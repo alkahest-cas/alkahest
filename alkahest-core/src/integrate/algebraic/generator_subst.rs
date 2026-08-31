@@ -301,12 +301,19 @@ fn integrate_reduced(
     // Among the candidates the gate accepts, the one that is real over the most
     // of the original integrand's domain wins.
     //
-    // The gate *skips* a sample where a side does not evaluate to a real, which
-    // is how a form real on only one component still clears it (`log` written
-    // without absolute values — the convention the rest of the integrator
-    // uses).  Correctness is the gate's business either way; this only decides
-    // which correct form to hand back, and the sign-repaired candidates are
-    // exactly the ones that tend to widen it.
+    // The gate skips a sample where the *integrand* is not a finite real, so a
+    // form real on only one component of the integrand's domain can still clear
+    // it — but only through its **derivative**.  `F` itself may be complex
+    // where `d/dx F` is an ordinary real, which is exactly the `log` case
+    // (`log(u)` for `u < 0` is complex; `u'/u` is not), and it is the
+    // convention the rest of the integrator writes its logs in.  What the gate
+    // does *not* skip any more is `d/dx F` failing to be real where the
+    // integrand is: that is a refutation (`gate`'s honest-limitations list), so
+    // a candidate whose derivative has a domain hole is rejected outright and
+    // never reaches this ranking.  Correctness is the gate's business either
+    // way; this only decides which of the accepted forms to hand back, and the
+    // sign-repaired candidates are the ones that tend to widen the region on
+    // which `F` itself is real.
     let mut best: Option<(usize, ExprId)> = None;
     for candidate in candidates {
         if !gate::verify(candidate, &target, var, &domain, &opts, pool).is_verified() {

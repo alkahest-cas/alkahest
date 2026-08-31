@@ -66,6 +66,104 @@ use crate::simplify::engine::simplify;
 /// A complex root, stored as `(re, im)`.
 pub(super) type Croot = (f64, f64);
 
+/// The real set on which a Byrd–Friedman reduction **claims** `d/dx F = f`.
+///
+/// This is deliberately *not* `{P > 0}`.  Each reduction below is a
+/// substitution `φ(x)` that is real on only part of `{P > 0}`: the
+/// three-real-root cubic needs `x` beyond the largest root, the four-real-root
+/// quartic needs `x` between the two middle roots, and so on.  `∫dx/√(x³−x)`
+/// is the standard illustration — `P > 0` on `(−1, 0) ∪ (1, ∞)`, the reduction
+/// holds only on `(1, ∞)`, and on `(−1, 0)` the integrand is an ordinary finite
+/// real while the candidate's derivative is `NaN`.
+///
+/// Sampling the whole of `{P > 0}` therefore asks the candidate about points it
+/// never claimed, and a gate that reads "candidate undefined where the
+/// integrand is finite" as a disagreement (which is the right reading — see
+/// [`crate::integrate::gate`]) refuses a correct answer.  So every reduction
+/// states its region here, and the gate's sample grid, its in-domain predicate
+/// and its enclosure boxes are all built from it.
+///
+/// The region is an **open** interval: the finite endpoints are roots of `P`,
+/// where `1/√P` is unbounded and there is nothing to compare.  `cuts` removes
+/// finitely many interior points, of which there are two kinds and both are
+/// facts about the *written* candidate, not about the mathematics:
+///
+/// * the pole of the `arctan` substitution's Möbius argument (the no-real-root
+///   quartic), where `φ` jumps by `π`; and
+/// * the poles the fitted higher-kind block set is written with — `log|x−t|`
+///   at a twin preimage, `√P/(x−p)` at a reduction pole, `EllipticPi`'s
+///   spurious twin pole.  Those cancel in the sum, so the residual's *limit*
+///   there is finite, but the expression as written evaluates `∞ − ∞`.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Region {
+    lo: f64,
+    hi: f64,
+    cuts: Vec<f64>,
+}
+
+impl Region {
+    /// The open interval `(lo, hi)`; either endpoint may be infinite.
+    fn open(lo: f64, hi: f64) -> Self {
+        Region {
+            lo,
+            hi,
+            cuts: Vec::new(),
+        }
+    }
+
+    /// The whole real line.
+    fn all() -> Self {
+        Region::open(f64::NEG_INFINITY, f64::INFINITY)
+    }
+
+    /// Remove the interior points `xs` (see the type docs for what qualifies).
+    fn cut_all(mut self, xs: impl IntoIterator<Item = f64>) -> Self {
+        for x in xs {
+            if x.is_finite() && x > self.lo && x < self.hi && !self.cuts.contains(&x) {
+                self.cuts.push(x);
+            }
+        }
+        self.cuts
+            .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        self
+    }
+
+    /// Is `x` a point this reduction claims?
+    ///
+    /// A cut is a single real number, but `f64` cannot see it that way: the
+    /// blocks whose poles cancel there are `O(1/(x−c))`, so evaluating within
+    /// `~ε/tol` of `c` loses the cancellation to rounding.  With `ε ≈ 2.2e−16`
+    /// and the gate's `1e−7` tolerance that boundary sits near `1e−9`; the
+    /// `1e−6` used here is three decades clear of it and still far narrower
+    /// than any domain hole the gate exists to catch.
+    fn contains(&self, x: f64) -> bool {
+        x.is_finite()
+            && x > self.lo
+            && x < self.hi
+            && !self
+                .cuts
+                .iter()
+                .any(|&c| (x - c).abs() <= 1e-6 * (1.0 + c.abs()))
+    }
+
+    /// The claimed set as disjoint open intervals, clipped to `[−window,
+    /// window]`.  Sub-intervals narrower than `min_width` are dropped.
+    fn components(&self, window: f64, min_width: f64) -> Vec<(f64, f64)> {
+        let lo = self.lo.max(-window);
+        let hi = self.hi.min(window);
+        if hi <= lo || hi.is_nan() || lo.is_nan() {
+            return Vec::new();
+        }
+        let mut cuts: Vec<f64> = vec![lo];
+        cuts.extend(self.cuts.iter().copied().filter(|&c| c > lo && c < hi));
+        cuts.push(hi);
+        cuts.windows(2)
+            .map(|w| (w[0], w[1]))
+            .filter(|&(a, b)| b - a >= min_width)
+            .collect()
+    }
+}
+
 /// Try to emit a first-kind `EllipticF` closed form for `∫ (a + b·√P) dx` when
 /// the integrand reduces to the pure first-kind shape `c/√P` (`a = 0`,
 /// `b = c/P` with `c` a constant) and `P` is a gate-verifiable cubic/quartic.
@@ -124,7 +222,7 @@ pub fn try_elliptic_output_with(
         return None;
     }
 
-    let (g, m, phi) = first_kind_reduction(&coeffs, deg, lead, var, pool)?;
+    let (g, m, phi, region) = first_kind_reduction(&coeffs, deg, lead, var, pool)?;
 
     // F_cand = (c · g) · EllipticF(phi, m).
     let m_expr = float_to_expr(m, pool);
@@ -132,19 +230,29 @@ pub fn try_elliptic_output_with(
     let coeff = float_to_expr(c * g, pool);
     let f_cand = simplify(pool.mul(vec![coeff, f]), pool).value;
 
-    // Soundness gate: d/dx F_cand = c/√P on the region where P > 0.
-    if verify(f_cand, &coeffs, c, c_expr, p_expr, var, pool, gate_opts).is_verified() {
+    // Soundness gate: d/dx F_cand = c/√P on the region this reduction claims,
+    // intersected with `P > 0`.
+    if verify(
+        f_cand, &coeffs, c, c_expr, p_expr, var, region, pool, gate_opts,
+    )
+    .is_verified()
+    {
         Some(f_cand)
     } else {
         None
     }
 }
 
-/// Compute the shared first-kind Legendre reduction `(g, m, φ(x))` for `√P`,
-/// chosen so that `d/dx[g·EllipticF(φ,m)] = 1/√P` on the real region where
-/// `P > 0`.  This is the *same* substitution used by every higher-kind
-/// reduction (B&F: all of `∫R(x,√P)dx` reduce under one substitution), so the
-/// second/third-kind paths reuse it verbatim.
+/// Compute the shared first-kind Legendre reduction `(g, m, φ(x), R)` for
+/// `√P`, chosen so that `d/dx[g·EllipticF(φ,m)] = 1/√P` on the region `R`.
+/// This is the *same* substitution used by every higher-kind reduction (B&F:
+/// all of `∫R(x,√P)dx` reduce under one substitution), so the second/third-kind
+/// paths reuse it verbatim — region included.
+///
+/// `R` is **not** `{P > 0}`.  Each B&F normal form is real on one component of
+/// `{P > 0}` (or, for the four-real-root quartic, on the bounded middle one),
+/// and every caller must verify only there; see [`Region`].  Each case returns
+/// its own region next to its own constants, so the two cannot drift apart.
 ///
 /// Returns `None` for radicand shapes outside the handled cubic/quartic
 /// root-configurations (e.g. all-complex quartic).
@@ -154,7 +262,7 @@ fn first_kind_reduction(
     lead: f64,
     var: ExprId,
     pool: &ExprPool,
-) -> Option<(f64, f64, ExprId)> {
+) -> Option<(f64, f64, ExprId, Region)> {
     let roots = poly_roots(coeffs)?;
     let (mut reals, pairs) = classify_roots(&roots);
     reals.sort_by(|a, b| b.partial_cmp(a).unwrap()); // descending
@@ -320,8 +428,8 @@ pub fn try_elliptic_output_higher_kind_with(
         return None;
     }
 
-    // The shared first-kind substitution.
-    let (g, m, phi) = first_kind_reduction(&p_coeffs, deg, lead, var, pool)?;
+    // The shared first-kind substitution, and the region it claims.
+    let (g, m, phi, region) = first_kind_reduction(&p_coeffs, deg, lead, var, pool)?;
     if !(g.is_finite() && m.is_finite()) || m >= 1.0 {
         return None;
     }
@@ -374,6 +482,26 @@ pub fn try_elliptic_output_higher_kind_with(
     // Second-kind reduction poles (where the `EllipticE` block's `sin²φ(x)`
     // introduces non-`P` poles that the algebraic ansatz must cancel).
     let red_poles = reduction_poles(&p_coeffs, deg);
+
+    // Points at which some block below is *written* with a pole that the fitted
+    // combination cancels: `√P/(x−p)` and `√P/(x−p)²` at the reduction poles and
+    // at the roots of `P`, `log|x−t|` and `EllipticPi`'s spurious twin pole at a
+    // twin preimage.  The residual's limit at such a point is finite — that is
+    // the whole reason the block is in the ansatz — but the expression as
+    // written evaluates `∞ − ∞`, so `d/dx F` comes back non-finite where the
+    // integrand is an ordinary real.  Under the gate's rule that is a
+    // disagreement, and it would be a false one: the candidate does not claim
+    // these isolated points.  They are cut from the region, so the claim and
+    // the sample set stay the same set.
+    //
+    // The union over *all* recipes is cut, not just the winning one's, because
+    // one domain serves the whole `propose_fit_verify` search.  That is a few
+    // isolated points wider than strictly necessary; each is named and finite,
+    // and none of them is an interval, which is the thing the rule exists to
+    // catch.
+    let mut written_poles: Vec<f64> = Vec::new();
+    written_poles.extend(red_poles.iter().copied());
+    written_poles.extend(p_roots.iter().copied());
 
     // Helper to build `xʲ·√P` and `√P/(x−r)^k` blocks.
     let poly_block = |j: usize, pool: &ExprPool| -> ExprId {
@@ -503,6 +631,7 @@ pub fn try_elliptic_output_higher_kind_with(
             }
         })
         .collect();
+    written_poles.extend(pi_poles.iter().map(|&(p, _)| p));
     if !pi_poles.is_empty() {
         let build_pi = |s: &mut Vec<ExprId>, pool: &ExprPool| {
             for &(_p, np) in &pi_poles {
@@ -542,10 +671,14 @@ pub fn try_elliptic_output_higher_kind_with(
         //     of the Π derivative can be cancelled and the fit can close.  Two
         //     variants: minimal (ladder + F + Π + logs) for clean coefficients,
         //     and rich (also E) as a fallback.
-        let twin_logs: Vec<ExprId> = pi_poles
+        let twins: Vec<f64> = pi_poles
             .iter()
             .filter_map(|&(p, _)| twin_pole(p, phi, var, pool))
-            .flat_map(|t| elem_log_blocks(t, p_expr, sqrt_p, var, pool))
+            .collect();
+        written_poles.extend(twins.iter().copied());
+        let twin_logs: Vec<ExprId> = twins
+            .iter()
+            .flat_map(|&t| elem_log_blocks(t, p_expr, sqrt_p, var, pool))
             .collect();
         if !twin_logs.is_empty() {
             // 4c) minimal + twin logs.
@@ -571,8 +704,11 @@ pub fn try_elliptic_output_higher_kind_with(
         }
     }
 
-    // Sample grid (shared across recipes) where `P > 0` and away from b-poles.
-    let samples = sample_grid(&p_coeffs, &b_den_f);
+    let region = region.cut_all(written_poles);
+
+    // Sample grid (shared across recipes) inside the claimed region and away
+    // from b-poles.
+    let samples = sample_grid(&p_coeffs, &b_den_f, &region);
 
     // `b·√P` in `f64`, restricted to the in-domain points.  The *same* closure
     // drives the least-squares fit and the gate's `f64` screen, so the two can
@@ -586,7 +722,7 @@ pub fn try_elliptic_output_higher_kind_with(
         Some(bv * pv.sqrt())
     };
     let integrand = simplify(pool.mul(vec![b_part, sqrt_p]), pool).value;
-    let domain = elliptic_domain(&p_coeffs);
+    let domain = elliptic_domain(&p_coeffs, region);
     let target = gate::Target::symbolic(integrand).with_numeric(&rhs);
     let to_expr = |v: f64, p: &ExprPool| float_to_expr(v, p);
 
@@ -745,16 +881,23 @@ fn elem_log_blocks(
     blocks
 }
 
-/// Sample grid for the fit, biased to the `P > 0` region and away from poles.
-fn sample_grid(p_coeffs: &[f64], b_den: &[f64]) -> Vec<f64> {
+/// Sample grid for the least-squares *fit*, restricted to the region the
+/// reduction claims and kept away from the weight's poles.
+///
+/// The region filter does not change which rows the fit sees — every recipe
+/// contains an `EllipticF` block, whose derivative is `NaN` outside the region,
+/// so [`gate::fit_blocks`] already dropped those rows.  It is applied because
+/// the design matrix should be built from the set the answer is about, rather
+/// than from a wider set that happens to self-filter.
+fn sample_grid(p_coeffs: &[f64], b_den: &[f64], region: &Region) -> Vec<f64> {
     let mut xs = Vec::new();
     let mut x = -4.0_f64;
     while x <= 6.0 {
-        // Skip points too close to a denominator zero.
-        if eval_poly(b_den, x).abs() > 1e-3 {
+        // Skip points outside the claim, and points too close to a denominator
+        // zero.
+        if region.contains(x) && eval_poly(p_coeffs, x) > 1e-6 && eval_poly(b_den, x).abs() > 1e-3 {
             xs.push(x);
         }
-        let _ = p_coeffs;
         x += 0.137;
     }
     xs
@@ -764,15 +907,24 @@ fn sample_grid(p_coeffs: &[f64], b_den: &[f64]) -> Vec<f64> {
 // Reduction cases (Byrd & Friedman normal forms)
 // ---------------------------------------------------------------------------
 
-/// Cubic, three real roots `e1 > e2 > e3` (region `x ≥ e1`, where `P > 0` for a
-/// positive leading coefficient): `sin²φ = (e1−e3)/(x−e3)`,
+/// Cubic, three real roots `e1 > e2 > e3`: `sin²φ = (e1−e3)/(x−e3)`,
 /// `m = (e2−e3)/(e1−e3)`, `g = −2/√(e1−e3)`.
+///
+/// **Region `(e1, ∞)`.**  `sin²φ = (e1−e3)/(x−e3)` lies in `[0, 1]` exactly for
+/// `x ≥ e1`: below `e1` (but above `e3`) the ratio exceeds `1`, and below `e3`
+/// it is negative, so `asin(√·)` is not real either way.  For a positive
+/// leading coefficient `{P > 0}` is `(e3, e2) ∪ (e1, ∞)` — strictly wider — and
+/// `∫dx/√(x³−x)` on `(−1, 0)` is the case that makes the difference visible.
+/// The `P > 0` half of the claim is *not* assumed here: it is re-checked
+/// pointwise by [`elliptic_domain`]'s predicate, which is what makes a negative
+/// leading coefficient (where this region and `{P > 0}` are disjoint) decline
+/// rather than misreport.
 fn cubic_three_real(
     reals: &[f64],
     inv_sqrt_lead: f64,
     var: ExprId,
     pool: &ExprPool,
-) -> Option<(f64, f64, ExprId)> {
+) -> Option<(f64, f64, ExprId, Region)> {
     let (e1, e2, e3) = (reals[0], reals[1], reals[2]);
     let denom = e1 - e3;
     if denom <= 0.0 {
@@ -788,19 +940,26 @@ fn cubic_three_real(
     ]);
     let s = pool.func("sqrt", vec![ratio]);
     let phi = pool.func("asin", vec![s]);
-    Some((g, m, phi))
+    Some((g, m, phi, Region::open(e1, f64::INFINITY)))
 }
 
-/// Cubic, one real root `y1` and a complex pair `b1 ± i·a1` (region `x ≥ y1`):
+/// Cubic, one real root `y1` and a complex pair `b1 ± i·a1`:
 /// `A = √((y1−b1)² + a1²)`, `g = 1/√A`, `m = (A + (b1−y1))/(2A)`,
 /// `cos φ = (A − (x−y1))/(A + (x−y1))`.
+///
+/// **Region `(y1, ∞)`.**  With `u = x − y1 > 0` the quotient `(A−u)/(A+u)` runs
+/// over `(−1, 1)`; for `u < 0` it leaves `[−1, 1]` (and passes through a pole at
+/// `u = −A`), so `acos` is not real.  Here the region coincides with `{P > 0}`
+/// for a positive leading coefficient — the narrowing is a no-op for this
+/// case — and it is stated anyway so that every reduction makes the same kind
+/// of claim.
 fn cubic_one_real(
     y1: f64,
     pair: Croot,
     inv_sqrt_lead: f64,
     var: ExprId,
     pool: &ExprPool,
-) -> Option<(f64, f64, ExprId)> {
+) -> Option<(f64, f64, ExprId, Region)> {
     let (b1, a1) = pair;
     let aa = ((y1 - b1).powi(2) + a1 * a1).sqrt();
     if aa <= 0.0 {
@@ -817,18 +976,25 @@ fn cubic_one_real(
     let den = pool.add(vec![float_to_expr(aa, pool), x_minus_y1]);
     let cosphi = pool.mul(vec![num, pool.pow(den, pool.integer(-1_i32))]);
     let phi = pool.func("acos", vec![cosphi]);
-    Some((g, m, phi))
+    Some((g, m, phi, Region::open(y1, f64::INFINITY)))
 }
 
-/// Quartic, four real roots `a > b > c > d` (region `c ≤ x ≤ b`, where `P > 0`):
+/// Quartic, four real roots `a > b > c > d`:
 /// `sn²φ = (b−d)(x−c)/((b−c)(x−d))`, `m = (b−c)(a−d)/((a−c)(b−d))`,
 /// `g = 2/√((a−c)(b−d))`.
+///
+/// **Region `(c, b)`.**  Write `h(x) = K(x−c)/(x−d)` with `K = (b−d)/(b−c) > 1`.
+/// `h` is increasing on each side of its pole at `d`, `h(c) = 0` and `h(b) = 1`,
+/// so `h ∈ [0, 1]` exactly on `[c, b]`: above `b` it exceeds `1`, on `(d, c)` it
+/// is negative, and below `d` it exceeds `1` again.  For a positive leading
+/// coefficient `{P > 0}` is `(−∞, d) ∪ (c, b) ∪ (a, ∞)`, so this reduction
+/// claims one bounded component out of three.
 fn quartic_four_real(
     reals: &[f64],
     inv_sqrt_lead: f64,
     var: ExprId,
     pool: &ExprPool,
-) -> Option<(f64, f64, ExprId)> {
+) -> Option<(f64, f64, ExprId, Region)> {
     let (a, b, c, d) = (reals[0], reals[1], reals[2], reals[3]);
     let ac = a - c;
     let bd = b - d;
@@ -846,21 +1012,29 @@ fn quartic_four_real(
     let ratio = pool.mul(vec![num, pool.pow(den, pool.integer(-1_i32))]);
     let s = pool.func("sqrt", vec![ratio]);
     let phi = pool.func("asin", vec![s]);
-    Some((g, m, phi))
+    Some((g, m, phi, Region::open(c, b)))
 }
 
-/// Quartic, two real roots `b1 > b2` and a complex pair `b3 ± i·a3`
-/// (region `b2 ≤ x ≤ b1`, where `P > 0`):
+/// Quartic, two real roots `b1 > b2` and a complex pair `b3 ± i·a3`:
 /// `A1 = √((b1−b3)² + a3²)`, `A2 = √((b2−b3)² + a3²)`, `g = 1/√(A1·A2)`,
 /// `m = ((A1+A2)² − (b1−b2)²)/(4·A1·A2)`,
 /// `cos φ = ((b1−x)A2 − (x−b2)A1)/((b1−x)A2 + (x−b2)A1)`.
+///
+/// **Region `(b2, b1)`.**  Writing `u = (b1−x)A2` and `v = (x−b2)A1`,
+/// `cos φ = (u−v)/(u+v)` has modulus `< 1` exactly when `u` and `v` are both
+/// positive, i.e. strictly between the two real roots; it is `+1` at `b2`, `−1`
+/// at `b1`, and of modulus `> 1` immediately outside.  `P > 0` on this interval
+/// requires a *negative* leading coefficient (`1 − x⁴` is the usual instance);
+/// with a positive one the region and `{P > 0}` are disjoint and the gate
+/// declines for want of in-domain points, which is the honest outcome rather
+/// than a mis-stated one.
 fn quartic_two_real(
     reals: &[f64],
     pair: Croot,
     inv_sqrt_lead: f64,
     var: ExprId,
     pool: &ExprPool,
-) -> Option<(f64, f64, ExprId)> {
+) -> Option<(f64, f64, ExprId, Region)> {
     let (b1, b2) = (reals[0], reals[1]);
     let (b3, a3) = pair;
     let aa1 = ((b1 - b3).powi(2) + a3 * a3).sqrt();
@@ -882,7 +1056,7 @@ fn quartic_two_real(
     let den = pool.add(vec![t1, t2]);
     let cosphi = pool.mul(vec![num, pool.pow(den, pool.integer(-1_i32))]);
     let phi = pool.func("acos", vec![cosphi]);
-    Some((g, m, phi))
+    Some((g, m, phi, Region::open(b2, b1)))
 }
 
 /// Quartic with **no real roots** — two complex-conjugate pairs `b1 ± i·a1`,
@@ -1005,7 +1179,7 @@ fn quartic_no_real(
     lead: f64,
     var: ExprId,
     pool: &ExprPool,
-) -> Option<(f64, f64, ExprId)> {
+) -> Option<(f64, f64, ExprId, Region)> {
     let (p, q, r, s, m, g) = quartic_no_real_consts(pair1, pair2, lead)?;
     // φ(x) = arctan( L(x) ),  L = (p·x+q)/(r·x+s).  The raw `(p,q,r,s)` are
     // `cos/sin θ`-scaled (θ a fixed angle of the substitution), so individually
@@ -1032,79 +1206,115 @@ fn quartic_no_real(
     ]);
     let l = pool.mul(vec![lp, pool.pow(ld, pool.integer(-1_i32))]);
     let phi = pool.func("atan", vec![l]);
-    Some((g, m, phi))
+    // Region: the whole real line — `P > 0` everywhere and `atan` is real for
+    // every argument — **minus the pole of `L` at `x = −s/r`**.  There `φ` jumps
+    // from `+π/2` to `−π/2`, so the candidate is discontinuous across it (the
+    // one-sided derivatives are still right; the jump is the additive constant a
+    // branch change contributes).  The written derivative is `0/0` exactly at
+    // the pole, so the point is cut rather than sampled.  Rescaling
+    // `(p, q, r, s)` above does not move `−s/r`.
+    let region = if r.abs() > 1e-12 {
+        Region::all().cut_all([-s / r])
+    } else {
+        Region::all()
+    };
+    Some((g, m, phi, region))
 }
 
 // ---------------------------------------------------------------------------
 // Verification gate
 // ---------------------------------------------------------------------------
 
-/// Region-aware sample points for the soundness gate.
+/// Sample points for the soundness gate, drawn from the region the reduction
+/// **claims** — and from nowhere else.
 ///
-/// The reduction's substitution is only valid on *part* of the `P > 0` set — a
-/// cubic-three-real reduction is valid only beyond the largest root, a
-/// quartic-two-real one only outside the real roots, etc.  A fixed grid can land
-/// fewer than the three required points in that valid region and make a *correct*
-/// reduction spuriously decline (e.g. `∫dx/√(x³−7x−6)`, region `x ≥ 3`;
-/// `∫dx/√(x⁴−1)`, region `|x| > 1`).
+/// This used to put points in *every* `P > 0` interval and say so, on the
+/// reasoning that "points where the substitution is invalid simply evaluate
+/// non-finite and are skipped".  That is true only of a gate that skips them.
+/// A gate that reads "the candidate is undefined where the integrand is an
+/// ordinary finite real" as a **disagreement** — which is the right reading,
+/// and is what [`crate::integrate::verify_antiderivative_status`] has done
+/// since PR #344 — refuses a correct answer instead: for `∫dx/√(x³−x)` the
+/// integrand is finite all over `(−1, 0)` while the cubic-three-real
+/// candidate's derivative is `NaN` there, because that component is not part
+/// of the claim.  The sample set was wider than the claim, so the fix belongs
+/// here and not in the rule.
 ///
-/// This derives points from `P`'s real roots so every `P > 0` interval is
-/// covered — in particular the unbounded region beyond the largest (and below the
-/// smallest) real root — on top of a wide fixed grid.  Adding points never
-/// weakens the gate: it still rejects on *any* disagreement, and points where the
-/// substitution is invalid simply evaluate non-finite and are skipped.
-fn gate_samples(p_coeffs: &[f64]) -> Vec<f64> {
-    let mut xs: Vec<f64> = vec![
-        -3.5, -2.7, -1.6, -0.9, -0.4, 0.15, 0.3, 0.55, 0.7, 0.9, 1.1, 1.4, 1.9, 2.6, 3.4, 4.7, 5.3,
+/// So: points come from `region` only.  A wide fixed grid supplies the ordinary
+/// case, and region-derived points guarantee the gate's three-point minimum is
+/// reachable however narrow or far away the region is (`∫dx/√(x³−7x−6)`, region
+/// `(3, ∞)`, was the case that motivated deriving them at all).  Every point is
+/// still re-checked against `P > 0`: a region and `{P > 0}` can be disjoint
+/// when the leading coefficient has the wrong sign for the normal form, and
+/// then the gate declines for want of points rather than reporting anything.
+///
+/// The offsets and fractions are deliberately not round numbers.  That is not
+/// superstition: a fitted higher-kind block set carries `log|x−t|` and
+/// `√P/(x−p)` written singularities, and those *are* cut from the region by the
+/// caller — but only the ones the caller knows about, so a grid that avoids
+/// landing on tidy values is one less way to trip over one it does not.
+fn gate_samples(p_coeffs: &[f64], region: &Region) -> Vec<f64> {
+    /// Offsets inward from a finite endpoint of an unbounded component.
+    const OFFSETS: [f64; 9] = [
+        0.0613, 0.1373, 0.2917, 0.6131, 1.2437, 2.5391, 5.1173, 10.241, 20.487,
     ];
-    let mut reals = poly_roots(p_coeffs)
-        .map(|roots| classify_roots(&roots).0)
-        .unwrap_or_default();
-    reals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    /// Fractions along a bounded component.
+    const FRACTIONS: [f64; 11] = [
+        0.0137, 0.0731, 0.1523, 0.2417, 0.3313, 0.4909, 0.6121, 0.7213, 0.8317, 0.9109, 0.9767,
+    ];
     let pos = |x: f64| eval_poly(p_coeffs, x) > 1e-6;
-    if let (Some(&lo), Some(&hi)) = (reals.first(), reals.last()) {
-        // Unbounded regions beyond the extreme roots (where most odd-degree /
-        // two-real-root reductions are valid).
-        for o in [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0] {
-            let (rgt, lft) = (hi + o, lo - o);
-            if pos(rgt) {
-                xs.push(rgt);
-            }
-            if pos(lft) {
-                xs.push(lft);
-            }
+    let mut xs: Vec<f64> = Vec::new();
+    let push = |x: f64, xs: &mut Vec<f64>| {
+        if region.contains(x) && pos(x) {
+            xs.push(x);
         }
-        // Interior of each bounded `P > 0` interval between consecutive roots.
-        for w in reals.windows(2) {
-            let (a, b) = (w[0], w[1]);
-            if b - a < 1e-6 {
-                continue;
-            }
-            for f in [0.15, 0.3, 0.45, 0.6, 0.75, 0.85] {
-                let x = a + (b - a) * f;
-                if pos(x) {
-                    xs.push(x);
+    };
+    for &x in &[
+        -3.5_f64, -2.7, -1.6, -0.9, -0.4, 0.15, 0.3, 0.55, 0.7, 0.9, 1.1, 1.4, 1.9, 2.6, 3.4, 4.7,
+        5.3,
+    ] {
+        push(x, &mut xs);
+    }
+    for (lo, hi) in region.components(f64::INFINITY, 0.0) {
+        match (lo.is_finite(), hi.is_finite()) {
+            (true, true) => {
+                for f in FRACTIONS {
+                    push(lo + (hi - lo) * f, &mut xs);
                 }
             }
+            (true, false) => {
+                for o in OFFSETS {
+                    push(lo + o, &mut xs);
+                }
+            }
+            (false, true) => {
+                for o in OFFSETS {
+                    push(hi - o, &mut xs);
+                }
+            }
+            // Doubly unbounded: the fixed grid above already covers it.
+            (false, false) => {}
         }
     }
     xs
 }
 
-/// Closed boxes **strictly inside** the `P > 0` region, for the gate's rigorous
-/// enclosure tier.
+/// Closed boxes **strictly inside the region the reduction claims**, for the
+/// gate's rigorous enclosure tier.
 ///
 /// The residual `d/dx F − f` carries a `1/√P` factor and is therefore unbounded
 /// at every root of `P`: no rigorous bound over a box that touches a root can
-/// exist, and asking for one only wastes the subdivision budget.  So each
-/// component of `{P > 0}` is inset away from its finite endpoints and clipped
-/// to a finite window, and the widest surviving box comes first (the gate takes
-/// them in order, up to its `max_boxes`).
+/// exist, and asking for one only wastes the subdivision budget.  The same
+/// goes for the interior points `region` cuts out.  So each component of the
+/// region is clipped to a finite window, inset away from its finite endpoints,
+/// and the widest survivor comes first (the gate takes them in order, up to its
+/// `max_boxes`).
 ///
 /// This is the domain-awareness of [`gate_samples`], expressed as a box instead
-/// of a point set — the two must agree, or the enclosure would certify a region
-/// the reduction was never claimed to be valid on.
-fn gate_boxes(p_coeffs: &[f64]) -> Vec<(f64, f64)> {
+/// of a point set — both are built from the same [`Region`], because an
+/// enclosure over a wider set would certify something the reduction never
+/// claimed.
+fn gate_boxes(p_coeffs: &[f64], region: &Region) -> Vec<(f64, f64)> {
     let mut reals = poly_roots(p_coeffs)
         .map(|roots| classify_roots(&roots).0)
         .unwrap_or_default();
@@ -1113,24 +1323,16 @@ fn gate_boxes(p_coeffs: &[f64]) -> Vec<(f64, f64)> {
     let span = reals.iter().fold(1.0_f64, |m, r| m.max(r.abs()));
     let window = span + 3.0;
 
-    // Endpoints of the candidate components: −window, the roots, +window.
-    let mut cuts = vec![-window];
-    cuts.extend(reals.iter().copied().filter(|r| r.abs() < window));
-    cuts.push(window);
-
     let mut boxes: Vec<(f64, f64)> = Vec::new();
-    for w in cuts.windows(2) {
-        let (mut lo, mut hi) = (w[0], w[1]);
-        if hi - lo < 0.3 {
-            continue;
-        }
-        // Inset away from a finite root; the outer window edges are already
-        // interior points, so they need no inset.
+    for (mut lo, mut hi) in region.components(window, 0.3) {
+        // Inset away from an endpoint the region itself put there (a root of
+        // `P`, or a cut point); the artificial `±window` clips are ordinary
+        // interior points and need no inset.
         let inset = (0.12 * (hi - lo)).clamp(0.05, 1.0);
-        if reals.iter().any(|r| (r - lo).abs() < 1e-9) {
+        if lo > -window {
             lo += inset;
         }
-        if reals.iter().any(|r| (r - hi).abs() < 1e-9) {
+        if hi < window {
             hi -= inset;
         }
         if hi - lo < 0.2 {
@@ -1168,12 +1370,22 @@ fn gate_boxes(p_coeffs: &[f64]) -> Vec<(f64, f64)> {
     boxes
 }
 
-/// The gate's view of "where this reduction is claimed to hold": the
-/// region-aware sample grid, the `P > 0` predicate, and the enclosure boxes.
-fn elliptic_domain(p_coeffs: &[f64]) -> gate::Domain<'_> {
-    gate::Domain::from_samples(gate_samples(p_coeffs))
-        .with_predicate(move |x: f64| eval_poly(p_coeffs, x) > 1e-6)
-        .with_boxes(gate_boxes(p_coeffs))
+/// The gate's view of "where this reduction is claimed to hold": the sample
+/// grid drawn from `region`, the conjunction of `region` and `P > 0` as the
+/// in-domain predicate, and enclosure boxes inside the same set.
+///
+/// Both halves of the predicate are load-bearing and neither implies the other.
+/// `region` is where the substitution is real; `P > 0` is where the integrand
+/// is.  They coincide for some root configurations and are disjoint for others
+/// (a normal form applied with the wrong sign of leading coefficient), and the
+/// gate must sample the intersection — which is exactly the set on which
+/// `d/dx F = f` is being asserted.
+fn elliptic_domain(p_coeffs: &[f64], region: Region) -> gate::Domain<'_> {
+    let samples = gate_samples(p_coeffs, &region);
+    let boxes = gate_boxes(p_coeffs, &region);
+    gate::Domain::from_samples(samples)
+        .with_predicate(move |x: f64| region.contains(x) && eval_poly(p_coeffs, x) > 1e-6)
+        .with_boxes(boxes)
 }
 
 /// Default gate configuration for this route.
@@ -1211,7 +1423,8 @@ fn gate_options() -> gate::GateOptions {
     }
 }
 
-/// Verify `d/dx F_cand = c/√P` on the region where `P > 0`.
+/// Verify `d/dx F_cand = c/√P` on `region ∩ {P > 0}` — the set this reduction
+/// claims, not the whole of `{P > 0}`.
 ///
 /// `c_expr` is the exact symbolic constant (`c` is its `f64` value), so the
 /// symbolic and enclosure tiers see the true integrand rather than a float
@@ -1224,6 +1437,7 @@ fn verify(
     c_expr: ExprId,
     p_expr: ExprId,
     var: ExprId,
+    region: Region,
     pool: &ExprPool,
     gate_opts: &gate::GateOptions,
 ) -> gate::Verdict {
@@ -1240,7 +1454,7 @@ fn verify(
         }
         Some(c / pv.sqrt())
     };
-    let domain = elliptic_domain(coeffs);
+    let domain = elliptic_domain(coeffs, region);
     let target = gate::Target::symbolic(integrand).with_numeric(&rhs);
     gate::verify(f_cand, &target, var, &domain, gate_opts, pool)
 }
@@ -1763,13 +1977,94 @@ mod tests {
             }
             Some(eval_ratio(b_num, b_den, xv)? * pv.sqrt())
         };
-        let domain = elliptic_domain(p_coeffs);
+        let domain = elliptic_domain(p_coeffs, region_of(p_coeffs, var, pool));
         let target = gate::Target::symbolic(integrand).with_numeric(&rhs);
         gate::verify(f_cand, &target, var, &domain, &gate_options(), pool).is_verified()
     }
 
     fn x_dummy(pool: &ExprPool) -> ExprId {
         pool.symbol("__unused__", Domain::Real)
+    }
+
+    /// The region the first-kind reduction for `p_coeffs` claims, taken from
+    /// [`first_kind_reduction`] itself rather than restated here — a test that
+    /// hard-coded the interval would keep passing after the reduction changed.
+    fn region_of(p_coeffs: &[f64], var: ExprId, pool: &ExprPool) -> Region {
+        let deg = p_coeffs.len() - 1;
+        let lead = *p_coeffs.last().expect("non-empty coefficients");
+        first_kind_reduction(p_coeffs, deg, lead, var, pool)
+            .expect("a handled cubic/quartic root configuration")
+            .3
+    }
+
+    /// The gate's domain for a three-real-root cubic is the component the
+    /// reduction claims, and nothing else.
+    ///
+    /// `P = x³ − x` is positive on `(−1, 0)` and on `(1, ∞)`; the B&F
+    /// `sin²φ = (e1−e3)/(x−e3)` normal form is real only on the second.  The
+    /// grid used to cover both and rely on the gate skipping the `NaN`s, which
+    /// is exactly what stopped the gate from being allowed to treat a `NaN`
+    /// derivative as a disagreement.  Nothing may be sampled in `(−1, 0)`, and
+    /// the surviving points must still clear the gate's three-point minimum.
+    #[test]
+    fn gate_domain_is_the_claimed_component_only() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let coeffs = [0.0, -1.0, 0.0, 1.0]; // x³ − x
+        let region = region_of(&coeffs, x, &pool);
+        assert_eq!(region, Region::open(1.0, f64::INFINITY));
+
+        let domain = elliptic_domain(&coeffs, region);
+        let live: Vec<f64> = domain
+            .samples()
+            .iter()
+            .copied()
+            .filter(|&v| domain.contains(v))
+            .collect();
+        assert!(
+            live.len() >= 3,
+            "narrowing must not starve the gate: {live:?}"
+        );
+        for &v in &live {
+            assert!(
+                v > 1.0,
+                "sampled {v}, which is outside the claimed region (1, ∞)"
+            );
+        }
+        // The other `P > 0` component is positive and *not* claimed.
+        for &v in &[-0.9_f64, -0.5, -0.1] {
+            assert!(eval_poly(&coeffs, v) > 0.0, "{v} should have P > 0");
+            assert!(!domain.contains(v), "{v} is in the domain but not claimed");
+        }
+        for b in domain.boxes() {
+            assert!(b.0 > 1.0, "enclosure box {b:?} leaves the claimed region");
+        }
+    }
+
+    /// The no-real-root quartic cuts the pole of its `arctan` substitution.
+    ///
+    /// `φ = atan(L)` with `L` a Möbius function has one real pole; `φ` jumps by
+    /// `π` across it and the written derivative is `0/0` there.  The region
+    /// removes it, so the two components either side are claimed and the point
+    /// itself is not — a `Region` fact, not a budget accident of the enclosure
+    /// tier.
+    #[test]
+    fn quartic_no_real_region_cuts_the_substitution_pole() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let coeffs = [1.0, 0.0, 0.0, 0.0, 1.0]; // x⁴ + 1
+        let region = region_of(&coeffs, x, &pool);
+        assert_eq!(region.cuts.len(), 1, "expected exactly one cut: {region:?}");
+        let pole = region.cuts[0];
+        assert!(!region.contains(pole));
+        assert!(region.contains(pole - 0.5) && region.contains(pole + 0.5));
+        let domain = elliptic_domain(&coeffs, region);
+        for b in domain.boxes() {
+            assert!(
+                pole <= b.0 || pole >= b.1,
+                "enclosure box {b:?} straddles the substitution pole {pole}"
+            );
+        }
     }
 
     #[test]
@@ -1888,7 +2183,7 @@ mod tests {
                 }
                 Some(1.0 / pv.sqrt())
             };
-            let domain = elliptic_domain(coeffs);
+            let domain = elliptic_domain(coeffs, region_of(coeffs, x, &pool));
             assert!(
                 !domain.boxes().is_empty(),
                 "{name}: no in-domain box was produced"
