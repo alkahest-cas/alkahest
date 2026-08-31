@@ -2,6 +2,71 @@
 
 ## Unreleased
 
+- **`dsolve`'s verification gate could certify a wrong `y(x)`.** Every solution
+  `dsolve` returns is checked by substituting the candidate back into the
+  original equation and requiring the residual to vanish — symbolically, or
+  numerically at 15 samples (5 values of `x` × 3 assignments of the integration
+  constants). A sample where the residual did not evaluate to a finite number
+  was **skipped** as "a pole here", and the candidate was then certified on the
+  remaining samples alone, subject only to a floor of six of them.
+
+  That floor is exactly six, and skipping is what makes it reachable. For
+  `y' = 0` — regular at every `x`, general solution `y = C1` — the candidate
+
+  ```
+  y = C1 + √(x − ½)·(x − 0.61)²·(x − 0.79)²
+  ```
+
+  is NaN at the samples `0.11, 0.27, 0.43` (negative radicand) and has a double
+  root at `0.61` and `0.79`, so the residual is exactly zero at the two samples
+  that do evaluate. Nine skips, six agreements, gate cleared, wrong answer
+  returned. The mistake is treating "did not evaluate" as "no information": a
+  candidate that blows up where the ODE itself is perfectly well-defined is
+  evidence that the candidate is wrong.
+
+  The residual alone cannot draw that distinction, because it conflates the
+  equation's coefficients and forcing term with the candidate's contribution
+  into a single expression. The gate now keeps the two halves separately and
+  **classifies** a non-finite sample instead of discarding it:
+
+  1. Probe the equation at that `x` with finite dummy values for `y, y', …`. If
+     nothing evaluates, the ODE is genuinely singular there — a `√(a − x)`
+     coefficient past its branch point, a pole in the forcing term — and the
+     sample really does carry no information. Skip.
+  2. Otherwise evaluate the candidate and its derivatives on their own. Not
+     finite, where the ODE is regular, is now a disagreement.
+  3. If both sides are finite and only the *simplified residual* was not, the
+     non-finiteness was an artefact of the residual's algebraic form; the
+     verdict comes from the original equation at the candidate's own values,
+     recovering a sample that used to be thrown away.
+
+  `E-ODE-011` now states the tally: agreeing, disagreeing, blow-ups at a regular
+  point, and each kind of skip.
+
+  The direction of the trade is deliberate: a decline is acceptable, a wrong
+  `y(x)` is not. For a *nonlinear* ODE a correct solution may have a movable
+  singularity at a regular point (`y' = 1 + y²` has `y = tan(x + C)`), and a
+  sample landing on one is now a decline rather than a skip.
+
+  **No capability change.** The ODE corpus is unchanged at 89/101, case for
+  case, and the classifier is never entered on it — all 15 samples of all 35
+  numerically-certified solutions are finite — so no evaluation work is added
+  and latency is unchanged. All 12 remaining declines are "no class produced a
+  candidate"; none is the gate refusing a correct answer (`cargo test
+  -p alkahest-cas ode::dsolve::corpus::decline_split_report -- --ignored
+  --nocapture`).
+
+  Two notes for anyone reasoning about this gate. The numeric fallback is not a
+  rarity — it is what certifies 35 of the 89 solved corpus cases, the symbolic
+  branch closing the other 54. And it is **not** blocked by a non-elementary
+  answer: `verify::eval` has no `f64` kernel for `Ei`/`Si`/`Ci`, but those
+  cancel out of the residual when the candidate is substituted, leaving
+  elementary leftovers such as `x⁻¹·eˣ·e⁻ˣ − x⁻¹` that the sampler evaluates
+  perfectly well. `y'' − y = 1/x`, `y'' − y = eˣ/x`, `y'' − 4y = 1/x` and
+  `y''' − y' = 1/x` are all certified numerically, not symbolically, so the
+  conflated residual is kept as the primary check — evaluating the split form
+  instead would lose them.
+
 - **`ak.simplify` refused expressions it could handle, and crashed on one it
   could not.** The `E-DEPTH-001` ceiling (`MAX_EXPR_DEPTH`, 2 048) is
   calibrated against the shallowest walker that recurses without a net —

@@ -190,6 +190,44 @@ fn outcome(entry: &Entry) -> (String, String) {
     }
 }
 
+/// Split the corpus's declines into the two reasons they can have.
+///
+/// `DECLINED` conflates them: a class may never have matched (nothing to
+/// verify), or a class may have produced a candidate that the substitution gate
+/// then refused.  Only the second kind is a *gate* problem — an answer the
+/// solver had and threw away — so the ratio says whether work belongs in
+/// `verify.rs` or in the solving classes and the integration engine.
+#[test]
+#[ignore = "measurement harness; run explicitly with --nocapture"]
+fn decline_split_report() {
+    let (mut no_candidate, mut gate_refused) = (0usize, 0usize);
+    for e in CORPUS {
+        let pool = ExprPool::new();
+        let Some(input) = build(e, &pool) else {
+            continue;
+        };
+        let _ = super::verify::take_gate_tally();
+        let solved = dsolve(&input, &pool).is_ok();
+        let (offered, refused) = super::verify::take_gate_tally();
+        if solved {
+            continue;
+        }
+        // `offered == refused` and `offered > 0` means every candidate any class
+        // produced was rejected by the gate.
+        if refused > 0 {
+            gate_refused += 1;
+            println!(
+                "GATE_REFUSED\t{}\t{}\t{offered} offered, {refused} refused",
+                e.0, e.1
+            );
+        } else {
+            no_candidate += 1;
+            println!("NO_CANDIDATE\t{}\t{}", e.0, e.1);
+        }
+    }
+    println!("SPLIT\tno_candidate={no_candidate}\tgate_refused={gate_refused}");
+}
+
 #[test]
 #[ignore = "measurement harness; run explicitly with --nocapture"]
 fn corpus_report() {
