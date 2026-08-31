@@ -3247,8 +3247,19 @@ const JUMP_REFINEMENTS: usize = 50;
 /// continuous, `|ΔF|` shrinks with the cell, and the ratio stays bounded.
 const JUMP_CONFIRM_RATIO: f64 = 1e6;
 
-/// Detect a jump discontinuity of the antiderivative `f` strictly inside
-/// `(lower, upper)`, which makes `F(b) − F(a)` not the value of the integral.
+/// Detect a *discontinuity* of the antiderivative `F` on `[lower, upper]`,
+/// which makes `F(b) − F(a)` not the value of the integral.
+///
+/// Two shapes are looked for, because `F` can fail to be continuous on the
+/// interval in two different ways and only one of them is a jump:
+///
+/// 1. **A hole** — `F` is not defined at all across a sub-interval on which
+///    the integrand is an ordinary finite real.  [`antiderivative_domain_hole`]
+///    goes first, because a hole makes every ratio below undecidable and so
+///    silences the scan that would otherwise have to answer.
+/// 2. **A jump** — `F` is finite either side of a point, and the increment
+///    across a shrinking bracket does not shrink with it.  This is the ratio
+///    scan below.
 ///
 /// This is the failure the other two guards structurally cannot see: they look
 /// at the *integrand*, and here the integrand is perfectly well behaved.
@@ -3284,6 +3295,13 @@ fn antiderivative_jump(
     let width = hi - lo;
     if !(width > 0.0) || !width.is_finite() {
         return None;
+    }
+
+    // Shape 1 first: an `F` that is not defined across part of the interval
+    // makes every ratio below undecidable, which is exactly how this class used
+    // to escape.
+    if let Some(reason) = antiderivative_domain_hole(f, integrand, var, lo, hi, pool) {
+        return Some(reason);
     }
 
     let at = |e: ExprId, t: f64| -> Option<f64> {
@@ -3370,6 +3388,130 @@ fn antiderivative_jump(
             best,
         )
     })
+}
+
+/// Consecutive hole samples needed before a hole is declared.
+///
+/// Two adjacent points of the [`JUMP_SCAN_CELLS`] grid, plus the midpoint
+/// between them, bracket a whole cell — `width / 257` of the interval, a set of
+/// positive measure — rather than one isolated point.  The distinction matters:
+/// an `F` written with a *removable* singularity (`x²·g(x)/x`) is non-finite at
+/// exactly one point and is still a perfectly good antiderivative, so a
+/// single-sample rule would refuse correct answers.
+const HOLE_MIN_RUN: usize = 2;
+
+/// Detect a **domain hole** of the antiderivative `F` inside `[lo, hi]`: a
+/// sub-interval on which `F` is undefined while the integrand is an ordinary
+/// finite real.
+///
+/// # Why this is a refusal and not a skip
+///
+/// The FTC needs `F` continuous on `[a, b]` and differentiable inside it.  If
+/// `F` is not even *defined* across a sub-interval where `f` is finite, then
+/// `F` is not that function, and `F(b) − F(a)` is not the integral — whatever
+/// the two endpoint values happen to come out as.  The scan in
+/// [`antiderivative_jump`] structurally cannot see this: every one of its cells
+/// needs `F` at both ends to form a ratio, so a hole makes each cell
+/// *undecidable* and the whole scan silent.  That silence used to be read as
+/// "no evidence against the candidate" and the difference was returned anyway.
+///
+/// It is the definite-integral sibling of the indefinite-path rule PR #344 put
+/// into [`classify_sample`], and it is what that rule cannot reach: the
+/// indefinite gate samples a fixed grid on the whole real line and asks about
+/// `F′`, while the question here is about `F` itself on the caller's interval.
+/// Measured, this class is large and every member of it returned `Solved`:
+/// `∫_{0.1}^{1.4} dx/(1 + tan x)` came back as
+/// `½·log(tan²(x/2) − 2·tan(x/2) − 1) − …`, whose logarithm is `log` of a
+/// negative number for every `x` in `(−π/4, 3π/4)` — the answer is undefined
+/// across the entire interval of integration, while the integrand runs
+/// smoothly from `0.909` down to `0.147` and the value is `0.677`.
+/// `∫_{-3}^{-2} dx/(x⁴−1)`, `∫_{-1/2}^{1/2} atanh(x) dx`,
+/// `∫_{1/5}^{4/5} asin(x)/x² dx` and `∫_{-4}^{-2} dx/(1+x³)` are the same
+/// shape.  The last endpoint gate, [`non_real_closed_form`], does not catch
+/// them: it asks [`crate::eval::eval_f64`], which does not implement `tan`,
+/// `atan`, `asin`, `atanh` or `EllipticF`, so it reports "cannot decide" and
+/// correctly declines to reject.  The registry-backed interpreter used here
+/// does implement them.
+///
+/// # The three classifications, and why they are not symmetric
+///
+/// | integrand | `F` | verdict |
+/// |---|---|---|
+/// | finite | finite | fine |
+/// | finite | non-finite | **hole** — evidence, refuse |
+/// | non-finite | either | no information |
+///
+/// The last row keeps genuine improper integrals working.  `∫_0^1 log x dx` has
+/// an integrand that is `−∞` at `0` and an `F = x·log x − x` that is `NaN`
+/// there; `∫_0^1 x^{-1/2} dx` has an integrand that blows up at `0`.  Neither
+/// is this defect, and both must stay with whatever machinery handles them
+/// today, so a point outside the *integrand's* domain is never held against
+/// `F`.  Symmetrically, this is why the rule is stated on `F` and the integrand
+/// rather than on `F′`: #344's asymmetry — `F′` is routinely defined on a
+/// strictly larger set than `f` — is about the derivative and does not arise
+/// here.
+///
+/// # What it deliberately does not decide
+///
+/// A sample where the interpreter returns *no value at all* (`RootSum`, an
+/// unregistered head) is a property of the expression, not of the point, so it
+/// is no information — the same call PR #344 made.  That leaves one known gap:
+/// `PrimitiveRegistry::numeric_f64` answers `None`, not `NaN`, for an
+/// out-of-domain `EllipticF`, so a branch-limited elliptic answer evaluated off
+/// its branch (`∫_{-0.9}^{-0.1} dx/√(x³−x)`, whose `F` is real only for
+/// `x ≥ 1`) is indistinguishable here from a `RootSum` and is still returned.
+/// Closing it needs the registry to separate "outside my domain" from "not
+/// implemented", not a change to this rule.
+fn antiderivative_domain_hole(
+    f: ExprId,
+    integrand: ExprId,
+    var: ExprId,
+    lo: f64,
+    hi: f64,
+    pool: &ExprPool,
+) -> Option<String> {
+    use crate::jit::InterpEvalError;
+
+    // `true` when the integrand is an ordinary finite real at `t` and `F` is
+    // *defined but not finite* there — the middle row of the table above.
+    let is_hole = |t: f64| -> bool {
+        let mut bindings = HashMap::new();
+        bindings.insert(var, t);
+        if crate::jit::eval_interp_checked(integrand, &bindings, pool).is_err() {
+            return false; // outside the integrand's domain: no claim to check
+        }
+        matches!(
+            crate::jit::eval_interp_checked(f, &bindings, pool),
+            Err(InterpEvalError::NonFinite)
+        )
+    };
+
+    let point = |i: usize| lo + (hi - lo) * (i as f64) / (JUMP_SCAN_CELLS as f64);
+    let mut run = 0_usize;
+    for i in 0..=JUMP_SCAN_CELLS {
+        if !is_hole(point(i)) {
+            run = 0;
+            continue;
+        }
+        run += 1;
+        // Confirm the cell just closed is a hole *throughout*, not two
+        // coincident isolated points.
+        if run >= HOLE_MIN_RUN && is_hole(0.5 * (point(i - 1) + point(i))) {
+            return Some(format!(
+                "improper application of the fundamental theorem: the antiderivative {} is \
+                 undefined across [{}, {}] ⊆ [{}, {}], where the integrand {} is an ordinary \
+                 finite real. F is therefore not continuous on the interval of integration, \
+                 and F(b) - F(a) is not the value of this integral",
+                pool.display(f),
+                point(i - 1),
+                point(i),
+                lo,
+                hi,
+                pool.display(integrand),
+            ));
+        }
+    }
+    None
 }
 
 /// Split `expr` into `(numerator, denominator)` by collecting factors carrying a
@@ -5712,6 +5854,112 @@ mod tests {
         // ∫_2^3 dx/(x²−1) = ½·ln((x−1)/(x+1)) |_2^3 = ½·(ln(1/2) − ln(1/3)).
         let expected = 0.5 * ((1.0_f64 / 2.0).ln() - (1.0_f64 / 3.0).ln());
         assert_num(r.value, expected, &pool);
+    }
+
+    // ── The antiderivative's *domain* over the interval ──────────────────────
+    //
+    // `antiderivative_domain_hole`. Three tests: the defect, the control that
+    // keeps genuine improper integrals working, and the control that keeps a
+    // removable singularity from being mistaken for a hole.
+
+    /// The defect. `∫_{-1/2}^{1/2} atanh(x) dx` was answered
+    /// `x·atanh x + ½·log(x²−1)`, whose logarithm is `log` of a negative number
+    /// for every `|x| < 1` — i.e. on the whole interval of integration, and
+    /// exactly where `atanh` is defined. The FTC difference is not a real
+    /// number, and the definite path returned it as a solved value: the jump
+    /// scan needs `F` at both ends of a cell to form its ratio, so a hole makes
+    /// every cell undecidable and the scan silent.
+    ///
+    /// The correct branch is `x·atanh x + ½·log(1−x²)`; recovering the answer
+    /// needs that, not a wider search.
+    #[test]
+    fn definite_domain_hole_across_the_whole_interval_is_refused() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.func("atanh", vec![x]);
+        let (lo, hi) = (pool.rational(-1_i32, 2_i32), pool.rational(1_i32, 2_i32));
+
+        // The premise: at x = 0 the integrand is finite and the emitted `F`
+        // is not.
+        let anti = integrate(f, x, &pool).expect("atanh integrates").value;
+        let mut env = HashMap::new();
+        env.insert(x, 0.0_f64);
+        assert!(
+            crate::jit::eval_interp(f, &env, &pool).is_some_and(|v| v.is_finite()),
+            "premise: the integrand must be finite at x = 0"
+        );
+        assert!(
+            crate::jit::eval_interp(anti, &env, &pool).map_or(true, |v| !v.is_finite()),
+            "premise: the antiderivative must be undefined at x = 0, got {}",
+            pool.display(anti)
+        );
+
+        match integrate_definite(f, x, lo, hi, &pool) {
+            Err(IntegrationError::NotImplemented(msg)) => assert!(
+                msg.contains("undefined across"),
+                "expected a domain-hole diagnostic, got: {msg}"
+            ),
+            Err(other) => panic!("expected NotImplemented, got {other:?}"),
+            Ok(v) => panic!("expected a refusal, got {}", pool.display(v.value)),
+        }
+    }
+
+    /// The control that matters most: a **genuine improper integral** has an
+    /// integrand that is itself non-finite at an endpoint, and must keep going
+    /// through whatever machinery handles it today. `∫_0^1 x^{-1/2} dx = 2`
+    /// converges; its integrand blows up at `0` and its `F = 2√x` does not, so
+    /// the hole rule must have no opinion about it.
+    #[test]
+    fn definite_endpoint_singularity_of_the_integrand_is_not_a_hole() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(x, pool.rational(-1_i32, 2_i32));
+        let r = integrate_definite(f, x, pool.integer(0_i32), pool.integer(1_i32), &pool)
+            .expect("a convergent improper integral must not be refused as a domain hole");
+        assert_num(r.value, 2.0, &pool);
+    }
+
+    /// A candidate written with a **removable** singularity is non-finite at
+    /// one isolated point and is still a perfectly good antiderivative, so a
+    /// single non-finite sample must not refuse it — hence `HOLE_MIN_RUN`.
+    ///
+    /// `F = x·(x−c)/(x−c)` with `c` placed exactly on grid point 1 of
+    /// `[0, 1]`: `0/0` is `NaN` there and `x` everywhere else. Asserted against
+    /// the helper directly, because `simplify` would cancel the factor before
+    /// `integrate_definite` ever saw it — the point is the rule, not this
+    /// spelling of it.
+    #[test]
+    fn definite_removable_singularity_of_the_antiderivative_is_not_a_hole() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let c = pool.rational(1_i32, JUMP_SCAN_CELLS as i32);
+        let shifted = pool.add(vec![x, pool.mul(vec![pool.integer(-1_i32), c])]);
+        let holed = pool.mul(vec![x, shifted, pool.pow(shifted, pool.integer(-1_i32))]);
+        let integrand = pool.integer(1_i32);
+
+        // The premise: exactly one grid point is non-finite.
+        let non_finite = (0..=JUMP_SCAN_CELLS)
+            .filter(|i| {
+                let mut env = HashMap::new();
+                env.insert(x, (*i as f64) / (JUMP_SCAN_CELLS as f64));
+                crate::jit::eval_interp(holed, &env, &pool).map_or(true, |v| !v.is_finite())
+            })
+            .count();
+        assert_eq!(non_finite, 1, "premise: exactly one grid sample is NaN");
+
+        assert!(
+            antiderivative_domain_hole(holed, integrand, x, 0.0, 1.0, &pool).is_none(),
+            "one isolated non-finite point is a removable singularity, not a hole"
+        );
+
+        // …and widening it to a whole cell *is* a hole: `√(c − x)` is undefined
+        // on all of `(c, 1]`, where the integrand is an ordinary finite real.
+        let flipped = pool.add(vec![c, pool.mul(vec![pool.integer(-1_i32), x])]);
+        let genuine = pool.func("sqrt", vec![flipped]);
+        assert!(
+            antiderivative_domain_hole(genuine, integrand, x, 0.0, 1.0, &pool).is_some(),
+            "a hole spanning a positive-measure sub-interval must be refused"
+        );
     }
 
     #[test]

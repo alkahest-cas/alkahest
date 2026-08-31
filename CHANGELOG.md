@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+- **A definite integral whose antiderivative is not defined on the interval of
+  integration was answered rather than refused.** The FTC needs `F` continuous
+  on `[a, b]`; `engine::antiderivative_jump` is the guard that looks at `F`
+  rather than at the integrand, and it can only see a *jump*. Forming its
+  `|ΔF| / (h·sup|f|)` ratio needs `F` at both ends of a cell, so a **hole** —
+  `F` undefined across a whole sub-interval where the integrand is an ordinary
+  finite real — makes every cell undecidable and the scan silent, and silence
+  was read as "no evidence against the candidate".
+
+  Nothing downstream caught it either. The last endpoint gate,
+  `non_real_closed_form`, asks `eval::eval_f64`, which does not implement
+  `tan`, `atan`, `asin`, `atanh` or `EllipticF`; for any answer containing one
+  it reports "cannot decide" and correctly declines to reject. So
+  `∫_{0.1}^{1.4} dx/(1 + tan x)` came back `Solved`, as
+  `½·log(tan²(x/2) − 2·tan(x/2) − 1) − ½·log(tan²(x/2) + 1) + atan(tan(x/2))`,
+  whose first logarithm is `log` of a negative number for every `x` in
+  `(−π/4, 3π/4)` — the answer is undefined across the *entire* interval, while
+  the integrand runs smoothly from `0.909` to `0.147` and the value is `0.677`.
+  `∫_{-3}^{-2} dx/(x⁴−1)`, `∫_{-4}^{-2} dx/(1+x³)`, `∫_{-1/2}^{1/2} atanh x dx`
+  and `∫_{1/5}^{4/5} asin(x)/x² dx` are the same shape.
+
+  `antiderivative_domain_hole` now runs first, and classifies each sample of
+  the same grid:
+
+  | integrand | `F` | verdict |
+  |---|---|---|
+  | finite | finite | fine |
+  | finite | non-finite | **hole** — refuse |
+  | non-finite | either | no information |
+
+  The third row is what keeps genuine improper integrals working: `∫_0^1 log x`
+  and `∫_0^1 x^{-1/2}` have an integrand that is itself non-finite at an
+  endpoint, which is not this defect and stays with the machinery that handles
+  it today. A single non-finite sample is not enough — a candidate written with
+  a *removable* singularity is `NaN` at one isolated point and is still a good
+  antiderivative — so a hole must span a whole cell, `width/257`, confirmed at
+  its midpoint. As in the indefinite gate, a sample the interpreter cannot
+  evaluate at all (`RootSum`, an unregistered head) is a property of the
+  expression, not of the point, and is no information.
+
+  **Measured on a 152-case definite corpus** (symmetric intervals, interior
+  poles, convergent improper integrals, Weierstrass answers that jump, and
+  answers whose branch cut lies in the interval): 62 → 62 correct values, 68 →
+  87 refusals, 22 → 3 answers that do not reduce to a real number, and **no
+  wrong number before or after**. All 19 that moved are the hole class above;
+  no case that produced a correct value stopped producing it. Every refusal is
+  `E-INT-001`; no new `E-INT-004`.
+
+  The three that remain are elliptic: `PrimitiveRegistry::numeric_f64` answers
+  `None`, not `NaN`, for an out-of-domain `EllipticF`, so a branch-limited
+  elliptic answer evaluated off its branch (`∫_{-0.9}^{-0.1} dx/√(x³−x)`, whose
+  `F` is real only for `x ≥ 1`) is indistinguishable here from a `RootSum` and
+  is still returned. Closing that needs the registry to separate "outside my
+  domain" from "not implemented".
 - **The nightly `tsan` shard spent two thirds of its wall clock instrumenting a
   simplex solver.** It ran the whole workspace under ThreadSanitizer. On the
   last green run the `alkahest-cas` unit-test binary took 7 977 s, and the last
