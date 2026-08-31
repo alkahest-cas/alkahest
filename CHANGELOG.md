@@ -151,6 +151,7 @@
   variable-dependent radicals or one with a non-polynomial radicand, which
   keeps the cost off the common decline path: median decline latency over a
   110-case corpus moves 124 ms → 128 ms, worst case 2244 ms → 2203 ms.
+
 - **A Lean certificate cited a theorem it had not stated.** The kernel folds
   `-e` into `Mul[e, -1]`, and the Lean printer rendered that literally, so the
   `Filter.Tendsto` certificate for `exp(-x) → 0` emitted the goal
@@ -288,8 +289,17 @@
   `(1+x²)⁻¹` with Mathlib's `1/(1+x²)`). `asin` carries an explicit
   `(x : ℝ) (hx : -1 < x ∧ x < 1)` binder, closed by
   `Real.hasDerivAt_arcsin`. Composites (`asin(x²)`, …) stay withheld.
-  **`tanh` is withheld**: Mathlib v4.9.0 has no `hasDerivAt_tanh` and no
-  `1 − tanh² = 1/cosh²` identity analogous to `Real.inv_one_add_tan_sq`.
+
+- **Pointwise `d/dx tanh x` now emits a Lean certificate.** Mathlib v4.9.0 has
+  no `hasDerivAt_tanh` and no `1 - tanh² = 1/cosh²` analogue of
+  `Real.inv_one_add_tan_sq`, so the earlier emitter withheld. The certificate
+  constructs the derivative from `Real.hasDerivAt_sinh` / `Real.hasDerivAt_cosh`
+  via `HasDerivAt.div`, using `Real.cosh_pos` (`cosh x ≠ 0` is free on ℝ, not a
+  binder) and `Real.cosh_sq_sub_sinh_sq` to reconcile Alkahest's `1 - tanh(x)²`
+  with the quotient-rule `1/cosh²`. Composites `tanh(x²)` stay withheld.
+  This is pointwise only and does **not** join the everywhere-differentiable
+  simp set.
+
 - **FTC for `∫ dx/(1+x²) = atan x`**, indefinite (via the reused
   differentiation certificate) and definite (`HasDerivAt` witness
   `hasDerivAt_arctan'`, `IntervalIntegrable` of the continuous integrand

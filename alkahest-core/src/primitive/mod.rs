@@ -1100,10 +1100,14 @@ pub mod builtins {
             Some(unary(args)?.tanh())
         }
 
-        // NOTE: no `lean_theorem` override. Mathlib v4.9.0 has no
-        // `hasDerivAt_tanh` and no `1 - tanh² = 1/cosh²` identity analogous
-        // to `Real.inv_one_add_tan_sq`. Alkahest records `1 - tanh²`; do not
-        // sorry a reconciliation we cannot close.
+        fn lean_theorem(&self) -> Option<&'static str> {
+            // Mathlib v4.9.0 has no `hasDerivAt_tanh`. The emitter constructs
+            // the pointwise derivative from `Real.hasDerivAt_sinh` /
+            // `Real.hasDerivAt_cosh` via `HasDerivAt.div` and reconciles
+            // Alkahest's `1 - tanh²` with `1/cosh²` using
+            // `Real.cosh_sq_sub_sinh_sq`. See `registry_diff_certificate`.
+            Some("Real.hasDerivAt_sinh")
+        }
     }
 
     // ── asin ─────────────────────────────────────────────────────────────────
