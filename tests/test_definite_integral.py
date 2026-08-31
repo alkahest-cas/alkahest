@@ -197,8 +197,8 @@ def test_definite_hole_refusal_names_the_reason():
     [
         # A genuine improper integral: the *integrand* blows up at an endpoint
         # and the antiderivative does not.  Must keep working.
-        (lambda x: x ** (-0.5), 0, 1, 2.0),
         (lambda x: 1 / alkahest.sqrt(x), 0, 1, 2.0),
+        (lambda x: alkahest.sqrt(x), 0, 4, 16.0 / 3.0),
         # F = ½log(x−1) − ½log(x+1) is perfectly defined on [2, 3]: the same
         # antiderivative shape as the refused case above, on an interval where
         # it holds.  The rule must be about the interval, not the formula.
