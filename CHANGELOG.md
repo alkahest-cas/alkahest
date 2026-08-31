@@ -42,6 +42,29 @@
   evaluate at all (`RootSum`, an unregistered head) is a property of the
   expression, not of the point, and is no information.
 
+  **What was actually being returned, stated precisely.** Evaluated on the
+  *principal complex branch*, all 22 of those answers are numerically right:
+  the `±iπ` the two endpoints pick up crossing the cut cancels in the
+  difference, and `∫_{0.1}^{1.4} dx/(1+tan x)` comes to `0.6769275912524469`,
+  matching `mpmath.quad` to 25 digits. They are not wrong values — they are
+  right values in a form the library's own `eval_expr` rejects with
+  `E-EVAL-009`, which the silent-error gate's vocabulary already classes as a
+  (weak) refusal. Two reasons to make the refusal explicit rather than keep
+  them:
+
+  * The agreement is **unverified luck of the branch**. It holds because both
+    endpoints land on the same side of every cut crossed between them; nothing
+    in the engine establishes that, and an odd number of crossings would leave
+    a wrong real part with no guard to notice. A `Solved` verdict has to mean
+    the FTC's hypotheses were checked, and here they fail.
+  * The value is unusable as returned: any caller that asks for a number gets
+    `E-EVAL-009` from a call that reported success. A coded refusal that names
+    the reason is strictly more information than an expression that blows up
+    on use.
+
+  Recovering these needs the real branch — `log|·|` rather than `log`,
+  `acoth` rather than `atanh` off `(−1, 1)` — not a laxer gate.
+
   **Measured on a 152-case definite corpus** (symmetric intervals, interior
   poles, convergent improper integrals, Weierstrass answers that jump, and
   answers whose branch cut lies in the interval): 62 → 62 correct values, 68 →
@@ -51,12 +74,17 @@
   `E-INT-001`; no new `E-INT-004`. The extra pass costs nothing measurable —
   a ten-integral sweep is 187–195 ms either side, inside the run-to-run spread.
 
-  The three that remain are elliptic: `PrimitiveRegistry::numeric_f64` answers
-  `None`, not `NaN`, for an out-of-domain `EllipticF`, so a branch-limited
-  elliptic answer evaluated off its branch (`∫_{-0.9}^{-0.1} dx/√(x³−x)`, whose
-  `F` is real only for `x ≥ 1`) is indistinguishable here from a `RootSum` and
-  is still returned. Closing that needs the registry to separate "outside my
-  domain" from "not implemented".
+  The three that remain are elliptic, and leaving them is the right call:
+  `PrimitiveRegistry::numeric_f64` answers `None`, not `NaN`, for an
+  out-of-domain `EllipticF`, so a branch-limited elliptic answer evaluated off
+  its branch (`∫_{-0.9}^{-0.1} dx/√(x³−x)`, whose `F` is real only for `x ≥ 1`)
+  is indistinguishable here from a `RootSum`, and *unevaluable* is no
+  information. All three are correct on the complex continuation —
+  `1.5300082013845898` against `mpmath`'s `1.5300082013845897` — so the rule
+  that would refuse them would be discarding right answers on the strength of
+  an evaluator limitation. Making them usable is a registry question ("outside
+  my domain" versus "not implemented") plus a real-valued reduction, not a
+  stricter gate.
 - **The nightly `tsan` shard spent two thirds of its wall clock instrumenting a
   simplex solver.** It ran the whole workspace under ThreadSanitizer. On the
   last green run the `alkahest-cas` unit-test binary took 7 977 s, and the last

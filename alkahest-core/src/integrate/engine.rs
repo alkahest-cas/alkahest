@@ -3433,6 +3433,28 @@ const HOLE_MIN_RUN: usize = 2;
 /// correctly declines to reject.  The registry-backed interpreter used here
 /// does implement them.
 ///
+/// # These answers are not *wrong*, and the refusal is still right
+///
+/// Stated precisely, because the distinction matters: on the principal complex
+/// branch every one of those differences is numerically correct — the `±iπ`
+/// each endpoint picks up crossing the cut cancels, and the `1/(1 + tan x)`
+/// case comes to `0.6769275912524469`, matching quadrature to 25 digits.  They
+/// are right values in a form [`crate::eval::eval_f64`] rejects, not wrong
+/// values.  Two reasons that is still a refusal:
+///
+/// * The agreement is **unverified luck of the branch**.  It holds because
+///   both endpoints land on the same side of every cut crossed between them.
+///   Nothing establishes that; an odd number of crossings would leave a wrong
+///   real part and no guard here or downstream would notice.  A `Solved`
+///   verdict has to mean the FTC's hypotheses were checked, and `F` not being
+///   real-valued on `[a, b]` is those hypotheses failing.
+/// * The value is unusable as returned — a caller asking for a number gets
+///   `E-EVAL-009` out of a call that reported success.  A coded refusal naming
+///   the reason is strictly more information.
+///
+/// Recovering them needs the real branch (`log|·|` rather than `log`, `acoth`
+/// rather than `atanh` outside `(−1, 1)`), not a laxer gate.
+///
 /// # The three classifications, and why they are not symmetric
 ///
 /// | integrand | `F` | verdict |
@@ -3456,12 +3478,17 @@ const HOLE_MIN_RUN: usize = 2;
 /// A sample where the interpreter returns *no value at all* (`RootSum`, an
 /// unregistered head) is a property of the expression, not of the point, so it
 /// is no information — the same call PR #344 made.  That leaves one known gap:
-/// `PrimitiveRegistry::numeric_f64` answers `None`, not `NaN`, for an
-/// out-of-domain `EllipticF`, so a branch-limited elliptic answer evaluated off
-/// its branch (`∫_{-0.9}^{-0.1} dx/√(x³−x)`, whose `F` is real only for
-/// `x ≥ 1`) is indistinguishable here from a `RootSum` and is still returned.
-/// Closing it needs the registry to separate "outside my domain" from "not
-/// implemented", not a change to this rule.
+/// [`crate::primitive::PrimitiveRegistry::numeric_f64`] answers `None`, not
+/// `NaN`, for an out-of-domain `EllipticF`, so a branch-limited elliptic answer
+/// evaluated off its branch (`∫_{-0.9}^{-0.1} dx/√(x³−x)`, whose `F` is real
+/// only for `x ≥ 1`) is indistinguishable here from a `RootSum` and is still
+/// returned.  Leaving it is the right call rather than a compromise: those
+/// answers are correct on the complex continuation (`1.5300082013845898`
+/// against quadrature's `1.5300082013845897`), so a rule that refused on
+/// *unevaluable* would be discarding right answers on the strength of an
+/// evaluator limitation.  Making them usable is a registry question — "outside
+/// my domain" versus "not implemented" — plus a real-valued reduction, not a
+/// change to this rule.
 fn antiderivative_domain_hole(
     f: ExprId,
     integrand: ExprId,
