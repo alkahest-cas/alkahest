@@ -273,7 +273,13 @@ fn first_kind_reduction(
         (4, 4, 0) => quartic_four_real(&reals, inv_sqrt_lead, var, pool),
         (4, 2, 1) => quartic_two_real(&reals, pairs[0], inv_sqrt_lead, var, pool),
         (4, 0, 2) => quartic_no_real(pairs[0], pairs[1], lead, var, pool),
-        _ => None, // genus-2 / unhandled config: declined (falls through)
+        // Not the genus-≥2 case, whatever the arms above look like: every
+        // caller has already required `deg ∈ {3, 4}`, so a quintic never
+        // reaches here.  Since `reals + 2·pairs` is the degree, the arms above
+        // exhaust both degrees, and this one is left for a root split the
+        // numeric solver produced that does not add up — a lost or spurious
+        // root.  Declining falls through to the caller's own analysis.
+        _ => None,
     }
 }
 
