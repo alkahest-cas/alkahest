@@ -150,7 +150,6 @@
   variable-dependent radicals or one with a non-polynomial radicand, which
   keeps the cost off the common decline path: median decline latency over a
   110-case corpus moves 124 ms → 128 ms, worst case 2244 ms → 2203 ms.
-
 - **A Lean certificate cited a theorem it had not stated.** The kernel folds
   `-e` into `Mul[e, -1]`, and the Lean printer rendered that literally, so the
   `Filter.Tendsto` certificate for `exp(-x) → 0` emitted the goal
@@ -328,6 +327,26 @@
   (`x² · x⁻¹ · ½ = x · ½`) that `ring` cannot close, and the two-factor
   `field_simp` encoding does not cover a spectator coefficient. A withheld
   certificate beats a `.lean` file that fails under `warningAsError`.
+- **Chain-rule Lean certificates now cover linear and primitive inners**, not
+  just `f(xⁿ)`. `d/dx sin(x²)` already closed via `hasDerivAt_pow` +
+  `HasDerivAt.sin`; the same encoding now names an inner `HasDerivAt` for
+  `c·x` / `x+c` / `a+bx` (`.const_mul` / `.mul_const` / `.add_const`) and for
+  a pointwise `sin`/`cos`/`exp` of the variable (`Real.hasDerivAt_cos` and
+  friends), then lifts through the outer `.sin`/`.cos`/`.exp`. That unlocks
+  `cos(2x)`, `exp(-x)` (interned `x * -1`, not `hasDerivAt_neg'`),
+  `sin(cos x)`, and `exp(-x²)` (`hasDerivAt_pow` scaled by `-1`). Nested
+  two-deep composites (`sin(cos(x²))`) and `log`/`tan`/`sqrt` chain still
+  withhold.
+
+  The FTC fragment now reuses a combine tactic for `{const} * f(linear)`
+  (`f ∈ {sin,cos,exp}`, binder-free linear/affine inner) via
+  `HasDerivAt.const_mul` / `.mul_const` — the same scaling the definite
+  constant-multiple arm already used — rather than widening
+  `diff_body_unconditional` to all products. That closes `∫ cos(2x) dx`
+  (indefinite, via `deriv F = f` with `F = (1/2) sin(2x)`) and
+  `∫₀¹ cos(2x)` (interval FTC, `HasDerivAt.sin` of the linear inner then
+  `.div_const 2`). `∫ x·exp(x²)` stays withheld: its antiderivative is
+  `{const} * exp(x²)`, a power inner outside this arm.
 
 - **A budget could be outrun by a single allocation, and was.**
   `alkahest.integrate` on `1/(x·log x·(1 + log²(log x)))` — the derivative of

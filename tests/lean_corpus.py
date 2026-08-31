@@ -166,6 +166,21 @@ STRICT_CASES = [
         "diff_sin",
         lambda pool: alkahest.diff(alkahest.sin(pool.symbol("x") ** 3), pool.symbol("x")),
     ),
+    (
+        "diff_sin_cos_x",
+        "diff_sin",
+        lambda pool: alkahest.diff(alkahest.sin(alkahest.cos(pool.symbol("x"))), pool.symbol("x")),
+    ),
+    (
+        "diff_exp_neg_x",
+        "diff_exp",
+        lambda pool: alkahest.diff(alkahest.exp(-pool.symbol("x")), pool.symbol("x")),
+    ),
+    (
+        "diff_cos_two_x",
+        "diff_cos",
+        lambda pool: alkahest.diff(alkahest.cos(2 * pool.symbol("x")), pool.symbol("x")),
+    ),
     # Indefinite integrals, certified via the FTC derivative relation
     # `deriv (fun x => F) x = f` (Part A). The recorded step is the integration
     # rule; `to_lean` differentiates the antiderivative and certifies that.
@@ -196,6 +211,11 @@ STRICT_CASES = [
         "int_log",
         lambda pool: alkahest.integrate(alkahest.log(pool.symbol("x")), pool.symbol("x")),
     ),
+    (
+        "int_cos_two_x",
+        "u_substitution",
+        lambda pool: alkahest.integrate(alkahest.cos(2 * pool.symbol("x")), pool.symbol("x")),
+    ),
     # Definite integrals, certified via the second fundamental theorem of
     # calculus for interval integrals:
     #   ∫ x in a..b, f x = F b - F a
@@ -203,8 +223,9 @@ STRICT_CASES = [
     # `HasDerivAt` witness on `Set.uIcc a b` and an `IntervalIntegrable` side
     # condition. The recorded step is `fundamental_theorem_of_calculus`; the
     # emitter builds the antiderivative + FTC proof for the certifiable fragment
-    # (pointwise sin/cos/exp of the variable, integer powers xⁿ, and pointwise
-    # log when both endpoints are strictly positive).
+    # (pointwise sin/cos/exp of the variable or of a linear/affine argument,
+    # integer powers xⁿ, (1+x²)⁻¹, and pointwise log when both endpoints are
+    # strictly positive).
     (
         "int_def_cos_0_1",
         "fundamental_theorem_of_calculus",
@@ -231,6 +252,16 @@ STRICT_CASES = [
         "fundamental_theorem_of_calculus",
         lambda pool: alkahest.integrate(
             pool.symbol("x") ** 2, pool.symbol("x"), pool.integer(0), pool.integer(1)
+        ),
+    ),
+    (
+        "int_def_cos_two_x_0_1",
+        "fundamental_theorem_of_calculus",
+        lambda pool: alkahest.integrate(
+            alkahest.cos(2 * pool.symbol("x")),
+            pool.symbol("x"),
+            pool.integer(0),
+            pool.integer(1),
         ),
     ),
     # Expanded definite-integral fragment: finite sums and numeric-literal

@@ -126,6 +126,10 @@ The strict CI corpus currently covers:
 - Basic arithmetic rewrites (`add_zero`, `mul_one`, `mul_zero`, constant
   folding, and `pow_one`)
 - The polynomial differentiation fast path for `d/dx x³`
+- Chain-rule differentiation of `f(g x)` for `f ∈ {sin, cos, exp}` and inner
+  `g` a power `xⁿ` (`n ≥ 2`), a linear form `c·x` / `x+c` / `a+bx` (including
+  interned `-x` as `x * -1`), or a pointwise `sin`/`cos`/`exp` of the variable
+  (`sin(cos x)`, `exp(-x)`, `cos(2x)`, `exp(-x²)`)
 - Indefinite integrals of `sin`, `cos`, `exp`, `log`, and `xⁿ`, certified via the FTC
   derivative relation `deriv (fun x => F) x = f`. `∫ log x` reuses the
   product/sum certificate for `d/dx (x log x − x)`. Definite `∫_a^b log x`
@@ -150,10 +154,11 @@ The strict CI corpus currently covers:
   withheld.
 
 Other exports are generated source, not CI-qualified Lean proofs. In
-particular, non-polynomial differentiation, conditional logarithm/power
-rewrites, integration, limits, and unsupported expression forms can require
-side conditions or currently use a placeholder tactic. They must remain
-unverified until their proof encoding and strict corpus coverage are added.
+particular, nested two-deep composites (`sin(cos(x²))`), `log`/`tan`/`sqrt`
+chain, conditional logarithm/power rewrites, integration outside the FTC
+fragment, limits, and unsupported expression forms can require side conditions
+or currently use a placeholder tactic. They must remain unverified until their
+proof encoding and strict corpus coverage are added.
 
 Planned algorithmic certificates include:
 

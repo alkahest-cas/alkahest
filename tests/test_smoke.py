@@ -375,6 +375,37 @@ def test_lean_integrate_log_certifies_via_ftc():
     assert "(hx : 0 < x)" in cert
 
 
+def test_lean_integrate_cos_two_x_certifies_via_ftc():
+    """∫ cos(2x) dx certifies via FTC: F = (1/2) sin(2x) uses const_mul of
+    the linear-inner chain, not a widened unconditional product_rule."""
+    p = pool()
+    x = p.symbol("x")
+    r = integrate(cos(2 * x), x)
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert to_lean(r) == cert
+    assert "deriv (fun" in cert
+    assert "sorry" not in cert
+    assert "admit" not in cert
+    assert "const_mul" in cert or "mul_const" in cert
+
+
+def test_lean_definite_integral_cos_two_x_certificate():
+    """∫₀¹ cos(2x) certifies via the interval FTC with HasDerivAt.sin of a
+    linear inner, scaled by 1/2."""
+    p = pool()
+    x = p.symbol("x")
+    r = integrate(cos(2 * x), x, p.integer(0), p.integer(1))
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "admit" not in cert
+    assert "intervalIntegral.integral_eq_sub_of_hasDerivAt" in cert
+    assert to_lean(r) == cert
+
+
 def test_lean_definite_log_positive_bounds_certificate():
     """∫_1^2 log x certifies via the interval FTC under 0 < 1, 0 < 2."""
     p = pool()
@@ -481,6 +512,36 @@ def test_lean_emits_chain_rule_composite_certificate():
     assert "hasDerivAt_pow" in cert
     assert "(hg.sin).deriv" in cert
     assert r.verification["status"] == "certificate_available"
+
+
+def test_lean_emits_chain_rule_linear_and_primitive_inners():
+    """Chain rule for f(c*x), f(-x), f(g x) with g a pointwise primitive."""
+    p = pool()
+    x = p.symbol("x")
+
+    cos_2x = diff(cos(2 * x), x)
+    cert = cos_2x.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "(hg.cos).deriv" in cert
+    assert "const_mul" in cert or "mul_const" in cert
+
+    exp_neg = diff(exp(-x), x)
+    cert = exp_neg.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "(hg.exp).deriv" in cert
+    assert "hasDerivAt_neg" not in cert
+
+    sin_cos = diff(sin(cos(x)), x)
+    cert = sin_cos.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "Real.hasDerivAt_cos" in cert
+    assert "(hg.sin).deriv" in cert
 
 
 def test_lean_withholds_chain_rule_log_composite():

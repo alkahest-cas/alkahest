@@ -7,8 +7,8 @@
       "tests/lean_tendsto_corpus.py",
       "tests/textbook_gate/"
     ],
-    "observations": 294,
-    "shape_classes": 191
+    "observations": 299,
+    "shape_classes": 194
   },
   "rows": [
     {
@@ -138,17 +138,37 @@
         "pow": "none",
         "pow_base": "none"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 2,
+        "withheld": 0,
         "no_derivation": 0
       },
-      "blocking_rules": [
-        "diff_sin"
-      ],
+      "blocking_rules": [],
       "examples": [
         "sin(cos(x))"
+      ]
+    },
+    {
+      "operation": "diff",
+      "shape": "diff/form=apply/funcs=cos/fn_arg=other/mul=scalar/pow=none/pow_base=none",
+      "features": {
+        "form": "apply",
+        "funcs": "cos",
+        "fn_arg": "other",
+        "mul": "scalar",
+        "pow": "none",
+        "pow_base": "none"
+      },
+      "verdict": "certified",
+      "observations": {
+        "certified": 1,
+        "withheld": 0,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "cos((2 * x))"
       ]
     },
     {
@@ -228,17 +248,37 @@
         "pow": "nat",
         "pow_base": "var"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 1,
+        "withheld": 0,
         "no_derivation": 0
       },
-      "blocking_rules": [
-        "diff_exp"
-      ],
+      "blocking_rules": [],
       "examples": [
         "exp((-1 * x^2))"
+      ]
+    },
+    {
+      "operation": "diff",
+      "shape": "diff/form=apply/funcs=exp/fn_arg=other/mul=scalar/pow=none/pow_base=none",
+      "features": {
+        "form": "apply",
+        "funcs": "exp",
+        "fn_arg": "other",
+        "mul": "scalar",
+        "pow": "none",
+        "pow_base": "none"
+      },
+      "verdict": "certified",
+      "observations": {
+        "certified": 1,
+        "withheld": 0,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "exp((-1 * x))"
       ]
     },
     {
@@ -873,16 +913,13 @@
         "pow": "none",
         "pow_base": "none"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 1,
+        "withheld": 0,
         "no_derivation": 0
       },
-      "blocking_rules": [
-        "diff_cos",
-        "product_rule"
-      ],
+      "blocking_rules": [],
       "examples": [
         "(-1/4 * cos((2 * x)))"
       ]
@@ -1019,7 +1056,6 @@
       },
       "blocking_rules": [
         "collect_mul_factors",
-        "diff_exp",
         "power_rule",
         "product_rule"
       ],
@@ -1331,8 +1367,6 @@
         "no_derivation": 0
       },
       "blocking_rules": [
-        "diff_cos",
-        "diff_sin",
         "product_rule",
         "sum_rule"
       ],
@@ -1449,7 +1483,6 @@
         "no_derivation": 0
       },
       "blocking_rules": [
-        "diff_exp",
         "product_rule",
         "sum_rule"
       ],
@@ -1688,6 +1721,29 @@
     },
     {
       "operation": "integrate",
+      "shape": "integrate/form=apply/funcs=cos/fn_arg=other/mul=scalar/pow=none/pow_base=none/definite=no",
+      "features": {
+        "form": "apply",
+        "funcs": "cos",
+        "fn_arg": "other",
+        "mul": "scalar",
+        "pow": "none",
+        "pow_base": "none",
+        "definite": "no"
+      },
+      "verdict": "certified",
+      "observations": {
+        "certified": 1,
+        "withheld": 0,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "cos((2 * x))"
+      ]
+    },
+    {
+      "operation": "integrate",
       "shape": "integrate/form=apply/funcs=cos/fn_arg=other/mul=scalar/pow=none/pow_base=none/definite=yes",
       "features": {
         "form": "apply",
@@ -1698,10 +1754,10 @@
         "pow_base": "none",
         "definite": "yes"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 2,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
