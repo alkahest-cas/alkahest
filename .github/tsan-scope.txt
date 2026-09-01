@@ -35,6 +35,16 @@ simplify::dispatch::
 # is precisely the happens-before edge TSan exists to check. `simplify::engine`
 # is the sequential caller of that helper and spawns small-stack threads of its
 # own in `deep_chain_*`; `parse` does the same in `parse_code_on_big_stack`.
+#
+# `parse::` is where this scope pays for its conservatism, and the number is
+# worth knowing before anyone "optimises" it. Measured locally (12 cores,
+# -Zsanitizer=thread, -Z build-std): the whole narrowed unit-test pass is 562 s
+# wall and `parse::tests::a_long_flat_sum_is_not_nesting` alone is 562 s of it —
+# every other test in this file finishes inside the first 12 s. That one test
+# does not spawn anything; it is in scope only because it shares a module with
+# `parse_code_on_big_stack`. Splitting it out would mean scoping by test name,
+# which is the hand-maintained list this file exists to avoid, and it would buy
+# ~9 minutes off a nightly job that used to take 136. Left as is deliberately.
 simplify::stack::
 simplify::engine::
 parse::
