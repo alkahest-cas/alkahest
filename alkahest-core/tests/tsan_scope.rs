@@ -318,6 +318,21 @@ fn tsan_scope_covers_every_module_that_can_start_a_thread() {
         if is_covered(&module, &entries) {
             continue;
         }
+
+        // A module with tests that names a Rayon-backed entry point anywhere in
+        // its code. The file-level condition is the one that decides; the loop
+        // below only exists to name the offending test in the message. Deciding
+        // at file level means a mis-braced body in `test_fn_bodies` can cost a
+        // vague message but never a missed module.
+        let file_calls: Vec<&str> = PARALLEL_ENTRY_POINTS
+            .iter()
+            .copied()
+            .filter(|t| stripped.contains(t))
+            .collect();
+        if file_calls.is_empty() || !stripped.contains("#[test]") {
+            continue;
+        }
+        let mut named = false;
         for (name, body) in test_fn_bodies(&stripped) {
             let calls: Vec<&str> = PARALLEL_ENTRY_POINTS
                 .iter()
@@ -325,12 +340,20 @@ fn tsan_scope_covers_every_module_that_can_start_a_thread() {
                 .filter(|t| body.contains(t))
                 .collect();
             if !calls.is_empty() {
+                named = true;
                 gaps.push(format!(
                     "  {shown}::…::{name}  ({}) calls: {}",
                     file.display(),
                     calls.join(", ")
                 ));
             }
+        }
+        if !named {
+            gaps.push(format!(
+                "  {shown}  ({}) has tests and names: {}",
+                file.display(),
+                file_calls.join(", ")
+            ));
         }
     }
 
