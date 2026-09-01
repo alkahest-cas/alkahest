@@ -77,6 +77,21 @@ fn scope_path() -> PathBuf {
     repo_root().join(".github").join("tsan-scope.txt")
 }
 
+/// `false` when this is a published `.crate` rather than the git checkout.
+///
+/// `.github/` is not part of the packaged crate, so a downstream `cargo test`
+/// on a vendored `alkahest-cas` has nothing to check and should not fail. The
+/// probe is the *workflow*, not the scope file: inside the repo the workflow
+/// always exists, so this can never quietly disable the guard where it matters
+/// — a missing or emptied `tsan-scope.txt` still fails loudly below.
+fn in_source_repo() -> bool {
+    repo_root()
+        .join(".github")
+        .join("workflows")
+        .join("ci.yml")
+        .is_file()
+}
+
 /// The filter lines of `.github/tsan-scope.txt`, trailing `::` trimmed.
 fn scope_entries() -> Vec<String> {
     let path = scope_path();
@@ -268,6 +283,10 @@ fn test_fn_bodies(src: &str) -> Vec<(String, String)> {
 
 #[test]
 fn tsan_scope_covers_every_module_that_can_start_a_thread() {
+    if !in_source_repo() {
+        eprintln!("not a git checkout (.github/ absent) — tsan scope guard skipped");
+        return;
+    }
     let entries = scope_entries();
     let mut gaps: Vec<String> = Vec::new();
 
@@ -329,6 +348,10 @@ fn tsan_scope_covers_every_module_that_can_start_a_thread() {
 
 #[test]
 fn tsan_scope_entries_all_name_a_live_module() {
+    if !in_source_repo() {
+        eprintln!("not a git checkout (.github/ absent) — tsan scope guard skipped");
+        return;
+    }
     let entries = scope_entries();
     let modules: BTreeSet<String> = module_files().into_iter().map(|(m, _)| m).collect();
 
