@@ -1,0 +1,53 @@
+# ThreadSanitizer shard scope — libtest filters for the `alkahest-cas` **unit**
+# test binary (`cargo test -p alkahest-cas --lib`).
+#
+# Read by two places, which is the point of the file existing:
+#
+#   * `.github/workflows/ci.yml`, step "ThreadSanitizer" — passes every line
+#     below to libtest as a filter, and fails if any line matches zero tests.
+#   * `alkahest-core/tests/tsan_scope.rs` — an ordinary test, so it runs in
+#     Tier-1 `cargo test --workspace`. It fails if a module that can put two
+#     threads on the same data is *not* covered by a line below, and it fails
+#     if a line below names a module that no longer exists.
+#
+# Nothing else is narrowed. Every integration test target (including
+# `tests/parallel_stress.rs`, which exists for this shard) and every other
+# package's unit tests run in full — see the step's comment in ci.yml.
+#
+# Entries are matched as libtest substring filters, and by the guard as module
+# path prefixes. Over-inclusion is safe; under-inclusion is a defect.
+
+# ── Rayon: two workers on one `ExprPool` at the same time ──────────────────
+# The parallel simplifiers. `simplify_par` forks `Add`/`Mul` children onto a
+# Rayon pool and memoises through a shared `DashMap`; `simplify_redex` level-
+# schedules a redex bag through `par_iter`; `dispatch` picks between them and
+# reads `rayon::current_num_threads`. This is the only code in the crate where
+# two threads touch the same pool concurrently by design.
+simplify::parallel::
+simplify::redex::
+simplify::dispatch::
+
+# ── The segmented-stack thread handoff ─────────────────────────────────────
+# `with_stack_segment` continues a deep recursion on a freshly spawned thread
+# and joins it immediately, so only one thread is ever runnable — it cannot
+# race with itself. It is in scope anyway because the handoff moves a
+# thread-local `SEGMENT` and a `DerivationLog` across a thread boundary, which
+# is precisely the happens-before edge TSan exists to check. `simplify::engine`
+# is the sequential caller of that helper and spawns small-stack threads of its
+# own in `deep_chain_*`; `parse` does the same in `parse_code_on_big_stack`.
+simplify::stack::
+simplify::engine::
+parse::
+
+# ── The shared data structure itself ───────────────────────────────────────
+# `ExprPool`'s index is a sharded `DashMap` under `--features parallel` and the
+# node array is an append-only `boxcar::Vec`. Its own unit tests are single-
+# threaded, but this is the object every racing thread above converges on, and
+# the tests are cheap, so they stay instrumented.
+kernel::pool::
+
+# ── Rayon fan-out in the compiled-function batch path ──────────────────────
+# `CompiledFn::call_batch_par` is `output.par_iter_mut()` over a shared `&self`
+# function pointer; `jit::tests::par_batch_*` drive it. `jit::cache` is folded
+# in because it is the same module tree and costs seconds.
+jit::
