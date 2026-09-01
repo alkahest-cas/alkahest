@@ -35,7 +35,7 @@
 //! `∂φ F = 1/√(1 − m·sin²φ)`, `∂φ E = √(1 − m·sin²φ)`,
 //! `∂φ Π = 1/((1 − n sin²φ)√(1 − m sin²φ))`, all elementary since `m`, `n` are
 //! constant here) is checked against the integrand on `R ∩ {P > 0}`, where `R`
-//! is the [`Region`] the reduction claims — **not** on all of `{P > 0}`, which
+//! is the `Region` the reduction claims — **not** on all of `{P > 0}`, which
 //! is a strictly larger set for most root configurations:
 //!
 //! * first, symbolically — `simplify(d/dx F − f) == 0` gives
@@ -56,7 +56,7 @@
 //! The region is load-bearing rather than an optimisation, because the gate
 //! treats "the candidate is undefined where the integrand is an ordinary finite
 //! real" as a **disagreement**.  Under that rule a sample set wider than the
-//! claim is not extra caution; it refutes correct answers.  See [`Region`].
+//! claim is not extra caution; it refutes correct answers.  See `Region`.
 //!
 //! What the enclosure tier does *not* cover is stated where it belongs, in the
 //! gate's own [honest-limitations list](crate::integrate::gate): neighbourhoods
@@ -256,7 +256,7 @@ pub fn try_elliptic_output_with(
 ///
 /// `R` is **not** `{P > 0}`.  Each B&F normal form is real on one component of
 /// `{P > 0}` (or, for the four-real-root quartic, on the bounded middle one),
-/// and every caller must verify only there; see [`Region`].  Each case returns
+/// and every caller must verify only there; see `Region`.  Each case returns
 /// its own region next to its own constants, so the two cannot drift apart.
 ///
 /// Returns `None` for radicand shapes outside the handled cubic/quartic
@@ -1322,7 +1322,7 @@ fn gate_samples(p_coeffs: &[f64], region: &Region) -> Vec<f64> {
 /// `max_boxes`).
 ///
 /// This is the domain-awareness of [`gate_samples`], expressed as a box instead
-/// of a point set — both are built from the same [`Region`], because an
+/// of a point set — both are built from the same `Region`, because an
 /// enclosure over a wider set would certify something the reduction never
 /// claimed.
 fn gate_boxes(p_coeffs: &[f64], region: &Region) -> Vec<(f64, f64)> {
