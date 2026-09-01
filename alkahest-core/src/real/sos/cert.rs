@@ -344,10 +344,14 @@ impl PositivityCertificate {
         if names.iter().any(|n| !is_lean_ident(n)) {
             return None;
         }
-        let binders: String = names
+        // Every listed variable, for the multiplier block (whose `σ` mentions
+        // them all); only the ones the statement actually mentions, for the
+        // direct blocks — see [`Self::lean_bound_vars`].
+        let all_binders: String = names
             .iter()
             .map(|n| format!("({n} : ℝ) "))
             .collect::<String>();
+        let binders = self.lean_binders(&self.lean_bound_vars());
 
         let rhs = self.lean_rhs();
         let target = self.target.to_lean(names);
@@ -361,7 +365,7 @@ impl PositivityCertificate {
         out.push_str(&format!("-- {}\n\n", self.claim_string()));
 
         if let Some(sigma) = self.multiplier() {
-            out.push_str(&self.lean_multiplier_block(&binders, &target, &rhs, &sigma));
+            out.push_str(&self.lean_multiplier_block(&all_binders, &target, &rhs, &sigma));
         } else if self.constraints.is_empty() {
             out.push_str(&format!(
                 "theorem alkahest_sos_identity {binders}:\n    {target} = {rhs} := by\n  ring\n\n"
@@ -388,6 +392,12 @@ impl PositivityCertificate {
                  \x20 rw [alkahest_positivstellensatz_identity]\n\
                  \x20 nlinarith [{hints}]\n"
             ));
+        }
+        // Defense in depth, matching every emitter in `crate::lean`: an
+        // admission anywhere in the rendered file (goal text included) means
+        // withhold, not warn.
+        if out.contains("sorry") || out.contains("admit") {
+            return None;
         }
         Some(out)
     }
@@ -477,6 +487,48 @@ impl PositivityCertificate {
             ));
         }
         out
+    }
+
+    /// Which of `var_names` actually occur in the terms the direct (non-
+    /// multiplier) Lean blocks render: the target, the constraints, and every
+    /// square of the identity.
+    ///
+    /// Binding a variable the statement never mentions is not merely untidy.
+    /// Under `-DwarningAsError=true` Mathlib's `unusedVariables` linter makes
+    /// it a hard error, and — worse — `rw [alkahest_sos_identity]` cannot
+    /// instantiate a binder that does not appear in the goal, so it leaves a
+    /// stray `⊢ ℝ` side goal. `prove_nonneg(x**2, [x, y])` emitted a file that
+    /// failed on both counts. The multiplier block is exempt: its
+    /// `σ = (x₁² + … + xₙ²)` mentions every name by construction.
+    fn lean_bound_vars(&self) -> Vec<bool> {
+        let mut used = vec![false; self.var_names.len()];
+        let mark = |p: &RatPoly, used: &mut Vec<bool>| {
+            for (i, u) in used.iter_mut().enumerate() {
+                if p.degree_in(i) > 0 {
+                    *u = true;
+                }
+            }
+        };
+        mark(&self.target, &mut used);
+        for g in &self.constraints {
+            mark(g, &mut used);
+        }
+        for m in &self.terms {
+            for t in &m.sos.terms {
+                mark(&t.square, &mut used);
+            }
+        }
+        used
+    }
+
+    /// `(x : ℝ) ` binders for exactly [`Self::lean_bound_vars`].
+    fn lean_binders(&self, used: &[bool]) -> String {
+        self.var_names
+            .iter()
+            .zip(used)
+            .filter(|(_, &u)| u)
+            .map(|(n, _)| format!("({n} : ℝ) "))
+            .collect()
     }
 
     fn lean_rhs(&self) -> String {
@@ -665,5 +717,44 @@ mod tests {
         assert!(!lean.contains("sorry"));
         assert!(!lean.contains("admit"));
         assert!(lean.contains("positivity"));
+    }
+
+    /// `x² + 2x + 1 ≥ 0` proved over the variable list `[x, y]`. The property:
+    /// every binder the emitted theorems introduce must occur in the statement
+    /// they introduce it for. `y` did not, which is a hard `unusedVariables`
+    /// error under `-DwarningAsError=true` *and* leaves `rw
+    /// [alkahest_sos_identity]` with an uninstantiated `⊢ ℝ` side goal.
+    #[test]
+    fn lean_binds_only_variables_the_statement_mentions() {
+        let (pool, x) = setup();
+        let y = pool.symbol("y", Domain::Real);
+        let mut c = simple_cert();
+        // Re-embed the same univariate identity in a two-variable ambient
+        // space; `y` occurs in nothing.
+        let lift = |p: &RatPoly| {
+            let mut q = RatPoly::zero(2);
+            for (e, coeff) in p.terms() {
+                q = q.add(&RatPoly::monomial(2, vec![e[0], 0], coeff.clone()));
+            }
+            q
+        };
+        c.target = lift(&c.target);
+        c.terms[0].sos.terms[0].square = lift(&c.terms[0].sos.terms[0].square);
+        c.vars = vec![x, y];
+        c.var_names = vec!["x".to_string(), "y".to_string()];
+        assert!(c.verify().is_ok());
+
+        let lean = c.to_lean().expect("a verified certificate must render");
+        for line in lean.lines().filter(|l| l.starts_with("theorem ")) {
+            let (binders, statement) = line.split_once(':').expect("a typed theorem line");
+            for name in &c.var_names {
+                let bound = binders.contains(&format!("({name} : ℝ)"));
+                let mentioned = statement.contains(name.as_str());
+                assert!(
+                    !bound || mentioned,
+                    "{name} is bound but never mentioned in: {line}"
+                );
+            }
+        }
     }
 }

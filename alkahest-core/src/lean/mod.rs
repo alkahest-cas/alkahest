@@ -29,6 +29,36 @@ use crate::deriv::log::{DerivedExpr, RewriteStep, SideCondition};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 
 // ---------------------------------------------------------------------------
+// Admissions
+// ---------------------------------------------------------------------------
+
+/// Printed in place of a subterm this exporter cannot render *faithfully* in
+/// Lean: an integer or rational literal that does not fit in `i64`, a
+/// non-finite float, or an AST node with no Lean spelling.
+///
+/// It is deliberately the token `sorry`, so every emission path's
+/// [`contains_admission`] guard withholds the whole certificate. The
+/// alternative — what this exporter used to do, silently truncating an
+/// out-of-range literal to `0` — produced certificates that *typecheck* while
+/// proving a different statement than the one the API reports: `simplify(2^70
+/// + 2^70)` returns `2^71` and handed out a Lean file proving
+/// `(0 : ℝ) + (0 : ℝ) = (0 : ℝ)`. A withheld certificate is always preferable.
+const UNREPRESENTABLE: &str = "sorry";
+
+/// True when `src` contains an admission (`sorry` / `admit`) and must not be
+/// handed out as a certificate.
+///
+/// Substring rather than token matching, deliberately: the check errs towards
+/// withholding, and a Lean `sorry` cannot span a line break, so anything that
+/// would actually elaborate as an admission is a substring hit. Every public
+/// emitter in this module runs this over its *complete* output — goal text
+/// included, not just the tactic — because the goal is where
+/// [`UNREPRESENTABLE`] appears.
+fn contains_admission(src: &str) -> bool {
+    src.contains("sorry") || src.contains("admit")
+}
+
+// ---------------------------------------------------------------------------
 // Tactic lookup table
 // ---------------------------------------------------------------------------
 
@@ -82,7 +112,13 @@ fn rule_to_tactic(rule_name: &str) -> &'static str {
         // repeatedly for ≥ 3 factors).
         "product_of_exps" => "by simp only [← Real.exp_add]",
         "log_of_pow" => "by simp [Real.log_pow]",
-        "sin_sq_plus_cos_sq" => "by rw [Real.sin_sq_add_cos_sq]",
+        // Both spellings, because which one the goal prints is decided by the
+        // pool's commutative canonicalisation (children sorted by raw
+        // `ExprId`), i.e. by what else happened to be interned first — the
+        // same input certifies in a fresh pool and printed `cos x ^ 2 +
+        // sin x ^ 2` in a warm one, where `rw [Real.sin_sq_add_cos_sq]` alone
+        // found no instance of its pattern.
+        "sin_sq_plus_cos_sq" => "by simp [Real.sin_sq_add_cos_sq, Real.cos_sq_add_sin_sq]",
         "power_rule" | "constant_rule" | "sum_rule" | "constant_multiple_rule" => "by ring",
         // Integration rules must not be emitted as bare `integrand = F` equalities
         // (that claim is false). They are filtered out by [`step_is_certifiable`].
@@ -277,12 +313,19 @@ fn quotient_chain_certificate(
             _ => None,
         })
     };
-    let (num, den_base) = pool.with(before, |d| match d {
+    // `inv_first` records which side the kernel actually interned the inverse
+    // on. `HasDerivAt.mul` proves a fact about `fun y => <left> y * <right> y`
+    // in that literal order, and the `rw` target is the *printed* lambda, so
+    // building `hf.mul hg` unconditionally left `rw` searching for
+    // `rexp y * (cos y)⁻¹` in a goal that reads `(cos x)⁻¹ * rexp x` and
+    // failing. Same class of bug as printing `x * -1` under a lemma stated
+    // about `-x`.
+    let (num, den_base, inv_first) = pool.with(before, |d| match d {
         ExprData::Mul(xs) if xs.len() == 2 => {
             if let Some(b) = factor_inv_base(xs[1]) {
-                Some((xs[0], b))
+                Some((xs[0], b, false))
             } else {
-                factor_inv_base(xs[0]).map(|b| (xs[1], b))
+                factor_inv_base(xs[0]).map(|b| (xs[1], b, true))
             }
         }
         _ => None,
@@ -293,12 +336,17 @@ fn quotient_chain_certificate(
     let glemma = pointwise_hasderivat_lemma(&gname)?;
     let var = wrt_name(wrt, pool);
     let binder = format!("({var} : ℝ) (hne : Real.{gname} {var} ≠ 0)");
+    let product = if inv_first { "hg.mul hf" } else { "hf.mul hg" };
+    // `field_simp` alone leaves a pure commutative rearrangement on some
+    // shapes (`rexp x * cos x = cos x * rexp x`); `try ring` finishes those
+    // without tripping `unreachableTactic` on the ones it already closed.
     let tactic = format!(
         "by\n    \
          have hf := {flemma} {var}\n    \
          have hg := ({glemma} {var}).inv hne\n    \
-         rw [(hf.mul hg).deriv]\n    \
-         field_simp [hne]"
+         rw [({product}).deriv]\n    \
+         field_simp [hne]\n    \
+         try ring"
     );
     Some((Some(binder), tactic))
 }
@@ -761,6 +809,12 @@ const UNCONDITIONAL_DIFF_TACTIC: &str = "by\n    \
 /// discharge those side goals. `try field_simp` reconciles `x * x⁻¹` /
 /// `1 / (2 * sqrt x)` against Alkahest's reciprocal form; `try ring` then
 /// closes coefficient order the way the unconditional tactic does.
+///
+/// The trailing `try tauto` is not decoration. On `xⁿ · log x` with `n ≥ 2`
+/// `field_simp` discharges the equation but leaves its own disjunctive side
+/// goal (`True ∨ x = 1 ∨ x = -1`, from clearing `x ^ n`), which `ring` cannot
+/// close — so `d/dx (x² log x)` emitted a certificate that failed to
+/// typecheck while `d/dx (x log x)` passed.
 const LOG_SQRT_DIFF_TACTIC: &str = "by\n    \
      simp (config := { maxDischargeDepth := 8 }) only [deriv_add, deriv_mul, deriv_pow, \
      deriv_const, deriv_id'', Real.deriv_sin, Real.deriv_cos, Real.deriv_exp, \
@@ -772,7 +826,8 @@ const LOG_SQRT_DIFF_TACTIC: &str = "by\n    \
      Real.differentiableAt_log hx.ne', (Real.hasDerivAt_sqrt hx.ne').differentiableAt, \
      DifferentiableAt.add, DifferentiableAt.mul, DifferentiableAt.pow]\n    \
      try field_simp [hx.ne']\n    \
-     try ring";
+     try ring\n    \
+     try tauto";
 
 /// Walk a differentiated body, accepting the unconditional fragment and
 /// (when `allow_log_sqrt`) pointwise `log`/`sqrt` of exactly the variable.
@@ -1153,12 +1208,18 @@ fn inv_cancel_base(before: ExprId, after: ExprId, pool: &ExprPool) -> Option<(Ex
         return None;
     }
     let net = exp_a + exp_b;
-    let expected_after = if net == 0 {
-        pool.integer(1_i32)
-    } else {
-        pool.pow(base_a, pool.integer(net))
+    // `net == 1` is spelled as the bare base, not `base^1`: the kernel folds
+    // `x^1` back to `x`, so matching only `pool.pow(base, 1)` let
+    // `x² · x⁻¹ = x` slip past this override and pick up
+    // `rule_to_tactic("collect_mul_factors") == "by ring"`, which cannot
+    // discharge a goal containing `⁻¹` (`ring` treats it as an opaque atom and
+    // suggests `ring_nf`, a hard error under `-DwarningAsError`).
+    let matches_after = match net {
+        0 => after == pool.integer(1_i32),
+        1 => after == base_a || after == pool.pow(base_a, pool.integer(1_i32)),
+        _ => after == pool.pow(base_a, pool.integer(net)),
     };
-    (after == expected_after).then_some((base_a, net))
+    matches_after.then_some((base_a, net))
 }
 
 /// Build a nonzero-hypothesis certificate for an [`inv_cancel_base`] shape,
@@ -1464,9 +1525,6 @@ pub fn emit_tendsto_cert(expr: ExprId, var: ExprId, lim: ExprId, pool: &ExprPool
     let Some(plan) = tendsto_plan(expr, var, lim, pool) else {
         return String::new();
     };
-    if plan.tactic.contains("sorry") || plan.tactic.contains("admit") {
-        return String::new();
-    }
 
     let mut out = emit_limit_header();
     out.push_str(&format!(
@@ -1480,6 +1538,12 @@ pub fn emit_tendsto_cert(expr: ExprId, var: ExprId, lim: ExprId, pool: &ExprPool
     out.push_str("  ");
     out.push_str(&plan.tactic);
     out.push('\n');
+    // Defense in depth over the *whole* file, tactic and goal alike. Checking
+    // only `plan.tactic` (what this did before) left the printed goal
+    // unguarded — and the goal is exactly where [`UNREPRESENTABLE`] lands.
+    if contains_admission(&out) {
+        return String::new();
+    }
     out
 }
 
@@ -1548,23 +1612,21 @@ fn tendsto_plan(expr: ExprId, var: ExprId, lim: ExprId, pool: &ExprPool) -> Opti
         return Some(at_top_plan("tendsto_exp_neg_atTop_nhds_zero".to_string()));
     }
 
-    // Pattern: var^n * exp(-var) → 0 (for any n ≥ 1)
-    if is_zero && matches_pow_mul_exp_neg(expr, var, pool) {
-        return Some(at_top_plan(
-            "by\n    have := tendsto_pow_mul_exp_neg_atTop_nhds_zero\n    exact this".to_string(),
-        ));
+    // Pattern: var^n * exp(-var) → 0 (n ≥ 1), in either interned factor order.
+    // `tendsto_pow_mul_exp_neg_atTop_nhds_zero` takes `n` *explicitly* and is
+    // stated with the power on the left; `simpa [mul_comm]` bridges the
+    // kernel's ordering.
+    if is_zero {
+        if let Some(n) = matches_pow_mul_exp_neg(expr, var, pool) {
+            return Some(at_top_plan(format!(
+                "by\n    simpa [mul_comm] using tendsto_pow_mul_exp_neg_atTop_nhds_zero {n}"
+            )));
+        }
     }
 
     // Pattern: exp(var) → +∞
     if is_pos_inf && matches_exp_var(expr, var, pool) {
         return Some(at_top_plan("tendsto_exp_atTop".to_string()));
-    }
-
-    // Pattern: exp(n*var) / exp(m*var) where n < m → 0
-    if is_zero && matches_exp_ratio_to_zero(expr, var, pool) {
-        return Some(at_top_plan(
-            "by\n    simp only [div_eq_mul_inv, ← Real.exp_neg]\n    exact tendsto_exp_neg_atTop_nhds_zero.comp tendsto_id".to_string(),
-        ));
     }
 
     // var → +∞
@@ -1617,22 +1679,26 @@ fn matches_exp_neg_var(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
     })
 }
 
-/// True iff `expr` is structurally `var^n * exp(-var)` for some integer n.
-fn matches_pow_mul_exp_neg(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
-    pool.with(expr, |d| {
-        if let ExprData::Mul(xs) = d {
-            let has_pow = xs.iter().any(|&x| {
-                pool.with(
-                    x,
-                    |d2| matches!(d2, ExprData::Pow { base, .. } if *base == var),
-                )
-            });
-            let has_exp_neg = xs.iter().any(|&x| matches_exp_neg_var(x, var, pool));
-            has_pow && has_exp_neg
-        } else {
-            false
-        }
-    })
+/// `n` iff `expr` is a two-factor product of `var^n` (natural `n ≥ 1`, or the
+/// bare variable read as `n = 1`) and `exp(-var)`, in either interned order —
+/// the exact hypothesis of `tendsto_pow_mul_exp_neg_atTop_nhds_zero`.
+///
+/// The old predicate here only asked "some factor is a `Pow` based at `var`,
+/// some factor is `exp(-var)`", which accepted a *negative* or symbolic
+/// exponent and any number of extra factors, and its caller never applied the
+/// lemma's explicit `n`. Both halves are goal/theorem mismatches: the goal
+/// printed `x⁻² * rexp (-x)` (or `rexp (-x) * x ^ 2`) while the cited lemma is
+/// `∀ n : ℕ, Tendsto (fun x => x ^ n * rexp (-x)) atTop (𝓝 0)`.
+fn matches_pow_mul_exp_neg(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<u32> {
+    let xs = pool.with(expr, |d| match d {
+        ExprData::Mul(xs) if xs.len() == 2 => Some([xs[0], xs[1]]),
+        _ => None,
+    })?;
+    let pow_then_exp = |a: ExprId, b: ExprId| -> Option<u32> {
+        let n = var_nat_pow(a, var, pool)?;
+        matches_exp_neg_var(b, var, pool).then_some(n)
+    };
+    pow_then_exp(xs[0], xs[1]).or_else(|| pow_then_exp(xs[1], xs[0]))
 }
 
 /// True iff `expr` is structurally `exp(var)`.
@@ -1646,25 +1712,18 @@ fn matches_exp_var(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
     })
 }
 
-/// True iff `expr` looks like exp(a*var) / exp(b*var) with a < b (or equivalent).
-fn matches_exp_ratio_to_zero(expr: ExprId, _var: ExprId, pool: &ExprPool) -> bool {
-    pool.with(expr, |d| {
-        if let ExprData::Mul(xs) = d {
-            let exp_count = xs
-                .iter()
-                .filter(|&&x| {
-                    pool.with(
-                        x,
-                        |d2| matches!(d2, ExprData::Func { name, .. } if name == "exp"),
-                    )
-                })
-                .count();
-            exp_count >= 2
-        } else {
-            false
-        }
-    })
-}
+// A `Tendsto` arm for `exp(a·x) / exp(b·x) → 0` used to live here. It matched
+// "a `Mul` with at least two `exp` factors" — ignoring the variable, the
+// exponents and their signs entirely — and always emitted the same proof,
+// `simp only [div_eq_mul_inv, ← Real.exp_neg]; exact
+// tendsto_exp_neg_atTop_nhds_zero.comp tendsto_id`, which discharges only the
+// literal goal `Tendsto (fun x => rexp (-x)) …`. Alkahest interns such a
+// quotient as `exp(a·x) · exp(b·x)`, on which that `simp only` makes no
+// progress, so the arm never produced a proof of the goal it printed for *any*
+// input: `limit(exp(x)·exp(-3x), x, ∞)` handed out a certificate that Lean
+// rejects. Withheld rather than half-fixed — recognising the shape properly
+// means folding `Real.exp_add` and checking `a + b < 0`, which is a new
+// pattern, not a repair of this one.
 
 fn integer_i64(expr: ExprId, pool: &ExprPool) -> Option<i64> {
     pool.with(expr, |d| match d {
@@ -1973,6 +2032,12 @@ pub fn emit_lean_expr_wrt(
         out.push_str(&format!(
             "-- No rewrite steps recorded.\nexample : {lean_e} = {lean_e} :=\n  rfl\n"
         ));
+        // This early return used to skip the admission guard at the bottom of
+        // the function, so a value the printer cannot spell (a literal outside
+        // `i64`, a `Piecewise`, …) escaped as `example : sorry = sorry := rfl`.
+        if contains_admission(&out) {
+            return String::new();
+        }
         return out;
     }
 
@@ -1995,7 +2060,7 @@ pub fn emit_lean_expr_wrt(
     }
 
     // Defense in depth: never hand out a certificate containing admissions.
-    if out.contains("sorry") || out.contains("admit") {
+    if contains_admission(&out) {
         return String::new();
     }
 
@@ -2150,10 +2215,16 @@ pub fn emit_integration_cert(
          -- certified via the FTC derivative relation: deriv (fun {var_name} => {big_f}) {var_name} = {f}\n"
     );
     // Splice the note directly before the first proof step, after the imports.
-    match cert.find("-- Step 1") {
+    let out = match cert.find("-- Step 1") {
         Some(idx) => format!("{}{note}{}", &cert[..idx], &cert[idx..]),
         None => format!("{cert}{note}"),
+    };
+    // The spliced note is built from `expr_to_lean` too, so it has to clear
+    // the same bar as the proof body.
+    if contains_admission(&out) {
+        return String::new();
     }
+    out
 }
 
 /// Lean import header for **definite** interval-integral certificates.
@@ -2194,8 +2265,12 @@ enum DefiniteIntegrandClass {
     /// `∫ (1+x²)⁻¹`, antiderivative `arctan x`.
     /// `one_left` records intern order: `1 + x²` vs `x² + 1`, so the
     /// `Continuous.inv₀` witness matches the printed lambda definitionally
-    /// (addition is not defeq-commutative).
-    InvOnePlusSq { one_left: bool },
+    /// (addition is not defeq-commutative). `expr` is the integrand node
+    /// itself, so the `HasDerivAt` witness can be *stated* in exactly the
+    /// spelling [`expr_to_lean`] prints — `Real.hasDerivAt_arctan'` is
+    /// `(1 + x²)⁻¹` only, and the top-level `simpa` cannot bridge the flipped
+    /// order because the mismatch sits under the `HasDerivAt` value argument.
+    InvOnePlusSq { one_left: bool, expr: ExprId },
     /// `∫ cos(ax+b)`, antiderivative `sin(ax+b)/a` (`a ≠ 0`).
     CosLinear(ExprId),
     /// `∫ sin(ax+b)`, antiderivative `-cos(ax+b)/a` (`a ≠ 0`).
@@ -2288,7 +2363,10 @@ fn classify_definite_integrand(
     pool: &ExprPool,
 ) -> Option<DefiniteIntegrandClass> {
     if let Some(one_left) = inv_one_plus_var_sq_one_left(integrand, var, pool) {
-        return Some(DefiniteIntegrandClass::InvOnePlusSq { one_left });
+        return Some(DefiniteIntegrandClass::InvOnePlusSq {
+            one_left,
+            expr: integrand,
+        });
     }
     pool.with(integrand, |d| match d {
         ExprData::Symbol { .. } if integrand == var => Some(DefiniteIntegrandClass::Pow(1)),
@@ -2494,7 +2572,7 @@ fn base_pieces(
                 },
             )
         }
-        DefiniteIntegrandClass::InvOnePlusSq { one_left } => {
+        DefiniteIntegrandClass::InvOnePlusSq { one_left, expr } => {
             // Match intern order so the Continuous term is definitionally the
             // printed integrand (addition is not defeq-commutative). The
             // positivity witness has to follow the same order: `0 < 1 + x²`
@@ -2510,9 +2588,23 @@ fn base_pieces(
                     "(add_pos_of_nonneg_of_pos (sq_nonneg t) zero_lt_one).ne'",
                 )
             };
+            // `Real.hasDerivAt_arctan'` has value `(1 + x²)⁻¹`. When the pool
+            // interned `x² + 1` the goal says so, and the outer `simpa` cannot
+            // reorder inside `HasDerivAt`'s value argument — so restate the
+            // fact in the printed spelling here, where `add_comm` can be aimed
+            // at it.
+            let hderiv = if *one_left {
+                format!("Real.hasDerivAt_arctan' {var_name}")
+            } else {
+                let printed = expr_to_lean(*expr, pool);
+                format!(
+                    "(show HasDerivAt Real.arctan {printed} {var_name} by \
+                     simpa [add_comm] using Real.hasDerivAt_arctan' {var_name})"
+                )
+            };
             (
                 Box::new(|t: &str| format!("Real.arctan ({t})")),
-                format!("Real.hasDerivAt_arctan' {var_name}"),
+                hderiv,
                 format!("({add_cont}.inv₀ (fun t => {ne_proof})).intervalIntegrable _ _"),
             )
         }
@@ -2829,7 +2921,7 @@ fn emit_definite_log_cert(
          \x20 exact intervalIntegral.integral_eq_sub_of_hasDerivAt hderiv hint\n"
     ));
 
-    if out.contains("sorry") || out.contains("admit") {
+    if contains_admission(&out) {
         return String::new();
     }
     out
@@ -2949,7 +3041,7 @@ pub fn emit_definite_integration_cert(
     ));
 
     // Defense in depth: never hand out a certificate containing admissions.
-    if out.contains("sorry") || out.contains("admit") {
+    if contains_admission(&out) {
         return String::new();
     }
     out
@@ -3317,7 +3409,7 @@ pub fn emit_gosper_cert(
         }
     };
 
-    if out.is_empty() || out.contains("sorry") || out.contains("admit") {
+    if out.is_empty() || contains_admission(&out) {
         String::new()
     } else {
         out
@@ -3469,7 +3561,7 @@ pub fn emit_product_cert(
     out.push_str(&format!(
         "{binders} : ∏ k ∈ {icc}, k = Nat.factorial {n_lean} := by\n  rw [← Nat.Ico_succ_right]\n  exact prod_Ico_id_eq_factorial {n_lean}\n"
     ));
-    if out.contains("sorry") || out.contains("admit") {
+    if contains_admission(&out) {
         return String::new();
     }
     out
@@ -3502,15 +3594,15 @@ fn expr_to_lean_neg(expr: ExprId, pool: &ExprPool) -> String {
 
 fn expr_to_lean_opts(expr: ExprId, pool: &ExprPool, neg_form: bool) -> String {
     pool.with(expr, |data| match data {
-        ExprData::Integer(n) => {
-            let v = n.0.to_i64().unwrap_or(0);
-            format!("({v} : ℝ)")
-        }
-        ExprData::Rational(r) => {
-            let n = r.0.numer().to_i64().unwrap_or(0);
-            let d = r.0.denom().to_i64().unwrap_or(1);
-            format!("({n} / {d} : ℝ)")
-        }
+        ExprData::Integer(n) => match n.0.to_i64() {
+            Some(v) => format!("({v} : ℝ)"),
+            None => UNREPRESENTABLE.to_string(),
+        },
+        ExprData::Rational(r) => match (r.0.numer().to_i64(), r.0.denom().to_i64()) {
+            (Some(n), Some(d)) => format!("({n} / {d} : ℝ)"),
+            _ => UNREPRESENTABLE.to_string(),
+        },
+        ExprData::Float(f) if !f.inner.is_finite() => UNREPRESENTABLE.to_string(),
         ExprData::Float(f) => format!("({} : ℝ)", f.inner),
         // Bare names leave metavariables in goals like `(x ^ (1 : ℕ) = x)` (`HPow ?m ℕ ?m`).
         ExprData::Symbol { name, .. } => format!("({name} : ℝ)"),
@@ -3601,7 +3693,7 @@ fn expr_to_lean_opts(expr: ExprId, pool: &ExprPool, neg_form: bool) -> String {
                 other => format!("{other} ({})", arg_strs.join(", ")),
             }
         }
-        _ => "sorry".to_string(),
+        _ => UNREPRESENTABLE.to_string(),
     })
 }
 
@@ -6468,5 +6560,246 @@ mod tests {
         let h = emit_limit_header();
         assert!(h.contains("import Mathlib.Tactic"));
         assert!(h.contains("Filter"));
+    }
+
+    // -----------------------------------------------------------------
+    // Audit regressions.
+    //
+    // Each of these asserts a *relation* — between the printed goal and the
+    // cited lemma, or between the value the kernel holds and what got printed
+    // — rather than the presence of a string. `emit_tendsto_exp_neg_x` above
+    // asserts only that the theorem's name occurs somewhere in the file, which
+    // is exactly how a certificate whose goal did not match that theorem
+    // shipped.
+    // -----------------------------------------------------------------
+
+    /// The digits of every integer literal in `expr`, as the kernel holds them.
+    fn integer_literals(expr: ExprId, pool: &ExprPool, out: &mut Vec<String>) {
+        pool.with(expr, |d| match d {
+            ExprData::Integer(n) => out.push(n.0.to_string()),
+            ExprData::Add(xs) | ExprData::Mul(xs) | ExprData::Func { args: xs, .. } => {
+                for &c in xs {
+                    integer_literals(c, pool, out);
+                }
+            }
+            ExprData::Pow { base, exp } => {
+                integer_literals(*base, pool, out);
+                integer_literals(*exp, pool, out);
+            }
+            _ => {}
+        });
+    }
+
+    /// A printed goal must never quietly stand a *different* number in for the
+    /// one the kernel holds. Truncating an out-of-`i64` literal to `0` produced
+    /// files that typecheck — `(0 : ℝ) + (0 : ℝ) = (0 : ℝ)` — while the API
+    /// reported `2^70 + 2^70 = 2^71`.
+    #[test]
+    fn printed_goal_never_substitutes_a_different_literal() {
+        let pool = p();
+        let big: rug::Integer = rug::Integer::from(1) << 70;
+        let huge = pool.integer(big);
+        let small = pool.integer(7_i32);
+        let x = pool.symbol("x", Domain::Real);
+
+        for expr in [
+            huge,
+            pool.add(vec![huge, small]),
+            pool.mul(vec![x, huge]),
+            pool.pow(x, small),
+        ] {
+            let printed = expr_to_lean(expr, &pool);
+            if contains_admission(&printed) {
+                continue;
+            }
+            let mut lits = Vec::new();
+            integer_literals(expr, &pool, &mut lits);
+            for lit in lits {
+                assert!(
+                    printed.contains(&lit),
+                    "printed goal {printed:?} dropped the literal {lit}"
+                );
+            }
+        }
+    }
+
+    /// The whole-file admission guard has to cover the *goal*, not just the
+    /// tactic, on every emission path — including the ones that return early.
+    #[test]
+    fn out_of_range_literals_withhold_every_certificate() {
+        let pool = p();
+        let big: rug::Integer = rug::Integer::from(1) << 70;
+        let huge = pool.integer(big);
+        let zero = pool.integer(0_i32);
+        let x = pool.symbol("x", Domain::Real);
+
+        // Rewrite log.
+        let sum = pool.add(vec![huge, zero]);
+        let derived = simplify(sum, &pool);
+        assert!(emit_lean_expr(&derived, &pool).is_empty());
+
+        // Empty log — the early-return path that used to skip the guard.
+        let empty = simplify(huge, &pool);
+        assert!(empty.log.steps().is_empty());
+        assert!(emit_lean_expr(&empty, &pool).is_empty());
+
+        // Tendsto — the path that only ever checked `plan.tactic`.
+        let neg_one = pool.integer(-1_i32);
+        let scaled = pool.mul(vec![x, neg_one]);
+        let e = pool.func("exp", vec![scaled]);
+        let body = pool.mul(vec![e, huge]);
+        assert!(emit_tendsto_cert(body, x, zero, &pool).is_empty());
+    }
+
+    /// `tendsto_pow_mul_exp_neg_atTop_nhds_zero` is `∀ n : ℕ, …`; the emitted
+    /// tactic must apply it to the *same* `n` the goal prints, in either
+    /// interned factor order.
+    #[test]
+    fn tendsto_pow_mul_exp_neg_cites_the_exponent_it_printed() {
+        for n in 1..=5_i32 {
+            for exp_first in [false, true] {
+                let pool = p();
+                let x = pool.symbol("x", Domain::Real);
+                let neg_one = pool.integer(-1_i32);
+                let neg_x = pool.mul(vec![x, neg_one]);
+                let e = pool.func("exp", vec![neg_x]);
+                let pw = pool.pow(x, pool.integer(n));
+                let body = if exp_first {
+                    pool.mul(vec![e, pw])
+                } else {
+                    pool.mul(vec![pw, e])
+                };
+                let zero = pool.integer(0_i32);
+                let lean = emit_tendsto_cert(body, x, zero, &pool);
+                assert!(!lean.is_empty(), "x^{n} * exp(-x) must certify");
+                let goal = lean
+                    .lines()
+                    .find(|l| l.starts_with("example"))
+                    .expect("goal line");
+                assert!(
+                    goal.contains(&format!("^ ({n} : ℕ)")),
+                    "goal does not print exponent {n}: {goal}"
+                );
+                assert!(
+                    lean.contains(&format!("tendsto_pow_mul_exp_neg_atTop_nhds_zero {n}")),
+                    "tactic does not instantiate the lemma at {n}: {lean}"
+                );
+            }
+        }
+    }
+
+    /// A product of exponentials is no longer claimed. The arm that used to
+    /// match it cited a lemma about `rexp (-x)` against a goal reading
+    /// `rexp a * rexp b`, for every input it accepted.
+    #[test]
+    fn tendsto_product_of_exponentials_is_withheld() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let neg_one = pool.integer(-1_i32);
+        let neg_three = pool.integer(-3_i32);
+        let zero = pool.integer(0_i32);
+        let a = pool.func("exp", vec![x]);
+        let three_x = pool.mul(vec![x, neg_three]);
+        let b = pool.func("exp", vec![three_x]);
+        let ab = pool.mul(vec![a, b]);
+        assert!(emit_tendsto_cert(ab, x, zero, &pool).is_empty());
+        let neg_x = pool.mul(vec![x, neg_one]);
+        let c = pool.func("exp", vec![neg_x]);
+        let cc = pool.mul(vec![c, c]);
+        assert!(emit_tendsto_cert(cc, x, zero, &pool).is_empty());
+    }
+
+    /// `HasDerivAt.mul` proves a fact about `left * right` in that literal
+    /// order; the `rw` target is the printed lambda. The two must agree.
+    #[test]
+    fn quotient_chain_witness_follows_printed_factor_order() {
+        for inv_first in [false, true] {
+            let pool = p();
+            let x = pool.symbol("x", Domain::Real);
+            let num = pool.func("exp", vec![x]);
+            let cos_x = pool.func("cos", vec![x]);
+            let den = pool.pow(cos_x, pool.integer(-1_i32));
+            let before = if inv_first {
+                pool.mul(vec![den, num])
+            } else {
+                pool.mul(vec![num, den])
+            };
+            let (binder, tactic) =
+                quotient_chain_certificate(before, x, &pool).expect("quotient shape");
+            assert!(binder.is_some(), "quotient certificate must bind g x ≠ 0");
+            let printed = expr_to_lean(before, &pool);
+            let inv_printed_first = printed.find('⁻').expect("an inverse factor")
+                < printed.find("Real.exp").expect("the numerator");
+            let expected = if inv_printed_first {
+                "hg.mul hf"
+            } else {
+                "hf.mul hg"
+            };
+            assert!(
+                tactic.contains(expected),
+                "goal prints {printed}, witness uses the other order: {tactic}"
+            );
+        }
+    }
+
+    /// A two-factor product that cancels through an inverse must always carry
+    /// its `≠ 0` hypothesis, whatever the net exponent — including `net == 1`,
+    /// where the kernel spells the result as the bare base rather than `x^1`
+    /// and the step used to fall back to the table's unconditional `by ring`.
+    #[test]
+    fn inverse_cancellation_never_falls_back_to_bare_ring() {
+        for m in 1..=5_i32 {
+            for k in 1..=5_i32 {
+                let pool = p();
+                let x = pool.symbol("x", Domain::Real);
+                let up = pool.pow(x, pool.integer(m));
+                let down = pool.pow(x, pool.integer(-k));
+                let before = pool.mul(vec![up, down]);
+                let derived = simplify(before, &pool);
+                let lean = emit_lean_expr(&derived, &pool);
+                if lean.is_empty() {
+                    continue;
+                }
+                assert!(
+                    lean.contains("field_simp") && lean.contains("≠ 0"),
+                    "x^{m} * x^-{k} certified without the nonzero-hypothesis \
+                     override:\n{lean}"
+                );
+            }
+        }
+    }
+
+    /// `sin² + cos²` is canonicalised by raw `ExprId`, so which addend prints
+    /// first depends on what else the pool interned. Both spellings must
+    /// certify — the old `rw [Real.sin_sq_add_cos_sq]` found no instance of its
+    /// pattern in the flipped one.
+    #[test]
+    fn pythagorean_identity_certifies_in_either_printed_order() {
+        for warm in [false, true] {
+            let pool = p();
+            let x = pool.symbol("x", Domain::Real);
+            if warm {
+                // Force `cos` to be interned before `sin`.
+                let _ = pool.func("cos", vec![x]);
+            }
+            let two = pool.integer(2_i32);
+            let sin_x = pool.func("sin", vec![x]);
+            let cos_x = pool.func("cos", vec![x]);
+            let s = pool.pow(sin_x, two);
+            let c = pool.pow(cos_x, two);
+            let one = pool.integer(1_i32);
+            let step = RewriteStep {
+                rule_name: "sin_sq_plus_cos_sq",
+                before: pool.add(vec![s, c]),
+                after: one,
+                side_conditions: Vec::new(),
+            };
+            let (_, tactic) = plain_step_certificate(&step, &pool).expect("certifiable");
+            assert!(
+                tactic.contains("Real.sin_sq_add_cos_sq")
+                    && tactic.contains("Real.cos_sq_add_sin_sq"),
+                "tactic only covers one addend order: {tactic}"
+            );
+        }
     }
 }

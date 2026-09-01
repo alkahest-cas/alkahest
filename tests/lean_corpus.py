@@ -20,6 +20,23 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import alkahest
 
 
+def _require_goal(result, fragment, label):
+    """Pin the *printed* goal, not just the rule that produced it.
+
+    Alkahest canonicalises commutative children by raw ``ExprId``, so which
+    addend or factor a goal prints first depends on what else the pool interned
+    — and a certificate whose goal does not match its cited Mathlib lemma is
+    exactly the failure this corpus exists to catch. Cases below that
+    deliberately construct one intern order assert it here, so that a change in
+    canonicalisation fails the generator loudly instead of silently retesting
+    the order that already worked.
+    """
+    src = result.certificate or ""
+    if fragment not in src:
+        raise ValueError(f"{label}: expected the goal to print {fragment!r}; got:\n{src}")
+    return result
+
+
 def _positive_log_case(pool, builder):
     """Run ``builder(x[, y])`` under explicit positivity assumptions."""
     x = pool.symbol("x")
@@ -47,6 +64,60 @@ def _exp_of_log_case(pool):
     assumptions = alkahest.Assumptions(pool)
     assumptions.refine(pool.gt(x, pool.integer(0)))
     return assumptions.simplify(alkahest.exp(alkahest.log(x)))
+
+
+def _pythagorean_sin_first(_pool):
+    """`sin² + cos² = 1` printed with `sin²` first (a fresh pool's order)."""
+    pool = alkahest.ExprPool()
+    x = pool.symbol("x")
+    result = alkahest.simplify_trig(alkahest.sin(x) ** 2 + alkahest.cos(x) ** 2)
+    return _require_goal(result, "(Real.sin ((x : ℝ))) ^ (2 : ℕ) + ", "pythagorean_sin_first")
+
+
+def _pythagorean_cos_first(_pool):
+    """The same identity printed with `cos²` first.
+
+    Children of a commutative node are sorted by raw ``ExprId``, so interning
+    ``cos(x)^2`` before the sum is built flips the printed order.
+    """
+    pool = alkahest.ExprPool()
+    x = pool.symbol("x")
+    alkahest.cos(x) ** 2
+    result = alkahest.simplify_trig(alkahest.sin(x) ** 2 + alkahest.cos(x) ** 2)
+    return _require_goal(result, "(Real.cos ((x : ℝ))) ^ (2 : ℕ) + ", "pythagorean_cos_first")
+
+
+def _diff_exp_over_cos(_pool):
+    """`d/dx (exp x / cos x)` with the numerator printed first."""
+    pool = alkahest.ExprPool()
+    x = pool.symbol("x")
+    result = alkahest.diff(alkahest.exp(x) / alkahest.cos(x), x)
+    return _require_goal(
+        result, "(Real.exp ((x : ℝ)) * (Real.cos ((x : ℝ)))⁻¹)", "diff_exp_over_cos"
+    )
+
+
+def _diff_inv_first_cos_exp(_pool):
+    """The same derivative with the *inverse* factor printed first.
+
+    Interning `cos(x)⁻¹` first makes commutative canonicalisation put it on the
+    left, which is the order `HasDerivAt.mul` has to be assembled in.
+    """
+    pool = alkahest.ExprPool()
+    x = pool.symbol("x")
+    alkahest.cos(x) ** -1
+    result = alkahest.diff(alkahest.exp(x) / alkahest.cos(x), x)
+    return _require_goal(
+        result, "((Real.cos ((x : ℝ)))⁻¹ * Real.exp ((x : ℝ)))", "diff_inv_first_cos_exp"
+    )
+
+
+def _int_def_arctan_sq_first(_pool):
+    """`∫₀¹ (x² + 1)⁻¹` — the `x²`-first intern order of `1 + x²`."""
+    pool = alkahest.ExprPool()
+    x = pool.symbol("x")
+    result = alkahest.integrate(1 / (1 + x**2), x, pool.integer(0), pool.integer(1))
+    return _require_goal(result, "((((x : ℝ)) ^ (2 : ℕ) + (1 : ℝ)))⁻¹", "int_def_arctan_sq_first")
 
 
 def _log_of_pow_case(pool):
@@ -506,6 +577,67 @@ STRICT_CASES = [
         "diff_neg_x_inv",
         "product_rule",
         lambda pool: alkahest.diff(-(pool.symbol("x") ** -1), pool.symbol("x")),
+    ),
+    # --- Audit regressions (certificates that were emitted but did not
+    # --- typecheck; see the module docstring of `alkahest_cas::lean`).
+    #
+    # `d/dx (xⁿ log x)` for `n ≥ 2`: `field_simp` discharges the equation but
+    # leaves its own `True ∨ x = 1 ∨ x = -1` side goal, which `ring` cannot
+    # close. `n = 1` (already covered by the textbook-gate pool) never hit it.
+    (
+        "diff_x_squared_log_x",
+        "product_rule",
+        lambda pool: alkahest.diff(
+            pool.symbol("x") ** 2 * alkahest.log(pool.symbol("x")), pool.symbol("x")
+        ),
+    ),
+    (
+        "diff_x_cubed_log_x",
+        "product_rule",
+        lambda pool: alkahest.diff(
+            pool.symbol("x") ** 3 * alkahest.log(pool.symbol("x")), pool.symbol("x")
+        ),
+    ),
+    (
+        "diff_x_squared_sqrt_x",
+        "product_rule",
+        lambda pool: alkahest.diff(
+            pool.symbol("x") ** 2 * alkahest.sqrt(pool.symbol("x")), pool.symbol("x")
+        ),
+    ),
+    # `d/dx (exp x / cos x)`: `HasDerivAt.mul` proves a fact about
+    # `left * right` in that literal order, so the witness has to follow the
+    # order the goal prints, not always numerator-first.
+    (
+        "diff_quotient_exp_over_cos",
+        "product_rule",
+        _diff_exp_over_cos,
+    ),
+    (
+        "diff_quotient_inv_first_cos_exp",
+        "product_rule",
+        _diff_inv_first_cos_exp,
+    ),
+    # `x² · x⁻¹ = x`: net exponent 1, which the kernel spells as the bare base
+    # rather than `x^1`. That spelling escaped the nonzero-hypothesis override
+    # and picked up `collect_mul_factors`' unconditional `by ring`, which
+    # cannot discharge a goal containing `⁻¹`.
+    (
+        "simplify_x_squared_over_x",
+        "collect_mul_factors",
+        lambda pool: alkahest.simplify(pool.symbol("x") ** 2 * pool.symbol("x") ** -1),
+    ),
+    # Both printed orders of the Pythagorean identity. `rw
+    # [Real.sin_sq_add_cos_sq]` found no instance of its pattern in the second.
+    ("simplify_trig_pythagorean_sin_first", "sin_sq_plus_cos_sq", _pythagorean_sin_first),
+    ("simplify_trig_pythagorean_cos_first", "sin_sq_plus_cos_sq", _pythagorean_cos_first),
+    # `∫₀¹ (x² + 1)⁻¹` — the flipped intern order of the case above.
+    # `Real.hasDerivAt_arctan'` has value `(1 + x²)⁻¹`, and the certificate's
+    # top-level `simpa` cannot reorder inside `HasDerivAt`'s value argument.
+    (
+        "int_def_inv_x_squared_plus_one_0_1",
+        "fundamental_theorem_of_calculus",
+        _int_def_arctan_sq_first,
     ),
 ]
 FORBIDDEN_TOKENS = ("sorry", "admit", "axiom")

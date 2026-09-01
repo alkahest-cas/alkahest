@@ -83,6 +83,25 @@ so the source admission check is explicit in both the generator and CI.
 2. Compiles them with the pinned Lean/Mathlib toolchain (with Mathlib cached)
 3. Fails the build if a proof contains an admission or does not typecheck
 
+**The corpus is a lower bound on correctness, not a proof of it.** A shape the
+corpus never emits is never typechecked, and the emitter is broader than the
+corpus: several arms shipped emitting `.lean` files that Lean rejects simply
+because nothing generated them. Two lessons are baked into the corpus now.
+
+*Assert the goal, not the theorem's name.* A test that checks only that a
+Mathlib lemma is mentioned somewhere in the file passes just as happily when
+the goal above it says something else. Corpus entries that depend on a
+particular printed form pin that form (`_require_goal`), and the tactic
+assertion for an instantiated lemma includes the argument
+(`tendsto_pow_mul_exp_neg_atTop_nhds_zero 2`, not the bare name).
+
+*Commutative order is not stable.* Children of `Add`/`Mul` are canonicalised by
+raw `ExprId`, so which addend or factor prints first depends on what else the
+pool interned — the same call certified in a fresh pool and emitted a
+non-compiling file in a warm one. Where a certificate's tactic is sensitive to
+that order, the corpus builds **both** orders deliberately (a fresh `ExprPool`
+per case, with the flipping term interned first).
+
 ## Knowing where the line is, before you compute
 
 The boundary above is not something to discover by running an operation and

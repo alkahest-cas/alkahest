@@ -66,6 +66,43 @@ def _one_plus_two_over_x_pow(pool):
     return alkahest.limit((1 + 2 / x) ** x, x, pool.pos_infinity())
 
 
+def _pow_mul_exp_neg(n):
+    """``xⁿ · exp(−x) → 0``.
+
+    ``tendsto_pow_mul_exp_neg_atTop_nhds_zero`` is ``∀ n : ℕ, …`` and is stated
+    with the power on the *left*; Alkahest can intern either factor order. Both
+    halves were wrong before: the tactic never applied the lemma's explicit
+    ``n``, and the goal it printed put ``exp(−x)`` first. A fresh pool is used
+    per case so the order is not an accident of corpus ordering.
+    """
+
+    def build(_pool):
+        pool = alkahest.ExprPool()
+        x = pool.symbol("x")
+        return alkahest.limit(x**n * alkahest.exp(-x), x, pool.pos_infinity())
+
+    return build
+
+
+def _exp_neg_mul_pow(n):
+    """The same limit with ``exp(−x)`` interned first."""
+
+    def build(_pool):
+        pool = alkahest.ExprPool()
+        x = pool.symbol("x")
+        alkahest.exp(-x)
+        return alkahest.limit(x**n * alkahest.exp(-x), x, pool.pos_infinity())
+
+    return build
+
+
+def _x_mul_exp_neg(pool):
+    """``x · exp(−x) → 0`` — the bare variable read as ``x¹``."""
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    return alkahest.limit(x * alkahest.exp(-x), x, p.pos_infinity())
+
+
 # (name, expected_tactic_fragment, DerivedResult builder)
 # Builders must emit a non-empty certificate; withheld shapes belong in
 # Python unit tests, not this typecheck corpus.
@@ -109,6 +146,28 @@ STRICT_CASES = [
         "tendsto_one_plus_div_rpow_exp_two",
         "tendsto_one_plus_div_rpow_exp",
         _one_plus_two_over_x_pow,
+    ),
+    # `xⁿ · exp(−x) → 0`, both interned factor orders and the bare-`x` case.
+    # The cited lemma has to be instantiated at the same `n` the goal prints.
+    (
+        "tendsto_pow_mul_exp_neg_x1",
+        "tendsto_pow_mul_exp_neg_atTop_nhds_zero 1",
+        _x_mul_exp_neg,
+    ),
+    (
+        "tendsto_pow_mul_exp_neg_x2",
+        "tendsto_pow_mul_exp_neg_atTop_nhds_zero 2",
+        _pow_mul_exp_neg(2),
+    ),
+    (
+        "tendsto_pow_mul_exp_neg_x3",
+        "tendsto_pow_mul_exp_neg_atTop_nhds_zero 3",
+        _pow_mul_exp_neg(3),
+    ),
+    (
+        "tendsto_exp_neg_mul_pow_x2",
+        "tendsto_pow_mul_exp_neg_atTop_nhds_zero 2",
+        _exp_neg_mul_pow(2),
     ),
 ]
 
