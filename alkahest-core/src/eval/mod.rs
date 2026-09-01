@@ -6,6 +6,7 @@
 //! single dispatch point and reports unsupported constructs structurally.
 
 mod complex_f64;
+mod root_sum;
 
 use crate::ball::{ArbBall, IntervalEval};
 use crate::kernel::expr::PredicateKind;
@@ -15,6 +16,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 pub use complex_f64::{eval_complex_f64, ComplexF64};
+pub(crate) use root_sum::eval_root_sum_f64;
 
 /// Input bindings and representation selected for an evaluation.
 ///

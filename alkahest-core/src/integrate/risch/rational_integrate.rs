@@ -55,7 +55,7 @@ use super::rational_rde::{
 };
 
 // ---------------------------------------------------------------------------
-// "A RootSum answer would be thrown away" — see `RootSumSuppressed`
+// "A RootSum answer is not worth its cost here" — see `RootSumSuppressed`
 // ---------------------------------------------------------------------------
 
 /// What the *caller* of this integration will do with a `RootSum` in the result.
@@ -85,21 +85,28 @@ std::thread_local! {
         const { std::cell::Cell::new(RootSumUse::Keep) };
 }
 
-/// Scope guard declaring that the caller will gate this integration through
-/// [`crate::integrate::verify_antiderivative_status`], which **provably cannot
-/// accept** a candidate containing a [`crate::kernel::ExprData::RootSum`]:
+/// Scope guard declaring that a [`crate::kernel::ExprData::RootSum`] is not
+/// worth building for this caller.
 ///
-/// * the exact arm simplifies `d/dx(candidate) − integrand` and asks whether it
-///   is zero, but `simplify` replaces every `RootSum` with an *opaque atom*
-///   (`simplify/egraph.rs`), so a residual containing one never reduces to 0;
-/// * the numeric arm evaluates with `jit::eval_interp`, which has no `RootSum`
-///   arm at all and returns `None`.
+/// **This is a cost decision, and it did not used to be.**  Until the numeric
+/// `RootSum` evaluator landed (`crate::eval`'s `root_sum` module) the guard
+/// recorded an impossibility: the callers below gate through
+/// [`crate::integrate::verify_antiderivative_status`], whose exact arm asks
+/// `simplify` whether `d/dx(candidate) − integrand` is zero — and `simplify`
+/// replaces every `RootSum` with an *opaque atom* (`simplify/egraph.rs`), so
+/// such a residual never reduces to 0 — while its numeric arm evaluated with
+/// `jit::eval_interp`, which had no `RootSum` arm and returned `None`.  No tier
+/// could accept one, so building it was pure waste.
 ///
-/// So when this guard is active, building the `RootSum` is pure waste — and its
-/// Lazard–Rioboo–Trager log argument is a number-field GCD that dominates the
-/// whole integration (measured: 3.72 s of a 3.74 s `∫ cos·sin¹²/(sin⁹+sin+1)`,
-/// all of it discarded). Declining early returns exactly the same `None` the
-/// caller would have reached after paying for it.
+/// The numeric arm can now read a `RootSum`, so the second half of that
+/// argument is gone: a suppressed answer is one the gate *might* have accepted.
+/// What is left is the price.  The Lazard–Rioboo–Trager log argument is a
+/// number-field GCD that dominates the whole integration (measured: 3.72 s of a
+/// 3.74 s `∫ cos·sin¹²/(sin⁹+sin+1)`), and the frames below try many candidates
+/// and would pay it on every one.  So the guard stays — but as a **cost**
+/// decision that is now worth re-measuring, not as a statement that the work
+/// could not have been used.  The **top-level** rational route is not
+/// suppressed, and that is where the capability the evaluator unlocked lives.
 ///
 /// # Scope
 ///

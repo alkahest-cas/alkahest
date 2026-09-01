@@ -750,6 +750,16 @@ fn eval_interp_inner(
         } else {
             0.0
         }),
+        // `Σ_{c : m(c)=0} body(x, c)` — the roots are found numerically and the
+        // body is summed over them in complex arithmetic. See
+        // `crate::eval::root_sum` for what is and is not established by that.
+        // Without this arm every Rothstein–Trager answer with an algebraic
+        // residue is unevaluable, and therefore unverifiable.
+        ExprData::RootSum {
+            poly,
+            var: rvar,
+            body,
+        } => crate::eval::eval_root_sum_f64(poly, rvar, body, env, pool),
         _ => None,
     };
     if let Some(v) = val {

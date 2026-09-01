@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+- **The rational-function route returned answers nothing had checked, and
+  nothing *could* check.** `integrate`'s Rothstein–Trager fallback was the one
+  route in the integrator that returned its result directly, with no
+  verification step at all. Every other route gates on `d/dx F = f`; this one
+  did not, so `∫dx/(x⁵−x−1)`, `∫x¹²/(x⁹+x+1) dx`, `∫dx/(x³−2)` and every other
+  rational function with an algebraic residue came back as an unchecked
+  assertion. On a 92-case rational corpus, 52 of the 92 answers were in that
+  state.
+
+  Simply wrapping the route in the gate would have deleted the capability
+  rather than checked it. Those answers are `RootSum` nodes, and no
+  verification tier could read one: `simplify` treats a `RootSum` as an opaque
+  atom so the symbolic arm can never reduce the residual to zero, and neither
+  `jit::eval_interp` nor the route-level `integrate::gate::eval_at` had a
+  `RootSum` rule, so the numeric arm reported "unevaluable". Declaring the
+  route trusted instead was not an option either — reading a method's soundness
+  as a claim about a result nobody looked at is the shape of every false
+  certificate that has had to be removed from this codebase.
+
+  So the answers were made checkable. A `RootSum` now **evaluates
+  numerically**, in `eval_expr` and everywhere else: the minimal polynomial's
+  roots are found by a rescaled Durand–Kerner iteration and the body is summed
+  over them in IEEE-754 complex arithmetic. The sum over a conjugate-closed
+  root set is real, and a residual imaginary part above rounding noise is
+  reported as "cannot evaluate" rather than rounded away. With that in place
+  the existing gate works unmodified, and the route is gated like every other.
+
+  Measured before → after: the 92-case rational corpus goes from 92 solved /
+  40 verified to 92 / 92, with all 52 moves being UNVERIFIED → VERIFIED at
+  42/42 sample points and zero disagreements; Charlwood's Fifty (33 solved / 32
+  verified), the 40-case integration probe (35 solved, 4 `E-INT-004`) and the
+  110-case Liouville corpus (84 solved / 84 verified) are unchanged case for
+  case. No new `E-INT-004` anywhere. Against a 60-digit `mpmath` reference the
+  answers that had never been checked are correct to about fifty places, so
+  none of them turns out to be wrong.
+
+  **Behaviour to plan for.** `eval_expr` on an expression containing a
+  `RootSum` now returns a number where it previously raised "expression could
+  not be evaluated"; code that used the exception to detect a `RootSum` should
+  inspect the expression instead.
+
+  **What is honestly declined.** `Σ_{m(c)=0} body(x, c)` is ill-conditioned in
+  the roots — a one-ulp perturbation of a *correct* `f64` root set moves the
+  value by `2e−8` at degree 15 and `1e−2` at degree 21, against the gate's
+  `1e−7` tolerance. Above roughly degree 14 the answer is therefore correct and
+  uncheckable, and `integrate` declines it with `E-INT-001` rather than ship
+  it. `∫dx/(xⁿ−x−1)` is solved through `n = 14` and declined from `n = 15`; it
+  was previously "solved" for every `n` the route could reach, unverified. A
+  decline there is never upgraded to `E-INT-004` — every rational function is
+  elementary, and nothing in this change decides otherwise. Raising the ceiling
+  needs high-precision *roots*, not just a high-precision body; `eval`'s
+  `root_sum` module carries the measurements.
 - **`dsolve`'s verification gate could certify a wrong `y(x)`.** Every solution
   `dsolve` returns is checked by substituting the candidate back into the
   original equation and requiring the residual to vanish — symbolically, or
