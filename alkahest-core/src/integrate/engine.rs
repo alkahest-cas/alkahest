@@ -4046,7 +4046,7 @@ pub enum AntiderivativeVerification {
 ///
 /// The claim being checked is `F′ = f` **wherever `f` is defined**, and each
 /// sample is classified against that claim rather than simply dropped when a
-/// number fails to come out — see [`SampleVerdict`].
+/// number fails to come out — see the private `SampleVerdict` enum.
 pub fn verify_antiderivative_status(
     candidate: ExprId,
     integrand: ExprId,
