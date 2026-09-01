@@ -38,7 +38,9 @@
 //!    sample points in IEEE-754 double precision and compare with a relative
 //!    tolerance.  A single in-domain disagreement is a **refutation**
 //!    ([`Verdict::Failed`]); too few evaluable points is a **decline**
-//!    ([`Verdict::Declined`]), never a pass.
+//!    ([`Verdict::Declined`]), never a pass.  A point where `f` is an ordinary
+//!    finite real and `d/dx F` is not counts as a disagreement, not as a
+//!    skip — see the honest-limitations list.
 //! 3. **Rigorous enclosure.**  Bound `d/dx F − f` over the caller's closed
 //!    boxes with [`crate::validated::bounds::bound_on_box`] — Taylor models in
 //!    outward-rounded [`crate::ball`] arithmetic.  When the bound clears the
@@ -53,7 +55,7 @@
 //! | [`Verdict::Proven`] | `d/dx F − f` is the zero expression after simplification: an identity wherever both sides are defined | nothing about domains — `F` may still be the wrong branch on part of the real line |
 //! | [`Verdict::EnclosureVerified`] | `sup{ \|d/dx F(x) − f(x)\| : x ∈ ⋃ boxes } ≤ residual_bound`, rigorously (outward rounding, remainder terms folded in, never dropped) | that the residual is *exactly* zero; that anything holds **outside** the listed boxes — in particular near branch points, poles and at infinity |
 //! | [`Verdict::SampledOnly`] | `\|d/dx F − f\| ≤ tol·(1+\|f\|)` at the reported number of in-domain `f64` sample points | any statement between the sample points — agreement at finitely many points is evidence, not an identity |
-//! | [`Verdict::Failed`] | the candidate disagrees with the integrand at a specific in-domain point, beyond tolerance and beyond plausible `f64` error | — |
+//! | [`Verdict::Failed`] | the candidate disagrees with the integrand at a specific in-domain point: either the two finite values differ beyond tolerance and beyond plausible `f64` error, or `d/dx F` is not a finite real where `f` is one | — |
 //! | [`Verdict::Declined`] | nothing at all — the gate could not run | — |
 //!
 //! [`Verdict::Failed`] and [`Verdict::Declined`] both mean *do not emit*.  They
@@ -94,9 +96,14 @@
 //!   perfectly finite — `bound_on_box` refuses on that box.  The gate halves
 //!   and retries, so the certified coverage is the box *minus a
 //!   neighbourhood of the written singularity*, and the gap is visible in the
-//!   `boxes` list.  It is not filled in silently.  (The `∫dx/√(x⁴+1)`
-//!   reduction is a live example: it certifies `[0, 2.2]`, `[−2.2, −1.1]` and
-//!   `[−0.55, 0]`, and leaves `(−1.1, −0.55)` uncovered.)
+//!   `boxes` list.  It is not filled in silently.  A caller that *knows* where
+//!   its candidate is written singular should hand in boxes that already
+//!   exclude those points, and say so in its region: the halve-and-retry path
+//!   is the backstop for the ones it did not know about.  (The `∫dx/√(x⁴+1)`
+//!   reduction does exactly this — the `arctan` substitution's Möbius argument
+//!   has a pole at `x = −1`, which its region cuts out, so the gate is offered
+//!   and certifies `[−4, −1.36]` and `[−0.4, 4]` and the uncovered
+//!   `(−1.36, −0.4)` is a stated exclusion rather than a budget failure.)
 //! * **The `f64` tier can be defeated by catastrophic cancellation.**  A
 //!   residual whose true value is `1e-9` and whose evaluation error is `1e-8`
 //!   is indistinguishable from zero at these tolerances.  This is exactly the
@@ -111,25 +118,35 @@
 //!   `crate::eval` `root_sum` module — numerically, by root-finding — which is
 //!   what makes a Rothstein–Trager answer with an algebraic residue something
 //!   this gate can have an opinion about at all.
-//! * **A candidate undefined where the integrand is finite is *skipped* here,
-//!   not refuted — unlike at the engine-level gate.**  That asymmetry is
-//!   deliberate and it is load-bearing, so it is worth stating plainly.
-//!   [`crate::integrate::verify_antiderivative_status`] treats a sample where
-//!   `f` is an ordinary finite real and `d/dx F` is not as a **disagreement**,
-//!   because there `F` is not an antiderivative of `f` (see
-//!   `engine::classify_sample`, and Charlwood #35, which is exactly that).
-//!   Applying the same rule *here* was tried and reverted: this gate's callers
-//!   deliberately sample beyond the region their reduction claims.
-//!   [`crate::integrate::algebraic::elliptic_output`]'s `gate_samples` puts
-//!   points in **every** `P > 0` interval and says so — "points where the
-//!   substitution is invalid simply evaluate non-finite and are skipped" —
-//!   while a cubic-three-real reduction is valid only beyond the largest root.
-//!   For `∫dx/√(x³−x)` the integrand is finite on `(−1, 0)` and the elliptic
-//!   candidate's derivative is not, so the stricter rule refuses four correct,
-//!   branch-limited elliptic answers (`tests/test_elliptic_integrate.py`).
-//!   Adopting it needs the sample set narrowed to the region each reduction
-//!   actually claims — or a [`Verdict`] that can name that region — not a
-//!   one-line change to the loop.
+//! * **A candidate undefined where the integrand is finite is refuted, and
+//!   that puts the burden on the caller's domain.**  A sample where `f` is an
+//!   ordinary finite real and `d/dx F` is not is a [`Verdict::Failed`], the
+//!   same reading [`crate::integrate::verify_antiderivative_status`] takes
+//!   (see `engine::classify_sample`, and Charlwood #35, which is exactly that:
+//!   an answer containing `log(x + √(x²))`, i.e. `log 0` for every `x < −1`,
+//!   on a component of the integrand's domain).
+//!
+//!   Adopting it here was tried once and reverted, because it refused thirteen
+//!   Rust and four Python tests' worth of *correct* elliptic answers.  The rule
+//!   was not the defect; the sample sets were.
+//!   [`crate::integrate::algebraic::elliptic_output`] used to put points in
+//!   **every** `P > 0` interval and say so — "points where the substitution is
+//!   invalid simply evaluate non-finite and are skipped" — while a
+//!   cubic-three-real Byrd–Friedman reduction is valid only beyond the largest
+//!   root.  For `∫dx/√(x³−x)` the integrand is finite all over `(−1, 0)` and
+//!   the candidate's derivative is not, so a set wider than the claim read as
+//!   a disagreement and a correct answer declined.  Each reduction now states
+//!   its own region (`elliptic_output::Region`), the grid, the predicate and
+//!   the boxes are all built from it, and the rule applies unweakened on it.
+//!
+//!   The lesson generalises to every caller of this module: **the domain you
+//!   hand in is the claim you are making.**  Sampling wider than the claim is
+//!   not free caution — under this rule it is a way to refute yourself.  Two
+//!   kinds of point must be excluded, and both are the caller's to know: those
+//!   where the *reduction* is not valid, and those where the *written*
+//!   candidate has a removable singularity its own blocks cancel (a
+//!   `log|x−t|` paired with an `EllipticPi`, say, which evaluates `∞ − ∞` at
+//!   `t` while the residual's limit there is finite).
 //!
 //! # Relationship to `verify_antiderivative_status`
 //!
@@ -255,7 +272,11 @@ pub enum Verdict {
     Failed {
         /// Where.
         at: f64,
-        /// `|d/dx F − f|` there.
+        /// `|d/dx F − f|` there — or `f64::INFINITY` when `d/dx F` was not a
+        /// finite real at an `at` where `f` was.  The residual is *undefined*
+        /// in that case rather than merely large, and `INFINITY` is how that
+        /// is reported; the two are distinguishable because a finite residual
+        /// always satisfies `residual > tolerance·(1+|f|)` for a finite `f`.
         residual: f64,
         /// The relative tolerance that was exceeded.
         tolerance: f64,
@@ -296,10 +317,13 @@ impl Verdict {
 
 /// Where the candidate is claimed to be an antiderivative.
 ///
-/// Domain-awareness is not decoration.  A Byrd–Friedman reduction is only
-/// valid on the real region where the radicand is positive; sampling outside
-/// it compares two things that are both `NaN` and proves nothing.  The caller
-/// owns that knowledge, so the caller supplies it here.
+/// Domain-awareness is not decoration, and since the `f64` screen refutes a
+/// candidate that is undefined where the integrand is finite, it is not merely
+/// an optimisation either: **this is the claim being verified**.  A
+/// Byrd–Friedman reduction is valid on one component of `{P > 0}`, not on all
+/// of it, and a domain wider than that turns points the candidate never
+/// claimed into evidence against it.  The caller owns that knowledge, so the
+/// caller supplies it here.
 ///
 /// * `samples` — candidate abscissae for the `f64` screen.  Points failing
 ///   `predicate` are skipped, not counted, and never cause a failure.
@@ -587,8 +611,30 @@ pub fn verify(
         let Some(lhs) = eval_at(dfs, var, x, pool) else {
             continue;
         };
-        if !lhs.is_finite() || !rhs.is_finite() {
+        // Outside `f`'s domain there is no claim to check, whatever the
+        // candidate does — `F` is routinely defined on a strictly larger set
+        // than `f` is, and holding that against it would refuse correct
+        // answers.  So a non-finite `f` is no information, in either
+        // direction.
+        if !rhs.is_finite() {
             continue;
+        }
+        // The other direction is *not* symmetric.  `f` is an ordinary finite
+        // real here and `d/dx F` is not, so `F` is not differentiable — not
+        // even defined — at a point the caller's own domain says the candidate
+        // covers.  That is a disagreement, not a skip; skipping it is how a
+        // domain hole clears a grid built to catch one (Charlwood #35).  The
+        // matching rule at the engine-level gate is `engine::classify_sample`.
+        //
+        // This is only sound because `domain` is the region the caller
+        // actually claims: see the honest-limitations list, and
+        // `elliptic_output::Region` for a caller that has to work for it.
+        if !lhs.is_finite() {
+            return Verdict::Failed {
+                at: x,
+                residual: f64::INFINITY,
+                tolerance: opts.tolerance,
+            };
         }
         let err = (lhs - rhs).abs();
         if err > opts.tolerance * (1.0 + rhs.abs()) {
@@ -1166,6 +1212,66 @@ mod tests {
         (0..=n)
             .map(|i| lo + (hi - lo) * (i as f64) / (n as f64))
             .collect()
+    }
+
+    /// A candidate undefined on part of the domain the caller handed in is
+    /// **refuted**, not skipped.
+    ///
+    /// `F = log(x + √(x²)) = log(x + |x|)` is `log 0` for every `x < 0`, while
+    /// the integrand `1/x` is an ordinary finite real there.  This is Charlwood
+    /// #35 in miniature, and it is the rule the elliptic route's sample regions
+    /// had to be narrowed to allow: if this test ever goes back to
+    /// `SampledOnly`, the rule has been weakened rather than the samples fixed.
+    #[test]
+    fn a_domain_hole_in_the_candidate_is_a_refutation() {
+        let (pool, x) = pool_and_x();
+        let abs_x = pool.func("sqrt", vec![pool.pow(x, pool.integer(2_i32))]);
+        let f_cand = pool.func("log", vec![pool.add(vec![x, abs_x])]);
+        let integrand = pool.pow(x, pool.integer(-1_i32));
+        // Both signs, and no `x = 0`: the integrand is finite at every sample.
+        let dom = Domain::from_samples(vec![-3.1, -2.3, -1.7, -0.9, 0.9, 1.7, 2.3, 3.1]);
+        let opts = GateOptions {
+            symbolic: false,
+            enclosure: EnclosurePolicy::Skip,
+            ..GateOptions::default()
+        };
+        let v = verify(f_cand, &Target::symbolic(integrand), x, &dom, &opts, &pool);
+        match v {
+            Verdict::Failed { at, residual, .. } => {
+                assert!(at < 0.0, "refuted at {at}, expected a negative sample");
+                assert!(
+                    residual.is_infinite(),
+                    "a non-finite derivative reports an infinite residual, got {residual}"
+                );
+            }
+            other => panic!("expected a refutation, got {other:?}"),
+        }
+    }
+
+    /// The other direction stays a skip: `F` defined where `f` is not is fine.
+    ///
+    /// `∫ x·√(x−1)/√(x−1) dx = x²/2` has a derivative finite everywhere while
+    /// the integrand is undefined below `1`.  Counting those samples against
+    /// the candidate would turn a correct antiderivative into a decline, which
+    /// is why the rule above is deliberately one-sided.
+    #[test]
+    fn a_candidate_defined_beyond_the_integrand_is_not_refuted() {
+        let (pool, x) = pool_and_x();
+        let half = pool.rational(rug::Integer::from(1), rug::Integer::from(2));
+        let f_cand = pool.mul(vec![half, pool.pow(x, pool.integer(2_i32))]);
+        let root = pool.func("sqrt", vec![pool.add(vec![x, pool.integer(-1_i32)])]);
+        let integrand = pool.mul(vec![x, root, pool.pow(root, pool.integer(-1_i32))]);
+        let dom = Domain::from_samples(vec![-2.0, -1.0, 0.0, 1.5, 2.5, 3.5, 4.5]);
+        let opts = GateOptions {
+            symbolic: false,
+            enclosure: EnclosurePolicy::Skip,
+            ..GateOptions::default()
+        };
+        let v = verify(f_cand, &Target::symbolic(integrand), x, &dom, &opts, &pool);
+        assert!(
+            matches!(v, Verdict::SampledOnly { .. }),
+            "samples below 1 are outside the integrand's domain and say nothing, got {v:?}"
+        );
     }
 
     #[test]

@@ -27,7 +27,7 @@ use crate::simplify::engine::simplify;
 use rug::{Integer, Rational};
 
 use super::coates::{coates_hyperelliptic, CoatesPlace};
-use super::find_order::{find_order_placed, FindOrder};
+use super::find_order::{find_order_placed, genus, FindOrder};
 use super::jacobian_torsion::AlgPlace;
 use super::residues::{certified_residue_divisor, AlgResidue, PlacedResidue};
 use super::sqrt_rde::{self, SqrtRde};
@@ -707,11 +707,25 @@ fn binomial_coeff(n: u64, k: u64) -> rug::Integer {
 //    polynomial weights `∫5x⁴√(x⁵+1) = ⅔(x⁵+1)^{3/2}`.
 //
 //  * **Logarithmic part**: with residues, FIND-ORDER decides: a **non-torsion**
-//    divisor ⇒ `NonElementary`; otherwise (torsion log part) emitting it on a
-//    genus ≥ 2 curve needs Coates' construction (genus 0/1 are handled upstream
-//    by the parametrization / genus-1 capstone), so we decline.  With *no*
-//    residues anywhere, Liouville leaves only an exact algebraic derivative, so
-//    an empty divisor plus "no algebraic primitive" certifies `NonElementary`.
+//    divisor ⇒ `NonElementary`; otherwise (torsion log part) emitting it needs
+//    Coates' construction, so we decline.  With *no* residues anywhere,
+//    Liouville leaves only an exact algebraic derivative, so an empty divisor
+//    plus "no algebraic primitive" certifies `NonElementary`.
+//
+// # This route is not genus-graded, and its declines must not pretend to be
+//
+// The guard above is `deg P ≥ 3`.  For squarefree `P` that is genus `⌊(deg P −
+// 1)/2⌋`, i.e. genus **1** for `deg P ∈ {3, 4}` and genus ≥ 2 only from `deg P
+// = 5`.  Genus 0 and 1 are *meant* to be taken upstream (rational
+// parametrisation; the genus-1 elliptic capstone in [`super::elliptic_output`]
+// and [`super::genus1_log`]) — but when those decline, a genus-1 integrand
+// arrives here and is decided, or not decided, by exactly this code.  The
+// decline messages below therefore state the genus they **computed** from
+// `deg P` via [`genus`], and never the genus the route was written for.  They
+// used to say "genus ≥ 2" unconditionally; Charlwood #19 (`y² = x³+1`), #38 and
+// #39 (`y² = x⁴+1`) are all genus 1, all reported "genus ≥ 2", and that wording
+// sent at least one reader to attribute three genus-1 misses to the
+// research-level genus-≥2 Coates gap.
 //
 // # Both premises of the empty-divisor certificate are load-bearing
 //
@@ -737,6 +751,43 @@ fn binomial_coeff(n: u64, k: u64) -> rug::Integer {
 // premise 1 only: a non-torsion residue divisor rules out an elementary integral
 // on its own, whatever the integral part does.
 // ---------------------------------------------------------------------------
+
+/// How to name the curve `y² = P` in a decline message, with the genus
+/// **computed** rather than assumed.
+///
+/// [`genus`] returns `⌊(deg P − 1)/2⌋` for squarefree `P` and `None` otherwise
+/// (a repeated root makes the affine model singular, and the normalisation's
+/// genus is then lower than that formula). When it returns `None` this says so
+/// instead of naming a number: an unearned genus in a message is the bug this
+/// function exists to stop, and replacing one guess with another would repeat
+/// it.
+fn curve_note(p_poly: &QPoly) -> String {
+    let d = degree(p_poly);
+    match genus(2, p_poly) {
+        Some(g) => format!("on y² = P, deg P = {d} squarefree ⇒ genus {g}"),
+        // Unreachable from the call sites below (they are past the squarefree
+        // check), and still not a licence to name a genus here.
+        None => format!(
+            "on y² = P, deg P = {d}, genus not determined (P is not squarefree, so \
+             ⌊(deg P − 1)/2⌋ does not describe the normalised curve)"
+        ),
+    }
+}
+
+/// The clause that stops a genus-0/1 decline from reading as a genus-≥2 one.
+///
+/// Empty above genus 1, and empty when the genus was not computed — this says
+/// something only where something was established.
+fn route_note(p_poly: &QPoly) -> &'static str {
+    match genus(2, p_poly) {
+        Some(g) if g <= 1 => {
+            ".  This is not the genus-≥2 Coates gap: a genus-1 curve reaches this \
+             deg P ≥ 3 fallback only when the genus-0/1 routes upstream (rational \
+             parametrisation, the genus-1 elliptic capstone) have already declined"
+        }
+        _ => "",
+    }
+}
 
 fn integrate_b_sqrt_high_degree(
     b: ExprId,
@@ -839,17 +890,23 @@ fn integrate_b_sqrt_high_degree(
                 // `d/dx F = B·√P` gate — else decline honestly.
                 match try_emit_genus2_coates_log(&p_poly, &divisor, order, &h, var, pool, log) {
                     Some(f) => Ok(f),
-                    None => Err(notdecided(
-                        "genus ≥ 2 torsion log part: Coates construction did not yield \
-                         a gate-verified antiderivative in the handled scope (even-\
-                         degree/real model, or an unverified argument)",
-                    )),
+                    None => Err(notdecided(&format!(
+                        "torsion logarithmic part {}: the residue divisor is torsion \
+                         (FIND-ORDER order {order}), but the Coates construction did not \
+                         yield a gate-verified antiderivative in the handled scope \
+                         (odd-degree/imaginary model only, or the constructed argument \
+                         failed the d/dx F = B·√P check){}",
+                        curve_note(&p_poly),
+                        route_note(&p_poly)
+                    ))),
                 }
             }
-            FindOrder::NotDecided => Err(notdecided(
-                "genus ≥ 2 residue divisor: torsion order could not be decided \
-                 (FIND-ORDER undecided) — elementarity unknown",
-            )),
+            FindOrder::NotDecided => Err(notdecided(&format!(
+                "residue divisor {}: FIND-ORDER could not decide whether the divisor \
+                 is torsion, so elementarity is unknown{}",
+                curve_note(&p_poly),
+                route_note(&p_poly)
+            ))),
         };
     }
 
@@ -867,15 +924,21 @@ fn integrate_b_sqrt_high_degree(
             "Trager ℚ-basis criterion: a residue component is non-torsion ⇒ \
              no elementary logarithmic part",
         )),
-        _ => Err(notimpl(
-            "genus ≥ 2 logarithmic part with algebraic residues: not decided \
-             (torsion log not yet emittable, or out of the handled scope — \
-             non-Galois tower / base degree ≥ 3)",
-        )),
+        _ => Err(notimpl(&format!(
+            "logarithmic part with algebraic residues {}: not decided (a torsion log \
+             part is not yet emittable on this route, or the residue tower is out of \
+             the handled scope — non-Galois tower / base degree ≥ 3){}",
+            curve_note(&p_poly),
+            route_note(&p_poly)
+        ))),
     }
 }
 
-/// Construct and **gate-verify** the genus ≥ 2 torsion logarithmic part.
+/// Construct and **gate-verify** the torsion logarithmic part via Coates.
+///
+/// Named `genus2` for the case it was written for; it is reached for any
+/// squarefree `deg P ≥ 3`, genus 1 included, so nothing it returns or reports
+/// may assert a genus.
 ///
 /// Given the rational residue divisor `δ` and its torsion order `N`
 /// (`FindOrder::Principal{N}`), primitivize `δ = (gg/L)·δ_prim` (integer
@@ -1385,6 +1448,87 @@ fn neg_c_power(c: &rug::Integer, n: i64) -> rug::Integer {
 #[cfg(test)]
 mod genus2_log_tests {
     use super::*;
+    /// The `deg P ≥ 3` route's declines must report the genus they computed.
+    ///
+    /// Every integrand here is on a curve of genus **1** (`deg P ∈ {3, 4}`,
+    /// squarefree). They reach this route because the genus-1 handlers upstream
+    /// declined, and the messages used to call them "genus ≥ 2" — which is not a
+    /// cosmetic slip: it points a reader at the research-level Coates gap
+    /// instead of at a genus-1 miss in an area the gap register calls complete.
+    /// The `√(1+x³)/x`, `(1±x²)/((1∓x²)√(1+x⁴))` cases are Charlwood #19, #38
+    /// and #39.
+    #[test]
+    fn deg_ge_3_declines_report_the_genus_they_computed() {
+        use crate::kernel::{Domain, ExprPool};
+        let cases: [(&str, i32, i32); 4] = [
+            // (name, degree of P, ·) — √(1+x³)/x  (Charlwood #19)
+            ("sqrt(1+x^3)/x", 3, 0),
+            // x/√(1+x⁴) — elementary (½·asinh(x²)), and this route misses it
+            ("x/sqrt(1+x^4)", 4, 1),
+            // 1/(x·√(1+x⁴))
+            ("1/(x*sqrt(1+x^4))", 4, 2),
+            // (1+x²)/((1−x²)√(1+x⁴))  (Charlwood #38)
+            ("(1+x^2)/((1-x^2)*sqrt(1+x^4))", 4, 3),
+        ];
+        let mut seen = 0;
+        for (name, deg, _tag) in cases {
+            let pool = ExprPool::new();
+            let x = pool.symbol("x", Domain::Real);
+            let one = pool.integer(1_i32);
+            let x2 = pool.pow(x, pool.integer(2_i32));
+            let x3 = pool.pow(x, pool.integer(3_i32));
+            let x4 = pool.pow(x, pool.integer(4_i32));
+            let inv = |e: ExprId| pool.pow(e, pool.integer(-1_i32));
+            let integrand = match deg {
+                3 => {
+                    // √(1+x³)/x
+                    let p = pool.add(vec![one, x3]);
+                    pool.mul(vec![pool.func("sqrt", vec![p]), inv(x)])
+                }
+                _ => {
+                    let p = pool.add(vec![one, x4]);
+                    let sq = pool.func("sqrt", vec![p]);
+                    match _tag {
+                        1 => pool.mul(vec![x, inv(sq)]),
+                        2 => pool.mul(vec![inv(x), inv(sq)]),
+                        _ => {
+                            let num = pool.add(vec![one, x2]);
+                            let den = pool.add(vec![one, pool.mul(vec![pool.integer(-1_i32), x2])]);
+                            pool.mul(vec![num, inv(den), inv(sq)])
+                        }
+                    }
+                }
+            };
+            let Err(e) = crate::integrate::engine::integrate(integrand, x, &pool) else {
+                continue; // solved outright: nothing to say about a decline
+            };
+            let msg = e.to_string();
+            // Whatever declines, it must never certify non-elementarity here:
+            // every one of these integrands is on a genus-1 curve and three of
+            // them have elementary antiderivatives.
+            assert!(
+                !matches!(e, IntegrationError::NonElementary(_)),
+                "{name}: certified non-elementary — {msg}"
+            );
+            if !msg.contains("genus") {
+                continue; // declined earlier, before this route's messages
+            }
+            seen += 1;
+            assert!(
+                !msg.contains("genus ≥ 2"),
+                "{name}: genus-1 curve reported as genus ≥ 2 — {msg}"
+            );
+            assert!(
+                msg.contains("genus 1"),
+                "{name}: expected the computed genus in the message — {msg}"
+            );
+        }
+        assert!(
+            seen > 0,
+            "no case reached the deg P ≥ 3 route's genus-reporting declines"
+        );
+    }
+
     use crate::integrate::algebraic::residues::{PlacedResidue, Residue};
     use crate::integrate::risch::rational_rde::poly_sub;
     use crate::kernel::Domain;

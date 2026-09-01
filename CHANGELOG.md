@@ -37,15 +37,14 @@
   numeric grid and had the identical skip. `risch::exp_algebraic`'s local check
   now follows the rule too. `algebraic::genus_zero` was left alone: it already
   refuses on *any* non-finite sample, stricter than this rule rather than laxer.
-  The third, `integrate::gate::verify`, was changed and the change **reverted**,
-  because its callers rely on the skip on purpose: the elliptic route samples
-  every `P > 0` interval while its reduction is valid on only one of them, so
-  for `∫dx/√(x³−x)` the integrand is finite on `(−1, 0)` where the candidate's
-  derivative is not, and the stricter rule refused four correct,
-  branch-limited elliptic answers. Adopting it there needs each reduction's
-  sample set narrowed to the region it claims, which is a larger change than
-  this one; the reason is recorded in that module's honest-limitations list so
-  the experiment is not repeated.
+  The third, `integrate::gate::verify`, was changed and the change **reverted
+  at first**, because its callers were sampling beyond the region their
+  reduction claims: the elliptic route put points in every `P > 0` interval
+  while its reduction is valid on only one of them, so for `∫dx/√(x³−x)` the
+  integrand is finite on `(−1, 0)` where the candidate's derivative is not, and
+  the stricter rule refused four correct, branch-limited elliptic answers. The
+  sample set was the defect, not the rule; the next entry narrows it and adopts
+  the rule there too.
 
   **Cost: Charlwood's Fifty goes 33 → 32, and #35 is the only problem that
   moves.** It was also the only one of the fifty whose answer had a domain
@@ -234,6 +233,88 @@
   `simplify_many` no longer reports one on the item; code branching on that
   refusal will now take the success path. Conversely, `ak.simplify(deep,
   assumptions=ctx)` now raises where it previously took the process out.
+
+- **The elliptic route's verification gate sampled a wider set than its answer
+  claimed, which is what blocked the rule above from being applied there.**
+  `elliptic_output`'s `gate_samples` put points in **every** interval where the
+  radicand `P` is positive, and said so in as many words — "points where the
+  substitution is invalid simply evaluate non-finite and are skipped". But a
+  Byrd–Friedman normal form is real on only one of those intervals. For
+  `∫dx/√(x³−x)`, `P > 0` on `(−1, 0) ∪ (1, ∞)` while the three-real-root
+  reduction `sin²φ = (e1−e3)/(x−e3)` needs `x ≥ e1 = 1`; on `(−1, 0)` the
+  integrand is an ordinary finite real and the candidate's derivative is `NaN`.
+  Under a gate that reads that as a disagreement — which is the reading the
+  entry above establishes — a **correct** answer declines.
+
+  Each reduction now returns the region it claims alongside its own constants,
+  so the two cannot drift apart, and the gate's sample grid, in-domain
+  predicate and enclosure boxes are all built from it:
+
+  | root configuration | region claimed | `{P > 0}` |
+  |---|---|---|
+  | cubic, three real `e1>e2>e3` | `(e1, ∞)` | `(e3, e2) ∪ (e1, ∞)` |
+  | cubic, one real `y1` + pair | `(y1, ∞)` | `(y1, ∞)` |
+  | quartic, four real `a>b>c>d` | `(c, b)` | `(−∞, d) ∪ (c, b) ∪ (a, ∞)` |
+  | quartic, two real `b1>b2` + pair | `(b2, b1)` | `(b2, b1)`, negative lead |
+  | quartic, no real root | `ℝ` minus the `arctan` substitution's pole | `ℝ` |
+
+  Each region is derived from where the substitution is real (`sin²φ ∈ [0,1]`,
+  `|cos φ| ≤ 1`), not from where the answer happens to agree — the difference
+  matters, because "wherever it verifies" would make the claim unfalsifiable.
+  `P > 0` is still checked pointwise and deliberately **not** folded into the
+  region: for the two-real-root quartic the two coincide only when the leading
+  coefficient is negative, and where they are disjoint the gate declines for
+  want of in-domain points rather than reporting anything.
+
+  The second/third-kind path additionally cuts the isolated points its own
+  fitted block set is *written* singular at — `log|x−t|` at a twin preimage,
+  `√P/(x−p)` at a reduction pole, `EllipticPi`'s spurious twin pole. Those
+  cancel in the sum, so the residual's limit there is finite, but the
+  expression as written evaluates `∞ − ∞`. `∫dx/((x−2)√(x³+1))` has one at
+  exactly `x = 0`, inside its claimed `(−1, ∞)`, and the old grid already
+  contained that point.
+
+  With the sample sets honest, `gate::verify` adopts the non-finite rule
+  unweakened. **The 13 Rust and 4 Python tests that the reverted experiment
+  broke pass because the points that used to come back `NaN` are no longer
+  sampled**, not because anything was loosened — two new gate tests pin both
+  directions of the rule so a future weakening shows up as a test change.
+
+  **Cost: none measured.** Charlwood's Fifty is 32/50 before and after with no
+  problem moving and all 32 verified; the 40-case probe is unchanged
+  (35 solved / 4 `E-INT-004` / 1 `E-INT-001`, identical answers); the 110-case
+  Liouville corpus is unchanged at 84 solved; and a 29-case sweep covering
+  every handled root configuration across first, second and third kind returns
+  byte-identical answers. **No `E-INT-004` appears anywhere it did not appear
+  before.** One thing improved: all four first-kind reductions now reach a
+  rigorous `EnclosureVerified` (was three), and the `∫dx/√(x⁴+1)` coverage gap
+  is now a stated exclusion around the substitution's pole rather than a
+  branch-and-bound budget failure.
+
+- **Three declines on genus-1 curves reported themselves as "genus ≥ 2".**
+  `integrate_b_sqrt_high_degree` is guarded by `deg P ≥ 3`, which for
+  squarefree `P` is genus `⌊(deg P − 1)/2⌋` — genus **1** for `deg P ∈ {3, 4}`,
+  and genus ≥ 2 only from `deg P = 5`. Its three "not decided" messages said
+  "genus ≥ 2" regardless.
+
+  That is not cosmetic. Charlwood **#19** (`y² = x³+1`), **#38** and **#39**
+  (`y² = x⁴+1`) are all genus 1 and all reported "genus ≥ 2", which sends a
+  reader to the research-level genus-≥2 Coates gap when the real answer is a
+  genus-1 miss in an area the gap register calls complete — and it had already
+  talked at least one reader out of working on these problems. The 2026-08-24
+  benchmark flagged the wording; the 2026-08-30 re-measurement found it still
+  there, with the cluster's membership changed underneath it (now #5, #38, #39).
+
+  The messages now report the genus they **computed**, through the existing
+  `find_order::genus` — the same function `find_order_placed` grades the
+  decision with, so the number in the message is the number the decision used.
+  Where `genus` declines (a non-squarefree `P`) the message says the genus was
+  not determined rather than naming one; replacing one guess with another would
+  be the same bug in a new coat. A genus-0/1 decline additionally says that it
+  is *not* the Coates gap and that the curve only reached this fallback because
+  the genus-0/1 routes upstream declined first. #38 and #39 now read
+  `logarithmic part with algebraic residues on y² = P, deg P = 4 squarefree ⇒
+  genus 1: …`.
 
 - **`simplify` could not cancel `¾·sin x − ¾·sin x`, and that cost the
   verification gate its strongest verdict.** `collect_add_terms` split each
