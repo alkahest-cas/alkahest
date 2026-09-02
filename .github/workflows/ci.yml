@@ -465,6 +465,40 @@ jobs:
       # `simplify_par` / `simplify_redex` on one shared pool, and nested
       # `call_batch_par` from real OS threads. `egraph` is left off — it pulls
       # in egglog, which is single-threaded here and only lengthens the build.
+      #
+      # ── Why this step is not one `--workspace --lib --tests` command ──────
+      #
+      # It was, and the job stopped finishing. Measured from the last green
+      # nightly (run 33299657521): the `alkahest-cas` unit-test binary took
+      # 7 977 s, of which the last ~5 340 s is three tests running alone on an
+      # otherwise idle runner —
+      #
+      #   real::sos::psd::tests::psd_search_does_not_yet_reach_homogeneous_…  ~118 min
+      #   real::sos::psd::tests::psd_search_certifies_robinsons_form_with_…    ~67 min
+      #   real::sos::tests::motzkin_certifies_via_a_reznick_multiplier         ~63 min
+      #
+      # Every other test in the workspace was done 45 minutes in. Those three
+      # are semidefinite-programming searches: a simplex/LP loop over rational
+      # matrices in `real::sos::{lp,linalg,psd,gram}`, reached only from
+      # `real::sos`. They allocate nothing that outlives the call, share no
+      # state with anything, and — the point — never start a second thread.
+      # TSan reports data races; a race needs two threads touching one address.
+      # Instrumenting a single-threaded simplex solver cannot find one. It just
+      # made the shard the longest job in the matrix, and the last two nightlies
+      # were killed mid-run with SIGTERM.
+      #
+      # So: `alkahest-cas`'s *unit* tests are filtered down to the modules where
+      # two threads really do meet, listed in `.github/tsan-scope.txt`.
+      # Nothing else is narrowed — every integration test target and every other
+      # package's unit tests still run in full, because together they are ~70 s.
+      #
+      # What stops the filter from rotting is `alkahest-core/tests/tsan_scope.rs`,
+      # an ordinary test that runs on every PR: it walks the module tree from
+      # `src/lib.rs` and fails if a module whose source spawns a thread or hands
+      # work to Rayon is not covered by the scope file, and fails again if a
+      # scope entry names a module that no longer exists. Below, this step also
+      # refuses to run a filter that matches zero tests — a rename cannot make
+      # the shard pass vacuously.
       - name: ThreadSanitizer
         if: matrix.shard == 'tsan'
         env:
@@ -493,11 +527,43 @@ jobs:
             fi
           done
           echo "TSAN_OPTIONS=$TSAN_OPTIONS"
-          RUSTFLAGS="-Zsanitizer=thread" \
-          cargo +nightly test --workspace --lib --tests \
-            --features parallel \
-            --target x86_64-unknown-linux-gnu \
-            -Z build-std
+
+          mapfile -t SCOPE < <(grep -vE '^[[:space:]]*(#|$)' .github/tsan-scope.txt)
+          if [ "${#SCOPE[@]}" -eq 0 ]; then
+            echo "error: .github/tsan-scope.txt declares no filters" >&2
+            exit 1
+          fi
+          printf 'tsan scope filter: %s\n' "${SCOPE[@]}"
+
+          COMMON=(--features parallel --target x86_64-unknown-linux-gnu -Z build-std)
+          export RUSTFLAGS="-Zsanitizer=thread"
+
+          # 1/4 — build once, so the --list probes below cost nothing.
+          cargo +nightly test -p alkahest-cas --lib "${COMMON[@]}" --no-run
+
+          # 2/4 — a filter that matches nothing would make this shard green
+          # without running anything. Refuse before, not after.
+          for f in "${SCOPE[@]}"; do
+            n=$(cargo +nightly test -p alkahest-cas --lib "${COMMON[@]}" \
+                  -- --list "$f" 2>/dev/null | grep -c ': test$' || true)
+            echo "  $f -> $n tests"
+            if [ "$n" -eq 0 ]; then
+              echo "error: tsan scope filter '$f' matches no test in alkahest-cas." >&2
+              echo "       Fix or remove the entry in .github/tsan-scope.txt." >&2
+              exit 1
+            fi
+          done
+
+          # 3/4 — the narrowed unit tests: everything that can put two threads
+          # on the same data. See .github/tsan-scope.txt for what each entry is.
+          cargo +nightly test -p alkahest-cas --lib "${COMMON[@]}" -- "${SCOPE[@]}"
+
+          # 4/4 — unnarrowed: every integration test target in the workspace
+          # (parallel_stress.rs among them) and every other package's unit
+          # tests. Cheap, and it means a new integration test is covered the
+          # day it lands without anyone editing the scope file.
+          cargo +nightly test --workspace --test '*' "${COMMON[@]}"
+          cargo +nightly test --workspace --exclude alkahest-cas --lib "${COMMON[@]}"
 
       - name: LeakSanitizer
         if: matrix.shard == 'lsan'

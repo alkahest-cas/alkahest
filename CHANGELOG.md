@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+- **The nightly `tsan` shard spent two thirds of its wall clock instrumenting a
+  simplex solver.** It ran the whole workspace under ThreadSanitizer. On the
+  last green run the `alkahest-cas` unit-test binary took 7 977 s, and the last
+  5 291 s of that — 88 minutes, 66% of the job — was three tests running alone
+  on an otherwise idle runner: `psd_search_does_not_yet_reach_homogeneous_…`
+  (~119 min), `psd_search_certifies_robinsons_form_with_a_reznick_multiplier`
+  (~67 min) and `motzkin_certifies_via_a_reznick_multiplier` (~63 min).
+  Everything else in the workspace was finished 45 minutes in. Those three are
+  semidefinite-programming searches in `real::sos`, whose sources contain no
+  occurrence of `thread`, `rayon`, `Mutex`, `Atomic` or `unsafe`. TSan reports
+  data races, and a race needs two threads reaching one address, so
+  instrumenting them could never report anything. It only made this the longest
+  job in the matrix, and the last two nightlies were killed mid-step.
+
+  `alkahest-cas`'s **unit** tests are now filtered to the modules where two
+  threads actually meet — the Rayon simplifiers (`simplify::{parallel,redex,
+  dispatch}`), the segmented-stack thread handoff (`simplify::{stack,engine}`,
+  `parse`), the sharded `ExprPool` index (`kernel::pool`) and
+  `CompiledFn::call_batch_par` (`jit`) — declared in `.github/tsan-scope.txt`.
+  Nothing else is narrowed: every integration test target, `parallel_stress.rs`
+  among them, and every other package's unit tests still run in full, because
+  together they are ~70 s. 2 806 tests become 194; none of the 2 612 dropped
+  lives in a module containing a thread-spawn or Rayon token, and none names a
+  parallel entry point.
+
+  A hand-maintained list of test names would rot, so the list is not the
+  contract. `alkahest-core/tests/tsan_scope.rs` is an ordinary test — Tier 1, on
+  every PR — that walks the module tree from `src/lib.rs` and fails when a
+  module whose source spawns a thread or hands work to Rayon is not covered, and
+  fails again when an entry names a module that no longer exists. The workflow
+  additionally refuses any filter matching zero tests, so a rename cannot make
+  the shard pass vacuously. `RUST_MIN_STACK` and the `TSAN_OPTIONS` symbolizer
+  handling are unchanged.
+
+  Not fixed here, but on the same path: the `lsan` shard also runs the whole
+  workspace, has gone from ~30 min to 152 min over the same period, and hit the
+  6 h job cap once (run 32209848511). Its exclusion argument is not the same one
+  — a single-threaded solver allocates, so LeakSanitizer has something to say
+  about it — so it needs a different fix.
 - **A Lean certificate typechecked while proving a different statement than the
   one the API reported.** `expr_to_lean` rendered an integer literal with
   `to_i64().unwrap_or(0)`, so any value outside `i64` was silently printed as
