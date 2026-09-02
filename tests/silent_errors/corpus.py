@@ -3198,6 +3198,84 @@ CASES: list[Case] = [
             "refuse intervals that cross π, not the whole (a + b·cos x) family."
         ),
     ),
+    # ── the antiderivative's *domain* over the interval ─────────────────────
+    #
+    # The sibling of the two Weierstrass cases above.  There the antiderivative
+    # is defined on the interval and *jumps*; here it is not defined on the
+    # interval at all, because the branch alkahest emitted is real only
+    # elsewhere.  Both make `F(b) − F(a)` not the integral, but only the first
+    # is visible to a scan that needs `F` at both ends of a cell to form a
+    # ratio — a hole makes every cell undecidable and the scan silent.  Each of
+    # these was answered `Solved`, with a value containing a `log` of a
+    # negative number or an `asin` outside [−1, 1].
+    Case(
+        id="int_domain_hole_atanh_symmetric",
+        subsystem="integration_definite",
+        statement="∫_{-1/2}^{1/2} atanh(x) dx = 0, and its antiderivative is not real there",
+        op=definite(ak.atanh(X), _rat(-1, 2), _rat(1, 2)),
+        contract=RefusesOr(0.0),
+        verified_by=(
+            "atanh is odd and continuous on (-1, 1), so the integral over a symmetric interval "
+            "is 0 by antisymmetry. alkahest's antiderivative is x·atanh(x) + ½·log(x² - 1), "
+            "whose logarithm is log of a negative number for every |x| < 1 — i.e. on the whole "
+            "interval, and exactly where the integrand is defined. The real branch is "
+            "x·atanh(x) + ½·log(1 - x²); recovering the value needs that, not a wider search."
+        ),
+    ),
+    Case(
+        id="int_domain_hole_quartic_below_its_poles",
+        subsystem="integration_definite",
+        statement="∫_{-3}^{-2} dx/(x⁴-1) = 0.030418: bounded integrand, non-real antiderivative",
+        op=definite(1 / (X**4 - _int(1)), _int(-3), _int(-2)),
+        contract=RefusesOr(0.030417749724959134),
+        verified_by=(
+            "1/(x⁴-1) is continuous on [-3, -2] (its poles are at ±1), so the integral is an "
+            "ordinary number; value from ¼·log|(x-1)/(x+1)| - ½·atan(x) evaluated at the two "
+            "endpoints. alkahest emits -¼·log(x+1) + ¼·log(x-1) - ½·atan(x), and both "
+            "logarithms are of negative numbers below -1. The endpoint gate cannot catch it: "
+            "it asks eval_f64, which does not implement atan and so reports 'cannot decide'."
+        ),
+    ),
+    Case(
+        id="int_domain_hole_cubic_below_its_pole",
+        subsystem="integration_definite",
+        statement="∫_{-4}^{-2} dx/(1+x³) = -0.100340: bounded integrand, non-real antiderivative",
+        op=definite(1 / (_int(1) + X**3), _int(-4), _int(-2)),
+        contract=RefusesOr(-0.10034029061616050),
+        verified_by=(
+            "1/(1+x³) has its only real pole at x = -1, outside [-4, -2], so the integrand is "
+            "continuous and bounded there; value from mpmath.quad at dps=30, anchored by the "
+            "real closed form ⅓·log|x+1| - ⅙·log(x²-x+1) + atan((2x-1)/√3)/√3. alkahest emits "
+            "the same formula with log(x+1) rather than log|x+1|, which is not real for x < -1."
+        ),
+    ),
+    Case(
+        id="int_control_improper_but_convergent_endpoint",
+        subsystem="integration_definite",
+        statement="∫_0^1 x^{-1/2} dx = 2 — the integrand blows up at an endpoint and it converges",
+        op=definite(_int(1) / ak.sqrt(X), _int(0), _int(1)),
+        contract=Returns(2.0, tol=1e-12),
+        verified_by=(
+            "∫x^{-1/2} = 2√x, continuous on [0, 1]; the improper integral converges to 2. The "
+            "control for the three domain-hole cases: a *genuine* improper integral has a "
+            "non-finite integrand and a perfectly good antiderivative, and must not be swept "
+            "into the same refusal."
+        ),
+    ),
+    Case(
+        id="int_control_same_antiderivative_where_it_is_real",
+        subsystem="integration_definite",
+        statement="∫_2^3 dx/(x²-1) = ½·log(3/2) — the refused formula, on an interval it holds on",
+        op=definite(1 / (X**2 - _int(1)), _int(2), _int(3)),
+        contract=Returns(0.5 * math.log(1.5), tol=1e-12),
+        verified_by=(
+            "½·log((x-1)/(x+1)) is an antiderivative; at 3 it is ½·log(1/2), at 2 it is "
+            "½·log(1/3), so the value is ½·log(3/2), and the poles at ±1 are outside [2, 3]. "
+            "This is the same ½·log(x-1) - ½·log(x+1) that int_domain_hole_* refuses below -1, "
+            "evaluated where both logarithms are real: the rule has to be about the interval, "
+            "not about the shape of the formula."
+        ),
+    ),
     # ── root isolation ──────────────────────────────────────────────────────
     #
     # `real_roots` is load-bearing under `decide`, `solve` and the integrator's
