@@ -61,7 +61,7 @@ Probe your environment after install: `alkahest.capabilities()["features"]` and 
 
 ### Opt-in Linux wheels: `+jit` and `+full` (PyTorch-style)
 
-**Why a separate index or direct wheel URL:** feature-heavy wheels use a PEP 440 **local version** (for example `3.8.0+jit` or `3.8.0+full`). Those builds **must not** be mixed into the main PyPI project’s simple API for the same reason PyTorch publishes CUDA wheels on `download.pytorch.org`: otherwise `pip install alkahest` could resolve a `+jit` / `+full` build as “newer” than `3.8.0` and pull LLVM (or a much larger binary) when you wanted the default wheel.
+**Why a separate index or direct wheel URL:** feature-heavy wheels use a PEP 440 **local version** (for example `3.9.0+jit` or `3.9.0+full`). Those builds **must not** be mixed into the main PyPI project’s simple API for the same reason PyTorch publishes CUDA wheels on `download.pytorch.org`: otherwise `pip install alkahest` could resolve a `+jit` / `+full` build as “newer” than `3.9.0` and pull LLVM (or a much larger binary) when you wanted the default wheel.
 
 There is **no** `pip install alkahest[jit]` / `alkahest[full]` that swaps the native extension: **pip extras only add Python dependencies**, not alternate binaries for the same wheel slot.
 
@@ -76,13 +76,13 @@ There is **no** `pip install alkahest[jit]` / `alkahest[full]` that swaps the na
 Direct-install examples (adjust tag and filename after checking the release assets):
 
 ```bash
-pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.8.0/alkahest-3.8.0+full-cp311-cp311-linux_x86_64.whl"
-pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.8.0/alkahest-3.8.0+jit-cp311-cp311-linux_x86_64.whl"
+pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.9.0/alkahest-3.9.0+full-cp311-cp311-linux_x86_64.whl"
+pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.9.0/alkahest-3.9.0+jit-cp311-cp311-linux_x86_64.whl"
 ```
 
 These wheels vendor LLVM (for JIT) and related `.so` files under `site-packages/alkahest.libs/`. If `import alkahest` fails with a missing `libffi-*.so` or `libLLVM-*.so`, prepend that directory to `LD_LIBRARY_PATH` (or install matching system packages). Release CI uses the same `LD_LIBRARY_PATH` step when smoke-testing wheels.
 
-If your client chokes on `+` in the URL, use percent-encoding (`3.8.0%2Bfull` in the filename segment).
+If your client chokes on `+` in the URL, use percent-encoding (`3.9.0%2Bfull` in the filename segment).
 
 After installing the **default** wheel, `alkahest.jit_is_available()` is `True` (Cranelift). After **`+jit`** it is also `True` (LLVM, in place of Cranelift); **`+full`** carries both backends. Gröbner-backed APIs such as `alkahest.solve` are available in **all** wheels since `groebner` became a default feature.
 
@@ -91,7 +91,7 @@ After installing the **default** wheel, `alkahest.jit_is_available()` is `True` 
 **Target layout (roadmap):** a small **extra index** URL (PEP 503) hosting only `+jit` / `+full` wheels, mirroring PyTorch’s `--extra-index-url` workflow:
 
 ```bash
-pip install 'alkahest==3.8.0+full' --extra-index-url https://EXAMPLE/alkahest-extras/simple
+pip install 'alkahest==3.9.0+full' --extra-index-url https://EXAMPLE/alkahest-extras/simple
 ```
 
 ### From source

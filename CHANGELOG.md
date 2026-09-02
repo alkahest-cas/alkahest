@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 3.9.0 — 2026-09-02
+
 - **A definite integral whose antiderivative is not defined on the interval of
   integration was answered rather than refused.** The FTC needs `F` continuous
   on `[a, b]`; `engine::antiderivative_jump` is the guard that looks at `F`
@@ -1877,7 +1879,6 @@
   Nothing in `integrate/` was touched: emitting Fresnel or `Li₂` forms from
   `∫sin(x²)dx`, `∫log(x)/(1+x)dx` and friends is a separate change.
 
-## 3.9.0 — 2026-08-14
 
 Everything in this section landed **after `v3.8.0` was tagged and published**,
 so none of it is in the released 3.8.0 wheel. It is the result of acting on a
