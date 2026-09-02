@@ -51,6 +51,24 @@ def _univariate_square(pool):
     return alkahest.prove_nonneg(_square(x), [x])
 
 
+def _square_with_spectator_var(pool):
+    """x² over the variable list ``[x, y]`` — ``y`` occurs in nothing.
+
+    Binding a variable the statement never mentions is a hard
+    ``unusedVariables`` error under ``-DwarningAsError=true``, and leaves ``rw
+    [alkahest_sos_identity]`` with an uninstantiated ``⊢ ℝ`` side goal. Every
+    case above happens to use all its variables, which is why this shipped.
+    """
+    x, y = pool.symbol("x"), pool.symbol("y")
+    return alkahest.sos_decompose(_square(x), [x, y])
+
+
+def _shifted_square_with_spectator_var(pool):
+    """(x − 1)² over ``[x, y]`` — same, through the constrained-free branch."""
+    x, y = pool.symbol("x"), pool.symbol("y")
+    return alkahest.prove_nonneg(_square(x) - 2 * x + 1, [x, y])
+
+
 def _motzkin(pool):
     """Motzkin polynomial via a Reznick multiplier (not itself SOS)."""
     x, y = pool.symbol("x"), pool.symbol("y")
@@ -69,6 +87,8 @@ CASES = [
     ("square_diff", _square_diff),
     ("sum_of_squares", _sum_of_squares),
     ("univariate_square", _univariate_square),
+    ("square_with_spectator_var", _square_with_spectator_var),
+    ("shifted_square_with_spectator_var", _shifted_square_with_spectator_var),
     ("motzkin_multiplier", _motzkin),
 ]
 

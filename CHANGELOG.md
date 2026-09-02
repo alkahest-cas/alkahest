@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+- **A Lean certificate typechecked while proving a different statement than the
+  one the API reported.** `expr_to_lean` rendered an integer literal with
+  `to_i64().unwrap_or(0)`, so any value outside `i64` was silently printed as
+  `0` (and a rational's numerator/denominator as `0`/`1`). `simplify(2**70 +
+  2**70)` returns `2361183241434822606848` and handed out
+
+  ```lean
+  example : ((0 : ℝ) + (0 : ℝ)) = (0 : ℝ) := by ring
+  ```
+
+  — a file that Lean *accepts*. This is the failure mode the withhold-rather-
+  than-lie discipline exists to prevent, and it is worse than the `#331`
+  precedent fixed in `#334`, where the mismatch at least made Lean reject the
+  file. An unrenderable literal (out of `i64`, or a non-finite float) now emits
+  an admission marker, and every emitter's guard runs over its **complete**
+  output rather than only over the tactic, so the certificate is withheld.
+
+  Three emission paths were reachable without that guard and are now covered:
+  `emit_tendsto_cert` checked only `plan.tactic` and never the printed goal;
+  `emit_lean_expr_wrt`'s empty-log early return (`example : e = e := rfl`)
+  returned before the guard; `PositivityCertificate::to_lean` had none at all.
+
+- **Five certificates were emitted that Lean rejects.** Each is a goal that
+  does not match the lemma cited to prove it — the same shape as `#334`, found
+  by emitting outside the CI corpus and typechecking against Mathlib v4.9.0.
+
+  | Call | What was printed | What was cited |
+  |---|---|---|
+  | `limit(x**2 * exp(-x), x, oo)` | `rexp (-x) * x ^ 2` | `tendsto_pow_mul_exp_neg_atTop_nhds_zero`, never applied to `n` |
+  | `limit(exp(x) * exp(-3*x), x, oo)` | `rexp x * rexp (-3*x)` | a lemma about `rexp (-x)` |
+  | `diff(exp(x)/cos(x), x)` | `(cos x)⁻¹ * rexp x` | `HasDerivAt.mul` assembled numerator-first |
+  | `diff(x**2 * log(x), x)` | — | `field_simp`'s `True ∨ x = 1 ∨ x = -1` side goal, unclosed |
+  | `integrate(1/(1+x**2), x, 0, 1)` | `(x ^ 2 + 1)⁻¹` | `Real.hasDerivAt_arctan'`, whose value is `(1 + x ^ 2)⁻¹` |
+
+  The `xⁿ·exp(−x)`, quotient-chain, `xⁿ·log x` and `arctan` arms are fixed and
+  are now in the CI-typechecked corpus, in **both** commutative intern orders
+  where the order was what broke them. The exponential-quotient arm is
+  **withheld**: it matched "a product with at least two `exp` factors",
+  ignoring the variable and the exponents entirely, and never produced a proof
+  of the goal it printed for any input it accepted.
+
+  Two more of the same class, reachable but not from the nine commits audited:
+  `simplify(x**2 * x**-1)` (net exponent 1 is spelled as the bare base, not
+  `x^1`, so it escaped the `≠ 0` override and picked up `collect_mul_factors`'
+  unconditional `by ring`), and `sin(x)**2 + cos(x)**2` (the tactic named
+  `Real.sin_sq_add_cos_sq` only, but which addend prints first is decided by
+  raw `ExprId` order — so the *same input* certified or not depending on what
+  else the pool had interned).
+
+  `certifiable()` answered `True` with reason `"emitted"` for every one of
+  these. It still reports emission faithfully; what changed is that the shapes
+  now emit something Lean accepts. The ledger is regenerated: 316 → 329
+  observations, 109 → 115 certified classes, no class moved to withheld.
+
 - **An antiderivative that is *undefined* on a whole component where the
   integrand is finite passed the verification gate.** The gate's numeric grid
   skipped every sample where either side came back non-finite, so a domain hole
