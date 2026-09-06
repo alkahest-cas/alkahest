@@ -692,28 +692,6 @@
     },
     {
       "operation": "diff",
-      "shape": "diff/form=product/funcs=-/fn_arg=none/mul=general/pow=none/pow_base=none",
-      "features": {
-        "form": "product",
-        "funcs": "-",
-        "fn_arg": "none",
-        "mul": "general",
-        "pow": "none",
-        "pow_base": "none"
-      },
-      "verdict": "certified",
-      "observations": {
-        "certified": 1,
-        "withheld": 0,
-        "no_derivation": 0
-      },
-      "blocking_rules": [],
-      "examples": [
-        "(C2 * x)"
-      ]
-    },
-    {
-      "operation": "diff",
       "shape": "diff/form=product/funcs=-/fn_arg=none/mul=scalar/pow=frac/pow_base=expr",
       "features": {
         "form": "product",
@@ -994,6 +972,31 @@
     },
     {
       "operation": "diff",
+      "shape": "diff/form=product/funcs=exp,log/fn_arg=other/mul=general/pow=none/pow_base=none",
+      "features": {
+        "form": "product",
+        "funcs": "exp,log",
+        "fn_arg": "other",
+        "mul": "general",
+        "pow": "none",
+        "pow_base": "none"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [
+        "diff_exp",
+        "product_rule"
+      ],
+      "examples": [
+        "(C1 * exp(log(x)))"
+      ]
+    },
+    {
+      "operation": "diff",
       "shape": "diff/form=product/funcs=exp,log/fn_arg=var/mul=general/pow=none/pow_base=none",
       "features": {
         "form": "product",
@@ -1060,30 +1063,51 @@
     },
     {
       "operation": "diff",
-      "shape": "diff/form=product/funcs=exp/fn_arg=other/mul=general/pow=neg_one/pow_base=expr",
+      "shape": "diff/form=product/funcs=exp/fn_arg=other/mul=general/pow=nat/pow_base=var",
       "features": {
         "form": "product",
         "funcs": "exp",
         "fn_arg": "other",
         "mul": "general",
-        "pow": "neg_one",
-        "pow_base": "expr"
+        "pow": "nat",
+        "pow_base": "var"
       },
       "verdict": "withheld",
       "observations": {
         "certified": 0,
-        "withheld": 3,
+        "withheld": 1,
         "no_derivation": 0
       },
       "blocking_rules": [
-        "collect_mul_factors",
-        "power_rule",
         "product_rule"
       ],
       "examples": [
-        "((exp((-1 * x)))^-1 * C2)",
-        "((exp((-1/2 * x^2)))^-1 * C2)",
-        "((exp((-3 * x)))^-1 * C2)"
+        "(C1 * exp((1/2 * x^2)))"
+      ]
+    },
+    {
+      "operation": "diff",
+      "shape": "diff/form=product/funcs=exp/fn_arg=other/mul=general/pow=none/pow_base=none",
+      "features": {
+        "form": "product",
+        "funcs": "exp",
+        "fn_arg": "other",
+        "mul": "general",
+        "pow": "none",
+        "pow_base": "none"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 2,
+        "no_derivation": 0
+      },
+      "blocking_rules": [
+        "product_rule"
+      ],
+      "examples": [
+        "(C1 * exp((-1 * x)))",
+        "(C1 * exp((3 * x)))"
       ]
     },
     {
@@ -1134,31 +1158,6 @@
     },
     {
       "operation": "diff",
-      "shape": "diff/form=product/funcs=exp/fn_arg=var/mul=general/pow=neg_one/pow_base=expr",
-      "features": {
-        "form": "product",
-        "funcs": "exp",
-        "fn_arg": "var",
-        "mul": "general",
-        "pow": "neg_one",
-        "pow_base": "expr"
-      },
-      "verdict": "withheld",
-      "observations": {
-        "certified": 0,
-        "withheld": 1,
-        "no_derivation": 0
-      },
-      "blocking_rules": [
-        "collect_mul_factors",
-        "product_rule"
-      ],
-      "examples": [
-        "((exp(x))^-1 * C2)"
-      ]
-    },
-    {
-      "operation": "diff",
       "shape": "diff/form=product/funcs=exp/fn_arg=var/mul=general/pow=none/pow_base=none",
       "features": {
         "form": "product",
@@ -1170,7 +1169,7 @@
       },
       "verdict": "certified",
       "observations": {
-        "certified": 2,
+        "certified": 3,
         "withheld": 0,
         "no_derivation": 0
       },
