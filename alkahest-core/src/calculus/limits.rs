@@ -2178,6 +2178,9 @@ fn try_expansion_limit(
     pool: &ExprPool,
     order: u32,
 ) -> Result<Option<ExprId>, LimitError> {
+    if has_essential_singularity(expr, var, point, pool) {
+        return Ok(None);
+    }
     let exp = match local_expansion(expr, var, point, order, pool) {
         Ok(e) => e,
         Err(_) => {
@@ -2193,6 +2196,57 @@ fn try_expansion_limit(
         checkpoint(pool)?;
     }
     Ok(r)
+}
+
+/// True when `expr` has an **essential** singularity at `point`: an unbounded
+/// transcendental head applied to something that blows up there.
+///
+/// A Taylor expansion is a statement about a function that is analytic at the
+/// point, and `e^{1/s}` is not analytic at `s = 0` in the strongest possible
+/// sense — every derivative is an `0^{-n}` form, `simplify` folds each of them
+/// to `0`, and [`local_expansion`] duly reports a series that is identically
+/// zero. `lim_{s→0⁺} s·e^{1/s}` then came out as `0` (from a positive
+/// valuation), confidently and silently, against a true value of `+∞`.
+///
+/// The test is deliberately restricted to *unbounded* heads. `x·sin(1/x)` has
+/// the same shape and the same all-zero expansion, and there the answer `0` is
+/// correct — `sin` is bounded, so the `0` factor really does win. The
+/// difference is not visible in the expansion; it is a property of the head,
+/// so it is read off the head.
+fn has_essential_singularity(expr: ExprId, var: ExprId, point: ExprId, pool: &ExprPool) -> bool {
+    /// Heads that outgrow every power near an infinite argument.
+    ///
+    /// Two kinds of head are deliberately absent. A *bounded* one (`sin`,
+    /// `cos`, `tanh`, `erf`, `atan`) cannot turn a vanishing factor into a
+    /// divergence. Neither can `log`, which is unbounded but slower than every
+    /// power: `lim_{s→0⁺} s·log(1/s) = 0`, and the expansion route gets that
+    /// right. Only a head that beats `s⁻¹` can make a `0·∞` come out
+    /// divergent, which is the case the expansion cannot see.
+    const OUTGROWS_EVERY_POWER: [&str; 3] = ["exp", "gamma", "Ei"];
+
+    match pool.get(expr) {
+        ExprData::Func { name, args } => {
+            if OUTGROWS_EVERY_POWER.contains(&name.as_str())
+                && args.iter().any(|&a| {
+                    let mut m = HashMap::with_capacity(1);
+                    m.insert(var, point);
+                    substitution_is_singular(subs(a, &m, pool), pool)
+                })
+            {
+                return true;
+            }
+            args.iter()
+                .any(|&a| has_essential_singularity(a, var, point, pool))
+        }
+        ExprData::Add(xs) | ExprData::Mul(xs) => xs
+            .iter()
+            .any(|&x| has_essential_singularity(x, var, point, pool)),
+        ExprData::Pow { base, exp } => {
+            has_essential_singularity(base, var, point, pool)
+                || has_essential_singularity(exp, var, point, pool)
+        }
+        _ => false,
+    }
 }
 
 fn expansion_to_limit(

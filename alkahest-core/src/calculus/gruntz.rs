@@ -560,6 +560,33 @@ fn sign_of_coeff_at_inf(coeff: ExprId, var: ExprId, pool: &ExprPool) -> Option<i
         if let Some(s) = structural_sign(l, pool) {
             return Some(s);
         }
+        // `lim coeff = 0` says nothing about *which side* of zero the
+        // coefficient approaches from, and that side is the whole question:
+        // for `e^x/x` the MRV rewrite leaves `coeff = x⁻¹`, whose limit is 0
+        // and whose eventual sign is what decides between `+∞` and `−∞`.
+        //
+        // The reciprocal settles it without guessing. `1/coeff → +∞` means
+        // `1/coeff > 0` from some point on, hence `coeff > 0` from some point
+        // on — and `lim 1/x⁻¹ = lim x = +∞` is a limit this engine computes
+        // directly. Only taken when the limit really is zero, and only one
+        // level deep, so it cannot ping-pong with itself.
+        if is_zero(l, pool) {
+            let reciprocal = simplify(pool.pow(coeff, pool.integer(-1_i32)), pool).value;
+            if let Ok(r) = limit(
+                reciprocal,
+                var,
+                pool.pos_infinity(),
+                LimitDirection::Bidirectional,
+                pool,
+            ) {
+                if is_pos_inf(r, pool) {
+                    return Some(1);
+                }
+                if is_neg_inf(r, pool) {
+                    return Some(-1);
+                }
+            }
+        }
     }
     structural_sign(coeff, pool)
 }
