@@ -118,7 +118,13 @@ fn gruntz_inner(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<Option<Exp
         return Ok(Some(pool.integer(0_i32)));
     }
     if power < 0 {
-        let sign = sign_of_coeff_at_inf(coeff, var, pool);
+        // No established sign, no answer: decline the whole Gruntz route
+        // rather than name an infinity by coin flip. `limits` has already
+        // recorded the parameter whose sign was wanted.
+        let Some(sign) = sign_of_coeff_at_inf(coeff, var, pool) else {
+            crate::calculus::limits::note_missing_assumption(coeff, var, pool);
+            return Ok(None);
+        };
         return Ok(Some(signed_infinity(pool, sign)));
     }
 
@@ -532,8 +538,17 @@ fn signed_infinity(pool: &ExprPool, sign: i8) -> ExprId {
     }
 }
 
-/// Determine the sign of `coeff` as `var → +∞` (for the leading-term decision).
-fn sign_of_coeff_at_inf(coeff: ExprId, var: ExprId, pool: &ExprPool) -> i8 {
+/// Determine the sign of `coeff` as `var → +∞` (for the leading-term decision),
+/// or `None` when nothing establishes it.
+///
+/// The MRV rewrite reduces the whole problem to `coeff · ωᵖ` with `ω → 0⁺`, so
+/// for `p < 0` this sign *is* the answer: it chooses between `+∞` and `−∞`.
+/// It used to end in `.unwrap_or(1)` — "assume positive" — which for a
+/// coefficient carrying a free parameter (`lim_{t→∞} (−1/k)·e^{kt}`, a
+/// perfectly ordinary shape for an improper integral's antiderivative) is a
+/// coin flip reported as a result. `None` now means the caller must decline;
+/// [`crate::calculus::limits`] records which parameter was missing.
+fn sign_of_coeff_at_inf(coeff: ExprId, var: ExprId, pool: &ExprPool) -> Option<i8> {
     // Try computing lim(coeff) and reading its sign
     if let Ok(l) = limit(
         coeff,
@@ -543,43 +558,20 @@ fn sign_of_coeff_at_inf(coeff: ExprId, var: ExprId, pool: &ExprPool) -> i8 {
         pool,
     ) {
         if let Some(s) = structural_sign(l, pool) {
-            return s;
+            return Some(s);
         }
     }
-    structural_sign(coeff, pool).unwrap_or(1)
+    structural_sign(coeff, pool)
 }
 
+/// Sign of a `var`-free leading coefficient from structure, the ambient
+/// assumptions, or its own numeric value; `None` when it is zero or
+/// undetermined.
 fn structural_sign(e: ExprId, pool: &ExprPool) -> Option<i8> {
-    match pool.get(e) {
-        ExprData::Integer(n) => {
-            if n.0 > 0 {
-                Some(1)
-            } else if n.0 < 0 {
-                Some(-1)
-            } else {
-                None
-            }
-        }
-        ExprData::Rational(r) => {
-            if r.0 == 0 {
-                None
-            } else if r.0 > 0 {
-                Some(1)
-            } else {
-                Some(-1)
-            }
-        }
-        ExprData::Mul(xs) => {
-            let mut s = 1i8;
-            for x in xs {
-                s *= structural_sign(x, pool)?;
-            }
-            Some(s)
-        }
-        ExprData::Pow { exp, .. } if matches!(pool.get(exp), ExprData::Integer(n) if n.0.clone() % 2 == 0) => {
-            Some(1)
-        }
-        _ => None,
+    match crate::calculus::limits::coefficient_sign(e, pool)? {
+        crate::simplify::Sign::Positive => Some(1),
+        crate::simplify::Sign::Negative => Some(-1),
+        crate::simplify::Sign::Zero => None,
     }
 }
 

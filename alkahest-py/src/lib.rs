@@ -768,6 +768,57 @@ fn py_is_budget_active() -> bool {
     alkahest_core::budget::is_active()
 }
 
+// ---------------------------------------------------------------------------
+// Ambient assumptions — same push/pop shape as the budget stack above.
+//
+// `Assumptions` is already threaded explicitly into `simplify` and `solve`,
+// which are the calls a user makes directly. The engines that need a stated
+// fact *indirectly* — `limit`, and therefore every improper integral that
+// bottoms out in one — cannot be reached that way, so
+// `alkahest.context(assumptions=…)` also installs the context on the Rust-side
+// thread-local for the duration of its block.
+//
+// The guard records the pool's address, so the `Py<PyExprPool>` is retained
+// alongside it: dropping the last reference to the pool while a frame naming
+// it is live would leave the frame comparing against an address that could be
+// reused. Nothing dereferences it either way, but keeping the pool alive makes
+// the comparison mean what it says.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static PY_ASSUMPTION_GUARDS: std::cell::RefCell<
+        Vec<(alkahest_core::simplify::AssumptionScope, Py<PyExprPool>)>,
+    > = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Make `assumptions` visible to the Rust engines on this thread until
+/// [`py_pop_assumptions`] is called. `alkahest.context(assumptions=…)` calls
+/// both around its `with` block.
+#[pyfunction]
+#[pyo3(name = "push_assumptions")]
+fn py_push_assumptions(py: Python<'_>, assumptions: PyRef<PyAssumptions>) -> PyResult<()> {
+    let pool_obj = assumptions.pool.clone_ref(py);
+    let guard = {
+        let pool = assumptions.pool.borrow(py);
+        alkahest_core::simplify::enter_assumptions(&assumptions.inner, &pool.inner)
+    };
+    PY_ASSUMPTION_GUARDS.with(|g| g.borrow_mut().push((guard, pool_obj)));
+    Ok(())
+}
+
+/// Pop the most recently pushed ambient assumption frame on this thread.
+#[pyfunction]
+#[pyo3(name = "pop_assumptions")]
+fn py_pop_assumptions() -> PyResult<()> {
+    let popped = PY_ASSUMPTION_GUARDS.with(|g| g.borrow_mut().pop());
+    if popped.is_none() {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "pop_assumptions() called with no active assumption scope on this thread",
+        ));
+    }
+    Ok(())
+}
+
 /// The seed of the innermost active budget on this thread, or `None`.
 #[pyfunction]
 #[pyo3(name = "budget_seed")]
@@ -865,6 +916,17 @@ fn limit_error_to_py(e: LimitError) -> PyErr {
             return Python::with_gil(|py| {
                 let exc_type = py.get_type_bound::<PyBudgetExceededError>();
                 make_structured_err(py, &exc_type, &b)
+            });
+        }
+    }
+    // Same out-of-band channel, for the same semver reason: "no rule applies"
+    // is true but useless when the missing rule is a fact only the caller can
+    // supply. `E-LIMIT-006` names the parameter and what to assume about it.
+    if matches!(e, LimitError::Unsupported) {
+        if let Some(missing) = alkahest_core::calculus::limits::last_missing_assumption() {
+            return Python::with_gil(|py| {
+                let exc_type = py.get_type_bound::<PyLimitError>();
+                make_structured_err(py, &exc_type, &missing)
             });
         }
     }
@@ -16056,6 +16118,8 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "BudgetExceededError",
         m.py().get_type_bound::<PyBudgetExceededError>(),
     )?;
+    m.add_function(wrap_pyfunction!(py_push_assumptions, m)?)?;
+    m.add_function(wrap_pyfunction!(py_pop_assumptions, m)?)?;
     m.add_function(wrap_pyfunction!(py_push_budget, m)?)?;
     m.add_function(wrap_pyfunction!(py_note_context_push, m)?)?;
     m.add_function(wrap_pyfunction!(py_note_context_pop, m)?)?;

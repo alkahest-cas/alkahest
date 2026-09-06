@@ -327,6 +327,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-LIMIT-003", class: "LimitError", cause: Cause::UserInput, remediation: Some("use LimitDirection::Plus or Minus matching the desired one-sided approach") },
     ErrorSpec { code: "E-LIMIT-004", class: "LimitError", cause: Cause::Resource, remediation: Some("try manual algebra (quotient form, cancellations) or split into simpler sub-expressions") },
     ErrorSpec { code: "E-LIMIT-005", class: "LimitError", cause: Cause::Unsupported, remediation: Some("limit could not be computed — try manual algebra, or the expression may involve oscillation or non-comparable growth not yet handled") },
+    ErrorSpec { code: "E-LIMIT-006", class: "LimitError", cause: Cause::UserInput, remediation: Some("state the sign of the parameter — `Assumptions.refine(pool.gt(k, pool.integer(0)))`, or declare it with `Domain.Positive` — and retry inside `alkahest.context(assumptions=…)`") },
     // E-NFM — NormalFormError
     ErrorSpec { code: "E-NFM-001", class: "NormalFormError", cause: Cause::UserInput, remediation: None },
     ErrorSpec { code: "E-NFM-002", class: "NormalFormError", cause: Cause::Unsupported, remediation: None },

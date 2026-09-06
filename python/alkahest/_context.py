@@ -137,6 +137,14 @@ def context(
         an explicit ``assumptions``/``domain`` argument of their own (see
         :func:`active_assumptions`). Explicit arguments to those functions
         always take precedence over the context.
+
+        The block additionally installs the facts on the Rust side for the
+        engines that consult them indirectly. :func:`alkahest.limit` reads
+        stated signs of free parameters, and :func:`alkahest.integrate` reaches
+        it for any bound of ``±∞``, so ``∫₀^∞ e^{-ke·t} dt`` returns ``1/ke``
+        under ``ke > 0`` and refuses with ``E-LIMIT-006`` — naming ``ke`` —
+        when nothing is stated. A symbol declared ``Domain.Positive`` carries
+        the same fact without a context.
     require_certificate : bool, optional
         When ``True``, every derivation-producing call in the block
         (:func:`diff`, :func:`integrate`, the :func:`simplify` family, the
@@ -212,14 +220,31 @@ def context(
     _state.stack.append(ctx)
     _note_frame_pushed()
     budget_pushed = False
+    assumptions_pushed = False
     if budget is not None:
         from . import alkahest as _native
 
         _native.push_budget(wall_ms=budget.wall_ms, max_steps=budget.max_steps, seed=budget.seed)
         budget_pushed = True
+    if assumptions is not None:
+        # Also install the assumptions on the Rust side, so engines that only
+        # need a stated fact deep inside a call chain can see it. `integrate`
+        # of an improper integral is the motivating case: it ends in a
+        # `limit`, and `lim_{t→∞} e^{-k·t}` is 0, +∞ or 1 depending entirely
+        # on the sign of `k`. Passing an `Assumptions` down every intermediate
+        # signature is not an option, so the scope is ambient — the same shape
+        # `budget` above already uses.
+        from . import alkahest as _native
+
+        _native.push_assumptions(assumptions)
+        assumptions_pushed = True
     try:
         yield
     finally:
+        if assumptions_pushed:
+            from . import alkahest as _native
+
+            _native.pop_assumptions()
         if budget_pushed:
             from . import alkahest as _native
 

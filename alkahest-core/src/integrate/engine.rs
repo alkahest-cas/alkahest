@@ -3727,8 +3727,15 @@ fn eval_bound(
             pool,
         )
         .map_err(|e| {
+            // When the limit failed for want of a stated fact about a free
+            // parameter, say which one: "no rule applies" sends the caller off
+            // to rewrite an integral that is already in the right form.
+            let missing = match crate::calculus::limits::last_missing_assumption() {
+                Some(m) => format!(" — {m}"),
+                None => String::new(),
+            };
             IntegrationError::NotImplemented(format!(
-                "improper integral with an infinite bound: lim_{{{}→{}}} {} : {e}",
+                "improper integral with an infinite bound: lim_{{{}→{}}} {} : {e}{missing}",
                 pool.display(var),
                 pool.display(bound),
                 pool.display(f),
