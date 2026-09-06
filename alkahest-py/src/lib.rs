@@ -11655,9 +11655,50 @@ fn require_same_pool(py: Python<'_>, a: &PyExpr, b: &PyExpr) -> PyResult<()> {
     Ok(())
 }
 
-/// Return ``False`` if unsatisfiable, ``True`` if satisfiable with no witness
-/// variables, a ``dict`` of symbol → rational string if a witness is found, or
-/// ``None`` if the fragment is unsupported.
+/// Decide satisfiability of a predicate ``Expr``.
+///
+/// Returns ``False`` if unsatisfiable, ``True`` if satisfiable with no witness
+/// variables, a ``dict`` of symbol → value string if a witness is found, or
+/// ``None`` if the fragment is unsupported.  ``None`` **never** means
+/// "unsatisfiable" — only ``False`` is a proof of that.
+///
+/// Two fragments are decided, and they are disjoint:
+///
+/// * **Purely propositional** — every leaf is a bare symbol (read as a Boolean
+///   variable, whatever ``Domain`` it was declared with) or ``pool.pred_true()``
+///   / ``pool.pred_false()``, combined with ``pred_and`` / ``pred_or`` /
+///   ``pred_not`` (equivalently :func:`And` / :func:`Or` / :func:`Not`).  This
+///   fragment is decided **completely** by DPLL: it returns ``None`` only if
+///   the formula exceeds the built-in search budget (64 distinct symbols, 4096
+///   nodes, 2 000 000 branching decisions), never because it gave up thinking.
+///   ``→`` and ``↔`` are in it once written out: ``a → b`` is
+///   ``Or(Not(a), b)`` and ``a ↔ b`` is ``And(Or(Not(a), b), Or(Not(b), a))``;
+///   the kernel has no separate implication node.
+/// * **One real symbol against rational constants** — ``x < 3``, ``x >= 1/2``
+///   and Boolean combinations of them, decided by interval intersection.  This
+///   one is *incomplete*: ``None`` is common, and expected.
+///
+/// Everything else is ``None``, including — deliberately — any formula that
+/// **mixes** a Boolean symbol with an arithmetic relation (``A ∧ x > 0``), any
+/// formula over two or more real symbols, and anything quantified.  Deciding
+/// those needs a Boolean-plus-theory combination this function does not
+/// implement; the cheap alternative, abstracting each relation to a fresh
+/// proposition, is sound for "unsatisfiable" only and would call
+/// ``x > 0 ∧ x < 0`` satisfiable.  Send them to :func:`decide` (real
+/// quantifier elimination by CAD) or to :mod:`alkahest.smt` instead.
+///
+/// A witness ``dict`` is **homogeneous**, so a caller can tell which path
+/// answered from any one value: propositional witnesses map every symbol to
+/// ``"true"`` or ``"false"``, interval witnesses map every symbol to a rational
+/// literal such as ``"1/2"``.  The two never appear in the same dict.
+///
+/// >>> import alkahest as ak
+/// >>> p = ak.ExprPool()
+/// >>> A, B = p.symbol("A"), p.symbol("B")
+/// >>> ak.satisfiable(p.pred_and([p.pred_or([A, B]), p.pred_not(A), p.pred_not(B)]))
+/// False
+/// >>> sorted(ak.satisfiable(p.pred_and([p.pred_or([A, B]), p.pred_not(A)])).items())
+/// [('A', 'false'), ('B', 'true')]
 #[pyfunction(name = "satisfiable")]
 fn py_satisfiable(py: Python<'_>, formula: PyRef<PyExpr>) -> PyResult<PyObject> {
     let pool = formula.pool.borrow(py);

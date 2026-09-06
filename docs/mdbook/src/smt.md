@@ -235,8 +235,9 @@ directory — a `pip install z3-solver` into a venv that was never `activate`d s
 found.
 
 If no solver is installed, `solve` raises `E-SMT-001`. It does **not** fall back to
-`alkahest.satisfiable`, the interval heuristic: that would answer `Unknown` and look for
-all the world like a solver had run and found nothing.
+`alkahest.satisfiable`: that decides only the purely propositional fragment and
+single-variable interval arithmetic — neither of which overlaps what is asked here — so it
+would answer `None` and look for all the world like a solver had run and found nothing.
 
 ### `SmtResult`
 

@@ -233,10 +233,10 @@ def _resolve_solver(solver: str) -> tuple[_SolverSpec, str]:
         code="E-SMT-001",
         remediation=(
             "install z3 (`pip install z3-solver`) or cvc5 and make it visible on PATH. "
-            "This is a refusal, not a fallback: alkahest.satisfiable is an interval "
-            "heuristic that answers Unknown for almost everything a solver would settle, "
-            "so silently routing to it would look like the solver had run and found "
-            "nothing"
+            "This is a refusal, not a fallback: alkahest.satisfiable decides only the "
+            "purely propositional fragment and single-variable interval arithmetic, and "
+            "answers None for almost every arithmetic formula a solver would settle, so "
+            "silently routing to it would look like the solver had run and found nothing"
         ),
     )
 
@@ -1134,7 +1134,9 @@ def solve(
     ------
     SmtError
         ``E-SMT-001`` no solver installed — a refusal, never a silent fallback
-        to the weak interval :func:`alkahest.satisfiable`.
+        to :func:`alkahest.satisfiable`, whose fragments (propositional, and one
+        real variable against rational constants) do not overlap what is asked
+        here.
         ``E-SMT-002`` formula outside the exportable/solvable fragment.
         ``E-SMT-003`` a model value (``root-obj``) cannot be lifted exactly.
         ``E-SMT-004`` the model failed back-substitution.  This is raised, never
