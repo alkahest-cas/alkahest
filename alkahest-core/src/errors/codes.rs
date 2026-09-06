@@ -93,6 +93,8 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-ODE-010", class: "DsolveError", cause: Cause::Unsupported, remediation: None },
     ErrorSpec { code: "E-ODE-011", class: "DsolveError", cause: Cause::UserInput, remediation: None },
     ErrorSpec { code: "E-ODE-012", class: "DsolveError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-ODE-013", class: "DsolveError", cause: Cause::Unsupported, remediation: Some("the ODE class was recognised but the quadrature it needs is not elementary for this integrator") },
+    ErrorSpec { code: "E-ODE-014", class: "DsolveError", cause: Cause::Unsupported, remediation: Some("supply a particular solution; no general-Riccati closed form is attempted") },
     ErrorSpec { code: "E-ODE-020", class: "NumericOdeError", cause: Cause::UserInput, remediation: None },
     ErrorSpec { code: "E-ODE-021", class: "NumericOdeError", cause: Cause::Resource, remediation: None },
     ErrorSpec { code: "E-ODE-022", class: "NumericOdeError", cause: Cause::Resource, remediation: None },

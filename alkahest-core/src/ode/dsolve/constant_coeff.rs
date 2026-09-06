@@ -202,11 +202,11 @@ fn solve_const_coeff(
 
     match residual_is_zero(input, y_general, &constants, pool) {
         Ok(()) => Ok(DsolveResult {
-            solutions: vec![DsolveSolution {
-                y_of_x: y_general,
+            solutions: vec![DsolveSolution::explicit(
+                y_general,
                 constants,
-                method: "constant_coefficient",
-            }],
+                "constant_coefficient",
+            )],
         }),
         Err(e) => Err(e),
     }
@@ -940,11 +940,7 @@ fn compose_from_basis(
     }
     match residual_is_zero(input, y_expr, &constants, pool) {
         Ok(()) => Ok(Some(DsolveResult {
-            solutions: vec![DsolveSolution {
-                y_of_x: y_expr,
-                constants,
-                method,
-            }],
+            solutions: vec![DsolveSolution::explicit(y_expr, constants, method)],
         })),
         Err(_) => Ok(None),
     }

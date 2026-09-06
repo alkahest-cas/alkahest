@@ -162,8 +162,8 @@ fn correct_solution_of_a_singular_ode_still_verifies() {
 
     // The premise: the ODE really is unevaluable past the branch point, and
     // fine before it.
-    assert!(ode_is_regular_at(&input, 0.43, &f.pool));
-    assert!(!ode_is_regular_at(&input, 0.61, &f.pool));
+    assert!(ode_is_regular_at(&input, 0.43, &HashMap::new(), &f.pool));
+    assert!(!ode_is_regular_at(&input, 0.61, &HashMap::new(), &f.pool));
 
     let (residual, derivs) = build_residual(&input, cand, &f.pool).expect("residual builds");
     let report = numeric_report(&input, residual, &derivs, &[f.c1], &f.pool);
@@ -201,7 +201,7 @@ fn candidate_blowup_where_the_ode_is_also_singular_stays_a_skip() {
         &f.pool,
     );
 
-    assert!(!ode_is_regular_at(&input, 0.61, &f.pool));
+    assert!(!ode_is_regular_at(&input, 0.61, &HashMap::new(), &f.pool));
 
     let (residual, derivs) = build_residual(&input, cand, &f.pool).expect("residual builds");
     let report = numeric_report(&input, residual, &derivs, &[f.c1], &f.pool);
@@ -228,7 +228,7 @@ fn regularity_probe_ignores_an_unlucky_state() {
     // y' − log(y) = 0: NaN for the negative probe, finite for the positive ones.
     let eq = f.pool.add(vec![yp, f.neg(f.pool.func("log", vec![f.y]))]);
     let input = input.with_equation(eq);
-    assert!(ode_is_regular_at(&input, 0.43, &f.pool));
+    assert!(ode_is_regular_at(&input, 0.43, &HashMap::new(), &f.pool));
 
     // y' − log(½ − x) = 0 is genuinely unevaluable past the branch point, for
     // every state.
@@ -237,8 +237,8 @@ fn regularity_probe_ignores_an_unlucky_state() {
     let arg = f.pool.add(vec![half, f.neg(f.x)]);
     let eq2 = f.pool.add(vec![yp2, f.neg(f.pool.func("log", vec![arg]))]);
     let input2 = input2.with_equation(eq2);
-    assert!(ode_is_regular_at(&input2, 0.43, &f.pool));
-    assert!(!ode_is_regular_at(&input2, 0.61, &f.pool));
+    assert!(ode_is_regular_at(&input2, 0.43, &HashMap::new(), &f.pool));
+    assert!(!ode_is_regular_at(&input2, 0.61, &HashMap::new(), &f.pool));
 }
 
 /// An equation the sampler cannot evaluate at all (an unknown special function)
@@ -250,5 +250,5 @@ fn regularity_probe_declines_on_an_unknown_construct() {
     let (input, yp) = OdeInput::first_order(f.x, f.y, &f.pool);
     let ei = f.pool.func("Ei", vec![f.x]);
     let input = input.with_equation(f.pool.add(vec![yp, f.neg(ei)]));
-    assert!(!ode_is_regular_at(&input, 0.43, &f.pool));
+    assert!(!ode_is_regular_at(&input, 0.43, &HashMap::new(), &f.pool));
 }
