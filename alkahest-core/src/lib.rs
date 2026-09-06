@@ -74,7 +74,7 @@ pub use flint::{FlintInteger, FlintPoly};
 pub use hybrid::{Event, GuardStructure, HybridODE};
 pub use integrate::{
     integrate, integrate_definite, verify_antiderivative_exact, verify_antiderivative_status,
-    AntiderivativeVerification, IntegrationError,
+    verify_antiderivative_status_parametric, AntiderivativeVerification, IntegrationError,
 };
 #[allow(deprecated)]
 pub use kernel::{

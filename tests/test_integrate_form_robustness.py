@@ -142,10 +142,15 @@ def test_logistic_is_elementary():
 # fallback running out of options.
 # ---------------------------------------------------------------------------
 
+# `exp(x)/x^2` and `sin(x)/x^2` used to be on this list.  They are no longer
+# refusals — the by-parts reduction to `Ei`/`Ci` is implemented — so they moved
+# to `_NONELEMENTARY_CLOSED_FORM` below.  The list is deliberately *repopulated*
+# rather than shortened: what it pins is that an `E-INT-004` proof is never
+# downgraded to the weaker `E-INT-001`, and that pin needs live examples.
 _NONELEMENTARY = [
     "exp(x^2)",  # would need `erfi`, which is not a registered primitive
-    "exp(x)/x^2",  # Ei family, but no reduction the engine performs
-    "sin(x)/x^2",  # `−sin(x)/x + Ci(x)`, which no matcher finds
+    "exp(-x^2)/x",  # `Ei(−x²)/2` — a quadratic argument, not in the table
+    "sin(2*x+3)/(x+1)",  # needs an angle-addition split, not in the table
     "cos(x)/(2*x+1)",  # denominator not proportional to the argument
 ]
 
@@ -178,6 +183,13 @@ _NONELEMENTARY_CLOSED_FORM = [
     ("sin(x^2)", "fresnels"),
     ("cos(x^2)", "fresnelc"),
     ("log(x)/(1+x)", "dilog"),
+    # Higher denominator powers, reduced by parts onto the `n = 1` case.
+    ("exp(x)/x^2", "Ei"),  # `Ei(x) − eˣ/x`
+    ("sin(x)/x^2", "Ci"),  # `−sin(x)/x + Ci(x)`
+    ("cos(x)/x^3", "Ci"),  # two reductions, and `cos′ = −sin` is a sign to lose
+    # Gaussian moments: `∫x²·exp(−x²) dx = −x·exp(−x²)/2 + (√π/4)·erf(x)`.
+    ("x^2*exp(-x^2)", "erf"),
+    ("x^4*exp(-x^2)", "erf"),
 ]
 
 _SPECIAL_BASIS = (

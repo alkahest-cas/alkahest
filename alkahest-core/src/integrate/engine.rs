@@ -4247,13 +4247,39 @@ pub fn verify_antiderivative_status(
         return None;
     };
     let d = simplify(d_raw.value, pool).value;
-    let samples = [
-        0.3719_f64, 0.9137, 1.4231, 2.1719, 2.8123, 3.6411, -0.3719, -0.9137, -1.4231, -2.1719,
-        -2.8123, -3.6411,
-    ];
+
+    // Require at least a couple of usable samples so an all-singular set cannot
+    // vacuously pass.
+    match sweep_var_grid(d, integrand, var, &HashMap::new(), pool) {
+        Some(checked) if checked >= 2 => Some(AntiderivativeVerification::Numeric),
+        _ => None,
+    }
+}
+
+/// The `f64` grid both antiderivative gates sample on.
+///
+/// Irrational-looking values dodge the poles of textbook integrands, and the
+/// grid is two-sided so a sign lost inside a `√` or a `log` cannot hide on the
+/// positive half — see [`verify_antiderivative_status`].
+const GATE_X_SAMPLES: [f64; 12] = [
+    0.3719, 0.9137, 1.4231, 2.1719, 2.8123, 3.6411, -0.3719, -0.9137, -1.4231, -2.1719, -2.8123,
+    -3.6411,
+];
+
+/// Run [`classify_sample`] over [`GATE_X_SAMPLES`] with `fixed` already bound.
+///
+/// `None` is a **refutation** — some sample disagreed. `Some(n)` reports how
+/// many samples agreed; the caller decides whether `n` clears its quorum.
+fn sweep_var_grid(
+    d: ExprId,
+    integrand: ExprId,
+    var: ExprId,
+    fixed: &HashMap<ExprId, f64>,
+    pool: &ExprPool,
+) -> Option<usize> {
     let mut checked = 0_usize;
-    for &xv in &samples {
-        let mut env = HashMap::new();
+    for &xv in &GATE_X_SAMPLES {
+        let mut env = fixed.clone();
         env.insert(var, xv);
         match classify_sample(d, integrand, &env, pool) {
             SampleVerdict::Agrees => checked += 1,
@@ -4261,10 +4287,179 @@ pub fn verify_antiderivative_status(
             SampleVerdict::Disagrees => return None,
         }
     }
+    Some(checked)
+}
 
-    // Require at least a couple of usable samples so an all-singular set cannot
-    // vacuously pass.
-    (checked >= 2).then_some(AntiderivativeVerification::Numeric)
+/// The most parameters [`verify_antiderivative_status_parametric`] will sweep.
+///
+/// Three values per parameter, so two parameters is nine `d/dx F` grids and a
+/// third would be twenty-seven. The cases this gate exists for
+/// (`∫exp(−a·x²) dx`, `∫exp(−(x−b)²) dx`) carry one.
+const GATE_MAX_PARAMS: usize = 2;
+
+/// [`verify_antiderivative_status`], extended to integrands carrying **free
+/// parameters**.
+///
+/// # Why the ordinary gate is not enough
+///
+/// [`verify_antiderivative_status`]'s numeric tier binds `var` and nothing
+/// else, so a symbol like the `a` of `∫exp(−a·x²) dx` is an unbound symbol to
+/// [`crate::jit::eval_interp`], every sample is `NoInformation`, the quorum is
+/// never met and the candidate is declined. The symbolic tier cannot rescue it
+/// either: `d/dx erf` is registered with the *float* coefficient `2/√π`, so the
+/// residual of a correct `√π/(2√a)·erf(√a·x)` never reduces to a syntactic
+/// zero. A parameterised answer was therefore unreachable however right it was.
+///
+/// # What this gate establishes, and what it does not
+///
+/// The claim `d/dx F = f` is quantified over the parameters as well as over
+/// `var`, so the evidence has to be too: each parameter is bound to three
+/// values **drawn from its declared [`crate::kernel::Domain`]**, and the full
+/// `var` grid is swept once per combination. The verdict is
+/// [`AntiderivativeVerification::Numeric`] — sampled evidence at finitely many
+/// points of a product grid, not an identity. It is exactly as strong (and as
+/// weak) as the single-parameter-free screen it generalises.
+///
+/// # The domain of the parameter is load-bearing
+///
+/// [`classify_sample`] counts "`f` is an ordinary finite real and `d/dx F` is
+/// not" as a **disagreement**, not as a skip, and that rule is what makes the
+/// parameter sweep honest rather than convenient. `√π/(2√a)·erf(√a·x)` is a
+/// perfectly good antiderivative of `exp(−a·x²)` for `a > 0` and is not a real
+/// number at all for `a < 0` (the real answer there needs `erfi`, which is not
+/// a registered primitive). So:
+///
+/// * `a` declared [`crate::kernel::Domain::Positive`] is sampled at positive
+///   values only, every sample agrees, and the answer is emitted;
+/// * `a` declared [`crate::kernel::Domain::Real`] is sampled on both sides of
+///   zero, the negative samples are a hole of exactly the shape 3.9.0's
+///   `antiderivative_domain_hole` refuses, and the candidate is **declined**.
+///
+/// That asymmetry is deliberate. A caller who knows the sign says so; a caller
+/// who does not gets a refusal rather than an expression that evaluates to
+/// `NaN` on half its parameter range.
+///
+/// `pi` is bound to its value rather than treated as a parameter: it is the
+/// codebase-wide spelling of the constant (`pool.symbol("pi", Domain::Real)`),
+/// not a free variable, and leaving it unbound would make every sample
+/// uninformative.
+///
+/// # Stated limitations
+///
+/// * A [`crate::kernel::Domain::Complex`] parameter is sampled on the **real
+///   line only**. Real samples are still evidence, and the alternative is no
+///   evidence at all, but the verdict says nothing about the rest of the
+///   complex plane — as with every other `Numeric` verdict in this file, it is
+///   a statement about the points that were tried.
+/// * At most [`GATE_MAX_PARAMS`] parameters; beyond that the sweep declines
+///   rather than growing the product grid.
+/// * Three values per parameter is a screen, not a proof. A candidate that is
+///   wrong only on a measure-zero set of parameter values would survive it —
+///   which is the same weakness the `var` grid has always had, and the reason
+///   the verdict is `Numeric` rather than `Exact`.
+pub fn verify_antiderivative_status_parametric(
+    candidate: ExprId,
+    integrand: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<AntiderivativeVerification> {
+    if verify_antiderivative_exact(candidate, integrand, var, pool) {
+        return Some(AntiderivativeVerification::Exact);
+    }
+
+    let mut constants: HashMap<ExprId, f64> = HashMap::new();
+    let mut params: Vec<ExprId> = Vec::new();
+    collect_gate_parameters(candidate, var, pool, &mut params, &mut constants);
+    collect_gate_parameters(integrand, var, pool, &mut params, &mut constants);
+
+    if params.is_empty() && constants.is_empty() {
+        return verify_antiderivative_status(candidate, integrand, var, pool);
+    }
+    if params.len() > GATE_MAX_PARAMS {
+        return None;
+    }
+
+    let Ok(d_raw) = crate::diff::diff(candidate, var, pool) else {
+        return None;
+    };
+    let d = simplify(d_raw.value, pool).value;
+
+    let grids: Vec<[f64; 3]> = params.iter().map(|&p| parameter_samples(p, pool)).collect();
+    let combinations = grids.iter().map(|g| g.len()).product::<usize>();
+    for index in 0..combinations {
+        let mut env = constants.clone();
+        let mut rest = index;
+        for (slot, grid) in grids.iter().enumerate() {
+            env.insert(params[slot], grid[rest % grid.len()]);
+            rest /= grid.len();
+        }
+        // Every combination has to carry its own quorum. A combination that
+        // produced nothing usable is not a pass on the strength of the others:
+        // it is the case this gate could not check, and an unchecked corner of
+        // the parameter space is a decline.
+        match sweep_var_grid(d, integrand, var, &env, pool) {
+            Some(checked) if checked >= 2 => {}
+            _ => return None,
+        }
+    }
+    Some(AntiderivativeVerification::Numeric)
+}
+
+/// Split the symbols of `expr` other than `var` into sweepable **parameters**
+/// and already-valued **constants**.
+///
+/// `∞` is neither: it is a sentinel symbol, it can only appear in a bound, and
+/// binding it to a float would be a fiction. Its presence makes the expression
+/// unsweepable, which the caller sees as an empty agreement count.
+fn collect_gate_parameters(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    params: &mut Vec<ExprId>,
+    constants: &mut HashMap<ExprId, f64>,
+) {
+    match pool.get(expr) {
+        ExprData::Symbol { name, .. } => {
+            if expr == var || name == crate::kernel::pool::POS_INFINITY_SYMBOL {
+                return;
+            }
+            if name == "pi" {
+                constants.insert(expr, std::f64::consts::PI);
+                return;
+            }
+            if !params.contains(&expr) {
+                params.push(expr);
+            }
+        }
+        ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
+            for a in args {
+                collect_gate_parameters(a, var, pool, params, constants);
+            }
+        }
+        ExprData::Pow { base, exp } => {
+            collect_gate_parameters(base, var, pool, params, constants);
+            collect_gate_parameters(exp, var, pool, params, constants);
+        }
+        _ => {}
+    }
+}
+
+/// Three sample values for a parameter, drawn from its declared domain.
+///
+/// The values are irrational-looking for the same reason the `var` grid is —
+/// they must not sit on the special points (`0`, `±1`) where a wrong candidate
+/// can agree by accident.
+fn parameter_samples(param: ExprId, pool: &ExprPool) -> [f64; 3] {
+    match pool.get(param) {
+        ExprData::Symbol { domain, .. } => match domain {
+            crate::kernel::Domain::Positive | crate::kernel::Domain::NonNegative => {
+                [0.6131, 1.3719, 2.8123]
+            }
+            crate::kernel::Domain::Integer => [-2.0, 1.0, 3.0],
+            _ => [-1.7231, 0.6131, 2.8123],
+        },
+        _ => [-1.7231, 0.6131, 2.8123],
+    }
 }
 
 /// What one sample point of the antiderivative gate's grid establishes.
@@ -5345,16 +5540,33 @@ mod tests {
     }
 
     #[test]
-    fn exp_over_x_squared_is_nonelementary() {
-        // ∫ exp(x)/x² dx — still an Ei-family non-elementary integral.
+    fn exp_over_x_squared_reduces_onto_ei() {
+        // ∫ exp(x)/x² dx = Ei(x) − eˣ/x.  This asserted `NonElementary` until
+        // the by-parts reduction for `n ≥ 2` existed: still non-elementary, but
+        // no longer a refusal, because the reduction onto `∫eˣ/x dx` is one
+        // integration by parts and the answer is gate-verified.
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let x2 = pool.pow(x, pool.integer(2_i32));
         let f = over(&pool, pool.func("exp", vec![x]), x2);
+        assert_emits(f, x, &pool, &["Ei"]);
+    }
+
+    #[test]
+    fn exp_of_a_negative_square_over_x_is_nonelementary() {
+        // ∫ exp(−x²)/x dx is `Ei(−x²)/2` — non-elementary, expressible over the
+        // basis, and *not* in the table, because the reduction needs a quadratic
+        // argument rather than a linear one.  It is the witness `∫eˣ/x² dx` used
+        // to be: a certificate that is sound as "not elementary" and would be
+        // false if re-read as "not expressible over the basis either".
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let arg = pool.mul(vec![pool.integer(-1_i32), pool.pow(x, pool.integer(2_i32))]);
+        let f = over(&pool, pool.func("exp", vec![arg]), x);
         let r = integrate(f, x, &pool);
         assert!(
             matches!(r, Err(IntegrationError::NonElementary(_))),
-            "∫ exp(x)/x² dx should be NonElementary; got {r:?}"
+            "∫ exp(−x²)/x dx should be NonElementary; got {r:?}"
         );
     }
 
@@ -7186,11 +7398,15 @@ mod tests {
         use crate::errors::AlkahestError;
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
+        // `exp(x)/x^2` and `sin(x)/x^2` were on this list until the by-parts
+        // reduction for `n ≥ 2` closed them.  The list is *repopulated* rather
+        // than shortened: what it pins is the downgrade, and that needs live
+        // examples.
         for src in [
-            "exp(x^2)",       // Risch DE has no rational solution; needs `erfi`
-            "exp(x)/x^2",     // Ei family, but no reduction this engine performs
-            "sin(x)/x^2",     // ditto — `−sin(x)/x + Ci(x)`, which nothing here finds
-            "cos(x)/(2*x+1)", // denominator not proportional to the argument
+            "exp(x^2)",         // Risch DE has no rational solution; needs `erfi`
+            "exp(-x^2)/x",      // `Ei(−x²)/2` — a quadratic argument, not in the table
+            "sin(2*x+3)/(x+1)", // needs an angle-addition split, not in the table
+            "cos(x)/(2*x+1)",   // denominator not proportional to the argument
         ] {
             match integrate_src(src, x, &pool) {
                 Ok(v) => panic!(
@@ -7725,5 +7941,131 @@ mod tests {
             pool.display(f)
         );
         assert!(verify_antiderivative_status(f, ei, x, &pool).is_some());
+    }
+
+    // ── the parametric gate ─────────────────────────────────────────────────
+
+    /// With no free parameter the parametric gate *is* the ordinary gate.
+    #[test]
+    fn parametric_gate_agrees_with_the_plain_gate_when_there_is_nothing_to_sweep() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.mul(vec![
+            pool.func("exp", vec![x]),
+            pool.pow(x, pool.integer(-1_i32)),
+        ]);
+        let cand = pool.func("Ei", vec![x]);
+        assert_eq!(
+            verify_antiderivative_status(cand, f, x, &pool),
+            verify_antiderivative_status_parametric(cand, f, x, &pool)
+        );
+    }
+
+    /// `√π/(2√p)·erf(√p·x)` verifies against `exp(−p·x²)` when `p` is declared
+    /// positive: the sweep binds `p` to three positive values and the `var`
+    /// grid agrees at every one.  The plain gate cannot do this — `p` is an
+    /// unbound symbol to the interpreter, so every sample is uninformative and
+    /// the quorum is never met.
+    #[test]
+    fn parametric_gate_sweeps_a_positive_parameter() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let pp = pool.symbol("p", Domain::Positive);
+        let f = pool.func(
+            "exp",
+            vec![pool.mul(vec![
+                pool.integer(-1_i32),
+                pp,
+                pool.pow(x, pool.integer(2_i32)),
+            ])],
+        );
+        let root = pool.func("sqrt", vec![pp]);
+        let cand = pool.mul(vec![
+            pool.float(std::f64::consts::PI.sqrt() / 2.0, 53),
+            pool.pow(root, pool.integer(-1_i32)),
+            pool.func("erf", vec![pool.mul(vec![root, x])]),
+        ]);
+        assert_eq!(
+            verify_antiderivative_status_parametric(cand, f, x, &pool),
+            Some(AntiderivativeVerification::Numeric)
+        );
+        assert!(
+            verify_antiderivative_status(cand, f, x, &pool).is_none(),
+            "the var-only grid cannot bind `p` and must not claim it verified"
+        );
+    }
+
+    /// The same candidate with the same integrand, differing only in the
+    /// *declaration* of the parameter, is refused: an unrestricted real `a` is
+    /// swept on both sides of zero, and for `a < 0` the candidate is `NaN`
+    /// where the integrand is an ordinary finite real.
+    #[test]
+    fn parametric_gate_refuses_a_parameter_whose_sign_is_not_declared() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let a = pool.symbol("a", Domain::Real);
+        let f = pool.func(
+            "exp",
+            vec![pool.mul(vec![
+                pool.integer(-1_i32),
+                a,
+                pool.pow(x, pool.integer(2_i32)),
+            ])],
+        );
+        let root = pool.func("sqrt", vec![a]);
+        let cand = pool.mul(vec![
+            pool.float(std::f64::consts::PI.sqrt() / 2.0, 53),
+            pool.pow(root, pool.integer(-1_i32)),
+            pool.func("erf", vec![pool.mul(vec![root, x])]),
+        ]);
+        assert!(verify_antiderivative_status_parametric(cand, f, x, &pool).is_none());
+    }
+
+    /// A wrong candidate stays wrong under the sweep — the extra reach is in
+    /// what can be *checked*, not in what is accepted.
+    #[test]
+    fn parametric_gate_still_refutes_a_wrong_candidate() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let b = pool.symbol("b", Domain::Real);
+        // ∫exp(−(x−b)²) dx is (√π/2)·erf(x−b); the unshifted `erf(x)` is not.
+        let shifted = pool.add(vec![x, pool.mul(vec![pool.integer(-1_i32), b])]);
+        let f = pool.func(
+            "exp",
+            vec![pool.mul(vec![
+                pool.integer(-1_i32),
+                pool.pow(shifted, pool.integer(2_i32)),
+            ])],
+        );
+        let wrong = pool.mul(vec![
+            pool.float(std::f64::consts::PI.sqrt() / 2.0, 53),
+            pool.func("erf", vec![x]),
+        ]);
+        assert!(verify_antiderivative_status_parametric(wrong, f, x, &pool).is_none());
+    }
+
+    /// `∫_{-∞}^{∞} exp(−x²/2) dx = √(2π)`.  The indefinite answer has been
+    /// `1.2533…·erf(0.7071…·x)` for some time; what was missing was
+    /// `lim_{x→±∞} erf = ±1`, without which `eval_bound` (correctly) refuses to
+    /// substitute an unestablished limit into the FTC difference.
+    #[test]
+    fn the_gaussian_integral_over_the_line_is_root_two_pi() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let arg = pool.mul(vec![pool.rational(-1, 2), pool.pow(x, pool.integer(2_i32))]);
+        let f = pool.func("exp", vec![arg]);
+        let pos = pool.pos_infinity();
+        let neg = pool.mul(vec![pool.integer(-1_i32), pos]);
+        let value = integrate_definite(f, x, neg, pos, &pool)
+            .expect("√(2π)")
+            .value;
+        let got = crate::eval::eval_f64(value, &pool, &HashMap::new())
+            .unwrap_or_else(|e| panic!("{} did not evaluate: {e}", pool.display(value)));
+        let want = (2.0 * std::f64::consts::PI).sqrt();
+        assert!(
+            (got - want).abs() < 1e-9,
+            "∫_{{-∞}}^{{∞}} exp(−x²/2) dx = √(2π) = {want}; got {got} from {}",
+            pool.display(value)
+        );
     }
 }
