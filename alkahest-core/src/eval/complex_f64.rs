@@ -109,6 +109,21 @@ impl ComplexF64 {
             -self.re.sin() * self.im.sinh(),
         )
     }
+    /// `acos z = π/2 + i·Log(iz + √(1 − z²))`, principal branch.
+    ///
+    /// Present because `matrix::eigen`'s casus-irreducibilis form —
+    /// `2√(−p/3)·cos((acos c + 2πk)/3)`, the *correct* closed form for a cubic
+    /// with three real roots — is otherwise a spectrum
+    /// [`crate::matrix::spectrum`]'s check cannot evaluate, and an unevaluable
+    /// spectrum is no information rather than a confirmation.
+    fn acos(self) -> Result<Self, EvalError> {
+        let one = Self::new(1.0, 0.0);
+        let i = Self::new(0.0, 1.0);
+        let root = one.add(Self::new(-1.0, 0.0).mul(self.mul(self))).sqrt()?;
+        let ln = i.mul(self).add(root).ln()?;
+        Ok(Self::new(std::f64::consts::FRAC_PI_2, 0.0).add(i.mul(ln)))
+    }
+
     fn principal_arg(self) -> Result<f64, EvalError> {
         // Principal arg is undefined at 0 and discontinuous on the negative real axis.
         if self.im == 0.0 && self.re <= 0.0 {
@@ -187,6 +202,7 @@ fn eval_node(
                 "exp" => Ok(x.exp()),
                 "log" => x.ln(),
                 "sqrt" => x.sqrt(),
+                "acos" => x.acos(),
                 "re" => Ok(ComplexF64::new(x.re, 0.0)),
                 "im" => Ok(ComplexF64::new(x.im, 0.0)),
                 "conjugate" => Ok(ComplexF64::new(x.re, -x.im)),
@@ -246,6 +262,24 @@ mod tests {
         let expr = pool.pow(pool.integer(-1_i32), pool.rational(1, 2));
         let v = eval_complex_f64(expr, &pool, &HashMap::new()).unwrap();
         assert!((v.re).abs() < 1e-12 && (v.im - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn acos_matches_the_real_branch_inside_the_unit_interval() {
+        let pool = crate::kernel::ExprPool::new();
+        let expr = pool.func("acos", vec![pool.rational(1, 2)]);
+        let v = eval_complex_f64(expr, &pool, &HashMap::new()).unwrap();
+        assert!((v.re - std::f64::consts::FRAC_PI_3).abs() < 1e-12, "{v:?}");
+        assert!(v.im.abs() < 1e-12, "{v:?}");
+    }
+
+    #[test]
+    fn acos_continues_off_the_real_interval() {
+        let pool = crate::kernel::ExprPool::new();
+        // cos(acos 2) must be 2 again, whatever branch the continuation picks.
+        let expr = pool.func("cos", vec![pool.func("acos", vec![pool.integer(2_i32)])]);
+        let v = eval_complex_f64(expr, &pool, &HashMap::new()).unwrap();
+        assert!((v.re - 2.0).abs() < 1e-12 && v.im.abs() < 1e-12, "{v:?}");
     }
 
     #[test]

@@ -110,6 +110,7 @@ loop must record as **undecided**, never as a negative result.
 |---|---|---|
 | `E-LINALG-010` | `LinearAlgebraError` | An entry's vanishing could be proven neither zero nor non-zero, so `rank` / `rref` / `nullspace` / `eigenvects` / `jordan_form` declined to pick a branch |
 | `E-MAT-004` | `MatrixError` | Same, for a determinant: `inverse()` will not divide by something it cannot show is non-zero |
+| `E-EIGEN-008` | `EigenError` / `LinearAlgebraError` | The closed-form eigenvalues were produced and then failed their own check: `Π(z − λ)` and `det(zI − A)` disagree at a sampled `z`, so the radicals are not the spectrum on the branches anything reads them on. `eigenvals` / `eigenvects` / `diagonalize` / `jordan_form` / `matrix_exp` refuse rather than return them |
 | `E-CAD-001` | `CadError` | `decide` is outside its fragment, or the only candidate solutions lie at an irrational boundary point it cannot test exactly |
 | `E-SOS-002` | `SosError` | No positivity certificate of this shape at this degree — a statement about the search, not a proof that none exists. **Record it as `unknown`, never as "not SOS" or "the inequality is false":** `p` may be SOS outside the LP subcone searched, SOS at a higher `basis_degree`, or non-negative without being SOS (Motzkin). `E-SOS-003`, which carries a witness point, is the only SOS *refutation*. See [Positivity certificates](./positivity.md#three-outcomes-deliberately-kept-apart) |
 | `E-IDEAL-005` | `IdealRefusal` | `radical` cannot certify `√I` for this ideal. Only monomial, principal and zero-dimensional ideals — and anything whose primary decomposition is certified — are answered; the alternative is asserting `√I = I` with nothing behind it |
@@ -123,6 +124,12 @@ loop must record as **undecided**, never as a negative result.
 wired into the bindings: `series` returns `SeriesError::InvalidOrder` with
 `calculus::series::take_series_refusal()` pending, and the Python layer raises `SeriesError`
 with `.code == "E-SERIES-003"` — or `BudgetExceededError` when a budget was what stopped it.
+
+`E-EIGEN-008` travels out of band on the same arrangement: `EigenError` and
+`LinearAlgebraError` are exhaustive, so the refusal is returned inside
+`UnsupportedIrreducibleDegree` — whose text now states the disjunction it covers — with
+`matrix::take_spectrum_refusal()` pending, and the Python bindings raise `EigenError` /
+`LinearAlgebraError` carrying `.code == "E-EIGEN-008"` and the offending `λ` list.
 
 `E-IDEAL-005`, `E-IDEAL-006` and `E-SOLVE-004` are new in 3.8 and travel **out of band**:
 `PrimaryDecompositionError` and `SolverError` are public exhaustive enums that cannot gain

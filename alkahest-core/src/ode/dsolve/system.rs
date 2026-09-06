@@ -342,133 +342,32 @@ fn spectrum(a: &Matrix, pool: &ExprPool) -> Result<Vec<ExprId>, DsolveSystemErro
 
 /// Cross-check the eigenvalue list before anything is built on it.
 ///
-/// `Π_i (z − λ_i)` must equal `det(zI − A)` — a polynomial identity, so testing
-/// it at a few sampled `z` (and a few sampled parameter values) either confirms
-/// it or refutes it.
+/// Delegates to `matrix::spectrum::confirm_spectrum`, which is the
+/// canonical form of this check and lives beside the routine that produces the
+/// spectrum — one copy, checked by one set of tests, rather than a second that
+/// drifts.  What stays here is the *policy*.
 ///
-/// This is not paranoia about arithmetic.  `matrix::eigenvalues` answers an
-/// irreducible cubic with Cardano radicals, and Cardano's formula is only
-/// correct on a *coordinated* choice of cube-root branches: written as two
-/// independent radicals `(−q/2 ± √Δ)^{1/3}`, each evaluated on its own
-/// principal branch, the constraint `AB = −p/3` fails and the three expressions
-/// are not roots of the polynomial they came from.  Building `e^{At}` on such a
-/// list produces a page-long candidate that the substitution gate then refuses
-/// — correctly, but slowly and under an error that says "verification failed"
-/// when the truth is "these are not the eigenvalues".
+/// Putzer's algorithm turns a wrong eigenvalue list into a page-long `e^{At}`
+/// candidate that the substitution gate then refuses — correctly, but slowly,
+/// and under an error saying "verification failed" when the truth is "these are
+/// not the eigenvalues".  So a system is solved only on a spectrum that was
+/// positively **confirmed**, and an unevaluable one is refused here.
+/// `matrix::eigenvalues` is deliberately laxer: it has no expansion to protect,
+/// and refusing an unevaluable spectrum there would discard every correct
+/// symbolic answer whose radicals the numeric evaluator happens not to model.
 fn confirm_spectrum(
     a: &Matrix,
     lambdas: &[ExprId],
     pool: &ExprPool,
 ) -> Result<(), DsolveSystemError> {
-    let n = a.rows;
-    let mut params: Vec<ExprId> = Vec::new();
-    for &e in a.entries() {
-        collect_symbols(e, pool, &mut params);
-    }
-    for &l in lambdas {
-        collect_symbols(l, pool, &mut params);
-    }
-    params.sort_by_key(|&s| pool.display(s).to_string());
-    const PARAM_SETS: [&[f64]; 2] = [&[1.7, 0.6, 2.3, 1.1, 0.4], &[0.37, 1.9, 0.83, 2.7, 1.3]];
-    const PROBES: [(f64, f64); 3] = [(0.53, 0.29), (-1.17, 0.71), (2.31, -0.43)];
-
-    let mut checked = 0usize;
-    for ps in PARAM_SETS {
-        let mut env: HashMap<ExprId, C64> = HashMap::new();
-        for (i, &p) in params.iter().enumerate() {
-            env.insert(p, C64::real(ps[i % ps.len()]));
-        }
-        let Some(entries) = a
-            .entries()
-            .iter()
-            .map(|&e| eval_complex(e, &env, pool).filter(|v| v.is_finite()))
-            .collect::<Option<Vec<_>>>()
-        else {
-            continue;
-        };
-        let Some(lam) = lambdas
-            .iter()
-            .map(|&l| eval_complex(l, &env, pool).filter(|v| v.is_finite()))
-            .collect::<Option<Vec<_>>>()
-        else {
-            continue;
-        };
-        for (zr, zi) in PROBES {
-            let z = C64::new(zr, zi);
-            // det(zI − A)
-            let mut m: Vec<Vec<C64>> = (0..n)
-                .map(|i| {
-                    (0..n)
-                        .map(|j| {
-                            let e = entries[i * n + j].mul(C64::real(-1.0));
-                            if i == j {
-                                z.add(e)
-                            } else {
-                                e
-                            }
-                        })
-                        .collect()
-                })
-                .collect();
-            let Some(det) = complex_det(&mut m) else {
-                continue;
-            };
-            let prod = lam.iter().fold(C64::real(1.0), |acc, &l| acc.mul(z.sub(l)));
-            let scale = det.abs().max(prod.abs()).max(1.0);
-            if det.sub(prod).abs() > 1e-7 * scale {
-                return Err(DsolveSystemError::UnsupportedSpectrum(format!(
-                    "the closed-form eigenvalues of the coefficient matrix are not roots \
-                     of its characteristic polynomial when evaluated on principal \
-                     branches (Π(z−λ) and det(zI−A) differ at z = {zr} + {zi}i).  This is \
-                     the Cardano branch-coordination problem for an irreducible cubic; no \
-                     answer is returned rather than one built on a spectrum that does not \
-                     check out"
-                )));
-            }
-            checked += 1;
-        }
-    }
-    if checked == 0 {
-        return Err(DsolveSystemError::UnsupportedSpectrum(
+    match crate::matrix::spectrum::confirm_spectrum(a, lambdas, pool) {
+        Ok(check) if check.is_confirmed() => Ok(()),
+        Ok(_) => Err(DsolveSystemError::UnsupportedSpectrum(
             "the eigenvalues of the coefficient matrix could not be evaluated at any \
              sample, so nothing confirms they are its spectrum"
                 .to_string(),
-        ));
-    }
-    Ok(())
-}
-
-/// Determinant by Gaussian elimination with partial pivoting, in place.
-fn complex_det(m: &mut [Vec<C64>]) -> Option<C64> {
-    let n = m.len();
-    let mut det = C64::real(1.0);
-    for col in 0..n {
-        let mut piv = col;
-        for r in (col + 1)..n {
-            if m[r][col].abs() > m[piv][col].abs() {
-                piv = r;
-            }
-        }
-        if m[piv][col].abs() < 1e-14 {
-            return Some(C64::real(0.0));
-        }
-        if piv != col {
-            m.swap(col, piv);
-            det = det.mul(C64::real(-1.0));
-        }
-        det = det.mul(m[col][col]);
-        for r in (col + 1)..n {
-            let f = m[r][col].div(m[col][col]);
-            for c in col..n {
-                let sub = f.mul(m[col][c]);
-                m[r][c] = m[r][c].sub(sub);
-            }
-        }
-    }
-    if det.is_finite() {
-        Some(det)
-    } else {
-        None
+        )),
+        Err(refusal) => Err(DsolveSystemError::UnsupportedSpectrum(refusal.to_string())),
     }
 }
 

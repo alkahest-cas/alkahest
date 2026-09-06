@@ -116,6 +116,14 @@ Exception subclasses
    an :exc:`EigenError` carrying code ``E-LINALG-010``: the code names what
    could not be decided, not the wrapper it arrived in.
 
+   ``E-EIGEN-008`` arrives the same way. Closed-form eigenvalues are radicals,
+   and a radical is not a number until a branch is chosen, so every list is
+   checked against ``det(zI - A)`` at sampled ``z`` before it is returned. When
+   the two disagree the radicals are not the spectrum on the branches anything
+   reads them on, and ``eigenvals`` / ``eigenvects`` / ``diagonalize`` /
+   ``jordan_form`` / ``matrix_exp`` refuse. **This is "these are not the
+   eigenvalues", not "this matrix has none".**
+
 .. exception:: CadError
 
    Code prefix ``E-CAD-*``. Real quantifier elimination (:func:`decide`).
