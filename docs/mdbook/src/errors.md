@@ -116,13 +116,21 @@ loop must record as **undecided**, never as a negative result.
 | `E-IDEAL-006` | `IdealRefusal` | `primary_decomposition` reached a component it cannot show is primary, so it will not report the ideal itself with an unjustified `associated_prime` |
 | `E-SOLVE-004` | `TriangularizeRefusal` | `triangularize` extracted a chain that does not generate an ideal containing the input, i.e. one that cuts out a larger variety than the system. Splitting on the initials (Lazard–Kalkbrener) is not implemented |
 | `E-SERIES-003` | `SeriesError` | `series` ran past its work ceiling (or an active `Budget`) before reaching the requested order. Coefficients are formed by repeated differentiation without re-simplifying, so a nested radical's derivatives grow by a constant factor each time; a *shorter* series would carry an `O(h^order)` label nothing bounded |
+| `E-SERIES-004` | `SeriesError` | A `series` coefficient came out as an indeterminate form (`0/0`, `1/0`, `log(0)`) rather than a number, so the expansion point is a singularity this engine cannot resolve — a branch point (`√x`), an essential singularity (`e^{1/x}`), or a removable one it could not cancel. Returning the `Series` anyway would report success and hand back coefficients that evaluate to `NaN` |
 | `E-INT-004` | `IntegrationError` | Proven non-elementary. **This one is a verdict, not a refusal** — keep it apart from the rest |
 | `E-BUDGET-001..003` | `BudgetExceededError` | Ran out of the time/steps it was given, or was cancelled |
 
-`E-SERIES-003` travels out of band for the same reason (`SeriesError` is exhaustive) but *is*
-wired into the bindings: `series` returns `SeriesError::InvalidOrder` with
-`calculus::series::take_series_refusal()` pending, and the Python layer raises `SeriesError`
-with `.code == "E-SERIES-003"` — or `BudgetExceededError` when a budget was what stopped it.
+`E-SERIES-003` and `E-SERIES-004` travel out of band for the same reason (`SeriesError` is
+exhaustive) but *are* wired into the bindings: `series` returns `SeriesError::InvalidOrder`
+with `calculus::series::take_series_refusal()` pending, and the Python layer raises
+`SeriesError` with `.code == "E-SERIES-003"` / `"E-SERIES-004"` — or `BudgetExceededError`
+when a budget was what stopped it. `SeriesRefusal::cause()` distinguishes the two in Rust.
+
+A **removable** singularity is not in that list, because it is no longer refused: `series`
+puts the expression over a common denominator and divides the two power series rather than
+substituting the expansion point into a quotient, so `sin(x)/x` gives `1 − x²/6 + O(x⁴)` and
+`1/sin(x)` gives `x⁻¹ + x/6 + O(x)`. `E-SERIES-004` is what is left when that does not
+apply.
 
 `E-IDEAL-005`, `E-IDEAL-006` and `E-SOLVE-004` are new in 3.8 and travel **out of band**:
 `PrimaryDecompositionError` and `SolverError` are public exhaustive enums that cannot gain

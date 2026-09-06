@@ -2080,9 +2080,10 @@ CASES: list[Case] = [
         contract=RefusesOr(1 / math.sin(0.1), tol=1e-3),
         verified_by="1/sin x = 1/x + x/6 + 7x³/360 + …; truncating after x gives 10.0166667 at "
         "x=0.1 against the true 1/sin(0.1) = 10.0166861 (tolerance covers truncation).",
-        note="Weak refusal: alkahest returns a Series whose coefficients contain 0^-1, so it "
-        "cannot be evaluated. It does not raise, so a caller who never evaluates the "
-        "coefficients gets no signal.",
+        note="Answered, not refused, since the removable-singularity fix: `series` divides the "
+        "numerator and denominator expansions instead of substituting 0 into a quotient, so "
+        "this returns x^-1 + x/6 + O(x). It used to return a Series whose coefficients "
+        "contained 0^-1 — unevaluable, and reported as success.",
     ),
     Case(
         id="series_log_at_origin",
@@ -2092,7 +2093,8 @@ CASES: list[Case] = [
         contract=RefusesOr(),
         verified_by="log x is unbounded at 0 but x^n·log x → 0 for every n>0, so no finite "
         "principal part exists. No finite answer is acceptable.",
-        note="Weak refusal: the returned Series contains log(0) and 0^-1 coefficients.",
+        note="Refused with E-SERIES-004 since the removable-singularity fix. It used to return "
+        "a Series carrying log(0) and 0^-1 coefficients — a weak refusal at best.",
     ),
     Case(
         id="series_sqrt_at_branch_point",
@@ -2101,7 +2103,8 @@ CASES: list[Case] = [
         op=series_at(ak.sqrt(X), _int(0), 3, 0.1),
         contract=RefusesOr(),
         verified_by="√x is not meromorphic at 0; a Puiseux series is required.",
-        note="Weak refusal: coefficients contain sqrt(0)^-1.",
+        note="Refused with E-SERIES-004 since the removable-singularity fix; it used to return "
+        "coefficients containing sqrt(0)^-1.",
     ),
     Case(
         id="series_essential_singularity",
@@ -2111,7 +2114,52 @@ CASES: list[Case] = [
         contract=RefusesOr(),
         verified_by="The Laurent series Σ x^-n/n! has infinitely many negative powers "
         "(Casorati–Weierstrass); no truncation at positive order represents it.",
-        note="Weak refusal: coefficients contain exp(0^-1).",
+        note="Refused with E-SERIES-004 since the removable-singularity fix; it used to return "
+        "coefficients containing exp(0^-1).",
+    ),
+    # -----------------------------------------------------------------------
+    # Removable singularities at the expansion point.  Substituting the point
+    # into repeated derivatives gives 0/0, which is where the silent NaN came
+    # from; the function itself extends analytically and has an ordinary
+    # Taylor series.  These are `Returns`, not `RefusesOr`: refusing here would
+    # be over-refusal on the most common expansion in applied mathematics.
+    # -----------------------------------------------------------------------
+    Case(
+        id="series_removable_singularity_sinc",
+        subsystem="series",
+        statement="sin(x)/x at x=0 is removable: the Taylor series is 1 - x²/6 + O(x⁴)",
+        op=series_at(ak.sin(X) / X, _int(0), 4, 0.1),
+        contract=Returns(1 - 0.01 / 6, tol=1e-12),
+        verified_by="SymPy series(sin(x)/x, x, 0, 4) = 1 - x**2/6 + O(x**4); evaluated at "
+        "x=0.1 by hand.",
+        note="Regression guard: this used to return a Series whose coefficients were 0*0^-1 "
+        "and 0^-1 — reported as success, evaluating to NaN.",
+    ),
+    Case(
+        id="series_removable_singularity_tan_over_x",
+        subsystem="series",
+        statement="tan(x)/x at x=0 is removable: the Taylor series is 1 + x²/3 + O(x⁴)",
+        op=series_at(ak.tan(X) / X, _int(0), 4, 0.1),
+        contract=Returns(1 + 0.01 / 3, tol=1e-12),
+        verified_by="tan x = x + x³/3 + 2x⁵/15 + …, so tan(x)/x = 1 + x²/3 + 2x⁴/15 + ….",
+    ),
+    Case(
+        id="series_removable_singularity_one_minus_cos",
+        subsystem="series",
+        statement="(1-cos x)/x² at x=0 is removable with value 1/2",
+        op=series_at((1 - ak.cos(X)) / X**2, _int(0), 4, 0.1),
+        contract=Returns(0.5 - 0.01 / 24, tol=1e-12),
+        verified_by="1 - cos x = x²/2 - x⁴/24 + …, so the quotient is 1/2 - x²/24 + ….",
+    ),
+    Case(
+        id="series_cancelling_poles_are_not_a_pole",
+        subsystem="series",
+        statement="1/x - 1/sin(x) is regular at 0 — the two simple poles cancel",
+        op=series_at(1 / X - 1 / ak.sin(X), _int(0), 4, 0.1),
+        contract=Returns(-0.1 / 6 - 7 * 0.001 / 360, tol=1e-12),
+        verified_by="1/sin x = 1/x + x/6 + 7x³/360 + …, so 1/x - 1/sin x = -x/6 - 7x³/360 + ….",
+        note="A sum, not a quotient: the expansion has to combine the terms over a common "
+        "denominator before it can see that the singular parts cancel.",
     ),
     Case(
         id="series_control_exponential",

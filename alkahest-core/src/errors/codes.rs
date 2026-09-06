@@ -51,6 +51,14 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // Carried out of band on `SeriesError::InvalidOrder` (exhaustive public enum) —
     // see `calculus::series::take_series_refusal`.
     ErrorSpec { code: "E-SERIES-003", class: "SeriesRefusal", cause: Cause::Resource,  remediation: Some("ask for a lower order, raise the budget, or rewrite the expression so its repeated derivatives close") },
+    // A coefficient came out as an indeterminate form rather than a number: `0/0` for a
+    // removable singularity the engine could not cancel, `1/0` for a branch point,
+    // `log(0)`, `exp(0^-1)` for an essential one. Returning the series anyway is the
+    // silent-wrong-answer shape this registry exists to prevent — it reports success,
+    // cannot be evaluated, and turns into NaN the moment anyone tries. Carried out of
+    // band on `SeriesError::InvalidOrder` alongside E-SERIES-003; see
+    // `calculus::series::take_series_refusal` and `SeriesRefusal::cause`.
+    ErrorSpec { code: "E-SERIES-004", class: "SeriesRefusal", cause: Cause::Domain,    remediation: Some("the expansion point is a branch point, an essential singularity, or a removable one this engine cannot cancel: cancel the singular factor by hand, expand about a nearby regular point, or use `limit` for the single value you need") },
     // E-INT — IntegrationError
     ErrorSpec { code: "E-INT-001", class: "IntegrationError", cause: Cause::Unsupported, remediation: Some("use a numeric integrator for arbitrary functions") },
     ErrorSpec { code: "E-INT-002", class: "IntegrationError", cause: Cause::Domain,      remediation: None },

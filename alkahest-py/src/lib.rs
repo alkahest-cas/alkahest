@@ -1813,6 +1813,46 @@ impl PySeries {
         self.expr.clone()
     }
 
+    /// The expansion with its trailing `O(·)` term dropped — SymPy's
+    /// ``removeO()``.
+    ///
+    /// `Series.expr` keeps the `BigO` node, which is the honest thing for it to
+    /// do (the remainder *is* part of the statement) and also what makes the
+    /// result a dead end: `eval_expr`, `simplify` and `diff` all refuse a bare
+    /// `O(x^n)`, so every caller re-implemented "walk the top-level sum and
+    /// skip the `big_o` child" by hand — `tests/_tg_helpers.py` and
+    /// `tests/silent_errors/corpus.py` each carry a copy.
+    ///
+    /// What comes back is a **polynomial approximation, not the function**:
+    /// dropping the remainder discards the only statement about the error, so
+    /// it is the right input to `eval_expr` near the expansion point and the
+    /// wrong thing to substitute back into an identity.
+    fn truncated(&self, py: Python<'_>) -> PyExpr {
+        let id = {
+            let pool = self.expr.pool.borrow(py);
+            let p = &pool.inner;
+            match p.get(self.expr.id) {
+                alkahest_core::kernel::ExprData::Add(terms) => {
+                    let kept: Vec<_> = terms
+                        .into_iter()
+                        .filter(|&t| !matches!(p.get(t), alkahest_core::kernel::ExprData::BigO(_)))
+                        .collect();
+                    match kept.len() {
+                        0 => p.integer(0_i32),
+                        1 => kept[0],
+                        _ => p.add(kept),
+                    }
+                }
+                alkahest_core::kernel::ExprData::BigO(_) => p.integer(0_i32),
+                _ => self.expr.id,
+            }
+        };
+        PyExpr {
+            id,
+            pool: self.expr.pool.clone_ref(py),
+        }
+    }
+
     fn __repr__(&self, py: Python<'_>) -> String {
         let pool = self.expr.pool.borrow(py);
         format!("Series({})", pool.inner.display(self.expr.id))

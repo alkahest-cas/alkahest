@@ -1221,6 +1221,24 @@ def series(expr, var, point, order):
     a *shorter* series: the ``O(h**order)`` term is a claim about the remainder,
     and attaching it to fewer coefficients than were asked for would be a false
     one that no caller could audit.
+
+    A **removable singularity** at *point* is expanded, not refused: the
+    expression is put over a common denominator and the two power series are
+    divided, so ``series(sin(x)/x, x, 0, 4)`` is ``1 - x**2/6 + O(x**4)`` and
+    ``series(1/sin(x), x, 0, 3)`` is ``x**-1 + x/6 + O(x)``.  Substituting the
+    expansion point into repeated derivatives would give ``0/0`` for the first
+    of those, which is why the direct route cannot see it.
+
+    A singularity that is *not* removable and not a pole — a branch point
+    (``sqrt(x)``), a logarithmic singularity (``log(x)``), an essential one
+    (``exp(1/x)``) — raises :exc:`SeriesError` with code ``E-SERIES-004``.
+    There is no Laurent expansion to return, and a ``Series`` whose
+    coefficients are ``0**-1`` would report success while evaluating to
+    ``NaN``.
+
+    Use :meth:`Series.truncated` to get the expansion as an :class:`Expr` with
+    the ``O(.)`` term dropped, which is what :func:`eval_expr` and
+    :func:`simplify` accept.
     """
     return _native_series(_coerce_expr(expr), _coerce_expr(var), _coerce_expr(point), order)
 
