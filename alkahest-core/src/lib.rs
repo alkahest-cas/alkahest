@@ -418,12 +418,18 @@ pub mod experimental {
     pub use crate::transform::fourier::fourier_derivative_rule;
     pub use crate::transform::laplace::laplace_derivative_rule;
     pub use crate::transform::{
-        fourier_transform, inverse_fourier_transform, inverse_laplace_transform, laplace_transform,
-        FourierError, LaplaceError,
+        fourier_transform, inverse_fourier_transform, inverse_laplace_transform,
+        inverse_laplace_transform_with_assumptions, inverse_laplace_transform_with_conditions,
+        laplace_transform, FourierError, LaplaceError,
     };
     pub use crate::transform::{
-        inverse_z_transform, z_shift_advance, z_shift_delay, z_transform, ZTransformError,
+        inverse_z_transform, inverse_z_transform_with_assumptions,
+        inverse_z_transform_with_conditions, take_transform_side_conditions, z_shift_advance,
+        z_shift_delay, z_transform, ZTransformError,
     };
+    // ℚ(params) partial fractions: the in-band and out-of-band forms of the
+    // hypotheses a parametric decomposition rests on.
+    pub use crate::poly::{apart_with_conditions, take_apart_side_conditions};
 
     #[cfg(feature = "parallel")]
     pub use crate::simplify::dispatch::{

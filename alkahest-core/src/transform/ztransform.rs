@@ -131,6 +131,11 @@ impl std::fmt::Display for ZTransformError {
 
 impl std::error::Error for ZTransformError {}
 
+use crate::deriv::SideCondition;
+use crate::simplify::assumptions::AssumptionContext;
+
+use super::{stash_transform_side_conditions, Genericity};
+
 // ===========================================================================
 // Small helpers (mirroring transform::laplace)
 // ===========================================================================
@@ -637,19 +642,74 @@ pub fn inverse_z_transform(
     n: ExprId,
     pool: &ExprPool,
 ) -> Result<ExprId, ZTransformError> {
+    // Cleared first so a failed call cannot leave an earlier call's
+    // hypotheses on the channel — see `inverse_laplace_transform`.
+    stash_transform_side_conditions(Vec::new());
+    let (out, conds) = inverse_z_transform_with_conditions(big_x, z, n, pool)?;
+    stash_transform_side_conditions(conds);
+    Ok(out)
+}
+
+/// [`inverse_z_transform`] with its genericity hypotheses returned in band.
+///
+/// Empty for a ℚ-coefficient `X`. Non-empty when the answer depends on a fact
+/// about a symbolic parameter — `Z⁻¹{A·z/(z−a)²} = (A/a)·n·aⁿ` divides by `a`,
+/// and at `a = 0` the term is `A·z^{−1}`, which the table declines rather than
+/// inverts.
+pub fn inverse_z_transform_with_conditions(
+    big_x: ExprId,
+    z: ExprId,
+    n: ExprId,
+    pool: &ExprPool,
+) -> Result<(ExprId, Vec<SideCondition>), ZTransformError> {
+    let mut gen = Genericity::new(None);
+    let out = inverse_z_inner(big_x, z, n, pool, &mut gen)?;
+    Ok((out, gen.into_conditions()))
+}
+
+/// [`inverse_z_transform_with_conditions`] under an explicit
+/// [`AssumptionContext`]; facts the context proves are discharged rather than
+/// reported.
+pub fn inverse_z_transform_with_assumptions(
+    big_x: ExprId,
+    z: ExprId,
+    n: ExprId,
+    pool: &ExprPool,
+    assumptions: &AssumptionContext,
+) -> Result<(ExprId, Vec<SideCondition>), ZTransformError> {
+    let mut gen = Genericity::new(Some(assumptions));
+    let out = inverse_z_inner(big_x, z, n, pool, &mut gen)?;
+    Ok((out, gen.into_conditions()))
+}
+
+fn inverse_z_inner(
+    big_x: ExprId,
+    z: ExprId,
+    n: ExprId,
+    pool: &ExprPool,
+    gen: &mut Genericity<'_>,
+) -> Result<ExprId, ZTransformError> {
     if z == n {
         return Err(ZTransformError::SameVariable);
     }
 
-    // Forward sinusoid table (transcendental coeffs — `apart` cannot see these).
+    // Forward sinusoid table: `sin(ω)`/`cos(ω)` are transcendental *generators*,
+    // and while ℚ(params) arithmetic would happily treat them as parameters,
+    // the resulting quadratic `z² − 2z·cos(ω) + 1` is irreducible there and the
+    // direct match produces the shorter, exact answer.  Tried first, unchanged.
     if let Some(seq) = try_match_sinusoid_table(big_x, z, n, pool) {
         return Ok(seq);
     }
 
-    // X(z)/z, partial-fractioned in z.
+    // X(z)/z, partial-fractioned in z — over ℚ, or over ℚ(params) when `X`
+    // mentions symbolic parameters (which is what makes `Z⁻¹{z/(z−a)} = aⁿ`
+    // round-trip against the forward `Z{aⁿ}`).
     let x_over_z = simp(pool.mul(vec![big_x, recip(z, pool)]), pool);
-    let pf = crate::poly::apart(x_over_z, z, pool)
+    let (pf, apart_conds) = crate::poly::apart_with_conditions(x_over_z, z, pool)
         .map_err(|e| ZTransformError::NotInvertible(format!("apart failed: {e}")))?;
+    for cond in apart_conds {
+        gen.adopt(cond, pool);
+    }
 
     let pf_terms: Vec<ExprId> = match pool.get(pf) {
         ExprData::Add(args) => args,
@@ -660,7 +720,7 @@ pub fn inverse_z_transform(
     for term in pf_terms {
         // Multiply this X(z)/z term back by z.
         let term_z = simp(pool.mul(vec![term, z]), pool);
-        out.push(invert_term(term_z, z, n, pool)?);
+        out.push(invert_term(term_z, z, n, pool, gen)?);
     }
     Ok(simp(pool.add(out), pool))
 }
@@ -813,8 +873,9 @@ fn invert_term(
     z: ExprId,
     n: ExprId,
     pool: &ExprPool,
+    gen: &mut Genericity<'_>,
 ) -> Result<ExprId, ZTransformError> {
-    let (numer, base, k) = split_rational_term(term, pool)
+    let (numer, base, k) = split_rational_term(term, z, pool)
         .ok_or_else(|| ZTransformError::NotInvertible(pool.display(term).to_string()))?;
 
     // A constant term (k == 0): Z⁻¹{c} would be `c·δ[n]`, which has no
@@ -848,7 +909,7 @@ fn invert_term(
     }
 
     match poly_degree(base, z, pool) {
-        Some(1) => invert_linear_pole(coeff, base, k, z, n, pool),
+        Some(1) => invert_linear_pole(coeff, base, k, z, n, pool, gen),
         Some(d) => Err(ZTransformError::NotInvertible(format!(
             "denominator factor of degree {d} (only linear poles are tabulated): {}",
             pool.display(base)
@@ -905,7 +966,7 @@ fn split_z_power(numer: ExprId, z: ExprId, pool: &ExprPool) -> Option<(ExprId, u
 /// Decompose a term into `(numerator, denom_base, k)` with
 /// `term = numerator · denom_base^{−k}` and `k ≥ 0`, `numerator` free of any
 /// negative power of `z`.
-fn split_rational_term(term: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId, u64)> {
+fn split_rational_term(term: ExprId, z: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId, u64)> {
     let factors: Vec<ExprId> = match pool.get(term) {
         ExprData::Mul(a) => a,
         _ => vec![term],
@@ -918,7 +979,9 @@ fn split_rational_term(term: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId,
         if let ExprData::Pow { base: b, exp } = pool.get(fac) {
             if let ExprData::Integer(e) = pool.get(exp) {
                 let ev = e.0;
-                if ev < 0 {
+                // A negative power free of `z` is a parametric *coefficient*
+                // (`(a − b)^{−1}` from a ℚ(params) decomposition), not a pole.
+                if ev < 0 && !is_free_of(b, z, pool) {
                     if base.is_some() && base != Some(b) {
                         return None;
                     }
@@ -995,6 +1058,7 @@ fn invert_linear_pole(
     z: ExprId,
     n: ExprId,
     pool: &ExprPool,
+    gen: &mut Genericity<'_>,
 ) -> Result<ExprId, ZTransformError> {
     // `numer` is the coefficient `A` (free of `z` by construction of
     // `split_z_power`). base = z − a (monic). Extract a from (coeff·z + b): a = −b/coeff,
@@ -1032,7 +1096,9 @@ fn invert_linear_pole(
                     "A·z/z² term has no causal-sequence inverse in the table".into(),
                 ));
             }
-            // (A/a)·n·aⁿ
+            // (A/a)·n·aⁿ — a division, so a symbolic `a` is a hypothesis: at
+            // a = 0 the term is `A·z^{−1}`, which the branch above declines.
+            gen.need_nonzero(a, pool);
             let coeff = simp(pool.mul(vec![numer, recip(a, pool)]), pool);
             let a_pow_n = pool.pow(a, n);
             Ok(pool.mul(vec![coeff, n, a_pow_n]))

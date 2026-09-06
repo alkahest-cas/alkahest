@@ -175,6 +175,7 @@ from alkahest.alkahest import (
     QZeilbergerCertificate,
     Telescoping2dCertificate,
     TelescopingMdCertificate,
+    apart_side_conditions,
     asymptotic_expand,
     # P1 item 10 — asymptotic expansion at scale
     coefficient_asymptotics,
@@ -196,6 +197,7 @@ from alkahest.alkahest import (
     series_solve,
     telescope2d,
     telescope_md,
+    transform_side_conditions,
     z_transform,
 )
 
@@ -263,6 +265,8 @@ __all__ = [
     # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
     "Telescoping2dCertificate",
     "TelescopingMdCertificate",
+    # Hypotheses the last `apart` on this thread rests on (ℚ(params) path).
+    "apart_side_conditions",
     "arg",
     "asymptotic_expand",
     # M5 — recurrence -> asymptotics
@@ -313,5 +317,7 @@ __all__ = [
     "to_jax",
     "to_lean",
     "to_stablehlo",
+    # Hypotheses the last inverse Laplace / Z transform on this thread rests on.
+    "transform_side_conditions",
     "z_transform",
 ]
