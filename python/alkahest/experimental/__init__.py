@@ -27,7 +27,13 @@ Remaining experimental surface:
 
 Calculus / ODE / transform surface:
 - :func:`heaviside`, :func:`dirac_delta` — distribution primitive constructors
-- :func:`dsolve` — classical symbolic ODE solver (#153)
+- :func:`dsolve` — classical symbolic ODE solver (#153); constant coefficients
+  may be symbolic, in which case the returned dicts carry ``side_conditions``
+  and ``notes`` naming the parameter branch that was *not* assumed
+- :func:`dsolve_system` — linear constant-coefficient systems ``y' = A·y + f(t)``
+  over an :class:`alkahest.ODE`, by Putzer's algorithm (defective ``A``
+  included); symbolic entries are allowed and an undecided eigenvalue
+  confluence is reported rather than assumed
 - :func:`laplace_transform` / :func:`inverse_laplace_transform` (#152)
 - :func:`fourier_transform` / :func:`inverse_fourier_transform` (#158)
 - :func:`z_transform` / :func:`inverse_z_transform` (#159)
@@ -182,6 +188,7 @@ from alkahest.alkahest import (
     cyclotomic_polynomial,
     dirac_delta,
     dsolve,
+    dsolve_system,
     euler_maclaurin,
     fourier_transform,
     heaviside,
@@ -284,6 +291,7 @@ __all__ = [
     "digamma",
     "dirac_delta",
     "dsolve",
+    "dsolve_system",
     "euler_maclaurin",
     "evaluate",
     "fourier_transform",

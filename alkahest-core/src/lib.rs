@@ -105,7 +105,11 @@ pub use matrix::{
 };
 pub use numeric::{guess_integer_relation, PslqError};
 pub use ode::{
-    dsolve::{dsolve, DsolveError, DsolveResult, DsolveSolution, OdeInput, SolutionForm},
+    dsolve::{
+        dsolve, dsolve_with,
+        system::{dsolve_system, dsolve_system_with, DsolveSystemError, SystemSolution},
+        DsolveError, DsolveReport, DsolveResult, DsolveSolution, OdeInput, SolutionForm,
+    },
     lower_to_first_order,
     sensitivity::{adjoint_system, sensitivity_system, AdjointSystem, SensitivitySystem},
     OdeError, ScalarODE, ODE,
@@ -391,8 +395,12 @@ pub mod experimental {
         select_lucky_prime, ModularError, ModularValue, MultiPolyFp,
     };
     pub use crate::numeric::{guess_integer_relation, PslqError};
+    pub use crate::ode::dsolve::system::{
+        dsolve_system, dsolve_system_with, DsolveSystemError, SystemSolution,
+    };
     pub use crate::ode::dsolve::{
-        dsolve, DsolveError, DsolveResult, DsolveSolution, OdeInput, SolutionForm,
+        dsolve, dsolve_with, DsolveError, DsolveReport, DsolveResult, DsolveSolution, OdeInput,
+        SolutionForm,
     };
     pub use crate::ode::sensitivity::{
         adjoint_system, sensitivity_system, AdjointSystem, SensitivitySystem,

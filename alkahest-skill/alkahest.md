@@ -944,10 +944,31 @@ ex.fourier_transform(...), ex.inverse_fourier_transform(...)
 ex.z_transform(...), ex.inverse_z_transform(...)
 
 # ODEs
-ex.dsolve(...)                    # closed-form solution
+ex.dsolve(eq, x, y, [yp, ypp])    # closed-form solution of a *scalar* ODE
+ex.dsolve_system(ode)             # closed-form solution of y' = A·y + f(t)
 ex.ode_integrate_rk4(...)         # numeric, fixed step
 ex.ode_integrate_rk45(...)        # numeric, adaptive → OdeTrajectory
 ```
+
+`dsolve` accepts **symbolic** constant coefficients, so the damped oscillator
+`y'' + 2·z·w·y' + w**2·y = 0` solves rather than being refused. The sign of the
+characteristic discriminant is parameter dependent and therefore undecidable, so
+the answer says which branch it took: `method` is
+`"constant_coefficient_symbolic"` when distinct roots were *assumed*, and the
+dict's `side_conditions` / `notes` name the repeated-root case that the returned
+two-parameter family does not span. Pass an `Assumptions` context as the fifth
+argument to settle it (`D ≠ 0` removes the condition; `−D > 0` switches the
+output to the real `e^{a·x}(C1·cos + C2·sin)` form).
+
+`dsolve_system` takes an `alkahest.ODE` (`d(state_vars)/dt = rhs`) and returns a
+dict with `y_of_t`, `constants`, `fundamental_matrix` (`e^{At}`), `method`,
+`side_conditions` and `notes`. Coefficients may be symbolic — the two-compartment
+PK model `x' = -ka·x`, `y' = ka·x - ke·y` solves, with `ka ≠ ke` reported as a
+side condition because the returned expression divides by that difference. A
+defective (non-diagonalizable) `A` is handled without any Jordan machinery. It
+refuses (`ValueError`, `E-ODE-030`…`E-ODE-034`) for a nonlinear system, a
+time-dependent coefficient, or a symbolic non-triangular 3×3, whose spectrum
+needs Cardano radicals that do not verify.
 
 Other experimental exports worth knowing: `asymptotic_expand`, `multilimit`,
 `series_solve`, `residue`, `heaviside`, `dirac_delta`, `Fps`, `to_jax`.

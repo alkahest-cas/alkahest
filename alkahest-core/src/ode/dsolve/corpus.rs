@@ -162,6 +162,19 @@ pub(crate) const CORPUS: &[Entry] = &[
     ("higher", "y'''+y'=sec(x)",            3, "yppp + yp - 1/cos(x)"),
     ("higher", "y'''+y'=tan(x)",            3, "yppp + yp - tan(x)"),
     ("higher", "y'''-y'=x^2",               3, "yppp - yp - x^2"),
+
+    // ---- constant coefficients, *symbolic* -----------------------------------
+    // The characteristic polynomial has free-symbol coefficients, so its
+    // multiplicity structure is parameter dependent.  See
+    // `constant_coeff::symbolic_basis`.
+    ("cc-sym", "y''+2*z*w*y'+w^2*y=0",     2, "ypp + 2*z*w*yp + w^2*y"),
+    ("cc-sym", "y''+w^2*y=0",              2, "ypp + w^2*y"),
+    ("cc-sym", "y''-k^2*y=0",              2, "ypp - k^2*y"),
+    ("cc-sym", "a*y''+b*y'+c*y=0",         2, "a*ypp + b*yp + c*y"),
+    ("cc-sym", "y''+2*a*y'+a^2*y=0",       2, "ypp + 2*a*yp + a^2*y"),
+    ("cc-sym", "y'-k*y=0",                 1, "yp - k*y"),
+    ("cc-sym", "y'''+2*z*w*y''+w^2*y'=0",  3, "yppp + 2*z*w*ypp + w^2*yp"),
+    ("cc-sym", "m*y''+k*y=0",              2, "m*ypp + k*y"),
 ];
 
 /// Build the `OdeInput` for a corpus entry.  Derivative symbols are named

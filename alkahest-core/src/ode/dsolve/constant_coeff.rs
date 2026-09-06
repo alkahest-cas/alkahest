@@ -2,22 +2,27 @@
 //! Euler–Cauchy, and general variable-coefficient second order.
 //!
 //! Coefficients of `y^(k)` are extracted from the equation.  When all are
-//! constant the characteristic polynomial is built and factored over ℚ
-//! (rational roots + quadratic factors); irreducible factors of degree ≥ 3 are
-//! declined.  Euler–Cauchy `a·x²y'' + b·x·y' + c·y = r` is detected by the
-//! `xᵏ` coefficient pattern.  Anything else at second order falls through to
-//! reduction of order.
+//! constant *and numeric* the characteristic polynomial is built and factored
+//! over ℚ (rational roots + quadratic factors); irreducible factors of degree
+//! ≥ 3 are declined.  When they are constant but **symbolic** — `y'' + 2ζω y' +
+//! ω² y = 0`, the damped oscillator — the characteristic polynomial is rooted
+//! in closed form up to degree two after a `λᵏ` factor is peeled off, and the
+//! branch its discriminant leaves open is reported rather than assumed (see
+//! [`symbolic_basis`]).  Euler–Cauchy `a·x²y'' + b·x·y' + c·y = r` is detected
+//! by the `xᵏ` coefficient pattern.  Anything else at second order falls
+//! through to reduction of order.
 //!
 //! All three routes end at the same place: a fundamental system, handed to
 //! [`super::variation`] for the forcing term.  Only the way the basis is found
 //! differs.
 
 use super::{
-    contains, ddx, is_zero, residual_is_zero, simp, sub, ConstGen, DsolveError, DsolveResult,
-    DsolveSolution, OdeInput,
+    contains, ddx, is_zero, residual_is_zero, simp, sub, AssumedSign, ConstGen, DsolveError,
+    DsolveResult, DsolveSolution, OdeInput, SolveCtx,
 };
 use crate::kernel::eval_const::try_expr_f64;
 use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::matrix::zero_test::{zero_status, ZeroStatus};
 
 // ---------------------------------------------------------------------------
 // Coefficient extraction
@@ -77,13 +82,14 @@ fn all_constant(coeffs: &[ExprId], x: ExprId, pool: &ExprPool) -> bool {
 pub(crate) fn solve_second_order(
     input: &OdeInput,
     gen: &mut ConstGen,
+    ctx: &mut SolveCtx<'_>,
     pool: &ExprPool,
 ) -> Result<DsolveResult, DsolveError> {
     let (coeffs, r) = extract_linear(input, pool)?;
     let x = input.x;
 
     if all_constant(&coeffs, x, pool) {
-        return solve_const_coeff(input, &coeffs, r, gen, pool);
+        return solve_const_coeff(input, &coeffs, r, gen, ctx, pool);
     }
     // Euler–Cauchy: coeffs[k] = c_k · x^k with c_k constant.
     if let Some(euler) = try_euler_cauchy(input, &coeffs, r, gen, pool)? {
@@ -144,6 +150,7 @@ pub(crate) fn solve_higher_order(
     input: &OdeInput,
     _n: usize,
     gen: &mut ConstGen,
+    ctx: &mut SolveCtx<'_>,
     pool: &ExprPool,
 ) -> Result<DsolveResult, DsolveError> {
     let (coeffs, r) = extract_linear(input, pool)?;
@@ -153,7 +160,7 @@ pub(crate) fn solve_higher_order(
             "higher-order non-constant-coefficient equations are not supported".to_string(),
         ));
     }
-    solve_const_coeff(input, &coeffs, r, gen, pool)
+    solve_const_coeff(input, &coeffs, r, gen, ctx, pool)
 }
 
 fn solve_const_coeff(
@@ -161,28 +168,30 @@ fn solve_const_coeff(
     coeffs: &[ExprId],
     r: ExprId,
     gen: &mut ConstGen,
+    ctx: &mut SolveCtx<'_>,
     pool: &ExprPool,
 ) -> Result<DsolveResult, DsolveError> {
     let x = input.x;
-    // Numeric coefficients for the characteristic polynomial Σ aₖ λᵏ.
-    let mut a: Vec<f64> = Vec::with_capacity(coeffs.len());
-    for &c in coeffs {
-        let v = try_expr_f64(c, pool).ok_or_else(|| {
-            DsolveError::Unsupported("non-numeric constant coefficient".to_string())
-        })?;
-        a.push(v);
-    }
-    // Drop leading zeros (highest derivative might be zero).
-    while a.len() > 1 && a.last() == Some(&0.0) {
-        a.pop();
-    }
-    let roots = char_roots(&a)?;
+    // Characteristic polynomial Σ aₖ λᵏ.  Numeric coefficients keep the ℚ route
+    // (exact rational roots, real cos/sin output); one symbolic coefficient
+    // sends the whole equation down the closed-form route instead.
+    let numeric: Option<Vec<f64>> = coeffs.iter().map(|&c| try_expr_f64(c, pool)).collect();
+    let (basis, method) = match numeric {
+        Some(mut a) => {
+            // Drop leading zeros (highest derivative might be zero).
+            while a.len() > 1 && a.last() == Some(&0.0) {
+                a.pop();
+            }
+            let roots = char_roots(&a)?;
+            let mut basis: Vec<ExprId> = Vec::new();
+            for root in &roots {
+                basis.extend(root.basis_functions(x, pool));
+            }
+            (basis, "constant_coefficient")
+        }
+        None => symbolic_basis(coeffs, x, ctx, pool)?,
+    };
 
-    // Build homogeneous basis functions and the general homogeneous solution.
-    let mut basis: Vec<ExprId> = Vec::new();
-    for root in &roots {
-        basis.extend(root.basis_functions(x, pool));
-    }
     let mut terms = Vec::new();
     let mut constants = Vec::new();
     for b in &basis {
@@ -202,14 +211,205 @@ fn solve_const_coeff(
 
     match residual_is_zero(input, y_general, &constants, pool) {
         Ok(()) => Ok(DsolveResult {
-            solutions: vec![DsolveSolution::explicit(
-                y_general,
-                constants,
-                "constant_coefficient",
-            )],
+            solutions: vec![DsolveSolution::explicit(y_general, constants, method)],
         }),
         Err(e) => Err(e),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Constant-coefficient with *symbolic* coefficients
+// ---------------------------------------------------------------------------
+
+/// Fundamental system of `Σ aₖ y^(k) = 0` when the `aₖ` are constant in `x` but
+/// contain free symbols, together with the method label naming the branch taken.
+///
+/// # The branch problem
+///
+/// For symbolic coefficients the multiplicity structure of the characteristic
+/// polynomial is *parameter dependent*, so it is not decidable here: the
+/// discriminant of `λ² + 2ζω λ + ω²` is `4ω²(ζ² − 1)`, which is positive,
+/// zero and negative on three non-empty regions of the `(ζ, ω)` plane.  The
+/// four ways out, in the order they are tried:
+///
+/// 1. **Proof.** `zero_test::zero_status` decides the discriminant outright
+///    for the cases that are decidable (`λ² + 2aλ + a²` really does have a
+///    double root for every `a`).  No condition is attached.
+/// 2. **Assumptions.** A caller-stated `D > 0`, `D ≠ 0` or `−D > 0` settles it.
+///    `−D > 0` additionally selects the real oscillatory form
+///    `e^{αx}(C₁cos βx + C₂sin βx)` over the complex exponentials.
+/// 3. **A side condition.** Otherwise the uniform two-exponential form is
+///    returned — it satisfies the equation identically, for *every* parameter
+///    value, and it is what SymPy and most CAS return — with `D ≠ 0` recorded
+///    as a [`SideCondition`](crate::deriv::SideCondition) and a note naming the
+///    confluent case it does not span.  Silently assuming distinct roots is
+///    what this exists to prevent.
+/// 4. **Refusal.** Degree ≥ 3 after peeling the `λᵏ` factor has no closed-form
+///    root in general, and is declined with a message naming the degree.
+fn symbolic_basis(
+    coeffs: &[ExprId],
+    x: ExprId,
+    ctx: &mut SolveCtx<'_>,
+    pool: &ExprPool,
+) -> Result<(Vec<ExprId>, &'static str), DsolveError> {
+    // `a[k]` is the coefficient of λᵏ.  Drop provably-zero leading terms; a
+    // leading coefficient that is merely *not provably* zero stays, and the
+    // order it claims becomes a side condition.
+    let mut a: Vec<ExprId> = coeffs.iter().map(|&c| simp(c, pool)).collect();
+    while a.len() > 1 && matches!(zero_status(pool, *a.last().unwrap()), ZeroStatus::Zero) {
+        a.pop();
+    }
+    let deg = a.len() - 1;
+    if deg == 0 {
+        return Err(DsolveError::Unsupported(
+            "every derivative coefficient vanishes; this is an algebraic equation, not an ODE"
+                .to_string(),
+        ));
+    }
+    require_nonzero(a[deg], ctx, pool);
+
+    // Peel the `λᵏ` factor: `a₀ = … = a_{k−1} = 0` contributes the root 0 with
+    // multiplicity k, whose basis is `1, x, …, x^{k−1}`.
+    let mut k = 0usize;
+    while k < deg && matches!(zero_status(pool, a[k]), ZeroStatus::Zero) {
+        k += 1;
+    }
+    let mut basis: Vec<ExprId> = (0..k)
+        .map(|j| {
+            if j == 0 {
+                pool.integer(1_i32)
+            } else {
+                simp(pool.pow(x, pool.integer(j as i32)), pool)
+            }
+        })
+        .collect();
+    let b = &a[k..];
+
+    let (rest, method) = match b.len() - 1 {
+        0 => (Vec::new(), "constant_coefficient_symbolic"),
+        1 => {
+            // b₁λ + b₀ = 0 → λ = −b₀/b₁.
+            require_nonzero(b[1], ctx, pool);
+            let root = super::div(pool.mul(vec![pool.integer(-1_i32), b[0]]), b[1], pool);
+            (
+                vec![exp_of_root(root, x, pool)],
+                "constant_coefficient_symbolic",
+            )
+        }
+        2 => symbolic_quadratic(b[2], b[1], b[0], x, ctx, pool)?,
+        d => {
+            return Err(DsolveError::Unsupported(format!(
+                "characteristic polynomial has symbolic coefficients and degree {d} after \
+                 factoring out λ^{k}; no closed-form roots exist beyond degree 2 for \
+                 arbitrary symbolic coefficients, and this solver will not return an \
+                 unverifiable root form"
+            )))
+        }
+    };
+    basis.extend(rest);
+    Ok((basis, method))
+}
+
+/// Fundamental system of `aλ² + bλ + c = 0`, branching on the discriminant.
+fn symbolic_quadratic(
+    a: ExprId,
+    b: ExprId,
+    c: ExprId,
+    x: ExprId,
+    ctx: &mut SolveCtx<'_>,
+    pool: &ExprPool,
+) -> Result<(Vec<ExprId>, &'static str), DsolveError> {
+    let neg_one = pool.integer(-1_i32);
+    let two_a = simp(pool.mul(vec![pool.integer(2_i32), a]), pool);
+    // D = b² − 4ac, with integer powers of products distributed so the
+    // vanishing test and the assumption matcher see one spelling.
+    let disc = super::expand_powers(
+        pool.add(vec![
+            pool.pow(b, pool.integer(2_i32)),
+            pool.mul(vec![pool.integer(-4_i32), a, c]),
+        ]),
+        pool,
+    );
+    let neg_disc = simp(pool.mul(vec![neg_one, disc]), pool);
+    // α = −b/(2a), the real part shared by every branch.
+    let alpha = super::div(pool.mul(vec![neg_one, b]), two_a, pool);
+
+    // 1. Decided outright: a genuine double root, for every parameter value.
+    if matches!(zero_status(pool, disc), ZeroStatus::Zero) {
+        let e = exp_of_root(alpha, x, pool);
+        let xe = simp(pool.mul(vec![x, e]), pool);
+        return Ok((vec![e, xe], "constant_coefficient_symbolic_repeated_root"));
+    }
+
+    // 2. Decided by the caller (or by the discriminant being a literal).
+    let sign = match try_expr_f64(disc, pool) {
+        Some(v) if v > 0.0 => AssumedSign::Positive,
+        Some(v) if v < 0.0 => AssumedSign::Negative,
+        _ => ctx.assumed_sign(disc, pool),
+    };
+    let asserted_nonzero = sign != AssumedSign::Unknown || super::is_settled_nonzero(disc, pool);
+    if sign == AssumedSign::Negative {
+        // Negative discriminant: the real oscillatory form.  β = √(−D)/(2a).
+        let beta = super::div(pool.func("sqrt", vec![neg_disc]), two_a, pool);
+        let e = exp_of_root(alpha, x, pool);
+        let bx = simp(pool.mul(vec![beta, x]), pool);
+        let cos = simp(pool.mul(vec![e, pool.func("cos", vec![bx])]), pool);
+        let sin = simp(pool.mul(vec![e, pool.func("sin", vec![bx])]), pool);
+        return Ok((vec![cos, sin], "constant_coefficient_symbolic_oscillatory"));
+    }
+
+    // 3./4. The uniform two-exponential form.  `√D` is written as a `Pow` so
+    // that `(√D)² → D` is a power collection the simplifier already performs;
+    // spelled `sqrt(D)` it is an opaque `Func` and the residual never closes
+    // symbolically.
+    let root_d = simp(pool.pow(disc, pool.rational(1_i64, 2_i64)), pool);
+    let r_plus = super::div(
+        pool.add(vec![pool.mul(vec![neg_one, b]), root_d]),
+        two_a,
+        pool,
+    );
+    let r_minus = super::div(
+        pool.add(vec![
+            pool.mul(vec![neg_one, b]),
+            pool.mul(vec![neg_one, root_d]),
+        ]),
+        two_a,
+        pool,
+    );
+    let basis = vec![exp_of_root(r_plus, x, pool), exp_of_root(r_minus, x, pool)];
+    if asserted_nonzero {
+        return Ok((basis, "constant_coefficient_symbolic_distinct_roots"));
+    }
+    ctx.conds.require_nonzero(disc);
+    let v = pool.display(x);
+    ctx.conds.note(format!(
+        "the two exponentials coincide where the characteristic discriminant {d} \
+         vanishes; there the general solution is C1·e^({r}·{v}) + C2·{v}·e^({r}·{v}), \
+         which this two-parameter family does not span",
+        d = pool.display(disc),
+        r = pool.display(alpha),
+    ));
+    Ok((basis, "constant_coefficient_symbolic"))
+}
+
+/// `e^{r·x}`, collapsing to `1` when `r` is provably zero.
+fn exp_of_root(r: ExprId, x: ExprId, pool: &ExprPool) -> ExprId {
+    if matches!(zero_status(pool, r), ZeroStatus::Zero) {
+        return pool.integer(1_i32);
+    }
+    simp(
+        pool.func("exp", vec![simp(pool.mul(vec![r, x]), pool)]),
+        pool,
+    )
+}
+
+/// Record `e ≠ 0` unless it is already known — a non-zero literal, or a fact
+/// the caller stated.
+fn require_nonzero(e: ExprId, ctx: &mut SolveCtx<'_>, pool: &ExprPool) {
+    if super::is_settled_nonzero(e, pool) || ctx.asserts_nonzero(e, pool) {
+        return;
+    }
+    ctx.conds.require_nonzero(simp(e, pool));
 }
 
 // ---------------------------------------------------------------------------
@@ -531,11 +731,19 @@ fn undetermined_coefficients(
     let mut rhs_vec = vec![0.0; k];
     for (i, &xv) in samples.iter().enumerate() {
         for (j, &lt) in l_terms.iter().enumerate() {
-            mat[i][j] = eval_at(lt, x, xv, pool)
-                .ok_or_else(|| DsolveError::Unsupported("ansatz evaluation failed".to_string()))?;
+            // A sample the real evaluator cannot resolve — the operator carries
+            // a symbolic coefficient, or the ansatz a construct it does not know
+            // — means *this* method does not apply, not that the equation is
+            // unsolvable.  Declining lets variation of parameters have its turn.
+            let Some(v) = eval_at(lt, x, xv, pool) else {
+                return Ok(None);
+            };
+            mat[i][j] = v;
         }
-        rhs_vec[i] = eval_at(r, x, xv, pool)
-            .ok_or_else(|| DsolveError::Unsupported("rhs evaluation failed".to_string()))?;
+        let Some(v) = eval_at(r, x, xv, pool) else {
+            return Ok(None);
+        };
+        rhs_vec[i] = v;
     }
     let Some(sol) = solve_linear(&mut mat, &mut rhs_vec) else {
         return Ok(None);

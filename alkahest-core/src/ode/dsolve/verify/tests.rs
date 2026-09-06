@@ -90,7 +90,7 @@ fn wrong_candidate_blowing_up_at_a_regular_point_is_rejected() {
     );
 
     let (residual, derivs) = build_residual(&input, wrong, &f.pool).expect("residual builds");
-    let report = numeric_report(&input, residual, &derivs, &[f.c1], &f.pool);
+    let report = numeric_report(&input, residual, &derivs, &[f.c1], &[], &f.pool);
 
     // The shape of the trap: exactly six agreeing samples, no disagreement, and
     // nine samples that the old code discarded.
@@ -124,7 +124,7 @@ fn plain_finite_disagreement_is_still_rejected() {
         &f.pool,
     );
     let (residual, derivs) = build_residual(&input, cand, &f.pool).expect("residual builds");
-    let report = numeric_report(&input, residual, &derivs, &[f.c1], &f.pool);
+    let report = numeric_report(&input, residual, &derivs, &[f.c1], &[], &f.pool);
     assert_eq!(report.agree, 0, "report: {report}");
     assert_eq!(report.disagree, 15, "report: {report}");
     assert!(!report.certifies(), "report: {report}");
@@ -166,7 +166,7 @@ fn correct_solution_of_a_singular_ode_still_verifies() {
     assert!(!ode_is_regular_at(&input, 0.61, &HashMap::new(), &f.pool));
 
     let (residual, derivs) = build_residual(&input, cand, &f.pool).expect("residual builds");
-    let report = numeric_report(&input, residual, &derivs, &[f.c1], &f.pool);
+    let report = numeric_report(&input, residual, &derivs, &[f.c1], &[], &f.pool);
     assert_eq!(report.agree, 9, "report: {report}");
     assert_eq!(report.disagree, 0, "report: {report}");
     assert_eq!(report.blowup_at_regular_point, 0, "report: {report}");
@@ -204,7 +204,7 @@ fn candidate_blowup_where_the_ode_is_also_singular_stays_a_skip() {
     assert!(!ode_is_regular_at(&input, 0.61, &HashMap::new(), &f.pool));
 
     let (residual, derivs) = build_residual(&input, cand, &f.pool).expect("residual builds");
-    let report = numeric_report(&input, residual, &derivs, &[f.c1], &f.pool);
+    let report = numeric_report(&input, residual, &derivs, &[f.c1], &[], &f.pool);
     assert_eq!(report.disagree, 0, "report: {report}");
     assert_eq!(report.blowup_at_regular_point, 0, "report: {report}");
     assert_eq!(report.skipped_singular_ode, 6, "report: {report}");

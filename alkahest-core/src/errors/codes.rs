@@ -102,6 +102,11 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-ODE-024", class: "NumericOdeError", cause: Cause::Unsupported, remediation: None },
     ErrorSpec { code: "E-ODE-025", class: "NumericOdeError", cause: Cause::UserInput, remediation: None },
     ErrorSpec { code: "E-ODE-026", class: "NumericOdeError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-ODE-030", class: "DsolveSystemError", cause: Cause::UserInput,   remediation: Some("each right-hand side must be affine in the state variables") },
+    ErrorSpec { code: "E-ODE-031", class: "DsolveSystemError", cause: Cause::Unsupported, remediation: Some("y' = A(t)y needs a Magnus/Peano series, not e^{At}") },
+    ErrorSpec { code: "E-ODE-032", class: "DsolveSystemError", cause: Cause::Unsupported, remediation: Some("substitute concrete values for the symbolic entries of A, or use a 2x2/3x3 or triangular system") },
+    ErrorSpec { code: "E-ODE-033", class: "DsolveSystemError", cause: Cause::Unsupported, remediation: Some("the forcing term has no elementary antiderivative against the fundamental matrix") },
+    ErrorSpec { code: "E-ODE-034", class: "DsolveSystemError", cause: Cause::UserInput,   remediation: None },
     // E-DAE — DaeError
     ErrorSpec { code: "E-DAE-001", class: "DaeError", cause: Cause::Unsupported, remediation: Some("ensure all functions are differentiable before calling pantelides()") },
     ErrorSpec { code: "E-DAE-002", class: "DaeError", cause: Cause::UserInput,   remediation: Some("DAE index exceeds depth-10 limit; reformulate the model") },
