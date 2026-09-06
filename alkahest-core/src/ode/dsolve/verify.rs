@@ -56,6 +56,34 @@
 //! is never entered at all, every sample of every numerically-certified
 //! solution being finite.
 
+//! # Free parameters
+//!
+//! An equation whose coefficients contain symbols other than `x` — `y'' +
+//! 2ζω y' + ω² y = 0` — has a candidate whose residual mentions those symbols,
+//! and the real sampler above cannot evaluate it at all: every sample comes
+//! back `None`, the report is `unevaluable`, and the gate declines.  The
+//! parametric path binds each free parameter to a value as well, over several
+//! deterministic assignments.
+//!
+//! It evaluates in **ℂ**, not ℝ.  The uniform two-exponential form of a
+//! symbolic-coefficient equation is `e^{(−ζω ± ω√(ζ²−1))t}`, whose exponent is
+//! complex for `|ζ| < 1` — the underdamped branch, the one the caller most
+//! often means.  A real evaluator returns `NaN` there, and a gate that reads
+//! `NaN` as disagreement would refuse the correct answer on exactly the
+//! parameter range it matters for; one that skipped it would only ever check
+//! the overdamped side.  Evaluating on the principal complex branch makes both
+//! sides of the residual ordinary complex numbers and the check meaningful on
+//! the whole parameter space.  The classification of a sample is otherwise the
+//! same three-way split as in the real path, and as in `integrate::gate`:
+//! finite-and-zero agrees, finite-and-non-zero disagrees, and non-finite or
+//! unevaluable is *no information* rather than evidence either way.
+//!
+//! Tolerance is relative there.  `e^{λt}` with a sampled `λ ≈ 3` is `O(10)`
+//! before the equation's own coefficients multiply it, so a fixed `1e-6`
+//! absolute band is not the same test at both ends of the parameter grid; the
+//! band is scaled by the magnitude of the candidate and its derivatives at the
+//! sample.
+
 use super::{ddx, simp, subs1, DsolveError, OdeInput};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use std::collections::HashMap;
@@ -134,6 +162,28 @@ fn verify_inner(
         return Ok(());
     }
 
+    // Free parameters (symbols that are neither `x`, the unknown, a derivative
+    // symbol, nor an integration constant) make the real sampler useless: every
+    // sample is `None` and the report says only "unevaluable".  Bind them too,
+    // and evaluate over ℂ so the complex branch of the answer is reachable.
+    let params = free_parameters(input, residual, constants, pool);
+    if !params.is_empty() {
+        let report =
+            parametric_report(input, residual, &candidate_derivs, constants, &params, pool);
+        if report.certifies() {
+            return Ok(());
+        }
+        return Err(DsolveError::VerificationFailed(format!(
+            "residual did not reduce to zero over the parameters {} ({report}): {}",
+            params
+                .iter()
+                .map(|&p| pool.display(p).to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            pool.display(residual)
+        )));
+    }
+
     // Numeric fallback: sample x over several constant assignments.
     let report = numeric_report(input, residual, &candidate_derivs, constants, pool);
     if report.certifies() {
@@ -144,6 +194,51 @@ fn verify_inner(
         "residual did not reduce to zero ({report}): {}",
         pool.display(residual)
     )))
+}
+
+/// Symbols in `residual` that the numeric sampler would otherwise leave unbound.
+///
+/// `x` and the integration constants are bound by the sampler already; `y` and
+/// the derivative symbols cannot survive [`build_residual`]'s substitution, but
+/// are excluded defensively so a stray one becomes a decline rather than a
+/// parameter that gets a random value bound to it.
+fn free_parameters(
+    input: &OdeInput,
+    residual: ExprId,
+    constants: &[ExprId],
+    pool: &ExprPool,
+) -> Vec<ExprId> {
+    let mut bound: Vec<ExprId> = vec![input.x, input.y];
+    bound.extend_from_slice(&input.derivs);
+    bound.extend_from_slice(constants);
+    let mut out: Vec<ExprId> = Vec::new();
+    collect_symbols(residual, pool, &mut out);
+    out.retain(|s| !bound.contains(s));
+    // Deterministic order: the sampled value of a parameter must not depend on
+    // the traversal order of a pool shared with other work.
+    out.sort_by_key(|&s| pool.display(s).to_string());
+    out.dedup();
+    out
+}
+
+fn collect_symbols(expr: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>) {
+    pool.with(expr, |d| match d {
+        ExprData::Symbol { .. } => {
+            if !out.contains(&expr) {
+                out.push(expr);
+            }
+        }
+        ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
+            for &a in args {
+                collect_symbols(a, pool, out);
+            }
+        }
+        ExprData::Pow { base, exp } => {
+            collect_symbols(*base, pool, out);
+            collect_symbols(*exp, pool, out);
+        }
+        _ => {}
+    });
 }
 
 /// Substitute the candidate into the equation.
@@ -420,6 +515,413 @@ fn eval_func(name: &str, a: &[f64]) -> Option<f64> {
         "acos" => x.acos(),
         "atan" => x.atan(),
         "abs" => x.abs(),
+        _ => return None,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Parametric verification: sampling over free parameters, evaluated in C
+// ---------------------------------------------------------------------------
+
+/// Deterministic parameter assignments.  Chosen so that a two-parameter
+/// equation such as `y'' + 2ζω y' + ω² y = 0` is sampled on *both* sides of its
+/// discriminant — `ζ < 1` (complex roots) and `ζ > 1` (real roots) — rather
+/// than only on the side the real evaluator happens to reach.
+const PARAM_SETS: [&[f64]; 3] = [
+    &[1.7, 0.6, 2.3, 1.1, 0.4],
+    &[0.37, 1.9, 0.83, 2.7, 1.3],
+    &[2.9, 0.45, 1.15, 0.71, 3.3],
+];
+
+/// Agreeing samples required before a *parametric* numeric certificate issues.
+///
+/// Higher than [`MIN_AGREEING_SAMPLES`] because the grid is three times larger
+/// and because an identity in the parameters is a stronger claim than an
+/// identity at fixed coefficients: it has to hold on an open set, not at a
+/// point.
+const PARAM_MIN_AGREEING: usize = 12;
+
+/// Relative band for "this sample of the residual is zero".
+///
+/// The residual's natural magnitude varies by orders across the parameter grid
+/// (`e^{λ x}` with a sampled `λ`), so the absolute [`ZERO_TOL`] would be a
+/// different test at each corner of it.
+const PARAM_REL_TOL: f64 = 1e-7;
+
+/// [`NumericReport`] plus the parameter-set bookkeeping.
+#[derive(Default, Debug, Clone, Copy)]
+struct ParametricReport {
+    inner: NumericReport,
+    /// Parameter sets that produced at least one agreeing sample.
+    sets_agreeing: usize,
+    /// Parameter sets that produced no resolved sample at all.
+    sets_unresolved: usize,
+}
+
+impl ParametricReport {
+    /// Two agreeing parameter sets are required, not one: a candidate can be
+    /// right on one branch of the discriminant and wrong on the other, and a
+    /// single set cannot tell those apart.
+    fn certifies(&self) -> bool {
+        !self.inner.unevaluable
+            && self.inner.disagree == 0
+            && self.inner.blowup_at_regular_point == 0
+            && self.inner.agree >= PARAM_MIN_AGREEING
+            && self.sets_agreeing >= 2
+    }
+}
+
+impl fmt::Display for ParametricReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}; {} parameter sets agreeing, {} with no resolved sample",
+            self.inner, self.sets_agreeing, self.sets_unresolved
+        )
+    }
+}
+
+/// Sample the residual over `x` x integration constants x parameter values.
+fn parametric_report(
+    input: &OdeInput,
+    residual: ExprId,
+    candidate_derivs: &[ExprId],
+    constants: &[ExprId],
+    params: &[ExprId],
+    pool: &ExprPool,
+) -> ParametricReport {
+    let const_sets: [&[f64]; 3] = [
+        &[5.7, 4.3, 6.4, 5.1, 4.9],
+        &[8.5, 7.8, 6.6, 9.2, 7.1],
+        &[12.3, 10.0, 11.7, 10.5, 9.4],
+    ];
+    let x_samples = [0.11, 0.27, 0.43, 0.61, 0.79];
+
+    let mut report = ParametricReport::default();
+    for ps in PARAM_SETS {
+        let mut env: HashMap<ExprId, C64> = HashMap::new();
+        for (i, &p) in params.iter().enumerate() {
+            env.insert(p, C64::real(ps[i % ps.len()]));
+        }
+        let before = report.inner.agree;
+        for cs in const_sets {
+            for (i, &c) in constants.iter().enumerate() {
+                env.insert(c, C64::real(cs[i % cs.len()]));
+            }
+            for &xv in &x_samples {
+                env.insert(input.x, C64::real(xv));
+                match eval_complex(residual, &env, pool) {
+                    Some(v) if v.is_finite() => {
+                        record_parametric(&mut report.inner, v, candidate_derivs, &env, pool)
+                    }
+                    Some(_) => classify_nonfinite_complex(
+                        input,
+                        candidate_derivs,
+                        &env,
+                        xv,
+                        pool,
+                        &mut report.inner,
+                    ),
+                    None => {
+                        report.inner.unevaluable = true;
+                        return report;
+                    }
+                }
+            }
+        }
+        if report.inner.agree > before {
+            report.sets_agreeing += 1;
+        } else if report.inner.disagree == 0 && report.inner.blowup_at_regular_point == 0 {
+            report.sets_unresolved += 1;
+        }
+    }
+    report
+}
+
+/// Bucket a finite complex residual, with the zero band scaled by how large the
+/// candidate itself is at this sample.
+fn record_parametric(
+    report: &mut NumericReport,
+    v: C64,
+    candidate_derivs: &[ExprId],
+    env: &HashMap<ExprId, C64>,
+    pool: &ExprPool,
+) {
+    let mut scale = 1.0_f64;
+    for &d in candidate_derivs {
+        if let Some(dv) = eval_complex(d, env, pool) {
+            if dv.is_finite() {
+                scale = scale.max(dv.abs());
+            }
+        }
+    }
+    if v.abs() <= PARAM_REL_TOL * scale {
+        report.agree += 1;
+    } else {
+        report.disagree += 1;
+    }
+}
+
+/// The complex analogue of [`classify_nonfinite`]: same three outcomes, same
+/// precedence, with the equation and the candidate probed over C.
+fn classify_nonfinite_complex(
+    input: &OdeInput,
+    candidate_derivs: &[ExprId],
+    env: &HashMap<ExprId, C64>,
+    xv: f64,
+    pool: &ExprPool,
+    report: &mut NumericReport,
+) {
+    if !ode_is_regular_at_complex(input, env, xv, pool) {
+        report.skipped_singular_ode += 1;
+        return;
+    }
+    let mut vals = Vec::with_capacity(candidate_derivs.len());
+    for &d in candidate_derivs {
+        match eval_complex(d, env, pool) {
+            Some(v) if v.is_finite() => vals.push(v),
+            Some(_) => {
+                report.blowup_at_regular_point += 1;
+                return;
+            }
+            None => {
+                report.skipped_unknown_construct += 1;
+                return;
+            }
+        }
+    }
+    let mut eq_env = env.clone();
+    eq_env.insert(input.x, C64::real(xv));
+    eq_env.insert(input.y, vals[0]);
+    for (k, &dsym) in input.derivs.iter().enumerate() {
+        eq_env.insert(dsym, vals[k + 1]);
+    }
+    match eval_complex(input.equation, &eq_env, pool) {
+        Some(v) if v.is_finite() => record_parametric(report, v, candidate_derivs, env, pool),
+        _ => report.skipped_singular_ode += 1,
+    }
+}
+
+/// Is the equation itself finite at this `x` and this parameter assignment,
+/// candidate aside?  Probes several finite states, as [`ode_is_regular_at`]
+/// does.
+fn ode_is_regular_at_complex(
+    input: &OdeInput,
+    env: &HashMap<ExprId, C64>,
+    xv: f64,
+    pool: &ExprPool,
+) -> bool {
+    const PROBES: [f64; 4] = [1.0, 2.5, 0.5, -1.5];
+    PROBES.iter().any(|&p| {
+        let mut e = env.clone();
+        e.insert(input.x, C64::real(xv));
+        e.insert(input.y, C64::real(p));
+        for (k, &dsym) in input.derivs.iter().enumerate() {
+            e.insert(dsym, C64::real(p + 0.25 * (k as f64 + 1.0)));
+        }
+        matches!(eval_complex(input.equation, &e, pool), Some(v) if v.is_finite())
+    })
+}
+
+// ---------------------------------------------------------------------------
+// A minimal complex double
+// ---------------------------------------------------------------------------
+
+/// `re + i*im`, with principal branches for `log`, `sqrt` and `pow`.
+///
+/// Deliberately small: the only expressions it has to evaluate are the ones
+/// `dsolve` itself manufactures (exponentials, powers, the elementary
+/// functions the real [`eval`] already handles) plus whatever the caller wrote
+/// in the equation.  Anything else returns `None`, which the gate reads as *no
+/// information* rather than as agreement.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct C64 {
+    re: f64,
+    im: f64,
+}
+
+impl C64 {
+    pub(crate) fn real(re: f64) -> Self {
+        C64 { re, im: 0.0 }
+    }
+    pub(crate) fn new(re: f64, im: f64) -> Self {
+        C64 { re, im }
+    }
+    pub(crate) fn is_finite(self) -> bool {
+        self.re.is_finite() && self.im.is_finite()
+    }
+    pub(crate) fn abs(self) -> f64 {
+        self.re.hypot(self.im)
+    }
+    pub(crate) fn add(self, o: C64) -> C64 {
+        C64 {
+            re: self.re + o.re,
+            im: self.im + o.im,
+        }
+    }
+    pub(crate) fn sub(self, o: C64) -> C64 {
+        C64 {
+            re: self.re - o.re,
+            im: self.im - o.im,
+        }
+    }
+    pub(crate) fn mul(self, o: C64) -> C64 {
+        C64 {
+            re: self.re * o.re - self.im * o.im,
+            im: self.re * o.im + self.im * o.re,
+        }
+    }
+    pub(crate) fn div(self, o: C64) -> C64 {
+        let d = o.re * o.re + o.im * o.im;
+        C64 {
+            re: (self.re * o.re + self.im * o.im) / d,
+            im: (self.im * o.re - self.re * o.im) / d,
+        }
+    }
+    fn neg(self) -> C64 {
+        C64 {
+            re: -self.re,
+            im: -self.im,
+        }
+    }
+    fn exp(self) -> C64 {
+        let m = self.re.exp();
+        C64 {
+            re: m * self.im.cos(),
+            im: m * self.im.sin(),
+        }
+    }
+    fn ln(self) -> C64 {
+        C64 {
+            re: self.abs().ln(),
+            im: self.im.atan2(self.re),
+        }
+    }
+    fn powi(self, n: i64) -> C64 {
+        if n < 0 {
+            return C64::real(1.0).div(self.powi(-n));
+        }
+        let mut acc = C64::real(1.0);
+        for _ in 0..n {
+            acc = acc.mul(self);
+        }
+        acc
+    }
+    /// `self^w` on the principal branch.  Integer exponents go through repeated
+    /// multiplication, which is exact at `0` (where `exp(w*log 0)` is not) and
+    /// avoids a branch choice the caller did not ask for.
+    fn pow(self, w: C64) -> C64 {
+        if w.im == 0.0 && w.re.fract() == 0.0 && w.re.abs() <= 64.0 {
+            return self.powi(w.re as i64);
+        }
+        if self.re == 0.0 && self.im == 0.0 {
+            return if w.re > 0.0 {
+                C64::real(0.0)
+            } else {
+                C64::real(f64::INFINITY)
+            };
+        }
+        w.mul(self.ln()).exp()
+    }
+    fn sin(self) -> C64 {
+        C64 {
+            re: self.re.sin() * self.im.cosh(),
+            im: self.re.cos() * self.im.sinh(),
+        }
+    }
+    fn cos(self) -> C64 {
+        C64 {
+            re: self.re.cos() * self.im.cosh(),
+            im: -self.re.sin() * self.im.sinh(),
+        }
+    }
+    fn sinh(self) -> C64 {
+        C64 {
+            re: self.re.sinh() * self.im.cos(),
+            im: self.re.cosh() * self.im.sin(),
+        }
+    }
+    fn cosh(self) -> C64 {
+        C64 {
+            re: self.re.cosh() * self.im.cos(),
+            im: self.re.sinh() * self.im.sin(),
+        }
+    }
+}
+
+const I: C64 = C64 { re: 0.0, im: 1.0 };
+
+/// Evaluate `expr` over C.  `None` for constructs this evaluator does not know,
+/// which the gate treats as no information (never as agreement).
+pub(crate) fn eval_complex(
+    expr: ExprId,
+    env: &HashMap<ExprId, C64>,
+    pool: &ExprPool,
+) -> Option<C64> {
+    match pool.get(expr) {
+        ExprData::Integer(n) => Some(C64::real(n.0.to_f64())),
+        ExprData::Rational(r) => {
+            let (num, den) = r.0.clone().into_numer_denom();
+            Some(C64::real(num.to_f64() / den.to_f64()))
+        }
+        ExprData::Float(f) => Some(C64::real(f.inner.to_f64())),
+        ExprData::Symbol { .. } => env.get(&expr).copied(),
+        ExprData::Add(args) => {
+            let mut s = C64::real(0.0);
+            for a in args {
+                s = s.add(eval_complex(a, env, pool)?);
+            }
+            Some(s)
+        }
+        ExprData::Mul(args) => {
+            let mut p = C64::real(1.0);
+            for a in args {
+                p = p.mul(eval_complex(a, env, pool)?);
+            }
+            Some(p)
+        }
+        ExprData::Pow { base, exp } => {
+            let b = eval_complex(base, env, pool)?;
+            let e = eval_complex(exp, env, pool)?;
+            Some(b.pow(e))
+        }
+        ExprData::Func { name, args } => {
+            let v: Vec<C64> = args
+                .iter()
+                .map(|&a| eval_complex(a, env, pool))
+                .collect::<Option<_>>()?;
+            eval_func_complex(&name, &v)
+        }
+        _ => None,
+    }
+}
+
+fn eval_func_complex(name: &str, a: &[C64]) -> Option<C64> {
+    let z = *a.first()?;
+    let one = C64::real(1.0);
+    let half = C64::real(0.5);
+    Some(match name {
+        "sin" => z.sin(),
+        "cos" => z.cos(),
+        "tan" => z.sin().div(z.cos()),
+        "exp" => z.exp(),
+        "log" | "ln" => z.ln(),
+        "sqrt" => z.pow(half),
+        "sinh" => z.sinh(),
+        "cosh" => z.cosh(),
+        "tanh" => z.sinh().div(z.cosh()),
+        // atan z = (i/2)*(log(1 - i z) - log(1 + i z)); asin/acos follow.
+        "atan" => I.div(C64::real(2.0)).mul(
+            one.add(I.mul(z).neg())
+                .ln()
+                .add(one.add(I.mul(z)).ln().neg()),
+        ),
+        "asin" => I
+            .neg()
+            .mul(I.mul(z).add(one.add(z.mul(z).neg()).pow(half)).ln()),
+        "acos" => C64::real(std::f64::consts::FRAC_PI_2)
+            .add(I.mul(I.mul(z).add(one.add(z.mul(z).neg()).pow(half)).ln())),
+        "abs" => C64::real(z.abs()),
         _ => return None,
     })
 }

@@ -3,8 +3,10 @@
 //! passed it); declines assert `Err`, never a wrong answer.
 
 use super::*;
+use crate::deriv::SideCondition;
 use crate::integrate::special::basis_functions_used;
 use crate::kernel::{Domain, ExprPool};
+use crate::simplify::assumptions::AssumptionContext;
 
 fn setup() -> (ExprPool, ExprId, ExprId) {
     let p = ExprPool::new();
@@ -597,4 +599,241 @@ fn general_solution_has_exactly_order_many_constants() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Constant coefficients that are *symbolic*
+// ---------------------------------------------------------------------------
+
+/// Solve `src = 0` through [`dsolve_with`] and return the report, asserting the
+/// first branch verifies independently.
+fn report_src(order: usize, src: &str) -> (ExprPool, OdeInput, DsolveReport) {
+    let pool = ExprPool::new();
+    let input = super::corpus::build_ode(order, src, &pool).expect("source parses");
+    let rep = dsolve_with(&input, &AssumptionContext::new(), &pool)
+        .unwrap_or_else(|e| panic!("`{src}` should solve: {e}"));
+    let sol = &rep.result.solutions[0];
+    residual_is_zero(&input, sol.y_of_x, &sol.constants, &pool)
+        .unwrap_or_else(|e| panic!("`{src}` returned an unverified solution: {e}"));
+    (pool, input, rep)
+}
+
+fn nonzero_conditions(rep: &DsolveReport, pool: &ExprPool) -> Vec<String> {
+    rep.side_conditions
+        .iter()
+        .map(|c| match c {
+            SideCondition::NonZero(id) => pool.display(*id).to_string(),
+            other => format!("{other:?}"),
+        })
+        .collect()
+}
+
+/// The damped harmonic oscillator — the case 3.9.0 refused outright.
+#[test]
+fn damped_oscillator_with_symbolic_zeta_and_omega() {
+    let (pool, _, rep) = report_src(2, "ypp + 2*z*w*yp + w^2*y");
+    let sol = &rep.result.solutions[0];
+    assert_eq!(sol.constants.len(), 2);
+    assert_eq!(sol.method, "constant_coefficient_symbolic");
+    // Both exponentials must be present and must involve both parameters.
+    let y = pool.display(sol.y_of_x).to_string();
+    assert_eq!(
+        y.matches("exp(").count(),
+        2,
+        "expected two exponentials: {y}"
+    );
+    // The critically-damped branch is stated, not assumed away.
+    assert_eq!(
+        rep.side_conditions.len(),
+        1,
+        "expected exactly the discriminant condition, got {:?}",
+        nonzero_conditions(&rep, &pool)
+    );
+    assert!(matches!(rep.side_conditions[0], SideCondition::NonZero(_)));
+    assert!(
+        rep.notes.iter().any(|n| n.contains("discriminant")),
+        "the repeated-root case must be named in prose, got {:?}",
+        rep.notes
+    );
+}
+
+/// A discriminant that is *provably* zero takes the confluent branch and
+/// carries no condition at all.
+#[test]
+fn a_provable_double_root_gets_the_secular_solution() {
+    let (pool, _, rep) = report_src(2, "ypp + 2*a*yp + a^2*y");
+    let sol = &rep.result.solutions[0];
+    assert_eq!(sol.method, "constant_coefficient_symbolic_repeated_root");
+    assert!(
+        rep.side_conditions.is_empty(),
+        "nothing is undecided here: {:?}",
+        nonzero_conditions(&rep, &pool)
+    );
+    // The second basis function must carry the secular factor `x`.
+    let y = pool.display(sol.y_of_x).to_string();
+    assert!(
+        y.contains("x * exp") || y.contains("exp(") && y.contains("x *"),
+        "expected an x·e^{{−ax}} term, got {y}"
+    );
+}
+
+/// A symbolic *leading* coefficient is an assumption about the equation's
+/// order, and is reported as one.
+#[test]
+fn a_symbolic_leading_coefficient_is_a_stated_assumption() {
+    let (pool, _, rep) = report_src(2, "a*ypp + b*yp + c*y");
+    let conds = nonzero_conditions(&rep, &pool);
+    assert!(
+        conds.iter().any(|c| c == "a"),
+        "`a ≠ 0` must be stated — at a = 0 the equation is first order, not \
+         second — got {conds:?}"
+    );
+    assert_eq!(
+        conds.len(),
+        2,
+        "leading coefficient and discriminant: {conds:?}"
+    );
+}
+
+/// A caller who rules out the confluence gets an unconditional answer.
+#[test]
+fn an_asserted_nonzero_discriminant_removes_the_condition() {
+    let pool = ExprPool::new();
+    let input = super::corpus::build_ode(2, "ypp + 2*z*w*yp + w^2*y", &pool).expect("parses");
+    // The solver forms D = 4ζ²ω² − 4ω²; the caller states 4ω²(ζ²−1) ≠ 0 in the
+    // equivalent spelling ζ²ω² − ω² ≠ 0, which differs by the factor 4.
+    let z = pool.symbol("z", Domain::Real);
+    let w = pool.symbol("w", Domain::Real);
+    let w2 = pool.pow(w, pool.integer(2_i32));
+    let d = pool.add(vec![
+        pool.mul(vec![pool.pow(z, pool.integer(2_i32)), w2]),
+        pool.mul(vec![pool.integer(-1_i32), w2]),
+    ]);
+    let mut assumptions = AssumptionContext::new();
+    assumptions
+        .refine(pool.pred_ne(d, pool.integer(0_i32)), &pool)
+        .expect("satisfiable");
+    let rep = dsolve_with(&input, &assumptions, &pool).expect("solves");
+    assert!(
+        rep.side_conditions.is_empty(),
+        "the caller settled the branch, got {:?}",
+        nonzero_conditions(&rep, &pool)
+    );
+    assert_eq!(
+        rep.result.solutions[0].method,
+        "constant_coefficient_symbolic_distinct_roots"
+    );
+}
+
+/// A stated *negative* discriminant selects the real oscillatory form rather
+/// than complex exponentials.
+#[test]
+fn an_asserted_negative_discriminant_gives_the_real_oscillatory_form() {
+    let pool = ExprPool::new();
+    let input = super::corpus::build_ode(2, "ypp + 2*z*w*yp + w^2*y", &pool).expect("parses");
+    let z = pool.symbol("z", Domain::Real);
+    let w = pool.symbol("w", Domain::Real);
+    let w2 = pool.pow(w, pool.integer(2_i32));
+    // −D/4 = ω² − ζ²ω² > 0, i.e. the underdamped region.
+    let neg_d = pool.add(vec![
+        w2,
+        pool.mul(vec![
+            pool.integer(-1_i32),
+            pool.pow(z, pool.integer(2_i32)),
+            w2,
+        ]),
+    ]);
+    let mut assumptions = AssumptionContext::new();
+    assumptions
+        .refine(pool.pred_gt(neg_d, pool.integer(0_i32)), &pool)
+        .expect("satisfiable");
+    let rep = dsolve_with(&input, &assumptions, &pool).expect("solves");
+    let sol = &rep.result.solutions[0];
+    assert_eq!(sol.method, "constant_coefficient_symbolic_oscillatory");
+    let y = pool.display(sol.y_of_x).to_string();
+    assert!(y.contains("cos(") && y.contains("sin("), "got {y}");
+    residual_is_zero(&input, sol.y_of_x, &sol.constants, &pool)
+        .expect("the oscillatory form must verify too");
+    assert!(rep.side_conditions.is_empty());
+}
+
+/// The `λᵏ` factor is peeled off, so a symbolic third-order equation with no
+/// `y` term still reduces to a quadratic.
+#[test]
+fn a_lambda_factor_reduces_the_symbolic_degree() {
+    let (pool, _, rep) = report_src(3, "yppp + 2*z*w*ypp + w^2*yp");
+    let sol = &rep.result.solutions[0];
+    assert_eq!(sol.constants.len(), 3);
+    let y = pool.display(sol.y_of_x).to_string();
+    assert_eq!(
+        y.matches("exp(").count(),
+        2,
+        "one constant mode + two exponentials: {y}"
+    );
+}
+
+/// Beyond degree two there is no closed form, and none is invented.
+#[test]
+fn a_symbolic_cubic_characteristic_polynomial_is_refused() {
+    let pool = ExprPool::new();
+    let input = super::corpus::build_ode(3, "yppp + a*ypp + b*yp + c*y", &pool).expect("parses");
+    match dsolve(&input, &pool) {
+        Err(DsolveError::Unsupported(m)) => {
+            assert!(
+                m.contains("degree"),
+                "the message must name the degree: {m}"
+            );
+        }
+        Err(e) => panic!("expected an Unsupported decline, got {e}"),
+        Ok(r) => panic!(
+            "expected a decline, got {}",
+            pool.display(r.solutions[0].y_of_x)
+        ),
+    }
+}
+
+/// A numeric equation is untouched by the symbolic route: same method label,
+/// same real cos/sin output, no conditions.
+#[test]
+fn numeric_coefficients_still_take_the_rational_route() {
+    let (pool, _, rep) = report_src(2, "ypp + 2*yp + 5*y");
+    let sol = &rep.result.solutions[0];
+    assert_eq!(sol.method, "constant_coefficient");
+    assert!(rep.side_conditions.is_empty());
+    let y = pool.display(sol.y_of_x).to_string();
+    assert!(y.contains("cos(") && y.contains("sin("), "got {y}");
+}
+
+/// Every symbolic corpus entry solves *and* verifies independently.
+#[test]
+fn symbolic_corpus_entries_all_verify() {
+    for (class, name, order, src) in super::corpus::CORPUS {
+        if *class != "cc-sym" {
+            continue;
+        }
+        let pool = ExprPool::new();
+        let input = super::corpus::build_ode(*order, src, &pool).expect("parses");
+        let res = dsolve(&input, &pool).unwrap_or_else(|e| panic!("`{name}` should solve: {e}"));
+        let sol = &res.solutions[0];
+        assert_eq!(sol.constants.len(), *order, "`{name}` constant count");
+        residual_is_zero(&input, sol.y_of_x, &sol.constants, &pool)
+            .unwrap_or_else(|e| panic!("`{name}` returned an unverified solution: {e}"));
+    }
+}
+
+/// The parametric gate must **refuse** a candidate that is wrong in the
+/// parameters even though it is right at one convenient value of them.
+#[test]
+fn a_candidate_right_at_one_parameter_value_only_is_refused() {
+    let pool = ExprPool::new();
+    let input = super::corpus::build_ode(2, "ypp + 2*z*w*yp + w^2*y", &pool).expect("parses");
+    // y = C1·e^{−ωx}: a solution exactly when ζ = 1, not in general.
+    let w = pool.symbol("w", Domain::Real);
+    let c1 = pool.symbol("C1", Domain::Real);
+    let arg = pool.mul(vec![pool.integer(-1_i32), w, input.x]);
+    let bogus = pool.mul(vec![c1, pool.func("exp", vec![arg])]);
+    assert!(
+        residual_is_zero(&input, bogus, &[c1], &pool).is_err(),
+        "a candidate that only works at ζ = 1 must not be certified"
+    );
 }

@@ -138,8 +138,11 @@ use alkahest_core::calculus::fps::{Fps as CoreFps, FpsError as CoreFpsError};
 use alkahest_core::calculus::multilimit::{
     multilimit as core_multilimit, MultiLimit as CoreMultiLimit,
 };
+use alkahest_core::ode::dsolve::system::{
+    dsolve_system_with as core_dsolve_system_with, DsolveSystemError as CoreDsolveSystemError,
+};
 use alkahest_core::ode::dsolve::{
-    dsolve as core_dsolve, DsolveError as CoreDsolveError, OdeInput as CoreOdeInput,
+    dsolve_with as core_dsolve_with, DsolveError as CoreDsolveError, OdeInput as CoreOdeInput,
 };
 use alkahest_core::ode::numeric::{
     integrate_rk4 as core_integrate_rk4, integrate_rk45 as core_integrate_rk45,
@@ -4452,23 +4455,41 @@ fn fps_error_to_py(e: CoreFpsError) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(e.to_string())
 }
 
-/// `experimental.dsolve(equation, x, y, [y', y'', …])` — solve a scalar ODE.
+/// `experimental.dsolve(equation, x, y, [y', y'', …], assumptions=None)` —
+/// solve a scalar ODE.
 ///
 /// `equation` is interpreted as `equation = 0`, written in terms of the
 /// independent variable `x`, the unknown `y`, and the derivative symbols
 /// `derivs` (`derivs[0] = y'`, …). Returns a list of solution dicts with keys
-/// `y_of_x` (the `Expr` for `y(x)`), `constants` (list of `Expr`), and `method`.
+/// `y_of_x` (the `Expr` for `y(x)`), `constants` (list of `Expr`), `method`,
+/// `side_conditions` (list of `str`) and `notes` (list of `str`).
+///
+/// The coefficients may be symbolic: `y'' + 2*z*w*y' + w**2*y = 0` returns the
+/// uniform two-exponential form. Its discriminant's sign is parameter
+/// dependent, so the family it returns is the general solution only where the
+/// characteristic roots are distinct — `side_conditions` carries that
+/// condition and `notes` names the repeated-root case it excludes. Both are
+/// empty when nothing was assumed. Passing `assumptions` (an
+/// :class:`Assumptions` context stating e.g. the discriminant is non-zero, or
+/// negative) settles the branch and empties them.
 #[pyfunction]
-#[pyo3(name = "dsolve")]
+#[pyo3(name = "dsolve", signature = (equation, x, y, derivs, assumptions=None))]
 fn py_dsolve(
     py: Python<'_>,
     equation: PyRef<PyExpr>,
     x: PyRef<PyExpr>,
     y: PyRef<PyExpr>,
     derivs: Vec<PyExpr>,
+    assumptions: Option<PyRef<PyAssumptions>>,
 ) -> PyResult<PyObject> {
+    if let Some(ref a) = assumptions {
+        if !a.pool.is(&equation.pool) {
+            return Err(pool_mismatch_err());
+        }
+    }
     let pool_py = equation.pool.clone_ref(py);
-    let result = {
+    let empty = CoreAssumptionContext::new();
+    let report = {
         let pool = pool_py.borrow(py);
         let input = CoreOdeInput {
             x: x.id,
@@ -4476,10 +4497,18 @@ fn py_dsolve(
             derivs: derivs.iter().map(|e| e.id).collect(),
             equation: equation.id,
         };
-        core_dsolve(&input, &pool.inner).map_err(dsolve_error_to_py)?
+        let ctx = assumptions.as_ref().map_or(&empty, |a| &a.inner);
+        core_dsolve_with(&input, ctx, &pool.inner).map_err(dsolve_error_to_py)?
     };
+    let pool = pool_py.borrow(py);
+    let conditions: Vec<String> = report
+        .side_conditions
+        .iter()
+        .map(|c| render_side_condition_or_depth(&pool.inner, c))
+        .collect();
+    drop(pool);
     let out = PyList::empty_bound(py);
-    for sol in result.solutions {
+    for sol in report.result.solutions {
         let d = PyDict::new_bound(py);
         d.set_item(
             "y_of_x",
@@ -4501,9 +4530,102 @@ fn py_dsolve(
         }
         d.set_item("constants", consts)?;
         d.set_item("method", sol.method)?;
+        d.set_item("side_conditions", conditions.clone())?;
+        d.set_item("notes", report.notes.clone())?;
         out.append(d)?;
     }
     Ok(out.into_py(py))
+}
+
+fn dsolve_system_error_to_py(e: CoreDsolveSystemError) -> PyErr {
+    pyo3::exceptions::PyValueError::new_err(e.to_string())
+}
+
+/// `experimental.dsolve_system(ode, assumptions=None)` — solve a linear
+/// constant-coefficient system `y' = A·y + f(t)` in closed form.
+///
+/// `ode` is an :class:`alkahest.ODE`, i.e. `d(state_vars)/dt = rhs`. Each
+/// right-hand side must be affine in the state variables with coefficients
+/// free of the time variable; the coefficients themselves may be symbolic.
+///
+/// Returns a dict with keys `state_vars` (list of `Expr`), `y_of_t` (list of
+/// `Expr`, aligned with `state_vars`), `constants` (list of `Expr`),
+/// `fundamental_matrix` (list of rows of `Expr`, the entries of `e^{At}`),
+/// `method` (`str`), `side_conditions` (list of `str`) and `notes` (list of
+/// `str`).
+///
+/// Raises `ValueError` when the system is not linear (`E-ODE-030`), has a
+/// time-dependent coefficient (`E-ODE-031`), has no closed-form spectrum
+/// (`E-ODE-032`), has a forcing term whose required integral is not elementary
+/// (`E-ODE-033`), or produced a candidate that failed the substitution gate
+/// (`E-ODE-034`). It never returns an unverified solution.
+///
+/// The two-compartment pharmacokinetic model
+/// `x' = -ka*x`, `y' = ka*x - ke*y` solves with symbolic `ka`, `ke`; because
+/// `ka = ke` makes the returned expression divide by zero, that case appears in
+/// `side_conditions` rather than being assumed away.
+#[pyfunction]
+#[pyo3(name = "dsolve_system", signature = (ode, assumptions=None))]
+fn py_dsolve_system(
+    py: Python<'_>,
+    ode: PyRef<PyODE>,
+    assumptions: Option<PyRef<PyAssumptions>>,
+) -> PyResult<PyObject> {
+    if let Some(ref a) = assumptions {
+        if !a.pool.is(&ode.pool) {
+            return Err(pool_mismatch_err());
+        }
+    }
+    let pool_py = ode.pool.clone_ref(py);
+    let empty = CoreAssumptionContext::new();
+    let (sol, conditions) = {
+        let pool = pool_py.borrow(py);
+        let ctx = assumptions.as_ref().map_or(&empty, |a| &a.inner);
+        let sol = core_dsolve_system_with(&ode.inner, ctx, &pool.inner)
+            .map_err(dsolve_system_error_to_py)?;
+        let conditions: Vec<String> = sol
+            .side_conditions
+            .iter()
+            .map(|c| render_side_condition_or_depth(&pool.inner, c))
+            .collect();
+        (sol, conditions)
+    };
+    let wrap = |id: ExprId| {
+        PyExpr {
+            id,
+            pool: pool_py.clone_ref(py),
+        }
+        .into_py(py)
+    };
+    let d = PyDict::new_bound(py);
+    let states = PyList::empty_bound(py);
+    for v in &sol.state_vars {
+        states.append(wrap(*v))?;
+    }
+    d.set_item("state_vars", states)?;
+    let ys = PyList::empty_bound(py);
+    for e in &sol.y_of_t {
+        ys.append(wrap(*e))?;
+    }
+    d.set_item("y_of_t", ys)?;
+    let consts = PyList::empty_bound(py);
+    for c in &sol.constants {
+        consts.append(wrap(*c))?;
+    }
+    d.set_item("constants", consts)?;
+    let phi = PyList::empty_bound(py);
+    for row in &sol.fundamental_matrix {
+        let r = PyList::empty_bound(py);
+        for e in row {
+            r.append(wrap(*e))?;
+        }
+        phi.append(r)?;
+    }
+    d.set_item("fundamental_matrix", phi)?;
+    d.set_item("method", sol.method)?;
+    d.set_item("side_conditions", conditions)?;
+    d.set_item("notes", sol.notes)?;
+    Ok(d.into_py(py))
 }
 
 // ---------------------------------------------------------------------------
@@ -15775,6 +15897,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(dirac_delta, m)?)?;
     // Experimental calculus / ODE / transform surface (PRs #152–#161).
     m.add_function(wrap_pyfunction!(py_dsolve, m)?)?;
+    m.add_function(wrap_pyfunction!(py_dsolve_system, m)?)?;
     m.add_function(wrap_pyfunction!(py_laplace_transform, m)?)?;
     m.add_function(wrap_pyfunction!(py_inverse_laplace_transform, m)?)?;
     m.add_function(wrap_pyfunction!(py_fourier_transform, m)?)?;

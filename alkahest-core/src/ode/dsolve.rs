@@ -17,7 +17,8 @@
 //!
 //! **Second order** (`F(x, y, y', y'') = 0`):
 //! - constant coefficients `a·y'' + b·y' + c·y = r(x)` (real distinct / repeated
-//!   / complex roots)
+//!   / complex roots), with `a, b, c` **numeric or symbolic** — the damped
+//!   oscillator `y'' + 2ζω y' + ω² y = 0` included
 //! - Euler–Cauchy `a·x²·y'' + b·x·y' + c·y = r(x)`
 //! - general variable coefficients `a₂(x)y'' + a₁(x)y' + a₀(x)y = r(x)`, when a
 //!   first homogeneous solution is found by ansatz — the second then follows by
@@ -25,7 +26,26 @@
 //!
 //! **Higher order**: constant-coefficient `Σ aₖ y^(k) = r(x)`, solved through
 //! the characteristic polynomial (rational + quadratic factorization;
-//! irreducible factors of degree ≥ 3 are declined).
+//! irreducible factors of degree ≥ 3 are declined).  With symbolic
+//! coefficients the same polynomial is rooted in closed form up to degree two
+//! after a `λᵏ` factor is peeled off, and declined above that.
+//!
+//! **Systems** `y' = A·y + f(t)` live in [`mod@system`], reached through
+//! [`system::dsolve_system`] over the crate's [`ODE`](crate::ode::ODE) type —
+//! not through [`dsolve`], whose input names a single unknown.
+//!
+//! # Parameter branches
+//!
+//! A symbolic coefficient makes the *multiplicity structure* of the
+//! characteristic polynomial parameter dependent, and therefore undecidable:
+//! `y'' + 2ζω y' + ω² y = 0` has two distinct roots for `ζ ≠ 1` and a double
+//! root at `ζ = 1`.  The returned family satisfies the equation identically
+//! either way — that is what the verification gate checks — but it is the
+//! *general* solution only on one side.  Which assumption was made is reported,
+//! never left implicit: coarsely in [`DsolveSolution::method`], and exactly in
+//! [`DsolveReport::side_conditions`] / [`DsolveReport::notes`] from
+//! [`dsolve_with`], which also consults caller-stated facts before assuming
+//! anything.
 //!
 //! For every linear class the forcing term `r(x)` is closed either by
 //! undetermined coefficients (cheap, exact, but only for
@@ -38,9 +58,11 @@
 //! *Every* returned solution is verified by substitution: the candidate `y(x)`
 //! (and its derivatives) are substituted into the original equation, the
 //! residual is simplified, and accepted only when it is the symbolic zero or
-//! numerically `≈ 0` at several sample points over random constant values.  A
-//! candidate that fails verification causes [`dsolve`] to decline (it never
-//! returns an unverified solution).
+//! numerically `≈ 0` at several sample points over random constant values —
+//! and, when the equation carries free parameters, over sampled parameter
+//! values too, evaluated in ℂ so the complex branch of a symbolic-coefficient
+//! answer is reachable.  A candidate that fails verification causes [`dsolve`]
+//! to decline (it never returns an unverified solution).
 //!
 //! # Quadratures
 //!
@@ -57,10 +79,12 @@
 //! that closes.  Set `ALKAHEST_DSOLVE_TRACE` in a test build to print every
 //! integral that no spelling closed.
 
+use crate::deriv::SideCondition;
 use crate::diff::diff;
 use crate::integrate::engine::integrate;
 use crate::kernel::eval_const::try_expr_f64;
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
+use crate::simplify::assumptions::AssumptionContext;
 use crate::simplify::engine::{simplify, simplify_expanded};
 use std::collections::HashMap;
 use std::fmt;
@@ -69,6 +93,7 @@ mod constant_coeff;
 #[cfg(test)]
 mod corpus;
 mod first_order;
+pub mod system;
 mod variation;
 mod verify;
 
@@ -270,13 +295,234 @@ impl crate::errors::AlkahestError for DsolveError {
 /// implemented classes or a required quadrature is non-elementary, and
 /// [`DsolveError::VerificationFailed`] when a candidate could not be verified.
 pub fn dsolve(input: &OdeInput, pool: &ExprPool) -> Result<DsolveResult, DsolveError> {
+    dsolve_with(input, &AssumptionContext::new(), pool).map(|r| r.result)
+}
+
+/// [`dsolve`], plus the conditions under which the returned branches are the
+/// **general** solution and any facts the caller has stated.
+///
+/// # Why this exists rather than a field on [`DsolveSolution`]
+///
+/// A constant-coefficient equation with *symbolic* coefficients has a
+/// characteristic polynomial whose multiplicity structure is parameter
+/// dependent: `y'' + 2ζω y' + ω² y = 0` has two distinct roots for `ζ ≠ 1` and
+/// one double root at `ζ = 1`, and no amount of simplification decides which,
+/// because both happen.  The two-exponential form
+/// `C₁e^{r₊x} + C₂e^{r₋x}` is *a* solution for every parameter value — it
+/// satisfies the equation identically — but it is the **general** solution only
+/// where the roots are distinct; at `ζ = 1` the two branches coincide and the
+/// missing second solution is `x·e^{rx}`.
+///
+/// Returning that form with no way to say so would be exactly the silent
+/// assumption this library refuses to make, so the assumption travels with the
+/// answer: [`DsolveReport::side_conditions`] carries `discriminant ≠ 0` as a
+/// [`SideCondition`], and [`DsolveReport::notes`] spells out what happens where
+/// it fails.  Callers of plain [`dsolve`] still see it, coarsely, in
+/// [`DsolveSolution::method`], which names the branch
+/// (`"constant_coefficient_symbolic"` vs `"…_repeated_root"`).
+///
+/// `assumptions` is consulted before the branch is guessed: a stated
+/// `discriminant > 0` or `discriminant ≠ 0` removes the side condition, and a
+/// stated `−discriminant > 0` selects the real `e^{αx}(C₁cos βx + C₂sin βx)`
+/// form instead of the complex exponentials.
+///
+/// # Errors
+///
+/// As [`dsolve`].
+pub fn dsolve_with(
+    input: &OdeInput,
+    assumptions: &AssumptionContext,
+    pool: &ExprPool,
+) -> Result<DsolveReport, DsolveError> {
     let mut gen = ConstGen::new(input, pool);
-    match input.order() {
+    let mut ctx = SolveCtx {
+        assumptions,
+        conds: Conditions::default(),
+    };
+    let result = match input.order() {
         1 => first_order::solve(input, &mut gen, pool),
-        2 => constant_coeff::solve_second_order(input, &mut gen, pool),
-        n if n >= 3 => constant_coeff::solve_higher_order(input, n, &mut gen, pool),
+        2 => constant_coeff::solve_second_order(input, &mut gen, &mut ctx, pool),
+        n if n >= 3 => constant_coeff::solve_higher_order(input, n, &mut gen, &mut ctx, pool),
         _ => Err(DsolveError::Unsupported("order 0 ODE".to_string())),
+    }?;
+    Ok(DsolveReport {
+        result,
+        side_conditions: ctx.conds.side,
+        notes: ctx.conds.notes,
+    })
+}
+
+/// The result of [`dsolve_with`].
+#[derive(Clone, Debug)]
+pub struct DsolveReport {
+    /// The solution branches, exactly as [`dsolve`] returns them.
+    pub result: DsolveResult,
+    /// Conditions under which [`Self::result`] is the *general* solution.
+    ///
+    /// Empty means unconditional.  A non-empty list is not a hedge about
+    /// correctness — every branch here has been verified by substitution — it
+    /// is about *completeness*: where a condition fails, the returned family
+    /// still solves the equation but no longer spans every solution.
+    pub side_conditions: Vec<SideCondition>,
+    /// Prose for the cases [`Self::side_conditions`] excludes.
+    pub notes: Vec<String>,
+}
+
+/// Per-call state threaded through the solving classes: what the caller has
+/// asserted, and what the class had to assume.
+pub(crate) struct SolveCtx<'a> {
+    pub(crate) assumptions: &'a AssumptionContext,
+    pub(crate) conds: Conditions,
+}
+
+/// Conditions a class attached to its answer.
+#[derive(Default, Debug, Clone)]
+pub(crate) struct Conditions {
+    pub(crate) side: Vec<SideCondition>,
+    pub(crate) notes: Vec<String>,
+}
+
+impl Conditions {
+    pub(crate) fn require_nonzero(&mut self, e: ExprId) {
+        let c = SideCondition::NonZero(e);
+        if !self.side.contains(&c) {
+            self.side.push(c);
+        }
     }
+
+    pub(crate) fn note(&mut self, s: String) {
+        if !self.notes.contains(&s) {
+            self.notes.push(s);
+        }
+    }
+}
+
+/// What the caller's assumptions establish about the sign of a quantity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AssumedSign {
+    /// Strictly positive.
+    Positive,
+    /// Strictly negative.
+    Negative,
+    /// Non-zero, sign not determined.
+    NonZero,
+    /// Nothing follows.
+    Unknown,
+}
+
+impl SolveCtx<'_> {
+    /// What the caller's facts say about the sign of `e`.
+    ///
+    /// A fact about `u` settles `e` when `e = q·u` for a non-zero rational `q`
+    /// small enough to be found by [`constant_ratio`].  That is a deliberately
+    /// narrow rule: it covers the spellings the same quantity arrives in
+    /// (`ka − ke` against `ke − ka`, a discriminant against a quarter of it),
+    /// which is what a caller actually trips over, and it needs no reasoning
+    /// beyond one provable identity.
+    ///
+    /// Deliberately **not** covered: deriving `4ω²(ζ² − 1) < 0` from
+    /// `ω > 0 ∧ ζ < 1`.  That is a real sign-decision problem;
+    /// `logic::satisfiable` is interval propagation over unbounded boxes and
+    /// does not refute the conjunction, and a heuristic that "usually" gets it
+    /// right is exactly how a wrong branch is picked silently.  A caller who
+    /// needs that branch states the fact about the discriminant itself.
+    pub(crate) fn assumed_sign(&self, e: ExprId, pool: &ExprPool) -> AssumedSign {
+        let target = expand_powers(e, pool);
+        let mut verdict = AssumedSign::Unknown;
+        for fact in self.assumptions.facts() {
+            let (u, strict_sign) = match fact {
+                SideCondition::Positive(id) => (*id, true),
+                SideCondition::NonZero(id) => (*id, false),
+                SideCondition::InDomain(..) => continue,
+            };
+            let Some(ratio) = constant_ratio(target, expand_powers(u, pool), pool) else {
+                continue;
+            };
+            if !strict_sign {
+                if verdict == AssumedSign::Unknown {
+                    verdict = AssumedSign::NonZero;
+                }
+                continue;
+            }
+            return if ratio > 0.0 {
+                AssumedSign::Positive
+            } else {
+                AssumedSign::Negative
+            };
+        }
+        verdict
+    }
+
+    /// Has the caller ruled out `e = 0`?
+    pub(crate) fn asserts_nonzero(&self, e: ExprId, pool: &ExprPool) -> bool {
+        !matches!(self.assumed_sign(e, pool), AssumedSign::Unknown)
+    }
+}
+
+/// Is `e ≠ 0` already established, without any caller assumption?
+///
+/// True for a non-zero literal, and for any **closed** expression (no free
+/// symbols) the zero test can certify non-zero — `−2√(−1)`, the eigenvalue gap
+/// of a rotation.  For an expression that *does* mention a free symbol,
+/// `ZeroStatus::NonZero` means only "not identically zero as a function", which
+/// is not the same claim and must not be read as one: `ζ² − 1` is not
+/// identically zero and still vanishes at `ζ = 1`.
+pub(crate) fn is_settled_nonzero(e: ExprId, pool: &ExprPool) -> bool {
+    if matches!(try_expr_f64(e, pool), Some(v) if v != 0.0) {
+        return true;
+    }
+    if has_free_symbol(e, pool) {
+        return false;
+    }
+    matches!(
+        crate::matrix::zero_test::zero_status(pool, e),
+        crate::matrix::zero_test::ZeroStatus::NonZero
+    )
+}
+
+fn has_free_symbol(expr: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| match d {
+        ExprData::Symbol { .. } => true,
+        ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
+            args.iter().any(|&a| has_free_symbol(a, pool))
+        }
+        ExprData::Pow { base, exp } => has_free_symbol(*base, pool) || has_free_symbol(*exp, pool),
+        _ => false,
+    })
+}
+
+/// `q` such that `a = q·b`, for a small non-zero rational `q`, or `None`.
+///
+/// Asking `simplify(a/b)` instead does not work: `(ke − ka)·(ka − ke)⁻¹` is a
+/// `Mul` of an `Add` and a `Pow` of an `Add`, and the default rule set has no
+/// reason to cancel it.  Testing `a − q·b = 0` for a fixed candidate list turns
+/// the question into one the zero test *can* answer, and the answer it gives is
+/// a proof rather than a numeric coincidence.
+fn constant_ratio(a: ExprId, b: ExprId, pool: &ExprPool) -> Option<f64> {
+    if let Some(v) = try_expr_f64(div(a, b, pool), pool) {
+        if v != 0.0 && v.is_finite() {
+            return Some(v);
+        }
+    }
+    const NUMS: [i64; 8] = [1, -1, 2, -2, 3, -3, 4, -4];
+    const DENS: [i64; 4] = [1, 2, 3, 4];
+    for num in NUMS {
+        for den in DENS {
+            let q = if den == 1 {
+                pool.integer(num)
+            } else {
+                pool.rational(num, den)
+            };
+            let diff = expand_powers(
+                pool.add(vec![a, pool.mul(vec![pool.integer(-1_i32), q, b])]),
+                pool,
+            );
+            if crate::matrix::zero_test::zero_status(pool, diff).is_proven_zero() {
+                return Some(num as f64 / den as f64);
+            }
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +540,14 @@ impl ConstGen {
     fn new(input: &OdeInput, pool: &ExprPool) -> Self {
         let mut used = std::collections::HashSet::new();
         collect_symbol_names(input.equation, pool, &mut used);
+        ConstGen { next: 1, used }
+    }
+
+    /// A generator that avoids an explicitly supplied set of names.
+    ///
+    /// [`Self::new`] derives the set from an [`OdeInput`]; a system has no
+    /// single equation to walk, so its caller collects the names itself.
+    pub(crate) fn with_used(used: std::collections::HashSet<String>) -> Self {
         ConstGen { next: 1, used }
     }
 
@@ -483,6 +737,19 @@ fn integrand_spellings(expr: ExprId, pool: &ExprPool) -> Vec<ExprId> {
         }
     }
     out
+}
+
+/// `simp`, with integer powers of products distributed first.
+///
+/// `simplify_expanded` does **not** turn `(z·ω)²` into `z²ω²` — the `Pow` wraps
+/// a whole `Mul`, so the exponent never reaches the factors — and a
+/// characteristic discriminant built from `(2ζω)² − 4ω²` therefore keeps a
+/// `(ζ·ω)²` that no later step cancels against a `ζ²ω²` written by the caller.
+/// Every quantity whose *vanishing* is going to be tested — a discriminant, an
+/// eigenvalue gap — goes through here first, so the zero test and the
+/// assumption matcher see one spelling rather than two.
+pub(crate) fn expand_powers(expr: ExprId, pool: &ExprPool) -> ExprId {
+    simp(distribute_recip(expr, pool), pool)
 }
 
 /// Rewrite `(a·b·…)^k → a^k·b^k·…` for **integer** `k`, recursively.
