@@ -56,9 +56,9 @@
 //! is never entered at all, every sample of every numerically-certified
 //! solution being finite.
 
-use super::{ddx, simp, subs1, DsolveError, OdeInput};
+use super::{contains, ddx, simp, subs1, DsolveError, OdeInput};
 use crate::kernel::{ExprData, ExprId, ExprPool};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 /// Absolute tolerance for "this sample of the residual is zero".
@@ -232,6 +232,95 @@ impl fmt::Display for NumericReport {
     }
 }
 
+/// Deterministic pseudo-random constant assignments (no rng dependency).
+/// Constants are kept positive and reasonably large so that radicands such as
+/// `sqrt(4·C − 3x²)` arising from quadratic-implicit solutions stay real over
+/// the (small) x-sample range.
+const CONST_SETS: [&[f64]; 3] = [
+    &[5.7, 4.3, 6.4, 5.1, 4.9],
+    &[8.5, 7.8, 6.6, 9.2, 7.1],
+    &[12.3, 10.0, 11.7, 10.5, 9.4],
+];
+
+/// Values bound to the equation's *symbolic parameters* (see
+/// [`parameter_env`]).  Kept `O(1)` and positive: a parameter is typically a
+/// rate or a half-saturation constant, appears under a `log` or in an exponent
+/// as often as not, and a value of `12` in an exponent overflows an `f64`
+/// where `1.3` does not.  One row per row of [`CONST_SETS`].
+///
+/// Positive-only is a deliberate limit, and it is the same convention the rest
+/// of this module already commits to by writing `log u` and `exp_of`'s `u^c`:
+/// a candidate that is right for `Kₘ > 0` and wrong for `Kₘ < 0` is certified
+/// here.  Sampling negative values instead would reject correct answers to
+/// equations whose parameters are physically positive far more often than it
+/// would catch anything, and the sign condition is not represented in the
+/// input — `OdeInput` carries no assumptions.
+const PARAM_SETS: [&[f64]; 3] = [
+    &[1.3, 2.1, 0.7, 1.9, 3.1],
+    &[0.9, 1.7, 2.3, 1.1, 0.6],
+    &[2.7, 0.8, 1.5, 3.3, 2.2],
+];
+
+/// `x` sample points, shared by the explicit and implicit gates.
+const X_SAMPLES: [f64; 5] = [0.11, 0.27, 0.43, 0.61, 0.79];
+
+/// Bind every symbol of `exprs` that is neither an ODE variable nor an
+/// integration constant to a value from `PARAM_SETS[set]`.
+///
+/// Without this a residual mentioning a symbolic coefficient (`y' + kₑ·y = 0`,
+/// Michaelis–Menten's `Kₘ`, `Vₘ`) is *unevaluable* — [`eval`] has nothing to
+/// put in its place — so the numeric half of the gate could not run at all and
+/// every parameterised ODE had to certify symbolically or be declined.  The
+/// binding is sound in the direction that matters: a candidate correct for all
+/// parameter values disagrees at none of them, and a disagreement at one
+/// value is still a disagreement.
+fn parameter_env(
+    exprs: &[ExprId],
+    input: &OdeInput,
+    constants: &[ExprId],
+    set: usize,
+    pool: &ExprPool,
+) -> HashMap<ExprId, f64> {
+    let mut bound: HashSet<ExprId> = HashSet::new();
+    bound.insert(input.x);
+    bound.insert(input.y);
+    bound.extend(input.derivs.iter().copied());
+    bound.extend(constants.iter().copied());
+
+    let mut params: Vec<ExprId> = Vec::new();
+    for &e in exprs {
+        collect_symbols(e, pool, &mut |s| {
+            if !bound.contains(&s) && !params.contains(&s) {
+                params.push(s);
+            }
+        });
+    }
+    // Sort by `ExprId` so the assignment does not depend on traversal order.
+    params.sort();
+    let values = PARAM_SETS[set % PARAM_SETS.len()];
+    params
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| (p, values[i % values.len()]))
+        .collect()
+}
+
+fn collect_symbols(expr: ExprId, pool: &ExprPool, out: &mut impl FnMut(ExprId)) {
+    match pool.get(expr) {
+        ExprData::Symbol { .. } => out(expr),
+        ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
+            for a in args {
+                collect_symbols(a, pool, out);
+            }
+        }
+        ExprData::Pow { base, exp } => {
+            collect_symbols(base, pool, out);
+            collect_symbols(exp, pool, out);
+        }
+        _ => {}
+    }
+}
+
 /// Numerically check residual ≈ 0 at several `x` over random constants.
 fn numeric_report(
     input: &OdeInput,
@@ -240,30 +329,31 @@ fn numeric_report(
     constants: &[ExprId],
     pool: &ExprPool,
 ) -> NumericReport {
-    // Deterministic pseudo-random constant assignments (no rng dependency).
-    // Constants are kept positive and reasonably large so that radicands such as
-    // `sqrt(4·C − 3x²)` arising from quadratic-implicit solutions stay real over
-    // the (small) x-sample range.
-    let const_sets: [&[f64]; 3] = [
-        &[5.7, 4.3, 6.4, 5.1, 4.9],
-        &[8.5, 7.8, 6.6, 9.2, 7.1],
-        &[12.3, 10.0, 11.7, 10.5, 9.4],
-    ];
-    let x_samples = [0.11, 0.27, 0.43, 0.61, 0.79];
+    let mut sources: Vec<ExprId> = vec![input.equation, residual];
+    sources.extend_from_slice(candidate_derivs);
 
     let mut report = NumericReport::default();
-    for cs in const_sets {
-        let mut env: HashMap<ExprId, f64> = HashMap::new();
+    for (set, cs) in CONST_SETS.iter().enumerate() {
+        let params = parameter_env(&sources, input, constants, set, pool);
+        let mut env: HashMap<ExprId, f64> = params.clone();
         for (i, &c) in constants.iter().enumerate() {
             env.insert(c, cs[i % cs.len()]);
         }
-        for &xv in &x_samples {
+        for &xv in &X_SAMPLES {
             env.insert(input.x, xv);
             match eval(residual, &env, pool) {
                 Some(v) if v.is_finite() => record(&mut report, v),
                 // Non-finite: the conflated residual cannot say whose fault it
                 // is.  Ask the equation and the candidate separately.
-                Some(_) => classify_nonfinite(input, candidate_derivs, &env, xv, pool, &mut report),
+                Some(_) => classify_nonfinite(
+                    input,
+                    candidate_derivs,
+                    &env,
+                    &params,
+                    xv,
+                    pool,
+                    &mut report,
+                ),
                 // Unknown construct → refuse to certify numerically.
                 None => {
                     report.unevaluable = true;
@@ -293,12 +383,13 @@ fn classify_nonfinite(
     input: &OdeInput,
     candidate_derivs: &[ExprId],
     env: &HashMap<ExprId, f64>,
+    params: &HashMap<ExprId, f64>,
     xv: f64,
     pool: &ExprPool,
     report: &mut NumericReport,
 ) {
     // 1. Is the equation itself well-defined at this `x`, candidate aside?
-    if !ode_is_regular_at(input, xv, pool) {
+    if !ode_is_regular_at(input, xv, params, pool) {
         report.skipped_singular_ode += 1;
         return;
     }
@@ -326,7 +417,7 @@ fn classify_nonfinite(
     // 3. Both sides are finite, so the non-finiteness came from the residual's
     //    algebraic form.  Re-ask the original equation at the candidate's own
     //    values — a real verdict where the old code had none.
-    let mut eq_env: HashMap<ExprId, f64> = HashMap::with_capacity(vals.len() + 1);
+    let mut eq_env: HashMap<ExprId, f64> = params.clone();
     eq_env.insert(input.x, xv);
     // `build_residual` always pushes `y(x)` first and the loop above either
     // filled `vals` completely or returned, so index 0 exists.
@@ -349,10 +440,15 @@ fn classify_nonfinite(
 /// since the question is whether the *equation* has a singularity at this `x`,
 /// not whether some particular state is admissible.  Distinct values per
 /// derivative order stop a probe from cancelling the equation by accident.
-fn ode_is_regular_at(input: &OdeInput, xv: f64, pool: &ExprPool) -> bool {
+fn ode_is_regular_at(
+    input: &OdeInput,
+    xv: f64,
+    params: &HashMap<ExprId, f64>,
+    pool: &ExprPool,
+) -> bool {
     const PROBES: [f64; 4] = [1.0, 2.5, 0.5, -1.5];
     PROBES.iter().any(|&p| {
-        let mut env: HashMap<ExprId, f64> = HashMap::with_capacity(input.derivs.len() + 2);
+        let mut env: HashMap<ExprId, f64> = params.clone();
         env.insert(input.x, xv);
         env.insert(input.y, p);
         for (k, &dsym) in input.derivs.iter().enumerate() {
@@ -420,8 +516,291 @@ fn eval_func(name: &str, a: &[f64]) -> Option<f64> {
         "acos" => x.acos(),
         "atan" => x.atan(),
         "abs" => x.abs(),
+        // Principal branch only, and `None` (→ "unknown construct", → skip)
+        // rather than `NaN` below `−1/e`, so a sample outside `W₀`'s domain is
+        // no information instead of a fake disagreement.  Reachable because
+        // the separable class inverts `k·log y + m·y = T` through `W`.
+        "lambert_w" => return crate::special::lambert_w0(x),
         _ => return None,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Implicit solutions
+// ---------------------------------------------------------------------------
+
+/// Re-verify a returned [`DsolveSolution`] in whichever form it came in.
+///
+/// The gate inside each class already ran; this is the entry point for callers
+/// that want to check a returned answer *independently* of it — which the
+/// corpus harness and every solving test do, on the principle that a gate is
+/// not allowed to be its own witness.
+#[cfg(test)]
+pub(crate) fn solution_is_verified(
+    input: &OdeInput,
+    sol: &super::DsolveSolution,
+    pool: &ExprPool,
+) -> Result<(), DsolveError> {
+    match sol.form {
+        super::SolutionForm::Explicit(y) => residual_is_zero(input, y, &sol.constants, pool),
+        super::SolutionForm::Implicit(g) => {
+            implicit_relation_is_zero(input, g, &sol.constants, pool)
+        }
+    }
+}
+
+/// Verify an implicit general solution `relation(x, y) = 0` of a *first-order*
+/// ODE.
+///
+/// # What is checked, and why it is the right thing
+///
+/// The implicit function theorem turns the relation into a slope field:
+/// wherever `G_y ≠ 0`, the level set through a point has slope
+/// `y' = −Gₓ/G_y`.  The relation is a general solution exactly when
+///
+/// ```text
+///     F(x, y, −Gₓ(x,y)/G_y(x,y)) ≡ 0     for all (x, y) in the region,
+/// ```
+///
+/// which says every level set of `G` — i.e. every member of the one-parameter
+/// family — solves the ODE.  Note that this is an identity in **two** free
+/// variables, so it is a *stronger* statement than the explicit gate's
+/// one-variable identity, and it needs no root-finding: the point `(x, y)`
+/// carries its own constant.
+///
+/// # The precondition that makes free `(x, y)` sampling legitimate
+///
+/// Sampling `y` independently of `x` is only sound when the slope field does
+/// not depend on the integration constant.  If it does — `relation = y − C·eˣ`
+/// has `Gₓ/G_y = −C·eˣ`, a slope that is only correct *on* the curve `y = C eˣ`
+/// — then the identity holds on each curve and nowhere else, and sampling off
+/// the curve would reject a perfectly good answer.  So `Gₓ` and `G_y` are
+/// required to be free of every constant, which is the case for the
+/// `G(x, y) − C` shape every class here produces, and the verification is
+/// declined otherwise rather than being run in a form that cannot conclude.
+///
+/// A relation must also mention at least one constant (a *general* solution is
+/// a family, not one curve) and must genuinely depend on `y`.
+pub(crate) fn implicit_relation_is_zero(
+    input: &OdeInput,
+    relation: ExprId,
+    constants: &[ExprId],
+    pool: &ExprPool,
+) -> Result<(), DsolveError> {
+    let outcome = implicit_inner(input, relation, constants, pool);
+    #[cfg(test)]
+    GATE_TALLY.with(|t| {
+        let (offered, refused) = t.get();
+        t.set((offered + 1, refused + usize::from(outcome.is_err())));
+    });
+    outcome
+}
+
+fn implicit_inner(
+    input: &OdeInput,
+    relation: ExprId,
+    constants: &[ExprId],
+    pool: &ExprPool,
+) -> Result<(), DsolveError> {
+    if input.derivs.len() != 1 {
+        return Err(DsolveError::VerificationFailed(
+            "implicit solutions are only verified for first-order equations".to_string(),
+        ));
+    }
+    let yp = input.derivs[0];
+    if !contains(relation, input.y, pool) {
+        return Err(DsolveError::VerificationFailed(
+            "implicit relation does not depend on y".to_string(),
+        ));
+    }
+    if !constants.iter().any(|&c| contains(relation, c, pool)) {
+        return Err(DsolveError::VerificationFailed(
+            "implicit relation carries no integration constant, so it is not a \
+             general solution"
+                .to_string(),
+        ));
+    }
+
+    let gx = ddx(relation, input.x, pool)?;
+    let gy = ddx(relation, input.y, pool)?;
+    if super::is_zero(gy, pool) {
+        return Err(DsolveError::VerificationFailed(
+            "∂G/∂y is identically zero: the relation defines no slope field".to_string(),
+        ));
+    }
+    for &c in constants {
+        if contains(gx, c, pool) || contains(gy, c, pool) {
+            return Err(DsolveError::VerificationFailed(
+                "the slope field −Gx/Gy still mentions an integration constant, so \
+                 the relation cannot be checked off its own level sets"
+                    .to_string(),
+            ));
+        }
+    }
+
+    // y' = −Gx/Gy, substituted into the equation.
+    let slope = super::div(
+        simp(pool.mul(vec![pool.integer(-1_i32), gx]), pool),
+        gy,
+        pool,
+    );
+    let residual = simp(subs1(input.equation, yp, slope, pool), pool);
+    if is_symbolic_zero(residual, pool) || is_symbolic_zero(super::simp_plain(residual, pool), pool)
+    {
+        return Ok(());
+    }
+
+    let report = implicit_numeric_report(input, residual, slope, gy, constants, pool);
+    if report.certifies() {
+        return Ok(());
+    }
+    Err(DsolveError::VerificationFailed(format!(
+        "implicit relation did not reduce to zero ({report}): {}",
+        pool.display(residual)
+    )))
+}
+
+/// `y` sample points for the implicit gate.  Positive and bounded away from
+/// zero: `log y` and `1/y` are the two commonest things a separable
+/// antiderivative produces, and both are real and finite here.
+const Y_SAMPLES: [f64; 5] = [0.37, 0.83, 1.4, 2.1, 3.3];
+
+/// Sample `F(x, y, −Gₓ/G_y) ≈ 0` over an `(x, y)` grid.
+///
+/// The classification of a non-finite sample follows [`classify_nonfinite`]'s
+/// discipline, with one deliberate difference: a point where the *slope* blows
+/// up is a **skip**, not a disagreement.  A vertical tangent is ordinary
+/// behaviour for a level curve — `x² + y² = C` has one at `y = 0` — and says
+/// nothing about whether the relation solves the ODE, whereas an explicit
+/// candidate blowing up where the ODE is regular is evidence that it is wrong.
+fn implicit_numeric_report(
+    input: &OdeInput,
+    residual: ExprId,
+    slope: ExprId,
+    gy: ExprId,
+    constants: &[ExprId],
+    pool: &ExprPool,
+) -> NumericReport {
+    let sources = [input.equation, residual, slope];
+    let mut report = NumericReport::default();
+    for set in 0..CONST_SETS.len() {
+        let params = parameter_env(&sources, input, constants, set, pool);
+        let mut env = params.clone();
+        for &xv in &X_SAMPLES {
+            env.insert(input.x, xv);
+            for &yv in &Y_SAMPLES {
+                env.insert(input.y, yv);
+                match eval(residual, &env, pool) {
+                    Some(v) if v.is_finite() => {
+                        record_scaled(&mut report, v, input, &env, slope, pool)
+                    }
+                    Some(_) => classify_implicit_nonfinite(
+                        input,
+                        slope,
+                        gy,
+                        &env,
+                        &params,
+                        xv,
+                        yv,
+                        pool,
+                        &mut report,
+                    ),
+                    None => {
+                        report.unevaluable = true;
+                        return report;
+                    }
+                }
+            }
+        }
+    }
+    report
+}
+
+/// Bucket a finite residual against the *scale of the terms that produced it*.
+///
+/// The implicit residual is the equation evaluated at a slope, and the slope
+/// can be large: `(Kₘ + y)·y' + Vₘ·y` at `y' = −40` has terms of size 100, and
+/// a cancellation between them is only meaningful to about `100·ε`.  An
+/// absolute `1e-6` would be simultaneously too strict there and too lax for an
+/// equation whose terms are all `1e-9`.  The scale is the largest magnitude
+/// among the equation's own top-level additive terms at this sample.
+fn record_scaled(
+    report: &mut NumericReport,
+    v: f64,
+    input: &OdeInput,
+    env: &HashMap<ExprId, f64>,
+    slope: ExprId,
+    pool: &ExprPool,
+) {
+    let scale = equation_term_scale(input, env, slope, pool).unwrap_or(0.0);
+    if v.abs() <= ZERO_TOL * (1.0 + scale) {
+        report.agree += 1;
+    } else {
+        report.disagree += 1;
+    }
+}
+
+/// Largest magnitude among the top-level additive terms of `input.equation`
+/// with `y' = slope`, at the sample in `env`.  `None` if any term is not a
+/// finite real there.
+fn equation_term_scale(
+    input: &OdeInput,
+    env: &HashMap<ExprId, f64>,
+    slope: ExprId,
+    pool: &ExprPool,
+) -> Option<f64> {
+    let eq = subs1(input.equation, input.derivs[0], slope, pool);
+    let terms: Vec<ExprId> = match pool.get(eq) {
+        ExprData::Add(args) => args,
+        _ => vec![eq],
+    };
+    let mut scale: f64 = 0.0;
+    for t in terms {
+        let v = eval(t, env, pool)?;
+        if !v.is_finite() {
+            return None;
+        }
+        scale = scale.max(v.abs());
+    }
+    Some(scale)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn classify_implicit_nonfinite(
+    input: &OdeInput,
+    slope: ExprId,
+    gy: ExprId,
+    env: &HashMap<ExprId, f64>,
+    params: &HashMap<ExprId, f64>,
+    xv: f64,
+    yv: f64,
+    pool: &ExprPool,
+    report: &mut NumericReport,
+) {
+    // 1. Is the equation itself well-defined at this `x`, the relation aside?
+    if !ode_is_regular_at(input, xv, params, pool) {
+        report.skipped_singular_ode += 1;
+        return;
+    }
+    // 2. Does the relation define a finite slope here?  A vanishing `G_y` (a
+    //    vertical tangent) or an unevaluable slope carries no information.
+    match (eval(gy, env, pool), eval(slope, env, pool)) {
+        (Some(g), Some(s)) if g.is_finite() && g.abs() > 1e-12 && s.is_finite() => {
+            // 3. Both sides are finite, so the non-finiteness was an artefact of
+            //    the residual's algebraic form.  Re-ask the original equation.
+            let mut eq_env: HashMap<ExprId, f64> = params.clone();
+            eq_env.insert(input.x, xv);
+            eq_env.insert(input.y, yv);
+            eq_env.insert(input.derivs[0], s);
+            match eval(input.equation, &eq_env, pool) {
+                Some(v) if v.is_finite() => record_scaled(report, v, input, env, slope, pool),
+                // Singular at this state rather than at this `x`.
+                _ => report.skipped_singular_ode += 1,
+            }
+        }
+        (None, _) | (_, None) => report.skipped_unknown_construct += 1,
+        _ => report.skipped_singular_ode += 1,
+    }
 }
 
 #[cfg(test)]

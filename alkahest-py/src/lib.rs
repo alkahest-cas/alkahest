@@ -4457,7 +4457,16 @@ fn fps_error_to_py(e: CoreFpsError) -> PyErr {
 /// `equation` is interpreted as `equation = 0`, written in terms of the
 /// independent variable `x`, the unknown `y`, and the derivative symbols
 /// `derivs` (`derivs[0] = y'`, …). Returns a list of solution dicts with keys
-/// `y_of_x` (the `Expr` for `y(x)`), `constants` (list of `Expr`), and `method`.
+/// `y_of_x` (the `Expr` for `y(x)`), `constants` (list of `Expr`), `method`,
+/// and — for first-order classes that can answer implicitly — `form` and
+/// `implicit_relation`.
+///
+/// `form` is `"explicit"` or `"implicit"`. A separable or exact equation often
+/// has no closed form for `y`; the answer is then the relation
+/// `implicit_relation == 0`, satisfied by every solution curve, and `y_of_x`
+/// is `None`. Reading `y_of_x` without checking `form` therefore cannot
+/// mistake a relation for a solution. Explicit answers keep exactly the keys
+/// and values they had before `form` existed.
 #[pyfunction]
 #[pyo3(name = "dsolve")]
 fn py_dsolve(
@@ -4481,13 +4490,22 @@ fn py_dsolve(
     let out = PyList::empty_bound(py);
     for sol in result.solutions {
         let d = PyDict::new_bound(py);
-        d.set_item(
-            "y_of_x",
+        let wrap = |id| {
             PyExpr {
-                id: sol.y_of_x,
+                id,
                 pool: pool_py.clone_ref(py),
             }
-            .into_py(py),
+            .into_py(py)
+        };
+        d.set_item("y_of_x", sol.y_of_x().map(wrap))?;
+        d.set_item("implicit_relation", sol.implicit_relation().map(wrap))?;
+        d.set_item(
+            "form",
+            if sol.is_explicit() {
+                "explicit"
+            } else {
+                "implicit"
+            },
         )?;
         let consts = PyList::empty_bound(py);
         for c in sol.constants {

@@ -28,6 +28,18 @@ pub(crate) const CORPUS: &[Entry] = &[
     ("separable", "y'=y*sin(x)^2",         1, "yp - y*sin(x)^2"),
     ("separable", "y'=y/(x*log(x))",       1, "yp - y/(x*log(x))"),
     ("separable", "y'=y*x/(1+x^2)",        1, "yp - y*x/(1 + x^2)"),
+    ("separable", "y'=x/y",                1, "yp - x/y"),
+    ("separable", "y'=sin(x)sin(y)",       1, "yp - sin(x)*sin(y)"),
+    ("separable", "y'=(1+y^2)/(1+x^2)",    1, "yp - (1 + y^2)/(1 + x^2)"),
+
+    // ---- pharmacokinetics / pharmacodynamics -------------------------------
+    // The two nonlinear models the field is built on, plus first-order decay.
+    ("pkpd", "first-order decay",          1, "yp + ke*y"),
+    ("pkpd", "michaelis-menten",           1, "(Km + y)*yp + Vm*y"),
+    ("pkpd", "michaelis-menten (solved)",  1, "yp + Vm*y/(Km + y)"),
+    ("pkpd", "logistic (symbolic r,K)",    1, "yp - r*y*(1 - y/K)"),
+    ("pkpd", "logistic (numeric)",         1, "yp - y*(1 - y)"),
+    ("pkpd", "infusion y'+ke*y=R",         1, "yp + ke*y - R"),
 
     // ---- linear first order ------------------------------------------------
     ("linear1", "y'-3y=x",                 1, "yp - 3*y - x"),
@@ -44,6 +56,8 @@ pub(crate) const CORPUS: &[Entry] = &[
     ("linear1", "y'-2xy=exp(x^2)*sin(x)",  1, "yp - 2*x*y - exp(x^2)*sin(x)"),
     ("linear1", "y'+y=x*exp(-x)",          1, "yp + y - x*exp(-x)"),
     ("linear1", "y'+y/x=cos(x)/x",         1, "yp + y/x - cos(x)/x"),
+    ("linear1", "y'+p*y=q (symbolic)",     1, "yp + p*y - q"),
+    ("linear1", "y'+y/x=x^2",              1, "yp + y/x - x^2"),
 
     // ---- Bernoulli ---------------------------------------------------------
     ("bernoulli", "y'+y=y^2",              1, "yp + y - y^2"),
@@ -61,6 +75,12 @@ pub(crate) const CORPUS: &[Entry] = &[
     ("exact", "exp(x)sin(y)",              1, "exp(x)*sin(y) + exp(x)*cos(y)*yp"),
     ("exact", "(y/(1+x^2))+atan(x)y'",     1, "y/(1 + x^2) + atan(x)*yp"),
 
+    // ---- near-exact: needs an integrating-factor rescue ---------------------
+    ("exact-if", "(2xy)+(y^2-3x^2)y'",     1, "(2*x*y) + (y^2 - 3*x^2)*yp"),
+    ("exact-if", "(x^2+y^2+x)+xy y'",      1, "(x^2 + y^2 + x) + x*y*yp"),
+    ("exact-if", "y+(2x-y e^y)y'",         1, "y + (2*x - y*exp(y))*yp"),
+    ("exact-if", "(x*y-1)+(x^2-x*y)y'",    1, "(x*y - 1) + (x^2 - x*y)*yp"),
+
     // ---- homogeneous -------------------------------------------------------
     ("homog", "y'=1+y/x",                  1, "yp - 1 - y/x"),
     ("homog", "y'=(x^2+y^2)/(x*y)",        1, "yp - (x^2 + y^2)/(x*y)"),
@@ -77,6 +97,8 @@ pub(crate) const CORPUS: &[Entry] = &[
 
     // ---- Riccati -----------------------------------------------------------
     ("riccati", "y'=(y-x)^2+1",            1, "yp - (y - x)^2 - 1"),
+    // No polynomial particular solution: must refuse, and say so by name.
+    ("riccati", "y'=y^2+x (Airy)",         1, "yp - y^2 - x"),
     ("riccati", "y'=y^2-2xy+x^2+1",        1, "yp - y^2 + 2*x*y - x^2 - 1"),
     ("riccati", "y'=y^2-2xy+x^2+x",        1, "yp - y^2 + 2*x*y - x^2 - x"),
 
@@ -177,8 +199,12 @@ fn outcome(entry: &Entry) -> (String, String) {
         Ok(res) => match res.solutions.first() {
             Some(s) => {
                 // Independently re-verify (never trust the internal gate alone).
-                let verdict = match residual_is_zero(&input, s.y_of_x, &s.constants, &pool) {
-                    Ok(()) => "SOLVED",
+                let verdict = match solution_is_verified(&input, s, &pool) {
+                    Ok(()) if s.is_explicit() => "SOLVED",
+                    // Implicit answers are counted apart: they are solutions,
+                    // but a corpus line that does not say so would make the
+                    // coverage number mean two different things.
+                    Ok(()) => "SOLVED_IMPLICIT",
                     Err(_) => "UNVERIFIED",
                 };
                 (verdict.to_owned(), s.method.to_owned())
@@ -231,17 +257,23 @@ fn decline_split_report() {
 #[test]
 #[ignore = "measurement harness; run explicitly with --nocapture"]
 fn corpus_report() {
-    let mut solved = 0usize;
+    let (mut solved, mut implicit) = (0usize, 0usize);
     for e in CORPUS {
         eprintln!("=== {}\t{}", e.0, e.1);
         let (status, method) = outcome(e);
         eprintln!("--- {status}\t{}\t{}\t{method}", e.0, e.1);
-        if status == "SOLVED" {
-            solved += 1;
+        match status.as_str() {
+            "SOLVED" => solved += 1,
+            "SOLVED_IMPLICIT" => implicit += 1,
+            _ => {}
         }
         println!("{status}\t{}\t{}\t{method}", e.0, e.1);
     }
-    println!("TOTAL\t{solved}/{}", CORPUS.len());
+    println!(
+        "TOTAL\t{}/{}\t({solved} explicit, {implicit} implicit)",
+        solved + implicit,
+        CORPUS.len()
+    );
 }
 
 /// The integrals `dsolve` needs and `integrate` declines, with the pairs that

@@ -5,15 +5,22 @@
 //!
 //! # Covered classes
 //!
-//! **First order** (`y' = …` written as `F(x, y, y') = 0`):
-//! - separable `y' = g(x)·h(y)`
-//! - linear `y' + p(x)·y = q(x)` (integrating-factor)
-//! - Bernoulli `y' + p(x)·y = q(x)·yⁿ`
-//! - exact `M dx + N dy = 0` with `∂M/∂y = ∂N/∂x`
-//! - homogeneous of degree zero `y' = G(y/x)` (substitution `v = y/x`)
-//! - Clairaut `y = x·y' + f(y')`
-//! - Riccati `y' = q₀(x) + q₁(x)·y + q₂(x)·y²` **with a polynomial particular
-//!   solution** found by ansatz (declined otherwise)
+//! **First order** (`y' = …` written as `F(x, y, y') = 0`), tried in this
+//! order — see the private `first_order` submodule for why the order is what
+//! it is:
+//! 1. Clairaut `y = x·y' + f(y')` (the only class nonlinear in `y'`)
+//! 2. separable `y' = g(x)·h(y)`
+//! 3. linear `y' + p(x)·y = q(x)` (integrating-factor)
+//! 4. Bernoulli `y' + p(x)·y = q(x)·yⁿ`
+//! 5. exact `M dx + N dy = 0` with `∂M/∂y = ∂N/∂x`, including the two standard
+//!    integrating-factor rescues when it is only *near*-exact
+//! 6. homogeneous of degree zero `y' = G(y/x)` (substitution `v = y/x`)
+//! 7. Riccati `y' = q₀(x) + q₁(x)·y + q₂(x)·y²` **with a polynomial particular
+//!    solution** found by ansatz (declined otherwise)
+//!
+//! A first-order answer may be [`SolutionForm::Implicit`]: separable and exact
+//! equations frequently have no closed form for `y`.  An explicit `y(x)` is
+//! always preferred when any class produces one.
 //!
 //! **Second order** (`F(x, y, y', y'') = 0`):
 //! - constant coefficients `a·y'' + b·y' + c·y = r(x)` (real distinct / repeated
@@ -41,6 +48,11 @@
 //! numerically `≈ 0` at several sample points over random constant values.  A
 //! candidate that fails verification causes [`dsolve`] to decline (it never
 //! returns an unverified solution).
+//!
+//! An implicit answer `G(x, y) = 0` is verified by the same discipline in the
+//! form the implicit function theorem gives: `y' = −Gₓ/G_y` is substituted into
+//! the equation and the result must vanish identically in `(x, y)` — which says
+//! precisely that *every* level set of `G` solves the ODE.  See `verify`.
 //!
 //! # Quadratures
 //!
@@ -72,7 +84,9 @@ mod first_order;
 mod variation;
 mod verify;
 
-pub(crate) use verify::residual_is_zero;
+#[cfg(test)]
+pub(crate) use verify::solution_is_verified;
+pub(crate) use verify::{implicit_relation_is_zero, residual_is_zero};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -181,16 +195,86 @@ impl OdeInput {
     }
 }
 
+/// How a general solution is written down.
+///
+/// Separable and exact equations routinely have no closed form for `y`: the
+/// answer is a relation `G(x, y) = 0` that the solution curves satisfy, and
+/// refusing to return one would refuse most of the two classes.  The two cases
+/// are kept in distinct variants rather than in one `ExprId` field so that a
+/// caller cannot read a relation as if it were `y(x)` — the single most likely
+/// way for this addition to produce a wrong answer downstream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SolutionForm {
+    /// `y(x) = expr`, with `expr` free of `y`.
+    Explicit(ExprId),
+    /// `expr(x, y) = 0`, an implicit general solution that could not be solved
+    /// for `y`.  Every solution curve of the ODE in the region satisfies it,
+    /// and every level set of it solves the ODE — the latter is what the
+    /// verification gate checks, by substituting `y' = −Gₓ/G_y`.
+    Implicit(ExprId),
+}
+
 /// A general solution returned by [`dsolve`].
 #[derive(Clone, Debug)]
 pub struct DsolveSolution {
-    /// The solution expression for `y(x)` (the right-hand side of `y(x) = …`),
-    /// containing the integration constants in [`Self::constants`].
-    pub y_of_x: ExprId,
-    /// The fresh constant symbols `C1, C2, …` appearing in [`Self::y_of_x`].
+    /// Explicit `y(x)` or an implicit relation; see [`SolutionForm`].
+    pub form: SolutionForm,
+    /// The fresh constant symbols `C1, C2, …` appearing in [`Self::form`].
     pub constants: Vec<ExprId>,
     /// Short label of the solving method (e.g. `"separable"`).
     pub method: &'static str,
+}
+
+impl DsolveSolution {
+    /// Build an explicit solution `y(x) = y_of_x`.
+    pub fn explicit(y_of_x: ExprId, constants: Vec<ExprId>, method: &'static str) -> Self {
+        DsolveSolution {
+            form: SolutionForm::Explicit(y_of_x),
+            constants,
+            method,
+        }
+    }
+
+    /// Build an implicit solution `relation(x, y) = 0`.
+    pub fn implicit(relation: ExprId, constants: Vec<ExprId>, method: &'static str) -> Self {
+        DsolveSolution {
+            form: SolutionForm::Implicit(relation),
+            constants,
+            method,
+        }
+    }
+
+    /// The explicit `y(x)`, or `None` when the solution is an implicit relation.
+    pub fn y_of_x(&self) -> Option<ExprId> {
+        match self.form {
+            SolutionForm::Explicit(e) => Some(e),
+            SolutionForm::Implicit(_) => None,
+        }
+    }
+
+    /// The implicit relation `G(x, y)` (read as `G = 0`), or `None` when the
+    /// solution is explicit.
+    pub fn implicit_relation(&self) -> Option<ExprId> {
+        match self.form {
+            SolutionForm::Implicit(e) => Some(e),
+            SolutionForm::Explicit(_) => None,
+        }
+    }
+
+    /// Is this an explicit `y(x)`?
+    pub fn is_explicit(&self) -> bool {
+        matches!(self.form, SolutionForm::Explicit(_))
+    }
+
+    /// Human-readable rendering: `y = …` for an explicit solution, `0 = …` for
+    /// an implicit relation.  For diagnostics and reports; the two forms are
+    /// deliberately not interchangeable as expressions.
+    pub fn render(&self, pool: &ExprPool) -> String {
+        match self.form {
+            SolutionForm::Explicit(e) => format!("y = {}", pool.display(e)),
+            SolutionForm::Implicit(e) => format!("0 = {}", pool.display(e)),
+        }
+    }
 }
 
 /// The result of [`dsolve`]: zero or more general-solution branches.
@@ -211,6 +295,19 @@ pub enum DsolveError {
     VerificationFailed(String),
     /// Differentiation of an intermediate expression failed.
     DiffError(String),
+    /// The equation *was* recognised as a solvable class, but a quadrature the
+    /// method needs did not close in elementary form.  Strictly more
+    /// informative than [`Self::Unsupported`]: the class is named, and the
+    /// integral that failed is quoted, so the decline points at the
+    /// integration engine rather than at the classifier.
+    QuadratureFailed(String),
+    /// The equation was recognised as a class whose solution method needs a
+    /// seed the solver could not produce — for a Riccati equation, a
+    /// particular solution.  No general-Riccati attempt is made; without a
+    /// particular solution the closed form is in terms of solutions of an
+    /// associated second-order linear ODE (Airy functions for `y' = y² + x`),
+    /// which this solver does not emit.
+    NoParticularSolution(String),
 }
 
 impl fmt::Display for DsolveError {
@@ -221,6 +318,12 @@ impl fmt::Display for DsolveError {
                 write!(f, "dsolve: candidate failed verification: {m}")
             }
             DsolveError::DiffError(m) => write!(f, "dsolve: differentiation error: {m}"),
+            DsolveError::QuadratureFailed(m) => {
+                write!(f, "dsolve: required quadrature did not close: {m}")
+            }
+            DsolveError::NoParticularSolution(m) => {
+                write!(f, "dsolve: no particular solution available: {m}")
+            }
         }
     }
 }
@@ -233,6 +336,8 @@ impl crate::errors::AlkahestError for DsolveError {
             DsolveError::Unsupported(_) => "E-ODE-010",
             DsolveError::VerificationFailed(_) => "E-ODE-011",
             DsolveError::DiffError(_) => "E-ODE-012",
+            DsolveError::QuadratureFailed(_) => "E-ODE-013",
+            DsolveError::NoParticularSolution(_) => "E-ODE-014",
         }
     }
 
@@ -249,6 +354,15 @@ impl crate::errors::AlkahestError for DsolveError {
             DsolveError::DiffError(_) => {
                 Some("ensure the equation only contains differentiable functions")
             }
+            DsolveError::QuadratureFailed(_) => Some(
+                "the ODE was classified, but the integral the method needs is not \
+                 elementary for this integrator; the message names the class and the \
+                 integrand that failed",
+            ),
+            DsolveError::NoParticularSolution(_) => Some(
+                "supply a particular solution, or expect a closed form outside the \
+                 elementary/special-function vocabulary this solver emits",
+            ),
         }
     }
 }
@@ -288,13 +402,21 @@ pub fn dsolve(input: &OdeInput, pool: &ExprPool) -> Result<DsolveResult, DsolveE
 pub(crate) struct ConstGen {
     next: usize,
     used: std::collections::HashSet<String>,
+    /// Names this generator handed out, in order — the only ones a rollback may
+    /// take back (a user symbol that happened to be called `C2` is in `used`
+    /// too, and releasing it would let a later class collide with it).
+    issued: Vec<String>,
 }
 
 impl ConstGen {
     fn new(input: &OdeInput, pool: &ExprPool) -> Self {
         let mut used = std::collections::HashSet::new();
         collect_symbol_names(input.equation, pool, &mut used);
-        ConstGen { next: 1, used }
+        ConstGen {
+            next: 1,
+            used,
+            issued: Vec::new(),
+        }
     }
 
     /// Return a fresh constant symbol whose name (`C{n}`) is not already used.
@@ -304,10 +426,41 @@ impl ConstGen {
             self.next += 1;
             if !self.used.contains(&name) {
                 self.used.insert(name.clone());
+                self.issued.push(name.clone());
                 return pool.symbol(name, Domain::Real);
             }
         }
     }
+
+    /// Mark for a later [`Self::rollback`].
+    pub(crate) fn checkpoint(&self) -> ConstMark {
+        ConstMark {
+            next: self.next,
+            issued: self.issued.len(),
+        }
+    }
+
+    /// Release the constants allocated since `mark`.
+    ///
+    /// A classification cascade allocates a constant for a class that then
+    /// fails to close, and without this the answer that a later class finds is
+    /// labelled `C2` (or `C4`) — the count of classes that were tried, leaking
+    /// the solver's search into the answer and making the output depend on
+    /// changes elsewhere in the cascade.  Only names this generator issued are
+    /// released.
+    pub(crate) fn rollback(&mut self, mark: ConstMark, _pool: &ExprPool) {
+        for name in self.issued.drain(mark.issued..) {
+            self.used.remove(&name);
+        }
+        self.next = mark.next;
+    }
+}
+
+/// Opaque position in a [`ConstGen`]'s allocation sequence.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ConstMark {
+    next: usize,
+    issued: usize,
 }
 
 fn collect_symbol_names(

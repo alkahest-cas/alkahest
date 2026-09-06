@@ -15,8 +15,14 @@ fn setup() -> (ExprPool, ExprId, ExprId) {
 
 /// Confirm a returned solution truly verifies (independent of the internal gate).
 fn assert_verifies(input: &OdeInput, sol: &DsolveSolution, pool: &ExprPool) {
-    residual_is_zero(input, sol.y_of_x, &sol.constants, pool)
+    solution_is_verified(input, sol, pool)
         .unwrap_or_else(|e| panic!("returned solution failed verification: {e}"));
+}
+
+/// The explicit `y(x)` of a solution that must be explicit.
+fn explicit_of(sol: &DsolveSolution) -> ExprId {
+    sol.y_of_x()
+        .expect("expected an explicit y(x), got an implicit relation")
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +149,19 @@ fn riccati_with_polynomial_particular() {
     match dsolve(&input, &p) {
         Ok(res) => assert_verifies(&input, &res.solutions[0], &p),
         // Acceptable to decline if the linear reduction integral does not close,
-        // but it must never return a wrong answer.
+        // but it must never return a wrong answer — and the decline has to say
+        // *which* integral, which here is the genuinely non-elementary
+        // `∫ e^{x²} dx` the `y = y_p + 1/v` reduction runs into.
+        Err(DsolveError::QuadratureFailed(m)) => {
+            assert!(
+                m.contains("riccati"),
+                "decline does not name the class: {m}"
+            );
+            assert!(
+                m.contains("exp(x^2)"),
+                "decline does not name the integral: {m}"
+            );
+        }
         Err(DsolveError::Unsupported(_)) => {}
         Err(e) => panic!("unexpected error: {e}"),
     }
@@ -391,7 +409,7 @@ fn solve_src(order: usize, src: &str) -> (ExprPool, OdeInput, DsolveSolution) {
     let input = super::corpus::build_ode(order, src, &pool).expect("corpus source parses");
     let res = dsolve(&input, &pool).unwrap_or_else(|e| panic!("`{src}` should solve: {e}"));
     let sol = res.solutions[0].clone();
-    residual_is_zero(&input, sol.y_of_x, &sol.constants, &pool)
+    solution_is_verified(&input, &sol, &pool)
         .unwrap_or_else(|e| panic!("`{src}` returned an unverified solution: {e}"));
     (pool, input, sol)
 }
@@ -406,7 +424,7 @@ fn assert_declines(order: usize, src: &str) {
         Err(e) => panic!("`{src}` should decline as Unsupported, got {e}"),
         Ok(res) => panic!(
             "`{src}` should decline, but returned {}",
-            pool.display(res.solutions[0].y_of_x)
+            res.solutions[0].render(&pool)
         ),
     }
 }
@@ -525,18 +543,18 @@ fn quadrature_over_the_special_function_basis_closes() {
         let (pool, input, sol) = solve_src(2, src);
         assert_eq!(sol.constants.len(), 2, "`{src}`: wrong constant count");
         assert!(
-            !super::verify::certifies_symbolically(&input, sol.y_of_x, &pool),
+            !super::verify::certifies_symbolically(&input, explicit_of(&sol), &pool),
             "`{src}`: now certified symbolically — the comment above is stale",
         );
         assert_eq!(
-            basis_functions_used(sol.y_of_x, &pool),
+            basis_functions_used(explicit_of(&sol), &pool),
             basis,
             "`{src}`: wrong special-function vocabulary in {}",
-            pool.display(sol.y_of_x)
+            pool.display(explicit_of(&sol))
         );
         for c in &sol.constants {
             assert!(
-                super::contains(sol.y_of_x, *c, &pool),
+                super::contains(explicit_of(&sol), *c, &pool),
                 "`{src}`: constant {} does not appear in the solution",
                 pool.display(*c)
             );
@@ -577,6 +595,281 @@ fn declines_when_the_quadrature_leaves_the_special_function_basis() {
     assert_declines(2, "ypp + y - x/(1 + x^2)");
 }
 
+// ---------------------------------------------------------------------------
+// First-order classes: the standard cascade
+// ---------------------------------------------------------------------------
+
+/// Solve `src` and return `(pool, input, solution)` without asserting the form,
+/// re-verifying independently of the gate inside `dsolve`.
+fn solve1(src: &str) -> (ExprPool, OdeInput, DsolveSolution) {
+    solve_src(1, src)
+}
+
+#[test]
+fn michaelis_menten_elimination() {
+    // `(Kₘ + y)·y' + Vₘ·y = 0` — saturable elimination, the workhorse of
+    // pharmacokinetics, and until now `no implemented first-order class
+    // matched`.  It separates to `Kₘ·log y + y = C − Vₘ·x`, which the Lambert
+    // inversion turns into `y = Kₘ·W(e^{(C − Vₘx)/Kₘ}/Kₘ)` — SymPy's answer.
+    //
+    // Both spellings are checked: the equation as a chemist writes it, and the
+    // `y' = −Vₘy/(Kₘ+y)` form a modeller types.
+    for src in ["(Km + y)*yp + Vm*y", "yp + Vm*y/(Km + y)"] {
+        let (pool, _, sol) = solve1(src);
+        assert_eq!(sol.method, "separable", "`{src}`");
+        let y_of_x = explicit_of(&sol);
+        assert!(
+            pool.display(y_of_x).to_string().contains("lambert_w"),
+            "`{src}`: expected a Lambert-W form, got {}",
+            pool.display(y_of_x)
+        );
+        assert_eq!(sol.constants.len(), 1, "`{src}`");
+        assert!(super::contains(y_of_x, sol.constants[0], &pool), "`{src}`");
+    }
+}
+
+#[test]
+fn logistic_growth_with_symbolic_parameters() {
+    // `y' = r·y·(1 − y/K)`.  The textbook `r = K = 1` case solved before; with
+    // symbolic parameters it did not, for two independent reasons that both had
+    // to go: the `∫ dy/h(y)` inversion insisted on literal `±1` log
+    // coefficients, and the verification gate had nothing to bind `r` and `K`
+    // to, so the numeric half could not run at all.
+    for src in ["yp - r*y*(1 - y/K)", "yp - k*y*(1 - y/K)"] {
+        let (pool, _, sol) = solve1(src);
+        assert_eq!(sol.constants.len(), 1, "`{src}`");
+        let y_of_x = explicit_of(&sol);
+        for name in ["K", "exp"] {
+            assert!(
+                pool.display(y_of_x).to_string().contains(name),
+                "`{src}`: expected `{name}` in {}",
+                pool.display(y_of_x)
+            );
+        }
+    }
+    // The numeric-parameter logistic still solves, explicitly.
+    let (_, _, sol) = solve1("yp - y*(1 - y)");
+    assert!(sol.is_explicit());
+}
+
+#[test]
+fn linear_handles_symbolic_and_variable_coefficients() {
+    // `p` and `q` constant but symbolic, then genuinely non-constant.
+    for (src, want) in [
+        ("yp + p*y - q", "p"),
+        ("yp + ke*y", "ke"),
+        ("yp + y/x - x^2", "x"),
+        ("yp - y/x - x*log(x)", "log"),
+    ] {
+        let (pool, _, sol) = solve1(src);
+        let y_of_x = explicit_of(&sol);
+        assert!(
+            pool.display(y_of_x).to_string().contains(want),
+            "`{src}`: expected `{want}` in {}",
+            pool.display(y_of_x)
+        );
+        assert_eq!(sol.constants.len(), 1, "`{src}`");
+    }
+}
+
+#[test]
+fn bernoulli_and_riccati_still_close() {
+    for src in ["yp + y - y^2", "yp - y - x*y^2", "yp - exp(x)*y^2"] {
+        let (_, _, sol) = solve1(src);
+        assert!(sol.is_explicit(), "`{src}`");
+    }
+    // Riccati with `y_p = x`.
+    let (_, _, sol) = solve1("yp - y^2 + 2*x*y - x^2 - 1");
+    assert_eq!(sol.method, "riccati");
+}
+
+#[test]
+fn exact_integrating_factor_rescues() {
+    // Near-exact equations: `M dx + N dy` is fixed only up to a common factor
+    // by `y' = f(x, y)`, and the arbitrary choice is almost never the exact
+    // one.  Each of these needs one of the two standard rescues.
+    for (src, method) in [
+        // μ(y) = y⁻⁴
+        ("(2*x*y) + (y^2 - 3*x^2)*yp", "exact_integrating_factor_y"),
+        // μ(x) = x
+        ("(x^2 + y^2 + x) + x*y*yp", "exact_integrating_factor_x"),
+        // μ(y) = y
+        ("y + (2*x - y*exp(y))*yp", "exact_integrating_factor_y"),
+    ] {
+        let (_, _, sol) = solve1(src);
+        assert_eq!(sol.method, method, "`{src}`");
+        assert_eq!(sol.constants.len(), 1, "`{src}`");
+    }
+    // And a genuinely exact one still goes through the plain route.
+    let (_, _, sol) = solve1("(2*x + y) + (x + 2*y)*yp");
+    assert_eq!(sol.method, "exact");
+}
+
+#[test]
+fn homogeneous_quotients_are_recognised() {
+    // `(x+y)/(x−y)` is homogeneous of degree zero, but substituting `y = v·x`
+    // leaves an `x` that no rule set cancels — the reciprocal wraps a *sum*.
+    // The class used to decline two equations out of its own chapter.
+    for src in [
+        "yp - (x^2 + y^2)/(x*y)",
+        "yp - (x + y)/(x - y)",
+        "yp - (x + 3*y)/(x - y)",
+    ] {
+        let (_, _, sol) = solve1(src);
+        assert_eq!(sol.method, "homogeneous", "`{src}`");
+    }
+    // The same equation with the quotient cleared is solved too — by the exact
+    // class, which comes first and also handles it.  What matters is that it
+    // is answered and verified, not which of the two overlapping classes wins.
+    let (_, _, sol) = solve1("yp*y*x - y^2 - x^2");
+    assert!(sol.is_explicit());
+}
+
+#[test]
+fn implicit_solutions_are_labelled_rather_than_disguised() {
+    // Separable and exact equations often have no closed form for `y`.  The
+    // answer is then the relation, and the API must make that impossible to
+    // misread: `y_of_x()` is `None` and the relation is somewhere else.
+    for src in [
+        // ∫ dy/sin y = log tan(y/2): no inverse this code can write down.
+        "yp - sin(x)*sin(y)",
+        // exact, potential eˣ·sin y = C.
+        "exp(x)*sin(y) + exp(x)*cos(y)*yp",
+        // near-exact, rescued by μ(y) = y; the potential mixes `y²eʸ` with
+        // `x·y²` and is not solvable for `y` by anything here.
+        "y + (2*x - y*exp(y))*yp",
+    ] {
+        let (pool, input, sol) = solve1(src);
+        assert!(!sol.is_explicit(), "`{src}`: expected an implicit answer");
+        assert!(sol.y_of_x().is_none(), "`{src}`: y_of_x must be None");
+        let rel = sol
+            .implicit_relation()
+            .expect("an implicit solution carries a relation");
+        assert!(super::contains(rel, input.y, &pool), "`{src}`");
+        assert!(super::contains(rel, sol.constants[0], &pool), "`{src}`");
+        // The relation verifies as a relation, through the implicit gate.
+        implicit_relation_is_zero(&input, rel, &sol.constants, &pool)
+            .unwrap_or_else(|e| panic!("`{src}`: relation does not verify: {e}"));
+    }
+}
+
+#[test]
+fn an_explicit_answer_wins_over_an_implicit_one() {
+    // `y' = eˣ·y²` separates to `−1/y = eˣ + C`, which this code does not
+    // invert and would hand back as a relation; Bernoulli solves it for `y`.
+    // The cascade must not stop at the first class that merely *answers*.
+    let (pool, _, sol) = solve1("yp - exp(x)*y^2");
+    assert!(sol.is_explicit());
+    assert_eq!(sol.method, "bernoulli");
+    // …and the constant is `C1`, not `C2`: a class that tried and did not
+    // answer must not leave its footprint in the answer.
+    assert_eq!(sol.constants.len(), 1);
+    assert_eq!(pool.display(sol.constants[0]).to_string(), "C1");
+}
+
+/// Build `y' = y` and a relation in `x`, `y`, `C1`, for the implicit-gate
+/// tests.  Returns `(pool, input, relation, c1)`.
+fn implicit_fixture(relation_src: &str) -> (ExprPool, OdeInput, ExprId, ExprId) {
+    use crate::parse::parse;
+    use std::collections::HashMap;
+    let pool = ExprPool::new();
+    let input = super::corpus::build_ode(1, "yp - y", &pool).expect("parses");
+    let c1 = pool.symbol("C1", Domain::Real);
+    let mut syms: HashMap<String, ExprId> = HashMap::new();
+    syms.insert("x".to_owned(), input.x);
+    syms.insert("y".to_owned(), input.y);
+    syms.insert("C1".to_owned(), c1);
+    let rel = parse(relation_src, &pool, &mut syms).expect("relation parses");
+    let rel = simp(rel, &pool);
+    (pool, input, rel, c1)
+}
+
+#[test]
+fn the_implicit_gate_certifies_a_relation_and_refuses_a_wrong_one() {
+    // `y' = y` has the general solution `log y − x = C`.
+    let (pool, input, rel, c1) = implicit_fixture("log(y) - x - C1");
+    implicit_relation_is_zero(&input, rel, &[c1], &pool).expect("the true relation must certify");
+
+    // Every one of these is wrong for `y' = y`, and each is wrong in a way the
+    // gate has to catch on its own terms: a rescaled slope field, a relation
+    // belonging to a different equation, and one that is not a family at all.
+    for src in [
+        "log(y) - 2*x - C1", // slope 2y, not y
+        "y^2 + x^2 - C1",    // the circle: y' = −x/y
+        "log(y) - x",        // no constant — a single curve, not a general solution
+        "x - C1",            // no y at all
+    ] {
+        let (pool, input, rel, c1) = implicit_fixture(src);
+        assert!(
+            implicit_relation_is_zero(&input, rel, &[c1], &pool).is_err(),
+            "`{src}` must not certify as a general solution of y' = y"
+        );
+    }
+}
+
+#[test]
+fn the_implicit_gate_refuses_a_slope_field_that_mentions_the_constant() {
+    // `y − C·eˣ = 0` *is* a general solution of `y' = y`, and the gate refuses
+    // it anyway: `−Gₓ/G_y = C·eˣ` is only the right slope *on* that curve, so
+    // the free-`(x, y)` sampling the gate is built on cannot be run.  Refusing
+    // is the conservative direction — no wrong answer is returned, the class
+    // simply falls through to a form that can be checked (here `y = C·eˣ`,
+    // which the explicit gate takes).  Pinned so the precondition is not
+    // quietly dropped later.
+    let (pool, input, rel, c1) = implicit_fixture("y - C1*exp(x)");
+    let err = implicit_relation_is_zero(&input, rel, &[c1], &pool)
+        .expect_err("a constant-dependent slope field must be refused");
+    assert!(
+        format!("{err}").contains("integration constant"),
+        "refusal does not say why: {err}"
+    );
+}
+
+#[test]
+fn riccati_without_a_particular_solution_refuses_by_name() {
+    // `y' = y² + x` is the Airy equation in disguise.  Refusing is correct;
+    // refusing with "no implemented first-order class matched" is not, because
+    // the class *was* recognised and the missing piece is nameable.
+    let pool = ExprPool::new();
+    let input = super::corpus::build_ode(1, "yp - y^2 - x", &pool).expect("parses");
+    match dsolve(&input, &pool) {
+        Err(DsolveError::NoParticularSolution(m)) => {
+            assert!(
+                m.contains("riccati"),
+                "decline does not name the class: {m}"
+            );
+            assert!(
+                m.contains("particular solution"),
+                "decline does not name what is missing: {m}"
+            );
+        }
+        Err(e) => panic!("expected a named Riccati refusal, got {e}"),
+        Ok(res) => panic!("expected a refusal, got {}", res.solutions[0].render(&pool)),
+    }
+}
+
+#[test]
+fn a_failed_inner_integral_is_reported_as_such() {
+    // The decline has to say *which* integral did not close.  `y' = 2xy + …`
+    // needs `∫ e^{x²}` through the Riccati reduction; the class is named and
+    // the integrand quoted, so the report points at the integration engine
+    // rather than at the classifier.
+    //
+    // Premise: `∫ e^{x²} dx` is not elementary and Alkahest emits no `erfi`.
+    // If that changes the equation will *solve*, and this test should be
+    // rewritten around whatever the integrator then declines — the decline
+    // path is what is worth keeping, not this particular integrand.
+    let pool = ExprPool::new();
+    let input = super::corpus::build_ode(1, "yp - y^2 + x^2 - 1", &pool).expect("parses");
+    match dsolve(&input, &pool) {
+        Err(DsolveError::QuadratureFailed(m)) => {
+            assert!(m.contains('∫'), "decline does not quote an integral: {m}");
+        }
+        Err(e) => panic!("expected a quadrature decline, got {e}"),
+        Ok(_) => {}
+    }
+}
+
 #[test]
 fn general_solution_has_exactly_order_many_constants() {
     // Variation of parameters must not allocate a constant of its own: the
@@ -591,7 +884,7 @@ fn general_solution_has_exactly_order_many_constants() {
         assert_eq!(sol.constants.len(), order, "`{src}`");
         for c in &sol.constants {
             assert!(
-                super::contains(sol.y_of_x, *c, &pool),
+                super::contains(explicit_of(&sol), *c, &pool),
                 "`{src}`: constant {} does not appear in the solution",
                 pool.display(*c)
             );
