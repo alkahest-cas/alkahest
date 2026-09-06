@@ -25,15 +25,35 @@
 //!
 //! ## Scope
 //!
-//! Decomposition is over ℚ only: irreducible quadratics (and higher-degree
-//! irreducible factors) are **kept intact**, not split into complex/algebraic
-//! linear factors.  The `ℚ(α)`-splitting variant is future work.
+//! Decomposition is over ℚ, or — when the input mentions symbols other than
+//! `x` — over **ℚ(params)**, the field of rational functions in those symbols.
+//! Irreducible quadratics (and higher-degree irreducible factors) are **kept
+//! intact**, not split into complex/algebraic linear factors.  The
+//! `ℚ(α)`-splitting variant is future work.
+//!
+//! The ℚ path is tried first and is unchanged; the ℚ(params) path in
+//! [`super::apart_param`] runs only for inputs the ℚ path rejects as
+//! [`ApartError::NotRational`], so no input that decomposed before decomposes
+//! differently now.
+//!
+//! ## Genericity — read this before using the ℚ(params) result
+//!
+//! A ℚ(params) decomposition can rest on hypotheses that a ℚ one never does:
+//! `1/((s+ka)(s+ke))` splits with `1/(ke−ka)` coefficients, an identity that is
+//! *false* at `ka = ke`.  [`apart`] cannot express that in its return type, so
+//! the hypotheses travel beside the result on a consuming thread-local channel,
+//! [`take_apart_side_conditions`] — the same out-of-band shape as
+//! [`crate::solver::take_solve_side_conditions`].  Callers that want them in
+//! band should use [`apart_with_conditions`].
 //!
 //! This reuses the ℚ\[x\] polynomial machinery from the rational Risch
 //! integrator (`crate::integrate::risch::{poly_rde, rational_rde}`).
 
+use std::cell::RefCell;
+
 use rug::{Integer, Rational};
 
+use crate::deriv::SideCondition;
 use crate::kernel::{ExprId, ExprPool};
 use crate::poly::UniPoly;
 
@@ -108,6 +128,61 @@ impl From<ApartError> for ConversionError {
 /// assert!(pool.display(pf).to_string().contains('x'));
 /// ```
 pub fn apart(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<ExprId, ApartError> {
+    // Cleared first: the `?` below skips the write, and a caller that catches
+    // the error and reads the channel must not see an earlier call's
+    // hypotheses.
+    APART_CONDITIONS.with(|c| c.borrow_mut().clear());
+    let (out, conditions) = apart_with_conditions(expr, var, pool)?;
+    APART_CONDITIONS.with(|c| *c.borrow_mut() = conditions);
+    Ok(out)
+}
+
+thread_local! {
+    static APART_CONDITIONS: RefCell<Vec<SideCondition>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The hypotheses the most recent [`apart`] call on this thread rests on.
+///
+/// Over ℚ this is always empty: every division performed is by a non-zero
+/// rational. Over ℚ(params) it is not — `apart(1/((s+ka)*(s+ke)), s)` returns
+/// the decomposition **for `ka ≠ ke`**, and at `ka = ke` the input is the
+/// ordinary `1/(s+ka)²` while the answer is `0/0`. A caller cannot audit an
+/// assumption that is never stated, so it is stated here.
+///
+/// Consuming, so one call's hypotheses cannot be read as a later call's. Empty
+/// means every division was by a non-zero constant — not that nothing was
+/// checked. [`apart_with_conditions`] is the in-band form.
+pub fn take_apart_side_conditions() -> Vec<SideCondition> {
+    APART_CONDITIONS.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
+
+/// [`apart`] with its genericity hypotheses returned in band.
+///
+/// The ℚ decomposition is attempted first and always yields an empty condition
+/// list. Only an input that is not a rational function of `var` **over ℚ** —
+/// i.e. one mentioning other symbols — reaches the ℚ(params) path, where the
+/// conditions describe the parameter loci on which the returned identity fails.
+/// See [`super::apart_param`] for how they are derived.
+pub fn apart_with_conditions(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Result<(ExprId, Vec<SideCondition>), ApartError> {
+    match apart_over_q(expr, var, pool) {
+        Ok(out) => Ok((out, Vec::new())),
+        // `NotRational` is precisely "there is a generator here that ℚ cannot
+        // see". Every other failure (zero denominator, a denominator FLINT
+        // could not factor) means the ℚ(params) path would fail the same way.
+        Err(ApartError::NotRational) => {
+            let d = super::apart_param::apart_param(expr, var, pool)?;
+            Ok((d.expr, d.conditions))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// The ℚ-only decomposition — [`apart`]'s historical behaviour, unchanged.
+fn apart_over_q(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<ExprId, ApartError> {
     let (num, den) = expr_to_qrational(expr, var, pool).ok_or(ApartError::NotRational)?;
     let num = trim(num);
     let den = trim(den);
@@ -452,6 +527,79 @@ mod tests {
     #[test]
     fn not_rational_errors() {
         // exp(x)/(x²−1) is not a rational function of x.
+        let (p, x) = pool();
+        let den = p.add(vec![p.pow(x, p.integer(2_i32)), p.integer(-1_i32)]);
+        let f = p.mul(vec![p.func("exp", vec![x]), p.pow(den, p.integer(-1_i32))]);
+        assert_eq!(apart(f, x, &p), Err(ApartError::NotRational));
+    }
+
+    // ── ℚ(params) path ─────────────────────────────────────────────────────
+
+    /// The ℚ path is unchanged and assumes nothing.
+    #[test]
+    fn rational_coefficients_assume_nothing() {
+        let (p, x) = pool();
+        let den = p.add(vec![p.pow(x, p.integer(2_i32)), p.integer(-1_i32)]);
+        let f = p.pow(den, p.integer(-1_i32));
+        let (out, conds) = apart_with_conditions(f, x, &p).unwrap();
+        assert!(conds.is_empty());
+        assert_eq!(out, apart(f, x, &p).unwrap());
+        assert!(take_apart_side_conditions().is_empty());
+    }
+
+    /// A symbolic parameter no longer stops the decomposition — and the
+    /// coincidence it rests on is reported.
+    #[test]
+    fn symbolic_parameters_decompose_with_a_stated_hypothesis() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let a = p.symbol("a", Domain::Real);
+        let b = p.symbol("b", Domain::Real);
+        let den = p.mul(vec![p.add(vec![x, a]), p.add(vec![x, b])]);
+        let f = p.pow(den, p.integer(-1_i32));
+
+        let (out, conds) = apart_with_conditions(f, x, &p).unwrap();
+        assert_eq!(conds.len(), 1, "{conds:?}");
+        assert!(matches!(conds[0], crate::deriv::SideCondition::NonZero(_)));
+
+        // Numeric check at a point where a ≠ b: the decomposition is an
+        // identity, not just a rearrangement that looks like one.
+        let eval3 = |e: ExprId, xv: f64, av: f64, bv: f64| -> f64 {
+            fn go(e: ExprId, env: &[(ExprId, f64)], pool: &ExprPool) -> f64 {
+                if let Some((_, v)) = env.iter().find(|(id, _)| *id == e) {
+                    return *v;
+                }
+                match pool.get(e) {
+                    ExprData::Integer(n) => n.0.to_f64(),
+                    ExprData::Rational(r) => r.0.to_f64(),
+                    ExprData::Add(args) => args.iter().map(|&a| go(a, env, pool)).sum(),
+                    ExprData::Mul(args) => args.iter().map(|&a| go(a, env, pool)).product(),
+                    ExprData::Pow { base, exp } => go(base, env, pool).powf(go(exp, env, pool)),
+                    other => panic!("eval: {other:?}"),
+                }
+            }
+            go(e, &[(x, xv), (a, av), (b, bv)], &p)
+        };
+        for (xv, av, bv) in [(1.5_f64, 0.5_f64, 2.0_f64), (-3.0, 1.0, -0.25)] {
+            let lhs = eval3(f, xv, av, bv);
+            let rhs = eval3(out, xv, av, bv);
+            assert!(
+                (lhs - rhs).abs() < 1e-9 * (1.0 + lhs.abs()),
+                "{lhs} vs {rhs}"
+            );
+        }
+
+        // The out-of-band channel agrees with the in-band one, and is consuming.
+        let _ = apart(f, x, &p).unwrap();
+        assert_eq!(take_apart_side_conditions(), conds);
+        assert!(take_apart_side_conditions().is_empty());
+    }
+
+    /// A generator that is not free of the variable keeps the historical
+    /// refusal: `exp(x)` is not a *parameter*, and a hypothesis phrased on it
+    /// would be a puncture in `x` dressed up as a fact about a constant.
+    #[test]
+    fn a_var_dependent_generator_is_still_not_rational() {
         let (p, x) = pool();
         let den = p.add(vec![p.pow(x, p.integer(2_i32)), p.integer(-1_i32)]);
         let f = p.mul(vec![p.func("exp", vec![x]), p.pow(den, p.integer(-1_i32))]);

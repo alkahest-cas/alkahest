@@ -42,6 +42,27 @@
 //! A leading polynomial part of `F` (improper rational) maps back to derivatives
 //! of `δ(t)`, which we decline rather than fabricate.
 //!
+//! ## Symbolic parameters
+//!
+//! `F`'s coefficients need not be rational numbers.  `apart` decomposes over
+//! `ℚ(params)` when other symbols are present, so the two workhorse forms of
+//! applied mathematics invert:
+//!
+//! | `F(s)` | `L⁻¹` | hypotheses |
+//! |---|---|---|
+//! | `K/(s² + 2ζωs + ω²)` | `K·e^{−ζωt}·sin(ω√(1−ζ²)·t)/(ω√(1−ζ²))` | `ω ≠ 0`, `ζ ≠ ±1`, `ω²(1−ζ²) > 0` |
+//! | `D·ka/((s+ka)(s+ke))` | `D·ka·(e^{−ka t} − e^{−ke t})/(ke − ka)` | `ka ≠ ke` |
+//!
+//! The hypotheses are not decoration.  At `ka = ke` the Bateman answer is
+//! `0/0` and the true inverse is `D·ka·t·e^{−ka t}`; at `ζ > 1` the
+//! second-order answer is a *hyperbolic* function that the printed form
+//! expresses only through an imaginary `√(1−ζ²)`.  They are returned by
+//! [`inverse_laplace_transform_with_conditions`], discharged where the caller's
+//! [`crate::simplify::assumptions::AssumptionContext`] proves them
+//! ([`inverse_laplace_transform_with_assumptions`]), and — for the historical
+//! [`inverse_laplace_transform`] signature — carried out of band on
+//! [`super::take_transform_side_conditions`].
+//!
 //! # Caveats
 //!
 //! Both directions are **formal** — no convergence region is computed and no
@@ -51,7 +72,11 @@
 
 use rug::Integer;
 
+use crate::deriv::SideCondition;
 use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::simplify::assumptions::AssumptionContext;
+
+use super::{stash_transform_side_conditions, Genericity};
 
 /// Errors from the Laplace transform routines.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -688,13 +713,85 @@ pub fn inverse_laplace_transform(
     t: ExprId,
     pool: &ExprPool,
 ) -> Result<ExprId, LaplaceError> {
+    // Clear first: on the `?` below the call returns without reaching the
+    // stash, and a caller that catches the error and then reads the channel
+    // must not be handed an *earlier* call's hypotheses.
+    stash_transform_side_conditions(Vec::new());
+    let (out, conds) = inverse_laplace_transform_with_conditions(big_f, s, t, pool)?;
+    stash_transform_side_conditions(conds);
+    Ok(out)
+}
+
+/// [`inverse_laplace_transform`] with its genericity hypotheses returned in
+/// band rather than through
+/// [`super::take_transform_side_conditions`].
+///
+/// The list is empty for every input whose coefficients are rational numbers.
+/// It is non-empty exactly when the answer depends on a fact about a symbolic
+/// parameter that the input does not settle — `ka ≠ ke` for the two-compartment
+/// denominator `(s+ka)(s+ke)`, `ζ < 1` for the under-damped second-order form.
+pub fn inverse_laplace_transform_with_conditions(
+    big_f: ExprId,
+    s: ExprId,
+    t: ExprId,
+    pool: &ExprPool,
+) -> Result<(ExprId, Vec<SideCondition>), LaplaceError> {
+    let mut g = Genericity::new(None);
+    let out = inverse_laplace_inner(big_f, s, t, pool, &mut g)?;
+    Ok((out, g.into_conditions()))
+}
+
+/// [`inverse_laplace_transform_with_conditions`] under an explicit
+/// [`AssumptionContext`].
+///
+/// A hypothesis the context **proves** is discharged rather than reported;
+/// anything else is still reported. An assumption context makes conditions
+/// disappear only by settling them, never by being present.
+///
+/// # How much it can settle
+///
+/// Discharge goes through, in order: a literal value; a matching
+/// [`crate::deriv::SideCondition`] fact from the context or from a symbol's
+/// static [`crate::kernel::Domain`]; the structural rules "a product is
+/// non-zero when every factor is" and "a positive quantity is non-zero"; and
+/// finally [`crate::logic::satisfiable`] on `assumptions ∧ ¬goal`.
+///
+/// That last step is an **interval** decision procedure, not real quantifier
+/// elimination, so it answers `Unknown` for anything nonlinear — and `Unknown`
+/// is not a proof. Concretely, declaring `0 < ζ < 1 ∧ ω > 0` discharges
+/// `ω ≠ 0` but leaves `ζ ≠ ±1` and `ω²(1 − ζ²) > 0` on the wire, even though
+/// both follow. Over-reporting is the safe direction and it is the one taken;
+/// closing the gap is a job for [`crate::real::cad`], whose cost is not
+/// something a transform call should pay unasked.
+pub fn inverse_laplace_transform_with_assumptions(
+    big_f: ExprId,
+    s: ExprId,
+    t: ExprId,
+    pool: &ExprPool,
+    assumptions: &AssumptionContext,
+) -> Result<(ExprId, Vec<SideCondition>), LaplaceError> {
+    let mut g = Genericity::new(Some(assumptions));
+    let out = inverse_laplace_inner(big_f, s, t, pool, &mut g)?;
+    Ok((out, g.into_conditions()))
+}
+
+fn inverse_laplace_inner(
+    big_f: ExprId,
+    s: ExprId,
+    t: ExprId,
+    pool: &ExprPool,
+    gen: &mut Genericity<'_>,
+) -> Result<ExprId, LaplaceError> {
     if s == t {
         return Err(LaplaceError::SameVariable);
     }
 
-    // Peel a delay factor e^{−a s}: L⁻¹{e^{−a s} G(s)} = θ(t−a)·g(t−a).
+    // Peel a delay factor e^{−a s}: L⁻¹{e^{−a s} G(s)} = θ(t−a)·g(t−a).  The
+    // unilateral rule needs `a ≥ 0`; a literal negative `a` is refused by the
+    // forward table, and a *symbolic* `a` is a hypothesis, not a fact.
     if let Some((a, g)) = split_delay(big_f, s, pool) {
-        let g_inv = inverse_laplace_transform(g, s, t, pool)?;
+        gen.need_in_domain(a, crate::kernel::Domain::NonNegative, pool);
+        let g_inv = inverse_laplace_inner(g, s, t, pool, gen)?;
         let t_minus_a = simp(pool.add(vec![t, neg(a, pool)]), pool);
         let shifted = subs_one(g_inv, t, t_minus_a, pool);
         let heaviside = pool.func("heaviside", vec![t_minus_a]);
@@ -702,15 +799,23 @@ pub fn inverse_laplace_transform(
     }
 
     // Peel s-free scalar factors (e.g. √2 in √2/(s²−2) from L{sinh(√2 t)})
-    // so `apart` sees a ℚ-rational function of `s`.
+    // so `apart` sees a rational function of `s`.  Over ℚ(params) most such
+    // factors are ordinary coefficients, but a genuine algebraic number (√2)
+    // or a transcendental (π) still has to come out first.
     if let Some((scalar, rest)) = split_s_free_scalar(big_f, s, pool) {
-        let rest_inv = inverse_laplace_transform(rest, s, t, pool)?;
+        let rest_inv = inverse_laplace_inner(rest, s, t, pool, gen)?;
         return Ok(simp(pool.mul(vec![scalar, rest_inv]), pool));
     }
 
-    // Rational route: partial fractions, then table per term.
-    let pf = crate::poly::apart(big_f, s, pool)
+    // Rational route: partial fractions over ℚ — or, when `F` mentions symbolic
+    // parameters, over ℚ(params) — then the table per term.  `apart` reports
+    // any genericity its decomposition rests on; those are the caller's
+    // hypotheses too.
+    let (pf, apart_conds) = crate::poly::apart_with_conditions(big_f, s, pool)
         .map_err(|e| LaplaceError::NotInvertible(format!("apart failed: {e}")))?;
+    for cond in apart_conds {
+        gen.adopt(cond, pool);
+    }
 
     let terms: Vec<ExprId> = match pool.get(pf) {
         ExprData::Add(args) => args,
@@ -719,7 +824,7 @@ pub fn inverse_laplace_transform(
 
     let mut out = Vec::with_capacity(terms.len());
     for term in terms {
-        out.push(invert_term(term, s, t, pool)?);
+        out.push(invert_term(term, s, t, pool, gen)?);
     }
     Ok(simp(pool.add(out), pool))
 }
@@ -786,9 +891,10 @@ fn invert_term(
     s: ExprId,
     t: ExprId,
     pool: &ExprPool,
+    gen: &mut Genericity<'_>,
 ) -> Result<ExprId, LaplaceError> {
     // Split term = numer · denom_pow, where denom_pow = D(s)^{−n}.
-    let (numer, base, n) = split_rational_term(term, pool)
+    let (numer, base, n) = split_rational_term(term, s, pool)
         .ok_or_else(|| LaplaceError::NotInvertible(pool.display(term).to_string()))?;
 
     // A polynomial part (n == 0) is the transform of `δ(t)` (constant term) or
@@ -804,7 +910,7 @@ fn invert_term(
 
     match poly_degree(base, s, pool) {
         Some(1) => invert_linear_pole(numer, base, n, s, t, pool),
-        Some(2) => invert_quadratic(numer, base, n, s, t, pool),
+        Some(2) => invert_quadratic(numer, base, n, s, t, pool, gen),
         _ => Err(LaplaceError::NotInvertible(format!(
             "denominator factor of degree > 2: {}",
             pool.display(base)
@@ -814,7 +920,13 @@ fn invert_term(
 
 /// Decompose a term into `(numerator, denom_base, n)` with `term = numerator ·
 /// denom_base^{−n}` and `n ≥ 0`, `numerator` free of any negative power of `s`.
-fn split_rational_term(term: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId, u64)> {
+///
+/// A negative power whose base is free of `s` — `(ka − ke)^{−1}` in the
+/// ℚ(params) decomposition of the two-compartment model — is a *coefficient*,
+/// not a pole, and belongs in the numerator. Reading it as a second pole is
+/// what used to make every parametric term look like "two distinct denominator
+/// factors" and fail.
+fn split_rational_term(term: ExprId, s: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId, u64)> {
     let factors: Vec<ExprId> = match pool.get(term) {
         ExprData::Mul(a) => a,
         _ => vec![term],
@@ -827,8 +939,8 @@ fn split_rational_term(term: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId,
         if let ExprData::Pow { base: b, exp } = pool.get(fac) {
             if let ExprData::Integer(e) = pool.get(exp) {
                 let ev = e.0;
-                if ev < 0 {
-                    // negative power → part of denominator
+                if ev < 0 && !is_free_of(b, s, pool) {
+                    // negative power in `s` → part of denominator
                     if base.is_some() && base != Some(b) {
                         // Two distinct denominator factors — not a single PF term.
                         return None;
@@ -957,6 +1069,7 @@ fn invert_quadratic(
     s: ExprId,
     t: ExprId,
     pool: &ExprPool,
+    gen: &mut Genericity<'_>,
 ) -> Result<ExprId, LaplaceError> {
     if n != 1 && n != 2 {
         return Err(LaplaceError::NotInvertible(
@@ -981,8 +1094,18 @@ fn invert_quadratic(
         pool,
     );
 
-    // Literal sign of ω² selects sin/cos vs sinh/cosh.  Non-literal ω² keeps
-    // the historical oscillatory path (formal √).
+    // The sign of ω² selects sin/cos vs sinh/cosh, and ω² = 0 is a third,
+    // genuinely different closed form (`t·e^{pt}`, a double real pole).  A
+    // literal decides itself.  A *parametric* ω² decides nothing on its own:
+    //
+    //   • if the caller's assumptions settle the sign, use it and say nothing;
+    //   • otherwise take the oscillatory branch — which is the analytic
+    //     continuation of both, since `cos ωt` and `sin(ωt)/ω` are entire in
+    //     ω² — and record what makes it the *real-valued* answer, namely
+    //     ω² > 0, plus ω² ≠ 0 which rules out the double-pole form.
+    //
+    // Silently taking the branch, as this did before, returns an expression
+    // that is imaginary at ζ > 1 with nothing on the wire to say so.
     let hyperbolic = match literal_rational(omega_sq, pool) {
         Some(r) if r < 0 => true,
         Some(r) if r == 0 => {
@@ -990,7 +1113,18 @@ fn invert_quadratic(
                 "degenerate quadratic pole (ω² = 0)".into(),
             ));
         }
-        _ => false,
+        Some(_) => false,
+        None => {
+            if gen.known_negative(omega_sq, pool) {
+                true
+            } else {
+                if !gen.known_positive(omega_sq, pool) {
+                    gen.need_nonzero(omega_sq, pool);
+                    gen.need_positive(omega_sq, pool);
+                }
+                false
+            }
+        }
     };
 
     let freq_sq = if hyperbolic {
@@ -998,7 +1132,16 @@ fn invert_quadratic(
     } else {
         omega_sq
     };
-    let freq = simp(pool.pow(freq_sq, half), pool); // ω or κ
+    // ω or κ.  When ω² is a perfect square — `w²` from `L{sin(w t)}` — take the
+    // root symbolically rather than leaving `(w²)^{1/2}`.  This is sound for
+    // *either* branch of the root because every form emitted below is an even
+    // function of the frequency: `cos ωt`, `sin(ωt)/ω`, `t·sin(ωt)/(2ω)` and
+    // `(sin ωt − ωt cos ωt)/(2ω³)` are all unchanged by `ω ↦ −ω`.  So
+    // `sin(√(w²)·t)/√(w²)` and `sin(w t)/w` are the same function of `w`.
+    let freq = match perfect_square_root(freq_sq, pool) {
+        Some(r) => r,
+        None => simp(pool.pow(freq_sq, half), pool),
+    };
 
     // numerator B s + C.
     let (bb, cc) = as_affine(numer, s, pool)
@@ -1044,6 +1187,56 @@ fn invert_quadratic(
     let two_freq3 = pool.mul(vec![two, freq3]);
     let second = pool.mul(vec![bp_plus_c, recip(two_freq3, pool), combo]);
     Ok(pool.mul(vec![exp_pt, pool.add(vec![t_odd, second])]))
+}
+
+/// A symbolic square root of `e` when one is evident: `w²` → `w`, `9·a⁴` →
+/// `3·a²`, a perfect-square literal → its root.  `None` when no exact root is
+/// apparent, in which case the caller keeps the formal `e^{1/2}`.
+///
+/// The sign of the root is not determined and does not need to be — see the
+/// evenness argument at the call site.
+fn perfect_square_root(e: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    if let Some(r) = literal_rational(e, pool) {
+        let (n, d) = r.into_numer_denom();
+        if n < 0 {
+            return None;
+        }
+        let (ns, nrem) = n.clone().sqrt_rem(Integer::new());
+        let (ds, drem) = d.clone().sqrt_rem(Integer::new());
+        if nrem != 0 || drem != 0 {
+            return None;
+        }
+        return Some(if ds == 1 {
+            pool.integer(ns)
+        } else {
+            pool.rational(ns, ds)
+        });
+    }
+    match pool.get(e) {
+        ExprData::Pow { base, exp } => {
+            let ExprData::Integer(k) = pool.get(exp) else {
+                return None;
+            };
+            let k = k.0.to_i64()?;
+            if k <= 0 || k % 2 != 0 {
+                return None;
+            }
+            let half = k / 2;
+            Some(if half == 1 {
+                base
+            } else {
+                pool.pow(base, pool.integer(half as i32))
+            })
+        }
+        ExprData::Mul(args) => {
+            let mut parts = Vec::with_capacity(args.len());
+            for a in args {
+                parts.push(perfect_square_root(a, pool)?);
+            }
+            Some(pool.mul(parts))
+        }
+        _ => None,
+    }
 }
 
 /// Refuse a literal negative delay `a` in `θ(t−a)` / `δ(t−a)` (unilateral

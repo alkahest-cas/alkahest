@@ -4269,7 +4269,11 @@ fn py_apart(py: Python<'_>, expr: PyRef<PyExpr>, var: PyRef<PyExpr>) -> PyResult
     let id = {
         let pool = pool_py.borrow(py);
         guard_depth(&pool.inner, expr.id)?;
-        core_apart(expr.id, var.id, &pool.inner).map_err(apart_error_to_py)?
+        let out = core_apart(expr.id, var.id, &pool.inner);
+        // Capture on both paths: a caller must be able to read the hypotheses
+        // of the call that just happened, not of some earlier one.
+        capture_apart_side_conditions(&pool.inner);
+        out.map_err(apart_error_to_py)?
     };
     Ok(PyExpr { id, pool: pool_py })
 }
@@ -4829,9 +4833,82 @@ fn py_inverse_laplace_transform(
     let pool_py = big_f.pool.clone_ref(py);
     let id = {
         let pool = pool_py.borrow(py);
-        core_ilaplace(big_f.id, s.id, t.id, &pool.inner).map_err(laplace_error_to_py)?
+        let out = core_ilaplace(big_f.id, s.id, t.id, &pool.inner);
+        capture_transform_side_conditions(&pool.inner);
+        out.map_err(laplace_error_to_py)?
     };
     Ok(PyExpr { id, pool: pool_py })
+}
+
+std::thread_local! {
+    static TRANSFORM_SIDE_CONDITIONS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static APART_SIDE_CONDITIONS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Drain the core channel and render it, so
+/// [`py_transform_side_conditions`] describes *this* call whether it succeeded
+/// or failed.
+fn capture_transform_side_conditions(pool: &alkahest_core::ExprPool) {
+    let rendered: Vec<String> = alkahest_core::transform::take_transform_side_conditions()
+        .iter()
+        .map(|c| render_side_condition_or_depth(pool, c))
+        .collect();
+    TRANSFORM_SIDE_CONDITIONS.with(|c| *c.borrow_mut() = rendered);
+}
+
+fn capture_apart_side_conditions(pool: &alkahest_core::ExprPool) {
+    let rendered: Vec<String> = alkahest_core::poly::take_apart_side_conditions()
+        .iter()
+        .map(|c| render_side_condition_or_depth(pool, c))
+        .collect();
+    APART_SIDE_CONDITIONS.with(|c| *c.borrow_mut() = rendered);
+}
+
+/// `experimental.transform_side_conditions() -> list[str]`
+///
+/// The hypotheses the most recent ``inverse_laplace_transform`` /
+/// ``inverse_z_transform`` on this thread **assumed** in order to return the
+/// answer it did — one rendered string per condition, e.g. ``"a ≠ 0"``.
+///
+/// Empty for every input whose coefficients are rational numbers. Non-empty
+/// when the answer depends on a fact about a symbolic parameter that the input
+/// does not settle::
+///
+///     L⁻¹{D·ka/((s+ka)(s+ke))} = D·ka·(e^{−ka·t} − e^{−ke·t})/(ke − ka)
+///
+/// is the Bateman function **for ``ka ≠ ke``**; at ``ka = ke`` it is ``0/0``
+/// and the true inverse is ``D·ka·t·e^{−ka·t}``. Likewise the second-order
+/// step response ``K/(s² + 2ζωs + ω²)`` is reported with ``ω ≠ 0``,
+/// ``ζ ≠ ±1`` and ``ω²(1 − ζ²) > 0`` — the last being the under-damped
+/// condition ``|ζ| < 1`` that makes the printed ``sin`` the real answer.
+///
+/// An empty list means every branch taken was forced by the input, not that
+/// none was taken. Reset by each inverse-transform call, so read it before the
+/// next one; repeated reads of the same call agree.
+#[pyfunction]
+#[pyo3(name = "transform_side_conditions")]
+fn py_transform_side_conditions() -> Vec<String> {
+    TRANSFORM_SIDE_CONDITIONS.with(|c| c.borrow().clone())
+}
+
+/// `experimental.apart_side_conditions() -> list[str]`
+///
+/// The hypotheses the most recent :func:`alkahest.apart` on this thread rests
+/// on. Always empty over ℚ — every division there is by a non-zero rational.
+///
+/// Non-empty when ``apart`` worked over ℚ(params), which it does whenever the
+/// input mentions symbols other than the decomposition variable, and divided by
+/// something that can vanish: ``apart(1/((s+ka)*(s+ke)), s)`` is the
+/// decomposition **for ``ka ≠ ke``**, and is ``0/0`` at ``ka = ke`` where the
+/// input is the perfectly ordinary ``1/(s+ka)²``.
+///
+/// Reset by each ``apart`` call; repeated reads of the same call agree.
+#[pyfunction]
+#[pyo3(name = "apart_side_conditions")]
+fn py_apart_side_conditions() -> Vec<String> {
+    APART_SIDE_CONDITIONS.with(|c| c.borrow().clone())
 }
 
 /// `experimental.fourier_transform(f, x, xi)` → `Expr` for `F{f}(ξ)` (unitary,
@@ -4898,7 +4975,9 @@ fn py_inverse_z_transform(
     let pool_py = big_x.pool.clone_ref(py);
     let id = {
         let pool = pool_py.borrow(py);
-        core_iztransform(big_x.id, z.id, n.id, &pool.inner).map_err(ztransform_error_to_py)?
+        let out = core_iztransform(big_x.id, z.id, n.id, &pool.inner);
+        capture_transform_side_conditions(&pool.inner);
+        out.map_err(ztransform_error_to_py)?
     };
     Ok(PyExpr { id, pool: pool_py })
 }
@@ -15855,6 +15934,8 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_inverse_fourier_transform, m)?)?;
     m.add_function(wrap_pyfunction!(py_z_transform, m)?)?;
     m.add_function(wrap_pyfunction!(py_inverse_z_transform, m)?)?;
+    m.add_function(wrap_pyfunction!(py_transform_side_conditions, m)?)?;
+    m.add_function(wrap_pyfunction!(py_apart_side_conditions, m)?)?;
     m.add_function(wrap_pyfunction!(py_multilimit, m)?)?;
     m.add_function(wrap_pyfunction!(py_asymptotic_expand, m)?)?;
     m.add_function(wrap_pyfunction!(py_series_solve, m)?)?;

@@ -37,14 +37,35 @@ pub fn together_parts(
     vars: Vec<ExprId>,
     pool: &ExprPool,
 ) -> Result<(ExprId, ExprId), ConversionError> {
+    let (rf, _gens) = rational_over_generators(expr, vars, pool)?;
+    let numer = rf.numer.to_expr(pool);
+    let denom = rf.denom.to_expr(pool);
+    Ok((numer, denom))
+}
+
+/// Convert *expr* to a normalized [`RationalFunction`] **and** report the
+/// generator list it is expressed over.
+///
+/// `vars` is placed at the front of the generator list, in the given order, so
+/// a caller that wants to read the result as a polynomial in `vars[0]` can
+/// slice each exponent key at index 0.  Everything else `expr` mentions — a
+/// foreign symbol, `sin(x)`, `x**n` — is appended as an opaque generator, which
+/// is exactly the treatment that makes ℚ(params) arithmetic possible: a
+/// parameter is a transcendental constant, so it is *already* a polynomial
+/// variable as far as this conversion is concerned.
+///
+/// [`together_parts`] is this function with the generator list discarded.
+pub(crate) fn rational_over_generators(
+    expr: ExprId,
+    vars: Vec<ExprId>,
+    pool: &ExprPool,
+) -> Result<(RationalFunction, Vec<ExprId>), ConversionError> {
     // Discover opaque generators and build the full generator list.
     let mut gens: Vec<ExprId> = vars.clone();
     collect_generators(expr, &vars, pool, &mut gens);
 
     let rf = expr_to_rational(expr, &gens, pool)?;
-    let numer = rf.numer.to_expr(pool);
-    let denom = rf.denom.to_expr(pool);
-    Ok((numer, denom))
+    Ok((rf, gens))
 }
 
 /// Combine *expr* over a common denominator and cancel common polynomial
