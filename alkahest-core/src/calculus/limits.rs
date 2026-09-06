@@ -971,6 +971,15 @@ fn limit_inner(
         return Ok(r);
     }
 
+    // The special-function basis the integrator emits over. Placed with the
+    // other table lookups and ahead of the `x ↦ 1/t` substitution, which would
+    // hand `erf(1/t)` to a Taylor expansion that cannot see through it.
+    if let Some(r) = try_special_basis_limit(expr, var, point, direction, pool, depth)? {
+        return Ok(r);
+    }
+    if let Some(r) = try_special_basis_algebra(expr, var, point, direction, pool, depth)? {
+        return Ok(r);
+    }
     if let Some(r) = try_continuous_composition(expr, var, point, direction, pool, depth)? {
         return Ok(r);
     }
@@ -1034,7 +1043,7 @@ fn limit_inner(
             pool,
         )?;
         let e2 = simplify(canon, pool).value;
-        return limit_inner(
+        let substituted = limit_inner(
             e2,
             t,
             pool.integer(0_i32),
@@ -1042,6 +1051,33 @@ fn limit_inner(
             pool,
             depth + 1,
         );
+        // **Reflection fallback**, on the unresolved path only.
+        //
+        // `lim_{x→−∞} f(x) = lim_{y→+∞} f(−y)` is an identity, and the `+∞`
+        // side of this function is strictly better equipped: the Gruntz
+        // algorithm runs there and nowhere else. The `x ↦ −1/t` substitution
+        // above turns `x·exp(−x²)` into `−exp(−t⁻²)/t`, which has no Taylor
+        // expansion at `0` — the recursive call comes back with a residual
+        // `0^{negative}` rather than an error, and `limit_body` is what
+        // eventually rejects it. Gruntz answers `lim_{y→+∞} −y·exp(−y²) = 0`
+        // immediately, and that limit is exactly what
+        // `∫_{-∞}^{∞} x²·exp(−x²) dx` needs at its lower bound.
+        //
+        // "Unresolved" therefore has to mean the same thing `limit_body` means
+        // by it: an error, a residual `0^{negative}`, or a value that still
+        // mentions the substitution variable. In every one of those cases the
+        // original outcome is returned unchanged if the reflection also fails,
+        // so nothing that resolves today can resolve differently.
+        let unresolved = match &substituted {
+            Err(_) => true,
+            Ok(v) => contains_zero_to_negative_power(*v, pool) || depends_on(*v, t, pool),
+        };
+        if unresolved {
+            if let Ok(v) = reflected_limit(expr, var, direction, pool, depth) {
+                return Ok(v);
+            }
+        }
+        return substituted;
     }
 
     if let Some(r) = try_direct_substitution(expr, var, point, pool) {
@@ -1766,6 +1802,317 @@ fn try_continuous_composition(
     Ok(Some(
         simplify(pool.func(name, vec![inner_limit]), pool).value,
     ))
+}
+
+/// Limits at `±∞` of the special functions the integrator now **emits**.
+///
+/// # Why this exists
+///
+/// `∫exp(−x²/2) dx` has been answered as `1.2533…·erf(0.7071…·x)` since the
+/// special-function emitter landed, but `∫_{-∞}^{∞} exp(−x²/2) dx` still
+/// refused: the fundamental theorem needs `lim_{x→±∞} F`, `limit` had no rule
+/// for `erf`, and `eval_bound` (correctly) will not substitute an unevaluated
+/// limit into `F(b) − F(a)`. The indefinite answer was useless to the definite
+/// question. Every entry below is the standard value of a function this
+/// codebase already defines to a pinned convention — DLMF §6.2 for the
+/// exponential-integral family, DLMF §7.2(iii) for the normalised Fresnel
+/// integrals — not a new claim.
+///
+/// # The argument is taken to its own limit first
+///
+/// [`try_special_function_limits`] only fires on `f(var)` literally. That is
+/// too narrow here, because the emitter's answers carry a *scaled* argument
+/// (`erf(0.7071·x)`, `Si(2·x)`): the limit of the argument is computed
+/// recursively, and only a `±∞` there is dispatched on. A finite inner limit is
+/// left to [`try_direct_substitution`], which is continuity and needs no table.
+///
+/// # `Ci`, `Chi` and `li` are `+∞` only
+///
+/// All three have a branch cut along the negative reals — `Ci(−x) = Ci(x) ± iπ`
+/// — so they have **no real value** for a negative argument, which is exactly
+/// why [`crate::primitive`]'s kernels refuse there. There is therefore no real
+/// limit at `−∞` to report, and returning one would be inventing a real part of
+/// a complex number. `None` here surfaces as a refusal upstream, which is the
+/// honest answer.
+fn try_special_basis_limit(
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    direction: LimitDirection,
+    pool: &ExprPool,
+    depth: u32,
+) -> Result<Option<ExprId>, LimitError> {
+    let ExprData::Func { name, args } = pool.get(expr) else {
+        return Ok(None);
+    };
+    if args.len() != 1 {
+        return Ok(None);
+    }
+    if !matches!(
+        name.as_str(),
+        "erf" | "erfc" | "Si" | "Ci" | "Shi" | "Chi" | "Ei" | "li" | "fresnels" | "fresnelc"
+    ) {
+        return Ok(None);
+    }
+    let Some(toward_pos) = argument_runs_to_infinity(args[0], var, point, direction, pool, depth)
+    else {
+        return Ok(None);
+    };
+
+    let half_pi = || {
+        pool.mul(vec![
+            pool.symbol("pi", crate::kernel::Domain::Real),
+            pool.rational(1, 2),
+        ])
+    };
+    let value = match (name.as_str(), toward_pos) {
+        // erf(±∞) = ±1, erfc = 1 − erf.
+        ("erf", true) => pool.integer(1_i32),
+        ("erf", false) => pool.integer(-1_i32),
+        ("erfc", true) => pool.integer(0_i32),
+        ("erfc", false) => pool.integer(2_i32),
+        // Si is odd with Si(∞) = π/2 (DLMF 6.2.9); Ci(∞) = 0 (DLMF 6.2.11).
+        ("Si", true) => half_pi(),
+        ("Si", false) => pool.mul(vec![pool.integer(-1_i32), half_pi()]),
+        ("Ci", true) => pool.integer(0_i32),
+        // Shi is odd and grows like eˣ/x; Chi and Ei diverge at +∞ and Ei
+        // decays to 0 at −∞ (DLMF 6.2.5: Ei(x) = ⨍_{-∞}^{x} eᵗ/t dt).
+        ("Shi" | "Chi" | "Ei" | "li", true) => pool.pos_infinity(),
+        ("Shi", false) => neg_infinity(pool),
+        ("Ei", false) => pool.integer(0_i32),
+        // Normalised Fresnel integrals: odd, with S(∞) = C(∞) = 1/2.
+        ("fresnels" | "fresnelc", true) => pool.rational(1, 2),
+        ("fresnels" | "fresnelc", false) => pool.rational(-1, 2),
+        // `Ci`, `Chi`, `li` at −∞: no real value — see the doc comment.
+        _ => return Ok(None),
+    };
+    Ok(Some(value))
+}
+
+/// Which infinity the argument of a special function runs to, or `None`.
+///
+/// The recursive [`limit_inner`] call is the general answer and is tried first.
+/// The **linear fallback** behind it is not redundant: `limit` cannot currently
+/// resolve `lim_{x→∞} 0.7071·x` at all (`lim_{x→∞} 2·x` is fine — the
+/// difference is that a `Float` coefficient makes `poly_normal` decline, so the
+/// `x ↦ 1/t` route hands `0.7071·t⁻¹` to a series expansion with nothing to say
+/// about it). That is a pre-existing gap in the engine, unrelated to special
+/// functions, but it lands squarely on this path because the emitted
+/// antiderivatives carry exactly such coefficients: `∫exp(−x²/2) dx` is
+/// `1.2533…·erf(0.7071…·x)`. Reading `c·x + d` off structurally, with `c` a
+/// non-zero finite `f64` and `d` a finite constant, covers it without touching
+/// the general engine.
+///
+/// A symbolic coefficient (`erf(√p·x)`) is **not** covered: its sign is a
+/// question about `p`, and this function does not answer questions about `p`.
+fn argument_runs_to_infinity(
+    arg: ExprId,
+    var: ExprId,
+    point: ExprId,
+    direction: LimitDirection,
+    pool: &ExprPool,
+    depth: u32,
+) -> Option<bool> {
+    if let Ok(inner) = limit_inner(arg, var, point, direction, pool, depth + 1) {
+        if is_pos_infinity(inner, pool) {
+            return Some(true);
+        }
+        if is_neg_infinity(inner, pool) {
+            return Some(false);
+        }
+    }
+    let point_pos = if is_pos_infinity(point, pool) {
+        true
+    } else if is_neg_infinity(point, pool) {
+        false
+    } else {
+        return None;
+    };
+    let c = linear_coefficient_f64(arg, var, pool)?;
+    Some((c > 0.0) == point_pos)
+}
+
+/// `Some(c)` when `arg` is `c·var + d` with `c` a non-zero finite `f64` and `d`
+/// a finite `var`-free constant.
+fn linear_coefficient_f64(arg: ExprId, var: ExprId, pool: &ExprPool) -> Option<f64> {
+    if arg == var {
+        return Some(1.0);
+    }
+    if !depends_on(arg, var, pool) {
+        return None;
+    }
+    match pool.get(arg) {
+        ExprData::Mul(xs) => {
+            let mut coeff = 1.0_f64;
+            let mut seen_var = false;
+            for x in xs {
+                if x == var {
+                    if seen_var {
+                        return None;
+                    }
+                    seen_var = true;
+                    continue;
+                }
+                if depends_on(x, var, pool) {
+                    return None;
+                }
+                coeff *= constant_f64(x, pool).filter(|v| v.is_finite())?;
+            }
+            (seen_var && coeff != 0.0 && coeff.is_finite()).then_some(coeff)
+        }
+        ExprData::Add(xs) => {
+            let mut coeff: Option<f64> = None;
+            for x in xs {
+                if depends_on(x, var, pool) {
+                    if coeff.is_some() {
+                        return None;
+                    }
+                    coeff = Some(linear_coefficient_f64(x, var, pool)?);
+                } else {
+                    constant_f64(x, pool).filter(|v| v.is_finite())?;
+                }
+            }
+            coeff
+        }
+        _ => None,
+    }
+}
+
+/// Name prefix of every variable this module substitutes in for the original
+/// one (`__lt_inf`, `__lt_ninf`, `__lt_refl`).  Seeing one in a *result* means
+/// the sub-problem it was introduced for was never solved.
+const LIMIT_SUBSTITUTION_PREFIX: &str = "__lt_";
+
+/// The heads [`try_special_basis_limit`] has a table for.
+const SPECIAL_BASIS_HEADS: [&str; 10] = [
+    "erf", "erfc", "Si", "Ci", "Shi", "Chi", "Ei", "li", "fresnels", "fresnelc",
+];
+
+/// `true` when `expr` mentions one of [`SPECIAL_BASIS_HEADS`].
+fn mentions_special_basis(expr: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(expr) {
+        ExprData::Func { name, args } => {
+            SPECIAL_BASIS_HEADS.contains(&name.as_str())
+                || args.iter().any(|&a| mentions_special_basis(a, pool))
+        }
+        ExprData::Add(args) | ExprData::Mul(args) => {
+            args.iter().any(|&a| mentions_special_basis(a, pool))
+        }
+        ExprData::Pow { base, exp } => {
+            mentions_special_basis(base, pool) || mentions_special_basis(exp, pool)
+        }
+        _ => false,
+    }
+}
+
+/// `true` when a computed limit is an ordinary finite value — no `∞`, and none
+/// of this module's internal substitution variables, anywhere.
+///
+/// The second half is not hypothetical.  [`limit_inner`] hands a `±∞` point to
+/// a `x ↦ ±1/t` substitution and returns whatever the recursive call on `t`
+/// produced; when no rule fires, that is the substituted expression itself,
+/// still written in `t`.  `limit_body` rejects the one shape of that it knows
+/// (`0^{negative}`) and `eval_bound` rejects a value still mentioning the
+/// *original* variable, but neither looks for `__lt_inf`.  A rule that
+/// *combines* child limits — as [`try_special_basis_algebra`] does — must not
+/// be the thing that launders an unsolved sub-problem into a finite-looking
+/// product.
+fn is_finite_limit_value(expr: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(expr) {
+        ExprData::Symbol { name, .. } => {
+            name != POS_INFINITY_SYMBOL && !name.starts_with(LIMIT_SUBSTITUTION_PREFIX)
+        }
+        ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
+            args.iter().all(|&a| is_finite_limit_value(a, pool))
+        }
+        ExprData::Pow { base, exp } => {
+            is_finite_limit_value(base, pool) && is_finite_limit_value(exp, pool)
+        }
+        _ => true,
+    }
+}
+
+/// The algebra of limits, applied to sums and products that mention a
+/// special-function head.
+///
+/// `∫exp(−x²/2) dx` is returned as `1.2533…·erf(0.7071…·x)`, a **product**, so
+/// the table in [`try_special_basis_limit`] never sees it: the top node is a
+/// `Mul`, and every general route below fails on it (`x ↦ 1/t` hands
+/// `erf(0.7071/t)` to a Taylor expansion with no rule for `erf`). The limit of
+/// a product whose factors all have finite limits is the product of those
+/// limits — elementary, and the one step needed to make the emitted
+/// antiderivatives usable under the fundamental theorem.
+///
+/// Two restrictions keep this from being a general-purpose rule that could
+/// change unrelated answers:
+///
+/// * it runs **only** on expressions mentioning [`SPECIAL_BASIS_HEADS`], which
+///   before this commit had no limit rule at all and so can have no behaviour
+///   to regress; and
+/// * every child limit must be **finite**. `∞ · 0` and `∞ − ∞` are exactly the
+///   indeterminate forms this identity does not cover, and a child that came
+///   back infinite (or that still mentions `var`, which is `limit`'s way of
+///   saying it did not solve the sub-problem) makes the whole rule decline
+///   rather than guess.
+fn try_special_basis_algebra(
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    direction: LimitDirection,
+    pool: &ExprPool,
+    depth: u32,
+) -> Result<Option<ExprId>, LimitError> {
+    let args = match pool.get(expr) {
+        ExprData::Add(args) | ExprData::Mul(args) => args,
+        _ => return Ok(None),
+    };
+    if !mentions_special_basis(expr, pool) {
+        return Ok(None);
+    }
+    let is_sum = matches!(pool.get(expr), ExprData::Add(_));
+
+    let mut parts = Vec::with_capacity(args.len());
+    for a in args {
+        let Ok(v) = limit_inner(a, var, point, direction, pool, depth + 1) else {
+            return Ok(None);
+        };
+        if !is_finite_limit_value(v, pool) || depends_on(v, var, pool) {
+            return Ok(None);
+        }
+        parts.push(v);
+    }
+    let combined = if is_sum {
+        pool.add(parts)
+    } else {
+        pool.mul(parts)
+    };
+    Ok(Some(fold_known_reals(simplify(combined, pool).value, pool)))
+}
+
+/// `lim_{x→−∞} f(x)` computed as `lim_{y→+∞} f(−y)`.
+///
+/// A one-sided approach flips with the reflection — coming at `−∞` "from the
+/// right" (larger `x`) is coming at `+∞` "from the left" (smaller `y`) — but at
+/// an infinite point every rule in this engine treats the three directions
+/// alike, so the flip is recorded for correctness rather than because anything
+/// downstream reads it.
+fn reflected_limit(
+    expr: ExprId,
+    var: ExprId,
+    direction: LimitDirection,
+    pool: &ExprPool,
+    depth: u32,
+) -> Result<ExprId, LimitError> {
+    let y = pool.symbol("__lt_refl", crate::kernel::Domain::Real);
+    let mut m = HashMap::new();
+    m.insert(var, pool.mul(vec![pool.integer(-1_i32), y]));
+    let reflected = simplify(subs(expr, &m, pool), pool).value;
+    let flipped = match direction {
+        LimitDirection::Plus => LimitDirection::Minus,
+        LimitDirection::Minus => LimitDirection::Plus,
+        LimitDirection::Bidirectional => LimitDirection::Bidirectional,
+    };
+    limit_inner(reflected, y, pool.pos_infinity(), flipped, pool, depth + 1)
 }
 
 fn neg_infinity(pool: &ExprPool) -> ExprId {
@@ -3042,5 +3389,136 @@ mod numeric_refutation_tests {
                 );
             }
         }
+    }
+
+    // ── the special-function basis at ±∞ ────────────────────────────────────
+
+    fn at_infinity(src_fn: &str, sign: i32) -> (ExprPool, Result<ExprId, LimitError>) {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let e = p.func(src_fn, vec![x]);
+        let point = if sign > 0 {
+            p.pos_infinity()
+        } else {
+            neg_infinity(&p)
+        };
+        let r = limit(e, x, point, LimitDirection::Bidirectional, &p);
+        (p, r)
+    }
+
+    /// The table itself, at both ends where both ends are real.
+    #[test]
+    fn special_basis_limits_match_dlmf() {
+        for (name, sign, want) in [
+            ("erf", 1, 1.0),
+            ("erf", -1, -1.0),
+            ("erfc", 1, 0.0),
+            ("erfc", -1, 2.0),
+            ("Si", 1, std::f64::consts::FRAC_PI_2),
+            ("Si", -1, -std::f64::consts::FRAC_PI_2),
+            ("Ci", 1, 0.0),
+            ("Ei", -1, 0.0),
+            ("fresnels", 1, 0.5),
+            ("fresnels", -1, -0.5),
+            ("fresnelc", 1, 0.5),
+            ("fresnelc", -1, -0.5),
+        ] {
+            let (p, r) = at_infinity(name, sign);
+            let v = r.unwrap_or_else(|e| panic!("lim {name} at {sign}∞: {e}"));
+            let mut binds = HashMap::new();
+            binds.insert(p.symbol("pi", Domain::Real), std::f64::consts::PI);
+            let got = crate::eval::eval_f64(v, &p, &binds)
+                .unwrap_or_else(|e| panic!("{} did not evaluate: {e}", p.display(v)));
+            assert!(
+                (got - want).abs() < 1e-12,
+                "lim_{{x→{sign}∞}} {name}(x) = {want}, got {got}"
+            );
+        }
+    }
+
+    /// `Ci`, `Chi` and `li` have a branch cut on the negative reals and no real
+    /// value there, so there is no real limit at `−∞` to report.  Inventing one
+    /// would be reporting the real part of a complex number as if it were the
+    /// answer.
+    #[test]
+    fn the_cut_functions_have_no_limit_at_minus_infinity() {
+        for name in ["Ci", "Chi", "li"] {
+            let (_, r) = at_infinity(name, -1);
+            assert!(
+                r.is_err(),
+                "{name} has no real value on the negative reals; a limit at −∞ must not be invented"
+            );
+        }
+    }
+
+    /// The emitted antiderivatives are *products* — `1.2533…·erf(0.7071…·x)` —
+    /// so the table alone is not enough; the algebra of limits has to reach
+    /// through the `Mul`, and the `f64` coefficient inside the `erf` has to be
+    /// read structurally (`lim 0.7071·x` is a case the general engine still
+    /// cannot do).
+    #[test]
+    fn a_scaled_erf_product_reaches_its_limit() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let inner = p.mul(vec![p.float(std::f64::consts::FRAC_1_SQRT_2, 53), x]);
+        let outer = (std::f64::consts::PI / 2.0).sqrt();
+        let e = p.mul(vec![p.float(outer, 53), p.func("erf", vec![inner])]);
+        let v = limit(e, x, p.pos_infinity(), LimitDirection::Bidirectional, &p).expect("limit");
+        let got = crate::eval::eval_f64(v, &p, &HashMap::new()).expect("value");
+        assert!((got - outer).abs() < 1e-12, "got {got}");
+    }
+
+    /// `lim_{x→−∞} x·exp(−x²) = 0`.  The `x ↦ −1/t` substitution cannot do
+    /// this — it produces `−exp(−t⁻²)/t`, which has no Taylor expansion at `0`
+    /// — and it is the limit `∫_{-∞}^{∞} x²·exp(−x²) dx` needs at its lower
+    /// bound.  The reflection to `+∞`, where Gruntz runs, settles it.
+    #[test]
+    fn the_reflection_fallback_reaches_a_gruntz_only_limit_at_minus_infinity() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let e = p.mul(vec![
+            x,
+            p.func(
+                "exp",
+                vec![p.mul(vec![p.integer(-1_i32), p.pow(x, p.integer(2_i32))])],
+            ),
+        ]);
+        let v = limit(e, x, neg_infinity(&p), LimitDirection::Bidirectional, &p).expect("0");
+        assert_eq!(v, p.integer(0_i32));
+    }
+
+    /// The fallback must not turn a limit that does not exist into one that
+    /// does: `lim_{x→−∞} sin x` has no value, from either direction of
+    /// approach, and the reflection is the identity on it.
+    #[test]
+    fn the_reflection_fallback_does_not_invent_a_missing_limit() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let e = p.func("sin", vec![x]);
+        assert!(limit(e, x, neg_infinity(&p), LimitDirection::Bidirectional, &p).is_err());
+    }
+
+    /// `∞ − ∞` and `∞ · 0` are exactly what the finiteness requirement in
+    /// `try_special_basis_algebra` exists to refuse: `Ei(x) − Shi(x)` has both
+    /// terms diverging at `+∞` and the rule must decline rather than subtract
+    /// two infinities.
+    #[test]
+    fn the_algebra_rule_declines_an_indeterminate_difference() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let e = p.add(vec![
+            p.func("Ei", vec![x]),
+            p.mul(vec![p.integer(-1_i32), p.func("Shi", vec![x])]),
+        ]);
+        assert!(try_special_basis_algebra(
+            e,
+            x,
+            p.pos_infinity(),
+            LimitDirection::Bidirectional,
+            &p,
+            0
+        )
+        .unwrap()
+        .is_none());
     }
 }

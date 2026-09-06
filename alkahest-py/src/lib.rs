@@ -120,7 +120,7 @@ use alkahest_core::{
     simplify_egraph_with as core_simplify_egraph_with, simplify_log_exp as core_simplify_log_exp,
     simplify_trig_normal_form as core_simplify_trig_normal_form,
     simplify_with as core_simplify_with, trig_rules,
-    verify_antiderivative_status as core_verify_antiderivative_status,
+    verify_antiderivative_status_parametric as core_verify_antiderivative_parametric,
     AlkahestError as AlkahestErrorTrait, AntiderivativeVerification, ApartError,
     AssumptionContext as CoreAssumptionContext, AssumptionError, ComplexF64, DerivedExpr,
     DiffError, EgraphConfig, GaussRat, IntegrationError, IoError,
@@ -2500,12 +2500,24 @@ impl PyDerivedResult {
             }
         };
         let has_certificate = lean_certificate.is_some();
+        // The *parametric* gate, so that an answer carrying a free parameter
+        // — `∫exp(−p·x²) dx = (√π/2√p)·erf(√p·x)` — reports the evidence it was
+        // actually emitted on. The plain gate binds only the integration
+        // variable, leaves `p` unbound, and reports `unverified` for an answer
+        // that a parameter sweep did check; that under-statement is as
+        // misleading as an over-statement. With no free parameter the two are
+        // the same function, so no existing status changes.
         let integration_verification =
             self.integration_verification_input
                 .and_then(|(integrand, var)| {
                     let pool_py = self.value.pool.clone_ref(py);
                     let pool = pool_py.borrow(py);
-                    core_verify_antiderivative_status(self.raw.value, integrand, var, &pool.inner)
+                    core_verify_antiderivative_parametric(
+                        self.raw.value,
+                        integrand,
+                        var,
+                        &pool.inner,
+                    )
                 });
         metadata
             .set_item(
