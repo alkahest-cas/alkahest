@@ -1824,8 +1824,11 @@ if "solve" in dir():
         return [sol for sol in result if _solution_respects_assumptions(sol, assumptions)]
 
     def solve(equations, vars, *, numeric=False, method="groebner", domain=None, assumptions=None):
-        """Solve a zero-dimensional polynomial system (see native ``solve`` for
-        the base behavior of *equations*, *vars*, *numeric*, and *method*).
+        """Solve a zero-dimensional polynomial or rational system (see native
+        ``solve`` for the base behavior of *equations*, *vars*, *numeric*, and
+        *method*, including how roots at a cleared denominator's zero are
+        excluded and how the undecidable ones are reported through
+        :func:`solve_side_conditions`).
 
         Parameters
         ----------

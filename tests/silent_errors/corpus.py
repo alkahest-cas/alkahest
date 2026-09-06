@@ -940,6 +940,65 @@ def _solve_states_no_unnecessary_hypothesis(
     return op
 
 
+def _roots_of(equation: ak.Expr, unknown: ak.Expr) -> list[float]:
+    """Every value ``solve`` returns for *unknown*, as floats."""
+    sols = ak.solve([equation], [unknown])
+    if not isinstance(sols, list):
+        raise ak.SolverError("solve returned an ideal, not a solution list")
+    out: list[float] = []
+    for sol in sols:
+        value = sol[unknown]
+        out.append(
+            float(value) if isinstance(value, (int, float)) else float(ak.eval_expr(value, {}))
+        )
+    return out
+
+
+def _solve_returns_a_pole_as_a_root(
+    equation: ak.Expr, unknown: ak.Expr, pole: float
+) -> Callable[[], float]:
+    """Answer = how many returned roots sit at *pole*, where the equation is undefined.
+
+    ``x/(x−1) = 1/(x−1)`` has no solution: at ``x = 1`` both sides read ``1/0``,
+    and nowhere else are they unequal.  Multiplying up turns it into
+    ``(x−1)² = 0``, whose only root is exactly that point — so a solver that
+    clears denominators and stops has a clean, plausible, wrong answer waiting
+    for it.  Counting the returned roots that land on the pole keeps the answer
+    a finite number.
+    """
+
+    def op() -> float:
+        return float(sum(1 for r in _roots_of(equation, unknown) if abs(r - pole) <= 1e-9))
+
+    return op
+
+
+def _solve_root_count(equation: ak.Expr, unknown: ak.Expr) -> Callable[[], float]:
+    """Answer = how many roots ``solve`` returns for a rational equation."""
+
+    def op() -> float:
+        return float(len(_roots_of(equation, unknown)))
+
+    return op
+
+
+def _solve_finds_all_of(
+    equation: ak.Expr, unknown: ak.Expr, expected: tuple[float, ...]
+) -> Callable[[], float]:
+    """Answer = how many of *expected* ``solve`` actually returned.
+
+    The control for the pole cases: excluding a root because a denominator
+    vanishes there must not degenerate into excluding roots, and refusing the
+    whole equation must not pass either.
+    """
+
+    def op() -> float:
+        got = _roots_of(equation, unknown)
+        return float(sum(1 for e in expected if any(abs(r - e) <= 1e-9 for r in got)))
+
+    return op
+
+
 def _undisclosed_expansion_limit(base: ak.Expr, exponent: int) -> Callable[[], float]:
     """Answer = 1.0 if a bounded expansion no-oped without saying so, else 0.0.
 
@@ -3913,6 +3972,86 @@ CASES: list[Case] = [
             "non-zero by inspection, so no side condition is needed. At b = 6 the solution is 3. "
             "The control for the case above — a library that emits a hypothesis unconditionally "
             "would pass that one and fail this."
+        ),
+    ),
+    # -----------------------------------------------------------------------
+    # Spurious roots from clearing a denominator.
+    #
+    # `N/D = 0` means `N = 0 and D != 0`.  Multiplying up drops the second
+    # conjunct, and the root it leaves behind is not a near-miss — it is the one
+    # point where the equation has no value at all.  Every one of these has a
+    # confident wrong answer available to a solver that stops after clearing.
+    # -----------------------------------------------------------------------
+    Case(
+        id="solve_rational_does_not_return_a_root_at_a_pole",
+        subsystem="solving",
+        statement="x/(x−1) = 1/(x−1) has no solution; x = 1 is a pole of both sides",
+        op=_solve_returns_a_pole_as_a_root(X / (X - _int(1)) - _int(1) / (X - _int(1)), X, 1.0),
+        contract=RefusesOr(0.0),
+        verified_by=(
+            "By hand: for x ≠ 1 the equation is x/(x−1) = 1/(x−1), i.e. x = 1 after "
+            "multiplying by the non-zero (x−1) — which contradicts x ≠ 1. At x = 1 neither "
+            "side is defined. So the solution set is empty. SymPy's solve returns [] for "
+            "the same input. Clearing denominators gives (x−1)² = 0 whose root is 1, so a "
+            "solver that stops there reports the one point that is excluded."
+        ),
+        note="Refusing to accept the rational form at all also scores 0 — that was the "
+        "behaviour before rational equations were supported.",
+    ),
+    Case(
+        id="solve_reciprocal_equals_zero_has_no_solution",
+        subsystem="solving",
+        statement="1/x = 0 has no solution — not x = 0, and not x = ∞",
+        op=_solve_root_count(_int(1) / X, X),
+        contract=RefusesOr(0.0),
+        verified_by=(
+            "By hand: 1/x = 0 would need 1 = 0 after multiplying by x, which is false for "
+            "every x; and x = 0 is not in the domain. A reciprocal is never zero. The trap "
+            "is a solver that cancels x against the numerator and reports x = 0."
+        ),
+    ),
+    Case(
+        id="solve_removable_singularity_is_not_a_solution",
+        subsystem="solving",
+        statement="x²/x = 0 has no solution: at x = 0 the expression is 0/0",
+        op=_solve_root_count(X * X / X, X),
+        contract=RefusesOr(0.0),
+        verified_by=(
+            "By hand: for x ≠ 0 the expression equals x, which is non-zero there; at x = 0 "
+            "it is 0/0 and has no value. So no x satisfies it. This is the case that "
+            "reducing to lowest terms gets wrong — cancelling gives x = 0, a point the "
+            "original expression is not defined at, so the cancelled form must not be the "
+            "one the exclusion test is run against."
+        ),
+    ),
+    Case(
+        id="solve_nested_reciprocal_keeps_the_inner_domain_condition",
+        subsystem="solving",
+        statement="1/(1/x − 1) = 0 has no solution: 1/x is undefined at x = 0",
+        op=_solve_root_count(_int(1) / (_int(1) / X - _int(1)), X),
+        contract=RefusesOr(0.0),
+        verified_by=(
+            "By hand: the expression is defined only for x ∉ {0, 1}, and there it equals "
+            "x/(1−x), which is zero only at x = 0 — a point outside its domain. So the "
+            "solution set is empty. SymPy's solve returns [] for the same input. The trap is "
+            "specific: a reciprocal swaps numerator and denominator, so the inner denominator "
+            "x becomes the outer numerator and the condition x ≠ 0 vanishes from any "
+            "product-of-denominators bookkeeping. What is left, 1 − x, is non-zero at x = 0, "
+            "so the cleared numerator's only root passes every check that is not the domain."
+        ),
+    ),
+    Case(
+        id="solve_control_rational_equation_keeps_its_real_roots",
+        subsystem="solving",
+        statement="(x²−4)/(x−1) = 0 has the roots ±2; excluding poles must not exclude them",
+        op=_solve_finds_all_of((X * X - _int(4)) / (X - _int(1)), X, (-2.0, 2.0)),
+        contract=Returns(2.0),
+        verified_by=(
+            "By hand: the numerator vanishes at x = ±2 and the denominator is 1 and −3 "
+            "there, so both are genuine solutions; the pole at x = 1 is not a root of the "
+            "numerator and never was a candidate. The control for the three cases above — "
+            "a library that refuses every rational equation, or drops every root it cannot "
+            "prove non-singular, passes those and fails this."
         ),
     ),
     Case(

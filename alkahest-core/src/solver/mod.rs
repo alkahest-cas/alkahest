@@ -34,6 +34,7 @@
 pub mod diophantine;
 pub mod homotopy;
 pub mod polyhedral;
+mod rational;
 pub mod regular_chains;
 pub mod transcendental;
 mod verify;
@@ -88,7 +89,8 @@ pub enum SolutionSet {
 /// Errors from the polynomial system solver.
 #[derive(Debug, Clone)]
 pub enum SolverError {
-    /// An equation is not a polynomial in the given variables.
+    /// An equation is not a polynomial (nor a rational function) in the given
+    /// variables.
     NotPolynomial(String),
     /// Back-substitution would require solving a degree > 2 univariate — not yet
     /// implemented for general algebraic numbers.
@@ -128,7 +130,7 @@ impl AlkahestError for SolverError {
     fn remediation(&self) -> Option<&'static str> {
         match self {
             SolverError::NotPolynomial(_) => Some(
-                "ensure all equations are polynomial in the declared variables; \
+                "ensure all equations are polynomial or rational in the declared variables; \
                  transcendental functions are not supported",
             ),
             SolverError::HighDegree(_) => Some(
@@ -140,6 +142,91 @@ impl AlkahestError for SolverError {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Everywhere-undefined equations, reported out of band
+// ---------------------------------------------------------------------------
+
+/// The solver declined because an equation's denominator is **identically**
+/// zero — `1/(x − x)`.
+///
+/// Such an equation denotes no function, so it has no solution set at all;
+/// clearing it would multiply through by zero and make every point a
+/// "solution", which is the one outcome worth going out of the way to prevent.
+///
+/// # Why this is not an error variant
+///
+/// [`SolverError`] is a public *exhaustive* enum, so growing it a variant is a
+/// major semver break for every downstream `match`. The refusal therefore
+/// travels inside [`SolverError::NotPolynomial`] and is recovered here, exactly
+/// as [`regular_chains::TriangularizeRefusal`] does for `E-SOLVE-004`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UndefinedEquation {
+    detail: String,
+}
+
+impl UndefinedEquation {
+    /// What was found to be identically zero.
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+}
+
+impl fmt::Display for UndefinedEquation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "equation is undefined everywhere: {}", self.detail)
+    }
+}
+
+impl std::error::Error for UndefinedEquation {}
+
+impl AlkahestError for UndefinedEquation {
+    fn code(&self) -> &'static str {
+        "E-SOLVE-005"
+    }
+
+    fn remediation(&self) -> Option<&'static str> {
+        Some(
+            "a denominator simplifies to zero, so the equation denotes no function; \
+             check the equation for a subtraction that cancels",
+        )
+    }
+}
+
+thread_local! {
+    /// The refusal behind the `SolverError::NotPolynomial` this thread is about
+    /// to return, when that variant is a carrier rather than what it usually
+    /// means.
+    static LAST_UNDEFINED_EQUATION: std::cell::RefCell<Option<UndefinedEquation>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Drop any recorded refusal, so a later unrelated `NotPolynomial` — a
+/// genuinely transcendental equation, say — is never re-attributed to it.
+fn forget_undefined_equation() {
+    LAST_UNDEFINED_EQUATION.with(|c| *c.borrow_mut() = None);
+}
+
+/// Build the carrier error and stash the refusal behind it.
+pub(crate) fn refuse_undefined_equation(detail: &str) -> SolverError {
+    let refusal = UndefinedEquation {
+        detail: detail.to_string(),
+    };
+    let message = refusal.to_string();
+    LAST_UNDEFINED_EQUATION.with(|c| *c.borrow_mut() = Some(refusal));
+    SolverError::NotPolynomial(message)
+}
+
+/// Take the refusal behind the error that just came back, if there was one.
+///
+/// Bindings call this when [`solve_polynomial_system`] returns
+/// `SolverError::NotPolynomial` and raise the refusal's own `E-SOLVE-005` when
+/// it is present, so the caller is told the equation is undefined rather than
+/// merely non-polynomial. Consuming, so one refusal is reported once;
+/// thread-local.
+pub fn take_undefined_equation() -> Option<UndefinedEquation> {
+    LAST_UNDEFINED_EQUATION.with(|c| c.borrow_mut().take())
 }
 
 // ---------------------------------------------------------------------------
@@ -924,6 +1011,252 @@ fn refine_solutions(
     kept
 }
 
+// ---------------------------------------------------------------------------
+// Poles: undoing the equivalence that clearing denominators broke
+// ---------------------------------------------------------------------------
+
+/// What could be established about a cleared denominator at a candidate root.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PoleStatus {
+    /// Proved non-zero — the root survives with no hypothesis attached.
+    Nonzero,
+    /// Proved zero (or the denominator is not even defined there): the root is
+    /// spurious and is removed.  This is a *positive* finding, so an empty
+    /// solution list that follows from it is a real "no solution".
+    Vanishes,
+    /// A number, but one the enclosure could not separate from zero.  Treated
+    /// as vanishing — the safe direction — but recorded, because unlike
+    /// [`PoleStatus::Vanishes`] it is not a proof and must not be allowed to
+    /// underwrite the claim "this system has no solutions".
+    Indeterminate,
+    /// Still mentions a free parameter, so it cannot be decided at all.  The
+    /// root is kept under a stated non-vanishing hypothesis.
+    Undecided,
+}
+
+/// Decide whether a domain condition, already specialised at a candidate root,
+/// vanishes there.
+///
+/// Four sources are consulted in order of strength: exact rational arithmetic,
+/// the structural zero test, the ambient assumptions (`R1 > 0` settles `R1 ≠ 0`
+/// outright, which is why declaring a resistance positive removes a side
+/// condition), and finally rigorous ball arithmetic.
+fn domain_status(e: ExprId, pool: &ExprPool) -> PoleStatus {
+    if let Some(v) = rational_value(e, pool) {
+        return if v == 0 {
+            PoleStatus::Vanishes
+        } else {
+            PoleStatus::Nonzero
+        };
+    }
+    if is_certain_zero(e, pool) {
+        return PoleStatus::Vanishes;
+    }
+    match crate::simplify::assumptions::assumed_sign(e, pool) {
+        Some(crate::simplify::assumptions::Sign::Zero) => return PoleStatus::Vanishes,
+        Some(_) => return PoleStatus::Nonzero,
+        None => {}
+    }
+    match verify::CBallEval::default().eval(e, pool) {
+        Ok(ball) if ball.excludes_zero() => PoleStatus::Nonzero,
+        // A number whose enclosure straddles zero.  For a denominator that
+        // really vanishes this is the *exact* answer arriving as a tight ball
+        // around zero; for one that does not it would need to be smaller than
+        // 2^-180, which no root of the systems this solver accepts is.
+        Ok(_) => PoleStatus::Indeterminate,
+        // `0^-1` inside the denominator itself: the root is outside the
+        // equation's domain either way.
+        Err(verify::VerifyGap::Undefined) => PoleStatus::Vanishes,
+        Err(verify::VerifyGap::Unsupported) => PoleStatus::Undecided,
+    }
+}
+
+/// Rebuild `expr` with each `vars[i]` replaced by `values[i]`.
+///
+/// Memoised on [`ExprId`], so a shared sub-expression is rewritten once: the
+/// input is a DAG and its tree expansion is not what anyone wants to walk.
+fn substitute_solution(
+    expr: ExprId,
+    vars: &[ExprId],
+    values: &[ExprId],
+    pool: &ExprPool,
+    memo: &mut std::collections::HashMap<ExprId, ExprId>,
+) -> ExprId {
+    if let Some(&hit) = memo.get(&expr) {
+        return hit;
+    }
+    if let Some(i) = vars.iter().position(|&v| v == expr) {
+        memo.insert(expr, values[i]);
+        return values[i];
+    }
+    let out = match pool.get(expr) {
+        ExprData::Add(args) => {
+            let new: Vec<ExprId> = args
+                .iter()
+                .map(|&a| substitute_solution(a, vars, values, pool, memo))
+                .collect();
+            pool.add(new)
+        }
+        ExprData::Mul(args) => {
+            let new: Vec<ExprId> = args
+                .iter()
+                .map(|&a| substitute_solution(a, vars, values, pool, memo))
+                .collect();
+            pool.mul(new)
+        }
+        ExprData::Pow { base, exp } => {
+            let b = substitute_solution(base, vars, values, pool, memo);
+            let e = substitute_solution(exp, vars, values, pool, memo);
+            pool.pow(b, e)
+        }
+        ExprData::Func { name, args } => {
+            let new: Vec<ExprId> = args
+                .iter()
+                .map(|&a| substitute_solution(a, vars, values, pool, memo))
+                .collect();
+            pool.func(&name, new)
+        }
+        _ => expr,
+    };
+    memo.insert(expr, out);
+    out
+}
+
+/// The verdict of substituting a candidate back into the caller's own equations.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum OriginalCheck {
+    /// Nothing could be held against it.
+    Survives,
+    /// The residual is *separated* from zero: a proof that this is not a root.
+    Refuted,
+    /// The expression has no value at the candidate (`1/0`, `0/0`) — or its
+    /// reciprocal's argument merely could not be separated from zero, which
+    /// reads the same from here.  A drop either way, but not a proof.
+    Undefined,
+}
+
+/// Substitute a candidate into the **original** rational equations — the ones
+/// the caller wrote, before anything was multiplied through.
+///
+/// Independent of the denominator test above and deliberately so: this walks
+/// the caller's own expression, so a mistake in clearing denominators shows up
+/// here rather than being confirmed by its own output.  One-sided in the same
+/// direction as [`refine_solutions`] — a candidate is only ever dropped, never
+/// rescued, and a residual ball that straddles zero proves nothing and lets the
+/// candidate through.
+fn check_against_original(
+    sol: &Solution,
+    equations: &[ExprId],
+    vars: &[ExprId],
+    pool: &ExprPool,
+) -> OriginalCheck {
+    let mut memo = std::collections::HashMap::new();
+    let mut evaluator = verify::CBallEval::default();
+    let mut verdict = OriginalCheck::Survives;
+    for &eq in equations {
+        let at_root = substitute_solution(eq, vars, sol, pool, &mut memo);
+        match evaluator.eval(at_root, pool) {
+            Ok(ball) if ball.excludes_zero() => return OriginalCheck::Refuted,
+            Ok(_) => {}
+            Err(verify::VerifyGap::Undefined) => verdict = OriginalCheck::Undefined,
+            // A free parameter: nothing can be concluded, and nothing is.
+            Err(verify::VerifyGap::Unsupported) => {}
+        }
+    }
+    verdict
+}
+
+/// Remove the roots that clearing denominators invented, and state the
+/// hypotheses under which the rest stand.
+///
+/// `N/D = 0` is equivalent to `N = 0 ∧ D ≠ 0`; the solver was handed only
+/// `N = 0`, so every root it produced has to be re-tested against the
+/// `domains` polynomial that says where its equation has a value at all
+/// (see [`rational`] — that is *not* the same thing as the product of the
+/// denominators). `x/(x−1) = 1/(x−1)` clears to `(x−1)² = 0` and its only root
+/// `x = 1` is removed here, which is the whole reason this step exists:
+/// returning it would be a wrong answer.
+///
+/// Three outcomes, all visible to the caller:
+///
+/// * **Proved non-zero** — the root is returned unconditionally.
+/// * **Proved zero** — the root is dropped.  Because this is a proof, an empty
+///   result is a genuine "no solution".
+/// * **Undecidable** (the condition still mentions a free parameter, so whether
+///   it vanishes depends on values nobody supplied) — the root is returned
+///   under a `≠ 0` hypothesis recorded through [`assume_nonzero`] and reported
+///   by [`take_solve_side_conditions`].  It is never assumed silently.
+///
+/// Returns the surviving roots and whether any drop was
+/// [`PoleStatus::Indeterminate`] rather than proved; the caller must not
+/// report "no solutions" on the strength of one of those.
+fn exclude_pole_roots(
+    solutions: Vec<Solution>,
+    domains: &[GbPoly],
+    equations: &[ExprId],
+    all_vars: &[ExprId],
+    n_solve: usize,
+    pool: &ExprPool,
+) -> (Vec<Solution>, bool) {
+    if domains.is_empty() {
+        return (solutions, false);
+    }
+    let solve_vars: Vec<ExprId> = all_vars[..n_solve].to_vec();
+    let mut kept = Vec::with_capacity(solutions.len());
+    let mut unproved_drop = false;
+
+    for sol in solutions {
+        // Name exponent slot `i` by the solved value for an unknown, and by
+        // the parameter itself for everything past them.
+        let mut at_root: Vec<ExprId> = sol.clone();
+        at_root.extend_from_slice(&all_vars[n_solve..]);
+
+        let mut hypotheses: Vec<ExprId> = Vec::new();
+        let mut excluded = false;
+        for d in domains {
+            let Some(value) = gbpoly_to_expr(d, &at_root, pool) else {
+                // `at_root` names every indeterminate by construction, so this
+                // is unreachable; refusing the root is the safe reading.
+                excluded = true;
+                unproved_drop = true;
+                break;
+            };
+            match domain_status(value, pool) {
+                PoleStatus::Nonzero => {}
+                PoleStatus::Vanishes => {
+                    excluded = true;
+                    break;
+                }
+                PoleStatus::Indeterminate => {
+                    excluded = true;
+                    unproved_drop = true;
+                    break;
+                }
+                PoleStatus::Undecided => hypotheses.push(value),
+            }
+        }
+        if excluded {
+            continue;
+        }
+        match check_against_original(&sol, equations, &solve_vars, pool) {
+            OriginalCheck::Survives => {}
+            OriginalCheck::Refuted => continue,
+            OriginalCheck::Undefined => {
+                // The product-of-denominators test above did not object, so the
+                // two enclosures disagree.  Dropping is the safe reading, but
+                // it is not the proof `Vanishes` would have been.
+                unproved_drop = true;
+                continue;
+            }
+        }
+        for h in hypotheses {
+            assume_nonzero(h);
+        }
+        kept.push(sol);
+    }
+    (kept, unproved_drop)
+}
+
 /// Free symbols in `equations` that are not among the declared solve `vars`,
 /// in stable [`ExprId`] order (via [`collect_free_vars`]'s `BTreeSet`).
 ///
@@ -944,7 +1277,7 @@ pub fn collect_parameters(equations: &[ExprId], vars: &[ExprId], pool: &ExprPool
     params.into_iter().collect()
 }
 
-/// Solve a polynomial system in the declared unknowns.
+/// Solve a polynomial — or **rational** — system in the declared unknowns.
 ///
 /// `equations` — list of `ExprId` each representing `p = 0`.
 /// `vars` — unknowns to solve for (order used for `GbPoly` exponent vectors).
@@ -952,6 +1285,20 @@ pub fn collect_parameters(equations: &[ExprId], vars: &[ExprId], pool: &ExprPool
 /// Symbols that appear in `equations` but are absent from `vars` are treated as
 /// free parameters: solutions may be expressions in those symbols (e.g.
 /// `x² − y = 0` in `[x]` yields `x = ±√y`).
+///
+/// # Rational equations
+///
+/// An equation may be a ratio of polynomials — `(Vo − Vin)/R1 + Vo·s·C`, the
+/// shape every admittance equation in nodal analysis has.  Each is put over a
+/// common denominator and the numerator system is solved.
+///
+/// That step is **not** an equivalence: `N/D = 0` means `N = 0 ∧ D ≠ 0`, and a
+/// root of `N` at which `D` vanishes is not a solution.  Such roots are removed
+/// again by [`exclude_pole_roots`], which decides `D ≠ 0` exactly where it can
+/// (rational arithmetic, the ambient assumptions, ball arithmetic) and
+/// otherwise records a `D ≠ 0` hypothesis through [`take_solve_side_conditions`]
+/// rather than assuming it.  Surviving roots are additionally substituted into
+/// the equations as the caller wrote them, before anything was cleared.
 ///
 /// Returns a [`SolutionSet`] with symbolic `ExprId` values for each solution
 /// (parallel to `vars` only — parameters are not included in solution tuples).
@@ -981,17 +1328,29 @@ pub fn solve_polynomial_system(
     pool: &ExprPool,
 ) -> Result<SolutionSet, SolverError> {
     // Hypotheses describe *this* call; a caller reading them after it must
-    // never see one left behind by an earlier solve.
+    // never see one left behind by an earlier solve.  Same for the refusal
+    // channel: a stale one would re-label an unrelated `NotPolynomial`.
     let _ = take_solve_side_conditions();
+    forget_undefined_equation();
     let n_solve = vars.len();
     let params = collect_parameters(&equations, &vars, pool);
     let mut all_vars = vars;
     all_vars.extend(params);
     let n_vars = all_vars.len();
 
+    // Each equation is put over a common denominator; the numerators are the
+    // system the Gröbner machinery below actually sees, and `domains` carries
+    // what has to be non-zero for each numerator to speak for its equation.
+    // For polynomial input the domain is `1` and nothing about this call
+    // changes.
     let mut polys: Vec<GbPoly> = Vec::with_capacity(equations.len());
+    let mut domains: Vec<GbPoly> = Vec::new();
     for eq in &equations {
-        polys.push(expr_to_gbpoly(*eq, &all_vars, pool)?);
+        let cleared = rational::clear_denominators(*eq, &all_vars, pool)?;
+        if !cleared.is_polynomial() {
+            domains.push(cleared.domain);
+        }
+        polys.push(cleared.numer);
     }
 
     let gb = GroebnerBasis::compute(polys.clone(), MonomialOrder::Lex);
@@ -1018,7 +1377,16 @@ pub fn solve_polynomial_system(
             // "this system has no solutions" — so decline instead.
             return None;
         }
-        Some(SolutionSet::Finite(refined))
+        // Clearing denominators enlarged the solution set; take the excess
+        // back out.  An empty list *is* the right answer here — `1/(x−1) =
+        // x/(x−1)` genuinely has none — but only when every drop was proved,
+        // so a merely-undecided one falls through to the basis instead.
+        let (kept, unproved_drop) =
+            exclude_pole_roots(refined, &domains, &equations, &all_vars, n_solve, pool);
+        if kept.is_empty() && unproved_drop {
+            return None;
+        }
+        Some(SolutionSet::Finite(kept))
     };
 
     match try_backsolve_generators(gens, &all_vars, n_solve, pool)? {
@@ -1043,6 +1411,15 @@ pub fn solve_polynomial_system(
             if let Some(set) = finish(solutions) {
                 return Ok(set);
             }
+        }
+    }
+    // The basis being returned is the *numerator* ideal, whose variety contains
+    // points the original equations are not even defined at.  Nobody filtered
+    // them, because no solution list was produced to filter; say so rather than
+    // hand back a basis that quietly means something wider than it looks.
+    for d in &domains {
+        if let Some(e) = gbpoly_to_expr(d, &all_vars, pool) {
+            assume_nonzero(e);
         }
     }
     Ok(SolutionSet::Parametric(gb))
@@ -1553,5 +1930,321 @@ mod tests {
         let yv = eval_interp(sols[0][1], &env, &pool).expect("eval y");
         assert!((xv - 2.0).abs() < 1e-10);
         assert!((yv - 2.0).abs() < 1e-10);
+    }
+
+    // -----------------------------------------------------------------------
+    // Rational equations: clearing denominators, and taking the excess back out
+    // -----------------------------------------------------------------------
+
+    /// `a − b` as an expression.
+    fn minus(a: ExprId, b: ExprId, pool: &ExprPool) -> ExprId {
+        pool.add(vec![a, pool.mul(vec![pool.integer(-1_i32), b])])
+    }
+
+    /// `a / b` written the way a caller writes it: `a · b⁻¹`.
+    fn over(a: ExprId, b: ExprId, pool: &ExprPool) -> ExprId {
+        pool.mul(vec![a, pool.pow(b, pool.integer(-1_i32))])
+    }
+
+    /// The RC divider in the form nodal analysis produces it. Solving it at all
+    /// is the point: this was `E-SOLVE-001` until rational equations were
+    /// accepted, and the caller had to clear `1/R1` by hand.
+    #[test]
+    fn rc_divider_solves_in_admittance_form() {
+        let pool = ExprPool::new();
+        let vo = pool.symbol("Vo", Domain::Real);
+        let vin = pool.symbol("Vin", Domain::Real);
+        let r1 = pool.symbol("R1", Domain::Real);
+        let c = pool.symbol("C", Domain::Real);
+        let s = pool.symbol("s", Domain::Real);
+
+        // (Vo − Vin)/R1 + Vo·s·C = 0
+        let eq = pool.add(vec![
+            over(minus(vo, vin, &pool), r1, &pool),
+            pool.mul(vec![vo, s, c]),
+        ]);
+        let SolutionSet::Finite(sols) = solve_polynomial_system(vec![eq], vec![vo], &pool).unwrap()
+        else {
+            panic!("expected a finite solution set");
+        };
+        assert_eq!(sols.len(), 1);
+
+        // Vo = Vin/(1 + s·R1·C).  At Vin = 1, s = 7, R1 = 2, C = 5 that is 1/71.
+        let env: HashMap<ExprId, f64> = [(vin, 1.0), (s, 7.0), (r1, 2.0), (c, 5.0)]
+            .into_iter()
+            .collect();
+        let got = eval_interp(sols[0][0], &env, &pool).expect("numeric value");
+        assert!((got - 1.0 / 71.0).abs() < 1e-12, "got {got}");
+
+        // The answer holds for R1 ≠ 0, and says so.
+        let conds = take_solve_side_conditions();
+        assert!(
+            conds.contains(&crate::deriv::log::SideCondition::NonZero(r1)),
+            "the cleared denominator R1 must be reported: {conds:?}"
+        );
+    }
+
+    /// A resistance declared positive settles its own non-vanishing, so the
+    /// hypothesis is discharged rather than reported.
+    #[test]
+    fn a_positive_denominator_needs_no_hypothesis() {
+        let pool = ExprPool::new();
+        let vo = pool.symbol("Vo", Domain::Real);
+        let vin = pool.symbol("Vin", Domain::Real);
+        let r1 = pool.symbol("R1", Domain::Positive);
+        let c = pool.symbol("C", Domain::Real);
+        let s = pool.symbol("s", Domain::Real);
+        let eq = pool.add(vec![
+            over(minus(vo, vin, &pool), r1, &pool),
+            pool.mul(vec![vo, s, c]),
+        ]);
+        let SolutionSet::Finite(sols) = solve_polynomial_system(vec![eq], vec![vo], &pool).unwrap()
+        else {
+            panic!("expected a finite solution set");
+        };
+        assert_eq!(sols.len(), 1);
+        let conds = take_solve_side_conditions();
+        assert!(
+            !conds.contains(&crate::deriv::log::SideCondition::NonZero(r1)),
+            "R1 > 0 already excludes R1 = 0: {conds:?}"
+        );
+    }
+
+    /// Two-node modified nodal analysis: two rational equations, two unknowns,
+    /// five symbolic parameters.
+    #[test]
+    fn two_node_mna_system() {
+        let pool = ExprPool::new();
+        let v1 = pool.symbol("V1", Domain::Real);
+        let v2 = pool.symbol("V2", Domain::Real);
+        let vin = pool.symbol("Vin", Domain::Real);
+        let r1 = pool.symbol("R1", Domain::Real);
+        let r2 = pool.symbol("R2", Domain::Real);
+        let c = pool.symbol("C", Domain::Real);
+        let s = pool.symbol("s", Domain::Real);
+
+        // (V1 − Vin)/R1 + (V1 − V2)/R2 = 0
+        let node1 = pool.add(vec![
+            over(minus(v1, vin, &pool), r1, &pool),
+            over(minus(v1, v2, &pool), r2, &pool),
+        ]);
+        // (V2 − V1)/R2 + V2·s·C = 0
+        let node2 = pool.add(vec![
+            over(minus(v2, v1, &pool), r2, &pool),
+            pool.mul(vec![v2, s, c]),
+        ]);
+
+        let SolutionSet::Finite(sols) =
+            solve_polynomial_system(vec![node1, node2], vec![v1, v2], &pool).unwrap()
+        else {
+            panic!("expected a finite solution set");
+        };
+        assert_eq!(sols.len(), 1);
+
+        // V2 = Vin/(1 + s·C·(R1+R2)) and V1 = V2·(1 + s·C·R2).
+        // Vin = 1, R1 = 2, R2 = 3, C = 5, s = 7  →  V2 = 1/176, V1 = 53/88.
+        let env: HashMap<ExprId, f64> = [(vin, 1.0), (r1, 2.0), (r2, 3.0), (c, 5.0), (s, 7.0)]
+            .into_iter()
+            .collect();
+        let got1 = eval_interp(sols[0][0], &env, &pool).expect("V1");
+        let got2 = eval_interp(sols[0][1], &env, &pool).expect("V2");
+        assert!((got1 - 53.0 / 88.0).abs() < 1e-12, "V1 = {got1}");
+        assert!((got2 - 1.0 / 176.0).abs() < 1e-12, "V2 = {got2}");
+
+        let conds = take_solve_side_conditions();
+        assert!(
+            !conds.is_empty(),
+            "R1 and R2 were divided by; that has to be visible"
+        );
+    }
+
+    /// `x/(x−1) = 1/(x−1)` clears to `(x−1)² = 0`. Its root `x = 1` is exactly
+    /// where the original equation reads `1/0 = 1/0`, so it is **not** a
+    /// solution — returning it would be a wrong answer, not a rough edge.
+    #[test]
+    fn a_root_that_kills_the_denominator_is_not_returned() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let xm1 = minus(x, pool.integer(1_i32), &pool);
+        let eq = minus(
+            over(x, xm1, &pool),
+            over(pool.integer(1_i32), xm1, &pool),
+            &pool,
+        );
+        match solve_polynomial_system(vec![eq], vec![x], &pool).unwrap() {
+            SolutionSet::Finite(sols) => assert!(
+                sols.is_empty(),
+                "x = 1 is a pole of both sides, not a solution: {sols:?}"
+            ),
+            SolutionSet::NoSolution => {}
+            SolutionSet::Parametric(_) => panic!("expected a decided answer"),
+        }
+    }
+
+    /// `1/x = 0` has no solution. Not `x = ∞`, and not the `x = 0` a careless
+    /// cancellation would produce.
+    #[test]
+    fn a_reciprocal_is_never_zero() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let eq = pool.pow(x, pool.integer(-1_i32));
+        match solve_polynomial_system(vec![eq], vec![x], &pool).unwrap() {
+            SolutionSet::NoSolution => {}
+            SolutionSet::Finite(sols) => {
+                assert!(sols.is_empty(), "1/x = 0 has no solution: {sols:?}")
+            }
+            SolutionSet::Parametric(_) => panic!("expected a decided answer"),
+        }
+    }
+
+    /// `x²/x = 0` is the case reducing to lowest terms gets wrong: cancelling
+    /// gives `x = 0`, but the original expression is `0/0` there.
+    #[test]
+    fn a_removable_singularity_is_still_not_a_solution() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let eq = over(pool.pow(x, pool.integer(2_i32)), x, &pool);
+        match solve_polynomial_system(vec![eq], vec![x], &pool).unwrap() {
+            SolutionSet::Finite(sols) => {
+                assert!(sols.is_empty(), "x = 0 makes it read 0/0: {sols:?}")
+            }
+            SolutionSet::NoSolution => {}
+            SolutionSet::Parametric(_) => panic!("expected a decided answer"),
+        }
+    }
+
+    /// `1/(1/x − 1) = 0` has no solution, and the reason is the one a "product
+    /// of the denominators" reading loses.
+    ///
+    /// The reciprocal swaps the halves — `(n/d)⁻¹ = d/n` — so the inner
+    /// denominator `x` becomes the outer *numerator* and the requirement
+    /// `x ≠ 0` leaves the denominator product entirely. What is left, `1 − x`,
+    /// is perfectly non-zero at `x = 0`, so the cleared numerator's only root
+    /// sails through and `x = 0` comes back as a solution of an equation that
+    /// has no value there.
+    #[test]
+    fn a_condition_hidden_by_a_reciprocal_is_not_lost() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let inner = minus(
+            pool.pow(x, pool.integer(-1_i32)),
+            pool.integer(1_i32),
+            &pool,
+        );
+        let eq = pool.pow(inner, pool.integer(-1_i32));
+        match solve_polynomial_system(vec![eq], vec![x], &pool).unwrap() {
+            SolutionSet::Finite(sols) => assert!(
+                sols.is_empty(),
+                "1/x is undefined at x = 0, so the whole equation is: {sols:?}"
+            ),
+            SolutionSet::NoSolution => {}
+            SolutionSet::Parametric(_) => panic!("expected a decided answer"),
+        }
+    }
+
+    /// One equation's root is another's pole: the system has no solution even
+    /// though the cleared numerator system has a perfectly good one.
+    #[test]
+    fn a_pole_of_a_sibling_equation_excludes_the_root() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let one = pool.integer(1_i32);
+        let ym1 = minus(y, one, &pool);
+        // (x − 1)/(y − 1) = 0,  y − 1 = 0
+        let eq1 = over(minus(x, one, &pool), ym1, &pool);
+        match solve_polynomial_system(vec![eq1, ym1], vec![x, y], &pool).unwrap() {
+            SolutionSet::Finite(sols) => assert!(
+                sols.is_empty(),
+                "(1,1) is a pole of the first equation: {sols:?}"
+            ),
+            SolutionSet::NoSolution => {}
+            SolutionSet::Parametric(_) => panic!("expected a decided answer"),
+        }
+    }
+
+    /// A rational equation whose roots are genuine keeps all of them; the pole
+    /// it does have is simply not one of them.
+    #[test]
+    fn genuine_roots_of_a_rational_equation_survive() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let one = pool.integer(1_i32);
+        // (x² − 4)/(x − 1) = 0  →  x = ±2
+        let num = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(-4_i32)]);
+        let eq = over(num, minus(x, one, &pool), &pool);
+        let SolutionSet::Finite(sols) = solve_polynomial_system(vec![eq], vec![x], &pool).unwrap()
+        else {
+            panic!("expected a finite solution set");
+        };
+        assert_eq!(sols.len(), 2);
+        let mut vals: Vec<f64> = sols.iter().map(|s| eval_no_env(s[0], &pool)).collect();
+        vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!((vals[0] + 2.0).abs() < 1e-10 && (vals[1] - 2.0).abs() < 1e-10);
+        // No parameter is involved, so nothing had to be assumed.
+        assert!(take_solve_side_conditions().is_empty());
+    }
+
+    /// Widening to rational functions must not widen to transcendental ones:
+    /// `exp(x) − 2` keeps refusing, with the code it always had.
+    #[test]
+    fn a_transcendental_still_refuses_with_its_own_code() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let eq = pool.add(vec![pool.func("exp", vec![x]), pool.integer(-2_i32)]);
+        let Err(err) = solve_polynomial_system(vec![eq], vec![x], &pool) else {
+            panic!("a transcendental must not be solved by the polynomial path");
+        };
+        assert!(matches!(err, SolverError::NotPolynomial(_)), "{err}");
+        assert_eq!(crate::errors::AlkahestError::code(&err), "E-SOLVE-001");
+    }
+
+    /// An equation whose denominator is identically zero denotes no function;
+    /// clearing it would multiply by zero and make every point a "solution".
+    #[test]
+    fn an_everywhere_undefined_equation_is_refused() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let zero = minus(x, x, &pool);
+        let eq = pool.pow(zero, pool.integer(-1_i32));
+        let Err(err) = solve_polynomial_system(vec![eq], vec![x], &pool) else {
+            panic!("an everywhere-undefined equation must not be solved");
+        };
+        assert!(matches!(err, SolverError::NotPolynomial(_)), "{err}");
+        let refusal = take_undefined_equation().expect("refusal recorded out of band");
+        assert_eq!(crate::errors::AlkahestError::code(&refusal), "E-SOLVE-005");
+    }
+
+    /// A genuinely transcendental refusal must never be re-attributed to the
+    /// undefined-equation carrier left behind by an earlier call.
+    #[test]
+    fn an_undefined_equation_refusal_does_not_leak_into_the_next_solve() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let zero = minus(x, x, &pool);
+        let bad = pool.pow(zero, pool.integer(-1_i32));
+        assert!(solve_polynomial_system(vec![bad], vec![x], &pool).is_err());
+
+        let trans = pool.add(vec![pool.func("exp", vec![x]), pool.integer(-2_i32)]);
+        assert!(solve_polynomial_system(vec![trans], vec![x], &pool).is_err());
+        assert!(
+            take_undefined_equation().is_none(),
+            "exp(x) − 2 is not an undefined equation"
+        );
+    }
+
+    /// Polynomial input takes exactly the path it always did: no denominator,
+    /// no exclusion step, no hypothesis invented.
+    #[test]
+    fn polynomial_input_records_no_denominator_hypothesis() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let eq = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(-4_i32)]);
+        let SolutionSet::Finite(sols) = solve_polynomial_system(vec![eq], vec![x], &pool).unwrap()
+        else {
+            panic!("expected a finite solution set");
+        };
+        assert_eq!(sols.len(), 2);
+        assert!(take_solve_side_conditions().is_empty());
     }
 }

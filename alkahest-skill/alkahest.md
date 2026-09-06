@@ -597,6 +597,25 @@ for s in solutions:
 # Certified enclosures / residuals: solve_numerical(eqs, vars, ...)
 ```
 
+**Rational equations** (`method="groebner"` only). Equations may be ratios of
+polynomials in the unknowns, which is the form nodal analysis produces — no need to
+clear `1/R` by hand:
+
+```python
+solve([(Vo - Vin)/R1 + Vo*s*C], [Vo])     # → [{Vo: Vin*(1 + R1*C*s)**-1}]
+alkahest.solve_side_conditions()          # → ['(1 + (R1 * C * s)) ≠ 0', 'R1 ≠ 0']
+```
+
+Clearing a denominator is not an equivalence — `N/D = 0` means `N = 0 and D != 0` — so
+roots at a pole are excluded again: `solve([x/(x-1) - 1/(x-1)], [x])` is `[]`, not
+`x = 1`; `solve([1/x], [x])` is `[]`; `solve([x*x/x], [x])` is `[]` (`0/0` at `x = 0`);
+and `solve([1/(1/x - 1)], [x])` is `[]` (`1/x` has no value at `x = 0`). Where the
+condition still mentions a free parameter the question is undecidable and the root is
+returned under a `≠ 0` hypothesis listed by `solve_side_conditions()` — read it, and
+treat an unstated condition as absent rather than assumed. `1/(x - x)` raises
+`E-SOLVE-005`. `method="homotopy"` and `solve_numerical` remain polynomial-only
+(`E-SOLVE-001`).
+
 ### Coefficient fields for elimination: `Q(params)` (M9, experimental)
 
 `GroebnerBasis.compute(polys, vars, params=[...])` puts the listed symbols in the **coefficient field** instead of the ring — they never enter the monomial order or generate S-pairs. This is the difference between eliminating states from `Q[states, Y, params]` and `Q(params)[states, Y]`: for a differential-elimination / structural-identifiability problem (states eliminated from an ODE model's jet equations, rate constants left symbolic), the parametric route can be an order of magnitude faster and produce far fewer basis generators than treating the parameters as ring variables — see `docs/mdbook/src/solving.md` for measured numbers on a worked example.

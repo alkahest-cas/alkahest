@@ -14877,7 +14877,29 @@ fn py_solve_numerical(
 
 /// `alkahest.solve(equations, vars, *, numeric=False, method="groebner")`
 ///
-/// Solve a zero-dimensional polynomial system.
+/// Solve a zero-dimensional polynomial — or **rational** — system.
+///
+/// Rational equations
+/// ------------------
+/// An equation may be a ratio of polynomials in *vars*, which is the form nodal
+/// analysis produces: ``solve([(Vo - Vin)/R1 + Vo*s*C], [Vo])`` →
+/// ``Vin/(1 + s*R1*C)``. Each equation is put over a common denominator and the
+/// numerator system is solved.
+///
+/// Clearing a denominator is **not** an equivalence — ``N/D = 0`` means
+/// ``N = 0 and D != 0`` — so every root is re-tested against the denominators
+/// that were multiplied through, and one that makes any of them vanish is
+/// dropped: ``solve([x/(x-1) - 1/(x-1)], [x])`` returns ``[]``, not ``x = 1``.
+/// Where the denominator still mentions a free parameter the question is not
+/// decidable, and the root is returned under a ``D != 0`` hypothesis listed by
+/// :func:`alkahest.solve_side_conditions` rather than under a silent assumption.
+/// Surviving roots are also substituted into the equations **as you wrote
+/// them**, before anything was cleared.
+///
+/// An equation whose denominator is identically zero (``1/(x - x)``) denotes no
+/// function at all and raises ``SolverError`` with ``.code == "E-SOLVE-005"``.
+/// Transcendental equations outside the closed-form slice keep refusing with
+/// ``E-SOLVE-001``.
 ///
 /// Parameters
 /// ----------
@@ -15077,6 +15099,15 @@ fn capture_solve_side_conditions(pool: &alkahest_core::ExprPool) {
 /// **assumed** in order to return the solutions it did — one string per
 /// condition, e.g. ``"a ≠ 0"``.
 ///
+/// Two things land here. A leading coefficient the back-substitution divided by
+/// without being able to decide it, and — for a rational equation — a
+/// denominator that was cleared and whose vanishing at the returned root could
+/// not be decided either. ``solve([(Vo - Vin)/R1 + Vo*s*C], [Vo])`` lists
+/// ``R1 ≠ 0``: at ``R1 = 0`` the equation you wrote has no value at all, so the
+/// answer is the answer *for* ``R1 ≠ 0``. Declaring the symbol positive
+/// (``pool.symbol("R1", "positive")``) discharges that condition instead of
+/// reporting it.
+///
 /// ``solve([a*x - b], [x])`` returns ``b/a``, which is the solution *for
 /// ``a ≠ 0``*: at ``a = 0`` the equation reads ``-b = 0``, so there is either no
 /// solution (``b ≠ 0``) or every ``x`` (``b = 0``), and neither of those is
@@ -15114,6 +15145,17 @@ fn finite_solutions_to_py(
     match result {
         Err(e) => Python::with_gil(|py2| {
             let exc_type = py2.get_type_bound::<PySolverError>();
+            // An equation whose denominator is identically zero is reported as
+            // `NotPolynomial` (the enum is public and exhaustive) with the real
+            // reason recorded out of band — the same arrangement `triangularize`
+            // uses for `E-SOLVE-004`. Recover it so the refusal raises its own
+            // `E-SOLVE-005` instead of `E-SOLVE-001`, which means something else:
+            // a well-defined equation that is merely not rational in the unknowns.
+            if matches!(e, alkahest_core::SolverError::NotPolynomial(_)) {
+                if let Some(r) = alkahest_core::solver::take_undefined_equation() {
+                    return Err(make_structured_err(py2, &exc_type, &r));
+                }
+            }
             Err(make_structured_err(py2, &exc_type, &e))
         }),
         Ok(SolutionSet::NoSolution) => Ok(pyo3::types::PyList::empty_bound(py).into()),
