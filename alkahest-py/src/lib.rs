@@ -4595,7 +4595,7 @@ fn py_dsolve(
         .collect();
     drop(pool);
     let out = PyList::empty_bound(py);
-    for sol in report.result.solutions {
+    for sol in report.branches {
         let d = PyDict::new_bound(py);
         let wrap = |id| {
             PyExpr {

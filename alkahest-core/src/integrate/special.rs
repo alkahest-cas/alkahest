@@ -41,7 +41,7 @@
 //! The witness for that has always been an integrand that is non-elementary
 //! (so the certificate is sound) *and* expressible over the basis (so the
 //! stronger reading would be false) *and* not in the table.  It used to be
-//! `∫sin(x)/x² dx`; [`match_quotient_power`] now answers that one
+//! `∫sin(x)/x² dx`; `match_quotient_power` now answers that one
 //! (`−sin(x)/x + Ci(x)`), so two measured replacements are `∫exp(−x²)/x dx`
 //! (certified `E-INT-004` by the Risch tower; equal to `Ei(−x²)/2`, which needs
 //! a *quadratic* argument the table has no entry for) and

@@ -41,7 +41,7 @@
 //!   machinery and no `jordan_form` refusal to route around.
 //! * Every eigenvector routine in the crate has to decide whether a candidate
 //!   pivot vanishes, and over symbolic entries that question is undecidable
-//!   (see [`crate::matrix::zero_test`]).  Putzer moves the only such question
+//!   (see `crate::matrix::zero_test`).  Putzer moves the only such question
 //!   to one place — `λ_i − λ_j`, in the recurrence for `r_{k+1}` — where it can
 //!   be reported instead of guessed.
 //!

@@ -20,7 +20,10 @@
 //!
 //! A first-order answer may be [`SolutionForm::Implicit`]: separable and exact
 //! equations frequently have no closed form for `y`.  An explicit `y(x)` is
-//! always preferred when any class produces one.
+//! always preferred when any class produces one.  Such an answer is reported by
+//! [`dsolve_with`] as a [`DsolveBranch`]; [`dsolve`], whose [`DsolveSolution`]
+//! is an explicit `y(x)` by construction, declines and says so rather than
+//! passing a relation off as one.
 //!
 //! **Second order** (`F(x, y, y', y'') = 0`):
 //! - constant coefficients `a·y'' + b·y' + c·y = r(x)` (real distinct / repeated
@@ -239,9 +242,36 @@ pub enum SolutionForm {
     Implicit(ExprId),
 }
 
-/// A general solution returned by [`dsolve`].
+/// A general solution returned by [`dsolve`]: always an explicit `y(x)`.
+///
+/// The shape of this struct is frozen: it is exhaustively constructible
+/// through the public API, so adding a field to it — one for the implicit form,
+/// say — is a major semver break
+/// (`cargo-semver-checks::constructible_struct_adds_field`), and so is removing
+/// or renaming one.  A branch that may be implicit is a [`DsolveBranch`],
+/// reported by [`dsolve_with`].  The separation is not only a versioning
+/// artefact: it is also what stops a caller reading a relation `G(x, y) = 0`
+/// out of a field named `y_of_x`.
 #[derive(Clone, Debug)]
 pub struct DsolveSolution {
+    /// The solution expression for `y(x)` (the right-hand side of `y(x) = …`),
+    /// containing the integration constants in [`Self::constants`].
+    pub y_of_x: ExprId,
+    /// The fresh constant symbols `C1, C2, …` appearing in [`Self::y_of_x`].
+    pub constants: Vec<ExprId>,
+    /// Short label of the solving method (e.g. `"separable"`).
+    pub method: &'static str,
+}
+
+/// A general-solution branch as [`dsolve_with`] reports it: explicit `y(x)` or
+/// an implicit relation.
+///
+/// The two cases are kept in distinct [`SolutionForm`] variants rather than in
+/// one `ExprId` field so that a caller cannot read a relation as if it were
+/// `y(x)` — the single most likely way for the implicit form to produce a wrong
+/// answer downstream.
+#[derive(Clone, Debug)]
+pub struct DsolveBranch {
     /// Explicit `y(x)` or an implicit relation; see [`SolutionForm`].
     pub form: SolutionForm,
     /// The fresh constant symbols `C1, C2, …` appearing in [`Self::form`].
@@ -250,26 +280,42 @@ pub struct DsolveSolution {
     pub method: &'static str,
 }
 
-impl DsolveSolution {
-    /// Build an explicit solution `y(x) = y_of_x`.
+impl DsolveBranch {
+    /// Build an explicit branch `y(x) = y_of_x`.
     pub fn explicit(y_of_x: ExprId, constants: Vec<ExprId>, method: &'static str) -> Self {
-        DsolveSolution {
+        DsolveBranch {
             form: SolutionForm::Explicit(y_of_x),
             constants,
             method,
         }
     }
 
-    /// Build an implicit solution `relation(x, y) = 0`.
+    /// Build an implicit branch `relation(x, y) = 0`.
     pub fn implicit(relation: ExprId, constants: Vec<ExprId>, method: &'static str) -> Self {
-        DsolveSolution {
+        DsolveBranch {
             form: SolutionForm::Implicit(relation),
             constants,
             method,
         }
     }
 
-    /// The explicit `y(x)`, or `None` when the solution is an implicit relation.
+    /// This branch as a [`DsolveSolution`], or `None` when it is implicit.
+    ///
+    /// The `None` is the whole point: an implicit relation has no `y_of_x` to
+    /// put in a [`DsolveSolution`], and inventing one is exactly the mistake
+    /// the two types exist to prevent.
+    pub fn into_solution(self) -> Option<DsolveSolution> {
+        match self.form {
+            SolutionForm::Explicit(y_of_x) => Some(DsolveSolution {
+                y_of_x,
+                constants: self.constants,
+                method: self.method,
+            }),
+            SolutionForm::Implicit(_) => None,
+        }
+    }
+
+    /// The explicit `y(x)`, or `None` when the branch is an implicit relation.
     pub fn y_of_x(&self) -> Option<ExprId> {
         match self.form {
             SolutionForm::Explicit(e) => Some(e),
@@ -310,6 +356,24 @@ pub struct DsolveResult {
 }
 
 /// Errors / declines from [`dsolve`].
+///
+/// # Why the refined declines are not variants
+///
+/// This enum is public and exhaustive, so a new variant is a major semver break
+/// (`cargo-semver-checks::enum_variant_added`) and marking it
+/// `#[non_exhaustive]` now is one too.  The two declines that earn their own
+/// error code — a recognised class whose quadrature did not close (`E-ODE-013`)
+/// and a recognised class missing the seed its method needs (`E-ODE-014`) —
+/// therefore live *inside* [`Self::Unsupported`], tagged by a fixed prefix on
+/// the message that [`code`](crate::errors::AlkahestError::code) reads back.
+/// Nothing about the diagnostic is lost: the message still names the class and
+/// quotes the failing integral or the missing particular solution, `Display`
+/// renders it exactly as a dedicated variant would, and
+/// [`Self::is_quadrature_failure`] / [`Self::is_missing_particular_solution`]
+/// let a caller branch on the distinction.
+///
+/// Build the tagged forms only through [`Self::quadrature_failed`] and
+/// [`Self::no_particular_solution`] so the tag and the code cannot drift apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DsolveError {
     /// The ODE did not match any implemented solvable class, or a required
@@ -320,35 +384,59 @@ pub enum DsolveError {
     VerificationFailed(String),
     /// Differentiation of an intermediate expression failed.
     DiffError(String),
+}
+
+impl DsolveError {
+    /// Message tag for the `E-ODE-013` decline.
+    const QUADRATURE_TAG: &'static str = "required quadrature did not close: ";
+    /// Message tag for the `E-ODE-014` decline.
+    const NO_PARTICULAR_TAG: &'static str = "no particular solution available: ";
+
     /// The equation *was* recognised as a solvable class, but a quadrature the
     /// method needs did not close in elementary form.  Strictly more
-    /// informative than [`Self::Unsupported`]: the class is named, and the
-    /// integral that failed is quoted, so the decline points at the
+    /// informative than a bare [`Self::Unsupported`]: `detail` names the class
+    /// and quotes the integral that failed, so the decline points at the
     /// integration engine rather than at the classifier.
-    QuadratureFailed(String),
+    pub fn quadrature_failed(detail: impl fmt::Display) -> Self {
+        DsolveError::Unsupported(format!("{}{detail}", Self::QUADRATURE_TAG))
+    }
+
     /// The equation was recognised as a class whose solution method needs a
-    /// seed the solver could not produce — for a Riccati equation, a
-    /// particular solution.  No general-Riccati attempt is made; without a
-    /// particular solution the closed form is in terms of solutions of an
-    /// associated second-order linear ODE (Airy functions for `y' = y² + x`),
-    /// which this solver does not emit.
-    NoParticularSolution(String),
+    /// seed the solver could not produce — for a Riccati equation, a particular
+    /// solution.  No general-Riccati attempt is made; without a particular
+    /// solution the closed form is in terms of solutions of an associated
+    /// second-order linear ODE (Airy functions for `y' = y² + x`), which this
+    /// solver does not emit.
+    pub fn no_particular_solution(detail: impl fmt::Display) -> Self {
+        DsolveError::Unsupported(format!("{}{detail}", Self::NO_PARTICULAR_TAG))
+    }
+
+    /// Was this decline a quadrature that did not close (`E-ODE-013`)?
+    pub fn is_quadrature_failure(&self) -> bool {
+        matches!(self, DsolveError::Unsupported(m) if m.starts_with(Self::QUADRATURE_TAG))
+    }
+
+    /// Was this decline a missing particular solution (`E-ODE-014`)?
+    pub fn is_missing_particular_solution(&self) -> bool {
+        matches!(self, DsolveError::Unsupported(m) if m.starts_with(Self::NO_PARTICULAR_TAG))
+    }
 }
 
 impl fmt::Display for DsolveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            // A tagged message already begins with its own description, so
+            // prefixing "unsupported ODE:" would only repeat it.
+            DsolveError::Unsupported(m)
+                if self.is_quadrature_failure() || self.is_missing_particular_solution() =>
+            {
+                write!(f, "dsolve: {m}")
+            }
             DsolveError::Unsupported(m) => write!(f, "dsolve: unsupported ODE: {m}"),
             DsolveError::VerificationFailed(m) => {
                 write!(f, "dsolve: candidate failed verification: {m}")
             }
             DsolveError::DiffError(m) => write!(f, "dsolve: differentiation error: {m}"),
-            DsolveError::QuadratureFailed(m) => {
-                write!(f, "dsolve: required quadrature did not close: {m}")
-            }
-            DsolveError::NoParticularSolution(m) => {
-                write!(f, "dsolve: no particular solution available: {m}")
-            }
         }
     }
 }
@@ -358,16 +446,25 @@ impl std::error::Error for DsolveError {}
 impl crate::errors::AlkahestError for DsolveError {
     fn code(&self) -> &'static str {
         match self {
+            _ if self.is_quadrature_failure() => "E-ODE-013",
+            _ if self.is_missing_particular_solution() => "E-ODE-014",
             DsolveError::Unsupported(_) => "E-ODE-010",
             DsolveError::VerificationFailed(_) => "E-ODE-011",
             DsolveError::DiffError(_) => "E-ODE-012",
-            DsolveError::QuadratureFailed(_) => "E-ODE-013",
-            DsolveError::NoParticularSolution(_) => "E-ODE-014",
         }
     }
 
     fn remediation(&self) -> Option<&'static str> {
         match self {
+            _ if self.is_quadrature_failure() => Some(
+                "the ODE was classified, but the integral the method needs is not \
+                 elementary for this integrator; the message names the class and the \
+                 integrand that failed",
+            ),
+            _ if self.is_missing_particular_solution() => Some(
+                "supply a particular solution, or expect a closed form outside the \
+                 elementary/special-function vocabulary this solver emits",
+            ),
             DsolveError::Unsupported(_) => Some(
                 "the ODE is outside the implemented classical classes, or a required \
                  integral is non-elementary; check the equation form",
@@ -379,15 +476,6 @@ impl crate::errors::AlkahestError for DsolveError {
             DsolveError::DiffError(_) => {
                 Some("ensure the equation only contains differentiable functions")
             }
-            DsolveError::QuadratureFailed(_) => Some(
-                "the ODE was classified, but the integral the method needs is not \
-                 elementary for this integrator; the message names the class and the \
-                 integrand that failed",
-            ),
-            DsolveError::NoParticularSolution(_) => Some(
-                "supply a particular solution, or expect a closed form outside the \
-                 elementary/special-function vocabulary this solver emits",
-            ),
         }
     }
 }
@@ -408,8 +496,33 @@ impl crate::errors::AlkahestError for DsolveError {
 /// Returns [`DsolveError::Unsupported`] when the equation is outside the
 /// implemented classes or a required quadrature is non-elementary, and
 /// [`DsolveError::VerificationFailed`] when a candidate could not be verified.
+///
+/// A [`DsolveSolution`] is always an explicit `y(x)`.  When every verified
+/// branch is an implicit relation `G(x, y) = 0` — routine for separable and
+/// exact equations — this declines rather than returning an empty
+/// [`DsolveResult`], and the message points at [`dsolve_with`], which reports
+/// the relation.  An `Ok` therefore always carries at least one branch.
 pub fn dsolve(input: &OdeInput, pool: &ExprPool) -> Result<DsolveResult, DsolveError> {
-    dsolve_with(input, &AssumptionContext::new(), pool).map(|r| r.result)
+    let report = dsolve_with(input, &AssumptionContext::new(), pool)?;
+    let implicit: Vec<String> = report
+        .branches
+        .iter()
+        .filter(|b| !b.is_explicit())
+        .map(|b| b.render(pool))
+        .collect();
+    let solutions: Vec<DsolveSolution> = report
+        .branches
+        .into_iter()
+        .filter_map(DsolveBranch::into_solution)
+        .collect();
+    if solutions.is_empty() {
+        return Err(DsolveError::Unsupported(format!(
+            "the general solution is an implicit relation, not an explicit y(x): {}; \
+             use dsolve_with to obtain it",
+            implicit.join("; ")
+        )));
+    }
+    Ok(DsolveResult { solutions })
 }
 
 /// [`dsolve`], plus the conditions under which the returned branches are the
@@ -453,14 +566,14 @@ pub fn dsolve_with(
         assumptions,
         conds: Conditions::default(),
     };
-    let result = match input.order() {
+    let branches = match input.order() {
         1 => first_order::solve(input, &mut gen, pool),
         2 => constant_coeff::solve_second_order(input, &mut gen, &mut ctx, pool),
         n if n >= 3 => constant_coeff::solve_higher_order(input, n, &mut gen, &mut ctx, pool),
         _ => Err(DsolveError::Unsupported("order 0 ODE".to_string())),
     }?;
     Ok(DsolveReport {
-        result,
+        branches,
         side_conditions: ctx.conds.side,
         notes: ctx.conds.notes,
     })
@@ -469,9 +582,10 @@ pub fn dsolve_with(
 /// The result of [`dsolve_with`].
 #[derive(Clone, Debug)]
 pub struct DsolveReport {
-    /// The solution branches, exactly as [`dsolve`] returns them.
-    pub result: DsolveResult,
-    /// Conditions under which [`Self::result`] is the *general* solution.
+    /// The verified general-solution branches, explicit or implicit.  Never
+    /// empty on `Ok`: a class that produced nothing declines instead.
+    pub branches: Vec<DsolveBranch>,
+    /// Conditions under which [`Self::branches`] is the *general* solution.
     ///
     /// Empty means unconditional.  A non-empty list is not a hedge about
     /// correctness — every branch here has been verified by substitution — it

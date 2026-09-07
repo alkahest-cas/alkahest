@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::deriv::SideCondition;
+use crate::errors::AlkahestError;
 use crate::integrate::special::basis_functions_used;
 use crate::kernel::{Domain, ExprPool};
 use crate::simplify::assumptions::AssumptionContext;
@@ -15,14 +16,33 @@ fn setup() -> (ExprPool, ExprId, ExprId) {
     (p, x, y)
 }
 
+/// Every verified branch, explicit or implicit.
+struct Branches {
+    solutions: Vec<DsolveBranch>,
+}
+
+/// Solve and keep *both* forms.
+///
+/// [`dsolve`] hands back [`DsolveSolution`], which is explicit by construction,
+/// so an implicit answer is not visible through it; these tests assert on the
+/// branch list [`dsolve_with`] reports, where an implicit relation is a
+/// first-class outcome.  `solve_all` therefore covers strictly more than
+/// `dsolve` does — see [`implicit_only_answer_is_not_an_explicit_solution`] for
+/// the seam between the two.
+fn solve_all(input: &OdeInput, pool: &ExprPool) -> Result<Branches, DsolveError> {
+    dsolve_with(input, &AssumptionContext::new(), pool).map(|r| Branches {
+        solutions: r.branches,
+    })
+}
+
 /// Confirm a returned solution truly verifies (independent of the internal gate).
-fn assert_verifies(input: &OdeInput, sol: &DsolveSolution, pool: &ExprPool) {
+fn assert_verifies(input: &OdeInput, sol: &DsolveBranch, pool: &ExprPool) {
     solution_is_verified(input, sol, pool)
         .unwrap_or_else(|e| panic!("returned solution failed verification: {e}"));
 }
 
 /// The explicit `y(x)` of a solution that must be explicit.
-fn explicit_of(sol: &DsolveSolution) -> ExprId {
+fn explicit_of(sol: &DsolveBranch) -> ExprId {
     sol.y_of_x()
         .expect("expected an explicit y(x), got an implicit relation")
 }
@@ -42,7 +62,7 @@ fn separable_logistic() {
     // equation: y' - y(1-y) = 0
     let eq = p.add(vec![yp, p.mul(vec![p.integer(-1_i32), rhs])]);
     let input = input.with_equation(eq);
-    let res = dsolve(&input, &p).expect("logistic should solve");
+    let res = solve_all(&input, &p).expect("logistic should solve");
     assert!(!res.solutions.is_empty());
     assert_verifies(&input, &res.solutions[0], &p);
 }
@@ -54,7 +74,7 @@ fn separable_exponential() {
     let (input, yp) = OdeInput::first_order(x, y, &p);
     let eq = p.add(vec![yp, p.mul(vec![p.integer(-1_i32), y])]);
     let input = input.with_equation(eq);
-    let res = dsolve(&input, &p).expect("y'=y should solve");
+    let res = solve_all(&input, &p).expect("y'=y should solve");
     assert_verifies(&input, &res.solutions[0], &p);
 }
 
@@ -70,7 +90,7 @@ fn linear_first_order() {
         p.mul(vec![p.integer(-1_i32), x]),
     ]);
     let input = input.with_equation(eq);
-    let res = dsolve(&input, &p).expect("linear first order should solve");
+    let res = solve_all(&input, &p).expect("linear first order should solve");
     assert_verifies(&input, &res.solutions[0], &p);
 }
 
@@ -82,7 +102,7 @@ fn bernoulli_first_order() {
     let y2 = p.pow(y, p.integer(2_i32));
     let eq = p.add(vec![yp, y, p.mul(vec![p.integer(-1_i32), y2])]);
     let input = input.with_equation(eq);
-    let res = dsolve(&input, &p).expect("Bernoulli should solve");
+    let res = solve_all(&input, &p).expect("Bernoulli should solve");
     assert_verifies(&input, &res.solutions[0], &p);
 }
 
@@ -99,7 +119,7 @@ fn exact_first_order() {
                                                               // equation: M + N y' = 0
     let eq = p.add(vec![m, p.mul(vec![n, yp])]);
     let input = input.with_equation(eq);
-    let res = dsolve(&input, &p).expect("exact should solve");
+    let res = solve_all(&input, &p).expect("exact should solve");
     assert_verifies(&input, &res.solutions[0], &p);
 }
 
@@ -111,7 +131,7 @@ fn homogeneous_first_order() {
     let rhs = p.add(vec![p.integer(1_i32), div(y, x, &p)]);
     let eq = p.add(vec![yp, p.mul(vec![p.integer(-1_i32), rhs])]);
     let input = input.with_equation(eq);
-    let res = dsolve(&input, &p).expect("homogeneous should solve");
+    let res = solve_all(&input, &p).expect("homogeneous should solve");
     assert_verifies(&input, &res.solutions[0], &p);
 }
 
@@ -128,7 +148,7 @@ fn clairaut_first_order() {
         p.mul(vec![p.integer(-1_i32), yp2]),
     ]);
     let input = input.with_equation(eq);
-    let res = dsolve(&input, &p).expect("Clairaut should solve");
+    let res = solve_all(&input, &p).expect("Clairaut should solve");
     assert_eq!(res.solutions[0].method, "clairaut");
     assert_verifies(&input, &res.solutions[0], &p);
 }
@@ -148,13 +168,15 @@ fn riccati_with_polynomial_particular() {
     ]);
     let eq = p.add(vec![yp, p.mul(vec![p.integer(-1_i32), rhs])]);
     let input = input.with_equation(eq);
-    match dsolve(&input, &p) {
+    match solve_all(&input, &p) {
         Ok(res) => assert_verifies(&input, &res.solutions[0], &p),
         // Acceptable to decline if the linear reduction integral does not close,
         // but it must never return a wrong answer — and the decline has to say
         // *which* integral, which here is the genuinely non-elementary
         // `∫ e^{x²} dx` the `y = y_p + 1/v` reduction runs into.
-        Err(DsolveError::QuadratureFailed(m)) => {
+        Err(ref e) if e.is_quadrature_failure() => {
+            assert_eq!(e.code(), "E-ODE-013");
+            let m = e.to_string();
             assert!(
                 m.contains("riccati"),
                 "decline does not name the class: {m}"
@@ -180,7 +202,7 @@ fn riccati_declined_without_particular() {
     let eq = p.add(vec![yp, p.mul(vec![p.integer(-1_i32), rhs])]);
     let input = input.with_equation(eq);
     assert!(
-        dsolve(&input, &p).is_err(),
+        solve_all(&input, &p).is_err(),
         "should decline Riccati w/o particular"
     );
 }
@@ -196,7 +218,7 @@ fn harmonic_oscillator() {
     let (input, _yp, ypp) = OdeInput::second_order(x, y, &p);
     let eq = p.add(vec![ypp, y]);
     let input = input.with_equation(eq);
-    let res = dsolve(&input, &p).expect("harmonic oscillator should solve");
+    let res = solve_all(&input, &p).expect("harmonic oscillator should solve");
     assert_eq!(res.solutions[0].constants.len(), 2);
     assert_verifies(&input, &res.solutions[0], &p);
 }
@@ -212,7 +234,7 @@ fn real_distinct_roots() {
         p.mul(vec![p.integer(2_i32), y]),
     ]);
     let input = input.with_equation(eq);
-    let res = dsolve(&input, &p).expect("distinct roots should solve");
+    let res = solve_all(&input, &p).expect("distinct roots should solve");
     assert_verifies(&input, &res.solutions[0], &p);
 }
 
@@ -223,7 +245,7 @@ fn repeated_root() {
     let (input, yp, ypp) = OdeInput::second_order(x, y, &p);
     let eq = p.add(vec![ypp, p.mul(vec![p.integer(-2_i32), yp]), y]);
     let input = input.with_equation(eq);
-    let res = dsolve(&input, &p).expect("repeated root should solve");
+    let res = solve_all(&input, &p).expect("repeated root should solve");
     assert_verifies(&input, &res.solutions[0], &p);
 }
 
@@ -238,7 +260,7 @@ fn complex_roots() {
         p.mul(vec![p.integer(5_i32), y]),
     ]);
     let input = input.with_equation(eq);
-    let res = dsolve(&input, &p).expect("complex roots should solve");
+    let res = solve_all(&input, &p).expect("complex roots should solve");
     assert_verifies(&input, &res.solutions[0], &p);
 }
 
@@ -255,7 +277,7 @@ fn undetermined_coefficients_x_exp_x() {
         p.mul(vec![p.integer(-1_i32), xex]),
     ]);
     let input = input.with_equation(eq);
-    let res = dsolve(&input, &p).expect("undetermined coefficients should solve");
+    let res = solve_all(&input, &p).expect("undetermined coefficients should solve");
     assert_verifies(&input, &res.solutions[0], &p);
 }
 
@@ -267,7 +289,7 @@ fn variation_of_parameters_tan() {
     let tanx = p.func("tan", vec![x]);
     let eq = p.add(vec![ypp, y, p.mul(vec![p.integer(-1_i32), tanx])]);
     let input = input.with_equation(eq);
-    match dsolve(&input, &p) {
+    match solve_all(&input, &p) {
         Ok(res) => assert_verifies(&input, &res.solutions[0], &p),
         Err(DsolveError::Unsupported(_)) => {} // acceptable decline if integral doesn't close
         Err(e) => panic!("must decline, not error wrongly: {e}"),
@@ -286,7 +308,7 @@ fn nonhomogeneous_polynomial_rhs() {
         p.mul(vec![p.integer(-1_i32), rhs]),
     ]);
     let input = input.with_equation(eq);
-    let res = dsolve(&input, &p).expect("polynomial RHS should solve");
+    let res = solve_all(&input, &p).expect("polynomial RHS should solve");
     assert_verifies(&input, &res.solutions[0], &p);
 }
 
@@ -302,7 +324,7 @@ fn nonhomogeneous_nonresonant_exp() {
         p.mul(vec![p.integer(-1_i32), e2x]),
     ]);
     let input = input.with_equation(eq);
-    let res = dsolve(&input, &p).expect("non-resonant exp RHS should solve");
+    let res = solve_all(&input, &p).expect("non-resonant exp RHS should solve");
     assert_verifies(&input, &res.solutions[0], &p);
 }
 
@@ -313,7 +335,7 @@ fn fourth_order_constant_coeff() {
     let (input, derivs) = OdeInput::higher_order(x, y, 4, &p);
     let eq = p.add(vec![derivs[3], p.mul(vec![p.integer(-1_i32), y])]);
     let input = input.with_equation(eq);
-    let res = dsolve(&input, &p).expect("fourth order should solve");
+    let res = solve_all(&input, &p).expect("fourth order should solve");
     assert_eq!(res.solutions[0].constants.len(), 4);
     assert_verifies(&input, &res.solutions[0], &p);
 }
@@ -334,7 +356,7 @@ fn euler_cauchy_distinct() {
         p.mul(vec![p.integer(-2_i32), y]),
     ]);
     let input = input.with_equation(eq);
-    let res = dsolve(&input, &p).expect("Euler-Cauchy should solve");
+    let res = solve_all(&input, &p).expect("Euler-Cauchy should solve");
     assert_eq!(res.solutions[0].method, "euler_cauchy");
     assert_verifies(&input, &res.solutions[0], &p);
 }
@@ -351,7 +373,7 @@ fn euler_cauchy_repeated() {
         y,
     ]);
     let input = input.with_equation(eq);
-    let res = dsolve(&input, &p).expect("Euler-Cauchy repeated should solve");
+    let res = solve_all(&input, &p).expect("Euler-Cauchy repeated should solve");
     assert_verifies(&input, &res.solutions[0], &p);
 }
 
@@ -372,7 +394,7 @@ fn third_order_constant_coeff() {
         p.mul(vec![p.integer(-6_i32), y]),
     ]);
     let input = input.with_equation(eq);
-    let res = dsolve(&input, &p).expect("third order should solve");
+    let res = solve_all(&input, &p).expect("third order should solve");
     assert_eq!(res.solutions[0].constants.len(), 3);
     assert_verifies(&input, &res.solutions[0], &p);
 }
@@ -390,7 +412,7 @@ fn fresh_constants_avoid_user_symbols() {
     let zero_term = p.mul(vec![p.add(vec![c1, p.mul(vec![p.integer(-1_i32), c1])]), x]);
     let eq = p.add(vec![ypp, y, zero_term]);
     let input = input.with_equation(eq);
-    let res = dsolve(&input, &p).expect("should still solve");
+    let res = solve_all(&input, &p).expect("should still solve");
     for c in &res.solutions[0].constants {
         assert_ne!(*c, c1, "fresh constant collided with user symbol C1");
     }
@@ -406,10 +428,10 @@ fn fresh_constants_avoid_user_symbols() {
 
 /// Solve `src = 0` (in `x`, `y`, `yp`, `ypp`, …) and return the pool, input
 /// and the first solution, asserting it verifies by substitution.
-fn solve_src(order: usize, src: &str) -> (ExprPool, OdeInput, DsolveSolution) {
+fn solve_src(order: usize, src: &str) -> (ExprPool, OdeInput, DsolveBranch) {
     let pool = ExprPool::new();
     let input = super::corpus::build_ode(order, src, &pool).expect("corpus source parses");
-    let res = dsolve(&input, &pool).unwrap_or_else(|e| panic!("`{src}` should solve: {e}"));
+    let res = solve_all(&input, &pool).unwrap_or_else(|e| panic!("`{src}` should solve: {e}"));
     let sol = res.solutions[0].clone();
     solution_is_verified(&input, &sol, &pool)
         .unwrap_or_else(|e| panic!("`{src}` returned an unverified solution: {e}"));
@@ -421,7 +443,7 @@ fn solve_src(order: usize, src: &str) -> (ExprPool, OdeInput, DsolveSolution) {
 fn assert_declines(order: usize, src: &str) {
     let pool = ExprPool::new();
     let input = super::corpus::build_ode(order, src, &pool).expect("corpus source parses");
-    match dsolve(&input, &pool) {
+    match solve_all(&input, &pool) {
         Err(DsolveError::Unsupported(_)) => {}
         Err(e) => panic!("`{src}` should decline as Unsupported, got {e}"),
         Ok(res) => panic!(
@@ -603,7 +625,7 @@ fn declines_when_the_quadrature_leaves_the_special_function_basis() {
 
 /// Solve `src` and return `(pool, input, solution)` without asserting the form,
 /// re-verifying independently of the gate inside `dsolve`.
-fn solve1(src: &str) -> (ExprPool, OdeInput, DsolveSolution) {
+fn solve1(src: &str) -> (ExprPool, OdeInput, DsolveBranch) {
     solve_src(1, src)
 }
 
@@ -756,6 +778,47 @@ fn implicit_solutions_are_labelled_rather_than_disguised() {
 }
 
 #[test]
+fn implicit_only_answer_is_not_an_explicit_solution() {
+    // The seam between the two entry points.  `DsolveSolution::y_of_x` is an
+    // `ExprId`, not an `Option`, so there is nothing honest to put in it for a
+    // relation `G(x, y) = 0`; `dsolve` therefore declines and says where the
+    // answer is, rather than handing back an empty `DsolveResult` (which reads
+    // as "no solution") or a relation dressed as `y(x)` (which is wrong).
+    let pool = ExprPool::new();
+    let input = super::corpus::build_ode(1, "exp(x)*sin(y) + exp(x)*cos(y)*yp", &pool)
+        .expect("corpus source parses");
+
+    let report = dsolve_with(&input, &AssumptionContext::new(), &pool)
+        .expect("dsolve_with reports the relation");
+    assert_eq!(report.branches.len(), 1);
+    assert!(!report.branches[0].is_explicit());
+
+    match dsolve(&input, &pool) {
+        Ok(res) => panic!(
+            "dsolve must not report an implicit relation as y(x); got {} branch(es)",
+            res.solutions.len()
+        ),
+        Err(e) => {
+            let m = e.to_string();
+            assert!(m.contains("implicit"), "decline does not say why: {m}");
+            assert!(m.contains("dsolve_with"), "decline does not say where: {m}");
+        }
+    }
+
+    // An explicit answer still comes through `dsolve` unchanged.
+    let lin = super::corpus::build_ode(1, "yp - y", &pool).expect("corpus source parses");
+    let res = dsolve(&lin, &pool).expect("y' = y is explicit");
+    assert_eq!(res.solutions.len(), 1);
+    residual_is_zero(
+        &lin,
+        res.solutions[0].y_of_x,
+        &res.solutions[0].constants,
+        &pool,
+    )
+    .expect("dsolve's explicit answer verifies");
+}
+
+#[test]
 fn an_explicit_answer_wins_over_an_implicit_one() {
     // `y' = eˣ·y²` separates to `−1/y = eˣ + C`, which this code does not
     // invert and would hand back as a relation; Bernoulli solves it for `y`.
@@ -834,8 +897,10 @@ fn riccati_without_a_particular_solution_refuses_by_name() {
     // the class *was* recognised and the missing piece is nameable.
     let pool = ExprPool::new();
     let input = super::corpus::build_ode(1, "yp - y^2 - x", &pool).expect("parses");
-    match dsolve(&input, &pool) {
-        Err(DsolveError::NoParticularSolution(m)) => {
+    match solve_all(&input, &pool) {
+        Err(ref e) if e.is_missing_particular_solution() => {
+            assert_eq!(e.code(), "E-ODE-014");
+            let m = e.to_string();
             assert!(
                 m.contains("riccati"),
                 "decline does not name the class: {m}"
@@ -863,8 +928,10 @@ fn a_failed_inner_integral_is_reported_as_such() {
     // path is what is worth keeping, not this particular integrand.
     let pool = ExprPool::new();
     let input = super::corpus::build_ode(1, "yp - y^2 + x^2 - 1", &pool).expect("parses");
-    match dsolve(&input, &pool) {
-        Err(DsolveError::QuadratureFailed(m)) => {
+    match solve_all(&input, &pool) {
+        Err(ref e) if e.is_quadrature_failure() => {
+            assert_eq!(e.code(), "E-ODE-013");
+            let m = e.to_string();
             assert!(m.contains('∫'), "decline does not quote an integral: {m}");
         }
         Err(e) => panic!("expected a quadrature decline, got {e}"),
@@ -905,7 +972,7 @@ fn report_src(order: usize, src: &str) -> (ExprPool, OdeInput, DsolveReport) {
     let input = super::corpus::build_ode(order, src, &pool).expect("source parses");
     let rep = dsolve_with(&input, &AssumptionContext::new(), &pool)
         .unwrap_or_else(|e| panic!("`{src}` should solve: {e}"));
-    let sol = &rep.result.solutions[0];
+    let sol = &rep.branches[0];
     residual_is_zero(
         &input,
         sol.y_of_x().expect("an explicit solution"),
@@ -930,7 +997,7 @@ fn nonzero_conditions(rep: &DsolveReport, pool: &ExprPool) -> Vec<String> {
 #[test]
 fn damped_oscillator_with_symbolic_zeta_and_omega() {
     let (pool, _, rep) = report_src(2, "ypp + 2*z*w*yp + w^2*y");
-    let sol = &rep.result.solutions[0];
+    let sol = &rep.branches[0];
     assert_eq!(sol.constants.len(), 2);
     assert_eq!(sol.method, "constant_coefficient_symbolic");
     // Both exponentials must be present and must involve both parameters.
@@ -962,7 +1029,7 @@ fn damped_oscillator_with_symbolic_zeta_and_omega() {
 #[test]
 fn a_provable_double_root_gets_the_secular_solution() {
     let (pool, _, rep) = report_src(2, "ypp + 2*a*yp + a^2*y");
-    let sol = &rep.result.solutions[0];
+    let sol = &rep.branches[0];
     assert_eq!(sol.method, "constant_coefficient_symbolic_repeated_root");
     assert!(
         rep.side_conditions.is_empty(),
@@ -1022,7 +1089,7 @@ fn an_asserted_nonzero_discriminant_removes_the_condition() {
         nonzero_conditions(&rep, &pool)
     );
     assert_eq!(
-        rep.result.solutions[0].method,
+        rep.branches[0].method,
         "constant_coefficient_symbolic_distinct_roots"
     );
 }
@@ -1050,7 +1117,7 @@ fn an_asserted_negative_discriminant_gives_the_real_oscillatory_form() {
         .refine(pool.pred_gt(neg_d, pool.integer(0_i32)), &pool)
         .expect("satisfiable");
     let rep = dsolve_with(&input, &assumptions, &pool).expect("solves");
-    let sol = &rep.result.solutions[0];
+    let sol = &rep.branches[0];
     assert_eq!(sol.method, "constant_coefficient_symbolic_oscillatory");
     let y = pool
         .display(sol.y_of_x().expect("an explicit solution"))
@@ -1071,7 +1138,7 @@ fn an_asserted_negative_discriminant_gives_the_real_oscillatory_form() {
 #[test]
 fn a_lambda_factor_reduces_the_symbolic_degree() {
     let (pool, _, rep) = report_src(3, "yppp + 2*z*w*ypp + w^2*yp");
-    let sol = &rep.result.solutions[0];
+    let sol = &rep.branches[0];
     assert_eq!(sol.constants.len(), 3);
     let y = pool
         .display(sol.y_of_x().expect("an explicit solution"))
@@ -1088,7 +1155,7 @@ fn a_lambda_factor_reduces_the_symbolic_degree() {
 fn a_symbolic_cubic_characteristic_polynomial_is_refused() {
     let pool = ExprPool::new();
     let input = super::corpus::build_ode(3, "yppp + a*ypp + b*yp + c*y", &pool).expect("parses");
-    match dsolve(&input, &pool) {
+    match solve_all(&input, &pool) {
         Err(DsolveError::Unsupported(m)) => {
             assert!(
                 m.contains("degree"),
@@ -1108,7 +1175,7 @@ fn a_symbolic_cubic_characteristic_polynomial_is_refused() {
 #[test]
 fn numeric_coefficients_still_take_the_rational_route() {
     let (pool, _, rep) = report_src(2, "ypp + 2*yp + 5*y");
-    let sol = &rep.result.solutions[0];
+    let sol = &rep.branches[0];
     assert_eq!(sol.method, "constant_coefficient");
     assert!(rep.side_conditions.is_empty());
     let y = pool
@@ -1126,7 +1193,7 @@ fn symbolic_corpus_entries_all_verify() {
         }
         let pool = ExprPool::new();
         let input = super::corpus::build_ode(*order, src, &pool).expect("parses");
-        let res = dsolve(&input, &pool).unwrap_or_else(|e| panic!("`{name}` should solve: {e}"));
+        let res = solve_all(&input, &pool).unwrap_or_else(|e| panic!("`{name}` should solve: {e}"));
         let sol = &res.solutions[0];
         assert_eq!(sol.constants.len(), *order, "`{name}` constant count");
         residual_is_zero(

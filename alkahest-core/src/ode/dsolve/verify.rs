@@ -1027,7 +1027,7 @@ fn eval_func_complex(name: &str, a: &[C64]) -> Option<C64> {
 // Implicit solutions
 // ---------------------------------------------------------------------------
 
-/// Re-verify a returned [`DsolveSolution`] in whichever form it came in.
+/// Re-verify a returned [`DsolveBranch`](super::DsolveBranch) in whichever form it came in.
 ///
 /// The gate inside each class already ran; this is the entry point for callers
 /// that want to check a returned answer *independently* of it — which the
@@ -1036,7 +1036,7 @@ fn eval_func_complex(name: &str, a: &[C64]) -> Option<C64> {
 #[cfg(test)]
 pub(crate) fn solution_is_verified(
     input: &OdeInput,
-    sol: &super::DsolveSolution,
+    sol: &super::DsolveBranch,
     pool: &ExprPool,
 ) -> Result<(), DsolveError> {
     match sol.form {

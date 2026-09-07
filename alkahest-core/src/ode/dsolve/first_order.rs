@@ -41,7 +41,7 @@
 
 use super::{
     contains, ddx, div, implicit_relation_is_zero, integrate_or_decline, is_zero, residual_is_zero,
-    simp, sub, subs1, ConstGen, DsolveError, DsolveResult, DsolveSolution, OdeInput,
+    simp, sub, subs1, ConstGen, DsolveBranch, DsolveError, OdeInput,
 };
 use crate::kernel::eval_const::try_expr_f64;
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
@@ -49,7 +49,7 @@ use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 /// What one class made of the equation.
 enum Outcome {
     /// A verified general solution.
-    Solved(DsolveSolution),
+    Solved(DsolveBranch),
     /// The equation is not of this class.  Carries no information.
     NoMatch,
     /// The equation *is* of this class, but the method did not close: an
@@ -62,7 +62,7 @@ pub(crate) fn solve(
     input: &OdeInput,
     gen: &mut ConstGen,
     pool: &ExprPool,
-) -> Result<DsolveResult, DsolveError> {
+) -> Result<Vec<DsolveBranch>, DsolveError> {
     let yp = input.derivs[0];
     let mut cascade = Cascade::default();
 
@@ -123,7 +123,7 @@ pub(crate) fn solve(
 #[derive(Default)]
 struct Cascade {
     /// The first implicit answer, kept in case no class answers explicitly.
-    implicit: Option<DsolveSolution>,
+    implicit: Option<DsolveBranch>,
     /// `class: reason` for every class that recognised the equation and then
     /// could not finish.
     notes: Vec<(String, DsolveError)>,
@@ -153,12 +153,15 @@ fn trace_class(_class: &str, _outcome: &Outcome, _pool: &ExprPool) {}
 
 impl Cascade {
     /// Record one class's outcome.  `Some` means the cascade is finished.
-    fn offer(&mut self, class: &str, outcome: Outcome, pool: &ExprPool) -> Option<DsolveResult> {
+    fn offer(
+        &mut self,
+        class: &str,
+        outcome: Outcome,
+        pool: &ExprPool,
+    ) -> Option<Vec<DsolveBranch>> {
         trace_class(class, &outcome, pool);
         match outcome {
-            Outcome::Solved(sol) if sol.is_explicit() => Some(DsolveResult {
-                solutions: vec![sol],
-            }),
+            Outcome::Solved(sol) if sol.is_explicit() => Some(vec![sol]),
             Outcome::Solved(sol) => {
                 if self.implicit.is_none() {
                     self.implicit = Some(sol);
@@ -175,11 +178,9 @@ impl Cascade {
 
     /// No class answered explicitly: return the implicit answer if there is
     /// one, else the most informative decline the cascade collected.
-    fn finish(self) -> Result<DsolveResult, DsolveError> {
+    fn finish(self) -> Result<Vec<DsolveBranch>, DsolveError> {
         if let Some(sol) = self.implicit {
-            return Ok(DsolveResult {
-                solutions: vec![sol],
-            });
+            return Ok(vec![sol]);
         }
         if self.notes.is_empty() {
             return Err(DsolveError::Unsupported(
@@ -197,17 +198,22 @@ impl Cascade {
         // handle); a missing particular solution is next; a candidate that
         // failed verification is a statement about the candidate, not the
         // equation, and comes last.
-        let kind = |e: &DsolveError| match e {
-            DsolveError::QuadratureFailed(_) => 3,
-            DsolveError::NoParticularSolution(_) => 2,
-            DsolveError::VerificationFailed(_) => 1,
-            _ => 0,
+        let kind = |e: &DsolveError| {
+            if e.is_quadrature_failure() {
+                3
+            } else if e.is_missing_particular_solution() {
+                2
+            } else if matches!(e, DsolveError::VerificationFailed(_)) {
+                1
+            } else {
+                0
+            }
         };
         let best = self.notes.iter().map(|(_, e)| kind(e)).max().unwrap_or(0);
         let msg = format!("no first-order class produced a verified solution ({detail})");
         Err(match best {
-            3 => DsolveError::QuadratureFailed(msg),
-            2 => DsolveError::NoParticularSolution(msg),
+            3 => DsolveError::quadrature_failed(msg),
+            2 => DsolveError::no_particular_solution(msg),
             _ => DsolveError::Unsupported(msg),
         })
     }
@@ -229,7 +235,7 @@ fn finalize_explicit(
 ) -> Outcome {
     let y_of_x = simp(y_of_x, pool);
     match residual_is_zero(input, y_of_x, &constants, pool) {
-        Ok(()) => Outcome::Solved(DsolveSolution::explicit(y_of_x, constants, method)),
+        Ok(()) => Outcome::Solved(DsolveBranch::explicit(y_of_x, constants, method)),
         Err(e) => Outcome::Declined(e),
     }
 }
@@ -244,7 +250,7 @@ fn finalize_implicit(
 ) -> Outcome {
     let relation = simp(relation, pool);
     match implicit_relation_is_zero(input, relation, &constants, pool) {
-        Ok(()) => Outcome::Solved(DsolveSolution::implicit(relation, constants, method)),
+        Ok(()) => Outcome::Solved(DsolveBranch::implicit(relation, constants, method)),
         Err(e) => Outcome::Declined(e),
     }
 }
@@ -299,7 +305,7 @@ fn quadrature_decline(
     e: DsolveError,
     pool: &ExprPool,
 ) -> Outcome {
-    Outcome::Declined(DsolveError::QuadratureFailed(format!(
+    Outcome::Declined(DsolveError::quadrature_failed(format!(
         "{class} needs {what} = ∫ `{}`: {e}",
         pool.display(integrand)
     )))
@@ -1220,7 +1226,7 @@ fn exact_potential(
     }
     // F = ∫ M dx + g(y), with ∂F/∂y = N → g'(y) = N − ∂/∂y ∫M dx.
     let int_m = integrate_or_decline(m, x, pool).map_err(|e| {
-        DsolveError::QuadratureFailed(format!("exact needs ∫ M dx of `{}`: {e}", pool.display(m)))
+        DsolveError::quadrature_failed(format!("exact needs ∫ M dx of `{}`: {e}", pool.display(m)))
     })?;
     let dint_m_dy = ddx(int_m, y, pool)?;
     let gy_prime = sub(n, dint_m_dy, pool); // should be free of x
@@ -1228,7 +1234,7 @@ fn exact_potential(
         return Ok(None);
     }
     let g_of_y = integrate_or_decline(gy_prime, y, pool).map_err(|e| {
-        DsolveError::QuadratureFailed(format!(
+        DsolveError::quadrature_failed(format!(
             "exact needs ∫ (N − ∂ₓ⁻¹) dy of `{}`: {e}",
             pool.display(gy_prime)
         ))
@@ -1322,7 +1328,7 @@ fn try_riccati(input: &OdeInput, rhs: ExprId, gen: &mut ConstGen, pool: &ExprPoo
         // solver emits — so the honest answer is a named refusal, not a
         // "no class matched" that misdescribes the equation, and not an
         // attempt that could only produce something unverifiable.
-        return Outcome::Declined(DsolveError::NoParticularSolution(format!(
+        return Outcome::Declined(DsolveError::no_particular_solution(format!(
             "riccati `y' = {}` has no polynomial particular solution of degree ≤ 2; \
              the general solution is in terms of solutions of the associated \
              second-order linear equation, which dsolve does not emit",

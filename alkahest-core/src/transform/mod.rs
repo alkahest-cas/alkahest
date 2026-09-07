@@ -11,7 +11,7 @@
 //! convergence side-conditions are emitted (matching SymPy's `noconds=True`
 //! default).  See each submodule for its rule coverage, fallbacks, and declines.
 //!
-//! # Symbolic parameters and genericity — [`Genericity`]
+//! # Symbolic parameters and genericity — `Genericity`
 //!
 //! The inverse transforms accept a rational `F` whose coefficients mention
 //! symbols other than the transform variable (`ω`, `ζ`, `K`, `ka`, `ke`, …).

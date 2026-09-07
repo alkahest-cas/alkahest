@@ -4329,7 +4329,7 @@ const GATE_MAX_PARAMS: usize = 2;
 ///
 /// # The domain of the parameter is load-bearing
 ///
-/// [`classify_sample`] counts "`f` is an ordinary finite real and `d/dx F` is
+/// `classify_sample` counts "`f` is an ordinary finite real and `d/dx F` is
 /// not" as a **disagreement**, not as a skip, and that rule is what makes the
 /// parameter sweep honest rather than convenient. `√π/(2√a)·erf(√a·x)` is a
 /// perfectly good antiderivative of `exp(−a·x²)` for `a > 0` and is not a real
@@ -4358,7 +4358,7 @@ const GATE_MAX_PARAMS: usize = 2;
 ///   evidence at all, but the verdict says nothing about the rest of the
 ///   complex plane — as with every other `Numeric` verdict in this file, it is
 ///   a statement about the points that were tried.
-/// * At most [`GATE_MAX_PARAMS`] parameters; beyond that the sweep declines
+/// * At most `GATE_MAX_PARAMS` parameters; beyond that the sweep declines
 ///   rather than growing the product grid.
 /// * Three values per parameter is a screen, not a proof. A candidate that is
 ///   wrong only on a measure-zero set of parameter values would survive it —

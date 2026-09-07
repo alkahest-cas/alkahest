@@ -69,7 +69,9 @@ def test_bateman_function():
     f = ex.inverse_laplace_transform(d * ka / ((s + ka) * (s + ke)), s, t)
     conds = ex.transform_side_conditions()
     assert len(conds) == 1, conds
-    assert "ka" in conds[0] and "ke" in conds[0] and conds[0].endswith("≠ 0")
+    assert "ka" in conds[0], conds[0]
+    assert "ke" in conds[0], conds[0]
+    assert conds[0].endswith("≠ 0"), conds[0]
 
     for dv, kav, kev, tv in [(100.0, 1.5, 0.25, 2.0), (50.0, 0.4, 2.2, 0.7), (1.0, 3.0, 0.1, 5.5)]:
         want = dv * kav * (math.exp(-kav * tv) - math.exp(-kev * tv)) / (kev - kav)

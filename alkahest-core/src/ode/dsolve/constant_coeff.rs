@@ -17,8 +17,8 @@
 //! differs.
 
 use super::{
-    contains, ddx, is_zero, residual_is_zero, simp, sub, AssumedSign, ConstGen, DsolveError,
-    DsolveResult, DsolveSolution, OdeInput, SolveCtx,
+    contains, ddx, is_zero, residual_is_zero, simp, sub, AssumedSign, ConstGen, DsolveBranch,
+    DsolveError, OdeInput, SolveCtx,
 };
 use crate::kernel::eval_const::try_expr_f64;
 use crate::kernel::{ExprData, ExprId, ExprPool};
@@ -84,7 +84,7 @@ pub(crate) fn solve_second_order(
     gen: &mut ConstGen,
     ctx: &mut SolveCtx<'_>,
     pool: &ExprPool,
-) -> Result<DsolveResult, DsolveError> {
+) -> Result<Vec<DsolveBranch>, DsolveError> {
     let (coeffs, r) = extract_linear(input, pool)?;
     let x = input.x;
 
@@ -125,7 +125,7 @@ fn try_reduction_of_order(
     r: ExprId,
     gen: &mut ConstGen,
     pool: &ExprPool,
-) -> Result<Option<DsolveResult>, DsolveError> {
+) -> Result<Option<Vec<DsolveBranch>>, DsolveError> {
     let x = input.x;
     if coeffs.len() != 3 || is_zero(coeffs[2], pool) {
         return Ok(None);
@@ -152,7 +152,7 @@ pub(crate) fn solve_higher_order(
     gen: &mut ConstGen,
     ctx: &mut SolveCtx<'_>,
     pool: &ExprPool,
-) -> Result<DsolveResult, DsolveError> {
+) -> Result<Vec<DsolveBranch>, DsolveError> {
     let (coeffs, r) = extract_linear(input, pool)?;
     let x = input.x;
     if !all_constant(&coeffs, x, pool) {
@@ -170,7 +170,7 @@ fn solve_const_coeff(
     gen: &mut ConstGen,
     ctx: &mut SolveCtx<'_>,
     pool: &ExprPool,
-) -> Result<DsolveResult, DsolveError> {
+) -> Result<Vec<DsolveBranch>, DsolveError> {
     let x = input.x;
     // Characteristic polynomial Σ aₖ λᵏ.  Numeric coefficients keep the ℚ route
     // (exact rational roots, real cos/sin output); one symbolic coefficient
@@ -210,9 +210,7 @@ fn solve_const_coeff(
     };
 
     match residual_is_zero(input, y_general, &constants, pool) {
-        Ok(()) => Ok(DsolveResult {
-            solutions: vec![DsolveSolution::explicit(y_general, constants, method)],
-        }),
+        Ok(()) => Ok(vec![DsolveBranch::explicit(y_general, constants, method)]),
         Err(e) => Err(e),
     }
 }
@@ -1048,7 +1046,7 @@ fn try_euler_cauchy(
     r: ExprId,
     gen: &mut ConstGen,
     pool: &ExprPool,
-) -> Result<Option<DsolveResult>, DsolveError> {
+) -> Result<Option<Vec<DsolveBranch>>, DsolveError> {
     let x = input.x;
     // Require coeffs[k] = c_k · x^k with constant c_k.
     let mut c = Vec::with_capacity(coeffs.len());
@@ -1111,7 +1109,7 @@ fn try_euler_cauchy(
 }
 
 /// Assemble `y = Σ Cₖ yₖ (+ y_p)` from a fundamental system, verify it, and
-/// wrap it as a [`DsolveResult`].
+/// wrap it as a branch list.
 ///
 /// `leading` is the coefficient of the highest derivative *as it appears in
 /// the equation* — variation of parameters needs the equation in monic form,
@@ -1130,7 +1128,7 @@ fn compose_from_basis(
     method: &'static str,
     gen: &mut ConstGen,
     pool: &ExprPool,
-) -> Result<Option<DsolveResult>, DsolveError> {
+) -> Result<Option<Vec<DsolveBranch>>, DsolveError> {
     let mut constants = Vec::with_capacity(basis.len());
     let mut terms = Vec::with_capacity(basis.len());
     for &b in basis {
@@ -1147,9 +1145,9 @@ fn compose_from_basis(
         y_expr = simp(pool.add(vec![y_expr, yp]), pool);
     }
     match residual_is_zero(input, y_expr, &constants, pool) {
-        Ok(()) => Ok(Some(DsolveResult {
-            solutions: vec![DsolveSolution::explicit(y_expr, constants, method)],
-        })),
+        Ok(()) => Ok(Some(vec![DsolveBranch::explicit(
+            y_expr, constants, method,
+        )])),
         Err(_) => Ok(None),
     }
 }

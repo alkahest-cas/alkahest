@@ -32,7 +32,7 @@
 //! `ℚ(α)`-splitting variant is future work.
 //!
 //! The ℚ path is tried first and is unchanged; the ℚ(params) path in
-//! [`super::apart_param`] runs only for inputs the ℚ path rejects as
+//! `super::apart_param` runs only for inputs the ℚ path rejects as
 //! [`ApartError::NotRational`], so no input that decomposed before decomposes
 //! differently now.
 //!
@@ -162,7 +162,7 @@ pub fn take_apart_side_conditions() -> Vec<SideCondition> {
 /// list. Only an input that is not a rational function of `var` **over ℚ** —
 /// i.e. one mentioning other symbols — reaches the ℚ(params) path, where the
 /// conditions describe the parameter loci on which the returned identity fails.
-/// See [`super::apart_param`] for how they are derived.
+/// See `super::apart_param` for how they are derived.
 pub fn apart_with_conditions(
     expr: ExprId,
     var: ExprId,

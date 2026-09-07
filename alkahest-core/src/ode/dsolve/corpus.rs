@@ -208,8 +208,14 @@ fn outcome(entry: &Entry) -> (String, String) {
     let Some(input) = build(entry, &pool) else {
         return ("PARSE_ERR".to_owned(), String::new());
     };
-    match dsolve(&input, &pool) {
-        Ok(res) => match res.solutions.first() {
+    // `dsolve_with`, not `dsolve`: the corpus counts implicit answers as their
+    // own outcome, and `dsolve`'s `DsolveSolution` is explicit by construction.
+    match dsolve_with(
+        &input,
+        &crate::simplify::assumptions::AssumptionContext::new(),
+        &pool,
+    ) {
+        Ok(res) => match res.branches.first() {
             Some(s) => {
                 // Independently re-verify (never trust the internal gate alone).
                 let verdict = match solution_is_verified(&input, s, &pool) {
@@ -246,7 +252,12 @@ fn decline_split_report() {
             continue;
         };
         let _ = super::verify::take_gate_tally();
-        let solved = dsolve(&input, &pool).is_ok();
+        let solved = dsolve_with(
+            &input,
+            &crate::simplify::assumptions::AssumptionContext::new(),
+            &pool,
+        )
+        .is_ok();
         let (offered, refused) = super::verify::take_gate_tally();
         if solved {
             continue;
