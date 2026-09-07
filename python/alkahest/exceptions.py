@@ -31,9 +31,12 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-RSOLVE-001 … E-RSOLVE-005 RsolveError (V2-18 difference equations)
     E-DIOPH-001 … E-DIOPH-004 DiophantineError (V2-19)
     E-NT-001 … E-NT-005    NumberTheoryError (V3-1 integer number theory)
-    E-SERIES-001 … E-SERIES-003 SeriesError  (003 = expansion ran past its work
+    E-SERIES-001 … E-SERIES-004 SeriesError  (003 = expansion ran past its work
                                  ceiling / budget before reaching the requested
-                                 order; refused rather than returned short)
+                                 order; refused rather than returned short.
+                                 004 = a coefficient is an indeterminate form,
+                                 not a number — a branch point or essential
+                                 singularity at the expansion point)
     E-LIMIT-001 … E-LIMIT-006 LimitError  (006 = the limit turns on the sign of
                                  a free parameter that nothing states; assume
                                  it, or declare the symbol Domain.Positive)

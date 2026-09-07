@@ -192,7 +192,7 @@ you reach for `.value`:
 |---|---|
 | `diff`, `integrate`, `simplify*`, `sum_*`, `product_*`, `resultant`, … | `DerivedResult` |
 | `limit` | plain `Expr` — **no `.value`** |
-| `series` | `Series` object — **no `.value`** |
+| `series` | `Series` object — **no `.value`**; `.expr` keeps the `O(...)`, `.truncated()` drops it |
 | `solve` | `list[dict[Expr, Expr]]` (or `GroebnerBasis`) |
 | `evaluate` | `EvaluationResult` |
 | `real_roots` | `list[RootInterval]` |
@@ -403,11 +403,21 @@ limit(sin(x) / x, x, pool.integer(0))              # → Expr: 1
 limit(pool.integer(1) / x, x, pool.integer(0), dir="+")   # one-sided
 
 s = series(exp(x), x, pool.integer(0), 4)          # → Series
-s.expr    # ((1 * 1) + (x * 1) + (1/2 * x^2) + (1/6 * x^3) + O(x^4))
+s.expr        # ((1 * 1) + (x * 1) + (1/2 * x^2) + (1/6 * x^3) + O(x^4))
+s.truncated() # → Expr, same sum without the O(x^4) term — feed this to eval_expr
 ```
 
-`Series` exposes a single attribute, `.expr`, which retains the `O(...)` term —
-strip or truncate it before feeding the result into numeric evaluation.
+`Series` has one attribute, `.expr`, which retains the `O(...)` term, and one
+method, `.truncated()`, which drops it (SymPy's `removeO()`). `eval_expr`,
+`simplify` and `diff` all refuse a bare `O(x**n)`, so `.truncated()` is what
+you want whenever the series is an input to something else.
+
+A **removable singularity** at the expansion point is expanded, not refused:
+`series(sin(x)/x, x, pool.integer(0), 4)` is `1 - x**2/6 + O(x**4)`, and
+`series(1/sin(x), ...)` gives the Laurent series `x**-1 + x/6 + O(x)`. A branch
+point (`sqrt(x)`), a logarithmic singularity (`log(x)`) or an essential one
+(`exp(1/x)`) has no Laurent expansion at all and raises `SeriesError` with code
+`E-SERIES-004` — never a `Series` whose coefficients evaluate to `NaN`.
 
 For asymptotics and multivariate limits, see `experimental.asymptotic_expand` and
 `experimental.multilimit`.

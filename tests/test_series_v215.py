@@ -130,3 +130,88 @@ def test_ordinary_high_order_series_still_expands():
     assert _has_big_o(s.expr)
     # sin's expansion runs to x^23: the last odd power below order 24.
     assert "x^23" in str(s.expr)
+
+
+# ---------------------------------------------------------------------------
+# Removable singularities at the expansion point
+# ---------------------------------------------------------------------------
+
+
+def _truncated_value(s: alkahest.Series, var: alkahest.Expr, at: float) -> float:
+    return alkahest.eval_expr(s.truncated(), {var: at})
+
+
+def test_sin_over_x_expands_through_its_removable_singularity():
+    """`series(sin(x)/x, x, 0, 4)` is `1 - x**2/6 + O(x**4)`, the answer SymPy
+    gives and the one every table of expansions has.
+
+    Coefficients are formed by substituting the expansion point into repeated
+    derivatives, so this used to come back as a *successful* `Series` whose
+    constant term was the literal `0 * 0**-1`: it could not be evaluated, could
+    not be simplified, and nothing about the return value said so.
+    """
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    s = alkahest.series(alkahest.sin(x) / x, x, p.integer(0), 4)
+    assert _has_big_o(s.expr)
+    assert _truncated_value(s, x, 0.1) == pytest.approx(1 - 0.01 / 6, abs=1e-15)
+    assert _truncated_value(s, x, 0.0) == pytest.approx(1.0, abs=1e-15)
+
+
+def test_tan_over_x_expands_through_its_removable_singularity():
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    s = alkahest.series(alkahest.tan(x) / x, x, p.integer(0), 4)
+    assert _truncated_value(s, x, 0.1) == pytest.approx(1 + 0.01 / 3, abs=1e-15)
+
+
+def test_a_genuine_pole_keeps_its_principal_part():
+    """The control in the other direction: a pole is expandable and must not be
+    turned into a refusal by the removable-singularity fix. `1/sin x` is
+    `x**-1 + x/6 + O(x)`."""
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    s = alkahest.series(1 / alkahest.sin(x), x, p.integer(0), 3)
+    assert _truncated_value(s, x, 0.1) == pytest.approx(10.0 + 0.1 / 6, abs=1e-12)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["sqrt", "log"],
+)
+def test_a_branch_point_is_refused_not_faked(name):
+    """`√x` and `log x` have no Laurent expansion at `0`. Each used to return a
+    `Series` whose coefficients were `sqrt(0)**-1` / `log(0)` — success, and
+    `NaN` for anyone who evaluated it."""
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    f = getattr(alkahest, name)(x)
+    with pytest.raises(alkahest.SeriesError) as excinfo:
+        alkahest.series(f, x, p.integer(0), 4)
+    assert excinfo.value.code == "E-SERIES-004"
+
+
+def test_an_essential_singularity_is_refused_not_faked():
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    with pytest.raises(alkahest.SeriesError) as excinfo:
+        alkahest.series(alkahest.exp(1 / x), x, p.integer(0), 4)
+    assert excinfo.value.code == "E-SERIES-004"
+
+
+def test_truncated_drops_the_remainder_and_is_evaluable():
+    """`Series.expr` keeps its `O(.)` term, which is honest and also makes the
+    result a dead end — `eval_expr` and `simplify` both refuse a bare
+    `O(x**n)`. `truncated()` is the bridge."""
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    s = alkahest.series(alkahest.exp(x), x, p.integer(0), 5)
+    assert _has_big_o(s.expr)
+    assert not _has_big_o(s.truncated())
+    with pytest.raises(ValueError):
+        alkahest.eval_expr(s.expr, {x: 0.1})
+    want = 1 + 0.1 + 0.01 / 2 + 0.001 / 6 + 0.0001 / 24
+    assert alkahest.eval_expr(s.truncated(), {x: 0.1}) == pytest.approx(want, abs=1e-15)
+    # and it is an ordinary Expr, so the rest of the library accepts it
+    assert alkahest.simplify(s.truncated()) is not None
+    assert alkahest.diff(s.truncated(), x) is not None
