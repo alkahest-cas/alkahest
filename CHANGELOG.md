@@ -2,6 +2,208 @@
 
 ## Unreleased
 
+- **Two limits were outright wrong for a free parameter, and twenty-nine more
+  returned values that were not values.** `expansion_to_limit` and gruntz's
+  `sign_of_coeff_at_inf` each guessed a positive leading coefficient with
+  `unwrap_or(1)`, so `lim_{x→∞} k·x` and `lim_{x→∞} −k·x` **both** returned
+  `+∞`; `numeric_evidence_contradicts` declines to sample anything with a free
+  parameter, so nothing downstream caught it. Separately,
+  `lim_{s→0⁺} s·e^{1/s}` returned `0` against a true value of `+∞` — every
+  derivative of `e^{1/s}` at `0` is a `0^{-n}` form that `simplify` folds to
+  `0`, so the Taylor route read an identically-zero series and believed the
+  valuation. Both are fixed: the sign is now read from the reciprocal where it
+  is determinate and refused where it is not, and an expansion is declined at
+  an essential singularity — for heads that outgrow every power (`exp`,
+  `gamma`, `Ei`) applied to a blowing-up argument, with `sin`/`cos` excluded
+  because they are bounded and `log` excluded because it is slower than every
+  power, so `lim x·sin(1/x) = 0` and `lim log(x)/x = 0` are preserved.
+
+  A 210-call audit found the wider class: `substitution_is_singular` was purely
+  syntactic (it fired only on `Pow(0, −n)`), so every pole reached through a
+  *function head* slipped past `try_direct_substitution` and was reported as a
+  success carrying `sqrt(0)^-1`, `NaN` or `−inf`. Twenty-nine such results
+  before, zero after; genuine successes went 42 → 65 on the same corpus.
+  `is_usable_limit_value` now screens every answer at `limit_body`, the single
+  point they all pass through. `±∞`, expressions mentioning a free parameter,
+  and node kinds the module does not model are deliberately *no verdict* rather
+  than failures.
+
+- **`satisfiable` could not answer an ordinary propositional formula, and the
+  solver underneath it would have answered wrong.** `Formula::Atom` carries a
+  `PredicateKind` restricted to the six relations, so a bare Boolean symbol fell
+  to the catch-all and became `Unknown`: `(A∨B) ∧ ¬A ∧ ¬B` returned `None`
+  rather than `False`. The gap is now closed by a propositional path in front of
+  the interval path — leaves lifted to a `Prop`, Tseitin-encoded with both
+  directions of each gate definition.
+
+  Wiring that in as the DPLL stood would have been worse than the gap. `dfs`
+  undid only its own decision literal on backtracking and left the failed
+  branch's unit-propagated literals on the trail, so the second branch started
+  polluted: `dpll_sat([[1,2],[1,-2],[-1,-2]], 2)`, satisfied by `p1=⊤, p2=⊥`,
+  reported unsatisfiable. Callers treat `False` as a *proof*, so that would have
+  converted an honest `None` into a confident wrong answer. The trail is now
+  snapshotted and restored around each branch. Every satisfying model is
+  re-evaluated against the original formula before it leaves — in release as
+  well as debug, degrading to `Unknown` rather than lying — and every verdict on
+  ≤10 variables is cross-checked against exhaustive enumeration in debug builds.
+  Mixed Boolean/arithmetic formulas still answer `None`, deliberately: the cheap
+  abstraction is sound for `Unsat` only and calls `x>0 ∧ x<0` satisfiable.
+
+- **Symbolic eigenvalues of an irreducible cubic were not roots of its
+  characteristic polynomial.** `t = A + B` solves `t³ + pt + q` only for the
+  pair with `A·B = −p/3`; two independent `Pow` nodes `(−q/2 ± √Δ)^(1/3)` do not
+  record that, and it fails exactly when both radicands are negative, where each
+  radical picks up its own `e^{iπ/3}` and the product is off by `e^{2iπ/3}`. On
+  the companion matrix of `λ³+3λ²+2λ+1`, `|p(λ)|` at the three returned values
+  was **2.2944788, 1.5048698, 1.5048698**; it is now **2.2e-16, 0, 0**. The real
+  root also raised `E-EVAL-009` from `eval_expr` — a successful call handing back
+  a value the library's own evaluator rejects — and now evaluates to
+  `−2.324717957244746`.
+
+  The fix pulls the sign out of the radical rather than asking a convention to
+  carry it: for `w < 0`, `∛w = −∛|w|`, so every cube-root base sits on the
+  positive real axis where the real and principal cube roots coincide, and the
+  expression means the same thing to `eval_expr`, to `eval_complex_f64` and to
+  Cardano. The sign is decided exactly, not numerically. A `cbrt` head was
+  rejected because it would need every consumer to agree and a half-implemented
+  convention is worse than a refusal; `RootSum` was rejected because it trades a
+  wrong value for an unusable one. `matrix/spectrum.rs` is a new standing
+  `Π(z−λ) = det(zI−A)` gate that refuses with `E-EIGEN-008` — placed beside the
+  formula rather than inside it, since a gate may not be its own witness. Two
+  bugs in the private copy of that check are fixed in the shared one: `pi` was
+  collected as a free parameter and bound to `1.7`, turning the correct
+  casus-irreducibilis form into a spurious refusal, and a near-singular probe
+  reported `det = 0` instead of declining.
+
+- **`series` returned `0⁻¹` and `0·0⁻¹` coefficients and called it success.**
+  Coefficients are formed by repeated differentiation without re-simplifying, so
+  the constant term of `sin(x)/x` at `0` is literally `0/0`:
+  `series(sin(x)/x, x, 0, 4)` came back as a `Series` that could be neither
+  evaluated nor simplified, on one of the most common expansions in applied
+  mathematics. `local_expansion` now retries an indeterminate coefficient
+  through power-series division — the expression over a common denominator,
+  numerator and denominator expanded separately (both analytic, so ordinary
+  substitutions), divided by `cₖ = (aₖ − Σⱼ bⱼcₖ₋ⱼ)/b₀` — so the vanishing
+  factor cancels before anything is evaluated at the point. Limit-per-coefficient
+  was rejected: `limit` calls `local_expansion`, so it risks recursion, and its
+  success is unpredictable where series division is deterministic and exact.
+  Going through a common denominator is also what makes a *sum* of cancelling
+  poles (`1/x − 1/sin x`) work, which factor-splitting could not take apart.
+
+  Twenty-two expansions are repaired (`sin(x)/x`, `tan(x)/x`, `cot(x)`,
+  `1/sin(x)`, `(1−cos x)/x²`, `1/x − 1/(eˣ−1)`, …) and sixteen that have no
+  Laurent expansion at all (`√x`, `e^{1/x}`, `x^x`, `gamma(x)`, …) now refuse
+  with a new `E-SERIES-004` instead of returning a non-value. The detector looks
+  *inside* each coefficient, because a free parameter otherwise hides the
+  culprit, and fires only on positive evidence in both directions so a symbolic
+  expansion point is never mistaken for one. Cost is 3–9% on well-behaved
+  expansions, from the coefficient scan. `Series::truncated()` is added, since
+  the type was otherwise a dead end: it kept its `O(·)` node, so `eval_expr`,
+  `simplify` and `diff` all refused it and two test helpers carried hand-rolled
+  copies of the same workaround.
+
+- **Five operations that every one of the library's target fields runs
+  constantly were coded refusals.** Each is now answered, and each answer that
+  depends on a parameter branch says so rather than picking one quietly.
+
+  *Definite Gaussians and special-function integrals.* The indefinite forms
+  existed; the definite ones did not, because the fundamental theorem needs
+  `lim_{x→±∞} F` and `limit` had no rule for `erf`. Limits at `±∞` are added for
+  the ten heads the integrator emits (DLMF §6.2, §7.2(iii)), with `Ci`, `Chi`
+  and `li` at `+∞` only — all three have a branch cut along the negative reals,
+  so there is no real limit to report and inventing one would be inventing the
+  real part of a complex number. A parametric gate binds each free parameter to
+  three values drawn from its declared `Domain` and sweeps the full grid per
+  combination, which is what lets `∫e^{-p·x²}` verify at all. So
+  `∫_{-∞}^{∞}e^{-x²/2} dx` is `2.5066282746310002`, and `∫x²e^{-x²}`,
+  `∫e^{-(x-b)²}`, `∫sin(x)/x²` and `∫e^x/x²` join the elementary cases.
+  `∫e^{-a·x²}` with `a` merely `Domain::Real` still refuses, deliberately:
+  `√π/(2√a)·erf(√a·x)` is `NaN` for every `a < 0`, which is a domain hole of
+  exactly the shape 3.9.0 made a refusal.
+
+  *Inverse Laplace and Z transforms with symbolic parameters.* `poly::apart`
+  decomposed over ℚ only, so `1/(s²+ω²)` could not be inverted at all. A new
+  `apart_param` works over **ℚ(params)** — every symbol other than the variable
+  is a transcendental constant, so `K = ℚ(params)` is a field and `K[var]` an
+  ordinary Euclidean domain, and the existing algorithm runs unchanged with
+  Gauss's lemma supplying the factorisation. `L⁻¹{1/(s²+ω²)} = sin(ωt)/ω`, the
+  second-order step response and the Bateman function all follow, and
+  `Z⁻¹{z/(z−a)} = aⁿ` closes a round trip that was previously one-way. The ℚ
+  path runs first and untouched, so nothing that decomposed before decomposes
+  differently. Genericity is *reported*: every division by a parametric quantity
+  tries to discharge its hypothesis against stated assumptions and records a
+  side condition when it cannot, so the Bateman answer carries `ka ≠ ke` and the
+  second-order response carries `ω ≠ 0`, `ζ ≠ ±1`, `ω²(1−ζ²) > 0`. Stating the
+  fact discharges the condition and the answer is byte-identical.
+
+  *The standard first-order ODE classes.* Seven are now reachable in a
+  documented order — Clairaut, separable, linear, Bernoulli, exact plus the two
+  integrating-factor rescues, homogeneous, Riccati — with a second rule on top:
+  an explicit `y(x)` always beats an implicit relation, so the cascade stops at
+  the first class that answers *explicitly* and keeps the first implicit answer
+  as a fallback. Michaelis–Menten elimination and the logistic equation, the two
+  most common nonlinear models in pharmacokinetics, are solved rather than
+  declined. Implicit answers are carried in a distinct type, so a caller cannot
+  read a relation as `y(x)`, and are verified by substituting `y' = −Gₓ/G_y` and
+  requiring the residual to vanish identically in `(x, y)` — i.e. that *every*
+  level set solves the equation — with the constant-free-slope-field
+  precondition checked rather than assumed and vertical tangents skipped rather
+  than counted as disagreements. Declines name the class and quote the integral
+  that did not close (`E-ODE-013`) or the particular solution that is missing
+  (`E-ODE-014`).
+
+  *Constant-coefficient ODEs with symbolic coefficients, and linear systems.*
+  `y'' + 2ζωy' + ω²y = 0` — the damped harmonic oscillator, and the single most
+  common ODE in controls and structural dynamics — was refused for the sole
+  reason that its coefficients were symbols. It now solves, and the repeated-root
+  branch is never silently assumed away: the discriminant is proved zero where
+  it can be, read from stated assumptions where those settle it, and otherwise
+  carried as a side condition with a note saying in as many words that the
+  two-parameter family does not span the confluent case. Linear systems are new
+  entirely (`dsolve` was scalar-only), via Putzer rather than Jordan — `e^{At}`
+  needs eigenvalues and nothing else, so a defective matrix needs no
+  `jordan_form` refusal to route around and the one undecidable question,
+  `λᵢ − λⱼ`, is isolated where it can be reported. The two-compartment
+  pharmacokinetic model solves with `ke − ka ≠ 0` recorded and a note that the
+  expression divides by zero there.
+
+  *Improper integrals with a symbolic decay rate.* The assumptions system worked
+  and the limit engine never consulted it: `is_positive(ke)` answered `True`
+  while `∫₀^∞ e^{-ke·t} dt` failed. An ambient thread-local assumption scope,
+  modelled on `budget`, now carries stated facts into `limit` and gruntz, with
+  frames recording the pool's address so `ExprId`s cannot be read against the
+  wrong pool. `∫₀^∞ e^{-ke·t} dt = 1/ke` under `ke > 0` — and with no assumption
+  stated it still refuses, but now names the missing fact: *the sign of `ke` is
+  unknown, and the limit depends on it; assume `ke > 0` or `ke < 0`*.
+
+- **`solve` rejected every equation with a negative exponent**, which is the
+  natural form of every admittance equation, so symbolic nodal and modified
+  nodal analysis were impossible without clearing denominators by hand. Each
+  equation is now put over a common denominator and the numerator system solved
+  — with the roots that clearing invents removed again.
+
+  The exclusion condition is the **domain**, not the denominator, and the
+  distinction is not academic: a reciprocal swaps the halves, so an inner
+  denominator becomes an outer numerator and drops out of any product of
+  denominators. In `1/(1/x − 1)` the requirement `x ≠ 0` disappears exactly that
+  way, leaving a condition that is non-zero at `x = 0` and making `x = 0` look
+  like a root. The recursion now maintains the invariant that `dom(p) ≠ 0`
+  implies the expression is defined at `p` and equals `num(p)/den(p)`, nothing
+  is reduced to lowest terms (`x²/x` cancels to `x`, whose root is precisely the
+  `0/0` point), and each candidate is classified by four escalating sources —
+  exact rational arithmetic, the structural zero test, stated assumptions, then
+  rigorous ball arithmetic. A proof of vanishing drops the root, so an empty
+  result is a genuine "no solution"; an undecidable case returns under a
+  recorded `≠ 0` hypothesis rather than silently; an indeterminate enclosure
+  drops the root but, if that empties the result, the solver declines rather
+  than claiming there are none. Survivors are substituted back into the
+  equations *as written*, not the cleared form. `x/(x−1) = 1/(x−1)` yields no
+  solution rather than `x = 1`, and the RC divider yields `Vin/(1 + R1·C·s)`.
+  `solve_numerical` keeps the restriction deliberately: homotopy returns
+  numerically certified points, so "this root is at a pole" can only ever be a
+  non-separation result and never a proof.
+
+
 ## 3.9.0 — 2026-09-02
 
 - **A definite integral whose antiderivative is not defined on the interval of
