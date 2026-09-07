@@ -17,6 +17,7 @@ pub mod linear_algebra;
 pub mod normal_form;
 mod smith;
 mod smith_poly;
+pub mod spectrum;
 pub(crate) mod zero_test;
 
 pub use eigen::{
@@ -32,6 +33,7 @@ pub use normal_form::{
     hermite_form, hermite_form_poly, smith_form, smith_form_poly, IntegerMatrix, NormalFormError,
     PolyMatrixQ, RatUniPoly,
 };
+pub use spectrum::{take_spectrum_refusal, SpectrumRefusal};
 pub use zero_test::{take_zero_test_refusal, ZeroTestRefusal};
 
 // ---------------------------------------------------------------------------

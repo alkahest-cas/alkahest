@@ -1127,6 +1127,18 @@ fn eigen_error_to_py(e: EigenError) -> PyErr {
             });
         }
     }
+    // `UnsupportedIrreducibleDegree` likewise covers two: a degree there is no
+    // formula for (`E-EIGEN-004`), and a closed form that was produced and then
+    // failed the `Π(z−λ) = det(zI−A)` check (`E-EIGEN-008`) — the radicals do
+    // not describe the spectrum on the branches anything will read them on.
+    if matches!(e, EigenError::UnsupportedIrreducibleDegree { .. }) {
+        if let Some(r) = alkahest_core::matrix::take_spectrum_refusal() {
+            return Python::with_gil(|py| {
+                let exc_type = py.get_type_bound::<PyEigenError>();
+                make_structured_err(py, &exc_type, &r)
+            });
+        }
+    }
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyEigenError>();
         make_structured_err(py, &exc_type, &e)
@@ -1140,6 +1152,18 @@ fn linear_algebra_error_to_py(e: LinearAlgebraError) -> PyErr {
     // variant of its own.
     if matches!(e, LinearAlgebraError::UnsupportedField) {
         if let Some(r) = alkahest_core::matrix::take_zero_test_refusal() {
+            return Python::with_gil(|py| {
+                let exc_type = py.get_type_bound::<PyLinearAlgebraError>();
+                make_structured_err(py, &exc_type, &r)
+            });
+        }
+    }
+    // `jordan_form`, `matrix_exp` and `diagonalize` all reach the spectrum
+    // through `eigenvalues`, and `map_eigen_err` carries its
+    // `UnsupportedIrreducibleDegree` across unchanged; so does the out-of-band
+    // refusal behind it. See `eigen_error_to_py`.
+    if matches!(e, LinearAlgebraError::UnsupportedIrreducibleDegree { .. }) {
+        if let Some(r) = alkahest_core::matrix::take_spectrum_refusal() {
             return Python::with_gil(|py| {
                 let exc_type = py.get_type_bound::<PyLinearAlgebraError>();
                 make_structured_err(py, &exc_type, &r)

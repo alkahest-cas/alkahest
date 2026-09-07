@@ -841,9 +841,6 @@ impl C64 {
     pub(crate) fn real(re: f64) -> Self {
         C64 { re, im: 0.0 }
     }
-    pub(crate) fn new(re: f64, im: f64) -> Self {
-        C64 { re, im }
-    }
     pub(crate) fn is_finite(self) -> bool {
         self.re.is_finite() && self.im.is_finite()
     }

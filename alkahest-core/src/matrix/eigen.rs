@@ -10,7 +10,7 @@
 #![allow(clippy::needless_range_loop)]
 
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
-use crate::matrix::{zero_test, Matrix};
+use crate::matrix::{spectrum, zero_test, Matrix};
 use crate::poly::error::ConversionError;
 use crate::poly::unipoly::UniPoly;
 use crate::poly::{factor_univariate_z, FactorError};
@@ -85,7 +85,16 @@ pub enum EigenError {
     CharPolyConversion(ConversionError),
     /// FLINT factorization failed.
     Factorization(FactorError),
-    /// The characteristic polynomial has an irreducible factor of degree greater than three.
+    /// No *usable* closed form for a factor of this degree.
+    ///
+    /// Covers two refusals. Either the characteristic polynomial has an
+    /// irreducible factor of degree greater than three, for which this module
+    /// has no formula at all; or a closed form was produced and then failed
+    /// `matrix::spectrum::confirm_spectrum`, which is the stronger
+    /// statement that the radicals do not describe the spectrum on the branches
+    /// anything will read them on. `EigenError` is a public exhaustive enum and
+    /// cannot grow a variant for the second, so it travels out of band — see
+    /// [`crate::matrix::take_spectrum_refusal`], which carries `E-EIGEN-008`.
     UnsupportedIrreducibleDegree { degree: usize },
     /// Algebraic and geometric multiplicity disagree (Jordan block situation).
     NonDiagonalizable,
@@ -103,8 +112,9 @@ impl fmt::Display for EigenError {
             EigenError::Factorization(e) => write!(f, "factorization failed: {e}"),
             EigenError::UnsupportedIrreducibleDegree { degree } => write!(
                 f,
-                "characteristic polynomial has an irreducible factor of degree {degree}; \
-                 closed-form eigenvalues are only available up to degree 3"
+                "no usable closed form for a characteristic factor of degree {degree}: \
+                 either the factor is irreducible of degree > 3, for which there is no \
+                 formula here, or its radicals did not check out as the spectrum"
             ),
             EigenError::NonDiagonalizable => {
                 write!(
@@ -149,7 +159,7 @@ impl crate::errors::AlkahestError for EigenError {
             ),
             EigenError::Factorization(_) => None,
             EigenError::UnsupportedIrreducibleDegree { .. } => {
-                Some("degree-4+ irreducible characteristic factors require a CAS / algebraic-numbers extension")
+                Some("degree-4+ irreducible characteristic factors require a CAS / algebraic-numbers extension; for a spectrum that did not verify, substitute concrete entries or use numeric root finding")
             }
             EigenError::NonDiagonalizable => {
                 Some("use Jordan-form tooling or restrict to diagonalizable matrices")
@@ -192,7 +202,47 @@ pub fn characteristic_polynomial_lambda_minus_m(
 }
 
 /// multiset of eigenvalue Expr → algebraic multiplicity
+///
+/// # The returned list is checked before it is returned
+///
+/// Every closed form here is a radical, and a radical is not a number until a
+/// branch is chosen. `matrix::spectrum::confirm_spectrum` evaluates
+/// `Π(z − λ)` and `det(zI − A)` at sampled `z` and refuses when they differ, so
+/// a spectrum that is only correct under some convention the expression does
+/// not record cannot leave this function. See
+/// `real_cbrt_of_rational_plus_sqrt` for the case that motivated it.
+///
+/// A list that cannot be evaluated at all is *no information* rather than a
+/// refusal — the classification `integrate`'s antiderivative gates and
+/// `limit`'s value gate use — because refusing it would discard every
+/// symbolic-entry spectrum on the strength of an evaluator's function table.
 pub fn eigenvalues(m: &Matrix, pool: &ExprPool) -> Result<Vec<(ExprId, usize)>, EigenError> {
+    // No `UnsupportedIrreducibleDegree` this call returns may inherit the
+    // `E-EIGEN-008` of an earlier one on the same thread — cf.
+    // [`zero_test::forget_refusal`].
+    spectrum::forget_refusal();
+    let pairs = eigenvalues_unchecked(m, pool)?;
+    // Flatten to a list with multiplicity: the identity being tested is between
+    // two degree-`n` polynomials, so every root has to appear as often as it is
+    // claimed to.
+    let mut flat: Vec<ExprId> = Vec::new();
+    for &(lam, mult) in &pairs {
+        for _ in 0..mult {
+            flat.push(lam);
+        }
+    }
+    match spectrum::confirm_spectrum(m, &flat, pool) {
+        Ok(_) => Ok(pairs),
+        Err(refusal) => {
+            let degree = flat.len();
+            spectrum::record_refusal(refusal);
+            Err(EigenError::UnsupportedIrreducibleDegree { degree })
+        }
+    }
+}
+
+/// [`eigenvalues`] without the spectrum check — the formula layer on its own.
+fn eigenvalues_unchecked(m: &Matrix, pool: &ExprPool) -> Result<Vec<(ExprId, usize)>, EigenError> {
     let (poly_e, lam) = characteristic_polynomial_lambda_minus_m(m, pool)?;
     match eigenvalues_from_char_poly(poly_e, lam, pool) {
         Ok(v) => Ok(v),
@@ -800,8 +850,93 @@ fn rational_to_expr(r: &Rational, pool: &ExprPool) -> ExprId {
     }
 }
 
+/// The **real** cube root of `w = r ± √d` (`minus` selects the sign), as an
+/// expression whose every cube-root base is non-negative.
+///
+/// # The bug this exists to prevent
+///
+/// Cardano's `t = A + B` solves `t³ + p·t + q` only for the pair with
+/// `A·B = −p/3`; of the nine `(A, B)` pairs of cube roots, three qualify. The
+/// obvious spelling — `(−q/2 + √Δ)^{1/3}` and `(−q/2 − √Δ)^{1/3}`, two
+/// independent `Pow` nodes — does not record that constraint, and it is
+/// violated exactly when both radicands are negative, which happens for every
+/// `Δ > 0` cubic with `q > 0 > p`. Read on principal branches each radical
+/// picks up its own `e^{iπ/3}`, so `A·B` is off by `e^{2iπ/3}` and neither
+/// `A + B` nor the conjugate pair built from it is a root of anything.
+///
+/// `λ³ + 3λ² + 2λ + 1` is the smallest case: `p = −1`, `q = 1`, `Δ = 23/108`,
+/// and both radicands are negative. The three returned expressions were right
+/// under the real-cube-root convention — the real one evaluated to
+/// `−2.324718`, residual `8.9e-16` — and wrong under principal branches, where
+/// `|p(λ)| = 2.29`. The library implements the real-cube-root convention
+/// **nowhere**: `eval_expr` answers `E-EVAL-009` for `x^{1/3}` at negative `x`,
+/// and `eval_complex_f64` answers the principal value. So `eigenvals` reported
+/// success and returned three values that were unusable to one evaluator and
+/// wrong to the other.
+///
+/// # The fix
+///
+/// Pull the sign out of the radical instead of asking a branch convention to
+/// carry it: for `w < 0`, `∛w = −∛|w|`, and `|w|` is written as the same
+/// `rational ∓ √d` with both terms negated. Every base then sits on the
+/// positive real axis, where the real and principal cube roots coincide, so
+/// the emitted expression means the same thing to `eval_expr`, to
+/// `eval_complex_f64` and to Cardano. `A·B = ∛(w₊·w₋) = ∛(−p³/27) = −p/3`
+/// holds because both factors are now genuinely real.
+///
+/// Deciding the sign needs no numerics: `d ≥ 0` and everything else is exactly
+/// rational, so `r + √d ≥ 0` iff `r ≥ 0` or `d ≥ r²`, and `r − √d ≥ 0` iff
+/// `r ≥ 0` and `d ≤ r²`.
+fn real_cbrt_of_rational_plus_sqrt(
+    r: &Rational,
+    d: &Rational,
+    minus: bool,
+    pool: &ExprPool,
+) -> ExprId {
+    let third = pool.rational(rug::Integer::from(1), rug::Integer::from(3));
+    let neg_one = pool.integer(-1_i32);
+    let sqrt_d = simplify(pool.func("sqrt", vec![rational_to_expr(d, pool)]), pool).value;
+    let neg_sqrt_d = simplify(pool.mul(vec![neg_one, sqrt_d]), pool).value;
+
+    let r_sq = r.clone() * r.clone();
+    let nonneg = if minus {
+        *r >= 0 && *d <= r_sq
+    } else {
+        *r >= 0 || *d >= r_sq
+    };
+
+    // `|w|`: `w` itself when it is non-negative, and `−w` — the same two terms
+    // with both signs flipped — when it is not.
+    let (rational_part, radical_part) = if nonneg {
+        (r.clone(), if minus { neg_sqrt_d } else { sqrt_d })
+    } else {
+        (
+            Rational::from(0) - r.clone(),
+            if minus { sqrt_d } else { neg_sqrt_d },
+        )
+    };
+    let magnitude = simplify(
+        pool.pow(
+            pool.add(vec![rational_to_expr(&rational_part, pool), radical_part]),
+            third,
+        ),
+        pool,
+    )
+    .value;
+    if nonneg {
+        magnitude
+    } else {
+        simplify(pool.mul(vec![neg_one, magnitude]), pool).value
+    }
+}
+
 /// Roots of an irreducible cubic `c₀ + c₁λ + c₂λ² + c₃λ³` via depression +
 /// trigonometric Cardano (three real roots) or radical Cardano (one real root).
+///
+/// The `Δ > 0` branch emits **real** cube roots — see
+/// `real_cbrt_of_rational_plus_sqrt` — so that the two radicals Cardano pairs
+/// are coordinated by construction rather than by a convention the expression
+/// does not carry.
 fn cubic_roots(p: &UniPoly, pool: &ExprPool) -> Result<[ExprId; 3], EigenError> {
     let c = p.coefficients();
     if c.len() != 4 {
@@ -872,32 +1007,12 @@ fn cubic_roots(p: &UniPoly, pool: &ExprPool) -> Result<[ExprId; 3], EigenError> 
         }
         out
     } else {
-        // One real root via Cardano: A = ∛(−q/2 + √Δ), B = ∛(−q/2 − √Δ), t₀ = A+B.
-        let sqrt_delta = simplify(
-            pool.func("sqrt", vec![rational_to_expr(&delta, pool)]),
-            pool,
-        )
-        .value;
-        let neg_half_q = rational_to_expr(&(Rational::from(0) - half_q), pool);
-        let a_cbrt = simplify(
-            pool.pow(
-                pool.add(vec![neg_half_q, sqrt_delta]),
-                pool.rational(rug::Integer::from(1), rug::Integer::from(3)),
-            ),
-            pool,
-        )
-        .value;
-        let b_cbrt = simplify(
-            pool.pow(
-                pool.add(vec![
-                    neg_half_q,
-                    pool.mul(vec![pool.integer(-1_i32), sqrt_delta]),
-                ]),
-                pool.rational(rug::Integer::from(1), rug::Integer::from(3)),
-            ),
-            pool,
-        )
-        .value;
+        // One real root via Cardano: A = ∛(−q/2 + √Δ), B = ∛(−q/2 − √Δ), t₀ = A+B,
+        // on the **real** cube root of each radicand — see `real_cbrt_of_rational_plus_sqrt`
+        // for why the two radicals cannot be written as independent principal powers.
+        let neg_half_q = Rational::from(0) - half_q.clone();
+        let a_cbrt = real_cbrt_of_rational_plus_sqrt(&neg_half_q, &delta, false, pool);
+        let b_cbrt = real_cbrt_of_rational_plus_sqrt(&neg_half_q, &delta, true, pool);
         let t0 = simplify(pool.add(vec![a_cbrt, b_cbrt]), pool).value;
         // Complex conjugate pair: −(A+B)/2 ± i √3 (A−B)/2.
         let half = pool.rational(rug::Integer::from(1), rug::Integer::from(2));
@@ -1691,6 +1806,190 @@ mod tests {
 
     fn pool() -> ExprPool {
         ExprPool::new()
+    }
+
+    /// Companion matrix of `λ³ + 3λ² + 2λ + 1`, irreducible over ℚ, with
+    /// `Δ = 23/108 > 0` and `q = 1 > 0 > p = −1` — the sign pattern that makes
+    /// both Cardano radicands negative.
+    fn cardano_companion(p: &ExprPool) -> Matrix {
+        let z = p.integer(0_i32);
+        let one = p.integer(1_i32);
+        Matrix::new(vec![
+            vec![z, z, p.integer(-1_i32)],
+            vec![one, z, p.integer(-2_i32)],
+            vec![z, one, p.integer(-3_i32)],
+        ])
+        .unwrap()
+    }
+
+    /// The confirmed bug: three radical eigenvalues that were roots only under
+    /// the real-cube-root convention, which nothing in the library implements.
+    ///
+    /// Before: `(−1/2 ± √(23/108))^{1/3}` — a cube root of a negative — so
+    /// `eval_expr` answered `E-EVAL-009` and the principal-branch residual was
+    /// `|p(λ)| = 2.29`. After: every cube-root base is positive, the values are
+    /// the roots on the same branch everything reads them on.
+    #[test]
+    fn cardano_eigenvalues_are_roots_on_principal_branches() {
+        let p = pool();
+        let m = cardano_companion(&p);
+        let vals = eigenvalues(&m, &p).expect("the irreducible cubic still has a closed form");
+        let flat: Vec<ExprId> = vals
+            .iter()
+            .flat_map(|&(l, mult)| std::iter::repeat_n(l, mult))
+            .collect();
+        assert_eq!(flat.len(), 3);
+
+        // `p(λ) = λ³ + 3λ² + 2λ + 1` at each returned value, read principally.
+        let env = std::collections::HashMap::new();
+        for &lam in &flat {
+            let v = crate::eval::eval_complex_f64(lam, &p, &env)
+                .unwrap_or_else(|e| panic!("{} is unevaluable: {e}", p.display(lam)));
+            let (re, im) = (v.re, v.im);
+            // λ³ + 3λ² + 2λ + 1 by hand, to keep the check independent of the pool.
+            let sq = (re * re - im * im, 2.0 * re * im);
+            let cu = (sq.0 * re - sq.1 * im, sq.0 * im + sq.1 * re);
+            let rr = cu.0 + 3.0 * sq.0 + 2.0 * re + 1.0;
+            let ri = cu.1 + 3.0 * sq.1 + 2.0 * im;
+            assert!(
+                rr.hypot(ri) < 1e-9,
+                "{} evaluates to {re} + {im}i, residual {}",
+                p.display(lam),
+                rr.hypot(ri)
+            );
+        }
+
+        // The real root is the one the trio must contain.
+        assert!(
+            flat.iter().any(|&lam| {
+                let v = crate::eval::eval_complex_f64(lam, &p, &env).unwrap();
+                v.im.abs() < 1e-9 && (v.re + 2.324_717_957_244_746).abs() < 1e-9
+            }),
+            "the real root −2.32471796 must be among the three"
+        );
+    }
+
+    /// The property the prime directive asks for, stated directly: a `Result`
+    /// that says `Ok` may not carry a value the library cannot turn into a
+    /// number.
+    ///
+    /// "The library" means the evaluator appropriate to the value's domain.
+    /// `eval_interp` — what `eval_expr` calls — is real-valued, and a complex
+    /// eigenvalue is spelled with the crate's own `sqrt(−1)`, so a genuinely
+    /// non-real λ is `E-EVAL-009` there by construction and always has been;
+    /// that is the domain, not this defect. The real root has no such excuse,
+    /// and before the fix it raised `E-EVAL-009` too.
+    #[test]
+    fn a_returned_cardano_spectrum_is_never_unevaluable() {
+        let p = pool();
+        let m = cardano_companion(&p);
+        let env = std::collections::HashMap::new();
+        match eigenvalues(&m, &p) {
+            Err(_) => { /* a coded refusal is always allowed */ }
+            Ok(vals) => {
+                let mut real_valued = 0;
+                for (lam, _) in vals {
+                    let interp =
+                        crate::jit::eval_interp_checked(lam, &std::collections::HashMap::new(), &p);
+                    let complex = crate::eval::eval_complex_f64(lam, &p, &env)
+                        .expect("every eigenvalue must be a complex number");
+                    if complex.im.abs() < 1e-9 {
+                        real_valued += 1;
+                        assert!(
+                            interp.is_ok(),
+                            "eigenvals reported success carrying the *real* value `{}`, \
+                             which `eval_expr` cannot turn into a number: {:?}",
+                            p.display(lam),
+                            interp.err()
+                        );
+                    }
+                }
+                assert_eq!(real_valued, 1, "this cubic has exactly one real root");
+            }
+        }
+    }
+
+    /// Cardano's pairing constraint, checked on the emitted radicals rather
+    /// than on the roots: `A·B = −p/3` is what selects three of the nine
+    /// `(A, B)` pairs, and it is the identity the old independent-principal
+    /// form broke.
+    #[test]
+    fn the_two_cardano_radicals_are_a_coordinated_pair() {
+        let p = pool();
+        // λ³ + 3λ² + 2λ + 1 depresses to t³ − t + 1: p = −1, so A·B = 1/3.
+        let a = real_cbrt_of_rational_plus_sqrt(
+            &Rational::from((-1, 2)),
+            &Rational::from((23, 108)),
+            false,
+            &p,
+        );
+        let b = real_cbrt_of_rational_plus_sqrt(
+            &Rational::from((-1, 2)),
+            &Rational::from((23, 108)),
+            true,
+            &p,
+        );
+        let env = std::collections::HashMap::new();
+        let va = crate::eval::eval_complex_f64(a, &p, &env).expect("A is evaluable");
+        let vb = crate::eval::eval_complex_f64(b, &p, &env).expect("B is evaluable");
+        let prod = (va.re * vb.re - va.im * vb.im, va.re * vb.im + va.im * vb.re);
+        assert!(
+            (prod.0 - 1.0 / 3.0).abs() < 1e-12 && prod.1.abs() < 1e-12,
+            "A·B = {} + {}i, must be 1/3",
+            prod.0,
+            prod.1
+        );
+    }
+
+    /// The three-real-roots branch emits `acos`, not cube roots, and has never
+    /// had the pairing problem — but it must still pass the same gate, or the
+    /// gate is only checking the cases it was written for.
+    #[test]
+    fn the_casus_irreducibilis_branch_is_confirmed_too() {
+        let p = pool();
+        // Companion matrix of λ³ − 3λ + 1 (Δ < 0: three real roots).
+        let z = p.integer(0_i32);
+        let one = p.integer(1_i32);
+        let m = Matrix::new(vec![
+            vec![z, z, p.integer(-1_i32)],
+            vec![one, z, p.integer(3_i32)],
+            vec![z, one, z],
+        ])
+        .unwrap();
+        let vals = eigenvalues(&m, &p).expect("casus irreducibilis still solves");
+        let flat: Vec<ExprId> = vals
+            .iter()
+            .flat_map(|&(l, mult)| std::iter::repeat_n(l, mult))
+            .collect();
+        let check = crate::matrix::spectrum::confirm_spectrum(&m, &flat, &p)
+            .expect("the trigonometric form is a correct spectrum");
+        assert!(
+            check.is_confirmed(),
+            "the trigonometric roots must be *confirmed*, not merely unevaluated: {check:?}"
+        );
+    }
+
+    /// A spectrum that does not check out is refused, and the refusal names
+    /// itself. Driven through the check directly because the formula layer no
+    /// longer produces one.
+    #[test]
+    fn a_spectrum_that_fails_the_check_is_refused_with_its_own_code() {
+        use crate::errors::AlkahestError;
+        let p = pool();
+        let m = cardano_companion(&p);
+        // The old, uncoordinated form: two independent principal cube roots.
+        let third = p.rational(1, 3);
+        let sqrt_d = p.func("sqrt", vec![p.rational(23, 108)]);
+        let half = p.rational(-1, 2);
+        let a = p.pow(p.add(vec![half, sqrt_d]), third);
+        let b = p.pow(
+            p.add(vec![half, p.mul(vec![p.integer(-1_i32), sqrt_d])]),
+            third,
+        );
+        let t0 = simplify(p.add(vec![a, b, p.integer(-1_i32)]), &p).value;
+        let refusal = crate::matrix::spectrum::confirm_spectrum(&m, &[t0, t0, t0], &p)
+            .expect_err("independent principal cube roots are not the spectrum");
+        assert_eq!(refusal.code(), "E-EIGEN-008");
     }
 
     #[test]

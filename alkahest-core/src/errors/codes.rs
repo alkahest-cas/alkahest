@@ -69,6 +69,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-EIGEN-005", class: "EigenError", cause: Cause::Domain,    remediation: Some("the matrix is defective or the eigenbasis is incomplete") },
     ErrorSpec { code: "E-EIGEN-006", class: "EigenError", cause: Cause::Unsupported, remediation: Some("nullspace elimination failed; try a purely rational or ℚ(i) spectrum") },
     ErrorSpec { code: "E-EIGEN-007", class: "EigenError", cause: Cause::Domain,    remediation: Some("eigenvector matrix is singular; check multiplicities") },
+    ErrorSpec { code: "E-EIGEN-008", class: "SpectrumRefusal", cause: Cause::Domain,    remediation: Some("substitute concrete numbers for any symbolic entries, or use real_roots / numeric eigenvalues for this matrix") },
     // E-LINALG — LinearAlgebraError (symbolic LA coverage)
     ErrorSpec { code: "E-LINALG-001", class: "LinearAlgebraError", cause: Cause::UserInput,   remediation: Some("pass a square n×n matrix") },
     ErrorSpec { code: "E-LINALG-002", class: "LinearAlgebraError", cause: Cause::Unsupported, remediation: Some("nullspace elimination failed; try rational entries") },
