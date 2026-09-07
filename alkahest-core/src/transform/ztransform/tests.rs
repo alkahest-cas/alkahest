@@ -608,3 +608,126 @@ fn round_trip_rational_table_smoke() {
         }
     }
 }
+
+// ===========================================================================
+// Symbolic parameters — inverse over ℚ(params)
+// ===========================================================================
+
+mod symbolic_params {
+    use super::*;
+    use crate::kernel::ExprData;
+    use crate::transform::inverse_z_transform_with_conditions;
+    use std::collections::HashMap;
+
+    fn eval_env(expr: ExprId, env: &HashMap<ExprId, f64>, pool: &ExprPool) -> Option<f64> {
+        match pool.get(expr) {
+            ExprData::Integer(n) => Some(n.0.to_f64()),
+            ExprData::Rational(r) => {
+                let (n, d) = r.0.clone().into_numer_denom();
+                Some(n.to_f64() / d.to_f64())
+            }
+            ExprData::Symbol { .. } => env.get(&expr).copied(),
+            ExprData::Add(args) => args
+                .iter()
+                .try_fold(0.0, |acc, &a| Some(acc + eval_env(a, env, pool)?)),
+            ExprData::Mul(args) => args
+                .iter()
+                .try_fold(1.0, |acc, &a| Some(acc * eval_env(a, env, pool)?)),
+            ExprData::Pow { base, exp } => {
+                Some(eval_env(base, env, pool)?.powf(eval_env(exp, env, pool)?))
+            }
+            _ => None,
+        }
+    }
+
+    /// The round trip that was broken: `Z{aⁿ}` produced `z/(z−a)`, and
+    /// `Z⁻¹{z/(z−a)}` refused it because `a` is not a rational number.
+    #[test]
+    fn geometric_round_trip_with_a_symbolic_ratio() {
+        let (pool, n, z) = setup();
+        let a = pool.symbol("a", Domain::Real);
+
+        let forward = z_transform(pool.pow(a, n), n, z, &pool).unwrap();
+        let (back, cs) = inverse_z_transform_with_conditions(forward, z, n, &pool).unwrap();
+
+        // `aⁿ` is right for every `a`, including 0 and 1, so nothing is assumed.
+        assert!(
+            cs.is_empty(),
+            "{:?}",
+            cs.iter()
+                .map(|c| c.display_with(&pool).to_string())
+                .collect::<Vec<_>>()
+        );
+        for (av, nv) in [(0.5_f64, 3.0_f64), (2.0, 4.0), (-1.5, 2.0)] {
+            let env = HashMap::from([(a, av), (n, nv)]);
+            let got = eval_env(back, &env, &pool).expect("finite");
+            assert!((got - av.powf(nv)).abs() < 1e-9, "{got} vs {}", av.powf(nv));
+        }
+    }
+
+    /// `Z⁻¹{A·z/(z−a)²} = (A/a)·n·aⁿ` divides by `a`, and at `a = 0` the term
+    /// is `A·z^{−1}`, which the table declines. So `a ≠ 0` is a hypothesis.
+    #[test]
+    fn repeated_symbolic_pole_reports_its_division() {
+        let (pool, n, z) = setup();
+        let a = pool.symbol("a", Domain::Real);
+        let big_x = pool.mul(vec![
+            z,
+            pool.pow(pool.add(vec![z, neg(a, &pool)]), pool.integer(-2_i32)),
+        ]);
+        let (got, cs) = inverse_z_transform_with_conditions(big_x, z, n, &pool).unwrap();
+        let rendered: Vec<String> = cs
+            .iter()
+            .map(|c| c.display_with(&pool).to_string())
+            .collect();
+        assert_eq!(rendered, vec!["a ≠ 0".to_string()]);
+
+        for (av, nv) in [(0.5_f64, 3.0_f64), (2.0, 5.0)] {
+            let env = HashMap::from([(a, av), (n, nv)]);
+            let v = eval_env(got, &env, &pool).expect("finite");
+            let want = nv * av.powf(nv - 1.0);
+            assert!((v - want).abs() < 1e-9, "{v} vs n·a^{{n−1}} = {want}");
+        }
+    }
+
+    /// Two distinct symbolic poles: the coincidence is reported once.
+    #[test]
+    fn two_symbolic_poles_report_their_coincidence() {
+        let (pool, n, z) = setup();
+        let a = pool.symbol("a", Domain::Real);
+        let b = pool.symbol("b", Domain::Real);
+        let den = pool.mul(vec![
+            pool.add(vec![z, neg(a, &pool)]),
+            pool.add(vec![z, neg(b, &pool)]),
+        ]);
+        let big_x = pool.mul(vec![z, z, pool.pow(den, pool.integer(-1_i32))]);
+        let (got, cs) = inverse_z_transform_with_conditions(big_x, z, n, &pool).unwrap();
+        assert_eq!(cs.len(), 1, "{cs:?}");
+
+        // Z⁻¹{z²/((z−a)(z−b))} = (a^{n+1} − b^{n+1})/(a − b).
+        for (av, bv, nv) in [(2.0_f64, 0.5_f64, 3.0_f64), (0.25, 1.5, 4.0)] {
+            let env = HashMap::from([(a, av), (b, bv), (n, nv)]);
+            let v = eval_env(got, &env, &pool).expect("finite");
+            let want = (av.powf(nv + 1.0) - bv.powf(nv + 1.0)) / (av - bv);
+            assert!(
+                (v - want).abs() < 1e-9 * (1.0 + want.abs()),
+                "a={av} b={bv} n={nv}: {v} vs {want} — {}",
+                pool.display(got)
+            );
+        }
+    }
+
+    /// The legacy signature routes hypotheses out of band, consumingly.
+    #[test]
+    fn the_legacy_signature_reports_out_of_band() {
+        let (pool, n, z) = setup();
+        let a = pool.symbol("a", Domain::Real);
+        let big_x = pool.mul(vec![
+            z,
+            pool.pow(pool.add(vec![z, neg(a, &pool)]), pool.integer(-2_i32)),
+        ]);
+        let _ = inverse_z_transform(big_x, z, n, &pool).unwrap();
+        assert_eq!(crate::transform::take_transform_side_conditions().len(), 1);
+        assert!(crate::transform::take_transform_side_conditions().is_empty());
+    }
+}

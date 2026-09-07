@@ -56,7 +56,59 @@
 //! is never entered at all, every sample of every numerically-certified
 //! solution being finite.
 
-use super::{ddx, simp, subs1, DsolveError, OdeInput};
+//! # Free parameters
+//!
+//! An equation whose coefficients contain symbols other than `x` — `y'' +
+//! 2ζω y' + ω² y = 0` — has a candidate whose residual mentions those symbols,
+//! and the real sampler above cannot evaluate it at all: every sample comes
+//! back `None`, the report is `unevaluable`, and the gate declines.  The
+//! parametric path binds each free parameter to a value as well, over several
+//! deterministic assignments.
+//!
+//! It evaluates in **ℂ**, not ℝ.  The uniform two-exponential form of a
+//! symbolic-coefficient equation is `e^{(−ζω ± ω√(ζ²−1))t}`, whose exponent is
+//! complex for `|ζ| < 1` — the underdamped branch, the one the caller most
+//! often means.  A real evaluator returns `NaN` there, and a gate that reads
+//! `NaN` as disagreement would refuse the correct answer on exactly the
+//! parameter range it matters for; one that skipped it would only ever check
+//! the overdamped side.  Evaluating on the principal complex branch makes both
+//! sides of the residual ordinary complex numbers and the check meaningful on
+//! the whole parameter space.  The classification of a sample is otherwise the
+//! same three-way split as in the real path, and as in `integrate::gate`:
+//! finite-and-zero agrees, finite-and-non-zero disagrees, and non-finite or
+//! unevaluable is *no information* rather than evidence either way.
+//!
+//! Tolerance is relative there.  `e^{λt}` with a sampled `λ ≈ 3` is `O(10)`
+//! before the equation's own coefficients multiply it, so a fixed `1e-6`
+//! absolute band is not the same test at both ends of the parameter grid; the
+//! band is scaled by the magnitude of the candidate and its derivatives at the
+//! sample.
+//!
+//! The complex pass may end the verification only by *disagreeing*.  Its
+//! evaluator implements a fixed list of heads, and a candidate written with one
+//! it does not have — `lambert_w`, which the separable class produces when it
+//! inverts `k·log y + m·y = T` — makes every sample unevaluable.  That is an
+//! absence of information, not evidence, so the real sampler is then asked as a
+//! second opinion, over the *same* parameters bound to the *same* values
+//! ([`parameter_env`] is the single table both draw from).  It knows a few
+//! heads ℂ does not; where it also cannot conclude, the candidate is refused.
+//!
+//! **Known conservatism, stated plainly.** Every row of [`PARAM_SETS`] is
+//! positive.  A candidate that is right for `Kₘ > 0` and wrong for `Kₘ < 0` is
+//! therefore certified here.  The sign is not represented in the input —
+//! `OdeInput` carries no assumptions — and sampling negative values instead
+//! would reject correct answers to equations whose parameters are physically
+//! positive far more often than it would catch anything.
+//!
+//! # Implicit solutions
+//!
+//! A first-order class that can only answer with a relation `G(x, y) = 0` is
+//! gated by [`implicit_relation_is_zero`] instead, which substitutes the slope
+//! field `y′ = −Gₓ/G_y` the implicit function theorem gives and requires the
+//! result to vanish identically in **two** free variables.  It draws its
+//! parameter values from the same [`parameter_env`].
+
+use super::{contains, ddx, simp, subs1, DsolveError, OdeInput};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use std::collections::HashMap;
 use std::fmt;
@@ -134,8 +186,46 @@ fn verify_inner(
         return Ok(());
     }
 
+    // Free parameters (symbols that are neither `x`, the unknown, a derivative
+    // symbol, nor an integration constant) make the real sampler useless: every
+    // sample is `None` and the report says only "unevaluable".  Bind them too,
+    // and evaluate over ℂ so the complex branch of the answer is reachable.
+    let params = free_parameters(input, &[residual], constants, pool);
+    if !params.is_empty() {
+        let report =
+            parametric_report(input, residual, &candidate_derivs, constants, &params, pool);
+        if report.certifies() {
+            return Ok(());
+        }
+        // A *disagreement* over ℂ is evidence against the candidate and is
+        // final.  "I could not evaluate this at all" is not evidence of
+        // anything, and it is the ordinary outcome for a candidate written
+        // with a head the complex evaluator does not implement — the Lambert-W
+        // inversion of a separable equation is the case that reaches it.  The
+        // real sampler below binds the *same* parameters to the *same* values
+        // and knows a few heads ℂ does not, so it is asked as a second opinion
+        // rather than the answer being refused unheard.
+        if report.has_counterevidence() {
+            return Err(DsolveError::VerificationFailed(format!(
+                "residual did not reduce to zero over the parameters {} ({report}): {}",
+                param_names(&params, pool),
+                pool.display(residual)
+            )));
+        }
+        let real = numeric_report(input, residual, &candidate_derivs, constants, &params, pool);
+        if real.certifies() {
+            return Ok(());
+        }
+        return Err(DsolveError::VerificationFailed(format!(
+            "residual did not reduce to zero over the parameters {} (over ℂ: {report}; \
+             over ℝ: {real}): {}",
+            param_names(&params, pool),
+            pool.display(residual)
+        )));
+    }
+
     // Numeric fallback: sample x over several constant assignments.
-    let report = numeric_report(input, residual, &candidate_derivs, constants, pool);
+    let report = numeric_report(input, residual, &candidate_derivs, constants, &[], pool);
     if report.certifies() {
         return Ok(());
     }
@@ -144,6 +234,62 @@ fn verify_inner(
         "residual did not reduce to zero ({report}): {}",
         pool.display(residual)
     )))
+}
+
+/// Symbols in `residual` that the numeric sampler would otherwise leave unbound.
+///
+/// `x` and the integration constants are bound by the sampler already; `y` and
+/// the derivative symbols cannot survive [`build_residual`]'s substitution, but
+/// are excluded defensively so a stray one becomes a decline rather than a
+/// parameter that gets a random value bound to it.
+fn free_parameters(
+    input: &OdeInput,
+    exprs: &[ExprId],
+    constants: &[ExprId],
+    pool: &ExprPool,
+) -> Vec<ExprId> {
+    let mut bound: Vec<ExprId> = vec![input.x, input.y];
+    bound.extend_from_slice(&input.derivs);
+    bound.extend_from_slice(constants);
+    let mut out: Vec<ExprId> = Vec::new();
+    for &e in exprs {
+        collect_symbols(e, pool, &mut out);
+    }
+    out.retain(|s| !bound.contains(s));
+    // Deterministic order: the sampled value of a parameter must not depend on
+    // the traversal order of a pool shared with other work.
+    out.sort_by_key(|&s| pool.display(s).to_string());
+    out.dedup();
+    out
+}
+
+/// Comma-separated parameter names, for a refusal message.
+fn param_names(params: &[ExprId], pool: &ExprPool) -> String {
+    params
+        .iter()
+        .map(|&p| pool.display(p).to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn collect_symbols(expr: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>) {
+    pool.with(expr, |d| match d {
+        ExprData::Symbol { .. } => {
+            if !out.contains(&expr) {
+                out.push(expr);
+            }
+        }
+        ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
+            for &a in args {
+                collect_symbols(a, pool, out);
+            }
+        }
+        ExprData::Pow { base, exp } => {
+            collect_symbols(*base, pool, out);
+            collect_symbols(*exp, pool, out);
+        }
+        _ => {}
+    });
 }
 
 /// Substitute the candidate into the equation.
@@ -232,38 +378,54 @@ impl fmt::Display for NumericReport {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Sample grids
+// ---------------------------------------------------------------------------
+
+/// Deterministic pseudo-random constant assignments (no rng dependency).
+/// Constants are kept positive and reasonably large so that radicands such as
+/// `sqrt(4·C − 3x²)` arising from quadratic-implicit solutions stay real over
+/// the (small) x-sample range.
+const CONST_SETS: [&[f64]; 3] = [
+    &[5.7, 4.3, 6.4, 5.1, 4.9],
+    &[8.5, 7.8, 6.6, 9.2, 7.1],
+    &[12.3, 10.0, 11.7, 10.5, 9.4],
+];
+
+/// `x` sample points, shared by the explicit, parametric and implicit gates.
+const X_SAMPLES: [f64; 5] = [0.11, 0.27, 0.43, 0.61, 0.79];
+
 /// Numerically check residual ≈ 0 at several `x` over random constants.
 fn numeric_report(
     input: &OdeInput,
     residual: ExprId,
     candidate_derivs: &[ExprId],
     constants: &[ExprId],
+    params: &[ExprId],
     pool: &ExprPool,
 ) -> NumericReport {
-    // Deterministic pseudo-random constant assignments (no rng dependency).
-    // Constants are kept positive and reasonably large so that radicands such as
-    // `sqrt(4·C − 3x²)` arising from quadratic-implicit solutions stay real over
-    // the (small) x-sample range.
-    let const_sets: [&[f64]; 3] = [
-        &[5.7, 4.3, 6.4, 5.1, 4.9],
-        &[8.5, 7.8, 6.6, 9.2, 7.1],
-        &[12.3, 10.0, 11.7, 10.5, 9.4],
-    ];
-    let x_samples = [0.11, 0.27, 0.43, 0.61, 0.79];
-
     let mut report = NumericReport::default();
-    for cs in const_sets {
-        let mut env: HashMap<ExprId, f64> = HashMap::new();
+    for (set, cs) in CONST_SETS.iter().enumerate() {
+        let param_env = parameter_env(params, set);
+        let mut env: HashMap<ExprId, f64> = param_env.clone();
         for (i, &c) in constants.iter().enumerate() {
             env.insert(c, cs[i % cs.len()]);
         }
-        for &xv in &x_samples {
+        for &xv in &X_SAMPLES {
             env.insert(input.x, xv);
             match eval(residual, &env, pool) {
                 Some(v) if v.is_finite() => record(&mut report, v),
                 // Non-finite: the conflated residual cannot say whose fault it
                 // is.  Ask the equation and the candidate separately.
-                Some(_) => classify_nonfinite(input, candidate_derivs, &env, xv, pool, &mut report),
+                Some(_) => classify_nonfinite(
+                    input,
+                    candidate_derivs,
+                    &env,
+                    &param_env,
+                    xv,
+                    pool,
+                    &mut report,
+                ),
                 // Unknown construct → refuse to certify numerically.
                 None => {
                     report.unevaluable = true;
@@ -289,16 +451,18 @@ fn record(report: &mut NumericReport, v: f64) {
 /// See the module docs for the three outcomes.  The ordering matters: "the ODE
 /// is singular here" dominates, because nothing can be concluded about a
 /// candidate at a point the equation itself does not reach.
+#[allow(clippy::too_many_arguments)]
 fn classify_nonfinite(
     input: &OdeInput,
     candidate_derivs: &[ExprId],
     env: &HashMap<ExprId, f64>,
+    params: &HashMap<ExprId, f64>,
     xv: f64,
     pool: &ExprPool,
     report: &mut NumericReport,
 ) {
     // 1. Is the equation itself well-defined at this `x`, candidate aside?
-    if !ode_is_regular_at(input, xv, pool) {
+    if !ode_is_regular_at(input, xv, params, pool) {
         report.skipped_singular_ode += 1;
         return;
     }
@@ -326,7 +490,7 @@ fn classify_nonfinite(
     // 3. Both sides are finite, so the non-finiteness came from the residual's
     //    algebraic form.  Re-ask the original equation at the candidate's own
     //    values — a real verdict where the old code had none.
-    let mut eq_env: HashMap<ExprId, f64> = HashMap::with_capacity(vals.len() + 1);
+    let mut eq_env: HashMap<ExprId, f64> = params.clone();
     eq_env.insert(input.x, xv);
     // `build_residual` always pushes `y(x)` first and the loop above either
     // filled `vals` completely or returned, so index 0 exists.
@@ -349,10 +513,15 @@ fn classify_nonfinite(
 /// since the question is whether the *equation* has a singularity at this `x`,
 /// not whether some particular state is admissible.  Distinct values per
 /// derivative order stop a probe from cancelling the equation by accident.
-fn ode_is_regular_at(input: &OdeInput, xv: f64, pool: &ExprPool) -> bool {
+fn ode_is_regular_at(
+    input: &OdeInput,
+    xv: f64,
+    params: &HashMap<ExprId, f64>,
+    pool: &ExprPool,
+) -> bool {
     const PROBES: [f64; 4] = [1.0, 2.5, 0.5, -1.5];
     PROBES.iter().any(|&p| {
-        let mut env: HashMap<ExprId, f64> = HashMap::with_capacity(input.derivs.len() + 2);
+        let mut env: HashMap<ExprId, f64> = params.clone();
         env.insert(input.x, xv);
         env.insert(input.y, p);
         for (k, &dsym) in input.derivs.iter().enumerate() {
@@ -420,8 +589,717 @@ fn eval_func(name: &str, a: &[f64]) -> Option<f64> {
         "acos" => x.acos(),
         "atan" => x.atan(),
         "abs" => x.abs(),
+        // Principal branch only, and `None` (→ "unknown construct", → skip)
+        // rather than `NaN` below `−1/e`, so a sample outside `W₀`'s domain is
+        // no information instead of a fake disagreement.  Reachable because
+        // the separable class inverts `k·log y + m·y = T` through `W`.
+        "lambert_w" => return crate::special::lambert_w0(x),
         _ => return None,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Parametric verification: sampling over free parameters, evaluated in C
+// ---------------------------------------------------------------------------
+
+/// Deterministic parameter assignments.  Chosen so that a two-parameter
+/// equation such as `y'' + 2ζω y' + ω² y = 0` is sampled on *both* sides of its
+/// discriminant — `ζ < 1` (complex roots) and `ζ > 1` (real roots) — rather
+/// than only on the side the real evaluator happens to reach.
+const PARAM_SETS: [&[f64]; 3] = [
+    &[1.7, 0.6, 2.3, 1.1, 0.4],
+    &[0.37, 1.9, 0.83, 2.7, 1.3],
+    &[2.9, 0.45, 1.15, 0.71, 3.3],
+];
+
+/// Bind `params` to the values of `PARAM_SETS[set]`.
+///
+/// The one sampler both parameter-aware gates draw from — the complex
+/// [`parametric_report`] builds its own `C64` environment from the same rows,
+/// and the real [`implicit_numeric_report`] uses this one directly.  Keeping a
+/// single table means a parameter is given the same value whichever gate asks,
+/// and there is one place to look when a sampled value has to change.
+fn parameter_env(params: &[ExprId], set: usize) -> HashMap<ExprId, f64> {
+    let values = PARAM_SETS[set % PARAM_SETS.len()];
+    params
+        .iter()
+        .enumerate()
+        .map(|(i, &p)| (p, values[i % values.len()]))
+        .collect()
+}
+
+/// Agreeing samples required before a *parametric* numeric certificate issues.
+///
+/// Higher than [`MIN_AGREEING_SAMPLES`] because the grid is three times larger
+/// and because an identity in the parameters is a stronger claim than an
+/// identity at fixed coefficients: it has to hold on an open set, not at a
+/// point.
+const PARAM_MIN_AGREEING: usize = 12;
+
+/// Relative band for "this sample of the residual is zero".
+///
+/// The residual's natural magnitude varies by orders across the parameter grid
+/// (`e^{λ x}` with a sampled `λ`), so the absolute [`ZERO_TOL`] would be a
+/// different test at each corner of it.
+const PARAM_REL_TOL: f64 = 1e-7;
+
+/// [`NumericReport`] plus the parameter-set bookkeeping.
+#[derive(Default, Debug, Clone, Copy)]
+struct ParametricReport {
+    inner: NumericReport,
+    /// Parameter sets that produced at least one agreeing sample.
+    sets_agreeing: usize,
+    /// Parameter sets that produced no resolved sample at all.
+    sets_unresolved: usize,
+}
+
+impl ParametricReport {
+    /// Two agreeing parameter sets are required, not one: a candidate can be
+    /// right on one branch of the discriminant and wrong on the other, and a
+    /// single set cannot tell those apart.
+    fn certifies(&self) -> bool {
+        !self.inner.unevaluable
+            && self.inner.disagree == 0
+            && self.inner.blowup_at_regular_point == 0
+            && self.inner.agree >= PARAM_MIN_AGREEING
+            && self.sets_agreeing >= 2
+    }
+
+    /// Did the complex pass see something that counts *against* the candidate?
+    ///
+    /// Only this may end the verification in a refusal.  Everything else the
+    /// pass can report — nothing evaluated, too few resolved samples, only one
+    /// parameter set resolving — is an absence of information, not evidence.
+    fn has_counterevidence(&self) -> bool {
+        self.inner.disagree > 0 || self.inner.blowup_at_regular_point > 0
+    }
+}
+
+impl fmt::Display for ParametricReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}; {} parameter sets agreeing, {} with no resolved sample",
+            self.inner, self.sets_agreeing, self.sets_unresolved
+        )
+    }
+}
+
+/// Sample the residual over `x` x integration constants x parameter values.
+fn parametric_report(
+    input: &OdeInput,
+    residual: ExprId,
+    candidate_derivs: &[ExprId],
+    constants: &[ExprId],
+    params: &[ExprId],
+    pool: &ExprPool,
+) -> ParametricReport {
+    let mut report = ParametricReport::default();
+    for ps in PARAM_SETS {
+        let mut env: HashMap<ExprId, C64> = HashMap::new();
+        for (i, &p) in params.iter().enumerate() {
+            env.insert(p, C64::real(ps[i % ps.len()]));
+        }
+        let before = report.inner.agree;
+        for cs in CONST_SETS {
+            for (i, &c) in constants.iter().enumerate() {
+                env.insert(c, C64::real(cs[i % cs.len()]));
+            }
+            for &xv in &X_SAMPLES {
+                env.insert(input.x, C64::real(xv));
+                match eval_complex(residual, &env, pool) {
+                    Some(v) if v.is_finite() => {
+                        record_parametric(&mut report.inner, v, candidate_derivs, &env, pool)
+                    }
+                    Some(_) => classify_nonfinite_complex(
+                        input,
+                        candidate_derivs,
+                        &env,
+                        xv,
+                        pool,
+                        &mut report.inner,
+                    ),
+                    None => {
+                        report.inner.unevaluable = true;
+                        return report;
+                    }
+                }
+            }
+        }
+        if report.inner.agree > before {
+            report.sets_agreeing += 1;
+        } else if report.inner.disagree == 0 && report.inner.blowup_at_regular_point == 0 {
+            report.sets_unresolved += 1;
+        }
+    }
+    report
+}
+
+/// Bucket a finite complex residual, with the zero band scaled by how large the
+/// candidate itself is at this sample.
+fn record_parametric(
+    report: &mut NumericReport,
+    v: C64,
+    candidate_derivs: &[ExprId],
+    env: &HashMap<ExprId, C64>,
+    pool: &ExprPool,
+) {
+    let mut scale = 1.0_f64;
+    for &d in candidate_derivs {
+        if let Some(dv) = eval_complex(d, env, pool) {
+            if dv.is_finite() {
+                scale = scale.max(dv.abs());
+            }
+        }
+    }
+    if v.abs() <= PARAM_REL_TOL * scale {
+        report.agree += 1;
+    } else {
+        report.disagree += 1;
+    }
+}
+
+/// The complex analogue of [`classify_nonfinite`]: same three outcomes, same
+/// precedence, with the equation and the candidate probed over C.
+fn classify_nonfinite_complex(
+    input: &OdeInput,
+    candidate_derivs: &[ExprId],
+    env: &HashMap<ExprId, C64>,
+    xv: f64,
+    pool: &ExprPool,
+    report: &mut NumericReport,
+) {
+    if !ode_is_regular_at_complex(input, env, xv, pool) {
+        report.skipped_singular_ode += 1;
+        return;
+    }
+    let mut vals = Vec::with_capacity(candidate_derivs.len());
+    for &d in candidate_derivs {
+        match eval_complex(d, env, pool) {
+            Some(v) if v.is_finite() => vals.push(v),
+            Some(_) => {
+                report.blowup_at_regular_point += 1;
+                return;
+            }
+            None => {
+                report.skipped_unknown_construct += 1;
+                return;
+            }
+        }
+    }
+    let mut eq_env = env.clone();
+    eq_env.insert(input.x, C64::real(xv));
+    eq_env.insert(input.y, vals[0]);
+    for (k, &dsym) in input.derivs.iter().enumerate() {
+        eq_env.insert(dsym, vals[k + 1]);
+    }
+    match eval_complex(input.equation, &eq_env, pool) {
+        Some(v) if v.is_finite() => record_parametric(report, v, candidate_derivs, env, pool),
+        _ => report.skipped_singular_ode += 1,
+    }
+}
+
+/// Is the equation itself finite at this `x` and this parameter assignment,
+/// candidate aside?  Probes several finite states, as [`ode_is_regular_at`]
+/// does.
+fn ode_is_regular_at_complex(
+    input: &OdeInput,
+    env: &HashMap<ExprId, C64>,
+    xv: f64,
+    pool: &ExprPool,
+) -> bool {
+    const PROBES: [f64; 4] = [1.0, 2.5, 0.5, -1.5];
+    PROBES.iter().any(|&p| {
+        let mut e = env.clone();
+        e.insert(input.x, C64::real(xv));
+        e.insert(input.y, C64::real(p));
+        for (k, &dsym) in input.derivs.iter().enumerate() {
+            e.insert(dsym, C64::real(p + 0.25 * (k as f64 + 1.0)));
+        }
+        matches!(eval_complex(input.equation, &e, pool), Some(v) if v.is_finite())
+    })
+}
+
+// ---------------------------------------------------------------------------
+// A minimal complex double
+// ---------------------------------------------------------------------------
+
+/// `re + i*im`, with principal branches for `log`, `sqrt` and `pow`.
+///
+/// Deliberately small: the only expressions it has to evaluate are the ones
+/// `dsolve` itself manufactures (exponentials, powers, the elementary
+/// functions the real [`eval`] already handles) plus whatever the caller wrote
+/// in the equation.  Anything else returns `None`, which the gate reads as *no
+/// information* rather than as agreement.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct C64 {
+    re: f64,
+    im: f64,
+}
+
+impl C64 {
+    pub(crate) fn real(re: f64) -> Self {
+        C64 { re, im: 0.0 }
+    }
+    pub(crate) fn new(re: f64, im: f64) -> Self {
+        C64 { re, im }
+    }
+    pub(crate) fn is_finite(self) -> bool {
+        self.re.is_finite() && self.im.is_finite()
+    }
+    pub(crate) fn abs(self) -> f64 {
+        self.re.hypot(self.im)
+    }
+    pub(crate) fn add(self, o: C64) -> C64 {
+        C64 {
+            re: self.re + o.re,
+            im: self.im + o.im,
+        }
+    }
+    pub(crate) fn sub(self, o: C64) -> C64 {
+        C64 {
+            re: self.re - o.re,
+            im: self.im - o.im,
+        }
+    }
+    pub(crate) fn mul(self, o: C64) -> C64 {
+        C64 {
+            re: self.re * o.re - self.im * o.im,
+            im: self.re * o.im + self.im * o.re,
+        }
+    }
+    pub(crate) fn div(self, o: C64) -> C64 {
+        let d = o.re * o.re + o.im * o.im;
+        C64 {
+            re: (self.re * o.re + self.im * o.im) / d,
+            im: (self.im * o.re - self.re * o.im) / d,
+        }
+    }
+    fn neg(self) -> C64 {
+        C64 {
+            re: -self.re,
+            im: -self.im,
+        }
+    }
+    fn exp(self) -> C64 {
+        let m = self.re.exp();
+        C64 {
+            re: m * self.im.cos(),
+            im: m * self.im.sin(),
+        }
+    }
+    fn ln(self) -> C64 {
+        C64 {
+            re: self.abs().ln(),
+            im: self.im.atan2(self.re),
+        }
+    }
+    fn powi(self, n: i64) -> C64 {
+        if n < 0 {
+            return C64::real(1.0).div(self.powi(-n));
+        }
+        let mut acc = C64::real(1.0);
+        for _ in 0..n {
+            acc = acc.mul(self);
+        }
+        acc
+    }
+    /// `self^w` on the principal branch.  Integer exponents go through repeated
+    /// multiplication, which is exact at `0` (where `exp(w*log 0)` is not) and
+    /// avoids a branch choice the caller did not ask for.
+    fn pow(self, w: C64) -> C64 {
+        if w.im == 0.0 && w.re.fract() == 0.0 && w.re.abs() <= 64.0 {
+            return self.powi(w.re as i64);
+        }
+        if self.re == 0.0 && self.im == 0.0 {
+            return if w.re > 0.0 {
+                C64::real(0.0)
+            } else {
+                C64::real(f64::INFINITY)
+            };
+        }
+        w.mul(self.ln()).exp()
+    }
+    fn sin(self) -> C64 {
+        C64 {
+            re: self.re.sin() * self.im.cosh(),
+            im: self.re.cos() * self.im.sinh(),
+        }
+    }
+    fn cos(self) -> C64 {
+        C64 {
+            re: self.re.cos() * self.im.cosh(),
+            im: -self.re.sin() * self.im.sinh(),
+        }
+    }
+    fn sinh(self) -> C64 {
+        C64 {
+            re: self.re.sinh() * self.im.cos(),
+            im: self.re.cosh() * self.im.sin(),
+        }
+    }
+    fn cosh(self) -> C64 {
+        C64 {
+            re: self.re.cosh() * self.im.cos(),
+            im: self.re.sinh() * self.im.sin(),
+        }
+    }
+}
+
+const I: C64 = C64 { re: 0.0, im: 1.0 };
+
+/// Evaluate `expr` over C.  `None` for constructs this evaluator does not know,
+/// which the gate treats as no information (never as agreement).
+pub(crate) fn eval_complex(
+    expr: ExprId,
+    env: &HashMap<ExprId, C64>,
+    pool: &ExprPool,
+) -> Option<C64> {
+    match pool.get(expr) {
+        ExprData::Integer(n) => Some(C64::real(n.0.to_f64())),
+        ExprData::Rational(r) => {
+            let (num, den) = r.0.clone().into_numer_denom();
+            Some(C64::real(num.to_f64() / den.to_f64()))
+        }
+        ExprData::Float(f) => Some(C64::real(f.inner.to_f64())),
+        ExprData::Symbol { .. } => env.get(&expr).copied(),
+        ExprData::Add(args) => {
+            let mut s = C64::real(0.0);
+            for a in args {
+                s = s.add(eval_complex(a, env, pool)?);
+            }
+            Some(s)
+        }
+        ExprData::Mul(args) => {
+            let mut p = C64::real(1.0);
+            for a in args {
+                p = p.mul(eval_complex(a, env, pool)?);
+            }
+            Some(p)
+        }
+        ExprData::Pow { base, exp } => {
+            let b = eval_complex(base, env, pool)?;
+            let e = eval_complex(exp, env, pool)?;
+            Some(b.pow(e))
+        }
+        ExprData::Func { name, args } => {
+            let v: Vec<C64> = args
+                .iter()
+                .map(|&a| eval_complex(a, env, pool))
+                .collect::<Option<_>>()?;
+            eval_func_complex(&name, &v)
+        }
+        _ => None,
+    }
+}
+
+fn eval_func_complex(name: &str, a: &[C64]) -> Option<C64> {
+    let z = *a.first()?;
+    let one = C64::real(1.0);
+    let half = C64::real(0.5);
+    Some(match name {
+        "sin" => z.sin(),
+        "cos" => z.cos(),
+        "tan" => z.sin().div(z.cos()),
+        "exp" => z.exp(),
+        "log" | "ln" => z.ln(),
+        "sqrt" => z.pow(half),
+        "sinh" => z.sinh(),
+        "cosh" => z.cosh(),
+        "tanh" => z.sinh().div(z.cosh()),
+        // atan z = (i/2)*(log(1 - i z) - log(1 + i z)); asin/acos follow.
+        "atan" => I.div(C64::real(2.0)).mul(
+            one.add(I.mul(z).neg())
+                .ln()
+                .add(one.add(I.mul(z)).ln().neg()),
+        ),
+        "asin" => I
+            .neg()
+            .mul(I.mul(z).add(one.add(z.mul(z).neg()).pow(half)).ln()),
+        "acos" => C64::real(std::f64::consts::FRAC_PI_2)
+            .add(I.mul(I.mul(z).add(one.add(z.mul(z).neg()).pow(half)).ln())),
+        "abs" => C64::real(z.abs()),
+        _ => return None,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Implicit solutions
+// ---------------------------------------------------------------------------
+
+/// Re-verify a returned [`DsolveBranch`](super::DsolveBranch) in whichever form it came in.
+///
+/// The gate inside each class already ran; this is the entry point for callers
+/// that want to check a returned answer *independently* of it — which the
+/// corpus harness and every solving test do, on the principle that a gate is
+/// not allowed to be its own witness.
+#[cfg(test)]
+pub(crate) fn solution_is_verified(
+    input: &OdeInput,
+    sol: &super::DsolveBranch,
+    pool: &ExprPool,
+) -> Result<(), DsolveError> {
+    match sol.form {
+        super::SolutionForm::Explicit(y) => residual_is_zero(input, y, &sol.constants, pool),
+        super::SolutionForm::Implicit(g) => {
+            implicit_relation_is_zero(input, g, &sol.constants, pool)
+        }
+    }
+}
+
+/// Verify an implicit general solution `relation(x, y) = 0` of a *first-order*
+/// ODE.
+///
+/// # What is checked, and why it is the right thing
+///
+/// The implicit function theorem turns the relation into a slope field:
+/// wherever `G_y ≠ 0`, the level set through a point has slope
+/// `y' = −Gₓ/G_y`.  The relation is a general solution exactly when
+///
+/// ```text
+///     F(x, y, −Gₓ(x,y)/G_y(x,y)) ≡ 0     for all (x, y) in the region,
+/// ```
+///
+/// which says every level set of `G` — i.e. every member of the one-parameter
+/// family — solves the ODE.  Note that this is an identity in **two** free
+/// variables, so it is a *stronger* statement than the explicit gate's
+/// one-variable identity, and it needs no root-finding: the point `(x, y)`
+/// carries its own constant.
+///
+/// # The precondition that makes free `(x, y)` sampling legitimate
+///
+/// Sampling `y` independently of `x` is only sound when the slope field does
+/// not depend on the integration constant.  If it does — `relation = y − C·eˣ`
+/// has `Gₓ/G_y = −C·eˣ`, a slope that is only correct *on* the curve `y = C eˣ`
+/// — then the identity holds on each curve and nowhere else, and sampling off
+/// the curve would reject a perfectly good answer.  So `Gₓ` and `G_y` are
+/// required to be free of every constant, which is the case for the
+/// `G(x, y) − C` shape every class here produces, and the verification is
+/// declined otherwise rather than being run in a form that cannot conclude.
+///
+/// A relation must also mention at least one constant (a *general* solution is
+/// a family, not one curve) and must genuinely depend on `y`.
+pub(crate) fn implicit_relation_is_zero(
+    input: &OdeInput,
+    relation: ExprId,
+    constants: &[ExprId],
+    pool: &ExprPool,
+) -> Result<(), DsolveError> {
+    let outcome = implicit_inner(input, relation, constants, pool);
+    #[cfg(test)]
+    GATE_TALLY.with(|t| {
+        let (offered, refused) = t.get();
+        t.set((offered + 1, refused + usize::from(outcome.is_err())));
+    });
+    outcome
+}
+
+fn implicit_inner(
+    input: &OdeInput,
+    relation: ExprId,
+    constants: &[ExprId],
+    pool: &ExprPool,
+) -> Result<(), DsolveError> {
+    if input.derivs.len() != 1 {
+        return Err(DsolveError::VerificationFailed(
+            "implicit solutions are only verified for first-order equations".to_string(),
+        ));
+    }
+    let yp = input.derivs[0];
+    if !contains(relation, input.y, pool) {
+        return Err(DsolveError::VerificationFailed(
+            "implicit relation does not depend on y".to_string(),
+        ));
+    }
+    if !constants.iter().any(|&c| contains(relation, c, pool)) {
+        return Err(DsolveError::VerificationFailed(
+            "implicit relation carries no integration constant, so it is not a \
+             general solution"
+                .to_string(),
+        ));
+    }
+
+    let gx = ddx(relation, input.x, pool)?;
+    let gy = ddx(relation, input.y, pool)?;
+    if super::is_zero(gy, pool) {
+        return Err(DsolveError::VerificationFailed(
+            "∂G/∂y is identically zero: the relation defines no slope field".to_string(),
+        ));
+    }
+    for &c in constants {
+        if contains(gx, c, pool) || contains(gy, c, pool) {
+            return Err(DsolveError::VerificationFailed(
+                "the slope field −Gx/Gy still mentions an integration constant, so \
+                 the relation cannot be checked off its own level sets"
+                    .to_string(),
+            ));
+        }
+    }
+
+    // y' = −Gx/Gy, substituted into the equation.
+    let slope = super::div(
+        simp(pool.mul(vec![pool.integer(-1_i32), gx]), pool),
+        gy,
+        pool,
+    );
+    let residual = simp(subs1(input.equation, yp, slope, pool), pool);
+    if is_symbolic_zero(residual, pool) || is_symbolic_zero(super::simp_plain(residual, pool), pool)
+    {
+        return Ok(());
+    }
+
+    let report = implicit_numeric_report(input, residual, slope, gy, constants, pool);
+    if report.certifies() {
+        return Ok(());
+    }
+    Err(DsolveError::VerificationFailed(format!(
+        "implicit relation did not reduce to zero ({report}): {}",
+        pool.display(residual)
+    )))
+}
+
+/// `y` sample points for the implicit gate.  Positive and bounded away from
+/// zero: `log y` and `1/y` are the two commonest things a separable
+/// antiderivative produces, and both are real and finite here.
+const Y_SAMPLES: [f64; 5] = [0.37, 0.83, 1.4, 2.1, 3.3];
+
+/// Sample `F(x, y, −Gₓ/G_y) ≈ 0` over an `(x, y)` grid.
+///
+/// The classification of a non-finite sample follows [`classify_nonfinite`]'s
+/// discipline, with one deliberate difference: a point where the *slope* blows
+/// up is a **skip**, not a disagreement.  A vertical tangent is ordinary
+/// behaviour for a level curve — `x² + y² = C` has one at `y = 0` — and says
+/// nothing about whether the relation solves the ODE, whereas an explicit
+/// candidate blowing up where the ODE is regular is evidence that it is wrong.
+fn implicit_numeric_report(
+    input: &OdeInput,
+    residual: ExprId,
+    slope: ExprId,
+    gy: ExprId,
+    constants: &[ExprId],
+    pool: &ExprPool,
+) -> NumericReport {
+    let sources = [input.equation, residual, slope];
+    let free = free_parameters(input, &sources, constants, pool);
+    let mut report = NumericReport::default();
+    for set in 0..PARAM_SETS.len() {
+        let params = parameter_env(&free, set);
+        let mut env = params.clone();
+        for &xv in &X_SAMPLES {
+            env.insert(input.x, xv);
+            for &yv in &Y_SAMPLES {
+                env.insert(input.y, yv);
+                match eval(residual, &env, pool) {
+                    Some(v) if v.is_finite() => {
+                        record_scaled(&mut report, v, input, &env, slope, pool)
+                    }
+                    Some(_) => classify_implicit_nonfinite(
+                        input,
+                        slope,
+                        gy,
+                        &env,
+                        &params,
+                        xv,
+                        yv,
+                        pool,
+                        &mut report,
+                    ),
+                    None => {
+                        report.unevaluable = true;
+                        return report;
+                    }
+                }
+            }
+        }
+    }
+    report
+}
+
+/// Bucket a finite residual against the *scale of the terms that produced it*.
+///
+/// The implicit residual is the equation evaluated at a slope, and the slope
+/// can be large: `(Kₘ + y)·y' + Vₘ·y` at `y' = −40` has terms of size 100, and
+/// a cancellation between them is only meaningful to about `100·ε`.  An
+/// absolute `1e-6` would be simultaneously too strict there and too lax for an
+/// equation whose terms are all `1e-9`.  The scale is the largest magnitude
+/// among the equation's own top-level additive terms at this sample.
+fn record_scaled(
+    report: &mut NumericReport,
+    v: f64,
+    input: &OdeInput,
+    env: &HashMap<ExprId, f64>,
+    slope: ExprId,
+    pool: &ExprPool,
+) {
+    let scale = equation_term_scale(input, env, slope, pool).unwrap_or(0.0);
+    if v.abs() <= ZERO_TOL * (1.0 + scale) {
+        report.agree += 1;
+    } else {
+        report.disagree += 1;
+    }
+}
+
+/// Largest magnitude among the top-level additive terms of `input.equation`
+/// with `y' = slope`, at the sample in `env`.  `None` if any term is not a
+/// finite real there.
+fn equation_term_scale(
+    input: &OdeInput,
+    env: &HashMap<ExprId, f64>,
+    slope: ExprId,
+    pool: &ExprPool,
+) -> Option<f64> {
+    let eq = subs1(input.equation, input.derivs[0], slope, pool);
+    let terms: Vec<ExprId> = match pool.get(eq) {
+        ExprData::Add(args) => args,
+        _ => vec![eq],
+    };
+    let mut scale: f64 = 0.0;
+    for t in terms {
+        let v = eval(t, env, pool)?;
+        if !v.is_finite() {
+            return None;
+        }
+        scale = scale.max(v.abs());
+    }
+    Some(scale)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn classify_implicit_nonfinite(
+    input: &OdeInput,
+    slope: ExprId,
+    gy: ExprId,
+    env: &HashMap<ExprId, f64>,
+    params: &HashMap<ExprId, f64>,
+    xv: f64,
+    yv: f64,
+    pool: &ExprPool,
+    report: &mut NumericReport,
+) {
+    // 1. Is the equation itself well-defined at this `x`, the relation aside?
+    if !ode_is_regular_at(input, xv, params, pool) {
+        report.skipped_singular_ode += 1;
+        return;
+    }
+    // 2. Does the relation define a finite slope here?  A vanishing `G_y` (a
+    //    vertical tangent) or an unevaluable slope carries no information.
+    match (eval(gy, env, pool), eval(slope, env, pool)) {
+        (Some(g), Some(s)) if g.is_finite() && g.abs() > 1e-12 && s.is_finite() => {
+            // 3. Both sides are finite, so the non-finiteness was an artefact of
+            //    the residual's algebraic form.  Re-ask the original equation.
+            let mut eq_env: HashMap<ExprId, f64> = params.clone();
+            eq_env.insert(input.x, xv);
+            eq_env.insert(input.y, yv);
+            eq_env.insert(input.derivs[0], s);
+            match eval(input.equation, &eq_env, pool) {
+                Some(v) if v.is_finite() => record_scaled(report, v, input, env, slope, pool),
+                // Singular at this state rather than at this `x`.
+                _ => report.skipped_singular_ode += 1,
+            }
+        }
+        (None, _) | (_, None) => report.skipped_unknown_construct += 1,
+        _ => report.skipped_singular_ode += 1,
+    }
 }
 
 #[cfg(test)]

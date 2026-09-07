@@ -17,7 +17,10 @@ pub(crate) mod stack;
 #[cfg(test)]
 mod proptests;
 
-pub use assumptions::{simplify_with_assumptions, AssumptionContext, AssumptionError};
+pub use assumptions::{
+    ambient_assumptions_active, ambient_equalities, assumed_sign, enter_assumptions,
+    simplify_with_assumptions, AssumptionContext, AssumptionError, AssumptionScope, Sign,
+};
 pub use colored_egraph::{
     assumptions_satisfy, simplify_colored, ColorId, ColoredEgraph, CONTEXT_COLOR, ROOT_COLOR,
 };

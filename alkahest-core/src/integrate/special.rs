@@ -34,12 +34,23 @@
 //! > **and** not expressible over the registered basis"* would be a **new and
 //! > unearned claim**.  Nothing in this codebase decides expressibility over the
 //! > basis; this module is a table of recognised shapes, and a table's silence
-//! > is not a theorem.  `∫sin(x)/x² dx` is the standing counterexample — it is
-//! > non-elementary (so today's certificate is sound), it *is* expressible as
-//! > `−sin(x)/x + Ci(x)`, and no matcher here finds that.  Re-reading the
-//! > existing certificate as the stronger statement would manufacture a false
-//! > one, which is exactly the defect eight families of this codebase were
-//! > already found to have.
+//! > is not a theorem.  Re-reading the existing certificate as the stronger
+//! > statement would manufacture a false one, which is exactly the defect eight
+//! > families of this codebase were already found to have.
+//!
+//! The witness for that has always been an integrand that is non-elementary
+//! (so the certificate is sound) *and* expressible over the basis (so the
+//! stronger reading would be false) *and* not in the table.  It used to be
+//! `∫sin(x)/x² dx`; `match_quotient_power` now answers that one
+//! (`−sin(x)/x + Ci(x)`), so two measured replacements are `∫exp(−x²)/x dx`
+//! (certified `E-INT-004` by the Risch tower; equal to `Ei(−x²)/2`, which needs
+//! a *quadratic* argument the table has no entry for) and
+//! `∫sin(2x+3)/(x+1) dx` (certified `E-INT-004` by `known_nonelementary`; equal
+//! to `cos(1)·Si(2x+2) + sin(1)·Ci(2x+2)`, which needs an angle-addition split
+//! the table has no entry for).  **Closing table entries never shrinks the gap
+//! between the two statements**; it only moves which example demonstrates it,
+//! which is precisely why the certificate must not be read as tracking the
+//! table.
 //!
 //! So [`IntegrationError::NonElementary`] keeps precisely the meaning and the
 //! wording it has always had: *no **elementary** antiderivative exists*.  The
@@ -49,12 +60,14 @@
 //!
 //! # Soundness
 //!
-//! Every candidate goes through [`verify_antiderivative_status`] — symbolic
-//! `d/dx F − f ≡ 0` first, then the in-domain `f64` screen — before it is
-//! returned, exactly as `elliptic_output`, `by_parts` and `norman` do.  A
-//! candidate that cannot be confirmed is discarded and the caller falls through
-//! to whatever verdict it already had.  There is **no path from this module to
-//! `NonElementary`**: it returns `Some(F)` or `None`, and `None` is a decline.
+//! Every candidate goes through
+//! [`verify_antiderivative_status_parametric`] — symbolic `d/dx F − f ≡ 0`
+//! first, then the in-domain `f64` screen, swept over the declared domain of
+//! any free parameter — before it is returned, exactly as `elliptic_output`,
+//! `by_parts` and `norman` do.  A candidate that cannot be confirmed is
+//! discarded and the caller falls through to whatever verdict it already had.
+//! There is **no path from this module to `NonElementary`**: it returns
+//! `Some(F)` or `None`, and `None` is a decline.
 //!
 //! # Where it runs
 //!
@@ -80,24 +93,32 @@
 //! | integrand | answer |
 //! |---|---|
 //! | `c·f(g)/d`, `f ∈ {exp,sin,cos,sinh,cosh}`, `g`,`d` linear, `d ∝ g` | `Ei`/`Si`/`Ci`/`Shi`/`Chi` |
-//! | `c·exp(a·x+b)/(p·x)` | `Ei` (the `e^b` is pulled out) |
+//! | `c·f(g)/dⁿ`, same heads, `n ≥ 2` | the same, plus elementary terms |
+//! | `c·exp(a·x+b)/(p·x)ⁿ` | `Ei` (the `e^b` is pulled out) |
 //! | `c/log(g)`, `g` linear | `li` |
-//! | `c·exp(A·x²+B·x+C)`, `A < 0` | `erf` |
+//! | `c·exp(A·x²+B·x+C)`, `A < 0` numeric | `erf` |
+//! | `c·exp(A·x²+B·x+C)`, `A` symbolic and provably negative | `erf` |
+//! | `c·xⁿ·exp(A·x²+C)`, `n` even, `A < 0` | `erf` plus elementary terms |
 //! | `c·sin(A·x²)` / `c·cos(A·x²)` | Fresnel `S` / `C` |
 //! | `c·log(x)/(a+b·x)`, `a·b ≠ 0` | `Li₂` |
 //!
 //! Not covered, and honest about it: `A > 0` in the Gaussian (would need
-//! `erfi`, which is not a registered primitive), higher denominator powers
-//! (`sin(x)/x²`), and non-linear arguments other than the pure quadratics above.
+//! `erfi`, which is not a registered primitive); an `A` whose sign is not
+//! decidable from the symbol's declared domain (`∫exp(−a·x²) dx` for a plain
+//! `Domain::Real` `a` — the answer would be `NaN` for every `a < 0`, so it is
+//! refused rather than emitted, and declaring `a` positive is what makes it
+//! answerable); `xⁿ` against a *shifted* Gaussian (`B ≠ 0`), which needs a
+//! binomial expansion after the substitution; and non-linear arguments other
+//! than the pure quadratics above.
 
 use std::collections::HashMap;
 
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
 use crate::kernel::{ExprData, ExprId, ExprPool};
-use crate::simplify::engine::simplify;
+use crate::simplify::engine::{simplify, simplify_expanded};
 
 use super::engine::{
-    is_free_of, is_linear_in, special_integral_name, verify_antiderivative_status,
+    is_free_of, is_linear_in, special_integral_name, verify_antiderivative_status_parametric,
     AntiderivativeVerification, IntegrationError,
 };
 
@@ -272,15 +293,22 @@ pub fn try_special_antiderivative(
 
     let candidates = [
         match_quotient_family(work, var, pool),
+        match_quotient_power(work, var, pool),
         match_log_reciprocal(work, var, pool),
         match_gaussian(work, var, pool),
+        match_gaussian_symbolic(work, var, pool),
+        match_gaussian_moment(work, var, pool),
         match_fresnel(work, var, pool),
         match_dilog(work, var, pool),
     ];
 
     for candidate in candidates.into_iter().flatten() {
         let f = simplify(candidate, pool).value;
-        if let Some(evidence) = verify_antiderivative_status(f, expr, var, pool) {
+        // The parametric gate is the ordinary gate whenever the integrand
+        // carries no free parameter, so nothing that verified before verifies
+        // differently now; the extra reach is exactly the `∫exp(−a·x²) dx`
+        // family, whose `a` the plain `var`-only grid cannot bind.
+        if let Some(evidence) = verify_antiderivative_status_parametric(f, expr, var, pool) {
             return Some((f, evidence));
         }
     }
@@ -449,6 +477,145 @@ fn match_quotient_family(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<E
 }
 
 // ---------------------------------------------------------------------------
+// Matcher 1b — Ei/Si/Ci/Shi/Chi under a higher denominator power
+// ---------------------------------------------------------------------------
+
+/// `c · f(a·x+b) / (p·x+q)ⁿ` with `n ≥ 2` — the same five heads, reduced by
+/// parts down to [`match_quotient_family`]'s case.
+///
+/// `∫sin(x)/x² dx` is the example this module's own docs have carried since it
+/// was written, as the standing proof that `NonElementary` must not be re-read
+/// as "not expressible over the basis either": it is non-elementary, it *is*
+/// `−sin(x)/x + Ci(x)`, and no matcher here found it.  That gap is now closed —
+/// which does not change the argument, only removes this particular witness for
+/// it.  The certificate still means exactly what it always meant; the module
+/// docs name the two integrands that carry the witness now.
+///
+/// The reduction is integration by parts with `u = f(g)`, `dv = g⁻ⁿ dg`:
+///
+/// ```text
+///   Jₙ(u) = ∫f(u)/uⁿ du = −f(u)/((n−1)·uⁿ⁻¹) + (σ/(n−1))·Jₙ₋₁(u)
+///   J₁(u) = F(u)                       F ∈ {Ei, Si, Ci, Shi, Chi}
+/// ```
+///
+/// where `f′ = σ·f_next` — `σ = −1` for `cos` (whose derivative is `−sin`) and
+/// `+1` for the other four.  With `d = (p/a)·g` and `dg = a·dx`, the change of
+/// variable contributes `aⁿ⁻¹/pⁿ`.
+///
+/// Every emission still passes the same `d/dx F = f` gate as the `n = 1` case,
+/// so a slipped sign in the recursion is caught rather than shipped.
+fn match_quotient_power(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let (c, rest) = split_constant(expr, var, pool);
+    if rest.len() != 2 {
+        return None;
+    }
+
+    let mut numerator: Option<(String, ExprId, ExprId, ExprId)> = None; // (f, g, a, b)
+    let mut denominator: Option<(ExprId, ExprId, u32)> = None; // (p, q, n)
+
+    for &factor in &rest {
+        if let ExprData::Func { name, args } = pool.get(factor) {
+            if args.len() == 1 && special_integral_name(&name).is_some() {
+                let (a, b) = is_linear_in(args[0], var, pool)?;
+                if is_zero_const(a, pool) || numerator.is_some() {
+                    return None;
+                }
+                numerator = Some((name.clone(), args[0], a, b));
+                continue;
+            }
+        }
+        if let Some((p, q, n)) = reciprocal_linear_power(factor, var, pool) {
+            if denominator.is_some() || n < 2 {
+                return None;
+            }
+            denominator = Some((p, q, n));
+            continue;
+        }
+        return None;
+    }
+
+    let (fname, g, a, b) = numerator?;
+    let (p, q, n) = denominator?;
+
+    // `∫f(g)/dⁿ dx` needs `d ∝ g`, exactly as in the `n = 1` case; the one
+    // exception is again `exp`, whose `e^b` factors out of a `q = 0`
+    // denominator.
+    let cross = pool.add(vec![
+        pool.mul(vec![a, q]),
+        pool.mul(vec![pool.integer(-1_i32), b, p]),
+    ]);
+    let (arg, extra) = if is_zero_const(cross, pool) {
+        (g, pool.integer(1_i32))
+    } else if fname == "exp" && is_zero_const(q, pool) {
+        (
+            simplify(pool.mul(vec![a, var]), pool).value,
+            pool.func("exp", vec![b]),
+        )
+    } else {
+        return None;
+    };
+
+    let jacobian = pool.mul(vec![
+        pool.pow(a, pool.integer(n as i32 - 1)),
+        pool.pow(p, pool.integer(-(n as i32))),
+    ]);
+    let body = quotient_power_reduce(&fname, arg, n, pool)?;
+    Some(pool.mul(vec![c, extra, jacobian, body]))
+}
+
+/// `Jₙ(u) = ∫f(u)/uⁿ du` of [`match_quotient_power`], built as an expression in
+/// the already-substituted argument `u`.
+fn quotient_power_reduce(fname: &str, u: ExprId, n: u32, pool: &ExprPool) -> Option<ExprId> {
+    if n == 1 {
+        return Some(pool.func(special_integral_name(fname)?, vec![u]));
+    }
+    // `f′ = σ·next`; `cos′ = −sin` is the only sign in the family.
+    let (next, sigma) = match fname {
+        "exp" => ("exp", 1_i32),
+        "sin" => ("cos", 1),
+        "cos" => ("sin", -1),
+        "sinh" => ("cosh", 1),
+        "cosh" => ("sinh", 1),
+        _ => return None,
+    };
+    let nm1 = pool.integer(n as i32 - 1);
+    let inv_nm1 = pool.pow(nm1, pool.integer(-1_i32));
+    let head = pool.mul(vec![
+        pool.integer(-1_i32),
+        inv_nm1,
+        pool.func(fname, vec![u]),
+        pool.pow(u, pool.integer(-(n as i32 - 1))),
+    ]);
+    let tail = pool.mul(vec![
+        pool.integer(sigma),
+        inv_nm1,
+        quotient_power_reduce(next, u, n - 1, pool)?,
+    ]);
+    Some(pool.add(vec![head, tail]))
+}
+
+/// `Some((a, b, n))` for a factor `(a·var + b)^(−n)` with `n ≥ 1` and `a ≠ 0`.
+fn reciprocal_linear_power(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<(ExprId, ExprId, u32)> {
+    let ExprData::Pow { base, exp } = pool.get(expr) else {
+        return None;
+    };
+    let ExprData::Integer(k) = pool.get(exp) else {
+        return None;
+    };
+    let k = i64::try_from(&k.0).ok()?;
+    if k >= 0 {
+        return None;
+    }
+    let n = u32::try_from(-k).ok()?;
+    let (a, b) = is_linear_in(base, var, pool)?;
+    (!is_zero_const(a, pool)).then_some((a, b, n))
+}
+
+// ---------------------------------------------------------------------------
 // Matcher 2 — li
 // ---------------------------------------------------------------------------
 
@@ -595,6 +762,342 @@ fn monomial(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<(f64, u32)> {
 }
 
 // ---------------------------------------------------------------------------
+// Matcher 3b — erf with symbolic coefficients
+// ---------------------------------------------------------------------------
+
+/// `c · exp(A·x² + B·x + C)` with **symbolic** `A`, `B`, `C` and `A` provably
+/// negative → `erf`.
+///
+/// [`match_gaussian`] evaluates the three coefficients to `f64`, which is what
+/// makes `∫exp(−a·x²) dx` and `∫exp(−(x−b)²) dx` invisible to it: `a` and `b`
+/// have no `f64` value.  The reduction is identical — complete the square,
+/// substitute `u = α·(x + h)` with `α = √(−A)` — but carried out on
+/// expressions:
+///
+/// ```text
+///   A·x² + B·x + C = A·(x + h)² + K,   h = B/(2A),   K = C − A·h²
+///   ∫exp(−α²·u²) du = (√π / 2α)·erf(α·u)
+/// ```
+///
+/// # Why `A` must be *provably* negative, not just not-numerically-positive
+///
+/// `√(−A)` is a real number only when `A < 0`, and for `A > 0` the honest
+/// answer is `erfi`, which is not a registered primitive.  Emitting the `erf`
+/// form for an `A` of unknown sign would hand back an expression that is `NaN`
+/// over half its parameter range — the "domain hole" shape 3.9.0 made a
+/// refusal.  So the sign has to come from the *declaration*: a negative
+/// literal, or `−1` times a [`crate::kernel::Domain::Positive`] symbol.  An
+/// `a` declared merely `Real` declines here, and declines again at the gate
+/// (which samples it on both sides of zero) if it somehow got this far.
+///
+/// The `√π/2` is emitted as a `f64` literal rather than as `sqrt(pi)` on
+/// purpose: `pi` is an ordinary free symbol in this codebase, and an answer
+/// carrying one is an answer [`crate::jit::eval_interp`] cannot evaluate — the
+/// numeric half of the gate would go blind, and so would every caller that
+/// later asks for a number.
+fn match_gaussian_symbolic(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let (c, rest) = split_constant(expr, var, pool);
+    if rest.len() != 1 {
+        return None;
+    }
+    let ExprData::Func { name, args } = pool.get(rest[0]) else {
+        return None;
+    };
+    if name != "exp" || args.len() != 1 {
+        return None;
+    }
+    let (aa, bb, cc) = quadratic_coeffs_sym(args[0], var, pool)?;
+    let alpha = negated_square_root(aa, pool)?;
+
+    // h = B/(2A); K = C − A·h².
+    let two_a = simplify(pool.mul(vec![pool.integer(2_i32), aa]), pool).value;
+    let h = quot(bb, two_a, pool);
+    let shifted = simplify(pool.add(vec![var, h]), pool).value;
+    let h2 = pool.pow(h, pool.integer(2_i32));
+    let k = simplify(
+        pool.add(vec![cc, pool.mul(vec![pool.integer(-1_i32), aa, h2])]),
+        pool,
+    )
+    .value;
+
+    let arg = simplify(pool.mul(vec![alpha, shifted]), pool).value;
+    let erf = pool.func("erf", vec![arg]);
+    let outer = pool.mul(vec![
+        c,
+        pool.func("exp", vec![k]),
+        pool.float(std::f64::consts::PI.sqrt() / 2.0, 53),
+        pool.pow(alpha, pool.integer(-1_i32)),
+        erf,
+    ]);
+    Some(outer)
+}
+
+// ---------------------------------------------------------------------------
+// Matcher 3c — Gaussian moments `∫xⁿ·exp(A·x² + C) dx`
+// ---------------------------------------------------------------------------
+
+/// `c · xⁿ · exp(A·x² + C)` with `A` provably negative and `n` a non-negative
+/// integer → `erf` plus elementary terms.
+///
+/// Integration by parts against `d(G) = 2A·x·G dx`, `G = exp(A·x² + C)`:
+///
+/// ```text
+///   ∫xⁿ·G dx = xⁿ⁻¹·G/(2A) − ((n−1)/(2A))·∫xⁿ⁻²·G dx
+///   ∫x·G  dx = G/(2A)
+///   ∫G    dx = exp(C)·(√π/2α)·erf(α·x),   α = √(−A)
+/// ```
+///
+/// The recursion drops `n` by two, so an **odd** `n` bottoms out at `∫x·G` and
+/// the answer is elementary, while an **even** `n` bottoms out at `∫G` and
+/// keeps exactly one `erf`.  That is the reason `∫x³·exp(−x²) dx` was already
+/// answered by the elementary pipeline and `∫x²·exp(−x²) dx` was an
+/// `E-INT-004`: the Risch tower is right that no elementary antiderivative
+/// exists for the even case, and wrong only about what follows from that.
+///
+/// **Odd `n` is excluded**, even though the recursion handles it.  An odd `n`
+/// bottoms out at `∫x·G` and produces an answer with no special function in it
+/// at all, and this module's contract is that it emits *non-elementary* closed
+/// forms — a second, weaker route to an elementary answer the rule engine
+/// already has is not an improvement, and `elementary_gaussian_multiple_declines`
+/// exists to keep it that way.  The base case `n = 1` stays in
+/// [`gaussian_moment`] because the even recursion never reaches it.
+///
+/// A linear term (`B ≠ 0`) is **not** covered.  The shift `u = x + B/(2A)`
+/// turns `xⁿ` into `(u − h)ⁿ`, which needs a binomial expansion this matcher
+/// does not do; declining is a decline, not a claim.
+fn match_gaussian_moment(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let (c, rest) = split_constant(expr, var, pool);
+    if rest.len() != 2 {
+        return None;
+    }
+
+    let mut power: Option<u32> = None;
+    let mut gaussian: Option<(ExprId, ExprId)> = None; // (G, A)
+    for &factor in &rest {
+        if let Some(n) = var_power(factor, var, pool) {
+            if power.is_some() {
+                return None;
+            }
+            power = Some(n);
+            continue;
+        }
+        if let ExprData::Func { name, args } = pool.get(factor) {
+            if name == "exp" && args.len() == 1 && gaussian.is_none() {
+                let (aa, bb, _cc) = quadratic_coeffs_sym(args[0], var, pool)?;
+                if !is_zero_const(bb, pool) {
+                    return None;
+                }
+                gaussian = Some((factor, aa));
+                continue;
+            }
+        }
+        return None;
+    }
+
+    let n = power?;
+    let (g, aa) = gaussian?;
+    // `n = 0` is `match_gaussian`'s / `match_gaussian_symbolic`'s case; odd `n`
+    // is elementary and not this module's business — see the doc comment.
+    if n < 2 || n % 2 != 0 {
+        return None;
+    }
+    let alpha = negated_square_root(aa, pool)?;
+    Some(pool.mul(vec![c, gaussian_moment(n, g, aa, alpha, var, pool)?]))
+}
+
+/// The recursion of [`match_gaussian_moment`], as an expression.
+fn gaussian_moment(
+    n: u32,
+    g: ExprId,
+    aa: ExprId,
+    alpha: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    // `2A` is non-zero: `quadratic_coeffs_sym` rejects a vanishing leading
+    // coefficient and `negated_square_root` has already proved `−A > 0`.
+    let inv_two_a = pool.pow(
+        pool.mul(vec![pool.integer(2_i32), aa]),
+        pool.integer(-1_i32),
+    );
+    match n {
+        // ∫exp(A·x² + C) dx.  `G` carries the `exp(C)` factor itself, so the
+        // constant is never re-derived: `G/exp(A·x²)` is `exp(C)`.
+        0 => {
+            let axx = pool.mul(vec![aa, pool.pow(var, pool.integer(2_i32))]);
+            let expc = pool.mul(vec![
+                g,
+                pool.pow(pool.func("exp", vec![axx]), pool.integer(-1_i32)),
+            ]);
+            let arg = simplify(pool.mul(vec![alpha, var]), pool).value;
+            Some(pool.mul(vec![
+                simplify(expc, pool).value,
+                pool.float(std::f64::consts::PI.sqrt() / 2.0, 53),
+                pool.pow(alpha, pool.integer(-1_i32)),
+                pool.func("erf", vec![arg]),
+            ]))
+        }
+        1 => Some(pool.mul(vec![g, inv_two_a])),
+        _ => {
+            let head = pool.mul(vec![
+                pool.pow(var, pool.integer(n as i32 - 1)),
+                g,
+                inv_two_a,
+            ]);
+            let tail = pool.mul(vec![
+                pool.integer(-(n as i32 - 1)),
+                inv_two_a,
+                gaussian_moment(n - 2, g, aa, alpha, var, pool)?,
+            ]);
+            Some(pool.add(vec![head, tail]))
+        }
+    }
+}
+
+/// `Some(n)` when `factor` is `var^n` with `n` a non-negative integer literal.
+fn var_power(factor: ExprId, var: ExprId, pool: &ExprPool) -> Option<u32> {
+    if factor == var {
+        return Some(1);
+    }
+    let ExprData::Pow { base, exp } = pool.get(factor) else {
+        return None;
+    };
+    if base != var {
+        return None;
+    }
+    let ExprData::Integer(n) = pool.get(exp) else {
+        return None;
+    };
+    u32::try_from(n.0).ok()
+}
+
+/// `Some((A, B, C))` for `A·var² + B·var + C` as **expressions**, with `A` a
+/// non-zero `var`-free coefficient.
+///
+/// The `f64` twin, `quadratic_coeffs`, is kept: it is what
+/// [`match_gaussian`]'s float-folded output is built from, and re-routing that
+/// through here would change the spelling of answers that already verify.
+fn quadratic_coeffs_sym(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<(ExprId, ExprId, ExprId)> {
+    // Expansion, not plain `simplify`: the whole point of this matcher is the
+    // shifted Gaussian, and `exp(−(x−b)²)` keeps its exponent as
+    // `−1·(x + −b)²` — a `Pow` whose base is an `Add`, which `monomial_sym`
+    // (correctly) has no reading of.  `simplify_expanded` multiplies it out to
+    // `−x² + 2·b·x − b²`, which is the quadratic this function is looking for.
+    let normalised = simplify_expanded(expr, pool).value;
+    let terms = match pool.get(normalised) {
+        ExprData::Add(args) => args,
+        _ => vec![normalised],
+    };
+    let mut buckets: [Vec<ExprId>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    for t in terms {
+        let (coeff, degree) = monomial_sym(t, var, pool)?;
+        buckets[degree as usize].push(coeff);
+    }
+    let collapse = |v: Vec<ExprId>| match v.len() {
+        0 => pool.integer(0_i32),
+        1 => v[0],
+        _ => pool.add(v),
+    };
+    let [c0, c1, c2] = buckets;
+    let aa = simplify(collapse(c2), pool).value;
+    if is_zero_const(aa, pool) {
+        return None;
+    }
+    Some((
+        aa,
+        simplify(collapse(c1), pool).value,
+        simplify(collapse(c0), pool).value,
+    ))
+}
+
+/// `Some((coefficient, degree))` for one term of a quadratic in `var`, with the
+/// coefficient left symbolic.  Degrees above two decline.
+fn monomial_sym(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<(ExprId, u32)> {
+    if is_free_of(expr, var, pool) {
+        return Some((expr, 0));
+    }
+    if expr == var {
+        return Some((pool.integer(1_i32), 1));
+    }
+    if let ExprData::Pow { base, exp } = pool.get(expr) {
+        if base != var {
+            return None;
+        }
+        let ExprData::Integer(n) = pool.get(exp) else {
+            return None;
+        };
+        let d = u32::try_from(n.0).ok()?;
+        return (d <= 2).then_some((pool.integer(1_i32), d));
+    }
+    let ExprData::Mul(args) = pool.get(expr) else {
+        return None;
+    };
+    let mut coeffs: Vec<ExprId> = Vec::new();
+    let mut degree = 0_u32;
+    for a in args {
+        let (k, d) = monomial_sym(a, var, pool)?;
+        coeffs.push(k);
+        degree += d;
+    }
+    if degree > 2 {
+        return None;
+    }
+    let coeff = match coeffs.len() {
+        1 => coeffs[0],
+        _ => pool.mul(coeffs),
+    };
+    Some((coeff, degree))
+}
+
+/// `Some(√(−A))` when `−A` is **provably** a positive real, else `None`.
+///
+/// "Provably" here is structural and deliberately small: a positive numeric
+/// literal, a symbol declared [`crate::kernel::Domain::Positive`], an `exp`, an
+/// even power, or a product/sum built from those.  It is a sufficient
+/// condition, never a necessary one — declining is free, and a wrong `yes`
+/// would emit `√` of a negative number.
+fn negated_square_root(aa: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let neg = simplify(pool.mul(vec![pool.integer(-1_i32), aa]), pool).value;
+    if !is_structurally_positive(neg, pool) {
+        return None;
+    }
+    Some(simplify(pool.func("sqrt", vec![neg]), pool).value)
+}
+
+/// A sufficient structural test for `e > 0`.
+fn is_structurally_positive(e: ExprId, pool: &ExprPool) -> bool {
+    if let Some(v) = crate::kernel::try_expr_f64(e, pool) {
+        return v > 0.0;
+    }
+    match pool.get(e) {
+        ExprData::Symbol { domain, .. } => domain == crate::kernel::Domain::Positive,
+        ExprData::Func { name, args } => {
+            name == "exp"
+                || (name == "sqrt" && args.len() == 1 && is_structurally_positive(args[0], pool))
+        }
+        ExprData::Mul(args) | ExprData::Add(args) => {
+            args.iter().all(|&a| is_structurally_positive(a, pool))
+        }
+        // A positive base raised to any real power is positive.  An **even
+        // power of an unsigned base is deliberately not accepted**, even though
+        // `b² ≥ 0`: the `≥` is the problem.  `∫exp(−b²·x²) dx` would emit
+        // `√π/(2b)·erf(b·x)`, which is right for every `b ≠ 0` and undefined at
+        // `b = 0` — where the integrand is the perfectly ordinary `1`.  The
+        // parameter sweep would never sample exactly `0` and so would never
+        // catch it, and "correct except at one parameter value, silently" is
+        // the shape of answer this codebase refuses.  A `b` the caller has
+        // declared `NonZero` or `Positive` is a different question and is
+        // accepted by the `Symbol` arm above.
+        ExprData::Pow { base, .. } => is_structurally_positive(base, pool),
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Matcher 4 — Fresnel
 // ---------------------------------------------------------------------------
 
@@ -692,6 +1195,7 @@ fn match_dilog(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::integrate::engine::verify_antiderivative_status;
     use crate::kernel::Domain;
 
     fn setup() -> (ExprPool, ExprId) {
@@ -827,5 +1331,120 @@ mod tests {
     #[test]
     fn elliptic_pi_is_not_in_the_basis() {
         assert!(!SPECIAL_BASIS.contains(&"EllipticPi"));
+    }
+
+    /// Parse a source string against a fresh pool carrying `x` real, `p`
+    /// positive and `b` real — the three declarations the parameter cases need.
+    fn parsed(src: &str) -> (ExprPool, ExprId, ExprId) {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let mut syms = std::collections::HashMap::from([
+            ("x".to_owned(), x),
+            ("b".to_owned(), pool.symbol("b", Domain::Real)),
+            ("a".to_owned(), pool.symbol("a", Domain::Real)),
+            ("p".to_owned(), pool.symbol("p", Domain::Positive)),
+            ("q".to_owned(), pool.symbol("q", Domain::Positive)),
+        ]);
+        let f = crate::parse(src, &pool, &mut syms).expect("parse");
+        (pool, f, x)
+    }
+
+    /// `∫exp(−p·x²) dx = (√π/2√p)·erf(√p·x)` for a symbol *declared* positive.
+    /// The `f64` coefficient route cannot see this at all — `p` has no value.
+    #[test]
+    fn symbolic_gaussian_needs_only_a_positive_declaration() {
+        let (pool, f, x) = parsed("exp(-p*x^2)");
+        let (out, evidence) = try_special_antiderivative(f, x, &pool).expect("erf");
+        assert_eq!(basis_functions_used(out, &pool), vec!["erf"]);
+        assert_eq!(evidence, AntiderivativeVerification::Numeric);
+    }
+
+    /// The same integrand with an **undeclared-sign** `a` is refused, and that
+    /// is the point: `√π/(2√a)·erf(√a·x)` is not a real number for `a < 0`, so
+    /// emitting it would hand back an expression that is `NaN` over half its
+    /// parameter range — the domain-hole shape the gate exists to catch.
+    #[test]
+    fn gaussian_with_an_unsigned_parameter_is_refused() {
+        let (pool, f, x) = parsed("exp(-a*x^2)");
+        assert!(try_special_antiderivative(f, x, &pool).is_none());
+    }
+
+    /// A linear shift is a substitution, not a new function: `∫exp(−(x−b)²) dx`
+    /// is `(√π/2)·erf(x−b)` for every real `b`.
+    #[test]
+    fn shifted_gaussian_carries_its_parameter() {
+        let (pool, f, x) = parsed("exp(-(x-b)^2)");
+        let (out, _) = try_special_antiderivative(f, x, &pool).expect("erf");
+        assert_eq!(basis_functions_used(out, &pool), vec!["erf"]);
+    }
+
+    /// `∫x²·exp(−x²) dx = −x·exp(−x²)/2 + (√π/4)·erf(x)` — one `erf`, one
+    /// elementary term, from the by-parts recursion.
+    #[test]
+    fn even_gaussian_moment_is_erf_plus_elementary() {
+        let (pool, f, x) = parsed("x^2*exp(-x^2)");
+        let (out, _) = try_special_antiderivative(f, x, &pool).expect("erf");
+        assert_eq!(basis_functions_used(out, &pool), vec!["erf"]);
+    }
+
+    /// `∫sin(x)/x² dx = −sin(x)/x + Ci(x)`.  This is the integrand this
+    /// module's docs carried for as long as it was unreachable.
+    #[test]
+    fn sine_over_x_squared_is_ci_plus_elementary() {
+        let (pool, f, x) = parsed("sin(x)/x^2");
+        let (out, _) = try_special_antiderivative(f, x, &pool).expect("Ci");
+        assert_eq!(basis_functions_used(out, &pool), vec!["Ci"]);
+    }
+
+    /// The `cos′ = −sin` sign is the one place the by-parts recursion can go
+    /// wrong quietly, so the `cos` chain is pinned separately from the `sin`
+    /// one: `∫cos(x)/x³ dx` reaches `Ci` through *two* reductions.
+    #[test]
+    fn cosine_over_x_cubed_keeps_its_sign() {
+        let (pool, f, x) = parsed("cos(x)/x^3");
+        let (out, _) = try_special_antiderivative(f, x, &pool).expect("Ci");
+        assert_eq!(basis_functions_used(out, &pool), vec!["Ci"]);
+    }
+
+    /// A denominator that is **not** proportional to the argument has no
+    /// change of variable to make, and the angle-addition split that would
+    /// close `∫sin(2x+3)/(x+1) dx` is not in this module.  Decline, do not
+    /// guess.
+    #[test]
+    fn non_proportional_denominator_declines() {
+        let (pool, f, x) = parsed("sin(2*x+3)/(x+1)^2");
+        assert!(try_special_antiderivative(f, x, &pool).is_none());
+    }
+
+    /// `−A = b²` is non-negative, not positive, and the difference is not
+    /// pedantic: `√π/(2b)·erf(b·x)` is a fine antiderivative of `exp(−b²·x²)`
+    /// for every `b ≠ 0` and is `0/0` at `b = 0`, where the integrand is the
+    /// ordinary constant `1`.  The parameter sweep sails past `0` without ever
+    /// landing on it, so the gate cannot be the thing that catches this —
+    /// `is_structurally_positive` has to refuse the even power itself.
+    #[test]
+    fn an_even_power_is_not_a_positive_coefficient() {
+        let (pool, f, x) = parsed("exp(-b^2*x^2)");
+        assert!(try_special_antiderivative(f, x, &pool).is_none());
+    }
+
+    /// The same integrand with `b` declared positive is answerable, which is
+    /// what makes the refusal above a statement about `b = 0` rather than about
+    /// even powers.
+    #[test]
+    fn an_even_power_of_a_positive_symbol_is_a_positive_coefficient() {
+        let (pool, f, x) = parsed("exp(-q^2*x^2)");
+        let (out, _) = try_special_antiderivative(f, x, &pool).expect("erf");
+        assert_eq!(basis_functions_used(out, &pool), vec!["erf"]);
+    }
+
+    /// `∫x³·exp(−x²) dx` is elementary and the rule engine already answers it;
+    /// this module emits *non-elementary* closed forms and stays out of the
+    /// way.  (The odd recursion would produce a correct answer — the point is
+    /// that it must not be this module's to give.)
+    #[test]
+    fn odd_gaussian_moment_is_not_this_modules_business() {
+        let (pool, f, x) = parsed("x^3*exp(-x^2)");
+        assert!(try_special_antiderivative(f, x, &pool).is_none());
     }
 }

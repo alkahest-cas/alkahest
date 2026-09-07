@@ -74,7 +74,7 @@ pub use flint::{FlintInteger, FlintPoly};
 pub use hybrid::{Event, GuardStructure, HybridODE};
 pub use integrate::{
     integrate, integrate_definite, verify_antiderivative_exact, verify_antiderivative_status,
-    AntiderivativeVerification, IntegrationError,
+    verify_antiderivative_status_parametric, AntiderivativeVerification, IntegrationError,
 };
 #[allow(deprecated)]
 pub use kernel::{
@@ -105,7 +105,12 @@ pub use matrix::{
 };
 pub use numeric::{guess_integer_relation, PslqError};
 pub use ode::{
-    dsolve::{dsolve, DsolveError, DsolveResult, DsolveSolution, OdeInput},
+    dsolve::{
+        dsolve, dsolve_with,
+        system::{dsolve_system, dsolve_system_with, DsolveSystemError, SystemSolution},
+        DsolveBranch, DsolveError, DsolveReport, DsolveResult, DsolveSolution, OdeInput,
+        SolutionForm,
+    },
     lower_to_first_order,
     sensitivity::{adjoint_system, sensitivity_system, AdjointSystem, SensitivitySystem},
     OdeError, ScalarODE, ODE,
@@ -391,7 +396,13 @@ pub mod experimental {
         select_lucky_prime, ModularError, ModularValue, MultiPolyFp,
     };
     pub use crate::numeric::{guess_integer_relation, PslqError};
-    pub use crate::ode::dsolve::{dsolve, DsolveError, DsolveResult, DsolveSolution, OdeInput};
+    pub use crate::ode::dsolve::system::{
+        dsolve_system, dsolve_system_with, DsolveSystemError, SystemSolution,
+    };
+    pub use crate::ode::dsolve::{
+        dsolve, dsolve_with, DsolveBranch, DsolveError, DsolveReport, DsolveResult, DsolveSolution,
+        OdeInput, SolutionForm,
+    };
     pub use crate::ode::sensitivity::{
         adjoint_system, sensitivity_system, AdjointSystem, SensitivitySystem,
     };
@@ -418,12 +429,18 @@ pub mod experimental {
     pub use crate::transform::fourier::fourier_derivative_rule;
     pub use crate::transform::laplace::laplace_derivative_rule;
     pub use crate::transform::{
-        fourier_transform, inverse_fourier_transform, inverse_laplace_transform, laplace_transform,
-        FourierError, LaplaceError,
+        fourier_transform, inverse_fourier_transform, inverse_laplace_transform,
+        inverse_laplace_transform_with_assumptions, inverse_laplace_transform_with_conditions,
+        laplace_transform, FourierError, LaplaceError,
     };
     pub use crate::transform::{
-        inverse_z_transform, z_shift_advance, z_shift_delay, z_transform, ZTransformError,
+        inverse_z_transform, inverse_z_transform_with_assumptions,
+        inverse_z_transform_with_conditions, take_transform_side_conditions, z_shift_advance,
+        z_shift_delay, z_transform, ZTransformError,
     };
+    // ℚ(params) partial fractions: the in-band and out-of-band forms of the
+    // hypotheses a parametric decomposition rests on.
+    pub use crate::poly::{apart_with_conditions, take_apart_side_conditions};
 
     #[cfg(feature = "parallel")]
     pub use crate::simplify::dispatch::{

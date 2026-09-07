@@ -1257,6 +1257,13 @@ def limit(expr, var, point, dir=None):
     ``LimitError`` (``E-LIMIT-005``), and a two-sided limit at an odd-order
     pole raises ``E-LIMIT-003`` asking for a direction.
 
+    A limit whose value turns on the sign of a free parameter —
+    ``lim_{t→∞} exp(-k·t)`` is ``0`` for ``k > 0``, ``+∞`` for ``k < 0`` and
+    ``1`` for ``k = 0`` — raises ``E-LIMIT-006`` naming the parameter, unless
+    the sign is stated: either inside
+    ``alkahest.context(assumptions=...)`` or by declaring the symbol with
+    ``Domain.Positive``.
+
     Nested calls that expect an :class:`Expr` still work: :func:`_coerce_expr`
     unwraps a :class:`DerivedResult` automatically. Use ``.value`` when
     comparing against an :class:`Expr` directly.

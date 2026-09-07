@@ -93,6 +93,8 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-ODE-010", class: "DsolveError", cause: Cause::Unsupported, remediation: None },
     ErrorSpec { code: "E-ODE-011", class: "DsolveError", cause: Cause::UserInput, remediation: None },
     ErrorSpec { code: "E-ODE-012", class: "DsolveError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-ODE-013", class: "DsolveError", cause: Cause::Unsupported, remediation: Some("the ODE class was recognised but the quadrature it needs is not elementary for this integrator") },
+    ErrorSpec { code: "E-ODE-014", class: "DsolveError", cause: Cause::Unsupported, remediation: Some("supply a particular solution; no general-Riccati closed form is attempted") },
     ErrorSpec { code: "E-ODE-020", class: "NumericOdeError", cause: Cause::UserInput, remediation: None },
     ErrorSpec { code: "E-ODE-021", class: "NumericOdeError", cause: Cause::Resource, remediation: None },
     ErrorSpec { code: "E-ODE-022", class: "NumericOdeError", cause: Cause::Resource, remediation: None },
@@ -100,6 +102,11 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-ODE-024", class: "NumericOdeError", cause: Cause::Unsupported, remediation: None },
     ErrorSpec { code: "E-ODE-025", class: "NumericOdeError", cause: Cause::UserInput, remediation: None },
     ErrorSpec { code: "E-ODE-026", class: "NumericOdeError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-ODE-030", class: "DsolveSystemError", cause: Cause::UserInput,   remediation: Some("each right-hand side must be affine in the state variables") },
+    ErrorSpec { code: "E-ODE-031", class: "DsolveSystemError", cause: Cause::Unsupported, remediation: Some("y' = A(t)y needs a Magnus/Peano series, not e^{At}") },
+    ErrorSpec { code: "E-ODE-032", class: "DsolveSystemError", cause: Cause::Unsupported, remediation: Some("substitute concrete values for the symbolic entries of A, or use a 2x2/3x3 or triangular system") },
+    ErrorSpec { code: "E-ODE-033", class: "DsolveSystemError", cause: Cause::Unsupported, remediation: Some("the forcing term has no elementary antiderivative against the fundamental matrix") },
+    ErrorSpec { code: "E-ODE-034", class: "DsolveSystemError", cause: Cause::UserInput,   remediation: None },
     // E-DAE — DaeError
     ErrorSpec { code: "E-DAE-001", class: "DaeError", cause: Cause::Unsupported, remediation: Some("ensure all functions are differentiable before calling pantelides()") },
     ErrorSpec { code: "E-DAE-002", class: "DaeError", cause: Cause::UserInput,   remediation: Some("DAE index exceeds depth-10 limit; reformulate the model") },
@@ -327,6 +334,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-LIMIT-003", class: "LimitError", cause: Cause::UserInput, remediation: Some("use LimitDirection::Plus or Minus matching the desired one-sided approach") },
     ErrorSpec { code: "E-LIMIT-004", class: "LimitError", cause: Cause::Resource, remediation: Some("try manual algebra (quotient form, cancellations) or split into simpler sub-expressions") },
     ErrorSpec { code: "E-LIMIT-005", class: "LimitError", cause: Cause::Unsupported, remediation: Some("limit could not be computed — try manual algebra, or the expression may involve oscillation or non-comparable growth not yet handled") },
+    ErrorSpec { code: "E-LIMIT-006", class: "LimitError", cause: Cause::UserInput, remediation: Some("state the sign of the parameter — `Assumptions.refine(pool.gt(k, pool.integer(0)))`, or declare it with `Domain.Positive` — and retry inside `alkahest.context(assumptions=…)`") },
     // E-NFM — NormalFormError
     ErrorSpec { code: "E-NFM-001", class: "NormalFormError", cause: Cause::UserInput, remediation: None },
     ErrorSpec { code: "E-NFM-002", class: "NormalFormError", cause: Cause::Unsupported, remediation: None },

@@ -828,6 +828,27 @@ fn match_gaussian_quadratic(
 /// `(A, B, C)`.  Requires a non-zero, x-free `x²` coefficient; rejects any term
 /// of degree > 2 or otherwise non-polynomial in `x`.
 fn quadratic_abc(expr: ExprId, x: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId, ExprId)> {
+    if let Some(abc) = quadratic_abc_structural(expr, x, pool) {
+        return Some(abc);
+    }
+    // The structural reader wants the literal factor `x^2`, so it misses every
+    // exponent that is a *quadratic* without being written as one: `x·x`,
+    // `(x+1)(x−1)`, `x(x−2)`.  Normalising through the rational-function
+    // machinery expands and collects the exponent first, which turns all of
+    // those into the `A·x² + B·x + C` the reader already handles.  Tried
+    // second, so nothing that matched before matches differently now.
+    let normalized = crate::poly::cancel(expr, vec![x], pool).ok()?;
+    if normalized == expr {
+        return None;
+    }
+    quadratic_abc_structural(normalized, x, pool)
+}
+
+fn quadratic_abc_structural(
+    expr: ExprId,
+    x: ExprId,
+    pool: &ExprPool,
+) -> Option<(ExprId, ExprId, ExprId)> {
     let x2 = pool.pow(x, pool.integer(2_i32));
     let terms: Vec<ExprId> = match pool.get(expr) {
         ExprData::Add(a) => a,

@@ -34,7 +34,9 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-SERIES-001 … E-SERIES-003 SeriesError  (003 = expansion ran past its work
                                  ceiling / budget before reaching the requested
                                  order; refused rather than returned short)
-    E-LIMIT-001 … E-LIMIT-005 LimitError
+    E-LIMIT-001 … E-LIMIT-006 LimitError  (006 = the limit turns on the sign of
+                                 a free parameter that nothing states; assume
+                                 it, or declare the symbol Domain.Positive)
     E-CUDA-001  … E-CUDA-006   CudaError
     E-IO-001    … E-IO-009     IoError  (formerly PoolPersistError / E-POOL-*)
     E-PARSE-*                  ParseError  (reserved; parser not yet integrated)

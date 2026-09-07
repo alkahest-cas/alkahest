@@ -120,7 +120,7 @@ use alkahest_core::{
     simplify_egraph_with as core_simplify_egraph_with, simplify_log_exp as core_simplify_log_exp,
     simplify_trig_normal_form as core_simplify_trig_normal_form,
     simplify_with as core_simplify_with, trig_rules,
-    verify_antiderivative_status as core_verify_antiderivative_status,
+    verify_antiderivative_status_parametric as core_verify_antiderivative_parametric,
     AlkahestError as AlkahestErrorTrait, AntiderivativeVerification, ApartError,
     AssumptionContext as CoreAssumptionContext, AssumptionError, ComplexF64, DerivedExpr,
     DiffError, EgraphConfig, GaussRat, IntegrationError, IoError,
@@ -138,8 +138,11 @@ use alkahest_core::calculus::fps::{Fps as CoreFps, FpsError as CoreFpsError};
 use alkahest_core::calculus::multilimit::{
     multilimit as core_multilimit, MultiLimit as CoreMultiLimit,
 };
+use alkahest_core::ode::dsolve::system::{
+    dsolve_system_with as core_dsolve_system_with, DsolveSystemError as CoreDsolveSystemError,
+};
 use alkahest_core::ode::dsolve::{
-    dsolve as core_dsolve, DsolveError as CoreDsolveError, OdeInput as CoreOdeInput,
+    dsolve_with as core_dsolve_with, DsolveError as CoreDsolveError, OdeInput as CoreOdeInput,
 };
 use alkahest_core::ode::numeric::{
     integrate_rk4 as core_integrate_rk4, integrate_rk45 as core_integrate_rk45,
@@ -768,6 +771,57 @@ fn py_is_budget_active() -> bool {
     alkahest_core::budget::is_active()
 }
 
+// ---------------------------------------------------------------------------
+// Ambient assumptions — same push/pop shape as the budget stack above.
+//
+// `Assumptions` is already threaded explicitly into `simplify` and `solve`,
+// which are the calls a user makes directly. The engines that need a stated
+// fact *indirectly* — `limit`, and therefore every improper integral that
+// bottoms out in one — cannot be reached that way, so
+// `alkahest.context(assumptions=…)` also installs the context on the Rust-side
+// thread-local for the duration of its block.
+//
+// The guard records the pool's address, so the `Py<PyExprPool>` is retained
+// alongside it: dropping the last reference to the pool while a frame naming
+// it is live would leave the frame comparing against an address that could be
+// reused. Nothing dereferences it either way, but keeping the pool alive makes
+// the comparison mean what it says.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static PY_ASSUMPTION_GUARDS: std::cell::RefCell<
+        Vec<(alkahest_core::simplify::AssumptionScope, Py<PyExprPool>)>,
+    > = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Make `assumptions` visible to the Rust engines on this thread until
+/// [`py_pop_assumptions`] is called. `alkahest.context(assumptions=…)` calls
+/// both around its `with` block.
+#[pyfunction]
+#[pyo3(name = "push_assumptions")]
+fn py_push_assumptions(py: Python<'_>, assumptions: PyRef<PyAssumptions>) -> PyResult<()> {
+    let pool_obj = assumptions.pool.clone_ref(py);
+    let guard = {
+        let pool = assumptions.pool.borrow(py);
+        alkahest_core::simplify::enter_assumptions(&assumptions.inner, &pool.inner)
+    };
+    PY_ASSUMPTION_GUARDS.with(|g| g.borrow_mut().push((guard, pool_obj)));
+    Ok(())
+}
+
+/// Pop the most recently pushed ambient assumption frame on this thread.
+#[pyfunction]
+#[pyo3(name = "pop_assumptions")]
+fn py_pop_assumptions() -> PyResult<()> {
+    let popped = PY_ASSUMPTION_GUARDS.with(|g| g.borrow_mut().pop());
+    if popped.is_none() {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "pop_assumptions() called with no active assumption scope on this thread",
+        ));
+    }
+    Ok(())
+}
+
 /// The seed of the innermost active budget on this thread, or `None`.
 #[pyfunction]
 #[pyo3(name = "budget_seed")]
@@ -865,6 +919,17 @@ fn limit_error_to_py(e: LimitError) -> PyErr {
             return Python::with_gil(|py| {
                 let exc_type = py.get_type_bound::<PyBudgetExceededError>();
                 make_structured_err(py, &exc_type, &b)
+            });
+        }
+    }
+    // Same out-of-band channel, for the same semver reason: "no rule applies"
+    // is true but useless when the missing rule is a fact only the caller can
+    // supply. `E-LIMIT-006` names the parameter and what to assume about it.
+    if matches!(e, LimitError::Unsupported) {
+        if let Some(missing) = alkahest_core::calculus::limits::last_missing_assumption() {
+            return Python::with_gil(|py| {
+                let exc_type = py.get_type_bound::<PyLimitError>();
+                make_structured_err(py, &exc_type, &missing)
             });
         }
     }
@@ -2438,12 +2503,24 @@ impl PyDerivedResult {
             }
         };
         let has_certificate = lean_certificate.is_some();
+        // The *parametric* gate, so that an answer carrying a free parameter
+        // — `∫exp(−p·x²) dx = (√π/2√p)·erf(√p·x)` — reports the evidence it was
+        // actually emitted on. The plain gate binds only the integration
+        // variable, leaves `p` unbound, and reports `unverified` for an answer
+        // that a parameter sweep did check; that under-statement is as
+        // misleading as an over-statement. With no free parameter the two are
+        // the same function, so no existing status changes.
         let integration_verification =
             self.integration_verification_input
                 .and_then(|(integrand, var)| {
                     let pool_py = self.value.pool.clone_ref(py);
                     let pool = pool_py.borrow(py);
-                    core_verify_antiderivative_status(self.raw.value, integrand, var, &pool.inner)
+                    core_verify_antiderivative_parametric(
+                        self.raw.value,
+                        integrand,
+                        var,
+                        &pool.inner,
+                    )
                 });
         metadata
             .set_item(
@@ -4195,7 +4272,11 @@ fn py_apart(py: Python<'_>, expr: PyRef<PyExpr>, var: PyRef<PyExpr>) -> PyResult
     let id = {
         let pool = pool_py.borrow(py);
         guard_depth(&pool.inner, expr.id)?;
-        core_apart(expr.id, var.id, &pool.inner).map_err(apart_error_to_py)?
+        let out = core_apart(expr.id, var.id, &pool.inner);
+        // Capture on both paths: a caller must be able to read the hypotheses
+        // of the call that just happened, not of some earlier one.
+        capture_apart_side_conditions(&pool.inner);
+        out.map_err(apart_error_to_py)?
     };
     Ok(PyExpr { id, pool: pool_py })
 }
@@ -4452,23 +4533,50 @@ fn fps_error_to_py(e: CoreFpsError) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(e.to_string())
 }
 
-/// `experimental.dsolve(equation, x, y, [y', y'', …])` — solve a scalar ODE.
+/// `experimental.dsolve(equation, x, y, [y', y'', …], assumptions=None)` —
+/// solve a scalar ODE.
 ///
 /// `equation` is interpreted as `equation = 0`, written in terms of the
 /// independent variable `x`, the unknown `y`, and the derivative symbols
 /// `derivs` (`derivs[0] = y'`, …). Returns a list of solution dicts with keys
-/// `y_of_x` (the `Expr` for `y(x)`), `constants` (list of `Expr`), and `method`.
+/// `y_of_x` (the `Expr` for `y(x)`), `constants` (list of `Expr`), `method`,
+/// `side_conditions` (list of `str`) and `notes` (list of `str`), and — for
+/// first-order classes that can answer implicitly — `form` and
+/// `implicit_relation`.
+///
+/// `form` is `"explicit"` or `"implicit"`. A separable or exact equation often
+/// has no closed form for `y`; the answer is then the relation
+/// `implicit_relation == 0`, satisfied by every solution curve, and `y_of_x`
+/// is `None`. Reading `y_of_x` without checking `form` therefore cannot
+/// mistake a relation for a solution. Explicit answers keep exactly the keys
+/// and values they had before `form` existed.
+///
+/// The coefficients may be symbolic: `y'' + 2*z*w*y' + w**2*y = 0` returns the
+/// uniform two-exponential form. Its discriminant's sign is parameter
+/// dependent, so the family it returns is the general solution only where the
+/// characteristic roots are distinct — `side_conditions` carries that
+/// condition and `notes` names the repeated-root case it excludes. Both are
+/// empty when nothing was assumed. Passing `assumptions` (an
+/// :class:`Assumptions` context stating e.g. the discriminant is non-zero, or
+/// negative) settles the branch and empties them.
 #[pyfunction]
-#[pyo3(name = "dsolve")]
+#[pyo3(name = "dsolve", signature = (equation, x, y, derivs, assumptions=None))]
 fn py_dsolve(
     py: Python<'_>,
     equation: PyRef<PyExpr>,
     x: PyRef<PyExpr>,
     y: PyRef<PyExpr>,
     derivs: Vec<PyExpr>,
+    assumptions: Option<PyRef<PyAssumptions>>,
 ) -> PyResult<PyObject> {
+    if let Some(ref a) = assumptions {
+        if !a.pool.is(&equation.pool) {
+            return Err(pool_mismatch_err());
+        }
+    }
     let pool_py = equation.pool.clone_ref(py);
-    let result = {
+    let empty = CoreAssumptionContext::new();
+    let report = {
         let pool = pool_py.borrow(py);
         let input = CoreOdeInput {
             x: x.id,
@@ -4476,18 +4584,35 @@ fn py_dsolve(
             derivs: derivs.iter().map(|e| e.id).collect(),
             equation: equation.id,
         };
-        core_dsolve(&input, &pool.inner).map_err(dsolve_error_to_py)?
+        let ctx = assumptions.as_ref().map_or(&empty, |a| &a.inner);
+        core_dsolve_with(&input, ctx, &pool.inner).map_err(dsolve_error_to_py)?
     };
+    let pool = pool_py.borrow(py);
+    let conditions: Vec<String> = report
+        .side_conditions
+        .iter()
+        .map(|c| render_side_condition_or_depth(&pool.inner, c))
+        .collect();
+    drop(pool);
     let out = PyList::empty_bound(py);
-    for sol in result.solutions {
+    for sol in report.branches {
         let d = PyDict::new_bound(py);
-        d.set_item(
-            "y_of_x",
+        let wrap = |id| {
             PyExpr {
-                id: sol.y_of_x,
+                id,
                 pool: pool_py.clone_ref(py),
             }
-            .into_py(py),
+            .into_py(py)
+        };
+        d.set_item("y_of_x", sol.y_of_x().map(wrap))?;
+        d.set_item("implicit_relation", sol.implicit_relation().map(wrap))?;
+        d.set_item(
+            "form",
+            if sol.is_explicit() {
+                "explicit"
+            } else {
+                "implicit"
+            },
         )?;
         let consts = PyList::empty_bound(py);
         for c in sol.constants {
@@ -4501,9 +4626,102 @@ fn py_dsolve(
         }
         d.set_item("constants", consts)?;
         d.set_item("method", sol.method)?;
+        d.set_item("side_conditions", conditions.clone())?;
+        d.set_item("notes", report.notes.clone())?;
         out.append(d)?;
     }
     Ok(out.into_py(py))
+}
+
+fn dsolve_system_error_to_py(e: CoreDsolveSystemError) -> PyErr {
+    pyo3::exceptions::PyValueError::new_err(e.to_string())
+}
+
+/// `experimental.dsolve_system(ode, assumptions=None)` — solve a linear
+/// constant-coefficient system `y' = A·y + f(t)` in closed form.
+///
+/// `ode` is an :class:`alkahest.ODE`, i.e. `d(state_vars)/dt = rhs`. Each
+/// right-hand side must be affine in the state variables with coefficients
+/// free of the time variable; the coefficients themselves may be symbolic.
+///
+/// Returns a dict with keys `state_vars` (list of `Expr`), `y_of_t` (list of
+/// `Expr`, aligned with `state_vars`), `constants` (list of `Expr`),
+/// `fundamental_matrix` (list of rows of `Expr`, the entries of `e^{At}`),
+/// `method` (`str`), `side_conditions` (list of `str`) and `notes` (list of
+/// `str`).
+///
+/// Raises `ValueError` when the system is not linear (`E-ODE-030`), has a
+/// time-dependent coefficient (`E-ODE-031`), has no closed-form spectrum
+/// (`E-ODE-032`), has a forcing term whose required integral is not elementary
+/// (`E-ODE-033`), or produced a candidate that failed the substitution gate
+/// (`E-ODE-034`). It never returns an unverified solution.
+///
+/// The two-compartment pharmacokinetic model
+/// `x' = -ka*x`, `y' = ka*x - ke*y` solves with symbolic `ka`, `ke`; because
+/// `ka = ke` makes the returned expression divide by zero, that case appears in
+/// `side_conditions` rather than being assumed away.
+#[pyfunction]
+#[pyo3(name = "dsolve_system", signature = (ode, assumptions=None))]
+fn py_dsolve_system(
+    py: Python<'_>,
+    ode: PyRef<PyODE>,
+    assumptions: Option<PyRef<PyAssumptions>>,
+) -> PyResult<PyObject> {
+    if let Some(ref a) = assumptions {
+        if !a.pool.is(&ode.pool) {
+            return Err(pool_mismatch_err());
+        }
+    }
+    let pool_py = ode.pool.clone_ref(py);
+    let empty = CoreAssumptionContext::new();
+    let (sol, conditions) = {
+        let pool = pool_py.borrow(py);
+        let ctx = assumptions.as_ref().map_or(&empty, |a| &a.inner);
+        let sol = core_dsolve_system_with(&ode.inner, ctx, &pool.inner)
+            .map_err(dsolve_system_error_to_py)?;
+        let conditions: Vec<String> = sol
+            .side_conditions
+            .iter()
+            .map(|c| render_side_condition_or_depth(&pool.inner, c))
+            .collect();
+        (sol, conditions)
+    };
+    let wrap = |id: ExprId| {
+        PyExpr {
+            id,
+            pool: pool_py.clone_ref(py),
+        }
+        .into_py(py)
+    };
+    let d = PyDict::new_bound(py);
+    let states = PyList::empty_bound(py);
+    for v in &sol.state_vars {
+        states.append(wrap(*v))?;
+    }
+    d.set_item("state_vars", states)?;
+    let ys = PyList::empty_bound(py);
+    for e in &sol.y_of_t {
+        ys.append(wrap(*e))?;
+    }
+    d.set_item("y_of_t", ys)?;
+    let consts = PyList::empty_bound(py);
+    for c in &sol.constants {
+        consts.append(wrap(*c))?;
+    }
+    d.set_item("constants", consts)?;
+    let phi = PyList::empty_bound(py);
+    for row in &sol.fundamental_matrix {
+        let r = PyList::empty_bound(py);
+        for e in row {
+            r.append(wrap(*e))?;
+        }
+        phi.append(r)?;
+    }
+    d.set_item("fundamental_matrix", phi)?;
+    d.set_item("method", sol.method)?;
+    d.set_item("side_conditions", conditions)?;
+    d.set_item("notes", sol.notes)?;
+    Ok(d.into_py(py))
 }
 
 // ---------------------------------------------------------------------------
@@ -4755,9 +4973,82 @@ fn py_inverse_laplace_transform(
     let pool_py = big_f.pool.clone_ref(py);
     let id = {
         let pool = pool_py.borrow(py);
-        core_ilaplace(big_f.id, s.id, t.id, &pool.inner).map_err(laplace_error_to_py)?
+        let out = core_ilaplace(big_f.id, s.id, t.id, &pool.inner);
+        capture_transform_side_conditions(&pool.inner);
+        out.map_err(laplace_error_to_py)?
     };
     Ok(PyExpr { id, pool: pool_py })
+}
+
+std::thread_local! {
+    static TRANSFORM_SIDE_CONDITIONS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static APART_SIDE_CONDITIONS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Drain the core channel and render it, so
+/// [`py_transform_side_conditions`] describes *this* call whether it succeeded
+/// or failed.
+fn capture_transform_side_conditions(pool: &alkahest_core::ExprPool) {
+    let rendered: Vec<String> = alkahest_core::transform::take_transform_side_conditions()
+        .iter()
+        .map(|c| render_side_condition_or_depth(pool, c))
+        .collect();
+    TRANSFORM_SIDE_CONDITIONS.with(|c| *c.borrow_mut() = rendered);
+}
+
+fn capture_apart_side_conditions(pool: &alkahest_core::ExprPool) {
+    let rendered: Vec<String> = alkahest_core::poly::take_apart_side_conditions()
+        .iter()
+        .map(|c| render_side_condition_or_depth(pool, c))
+        .collect();
+    APART_SIDE_CONDITIONS.with(|c| *c.borrow_mut() = rendered);
+}
+
+/// `experimental.transform_side_conditions() -> list[str]`
+///
+/// The hypotheses the most recent ``inverse_laplace_transform`` /
+/// ``inverse_z_transform`` on this thread **assumed** in order to return the
+/// answer it did — one rendered string per condition, e.g. ``"a ≠ 0"``.
+///
+/// Empty for every input whose coefficients are rational numbers. Non-empty
+/// when the answer depends on a fact about a symbolic parameter that the input
+/// does not settle::
+///
+///     L⁻¹{D·ka/((s+ka)(s+ke))} = D·ka·(e^{−ka·t} − e^{−ke·t})/(ke − ka)
+///
+/// is the Bateman function **for ``ka ≠ ke``**; at ``ka = ke`` it is ``0/0``
+/// and the true inverse is ``D·ka·t·e^{−ka·t}``. Likewise the second-order
+/// step response ``K/(s² + 2ζωs + ω²)`` is reported with ``ω ≠ 0``,
+/// ``ζ ≠ ±1`` and ``ω²(1 − ζ²) > 0`` — the last being the under-damped
+/// condition ``|ζ| < 1`` that makes the printed ``sin`` the real answer.
+///
+/// An empty list means every branch taken was forced by the input, not that
+/// none was taken. Reset by each inverse-transform call, so read it before the
+/// next one; repeated reads of the same call agree.
+#[pyfunction]
+#[pyo3(name = "transform_side_conditions")]
+fn py_transform_side_conditions() -> Vec<String> {
+    TRANSFORM_SIDE_CONDITIONS.with(|c| c.borrow().clone())
+}
+
+/// `experimental.apart_side_conditions() -> list[str]`
+///
+/// The hypotheses the most recent :func:`alkahest.apart` on this thread rests
+/// on. Always empty over ℚ — every division there is by a non-zero rational.
+///
+/// Non-empty when ``apart`` worked over ℚ(params), which it does whenever the
+/// input mentions symbols other than the decomposition variable, and divided by
+/// something that can vanish: ``apart(1/((s+ka)*(s+ke)), s)`` is the
+/// decomposition **for ``ka ≠ ke``**, and is ``0/0`` at ``ka = ke`` where the
+/// input is the perfectly ordinary ``1/(s+ka)²``.
+///
+/// Reset by each ``apart`` call; repeated reads of the same call agree.
+#[pyfunction]
+#[pyo3(name = "apart_side_conditions")]
+fn py_apart_side_conditions() -> Vec<String> {
+    APART_SIDE_CONDITIONS.with(|c| c.borrow().clone())
 }
 
 /// `experimental.fourier_transform(f, x, xi)` → `Expr` for `F{f}(ξ)` (unitary,
@@ -4824,7 +5115,9 @@ fn py_inverse_z_transform(
     let pool_py = big_x.pool.clone_ref(py);
     let id = {
         let pool = pool_py.borrow(py);
-        core_iztransform(big_x.id, z.id, n.id, &pool.inner).map_err(ztransform_error_to_py)?
+        let out = core_iztransform(big_x.id, z.id, n.id, &pool.inner);
+        capture_transform_side_conditions(&pool.inner);
+        out.map_err(ztransform_error_to_py)?
     };
     Ok(PyExpr { id, pool: pool_py })
 }
@@ -15775,12 +16068,15 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(dirac_delta, m)?)?;
     // Experimental calculus / ODE / transform surface (PRs #152–#161).
     m.add_function(wrap_pyfunction!(py_dsolve, m)?)?;
+    m.add_function(wrap_pyfunction!(py_dsolve_system, m)?)?;
     m.add_function(wrap_pyfunction!(py_laplace_transform, m)?)?;
     m.add_function(wrap_pyfunction!(py_inverse_laplace_transform, m)?)?;
     m.add_function(wrap_pyfunction!(py_fourier_transform, m)?)?;
     m.add_function(wrap_pyfunction!(py_inverse_fourier_transform, m)?)?;
     m.add_function(wrap_pyfunction!(py_z_transform, m)?)?;
     m.add_function(wrap_pyfunction!(py_inverse_z_transform, m)?)?;
+    m.add_function(wrap_pyfunction!(py_transform_side_conditions, m)?)?;
+    m.add_function(wrap_pyfunction!(py_apart_side_conditions, m)?)?;
     m.add_function(wrap_pyfunction!(py_multilimit, m)?)?;
     m.add_function(wrap_pyfunction!(py_asymptotic_expand, m)?)?;
     m.add_function(wrap_pyfunction!(py_series_solve, m)?)?;
@@ -16056,6 +16352,8 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "BudgetExceededError",
         m.py().get_type_bound::<PyBudgetExceededError>(),
     )?;
+    m.add_function(wrap_pyfunction!(py_push_assumptions, m)?)?;
+    m.add_function(wrap_pyfunction!(py_pop_assumptions, m)?)?;
     m.add_function(wrap_pyfunction!(py_push_budget, m)?)?;
     m.add_function(wrap_pyfunction!(py_note_context_push, m)?)?;
     m.add_function(wrap_pyfunction!(py_note_context_pop, m)?)?;

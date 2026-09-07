@@ -538,3 +538,65 @@ fn divergent_gaussian_declines() {
         Err(FourierError::NoRule(_))
     ));
 }
+
+// ===========================================================================
+// Gaussian exponents that are quadratic without being *written* as quadratics
+// ===========================================================================
+
+/// `e^{−x·x/2}` is the same function as `e^{−x²/2}`, but the pool does not
+/// collapse `x·x` to `x^2` and the structural exponent reader wants the literal
+/// `x^2` factor. Normalising the exponent first covers the whole class.
+#[test]
+fn gaussian_exponent_written_as_a_product() {
+    let (pool, x, xi) = setup();
+    let half = pool.rational(1_i32, 2_i32);
+    let arg = pool.mul(vec![int(&pool, -1), x, x, half]);
+    let got = fourier_transform(pool.func("exp", vec![arg]), x, xi, &pool).unwrap();
+
+    // Reference: the same input written as `−x²/2`.
+    let arg2 = pool.mul(vec![int(&pool, -1), pool.pow(x, int(&pool, 2)), half]);
+    let want = fourier_transform(pool.func("exp", vec![arg2]), x, xi, &pool).unwrap();
+    assert_eq!(
+        got,
+        want,
+        "`x·x` and `x²` must transform identically: {} vs {}",
+        pool.display(got),
+        pool.display(want)
+    );
+}
+
+/// A factored quadratic exponent that is *not* a perfect square:
+/// `e^{−(x+1)(x+3)}` = `e^{−(x+2)² + 1}`.
+#[test]
+fn gaussian_exponent_written_as_a_product_of_two_affines() {
+    let (pool, x, xi) = setup();
+    let arg = pool.mul(vec![
+        int(&pool, -1),
+        pool.add(vec![x, int(&pool, 1)]),
+        pool.add(vec![x, int(&pool, 3)]),
+    ]);
+    let got = fourier_transform(pool.func("exp", vec![arg]), x, xi, &pool).unwrap();
+
+    // Reference: the completed square, which the old reader already handled.
+    let arg2 = pool.add(vec![
+        pool.mul(vec![
+            int(&pool, -1),
+            pool.pow(pool.add(vec![x, int(&pool, 2)]), int(&pool, 2)),
+        ]),
+        int(&pool, 1),
+    ]);
+    let want = fourier_transform(pool.func("exp", vec![arg2]), x, xi, &pool).unwrap();
+    // Compared structurally: the shifted Gaussian carries a `e^{−2πibξ}` phase,
+    // which the real-valued test evaluator here cannot sample.
+    assert_eq!(got, want, "{} vs {}", pool.display(got), pool.display(want));
+}
+
+/// Normalising the exponent must not turn a *divergent* `e^{+x·x}` into an
+/// answer: a literally-negative curvature is still refused.
+#[test]
+fn divergent_product_form_still_declines() {
+    let (pool, x, xi) = setup();
+    let arg = pool.mul(vec![x, x]);
+    let err = fourier_transform(pool.func("exp", vec![arg]), x, xi, &pool).unwrap_err();
+    assert!(matches!(err, FourierError::NoRule(_)), "{err}");
+}

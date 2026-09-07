@@ -27,7 +27,13 @@ Remaining experimental surface:
 
 Calculus / ODE / transform surface:
 - :func:`heaviside`, :func:`dirac_delta` — distribution primitive constructors
-- :func:`dsolve` — classical symbolic ODE solver (#153)
+- :func:`dsolve` — classical symbolic ODE solver (#153); constant coefficients
+  may be symbolic, in which case the returned dicts carry ``side_conditions``
+  and ``notes`` naming the parameter branch that was *not* assumed
+- :func:`dsolve_system` — linear constant-coefficient systems ``y' = A·y + f(t)``
+  over an :class:`alkahest.ODE`, by Putzer's algorithm (defective ``A``
+  included); symbolic entries are allowed and an undecided eigenvalue
+  confluence is reported rather than assumed
 - :func:`laplace_transform` / :func:`inverse_laplace_transform` (#152)
 - :func:`fourier_transform` / :func:`inverse_fourier_transform` (#158)
 - :func:`z_transform` / :func:`inverse_z_transform` (#159)
@@ -175,12 +181,14 @@ from alkahest.alkahest import (
     QZeilbergerCertificate,
     Telescoping2dCertificate,
     TelescopingMdCertificate,
+    apart_side_conditions,
     asymptotic_expand,
     # P1 item 10 — asymptotic expansion at scale
     coefficient_asymptotics,
     cyclotomic_polynomial,
     dirac_delta,
     dsolve,
+    dsolve_system,
     euler_maclaurin,
     fourier_transform,
     heaviside,
@@ -196,6 +204,7 @@ from alkahest.alkahest import (
     series_solve,
     telescope2d,
     telescope_md,
+    transform_side_conditions,
     z_transform,
 )
 
@@ -263,6 +272,8 @@ __all__ = [
     # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
     "Telescoping2dCertificate",
     "TelescopingMdCertificate",
+    # Hypotheses the last `apart` on this thread rests on (ℚ(params) path).
+    "apart_side_conditions",
     "arg",
     "asymptotic_expand",
     # M5 — recurrence -> asymptotics
@@ -280,6 +291,7 @@ __all__ = [
     "digamma",
     "dirac_delta",
     "dsolve",
+    "dsolve_system",
     "euler_maclaurin",
     "evaluate",
     "fourier_transform",
@@ -313,5 +325,7 @@ __all__ = [
     "to_jax",
     "to_lean",
     "to_stablehlo",
+    # Hypotheses the last inverse Laplace / Z transform on this thread rests on.
+    "transform_side_conditions",
     "z_transform",
 ]

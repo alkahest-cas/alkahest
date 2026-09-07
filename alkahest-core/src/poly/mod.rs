@@ -1,3 +1,5 @@
+// Partial-fraction decomposition over ℚ(params) (apart's parametric path)
+mod apart_param;
 // Rational-function cancel/together normalization
 pub mod cancel;
 pub mod error;
@@ -38,7 +40,7 @@ pub use interp::{
     SparseInterpError,
 };
 pub use multipoly::MultiPoly;
-pub use partial_fractions::{apart, ApartError};
+pub use partial_fractions::{apart, apart_with_conditions, take_apart_side_conditions, ApartError};
 pub use rational::RationalFunction;
 pub use residue::{residue, ResidueError};
 // V2-2 — Resultants and subresultant PRS

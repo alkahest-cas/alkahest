@@ -9,6 +9,7 @@ pub mod special;
 
 pub use engine::{
     integrate, integrate_classified, integrate_definite, verify_antiderivative_exact,
-    verify_antiderivative_status, AntiderivativeVerification, IntegrationError,
+    verify_antiderivative_status, verify_antiderivative_status_parametric,
+    AntiderivativeVerification, IntegrationError,
 };
 pub use special::{basis_functions_used, IntegrationAnswer, SPECIAL_BASIS};
