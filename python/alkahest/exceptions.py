@@ -785,8 +785,9 @@ class SmtError(AlkahestError):
     Raised by :mod:`alkahest.smt` (P2 item 3).
 
     - ``E-SMT-001`` — no solver binary was found. Reported as a refusal rather
-      than a silent fallback to the weak interval :func:`alkahest.satisfiable`,
-      which would answer ``Unknown`` and look like the solver had run.
+      than a silent fallback to :func:`alkahest.satisfiable`, which decides only
+      the propositional and single-real-variable fragments and would answer
+      ``None`` here — looking like the solver had run and found nothing.
     - ``E-SMT-002`` — the formula is outside the supported SMT-LIB fragment;
       check :func:`alkahest.smt.supported` first.
     - ``E-SMT-003`` — the model contains a value (an ``root-obj`` algebraic

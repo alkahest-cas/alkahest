@@ -422,10 +422,11 @@ def test_model_parser_handles_both_z3_shapes():
 
 
 def test_missing_solver_is_a_refusal_not_a_fallback(pool, monkeypatch):
-    """Never quietly degrade to the weak interval `satisfiable`.
+    """Never quietly degrade to `satisfiable`.
 
-    That would answer ``Unknown`` and look exactly like a solver had run and
-    found nothing.
+    `satisfiable` decides only the propositional and single-real-variable
+    fragments, so on an arithmetic formula it would answer ``None`` and look
+    exactly like a solver had run and found nothing.
     """
     monkeypatch.setattr(smt, "_find_binary", lambda _binary: None)
     x = pool.symbol("x")
