@@ -1294,7 +1294,7 @@ pub fn collect_parameters(equations: &[ExprId], vars: &[ExprId], pool: &ExprPool
 ///
 /// That step is **not** an equivalence: `N/D = 0` means `N = 0 ∧ D ≠ 0`, and a
 /// root of `N` at which `D` vanishes is not a solution.  Such roots are removed
-/// again by [`exclude_pole_roots`], which decides `D ≠ 0` exactly where it can
+/// again by `exclude_pole_roots`, which decides `D ≠ 0` exactly where it can
 /// (rational arithmetic, the ambient assumptions, ball arithmetic) and
 /// otherwise records a `D ≠ 0` hypothesis through [`take_solve_side_conditions`]
 /// rather than assuming it.  Surviving roots are additionally substituted into
