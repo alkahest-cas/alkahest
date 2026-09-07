@@ -7,6 +7,7 @@
 
 mod complex_f64;
 mod root_sum;
+pub(crate) mod symbols;
 
 use crate::ball::{ArbBall, IntervalEval};
 use crate::kernel::expr::PredicateKind;

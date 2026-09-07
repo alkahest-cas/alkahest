@@ -75,9 +75,10 @@
 // allow for the same reason.
 #![allow(clippy::needless_range_loop)]
 
-use super::verify::{eval_complex, C64};
+use super::verify::{eval_complex, C64, CONST_SETS, PARAM_SETS, X_SAMPLES};
 use super::{contains, ddx, integrate_or_decline, simp, simp_plain, sub, AssumedSign, SolveCtx};
 use crate::deriv::SideCondition;
+use crate::eval::symbols::collect_free_symbols;
 use crate::kernel::eval_const::try_expr_f64;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::matrix::zero_test::{zero_status, ZeroStatus};
@@ -754,20 +755,24 @@ fn verify_system(
     let mut bound: Vec<ExprId> = vec![t];
     bound.extend_from_slice(&ode.state_vars);
     bound.extend_from_slice(constants);
+    // `pi` and the imaginary unit are symbols in this crate but they are not
+    // parameters: `collect_free_symbols` leaves them out and `eval_complex`
+    // gives them their own values.  Sampling `pi` at 1.7 is what refused the
+    // casus-irreducibilis companion matrix, whose eigenvalues are the correct
+    // `2√(−p/3)·cos((acos c + 2πk)/3)`.
     let mut params: Vec<ExprId> = Vec::new();
     for &r in &residuals {
-        collect_symbols(r, pool, &mut params);
+        collect_free_symbols(r, pool, &mut params);
     }
     params.retain(|s| !bound.contains(s));
     params.sort_by_key(|&s| pool.display(s).to_string());
 
-    let param_sets: [&[f64]; 3] = [
-        &[1.7, 0.6, 2.3, 1.1, 0.4],
-        &[0.37, 1.9, 0.83, 2.7, 1.3],
-        &[2.9, 0.45, 1.15, 0.71, 3.3],
-    ];
-    let const_sets: [&[f64]; 2] = [&[5.7, 4.3, 6.4, 5.1, 4.9], &[8.5, 7.8, 6.6, 9.2, 7.1]];
-    let t_samples = [0.11, 0.27, 0.43, 0.61, 0.79];
+    // The scalar gate's tables, not a second copy of them: a parameter must be
+    // sampled the same way whichever gate is asking, and the sign coverage of
+    // `PARAM_SETS` is a soundness property that has to hold in both.
+    let param_sets = PARAM_SETS;
+    let const_sets = CONST_SETS;
+    let t_samples = X_SAMPLES;
 
     let (mut agree, mut disagree, mut skipped) = (0usize, 0usize, 0usize);
     let mut sets_agreeing = 0usize;
@@ -884,26 +889,6 @@ fn verify_system(
 
 fn is_literal_zero(e: ExprId, pool: &ExprPool) -> bool {
     matches!(pool.get(e), ExprData::Integer(n) if n.0 == 0)
-}
-
-fn collect_symbols(expr: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>) {
-    pool.with(expr, |d| match d {
-        ExprData::Symbol { .. } => {
-            if !out.contains(&expr) {
-                out.push(expr);
-            }
-        }
-        ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
-            for &a in args {
-                collect_symbols(a, pool, out);
-            }
-        }
-        ExprData::Pow { base, exp } => {
-            collect_symbols(*base, pool, out);
-            collect_symbols(*exp, pool, out);
-        }
-        _ => {}
-    });
 }
 
 #[cfg(test)]

@@ -252,3 +252,166 @@ fn regularity_probe_declines_on_an_unknown_construct() {
     let input = input.with_equation(f.pool.add(vec![yp, f.neg(ei)]));
     assert!(!ode_is_regular_at(&input, 0.43, &HashMap::new(), &f.pool));
 }
+
+// ---------------------------------------------------------------------------
+// Named constants are not free parameters
+// ---------------------------------------------------------------------------
+
+/// `pi` is an ordinary symbol here, so the collector used to hand it to the
+/// sampler and the gate evaluated candidates at `π = 1.7`.  Anything whose
+/// correctness depends on π being π then disagrees at every sample — a correct
+/// answer refused.
+#[test]
+fn pi_is_bound_to_its_value_rather_than_sampled() {
+    let f = Fixture::new();
+    let (input, yp) = OdeInput::first_order(f.x, f.y, &f.pool);
+    let pi = f.pool.symbol("pi", Domain::Real);
+    // y' − cos(π + π)·y·(eˣ·e⁻ˣ) = 0.  `cos(2π) = 1`, so this is `y' = y` and
+    // `y = C1·eˣ` is exactly right — but only at the real π.  At `π = 1.7` the
+    // coefficient is `cos(3.4) = −0.967` and the candidate is wrong.
+    let coeff = f.pool.func("cos", vec![f.pool.add(vec![pi, pi])]);
+    let eq = f.pool.add(vec![
+        yp,
+        f.neg(f.pool.mul(vec![coeff, f.y, f.one_that_does_not_simplify()])),
+    ]);
+    let input = input.with_equation(eq);
+    let cand = simp(
+        f.pool.mul(vec![f.c1, f.pool.func("exp", vec![f.x])]),
+        &f.pool,
+    );
+
+    let (residual, _) = build_residual(&input, cand, &f.pool).expect("residual builds");
+    // Non-vacuity: `simp` must not have folded `cos(2π)` away, or the case
+    // would never reach the sampler at all.
+    assert!(
+        contains(residual, pi, &f.pool),
+        "the residual must still mention pi: {}",
+        f.pool.display(residual)
+    );
+    assert!(
+        free_parameters(&input, &[residual], &[f.c1], &f.pool).is_empty(),
+        "pi must not be collected as a free parameter"
+    );
+    // `pi` resolves without ever being in the environment.
+    let sin_pi = f.pool.func("sin", vec![pi]);
+    assert!(
+        eval(sin_pi, &HashMap::new(), &f.pool)
+            .expect("pi has a value")
+            .abs()
+            < 1e-12,
+        "sin(pi) must evaluate to 0"
+    );
+
+    residual_is_zero(&input, cand, &[f.c1], &f.pool)
+        .expect("a solution that is correct at the real pi must verify");
+}
+
+/// The imaginary unit is the other symbol that already denotes a number.  Bound
+/// to a real sample it turns `e^{iπ}` into an ordinary real exponential and the
+/// gate reports a disagreement that is entirely an artefact of the binding.
+#[test]
+fn the_imaginary_unit_is_not_sampled_either() {
+    let f = Fixture::new();
+    let (input, yp) = OdeInput::first_order(f.x, f.y, &f.pool);
+    let pi = f.pool.symbol("pi", Domain::Real);
+    let i = f.pool.imaginary_unit();
+    // y' + e^{iπ}·y·(eˣ·e⁻ˣ) = 0.  `e^{iπ} = −1`, so this is `y' = y`.
+    let coeff = f.pool.func("exp", vec![f.pool.mul(vec![i, pi])]);
+    let eq = f.pool.add(vec![
+        yp,
+        f.pool.mul(vec![coeff, f.y, f.one_that_does_not_simplify()]),
+    ]);
+    let input = input.with_equation(eq);
+    let cand = simp(
+        f.pool.mul(vec![f.c1, f.pool.func("exp", vec![f.x])]),
+        &f.pool,
+    );
+
+    let (residual, _) = build_residual(&input, cand, &f.pool).expect("residual builds");
+    assert!(
+        contains(residual, i, &f.pool) && contains(residual, pi, &f.pool),
+        "the residual must still mention both constants: {}",
+        f.pool.display(residual)
+    );
+    assert!(
+        free_parameters(&input, &[residual], &[f.c1], &f.pool).is_empty(),
+        "neither pi nor the imaginary unit is a free parameter"
+    );
+    residual_is_zero(&input, cand, &[f.c1], &f.pool)
+        .expect("e^{i*pi} = -1 must be read as -1, not as a sampled product");
+}
+
+// ---------------------------------------------------------------------------
+// Parameters are sampled at both signs
+// ---------------------------------------------------------------------------
+
+/// The soundness hole a positive-only [`PARAM_SETS`] left open.
+///
+/// The equation is `y' = √(k²)·y`, whose general solution is `y = C1·e^{|k|x}`.
+/// The candidate `y = C1·e^{kx}` is **right for every `k > 0` and wrong for
+/// every `k < 0`** — the single commonest way a symbolic-coefficient class goes
+/// wrong, since `√(k²) → k` is the step it is tempted to take.  Sampled only at
+/// positive `k` the two are indistinguishable and the wrong candidate was
+/// certified; the negative rows separate them.
+#[test]
+fn a_candidate_right_only_for_positive_parameters_is_refused() {
+    let f = Fixture::new();
+    let (input, yp) = OdeInput::first_order(f.x, f.y, &f.pool);
+    let k = f.pool.symbol("k", Domain::Real);
+    let abs_k = f
+        .pool
+        .func("sqrt", vec![f.pool.pow(k, f.pool.integer(2_i32))]);
+    let input = input.with_equation(f.pool.add(vec![yp, f.neg(f.pool.mul(vec![abs_k, f.y]))]));
+
+    let wrong = simp(
+        f.pool.mul(vec![
+            f.c1,
+            f.pool.func("exp", vec![f.pool.mul(vec![k, f.x])]),
+        ]),
+        &f.pool,
+    );
+    let (residual, derivs) = build_residual(&input, wrong, &f.pool).expect("residual builds");
+    // Non-vacuity: `simp` must not have rewritten `√(k²)` to `k`, which would
+    // make the candidate correct as written and the case meaningless.
+    assert!(
+        !is_symbolic_zero(residual, &f.pool),
+        "the residual must not already be zero: {}",
+        f.pool.display(residual)
+    );
+    let params = free_parameters(&input, &[residual], &[f.c1], &f.pool);
+    assert_eq!(params, vec![k], "k is the one free parameter");
+
+    // On the positive rows alone the candidate is indistinguishable from the
+    // truth — this is what the old table could see, and why it certified.
+    let positive_only = parametric_report_over(
+        &PARAM_SETS[..3],
+        &input,
+        residual,
+        &derivs,
+        &[f.c1],
+        &params,
+        &f.pool,
+    );
+    assert_eq!(positive_only.inner.disagree, 0, "{positive_only}");
+    assert!(
+        positive_only.certifies(),
+        "the positive rows on their own certify a wrong candidate: {positive_only}"
+    );
+
+    // With both signs the disagreement is visible and the gate refuses.
+    let full = parametric_report(&input, residual, &derivs, &[f.c1], &params, &f.pool);
+    assert!(full.has_counterevidence(), "{full}");
+    residual_is_zero(&input, wrong, &[f.c1], &f.pool)
+        .expect_err("a candidate wrong for every k < 0 must not be certified");
+
+    // …and the correct answer still is.
+    let right = simp(
+        f.pool.mul(vec![
+            f.c1,
+            f.pool.func("exp", vec![f.pool.mul(vec![abs_k, f.x])]),
+        ]),
+        &f.pool,
+    );
+    residual_is_zero(&input, right, &[f.c1], &f.pool)
+        .expect("y = C1*e^{|k|x} is the general solution and must still verify");
+}

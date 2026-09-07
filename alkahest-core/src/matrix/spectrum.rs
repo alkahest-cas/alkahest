@@ -47,8 +47,9 @@
 //! Putzer expansion, which turns a bad spectrum into a page-long candidate —
 //! ask for `SpectrumCheck::Confirmed` explicitly.
 
+use crate::eval::symbols::{collect_free_symbols, collect_named_constants, is_pi};
 use crate::eval::{eval_complex_f64, ComplexF64};
-use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::kernel::{ExprId, ExprPool};
 use crate::matrix::Matrix;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -352,12 +353,17 @@ pub(crate) fn confirm_spectrum(
 /// Bind the named constants the eigen formulas emit but that
 /// [`eval_complex_f64`] has no value for.
 ///
-/// `pi` is a plain [`ExprData::Symbol`] in this crate, so the casus
-/// irreducibilis form `2√(−p/3)·cos((acos c + 2πk)/3)` would otherwise be
+/// `pi` is a plain symbol in this crate (see [`crate::eval::symbols`]), so the
+/// casus irreducibilis form `2√(−p/3)·cos((acos c + 2πk)/3)` would otherwise be
 /// unevaluable — and, worse, `pi` would be collected as a free *parameter* and
 /// given a sample value, turning a correct spectrum into a spurious refusal.
 /// Binding it here is what lets the three-real-roots branch be confirmed rather
 /// than merely tolerated.
+///
+/// The imaginary unit is the other symbol
+/// [`collect_named_constants`](crate::eval::symbols::collect_named_constants)
+/// reports, and it is deliberately *not* bound: `eval_complex_f64` knows it
+/// natively, and binding it here would overwrite `i` with `π`.
 fn bind_constants(
     pool: &ExprPool,
     env: &mut HashMap<ExprId, ComplexF64>,
@@ -372,45 +378,9 @@ fn bind_constants(
         collect_named_constants(l, pool, &mut all);
     }
     for s in all {
-        env.insert(s, ComplexF64::new(std::f64::consts::PI, 0.0));
-    }
-}
-
-fn is_pi(expr: ExprId, pool: &ExprPool) -> bool {
-    matches!(pool.get(expr), ExprData::Symbol { name, .. } if name == "pi")
-}
-
-fn collect_named_constants(expr: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>) {
-    walk_symbols(expr, pool, &mut |s, pool| {
-        if is_pi(s, pool) && !out.contains(&s) {
-            out.push(s);
+        if is_pi(s, pool) {
+            env.insert(s, ComplexF64::new(std::f64::consts::PI, 0.0));
         }
-    });
-}
-
-/// Symbols that are genuine free parameters: neither `pi` nor the imaginary
-/// unit, both of which have values and must not be sampled.
-fn collect_free_symbols(expr: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>) {
-    walk_symbols(expr, pool, &mut |s, pool| {
-        if !is_pi(s, pool) && !pool.is_imaginary_unit(s) && !out.contains(&s) {
-            out.push(s);
-        }
-    });
-}
-
-fn walk_symbols(expr: ExprId, pool: &ExprPool, f: &mut impl FnMut(ExprId, &ExprPool)) {
-    match pool.get(expr) {
-        ExprData::Symbol { .. } => f(expr, pool),
-        ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
-            for a in args {
-                walk_symbols(a, pool, f);
-            }
-        }
-        ExprData::Pow { base, exp } => {
-            walk_symbols(base, pool, f);
-            walk_symbols(exp, pool, f);
-        }
-        _ => {}
     }
 }
 
