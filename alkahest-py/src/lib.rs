@@ -5009,6 +5009,11 @@ fn py_ode_integrate_rk45(
 }
 
 /// `experimental.laplace_transform(f, t, s)` → `Expr` for `L{f}(s)`.
+///
+/// Any hypothesis the table had to assume about a symbolic parameter — the
+/// `a ≥ 0` of the unilateral second-shift rule `L{θ(t−a)·g(t−a)} = e^{−a s}G(s)`
+/// — is left on :func:`transform_side_conditions`, which describes *this* call
+/// whether it succeeded or raised.
 #[pyfunction]
 #[pyo3(name = "laplace_transform")]
 fn py_laplace_transform(
@@ -5020,7 +5025,9 @@ fn py_laplace_transform(
     let pool_py = f.pool.clone_ref(py);
     let id = {
         let pool = pool_py.borrow(py);
-        core_laplace(f.id, t.id, s.id, &pool.inner).map_err(laplace_error_to_py)?
+        let out = core_laplace(f.id, t.id, s.id, &pool.inner);
+        capture_transform_side_conditions(&pool.inner);
+        out.map_err(laplace_error_to_py)?
     };
     Ok(PyExpr { id, pool: pool_py })
 }
@@ -5072,8 +5079,10 @@ fn capture_apart_side_conditions(pool: &alkahest_core::ExprPool) {
 
 /// `experimental.transform_side_conditions() -> list[str]`
 ///
-/// The hypotheses the most recent ``inverse_laplace_transform`` /
-/// ``inverse_z_transform`` on this thread **assumed** in order to return the
+/// The hypotheses the most recent ``laplace_transform`` /
+/// ``inverse_laplace_transform`` / ``fourier_transform`` /
+/// ``inverse_fourier_transform`` / ``inverse_z_transform`` on this thread
+/// **assumed** in order to return the
 /// answer it did — one rendered string per condition, e.g. ``"a ≠ 0"``.
 ///
 /// Empty for every input whose coefficients are rational numbers. Non-empty
@@ -5128,7 +5137,9 @@ fn py_fourier_transform(
     let pool_py = f.pool.clone_ref(py);
     let id = {
         let pool = pool_py.borrow(py);
-        core_fourier_transform(f.id, x.id, xi.id, &pool.inner).map_err(fourier_error_to_py)?
+        let out = core_fourier_transform(f.id, x.id, xi.id, &pool.inner);
+        capture_transform_side_conditions(&pool.inner);
+        out.map_err(fourier_error_to_py)?
     };
     Ok(PyExpr { id, pool: pool_py })
 }
@@ -5145,7 +5156,9 @@ fn py_inverse_fourier_transform(
     let pool_py = g.pool.clone_ref(py);
     let id = {
         let pool = pool_py.borrow(py);
-        core_ifourier(g.id, xi.id, x.id, &pool.inner).map_err(fourier_error_to_py)?
+        let out = core_ifourier(g.id, xi.id, x.id, &pool.inner);
+        capture_transform_side_conditions(&pool.inner);
+        out.map_err(fourier_error_to_py)?
     };
     Ok(PyExpr { id, pool: pool_py })
 }

@@ -1040,4 +1040,214 @@ mod symbolic_params {
             inverse_laplace_transform_with_conditions(recip(den2, &p2), s2, t2, &p2).unwrap();
         assert!(cs2.is_empty(), "{:?}", conds(&cs2, &p2));
     }
+
+    /// Stating a fact that makes a reported hypothesis **false** must not
+    /// discharge it.
+    ///
+    /// `ζ > 1 ∧ ω > 0` is the over-damped régime, where `ω²(1 − ζ²) > 0` is
+    /// false and the true inverse is hyperbolic.  The interval solver cannot
+    /// prove `ω²(1 − ζ²) < 0` either, so the oscillatory branch is still the
+    /// one taken — but the hypothesis that makes it the *real-valued* answer
+    /// stays on the wire, which is what lets a caller notice.  A discharge here
+    /// would be the worst outcome available: the wrong closed form, asserted
+    /// unconditionally, under assumptions that refute it.
+    #[test]
+    fn an_assumption_that_refutes_a_hypothesis_does_not_discharge_it() {
+        let (pool, t, s) = setup();
+        let (w, zeta) = (sym(&pool, "w"), sym(&pool, "zeta"));
+        let den = pool.add(vec![
+            pool.pow(s, pool.integer(2_i32)),
+            pool.mul(vec![pool.integer(2_i32), zeta, w, s]),
+            pool.pow(w, pool.integer(2_i32)),
+        ]);
+        let big_f = recip(den, &pool);
+
+        let zero = pool.integer(0_i32);
+        let one = pool.integer(1_i32);
+        let mut ctx = AssumptionContext::new();
+        for p in [
+            pool.predicate(crate::kernel::expr::PredicateKind::Gt, vec![zeta, one]),
+            pool.predicate(crate::kernel::expr::PredicateKind::Gt, vec![w, zero]),
+        ] {
+            ctx.refine(p, &pool).unwrap();
+        }
+
+        let (out, cs) =
+            inverse_laplace_transform_with_assumptions(big_f, s, t, &pool, &ctx).unwrap();
+        let rendered = conds(&cs, &pool);
+        assert!(
+            rendered.iter().any(|c| c.contains('>')),
+            "the positivity that ζ > 1 refutes must still be reported: {rendered:?}"
+        );
+        // And the printed form is the one that positivity would justify, so the
+        // report is not decorative — it is the only thing separating this from
+        // a wrong answer.
+        assert!(
+            pool.display(out).to_string().contains("sin"),
+            "{}",
+            pool.display(out)
+        );
+    }
+
+    /// `π` is a constant, not a parameter.
+    ///
+    /// It is interned as an ordinary symbol, so the genericity bookkeeping used
+    /// to hand back `π ≠ 0` as something for the caller to discharge.  A
+    /// hypothesis nobody can decline is noise that hides the real ones.
+    #[test]
+    fn pi_is_not_a_hypothesis() {
+        let (pool, t, s) = setup();
+        let pi = pool.symbol("pi", Domain::Real);
+        let den = pool.add(vec![
+            pool.pow(s, pool.integer(2_i32)),
+            pool.pow(pi, pool.integer(2_i32)),
+        ]);
+        let big_f = pool.mul(vec![pi, recip(den, &pool)]);
+        let (_out, cs) = inverse_laplace_transform_with_conditions(big_f, s, t, &pool).unwrap();
+        assert!(cs.is_empty(), "{:?}", conds(&cs, &pool));
+    }
+}
+
+// ===========================================================================
+// The unilateral shift is a hypothesis, not a fact
+// ===========================================================================
+//
+// `L{θ(t−a)·g(t−a)} = e^{−a s}·G(s)` is the transform of `g` only for `a ≥ 0`;
+// at `a < 0` the step edge is before the origin and the unilateral integral
+// never sees it.  A literal negative shift refutes the hypothesis and is
+// refused (`decline_negative_heaviside_shift` above); a symbolic one leaves it
+// open and must be reported.  Before it was, `L{θ(t+a)}` came back as
+// `e^{a s}/s` with nothing on the wire: at `a = 1.5, s = 2.5` that reads
+// 17.008 against a true `1/s = 0.4`.
+
+mod shift_genericity {
+    use super::*;
+    use crate::deriv::SideCondition;
+
+    fn nonneg_conditions(conds: &[SideCondition]) -> Vec<ExprId> {
+        conds
+            .iter()
+            .filter_map(|c| match c {
+                SideCondition::InDomain(e, Domain::NonNegative) => Some(*e),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn symbolic_delay_reports_its_nonnegativity() {
+        let (pool, t, s) = setup();
+        let a = pool.symbol("a", Domain::Real);
+        let arg = pool.add(vec![t, pool.mul(vec![pool.integer(-1_i32), a])]);
+        let f = pool.func("heaviside", vec![arg]);
+        let (out, conds) = laplace_transform_with_conditions(f, t, s, &pool).unwrap();
+        assert!(
+            pool.display(out).to_string().contains("exp"),
+            "expected the shifted-step form, got {}",
+            pool.display(out)
+        );
+        assert_eq!(nonneg_conditions(&conds), vec![a], "conds = {conds:?}");
+    }
+
+    #[test]
+    fn symbolic_advance_reports_the_hypothesis_it_actually_needs() {
+        // θ(t + a) is θ(t − (−a)), so the fact wanted is `−a ≥ 0`, i.e. a ≤ 0 —
+        // false at every a > 0, which is exactly why it has to be said.
+        let (pool, t, s) = setup();
+        let a = pool.symbol("a", Domain::Real);
+        let f = pool.func("heaviside", vec![pool.add(vec![t, a])]);
+        let (_out, conds) = laplace_transform_with_conditions(f, t, s, &pool).unwrap();
+        let want = simp(pool.mul(vec![pool.integer(-1_i32), a]), &pool);
+        assert_eq!(nonneg_conditions(&conds), vec![want], "conds = {conds:?}");
+    }
+
+    #[test]
+    fn symbolic_dirac_shift_reports_it_too() {
+        let (pool, t, s) = setup();
+        let a = pool.symbol("a", Domain::Real);
+        let arg = pool.add(vec![t, pool.mul(vec![pool.integer(-1_i32), a])]);
+        let f = pool.func("diracdelta", vec![arg]);
+        let (_out, conds) = laplace_transform_with_conditions(f, t, s, &pool).unwrap();
+        assert_eq!(nonneg_conditions(&conds), vec![a], "conds = {conds:?}");
+    }
+
+    #[test]
+    fn a_positive_domain_symbol_discharges_the_shift() {
+        // The fact is established by the symbol itself, so there is nothing to
+        // report — an empty list has to mean "checked and forced", not "not
+        // looked at".
+        let (pool, t, s) = setup();
+        let a = pool.symbol("a", Domain::Positive);
+        let arg = pool.add(vec![t, pool.mul(vec![pool.integer(-1_i32), a])]);
+        let f = pool.func("heaviside", vec![arg]);
+        let (_out, conds) = laplace_transform_with_conditions(f, t, s, &pool).unwrap();
+        assert!(conds.is_empty(), "conds = {conds:?}");
+    }
+
+    #[test]
+    fn a_literal_shift_is_decided_not_reported() {
+        let (pool, t, s) = setup();
+        let arg = pool.add(vec![t, pool.integer(-2_i32)]);
+        let f = pool.func("heaviside", vec![arg]);
+        let (_out, conds) = laplace_transform_with_conditions(f, t, s, &pool).unwrap();
+        assert!(conds.is_empty(), "conds = {conds:?}");
+    }
+
+    #[test]
+    fn the_shifted_product_rule_reports_it_as_well() {
+        let (pool, t, s) = setup();
+        let a = pool.symbol("a", Domain::Real);
+        let shifted = pool.add(vec![t, pool.mul(vec![pool.integer(-1_i32), a])]);
+        let f = pool.mul(vec![pool.func("heaviside", vec![shifted]), shifted]);
+        let (_out, conds) = laplace_transform_with_conditions(f, t, s, &pool).unwrap();
+        assert_eq!(nonneg_conditions(&conds), vec![a], "conds = {conds:?}");
+    }
+
+    #[test]
+    fn the_out_of_band_channel_carries_the_forward_hypotheses() {
+        let (pool, t, s) = setup();
+        let a = pool.symbol("a", Domain::Real);
+        let arg = pool.add(vec![t, pool.mul(vec![pool.integer(-1_i32), a])]);
+        let f = pool.func("heaviside", vec![arg]);
+        let _ = laplace_transform(f, t, s, &pool).unwrap();
+        let conds = crate::transform::take_transform_side_conditions();
+        assert_eq!(nonneg_conditions(&conds), vec![a], "conds = {conds:?}");
+        // Consuming: a second read must not repeat the first call's hypotheses.
+        assert!(crate::transform::take_transform_side_conditions().is_empty());
+    }
+
+    #[test]
+    fn inverse_declines_an_advance_rather_than_stating_the_impossible() {
+        // `e^{+2s}/(s+1)` is not the transform of any causal function.  The
+        // shift rule would hand back `θ(t+2)·e^{−2−t}` under the side condition
+        // `−2 ≥ 0` — an answer that is wrong (its own transform is `e^{−2}/(s+1)`,
+        // 0.0501 against F(1.7) = 11.098) carrying a hypothesis that can never
+        // be discharged.  Refusing is the only honest option.
+        let (pool, t, s) = setup();
+        let big_f = pool.mul(vec![
+            pool.func("exp", vec![pool.mul(vec![pool.integer(2_i32), s])]),
+            pool.pow(pool.add(vec![s, pool.integer(1_i32)]), pool.integer(-1_i32)),
+        ]);
+        let err = inverse_laplace_transform(big_f, s, t, &pool).unwrap_err();
+        assert!(matches!(err, LaplaceError::NotInvertible(_)), "{err}");
+        assert!(
+            crate::transform::take_transform_side_conditions().is_empty(),
+            "a refused call must not leave hypotheses behind"
+        );
+    }
+
+    #[test]
+    fn inverse_symbolic_delay_is_still_a_hypothesis() {
+        let (pool, t, s) = setup();
+        let a = pool.symbol("a", Domain::Real);
+        let big_f = pool.mul(vec![
+            pool.func(
+                "exp",
+                vec![simp(pool.mul(vec![pool.integer(-1_i32), a, s]), &pool)],
+            ),
+            pool.pow(s, pool.integer(-1_i32)),
+        ]);
+        let (_out, conds) = inverse_laplace_transform_with_conditions(big_f, s, t, &pool).unwrap();
+        assert_eq!(nonneg_conditions(&conds), vec![a], "conds = {conds:?}");
+    }
 }

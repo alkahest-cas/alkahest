@@ -7,32 +7,50 @@
 //! - The [`ztransform`] submodule provides the **(unilateral) Z-transform**
 //!   `Z{a[n]}(z)` and its **inverse** `Z⁻¹{A(z)}(n)`.
 //!
-//! These are *formal* transforms: no region-of-convergence is tracked and no
-//! convergence side-conditions are emitted (matching SymPy's `noconds=True`
-//! default).  See each submodule for its rule coverage, fallbacks, and declines.
+//! These are *formal* transforms: no region-of-convergence is tracked, and the
+//! abscissa of convergence of an answer is not reported (matching SymPy's
+//! `noconds=True` default).  See each submodule for its rule coverage,
+//! fallbacks, and declines.
 //!
 //! # Symbolic parameters and genericity — `Genericity`
 //!
-//! The inverse transforms accept a rational `F` whose coefficients mention
-//! symbols other than the transform variable (`ω`, `ζ`, `K`, `ka`, `ke`, …).
-//! Such an answer can rest on hypotheses about those symbols that are *not*
-//! consequences of the input:
+//! The transforms accept expressions whose coefficients, shifts and rates
+//! mention symbols other than the transform variable (`ω`, `ζ`, `K`, `ka`,
+//! `ke`, `a`, …).  Such an answer can rest on hypotheses about those symbols
+//! that are *not* consequences of the input:
 //!
 //! ```text
 //!   L⁻¹{1/((s+ka)(s+ke))}  =  (e^{−ka t} − e^{−ke t}) / (ke − ka)    for ka ≠ ke
 //!                          =  t·e^{−ka t}                            at ka = ke
+//!
+//!   L{θ(t−a)}              =  e^{−a s}/s                             for a ≥ 0
+//!                          =  1/s                                    at a < 0
+//!
+//!   F{2a/(a² + 4π²x²)}     =  e^{−a|ξ|}                              for a > 0
+//!                          =  −e^{a|ξ|}                              at a < 0
 //! ```
 //!
-//! Both are right; neither is right in general.  Every such hypothesis is
-//! recorded as a [`SideCondition`] and returned by the `*_with_conditions`
-//! entry points.  The historical signatures ([`inverse_laplace_transform`],
-//! [`inverse_z_transform`]) cannot express it in their return type, so for them
-//! the hypotheses travel on the consuming thread-local
-//! [`take_transform_side_conditions`] — the same out-of-band channel as
-//! [`crate::solver::take_solve_side_conditions`].
+//! In each pair both lines are right and neither is right in general.  Every
+//! such hypothesis is recorded as a [`SideCondition`] and returned by the
+//! `*_with_conditions` entry points.  The historical signatures
+//! ([`laplace_transform`], [`inverse_laplace_transform`], [`fourier_transform`],
+//! [`inverse_fourier_transform`], [`inverse_z_transform`]) cannot express it in
+//! their return type, so for them the hypotheses travel on the consuming
+//! thread-local [`take_transform_side_conditions`] — the same out-of-band
+//! channel as [`crate::solver::take_solve_side_conditions`].
 //!
 //! An **empty** condition list means every branch taken was forced, not that
 //! nothing was examined.
+//!
+//! ## A hypothesis and a refutation are different things
+//!
+//! A condition is recorded only where the input leaves it *open*.  Where the
+//! input **settles it the wrong way** — a literal negative shift in
+//! `L{θ(t−a)}`, a literal non-positive rate in `F{e^{−a|x|}}`, an advance
+//! `e^{+a s}` handed to `L⁻¹` — there is no branch to report, only a wrong
+//! answer to decline, and the call returns `NoRule` / `NotInvertible` instead.
+//! Recording an unsatisfiable side condition would be the worst of both: an
+//! answer that is wrong, carrying a hypothesis that can never be discharged.
 
 use crate::deriv::SideCondition;
 use crate::kernel::expr::PredicateKind;
@@ -44,10 +62,14 @@ pub mod fourier;
 pub mod laplace;
 pub mod ztransform;
 
-pub use fourier::{fourier_transform, inverse_fourier_transform, FourierError};
+pub use fourier::{
+    fourier_transform, fourier_transform_with_conditions, inverse_fourier_transform,
+    inverse_fourier_transform_with_conditions, FourierError,
+};
 pub use laplace::{
     inverse_laplace_transform, inverse_laplace_transform_with_assumptions,
-    inverse_laplace_transform_with_conditions, laplace_transform, LaplaceError,
+    inverse_laplace_transform_with_conditions, laplace_transform,
+    laplace_transform_with_conditions, LaplaceError,
 };
 pub use ztransform::{
     inverse_z_transform, inverse_z_transform_with_assumptions, inverse_z_transform_with_conditions,
@@ -192,9 +214,13 @@ impl<'a> Genericity<'a> {
             SideCondition::InDomain(..) => unreachable!("handled above"),
         };
 
-        // 1. A literal decides itself.
+        // 1. A literal decides itself, and so does a named mathematical
+        //    constant — see [`evidently_positive_constant`].
         if let Some(r) = literal_rational(target, pool) {
             return if want_positive { r > 0 } else { r != 0 };
+        }
+        if evidently_positive_constant(target, pool) {
+            return true;
         }
 
         // 2. Facts: the caller's context plus static symbol domains.
@@ -325,6 +351,37 @@ fn literal_rational(expr: ExprId, pool: &ExprPool) -> Option<rug::Rational> {
         ExprData::Integer(n) => Some(rug::Rational::from(n.0.clone())),
         ExprData::Rational(r) => Some(r.0.clone()),
         _ => None,
+    }
+}
+
+/// Is `e` built only from things that are positive *as a matter of fact*?
+///
+/// `π` is interned as an ordinary [`ExprData::Symbol`] whose `Domain` depends
+/// on whichever call created it first, so without this
+/// [`Genericity::need_positive`] would hand the caller `π > 0` as a hypothesis
+/// to discharge — and a hypothesis a caller cannot decline is not a hypothesis,
+/// it is noise that hides the real ones.  `L⁻¹{π/(s² + π²)}` reported `π ≠ 0`
+/// and `F{e^{−πx²}}` reported `π > 0` on exactly this route.
+///
+/// Deliberately short: only positive literals, `π`, and products/powers of
+/// them.  Anything else stays a hypothesis, which over-reports and never
+/// under-reports.
+fn evidently_positive_constant(e: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(e) {
+        ExprData::Integer(_) | ExprData::Rational(_) => {
+            literal_rational(e, pool).is_some_and(|r| r > 0)
+        }
+        ExprData::Float(f) => f.inner.to_f64() > 0.0,
+        ExprData::Symbol { name, .. } => &*name == "pi",
+        ExprData::Mul(args) => {
+            !args.is_empty() && args.iter().all(|&a| evidently_positive_constant(a, pool))
+        }
+        // A positive base raised to a real power is positive; a literal
+        // rational exponent is the only case the tables produce (`π²`, `√π`).
+        ExprData::Pow { base, exp } => {
+            evidently_positive_constant(base, pool) && literal_rational(exp, pool).is_some()
+        }
+        _ => false,
     }
 }
 

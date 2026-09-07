@@ -600,3 +600,195 @@ fn divergent_product_form_still_declines() {
     let err = fourier_transform(pool.func("exp", vec![arg]), x, xi, &pool).unwrap_err();
     assert!(matches!(err, FourierError::NoRule(_)), "{err}");
 }
+
+// ===========================================================================
+// Positivity of a rate is a branch selector, not decoration
+// ===========================================================================
+//
+// Every entry in the table is stated for `a > 0`.  A literal `a ≤ 0` refutes
+// the entry — `e^{+3|x|}` and `θ(x)e^{+3x}` have no transform at all, and the
+// Lorentzian's transform changes sign — and is refused.  A symbolic `a` leaves
+// it open and is reported.
+//
+// The Lorentzian is the sharp one: `C₀ = a²` is satisfied by `a` and `−a`
+// alike, so reading the root off the numerator silently picked the wrong branch
+// for a negative amplitude.  `F{−2/(1 + 4π²x²)}` returned `e^{+|ξ|}` — 1.3499
+// at ξ = 0.3, and *growing* — against a true `−e^{−|ξ|} = −0.7408` (mpmath
+// `quadosc` agrees with the closed form to 10 digits).
+
+mod rate_positivity {
+    use super::*;
+    use crate::deriv::SideCondition;
+
+    /// `c/(c0 + 4π²x²)`.
+    fn lorentzian(pool: &ExprPool, x: ExprId, numer: ExprId, c0: ExprId) -> ExprId {
+        let pi = pool.symbol("pi", Domain::Real);
+        let four_pi2_x2 = pool.mul(vec![
+            int(pool, 4),
+            pool.pow(pi, int(pool, 2)),
+            pool.pow(x, int(pool, 2)),
+        ]);
+        let denom = pool.add(vec![c0, four_pi2_x2]);
+        pool.mul(vec![numer, pool.pow(denom, int(pool, -1))])
+    }
+
+    fn positives(conds: &[SideCondition]) -> Vec<ExprId> {
+        conds
+            .iter()
+            .filter_map(|c| match c {
+                SideCondition::Positive(e) => Some(*e),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn negative_amplitude_lorentzian_is_declined() {
+        let (pool, x, xi) = setup();
+        let f = lorentzian(&pool, x, int(&pool, -2), int(&pool, 1));
+        let err = fourier_transform(f, x, xi, &pool).unwrap_err();
+        assert!(matches!(err, FourierError::NoRule(_)), "{err}");
+    }
+
+    #[test]
+    fn negative_amplitude_lorentzian_is_declined_at_a_second_scale() {
+        let (pool, x, xi) = setup();
+        let f = lorentzian(&pool, x, int(&pool, -6), int(&pool, 9));
+        let err = fourier_transform(f, x, xi, &pool).unwrap_err();
+        assert!(matches!(err, FourierError::NoRule(_)), "{err}");
+    }
+
+    #[test]
+    fn positive_amplitude_lorentzian_still_transforms() {
+        // The control: the neighbouring case that must keep working.
+        let (pool, x, xi) = setup();
+        let f = lorentzian(&pool, x, int(&pool, 6), int(&pool, 9));
+        let (g, conds) = fourier_transform_with_conditions(f, x, xi, &pool).unwrap();
+        assert!(conds.is_empty(), "conds = {conds:?}");
+        let abs_xi = pool.func("abs", vec![xi]);
+        let want = pool.func(
+            "exp",
+            vec![simp(
+                pool.mul(vec![int(&pool, -1), int(&pool, 3), abs_xi]),
+                &pool,
+            )],
+        );
+        assert_eq_simplified(&pool, g, want);
+    }
+
+    #[test]
+    fn symbolic_amplitude_lorentzian_reports_its_positivity() {
+        let (pool, x, xi) = setup();
+        let a = pool.symbol("a", Domain::Real);
+        let numer = pool.mul(vec![int(&pool, 2), a]);
+        let c0 = pool.pow(a, int(&pool, 2));
+        let f = lorentzian(&pool, x, numer, c0);
+        let (_g, conds) = fourier_transform_with_conditions(f, x, xi, &pool).unwrap();
+        assert_eq!(positives(&conds), vec![a], "conds = {conds:?}");
+    }
+
+    #[test]
+    fn a_positive_domain_amplitude_discharges_it() {
+        let (pool, x, xi) = setup();
+        let a = pool.symbol("a", Domain::Positive);
+        let numer = pool.mul(vec![int(&pool, 2), a]);
+        let c0 = pool.pow(a, int(&pool, 2));
+        let f = lorentzian(&pool, x, numer, c0);
+        let (_g, conds) = fourier_transform_with_conditions(f, x, xi, &pool).unwrap();
+        assert!(conds.is_empty(), "conds = {conds:?}");
+    }
+
+    #[test]
+    fn a_growing_two_sided_exponential_is_declined() {
+        // ∫ e^{+3|x|}·e^{−2πiξx} dx does not converge; the table would have
+        // reported the finite `−6/(9 + 4π²ξ²)`.
+        let (pool, x, xi) = setup();
+        let absx = pool.func("abs", vec![x]);
+        let f = pool.func("exp", vec![pool.mul(vec![int(&pool, 3), absx])]);
+        let err = fourier_transform(f, x, xi, &pool).unwrap_err();
+        assert!(matches!(err, FourierError::NoRule(_)), "{err}");
+    }
+
+    #[test]
+    fn a_growing_one_sided_exponential_is_declined() {
+        let (pool, x, xi) = setup();
+        let f = pool.mul(vec![
+            pool.func("heaviside", vec![x]),
+            pool.func("exp", vec![pool.mul(vec![int(&pool, 3), x])]),
+        ]);
+        let err = fourier_transform(f, x, xi, &pool).unwrap_err();
+        assert!(matches!(err, FourierError::NoRule(_)), "{err}");
+    }
+
+    #[test]
+    fn a_symbolic_two_sided_exponential_reports_its_rate() {
+        let (pool, x, xi) = setup();
+        let a = pool.symbol("a", Domain::Real);
+        let absx = pool.func("abs", vec![x]);
+        let f = pool.func("exp", vec![pool.mul(vec![int(&pool, -1), a, absx])]);
+        let (_g, conds) = fourier_transform_with_conditions(f, x, xi, &pool).unwrap();
+        assert_eq!(positives(&conds), vec![a], "conds = {conds:?}");
+    }
+
+    #[test]
+    fn a_symbolic_gaussian_reports_its_curvature() {
+        let (pool, x, xi) = setup();
+        let a = pool.symbol("a", Domain::Real);
+        let f = pool.func(
+            "exp",
+            vec![pool.mul(vec![int(&pool, -1), a, pool.pow(x, int(&pool, 2))])],
+        );
+        let (_g, conds) = fourier_transform_with_conditions(f, x, xi, &pool).unwrap();
+        assert_eq!(positives(&conds), vec![a], "conds = {conds:?}");
+    }
+
+    #[test]
+    fn a_symbolic_one_sided_exponential_reports_its_rate() {
+        let (pool, x, xi) = setup();
+        let a = pool.symbol("a", Domain::Real);
+        let f = pool.mul(vec![
+            pool.func("heaviside", vec![x]),
+            pool.func(
+                "exp",
+                vec![simp(pool.mul(vec![int(&pool, -1), a, x]), &pool)],
+            ),
+        ]);
+        let (_g, conds) = fourier_transform_with_conditions(f, x, xi, &pool).unwrap();
+        assert_eq!(positives(&conds), vec![a], "conds = {conds:?}");
+    }
+
+    #[test]
+    fn the_out_of_band_channel_carries_the_fourier_hypotheses() {
+        let (pool, x, xi) = setup();
+        let a = pool.symbol("a", Domain::Real);
+        let f = pool.func(
+            "exp",
+            vec![pool.mul(vec![int(&pool, -1), a, pool.pow(x, int(&pool, 2))])],
+        );
+        let _ = fourier_transform(f, x, xi, &pool).unwrap();
+        let conds = crate::transform::take_transform_side_conditions();
+        assert_eq!(positives(&conds), vec![a], "conds = {conds:?}");
+        assert!(crate::transform::take_transform_side_conditions().is_empty());
+    }
+
+    #[test]
+    fn a_literal_positive_rate_is_decided_not_reported() {
+        let (pool, x, xi) = setup();
+        let absx = pool.func("abs", vec![x]);
+        let f = pool.func("exp", vec![pool.mul(vec![int(&pool, -3), absx])]);
+        let (_g, conds) = fourier_transform_with_conditions(f, x, xi, &pool).unwrap();
+        assert!(conds.is_empty(), "conds = {conds:?}");
+    }
+
+    #[test]
+    fn the_inverse_carries_the_same_hypotheses_as_the_forward() {
+        let (pool, x, xi) = setup();
+        let a = pool.symbol("a", Domain::Real);
+        let g = pool.func(
+            "exp",
+            vec![pool.mul(vec![int(&pool, -1), a, pool.pow(xi, int(&pool, 2))])],
+        );
+        let (_f, conds) = inverse_fourier_transform_with_conditions(g, xi, x, &pool).unwrap();
+        assert_eq!(positives(&conds), vec![a], "conds = {conds:?}");
+    }
+}
