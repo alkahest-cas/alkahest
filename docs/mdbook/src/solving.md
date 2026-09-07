@@ -1,6 +1,7 @@
 # Polynomial system solving
 
-Alkahest solves systems of polynomial equations symbolically using Gröbner bases.
+Alkahest solves systems of polynomial — and rational — equations symbolically using
+Gröbner bases.
 
 ## solve
 
@@ -47,6 +48,90 @@ for sol in solutions:
 `solve` returns an empty list for inconsistent systems and a `GroebnerBasis` handle for parametric families (infinite solution sets).
 
 Pass `numeric=True` to return float values directly: `solve(eqs, vars, numeric=True)`.
+
+## Rational equations
+
+An equation may be a ratio of polynomials in the declared unknowns. This is the form
+nodal analysis produces — every admittance term is a reciprocal — so writing the
+circuit equation directly is the point:
+
+```python
+Vo, Vin, R1, C, s = (pool.symbol(n) for n in ("Vo", "Vin", "R1", "C", "s"))
+
+solve([(Vo - Vin) / R1 + Vo * s * C], [Vo])
+# → [{Vo: Vin * (1 + R1*C*s)**-1}]
+
+solve_side_conditions()
+# → ['(1 + (R1 * C * s)) ≠ 0', 'R1 ≠ 0']
+```
+
+Each equation is put over a common denominator and the numerator system is solved.
+
+### Spurious roots
+
+Clearing a denominator is **not** an equivalence:
+
+```text
+N/D = 0     ⟺     N = 0  and  D ≠ 0
+```
+
+Multiplying up drops the second conjunct, and the root it leaves behind is not a
+near-miss — it is the one point where the equation has no value at all. `x/(x-1) =
+1/(x-1)` clears to `(x-1)**2 = 0`, whose only root is `x = 1`, which is exactly where
+both sides read `1/0`:
+
+```python
+solve([x / (x - 1) - 1 / (x - 1)], [x])   # → []   (not x = 1)
+solve([1 / x], [x])                       # → []   (a reciprocal is never zero)
+solve([x * x / x], [x])                   # → []   (0/0 at x = 0)
+solve([1 / (1 / x - 1)], [x])             # → []   (1/x has no value at x = 0)
+```
+
+So every candidate root is re-tested against the condition that says where the equation
+has a value at all, and one that makes it vanish is dropped. The test is exact where it
+can be — rational arithmetic, then the ambient assumptions, then rigorous ball
+arithmetic — and surviving roots are additionally substituted into the equations **as
+you wrote them**, before anything was cleared.
+
+Two things that condition is deliberately *not*:
+
+- It is not the *cancelled* denominator. `x**2/x` reduces to `x`, whose root `x = 0` is
+  precisely the point the original expression is `0/0` at, so the uncancelled form is
+  what gets carried.
+- It is not the product of the denominators either. A reciprocal swaps the two halves —
+  `(n/d)**-1 = d/n` — so an inner *denominator* becomes an outer *numerator* and would
+  drop out of such a product. In `1/(1/x - 1)` the requirement `x != 0` disappears
+  exactly that way, leaving `1 - x` (non-zero at `x = 0`) as the only recorded condition
+  and `x = 0` looking like a root. What is carried instead is the **domain**: everything
+  that has to be non-zero for the expression to denote a number, which for that example
+  is `x*(1 - x)` — both of the points it is undefined at.
+
+### When the exclusion is undecidable
+
+With symbolic parameters, whether a denominator vanishes at a root may be undecidable —
+`R1 ≠ 0` is not something the solver gets to assume. The root is returned under a
+stated hypothesis instead, listed by `solve_side_conditions()` alongside the
+non-vanishing leading coefficients the back-substitution divided by. Declaring the
+symbol positive discharges the condition rather than reporting it:
+
+```python
+R1 = pool.symbol("R1", "positive")
+solve([(Vo - Vin) / R1 + Vo * s * C], [Vo])
+solve_side_conditions()          # → ['(1 + (C * s * R1)) ≠ 0']   — no 'R1 ≠ 0'
+```
+
+An empty list means every divisor was *proved* non-zero, not that none was looked at.
+
+When no finite solution list can be produced and a `GroebnerBasis` comes back instead,
+that basis is the **numerator** ideal — no root of it has been tested against the
+denominators — and the cleared denominators are reported as side conditions so the
+distinction is visible.
+
+An equation whose denominator is identically zero (`1/(x - x)`) denotes no function at
+all and raises `SolverError` with `.code == "E-SOLVE-005"` rather than being cleared.
+
+`method="homotopy"` and `solve_numerical` are **not** covered by this: they take
+polynomial systems only, and a rational equation still raises `E-SOLVE-001` there.
 
 ## GroebnerBasis
 

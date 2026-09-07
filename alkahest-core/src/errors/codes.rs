@@ -124,7 +124,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-DIFFALG-001", class: "DiffAlgError", cause: Cause::Unsupported, remediation: Some("ensure the DAE is polynomial in its state and derivative symbols") },
     ErrorSpec { code: "E-DIFFALG-002", class: "DiffAlgError", cause: Cause::UserInput,   remediation: Some("declare all jet variables; remove transcendental functions") },
     ErrorSpec { code: "E-DIFFALG-003", class: "DiffAlgError", cause: Cause::UserInput, remediation: None },
-    ErrorSpec { code: "E-SOLVE-001", class: "SolverError", cause: Cause::UserInput,   remediation: Some("ensure all equations are polynomial in the declared variables") },
+    ErrorSpec { code: "E-SOLVE-001", class: "SolverError", cause: Cause::UserInput,   remediation: Some("ensure all equations are polynomial or rational in the declared variables") },
     ErrorSpec { code: "E-SOLVE-002", class: "SolverError", cause: Cause::Unsupported, remediation: Some("only degree ≤ 2 univariate solving is implemented; Gröbner basis is still returned") },
     ErrorSpec { code: "E-SOLVE-003", class: "SolverError", cause: Cause::UserInput,   remediation: Some("provide one equation per variable") },
     // `triangularize` extracts one polynomial per main variable, so two basis
@@ -134,6 +134,12 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // point until it exists.  Travels inside `SolverError::NotPolynomial` — see
     // `solver::regular_chains::TriangularizeRefusal`.
     ErrorSpec { code: "E-SOLVE-004", class: "TriangularizeRefusal", cause: Cause::Unsupported, remediation: Some("this ideal needs a splitting triangular decomposition (Lazard–Kalkbrener on the initials), which is not implemented; use GroebnerBasis::compute or primary_decomposition instead") },
+    // A rational equation whose denominator is identically zero (`1/(x − x)`)
+    // denotes no function, so it has no solution set.  Clearing it would
+    // multiply through by zero and turn every point into a "solution".  Like
+    // `E-SOLVE-004`, it travels inside `SolverError::NotPolynomial` — see
+    // `solver::UndefinedEquation`.
+    ErrorSpec { code: "E-SOLVE-005", class: "UndefinedEquation", cause: Cause::UserInput,   remediation: Some("a denominator simplifies to zero, so the equation denotes no function; check the equation for a subtraction that cancels") },
     ErrorSpec { code: "E-SOLVE-010", class: "SolverError", cause: Cause::Resource,    remediation: Some("check GPU availability; pass device_id=None to fall back to CPU") },
     ErrorSpec { code: "E-SOLVE-011", class: "SolverError", cause: Cause::Resource,    remediation: Some("CRT reconstruction failed; try adding more equations or use CPU path") },
     // E-IDEAL — PrimaryDecompositionError (ideal/primary.rs) and IdealRefusal

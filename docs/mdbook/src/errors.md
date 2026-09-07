@@ -87,9 +87,10 @@ Raised when a mathematical side condition is violated.
 
 | Code | Cause | Remediation |
 |---|---|---|
-| `E-SOLVE-001` | System is inconsistent | No solutions exist |
+| `E-SOLVE-001` | An equation is not polynomial *or rational* in the declared variables — a transcendental function, a symbolic exponent, or a symbol the conversion could not place | Restate it as a ratio of polynomials in the unknowns and parameters. (An *inconsistent* system is not an error: it returns an empty list) |
 | `E-SOLVE-002` | High-degree univariate factor (> 2) | Symbolic solution not supported; use numerical solve |
 | `E-SOLVE-003` | Gröbner basis did not terminate | Increase node/iteration limits |
+| `E-SOLVE-005` | An equation's denominator is identically zero (`1/(x - x)`), so it denotes no function and has no solution set | Check the equation for a subtraction that cancels |
 
 ### PrimaryDecompositionError (E-IDEAL-*)
 
@@ -147,6 +148,13 @@ real code is available from `ideal::take_ideal_refusal()` /
 `radical` and `primary_decomposition` raise `AlkahestError` with `.code == "E-IDEAL-005"` /
 `"E-IDEAL-006"`, and `triangularize` raises `SolverError` with `.code == "E-SOLVE-004"`.
 `AlkahestError` subclasses `ValueError`, so code that catches `ValueError` is unaffected.
+
+`E-SOLVE-005` uses the same channel for the same reason: `solve` returns
+`SolverError::NotPolynomial` with `solver::take_undefined_equation()` pending, and the
+Python binding raises `SolverError` with `.code == "E-SOLVE-005"`. It means the equation's
+denominator vanishes identically, so it is not a rational function of anything and there is
+no solution set to report — distinct from `E-SOLVE-001`, which means the equation is a
+perfectly good function that is merely not polynomial or rational in the declared unknowns.
 
 The takers are *consuming*, which is what keeps the carrier variant honest: a genuinely
 non-polynomial equation still reports `E-SOLVE-001`, because no refusal is pending for it.
