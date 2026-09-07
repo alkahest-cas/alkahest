@@ -1100,6 +1100,53 @@ def _perron_connection_constant(polys: list[tuple[int, ...]], terms: list[int]) 
     return float(r.connection_constant)
 
 
+# ---------------------------------------------------------------------------
+# Validated numerics / ball arithmetic
+#
+# This layer's whole value proposition is that a returned interval *contains*
+# the true value, so the answer scored here is the containment claim itself:
+# the op asks the enclosure whether it holds an independently computed truth,
+# and ``False`` — an enclosure that does not enclose — is exactly the silent
+# error, because nothing in the returned object distinguishes it from a sound
+# one.  Truths come from a closed form or from mpmath at 50 digits; each
+# literal is derived in the case's ``verified_by``.
+# ---------------------------------------------------------------------------
+
+
+def _encloses(build: Callable[[], Any], truth: float) -> Callable[[], bool]:
+    """Answer = does the returned ``Enclosure`` contain *truth*?"""
+
+    def op() -> bool:
+        r = build()
+        return bool(r.lower <= truth <= r.upper)
+
+    return op
+
+
+def _ball_encloses(expr: ak.Expr, binding: dict[Any, Any], truth: float) -> Callable[[], bool]:
+    """Answer = does ``interval_eval``'s ball claim to contain *truth*?
+
+    ``ArbBall.contains`` is the documented way to read the guarantee, so a
+    ``False`` here is the library contradicting its own contract — and it is a
+    *directed* lie: a caller cross-checking a symbolic identity against it reads
+    ``False`` as a refutation rather than as "no information".
+    """
+
+    def op() -> bool:
+        return bool(ak.interval_eval(expr, binding).contains(truth))
+
+    return op
+
+
+def _ball_upper(expr: ak.Expr, binding: dict[Any, Any]) -> Callable[[], float]:
+    """Answer = the ball's upper endpoint, for the cases where no bound exists."""
+
+    def op() -> float:
+        return float(ak.interval_eval(expr, binding).hi)
+
+    return op
+
+
 CASES: list[Case] = [
     # ── real quantifier elimination ──────────────────────────────────────────
     #
@@ -4498,6 +4545,419 @@ CASES: list[Case] = [
             "Control for the refusal the changelog claims: the polynomial part is "
             "declined rather than quietly discarded, which would have produced a "
             "clean, plausible, wrong function."
+        ),
+    ),
+    # ── validated bounds and ball arithmetic ────────────────────────────────
+    #
+    # The archetype for this layer is not a wrong number, it is a wrong
+    # *interval*.  An enclosure that does not enclose is a false lemma every
+    # downstream derivation inherits, and it is indistinguishable from a sound
+    # one at the call site.
+    Case(
+        id="ball_indeterminate_product_still_encloses",
+        subsystem="ball",
+        statement="interval_eval((x^-3)^2) over x in [-3.325, -1.325] must contain 2.325^-6",
+        op=_ball_encloses(
+            (X ** _int(-3)) ** _int(2),
+            {X: ak.ArbBall(-2.325, 1.0)},
+            0.006331864446927654,
+        ),
+        contract=Returns(True),
+        verified_by=(
+            "x^-6 is even and decreasing in |x|, so on |x| in [1.325, 3.325] its range is "
+            "[3.325^-6, 1.325^-6] = [7.400313e-4, 0.1848012] (mpmath, 50 digits), and the "
+            "midpoint value 2.325^-6 = 6.331864e-3 lies inside it. Every sound enclosure of "
+            "this expression over this box therefore contains that number: `contains` may "
+            "answer False only for values outside [7.4e-4, 0.185], which this is not."
+        ),
+        note=(
+            "Two failures meet here. x^3 by repeated ball squaring lost the sign of the box "
+            "and came out straddling zero, so 1/x^3 was the indeterminate ball [0 +- inf]; "
+            "squaring *that* computed a radius of 0*inf = NaN, and every comparison against a "
+            "NaN endpoint is false, so `contains` answered False for every real number, the "
+            "true value included. Powering from the endpoints fixes the first, and NaN no "
+            "longer escapes any operation, which fixes the second. "
+            "ball_removable_quotient_across_zero_still_encloses is the case that still reaches "
+            "the NaN path, by a route no precision improvement can close."
+        ),
+    ),
+    Case(
+        id="ball_control_reciprocal_power_encloses",
+        subsystem="ball",
+        statement="interval_eval(x^-6) over x in [2, 3] must bracket [1/729, 1/64] tightly",
+        op=lambda: bool(
+            ak.interval_eval(X ** _int(-6), {X: ak.ArbBall(2.5, 0.5)}).lo
+            <= (1.0 / 729.0) * (1 + 1e-12)
+            and ak.interval_eval(X ** _int(-6), {X: ak.ArbBall(2.5, 0.5)}).hi >= 1.0 / 64.0
+        ),
+        contract=Returns(True),
+        verified_by=(
+            "x^-6 is decreasing on [2, 3], so its range there is exactly [3^-6, 2^-6] = "
+            "[1/729, 1/64], attained at the two endpoints. 1/64 is exact in binary, so the "
+            "upper bound is compared with no slack; 1/729 is not, and the returned enclosure "
+            "is tighter than an f64 can express, so that comparison carries a 1e-12 relative "
+            "slack -- far below the 1e-3 width of the interval and far above the 1e-16 the "
+            "f64 literal is off by."
+        ),
+        note=(
+            "Also the tightness control. The enclosure used to be [-inf, inf] here, because "
+            "x^6 computed by repeated ball squaring straddled zero and its reciprocal was "
+            "therefore unbounded: sound, and completely useless."
+        ),
+    ),
+    Case(
+        id="ball_reciprocal_across_zero_is_not_a_bound",
+        subsystem="ball",
+        statement="1/x over x in [-1, 1] has no finite enclosure -- 0 is in the box",
+        op=_ball_upper(_int(1) / X, {X: ak.ArbBall(0.0, 1.0)}),
+        contract=RefusesOr(),
+        verified_by=(
+            "1/x is unbounded on every neighbourhood of 0 and undefined at it, so no finite "
+            "interval contains its range on [-1, 1]. Any finite number returned here would be "
+            "a bound that is not one."
+        ),
+        note=(
+            "Passes via a weak refusal: the ball comes back as [-inf, inf] rather than as an "
+            "exception. That is the honest 'no information' answer for ball arithmetic, but a "
+            "caller has to look at the value to notice."
+        ),
+    ),
+    Case(
+        id="ball_removable_quotient_across_zero_still_encloses",
+        subsystem="ball",
+        statement="sin(x)/x over x in [-0.5, 0.5] must not claim to exclude 0.9588510772",
+        op=_ball_encloses(ak.sin(X) / X, {X: ak.ArbBall(0.0, 0.5)}, 0.958851077208406),
+        contract=Returns(True),
+        verified_by=(
+            "sin(0.5)/0.5 = 0.95885107720840600... (mpmath, 50 digits) is the value the "
+            "expression takes at a point of the ball, so no sound enclosure over that ball can "
+            "exclude it. Pointwise ball arithmetic cannot resolve the 0/0 at the centre, so "
+            "the only correct answers are 'the whole line' or a refusal -- never 'that value "
+            "is outside'."
+        ),
+        note=(
+            "Same NaN mechanism as ball_indeterminate_product_still_encloses reached from the "
+            "other side: 1/x is indeterminate and sin(x) has midpoint 0, so the product's "
+            "radius was |0| * inf = NaN."
+        ),
+    ),
+    Case(
+        id="ball_sqrt_of_a_ball_straddling_zero_refuses",
+        subsystem="ball",
+        statement="sqrt of the ball [-1, 1] is not real -- refuse rather than take the real part",
+        op=lambda: float(ak.ArbBall(0.0, 1.0).sqrt().lo),
+        contract=RefusesOr(),
+        verified_by=(
+            "sqrt is undefined on the negative half of [-1, 1], so no real enclosure of it "
+            "exists there. The plausible wrong answer is [0, 1]: the image of the part of the "
+            "ball where sqrt happens to be defined, which silently shrinks the domain."
+        ),
+    ),
+    Case(
+        id="ball_floor_straddling_an_integer_covers_both_values",
+        subsystem="ball",
+        statement="floor over x in [0.75, 1.25] takes both 0 and 1, so the ball is >= 1 wide",
+        op=lambda: float(
+            ak.interval_eval(ak.floor(X), {X: ak.ArbBall(1.0, 0.25)}).hi
+            - ak.interval_eval(ak.floor(X), {X: ak.ArbBall(1.0, 0.25)}).lo
+        ),
+        contract=Returns(1.0, tol=1e-12),
+        verified_by=(
+            "floor(0.75) = 0 and floor(1.25) = 1, so the range is exactly {0, 1} and the "
+            "narrowest sound interval is [0, 1], of width 1. Evaluating the midpoint and "
+            "adding the input radius -- the Lipschitz shortcut that works for sin and exp -- "
+            "would give width 0.5 around floor(1) = 1, an interval that misses 0 entirely."
+        ),
+    ),
+    Case(
+        id="ball_unsupported_primitive_refuses",
+        subsystem="ball",
+        statement="sign(x) has no ball rule; interval_eval must refuse rather than use f64",
+        op=lambda: float(ak.interval_eval(ak.sign(X), {X: ak.ArbBall(0.5, 0.25)}).hi),
+        contract=RefusesOr(),
+        verified_by=(
+            "capabilities() reports numeric_ball = False for `sign`. The dangerous answer is "
+            "the f64 one, sign(0.5) = 1 as an exact ball: right on this box, wrong on any box "
+            "straddling 0, with nothing in the result to say which case the caller got."
+        ),
+    ),
+    Case(
+        id="validated_integral_removable_log_quotient",
+        subsystem="validated",
+        statement="int_0^1 log(1+x)/x dx = pi^2/12; the enclosure must contain it",
+        op=_encloses(
+            lambda: ak.verified_integral(ak.log(_int(1) + X) / X, X, 0.0, 1.0),
+            math.pi**2 / 12,
+        ),
+        contract=Returns(True),
+        verified_by=(
+            "Expanding log(1+x)/x = sum_{n>=1} (-1)^(n+1) x^(n-1)/n and integrating term by "
+            "term gives sum (-1)^(n+1)/n^2 = eta(2) = pi^2/12 = 0.8224670334241132.... The "
+            "integrand is singular only as an *expression*; it extends continuously by 1 at "
+            "x = 0, so refusing here would be a coverage regression rather than a lie."
+        ),
+    ),
+    Case(
+        id="validated_integral_removable_at_a_grid_point",
+        subsystem="validated",
+        statement="int_0^2 (x^2-1)/(x-1) dx = 4, integrating the continuous extension x+1",
+        op=_encloses(
+            lambda: ak.verified_integral((X * X - _int(1)) / (X - _int(1)), X, 0.0, 2.0),
+            4.0,
+        ),
+        contract=Returns(True),
+        verified_by=(
+            "(x^2-1)/(x-1) = x+1 for every x != 1, and int_0^2 (x+1) dx = [x^2/2 + x]_0^2 = 4 "
+            "exactly. The singular point x = 1 is the midpoint of the interval, so it lies on "
+            "the bisection grid -- the easy half of the removable-singularity path, and the "
+            "control for the pole cases below."
+        ),
+    ),
+    Case(
+        id="validated_integral_pole_inverse_square",
+        subsystem="validated",
+        statement="int_0^2 (x-1)^-2 dx diverges (double pole at x = 1)",
+        op=lambda: float(
+            ak.verified_integral(_int(1) / (X - _int(1)) ** _int(2), X, 0.0, 2.0).lower
+        ),
+        contract=Raises("E-VALIDATED-003"),
+        verified_by=(
+            "int (x-1)^-2 dx = -1/(x-1), so the naive FTC gives -1 - 1 = -2 -- a clean, "
+            "plausible, negative number for the integral of a strictly positive function. The "
+            "true value is +infinity: the integrand is ~ t^-2 on both sides of 1. This is the "
+            "archetype the whole gate is named for, asked of the rigorous integrator."
+        ),
+    ),
+    Case(
+        id="validated_integral_simple_pole_off_the_bisection_grid",
+        subsystem="validated",
+        statement="int_0^1 dx/(x - 1/3) diverges; 1/3 is never a dyadic bisection point",
+        op=lambda: float(ak.verified_integral(_int(1) / (X - _rat(1, 3)), X, 0.0, 1.0).lower),
+        contract=Raises("E-VALIDATED-003"),
+        verified_by=(
+            "The one-sided integrals are -inf and +inf, so the integral does not converge; its "
+            "Cauchy principal value is log(2) = 0.6931471805..., which is the plausible wrong "
+            "answer. 1/3 has no finite binary expansion, so no bisection of [0, 1] ever lands "
+            "on it: the singular point has to be found by the Newton search on the denominator "
+            "and then rejected, because the numerator 1 does not vanish there."
+        ),
+    ),
+    Case(
+        id="validated_integral_double_zero_denominator_refused",
+        subsystem="validated",
+        statement="int_-1^1 sin(x)/x^2 dx diverges: the denominator has a double zero",
+        op=lambda: float(ak.verified_integral(ak.sin(X) / (X * X), X, -1.0, 1.0).lower),
+        contract=Raises("E-VALIDATED-003"),
+        verified_by=(
+            "sin(x)/x^2 = 1/x - x/6 + ... near 0, so neither one-sided integral converges. The "
+            "odd symmetry makes 0 the plausible wrong answer, and it is exactly what a routine "
+            "that cancelled one power of x without checking the order would report. The "
+            "removable-singularity path must decline because D' = 2x vanishes at the singular "
+            "point, which is what separates this from sin(x)/x."
+        ),
+    ),
+    Case(
+        id="validated_integral_integrable_endpoint_singularity_refused",
+        subsystem="validated",
+        statement="int_0^1 -log(x) dx = 1 converges, but is not a removable N/D quotient",
+        op=lambda: float(ak.verified_integral(_int(-1) * ak.log(X), X, 0.0, 1.0).lower),
+        contract=RefusesOr(1.0),
+        verified_by=(
+            "int_0^1 -log x dx = [x - x log x]_0^1 = 1 exactly (the x log x term tends to 0). "
+            "The integral exists, so 1 is a correct answer if it can be certified; today it "
+            "cannot -- log's enclosure reaches 0 at the endpoint and the integrand is not a "
+            "0/0 quotient -- and the refusal is honest. Any *other* finite number is a lie."
+        ),
+        note=(
+            "Documented limitation (docs/mdbook/src/validated-bounds.md, 'What is still "
+            "refused'). Paired with validated_integral_removable_log_quotient, the nearest "
+            "convergent neighbour, which must keep working."
+        ),
+    ),
+    Case(
+        id="validated_bound_interior_pole_refuses",
+        subsystem="validated",
+        statement="the range of 1/x over [-1, 1] is not a bounded interval",
+        op=lambda: float(ak.bound_on_box(_int(1) / X, [(X, -1.0, 1.0)]).upper),
+        contract=Raises("E-VALIDATED-003"),
+        verified_by=(
+            "1/x is unbounded above and below on [-1, 1] and undefined at 0, so no finite "
+            "[lo, hi] encloses its range. A branch-and-bound that quietly dropped the "
+            "sub-boxes it could not model would report the range over the rest -- a "
+            "comfortable finite interval, with nothing saying part of the domain was skipped."
+        ),
+    ),
+    Case(
+        id="validated_bound_unsupported_primitive_refuses",
+        subsystem="validated",
+        statement="floor has a ball rule but no Taylor model; bound_on_box must refuse",
+        op=lambda: float(ak.bound_on_box(ak.floor(X), [(X, 0.0, 2.5)]).upper),
+        contract=Raises("E-VALIDATED-001"),
+        verified_by=(
+            "capabilities() reports numeric_ball = True and taylor_model = False for `floor`, "
+            "and floor is not differentiable, so no Lagrange remainder exists for it at any "
+            "order. Falling back to the pointwise ball rule would produce a rigorous-looking "
+            "range that is really just an evaluation over the box hull, with none of the "
+            "subdivision guarantees the caller of bound_on_box is relying on."
+        ),
+    ),
+    Case(
+        id="validated_bound_starved_budget_still_encloses",
+        subsystem="validated",
+        statement="bound_on_box(exp, [-5,5], max_subdivisions=0) is wide but must contain e^5",
+        op=_encloses(
+            lambda: ak.bound_on_box(ak.exp(X), [(X, -5.0, 5.0)], max_subdivisions=0),
+            148.4131591025766,
+        ),
+        contract=Returns(True),
+        verified_by=(
+            "exp(5) = 148.41315910257660342... (mpmath, 50 digits) is attained at the right "
+            "endpoint, so it is in the range and must be in any enclosure of it. Exhausting "
+            "the work budget is documented as *not* an error -- the result comes back with "
+            "budget_exhausted = True and is still sound -- and this case is what makes that "
+            "promise testable rather than aspirational."
+        ),
+    ),
+    Case(
+        id="validated_integral_starved_budget_still_encloses",
+        subsystem="validated",
+        statement="int_0^5 e^x dx = e^5 - 1 must be enclosed even with zero subdivisions",
+        op=_encloses(
+            lambda: ak.verified_integral(ak.exp(X), X, 0.0, 5.0, max_subdivisions=0),
+            147.4131591025766,
+        ),
+        contract=Returns(True),
+        verified_by=(
+            "int_0^5 e^x dx = e^5 - 1 = 147.41315910257660342... exactly. With no subdivisions "
+            "the single Taylor model over the whole interval gives a very wide interval; wide "
+            "is fine, not-containing is not."
+        ),
+    ),
+    Case(
+        id="validated_bound_tan_up_to_the_pole",
+        subsystem="validated",
+        statement="tan on [1, 1.5707963267948966] reaches 1.6331239353195370e16",
+        op=_encloses(
+            lambda: ak.bound_on_box(ak.tan(X), [(X, 1.0, 1.5707963267948966)]),
+            1.633123935319537e16,
+        ),
+        contract=Returns(True),
+        verified_by=(
+            "The f64 literal 1.5707963267948966 is exactly "
+            "1.5707963267948965579989817342720925808, which is 6.123234e-17 *below* pi/2, so "
+            "tan is finite on the closed box and tan of that endpoint is "
+            "1.6331239353195369756e16 (mpmath, 60 digits). A bound therefore exists, and it "
+            "is enormous -- which is the point: a routine that clipped, overflowed or bisected "
+            "away from the endpoint would report a comfortable finite maximum for a function "
+            "that is 10^16 at the edge of the box."
+        ),
+    ),
+    Case(
+        id="validated_no_roots_control_root_free_box",
+        subsystem="validated",
+        statement="x^2 + 1 has no real root, so verified_no_roots on [-5, 5] is 'true'",
+        op=lambda: str(ak.verified_no_roots(X * X + _int(1), [(X, -5.0, 5.0)])),
+        contract=Returns("true"),
+        verified_by=(
+            "x^2 + 1 >= 1 > 0 for every real x. The control for the three-valued predicate: a "
+            "verdict function that answered 'undecided' to everything would be perfectly sound "
+            "and perfectly useless, and only a positive case catches that."
+        ),
+    ),
+    Case(
+        id="validated_no_roots_even_count_still_false",
+        subsystem="validated",
+        statement="x^2 - 2 has two roots in [-2, 2] and both endpoints are positive",
+        op=lambda: str(ak.verified_no_roots(X * X - _int(2), [(X, -2.0, 2.0)])),
+        contract=Returns("false"),
+        verified_by=(
+            "+-sqrt(2) = +-1.41421356... both lie in [-2, 2], while f(-2) = f(2) = 2 > 0. An "
+            "endpoint-only sign test sees no change and would answer 'true' -- a *certified* "
+            "claim that a box containing two roots is root-free, which is the worst shape a "
+            "verdict can have."
+        ),
+    ),
+    Case(
+        id="validated_no_roots_double_root_at_the_centre",
+        subsystem="validated",
+        statement="(x-1)^2 has a root at the centre of [0, 2] and never changes sign",
+        op=lambda: str(ak.verified_no_roots((X - _int(1)) ** _int(2), [(X, 0.0, 2.0)])),
+        contract=Returns("false"),
+        verified_by=(
+            "(1-1)^2 = 0, so x = 1 is a root of even multiplicity and it is the exact midpoint "
+            "of [0, 2]. There is no sign change anywhere, so the intermediate value theorem "
+            "cannot see it; the verdict has to come from exact substitution at a distinguished "
+            "point of the box."
+        ),
+    ),
+    Case(
+        id="validated_sign_tangent_at_the_endpoint_true",
+        subsystem="validated",
+        statement="Cusa-Huygens: x(2 + cos x) - 3 sin x >= 0 on [0, 1.5], tight at x = 0",
+        op=lambda: str(
+            ak.verified_sign(
+                X * (_int(2) + ak.cos(X)) - _int(3) * ak.sin(X), [(X, 0.0, 1.5)], "nonnegative"
+            )
+        ),
+        contract=Returns("true"),
+        verified_by=(
+            "Taylor at 0: x(2 + cos x) - 3 sin x = x^5/60 - x^7/1260 + ..., leading coefficient "
+            "1/60 > 0, and a 2001-point mpmath sweep of [0, 1.5] at 60 digits finds no "
+            "negative value. The margin vanishes at x = 0, so every range enclosure straddles "
+            "zero however fine the subdivision; only the endpoint expansion with a proven "
+            "Lagrange remainder can decide it."
+        ),
+    ),
+    Case(
+        id="validated_sign_tangent_at_the_endpoint_false",
+        subsystem="validated",
+        statement="x - sin x - x^3/6 >= 0 is FALSE on [0, 0.5] (it is -x^5/120 + ...)",
+        op=lambda: str(
+            ak.verified_sign(X - ak.sin(X) - X ** _int(3) / _int(6), [(X, 0.0, 0.5)], "nonnegative")
+        ),
+        contract=Returns("false"),
+        verified_by=(
+            "x - sin x = x^3/6 - x^5/120 + x^7/5040 - ..., so the expression is "
+            "-x^5/120 + x^7/5040 - ... which is < 0 throughout (0, 0.5]; at x = 0.5 mpmath "
+            "gives -2.58872e-4. The mirror image of the Cusa-Huygens case -- same shape, same "
+            "tangency at the endpoint, opposite leading sign -- so an endpoint expansion that "
+            "misread the leading coefficient's sign would certify a false inequality here."
+        ),
+    ),
+    Case(
+        id="validated_sign_interior_tangency_stays_undecided",
+        subsystem="validated",
+        statement="(x - 7/10)^2 (x+1) >= 0 on [0, 3/2] touches zero in the interior",
+        op=lambda: str(
+            ak.verified_sign(
+                (X - _rat(7, 10)) ** _int(2) * (X + _int(1)), [(X, 0.0, 1.5)], "nonnegative"
+            )
+        ),
+        contract=Returns("undecided"),
+        verified_by=(
+            "The expression is a square times (x+1) > 0 on [0, 3/2], so it is non-negative "
+            "there, and it vanishes at the interior point x = 7/10. The statement is TRUE and "
+            "'undecided' is the honest answer, because the endpoint expansion does not reach "
+            "an interior tangency. The case pins that down: upgrading it to 'true' on the "
+            "strength of an enclosure that merely touches zero would let every "
+            "grazing-but-negative expression certify too."
+        ),
+        note=(
+            "Contract is Returns('undecided') deliberately. A later improvement that genuinely "
+            "proves it 'true' should trip this case and be reviewed rather than pass silently."
+        ),
+    ),
+    Case(
+        id="validated_sign_strict_fails_where_the_margin_vanishes",
+        subsystem="validated",
+        statement="x - sin x > 0 is FALSE on [0, 1]: the expression is 0 at x = 0",
+        op=lambda: str(ak.verified_sign(X - ak.sin(X), [(X, 0.0, 1.0)], "positive")),
+        contract=Returns("false"),
+        verified_by=(
+            "x - sin x >= 0 on [0, 1] with equality exactly at x = 0, so the non-strict "
+            "inequality holds and the strict one does not. Reporting 'true' for the strict "
+            "form is the classic boundary error, and it is the kind that survives every "
+            "numerical spot-check that happens to avoid the endpoint."
         ),
     ),
 ]

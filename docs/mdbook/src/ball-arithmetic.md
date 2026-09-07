@@ -90,6 +90,33 @@ result = interval_eval(expr, {
 
 `interval_eval` guarantees that the output ball contains the true value for any input in the given input balls, accounting for all rounding in the intermediate computation.
 
+## The indeterminate ball
+
+Some expressions have no finite enclosure over the ball you asked about — `1/x`
+where the ball straddles `0`, or an intermediate result whose enclosure lost so
+much to the dependency problem that a later reciprocal became unbounded. The
+answer in that case is `[-inf, inf]`: the whole real line, which is true and
+carries no information.
+
+```python
+r = interval_eval(pool.integer(1) / x, {x: ArbBall(0.0, 1.0)})
+r.lo, r.hi        # (-inf, inf)
+r.contains(5.0)   # True — it contains everything
+```
+
+Two consequences worth knowing:
+
+* **Check `lo`/`hi` for finiteness before believing a bound.** An infinite
+  endpoint is the API saying "I could not bound this", and it is the only way
+  it says so — `interval_eval` does not raise for it.
+* **`contains` is `True` for an indeterminate ball, never `False`.** This is
+  the direction that matters: `contains` is what a caller uses to
+  cross-check a symbolic identity, and a `False` there is read as a
+  *refutation*. "No information" must never be reported as "that value is
+  outside the enclosure", so no ball ever has NaN endpoints — a NaN produced by
+  an indeterminate operand (`0 · ∞` in the radius of a product, `∞ − ∞` in the
+  midpoint of a sum) widens to the whole line instead of escaping.
+
 ## AcbBall
 
 Complex ball arithmetic for expressions over ℂ:

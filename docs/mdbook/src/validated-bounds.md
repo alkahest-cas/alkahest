@@ -109,11 +109,18 @@ whose enclosure has a determined one, and samples the centres of the rest.
 | `x²−2` on `[-10,10]` | 2 | + → + | `"false"` |
 | `(x²−2)(x²+1)` on `[-2,2]` | 2 | + → + | `"false"` |
 | `x−y` on `[-1,1]²` | a whole line | — | `"false"` |
-| `(x−1)²` on `[0,2]` | 1 (double) | + → + | `"undecided"` |
+| `(x−1)²` on `[0,2]` | 1 (double) | + → + | `"false"` |
+| `(x−1)²` on `[0,3/2]` | 1 (double) | + → + | `"undecided"` |
 
-The last row is the honest limit. A double root never changes sign, so no
-witness pair exists; `"undecided"` is the answer, and it is not upgraded to
-`"false"` on the strength of an enclosure that merely touches zero.
+The last two rows are the honest limit, and the difference between them is
+worth understanding. A double root never changes sign, so the intermediate
+value theorem has nothing to work with either time. What settles `[0,2]` is the
+*other* proof: `1` is the exact midpoint of that box, and substituting it
+symbolically gives a literal `0`, so a point of the box is **proven** to be a
+root and no continuity argument is needed. On `[0,3/2]` the root is at no
+distinguished point and no dyadic bisection ever lands on it, so nothing is
+proven and `"undecided"` is the answer — never upgraded to `"false"` on the
+strength of an enclosure that merely touches zero.
 
 ### Inequalities that are tight at an endpoint
 
@@ -164,9 +171,17 @@ enclosure that merely touches zero.
 Taylor models reach the **elementary fragment**: `exp`, `log`, `sqrt`, `sin`,
 `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `asinh`,
 `acosh`, `atanh`, `abs`, plus arithmetic and integer/rational powers — and,
-since 3.9.0, `erf` and `erfc`. Outside it are `bessel_j0`, `bessel_j1`,
-`digamma`, `lambert_w`, `gamma`, the elliptic integrals, `floor` and `ceil`,
-and so is any two-argument function such as `atan2`.
+since 3.9.0, `erf` and `erfc` — and it reaches beyond it: `gamma`, `digamma`,
+`trigamma`, `lambert_w`, `bessel_j0`, `bessel_j1`, `dilog`, `Si`, `Ci`, `Shi`,
+`Chi`, `Ei`, `li`, `fresnels` and `fresnelc` all carry a rule with a rigorous
+remainder as well. Outside it are the elliptic integrals, `floor`, `ceil`,
+`sign`, `round` and `heaviside` — none of which is differentiable, so no
+Lagrange remainder exists for them at any order — and so is any two-argument
+function such as `atan2`.
+
+Do not read that list as fixed. `taylor_model` and `bounds_supported` are
+derived by *running* the Taylor evaluator, so the query below is the answer and
+this paragraph is only a summary of it.
 
 The three inverse hyperbolics carry the domain restriction their branch has:
 `acosh` needs the whole box strictly above `1` and `atanh` needs it strictly
@@ -180,20 +195,23 @@ instead of discovering it by hitting `E-VALIDATED-001`:
 
 ```python
 ak.bounds_supported(ak.sin(x) * ak.exp(x))     # truthy
-answer = ak.bounds_supported(ak.bessel_j0(x))
-bool(answer), answer.functions                  # (False, ['bessel_j0'])
-answer.blocker                                  # "function `bessel_j0`"
+answer = ak.bounds_supported(ak.floor(x))
+bool(answer), answer.functions                  # (False, ['floor'])
+answer.blocker                                  # "function `floor`"
 
 # Per primitive, in the agent contract:
 {row["name"] for row in ak.capabilities()["primitives"] if row["taylor_model"]}
 ```
 
-**`numeric_ball` is not this flag.** It reports pointwise ball arithmetic,
-which `bessel_j0`, `digamma`, `lambert_w` and `floor` all have; a Taylor model
-additionally needs a rule with a rigorous Lagrange remainder, which they do
-not. Both bits are honest — they answer different questions. `taylor_model`
-and `bounds_supported` are derived by *running* the Taylor evaluator, not from
-a maintained list, so neither can drift from what `bound_on_box` accepts.
+**`numeric_ball` is not this flag.** It reports pointwise ball arithmetic; a
+Taylor model additionally needs a rule with a rigorous Lagrange remainder, and
+the two bits move independently. `floor` is the clean example: its ball rule is
+exact — `floor` of a ball straddling an integer returns an interval covering
+both values — and it still has `taylor_model = False`, because it has no
+derivative to bound. The elliptic integrals have neither. Both bits are honest,
+and they answer different questions. `taylor_model` and `bounds_supported` are
+derived by *running* the Taylor evaluator, not from a maintained list, so
+neither can drift from what `bound_on_box` accepts.
 
 A `True` answer means "will not be refused with `E-VALIDATED-001`". It is not
 a promise of success: a covered function can still hit a domain violation or
