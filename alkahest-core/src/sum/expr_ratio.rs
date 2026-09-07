@@ -166,7 +166,7 @@ fn ratio_factor(f: ExprId, k: ExprId, pool: &ExprPool) -> Result<RatFunc, SumErr
     }
 }
 
-fn is_free_of_k(expr: ExprId, k: ExprId, pool: &ExprPool) -> bool {
+pub(super) fn is_free_of_k(expr: ExprId, k: ExprId, pool: &ExprPool) -> bool {
     if expr == k {
         return false;
     }
@@ -254,7 +254,7 @@ fn geometric_base_ratio(
 }
 
 /// Extract integer slope `a` from an affine exponent `a·k + b` (`b` free of `k`).
-fn affine_slope_in_k(exp: ExprId, k: ExprId, pool: &ExprPool) -> Result<i64, SumError> {
+pub(super) fn affine_slope_in_k(exp: ExprId, k: ExprId, pool: &ExprPool) -> Result<i64, SumError> {
     if exp == k {
         return Ok(1);
     }

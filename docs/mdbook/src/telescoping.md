@@ -137,6 +137,27 @@ b(n) = G(n, k_hi+1) − G(n, k_lo) + Σ_i a_i(n)·D_i(n)
 with `D_i` the finitely many values of `F` between the range at `n` and the range
 at `n+i`, and it is `b(n)` that the verdict is about.
 
+### The sum has to exist before a verdict is worth anything
+
+Everything above assumes `S(n)` is a finite sum of finite terms. That is a
+statement about the **summand**, and it is checked rather than assumed: a pole of
+`F(n,k)` at an integer `k` inside `[k_lo, k_hi]` is `"unknown"`, naming the
+index.
+
+The check is not decorative. `F(n,k) = C(n,k)/(k−3)` has a certificate that
+verifies exactly in `Q(n)(k)`, finite `G` at both endpoints, and used to come
+back `"vanishes"` with coefficients `(2n+2)`, `(2−3n)`, `(n−1)` — for a sum whose
+`k = 3` term divides by zero, so that `S(n)` does not exist for any `n ≥ 3`. At
+`n = 1` the last coefficient is `0`, so the "proved" recurrence reads
+`4·S(1) − S(2) = 0` with both quantities defined: `S(1) = −5/6` and
+`S(2) = −7/3`, which is `−1`, and solving it for `S(2)` gives `−10/3`. This is
+the same lesson as `sum_definite`'s interior-pole guard and the definite-integral
+one — the guard has to look at the summand, because `G(k_hi+1) − G(k_lo)` is
+precisely the object that has forgotten the interior.
+
+A pole *outside* the range is not this defect and is left alone:
+`Σ_{k=0}^{n} C(n,k)/(k+1)` still gets its `"nonzero"` verdict.
+
 Symmetrically, `"nonzero"` needs a *witness*: an integer `n₀` at which `b(n₀)`
 is nonzero in exact rational arithmetic. Sampling that finds only zeros proves
 nothing and yields `"unknown"`.

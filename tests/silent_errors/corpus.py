@@ -40,6 +40,8 @@ X = POOL.symbol("x")
 Y = POOL.symbol("y")
 N = POOL.symbol("n")
 K = POOL.symbol("k")
+#: Symbolic geometric ratio, for the `Σ rᵏ` cases.
+R = POOL.symbol("r")
 
 
 def _int(v: int) -> ak.Expr:
@@ -687,6 +689,22 @@ def _zeilberger_sum_recurrence_defect(
                 total += coeff * exact_sum(ni + i)
             worst = max(worst, abs(float(total)))
         return worst
+
+    return op
+
+
+def _zeilberger_boundary_tag(term: ak.Expr) -> Callable[[], str]:
+    """Answer = ``cert.boundary``, the three-valued verdict on the *sum*.
+
+    The certificate is an identity about the summand and always holds; the
+    verdict is the separate claim that a recurrence for ``S(n)`` follows from
+    it.  Scoring the verdict rather than the coefficients is what makes a
+    ``"vanishes"`` about a sum that does not exist a silent error rather than a
+    detail buried in a side-condition string.
+    """
+
+    def op() -> str:
+        return str(ak.zeilberger(term, N, K).boundary)
 
     return op
 
@@ -3714,6 +3732,175 @@ CASES: list[Case] = [
             "1·2·3·4·5 = 120. The Γ-quotient here is Γ(6)/Γ(1) with no pole in it, so the pole "
             "guard must stay silent; together with product_control_contains_zero (which needs "
             "1/Γ(0) = 0) it pins both sides of the guard."
+        ),
+    ),
+    # -----------------------------------------------------------------------
+    # A pole of the *summand* inside the summation range, seen from the
+    # holonomic side.  `sum_definite` has had an interior-pole guard since
+    # 3.8.0; `zeilberger`'s boundary verdict did not, and a verdict is a much
+    # more dangerous thing to get wrong than a number, because it is labelled
+    # "proved".
+    # -----------------------------------------------------------------------
+    Case(
+        id="zeilberger_boundary_pole_inside_range",
+        subsystem="sums_products",
+        statement=(
+            "Σ_{k=0}^{n} C(n,k)/(k-3) has no value for n ≥ 3, so its certificate implies no "
+            "recurrence for the sum"
+        ),
+        op=_zeilberger_boundary_tag(_binom(N, K) / (K - _int(3))),
+        contract=Returns("unknown"),
+        verified_by=(
+            "The k=3 term of the sum is C(n,3)/0. alkahest returned boundary='vanishes' — "
+            "'proved: Σ_i a_i(n)·S(n+i) = 0' — with coefficients (2n+2), (2-3n), (n-1). At n=1 "
+            "the last one is 0, so the claim reads 4·S(1) - S(2) = 0 with every quantity in it "
+            "defined: S(1) = 1/(-3) + 1/(-2) = -5/6 and S(2) = 1/(-3) + 2/(-2) + 1/(-1) = -7/3, "
+            "computed term by term from the definition. That is -1, not 0, and solving the "
+            "claimed recurrence for S(2) gives -10/3 against the true -7/3."
+        ),
+    ),
+    Case(
+        id="zeilberger_control_pole_below_the_range",
+        subsystem="sums_products",
+        statement="Σ_{k=0}^{n} C(n,k)/(k+1): the pole is at k = -1, outside the range",
+        op=_zeilberger_boundary_tag(_binom(N, K) / (K + _int(1))),
+        contract=Returns("nonzero"),
+        verified_by=(
+            "Every term C(n,k)/(k+1) with 0 ≤ k ≤ n is finite, so the sum exists and the "
+            "boundary analysis must still answer. It is the A279013-shaped case whose true "
+            "recurrence is inhomogeneous: (n+2)·S(n+1) - (2n+2)·S(n) = 1, checked against "
+            "S(0) = 1, S(1) = 3/2, S(2) = 7/3 from Σ_{k=0}^{m} C(m,k)/(k+1) = (2^{m+1}-1)/(m+1). "
+            "The control for the interior-pole guard: refusing this would trade a false verdict "
+            "for a dead engine."
+        ),
+    ),
+    Case(
+        id="zeilberger_control_natural_boundary_still_vanishes",
+        subsystem="sums_products",
+        statement="Σ_{k=0}^{n} C(n,k) = 2ⁿ — the textbook natural boundary",
+        op=_zeilberger_boundary_tag(_binom(N, K)),
+        contract=Returns("vanishes"),
+        verified_by=(
+            "C(n,k) is finite at every integer k, and vanishes outside 0 ≤ k ≤ n, so the "
+            "homogeneous S(n+1) = 2·S(n) holds — as 1, 2, 4, 8 confirms. The second control: a "
+            "guard that fired on the shape rather than on a pole would break this."
+        ),
+    ),
+    # -----------------------------------------------------------------------
+    # `verify_wz_pair` — a verifier's false *negative* is not a lie, but it is
+    # a verifier that cannot verify.
+    # -----------------------------------------------------------------------
+    Case(
+        id="wz_pair_polynomial_is_verified",
+        subsystem="sums_products",
+        statement="(F, G) = (n·k, k(k-1)/2) is a WZ pair: both differences are k",
+        op=lambda: bool(ak.verify_wz_pair(N * K, K * (K - _int(1)) * _rat(1, 2), N, K)),
+        contract=Returns(True),
+        verified_by=(
+            "F(n+1,k) - F(n,k) = (n+1)k - nk = k, and G(n,k+1) - G(n,k) = (k+1)k/2 - k(k-1)/2 = "
+            "k. Expanded by hand; both sides are the polynomial k. alkahest returned False — "
+            "simplify does not expand a product, so k·(n+1) - n·k and k(k+1)/2 - k(k-1)/2 were "
+            "compared structurally and found different."
+        ),
+    ),
+    Case(
+        id="wz_pair_control_non_pair_is_refuted",
+        subsystem="sums_products",
+        statement="(F, G) = (n·k, 0) is not a WZ pair: k ≠ 0",
+        op=lambda: bool(ak.verify_wz_pair(N * K, _int(0), N, K)),
+        contract=Returns(False),
+        verified_by=(
+            "F(n+1,k) - F(n,k) = k while G(n,k+1) - G(n,k) = 0, and k is not identically zero. "
+            "The control for the case above: a verifier that answered True by giving up would "
+            "pass that one and fail this."
+        ),
+    ),
+    # -----------------------------------------------------------------------
+    # A geometric series whose ratio is a symbol: elementary, and the r = 1
+    # branch is a second case rather than a detail.
+    # -----------------------------------------------------------------------
+    Case(
+        id="sum_geometric_symbolic_ratio",
+        subsystem="sums_products",
+        statement="Σ_{k=0}^{n} rᵏ = (r^{n+1} - 1)/(r - 1); at r = 3, n = 4 that is 121",
+        op=lambda: float(
+            ak.eval_expr(ak.sum_definite(R**K, K, _int(0), N).value, {R: 3.0, N: 4.0})
+        ),
+        contract=Returns(121.0, tol=1e-9),
+        verified_by=(
+            "1 + 3 + 9 + 27 + 81 = 121, summed term by term. alkahest refused with E-SUM-001 "
+            "('geometric base must be a rational constant') — Gosper's certificate lives in "
+            "Q(k) and a symbolic ratio is not in Q, so the whole layer underneath could not "
+            "see an elementary series."
+        ),
+    ),
+    Case(
+        id="sum_geometric_symbolic_ratio_at_one",
+        subsystem="sums_products",
+        statement="the closed form for Σ_{k=0}^{n} rᵏ is 0/0 at r = 1 and must not answer there",
+        op=lambda: float(
+            ak.eval_expr(ak.sum_definite(R**K, K, _int(0), N).value, {R: 1.0, N: 4.0})
+        ),
+        contract=RefusesOr(),
+        verified_by=(
+            "Σ_{k=0}^{4} 1ᵏ = 5, but (1^5 - 1)/(1 - 1) is 0/0 — the r = 1 branch is a separate "
+            "case, which is why SymPy answers this with a Piecewise. Any finite value out of "
+            "the r ≠ 1 formula at r = 1 would be an arithmetic accident. alkahest records "
+            "r - 1 ≠ 0 as a side condition on the derivation step and the expression itself "
+            "declines to evaluate."
+        ),
+        note=(
+            "Weak refusal: the guard is that 0/0 has no float, not a coded error. The stronger "
+            "signal is the recorded side condition, which the contract vocabulary here cannot "
+            "express."
+        ),
+    ),
+    Case(
+        id="sum_geometric_symbolic_ratio_to_infinity",
+        subsystem="sums_products",
+        statement="Σ_{k=0}^{∞} rᵏ converges only for |r| < 1, which nothing states here",
+        op=lambda: _num(ak.sum_definite(R**K, K, _int(0), POOL.pos_infinity()).value),
+        contract=RefusesOr(),
+        verified_by=(
+            "The series diverges for every |r| ≥ 1, and r is an unconstrained symbol. Returning "
+            "1/(1-r) would be the geometric-series answer stated outside its disc of "
+            "convergence — the same error as summing Σ2ᵏ to -1."
+        ),
+    ),
+    Case(
+        id="zeilberger_even_row_sum_holds_where_the_certificate_is_defined",
+        subsystem="sums_products",
+        statement=(
+            "for F = C(2n,2k) the verdict is 'vanishes', and S(n+1) = 4·S(n) does hold at "
+            "every n where the certificate is defined"
+        ),
+        op=_zeilberger_sum_recurrence_defect(
+            _binom(_int(2) * N, _int(2) * K),
+            lambda m: Fraction(sum(math.comb(2 * m, 2 * j) for j in range(m + 1))),
+            disclosure_counts=False,
+        ),
+        contract=Returns(0.0, tol=1e-9),
+        verified_by=(
+            "Σ_{k=0}^{n} C(2n,2k) is the even half of row 2n, i.e. 2^{2n-1} for n ≥ 1: "
+            "1, 2, 8, 32, 128, 512 summed term by term. S(n+1) - 4·S(n) = 0 for every n ≥ 1, "
+            "checked in exact Fraction arithmetic against alkahest's own coefficients (-4, 1). "
+            "It fails by -2 at n = 0 only, and n = 0 is exactly where the certificate — which "
+            "carries a 1/n — is undefined, the residual hypothesis the side condition names. "
+            "Pinned here so that a future verdict that ignored that hypothesis, or a guard that "
+            "over-refused this shape, would show up as a change."
+        ),
+    ),
+    Case(
+        id="sum_control_empty_range",
+        subsystem="sums_products",
+        statement="Σ_{k=5}^{4} k = 0 — an empty range takes no terms",
+        op=lambda: _num(ak.sum_definite(K, K, _int(5), _int(4)).value),
+        contract=Returns(0.0),
+        verified_by=(
+            "hi = lo - 1 is the empty range under every convention: no term is ever taken, so "
+            "the sum is 0. The telescoped G(hi+1) - G(lo) = G(5) - G(5) gives it for free, "
+            "which is exactly what makes it a good check that the bounds are wired the right "
+            "way round."
         ),
     ),
     # -----------------------------------------------------------------------

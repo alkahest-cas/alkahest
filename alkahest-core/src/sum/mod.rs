@@ -23,7 +23,7 @@ pub use recurrence::{
 };
 pub use rsolve::{rsolve, RsolveError};
 
-use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
+use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
 use crate::kernel::subs::subs;
 use crate::kernel::{ExprId, ExprPool};
 use crate::matrix::normal_form::RatUniPoly;
@@ -142,6 +142,13 @@ pub fn sum_indefinite(
 /// else with an infinite bound honestly returns
 /// [`SumError::NotGosperSummable`] rather than a wrong or unresolved-`∞`
 /// answer.
+///
+/// One family is summed *off* the Gosper path, on its failure branch only:
+/// `Σ c·r^{a·k+b}` with a **symbolic** ratio, which the `Q(k)` machinery cannot
+/// represent — Gosper's certificate lives in `Q(k)` and a symbolic ratio is not
+/// in `Q`. Its `q = 1` branch is recorded as a [`SideCondition::NonZero`] on the
+/// derivation step rather than assumed away, and an infinite upper bound still
+/// refuses, because convergence needs `|q| < 1` and nothing here knows it.
 pub fn sum_definite(
     term: ExprId,
     k: ExprId,
@@ -156,7 +163,25 @@ pub fn sum_definite(
         log.push(RewriteStep::simple("basel_zeta_even", term, value));
         return Ok(DerivedExpr::with_log(value, log));
     }
-    let ind = sum_indefinite(term, k, pool)?;
+    let ind = match sum_indefinite(term, k, pool) {
+        Ok(ind) => ind,
+        Err(e) => {
+            // The one elementary family the `Q(k)` machinery structurally
+            // cannot see: a geometric series whose ratio is a symbol.
+            if let Some((value, q)) = symbolic_geometric_closed_form(term, k, lo, hi, pool) {
+                let cond = simp(pool, pool.add(vec![q, pool.integer(-1_i32)]));
+                let mut log = DerivationLog::new();
+                log.push(RewriteStep::with_conditions(
+                    "geometric_symbolic_ratio",
+                    term,
+                    value,
+                    vec![SideCondition::NonZero(cond)],
+                ));
+                return Ok(DerivedExpr::with_log(value, log));
+            }
+            return Err(e);
+        }
+    };
     let g = ind.value;
     let one = pool.integer(1_i32);
     let hi_p1 = simp(pool, pool.add(vec![hi, one]));
@@ -204,6 +229,109 @@ pub fn sum_definite(
     let mut log = DerivationLog::new();
     log.push(RewriteStep::simple("gosper_definite_telescope", term, diff));
     Ok(DerivedExpr::with_log(diff, log))
+}
+
+/// `Σ_{k=lo}^{hi} c·q^k = c·(q^{hi+1} − q^{lo})/(q − 1)` when the ratio `q` is a
+/// **symbolic** constant, with the `q = 1` branch returned as a side condition
+/// rather than assumed away.
+///
+/// Gosper cannot reach this. Its certificate lives in `Q(k)` and its shift
+/// ratio must be a rational *number*, so [`expr_ratio::hypergeom_ratio`]
+/// refuses `r^k` for a symbol `r` with `E-SUM-001` — not because the sum is
+/// hard but because the whole layer underneath is over `Q`. The series is
+/// elementary, so it is summed here instead, on the failure path only: nothing
+/// that summed before goes through this function.
+///
+/// The returned pair is `(value, q)`. `q = 1` is a genuine second branch —
+/// `Σ_{k=lo}^{hi} 1 = hi − lo + 1`, and the formula is `0/0` there — so the
+/// caller records `q − 1 ≠ 0` on the derivation step. It is not proved, only
+/// stated: a caller that does not read it still gets an expression that is
+/// `0/0` at `q = 1` rather than a wrong number.
+fn symbolic_geometric_closed_form(
+    term: ExprId,
+    k: ExprId,
+    lo: ExprId,
+    hi: ExprId,
+    pool: &ExprPool,
+) -> Option<(ExprId, ExprId)> {
+    use crate::kernel::ExprData;
+    use expr_ratio::{affine_slope_in_k, is_free_of_k};
+
+    if hi == pool.pos_infinity() || lo == pool.pos_infinity() {
+        // A geometric series to infinity converges only for |q| < 1, which is a
+        // fact about a symbol nothing here has established. Refusing is the
+        // honest answer; `E-SUM-002` already says so.
+        return None;
+    }
+
+    let factors: Vec<ExprId> = match pool.get(term) {
+        ExprData::Mul(args) => args.to_vec(),
+        _ => vec![term],
+    };
+
+    // Exactly one factor may mention `k`, and it has to be `base^{a·k + b}`
+    // with `base` free of `k`. Two `k`-dependent factors would make the term
+    // `k·q^k` or `q^k·s^k` — the first is not geometric, the second is, but
+    // folding it would duplicate work Gosper already does for numeric bases.
+    let mut geom: Option<(ExprId, ExprId)> = None;
+    let mut rest: Vec<ExprId> = Vec::new();
+    for f in factors {
+        if is_free_of_k(f, k, pool) {
+            rest.push(f);
+            continue;
+        }
+        if geom.is_some() {
+            return None;
+        }
+        let ExprData::Pow { base, exp } = pool.get(f) else {
+            return None;
+        };
+        if !is_free_of_k(base, k, pool) || is_free_of_k(exp, k, pool) {
+            return None;
+        }
+        geom = Some((base, exp));
+    }
+    let (base, exp) = geom?;
+
+    // A rational base is Gosper's business, and it got here only because
+    // something else about the term was unsupported; claiming it now would
+    // answer a call whose real defect is elsewhere.
+    if matches!(pool.get(base), ExprData::Integer(_) | ExprData::Rational(_)) {
+        return None;
+    }
+
+    let a = affine_slope_in_k(exp, k, pool).ok()?;
+    if a == 0 {
+        return None;
+    }
+    // `b = exp − a·k`, the part of the exponent that does not move with `k`.
+    let b = simp(
+        pool,
+        pool.add(vec![exp, pool.mul(vec![pool.integer(-a), k])]),
+    );
+    if !is_free_of_k(b, k, pool) {
+        return None;
+    }
+
+    let q = simp(pool, pool.pow(base, pool.integer(a)));
+    let one = pool.integer(1_i32);
+    let coeff = {
+        let mut fs = rest;
+        fs.push(pool.pow(base, b));
+        simp(pool, pool.mul(fs))
+    };
+
+    let hi_p1 = simp(pool, pool.add(vec![hi, one]));
+    let numer = pool.add(vec![
+        pool.pow(q, hi_p1),
+        pool.mul(vec![pool.integer(-1_i32), pool.pow(q, lo)]),
+    ]);
+    let denom = pool.add(vec![q, pool.integer(-1_i32)]);
+    let value = simp(
+        pool,
+        pool.mul(vec![coeff, numer, pool.pow(denom, pool.integer(-1_i32))]),
+    );
+    Some((value, q))
 }
 
 /// Largest number of individual indices [`interior_undefined_index`] will
@@ -366,16 +494,35 @@ fn contains_zero_to_negative_power(expr: ExprId, pool: &ExprPool) -> bool {
 }
 
 /// Witness `(F, G)` for Zeilberger/WZ-style telescoping in `k`:
-/// checks `F(n+1,k)-F(n,k) = G(n,k+1)-G(n,k)` after clearing denominators by cross-multiplication.
+/// [`verify_wz_pair`] checks `F(n+1,k)-F(n,k) = G(n,k+1)-G(n,k)`.
 ///
-/// Requires `n`, `k` distinct symbols. Uses [`simplify`] and structural equality; dense normalization
-/// for general `binom`/`gamma` identities is not guaranteed without extra rewrite rules.
+/// Requires `n`, `k` distinct symbols.
 #[derive(Clone, Debug)]
 pub struct WzPair {
     pub f: ExprId,
     pub g: ExprId,
 }
 
+/// `true` only when `F(n+1,k) − F(n,k) = G(n,k+1) − G(n,k)` was *established*.
+///
+/// Two decision procedures, tried in that order, and a `true` from either is a
+/// proof rather than a match:
+///
+/// 1. **Exact, in `Q(n)(k)`.** When both sides read as rational functions of
+///    `n` and `k`, their difference is put in the canonical form the Zeilberger
+///    engine uses and compared with zero. This decides the rational class in
+///    both directions.
+/// 2. **Structural, after [`simplify`].** The fallback for everything else —
+///    a pair built from `gamma` / `binom`, say, where no canonical form is
+///    available here.
+///
+/// The second is *one-sided*: `simplify` does not expand products, so it says
+/// `false` for pairs it cannot put in a common shape. `F = n·k`,
+/// `G = k(k−1)/2` is a true WZ pair — both sides are `k` — and used to fail
+/// exactly there, because `k·(n+1) − n·k` and `k(k+1)/2 − k(k−1)/2` are both
+/// left unexpanded and are not structurally equal. Step 1 now decides it.
+/// A `false` from step 2 alone therefore still means *not verified* rather than
+/// *refuted*; a `false` from step 1 means refuted.
 pub fn verify_wz_pair(pair: &WzPair, n: ExprId, k: ExprId, pool: &ExprPool) -> bool {
     let k1 = simp(pool, pool.add(vec![k, pool.integer(1_i32)]));
     let n1 = simp(pool, pool.add(vec![n, pool.integer(1_i32)]));
@@ -398,7 +545,19 @@ pub fn verify_wz_pair(pair: &WzPair, n: ExprId, k: ExprId, pool: &ExprPool) -> b
         pool.add(vec![g_n_k1, pool.mul(vec![pair.g, pool.integer(-1_i32)])]),
     );
 
-    lhs == rhs
+    if lhs == rhs {
+        return true;
+    }
+    // `Q(n)(k)` decides the rational class outright — and decides it *against*
+    // a non-pair too, so this can only turn a spurious `false` into `true`,
+    // never the other way round.
+    if let (Some(l), Some(r)) = (
+        crate::holonomic::hyperterm::as_ratk(lhs, n, k, pool, 0),
+        crate::holonomic::hyperterm::as_ratk(rhs, n, k, pool, 0),
+    ) {
+        return l.sub(&r).is_zero();
+    }
+    false
 }
 
 #[cfg(test)]
@@ -586,5 +745,102 @@ mod tests {
         let z = pool.integer(0_i32);
         let pair = WzPair { f: z, g: z };
         assert!(verify_wz_pair(&pair, n, k, &pool));
+    }
+
+    /// A *true* polynomial WZ pair the structural check cannot see.
+    ///
+    /// `F = n·k`, `G = k(k−1)/2`: both `F(n+1,k) − F(n,k)` and
+    /// `G(n,k+1) − G(n,k)` are `k`. `simplify` does not expand a product, so it
+    /// leaves `k·(n+1) − n·k` and `k(k+1)/2 − k(k−1)/2` as they stand and the
+    /// two are not structurally equal — a verifier answering `false` about a
+    /// pair that verifies.
+    #[test]
+    fn a_polynomial_wz_pair_verifies() {
+        let pool = ExprPool::new();
+        let n = pool.symbol("n", Domain::Real);
+        let k = pool.symbol("k", Domain::Real);
+        let i = |v: i32| pool.integer(v);
+
+        let f = pool.mul(vec![n, k]);
+        let g = pool.mul(vec![k, pool.add(vec![k, i(-1)]), pool.pow(i(2), i(-1))]);
+        assert!(verify_wz_pair(&WzPair { f, g }, n, k, &pool));
+
+        // …and the same escalation still refutes a non-pair, in both the
+        // "wrong G" and the "no G" directions.
+        let g_bad = pool.mul(vec![i(2), g]);
+        assert!(!verify_wz_pair(&WzPair { f, g: g_bad }, n, k, &pool));
+        assert!(!verify_wz_pair(&WzPair { f, g: i(0) }, n, k, &pool));
+    }
+
+    /// A geometric series with a *symbolic* ratio is elementary, and the
+    /// `r = 1` branch is reported rather than assumed away.
+    #[test]
+    fn symbolic_geometric_ratio_sums_with_its_side_condition() {
+        let pool = ExprPool::new();
+        let k = pool.symbol("k", Domain::Real);
+        let n = pool.symbol("n", Domain::Real);
+        let r = pool.symbol("r", Domain::Real);
+        let i = |v: i32| pool.integer(v);
+
+        let term = pool.pow(r, k);
+        let s = sum_definite(term, k, i(0), n, &pool).expect("geometric series");
+
+        // The condition is on the record, and it is `r − 1 ≠ 0`.
+        let conds: Vec<_> = s
+            .log
+            .0
+            .iter()
+            .flat_map(|st| st.side_conditions.iter())
+            .collect();
+        assert_eq!(conds.len(), 1, "expected exactly one side condition");
+        let SideCondition::NonZero(c) = conds[0] else {
+            panic!("expected a NonZero condition, got {:?}", conds[0]);
+        };
+        let want = simp(&pool, pool.add(vec![r, i(-1)]));
+        assert_eq!(*c, want, "got {}", pool.display(*c));
+
+        // The value is the closed form, checked against direct summation.
+        for rv in [2.0_f64, 0.5, -3.0, 7.0] {
+            for nv in 0..6 {
+                let mut env = HashMap::new();
+                env.insert(r, rv);
+                env.insert(n, nv as f64);
+                let got = eval_interp(s.value, &env, &pool).expect("eval");
+                let want: f64 = (0..=nv).map(|j| rv.powi(j)).sum();
+                assert!(
+                    (got - want).abs() < 1e-9 * want.abs().max(1.0),
+                    "r={rv} n={nv}: got {got} want {want}"
+                );
+            }
+        }
+    }
+
+    /// The refusals the geometric path must not swallow.
+    #[test]
+    fn symbolic_geometric_declines_what_it_cannot_sum() {
+        let pool = ExprPool::new();
+        let k = pool.symbol("k", Domain::Real);
+        let n = pool.symbol("n", Domain::Real);
+        let r = pool.symbol("r", Domain::Real);
+        let i = |v: i32| pool.integer(v);
+
+        // To infinity: convergence needs |r| < 1, which nothing here knows.
+        let term = pool.pow(r, k);
+        assert!(sum_definite(term, k, i(0), pool.pos_infinity(), &pool).is_err());
+
+        // `k·r^k` is geometric times a polynomial — outside this path, and
+        // Gosper cannot reach it either with a symbolic ratio.
+        let term = pool.mul(vec![k, pool.pow(r, k)]);
+        assert!(sum_definite(term, k, i(0), n, &pool).is_err());
+
+        // A numeric base is Gosper's, and still is: `Σ_{k=0}^{n} 2^k`
+        // telescopes as before, with no side condition attached.
+        let term = pool.pow(i(2), k);
+        let s = sum_definite(term, k, i(0), n, &pool).expect("2^k");
+        assert!(s.log.0.iter().all(|st| st.side_conditions.is_empty()));
+        let mut env = HashMap::new();
+        env.insert(n, 5.0);
+        let got = eval_interp(s.value, &env, &pool).expect("eval");
+        assert!((got - 63.0).abs() < 1e-9, "got {got}");
     }
 }
