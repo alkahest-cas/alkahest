@@ -11,7 +11,7 @@ pub(crate) mod symbols;
 
 use crate::ball::{ArbBall, IntervalEval};
 use crate::kernel::expr::PredicateKind;
-use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::kernel::{integer_to_f64, rational_to_f64, ExprData, ExprId, ExprPool};
 use rug::Rational;
 use std::collections::HashMap;
 use std::fmt;
@@ -311,8 +311,8 @@ fn eval_f64_node(
     bindings: &HashMap<ExprId, f64>,
 ) -> Result<f64, EvalError> {
     match pool.get(expr) {
-        ExprData::Integer(n) => Ok(n.0.to_f64()),
-        ExprData::Rational(r) => Ok(r.0.to_f64()),
+        ExprData::Integer(n) => Ok(integer_to_f64(&n.0)),
+        ExprData::Rational(r) => Ok(rational_to_f64(&r.0)),
         ExprData::Float(f) => Ok(f.inner.to_f64()),
         ExprData::Symbol { .. } => bindings
             .get(&expr)

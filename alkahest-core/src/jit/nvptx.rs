@@ -272,6 +272,7 @@ fn emit_ptx_stub(_e: ExprId, _ins: &[ExprId], _n: usize, _pool: &ExprPool) -> St
 #[cfg(all(feature = "cuda", feature = "jit"))]
 mod codegen {
     use super::{CudaError, ExprData, ExprId, ExprPool};
+    use crate::kernel::{integer_to_f64, rational_to_f64};
     use inkwell::{
         attributes::{Attribute, AttributeLoc},
         builder::Builder,
@@ -502,11 +503,8 @@ mod codegen {
     ) -> Result<FloatValue<'ctx>, CudaError> {
         let f64_t = ctx.f64_type();
         match pool.get(node) {
-            ExprData::Integer(n) => Ok(f64_t.const_float(n.0.to_f64())),
-            ExprData::Rational(r) => {
-                let (n, d) = r.0.clone().into_numer_denom();
-                Ok(f64_t.const_float(n.to_f64() / d.to_f64()))
-            }
+            ExprData::Integer(n) => Ok(f64_t.const_float(integer_to_f64(&n.0))),
+            ExprData::Rational(r) => Ok(f64_t.const_float(rational_to_f64(&r.0))),
             ExprData::Float(f) => Ok(f64_t.const_float(f.inner.to_f64())),
             ExprData::Symbol { name, .. } => Err(CudaError::PtxGenerationFailed(format!(
                 "unbound symbol '{name}' (not provided in inputs)"

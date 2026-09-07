@@ -650,6 +650,25 @@ pub mod builtins {
         }
     }
 
+    /// The single argument of a unary primitive's `f64` kernel, or `None` if
+    /// the caller supplied a different number of them.
+    ///
+    /// Exactly the argument [`unary`] above makes, one dispatch table over:
+    /// `numeric_f64` is reached generically from `eval_interp`, the snapshot
+    /// interpreter and `eval::eval_f64`, each of which hands the registry
+    /// whatever argument list the `Func` node carries. A kernel that indexed
+    /// `args[0]` unconditionally answered `sin(x, y)` with `sin(x)` — a
+    /// confident number for an expression that has no value. The special
+    /// functions added later (`lambert_w`, `digamma`, `bessel_j*`, the
+    /// elliptic family, the exponential integrals) already checked; the
+    /// original elementary set did not.
+    fn unary_f64(args: &[f64]) -> Option<f64> {
+        match args {
+            [only] => Some(*only),
+            _ => None,
+        }
+    }
+
     macro_rules! symbolic_complex_primitive {
         ($type:ident, $name:literal) => {
             pub struct $type;
@@ -700,7 +719,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(args[0].sin())
+            Some(unary_f64(args)?.sin())
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -746,7 +765,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(args[0].cos())
+            Some(unary_f64(args)?.cos())
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -790,7 +809,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(args[0].exp())
+            Some(unary_f64(args)?.exp())
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -835,7 +854,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(args[0].ln())
+            Some(unary_f64(args)?.ln())
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -890,7 +909,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(args[0].sqrt())
+            Some(unary_f64(args)?.sqrt())
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -944,7 +963,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(args[0].tan())
+            Some(unary_f64(args)?.tan())
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -993,7 +1012,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(args[0].sinh())
+            Some(unary_f64(args)?.sinh())
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -1040,7 +1059,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(args[0].cosh())
+            Some(unary_f64(args)?.cosh())
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -1093,7 +1112,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(args[0].tanh())
+            Some(unary_f64(args)?.tanh())
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -1153,7 +1172,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(args[0].asin())
+            Some(unary_f64(args)?.asin())
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -1213,7 +1232,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(args[0].acos())
+            Some(unary_f64(args)?.acos())
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -1260,7 +1279,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(args[0].atan())
+            Some(unary_f64(args)?.atan())
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -1315,7 +1334,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(args[0].asinh())
+            Some(unary_f64(args)?.asinh())
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -1367,7 +1386,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(args[0].acosh())
+            Some(unary_f64(args)?.acosh())
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -1417,7 +1436,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(args[0].atanh())
+            Some(unary_f64(args)?.atanh())
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -1467,7 +1486,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(libm::erf(args[0]))
+            Some(libm::erf(unary_f64(args)?))
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -1513,7 +1532,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(libm::erfc(args[0]))
+            Some(libm::erfc(unary_f64(args)?))
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -2170,7 +2189,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(args[0].abs())
+            Some(unary_f64(args)?.abs())
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -2192,9 +2211,10 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(if args[0] > 0.0 {
+            let x = unary_f64(args)?;
+            Some(if x > 0.0 {
                 1.0
-            } else if args[0] < 0.0 {
+            } else if x < 0.0 {
                 -1.0
             } else {
                 0.0
@@ -2240,9 +2260,10 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(if args[0] > 0.0 {
+            let x = unary_f64(args)?;
+            Some(if x > 0.0 {
                 1.0
-            } else if args[0] < 0.0 {
+            } else if x < 0.0 {
                 0.0
             } else {
                 0.5
@@ -2282,7 +2303,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(args[0].floor())
+            Some(unary_f64(args)?.floor())
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -2304,7 +2325,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(args[0].ceil())
+            Some(unary_f64(args)?.ceil())
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -2326,7 +2347,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(args[0].round())
+            Some(unary_f64(args)?.round())
         }
     }
 
@@ -2744,7 +2765,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(libm_gamma(args[0]))
+            Some(libm_gamma(unary_f64(args)?))
         }
 
         /// Only for `x > 0`: the enclosure rests on `Γ` being convex there
@@ -2854,7 +2875,21 @@ pub mod builtins {
                 a += p / (xm + i as f64);
             }
             let t = xm + G + 0.5;
-            (2.0 * std::f64::consts::PI).sqrt() * t.powf(xm + 0.5) * (-t).exp() * a
+            // `t^(xm+0.5)` overflows `f64` at about `x = 142.3`, while the
+            // product with `e^{-t}` stays finite up to `x ≈ 171.6` — so `Γ`
+            // used to refuse (`E-EVAL-009`, via the non-finite check) across
+            // the last thirty units of its own real domain, e.g. `Γ(170) =
+            // 169! = 4.269e304`. The log form has no intermediate to
+            // overflow. It is only reached once the direct form has already
+            // failed, so every value the direct form produced is unchanged
+            // bit for bit.
+            let pow = t.powf(xm + 0.5);
+            let scale = if pow.is_finite() {
+                pow * (-t).exp()
+            } else {
+                ((xm + 0.5) * t.ln() - t).exp()
+            };
+            (2.0 * std::f64::consts::PI).sqrt() * scale * a
         }
     }
 
@@ -3622,6 +3657,159 @@ mod tests {
             let got = eval_expr_f64(d, x, x0, &pool);
             let want = -(1.0 - x0).ln() / x0;
             assert!((got - want).abs() < 1e-12, "Li₂′({x0}): {got} vs {want}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod gamma_range_tests {
+    use super::PrimitiveRegistry;
+    use std::sync::OnceLock;
+
+    fn gamma(x: f64) -> Option<f64> {
+        static REG: OnceLock<PrimitiveRegistry> = OnceLock::new();
+        REG.get_or_init(PrimitiveRegistry::dispatch_registry)
+            .numeric_f64("gamma", &[x])
+    }
+
+    /// `Γ` is finite on the reals up to `x ≈ 171.61`, but the Lanczos form
+    /// computes `t^(x-0.5)·e^{-t}` as two factors and the first one overflows
+    /// at about `x = 142.3`. The result was a non-finite value, which
+    /// `eval_expr` reports as `E-EVAL-009` — an honest refusal, but a refusal
+    /// across thirty units of the function's own domain.
+    #[test]
+    fn gamma_is_finite_across_the_whole_range_f64_can_hold() {
+        // Γ(n) = (n-1)!, computed independently below, so these are not read
+        // off the implementation under test.
+        let mut factorial = 1.0f64; // 0! = Γ(1)
+        for n in 1..=171u32 {
+            let g = gamma(f64::from(n)).expect("gamma is registered");
+            assert!(
+                g.is_finite(),
+                "Γ({n}) = {}! is {factorial:e} and finite, but the kernel returned {g:?}",
+                n - 1
+            );
+            let rel = (g - factorial).abs() / factorial;
+            assert!(rel < 1e-11, "Γ({n}) off by {rel:e}: {g:e} vs {factorial:e}");
+            factorial *= f64::from(n);
+        }
+        // Γ(172) = 171! ≈ 1.24e309 genuinely overflows; refusing there is right.
+        assert!(!gamma(172.0).expect("registered").is_finite());
+    }
+
+    /// The values the direct path already produced must be untouched: the log
+    /// form is only reached once `t^(x-0.5)` has overflowed.
+    ///
+    /// Reference values from `mpmath` at 40 digits, not from this kernel.
+    #[test]
+    fn gamma_below_the_overflow_point_is_unchanged() {
+        for (x, want) in [
+            (0.5f64, 1.772_453_850_905_516f64),
+            (1.0, 1.0),
+            (5.0, 24.0),
+            (10.5, 1_133_278.388_948_785_6),
+            (142.2, 5.111_424_205_935_494e243),
+        ] {
+            let g = gamma(x).expect("registered");
+            let rel = (g - want).abs() / want.abs();
+            assert!(
+                rel < 1e-11,
+                "Γ({x}) = {g:e}, expected {want:e} (rel {rel:e})"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod arity_tests {
+    use super::PrimitiveRegistry;
+    use std::sync::OnceLock;
+
+    fn reg() -> &'static PrimitiveRegistry {
+        static REG: OnceLock<PrimitiveRegistry> = OnceLock::new();
+        REG.get_or_init(PrimitiveRegistry::dispatch_registry)
+    }
+
+    /// A unary kernel handed two arguments used to ignore the second and
+    /// answer as if it had been called correctly: `sin(x, y)` evaluated to
+    /// `sin(x)`. The ball kernels already declined — the `unary` helper and
+    /// its comment are older than this — so the two halves of the same
+    /// registry disagreed about whether the call had a value.
+    #[test]
+    fn a_unary_kernel_declines_a_binary_call() {
+        const UNARY: [&str; 30] = [
+            "sin",
+            "cos",
+            "exp",
+            "log",
+            "sqrt",
+            "tan",
+            "sinh",
+            "cosh",
+            "tanh",
+            "asin",
+            "acos",
+            "atan",
+            "asinh",
+            "acosh",
+            "atanh",
+            "erf",
+            "erfc",
+            "abs",
+            "sign",
+            "heaviside",
+            "floor",
+            "ceil",
+            "round",
+            "gamma",
+            "lambert_w",
+            "digamma",
+            "bessel_j0",
+            "bessel_j1",
+            "Si",
+            "Ei",
+        ];
+        for name in UNARY {
+            assert!(
+                reg().numeric_f64(name, &[0.5]).is_some(),
+                "{name} should evaluate with one argument"
+            );
+            assert_eq!(
+                reg().numeric_f64(name, &[0.5, 3.0]),
+                None,
+                "{name}(x, y) must decline, not answer {name}(x)"
+            );
+            assert_eq!(reg().numeric_f64(name, &[]), None, "{name}() must decline");
+        }
+    }
+
+    /// The genuinely n-ary primitives keep working, and decline the arities
+    /// they do not have — the guard above must not become "always one".
+    #[test]
+    fn n_ary_kernels_keep_their_own_arities() {
+        for name in ["atan2", "min", "max"] {
+            assert!(reg().numeric_f64(name, &[1.0, 2.0]).is_some(), "{name}");
+            assert_eq!(reg().numeric_f64(name, &[1.0]), None, "{name}");
+        }
+        // EllipticE and EllipticF are complete/incomplete pairs.
+        assert!(reg().numeric_f64("EllipticE", &[0.5]).is_some());
+        assert!(reg().numeric_f64("EllipticE", &[0.5, 0.3]).is_some());
+        assert!(reg().numeric_f64("EllipticPi", &[0.2, 0.3, 0.4]).is_some());
+    }
+
+    /// The `f64` and ball kernels must agree about which calls have a value,
+    /// since a gate may reach for either.
+    #[test]
+    fn f64_and_ball_kernels_agree_on_arity() {
+        use crate::ball::ArbBall;
+        let one = ArbBall::from_f64(0.5, 128);
+        for name in ["sin", "cos", "exp", "log", "sqrt", "tan", "abs", "floor"] {
+            let f64_two = reg().numeric_f64(name, &[0.5, 3.0]).is_some();
+            let ball_two = reg()
+                .numeric_ball(name, &[one.clone(), one.clone()])
+                .is_some();
+            assert_eq!(f64_two, ball_two, "{name} disagrees on the binary call");
+            assert!(!f64_two, "{name}(x, y) has no value");
         }
     }
 }
