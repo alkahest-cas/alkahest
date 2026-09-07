@@ -1217,6 +1217,25 @@ mod shift_genericity {
     }
 
     #[test]
+    fn a_positive_domain_symbol_refutes_an_advance_rather_than_conditioning_it() {
+        // θ(t + a) with `a` declared positive: the fact the rule needs is
+        // `−a ≥ 0`, which the symbol's own domain refutes.  Reporting it would
+        // hand back `e^{a s}/s` — 17.008 at a = 1.5, s = 2.5, against a true
+        // 1/s = 0.4 — under a hypothesis nobody can discharge.
+        let (pool, t, s) = setup();
+        let a = pool.symbol("apos", Domain::Positive);
+        let f = pool.func("heaviside", vec![pool.add(vec![t, a])]);
+        let err = laplace_transform(f, t, s, &pool).unwrap_err();
+        assert!(matches!(err, LaplaceError::NoRule(_)), "{err}");
+
+        // …and the same symbol used as a genuine delay still answers.
+        let arg = pool.add(vec![t, pool.mul(vec![pool.integer(-1_i32), a])]);
+        let g = pool.func("heaviside", vec![arg]);
+        let (_out, conds) = laplace_transform_with_conditions(g, t, s, &pool).unwrap();
+        assert!(conds.is_empty(), "conds = {conds:?}");
+    }
+
+    #[test]
     fn inverse_declines_an_advance_rather_than_stating_the_impossible() {
         // `e^{+2s}/(s+1)` is not the transform of any causal function.  The
         // shift rule would hand back `θ(t+2)·e^{−2−t}` under the side condition

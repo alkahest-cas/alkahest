@@ -344,6 +344,12 @@ fn require_positive_rate(
         }
         return Ok(());
     }
+    if gen.refuted(&SideCondition::Positive(a), pool) {
+        return Err(FourierError::NoRule(format!(
+            "{what}: {} is known to be negative, so this table entry does not apply",
+            pool.display(a)
+        )));
+    }
     gen.need_positive(a, pool);
     Ok(())
 }

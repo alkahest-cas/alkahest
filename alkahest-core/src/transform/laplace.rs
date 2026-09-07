@@ -1326,7 +1326,15 @@ fn require_nonneg_shift(
         }
         return Ok(());
     }
-    gen.need_in_domain(a, crate::kernel::Domain::NonNegative, pool);
+    let cond = SideCondition::InDomain(a, crate::kernel::Domain::NonNegative);
+    if gen.refuted(&cond, pool) {
+        return Err(LaplaceError::NoRule(format!(
+            "shift a = {} is known to be negative; the unilateral Heaviside/Dirac \
+             rule needs a ≥ 0",
+            pool.display(a)
+        )));
+    }
+    gen.adopt(cond, pool);
     Ok(())
 }
 

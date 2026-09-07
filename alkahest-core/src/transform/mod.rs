@@ -190,6 +190,30 @@ impl<'a> Genericity<'a> {
         self.holds(&SideCondition::Positive(e), pool)
     }
 
+    /// Is `cond`'s **negation** established?
+    ///
+    /// A hypothesis whose negation is a fact is not a hypothesis; it is a
+    /// refutation of the table row that raised it, and the honest response is to
+    /// decline rather than to answer under something that cannot hold.  With `a`
+    /// declared [`crate::kernel::Domain::Positive`], `L{θ(t+a)}` came back as
+    /// `e^{a s}/s` carrying `−a ≥ 0` — a value that is wrong (the true transform
+    /// is `1/s`) under a hypothesis no caller could ever discharge.  That is the
+    /// same defect as returning it silently, wearing a hat.
+    ///
+    /// Only the positivity family is decidable here: `q > 0` and `q ≥ 0` are
+    /// both refuted by `−q > 0`, which goes through the same evidence
+    /// [`Genericity::holds`] uses.  `Unknown` is not a refutation, so an
+    /// undecided hypothesis stays a hypothesis — over-reporting, never
+    /// under-refusing.
+    pub(crate) fn refuted(&self, cond: &SideCondition, pool: &ExprPool) -> bool {
+        let target = match cond {
+            SideCondition::Positive(e) => *e,
+            SideCondition::InDomain(e, d) if *d == crate::kernel::Domain::NonNegative => *e,
+            SideCondition::NonZero(_) | SideCondition::InDomain(..) => return false,
+        };
+        self.known_negative(target, pool)
+    }
+
     /// Is `e` known to be strictly negative?
     pub(crate) fn known_negative(&self, e: ExprId, pool: &ExprPool) -> bool {
         let neg = pool.mul(vec![pool.integer(-1_i32), e]);

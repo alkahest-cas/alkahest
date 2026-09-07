@@ -699,6 +699,26 @@ mod rate_positivity {
     }
 
     #[test]
+    fn a_positive_domain_rate_refutes_the_growing_forms() {
+        // With `a` declared positive, `e^{+a|x|}` and `2·(−a)/(a² + 4π²x²)` are
+        // as refuted as their literal counterparts — the rate the table needs is
+        // `−a`, and `−a > 0` is false.  Answering under it would carry a
+        // hypothesis that can never be discharged.
+        let (pool, x, xi) = setup();
+        let a = pool.symbol("apos", Domain::Positive);
+        let absx = pool.func("abs", vec![x]);
+        let grow = pool.func("exp", vec![pool.mul(vec![a, absx])]);
+        let err = fourier_transform(grow, x, xi, &pool).unwrap_err();
+        assert!(matches!(err, FourierError::NoRule(_)), "{err}");
+
+        let numer = pool.mul(vec![int(&pool, -2), a]);
+        let c0 = pool.pow(a, int(&pool, 2));
+        let lor = lorentzian(&pool, x, numer, c0);
+        let err = fourier_transform(lor, x, xi, &pool).unwrap_err();
+        assert!(matches!(err, FourierError::NoRule(_)), "{err}");
+    }
+
+    #[test]
     fn a_growing_two_sided_exponential_is_declined() {
         // ∫ e^{+3|x|}·e^{−2πiξx} dx does not converge; the table would have
         // reported the finite `−6/(9 + 4π²ξ²)`.
