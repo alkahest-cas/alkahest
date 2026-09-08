@@ -118,6 +118,27 @@ fn triple_jordan_block_solves() {
     );
 }
 
+/// `pi` is an ordinary symbol in this crate, so a gate that collects free
+/// symbols and binds each to a sample value binds **π to 1.7** — and every
+/// expression whose correctness depends on π being π then disagrees at every
+/// sample.  The casus irreducibilis is where that bites: the three real
+/// eigenvalues of a `λ³ − 3λ + 1` companion matrix are
+/// `2√(−p/3)·cos((acos c + 2πk)/3)`, correct only at the real π, and the system
+/// built on them used to be refused with `VerificationFailed`.
+#[test]
+fn casus_irreducibilis_eigenvalues_are_not_refused_over_a_sampled_pi() {
+    // Companion matrix of λ³ − 3λ + 1 (Δ < 0: three distinct real roots).
+    // x' = -z, y' = x + 3z, z' = y.
+    let (pool, ode, _) = build(&["x", "y", "z"], &["-1*z", "x + 3*z", "y"], &[]);
+    let sol = dsolve_system(&ode, &pool).expect("the trigonometric eigenvalues verify");
+    assert_eq!(sol.constants.len(), 3);
+    let shown = pool.display(sol.y_of_t[0]).to_string();
+    assert!(
+        shown.contains("pi") || shown.contains('π') || shown.contains("acos"),
+        "expected the trigonometric root form, got {shown}"
+    );
+}
+
 #[test]
 fn forced_system_closes_by_variation_of_parameters() {
     // x' = -x + 1, y' = x - 2y.

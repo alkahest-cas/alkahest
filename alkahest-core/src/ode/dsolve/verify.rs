@@ -93,12 +93,15 @@
 //! ([`parameter_env`] is the single table both draw from).  It knows a few
 //! heads ℂ does not; where it also cannot conclude, the candidate is refused.
 //!
-//! **Known conservatism, stated plainly.** Every row of [`PARAM_SETS`] is
-//! positive.  A candidate that is right for `Kₘ > 0` and wrong for `Kₘ < 0` is
-//! therefore certified here.  The sign is not represented in the input —
-//! `OdeInput` carries no assumptions — and sampling negative values instead
-//! would reject correct answers to equations whose parameters are physically
-//! positive far more often than it would catch anything.
+//! [`PARAM_SETS`] samples **both signs**.  It did not always: every row used to
+//! be positive, so a candidate right for `Kₘ > 0` and wrong for `Kₘ < 0` was
+//! certified on the half of the parameter space it happened to be right on,
+//! while `OdeInput` carries no assumption that would justify the restriction.
+//! Negative rows are safe here only because the pass they feed evaluates over
+//! ℂ — where `log(−1.3)` and `√(−1.3)` are ordinary numbers and a correct
+//! candidate's analytic continuation is still correct — and because a row that
+//! cannot be resolved is *no information* rather than a refusal.  See
+//! [`PARAM_SETS`] for the measurement.
 //!
 //! # Implicit solutions
 //!
@@ -109,6 +112,7 @@
 //! parameter values from the same [`parameter_env`].
 
 use super::{contains, ddx, simp, subs1, DsolveError, OdeInput};
+use crate::eval::symbols::{collect_free_symbols, is_pi, walk_symbols};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use std::collections::HashMap;
 use std::fmt;
@@ -190,8 +194,14 @@ fn verify_inner(
     // symbol, nor an integration constant) make the real sampler useless: every
     // sample is `None` and the report says only "unevaluable".  Bind them too,
     // and evaluate over ℂ so the complex branch of the answer is reachable.
+    //
+    // A residual that mentions the imaginary unit takes the same route with no
+    // parameters at all: `eval` has no `f64` for `i` and reports the whole
+    // residual unevaluable, so the real sampler can only ever decline it.  The
+    // complex evaluator knows `i` natively and is the right instrument; the
+    // classification it applies is the same one.
     let params = free_parameters(input, &[residual], constants, pool);
-    if !params.is_empty() {
+    if !params.is_empty() || mentions_imaginary_unit(residual, pool) {
         let report =
             parametric_report(input, residual, &candidate_derivs, constants, &params, pool);
         if report.certifies() {
@@ -242,6 +252,14 @@ fn verify_inner(
 /// the derivative symbols cannot survive [`build_residual`]'s substitution, but
 /// are excluded defensively so a stray one becomes a decline rather than a
 /// parameter that gets a random value bound to it.
+///
+/// `pi` and the imaginary unit are excluded by
+/// [`collect_free_symbols`](crate::eval::symbols::collect_free_symbols): they
+/// are ordinary [`ExprData::Symbol`]s in this crate but they already denote a
+/// number, and sampling them is a false-refusal machine — a candidate written
+/// in the casus irreducibilis form `2√(−p/3)·cos((acos c + 2πk)/3)` evaluated
+/// at `π = 1.7` disagrees at every sample.  [`eval`] and [`eval_complex`] give
+/// them their real values instead.
 fn free_parameters(
     input: &OdeInput,
     exprs: &[ExprId],
@@ -253,7 +271,7 @@ fn free_parameters(
     bound.extend_from_slice(constants);
     let mut out: Vec<ExprId> = Vec::new();
     for &e in exprs {
-        collect_symbols(e, pool, &mut out);
+        collect_free_symbols(e, pool, &mut out);
     }
     out.retain(|s| !bound.contains(s));
     // Deterministic order: the sampled value of a parameter must not depend on
@@ -265,6 +283,12 @@ fn free_parameters(
 
 /// Comma-separated parameter names, for a refusal message.
 fn param_names(params: &[ExprId], pool: &ExprPool) -> String {
+    if params.is_empty() {
+        // The complex path was entered for the residual's own sake, not for a
+        // parameter; saying "the parameters " with nothing after it reads as a
+        // formatting bug.
+        return "(none: a complex-valued residual)".to_string();
+    }
     params
         .iter()
         .map(|&p| pool.display(p).to_string())
@@ -272,24 +296,16 @@ fn param_names(params: &[ExprId], pool: &ExprPool) -> String {
         .join(", ")
 }
 
-fn collect_symbols(expr: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>) {
-    pool.with(expr, |d| match d {
-        ExprData::Symbol { .. } => {
-            if !out.contains(&expr) {
-                out.push(expr);
-            }
-        }
-        ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
-            for &a in args {
-                collect_symbols(a, pool, out);
-            }
-        }
-        ExprData::Pow { base, exp } => {
-            collect_symbols(*base, pool, out);
-            collect_symbols(*exp, pool, out);
-        }
-        _ => {}
+/// Does `expr` mention the imaginary unit anywhere?
+///
+/// The real [`eval`] has no value for it, so such a residual is unevaluable to
+/// the real sampler however its parameters are bound.
+fn mentions_imaginary_unit(expr: ExprId, pool: &ExprPool) -> bool {
+    let mut found = false;
+    walk_symbols(expr, pool, &mut |s, pool| {
+        found |= pool.is_imaginary_unit(s);
     });
+    found
 }
 
 /// Substitute the candidate into the equation.
@@ -386,16 +402,23 @@ impl fmt::Display for NumericReport {
 /// Constants are kept positive and reasonably large so that radicands such as
 /// `sqrt(4·C − 3x²)` arising from quadratic-implicit solutions stay real over
 /// the (small) x-sample range.
-const CONST_SETS: [&[f64]; 3] = [
+pub(crate) const CONST_SETS: [&[f64]; 3] = [
     &[5.7, 4.3, 6.4, 5.1, 4.9],
     &[8.5, 7.8, 6.6, 9.2, 7.1],
     &[12.3, 10.0, 11.7, 10.5, 9.4],
 ];
 
 /// `x` sample points, shared by the explicit, parametric and implicit gates.
-const X_SAMPLES: [f64; 5] = [0.11, 0.27, 0.43, 0.61, 0.79];
+pub(crate) const X_SAMPLES: [f64; 5] = [0.11, 0.27, 0.43, 0.61, 0.79];
 
 /// Numerically check residual ≈ 0 at several `x` over random constants.
+///
+/// When there are parameters the grid is the *product* of [`PARAM_SETS`] and
+/// [`CONST_SETS`], not a pairing of the two: pairing them by index would leave
+/// the negative rows of `PARAM_SETS` unsampled here, so the real second opinion
+/// would be reasoning about a different parameter region than the complex pass
+/// that asked for it.  With no parameters every row gives the same environment,
+/// so one pass is the whole grid.
 fn numeric_report(
     input: &OdeInput,
     residual: ExprId,
@@ -405,7 +428,12 @@ fn numeric_report(
     pool: &ExprPool,
 ) -> NumericReport {
     let mut report = NumericReport::default();
-    for (set, cs) in CONST_SETS.iter().enumerate() {
+    let rows = if params.is_empty() {
+        1
+    } else {
+        PARAM_SETS.len()
+    };
+    for (set, cs) in (0..rows).flat_map(|s| CONST_SETS.iter().map(move |cs| (s, cs))) {
         let param_env = parameter_env(params, set);
         let mut env: HashMap<ExprId, f64> = param_env.clone();
         for (i, &c) in constants.iter().enumerate() {
@@ -534,6 +562,11 @@ fn ode_is_regular_at(
 /// Evaluate `expr` to an `f64` given a symbol→value environment.
 /// Returns `None` for constructs the evaluator does not understand (so the
 /// caller refuses to certify rather than guessing).
+///
+/// `pi` resolves to π without being in `env` — it is a plain symbol in this
+/// crate, and [`free_parameters`] deliberately does not sample it, so nothing
+/// else would bind it.  The imaginary unit stays `None` here: it has no `f64`
+/// value, and "unknown construct" (→ no information) is the honest reading.
 pub(crate) fn eval(expr: ExprId, env: &HashMap<ExprId, f64>, pool: &ExprPool) -> Option<f64> {
     match pool.get(expr) {
         ExprData::Integer(n) => Some(n.0.to_f64()),
@@ -542,7 +575,10 @@ pub(crate) fn eval(expr: ExprId, env: &HashMap<ExprId, f64>, pool: &ExprPool) ->
             Some(num.to_f64() / den.to_f64())
         }
         ExprData::Float(f) => Some(f.inner.to_f64()),
-        ExprData::Symbol { .. } => env.get(&expr).copied(),
+        ExprData::Symbol { .. } => env
+            .get(&expr)
+            .copied()
+            .or_else(|| is_pi(expr, pool).then_some(std::f64::consts::PI)),
         ExprData::Add(args) => {
             let mut s = 0.0;
             for a in args {
@@ -606,10 +642,45 @@ fn eval_func(name: &str, a: &[f64]) -> Option<f64> {
 /// equation such as `y'' + 2ζω y' + ω² y = 0` is sampled on *both* sides of its
 /// discriminant — `ζ < 1` (complex roots) and `ζ > 1` (real roots) — rather
 /// than only on the side the real evaluator happens to reach.
-const PARAM_SETS: [&[f64]; 3] = [
+///
+/// # Both signs, and why that is safe here
+///
+/// The first three rows are positive; the last three carry the sign patterns a
+/// two-parameter equation needs to be sampled in all four quadrants —
+/// `(−, +)`, `(+, −)`, `(−, −)`.  Sampling positive values only certified a
+/// candidate that is right for `Kₘ > 0` and wrong for `Kₘ < 0`, and `OdeInput`
+/// carries no assumption that would justify the restriction.
+///
+/// "Add negative values" is not on its own a safe change: many correct answers
+/// are legitimately domain-limited, and a `log k` or `√k` in a candidate is
+/// genuinely undefined at `k < 0`.  Three things make it safe:
+///
+/// * The parametric gate evaluates over **ℂ**, where `log(−1.3)` and `√(−1.3)`
+///   are ordinary finite numbers on the principal branch, and where a correct
+///   candidate's analytic continuation is still correct.  The negative rows
+///   therefore mostly *resolve* rather than dropping out.
+/// * Where a sample does not resolve, the three-way classification the whole
+///   gate is built on books it as **no information** — never as agreement and
+///   never as disagreement.  A row that is entirely unevaluable raises
+///   `sets_unresolved`, which cannot refuse anything on its own; only
+///   `disagree` and `blowup_at_regular_point` can.
+/// * The bar is `sets_agreeing ≥ 2` out of six rows rather than out of three,
+///   so a candidate that resolves only on the positive side is still certified
+///   on the evidence it does produce.
+///
+/// Measured on the dsolve corpus (`corpus::corpus_report`), the six rows leave
+/// all 121 of 125 solved entries solved, with no entry changing status in
+/// either direction.  Nor are the new rows inert: running the corpus with the
+/// three **negative** rows *alone* also solves 121 of 125, so every
+/// parameterised entry resolves and agrees there rather than dropping out of
+/// the evidence.
+pub(crate) const PARAM_SETS: [&[f64]; 6] = [
     &[1.7, 0.6, 2.3, 1.1, 0.4],
     &[0.37, 1.9, 0.83, 2.7, 1.3],
     &[2.9, 0.45, 1.15, 0.71, 3.3],
+    &[-1.3, 0.9, -2.1, 1.6, -0.55],
+    &[0.62, -1.45, 2.05, -0.78, 1.1],
+    &[-2.4, -0.83, -1.35, -3.1, -0.6],
 ];
 
 /// Bind `params` to the values of `PARAM_SETS[set]`.
@@ -630,7 +701,7 @@ fn parameter_env(params: &[ExprId], set: usize) -> HashMap<ExprId, f64> {
 
 /// Agreeing samples required before a *parametric* numeric certificate issues.
 ///
-/// Higher than [`MIN_AGREEING_SAMPLES`] because the grid is three times larger
+/// Higher than [`MIN_AGREEING_SAMPLES`] because the grid is far larger
 /// and because an identity in the parameters is a stronger claim than an
 /// identity at fixed coefficients: it has to hold on an open set, not at a
 /// point.
@@ -694,8 +765,33 @@ fn parametric_report(
     params: &[ExprId],
     pool: &ExprPool,
 ) -> ParametricReport {
+    parametric_report_over(
+        &PARAM_SETS,
+        input,
+        residual,
+        candidate_derivs,
+        constants,
+        params,
+        pool,
+    )
+}
+
+/// [`parametric_report`] restricted to `rows` of the parameter table.
+///
+/// Split out so a test can ask what a *subset* of [`PARAM_SETS`] would have
+/// concluded — which is the only way to pin that the negative rows are the
+/// thing catching a candidate the positive rows certify.
+fn parametric_report_over(
+    rows: &[&[f64]],
+    input: &OdeInput,
+    residual: ExprId,
+    candidate_derivs: &[ExprId],
+    constants: &[ExprId],
+    params: &[ExprId],
+    pool: &ExprPool,
+) -> ParametricReport {
     let mut report = ParametricReport::default();
-    for ps in PARAM_SETS {
+    for &ps in rows {
         let mut env: HashMap<ExprId, C64> = HashMap::new();
         for (i, &p) in params.iter().enumerate() {
             env.insert(p, C64::real(ps[i % ps.len()]));
@@ -947,6 +1043,10 @@ const I: C64 = C64 { re: 0.0, im: 1.0 };
 
 /// Evaluate `expr` over C.  `None` for constructs this evaluator does not know,
 /// which the gate treats as no information (never as agreement).
+///
+/// `pi` and the imaginary unit resolve to their own values without being in
+/// `env`; see [`crate::eval::symbols`] for why binding them to samples instead
+/// is a false-refusal machine.
 pub(crate) fn eval_complex(
     expr: ExprId,
     env: &HashMap<ExprId, C64>,
@@ -959,7 +1059,15 @@ pub(crate) fn eval_complex(
             Some(C64::real(num.to_f64() / den.to_f64()))
         }
         ExprData::Float(f) => Some(C64::real(f.inner.to_f64())),
-        ExprData::Symbol { .. } => env.get(&expr).copied(),
+        ExprData::Symbol { .. } => env.get(&expr).copied().or_else(|| {
+            if is_pi(expr, pool) {
+                Some(C64::real(std::f64::consts::PI))
+            } else if pool.is_imaginary_unit(expr) {
+                Some(I)
+            } else {
+                None
+            }
+        }),
         ExprData::Add(args) => {
             let mut s = C64::real(0.0);
             for a in args {
