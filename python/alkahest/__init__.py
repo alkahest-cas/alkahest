@@ -1343,6 +1343,21 @@ def sum_definite(expr, k, lo, hi):
     difference is not the sum, and ``SumError`` (``E-SUM-003``) is raised
     instead of returning the division by zero embedded in an otherwise
     plausible expression.
+
+    **A geometric ratio that is a symbol.** ``Σ_{k=0}^{n} rᵏ`` is summed to
+    ``(r^{n+1} − 1)/(r − 1)``, which Gosper cannot reach: its certificate lives
+    in ``ℚ(k)`` and a symbolic ratio is not in ``ℚ``.  ``r = 1`` is a genuine
+    second branch — the sum is ``n + 1`` there and the formula is ``0/0`` — so
+    it is **not** assumed away: the derivation step carries the side condition
+    ``r − 1 ≠ 0``, readable as::
+
+        s = ak.sum_definite(r**k, k, pool.integer(0), n)
+        s.steps[0]["side_conditions"]        # ['(r + -1) ≠ 0']
+
+    and the returned expression declines to evaluate at ``r = 1`` rather than
+    producing a number there.  An infinite upper bound still refuses: the
+    series converges only for ``|r| < 1``, which is a fact about ``r`` that
+    nothing here establishes.
     """
     return _maybe_context_simplify(
         _native_sum_definite(

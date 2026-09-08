@@ -235,6 +235,23 @@ fn collect_terms(
         ));
     }
 
+    // A pole of the *summand* at an integer strictly between the bounds is
+    // invisible to everything below — the telescoped part reads `G` only at the
+    // two endpoints, and the certificate identity is one in `Q(n)(k)`, which a
+    // pole in `k` does not disturb. But `S(n)` has no value at any `n` whose
+    // range contains one, so no verdict on `b(n)` may be issued. This is the
+    // same lesson as `sum::interior_undefined_index` and the definite-integral
+    // interior-pole guards: the guard has to look at the summand, not at
+    // `G(k_hi+1) − G(k_lo)`, which is precisely the object that has forgotten
+    // the interior.
+    if let Some(pt) = summand_pole_inside(&f, lo_pt, hi_pt) {
+        return Err(format!(
+            "the summand is undefined at k = {pt}, which lies inside the summation range \
+             k = {lo_pt}..{hi_pt}: that term of S(n) is a division by zero, so the sum has \
+             no value and no recurrence for it follows from the certificate"
+        ));
+    }
+
     let mut terms: Vec<HypTerm> = Vec::new();
 
     // The telescoped part: + G(n, k_hi+1) − G(n, k_lo).
@@ -363,6 +380,102 @@ fn endpoint_point(e: ExprId, n: ExprId, k: ExprId, pool: &ExprPool) -> Result<Po
     Ok(Point { alpha: a, beta })
 }
 
+impl std::fmt::Display for Point {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (self.alpha, self.beta) {
+            (0, b) => write!(f, "{b}"),
+            (1, 0) => write!(f, "n"),
+            (a, 0) => write!(f, "{a}*n"),
+            (1, b) if b > 0 => write!(f, "n + {b}"),
+            (1, b) => write!(f, "n - {}", -b),
+            (a, b) if b > 0 => write!(f, "{a}*n + {b}"),
+            (a, b) => write!(f, "{a}*n - {}", -b),
+        }
+    }
+}
+
+/// `a(n) ≥ b(n)` for every sufficiently large `n`, for integer-affine points.
+fn ge_eventually(a: Point, b: Point) -> bool {
+    a.alpha > b.alpha || (a.alpha == b.alpha && a.beta >= b.beta)
+}
+
+/// Largest `|β|` offset scanned when looking for a pole of the summand strictly
+/// inside the summation range.
+///
+/// The scan is structural — a pole sits at `k = α·n + β` — and a real summand
+/// never places one far from an endpoint, so the window is generous rather than
+/// tuned. Finding nothing past it is *no opinion*, never *no pole*: the verdict
+/// then falls through to the endpoint analysis exactly as it did before.
+const MAX_INTERIOR_POLE_OFFSET: i64 = 64;
+
+/// A point `k = α·n + β` in `[lo, hi]` at which the summand is **undefined**,
+/// when one can be exhibited.
+///
+/// `S(n) = Σ_{k=κ₀(n)}^{κ₁(n)} F(n,k)` does not exist at any `n` for which some
+/// integer `k` in the range is a pole of `F`, and a verdict on `b(n)` is a claim
+/// about `S`. The certificate identity is one in `Q(n)(k)`, so it survives the
+/// pole happily and the boundary analysis — which only ever looks at the two
+/// endpoints and the finitely many range-shift corrections — never meets it.
+///
+/// `Σ_{k=0}^{n} C(n,k)/(k−3)` is the shape this exists for: the certificate
+/// verifies, every endpoint is finite, and `"vanishes"` came back for a sum that
+/// is undefined for every `n ≥ 3`. Reading the homogeneous recurrence off it at
+/// `n = 1` gives `S(2) = −10/3` against a true `−7/3`.
+///
+/// `None` is *no pole was found*, never *there is no pole*: a refusal rests on
+/// [`Value::Pole`], which is positive evidence obtained by the same exact order
+/// counting the endpoint values use.
+fn summand_pole_inside(f: &ProperTerm, lo: Point, hi: Point) -> Option<Point> {
+    // A backwards range `Σ_{k=lo}^{hi} = −Σ_{k=hi+1}^{lo−1}` runs over the
+    // reversed window, and a pole in *that* window is just as fatal.
+    let (first, last) = if ge_eventually(hi, lo) {
+        (lo, hi)
+    } else {
+        (hi.offset(1), lo.offset(-1))
+    };
+    if first.alpha > last.alpha {
+        return None;
+    }
+
+    // `F(n,k) = R(n,k)·z^k·w^n·∏ Γ(aⱼn + bⱼk + cⱼ)^{eⱼ}` can only blow up *in k*
+    // through `R`'s denominator or through a `Γ` with a positive exponent whose
+    // argument stops moving with `n` — everything else is either `k`-free (an
+    // isolated-`n` question, which the residual hypothesis already covers) or a
+    // `Γ` with a negative exponent, i.e. a zero. So the great majority of
+    // summands, `C(n,k)^j` and Apéry's among them, are answered without
+    // substituting anything at all.
+    let den_can_vanish = f.rat.den.degree() >= 1;
+    let gamma_can_pole = |alpha: i64| {
+        f.gammas
+            .iter()
+            .any(|g| g.e > 0 && g.b != 0 && g.a.checked_add(g.b.wrapping_mul(alpha)) == Some(0))
+    };
+
+    let w = MAX_INTERIOR_POLE_OFFSET;
+    let one = RatK::one();
+    for alpha in first.alpha..=last.alpha {
+        if !den_can_vanish && !gamma_can_pole(alpha) {
+            continue;
+        }
+        // `α·n + β` lies in `[first, last]` for all large `n` exactly when it
+        // clears the endpoint it shares a slope with; a strictly interior slope
+        // clears both for free.
+        let (blo, bhi) = match (alpha == first.alpha, alpha == last.alpha) {
+            (true, true) => (first.beta, last.beta.min(first.beta.saturating_add(w))),
+            (true, false) => (first.beta, first.beta.saturating_add(w)),
+            (false, true) => (last.beta.saturating_sub(w), last.beta),
+            (false, false) => (-w, w),
+        };
+        for beta in blo..=bhi {
+            let pt = Point { alpha, beta };
+            if let Value::Pole { .. } = value_at(&one, f, 0, pt) {
+                return Some(pt);
+            }
+        }
+    }
+    None
+}
+
 /// The integer offsets in `Σ_{t=from}^{to}`, with `Σ_{t=from}^{to} = −Σ_{t=to+1}^{from−1}`
 /// when the range runs backwards — so a limit that *decreases* with `n` is
 /// handled with the right sign rather than silently dropped.
@@ -416,6 +529,12 @@ enum Value {
     Zero,
     /// Finite, with this closed form.
     Finite(HypTerm),
+    /// Proved *unbounded*: the value has a pole of this order at the point.
+    ///
+    /// Distinguished from [`Value::Undecidable`] because it is positive
+    /// evidence — "there is a pole here", not "this analysis cannot say" — and
+    /// [`summand_pole_inside`] may only refuse on the former.
+    Pole { order: u64 },
     /// Not decidable by this analysis.
     Undecidable(String),
 }
@@ -423,6 +542,10 @@ enum Value {
 fn push_value(out: &mut Vec<HypTerm>, v: Value, weight: &Rn) -> Result<(), String> {
     match v {
         Value::Zero => Ok(()),
+        Value::Pole { order } => Err(format!(
+            "the value is unbounded there (pole of order {order}), so the telescoped sum has \
+             no finite boundary value"
+        )),
         Value::Undecidable(why) => Err(why),
         Value::Finite(mut t) => {
             t.coeff = rn_mul(&t.coeff, weight);
@@ -503,11 +626,9 @@ fn value_at(extra: &RatK, f: &ProperTerm, n_shift: i64, at: Point) -> Value {
         return Value::Zero;
     }
     if order < 0 {
-        return Value::Undecidable(format!(
-            "the value is unbounded there (pole of order {}), so the telescoped sum has no \
-             finite boundary value",
-            -order
-        ));
+        return Value::Pole {
+            order: order.unsigned_abs(),
+        };
     }
     if rn_is_zero(&coeff) {
         return Value::Zero;
@@ -1064,6 +1185,61 @@ mod tests {
         assert_eq!(signed_window(1, -1), vec![(0, -1)]);
         assert_eq!(signed_window(0, -1), Vec::<(i64, i32)>::new());
         assert_eq!(signed_window(-1, -1), vec![(-1, 1)]);
+    }
+
+    /// A pole of the *summand* inside the range makes `S(n)` not exist, so no
+    /// verdict may be issued — and the one that used to be issued was false.
+    ///
+    /// `F(n,k) = C(n,k)/(k−3)`: the certificate verifies exactly in `Q(n)(k)`,
+    /// both endpoints of `G` are finite, and `"vanishes"` came back. The
+    /// recurrence it licenses is
+    /// `(2n+2)·S(n) + (2−3n)·S(n+1) + (n−1)·S(n+2) = 0`, and at `n = 1` the
+    /// last coefficient is `0`, so it reads `4·S(1) − S(2) = 0` with
+    /// `S(1) = −5/6` and `S(2) = −7/3` — that is `−1`, not `0`, and solving it
+    /// for `S(2)` gives `−10/3` against a true `−7/3`. Every quantity in that
+    /// instance is defined; the sum is only undefined from `n = 3` on, where
+    /// the `k = 3` term divides by zero.
+    #[test]
+    fn a_pole_inside_the_range_is_unknown_not_vanishes() {
+        let pool = ExprPool::new();
+        let (n, k) = nk(&pool);
+        for m in 2..=6_i32 {
+            let den = pool.add(vec![k, pool.integer(-m)]);
+            let f = pool.mul(vec![
+                binom(&pool, n, k),
+                pool.pow(den, pool.integer(-1_i32)),
+            ]);
+            let status = verdict(f, n, k, &pool, Some(natural_limits(n, &pool)));
+            let BoundaryStatus::Unknown { reason } = &status else {
+                panic!("C(n,k)/(k-{m}) must not get a verdict: got {status:?}");
+            };
+            assert!(
+                reason.contains(&format!("k = {m}")),
+                "the reason must name the offending index: {reason}"
+            );
+            assert!(!status.implies_sum_recurrence());
+        }
+    }
+
+    /// The control the guard must not swallow: a pole *outside* the range.
+    ///
+    /// `C(n,k)/(k+1)` has its pole at `k = −1`, below `k_lo = 0`, and is the
+    /// A279013-shaped case whose `"nonzero"` verdict is the module's headline
+    /// result. Refusing it would trade one false verdict for a dead engine.
+    #[test]
+    fn a_pole_below_the_range_still_gets_a_verdict() {
+        let pool = ExprPool::new();
+        let (n, k) = nk(&pool);
+        let den = pool.add(vec![k, pool.integer(1_i32)]);
+        let f = pool.mul(vec![
+            binom(&pool, n, k),
+            pool.pow(den, pool.integer(-1_i32)),
+        ]);
+        let status = verdict(f, n, k, &pool, Some(natural_limits(n, &pool)));
+        assert!(
+            matches!(status, BoundaryStatus::Nonzero { .. }),
+            "got {status:?}"
+        );
     }
 
     /// `⌊·⌋`, not truncation — the `Γ` ladder is wrong by one for negative
