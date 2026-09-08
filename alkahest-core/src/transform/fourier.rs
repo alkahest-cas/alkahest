@@ -46,14 +46,38 @@
 //! | `f(b·x)` (`b>0`)       | `(1/b)·F(ξ/b)`                         | scaling         |
 //! | `f'(x)`                | `2πi ξ·F(ξ)`                          | derivative rule |
 //!
+//! # Positivity is part of the table, not a footnote
+//!
+//! Every row above marked `a > 0` is *false* on the other side of `a = 0`, not
+//! merely unproven: `e^{+a x²}`, `e^{+a|x|}` and `θ(x)e^{+a x}` have no Fourier
+//! transform at all, and the Lorentzian's is
+//!
+//! ```text
+//!   F{2a/(a² + 4π²x²)}(ξ) = sgn(a)·e^{−|a||ξ|},
+//! ```
+//!
+//! so at `a < 0` the tabulated `e^{−a|ξ|}` has the wrong sign *and* grows where
+//! the truth decays.  So the rate is checked rather than assumed:
+//!
+//! * a **literal** `a ≤ 0` refutes the row and returns [`FourierError::NoRule`];
+//! * a **symbolic** `a` is a hypothesis, recorded as a
+//!   [`crate::deriv::SideCondition::Positive`] and returned by
+//!   [`fourier_transform_with_conditions`] (or, for the historical signature, on
+//!   [`super::take_transform_side_conditions`]).  A symbol whose static
+//!   [`Domain`] is `Positive` discharges it silently.
+//!
 //! # Caveats
 //!
-//! The transform is **formal** — no convergence region or distribution-theoretic
-//! side condition is attached.  Unrecognised forms return
-//! [`FourierError::NoRule`] rather than guessing.  The convolution theorem is
-//! declined (the kernel has no convolution primitive to represent the input).
+//! The transform is otherwise **formal** — no convergence *region* is computed
+//! and no distribution-theoretic side condition is attached.  Unrecognised forms
+//! return [`FourierError::NoRule`] rather than guessing.  The convolution
+//! theorem is declined (the kernel has no convolution primitive to represent the
+//! input).
 
+use crate::deriv::SideCondition;
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
+
+use super::{stash_transform_side_conditions, Genericity};
 
 /// Errors from the Fourier transform routines.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -291,6 +315,45 @@ fn phase_minus(a: ExprId, xi: ExprId, pool: &ExprPool) -> ExprId {
     pool.func("exp", vec![simp(arg, pool)])
 }
 
+/// Require the decay rate / amplitude `a` of a table entry to be positive.
+///
+/// Every entry in this module's table is stated for `a > 0`, and the two ways
+/// that can fail are different failures:
+///
+/// * A **literal** `a ≤ 0` refutes the hypothesis.  `e^{+3|x|}` and
+///   `θ(x)·e^{+3x}` have no Fourier transform at all — their defining integrals
+///   diverge — and a Lorentzian with a negative amplitude has the transform
+///   `−e^{−|a||ξ|}`, whose sign and whose direction of growth are both opposite
+///   to the `e^{−a|ξ|}` the table would emit.  Neither is a conditional answer;
+///   both are refused.
+/// * A **symbolic** `a` settles nothing, so it is recorded as a hypothesis on
+///   [`super::take_transform_side_conditions`] — unless the symbol's static
+///   [`Domain`] or the ambient facts already prove it.
+fn require_positive_rate(
+    a: ExprId,
+    what: &str,
+    pool: &ExprPool,
+    gen: &mut Genericity<'_>,
+) -> Result<(), FourierError> {
+    if let Some(r) = literal_rational(a, pool) {
+        if r <= 0 {
+            return Err(FourierError::NoRule(format!(
+                "{what}: {} is not positive, so this table entry does not apply",
+                pool.display(a)
+            )));
+        }
+        return Ok(());
+    }
+    if gen.refuted(&SideCondition::Positive(a), pool) {
+        return Err(FourierError::NoRule(format!(
+            "{what}: {} is known to be negative, so this table entry does not apply",
+            pool.display(a)
+        )));
+    }
+    gen.need_positive(a, pool);
+    Ok(())
+}
+
 // ===========================================================================
 // Forward transform
 // ===========================================================================
@@ -332,11 +395,34 @@ pub fn fourier_transform(
     xi: ExprId,
     pool: &ExprPool,
 ) -> Result<ExprId, FourierError> {
+    stash_transform_side_conditions(Vec::new());
+    let (out, conds) = fourier_transform_with_conditions(f, x, xi, pool)?;
+    stash_transform_side_conditions(conds);
+    Ok(out)
+}
+
+/// [`fourier_transform`] with its genericity hypotheses returned in band rather
+/// than through [`super::take_transform_side_conditions`].
+///
+/// The list is empty for every input whose rates are literal numbers.  It is
+/// non-empty exactly when a table entry was selected on a positivity fact about
+/// a symbolic parameter that the input does not settle: `a > 0` for the
+/// Gaussian `e^{−a x²}`, the two-sided exponential `e^{−a|x|}`, the one-sided
+/// `θ(x)e^{−a x}`, and the Lorentzian `2a/(a² + 4π²x²)`.  Each of those pairs is
+/// *false* on the other side of `a = 0` rather than merely unproven — the first
+/// three integrals diverge, and the Lorentzian's transform changes sign.
+pub fn fourier_transform_with_conditions(
+    f: ExprId,
+    x: ExprId,
+    xi: ExprId,
+    pool: &ExprPool,
+) -> Result<(ExprId, Vec<SideCondition>), FourierError> {
     if x == xi {
         return Err(FourierError::SameVariable);
     }
-    let out = fourier_inner(f, x, xi, pool, 0)?;
-    Ok(normalize(simp(out, pool), pool))
+    let mut gen = Genericity::new(None);
+    let out = fourier_inner(f, x, xi, pool, 0, &mut gen)?;
+    Ok((normalize(simp(out, pool), pool), gen.into_conditions()))
 }
 
 /// Compute the inverse Fourier transform `F⁻¹{g(ξ)}(x) = ∫ g(ξ) e^{+2πiξx} dξ`.
@@ -355,15 +441,30 @@ pub fn inverse_fourier_transform(
     x: ExprId,
     pool: &ExprPool,
 ) -> Result<ExprId, FourierError> {
+    stash_transform_side_conditions(Vec::new());
+    let (out, conds) = inverse_fourier_transform_with_conditions(g, xi, x, pool)?;
+    stash_transform_side_conditions(conds);
+    Ok(out)
+}
+
+/// [`inverse_fourier_transform`] with its genericity hypotheses returned in
+/// band.  See [`fourier_transform_with_conditions`] — the inverse is the
+/// forward transform at `−x`, so it rests on exactly the same hypotheses.
+pub fn inverse_fourier_transform_with_conditions(
+    g: ExprId,
+    xi: ExprId,
+    x: ExprId,
+    pool: &ExprPool,
+) -> Result<(ExprId, Vec<SideCondition>), FourierError> {
     if xi == x {
         return Err(FourierError::SameVariable);
     }
     // F⁻¹{g}(x) = F{g}(−x): transform in ξ to a fresh frequency, then negate it.
-    let forward = fourier_transform(g, xi, x, pool)?;
+    let (forward, conds) = fourier_transform_with_conditions(g, xi, x, pool)?;
     let neg_x = neg(x, pool);
-    Ok(normalize(
-        simp(subs_one(forward, x, neg_x, pool), pool),
-        pool,
+    Ok((
+        normalize(simp(subs_one(forward, x, neg_x, pool), pool), pool),
+        conds,
     ))
 }
 
@@ -373,6 +474,7 @@ fn fourier_inner(
     xi: ExprId,
     pool: &ExprPool,
     depth: usize,
+    gen: &mut Genericity<'_>,
 ) -> Result<ExprId, FourierError> {
     if depth > MAX_DEPTH {
         return Err(FourierError::NoRule("recursion depth exceeded".into()));
@@ -386,7 +488,7 @@ fn fourier_inner(
 
     // Lorentzian `2a/(a² + 4π² x²)` → e^{−a|ξ|}  (the dual of the two-sided
     // exponential; makes that pair invertible by the duality `F⁻¹{g} = F{g}(−·)`).
-    if let Some(res) = try_lorentzian(f, x, xi, pool) {
+    if let Some(res) = try_lorentzian(f, x, xi, pool, gen)? {
         return Ok(res);
     }
 
@@ -395,16 +497,16 @@ fn fourier_inner(
         ExprData::Add(args) => {
             let mut terms = Vec::with_capacity(args.len());
             for a in args {
-                terms.push(fourier_inner(a, x, xi, pool, depth + 1)?);
+                terms.push(fourier_inner(a, x, xi, pool, depth + 1, gen)?);
             }
             Ok(pool.add(terms))
         }
 
         // Products: peel the constant scalar, then dispatch the x-dependent body.
-        ExprData::Mul(args) => fourier_mul(&args, x, xi, pool, depth),
+        ExprData::Mul(args) => fourier_mul(&args, x, xi, pool, depth, gen),
 
         ExprData::Func { name, args } if args.len() == 1 => {
-            fourier_func(&name, args[0], f, x, xi, pool, depth)
+            fourier_func(&name, args[0], f, x, xi, pool, depth, gen)
         }
 
         _ => Err(FourierError::NoRule(pool.display(f).to_string())),
@@ -418,6 +520,7 @@ fn fourier_mul(
     xi: ExprId,
     pool: &ExprPool,
     depth: usize,
+    gen: &mut Genericity<'_>,
 ) -> Result<ExprId, FourierError> {
     // Pull out the constant (x-free) scalar prefactor (linearity).
     let (consts, rest): (Vec<ExprId>, Vec<ExprId>) =
@@ -431,13 +534,13 @@ fn fourier_mul(
         0 => {
             // Wholly constant — handled by caller, but be safe.
             let c = scalar.unwrap_or_else(|| pool.integer(1_i32));
-            return fourier_inner(c, x, xi, pool, depth + 1);
+            return fourier_inner(c, x, xi, pool, depth + 1, gen);
         }
         1 => rest[0],
         _ => pool.mul(rest.clone()),
     };
 
-    let transformed = fourier_product_body(body, &rest, x, xi, pool, depth)?;
+    let transformed = fourier_product_body(body, &rest, x, xi, pool, depth, gen)?;
     Ok(match scalar {
         Some(c) => pool.mul(vec![c, transformed]),
         None => transformed,
@@ -447,6 +550,7 @@ fn fourier_mul(
 /// Transform an x-dependent product (constant scalar already peeled), applying
 /// the structural product theorems: modulation `e^{2πi a x}·f`, two-sided
 /// exponential `e^{−a|x|}`, one-sided `θ(x)·e^{−a x}`.
+#[allow(clippy::too_many_arguments)]
 fn fourier_product_body(
     body: ExprId,
     factors: &[ExprId],
@@ -454,9 +558,10 @@ fn fourier_product_body(
     xi: ExprId,
     pool: &ExprPool,
     depth: usize,
+    gen: &mut Genericity<'_>,
 ) -> Result<ExprId, FourierError> {
     // (1) θ(x)·e^{−a x}  →  1/(a + 2πi ξ)   [causal / one-sided exponential]
-    if let Some(res) = try_one_sided_exponential(factors, x, xi, pool)? {
+    if let Some(res) = try_one_sided_exponential(factors, x, xi, pool, gen)? {
         return Ok(res);
     }
 
@@ -464,7 +569,7 @@ fn fourier_product_body(
     for (i, &fac) in factors.iter().enumerate() {
         if let Some(a) = match_modulation(fac, x, pool) {
             let rest = remove_index(factors, i, pool);
-            let g_transform = fourier_inner(rest, x, xi, pool, depth + 1)?;
+            let g_transform = fourier_inner(rest, x, xi, pool, depth + 1, gen)?;
             let xi_minus_a = simp(pool.add(vec![xi, neg(a, pool)]), pool);
             return Ok(subs_one(g_transform, xi, xi_minus_a, pool));
         }
@@ -473,7 +578,7 @@ fn fourier_product_body(
     // No product theorem applied; if `body` is a lone factor, fall through to the
     // structural table (cannot recurse forever — a non-`Mul` re-enters the table).
     if !matches!(pool.get(body), ExprData::Mul(_)) {
-        return fourier_inner(body, x, xi, pool, depth + 1);
+        return fourier_inner(body, x, xi, pool, depth + 1, gen);
     }
 
     Err(FourierError::NoRule(pool.display(body).to_string()))
@@ -530,6 +635,7 @@ fn try_one_sided_exponential(
     x: ExprId,
     xi: ExprId,
     pool: &ExprPool,
+    gen: &mut Genericity<'_>,
 ) -> Result<Option<ExprId>, FourierError> {
     // Locate a Heaviside θ(x).
     let heaviside_idx = factors.iter().position(|&fac| {
@@ -558,6 +664,7 @@ fn try_one_sided_exponential(
             if off == pool.integer(0_i32) && coeff != pool.integer(0_i32) {
                 // exponent = coeff·x; want coeff = −a, so a = −coeff.
                 let a = simp(neg(coeff, pool), pool);
+                require_positive_rate(a, "one-sided exponential θ(x)·e^{−a x}", pool, gen)?;
                 let denom = pool.add(vec![a, pool.mul(vec![two_pi_i(pool), xi])]);
                 return Ok(Some(recip(denom, pool)));
             }
@@ -575,7 +682,13 @@ fn try_one_sided_exponential(
 /// Strategy: split `f = numer · denom^{−1}` with `denom = C₀ + C₂·x²` quadratic
 /// in `x` (no linear term).  Solve `a = numer/2`, then verify `C₀ = a²` and
 /// `C₂ = 4π²` by simplifying the differences to `0`.
-fn try_lorentzian(f: ExprId, x: ExprId, xi: ExprId, pool: &ExprPool) -> Option<ExprId> {
+fn try_lorentzian(
+    f: ExprId,
+    x: ExprId,
+    xi: ExprId,
+    pool: &ExprPool,
+    gen: &mut Genericity<'_>,
+) -> Result<Option<ExprId>, FourierError> {
     let factors: Vec<ExprId> = match pool.get(f) {
         ExprData::Mul(a) => a,
         _ => vec![f],
@@ -587,7 +700,7 @@ fn try_lorentzian(f: ExprId, x: ExprId, xi: ExprId, pool: &ExprPool) -> Option<E
         if let ExprData::Pow { base, exp } = pool.get(fac) {
             if exp == pool.integer(-1_i32) && !is_free_of(base, x, pool) {
                 if denom.is_some() {
-                    return None; // more than one x-dependent denominator factor
+                    return Ok(None); // more than one x-dependent denominator factor
                 }
                 denom = Some(base);
                 continue;
@@ -595,25 +708,29 @@ fn try_lorentzian(f: ExprId, x: ExprId, xi: ExprId, pool: &ExprPool) -> Option<E
         }
         numer_parts.push(fac);
     }
-    let denom = denom?;
+    let Some(denom) = denom else {
+        return Ok(None);
+    };
     let numer = match numer_parts.len() {
         0 => pool.integer(1_i32),
         1 => numer_parts[0],
         _ => pool.mul(numer_parts),
     };
     if !is_free_of(numer, x, pool) {
-        return None;
+        return Ok(None);
     }
 
     // denom = C₀ + C₂·x²  (reject any linear or higher term).
-    let (c0, c2) = quadratic_in_x(denom, x, pool)?;
+    let Some((c0, c2)) = quadratic_in_x(denom, x, pool) else {
+        return Ok(None);
+    };
 
     // a = numer / 2.
     let a = simp(pool.mul(vec![numer, pool.rational(1_i32, 2_i32)]), pool);
     let a2 = pool.pow(a, pool.integer(2_i32));
     // Verify C₀ − a² = 0.
     if simp(pool.add(vec![c0, neg(a2, pool)]), pool) != pool.integer(0_i32) {
-        return None;
+        return Ok(None);
     }
     // Verify C₂ − 4π² = 0.
     let four_pi2 = pool.mul(vec![
@@ -621,13 +738,22 @@ fn try_lorentzian(f: ExprId, x: ExprId, xi: ExprId, pool: &ExprPool) -> Option<E
         pool.pow(pi(pool), pool.integer(2_i32)),
     ]);
     if simp(pool.add(vec![c2, neg(four_pi2, pool)]), pool) != pool.integer(0_i32) {
-        return None;
+        return Ok(None);
     }
+
+    // `C₀ = a²` is satisfied by `a` and by `−a` alike, and the two give
+    // *different* transforms: the pair is `2a/(a² + 4π²x²) ↦ sgn(a)·e^{−|a||ξ|}`.
+    // Reading the root off the numerator picks `a` and emits `e^{−a|ξ|}`, which
+    // for `a < 0` is both the wrong sign and unbounded — `F{−2/(1 + 4π²x²)}`
+    // came back as `e^{+|ξ|}` (`1.3499` at `ξ = 0.3`) against a true
+    // `−e^{−|ξ|} = −0.7408`.  So positivity is not decoration here; it is what
+    // selects the branch.
+    require_positive_rate(a, "Lorentzian 2a/(a² + 4π²x²)", pool, gen)?;
 
     // F = e^{−a|ξ|}.
     let abs_xi = pool.func("abs", vec![xi]);
     let arg = neg(pool.mul(vec![a, abs_xi]), pool);
-    Some(pool.func("exp", vec![simp(arg, pool)]))
+    Ok(Some(pool.func("exp", vec![simp(arg, pool)])))
 }
 
 /// Decompose `expr = C₀ + C₂·x²` (both `Cᵢ` free of `x`, no linear or higher
@@ -695,6 +821,7 @@ fn fourier_func(
     xi: ExprId,
     pool: &ExprPool,
     depth: usize,
+    gen: &mut Genericity<'_>,
 ) -> Result<ExprId, FourierError> {
     // δ(x − a) → e^{−2πi a ξ}   (δ(x) ↦ 1).
     if name == "diracdelta" {
@@ -714,7 +841,7 @@ fn fourier_func(
     }
 
     if name == "exp" {
-        return fourier_exp(arg, x, xi, pool);
+        return fourier_exp(arg, x, xi, pool, gen);
     }
 
     let _ = (f, depth);
@@ -730,6 +857,7 @@ fn fourier_exp(
     x: ExprId,
     xi: ExprId,
     pool: &ExprPool,
+    gen: &mut Genericity<'_>,
 ) -> Result<ExprId, FourierError> {
     // ── Gaussian (centred or shifted): arg = −a·(x − b)² + d. ───────────────
     // Completing the square handles the centred case (b = 0, d = 0) as well as
@@ -737,6 +865,9 @@ fn fourier_exp(
     // (its derivation collapses an I² cross-term via the kernel's i² = −1 rule);
     // the constant offset d rides along as the scalar e^{d}.
     if let Some((a, b, d)) = match_gaussian_quadratic(arg, x, pool) {
+        // A literal `a ≤ 0` was already rejected by the matcher; a symbolic one
+        // is a hypothesis (`e^{+a x²}` has no transform), so record it.
+        require_positive_rate(a, "Gaussian e^{−a x²}", pool, gen)?;
         // F{e^{−a x²}}(ξ) = √(π/a)·e^{−π² ξ²/a}; shift by b multiplies by the
         // phase e^{−2πi b ξ} (shift theorem); the offset d scales by e^{d}.
         let pi_e = pi(pool);
@@ -760,6 +891,7 @@ fn fourier_exp(
 
     // ── Two-sided exponential: arg = −a·|x| (a free of x, a > 0 assumed). ────
     if let Some(a) = match_abs_neg(arg, x, pool) {
+        require_positive_rate(a, "two-sided exponential e^{−a|x|}", pool, gen)?;
         // F{e^{−a|x|}}(ξ) = 2a/(a² + 4π² ξ²).
         let two_a = pool.mul(vec![pool.integer(2_i32), a]);
         let a2 = pool.pow(a, pool.integer(2_i32));

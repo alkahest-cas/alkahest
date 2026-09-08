@@ -429,9 +429,10 @@ pub mod experimental {
     pub use crate::transform::fourier::fourier_derivative_rule;
     pub use crate::transform::laplace::laplace_derivative_rule;
     pub use crate::transform::{
-        fourier_transform, inverse_fourier_transform, inverse_laplace_transform,
+        fourier_transform, fourier_transform_with_conditions, inverse_fourier_transform,
+        inverse_fourier_transform_with_conditions, inverse_laplace_transform,
         inverse_laplace_transform_with_assumptions, inverse_laplace_transform_with_conditions,
-        laplace_transform, FourierError, LaplaceError,
+        laplace_transform, laplace_transform_with_conditions, FourierError, LaplaceError,
     };
     pub use crate::transform::{
         inverse_z_transform, inverse_z_transform_with_assumptions,

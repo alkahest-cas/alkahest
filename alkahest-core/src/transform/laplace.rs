@@ -16,7 +16,7 @@
 //! | `α·f + β·g`            | `α·L{f} + β·L{g}`               | linearity         |
 //! | `e^{a t}·f(t)`         | `F(s−a)`                        | s-shift theorem   |
 //! | `t^n·f(t)`             | `(−1)^n F^{(n)}(s)`             | frequency-diff    |
-//! | `θ(t−a)·g(t−a)`        | `e^{−a s} G(s)`                | t-shift (`a ≥ 0`) |
+//! | `θ(t−a)·g(t−a)`        | `e^{−a s} G(s)`                | t-shift (`a ≥ 0`, reported) |
 //! | `θ(t−a)`               | `e^{−a s}/s`                    | shifted step      |
 //! | `δ(t−a)`               | `e^{−a s}`  (`δ(t) ↦ 1`)        | impulse           |
 //!
@@ -63,10 +63,27 @@
 //! [`inverse_laplace_transform`] signature — carried out of band on
 //! [`super::take_transform_side_conditions`].
 //!
+//! ## The unilateral shift
+//!
+//! The second-shift rule is the transform of `g` only for `a ≥ 0`: at `a < 0`
+//! the step edge lies before the origin, outside the range `∫₀^∞` sees, and the
+//! answer is a different function (`L{θ(t+1)} = 1/s`, not `e^{s}/s`).  A
+//! *literal* negative shift refutes the rule and is refused; a *symbolic* one
+//! is a hypothesis, recorded as
+//! [`crate::deriv::SideCondition::InDomain`]`(a, NonNegative)` and returned by
+//! [`laplace_transform_with_conditions`] — or, for the historical signature, on
+//! [`super::take_transform_side_conditions`].  A symbol whose static
+//! [`crate::kernel::Domain`] is `Positive`/`NonNegative` discharges it.
+//!
+//! The same fact governs the inverse's delay factor `e^{−a s}`, with one
+//! difference: an *advance* `e^{+a s}` with a literal `a > 0` is not the
+//! transform of any causal function, so it is declined rather than answered
+//! under a hypothesis that cannot hold.
+//!
 //! # Caveats
 //!
-//! Both directions are **formal** — no convergence region is computed and no
-//! existence side-conditions are attached.  Unrecognised forms return
+//! Both directions are otherwise **formal** — no convergence region is computed
+//! and no existence side-conditions are attached.  Unrecognised forms return
 //! [`LaplaceError::NoRule`] (forward) / [`LaplaceError::NotInvertible`] (inverse)
 //! rather than guessing.
 
@@ -258,8 +275,39 @@ pub fn laplace_transform(
     if t == s {
         return Err(LaplaceError::SameVariable);
     }
-    let out = laplace_inner(f, t, s, pool, 0)?;
-    Ok(simp(out, pool))
+    stash_transform_side_conditions(Vec::new());
+    let (out, conds) = laplace_transform_with_conditions(f, t, s, pool)?;
+    stash_transform_side_conditions(conds);
+    Ok(out)
+}
+
+/// [`laplace_transform`] with its genericity hypotheses returned in band rather
+/// than through [`super::take_transform_side_conditions`].
+///
+/// The list is empty for every input whose shifts are literal numbers.  It is
+/// non-empty exactly when a table entry was selected on a fact about a symbolic
+/// parameter that the input does not settle — the unilateral second-shift rule
+/// `L{θ(t−a)·g(t−a)} = e^{−a s}·G(s)`, which is that transform only for
+/// `a ≥ 0`.  At `a < 0` the step edge (or the impulse) sits *before* `t = 0`,
+/// outside the range the unilateral integral sees, and the true transform is a
+/// different function: `L{θ(t+1)} = 1/s`, not `e^{s}/s`.
+///
+/// A hypothesis a symbol's static [`crate::kernel::Domain`] already proves
+/// (`Domain::Positive` / `Domain::NonNegative`) is discharged rather than
+/// reported.  A shift that is a *literal* negative number is not a hypothesis
+/// at all and is refused by [`LaplaceError::NoRule`].
+pub fn laplace_transform_with_conditions(
+    f: ExprId,
+    t: ExprId,
+    s: ExprId,
+    pool: &ExprPool,
+) -> Result<(ExprId, Vec<SideCondition>), LaplaceError> {
+    if t == s {
+        return Err(LaplaceError::SameVariable);
+    }
+    let mut gen = Genericity::new(None);
+    let out = laplace_inner(f, t, s, pool, 0, &mut gen)?;
+    Ok((simp(out, pool), gen.into_conditions()))
 }
 
 const MAX_DEPTH: usize = 32;
@@ -270,6 +318,7 @@ fn laplace_inner(
     s: ExprId,
     pool: &ExprPool,
     depth: usize,
+    gen: &mut Genericity<'_>,
 ) -> Result<ExprId, LaplaceError> {
     if depth > MAX_DEPTH {
         return Err(LaplaceError::NoRule("recursion depth exceeded".into()));
@@ -290,14 +339,14 @@ fn laplace_inner(
         ExprData::Add(args) => {
             let mut terms = Vec::with_capacity(args.len());
             for a in args {
-                terms.push(laplace_inner(a, t, s, pool, depth + 1)?);
+                terms.push(laplace_inner(a, t, s, pool, depth + 1, gen)?);
             }
             Ok(pool.add(terms))
         }
 
         // Products: split off the t-free scalar (linearity), then dispatch the
         // remaining t-dependent factor through the structural product rules.
-        ExprData::Mul(args) => laplace_mul(&args, t, s, pool, depth),
+        ExprData::Mul(args) => laplace_mul(&args, t, s, pool, depth, gen),
 
         // Pure power t^n.
         ExprData::Pow { base, exp } if base == t => {
@@ -315,7 +364,7 @@ fn laplace_inner(
         }
 
         ExprData::Func { name, args } if args.len() == 1 => {
-            laplace_func(&name, args[0], t, s, pool, depth)
+            laplace_func(&name, args[0], t, s, pool, depth, gen)
         }
 
         _ => Err(LaplaceError::NoRule(pool.display(f).to_string())),
@@ -340,6 +389,7 @@ fn laplace_mul(
     s: ExprId,
     pool: &ExprPool,
     depth: usize,
+    gen: &mut Genericity<'_>,
 ) -> Result<ExprId, LaplaceError> {
     // Pull out the constant (t-free) scalar prefactor.
     let (consts, rest): (Vec<ExprId>, Vec<ExprId>) =
@@ -360,7 +410,7 @@ fn laplace_mul(
         _ => pool.mul(rest.clone()),
     };
 
-    let transformed = laplace_product_body(inner, t, s, pool, depth)?;
+    let transformed = laplace_product_body(inner, t, s, pool, depth, gen)?;
     Ok(match scalar {
         Some(c) => pool.mul(vec![c, transformed]),
         None => transformed,
@@ -376,6 +426,7 @@ fn laplace_product_body(
     s: ExprId,
     pool: &ExprPool,
     depth: usize,
+    gen: &mut Genericity<'_>,
 ) -> Result<ExprId, LaplaceError> {
     let factors: Vec<ExprId> = match pool.get(body) {
         ExprData::Mul(a) => a,
@@ -386,14 +437,14 @@ fn laplace_product_body(
     for (i, &fac) in factors.iter().enumerate() {
         if let Some(a) = match_exp_linear(fac, t, pool) {
             let rest = remove_index(&factors, i, pool);
-            let g_transform = laplace_inner(rest, t, s, pool, depth + 1)?;
+            let g_transform = laplace_inner(rest, t, s, pool, depth + 1, gen)?;
             let s_minus_a = simp(pool.add(vec![s, neg(a, pool)]), pool);
             return Ok(subs_one(g_transform, s, s_minus_a, pool));
         }
     }
 
     // (2) θ(t − a) · g(t − a)  →  e^{−a s} G(s)   [t-shift / second shift]
-    if let Some(res) = try_time_shift(&factors, t, s, pool, depth)? {
+    if let Some(res) = try_time_shift(&factors, t, s, pool, depth, gen)? {
         return Ok(res);
     }
 
@@ -401,7 +452,7 @@ fn laplace_product_body(
     for (i, &fac) in factors.iter().enumerate() {
         if let Some(n) = match_t_power(fac, t, pool) {
             let rest = remove_index(&factors, i, pool);
-            let mut g_transform = laplace_inner(rest, t, s, pool, depth + 1)?;
+            let mut g_transform = laplace_inner(rest, t, s, pool, depth + 1, gen)?;
             for _ in 0..n {
                 g_transform = crate::diff::diff(g_transform, s, pool)
                     .map_err(|_| LaplaceError::NoRule("frequency-diff failed".into()))?
@@ -422,7 +473,7 @@ fn laplace_product_body(
     // forever: `laplace_inner` only re-enters `laplace_product_body` for a `Mul`,
     // and here `body` is not a `Mul`.
     if !matches!(pool.get(body), ExprData::Mul(_)) {
-        return laplace_inner(body, t, s, pool, depth + 1);
+        return laplace_inner(body, t, s, pool, depth + 1, gen);
     }
 
     Err(LaplaceError::NoRule(pool.display(body).to_string()))
@@ -466,6 +517,7 @@ fn try_time_shift(
     s: ExprId,
     pool: &ExprPool,
     depth: usize,
+    gen: &mut Genericity<'_>,
 ) -> Result<Option<ExprId>, LaplaceError> {
     // Find a Heaviside factor and its shift a (from θ(t − a)).
     let mut heaviside_idx = None;
@@ -488,7 +540,7 @@ fn try_time_shift(
         (Some(hi), Some(a)) => (hi, simp(a, pool)),
         _ => return Ok(None),
     };
-    require_nonneg_shift(a, pool)?;
+    require_nonneg_shift(a, pool, gen)?;
 
     // The remaining factors form g(t − a).  Substitute u = t + a (i.e. shift the
     // argument back) and transform g(u), then attach e^{−a s}.
@@ -503,11 +555,12 @@ fn try_time_shift(
     }
     let t_plus_a = simp(pool.add(vec![t, a]), pool);
     let g_of_t = subs_one(rest, t, t_plus_a, pool);
-    let g_transform = laplace_inner(simp(g_of_t, pool), t, s, pool, depth + 1)?;
+    let g_transform = laplace_inner(simp(g_of_t, pool), t, s, pool, depth + 1, gen)?;
     Ok(Some(pool.mul(vec![exp_neg_as, g_transform])))
 }
 
 /// Single-argument primitive functions: sin/cos/sinh/cosh/exp/heaviside/dirac.
+#[allow(clippy::too_many_arguments)]
 fn laplace_func(
     name: &str,
     arg: ExprId,
@@ -515,6 +568,7 @@ fn laplace_func(
     s: ExprId,
     pool: &ExprPool,
     _depth: usize,
+    gen: &mut Genericity<'_>,
 ) -> Result<ExprId, LaplaceError> {
     // exp(a t) → 1/(s − a)
     if name == "exp" {
@@ -585,7 +639,7 @@ fn laplace_func(
             ));
         }
         let a = simp(neg(b, pool), pool); // a = −b
-        require_nonneg_shift(a, pool)?;
+        require_nonneg_shift(a, pool, gen)?;
         let exp_neg_as = pool.func("exp", vec![simp(neg(pool.mul(vec![a, s]), pool), pool)]);
         return Ok(pool.mul(vec![exp_neg_as, recip(s, pool)]));
     }
@@ -604,7 +658,7 @@ fn laplace_func(
             ));
         }
         let a = simp(neg(b, pool), pool);
-        require_nonneg_shift(a, pool)?;
+        require_nonneg_shift(a, pool, gen)?;
         return Ok(pool.func("exp", vec![simp(neg(pool.mul(vec![a, s]), pool), pool)]));
     }
 
@@ -790,7 +844,13 @@ fn inverse_laplace_inner(
     // unilateral rule needs `a ≥ 0`; a literal negative `a` is refused by the
     // forward table, and a *symbolic* `a` is a hypothesis, not a fact.
     if let Some((a, g)) = split_delay(big_f, s, pool) {
-        gen.need_in_domain(a, crate::kernel::Domain::NonNegative, pool);
+        require_nonneg_shift(a, pool, gen).map_err(|_| {
+            LaplaceError::NotInvertible(format!(
+                "advance factor e^{{{}·s}}: the unilateral inverse needs a delay, not an \
+                 advance, and no causal f has this transform",
+                pool.display(simp(neg(a, pool), pool))
+            ))
+        })?;
         let g_inv = inverse_laplace_inner(g, s, t, pool, gen)?;
         let t_minus_a = simp(pool.add(vec![t, neg(a, pool)]), pool);
         let shifted = subs_one(g_inv, t, t_minus_a, pool);
@@ -1239,9 +1299,24 @@ fn perfect_square_root(e: ExprId, pool: &ExprPool) -> Option<ExprId> {
     }
 }
 
-/// Refuse a literal negative delay `a` in `θ(t−a)` / `δ(t−a)` (unilateral
-/// table assumes `a ≥ 0`).  Non-literal shifts are left to the caller.
-fn require_nonneg_shift(a: ExprId, pool: &ExprPool) -> Result<(), LaplaceError> {
+/// The unilateral second-shift rule `θ(t−a)·g(t−a) ↦ e^{−a s}·G(s)` needs
+/// `a ≥ 0`, and the two ways that can fail are not the same failure.
+///
+/// A *literal* negative `a` refutes the hypothesis outright: `θ(t+1) ≡ 1` on
+/// `t ≥ 0`, so its transform is `1/s`, and `e^{s}/s` is not a conditional
+/// answer but a wrong one.  That is refused.
+///
+/// A *symbolic* `a` settles nothing either way, so it is recorded as a
+/// hypothesis — unless the symbol's static [`crate::kernel::Domain`] or the
+/// ambient facts already prove it.  Before this was recorded,
+/// `L{θ(t+a)} = e^{a s}/s` came back with nothing on the wire to say it is the
+/// transform only for `a ≤ 0`: at `a = 1.5, s = 2.5` it reads `17.008` against
+/// a true `1/s = 0.4`.
+fn require_nonneg_shift(
+    a: ExprId,
+    pool: &ExprPool,
+    gen: &mut Genericity<'_>,
+) -> Result<(), LaplaceError> {
     if let Some(r) = literal_rational(a, pool) {
         if r < 0 {
             return Err(LaplaceError::NoRule(format!(
@@ -1249,7 +1324,17 @@ fn require_nonneg_shift(a: ExprId, pool: &ExprPool) -> Result<(), LaplaceError> 
                 pool.display(a)
             )));
         }
+        return Ok(());
     }
+    let cond = SideCondition::InDomain(a, crate::kernel::Domain::NonNegative);
+    if gen.refuted(&cond, pool) {
+        return Err(LaplaceError::NoRule(format!(
+            "shift a = {} is known to be negative; the unilateral Heaviside/Dirac \
+             rule needs a ≥ 0",
+            pool.display(a)
+        )));
+    }
+    gen.adopt(cond, pool);
     Ok(())
 }
 
