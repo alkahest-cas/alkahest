@@ -985,7 +985,10 @@ def _q_normalise(shifts: dict) -> tuple:
     if len(common) > 1 or (common and len(common[0]) > 1):
         divided = [_q_col_divexact(column, common) for column in columns]
         if all(d is not None for d in divided):
-            columns = divided
+            # Every division succeeded.  The filter restates that for the type
+            # checker, which cannot narrow a list's element type through
+            # `all(...)`; at run time it is the same list.
+            columns = [d for d in divided if d is not None]
     polys = [_q_from_columns(column) for column in columns]
     multiplier = 1
     for p in polys:
