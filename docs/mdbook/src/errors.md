@@ -140,6 +140,8 @@ loop must record as **undecided**, never as a negative result.
 | `E-SERIES-004` | `SeriesError` | A `series` coefficient came out as an indeterminate form (`0/0`, `1/0`, `log(0)`) rather than a number, so the expansion point is a singularity this engine cannot resolve — a branch point (`√x`), an essential singularity (`e^{1/x}`), or a removable one it could not cancel. Returning the `Series` anyway would report success and hand back coefficients that evaluate to `NaN` |
 | `E-PSLQ-004` | `PslqError` | `guess_relation` found an integer relation the inputs' precision cannot justify — pinning down `n` coefficients bounded by `H` costs about `n·log10(2H+1)` digits of agreement, and the inputs do not carry that many. **Record it as `undecided`, not as "no relation exists":** the same constants at higher precision may well admit one. `relation_confidence` reports the same judgement as data, including a three-valued `credible` whose `None` means *the inputs' precision is not knowable*, never a pass |
 | `E-PSLQ-005` | `PslqError` | The constants are exact rationals and `Σ aᵢ·cᵢ` is not zero in exact arithmetic. **This one is a verdict, not a refusal** — the relation is refuted for the numbers supplied |
+| `E-SERIES-005` | `SeriesError` | `experimental.puiseux_series` found no Puiseux expansion at the point at all: a logarithm of something vanishing (`log x`, `√x·log x` — a Puiseux–*log* / transseries term, which this engine has no representation for), an essential singularity (`e^{1/x}`), or a ramification index past the range an expansion can be *checked* at. Truncating `√x·log x` to `x^{1/2}` would be a wrong answer rather than a coarse one |
+| `E-SERIES-006` | `SeriesError` | `experimental.puiseux_series` **computed** an expansion and then withheld it, because its verifier could not confirm it — the truncation residual did not decay at the claimed rate, or nothing near the point could be evaluated (a branch that is not real on the side sampled, a head with no numeric kernel). Distinct from `E-SERIES-005` on purpose: that one says there is nothing to return, this one says there was something and it is not trustworthy |
 | `E-INT-004` | `IntegrationError` | Proven non-elementary. **This one is a verdict, not a refusal** — keep it apart from the rest |
 | `E-BUDGET-001..005` | `BudgetExceededError` | Ran out of the time, steps or memory it was given, was cancelled, or is about to exhaust the process address-space limit |
 
@@ -148,6 +150,13 @@ exhaustive) but *are* wired into the bindings: `series` returns `SeriesError::In
 with `calculus::series::take_series_refusal()` pending, and the Python layer raises
 `SeriesError` with `.code == "E-SERIES-003"` / `"E-SERIES-004"` — or `BudgetExceededError`
 when a budget was what stopped it. `SeriesRefusal::cause()` distinguishes the two in Rust.
+
+`E-SERIES-005` and `E-SERIES-006` come from a different type — `calculus::puiseux::PuiseuxError`,
+which is `#[non_exhaustive]` from birth and so needs no out-of-band channel — but they raise the
+same Python `SeriesError`, because `puiseux_series` is the series engine widened rather than a
+new subsystem, and `except SeriesError` should keep covering both entry points. A budget trip
+inside `puiseux_series` raises `BudgetExceededError`, not `E-SERIES-003`: "raise your budget"
+and "this expansion does not close" are different problems.
 
 A **removable** singularity is not in that list, because it is no longer refused: `series`
 puts the expression over a common denominator and divides the two power series rather than

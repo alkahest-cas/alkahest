@@ -134,6 +134,14 @@ impl From<DiffError> for SeriesError {
 /// [`SeriesRefusalCause::IndeterminateCoefficient`] refusal (`E-SERIES-004`).
 /// It is never a `Series` whose coefficients contain `0⁻¹`: that reports
 /// success, cannot be evaluated, and evaluates to `NaN` for whoever tries.
+///
+/// A **branch point** is the one of those three that has an expansion this
+/// function cannot hold: `√x = x^{1/2}` is a perfectly good *Puiseux* series,
+/// and [`crate::calculus::puiseux::puiseux_series`] returns it. `Series` is a
+/// bare `ExprId` with no ramification index to report, and every consumer of
+/// `local_expansion` — `limit`, `gruntz`, `asymptotic`, `fps` — reads an
+/// *integer* valuation, so the fractional case lives in a sibling type rather
+/// than widening this one. The refusal here is unchanged and deliberate.
 pub fn series(
     expr: ExprId,
     var: ExprId,
@@ -454,7 +462,7 @@ fn factorial_u32(n: u32) -> rug::Integer {
     r
 }
 
-fn expansion_increment(pool: &ExprPool, var: ExprId, point: ExprId) -> ExprId {
+pub(crate) fn expansion_increment(pool: &ExprPool, var: ExprId, point: ExprId) -> ExprId {
     match pool.get(point) {
         ExprData::Integer(n) if n.0 == 0 => var,
         _ => pool.add(vec![var, pool.mul(vec![pool.integer(-1_i32), point])]),
@@ -469,7 +477,7 @@ fn laurent_big_o_pow(valuation: i32, order: u32) -> i64 {
     }
 }
 
-fn is_structural_zero(id: ExprId, pool: &ExprPool) -> bool {
+pub(crate) fn is_structural_zero(id: ExprId, pool: &ExprPool) -> bool {
     matches!(pool.get(id), ExprData::Integer(n) if n.0 == 0)
 }
 
@@ -565,7 +573,7 @@ fn has_non_finite_constant(expr: ExprId, pool: &ExprPool) -> bool {
 }
 
 /// Index of the first coefficient that is not a number, if any.
-fn first_indeterminate(coeffs: &[ExprId], pool: &ExprPool) -> Option<usize> {
+pub(crate) fn first_indeterminate(coeffs: &[ExprId], pool: &ExprPool) -> Option<usize> {
     coeffs
         .iter()
         .position(|&c| coefficient_is_indeterminate(c, pool))

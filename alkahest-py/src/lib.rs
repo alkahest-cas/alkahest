@@ -138,6 +138,9 @@ use alkahest_core::calculus::fps::{Fps as CoreFps, FpsError as CoreFpsError};
 use alkahest_core::calculus::multilimit::{
     multilimit as core_multilimit, MultiLimit as CoreMultiLimit,
 };
+use alkahest_core::calculus::puiseux::{
+    puiseux_series as core_puiseux_series, PuiseuxError as CorePuiseuxError,
+};
 use alkahest_core::ode::dsolve::system::{
     dsolve_system_with as core_dsolve_system_with, DsolveSystemError as CoreDsolveSystemError,
 };
@@ -5318,6 +5321,231 @@ fn py_asymptotic_expand(
         )?;
     }
     Ok(out.into_py(py))
+}
+
+/// Convert a [`CorePuiseuxError`] into a Python exception.
+///
+/// A budget trip raises the same `BudgetExceededError` (`E-BUDGET-*`) every
+/// other engine raises rather than `E-SERIES-003`: "raise your budget" and
+/// "this expansion does not close" are different problems, and a caller
+/// branching on the code should not have to guess which one it hit. Everything
+/// else raises `SeriesError`, because this *is* the series engine widened —
+/// `except SeriesError` keeps covering both entry points.
+fn puiseux_error_to_py(e: CorePuiseuxError) -> PyErr {
+    Python::with_gil(|py| {
+        if let CorePuiseuxError::Exhausted(Some(b)) = &e {
+            let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+            return make_structured_err(py, &exc_type, b);
+        }
+        let exc_type = py.get_type_bound::<PySeriesError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+/// A verified Puiseux expansion — the result of
+/// :func:`alkahest.experimental.puiseux_series`.
+///
+/// Holding one of these means the expansion **was checked** before it was
+/// handed over; see :attr:`evidence`. There is no constructor: an unchecked
+/// expansion cannot be made to look like a checked one.
+#[pyclass(name = "PuiseuxExpansion", module = "alkahest.experimental")]
+struct PyPuiseuxExpansion {
+    expr_id: ExprId,
+    term_exponents: Vec<Rational>,
+    term_coeffs: Vec<ExprId>,
+    remainder: Rational,
+    ramification: u64,
+    rungs: usize,
+    conclusive_rungs: usize,
+    worst_margin: f64,
+    power_check_passed: bool,
+    pool: Py<PyExprPool>,
+}
+
+#[pymethods]
+impl PyPuiseuxExpansion {
+    /// The expansion as one :class:`~alkahest.Expr`:
+    /// ``Σ cₖ·h^eₖ + O(h^order)`` with ``h = var - point``.
+    #[getter]
+    fn expr(&self, py: Python<'_>) -> PyExpr {
+        PyExpr {
+            id: self.expr_id,
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
+    /// The ramification index ``e``: every exponent has denominator dividing
+    /// it. ``1`` means the expansion is an ordinary Laurent series.
+    ///
+    /// Computed from the exponents that came out, never read off the input:
+    /// ``sqrt(x**2 + x**3)`` contains a square root and has ramification 1.
+    #[getter]
+    fn ramification(&self) -> u64 {
+        self.ramification
+    }
+
+    /// ``(exponent, coefficient)`` pairs, ascending in exponent. Exponents are
+    /// exact Python ``int`` / :class:`fractions.Fraction`; coefficients are
+    /// :class:`~alkahest.Expr`.
+    #[getter]
+    fn terms(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let out = PyList::empty_bound(py);
+        for (e, c) in self.term_exponents.iter().zip(self.term_coeffs.iter()) {
+            let pair = PyTuple::new_bound(
+                py,
+                [
+                    rational_to_py(py, e)?,
+                    PyExpr {
+                        id: *c,
+                        pool: self.pool.clone_ref(py),
+                    }
+                    .into_py(py),
+                ],
+            );
+            out.append(pair)?;
+        }
+        Ok(out.into_py(py))
+    }
+
+    /// The leading exponent, or ``None`` when the expansion is zero to the
+    /// requested order.
+    #[getter]
+    fn valuation(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+        match self.term_exponents.first() {
+            Some(e) => Ok(Some(rational_to_py(py, e)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// The exclusive truncation exponent: every omitted term has an exponent at
+    /// least this large, so the remainder really is ``O(h^this)``.
+    #[getter]
+    fn remainder_order(&self, py: Python<'_>) -> PyResult<PyObject> {
+        rational_to_py(py, &self.remainder)
+    }
+
+    /// What was checked before this expansion was released.
+    ///
+    /// * ``rungs`` — truncations of the series whose residual decay was tested
+    ///   (one per prefix, per parameter assignment);
+    /// * ``conclusive_rungs`` — how many produced a *measured* decay exponent
+    ///   rather than a residual sitting at the floating-point noise floor.
+    ///   Always at least 1: an expansion whose rate was never measured is not
+    ///   returned;
+    /// * ``worst_margin`` — the tightest ``observed − claimed`` decay exponent
+    ///   over those rungs;
+    /// * ``power_check_passed`` — whether the exact ``S**e`` versus ``f**e``
+    ///   comparison applied and agreed. ``False`` means it did not apply, never
+    ///   that it disagreed: a disagreement is a refusal.
+    #[getter]
+    fn evidence(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let d = PyDict::new_bound(py);
+        d.set_item("rungs", self.rungs)?;
+        d.set_item("conclusive_rungs", self.conclusive_rungs)?;
+        d.set_item("worst_margin", self.worst_margin)?;
+        d.set_item("power_check_passed", self.power_check_passed)?;
+        Ok(d.into_py(py))
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> String {
+        let pool = self.pool.borrow(py);
+        format!(
+            "PuiseuxExpansion({}, ramification={})",
+            pool.inner.display(self.expr_id),
+            self.ramification
+        )
+    }
+}
+
+/// ``experimental.puiseux_series(expr, var, point, order) -> PuiseuxExpansion``
+///
+/// Puiseux expansion — a truncated series in **fractional** powers of
+/// ``h = var - point``. This is the sibling of :func:`alkahest.series` for the
+/// expansions ``Series`` has no representation for: ``sqrt(x)`` has valuation
+/// ``1/2``, and :func:`alkahest.series` refuses it with ``E-SERIES-004``.
+///
+/// Every term with exponent ``< order`` is present and the remainder is
+/// ``O(h**order)``.
+///
+/// **Every returned expansion has been verified**, numerically at several
+/// points approaching *point* and — where the shape allows it — exactly, by
+/// raising the series to the ramification index and comparing against an
+/// independently computed expansion of the same power. An expansion that could
+/// not be confirmed raises :exc:`alkahest.SeriesError` with code
+/// ``E-SERIES-006`` rather than being returned with a caveat.
+///
+/// Refuses, with ``E-SERIES-005``:
+///
+/// * ``log(x)``, ``sqrt(x)*log(x)`` — a logarithm is not a Puiseux series;
+///   ``sqrt(x)*log(x)`` needs a Puiseux–log (transseries) representation this
+///   engine does not have, and truncating it to ``x**(1/2)`` would be a wrong
+///   answer rather than a coarse one;
+/// * ``exp(1/x)``, ``sin(1/x)`` — essential singularities;
+/// * a ramification index past the largest one an expansion can be *checked*
+///   at (see ``alkahest_cas::experimental::MAX_RAMIFICATION``).
+///
+/// Example::
+///
+///     >>> from alkahest import ExprPool, sin, sqrt
+///     >>> from alkahest.experimental import puiseux_series
+///     >>> pool = ExprPool()
+///     >>> x = pool.symbol("x")
+///     >>> px = puiseux_series(sqrt(sin(x)), x, pool.integer(0), 5)
+///     >>> px.ramification
+///     2
+///     >>> [(str(e), str(c)) for e, c in px.terms]
+///     [('1/2', '1'), ('5/2', '-1/12'), ('9/2', '1/1440')]
+///     >>> str(px.expr)   # doctest: +SKIP
+///     '((1 * x^(1/2)) + O(x^5) + (-1/12 * x^(5/2)) + (1/1440 * x^(9/2)))'
+///
+/// .. warning::
+///
+///    ``Expr.__pow__`` coerces its exponent through ``f64``, so
+///    ``x ** Fraction(1, 3)`` is **not** ``x**(1/3)`` — it is the exact binary
+///    rational ``6004799503160661/18014398509481984``, and this function
+///    refuses it (``E-SERIES-005``, ramification past the verifiable range)
+///    rather than rounding it to the fraction you probably meant. Dyadic
+///    exponents such as ``Fraction(3, 2)`` *are* exact through ``f64`` and work.
+///    For an exact non-dyadic exponent build the power node directly::
+///
+///        cube_root = sin(x).pow_expr(pool.rational(1, 3))
+///        px = puiseux_series(cube_root, x, pool.integer(0), 5)
+///        # px.ramification == 3, terms at 1/3, 7/3, 13/3
+#[pyfunction]
+#[pyo3(name = "puiseux_series")]
+fn py_puiseux_series(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    var: PyRef<PyExpr>,
+    point: &Bound<'_, PyAny>,
+    order: u32,
+) -> PyResult<PyPuiseuxExpansion> {
+    let pool_py = expr.pool.clone_ref(py);
+    let point_id = coerce_substituent(&pool_py, point, py)?;
+    let px = {
+        let pool_ref = pool_py.borrow(py);
+        guard_depth(&pool_ref.inner, expr.id)?;
+        checked_order("puiseux order", order as usize)?;
+        // GIL released for the core call, like `series`: the expander honours
+        // `Budget`, and a `request_cancel()` from another Python thread cannot
+        // reach it while this one holds the GIL.
+        let (id, var_id, pool) = (expr.id, var.id, &pool_ref.inner);
+        py.allow_threads(|| core_puiseux_series(id, var_id, point_id, order, pool))
+            .map_err(puiseux_error_to_py)?
+    };
+    let ev = px.evidence();
+    Ok(PyPuiseuxExpansion {
+        expr_id: px.expr(),
+        term_exponents: px.terms().iter().map(|(e, _)| e.clone()).collect(),
+        term_coeffs: px.terms().iter().map(|(_, c)| *c).collect(),
+        remainder: px.remainder_order().clone(),
+        ramification: px.ramification(),
+        rungs: ev.rungs,
+        conclusive_rungs: ev.conclusive_rungs,
+        worst_margin: ev.worst_margin,
+        power_check_passed: ev.power_check_passed,
+        pool: pool_py,
+    })
 }
 
 /// `experimental.series_solve(x, p, q, r, x0, order)` — power-series / Frobenius
@@ -16739,6 +16967,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_verify_wz_pair, m)?)?;
     // P1 item 10 — asymptotic expansion at scale
     m.add_class::<PyAsymptoticReport>()?;
+    m.add_class::<PyPuiseuxExpansion>()?;
     m.add_function(wrap_pyfunction!(py_euler_maclaurin, m)?)?;
     m.add_function(wrap_pyfunction!(py_coefficient_asymptotics, m)?)?;
     // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
@@ -16824,6 +17053,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_apart_side_conditions, m)?)?;
     m.add_function(wrap_pyfunction!(py_multilimit, m)?)?;
     m.add_function(wrap_pyfunction!(py_asymptotic_expand, m)?)?;
+    m.add_function(wrap_pyfunction!(py_puiseux_series, m)?)?;
     m.add_function(wrap_pyfunction!(py_series_solve, m)?)?;
     m.add_class::<PyFps>()?;
     m.add_function(wrap_pyfunction!(atan2, m)?)?;
