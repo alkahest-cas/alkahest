@@ -419,6 +419,48 @@ point (`sqrt(x)`), a logarithmic singularity (`log(x)`) or an essential one
 (`exp(1/x)`) has no Laurent expansion at all and raises `SeriesError` with code
 `E-SERIES-004` — never a `Series` whose coefficients evaluate to `NaN`.
 
+### Fractional exponents: `experimental.puiseux_series`
+
+A **branch point** is the one of those three that has an expansion `series` cannot
+hold. `sqrt(x) = x**(1/2)` is a *Puiseux* series — fractional exponents on a
+`(1/e)Z` lattice — and `Series` is a bare expression with no ramification index to
+report, so it lives in a sibling entry point rather than widening `series`:
+
+```python
+from alkahest.experimental import puiseux_series
+
+px = puiseux_series(sqrt(sin(x)), x, pool.integer(0), 5)
+px.ramification                                   # 2
+px.valuation                                      # Fraction(1, 2)
+[(str(e), str(c)) for e, c in px.terms]
+# [('1/2', '1'), ('5/2', '-1/12'), ('9/2', '1/1440')]
+px.evidence["conclusive_rungs"]                   # >= 1, always
+```
+
+`order` means what it means for `series`: every term with exponent `< order` is
+present and the remainder is `O(h**order)`. For a *pole* it is sharper than
+`series` — `puiseux_series(1/sin(x), x, 0, 4)` keeps `7*x**3/360` where `series`
+stops at `O(x)`. Where both apply the coefficients are identical.
+
+Three things an agent should know:
+
+1. **Every returned expansion has been verified.** The residual of each truncation
+   is measured against the original function at points approaching the expansion
+   point and its decay exponent compared against the first omitted term's; where
+   the shape allows, `S**e` is also compared exactly against `f**e`. `.evidence`
+   reports what ran. One that could not be confirmed raises `E-SERIES-006` rather
+   than being returned with a caveat — treat that as a refusal, not a bug.
+2. **`E-SERIES-005` is a permanent refusal, not a budget one.** `log(x)` and
+   `sqrt(x)*log(x)` need a Puiseux-*log* (transseries) representation that does not
+   exist here — a truncated Puiseux answer for `sqrt(x)*log(x)` would be **wrong**,
+   not coarse. `exp(1/x)` and `sin(1/x)` are essential singularities. A ramification
+   index past what the verifier can discriminate is refused with the same code.
+3. **`x ** Fraction(1, 3)` is not `x**(1/3)`.** `Expr.__pow__` coerces through
+   `f64`, so a non-dyadic fraction arrives as a binary rational with a
+   `2**54` denominator and is refused rather than rounded. Build it exactly with
+   `sin(x).pow_expr(pool.rational(1, 3))`. `Fraction(3, 2)` is dyadic and works
+   as written.
+
 For asymptotics and multivariate limits, see `experimental.asymptotic_expand` and
 `experimental.multilimit`.
 
@@ -1000,7 +1042,8 @@ time-dependent coefficient, or a symbolic non-triangular 3×3, whose spectrum
 needs Cardano radicals that do not verify.
 
 Other experimental exports worth knowing: `asymptotic_expand`, `multilimit`,
-`series_solve`, `residue`, `heaviside`, `dirac_delta`, `Fps`, `to_jax`.
+`puiseux_series`, `series_solve`, `residue`, `heaviside`, `dirac_delta`, `Fps`,
+`to_jax`.
 
 Transform round-trips are supported but not total — inverse Laplace covers
 repeated irreducible quadratic poles and sinh/cosh forms as of 3.8.0. Literal

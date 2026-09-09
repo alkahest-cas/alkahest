@@ -365,6 +365,13 @@ pub mod experimental {
     };
     pub use crate::calculus::fps::{Fps, FpsError};
     pub use crate::calculus::multilimit::{multilimit, MultiLimit, PathWitness};
+    /// Puiseux (fractional-exponent) expansion — the sibling of `series` for
+    /// the half-integer valuations `Series` has no representation for. Every
+    /// returned expansion has been checked before it left; see the module docs.
+    pub use crate::calculus::puiseux::{
+        puiseux_series, Evidence, NotPuiseuxReason, PuiseuxError, PuiseuxExpansion,
+        UnverifiedReason, MAX_RAMIFICATION,
+    };
     pub use crate::deriv::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
     pub use crate::eval::{
         eval_complex_f64, eval_exact_rational, eval_f64, eval_interval, evaluate, ComplexF64,
