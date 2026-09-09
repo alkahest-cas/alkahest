@@ -248,12 +248,18 @@ impl ArbBall {
     /// (`cosh([5.2, 9.2])`, `log([1/2, 2])`), and covers nothing at all for a
     /// ball centred on zero.
     ///
-    /// Eight ulps of `|mid| + rad` dominates every one of those steps with room
-    /// to spare — it is the wider of the two independent bounds derived for
-    /// this (four ulps also suffices), and a rounding term is the one place to
-    /// prefer the looser constant. It is still 10³⁴ below `f64` resolution at
-    /// the default 128 bits, and it is a superset of the `2^{-(prec-2)}`
-    /// convention [`crate::validated::inflate`] uses.
+    /// Four ulps of `|mid| + rad` dominates every one of those steps with room
+    /// to spare: the requirement is ~1 ulp (half for `mid`, half for `rad`,
+    /// each accumulated at `prec + 32` and rounded once), so this is 4×
+    /// margin. It is still 10³⁴ below `f64` resolution at the default 128
+    /// bits, and it is exactly the `2^{-(prec-2)}` convention
+    /// [`crate::validated::inflate`] uses.
+    ///
+    /// Eight ulps was tried and reverted. It is also sound, but it widens
+    /// every derived enclosure, and root isolation pays for that in extra
+    /// bisection: `real_roots(x^8 - x - 1)` went 21.4 µs → 29.9 µs against
+    /// 26.0 µs at four, for identical output. The looser constant bought no
+    /// guarantee that four does not already provide.
     fn add_rounding_error(&mut self) {
         if self.mid.is_infinite() || self.mid.is_nan() || self.rad.is_nan() {
             // `mid` is reset too: `∞ ± ∞` and `NaN ± ∞` both have NaN
@@ -269,7 +275,7 @@ impl ArbBall {
             self.prec + 32,
             Float::with_val(self.prec + 32, self.mid.abs_ref()) + &self.rad,
         );
-        scale >>= self.prec.saturating_sub(3);
+        scale >>= self.prec.saturating_sub(2);
         self.rad += &scale;
     }
 }
