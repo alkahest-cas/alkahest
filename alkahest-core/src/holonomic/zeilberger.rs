@@ -34,9 +34,11 @@
 //! **[`super::boundary::boundary_status`] decides it** over a stated summation
 //! range, three-valued: proved to vanish, proved nonzero (with the
 //! inhomogeneity `b(n)` explicit), or undecided — in which case nothing about
-//! the sum may be claimed. [`boundary_term`] still returns `G(n,k)` for a caller
-//! who would rather discharge the hypothesis by hand, and
-//! [`boundary_side_condition`] states it in words.
+//! the sum may be claimed. [`super::boundary::boundary_verdict`] returns the
+//! same verdict with the integers `n` it is a theorem on, which a declared range
+//! that is empty at small `n` makes a real restriction. [`boundary_term`] still
+//! returns `G(n,k)` for a caller who would rather discharge the hypothesis by
+//! hand, and [`boundary_side_condition`] states it in words.
 //!
 //! # Method
 //!

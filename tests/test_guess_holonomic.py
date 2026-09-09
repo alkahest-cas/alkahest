@@ -12,6 +12,7 @@ give me enough terms" comes back as a refusal instead of being laundered into
 
 import decimal
 import doctest
+import math
 from fractions import Fraction
 
 import alkahest as ak
@@ -95,7 +96,10 @@ def test_surplus_is_reported_and_is_the_number_that_justifies_the_fit():
         "surplus_terms": 14,
         "min_surplus": 6,
         "dimension": 1,
+        "singular_indices": [],
         "untested_candidates": 0,
+        "status": "confirmed",
+        "means": ak.GUESS_STATUS_MEANINGS["confirmed"],
         "confirmed": True,
     }
 
@@ -359,3 +363,290 @@ def test_module_docstrings_have_runnable_doctests():
         optionflags=doctest.ELLIPSIS | doctest.IGNORE_EXCEPTION_DETAIL,
     )
     assert failures == 0
+
+
+# ---------------------------------------------------------------------------
+# Corrupted data: the fit that holds on the terms and is not the recurrence
+# ---------------------------------------------------------------------------
+
+
+def _at(poly, index):
+    """``p(index)`` for an ascending integer coefficient tuple."""
+    return sum(c * index**j for j, c in enumerate(poly))
+
+
+def _motzkin(count):
+    """The first *count* Motzkin numbers, from their own recurrence."""
+    terms = [1, 1]
+    while len(terms) < count:
+        i = len(terms) - 1
+        terms.append(((2 * i + 3) * terms[-1] + 3 * i * terms[-2]) // (i + 3))
+    return terms
+
+
+def test_a_clean_sequence_has_no_singular_index_and_stays_confirmed():
+    """The control the corrupted cases are read against.
+
+    Motzkin's own leading coefficient is ``p_J(n) = n + 4``, whose only root is
+    ``−4`` — outside the fitted range, so nothing is reported and the verdict
+    is unchanged by any of this.
+    """
+    guess = ak.guess_holonomic(_motzkin(71))
+    assert guess.coeffs[-1] == (4, 1), "p_J(n) = n + 4"
+    assert guess.singular_indices == ()
+    assert guess.status == "confirmed"
+    assert guess.confirmed is True
+
+
+def test_one_corrupted_term_is_reported_as_singular_and_never_confirmed():
+    """A single typo is absorbed into three roots of the leading coefficient.
+
+    At the default ``max_degree`` the fit multiplies the true operator by the
+    cubic vanishing at exactly the three indices whose equations the typo
+    breaks. Everything a caller reads to judge a fit looked perfect —
+    ``dimension`` 1, 55 surplus equations, no untested candidates — and the
+    relation really does hold on the terms supplied. It is simply not Motzkin's
+    recurrence, and the roots inside the data are the only tell.
+    """
+    spoiled = _motzkin(71)
+    spoiled[30] += 1
+
+    guess = ak.guess_holonomic(spoiled)
+    assert guess is not None
+    assert guess.singular_indices == (28, 29, 30)
+    assert guess.status == "singular"
+    assert guess.confirmed is None, "never a bare True on corrupted data"
+    # The evidence that used to be the whole story is still exactly as strong.
+    assert guess.dimension == 1
+    assert guess.surplus_terms == 55
+    assert guess.untested_candidates == 0
+    assert guess.holds_for(spoiled), "the relation does hold on what it was shown"
+    # It is the true operator multiplied by that cubic, so it also holds on the
+    # *clean* sequence — which is precisely why no re-check can catch this and
+    # why the roots have to be reported. What it does not do is determine the
+    # sequence at 28, 29 and 30, where every coefficient vanishes at once.
+    assert guess.holds_for(_motzkin(71))
+    for index in guess.singular_indices:
+        assert all(_at(poly, index) == 0 for poly in guess.coeffs), (
+            f"every coefficient vanishes at n = {index}, so the equation there "
+            "is 0 = 0 and constrained nothing"
+        )
+
+
+def test_two_corrupted_terms_are_reported_as_six_roots():
+    """Two typos need ``max_degree=8``, and produce two triples of roots.
+
+    Same mechanism one degree up: a sextic factor vanishing at the six indices
+    the two wrong terms break. The count of roots scales with the corruption,
+    which is what makes the field usable as a diagnostic rather than a flag.
+    """
+    spoiled = _motzkin(71)
+    spoiled[30] += 1
+    spoiled[50] += 1
+
+    guess = ak.guess_holonomic(spoiled, 4, 8)
+    assert guess.singular_indices == (28, 29, 30, 48, 49, 50)
+    assert guess.status == "singular"
+    assert guess.confirmed is None
+
+
+def test_the_evidence_dict_carries_the_verdict_and_the_roots():
+    """``evidence()`` is what a research loop logs, so it must carry both."""
+    spoiled = _motzkin(71)
+    spoiled[30] += 1
+    evidence = ak.guess_holonomic(spoiled).evidence()
+
+    assert evidence["singular_indices"] == [28, 29, 30]
+    assert evidence["status"] == "singular"
+    assert evidence["confirmed"] is None
+    assert "singular" in evidence["means"]
+
+
+def test_the_status_vocabulary_is_closed_and_glossed():
+    """Every status is nameable and has a meaning, as for ``NoveltyVerdict``."""
+    assert set(ak.GUESS_STATUSES) == set(ak.GUESS_STATUS_MEANINGS)
+    for name in ("GUESS_STATUSES", "GUESS_STATUS_MEANINGS"):
+        assert name in ak.__all__
+
+    spoiled = _motzkin(71)
+    spoiled[30] += 1
+    for guess in (ak.guess_holonomic(_motzkin(71)), ak.guess_holonomic(spoiled)):
+        assert guess.status in ak.GUESS_STATUSES
+        assert guess.means == ak.GUESS_STATUS_MEANINGS[guess.status]
+
+
+def test_a_corrupted_fit_says_so_in_its_repr():
+    """The one-line form a loop prints must not read as a clean answer."""
+    spoiled = _motzkin(71)
+    spoiled[30] += 1
+    text = repr(ak.guess_holonomic(spoiled))
+    assert "singular_indices=[28, 29, 30]" in text
+    assert "status='singular'" in text
+    assert "confirmed=None" in text
+
+
+# ---------------------------------------------------------------------------
+# The guard still refuses everything it was built to refuse
+# ---------------------------------------------------------------------------
+
+
+def _partitions(count):
+    """``p(n)``, by Euler's pentagonal-number recurrence. Not P-recursive."""
+    values = [1]
+    for n in range(1, count):
+        total = 0
+        k = 1
+        while True:
+            for pentagonal in ((3 * k * k - k) // 2, (3 * k * k + k) // 2):
+                if pentagonal > n:
+                    break
+                total += (-1) ** (k + 1) * values[n - pentagonal]
+            if (3 * k * k - k) // 2 > n:
+                break
+            k += 1
+        values.append(total)
+    return values
+
+
+def _bell(count):
+    """Bell numbers off the Bell triangle. Not P-recursive."""
+    row = [1]
+    values = [1]
+    for _ in range(count - 1):
+        nxt = [row[-1]]
+        for value in row:
+            nxt.append(nxt[-1] + value)
+        row = nxt
+        values.append(row[0])
+    return values
+
+
+def _divisor(count, power):
+    """``σ(n)`` for *power* 1 and ``τ(n)`` for *power* 0, from ``n = 1``."""
+    return [sum(d**power for d in range(1, n + 1) if n % d == 0) for n in range(1, count + 1)]
+
+
+def _digits_of_pi(count):
+    """Decimal digits of ``π``, by the unbounded spigot. Not P-recursive."""
+    out = []
+    q, r, t, k, m, x = 1, 0, 1, 1, 3, 3
+    while len(out) < count:
+        if 4 * q + r - t < m * t:
+            out.append(m)
+            q, r, t, k, m, x = 10 * q, 10 * (r - m * t), t, k, (10 * (3 * q + r)) // t - 10 * m, x
+        else:
+            q, r, t, k, m, x = (
+                q * k,
+                (2 * q + r) * x,
+                t * x,
+                k + 1,
+                (q * (7 * k + 2) + r * x) // (t * x),
+                x + 2,
+            )
+    return out
+
+
+def _pseudorandom(count):
+    """A fixed pseudo-random sequence: the control with no structure at all."""
+    values = []
+    state = 20260820
+    for _ in range(count):
+        state = (state * 6364136223846793005 + 1442695040888963407) % 2**64
+        values.append(state % 101 - 50)
+    return values
+
+
+def _beatty_sqrt(radicand, count):
+    """``floor(n·√radicand)``, computed exactly. Not P-recursive."""
+    decimal.getcontext().prec = 200
+    root = decimal.Decimal(radicand).sqrt()
+    return [int(decimal.Decimal(n) * root) for n in range(count)]
+
+
+def _digit_sums(count):
+    return [sum(int(c) for c in str(n)) for n in range(count)]
+
+
+NOT_P_RECURSIVE = {
+    "primes": PRIMES,
+    "partitions": _partitions(60),
+    "bell": _bell(60),
+    "sigma": _divisor(60, 1),
+    "tau": _divisor(60, 0),
+    "pi_digits": _digits_of_pi(60),
+    "pseudorandom": _pseudorandom(60),
+    "beatty_phi": _beatty(60),
+    "beatty_sqrt2": _beatty_sqrt(2, 60),
+    "digit_sums": _digit_sums(60),
+}
+
+
+@pytest.mark.parametrize("name", sorted(NOT_P_RECURSIVE))
+def test_ten_non_p_recursive_sequences_still_come_back_none(name):
+    """The guard is real in the direction it was designed for, and stays real.
+
+    Reporting singular indices and returning an underdetermined fit both loosen
+    what comes *back*; neither may loosen what gets returned at all. Ten
+    sequences that are not P-recursive — none of which the literature gives a
+    P-recursive relation — must still answer ``None`` after a full sweep, not a
+    fit with a caveat attached.
+    """
+    assert ak.guess_holonomic(NOT_P_RECURSIVE[name]) is None
+
+
+def test_too_few_terms_still_refuses_and_names_the_shortfall():
+    """``E-HOLO-005`` is untouched: undecided is still not a negative."""
+    with pytest.raises(ak.HolonomicError) as excinfo:
+        ak.guess_holonomic(MOTZKIN[:7])
+    assert excinfo.value.code == "E-HOLO-005"
+    assert "7 terms are not enough" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# dimension > 1 returns the solution space instead of refusing
+# ---------------------------------------------------------------------------
+
+
+def _a277060(count):
+    """OEIS A277060, ``a(n) = (1/2)·Σ_k (C(n,k)·C(n+k,k+1))²``."""
+    return [
+        sum((math.comb(n, k) * math.comb(n + k, k + 1)) ** 2 for k in range(n + 1)) // 2
+        for n in range(count)
+    ]
+
+
+def test_a_wider_probe_than_the_annihilator_returns_the_basis():
+    """A277060: ``dimension`` 2 is information, and used to be a dead end.
+
+    The probe that succeeds first is wider than the sequence's annihilator, so
+    the terms admit two independent relations of that shape. Refusing made the
+    whole ``(order, degree)`` cell unusable and closed a sequence that
+    ``zeilberger`` decides immediately; the space is returned instead, and the
+    verdict says the terms did not single a member of it out.
+    """
+    terms = _a277060(80)
+    guess = ak.guess_holonomic(terms, 4, 6)
+
+    assert guess is not None, "used to raise E-HOLO-005"
+    assert guess.dimension == 2
+    assert len(guess.basis) == 2
+    assert guess.basis[0] == guess.coeffs
+    assert guess.status == "underdetermined"
+    assert guess.confirmed is None
+
+    # Every element of the basis is a relation on the data, which is the whole
+    # reason returning it is better than refusing.
+    for vector in guess.basis:
+        member = ak.GuessedRecurrence(
+            order=guess.order,
+            degree=guess.degree,
+            start=guess.start,
+            coeffs=vector,
+            n_terms=guess.n_terms,
+            n_equations=guess.n_equations,
+            rank=guess.equations_used,
+            dimension=1,
+            min_surplus=guess.min_surplus,
+            untested=guess.untested_candidates,
+        )
+        assert member.holds_for(terms)

@@ -69,6 +69,9 @@
 //! ```
 
 pub mod bounds;
+/// Directed-rounding interval arithmetic over the extended reals — the
+/// last-resort range bound for one panel of `bounds::verified_integral`.
+mod interval;
 pub mod taylor;
 
 use crate::ball::ArbBall;

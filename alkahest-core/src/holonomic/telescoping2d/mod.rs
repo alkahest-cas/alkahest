@@ -249,6 +249,7 @@ pub fn telescope_md(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::errors::AlkahestError as _;
     use crate::kernel::{Domain, ExprId, ExprPool};
     use rug::ops::Pow as _;
     use rug::Integer;
@@ -685,6 +686,45 @@ mod tests {
         let f = pool.func("binomial", vec![n, k]);
         let result = telescope_md(f, n, &[k], &pool).expect("certificate for C(n,k)");
         assert_eq!(result.certs.len(), 1);
+    }
+
+    /// The exact-rational elimination used to `abort()` the whole process when
+    /// it ran out of memory — `GNU MP: Cannot allocate memory (size=8)`, no
+    /// exception, no `BudgetExceededError`, nothing an `except` clause could
+    /// catch (2026-08-19 issue #5). `Budget`'s `max_bytes` ceiling turns that
+    /// into an ordinary coded error, checked *before* the allocation GMP has
+    /// no failure path for.
+    #[test]
+    fn a_memory_ceiling_refuses_instead_of_aborting_the_process() {
+        let pool = ExprPool::new();
+        let n = pool.symbol("n", Domain::Real);
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let f = pool.mul(vec![
+            pool.func("binomial", vec![n, x]),
+            pool.func("binomial", vec![x, y]),
+        ]);
+        let _guard = crate::budget::enter_with_memory(crate::budget::Budget::new(), Some(1024));
+        let err = search::telescope_md_search(f, n, &[x, y], &pool, &TelescopingMdOpts::default())
+            .expect_err("1 KiB of exact-rational memory cannot cover this search");
+        assert!(
+            matches!(err, Telescoping2dError::SearchExhausted(_)),
+            "{err:?}"
+        );
+        let trip = crate::budget::take_trip().expect("the memory trip must be recorded");
+        assert_eq!(trip.code(), "E-BUDGET-004");
+    }
+
+    /// A generous ceiling must not change the answer — the point is a ceiling,
+    /// not a refusal.
+    #[test]
+    fn a_generous_memory_ceiling_still_returns_the_certificate() {
+        let pool = ExprPool::new();
+        let (n, k, _) = njk(&pool);
+        let f = pool.func("binomial", vec![n, k]);
+        let _guard = crate::budget::enter_with_memory(crate::budget::Budget::new(), Some(1 << 40));
+        let res = telescope_md(f, n, &[k], &pool).expect("a 1 TiB ceiling cannot refuse this");
+        assert!(res.order >= 1);
     }
 
     /// Regression test for the two resource ceilings in `search`

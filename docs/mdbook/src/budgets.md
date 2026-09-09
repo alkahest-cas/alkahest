@@ -23,9 +23,9 @@ with ak.context(pool=p, budget=ak.Budget(wall_ms=50, max_steps=10_000, seed=7)):
 
 ## Model
 
-A `Budget` is an immutable `(wall_ms, max_steps, seed)` triple. Every field is optional;
-`Budget()` never trips a check on its own — only `alkahest.request_cancel()` can stop a
-call entered with a bare `Budget()`.
+A `Budget` is an immutable `(wall_ms, max_steps, seed, max_bytes)` tuple. Every field is
+optional; `Budget()` never trips a check on its own — only `alkahest.request_cancel()`
+can stop a call entered with a bare `Budget()`.
 
 `context(budget=...)` pushes the budget into a **thread-local** stack on the Rust side
 (`alkahest_cas::budget`) for the scope of the `with` block, and pops it on exit —
@@ -337,6 +337,63 @@ The `jit` (LLVM) feature leaks a whole LLVM `Context` per compile — a true lea
 pool to drop, on the error paths as well as the success path. Cranelift (the default
 wheel's JIT) is unaffected. Do not compile in a loop under a `+jit` / `+full` build.
 
+## Memory: `max_bytes`, and why an OOM used to kill the process
+
+`wall_ms` bounds how long a call may run. Nothing bounded how much memory it could ask
+for — and the answer to *that* question was not an exception:
+
+```
+GNU MP: Cannot allocate memory (size=8)
+timeout: the monitored command dumped core          # SIGABRT, exit 134
+```
+
+GMP's reaction to a failed allocation is to print that line and call `abort()`. The Rust
+allocator's is `memory allocation of N bytes failed` and the same `abort()`. Neither is
+catchable, so an exact-rational solve that outgrew the machine took the whole
+interpreter with it — and an unattended loop lost every result it was holding, not just
+the offending call. It was reachable from *default arguments* (`telescope_md` on the
+`m = 4` multinomial).
+
+This cannot be fixed inside the allocator. GMP's contract for a replacement allocation
+function forbids returning `NULL` — the library has no failure path to take — and a Rust
+`panic!` may not cross a C frame. So Alkahest **counts** GMP's allocations (a wrapper
+that delegates to GMP's own functions and does nothing else) and **refuses at its own
+cooperative checkpoints**, before the allocation that would have died:
+
+```python
+with ak.context(budget=ak.Budget(max_bytes=512 * 1024 * 1024)):
+    try:
+        telescope_md(term, n, xs)
+    except ak.BudgetExceededError as e:
+        assert e.code == "E-BUDGET-004"
+```
+
+`max_bytes` counts bytes of GMP (exact integer/rational) memory held live *by the
+guarded block* — the total now, less the total when the block was entered. It is the
+missing size budget: the engines' existing ceilings bound the *shape* of a linear system
+(how many unknowns), and it is the *size of its numbers* that exhausts memory.
+
+### The address-space guard (`E-BUDGET-005`), which needs no budget at all
+
+If the process runs under a finite `RLIMIT_AS` — `ulimit -v`, a container memory limit,
+a batch scheduler — Alkahest refuses when it climbs to within a reserve of that limit,
+**whether or not a budget is active**. The operator already said how much the process
+may have; stopping inside that number is strictly better than dying at it, and it is
+what makes the default-arguments case survivable. With no limit set the guard is inert
+and behaviour is unchanged.
+
+The reserve is a flat floor (32 MiB, up to 256 MiB for large limits) widened by the
+address-space growth observed between the last two probes, so it tightens exactly when a
+workload accelerates.
+
+### What this does not do
+
+The guard is checkpoint-granular. A single allocation large enough to cross the whole
+reserve between two consecutive checkpoints still aborts — nothing short of a fallible
+allocator can prevent that, and GMP does not have one. Address-space *usage* is only
+observable on Linux (`/proc/self/statm`); elsewhere the guard degrades to `max_bytes`
+alone. And `max_bytes` counts GMP memory, not Rust-side allocations.
+
 ## Error codes
 
 | Code | Cause |
@@ -344,8 +401,10 @@ wheel's JIT) is unaffected. Do not compile in a loop under a `+jit` / `+full` bu
 | `E-BUDGET-001` | The active budget's wall-clock limit elapsed |
 | `E-BUDGET-002` | The active budget's step counter exceeded `max_steps` |
 | `E-BUDGET-003` | `request_cancel()` was called and not yet cleared |
+| `E-BUDGET-004` | The active budget's `max_bytes` ceiling was reached |
+| `E-BUDGET-005` | The process is about to exhaust its address-space limit |
 
-All three are `Cause::Resource` in the Rust registry (`alkahest_cas::errors::codes`) —
+All five are `Cause::Resource` in the Rust registry (`alkahest_cas::errors::codes`) —
 a budget/cancellation trip is an environment/policy limit, not a statement about the
 mathematics, so it is never conflated with e.g. `IntegrationError::NonElementary` (a
 proof that no elementary antiderivative exists). `alkahest.integrate` and

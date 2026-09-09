@@ -600,6 +600,66 @@ mod tests {
         pool.func("qbinomial", vec![top, bot])
     }
 
+    /// `Σ_k [2n; k]_q` — the summand issue #10 (2026-08-19) was logged for.
+    ///
+    /// Class-legal and cheap to *state*; before this module had any ceiling it
+    /// ran for eight minutes at the documented defaults with no output and had
+    /// to be killed, while its near-twin `Σ_k [n; k]_q` decides in half a
+    /// second. The cost is fragile in the *input*, not in `max_order` /
+    /// `max_degree`, which is why a ceiling on the shape of the search is not
+    /// enough on its own.
+    fn q_central_2n(pool: &ExprPool, n: ExprId, k: ExprId) -> ExprId {
+        qbinom(pool, pool.mul(vec![pool.integer(2_i32), n]), k)
+    }
+
+    #[test]
+    fn q_zeilberger_honours_a_wall_budget() {
+        let pool = ExprPool::new();
+        let (q, n, k) = syms(&pool);
+        let term = q_central_2n(&pool, n, k);
+        let opts = QZeilbergerOpts::default();
+        let _guard = crate::budget::enter(
+            crate::budget::Budget::new().with_wall(std::time::Duration::from_millis(300)),
+        );
+        let start = std::time::Instant::now();
+        let err = q_zeilberger(term, q, n, k, &pool, &opts)
+            .expect_err("a 300 ms budget cannot cover this search");
+        // Loose by two orders of magnitude: the point is that the call
+        // *returns*, where before it consulted no budget at all.
+        assert!(start.elapsed().as_secs() < 60, "budget was not consulted");
+        assert!(
+            matches!(err, QHolonomicError::SearchExhausted(_)),
+            "{err:?}"
+        );
+        let trip = crate::budget::take_trip().expect("the budget trip must be recorded");
+        assert_eq!(trip.code(), "E-BUDGET-001");
+    }
+
+    #[test]
+    fn q_zeilberger_refuses_at_a_resource_ceiling_rather_than_running_unbounded() {
+        let pool = ExprPool::new();
+        let (q, n, k) = syms(&pool);
+        let term = q_central_2n(&pool, n, k);
+        // The cheapest bounds the engine accepts above the trivial ones.
+        let opts = QZeilbergerOpts {
+            max_order: 2,
+            max_degree: 2,
+            ..QZeilbergerOpts::default()
+        };
+        let err = q_zeilberger(term, q, n, k, &pool, &opts)
+            .expect_err("no q-recurrence of this shape is found for this summand");
+        let QHolonomicError::SearchExhausted(msg) = &err else {
+            panic!("expected SearchExhausted, got {err:?}");
+        };
+        assert!(
+            msg.contains("resource ceilings"),
+            "a ceiling refusal must say so — a caller that reads this as 'the grid was covered \
+             and nothing exists' records a false negative. Got: {msg}"
+        );
+        // No budget was active, so this is the module's own ceiling, not a trip.
+        assert_eq!(crate::budget::take_trip(), None);
+    }
+
     /// `(q;q)_m` at an integer `m ≥ 0`, built straight from the definition —
     /// the independent yardstick the recurrence is checked against.
     fn q_poch_int(m: i64) -> Rn {

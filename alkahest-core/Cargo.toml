@@ -65,6 +65,10 @@ libm = "0.2"
 # force-cross lets gmp-mpfr-sys build when the Rust host and target triples
 # differ (e.g. x86_64-pc-windows-msvc host → x86_64-pc-windows-gnu target).
 gmp-mpfr-sys = { version = "1", features = ["force-cross"] }
+# getrlimit(RLIMIT_AS)/sysconf for the address-space guard in `budget::memory`,
+# which refuses before GMP's uncatchable out-of-memory abort. Already in the
+# lock file transitively via gmp-mpfr-sys.
+libc = "0.2"
 egglog  = { version = "0.4", optional = true }
 inkwell = { version = "0.9", features = ["llvm15-0-prefer-dynamic"], optional = true }
 cranelift-jit      = { version = "0.132", optional = true }
