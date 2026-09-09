@@ -680,9 +680,16 @@ def test_a_sample_outside_the_domain_is_skipped_not_counted_against_the_claim():
     ``log(x - 5)`` is undefined at every default sample, so nothing evaluates
     and the honest answer is ``inconclusive`` — never ``failed``, and never a
     ``numeric_ok`` that silently rested on zero points.
+
+    The residual has to *survive* simplification for the numeric path to be
+    reached at all.  ``log(x-5)`` against ``log(x-5) + 1`` no longer does: the
+    two logs cancel and the residual is the constant ``-1``, which is defined
+    everywhere and is correctly reported ``failed``.  Doubling instead of
+    offsetting leaves ``-log(x - 5)`` standing, which is what puts the domain
+    on the numeric sampler rather than on the simplifier.
     """
     graph = ClaimGraph()
-    graph.add(_identity_claim("log(x-5) = log(x-5) + 1", "log(x - 5)", "log(x - 5) + 1"))
+    graph.add(_identity_claim("log(x-5) = 2*log(x-5)", "log(x - 5)", "2 * log(x - 5)"))
     report = graph.verify()
     assert report.outcomes[0].outcome == "inconclusive"
     assert "no numeric sample" in report.outcomes[0].detail
