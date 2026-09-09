@@ -2,6 +2,173 @@
 
 ## Unreleased
 
+- **An enclosure that could not bound a value reported that it *excluded* it.**
+  `ArbBall` could return a NaN-radius ball whose `contains` answers `false` for
+  every real number: `interval_eval((x^-3)^2, {x: ArbBall(-2.325, 1.0)})` gave
+  `ArbBall(0.0 ± NaN)`, and `contains(0.006331864446927654)` was `false` even
+  though `x^-6` on `|x| ∈ [1.325, 3.325]` ranges over
+  `[7.400313e-4, 0.1848012]` and the queried value is the image of the box
+  midpoint. The cause was `0 · ∞` in the radius of a product with an
+  indeterminate operand. This is the failure the rigorous layer exists to
+  prevent, and it is *directed*: `contains` is the documented way to
+  cross-check a symbolic identity, so `false` reads as a refutation rather than
+  as "no information". NaN can no longer escape; "no information" is
+  canonically `[0 ± ∞]`, which `contains`/`lo`/`hi` read as the whole real line.
+
+  Two lesser defects in the same layer: `powi` used repeated ball
+  multiplication, so `[-1,1]²` gave `[-2,4]` instead of `[0,1]` and `[2,3]^-6`
+  had no finite enclosure at all (sound, but unusable — now enclosed from the
+  endpoints); and corner-built balls in `Div`/`pow_f`/`exp`/`log` were rounded
+  to nearest with no outward bump, while `add_rounding_error` scaled its bump by
+  `|mid|` alone, which covers nothing for a ball centred on zero. No runtime
+  counterexample was constructed for the latter — it was found by inspection —
+  and all such balls now round outward by 4 ulps of `|mid| + rad`.
+
+  The rest of the layer was audited and held: ~8,000 randomised trials against
+  mpmath at 40–60 dps, `mpmath.quad`, and exact sympy root isolation found no
+  other containment violation. `budget_exhausted=True` still guarantees
+  containment across 955 exhausted results; there is no `f64` fallback anywhere
+  (`sign`, `round`, `arg`, the elliptic family and `atan2` all refuse rather
+  than laundering a non-rigorous value); no false SOS certificate appeared in 15
+  cases, and the Motzkin certificate is a real Reznick multiplier identity that
+  expands to residual 0; and 500 polynomials checked against exact sympy
+  produced no false root verdict and no false sign verdict in 2,000.
+
+- **A certificate proved a recurrence for sums that do not exist.**
+  `zeilberger` issued `boundary="vanishes"` — *"proved: the homogeneous
+  recurrence holds for the sum"* — for `F(n,k) = C(n,k)/(k−3)` over `k = 0..n`.
+  Computed term by term in exact rationals, `S(1) = −5/6` and `S(2) = −7/3`,
+  while `S(3)` does not exist at all because the `k = 3` term divides by zero.
+  At `n = 1` the licensed recurrence reads `4·S(1) − S(2) = 0`; it is `−1`, and
+  solving it for `S(2)` gives `−10/3` against the true `−7/3`. Reproduced for
+  `k−m` with m = 0..7, for `C(n,k)/(n−k)`, and for `C(n,k)/(k(k−2))`.
+
+  The certificate is genuinely valid *as an identity in `Q(n)(k)`* — that is
+  what makes it dangerous. The boundary analysis inspects `G` only at the two
+  endpoints and the range-shift corrections, so a pole of `F` strictly inside
+  the range is invisible to it and does not disturb the identity either; the
+  defect is in the inference from certificate to sum. `summand_pole_inside` now
+  counts orders exactly, with `Value::Pole` split out of `Value::Undecidable` so
+  the refusal rests on positive evidence, and the verdict becomes `Unknown`
+  naming the offending index. All 23 classical verdicts are unchanged.
+
+  Also in this layer: `verify_wz_pair` refuted a true WZ pair (`F = n·k`,
+  `G = k(k−1)/2`, both differences `k`) because `simplify` does not expand
+  products and the comparison was structural — it now escalates to the exact
+  `Q(n)(k)` normal form, which cannot turn a refutation into a spurious
+  acceptance. `sum_definite(r**k, k, 0, n)` with symbolic `r` is now summed
+  rather than refused, with `r ≠ 1` **recorded** as a side condition on the
+  derivation step rather than assumed, and the expression raising `E-EVAL-009`
+  at `r = 1` rather than producing a number.
+
+  Every emitted `ZeilbergerCertificate` was checked against its own defining
+  identity — 11 summands, 30 random non-integer points each at 60 dps, worst
+  relative residual `5.4e-53`. None fails. 1,388 sums, products and recurrences
+  checked against exact oracles produced no wrong answer.
+
+- **A Fourier transform took the wrong square root, on fully literal input.**
+  `try_lorentzian` set `a = numer/2` and verified `C₀ = a²` — a condition `a`
+  and `−a` satisfy alike, while the true pair carries the sign:
+  `F{2a/(a²+4π²x²)} = sgn(a)·e^{−|a||ξ|}`. So `F{−2/(1+4π²x²)}` at `ξ = 0.3`
+  returned `e^{+|ξ|} = +1.3499` against a true `−e^{−|ξ|} =
+  −0.7408182206817178660668738`, confirmed by `quadosc` and by the residue
+  closed form to 25 digits.
+
+  Three more in the same subsystem, each a value where a refusal was owed:
+  `F{e^{+3|x|}}` and `F{θ(x)e^{+3x}}` returned finite answers for divergent
+  integrals; forward Laplace applied the *unilateral* second-shift rule to
+  negative shifts, so `L{θ(t+a)} = e^{as}/s` read `17.0084` at `a = 1.5, s =
+  2.5` where the truth is `1/s = 0.4`, and `L{δ(t+a)}` read `42.52` for a
+  quantity that is exactly `0`; and `L⁻¹{e^{+2s}/(s+1)}` returned
+  `θ(t+2)e^{−2−t}` carrying the *unsatisfiable* condition `−2 ∈ NonNegative`.
+  Relatedly, a symbol declared `Domain::Positive` **refuted** rather than
+  discharged its hypothesis, and `π` was reported as a side condition
+  (`L⁻¹{π/(s²+π²)}` → `π ≠ 0`), noise that hides the real ones.
+
+  All six follow one rule: **a hypothesis and a refutation are different
+  things.** An open condition is recorded and returned; a condition settled the
+  wrong way is a refusal. `Genericity::refuted` now mirrors `holds`, and
+  `Unknown` is never read as a refutation.
+
+  The ℚ(params) decomposition added earlier in this cycle was audited
+  adversarially and came through clean: 23 decompositions — degree caps,
+  parameters in both numerator and denominator, nested parameters, a parameter
+  making a factor vanish identically — all recombine exactly, and every side
+  condition it reports (`ka ≠ ke`, `ω ≠ 0`, `ζ ≠ ±1`, `ω²(1−ζ²) > 0`,
+  `a ≠ 0`, `a − b ≠ 0`) was verified complete by evaluating the answer inside
+  *and* outside the region it claims.
+
+- **Three code generators emitted a different function than the one they were
+  given.** `horner` and `emit_c` both read `UniPoly::coefficients_i64`, whose
+  own documentation says it overflows silently, so `horner((x+1)^80)` at `x = 1`
+  returned `2.12e20` where the answer is `2^80 = 1.2089258196146292e24` —
+  `C(80,40) = 1.0751e23` does not fit in an `i64` — and `(2^70+3)·x²` became
+  `3·x²`, wrapped mod 2^64. `to_stablehlo` lowered any coefficient past `i64` to
+  the constant `0`, emitting valid MLIR for `x·0 + 1` given `2^70·x + 1`, and
+  separately emitted MLIR that does not parse (`dense<1e30>`; MLIR requires a
+  decimal point — confirmed by running `mlir-opt` 15.0.4, which rejects `1e30`,
+  `1e16` and `5e-324` while accepting `1.0e30`). The same class had already been
+  fixed for `PyUniPoly.coefficients`; these callers were missed.
+
+  Underneath them, every f64 evaluator read constants through `rug::to_f64`,
+  which truncates toward zero: `10^30` evaluated to `9.999999999999999e29` and
+  `2/5` to `0.39999999999999997`, where correct rounding gives `1e30` and `0.4`.
+  The emitted C was *right* here — it writes the exact decimal and lets the C
+  compiler round — which is precisely how the pair disagreed. A rational with
+  numerator and denominator both past the f64 range became `NaN` in three paths
+  (`(3·10^400+1)/(2·10^400)` is `1.5`, but `numer.to_f64()/denom.to_f64()` is
+  `inf/inf`), and `emit_c_expr` emitted bare `inf`/`-inf`/`NaN`, none of which
+  is a C identifier, so the output did not compile.
+
+  Two more: `Γ` refused across thirty units of its own domain (`Γ(170) = 169!`
+  is finite in f64, but the Lanczos `t^(x−0.5)·e^{−t}` overflows in the first
+  factor at `x ≈ 142.3`) — an honest refusal, but a false one; and a unary
+  `numeric_f64` kernel answered a binary call, `pool.func("sin",[x,y])`
+  returning `sin(x)`, where the *ball* kernels already declined with a comment
+  explaining why.
+
+  The audit that found these compared **606 expressions × 17 points = 10,421
+  evaluation points bit-exactly** across ten paths, compiled the emitted C with
+  `cc -Wall -Werror` and ran it, and fed the StableHLO through a real MLIR
+  parser. What it did *not* find matters as much: `numpy_eval_par` is
+  bit-identical to `numpy_eval` up to 10⁶ points; Cranelift, the snapshot
+  interpreter and `eval_interp` agree bit for bit; and in all 10,421 points the
+  compiled paths never returned a wrong finite number where the interpreter
+  refused — only `NaN`/`±inf`, a weak refusal. All 50 primitives match their
+  advertised `numeric_f64`/`numeric_ball` flags, with zero wrong reals across 42
+  out-of-domain probes. The LLVM and NVPTX paths were type-checked only; this
+  build has neither.
+
+- **The ODE verifier bound `π` to `1.7`.** `pi` is an ordinary `Symbol` in this
+  crate, so `collect_symbols` picked it up as a free parameter and the numeric
+  gate evaluated candidate solutions with `π = 1.7`, reporting "0 agreeing, 90
+  disagreeing" for correct answers — `dsolve_system` on the companion matrix of
+  `λ³ − 3λ + 1` failed exactly this way. It lived in two files, each with its
+  own `collect_symbols`; the exclusion is now written once in
+  `crate::eval::symbols` and shared by all three gates that need it.
+
+  The same gate sampled symbolic parameters at **positive values only**, so a
+  candidate right for `k > 0` and wrong for `k < 0` certified. Three rows with
+  the `(−,+)`, `(+,−)`, `(−,−)` sign patterns are added, and `numeric_report`
+  now takes the product of `PARAM_SETS × CONST_SETS` rather than pairing by
+  index. The corpus is unchanged at 121/125 solved with an empty per-entry
+  diff — and that is measured rather than assumed to be harmless: with the
+  *negative* rows alone the corpus still solves 121/125, and for `y' = √(k²)·y`
+  the wrong candidate `C1·e^{kx}` is certified by the positive rows alone and
+  refused by all six.
+
+- **The silent-error corpus grew from 261 to 356 cases**, and gained five
+  subsystems that had no coverage at all: `codegen` (10), `ode` (21),
+  `transform` (15), `validated` (18) and `ball` (7). The ODE cases score three
+  distinct claims, because substituting an answer back cannot detect all three
+  kinds of wrong: that the answer solves the equation, that it *spans* the
+  solution space, and that it states the branch condition it depends on. The
+  second is not hypothetical — for `y'' − 2y' + y = 0` the wrong family
+  `C1eˣ + C2eˣ` has residual `8.9e-16`, indistinguishable from correct, and
+  rank 1 instead of 2, which the library's own substitution-based gate is
+  structurally blind to.
+
+
 - **Two limits were outright wrong for a free parameter, and twenty-nine more
   returned values that were not values.** `expansion_to_limit` and gruntz's
   `sign_of_coeff_at_inf` each guessed a positive leading coefficient with
