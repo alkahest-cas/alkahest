@@ -1,6 +1,47 @@
 # Changelog
 
-## Unreleased
+## 3.10.0 — 2026-09-10
+
+- **Series with a fractional valuation are expanded rather than refused.** New
+  `alkahest.experimental.puiseux_series` /
+  `alkahest_cas::experimental::puiseux_series`. `series` refused every
+  expansion whose valuation is not an integer, because `Series` has no
+  representation for one — honest, but the answers are standard:
+
+  | input | before | after |
+  |---|---|---|
+  | `√x` | `E-SERIES-004` | `x^{1/2} + O(x⁵)`, ramification 2 |
+  | `√(sin x)` | `E-SERIES-004` | `x^{1/2} − x^{5/2}/12 + x^{9/2}/1440` |
+  | `(sin x)^{1/3}` | refused | `x^{1/3} − x^{7/3}/18 − x^{13/3}/3240` |
+  | `sin(√x)` | refused | `x^{1/2} − x^{3/2}/6 + x^{5/2}/120 − x^{7/2}/5040` |
+  | `√(x²+x³)` | refused | `x + x²/2 − x³/8 + x⁴/16`, ramification **1** |
+  | `√(t⁻²+t⁻¹)` — `series`' own documented "unreachable" case | `E-SERIES-004` | order 8 in 48 ms |
+
+  Ramification is the lcm of the exponents that come *out*, not read off the
+  input, which is why `√(x²+x³)` reduces to 1. Every one of these agrees with
+  `sympy.series` exactly.
+
+  It is a sibling type, not a wider `Series`: `Series` is
+  `pub struct Series(pub ExprId)` — publicly constructible, so a ramification
+  field is a major semver break — and the internal `LocalExpansion` carries an
+  `i32` valuation that `limit`, `gruntz`, `asymptotic` and `fps` all read, so a
+  rational valuation there would have silently changed *limits*. `series.rs`
+  gets no behaviour change at all, and an integer-exponent expansion returns
+  the identical interned `ExprId` it did before, which is asserted rather than
+  assumed.
+
+  Verification is a **prefix ladder**: a single check against `O(h^order)` is
+  vacuous for a good series — the residual falls under the `f64` floor before
+  it can be measured — so every prefix is fitted against the first omitted
+  term's exponent, with sample points derived from the claimed exponent. Where
+  the shape allows, an exact `S^e` vs `f^e` comparison runs as well. Failure
+  discards the expansion and returns `E-SERIES-006`. A test corrupts an
+  expansion — scaling coefficients, shifting the valuation, dropping a term —
+  and asserts each is rejected, so the ladder is known to be able to fail.
+
+  `log x` and `√x·log x` still refuse with `E-SERIES-005`: those are
+  Puiseux–*log* (transseries), and truncating `√x·log x` to `x^{1/2}` is
+  opposite-sign and unboundedly wrong, not merely coarse.
 
 - **An enclosure that could not bound a value reported that it *excluded* it.**
   `ArbBall` could return a NaN-radius ball whose `contains` answers `false` for
@@ -157,9 +198,9 @@
   the wrong candidate `C1·e^{kx}` is certified by the positive rows alone and
   refused by all six.
 
-- **The silent-error corpus grew from 261 to 356 cases**, and gained five
+- **The silent-error corpus grew from 261 to 361 cases**, and gained five
   subsystems that had no coverage at all: `codegen` (10), `ode` (21),
-  `transform` (15), `validated` (18) and `ball` (7). The ODE cases score three
+  `transform` (15), `validated` (18) and `ball` (7); `series` grew 12 → 27. The ODE cases score three
   distinct claims, because substituting an answer back cannot detect all three
   kinds of wrong: that the answer solves the equation, that it *spans* the
   solution space, and that it states the branch condition it depends on. The
