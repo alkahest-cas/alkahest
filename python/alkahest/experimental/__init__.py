@@ -39,6 +39,17 @@ Calculus / ODE / transform surface:
 - :func:`z_transform` / :func:`inverse_z_transform` (#159)
 - :func:`multilimit` — two-variable limits (#156)
 - :func:`asymptotic_expand` — asymptotic expansion at infinity (#161)
+- :func:`puiseux_series` / :class:`PuiseuxExpansion` — **Puiseux** expansion:
+  a truncated series in *fractional* powers of ``var - point``. The sibling of
+  the stable :func:`alkahest.series` for the half-integer valuations a
+  ``Series`` has no representation for — ``sqrt(x)``, ``sqrt(sin(x))``,
+  ``x**Fraction(1,2)*sin(x)`` — each of which :func:`alkahest.series` refuses
+  with ``E-SERIES-004``. Every returned expansion is **verified** before it is
+  returned (residual decay at several points approaching the expansion point,
+  plus an exact ``S**e == f**e`` comparison where the shape allows one); one
+  that cannot be confirmed raises ``E-SERIES-006`` instead. ``log(x)``,
+  ``sqrt(x)*log(x)`` (a Puiseux-*log* term, not a Puiseux series) and
+  ``exp(1/x)`` refuse with ``E-SERIES-005``
 - :func:`asymptotics_from_recurrence` — Poincaré–Perron growth of a P-recursive
   sequence, with the derived growth rate/exponent kept apart from the fitted
   connection constant (M5)
@@ -177,6 +188,8 @@ from alkahest.alkahest import (
     Fps,
     OdeTrajectory,
     ParallelRischResult,
+    # Puiseux (fractional-exponent) expansion — verified before it is returned
+    PuiseuxExpansion,
     QRootOfUnitySpecialization,
     QZeilbergerCertificate,
     Telescoping2dCertificate,
@@ -200,6 +213,7 @@ from alkahest.alkahest import (
     multilimit,
     ode_integrate_rk4,
     ode_integrate_rk45,
+    puiseux_series,
     q_zeilberger,
     series_solve,
     telescope2d,
@@ -261,6 +275,8 @@ __all__ = [
     # M9 — coefficient fields for elimination
     "ParametricGbPoly",
     "ParametricGroebnerBasis",
+    # Puiseux (fractional-exponent) expansion
+    "PuiseuxExpansion",
     # M4 — root-of-unity specialisation
     "QRootOfUnitySpecialization",
     # M4(b) — q-analogue creative telescoping
@@ -311,6 +327,8 @@ __all__ = [
     "novelty",
     "ode_integrate_rk4",
     "ode_integrate_rk45",
+    # Puiseux (fractional-exponent) expansion
+    "puiseux_series",
     # M4(b) — q-analogue creative telescoping
     "q_zeilberger",
     "qbinomial",

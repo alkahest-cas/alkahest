@@ -1236,6 +1236,19 @@ def series(expr, var, point, order):
     coefficients are ``0**-1`` would report success while evaluating to
     ``NaN``.
 
+    The **branch point** is the one of those three that has an expansion this
+    function cannot hold: ``sqrt(x) = x**(1/2)`` is a Puiseux series, and
+    :func:`alkahest.experimental.puiseux_series` returns it (together with the
+    ramification index, and only after verifying it).  ``Series`` carries no
+    ramification and every consumer of the underlying expansion reads an
+    *integer* valuation, so the fractional case lives in a sibling type rather
+    than widening this one — the refusal here is deliberate, not a gap::
+
+        >>> from alkahest.experimental import puiseux_series
+        >>> px = puiseux_series(sqrt(sin(x)), x, pool.integer(0), 5)  # doctest: +SKIP
+        >>> px.ramification, px.valuation                            # doctest: +SKIP
+        (2, Fraction(1, 2))
+
     Use :meth:`Series.truncated` to get the expansion as an :class:`Expr` with
     the ``O(.)`` term dropped, which is what :func:`eval_expr` and
     :func:`simplify` accept.

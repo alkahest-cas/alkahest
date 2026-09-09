@@ -31,12 +31,19 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-RSOLVE-001 … E-RSOLVE-005 RsolveError (V2-18 difference equations)
     E-DIOPH-001 … E-DIOPH-004 DiophantineError (V2-19)
     E-NT-001 … E-NT-005    NumberTheoryError (V3-1 integer number theory)
-    E-SERIES-001 … E-SERIES-004 SeriesError  (003 = expansion ran past its work
+    E-SERIES-001 … E-SERIES-006 SeriesError  (003 = expansion ran past its work
                                  ceiling / budget before reaching the requested
                                  order; refused rather than returned short.
                                  004 = a coefficient is an indeterminate form,
                                  not a number — a branch point or essential
-                                 singularity at the expansion point)
+                                 singularity at the expansion point.
+                                 005/006 come from experimental.puiseux_series,
+                                 the fractional-exponent sibling of series():
+                                 005 = no Puiseux expansion exists at the point
+                                 (a logarithm, an essential singularity, or a
+                                 ramification index past the verifiable range);
+                                 006 = one was computed and then withheld
+                                 because its verifier could not confirm it)
     E-LIMIT-001 … E-LIMIT-006 LimitError  (006 = the limit turns on the sign of
                                  a free parameter that nothing states; assume
                                  it, or declare the symbol Domain.Positive)

@@ -59,6 +59,22 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // band on `SeriesError::InvalidOrder` alongside E-SERIES-003; see
     // `calculus::series::take_series_refusal` and `SeriesRefusal::cause`.
     ErrorSpec { code: "E-SERIES-004", class: "SeriesRefusal", cause: Cause::Domain,    remediation: Some("the expansion point is a branch point, an essential singularity, or a removable one this engine cannot cancel: cancel the singular factor by hand, expand about a nearby regular point, or use `limit` for the single value you need") },
+    // `calculus::puiseux` — the fractional-exponent expansion `series` refuses with
+    // E-SERIES-004. Same subsystem, same Python exception class: this is the series
+    // engine widened, not a new one, and reusing the prefix keeps a caller's
+    // `except SeriesError` covering both.
+    //
+    // 005: the expression has no Puiseux expansion at the point at all — a logarithm
+    // of something vanishing (`√x·log x` needs a Puiseux-log/transseries type that
+    // does not exist here), an essential singularity, or a ramification index finer
+    // than the returned expansion could be *checked* at.
+    ErrorSpec { code: "E-SERIES-005", class: "PuiseuxError", cause: Cause::Domain,      remediation: Some("a logarithm of a vanishing quantity (`sqrt(x)*log x`) needs a Puiseux-log/transseries type this engine does not have, and an essential singularity has no truncation exponent at all: factor the log term out by hand, or expand about a nearby regular point. A ramification index past the verifiable range is the third reading — a Python `Fraction` exponent reaches the kernel through `f64` and is not the fraction you wrote; build it with `pow_expr(pool.rational(p, q))`") },
+    // 006: an expansion was computed and then **withheld** because the verifier could
+    // not confirm it. Distinct from 005 on purpose — 005 says "there is nothing to
+    // return", 006 says "there was something and it is not trustworthy". Returning it
+    // with a caveat is not an option: a caller cannot tell a checked expansion from an
+    // unchecked one once it is in their hands.
+    ErrorSpec { code: "E-SERIES-006", class: "PuiseuxError", cause: Cause::Unsupported, remediation: Some("ask for a lower order, or expand about a point where the function is real and its heads have numeric kernels; an unverified expansion is withheld rather than returned") },
     // E-INT — IntegrationError
     ErrorSpec { code: "E-INT-001", class: "IntegrationError", cause: Cause::Unsupported, remediation: Some("use a numeric integrator for arbitrary functions") },
     ErrorSpec { code: "E-INT-002", class: "IntegrationError", cause: Cause::Domain,      remediation: None },
