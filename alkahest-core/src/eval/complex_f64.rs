@@ -1,6 +1,6 @@
 //! IEEE-754 complex evaluation for `re` / `im` / `conjugate` / `arg`.
 
-use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::kernel::{integer_to_f64, rational_to_f64, ExprData, ExprId, ExprPool};
 use std::collections::HashMap;
 
 use super::{error, EvalError, UnsupportedReason};
@@ -154,8 +154,8 @@ fn eval_node(
     bindings: &HashMap<ExprId, ComplexF64>,
 ) -> Result<ComplexF64, EvalError> {
     match pool.get(expr) {
-        ExprData::Integer(n) => Ok(ComplexF64::new(n.0.to_f64(), 0.0)),
-        ExprData::Rational(r) => Ok(ComplexF64::new(r.0.to_f64(), 0.0)),
+        ExprData::Integer(n) => Ok(ComplexF64::new(integer_to_f64(&n.0), 0.0)),
+        ExprData::Rational(r) => Ok(ComplexF64::new(rational_to_f64(&r.0), 0.0)),
         ExprData::Float(f) => Ok(ComplexF64::new(f.inner.to_f64(), 0.0)),
         ExprData::Symbol { .. } => {
             if let Some(&v) = bindings.get(&expr) {

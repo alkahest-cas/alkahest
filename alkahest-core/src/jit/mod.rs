@@ -42,7 +42,7 @@
 
 use crate::kernel::eval_const::try_predicate_bool_from_expr;
 use crate::kernel::expr::PredicateKind;
-use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::kernel::{integer_to_f64, rational_to_f64, ExprData, ExprId, ExprPool};
 use crate::primitive::PrimitiveRegistry;
 use std::collections::HashMap;
 use std::fmt;
@@ -73,6 +73,9 @@ pub use nvptx::{compile_cuda, cuda_device_count, CudaCompiledFn, CudaError};
 mod cranelift_backend;
 
 pub mod cache;
+
+#[cfg(test)]
+mod agreement_tests;
 pub use cache::CompileCache;
 
 // ---------------------------------------------------------------------------
@@ -702,11 +705,8 @@ fn eval_interp_inner(
         return Some(cached);
     }
     let val = match pool.get(expr) {
-        ExprData::Integer(n) => Some(n.0.to_f64()),
-        ExprData::Rational(r) => {
-            let (n, d) = r.0.clone().into_numer_denom();
-            Some(n.to_f64() / d.to_f64())
-        }
+        ExprData::Integer(n) => Some(integer_to_f64(&n.0)),
+        ExprData::Rational(r) => Some(rational_to_f64(&r.0)),
         ExprData::Float(f) => Some(f.inner.to_f64()),
         ExprData::Symbol { .. } => env.get(&expr).copied(),
         ExprData::Add(args) => {
@@ -855,11 +855,8 @@ fn try_expr_f64_snap(
         return Some(cached);
     }
     let val = match snap_data(snap, expr)? {
-        ExprData::Integer(n) => Some(n.0.to_f64()),
-        ExprData::Rational(r) => {
-            let (n, d) = r.0.clone().into_numer_denom();
-            Some(n.to_f64() / d.to_f64())
-        }
+        ExprData::Integer(n) => Some(integer_to_f64(&n.0)),
+        ExprData::Rational(r) => Some(rational_to_f64(&r.0)),
         ExprData::Float(f) => Some(f.inner.to_f64()),
         ExprData::Symbol { .. } => env.get(&expr).copied(),
         ExprData::Add(args) => {
@@ -971,11 +968,8 @@ fn eval_interp_snap(
         return Some(cached);
     }
     let val = match snap.nodes.get(&expr)? {
-        ExprData::Integer(n) => Some(n.0.to_f64()),
-        ExprData::Rational(r) => {
-            let (n, d) = r.0.clone().into_numer_denom();
-            Some(n.to_f64() / d.to_f64())
-        }
+        ExprData::Integer(n) => Some(integer_to_f64(&n.0)),
+        ExprData::Rational(r) => Some(rational_to_f64(&r.0)),
         ExprData::Float(f) => Some(f.inner.to_f64()),
         ExprData::Symbol { .. } => env.get(&expr).copied(),
         ExprData::Add(args) => {
@@ -1354,11 +1348,8 @@ mod llvm_backend {
     ) -> Result<FloatValue<'ctx>, JitError> {
         let f64_type = ctx.f64_type();
         match pool.get(node) {
-            ExprData::Integer(n) => Ok(f64_type.const_float(n.0.to_f64())),
-            ExprData::Rational(r) => {
-                let (n, d) = r.0.clone().into_numer_denom();
-                Ok(f64_type.const_float(n.to_f64() / d.to_f64()))
-            }
+            ExprData::Integer(n) => Ok(f64_type.const_float(integer_to_f64(&n.0))),
+            ExprData::Rational(r) => Ok(f64_type.const_float(rational_to_f64(&r.0))),
             ExprData::Float(f) => Ok(f64_type.const_float(f.inner.to_f64())),
             ExprData::Symbol { name, .. } => Err(JitError::UnsupportedNode(format!(
                 "unbound symbol '{name}'"

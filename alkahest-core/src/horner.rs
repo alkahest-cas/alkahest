@@ -17,7 +17,7 @@
 //! [`ExprData::Func`] nodes.  This is the general entry point;
 //! [`emit_horner_c`] remains available for the polynomial-only Horner form.
 
-use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::kernel::{integer_to_f64, rational_to_f64, ExprData, ExprId, ExprPool};
 use crate::poly::{ConversionError, UniPoly};
 use std::collections::HashMap;
 
@@ -38,13 +38,18 @@ use std::collections::HashMap;
 /// ```
 pub fn horner(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<ExprId, ConversionError> {
     let poly = UniPoly::from_symbolic(expr, var, pool)?;
-    let coeffs = poly.coefficients_i64(); // [a0, a1, …, an]
+    // `coefficients_i64` wraps modulo 2^64 without saying so, and this is a
+    // *rewrite*: the result claims to be the same polynomial. It was not.
+    // `(x+1)^80` has binomial coefficients past `i64`, so `horner` returned a
+    // different polynomial — `2.12e20` instead of `2^80` at `x = 1` — with no
+    // error and no flag. Exact coefficients throughout.
+    let coeffs = poly.coefficients(); // [a0, a1, …, an]
     Ok(build_horner(&coeffs, var, pool))
 }
 
 /// Build Horner form from a coefficient slice `[a0, a1, …, an]` where
 /// `a_k` is the coefficient of `x^k`.
-fn build_horner(coeffs: &[i64], var: ExprId, pool: &ExprPool) -> ExprId {
+fn build_horner(coeffs: &[rug::Integer], var: ExprId, pool: &ExprPool) -> ExprId {
     if coeffs.is_empty() {
         return pool.integer(0_i32);
     }
@@ -54,11 +59,11 @@ fn build_horner(coeffs: &[i64], var: ExprId, pool: &ExprPool) -> ExprId {
     // …
     // result = a_0   + x * result
     let n = coeffs.len();
-    let mut result = pool.integer(coeffs[n - 1]);
+    let mut result = pool.integer(coeffs[n - 1].clone());
     for k in (0..n - 1).rev() {
         // result = coeffs[k] + var * result
         let xr = pool.mul(vec![var, result]);
-        let ck = pool.integer(coeffs[k]);
+        let ck = pool.integer(coeffs[k].clone());
         result = pool.add(vec![ck, xr]);
     }
     result
@@ -90,7 +95,8 @@ pub fn emit_horner_c(
     pool: &ExprPool,
 ) -> Result<String, ConversionError> {
     let poly = UniPoly::from_symbolic(expr, var, pool)?;
-    let coeffs = poly.coefficients_i64();
+    // Exact, for the reason spelled out in `horner` above.
+    let coeffs = poly.coefficients();
     let body = build_c_horner(&coeffs, var_name);
     Ok(format!(
         "double {}(double {}) {{\n    return {};\n}}\n",
@@ -146,14 +152,29 @@ fn eval_horner_f64x4(coeffs: &[f64], x: wide::f64x4) -> wide::f64x4 {
     acc
 }
 
-fn build_c_horner(coeffs: &[i64], var: &str) -> String {
+/// Render an exact integer as a C `double` literal.
+///
+/// Written out in full while it is exact in `f64`, so the C compiler's own
+/// correctly-rounded parse agrees with the interpreter bit for bit. Past that
+/// the exact decimal would be both misleading and, above `DBL_MAX`, outside
+/// the range a C compiler will accept, so the rounded value is emitted
+/// instead — the same one every evaluator uses.
+fn c_integer_literal(n: &rug::Integer) -> String {
+    if n.significant_bits() <= f64::MANTISSA_DIGITS {
+        format!("{n}.0")
+    } else {
+        c_double_literal(integer_to_f64(n))
+    }
+}
+
+fn build_c_horner(coeffs: &[rug::Integer], var: &str) -> String {
     if coeffs.is_empty() {
         return "0.0".to_string();
     }
     let n = coeffs.len();
-    let mut result = format!("{}.0", coeffs[n - 1]);
+    let mut result = c_integer_literal(&coeffs[n - 1]);
     for k in (0..n - 1).rev() {
-        let ck = format!("{}.0", coeffs[k]);
+        let ck = c_integer_literal(&coeffs[k]);
         result = format!("{} + {} * ({})", ck, var, result);
     }
     result
@@ -201,6 +222,26 @@ impl std::error::Error for EmitCError {}
 ///
 /// Returns `None` for functions that cannot be expressed as a single `<math.h>`
 /// call (e.g. `diracdelta`, elliptic integrals, `heaviside`).
+///
+/// # Where the emitted C and the interpreter differ
+///
+/// Both are documented rather than repaired, because in each case the emitted
+/// C is *not* the wrong side and forcing agreement would cost more than it
+/// buys. Measured over a 606-expression / 10 421-point differential sweep,
+/// these are the only two classes that survive:
+///
+/// * **`gamma`.** Alkahest returns `+∞` at each pole of `Γ` (see
+///   `libm_gamma`), so `1/Γ(−n)` is `0` — the value that makes `1/Γ` entire.
+///   C99's `tgamma` returns `NaN` there, so the emitted C degrades that `0` to
+///   a `NaN`: a weak refusal in place of a correct value, never a wrong number.
+///   Alkahest's `Γ` is also a Lanczos approximation good to ~1e-15 (~1e-12
+///   near the poles), where glibc's `tgamma` is nearly correctly rounded.
+/// * **`x^2` / `x^3`.** The `Pow` arm below emits repeated multiplication,
+///   which rounds twice where the interpreter's `powf` rounds once. That is
+///   ≤ 1 ulp and usually *cheaper and better conditioned* in the surrounding
+///   expression, which is why the specialisation exists. It is only visible
+///   downstream of a function with unbounded derivative — `tan` of an argument
+///   past `1e38`, where no evaluator carries information anyway.
 fn func_to_c(name: &str, arg_exprs: &[String]) -> Option<String> {
     // Binary functions first
     if name == "atan2" && arg_exprs.len() == 2 {
@@ -250,6 +291,23 @@ fn func_to_c(name: &str, arg_exprs: &[String]) -> Option<String> {
     None
 }
 
+/// Render an `f64` as a C `double` literal.
+///
+/// `{v:?}` alone produced the bare tokens `inf`, `-inf` and `NaN` for a
+/// non-finite constant. None of the three is a C identifier, so `emit_c_expr`
+/// reported success and handed back a function that does not compile. The
+/// `<math.h>` macros the emitted code already requires say the same thing and
+/// do compile.
+fn c_double_literal(v: f64) -> String {
+    if v.is_nan() {
+        return "NAN".to_string();
+    }
+    if v.is_infinite() {
+        return if v > 0.0 { "INFINITY" } else { "-INFINITY" }.to_string();
+    }
+    format!("{v:?}")
+}
+
 /// Internal: emit a C expression for `expr`, collecting temporary variable
 /// assignments into `stmts`.  Returns the C expression string (may be a temp
 /// var name like `_t3` or an inline expression like `sin(_t2)`).
@@ -273,18 +331,9 @@ fn emit_expr_inner(
     }
 
     let result = match pool.get(expr) {
-        ExprData::Integer(n) => {
-            // Emit as double literal
-            format!("{}.0", n.0)
-        }
-        ExprData::Rational(r) => {
-            let v = r.0.numer().to_f64() / r.0.denom().to_f64();
-            format!("{v:?}")
-        }
-        ExprData::Float(f) => {
-            let v = f.inner.to_f64();
-            format!("{v:?}")
-        }
+        ExprData::Integer(n) => c_integer_literal(&n.0),
+        ExprData::Rational(r) => c_double_literal(rational_to_f64(&r.0)),
+        ExprData::Float(f) => c_double_literal(f.inner.to_f64()),
         ExprData::Symbol { name, .. } => {
             return Err(EmitCError::MissingVariable(name.clone()));
         }
@@ -852,5 +901,129 @@ mod tests {
         let code = emit_expr_c(expr, &[x], &["x"], "eval_poly_new", &pool).unwrap();
         assert!(code.contains("double eval_poly_new"), "signature:\n{code}");
         assert!(code.contains("return "), "return:\n{code}");
+    }
+}
+
+#[cfg(test)]
+mod exact_coefficient_tests {
+    use super::*;
+    use crate::jit::eval_interp;
+    use crate::kernel::{Domain, ExprPool};
+    use rug::ops::Pow;
+    use std::collections::HashMap;
+
+    fn at(expr: ExprId, x: ExprId, v: f64, pool: &ExprPool) -> f64 {
+        let mut env = HashMap::new();
+        env.insert(x, v);
+        eval_interp(expr, &env, pool).unwrap()
+    }
+
+    /// `horner` is a *rewrite*: it promises the same polynomial in a better
+    /// shape. Going through `coefficients_i64` made that promise false —
+    /// coefficients wrapped modulo 2^64, silently, so the returned expression
+    /// was a different polynomial.
+    #[test]
+    fn horner_keeps_coefficients_past_i64() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        // 2^70 + 3 wraps to 3 in `i64`.
+        let big = rug::Integer::from(2u32).pow(70) + 3u32;
+        let expr = pool.add(vec![
+            pool.mul(vec![
+                pool.integer(big.clone()),
+                pool.pow(x, pool.integer(2_i32)),
+            ]),
+            pool.mul(vec![pool.integer(5_i32), x]),
+            pool.integer(7_i32),
+        ]);
+        let h = horner(expr, x, &pool).unwrap();
+        for v in [0.0, 1.0, 2.0, -3.0] {
+            assert_eq!(
+                at(h, x, v, &pool),
+                at(expr, x, v, &pool),
+                "horner form disagrees with the input at x = {v}"
+            );
+        }
+        // …and the value is the mathematically right one, not just consistent.
+        // (2^70 + 3) + 5 + 7 = 1180591620717411303439.
+        assert_eq!(at(h, x, 1.0, &pool), 1.1805916207174113e21);
+    }
+
+    /// The same defect on a polynomial nobody would call exotic: the binomial
+    /// coefficients of `(x+1)^80` run past `i64` in the middle of the row.
+    #[test]
+    fn horner_of_an_ordinary_binomial_power_is_the_same_polynomial() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.pow(pool.add(vec![x, pool.integer(1_i32)]), pool.integer(80_i32));
+        let h = horner(expr, x, &pool).unwrap();
+        // (1+1)^80 = 2^80.
+        assert_eq!(at(h, x, 1.0, &pool), 2f64.powi(80));
+        assert_eq!(at(h, x, 0.0, &pool), 1.0);
+    }
+
+    #[test]
+    fn emit_horner_c_keeps_coefficients_past_i64() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let big = rug::Integer::from(2u32).pow(70) + 3u32;
+        let expr = pool.add(vec![
+            pool.mul(vec![pool.integer(big), x]),
+            pool.integer(1_i32),
+        ]);
+        let c = emit_horner_c(expr, x, "x", "f", &pool).unwrap();
+        assert!(
+            c.contains("1.1805916207174113e21"),
+            "emitted C lost the coefficient: {c}"
+        );
+        assert!(!c.contains(" 3.0"), "coefficient wrapped to 3: {c}");
+    }
+
+    /// A rational literal is emitted as the same `double` the interpreter
+    /// uses, so the C and the interpreter cannot drift apart by an ulp.
+    #[test]
+    fn emit_expr_c_rounds_rationals_the_way_the_interpreter_does() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![pool.rational(2, 5), x]);
+        let c = emit_expr_c(expr, &[x], &["x"], "f", &pool).unwrap();
+        assert!(c.contains("0.4"), "expected the nearest double 0.4: {c}");
+        assert!(!c.contains("0.39999999999999997"), "truncated: {c}");
+    }
+
+    /// `{v:?}` produced the bare tokens `inf` / `NaN`, which are not C
+    /// identifiers: `emit_expr_c` reported success and returned a function
+    /// that does not compile.
+    #[test]
+    fn emit_expr_c_writes_math_h_macros_for_non_finite_literals() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        for (v, want) in [
+            (f64::INFINITY, "INFINITY"),
+            (f64::NEG_INFINITY, "-INFINITY"),
+            (f64::NAN, "NAN"),
+        ] {
+            let expr = pool.mul(vec![pool.float(v, 53), x]);
+            let c = emit_expr_c(expr, &[x], &["x"], "f", &pool).unwrap();
+            assert!(c.contains(want), "expected {want} in: {c}");
+            assert!(!c.contains(" inf"), "bare `inf` is not valid C: {c}");
+            assert!(!c.contains("NaN"), "bare `NaN` is not valid C: {c}");
+        }
+    }
+
+    /// An integer past the `f64` grid must be emitted as the `double` every
+    /// evaluator actually uses, not as an exact decimal a C compiler would
+    /// have to round on its own (and would reject above `DBL_MAX`).
+    #[test]
+    fn emit_expr_c_emits_large_integers_as_in_range_doubles() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![pool.integer(rug::Integer::from(10).pow(400)), x]);
+        let c = emit_expr_c(expr, &[x], &["x"], "f", &pool).unwrap();
+        assert!(c.contains("INFINITY"), "expected a saturating literal: {c}");
+
+        let expr = pool.mul(vec![pool.integer(rug::Integer::from(10).pow(30)), x]);
+        let c = emit_expr_c(expr, &[x], &["x"], "f", &pool).unwrap();
+        assert!(c.contains("1e30"), "expected the rounded double: {c}");
     }
 }

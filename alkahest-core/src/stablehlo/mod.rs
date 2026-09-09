@@ -19,7 +19,7 @@
 //! assert!(mlir.contains("stablehlo.sine"));
 //! ```
 
-use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::kernel::{integer_to_f64, rational_to_f64, ExprData, ExprId, ExprPool};
 use std::collections::HashMap;
 
 /// Emit a StableHLO MLIR text module for `expr` as a function named `fn_name`.
@@ -71,6 +71,26 @@ struct Emitter {
     unsupported: Option<String>,
 }
 
+/// Render a finite `f64` as an MLIR float literal.
+///
+/// MLIR's grammar is `[-+]?[0-9]+[.][0-9]*([eE][-+]?[0-9]+)?` — the decimal
+/// point is **required**. Rust's `{:?}` gives the shortest round-tripping form,
+/// which drops it whenever the mantissa is a single digit: `1e30`, `1e16` and
+/// `5e-324` all come out without one. `mlir-opt` rejects each of those with
+/// `error: expected '>'`, so `to_stablehlo` returned a module that does not
+/// parse while reporting success — on constants a large integer or a small
+/// rational reaches easily.
+fn mlir_f64_literal(val: f64) -> String {
+    let rendered = format!("{val:?}");
+    if rendered.contains('.') {
+        return rendered;
+    }
+    match rendered.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => format!("{mantissa}.0e{exponent}"),
+        None => format!("{rendered}.0"),
+    }
+}
+
 impl Emitter {
     fn new(inputs: &[ExprId], _pool: &ExprPool) -> Self {
         let mut arg_map = HashMap::new();
@@ -96,16 +116,18 @@ impl Emitter {
     /// `{val}` renders `1.0_f64` as `1`, and MLIR rejects a decimal integer
     /// literal for an `f64` tensor ("unexpected decimal integer"). Every
     /// expression containing an integer constant — `x**2 + 1` — therefore
-    /// emitted a module that would not parse. `{val:?}` always renders a
-    /// decimal point.
+    /// emitted a module that would not parse. [`mlir_f64_literal`] fixes that
+    /// and the second half of the same problem: `{val:?}` does *not* always
+    /// render a decimal point.
     fn emit_const_f64(&mut self, val: f64) -> String {
         if !val.is_finite() {
             self.unsupported = Some(format!("non-finite constant: {val}"));
             return self.fresh();
         }
         let v = self.fresh();
+        let lit = mlir_f64_literal(val);
         self.body.push(format!(
-            "{v} = stablehlo.constant dense<{val:?}> : tensor<f64>"
+            "{v} = stablehlo.constant dense<{lit}> : tensor<f64>"
         ));
         v
     }
@@ -117,7 +139,6 @@ impl Emitter {
         }
 
         enum Node {
-            Integer(i64),
             Float(f64),
             Add(Vec<ExprId>),
             Mul(Vec<ExprId>),
@@ -127,12 +148,14 @@ impl Emitter {
         }
 
         let node = pool.with(expr, |data| match data {
-            ExprData::Integer(n) => Node::Integer(n.0.to_i64().unwrap_or(0)),
+            // `to_i64().unwrap_or(0)` used to sit here, so an integer past
+            // `i64` became the *constant zero* and `to_stablehlo(2^70·x + 1)`
+            // emitted valid MLIR for `x·0 + 1`. Rounding to `f64` loses one
+            // ulp on a large coefficient instead of losing the whole term, and
+            // it is what every other backend does with the same literal.
+            ExprData::Integer(n) => Node::Float(integer_to_f64(&n.0)),
             ExprData::Float(f) => Node::Float(f.inner.to_f64()),
-            ExprData::Rational(r) => {
-                let (numer, denom) = r.0.clone().into_numer_denom();
-                Node::Float(numer.to_f64() / denom.to_f64())
-            }
+            ExprData::Rational(r) => Node::Float(rational_to_f64(&r.0)),
             ExprData::Add(args) => Node::Add(args.clone()),
             ExprData::Mul(args) => Node::Mul(args.clone()),
             ExprData::Pow { base, exp } => Node::Pow {
@@ -147,7 +170,6 @@ impl Emitter {
         });
 
         match node {
-            Node::Integer(n) => self.emit_const_f64(n as f64),
             Node::Float(f) => self.emit_const_f64(f),
 
             Node::Add(args) => {
@@ -449,5 +471,84 @@ mod emitter_soundness_tests {
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.add(vec![x, pool.float(f64::INFINITY, 53)]);
         assert!(emit_stablehlo(expr, &[x], "f", &pool).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod large_constant_tests {
+    use super::*;
+    use crate::kernel::{Domain, ExprPool};
+    use rug::ops::Pow;
+
+    /// `to_i64().unwrap_or(0)` turned any coefficient past `i64` into the
+    /// constant zero, so the emitted module computed a different function —
+    /// valid MLIR, no diagnostic, wrong answer.
+    #[test]
+    fn a_coefficient_past_i64_is_not_emitted_as_zero() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.add(vec![
+            pool.mul(vec![pool.integer(rug::Integer::from(2u32).pow(70)), x]),
+            pool.integer(1_i32),
+        ]);
+        let mlir = emit_stablehlo(expr, &[x], "f", &pool);
+        assert!(
+            mlir.contains("1.1805916207174113e21"),
+            "coefficient lost: {mlir}"
+        );
+        assert!(
+            !mlir.contains("dense<0.0>"),
+            "coefficient became the constant zero: {mlir}"
+        );
+    }
+
+    #[test]
+    fn a_rational_coefficient_rounds_to_nearest() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![pool.rational(2, 5), x]);
+        let mlir = emit_stablehlo(expr, &[x], "f", &pool);
+        assert!(mlir.contains("dense<0.4>"), "expected 0.4: {mlir}");
+    }
+
+    /// MLIR's float literal needs a decimal point. Rust's `{:?}` drops it for
+    /// a single-digit mantissa, so `dense<1e30>` came out of the emitter and
+    /// `mlir-opt` answered `error: expected '>'` — a module reported as
+    /// emitted that does not parse.
+    #[test]
+    fn every_emitted_constant_carries_a_decimal_point() {
+        assert_eq!(mlir_f64_literal(1e30), "1.0e30");
+        assert_eq!(mlir_f64_literal(1e16), "1.0e16");
+        assert_eq!(mlir_f64_literal(5e-324), "5.0e-324");
+        assert_eq!(mlir_f64_literal(-1e30), "-1.0e30");
+        // Forms that already had one are untouched.
+        assert_eq!(mlir_f64_literal(1.0), "1.0");
+        assert_eq!(mlir_f64_literal(0.4), "0.4");
+        assert_eq!(
+            mlir_f64_literal(1.1805916207174113e21),
+            "1.1805916207174113e21"
+        );
+        assert_eq!(mlir_f64_literal(1e15), "1000000000000000.0");
+
+        // …and end to end, over the constants that reach the emitter.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        for coefficient in [
+            pool.integer(rug::Integer::from(10).pow(30)),
+            pool.integer(rug::Integer::from(10).pow(16)),
+            pool.integer(1_i32),
+            pool.rational(1, rug::Integer::from(10).pow(30)),
+            pool.rational(2, 5),
+        ] {
+            let expr = pool.add(vec![pool.mul(vec![coefficient, x]), pool.integer(1_i32)]);
+            let mlir = emit_stablehlo(expr, &[x], "f", &pool);
+            for chunk in mlir.split("dense<").skip(1) {
+                let literal = chunk.split('>').next().unwrap();
+                assert!(
+                    literal.contains('.'),
+                    "MLIR rejects the literal `{literal}` in: {mlir}"
+                );
+            }
+        }
     }
 }

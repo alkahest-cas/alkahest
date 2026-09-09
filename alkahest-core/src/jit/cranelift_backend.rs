@@ -19,7 +19,7 @@
 use super::{
     topo_sort, CompileTier, CompiledFn, CompiledFnInner, JitBulkFn, JitError, JitScalarFn,
 };
-use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::kernel::{integer_to_f64, rational_to_f64, ExprData, ExprId, ExprPool};
 use cranelift_codegen::ir::{condcodes::IntCC, types, AbiParam, BlockArg, InstBuilder, MemFlags};
 use cranelift_codegen::{settings, settings::Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -143,11 +143,8 @@ fn codegen_node(
     math: &MathFuncIds,
 ) -> Result<cranelift_codegen::ir::Value, JitError> {
     match pool.get(node) {
-        ExprData::Integer(n) => Ok(builder.ins().f64const(n.0.to_f64())),
-        ExprData::Rational(r) => {
-            let (num, den) = r.0.clone().into_numer_denom();
-            Ok(builder.ins().f64const(num.to_f64() / den.to_f64()))
-        }
+        ExprData::Integer(n) => Ok(builder.ins().f64const(integer_to_f64(&n.0))),
+        ExprData::Rational(r) => Ok(builder.ins().f64const(rational_to_f64(&r.0))),
         ExprData::Float(f) => Ok(builder.ins().f64const(f.inner.to_f64())),
         ExprData::Symbol { name, .. } => Err(JitError::UnsupportedNode(format!(
             "unbound symbol '{name}'"
