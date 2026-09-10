@@ -192,16 +192,20 @@ def test_a_double_pole_with_a_simple_numerator_zero_is_still_refused():
         ak.verified_integral(ak.sin(x) / (x * x), x, -1.0, 1.0)
 
 
-def test_a_second_order_removable_singularity_is_refused_not_guessed():
-    """`(1-cos x)/x**2` really is removable (it tends to 1/2), but the proof
-    needs a *second*-order argument: `D' = 2x` vanishes at 0, so Cauchy's mean
-    value theorem does not apply and the enclosure is declined rather than
-    stretched to fit."""
+def test_a_second_order_removable_singularity_is_enclosed_by_iterating():
+    """`(1-cos x)/x**2` is removable (it tends to 1/2), but the proof needs a
+    *second*-order argument: `D' = 2x` vanishes at 0 too, so one application of
+    Cauchy's mean value theorem is not enough and the step has to be repeated
+    until `D'' = 2`, which is bounded away from zero.
+
+    Reference value from mpmath at 40 dps.
+    """
     pool = ak.ExprPool()
     x = pool.symbol("x")
 
-    with pytest.raises(ak.ValidatedError):
-        ak.verified_integral((pool.integer(1) - ak.cos(x)) / (x * x), x, 0.0, 1.0)
+    r = ak.verified_integral((pool.integer(1) - ak.cos(x)) / (x * x), x, 0.0, 1.0)
+
+    assert r.lower <= 0.486385376235322732342288196293 <= r.upper
 
 
 @pytest.mark.parametrize(
@@ -209,15 +213,26 @@ def test_a_second_order_removable_singularity_is_refused_not_guessed():
     [
         (lambda pool, x: -ak.log(x), 0.0, 1.0, "-log x"),
         (lambda pool, x: ak.log(x) * ak.log(x), 0.0, 1.0, "(log x)^2"),
-        (lambda pool, x: ak.exp(x * ak.log(x)), 0.0, 1.0, "x^x"),
+        (lambda pool, x: pool.integer(1) / ak.sqrt(x), 0.0, 1.0, "1/sqrt(x)"),
+        (
+            lambda pool, x: ak.log(x) * ak.log(pool.integer(1) - x),
+            0.0,
+            1.0,
+            "log(x) log(1-x)",
+        ),
     ],
 )
-def test_integrable_but_not_removable_singularities_refuse_with_an_honest_message(
-    build, a, b, label
-):
+def test_unbounded_integrands_refuse_with_an_honest_message(build, a, b, label):
     """These integrals all exist. What does not exist is a rigorous enclosure
-    of the *integrand*, and the error text must say which of the two it means
-    rather than implying the integral is undefined."""
+    of the *integrand* — it is genuinely unbounded on the last panel, so the
+    `width x range` fallback has no bounded range either — and the error text
+    must say which of the two it means rather than implying the integral is
+    undefined.
+
+    It must also not call the integrand "singular" on the strength of a Taylor
+    rule refusing: it names the rule that stopped instead. `asin(1) = pi/2` is
+    finite, and the old wording called it singular.
+    """
     pool = ak.ExprPool()
     x = pool.symbol("x")
 
@@ -225,9 +240,75 @@ def test_integrable_but_not_removable_singularities_refuse_with_an_honest_messag
         ak.verified_integral(build(pool, x), x, a, b)
 
     message = str(excinfo.value)
-    assert "integrand is singular" in message, f"{label}: {message}"
+    assert "no rigorous enclosure of the integrand" in message, f"{label}: {message}"
     assert "integrable singularity" in message, f"{label}: {message}"
+    assert "the integrand is singular" not in message, f"{label}: {message}"
     assert excinfo.value.remediation
+
+
+# Bounded, continuous integrands whose Taylor model runs out of *domain* rather
+# than out of function. Every one of these was refused with "the integrand is
+# singular at the right endpoint", which is false: `asin(1) = pi/2`. Reference
+# values are mpmath at 40 dps.
+_BOUNDED_TABLE = [
+    ("asin(x)", lambda pool, x: ak.asin(x), 0.57079632679489661923132169164),
+    ("acos(x)", lambda pool, x: ak.acos(x), 1.0),
+    (
+        "sqrt(1-x^2)",
+        lambda pool, x: ak.sqrt(pool.integer(1) - x * x),
+        0.78539816339744830961566084582,
+    ),
+    ("sqrt(x)", lambda pool, x: ak.sqrt(x), 0.66666666666666666666666666667),
+    (
+        "x**x",
+        lambda pool, x: ak.exp(x * ak.log(x)),
+        0.783430510712134407059264386527,
+    ),
+    (
+        "(1-cos x)/x^2",
+        lambda pool, x: (pool.integer(1) - ak.cos(x)) / (x * x),
+        0.486385376235322732342288196293,
+    ),
+    (
+        "(x-1)/log(x)",
+        lambda pool, x: (x - pool.integer(1)) / ak.log(x),
+        0.693147180559945309417232121458,
+    ),
+    ("sin(x)/x", lambda pool, x: ak.sin(x) / x, 0.946083070367183014941353313823),
+]
+
+
+@pytest.mark.parametrize(
+    ("label", "build", "truth"), _BOUNDED_TABLE, ids=[r[0] for r in _BOUNDED_TABLE]
+)
+def test_bounded_integrands_at_a_domain_boundary_are_enclosed(label, build, truth):
+    """Each of these is bounded and continuous on the closed interval `[0, 1]`,
+    so `width x range` closes the last panel even though no Taylor model exists
+    on it. The enclosure must contain the true value: soundness is the point,
+    and an enclosure that succeeds but misses is far worse than a refusal.
+    """
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+
+    r = ak.verified_integral(build(pool, x), x, 0.0, 1.0)
+
+    assert r.lower <= truth <= r.upper, f"{label}: [{r.lower!r}, {r.upper!r}]"
+    assert r.width < 1e-3, f"{label}: enclosure width {r.width}"
+
+
+def test_the_bounded_fallback_does_not_swallow_a_pole_at_the_same_endpoint():
+    """The fallback fires exactly where the Taylor model runs out of domain, so
+    the guard that matters is that an *unbounded* integrand at that same
+    endpoint still refuses. `1/sqrt(1-x*x)` on [0,1] and `sqrt(1-x*x)` on [0,1]
+    both hit `sqrt` at zero; only the second is bounded.
+    """
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+    inner = pool.integer(1) - x * x
+
+    assert ak.verified_integral(ak.sqrt(inner), x, 0.0, 1.0).contains(math.pi / 4)
+    with pytest.raises(ak.ValidatedError):
+        ak.verified_integral(pool.integer(1) / ak.sqrt(inner), x, 0.0, 1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -662,3 +743,143 @@ def test_bound_on_box_terminates_when_the_tolerance_is_unreachable():
 
     assert elapsed < 60.0, f"took {elapsed:.1f}s"
     assert r.lower <= 0.0 <= r.upper
+
+
+# ---------------------------------------------------------------------------
+# `verified_sign` is monotone in the box across the endpoint dead band
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", _CLASSICAL_NAMES)
+@pytest.mark.parametrize("lo", [1e-30, 1e-12])
+def test_a_smaller_box_never_loses_a_verdict_the_larger_one_had(name, lo):
+    """`[lo, 1.5]` is a strict subset of `[0, 1.5]` — which the test above
+    certifies `true` — so it is a strictly weaker claim and must not be harder
+    to decide.
+
+    It used to be. The collar the endpoint-series argument plants is only strong
+    when the box endpoint *is* the point the inequality is tight at: back off by
+    `1e-12` and the leading coefficient becomes `g(1e-12)`, far too small to
+    beat its own evaluation noise and the linear term of the tail bound. The
+    measured result was a dead band of left endpoints from about `1e-300` to
+    `1e-9` answering `undecided`, sandwiched between two `true` regions at `0`
+    and from `1e-6` up.
+    """
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+
+    assert ak.verified_sign(_classical(pool, x)[name], _box(x, lo, 1.5), "nonnegative") == "true"
+
+
+def test_the_dead_band_is_closed_at_its_far_end_too():
+    """`1e-300` is where the tail bound, not the noise, is the binding
+    constraint: the halving sequence for the collar bottoms out long before it
+    reaches a width that small."""
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+
+    f = _classical(pool, x)["cusa_huygens"]
+
+    assert ak.verified_sign(f, _box(x, 1e-300, 1.5), "nonnegative") == "true"
+
+
+def test_the_widened_retry_cannot_manufacture_a_false():
+    """Only `true` may be taken from the enlarged box. `false` on a superset
+    says nothing about the subset, and taking it would be a false negative:
+    `x - 1/2` is `false` on `[0, 1]` and genuinely `true` on `[0.6, 1]`, which
+    is exactly the box the retry enlarges back to `[0, 1]`.
+    """
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+    f = x - pool.rational(1, 2)
+
+    assert ak.verified_sign(f, _box(x, 0.0, 1.0), "nonnegative") == "false"
+    assert ak.verified_sign(f, _box(x, 0.6, 1.0), "nonnegative") == "true"
+
+
+# ---------------------------------------------------------------------------
+# The long-running native calls are interruptible
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not hasattr(__import__("signal"), "setitimer"),
+    reason="needs POSIX interval timers",
+)
+def test_a_python_timer_can_bound_a_long_verified_sign():
+    """`P*x - tan(x)*(P - 4e18*x*x) >= 0` on `[0, pi/2]` ran for 109.9 s before
+    answering `undecided`, and a `signal.setitimer(60)` around it fired at
+    182.8 s — after the call had already returned. A Python-level signal handler
+    only runs in the main thread and only between bytecodes, so releasing the
+    GIL is not by itself enough: the call has to come *back* for the GIL
+    periodically and ask whether a signal is pending.
+    """
+    import signal
+    import time
+
+    class _Fired(Exception):
+        pass
+
+    def _raise(signum, frame):
+        raise _Fired()
+
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+    big = pool.integer(9869604401089358619)  # ~ 1e18 * pi**2
+    f = big * x - ak.tan(x) * (big - pool.integer(4 * 10**18) * x * x)
+
+    previous = signal.signal(signal.SIGALRM, _raise)
+    start = time.monotonic()
+    try:
+        signal.setitimer(signal.ITIMER_REAL, 3.0)
+        try:
+            outcome = ak.verified_sign(f, _box(x, 0.0, math.pi / 2), "nonnegative")
+        except _Fired:
+            outcome = "interrupted"
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+    finally:
+        signal.signal(signal.SIGALRM, previous)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 45.0, f"the timer did not preempt the call: {elapsed:.1f}s"
+    assert outcome in ("interrupted", "true", "false", "undecided")
+    # The interpreter must be left in a usable state, with no cancellation
+    # request lingering for the next caller.
+    assert ak.verified_sign(ak.sin(x), _box(x, 0.1, 1.0), "positive") == "true"
+
+
+# ---------------------------------------------------------------------------
+# Advertised coverage matches what the evaluator actually does
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name", ["bessel_j0", "bessel_j1", "digamma", "gamma", "lambert_w", "erf", "erfc"]
+)
+def test_documented_taylor_model_coverage_is_real(name):
+    """The docs and the `bounds_supported` docstring both listed these as
+    *outside* Taylor-model coverage after the release that added them. Assert
+    the live answer so the text cannot drift again without a red test.
+    """
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+    f = getattr(ak, name)(x)
+
+    answer = ak.bounds_supported(f)
+
+    assert bool(answer) is True, f"{name}: {answer.functions}"
+    assert answer.functions == []
+    ak.bound_on_box(f, _box(x, 1.2, 1.4))
+
+
+def test_a_primitive_with_no_taylor_rule_is_still_reported():
+    """The counterexample the docstring example now uses."""
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+
+    answer = ak.bounds_supported(ak.floor(x))
+
+    assert bool(answer) is False
+    assert answer.functions == ["floor"]
+    assert "floor" in answer.blocker

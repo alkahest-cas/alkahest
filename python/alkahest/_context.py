@@ -224,7 +224,12 @@ def context(
     if budget is not None:
         from . import alkahest as _native
 
-        _native.push_budget(wall_ms=budget.wall_ms, max_steps=budget.max_steps, seed=budget.seed)
+        _native.push_budget(
+            wall_ms=budget.wall_ms,
+            max_steps=budget.max_steps,
+            seed=budget.seed,
+            max_bytes=budget.max_bytes,
+        )
         budget_pushed = True
     if assumptions is not None:
         # Also install the assumptions on the Rust side, so engines that only

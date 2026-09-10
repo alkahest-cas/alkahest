@@ -49,8 +49,11 @@ What survives is then reported with the evidence attached:
 | `equations_used` | independent equations the fit consumed (the matrix rank) |
 | `surplus_terms` | equations that were *not* needed and agreed anyway |
 | `dimension` | dimension of the solution space; `1` for a genuine fit |
+| `basis` | every independent relation the terms admit; `basis[0]` is `coeffs` |
+| `singular_indices` | indices inside the data where the leading coefficient vanishes |
 | `untested_candidates` | lower `(order, degree)` candidates the terms could not test |
-| `confirmed` | enough surplus **and** dimension exactly 1 |
+| `status` | one of `GUESS_STATUSES`; `means` glosses it |
+| `confirmed` | `True` / `False` / `None` — see below |
 
 `untested_candidates` is the minimality caveat, and it is the same discipline as
 `ZeilbergerCertificate.order_is_minimal`. `0` means the returned order is the
@@ -62,6 +65,59 @@ may be hiding in the ones it could not.
 of it as a dict for logging next to the result. This is `relation_confidence`'s
 discipline applied to sequences: a fit is judged against what the data can
 actually support, rather than endorsed because the arithmetic came out even.
+
+## The verdict is three-valued
+
+`confirmed` is `True`, `False`, or `None`, and `status` names which:
+
+| `status` | `confirmed` | what it means |
+|---|---|---|
+| `confirmed` | `True` | over-determined, unique, and non-singular in the data |
+| `singular` | `None` | the operator vanishes identically at `singular_indices` |
+| `underdetermined` | `None` | several independent relations; read `basis` |
+| `unconfirmed` | `False` | the fit consumed the equations that would have confirmed it |
+
+Neither `False` nor `None` is a pass, and they are different: `False` is *the
+data says nothing about this fit*, `None` is *the relation holds and is still
+not the sequence's recurrence*. This is `relation_confidence`'s `credible` and
+`NoveltyVerdict.found` for sequences — the same three values and the same rule
+that only the first is a result.
+
+`GUESS_STATUSES` is the closed vocabulary and `GUESS_STATUS_MEANINGS` glosses
+each entry; `guess.means` is the gloss for the one at hand.
+
+## Singular indices, and the corrupted term
+
+This is the failure `surplus_terms` and `dimension` do not catch. A single
+wrong term in an otherwise clean sequence does not stop a fit — it is absorbed:
+
+```python
+spoiled = motzkin_71_terms.copy()
+spoiled[30] += 1                       # one typo
+
+fit = ak.guess_holonomic(spoiled)      # default max_degree = 4
+fit.order, fit.degree                  # (2, 4) — one degree up from the truth
+fit.dimension, fit.surplus_terms       # (1, 55)  — every number still perfect
+fit.singular_indices                   # (28, 29, 30)
+fit.status, fit.confirmed              # ('singular', None)
+```
+
+The fit is the true operator multiplied by the cubic `(n−28)(n−29)(n−30)`,
+which vanishes at exactly the three indices whose equations the typo breaks.
+Every coefficient polynomial vanishes there at once, so those three equations
+read `0 = 0` and constrained nothing — and the relation that comes back
+satisfies every equation the terms supplied. **No re-check can catch this**: it
+holds on the clean sequence too, being a left multiple of the true operator.
+The roots inside the data are the only tell, which is why they are a field.
+
+Two typos need `max_degree=8` and produce six roots — the count scales with the
+corruption, so the field is a diagnostic and not just a flag. The first move on
+a non-empty `singular_indices` is to recompute the terms at those indices.
+
+`ModularRecurrence.value_mod` meets the same phenomenon and *refuses*
+(`E-HOLO-007`), because a modular evaluation genuinely cannot step through a
+singular index. A fit can be returned and flagged, because the relation is true
+on the data — it is only untrue that it is the sequence's recurrence.
 
 ## What it refuses, and what `None` means
 
@@ -107,10 +163,17 @@ ak.guess_holonomic(terms, max_order=4, max_degree=4, *,
 - `min_surplus` overrides the surplus demanded. `0` turns the requirement off
   while leaving the reporting intact.
 - `check_evidence=False` fits every candidate regardless of surplus and returns
-  the first fit with `confirmed` set honestly. It is the escape hatch, in the
+  the first fit with `status` set honestly. It is the escape hatch, in the
   same role `check_precision=False` plays on `guess_relation` — useful when the
   candidate is going somewhere else to be checked, never a way to make a weak
   fit look strong.
+
+Only `status == "unconfirmed"` — a fit with no surplus left — is refused.
+`"singular"` and `"underdetermined"` are *returned*, carrying the reason: in
+both the relation genuinely holds on the terms, so there is something for the
+caller to act on. `dimension > 1` used to raise, which made the whole
+`(order, degree)` cell unusable on sequences whose annihilator is narrower than
+the probe that reached them first.
 
 Terms must be exact: Python `int` of any size, or `fractions.Fraction`. A
 `float` is refused rather than converted, because every step after this one is
@@ -120,7 +183,7 @@ exact and would happily certify a recurrence for the sequence you rounded to.
 
 ```python
 guess = ak.guess_holonomic(terms)
-if guess is not None and guess.confirmed:
+if guess is not None and guess.confirmed is True:
     assert guess.holds_for(more_terms)          # exact, on data it never saw
     cert = ak.zeilberger(F, n, k, minimal=True) # …and now prove it
     cert.order == guess.order

@@ -40,7 +40,8 @@ from fractions import Fraction
 from numbers import Rational
 from typing import TYPE_CHECKING, Any
 
-from .alkahest import RecurrenceAsymptotics
+from .alkahest import ExprPool, RecurrenceAsymptotics
+from .alkahest import PoolError as _PoolError
 from .alkahest import asymptotics_from_recurrence as _native
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -51,8 +52,24 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 __all__ = ["RecurrenceAsymptotics", "asymptotics_from_recurrence"]
 
 
-def _coefficients(rec: Any) -> tuple[Any, int | None]:
-    """The coefficient polynomials of *rec*, and the index its terms start at.
+class RecurrencePoolError(_PoolError):
+    """``E-POOL-001`` — *n* is not from the pool *rec*'s coefficients live in.
+
+    A subclass of the *native* :class:`alkahest.PoolError`, so ``except
+    ak.PoolError`` catches it, carrying a code and a remediation that name the
+    fix. The bare mismatch the kernel raises is correct but arrives from
+    several frames down without saying which argument caused it or that there
+    is now a way not to pass one.
+    """
+
+    def __init__(self, message: str, remediation: str):
+        super().__init__(message)
+        self.code = "E-POOL-001"
+        self.remediation = remediation
+
+
+def _coefficients(rec: Any) -> tuple[Any, int | None, Any]:
+    """The coefficients of *rec*, the index its terms start at, and its own ``n``.
 
     Accepts the two objects that produce recurrences in this library plus the
     raw form. Duck-typed rather than ``isinstance``-checked so that a wrapper
@@ -65,9 +82,31 @@ def _coefficients(rec: Any) -> tuple[Any, int | None]:
     coeffs = getattr(rec, "coeffs", None)
     if coeffs is None:
         # A plain sequence of coefficient polynomials.
-        return list(rec), None
+        return list(rec), None, None
     start = getattr(rec, "start", None)
-    return list(coeffs), start
+    # `ZeilbergerCertificate.n` is the symbol its coefficients are written in,
+    # and the only one they can be combined with. A `GuessedRecurrence` has no
+    # pool at all — its coefficients are plain integers — so it has no `n`.
+    return list(coeffs), start, getattr(rec, "n", None)
+
+
+def _index_symbol(rec: Any, coeffs: Sequence[Any], own_n: Any) -> Expr:
+    """The index variable to use when the caller did not supply one."""
+    if own_n is not None:
+        return own_n
+    if all(hasattr(p, "__iter__") and not isinstance(p, str) for p in coeffs):
+        # Every coefficient is a sequence of integers, so nothing in *rec*
+        # belongs to a pool and the result is free to be built in a fresh one.
+        return ExprPool().symbol("n")
+    raise RecurrencePoolError(
+        f"n must be given: the coefficients of this {type(rec).__name__} are "
+        "expressions, and only the pool they were built in can say which "
+        "symbol is the index",
+        remediation=(
+            "pass the symbol the coefficients were built with — for a "
+            "ZeilbergerCertificate that is cert.n, and omitting n uses it"
+        ),
+    )
 
 
 def _exact(value: Any, where: str) -> int | tuple[int, int]:
@@ -92,7 +131,7 @@ def _exact(value: Any, where: str) -> int | tuple[int, int]:
 
 def asymptotics_from_recurrence(
     rec: Any,
-    n: Expr,
+    n: Expr | None = None,
     *,
     terms: Sequence[Any] | None = None,
     start: int | None = None,
@@ -107,7 +146,15 @@ def asymptotics_from_recurrence(
     ``Σ_{i=0}^{J} p_i(n) · u(n+i) = 0``.
 
     *n* is the index variable; it also says which
-    :class:`~alkahest.ExprPool` the result is built in.
+    :class:`~alkahest.ExprPool` the result is built in. **It is optional**, and
+    leaving it out is the safe way to call this: expressions from two different
+    pools cannot meet, so a certificate's coefficients only combine with the
+    certificate's own :attr:`~alkahest.ZeilbergerCertificate.n`, and a symbol
+    made in a fresh pool for the occasion is a pool mismatch several frames
+    down rather than an answer. Omitted, *n* comes from *rec* when *rec* has
+    one, and from a pool created here when its coefficients are plain integers
+    (a :class:`~alkahest.GuessedRecurrence`, or raw integer tuples), which
+    belong to no pool at all.
 
     :param terms: exact leading terms of the sequence, ``terms[0] = u(start)``.
         ``int`` or :class:`fractions.Fraction`; a ``float`` is refused. Without
@@ -125,6 +172,9 @@ def asymptotics_from_recurrence(
         coefficients, a coefficient that is not a polynomial in *n* over ``ℚ``,
         or a characteristic polynomial all of whose roots are zero. A recurrence
         whose hypotheses fail is *reported* through ``verdict``, not refused.
+    :raises alkahest.PoolError: ``E-POOL-001`` when *n* does not come from the
+        pool *rec*'s coefficients live in, or when it was omitted and *rec* is
+        a raw list of expressions that cannot say what its index symbol is.
     :raises TypeError: when a term is not an exact rational.
 
     Central binomial coefficients, ``C(2n,n) ~ 4ⁿ/√(πn)``:
@@ -156,9 +206,30 @@ def asymptotics_from_recurrence(
     >>> osc = asymptotics_from_recurrence([(-4,), (0,), (1,)], n, terms=[1, 2])
     >>> osc.verdict, osc.growth_rate
     ('equal_modulus_roots', None)
+
+    Integer coefficients belong to no pool, so ``n`` can simply be left out:
+
+    >>> asymptotics_from_recurrence([(-2, -4), (1, 1)], terms=[1]).growth_rate
+    4.0
     """
-    coeffs, rec_start = _coefficients(rec)
+    coeffs, rec_start, own_n = _coefficients(rec)
     if start is None:
         start = rec_start if rec_start is not None else 0
+    if n is None:
+        n = _index_symbol(rec, coeffs, own_n)
     exact = [_exact(t, "every term of the sequence") for t in (terms or ())]
-    return _native(coeffs, n, terms=exact, start=start)
+    try:
+        return _native(coeffs, n, terms=exact, start=start)
+    except _PoolError as exc:
+        # The kernel is right to refuse — two pools cannot meet — but it
+        # refuses from inside the coefficient walk, naming neither the argument
+        # at fault nor the fact that `rec` was carrying the right symbol all
+        # along. Re-raise with both.
+        if own_n is None:
+            raise
+        raise RecurrencePoolError(
+            f"n belongs to a different ExprPool than this {type(rec).__name__}, "
+            "whose coefficient polynomials can only be combined with the symbol "
+            "it was built with",
+            remediation=("omit n — it is taken from rec — or pass rec.n, which is that symbol"),
+        ) from exc

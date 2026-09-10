@@ -623,6 +623,43 @@ def test_sweep_records_refusals_instead_of_counting_them_as_successes():
     assert not sweep.sharp
 
 
+def test_a_modulus_past_the_word_ceiling_is_skipped_not_fatal():
+    """``E-HOLO-006`` from ``p**k`` past ``2**62`` must not kill the sweep.
+
+    It used to propagate, destroying every residue already computed and leaving
+    the caller to pre-filter the prime list by ``int((2**62)**(1/(k+1)))`` — the
+    exact accounting ``skipped()`` exists to do, and the same "out of reach of
+    this backend" that ``E-HOLO-008`` is already recorded for. At ``k=6`` with
+    one digit of extra precision the ceiling lands at ``p**7 < 2**62``, i.e.
+    just past 460, so this range straddles it.
+    """
+    rec = ak.ModularRecurrence(*SEQUENCES[0][1:3])
+    primes = [p for p in small_primes(700) if p >= 5]
+
+    sweep = ak.supercongruence_sweep(rec, primes, k=6, expect=1, max_counterexamples=len(primes))
+    assert sweep.n_skipped > 0
+    assert sweep.n_tested > 0, "the partial result survives"
+    assert sweep.n_tested + sweep.n_skipped == len(primes)
+    assert all("E-HOLO-006" in reason for _p, reason in sweep.skipped())
+    assert all(p > 460 for p, _reason in sweep.skipped())
+
+
+def test_a_composite_in_the_prime_list_is_still_fatal():
+    """The *other* ``E-HOLO-006`` is a fact about the call and must still raise.
+
+    A sweep that skipped its way through a list of composites would report
+    ``holds`` over zero primes — a range it never covered. The check is made up
+    front so that the reachable-modulus half can be skipped without taking this
+    half with it.
+    """
+    rec = ak.ModularRecurrence(*SEQUENCES[0][1:3])
+    with pytest.raises(ak.HolonomicError) as excinfo:
+        ak.supercongruence_sweep(rec, [5, 7, 9, 11], k=3, expect=1)
+    assert excinfo.value.code == "E-HOLO-006"
+    assert "9 is not prime" in str(excinfo.value)
+    assert excinfo.value.remediation
+
+
 def test_sweep_without_extra_precision_cannot_claim_sharpness():
     rec = ak.ModularRecurrence(*SEQUENCES[0][1:3])
     primes = [p for p in small_primes(100) if p >= 5]

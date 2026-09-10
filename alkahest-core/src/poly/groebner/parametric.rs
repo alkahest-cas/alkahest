@@ -54,6 +54,7 @@ use crate::poly::groebner::ideal::GbPoly;
 use crate::poly::groebner::monomial_order::MonomialOrder;
 use crate::poly::groebner::pairs::{lcm_exp, update_pairs, CriticalPair};
 use crate::poly::groebner::paramfield::{ParamPoly, QParam};
+use crate::poly::groebner::GroebnerBasis;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -291,6 +292,40 @@ impl ParamGbPoly {
         }
     }
 
+    /// `self · other`.
+    pub fn mul(&self, other: &Self) -> Self {
+        let mut out = ParamGbPoly::zero(self.n_vars, self.n_params);
+        for (ea, ca) in &self.terms {
+            for (eb, cb) in &other.terms {
+                let e: Vec<u32> = ea.iter().zip(eb.iter()).map(|(a, b)| a + b).collect();
+                let slot = out
+                    .terms
+                    .entry(e)
+                    .or_insert_with(|| QParam::zero(self.n_params));
+                *slot = slot.add(&ca.mul(cb));
+            }
+        }
+        out.terms.retain(|_, c| !c.is_zero());
+        out
+    }
+
+    /// The polynomial as a single element of `Q(params)`, or `None` when it
+    /// mentions a ring variable.
+    ///
+    /// The zero polynomial is `Some(0)`.  This is what decides whether a
+    /// negative power is a coefficient-field denominator (fine — that is where
+    /// the parameters live) or a genuine non-polynomial (not fine).
+    pub fn as_coeff(&self) -> Option<QParam> {
+        match self.terms.len() {
+            0 => Some(QParam::zero(self.n_params)),
+            1 => {
+                let (e, c) = self.terms.iter().next()?;
+                e.iter().all(|&k| k == 0).then(|| c.clone())
+            }
+            _ => None,
+        }
+    }
+
     /// `self · c · x^shift`.
     pub fn mul_monomial(&self, shift: &[u32], c: &QParam) -> Self {
         if c.is_zero() {
@@ -522,6 +557,13 @@ pub struct ParamGroebnerBasis {
     n_vars: usize,
     n_params: usize,
     conditions: Vec<ParamPoly>,
+    /// The generators this basis was computed from, kept so that
+    /// [`Self::specialize_verified`] can rebuild the oracle at a parameter
+    /// point instead of refusing on [`Self::conditions`] alone.
+    input_generators: Vec<ParamGbPoly>,
+    /// Variable slots dropped by [`Self::eliminate`], in call order.  The
+    /// oracle has to eliminate them too, or it is not comparing like with like.
+    eliminated: Vec<usize>,
 }
 
 impl ParamGroebnerBasis {
@@ -550,6 +592,7 @@ impl ParamGroebnerBasis {
             }
         }
 
+        let input_generators = gens.clone();
         let initial: Vec<ParamGbPoly> = gens
             .into_iter()
             .filter(|g| !g.is_zero())
@@ -563,6 +606,8 @@ impl ParamGroebnerBasis {
                 n_vars,
                 n_params,
                 conditions: conds.finish(),
+                input_generators,
+                eliminated: vec![],
             });
         }
 
@@ -613,6 +658,8 @@ impl ParamGroebnerBasis {
             n_vars,
             n_params,
             conditions: conds.finish(),
+            input_generators,
+            eliminated: vec![],
         })
     }
 
@@ -715,6 +762,107 @@ impl ParamGroebnerBasis {
         Ok(out)
     }
 
+    /// Specialise at `values`, **checking** the parameter point rather than
+    /// refusing on [`Self::conditions`] alone.
+    ///
+    /// [`Self::conditions`] is sufficient, not necessary: most of what it lists
+    /// are leading coefficients that were inverted somewhere inside the
+    /// Buchberger loop and then cancelled, so a large fraction of the points it
+    /// excludes are perfectly ordinary.  (On small-integer parameter grids a
+    /// quarter to a half of the refusals are of that kind, dominated by
+    /// parameters equal to exactly 0.)
+    ///
+    /// This does the work instead of guessing:
+    ///
+    /// 1. off the locus, it is exactly [`Self::specialize`];
+    /// 2. on it, `σ(F)` is re-Gröbner-ised over ℚ from scratch and compared with
+    ///    `σ(G)`.  They agree ⇒ the refusal was unnecessary and `σ(G)` is
+    ///    returned.  They disagree, or `σ(G)` has a genuine pole ⇒
+    ///    [`ParamGroebnerError::Degenerate`], as before.
+    ///
+    /// So this is strictly more complete and never less sound — but on the
+    /// locus it pays for a second Gröbner basis over ℚ, which is why
+    /// [`Self::specialize`] is still the default path.
+    ///
+    /// If [`Self::eliminate`] was applied, the oracle eliminates the same
+    /// variable slots before comparing; otherwise it would not be comparing
+    /// like with like.
+    pub fn specialize_verified(
+        &self,
+        values: &[Rational],
+    ) -> Result<Vec<GbPoly>, ParamGroebnerError> {
+        if values.len() != self.n_params {
+            return Err(ParamGroebnerError::WrongArity {
+                expected: self.n_params,
+                got: values.len(),
+            });
+        }
+        if self.is_regular_at(values) {
+            return self.specialize(values);
+        }
+
+        let vanishing = self.vanishing_conditions(values);
+        let degenerate = || ParamGroebnerError::Degenerate {
+            vanishing: vanishing.clone(),
+        };
+
+        // σ(G): the generic basis at the point.  A pole here is a genuine
+        // degeneration — the basis has no value at all there.
+        let mut spec = Vec::with_capacity(self.generators.len());
+        for g in &self.generators {
+            spec.push(g.specialize(values).ok_or_else(degenerate)?);
+        }
+
+        // σ(F): the input system at the point, re-solved over ℚ.
+        let mut direct = Vec::with_capacity(self.input_generators.len());
+        for g in &self.input_generators {
+            let p = g.specialize(values).ok_or_else(degenerate)?;
+            if !p.terms.is_empty() {
+                direct.push(p);
+            }
+        }
+        if direct.is_empty() {
+            // Nothing left to generate the ideal with; `σ(G)` cannot be checked
+            // against anything, so keep the refusal.
+            return Err(degenerate());
+        }
+        let mut oracle = GroebnerBasis::compute(direct, self.order);
+        if !self.eliminated.is_empty() {
+            oracle = GroebnerBasis::from_generators(
+                oracle
+                    .generators()
+                    .iter()
+                    .filter(|g| {
+                        !g.terms.keys().any(|e| {
+                            self.eliminated
+                                .iter()
+                                .any(|&i| e.get(i).copied().unwrap_or(0) > 0)
+                        })
+                    })
+                    .cloned()
+                    .collect(),
+                self.order,
+            );
+        }
+
+        // Equal ideals, checked both ways: `σ(G)` is then a Gröbner basis of the
+        // specialised ideal, which is all `specialize` ever promised.
+        if !spec.iter().all(|g| oracle.contains(g)) {
+            return Err(degenerate());
+        }
+        let spec_gb = GroebnerBasis::compute(
+            spec.iter()
+                .filter(|g| !g.terms.is_empty())
+                .cloned()
+                .collect(),
+            self.order,
+        );
+        if !oracle.generators().iter().all(|g| spec_gb.contains(g)) {
+            return Err(degenerate());
+        }
+        Ok(spec)
+    }
+
     /// Reduce a polynomial modulo this basis and return the remainder.
     pub fn reduce(&self, p: &ParamGbPoly) -> ParamGbPoly {
         let mut sink = ConditionLog::default();
@@ -724,6 +872,65 @@ impl ParamGroebnerBasis {
     /// Ideal membership: true when [`Self::reduce`] gives zero.
     pub fn contains(&self, p: &ParamGbPoly) -> bool {
         self.reduce(p).is_zero()
+    }
+
+    /// True when every generator of `other` lies in this ideal, i.e.
+    /// `⟨other⟩ ⊆ ⟨self⟩` as ideals of `Q(params)[vars]`.
+    ///
+    /// `false` when the two are written over different numbers of variables or
+    /// parameters — there is no shared ring in which to compare them.
+    pub fn contains_ideal(&self, other: &ParamGroebnerBasis) -> bool {
+        if (self.n_vars, self.n_params) != (other.n_vars, other.n_params) {
+            return false;
+        }
+        other.generators.iter().all(|g| self.contains(g))
+    }
+
+    /// True when the two bases generate the same ideal of `Q(params)[vars]`.
+    ///
+    /// This is an *exact* statement about the fraction field: reduction over
+    /// `Q(params)` only ever divides by non-zero field elements, so no
+    /// genericity hypothesis is involved and neither basis's
+    /// [`Self::conditions`] enters the answer.  Those conditions still bound
+    /// what each basis says about a *specialised* parameter point.
+    pub fn equals_ideal(&self, other: &ParamGroebnerBasis) -> bool {
+        self.contains_ideal(other) && other.contains_ideal(self)
+    }
+
+    /// This basis re-read in a ring with `extra` further variables, appended
+    /// after the existing ones.
+    ///
+    /// A Gröbner basis stays one when the ring gains variables none of its
+    /// generators mention: every leading monomial is unchanged and every S-pair
+    /// reduces exactly as before.  Prolongation needs this — each round
+    /// introduces new jets, and recomputing the previous round's basis over the
+    /// wider ring just to test membership would double the work.
+    pub fn extend_vars(&self, extra: usize) -> ParamGroebnerBasis {
+        if extra == 0 {
+            return self.clone();
+        }
+        let pad = |p: &ParamGbPoly| ParamGbPoly {
+            terms: p
+                .terms
+                .iter()
+                .map(|(e, c)| {
+                    let mut e = e.clone();
+                    e.extend(std::iter::repeat(0u32).take(extra));
+                    (e, c.clone())
+                })
+                .collect(),
+            n_vars: p.n_vars + extra,
+            n_params: p.n_params,
+        };
+        ParamGroebnerBasis {
+            generators: self.generators.iter().map(pad).collect(),
+            order: self.order,
+            n_vars: self.n_vars + extra,
+            n_params: self.n_params,
+            conditions: self.conditions.clone(),
+            input_generators: self.input_generators.iter().map(pad).collect(),
+            eliminated: self.eliminated.clone(),
+        }
     }
 
     /// The elimination ideal `I ∩ Q(params)[remaining vars]`.
@@ -743,12 +950,16 @@ impl ParamGroebnerBasis {
             })
             .cloned()
             .collect();
+        let mut eliminated = self.eliminated.clone();
+        eliminated.extend_from_slice(vars);
         ParamGroebnerBasis {
             generators,
             order: self.order,
             n_vars: self.n_vars,
             n_params: self.n_params,
             conditions: self.conditions.clone(),
+            input_generators: self.input_generators.clone(),
+            eliminated,
         }
     }
 }
@@ -763,7 +974,7 @@ mod tests {
     use crate::poly::groebner::GroebnerBasis;
 
     /// `c · x^var_exp · p^par_exp` as a one-term parametric polynomial.
-    fn term(
+    pub(super) fn term(
         n_vars: usize,
         n_params: usize,
         var_exp: &[u32],
@@ -781,19 +992,19 @@ mod tests {
         p
     }
 
-    fn sum(parts: Vec<ParamGbPoly>) -> ParamGbPoly {
+    pub(super) fn sum(parts: Vec<ParamGbPoly>) -> ParamGbPoly {
         let mut it = parts.into_iter();
         let first = it.next().expect("non-empty");
         it.fold(first, |a, b| a.add(&b))
     }
 
-    fn rat(v: i64) -> Rational {
+    pub(super) fn rat(v: i64) -> Rational {
         Rational::from(v)
     }
 
     /// The same system written over ℚ with the parameters substituted, as a
     /// plain `GbPoly` — the oracle for the specialisation tests.
-    fn gb_over_q(polys: &[Vec<(Vec<u32>, Rational)>], n_vars: usize) -> GroebnerBasis {
+    pub(super) fn gb_over_q(polys: &[Vec<(Vec<u32>, Rational)>], n_vars: usize) -> GroebnerBasis {
         let gens: Vec<GbPoly> = polys
             .iter()
             .map(|terms| GbPoly {
@@ -978,5 +1189,137 @@ mod tests {
         let g = term(3, 1, &[1, 0, 0], &[0], 1);
         let err = ParamGroebnerBasis::compute(vec![f, g], MonomialOrder::Lex).unwrap_err();
         assert_eq!(err.code(), "E-PARAMGB-002");
+    }
+}
+
+#[cfg(test)]
+mod ideal_and_verify_tests {
+    use super::tests::*;
+    use super::*;
+
+    /// `{a·x + b·y - 1, c·x + d·y - 1}` over `Q(a, b, c, d)[x, y]`.
+    fn cramer() -> ParamGroebnerBasis {
+        let f = sum(vec![
+            term(2, 4, &[1, 0], &[1, 0, 0, 0], 1),
+            term(2, 4, &[0, 1], &[0, 1, 0, 0], 1),
+            term(2, 4, &[0, 0], &[0, 0, 0, 0], -1),
+        ]);
+        let g = sum(vec![
+            term(2, 4, &[1, 0], &[0, 0, 1, 0], 1),
+            term(2, 4, &[0, 1], &[0, 0, 0, 1], 1),
+            term(2, 4, &[0, 0], &[0, 0, 0, 0], -1),
+        ]);
+        ParamGroebnerBasis::compute(vec![f, g], MonomialOrder::Lex).unwrap()
+    }
+
+    #[test]
+    fn a_basis_contains_its_own_generators() {
+        let gb = cramer();
+        assert!(!gb.is_empty());
+        for g in gb.generators() {
+            assert!(gb.contains(g), "a basis must contain its own generators");
+        }
+    }
+
+    #[test]
+    fn equals_ideal_is_mutual_containment() {
+        // ⟨a·x - 1⟩ and ⟨a²·x - a⟩ are the same ideal of Q(a)[x]: over the
+        // fraction field `a` is a unit.
+        let f = term(1, 1, &[1], &[1], 1).sub(&term(1, 1, &[0], &[0], 1));
+        let g = term(1, 1, &[1], &[2], 1).sub(&term(1, 1, &[0], &[1], 1));
+        let gf = ParamGroebnerBasis::compute(vec![f], MonomialOrder::Lex).unwrap();
+        let gg = ParamGroebnerBasis::compute(vec![g], MonomialOrder::Lex).unwrap();
+        assert!(gf.equals_ideal(&gg));
+        assert!(gg.equals_ideal(&gf));
+
+        // ⟨x⟩ is a different ideal.
+        let h = term(1, 1, &[1], &[0], 1);
+        let gh = ParamGroebnerBasis::compute(vec![h], MonomialOrder::Lex).unwrap();
+        assert!(!gf.equals_ideal(&gh));
+        assert!(!gh.contains_ideal(&gf));
+    }
+
+    #[test]
+    fn equals_ideal_refuses_a_shape_mismatch() {
+        let f = term(1, 1, &[1], &[1], 1);
+        let g = term(1, 2, &[1], &[1, 0], 1);
+        let gf = ParamGroebnerBasis::compute(vec![f], MonomialOrder::Lex).unwrap();
+        let gg = ParamGroebnerBasis::compute(vec![g], MonomialOrder::Lex).unwrap();
+        assert!(!gf.equals_ideal(&gg));
+    }
+
+    #[test]
+    fn specialize_verified_accepts_an_unnecessary_refusal() {
+        let gb = cramer();
+        // a = 0, b = c = d = 1: `a` is a recorded condition, but the only
+        // denominator in the basis is a·d - b·c = -1.
+        let pt = [rat(0), rat(1), rat(1), rat(1)];
+        assert!(!gb.is_regular_at(&pt));
+        assert!(matches!(
+            gb.specialize(&pt),
+            Err(ParamGroebnerError::Degenerate { .. })
+        ));
+
+        let spec = gb
+            .specialize_verified(&pt)
+            .expect("refusal was unnecessary");
+        // y = 1, x = 0.
+        let direct = gb_over_q(
+            &[
+                vec![(vec![0, 1], rat(1)), (vec![0, 0], rat(-1))],
+                vec![
+                    (vec![1, 0], rat(1)),
+                    (vec![0, 1], rat(1)),
+                    (vec![0, 0], rat(-1)),
+                ],
+            ],
+            2,
+        );
+        let spec_gb = GroebnerBasis::compute(spec, MonomialOrder::Lex);
+        for g in direct.generators() {
+            assert!(spec_gb.contains(g));
+        }
+        for g in spec_gb.generators() {
+            assert!(direct.contains(g));
+        }
+    }
+
+    #[test]
+    fn specialize_verified_still_refuses_a_genuine_pole() {
+        let gb = cramer();
+        // a·d - b·c = 0: the coefficients have no value there at all.
+        for pt in [
+            [rat(1), rat(1), rat(1), rat(1)],
+            [rat(1), rat(1), rat(2), rat(2)],
+        ] {
+            assert!(matches!(
+                gb.specialize_verified(&pt),
+                Err(ParamGroebnerError::Degenerate { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn specialize_verified_matches_specialize_at_regular_points() {
+        let gb = cramer();
+        let pt = [rat(1), rat(2), rat(3), rat(4)];
+        assert!(gb.is_regular_at(&pt));
+        let a = gb.specialize(&pt).unwrap();
+        let b = gb.specialize_verified(&pt).unwrap();
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert_eq!(x.terms, y.terms);
+        }
+    }
+
+    #[test]
+    fn extend_vars_keeps_membership() {
+        let gb = cramer();
+        let wide = gb.extend_vars(3);
+        assert_eq!(wide.n_vars(), gb.n_vars() + 3);
+        for (narrow, padded) in gb.generators().iter().zip(wide.generators()) {
+            assert_eq!(narrow.n_terms(), padded.n_terms());
+            assert!(wide.contains(padded));
+        }
     }
 }

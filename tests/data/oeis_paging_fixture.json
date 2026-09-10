@@ -1,0 +1,648 @@
+{
+ "kind": "alkahest.oeis_raw_pages",
+ "version": 1,
+ "license": "Sequence data and formula lines are from the On-Line Encyclopedia of Integer Sequences (https://oeis.org), (c) The OEIS Foundation Inc., licensed CC BY-NC-SA 4.0.",
+ "note": "Raw https://oeis.org/search?...&fmt=json pages, keyed 'query|start', trimmed to the fields OeisEntry.from_oeis_json reads. Recorded once so the paging tests can run with no network.",
+ "pages": {
+  "1,1,2,3,5,8,13|0": [
+   {
+    "number": 45,
+    "name": "Fibonacci numbers: F(n) = F(n-1) + F(n-2) with F(0) = 0 and F(1) = 1.",
+    "data": "0,1,1,2,3,5,8,13,21,34,55,89,144,233,377,610,987,1597,2584,4181,6765,10946,17711,28657,46368,75025,121393,196418,317811,514229,832040,1346269,2178309,3524578,5702887,9227465,14930352,24157817,39088169,63245986,102334155",
+    "offset": "0,4",
+    "formula": [
+     "G.f.: x / (1 - x - x^2).",
+     "G.f.: Sum_{n>=0} x^n * Product_{k=1..n} (k + x)/(1 + k*x). - _Paul D. Hanna_, Oct 26 2013",
+     "F(n) = ((1+sqrt(5))^n - (1-sqrt(5))^n)/(2^n*sqrt(5)).",
+     "Alternatively, F(n) = ((1/2+sqrt(5)/2)^n - (1/2-sqrt(5)/2)^n)/sqrt(5).",
+     "F(n) = F(n-1) + F(n-2) = -(-1)^n F(-n).",
+     "F(n) = round(phi^n/sqrt(5)).",
+     "F(n+1) = Sum_{j=0..floor(n/2)} binomial(n-j, j).",
+     "A strong divisibility sequence, that is, gcd(a(n), a(m)) = a(gcd(n, m)) for all positive integers n and m. - _Michael Somos_, Jan 03 2017",
+     "E.g.f.: (2/sqrt(5))*exp(x/2)*sinh(sqrt(5)*x/2). - _Len Smiley_, Nov 30 2001",
+     "[0 1; 1 1]^n [0 1] = [F(n); F(n+1)]",
+     "x | F(n) ==> x | F(kn).",
+     "A sufficient condition for F(m) to be divisible by a prime p is (p - 1) divides m, if p == 1 or 4 (mod 5); (p + 1) divides m, if p == 2 or 3 (mod 5); or 5 divides m, if p = 5. (This is essentially Theorem 180 in Hardy and Wright.) - Fred W. Helenius (fredh(AT)ix.netcom.com), Jun 29 2001",
+     "a(n)=F(n) has the property: F(n)*F(m) + F(n+1)*F(m+1) = F(n+m+1). - _Miklos Kristof_, Nov 13 2003",
+     "From _Kurmang. Aziz. Rashid_, Feb 21 2004: (Start)",
+     "Conjecture 1: for n >= 2, sqrt(F(2n+1) + F(2n+2) + F(2n+3) + F(2n+4) + 2*(-1)^n) = (F(2n+1) + 2*(-1)^n)/F(n-1). [For a proof see Comments section.]",
+     "Conjecture 2: for n >= 0, (F(n+2)*F(n+3)) - (F(n+1)*F(n+4)) + (-1)^n = 0.",
+     "[Two more conjectures removed by _Peter Luschny_, Nov 17 2017]",
+     "Theorem 1: for n >= 0, (F(n+3)^ 2 - F(n+1)^ 2)/F(n+2) = (F(n+3)+ F(n+1)).",
+     "Theorem 2: for n >= 0, F(n+10) = 11*F(n+5) + F(n).",
+     "Theorem 3: for n >= 6, F(n) = 4*F(n-3) + F(n-6). (End)",
+     "Conjecture 2 of Rashid is actually a special case of the general law F(n)*F(m) + F(n+1)*F(m+1) = F(n+m+1) (take n <- n+1 and m <- -(n+4) in this law). - Harmel Nestra (harmel.nestra(AT)ut.ee), Apr 22 2005",
+     "Conjecture 2 of Rashid Kurmang simplified: F(n)*F(n+3) = F(n+1)*F(n+2)-(-1)^n. Follows from d'Ocagne's identity: m=n+2. - _Alex Ratushnyak_, May 06 2012",
+     "Conjecture: for all c such that 2-phi <= c < 2*(2-phi) we have F(n) = floor(phi*a(n-1)+c) for n > 2. - _Gerald McGarvey_, Jul 21 2004",
+     "For x > phi, Sum_{n>=0} F(n)/x^n = x/(x^2 - x - 1). - _Gerald McGarvey_, Oct 27 2004",
+     "F(n+1) = exponent of the n-th term in the series f(x, 1) determined by the equation f(x, y) = xy + f(xy, x). - _Jonathan Sondow_, Dec 19 2004",
+     "a(n-1) = Sum_{k=0..n} (-1)^k*binomial(n-ceiling(k/2), floor(k/2)). - _Benoit Cloitre_, May 05 2005",
+     "a(n) = Sum_{k=0..n} abs(A108299(n, k)). - _Reinhard Zumkeller_, Jun 01 2005",
+     "a(n) = A001222(A000304(n)).",
+     "F(n+1) = Sum_{k=0..n} binomial((n+k)/2, (n-k)/2)(1+(-1)^(n-k))/2. - _Paul Barry_, Aug 28 2005",
+     "Fibonacci(n) = Product_{j=1..ceiling(n/2)-1} (1 + 4(cos(j*Pi/n))^2). [Bicknell and Hoggatt, pp. 47-48.] - _Emeric Deutsch_, Oct 15 2006",
+     "F(n) = 2^(-(n-1))*Sum_{k=0..floor((n-1)/2)} binomial(n,2*k+1)*5^k. - _Hieronymus Fischer_, Feb 07 2006",
+     "a(n) = (b(n+1) + b(n-1))/n where {b(n)} is the sequence A001629. - _Sergio Falcon_, Nov 22 2006",
+     "F(n*m) = Sum_{k = 0..m} binomial(m,k)*F(n-1)^k*F(n)^(m-k)*F(m-k). The generating function of F(n*m) (n fixed, m = 0,1,2,...) is G(x) = F(n)*x / ((1 - F(n-1)*x)^2 - F(n)*x*(1 - F(n-1)*x) - (F(n)*x)^2). E.g., F(15) = 610 = F(5*3) = binomial(3,0)* F(4)^0*F(5)^3*F(3) + binomial(3,1)* F(4)^1*F(5)^2*F(2) + binomial(3,2)* F(4)^2*F(5)^1*F(1) + binomial(3,3)* F(4)^3*F(5)^0*F(0) = 1*1*125*2 + 3*3*25*1 + 3*9*5*1 + 1*27*1*0 = 250 + 225 + 135 + 0 = 610. - _Miklos Kristof_, Feb 12 2007",
+     "From _Miklos Kristof_, Mar 19 2007: (Start)",
+     "  Let L(n) = A000032(n) = Lucas numbers. Then:",
+     "  For a >= b and odd b,  F(a+b) + F(a-b) = L(a)*F(b).",
+     "  For a >= b and even b, F(a+b) + F(a-b) = F(a)*L(b).",
+     "  For a >= b and odd b,  F(a+b) - F(a-b) = F(a)*L(b).",
+     "  For a >= b and even b, F(a+b) - F(a-b) = L(a)*F(b).",
+     "  F(n+m) + (-1)^m*F(n-m) = F(n)*L(m);",
+     "  F(n+m) - (-1)^m*F(n-m) = L(n)*F(m);",
+     "  F(n+m+k) + (-1)^k*F(n+m-k) + (-1)^m*(F(n-m+k) + (-1)^k*F(n-m-k)) = F(n)*L(m)*L(k);",
+     "  F(n+m+k) - (-1)^k*F(n+m-k) + (-1)^m*(F(n-m+k) - (-1)^k*F(n-m-k)) = L(n)*L(m)*F(k);",
+     "  F(n+m+k) + (-1)^k*F(n+m-k) - (-1)^m*(F(n-m+k) + (-1)^k*F(n-m-k)) = L(n)*F(m)*L(k);",
+     "  F(n+m+k) - (-1)^k*F(n+m-k) - (-1)^m*(F(n-m+k) - (-1)^k*F(n-m-k)) = 5*F(n)*F(m)*F(k). (End)",
+     "A corollary to Kristof 2007 is 2*F(a+b) = F(a)*L(b) + L(a)*F(b). - _Graeme McRae_, Apr 24 2014",
+     "For n > m, the sum of the 2m consecutive Fibonacci numbers F(n-m-1) thru F(n+m-2) is F(n)*L(m) if m is odd, and L(n)*F(m) if m is even (see the McRae link). - _Graeme McRae_, Apr 24 2014.",
+     "F(n) = b(n) + (p-1)*Sum_{k=2..n-1} floor(b(k)/p)*F(n-k+1) where b(k) is the digital sum analog of the Fibonacci recurrence, defined by b(k) = ds_p(b(k-1)) + ds_p(b(k-2)), b(0)=0, b(1)=1, ds_p=digital sum base p. Example for base p=10: F(n) = A010077(n) + 9*Sum_{k=2..n-1} A059995(A010077(k))*F(n-k+1). - _Hieronymus Fischer_, Jul 01 2007",
+     "F(n) = b(n)+p*Sum_{k=2..n-1} floor(b(k)/p)*F(n-k+1) where b(k) is the digital product analog of the Fonacci recurrence, defined by b(k) = dp_p(b(k-1)) + dp_p(b(k-2)), b(0)=0, b(1)=1, dp_p=digital product base p. Example for base p=10: F(n) = A074867(n) + 10*Sum_{k=2..n-1} A059995(A074867(k))*F(n-k+1). - _Hieronymus Fischer_, Jul 01 2007",
+     "a(n) = denominator of continued fraction [1,1,1,...] (with n ones); e.g., 2/3 = continued fraction [1,1,1]; where barover[1] = [1,1,1,...] = 0.6180339.... - _Gary W. Adamson_, Nov 29 2007",
+     "F(n + 3) = 2F(n + 2) - F(n), F(n + 4) = 3F(n + 2) - F(n), F(n + 8) = 7F(n + 4) - F(n), F(n + 12) = 18F(n + 6) - F(n). - _Paul Curtz_, Feb 01 2008",
+     "a(2^n) = Product_{i=0..n-2} B(i) where B(i) is A001566. Example 3*7*47 = F(16). - _Kenneth J Ramsey_, Apr 23 2008",
+     "a(n+1) = Sum_{k=0..n} A109466(n,k)*(-1)^(n-k). -_Philippe Del\u00e9ham_, Oct 26 2008",
+     "a(n) = Sum_{l_1=0..n+1} Sum_{l_2=0..n}...Sum_{l_i=0..n-i}... Sum_{l_n=0..1} delta(l_1,l_2,...,l_i,...,l_n), where delta(l_1,l_2,...,l_i,...,l_n) = 0 if any l_i + l_(i+1) >= 2 for i=1..n-1 and delta(l_1,l_2,...,l_i,...,l_n) = 1 otherwise. - _Thomas Wieder_, Feb 25 2009",
+     "a(n+1) = 2^n sqrt(Product_{k=1..n} cos(k Pi/(n+1))^2+1/4) (Kasteleyn's formula specialized). - _Sarah-Marie Belcastro_, Jul 04 2009",
+     "a(n+1) = Sum_{k=floor(n/2) mod 5} C(n,k) - Sum_{k=floor((n+5)/2) mod 5} C(n,k) = A173125(n) - A173126(n) = |A054877(n)-A052964(n-1)|. - _Henry Bottomley_, Feb 10 2010",
+     "If p[i] = modp(i,2) and if A is Hessenberg matrix of order n defined by: A[i,j] = p[j-i+1], (i <= j), A[i,j]=-1, (i=j+1), and A[i,j]=0 otherwise. Then, for n >= 1, a(n)=det A. - _Milan Janjic_, May 02 2010",
+     "Limit_{k->oo} F(k+n)/F(k) = (L(n) + F(n)*sqrt(5))/2 with the Lucas numbers L(n) = A000032(n). - _Johannes W. Meijer_, May 27 2010",
+     "For n >= 1, F(n) = round(log_2(2^(phi*F(n-1)) + 2^(phi*F(n-2)))), where phi is the golden ratio. - _Vladimir Shevelev_, Jun 24 2010, Jun 27 2010",
+     "For n >= 1, a(n+1) = ceiling(phi*a(n)), if n is even and a(n+1) = floor(phi*a(n)), if n is odd (phi = golden ratio). - _Vladimir Shevelev_, Jul 01 2010",
+     "a(n) = 2*a(n-2) + a(n-3), n > 2. - _Gary Detlefs_, Sep 08 2010",
+     "a(2^n) = Product_{i=0..n-1} A000032(2^i). - _Vladimir Shevelev_, Nov 28 2010",
+     "a(n)^2 - a(n-1)^2 = a(n+1)*a(n-2), see A121646.",
+     "a(n) = sqrt((-1)^k*(a(n+k)^2 - a(k)*a(2n+k))), for any k. - _Gary Detlefs_, Dec 03 2010",
+     "F(2*n) = F(n+2)^2 - F(n+1)^2 - 2*F(n)^2. - _Richard R. Forberg_, Jun 04 2011",
+     "From _Artur Jasinski_, Nov 17 2011: (Start)",
+     "(-1)^(n+1) = F(n)^2 + F(n)*F(1+n) - F(1+n)^2.",
+     "F(n) = F(n+2) - 1 + (F(n+1))^4 + 2*(F(n+1)^3*F(n+2)) - (F(n+1)*F(n+2))^2 - 2*F(n+1)(F(n+2))^3 + (F(n+2))^4 - F(n+1). (End)",
+     "F(n) = 1 + Sum_{x=1..n-2} F(x). - _Joseph P. Shoulak_, Feb 05 2012",
+     "F(n) = 4*F(n-2) - 2*F(n-3) - F(n-6). - _Gary Detlefs_, Apr 01 2012",
+     "F(n) = round(phi^(n+1)/(phi+2)). - _Thomas Ordowski_, Apr 20 2012",
+     "From _Sergei N. Gladkovskii_, Jun 03 2012: (Start)",
+     "G.f.: A(x) = x/(1-x-x^2) = G(0)/sqrt(5) where G(k) = 1 - ((-1)^k)*2^k/(a^k - b*x*a^k*2^k/(b*x*2^k - 2*((-1)^k)*c^k/G(k+1))) and a=3+sqrt(5), b=1+sqrt(5), c=3-sqrt(5); (continued fraction, 3rd kind, 3-step).",
+     "Let E(x) be the e.g.f., i.e.,",
+     "E(x) = 1*x + (1/2)*x^2 + (1/3)*x^3 + (1/8)*x^4 + (1/24)*x^5 + (1/90)*x^6 + (13/5040)*x^7 + ...; then",
+     "E(x) = G(0)/sqrt(5); G(k) = 1 - ((-1)^k)*2^k/(a^k - b*x*a^k*2^k/(b*x*2^k - 2*((-1)^k)*(k+1)*c^k/G(k+1))), where a=3+sqrt(5), b=1+sqrt(5), c=3-sqrt(5); (continued fraction, 3rd kind, 3-step).",
+     "(End)",
+     "From _Hieronymus Fischer_, Nov 30 2012: (Start)",
+     "F(n) = 1 + Sum_{j_1=1..n-2} 1 + Sum_{j_1=1..n-2} Sum_{j_2=1..j_1-2} 1 + Sum_{j_1=1..n-2} Sum_{j_2=1..j_1-2} Sum_{j_3=1..j_2-2} 1 + ... + Sum_{j_1=1..n-2} Sum_{j_2=1..j_1-2} Sum_{j_3=1..j_2-2} ... Sum_{j_k=1..j_(k-1)-2} 1, where k = floor((n-1)/2).",
+     "Example: F(6) = 1 + Sum_{j=1..4} 1 + Sum_{j=1..4} Sum_{k=1..(j-2)} 1 + 0 = 1 + (1 + 1 + 1 + 1) + (1 + (1 + 1)) = 8.",
+     "F(n) = Sum_{j=0..k} S(j+1,n-2j), where k = floor((n-1)/2) and the S(j,n) are the n-th j-simplex sums: S(1,n) = 1 is the 1-simplex sum, S(2,n) = Sum_{k=1..n} S(1,k) = 1+1+...+1 = n is the 2-simplex sum, S(3,n) = Sum_{k=1..n} S(2,k) = 1+2+3+...+n is the 3-simplex sum (= triangular numbers = A000217), S(4,n) = Sum_{k=1..n} S(3,k) = 1+3+6+...+n(n+1)/2 is the 4-simplex sum (= tetrahedral numbers = A000292) and so on.",
+     "Since S(j,n) = binomial(n-2+j,j-1), the formula above equals the well-known binomial formula, essentially. (End)",
+     "G.f.: A(x) = x / (1 - x / (1 - x / (1 + x))). - _Michael Somos_, Jan 04 2013",
+     "Sum_{n >= 1} (-1)^(n-1)/(a(n)*a(n+1)) = 1/phi (phi=golden ratio). - _Vladimir Shevelev_, Feb 22 2013",
+     "From _Raul Prisacariu_, Oct 29 2023: (Start)",
+     "For odd k, Sum_{n >= 1} a(k)^2*(-1)^(n-1)/(a(k*n)*a(k*n+k)) = phi^(-k).",
+     "For even k, Sum_{n >= 1} a(k)^2/(a(k*n)*a(k*n+k)) = phi^(-k). (End)",
+     "From _Vladimir Shevelev_, Feb 24 2013: (Start)",
+     "(1) Expression a(n+1) via a(n): a(n+1) = (a(n) + sqrt(5*(a(n))^2 + 4*(-1)^n))/2;",
+     "(2) Sum_{k=1..n} (-1)^(k-1)/(a(k)*a(k+1)) = a(n)/a(n+1);",
+     "(3) a(n)/a(n+1) = 1/phi + r(n), where |r(n)| < 1/(a(n+1)*a(n+2)). (End)",
+     "F(n+1) = F(n)/2 + sqrt((-1)^n + 5*F(n)^2/4), n >= 0. F(n+1) = U_n(i/2)/i^n, (U:= Chebyshev polynomial of the 2nd kind, i=sqrt(-1)). - _Bill Gosper_, Mar 04 2013",
+     "G.f.: -Q(0) where Q(k) = 1 - (1+x)/(1 - x/(x - 1/Q(k+1) )); (continued fraction). - _Sergei N. Gladkovskii_, Mar 06 2013",
+     "G.f.: x - 1 - 1/x + (1/x)/Q(0), where Q(k) = 1 - (k+1)*x/(1 - x/(x - (k+1)/Q(k+1))); (continued fraction). - _Sergei N. Gladkovskii_, Apr 23 2013",
+     "G.f.: x*G(0), where G(k) = 1 + x*(1+x)/(1 - x*(1+x)/(x*(1+x) + 1/G(k+1) )); (continued fraction). - _Sergei N. Gladkovskii_, Jul 08 2013",
+     "G.f.: x^2 - 1 + 2*x^2/(W(0)-2), where W(k) = 1 + 1/(1 - x*(k + x)/( x*(k+1 + x) + 1/W(k+1) )); (continued fraction). - _Sergei N. Gladkovskii_, Aug 28 2013",
+     "G.f.: Q(0) - 1, where Q(k) = 1 + x^2 + (k+2)*x - x*(k+1 + x)/Q(k+1); (continued fraction). - _Sergei N. Gladkovskii_, Oct 06 2013",
+     "Let b(n) = b(n-1) + b(n-2), with b(0) = 0, b(1) = phi. Then, for n >= 2, F(n) = floor(b(n-1)) if n is even, F(n) = ceiling(b(n-1)), if n is odd, with convergence. - _Richard R. Forberg_, Jan 19 2014",
+     "a(n) = Sum_{t1*g(1)+t2*g(2)+...+tn*g(n)=n} multinomial(t1+t2+...+tn,t1,t2,...,tn), where g(k)=2*k-1. - _Mircea Merca_, Feb 27 2014",
+     "F(n) = round(sqrt(F(n-1)^2 + F(n)^2 + F(n+1)^2)/2), for n > 0. This rule appears to apply to any sequence of the form a(n) = a(n-1) + a(n-2), for any two values of a(0) and a(1), if n is sufficiently large. - _Richard R. Forberg_, Jul 27 2014",
+     "F(n) = round(2/(1/F(n) + 1/F(n+1) + 1/F(n+2))), for n > 0. This rule also appears to apply to any sequence of the form a(n) = a(n-1) + a(n-2), for any two values of a(0) and a(1), if n is sufficiently large. - _Richard R. Forberg_, Aug 03 2014",
+     "F(n) = round(1/(Sum_{j>=n+2} 1/F(j))). - _Richard R. Forberg_, Aug 14 2014",
+     "a(n) = hypergeometric([-n/2+1/2, -n/2+1], [-n+1], -4) for n >= 2. - _Peter Luschny_, Sep 19 2014",
+     "Limit_{n -> oo} (log F(n+1)/log F(n))^n = e. - _Thomas Ordowski_, Oct 06 2014",
+     "F(n) = (L(n+1)^2 - L(n-1)^2)/(5*L(n)), where L(n) is A000032(n), with a similar inverse relationship. - _Richard R. Forberg_, Nov 17 2014",
+     "Consider the graph G[1-vertex;1-loop,2-loop] in comment above. Construct the power matrix array T(n,j) = [A^*j]*[S^*(j-1)] where A=(1,1,0,...) and S=(0,1,0,...)(A063524). [* is convolution operation] Define S^*0=I with I=(1,0,...). Then T(n,j) counts n-walks containing (j) loops and a(n-1) = Sum_{j=1..n} T(n,j). - _David Neil McGrath_, Nov 21 2014",
+     "Define F(-n) to be F(n) for n odd and -F(n) for n even. Then for all n and k, F(n) = F(k)*F(n-k+3) - F(k-1)*F(n-k+2) - F(k-2)*F(n-k) + (-1)^k*F(n-2k+2). - _Charlie Marion_, Dec 04 2014",
+     "F(n+k)^2 - L(k)*F(n)*F(n+k) + (-1)^k*F(n)^2 = (-1)^n*F(k)^2, if L(k) = A000032(k). - _Alexander Samokrutov_, Jul 20 2015",
+     "F(2*n) = F(n+1)^2 - F(n-1)^2, similar to Koshy (D) and Forberg 2011, but different. - _Hermann Stamm-Wilbrandt_, Aug 12 2015",
+     "F(n+1) = ceiling( (1/phi)*Sum_{k=0..n} F(k) ). - _Tom Edgar_, Sep 10 2015",
+     "a(n) = (L(n-3) + L(n+3))/10 where L(n)=A000032(n). - _J. M. Bergot_, Nov 25 2015",
+     "From _Bob Selcoe_, Mar 27 2016: (Start)",
+     "F(n) = (F(2n+k+1) - F(n+1)*F(n+k+1))/F(n+k), k >= 0.",
+     "Thus when k=0: F(n) = sqrt(F(2n+1) - F(n+1)^2).",
+     "F(n) = (F(3n) - F(n+1)^3 + F(n-1)^3)^(1/3).",
+     "F(n+2k) = binomial transform of any subsequence starting with F(n). Example F(6)=8: 1*8 = F(6)=8; 1*8 + 1*13 = F(8)=21; 1*8 + 2*13 + 1*21 = F(10)=55; 1*8 + 3*13 + 3*21 + 1*34 = F(12)=144, etc. This formula applies to Fibonacci-type sequences with any two seed values for a(0) and a(1) (e.g., Lucas sequence A000032: a(0)=2, a(1)=1).",
+     "(End)",
+     "F(n) = L(k)*F(n-k) + (-1)^(k+1)*F(n-2k) for all k >= 0, where L(k) = A000032(k). - _Anton Zakharov_, Aug 02 2016",
+     "From _Ilya Gutkovskiy_, Aug 03 2016: (Start)",
+     "a(n) = F_n(1), where F_n(x) are the Fibonacci polynomials.",
+     "Inverse binomial transform of A001906.",
+     "Number of zeros in substitution system {0 -> 11, 1 -> 1010} at step n from initial string \"1\" (1 -> 1010 -> 101011101011 -> ...) multiplied by 1/A000079(n). (End)",
+     "For n >= 2, a(n) = 2^(n^2+n) - (4^n-2^n-1)*floor(2^(n^2+n)/(4^n-2^n-1)) - 2^n*floor(2^(n^2) - (2^n-1-1/2^n)*floor(2^(n^2+n)/(4^n-2^n-1))). - _Benoit Cloitre_, Apr 17 2017",
+     "f(n+1) = Sum_{j=0..floor(n/2)} Sum_{k=0..j} binomial(n-2j,k)*binomial(j,k). - _Tony Foster III_, Sep 04 2017",
+     "F(n) = Sum_{k=0..floor((n-1)/2)} ( (n-k-1)! / ((n-2k-1)! * k!) ). - _Zhandos Mambetaliyev_, Nov 08 2017",
+     "For x even, F(n) = (F(n+x) + F(n-x))/L(x). For x odd, F(n) = (F(n+x) - F(n-x))/L(x) where n >= x in both cases. Therefore F(n) = F(2*n)/L(n) for n >= 0. - _David James Sycamore_, May 04 2018",
+     "From _Isaac Saffold_, Jul 19 2018: (Start)",
+     "Let [a/p] denote the Legendre symbol. Then, for an odd prime p:",
+     "  F(p+n) == [5/p]*F([5/p]+n) (mod p), if [5/p] = 1 or -1.",
+     "  F(p+n) == 3*F(n) (mod p), if [5/p] = 0 (i.e., p = 5).",
+     "  This is true for negative-indexed terms as well, if this sequence is extended by the negafibonacci numbers (i.e., F(-n) = A039834(n)). (End)",
+     "a(n) = A094718(4, n). a(n) = A101220(0, j, n).",
+     "a(n) = A090888(0, n+1) = A118654(0, n+1) = A118654(1, n-1) = A109754(0, n) = A109754(1, n-1), for n > 0.",
+     "a(n) = (L(n-3) + L(n-2) + L(n-1) + L(n))/5 with L(n)=A000032(n). - _Art Baker_, Jan 04 2019",
+     "F(n) = F(k-1)*F(abs(n-k-2)) + F(k-1)*F(n-k-1) + F(k)*F(abs(n-k-2)) + 2*F(k)*F(n-k-1), for n > k > 0. - _Joseph M. Shunia_, Aug 12 2019",
+     "F(n) = F(n-k+2)*F(k-1) + F(n-k+1)*F(k-2) for all k such that 2 <= k <= n. - _Michael Tulskikh_, Oct 09 2019",
+     "F(n)^2 - F(n+k)*F(n-k) = (-1)^(n+k) * F(k)^2 for 2 <= k <= n [Catalan's identity]. - _Hermann Stamm-Wilbrandt_, May 07 2021",
+     "Sum_{n>=1} 1/a(n) = A079586 is the reciprocal Fibonacci constant. - _Gennady Eremin_, Aug 06 2021",
+     "a(n) = Product_{d|n} b(d) = Product_{k=1..n} b(gcd(n,k))^(1/phi(n/gcd(n,k))) = Product_{k=1..n} b(n/gcd(n,k))^(1/phi(n/gcd(n,k))) where b(n) = A061446(n) = primitive part of a(n), phi(n) = A000010(n). - _Richard L. Ollerton_, Nov 08 2021",
+     "a(n) = 2*i^(1-n)*sin(n*arccos(i/2))/sqrt(5), i=sqrt(-1). - _Bill Gosper_, May 05 2022",
+     "a(n) = i^(n-1)*sin(n*c)/sin(c) = i^(n-1)*sin(c*n)*csc(c), where c = Pi/2 + i*arccsch(2). - _Peter Luschny_, May 23 2022",
+     "F(2n) = Sum_{k=1..n} (k/5)*binomial(2n, n+k), where (k/5) is the Legendre or Jacobi Symbol; F(2n+1)= Sum_{k=1..n} (-(k+2)/5)*binomial(2n+1, n+k), where (-(k+2)/5) is the Legendre or Jacobi Symbol. For example, F(10) = 1*binomial(10,6) - 1*binomial(10,7) - 1*binomial(10,8) + 1*binomial(10,9) + 0*binomial(10,10), F(11) = 1*binomial(11,6) - 1*binomial(11,7) + 0*binomial(11,8) - 1*binomial(11,9) + 1*binomial(11,10) + 1*binomial(11,11). - _Yike Li_, Aug 21 2022",
+     "For n > 0, 1/F(n) = Sum_{k>=1} F(n*k)/(F(n+2)^(k+1)). - _Diego Rattaggi_, Oct 26 2022",
+     "From _Andrea Pinos_, Dec 02 2022: (Start)",
+     "For n == 0 (mod 4): F(n) = F((n+2)/2)*( F(n/2) + F((n/2)-2) ) + 1;",
+     "For n == 1 (mod 4): F(n) = F((n-1)/2)*( F((n-1)/2) + F(2+(n-1)/2) ) + 1;",
+     "For n == 2 (mod 4): F(n) = F((n-2)/2)*( F(n/2) + F((n/2)+2) ) + 1;",
+     "For n == 3 (mod 4): F(n) = F((n-1)/2)*( F((n-1)/2) + F(2+(n-1)/2) ) - 1. (End)",
+     "F(n) = Sum_{i=0..n-1} F(i)^2 / F(n-1). - _Jules Beauchamp_, May 03 2025",
+     "F(n) = Sum_{i=0..n-1} L(n-i)*(-2)^i. - _Greg Dresden_ and Xiaoya Gao, Oct 11 2025",
+     "For n>=2, a(n) = 2^(n-2)*hypergeometric([(1-n)/3,(2-n)/3,1-n/3,2-n],[(2-n)/2,(3-n)/2,1-n],27/32). - _Victor Petrescu_, Oct 25 2025",
+     "From _Friedjof Tellkamp_, Jun 10 2026: (Start)",
+     "Sum_{n>=1} 1/a(n)^s = 5^(s/2) * Sum_{k>=0} C(-s, k) * 1/(phi^(s+2k) - (-1)^k), see Eq. 5 in Navas.",
+     "Sum_{n>=1} (-1)^(n+1)/a(n)^s = 5^(s/2) * Sum_{k>=0} C(-s, k) * 1/(phi^(s+2k) + (-1)^k). (End)"
+    ]
+   },
+   {
+    "number": 290689,
+    "name": "Number of transitive rooted trees with n nodes.",
+    "data": "1,1,1,2,3,5,8,13,21,34,55,88,143,229,370,592,955,1527,2457,3929,6304,10081,16147,25802,41265,65912,105279,168043,268164,427739,682026,1087180,1732295,2759660,4394579,6996857,11136152,17721389,28192021,44842171,71307030",
+    "offset": "1,4"
+   },
+   {
+    "number": 212804,
+    "name": "Expansion of (1 - x)/(1 - x - x^2).",
+    "data": "1,0,1,1,2,3,5,8,13,21,34,55,89,144,233,377,610,987,1597,2584,4181,6765,10946,17711,28657,46368,75025,121393,196418,317811,514229,832040,1346269,2178309,3524578,5702887,9227465,14930352,24157817,39088169,63245986,102334155,165580141,267914296,433494437,701408733,1134903170,1836311903,2971215073,4807526976",
+    "offset": "0,5",
+    "formula": [
+     "G.f.: 1/(1 - (Sum_{k >= 2} x^k)). - _Joerg Arndt_, Aug 13 2012",
+     "a(n) = Fibonacci(n+1) - Fibonacci(n). - _Arkadiusz Wesolowski_, Oct 29 2012",
+     "G.f.: 1 - x*Q(0) where Q(k) = 1 - (1 + x)/(1 - x/(x - 1/Q(k+1))); (continued fraction). - _Sergei N. Gladkovskii_, Mar 06 2013",
+     "G.f.: 3*x^3/(3*x - Q(0)) - x^2 + 1, where Q(k) = 1 - 1/(4^k - x*16^k/(x*4^k - 1/(1 + 1/(2*4^k - 4*x*16^k/(2*x*4^k + 1/Q(k+1)))))); (continued fraction). - _Sergei N. Gladkovskii_, May 21 2013",
+     "G.f.: G(0)*(1 - x)/(2 - x), where G(k) = 1 + 1/(1 - (x*(5*k - 1))/((x*(5*k + 4)) - 2/G(k+1))); (continued fraction). - _Sergei N. Gladkovskii_, Jun 15 2013",
+     "G.f.: 1 + Q(0)*x^2/2, where Q(k) = 1 + 1/(1 - x*(2*k + 1 + x)/( x*(2*k + 2 + x) + 1/Q(k+1) )); (continued fraction). - _Sergei N. Gladkovskii_, Aug 29 2013",
+     "a(n) = Sum_{k=0..n} (C(k, n-k) - C(k, n-k-1)). - _Peter Luschny_, Oct 01 2014",
+     "a(n) = (2^(-1-n)*((1 - sqrt(5))^n*(1 + sqrt(5)) + (-1 + sqrt(5))*(1 + sqrt(5))^n))/sqrt(5). - _Colin Barker_, Sep 25 2016",
+     "a(n) = A000045(n-1), n >= 1. - _R. J. Mathar_, Apr 14 2018",
+     "E.g.f.: exp((1 - sqrt(5))*x/2)*(3 + sqrt(5) + 2*exp(sqrt(5)*x))/(5 + sqrt(5)). - _Stefano Spezia_, Mar 09 2025"
+    ]
+   },
+   {
+    "number": 27926,
+    "name": "Triangular array T read by rows: T(n,0) = T(n,2n) = 1 for n >= 0; T(n,1) = 1 for n >= 1; T(n,k) = T(n-1,k-2) + T(n-1,k-1) for k = 2..2n-1, n >= 2.",
+    "data": "1,1,1,1,1,1,2,2,1,1,1,2,3,4,3,1,1,1,2,3,5,7,7,4,1,1,1,2,3,5,8,12,14,11,5,1,1,1,2,3,5,8,13,20,26,25,16,6,1,1,1,2,3,5,8,13,21,33,46,51,41,22,7,1,1,1,2,3,5,8,13,21,34,54,79,97,92,63,29,8,1",
+    "offset": "0,7",
+    "formula": [
+     "T(n, k) = Sum_{j=0..floor((2*n-k+1)/2)} binomial(n-j, 2*n-k-2*j). - _Len Smiley_, Oct 21 2001"
+    ]
+   },
+   {
+    "number": 1129,
+    "name": "Iccanobif numbers: reverse digits of two previous terms and add.",
+    "data": "0,1,1,2,3,5,8,13,39,124,514,836,1053,4139,12815,61135,104937,792517,1454698,9679838,17354310,9735140,1760750,986050,621360,113815,581437,1252496,7676706,13019288,94367798,178067380,173537220,106496242,265429972,522619163",
+    "offset": "0,4"
+   },
+   {
+    "number": 5347,
+    "name": "First differences of A005579.",
+    "data": "1,1,1,1,2,3,5,8,13,20,34,53,88,143,236,387,641,1061,1763,2937,4903,8202,13750,23095,38850,65461,110465,186665,315827,535011,907341,1540416,2617782,4452846,7581016,12917486,22027745,37591270,64196610",
+    "offset": "0,5",
+    "formula": [
+     "a(n) = A005579(n+1) - A005579(n) - _T. D. Noe_, May 08 2006"
+    ]
+   },
+   {
+    "number": 14260,
+    "name": "Iccanobif numbers: add a(n-1) to reversal of a(n-2).",
+    "data": "0,1,1,2,3,5,8,13,21,52,64,89,135,233,764,1096,1563,8464,12115,16763,67884,104645,153521,699922,825273,1055269,1427797,11053298,19030539,108265550,201768641,257331442,404198544,648332296,1094223700,1786457546,1859682447",
+    "offset": "0,4"
+   },
+   {
+    "number": 374742,
+    "name": "Number of integer compositions of n whose leaders of weakly decreasing runs are identical.",
+    "data": "1,1,2,3,5,8,13,21,34,54,87,138,220,349,556,881,1403,2229,3551,5653,9019,14387,22988,36739,58785,94100,150765,241658,387617,622002,998658,1604032,2577512,4143243,6662520,10716931,17243904,27753518,44680121,71947123,115880662",
+    "offset": "0,3",
+    "formula": [
+     "G.f.: 1 + Sum_{i>0} -1 + (1 + x^i/(1 - x^i))/(1 - B(i,x)) where B(i,x) = x^i/(1 - x^i) * Sum_{j=1..i-1} x^j * Product_{k=1..j} (1 - x^k)^(-1). - _John Tyler Rascoe_, Apr 29 2025"
+    ]
+   },
+   {
+    "number": 225394,
+    "name": "Expansion of 1/(1 - x - x^2 + x^7 - x^9).",
+    "data": "1,1,2,3,5,8,13,20,32,51,81,129,205,326,519,826,1314,2091,3327,5294,8424,13404,21328,33937,54000,85924,136721,217548,346159,550803,876429,1394560,2219002,3530841,5618219,8939622,14224586,22633938,36014767,57306132,91184618",
+    "offset": "0,3",
+    "formula": [
+     "a(n) = a(n-1) + a(n-2) - a(n-7) + a(n-9). - _Ilya Gutkovskiy_, Nov 16 2016"
+    ]
+   },
+   {
+    "number": 181600,
+    "name": "Expansion of 1/(1 - x - x^2 + x^8 - x^10).",
+    "data": "1,1,2,3,5,8,13,21,33,53,85,136,218,349,559,895,1434,2297,3679,5893,9439,15119,24217,38790,62132,99520,159407,255331,408978,655083,1049283,1680695,2692063,4312028,6906816,11063033,17720278,28383559,45463532,72821479",
+    "offset": "0,3",
+    "formula": [
+     "a(n) = a(n-1) + a(n-2) - a(n-8) + a(n-10). - _Franck Maminirina Ramaharo_, Oct 31 2018"
+    ]
+   }
+  ],
+  "1,1,2,3,5,8,13|10": [
+   {
+    "number": 10077,
+    "name": "a(n) = sum of digits of a(n-1) + sum of digits of a(n-2); a(0) = 0, a(1) = 1.",
+    "data": "0,1,1,2,3,5,8,13,12,7,10,8,9,17,17,16,15,13,10,5,6,11,8,10,9,10,10,2,3,5,8,13,12,7,10,8,9,17,17,16,15,13,10,5,6,11,8,10,9,10,10,2,3,5,8,13,12,7,10,8,9,17,17,16,15,13,10,5,6,11,8,10,9,10,10",
+    "offset": "0,4",
+    "formula": [
+     "Periodic from n=3 with period 24. - _Franklin T. Adams-Watters_, Mar 13 2006",
+     "a(n) = A030132(n-4) + A030132(n-3) for n>3. - _Reinhard Zumkeller_, Jul 04 2007",
+     "a(n) = a(n-1) + a(n-2) - 9*(floor(a(n-1)/10) + floor(a(n-2)/10)). - _Hieronymus Fischer_, Jun 27 2007",
+     "a(n) = floor(a(n-1)/10) + floor(a(n-2)/10) + (a(n-1) mod 10) + (a(n-2) mod 10). - _Hieronymus Fischer_, Jun 27 2007",
+     "a(n) = A059995(a(n-1)) + A059995(a(n-2)) + A010879(a(n-1)) + A010879(a(n-2)). - _Hieronymus Fischer_, Jun 27 2007",
+     "a(n) = Fibonacci(n) - 9*Sum_{k=2..n-1} Fibonacci(n-k+1)*floor(a(k)/10) where Fibonacci(n) = A000045(n). - _Hieronymus Fischer_, Jun 27 2007",
+     "G.f.: x*(1 + x + 2*x^2 + 3*x^3 + 5*x^4 + 8*x^5 + 13*x^6 + 12*x^7 + 7*x^8 + 10*x^9 + 8*x^10+ 9*x^11 + 17*x^12 + 17*x^13 + 16*x^14+ 15*x^15+ 13*x^16 + 10*x^17+ 5*x^18 + 6*x^19 + 11*x^20 + 8*x^21 + 10*x^22 + 9*x^23 + 9*x^24 + 9*x^25)/(1 - x^24). - _Stefano Spezia_, Nov 10 2025"
+    ]
+   },
+   {
+    "number": 69638,
+    "name": "\"Sorted\" sum of two previous terms, beginning with 0,1. \"Sorted\" means to sort the digits of the sum in ascending order.",
+    "data": "0,1,1,2,3,5,8,13,12,25,37,26,36,26,26,25,15,4,19,23,24,47,17,46,36,28,46,47,39,68,17,58,57,115,127,224,135,359,449,88,357,445,28,347,357,47,44,19,36,55,19,47,66,113,179,229,48,277,235,125,36,116,125,124,249,337",
+    "offset": "0,4",
+    "formula": [
+     "a(n) = SORT[a(n-1) + a(n-2)]."
+    ]
+   },
+   {
+    "number": 324969,
+    "name": "Number of unlabeled rooted identity trees with n vertices whose non-leaf terminal subtrees are all different.",
+    "data": "1,1,1,2,3,5,8,13,21,34,55,89,144,233,377,610,987,1597,2584,4181,6765,10946,17711,28657,46368,75025,121393,196418,317811,514229,832040,1346269,2178309,3524578,5702887,9227465,14930352,24157817,39088169,63245986,102334155",
+    "offset": "1,4",
+    "formula": [
+     "From _Michael Somos_, Nov 22 2019: (Start)",
+     "G.f.: x*(1 - x^2) / (1 - x - x^2) = x*(1 + x/(1 - x/(1 - x/(1 + x)))).",
+     "a(n) = A000045(n-1) if n>=2. (End)",
+     "E.g.f.: -1 + x + exp(x/2)*(cosh(sqrt(5)*x/2) - (1/sqrt(5))*sinh(sqrt(5)*x/2)). - _G. C. Greubel_, Oct 24 2023"
+    ]
+   },
+   {
+    "number": 104763,
+    "name": "Triangle read by rows: Fibonacci(1), Fibonacci(2), ..., Fibonacci(n) in row n.",
+    "data": "1,1,1,1,1,2,1,1,2,3,1,1,2,3,5,1,1,2,3,5,8,1,1,2,3,5,8,13,1,1,2,3,5,8,13,21,1,1,2,3,5,8,13,21,34,1,1,2,3,5,8,13,21,34,55,1,1,2,3,5,8,13,21,34,55,89,1,1,2,3,5,8,13,21,34,55,89,144,1,1,2,3,5,8,13,21,34,55,89,144,233",
+    "offset": "1,6",
+    "formula": [
+     "F(1) through F(n) starting from the left in n-th row.",
+     "T(n,k) = A000045(k), 1<=k<=n. - _R. J. Mathar_, May 02 2008",
+     "a(n) = A000045(m), where m= n-t(t+1)/2, t=floor((-1+sqrt(8*n-7))/2). - _Boris Putievskiy_, Dec 13 2012",
+     "G.f.: (x*y)/((x-1)*(x^2*y^2+x*y-1)). - _Vladimir Kruchinin_, Jun 21 2025"
+    ]
+   },
+   {
+    "number": 131297,
+    "name": "a(n) = ds_11(a(n-1))+ds_11(a(n-2)), a(0)=0, a(1)=1; where ds_11=digital sum base 11.",
+    "data": "0,1,1,2,3,5,8,13,11,4,5,9,14,13,7,10,17,17,14,11,5,6,11,7,8,15,13,8,11,9,10,19,19,18,17,15,12,7,9,16,15,11,6,7,13,10,13,13,6,9,15,14,9,13,12,5,7,12,9,11,10,11,11,2,3,5,8,13,11,4,5,9,14,13,7,10,17,17,14,11",
+    "offset": "0,4",
+    "formula": [
+     "a(n) = a(n-1)+a(n-2)-10*(floor(a(n-1)/11)+floor(a(n-2)/11)).",
+     "a(n) = floor(a(n-1)/11)+floor(a(n-2)/11)+(a(n-1)mod 11)+(a(n-2)mod 11).",
+     "a(n) = Fib(n)-10*sum{1<k<n, Fib(n-k+1)*floor(a(k)/11)}, where Fib(n)=A000045(n)."
+    ]
+   },
+   {
+    "number": 10076,
+    "name": "a(n) = sum of base-9 digits of a(n-1) + sum of base-9 digits of a(n-2).",
+    "data": "0,1,1,2,3,5,8,13,13,10,7,9,8,9,9,2,3,5,8,13,13,10,7,9,8,9,9,2,3,5,8,13,13,10,7,9,8,9,9,2,3,5,8,13,13,10,7,9,8,9,9,2,3,5,8,13,13,10,7,9,8,9,9,2,3,5,8,13,13,10,7,9,8,9,9",
+    "offset": "0,4",
+    "formula": [
+     "Periodic from n=3 with period 12. - _Franklin T. Adams-Watters_, Mar 13 2006",
+     "From _Hieronymus Fischer_, Jun 27 2007: (Start)",
+     "a(n) = a(n-1)+a(n-2)-8*(floor(a(n-1)/9)+floor(a(n-2)/9)).",
+     "a(n) = floor(a(n-1)/9)+floor(a(n-2)/9)+(a(n-1)mod 9)+(a(n-2)mod 9).",
+     "a(n) = (a(n-1)+a(n-2)+8*(A010878(a(n-1))+A010878(a(n-2))))/9.",
+     "a(n) = Fib(n)-8*sum{1<k<n, Fib(n-k+1)*floor(a(k)/9)} where Fib(n)=A000045(n). (End)"
+    ]
+   },
+   {
+    "number": 186085,
+    "name": "Number of 1-dimensional sandpiles with n grains.",
+    "data": "1,1,1,1,2,3,5,8,13,22,36,60,100,166,277,461,769,1282,2137,3565,5945,9916,16540,27589,46022,76769,128062,213628,356366,594483,991706,1654352,2759777,4603843,7680116,12811951,21372882,35654237,59478406,99221923,165522118,276124217,460630839",
+    "offset": "0,5",
+    "formula": [
+     "G.f.: 1 + x/(1-x - x^3*B(x)) where B(x) equals the g.f. of the antidiagonal sums of triangle A186084 [_Paul D. Hanna_].",
+     "G.f.: 1 + x/(1-x - x^3/(1-x^2 - x^5/(1-x^3 - x^7/(1-x^4 - x^9/(1 -...))))) (continued fraction).  [_Paul D. Hanna_].",
+     "G.f.: 1/(1 - x/(1-x^3/(1-x^2/(1 - x^3/(1-x^7/(1-x^4/(1 - x^5/(1-x^11/(1-x^6/(1 -...)))))))))) (continued fraction).  [_Paul D. Hanna_].",
+     "The g.f. T(x,y) of triangle A186084 satisfies: T(x,y) = 1/(1 - x*y - x^3*y^2*T(x,x*y)); therefore, the g.f. of this sequence is A(x) = 1 + x*T(x,1). [_Paul D. Hanna_]",
+     "a(n) ~ c/r^n where r = 0.5994477646147968266874606710272382... and c = 0.213259838728143595595398989847345... [_Paul D. Hanna_]",
+     "G.f.: 1 + 1/Q(0), where Q(k)= 1/x^(k+1) - 1 - 1/Q(k+1); (continued fraction). - _Sergei N. Gladkovskii_, May 07 2013",
+     "G.f.: G(1), where G(k) = 1 + x^k/( 1 - x^k * G(k+1) ) (continued fraction). [_Joerg Arndt_, Jun 29 2013]",
+     "a(n) = Sum_{j=1..n} A129181(n-j,j-1) for n>=1. - _Alois P. Heinz_, Jun 25 2023"
+    ]
+   },
+   {
+    "number": 14259,
+    "name": "Iccanobif numbers: add reversal of a(n-1) to a(n-2).",
+    "data": "0,1,1,2,3,5,8,13,39,106,640,152,891,350,944,799,1941,2290,2863,5972,5658,14537,79199,113734,516510,129349,1460431,1469990,2460072,4170632,4820786,11040916,66724797,90783682,95363506,151320041,235386657,908003573,610687466",
+    "offset": "0,4"
+   },
+   {
+    "number": 240733,
+    "name": "a(n) = floor(6^n/(2+2*cos(Pi/9))^n).",
+    "data": "1,1,2,3,5,8,13,21,32,50,78,121,187,289,448,693,1072,1658,2564,3966,6134,9487,14673,22695,35101,54288,83964,129862,200850,310643,480452,743085,1149282,1777523,2749182,4251987,6576279,10171116,15731022,24330178,37629950",
+    "offset": "0,3"
+   },
+   {
+    "number": 326594,
+    "name": "Sum of the fifth largest parts of the partitions of n into 10 parts.",
+    "data": "0,0,0,0,0,0,0,0,0,0,1,1,2,3,5,8,13,19,29,42,62,85,121,164,226,303,407,534,706,912,1184,1511,1930,2433,3072,3831,4776,5900,7281,8909,10898,13223,16031,19312,23231,27787,33194,39444,46806,55292,65219,76603",
+    "offset": "0,13",
+    "formula": [
+     "a(n) = Sum_{r=1..floor(n/10)} Sum_{q=r..floor((n-r)/9)} Sum_{p=q..floor((n-q-r)/8)} Sum_{o=p..floor((n-p-q-r)/7)} Sum_{m=o..floor((n-o-p-q-r)/6)} Sum_{l=m..floor((n-m-o-p-q-r)/5)} Sum_{k=l..floor((n-l-m-o-p-q-r)/4)} Sum_{j=k..floor((n-k-l-m-o-p-q-r)/3)} Sum_{i=j..floor((n-j-k-l-m-o-p-q-r)/2)} l.",
+     "a(n) = A326588(n) - A326589(n) - A326590(n) - A326591(n) - A326592(n) - A326593(n) - A326595(n) - A326596(n) - A326597(n) - A326598(n)."
+    ]
+   }
+  ],
+  "1,1,2,3,5,8,13|20": [
+   {
+    "number": 243063,
+    "name": "Numbers generated by a Fibonacci-like sequence in which zeros are suppressed.",
+    "data": "1,1,2,3,5,8,13,21,34,55,89,144,233,377,61,438,499,937,1436,2373,389,2762,3151,5913,964,6877,7841,14718,22559,37277,59836,97113,156949,25462,182411,27873,21284,49157,7441,56598,6439,6337,12776,19113,31889,512,3241",
+    "offset": "1,3",
+    "formula": [
+     "x(i) = no-zero(x(i-2) + x(i-1)). For example, no-zero(233 + 377) = no-zero(610) = 61."
+    ]
+   },
+   {
+    "number": 326469,
+    "name": "Sum of the fifth largest parts of the partitions of n into 9 parts.",
+    "data": "0,0,0,0,0,0,0,0,0,1,1,2,3,5,8,13,19,29,42,60,83,117,158,216,288,383,500,655,840,1080,1371,1734,2172,2718,3364,4157,5099,6235,7574,9184,11059,13294,15895,18955,22501,26657,31432,36991,43368,50731,59138,68811",
+    "offset": "0,12",
+    "formula": [
+     "a(n) = Sum_{q=1..floor(n/9)} Sum_{p=q..floor((n-q)/8)} Sum_{o=p..floor((n-p-q)/7)} Sum_{m=o..floor((n-o-p-q)/6)} Sum_{l=m..floor((n-m-o-p-q)/5)} Sum_{k=l..floor((n-l-m-o-p-q)/4)} Sum_{j=k..floor((n-k-l-m-o-p-q)/3)} Sum_{i=j..floor((n-j-k-l-m-o-p-q)/2)} l.",
+     "a(n) = A326464(n) - A326465(n) - A326466(n) - A326467(n) - A326468(n) - A326470(n) - A326471(n) - A326472(n) - A326473(n)."
+    ]
+   },
+   {
+    "number": 374765,
+    "name": "Number of integer compositions of n whose leaders of strictly decreasing runs are weakly decreasing.",
+    "data": "1,1,2,3,5,8,13,21,34,55,88,141,225,357,565,891,1399,2191,3420,5321,8256,12774,19711,30339,46584,71359,109066,166340,253163,384539,582972,882166,1332538,2009377,3024969,4546562,6822926,10223632,15297051,22855872,34103117",
+    "offset": "0,3"
+   },
+   {
+    "number": 78414,
+    "name": "a(n) = (a(n-1)+a(n-2))/7^k, where 7^k is the highest power of 7 dividing a(n-1)+a(n-2).",
+    "data": "1,1,2,3,5,8,13,3,16,19,5,24,29,53,82,135,31,166,197,363,80,443,523,138,661,799,1460,2259,3719,122,3841,3963,7804,1681,1355,3036,4391,1061,5452,6513,11965,18478,4349,3261,7610,1553,187,1740,1927,3667,5594,27",
+    "offset": "1,3",
+    "formula": [
+     "a(n) = A242603(a(n-1)+a(n-2)). - _R. J. Mathar_, Mar 13 2024"
+    ]
+   },
+   {
+    "number": 177194,
+    "name": "Fibonacci numbers whose decimal expansion does not contain any digit 0.",
+    "data": "1,1,2,3,5,8,13,21,34,55,89,144,233,377,987,1597,2584,4181,6765,17711,28657,46368,121393,196418,317811,514229,1346269,3524578,9227465,24157817,63245986,267914296,433494437,53316291173,86267571272",
+    "offset": "1,3",
+    "formula": [
+     "a(n) = A000045(A076564(n)). [From _R. J. Mathar_, Oct 18 2010]"
+    ]
+   },
+   {
+    "number": 308994,
+    "name": "Sum of the fifth largest parts in the partitions of n into 8 parts.",
+    "data": "0,0,0,0,0,0,0,0,1,1,2,3,5,8,13,19,29,40,58,79,111,148,201,264,349,449,583,739,943,1181,1482,1833,2273,2780,3405,4126,5002,6006,7215,8593,10235,12101,14300,16795,19713,23003,26825,31124,36083,41638,48012",
+    "offset": "0,11",
+    "formula": [
+     "a(n) = Sum_{p=1..floor(n/8)} Sum_{o=p..floor((n-p)/7)} Sum_{m=o..floor((n-o-p)/6)} Sum_{l=m..floor((n-m-o-p)/5)} Sum_{k=l..floor((n-l-m-o-p)/4)} Sum_{j=k..floor((n-k-l-m-o-p)/3)} Sum_{i=j..floor((n-j-k-l-m-o-p)/2)} l.",
+     "a(n) = A308989(n) - A308990(n) - A308991(n) - A308992(n) - A308995(n) - A308996(n) - A308997(n) - A308998(n)."
+    ]
+   },
+   {
+    "number": 55801,
+    "name": "Triangle T read by rows: T(i,0)=T(i,i)=1, T(i,j) = Sum_{k=1..floor(n/2)} T(i-2k, j-2k+1) for 1<=j<=i-1, where T(m,n) := 0 if m<0 or n<0.",
+    "data": "1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,2,2,1,1,1,1,2,3,3,1,1,1,1,2,3,4,3,1,1,1,1,2,3,5,6,4,1,1,1,1,2,3,5,7,7,4,1,1,1,1,2,3,5,8,11,10,5,1,1,1,1,2,3,5,8,12,14,11,5,1,1,1,1,2,3,5,8,13,19,21,15,6,1",
+    "offset": "0,14"
+   },
+   {
+    "number": 55805,
+    "name": "a(n) = T(n,n-5), array T as in A055801.",
+    "data": "1,1,1,2,3,5,8,13,20,32,46,72,97,148,189,281,344,499,591,838,967,1343,1518,2069,2300,3082,3380,4460,4837,6294,6763,8689,9264,11765,12461,15658,16491,20521,21508,26525,27684,33860",
+    "offset": "5,4",
+    "formula": [
+     "From _Colin Barker_, Nov 28 2014: (Start)",
+     "a(n) = ((2*n^5 -45*n^4 +450*n^3 -2070*n^2 +4873*n -3585) +5*(-1)^n*(n^4 -34*n^3 +446*n^2 -2741*n +6861))/7680 for n>5.",
+     "G.f.: x^5*(1 -5*x^2 +x^3 +11*x^4 -3*x^5 -12*x^6 +5*x^7 +7*x^8 -3*x^9 -2*x^10 + x^11)/((1-x)^6*(1+x)^5). (End)"
+    ]
+   },
+   {
+    "number": 55806,
+    "name": "a(n) = T(n,n-6), array T as in A055801.",
+    "data": "1,1,1,2,3,5,8,13,21,33,53,79,125,176,273,365,554,709,1053,1300,1891,2267,3234,3785,5303,6085,8385,9465,12845,14302,19139,21065,27828,30329,39593,42790,55251,59281,75772,80789,102297,108473,136157,143683,178893",
+    "offset": "6,4",
+    "formula": [
+     "From _G. C. Greubel_, Jan 24 2020: (Start)",
+     "a(n) = (48915 -58884*n +29723*n^2 -7200*n^3 +965*n^4 -66*n^5 +2*n^6 + 3*(-1)^n*(-231345 +98988*n -18505*n^2 +1840*n^3 -95*n^4 +2*n^5))/92160, n > 6.",
+     "G.f.: x^6*(1 -6*x^2 +x^3 +16*x^4 -4*x^5 -23*x^6 +8*x^7 +20*x^8 -8*x^9 -9*x^10 + 4*x^11 +2*x^12 -x^13)/((1-x)^7*(1+x)^6). (End)"
+    ]
+   },
+   {
+    "number": 227374,
+    "name": "G.f.: 1/(1 - x*(1-x^5)/(1 - x^2*(1-x^6)/(1 - x^3*(1-x^7)/(1 - x^4*(1-x^8)/(1 - x^5*(1-x^9)/(1 - ...)))))), a continued fraction.",
+    "data": "1,1,1,2,3,5,8,13,22,36,61,101,169,283,473,793,1325,2220,3715,6220,10413,17431,29185,48856,81797,136937,229257,383813,642564,1075762,1800995,3015171,5047886,8451001,14148368,23686705,39655467,66389797,111147511,186079299,311527531,521548600",
+    "offset": "0,4",
+    "formula": [
+     "G.f.: T(0), where T(k) = 1 -  x^(k+1)*(1-x^(k+5))/(x^(k+1)*(1-x^(k+5)) - 1/T(k+1) ); (continued fraction). - _Sergei N. Gladkovskii_, Oct 18 2013"
+    ]
+   }
+  ],
+  "1,5,73,1445,33001,819005,21460825,584307365,16367912425,468690849005|0": [
+   {
+    "number": 5259,
+    "name": "Apery (Ap\u00e9ry) numbers: Sum_{k=0..n} (binomial(n,k)*binomial(n+k,k))^2.",
+    "data": "1,5,73,1445,33001,819005,21460825,584307365,16367912425,468690849005,13657436403073,403676083788125,12073365010564729,364713572395983725,11111571997143198073,341034504521827105445,10534522198396293262825,327259338516161442321485",
+    "offset": "0,2",
+    "formula": [
+     "D-finite with recurrence (n+1)^3*a(n+1) = (34*n^3 + 51*n^2 + 27*n + 5)*a(n) - n^3*a(n-1), n >= 1.",
+     "Representation as a special value of the hypergeometric function 4F3, in Maple notation: a(n)=hypergeom([n+1, n+1, -n, -n], [1, 1, 1], 1), n=0, 1, ... - _Karol A. Penson_ Jul 24 2002",
+     "a(n) = Sum_{k >= 0} A063007(n, k)*A000172(k). A000172 = Franel numbers. - _Philippe Del\u00e9ham_, Aug 14 2003",
+     "G.f.: (-1/2)*(3*x - 3 + (x^2-34*x+1)^(1/2))*(x+1)^(-2)*hypergeom([1/3,2/3],[1],(-1/2)*(x^2 - 7*x + 1)*(x+1)^(-3)*(x^2 - 34*x + 1)^(1/2)+(1/2)*(x^3 + 30*x^2 - 24*x + 1)*(x+1)^(-3))^2. - _Mark van Hoeij_, Oct 29 2011",
+     "Let g(x, y) = 4*cos(2*x) + 8*sin(y)*cos(x) + 5 and let P(n,z) denote the Legendre polynomial of degree n. Then G. A. Edgar posted a conjecture of Alexandru Lupas that a(n) equals the double integral 1/(4*Pi^2)*int {y = -Pi..Pi} int {x = -Pi..Pi} P(n,g(x,y)) dx dy. (Added Jan 07 2015: Answered affirmatively in Math Overflow question 178790) - _Peter Bala_, Mar 04 2012; edited by _G. A. Edgar_, Dec 10 2016",
+     "a(n) ~ (1+sqrt(2))^(4*n+2)/(2^(9/4)*Pi^(3/2)*n^(3/2)). - _Vaclav Kotesovec_, Nov 01 2012",
+     "a(n) = Sum_{k=0..n} C(n,k)^2 * C(n+k,k)^2. - _Joerg Arndt_, May 11 2013",
+     "0 = (-x^2+34*x^3-x^4)*y''' + (-3*x+153*x^2-6*x^3)*y'' + (-1+112*x-7*x^2)*y' + (5-x)*y, where y is g.f. - _Gheorghe Coserea_, Jul 14 2016",
+     "From _Peter Bala_, Jan 18 2020: (Start)",
+     "a(n) = Sum_{0 <= j, k <= n} (-1)^(n+j) * C(n,k)^2 * C(n+k,k)^2 * C(n,j) * C(n+k+j,k+j).",
+     "a(n) = Sum_{0 <= j, k <= n} C(n,k) * C(n+k,k) * C(k,j)^3 (see Koepf, p. 55).",
+     "a(n) = Sum_{0 <= j, k <= n} C(n,k)^2 * C(n,j)^2 * C(3*n-j-k,2*n) (see Koepf, p. 119).",
+     "Diagonal coefficients of the rational function 1/((1 - x - y)*(1 - z - t) - x*y*z*t) (Straub, 2014). (End)",
+     "a(n) = [x^n] 1/(1 - x)*( Legendre_P(n,(1 + x)/(1 - x)) )^m at m = 2. At m = 1 we get the Ap\u00e9ry numbers A005258. - _Peter Bala_, Dec 22 2020",
+     "a(n) = Sum_{k = 0..n} (-1)^(n+k)*binomial(n, k)*binomial(n+k, k)*A108625(n, k). - _Peter Bala_, Jul 18 2024",
+     "a(n) = Sum_{k=0..n} Sum_{j=0..n} C(n,k)^2 * C(n,j)^2 * C(k+j,k), see Labelle et al. link. - _Max Alekseyev_, Mar 12 2025"
+    ]
+   }
+  ],
+  "id:A000045|0": [
+   {
+    "number": 45,
+    "name": "Fibonacci numbers: F(n) = F(n-1) + F(n-2) with F(0) = 0 and F(1) = 1.",
+    "data": "0,1,1,2,3,5,8,13,21,34,55,89,144,233,377,610,987,1597,2584,4181,6765,10946,17711,28657,46368,75025,121393,196418,317811,514229,832040,1346269,2178309,3524578,5702887,9227465,14930352,24157817,39088169,63245986,102334155",
+    "offset": "0,4",
+    "formula": [
+     "G.f.: x / (1 - x - x^2).",
+     "G.f.: Sum_{n>=0} x^n * Product_{k=1..n} (k + x)/(1 + k*x). - _Paul D. Hanna_, Oct 26 2013",
+     "F(n) = ((1+sqrt(5))^n - (1-sqrt(5))^n)/(2^n*sqrt(5)).",
+     "Alternatively, F(n) = ((1/2+sqrt(5)/2)^n - (1/2-sqrt(5)/2)^n)/sqrt(5).",
+     "F(n) = F(n-1) + F(n-2) = -(-1)^n F(-n).",
+     "F(n) = round(phi^n/sqrt(5)).",
+     "F(n+1) = Sum_{j=0..floor(n/2)} binomial(n-j, j).",
+     "A strong divisibility sequence, that is, gcd(a(n), a(m)) = a(gcd(n, m)) for all positive integers n and m. - _Michael Somos_, Jan 03 2017",
+     "E.g.f.: (2/sqrt(5))*exp(x/2)*sinh(sqrt(5)*x/2). - _Len Smiley_, Nov 30 2001",
+     "[0 1; 1 1]^n [0 1] = [F(n); F(n+1)]",
+     "x | F(n) ==> x | F(kn).",
+     "A sufficient condition for F(m) to be divisible by a prime p is (p - 1) divides m, if p == 1 or 4 (mod 5); (p + 1) divides m, if p == 2 or 3 (mod 5); or 5 divides m, if p = 5. (This is essentially Theorem 180 in Hardy and Wright.) - Fred W. Helenius (fredh(AT)ix.netcom.com), Jun 29 2001",
+     "a(n)=F(n) has the property: F(n)*F(m) + F(n+1)*F(m+1) = F(n+m+1). - _Miklos Kristof_, Nov 13 2003",
+     "From _Kurmang. Aziz. Rashid_, Feb 21 2004: (Start)",
+     "Conjecture 1: for n >= 2, sqrt(F(2n+1) + F(2n+2) + F(2n+3) + F(2n+4) + 2*(-1)^n) = (F(2n+1) + 2*(-1)^n)/F(n-1). [For a proof see Comments section.]",
+     "Conjecture 2: for n >= 0, (F(n+2)*F(n+3)) - (F(n+1)*F(n+4)) + (-1)^n = 0.",
+     "[Two more conjectures removed by _Peter Luschny_, Nov 17 2017]",
+     "Theorem 1: for n >= 0, (F(n+3)^ 2 - F(n+1)^ 2)/F(n+2) = (F(n+3)+ F(n+1)).",
+     "Theorem 2: for n >= 0, F(n+10) = 11*F(n+5) + F(n).",
+     "Theorem 3: for n >= 6, F(n) = 4*F(n-3) + F(n-6). (End)",
+     "Conjecture 2 of Rashid is actually a special case of the general law F(n)*F(m) + F(n+1)*F(m+1) = F(n+m+1) (take n <- n+1 and m <- -(n+4) in this law). - Harmel Nestra (harmel.nestra(AT)ut.ee), Apr 22 2005",
+     "Conjecture 2 of Rashid Kurmang simplified: F(n)*F(n+3) = F(n+1)*F(n+2)-(-1)^n. Follows from d'Ocagne's identity: m=n+2. - _Alex Ratushnyak_, May 06 2012",
+     "Conjecture: for all c such that 2-phi <= c < 2*(2-phi) we have F(n) = floor(phi*a(n-1)+c) for n > 2. - _Gerald McGarvey_, Jul 21 2004",
+     "For x > phi, Sum_{n>=0} F(n)/x^n = x/(x^2 - x - 1). - _Gerald McGarvey_, Oct 27 2004",
+     "F(n+1) = exponent of the n-th term in the series f(x, 1) determined by the equation f(x, y) = xy + f(xy, x). - _Jonathan Sondow_, Dec 19 2004",
+     "a(n-1) = Sum_{k=0..n} (-1)^k*binomial(n-ceiling(k/2), floor(k/2)). - _Benoit Cloitre_, May 05 2005",
+     "a(n) = Sum_{k=0..n} abs(A108299(n, k)). - _Reinhard Zumkeller_, Jun 01 2005",
+     "a(n) = A001222(A000304(n)).",
+     "F(n+1) = Sum_{k=0..n} binomial((n+k)/2, (n-k)/2)(1+(-1)^(n-k))/2. - _Paul Barry_, Aug 28 2005",
+     "Fibonacci(n) = Product_{j=1..ceiling(n/2)-1} (1 + 4(cos(j*Pi/n))^2). [Bicknell and Hoggatt, pp. 47-48.] - _Emeric Deutsch_, Oct 15 2006",
+     "F(n) = 2^(-(n-1))*Sum_{k=0..floor((n-1)/2)} binomial(n,2*k+1)*5^k. - _Hieronymus Fischer_, Feb 07 2006",
+     "a(n) = (b(n+1) + b(n-1))/n where {b(n)} is the sequence A001629. - _Sergio Falcon_, Nov 22 2006",
+     "F(n*m) = Sum_{k = 0..m} binomial(m,k)*F(n-1)^k*F(n)^(m-k)*F(m-k). The generating function of F(n*m) (n fixed, m = 0,1,2,...) is G(x) = F(n)*x / ((1 - F(n-1)*x)^2 - F(n)*x*(1 - F(n-1)*x) - (F(n)*x)^2). E.g., F(15) = 610 = F(5*3) = binomial(3,0)* F(4)^0*F(5)^3*F(3) + binomial(3,1)* F(4)^1*F(5)^2*F(2) + binomial(3,2)* F(4)^2*F(5)^1*F(1) + binomial(3,3)* F(4)^3*F(5)^0*F(0) = 1*1*125*2 + 3*3*25*1 + 3*9*5*1 + 1*27*1*0 = 250 + 225 + 135 + 0 = 610. - _Miklos Kristof_, Feb 12 2007",
+     "From _Miklos Kristof_, Mar 19 2007: (Start)",
+     "  Let L(n) = A000032(n) = Lucas numbers. Then:",
+     "  For a >= b and odd b,  F(a+b) + F(a-b) = L(a)*F(b).",
+     "  For a >= b and even b, F(a+b) + F(a-b) = F(a)*L(b).",
+     "  For a >= b and odd b,  F(a+b) - F(a-b) = F(a)*L(b).",
+     "  For a >= b and even b, F(a+b) - F(a-b) = L(a)*F(b).",
+     "  F(n+m) + (-1)^m*F(n-m) = F(n)*L(m);",
+     "  F(n+m) - (-1)^m*F(n-m) = L(n)*F(m);",
+     "  F(n+m+k) + (-1)^k*F(n+m-k) + (-1)^m*(F(n-m+k) + (-1)^k*F(n-m-k)) = F(n)*L(m)*L(k);",
+     "  F(n+m+k) - (-1)^k*F(n+m-k) + (-1)^m*(F(n-m+k) - (-1)^k*F(n-m-k)) = L(n)*L(m)*F(k);",
+     "  F(n+m+k) + (-1)^k*F(n+m-k) - (-1)^m*(F(n-m+k) + (-1)^k*F(n-m-k)) = L(n)*F(m)*L(k);",
+     "  F(n+m+k) - (-1)^k*F(n+m-k) - (-1)^m*(F(n-m+k) - (-1)^k*F(n-m-k)) = 5*F(n)*F(m)*F(k). (End)",
+     "A corollary to Kristof 2007 is 2*F(a+b) = F(a)*L(b) + L(a)*F(b). - _Graeme McRae_, Apr 24 2014",
+     "For n > m, the sum of the 2m consecutive Fibonacci numbers F(n-m-1) thru F(n+m-2) is F(n)*L(m) if m is odd, and L(n)*F(m) if m is even (see the McRae link). - _Graeme McRae_, Apr 24 2014.",
+     "F(n) = b(n) + (p-1)*Sum_{k=2..n-1} floor(b(k)/p)*F(n-k+1) where b(k) is the digital sum analog of the Fibonacci recurrence, defined by b(k) = ds_p(b(k-1)) + ds_p(b(k-2)), b(0)=0, b(1)=1, ds_p=digital sum base p. Example for base p=10: F(n) = A010077(n) + 9*Sum_{k=2..n-1} A059995(A010077(k))*F(n-k+1). - _Hieronymus Fischer_, Jul 01 2007",
+     "F(n) = b(n)+p*Sum_{k=2..n-1} floor(b(k)/p)*F(n-k+1) where b(k) is the digital product analog of the Fonacci recurrence, defined by b(k) = dp_p(b(k-1)) + dp_p(b(k-2)), b(0)=0, b(1)=1, dp_p=digital product base p. Example for base p=10: F(n) = A074867(n) + 10*Sum_{k=2..n-1} A059995(A074867(k))*F(n-k+1). - _Hieronymus Fischer_, Jul 01 2007",
+     "a(n) = denominator of continued fraction [1,1,1,...] (with n ones); e.g., 2/3 = continued fraction [1,1,1]; where barover[1] = [1,1,1,...] = 0.6180339.... - _Gary W. Adamson_, Nov 29 2007",
+     "F(n + 3) = 2F(n + 2) - F(n), F(n + 4) = 3F(n + 2) - F(n), F(n + 8) = 7F(n + 4) - F(n), F(n + 12) = 18F(n + 6) - F(n). - _Paul Curtz_, Feb 01 2008",
+     "a(2^n) = Product_{i=0..n-2} B(i) where B(i) is A001566. Example 3*7*47 = F(16). - _Kenneth J Ramsey_, Apr 23 2008",
+     "a(n+1) = Sum_{k=0..n} A109466(n,k)*(-1)^(n-k). -_Philippe Del\u00e9ham_, Oct 26 2008",
+     "a(n) = Sum_{l_1=0..n+1} Sum_{l_2=0..n}...Sum_{l_i=0..n-i}... Sum_{l_n=0..1} delta(l_1,l_2,...,l_i,...,l_n), where delta(l_1,l_2,...,l_i,...,l_n) = 0 if any l_i + l_(i+1) >= 2 for i=1..n-1 and delta(l_1,l_2,...,l_i,...,l_n) = 1 otherwise. - _Thomas Wieder_, Feb 25 2009",
+     "a(n+1) = 2^n sqrt(Product_{k=1..n} cos(k Pi/(n+1))^2+1/4) (Kasteleyn's formula specialized). - _Sarah-Marie Belcastro_, Jul 04 2009",
+     "a(n+1) = Sum_{k=floor(n/2) mod 5} C(n,k) - Sum_{k=floor((n+5)/2) mod 5} C(n,k) = A173125(n) - A173126(n) = |A054877(n)-A052964(n-1)|. - _Henry Bottomley_, Feb 10 2010",
+     "If p[i] = modp(i,2) and if A is Hessenberg matrix of order n defined by: A[i,j] = p[j-i+1], (i <= j), A[i,j]=-1, (i=j+1), and A[i,j]=0 otherwise. Then, for n >= 1, a(n)=det A. - _Milan Janjic_, May 02 2010",
+     "Limit_{k->oo} F(k+n)/F(k) = (L(n) + F(n)*sqrt(5))/2 with the Lucas numbers L(n) = A000032(n). - _Johannes W. Meijer_, May 27 2010",
+     "For n >= 1, F(n) = round(log_2(2^(phi*F(n-1)) + 2^(phi*F(n-2)))), where phi is the golden ratio. - _Vladimir Shevelev_, Jun 24 2010, Jun 27 2010",
+     "For n >= 1, a(n+1) = ceiling(phi*a(n)), if n is even and a(n+1) = floor(phi*a(n)), if n is odd (phi = golden ratio). - _Vladimir Shevelev_, Jul 01 2010",
+     "a(n) = 2*a(n-2) + a(n-3), n > 2. - _Gary Detlefs_, Sep 08 2010",
+     "a(2^n) = Product_{i=0..n-1} A000032(2^i). - _Vladimir Shevelev_, Nov 28 2010",
+     "a(n)^2 - a(n-1)^2 = a(n+1)*a(n-2), see A121646.",
+     "a(n) = sqrt((-1)^k*(a(n+k)^2 - a(k)*a(2n+k))), for any k. - _Gary Detlefs_, Dec 03 2010",
+     "F(2*n) = F(n+2)^2 - F(n+1)^2 - 2*F(n)^2. - _Richard R. Forberg_, Jun 04 2011",
+     "From _Artur Jasinski_, Nov 17 2011: (Start)",
+     "(-1)^(n+1) = F(n)^2 + F(n)*F(1+n) - F(1+n)^2.",
+     "F(n) = F(n+2) - 1 + (F(n+1))^4 + 2*(F(n+1)^3*F(n+2)) - (F(n+1)*F(n+2))^2 - 2*F(n+1)(F(n+2))^3 + (F(n+2))^4 - F(n+1). (End)",
+     "F(n) = 1 + Sum_{x=1..n-2} F(x). - _Joseph P. Shoulak_, Feb 05 2012",
+     "F(n) = 4*F(n-2) - 2*F(n-3) - F(n-6). - _Gary Detlefs_, Apr 01 2012",
+     "F(n) = round(phi^(n+1)/(phi+2)). - _Thomas Ordowski_, Apr 20 2012",
+     "From _Sergei N. Gladkovskii_, Jun 03 2012: (Start)",
+     "G.f.: A(x) = x/(1-x-x^2) = G(0)/sqrt(5) where G(k) = 1 - ((-1)^k)*2^k/(a^k - b*x*a^k*2^k/(b*x*2^k - 2*((-1)^k)*c^k/G(k+1))) and a=3+sqrt(5), b=1+sqrt(5), c=3-sqrt(5); (continued fraction, 3rd kind, 3-step).",
+     "Let E(x) be the e.g.f., i.e.,",
+     "E(x) = 1*x + (1/2)*x^2 + (1/3)*x^3 + (1/8)*x^4 + (1/24)*x^5 + (1/90)*x^6 + (13/5040)*x^7 + ...; then",
+     "E(x) = G(0)/sqrt(5); G(k) = 1 - ((-1)^k)*2^k/(a^k - b*x*a^k*2^k/(b*x*2^k - 2*((-1)^k)*(k+1)*c^k/G(k+1))), where a=3+sqrt(5), b=1+sqrt(5), c=3-sqrt(5); (continued fraction, 3rd kind, 3-step).",
+     "(End)",
+     "From _Hieronymus Fischer_, Nov 30 2012: (Start)",
+     "F(n) = 1 + Sum_{j_1=1..n-2} 1 + Sum_{j_1=1..n-2} Sum_{j_2=1..j_1-2} 1 + Sum_{j_1=1..n-2} Sum_{j_2=1..j_1-2} Sum_{j_3=1..j_2-2} 1 + ... + Sum_{j_1=1..n-2} Sum_{j_2=1..j_1-2} Sum_{j_3=1..j_2-2} ... Sum_{j_k=1..j_(k-1)-2} 1, where k = floor((n-1)/2).",
+     "Example: F(6) = 1 + Sum_{j=1..4} 1 + Sum_{j=1..4} Sum_{k=1..(j-2)} 1 + 0 = 1 + (1 + 1 + 1 + 1) + (1 + (1 + 1)) = 8.",
+     "F(n) = Sum_{j=0..k} S(j+1,n-2j), where k = floor((n-1)/2) and the S(j,n) are the n-th j-simplex sums: S(1,n) = 1 is the 1-simplex sum, S(2,n) = Sum_{k=1..n} S(1,k) = 1+1+...+1 = n is the 2-simplex sum, S(3,n) = Sum_{k=1..n} S(2,k) = 1+2+3+...+n is the 3-simplex sum (= triangular numbers = A000217), S(4,n) = Sum_{k=1..n} S(3,k) = 1+3+6+...+n(n+1)/2 is the 4-simplex sum (= tetrahedral numbers = A000292) and so on.",
+     "Since S(j,n) = binomial(n-2+j,j-1), the formula above equals the well-known binomial formula, essentially. (End)",
+     "G.f.: A(x) = x / (1 - x / (1 - x / (1 + x))). - _Michael Somos_, Jan 04 2013",
+     "Sum_{n >= 1} (-1)^(n-1)/(a(n)*a(n+1)) = 1/phi (phi=golden ratio). - _Vladimir Shevelev_, Feb 22 2013",
+     "From _Raul Prisacariu_, Oct 29 2023: (Start)",
+     "For odd k, Sum_{n >= 1} a(k)^2*(-1)^(n-1)/(a(k*n)*a(k*n+k)) = phi^(-k).",
+     "For even k, Sum_{n >= 1} a(k)^2/(a(k*n)*a(k*n+k)) = phi^(-k). (End)",
+     "From _Vladimir Shevelev_, Feb 24 2013: (Start)",
+     "(1) Expression a(n+1) via a(n): a(n+1) = (a(n) + sqrt(5*(a(n))^2 + 4*(-1)^n))/2;",
+     "(2) Sum_{k=1..n} (-1)^(k-1)/(a(k)*a(k+1)) = a(n)/a(n+1);",
+     "(3) a(n)/a(n+1) = 1/phi + r(n), where |r(n)| < 1/(a(n+1)*a(n+2)). (End)",
+     "F(n+1) = F(n)/2 + sqrt((-1)^n + 5*F(n)^2/4), n >= 0. F(n+1) = U_n(i/2)/i^n, (U:= Chebyshev polynomial of the 2nd kind, i=sqrt(-1)). - _Bill Gosper_, Mar 04 2013",
+     "G.f.: -Q(0) where Q(k) = 1 - (1+x)/(1 - x/(x - 1/Q(k+1) )); (continued fraction). - _Sergei N. Gladkovskii_, Mar 06 2013",
+     "G.f.: x - 1 - 1/x + (1/x)/Q(0), where Q(k) = 1 - (k+1)*x/(1 - x/(x - (k+1)/Q(k+1))); (continued fraction). - _Sergei N. Gladkovskii_, Apr 23 2013",
+     "G.f.: x*G(0), where G(k) = 1 + x*(1+x)/(1 - x*(1+x)/(x*(1+x) + 1/G(k+1) )); (continued fraction). - _Sergei N. Gladkovskii_, Jul 08 2013",
+     "G.f.: x^2 - 1 + 2*x^2/(W(0)-2), where W(k) = 1 + 1/(1 - x*(k + x)/( x*(k+1 + x) + 1/W(k+1) )); (continued fraction). - _Sergei N. Gladkovskii_, Aug 28 2013",
+     "G.f.: Q(0) - 1, where Q(k) = 1 + x^2 + (k+2)*x - x*(k+1 + x)/Q(k+1); (continued fraction). - _Sergei N. Gladkovskii_, Oct 06 2013",
+     "Let b(n) = b(n-1) + b(n-2), with b(0) = 0, b(1) = phi. Then, for n >= 2, F(n) = floor(b(n-1)) if n is even, F(n) = ceiling(b(n-1)), if n is odd, with convergence. - _Richard R. Forberg_, Jan 19 2014",
+     "a(n) = Sum_{t1*g(1)+t2*g(2)+...+tn*g(n)=n} multinomial(t1+t2+...+tn,t1,t2,...,tn), where g(k)=2*k-1. - _Mircea Merca_, Feb 27 2014",
+     "F(n) = round(sqrt(F(n-1)^2 + F(n)^2 + F(n+1)^2)/2), for n > 0. This rule appears to apply to any sequence of the form a(n) = a(n-1) + a(n-2), for any two values of a(0) and a(1), if n is sufficiently large. - _Richard R. Forberg_, Jul 27 2014",
+     "F(n) = round(2/(1/F(n) + 1/F(n+1) + 1/F(n+2))), for n > 0. This rule also appears to apply to any sequence of the form a(n) = a(n-1) + a(n-2), for any two values of a(0) and a(1), if n is sufficiently large. - _Richard R. Forberg_, Aug 03 2014",
+     "F(n) = round(1/(Sum_{j>=n+2} 1/F(j))). - _Richard R. Forberg_, Aug 14 2014",
+     "a(n) = hypergeometric([-n/2+1/2, -n/2+1], [-n+1], -4) for n >= 2. - _Peter Luschny_, Sep 19 2014",
+     "Limit_{n -> oo} (log F(n+1)/log F(n))^n = e. - _Thomas Ordowski_, Oct 06 2014",
+     "F(n) = (L(n+1)^2 - L(n-1)^2)/(5*L(n)), where L(n) is A000032(n), with a similar inverse relationship. - _Richard R. Forberg_, Nov 17 2014",
+     "Consider the graph G[1-vertex;1-loop,2-loop] in comment above. Construct the power matrix array T(n,j) = [A^*j]*[S^*(j-1)] where A=(1,1,0,...) and S=(0,1,0,...)(A063524). [* is convolution operation] Define S^*0=I with I=(1,0,...). Then T(n,j) counts n-walks containing (j) loops and a(n-1) = Sum_{j=1..n} T(n,j). - _David Neil McGrath_, Nov 21 2014",
+     "Define F(-n) to be F(n) for n odd and -F(n) for n even. Then for all n and k, F(n) = F(k)*F(n-k+3) - F(k-1)*F(n-k+2) - F(k-2)*F(n-k) + (-1)^k*F(n-2k+2). - _Charlie Marion_, Dec 04 2014",
+     "F(n+k)^2 - L(k)*F(n)*F(n+k) + (-1)^k*F(n)^2 = (-1)^n*F(k)^2, if L(k) = A000032(k). - _Alexander Samokrutov_, Jul 20 2015",
+     "F(2*n) = F(n+1)^2 - F(n-1)^2, similar to Koshy (D) and Forberg 2011, but different. - _Hermann Stamm-Wilbrandt_, Aug 12 2015",
+     "F(n+1) = ceiling( (1/phi)*Sum_{k=0..n} F(k) ). - _Tom Edgar_, Sep 10 2015",
+     "a(n) = (L(n-3) + L(n+3))/10 where L(n)=A000032(n). - _J. M. Bergot_, Nov 25 2015",
+     "From _Bob Selcoe_, Mar 27 2016: (Start)",
+     "F(n) = (F(2n+k+1) - F(n+1)*F(n+k+1))/F(n+k), k >= 0.",
+     "Thus when k=0: F(n) = sqrt(F(2n+1) - F(n+1)^2).",
+     "F(n) = (F(3n) - F(n+1)^3 + F(n-1)^3)^(1/3).",
+     "F(n+2k) = binomial transform of any subsequence starting with F(n). Example F(6)=8: 1*8 = F(6)=8; 1*8 + 1*13 = F(8)=21; 1*8 + 2*13 + 1*21 = F(10)=55; 1*8 + 3*13 + 3*21 + 1*34 = F(12)=144, etc. This formula applies to Fibonacci-type sequences with any two seed values for a(0) and a(1) (e.g., Lucas sequence A000032: a(0)=2, a(1)=1).",
+     "(End)",
+     "F(n) = L(k)*F(n-k) + (-1)^(k+1)*F(n-2k) for all k >= 0, where L(k) = A000032(k). - _Anton Zakharov_, Aug 02 2016",
+     "From _Ilya Gutkovskiy_, Aug 03 2016: (Start)",
+     "a(n) = F_n(1), where F_n(x) are the Fibonacci polynomials.",
+     "Inverse binomial transform of A001906.",
+     "Number of zeros in substitution system {0 -> 11, 1 -> 1010} at step n from initial string \"1\" (1 -> 1010 -> 101011101011 -> ...) multiplied by 1/A000079(n). (End)",
+     "For n >= 2, a(n) = 2^(n^2+n) - (4^n-2^n-1)*floor(2^(n^2+n)/(4^n-2^n-1)) - 2^n*floor(2^(n^2) - (2^n-1-1/2^n)*floor(2^(n^2+n)/(4^n-2^n-1))). - _Benoit Cloitre_, Apr 17 2017",
+     "f(n+1) = Sum_{j=0..floor(n/2)} Sum_{k=0..j} binomial(n-2j,k)*binomial(j,k). - _Tony Foster III_, Sep 04 2017",
+     "F(n) = Sum_{k=0..floor((n-1)/2)} ( (n-k-1)! / ((n-2k-1)! * k!) ). - _Zhandos Mambetaliyev_, Nov 08 2017",
+     "For x even, F(n) = (F(n+x) + F(n-x))/L(x). For x odd, F(n) = (F(n+x) - F(n-x))/L(x) where n >= x in both cases. Therefore F(n) = F(2*n)/L(n) for n >= 0. - _David James Sycamore_, May 04 2018",
+     "From _Isaac Saffold_, Jul 19 2018: (Start)",
+     "Let [a/p] denote the Legendre symbol. Then, for an odd prime p:",
+     "  F(p+n) == [5/p]*F([5/p]+n) (mod p), if [5/p] = 1 or -1.",
+     "  F(p+n) == 3*F(n) (mod p), if [5/p] = 0 (i.e., p = 5).",
+     "  This is true for negative-indexed terms as well, if this sequence is extended by the negafibonacci numbers (i.e., F(-n) = A039834(n)). (End)",
+     "a(n) = A094718(4, n). a(n) = A101220(0, j, n).",
+     "a(n) = A090888(0, n+1) = A118654(0, n+1) = A118654(1, n-1) = A109754(0, n) = A109754(1, n-1), for n > 0.",
+     "a(n) = (L(n-3) + L(n-2) + L(n-1) + L(n))/5 with L(n)=A000032(n). - _Art Baker_, Jan 04 2019",
+     "F(n) = F(k-1)*F(abs(n-k-2)) + F(k-1)*F(n-k-1) + F(k)*F(abs(n-k-2)) + 2*F(k)*F(n-k-1), for n > k > 0. - _Joseph M. Shunia_, Aug 12 2019",
+     "F(n) = F(n-k+2)*F(k-1) + F(n-k+1)*F(k-2) for all k such that 2 <= k <= n. - _Michael Tulskikh_, Oct 09 2019",
+     "F(n)^2 - F(n+k)*F(n-k) = (-1)^(n+k) * F(k)^2 for 2 <= k <= n [Catalan's identity]. - _Hermann Stamm-Wilbrandt_, May 07 2021",
+     "Sum_{n>=1} 1/a(n) = A079586 is the reciprocal Fibonacci constant. - _Gennady Eremin_, Aug 06 2021",
+     "a(n) = Product_{d|n} b(d) = Product_{k=1..n} b(gcd(n,k))^(1/phi(n/gcd(n,k))) = Product_{k=1..n} b(n/gcd(n,k))^(1/phi(n/gcd(n,k))) where b(n) = A061446(n) = primitive part of a(n), phi(n) = A000010(n). - _Richard L. Ollerton_, Nov 08 2021",
+     "a(n) = 2*i^(1-n)*sin(n*arccos(i/2))/sqrt(5), i=sqrt(-1). - _Bill Gosper_, May 05 2022",
+     "a(n) = i^(n-1)*sin(n*c)/sin(c) = i^(n-1)*sin(c*n)*csc(c), where c = Pi/2 + i*arccsch(2). - _Peter Luschny_, May 23 2022",
+     "F(2n) = Sum_{k=1..n} (k/5)*binomial(2n, n+k), where (k/5) is the Legendre or Jacobi Symbol; F(2n+1)= Sum_{k=1..n} (-(k+2)/5)*binomial(2n+1, n+k), where (-(k+2)/5) is the Legendre or Jacobi Symbol. For example, F(10) = 1*binomial(10,6) - 1*binomial(10,7) - 1*binomial(10,8) + 1*binomial(10,9) + 0*binomial(10,10), F(11) = 1*binomial(11,6) - 1*binomial(11,7) + 0*binomial(11,8) - 1*binomial(11,9) + 1*binomial(11,10) + 1*binomial(11,11). - _Yike Li_, Aug 21 2022",
+     "For n > 0, 1/F(n) = Sum_{k>=1} F(n*k)/(F(n+2)^(k+1)). - _Diego Rattaggi_, Oct 26 2022",
+     "From _Andrea Pinos_, Dec 02 2022: (Start)",
+     "For n == 0 (mod 4): F(n) = F((n+2)/2)*( F(n/2) + F((n/2)-2) ) + 1;",
+     "For n == 1 (mod 4): F(n) = F((n-1)/2)*( F((n-1)/2) + F(2+(n-1)/2) ) + 1;",
+     "For n == 2 (mod 4): F(n) = F((n-2)/2)*( F(n/2) + F((n/2)+2) ) + 1;",
+     "For n == 3 (mod 4): F(n) = F((n-1)/2)*( F((n-1)/2) + F(2+(n-1)/2) ) - 1. (End)",
+     "F(n) = Sum_{i=0..n-1} F(i)^2 / F(n-1). - _Jules Beauchamp_, May 03 2025",
+     "F(n) = Sum_{i=0..n-1} L(n-i)*(-2)^i. - _Greg Dresden_ and Xiaoya Gao, Oct 11 2025",
+     "For n>=2, a(n) = 2^(n-2)*hypergeometric([(1-n)/3,(2-n)/3,1-n/3,2-n],[(2-n)/2,(3-n)/2,1-n],27/32). - _Victor Petrescu_, Oct 25 2025",
+     "From _Friedjof Tellkamp_, Jun 10 2026: (Start)",
+     "Sum_{n>=1} 1/a(n)^s = 5^(s/2) * Sum_{k>=0} C(-s, k) * 1/(phi^(s+2k) - (-1)^k), see Eq. 5 in Navas.",
+     "Sum_{n>=1} (-1)^(n+1)/a(n)^s = 5^(s/2) * Sum_{k>=0} C(-s, k) * 1/(phi^(s+2k) + (-1)^k). (End)"
+    ]
+   }
+  ]
+ }
+}

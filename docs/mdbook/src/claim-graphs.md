@@ -123,6 +123,12 @@ s.conjecture(
 - `conjecture()` always produces `"unverified"`.
 - `verify()` may only *lower* confidence: a failed re-check sets `"refuted"`; a successful
   one appends an audit entry and promotes nothing.
+- `record(result, statement=...)` does not move a machine-checked status onto prose. The
+  status describes `result`; `statement=` is free text, and nothing relates the two. So a
+  re-worded claim is stored as `"asserted"` (`[ASSERTED, UNCHECKED]`, `machine_checked`
+  false), with the result's own status kept under `verification["result_status"]`.
+  Record the result as itself, or supply the `check` recipe that re-establishes the link,
+  to keep the machine-checked status.
 
 The renderers follow the same rule. An emitted-but-unchecked Lean certificate is marked
 `[CERT ONLY, UNCHECKED]`, never as a proof, and every document opens with the exact
@@ -132,6 +138,12 @@ machine-checkable fraction:
 > checked by a checker. Everything else is recorded evidence and must not be read as proved.
 
 `Claim.machine_checked` is true only for `exactly_verified` and `lean_checked`.
+
+Re-recording a statement merges into the stored claim rather than replacing it: it keeps
+its original status and derivation and gains the new edges, tags and audit entries. It
+also **adopts a `check` recipe** when it had none, so recording a statement bare and then
+recording it again with its recipe attaches the recipe rather than dropping it. An
+existing recipe is never overwritten.
 
 ## Querying
 
@@ -205,6 +217,68 @@ report.ok            # False if anything was refuted
 report.summary()     # {'ok': 2, 'numeric_ok': 1, 'skipped': 1}
 print(report.to_markdown())
 ```
+
+`verify()` can only ever **lower** confidence: a `failed` re-check sets the claim
+`"refuted"` (unless `mark_refuted=False`), and no outcome ever raises a status.
+
+### What `numeric_ok` does and does not mean
+
+The numeric fallback evaluates the residual at the points in `samples` (default
+`(0.37, 1.23, 2.71)`). Each sample gives a **point**, not one value shared by every
+symbol: a free symbol is bound to the sample offset by its rank in sorted name order, so
+`x`, `y`, `z` take `0.37`, `0.48`, `0.59` and the evaluation is off the diagonal
+`x = y = z`. That is deliberate — on the diagonal, `sin(x)cos(y) = sin(y)cos(x)` and
+`x + y = 2x` are both true, so a symmetry error between two variables, the commonest bug
+class this fallback exists to catch, would come back `numeric_ok`.
+
+Two consequences worth knowing:
+
+- Finitely many points is still evidence, not a proof. `numeric_ok` means "did not
+  contradict at the points sampled", which is why it never upgrades a status.
+- An offset can push a sample out of an operation's domain. That point is skipped; the
+  detail string reports how many of the samples actually evaluated, and a recipe where
+  none of them do comes back `inconclusive` rather than `numeric_ok`.
+
+Pass your own `samples=` to move the points, and `tolerance=` to set the cutoff.
+
+### Precision, and `numeric_relation`
+
+`numeric_relation` does **not** narrow its inputs to `float`. Constants are the output of
+a high-precision search — `guess_relation`'s docstring tells you to hand it 50 or more
+digits — and a `float` holds about 16, so casting them would fabricate a residual out of
+rounding. With coefficients around `5e9`, a *true* relation given at 60 digits picks up a
+`9.5e-7` double-rounding residual, eight orders of magnitude past the default `1e-8`
+tolerance, and `mark_refuted=True` is the default: the pass documented as one that can
+only lower confidence would destroy a true claim.
+
+So the residual is computed exactly, in `fractions.Fraction`, from the numerals as
+written, and each input contributes the precision its own notation implies: `"1"` is the
+exact integer, `"1.15572734962273134279"` is known to half a unit in its last decimal
+place, a `float` to half its own ulp. The true residual therefore lies in a band
+`|R| ± U`, and the outcome follows from where that band sits:
+
+| Band vs. `tolerance` | Outcome |
+| --- | --- |
+| entirely inside | `numeric_ok` |
+| entirely outside | `failed` |
+| straddles it | `inconclusive` — "you did not give me the digits to decide this" |
+
+The escape hatch is the recipe's own `"tolerance"` key, which overrides the `tolerance=`
+argument for that claim:
+
+```python
+check = {
+    "kind": "numeric_relation",
+    # Strings, not floats: the digits past the 17th are the evidence.
+    "constants": ["1.33571181795176524...", "1.15572734962273134...", "1"],
+    "coefficients": [5144503108, -5945642943, 1],
+    "tolerance": 1e-40,
+}
+```
+
+Supply the constants as strings (or `Decimal`, or `Fraction`). A `float` in that list has
+already lost the digits before `verify()` ever sees it, and the reported uncertainty will
+say so.
 
 ## A long session accumulates, by design
 

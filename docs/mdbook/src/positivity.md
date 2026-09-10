@@ -65,17 +65,27 @@ it does not report it as negative, and it does not invent a decomposition.
 `sos_decompose`'s full pipeline does not stop there, though (see "What the
 search actually covers" below) — it also tries multiplying by a power of
 `x²+y²` before giving up, and that succeeds for Motzkin, so the *end-to-end*
-call returns a certificate, not a refusal. The homogeneous 3-variable form of
-Motzkin still refuses even through the full pipeline (multiplier search
-included), and — unlike the affine case above — this is not just "not yet
-reached": the classical fact needs multiplier power `N = 2`, not `N = 1`, for
-this specific homogeneous ternary form, and `N = 2` has now been attempted to
-closure by a genuinely harder search (symmetry reduction plus an exact
-algebraic zero-vector restriction, cutting 165 free parameters down to 16)
-without succeeding — see "What's still open" below for the numbers. That is
-the actual reachable illustration of a genuine `E-SOS-002` from this module
-today: **the refusal is a property of the search, not of the polynomial**,
-and which polynomials it applies to shifts as the search grows more complete.
+call returns a certificate, not a refusal. The *homogeneous* 3-variable form
+of Motzkin now certifies too, at multiplier power `N = 1` — which is the
+classical fact:
+
+```text
+(x²+y²+z²)(x⁴y²+x²y⁴−3x²y²z²+z⁶)
+  = (½x³y+xy³−3⁄2xyz²)² + ¾(x³y−xyz²)² + (xy²z−xz³)² + (x²yz−yz³)² + (x²y²−z⁴)²
+```
+
+> **Correction (2026-08-20).** Earlier releases of this page said the
+> homogeneous ternary form "is still out of reach" and that the classical
+> fact "needs `N = 2`, not `N = 1`". Both statements were wrong: the identity
+> above is exactly why Motzkin is the standard example of a PSD non-SOS form
+> that becomes SOS after one multiplication by `Σxᵢ²`. What was missing was a
+> half-Newton-polytope reduction in the search — see "What the search
+> actually covers" below.
+
+The general point stands regardless of which examples are currently
+reachable: **an `E-SOS-002` refusal is a property of the search, not of the
+polynomial**, and which polynomials it applies to shifts as the search grows
+more complete.
 
 The three-way branch a loop should write:
 
@@ -110,7 +120,12 @@ The search tries three things, in order, before refusing:
    perfect square as ordinary as `(x/2 + 1/3)²` has a Gram matrix — its only
    one — that is PSD but not DD.
 2. **The full PSD Gram cone**, when DSOS fails (`real::sos::psd::psd_search`).
-   This subsumes DSOS but is not free: it leans on a floating-point search
+   The monomial basis is cut down first: to the monomials of degree exactly
+   `d/2` when `p` is homogeneous of degree `d`, and then to the lattice
+   points of `½·Newton(p)` — Reznick's theorem says the support of every
+   square in every SOS decomposition of `p` already lies there, so this loses
+   no certificate while removing free parameters quadratically. It then leans
+   on a floating-point search
    (Jacobi eigendecomposition, PSD-cone projection, an annealed schedule of
    shrinking eigenvalue floors with several random restarts —
    `real::sos::sdp`) to *propose* a Gram matrix, which is then rounded to
@@ -141,30 +156,35 @@ the textbook behaviour of alternating projection at a tangential
 Douglas–Rachford splitting with over-relaxation and a facial-reduction step —
 both standard escapes for exactly this stall — and with them, both
 `(x²+y²)·Motzkin(x,y)` and `(x²+y²+z²)·Robinson(x,y,z)` are found and
-exactly re-verified. **What's still open:** the *homogeneous 3-variable*
-form of Motzkin at multiplier power `N = 2`, `(x²+y²+z²)²·(x⁴y²+x²y⁴−3x²y²z²+z⁶)`
-(`N = 1` is not classically expected to work for this specific homogeneous
-ternary form at all), is not — and this has now been pushed well past a
-budget skip. A new fallback, symmetry reduction
-(`real::sos::psd::symmetry_reduced_search`), restricts the search to the
-subspace fixed by the target's own signed-permutation symmetry (here, order
-16: swap `x, y`, and independently flip the sign of each variable, since
-every exponent is even) whenever that subspace is genuinely smaller — cutting
-this case's 165 free parameters to 26. An *exact*, non-numeric restriction on
-top of that — Motzkin's known zero at `(1,1,1)` forces `Q·z(1,1,1) = 0` on
-any witnessing Gram matrix `Q`, and `z(1,1,1)` is literally the all-ones
-vector, no rounding involved — cuts it again to 16. Even on that
-16-parameter family, though, Douglas–Rachford converges only very slowly:
-6,000,000 iterations bring the minimum eigenvalue to roughly `−1.4·10⁻⁸`,
-and rational rounding still fails at every stage even with denominators up to
-roughly `10⁹`. This is now a genuine, quantified numerical-hardness finding,
-not an unexplored avenue or an under-tuned budget — checked to be a real
-search limitation and not a bug in the machinery the same way as before: an
-independent sanity check confirms the affine Gram-matrix family (and each
-reduced family) is constructed correctly, and a synthetic planted example
-with a singular Gram matrix of the same size *is* found and exactly
-re-verified. The remaining test for the 3-variable Motzkin form records
-`undecided` rather than a false certificate.
+exactly re-verified.
+
+**The half-Newton-polytope reduction is what closed the homogeneous cases.**
+The *homogeneous* ternary Motzkin form at `N = 1` used to refuse, and the
+refusal was misdiagnosed as numerical hardness: a great deal of extra search
+machinery (symmetry reduction, an exact zero-vector restriction, 6,000,000
+Douglas–Rachford iterations) was spent on the wrong multiplier power. The
+actual cause was dimension. `(x²+y²+z²)·Motzkin_hom` has a 15-monomial
+degree-4 basis of which only 9 lie in `½·Newton`; the 75-parameter family
+over the unreduced basis leaves the numeric search about `0.96` away from
+the true certificate in parameter space — far too far to round onto it —
+while the 18-parameter family over the reduced basis lands on it exactly.
+Note what this is *not*: on both bases the certificate is the unique PSD
+point of the affine family, rank 5, minimum eigenvalue exactly 0, so `λ_min`
+does not distinguish them and more iterations do not help (4× the
+Douglas–Rachford budget on the unreduced family still fails to round). With
+the reduction, `(Σxᵢ²)·Motzkin_hom` and `(Σxᵢ²)·Choi–Lam` both certify at
+`N = 1` in seconds.
+
+**What's still open:** larger copositivity forms — the Horn/C₅ form (5
+variables) and the C₇ form (7 variables) both admit `N = 1` certificates that
+this search does not reach. Their Newton polytopes are already full, so the
+reduction does not help, and their `N = 1` affine families have 420 and 2646
+free parameters respectively — above `psd_search`'s numeric-search ceiling of
+200, so no search is attempted at those powers at all. That is now *reported*
+in the `E-SOS-002` message (lines marked `NOT SEARCHED`) rather than being
+indistinguishable from an exhausted search. Closing these needs a real
+interior-point SDP solve on the reduced family, not more alternating
+projection.
 
 ## Constrained certificates
 
@@ -273,10 +293,11 @@ Motzkin's polynomial and Robinson's form), Handelman certificates on basic
 semialgebraic sets, exact verification, and Lean export.
 
 Not yet shipped: reliable certification of *every* boundary-case example —
-the homogeneous 3-variable form of Motzkin specifically is still out of
-reach (see above), so this is a real but narrower gap than "Motzkin doesn't
-certify" was in the prior release — a proper interior-point solver that
-would close it more systematically, and Putinar-style certificates with
+the Horn/C₅ and C₇ copositivity forms are the ones currently out of reach,
+and for a reason the error message now states outright (their affine families
+are over the numeric-search ceiling, so no search runs) — a proper
+interior-point solver that would close them more systematically, and
+Putinar-style certificates with
 genuine SOS — rather than non-negative constant — multipliers on the
 *constraints*. `CertificateKind::Putinar` exists in the certificate type so
 those can be added without a shape change.

@@ -123,9 +123,17 @@ these sweeps live in — one index per prime, at or near `p` — there are at mo
 one or two singular steps and the headroom is free.
 
 `supercongruence_sweep` records `E-HOLO-007` and `E-HOLO-008` in `skipped()` and
-carries on, because those are facts about one prime. `E-HOLO-006` is a fact
-about the *call*, so it propagates — a list of composites must not come back
-`holds=True` over zero primes.
+carries on, because those are facts about one prime — and `E-HOLO-006` for the
+same reason, when it is `p**(k + extra_precision)` past `2**62`. That one is the
+same "out of reach of this backend"; letting it propagate destroyed every
+residue already computed and left the caller to work out the per-`k` cap
+`int((2**62) ** (1 / (k + 1)))` by hand.
+
+The *other* `E-HOLO-006` — a composite in `primes` — is a fact about the
+**call**, and still raises: a list of composites must not come back
+`holds=True` over zero primes. The sweep decides that half itself, before any
+evaluation, which is what lets the reachable-modulus half be skipped without
+taking this half with it.
 
 ## Binomial coefficients
 
