@@ -103,6 +103,6 @@ and functions listed above:
 from alkahest import latex, unicode_str
 
 e = parse("sin(x)^2 + cos(x)^2", pool, {"x": x})
-print(latex(e))        # \sin\!\left(x\right)^{2} + \cos\!\left(x\right)^{2}
+print(latex(e))        # \sin\!\left(x\right)^2 + \cos\!\left(x\right)^2
 print(unicode_str(e))  # sin(x)² + cos(x)²
 ```
