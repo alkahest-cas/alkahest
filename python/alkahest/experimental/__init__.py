@@ -25,6 +25,33 @@ Remaining experimental surface:
 - :func:`compile_cuda` / :class:`CudaCompiledFn` — NVPTX codegen (requires
   ``cuda`` + ``jit``)
 
+Probability and statistics:
+- :class:`Distribution` and its constructors :func:`Normal`, :func:`LogNormal`,
+  :func:`Uniform`, :func:`Exponential`, :func:`Gamma`, :func:`Beta`,
+  :func:`Bernoulli`, :func:`Binomial`, :func:`Poisson` — a law is a *name plus
+  symbolic parameters*, carrying its density, its support, and the constraints
+  that make it a distribution at all. A numeric parameter outside its
+  constraint raises ``E-PROB-001``; a symbolic one cannot be decided and is
+  carried on :meth:`Distribution.constraints` for the caller to discharge
+- :meth:`Distribution.mean`, :meth:`~Distribution.variance`,
+  :meth:`~Distribution.moment`, :meth:`~Distribution.cdf`,
+  :meth:`~Distribution.quantile`,
+  :meth:`~Distribution.characteristic_function` — every one of these is
+  **checked against numerical quadrature of its own defining integral before
+  it is returned**. One the checker cannot confirm raises ``E-PROB-005``
+  rather than arriving with a caveat
+- :func:`expectation` — ``E[f(X)]``, reduced to integrals the existing
+  integrator attempts. A divergent expectation raises ``E-PROB-006`` (checked
+  *before* the symbolic work, so the answer is "no value exists" rather than
+  "the integrator declined"); an integral that does not close raises
+  ``E-PROB-003`` **naming it**, never an unevaluated object dressed as an
+  answer. ``max(S - K, 0)`` under a :func:`LogNormal` derives Black–Scholes
+- :func:`expectation_affine` — linearity, which needs no independence at all —
+  and :func:`variance_affine_independent`, which does and says so in its name.
+  There are no joint distributions, no conditioning and no covariance here: a
+  product of two variates raises ``E-PROB-002`` rather than guessing at a
+  joint law
+
 Calculus / ODE / transform surface:
 - :func:`heaviside`, :func:`dirac_delta` — distribution primitive constructors
 - :func:`dsolve` — classical symbolic ODE solver (#153); constant coefficients
@@ -212,6 +239,18 @@ from alkahest.alkahest import (
     dsolve,
     dsolve_system,
     euler_maclaurin,
+    Bernoulli,
+    Beta,
+    Binomial,
+    Distribution,
+    Exponential,
+    Gamma,
+    LogNormal,
+    Normal,
+    Poisson,
+    Uniform,
+    expectation,
+    expectation_affine,
     fourier_transform,
     heaviside,
     integrate_parallel_risch,
@@ -228,6 +267,7 @@ from alkahest.alkahest import (
     telescope2d,
     telescope_md,
     transform_side_conditions,
+    variance_affine_independent,
     z_transform,
 )
 
@@ -268,6 +308,20 @@ with contextlib.suppress(ImportError):
     from alkahest.alkahest import CudaCompiledFn, compile_cuda
 
 __all__ = [
+    # Probability distributions and expectations
+    "Bernoulli",
+    "Beta",
+    "Binomial",
+    "Distribution",
+    "Exponential",
+    "Gamma",
+    "LogNormal",
+    "Normal",
+    "Poisson",
+    "Uniform",
+    "expectation",
+    "expectation_affine",
+    "variance_affine_independent",
     "Assumptions",
     # P1 item 10 — asymptotic expansion at scale
     "AsymptoticReport",

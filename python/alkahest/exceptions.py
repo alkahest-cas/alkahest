@@ -69,6 +69,17 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-ANSATZ-001 … E-ANSATZ-004 AnsatzError (Python-only; P2 item 1 — conjecture generation)
     E-XCHECK-001 … E-XCHECK-004 CrossCheckError (Python-only; P2 item 2 — differential testing)
     E-SMT-001 … E-SMT-004       SmtError (P2 item 3 — SMT/SAT bridge)
+    E-PROB-001 … E-PROB-006     ProbabilityError (distributions and expectations;
+                                 001 = a numeric parameter outside its own
+                                 constraint — a symbolic one is carried on
+                                 Distribution.constraints() instead of decided;
+                                 003 = the reduction integral did not close, and
+                                 the message names it; 004 = no closed form
+                                 exists inside this library's primitive set;
+                                 005 = one was computed and then **withheld**
+                                 because quadrature of its own defining integral
+                                 did not confirm it; 006 = the integral diverges,
+                                 so there is no value to return)
     E-DEPTH-001                 DepthLimitError (expression nesting ceiling — see
                                  alkahest_core::kernel::depth; refuses rather than
                                  letting a recursive walk overflow the native stack)
@@ -830,3 +841,48 @@ class ParseError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code="E-PARSE-001", remediation=remediation, span=span)
+
+
+class ProbabilityError(AlkahestError):
+    """A probability query did not return a value (``E-PROB-*``).
+
+    Raised by the :mod:`alkahest.experimental` distribution surface. The six
+    codes are kept apart because they call for four different next steps, and
+    collapsing them would send a caller looking for a better integrator when
+    the integral simply diverges:
+
+    - ``E-PROB-001`` — a parameter is a *number* that violates the
+      distribution's own constraint (``sigma <= 0``, ``a >= b``,
+      ``p`` outside ``[0, 1]``, a non-literal ``n`` for ``Binomial``). A
+      **symbolic** parameter is never reported here: it cannot be decided, so
+      it is carried as a side condition on
+      :meth:`~alkahest.experimental.Distribution.constraints` instead.
+    - ``E-PROB-002`` — the query is outside the supported shape: a
+      non-polynomial ``f`` over a countably infinite discrete support, a
+      non-affine argument to :func:`~alkahest.experimental.expectation_affine`,
+      a moment order past the range the verifier can still fail on.
+    - ``E-PROB-003`` — the reduction integral was built and the symbolic
+      integrator declined it. The message names the integral.
+    - ``E-PROB-004`` — there is no closed form inside this library's primitive
+      set: the ``Gamma`` CDF at a non-integer shape needs the incomplete gamma,
+      the ``Beta`` CDF needs the incomplete beta, the normal quantile needs
+      ``erf**-1``, the ``Beta`` characteristic function needs ``1F1`` — and the
+      log-normal characteristic function has no closed form at all.
+    - ``E-PROB-005`` — a closed form **was** computed and then **withheld**,
+      because quadrature of its own defining integral could not confirm it.
+      Never downgraded to a warning: a caller cannot tell a checked value from
+      an unchecked one once it is in their hands.
+    - ``E-PROB-006`` — the defining integral does not converge, so the quantity
+      does not exist. The formal symbolic answer for a divergent expectation is
+      typically a clean, plausible, wrong number, which is why the convergence
+      check runs *before* the symbolic work rather than after.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-PROB-001",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)

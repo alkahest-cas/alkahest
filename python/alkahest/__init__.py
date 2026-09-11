@@ -398,6 +398,7 @@ from .exceptions import (
     ParamGroebnerError,
     ParseError,
     PoolError,
+    ProbabilityError,
     ProductError,
     PslqError,
     RealRootError,
