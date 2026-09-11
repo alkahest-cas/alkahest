@@ -127,6 +127,132 @@ def test_matrix_exp_diagonal():
     assert expm.rows == 2
 
 
+def _expm_floats(rows):
+    """``exp(M)`` as floats, evaluated in ℂ and reduced to ``Re + |Im|``.
+
+    Complex mode because a matrix with a complex spectrum comes back written
+    over ``sqrt(-1)``; ``Re + |Im|`` so a spurious imaginary part is not
+    rounded into agreement.
+    """
+    pool = alkahest.ExprPool()
+    m = alkahest.Matrix([[pool.integer(v) for v in row] for row in rows])
+    out = []
+    for row in m.matrix_exp().to_list():
+        vals = []
+        for entry in row:
+            value = complex(alkahest.evaluate(entry, {}, mode="complex").value)
+            vals.append(value.real + abs(value.imag))
+        out.append(vals)
+    return out
+
+
+def _assert_close(got, want, tol=1e-9):
+    assert len(got) == len(want)
+    for grow, wrow in zip(got, want):
+        assert len(grow) == len(wrow)
+        for g, w in zip(grow, wrow):
+            assert abs(g - w) < tol, f"{got} != {want}"
+
+
+# Expected values are `sympy.Matrix(M).exp()`.  Before 3.10.1 every defective
+# (non-diagonalizable) matrix came back wrong with no exception and no flag:
+# the Jordan block formula read the nilpotent power `N^k` as `λ^k`, so a
+# nilpotent block lost its off-diagonal entirely and every other defective
+# block was scaled by `λ^k`.
+_E = 2.718281828459045
+_E2 = _E * _E
+
+
+def test_matrix_exp_nilpotent_is_not_the_identity():
+    # sympy: exp([[0,1],[0,0]]) == [[1,1],[0,1]].  Returned the identity.
+    _assert_close(_expm_floats([[0, 1], [0, 0]]), [[1.0, 1.0], [0.0, 1.0]])
+
+
+def test_matrix_exp_defective_off_diagonal_is_not_doubled():
+    # sympy: exp([[2,1],[0,2]]) == [[e², e²],[0, e²]].  The off-diagonal was 2e².
+    _assert_close(_expm_floats([[2, 1], [0, 2]]), [[_E2, _E2], [0.0, _E2]])
+
+
+def test_matrix_exp_three_by_three_jordan_block():
+    # sympy: exp([[2,1,0],[0,2,1],[0,0,2]]) == [[e²,e²,e²/2],[0,e²,e²],[0,0,e²]].
+    _assert_close(
+        _expm_floats([[2, 1, 0], [0, 2, 1], [0, 0, 2]]),
+        [[_E2, _E2, _E2 / 2], [0.0, _E2, _E2], [0.0, 0.0, _E2]],
+    )
+
+
+def test_matrix_exp_two_jordan_blocks_for_one_eigenvalue():
+    # sympy: exp(J₂(3) ⊕ J₂(3)) is block diagonal with [[e³,e³],[0,e³]].  This
+    # refused before 3.10.1: both Jordan chains came out of the same kernel, so
+    # the similarity transform was singular.
+    e3 = _E**3
+    _assert_close(
+        _expm_floats([[3, 1, 0, 0], [0, 3, 0, 0], [0, 0, 3, 1], [0, 0, 0, 3]]),
+        [
+            [e3, e3, 0.0, 0.0],
+            [0.0, e3, 0.0, 0.0],
+            [0.0, 0.0, e3, e3],
+            [0.0, 0.0, 0.0, e3],
+        ],
+    )
+
+
+def test_matrix_exp_defective_without_a_zero_off_diagonal():
+    # (λ − 2)² with a rank-1 A − 2I; sympy: exp([[1,1],[-1,3]]) == [[0,e²],[-e²,2e²]].
+    _assert_close(_expm_floats([[1, 1], [-1, 3]]), [[0.0, _E2], [-_E2, 2 * _E2]])
+
+
+def test_matrix_exp_rotation_stays_real():
+    # sympy: exp([[0,1],[-1,0]]) == [[cos 1, sin 1],[-sin 1, cos 1]].
+    import math
+
+    c, s = math.cos(1.0), math.sin(1.0)
+    _assert_close(_expm_floats([[0, 1], [-1, 0]]), [[c, s], [-s, c]])
+
+
+def test_matrix_exp_diagonalizable_control_does_not_regress():
+    # The route that was already right: sympy gives [[51.968956198705, ...], ...].
+    _assert_close(
+        _expm_floats([[1, 2], [3, 4]]),
+        [[51.968956198705, 74.73656456700321], [112.10484685050481, 164.07380304920983]],
+        tol=1e-7,
+    )
+
+
+def test_matrix_exp_reports_the_eigenvalue_gap_it_divided_by():
+    """``exp([[a,1],[0,b]])`` is ``e^A`` only for ``a != b``, and says so."""
+    pool = alkahest.ExprPool()
+    a, b = pool.symbol("a"), pool.symbol("b")
+    m = alkahest.Matrix([[a, pool.integer(1)], [pool.integer(0), b]])
+    m.matrix_exp()
+    conds = alkahest.matrix_exp_side_conditions()
+    assert len(conds) == 1, conds
+    assert "≠ 0" in conds[0]
+
+
+def test_matrix_exp_reports_nothing_when_every_gap_is_settled():
+    """The control: a rational spectrum needs no hypothesis at all."""
+    pool = alkahest.ExprPool()
+    m = alkahest.Matrix([[pool.integer(2), pool.integer(1)], [pool.integer(0), pool.integer(2)]])
+    m.matrix_exp()
+    assert alkahest.matrix_exp_side_conditions() == []
+
+
+def test_jordan_form_transform_is_a_basis():
+    """``M = P·J·P⁻¹`` is a claim about ``P``; a rank-deficient one is not a similarity."""
+    pool = alkahest.ExprPool()
+    rows = [[3, 1, 0, 0], [0, 3, 0, 0], [0, 0, 3, 1], [0, 0, 0, 3]]
+    m = alkahest.Matrix([[pool.integer(v) for v in row] for row in rows])
+    # Refusing is acceptable — both chains of this matrix are drawn from the
+    # same kernel, so a basis may genuinely not be found. Returning a singular
+    # P labelled a similarity transform is not.
+    try:
+        p, _j = m.jordan_form()
+    except alkahest.LinearAlgebraError:
+        pytest.skip("jordan_form declined this matrix, which is the honest outcome")
+    assert p.rank() == 4
+
+
 def test_non_square_jordan_form_declines():
     pool = alkahest.ExprPool()
     m = alkahest.Matrix([[pool.integer(1), pool.integer(0), pool.integer(0)]])

@@ -462,6 +462,83 @@ def _kernel_residual(m: ak.Matrix, at: float = 0.7) -> Callable[[], float]:
     return op
 
 
+#: ``exp(A)`` traps.  Every one of these is **defective** — the characteristic
+#: polynomial has a repeated root whose eigenspace is too small — which is the
+#: only case ``e^A`` needs anything beyond a diagonalisation, and the case that
+#: was wrong in 3.10.0.
+NILPOTENT_2X2 = [[0, 1], [0, 0]]
+DEFECTIVE_2X2 = [[2, 1], [0, 2]]
+NILPOTENT_3X3 = [[0, 1, 0], [0, 0, 1], [0, 0, 0]]
+JORDAN_3X3 = [[2, 1, 0], [0, 2, 1], [0, 0, 2]]
+TWO_JORDAN_BLOCKS = [[3, 1, 0, 0], [0, 3, 0, 0], [0, 0, 3, 1], [0, 0, 0, 3]]
+#: Defective with nothing on the surface to say so: no zero off-diagonal, and
+#: the repeated eigenvalue 2 only appears after the characteristic polynomial
+#: is factored as (λ − 2)².
+DEFECTIVE_DENSE_2X2 = [[1, 1], [-1, 3]]
+ROTATION_2X2 = [[0, 1], [-1, 0]]
+
+#: ``[[a, 1], [0, b]]``: diagonalisable for ``a != b`` and defective at ``a = b``,
+#: where ``e^A`` is the confluent form and the generic formula divides by
+#: ``a − b``.  Which branch holds is not decidable from the matrix alone.
+_B = POOL.symbol("b")
+SYMBOLIC_GAP_2X2 = ak.Matrix([[_A, _int(1)], [_int(0), _B]])
+
+
+def _exp_scalar(entry: Any, bindings: dict[Any, float]) -> float:
+    """Reduce one ``exp(M)`` entry to ``Re + |Im|``.
+
+    Evaluated in **complex** mode because a matrix with a complex spectrum comes
+    back written over ``sqrt(-1)`` — ``exp([[0,1],[-1,0]])[0][1]`` is
+    ``(e^{i} − e^{−i})/(2i)``, which is exactly ``sin 1`` and which the real
+    evaluator declines rather than mis-evaluating.
+
+    ``Re + |Im|`` rather than ``Re`` so that an answer which is right on the
+    real axis and wrong off it is still scored wrong: every matrix in these
+    cases is real, so every entry of ``e^M`` is real and a correct answer has
+    ``Im = 0`` exactly.
+    """
+    result = ak.evaluate(entry, bindings, mode="complex")
+    if result.value is None:
+        # ``evaluate`` reports a decline in the result rather than raising;
+        # re-raise it as the ``ValueError`` the gate reads as a weak refusal, so
+        # "could not be evaluated" is not scored as a corpus bug.
+        raise ValueError(f"{result.status}: {result.reason}")
+    value = complex(result.value)
+    return value.real + abs(value.imag)
+
+
+def _exp_entry(rows: list[list[int]], i: int, j: int) -> Callable[[], float]:
+    """Answer = entry ``(i, j)`` of ``exp(M)``, as a float.
+
+    One entry rather than the whole matrix because that is where the failure
+    lives: every *diagonal* entry of a defective ``e^A`` was already right in
+    3.10.0, so a case scored on the diagonal would have passed throughout.
+    """
+    return lambda: _exp_scalar(_matrix(rows).matrix_exp().to_list()[i][j], {})
+
+
+def _exp_entry_at(m: ak.Matrix, i: int, j: int, **at: float) -> Callable[[], float]:
+    """Answer = entry ``(i, j)`` of ``exp(m)`` evaluated at the given symbols."""
+    return lambda: _exp_scalar(
+        m.matrix_exp().to_list()[i][j], {POOL.symbol(k): v for k, v in at.items()}
+    )
+
+
+def _jordan_p_rank(rows: list[list[int]]) -> Callable[[], int]:
+    """Answer = the rank of the ``P`` returned by ``jordan_form``.
+
+    ``M = P·J·P⁻¹`` is a claim about ``P`` being a *basis*.  A rank-deficient
+    ``P`` makes the identity false and ``P⁻¹`` non-existent, and neither matrix
+    looks wrong on inspection — so the rank is the thing to score.
+    """
+
+    def op() -> int:
+        p, _j = _matrix(rows).jordan_form()
+        return p.rank()
+
+    return op
+
+
 def _rref_zero_rows(m: ak.Matrix, at: float = 0.7) -> Callable[[], int]:
     """Answer = how many rows of ``m.rref()`` vanish, sampled at ``a = at``.
 
@@ -3107,6 +3184,183 @@ CASES: list[Case] = [
         contract=Returns([[-2.0, 1.0], [1.5, -0.5]]),
         verified_by="1/det · adj = (1/-2)·[[4,-2],[-3,1]] = [[-2,1],[1.5,-0.5]], by hand. The "
         "control for the singular-inverse refusals.",
+    ),
+    # -----------------------------------------------------------------------
+    # The matrix exponential of a DEFECTIVE matrix.
+    #
+    # `e^A` for a diagonalisable A is `P·e^D·P⁻¹` and was always right.  For a
+    # defective A the Jordan block contributes `e^λ·Σ N^k/k!`, and in 3.10.0 the
+    # nilpotent power `N^k` was written `λ^k` — so every nilpotent block lost its
+    # off-diagonal entirely (`exp([[0,1],[0,0]])` came back as the identity) and
+    # every other defective block was off by a factor of `λ^k`.  Clean, plausible
+    # matrices, no exception, no flag.
+    #
+    # Every expectation below is `sympy.Matrix(M).exp()`, checked independently.
+    # The diagonal entries are deliberately *not* scored: they were right
+    # throughout, so a case reading one would have passed the whole time.
+    # -----------------------------------------------------------------------
+    Case(
+        id="matrix_exp_nilpotent_2x2_off_diagonal",
+        subsystem="linear_algebra",
+        statement="exp([[0,1],[0,0]])[0][1] = 1",
+        op=_exp_entry(NILPOTENT_2X2, 0, 1),
+        contract=Returns(1.0),
+        verified_by="N² = 0, so the series terminates: e^N = I + N = [[1,1],[0,1]]. "
+        "sympy.Matrix([[0,1],[0,0]]).exp() agrees. alkahest 3.10.0 returned the identity, "
+        "i.e. 0 here — the off-diagonal of e^N for a nilpotent N is the one entry that "
+        "cannot be zero, since e^N = I would force N = log I = 0.",
+    ),
+    Case(
+        id="matrix_exp_defective_off_diagonal_is_not_doubled",
+        subsystem="linear_algebra",
+        statement="exp([[2,1],[0,2]])[0][1] = e², not 2e²",
+        op=_exp_entry(DEFECTIVE_2X2, 0, 1),
+        contract=Returns(7.38905609893065),
+        verified_by="A = 2I + N with N² = 0, and 2I commutes with N, so "
+        "e^A = e²·(I + N) = [[e², e²], [0, e²]]; e² = 7.38905609893065. "
+        "sympy.Matrix([[2,1],[0,2]]).exp() agrees. alkahest 3.10.0 returned 2e² = "
+        "14.7781121978613 — exactly the factor λ¹ that the k = 1 term should not carry.",
+    ),
+    Case(
+        id="matrix_exp_nilpotent_3x3_second_superdiagonal",
+        subsystem="linear_algebra",
+        statement="exp([[0,1,0],[0,0,1],[0,0,0]])[0][2] = 1/2",
+        op=_exp_entry(NILPOTENT_3X3, 0, 2),
+        contract=Returns(0.5),
+        verified_by="N³ = 0, so e^N = I + N + N²/2 and the (0,2) entry is (N²)₀₂/2! = 1/2. "
+        "sympy agrees. Two distinct defects met here in 3.10.0: the λ^k factor zeroed it, "
+        "and the block-size detector read J[i][i+sz] instead of J[i+sz−1][i+sz], splitting "
+        "the 3×3 block into a 2×2 and a 1×1 so the 1/2 had nowhere to come from.",
+    ),
+    Case(
+        id="matrix_exp_full_jordan_block_corner",
+        subsystem="linear_algebra",
+        statement="exp([[2,1,0],[0,2,1],[0,0,2]])[0][2] = e²/2",
+        op=_exp_entry(JORDAN_3X3, 0, 2),
+        contract=Returns(3.694528049465325),
+        verified_by="e^{2I+N} = e²(I + N + N²/2); the corner is e²/2 = 3.694528049465325. "
+        "sympy.Matrix([[2,1,0],[0,2,1],[0,0,2]]).exp() agrees. The 3×3 block is the "
+        "smallest matrix on which the block-size misdetection is visible on its own.",
+    ),
+    Case(
+        id="matrix_exp_two_jordan_blocks_one_eigenvalue",
+        subsystem="linear_algebra",
+        statement="exp(J₂(3) ⊕ J₂(3))[2][3] = e³",
+        op=_exp_entry(TWO_JORDAN_BLOCKS, 2, 3),
+        contract=Returns(20.085536923187668),
+        verified_by="e^A is block diagonal with each block e³(I + N) = [[e³, e³],[0, e³]]; "
+        "e³ = 20.085536923187668. sympy agrees. This is the shape that breaks a Jordan-basis "
+        "route rather than the block formula: both chains come out of the same kernel, so a "
+        "P built by taking the same generator twice is singular.",
+    ),
+    Case(
+        id="matrix_exp_defective_without_a_zero_off_diagonal",
+        subsystem="linear_algebra",
+        statement="exp([[1,1],[-1,3]])[0][0] = 0",
+        op=_exp_entry(DEFECTIVE_DENSE_2X2, 0, 0),
+        contract=Returns(0.0),
+        verified_by="det(λI − A) = λ² − 4λ + 4 = (λ − 2)², and A − 2I = [[-1,1],[-1,1]] has "
+        "rank 1, so A is defective with one 2×2 block. e^A = e²(I + (A − 2I)) = "
+        "[[0, e²], [-e², 2e²]], whose (0,0) entry is exactly 0. sympy agrees. Nothing on the "
+        "surface of this matrix announces defectiveness — no zero off-diagonal, no repeated "
+        "diagonal entry — so it is the case a triangular-only fast path would miss.",
+    ),
+    Case(
+        id="matrix_exp_rotation_off_diagonal_is_sin_one",
+        subsystem="linear_algebra",
+        statement="exp([[0,1],[-1,0]])[0][1] = sin 1",
+        op=_exp_entry(ROTATION_2X2, 0, 1),
+        contract=Returns(0.8414709848078965),
+        verified_by="A generates rotation: e^{θA} = [[cos θ, sin θ], [-sin θ, cos θ]], so at "
+        "θ = 1 the (0,1) entry is sin 1 = 0.8414709848078965 (Euler / the 2×2 rotation "
+        "group). sympy.Matrix([[0,1],[-1,0]]).exp() agrees. The complex-spectrum control: "
+        "λ = ±i are distinct, so the answer must be real and must not acquire an imaginary "
+        "part from the route that produced it.",
+    ),
+    Case(
+        id="matrix_exp_symbolic_defective_gap",
+        subsystem="linear_algebra",
+        statement="exp([[a,1],[0,b]])[0][1] at a = b = 3/2 is e^{3/2}, not a 0/0 form",
+        op=_exp_entry_at(SYMBOLIC_GAP_2X2, 0, 1, a=1.5, b=1.5),
+        contract=RefusesOr(4.4816890703380645),
+        verified_by="For a != b the entry is (e^a − e^b)/(a − b); its limit as b → a is e^a, "
+        "which is also what the defective case gives directly: at a = b the matrix is "
+        "a·I + N with N² = 0, so e^A = e^a(I + N) and the entry is e^{3/2} = "
+        "4.4816890703380645. sympy: `sp.Matrix([[a,1],[0,b]]).exp().subs(b,a)` and "
+        "`sp.limit((sp.exp(a)-sp.exp(b))/(a-b), b, a)` both give exp(a). Refusing is "
+        "acceptable — which branch holds is not decidable from the matrix — but a *different* "
+        "finite number is not, and neither is the generic form evaluated at the confluence, "
+        "which is 0/0.",
+        note="Passes today by a refusal, not by producing the confluent value: alkahest "
+        "returns the generic (e^a − e^b)/(a − b) — correct everywhere except the confluence "
+        "— and evaluating it at a = b raises E-EVAL-004. That is a refusal a caller has to "
+        "look at the value to notice, so what carries the real signal is "
+        "`alkahest.matrix_exp_side_conditions()`, which lists `a − b ≠ 0`; "
+        "test_matrix_exp_reports_the_eigenvalue_gap_it_divided_by in "
+        "tests/test_linear_algebra.py pins that. The stronger outcome is the "
+        "Returns(e^{3/2}) branch, i.e. taking the confluent limit when the parameters are "
+        "bound.",
+    ),
+    Case(
+        id="matrix_exp_control_diagonalizable_2x2",
+        subsystem="linear_algebra",
+        statement="exp([[1,2],[3,4]])[0][0] = 51.968956198705",
+        op=_exp_entry([[1, 2], [3, 4]], 0, 0),
+        contract=Returns(51.968956198705),
+        verified_by="Eigenvalues (5 ± √33)/2 are distinct, so A = PDP⁻¹ and e^A = Pe^DP⁻¹; "
+        "sympy.Matrix([[1,2],[3,4]]).exp().evalf(20) gives 51.968956198705 in the (0,0) "
+        "entry. The control for the defective cases above: a library that 'fixed' them by "
+        "refusing every matrix with a repeated eigenvalue would still have to answer this "
+        "one, and one that broke the diagonalisable route while repairing the Jordan route "
+        "would fail here.",
+    ),
+    Case(
+        id="matrix_exp_control_diagonal_2x2",
+        subsystem="linear_algebra",
+        statement="exp(diag(1,2))[1][1] = e²",
+        op=_exp_entry([[1, 0], [0, 2]], 1, 1),
+        contract=Returns(7.38905609893065),
+        verified_by="exp(diag(d₁,…,dₙ)) = diag(e^{d₁},…,e^{dₙ}); e² = 7.38905609893065. "
+        "sympy agrees. The second control, one step simpler than the diagonalisable one: it "
+        "pins the entrywise fast path, which is the only route that never consults a "
+        "spectrum at all.",
+    ),
+    Case(
+        id="matrix_exp_control_zero_matrix_is_identity",
+        subsystem="linear_algebra",
+        statement="exp(0) = I, so exp([[0,0],[0,0]])[0][1] = 0",
+        op=_exp_entry(ZERO_2X2, 0, 1),
+        contract=Returns(0.0),
+        verified_by="e^0 = I by the series, whose every term past the first vanishes. The "
+        "companion to matrix_exp_nilpotent_2x2_off_diagonal: the identity is the *right* "
+        "answer here and the wrong one there, and the two differ in a single entry of the "
+        "input — so a gate holding only the nilpotent case could be passed by never "
+        "returning the identity at all.",
+    ),
+    Case(
+        id="jordan_form_transform_is_a_basis",
+        subsystem="linear_algebra",
+        statement="the P of jordan_form(J₂(3) ⊕ J₂(3)) has rank 4",
+        op=_jordan_p_rank(TWO_JORDAN_BLOCKS),
+        contract=RefusesOr(4),
+        verified_by="M = P·J·P⁻¹ is a similarity, so P must be invertible and a 4×4 "
+        "invertible matrix has rank 4; sympy.Matrix(M).jordan_form() returns P = I here, "
+        "det 1. Both chains of this matrix are drawn from ker(M − 3I)² = ℝ⁴, and alkahest "
+        "3.10.0 took the same generator for both, returning a P with two identical columns "
+        "— rank 3, det 0, so the identity it claims is false and P⁻¹ does not exist. "
+        "Refusing is acceptable; a rank-deficient P silently labelled a similarity transform "
+        "is not.",
+    ),
+    Case(
+        id="jordan_form_control_diagonalizable_transform",
+        subsystem="linear_algebra",
+        statement="the P of jordan_form([[1,2],[3,4]]) has rank 2",
+        op=_jordan_p_rank([[1, 2], [3, 4]]),
+        contract=Returns(2),
+        verified_by="Distinct eigenvalues (5 ± √33)/2 give two independent eigenvectors, so "
+        "P is invertible and has rank 2; sympy.Matrix([[1,2],[3,4]]).jordan_form() returns a "
+        "P with det ≠ 0. The control for the case above: a library that answered it by "
+        "refusing every jordan_form would pass that one and fail this.",
     ),
     # -----------------------------------------------------------------------
     # Divergent sums and products.  Every one of these has a famous "value"

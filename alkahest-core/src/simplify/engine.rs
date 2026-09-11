@@ -605,6 +605,54 @@ pub fn simplify_expanded(expr: ExprId, pool: &ExprPool) -> DerivedExpr<ExprId> {
     simplify_with(expr, pool, &rules_for_config(&config), config)
 }
 
+/// Simplify `expr` after distributing integer powers over products.
+///
+/// [`simplify_expanded`] does **not** turn `(z·ω)²` into `z²ω²` — the `Pow`
+/// wraps a whole `Mul`, so the exponent never reaches the factors — and a
+/// discriminant built from `(2ζω)² − 4ω²` therefore keeps a `(ζ·ω)²` that no
+/// later step cancels against a `ζ²ω²` written by the caller. It also leaves
+/// `x²·(−1·x²)⁻¹` uncancelled, which the integration engine then declines as an
+/// "irreducible product of var-dependent factors".
+///
+/// Every quantity whose *vanishing* is going to be tested — a discriminant, an
+/// eigenvalue gap — goes through here first, so the zero test and the
+/// assumption matcher see one spelling rather than two.
+pub(crate) fn expand_powers(expr: ExprId, pool: &ExprPool) -> ExprId {
+    simplify_expanded(distribute_recip(expr, pool), pool).value
+}
+
+/// Rewrite `(a·b·…)^k → a^k·b^k·…` for **integer** `k`, recursively.
+///
+/// Restricted to integer exponents, where `(ab)^k = a^k·b^k` holds
+/// unconditionally over ℝ∖{0}.
+pub(crate) fn distribute_recip(expr: ExprId, pool: &ExprPool) -> ExprId {
+    match pool.get(expr) {
+        ExprData::Add(args) => {
+            let ds: Vec<ExprId> = args.iter().map(|&a| distribute_recip(a, pool)).collect();
+            pool.add(ds)
+        }
+        ExprData::Mul(args) => {
+            let ds: Vec<ExprId> = args.iter().map(|&a| distribute_recip(a, pool)).collect();
+            pool.mul(ds)
+        }
+        ExprData::Pow { base, exp } => {
+            let b = distribute_recip(base, pool);
+            let is_int = matches!(pool.get(exp), ExprData::Integer(_));
+            match pool.get(b) {
+                ExprData::Mul(fs) if is_int => {
+                    pool.mul(fs.iter().map(|&f| pool.pow(f, exp)).collect())
+                }
+                _ => pool.pow(b, exp),
+            }
+        }
+        ExprData::Func { name, args } => {
+            let ds: Vec<ExprId> = args.iter().map(|&a| distribute_recip(a, pool)).collect();
+            pool.func(&name, ds)
+        }
+        _ => expr,
+    }
+}
+
 /// Simplify `expr` to a **trigonometric normal form**.
 ///
 /// Runs the full algebraic core *with bounded polynomial expansion* together

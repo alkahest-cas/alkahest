@@ -100,7 +100,7 @@ use crate::integrate::engine::integrate;
 use crate::kernel::eval_const::try_expr_f64;
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 use crate::simplify::assumptions::AssumptionContext;
-use crate::simplify::engine::{simplify, simplify_expanded};
+use crate::simplify::engine::{distribute_recip, simplify, simplify_expanded};
 use std::collections::HashMap;
 use std::fmt;
 
@@ -696,27 +696,7 @@ impl SolveCtx<'_> {
 /// is not the same claim and must not be read as one: `ζ² − 1` is not
 /// identically zero and still vanishes at `ζ = 1`.
 pub(crate) fn is_settled_nonzero(e: ExprId, pool: &ExprPool) -> bool {
-    if matches!(try_expr_f64(e, pool), Some(v) if v != 0.0) {
-        return true;
-    }
-    if has_free_symbol(e, pool) {
-        return false;
-    }
-    matches!(
-        crate::matrix::zero_test::zero_status(pool, e),
-        crate::matrix::zero_test::ZeroStatus::NonZero
-    )
-}
-
-fn has_free_symbol(expr: ExprId, pool: &ExprPool) -> bool {
-    pool.with(expr, |d| match d {
-        ExprData::Symbol { .. } => true,
-        ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
-            args.iter().any(|&a| has_free_symbol(a, pool))
-        }
-        ExprData::Pow { base, exp } => has_free_symbol(*base, pool) || has_free_symbol(*exp, pool),
-        _ => false,
-    })
+    crate::matrix::zero_test::settled_nonzero(e, pool)
 }
 
 /// `q` such that `a = q·b`, for a small non-zero rational `q`, or `None`.
@@ -1020,43 +1000,7 @@ fn integrand_spellings(expr: ExprId, pool: &ExprPool) -> Vec<ExprId> {
 /// eigenvalue gap — goes through here first, so the zero test and the
 /// assumption matcher see one spelling rather than two.
 pub(crate) fn expand_powers(expr: ExprId, pool: &ExprPool) -> ExprId {
-    simp(distribute_recip(expr, pool), pool)
-}
-
-/// Rewrite `(a·b·…)^k → a^k·b^k·…` for **integer** `k`, recursively.
-///
-/// `simplify` does not cancel `x²·(−1·x²)⁻¹`: the `Pow` wraps a whole `Mul`,
-/// so power collection never sees the `x²` inside it and the quotient survives
-/// as an "irreducible product of var-dependent factors" the integration engine
-/// declines. Distributing first turns it into `x²·(−1)⁻¹·x⁻²`, which collects
-/// to `−1`. Restricted to integer exponents, where `(ab)^k = a^k b^k` holds
-/// unconditionally over ℝ∖{0}.
-fn distribute_recip(expr: ExprId, pool: &ExprPool) -> ExprId {
-    match pool.get(expr) {
-        ExprData::Add(args) => {
-            let ds: Vec<ExprId> = args.iter().map(|&a| distribute_recip(a, pool)).collect();
-            pool.add(ds)
-        }
-        ExprData::Mul(args) => {
-            let ds: Vec<ExprId> = args.iter().map(|&a| distribute_recip(a, pool)).collect();
-            pool.mul(ds)
-        }
-        ExprData::Pow { base, exp } => {
-            let b = distribute_recip(base, pool);
-            let is_int = matches!(pool.get(exp), ExprData::Integer(_));
-            match pool.get(b) {
-                ExprData::Mul(fs) if is_int => {
-                    pool.mul(fs.iter().map(|&f| pool.pow(f, exp)).collect())
-                }
-                _ => pool.pow(b, exp),
-            }
-        }
-        ExprData::Func { name, args } => {
-            let ds: Vec<ExprId> = args.iter().map(|&a| distribute_recip(a, pool)).collect();
-            pool.func(&name, ds)
-        }
-        _ => expr,
-    }
+    crate::simplify::engine::expand_powers(expr, pool)
 }
 
 fn mentions_sin_cos(expr: ExprId, pool: &ExprPool) -> bool {

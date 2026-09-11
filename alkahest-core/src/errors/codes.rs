@@ -111,6 +111,13 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // Raised through `EigenError` too (`eigenvects`), which shares the elimination it
     // refuses in; the class below names where the code is defined, not every route.
     ErrorSpec { code: "E-LINALG-010", class: "LinearAlgebraError", cause: Cause::Unsupported, remediation: Some("rewrite the entry into a form whose vanishing is decidable, or substitute concrete values for the parameters") },
+    // `matrix_exponential` refusing rather than returning an e^A it cannot stand behind:
+    // an eigenvalue list nothing confirmed is the spectrum, an eigenvalue gap that is
+    // neither provably zero nor settled non-zero (the confluent and generic branches
+    // disagree and only one is right), or a candidate that failed the standing
+    // scaling-and-squaring check. Raised through `LinearAlgebraError::UnsupportedField`;
+    // the class below names where the code is defined, not the carrier variant.
+    ErrorSpec { code: "E-LINALG-011", class: "MatrixExpRefusal", cause: Cause::Unsupported, remediation: Some("substitute concrete numbers for any symbolic entries, or state the assumption that makes the eigenvalue gap non-zero") },
     // E-ODE — OdeError
     ErrorSpec { code: "E-ODE-001", class: "OdeError", cause: Cause::UserInput,   remediation: Some("number of state variables must equal number of RHS expressions") },
     ErrorSpec { code: "E-ODE-002", class: "OdeError", cause: Cause::UserInput,   remediation: Some("use lower_to_first_order() before passing to a solver") },
