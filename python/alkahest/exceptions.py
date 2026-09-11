@@ -830,3 +830,42 @@ class ParseError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code="E-PARSE-001", remediation=remediation, span=span)
+
+
+class VectorError(AlkahestError):
+    """Vector calculus over an orthogonal chart refused (``E-VEC-001`` … ``E-VEC-005``).
+
+    ``E-VEC-004`` is the one to read twice: the chart handed to
+    :meth:`alkahest.experimental.Coordinates.from_embedding` was not shown to be
+    orthogonal, and every ``grad``/``div``/``curl``/``∇²`` formula in that module
+    assumes it is. On a skew chart they still evaluate — to an expression that
+    looks like a divergence and is not one — so an *undecided* inner product is a
+    refusal rather than an assumption.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-VEC-001",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)
+
+
+class QuaternionError(AlkahestError):
+    """A quaternion operation refused (``E-QUAT-001`` … ``E-QUAT-003``).
+
+    ``E-QUAT-002`` is a refusal by design: the identity rotation has no axis,
+    because *every* unit vector is one. Returning the conventional ``(0, 0, 1)``
+    would be a stated answer to a question with no answer.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-QUAT-001",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)

@@ -270,6 +270,26 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-XCHECK-*` | `CrossCheckError` | Cross-CAS differential testing — see [Cross-CAS testing](./crosscheck.md) |
 | `E-SMT-*` | `SmtError` | SMT-LIB export, solver invocation, model lift — see [SMT bridge](./smt.md) |
 | `E-RESIDUE-*` | `AlkahestError` | `residue` — not a rational function, zero denominator, pole order out of range, or (`E-RESIDUE-005`) a point that is not an exact constant in ℚ(i) |
+| `E-VEC-*` | `VectorError` | Vector calculus over an orthogonal chart — a non-differentiable component, a repeated or non-symbol coordinate, a chart that could not be *proven* orthogonal (`E-VEC-004`), or a degenerate scale factor (`E-VEC-005`). See [Vector calculus and quaternions](#vector-calculus-and-quaternions) |
+| `E-QUAT-*` | `QuaternionError` | Quaternion algebra and rotations — a zero or undecided norm (`E-QUAT-001`), the axis of the identity rotation, which does not exist (`E-QUAT-002`), or a matrix that could not be checked to be a proper rotation (`E-QUAT-003`) |
+
+### Vector calculus and quaternions
+
+`alkahest.experimental`'s rigid-body layer refuses in three places where a clean,
+plausible number is available, and that is the point of each of them.
+
+| Code | Raised by | Why a refusal rather than an answer |
+|---|---|---|
+| `E-VEC-004` | `Coordinates.from_embedding` | Every `grad`/`div`/`curl`/`∇²` formula in the module is derived for an **orthogonal** frame. On a skew chart they still evaluate, to an expression that looks like a divergence and is not one. So the tangent inner products must be *proven* to vanish; undecided is a refusal, not an assumption |
+| `E-VEC-005` | `Coordinates.from_embedding` | A scale factor that is identically zero — or whose non-vanishing could not be established — is divided by in every operator |
+| `E-QUAT-002` | `Quaternion.to_axis_angle` | The identity rotation has no axis: *every* unit vector is one. The conventional stand-in `(0, 0, 1)` is a stated answer to a question with no answer, and nothing downstream can tell it from a real axis |
+| `E-QUAT-003` | `Quaternion.from_rotation_matrix` | Shepperd's method returns a perfectly ordinary unit quaternion for a reflection, a scaled matrix or a shear — representing some *other*, proper rotation. So `RᵀR = I` and `det R = +1` are checked, the recovered quaternion is required to reproduce the matrix, and a **symbolic** matrix refuses outright, because the branch selection is a comparison between entries and there is none to make on a symbol |
+
+The vector Laplacian is a fourth trap without an error code, because there is a right
+answer: `experimental.vector_laplacian` is `∇(∇·F) − ∇×(∇×F)`, which equals the
+componentwise scalar Laplacian in Cartesian coordinates **only**. Applying
+`experimental.laplacian` to each physical component of a cylindrical or spherical field
+silently drops the terms that come from the basis turning — `∇²(φ̂)` is `−φ̂/ρ²`, not `0`.
 
 `E-RESIDUE-005` is raised only at the Python boundary — the Rust `residue` takes an
 already-parsed point and cannot reach that state — so it is deliberately absent from
