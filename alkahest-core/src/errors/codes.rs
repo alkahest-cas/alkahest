@@ -408,6 +408,22 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-VALIDATED-003", class: "ValidatedError", cause: Cause::Domain, remediation: None },
     ErrorSpec { code: "E-VALIDATED-004", class: "ValidatedError", cause: Cause::Domain, remediation: None },
     ErrorSpec { code: "E-VALIDATED-005", class: "ValidatedError", cause: Cause::UserInput, remediation: None },
+    // E-VEC — VectorError (vector calculus over orthogonal curvilinear charts)
+    ErrorSpec { code: "E-VEC-001", class: "VectorError", cause: Cause::Unsupported, remediation: Some("the field contains a function with no differentiation rule; register it in PrimitiveRegistry or rewrite the component") },
+    ErrorSpec { code: "E-VEC-002", class: "VectorError", cause: Cause::UserInput,   remediation: Some("pass three distinct coordinate symbols, e.g. Coordinates::cylindrical(rho, phi, z)") },
+    ErrorSpec { code: "E-VEC-003", class: "VectorError", cause: Cause::UserInput,   remediation: Some("build each coordinate with `pool.symbol(..)` before constructing Coordinates") },
+    // Every grad/div/curl/laplacian formula in `vector` assumes the chart is
+    // orthogonal.  On a skew chart they still evaluate — to a number that looks
+    // like a divergence and is not one — so an *undecided* inner product is a
+    // refusal rather than an assumption.
+    ErrorSpec { code: "E-VEC-004", class: "VectorError", cause: Cause::Domain,      remediation: Some("these formulas hold only for orthogonal charts; supply an orthogonal embedding, or work in Cartesian coordinates and transform the result by hand") },
+    ErrorSpec { code: "E-VEC-005", class: "VectorError", cause: Cause::Domain,      remediation: Some("restrict the chart to a region where the scale factor is non-zero, or re-parametrise; a chart that collapses a direction has no unique orthonormal frame there") },
+    // E-QUAT — QuaternionError (Hamilton quaternions and the rotation operator)
+    ErrorSpec { code: "E-QUAT-001", class: "QuaternionError", cause: Cause::Domain,    remediation: Some("use a non-zero quaternion; if the components are symbolic, substitute concrete values or declare the parameters so the norm can be decided") },
+    // The identity rotation has no axis — *every* unit vector is one.  Returning
+    // the conventional (0,0,1) is a stated answer to a question with no answer.
+    ErrorSpec { code: "E-QUAT-002", class: "QuaternionError", cause: Cause::Domain,    remediation: Some("the rotation is the identity — report the angle as 0 and pick whatever axis your convention prefers, explicitly, at the call site") },
+    ErrorSpec { code: "E-QUAT-003", class: "QuaternionError", cause: Cause::UserInput, remediation: Some("pass a 3×3 matrix of numbers with RᵀR = I and det R = +1; a reflection (det = −1) is not a rotation and has no quaternion") },
 ];
 
 #[cfg(test)]

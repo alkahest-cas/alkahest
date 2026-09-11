@@ -16998,6 +16998,760 @@ fn py_binomial_mod(a: u64, b: i128, p: u64, k: u32) -> PyResult<u64> {
     core_binomial_mod(a, b, p, k).map_err(holonomic_modular_error_to_py)
 }
 
+// ---------------------------------------------------------------------------
+// Vector calculus and quaternions (experimental surface)
+// ---------------------------------------------------------------------------
+
+pyo3::create_exception!(alkahest, PyVectorError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PyQuaternionError, PyAlkahestError);
+
+fn vector_error_to_py(e: alkahest_core::vector::VectorError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyVectorError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn quaternion_error_to_py(e: alkahest_core::algebra::quaternion::QuaternionError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyQuaternionError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+/// The pool behind the first `Expr`/`DerivedResult` in `items`, if any.
+///
+/// Same rule `Matrix.from_rows` uses: bare numbers are coerced into the pool
+/// the symbolic entries already live in, and an all-numeric argument list has
+/// no pool to infer.
+fn pool_from_items(py: Python<'_>, items: &[Bound<'_, PyAny>]) -> Option<Py<PyExprPool>> {
+    for item in items {
+        if let Ok(e) = item.extract::<PyRef<PyExpr>>() {
+            return Some(e.pool.clone_ref(py));
+        }
+        if let Ok(dr) = item.downcast::<PyDerivedResult>() {
+            return Some(dr.borrow().value.pool.clone_ref(py));
+        }
+    }
+    None
+}
+
+fn require_three(items: &[Bound<'_, PyAny>], what: &str) -> PyResult<()> {
+    if items.len() != 3 {
+        return Err(PyTypeError::new_err(format!(
+            "{what} takes exactly 3 components, got {}",
+            items.len()
+        )));
+    }
+    Ok(())
+}
+
+fn coerce_vec3(
+    pool_py: &Py<PyExprPool>,
+    items: &[Bound<'_, PyAny>],
+    py: Python<'_>,
+    what: &str,
+) -> PyResult<[ExprId; 3]> {
+    require_three(items, what)?;
+    Ok([
+        coerce_substituent(pool_py, &items[0], py)?,
+        coerce_substituent(pool_py, &items[1], py)?,
+        coerce_substituent(pool_py, &items[2], py)?,
+    ])
+}
+
+fn vec3_to_py(v: [ExprId; 3], pool_py: &Py<PyExprPool>, py: Python<'_>) -> PyObject {
+    PyTuple::new_bound(
+        py,
+        v.iter().map(|&id| {
+            PyExpr {
+                id,
+                pool: pool_py.clone_ref(py),
+            }
+            .into_py(py)
+        }),
+    )
+    .into_py(py)
+}
+
+/// An orthogonal coordinate system — three coordinate symbols and their scale
+/// factors.
+///
+/// Build one with :meth:`cartesian`, :meth:`cylindrical`, :meth:`spherical` or
+/// :meth:`from_embedding`. There is no constructor taking scale factors
+/// directly: the three built-in charts carry textbook values, and anything
+/// else has to come from an embedding whose orthogonality was *checked*
+/// (``E-VEC-004`` when it cannot be).
+///
+/// Vector fields are given in **physical** components — the local orthonormal
+/// frame — which is the convention ``sympy.vector`` uses and the one an
+/// engineer means by "the ρ component".
+#[pyclass(name = "Coordinates", module = "alkahest.experimental")]
+#[derive(Clone)]
+struct PyCoordinates {
+    inner: alkahest_core::vector::Coordinates,
+    pool: Py<PyExprPool>,
+}
+
+#[pymethods]
+impl PyCoordinates {
+    /// Cartesian ``(x, y, z)`` — scale factors ``(1, 1, 1)``.
+    #[staticmethod]
+    fn cartesian(
+        py: Python<'_>,
+        x: PyRef<PyExpr>,
+        y: PyRef<PyExpr>,
+        z: PyRef<PyExpr>,
+    ) -> PyResult<PyCoordinates> {
+        let pool_py = x.pool.clone_ref(py);
+        if !y.pool.is(&pool_py) || !z.pool.is(&pool_py) {
+            return Err(pool_mismatch_err());
+        }
+        let inner = {
+            let pool = pool_py.borrow(py);
+            alkahest_core::vector::Coordinates::cartesian(x.id, y.id, z.id, &pool.inner)
+                .map_err(vector_error_to_py)?
+        };
+        Ok(PyCoordinates {
+            inner,
+            pool: pool_py,
+        })
+    }
+
+    /// Cylindrical ``(ρ, φ, z)`` — scale factors ``(1, ρ, 1)``, with
+    /// ``x = ρ cos φ``, ``y = ρ sin φ``. Right-handed in this order.
+    #[staticmethod]
+    fn cylindrical(
+        py: Python<'_>,
+        rho: PyRef<PyExpr>,
+        phi: PyRef<PyExpr>,
+        z: PyRef<PyExpr>,
+    ) -> PyResult<PyCoordinates> {
+        let pool_py = rho.pool.clone_ref(py);
+        if !phi.pool.is(&pool_py) || !z.pool.is(&pool_py) {
+            return Err(pool_mismatch_err());
+        }
+        let inner = {
+            let pool = pool_py.borrow(py);
+            alkahest_core::vector::Coordinates::cylindrical(rho.id, phi.id, z.id, &pool.inner)
+                .map_err(vector_error_to_py)?
+        };
+        Ok(PyCoordinates {
+            inner,
+            pool: pool_py,
+        })
+    }
+
+    /// Spherical ``(r, θ, φ)`` — scale factors ``(1, r, r sin θ)``.
+    ///
+    /// The **physics / ISO 80000-2** convention: ``θ`` is the polar angle from
+    /// ``+z``, ``φ`` the azimuth, so ``x = r sin θ cos φ``,
+    /// ``y = r sin θ sin φ``, ``z = r cos θ``. Right-handed in the order
+    /// ``(r, θ, φ)``.
+    #[staticmethod]
+    fn spherical(
+        py: Python<'_>,
+        r: PyRef<PyExpr>,
+        theta: PyRef<PyExpr>,
+        phi: PyRef<PyExpr>,
+    ) -> PyResult<PyCoordinates> {
+        let pool_py = r.pool.clone_ref(py);
+        if !theta.pool.is(&pool_py) || !phi.pool.is(&pool_py) {
+            return Err(pool_mismatch_err());
+        }
+        let inner = {
+            let pool = pool_py.borrow(py);
+            alkahest_core::vector::Coordinates::spherical(r.id, theta.id, phi.id, &pool.inner)
+                .map_err(vector_error_to_py)?
+        };
+        Ok(PyCoordinates {
+            inner,
+            pool: pool_py,
+        })
+    }
+
+    /// Derive a chart from its Cartesian embedding ``(x(u), y(u), z(u))``,
+    /// **verifying orthogonality** before returning it.
+    ///
+    /// ``hᵢ = |∂r/∂uᵢ|``, and a pair is accepted only when
+    /// ``∂r/∂uᵢ · ∂r/∂u_j`` is *proven* to vanish: an undecided inner product
+    /// raises ``E-VEC-004`` rather than being assumed away. Every formula in
+    /// this module is false on a skew chart, and false in a way that produces
+    /// an ordinary-looking expression.
+    #[staticmethod]
+    #[pyo3(signature = (coordinates, embedding, label = None))]
+    fn from_embedding(
+        py: Python<'_>,
+        coordinates: Vec<Bound<'_, PyAny>>,
+        embedding: Vec<Bound<'_, PyAny>>,
+        label: Option<String>,
+    ) -> PyResult<PyCoordinates> {
+        require_three(&coordinates, "Coordinates.from_embedding(coordinates=...)")?;
+        require_three(&embedding, "Coordinates.from_embedding(embedding=...)")?;
+        let pool_py = pool_from_items(py, &coordinates)
+            .or_else(|| pool_from_items(py, &embedding))
+            .ok_or_else(|| {
+                PyTypeError::new_err(
+                    "Coordinates.from_embedding could not determine an ExprPool: at least \
+                     one coordinate or embedding component must be an Expr",
+                )
+            })?;
+        let vars = coerce_vec3(&pool_py, &coordinates, py, "coordinates")?;
+        let emb = coerce_vec3(&pool_py, &embedding, py, "embedding")?;
+        let inner = {
+            let pool = pool_py.borrow(py);
+            alkahest_core::vector::Coordinates::from_embedding(
+                vars,
+                emb,
+                label.unwrap_or_else(|| "custom".to_string()),
+                &pool.inner,
+            )
+            .map_err(vector_error_to_py)?
+        };
+        Ok(PyCoordinates {
+            inner,
+            pool: pool_py,
+        })
+    }
+
+    /// The three coordinate symbols, in constructor order.
+    fn vars(&self, py: Python<'_>) -> PyObject {
+        vec3_to_py(self.inner.vars(), &self.pool, py)
+    }
+
+    /// The three scale factors ``(h₁, h₂, h₃)``.
+    fn scale_factors(&self, py: Python<'_>) -> PyObject {
+        vec3_to_py(self.inner.scale_factors(), &self.pool, py)
+    }
+
+    /// The chart's name, for diagnostics.
+    #[getter]
+    fn label(&self) -> String {
+        self.inner.label().to_string()
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> String {
+        let pool = self.pool.borrow(py);
+        let vars = self.inner.vars();
+        format!(
+            "Coordinates({}, ({}, {}, {}))",
+            self.inner.label(),
+            pool.inner.display(vars[0]),
+            pool.inner.display(vars[1]),
+            pool.inner.display(vars[2]),
+        )
+    }
+}
+
+/// ``experimental.gradient(f, coords)`` — ``∇f`` in physical components.
+#[pyfunction]
+#[pyo3(name = "gradient")]
+fn py_vector_gradient(
+    py: Python<'_>,
+    f: &Bound<'_, PyAny>,
+    coords: PyRef<PyCoordinates>,
+) -> PyResult<PyObject> {
+    let pool_py = coords.pool.clone_ref(py);
+    let fid = coerce_substituent(&pool_py, f, py)?;
+    let out = {
+        let pool = pool_py.borrow(py);
+        alkahest_core::vector::gradient(fid, &coords.inner, &pool.inner)
+            .map_err(vector_error_to_py)?
+    };
+    Ok(vec3_to_py(out, &pool_py, py))
+}
+
+/// ``experimental.divergence(field, coords)`` — ``∇·F``.
+#[pyfunction]
+#[pyo3(name = "divergence")]
+fn py_vector_divergence(
+    py: Python<'_>,
+    field: Vec<Bound<'_, PyAny>>,
+    coords: PyRef<PyCoordinates>,
+) -> PyResult<PyExpr> {
+    let pool_py = coords.pool.clone_ref(py);
+    let f = coerce_vec3(&pool_py, &field, py, "divergence(field=...)")?;
+    let id = {
+        let pool = pool_py.borrow(py);
+        alkahest_core::vector::divergence(&f, &coords.inner, &pool.inner)
+            .map_err(vector_error_to_py)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// ``experimental.curl(field, coords)`` — ``∇×F`` in a right-handed frame.
+#[pyfunction]
+#[pyo3(name = "curl")]
+fn py_vector_curl(
+    py: Python<'_>,
+    field: Vec<Bound<'_, PyAny>>,
+    coords: PyRef<PyCoordinates>,
+) -> PyResult<PyObject> {
+    let pool_py = coords.pool.clone_ref(py);
+    let f = coerce_vec3(&pool_py, &field, py, "curl(field=...)")?;
+    let out = {
+        let pool = pool_py.borrow(py);
+        alkahest_core::vector::curl(&f, &coords.inner, &pool.inner).map_err(vector_error_to_py)?
+    };
+    Ok(vec3_to_py(out, &pool_py, py))
+}
+
+/// ``experimental.laplacian(f, coords)`` — the scalar Laplacian ``∇²f``.
+#[pyfunction]
+#[pyo3(name = "laplacian")]
+fn py_vector_laplacian_scalar(
+    py: Python<'_>,
+    f: &Bound<'_, PyAny>,
+    coords: PyRef<PyCoordinates>,
+) -> PyResult<PyExpr> {
+    let pool_py = coords.pool.clone_ref(py);
+    let fid = coerce_substituent(&pool_py, f, py)?;
+    let id = {
+        let pool = pool_py.borrow(py);
+        alkahest_core::vector::laplacian(fid, &coords.inner, &pool.inner)
+            .map_err(vector_error_to_py)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// ``experimental.vector_laplacian(field, coords)`` — ``∇²F``, defined as
+/// ``∇(∇·F) − ∇×(∇×F)``.
+///
+/// In Cartesian coordinates that equals the componentwise scalar Laplacian and
+/// is computed that way. In every other chart it does **not**: applying
+/// :func:`laplacian` to each physical component there is a silent error, and
+/// this function exists so that nobody has to.
+#[pyfunction]
+#[pyo3(name = "vector_laplacian")]
+fn py_vector_laplacian_vector(
+    py: Python<'_>,
+    field: Vec<Bound<'_, PyAny>>,
+    coords: PyRef<PyCoordinates>,
+) -> PyResult<PyObject> {
+    let pool_py = coords.pool.clone_ref(py);
+    let f = coerce_vec3(&pool_py, &field, py, "vector_laplacian(field=...)")?;
+    let out = {
+        let pool = pool_py.borrow(py);
+        alkahest_core::vector::vector_laplacian(&f, &coords.inner, &pool.inner)
+            .map_err(vector_error_to_py)?
+    };
+    Ok(vec3_to_py(out, &pool_py, py))
+}
+
+fn vec3_pair(
+    py: Python<'_>,
+    a: &[Bound<'_, PyAny>],
+    b: &[Bound<'_, PyAny>],
+    what: &str,
+) -> PyResult<(Py<PyExprPool>, [ExprId; 3], [ExprId; 3])> {
+    let pool_py = pool_from_items(py, a)
+        .or_else(|| pool_from_items(py, b))
+        .ok_or_else(|| {
+            PyTypeError::new_err(format!(
+                "{what} could not determine an ExprPool: at least one component must be an Expr"
+            ))
+        })?;
+    let av = coerce_vec3(&pool_py, a, py, what)?;
+    let bv = coerce_vec3(&pool_py, b, py, what)?;
+    Ok((pool_py, av, bv))
+}
+
+/// ``experimental.dot(a, b)`` — ``Σ aᵢbᵢ`` in an orthonormal frame.
+#[pyfunction]
+#[pyo3(name = "dot")]
+fn py_vector_dot(
+    py: Python<'_>,
+    a: Vec<Bound<'_, PyAny>>,
+    b: Vec<Bound<'_, PyAny>>,
+) -> PyResult<PyExpr> {
+    let (pool_py, av, bv) = vec3_pair(py, &a, &b, "dot(a, b)")?;
+    let id = {
+        let pool = pool_py.borrow(py);
+        alkahest_core::vector::dot(&av, &bv, &pool.inner)
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// ``experimental.cross(a, b)`` — ``a × b`` in a **right-handed** orthonormal
+/// frame, so ``ê₁ × ê₂ = ê₃``.
+#[pyfunction]
+#[pyo3(name = "cross")]
+fn py_vector_cross(
+    py: Python<'_>,
+    a: Vec<Bound<'_, PyAny>>,
+    b: Vec<Bound<'_, PyAny>>,
+) -> PyResult<PyObject> {
+    let (pool_py, av, bv) = vec3_pair(py, &a, &b, "cross(a, b)")?;
+    let out = {
+        let pool = pool_py.borrow(py);
+        alkahest_core::vector::cross(&av, &bv, &pool.inner)
+    };
+    Ok(vec3_to_py(out, &pool_py, py))
+}
+
+/// ``experimental.norm(a)`` — ``√(a·a)``, the Euclidean length of a real
+/// 3-vector.
+#[pyfunction]
+#[pyo3(name = "norm")]
+fn py_vector_norm(py: Python<'_>, a: Vec<Bound<'_, PyAny>>) -> PyResult<PyExpr> {
+    let pool_py = pool_from_items(py, &a).ok_or_else(|| {
+        PyTypeError::new_err(
+            "norm(a) could not determine an ExprPool: at least one component must be an Expr",
+        )
+    })?;
+    let av = coerce_vec3(&pool_py, &a, py, "norm(a)")?;
+    let id = {
+        let pool = pool_py.borrow(py);
+        alkahest_core::vector::norm(&av, &pool.inner)
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// A Hamilton quaternion ``w + xi + yj + zk``.
+///
+/// ``i² = j² = k² = ijk = −1``, so ``ij = k`` and ``ji = −k``: ``*`` does not
+/// commute. :meth:`rotate` is the **active** rotation ``v ↦ q v q⁻¹`` in a
+/// right-handed frame, and composition follows from it —
+/// ``(q1 * q2)`` applies ``q2`` first, and
+/// ``(q1 * q2).to_rotation_matrix() == q1.to_rotation_matrix() @
+/// q2.to_rotation_matrix()``.
+#[pyclass(name = "Quaternion", module = "alkahest.experimental")]
+#[derive(Clone)]
+struct PyQuaternion {
+    inner: alkahest_core::algebra::quaternion::Quaternion,
+    pool: Py<PyExprPool>,
+}
+
+impl PyQuaternion {
+    fn wrap(
+        inner: alkahest_core::algebra::quaternion::Quaternion,
+        pool: &Py<PyExprPool>,
+        py: Python<'_>,
+    ) -> PyQuaternion {
+        PyQuaternion {
+            inner,
+            pool: pool.clone_ref(py),
+        }
+    }
+
+    fn expr(&self, id: ExprId, py: Python<'_>) -> PyExpr {
+        PyExpr {
+            id,
+            pool: self.pool.clone_ref(py),
+        }
+    }
+}
+
+#[pymethods]
+impl PyQuaternion {
+    /// ``Quaternion(w, x, y, z, pool=None)``.
+    ///
+    /// Each component may be an :class:`Expr`, a :class:`DerivedResult`, or a
+    /// Python number. Numbers are coerced into the pool the symbolic
+    /// components live in; if all four are numbers, pass ``pool=`` explicitly,
+    /// because there is nothing to infer it from.
+    #[new]
+    #[pyo3(signature = (w, x, y, z, pool = None))]
+    fn __new__(
+        py: Python<'_>,
+        w: Bound<'_, PyAny>,
+        x: Bound<'_, PyAny>,
+        y: Bound<'_, PyAny>,
+        z: Bound<'_, PyAny>,
+        pool: Option<Py<PyExprPool>>,
+    ) -> PyResult<PyQuaternion> {
+        let items = [w, x, y, z];
+        let pool_py = match pool {
+            Some(p) => p,
+            None => pool_from_items(py, &items).ok_or_else(|| {
+                PyTypeError::new_err(
+                    "Quaternion could not determine an ExprPool: pass at least one Expr \
+                     component, or the pool= keyword",
+                )
+            })?,
+        };
+        let mut c = Vec::with_capacity(4);
+        for item in &items {
+            c.push(coerce_substituent(&pool_py, item, py)?);
+        }
+        Ok(PyQuaternion {
+            inner: alkahest_core::algebra::quaternion::Quaternion::new(c[0], c[1], c[2], c[3]),
+            pool: pool_py,
+        })
+    }
+
+    /// The multiplicative identity ``1``.
+    #[staticmethod]
+    fn identity(py: Python<'_>, pool: Py<PyExprPool>) -> PyQuaternion {
+        let inner = {
+            let p = pool.borrow(py);
+            alkahest_core::algebra::quaternion::Quaternion::identity(&p.inner)
+        };
+        PyQuaternion { inner, pool }
+    }
+
+    /// The real part ``w``.
+    #[getter]
+    fn w(&self, py: Python<'_>) -> PyExpr {
+        self.expr(self.inner.w(), py)
+    }
+
+    /// The ``i`` component.
+    #[getter]
+    fn x(&self, py: Python<'_>) -> PyExpr {
+        self.expr(self.inner.x(), py)
+    }
+
+    /// The ``j`` component.
+    #[getter]
+    fn y(&self, py: Python<'_>) -> PyExpr {
+        self.expr(self.inner.y(), py)
+    }
+
+    /// The ``k`` component.
+    #[getter]
+    fn z(&self, py: Python<'_>) -> PyExpr {
+        self.expr(self.inner.z(), py)
+    }
+
+    /// ``(w, x, y, z)``, scalar first.
+    fn components(&self, py: Python<'_>) -> PyObject {
+        let c = self.inner.components();
+        PyTuple::new_bound(py, c.iter().map(|&id| self.expr(id, py).into_py(py))).into_py(py)
+    }
+
+    /// ``(x, y, z)`` — the vector part.
+    fn vector_part(&self, py: Python<'_>) -> PyObject {
+        vec3_to_py(self.inner.vector_part(), &self.pool, py)
+    }
+
+    /// The **Hamilton product**. Not commutative: ``i * j == k`` while
+    /// ``j * i == -k``.
+    fn __mul__(&self, py: Python<'_>, other: PyRef<PyQuaternion>) -> PyResult<PyQuaternion> {
+        if !other.pool.is(&self.pool) {
+            return Err(pool_mismatch_err());
+        }
+        let inner = {
+            let p = self.pool.borrow(py);
+            self.inner.mul(&other.inner, &p.inner)
+        };
+        Ok(PyQuaternion::wrap(inner, &self.pool, py))
+    }
+
+    fn __add__(&self, py: Python<'_>, other: PyRef<PyQuaternion>) -> PyResult<PyQuaternion> {
+        if !other.pool.is(&self.pool) {
+            return Err(pool_mismatch_err());
+        }
+        let inner = {
+            let p = self.pool.borrow(py);
+            self.inner.add(&other.inner, &p.inner)
+        };
+        Ok(PyQuaternion::wrap(inner, &self.pool, py))
+    }
+
+    fn __sub__(&self, py: Python<'_>, other: PyRef<PyQuaternion>) -> PyResult<PyQuaternion> {
+        if !other.pool.is(&self.pool) {
+            return Err(pool_mismatch_err());
+        }
+        let inner = {
+            let p = self.pool.borrow(py);
+            self.inner.sub(&other.inner, &p.inner)
+        };
+        Ok(PyQuaternion::wrap(inner, &self.pool, py))
+    }
+
+    fn __neg__(&self, py: Python<'_>) -> PyQuaternion {
+        let inner = {
+            let p = self.pool.borrow(py);
+            let neg = p.inner.integer(-1_i32);
+            self.inner.scale(neg, &p.inner)
+        };
+        PyQuaternion::wrap(inner, &self.pool, py)
+    }
+
+    fn __eq__(&self, other: PyRef<PyQuaternion>) -> bool {
+        self.inner == other.inner && other.pool.is(&self.pool)
+    }
+
+    /// ``q̄ = w − xi − yj − zk``.
+    fn conjugate(&self, py: Python<'_>) -> PyQuaternion {
+        let inner = {
+            let p = self.pool.borrow(py);
+            self.inner.conjugate(&p.inner)
+        };
+        PyQuaternion::wrap(inner, &self.pool, py)
+    }
+
+    /// ``|q|² = w² + x² + y² + z²``.
+    fn norm_squared(&self, py: Python<'_>) -> PyExpr {
+        let id = {
+            let p = self.pool.borrow(py);
+            self.inner.norm_squared(&p.inner)
+        };
+        self.expr(id, py)
+    }
+
+    /// ``|q| = √(w² + x² + y² + z²)``.
+    fn norm(&self, py: Python<'_>) -> PyExpr {
+        let id = {
+            let p = self.pool.borrow(py);
+            self.inner.norm(&p.inner)
+        };
+        self.expr(id, py)
+    }
+
+    /// ``q⁻¹ = q̄/|q|²``.
+    ///
+    /// Raises ``E-QUAT-001`` when ``|q|²`` is zero or its vanishing could not
+    /// be decided.
+    fn inverse(&self, py: Python<'_>) -> PyResult<PyQuaternion> {
+        let inner = {
+            let p = self.pool.borrow(py);
+            self.inner
+                .inverse(&p.inner)
+                .map_err(quaternion_error_to_py)?
+        };
+        Ok(PyQuaternion::wrap(inner, &self.pool, py))
+    }
+
+    /// ``q/|q|``. Raises ``E-QUAT-001`` for a zero or undecided norm.
+    fn normalize(&self, py: Python<'_>) -> PyResult<PyQuaternion> {
+        let inner = {
+            let p = self.pool.borrow(py);
+            self.inner
+                .normalize(&p.inner)
+                .map_err(quaternion_error_to_py)?
+        };
+        Ok(PyQuaternion::wrap(inner, &self.pool, py))
+    }
+
+    /// The **active** rotation ``v ↦ q v q⁻¹``, returned as a 3-tuple.
+    ///
+    /// ``q`` need not be a unit quaternion — the operator is invariant under
+    /// ``q ↦ λq``. Raises ``E-QUAT-001`` for a zero or undecided norm.
+    fn rotate(&self, py: Python<'_>, v: Vec<Bound<'_, PyAny>>) -> PyResult<PyObject> {
+        let vv = coerce_vec3(&self.pool, &v, py, "Quaternion.rotate(v)")?;
+        let out = {
+            let p = self.pool.borrow(py);
+            self.inner
+                .rotate(&vv, &p.inner)
+                .map_err(quaternion_error_to_py)?
+        };
+        Ok(vec3_to_py(out, &self.pool, py))
+    }
+
+    /// The 3×3 :class:`~alkahest.Matrix` ``R`` with ``R @ v == q.rotate(v)``.
+    fn to_rotation_matrix(&self, py: Python<'_>) -> PyResult<PyMatrix> {
+        let inner = {
+            let p = self.pool.borrow(py);
+            self.inner
+                .to_rotation_matrix(&p.inner)
+                .map_err(quaternion_error_to_py)?
+        };
+        Ok(PyMatrix {
+            inner,
+            pool: self.pool.clone_ref(py),
+        })
+    }
+
+    /// ``(axis, angle)`` with ``angle = 2·atan2(|v|, w)`` and ``axis = v/|v|``.
+    ///
+    /// Raises ``E-QUAT-002`` when the vector part is zero: ``q`` is then a real
+    /// scalar, the rotation is the identity, and *every* unit vector is an axis
+    /// for it. There is no axis to return, and returning the conventional
+    /// ``(0, 0, 1)`` would be a stated answer to a question with no answer.
+    fn to_axis_angle(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let (axis, angle) = {
+            let p = self.pool.borrow(py);
+            self.inner
+                .to_axis_angle(&p.inner)
+                .map_err(quaternion_error_to_py)?
+        };
+        Ok(PyTuple::new_bound(
+            py,
+            [
+                vec3_to_py(axis, &self.pool, py),
+                self.expr(angle, py).into_py(py),
+            ],
+        )
+        .into_py(py))
+    }
+
+    /// ``q = cos(θ/2) + sin(θ/2)·û`` for a rotation of ``angle`` about
+    /// ``axis``, right-handed.
+    ///
+    /// ``axis`` is normalised internally. Raises ``E-QUAT-001`` when it is the
+    /// zero vector — that picks out no axis.
+    #[staticmethod]
+    fn from_axis_angle(
+        py: Python<'_>,
+        axis: Vec<Bound<'_, PyAny>>,
+        angle: &Bound<'_, PyAny>,
+    ) -> PyResult<PyQuaternion> {
+        let mut items = axis.clone();
+        items.push(angle.clone());
+        let pool_py = pool_from_items(py, &items).ok_or_else(|| {
+            PyTypeError::new_err(
+                "Quaternion.from_axis_angle could not determine an ExprPool: the axis or the \
+                 angle must contain an Expr",
+            )
+        })?;
+        let ax = coerce_vec3(&pool_py, &axis, py, "Quaternion.from_axis_angle(axis)")?;
+        let ang = coerce_substituent(&pool_py, angle, py)?;
+        let inner = {
+            let p = pool_py.borrow(py);
+            alkahest_core::algebra::quaternion::Quaternion::from_axis_angle(&ax, ang, &p.inner)
+                .map_err(quaternion_error_to_py)?
+        };
+        Ok(PyQuaternion {
+            inner,
+            pool: pool_py,
+        })
+    }
+
+    /// Recover a unit quaternion from a **numeric** proper rotation matrix.
+    ///
+    /// Raises ``E-QUAT-003`` unless the matrix is 3×3, every entry evaluates to
+    /// a finite number, ``RᵀR = I``, ``det R = +1``, *and* the recovered
+    /// quaternion reproduces the matrix. Symbolic entries refuse: the branch
+    /// selection is a comparison between entries, and there is none to make on
+    /// a symbol.
+    #[staticmethod]
+    fn from_rotation_matrix(py: Python<'_>, m: PyRef<PyMatrix>) -> PyResult<PyQuaternion> {
+        let pool_py = m.pool.clone_ref(py);
+        let inner = {
+            let p = pool_py.borrow(py);
+            alkahest_core::algebra::quaternion::Quaternion::from_rotation_matrix(&m.inner, &p.inner)
+                .map_err(quaternion_error_to_py)?
+        };
+        Ok(PyQuaternion {
+            inner,
+            pool: pool_py,
+        })
+    }
+
+    /// Simplify all four components.
+    fn simplify(&self, py: Python<'_>) -> PyQuaternion {
+        let inner = {
+            let p = self.pool.borrow(py);
+            self.inner.simplified(&p.inner)
+        };
+        PyQuaternion::wrap(inner, &self.pool, py)
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> String {
+        let p = self.pool.borrow(py);
+        let c = self.inner.components();
+        format!(
+            "Quaternion({}, {}, {}, {})",
+            p.inner.display(c[0]),
+            p.inner.display(c[1]),
+            p.inner.display(c[2]),
+            p.inner.display(c[3]),
+        )
+    }
+}
+
 #[pymodule]
 fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Before anything in this module can reach GMP: install the allocation
@@ -17039,6 +17793,22 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // P1 item 10 — asymptotic expansion at scale
     m.add_class::<PyAsymptoticReport>()?;
     m.add_class::<PyPuiseuxExpansion>()?;
+    // Vector calculus and quaternions (experimental surface)
+    m.add_class::<PyCoordinates>()?;
+    m.add_class::<PyQuaternion>()?;
+    m.add("VectorError", m.py().get_type_bound::<PyVectorError>())?;
+    m.add(
+        "QuaternionError",
+        m.py().get_type_bound::<PyQuaternionError>(),
+    )?;
+    m.add_function(wrap_pyfunction!(py_vector_gradient, m)?)?;
+    m.add_function(wrap_pyfunction!(py_vector_divergence, m)?)?;
+    m.add_function(wrap_pyfunction!(py_vector_curl, m)?)?;
+    m.add_function(wrap_pyfunction!(py_vector_laplacian_scalar, m)?)?;
+    m.add_function(wrap_pyfunction!(py_vector_laplacian_vector, m)?)?;
+    m.add_function(wrap_pyfunction!(py_vector_dot, m)?)?;
+    m.add_function(wrap_pyfunction!(py_vector_cross, m)?)?;
+    m.add_function(wrap_pyfunction!(py_vector_norm, m)?)?;
     m.add_function(wrap_pyfunction!(py_euler_maclaurin, m)?)?;
     m.add_function(wrap_pyfunction!(py_coefficient_asymptotics, m)?)?;
     // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
