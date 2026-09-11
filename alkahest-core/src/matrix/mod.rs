@@ -13,8 +13,10 @@ use crate::simplify::engine::simplify;
 use std::fmt;
 
 pub mod eigen;
+pub mod exp_gate;
 pub mod linear_algebra;
 pub mod normal_form;
+pub(crate) mod putzer;
 mod smith;
 mod smith_poly;
 pub mod spectrum;
@@ -22,6 +24,9 @@ pub(crate) mod zero_test;
 
 pub use eigen::{
     characteristic_polynomial_lambda_minus_m, diagonalize, eigenvalues, eigenvectors, EigenError,
+};
+pub use exp_gate::{
+    take_matrix_exp_refusal, take_matrix_exp_side_conditions, ExpRefusalReason, MatrixExpRefusal,
 };
 pub use linear_algebra::{
     cholesky, column_space_basis, jordan_form, lu_decomposition, matrix_exponential,

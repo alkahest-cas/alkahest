@@ -1177,12 +1177,69 @@ fn eigen_error_to_py(e: EigenError) -> PyErr {
     })
 }
 
+thread_local! {
+    /// Hypotheses recorded by the most recent `Matrix.matrix_exp` on this
+    /// thread, rendered against the pool that call used.
+    static MATRIX_EXP_SIDE_CONDITIONS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Reset both ends of the side-condition channel at the start of a `matrix_exp`.
+fn reset_matrix_exp_side_conditions() {
+    let _ = alkahest_core::matrix::take_matrix_exp_side_conditions();
+    MATRIX_EXP_SIDE_CONDITIONS.with(|c| c.borrow_mut().clear());
+}
+
+/// Render the hypotheses the core `matrix_exponential` just assumed, for
+/// [`py_matrix_exp_side_conditions`].
+fn capture_matrix_exp_side_conditions(pool: &alkahest_core::ExprPool) {
+    let rendered: Vec<String> = alkahest_core::matrix::take_matrix_exp_side_conditions()
+        .iter()
+        .map(|c| c.display_with(pool).to_string())
+        .collect();
+    MATRIX_EXP_SIDE_CONDITIONS.with(|c| *c.borrow_mut() = rendered);
+}
+
+/// `alkahest.matrix_exp_side_conditions() -> list[str]`
+///
+/// The hypotheses the most recent :meth:`alkahest.Matrix.matrix_exp` on this
+/// thread **assumed** in order to return the matrix it did — one string per
+/// condition, e.g. ``"(a + (b · -1)) ≠ 0"``.
+///
+/// Exactly one thing lands here: a difference of two eigenvalues that the
+/// expansion divided by and could not prove non-zero.
+/// ``Matrix([[a,1],[0,b]]).matrix_exp()`` has the off-diagonal
+/// ``(e^a − e^b)/(a − b)``, which is ``e^A`` *for* ``a ≠ b``; at ``a = b`` the
+/// matrix is defective and the entry is ``e^a``, the limit, not a quotient.
+/// That generic-parameter reading is the one every CAS gives and is the useful
+/// one — but a ``Matrix`` cannot carry the caveat, so it is reported beside the
+/// result, as ``solve`` reports ``a ≠ 0`` through
+/// :func:`alkahest.solve_side_conditions`.
+///
+/// An empty list means every gap divided by was *proven* non-zero, or that the
+/// confluent branch was taken and nothing was divided by at all — not that
+/// nothing was looked at. Reset by each ``matrix_exp`` call, so read it before
+/// the next one; repeated reads of the same call agree.
+#[pyfunction]
+#[pyo3(name = "matrix_exp_side_conditions")]
+fn py_matrix_exp_side_conditions() -> Vec<String> {
+    MATRIX_EXP_SIDE_CONDITIONS.with(|c| c.borrow().clone())
+}
+
 fn linear_algebra_error_to_py(e: LinearAlgebraError) -> PyErr {
-    // `UnsupportedField` covers both "entries are not rational constants"
-    // (`E-LINALG-007`) and "a pivot could be proven neither zero nor non-zero"
-    // (`E-LINALG-010`); see `matrix_error_to_py` for why the second has no
-    // variant of its own.
+    // `UnsupportedField` covers three: "entries are not rational constants"
+    // (`E-LINALG-007`), "a pivot could be proven neither zero nor non-zero"
+    // (`E-LINALG-010`), and "`matrix_exp` will not stand behind this e^A"
+    // (`E-LINALG-011`); see `matrix_error_to_py` for why none of the three has
+    // a variant of its own. At most one channel answers `Some` — the
+    // exponential's recorder clears the zero test's.
     if matches!(e, LinearAlgebraError::UnsupportedField) {
+        if let Some(r) = alkahest_core::matrix::take_matrix_exp_refusal() {
+            return Python::with_gil(|py| {
+                let exc_type = py.get_type_bound::<PyLinearAlgebraError>();
+                make_structured_err(py, &exc_type, &r)
+            });
+        }
         if let Some(r) = alkahest_core::matrix::take_zero_test_refusal() {
             return Python::with_gil(|py| {
                 let exc_type = py.get_type_bound::<PyLinearAlgebraError>();
@@ -9024,12 +9081,26 @@ impl PyMatrix {
         })
     }
 
+    /// ``e^M``.
+    ///
+    /// Correct for a **defective** (non-diagonalizable) ``M`` as well as a
+    /// diagonalizable one: ``Matrix([[0,1],[0,0]]).matrix_exp()`` is
+    /// ``[[1,1],[0,1]]``, not the identity. The answer is checked against an
+    /// independently computed ``e^M`` before it is returned, and withheld with
+    /// ``LinearAlgebraError`` (``E-LINALG-011``) if the two disagree or if
+    /// nothing could confirm the eigenvalue list is the spectrum.
+    ///
+    /// For a symbolic ``M`` whose eigenvalues can coincide — ``[[a,1],[0,b]]``
+    /// at ``a = b`` — the generic answer is returned and the hypothesis it rests
+    /// on is listed by :func:`alkahest.matrix_exp_side_conditions`.
     fn matrix_exp(&self, py: Python<'_>) -> PyResult<PyMatrix> {
         let pool = self.pool.borrow(py);
+        reset_matrix_exp_side_conditions();
         let expm = self
             .inner
             .matrix_exp(&pool.inner)
             .map_err(linear_algebra_error_to_py)?;
+        capture_matrix_exp_side_conditions(&pool.inner);
         drop(pool);
         Ok(PyMatrix {
             inner: expm,
@@ -17082,6 +17153,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Phase 15
     m.add_function(wrap_pyfunction!(py_jacobian, m)?)?;
     m.add_class::<PyMatrix>()?;
+    m.add_function(wrap_pyfunction!(py_matrix_exp_side_conditions, m)?)?;
     // Phase 16
     m.add_class::<PyODE>()?;
     m.add_function(wrap_pyfunction!(py_lower_to_first_order, m)?)?;

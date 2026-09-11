@@ -81,6 +81,7 @@ use crate::deriv::SideCondition;
 use crate::eval::symbols::collect_free_symbols;
 use crate::kernel::eval_const::try_expr_f64;
 use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::matrix::putzer::{self, Gap, GapPolicy};
 use crate::matrix::zero_test::{zero_status, ZeroStatus};
 use crate::matrix::Matrix;
 use crate::ode::ODE;
@@ -385,118 +386,35 @@ fn is_triangular(a: &Matrix, pool: &ExprPool) -> bool {
 // Putzer
 // ---------------------------------------------------------------------------
 
-/// One `coeff · t^power · e^{lambda·t}` summand.
-#[derive(Clone, Copy, Debug)]
-struct ExpTerm {
-    coeff: ExprId,
-    power: usize,
-    lambda: ExprId,
-}
-
-/// `r_1 … r_n` of Putzer's recurrence, as explicit exponential-polynomial sums.
+/// This module's policy for the one undecidable question Putzer asks.
 ///
-/// `r_{k+1}(t) = ∫₀ᵗ e^{μ(t−s)} r_k(s) ds` with `μ = λ_{k+1}`, evaluated in
-/// closed form per summand: with `d = λ − μ`,
+/// A [`SystemSolution`] has a `side_conditions` field, so an undecided
+/// `λ_i − λ_j` is a *hypothesis carried with the answer*: the two-compartment
+/// model's `ka ≠ ke` is exactly this, together with a note naming the confluent
+/// limit.  [`crate::matrix::matrix_exponential`] divides by the same gaps but
+/// returns a bare `Matrix`, so it reports them out of band through
+/// [`putzer::RecordedGaps`] instead — same algorithm, different place to put
+/// the hypothesis, which is why the policy is a parameter.
+struct DsolveGaps<'a, 'b> {
+    ctx: &'a mut SolveCtx<'b>,
+}
+
+impl GapPolicy for DsolveGaps<'_, '_> {
+    fn classify(&mut self, lambda: ExprId, mu: ExprId, pool: &ExprPool) -> Gap {
+        let d = putzer::normalised_gap(lambda, mu, pool);
+        if lambda == mu || matches!(zero_status(pool, d), ZeroStatus::Zero) {
+            return Gap::Confluent;
+        }
+        require_nonzero(d, self.ctx, pool);
+        Gap::Distinct(d)
+    }
+}
+
+/// `e^{At}` by Putzer's algorithm, row-major.
 ///
-/// ```text
-/// ∫₀ᵗ e^{μ(t−s)} s^j e^{λs} ds
-///   = t^{j+1}/(j+1) · e^{μt}                                      (d = 0)
-///   = Σ_{i=0}^{j} (−1)^i j!/(j−i)! · t^{j−i}/d^{i+1} · e^{λt}
-///     − (−1)^j j!/d^{j+1} · e^{μt}                                (d ≠ 0)
-/// ```
-fn putzer_r(lambdas: &[ExprId], ctx: &mut SolveCtx<'_>, pool: &ExprPool) -> Vec<Vec<ExpTerm>> {
-    let mut rs: Vec<Vec<ExpTerm>> = Vec::with_capacity(lambdas.len());
-    rs.push(vec![ExpTerm {
-        coeff: pool.integer(1_i32),
-        power: 0,
-        lambda: lambdas[0],
-    }]);
-    for &mu in &lambdas[1..] {
-        let prev = rs.last().expect("r_1 was pushed before the loop").clone();
-        let mut next: Vec<ExpTerm> = Vec::new();
-        for term in prev {
-            let d = super::expand_powers(sub(term.lambda, mu, pool), pool);
-            if term.lambda == mu || matches!(zero_status(pool, d), ZeroStatus::Zero) {
-                next.push(ExpTerm {
-                    coeff: super::div(term.coeff, pool.integer((term.power + 1) as i64), pool),
-                    power: term.power + 1,
-                    lambda: mu,
-                });
-                continue;
-            }
-            require_nonzero(d, ctx, pool);
-            let j = term.power;
-            let mut falling = 1_i64; // j!/(j−i)!
-            for i in 0..=j {
-                if i > 0 {
-                    falling *= (j - i + 1) as i64;
-                }
-                let sign = if i % 2 == 0 { 1_i64 } else { -1_i64 };
-                let denom = pool.pow(d, pool.integer((i + 1) as i64));
-                let coeff = super::div(
-                    pool.mul(vec![term.coeff, pool.integer(sign * falling)]),
-                    denom,
-                    pool,
-                );
-                next.push(ExpTerm {
-                    coeff,
-                    power: j - i,
-                    lambda: term.lambda,
-                });
-            }
-            // The `s = 0` boundary term, carrying `e^{μt}`.
-            let jfact: i64 = (1..=(j as i64)).product::<i64>().max(1);
-            let sign = if j % 2 == 0 { -1_i64 } else { 1_i64 };
-            let denom = pool.pow(d, pool.integer((j + 1) as i64));
-            next.push(ExpTerm {
-                coeff: super::div(
-                    pool.mul(vec![term.coeff, pool.integer(sign * jfact)]),
-                    denom,
-                    pool,
-                ),
-                power: 0,
-                lambda: mu,
-            });
-        }
-        rs.push(merge(next, pool));
-    }
-    rs
-}
-
-/// Add together summands with the same `(power, lambda)`.
-fn merge(terms: Vec<ExpTerm>, pool: &ExprPool) -> Vec<ExpTerm> {
-    let mut out: Vec<ExpTerm> = Vec::new();
-    for t in terms {
-        if let Some(slot) = out
-            .iter_mut()
-            .find(|o| o.power == t.power && o.lambda == t.lambda)
-        {
-            slot.coeff = simp(pool.add(vec![slot.coeff, t.coeff]), pool);
-        } else {
-            out.push(t);
-        }
-    }
-    out.retain(|t| !matches!(zero_status(pool, t.coeff), ZeroStatus::Zero));
-    out
-}
-
-fn exp_poly_to_expr(terms: &[ExpTerm], t: ExprId, pool: &ExprPool) -> ExprId {
-    let mut sum = Vec::with_capacity(terms.len());
-    for term in terms {
-        let mut factors = vec![term.coeff];
-        if term.power > 0 {
-            factors.push(pool.pow(t, pool.integer(term.power as i64)));
-        }
-        if !matches!(zero_status(pool, term.lambda), ZeroStatus::Zero) {
-            let lt = simp(pool.mul(vec![term.lambda, t]), pool);
-            factors.push(pool.func("exp", vec![lt]));
-        }
-        sum.push(pool.mul(factors));
-    }
-    simp(pool.add(sum), pool)
-}
-
-/// `e^{At}` by Putzer's algorithm.
+/// The expansion itself lives in [`crate::matrix::putzer`], shared with
+/// [`crate::matrix::matrix_exponential`]: one `e^{At}` in the crate rather than
+/// two, after the other one was found to be wrong for every defective matrix.
 fn matrix_exponential(
     a: &Matrix,
     lambdas: &[ExprId],
@@ -505,46 +423,11 @@ fn matrix_exponential(
     pool: &ExprPool,
 ) -> Vec<Vec<ExprId>> {
     let n = a.rows;
-    let rs = putzer_r(lambdas, ctx, pool);
-    // P_0 = I, P_k = (A − λ_k I) P_{k−1}.
-    let mut p: Vec<Vec<ExprId>> = (0..n)
-        .map(|i| (0..n).map(|j| pool.integer(i32::from(i == j))).collect())
-        .collect();
-    let mut acc: Vec<Vec<ExprId>> = vec![vec![pool.integer(0_i32); n]; n];
-    for (k, r) in rs.iter().enumerate() {
-        let r_expr = exp_poly_to_expr(r, t, pool);
-        for i in 0..n {
-            for j in 0..n {
-                acc[i][j] = pool.add(vec![acc[i][j], pool.mul(vec![r_expr, p[i][j]])]);
-            }
-        }
-        if k + 1 < n {
-            p = mat_mul_shift(a, &p, lambdas[k], pool);
-        }
-    }
-    acc.iter()
-        .map(|row| row.iter().map(|&e| simp(e, pool)).collect())
+    let phi = putzer::matrix_exponential(a, lambdas, t, &mut DsolveGaps { ctx }, pool)
+        .expect("a system with no state variables is rejected before this point");
+    (0..n)
+        .map(|i| (0..n).map(|j| phi.get(i, j)).collect())
         .collect()
-}
-
-/// `(A − λI)·P`.
-fn mat_mul_shift(a: &Matrix, p: &[Vec<ExprId>], lam: ExprId, pool: &ExprPool) -> Vec<Vec<ExprId>> {
-    let n = a.rows;
-    let mut out = vec![vec![pool.integer(0_i32); n]; n];
-    for i in 0..n {
-        for j in 0..n {
-            let mut terms = Vec::with_capacity(n + 1);
-            for (k, prow) in p.iter().enumerate().take(n) {
-                let mut aik = a.get(i, k);
-                if i == k {
-                    aik = pool.add(vec![aik, pool.mul(vec![pool.integer(-1_i32), lam])]);
-                }
-                terms.push(pool.mul(vec![aik, prow[j]]));
-            }
-            out[i][j] = simp(pool.add(terms), pool);
-        }
-    }
-    out
 }
 
 // ---------------------------------------------------------------------------

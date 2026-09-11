@@ -246,6 +246,40 @@ pub(crate) fn zero_status(pool: &ExprPool, e: ExprId) -> ZeroStatus {
     status_of(pool, simplify(e, pool).value, 0)
 }
 
+/// Is `e` non-zero as a **number**, rather than merely not identically zero?
+///
+/// The distinction is the whole point, and it is not pedantry. For an
+/// expression mentioning a free symbol, [`ZeroStatus::NonZero`] means only "not
+/// identically zero as a function of it" — `ζ² − 1` qualifies, and still
+/// vanishes at `ζ = 1`. A caller about to *divide* by `e` needs the stronger
+/// claim, because dividing by something that vanishes somewhere produces an
+/// answer that is wrong exactly on the set the caller was never told about.
+///
+/// Three tiers, cheapest first: a literal non-zero value; then a bail-out on
+/// any free symbol; then the zero test, which by that point is being asked
+/// about a closed-form constant (`−2√(−1)`, the eigenvalue gap of a rotation)
+/// where `NonZero` really does mean non-zero.
+pub(crate) fn settled_nonzero(e: ExprId, pool: &ExprPool) -> bool {
+    if matches!(crate::kernel::eval_const::try_expr_f64(e, pool), Some(v) if v != 0.0) {
+        return true;
+    }
+    if has_free_symbol(e, pool) {
+        return false;
+    }
+    matches!(zero_status(pool, e), ZeroStatus::NonZero)
+}
+
+fn has_free_symbol(expr: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| match d {
+        ExprData::Symbol { .. } => true,
+        ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
+            args.iter().any(|&a| has_free_symbol(a, pool))
+        }
+        ExprData::Pow { base, exp } => has_free_symbol(*base, pool) || has_free_symbol(*exp, pool),
+        _ => false,
+    })
+}
+
 fn status_of(pool: &ExprPool, e: ExprId, depth: u32) -> ZeroStatus {
     if let Some(status) = literal_status(pool, e) {
         return status;

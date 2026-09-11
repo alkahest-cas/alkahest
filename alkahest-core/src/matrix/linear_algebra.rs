@@ -9,7 +9,7 @@ use crate::matrix::eigen::{
     m_minus_lambda_scaled, KernelFailure, KnownSingular,
 };
 use crate::matrix::normal_form::{smith_form_poly, PolyMatrixQ, RatUniPoly};
-use crate::matrix::{zero_test, Matrix, MatrixError};
+use crate::matrix::{exp_gate, putzer, spectrum, zero_test, Matrix, MatrixError};
 use crate::poly::unipoly::UniPoly;
 use crate::poly::{factor_univariate_z, FactorError};
 use crate::simplify::engine::{simplify, simplify_expanded};
@@ -32,19 +32,23 @@ pub enum LinearAlgebraError {
     UnsupportedIrreducibleDegree {
         degree: usize,
     },
-    /// The entries lie outside the field this routine can work over.
+    /// This routine could not answer over the field the entries live in.
     ///
-    /// Two ways that happens: a Smith-based decomposition needs rational
-    /// constants and got something else, or elimination reached an entry whose
+    /// Three ways that happens: a Smith-based decomposition needs rational
+    /// constants and got something else; elimination reached an entry whose
     /// vanishing it could not decide — over a transcendental extension that
     /// question is undecidable in general (see the `matrix::zero_test` module),
     /// and pivoting on an entry that might be identically zero is what produced
-    /// full-rank verdicts for rank-deficient matrices.
+    /// full-rank verdicts for rank-deficient matrices; or
+    /// [`matrix_exponential`] declined (see [`crate::matrix::exp_gate`]).
     ///
-    /// Which of the two it was is available from
-    /// [`take_zero_test_refusal`](crate::matrix::take_zero_test_refusal):
-    /// `Some(..)` means an undecided entry (code `E-LINALG-010`), `None` means
-    /// non-rational entries (code `E-LINALG-007`).
+    /// Which of the three it was is available out of band, and exactly one of
+    /// the two channels answers `Some`:
+    /// [`take_matrix_exp_refusal`](crate::matrix::take_matrix_exp_refusal) for
+    /// the exponential (code `E-LINALG-011`),
+    /// [`take_zero_test_refusal`](crate::matrix::take_zero_test_refusal) for an
+    /// undecided entry (code `E-LINALG-010`); neither means non-rational
+    /// entries (code `E-LINALG-007`).
     UnsupportedField,
     SingularTransform,
     NonRationalEntry,
@@ -69,9 +73,11 @@ impl fmt::Display for LinearAlgebraError {
             LinearAlgebraError::UnsupportedField => {
                 write!(
                     f,
-                    "matrix entries lie outside the field this routine can work over: \
-                     a Smith-based decomposition needs rational constants, and \
-                     elimination needs entries whose vanishing it can decide"
+                    "this routine could not answer over the field the entries live in: \
+                     a Smith-based decomposition needs rational constants, elimination \
+                     needs entries whose vanishing it can decide, and the matrix \
+                     exponential needs a confirmed spectrum whose eigenvalue gaps are \
+                     settled"
                 )
             }
             LinearAlgebraError::SingularTransform => {
@@ -637,6 +643,21 @@ pub fn cholesky(m: &Matrix, pool: &ExprPool) -> Result<Matrix, LinearAlgebraErro
 // ---------------------------------------------------------------------------
 
 /// `(P, J)` with `M = P·J·P⁻¹`.
+///
+/// # The independence of the chains is checked, not assumed
+///
+/// When one eigenvalue owns two Jordan blocks of the same size — `J₂(3) ⊕
+/// J₂(3)` is the smallest example — both chains are generated from the same
+/// `ker (M − λI)^s`, and taking the same basis vector twice produces a `P`
+/// whose columns are dependent. `J` is still right; `P` is not a basis, so
+/// `M = P·J·P⁻¹` is false and `P⁻¹` does not exist. Until 3.10.1 that pair was
+/// returned anyway, with nothing in it to indicate the problem.
+///
+/// Two things now stop it. Each chain's generator is chosen to be independent
+/// of the chains already built (`chain_generator`), and the assembled `P` is
+/// refused when its rank can be *proven* deficient — positive evidence only, so
+/// a symbolic `P` whose rank is undecidable is still returned rather than newly
+/// refused.
 pub fn jordan_form(m: &Matrix, pool: &ExprPool) -> Result<(Matrix, Matrix), LinearAlgebraError> {
     if m.rows != m.cols {
         return Err(LinearAlgebraError::NonSquare);
@@ -681,16 +702,7 @@ pub fn jordan_form(m: &Matrix, pool: &ExprPool) -> Result<(Matrix, Matrix), Line
             }
             let bas = kernel_column_basis(&nk, pool, KnownSingular::Yes)
                 .map_err(|f| kernel_failure_to_error(f, pool))?;
-            let v_top = bas.last().ok_or(LinearAlgebraError::KernelFailed)?.clone();
-            let mut chain = vec![v_top.clone()];
-            let mut cur = v_top;
-            for _ in 1..sz {
-                cur = shifted
-                    .mul(&cur, pool)
-                    .map_err(|_| LinearAlgebraError::KernelFailed)?;
-                chain.push(cur.clone());
-            }
-            chain.reverse();
+            let chain = chain_generator(&bas, &shifted, sz, &p_cols, pool)?;
             for col in chain {
                 p_cols.push(col);
             }
@@ -701,8 +713,79 @@ pub fn jordan_form(m: &Matrix, pool: &ExprPool) -> Result<(Matrix, Matrix), Line
         return Err(LinearAlgebraError::KernelFailed);
     }
     let p = concatenate_columns(&p_cols, pool).map_err(|_| LinearAlgebraError::KernelFailed)?;
+    // `M = P·J·P⁻¹` needs `P` to be a *basis*. A dependent column set makes the
+    // identity false and `P⁻¹` non-existent, and neither `J` nor `P` looks
+    // wrong on inspection. Refuse on proof of deficiency; an undecidable rank
+    // is no evidence and is left alone.
+    if matches!(rank(&p, pool), Ok(r) if r < n) {
+        return Err(LinearAlgebraError::SingularTransform);
+    }
     let j = block_diagonal(&j_blocks, pool)?;
     Ok((p, j))
+}
+
+/// The Jordan chain `[N^{sz−1}v, …, Nv, v]` for a generator `v` drawn from
+/// `bas`, chosen so the chain is independent of `built`.
+///
+/// `bas` spans `ker N^{sz}`, which for a repeated block size contains the
+/// previous block's chain as well; taking a fixed element of it — the last one,
+/// as this did before 3.10.1 — hands back the same chain twice. Candidates are
+/// tried in reverse order, so a matrix with one block per size picks exactly
+/// what it picked before.
+///
+/// This is a greedy search over a spanning set, not a constructive proof: a
+/// generator that exists only as a *combination* of `bas` elements is not
+/// found, and [`jordan_form`]'s rank check is what keeps that a refusal rather
+/// than a wrong answer.
+fn chain_generator(
+    bas: &[Matrix],
+    shifted: &Matrix,
+    sz: usize,
+    built: &[Matrix],
+    pool: &ExprPool,
+) -> Result<Vec<Matrix>, LinearAlgebraError> {
+    let mut first: Option<Vec<Matrix>> = None;
+    for v_top in bas.iter().rev() {
+        let mut chain = vec![v_top.clone()];
+        let mut cur = v_top.clone();
+        for _ in 1..sz {
+            cur = shifted
+                .mul(&cur, pool)
+                .map_err(|_| LinearAlgebraError::KernelFailed)?;
+            chain.push(cur.clone());
+        }
+        chain.reverse();
+        // `v` generates a chain of length `sz` only if `N^{sz−1}v ≠ 0`.
+        if chain[0]
+            .entries()
+            .iter()
+            .all(|&e| zero_test::zero_status(pool, simplify(e, pool).value).is_proven_zero())
+        {
+            continue;
+        }
+        if first.is_none() {
+            first = Some(chain.clone());
+        }
+        if extends_independently(built, &chain, pool) {
+            return Ok(chain);
+        }
+    }
+    // Nothing was *proven* independent. Hand back the first well-formed chain
+    // and let the rank check decide: over symbolic entries "could not prove
+    // independent" is routine and must not become a refusal on its own.
+    first
+        .or_else(|| bas.last().map(|v| vec![v.clone()]))
+        .ok_or(LinearAlgebraError::KernelFailed)
+}
+
+/// Is `built ∪ chain` provably a set of `built.len() + chain.len()` independent
+/// columns?
+fn extends_independently(built: &[Matrix], chain: &[Matrix], pool: &ExprPool) -> bool {
+    let cols: Vec<Matrix> = built.iter().chain(chain.iter()).cloned().collect();
+    let Ok(m) = concatenate_columns(&cols, pool) else {
+        return false;
+    };
+    matches!(rank(&m, pool), Ok(r) if r == cols.len())
 }
 
 fn jordan_block_matrix(lambda: ExprId, size: usize, pool: &ExprPool) -> Matrix {
@@ -1101,33 +1184,176 @@ fn uni_poly_to_expr(p: &UniPoly, lam: ExprId, pool: &ExprPool) -> ExprId {
 // Matrix exponential
 // ---------------------------------------------------------------------------
 
+/// `e^M`.
+///
+/// # Method
+///
+/// Three routes, in order:
+///
+/// 1. a diagonal `M` is exponentiated entrywise;
+/// 2. a `M` that [`diagonalize`](crate::matrix::diagonalize) accepts is
+///    `P·e^{D}·P⁻¹`;
+/// 3. everything else — every **defective** matrix, and every matrix whose
+///    eigenbasis the eigenvector machinery could not assemble — goes through
+///    **Putzer's algorithm** (`crate::matrix::putzer`), which needs the
+///    eigenvalues and nothing else: no eigenvectors, no similarity transform,
+///    and no special case for defectiveness.
+///
+/// Route 3 is why the code changed. Until 3.10.1 a non-diagonalizable
+/// `M` went through `jordan_form` and a per-block `e^{J}`, and the block
+/// formula was `e^λ·λ^k/k!` where the truth is `e^λ·N^k/k! = e^λ/k!`. It read
+/// the nilpotent power as a power of the eigenvalue, so every defective matrix
+/// came back wrong, silently:
+///
+/// ```text
+/// exp([[0,1],[0,0]])  →  [[1,0],[0,1]]        truth [[1,1],[0,1]]
+/// exp([[2,1],[0,2]])  →  [[e², 2e²],[0, e²]]  truth [[e², e²],[0, e²]]
+/// ```
+///
+/// The same block loop also mis-detected block size — it compared `J[i][i+sz]`
+/// against 1 where the superdiagonal is `J[i+sz−1][i+sz]` — so a 3×3 Jordan
+/// block was split into a 2×2 and a 1×1. Neither defect can recur: there is no
+/// Jordan form on this path any more, and the answer is checked before it is
+/// returned.
+///
+/// # What is guaranteed
+///
+/// Every answer is checked against an independently computed `e^A` before it is
+/// returned ([`crate::matrix::exp_gate`]), and two things are refused rather
+/// than guessed, both through [`LinearAlgebraError::UnsupportedField`] with the
+/// specific cause available from
+/// [`take_matrix_exp_refusal`](crate::matrix::take_matrix_exp_refusal)
+/// (`E-LINALG-011`):
+///
+/// * an eigenvalue list that could not be *positively confirmed* as the
+///   spectrum ([`crate::matrix::spectrum`]) — Putzer's expansion is built
+///   entirely on it, and a wrong list produces a plausible matrix rather than
+///   an error;
+/// * a candidate that failed the standing check.
+///
+/// # What is reported rather than refused
+///
+/// An eigenvalue gap `λ_i − λ_j` that is neither provably zero nor settled
+/// non-zero is *divided by*, because the generic expansion is a correct answer
+/// on `λ_i ≠ λ_j` and that is the reading every CAS gives — but the hypothesis
+/// is recorded and available from
+/// [`take_matrix_exp_side_conditions`](crate::matrix::take_matrix_exp_side_conditions).
+/// An open condition is reported; only a condition settled the wrong way is a
+/// refusal.
 pub fn matrix_exponential(m: &Matrix, pool: &ExprPool) -> Result<Matrix, LinearAlgebraError> {
+    exp_gate::forget_refusal();
     if m.rows != m.cols {
         return Err(LinearAlgebraError::NonSquare);
     }
     // A diagonal matrix (possibly with free-symbol entries) exponentiates entrywise:
     // exp(diag(d₀, …, dₙ)) = diag(e^{d₀}, …, e^{dₙ}). Short-circuit so symbolic diagonal /
-    // decoupled state matrices succeed without invoking the eigenvector machinery, whose
-    // radical eigenvalues can collapse the eigenbasis for these cases.
+    // decoupled state matrices succeed without invoking the spectrum machinery at all.
     if is_diagonal(m, pool) {
         return diagonal_matrix_exp(m, pool);
     }
+
+    // The diagonalizable route, unchanged: it was never the broken one, it
+    // keeps symbolic answers in the `P·e^{D}·P⁻¹` form callers already read,
+    // and it settles the `λ_i − λ_j` question by construction — a matrix with a
+    // full eigenbasis needs no gap decision at all. It is checked by the same
+    // gate as the Putzer route.
     if let Ok((p, d)) = eigen::diagonalize(m, pool) {
         let exp_d = diagonal_matrix_exp(&d, pool)?;
         let inv_p = matrix_inverse(&p, pool).map_err(|_| LinearAlgebraError::SingularTransform)?;
-        return p
+        let candidate = p
             .mul(&exp_d, pool)
             .map_err(|_| LinearAlgebraError::KernelFailed)?
             .mul(&inv_p, pool)
-            .map_err(|_| LinearAlgebraError::KernelFailed);
+            .map_err(|_| LinearAlgebraError::KernelFailed)?;
+        return gated(m, candidate, pool);
     }
-    let (p, j) = jordan_form(m, pool)?;
-    let exp_j = jordan_matrix_exp(&j, pool)?;
-    let inv_p = matrix_inverse(&p, pool).map_err(|_| LinearAlgebraError::SingularTransform)?;
-    p.mul(&exp_j, pool)
-        .map_err(|_| LinearAlgebraError::KernelFailed)?
-        .mul(&inv_p, pool)
-        .map_err(|_| LinearAlgebraError::KernelFailed)
+
+    let lambdas = spectrum_with_multiplicity(m, pool)?;
+    // Putzer turns a wrong eigenvalue list into a plausible matrix rather than
+    // into an error, so the list is confirmed *before* anything is built on it.
+    match spectrum::confirm_spectrum(m, &lambdas, pool) {
+        Ok(check) if check.is_confirmed() => {}
+        Ok(_) => return Err(unconfirmed_spectrum(m.rows)),
+        Err(refusal) => {
+            spectrum::record_refusal(refusal);
+            return Err(LinearAlgebraError::UnsupportedIrreducibleDegree { degree: m.rows });
+        }
+    }
+
+    let one = pool.integer(1_i32);
+    let mut gaps = putzer::RecordedGaps::default();
+    // `None` only for `n = 0`, which `NonSquare` above has already excluded for
+    // every shape a caller can build.
+    let candidate = putzer::matrix_exponential(m, &lambdas, one, &mut gaps, pool)
+        .ok_or(LinearAlgebraError::NonSquare)?;
+    let out = gated(m, candidate.simplify_entries(pool), pool)?;
+    exp_gate::record_side_conditions(gaps.assumed_nonzero);
+    Ok(out)
+}
+
+/// Return `candidate` only if the standing gate does not refute it.
+///
+/// `ExpCheck::Unevaluated` is no information rather than a failure, for the
+/// same reason it is in [`crate::matrix::spectrum`]: an expression the numeric
+/// evaluator does not model is a property of the expression, not evidence
+/// against the answer.
+fn gated(m: &Matrix, candidate: Matrix, pool: &ExprPool) -> Result<Matrix, LinearAlgebraError> {
+    match exp_gate::confirm_matrix_exponential(m, &candidate, pool) {
+        Ok(_) => Ok(candidate),
+        Err(refusal) => {
+            exp_gate::record_refusal(refusal.reason(), refusal.to_string());
+            Err(LinearAlgebraError::UnsupportedField)
+        }
+    }
+}
+
+/// The `n` eigenvalues of `m`, listed with multiplicity.
+///
+/// A triangular `m` is read off its diagonal directly. That is not only a
+/// shortcut: for a symbolic triangular matrix the general routine would build
+/// `det(λI − M)`, fail to clear it to ℤ\[λ\], and fall through to Cardano,
+/// returning nested radicals for what the diagonal states in three symbols.
+fn spectrum_with_multiplicity(
+    m: &Matrix,
+    pool: &ExprPool,
+) -> Result<Vec<ExprId>, LinearAlgebraError> {
+    let n = m.rows;
+    if is_triangular(m, pool) {
+        return Ok((0..n).map(|i| simplify(m.get(i, i), pool).value).collect());
+    }
+    let eigs = eigen::eigenvalues(m, pool).map_err(map_eigen_err)?;
+    let mut out = Vec::with_capacity(n);
+    for (lam, mult) in eigs {
+        for _ in 0..mult {
+            out.push(simplify(lam, pool).value);
+        }
+    }
+    if out.len() != n {
+        // The characteristic polynomial did not split; `eigenvalues` returned a
+        // partial list, which Putzer cannot use.
+        return Err(LinearAlgebraError::UnsupportedIrreducibleDegree { degree: n });
+    }
+    Ok(out)
+}
+
+/// True iff every entry strictly below — or every entry strictly above — the
+/// diagonal is *proven* zero.
+fn is_triangular(m: &Matrix, pool: &ExprPool) -> bool {
+    let n = m.rows;
+    let proven_zero = |i: usize, j: usize| {
+        zero_test::zero_status(pool, simplify(m.get(i, j), pool).value).is_proven_zero()
+    };
+    let lower = (0..n).all(|i| (0..i).all(|j| proven_zero(i, j)));
+    let upper = (0..n).all(|i| ((i + 1)..n).all(|j| proven_zero(i, j)));
+    lower || upper
+}
+
+fn unconfirmed_spectrum(n: usize) -> LinearAlgebraError {
+    exp_gate::record_refusal(
+        exp_gate::ExpRefusalReason::SpectrumUnconfirmed,
+        exp_gate::spectrum_unconfirmed(n),
+    );
+    LinearAlgebraError::UnsupportedField
 }
 
 /// True iff every off-diagonal entry is *proven* zero.
@@ -1163,68 +1389,10 @@ fn diagonal_matrix_exp(d: &Matrix, pool: &ExprPool) -> Result<Matrix, LinearAlge
     Ok(out)
 }
 
-fn jordan_matrix_exp(j: &Matrix, pool: &ExprPool) -> Result<Matrix, LinearAlgebraError> {
-    let n = j.rows;
-    let mut out = Matrix::zeros(n, n, pool);
-    let mut i = 0usize;
-    while i < n {
-        let lambda = j.get(i, i);
-        let mut sz = 1usize;
-        while i + sz < n
-            && j.get(i, i + sz) == pool.integer(1_i32)
-            && j.get(i + sz, i + sz) == lambda
-        {
-            sz += 1;
-        }
-        let block = jordan_block_exp(lambda, sz, pool)?;
-        for bi in 0..sz {
-            for bj in 0..sz {
-                out.set(i + bi, i + bj, block.get(bi, bj));
-            }
-        }
-        i += sz;
-    }
-    Ok(out)
-}
-
-fn jordan_block_exp(
-    lambda: ExprId,
-    size: usize,
-    pool: &ExprPool,
-) -> Result<Matrix, LinearAlgebraError> {
-    let mut out = Matrix::zeros(size, size, pool);
-    let elam = simplify(pool.func("exp", vec![lambda]), pool).value;
-    for i in 0..size {
-        for j in i..size {
-            let k = j - i;
-            let fact = pool.integer(factorial_i64(k) as i32);
-            let pow = if k == 0 {
-                pool.integer(1_i32)
-            } else {
-                pool.pow(lambda, pool.integer(k as i32))
-            };
-            out.set(
-                i,
-                j,
-                simplify(
-                    pool.mul(vec![elam, pow, pool.pow(fact, pool.integer(-1_i32))]),
-                    pool,
-                )
-                .value,
-            );
-        }
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 fn apply_row_permutation(m: &Matrix, perm: &[usize]) -> Matrix {
     let rows: Vec<Vec<ExprId>> = perm.iter().map(|&r| m.row(r)).collect();
     Matrix::new(rows).expect("row permutation")
-}
-
-fn factorial_i64(k: usize) -> i64 {
-    (1..=k).fold(1i64, |a, b| a.saturating_mul(b as i64))
 }
 
 // ---------------------------------------------------------------------------
@@ -1962,6 +2130,257 @@ mod tests {
         let s = expm.display(&p);
         assert!(s.contains("exp"), "expected exponential entries: {s}");
         assert!(s.contains('w'), "expected dependence on free symbol w: {s}");
+    }
+
+    // -----------------------------------------------------------------------
+    // The defective matrix exponential
+    //
+    // Every expected value below is `sympy.Matrix(M).exp()`, not alkahest's own
+    // output. Before 3.10.1 the first four returned the identity, or an
+    // off-diagonal twice too large, or refused — with no exception and no flag.
+    // -----------------------------------------------------------------------
+
+    fn int_matrix(rows: &[&[i32]], pool: &ExprPool) -> Matrix {
+        Matrix::new(
+            rows.iter()
+                .map(|r| r.iter().map(|&v| pool.integer(v)).collect())
+                .collect(),
+        )
+        .expect("square integer matrix")
+    }
+
+    /// Every entry of `matrix_exponential(rows)` against `expected`, as f64.
+    fn assert_exp_entries(rows: &[&[i32]], expected: &[&[f64]]) {
+        let p = pool();
+        let a = int_matrix(rows, &p);
+        let e = matrix_exponential(&a, &p).expect("e^A for an integer matrix");
+        let env = std::collections::HashMap::new();
+        for (i, row) in expected.iter().enumerate() {
+            for (j, &want) in row.iter().enumerate() {
+                let got = crate::eval::eval_complex_f64(e.get(i, j), &p, &env)
+                    .unwrap_or_else(|err| panic!("entry ({i},{j}) is not a number: {err}"));
+                assert!(
+                    (got.re - want).abs() < 1e-9 && got.im.abs() < 1e-9,
+                    "entry ({i},{j}): got {} + {}i, sympy says {want}\n{}",
+                    got.re,
+                    got.im,
+                    e.display(&p)
+                );
+            }
+        }
+    }
+
+    const E1: f64 = std::f64::consts::E;
+
+    #[test]
+    fn matrix_exp_nilpotent_2x2_is_not_the_identity() {
+        // sympy: exp([[0,1],[0,0]]) == [[1,1],[0,1]]. Returned I before 3.10.1.
+        assert_exp_entries(&[&[0, 1], &[0, 0]], &[&[1.0, 1.0], &[0.0, 1.0]]);
+    }
+
+    #[test]
+    fn matrix_exp_defective_off_diagonal_is_e_lambda_not_lambda_e_lambda() {
+        // sympy: exp([[2,1],[0,2]]) == [[e², e²],[0, e²]]. The off-diagonal was
+        // 2e² before 3.10.1 — the block formula used λ^k where N^k belongs.
+        let e2 = E1 * E1;
+        assert_exp_entries(&[&[2, 1], &[0, 2]], &[&[e2, e2], &[0.0, e2]]);
+    }
+
+    #[test]
+    fn matrix_exp_nilpotent_3x3_keeps_the_half() {
+        // sympy: exp([[0,1,0],[0,0,1],[0,0,0]]) == [[1,1,1/2],[0,1,1],[0,0,1]].
+        assert_exp_entries(
+            &[&[0, 1, 0], &[0, 0, 1], &[0, 0, 0]],
+            &[&[1.0, 1.0, 0.5], &[0.0, 1.0, 1.0], &[0.0, 0.0, 1.0]],
+        );
+    }
+
+    #[test]
+    fn matrix_exp_full_3x3_jordan_block() {
+        // sympy: exp([[2,1,0],[0,2,1],[0,0,2]]) == [[e²,e²,e²/2],[0,e²,e²],[0,0,e²]].
+        // The old block-size detector compared `J[i][i+sz]` against 1 where the
+        // superdiagonal is `J[i+sz−1][i+sz]`, so this split into a 2×2 and a
+        // 1×1 and lost the e²/2 corner entirely.
+        let e2 = E1 * E1;
+        assert_exp_entries(
+            &[&[2, 1, 0], &[0, 2, 1], &[0, 0, 2]],
+            &[&[e2, e2, e2 / 2.0], &[0.0, e2, e2], &[0.0, 0.0, e2]],
+        );
+    }
+
+    #[test]
+    fn matrix_exp_two_jordan_blocks_for_one_eigenvalue() {
+        // sympy: exp(J₂(3) ⊕ J₂(3)) is block diagonal with [[e³,e³],[0,e³]].
+        // This refused before 3.10.1 (`jordan_form` handed back a singular P);
+        // Putzer needs no basis at all.
+        let e3 = E1.powi(3);
+        assert_exp_entries(
+            &[&[3, 1, 0, 0], &[0, 3, 0, 0], &[0, 0, 3, 1], &[0, 0, 0, 3]],
+            &[
+                &[e3, e3, 0.0, 0.0],
+                &[0.0, e3, 0.0, 0.0],
+                &[0.0, 0.0, e3, e3],
+                &[0.0, 0.0, 0.0, e3],
+            ],
+        );
+    }
+
+    #[test]
+    fn matrix_exp_mixed_defective_and_simple_eigenvalue() {
+        // sympy: exp([[1,1,0],[0,1,0],[0,0,5]]) == [[e,e,0],[0,e,0],[0,0,e⁵]].
+        assert_exp_entries(
+            &[&[1, 1, 0], &[0, 1, 0], &[0, 0, 5]],
+            &[&[E1, E1, 0.0], &[0.0, E1, 0.0], &[0.0, 0.0, E1.powi(5)]],
+        );
+    }
+
+    #[test]
+    fn matrix_exp_defective_but_not_triangular() {
+        // sympy: exp([[1,1],[-1,3]]) == [[0, e²],[-e², 2e²]]. Characteristic
+        // polynomial (λ−2)², geometric multiplicity 1, and nothing about the
+        // input announces that — there is no zero off-diagonal to read a
+        // spectrum off.
+        let e2 = E1 * E1;
+        assert_exp_entries(&[&[1, 1], &[-1, 3]], &[&[0.0, e2], &[-e2, 2.0 * e2]]);
+    }
+
+    #[test]
+    fn matrix_exp_defective_3x3_but_not_triangular() {
+        // sympy: exp([[4,1,1],[-2,1,-1],[0,1,1]]) ==
+        //   [[4e²,2e²,e²],[-3e²,-e²,-e²],[-e²,0,0]]. One eigenvalue λ=2 with a
+        //   single 3×3 Jordan block, reached through the general spectrum.
+        let e2 = E1 * E1;
+        assert_exp_entries(
+            &[&[4, 1, 1], &[-2, 1, -1], &[0, 1, 1]],
+            &[
+                &[4.0 * e2, 2.0 * e2, e2],
+                &[-3.0 * e2, -e2, -e2],
+                &[-e2, 0.0, 0.0],
+            ],
+        );
+    }
+
+    #[test]
+    fn matrix_exp_rotation_is_the_rotation_by_one_radian() {
+        // sympy: exp([[0,1],[-1,0]]) == [[cos 1, sin 1],[-sin 1, cos 1]].
+        // A complex spectrum {±i}, and the answer must come back real.
+        let (c, s) = (1.0_f64.cos(), 1.0_f64.sin());
+        assert_exp_entries(&[&[0, 1], &[-1, 0]], &[&[c, s], &[-s, c]]);
+    }
+
+    #[test]
+    fn matrix_exp_diagonalizable_controls_do_not_regress() {
+        // The route that was already right. sympy: exp([[1,0],[0,2]]) =
+        // diag(e, e²); exp([[1,2],[3,4]]) = [[51.968956198705, 74.73656456700321],
+        // [112.10484685050481, 164.07380304920983]].
+        assert_exp_entries(&[&[1, 0], &[0, 2]], &[&[E1, 0.0], &[0.0, E1 * E1]]);
+        assert_exp_entries(
+            &[&[1, 2], &[3, 4]],
+            &[
+                &[51.968956198705, 74.73656456700321],
+                &[112.10484685050481, 164.07380304920983],
+            ],
+        );
+    }
+
+    #[test]
+    fn jordan_form_never_returns_a_singular_p() {
+        // J₂(3) ⊕ J₂(3): both chains are drawn from the same kernel, and taking
+        // the same vector twice gave a P with two identical columns — so
+        // `M = P·J·P⁻¹` was false and `P⁻¹` did not exist, with nothing said.
+        // Either an invertible P or a refusal is acceptable; a singular P is not.
+        let p = pool();
+        let m = int_matrix(
+            &[&[3, 1, 0, 0], &[0, 3, 0, 0], &[0, 0, 3, 1], &[0, 0, 0, 3]],
+            &p,
+        );
+        match jordan_form(&m, &p) {
+            Ok((pm, j)) => {
+                assert_eq!(
+                    rank(&pm, &p).expect("rational rank"),
+                    4,
+                    "P must be a basis"
+                );
+                let inv = matrix_inverse(&pm, &p).expect("an invertible P");
+                let recon = pm
+                    .mul(&j, &p)
+                    .unwrap()
+                    .mul(&inv, &p)
+                    .unwrap()
+                    .simplify_entries(&p);
+                assert!(
+                    eigen::matrix_eq_simplified(&recon, &m, &p),
+                    "P·J·P⁻¹ must be M, got {}",
+                    recon.display(&p)
+                );
+            }
+            Err(e) => assert_eq!(e, LinearAlgebraError::SingularTransform, "{e}"),
+        }
+    }
+
+    #[test]
+    fn jordan_form_handles_two_blocks_of_different_sizes() {
+        // [[0,0,1],[0,0,0],[0,0,0]] is J₂(0) ⊕ J₁(0) — one eigenvalue, two
+        // blocks, so the same repeated-kernel trap with unequal sizes.
+        let p = pool();
+        let m = int_matrix(&[&[0, 0, 1], &[0, 0, 0], &[0, 0, 0]], &p);
+        let (pm, j) = jordan_form(&m, &p).expect("J₂(0) ⊕ J₁(0)");
+        assert_eq!(rank(&pm, &p).expect("rational rank"), 3);
+        let inv = matrix_inverse(&pm, &p).expect("an invertible P");
+        let recon = pm
+            .mul(&j, &p)
+            .unwrap()
+            .mul(&inv, &p)
+            .unwrap()
+            .simplify_entries(&p);
+        assert!(
+            eigen::matrix_eq_simplified(&recon, &m, &p),
+            "P·J·P⁻¹ must be M, got {}",
+            recon.display(&p)
+        );
+        // sympy: exp([[0,0,1],[0,0,0],[0,0,0]]) == [[1,0,1],[0,1,0],[0,0,1]].
+        assert_exp_entries(
+            &[&[0, 0, 1], &[0, 0, 0], &[0, 0, 0]],
+            &[&[1.0, 0.0, 1.0], &[0.0, 1.0, 0.0], &[0.0, 0.0, 1.0]],
+        );
+    }
+
+    #[test]
+    fn matrix_exp_reports_the_eigenvalue_gap_it_divided_by() {
+        // [[a, 1], [0, b]] for free symbols a, b is defective exactly at a = b,
+        // where the generic e^A divides by zero and the truth is the confluent
+        // e^a(I + N). The generic answer is right everywhere else and is what a
+        // caller wants — but only with `a − b ≠ 0` stated, which is the part
+        // that was previously invisible.
+        let p = pool();
+        let a = p.symbol("a", Domain::Real);
+        let b = p.symbol("b", Domain::Real);
+        let z = p.integer(0_i32);
+        let one = p.integer(1_i32);
+        let m = Matrix::new(vec![vec![a, one], vec![z, b]]).unwrap();
+        matrix_exponential(&m, &p).expect("the generic branch");
+        let conds = crate::matrix::take_matrix_exp_side_conditions();
+        assert_eq!(conds.len(), 1, "a − b must be reported: {conds:?}");
+        assert!(matches!(conds[0], crate::deriv::SideCondition::NonZero(_)));
+        // Consuming: a second read sees nothing.
+        assert!(crate::matrix::take_matrix_exp_side_conditions().is_empty());
+    }
+
+    #[test]
+    fn matrix_exp_reports_nothing_when_every_gap_is_settled() {
+        // The control for the case above: a rational spectrum needs no
+        // hypothesis at all, and a channel that always says something is a
+        // channel a caller learns to ignore.
+        let p = pool();
+        let m = int_matrix(&[&[1, 2], &[3, 4]], &p);
+        matrix_exponential(&m, &p).expect("distinct rational spectrum");
+        assert!(crate::matrix::take_matrix_exp_side_conditions().is_empty());
+        let d = int_matrix(&[&[2, 1], &[0, 2]], &p);
+        matrix_exponential(&d, &p).expect("repeated rational spectrum");
+        assert!(
+            crate::matrix::take_matrix_exp_side_conditions().is_empty(),
+            "the confluent branch divides by nothing"
+        );
     }
 
     #[test]
