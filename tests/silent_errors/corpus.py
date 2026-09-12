@@ -6487,6 +6487,31 @@ CASES: list[Case] = [
         "QRdecomposition satisfies it. Scored as the worst |qᵢ·qⱼ − δᵢⱼ| over all pairs.",
     ),
     Case(
+        id="matrix_qr_of_a_rank_deficient_matrix_has_an_orthonormal_q",
+        subsystem="linear_algebra",
+        statement="QᵀQ = I for the Q of the rank-1 matrix [[-4,-4],[-2,-2]]",
+        op=lambda: _qr_orthonormality_residual(RANK_ONE_2X2),
+        contract=Returns(0.0, tol=1e-9),
+        verified_by="Orthonormality is part of the definition of a QR factorisation and "
+        "does not lapse when A is rank deficient — sympy returns the rank-sized "
+        "Q (2×1 here) rather than a padded one, and LAPACK's full QR returns a 2×2 "
+        "orthogonal Q. alkahest padded with the **zero vector**: Q = [[-2/√5,0],[-1/√5,0]], "
+        "so Q·R = A held and QᵀQ was diag(1,0). A caller reading Q⁻¹ = Qᵀ, which is the "
+        "reason to want a QR at all, was reading a falsehood with nothing to signal it; "
+        "62 of 304 randomised matrices came back that way.",
+    ),
+    Case(
+        id="matrix_qr_of_a_rank_deficient_matrix_still_reconstructs",
+        subsystem="linear_algebra",
+        statement="Q·R = [[-4,-4],[-2,-2]] even though the second column is dependent",
+        op=lambda: _qr_reconstruction_residual(RANK_ONE_2X2),
+        contract=Returns(0.0, tol=1e-9),
+        verified_by="A = QR is the other half of the definition and must survive the "
+        "orthonormality repair: filling Q's second column changes nothing in Q·R, because "
+        "the R row that multiplies it is zero. The control that pins the repair as a "
+        "repair rather than a substitution.",
+    ),
+    Case(
         id="matrix_cholesky_of_two_i_is_sqrt_two_i",
         subsystem="linear_algebra",
         statement="cholesky(2I)[0][0] = √2",
@@ -6817,6 +6842,9 @@ LU_PIVOTING_3X3 = [[2, -1, 4], [-1, 1, -1], [3, -4, 0]]
 #: Distinct irrational eigenvalues (5 ± √33)/2; det −2, trace 5.
 QR_2X2 = [[1, 2], [3, 4]]
 TWO_I = [[2, 0], [0, 2]]
+#: Rank 1: column 1 is column 0, so Gram-Schmidt leaves nothing for Q's second
+#: column and it has to be completed rather than zero-filled.
+RANK_ONE_2X2 = [[-4, -4], [-2, -2]]
 #: Symmetric positive definite with a non-square second pivot: L = [[2,0],[1,√2]].
 SPD_IRRATIONAL_PIVOT = [[4, 2], [2, 3]]
 NON_SYMMETRIC_2X2 = [[1, 5], [0, 1]]

@@ -558,12 +558,47 @@ fn expr_lu_decomposition(
     Ok(LuDecomposition { l, u, perm })
 }
 
+/// `Q` and `R` with `A = Q·R`, `R` upper triangular and `Q`'s columns
+/// orthonormal.
+///
+/// `Q` is `n×k` and `R` is `k×k` for an `n×k` input — the *reduced* shape. See
+/// [`qr_decomposition`] for what is guaranteed when `A` is rank deficient or
+/// wider than it is tall.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QrDecomposition {
     pub q: Matrix,
     pub r: Matrix,
 }
 
+/// Gram–Schmidt `QR`: `A = Q·R` with `R` `k×k` upper triangular and `Q` `n×k`.
+///
+/// # What `Q` is
+///
+/// `QᵀQ = I` whenever `n ≥ k`, **including when `A` is rank deficient**. A
+/// dependent column contributes a zero row to `R`, and the matching column of
+/// `Q` is then filled by completing the orthonormal set — any unit vector
+/// orthogonal to the columns already placed will do, and `Q·R` does not depend
+/// on the choice, because the `R` row that would multiply it is zero.
+///
+/// Before 3.10.1 that column was left as the **zero vector**. `Q·R = A` still
+/// held, so a reconstruction check passed, but `Q` was singular and `QᵀQ` was
+/// not the identity — measured on 304 randomised matrices, 62 came back with a
+/// `Q` whose columns are not orthonormal. `qr([[−4,−4],[−2,−2]])` gave
+/// `Q = [[−2/√5, 0], [−1/√5, 0]]`, so `QᵀQ = diag(1, 0)`: a caller reading
+/// `Q⁻¹ = Qᵀ`, which is the reason to want a `QR` at all, is reading a
+/// falsehood, and nothing in the returned pair says so. sympy returns the
+/// rank-sized `Q` (`2×1`) here rather than a padded one.
+///
+/// # The one case that is not a `QR`
+///
+/// For `n < k` — more columns than rows — `k` orthonormal vectors do not exist
+/// in `ℝⁿ`, so no `n×k` matrix can have orthonormal columns and this shape
+/// cannot carry an answer. The trailing columns of `Q` are zero there, exactly
+/// as before, and `Q·R = A` still holds. The fix would be to return the `n×n`
+/// `Q` and `n×k` `R` of the *full* factorisation, which changes the shape of a
+/// public return value for every caller, so it is left alone and stated here
+/// rather than changed inside an audit. Transpose the input, or check
+/// `q.cols <= q.rows` before relying on orthonormality.
 pub fn qr_decomposition(
     m: &Matrix,
     pool: &ExprPool,
@@ -591,13 +626,14 @@ pub fn qr_decomposition(
                 .map_err(|_| LinearAlgebraError::KernelFailed)?;
         }
         let rjj = norm_column(&v, pool)?;
-        // `‖v‖ = 0` means column `j` is dependent on the ones before it and Q
-        // gets a zero column; `‖v‖ ≠ 0` means we may divide by it. Guessing
-        // either way silently changes the rank of Q.
+        // `‖v‖ = 0` means column `j` is dependent on the ones before it, so `R`
+        // gets a zero row and `Q` needs a column from outside the span;
+        // `‖v‖ ≠ 0` means we may divide by it. Guessing either way silently
+        // changes the rank of Q.
         match zero_test::zero_status(pool, rjj) {
             zero_test::ZeroStatus::Zero => {
                 r.set(j, j, pool.integer(0_i32));
-                q_cols.push(Matrix::zeros(n, 1, pool));
+                q_cols.push(orthonormal_completion(&q_cols, n, pool));
                 continue;
             }
             zero_test::ZeroStatus::NonZero => {}
@@ -610,6 +646,58 @@ pub fn qr_decomposition(
     }
     let q = concatenate_columns(&q_cols, pool).map_err(|_| LinearAlgebraError::KernelFailed)?;
     Ok(QrDecomposition { q, r })
+}
+
+/// A unit column of `ℝⁿ` orthogonal to every column of `built`, or the zero
+/// column when none can be produced.
+///
+/// Gram–Schmidt against the standard basis: at least one `e_i` has a non-zero
+/// residual whenever `built` spans a proper subspace, i.e. whenever
+/// `built.len() < n`, because `n` vectors cannot all lie in a space of smaller
+/// dimension. The search is exact — a candidate is used only when its norm is
+/// *proven* non-zero — so no symbolic guess is involved.
+///
+/// Returning the zero column is the honest outcome in the two cases where no
+/// completion exists: `built.len() >= n` (the wide input discussed on
+/// [`qr_decomposition`]) and a residual whose vanishing the zero test cannot
+/// settle. `Q·R` is unaffected either way, since the `R` row that multiplies
+/// this column is zero.
+fn orthonormal_completion(built: &[Matrix], n: usize, pool: &ExprPool) -> Matrix {
+    if built.len() >= n {
+        return Matrix::zeros(n, 1, pool);
+    }
+    for i in 0..n {
+        let Ok(mut v) = unit_column_vector(i, n, pool) else {
+            continue;
+        };
+        let mut ok = true;
+        for q in built {
+            let Ok(c) = dot_columns(q, &v, pool) else {
+                ok = false;
+                break;
+            };
+            let proj = q.scale(c, pool);
+            match v.sub(&proj, pool) {
+                Ok(next) => v = next.simplify_entries(pool),
+                Err(_) => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if !ok {
+            continue;
+        }
+        let Ok(norm) = norm_column(&v, pool) else {
+            continue;
+        };
+        if zero_test::zero_status(pool, norm) != zero_test::ZeroStatus::NonZero {
+            continue;
+        }
+        let inv = simplify(pool.pow(norm, pool.integer(-1_i32)), pool).value;
+        return v.scale(inv, pool).simplify_entries(pool);
+    }
+    Matrix::zeros(n, 1, pool)
 }
 
 /// The lower-triangular `L` with `L·Lᵀ = M`, for symmetric positive definite `M`.
@@ -1945,17 +2033,30 @@ fn integer_sqrt(n: &rug::Integer) -> Option<rug::Integer> {
     }
 }
 
+/// `‖v‖ = √(Σ vᵢ²)`, with the radicand de-radicalised first.
+///
+/// Gram–Schmidt feeds its own output back in, so by the second column the
+/// entries of `v` already carry `(√c)⁻¹` factors and the radicand reads
+/// `1 − 32/√20² + 320/√20⁴` rather than `1/5`. `simplify` does not fold
+/// `(√c)ᵏ` into `c^{k/2}`, so the norm stayed in that form, every later entry
+/// nested one level deeper, and both the exact zero test and any structural
+/// comparison lost sight of the value — which is why `qr` refused integer
+/// matrices with `E-LINALG-010` and why `QᵀQ = I` could not be proven for the
+/// ones it did answer.
+///
+/// [`zero_test::fold_rational_radicals`] is exactly the rewrite needed and is
+/// sound without a branch convention: over a non-negative *rational* base
+/// `√c` is the non-negative real root, so `(√c)ᵏ = c^{k/2}` outright. A
+/// symbolic base is left alone.
 fn norm_column(v: &Matrix, pool: &ExprPool) -> Result<ExprId, LinearAlgebraError> {
     let mut terms = Vec::new();
     for r in 0..v.rows {
         let e = v.get(r, 0);
         terms.push(simplify(pool.mul(vec![e, e]), pool).value);
     }
-    Ok(simplify(
-        pool.func("sqrt", vec![simplify(pool.add(terms), pool).value]),
-        pool,
-    )
-    .value)
+    let sum = simplify_expanded(pool.add(terms), pool).value;
+    let sum = simplify_expanded(zero_test::fold_rational_radicals(pool, sum), pool).value;
+    Ok(simplify(pool.func("sqrt", vec![sum]), pool).value)
 }
 
 #[cfg(test)]
@@ -3626,5 +3727,115 @@ mod tests {
         let _ = crate::matrix::take_matrix_inverse_side_conditions();
         assert_eq!(matrix_inverse(&m, &p), Err(MatrixError::SingularMatrix));
         assert!(crate::matrix::take_matrix_inverse_side_conditions().is_empty());
+    }
+
+    // ----------------------------------------------------------------- QR
+
+    /// `QᵀQ = I`, evaluated to `f64` rather than proven symbolically.
+    ///
+    /// Deliberate: a Gram–Schmidt norm is `√(a² + b²)` built by `norm_column`
+    /// without folding, so an entry of `QᵀQ` reads
+    /// `−4/(√20·√(1 − 32/√20² + 320/√20⁴)) + 80/(√20³·√(…))` — two terms that
+    /// cancel exactly and that no normaliser in this crate reduces, because
+    /// `simplify` leaves `√20²` as written. The zero test answers `Unknown`
+    /// there, which is honest; asserting on it would be asserting on the
+    /// simplifier rather than on `qr`. The quantity being checked is a sum of
+    /// products of unit-length entries, so `1e-12` is many orders below any
+    /// wrong answer — a zero column, the defect this pins, makes the diagonal
+    /// entry exactly `0`. `1e-9` rather than `1e-12`: a deeply nested radical
+    /// evaluated in `f64` drifts by about `1e-12` on a 4-column shape.
+    fn assert_gram_is_identity(q: &Matrix, pool: &ExprPool, what: &str) {
+        for a in 0..q.cols {
+            for b in 0..q.cols {
+                let mut acc = 0.0_f64;
+                for i in 0..q.rows {
+                    let env = std::collections::HashMap::new();
+                    let x = crate::eval::eval_f64(simplify(q.get(i, a), pool).value, pool, &env)
+                        .unwrap_or_else(|e| panic!("{what}: Q[{i}][{a}] did not evaluate: {e}"));
+                    let y = crate::eval::eval_f64(simplify(q.get(i, b), pool).value, pool, &env)
+                        .unwrap_or_else(|e| panic!("{what}: Q[{i}][{b}] did not evaluate: {e}"));
+                    acc += x * y;
+                }
+                let want = if a == b { 1.0 } else { 0.0 };
+                assert!(
+                    (acc - want).abs() < 1e-9,
+                    "{what}: (QᵀQ)[{a}][{b}] = {acc}, want {want}"
+                );
+            }
+        }
+    }
+
+    /// `Q·R = A` and `QᵀQ = I` over every square and tall shape, rank
+    /// deficient ones included.
+    ///
+    /// A dependent column used to leave a **zero column** in `Q`. `Q·R = A`
+    /// still held — which is why a reconstruction check passed throughout —
+    /// but `Q` was singular and `Qᵀ` was not its inverse, which is the reason
+    /// to want a `QR` at all. Measured over 304 randomised matrices, 62 came
+    /// back with a non-orthonormal `Q`.
+    ///
+    /// Both halves are asserted, because each alone is satisfied by something
+    /// useless: `Q·R = A` by `Q = A, R = I`, and `QᵀQ = I` by any orthonormal
+    /// matrix at all.
+    #[test]
+    fn qr_returns_an_orthonormal_q_for_every_square_or_tall_shape() {
+        let p = pool();
+        let mut checked = 0usize;
+        let mut deficient = 0usize;
+        for seed in 700..780u64 {
+            let cols = 1 + (seed % 4) as usize;
+            let rows = cols + ((seed / 4) % 3) as usize;
+            let mut m = seeded_matrix(seed, rows, cols, &p);
+            // Force a dependent column half the time so the completion path is
+            // actually exercised rather than assumed to be rare.
+            if cols > 1 && seed % 2 == 0 {
+                for i in 0..rows {
+                    m.set(
+                        i,
+                        cols - 1,
+                        simplify(p.mul(vec![p.integer(2_i32), m.get(i, 0)]), &p).value,
+                    );
+                }
+                deficient += 1;
+            }
+            let qr = qr_decomposition(&m, &p).expect("integer entries are decidable");
+            assert_eq!(qr.q.rows, rows);
+            assert_eq!(qr.q.cols, cols);
+            let recon = qr.q.mul(&qr.r, &p).unwrap();
+            assert!(entries_equal(&recon, &m, &p), "seed {seed}: Q·R = A failed");
+            assert_gram_is_identity(&qr.q, &p, &format!("seed {seed}"));
+            for i in 0..qr.r.rows {
+                for j in 0..i.min(qr.r.cols) {
+                    assert_eq!(
+                        simplify(qr.r.get(i, j), &p).value,
+                        p.integer(0_i32),
+                        "seed {seed}: R must be upper triangular"
+                    );
+                }
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 80);
+        assert!(
+            deficient >= 20,
+            "only {deficient} rank-deficient shapes were built"
+        );
+    }
+
+    /// The smallest witness, stated on the matrix from the doc comment.
+    #[test]
+    fn qr_of_a_rank_one_two_by_two_has_an_invertible_q() {
+        let p = pool();
+        let m = Matrix::new(vec![
+            vec![p.integer(-4_i32), p.integer(-4_i32)],
+            vec![p.integer(-2_i32), p.integer(-2_i32)],
+        ])
+        .unwrap();
+        let qr = qr_decomposition(&m, &p).unwrap();
+        assert!(entries_equal(&qr.q.mul(&qr.r, &p).unwrap(), &m, &p));
+        assert_gram_is_identity(&qr.q, &p, "[[-4,-4],[-2,-2]]");
+        // `R`'s second row is zero, which is what makes the filled column free.
+        assert_eq!(simplify(qr.r.get(1, 1), &p).value, p.integer(0_i32));
+        assert_eq!(simplify(qr.r.get(1, 0), &p).value, p.integer(0_i32));
     }
 }

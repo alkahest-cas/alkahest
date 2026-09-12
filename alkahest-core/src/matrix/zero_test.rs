@@ -493,7 +493,7 @@ fn normalises_to_zero(pool: &ExprPool, e: ExprId) -> bool {
 /// rewritten under an assumption nobody stated.
 ///
 /// [`qr_decomposition`]: crate::matrix::qr_decomposition
-fn fold_rational_radicals(pool: &ExprPool, e: ExprId) -> ExprId {
+pub(crate) fn fold_rational_radicals(pool: &ExprPool, e: ExprId) -> ExprId {
     fold_rational_radicals_at(pool, e, 0)
 }
 
