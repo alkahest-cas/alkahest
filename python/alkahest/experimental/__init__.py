@@ -221,15 +221,25 @@ from alkahest._recurrence_asymptotics import (
 from alkahest.alkahest import (
     # P1 item 10 — asymptotic expansion at scale
     AsymptoticReport,
+    Bernoulli,
+    Beta,
+    Binomial,
+    Distribution,
+    Exponential,
     Fps,
+    Gamma,
+    LogNormal,
+    Normal,
     OdeTrajectory,
     ParallelRischResult,
+    Poisson,
     # Puiseux (fractional-exponent) expansion — verified before it is returned
     PuiseuxExpansion,
     QRootOfUnitySpecialization,
     QZeilbergerCertificate,
     Telescoping2dCertificate,
     TelescopingMdCertificate,
+    Uniform,
     apart_side_conditions,
     asymptotic_expand,
     # P1 item 10 — asymptotic expansion at scale
@@ -239,16 +249,6 @@ from alkahest.alkahest import (
     dsolve,
     dsolve_system,
     euler_maclaurin,
-    Bernoulli,
-    Beta,
-    Binomial,
-    Distribution,
-    Exponential,
-    Gamma,
-    LogNormal,
-    Normal,
-    Poisson,
-    Uniform,
     expectation,
     expectation_affine,
     fourier_transform,
@@ -308,29 +308,24 @@ with contextlib.suppress(ImportError):
     from alkahest.alkahest import CudaCompiledFn, compile_cuda
 
 __all__ = [
-    # Probability distributions and expectations
-    "Bernoulli",
-    "Beta",
-    "Binomial",
-    "Distribution",
-    "Exponential",
-    "Gamma",
-    "LogNormal",
-    "Normal",
-    "Poisson",
-    "Uniform",
-    "expectation",
-    "expectation_affine",
-    "variance_affine_independent",
     "Assumptions",
     # P1 item 10 — asymptotic expansion at scale
     "AsymptoticReport",
+    # Probability: a law is a name plus symbolic parameters
+    "Bernoulli",
+    "Beta",
+    "Binomial",
     "CudaCompiledFn",
+    "Distribution",
     "EvaluationResult",
+    "Exponential",
     "Fps",
+    "Gamma",
     "GbPoly",
     "GroebnerBasis",
     # M11 — novelty filtering
+    "LogNormal",
+    "Normal",
     "NoveltyMatch",
     "NoveltyVerdict",
     "OdeTrajectory",
@@ -345,6 +340,7 @@ __all__ = [
     "ParametricGroebnerBasis",
     "ParametricRosenfeldGroebnerResult",
     # Puiseux (fractional-exponent) expansion
+    "Poisson",
     "PuiseuxExpansion",
     # M11 — novelty filtering
     "QRecurrenceClaim",
@@ -360,6 +356,7 @@ __all__ = [
     "Telescoping2dCertificate",
     "TelescopingMdCertificate",
     # Hypotheses the last `apart` on this thread rests on (ℚ(params) path).
+    "Uniform",
     "apart_side_conditions",
     "arg",
     "asymptotic_expand",
@@ -381,6 +378,8 @@ __all__ = [
     "dsolve_system",
     "euler_maclaurin",
     "evaluate",
+    "expectation",
+    "expectation_affine",
     "fourier_transform",
     "heaviside",
     "im",
@@ -416,5 +415,6 @@ __all__ = [
     "to_stablehlo",
     # Hypotheses the last inverse Laplace / Z transform on this thread rests on.
     "transform_side_conditions",
+    "variance_affine_independent",
     "z_transform",
 ]

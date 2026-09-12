@@ -138,12 +138,6 @@ use alkahest_core::calculus::fps::{Fps as CoreFps, FpsError as CoreFpsError};
 use alkahest_core::calculus::multilimit::{
     multilimit as core_multilimit, MultiLimit as CoreMultiLimit,
 };
-use alkahest_core::prob::{
-    characteristic_function as core_characteristic_function, expectation as core_expectation,
-    expectation_affine as core_expectation_affine,
-    variance_affine_independent as core_variance_affine_independent, DistKind as CoreDistKind,
-    Distribution as CoreDistribution, ProbError as CoreProbError, Support as CoreSupport,
-};
 use alkahest_core::calculus::puiseux::{
     puiseux_series as core_puiseux_series, PuiseuxError as CorePuiseuxError,
 };
@@ -161,6 +155,12 @@ use alkahest_core::ode::numeric::{
 use alkahest_core::ode::series_solve::{
     series_solve as core_series_solve, PointKind as CorePointKind,
     SeriesError as CoreSeriesSolveError, SeriesOde as CoreSeriesOde,
+};
+use alkahest_core::prob::{
+    characteristic_function as core_characteristic_function, expectation as core_expectation,
+    expectation_affine as core_expectation_affine,
+    variance_affine_independent as core_variance_affine_independent, DistKind as CoreDistKind,
+    Distribution as CoreDistribution, ProbError as CoreProbError, Support as CoreSupport,
 };
 use alkahest_core::transform::{
     fourier_transform as core_fourier_transform, inverse_fourier_transform as core_ifourier,
@@ -17006,7 +17006,6 @@ fn py_binomial_mod(a: u64, b: i128, p: u64, k: u32) -> PyResult<u64> {
     core_binomial_mod(a, b, p, k).map_err(holonomic_modular_error_to_py)
 }
 
-
 // ===========================================================================
 // Probability distributions and expectations (experimental)
 // ===========================================================================
@@ -17049,11 +17048,7 @@ impl PyDistribution {
             .iter()
             .map(|&p| pool.inner.display(p).to_string())
             .collect();
-        format!(
-            "{}({})",
-            dist_kind_name(self.inner.kind()),
-            args.join(", ")
-        )
+        format!("{}({})", dist_kind_name(self.inner.kind()), args.join(", "))
     }
 
     /// The distribution's name, e.g. ``"Normal"``.
@@ -17254,11 +17249,7 @@ fn py_dist_log_normal(
 /// ``Uniform(a, b)`` — requires ``a < b``.
 #[pyfunction]
 #[pyo3(name = "Uniform")]
-fn py_dist_uniform(
-    py: Python<'_>,
-    a: PyRef<PyExpr>,
-    b: PyRef<PyExpr>,
-) -> PyResult<PyDistribution> {
+fn py_dist_uniform(py: Python<'_>, a: PyRef<PyExpr>, b: PyRef<PyExpr>) -> PyResult<PyDistribution> {
     let (x, y) = (a.id, b.id);
     build_dist(py, a.pool.clone_ref(py), |p| {
         CoreDistribution::uniform(x, y, p)
@@ -17438,8 +17429,7 @@ fn py_variance_affine_independent(
     let args = affine_args(py, variates)?;
     let out = {
         let pool_ref = pool_py.borrow(py);
-        core_variance_affine_independent(eid, &args, &pool_ref.inner)
-            .map_err(prob_error_to_py)?
+        core_variance_affine_independent(eid, &args, &pool_ref.inner).map_err(prob_error_to_py)?
     };
     Ok(PyExpr {
         id: out.value,

@@ -317,7 +317,7 @@ fn log_normal_and_exponential_cdfs() {
     // mpmath (40 dps): ncdf((log(1.5) - 0.2)/0.5) = 0.659438147374726910788…
     assert_close!(
         at(&p, f, &[("mu", 0.2), ("sigma", 0.5), ("x", 1.5)]),
-        0.659_438_147_374_726_9
+        0.659_438_147_374_727
     );
 
     let lam = sym(&p, "lambda");
@@ -500,7 +500,7 @@ fn expectation_of_a_call_payoff_under_a_log_normal_is_black_scholes() {
     let payoff = p.func("max", vec![sub(s, k, &p), p.integer(0)]);
     let r = expectation(payoff, s, &d, &p).expect("the call payoff should derive");
     let value = at(&p, r.value, &[("mu", 0.05), ("sigma", 0.3), ("K", 1.1)]);
-    assert_close!(value, 0.130_968_082_077_972_31);
+    assert_close!(value, 0.130_968_082_077_972_3);
 
     // The derivation records that the strike has to be inside the support.
     let has_condition = r

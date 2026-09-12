@@ -144,10 +144,7 @@ fn raw_moment_claim(dist: &Distribution, n: u32, pool: &ExprPool) -> Option<Expr
                 if ff == 0 {
                     continue;
                 }
-                terms.push(pool.mul(vec![
-                    pool.integer(Integer::from(s) * Integer::from(ff)),
-                    pool.pow(prob, pool.integer(r)),
-                ]));
+                terms.push(pool.mul(vec![pool.integer(s * ff), pool.pow(prob, pool.integer(r))]));
             }
             if terms.is_empty() {
                 pool.integer(0)
@@ -164,10 +161,7 @@ fn raw_moment_claim(dist: &Distribution, n: u32, pool: &ExprPool) -> Option<Expr
                 if s == 0 {
                     continue;
                 }
-                terms.push(pool.mul(vec![
-                    pool.integer(Integer::from(s)),
-                    pool.pow(lambda, pool.integer(r)),
-                ]));
+                terms.push(pool.mul(vec![pool.integer(s), pool.pow(lambda, pool.integer(r))]));
             }
             pool.add(terms)
         }

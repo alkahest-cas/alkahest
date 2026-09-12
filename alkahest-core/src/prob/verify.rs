@@ -83,7 +83,7 @@ const MIN_POINTS: usize = 2;
 /// evaluating the same point twice, which is why `sample_points` returns one
 /// entry rather than `MAX_POINTS` copies of it.
 fn required_points(available: usize) -> usize {
-    available.min(MIN_POINTS).max(1)
+    available.clamp(1, MIN_POINTS)
 }
 
 /// Most parameter points tried, to bound the cost of a check.
@@ -440,7 +440,7 @@ fn integrate_pieces(
     // empty or inverted piece.
     let inside: Vec<Float> = cuts
         .iter()
-        .filter(|c| lo.as_ref().is_none_or(|l| *c > l) && hi.as_ref().is_none_or(|h| *c < h))
+        .filter(|c| lo.as_ref().map_or(true, |l| *c > l) && hi.as_ref().map_or(true, |h| *c < h))
         .cloned()
         .collect();
     let mut edges: Vec<Option<Float>> = Vec::with_capacity(inside.len() + 2);
@@ -616,7 +616,6 @@ fn role_rows(dist: &Distribution) -> &'static [&'static [f64]] {
         Beta => &[&[2.0, 3.0], &[0.5, 0.5], &[1.0, 4.0], &[3.2, 1.4]],
         Bernoulli => &[&[0.3], &[0.5], &[0.8], &[0.125]],
         Binomial => &[&[0.0, 0.3], &[0.0, 0.5], &[0.0, 0.8], &[0.0, 0.125]],
-        _ => &[],
     }
 }
 
