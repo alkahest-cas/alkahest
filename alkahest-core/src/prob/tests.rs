@@ -396,7 +396,10 @@ fn a_cdf_below_or_above_the_support_is_zero_or_one_not_the_formula() {
     assert_eq!(at(&p, u.cdf(p.integer(7), &p).unwrap().value, &[]), 1.0);
 
     let b = Distribution::beta(p.integer(2), p.integer(3), &p).unwrap();
-    assert_eq!(at(&p, b.cdf(p.rational(-1, 2), &p).unwrap().value, &[]), 0.0);
+    assert_eq!(
+        at(&p, b.cdf(p.rational(-1, 2), &p).unwrap().value, &[]),
+        0.0
+    );
     assert_eq!(at(&p, b.cdf(p.rational(3, 2), &p).unwrap().value, &[]), 1.0);
 
     // The step says which branch was taken, so a reader of the log can tell
@@ -436,12 +439,9 @@ fn a_symbolic_cdf_argument_carries_the_in_support_condition() {
 
     let e = Distribution::exponential(sym(&p, "lambda"), &p).unwrap();
     let r = e.cdf(x, &p).unwrap();
-    assert!(r
-        .log
-        .0
-        .iter()
-        .any(|s| s.rule_name == "prob_cdf_argument_inside_support"
-            && !s.side_conditions.is_empty()));
+    assert!(r.log.0.iter().any(
+        |s| s.rule_name == "prob_cdf_argument_inside_support" && !s.side_conditions.is_empty()
+    ));
 
     // A compact support needs both ends recorded, not just one.
     let u = Distribution::uniform(sym(&p, "a"), sym(&p, "b"), &p).unwrap();

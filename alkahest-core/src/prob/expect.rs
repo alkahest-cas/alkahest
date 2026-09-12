@@ -76,7 +76,7 @@ const MAX_TERMS: usize = 64;
 ///   the numeric gate — the value is discarded, not returned with a caveat.
 /// * [`ProbError::Unsupported`] for a shape outside the pipeline: a
 ///   non-polynomial `f` over a countably infinite discrete support, or a
-///   payoff with more than [`MAX_PIECES`] pieces.
+///   payoff with more than four kinks in the integration variable.
 pub fn expectation(
     f: ExprId,
     x: ExprId,

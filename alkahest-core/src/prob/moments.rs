@@ -529,8 +529,12 @@ pub(crate) fn cdf(
                 conditions.push(SideCondition::Positive(x));
             }
             crate::prob::Support::Interval(lo, hi) => {
-                conditions.push(SideCondition::Positive(simplify(sub(x, lo, pool), pool).value));
-                conditions.push(SideCondition::Positive(simplify(sub(hi, x, pool), pool).value));
+                conditions.push(SideCondition::Positive(
+                    simplify(sub(x, lo, pool), pool).value,
+                ));
+                conditions.push(SideCondition::Positive(
+                    simplify(sub(hi, x, pool), pool).value,
+                ));
             }
             _ => {}
         }

@@ -36,7 +36,8 @@
 //! untransformed definition**: the numeric gate quadratures `f(x) p(x)` over
 //! the original support in `x`, not over `z`. A wrong Jacobian, a wrong
 //! inverse, a dropped constant or a mis-mapped bound all show up as a
-//! disagreement and the answer is refused. See [`verify`].
+//! disagreement and the answer is refused. See the `verify` module (private;
+//! `--document-private-items` to read it) and the [`Evidence`] it returns.
 //!
 //! # What refuses, and why that is right
 //!
