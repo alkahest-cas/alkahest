@@ -937,7 +937,7 @@ fn jordan_block_matrix(lambda: ExprId, size: usize, pool: &ExprPool) -> Matrix {
 /// `M = P·C·P⁻¹` is a claim about *both* matrices, and until 3.10.1 neither
 /// half was verified. Two independent defects shipped behind that:
 ///
-/// * [`companion_matrix`] wrote the coefficients down the last **row** instead
+/// * `companion_matrix` wrote the coefficients down the last **row** instead
 ///   of the last **column**, which for `d ≥ 2` also overwrote a subdiagonal
 ///   `1`. On `diag(1, 2)` it returned `C = [[0,0],[−2,3]]`, whose determinant
 ///   is `0` against `det M = 2` — not similar to `M`, not even the same rank.
@@ -3617,7 +3617,10 @@ mod tests {
         let b = p.symbol("r", Domain::Complex);
         let m = Matrix::new(vec![
             vec![a, b],
-            vec![p.mul(vec![p.integer(2_i32), a]), p.mul(vec![p.integer(2_i32), b])],
+            vec![
+                p.mul(vec![p.integer(2_i32), a]),
+                p.mul(vec![p.integer(2_i32), b]),
+            ],
         ])
         .unwrap();
         let _ = crate::matrix::take_matrix_inverse_side_conditions();

@@ -9152,11 +9152,10 @@ impl PyMatrix {
             .inner
             .inverse(&pool.inner)
             .map_err(matrix_error_to_py)?;
-        let rendered: Vec<String> =
-            alkahest_core::matrix::take_matrix_inverse_side_conditions()
-                .iter()
-                .map(|c| c.display_with(&pool.inner).to_string())
-                .collect();
+        let rendered: Vec<String> = alkahest_core::matrix::take_matrix_inverse_side_conditions()
+            .iter()
+            .map(|c| c.display_with(&pool.inner).to_string())
+            .collect();
         MATRIX_INVERSE_SIDE_CONDITIONS.with(|c| *c.borrow_mut() = rendered);
         drop(pool);
         Ok(PyMatrix {

@@ -6400,7 +6400,6 @@ CASES: list[Case] = [
             "channel) and is the reason this case exists rather than a Raises() one."
         ),
     ),
-
     # -----------------------------------------------------------------------
     # Linear algebra, scored against an outside oracle.
     #
@@ -6834,7 +6833,24 @@ ZERO_LEADING_ROW = [[0, 0], [1, 0]]
 FIBONACCI_2X2 = [[1, 1], [1, 0]]
 #: Unstructured sample values for the dense symbolic inverse.  See the case's
 #: `verified_by` for why an arithmetic progression will not do.
-_INVERSE_SAMPLE = (1.7, -2.3, 0.9, 3.1, -0.6, 2.2, 4.7, -1.1, 0.4, 5.3, -3.7, 1.3, 2.9, -0.8, 6.1, 0.3)
+_INVERSE_SAMPLE = (
+    1.7,
+    -2.3,
+    0.9,
+    3.1,
+    -0.6,
+    2.2,
+    4.7,
+    -1.1,
+    0.4,
+    5.3,
+    -3.7,
+    1.3,
+    2.9,
+    -0.8,
+    6.1,
+    0.3,
+)
 
 
 def _permutation_sign(perm: list[int]) -> int:
