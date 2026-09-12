@@ -63,6 +63,7 @@
 
 use std::fmt;
 
+use crate::deriv::SideCondition;
 use crate::errors::AlkahestError;
 use crate::kernel::{Domain, ExprId, ExprPool};
 
@@ -81,6 +82,69 @@ pub use expect::{expectation, expectation_affine, variance_affine_independent};
 pub use verify::Evidence;
 
 pub(crate) use quad::numeric_ball;
+
+// ---------------------------------------------------------------------------
+// Undischarged hypotheses
+// ---------------------------------------------------------------------------
+
+std::thread_local! {
+    static PROB_CONDITIONS: std::cell::RefCell<Vec<SideCondition>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The hypotheses the most recent [`Distribution::cdf`],
+/// [`Distribution::quantile`] or [`expectation`] call on this thread had to
+/// **assume** in order to return the answer it did.
+///
+/// The same out-of-band channel as
+/// [`crate::transform::take_transform_side_conditions`], and for the same
+/// reason: the value is an `ExprId`, so there is nowhere in band to hang a
+/// hypothesis, and a caller who cannot see one cannot tell a theorem from a
+/// conditional.
+///
+/// Non-empty in exactly the cases the argument could not be *placed*:
+///
+/// * `cdf(x)` for a symbolic `x` — the closed forms are the in-support branch,
+///   and `P(X ≤ x)` is `0`/`1` outside it. A decidable argument is answered
+///   exactly instead and records nothing; a `Normal`, whose support is the
+///   whole line, never records anything at all.
+/// * `quantile(p)` for a symbolic `p` — `F⁻¹` is defined on `[0, 1]`, and off
+///   it the closed forms return a number rather than failing.
+/// * `expectation` of a payoff whose kink position cannot be placed inside the
+///   support — `E[max(S - K, 0)]` with a symbolic strike needs `K > 0`.
+///
+/// Consuming, so one call's hypotheses cannot be read as a later call's, and
+/// **reset by every one of those three entry points** — including on the
+/// refusal path, so a stale list is never attributed to a call that failed.
+/// An empty list means every branch taken was forced by the input, not that
+/// none was taken.
+pub fn take_prob_side_conditions() -> Vec<SideCondition> {
+    PROB_CONDITIONS.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
+
+/// Replace the channel with `conds`. Called at the *entry* of every route that
+/// can record one, so a refusal clears rather than leaks.
+pub(crate) fn stash_prob_side_conditions(conds: Vec<SideCondition>) {
+    PROB_CONDITIONS.with(|c| *c.borrow_mut() = conds);
+}
+
+/// Collect every side condition a derivation recorded, in order, without
+/// repeats.
+///
+/// A split payoff attaches the *same* hypothesis to each of its pieces —
+/// `E[max(S - K, 0)]` cuts the support once and both sides carry `K > 0` — so
+/// without this the caller reads `["K > 0", "K > 0"]` and has to work out
+/// whether that is one hypothesis or two. `ExprId` is interned, so equality is
+/// a pointer comparison.
+pub(crate) fn conditions_of(log: &crate::deriv::DerivationLog) -> Vec<SideCondition> {
+    let mut out: Vec<SideCondition> = Vec::new();
+    for c in log.0.iter().flat_map(|s| s.side_conditions.iter()) {
+        if !out.contains(c) {
+            out.push(c.clone());
+        }
+    }
+    out
+}
 
 // ---------------------------------------------------------------------------
 // Errors

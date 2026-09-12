@@ -762,11 +762,18 @@ fn undischarged(pred: ExprId, pool: &ExprPool) -> Option<SideCondition> {
         return None;
     };
     let (lhs, rhs) = (*lhs, *rhs);
-    let gap = match kind {
-        PredicateKind::Gt | PredicateKind::Ge => super::sub(lhs, rhs, pool),
-        PredicateKind::Lt | PredicateKind::Le => super::sub(rhs, lhs, pool),
-        _ => return None,
-    };
+    // Simplified, because this string is the whole of what the caller sees:
+    // `sigma - 0 > 0` and `sigma > 0` are the same hypothesis, and only one of
+    // them reads like one.
+    let gap = crate::simplify::simplify(
+        match kind {
+            PredicateKind::Gt | PredicateKind::Ge => super::sub(lhs, rhs, pool),
+            PredicateKind::Lt | PredicateKind::Le => super::sub(rhs, lhs, pool),
+            _ => return None,
+        },
+        pool,
+    )
+    .value;
     // Decided already: nothing for the caller to discharge.
     if !matches!(dists::sign_of(gap, pool), dists::Sign::Unknown) {
         return None;

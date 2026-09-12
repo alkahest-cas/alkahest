@@ -467,6 +467,84 @@ fn a_symbolic_cdf_argument_carries_the_in_support_condition() {
         .any(|s| s.rule_name == "prob_cdf_argument_inside_support"));
 }
 
+/// The out-of-band channel. The value is an `ExprId`, so a hypothesis has
+/// nowhere in band to live; without this a conditional answer and a theorem are
+/// indistinguishable at the call site.
+///
+/// Two *different* classes of hypothesis travel on it, and both matter:
+/// an undischarged **parameter** constraint (`σ > 0` for a symbolic scale) and
+/// an undischarged **argument** placement (`x` inside the support). The first
+/// comes from `evidence_step`, the second from `cdf`/`quantile`/`expectation`.
+#[test]
+fn undischarged_hypotheses_are_readable_out_of_band() {
+    use crate::prob::take_prob_side_conditions;
+
+    let p = pool();
+    let x = sym(&p, "x");
+
+    // Literal parameter, symbolic argument: the *only* open hypothesis is that
+    // `x` is in the support.
+    let e = Distribution::exponential(p.rational(7, 4), &p).unwrap();
+    let _ = e.cdf(x, &p).unwrap();
+    assert_eq!(
+        take_prob_side_conditions().len(),
+        1,
+        "a symbolic cdf argument over a literal-rate exponential publishes x > 0"
+    );
+
+    // Consuming: a second read of the same call is empty, so one call's
+    // hypotheses cannot be re-read as a later call's.
+    assert!(take_prob_side_conditions().is_empty());
+
+    // Symbolic parameter *and* symbolic argument: both classes are published.
+    let e = Distribution::exponential(sym(&p, "lambda"), &p).unwrap();
+    let _ = e.cdf(x, &p).unwrap();
+    assert_eq!(
+        take_prob_side_conditions().len(),
+        2,
+        "lambda > 0 and x > 0 are both still open"
+    );
+
+    // A compact support publishes both ends.
+    let u = Distribution::uniform(p.integer(-2), p.integer(3), &p).unwrap();
+    let _ = u.cdf(x, &p).unwrap();
+    assert_eq!(take_prob_side_conditions().len(), 2);
+
+    // A decidable argument is answered exactly and claims nothing.
+    let g = Distribution::gamma(p.integer(3), p.rational(4, 5), &p).unwrap();
+    let _ = g.cdf(p.integer(-5), &p).unwrap();
+    assert!(take_prob_side_conditions().is_empty());
+    let _ = g.cdf(p.rational(12, 5), &p).unwrap();
+    assert!(take_prob_side_conditions().is_empty());
+
+    // A normal's support is the whole line, so with literal parameters there is
+    // nothing left to assume at all.
+    let n = Distribution::normal(p.integer(0), p.integer(1), &p).unwrap();
+    let _ = n.cdf(x, &p).unwrap();
+    assert!(take_prob_side_conditions().is_empty());
+
+    // A symbolic quantile argument publishes 0 <= p <= 1.
+    let q = sym(&p, "q");
+    let _ = u.quantile(q, &p).unwrap();
+    assert_eq!(take_prob_side_conditions().len(), 2);
+
+    // A refusal *clears* the channel rather than leaving the previous call's
+    // hypotheses readable as its own. Prime the channel, then refuse.
+    let _ = u.cdf(x, &p).unwrap();
+    let _ = n
+        .quantile(q, &p)
+        .expect_err("the normal quantile needs erf-inverse");
+    assert!(
+        take_prob_side_conditions().is_empty(),
+        "a refusal must not leave a stale hypothesis behind"
+    );
+
+    // And a route that records nothing clears it too.
+    let _ = u.cdf(x, &p).unwrap();
+    let _ = n.mean(&p).unwrap();
+    assert!(take_prob_side_conditions().is_empty());
+}
+
 // ---------------------------------------------------------------------------
 // Quantiles
 // ---------------------------------------------------------------------------

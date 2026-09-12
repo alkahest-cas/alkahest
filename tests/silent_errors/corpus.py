@@ -1571,6 +1571,46 @@ def _prob_phi(build: Callable[[], Any], env: dict | None = None) -> Callable[[],
     return op
 
 
+def _prob_unconditional(build: Callable[[], Any], env: dict) -> Callable[[], float]:
+    """Answer = a probability closed form's value, but only if it was *unconditional*.
+
+    ``experimental.prob_side_conditions()`` reports the hypotheses the call that
+    just ran had to assume.  A number returned under an undischarged hypothesis
+    is not an unconditional answer — the caller was told — so it is surfaced as
+    a refusal rather than scored as a stated value.  That is the whole point of
+    the channel: without it, ``F(x)`` for a symbolic ``x`` and ``F(x)`` for an
+    ``x`` known to be in the support are indistinguishable at the call site.
+    """
+
+    def op() -> float:
+        out = build()
+        conds = ex.prob_side_conditions()
+        if conds:
+            raise ValueError(f"answer holds only under {conds}")
+        return float(ak.eval_expr(out, {**env, PI: math.pi}))
+
+    return op
+
+
+def _phi_real_mode(build: Callable[[], Any], env: dict) -> Callable[[], float]:
+    """Answer = ``phi(t)`` forced through a **real** evaluator.
+
+    ``phi`` is complex.  A real evaluator that quietly hands back ``Re phi`` is
+    the silent error this case exists to catch: it is a clean number of the
+    right magnitude, and nothing in the return value says the imaginary part —
+    which for a non-symmetric law carries the whole of the mean — was dropped.
+    Refusing is the only acceptable outcome.
+    """
+
+    def op() -> float:
+        r = ak.evaluate(build(), {**env, PI: math.pi}, mode="f64")
+        if r.value is None:
+            raise ValueError(f"real evaluation declined: {r.status} {r.reason}")
+        return float(r.value)
+
+    return op
+
+
 def _moment_via_charfun(build: Callable[[], Any], n: int) -> Callable[[], float]:
     """Answer = ``φ⁽ⁿ⁾(0) / iⁿ`` — i.e. ``E[Xⁿ]`` reached by differentiating the
     characteristic function at the origin instead of by the moment table.
@@ -6782,6 +6822,43 @@ CASES: list[Case] = [
         "sigma > 0. The constraint is returned as a predicate for the caller to "
         "discharge; there is exactly one of them for a Normal. The control that "
         "the constructor check above is a *decision* and not a blanket refusal.",
+    ),
+    Case(
+        id="prob_symbolic_cdf_discloses_that_it_is_the_in_support_branch",
+        subsystem="probability",
+        statement="F(x) for symbolic x is the in-support branch; at x = -5 it gives -7396.87",
+        op=_prob_unconditional(lambda: ex.Gamma(_int(3), _rat(4, 5)).cdf(PROB_X), {PROB_X: -5.0}),
+        contract=RefusesOr(0.0),
+        verified_by="A Gamma puts no mass below 0, so P(X <= -5) = 0 by definition. The "
+        "Erlang closed form 1 - e^{-u} sum_{j<3} u^j/j! at u = -6.25 is "
+        "-7396.8706522947593 — a negative probability. With a symbolic "
+        "argument alkahest cannot place x, so it publishes the hypothesis "
+        "'x > 0' on `prob_side_conditions()`; this case scores a disclosed "
+        "answer as a refusal, which is what makes it able to fail if the "
+        "disclosure is ever dropped.",
+        note="The companion `prob_cdf_below_the_support_is_zero_not_the_formula` covers "
+        "the decidable argument, where alkahest returns the exact 0 instead of "
+        "disclosing a hypothesis. Both routes have to hold.",
+    ),
+    Case(
+        id="prob_characteristic_function_is_not_silently_realified",
+        subsystem="probability",
+        statement="phi_Normal(1.3) is complex; a real evaluator must refuse, not return Re",
+        op=_phi_real_mode(
+            lambda: ex.Normal(_rat(7, 10), _rat(11, 10)).characteristic_function(_rat(13, 10)),
+            {},
+        ),
+        contract=RefusesOr(),
+        verified_by="phi(t) = e^{i mu t - sigma^2 t^2/2} = 0.22077205714480930348 + "
+        "0.28399441442982708525i (mpmath 50 dps, from int p(x)e^{itx}dx). No "
+        "real number is its value. Handing back the real part alone would be a "
+        "clean number of the right magnitude that has silently discarded the "
+        "imaginary part — which for a non-symmetric law carries the mean, since "
+        "phi'(0) = i·E[X].",
+        note="The control is `prob_characteristic_function_convention_is_e_itx`, which "
+        "asks the same question through `evaluate(..., mode='complex')` and gets "
+        "both components. A gate made only of this case would be passed by a "
+        "module whose characteristic functions could not be evaluated at all.",
     ),
 ]
 

@@ -74,6 +74,7 @@ pub fn characteristic_function(
     t: ExprId,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, ProbError> {
+    super::stash_prob_side_conditions(Vec::new());
     let claim = simplify(claim_for(dist, t, pool)?, pool).value;
     let (evidence, fourier_agreed) = verify::check_characteristic(claim, t, dist, pool)?;
     let mut log = DerivationLog::new();
@@ -90,6 +91,7 @@ pub fn characteristic_function(
         ));
     }
     log.push(verify::evidence_step(&evidence, claim, dist, pool));
+    super::stash_prob_side_conditions(super::conditions_of(&log));
     Ok(DerivedExpr::with_log(claim, log))
 }
 

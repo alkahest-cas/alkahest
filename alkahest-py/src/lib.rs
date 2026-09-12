@@ -159,6 +159,7 @@ use alkahest_core::ode::series_solve::{
 use alkahest_core::prob::{
     characteristic_function as core_characteristic_function, expectation as core_expectation,
     expectation_affine as core_expectation_affine,
+    take_prob_side_conditions as core_take_prob_side_conditions,
     variance_affine_independent as core_variance_affine_independent, DistKind as CoreDistKind,
     Distribution as CoreDistribution, ProbError as CoreProbError, Support as CoreSupport,
 };
@@ -17192,7 +17193,13 @@ impl PyDistribution {
         ) -> Result<alkahest_core::deriv::DerivedExpr<ExprId>, CoreProbError>,
     {
         let pool_ref = self.pool.borrow(py);
-        let out = f(&self.inner, &pool_ref.inner).map_err(prob_error_to_py)?;
+        let out = f(&self.inner, &pool_ref.inner);
+        // Drained whether the call succeeded or failed, so
+        // `prob_side_conditions()` always describes *this* call. `mean`,
+        // `moment` and the rest record nothing and therefore clear it, which is
+        // the point: a stale hypothesis read as a fresh one is worse than none.
+        capture_prob_side_conditions(&pool_ref.inner);
+        let out = out.map_err(prob_error_to_py)?;
         Ok(PyExpr {
             id: out.value,
             pool: self.pool.clone_ref(py),
@@ -17334,6 +17341,59 @@ fn py_dist_poisson(py: Python<'_>, lam: PyRef<PyExpr>) -> PyResult<PyDistributio
     })
 }
 
+std::thread_local! {
+    static PROB_SIDE_CONDITIONS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Drain the core channel and render it, so [`py_prob_side_conditions`]
+/// describes *this* call whether it succeeded or failed.
+fn capture_prob_side_conditions(pool: &alkahest_core::ExprPool) {
+    let rendered: Vec<String> = core_take_prob_side_conditions()
+        .iter()
+        .map(|c| render_side_condition_or_depth(pool, c))
+        .collect();
+    PROB_SIDE_CONDITIONS.with(|c| *c.borrow_mut() = rendered);
+}
+
+/// `experimental.prob_side_conditions() -> list[str]`
+///
+/// The hypotheses the most recent :class:`Distribution` method or
+/// :func:`expectation` call **on this thread** had to assume in order to
+/// return the answer it did — one rendered string per condition, e.g.
+/// ``"x > 0"``.
+///
+/// The returned value is an ``Expr``, so there is nowhere in band to hang a
+/// hypothesis. Without this channel a conditional answer and a theorem are
+/// indistinguishable at the call site, which is the failure this library
+/// exists to avoid. Read it immediately after the call::
+///
+///     F = Gamma(3, Fraction(4, 5)).cdf(x)      # symbolic x
+///     assert prob_side_conditions() == ["x > 0"]
+///
+/// Non-empty in exactly the cases the argument could not be *placed*:
+///
+/// - ``cdf(x)`` for a symbolic ``x``. The closed forms are the in-support
+///   branch; ``P(X <= x)`` is ``0`` below the support and ``1`` above it, and
+///   the formula does not fail there — ``Gamma(3, 4/5)`` at ``x = -5`` is
+///   ``-7396.87``, offered as a probability. A ``x`` that *can* be placed is
+///   answered exactly and records nothing, and a ``Normal`` — whose support is
+///   the whole line — never records anything at all.
+/// - ``quantile(p)`` for a symbolic ``p``: ``F**-1`` is defined on ``[0, 1]``
+///   and off it the closed forms return a number rather than failing.
+/// - ``expectation`` of a payoff whose kink cannot be placed inside the
+///   support: ``E[max(S - K, 0)]`` with a symbolic strike needs ``K > 0``.
+///
+/// Reset by every one of those entry points, including on the refusal path, so
+/// a stale list is never attributed to a call that failed. An empty list means
+/// every branch taken was forced by the input, not that none was taken.
+/// Repeated reads of the same call agree.
+#[pyfunction]
+#[pyo3(name = "prob_side_conditions")]
+fn py_prob_side_conditions() -> Vec<String> {
+    PROB_SIDE_CONDITIONS.with(|c| c.borrow().clone())
+}
+
 /// ``expectation(f, var, dist)`` — ``E[f(X)]`` where ``f`` is written in
 /// ``var``.
 ///
@@ -17360,7 +17420,11 @@ fn py_expectation(
     let (fid, vid) = (f.id, var.id);
     let out = {
         let pool_ref = pool_py.borrow(py);
-        core_expectation(fid, vid, &dist.inner, &pool_ref.inner).map_err(prob_error_to_py)?
+        let out = core_expectation(fid, vid, &dist.inner, &pool_ref.inner);
+        // Drained on both paths: a refusal must clear the channel, not leave
+        // the previous call's hypotheses readable as this one's.
+        capture_prob_side_conditions(&pool_ref.inner);
+        out.map_err(prob_error_to_py)?
     };
     Ok(PyExpr {
         id: out.value,
@@ -17573,6 +17637,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_dist_bernoulli, m)?)?;
     m.add_function(wrap_pyfunction!(py_dist_binomial, m)?)?;
     m.add_function(wrap_pyfunction!(py_dist_poisson, m)?)?;
+    m.add_function(wrap_pyfunction!(py_prob_side_conditions, m)?)?;
     m.add_function(wrap_pyfunction!(py_expectation, m)?)?;
     m.add_function(wrap_pyfunction!(py_expectation_affine, m)?)?;
     m.add_function(wrap_pyfunction!(py_variance_affine_independent, m)?)?;

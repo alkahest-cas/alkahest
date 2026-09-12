@@ -435,9 +435,9 @@ pub mod experimental {
     /// and the numeric gate every closed form they produce has to pass. See
     /// [`crate::prob`] — in particular, what refuses and why.
     pub use crate::prob::{
-        characteristic_function, expectation, expectation_affine, variance_affine_independent,
-        DistKind, Distribution, Evidence as ProbEvidence, ProbError, Support,
-        UnverifiedReason as ProbUnverifiedReason, MAX_MOMENT_ORDER,
+        characteristic_function, expectation, expectation_affine, take_prob_side_conditions,
+        variance_affine_independent, DistKind, Distribution, Evidence as ProbEvidence, ProbError,
+        Support, UnverifiedReason as ProbUnverifiedReason, MAX_MOMENT_ORDER,
     };
     pub use crate::simplify::{
         simplify_colored, simplify_egraph, simplify_expanded, ColorId, ColoredEgraph,

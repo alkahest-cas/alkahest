@@ -34,12 +34,27 @@ Probability and statistics:
   constraint raises ``E-PROB-001``; a symbolic one cannot be decided and is
   carried on :meth:`Distribution.constraints` for the caller to discharge
 - :meth:`Distribution.mean`, :meth:`~Distribution.variance`,
-  :meth:`~Distribution.moment`, :meth:`~Distribution.cdf`,
-  :meth:`~Distribution.quantile`,
-  :meth:`~Distribution.characteristic_function` — every one of these is
-  **checked against numerical quadrature of its own defining integral before
-  it is returned**. One the checker cannot confirm raises ``E-PROB-005``
-  rather than arriving with a caveat
+  :meth:`~Distribution.moment`, :meth:`~Distribution.pdf`,
+  :meth:`~Distribution.cdf`, :meth:`~Distribution.quantile`,
+  :meth:`~Distribution.characteristic_function`, plus
+  :attr:`~Distribution.kind`, :meth:`~Distribution.params`,
+  :meth:`~Distribution.support` and :meth:`~Distribution.constraints`. These
+  are **methods on the law**, not module-level functions — ``Normal(mu,
+  sigma).cdf(x)``, not ``cdf(dist, x)`` — so there is one way to ask each
+  question. Every derived quantity is **checked against numerical quadrature
+  of its own defining integral before it is returned**; one the checker cannot
+  confirm raises ``E-PROB-005`` rather than arriving with a caveat
+- :meth:`~Distribution.characteristic_function` is **complex-valued**. Evaluate
+  it with ``evaluate(phi, env, mode="complex")``; the real modes return
+  ``value=None`` with ``status="unsupported"`` rather than dropping the
+  imaginary part
+- :func:`prob_side_conditions` — the hypotheses the last :class:`Distribution`
+  method or :func:`expectation` call had to *assume*. The return value is an
+  ``Expr``, so there is nowhere in band to hang one; without this channel a
+  conditional answer and a theorem look identical at the call site. Non-empty
+  for a symbolic ``cdf`` argument (the closed form is the in-support branch),
+  a symbolic ``quantile`` argument, and a payoff kink that cannot be placed
+  inside the support
 - :func:`expectation` — ``E[f(X)]``, reduced to integrals the existing
   integrator attempts. A divergent expectation raises ``E-PROB-006`` (checked
   *before* the symbolic work, so the answer is "no value exists" rather than
@@ -261,6 +276,7 @@ from alkahest.alkahest import (
     multilimit,
     ode_integrate_rk4,
     ode_integrate_rk45,
+    prob_side_conditions,
     puiseux_series,
     q_zeilberger,
     series_solve,
@@ -398,6 +414,7 @@ __all__ = [
     "ode_integrate_rk4",
     "ode_integrate_rk45",
     # Puiseux (fractional-exponent) expansion
+    "prob_side_conditions",
     "puiseux_series",
     # M4(b) — q-analogue creative telescoping
     "q_zeilberger",

@@ -83,6 +83,10 @@ pub fn expectation(
     dist: &Distribution,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, ProbError> {
+    // Cleared up front so a refusal cannot leave the previous call's
+    // hypotheses readable as this one's.
+    super::stash_prob_side_conditions(Vec::new());
+
     let definition = verify::definition_integrand(f, x, dist, pool);
     if let Some(divergent) = verify::convergence_probe(definition, x, dist, pool) {
         return Err(divergent);
@@ -99,6 +103,7 @@ pub fn expectation(
     let claim = simplify(claim, pool).value;
     let evidence = verify::check_with_breaks(claim, definition, x, dist, &breaks, pool)?;
     log.push(verify::evidence_step(&evidence, claim, dist, pool));
+    super::stash_prob_side_conditions(super::conditions_of(&log));
     Ok(DerivedExpr::with_log(claim, log))
 }
 
@@ -729,6 +734,9 @@ pub fn expectation_affine(
     variates: &[(ExprId, Distribution)],
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, ProbError> {
+    // Cleared up front: `affine_decomposition` can refuse before any component
+    // `mean`/`variance` runs, and a stale list must not survive that.
+    super::stash_prob_side_conditions(Vec::new());
     let (coeffs, constant) = affine_decomposition(expr, variates, pool)?;
     let mut log = DerivationLog::new();
     let mut terms = vec![constant];
@@ -746,6 +754,10 @@ pub fn expectation_affine(
         expr,
         value,
     ));
+    // Over the *merged* log: each component's `mean`/`variance` stashed its own
+    // conditions on the way through, and the last one to run must not be
+    // mistaken for the whole combination's.
+    super::stash_prob_side_conditions(super::conditions_of(&log));
     Ok(DerivedExpr::with_log(value, log))
 }
 
@@ -765,6 +777,9 @@ pub fn variance_affine_independent(
     variates: &[(ExprId, Distribution)],
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, ProbError> {
+    // Cleared up front: `affine_decomposition` can refuse before any component
+    // `mean`/`variance` runs, and a stale list must not survive that.
+    super::stash_prob_side_conditions(Vec::new());
     let (coeffs, _) = affine_decomposition(expr, variates, pool)?;
     let mut log = DerivationLog::new();
     let mut terms = Vec::new();
@@ -786,6 +801,10 @@ pub fn variance_affine_independent(
         expr,
         value,
     ));
+    // Over the *merged* log: each component's `mean`/`variance` stashed its own
+    // conditions on the way through, and the last one to run must not be
+    // mistaken for the whole combination's.
+    super::stash_prob_side_conditions(super::conditions_of(&log));
     Ok(DerivedExpr::with_log(value, log))
 }
 

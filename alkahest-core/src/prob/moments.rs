@@ -236,6 +236,7 @@ pub(crate) fn moment(
     n: u32,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, ProbError> {
+    super::stash_prob_side_conditions(Vec::new());
     if n > MAX_MOMENT_ORDER {
         return Err(ProbError::Unsupported(format!(
             "moment order {n} exceeds MAX_MOMENT_ORDER = {MAX_MOMENT_ORDER}; past that the \
@@ -256,6 +257,7 @@ pub(crate) fn moment(
     let mut log = DerivationLog::new();
     log.push(RewriteStep::simple("prob_raw_moment", x, claim));
     log.push(verify::evidence_step(&evidence, claim, dist, pool));
+    super::stash_prob_side_conditions(super::conditions_of(&log));
     Ok(DerivedExpr::with_log(claim, log))
 }
 
@@ -313,6 +315,7 @@ fn variance_claim(dist: &Distribution, pool: &ExprPool) -> ExprId {
 }
 
 pub(crate) fn mean(dist: &Distribution, pool: &ExprPool) -> Result<DerivedExpr<ExprId>, ProbError> {
+    super::stash_prob_side_conditions(Vec::new());
     let claim = simplify(mean_claim(dist, pool), pool).value;
     let x = integration_var(dist, &[], pool);
     let integrand = verify::definition_integrand(x, x, dist, pool);
@@ -320,6 +323,7 @@ pub(crate) fn mean(dist: &Distribution, pool: &ExprPool) -> Result<DerivedExpr<E
     let mut log = DerivationLog::new();
     log.push(RewriteStep::simple("prob_mean", x, claim));
     log.push(verify::evidence_step(&evidence, claim, dist, pool));
+    super::stash_prob_side_conditions(super::conditions_of(&log));
     Ok(DerivedExpr::with_log(claim, log))
 }
 
@@ -327,6 +331,7 @@ pub(crate) fn variance(
     dist: &Distribution,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, ProbError> {
+    super::stash_prob_side_conditions(Vec::new());
     let claim = simplify(variance_claim(dist, pool), pool).value;
     let mu = simplify(mean_claim(dist, pool), pool).value;
     let x = integration_var(dist, &[], pool);
@@ -340,6 +345,7 @@ pub(crate) fn variance(
     let mut log = DerivationLog::new();
     log.push(RewriteStep::simple("prob_variance", x, claim));
     log.push(verify::evidence_step(&evidence, claim, dist, pool));
+    super::stash_prob_side_conditions(super::conditions_of(&log));
     Ok(DerivedExpr::with_log(claim, log))
 }
 
@@ -488,6 +494,10 @@ pub(crate) fn cdf(
     x: ExprId,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, ProbError> {
+    // Clear first: a refusal below must not leave the previous call's
+    // hypotheses readable as this one's.
+    super::stash_prob_side_conditions(Vec::new());
+
     // Refuse the laws that have no closed form *before* anything else, so a
     // `Gamma` with a symbolic shape still reports E-PROB-004 rather than being
     // short-circuited by an out-of-support argument.
@@ -549,6 +559,7 @@ pub(crate) fn cdf(
     }
     log.push(RewriteStep::simple("prob_cdf", x, claim));
     log.push(verify::evidence_step(&evidence, claim, dist, pool));
+    super::stash_prob_side_conditions(super::conditions_of(&log));
     Ok(DerivedExpr::with_log(claim, log))
 }
 
@@ -597,6 +608,8 @@ pub(crate) fn quantile(
     p_arg: ExprId,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, ProbError> {
+    super::stash_prob_side_conditions(Vec::new());
+
     // `F⁻¹` is only defined on `[0, 1]`, and off it the closed forms produce a
     // number rather than failing: `Uniform(-2, 3).quantile(2)` evaluates to
     // `8`, outside the support it is supposed to be a point of. A probability
@@ -630,5 +643,6 @@ pub(crate) fn quantile(
     }
     log.push(RewriteStep::simple("prob_quantile", p_arg, claim));
     log.push(verify::evidence_step(&evidence, claim, dist, pool));
+    super::stash_prob_side_conditions(super::conditions_of(&log));
     Ok(DerivedExpr::with_log(claim, log))
 }
