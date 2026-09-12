@@ -156,6 +156,13 @@ use alkahest_core::ode::series_solve::{
     series_solve as core_series_solve, PointKind as CorePointKind,
     SeriesError as CoreSeriesSolveError, SeriesOde as CoreSeriesOde,
 };
+use alkahest_core::prob::{
+    characteristic_function as core_characteristic_function, expectation as core_expectation,
+    expectation_affine as core_expectation_affine,
+    take_prob_side_conditions as core_take_prob_side_conditions,
+    variance_affine_independent as core_variance_affine_independent, DistKind as CoreDistKind,
+    Distribution as CoreDistribution, ProbError as CoreProbError, Support as CoreSupport,
+};
 use alkahest_core::transform::{
     fourier_transform as core_fourier_transform, inverse_fourier_transform as core_ifourier,
     inverse_laplace_transform as core_ilaplace, inverse_z_transform as core_iztransform,
@@ -465,6 +472,8 @@ pyo3::create_exception!(alkahest, PyParamGroebnerError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyBudgetExceededError, PyAlkahestError);
 // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
 pyo3::create_exception!(alkahest, PyHolonomicError, PyAlkahestError);
+// Probability distributions and expectations (E-PROB-*).
+pyo3::create_exception!(alkahest, PyProbabilityError, PyAlkahestError);
 
 /// Build a structured exception with `.code`, `.remediation`, `.span` attributes.
 fn make_structured_err<E: AlkahestErrorTrait>(
@@ -16998,6 +17007,500 @@ fn py_binomial_mod(a: u64, b: i128, p: u64, k: u32) -> PyResult<u64> {
     core_binomial_mod(a, b, p, k).map_err(holonomic_modular_error_to_py)
 }
 
+// ===========================================================================
+// Probability distributions and expectations (experimental)
+// ===========================================================================
+
+fn prob_error_to_py(e: CoreProbError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyProbabilityError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+/// A distribution with symbolic parameters —
+/// :class:`alkahest.experimental.Distribution`.
+///
+/// Built through the named constructors (:func:`Normal`, :func:`Gamma`, …),
+/// never directly: a constructor is what checks the parameter constraints, and
+/// a directly-constructible distribution could hold `sigma = -1`.
+///
+/// Every closed form these methods return has been **checked against numerical
+/// quadrature of its own defining integral** before it was returned. One the
+/// checker could not confirm raises ``E-PROB-005`` instead of arriving with a
+/// caveat attached.
+#[pyclass(name = "Distribution", module = "alkahest.experimental")]
+struct PyDistribution {
+    inner: CoreDistribution,
+    pool: Py<PyExprPool>,
+}
+
+fn dist_kind_name(k: CoreDistKind) -> &'static str {
+    k.name()
+}
+
+#[pymethods]
+impl PyDistribution {
+    fn __repr__(&self, py: Python<'_>) -> String {
+        let pool = self.pool.borrow(py);
+        let args: Vec<String> = self
+            .inner
+            .params()
+            .iter()
+            .map(|&p| pool.inner.display(p).to_string())
+            .collect();
+        format!("{}({})", dist_kind_name(self.inner.kind()), args.join(", "))
+    }
+
+    /// The distribution's name, e.g. ``"Normal"``.
+    #[getter]
+    fn kind(&self) -> &'static str {
+        dist_kind_name(self.inner.kind())
+    }
+
+    /// The parameters, in constructor order.
+    fn params(&self, py: Python<'_>) -> Vec<PyExpr> {
+        self.inner
+            .params()
+            .iter()
+            .map(|&id| PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
+    }
+
+    /// Where the mass lives, as a string tag plus the endpoints where it has
+    /// them: ``("real", None)``, ``("positive", None)``,
+    /// ``("interval", (lo, hi))``, ``("integers_up_to", n)``,
+    /// ``("non_negative_integers", None)``.
+    fn support(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let pool = self.pool.borrow(py);
+        let out = match self.inner.support(&pool.inner) {
+            CoreSupport::Real => ("real", py.None()),
+            CoreSupport::Positive => ("positive", py.None()),
+            CoreSupport::Interval(lo, hi) => (
+                "interval",
+                (
+                    PyExpr {
+                        id: lo,
+                        pool: self.pool.clone_ref(py),
+                    },
+                    PyExpr {
+                        id: hi,
+                        pool: self.pool.clone_ref(py),
+                    },
+                )
+                    .into_py(py),
+            ),
+            CoreSupport::IntegersUpTo(n) => ("integers_up_to", n.into_py(py)),
+            CoreSupport::NonNegativeIntegers => ("non_negative_integers", py.None()),
+            _ => ("unknown", py.None()),
+        };
+        Ok(out.into_py(py))
+    }
+
+    /// The parameter constraints, as predicate expressions.
+    ///
+    /// A constraint over *numeric* parameters was already checked by the
+    /// constructor and appears here as a record. One over a **symbolic**
+    /// parameter has not been decided by anybody and is the caller's to
+    /// discharge — which is why this returns predicates rather than a bool.
+    fn constraints(&self, py: Python<'_>) -> Vec<PyExpr> {
+        let pool = self.pool.borrow(py);
+        self.inner
+            .constraints(&pool.inner)
+            .into_iter()
+            .map(|id| PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
+    }
+
+    /// The density at ``x`` (continuous) or the mass at ``k`` (discrete),
+    /// **on the support only** — it is not extended by zero outside it.
+    fn pdf(&self, py: Python<'_>, x: PyRef<PyExpr>) -> PyExpr {
+        let pool = self.pool.borrow(py);
+        let id = self.inner.pdf(x.id, &pool.inner);
+        PyExpr {
+            id,
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
+    /// ``E[X]``, verified.
+    fn mean(&self, py: Python<'_>) -> PyResult<PyExpr> {
+        self.derived(py, |d, pool| d.mean(pool))
+    }
+
+    /// ``Var[X]``, verified against ``∫(x - E[X])²p(x)dx``.
+    fn variance(&self, py: Python<'_>) -> PyResult<PyExpr> {
+        self.derived(py, |d, pool| d.variance(pool))
+    }
+
+    /// The raw moment ``E[Xⁿ]``, verified.
+    fn moment(&self, py: Python<'_>, n: u32) -> PyResult<PyExpr> {
+        self.derived(py, |d, pool| d.moment(n, pool))
+    }
+
+    /// ``P(X ≤ x)``, verified against the density it accumulates.
+    ///
+    /// Raises ``E-PROB-004`` where the CDF needs a special function this
+    /// library does not have — a non-integer ``Gamma`` shape (incomplete
+    /// gamma), non-integer ``Beta`` parameters (incomplete beta), or any
+    /// discrete law.
+    fn cdf(&self, py: Python<'_>, x: PyRef<PyExpr>) -> PyResult<PyExpr> {
+        let id = x.id;
+        self.derived(py, move |d, pool| d.cdf(id, pool))
+    }
+
+    /// ``F⁻¹(p)``, verified by pushing it back through the density.
+    ///
+    /// Only ``Uniform`` and ``Exponential`` close; everything else raises
+    /// ``E-PROB-004`` (the normal quantile needs ``erf⁻¹``).
+    fn quantile(&self, py: Python<'_>, p: PyRef<PyExpr>) -> PyResult<PyExpr> {
+        let id = p.id;
+        self.derived(py, move |d, pool| d.quantile(id, pool))
+    }
+
+    /// The characteristic function ``φ_X(t) = E[e^{itX}]``, verified against
+    /// the defining integral and — where the transform has a rule for the
+    /// density — against ``fourier_transform`` at ``-t/2π``.
+    ///
+    /// Complex-valued: evaluate it with ``evaluate(..., mode="complex")``, not
+    /// the real evaluator.
+    ///
+    /// Raises ``E-PROB-004`` for ``LogNormal`` (whose ``φ`` has no closed form
+    /// at all) and ``Beta`` (which needs ``₁F₁``).
+    ///
+    /// There is **no inversion** here: recovering a density or a price from
+    /// ``φ`` is an oscillatory contour integral, and
+    /// ``inverse_fourier_transform`` is a rule table rather than a contour
+    /// integrator.
+    fn characteristic_function(&self, py: Python<'_>, t: PyRef<PyExpr>) -> PyResult<PyExpr> {
+        let id = t.id;
+        self.derived(py, move |d, pool| core_characteristic_function(d, id, pool))
+    }
+}
+
+impl PyDistribution {
+    fn derived<F>(&self, py: Python<'_>, f: F) -> PyResult<PyExpr>
+    where
+        F: FnOnce(
+            &CoreDistribution,
+            &alkahest_core::ExprPool,
+        ) -> Result<alkahest_core::deriv::DerivedExpr<ExprId>, CoreProbError>,
+    {
+        let pool_ref = self.pool.borrow(py);
+        let out = f(&self.inner, &pool_ref.inner);
+        // Drained whether the call succeeded or failed, so
+        // `prob_side_conditions()` always describes *this* call. `mean`,
+        // `moment` and the rest record nothing and therefore clear it, which is
+        // the point: a stale hypothesis read as a fresh one is worse than none.
+        capture_prob_side_conditions(&pool_ref.inner);
+        let out = out.map_err(prob_error_to_py)?;
+        Ok(PyExpr {
+            id: out.value,
+            pool: self.pool.clone_ref(py),
+        })
+    }
+}
+
+fn build_dist(
+    py: Python<'_>,
+    pool: Py<PyExprPool>,
+    make: impl FnOnce(&alkahest_core::ExprPool) -> Result<CoreDistribution, CoreProbError>,
+) -> PyResult<PyDistribution> {
+    let inner = {
+        let pool_ref = pool.borrow(py);
+        make(&pool_ref.inner).map_err(prob_error_to_py)?
+    };
+    Ok(PyDistribution { inner, pool })
+}
+
+/// ``Normal(mu, sigma)`` — requires ``sigma > 0``.
+///
+/// A numeric ``sigma <= 0`` raises ``E-PROB-001``; a symbolic one is accepted
+/// and travels on :meth:`Distribution.constraints`.
+#[pyfunction]
+#[pyo3(name = "Normal")]
+fn py_dist_normal(
+    py: Python<'_>,
+    mu: PyRef<PyExpr>,
+    sigma: PyRef<PyExpr>,
+) -> PyResult<PyDistribution> {
+    let (a, b) = (mu.id, sigma.id);
+    build_dist(py, mu.pool.clone_ref(py), |p| {
+        CoreDistribution::normal(a, b, p)
+    })
+}
+
+/// ``LogNormal(mu, sigma)`` — ``log X ~ Normal(mu, sigma)``.
+///
+/// Note the convention: ``mu`` and ``sigma`` parametrise the *underlying
+/// normal*, so ``E[X] = exp(mu + sigma**2/2)``, not ``mu``.
+#[pyfunction]
+#[pyo3(name = "LogNormal")]
+fn py_dist_log_normal(
+    py: Python<'_>,
+    mu: PyRef<PyExpr>,
+    sigma: PyRef<PyExpr>,
+) -> PyResult<PyDistribution> {
+    let (a, b) = (mu.id, sigma.id);
+    build_dist(py, mu.pool.clone_ref(py), |p| {
+        CoreDistribution::log_normal(a, b, p)
+    })
+}
+
+/// ``Uniform(a, b)`` — requires ``a < b``.
+#[pyfunction]
+#[pyo3(name = "Uniform")]
+fn py_dist_uniform(py: Python<'_>, a: PyRef<PyExpr>, b: PyRef<PyExpr>) -> PyResult<PyDistribution> {
+    let (x, y) = (a.id, b.id);
+    build_dist(py, a.pool.clone_ref(py), |p| {
+        CoreDistribution::uniform(x, y, p)
+    })
+}
+
+/// ``Exponential(lam)`` — rate parametrisation, mean ``1/lam``.
+#[pyfunction]
+#[pyo3(name = "Exponential")]
+fn py_dist_exponential(py: Python<'_>, lam: PyRef<PyExpr>) -> PyResult<PyDistribution> {
+    let a = lam.id;
+    build_dist(py, lam.pool.clone_ref(py), |p| {
+        CoreDistribution::exponential(a, p)
+    })
+}
+
+/// ``Gamma(k, theta)`` — **shape–scale**, mean ``k*theta``.
+///
+/// The other common convention is shape–*rate*; pass ``1/rate`` as ``theta``.
+#[pyfunction]
+#[pyo3(name = "Gamma")]
+fn py_dist_gamma(
+    py: Python<'_>,
+    k: PyRef<PyExpr>,
+    theta: PyRef<PyExpr>,
+) -> PyResult<PyDistribution> {
+    let (a, b) = (k.id, theta.id);
+    build_dist(py, k.pool.clone_ref(py), |p| {
+        CoreDistribution::gamma(a, b, p)
+    })
+}
+
+/// ``Beta(alpha, beta)`` on ``[0, 1]``.
+#[pyfunction]
+#[pyo3(name = "Beta")]
+fn py_dist_beta(
+    py: Python<'_>,
+    alpha: PyRef<PyExpr>,
+    beta: PyRef<PyExpr>,
+) -> PyResult<PyDistribution> {
+    let (a, b) = (alpha.id, beta.id);
+    build_dist(py, alpha.pool.clone_ref(py), |p| {
+        CoreDistribution::beta(a, b, p)
+    })
+}
+
+/// ``Bernoulli(p)`` on ``{0, 1}``.
+#[pyfunction]
+#[pyo3(name = "Bernoulli")]
+fn py_dist_bernoulli(py: Python<'_>, prob: PyRef<PyExpr>) -> PyResult<PyDistribution> {
+    let a = prob.id;
+    build_dist(py, prob.pool.clone_ref(py), |p| {
+        CoreDistribution::bernoulli(a, p)
+    })
+}
+
+/// ``Binomial(n, p)`` on ``{0…n}``.
+///
+/// ``n`` must be a literal non-negative integer: every route here enumerates
+/// the support, so a symbolic ``n`` is refused at construction rather than
+/// accepted and then failing on every query.
+#[pyfunction]
+#[pyo3(name = "Binomial")]
+fn py_dist_binomial(
+    py: Python<'_>,
+    n: PyRef<PyExpr>,
+    prob: PyRef<PyExpr>,
+) -> PyResult<PyDistribution> {
+    let (a, b) = (n.id, prob.id);
+    build_dist(py, n.pool.clone_ref(py), |p| {
+        CoreDistribution::binomial(a, b, p)
+    })
+}
+
+/// ``Poisson(lam)`` on ``{0, 1, 2, …}``.
+#[pyfunction]
+#[pyo3(name = "Poisson")]
+fn py_dist_poisson(py: Python<'_>, lam: PyRef<PyExpr>) -> PyResult<PyDistribution> {
+    let a = lam.id;
+    build_dist(py, lam.pool.clone_ref(py), |p| {
+        CoreDistribution::poisson(a, p)
+    })
+}
+
+std::thread_local! {
+    static PROB_SIDE_CONDITIONS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Drain the core channel and render it, so [`py_prob_side_conditions`]
+/// describes *this* call whether it succeeded or failed.
+fn capture_prob_side_conditions(pool: &alkahest_core::ExprPool) {
+    let rendered: Vec<String> = core_take_prob_side_conditions()
+        .iter()
+        .map(|c| render_side_condition_or_depth(pool, c))
+        .collect();
+    PROB_SIDE_CONDITIONS.with(|c| *c.borrow_mut() = rendered);
+}
+
+/// `experimental.prob_side_conditions() -> list[str]`
+///
+/// The hypotheses the most recent :class:`Distribution` method or
+/// :func:`expectation` call **on this thread** had to assume in order to
+/// return the answer it did — one rendered string per condition, e.g.
+/// ``"x > 0"``.
+///
+/// The returned value is an ``Expr``, so there is nowhere in band to hang a
+/// hypothesis. Without this channel a conditional answer and a theorem are
+/// indistinguishable at the call site, which is the failure this library
+/// exists to avoid. Read it immediately after the call::
+///
+///     F = Gamma(3, Fraction(4, 5)).cdf(x)      # symbolic x
+///     assert prob_side_conditions() == ["x > 0"]
+///
+/// Non-empty in exactly the cases the argument could not be *placed*:
+///
+/// - ``cdf(x)`` for a symbolic ``x``. The closed forms are the in-support
+///   branch; ``P(X <= x)`` is ``0`` below the support and ``1`` above it, and
+///   the formula does not fail there — ``Gamma(3, 4/5)`` at ``x = -5`` is
+///   ``-7396.87``, offered as a probability. A ``x`` that *can* be placed is
+///   answered exactly and records nothing, and a ``Normal`` — whose support is
+///   the whole line — never records anything at all.
+/// - ``quantile(p)`` for a symbolic ``p``: ``F**-1`` is defined on ``[0, 1]``
+///   and off it the closed forms return a number rather than failing.
+/// - ``expectation`` of a payoff whose kink cannot be placed inside the
+///   support: ``E[max(S - K, 0)]`` with a symbolic strike needs ``K > 0``.
+///
+/// Reset by every one of those entry points, including on the refusal path, so
+/// a stale list is never attributed to a call that failed. An empty list means
+/// every branch taken was forced by the input, not that none was taken.
+/// Repeated reads of the same call agree.
+#[pyfunction]
+#[pyo3(name = "prob_side_conditions")]
+fn py_prob_side_conditions() -> Vec<String> {
+    PROB_SIDE_CONDITIONS.with(|c| c.borrow().clone())
+}
+
+/// ``expectation(f, var, dist)`` — ``E[f(X)]`` where ``f`` is written in
+/// ``var``.
+///
+/// The answer is checked against quadrature of ``f(x)·p(x)`` over the support
+/// before it is returned. Raises ``E-PROB-006`` when that integral **diverges**
+/// (checked *before* the symbolic work, so the answer is "no value exists"
+/// rather than "the integrator declined"), ``E-PROB-003`` naming the integral
+/// the integrator could not close, and ``E-PROB-005`` if the assembled closed
+/// form did not survive the gate.
+///
+/// ``max(x - K, 0)`` is handled: the support is cut at the kink and each side
+/// carries its own linear piece, which is what makes
+/// ``expectation(max(S - K, 0), S, LogNormal(mu, sigma))`` come out as
+/// Black–Scholes.
+#[pyfunction]
+#[pyo3(name = "expectation")]
+fn py_expectation(
+    py: Python<'_>,
+    f: PyRef<PyExpr>,
+    var: PyRef<PyExpr>,
+    dist: PyRef<PyDistribution>,
+) -> PyResult<PyExpr> {
+    let pool_py = f.pool.clone_ref(py);
+    let (fid, vid) = (f.id, var.id);
+    let out = {
+        let pool_ref = pool_py.borrow(py);
+        let out = core_expectation(fid, vid, &dist.inner, &pool_ref.inner);
+        // Drained on both paths: a refusal must clear the channel, not leave
+        // the previous call's hypotheses readable as this one's.
+        capture_prob_side_conditions(&pool_ref.inner);
+        out.map_err(prob_error_to_py)?
+    };
+    Ok(PyExpr {
+        id: out.value,
+        pool: pool_py,
+    })
+}
+
+fn affine_args(
+    py: Python<'_>,
+    variates: Vec<(PyExpr, Py<PyDistribution>)>,
+) -> PyResult<Vec<(ExprId, CoreDistribution)>> {
+    variates
+        .into_iter()
+        .map(|(v, d)| {
+            let d = d.borrow(py);
+            Ok((v.id, d.inner.clone()))
+        })
+        .collect()
+}
+
+/// ``expectation_affine(expr, [(var, dist), …])`` —
+/// ``E[Σ aᵢXᵢ + c] = Σ aᵢE[Xᵢ] + c``.
+///
+/// Linearity of expectation holds for **any** joint law, dependent or not,
+/// which is exactly why this is the combination rule offered and covariance is
+/// not. A product of two variates raises ``E-PROB-002``: its expectation
+/// depends on a joint law this module does not model, and guessing at one is
+/// how a wrong covariance gets returned silently.
+#[pyfunction]
+#[pyo3(name = "expectation_affine")]
+fn py_expectation_affine(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    variates: Vec<(PyExpr, Py<PyDistribution>)>,
+) -> PyResult<PyExpr> {
+    let pool_py = expr.pool.clone_ref(py);
+    let eid = expr.id;
+    let args = affine_args(py, variates)?;
+    let out = {
+        let pool_ref = pool_py.borrow(py);
+        core_expectation_affine(eid, &args, &pool_ref.inner).map_err(prob_error_to_py)?
+    };
+    Ok(PyExpr {
+        id: out.value,
+        pool: pool_py,
+    })
+}
+
+/// ``variance_affine_independent(expr, [(var, dist), …])`` —
+/// ``Var[Σ aᵢXᵢ + c] = Σ aᵢ²Var[Xᵢ]``, **assuming independence**.
+///
+/// The assumption is in the name because nothing can check it: a list of
+/// marginal distributions does not record whether they are independent, and
+/// under dependence the answer is short by ``2Σ_{i<j}aᵢaⱼCov(Xᵢ,Xⱼ)`` with no
+/// indication that anything is missing. If you cannot assert independence, do
+/// not call this.
+#[pyfunction]
+#[pyo3(name = "variance_affine_independent")]
+fn py_variance_affine_independent(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    variates: Vec<(PyExpr, Py<PyDistribution>)>,
+) -> PyResult<PyExpr> {
+    let pool_py = expr.pool.clone_ref(py);
+    let eid = expr.id;
+    let args = affine_args(py, variates)?;
+    let out = {
+        let pool_ref = pool_py.borrow(py);
+        core_variance_affine_independent(eid, &args, &pool_ref.inner).map_err(prob_error_to_py)?
+    };
+    Ok(PyExpr {
+        id: out.value,
+        pool: pool_py,
+    })
+}
+
 #[pymodule]
 fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Before anything in this module can reach GMP: install the allocation
@@ -17125,6 +17628,20 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_multilimit, m)?)?;
     m.add_function(wrap_pyfunction!(py_asymptotic_expand, m)?)?;
     m.add_function(wrap_pyfunction!(py_puiseux_series, m)?)?;
+    m.add_function(wrap_pyfunction!(py_dist_normal, m)?)?;
+    m.add_function(wrap_pyfunction!(py_dist_log_normal, m)?)?;
+    m.add_function(wrap_pyfunction!(py_dist_uniform, m)?)?;
+    m.add_function(wrap_pyfunction!(py_dist_exponential, m)?)?;
+    m.add_function(wrap_pyfunction!(py_dist_gamma, m)?)?;
+    m.add_function(wrap_pyfunction!(py_dist_beta, m)?)?;
+    m.add_function(wrap_pyfunction!(py_dist_bernoulli, m)?)?;
+    m.add_function(wrap_pyfunction!(py_dist_binomial, m)?)?;
+    m.add_function(wrap_pyfunction!(py_dist_poisson, m)?)?;
+    m.add_function(wrap_pyfunction!(py_prob_side_conditions, m)?)?;
+    m.add_function(wrap_pyfunction!(py_expectation, m)?)?;
+    m.add_function(wrap_pyfunction!(py_expectation_affine, m)?)?;
+    m.add_function(wrap_pyfunction!(py_variance_affine_independent, m)?)?;
+    m.add_class::<PyDistribution>()?;
     m.add_function(wrap_pyfunction!(py_series_solve, m)?)?;
     m.add_class::<PyFps>()?;
     m.add_function(wrap_pyfunction!(atan2, m)?)?;
@@ -17375,6 +17892,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "HolonomicError",
         m.py().get_type_bound::<PyHolonomicError>(),
+    )?;
+    m.add(
+        "ProbabilityError",
+        m.py().get_type_bound::<PyProbabilityError>(),
     )?;
     m.add(
         "NumberTheoryError",

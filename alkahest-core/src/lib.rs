@@ -38,6 +38,7 @@ pub mod ode;
 pub mod parse;
 pub mod pattern;
 pub mod poly;
+pub mod prob;
 // V2-9 — CAD / real QE
 #[cfg(feature = "groebner")]
 pub mod ideal;
@@ -429,6 +430,14 @@ pub mod experimental {
     pub use crate::poly::{
         gcd_sparse_modular, residue, sparse_interpolate, sparse_interpolate_univariate, GaussRat,
         ResidueError, SparseGcdError, SparseInterpError,
+    };
+    /// Probability distributions as symbolic objects, expectations over them,
+    /// and the numeric gate every closed form they produce has to pass. See
+    /// [`crate::prob`] — in particular, what refuses and why.
+    pub use crate::prob::{
+        characteristic_function, expectation, expectation_affine, take_prob_side_conditions,
+        variance_affine_independent, DistKind, Distribution, Evidence as ProbEvidence, ProbError,
+        Support, UnverifiedReason as ProbUnverifiedReason, MAX_MOMENT_ORDER,
     };
     pub use crate::simplify::{
         simplify_colored, simplify_egraph, simplify_expanded, ColorId, ColoredEgraph,
