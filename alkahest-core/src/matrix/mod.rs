@@ -31,8 +31,8 @@ pub use exp_gate::{
 pub use linear_algebra::{
     cholesky, column_space_basis, jordan_form, lu_decomposition, matrix_exponential,
     matrix_inverse, minimal_polynomial, nullspace_basis, qr_decomposition, rank,
-    rational_canonical_form, row_space_basis, rref, LinearAlgebraError, LuDecomposition,
-    QrDecomposition,
+    rational_canonical_form, row_space_basis, rref, take_matrix_inverse_side_conditions,
+    LinearAlgebraError, LuDecomposition, QrDecomposition,
 };
 pub use normal_form::{
     hermite_form, hermite_form_poly, smith_form, smith_form_poly, IntegerMatrix, NormalFormError,

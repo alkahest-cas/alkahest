@@ -245,6 +245,8 @@ from .alkahest import (  # noqa: F401
     match_pattern,
     # The eigenvalue gaps `Matrix.matrix_exp` divided by without settling them
     matrix_exp_side_conditions,
+    # The `det ≠ 0` a symbolic `Matrix.inverse` assumed
+    matrix_inverse_side_conditions,
     max,  # symbolic max(a, b) — shadows Python builtin within this module
     min,  # symbolic min(a, b) — shadows Python builtin within this module
     pantelides,
@@ -2582,6 +2584,8 @@ __all__ = [
     "match_pattern",
     # The non-vanishing hypotheses `Matrix.matrix_exp` assumed for a symbolic e^A
     "matrix_exp_side_conditions",
+    # The `det ≠ 0` a symbolic `Matrix.inverse` assumed
+    "matrix_inverse_side_conditions",
     "number_theory",
     # Phase 25
     "numpy_eval",

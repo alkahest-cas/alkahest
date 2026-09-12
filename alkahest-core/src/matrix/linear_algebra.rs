@@ -1649,7 +1649,62 @@ fn apply_row_permutation(m: &Matrix, perm: &[usize]) -> Matrix {
 // Matrix inverse (for similarity transforms)
 // ---------------------------------------------------------------------------
 
+thread_local! {
+    /// The determinant the most recent successful [`matrix_inverse`] divided by
+    /// without being able to settle it at a *point*.
+    static INVERSE_SIDE_CONDITIONS: std::cell::RefCell<Vec<ExprId>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The hypotheses the matrix returned by the most recent [`matrix_inverse`]
+/// call on this thread rests on, as [`crate::deriv::SideCondition::NonZero`].
+///
+/// Exactly one thing lands here: **`det A ≠ 0`**, for a symbolic `A` whose
+/// determinant was proven not to be the zero *function* but cannot be proven
+/// non-zero at a particular parameter value — because that is not a question
+/// about `A` at all, it is a question about the parameters, and the caller is
+/// the only one who can answer it. `Matrix([[a,b],[c,d]]).inverse()` is
+/// `adj/det` **for `ad − bc ≠ 0`**; on the locus `ad = bc` the matrix has no
+/// inverse and the expression has no value.
+///
+/// Empty means the determinant is a non-zero rational constant — the
+/// hypothesis was *discharged*, not skipped.
+///
+/// # Why this is auditability and not soundness
+///
+/// The returned entries are literally `±minor · det⁻¹`, so evaluating one on
+/// the singular locus raises rather than returning a number, and no
+/// cancellation can hide that: over the local ring at an irreducible factor
+/// `p` of `det`, the Smith form `diag(p^{e₁} … p^{eₙ})` gives `det` order
+/// `Σeᵢ` and the adjugate order `Σeᵢ − eₙ`, so the *reduced* denominator still
+/// vanishes to order `eₙ ≥ 1` on every component of `{det = 0}`. The condition
+/// therefore cannot be silently lost. What it can be is *unstated*, which is
+/// what this channel fixes — a controls user inverting a symbolic plant needs
+/// the genericity assumption in machine-readable form, not implied by the
+/// shape of an expression.
+///
+/// # Why out of band
+///
+/// [`matrix_inverse`] returns a bare [`Matrix`], a public type; it cannot grow
+/// a conditions field without a major semver break. Same treatment as
+/// [`crate::matrix::take_matrix_exp_side_conditions`] and
+/// [`crate::solver::take_solve_side_conditions`].
+///
+/// Consuming, so one call's hypotheses cannot be read as a later call's.
+pub fn take_matrix_inverse_side_conditions() -> Vec<crate::deriv::SideCondition> {
+    INVERSE_SIDE_CONDITIONS.with(|c| {
+        std::mem::take(&mut *c.borrow_mut())
+            .into_iter()
+            .map(crate::deriv::SideCondition::NonZero)
+            .collect()
+    })
+}
+
 pub fn matrix_inverse(m: &Matrix, pool: &ExprPool) -> Result<Matrix, MatrixError> {
+    // Cleared unconditionally on entry, including on the early returns below:
+    // a stale condition read as this call's would be a hypothesis attached to
+    // the wrong answer, which is worse than none.
+    INVERSE_SIDE_CONDITIONS.with(|c| c.borrow_mut().clear());
     if m.rows != m.cols {
         return Err(MatrixError::NotSquare);
     }
@@ -1729,7 +1784,15 @@ fn symbolic_inverse(m: &Matrix, pool: &ExprPool) -> Result<Matrix, MatrixError> 
     let det = simplify_expanded(m.det(pool)?, pool).value;
     match zero_test::zero_status(pool, det) {
         zero_test::ZeroStatus::Zero => return Err(singular()),
-        zero_test::ZeroStatus::NonZero => {}
+        zero_test::ZeroStatus::NonZero => {
+            // Proven not the zero *function*. That licenses `adj/det`, and it
+            // is all it licenses: on `{det = 0}` there is no inverse. Record
+            // the hypothesis unless the determinant is a non-zero rational
+            // constant, where there is no locus and nothing to assume.
+            if expr_to_rational_strict(det, pool).is_none() {
+                INVERSE_SIDE_CONDITIONS.with(|c| c.borrow_mut().push(det));
+            }
+        }
         zero_test::ZeroStatus::Unknown => {
             zero_test::record_refusal(pool, det, zero_test::RefusalSite::Determinant);
             return Err(MatrixError::SingularMatrix);
@@ -3464,5 +3527,101 @@ mod tests {
                 "{n}×{n} with a dependent row must be refused"
             );
         }
+    }
+
+    /// The `det ≠ 0` a symbolic inverse rests on is *stated*, not assumed.
+    ///
+    /// `adj/det` is the inverse of `[[a,b],[c,d]]` exactly where `ad − bc` does
+    /// not vanish. That the determinant is not the zero *function* is what
+    /// licenses the formula; that it is non-zero at a given point is a question
+    /// about the parameters, and the only honest thing to do with it is hand it
+    /// back. Asserted against the determinant computed independently here, not
+    /// against whatever the channel happened to contain.
+    #[test]
+    fn a_symbolic_inverse_reports_the_determinant_it_divided_by() {
+        let p = pool();
+        let a = p.symbol("a", Domain::Complex);
+        let b = p.symbol("b", Domain::Complex);
+        let c = p.symbol("c", Domain::Complex);
+        let d = p.symbol("d", Domain::Complex);
+        let m = Matrix::new(vec![vec![a, b], vec![c, d]]).unwrap();
+        let _ = crate::matrix::take_matrix_inverse_side_conditions();
+        matrix_inverse(&m, &p).expect("[[a,b],[c,d]] is generically invertible");
+        let conds = crate::matrix::take_matrix_inverse_side_conditions();
+        assert_eq!(conds.len(), 1, "exactly one hypothesis: det ≠ 0");
+        let crate::deriv::SideCondition::NonZero(recorded) = conds[0] else {
+            panic!("the inverse's hypothesis is a non-vanishing one");
+        };
+        // `ad − bc`, built here rather than read off the library.
+        let want = simplify_expanded(
+            p.add(vec![
+                p.mul(vec![a, d]),
+                p.mul(vec![p.integer(-1_i32), b, c]),
+            ]),
+            &p,
+        )
+        .value;
+        let diff = simplify_expanded(
+            p.add(vec![recorded, p.mul(vec![p.integer(-1_i32), want])]),
+            &p,
+        )
+        .value;
+        assert!(
+            zero_test::zero_status(&p, diff).is_proven_zero(),
+            "the recorded condition must be the determinant itself"
+        );
+        // Consuming: a second read must not repeat the first call's hypothesis.
+        assert!(crate::matrix::take_matrix_inverse_side_conditions().is_empty());
+    }
+
+    /// A determinant that is a non-zero *constant* is discharged, not recorded.
+    ///
+    /// A gate made only of "the condition is reported" cases is passed by a
+    /// library that reports one unconditionally, which is noise a caller learns
+    /// to ignore — the failure mode the transform work called out by name when
+    /// it stopped reporting `π ≠ 0`.
+    #[test]
+    fn a_constant_determinant_records_no_hypothesis() {
+        let p = pool();
+        let _ = crate::matrix::take_matrix_inverse_side_conditions();
+        // Rational fast path.
+        let m = Matrix::new(vec![
+            vec![p.integer(1_i32), p.integer(2_i32)],
+            vec![p.integer(3_i32), p.integer(4_i32)],
+        ])
+        .unwrap();
+        matrix_inverse(&m, &p).unwrap();
+        assert!(crate::matrix::take_matrix_inverse_side_conditions().is_empty());
+
+        // Symbolic entries, unit determinant: `[[cos t, -sin t], [sin t, cos t]]`
+        // would need a trig identity, so use the shear `[[1, s], [0, 1]]`, whose
+        // determinant is the literal `1` however `s` is read.
+        let s = p.symbol("s", Domain::Complex);
+        let shear = Matrix::new(vec![
+            vec![p.integer(1_i32), s],
+            vec![p.integer(0_i32), p.integer(1_i32)],
+        ])
+        .unwrap();
+        matrix_inverse(&shear, &p).unwrap();
+        assert!(
+            crate::matrix::take_matrix_inverse_side_conditions().is_empty(),
+            "det = 1 is not a hypothesis"
+        );
+    }
+
+    /// A refusal leaves nothing behind for the next call to inherit.
+    #[test]
+    fn a_refused_inverse_records_no_hypothesis() {
+        let p = pool();
+        let a = p.symbol("q", Domain::Complex);
+        let b = p.symbol("r", Domain::Complex);
+        let m = Matrix::new(vec![
+            vec![a, b],
+            vec![p.mul(vec![p.integer(2_i32), a]), p.mul(vec![p.integer(2_i32), b])],
+        ])
+        .unwrap();
+        let _ = crate::matrix::take_matrix_inverse_side_conditions();
+        assert_eq!(matrix_inverse(&m, &p), Err(MatrixError::SingularMatrix));
+        assert!(crate::matrix::take_matrix_inverse_side_conditions().is_empty());
     }
 }
