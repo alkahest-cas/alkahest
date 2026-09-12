@@ -48,6 +48,7 @@
 //! | `E[e^{X²}]` under `Normal(0, 1)` | `E-PROB-006`: the reduction integral `∫ e^{z²} e^{-z²/2} dz` **diverges**. The gate sees the quadrature fail to converge and says so rather than returning the integrator's formal answer |
 //! | an integrand the integrator declines | `E-PROB-003`, naming the exact integral that did not close. Not an unevaluated `Integral` object dressed as an answer |
 //! | a closed form the quadrature contradicts | `E-PROB-005`. This is the prime-directive case: something *was* computed and is being withheld |
+//! | `Uniform(a, b).quantile(2)` | `E-PROB-001`: `p` is a probability. The closed form returns `a + 2(b-a)` there — a point outside the support, offered as a quantile |
 //!
 //! # What this module deliberately does not do
 //!
@@ -565,6 +566,23 @@ impl Distribution {
 
     /// `P(X ≤ x)`, in closed form, verified.
     ///
+    /// # Outside the support
+    ///
+    /// Unlike [`Distribution::pdf`], this is **not** "the formula on the
+    /// support, and you are on your own elsewhere". `P(X ≤ x)` is `0` below the
+    /// support and `1` above it, and the in-support closed form does not merely
+    /// fail there — it produces a clean wrong number offered as a probability
+    /// (the `Erlang(3, 4/5)` form at `x = -5` is `-7396.87`). So:
+    ///
+    /// * an argument that can be *decided* to sit outside the support returns
+    ///   the exact `0` or `1`;
+    /// * an argument that cannot be decided returns the in-support branch with
+    ///   the restriction recorded as a [`crate::deriv::SideCondition`] on the
+    ///   `prob_cdf_argument_inside_support` step, rather than silently assumed.
+    ///
+    /// The second case is a weaker guarantee than the first, and it is the one
+    /// a symbolic argument gets.
+    ///
     /// # Errors
     ///
     /// [`ProbError::NoClosedForm`] where the CDF needs a special function this
@@ -603,8 +621,16 @@ impl Distribution {
 
     /// The quantile `F⁻¹(p)`, in closed form, verified.
     ///
+    /// `p` is a probability and is checked as one: a numeric `p` outside
+    /// `[0, 1]` is [`ProbError::InvalidParameter`], because the closed forms
+    /// return a number there rather than failing — `Uniform(-2, 3)` at `p = 2`
+    /// evaluates to `8`, outside the support it claims to be a point of. A
+    /// symbolic `p` cannot be decided and carries `0 ≤ p ≤ 1` as a
+    /// [`crate::deriv::SideCondition`] instead.
+    ///
     /// # Errors
     ///
+    /// [`ProbError::InvalidParameter`] for a numeric `p` outside `[0, 1]`, and
     /// [`ProbError::NoClosedForm`] for every distribution whose quantile needs
     /// `erf⁻¹` or a numerical inversion — which is most of them. `Uniform` and
     /// `Exponential` close; nothing else here does.

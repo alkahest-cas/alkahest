@@ -165,6 +165,18 @@ second. Known-slow inputs are documented here rather than added:
   `integrate` grows a budget; adding it today would make the gate a timeout
   hazard rather than a signal.
 
+* `E[max(S − K, 0)]` for `S ~ LogNormal(μ, σ)` — the Black–Scholes call — takes
+  **~2.4 s**. It is correct (it agrees with `mpmath.quad((s−K)·p(s), [K, ∞))` to
+  1e-10 at three parameter points and satisfies put–call parity), but the cost
+  is inherent rather than incidental: one call splits the payoff at the kink,
+  pushes both pieces through the log-normal reduction, completes the square, and
+  runs `integrate_definite` twice for an `erf` antiderivative. It lives in
+  `alkahest-core/src/prob/tests.rs`
+  (`expectation_of_a_call_payoff_under_a_log_normal_is_black_scholes`, and the
+  put/parity and Bachelier siblings) instead. The `probability` cases that *are*
+  here cover the same machinery more cheaply: the divergence probe, the payoff-
+  free expectations, and the characteristic-function cross-check.
+
 ## Known-broken cases: `xfail(strict=True)`, never deletion
 
 A case alkahest currently fails is not removed — it is marked:

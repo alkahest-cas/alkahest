@@ -372,6 +372,101 @@ fn uniform_cdf_is_linear() {
     assert_close!(at(&p, f, &[("a", -2.0), ("b", 3.0), ("x", 0.5)]), 0.5);
 }
 
+/// A CDF is a probability, and the in-support closed form is not one off the
+/// support — it is a clean wrong number. `Erlang(3, 4/5)` at `x = -5` evaluates
+/// to `-7396.87`, which is exactly the shape of answer this library exists not
+/// to give.
+#[test]
+fn a_cdf_below_or_above_the_support_is_zero_or_one_not_the_formula() {
+    let p = pool();
+
+    // Below a support that starts at 0.
+    let g = Distribution::gamma(p.integer(3), p.rational(4, 5), &p).unwrap();
+    for below in [-1, -5] {
+        let f = g.cdf(p.integer(below), &p).unwrap().value;
+        assert_eq!(at(&p, f, &[]), 0.0, "Erlang CDF at x = {below}");
+    }
+
+    let e = Distribution::exponential(p.rational(7, 4), &p).unwrap();
+    assert_eq!(at(&p, e.cdf(p.integer(-3), &p).unwrap().value, &[]), 0.0);
+
+    // Both ends of a compact support.
+    let u = Distribution::uniform(p.integer(-2), p.integer(3), &p).unwrap();
+    assert_eq!(at(&p, u.cdf(p.integer(-4), &p).unwrap().value, &[]), 0.0);
+    assert_eq!(at(&p, u.cdf(p.integer(7), &p).unwrap().value, &[]), 1.0);
+
+    let b = Distribution::beta(p.integer(2), p.integer(3), &p).unwrap();
+    assert_eq!(at(&p, b.cdf(p.rational(-1, 2), &p).unwrap().value, &[]), 0.0);
+    assert_eq!(at(&p, b.cdf(p.rational(3, 2), &p).unwrap().value, &[]), 1.0);
+
+    // The step says which branch was taken, so a reader of the log can tell
+    // "outside the support" from "the formula happened to give 0".
+    let r = g.cdf(p.integer(-5), &p).unwrap();
+    assert!(r
+        .log
+        .0
+        .iter()
+        .any(|s| s.rule_name == "prob_cdf_outside_support"));
+}
+
+/// A *literal* in-support argument is verified and returned, not refused. The
+/// CDF is checked as a function of a fresh symbol — over a ladder of abscissae
+/// — and the caller's point substituted afterwards, because a claim with no
+/// free variable gives the checker nothing to vary.
+#[test]
+fn a_cdf_at_a_literal_point_inside_the_support_is_verified_and_returned() {
+    let p = pool();
+    let g = Distribution::gamma(p.integer(3), p.rational(4, 5), &p).unwrap();
+    let f = g.cdf(p.rational(12, 5), &p).unwrap();
+    // mpmath (40 dps): quad(gamma pdf k=3 theta=4/5, [0, 12/5]) =
+    // 0.57680991887315648468…
+    assert_close!(at(&p, f.value, &[]), 0.576_809_918_873_156_5);
+    assert!(f.log.0.iter().any(|s| s.rule_name == "prob_cdf"));
+
+    let u = Distribution::uniform(p.integer(-2), p.integer(3), &p).unwrap();
+    assert_close!(at(&p, u.cdf(p.rational(1, 2), &p).unwrap().value, &[]), 0.5);
+}
+
+/// A symbolic argument cannot be placed, so the in-support restriction travels
+/// with the answer instead of being assumed.
+#[test]
+fn a_symbolic_cdf_argument_carries_the_in_support_condition() {
+    let p = pool();
+    let x = sym(&p, "x");
+
+    let e = Distribution::exponential(sym(&p, "lambda"), &p).unwrap();
+    let r = e.cdf(x, &p).unwrap();
+    assert!(r
+        .log
+        .0
+        .iter()
+        .any(|s| s.rule_name == "prob_cdf_argument_inside_support"
+            && !s.side_conditions.is_empty()));
+
+    // A compact support needs both ends recorded, not just one.
+    let u = Distribution::uniform(sym(&p, "a"), sym(&p, "b"), &p).unwrap();
+    let r = u.cdf(x, &p).unwrap();
+    let conds: usize = r
+        .log
+        .0
+        .iter()
+        .filter(|s| s.rule_name == "prob_cdf_argument_inside_support")
+        .map(|s| s.side_conditions.len())
+        .sum();
+    assert_eq!(conds, 2);
+
+    // A normal's support is the whole line: nothing to restrict, so nothing is
+    // claimed. A condition that is always true is noise, not disclosure.
+    let n = Distribution::normal(sym(&p, "mu"), sym(&p, "sigma"), &p).unwrap();
+    assert!(!n
+        .cdf(x, &p)
+        .unwrap()
+        .log
+        .0
+        .iter()
+        .any(|s| s.rule_name == "prob_cdf_argument_inside_support"));
+}
+
 // ---------------------------------------------------------------------------
 // Quantiles
 // ---------------------------------------------------------------------------
@@ -404,6 +499,45 @@ fn the_normal_quantile_refuses_for_want_of_an_inverse_error_function() {
     assert_eq!(g.quantile(q, &p).unwrap_err().code(), "E-PROB-004");
     let po = Distribution::poisson(p.integer(2), &p).unwrap();
     assert_eq!(po.quantile(q, &p).unwrap_err().code(), "E-PROB-004");
+}
+
+/// `p` is a probability. Off `[0, 1]` the closed forms do not fail, they answer:
+/// `Uniform(-2, 3).quantile(2)` is `8`, a point outside the support it is
+/// supposed to name.
+#[test]
+fn a_quantile_argument_outside_zero_one_is_refused() {
+    let p = pool();
+    let u = Distribution::uniform(p.integer(-2), p.integer(3), &p).unwrap();
+    for bad in [p.integer(2), p.rational(-1, 2), p.integer(-3)] {
+        let e = u.quantile(bad, &p).unwrap_err();
+        assert_eq!(e.code(), "E-PROB-001");
+    }
+    let e = Distribution::exponential(p.rational(7, 4), &p).unwrap();
+    assert_eq!(
+        e.quantile(p.rational(3, 2), &p).unwrap_err().code(),
+        "E-PROB-001"
+    );
+
+    // Inside, a literal still returns a verified value.
+    // mpmath: -log(1 - 9/10)/(7/4) = 1.3157629102823118194…
+    assert_close!(
+        at(&p, e.quantile(p.rational(9, 10), &p).unwrap().value, &[]),
+        1.315_762_910_282_311_8
+    );
+    assert_close!(
+        at(&p, u.quantile(p.rational(1, 4), &p).unwrap().value, &[]),
+        -0.75
+    );
+
+    // A symbolic `p` cannot be decided, so `0 ≤ p ≤ 1` is carried.
+    let q = sym(&p, "q");
+    let r = u.quantile(q, &p).unwrap();
+    assert!(r
+        .log
+        .0
+        .iter()
+        .any(|s| s.rule_name == "prob_quantile_argument_is_a_probability"
+            && s.side_conditions.len() == 2));
 }
 
 // ---------------------------------------------------------------------------

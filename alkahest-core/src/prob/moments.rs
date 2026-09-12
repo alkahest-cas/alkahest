@@ -17,7 +17,7 @@
 
 use rug::Integer;
 
-use crate::deriv::{DerivationLog, DerivedExpr, RewriteStep};
+use crate::deriv::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::simplify::simplify;
 
@@ -435,14 +435,114 @@ fn cdf_claim(dist: &Distribution, x: ExprId, pool: &ExprPool) -> Result<ExprId, 
     })
 }
 
+/// Where `arg` sits relative to the support, when that can be decided.
+///
+/// A CDF is the one quantity in this module whose value *outside* the support
+/// is not a matter of convention: `P(X ≤ x)` is `0` below it and `1` above it,
+/// full stop. The closed forms in [`cdf_claim`] are the in-support branch only,
+/// and evaluating one off-support does not fail — it produces a clean, wrong
+/// number (`Gamma(3, 4/5)` at `x = -5` gives `-7396.87`, offered as a
+/// probability). So a decidable argument is answered exactly here rather than
+/// being pushed through a formula that does not apply to it.
+enum Placement {
+    Below,
+    Above,
+    Inside,
+    /// Symbolic or otherwise undecidable — the in-support branch is returned
+    /// with the restriction recorded as a side condition.
+    Unknown,
+}
+
+fn placement(dist: &Distribution, arg: ExprId, pool: &ExprPool) -> Placement {
+    let (lo, hi) = match dist.support(pool) {
+        crate::prob::Support::Real => return Placement::Inside,
+        crate::prob::Support::Positive => (Some(pool.integer(0)), None),
+        crate::prob::Support::Interval(lo, hi) => (Some(lo), Some(hi)),
+        // Discrete supports never reach here: `cdf_claim` refuses them first.
+        _ => return Placement::Unknown,
+    };
+    let mut decided_inside = true;
+    if let Some(lo) = lo {
+        match dists::sign_of(sub(arg, lo, pool), pool) {
+            dists::Sign::Negative => return Placement::Below,
+            dists::Sign::Positive | dists::Sign::Zero => {}
+            dists::Sign::Unknown => decided_inside = false,
+        }
+    }
+    if let Some(hi) = hi {
+        match dists::sign_of(sub(arg, hi, pool), pool) {
+            dists::Sign::Positive | dists::Sign::Zero => return Placement::Above,
+            dists::Sign::Negative => {}
+            dists::Sign::Unknown => decided_inside = false,
+        }
+    }
+    if decided_inside {
+        Placement::Inside
+    } else {
+        Placement::Unknown
+    }
+}
+
 pub(crate) fn cdf(
     dist: &Distribution,
     x: ExprId,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, ProbError> {
-    let claim = simplify(cdf_claim(dist, x, pool)?, pool).value;
-    let evidence = verify::check_cdf(claim, x, dist, pool)?;
+    // Refuse the laws that have no closed form *before* anything else, so a
+    // `Gamma` with a symbolic shape still reports E-PROB-004 rather than being
+    // short-circuited by an out-of-support argument.
+    let _ = cdf_claim(dist, x, pool)?;
+
+    let placement = placement(dist, x, pool);
+    if let Placement::Below | Placement::Above = placement {
+        let value = pool.integer(match placement {
+            Placement::Below => 0,
+            _ => 1,
+        });
+        let mut log = DerivationLog::new();
+        log.push(RewriteStep::simple("prob_cdf_outside_support", x, value));
+        return Ok(DerivedExpr::with_log(value, log));
+    }
+
+    // Verify the CDF as a *function*: `check_cdf` reads levels and increments
+    // off the claim at several abscissae, which it can only do when the
+    // argument is a symbol it can substitute for. Building against a fresh one
+    // and substituting afterwards is what lets `cdf(12/5)` be checked at all —
+    // against the claim as a whole, over a range, rather than at the single
+    // point the caller asked about.
+    let z = integration_var(dist, &[x], pool);
+    let checked = simplify(cdf_claim(dist, z, pool)?, pool).value;
+    let evidence = verify::check_cdf(checked, z, dist, pool)?;
+
+    let mut m = std::collections::HashMap::new();
+    m.insert(z, x);
+    let claim = simplify(crate::kernel::subs(checked, &m, pool), pool).value;
+
     let mut log = DerivationLog::new();
+    if matches!(placement, Placement::Unknown) {
+        // The closed form is the in-support branch. Where the argument could
+        // not be placed, say so rather than letting the caller read a number
+        // that is only a probability when the hypothesis holds.
+        let mut conditions = Vec::new();
+        match dist.support(pool) {
+            crate::prob::Support::Positive => {
+                conditions.push(SideCondition::Positive(x));
+            }
+            crate::prob::Support::Interval(lo, hi) => {
+                conditions.push(SideCondition::Positive(simplify(sub(x, lo, pool), pool).value));
+                conditions.push(SideCondition::Positive(simplify(sub(hi, x, pool), pool).value));
+            }
+            _ => {}
+        }
+        if !conditions.is_empty() {
+            log.push(RewriteStep::with_conditions(
+                "prob_cdf_argument_inside_support",
+                x,
+                claim,
+                conditions,
+            ));
+        }
+    }
     log.push(RewriteStep::simple("prob_cdf", x, claim));
     log.push(verify::evidence_step(&evidence, claim, dist, pool));
     Ok(DerivedExpr::with_log(claim, log))
@@ -493,9 +593,37 @@ pub(crate) fn quantile(
     p_arg: ExprId,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, ProbError> {
+    // `F⁻¹` is only defined on `[0, 1]`, and off it the closed forms produce a
+    // number rather than failing: `Uniform(-2, 3).quantile(2)` evaluates to
+    // `8`, outside the support it is supposed to be a point of. A probability
+    // that can be decided is therefore checked, exactly as a distribution
+    // parameter is.
+    dists::require_probability(p_arg, "p", pool)?;
+
     let claim = simplify(quantile_claim(dist, p_arg, pool)?, pool).value;
-    let evidence = verify::check_quantile(claim, p_arg, dist, pool)?;
+
+    // As in `cdf`: verify the quantile as a function of a fresh symbol, over a
+    // ladder of probabilities, then substitute. A literal `p` leaves
+    // `check_quantile` with nothing to vary and no way to conclude.
+    let z = integration_var(dist, &[p_arg], pool);
+    let checked = simplify(quantile_claim(dist, z, pool)?, pool).value;
+    let evidence = verify::check_quantile(checked, z, dist, pool)?;
+
     let mut log = DerivationLog::new();
+    if matches!(dists::sign_of(p_arg, pool), dists::Sign::Unknown) {
+        // A symbolic `p` cannot be placed in `[0, 1]`; carry the requirement
+        // rather than assuming it.
+        let one = pool.integer(1);
+        log.push(RewriteStep::with_conditions(
+            "prob_quantile_argument_is_a_probability",
+            p_arg,
+            claim,
+            vec![
+                SideCondition::Positive(p_arg),
+                SideCondition::Positive(simplify(sub(one, p_arg, pool), pool).value),
+            ],
+        ));
+    }
     log.push(RewriteStep::simple("prob_quantile", p_arg, claim));
     log.push(verify::evidence_step(&evidence, claim, dist, pool));
     Ok(DerivedExpr::with_log(claim, log))
