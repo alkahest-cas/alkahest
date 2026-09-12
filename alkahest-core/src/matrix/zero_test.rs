@@ -78,7 +78,42 @@ const PROBE_PREC: u32 = 128;
 const PROBE_ROUNDS: usize = 3;
 
 /// Give up rather than probe a wide parameter space.
-const MAX_PROBE_SYMBOLS: usize = 16;
+///
+/// 144 is `12×12` distinct entries: enough that a fully symbolic matrix of the
+/// size controls work actually uses gets a verdict. At 16 a `5×5` matrix of
+/// distinct symbols — 25 of them — was already over the line, which is why
+/// `inverse()` on a symbolic `5×5` or `6×6` refused with `E-MAT-004`
+/// ("cannot decide whether the determinant is zero") about a determinant that
+/// is a 720-term polynomial and manifestly not the zero function. A `4×4`
+/// (16 symbols) answered.
+///
+/// Raising it cannot make a verdict wrong. `NonZero` is only ever returned on
+/// a **rigorous** enclosure that excludes `0` at a sample point, which is a
+/// proof that the expression is not identically zero however many symbols it
+/// has; the cap never contributed to soundness, only to cost. A sample that
+/// happens to land on a root yields no certificate and the answer stays
+/// `Unknown`, which is safe.
+const MAX_PROBE_SYMBOLS: usize = 144;
+
+/// Give up rather than probe a very large expression.
+///
+/// This is the bound that actually tracks cost: each round is one interval
+/// evaluation, whose work is proportional to the size of the expression DAG and
+/// not to the number of symbols in it. Bounding the symbol count was bounding
+/// the wrong quantity — it let a huge single-variable expression through and
+/// stopped a small many-variable one.
+const MAX_PROBE_NODES: usize = 250_000;
+
+/// Generator budget for the `cancel` rung of [`normalises_to_zero`].
+///
+/// Deliberately far below [`MAX_PROBE_SYMBOLS`]: the non-vanishing probe costs
+/// one interval evaluation per round however many symbols there are, while
+/// `cancel` runs multivariate GCDs whose cost explodes with the generator
+/// count. 12 covers the eliminated-entry case this rung exists for.
+const CANCEL_MAX_SYMBOLS: usize = 12;
+
+/// Expression-size budget for the `cancel` rung.
+const CANCEL_MAX_NODES: usize = 4_000;
 
 /// Whether an expression is identically zero, where "I cannot tell" is a
 /// first-class answer.
@@ -427,7 +462,172 @@ fn normalises_to_zero(pool: &ExprPool, e: ExprId) -> bool {
             return true;
         }
     }
-    is_literal_zero(pool, simplify_trig_normal_form(e, pool).value)
+    if is_literal_zero(pool, simplify_trig_normal_form(e, pool).value) {
+        return true;
+    }
+    let deradicalised = fold_rational_radicals(pool, e);
+    if deradicalised != e {
+        if is_literal_zero(pool, simplify_expanded(deradicalised, pool).value) {
+            return true;
+        }
+        if cancels_to_zero(pool, deradicalised) {
+            return true;
+        }
+    }
+    cancels_to_zero(pool, e)
+}
+
+/// Rewrite `(√c)^k` as `c^{k/2}` wherever `c` is a **non-negative rational
+/// literal**, leaving everything else untouched.
+///
+/// `simplify` does not do this: `√2·√2` comes back as `√2²` and `1/√10²` as
+/// `√10⁻²`, so `√2·√2 − 2` — the residual of `L·Lᵀ − M` for the Cholesky factor
+/// of `2I`, and the shape every Gram–Schmidt norm in [`qr_decomposition`]
+/// produces — is not recognised as zero. Over a *non-negative rational* base
+/// the rewrite needs no branch convention at all: `√c` is the non-negative real
+/// root, so `(√c)^k = c^{k/2}` holds outright, for negative `k` as well.
+///
+/// Restricting to rational literals is what keeps it sound. `(√x)² = x` is
+/// false for `x < 0` under the principal branch (it is `|x|` on the reals and
+/// picks up a sign in ℂ), so a symbolic base is left alone rather than
+/// rewritten under an assumption nobody stated.
+///
+/// [`qr_decomposition`]: crate::matrix::qr_decomposition
+pub(crate) fn fold_rational_radicals(pool: &ExprPool, e: ExprId) -> ExprId {
+    fold_rational_radicals_at(pool, e, 0)
+}
+
+fn fold_rational_radicals_at(pool: &ExprPool, e: ExprId, depth: u32) -> ExprId {
+    if depth > MAX_STRUCTURAL_DEPTH {
+        return e;
+    }
+    let d = depth + 1;
+    match pool.get(e) {
+        ExprData::Add(args) => {
+            let next: Vec<ExprId> = args
+                .iter()
+                .map(|&a| fold_rational_radicals_at(pool, a, d))
+                .collect();
+            pool.add(next)
+        }
+        ExprData::Mul(args) => {
+            let next: Vec<ExprId> = args
+                .iter()
+                .map(|&a| fold_rational_radicals_at(pool, a, d))
+                .collect();
+            pool.mul(next)
+        }
+        ExprData::Func { name, args } => {
+            let next: Vec<ExprId> = args
+                .iter()
+                .map(|&a| fold_rational_radicals_at(pool, a, d))
+                .collect();
+            pool.func(name.as_str(), next)
+        }
+        ExprData::Pow { base, exp } => {
+            let (base, exp) = (base, exp);
+            let folded_base = fold_rational_radicals_at(pool, base, d);
+            let folded_exp = fold_rational_radicals_at(pool, exp, d);
+            if let (Some(radicand), Some(k)) = (
+                sqrt_of_nonneg_rational(pool, folded_base),
+                integer_of(pool, folded_exp),
+            ) {
+                let half = Rational::from((k, rug::Integer::from(2)));
+                let new_exp = if *half.denom() == 1 {
+                    pool.integer(half.numer().clone())
+                } else {
+                    pool.rational(half.numer().clone(), half.denom().clone())
+                };
+                let rad = pool.rational(radicand.numer().clone(), radicand.denom().clone());
+                return pool.pow(rad, new_exp);
+            }
+            pool.pow(folded_base, folded_exp)
+        }
+        _ => e,
+    }
+}
+
+/// `Some(c)` when `e` is `sqrt(c)` or `c^(1/2)` for a non-negative rational `c`.
+fn sqrt_of_nonneg_rational(pool: &ExprPool, e: ExprId) -> Option<Rational> {
+    let inner = pool.with(e, |d| match d {
+        ExprData::Func { name, args } if name.as_str() == "sqrt" && args.len() == 1 => {
+            Some(args[0])
+        }
+        ExprData::Pow { base, exp } => {
+            let half = pool.with(*exp, |x| match x {
+                ExprData::Rational(r) => *r.0.numer() == 1 && *r.0.denom() == 2,
+                _ => false,
+            });
+            if half {
+                Some(*base)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    })?;
+    let r = rational_of(pool, inner)?;
+    if r < 0 {
+        return None;
+    }
+    Some(r)
+}
+
+fn rational_of(pool: &ExprPool, e: ExprId) -> Option<Rational> {
+    pool.with(e, |d| match d {
+        ExprData::Integer(n) => Some(Rational::from((n.0.clone(), rug::Integer::from(1)))),
+        ExprData::Rational(r) => Some(r.0.clone()),
+        _ => None,
+    })
+}
+
+fn integer_of(pool: &ExprPool, e: ExprId) -> Option<rug::Integer> {
+    pool.with(e, |d| match d {
+        ExprData::Integer(n) => Some(n.0.clone()),
+        _ => None,
+    })
+}
+
+/// Last rung: put `e` over a common denominator and cancel the GCD.
+///
+/// Elimination does not produce polynomials, it produces **rational
+/// functions** — every entry after a pivot step carries a `1/pivot` factor —
+/// and `expand` alone cannot see that a sum of them vanishes. `A⁻¹·A` for a
+/// symbolic `A` is the standard example: entry `(0,0)` of the `2×2` case is
+/// `a·d·(ad−bc)⁻¹ − b·c·(ad−bc)⁻¹ − 1`, which is `0` and which every rung above
+/// this one answers `Unknown` for, because none of them combines the two
+/// quotients.
+///
+/// Sound in the only direction it is used. [`crate::poly::cancel::cancel`]
+/// works over a generator list in which anything it does not recognise —
+/// `sin(x)`, `√2`, `x^n` — is an *opaque* generator, i.e. treated as an
+/// independent transcendental. A zero numerator in that free ring is therefore
+/// zero for every substitution, so `true` is a proof. The converse does not
+/// hold and is not claimed: `√2·√2 − 2` is `g² − 2` over an opaque `g` and
+/// stays `Unknown`, which is a missed `Zero`, never a wrong verdict.
+///
+/// Placed last because it is by far the most expensive rung, and budgeted
+/// separately and much more tightly than [`probe_nonzero`].
+///
+/// The cost is not the node count. `cancel` runs multivariate polynomial GCDs
+/// over the generator list, which is super-linear in the *number of
+/// generators*: the residual of `A⁻¹·A` for a fully symbolic `6×6` has 36 of
+/// them over a 720-term determinant, and the reduction does not finish in any
+/// useful time. [`CANCEL_MAX_SYMBOLS`] and [`CANCEL_MAX_NODES`] are therefore
+/// sized for what actually motivates this rung — a handful of parameters in an
+/// eliminated matrix entry — and not for a dense symbolic determinant, which
+/// is left `Unknown` and hence a refusal.
+fn cancels_to_zero(pool: &ExprPool, e: ExprId) -> bool {
+    let Some((symbols, nodes)) = probe_symbols(pool, e) else {
+        return false;
+    };
+    if symbols.len() > CANCEL_MAX_SYMBOLS || nodes > CANCEL_MAX_NODES {
+        return false;
+    }
+    match crate::poly::cancel::cancel(e, Vec::new(), pool) {
+        Ok(c) => is_literal_zero(pool, simplify(c, pool).value),
+        Err(_) => false,
+    }
 }
 
 fn is_literal_zero(pool: &ExprPool, e: ExprId) -> bool {
@@ -442,10 +642,10 @@ fn is_literal_zero(pool: &ExprPool, e: ExprId) -> bool {
 /// domain error, an enclosure straddling `0` — returns `false`, which the
 /// caller reads as "no certificate", never as "zero".
 fn probe_nonzero(pool: &ExprPool, e: ExprId) -> bool {
-    let Some(symbols) = probe_symbols(pool, e) else {
+    let Some((symbols, nodes)) = probe_symbols(pool, e) else {
         return false;
     };
-    if symbols.len() > MAX_PROBE_SYMBOLS {
+    if symbols.len() > MAX_PROBE_SYMBOLS || nodes > MAX_PROBE_NODES {
         return false;
     }
     for round in 0..PROBE_ROUNDS {
@@ -483,12 +683,14 @@ fn ball_excludes_zero(ball: &ArbBall) -> bool {
 /// sample would report `I² + 1` as non-zero. Both would be exactly the silent
 /// error this module exists to prevent, so those expressions get no certificate.
 /// `pi` itself is the one constant handled properly, in [`sample_ball`].
-fn probe_symbols(pool: &ExprPool, e: ExprId) -> Option<Vec<ExprId>> {
+/// Returns the symbols together with the number of distinct DAG nodes walked,
+/// which is what [`MAX_PROBE_NODES`] bounds.
+fn probe_symbols(pool: &ExprPool, e: ExprId) -> Option<(Vec<ExprId>, usize)> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     collect_symbols(pool, e, &mut seen, &mut out)?;
     out.sort_unstable();
-    Some(out)
+    Some((out, seen.len()))
 }
 
 /// Symbol names that denote a specific number and are not handled rigorously.
@@ -541,6 +743,29 @@ fn collect_symbols(
 /// refusal is reproducible rather than flaky. The points are ratios with a
 /// large prime-ish denominator so that no small algebraic relation between two
 /// symbols (`x − y`, `x − 2`, `2x − y`) holds accidentally.
+///
+/// # Why the numerator is scrambled rather than counted up
+///
+/// It used to be `733 + 269·index`, which is *linear in the index* — and that
+/// is itself an algebraic relation, just one between three symbols rather than
+/// two: `x_{k+1} − 2x_k + x_{k−1} = 0` holds identically for every consecutive
+/// triple. Any expression that vanishes on collinear inputs therefore vanished
+/// at every sample, in every round, since the round only shifted all the
+/// numerators by the same `1123·round` and scaled the denominator.
+///
+/// The expression that vanishes on collinear inputs is **the determinant of a
+/// dense matrix**. Binding the `n²` entries of a symbolic matrix in index order
+/// produced a probe matrix whose rows are in arithmetic progression, i.e. of
+/// rank 2, so `det` evaluated to exactly `0` for every `n ≥ 3` — verified
+/// directly: the probe matrices for `n = 3..6` and rounds `0..2` all have
+/// rank 2 and determinant 0. The probe could not certify a single dense
+/// symbolic determinant as non-vanishing, and `inverse`, `rank`, `rref` and
+/// `nullspace` refused the whole class with `E-MAT-004`/`E-LINALG-010`.
+///
+/// The scrambled sequence below is a xorshift keyed by `(index, round)`: still
+/// deterministic and still reproducible, but with no low-degree relation among
+/// the values. This is the substantive half of supporting the generic symbolic
+/// matrix; raising [`MAX_PROBE_SYMBOLS`] alone only got as far as *trying*.
 fn sample_ball(pool: &ExprPool, sym: ExprId, index: usize, round: usize) -> ArbBall {
     if pool.with(
         sym,
@@ -561,12 +786,33 @@ fn sample_ball(pool: &ExprPool, sym: ExprId, index: usize, round: usize) -> ArbB
         // An integer-domain symbol must be sampled at an integer: identities
         // such as `sin(pi·n) = 0` hold only there, and a fractional sample
         // would "certify" them non-zero.
-        let n = 7 + 11 * index as i64 + 101 * round as i64;
+        // Scrambled for the same reason as the rational branch: `7 + 11·index`
+        // is an arithmetic progression, and a determinant vanishes on one.
+        let n = 7 + scrambled(index, round) % 977;
         return ArbBall::from_integer(&rug::Integer::from(n), PROBE_PREC);
     }
-    let numer = 733 + 269 * index as i64 + 1123 * round as i64;
+    let numer = 733 + scrambled(index, round);
     let denom = 1021 + 7 * round as i64;
     ArbBall::from_rational(&Rational::from((numer, denom)), PROBE_PREC)
+}
+
+/// A deterministic, low-structure offset for `(index, round)`.
+///
+/// xorshift64 over a seed mixing both, reduced to a few thousand. Deterministic
+/// by construction — no RNG state, no clock — so a verdict is reproducible; and
+/// unlike an arithmetic progression it satisfies no low-degree relation across
+/// consecutive indices, which is the property the probe actually needs.
+fn scrambled(index: usize, round: usize) -> i64 {
+    let mut x = (index as u64)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add((round as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9))
+        .wrapping_add(0x2545_F491_4F6C_DD1D);
+    x ^= x >> 30;
+    x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x ^= x >> 27;
+    x = x.wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^= x >> 31;
+    (x % 7919) as i64
 }
 
 /// An enclosure of π that is honest about its own error.
@@ -666,5 +912,155 @@ mod tests {
         // answer is not a confident `NonZero`.
         let diff = pool.add(vec![f, pool.mul(vec![pool.integer(-1_i32), g])]);
         assert_ne!(zero_status(&pool, diff), ZeroStatus::NonZero);
+    }
+
+    /// The determinant of a dense matrix of distinct symbols is certified
+    /// non-vanishing, at every size the probe budget covers.
+    ///
+    /// This is the test the collinear samples failed. `733 + 269·index` puts
+    /// the sample values in arithmetic progression, so binding the `n²` entries
+    /// of a symbolic matrix in index order produced a probe matrix of **rank 2**
+    /// — verified directly with exact rational arithmetic for `n = 3..6` and
+    /// every round — whose determinant is exactly `0`. The enclosure therefore
+    /// contained `0` at every sample, no certificate was ever issued, and the
+    /// verdict was `Unknown`: `inverse` refused a dense symbolic `3×3` with
+    /// `E-MAT-004`, and `rank`/`rref`/`nullspace` refused the same class with
+    /// `E-LINALG-010`.
+    ///
+    /// `det` of a matrix of `n²` distinct symbols is a sum of `n!` distinct
+    /// monomials over ℤ and is not the zero polynomial for any `n ≥ 1`, so
+    /// `NonZero` is the only correct verdict here and `Unknown` is a pure loss.
+    #[test]
+    fn dense_symbolic_determinant_is_certified_non_vanishing() {
+        for n in 1..=6usize {
+            let pool = p();
+            let grid: Vec<Vec<crate::kernel::ExprId>> = (0..n)
+                .map(|i| {
+                    (0..n)
+                        .map(|j| pool.symbol(format!("s_{i}_{j}"), Domain::Complex))
+                        .collect()
+                })
+                .collect();
+            let m = crate::matrix::Matrix::new(grid).unwrap();
+            let det =
+                crate::simplify::engine::simplify_expanded(m.det(&pool).unwrap(), &pool).value;
+            assert_eq!(
+                zero_status(&pool, det),
+                ZeroStatus::NonZero,
+                "det of a dense symbolic {n}×{n} is a sum of {n}! distinct monomials \
+                 and cannot be the zero function"
+            );
+        }
+    }
+
+    /// The samples themselves are in general position.
+    ///
+    /// Stated on the generator rather than on a consequence of it, so a future
+    /// change to the sequence is checked against the property that matters
+    /// rather than against one matrix that happens to exercise it: no three
+    /// consecutive numerators may be collinear, which is exactly the relation
+    /// `x_{k+1} − 2x_k + x_{k−1} = 0` that an arithmetic progression satisfies
+    /// and that a determinant vanishes on.
+    #[test]
+    fn probe_samples_are_not_collinear_in_the_index() {
+        for round in 0..PROBE_ROUNDS {
+            let vals: Vec<i64> = (0..40).map(|i| scrambled(i, round)).collect();
+            let mut collinear = 0usize;
+            for w in vals.windows(3) {
+                if w[2] - 2 * w[1] + w[0] == 0 {
+                    collinear += 1;
+                }
+            }
+            assert!(
+                collinear < 3,
+                "round {round}: {collinear} of 38 consecutive triples are collinear; \
+                 an arithmetic progression would give 38"
+            );
+            // And they must stay distinct, or two symbols get the same value and
+            // `x − y` looks like zero.
+            let mut sorted = vals.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(sorted.len(), vals.len(), "round {round}: duplicate samples");
+        }
+    }
+
+    /// A rational function that vanishes identically is proven zero.
+    ///
+    /// `a/(a+b) + b/(a+b) − 1` is `0` for every `(a, b)` with `a + b ≠ 0`, and
+    /// no rung above the `cancel` one sees it: `expand` cannot combine two
+    /// quotients, and the log/exp and trig normalisers have nothing to do here.
+    /// This is the shape every entry of an eliminated symbolic matrix has.
+    #[test]
+    fn a_vanishing_rational_function_is_proven_zero() {
+        let pool = p();
+        let a = pool.symbol("a", Domain::Real);
+        let b = pool.symbol("b", Domain::Real);
+        let sum = pool.add(vec![a, b]);
+        let inv = pool.pow(sum, pool.integer(-1_i32));
+        let e = pool.add(vec![
+            pool.mul(vec![a, inv]),
+            pool.mul(vec![b, inv]),
+            pool.integer(-1_i32),
+        ]);
+        assert_eq!(zero_status(&pool, e), ZeroStatus::Zero);
+    }
+
+    /// `√c·√c − c` is proven zero for a non-negative rational `c`.
+    ///
+    /// `simplify` leaves `√2·√2` as `√2²`, so without the radical fold the
+    /// residual of `L·Lᵀ − M` for the Cholesky factor of `2I` — and every
+    /// Gram–Schmidt norm in `qr_decomposition` — is `Unknown`.
+    #[test]
+    fn a_squared_rational_radical_is_proven_zero() {
+        let pool = p();
+        for c in [2_i32, 3, 10, 12] {
+            let lit = pool.integer(c);
+            for root in [
+                pool.func("sqrt", vec![lit]),
+                pool.pow(lit, pool.rational(1, 2)),
+            ] {
+                let e = pool.add(vec![
+                    pool.mul(vec![root, root]),
+                    pool.mul(vec![pool.integer(-1_i32), lit]),
+                ]);
+                assert_eq!(
+                    zero_status(&pool, e),
+                    ZeroStatus::Zero,
+                    "√{c}·√{c} − {c} = 0"
+                );
+            }
+        }
+    }
+
+    /// The radical fold does not fire on a base whose sign is unknown.
+    ///
+    /// `(√x)² = x` is false for `x < 0` under the principal branch, so a
+    /// symbolic base must be left alone. Asserting the *absence* of a `Zero`
+    /// verdict is the point: a rewrite that is sound only on a region, applied
+    /// unconditionally, is how a normaliser turns into a silent error.
+    #[test]
+    fn the_radical_fold_does_not_touch_a_symbolic_base() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Complex);
+        let root = pool.func("sqrt", vec![x]);
+        let e = pool.add(vec![
+            pool.mul(vec![root, root]),
+            pool.mul(vec![pool.integer(-1_i32), x]),
+        ]);
+        // Whatever the verdict is, it must not come from folding `(√x)² → x`.
+        let folded = fold_rational_radicals(&pool, e);
+        assert_eq!(folded, e, "a symbolic radicand must not be folded");
+    }
+
+    /// A negative rational radicand is left alone too: `(√−4)² = −4` holds in ℂ
+    /// but `√−4` is not on the branch the fold assumes, so it is out of scope.
+    #[test]
+    fn the_radical_fold_does_not_touch_a_negative_radicand() {
+        let pool = p();
+        let neg = pool.integer(-4_i32);
+        let root = pool.func("sqrt", vec![neg]);
+        let e = pool.pow(root, pool.integer(2_i32));
+        assert_eq!(fold_rational_radicals(&pool, e), e);
     }
 }

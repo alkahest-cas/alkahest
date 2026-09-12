@@ -481,3 +481,204 @@ def test_a_computable_nullspace_is_still_computed():
     exp_a = alkahest.exp(a)
     m = alkahest.Matrix([[pool.integer(1), exp_a], [exp_a, exp_a * exp_a]])
     assert len(m.nullspace()) == 1
+
+
+# ---------------------------------------------------------------------------
+# 3.10.1 linear-algebra audit
+# ---------------------------------------------------------------------------
+
+
+def _int_rows(pool, rows):
+    return alkahest.Matrix([[pool.integer(v) for v in row] for row in rows])
+
+
+def test_diagonalize_answers_an_irrational_spectrum():
+    """`[[1,2],[3,4]]` has distinct eigenvalues, so it is diagonalizable.
+
+    It was refused with `E-EIGEN-005`, *"matrix is not diagonalizable"* — a
+    statement that is false about this matrix, and one the library's own
+    `jordan_form` contradicted by returning a diagonal `J` for it. The check
+    compared two normalised forms structurally, and the `M·v` side carries
+    `√33·√33` where the `λ·v` side carries `33`.
+
+    Scored on the identity, not on the shape of `P`: `M·P = P·D`.
+    """
+    pool = alkahest.ExprPool()
+    m = _int_rows(pool, [[1, 2], [3, 4]])
+    p, d = m.diagonalize()
+    lhs = m.multiply(p).to_list()
+    rhs = p.multiply(d).to_list()
+    for i in range(2):
+        for j in range(2):
+            got = float(alkahest.eval_expr(lhs[i][j], {}))
+            want = float(alkahest.eval_expr(rhs[i][j], {}))
+            assert abs(got - want) < 1e-9
+    # `D` is diagonal and its trace is the trace of `M`, which is 5.
+    entries = d.to_list()
+    assert float(alkahest.eval_expr(entries[0][1], {})) == 0.0
+    assert float(alkahest.eval_expr(entries[1][0], {})) == 0.0
+    trace = sum(float(alkahest.eval_expr(entries[i][i], {})) for i in range(2))
+    assert abs(trace - 5.0) < 1e-9
+
+
+def test_diagonalize_still_refuses_a_defective_matrix():
+    """The control. `[[2,1],[0,2]]` has one eigenvalue of algebraic
+    multiplicity 2 and a one-dimensional eigenspace, so no diagonalization
+    exists; widening the verification must not have widened the answer set."""
+    pool = alkahest.ExprPool()
+    m = _int_rows(pool, [[2, 1], [0, 2]])
+    with pytest.raises(alkahest.AlkahestError) as exc_info:
+        m.diagonalize()
+    assert exc_info.value.code == "E-EIGEN-005"
+
+
+def test_cholesky_answers_an_irrational_pivot():
+    """`2I` is symmetric positive definite and its factor is `√2·I`.
+
+    The rational path required every pivot to be a perfect rational square and
+    reported `E-LINALG-003`, *"matrix is not symmetric positive definite"*,
+    about a matrix that is both.
+    """
+    pool = alkahest.ExprPool()
+    lower = _int_rows(pool, [[2, 0], [0, 2]]).cholesky()
+    entries = lower.to_list()
+    assert abs(float(alkahest.eval_expr(entries[0][0], {})) - 2**0.5) < 1e-12
+    assert float(alkahest.eval_expr(entries[0][1], {})) == 0.0
+
+
+def test_cholesky_refuses_a_non_symmetric_matrix():
+    """`L·Lᵀ` is symmetric for every `L`, so `[[1,5],[0,1]]` has no factor.
+
+    Only the lower triangle was read, so the upper one was discarded and the
+    identity came back — a factorisation of `I`, not of the input.
+    """
+    pool = alkahest.ExprPool()
+    with pytest.raises(alkahest.AlkahestError) as exc_info:
+        _int_rows(pool, [[1, 5], [0, 1]]).cholesky()
+    assert exc_info.value.code == "E-LINALG-003"
+
+
+def test_lu_permutes_the_multipliers_with_their_rows():
+    """`P·A = L·U`, on a 3×3 that pivots twice.
+
+    The multipliers already stored in `L` belong to the rows a pivot swap
+    moves. A 2×2 cannot show it: its only swap is at `k = 0`, where `L` has no
+    computed column yet to be left behind.
+    """
+    pool = alkahest.ExprPool()
+    rows = [[2, -1, 4], [-1, 1, -1], [3, -4, 0]]
+    lower, upper, perm = _int_rows(pool, rows).lu()
+    product = lower.multiply(upper).to_list()
+    for i, source in enumerate(perm):
+        for j in range(3):
+            assert abs(float(alkahest.eval_expr(product[i][j], {})) - rows[source][j]) < 1e-9
+
+
+def test_row_space_basis_comes_from_the_echelon_form():
+    """`[[0,0],[1,0]]` has row space `span{(1,0)}`.
+
+    Elimination swaps the rows and marks echelon row 0 as the pivot row;
+    reading `m.row(0)` handed back `(0,0)`, the zero vector offered as a basis
+    of a one-dimensional space.
+    """
+    pool = alkahest.ExprPool()
+    basis = _int_rows(pool, [[0, 0], [1, 0]]).row_space()
+    assert len(basis) == 1
+    row = basis[0].to_list()[0]
+    assert float(alkahest.eval_expr(row[0], {})) == 1.0
+    assert float(alkahest.eval_expr(row[1], {})) == 0.0
+
+
+def test_minimal_polynomial_of_the_zero_matrix_is_lambda():
+    """`p(M) = 0` for `p = λ`, and nothing of lower degree does.
+
+    A vanishing constant term used to leave the matrix power un-advanced, so
+    `p(M)` was evaluated as `(p/λ)(M)`: `λ` was rejected and `λ²` returned. A
+    zero constant term is exactly `0 ∈ spec(M)`, so every singular matrix was
+    exposed. Scored at a point — `λ` gives 3 and `λ²` gives 9.
+    """
+    import re
+
+    pool = alkahest.ExprPool()
+    poly = _int_rows(pool, [[0, 0], [0, 0]]).minimal_polynomial()
+    names = set(re.findall(r"__eigen_lambda_\d+", str(poly)))
+    assert len(names) == 1
+    lam = pool.symbol(names.pop(), "complex")
+    assert float(alkahest.eval_expr(poly, {lam: 3.0})) == 3.0
+
+
+def test_rational_canonical_form_reconstructs_the_matrix():
+    """`M·P = P·C` with `P` invertible, and `det C = det M`.
+
+    The companion block wrote its coefficients along the last *row* instead of
+    the last *column*, which for `d ≥ 2` also overwrote a subdiagonal 1. On
+    `diag(1,2)` that gave `C = [[0,0],[−2,3]]`, determinant 0 against
+    `det M = 2` — not similar to `M`, and not even of the same rank.
+    """
+    pool = alkahest.ExprPool()
+    m = _int_rows(pool, [[1, 0], [0, 2]])
+    p, c = m.rational_canonical_form()
+    lhs = m.multiply(p).to_list()
+    rhs = p.multiply(c).to_list()
+    for i in range(2):
+        for j in range(2):
+            got = float(alkahest.eval_expr(lhs[i][j], {}))
+            want = float(alkahest.eval_expr(rhs[i][j], {}))
+            assert abs(got - want) < 1e-9
+    assert p.rank() == 2
+    assert abs(float(alkahest.eval_expr(c.det(), {})) - 2.0) < 1e-9
+
+
+def test_a_dense_symbolic_matrix_is_inverted_and_says_what_it_assumed():
+    """A 4×4 of 16 distinct symbols inverts, and reports `det ≠ 0`.
+
+    `det` of a matrix of `n²` distinct symbols is a sum of `n!` distinct
+    monomials and is not the zero function, so `adj/det` is the inverse. Sizes
+    from 5×5 up refused with `E-MAT-004` only because the non-vanishing probe
+    would not bind more than 16 symbols and sampled them along an arithmetic
+    progression, which makes the probe matrix rank 2.
+
+    Verified by substitution into ℚ rather than by symbolic cancellation. The
+    sample values are deliberately unstructured: an affine function of `(i, j)`
+    makes the rows an arithmetic progression, so `det` vanishes there and
+    `A⁻¹·A` is `0/0` rather than `I`.
+    """
+    pool = alkahest.ExprPool()
+    n = 4
+    syms = [[pool.symbol(f"__pt_{i}_{j}") for j in range(n)] for i in range(n)]
+    m = alkahest.Matrix(syms)
+    product = m.inverse().multiply(m).to_list()
+    conditions = alkahest.matrix_inverse_side_conditions()
+    assert len(conditions) == 1, conditions
+    assert "≠ 0" in conditions[0]
+
+    sample = [1.7, -2.3, 0.9, 3.1, -0.6, 2.2, 4.7, -1.1, 0.4, 5.3, -3.7, 1.3, 2.9, -0.8, 6.1, 0.3]
+    env = {syms[i][j]: sample[(i * n + j) % len(sample)] for i in range(n) for j in range(n)}
+    for i in range(n):
+        for j in range(n):
+            got = float(alkahest.eval_expr(product[i][j], env))
+            assert abs(got - (1.0 if i == j else 0.0)) < 1e-9
+
+
+def test_a_constant_determinant_is_discharged_not_reported():
+    """The control for the channel above.
+
+    `det [[1,2],[3,4]] = −2`, a non-zero constant: the hypothesis is settled,
+    not assumed, and reporting one anyway is the noise that makes a caller stop
+    reading the channel.
+    """
+    pool = alkahest.ExprPool()
+    _int_rows(pool, [[1, 2], [3, 4]]).inverse()
+    assert alkahest.matrix_inverse_side_conditions() == []
+
+
+def test_the_inverse_channel_is_cleared_by_a_refusal():
+    """A refused inverse must not leave a hypothesis for the next call."""
+    pool = alkahest.ExprPool()
+    a = pool.symbol("__pt_q")
+    b = pool.symbol("__pt_r")
+    two = pool.integer(2)
+    dependent = alkahest.Matrix([[a, b], [two * a, two * b]])
+    with pytest.raises(alkahest.MatrixError):
+        dependent.inverse()
+    assert alkahest.matrix_inverse_side_conditions() == []

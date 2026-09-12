@@ -1226,6 +1226,37 @@ fn py_matrix_exp_side_conditions() -> Vec<String> {
     MATRIX_EXP_SIDE_CONDITIONS.with(|c| c.borrow().clone())
 }
 
+thread_local! {
+    /// Hypotheses recorded by the most recent `Matrix.inverse` on this thread,
+    /// rendered against the pool that call used.
+    static MATRIX_INVERSE_SIDE_CONDITIONS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The hypotheses the most recent :meth:`alkahest.Matrix.inverse` on this
+/// thread **assumed** in order to return the matrix it did — one string per
+/// condition, e.g. ``"((a · d) + (b · c · -1)) ≠ 0"``.
+///
+/// Exactly one thing lands here: ``det(M) ≠ 0`` for a symbolic ``M``. The
+/// determinant of ``[[a,b],[c,d]]`` is not the zero function, so ``adj/det``
+/// is the inverse — *for the parameter values where ``ad − bc`` does not
+/// vanish*. Whether a given set of values is on that locus is a question about
+/// the parameters, not about the matrix, and only the caller can settle it.
+///
+/// An empty list means the determinant is a non-zero rational constant and the
+/// hypothesis was **discharged**, not skipped. Reset by each ``inverse`` call,
+/// so read it before the next one; repeated reads of the same call agree.
+///
+/// The condition is also present in the value — every entry carries a
+/// ``det⁻¹`` factor, so evaluating on the singular locus raises rather than
+/// returning a number — which is why this is an auditability channel rather
+/// than the thing standing between the caller and a wrong answer.
+#[pyfunction]
+#[pyo3(name = "matrix_inverse_side_conditions")]
+fn py_matrix_inverse_side_conditions() -> Vec<String> {
+    MATRIX_INVERSE_SIDE_CONDITIONS.with(|c| c.borrow().clone())
+}
+
 fn linear_algebra_error_to_py(e: LinearAlgebraError) -> PyErr {
     // `UnsupportedField` covers three: "entries are not rational constants"
     // (`E-LINALG-007`), "a pivot could be proven neither zero nor non-zero"
@@ -9108,12 +9139,24 @@ impl PyMatrix {
         })
     }
 
+    /// ``M⁻¹``.
+    ///
+    /// For a symbolic ``M`` the adjugate form ``adj(M)/det(M)`` is returned
+    /// whenever ``det(M)`` is proven not to be the zero *function*; the
+    /// genericity hypothesis that licenses it is listed by
+    /// :func:`alkahest.matrix_inverse_side_conditions`.
     fn inverse(&self, py: Python<'_>) -> PyResult<PyMatrix> {
         let pool = self.pool.borrow(py);
+        MATRIX_INVERSE_SIDE_CONDITIONS.with(|c| c.borrow_mut().clear());
         let inv = self
             .inner
             .inverse(&pool.inner)
             .map_err(matrix_error_to_py)?;
+        let rendered: Vec<String> = alkahest_core::matrix::take_matrix_inverse_side_conditions()
+            .iter()
+            .map(|c| c.display_with(&pool.inner).to_string())
+            .collect();
+        MATRIX_INVERSE_SIDE_CONDITIONS.with(|c| *c.borrow_mut() = rendered);
         drop(pool);
         Ok(PyMatrix {
             inner: inv,
@@ -17154,6 +17197,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_jacobian, m)?)?;
     m.add_class::<PyMatrix>()?;
     m.add_function(wrap_pyfunction!(py_matrix_exp_side_conditions, m)?)?;
+    m.add_function(wrap_pyfunction!(py_matrix_inverse_side_conditions, m)?)?;
     // Phase 16
     m.add_class::<PyODE>()?;
     m.add_function(wrap_pyfunction!(py_lower_to_first_order, m)?)?;
