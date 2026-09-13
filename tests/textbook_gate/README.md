@@ -82,8 +82,7 @@ from the suite — it's marked:
     strict=True,
     reason="B4 (report7-20.md): sum_definite rejects Σk as 'not Gosper-summable'",
 )
-def test_sum_k_faulhaber():
-    ...
+def test_sum_k_faulhaber(): ...
 ```
 
 `strict=True` is load-bearing: if the bug is later fixed, this test flips

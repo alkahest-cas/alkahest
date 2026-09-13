@@ -25,6 +25,48 @@ Remaining experimental surface:
 - :func:`compile_cuda` / :class:`CudaCompiledFn` — NVPTX codegen (requires
   ``cuda`` + ``jit``)
 
+Probability and statistics:
+- :class:`Distribution` and its constructors :func:`Normal`, :func:`LogNormal`,
+  :func:`Uniform`, :func:`Exponential`, :func:`Gamma`, :func:`Beta`,
+  :func:`Bernoulli`, :func:`Binomial`, :func:`Poisson` — a law is a *name plus
+  symbolic parameters*, carrying its density, its support, and the constraints
+  that make it a distribution at all. A numeric parameter outside its
+  constraint raises ``E-PROB-001``; a symbolic one cannot be decided and is
+  carried on :meth:`Distribution.constraints` for the caller to discharge
+- :meth:`Distribution.mean`, :meth:`~Distribution.variance`,
+  :meth:`~Distribution.moment`, :meth:`~Distribution.pdf`,
+  :meth:`~Distribution.cdf`, :meth:`~Distribution.quantile`,
+  :meth:`~Distribution.characteristic_function`, plus
+  :attr:`~Distribution.kind`, :meth:`~Distribution.params`,
+  :meth:`~Distribution.support` and :meth:`~Distribution.constraints`. These
+  are **methods on the law**, not module-level functions — ``Normal(mu,
+  sigma).cdf(x)``, not ``cdf(dist, x)`` — so there is one way to ask each
+  question. Every derived quantity is **checked against numerical quadrature
+  of its own defining integral before it is returned**; one the checker cannot
+  confirm raises ``E-PROB-005`` rather than arriving with a caveat
+- :meth:`~Distribution.characteristic_function` is **complex-valued**. Evaluate
+  it with ``evaluate(phi, env, mode="complex")``; the real modes return
+  ``value=None`` with ``status="unsupported"`` rather than dropping the
+  imaginary part
+- :func:`prob_side_conditions` — the hypotheses the last :class:`Distribution`
+  method or :func:`expectation` call had to *assume*. The return value is an
+  ``Expr``, so there is nowhere in band to hang one; without this channel a
+  conditional answer and a theorem look identical at the call site. Non-empty
+  for a symbolic ``cdf`` argument (the closed form is the in-support branch),
+  a symbolic ``quantile`` argument, and a payoff kink that cannot be placed
+  inside the support
+- :func:`expectation` — ``E[f(X)]``, reduced to integrals the existing
+  integrator attempts. A divergent expectation raises ``E-PROB-006`` (checked
+  *before* the symbolic work, so the answer is "no value exists" rather than
+  "the integrator declined"); an integral that does not close raises
+  ``E-PROB-003`` **naming it**, never an unevaluated object dressed as an
+  answer. ``max(S - K, 0)`` under a :func:`LogNormal` derives Black–Scholes
+- :func:`expectation_affine` — linearity, which needs no independence at all —
+  and :func:`variance_affine_independent`, which does and says so in its name.
+  There are no joint distributions, no conditioning and no covariance here: a
+  product of two variates raises ``E-PROB-002`` rather than guessing at a
+  joint law
+
 Calculus / ODE / transform surface:
 - :func:`heaviside`, :func:`dirac_delta` — distribution primitive constructors
 - :func:`dsolve` — classical symbolic ODE solver (#153); constant coefficients
@@ -222,10 +264,19 @@ from alkahest._recurrence_asymptotics import (
 from alkahest.alkahest import (
     # P1 item 10 — asymptotic expansion at scale
     AsymptoticReport,
+    Bernoulli,
+    Beta,
+    Binomial,
     Coordinates,
+    Distribution,
+    Exponential,
     Fps,
+    Gamma,
+    LogNormal,
+    Normal,
     OdeTrajectory,
     ParallelRischResult,
+    Poisson,
     # Puiseux (fractional-exponent) expansion — verified before it is returned
     PuiseuxExpansion,
     QRootOfUnitySpecialization,
@@ -235,6 +286,7 @@ from alkahest.alkahest import (
     QZeilbergerCertificate,
     Telescoping2dCertificate,
     TelescopingMdCertificate,
+    Uniform,
     VectorError,
     apart_side_conditions,
     asymptotic_expand,
@@ -249,6 +301,8 @@ from alkahest.alkahest import (
     dsolve,
     dsolve_system,
     euler_maclaurin,
+    expectation,
+    expectation_affine,
     fourier_transform,
     gradient,
     heaviside,
@@ -262,12 +316,14 @@ from alkahest.alkahest import (
     norm,
     ode_integrate_rk4,
     ode_integrate_rk45,
+    prob_side_conditions,
     puiseux_series,
     q_zeilberger,
     series_solve,
     telescope2d,
     telescope_md,
     transform_side_conditions,
+    variance_affine_independent,
     vector_laplacian,
     z_transform,
 )
@@ -312,14 +368,23 @@ __all__ = [
     "Assumptions",
     # P1 item 10 — asymptotic expansion at scale
     "AsymptoticReport",
+    # Probability: a law is a name plus symbolic parameters
+    "Bernoulli",
+    "Beta",
+    "Binomial",
     # Vector calculus over orthogonal curvilinear charts
     "Coordinates",
     "CudaCompiledFn",
+    "Distribution",
     "EvaluationResult",
+    "Exponential",
     "Fps",
+    "Gamma",
     "GbPoly",
     "GroebnerBasis",
     # M11 — novelty filtering
+    "LogNormal",
+    "Normal",
     "NoveltyMatch",
     "NoveltyVerdict",
     "OdeTrajectory",
@@ -334,6 +399,7 @@ __all__ = [
     "ParametricGroebnerBasis",
     "ParametricRosenfeldGroebnerResult",
     # Puiseux (fractional-exponent) expansion
+    "Poisson",
     "PuiseuxExpansion",
     # M11 — novelty filtering
     "QRecurrenceClaim",
@@ -351,8 +417,9 @@ __all__ = [
     # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
     "Telescoping2dCertificate",
     "TelescopingMdCertificate",
-    "VectorError",
     # Hypotheses the last `apart` on this thread rests on (ℚ(params) path).
+    "Uniform",
+    "VectorError",
     "apart_side_conditions",
     "arg",
     "asymptotic_expand",
@@ -380,6 +447,8 @@ __all__ = [
     "dsolve_system",
     "euler_maclaurin",
     "evaluate",
+    "expectation",
+    "expectation_affine",
     "fourier_transform",
     # Vector calculus
     "gradient",
@@ -403,6 +472,7 @@ __all__ = [
     "ode_integrate_rk4",
     "ode_integrate_rk45",
     # Puiseux (fractional-exponent) expansion
+    "prob_side_conditions",
     "puiseux_series",
     # M4(b) — q-analogue creative telescoping
     "q_zeilberger",
@@ -420,6 +490,7 @@ __all__ = [
     "to_stablehlo",
     # Hypotheses the last inverse Laplace / Z transform on this thread rests on.
     "transform_side_conditions",
+    "variance_affine_independent",
     # Vector calculus
     "vector_laplacian",
     "z_transform",

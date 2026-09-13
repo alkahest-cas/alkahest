@@ -400,6 +400,7 @@ from .exceptions import (
     ParamGroebnerError,
     ParseError,
     PoolError,
+    ProbabilityError,
     ProductError,
     PslqError,
     RealRootError,
@@ -451,6 +452,10 @@ _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     # not define, so catching it still works on a wheel without the feature.
     "ParamGroebnerError",
     "PoolError",
+    # Probability distributions and expectations (the experimental `prob`
+    # surface); E-PROB-005 in particular is a closed form that was computed and
+    # then withheld because quadrature could not confirm it.
+    "ProbabilityError",
     "ProductError",
     "PslqError",
     "RealRootError",
@@ -2429,6 +2434,7 @@ __all__ = [
     "PrimaryComponent",
     # PA-5
     "PrimitiveRegistry",
+    "ProbabilityError",
     "Product",
     "ProductError",
     "PslqError",

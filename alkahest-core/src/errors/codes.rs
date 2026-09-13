@@ -402,6 +402,29 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // Not a malfunction: the basis is a *generic* one, and this is it saying so
     // at a point where it does not apply, rather than specialising anyway.
     ErrorSpec { code: "E-PARAMGB-004", class: "ParamGroebnerError", cause: Cause::Domain,      remediation: Some("compute the basis directly over ℚ at that parameter point, or move the vanishing factors into the generators and recompute") },
+    // E-PROB — ProbError (probability distributions and expectations)
+    //
+    // 001 is the only one of these that is a *user* error. The rest are the
+    // module declining to answer, and they are kept apart because "there is no
+    // closed form", "this integrator could not find one", "the quantity does
+    // not exist" and "one was found and is not trustworthy" call for four
+    // different next steps, and collapsing them would tell a caller to go
+    // looking for a better integrator when the integral diverges.
+    ErrorSpec { code: "E-PROB-001", class: "ProbError", cause: Cause::UserInput,   remediation: Some("pass a parameter inside the distribution's constraint (σ > 0, a < b, 0 ≤ p ≤ 1, n a literal non-negative integer), or leave it symbolic — a symbolic parameter is carried as a side condition on `constraints` rather than decided") },
+    ErrorSpec { code: "E-PROB-002", class: "ProbError", cause: Cause::Unsupported, remediation: Some("reduce the query to a supported shape: a polynomial f for an expectation over a countably infinite discrete support, an affine combination for `expectation_affine`, a moment order within MAX_MOMENT_ORDER") },
+    ErrorSpec { code: "E-PROB-003", class: "ProbError", cause: Cause::Unsupported, remediation: Some("the named integral has no antiderivative this integrator found; integrate it numerically, or ask for a moment/CDF that is in the closed-form table") },
+    // Distinct from 003: no integrator would help, because the closed form
+    // needs a function this library does not implement (the incomplete gamma,
+    // the incomplete beta, erf⁻¹, ₁F₁) — or, for the log-normal characteristic
+    // function, one that does not exist in closed form at all.
+    ErrorSpec { code: "E-PROB-004", class: "ProbError", cause: Cause::Unsupported, remediation: Some("use an integer shape parameter where that collapses the special function to a finite sum (Erlang, integer-parameter Beta), or integrate numerically") },
+    // The prime-directive code: a closed form *was* computed and is being
+    // withheld because the numeric gate could not confirm it against
+    // quadrature of its own defining integral. Never downgraded to a warning —
+    // a caller cannot tell a checked value from an unchecked one once it is in
+    // their hands.
+    ErrorSpec { code: "E-PROB-005", class: "ProbError", cause: Cause::Internal,    remediation: Some("an unconfirmed closed form is withheld rather than returned; report the distribution and query as a minimal failing example") },
+    ErrorSpec { code: "E-PROB-006", class: "ProbError", cause: Cause::Domain,      remediation: Some("the integral defining this expectation does not converge — there is no value to return; restrict f so that f(x)·p(x) is integrable over the support") },
     // E-VALIDATED — ValidatedError
     ErrorSpec { code: "E-VALIDATED-001", class: "ValidatedError", cause: Cause::Unsupported, remediation: None },
     ErrorSpec { code: "E-VALIDATED-002", class: "ValidatedError", cause: Cause::UserInput, remediation: None },
