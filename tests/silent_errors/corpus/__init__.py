@@ -27,6 +27,7 @@ surface only as every case in the subsystem raising the same uninformative
 from __future__ import annotations
 
 import importlib
+import inspect
 import pkgutil
 from typing import TYPE_CHECKING
 
@@ -70,6 +71,19 @@ def validate(cases: Sequence[Case], *, module: str | None = None) -> None:
         seen.add(case.id)
         if not callable(case.op):
             raise TypeError(f"{where}: op is {case.op!r}, not callable")
+        try:
+            inspect.signature(case.op).bind()
+        except TypeError as exc:
+            # Nearly always the factory passed instead of called: the shape
+            # helpers all *return* the op, so ``op=definite`` is callable and
+            # wrong, and only shows up at run time as an uninformative
+            # ``no_answer``.
+            raise TypeError(
+                f"{where}: op needs arguments ({exc}); a case op is called with none. "
+                "Did you write op=definite where you meant op=definite(f, a, b)?"
+            ) from exc
+        except ValueError:  # pragma: no cover - builtin with no introspectable signature
+            pass
         if not case.statement.strip():
             raise RuntimeError(f"{where}: empty statement")
         if not case.verified_by.strip():

@@ -430,7 +430,7 @@ CASES: list[Case] = [
     Case(
         id="quat_control_inverse_of_a_unit_quaternion_is_its_conjugate",
         subsystem="vector",
-        statement="(1+i+j+k)/2 is a unit quaternion, and its inverse has w = 1/2",
+        statement="1+i+j+k has norm² 4, so its inverse is (1−i−j−k)/4 and has w = 1/4",
         op=lambda: _at(_quat(1, 1, 1, 1).inverse().w, {}),
         contract=Returns(0.25),
         verified_by="|1+i+j+k|² = 4, so (1+i+j+k)⁻¹ = (1−i−j−k)/4 and its real part is "

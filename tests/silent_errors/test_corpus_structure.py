@@ -54,6 +54,17 @@ def test_a_malformed_case_is_rejected_by_name(field, value, error, message) -> N
     assert "structure_probe" in str(excinfo.value)
 
 
+def test_an_op_that_needs_arguments_is_rejected() -> None:
+    """``Case.op`` is called with no arguments, and the helpers are factories.
+
+    ``op=definite`` instead of ``op=definite(f, a, b)`` is callable, passes a
+    bare ``callable()`` check, and then surfaces only as a ``no_answer`` — the
+    outcome that means "the corpus is broken", with no hint of where.
+    """
+    with pytest.raises(TypeError, match="needs arguments"):
+        validate([_broken(op=lambda _x: 2)])
+
+
 def test_a_case_in_the_wrong_module_is_rejected() -> None:
     """``subsystem`` decides which rate a case is counted against.
 
