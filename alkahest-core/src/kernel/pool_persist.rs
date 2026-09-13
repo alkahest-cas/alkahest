@@ -589,15 +589,25 @@ mod tests {
     use super::*;
     use crate::kernel::{Domain, ExprData};
 
+    /// A path no other test in this process will pick.
+    ///
+    /// The timestamp alone is not enough: on Windows the system clock ticks
+    /// about every 15 ms, so two of these tests running in parallel read the
+    /// same nanosecond count, build the same path, and then race — one sees
+    /// the other's pool (`node count must match` off by two) or its
+    /// `remove_file` (`NotFound`). The counter makes the name unique within
+    /// the process and the pid keeps it unique across processes.
     fn tempfile() -> PathBuf {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let mut p = std::env::temp_dir();
         p.push(format!(
-            "alkahest_pool_{}_{}.akp",
+            "alkahest_pool_{}_{}_{}.akp",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
         p
     }
