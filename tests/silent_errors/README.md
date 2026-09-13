@@ -9,6 +9,31 @@ it is wrong — the integral diverges.
 This package measures how often alkahest does that, deterministically, with no
 LLM, fast enough to run on every pull request.
 
+## Layout
+
+```
+corpus/
+  __init__.py     discovers the subsystem modules, concatenates CASES, and
+                  runs the structural checks below at import time
+  _shared.py      the expression pool, the common symbols, and the handful of
+                  helpers more than one subsystem needs
+  <subsystem>.py  one module per Case.subsystem, holding that subsystem's
+                  cases and the helpers only it uses
+```
+
+The split is not cosmetic. The corpus is edited by many agents at once, usually
+one per subsystem, and a single file made every one of those edits a conflict in
+the same region — which is how a merge once cut three helpers mid-body, leaving
+`op` bound to `None` while the file still parsed, formatted and linted. The
+package makes the common case a disjoint edit, and `corpus/__init__.py` checks
+at **import** time that every case is structurally sound: unique id, callable
+`op`, non-empty `statement` and `verified_by`, a contract, and a `subsystem`
+that matches the module it was found in. A corpus that can only fail one case at
+a time, loudly and by name, is worth more than one that is short.
+
+Adding a subsystem is one new file — `corpus/__init__.py` discovers modules with
+`pkgutil` rather than listing them, so there is no shared registry to collide on.
+
 ## Why it is separate from the textbook gate
 
 `tests/textbook_gate/` asks *"does alkahest get first-course problems right?"*.
@@ -124,7 +149,9 @@ evidence behind it quietly weakens.
    `int_control_integrable_endpoint_singularity`, the DNE limits with
    `limit_control_squeeze`, the singular-point series with
    `series_control_simple_pole`.
-4. **Append to `CASES` in `corpus.py`** with a stable, never-reused `id`.
+4. **Append to `CASES` in `corpus/<subsystem>.py`** with a stable,
+   never-reused `id`. The `subsystem=` field must match the module name;
+   `corpus/__init__.py` rejects the import if it does not.
 
 ```python
 (
@@ -143,9 +170,12 @@ The `op` is a zero-argument callable returning a plain **answer** — a float,
 int, bool, string, list, or a `Measured`. Reducing the library's return value to
 an answer is the case's own job, which is what lets a definite integral, a
 solution count, and a series coefficient all be scored by the same four
-contracts. `corpus.py` provides `definite`, `antiderivative_slope`,
-`limit_value`, `series_at`, `simplified_value` and `real_solution_count` for the
-common shapes.
+contracts. Each subsystem module carries the shape helpers its own cases
+need — `definite` in `corpus/integration_definite.py`, `antiderivative_slope`
+in `corpus/integration_nonelementary.py`, `limit_value` in `corpus/limits.py`,
+`series_at` in `corpus/series.py`, `simplified_value` in
+`corpus/simplification.py`, `real_solution_count` in `corpus/solving.py` —
+and `corpus/_shared.py` carries the pool, the symbols and `_int`/`_rat`.
 
 ### Verifying an antiderivative
 

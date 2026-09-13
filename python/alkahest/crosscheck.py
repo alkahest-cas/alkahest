@@ -1246,7 +1246,7 @@ class Divergence:
         What the rigorous escalation established. ``"oracle_supported"`` means
         an operation invariant was **rigorously refuted on the Alkahest side**
         — a silent-error finding, and the case that should be routed into
-        ``tests/silent_errors/corpus.py``.
+        ``tests/silent_errors/corpus/``.
     region : dict or None
         When :func:`alkahest.verified_sign` certified that the failing
         invariant residual keeps one sign across the whole sampling box, the
@@ -1270,7 +1270,7 @@ class Divergence:
 
     @property
     def silent_error_candidate(self) -> bool:
-        """Is this a case for ``tests/silent_errors/corpus.py``?
+        """Is this a case for ``tests/silent_errors/corpus/``?
 
         True exactly when rigorous ball arithmetic refuted the *Alkahest* side
         of an operation invariant. That is the finding worth converting into a
@@ -2165,7 +2165,7 @@ class _Comparison:
                 "oracle_supported": (
                     f"the alkahest answer fails the {self.spec.invariant} invariant under "
                     f"rigorous ball arithmetic while the {self.oracle.name} answer satisfies "
-                    "it — a silent-error candidate for tests/silent_errors/corpus.py"
+                    "it — a silent-error candidate for tests/silent_errors/corpus/"
                 ),
                 "alkahest_supported": (
                     f"the {self.oracle.name} answer fails the {self.spec.invariant} "

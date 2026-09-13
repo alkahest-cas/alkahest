@@ -1974,7 +1974,7 @@ impl PySeries {
     /// result a dead end: `eval_expr`, `simplify` and `diff` all refuse a bare
     /// `O(x^n)`, so every caller re-implemented "walk the top-level sum and
     /// skip the `big_o` child" by hand — `tests/_tg_helpers.py` and
-    /// `tests/silent_errors/corpus.py` each carry a copy.
+    /// `tests/silent_errors/corpus/` each carry a copy.
     ///
     /// What comes back is a **polynomial approximation, not the function**:
     /// dropping the remainder discards the only statement about the error, so
