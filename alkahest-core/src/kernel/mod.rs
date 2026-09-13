@@ -7,6 +7,7 @@ pub mod expr;
 pub mod expr_props;
 pub mod pool;
 pub mod pool_persist;
+mod printer_roundtrip;
 mod proptests;
 pub mod subs;
 
