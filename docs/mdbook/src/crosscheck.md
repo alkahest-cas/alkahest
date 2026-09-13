@@ -137,7 +137,7 @@ one sign across the whole sampling box, `Divergence.region` records the box — 
 finding from "wrong at this point" to "wrong on this interval", which is a much shorter
 argument to hand a reviewer.
 
-A `silent_error_candidate` should be routed into `tests/silent_errors/corpus.py`. That
+A `silent_error_candidate` should be routed into `tests/silent_errors/corpus/`. That
 routing is the whole point of the feature: it converts a fuzzing signal into a permanent
 regression gate.
 
