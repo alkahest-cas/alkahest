@@ -57,6 +57,8 @@ pub mod sum;
 pub mod transform;
 // P1 item 9 — rigorous global bounds (Taylor models / validated numerics)
 pub mod validated;
+// Vector calculus over orthogonal curvilinear coordinates (grad/div/curl/laplacian)
+pub mod vector;
 // Plot — dependency-free SVG / DOT renderers
 pub mod plot;
 
@@ -361,6 +363,9 @@ pub mod stable {
 /// on it.
 pub mod experimental {
     pub use crate::acausal::{capacitor, resistor, voltage_source, Component, Port, System};
+    /// Hamilton quaternions and the active rotation operator `q v q⁻¹`, with
+    /// conversions to and from a rotation matrix and axis–angle form.
+    pub use crate::algebra::quaternion::{Quaternion, QuaternionError};
     pub use crate::ball::{AcbBall, ArbBall, IntervalEval};
     pub use crate::calculus::asymptotic::{
         asymptotic_expand, AsymptoticError, AsymptoticExpansion, AsymptoticTerm,
@@ -447,6 +452,15 @@ pub mod experimental {
         inverse_z_transform, inverse_z_transform_with_assumptions,
         inverse_z_transform_with_conditions, take_transform_side_conditions, z_shift_advance,
         z_shift_delay, z_transform, ZTransformError,
+    };
+    /// Vector calculus over orthogonal curvilinear coordinates: `grad`, `div`,
+    /// `curl`, the scalar and vector Laplacian, and the vector algebra they
+    /// are used with. Cartesian, cylindrical and spherical charts are built
+    /// in; `Coordinates::from_embedding` derives one from its Cartesian
+    /// parametrisation and checks orthogonality before returning it.
+    pub use crate::vector::{
+        cross, curl, divergence, dot, gradient, laplacian, norm, norm_squared, vector_laplacian,
+        Coordinates, VectorError,
     };
     // ℚ(params) partial fractions: the in-band and out-of-band forms of the
     // hypotheses a parametric decomposition rests on.

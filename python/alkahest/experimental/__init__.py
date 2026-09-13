@@ -74,6 +74,34 @@ Calculus / ODE / transform surface:
   arithmetic works over, exposed so a caller can redo the divisibility check
   by hand
 
+Vector calculus and quaternions (the rigid-body layer):
+- :class:`Coordinates` — an orthogonal chart, built by
+  :meth:`Coordinates.cartesian`, :meth:`Coordinates.cylindrical`,
+  :meth:`Coordinates.spherical`, or :meth:`Coordinates.from_embedding`, which
+  derives the scale factors from a Cartesian parametrisation and **refuses**
+  (``E-VEC-004``) a chart it cannot prove orthogonal. There is no constructor
+  taking scale factors directly
+- :func:`gradient`, :func:`divergence`, :func:`curl`, :func:`laplacian`,
+  :func:`vector_laplacian`, and the algebra they are used with —
+  :func:`dot`, :func:`cross`, :func:`norm`. Vector fields are three
+  **physical** components, read in the local orthonormal frame, which is the
+  convention ``sympy.vector`` uses and the one an engineer means by "the ρ
+  component"
+- :func:`vector_laplacian` is ``∇(∇·F) − ∇×(∇×F)``. That equals the
+  componentwise scalar Laplacian in Cartesian coordinates *only*; applying
+  :func:`laplacian` to each physical component of a cylindrical or spherical
+  field is a silent error, and this entry point exists so nobody has to
+- :class:`Quaternion` — Hamilton product (``i*j == k``, ``j*i == -k``),
+  conjugate, norm, inverse, the active rotation ``q v q⁻¹``, and conversions
+  to and from a rotation matrix and axis–angle form.
+  ``(q1 * q2)`` applies ``q2`` first, so
+  ``(q1 * q2).to_rotation_matrix()`` is ``R(q1) @ R(q2)``.
+  :meth:`Quaternion.to_axis_angle` **refuses** (``E-QUAT-002``) for the
+  identity rotation, which has no axis because every unit vector is one, and
+  :meth:`Quaternion.from_rotation_matrix` refuses (``E-QUAT-003``) anything it
+  cannot check is a proper rotation — including a symbolic matrix, where the
+  branch selection is a comparison it cannot make
+
 Risch–Norman (parallel Risch) heuristic integration:
 - :func:`integrate_parallel_risch` / :class:`ParallelRischResult` — posits
   ``F = P/Q + Σ dⱼ·log(pⱼ)`` over the monomial basis of
@@ -194,32 +222,44 @@ from alkahest._recurrence_asymptotics import (
 from alkahest.alkahest import (
     # P1 item 10 — asymptotic expansion at scale
     AsymptoticReport,
+    Coordinates,
     Fps,
     OdeTrajectory,
     ParallelRischResult,
     # Puiseux (fractional-exponent) expansion — verified before it is returned
     PuiseuxExpansion,
     QRootOfUnitySpecialization,
+    # Vector calculus over orthogonal charts, and Hamilton quaternions
+    Quaternion,
+    QuaternionError,
     QZeilbergerCertificate,
     Telescoping2dCertificate,
     TelescopingMdCertificate,
+    VectorError,
     apart_side_conditions,
     asymptotic_expand,
     # P1 item 10 — asymptotic expansion at scale
     coefficient_asymptotics,
+    cross,
+    curl,
     cyclotomic_polynomial,
     dirac_delta,
+    divergence,
+    dot,
     dsolve,
     dsolve_system,
     euler_maclaurin,
     fourier_transform,
+    gradient,
     heaviside,
     integrate_parallel_risch,
     inverse_fourier_transform,
     inverse_laplace_transform,
     inverse_z_transform,
     laplace_transform,
+    laplacian,
     multilimit,
+    norm,
     ode_integrate_rk4,
     ode_integrate_rk45,
     puiseux_series,
@@ -228,6 +268,7 @@ from alkahest.alkahest import (
     telescope2d,
     telescope_md,
     transform_side_conditions,
+    vector_laplacian,
     z_transform,
 )
 
@@ -271,6 +312,8 @@ __all__ = [
     "Assumptions",
     # P1 item 10 — asymptotic expansion at scale
     "AsymptoticReport",
+    # Vector calculus over orthogonal curvilinear charts
+    "Coordinates",
     "CudaCompiledFn",
     "EvaluationResult",
     "Fps",
@@ -298,6 +341,9 @@ __all__ = [
     "QRootOfUnitySpecialization",
     # M4(b) — q-analogue creative telescoping
     "QZeilbergerCertificate",
+    # Hamilton quaternions and the rotation operator q v q⁻¹
+    "Quaternion",
+    "QuaternionError",
     # M5 — recurrence -> asymptotics
     "RecurrenceAsymptotics",
     # M11 — novelty filtering
@@ -305,6 +351,7 @@ __all__ = [
     # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
     "Telescoping2dCertificate",
     "TelescopingMdCertificate",
+    "VectorError",
     # Hypotheses the last `apart` on this thread rests on (ℚ(params) path).
     "apart_side_conditions",
     "arg",
@@ -319,15 +366,23 @@ __all__ = [
     "coefficient_asymptotics",
     "compile_cuda",
     "conjugate",
+    # Vector calculus
+    "cross",
+    "curl",
     # M4 — root-of-unity specialisation
     "cyclotomic_polynomial",
     "digamma",
     "dirac_delta",
+    # Vector calculus
+    "divergence",
+    "dot",
     "dsolve",
     "dsolve_system",
     "euler_maclaurin",
     "evaluate",
     "fourier_transform",
+    # Vector calculus
+    "gradient",
     "heaviside",
     "im",
     # Risch-Norman (parallel Risch) heuristic integrator.  Returns a result
@@ -338,7 +393,10 @@ __all__ = [
     "inverse_z_transform",
     "lambert_w",
     "laplace_transform",
+    # Vector calculus
+    "laplacian",
     "multilimit",
+    "norm",
     # M11 — novelty filtering (the module itself, for `novelty.RecordedRecurrence`
     # and the status tables)
     "novelty",
@@ -362,5 +420,7 @@ __all__ = [
     "to_stablehlo",
     # Hypotheses the last inverse Laplace / Z transform on this thread rests on.
     "transform_side_conditions",
+    # Vector calculus
+    "vector_laplacian",
     "z_transform",
 ]
