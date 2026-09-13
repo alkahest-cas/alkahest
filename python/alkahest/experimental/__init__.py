@@ -267,9 +267,9 @@ from alkahest.alkahest import (
     Bernoulli,
     Beta,
     Binomial,
+    Coordinates,
     Distribution,
     Exponential,
-    Coordinates,
     Fps,
     Gamma,
     LogNormal,
@@ -417,9 +417,9 @@ __all__ = [
     # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
     "Telescoping2dCertificate",
     "TelescopingMdCertificate",
-    "VectorError",
     # Hypotheses the last `apart` on this thread rests on (ℚ(params) path).
     "Uniform",
+    "VectorError",
     "apart_side_conditions",
     "arg",
     "asymptotic_expand",

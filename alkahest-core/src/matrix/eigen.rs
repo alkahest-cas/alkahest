@@ -119,7 +119,9 @@ impl fmt::Display for EigenError {
             EigenError::NonDiagonalizable => {
                 write!(
                     f,
-                    "matrix is not diagonalizable over the computed eigenbasis"
+                    "no diagonalization is available: either an eigenvalue's geometric \
+                     multiplicity is smaller than its algebraic one, or M·P = P·D could \
+                     not be proven for the eigenbasis that was computed"
                 )
             }
             EigenError::KernelComputationFailed => write!(
@@ -1360,7 +1362,30 @@ fn columns_match_eigen_relation(
             let rhs = simplify(pool.mul(vec![lam, p.get(r, j)]), pool).value;
             let lhs3 = deep_normalize_for_compare(lhs, pool, 12);
             let rhs3 = deep_normalize_for_compare(rhs, pool, 12);
-            if lhs3 != rhs3 {
+            if lhs3 == rhs3 {
+                continue;
+            }
+            // Structural equality of two normalised forms is *sufficient* and
+            // nowhere near necessary, and it is the whole reason `diagonalize`
+            // refused every matrix with an irrational spectrum: the `M·v` side
+            // of `[[1,2],[3,4]]` carries `√33·√33` where the `λ·v` side carries
+            // `33`, and no normaliser in this path folds one into the other, so
+            // two forms of the same number compared unequal. `eigenvects`
+            // returned two eigenvalues of multiplicity one with one eigenvector
+            // each — a complete eigenbasis — and `jordan_form` answered the
+            // same matrix with a diagonal `J`, while this said *"matrix is not
+            // diagonalizable"*, which is false about `[[1,2],[3,4]]`.
+            //
+            // Falling back to the zero-test ladder is strictly wider (anything
+            // that matched structurally already returned above) and no weaker:
+            // only a *proven* zero counts, so an undecided entry is still a
+            // refusal and the gate can still fail.
+            let diff = simplify_expanded(
+                pool.add(vec![lhs, pool.mul(vec![pool.integer(-1_i32), rhs])]),
+                pool,
+            )
+            .value;
+            if !zero_test::zero_status(pool, diff).is_proven_zero() {
                 return false;
             }
         }
