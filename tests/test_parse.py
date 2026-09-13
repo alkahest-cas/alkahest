@@ -191,7 +191,10 @@ class TestNegativeLiteralFolding:
             ("-(-3)", "3", "3", "3"),  # (-1 * (-1 * 3)),  "--3"
             ("x^(-1)", "x^-1", r"\frac{1}{x}", "x⁻¹"),  # x^(1 * -1),  "x^(-1)"
             ("x^(-2)", "x^-2", "x^{-2}", "x⁻²"),  # x^(-1 * 2),  "x^(-2)"
-            ("-2/3", None, r"-\frac{2}{3}", "-2/3¹"),  # \frac{-2}{3}
+            # The Unicode column used to read `-2/3¹`: the reciprocal factor was
+            # moved into the denominator *and* kept its exponent.  `x^-1` is
+            # `1/x`, not `1/x¹` — the division is what spends the exponent.
+            ("-2/3", None, r"-\frac{2}{3}", "-2/3"),  # \frac{-2}{3}
             ("2 - -3", None, "2 + 3", "2 + 3"),  # "--3 + 2"
             # Unchanged, because none of these is `-<literal>`.
             ("-x", None, "-x", "-x"),

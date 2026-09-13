@@ -24,7 +24,7 @@ def latex(expr) -> str:
         >>> p = alkahest.ExprPool()
         >>> x = p.symbol("x")
         >>> alkahest.latex(alkahest.sin(x)**2 + alkahest.cos(x)**2)
-        '\\\\sin\\\\!\\\\left(x\\\\right)^{2} + \\\\cos\\\\!\\\\left(x\\\\right)^{2}'
+        '\\\\sin\\\\!\\\\left(x\\\\right)^2 + \\\\cos\\\\!\\\\left(x\\\\right)^2'
     """
     return expr.display_latex()
 
