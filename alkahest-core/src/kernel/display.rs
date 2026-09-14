@@ -26,6 +26,25 @@ const PREC_NEG: i32 = 25;
 const PREC_POW: i32 = 30;
 const PREC_ATOM: i32 = 100;
 
+/// A big operator whose body extends to the right — `Σ_{c : p(c) = 0} body`.
+///
+/// **Not** [`PREC_ATOM`].  The rendering ends in the body, so an unparenthesised
+/// `Σ` under a `^` or inside a product silently absorbs what follows it:
+/// `(Σ_c c·ln(x+c))²` printed `\sum_{c : …} c \ln(x+c)^2`, which is character
+/// for character the rendering of `Σ_c c·ln(x+c)²` — a different number.
+/// Sitting at [`PREC_ADD`] makes [`latex_wrap`]/[`unicode_wrap`] bracket the
+/// whole operator wherever it is an operand of `*`, `/` or `^`, while leaving
+/// it bare as a term of a sum, where `Σ f + 1` and `Σ (f + 1)` are told apart
+/// by the body's own brackets (see [`PREC_BIGOP_BODY`]).
+const PREC_BIGOP: i32 = PREC_ADD;
+
+/// The precedence a [`ExprData::RootSum`] body is wrapped at.
+///
+/// A body that binds looser than a product — an `Add`, a comparison — has to be
+/// bracketed, or `Σ_c (c + 1)` prints as `Σ_c c + 1` and reads as `(Σ_c c) + 1`.
+/// A product or an atom needs nothing: `Σ_c c·ln(x + c)` is unambiguous.
+const PREC_BIGOP_BODY: i32 = PREC_MUL;
+
 // ---------------------------------------------------------------------------
 // Public entry points
 // ---------------------------------------------------------------------------
@@ -772,8 +791,8 @@ fn latex_r(id: ExprId, pool: &ExprPool) -> (String, i32) {
         ExprData::RootSum { poly, var, body } => {
             let (p, _) = latex_r(*poly, pool);
             let (v, _) = latex_r(*var, pool);
-            let (b, _) = latex_r(*body, pool);
-            (format!(r"\sum_{{{v} \, : \, {p} = 0}} {b}"), PREC_ATOM)
+            let b = latex_wrap(*body, pool, PREC_BIGOP_BODY);
+            (format!(r"\sum_{{{v} \, : \, {p} = 0}} {b}"), PREC_BIGOP)
         }
     })
 }
@@ -1113,7 +1132,12 @@ fn unicode_piecewise(branches: &[(ExprId, ExprId)], default: ExprId, pool: &Expr
     }
     let (def_tex, _) = unicode_r(default, pool);
     rows.push(format!("{def_tex}  otherwise"));
-    format!("{{ {}", rows.join("\n  "))
+    // The closing brace is what makes this an atom.  Without it the block ends
+    // in the default branch, so `p^2` rendered as `… 2·x  otherwise²` — the
+    // exponent on the last branch rather than on the piecewise.  The LaTeX side
+    // has always been self-delimiting (`\end{cases}`); this is the Unicode
+    // equivalent.
+    format!("{{ {} }}", rows.join("\n  "))
 }
 
 fn unicode_r(id: ExprId, pool: &ExprPool) -> (String, i32) {
@@ -1173,8 +1197,8 @@ fn unicode_r(id: ExprId, pool: &ExprPool) -> (String, i32) {
         ExprData::RootSum { poly, var, body } => {
             let (p, _) = unicode_r(*poly, pool);
             let (v, _) = unicode_r(*var, pool);
-            let (b, _) = unicode_r(*body, pool);
-            (format!("∑_{{{v}:{p}=0}} {b}"), PREC_ATOM)
+            let b = unicode_wrap(*body, pool, PREC_BIGOP_BODY);
+            (format!("∑_{{{v}:{p}=0}} {b}"), PREC_BIGOP)
         }
     })
 }
@@ -1460,6 +1484,94 @@ mod tests {
         assert_eq!(render_unicode(two_over_one, &p), "2");
         assert_eq!(render_latex(p.pow(x, p.rational(1, 1)), &p), "x^1");
         assert_eq!(render_unicode(p.pow(x, p.rational(1, 1)), &p), "x");
+    }
+
+    /// A `RootSum` under a power must bracket the operator, not the body.
+    ///
+    /// `Σ_{c : c²−2=0} c·ln(x+c)` squared printed
+    /// `\sum_{c : c^2 - 2 = 0} c \ln\!\left(x + c\right)^2`, which is character
+    /// for character the rendering of `Σ_{c : c²−2=0} c·ln(x+c)²`.  Two
+    /// different numbers — at `x = 3` they are `2.096…` and `2.817…` — with one
+    /// printed form between them.
+    #[test]
+    fn a_root_sum_under_a_power_brackets_the_operator() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let c = p.symbol("c", Domain::Real);
+        let poly = p.add(vec![p.pow(c, p.integer(2_i32)), p.integer(-2_i32)]);
+        let log = p.func("log", vec![p.add(vec![x, c])]);
+        let body = p.mul(vec![c, log]);
+
+        let squared_sum = p.pow(p.root_sum(poly, c, body), p.integer(2_i32));
+        let sum_of_squares = p.root_sum(poly, c, p.mul(vec![c, p.pow(log, p.integer(2_i32))]));
+
+        assert_ne!(
+            render_latex(squared_sum, &p),
+            render_latex(sum_of_squares, &p)
+        );
+        assert_ne!(
+            render_unicode(squared_sum, &p),
+            render_unicode(sum_of_squares, &p)
+        );
+        assert!(render_latex(squared_sum, &p).starts_with(r"\left(\sum"));
+        assert!(render_unicode(squared_sum, &p).starts_with("(∑"));
+    }
+
+    /// A `RootSum` body that binds looser than a product is bracketed, or
+    /// `Σ_c (c + 1)` prints as `Σ_c c + 1` and reads as `(Σ_c c) + 1`.
+    #[test]
+    fn a_root_sum_brackets_a_body_that_binds_looser_than_a_product() {
+        let p = ExprPool::new();
+        let c = p.symbol("c", Domain::Real);
+        let poly = p.add(vec![p.pow(c, p.integer(2_i32)), p.integer(-2_i32)]);
+
+        let add_body = p.root_sum(poly, c, p.add(vec![c, p.integer(1_i32)]));
+        assert_eq!(
+            render_latex(add_body, &p),
+            r"\sum_{c \, : \, c^2 - 2 = 0} \left(c + 1\right)"
+        );
+        assert_eq!(render_unicode(add_body, &p), "∑_{c:c² - 2=0} (c + 1)");
+
+        // A product needs nothing; over-bracketing would be its own defect.
+        let mul_body = p.root_sum(poly, c, p.mul(vec![c, p.integer(3_i32)]));
+        assert_eq!(render_unicode(mul_body, &p), "∑_{c:c² - 2=0} 3·c");
+    }
+
+    /// A `RootSum` inside a product is bracketed: `x · Σ_c c` must not print as
+    /// `Σ_c c x`, which reads as `Σ_c (c·x)`.
+    #[test]
+    fn a_root_sum_inside_a_product_is_bracketed() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let c = p.symbol("c", Domain::Real);
+        let poly = p.add(vec![p.pow(c, p.integer(2_i32)), p.integer(-2_i32)]);
+        let rs = p.root_sum(poly, c, c);
+        let tex = render_latex(p.mul(vec![rs, x]), &p);
+        assert!(tex.contains(r"\left(\sum"), "{tex}");
+        assert!(tex.contains(r"\right)"), "{tex}");
+    }
+
+    /// The Unicode piecewise block is self-delimiting.
+    ///
+    /// Without the closing brace the block ended in its default branch, so a
+    /// power landed on that branch: `p²` printed `{ x + 1  if x < 0\n  2·x
+    /// otherwise²`, i.e. the square of the *default value* rather than of the
+    /// piecewise.  `\end{cases}` has always closed the LaTeX one.
+    #[test]
+    fn a_unicode_piecewise_closes_its_brace() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let cond = p.predicate(PredicateKind::Lt, vec![x, p.integer(0_i32)]);
+        let pw = p.piecewise(
+            vec![(cond, p.add(vec![x, p.integer(1_i32)]))],
+            p.mul(vec![p.integer(2_i32), x]),
+        );
+        let block = render_unicode(pw, &p);
+        assert!(block.starts_with("{ "), "{block}");
+        assert!(block.ends_with(" }"), "{block}");
+        // The exponent now attaches to the closed block, not to `2·x`.
+        let squared = render_unicode(p.pow(pw, p.integer(2_i32)), &p);
+        assert!(squared.ends_with(" }²"), "{squared}");
     }
 
     /// `|` is its own mirror, so `||x||` has no unique reading.
