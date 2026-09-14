@@ -1,46 +1,80 @@
 # Changelog
 
-## Unreleased
+## 3.11.0 — 2026-09-14
 
-- **The LLVM JIT backend moves from LLVM 15 to LLVM 21.** This is a build-environment
-  break, not an API break: no public Rust or Python signature changes, and
-  `cargo semver-checks` reports no semver update required.
+### Silent errors fixed — do results you already computed need rechecking?
 
-  - **inkwell was never the constraint.** inkwell 0.9 — already the pinned version —
-    carries feature flags for LLVM 11 through 22. The version was one feature string,
-    `llvm15-0-prefer-dynamic`. (inkwell 0.10 would gain nothing: it supports 12–22,
-    i.e. it *drops* 11 rather than adding anything newer.)
-  - **CI installs LLVM 21 from `apt.llvm.org`.** Ubuntu 24.04's universe stops at
-    `llvm-19-dev`, so a new `.github/actions/setup-llvm` composite action adds the
-    upstream repository and exports `LLVM_SYS_211_PREFIX`. It is an action rather than
-    nine copies because nine jobs across five workflows build the `jit` feature. macOS
-    pins `brew install llvm@21`, since Homebrew's unversioned `llvm` is already 22.
-    LLVM 21 is also what RHEL 10 ships (`/usr/lib64/llvm21`), so a distro `llvm-devel`
-    gives a contributor the right version with no extra repository.
-  - **The NVPTX libdevice cleanup now uses the new pass manager.** LLVM 17 removed the
-    legacy `PassManager`, so `--features cuda` did not merely warn on LLVM 21 — it
-    failed to compile with four `no method named add_*_pass` errors.
-    `run_libdevice_cleanup_passes` is rewritten onto `Module::run_passes` with the same
-    four passes in the same order. **Verified on 2× RTX 3090 hardware:**
-    `scripts/verify_cuda_on_gpu.sh` 9/9, `compute-sanitizer` memcheck / racecheck /
-    initcheck / synccheck all `ERROR SUMMARY: 0`, and a 14-kernel PTX diff against an
-    LLVM 15 build of the same tree gives **896/896 bit-for-bit identical device
-    results**, the same set of out-of-line libdevice functions, zero `__nv_*` or
-    `tanh` survivors, and 2–12 % *fewer* instructions. With the cleanup disabled, all
-    14 kernels fail `ptxas` on LLVM 21 with the documented
-    `llvm.nvvm.tanh.approx.f32` parse error — so the hazard is live on 21 and this
-    pipeline is what removes it. Note nothing in CI builds `cuda`; that verification
-    is a manual GPU-box step.
-  - **The `+jit` and `+full` release wheels move from `ubuntu-22.04` to `ubuntu-24.04`.**
-    This raises those two wheels' glibc floor from 2.35 to 2.39. They are
-    `linux_x86_64`-tagged and attached to GitHub Releases only, never PyPI; the default
-    PyPI wheel is unaffected and stays on 22.04. The `attach-optional-linux-wheels`
-    artifact glob is updated to match, which would otherwise have silently stopped
-    matching anything.
-  - `AGENTS.md`'s headline build line no longer includes `jit`. It required LLVM dev
-    headers that the line never mentioned, so a fresh contributor's first command failed
-    on an LLVM error; `cranelift` already provides a JIT with no system dependencies.
-    The `jit` invocation is documented beneath it with the prefix variable spelled out.
+- **`matrix_exp` was wrong for every defective matrix, and `jordan_form`
+  returned a `P` that was not a basis.** Both shipped in 3.10.0.
+  `jordan_block_exp` wrote `e^λ·λᵏ/k!` where `e^J = e^λ·Σ Nᵏ/k!` requires
+  `e^λ/k!` — it substituted the eigenvalue for the nilpotent power. A nilpotent
+  block (`λ = 0`) lost its off-diagonal entirely and collapsed to the identity;
+  `[[2,1],[0,2]]` picked up a spurious factor of 2; a block with `λ = 1` was
+  correct *by luck*, because `λᵏ = 1` hides the defect. Independently,
+  `jordan_matrix_exp` read the superdiagonal at `(i, i+sz)` instead of
+  `(i+sz-1, i+sz)`, so a 3×3 Jordan block split into a 2×2 and a 1×1.
+
+  `jordan_form` was wrong differently: for one eigenvalue owning two blocks of
+  the same size, both chains were generated from the same `ker(M−λI)^s` and took
+  the same basis vector, so `P` had duplicate columns. `J` was right, `P` was
+  not a basis, `M = P·J·P⁻¹` was false and `P⁻¹` did not exist — and it was
+  returned anyway with nothing to say so.
+
+  `e^{At}` now routes diagonal → `diagonalize` → **Putzer**, with no Jordan form
+  on the exponential path at all (`matrix/putzer.rs`, lifted out of the ODE
+  module, which now shares it). The one undecidable question — whether
+  `λᵢ − λⱼ` vanishes — is reported through the new
+  `matrix_exp_side_conditions()` rather than assumed. An assembled `P` whose
+  rank can be *proven* deficient is refused (`E-LINALG-008`); positive evidence
+  only, so a symbolic `P` of undecidable rank is not newly refused.
+
+- **Eight more wrong answers in `matrix/`, found by comparing against an outside
+  oracle for the first time.** The corpus had 19 `linear_algebra` cases and not
+  one of them compared a matrix function against anything external, which is how
+  a 60%-wrong `matrix_exp` shipped. A sweep of 351 randomised matrices × 21
+  operations against sympy found, with the rate on the then-current `main`:
+
+  | operation | defect | wrong |
+  |---|---|---|
+  | `rational_canonical_form` | companion coefficients written down the last **row** instead of the last column; `rcf(diag(1,2))` gives `det C = 0` against `det M = 2` | 228 / 351 |
+  | `lu` | `L`'s multipliers were not moved when a pivot swap moved their rows, so row 1 of `L·U` is not a row of `A` at all | 105 / 351 |
+  | `qr` | Gram–Schmidt filled a dependent column with the zero vector, so `Q·R = A` held — which is why every existing check passed — while `QᵀQ = diag(1,0)` | 62 / 304 |
+  | `row_space` | returned rows of `m` at echelon pivot indices; `row_space([[0,0],[1,0]])` returned the zero vector as a basis of a 1-D space | 58 / 351 |
+  | `minimal_polynomial` | did not advance `Mᵏ` past a zero constant term — `minpoly(0₂ₓ₂) = λ²` | 7 / 351 |
+  | `cholesky` | never checked symmetry: `cholesky([[1,5],[0,1]])` returned the identity, a factorisation of something other than its input | — |
+  | `cholesky` | refused `2I` claiming "not symmetric positive definite" — a refusal stating a falsehood | — |
+  | `diagonalize` | refused every matrix with an irrational spectrum, while `eigenvects` returned a complete eigenbasis for the same matrix and `jordan_form` returned a diagonal `J` — the library contradicted itself | 53 → 89 answered |
+
+  The `qr` case is the argument for oracle comparison in one line: the
+  factorisation identity `Q·R = A` was true, so every test that checked it
+  passed while `Q` was not orthogonal.
+
+- **A boundary face is not zero where the summand has no value.**
+  `telescoping2d/boundary.rs` promised in its own header to check three
+  defeaters of a face's vanishing. Two were present but limited to *identical*
+  vanishing along the face; the third — another `Γ` factor with `e > 0` poling
+  where the `1/Γ` zeroes — was not checked at all, because `face_vanishes`
+  skipped every factor whose argument still moved with `n`. The module had also
+  never inherited the interior-pole guard the single-sum engine gained in 3.10.
+  `F(n,k) = C(10,k)·Γ(n−k+1)/Γ(n+1)` over `k = 0..10` reported `"vanishes"` and
+  licensed `110·S(11) = 100·S(10)`, false by exactly `1/9!` — which is the value
+  of the face the verdict called zero. Verified in exact rational arithmetic
+  from the definition. The refusal is now shape-based and costs the
+  `C(10,k)·(n+1)_k` family a verdict it used to get; that is documented in the
+  module header rather than left to be discovered.
+
+- **Every printed form now re-reads as the expression that was printed.** A
+  printer that emits something which parses back as different mathematics is a
+  wrong answer with extra steps. `2·3^n` printed as `2 3^n`, which typesets as
+  `23^n` — **12167 against 54**. `x·(−1.5)` printed as `x -1.5`, which reads as
+  `x − 1.5` — **0.5 against −3**. `Mul[x,x]` set as juxtaposed `x x`, and
+  `unicode_str` emitted a spurious `(1 + x·x)¹`.
+
+  `kernel/printer_roundtrip.rs` now prints, re-reads and compares — structurally
+  where it can, numerically at five sample points otherwise — across 4000 plain,
+  2028 LaTeX and 2028 Unicode forms, with **0 mismatches**. The typeset forms
+  are read back the way a page reads them: math mode discards whitespace, so a
+  fused `2 3` → `23` counts as a failure rather than being assumed away.
 
 - **`zeilberger`'s boundary verdict no longer reads a zero off `0 · ∞`.** An
   endpoint of `G(n,k)` is evaluated by order counting in `k`, and a strictly
@@ -75,6 +109,103 @@
   `S(n+1) = 2·S(n)` from `n = 3` on. Reporting that as a narrowed
   `boundary_valid_from` instead of refusing would be strictly better and is not
   what this change does; a refusal is the honest answer until it exists.
+
+
+- **`Expr.__pow__` and the arithmetic dunders keep an exact Python number
+  exact.** pyo3's `extract::<f64>()` is not a test for "is a float" — it goes
+  through `__float__` — and the coercion helpers took that arm before any exact
+  one. So:
+
+  | input | before | after |
+  |---|---|---|
+  | `x ** (10**30 + 1)` | `x^1e30` — the `+ 1` gone, an exact integer power turned into a float one | `x^1000000000000000000000000000001` |
+  | `x ** Fraction(1, 3)` | `x^0.3333333333333333` | `x^(1/3)` |
+  | `x ** Decimal("0.1")` | `x^0.1` (the double, which is not one tenth) | `x^(1/10)` |
+  | `x * (10**30 + 1)`, `x + …`, `x - …`, `x / …`, `subs`, `Matrix` scalars | same loss | exact |
+
+  The kernel never forced it: `ExprPool::integer` and `ExprPool::rational` are
+  `rug`-backed and unbounded. What the loss destroyed was the *node* —
+  `eval_expr` reduces every exponent to an `f64` anyway, so a numeric probe
+  cannot see it, but `integrate`, `puiseux_series` and the polynomial converters
+  all read an exponent structurally and none of them can recognise a float power
+  as the exact one that was written.
+
+  A Python `float` is still a float node, and a NumPy `float32`/`float64` still
+  follows `float` — `0.1` means the double, not 3602879701896397/36028797018963968.
+  `Fraction(4, 2)` interns as the integer `2`, not as `Rational(2, 1)`, which is
+  a distinct node that structural matches on an integer exponent would miss.
+
+  Two other `__pow__` defects fell out of routing it through the same
+  `coerce_scalar` the other operators use: `pool_a.symbol("x") ** pool_b.symbol("y")`
+  read the second pool's raw `ExprId` in the first pool and returned `x^x`
+  instead of the pool-mismatch error every other operator raises, and
+  `pow(x, 2, 5)` silently discarded the modulus. Both are now errors.
+
+### Added
+
+- **Probability distributions, expectations and moments.**
+  `alkahest.experimental.Distribution` over nine laws — `Normal`, `LogNormal`,
+  `Uniform`, `Exponential`, `Gamma` (shape–scale), `Beta`, `Bernoulli`,
+  `Binomial`, `Poisson` — with `pdf`, `cdf`, `quantile`, `mean`, `variance`,
+  `moment(n)`, `support`, `constraints`, and a free `expectation(f, var, dist)`.
+  Every closed form is checked against quadrature of its own defining integral
+  before it is returned; `E-PROB-006` when that integral diverges (decided
+  *before* the symbolic work, so the answer is "no value exists" rather than
+  "the integrator declined"), `E-PROB-005` when an assembled form could not be
+  confirmed.
+
+  `max(x − K, 0)` is handled by cutting the support at the kink, which is what
+  makes `expectation(max(S − K, 0), S, LogNormal(μ, σ))` come out as
+  Black–Scholes.
+
+- **Characteristic and generating functions, with the region of convergence
+  reported rather than assumed.** `characteristic_function(t)`,
+  `moment_generating_function(t)`, `cumulant_generating_function(t)`,
+  `probability_generating_function(z)`, `cumulant(n)`, `factorial_moment(n)`,
+  `skewness()`, `excess_kurtosis()`.
+
+  This is where a table lookup and a correct answer part company.
+  `M_X(t) = λ/(λ−t)` for an `Exponential(λ)` holds **only on `t < λ`**; outside
+  that strip the same expression is finite, clean and the value of no integral.
+  A decidably out-of-strip argument refuses; an undecidable one publishes
+  `λ − t > 0` on `prob_side_conditions()`. The log-normal MGF does not exist for
+  any `t > 0` and refuses rather than completing the square anyway. A PGF is
+  refused for a distribution not supported on the non-negative integers, naming
+  the support, rather than manipulating `E[z^X]` formally.
+
+- **Entropy, KL divergence and cross-entropy**, over the same nine laws:
+  `Distribution.entropy(base=None)`, `kl_divergence`, `cross_entropy`,
+  `mutual_information_independent`.
+
+  Differential entropy is not Shannon entropy and the library does not pretend
+  otherwise: the support decides which is computed, the derivation log says
+  which, and `h` is not clamped non-negative — `Uniform(0, ½).entropy()` returns
+  `log ½ = −0.693`. `h` is not invariant under a change of variables either;
+  `h(LogNormal(μ,σ)) − h(Normal(μ,σ))` is `μ`, asserted on the expression rather
+  than on two numbers. `D(P‖Q)` is gated on support containment **before** the
+  closed form is applied: `D(Uniform(0,1)‖Uniform(0,½))` is `+∞`, where
+  substituting into the formula gives `log ½` — a negative divergence.
+
+- **Vector calculus over orthogonal charts, and Hamilton quaternions.**
+  `gradient`, `divergence`, `curl`, `laplacian`, `vector_laplacian`, `dot`,
+  `cross`, `norm`, `scale` and friends over `cartesian`, `cylindrical` and
+  `spherical` charts, plus `from_embedding`, which *derives* the scale factors
+  from a Cartesian parametrisation and checks orthogonality — there is
+  deliberately no constructor taking scale factors directly, because that is the
+  input you cannot validate. Fields are physical components in the local
+  orthonormal frame.
+
+  Quaternions get the Hamilton product, conjugate, norm, inverse, `normalize`,
+  `rotate`, and conversions to and from rotation matrices and axis–angle form.
+
+  Verified three ways at random *ugly* points, because scale-factor errors
+  vanish at `θ = π/2`, `φ = 0`, `ρ = 1`: the vector identities in every chart,
+  the published cylindrical and spherical forms from Arfken & Weber and
+  Griffiths, and a Cartesian round trip with components rotated into the local
+  frame — the last being the only check sensitive to handedness, and the one a
+  self-consistent-but-wrong set of scale factors cannot pass.
+
+### Fixed
 
 - **The `erf` and Fresnel antiderivatives carry their constants exactly.**
   `integrate/special.rs` built `√π/2`, `√(π/2|A|)` and `√(2|A|/π)` in `f64` and
@@ -116,6 +247,7 @@
   (`∫_{-∞}^{∞} dx/(x⁴+1) = π/√2`, among others); it is newly true of the
   Gaussian and Fresnel antiderivatives.
 
+
 - **`parse` no longer panics on a truncated exponent.** The Rust lexer
   (`alkahest-core/src/parse.rs`) consumed `e`/`E` and an optional sign
   unconditionally once it had seen a digit, so `"1e"` lexed as the number
@@ -135,43 +267,6 @@
   always rejected these shapes by grammar, so nothing on the Python surface
   changed; the two hand-maintained parsers now agree, which they did not before.
 
-- **`Expr.__pow__` and the arithmetic dunders keep an exact Python number
-  exact.** pyo3's `extract::<f64>()` is not a test for "is a float" — it goes
-  through `__float__` — and the coercion helpers took that arm before any exact
-  one. So:
-
-  | input | before | after |
-  |---|---|---|
-  | `x ** (10**30 + 1)` | `x^1e30` — the `+ 1` gone, an exact integer power turned into a float one | `x^1000000000000000000000000000001` |
-  | `x ** Fraction(1, 3)` | `x^0.3333333333333333` | `x^(1/3)` |
-  | `x ** Decimal("0.1")` | `x^0.1` (the double, which is not one tenth) | `x^(1/10)` |
-  | `x * (10**30 + 1)`, `x + …`, `x - …`, `x / …`, `subs`, `Matrix` scalars | same loss | exact |
-
-  The kernel never forced it: `ExprPool::integer` and `ExprPool::rational` are
-  `rug`-backed and unbounded. What the loss destroyed was the *node* —
-  `eval_expr` reduces every exponent to an `f64` anyway, so a numeric probe
-  cannot see it, but `integrate`, `puiseux_series` and the polynomial converters
-  all read an exponent structurally and none of them can recognise a float power
-  as the exact one that was written.
-
-  A Python `float` is still a float node, and a NumPy `float32`/`float64` still
-  follows `float` — `0.1` means the double, not 3602879701896397/36028797018963968.
-  `Fraction(4, 2)` interns as the integer `2`, not as `Rational(2, 1)`, which is
-  a distinct node that structural matches on an integer exponent would miss.
-
-  Two other `__pow__` defects fell out of routing it through the same
-  `coerce_scalar` the other operators use: `pool_a.symbol("x") ** pool_b.symbol("y")`
-  read the second pool's raw `ExprId` in the first pool and returned `x^x`
-  instead of the pool-mismatch error every other operator raises, and
-  `pow(x, 2, 5)` silently discarded the modulus. Both are now errors.
-
-- **Behaviour changes to plan for.** `x ** Fraction(1, 3)` now expands under
-  `puiseux_series` (ramification 3) where it used to be refused `E-SERIES-005`,
-  and `ak.series(x ** Fraction(3, 2), …)` refuses with `E-SERIES-004`
-  (fractional valuation) rather than `E-SERIES-001` (`diff` has no rule for a
-  float power) — the same refusal, for the right reason.
-
-## 3.10.0 — 2026-09-10
 
 - **The transform, ODE and series engines say *why* they declined.** Eight
   conversion functions in `alkahest-py/src/lib.rs` ended at
@@ -207,6 +302,7 @@
 
   `E-FPS-001` … `007` had codes but no `.remediation`; they have one now.
 
+
 - **Fixed: `E-ODE-021` meant two incompatible things.**
   `ode::numeric::NumericOdeError::StepSizeTooSmall` and
   `ode::series_solve::SeriesError::IrregularSingular` both returned it, and the
@@ -225,6 +321,95 @@
   (`PuiseuxError` reusing `E-SERIES-001..003`, and the two holonomic
   `InvalidInput`s sharing `E-HOLO-004`).
 
+
+### Behaviour changes to plan for
+
+- **Behaviour changes to plan for.** `x ** Fraction(1, 3)` now expands under
+  `puiseux_series` (ramification 3) where it used to be refused `E-SERIES-005`,
+  and `ak.series(x ** Fraction(3, 2), …)` refuses with `E-SERIES-004`
+  (fractional valuation) rather than `E-SERIES-001` (`diff` has no rule for a
+  float power) — the same refusal, for the right reason.
+
+
+### Build and packaging
+
+- **The LLVM JIT backend moves from LLVM 15 to LLVM 21.** This is a build-environment
+  break, not an API break: no public Rust or Python signature changes, and
+  `cargo semver-checks` reports no semver update required.
+
+  - **inkwell was never the constraint.** inkwell 0.9 — already the pinned version —
+    carries feature flags for LLVM 11 through 22. The version was one feature string,
+    `llvm15-0-prefer-dynamic`. (inkwell 0.10 would gain nothing: it supports 12–22,
+    i.e. it *drops* 11 rather than adding anything newer.)
+  - **CI installs LLVM 21 from `apt.llvm.org`.** Ubuntu 24.04's universe stops at
+    `llvm-19-dev`, so a new `.github/actions/setup-llvm` composite action adds the
+    upstream repository and exports `LLVM_SYS_211_PREFIX`. It is an action rather than
+    nine copies because nine jobs across five workflows build the `jit` feature. macOS
+    pins `brew install llvm@21`, since Homebrew's unversioned `llvm` is already 22.
+    LLVM 21 is also what RHEL 10 ships (`/usr/lib64/llvm21`), so a distro `llvm-devel`
+    gives a contributor the right version with no extra repository.
+  - **The NVPTX libdevice cleanup now uses the new pass manager.** LLVM 17 removed the
+    legacy `PassManager`, so `--features cuda` did not merely warn on LLVM 21 — it
+    failed to compile with four `no method named add_*_pass` errors.
+    `run_libdevice_cleanup_passes` is rewritten onto `Module::run_passes` with the same
+    four passes in the same order. **Verified on 2× RTX 3090 hardware:**
+    `scripts/verify_cuda_on_gpu.sh` 9/9, `compute-sanitizer` memcheck / racecheck /
+    initcheck / synccheck all `ERROR SUMMARY: 0`, and a 14-kernel PTX diff against an
+    LLVM 15 build of the same tree gives **896/896 bit-for-bit identical device
+    results**, the same set of out-of-line libdevice functions, zero `__nv_*` or
+    `tanh` survivors, and 2–12 % *fewer* instructions. With the cleanup disabled, all
+    14 kernels fail `ptxas` on LLVM 21 with the documented
+    `llvm.nvvm.tanh.approx.f32` parse error — so the hazard is live on 21 and this
+    pipeline is what removes it. Note nothing in CI builds `cuda`; that verification
+    is a manual GPU-box step.
+  - **The `+jit` and `+full` release wheels move from `ubuntu-22.04` to `ubuntu-24.04`.**
+    This raises those two wheels' glibc floor from 2.35 to 2.39. They are
+    `linux_x86_64`-tagged and attached to GitHub Releases only, never PyPI; the default
+    PyPI wheel is unaffected and stays on 22.04. The `attach-optional-linux-wheels`
+    artifact glob is updated to match, which would otherwise have silently stopped
+    matching anything.
+  - `AGENTS.md`'s headline build line no longer includes `jit`. It required LLVM dev
+    headers that the line never mentioned, so a fresh contributor's first command failed
+    on an LLVM error; `cranelift` already provides a JIT with no system dependencies.
+    The `jit` invocation is documented beneath it with the prefix variable spelled out.
+
+### Testing and tooling
+
+- **The silent-error corpus is a package, not a 8,337-line file.**
+  `tests/silent_errors/corpus/` holds one module per `Case.subsystem` (largest
+  1,278 lines), `_shared.py` for the pool and the helpers more than one
+  subsystem needs, and an `__init__.py` that discovers modules with `pkgutil`
+  rather than listing them — so adding a subsystem is one new file and there is
+  no shared registry to collide on.
+
+  `corpus.validate()` runs at **import**, before any case executes: unique ids,
+  callable `op` that binds with no arguments, non-empty `statement` and
+  `verified_by`, a contract, and a `subsystem` matching the module the case was
+  found in. The motivating failure was a merge that truncated a helper past its
+  `return`, leaving `op` bound to `None`: the file still parsed, still formatted
+  and still linted, and the only symptom was every case in the subsystem
+  reporting `'NoneType' object is not callable` from inside the runner. It now
+  fails collection naming the case. `test_corpus_structure.py` tests the guard,
+  control case included.
+
+- **The demo playground's recording pipeline filmed the wrong notebook.** Four
+  defects, each of which failed quietly: cells were injected as plain base64 in
+  a query string, where `URLSearchParams` decodes `+` as a space — so any
+  payload containing a `+` failed to decode and the notebook silently fell back
+  to the default starter cells; `atob` output was parsed as Latin-1, so every en
+  dash and Greek letter became mojibake; `?autorun=1` ran exactly one cell,
+  because the effect cleared a flag that was one of its own dependencies and
+  React then ran its cleanup mid-loop; and the page opened two kernel sessions,
+  so the import cell landed in one and the rest in the other. Printed tables
+  were also being reflowed into prose by the markdown renderer.
+
+  `demos/black_scholes.py` derives the Black–Scholes call price from a single
+  `expectation(max(S-K, 0), S, LogNormal(μ, Σ))` call and checks it against the
+  textbook formula built from `math.erf` (2.5e-15 over five parameter points),
+  against `Φ(d₁)` for a delta obtained by symbolic differentiation, and against
+  the Black–Scholes PDE, whose residual is ~1e-14.
+
+## 3.10.0 — 2026-09-10
 
 - **Series with a fractional valuation are expanded rather than refused.** New
   `alkahest.experimental.puiseux_series` /
