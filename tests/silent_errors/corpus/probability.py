@@ -17,6 +17,7 @@ from ._shared import PI, POOL, _int, _rat
 
 PROB_T = POOL.symbol("prob_t")
 PROB_X = POOL.symbol("prob_x")
+PROB_Z = POOL.symbol("prob_z")
 
 
 def _prob_value(build: Callable[[], Any], env: dict | None = None) -> Callable[[], float]:
@@ -453,5 +454,162 @@ CASES: list[Case] = [
         "asks the same question through `evaluate(..., mode='complex')` and gets "
         "both components. A gate made only of this case would be passed by a "
         "module whose characteristic functions could not be evaluated at all.",
+    ),
+    Case(
+        id="prob_lognormal_mgf_diverges_and_is_refused",
+        subsystem="probability",
+        statement="M_X(t) = E[e^{tX}] for a LogNormal is +infinity for every t > 0",
+        op=lambda: ex.LogNormal(_int(0), _int(1)).moment_generating_function(_int(1)),
+        contract=Raises("E-PROB-006"),
+        verified_by="int_0^inf e^{tx} e^{-(log x)^2/2}/(x sqrt(2 pi)) dx diverges for every "
+        "t > 0: substituting x = e^u gives int e^{t e^u - u^2/2} du/sqrt(2 pi), "
+        "and t e^u outgrows u^2/2 without bound. mpmath quad over [0, inf] at "
+        "t = 1 fails to converge and nsum of the moment series "
+        "sum t^n e^{n^2/2}/n! diverges (the terms grow: e^{n^2/2}/n! -> inf). "
+        "Aitchison & Brown, *The Lognormal Distribution* §2.4; the same fact "
+        "underlies Heyde 1963 (J. London Math. Soc. 38) on the log-normal not "
+        "being determined by its moments. A CAS that completes the square in "
+        "the exponent returns a clean e^{...} that is the value of no integral.",
+        note="The control is `prob_control_normal_mgf_closes_and_is_returned`: a gate "
+        "made only of this case is passed by a library with no MGF at all.",
+    ),
+    Case(
+        id="prob_control_normal_mgf_closes_and_is_returned",
+        subsystem="probability",
+        statement="M_X(13/10) for X ~ Normal(7/10, 11/10) is e^{mu t + sigma^2 t^2/2}",
+        op=_prob_value(
+            lambda: ex.Normal(_rat(7, 10), _rat(11, 10)).moment_generating_function(_rat(13, 10))
+        ),
+        contract=Returns(6.906410235712461, tol=1e-11),
+        verified_by="mpmath 40 dps, from the definition M(t) = int e^{tx} p(x) dx: "
+        "quad(e^{1.3x}·normal_pdf(x, 0.7, 1.1), [-inf, 0.7, inf]) = "
+        "6.9064102357124608639, equal to exp(0.7·1.3 + 1.21·1.69/2). The "
+        "control for the log-normal refusal: a Gaussian MGF is entire, so "
+        "there is no strip to report and the answer is unconditional.",
+    ),
+    Case(
+        id="prob_exponential_mgf_outside_its_strip_is_refused",
+        subsystem="probability",
+        statement="lambda/(lambda - t) is the Exponential MGF only for t < lambda",
+        op=lambda: ex.Exponential(_rat(7, 4)).moment_generating_function(_rat(7, 2)),
+        contract=Raises("E-PROB-006"),
+        verified_by="E[e^{tX}] = int_0^inf e^{tx} lambda e^{-lambda x} dx = "
+        "lambda/(lambda - t) *only* where lambda - t > 0; at t = 2 lambda the "
+        "integrand is lambda e^{+lambda x}, which grows without bound, so the "
+        "expectation is +infinity (Feller II, XIII.2). The closed form there "
+        "evaluates to 1.75/(1.75 - 3.5) = -1 — a *negative* moment generating "
+        "function, when E[e^{tX}] > 0 for every t at which it exists. Both "
+        "numbers are one line of arithmetic; only one of them is an answer.",
+        note="The control is `prob_control_exponential_mgf_inside_its_strip`.",
+    ),
+    Case(
+        id="prob_control_exponential_mgf_inside_its_strip",
+        subsystem="probability",
+        statement="M_X(1/2) for X ~ Exponential(7/4) is 1.4, unconditionally",
+        op=_prob_unconditional(
+            lambda: ex.Exponential(_rat(7, 4)).moment_generating_function(_rat(1, 2)), {}
+        ),
+        contract=Returns(1.4, tol=1e-12),
+        verified_by="mpmath 40 dps: quad(e^{x/2}·1.75 e^{-1.75x}, [0, inf]) = 1.4 exactly, "
+        "= 1.75/(1.75 - 0.5) = 7/5. The rate is numeric and 1/2 < 7/4, so the "
+        "convergence condition is *decided* rather than carried, and this case "
+        "scores the answer only if `prob_side_conditions()` comes back empty. "
+        "Without it the out-of-strip refusal would be passed by a library that "
+        "refused every exponential MGF.",
+    ),
+    Case(
+        id="prob_symbolic_mgf_argument_reports_its_strip_out_of_band",
+        subsystem="probability",
+        statement="M(t) for Exponential(lam) with symbolic t must publish lam - t > 0",
+        op=_prob_unconditional(
+            lambda: ex.Exponential(POOL.symbol("gf_lam")).moment_generating_function(PROB_T),
+            {POOL.symbol("gf_lam"): 1.75, PROB_T: 3.5},
+        ),
+        contract=RefusesOr(),
+        verified_by="With both lambda and t symbolic the strip lambda - t > 0 cannot be "
+        "decided, so the closed form is conditional and the hypothesis is the "
+        "whole of what distinguishes it from a theorem. Evaluated at the "
+        "parameter point used here — lambda = 1.75, t = 3.5, outside the strip "
+        "— it gives -1, while E[e^{3.5X}] = +infinity (the integrand is "
+        "1.75 e^{1.75x}). This case scores a *disclosed* answer as a refusal, "
+        "so it fails if the disclosure is ever dropped.",
+        note="`prob_control_exponential_mgf_inside_its_strip` is the companion where "
+        "the condition is decidable and the channel is correctly empty.",
+    ),
+    Case(
+        id="prob_pgf_of_a_continuous_law_is_a_category_error",
+        subsystem="probability",
+        statement="G_X(z) = sum_k z^k P(X = k) is meaningless for a Normal",
+        op=lambda: ex.Normal(_int(0), _int(1)).probability_generating_function(PROB_Z),
+        contract=Raises("E-PROB-002"),
+        verified_by="A probability generating function is a power series whose coefficients "
+        "are P(X = k) for k = 0, 1, 2, ... (Feller I, XI.1). A normal is "
+        "continuous, so P(X = k) = 0 for every k and the series is identically "
+        "0 — it is not e^{mu log z + sigma^2 log^2 z/2}. That expression is "
+        "what the formal rewrite E[z^X] = E[e^{X log z}] produces, and it is "
+        "the *moment* generating function at log z: a clean, finite, plausible "
+        "answer to a different question.",
+        note="The control is `prob_control_poisson_pgf_closes`.",
+    ),
+    Case(
+        id="prob_control_poisson_pgf_closes",
+        subsystem="probability",
+        statement="G_X(1/2) for X ~ Poisson(12/5) is e^{lam(z-1)} = e^{-6/5}",
+        op=_prob_value(
+            lambda: ex.Poisson(_rat(12, 5)).probability_generating_function(PROB_Z),
+            {PROB_Z: 0.5},
+        ),
+        contract=Returns(0.3011942119122021, tol=1e-12),
+        verified_by="mpmath 40 dps, summing the definition: "
+        "nsum(0.5^k e^{-2.4} 2.4^k / k!, [0, inf]) = "
+        "0.30119421191220209664, equal to exp(2.4·(0.5 - 1)) = e^{-1.2}. The "
+        "control for the category-error refusal above — a gate made only of "
+        "refusals is passed by a library with no PGF at all.",
+    ),
+    Case(
+        id="prob_lognormal_has_no_cumulants",
+        subsystem="probability",
+        statement="kappa_n = K^{(n)}(0) needs K = log M, and a LogNormal has no M",
+        op=lambda: ex.LogNormal(_rat(1, 5), _rat(1, 2)).cumulant(3),
+        contract=Raises("E-PROB-006"),
+        verified_by="kappa_n is by definition the n-th derivative of log E[e^{tX}] at the "
+        "origin, and E[e^{tX}] = +infinity for every t > 0 for a log-normal "
+        "(see `prob_lognormal_mgf_diverges_and_is_refused`), so K exists on no "
+        "neighbourhood of 0. The moment-cumulant recursion nevertheless runs "
+        "on the log-normal's moments e^{n mu + n^2 sigma^2/2} and produces "
+        "finite numbers — the coefficients of a divergent series. That is "
+        "exactly the failure mode: arithmetic that completes and means "
+        "nothing.",
+        note="The control is `prob_control_lognormal_skewness_still_exists`: the "
+        "refusal must not sweep up the shape statistics, which are defined "
+        "from central moments and are finite.",
+    ),
+    Case(
+        id="prob_control_lognormal_skewness_still_exists",
+        subsystem="probability",
+        statement="gamma_1 for LogNormal(0, 1) is (e^{s^2}+2)sqrt(e^{s^2}-1), not a refusal",
+        op=_prob_value(lambda: ex.LogNormal(_int(0), _int(1)).skewness()),
+        contract=Returns(6.184877138632555, tol=1e-9),
+        verified_by="Skewness is E[((X-mu)/sigma)^3], a ratio of *central moments*, and a "
+        "log-normal has moments of every order. At sigma = 1 the standard "
+        "closed form (e^{s^2}+2)sqrt(e^{s^2}-1) (Aitchison & Brown §2.3) is "
+        "(e+2)sqrt(e-1) = 6.1848771386325547948 to 20 digits by mpmath. "
+        "Refusing it because the cumulants do not exist would be a false "
+        "refusal — the quantity is standard, finite and printed in every "
+        "reference.",
+    ),
+    Case(
+        id="prob_excess_kurtosis_of_a_normal_is_zero_not_three",
+        subsystem="probability",
+        statement="excess kurtosis subtracts the 3; a Normal has gamma_2 = 0",
+        op=_prob_value(lambda: ex.Normal(_rat(7, 10), _rat(11, 10)).excess_kurtosis()),
+        contract=Returns(0.0, tol=1e-9),
+        verified_by="E[(X-mu)^4] = 3 sigma^4 for any Gaussian (Isserlis), so the fourth "
+        "standardised moment is 3 and the *excess* kurtosis is 3 - 3 = 0. The "
+        "two conventions differ by exactly the constant a reader is least "
+        "likely to notice: both 0 and 3 are plausible for a bell curve, and a "
+        "library that returned the raw kurtosis under this name would look "
+        "right for every heavy-tailed law. Confirmed by mpmath "
+        "quad(((x-0.7)/1.1)^4·normal_pdf(x, 0.7, 1.1), [-inf, 0.7, inf]) = 3.",
     ),
 ]
