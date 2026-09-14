@@ -455,11 +455,12 @@ Three things an agent should know:
    exist here — a truncated Puiseux answer for `sqrt(x)*log(x)` would be **wrong**,
    not coarse. `exp(1/x)` and `sin(1/x)` are essential singularities. A ramification
    index past what the verifier can discriminate is refused with the same code.
-3. **`x ** Fraction(1, 3)` is not `x**(1/3)`.** `Expr.__pow__` coerces through
-   `f64`, so a non-dyadic fraction arrives as a binary rational with a
-   `2**54` denominator and is refused rather than rounded. Build it exactly with
-   `sin(x).pow_expr(pool.rational(1, 3))`. `Fraction(3, 2)` is dyadic and works
-   as written.
+3. **`x ** Fraction(1, 3)` *is* `x**(1/3)`.** `Expr.__pow__` used to coerce its
+   exponent through `f64`, so a non-dyadic fraction arrived as a binary rational
+   with a `2**54` denominator and was refused rather than rounded. Exact Python
+   numbers now reach the pool exactly — `Fraction`, `decimal.Decimal` and an int
+   of any width — so `puiseux_series(sin(x) ** Fraction(1, 3), ...)` expands with
+   ramification 3. A `float` exponent is still a float node.
 
 For asymptotics and multivariate limits, see `experimental.asymptotic_expand` and
 `experimental.multilimit`.

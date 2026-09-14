@@ -184,12 +184,39 @@ fn tokenize(src: &str) -> Result<Vec<Token>, ParseError> {
                 }
             }
             if pos < n && (bytes[pos] == b'e' || bytes[pos] == b'E') {
-                pos += 1;
-                if pos < n && (bytes[pos] == b'+' || bytes[pos] == b'-') {
-                    pos += 1;
+                // An exponent marker must be followed by at least one digit.
+                // Consuming `e`/`E` and an optional sign unconditionally made
+                // `"1e"` lex as `Num("1e")`, and `"1e".parse::<f64>()` is an
+                // `Err` — `nud` unwrapped it and the parser *panicked* on a
+                // two-character input.  Reject it here, with a span, so the
+                // caller gets the same structured `E-PARSE-001` every other
+                // piece of malformed text gets.
+                //
+                // This is deliberately an error and not a backtrack: `2e` does
+                // not become `2 * e`.  Implicit multiplication is a separate
+                // grammar decision, and silently reinterpreting a typo'd
+                // exponent as a product with Euler's number is exactly the kind
+                // of guess this parser should not make.
+                let exp_marker = pos;
+                let mut scan = pos + 1;
+                if scan < n && (bytes[scan] == b'+' || bytes[scan] == b'-') {
+                    scan += 1;
                 }
-                while pos < n && bytes[pos].is_ascii_digit() {
-                    pos += 1;
+                if scan < n && bytes[scan].is_ascii_digit() {
+                    while scan < n && bytes[scan].is_ascii_digit() {
+                        scan += 1;
+                    }
+                    pos = scan;
+                } else {
+                    return Err(ParseError::lex(
+                        format!(
+                            "malformed number literal {:?}: exponent marker {:?} needs at \
+                             least one digit after it",
+                            &src[start..scan],
+                            &src[exp_marker..scan],
+                        ),
+                        (start, scan),
+                    ));
                 }
             }
             tokens.push(Token {
@@ -514,7 +541,17 @@ impl<'a> Parser<'a> {
             Tok::Num(s) => {
                 let s = s.clone();
                 if s.contains('.') || s.to_ascii_lowercase().contains('e') {
-                    Ok(pool.float(s.parse::<f64>().unwrap(), 53))
+                    // The lexer only emits shapes `f64::from_str` accepts, but
+                    // an `unwrap` here once turned a lexer gap into a process
+                    // abort.  Keep the failure structured no matter what the
+                    // lexer hands over.
+                    let value = s.parse::<f64>().map_err(|_| {
+                        ParseError::lex(
+                            format!("malformed number literal: {s}"),
+                            (tok.offset, tok.offset + s.len()),
+                        )
+                    })?;
+                    Ok(pool.float(value, 53))
                 } else {
                     let n: i64 = s.parse().map_err(|_| {
                         ParseError::lex(
@@ -1334,6 +1371,89 @@ mod tests {
                 parsed,
                 "{name} does not round trip"
             );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // A truncated exponent is an error, not a panic
+    // -----------------------------------------------------------------------
+
+    /// `"1e"` used to *panic*.
+    ///
+    /// The lexer consumed `e`/`E` and an optional sign unconditionally once it
+    /// had seen a digit, so `"1e"` became `Tok::Num("1e")`; `nud` then called
+    /// `"1e".parse::<f64>().unwrap()` on an `Err`.  A parser that aborts the
+    /// process on a two-character string is unusable on text the caller did not
+    /// write, which is the only kind of text a parser is for.
+    #[test]
+    fn a_truncated_exponent_is_a_lex_error_not_a_panic() {
+        for src in [
+            "1e", "1E", "1e+", "1e-", "1E+", "1E-", "2.5e", "2.5E-", ".5e", "1.e", "0e", "1e ",
+            "1e*2", "1e+x", "x^2e",
+        ] {
+            let pool = ExprPool::new();
+            let mut syms = HashMap::new();
+            let err = match parse(src, &pool, &mut syms) {
+                Ok(_) => panic!("{src:?} must not parse"),
+                Err(e) => e,
+            };
+            assert_eq!(err.code(), "E-PARSE-001", "{src:?} got the wrong code");
+            let (lo, hi) = err.span().unwrap_or_else(|| panic!("{src:?} has no span"));
+            assert!(
+                lo < hi && hi <= src.len(),
+                "{src:?} span {lo}..{hi} is bogus"
+            );
+            assert!(
+                src[lo..hi].to_ascii_lowercase().contains('e'),
+                "{src:?} span {lo}..{hi} does not cover the exponent marker"
+            );
+        }
+    }
+
+    /// The neighbouring shapes that *are* well formed keep working — the fix
+    /// must not turn a legal literal into an error, and must not backtrack
+    /// `2e` into `2 * e` either.
+    #[test]
+    fn well_formed_exponents_and_trailing_dots_still_parse() {
+        for (src, expect) in [
+            ("1e5", 1e5),
+            ("1E5", 1e5),
+            ("1e+5", 1e5),
+            ("1e-5", 1e-5),
+            ("2.5e3", 2.5e3),
+            (".5e3", 0.5e3),
+            ("1.", 1.0),
+            ("1.e5", 1e5),
+            ("0.", 0.0),
+            (".5", 0.5),
+        ] {
+            let pool = ExprPool::new();
+            let mut syms = HashMap::new();
+            let id = parse(src, &pool, &mut syms)
+                .unwrap_or_else(|e| panic!("{src:?} must parse, got {e}"));
+            match pool.get(id) {
+                ExprData::Float(f) => assert_eq!(
+                    f.inner.to_f64(),
+                    expect,
+                    "{src:?} parsed to the wrong value"
+                ),
+                other => panic!("{src:?} parsed to {other:?}, not a float"),
+            }
+        }
+    }
+
+    /// Every prefix of a well-formed numeric literal either parses or returns a
+    /// `ParseError` — no input reaches `unwrap` on a `ParseFloatError`.
+    #[test]
+    fn no_numeric_prefix_panics() {
+        for full in ["123", "1.5", "1.5e-7", "0.5E+12", ".25e3", "9.", "1e999"] {
+            for end in 1..=full.len() {
+                let src = &full[..end];
+                let pool = ExprPool::new();
+                let mut syms = HashMap::new();
+                // The assertion is that this call returns at all.
+                let _ = parse(src, &pool, &mut syms);
+            }
         }
     }
 }

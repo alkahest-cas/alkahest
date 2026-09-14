@@ -238,7 +238,7 @@ use alkahest_core::number_theory::{
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyComplex, PyDict, PyInt, PyList, PyTuple};
+use pyo3::types::{PyComplex, PyDict, PyFloat, PyInt, PyList, PyTuple};
 use rug::{Complete, Integer, Rational};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -372,6 +372,111 @@ fn big_integer_from_py(n: &Bound<'_, PyAny>) -> PyResult<Integer> {
     })
 }
 
+/// A Python number as the most faithful pool node for it, or `None` when *ob* is
+/// not a number this binding recognises (so callers can return
+/// `NotImplemented` and let Python try the reflected operation).
+///
+/// This ladder exists because `extract::<f64>()` is **not** a test for "is a
+/// float".  It goes through `__float__`, so it also swallows a Python `int` of
+/// any size, a `fractions.Fraction`, a `decimal.Decimal` and every NumPy
+/// scalar — and the arithmetic dunders used to take that arm first.  So
+/// `x ** (10**30 + 1)` quietly became `x ** 1e30` (the `+ 1` gone, and an exact
+/// integer power turned into a float one), and `x ** Fraction(1, 3)` became
+/// `x ** 0.3333333333333333`, which is not a cube root and which nothing
+/// downstream can recognise as one.  Neither loss was forced by the kernel:
+/// `ExprPool::integer` and `ExprPool::rational` are `rug`-backed and unbounded,
+/// so both values fit exactly.
+///
+/// Order matters:
+///
+/// 1. a real Python `float` (and `numpy.float64`, which subclasses it) *is* an
+///    IEEE double, so a float node loses nothing — keep it;
+/// 2. anything with `__index__` (`int`, `bool`, NumPy integer scalars) is an
+///    exact integer, at whatever width;
+/// 3. anything carrying integral `numerator`/`denominator` (`fractions.Fraction`,
+///    any `numbers.Rational`) is an exact rational;
+/// 4. anything whose `as_integer_ratio()` returns an integer pair
+///    (`decimal.Decimal`) is an exact rational;
+/// 5. only then `__float__`, for values that genuinely have no exact form to
+///    offer — `numpy.float32`, `Decimal("NaN")`.
+fn number_into_pool(pool: &ExprPool, ob: &Bound<'_, PyAny>) -> PyResult<Option<ExprId>> {
+    if ob.is_instance_of::<PyFloat>() {
+        return Ok(Some(pool.float(ob.extract::<f64>()?, 53)));
+    }
+    if ob.is_instance_of::<PyInt>() {
+        return Ok(Some(integer_into_pool(pool, ob)?));
+    }
+    // NumPy integer scalars and anything else that is an integer by protocol.
+    if let Ok(index) = ob.call_method0("__index__") {
+        return Ok(Some(integer_into_pool(pool, &index)?));
+    }
+    if let Some(id) = exact_ratio_into_pool(pool, ob)? {
+        return Ok(Some(id));
+    }
+    if let Ok(x) = ob.extract::<f64>() {
+        return Ok(Some(pool.float(x, 53)));
+    }
+    Ok(None)
+}
+
+/// True when *ob* is a `decimal.Decimal` (or a subclass of one).
+fn is_decimal(ob: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let cls = ob.py().import_bound("decimal")?.getattr("Decimal")?;
+    ob.is_instance(&cls)
+}
+
+/// The exact value of *ob* as an integer or rational node, when it publishes one
+/// through `numerator`/`denominator` or `as_integer_ratio()`.
+///
+/// Both halves must be honest Python `int`s.  A duck-typed `numerator` that is
+/// itself a float is not a rational, and guessing at it would be the same
+/// silent coercion this function exists to remove.
+fn exact_ratio_into_pool(pool: &ExprPool, ob: &Bound<'_, PyAny>) -> PyResult<Option<ExprId>> {
+    let pair = match (ob.getattr("numerator"), ob.getattr("denominator")) {
+        (Ok(num), Ok(den)) => Some((num, den)),
+        _ if is_decimal(ob)? => {
+            // `Decimal` has no `numerator`, but `as_integer_ratio()` publishes
+            // its exact value — and `Decimal("0.1")` really is one tenth, which
+            // the float arm would have lost.  `Decimal("NaN").as_integer_ratio()`
+            // raises; that value has no exact ratio, so fall through to the
+            // float arm rather than failing.
+            //
+            // Deliberately keyed on `Decimal` rather than generalised to
+            // "anything with `as_integer_ratio`": `numpy.float32` has one too,
+            // and turning `np.float32(0.1)` into 13421773/134217728 while
+            // Python's own `0.1` stays a float node would be a worse
+            // inconsistency than the one this is fixing.
+            match ob.call_method0("as_integer_ratio") {
+                Ok(t) => t.extract::<(Bound<'_, PyAny>, Bound<'_, PyAny>)>().ok(),
+                Err(_) => None,
+            }
+        }
+        _ => None,
+    };
+    let Some((num, den)) = pair else {
+        return Ok(None);
+    };
+    if !num.is_instance_of::<PyInt>() || !den.is_instance_of::<PyInt>() {
+        return Ok(None);
+    }
+    let (num, den) = (big_integer_from_py(&num)?, big_integer_from_py(&den)?);
+    if den == 0 {
+        return Err(pyo3::exceptions::PyZeroDivisionError::new_err(
+            "rational with a zero denominator",
+        ));
+    }
+    // `pool.rational(2, 1)` interns a `Rational` node *distinct* from
+    // `Integer(2)`, and every structural match on an integer exponent would
+    // miss it.  Send whole values down the integer path so `x ** Fraction(4, 2)`
+    // is the same node as `x ** 2`.
+    let (num, den) = Rational::from((num, den)).into_numer_denom();
+    if den == 1 {
+        Ok(Some(pool.integer(num)))
+    } else {
+        Ok(Some(pool.rational(num, den)))
+    }
+}
+
 fn pool_mismatch_err() -> PyErr {
     PyPoolError::new_err(
         "expressions belong to different ExprPool instances; combine only symbols \
@@ -409,11 +514,8 @@ fn coerce_substituent(
         return Ok(dr.value.id);
     }
     let pool = pool_py.borrow(py);
-    if let Ok(n) = ob.extract::<i64>() {
-        return Ok(pool.inner.integer(n));
-    }
-    if let Ok(f) = ob.extract::<f64>() {
-        return Ok(pool.inner.float(f, 53));
+    if let Some(id) = number_into_pool(&pool.inner, ob)? {
+        return Ok(id);
     }
     integer_into_pool(&pool.inner, ob)
 }
@@ -1744,32 +1846,50 @@ impl PyExpr {
         }
     }
 
+    /// ``self ** exp`` — an ``Expr`` exponent, or a Python number coerced by
+    /// `number_into_pool` (exactly, where the value has an exact form).
+    ///
+    /// This used to test `extract::<i64>()` then `extract::<f64>()` then
+    /// `PyRef<PyExpr>`, which cost three separate answers:
+    ///
+    /// * `x ** (10**30 + 1)` became `x ** 1e30`, because a Python `int` wider
+    ///   than `i64` still converts to `f64` — the `+ 1` was dropped in silence
+    ///   and an exact integer power became a float one;
+    /// * `x ** Fraction(1, 3)` became `x ** 0.3333333333333333`, a float power
+    ///   rather than the cube root the caller wrote;
+    /// * `x ** y` for a `y` from a *different* pool read `y`'s raw `ExprId` in
+    ///   `x`'s pool, so `pool_a.symbol("x") ** pool_b.symbol("y")` returned
+    ///   `x^x` instead of raising the pool-mismatch error every other operator
+    ///   raises.
+    ///
+    /// Routing through `coerce_scalar` — the same helper `__mul__` and friends
+    /// already use — settles all three.
     fn __pow__(
         &self,
         exp: &Bound<'_, PyAny>,
-        _modulo: Option<PyObject>,
+        modulo: Option<PyObject>,
         py: Python<'_>,
-    ) -> PyObject {
-        // Accept Python int/float literals and Expr exponents.
-        let pool = self.pool.borrow(py);
-        let exp_id = if let Ok(n) = exp.extract::<i64>() {
-            pool.inner.integer(n)
-        } else if let Ok(x) = exp.extract::<f64>() {
-            // IEEE float literal → pool float node (complex eval uses principal Log).
-            pool.inner.float(x, 53)
-        } else if let Ok(expr_ref) = exp.extract::<PyRef<PyExpr>>() {
-            expr_ref.id
-        } else {
-            drop(pool);
-            return py.NotImplemented();
-        };
-        let id = pool.inner.pow(self.id, exp_id);
-        drop(pool);
-        PyExpr {
-            id,
-            pool: self.pool.clone_ref(py),
+    ) -> PyResult<PyObject> {
+        // `pow(expr, e, m)` used to discard `m` and return the unreduced power.
+        // There is no modular exponentiation on a symbolic expression, so say so
+        // rather than answer a question that was not asked.
+        if modulo.map(|m| !m.is_none(py)).unwrap_or(false) {
+            return Err(PyTypeError::new_err(
+                "pow() with a modulus is not supported for Expr; reduce the result \
+                 with a modular primitive instead of passing a third argument",
+            ));
         }
-        .into_py(py)
+        match self.coerce_scalar(exp, py)? {
+            Some(exp_id) => {
+                let id = self.pool.borrow(py).inner.pow(self.id, exp_id);
+                Ok(PyExpr {
+                    id,
+                    pool: self.pool.clone_ref(py),
+                }
+                .into_py(py))
+            }
+            None => Ok(py.NotImplemented()),
+        }
     }
 
     fn pow_expr(&self, exp: &PyExpr, py: Python<'_>) -> PyExpr {
@@ -1936,16 +2056,7 @@ impl PyExpr {
             return Ok(Some(e.id));
         }
         let pool = self.pool.borrow(py);
-        if let Ok(n) = ob.extract::<i64>() {
-            return Ok(Some(pool.inner.integer(n)));
-        }
-        if let Ok(f) = ob.extract::<f64>() {
-            return Ok(Some(pool.inner.float(f, 53)));
-        }
-        if ob.is_instance_of::<PyInt>() {
-            return Ok(Some(integer_into_pool(&pool.inner, ob)?));
-        }
-        Ok(None)
+        number_into_pool(&pool.inner, ob)
     }
 }
 
@@ -5595,18 +5706,19 @@ impl PyPuiseuxExpansion {
 ///     >>> str(px.expr)   # doctest: +SKIP
 ///     '((1 * x^(1/2)) + O(x^5) + (-1/12 * x^(5/2)) + (1/1440 * x^(9/2)))'
 ///
-/// .. warning::
+/// .. note::
 ///
-///    ``Expr.__pow__`` coerces its exponent through ``f64``, so
-///    ``x ** Fraction(1, 3)`` is **not** ``x**(1/3)`` — it is the exact binary
-///    rational ``6004799503160661/18014398509481984``, and this function
-///    refuses it (``E-SERIES-005``, ramification past the verifiable range)
-///    rather than rounding it to the fraction you probably meant. Dyadic
-///    exponents such as ``Fraction(3, 2)`` *are* exact through ``f64`` and work.
-///    For an exact non-dyadic exponent build the power node directly::
+///    ``x ** Fraction(1, 3)`` is the cube root. ``Expr.__pow__`` used to coerce
+///    its exponent through ``f64``, so it arrived as the binary rational
+///    ``6004799503160661/18014398509481984`` and this function refused it
+///    (``E-SERIES-005``, ramification past the verifiable range) rather than
+///    rounding it to the fraction you probably meant. Exact exponents now reach
+///    the pool exactly — a ``Fraction``, a ``decimal.Decimal`` and a Python int
+///    of any width all do — so ``puiseux_series(sin(x) ** Fraction(1, 3), ...)``
+///    expands with ramification 3. A Python ``float`` exponent is still a float
+///    node, because that is what it is::
 ///
-///        cube_root = sin(x).pow_expr(pool.rational(1, 3))
-///        px = puiseux_series(cube_root, x, pool.integer(0), 5)
+///        px = puiseux_series(sin(x) ** Fraction(1, 3), x, pool.integer(0), 5)
 ///        # px.ramification == 3, terms at 1/3, 7/3, 13/3
 #[pyfunction]
 #[pyo3(name = "puiseux_series")]
@@ -9254,16 +9366,7 @@ impl PyMatrix {
             return Ok(Some(dr.value.id));
         }
         let pool = self.pool.borrow(py);
-        if let Ok(n) = ob.extract::<i64>() {
-            return Ok(Some(pool.inner.integer(n)));
-        }
-        if let Ok(f) = ob.extract::<f64>() {
-            return Ok(Some(pool.inner.float(f, 53)));
-        }
-        if ob.is_instance_of::<PyInt>() {
-            return Ok(Some(integer_into_pool(&pool.inner, ob)?));
-        }
-        Ok(None)
+        number_into_pool(&pool.inner, ob)
     }
 }
 

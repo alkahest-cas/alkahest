@@ -1,5 +1,62 @@
 # Changelog
 
+## Unreleased
+
+- **`parse` no longer panics on a truncated exponent.** The Rust lexer
+  (`alkahest-core/src/parse.rs`) consumed `e`/`E` and an optional sign
+  unconditionally once it had seen a digit, so `"1e"` lexed as the number
+  `"1e"`; `nud` then called `"1e".parse::<f64>().unwrap()` on an `Err` and the
+  parser **aborted the process**. The same held for `"1E"`, `"1e+"`, `"1e-"`,
+  `"2.5e"`, `".5e"` and `"1.e"` — a parser that panics on a two-character string
+  is unusable on text the caller did not write, which is the only kind of text a
+  parser is for. They are now `E-PARSE-001` with a span over the malformed
+  literal, like every other piece of malformed input.
+
+  Deliberately *not* a backtrack: `2e` is an error, not `2 * e`. Implicit
+  multiplication is a separate grammar decision, and reading a typo'd exponent as
+  a product with Euler's number is the kind of guess this parser should not make.
+
+  `"1."`, `"1.e5"` and `"1e999"` were never affected — `f64::from_str` accepts
+  all three — and still parse. Python's parser (`python/alkahest/_parse.py`) has
+  always rejected these shapes by grammar, so nothing on the Python surface
+  changed; the two hand-maintained parsers now agree, which they did not before.
+
+- **`Expr.__pow__` and the arithmetic dunders keep an exact Python number
+  exact.** pyo3's `extract::<f64>()` is not a test for "is a float" — it goes
+  through `__float__` — and the coercion helpers took that arm before any exact
+  one. So:
+
+  | input | before | after |
+  |---|---|---|
+  | `x ** (10**30 + 1)` | `x^1e30` — the `+ 1` gone, an exact integer power turned into a float one | `x^1000000000000000000000000000001` |
+  | `x ** Fraction(1, 3)` | `x^0.3333333333333333` | `x^(1/3)` |
+  | `x ** Decimal("0.1")` | `x^0.1` (the double, which is not one tenth) | `x^(1/10)` |
+  | `x * (10**30 + 1)`, `x + …`, `x - …`, `x / …`, `subs`, `Matrix` scalars | same loss | exact |
+
+  The kernel never forced it: `ExprPool::integer` and `ExprPool::rational` are
+  `rug`-backed and unbounded. What the loss destroyed was the *node* —
+  `eval_expr` reduces every exponent to an `f64` anyway, so a numeric probe
+  cannot see it, but `integrate`, `puiseux_series` and the polynomial converters
+  all read an exponent structurally and none of them can recognise a float power
+  as the exact one that was written.
+
+  A Python `float` is still a float node, and a NumPy `float32`/`float64` still
+  follows `float` — `0.1` means the double, not 3602879701896397/36028797018963968.
+  `Fraction(4, 2)` interns as the integer `2`, not as `Rational(2, 1)`, which is
+  a distinct node that structural matches on an integer exponent would miss.
+
+  Two other `__pow__` defects fell out of routing it through the same
+  `coerce_scalar` the other operators use: `pool_a.symbol("x") ** pool_b.symbol("y")`
+  read the second pool's raw `ExprId` in the first pool and returned `x^x`
+  instead of the pool-mismatch error every other operator raises, and
+  `pow(x, 2, 5)` silently discarded the modulus. Both are now errors.
+
+- **Behaviour changes to plan for.** `x ** Fraction(1, 3)` now expands under
+  `puiseux_series` (ramification 3) where it used to be refused `E-SERIES-005`,
+  and `ak.series(x ** Fraction(3, 2), …)` refuses with `E-SERIES-004`
+  (fractional valuation) rather than `E-SERIES-001` (`diff` has no rule for a
+  float power) — the same refusal, for the right reason.
+
 ## 3.10.0 — 2026-09-10
 
 - **Series with a fractional valuation are expanded rather than refused.** New
