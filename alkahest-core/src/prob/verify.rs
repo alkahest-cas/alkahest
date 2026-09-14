@@ -130,7 +130,49 @@ pub(crate) fn check_with_breaks(
     breaks: &[ExprId],
     pool: &ExprPool,
 ) -> Result<Evidence, ProbError> {
-    let points = sample_points(claim, integrand, x, dist, pool);
+    let points = sample_points(claim, integrand, x, dist, None, &[], pool);
+    compare_against_definition(&points, claim, integrand, x, dist, breaks, pool)
+}
+
+/// As [`check`], for a claim about **two** distributions — a divergence or a
+/// cross-entropy, whose integrand is `p log(p/q)` or `-p log q`.
+///
+/// Two things differ from the single-distribution route, and both of them are
+/// the difference between a check and a ritual:
+///
+/// * `q`'s parameters are sampled from `q`'s **own** role ladder rather than
+///   from the generic extra-symbol ladder, and `p` and `q` are never given the
+///   same row. Identical rows make `P = Q`, where every divergence formula
+///   returns `0` and the integral returns `0` — a comparison that passes for
+///   every wrong closed form.
+/// * `extra` carries `q`'s parameter constraints and whatever remains of
+///   `supp P ⊆ supp Q`. A point outside those is a point where the integrand
+///   is not the quantity the claim is about, so it must not be sampled — the
+///   `Uniform` case is the sharp one, where an unnested pair makes
+///   `∫p log(p/q)` a finite number and the true value `+∞`.
+pub(crate) fn check_pair(
+    claim: ExprId,
+    integrand: ExprId,
+    x: ExprId,
+    p: &Distribution,
+    q: &Distribution,
+    extra: &[ExprId],
+    pool: &ExprPool,
+) -> Result<Evidence, ProbError> {
+    let points = sample_points(claim, integrand, x, p, Some(q), extra, pool);
+    compare_against_definition(&points, claim, integrand, x, p, &[], pool)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compare_against_definition(
+    points: &[Vec<(ExprId, Float)>],
+    claim: ExprId,
+    integrand: ExprId,
+    x: ExprId,
+    dist: &Distribution,
+    breaks: &[ExprId],
+    pool: &ExprPool,
+) -> Result<Evidence, ProbError> {
     if points.is_empty() {
         return Err(ProbError::Unverified(UnverifiedReason::NoAdmissiblePoint));
     }
@@ -145,7 +187,7 @@ pub(crate) fn check_with_breaks(
     let mut claim_ever_evaluable = false;
     let mut divergences = 0usize;
 
-    for binding in &points {
+    for binding in points {
         // The quadrature runs **before** the claim is evaluated, deliberately.
         // A claim that cannot be evaluated is usually a symptom rather than the
         // disease: the reduction produced `∞` or `log 0` because the integral
@@ -222,7 +264,7 @@ pub(crate) fn convergence_probe(
     dist: &Distribution,
     pool: &ExprPool,
 ) -> Option<ProbError> {
-    let points = sample_points(integrand, integrand, x, dist, pool);
+    let points = sample_points(integrand, integrand, x, dist, None, &[], pool);
     if points.is_empty() {
         return None;
     }
@@ -606,6 +648,8 @@ fn sample_points(
     integrand: ExprId,
     x: ExprId,
     dist: &Distribution,
+    other: Option<&Distribution>,
+    extra: &[ExprId],
     pool: &ExprPool,
 ) -> Vec<Vec<(ExprId, Float)>> {
     use crate::eval::symbols::collect_free_symbols;
@@ -616,14 +660,23 @@ fn sample_points(
     for &p in dist.params() {
         collect_free_symbols(p, pool, &mut free);
     }
+    if let Some(o) = other {
+        for &p in o.params() {
+            collect_free_symbols(p, pool, &mut free);
+        }
+    }
     free.retain(|&s| s != x && !is_infinity(s, pool));
     if free.len() > MAX_FREE {
         return Vec::new();
     }
 
-    // Which free symbols are exactly the distribution's own bare-symbol
-    // parameters, and in which slot.
+    // Which free symbols are exactly a distribution's own bare-symbol
+    // parameters, and in which slot. `dist` claims a symbol first: a parameter
+    // shared between the two laws (`D(Normal(mu, s1) ‖ Normal(mu, s2))`) is one
+    // symbol and must get one value, and taking it from `dist`'s ladder keeps
+    // the row semantics of the single-distribution case.
     let mut role: Vec<Option<usize>> = vec![None; free.len()];
+    let mut co_role: Vec<Option<usize>> = vec![None; free.len()];
     for (slot, &p) in dist.params().iter().enumerate() {
         if matches!(pool.get(p), ExprData::Symbol { .. }) {
             if let Some(i) = free.iter().position(|&s| s == p) {
@@ -631,10 +684,23 @@ fn sample_points(
             }
         }
     }
+    if let Some(o) = other {
+        for (slot, &p) in o.params().iter().enumerate() {
+            if matches!(pool.get(p), ExprData::Symbol { .. }) {
+                if let Some(i) = free.iter().position(|&s| s == p) {
+                    if role[i].is_none() {
+                        co_role[i] = Some(slot);
+                    }
+                }
+            }
+        }
+    }
 
     let rows = role_rows(dist);
-    let constraints = dist.constraints(pool);
-    let mut out = Vec::new();
+    let co_rows = other.map(role_rows);
+    let mut constraints = dist.constraints(pool);
+    constraints.extend_from_slice(extra);
+
     if free.is_empty() {
         // Every parameter is a literal. There is exactly one point to check at,
         // and repeating it would inflate the evidence count without adding any
@@ -645,15 +711,23 @@ fn sample_points(
             Vec::new()
         };
     }
-    for r in 0..EXTRA_ROWS.len().max(rows.len()) {
+
+    let mut out = Vec::new();
+    for (r, c) in candidate_rows(rows.len(), co_rows.map(<[&[f64]]>::len)) {
         let mut binding: Vec<(ExprId, Float)> = Vec::with_capacity(free.len());
         for (i, &sym) in free.iter().enumerate() {
-            let v = match role[i] {
-                Some(slot) => match rows.get(r).and_then(|row| row.get(slot)) {
-                    Some(v) => *v,
-                    None => EXTRA_ROWS[r % EXTRA_ROWS.len()],
-                },
-                None => EXTRA_ROWS[(r + i) % EXTRA_ROWS.len()],
+            let v = match (role[i], co_role[i]) {
+                (Some(slot), _) => rows
+                    .get(r)
+                    .and_then(|row| row.get(slot))
+                    .copied()
+                    .unwrap_or(EXTRA_ROWS[r % EXTRA_ROWS.len()]),
+                (None, Some(slot)) => co_rows
+                    .and_then(|cr| cr.get(c))
+                    .and_then(|row| row.get(slot))
+                    .copied()
+                    .unwrap_or(EXTRA_ROWS[c % EXTRA_ROWS.len()]),
+                (None, None) => EXTRA_ROWS[(r + i) % EXTRA_ROWS.len()],
             };
             binding.push((sym, fl(VERIFY_PREC, v)));
         }
@@ -665,6 +739,26 @@ fn sample_points(
         }
     }
     out
+}
+
+/// The `(dist row, other row)` pairs to try, in order.
+///
+/// Without a second distribution this is the historical ladder: row `r`, once
+/// each. With one, it is every **distinct** pair. Distinctness is the point —
+/// on the diagonal the two laws are identical, every divergence closed form
+/// collapses to `0` and so does its defining integral, so a diagonal-only
+/// ladder would confirm any formula at all. Pairs that violate a constraint
+/// (a `Uniform` whose supports are not nested) are dropped by the caller's
+/// admissibility check, which is why all of them are offered rather than a
+/// chosen few.
+fn candidate_rows(rows: usize, co_rows: Option<usize>) -> Vec<(usize, usize)> {
+    match co_rows {
+        None => (0..EXTRA_ROWS.len().max(rows)).map(|r| (r, 0)).collect(),
+        Some(cr) => (0..rows)
+            .flat_map(|r| (0..cr).map(move |c| (r, c)))
+            .filter(|(r, c)| r != c)
+            .collect(),
+    }
 }
 
 fn is_infinity(sym: ExprId, pool: &ExprPool) -> bool {
@@ -723,7 +817,7 @@ pub(crate) fn evidence_step(
 
 /// A constraint that a numeric check already settled contributes nothing; one
 /// that is still open becomes a [`SideCondition`].
-fn undischarged(pred: ExprId, pool: &ExprPool) -> Option<SideCondition> {
+pub(crate) fn undischarged(pred: ExprId, pool: &ExprPool) -> Option<SideCondition> {
     let ExprData::Predicate { kind, args } = pool.get(pred) else {
         return None;
     };
@@ -788,7 +882,7 @@ pub(crate) fn check_cdf(
     pool: &ExprPool,
 ) -> Result<Evidence, ProbError> {
     let density = dists::pdf(dist, x, pool);
-    let points = sample_points(claim, density, x, dist, pool);
+    let points = sample_points(claim, density, x, dist, None, &[], pool);
     if points.is_empty() {
         return Err(ProbError::Unverified(UnverifiedReason::NoAdmissiblePoint));
     }
@@ -873,7 +967,7 @@ pub(crate) fn check_quantile(
 ) -> Result<Evidence, ProbError> {
     let x = dists::fresh_var(&[claim, p_arg], pool);
     let density = dists::pdf(dist, x, pool);
-    let points = sample_points(claim, density, x, dist, pool);
+    let points = sample_points(claim, density, x, dist, None, &[], pool);
     if points.is_empty() {
         return Err(ProbError::Unverified(UnverifiedReason::NoAdmissiblePoint));
     }
@@ -1301,7 +1395,7 @@ pub(crate) fn check_characteristic(
 
     let x = dists::fresh_var(&[claim, t], pool);
     let density_expr = dists::pdf(dist, x, pool);
-    let points = sample_points(claim, density_expr, x, dist, pool);
+    let points = sample_points(claim, density_expr, x, dist, None, &[], pool);
     if points.is_empty() {
         return Err(ProbError::Unverified(UnverifiedReason::NoAdmissiblePoint));
     }
@@ -1587,7 +1681,7 @@ pub(crate) fn check_generating(
     dist: &Distribution,
     pool: &ExprPool,
 ) -> Result<Evidence, ProbError> {
-    let points = sample_points(claim, integrand, x, dist, pool);
+    let points = sample_points(claim, integrand, x, dist, None, &[], pool);
     if points.is_empty() {
         return Err(ProbError::Unverified(UnverifiedReason::NoAdmissiblePoint));
     }
@@ -1734,7 +1828,7 @@ pub(crate) fn check_cumulant(
     pool: &ExprPool,
 ) -> Result<Evidence, ProbError> {
     let density_expr = dists::pdf(dist, x, pool);
-    let points = sample_points(claim, mean, x, dist, pool);
+    let points = sample_points(claim, mean, x, dist, None, &[], pool);
     if points.is_empty() {
         return Err(ProbError::Unverified(UnverifiedReason::NoAdmissiblePoint));
     }

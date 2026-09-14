@@ -93,6 +93,32 @@ Probability and statistics:
   product of two variates raises ``E-PROB-002`` rather than guessing at a
   joint law
 
+Information theory over those same laws:
+- :meth:`Distribution.entropy` — Shannon ``H = -sum p log p`` on a discrete
+  support, **differential** ``h = -int f log f`` on a continuous one. They are
+  not the same quantity and are not unified behind one formula: ``h`` is not
+  the limit of ``H``, is not non-negative (``Uniform(0, 1/2).entropy()`` is
+  ``log(1/2) < 0``, returned rather than clamped), and is **not invariant under
+  a change of variables** — it shifts by ``E[log|dx/dy|]``, which is exactly
+  the ``mu`` by which a :func:`LogNormal`'s entropy exceeds the underlying
+  :func:`Normal`'s. ``base=None`` is nats, the right default for symbolic work;
+  ``base=2`` is bits
+- :func:`kl_divergence` — ``D(P||Q)``, **not** a distance. Not symmetric, and
+  ``+inf`` whenever ``P`` charges a set ``Q`` gives probability zero. That last
+  one is *gated*, because the closed form does not fail there: substituting
+  ``Uniform(0,1)`` against ``Uniform(0,1/2)`` into ``log((b2-a2)/(b1-a1))``
+  gives ``-0.693``, a finite negative KL divergence, which Gibbs' inequality
+  forbids. Decidably non-nested supports raise ``E-PROB-006`` naming the value
+  as ``+inf``; an undecidable containment is published on
+  :func:`prob_side_conditions` instead of assumed
+- :func:`cross_entropy` — ``H(P, Q)``, assembled as ``H(P) + D(P||Q)`` from the
+  two tables and then checked against ``-E_P[log q]``, which is neither of
+  them, so the identity is falsifiable rather than definitional
+- :func:`mutual_information_independent` — ``0``, under an independence the
+  caller asserts by choosing the name. There is no dependent case: the
+  bivariate-normal ``-log(1 - rho^2)/2`` would need a joint-distribution type
+  this library does not have
+
 Calculus / ODE / transform surface:
 - :func:`heaviside`, :func:`dirac_delta` — distribution primitive constructors
 - :func:`dsolve` — classical symbolic ODE solver (#153); constant coefficients
@@ -319,6 +345,7 @@ from alkahest.alkahest import (
     # P1 item 10 — asymptotic expansion at scale
     coefficient_asymptotics,
     cross,
+    cross_entropy,
     curl,
     cyclotomic_polynomial,
     dirac_delta,
@@ -336,9 +363,11 @@ from alkahest.alkahest import (
     inverse_fourier_transform,
     inverse_laplace_transform,
     inverse_z_transform,
+    kl_divergence,
     laplace_transform,
     laplacian,
     multilimit,
+    mutual_information_independent,
     norm,
     ode_integrate_rk4,
     ode_integrate_rk45,
@@ -461,6 +490,8 @@ __all__ = [
     "conjugate",
     # Vector calculus
     "cross",
+    # Information theory: H(P, Q) = H(P) + D(P||Q), checked against -E_P[log q]
+    "cross_entropy",
     "curl",
     # M4 — root-of-unity specialisation
     "cyclotomic_polynomial",
@@ -486,11 +517,15 @@ __all__ = [
     "inverse_fourier_transform",
     "inverse_laplace_transform",
     "inverse_z_transform",
+    # Information theory: not symmetric, and +inf off a nested support
+    "kl_divergence",
     "lambert_w",
     "laplace_transform",
     # Vector calculus
     "laplacian",
     "multilimit",
+    # Information theory: 0, under an independence the caller asserts
+    "mutual_information_independent",
     "norm",
     # M11 — novelty filtering (the module itself, for `novelty.RecordedRecurrence`
     # and the status tables)

@@ -163,6 +163,12 @@ use alkahest_core::prob::{
     variance_affine_independent as core_variance_affine_independent, DistKind as CoreDistKind,
     Distribution as CoreDistribution, ProbError as CoreProbError, Support as CoreSupport,
 };
+// Information theory over the same laws. A separate `use` rather than an edit
+// to the block above: this is an append, and an append is what merges.
+use alkahest_core::prob::{
+    cross_entropy as core_cross_entropy, kl_divergence as core_kl_divergence,
+    mutual_information_independent as core_mutual_information_independent,
+};
 use alkahest_core::transform::{
     fourier_transform as core_fourier_transform, inverse_fourier_transform as core_ifourier,
     inverse_laplace_transform as core_ilaplace, inverse_z_transform as core_iztransform,
@@ -17383,6 +17389,43 @@ impl PyDistribution {
         self.derived(py, move |d, pool| core_characteristic_function(d, id, pool))
     }
 
+    /// The entropy, in nats unless ``base`` says otherwise, verified against
+    /// its own defining integral.
+    ///
+    /// **Two different quantities share this name.** On a discrete support
+    /// this is the Shannon entropy ``H = -sum p log p``: non-negative, zero at
+    /// a point mass, unchanged by relabelling the atoms. On a continuous
+    /// support it is the *differential* entropy ``h = -int f log f``, and
+    /// almost none of that carries over:
+    ///
+    /// - ``h`` is **not non-negative**. ``Uniform(0, 1/2).entropy()`` is
+    ///   ``log(1/2) = -0.693``, and that negative number is the answer — it is
+    ///   not clamped, and it is not "the information content" of anything.
+    ///   ``Uniform(0, b)`` with a symbolic ``b`` gives ``log(b)``, of either
+    ///   sign, because neither sign is decidable.
+    /// - ``h`` is **not invariant under a change of variables**; it shifts by
+    ///   ``E[log|dx/dy|]``. ``LogNormal(mu, sigma)`` is ``exp`` of a
+    ///   ``Normal(mu, sigma)`` and its entropy is larger by exactly ``mu``.
+    /// - ``h`` is **not the limit of** ``H``. Quantising at width ``d`` gives
+    ///   ``H ~ h - log d``, which diverges.
+    ///
+    /// ``base=None`` (the default) is nats; pass ``2`` for bits. A numeric
+    /// base that is ``<= 0`` or ``1`` raises ``E-PROB-001``.
+    ///
+    /// Raises ``E-PROB-004`` for ``Poisson``: its entropy is
+    /// ``lam(1 - log lam)`` plus ``e^{-lam} sum lam^k log(k!)/k!``, and that
+    /// residual sum is not an elementary or standard special function.
+    #[pyo3(signature = (base=None))]
+    fn entropy(&self, py: Python<'_>, base: Option<PyRef<PyExpr>>) -> PyResult<PyExpr> {
+        if let Some(b) = &base {
+            if !b.pool.is(&self.pool) {
+                return Err(pool_mismatch_err());
+            }
+        }
+        let b = base.map(|e| e.id);
+        self.derived(py, move |d, pool| d.entropy(b, pool))
+    }
+
     /// The moment generating function ``M_X(t) = E[e^{tX}]``, verified against
     /// its defining integral, **with its region of convergence reported rather
     /// than assumed**.
@@ -18575,6 +18618,130 @@ impl PyQuaternion {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Information theory: the two-distribution quantities
+// ---------------------------------------------------------------------------
+
+/// The `base` argument's id, checked against the law's pool.
+fn base_id(d: &PyDistribution, base: Option<PyRef<PyExpr>>) -> PyResult<Option<ExprId>> {
+    match base {
+        Some(b) if !b.pool.is(&d.pool) => Err(pool_mismatch_err()),
+        Some(b) => Ok(Some(b.id)),
+        None => Ok(None),
+    }
+}
+
+/// Shared body: run a two-distribution route, drain the side-condition channel
+/// on both paths, and hand back the value.
+fn prob_pair<F>(py: Python<'_>, p: &PyDistribution, q: &PyDistribution, f: F) -> PyResult<PyExpr>
+where
+    F: FnOnce(
+        &CoreDistribution,
+        &CoreDistribution,
+        &alkahest_core::ExprPool,
+    ) -> Result<alkahest_core::deriv::DerivedExpr<ExprId>, CoreProbError>,
+{
+    // Two laws built in different pools share no `ExprId` meanings, and the
+    // result of reading one law's ids through the other's pool is not an error
+    // — it is a different, well-formed expression. Checked, like every other
+    // two-operand route here.
+    if !p.pool.is(&q.pool) {
+        return Err(pool_mismatch_err());
+    }
+    let pool_ref = p.pool.borrow(py);
+    let out = f(&p.inner, &q.inner, &pool_ref.inner);
+    capture_prob_side_conditions(&pool_ref.inner);
+    let out = out.map_err(prob_error_to_py)?;
+    Ok(PyExpr {
+        id: out.value,
+        pool: p.pool.clone_ref(py),
+    })
+}
+
+/// ``kl_divergence(p, q, base=None)`` — ``D(P||Q) = int p log(p/q)``, verified.
+///
+/// **Not a distance.** It is not symmetric — ``D(Exponential(1)||Exponential(4))``
+/// and ``D(Exponential(4)||Exponential(1))`` are different numbers — it fails
+/// the triangle inequality, and it is ``+inf`` whenever ``P`` charges a set
+/// ``Q`` gives probability zero.
+///
+/// That last one is gated rather than documented, because the closed form does
+/// not fail there — it returns a clean finite number. ``D(Uniform(0,1) ||
+/// Uniform(0,1/2))`` substituted through ``log((b2-a2)/(b1-a1))`` is
+/// ``log(1/2) = -0.693``: finite, plausible, and a *negative* KL divergence,
+/// which Gibbs' inequality forbids. So:
+///
+/// - supports decidably nested: the closed form, checked against quadrature of
+///   ``int p log(p/q)``;
+/// - decidably not nested: ``E-PROB-006``, saying the value is ``+inf``. A
+///   verdict, not a refusal to try;
+/// - undecidable (symbolic endpoints): the closed form, with the containment
+///   published on :func:`prob_side_conditions`.
+///
+/// ``P`` and ``Q`` must be the same family; a cross-family divergence raises
+/// ``E-PROB-002`` rather than a guess. Two ``Binomial``s need the same ``n``.
+#[pyfunction]
+#[pyo3(name = "kl_divergence", signature = (p, q, base=None))]
+fn py_kl_divergence(
+    py: Python<'_>,
+    p: PyRef<PyDistribution>,
+    q: PyRef<PyDistribution>,
+    base: Option<PyRef<PyExpr>>,
+) -> PyResult<PyExpr> {
+    let b = base_id(&p, base)?;
+    prob_pair(py, &p, &q, |a, c, pool| core_kl_divergence(a, c, b, pool))
+}
+
+/// ``cross_entropy(p, q, base=None)`` — ``H(P, Q) = -int p log q``, verified.
+///
+/// Assembled as ``H(P) + D(P||Q)`` from the entropy table and the divergence
+/// table, and then checked against ``-E_P[log q]``, which is neither of them.
+/// That makes the identity an assertion the numeric gate can falsify: an error
+/// in either table shows up here, and only a pair of errors that cancel exactly
+/// would survive.
+///
+/// Refuses wherever :meth:`Distribution.entropy` or :func:`kl_divergence`
+/// refuses — in particular ``Poisson``, whose entropy has no closed form, and
+/// non-nested supports, which are ``+inf``.
+#[pyfunction]
+#[pyo3(name = "cross_entropy", signature = (p, q, base=None))]
+fn py_cross_entropy(
+    py: Python<'_>,
+    p: PyRef<PyDistribution>,
+    q: PyRef<PyDistribution>,
+    base: Option<PyRef<PyExpr>>,
+) -> PyResult<PyExpr> {
+    let b = base_id(&p, base)?;
+    prob_pair(py, &p, &q, |a, c, pool| core_cross_entropy(a, c, b, pool))
+}
+
+/// ``mutual_information_independent(x, y, base=None)`` — ``I(X; Y) = 0``,
+/// **assuming independence**.
+///
+/// The assumption is in the name because nothing can check it: a pair of
+/// marginals does not record whether they are independent, and under dependence
+/// the answer is wrong by the whole of ``I`` with nothing in the return value
+/// to say so. Same contract as :func:`variance_affine_independent`. If you
+/// cannot assert independence, do not call this.
+///
+/// There is deliberately **no dependent case**. ``I = -log(1 - rho^2)/2`` for a
+/// bivariate normal would need a joint-distribution type, and this module has
+/// none; adding one whose sole purpose was to host that formula would be a
+/// worse answer than not having the formula.
+#[pyfunction]
+#[pyo3(name = "mutual_information_independent", signature = (x, y, base=None))]
+fn py_mutual_information_independent(
+    py: Python<'_>,
+    x: PyRef<PyDistribution>,
+    y: PyRef<PyDistribution>,
+    base: Option<PyRef<PyExpr>>,
+) -> PyResult<PyExpr> {
+    let b = base_id(&x, base)?;
+    prob_pair(py, &x, &y, |a, c, pool| {
+        core_mutual_information_independent(a, c, b, pool)
+    })
+}
+
 #[pymodule]
 fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Before anything in this module can reach GMP: install the allocation
@@ -18732,6 +18899,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_expectation_affine, m)?)?;
     m.add_function(wrap_pyfunction!(py_variance_affine_independent, m)?)?;
     m.add_class::<PyDistribution>()?;
+    m.add_function(wrap_pyfunction!(py_kl_divergence, m)?)?;
+    m.add_function(wrap_pyfunction!(py_cross_entropy, m)?)?;
+    m.add_function(wrap_pyfunction!(py_mutual_information_independent, m)?)?;
     m.add_function(wrap_pyfunction!(py_series_solve, m)?)?;
     m.add_class::<PyFps>()?;
     m.add_function(wrap_pyfunction!(atan2, m)?)?;
