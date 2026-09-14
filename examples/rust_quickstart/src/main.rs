@@ -4,7 +4,7 @@
 //!   cargo run --manifest-path examples/rust_quickstart/Cargo.toml
 //!
 //! Once the crate is on crates.io, swap the path dep for:
-//!   alkahest-cas = "2"
+//!   alkahest-cas = "3"
 
 use alkahest_cas::kernel::Domain;
 use alkahest_cas::number_theory;

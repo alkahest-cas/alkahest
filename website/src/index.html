@@ -6,7 +6,7 @@
     <title>Alkahest</title>
     <meta
       name="description"
-      content="Computer algebra for Python 3.9–3.13 and Rust. pip install alkahest or alkahest-cas = &quot;2&quot; in Cargo.toml."
+      content="Computer algebra for Python 3.9–3.13 and Rust. pip install alkahest or alkahest-cas = &quot;3&quot; in Cargo.toml."
     />
     <link rel="stylesheet" href="styles.css" />
     <style>
@@ -70,7 +70,7 @@
 
         <div id="panel-rs" role="tabpanel" aria-labelledby="tab-rs" hidden>
           <div class="install-row">
-            <code id="cargo-cmd">alkahest-cas = "2"</code>
+            <code id="cargo-cmd">alkahest-cas = "3"</code>
             <button type="button" class="copy" id="copy-cargo-btn" aria-label="Copy Cargo dependency">Copy</button>
           </div>
           <p id="copy-cargo-hint" class="hint" role="status" aria-live="polite" hidden></p>
@@ -160,7 +160,7 @@ svg = ak.plot_svg(ak.sin(x), x, (-6, 6))</code></pre>
             <code>alkahest-cas</code> is a native Rust crate — embed the CAS in
             your own library or CLI without a Python runtime.
           </p>
-          <pre class="code-block" tabindex="0"><code>// Cargo.toml: alkahest-cas = "2"
+          <pre class="code-block" tabindex="0"><code>// Cargo.toml: alkahest-cas = "3"
 use alkahest_cas::{ExprPool, diff, simplify, render_latex, parse};
 use alkahest_cas::kernel::Domain;
 use std::collections::HashMap;

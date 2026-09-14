@@ -79,7 +79,7 @@ After installing `+jit` or `+full`, `capabilities()["features"]["llvm_jit"]` sho
 **Target layout (roadmap):** a small **extra index** URL (PEP 503) hosting only `+jit` / `+full` wheels, mirroring PyTorch’s `--extra-index-url` workflow:
 
 ```bash
-pip install 'alkahest==3.8.0+full' --extra-index-url https://EXAMPLE/alkahest-extras/simple
+pip install 'alkahest==3.10.0+full' --extra-index-url https://EXAMPLE/alkahest-extras/simple
 ```
 
 ### From source
@@ -389,6 +389,21 @@ try:
 except IntegrationError as e:
     print(e.code)         # E-INT-004
 ```
+
+**The non-elementary output basis carries *exact* constants** (since 3.11). `erf`,
+the Fresnel pair and their coefficients used to be interned as `f64` nodes, so
+`∫exp(−x²)dx` came back as `0.8862269254527579·erf(x)` and nothing downstream could
+put `√π/2` back — `√(π/2)/√(2π)` is exactly `1/2` and is nothing at all once one side
+is a float, so every closed form built on top of these stopped closing:
+
+```python
+integrate(exp(-x*x), x).value      # (1/2)·√π·erf(x)      — not 0.886…·erf(x)
+integrate(sin(x*x), x).value       # √(2/π)⁻¹·S(√(2/π)·x)  — not 1.2533…·S(0.79…)
+```
+
+A coefficient the *caller* wrote as a float stays a float (`∫exp(−0.5·x²)dx` keeps its
+`0.5`) — no false exactness. If you have pinned a printed form from an older release,
+re-read it.
 
 ---
 
@@ -932,6 +947,21 @@ except ak.MatrixError as e:
     print(e.code)          # E-MAT-004
 ```
 
+A symbolic inverse that *does* return now **states the hypothesis it rests on**
+(since 3.11), through the same out-of-band channel `solve` and `matrix_exp` use:
+
+```python
+ak.Matrix([[a, b], [c, d]]).inverse()
+ak.matrix_inverse_side_conditions()    # ['((a * d) + (b * c * -1)) ≠ 0']
+```
+
+`adj/det` is the inverse *for the parameter values where `ad − bc` does not vanish*,
+and whether a given set of values is on that locus is a question about the parameters
+that only the caller can settle. An **empty** list means the determinant is a non-zero
+rational constant and the hypothesis was **discharged**, not skipped. It is reset by
+each `inverse` call, so read it before the next one. `matrix_exp_side_conditions()`
+is the same channel for the eigenvalue gaps `matrix_exp` divides by.
+
 Before 3.8, "could not prove `det ≠ 0`" was read as "`det = 0`", and `nullspace()`
 returned a **confident wrong basis** for any 2×2 with a symbolic determinant. If you
 have results computed with 3.7 that came from `nullspace` on symbolic entries, recheck
@@ -1057,6 +1087,173 @@ there is nothing a wider table would ever find. Since 3.10 these arrive as
 `TransformError` with `.code` and `.remediation` set, not as a bare
 `ValueError`; the same release did the same for `dsolve`, `dsolve_system`,
 `series_solve`, `asymptotic_expand` and `Fps`.
+
+---
+
+## Probability and information theory (experimental, since 3.11)
+
+A `Distribution` is a **name plus symbolic parameters**, carrying its density, its
+support and the constraints that make it a distribution at all. Every derived
+quantity is checked against numerical quadrature of its own defining integral
+before it is returned.
+
+```python
+import alkahest as ak
+from alkahest import experimental as ex
+
+pool = ak.ExprPool()
+mu, sigma, t, x = (pool.symbol(n) for n in ("mu", "sigma", "t", "x"))
+
+N = ex.Normal(mu, sigma)     # also LogNormal, Uniform, Exponential, Gamma, Beta,
+                             # Bernoulli, Binomial, Poisson  — nine laws
+N.kind                       # 'Normal'
+N.params()                   # [mu, sigma]
+N.support()                  # ('real', None)
+N.constraints()              # [sigma > 0]   — NOT decided, published for you
+
+# Everything is a METHOD ON THE LAW. There is no `cdf(dist, x)`.
+N.mean(); N.variance(); N.moment(3)
+N.pdf(x); N.cdf(x)                     # 1/2·(1 + erf((x−mu)/(sigma√2)))
+N.entropy()                            # 1/2 + 1/2·log(2·pi·sigma²)
+N.skewness(); N.excess_kurtosis()      # EXCESS kurtosis: 0 for a normal, not 3
+
+# The characteristic function is COMPLEX-VALUED.
+phi = N.characteristic_function(t)
+ak.evaluate(phi, {mu: 0.0, sigma: 1.0, t: 1.0}, mode="complex")
+# the real modes return value=None, status="unsupported" — they do not drop
+# the imaginary part
+
+# Expectations
+ex.expectation(ak.exp(x), x, N)                    # exp(mu + sigma²/2)
+S, K = pool.symbol("S"), pool.symbol("K")
+ex.expectation(ak.max(S - K, pool.integer(0)), S, ex.LogNormal(mu, sigma))
+# → Black–Scholes, e^{mu+sigma²/2}·Φ(d₁) − K·Φ(d₂)
+
+# Combination rules and information theory — signatures:
+#   ex.expectation_affine(expr, [(var, dist), ...])           linearity; no independence needed
+#   ex.variance_affine_independent(expr, [(var, dist), ...])  needs it, says so in the name
+#   ex.kl_divergence(p, q, base=None)          D(P||Q) — not a distance
+#   ex.cross_entropy(p, q)                     H(P) + D(P||Q), checked against −E_P[log q]
+#   ex.mutual_information_independent(p, q)    0, under an independence you assert
+a, b_, X, Y = (pool.symbol(n) for n in ("a", "b", "X", "Y"))
+ex.expectation_affine(a * X + b_ * Y, [(X, N), (Y, ex.Exponential(pool.integer(2)))])
+ex.kl_divergence(ex.Normal(pool.integer(0), pool.integer(1)), N)
+```
+
+**There are no joint distributions, no conditioning and no covariance.** A product
+of two variates raises `E-PROB-002` rather than guessing at a joint law.
+
+### The six `E-PROB-*` codes are four different instructions
+
+| Code | Reading | Next step |
+|---|---|---|
+| `E-PROB-001` | A parameter that is a **number** is outside the law's constraint | Fix it. A *symbolic* parameter is never reported here — it goes on `constraints()` |
+| `E-PROB-002` | Outside the modelled class (joint law, PGF for a non-lattice variate, cross-family KL) | Restate the query |
+| `E-PROB-003` | The reduction integral was built and **this integrator** declined it | The message names the integral — go numeric |
+| `E-PROB-004` | No closed form inside this library's primitives: `Gamma` CDF at non-integer shape, `Beta` CDF, the normal quantile (`erf⁻¹`), the log-normal characteristic function | Integer shape parameter, or numeric |
+| `E-PROB-005` | A closed form **was computed and withheld** — quadrature of its own defining integral did not confirm it | Record `unknown`. Never downgrade to a warning |
+| `E-PROB-006` | The quantity **does not exist** | **A verdict.** Stop looking |
+
+### Generating functions report their convergence strip
+
+```python
+lam = pool.symbol("lam")
+ex.Exponential(lam).moment_generating_function(t)   # lam/(lam − t)
+ex.prob_side_conditions()                           # ['lam - t > 0', 'lam > 0']
+```
+
+`M_X(t) = lambda/(lambda − t)` holds **only** on `t < lambda`; outside the strip the
+expression is still finite, still plausible and still wrong. A decidable argument
+outside it raises `E-PROB-006`; an undecidable one publishes the condition on
+`prob_side_conditions()`. **A law whose MGF is entire leaves that list empty, so
+empty means _checked_, not _unexamined_.**
+
+A `LogNormal` has no MGF at all — `E[e^{tX}]` is `+inf` for every `t > 0` — so
+`moment_generating_function` and `cumulant` raise `E-PROB-006` there, while
+`skewness` and `excess_kurtosis`, which are built from *central* moments, are
+returned as usual. `probability_generating_function` is defined only on the
+non-negative integers; asking a `Normal` raises `E-PROB-002` rather than handing
+back the formal `E[exp(X·log z)]`, which is the *moment* generating function at
+`log z` and says nothing about any `P(X = k)`.
+
+### Differential entropy is not Shannon entropy
+
+`Distribution.entropy()` is `H = −Σ p log p` on a discrete support and
+**differential** `h = −∫ f log f` on a continuous one. They are not unified behind
+one formula, and `h` is **not** the limit of `H`: it can be negative
+(`Uniform(0, 1/2).entropy()` is `log(1/2)`, returned rather than clamped) and it is
+**not invariant under a change of variables** — it shifts by `E[log|dx/dy|]`, which
+is exactly the `mu` by which a `LogNormal`'s entropy exceeds the underlying
+`Normal`'s. `base=None` is nats; `base=2` is bits.
+
+`kl_divergence` is `+inf` whenever `P` charges a set `Q` gives probability zero, and
+that case is **gated**, because the closed form does not fail there: substituting
+`Uniform(0,1)` against `Uniform(0,1/2)` into `log((b₂−a₂)/(b₁−a₁))` returns `−0.693`,
+a finite *negative* KL divergence, which Gibbs' inequality forbids. Decidably
+non-nested supports raise `E-PROB-006`; an undecidable containment is published on
+`prob_side_conditions()`. `P` and `Q` must be the same family.
+
+---
+
+## Vector calculus and quaternions (experimental, since 3.11)
+
+```python
+x, y, z = (pool.symbol(n) for n in ("x", "y", "z"))
+rho, r, theta, phi = (pool.symbol(n) for n in ("rho", "r", "theta", "phi"))
+
+cart = ex.Coordinates.cartesian(x, y, z)          # scale factors (1, 1, 1)
+cyl  = ex.Coordinates.cylindrical(rho, phi, z)    # (1, rho, 1)
+sph  = ex.Coordinates.spherical(r, theta, phi)    # (1, r, r·sin θ)
+sph.vars(); sph.scale_factors(); sph.label
+
+f = x * y + z                      # a scalar field
+F = [x, y, z]                      # a vector field: three physical components
+G = [z, x, y]
+
+ex.gradient(f, cart); ex.divergence(F, cart); ex.curl(F, cart)
+ex.laplacian(f, cart); ex.vector_laplacian(F, cart)
+ex.dot(F, G); ex.cross(F, G); ex.norm(F)
+```
+
+Three things an agent must not get wrong:
+
+1. **Fields are *physical* components** — the local orthonormal frame, the
+   convention `sympy.vector` uses and the one an engineer means by "the ρ
+   component". Not contravariant components, not `∂/∂ρ` basis coefficients.
+2. **`vector_laplacian` is `∇(∇·F) − ∇×(∇×F)`**, which equals the componentwise
+   scalar Laplacian **in Cartesian coordinates only**. Applying `laplacian` to each
+   physical component of a cylindrical or spherical field silently drops the terms
+   from the basis turning — `∇²(φ̂)` is `−φ̂/ρ²`, not `0`. This trap has no error
+   code because there *is* a right answer; use the entry point.
+3. **There is no constructor taking scale factors.** `Coordinates.from_embedding`
+   derives them from a Cartesian parametrisation and **refuses** (`E-VEC-004`) a
+   chart it cannot *prove* orthogonal, because every formula in the module assumes
+   orthogonality and on a skew chart they still evaluate — to an expression that
+   looks like a divergence and is not one. `E-VEC-005` is a degenerate scale factor.
+
+```python
+i = ex.Quaternion(pool.integer(0), pool.integer(1), pool.integer(0), pool.integer(0))
+j = ex.Quaternion(pool.integer(0), pool.integer(0), pool.integer(1), pool.integer(0))
+(i * j).components()      # (0, 0, 0,  1)  ==  k
+(j * i).components()      # (0, 0, 0, -1)  == -k
+```
+
+`Quaternion(w, x, y, z)` takes four `Expr`s (no pool argument);
+`Quaternion.identity(pool)` is the one constructor that takes the pool. `rotate(v)`
+is the **active** rotation `v ↦ q v q⁻¹`, and `(q1 * q2)` applies `q2` first, so
+`(q1 * q2).to_rotation_matrix() == q1.to_rotation_matrix() @ q2.to_rotation_matrix()`.
+
+Two refusals worth planning for: `to_axis_angle()` raises `E-QUAT-002` for the
+identity rotation, which has no axis because *every* unit vector is one; and
+`from_rotation_matrix(m)` raises `E-QUAT-003` for anything it cannot check is a
+proper rotation — `RᵀR = I` and `det R = +1` are verified and the recovered
+quaternion must reproduce the matrix, and a **symbolic** matrix refuses outright,
+because Shepperd's branch selection is a comparison between entries and there is
+none to make on a symbol.
+
+`VectorError` and `QuaternionError` are reached as `ex.VectorError` /
+`ex.QuaternionError` — they are **not** on the top-level `alkahest` namespace,
+unlike `ProbabilityError`, which is. All three subclass `ak.AlkahestError`.
 
 ---
 
@@ -1292,7 +1489,7 @@ All errors inherit `AlkahestError` and carry `.code`, `.remediation`, `.span`.
 | `HolonomicError` | `E-HOLO-*` | `zeilberger` outside the proper-hypergeometric class; `q_zeilberger` outside the `q`-hypergeometric one (`E-HOLO-020`) or with a non-rational shift quotient (`E-HOLO-024` — **permanent, not a bounds problem**); `telescope2d`/`telescope_md` outside the proper-hypergeometric-in-the-bound-indices class (`E-HOLO-040`), search exhausted — including a resource ceiling refusal, see item 31 — (`E-HOLO-041`), or a malformed call (`E-HOLO-042` — indices not pairwise distinct, or empty); `guess_holonomic` given too few terms to confirm a fit (`E-HOLO-005` — **a refusal: record `unknown`, not "no recurrence"**); `ModularRecurrence` / `binomial_mod` given an unsupported prime-power modulus (`E-HOLO-006`), a step with no `p`-adic integer answer (`E-HOLO-007` — **permanent**) or a working precision past `2**62` (`E-HOLO-008` — **resource: record `unknown`**) |
 | `ValidatedError` | `E-VALIDATED-*` | Rigorous-bounds request unsupported / singular / malformed |
 | `OdeError` | `E-ODE-*` | Every ODE engine, one class per prefix: construction (`001`–`003`), `dsolve` (`010`–`014`; `011` = a candidate that failed substitution verification and was **withheld**, `013` = class recognised but its quadrature did not close, `014` = Riccati with no particular solution to seed it), the numeric integrators (`020`–`026`), `dsolve_system` (`030`–`034`), `series_solve` (`040`–`045`; `041` = an irregular singular point, where **no** Frobenius series exists, `044` = a candidate series that failed the exact-residual gate). The `series_solve` block moved off `020`–`025` in 3.10, where it collided with the numeric one |
-| `TransformError` | `E-TRANSFORM-*` | Laplace (`00x`), Fourier (`01x`), Z (`10x`) and their inverses. `001`/`011`/`101` and `002`/`102` are **table gaps** — a wider table would close them. `004` and `013` are **refuted hypotheses**: the unilateral transform sees `t ≥ 0` only (`L{θ(t+1)} = 1/s`, not `e^s/s`; an advance factor `e^{+as}` on the inverse is the transform of no causal function), and a non-positive Fourier decay rate makes the defining integral diverge. Record the second kind as **there is nothing to find**, not as "try again later". A *symbolic* parameter is neither — it is carried on `side_conditions` |
+| `TransformError` | `E-TRANSFORM-*` | Laplace (`00x`), Fourier (`01x`), Z (`10x`) and their inverses. `001`/`011`/`101` and `002`/`102` are **table gaps** — a wider table would close them. `004` and `013` are **refuted hypotheses**: the unilateral transform sees `t ≥ 0` only (`L{θ(t+1)} = 1/s`, not `e^s/s`; an advance factor `e^{+as}` on the inverse is the transform of no causal function), and a non-positive Fourier decay rate makes the defining integral diverge. Record the second kind as **there is nothing to find**, not as "try again later". A *symbolic* parameter is neither — it is answered, with the hypothesis on the thread-local `experimental.transform_side_conditions()` (these functions return a bare `Expr`; there is no `.side_conditions` field to read) |
 | `AsymptoticError` | `E-ASYMPT-*` | `asymptotic_expand`; `004` = an expansion the numeric `o()`-gate could not confirm, **withheld** rather than returned; `005` = a scale outside the implemented rules |
 | `FpsError` | `E-FPS-*` | Formal power series — a pole at the origin (`001`/`002`), a non-rational coefficient (`003`), or a constant-term hypothesis (`004`–`006`: `f(0) = 0` for composition/`exp`/reversion, `= 1` for `log`, `≠ 0` for the inverse) |
 | `DaeError` | `E-DAE-*` | DAE index reduction failed |
@@ -1310,6 +1507,9 @@ All errors inherit `AlkahestError` and carry `.code`, `.remediation`, `.span`.
 | `CrossCheckError` | `E-XCHECK-*` | Check could not be posed; `002` = no oracle installed |
 | `SmtError` | `E-SMT-*` | Export/solver/model-lift; `003` = algebraic witness, `004` = model failed the check |
 | `CertificateUnavailableError` | `E-CERT-*` | A Lean certificate was required but withheld |
+| `ProbabilityError` | `E-PROB-*` | The experimental distribution surface. `001` = a **numeric** parameter outside the law's constraint (a symbolic one goes on `constraints()` instead); `002` = outside the modelled class (joint law, PGF for a non-lattice variate, cross-family KL); `003` = the reduction integral was built and **this integrator** declined it, and the message names it; `004` = no closed form inside this library's primitives (`Gamma`/`Beta` CDF, the normal quantile, the log-normal characteristic function); `005` = a closed form **computed and withheld** because quadrature of its own defining integral did not confirm it — **record `unknown`**; `006` = the quantity **does not exist** (a divergent expectation, an MGF outside its convergence strip, an infinite KL divergence) — **a verdict, stop looking** |
+| `VectorError` | `E-VEC-*` | Vector calculus over an orthogonal chart. `004` = a chart `from_embedding` could not **prove** orthogonal — undecided is a refusal, because the formulas still evaluate on a skew chart, to something that looks like a divergence and is not one; `005` = a degenerate scale factor. Reached as `experimental.VectorError`, not `alkahest.VectorError` |
+| `QuaternionError` | `E-QUAT-*` | `001` = a zero or undecided norm; `002` = the axis of the identity rotation, which **does not exist** — every unit vector is one, and the conventional `(0,0,1)` is a stated answer to a question with no answer; `003` = a matrix that could not be checked to be a proper rotation, including any symbolic matrix. Reached as `experimental.QuaternionError` |
 
 ```python
 from alkahest import ConversionError, IntegrationError
@@ -1331,7 +1531,7 @@ branch in a search.
 
 | Refusals (⇒ *undecided*) | Verdicts (⇒ a real answer) |
 |---|---|
-| `E-CAD-001`, `E-LINALG-010`, `E-MAT-004`, `E-SOS-002`, `E-ANSATZ-003`, `E-SMT-003`, `E-INT-001`, `E-LIMIT-003/005`, `E-BUDGET-001..003` | `E-INT-004` (proven non-elementary), `E-MAT-003` (proven singular), `E-EVAL-009` (undefined at this point), an `unsat` from `smt` (but only as *externally asserted*) |
+| `E-CAD-001`, `E-LINALG-010`, `E-MAT-004`, `E-SOS-002`, `E-ANSATZ-003`, `E-SMT-003`, `E-INT-001`, `E-LIMIT-003/005`, `E-PROB-003`, `E-PROB-005`, `E-TRANSFORM-001/011/101/002/102`, `E-BUDGET-001..005` | `E-INT-004` (proven non-elementary), `E-MAT-003` (proven singular), `E-EVAL-009` (undefined at this point), `E-TRANSFORM-004/013` (a refuted hypothesis — there is nothing a wider table would find), `E-PROB-006` (the quantity does not exist), `E-QUAT-002` (the identity rotation has no axis), an `unsat` from `smt` (but only as *externally asserted*) |
 
 When Alkahest refuses, say so precisely: *"Alkahest declined to decide this (E-CAD-001);
 it is not a disproof."* Then offer an escalation route rather than substituting an
@@ -1398,6 +1598,19 @@ e = parse("x^2 + 2*x + 1", pool, {"x": x})
 latex(e)
 unicode_str(e)
 ```
+
+**Round-trip fidelity is a correctness property here** (since 3.11): every printed
+form is required to re-read as the expression that was printed. A printer that
+emits something re-parsing to different mathematics is a silent wrong answer with
+extra steps — the caller copies the output, feeds it back, and nothing is raised
+anywhere. What changed, in case you have pinned output from an older release:
+`latex` collapses runs of an identical factor into a power (`x·x` → `x^2`, not the
+juxtaposed `x x`), puts an explicit `\cdot` before a factor that begins with a digit
+(`2 3^n` set as `23^n` in math mode), parenthesises a factor whose rendering starts
+with `-` (`x -1.5` read as `x − 1.5`), renders a float in exponent notation as
+`2.5 \times 10^{-1}` rather than copying `2.5e-1` into math mode, and prints logical
+connectives at their own precedences; `unicode_str` no longer emits the spurious
+`¹` on a base moved into the denominator.
 
 ---
 
@@ -1537,7 +1750,7 @@ reg.coverage_report_markdown()  # same, rendered as a Markdown table
 10. **Symbols from different pools are incompatible.** Keep one pool per computation graph.
 11. **`plot*` functions detect the backend automatically.** Never import matplotlib/plotly in user code just to call `ak.plot` — let alkahest dispatch. Use `backend="plotly"` or `backend="matplotlib"` to force one. Use `plot_svg` when no plotting library is available.
 12. **`plot_dag` returns a `graphviz.Source` if the `graphviz` package is installed, otherwise a raw DOT string.** Call `.render()` or `.view()` on the returned object, or pipe the string to `dot -Tpng`.
-13. **A refusal is not a negative result.** `E-CAD-001`, `E-LINALG-010`, `E-MAT-004`, `E-SOS-002`, `E-ANSATZ-003`, `E-SMT-003` and every `E-BUDGET-*` mean *undecided by this route*. Say so explicitly; do not paraphrase them as "false", "no solution exists", or "not possible". See [Refusal vs verdict](#refusal-vs-verdict--the-distinction-that-matters-most).
+13. **A refusal is not a negative result.** `E-CAD-001`, `E-LINALG-010`, `E-MAT-004`, `E-SOS-002`, `E-ANSATZ-003`, `E-SMT-003`, `E-PROB-003`, `E-PROB-005` and every `E-BUDGET-*` mean *undecided by this route*. Say so explicitly; do not paraphrase them as "false", "no solution exists", or "not possible". See [Refusal vs verdict](#refusal-vs-verdict--the-distinction-that-matters-most).
 14. **`decide` can raise.** Always `try/except ak.CadError`. It is not complete: ≤ 2 variables, ≤ 2 quantifiers, and it refuses at irrational boundary points.
 15. **One pool per problem in any loop.** `ExprPool` never reclaims and holding any `Expr` pins the whole pool. Carry `to_dict(mode="compact")` between iterations, not live expressions.
 16. **Bound long calls with `context(budget=…)`, not `run_with_wall_fallback`.** The latter joins its worker and so does not bound wall time for an uncooperative callee. Only `integrate` and `limit` honour the cooperative budget and release the GIL.
@@ -1565,3 +1778,13 @@ reg.coverage_report_markdown()  # same, rendered as a Markdown table
 
 30. **`sos_decompose` tries the full PSD Gram cone and a Reznick multiplier search before refusing, and now certifies Motzkin and Robinson's form too** (since 3.9). Past diagonal dominance (`E-SOS-002` from DSOS alone) it searches the general PSD Gram cone, and past that — when `p` itself is not SOS — tries `(x_1²+…+x_n²)^N·p` for `N = 1..4` and searches *that* cone; a witness for `p < 0` still refuses separately with `E-SOS-003`, unaffected. Every certificate this returns is exact end to end: the numeric search only ever proposes a Gram matrix, which is rounded to nearby rationals and re-expanded to check it equals the target exactly before anything is returned — a `Some`/returned certificate is always sound regardless of what the float search converged to. Budget exhaustion is still `E-SOS-002`, undecided, never "not SOS" — say so, don't paraphrase it as a disproof. **The textbook PSD-not-SOS examples whose multiplier certificates are *singular* Gram matrices sitting exactly on the boundary of the PSD cone** — Motzkin's polynomial and Robinson's form — used to be out of reach for the original annealed alternating-projection search (a diagnosed convergence limitation at tangential PSD-cone intersections, not a soundness bug); the search now also tries Douglas–Rachford splitting with over-relaxation and a facial-reduction step, and with them both examples are found and exactly re-verified. **Correction (2026-08-20):** earlier revisions of this entry said the homogeneous 3-variable Motzkin form "is not classically expected to be SOS at `N = 1` at all" and that reaching it required `N = 2`. That was **false**. `(x²+y²+z²)·(x⁴y²+x²y⁴−3x²y²z²+z⁶)` *is* a sum of squares — that identity is precisely why Motzkin is the standard example of a PSD non-SOS form made SOS by one factor of `Σxᵢ²` — and it now certifies at `N = 1`, together with Choi–Lam. What was missing was not iterations but a **half-Newton-polytope reduction**: `psd_search` now restricts the Gram basis to the lattice points of `½·Newton(p)` (Reznick: every square in every SOS decomposition already has its support there, so nothing is lost), which takes `σ·Motzkin_hom` from a 75-parameter family to an 18-parameter one — the difference between landing `0.96` away from the certificate in parameter space and landing on it exactly. **What's still open:** the Horn/C₅ and C₇ copositivity forms, whose Newton polytopes are already full and whose `N = 1` families (420 and 2646 free parameters) are above `psd_search`'s numeric-search ceiling of 200 — so for those *no multiplier power is searched at all*. `E-SOS-002` now carries a trace of what the search actually did, with `NOT SEARCHED` marking budgets that fired; read it before recording a refusal as exhaustive, because "we did not look" and "we looked and found nothing" share the error code. `E-SOS-002` still means "not found within this search", never "not SOS". `basis_degree` now does reach the multiplier path (it used to be ignored there), or fall back to `alkahest.decide`.
 31. **Multi-sums need `experimental.telescope2d` (two bound indices) or `experimental.telescope_md` (any number `m >= 1`), not `zeilberger`** (since 3.9; `telescope_md` since 3.10). `zeilberger`/`q_zeilberger` reach a sum over *one* index; `telescope2d(term, n, j, k)` is the Apagodu–Zeilberger generalization to a proper hypergeometric `F(n,j,k)` with **two** bound indices `j`, `k`, returning `a_0(n), …, a_J(n)` and *two* certificates `cert1`, `cert2` with `Σ_i a_i(n)·F(n+i,j,k) = Δ_j(cert1·F) + Δ_k(cert2·F)`, re-checked exactly in `Q(n,j,k)`. `telescope_md(term, n, [x_1, ..., x_m])` is the same engine generalized to arbitrary `m` — `m = 1` degenerates to a single-sum-shaped search, `m = 2` behaves identically to `telescope2d` (which is now a thin wrapper over it), `m >= 3` is genuinely new — returning `cert.certs()` (a list of `m` certificates, a method not a property since it's a collection) instead of `cert1`/`cert2`. Four real, stated scope limits, not unfinished polish: (1) the certificate ansatz uses a *fixed* denominator built from `F`'s own shift-ratio denominators rather than a minimal Gosper normal form, so a search that finds nothing raises `E-HOLO-041` and does not prove no certificate exists; (2) `cert.boundary_status(j_lo, j_hi, k_lo, k_hi)` / `cert.boundary_status([(lo_1, hi_1), ..., (lo_m, hi_m)])` only accept **constant** (not `n`-dependent) boxes — for a natural range like `j = 0..n`, pick a fixed bound safely larger than any `n` you check and let `F`'s own combinatorial vanishing do the rest, exactly as the module's own worked examples do; (3) the boundary of a box is **`2m` `(m-1)`-dimensional face sums, not `2^m` corner-point evaluations** — a naive corner-evaluation formula is simply wrong — and this version only proves the sufficient (not necessary) condition that each face vanishes identically, so `boundary_status` can return `"unknown"` for a boundary that is genuinely `0` but not by that pointwise route; it never guesses `"vanishes"`. That face criterion is a statement about a *value* of `F`, so `boundary_status` first requires `F` to be provably defined at every integer point of the box **and its `2m` faces**: a pole strictly inside the box (which leaves `S(n)` with no value while the `Q(n,x)` certificate identity verifies happily) and a `gamma(...)^e` factor with `e > 0` whose argument still moves with `n` (not a constant along a face, so not weighed against the `1/gamma` zero — and `0 * inf` is not `0`) are both `"unknown"`. Factors are weighed one at a time, so `gamma(n+k+1)/gamma(n+1)` — a Pochhammer with no pole anywhere — is refused on its numerator alone. There is no inhomogeneous `"nonzero"` verdict yet — an unresolved face is always `"unknown"`; (4) `telescope_md`'s underlying exact linear solve is `O(rows · cols²)` and both grow fast with `m` and the certificate degree bound (measured: `m = 3` at certificate degree 2 already means a ~10,000-row, 245-unknown system taking ~47s to solve *per probe*), so two resource ceilings apply — a single probe above 400 unknowns is refused outright, and total work across every probe at or above 150 unknowns in one search call is capped to 300 — meaning `E-HOLO-041` can also mean "refused by a resource ceiling, not searched and found nothing," which the error message states explicitly; raising `m` or `max_cert_degree` further will not help once a ceiling is the reason. `E-HOLO-040` is the class refusal (not proper hypergeometric in the bound indices), `E-HOLO-042` a malformed call (indices not pairwise distinct, or `indices` empty for `telescope_md`).
+
+32. **A probability quantity is checked before it is returned, and the check has its own error code** (since 3.11). Every `Distribution` method and every `expectation` is verified against numerical quadrature of its own defining integral; one the checker cannot confirm raises `E-PROB-005` rather than arriving with a caveat, so **there is no such thing as an unchecked value from this surface**. Read the four instructions apart: `E-PROB-003` is *this integrator declined* (the message names the integral — hand it to quadrature), `E-PROB-004` is *no closed form exists inside this library's primitives* (the `Gamma`/`Beta` CDFs, the normal quantile, the log-normal characteristic function), `E-PROB-005` is *found and withheld*, and `E-PROB-006` is a **verdict** that the quantity does not exist. Retrying with a wider integration table is the right move for `003` and the wrong move for all the others. The convergence gate behind `006` is *sufficient, not complete*: a divergence it cannot see surfaces as `E-PROB-003`.
+
+33. **A generating function is only true on its strip, and the strip is reported rather than assumed** (since 3.11). `Exponential(lam).moment_generating_function(t)` is `lam/(lam − t)` **for `t < lam`**; outside it the expression is still finite, still plausible and still wrong, so a decidable argument outside the strip raises `E-PROB-006` and an undecidable one publishes the condition on `experimental.prob_side_conditions()` — the same out-of-band channel as `transform_side_conditions()`, and for the same reason: the return value is an `Expr`, so a conditional answer and a theorem look identical at the call site. **A law whose MGF is entire leaves that list empty, so empty means _checked_.** A `LogNormal` has no MGF at all (`E[e^{tX}] = +inf` for every `t > 0`) and raises `E-PROB-006` — a CAS that completes the square anyway returns a clean closed form that is the value of no integral. `probability_generating_function` refuses (`E-PROB-002`) for anything not on the non-negative integers rather than returning the formal `E[exp(X·log z)]`, which is a different function. And there are **no joint laws**: use `expectation_affine` (linearity, which needs no independence) or `variance_affine_independent` (which does, and says so); a product of two variates is `E-PROB-002`, never a guessed covariance.
+
+34. **Differential entropy is not Shannon entropy, and KL divergence is not a distance** (since 3.11). `Distribution.entropy()` is `−Σ p log p` on a discrete support and `−∫ f log f` on a continuous one; the second can be **negative** (`Uniform(0, 1/2).entropy()` is `log(1/2)`, returned rather than clamped) and is **not invariant under a change of variables** — it shifts by `E[log|dx/dy|]`, exactly the `mu` by which a `LogNormal`'s entropy exceeds the underlying `Normal`'s. Never report `h < 0` as a bug. `kl_divergence(P, Q)` is not symmetric and is `+inf` whenever `P` charges a set `Q` gives probability zero — a case that is *gated* rather than merely documented, because the closed form does not fail there: `Uniform(0,1)` against `Uniform(0,1/2)` substituted into `log((b₂−a₂)/(b₁−a₁))` gives a finite **negative** divergence, which Gibbs' inequality forbids. Decidably non-nested supports raise `E-PROB-006`; an undecidable containment is published on `prob_side_conditions()`. `P` and `Q` must be the same family.
+
+35. **Vector-calculus fields are *physical* components, and `vector_laplacian` is not `laplacian` three times** (since 3.11). `experimental.gradient`/`divergence`/`curl`/`laplacian` read and write the local orthonormal frame — the `sympy.vector` convention, "the ρ component" as an engineer means it. `vector_laplacian` is `∇(∇·F) − ∇×(∇×F)`, which equals the componentwise scalar Laplacian **in Cartesian coordinates only**; applying `laplacian` to each physical component of a cylindrical or spherical field silently drops the terms that come from the basis turning (`∇²(φ̂)` is `−φ̂/ρ²`, not `0`), and that trap has no error code because there is a right answer. `Coordinates` has **no constructor taking scale factors**: use `cartesian`/`cylindrical`/`spherical`, or `from_embedding`, which refuses (`E-VEC-004`) a chart it cannot *prove* orthogonal — on a skew chart the formulas still evaluate, to an expression that looks like a divergence and is not one.
+
+36. **A quaternion product is not commutative and `to_axis_angle` can refuse** (since 3.11). `Quaternion(w, x, y, z)` takes four `Expr`s and no pool; `Quaternion.identity(pool)` is the exception. `i*j == k` and `j*i == −k`; `rotate(v)` is the **active** rotation `v ↦ q v q⁻¹`, and `(q1 * q2)` applies `q2` **first**, so `(q1*q2).to_rotation_matrix() == q1.to_rotation_matrix() @ q2.to_rotation_matrix()` — getting that order backwards is a silent wrong answer, not an exception. `to_axis_angle()` raises `E-QUAT-002` for the identity rotation, which genuinely has no axis (every unit vector is one), so do not paper over it with `(0, 0, 1)`; `from_rotation_matrix` raises `E-QUAT-003` for anything it cannot check is a proper rotation, **including any symbolic matrix**, because the branch selection is a comparison between entries.

@@ -240,6 +240,61 @@ Exception subclasses
    ``f(0) ≠ 0`` for the inverse), and each ``.remediation`` names the rewrite
    that removes the obstruction.
 
+.. exception:: ProbabilityError
+
+   Code prefix ``E-PROB-*``. The :mod:`alkahest.experimental` probability
+   surface — distributions, expectations, moments, characteristic and
+   generating functions, entropy and KL divergence. The six codes are kept
+   apart because they call for four different next steps:
+
+   - ``E-PROB-001`` — a parameter that is a **number** violates the law's own
+     constraint (``sigma <= 0``, ``a >= b``, ``p`` outside ``[0, 1]``). A
+     *symbolic* parameter is never reported here: it cannot be decided, so it
+     is carried on :meth:`Distribution.constraints` instead.
+   - ``E-PROB-002`` — outside the modelled class: a product of two variates
+     (there are no joint laws here), a probability generating function for a
+     law that is not on the non-negative integers, a cross-family KL
+     divergence.
+   - ``E-PROB-003`` — the reduction integral was built and the symbolic
+     integrator declined it. The message names the integral.
+   - ``E-PROB-004`` — no closed form exists inside this library's primitive
+     set: the ``Gamma`` CDF at non-integer shape, the ``Beta`` CDF, the normal
+     quantile (``erf**-1``), the log-normal characteristic function.
+   - ``E-PROB-005`` — a closed form **was** computed and is being **withheld**,
+     because quadrature of its own defining integral could not confirm it.
+   - ``E-PROB-006`` — the quantity **does not exist**: a divergent expectation,
+     a moment generating function outside its convergence strip, an infinite KL
+     divergence. A verdict, not a refusal.
+
+.. exception:: VectorError
+
+   Code prefix ``E-VEC-*``. Vector calculus over an orthogonal chart
+   (:class:`alkahest.experimental.Coordinates`). ``E-VEC-004`` is the one to
+   read twice: every ``grad``/``div``/``curl``/``laplacian`` formula in the
+   module is derived for an orthogonal frame, and on a skew chart they still
+   evaluate — to an expression that looks like a divergence and is not one. So
+   the tangent inner products must be *proven* to vanish, and an undecided one
+   is a refusal rather than an assumption. ``E-VEC-005`` is a scale factor that
+   is zero, or whose non-vanishing could not be established; every operator
+   divides by it.
+
+   Reached as ``alkahest.experimental.VectorError``; it is not on the
+   top-level namespace.
+
+.. exception:: QuaternionError
+
+   Code prefix ``E-QUAT-*``. Quaternion algebra and rotations
+   (:class:`alkahest.experimental.Quaternion`). ``E-QUAT-001`` is a zero or
+   undecided norm. ``E-QUAT-002`` refuses the axis of the identity rotation,
+   which does not exist — *every* unit vector is one, and the conventional
+   ``(0, 0, 1)`` is a stated answer to a question with no answer.
+   ``E-QUAT-003`` refuses a matrix that could not be checked to be a proper
+   rotation, including any symbolic matrix, because Shepperd's branch
+   selection is a comparison between entries and there is none to make on a
+   symbol.
+
+   Reached as ``alkahest.experimental.QuaternionError``.
+
 .. exception:: DaeError
 
    Code prefix ``E-DAE-*``. DAE structural analysis error (Pantelides
@@ -358,6 +413,9 @@ Exception subclasses
    - ``E-BUDGET-001`` — wall-clock limit elapsed
    - ``E-BUDGET-002`` — step limit exceeded
    - ``E-BUDGET-003`` — cancellation requested
+   - ``E-BUDGET-004`` — the declared memory budget was exceeded
+   - ``E-BUDGET-005`` — the process address-space limit was about to be
+     exhausted; this refusal replaces the uncatchable abort that would follow
 
    Example::
 
@@ -387,5 +445,6 @@ Match on the base class and filter by code prefix::
        else:
            raise
 
-For the full error taxonomy (cause classification, rules for adding codes)
-see ``docs/error-taxonomy.md`` in the repository.
+For the full error taxonomy (cause classification, refusal vs verdict, rules for
+adding codes) see the `Error handling <../errors.html>`_ chapter of the user
+guide, whose source is ``docs/mdbook/src/errors.md``.

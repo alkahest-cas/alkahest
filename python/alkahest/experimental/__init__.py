@@ -82,11 +82,15 @@ Probability and statistics:
   a symbolic ``quantile`` argument, and a payoff kink that cannot be placed
   inside the support
 - :func:`expectation` — ``E[f(X)]``, reduced to integrals the existing
-  integrator attempts. A divergent expectation raises ``E-PROB-006`` (checked
-  *before* the symbolic work, so the answer is "no value exists" rather than
-  "the integrator declined"); an integral that does not close raises
-  ``E-PROB-003`` **naming it**, never an unevaluated object dressed as an
-  answer. ``max(S - K, 0)`` under a :func:`LogNormal` derives Black–Scholes
+  integrator attempts. A divergence the convergence gate can see raises
+  ``E-PROB-006`` (checked *before* the symbolic work, so the answer is "no
+  value exists" rather than "the integrator declined"); an integral that does
+  not close raises ``E-PROB-003`` **naming it**, never an unevaluated object
+  dressed as an answer. The gate is sufficient, not complete — a divergence it
+  cannot see (``E[e**X]`` under ``Exponential(1)``, whose integrand is the
+  constant ``1``) arrives as ``E-PROB-003`` instead, so read ``006`` as "proved
+  divergent", never ``003`` as "proved convergent". ``max(S - K, 0)`` under a
+  :func:`LogNormal` derives Black–Scholes
 - :func:`expectation_affine` — linearity, which needs no independence at all —
   and :func:`variance_affine_independent`, which does and says so in its name.
   There are no joint distributions, no conditioning and no covariance here: a
@@ -437,9 +441,10 @@ __all__ = [
     "Gamma",
     "GbPoly",
     "GroebnerBasis",
-    # M11 — novelty filtering
+    # Probability (continued)
     "LogNormal",
     "Normal",
+    # M11 — novelty filtering
     "NoveltyMatch",
     "NoveltyVerdict",
     "OdeTrajectory",
@@ -453,8 +458,9 @@ __all__ = [
     "ParametricGbPoly",
     "ParametricGroebnerBasis",
     "ParametricRosenfeldGroebnerResult",
-    # Puiseux (fractional-exponent) expansion
+    # Probability (continued)
     "Poisson",
+    # Puiseux (fractional-exponent) expansion
     "PuiseuxExpansion",
     # M11 — novelty filtering
     "QRecurrenceClaim",
@@ -472,9 +478,10 @@ __all__ = [
     # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
     "Telescoping2dCertificate",
     "TelescopingMdCertificate",
-    # Hypotheses the last `apart` on this thread rests on (ℚ(params) path).
+    # Probability (continued)
     "Uniform",
     "VectorError",
+    # Hypotheses the last `apart` on this thread rests on (ℚ(params) path).
     "apart_side_conditions",
     "arg",
     "asymptotic_expand",
@@ -532,8 +539,9 @@ __all__ = [
     "novelty",
     "ode_integrate_rk4",
     "ode_integrate_rk45",
-    # Puiseux (fractional-exponent) expansion
+    # Hypotheses the last Distribution method / expectation call rests on
     "prob_side_conditions",
+    # Puiseux (fractional-exponent) expansion
     "puiseux_series",
     # M4(b) — q-analogue creative telescoping
     "q_zeilberger",

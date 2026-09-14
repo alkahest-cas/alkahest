@@ -26,6 +26,9 @@ AlkahestError (base)
 ├── AnsatzError       (E-ANSATZ-*) — ansatz family construction or fitting, see [Ansatz families](./ansatz.md)
 ├── CrossCheckError   (E-XCHECK-*) — cross-CAS check could not be posed, see [Cross-CAS testing](./crosscheck.md)
 ├── SmtError          (E-SMT-*)    — SMT-LIB export, solver run, or model lift, see [SMT bridge](./smt.md)
+├── VectorError       (E-VEC-*)    — vector calculus over an orthogonal chart, see below
+├── QuaternionError   (E-QUAT-*)   — quaternion algebra and rotations, see below
+├── ProbabilityError  (E-PROB-*)   — distributions, expectations, generating functions, entropy, see below
 └── BudgetExceededError (E-BUDGET-*) — budget/cancellation trip, see [Budgets](./budgets.md)
 ```
 
@@ -36,9 +39,12 @@ Every exception instance exposes:
 | Attribute | Type | Description |
 |---|---|---|
 | `.code` | `str` | Stable diagnostic code, e.g. `"E-POLY-001"` |
-| `.message` | `str` | Human-readable description |
 | `.remediation` | `str \| None` | What the user should try |
 | `.span` | `tuple[int, int] \| None` | Character offset range in source expression |
+
+There is no `.message`. The human-readable description is `str(e)`, which carries the
+code, the message and the remediation on separate lines; `e.args[0]` is the same
+string. Branch on `.code`, print `str(e)`.
 
 ```python
 import alkahest
@@ -51,9 +57,12 @@ try:
     # sin(x) cannot be represented as a polynomial
     p = UniPoly.from_symbolic(alkahest.sin(x), x)
 except ConversionError as e:
-    print(e.code)          # E-POLY-001
-    print(e.message)       # "expression contains non-polynomial term: sin(x)"
-    print(e.remediation)   # "Use Expr directly, or expand sin(x) as a series first"
+    print(e.code)          # E-POLY-006
+    print(str(e))          # "[E-POLY-006] function 'sin' cannot appear in a polynomial
+                           #  Remediation: not a polynomial; wrap in the function only
+                           #  after rational reduction"
+    print(e.remediation)   # "not a polynomial; wrap in the function only after
+                           #  rational reduction"
 ```
 
 ## Common errors and remediations
@@ -64,9 +73,14 @@ Raised when an expression cannot be converted to a polynomial or rational functi
 
 | Code | Cause | Remediation |
 |---|---|---|
-| `E-POLY-001` | Non-polynomial term (e.g. `sin`) | Use `Expr` directly; or expand as series |
-| `E-POLY-002` | Non-integer exponent | Algebraic extension not yet supported |
-| `E-POLY-003` | Symbolic exponent (variable in exponent) | Use `Expr.pow`, not `UniPoly` |
+| `E-POLY-001` | A symbol the conversion could not place | Remove it, or declare it as a parameter |
+| `E-POLY-002` | A coefficient is not a rational integer | Rationalize, or substitute |
+| `E-POLY-003` | A negative or non-integer exponent | Only non-negative integer exponents are supported |
+| `E-POLY-004` | Degree ceiling exceeded | Reduce the degree, or use the sparse representation |
+| `E-POLY-005` | Symbolic exponent (a variable in the exponent) | Substitute a concrete integer first |
+| `E-POLY-006` | A non-polynomial **function** in the input (e.g. `sin`) | Use `Expr` directly, or expand as a series first. This — not `E-POLY-001` — is what `UniPoly.from_symbolic(sin(x), x)` raises |
+| `E-POLY-007` | The denominator is zero | Ensure it is non-zero before converting |
+| `E-POLY-008` … `E-POLY-010` | `FactorError`, not `ConversionError`: factoring the zero polynomial, or a bad modulus | — |
 
 ### DomainError (E-DOMAIN-*)
 
@@ -153,6 +167,9 @@ loop must record as **undecided**, never as a negative result.
 | `E-ODE-011` | `OdeError` | `dsolve` produced a candidate closed form and then withheld it, because substituting it back into the equation did not verify. Distinct from `E-ODE-010` on purpose: that one says no class matched, this one says something was found and is not trustworthy |
 | `E-ODE-044` | `OdeError` | The same for `series_solve`: a candidate Frobenius series that failed the exact-residual gate |
 | `E-ASYMPT-004` | `AsymptoticError` | `asymptotic_expand` computed an expansion and then withheld it, because the numeric `o()`-gate rejected every candidate term at large `x`. The function may have an oscillatory or non-power-scale tail |
+| `E-PROB-005` | `ProbabilityError` | A moment, CDF, quantile, characteristic function or entropy was **computed** and then withheld, because quadrature of its own defining integral could not confirm it. The same shape as `E-ODE-011` and `E-SERIES-006`: something was found and it is not trustworthy |
+| `E-PROB-003` | `ProbabilityError` | The reduction integral was built and the symbolic integrator declined it. A fact about **this integrator**, so a wider integration table would close it — the message names the integral, so it can be handed to quadrature instead |
+| `E-PROB-006` | `ProbabilityError` | The defining integral **diverges**, so there is no value. **A verdict, not a refusal** — `E[e^{X²}]` under a standard normal, `E[e^{tX}]` for a log-normal at any `t > 0`, `D(P‖Q)` where `P` charges a set `Q` gives probability zero. Keep it apart from `E-PROB-003`: retrying with a wider integration table is the wrong next step. The convergence gate is *sufficient, not complete* — a divergence it cannot see still surfaces as `E-PROB-003` |
 
 `E-SERIES-003` and `E-SERIES-004` travel out of band for the same reason (`SeriesError` is
 exhaustive) but *are* wired into the bindings: `series` returns `SeriesError::InvalidOrder`
@@ -283,6 +300,36 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-RESIDUE-*` | `AlkahestError` | `residue` — not a rational function, zero denominator, pole order out of range, or (`E-RESIDUE-005`) a point that is not an exact constant in ℚ(i) |
 | `E-VEC-*` | `VectorError` | Vector calculus over an orthogonal chart — a non-differentiable component, a repeated or non-symbol coordinate, a chart that could not be *proven* orthogonal (`E-VEC-004`), or a degenerate scale factor (`E-VEC-005`). See [Vector calculus and quaternions](#vector-calculus-and-quaternions) |
 | `E-QUAT-*` | `QuaternionError` | Quaternion algebra and rotations — a zero or undecided norm (`E-QUAT-001`), the axis of the identity rotation, which does not exist (`E-QUAT-002`), or a matrix that could not be checked to be a proper rotation (`E-QUAT-003`) |
+| `E-PROB-*` | `ProbabilityError` | `alkahest.experimental`'s distribution surface — laws, expectations, moments, characteristic and generating functions, entropy and KL divergence. `E-PROB-005` and `E-PROB-006` are the two to branch on: one is a closed form that was **withheld**, the other says the quantity **does not exist**. See [Probability: four ways not to answer](#probability-four-ways-not-to-answer) |
+| `E-LIMIT-*` | `LimitError` | `limit` could not be established; `E-LIMIT-006` is a limit that turns on the sign of a free parameter nothing states — assume it, or declare the symbol `Domain.Positive` |
+| `E-SERIES-*` | `SeriesError` | `series` and `experimental.puiseux_series`. `003` a work ceiling, `004` an indeterminate coefficient, `005` no Puiseux expansion exists, `006` one computed and withheld |
+| `E-SUM-*` | `SumError` | Symbolic summation (`sum_indefinite`, `sum_definite`) — not hypergeometric, or not Gosper-summable |
+| `E-PROD-*` | `ProductError` | Symbolic discrete products (`product_indefinite`, `product_definite`) |
+| `E-REC-*` | `LinearRecurrenceError` | `solve_linear_recurrence_homogeneous` |
+| `E-RSOLVE-*` | `RsolveError` | Difference equations (`rsolve`) |
+| `E-HOLO-*` | `HolonomicError` | One prefix, five engines: `001`–`008` single-index `zeilberger` plus modular / `p`-adic evaluation, `020`–`024` `q_zeilberger`, `040`–`042` `experimental.telescope2d` / `telescope_md`, `060`–`064` the continuous (Almkvist–Zeilberger) engine, which has no Python entry point yet. See [Creative telescoping](./telescoping.md) |
+| `E-VALIDATED-*` | `ValidatedError` | Rigorous Taylor-model bounds. **Every variant is a refusal, never a guess** — see [Rigorous global bounds](./validated-bounds.md) |
+| `E-NT-*` | `NumberTheoryError` | FLINT-backed integer number theory (`alkahest.number_theory`) |
+| `E-MOD-*` | `ModularError` | Modular / CRT reconstruction (`alkahest.modular`) |
+| `E-DIOPH-*` | `DiophantineError` | Integer Diophantine solving — linear and quadratic patterns |
+| `E-ROOT-*` | `RealRootError` | Real root isolation (VAS) |
+| `E-RES-*` | `ResultantError` | Resultants and the subresultant PRS |
+| `E-INTERP-*` | `SparseInterpError` (`001`–`004`), `SparseGcdError` (`010`–`012`) | Sparse multivariate interpolation and sparse modular GCD |
+| `E-HOMOTOPY-*` | `HomotopyError` | Numerical polynomial continuation (`solve(..., method="homotopy")`) |
+| `E-PARAMGB-*` | `ParamGroebnerError` | Gröbner bases over `Q(params)` — `GroebnerBasis.compute(..., params=[...])` and `experimental.ParametricGroebnerBasis` |
+| `E-SIMPLIFY-*` | `AssumptionError` | An explicit simplification assumption contradicted the active context |
+| `E-DEPTH-*` | `DepthLimitError` | The expression nesting ceiling. A refusal rather than letting a recursive walk overflow the native stack, which would be a `SIGSEGV` and not an exception |
+
+Four registry prefixes are **Rust-side only** and have no Python entry point that
+raises them today: `E-LOGIC-*` (`LogicError`), `E-NFM-*` (`NormalFormError`),
+`E-DIFFALG-*` (`DiffAlgError`) and `E-HOLO-060…064` (`DiffTelescopingError`).
+`E-EVAL-*` has no class of its own — the bindings surface it as `DomainError`,
+`E-EVAL-009` being "undefined at this point", which is a **verdict**. `E-POLY-008`
+… `E-POLY-010` belong to `FactorError` rather than `ConversionError`, which shares
+the prefix.
+
+`scripts/check_error_codes.py` checks that this table names every prefix in the Rust
+`REGISTRY`, so a new subsystem cannot land undocumented.
 
 ### Transforms: a table gap is not a refuted hypothesis
 
@@ -307,8 +354,13 @@ looking. Before 3.10 all of these arrived as a bare `ValueError` with no `.code`
 at all, so telling them apart meant matching English prose.
 
 A **symbolic** parameter is reported as neither. `θ(t−a)` with a symbolic `a`
-cannot be decided, so the hypothesis `a ≥ 0` is recorded and returned on
-`side_conditions` rather than assumed or refused:
+cannot be decided, so the hypothesis `a ≥ 0` is recorded rather than assumed or
+refused. It is **not** a field on the returned value — these functions return a
+bare `Expr`, and there is nowhere in band to hang a hypothesis — so read it from
+the thread-local `experimental.transform_side_conditions()`, which describes the
+most recent `laplace_transform`, `inverse_laplace_transform`,
+`fourier_transform`, `inverse_fourier_transform` or `inverse_z_transform` on this
+thread whether it returned or raised:
 
 ```python
 import alkahest as ak
@@ -327,7 +379,63 @@ except ak.TransformError as e:
 
 # The control: shift it the other way and the rule applies.
 ex.laplace_transform(pool.func("heaviside", [t - pool.integer(1)]), t, s)
+
+# Undecidable: answered, with the hypothesis stated out of band.
+a = pool.symbol("a")
+ex.laplace_transform(pool.func("heaviside", [t - a]), t, s)   # e^{-a·s}/s
+print(ex.transform_side_conditions())                          # ['a ∈ NonNegative']
 ```
+
+An empty list means every branch taken was forced by the input, not that none was
+taken.
+
+### Probability: four ways not to answer
+
+`E-PROB-*` is one prefix over one class, and the six numbers exist because
+"there is no closed form", "*this* integrator could not find one", "the
+quantity does not exist" and "one was found and is not trustworthy" call for
+four different next steps. Collapsing them would send a caller looking for a
+better integrator when the integral diverges.
+
+| Code | Reading | What to do next |
+|---|---|---|
+| `E-PROB-001` | A parameter is a **number** outside the law's own constraint (`sigma <= 0`, `a >= b`, `p` outside `[0, 1]`) | Fix the parameter. A *symbolic* parameter is never reported here — it cannot be decided, so it is carried on `Distribution.constraints()` for the caller to discharge |
+| `E-PROB-002` | Outside the modelled class: a product of two variates (there are no joint laws here), a `probability_generating_function` for a law that is not on the non-negative integers, a cross-family KL divergence | Restate the query, or do the joint-law step yourself |
+| `E-PROB-003` | The reduction integral was built and the symbolic integrator declined it. A fact about **this implementation** | The message names the integral — hand it to quadrature |
+| `E-PROB-004` | No closed form exists inside this library's primitive set: the `Gamma` CDF at non-integer shape (incomplete gamma), the `Beta` CDF (incomplete beta), the normal quantile (`erf⁻¹`), the log-normal characteristic function (none at all) | Use an integer shape parameter where that collapses to a finite sum, or go numeric |
+| `E-PROB-005` | A closed form **was computed** and is being **withheld**, because quadrature of its own defining integral did not confirm it | Record it as undecided and report the query. Never a warning: a caller cannot tell a checked value from an unchecked one once it is in hand |
+| `E-PROB-006` | The quantity **does not exist** | A verdict. Stop looking |
+
+Two of these are the reason the surface exists at all. `moment_generating_function`
+for a `LogNormal` raises `E-PROB-006`: `E[e^{tX}]` is `+inf` for every `t > 0`, and a
+CAS that completes the square anyway hands back a clean closed form that is the value
+of no integral. And `M_X(t) = lambda/(lambda − t)` for an `Exponential` holds *only*
+on `t < lambda` — outside that strip the expression is still finite, still plausible
+and still wrong — so a decidable argument outside the strip raises `E-PROB-006` and an
+undecidable one publishes the condition on `experimental.prob_side_conditions()`.
+
+```python
+import alkahest as ak
+from alkahest import experimental as ex
+
+pool = ak.ExprPool()
+t, lam = pool.symbol("t"), pool.symbol("lam")
+
+ex.Exponential(lam).moment_generating_function(t)   # lam/(lam - t)
+print(ex.prob_side_conditions())
+# the convergence strip and the parameter constraint: ['lam - t > 0', 'lam > 0']
+
+try:
+    ex.LogNormal(pool.integer(0), pool.integer(1)).moment_generating_function(t)
+except ak.ProbabilityError as e:
+    print(e.code)        # E-PROB-006
+```
+
+`prob_side_conditions()` is the same out-of-band channel as
+`transform_side_conditions()`, for the same reason: the return value is an `Expr`,
+so a conditional answer and a theorem look identical at the call site unless the
+hypotheses are published somewhere. A law whose MGF is entire leaves the list
+empty — so empty means *checked*, not *unexamined*.
 
 ### Vector calculus and quaternions
 

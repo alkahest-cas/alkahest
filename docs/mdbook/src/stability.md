@@ -35,8 +35,22 @@ Python deprecations emit `DeprecationWarning` from the point of deprecation.
 
 ## Error codes
 
-Diagnostic error codes (e.g. `E-POLY-001`) are also stable. A code introduced in 1.x will not be renumbered or removed until 2.0. New codes are added by incrementing within the existing prefix.
+Diagnostic error codes (e.g. `E-POLY-001`) are also stable. A code that is **reachable
+from a released binding** will not be renumbered or removed within a major cycle; new
+codes are added by incrementing within the existing prefix.
+
+The qualifier is load-bearing, and so far it has been used once. `series_solve` raised
+an uncoded bare `ValueError` until 3.10, so its internal `E-ODE-020…025` had never
+surfaced to any caller — while colliding head-on with the numeric integrators' block, where
+`E-ODE-021` simultaneously meant "the adaptive step size fell below the floor" and "the
+point is irregular singular". That is precisely the branch these codes exist to support, so
+the series block moved to `E-ODE-040…045` when it was wired up. A code nobody could observe
+is not yet part of the stable surface; one code meaning two things is worse than a
+renumbering. `scripts/check_error_codes.py` now fails any PR that reintroduces a collision.
 
 ## Diagnostic codes and their stability
 
-Error codes are part of the stable surface from the version they first appear. See [Error handling](./errors.md) for the current code table.
+A code joins the stable surface at the version where it first becomes **reachable from a
+released binding** — which is usually the version it is written in, but not always; see the
+qualifier above. From that point it is not renumbered or removed within the major cycle.
+See [Error handling](./errors.md) for the current code table.

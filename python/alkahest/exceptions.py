@@ -11,8 +11,15 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
 
     E-POLY-001 … E-POLY-010    ConversionError (001–007), FactorError (008–010)
     E-DIFF-001 … E-DIFF-004    DiffError  (003-004 = forward-mode variants)
-    E-INT-001  … E-INT-002     IntegrationError
-    E-MAT-001  … E-MAT-003     MatrixError
+    E-INT-001  … E-INT-004     IntegrationError  (004 = proven non-elementary —
+                                 a verdict, not a refusal)
+    E-MAT-001  … E-MAT-004     MatrixError  (004 = a determinant whose vanishing
+                                 could be proven neither way)
+    E-LINALG-001 … E-LINALG-011 LinearAlgebraError (subclass of MatrixError;
+                                 010 = an undecidable entry, 011 = an e^A that
+                                 failed its own check and was withheld)
+    E-EIGEN-001 … E-EIGEN-008  EigenError (subclass of MatrixError; 008 = closed-form
+                                 eigenvalues that disagreed with det(zI - A))
     E-ODE-001  … E-ODE-045     OdeError  (001-003 construction/lowering,
                                  010-014 dsolve, 020-026 the numeric integrators,
                                  030-034 dsolve_system, 040-045 series_solve — the
@@ -21,7 +28,7 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-DAE-001  … E-DAE-003     DaeError
     E-HOMOTOPY-002 … E-HOMOTOPY-004 HomotopyError (numerical continuation — V2-14)
     E-SOLVE-010 … E-SOLVE-011  SolverError  (GPU Gröbner)
-    E-JIT-001   … E-JIT-003    JitError
+    E-JIT-001   … E-JIT-004    JitError
     E-LAT-001 … E-LAT-004      LatticeError
     E-PSLQ-001 … E-PSLQ-005    PslqError  (004 = input precision below requested,
                                  005 = the relation is false for the exact rationals
@@ -59,14 +66,20 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-PARSE-*                  ParseError  (reserved; parser not yet integrated)
     E-DOMAIN-*                 DomainError  (reserved; Python-only pending Rust impl)
     E-CERT-001                 CertificateUnavailableError  (Python-only; certificate ledger)
-    E-BUDGET-001 … E-BUDGET-003 BudgetExceededError (P1 search plumbing item 4)
+    E-BUDGET-001 … E-BUDGET-005 BudgetExceededError (P1 search plumbing item 4;
+                                 001 wall clock, 002 max_steps, 003 cancelled,
+                                 004 memory, 005 address-space ceiling)
     E-VALIDATED-001 … E-VALIDATED-005  ValidatedError (P1 item 9 — validated numerics)
     E-SOS-001 … E-SOS-005      SosError (P1 item 8 — positivity certificates)
-    E-HOLO-001 … E-HOLO-008    HolonomicError (P1 item 7 — creative telescoping,
-                                 plus M6 — modular / p-adic evaluation;
-                                 005 = a guessed recurrence the terms cannot
-                                 confirm, raised from Python, so it is absent
-                                 from the Rust REGISTRY as E-PSLQ-004 is)
+    E-HOLO-001 … E-HOLO-064    HolonomicError.  One prefix, five engines:
+                                 001-008 single-index Zeilberger (P1 item 7) plus
+                                 M6 modular / p-adic evaluation (005 = a guessed
+                                 recurrence the terms cannot confirm, raised from
+                                 Python, so it is absent from the Rust REGISTRY as
+                                 E-PSLQ-004 is); 020-024 q-Zeilberger; 040-042
+                                 telescope2d / telescope_md; 060-064 the
+                                 continuous (Almkvist-Zeilberger) engine, which
+                                 has no Python entry point yet
     E-BATCH-001                 (Python-only; alkahest._batch fallback for a
                                  batch_map/batch_map_iter item whose exception carried no
                                  .code of its own — see docs/mdbook/src/batch.md)
@@ -80,6 +93,26 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
                                  expansion the numeric o()-gate could not confirm,
                                  withheld rather than returned)
     E-FPS-001 … E-FPS-007        FpsError (formal power series)
+    E-VEC-001 … E-VEC-005        VectorError (vector calculus over an orthogonal
+                                 chart; 004 = a chart that could not be *proven*
+                                 orthogonal, 005 = a degenerate scale factor)
+    E-QUAT-001 … E-QUAT-003      QuaternionError (002 = the axis of the identity
+                                 rotation, which does not exist; 003 = a matrix that
+                                 could not be checked to be a proper rotation)
+    E-PROB-001 … E-PROB-006      ProbabilityError (distributions, expectations,
+                                 generating functions and information theory;
+                                 001 = a numeric parameter outside its constraint,
+                                 002 = outside the modelled class (no joint law, a
+                                 PGF for a non-lattice variate, a cross-family KL),
+                                 003 = an integral the integrator could not close,
+                                 004 = a closed form that needs a special function
+                                 this library does not implement (incomplete gamma
+                                 or beta, erf-inverse, 1F1) or that has none at all,
+                                 005 = a closed form that was computed and then
+                                 withheld because quadrature could not confirm it,
+                                 006 = the quantity does not exist —
+                                 a divergent expectation, an MGF outside its
+                                 convergence strip, an infinite KL divergence)
     E-DEPTH-001                 DepthLimitError (expression nesting ceiling — see
                                  alkahest_core::kernel::depth; refuses rather than
                                  letting a recursive walk overflow the native stack)

@@ -62,8 +62,18 @@ Current stable feature surface.
 - Coefficient asymptotics of rational generating functions (`experimental.coefficient_asymptotics`): singularity analysis with the leading constant by Richardson extrapolation; declines when the dominant singularity is not unique (equal-modulus poles make the coefficients oscillate)
 - Asymptotics of sums (`experimental.euler_maclaurin`): Euler–Maclaurin expansion of `Σ_{k=a}^{n} f(k)` with Bernoulli corrections, numerically gated, returning an `AsymptoticReport` that marks each hypothesis checked or assumed (the additive constant — γ for the harmonic numbers — is fitted, not proved, and labelled as such)
 
-- Validated numerics (`bound_on_box`, `verified_integral`, `verified_no_roots`, `verified_sign`): Taylor models over a box with Moore–Skelboe branch-and-bound; rigorous range enclosures, definite-integral enclosures and three-valued (`true`/`false`/`undecided`) predicates. Sound before tight — a wide bound is returned rather than a wrong one, and unbounded cases refuse (`E-VALIDATED-*`). Coverage is the elementary fragment plus `erf`/`erfc`, the Bessel pair `bessel_j0`/`bessel_j1`, `gamma`, `digamma`, `lambert_w` and the exponential-integral family `Ei`/`li`/`Si`/`Ci`/`Shi`/`Chi`, and is queryable before you commit to a route: `bounds_supported(expr)`, and `taylor_model` per primitive in `capabilities()["primitives"]` (not `numeric_ball`, which is pointwise ball arithmetic — the two now differ only on `floor`/`ceil`, which are not differentiable and will not get a rule)
 - Validated numerics (`bound_on_box`, `verified_integral`, `verified_no_roots`, `verified_sign`): Taylor models over a box with Moore–Skelboe branch-and-bound; rigorous range enclosures, definite-integral enclosures and three-valued (`true`/`false`/`undecided`) predicates. Sound before tight — a wide bound is returned rather than a wrong one, and unbounded cases refuse (`E-VALIDATED-*`). Coverage is the elementary fragment plus `erf`/`erfc`, the Bessel pair `bessel_j0`/`bessel_j1`, `gamma`, `digamma`, `trigamma`, `lambert_w`, the Fresnel pair `fresnels`/`fresnelc` and `dilog`, and is queryable before you commit to a route: `bounds_supported(expr)`, and `taylor_model` per primitive in `capabilities()["primitives"]` (not `numeric_ball`, which is pointwise ball arithmetic — the two now differ only on `floor`/`ceil`, which are not differentiable and will not get a rule)
+
+## Probability and information theory
+
+Experimental (`alkahest.experimental`); see the [probability guide](./mdbook/src/probability.md).
+
+- Nine distributions as **symbolic laws** — `Normal`, `LogNormal`, `Uniform`, `Exponential`, `Gamma`, `Beta`, `Bernoulli`, `Binomial`, `Poisson` — each carrying its density, support and the constraints that make it a distribution. A numeric parameter outside its constraint raises `E-PROB-001`; a symbolic one is carried on `constraints()` rather than decided
+- Moments and quantiles as methods on the law: `mean`, `variance`, `moment`, `pdf`, `cdf`, `quantile`, `skewness`, `excess_kurtosis` (the **excess** one — `0` for a normal, not `3`)
+- Characteristic function (complex-valued; evaluate with `mode="complex"`), moment/cumulant/probability generating functions, `cumulant`, `factorial_moment`. **The convergence strip is reported, not assumed**: a decidable argument outside it raises `E-PROB-006`, an undecidable one is published on `prob_side_conditions()`, and an entire MGF leaves that list empty
+- `expectation` (`E[f(X)]`, with `max(S − K, 0)` under a `LogNormal` deriving Black–Scholes), `expectation_affine` (linearity, no independence needed) and `variance_affine_independent` (which does need it, and says so). No joint laws, no conditioning, no covariance — a product of two variates raises `E-PROB-002` rather than guessing
+- `Distribution.entropy` (Shannon on a discrete support, **differential** on a continuous one — not the same quantity, not unified behind one formula), `kl_divergence`, `cross_entropy`, `mutual_information_independent`
+- **Every derived quantity is checked against numerical quadrature of its own defining integral before it is returned**; one the checker cannot confirm raises `E-PROB-005` rather than arriving with a caveat
 
 ## Discrete mathematics
 
@@ -142,7 +152,9 @@ Current stable feature surface.
 - ODE representation and first-order lowering (`ODE`, `lower_to_first_order`)
 - DAE structural analysis: Pantelides index reduction (`DAE`, `pantelides`)
 - Acausal component modeling (`AcausalSystem`, `Port`, `Component`, `resistor`, `capacitor`, `voltage_source`)
-- Laplace transform (`alkahest.experimental.laplace_transform` / `inverse_laplace_transform`)
+- Laplace transform (`alkahest.experimental.laplace_transform` / `inverse_laplace_transform`); hypotheses assumed about a symbolic parameter are published out of band on `experimental.transform_side_conditions()`
+- Vector calculus over orthogonal charts (`experimental.Coordinates` + `gradient`, `divergence`, `curl`, `laplacian`, `vector_laplacian`, `dot`, `cross`, `norm`): physical components in the local orthonormal frame; `Coordinates.from_embedding` **refuses** a chart it cannot prove orthogonal (`E-VEC-004`) rather than applying formulas that do not hold there
+- Hamilton quaternions (`experimental.Quaternion`): non-commutative product, conjugate, inverse, the active rotation `q v q⁻¹`, and conversions to and from a rotation matrix and axis–angle form. `to_axis_angle` refuses the identity rotation (`E-QUAT-002`, which has no axis) and `from_rotation_matrix` refuses anything it cannot check is a proper rotation (`E-QUAT-003`)
 - Sensitivity analysis: forward (`sensitivity_system`) and adjoint (`adjoint_system`)
 - Hybrid systems with events (`HybridODE`, `Event`)
 - Piecewise expressions and predicates
@@ -184,9 +196,9 @@ Current stable feature surface.
 ## Error handling
 
 - Structured exception hierarchy with stable codes (`E-POLY-*`, `E-DIFF-*`, etc.)
-- Every exception: `.code`, `.message`, `.remediation`, `.span`
-- Subsystems: ConversionError, DomainError, DiffError, IntegrationError, MatrixError, LinearAlgebraError, EigenError, CadError, OdeError, DaeError, JitError, CudaError, PoolError, SolverError, SosError, HolonomicError, ValidatedError, LimitError, SeriesError, SumError, ProductError, PslqError, DiophantineError, NumberTheoryError, HomotopyError, DiffAlgError, BudgetExceededError, AnsatzError, CrossCheckError, SmtError, CertificateUnavailableError
-- **Refusals are distinguished from verdicts.** `E-CAD-001`, `E-LINALG-010`, `E-MAT-004`, `E-SOS-002`, `E-ANSATZ-003`, `E-SMT-003` and `E-BUDGET-*` mean *undecided*, not *false*
+- Every exception: `.code`, `.remediation`, `.span` (there is no `.message` — the rendered text is `str(e)`)
+- Subsystems: ConversionError, DomainError, DiffError, IntegrationError, MatrixError, LinearAlgebraError, EigenError, CadError, OdeError, TransformError, AsymptoticError, FpsError, DaeError, JitError, CudaError, PoolError, SolverError, SosError, HolonomicError, ValidatedError, LimitError, SeriesError, SumError, ProductError, PslqError, DiophantineError, NumberTheoryError, HomotopyError, DiffAlgError, BudgetExceededError, AnsatzError, CrossCheckError, SmtError, CertificateUnavailableError, VectorError, QuaternionError, ProbabilityError
+- **Refusals are distinguished from verdicts.** `E-CAD-001`, `E-LINALG-010`, `E-MAT-004`, `E-SOS-002`, `E-ANSATZ-003`, `E-SMT-003`, `E-PROB-003`, `E-PROB-005` and `E-BUDGET-*` mean *undecided*, not *false*; `E-INT-004`, `E-MAT-003`, `E-TRANSFORM-004`, `E-TRANSFORM-013` and `E-PROB-006` are verdicts about the mathematics
 
 ## Autoresearch modules
 
