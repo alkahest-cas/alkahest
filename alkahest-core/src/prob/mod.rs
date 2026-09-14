@@ -72,6 +72,7 @@ mod cplx;
 mod dists;
 mod entropy;
 mod expect;
+mod genfun;
 mod moments;
 mod quad;
 #[cfg(test)]
@@ -83,6 +84,10 @@ pub use entropy::{
     cross_entropy, entropy, kl_divergence, mutual_information_independent, MAX_BINOMIAL_ENTROPY_N,
 };
 pub use expect::{expectation, expectation_affine, variance_affine_independent};
+pub use genfun::{
+    cumulant, cumulant_generating_function, excess_kurtosis, factorial_moment,
+    moment_generating_function, probability_generating_function, skewness, MAX_CUMULANT_ORDER,
+};
 pub use verify::Evidence;
 
 pub(crate) use quad::numeric_ball;
@@ -749,6 +754,138 @@ impl Distribution {
         pool: &ExprPool,
     ) -> Result<crate::deriv::DerivedExpr<ExprId>, ProbError> {
         moments::quantile(self, p, pool)
+    }
+
+    /// The moment generating function `M_X(t) = E[e^{tX}]`, in closed form,
+    /// verified — **with its region of convergence reported rather than
+    /// assumed**.
+    ///
+    /// This is the route where a table lookup and a correct answer part
+    /// company. `M_X(t) = λ/(λ - t)` for an `Exponential(λ)` holds only on
+    /// `t < λ`; outside that strip the same expression is finite, clean and
+    /// not the value of any integral. So an argument that can be *decided* to
+    /// sit outside the strip is [`ProbError::Divergent`], an argument that
+    /// cannot carries `λ - t > 0` on
+    /// [`take_prob_side_conditions`], and a law whose MGF is entire records
+    /// that fact in the derivation log — an empty condition list means
+    /// "checked", not "not looked at".
+    ///
+    /// # Errors
+    ///
+    /// [`ProbError::Divergent`] for `LogNormal` at a positive or undecidable
+    /// `t` (`E[e^{tX}] = ∞` for every `t > 0`) and for an argument outside an
+    /// `Exponential`/`Gamma` strip; [`ProbError::NoClosedForm`] for `Beta`,
+    /// whose `M` is `₁F₁(α; α+β; t)`.
+    pub fn moment_generating_function(
+        &self,
+        t: ExprId,
+        pool: &ExprPool,
+    ) -> Result<crate::deriv::DerivedExpr<ExprId>, ProbError> {
+        genfun::moment_generating_function(self, t, pool)
+    }
+
+    /// The cumulant generating function `K_X(t) = log M_X(t)`, in closed form,
+    /// verified as `e^{K(t)} = E[e^{tX}]`.
+    ///
+    /// Carries the same convergence strip as
+    /// [`Distribution::moment_generating_function`], through the same channel:
+    /// the logarithm of a divergent expectation is not a cumulant generating
+    /// function.
+    ///
+    /// # Errors
+    ///
+    /// As [`Distribution::moment_generating_function`]. `Beta` refuses here
+    /// while [`Distribution::cumulant`] does not — `K` is analytic at the
+    /// origin for a Beta, it simply has no name in this library.
+    pub fn cumulant_generating_function(
+        &self,
+        t: ExprId,
+        pool: &ExprPool,
+    ) -> Result<crate::deriv::DerivedExpr<ExprId>, ProbError> {
+        genfun::cumulant_generating_function(self, t, pool)
+    }
+
+    /// The probability generating function `G_X(z) = E[z^X] = Σ_k z^k P(X=k)`,
+    /// in closed form, verified against that sum.
+    ///
+    /// # Errors
+    ///
+    /// [`ProbError::Unsupported`] for every law not supported on the
+    /// non-negative integers. `E[z^X]` for a `Normal` is a category error, not
+    /// a harder integral: the formal rewrite `E[e^{X log z}]` returns a number,
+    /// and that number is the MGF at `log z` and says nothing about any
+    /// `P(X = k)`.
+    pub fn probability_generating_function(
+        &self,
+        z: ExprId,
+        pool: &ExprPool,
+    ) -> Result<crate::deriv::DerivedExpr<ExprId>, ProbError> {
+        genfun::probability_generating_function(self, z, pool)
+    }
+
+    /// The factorial moment `E[X(X-1)⋯(X-n+1)] = G_X^{(n)}(1)`, in closed
+    /// form, verified against the defining sum.
+    ///
+    /// # Errors
+    ///
+    /// [`ProbError::Unsupported`] for a continuous law — there is no `G` to
+    /// differentiate — and for `n` past [`MAX_MOMENT_ORDER`].
+    pub fn factorial_moment(
+        &self,
+        n: u32,
+        pool: &ExprPool,
+    ) -> Result<crate::deriv::DerivedExpr<ExprId>, ProbError> {
+        genfun::factorial_moment(self, n, pool)
+    }
+
+    /// The `n`-th cumulant `κ_n = K_X^{(n)}(0)`, in closed form, verified.
+    ///
+    /// `κ₁ = E[X]`, `κ₂ = Var[X]`, and for a `Normal` every `κ_n` with `n ≥ 3`
+    /// is exactly `0` — the sharpest available test that the moment–cumulant
+    /// recursion has no off-by-one in it, and one this module runs.
+    ///
+    /// # Errors
+    ///
+    /// [`ProbError::Divergent`] for `LogNormal`, whose `K` exists on no
+    /// neighbourhood of the origin: the recursion runs, and what it computes
+    /// is the coefficient of a divergent series. Use
+    /// [`Distribution::skewness`] and [`Distribution::excess_kurtosis`], which
+    /// are defined from central moments and do exist there.
+    /// [`ProbError::Unsupported`] for `n = 0` and for `n` past
+    /// [`MAX_CUMULANT_ORDER`].
+    pub fn cumulant(
+        &self,
+        n: u32,
+        pool: &ExprPool,
+    ) -> Result<crate::deriv::DerivedExpr<ExprId>, ProbError> {
+        genfun::cumulant(self, n, pool)
+    }
+
+    /// `γ₁ = E[((X - μ)/σ)³] = κ₃/σ³`, in closed form, verified against that
+    /// expectation.
+    ///
+    /// # Errors
+    ///
+    /// See [`ProbError`].
+    pub fn skewness(
+        &self,
+        pool: &ExprPool,
+    ) -> Result<crate::deriv::DerivedExpr<ExprId>, ProbError> {
+        genfun::skewness(self, pool)
+    }
+
+    /// `γ₂ = E[((X - μ)/σ)⁴] - 3 = κ₄/σ⁴`, in closed form, verified.
+    ///
+    /// **Excess** kurtosis — `0` for a normal, not `3`.
+    ///
+    /// # Errors
+    ///
+    /// See [`ProbError`].
+    pub fn excess_kurtosis(
+        &self,
+        pool: &ExprPool,
+    ) -> Result<crate::deriv::DerivedExpr<ExprId>, ProbError> {
+        genfun::excess_kurtosis(self, pool)
     }
 }
 

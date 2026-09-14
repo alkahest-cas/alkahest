@@ -222,38 +222,7 @@ fn compare_against_definition(
         };
         claim_ever_evaluable = true;
 
-        let diff = Float::with_val(VERIFY_PREC, &claim_ball.mid - &value).abs();
-        let scale = {
-            let mut s = value.clone();
-            s.abs_mut();
-            if s < 1 {
-                s = fl(VERIFY_PREC, 1.0);
-            }
-            s
-        };
-        let allowed = {
-            let base = Float::with_val(VERIFY_PREC, &scale * fl(VERIFY_PREC, REL_TOL));
-            let slack = Float::with_val(
-                VERIFY_PREC,
-                Float::with_val(VERIFY_PREC, &est_err + &claim_ball.rad) * 16u32,
-            );
-            if slack > base {
-                slack
-            } else {
-                base
-            }
-        };
-        if diff > allowed {
-            return Err(ProbError::Unverified(UnverifiedReason::Disagreement(
-                format!(
-                    "closed form {} vs quadrature {} (allowed {})",
-                    fmt(&claim_ball.mid),
-                    fmt(&value),
-                    fmt(&allowed)
-                ),
-            )));
-        }
-        let rel = Float::with_val(VERIFY_PREC, &diff / &scale).to_f64();
+        let rel = agree(&claim_ball, &value, &est_err)?;
         if rel > worst {
             worst = rel;
         }
@@ -1102,6 +1071,49 @@ fn rel(a: &Float, b: &Float) -> f64 {
     .to_f64()
 }
 
+/// Compare a claim's *ball* against a quadrature value, and return the relative
+/// disagreement if it is inside the tolerance.
+///
+/// The allowance is the larger of [`REL_TOL`] scaled to the answer and sixteen
+/// times the two error bars the comparison actually has — the quadrature's own
+/// estimate and the radius of the claim's enclosure. Using only the first would
+/// refuse an honest answer whose quadrature happens to be hard; using only the
+/// second would pass anything whose error bar is generous.
+fn agree(claim: &crate::ball::ArbBall, value: &Float, est_err: &Float) -> Result<f64, ProbError> {
+    let diff = Float::with_val(VERIFY_PREC, &claim.mid - value).abs();
+    let scale = {
+        let mut s = value.clone();
+        s.abs_mut();
+        if s < 1 {
+            s = fl(VERIFY_PREC, 1.0);
+        }
+        s
+    };
+    let allowed = {
+        let base = Float::with_val(VERIFY_PREC, &scale * fl(VERIFY_PREC, REL_TOL));
+        let slack = Float::with_val(
+            VERIFY_PREC,
+            Float::with_val(VERIFY_PREC, est_err + &claim.rad) * 16u32,
+        );
+        if slack > base {
+            slack
+        } else {
+            base
+        }
+    };
+    if diff > allowed {
+        return Err(ProbError::Unverified(UnverifiedReason::Disagreement(
+            format!(
+                "closed form {} vs quadrature {} (allowed {})",
+                fmt(&claim.mid),
+                fmt(value),
+                fmt(&allowed)
+            ),
+        )));
+    }
+    Ok(Float::with_val(VERIFY_PREC, &diff / &scale).to_f64())
+}
+
 fn compare(claim: &Float, truth: &Float, what: &str) -> Result<(), ProbError> {
     if rel(claim, truth) > REL_TOL {
         return Err(ProbError::Unverified(UnverifiedReason::Disagreement(
@@ -1633,4 +1645,277 @@ fn compare_within(
         )));
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Generating functions
+// ---------------------------------------------------------------------------
+
+/// Check `claim` against `E[g(X)]` at arguments the caller asserts are inside
+/// the region of convergence.
+///
+/// # Why this is not just [`check`]
+///
+/// [`check`] lets [`sample_points`] pick a value for every free symbol out of
+/// one fixed ladder. That is right for a moment and wrong for a generating
+/// function, because the region of convergence **moves with the parameters**:
+/// `M_X(t) = λ/(λ - t)` for an `Exponential(λ)` converges only for `t < λ`, and
+/// `λ` is `1`, `0.4` and `2.5` at the three parameter points this file checks
+/// at. A constant `t` ladder would step outside the strip at some of them, the
+/// defining integral would diverge there, and a correct closed form would be
+/// reported as divergent.
+///
+/// So `ladder` holds the admissible arguments as **expressions in the
+/// distribution's parameters** — `λ/2`, `-λ`, `1/(2θ)` — evaluated afresh at
+/// each parameter point. When the argument the caller passed is not a bare
+/// symbol there is nothing to substitute into, and the claim is checked once,
+/// as written: if that argument is outside the strip the quadrature diverges
+/// and this reports it, which is the correct answer rather than a failure of
+/// the check.
+pub(crate) fn check_generating(
+    claim: ExprId,
+    integrand: ExprId,
+    x: ExprId,
+    arg: ExprId,
+    ladder: &[ExprId],
+    dist: &Distribution,
+    pool: &ExprPool,
+) -> Result<Evidence, ProbError> {
+    let points = sample_points(claim, integrand, x, dist, None, &[], pool);
+    if points.is_empty() {
+        return Err(ProbError::Unverified(UnverifiedReason::NoAdmissiblePoint));
+    }
+    let arg_sym = match pool.get(arg) {
+        ExprData::Symbol { .. } => Some(arg),
+        _ => None,
+    };
+    // Two arguments per parameter point where the caller left the argument
+    // symbolic, one where they pinned it — the same reasoning as
+    // `required_points`: a count met by evaluating the same point twice is not
+    // twice the evidence.
+    let per_point = match arg_sym {
+        Some(_) => ladder.len().min(2),
+        None => 1,
+    };
+    if per_point == 0 {
+        return Err(ProbError::Unverified(UnverifiedReason::NoAdmissiblePoint));
+    }
+
+    let integrand_b = ballable(integrand, pool);
+    let density = ballable(dists::pdf(dist, x, pool), pool);
+    let support = dist.support(pool);
+
+    let mut compared = 0usize;
+    let mut worst = 0.0f64;
+    let mut claim_ever_evaluable = false;
+    let mut divergences = 0usize;
+
+    for binding in &points {
+        let rule = if support.is_discrete() {
+            ValidatedRule {
+                region: Region::Real,
+                density_window: None,
+            }
+        } else {
+            match prepare_rule(density, x, &support, binding, pool) {
+                Some(r) => r,
+                None => continue,
+            }
+        };
+        for env in argument_envs(arg_sym, ladder, binding, per_point, pool) {
+            let outcome = integrate_definition(integrand_b, x, &support, &rule, &[], &env, pool);
+            let (value, est_err) = match outcome {
+                QuadOutcome::Value { value, est_err } => (value, est_err),
+                QuadOutcome::Divergent => {
+                    divergences += 1;
+                    continue;
+                }
+                QuadOutcome::Inconclusive => continue,
+            };
+            let Some(claim_ball) = eval_ball(claim, &env, pool, VERIFY_PREC) else {
+                continue;
+            };
+            claim_ever_evaluable = true;
+            let rel = agree(&claim_ball, &value, &est_err)?;
+            if rel > worst {
+                worst = rel;
+            }
+            compared += 1;
+        }
+    }
+
+    if divergences > 0 && compared == 0 {
+        return Err(ProbError::Divergent(
+            "E[g(X)] does not converge at any argument this gate could check: the integrand \
+             fails to decay at the ends of the support"
+                .to_string(),
+        ));
+    }
+    finish(
+        compared,
+        worst,
+        claim_ever_evaluable,
+        per_point * required_points(points.len()),
+    )
+}
+
+/// The environments one parameter point contributes: the point itself with the
+/// generating argument set to each admissible ladder value in turn.
+fn argument_envs(
+    arg_sym: Option<ExprId>,
+    ladder: &[ExprId],
+    binding: &[(ExprId, Float)],
+    per_point: usize,
+    pool: &ExprPool,
+) -> Vec<Vec<(ExprId, Float)>> {
+    let Some(sym) = arg_sym else {
+        return vec![binding.to_vec()];
+    };
+    let mut out = Vec::with_capacity(per_point);
+    for &l in ladder {
+        let Some(v) = eval_ball(l, binding, pool, VERIFY_PREC) else {
+            continue;
+        };
+        if !v.mid.is_finite() {
+            continue;
+        }
+        let mut env = binding.to_vec();
+        match env.iter_mut().find(|(s, _)| *s == sym) {
+            Some(slot) => slot.1 = v.mid,
+            None => env.push((sym, v.mid)),
+        }
+        out.push(env);
+        if out.len() == per_point {
+            break;
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Cumulants
+// ---------------------------------------------------------------------------
+
+/// One term of a cumulant written in **central** moments: a coefficient and
+/// the orders and powers of the `μ_k` it multiplies.
+///
+/// `κ₄ = μ₄ - 3μ₂²` is `[(1, &[(4, 1)]), (-3, &[(2, 2)])]`.
+pub(crate) type CentralTerm = (i32, &'static [(u32, u32)]);
+
+/// Check a cumulant claim against the same cumulant assembled from
+/// **quadratured central moments**.
+///
+/// # Why not the obvious check
+///
+/// The claim is built by the moment–cumulant recursion
+/// `κ_n = μ'_n - Σ C(n-1, m-1) κ_m μ'_{n-m}` over the raw-moment table. The
+/// obvious way to check it — run the same recursion over *quadratured* raw
+/// moments — changes only where the numbers came from, and an off-by-one in
+/// the recursion produces the identical wrong answer on both sides. It is the
+/// check that cannot fail in exactly the case it exists for.
+///
+/// So the truth side uses a different identity on different data: the standard
+/// expression of `κ_n` in the **central** moments (Kendall & Stuart, *The
+/// Advanced Theory of Statistics* I, §3.14), with each `μ_k = E[(X - E[X])^k]`
+/// obtained by quadrature of its own defining integral. Nothing is shared but
+/// the distribution.
+pub(crate) fn check_cumulant(
+    claim: ExprId,
+    terms: &[CentralTerm],
+    mean: ExprId,
+    x: ExprId,
+    dist: &Distribution,
+    pool: &ExprPool,
+) -> Result<Evidence, ProbError> {
+    let density_expr = dists::pdf(dist, x, pool);
+    let points = sample_points(claim, mean, x, dist, None, &[], pool);
+    if points.is_empty() {
+        return Err(ProbError::Unverified(UnverifiedReason::NoAdmissiblePoint));
+    }
+    let support = dist.support(pool);
+    let density = ballable(density_expr, pool);
+
+    // Every central moment the terms mention, and its centred integrand.
+    let mut orders: Vec<u32> = terms
+        .iter()
+        .flat_map(|(_, f)| f.iter().map(|&(k, _)| k))
+        .collect();
+    orders.sort_unstable();
+    orders.dedup();
+    let centred: Vec<(u32, ExprId)> = orders
+        .iter()
+        .map(|&k| {
+            let dev = super::sub(x, mean, pool);
+            let power = pool.pow(dev, pool.integer(k));
+            (k, ballable(pool.mul(vec![power, density_expr]), pool))
+        })
+        .collect();
+
+    let mut compared = 0usize;
+    let mut worst = 0.0f64;
+    let mut claim_ever_evaluable = false;
+
+    'points: for binding in &points {
+        let rule = if support.is_discrete() {
+            ValidatedRule {
+                region: Region::Real,
+                density_window: None,
+            }
+        } else {
+            match prepare_rule(density, x, &support, binding, pool) {
+                Some(r) => r,
+                None => continue,
+            }
+        };
+        let mut mu: Vec<(u32, Float, Float)> = Vec::with_capacity(centred.len());
+        for &(k, integrand) in &centred {
+            match integrate_definition(integrand, x, &support, &rule, &[], binding, pool) {
+                QuadOutcome::Value { value, est_err } => mu.push((k, value, est_err)),
+                _ => continue 'points,
+            }
+        }
+        let mut truth = fl(VERIFY_PREC, 0.0);
+        let mut err = fl(VERIFY_PREC, 0.0);
+        for (coeff, factors) in terms {
+            let mut term = fl(VERIFY_PREC, f64::from(*coeff));
+            // First-order propagation of each factor's quadrature error, so a
+            // hard-to-integrate central moment widens the allowance rather
+            // than being compared as if it were exact.
+            let mut rel_err = fl(VERIFY_PREC, 0.0);
+            for &(k, power) in factors.iter() {
+                let (_, v, e) = mu
+                    .iter()
+                    .find(|(kk, _, _)| *kk == k)
+                    .expect("every order was quadratured above");
+                for _ in 0..power {
+                    term = Float::with_val(VERIFY_PREC, &term * v);
+                }
+                let mut scale = v.clone();
+                scale.abs_mut();
+                if scale > 0 {
+                    rel_err += Float::with_val(VERIFY_PREC, e / &scale) * power;
+                }
+            }
+            let mut mag = term.clone();
+            mag.abs_mut();
+            err += Float::with_val(VERIFY_PREC, mag * rel_err);
+            truth += term;
+        }
+        let Some(claim_ball) = eval_ball(claim, binding, pool, VERIFY_PREC) else {
+            continue;
+        };
+        claim_ever_evaluable = true;
+        let rel = agree(&claim_ball, &truth, &err)?;
+        if rel > worst {
+            worst = rel;
+        }
+        compared += 1;
+    }
+
+    finish(
+        compared,
+        worst,
+        claim_ever_evaluable,
+        required_points(points.len()),
+    )
 }

@@ -80,30 +80,93 @@ use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 use super::{stash_transform_side_conditions, Genericity};
 
 /// Errors from the Fourier transform routines.
+///
+/// [`Self::NoRule`] carries two codes, split by a message tag rather than by a
+/// new variant (the enum is public and exhaustive, so a third variant would be
+/// a major semver break). The split is the one distinction that changes what a
+/// caller should do next: `E-TRANSFORM-011` is a gap in *this table*, which a
+/// wider table would close, while `E-TRANSFORM-013` is the table entry's own
+/// convergence hypothesis being **refuted** — the defining integral diverges at
+/// that rate, so there is no transform to tabulate. Build the tagged form only
+/// through [`Self::divergent`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FourierError {
-    /// No forward rule matched `f(x)` (E-TRANSFORM-011).
+    /// No forward rule matched `f(x)` (`E-TRANSFORM-011`), or — when tagged by
+    /// [`Self::divergent`] — the entry's decay hypothesis is refuted
+    /// (`E-TRANSFORM-013`).
     NoRule(String),
     /// The space variable `x` and frequency variable `ξ` must be distinct
-    /// symbols (E-TRANSFORM-012).
+    /// symbols (`E-TRANSFORM-012`).
     SameVariable,
+}
+
+impl FourierError {
+    /// Message tag for the `E-TRANSFORM-013` refusal.
+    const DIVERGENT_TAG: &'static str = "convergence hypothesis refuted: ";
+
+    /// The entry's decay rate is known **not** to be positive, so
+    /// `∫ f(x) e^{−2πiξ x} dx` diverges (or, for a negative Lorentzian
+    /// amplitude, converges to a function with the opposite sign and the
+    /// opposite direction of growth to the one the table would emit).
+    pub fn divergent(detail: impl std::fmt::Display) -> Self {
+        FourierError::NoRule(format!("{}{detail}", Self::DIVERGENT_TAG))
+    }
+
+    /// Was this decline a refuted convergence hypothesis (`E-TRANSFORM-013`)?
+    pub fn is_divergence_refutation(&self) -> bool {
+        matches!(self, FourierError::NoRule(m) if m.starts_with(Self::DIVERGENT_TAG))
+    }
 }
 
 impl std::fmt::Display for FourierError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            // A tagged message already says what went wrong; "no rule for"
+            // would misdescribe a divergent integral as a gap in the table.
+            FourierError::NoRule(m) if self.is_divergence_refutation() => {
+                write!(f, "fourier_transform: {m}")
+            }
             FourierError::NoRule(m) => {
-                write!(f, "fourier_transform: no rule for {m} [E-TRANSFORM-011]")
+                write!(f, "fourier_transform: no rule for {m}")
             }
             FourierError::SameVariable => write!(
                 f,
-                "fourier_transform: space and frequency variables must differ [E-TRANSFORM-012]"
+                "fourier_transform: space and frequency variables must differ"
             ),
         }
     }
 }
 
 impl std::error::Error for FourierError {}
+
+impl crate::errors::AlkahestError for FourierError {
+    fn code(&self) -> &'static str {
+        match self {
+            _ if self.is_divergence_refutation() => "E-TRANSFORM-013",
+            FourierError::NoRule(_) => "E-TRANSFORM-011",
+            FourierError::SameVariable => "E-TRANSFORM-012",
+        }
+    }
+
+    fn remediation(&self) -> Option<&'static str> {
+        match self {
+            _ if self.is_divergence_refutation() => Some(
+                "the rate named in the message is a number that is not positive, or is \
+                 proven non-positive by the ambient assumptions, so the defining integral \
+                 does not converge — no wider table fixes this. Supply a positive rate, or \
+                 leave it symbolic and read the hypothesis off `side_conditions`",
+            ),
+            FourierError::NoRule(_) => Some(
+                "fourier_transform is table-based: reduce f(x) to Gaussians, two-sided \
+                 and one-sided exponentials, Lorentzians, rect/sinc, Dirac deltas, \
+                 constants and polynomials, and modulations e^{2πi a x} of those",
+            ),
+            FourierError::SameVariable => {
+                Some("pass distinct symbols for the space and frequency variables")
+            }
+        }
+    }
+}
 
 // ===========================================================================
 // Small helpers
@@ -337,7 +400,7 @@ fn require_positive_rate(
 ) -> Result<(), FourierError> {
     if let Some(r) = literal_rational(a, pool) {
         if r <= 0 {
-            return Err(FourierError::NoRule(format!(
+            return Err(FourierError::divergent(format!(
                 "{what}: {} is not positive, so this table entry does not apply",
                 pool.display(a)
             )));
@@ -345,7 +408,7 @@ fn require_positive_rate(
         return Ok(());
     }
     if gen.refuted(&SideCondition::Positive(a), pool) {
-        return Err(FourierError::NoRule(format!(
+        return Err(FourierError::divergent(format!(
             "{what}: {} is known to be negative, so this table entry does not apply",
             pool.display(a)
         )));

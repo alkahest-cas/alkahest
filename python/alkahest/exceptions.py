@@ -13,7 +13,11 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-DIFF-001 … E-DIFF-004    DiffError  (003-004 = forward-mode variants)
     E-INT-001  … E-INT-002     IntegrationError
     E-MAT-001  … E-MAT-003     MatrixError
-    E-ODE-001  … E-ODE-003     OdeError
+    E-ODE-001  … E-ODE-045     OdeError  (001-003 construction/lowering,
+                                 010-014 dsolve, 020-026 the numeric integrators,
+                                 030-034 dsolve_system, 040-045 series_solve — the
+                                 last block moved off 020-025 in 3.10, where it
+                                 collided with the numeric one)
     E-DAE-001  … E-DAE-003     DaeError
     E-HOMOTOPY-002 … E-HOMOTOPY-004 HomotopyError (numerical continuation — V2-14)
     E-SOLVE-010 … E-SOLVE-011  SolverError  (GPU Gröbner)
@@ -69,6 +73,13 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-ANSATZ-001 … E-ANSATZ-004 AnsatzError (Python-only; P2 item 1 — conjecture generation)
     E-XCHECK-001 … E-XCHECK-004 CrossCheckError (Python-only; P2 item 2 — differential testing)
     E-SMT-001 … E-SMT-004       SmtError (P2 item 3 — SMT/SAT bridge)
+    E-TRANSFORM-001 … E-TRANSFORM-103  TransformError (00x Laplace, 01x Fourier,
+                                 10x Z; 004 and 013 are refuted hypotheses rather
+                                 than table gaps — see the class docstring)
+    E-ASYMPT-001 … E-ASYMPT-005  AsymptoticError (asymptotic_expand; 004 = an
+                                 expansion the numeric o()-gate could not confirm,
+                                 withheld rather than returned)
+    E-FPS-001 … E-FPS-007        FpsError (formal power series)
     E-DEPTH-001                 DepthLimitError (expression nesting ceiling — see
                                  alkahest_core::kernel::depth; refuses rather than
                                  letting a recursive walk overflow the native stack)
@@ -538,15 +549,139 @@ class SparseGcdError(AlkahestError):
 
 
 class OdeError(AlkahestError):
-    """ODE construction or lowering failed."""
+    """An ODE routine did not return a solution (``E-ODE-*``).
+
+    One class for the whole prefix, because the prefix is the subsystem: the
+    number says which engine declined and why.
+
+    - ``E-ODE-001`` … ``003`` — construction or lowering
+      (:class:`~alkahest.ODE`).
+    - ``E-ODE-010`` … ``014`` — :func:`~alkahest.experimental.dsolve`.
+      ``013`` is a recognised ODE class whose quadrature did not close, and
+      ``014`` a Riccati equation with no particular solution to seed it —
+      both strictly more informative than ``010`` ("outside the implemented
+      classes"), and ``011`` is a candidate that failed substitution
+      verification and is withheld rather than returned.
+    - ``E-ODE-020`` … ``026`` — the numeric integrators
+      (:func:`~alkahest.experimental.ode_integrate_rk4` and friends).
+    - ``E-ODE-030`` … ``034`` —
+      :func:`~alkahest.experimental.dsolve_system`.
+    - ``E-ODE-040`` … ``045`` —
+      :func:`~alkahest.experimental.series_solve` (Frobenius). ``041`` is a
+      fact about the equation — an irregular singular point has no Frobenius
+      series, so no wider implementation would find one — whereas ``042``
+      (irrational indicial roots) is a limit of this solver's rational
+      recurrence. These sat on ``020`` … ``025`` before 3.10, where they
+      collided with the numeric block above; they had never reached Python at
+      all, so the renumbering broke nothing.
+    """
 
     def __init__(
         self,
         message: str,
+        code: str = "E-ODE-001",
         remediation: str | None = None,
         span: tuple[int, int] | None = None,
     ):
-        super().__init__(message, code="E-ODE-001", remediation=remediation, span=span)
+        super().__init__(message, code=code, remediation=remediation, span=span)
+
+
+class TransformError(AlkahestError):
+    """An integral or sequence transform did not return a value (``E-TRANSFORM-*``).
+
+    Raised by :func:`~alkahest.experimental.laplace_transform`,
+    :func:`~alkahest.experimental.fourier_transform`,
+    :func:`~alkahest.experimental.z_transform` and their inverses. One class for
+    the whole ``transform`` module, the way :class:`OdeError` is one class for
+    the whole of ``E-ODE-*``: the number says which table and which failure, and
+    a caller who wants only one of them filters on the code.
+
+    Laplace (``00x``), Fourier (``01x``), Z (``10x``):
+
+    - ``E-TRANSFORM-001`` / ``011`` / ``101`` — no forward rule matched. A
+      fact about *this implementation*: these are table-driven, and a wider
+      table would close it.
+    - ``E-TRANSFORM-002`` / ``102`` — the inverse table does not reach this
+      form. Same kind of fact.
+    - ``E-TRANSFORM-003`` / ``012`` / ``103`` — the two variables passed are
+      the same symbol.
+    - ``E-TRANSFORM-004`` — the **unilateral hypothesis is refuted**. The
+      Laplace integral runs over ``t >= 0``, so a Heaviside/Dirac edge at
+      ``a < 0`` is invisible to it (``L{theta(t+1)} = 1/s``, *not* ``e**s/s``),
+      and an advance factor ``e**(+a*s)`` on the inverse is the transform of no
+      causal function. Not a gap: there is nothing to find.
+    - ``E-TRANSFORM-013`` — the Fourier table entry's **decay hypothesis is
+      refuted**. At a non-positive rate the defining integral diverges, and a
+      negative Lorentzian amplitude transforms to the opposite sign and the
+      opposite direction of growth from the tabulated form.
+
+    The ``004``/``013`` split from the rest is the point of the prefix. A table
+    miss says "rewrite the input, or wait for a wider table"; a refuted
+    hypothesis says "no implementation will ever answer this". A symbolic
+    parameter is never reported as either — it cannot be decided, so it is
+    carried as a side condition instead.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-TRANSFORM-001",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)
+
+
+class AsymptoticError(AlkahestError):
+    """An asymptotic expansion at infinity was not produced (``E-ASYMPT-*``).
+
+    Raised by :func:`~alkahest.experimental.asymptotic_expand`.
+
+    - ``E-ASYMPT-001`` — ``n_terms`` below 1.
+    - ``E-ASYMPT-002`` — the ``x = 1/t`` series did not close.
+    - ``E-ASYMPT-003`` — a derivative needed for the expansion failed.
+    - ``E-ASYMPT-004`` — an expansion **was** computed and then withheld,
+      because the numeric ``o()``-gate could not confirm a single term of it at
+      large ``x``. Never downgraded to a warning.
+    - ``E-ASYMPT-005`` — the scale is outside the implemented rules
+      (exp/log hierarchies, Gamma/Stirling); power scales and a single log/exp
+      peel are what this covers.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-ASYMPT-001",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)
+
+
+class FpsError(AlkahestError):
+    """A formal-power-series operation refused (``E-FPS-*``).
+
+    Raised by :class:`~alkahest.experimental.Fps`.
+
+    ``E-FPS-001`` and ``002`` are the same mathematical fact reached two ways:
+    the object has a pole at the origin, so it is a Laurent series and not a
+    formal *power* series. ``004``/``005``/``006`` are the constant-term
+    hypotheses the operations need to be well defined at all — ``f(0) = 0``
+    for composition/``exp``/reversion, ``f(0) = 1`` for ``log`` and the default
+    n-th root, ``f(0) != 0`` for the inverse — and each carries the rewrite
+    that removes the obstruction in its ``.remediation``. ``003`` and ``007``
+    are the implementation's limits: exact rational coefficients only, and an
+    underlying Taylor expansion that has to close.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-FPS-001",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)
 
 
 class DaeError(AlkahestError):

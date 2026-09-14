@@ -7,6 +7,8 @@ discovered, concatenated and checked.
 from __future__ import annotations
 
 import math
+from decimal import Decimal
+from fractions import Fraction
 from typing import Callable
 
 import alkahest as ak
@@ -227,5 +229,84 @@ CASES: list[Case] = [
         op=lambda: float(ak.eval_expr(_rat(1, 2), {})),
         contract=Returns(0.5, tol=0.0),
         verified_by="1/2 is exact in binary64. Control for the two rounding cases above.",
+    ),
+    # ``Expr.__pow__`` and friends coercing a Python number to a pool node.
+    # -----------------------------------------------------------------------
+    # These read the exponent the pool actually holds rather than evaluating,
+    # because `eval_expr` reduces every exponent to an `f64` before computing:
+    # `8 ** (1/3)` and `8 ** 0.3333333333333333` are both `2.0`, so a numeric
+    # probe cannot see the difference.  What the loss destroys is the *node* —
+    # `integrate`, `puiseux_series` and the polynomial converters all read an
+    # exponent structurally, and none of them can recognise a float power as
+    # the exact one that was written.
+    Case(
+        id="pow_bigint_exponent_is_not_rounded_through_a_double",
+        subsystem="evaluation",
+        statement="x ** (10**30 + 1) is the power 10**30 + 1, not the double 1e30",
+        op=lambda: str((X ** (10**30 + 1)).node()[2]),
+        contract=Returns("1000000000000000000000000000001"),
+        verified_by=(
+            "Python: 10**30 + 1 == 1000000000000000000000000000001, while "
+            "int(float(10**30 + 1)) == 1000000000000000019884624838656 — the nearest "
+            "double is a different integer — 19884624838655 away, and even where the value "
+            "asked for is odd."
+        ),
+        note=(
+            "`Expr.__pow__` used to try `extract::<f64>()` before any exact path, and "
+            "pyo3's f64 extraction goes through `__float__`, so a Python int wider than "
+            "i64 landed in the float arm and the `+ 1` vanished in silence."
+        ),
+    ),
+    Case(
+        id="pow_control_i64_exponent_stays_exact",
+        subsystem="evaluation",
+        statement="x ** (2**62 + 1) — an odd exponent that fits in an i64 — is still exact",
+        op=lambda: str((X ** (2**62 + 1)).node()[2]),
+        contract=Returns("4611686018427387905"),
+        verified_by=(
+            "Python: 2**62 + 1 == 4611686018427387905, below 2**63 - 1. It is odd, so the "
+            "nearest double (2**62) is a different integer — a live control, not a value "
+            "that would have survived rounding anyway."
+        ),
+    ),
+    Case(
+        id="pow_fraction_exponent_is_the_exact_rational",
+        subsystem="evaluation",
+        statement="x ** Fraction(1, 3) is the cube root x^(1/3), not x^0.3333333333333333",
+        op=lambda: str((X ** Fraction(1, 3)).node()[2]),
+        contract=Returns("1/3"),
+        verified_by=(
+            "Fraction(1, 3) is one third by definition. Python: Fraction(1 / 3) == "
+            "Fraction(6004799503160661, 18014398509481984) != Fraction(1, 3), so the "
+            "double is a different rational number with a 2**54 denominator."
+        ),
+        note=(
+            "A cube root alkahest can reason about symbolically versus a float power it "
+            "cannot: `puiseux_series` refused the f64 exponent outright, because honest "
+            "expansion of a 2**54 ramification is past anything it can verify."
+        ),
+    ),
+    Case(
+        id="pow_control_dyadic_fraction_exponent",
+        subsystem="evaluation",
+        statement="x ** Fraction(3, 2) is x^(3/2) — the exponent that was always exact still is",
+        op=lambda: str((X ** Fraction(3, 2)).node()[2]),
+        contract=Returns("3/2"),
+        verified_by=(
+            "3/2 is exact in binary64: Python's Fraction(1.5) == Fraction(3, 2). This is "
+            "the neighbour that worked before the fix and must still work after it."
+        ),
+    ),
+    Case(
+        id="pow_decimal_exponent_is_the_exact_decimal",
+        subsystem="evaluation",
+        statement='x ** Decimal("0.1") is x^(1/10); Decimal("0.1") is one tenth, the double is not',
+        op=lambda: str((X ** Decimal("0.1")).node()[2]),
+        contract=Returns("1/10"),
+        verified_by=(
+            "Python: Decimal('0.1').as_integer_ratio() == (1, 10), while "
+            "Fraction(0.1) == Fraction(3602879701896397, 36028797018963968). The whole "
+            "point of Decimal is that it is not the binary float."
+        ),
     ),
 ]

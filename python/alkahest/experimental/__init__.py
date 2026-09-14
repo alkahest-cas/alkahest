@@ -48,6 +48,32 @@ Probability and statistics:
   it with ``evaluate(phi, env, mode="complex")``; the real modes return
   ``value=None`` with ``status="unsupported"`` rather than dropping the
   imaginary part
+- The generating-function family, also methods on the law:
+  :meth:`~Distribution.moment_generating_function` (``M_X(t) = E[e^{tX}]``),
+  :meth:`~Distribution.cumulant_generating_function` (``K = log M``),
+  :meth:`~Distribution.probability_generating_function` (``G_X(z) = E[z**X]``),
+  :meth:`~Distribution.cumulant`, :meth:`~Distribution.factorial_moment`,
+  :meth:`~Distribution.skewness` and :meth:`~Distribution.excess_kurtosis`
+- **These refuse where the quantity does not exist, which is most of the point
+  of having them here rather than in a table.** ``M_X`` for a
+  :func:`LogNormal` raises ``E-PROB-006``: ``E[e^{tX}]`` is ``+inf`` for every
+  ``t > 0``, and a CAS that completes the square anyway returns a clean closed
+  form that is the value of no integral. ``M_X(t) = lambda/(lambda - t)`` for
+  an :func:`Exponential` holds *only* on ``t < lambda``, and ``(1 - theta t)``
+  ``**-k`` for a :func:`Gamma` only on ``t < 1/theta`` — outside those strips
+  the expressions are still finite, still plausible and still wrong, so a
+  decidable argument outside the strip raises ``E-PROB-006`` and an undecidable
+  one publishes the condition on :func:`prob_side_conditions`. A law whose MGF
+  is entire leaves that list empty, so empty means *checked*
+- ``G_X(z) = sum_k z**k P(X = k)`` is defined only for a law on the
+  non-negative integers; asking a :func:`Normal` for one raises ``E-PROB-002``
+  rather than returning the formal ``E[exp(X log z)]``, which is the *moment*
+  generating function at ``log z`` and says nothing about any ``P(X = k)``
+- :meth:`~Distribution.cumulant` raises ``E-PROB-006`` for a :func:`LogNormal`
+  — ``kappa_n = K**(n)(0)`` and there is no ``K`` — while
+  :meth:`~Distribution.skewness` and :meth:`~Distribution.excess_kurtosis`,
+  which are defined from *central* moments, are returned there as usual. The
+  kurtosis is the **excess** one: ``0`` for a normal, not ``3``
 - :func:`prob_side_conditions` — the hypotheses the last :class:`Distribution`
   method or :func:`expectation` call had to *assume*. The return value is an
   ``Expr``, so there is nowhere in band to hang one; without this channel a

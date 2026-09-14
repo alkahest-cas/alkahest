@@ -43,6 +43,7 @@ program
   .option('--height <px>', 'Viewport height (default 1080 for split, 720 for single)', '')
   .option('--delay <ms>', 'Delay between typing characters (ms)', '40')
   .option('--hide-line-numbers', 'Hide code cell line numbers in the recording (?hideLineNumbers=1)')
+  .option('--pace <multiplier>', 'Scale every pause and scroll step; >1 is slower and more readable', '1')
   .action(recordCommand);
 
 program

@@ -5,8 +5,8 @@ carries the coefficient tests and the corrupted-expansion rejection test, and
 ``tests/silent_errors/corpus.py`` scores the refusals against their controls).
 What this file covers is the **Python surface**: that the accessors report what
 the Rust type reports, that the refusals arrive as coded ``SeriesError``s a
-caller can branch on, and that the two documented footguns — ``Fraction``
-exponents going through ``f64``, and ``series`` still refusing what this
+caller can branch on, and that the two documented edge cases — ``Fraction``
+exponents reaching the kernel exactly, and ``series`` still refusing what this
 expands — behave as documented rather than as folklore.
 """
 
@@ -177,33 +177,33 @@ def test_the_exact_power_check_runs_where_it_applies(pool_and_x):
 
 
 # ---------------------------------------------------------------------------
-# The two documented footguns
+# The two documented edge cases
 # ---------------------------------------------------------------------------
 
 
-def test_a_non_dyadic_fraction_exponent_is_refused_not_rounded(pool_and_x):
-    """``x ** Fraction(1, 3)`` is not ``x**(1/3)``.
+def test_a_non_dyadic_fraction_exponent_is_the_exact_root(pool_and_x):
+    """``x ** Fraction(1, 3)`` is ``x**(1/3)``.
 
-    ``Expr.__pow__`` coerces through ``f64``, so the exponent that reaches the
-    kernel is ``6004799503160661/18014398509481984``. Expanding *that* honestly
-    needs a ramification index of ``2**54``; rounding it to ``1/3`` would be
-    answering a question nobody asked. The refusal is the correct behaviour and
-    the docstring points at ``pow_expr(pool.rational(1, 3))``.
+    It used not to be. ``Expr.__pow__`` coerced its exponent through ``f64``, so
+    what reached the kernel was ``6004799503160661/18014398509481984``; expanding
+    *that* honestly needs a ramification index of ``2**54``, and the refusal
+    (``E-SERIES-005``) was the correct answer to the question actually asked.
+    The exponent now arrives exact, so the question asked is the one written and
+    ``x ** Fraction(1, 3)`` builds the same node as ``pow_expr(rational(1, 3))``.
     """
     pool, x = pool_and_x
-    with pytest.raises(SeriesError) as excinfo:
-        puiseux_series(x ** Fraction(1, 3), x, pool.integer(0), 3)
-    assert excinfo.value.code == "E-SERIES-005"
+    assert x ** Fraction(1, 3) == x.pow_expr(pool.rational(1, 3))
 
-    # The exact route works.
-    px = puiseux_series(x.pow_expr(pool.rational(1, 3)), x, pool.integer(0), 3)
+    px = puiseux_series(x ** Fraction(1, 3), x, pool.integer(0), 3)
     assert px.ramification == 3
     assert px.valuation == Fraction(1, 3)
 
 
-def test_a_dyadic_fraction_exponent_survives_f64_and_works(pool_and_x):
-    """``Fraction(3, 2)`` *is* exact in binary, so ``x ** Fraction(3, 2)`` works."""
+def test_a_dyadic_fraction_exponent_still_works(pool_and_x):
+    """``Fraction(3, 2)`` was exact through ``f64`` too — the control."""
     pool, x = pool_and_x
+    assert x ** Fraction(3, 2) == x.pow_expr(pool.rational(3, 2))
+
     px = puiseux_series(x ** Fraction(3, 2), x, pool.integer(0), 4)
     assert px.ramification == 2
     assert px.valuation == Fraction(3, 2)
@@ -224,9 +224,11 @@ def test_series_still_refuses_what_puiseux_series_expands(pool_and_x):
         # refuses it as an indeterminate form.
         (ak.sqrt(x), "E-SERIES-004"),
         (ak.sqrt(ak.sin(x)), "E-SERIES-004"),
-        # A literal non-integer power never even reaches a coefficient — `diff`
-        # has no rule for it. A different code, the same refusal.
-        (x ** Fraction(3, 2), "E-SERIES-001"),
+        # A literal rational power is a fractional valuation like the two above.
+        # It used to be `E-SERIES-001` instead, because `Expr.__pow__` coerced
+        # `Fraction(3, 2)` to a *float* node and `diff` has no rule for a float
+        # power — a refusal for the wrong reason about a different expression.
+        (x ** Fraction(3, 2), "E-SERIES-004"),
     ]
     for expr, code in cases:
         with pytest.raises(SeriesError) as excinfo:

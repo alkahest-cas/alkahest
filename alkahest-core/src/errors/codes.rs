@@ -139,6 +139,23 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-ODE-032", class: "DsolveSystemError", cause: Cause::Unsupported, remediation: Some("substitute concrete values for the symbolic entries of A, or use a 2x2/3x3 or triangular system") },
     ErrorSpec { code: "E-ODE-033", class: "DsolveSystemError", cause: Cause::Unsupported, remediation: Some("the forcing term has no elementary antiderivative against the fundamental matrix") },
     ErrorSpec { code: "E-ODE-034", class: "DsolveSystemError", cause: Cause::UserInput,   remediation: None },
+    // E-ODE-040..045 — `ode::series_solve::SeriesError` (Frobenius / power-series
+    // solutions).  These sat on 020..025 until 3.10, colliding head-on with the
+    // `NumericOdeError` block above: `E-ODE-021` was simultaneously "the adaptive
+    // step size fell below the floor" and "the point is irregular singular", which
+    // is precisely the branch a caller is told these codes exist to support.  The
+    // series side moved because it had never surfaced — `series_solve` raised an
+    // uncoded `ValueError` — so no caller could be reading it.
+    //
+    // 041/042 are declines about *this* implementation's reach; 040 and 043 are
+    // facts about the equation; 044 is the withheld-answer code (a candidate
+    // series that failed the exact-residual gate is never returned with a caveat).
+    ErrorSpec { code: "E-ODE-040", class: "SeriesOdeError", cause: Cause::Unsupported, remediation: Some("ensure p, q, r are analytic at x0 with rational Taylor coefficients") },
+    ErrorSpec { code: "E-ODE-041", class: "SeriesOdeError", cause: Cause::Domain,      remediation: Some("no Frobenius series exists at an irregular singular point; expand about an ordinary or regular-singular point instead") },
+    ErrorSpec { code: "E-ODE-042", class: "SeriesOdeError", cause: Cause::Unsupported, remediation: Some("the indicial equation has irrational roots, outside the rational-recurrence path this solver uses") },
+    ErrorSpec { code: "E-ODE-043", class: "SeriesOdeError", cause: Cause::UserInput,   remediation: Some("supply a non-zero coefficient for y''; p = 0 is not a second-order ODE") },
+    ErrorSpec { code: "E-ODE-044", class: "SeriesOdeError", cause: Cause::Internal,    remediation: Some("the candidate series did not satisfy the ODE exactly, so it is withheld rather than returned; report the equation as a minimal failing example") },
+    ErrorSpec { code: "E-ODE-045", class: "SeriesOdeError", cause: Cause::Unsupported, remediation: Some("the logarithmic second solution is intractable for this equation; the first solution is available on its own") },
     // E-DAE — DaeError
     ErrorSpec { code: "E-DAE-001", class: "DaeError", cause: Cause::Unsupported, remediation: Some("ensure all functions are differentiable before calling pantelides()") },
     ErrorSpec { code: "E-DAE-002", class: "DaeError", cause: Cause::UserInput,   remediation: Some("DAE index exceeds depth-10 limit; reformulate the model") },
@@ -357,13 +374,44 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-ASYMPT-004", class: "AsymptoticError", cause: Cause::UserInput, remediation: Some("the expansion could not be numerically verified at large x; the function may have an oscillatory or non-power-scale tail") },
     ErrorSpec { code: "E-ASYMPT-005", class: "AsymptoticError", cause: Cause::Unsupported, remediation: Some("exp/log scale hierarchies and Gamma/Stirling asymptotics are out of scope for asymptotic_expand; power-scale (rational/algebraic) and single log/exp peels are supported. For the asymptotics of a *sum* use experimental.euler_maclaurin, which also reaches Stirling via the sum of log k") },
     // E-FPS — FpsError
-    ErrorSpec { code: "E-FPS-001", class: "FpsError", cause: Cause::Domain, remediation: None },
-    ErrorSpec { code: "E-FPS-002", class: "FpsError", cause: Cause::Domain, remediation: None },
-    ErrorSpec { code: "E-FPS-003", class: "FpsError", cause: Cause::UserInput, remediation: None },
-    ErrorSpec { code: "E-FPS-004", class: "FpsError", cause: Cause::Domain, remediation: None },
-    ErrorSpec { code: "E-FPS-005", class: "FpsError", cause: Cause::UserInput, remediation: None },
-    ErrorSpec { code: "E-FPS-006", class: "FpsError", cause: Cause::Domain, remediation: None },
-    ErrorSpec { code: "E-FPS-007", class: "FpsError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-FPS-001", class: "FpsError", cause: Cause::Domain, remediation: Some("q(0) = 0 makes p/q singular at the origin: divide out the common factor of x, or expand about a point where q does not vanish") },
+    ErrorSpec { code: "E-FPS-002", class: "FpsError", cause: Cause::Domain, remediation: Some("the expression has a pole at x = 0, so its expansion is a Laurent series and not a formal power series; multiply by the polar factor first, or use series/puiseux_series") },
+    ErrorSpec { code: "E-FPS-003", class: "FpsError", cause: Cause::UserInput, remediation: Some("Fps carries exact rational coefficients only; substitute rationals for the symbolic parameters") },
+    ErrorSpec { code: "E-FPS-004", class: "FpsError", cause: Cause::Domain, remediation: Some("composition, exp and reversion need f(0) = 0; subtract the constant term, e.g. exp(f) = exp(f(0))*exp(f - f(0))") },
+    ErrorSpec { code: "E-FPS-005", class: "FpsError", cause: Cause::UserInput, remediation: Some("log and the default n-th root need f(0) = 1 to pick a branch; factor the constant term out, e.g. log(f) = log(f(0)) + log(f/f(0))") },
+    ErrorSpec { code: "E-FPS-006", class: "FpsError", cause: Cause::Domain, remediation: Some("the multiplicative inverse needs f(0) != 0; when f vanishes to order k, divide x^k out first") },
+    ErrorSpec { code: "E-FPS-007", class: "FpsError", cause: Cause::UserInput, remediation: Some("the underlying Taylor expansion failed; ensure every function has a differentiation rule and the expansion point is regular") },
+    // E-TRANSFORM — the integral/sequence transform tables
+    // (`transform::laplace`, `transform::fourier`, `transform::ztransform`).
+    //
+    // One prefix for the whole `transform` module, three disjoint numeric
+    // blocks: 00x Laplace, 01x Fourier, 10x Z.  This is the arrangement E-ODE-*
+    // already uses for `OdeError`/`DsolveError`/`NumericOdeError` — one Python
+    // class per *prefix*, with the number saying which engine and which failure.
+    //
+    // The blocks are split the same way inside: a table miss (001/002/011/101/102)
+    // is a fact about *this implementation* and a wider table would close it,
+    // while 004 and 013 are facts about *the mathematics* — the hypothesis the
+    // rule rests on is refuted, and no table can be widened to cover it.  That is
+    // the branch these codes exist for: the first says "try again later or rewrite
+    // the input", the second says "there is nothing to find".
+    ErrorSpec { code: "E-TRANSFORM-001", class: "TransformError", cause: Cause::Unsupported, remediation: Some("laplace_transform is table-based: reduce f(t) to constants, t^n, exp(a*t), sin/cos/sinh/cosh of b*t, Heaviside/Dirac shifts, and products of those with exp(a*t) or t^n") },
+    ErrorSpec { code: "E-TRANSFORM-002", class: "TransformError", cause: Cause::Unsupported, remediation: Some("inverse_laplace_transform inverts a proper rational F(s) whose denominator factors into poles of degree <= 2 (times an optional delay exp(-a*s)); an improper part would invert to derivatives of the Dirac delta and is declined rather than fabricated") },
+    ErrorSpec { code: "E-TRANSFORM-003", class: "TransformError", cause: Cause::UserInput,   remediation: Some("pass distinct symbols for the time and frequency variables") },
+    // Not a table gap: the unilateral transform integrates over t >= 0 only, so a
+    // step/impulse edge at a < 0 is invisible to it and exp(+a*s) on the inverse is
+    // the transform of nothing causal.  Emitting the shifted answer anyway is a
+    // clean, plausible, wrong function — L{theta(t+1)} = 1/s, not e^s/s.
+    ErrorSpec { code: "E-TRANSFORM-004", class: "TransformError", cause: Cause::Domain,      remediation: Some("the unilateral transform sees t >= 0 only, so no wider table fixes this; shift the edge to a >= 0, or use a bilateral transform") },
+    ErrorSpec { code: "E-TRANSFORM-011", class: "TransformError", cause: Cause::Unsupported, remediation: Some("fourier_transform is table-based: reduce f(x) to Gaussians, one- and two-sided exponentials, Lorentzians, rect/sinc, Dirac deltas, constants and polynomials, and modulations of those") },
+    ErrorSpec { code: "E-TRANSFORM-012", class: "TransformError", cause: Cause::UserInput,   remediation: Some("pass distinct symbols for the space and frequency variables") },
+    // The table entry's own decay hypothesis, refuted rather than unproven: at a
+    // non-positive rate the defining integral diverges, and a negative Lorentzian
+    // amplitude has a transform of the opposite sign to the tabulated one.
+    ErrorSpec { code: "E-TRANSFORM-013", class: "TransformError", cause: Cause::Domain,      remediation: Some("the rate named in the message is not positive, so the defining integral does not converge; supply a positive rate, or leave it symbolic and read the hypothesis off side_conditions") },
+    ErrorSpec { code: "E-TRANSFORM-101", class: "TransformError", cause: Cause::Unsupported, remediation: Some("z_transform is table-based: reduce a[n] to constants, n, n^2, a^n, sin/cos of omega*n, and products of those with a^n or n") },
+    ErrorSpec { code: "E-TRANSFORM-102", class: "TransformError", cause: Cause::Unsupported, remediation: Some("inverse_z_transform inverts X(z) whose partial-fraction terms are A*z^p/(z - a)^k with k <= 2; a constant term would invert to the Kronecker delta, for which there is no primitive here") },
+    ErrorSpec { code: "E-TRANSFORM-103", class: "TransformError", cause: Cause::UserInput,   remediation: Some("pass distinct symbols for the index and frequency variables") },
     // E-INTERP — SparseInterpError
     ErrorSpec { code: "E-INTERP-001", class: "SparseInterpError", cause: Cause::UserInput, remediation: None },
     ErrorSpec { code: "E-INTERP-002", class: "SparseInterpError", cause: Cause::UserInput, remediation: None },

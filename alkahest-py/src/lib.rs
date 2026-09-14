@@ -244,7 +244,7 @@ use alkahest_core::number_theory::{
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyComplex, PyDict, PyInt, PyList, PyTuple};
+use pyo3::types::{PyComplex, PyDict, PyFloat, PyInt, PyList, PyTuple};
 use rug::{Complete, Integer, Rational};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -378,6 +378,111 @@ fn big_integer_from_py(n: &Bound<'_, PyAny>) -> PyResult<Integer> {
     })
 }
 
+/// A Python number as the most faithful pool node for it, or `None` when *ob* is
+/// not a number this binding recognises (so callers can return
+/// `NotImplemented` and let Python try the reflected operation).
+///
+/// This ladder exists because `extract::<f64>()` is **not** a test for "is a
+/// float".  It goes through `__float__`, so it also swallows a Python `int` of
+/// any size, a `fractions.Fraction`, a `decimal.Decimal` and every NumPy
+/// scalar — and the arithmetic dunders used to take that arm first.  So
+/// `x ** (10**30 + 1)` quietly became `x ** 1e30` (the `+ 1` gone, and an exact
+/// integer power turned into a float one), and `x ** Fraction(1, 3)` became
+/// `x ** 0.3333333333333333`, which is not a cube root and which nothing
+/// downstream can recognise as one.  Neither loss was forced by the kernel:
+/// `ExprPool::integer` and `ExprPool::rational` are `rug`-backed and unbounded,
+/// so both values fit exactly.
+///
+/// Order matters:
+///
+/// 1. a real Python `float` (and `numpy.float64`, which subclasses it) *is* an
+///    IEEE double, so a float node loses nothing — keep it;
+/// 2. anything with `__index__` (`int`, `bool`, NumPy integer scalars) is an
+///    exact integer, at whatever width;
+/// 3. anything carrying integral `numerator`/`denominator` (`fractions.Fraction`,
+///    any `numbers.Rational`) is an exact rational;
+/// 4. anything whose `as_integer_ratio()` returns an integer pair
+///    (`decimal.Decimal`) is an exact rational;
+/// 5. only then `__float__`, for values that genuinely have no exact form to
+///    offer — `numpy.float32`, `Decimal("NaN")`.
+fn number_into_pool(pool: &ExprPool, ob: &Bound<'_, PyAny>) -> PyResult<Option<ExprId>> {
+    if ob.is_instance_of::<PyFloat>() {
+        return Ok(Some(pool.float(ob.extract::<f64>()?, 53)));
+    }
+    if ob.is_instance_of::<PyInt>() {
+        return Ok(Some(integer_into_pool(pool, ob)?));
+    }
+    // NumPy integer scalars and anything else that is an integer by protocol.
+    if let Ok(index) = ob.call_method0("__index__") {
+        return Ok(Some(integer_into_pool(pool, &index)?));
+    }
+    if let Some(id) = exact_ratio_into_pool(pool, ob)? {
+        return Ok(Some(id));
+    }
+    if let Ok(x) = ob.extract::<f64>() {
+        return Ok(Some(pool.float(x, 53)));
+    }
+    Ok(None)
+}
+
+/// True when *ob* is a `decimal.Decimal` (or a subclass of one).
+fn is_decimal(ob: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let cls = ob.py().import_bound("decimal")?.getattr("Decimal")?;
+    ob.is_instance(&cls)
+}
+
+/// The exact value of *ob* as an integer or rational node, when it publishes one
+/// through `numerator`/`denominator` or `as_integer_ratio()`.
+///
+/// Both halves must be honest Python `int`s.  A duck-typed `numerator` that is
+/// itself a float is not a rational, and guessing at it would be the same
+/// silent coercion this function exists to remove.
+fn exact_ratio_into_pool(pool: &ExprPool, ob: &Bound<'_, PyAny>) -> PyResult<Option<ExprId>> {
+    let pair = match (ob.getattr("numerator"), ob.getattr("denominator")) {
+        (Ok(num), Ok(den)) => Some((num, den)),
+        _ if is_decimal(ob)? => {
+            // `Decimal` has no `numerator`, but `as_integer_ratio()` publishes
+            // its exact value — and `Decimal("0.1")` really is one tenth, which
+            // the float arm would have lost.  `Decimal("NaN").as_integer_ratio()`
+            // raises; that value has no exact ratio, so fall through to the
+            // float arm rather than failing.
+            //
+            // Deliberately keyed on `Decimal` rather than generalised to
+            // "anything with `as_integer_ratio`": `numpy.float32` has one too,
+            // and turning `np.float32(0.1)` into 13421773/134217728 while
+            // Python's own `0.1` stays a float node would be a worse
+            // inconsistency than the one this is fixing.
+            match ob.call_method0("as_integer_ratio") {
+                Ok(t) => t.extract::<(Bound<'_, PyAny>, Bound<'_, PyAny>)>().ok(),
+                Err(_) => None,
+            }
+        }
+        _ => None,
+    };
+    let Some((num, den)) = pair else {
+        return Ok(None);
+    };
+    if !num.is_instance_of::<PyInt>() || !den.is_instance_of::<PyInt>() {
+        return Ok(None);
+    }
+    let (num, den) = (big_integer_from_py(&num)?, big_integer_from_py(&den)?);
+    if den == 0 {
+        return Err(pyo3::exceptions::PyZeroDivisionError::new_err(
+            "rational with a zero denominator",
+        ));
+    }
+    // `pool.rational(2, 1)` interns a `Rational` node *distinct* from
+    // `Integer(2)`, and every structural match on an integer exponent would
+    // miss it.  Send whole values down the integer path so `x ** Fraction(4, 2)`
+    // is the same node as `x ** 2`.
+    let (num, den) = Rational::from((num, den)).into_numer_denom();
+    if den == 1 {
+        Ok(Some(pool.integer(num)))
+    } else {
+        Ok(Some(pool.rational(num, den)))
+    }
+}
+
 fn pool_mismatch_err() -> PyErr {
     PyPoolError::new_err(
         "expressions belong to different ExprPool instances; combine only symbols \
@@ -415,11 +520,8 @@ fn coerce_substituent(
         return Ok(dr.value.id);
     }
     let pool = pool_py.borrow(py);
-    if let Ok(n) = ob.extract::<i64>() {
-        return Ok(pool.inner.integer(n));
-    }
-    if let Ok(f) = ob.extract::<f64>() {
-        return Ok(pool.inner.float(f, 53));
+    if let Some(id) = number_into_pool(&pool.inner, ob)? {
+        return Ok(id);
     }
     integer_into_pool(&pool.inner, ob)
 }
@@ -480,6 +582,15 @@ pyo3::create_exception!(alkahest, PyBudgetExceededError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyHolonomicError, PyAlkahestError);
 // Probability distributions and expectations (E-PROB-*).
 pyo3::create_exception!(alkahest, PyProbabilityError, PyAlkahestError);
+// Integral / sequence transforms (E-TRANSFORM-*). One class for the whole
+// `transform` module, as `OdeError` is one class for the whole of E-ODE-*:
+// the number says which table (00x Laplace, 01x Fourier, 10x Z) and whether the
+// decline is a gap in the implementation or a refuted hypothesis.
+pyo3::create_exception!(alkahest, PyTransformError, PyAlkahestError);
+// Asymptotic expansions at infinity (E-ASYMPT-*).
+pyo3::create_exception!(alkahest, PyAsymptoticError, PyAlkahestError);
+// Formal power series (E-FPS-*).
+pyo3::create_exception!(alkahest, PyFpsError, PyAlkahestError);
 
 /// Build a structured exception with `.code`, `.remediation`, `.span` attributes.
 fn make_structured_err<E: AlkahestErrorTrait>(
@@ -1750,32 +1861,50 @@ impl PyExpr {
         }
     }
 
+    /// ``self ** exp`` — an ``Expr`` exponent, or a Python number coerced by
+    /// `number_into_pool` (exactly, where the value has an exact form).
+    ///
+    /// This used to test `extract::<i64>()` then `extract::<f64>()` then
+    /// `PyRef<PyExpr>`, which cost three separate answers:
+    ///
+    /// * `x ** (10**30 + 1)` became `x ** 1e30`, because a Python `int` wider
+    ///   than `i64` still converts to `f64` — the `+ 1` was dropped in silence
+    ///   and an exact integer power became a float one;
+    /// * `x ** Fraction(1, 3)` became `x ** 0.3333333333333333`, a float power
+    ///   rather than the cube root the caller wrote;
+    /// * `x ** y` for a `y` from a *different* pool read `y`'s raw `ExprId` in
+    ///   `x`'s pool, so `pool_a.symbol("x") ** pool_b.symbol("y")` returned
+    ///   `x^x` instead of raising the pool-mismatch error every other operator
+    ///   raises.
+    ///
+    /// Routing through `coerce_scalar` — the same helper `__mul__` and friends
+    /// already use — settles all three.
     fn __pow__(
         &self,
         exp: &Bound<'_, PyAny>,
-        _modulo: Option<PyObject>,
+        modulo: Option<PyObject>,
         py: Python<'_>,
-    ) -> PyObject {
-        // Accept Python int/float literals and Expr exponents.
-        let pool = self.pool.borrow(py);
-        let exp_id = if let Ok(n) = exp.extract::<i64>() {
-            pool.inner.integer(n)
-        } else if let Ok(x) = exp.extract::<f64>() {
-            // IEEE float literal → pool float node (complex eval uses principal Log).
-            pool.inner.float(x, 53)
-        } else if let Ok(expr_ref) = exp.extract::<PyRef<PyExpr>>() {
-            expr_ref.id
-        } else {
-            drop(pool);
-            return py.NotImplemented();
-        };
-        let id = pool.inner.pow(self.id, exp_id);
-        drop(pool);
-        PyExpr {
-            id,
-            pool: self.pool.clone_ref(py),
+    ) -> PyResult<PyObject> {
+        // `pow(expr, e, m)` used to discard `m` and return the unreduced power.
+        // There is no modular exponentiation on a symbolic expression, so say so
+        // rather than answer a question that was not asked.
+        if modulo.map(|m| !m.is_none(py)).unwrap_or(false) {
+            return Err(PyTypeError::new_err(
+                "pow() with a modulus is not supported for Expr; reduce the result \
+                 with a modular primitive instead of passing a third argument",
+            ));
         }
-        .into_py(py)
+        match self.coerce_scalar(exp, py)? {
+            Some(exp_id) => {
+                let id = self.pool.borrow(py).inner.pow(self.id, exp_id);
+                Ok(PyExpr {
+                    id,
+                    pool: self.pool.clone_ref(py),
+                }
+                .into_py(py))
+            }
+            None => Ok(py.NotImplemented()),
+        }
     }
 
     fn pow_expr(&self, exp: &PyExpr, py: Python<'_>) -> PyExpr {
@@ -1942,16 +2071,7 @@ impl PyExpr {
             return Ok(Some(e.id));
         }
         let pool = self.pool.borrow(py);
-        if let Ok(n) = ob.extract::<i64>() {
-            return Ok(Some(pool.inner.integer(n)));
-        }
-        if let Ok(f) = ob.extract::<f64>() {
-            return Ok(Some(pool.inner.float(f, 53)));
-        }
-        if ob.is_instance_of::<PyInt>() {
-            return Ok(Some(integer_into_pool(&pool.inner, ob)?));
-        }
-        Ok(None)
+        number_into_pool(&pool.inner, ob)
     }
 }
 
@@ -4710,26 +4830,66 @@ fn rational_to_py(py: Python<'_>, r: &Rational) -> PyResult<PyObject> {
     Ok(frac.call1((format!("{numer}/{denom}"),))?.into_py(py))
 }
 
+// Every one of these flattened to a bare `ValueError` carrying only
+// `e.to_string()` until 3.10 — no `.code`, no `.remediation`, no `.span`. A
+// caller could not tell "this Laplace transform's causality hypothesis is
+// refuted" from "this integrand is not in the table yet" without matching on
+// English prose, and those two call for opposite next steps. All eight now go
+// through `make_structured_err` like the rest of the library.
+//
+// `PyAlkahestError` subclasses `ValueError`, so `except ValueError` around any
+// of these keeps working unchanged.
+
 fn dsolve_error_to_py(e: CoreDsolveError) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(e.to_string())
+    // E-ODE-010..014: the same prefix, and so the same class, as `OdeError`.
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyOdeError>();
+        make_structured_err(py, &exc_type, &e)
+    })
 }
+
 fn laplace_error_to_py(e: CoreLaplaceError) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(e.to_string())
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyTransformError>();
+        make_structured_err(py, &exc_type, &e)
+    })
 }
+
 fn fourier_error_to_py(e: CoreFourierError) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(e.to_string())
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyTransformError>();
+        make_structured_err(py, &exc_type, &e)
+    })
 }
+
 fn ztransform_error_to_py(e: CoreZTransformError) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(e.to_string())
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyTransformError>();
+        make_structured_err(py, &exc_type, &e)
+    })
 }
+
 fn asymptotic_error_to_py(e: CoreAsymptoticError) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(e.to_string())
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyAsymptoticError>();
+        make_structured_err(py, &exc_type, &e)
+    })
 }
+
 fn series_solve_error_to_py(e: CoreSeriesSolveError) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(e.to_string())
+    // E-ODE-040..045 — see the note on `SeriesError::code` for why this block
+    // moved off 020..025, which `NumericOdeError` already owned.
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyOdeError>();
+        make_structured_err(py, &exc_type, &e)
+    })
 }
+
 fn fps_error_to_py(e: CoreFpsError) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(e.to_string())
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyFpsError>();
+        make_structured_err(py, &exc_type, &e)
+    })
 }
 
 /// `experimental.dsolve(equation, x, y, [y', y'', …], assumptions=None)` —
@@ -4833,7 +4993,11 @@ fn py_dsolve(
 }
 
 fn dsolve_system_error_to_py(e: CoreDsolveSystemError) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(e.to_string())
+    // E-ODE-030..034, alongside `dsolve_error_to_py` — same prefix, same class.
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyOdeError>();
+        make_structured_err(py, &exc_type, &e)
+    })
 }
 
 /// `experimental.dsolve_system(ode, assumptions=None)` — solve a linear
@@ -4849,11 +5013,12 @@ fn dsolve_system_error_to_py(e: CoreDsolveSystemError) -> PyErr {
 /// `method` (`str`), `side_conditions` (list of `str`) and `notes` (list of
 /// `str`).
 ///
-/// Raises `ValueError` when the system is not linear (`E-ODE-030`), has a
-/// time-dependent coefficient (`E-ODE-031`), has no closed-form spectrum
-/// (`E-ODE-032`), has a forcing term whose required integral is not elementary
-/// (`E-ODE-033`), or produced a candidate that failed the substitution gate
-/// (`E-ODE-034`). It never returns an unverified solution.
+/// Raises `OdeError` (a `ValueError` subclass) when the system is not linear
+/// (`E-ODE-030`), has a time-dependent coefficient (`E-ODE-031`), has no
+/// closed-form spectrum (`E-ODE-032`), has a forcing term whose required
+/// integral is not elementary (`E-ODE-033`), or produced a candidate that
+/// failed the substitution gate (`E-ODE-034`). It never returns an unverified
+/// solution.
 ///
 /// The two-compartment pharmacokinetic model
 /// `x' = -ka*x`, `y' = ka*x - ke*y` solves with symbolic `ka`, `ke`; because
@@ -5601,18 +5766,19 @@ impl PyPuiseuxExpansion {
 ///     >>> str(px.expr)   # doctest: +SKIP
 ///     '((1 * x^(1/2)) + O(x^5) + (-1/12 * x^(5/2)) + (1/1440 * x^(9/2)))'
 ///
-/// .. warning::
+/// .. note::
 ///
-///    ``Expr.__pow__`` coerces its exponent through ``f64``, so
-///    ``x ** Fraction(1, 3)`` is **not** ``x**(1/3)`` — it is the exact binary
-///    rational ``6004799503160661/18014398509481984``, and this function
-///    refuses it (``E-SERIES-005``, ramification past the verifiable range)
-///    rather than rounding it to the fraction you probably meant. Dyadic
-///    exponents such as ``Fraction(3, 2)`` *are* exact through ``f64`` and work.
-///    For an exact non-dyadic exponent build the power node directly::
+///    ``x ** Fraction(1, 3)`` is the cube root. ``Expr.__pow__`` used to coerce
+///    its exponent through ``f64``, so it arrived as the binary rational
+///    ``6004799503160661/18014398509481984`` and this function refused it
+///    (``E-SERIES-005``, ramification past the verifiable range) rather than
+///    rounding it to the fraction you probably meant. Exact exponents now reach
+///    the pool exactly — a ``Fraction``, a ``decimal.Decimal`` and a Python int
+///    of any width all do — so ``puiseux_series(sin(x) ** Fraction(1, 3), ...)``
+///    expands with ramification 3. A Python ``float`` exponent is still a float
+///    node, because that is what it is::
 ///
-///        cube_root = sin(x).pow_expr(pool.rational(1, 3))
-///        px = puiseux_series(cube_root, x, pool.integer(0), 5)
+///        px = puiseux_series(sin(x) ** Fraction(1, 3), x, pool.integer(0), 5)
 ///        # px.ramification == 3, terms at 1/3, 7/3, 13/3
 #[pyfunction]
 #[pyo3(name = "puiseux_series")]
@@ -9260,16 +9426,7 @@ impl PyMatrix {
             return Ok(Some(dr.value.id));
         }
         let pool = self.pool.borrow(py);
-        if let Ok(n) = ob.extract::<i64>() {
-            return Ok(Some(pool.inner.integer(n)));
-        }
-        if let Ok(f) = ob.extract::<f64>() {
-            return Ok(Some(pool.inner.float(f, 53)));
-        }
-        if ob.is_instance_of::<PyInt>() {
-            return Ok(Some(integer_into_pool(&pool.inner, ob)?));
-        }
-        Ok(None)
+        number_into_pool(&pool.inner, ob)
     }
 }
 
@@ -17268,6 +17425,126 @@ impl PyDistribution {
         let b = base.map(|e| e.id);
         self.derived(py, move |d, pool| d.entropy(b, pool))
     }
+
+    /// The moment generating function ``M_X(t) = E[e^{tX}]``, verified against
+    /// its defining integral, **with its region of convergence reported rather
+    /// than assumed**.
+    ///
+    /// This is where a table lookup and a correct answer part company.
+    /// ``M_X(t) = lambda/(lambda - t)`` for an ``Exponential(lambda)`` holds
+    /// only on ``t < lambda``; outside that strip the same expression is
+    /// finite, clean, and the value of no integral. So:
+    ///
+    /// * a ``t`` that can be **decided** to sit outside the strip raises
+    ///   ``E-PROB-006`` — the quantity is ``+inf``, not a rational function;
+    /// * a ``t`` that cannot be decided returns the closed form with
+    ///   ``lambda - t > 0`` on :func:`prob_side_conditions`;
+    /// * a law whose MGF is entire records that in the derivation log and
+    ///   leaves the condition list empty — so empty means *checked*, not
+    ///   *not looked at*.
+    ///
+    /// Raises ``E-PROB-006`` for ``LogNormal`` at a positive or undecidable
+    /// ``t``: ``E[e^{tX}]`` diverges for **every** ``t > 0``, and completing
+    /// the square anyway is the archetypal silent error this module exists to
+    /// prevent. A ``t`` decidably ``<= 0`` raises ``E-PROB-004`` instead —
+    /// there the expectation is finite and what is missing is a closed form.
+    /// ``Beta`` raises ``E-PROB-004``: its MGF is ``1F1(a; a+b; t)``.
+    fn moment_generating_function(&self, py: Python<'_>, t: PyRef<PyExpr>) -> PyResult<PyExpr> {
+        let id = t.id;
+        self.derived(py, move |d, pool| d.moment_generating_function(id, pool))
+    }
+
+    /// The cumulant generating function ``K_X(t) = log M_X(t)``, verified as
+    /// ``exp(K(t)) == E[e^{tX}]`` — so the logarithm is exercised rather than
+    /// cancelled.
+    ///
+    /// Carries the same convergence strip as
+    /// :meth:`moment_generating_function`, through the same channel: the
+    /// logarithm of a divergent expectation is not a cumulant generating
+    /// function. ``Beta`` raises ``E-PROB-004`` here while :meth:`cumulant`
+    /// does not — ``K`` is analytic at the origin for a Beta, it simply has no
+    /// name in this library.
+    fn cumulant_generating_function(&self, py: Python<'_>, t: PyRef<PyExpr>) -> PyResult<PyExpr> {
+        let id = t.id;
+        self.derived(py, move |d, pool| d.cumulant_generating_function(id, pool))
+    }
+
+    /// The probability generating function ``G_X(z) = E[z**X]``, verified
+    /// against ``sum_k z**k P(X = k)``.
+    ///
+    /// Defined only for a law supported on the non-negative integers —
+    /// ``Bernoulli``, ``Binomial``, ``Poisson``. Everything else raises
+    /// ``E-PROB-002`` naming its support. ``E[z**X]`` for a ``Normal`` is a
+    /// category error rather than a harder integral: the formal rewrite
+    /// ``E[exp(X log z)]`` returns a clean number, that number is the *moment*
+    /// generating function at ``log z``, and it says nothing about any
+    /// ``P(X = k)`` — all of which are zero.
+    ///
+    /// All three integer laws here converge for every ``z``: two because
+    /// ``G`` is a polynomial, the Poisson because ``G`` is entire. The
+    /// derivation log says which.
+    fn probability_generating_function(
+        &self,
+        py: Python<'_>,
+        z: PyRef<PyExpr>,
+    ) -> PyResult<PyExpr> {
+        let id = z.id;
+        self.derived(py, move |d, pool| {
+            d.probability_generating_function(id, pool)
+        })
+    }
+
+    /// The factorial moment ``E[X(X-1)...(X-n+1)]``, which is ``G_X**(n)(1)``,
+    /// verified against the defining sum.
+    ///
+    /// Raises ``E-PROB-002`` for a continuous law — there is no ``G`` to
+    /// differentiate — and for ``n`` past ``MAX_MOMENT_ORDER``.
+    fn factorial_moment(&self, py: Python<'_>, n: u32) -> PyResult<PyExpr> {
+        self.derived(py, move |d, pool| d.factorial_moment(n, pool))
+    }
+
+    /// The ``n``-th cumulant ``kappa_n = K_X**(n)(0)``, verified.
+    ///
+    /// ``kappa_1`` is the mean and ``kappa_2`` the variance; for a ``Normal``
+    /// every ``kappa_n`` with ``n >= 3`` is exactly ``0``, and for a
+    /// ``Poisson(lam)`` every ``kappa_n`` is ``lam``.
+    ///
+    /// The claim comes from the moment-cumulant recursion over the raw-moment
+    /// table and is checked against the expression of ``kappa_n`` in the
+    /// **central** moments, each quadratured from its own defining integral —
+    /// a different identity on different data, because re-running the same
+    /// recursion over quadratured raw moments would agree with a wrong
+    /// recursion.
+    ///
+    /// Raises ``E-PROB-006`` for ``LogNormal``, whose ``K`` exists on no
+    /// neighbourhood of the origin: the recursion runs perfectly well and what
+    /// it computes is the coefficient of a divergent series. Use
+    /// :meth:`skewness` and :meth:`excess_kurtosis`, which are defined from
+    /// central moments and do exist there. Raises ``E-PROB-002`` for ``n = 0``
+    /// and for ``n`` past ``MAX_CUMULANT_ORDER`` (6).
+    fn cumulant(&self, py: Python<'_>, n: u32) -> PyResult<PyExpr> {
+        self.derived(py, move |d, pool| d.cumulant(n, pool))
+    }
+
+    /// ``gamma_1 = E[((X - mu)/sigma)**3] = kappa_3/sigma**3``, verified
+    /// against that expectation.
+    ///
+    /// Built from central moments rather than from :meth:`cumulant`, and the
+    /// difference is not cosmetic: a ``LogNormal`` has no cumulants and does
+    /// have the skewness ``(exp(s**2) + 2)*sqrt(exp(s**2) - 1)`` that every
+    /// reference prints.
+    fn skewness(&self, py: Python<'_>) -> PyResult<PyExpr> {
+        self.derived(py, |d, pool| d.skewness(pool))
+    }
+
+    /// ``gamma_2 = E[((X - mu)/sigma)**4] - 3 = kappa_4/sigma**4``, verified.
+    ///
+    /// **Excess** kurtosis: ``0`` for a normal, not ``3``. The two conventions
+    /// differ by exactly the constant a reader is least likely to notice, so
+    /// the one returned is the one whose name says which it is.
+    fn excess_kurtosis(&self, py: Python<'_>) -> PyResult<PyExpr> {
+        self.derived(py, |d, pool| d.excess_kurtosis(pool))
+    }
 }
 
 impl PyDistribution {
@@ -18846,6 +19123,15 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("CudaError", m.py().get_type_bound::<PyCudaError>())?;
     m.add("IoError", m.py().get_type_bound::<PyIoError>())?;
     m.add("ParseError", m.py().get_type_bound::<PyParseError>())?;
+    m.add(
+        "TransformError",
+        m.py().get_type_bound::<PyTransformError>(),
+    )?;
+    m.add(
+        "AsymptoticError",
+        m.py().get_type_bound::<PyAsymptoticError>(),
+    )?;
+    m.add("FpsError", m.py().get_type_bound::<PyFpsError>())?;
     m.add("FactorError", m.py().get_type_bound::<PyFactorError>())?;
     m.add(
         "ResultantError",

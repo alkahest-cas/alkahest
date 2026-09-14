@@ -96,6 +96,63 @@ def test_the_gate_can_actually_detect_an_unregistered_code(tmp_path):
     assert raised - checker.parse_registry(registry) == {"E-FAKE-002"}
 
 
+@pytest.mark.skipif(not SCRIPT.is_file(), reason="checkout-only script (absent in a wheel)")
+def test_the_gate_can_detect_one_code_claimed_by_two_impls(tmp_path):
+    """The duplicate that REGISTRY's own uniqueness test could not see.
+
+    ``E-ODE-021`` was returned by ``NumericOdeError::StepSizeTooSmall`` *and* by
+    ``series_solve``'s ``SeriesError::IrregularSingular``. The registry listed it
+    once, so ``no_duplicate_codes`` passed while the code meant two incompatible
+    things on the wire: "the adaptive integrator gave up" and "this equation has
+    no Frobenius series at this point". A caller told to branch on stable codes
+    would have read the first as the second.
+
+    Like the sibling gate above, this runs against synthetic sources rather than
+    by corrupting tracked files.
+    """
+    checker = _load_checker()
+
+    core = tmp_path / "core"
+    core.mkdir()
+    (core / "a.rs").write_text(
+        "impl AlkahestError for AlphaError {\n"
+        "    fn code(&self) -> &'static str {\n"
+        '        match self { AlphaError::X => "E-FAKE-001" }\n'
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (core / "b.rs").write_text(
+        "impl crate::errors::AlkahestError for BetaError {\n"
+        "    fn code(&self) -> &'static str {\n"
+        '        match self { BetaError::Y => "E-FAKE-001" }\n'
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    owners = checker.collect_rust_code_owners(core)
+    assert owners["E-FAKE-001"] == {"AlphaError", "BetaError"}
+    assert "E-FAKE-001" not in checker.DELIBERATE_ALIASES
+
+
+@pytest.mark.skipif(not SCRIPT.is_file(), reason="checkout-only script (absent in a wheel)")
+def test_a_doc_comment_mentioning_a_code_is_not_a_claim_on_it():
+    """Only an impl body counts, or the gate would fire on cross-references.
+
+    Half the codes in this repo are named in the doc comment of some *other*
+    error explaining how they differ. Counting those as owners would make the
+    duplicate check unusable, and it would be turned off rather than fixed.
+    """
+    checker = _load_checker()
+    owners = checker.collect_rust_code_owners(REPO / "alkahest-core" / "src")
+    shared = {c: v for c, v in owners.items() if len(v) > 1}
+    unexpected = set(shared) - set(checker.DELIBERATE_ALIASES)
+    assert not unexpected, (
+        f"codes claimed by two AlkahestError impls: "
+        f"{ {c: sorted(shared[c]) for c in sorted(unexpected)} }"
+    )
+
+
 def test_every_python_exception_class_carries_a_code():
     """A wrapper with no ``.code`` is indistinguishable from a bare exception."""
     from alkahest import exceptions

@@ -96,37 +96,124 @@ use crate::simplify::assumptions::AssumptionContext;
 use super::{stash_transform_side_conditions, Genericity};
 
 /// Errors from the Laplace transform routines.
+///
+/// The two string-carrying variants each cover *two* codes, split by a message
+/// tag rather than by a new variant — the enum is public and exhaustive, so a
+/// fourth variant would be a major semver break. The split is not cosmetic:
+/// [`Self::NoRule`] / [`Self::NotInvertible`] normally mean "this table does
+/// not reach that form yet", a fact about the implementation that a caller
+/// answers by rewriting the input or waiting for a wider table, whereas
+/// `E-TRANSFORM-004` means the *unilateral transform's own hypothesis is
+/// refuted* — there is no rule to add, because no causal function has that
+/// transform. Build the tagged form only through
+/// [`Self::forward_not_causal`] / [`Self::inverse_not_causal`] so the tag and
+/// the code cannot drift apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaplaceError {
-    /// No forward rule matched `f(t)` (E-TRANSFORM-001).
+    /// No forward rule matched `f(t)` (`E-TRANSFORM-001`), or — when tagged by
+    /// [`Self::forward_not_causal`] — the unilateral hypothesis is refuted
+    /// (`E-TRANSFORM-004`).
     NoRule(String),
     /// The inverse-transform input is not a form the table can invert
-    /// (E-TRANSFORM-002).
+    /// (`E-TRANSFORM-002`), or — when tagged by [`Self::inverse_not_causal`] —
+    /// it is not the transform of any causal function (`E-TRANSFORM-004`).
     NotInvertible(String),
     /// The frequency variable `s` and time variable `t` must be distinct
-    /// symbols (E-TRANSFORM-003).
+    /// symbols (`E-TRANSFORM-003`).
     SameVariable,
+}
+
+impl LaplaceError {
+    /// Message tag for the `E-TRANSFORM-004` refusal.
+    const CAUSALITY_TAG: &'static str = "unilateral hypothesis refuted: ";
+
+    /// The forward rule's `a ≥ 0` hypothesis is *refuted*, not merely unproven:
+    /// the step/impulse edge lies strictly before the origin, so `∫₀^∞` never
+    /// sees it and `L{θ(t−a)g(t−a)} = e^{−as}G(s)` is false here.
+    pub fn forward_not_causal(detail: impl std::fmt::Display) -> Self {
+        LaplaceError::NoRule(format!("{}{detail}", Self::CAUSALITY_TAG))
+    }
+
+    /// The input is not the transform of any causal function — an *advance*
+    /// factor `e^{+as}` with literal `a > 0`. Nothing to invert to, rather than
+    /// something this table cannot reach.
+    pub fn inverse_not_causal(detail: impl std::fmt::Display) -> Self {
+        LaplaceError::NotInvertible(format!("{}{detail}", Self::CAUSALITY_TAG))
+    }
+
+    /// Was this decline a refuted causality hypothesis (`E-TRANSFORM-004`)?
+    pub fn is_causality_refutation(&self) -> bool {
+        match self {
+            LaplaceError::NoRule(m) | LaplaceError::NotInvertible(m) => {
+                m.starts_with(Self::CAUSALITY_TAG)
+            }
+            LaplaceError::SameVariable => false,
+        }
+    }
 }
 
 impl std::fmt::Display for LaplaceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LaplaceError::NoRule(m) => {
-                write!(f, "laplace_transform: no rule for {m} [E-TRANSFORM-001]")
+            // A tagged message already says what went wrong; "no rule for"
+            // would misdescribe it as a gap in the table.
+            LaplaceError::NoRule(m) if self.is_causality_refutation() => {
+                write!(f, "laplace_transform: {m}")
             }
-            LaplaceError::NotInvertible(m) => write!(
-                f,
-                "inverse_laplace_transform: cannot invert {m} [E-TRANSFORM-002]"
-            ),
+            LaplaceError::NotInvertible(m) if self.is_causality_refutation() => {
+                write!(f, "inverse_laplace_transform: {m}")
+            }
+            LaplaceError::NoRule(m) => {
+                write!(f, "laplace_transform: no rule for {m}")
+            }
+            LaplaceError::NotInvertible(m) => {
+                write!(f, "inverse_laplace_transform: cannot invert {m}")
+            }
             LaplaceError::SameVariable => write!(
                 f,
-                "laplace_transform: time and frequency variables must differ [E-TRANSFORM-003]"
+                "laplace_transform: time and frequency variables must differ"
             ),
         }
     }
 }
 
 impl std::error::Error for LaplaceError {}
+
+impl crate::errors::AlkahestError for LaplaceError {
+    fn code(&self) -> &'static str {
+        match self {
+            _ if self.is_causality_refutation() => "E-TRANSFORM-004",
+            LaplaceError::NoRule(_) => "E-TRANSFORM-001",
+            LaplaceError::NotInvertible(_) => "E-TRANSFORM-002",
+            LaplaceError::SameVariable => "E-TRANSFORM-003",
+        }
+    }
+
+    fn remediation(&self) -> Option<&'static str> {
+        match self {
+            _ if self.is_causality_refutation() => Some(
+                "the unilateral transform integrates over t ≥ 0 only, so a step or impulse \
+                 edge at a < 0 — or an advance factor e^{+a·s} on the inverse — is outside \
+                 what it can see; no wider table fixes this. Shift the edge to a ≥ 0, or \
+                 use a bilateral transform",
+            ),
+            LaplaceError::NoRule(_) => Some(
+                "laplace_transform is table-based: reduce f(t) to a sum of constants, \
+                 t^n, e^{a·t}, sin/cos/sinh/cosh of b·t, Heaviside/Dirac shifts, and \
+                 products of those with e^{a·t} or t^n",
+            ),
+            LaplaceError::NotInvertible(_) => Some(
+                "inverse_laplace_transform inverts a proper rational F(s) whose \
+                 denominator factors into poles of degree ≤ 2 (times an optional delay \
+                 e^{−a·s}); an improper part would invert to derivatives of δ, which are \
+                 declined rather than fabricated",
+            ),
+            LaplaceError::SameVariable => {
+                Some("pass distinct symbols for the time and frequency variables")
+            }
+        }
+    }
+}
 
 // ===========================================================================
 // Small helpers
@@ -845,8 +932,8 @@ fn inverse_laplace_inner(
     // forward table, and a *symbolic* `a` is a hypothesis, not a fact.
     if let Some((a, g)) = split_delay(big_f, s, pool) {
         require_nonneg_shift(a, pool, gen).map_err(|_| {
-            LaplaceError::NotInvertible(format!(
-                "advance factor e^{{{}·s}}: the unilateral inverse needs a delay, not an \
+            LaplaceError::inverse_not_causal(format!(
+                "advance factor e^{{{}·s}} — the unilateral inverse needs a delay, not an \
                  advance, and no causal f has this transform",
                 pool.display(simp(neg(a, pool), pool))
             ))
@@ -1319,7 +1406,7 @@ fn require_nonneg_shift(
 ) -> Result<(), LaplaceError> {
     if let Some(r) = literal_rational(a, pool) {
         if r < 0 {
-            return Err(LaplaceError::NoRule(format!(
+            return Err(LaplaceError::forward_not_causal(format!(
                 "shift a = {} must be ≥ 0 for unilateral Heaviside/Dirac",
                 pool.display(a)
             )));
@@ -1328,7 +1415,7 @@ fn require_nonneg_shift(
     }
     let cond = SideCondition::InDomain(a, crate::kernel::Domain::NonNegative);
     if gen.refuted(&cond, pool) {
-        return Err(LaplaceError::NoRule(format!(
+        return Err(LaplaceError::forward_not_causal(format!(
             "shift a = {} is known to be negative; the unilateral Heaviside/Dirac \
              rule needs a ≥ 0",
             pool.display(a)

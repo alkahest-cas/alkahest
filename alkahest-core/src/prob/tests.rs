@@ -1132,6 +1132,443 @@ fn moments_from_the_characteristic_function_agree_with_the_moment_table() {
 }
 
 // ---------------------------------------------------------------------------
+// Generating functions
+// ---------------------------------------------------------------------------
+
+/// Evaluate a complex-valued expression at a named-symbol environment.
+fn at_complex(p: &ExprPool, e: ExprId, env: &[(&str, f64)]) -> (f64, f64) {
+    let bindings: Vec<(ExprId, Float)> = env
+        .iter()
+        .map(|(n, v)| (sym(p, n), Float::with_val(VERIFY_PREC, *v)))
+        .collect();
+    let v = super::cplx::eval_complex(e, &bindings, p, VERIFY_PREC)
+        .unwrap_or_else(|| panic!("{} did not evaluate in C", p.display(e)));
+    (v.re.to_f64(), v.im.to_f64())
+}
+
+/// `expr` with `var` replaced by `by`.
+fn subs1(p: &ExprPool, expr: ExprId, var: ExprId, by: ExprId) -> ExprId {
+    let mut m = std::collections::HashMap::new();
+    m.insert(var, by);
+    crate::kernel::subs(expr, &m, p)
+}
+
+/// `d^n expr / d var^n`, simplified at each step so the expression does not
+/// blow up before it can be evaluated.
+fn nth_derivative(p: &ExprPool, expr: ExprId, var: ExprId, n: u32) -> ExprId {
+    let mut e = expr;
+    for _ in 0..n {
+        e = simplify(
+            crate::diff::diff(e, var, p).expect("differentiable").value,
+            p,
+        )
+        .value;
+    }
+    e
+}
+
+#[test]
+fn the_mgf_at_an_imaginary_argument_is_the_characteristic_function() {
+    // Cross-check 1. `M_X(it) = φ_X(t)` by definition — `E[e^{(it)X}]` is
+    // `E[e^{itX}]`. The two tables are written out independently in `genfun`
+    // and `charfun`, so a slip in either shows up here.
+    let p = pool();
+    let t = sym(&p, "t");
+    let s = sym(&p, "s");
+    let i_t = p.mul(vec![p.imaginary_unit(), t]);
+    let dists = [
+        Distribution::normal(p.rational(7, 10), p.rational(11, 10), &p).unwrap(),
+        Distribution::uniform(p.integer(-2), p.integer(3), &p).unwrap(),
+        Distribution::exponential(p.rational(7, 4), &p).unwrap(),
+        Distribution::gamma(p.integer(3), p.rational(4, 5), &p).unwrap(),
+        Distribution::bernoulli(p.rational(3, 10), &p).unwrap(),
+        Distribution::binomial(p.integer(5), p.rational(7, 20), &p).unwrap(),
+        Distribution::poisson(p.rational(12, 5), &p).unwrap(),
+    ];
+    for d in &dists {
+        let m = moment_generating_function(d, s, &p).unwrap().value;
+        let phi = d.characteristic_function(t, &p).unwrap().value;
+        for tv in [0.4, -0.9, 1.3] {
+            let (mr, mi) = at_complex(&p, subs1(&p, m, s, i_t), &[("t", tv)]);
+            let (pr, pi_) = at_complex(&p, phi, &[("t", tv)]);
+            assert_close!(mr, pr);
+            assert_close!(mi, pi_);
+        }
+    }
+}
+
+#[test]
+fn derivatives_of_the_mgf_at_zero_are_the_raw_moments() {
+    // Cross-check 2. `M⁽ⁿ⁾(0) = E[Xⁿ]`, reached by differentiating the MGF
+    // rather than by reading the moment table — two routes that share no
+    // closed form.
+    let p = pool();
+    let t = sym(&p, "t");
+    let cases = [
+        Distribution::normal(p.rational(1, 2), p.rational(3, 2), &p).unwrap(),
+        Distribution::exponential(p.rational(7, 4), &p).unwrap(),
+        Distribution::gamma(p.integer(3), p.rational(4, 5), &p).unwrap(),
+        Distribution::poisson(p.rational(12, 5), &p).unwrap(),
+        Distribution::binomial(p.integer(5), p.rational(7, 20), &p).unwrap(),
+    ];
+    for d in &cases {
+        let m = moment_generating_function(d, t, &p).unwrap().value;
+        for n in 1..=4u32 {
+            let dn = subs1(&p, nth_derivative(&p, m, t, n), t, p.integer(0));
+            let table = d.moment(n, &p).unwrap().value;
+            assert_close!(at(&p, dn, &[]), at(&p, table, &[]));
+        }
+    }
+}
+
+#[test]
+fn derivatives_of_the_pgf_at_one_are_the_factorial_moments() {
+    // Cross-check 3. `G⁽ⁿ⁾(1) = E[X(X-1)⋯(X-n+1)]`.
+    let p = pool();
+    let z = sym(&p, "z");
+    let cases = [
+        Distribution::bernoulli(p.rational(3, 10), &p).unwrap(),
+        Distribution::binomial(p.integer(5), p.rational(7, 20), &p).unwrap(),
+        Distribution::poisson(p.rational(12, 5), &p).unwrap(),
+    ];
+    for d in &cases {
+        let g = probability_generating_function(d, z, &p).unwrap().value;
+        for n in 1..=4u32 {
+            let dn = subs1(&p, nth_derivative(&p, g, z, n), z, p.integer(1));
+            let fm = factorial_moment(d, n, &p).unwrap().value;
+            assert_close!(at(&p, dn, &[]), at(&p, fm, &[]));
+        }
+    }
+}
+
+#[test]
+fn the_pgf_at_e_to_the_t_is_the_mgf() {
+    // Cross-check 4. `G_X(e^t) = E[(e^t)^X] = E[e^{tX}] = M_X(t)` for an
+    // integer-valued `X`.
+    let p = pool();
+    let t = sym(&p, "t");
+    let z = sym(&p, "z");
+    let e_t = p.func("exp", vec![t]);
+    let cases = [
+        Distribution::bernoulli(p.rational(3, 10), &p).unwrap(),
+        Distribution::binomial(p.integer(5), p.rational(7, 20), &p).unwrap(),
+        Distribution::poisson(p.rational(12, 5), &p).unwrap(),
+    ];
+    for d in &cases {
+        let g = probability_generating_function(d, z, &p).unwrap().value;
+        let m = moment_generating_function(d, t, &p).unwrap().value;
+        for tv in [0.4, -0.9, 1.3] {
+            assert_close!(
+                at(&p, subs1(&p, g, z, e_t), &[("t", tv)]),
+                at(&p, m, &[("t", tv)])
+            );
+        }
+    }
+}
+
+#[test]
+fn the_first_two_cumulants_are_the_mean_and_the_variance() {
+    // Cross-check 5a.
+    let p = pool();
+    let cases = [
+        Distribution::normal(p.rational(1, 2), p.rational(3, 2), &p).unwrap(),
+        Distribution::uniform(p.integer(-2), p.integer(3), &p).unwrap(),
+        Distribution::exponential(p.rational(7, 4), &p).unwrap(),
+        Distribution::gamma(p.integer(3), p.rational(4, 5), &p).unwrap(),
+        Distribution::beta(p.integer(2), p.integer(3), &p).unwrap(),
+        Distribution::bernoulli(p.rational(3, 10), &p).unwrap(),
+        Distribution::binomial(p.integer(5), p.rational(7, 20), &p).unwrap(),
+        Distribution::poisson(p.rational(12, 5), &p).unwrap(),
+    ];
+    for d in &cases {
+        assert_close!(
+            at(&p, cumulant(d, 1, &p).unwrap().value, &[]),
+            at(&p, d.mean(&p).unwrap().value, &[])
+        );
+        assert_close!(
+            at(&p, cumulant(d, 2, &p).unwrap().value, &[]),
+            at(&p, d.variance(&p).unwrap().value, &[])
+        );
+    }
+}
+
+#[test]
+fn every_normal_cumulant_past_the_second_is_zero() {
+    // Cross-check 5b — the sharp one. A normal's CGF is exactly
+    // `μt + σ²t²/2`, a quadratic, so `κ_n = 0` for every `n ≥ 3`. An
+    // off-by-one anywhere in the moment–cumulant recursion produces a nonzero
+    // value here, and the Gaussian moments it is built from are large
+    // (`E[X⁶] = 15σ⁶ + …`), so the cancellation is not one a wrong recursion
+    // can stumble into.
+    let p = pool();
+    let mu = sym(&p, "mu");
+    let sigma = sym(&p, "sigma");
+    let d = Distribution::normal(mu, sigma, &p).unwrap();
+    for n in 3..=MAX_CUMULANT_ORDER {
+        let k = cumulant(&d, n, &p).unwrap().value;
+        for env in [
+            [("mu", 0.0), ("sigma", 1.0)],
+            [("mu", -1.5), ("sigma", 2.0)],
+            [("mu", 0.25), ("sigma", 3.0)],
+        ] {
+            assert!(
+                at(&p, k, &env).abs() < 1e-9,
+                "kappa_{n} of a normal is {} at {env:?}, not 0",
+                at(&p, k, &env)
+            );
+        }
+    }
+}
+
+#[test]
+fn every_poisson_cumulant_is_lambda() {
+    // The Poisson's defining property: `K(t) = λ(e^t - 1)`, so every
+    // derivative at the origin is `λ`. A second sharp test of the recursion,
+    // and one whose right answer is not zero.
+    let p = pool();
+    let lam = sym(&p, "lambda");
+    let d = Distribution::poisson(lam, &p).unwrap();
+    for n in 1..=MAX_CUMULANT_ORDER {
+        let k = cumulant(&d, n, &p).unwrap().value;
+        for lv in [1.0, 0.4, 2.5] {
+            assert_close!(at(&p, k, &[("lambda", lv)]), lv);
+        }
+    }
+}
+
+#[test]
+fn skewness_and_excess_kurtosis_agree_with_the_cumulants() {
+    // `γ₁ = κ₃/σ³` and `γ₂ = κ₄/σ⁴` wherever the cumulants exist. The two
+    // routes are different by construction — the shape statistics are built
+    // from central moments so that a `LogNormal`, which has no cumulants, is
+    // still answered.
+    let p = pool();
+    let cases = [
+        Distribution::normal(p.rational(1, 2), p.rational(3, 2), &p).unwrap(),
+        Distribution::uniform(p.integer(-2), p.integer(3), &p).unwrap(),
+        Distribution::exponential(p.rational(7, 4), &p).unwrap(),
+        Distribution::gamma(p.integer(3), p.rational(4, 5), &p).unwrap(),
+        Distribution::beta(p.integer(2), p.integer(3), &p).unwrap(),
+        Distribution::bernoulli(p.rational(3, 10), &p).unwrap(),
+        Distribution::poisson(p.rational(12, 5), &p).unwrap(),
+    ];
+    for d in &cases {
+        let var = at(&p, d.variance(&p).unwrap().value, &[]);
+        let k3 = at(&p, cumulant(d, 3, &p).unwrap().value, &[]);
+        let k4 = at(&p, cumulant(d, 4, &p).unwrap().value, &[]);
+        assert_close!(
+            at(&p, skewness(d, &p).unwrap().value, &[]),
+            k3 / var.powf(1.5)
+        );
+        assert_close!(
+            at(&p, excess_kurtosis(d, &p).unwrap().value, &[]),
+            k4 / (var * var)
+        );
+    }
+}
+
+#[test]
+fn known_shape_statistics_match_their_textbook_values() {
+    // Values from references, not from alkahest: a normal is mesokurtic
+    // (γ₂ = 0); a uniform has γ₁ = 0, γ₂ = -6/5; an exponential has γ₁ = 2,
+    // γ₂ = 6 at every rate; a Poisson has γ₁ = λ^{-1/2}, γ₂ = λ^{-1}.
+    let p = pool();
+    let n = Distribution::normal(p.rational(1, 2), p.rational(3, 2), &p).unwrap();
+    assert_close!(at(&p, skewness(&n, &p).unwrap().value, &[]), 0.0);
+    assert_close!(at(&p, excess_kurtosis(&n, &p).unwrap().value, &[]), 0.0);
+
+    let u = Distribution::uniform(p.integer(-2), p.integer(3), &p).unwrap();
+    assert_close!(at(&p, skewness(&u, &p).unwrap().value, &[]), 0.0);
+    assert_close!(at(&p, excess_kurtosis(&u, &p).unwrap().value, &[]), -1.2);
+
+    let lam = sym(&p, "lambda");
+    let e = Distribution::exponential(lam, &p).unwrap();
+    let (sk, ek) = (
+        skewness(&e, &p).unwrap().value,
+        excess_kurtosis(&e, &p).unwrap().value,
+    );
+    for lv in [1.0, 0.4, 2.5] {
+        assert_close!(at(&p, sk, &[("lambda", lv)]), 2.0);
+        assert_close!(at(&p, ek, &[("lambda", lv)]), 6.0);
+    }
+
+    let po = Distribution::poisson(lam, &p).unwrap();
+    let (sk, ek) = (
+        skewness(&po, &p).unwrap().value,
+        excess_kurtosis(&po, &p).unwrap().value,
+    );
+    for lv in [1.0, 0.4, 2.5] {
+        assert_close!(at(&p, sk, &[("lambda", lv)]), lv.powf(-0.5));
+        assert_close!(at(&p, ek, &[("lambda", lv)]), 1.0 / lv);
+    }
+}
+
+#[test]
+fn the_lognormal_mgf_is_refused_rather_than_completed() {
+    // The archetypal silent error: completing the square in `∫e^{tx}p(x)dx`
+    // for a log-normal produces a clean closed form, and the integral it is
+    // supposed to be the value of diverges for every `t > 0`.
+    let p = pool();
+    let t = sym(&p, "t");
+    let d = Distribution::log_normal(p.integer(0), p.integer(1), &p).unwrap();
+    // A symbolic `t` cannot be decided, and the undecidable branch is the
+    // divergent one: an MGF has to exist on a neighbourhood of the origin.
+    assert_eq!(
+        moment_generating_function(&d, t, &p).unwrap_err().code(),
+        "E-PROB-006"
+    );
+    assert_eq!(
+        moment_generating_function(&d, p.integer(1), &p)
+            .unwrap_err()
+            .code(),
+        "E-PROB-006"
+    );
+    assert_eq!(
+        cumulant_generating_function(&d, t, &p).unwrap_err().code(),
+        "E-PROB-006"
+    );
+    assert_eq!(cumulant(&d, 3, &p).unwrap_err().code(), "E-PROB-006");
+    // `t ≤ 0` is a different statement: the expectation is finite there, and
+    // what is missing is a closed form rather than a value.
+    assert_eq!(
+        moment_generating_function(&d, p.integer(-1), &p)
+            .unwrap_err()
+            .code(),
+        "E-PROB-004"
+    );
+    // …but the shape statistics, which are central moments rather than
+    // cumulants, do exist and are returned. γ₁ = (e^{σ²}+2)√(e^{σ²}-1) with
+    // σ = 1 is 6.1848771858680. (Aitchison & Brown, *The Lognormal
+    // Distribution*, §2.3.)
+    assert_close!(
+        at(&p, skewness(&d, &p).unwrap().value, &[]),
+        (1.0f64.exp() + 2.0) * (1.0f64.exp() - 1.0).sqrt()
+    );
+}
+
+#[test]
+fn an_exponential_mgf_outside_its_strip_is_refused() {
+    // `M(t) = λ/(λ - t)` only for `t < λ`. At `t = 2λ` the expression is
+    // `-1` — finite, clean, and the value of no integral, since `E[e^{2λX}]`
+    // is `+∞`.
+    let p = pool();
+    let d = Distribution::exponential(p.rational(7, 4), &p).unwrap();
+    for bad in [p.rational(7, 2), p.rational(7, 4), p.integer(2)] {
+        let e = moment_generating_function(&d, bad, &p).unwrap_err();
+        assert_eq!(e.code(), "E-PROB-006");
+        assert_eq!(
+            cumulant_generating_function(&d, bad, &p)
+                .unwrap_err()
+                .code(),
+            "E-PROB-006"
+        );
+    }
+    // The control: inside the strip it is returned, unconditionally, and it is
+    // the right number. λ/(λ - t) at λ = 7/4, t = 1/2 is 1.4.
+    let good = moment_generating_function(&d, p.rational(1, 2), &p).unwrap();
+    assert_close!(at(&p, good.value, &[]), 1.4);
+    assert!(take_prob_side_conditions().is_empty());
+}
+
+#[test]
+fn a_symbolic_mgf_argument_carries_its_convergence_strip() {
+    // The condition cannot be decided, so it is *reported* — out of band,
+    // through the same channel a symbolic `cdf` argument uses. A caller who
+    // reads an empty list has been told the answer is unconditional.
+    let p = pool();
+    let t = sym(&p, "t");
+    let lam = sym(&p, "lambda");
+
+    let d = Distribution::exponential(lam, &p).unwrap();
+    moment_generating_function(&d, t, &p).unwrap();
+    let conds = take_prob_side_conditions();
+    assert!(
+        conds
+            .iter()
+            .any(|c| matches!(c, crate::deriv::SideCondition::Positive(_))),
+        "expected the strip lambda - t > 0, got {conds:?}"
+    );
+
+    // A Gamma carries `1 - θt > 0` the same way.
+    let theta = sym(&p, "theta");
+    let g = Distribution::gamma(p.integer(3), theta, &p).unwrap();
+    moment_generating_function(&g, t, &p).unwrap();
+    assert!(!take_prob_side_conditions().is_empty());
+
+    // A normal's MGF is entire: nothing to discharge, and the empty list is a
+    // statement rather than a silence.
+    let n = Distribution::normal(p.integer(0), p.integer(1), &p).unwrap();
+    moment_generating_function(&n, t, &p).unwrap();
+    assert!(take_prob_side_conditions().is_empty());
+}
+
+#[test]
+fn the_pgf_of_a_continuous_law_is_a_category_error() {
+    // `E[z^X] = E[e^{X log z}]` is a formal manipulation that returns a
+    // number. That number is the MGF at `log z`, and `G_X` is a statement
+    // about `P(X = k)` — which is zero for every `k` here.
+    let p = pool();
+    let z = sym(&p, "z");
+    for d in [
+        Distribution::normal(p.integer(0), p.integer(1), &p).unwrap(),
+        Distribution::log_normal(p.integer(0), p.integer(1), &p).unwrap(),
+        Distribution::uniform(p.integer(0), p.integer(1), &p).unwrap(),
+        Distribution::exponential(p.integer(1), &p).unwrap(),
+        Distribution::gamma(p.integer(3), p.integer(1), &p).unwrap(),
+        Distribution::beta(p.integer(2), p.integer(3), &p).unwrap(),
+    ] {
+        assert_eq!(
+            probability_generating_function(&d, z, &p)
+                .unwrap_err()
+                .code(),
+            "E-PROB-002"
+        );
+        assert_eq!(
+            factorial_moment(&d, 2, &p).unwrap_err().code(),
+            "E-PROB-002"
+        );
+    }
+    // The control: an integer-valued law answers. G(z) = e^{λ(z-1)}, and at
+    // λ = 12/5, z = 1/2 that is e^{-1.2} = 0.30119421191220214.
+    let po = Distribution::poisson(p.rational(12, 5), &p).unwrap();
+    let g = probability_generating_function(&po, z, &p).unwrap();
+    assert_close!(at(&p, g.value, &[("z", 0.5)]), (-1.2f64).exp());
+}
+
+#[test]
+fn the_beta_cgf_refuses_but_its_cumulants_do_not() {
+    // `M = ₁F₁(α; α+β; t)` has no name here, so `K` refuses. `K` is still
+    // analytic at the origin — a Beta is bounded — so the cumulants exist and
+    // are returned. Refusing them too would be a false refusal.
+    let p = pool();
+    let t = sym(&p, "t");
+    let d = Distribution::beta(p.integer(2), p.integer(3), &p).unwrap();
+    assert_eq!(
+        moment_generating_function(&d, t, &p).unwrap_err().code(),
+        "E-PROB-004"
+    );
+    assert_eq!(
+        cumulant_generating_function(&d, t, &p).unwrap_err().code(),
+        "E-PROB-004"
+    );
+    // Beta(2,3): μ = 2/5, σ² = αβ/((α+β)²(α+β+1)) = 6/150 = 1/25.
+    assert_close!(at(&p, cumulant(&d, 2, &p).unwrap().value, &[]), 0.04);
+    // γ₁ = 2(β-α)√(α+β+1)/((α+β+2)√(αβ)) = 2(1)√6/(7√6) = 2/7.
+    assert_close!(at(&p, skewness(&d, &p).unwrap().value, &[]), 2.0 / 7.0);
+}
+
+#[test]
+fn cumulant_orders_outside_the_checked_range_are_refused() {
+    let p = pool();
+    let d = Distribution::poisson(p.rational(12, 5), &p).unwrap();
+    assert_eq!(cumulant(&d, 0, &p).unwrap_err().code(), "E-PROB-002");
+    assert_eq!(
+        cumulant(&d, MAX_CUMULANT_ORDER + 1, &p).unwrap_err().code(),
+        "E-PROB-002"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Information theory
 // ---------------------------------------------------------------------------
 //

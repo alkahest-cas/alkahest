@@ -215,6 +215,7 @@ export default function Cell({
       <div
         data-cell-id={cell.id}
         data-cell-status={cell.status}
+        data-cell-type={cell.cellType}
         data-cell-active={uiActive || undefined}
         onMouseDown={handleCellMouseDown}
         className={`relative overflow-hidden rounded-lg border transition-all ${
