@@ -76,8 +76,8 @@
 //!
 //! The order counting in step 2 is an expansion in `k` around `k*`, and it
 //! leaves behind the factors that do not move with `k` there: a `Γ(a·n + c)^e`
-//! list, which [`GammaAt::Finite`] describes as "finite and nonzero for all but
-//! finitely many `n`". For a [`Value::Finite`] that is honest — the factor goes
+//! list, which `GammaAt::Finite` describes as "finite and nonzero for all but
+//! finitely many `n`". For a `Value::Finite` that is honest — the factor goes
 //! into the closed form and is still there when `b(n)` is evaluated. For a
 //! **zero** it is not, because the finitely many `n` are the whole hazard:
 //! `0 · ∞` is not `0`, and a verdict carries an implied "for every `n`".
@@ -92,7 +92,7 @@
 //! about two numbers that are both perfectly well defined — and that differ by
 //! exactly `1/9!`.
 //!
-//! So [`value_at`] refuses to read a zero off an expansion whose surviving
+//! So `value_at` refuses to read a zero off an expansion whose surviving
 //! positive-exponent `Γ(a·n + c)` has a pole at an integer `n` in the domain the
 //! verdict covers, and the verdict is [`BoundaryStatus::Unknown`]. The test is
 //! on the *location* of the pole, not on the shape of the factor: `Γ` is
@@ -1215,7 +1215,7 @@ fn value_at(extra: &RatK, f: &ProperTerm, n_shift: i64, at: Point, n_floor: Opti
 /// in `n`: `a < 0` puts a pole at every sufficiently large `n`, `a > 0` puts the
 /// last one at `n = ⌊−c/a⌋`, and `a = 0` cannot arrive here at all, because a
 /// constant non-positive integer argument was already counted as a pole in `k`
-/// by [`gamma_at_point`] and never reaches [`GammaAt::Finite`].
+/// by [`gamma_at_point`] and never reaches `GammaAt::Finite`.
 ///
 /// A negative exponent is `1/Γ(·)^{|e|}`, which is entire: it is a *zero* at
 /// those points, not an infinity, and a zero is no obstacle to having a value.
