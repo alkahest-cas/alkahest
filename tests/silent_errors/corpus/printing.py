@@ -7,6 +7,7 @@ discovered, concatenated and checked.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from typing import Callable
 
 import alkahest as ak
@@ -200,6 +201,27 @@ def _operatorname_underscores_are_escaped(tex: str) -> bool:
     return True
 
 
+@lru_cache(maxsize=1)
+def _root_sum_expr() -> ak.Expr:
+    """A `RootSum`, the one node with no public constructor.
+
+    `int dx/(x^3+x+1)` has algebraic residues of degree 3, so the
+    Rothstein-Trager logarithmic part is a sum over the roots of a resolvent —
+    the shape a printer has to bracket.
+    """
+    x = _PRINT_SYMS["x"]
+    out = ak.integrate(_int(1) / (x**3 + x + _int(1)), x)
+    return out.value if isinstance(out, ak.DerivedResult) else out
+
+
+def _trailing_superscript_run(rendered: str) -> str:
+    """The Unicode superscript run the rendering ends with, or `""`."""
+    end = len(rendered)
+    while end and rendered[end - 1] in "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻":
+        end -= 1
+    return rendered[end:]
+
+
 def _grouping_depth(tex: str, needle: str) -> int:
     """Parenthesis depth at which *needle* appears in *tex*."""
     index = tex.index(needle)
@@ -387,6 +409,66 @@ CASES: list[Case] = [
         verified_by="`u_0` names a subscripted variable, and `{u}_{0}` is how that is "
         "written (The TeXbook, ch. 7). The control for the case above: escaping "
         "every underscore would turn subscripted symbols into literal text.",
+    ),
+    Case(
+        id="printing_latex_root_sum_under_a_power_is_grouped",
+        subsystem="printing",
+        statement="latex((sum_{c : p(c)=0} f(c))^2) puts the sum one group deep",
+        op=lambda: _grouping_depth(ak.latex(_root_sum_expr() ** 2), "\\sum"),
+        contract=Returns(1),
+        verified_by="A big operator's body extends to the right, so `sum_{c} f(c)^2` is "
+        "sum_{c} (f(c)^2) — the square inside the sum — while the expression "
+        "printed is (sum_{c} f(c))^2, the square of the sum. For the two roots "
+        "of c^2 = 2 and f(c) = c·ln(x+c) at x = 3 those are 2.096 and 2.817: "
+        "different numbers, one printed form. Grouping the operator is the only "
+        "rendering that reads back as what was printed.",
+    ),
+    Case(
+        id="printing_control_latex_bare_root_sum_is_not_grouped",
+        subsystem="printing",
+        statement="latex(sum_{c : p(c)=0} f(c)) at the top level adds no group",
+        op=lambda: _grouping_depth(ak.latex(_root_sum_expr()), "\\sum"),
+        contract=Returns(0),
+        verified_by="At the top level there is nothing to the right of the body, so there is "
+        "nothing to absorb and no bracket is needed (ISO 80000-2, item 2-8.1, "
+        "prints sum without delimiters). The control for the case above: "
+        "bracketing every sum unconditionally would satisfy it while making "
+        "every printed integral harder to read.",
+    ),
+    Case(
+        id="printing_unicode_piecewise_block_is_self_delimiting",
+        subsystem="printing",
+        statement="unicode_str(piecewise^2) carries the exponent outside the block",
+        op=lambda: (
+            _trailing_superscript_run(
+                ak.unicode_str(ak.piecewise([(POOL.lt(X, _int(0)), X + _int(1))], _int(2) * X) ** 2)
+            )
+            == "²"
+            and ak.unicode_str(
+                ak.piecewise([(POOL.lt(X, _int(0)), X + _int(1))], _int(2) * X) ** 2
+            ).endswith(" }²")
+        ),
+        contract=Returns(True),
+        verified_by="A cases block has to close before anything can be applied to it — that "
+        "is what `\\end{cases}` does on the LaTeX side (Knuth, The TeXbook, "
+        "ch. 18; amsmath's `cases`). An unterminated Unicode block ended in its "
+        "default branch, so the exponent landed there: `2·x  otherwise²` is "
+        "{x+1 if x<0, (2x)^2 otherwise}, which differs from the square of the "
+        "whole piecewise on every *conditional* branch — at x = -3 the misread "
+        "is x+1 = -2 while the expression printed is (x+1)^2 = 4.",
+    ),
+    Case(
+        id="printing_control_unicode_piecewise_branch_keeps_its_own_exponent",
+        subsystem="printing",
+        statement="an exponent that belongs to a *branch* still prints on the branch",
+        op=lambda: (lambda r: r.endswith(" }") and "x²" in r)(
+            ak.unicode_str(ak.piecewise([(POOL.lt(X, _int(0)), X**2)], _int(2) * X))
+        ),
+        contract=Returns(True),
+        verified_by="{x^2 if x<0, 2x otherwise} has a genuine exponent inside the first "
+        "branch, and the block still has to close. The control for the case "
+        "above: hoisting every superscript out of the block would satisfy that "
+        "case and lose the branch's own power.",
     ),
     Case(
         id="printing_unicode_nested_absolute_value_is_pairable",

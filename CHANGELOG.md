@@ -1,5 +1,59 @@
 # Changelog
 
+## Unreleased
+
+- **`E[f(X)]` over a bounded support integrated from `a` to `a`.**
+  `prob/expect.rs`'s `map_bound` maps an `x`-bound through the distribution's
+  reduction, and short-circuits when the bound *is* a support endpoint — where
+  `ζ = ξ⁻¹` would be `log 0`. It chose which reduction endpoint to return by
+  asking whether the support endpoint was `+∞`, which is right for every law
+  unbounded above and wrong for every law that is not. `Uniform(a, b)` and
+  `Beta(α, β)` have a finite upper endpoint, so the **upper** bound was mapped
+  to the reduction's **lower** one and every integral collapsed: the claim was
+  `0` for every `f`. The numeric gate caught it, so what a caller saw was a
+  false `E-PROB-005` on `E[X]`, `E[X²]`, `E[e^X]` over any `Uniform` or `Beta` —
+  and a plausible number wherever the wrong value coincided with the right one.
+  `E[max(X−K,0)]` over `Uniform(0,2)` is the sharp case: only the outer bound is
+  mis-mapped, so the upper piece came out as the mirror image
+  `(K−a)²/(2(b−a))` instead of `(b−K)²/(2(b−a))`. The two are equal at exactly
+  one strike, `K = (a+b)/2`, which is the strike a hand-picked example uses.
+  `map_bound` now takes the corresponding reduction endpoint as an argument
+  instead of inferring it. `mean`, `variance` and `moment` were never affected
+  (they go through the moment table), and the unbounded routes — Black–Scholes,
+  Bachelier — are unchanged. Against mpmath at 40 dps: `E[X²]` over
+  `Uniform(0,2)` is `4/3`, over `Beta(2,3)` is `0.2`, `E[e^X]` over
+  `Uniform(0,2)` is `3.194528049465325`.
+
+- **A `RootSum` printed as a bare `Σ`, and `(Σ f)²` rendered as `Σ f²`.**
+  `ExprData::RootSum` emitted `\sum_{v : p = 0} body` with the body unwrapped
+  and the whole rendering reported at `PREC_ATOM`. A big operator's body extends
+  to the right, so neither held. With `p = c²−2` and `f = c·ln(x+c)`,
+  `latex((Σ_c f)²)` and `latex(Σ_c f²)` were character for character the same
+  string — `\sum_{c \, : \, c^2 - 2 = 0} c \ln\!\left(x + c\right)^2` — for two
+  expressions that differ by 34 % at `x = 3` (`2.09612497261837…` against
+  `2.81728880292489…`). Unicode collided identically. This is reachable from
+  `integrate`: a rational function with algebraic residues returns a `RootSum`
+  as its logarithmic part. An `Add` body was the second half of it —
+  `Σ_c (c+1)` printed `Σ_c c + 1`, which reads as `(Σ_c c) + 1`. The operator
+  now sits at `PREC_ADD`, so `latex_wrap`/`unicode_wrap` bracket it under `^`,
+  `*` and `/`, and the body is wrapped at `PREC_MUL`, so an `Add` is bracketed
+  and a product is not (`Σ_c c·ln(x+c)` is unchanged).
+
+- **The Unicode piecewise block never closed its brace.** `unicode_piecewise`
+  opened with `{`, ended in its default branch, and claimed `PREC_ATOM`, so an
+  exponent landed on the last branch: `piecewise([(x<0, x+1)], 2x)` squared
+  rendered as `{ x + 1  if x < 0 / 2·x  otherwise²`, i.e.
+  `{x+1 if x<0, (2x)² otherwise}` — a different function, which at `x = −3` is
+  `−2` where the expression printed is `4`. The LaTeX side has
+  always been self-delimiting (`\end{cases}`); the block now closes with ` }`,
+  which is what makes it an atom.
+
+  `tests/silent_errors/corpus/` gains seven cases across `probability` and
+  `printing`, each with its control: a control that fails if the `RootSum` fix
+  brackets every sum, one that fails if the piecewise fix hoists a branch's own
+  exponent out of the block, and one that fails if the `expectation` fix
+  disturbs an unbounded support.
+
 ## 3.11.0 — 2026-09-14
 
 ### Silent errors fixed — do results you already computed need rechecking?

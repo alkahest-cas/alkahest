@@ -282,8 +282,8 @@ fn continuous_expectation(
     for piece in &pieces {
         // Map the x-bounds through ζ = ξ⁻¹. Monotone increasing (see
         // `Reduction`), so the orientation is preserved and no swap is needed.
-        let z_lo = map_bound(piece.lo, x, &red, support_lo, pool);
-        let z_hi = map_bound(piece.hi, x, &red, support_hi, pool);
+        let z_lo = map_bound(piece.lo, x, &red, support_lo, red.lo, pool);
+        let z_hi = map_bound(piece.hi, x, &red, support_hi, red.hi, pool);
 
         let mut m = HashMap::new();
         m.insert(x, red.x_of_z);
@@ -356,19 +356,23 @@ fn support_bounds(dist: &Distribution, pool: &ExprPool) -> (ExprId, ExprId) {
 
 /// `ζ(bound)`, or the reduction's own endpoint when the bound *is* the
 /// endpoint of the support (where `ζ` would be `log 0` or similar).
+///
+/// `reduced_end` is the reduction endpoint that corresponds to `support_end`,
+/// and it is passed in rather than inferred. Inferring it from whether
+/// `support_end` is `+∞` is right for every support that is unbounded above
+/// and wrong for every support that is not: `Uniform(a, b)` and `Beta` have a
+/// finite upper endpoint, so the test picked `red.lo` for the *upper* bound
+/// and every integral collapsed to `∫_{red.lo}^{red.lo} = 0`.
 fn map_bound(
     bound: ExprId,
     x: ExprId,
     red: &dists::Reduction,
     support_end: ExprId,
+    reduced_end: ExprId,
     pool: &ExprPool,
 ) -> ExprId {
     if bound == support_end {
-        return if support_end == pool.pos_infinity() {
-            red.hi
-        } else {
-            red.lo
-        };
+        return reduced_end;
     }
     let mut m = HashMap::new();
     m.insert(x, bound);

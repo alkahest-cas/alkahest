@@ -356,6 +356,47 @@ CASES: list[Case] = [
         "expectation.",
     ),
     Case(
+        id="prob_expectation_over_a_bounded_support_reaches_the_upper_endpoint",
+        subsystem="probability",
+        statement="E[X^2] for X ~ Uniform(0, 2) is 4/3; a collapsed upper bound gives 0",
+        op=_prob_value(lambda: ex.expectation(PROB_X**2, PROB_X, ex.Uniform(_int(0), _int(2)))),
+        contract=Returns(1.3333333333333333, tol=1e-11),
+        verified_by="int_0^2 x^2 (1/2) dx = 8/6 = 4/3 = 1.33333333333333333, by hand and by "
+        "mpmath quad(x^2/2, [0, 2]). The trap is a reduction whose *upper* "
+        "integration bound is mapped to the reduction's lower endpoint: every "
+        "integral then runs from a to a, the answer is a clean 0 for every f, "
+        "and 0 is a perfectly plausible expectation.",
+    ),
+    Case(
+        id="prob_control_expectation_over_an_unbounded_support",
+        subsystem="probability",
+        statement="E[X^2] for X ~ Exponential(2) is 2/lambda^2 = 1/2",
+        op=_prob_value(lambda: ex.expectation(PROB_X**2, PROB_X, ex.Exponential(_int(2)))),
+        contract=Returns(0.5, tol=1e-11),
+        verified_by="E[X^n] = n!/lambda^n for an Exponential(lambda) (Feller II, I.2), so "
+        "E[X^2] = 2/4 = 0.5; mpmath quad(x^2·2e^{-2x}, [0, 1, inf]) agrees. The "
+        "control for the case above: a support unbounded above already mapped "
+        "its endpoints correctly, and a fix must not disturb it.",
+    ),
+    Case(
+        id="prob_call_payoff_over_a_uniform_integrates_above_the_strike",
+        subsystem="probability",
+        statement="E[max(X-1/2,0)] for X ~ Uniform(0,2) is (b-K)^2/(2(b-a)) = 9/16",
+        op=_prob_value(
+            lambda: ex.expectation(
+                POOL.func("max", [PROB_X + _rat(-1, 2), _int(0)]),
+                PROB_X,
+                ex.Uniform(_int(0), _int(2)),
+            )
+        ),
+        contract=Returns(0.5625, tol=1e-11),
+        verified_by="int_{1/2}^{2} (x - 1/2)(1/2) dx = (3/2)^2/4 = 0.5625, by hand. The trap "
+        "is the mirror image (K-a)^2/(2(b-a)) = 0.0625, which an upper bound "
+        "collapsed onto the support's *lower* endpoint produces, and which is "
+        "equal to the right answer at exactly one strike, K = (a+b)/2 — the "
+        "strike a hand-picked example would most likely use.",
+    ),
+    Case(
         id="prob_product_of_two_variates_needs_a_joint_law",
         subsystem="probability",
         statement="E[A*B] is not determined by the marginals of A and B",

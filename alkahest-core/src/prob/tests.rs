@@ -681,6 +681,86 @@ fn expectation_over_poisson_needs_a_polynomial_and_says_so() {
     assert_eq!(e.code(), "E-PROB-002");
 }
 
+/// `E[f(X)]` over a law whose support has a *finite* upper endpoint.
+///
+/// `map_bound` used to decide which reduction endpoint a support endpoint maps
+/// to by asking whether the support endpoint was `+∞`.  That is right for every
+/// law that is unbounded above and wrong for `Uniform` and `Beta`: the upper
+/// bound mapped to the reduction's *lower* endpoint, every integral collapsed
+/// to `∫_a^a = 0`, and `E[f]` was `0` for every `f`.  The gate caught it as
+/// `E-PROB-005` — a false refusal — except where the true value happens to be
+/// `0`, where a wrong derivation returned a right-looking number.
+///
+/// Values by hand: `E[X] = 1`, `E[X²] = 4/3`, `E[3X²+2X+1] = 7` over
+/// `Uniform(0, 2)`; `E[e^X] = (e² − 1)/2` there; `E[X²] = 3/10` over
+/// `Beta(2, 2)`.
+#[test]
+fn expectation_over_a_bounded_support_uses_the_upper_endpoint() {
+    let p = pool();
+    let x = sym(&p, "x");
+    let u = Distribution::uniform(p.integer(0), p.integer(2), &p).unwrap();
+
+    assert_close!(at(&p, expectation(x, x, &u, &p).unwrap().value, &[]), 1.0);
+    assert_close!(
+        at(
+            &p,
+            expectation(p.pow(x, p.integer(2)), x, &u, &p)
+                .unwrap()
+                .value,
+            &[]
+        ),
+        4.0 / 3.0
+    );
+    let f = p.add(vec![
+        p.mul(vec![p.integer(3), p.pow(x, p.integer(2))]),
+        p.mul(vec![p.integer(2), x]),
+        p.integer(1),
+    ]);
+    assert_close!(at(&p, expectation(f, x, &u, &p).unwrap().value, &[]), 7.0);
+    assert_close!(
+        at(
+            &p,
+            expectation(p.func("exp", vec![x]), x, &u, &p)
+                .unwrap()
+                .value,
+            &[]
+        ),
+        (std::f64::consts::E.powi(2) - 1.0) / 2.0
+    );
+
+    let b = Distribution::beta(p.integer(2), p.integer(2), &p).unwrap();
+    assert_close!(
+        at(
+            &p,
+            expectation(p.pow(x, p.integer(2)), x, &b, &p)
+                .unwrap()
+                .value,
+            &[]
+        ),
+        0.3
+    );
+}
+
+/// A kinked payoff over a bounded support: both pieces have to land on the
+/// right interval, not just the one whose endpoint is interior.
+///
+/// `E[max(X − K, 0)]` for `X ~ Uniform(a, b)` and `a ≤ K ≤ b` is
+/// `(b − K)²/(2(b − a))`.  The old bound mapping computed `(K − a)²/(2(b − a))`
+/// — the mirror image, equal only at the midpoint `K = (a+b)/2`, which is
+/// exactly where a hand-picked example would have been chosen.
+#[test]
+fn a_call_payoff_over_a_uniform_uses_the_upper_endpoint() {
+    let p = pool();
+    let x = sym(&p, "x");
+    let u = Distribution::uniform(p.integer(0), p.integer(2), &p).unwrap();
+    for (k_num, k_den, want) in [(1_i64, 2_i64, 0.5625_f64), (1, 1, 0.25), (3, 2, 0.0625)] {
+        let k = p.rational(k_num, k_den);
+        let payoff = p.func("max", vec![sub(x, k, &p), p.integer(0)]);
+        let r = expectation(payoff, x, &u, &p).unwrap();
+        assert_close!(at(&p, r.value, &[]), want);
+    }
+}
+
 #[test]
 fn a_divergent_expectation_is_reported_as_divergent() {
     let p = pool();
