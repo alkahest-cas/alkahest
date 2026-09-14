@@ -9,6 +9,13 @@ Checks:
      handful of deliberate aliases listed in DELIBERATE_ALIASES.
   5. Every PyO3 exception class name (Py*Error) has a matching Python class in
      alkahest/exceptions.py.
+  6. Every code prefix in REGISTRY is named in the user-facing subsystem table in
+     docs/mdbook/src/errors.md.
+
+Check 6 exists because a stable code is only useful if a caller can look it up. The
+guarantee is "branch on `.code` instead of matching English prose", and a prefix that
+appears in no user-facing table asks the caller to read `codes.rs`. Twenty-two of the forty-nine prefixes had
+accumulated that way before the 3.11 audit.
 
 Check 4 is not pedantry about tidiness. `E-ODE-021` meant "the adaptive step
 size fell below the floor" in `ode::numeric` and "the point is irregular
@@ -34,6 +41,7 @@ CORE = REPO / "alkahest-core" / "src"
 PY_LIB = REPO / "alkahest-py" / "src" / "lib.rs"
 EXCEPTIONS_PY = REPO / "python" / "alkahest" / "exceptions.py"
 CODES_RS = CORE / "errors" / "codes.rs"
+ERRORS_MD = REPO / "docs" / "mdbook" / "src" / "errors.md"
 
 # ---------------------------------------------------------------------------
 # Parse REGISTRY from codes.rs
@@ -183,6 +191,17 @@ def main() -> int:
             f"PyO3 exception Py{cls} has no matching Python class {cls} in exceptions.py"
         )
 
+    # 6. Every prefix is named in the user-facing table.
+    prefixes = {c.rsplit("-", 1)[0] for c in registry}
+    errors_md = ERRORS_MD.read_text()
+    for prefix in sorted(prefixes):
+        if f"{prefix}-" not in errors_md:
+            errors.append(
+                f"code prefix {prefix}-* is in REGISTRY but is named nowhere in "
+                f"{ERRORS_MD.relative_to(REPO)} — a stable code a caller cannot look "
+                "up is not much of a guarantee. Add a row to the subsystem table."
+            )
+
     if errors:
         print("check_error_codes: FAILED")
         for e in errors:
@@ -191,7 +210,7 @@ def main() -> int:
 
     print(
         f"check_error_codes: OK  "
-        f"({len(registry)} registered codes, "
+        f"({len(registry)} registered codes in {len(prefixes)} documented prefixes, "
         f"{len(pyo3_classes)} PyO3 classes, "
         f"{len(py_classes)} Python classes)"
     )

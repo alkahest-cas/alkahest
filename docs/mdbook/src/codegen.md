@@ -59,9 +59,9 @@ from alkahest import ExprPool, compile_expr, CompileCache
 pool = ExprPool()
 x = pool.symbol("x")
 cache = CompileCache()
-f = cache.compile(x**2, [x], pool)   # JIT compiles on first call
-g = cache.compile(x**2, [x], pool)   # cache hit — O(1)
-print(cache.stats())                 # hits, compiles, hit_rate
+f = cache.compile(x**2, [x])         # JIT compiles on first call — (expr, inputs)
+g = cache.compile(x**2, [x])         # cache hit — O(1)
+print(cache.stats())                 # {'len', 'compiles', 'hits', 'hit_rate'}
 ```
 
 ## eval_expr

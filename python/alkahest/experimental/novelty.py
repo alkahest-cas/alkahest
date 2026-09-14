@@ -1087,7 +1087,7 @@ class QRecurrenceClaim:
 
     @classmethod
     def from_recurrence(cls, rec: Any, var: Any = None, q: Any = None) -> QRecurrenceClaim:
-        """From a :class:`~alkahest.QZeilbergerCertificate` or a coefficient list.
+        """From a :class:`~alkahest.experimental.QZeilbergerCertificate` or a coefficient list.
 
         Duck-typed on ``.coeffs``, exactly as
         :meth:`RecurrenceClaim.from_recurrence` is. Both *var* and *q* are
@@ -2082,7 +2082,7 @@ def check_novelty(
         :class:`~alkahest.ZeilbergerCertificate` or a
         :class:`~alkahest.GuessedRecurrence`, or with
         :meth:`QRecurrenceClaim.from_recurrence` from a
-        :class:`~alkahest.QZeilbergerCertificate`.
+        :class:`~alkahest.experimental.QZeilbergerCertificate`.
     :param sources: objects with a ``name`` and a
         ``lookup(*, terms=None, ids=None)`` returning a :class:`SourceAnswer`
         or ``None``. :class:`OeisCache` offline, :class:`OeisWeb` live.

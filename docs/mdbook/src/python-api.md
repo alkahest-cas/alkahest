@@ -27,7 +27,7 @@ Not everything lives on the top-level namespace as a function. These are reached
 | `alkahest.crosscheck` | Differential testing against an external CAS oracle: `check`, `sweep`, `run_frozen_corpus`, `to_sympy`, `register_oracle` | [Cross-CAS testing](./crosscheck.md) |
 | `alkahest.smt` | SMT-LIB 2 export and z3/cvc5 bridge: `to_smtlib`, `solve`, `supported`, `solvers` | [SMT bridge](./smt.md) |
 | `alkahest.research` | Session claim graphs and provenance | [Claim graphs](./claim-graphs.md) |
-| `alkahest.experimental` | Transforms, `dsolve`, asymptotics, `residue`, `Fps`, `to_jax` — may change in a minor release. **Must be imported explicitly** (`from alkahest import experimental as ex`); it is not an attribute of the top-level module until then | [Stability policy](./stability.md) |
+| `alkahest.experimental` | Transforms, `dsolve`, asymptotics, `residue`, `Fps`, Puiseux series, creative telescoping, probability laws and information theory, vector calculus and quaternions, `to_jax` — may change in a minor release. **Must be imported explicitly** (`from alkahest import experimental as ex`); it is not an attribute of the top-level module until then | [Stability policy](./stability.md), [Probability](./probability.md), [Vector calculus and quaternions](./vector-quaternion.md) |
 | `alkahest.rl` | Verifiable RL environments | [Reinforcement learning](./rl.md) |
 | `alkahest.number_theory`, `alkahest.modular`, `alkahest.lattice` | FLINT-backed integer and lattice routines | — |
 
