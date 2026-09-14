@@ -48,10 +48,14 @@ never *false*, and an unattended loop that records one as a negative result
 closes a branch it never explored.
 
 Refusals: ``E-CAD-001``, ``E-LINALG-010``, ``E-MAT-004``, ``E-SOS-002``,
-``E-ANSATZ-003``, ``E-SMT-003``, ``E-INT-001``, ``E-BUDGET-001..003``.
+``E-ANSATZ-003``, ``E-SMT-003``, ``E-INT-001``, ``E-BUDGET-001..003``,
+``E-ASYMPT-004``, ``E-ODE-011``, ``E-ODE-044``.
 
 Verdicts: ``E-INT-004`` (proven non-elementary), ``E-MAT-003`` (proven
-singular), ``E-EVAL-009`` (undefined at this point).
+singular), ``E-EVAL-009`` (undefined at this point), ``E-TRANSFORM-004`` and
+``E-TRANSFORM-013`` (the rule's own hypothesis is refuted — no transform of
+this shape exists), ``E-ODE-041`` (an irregular singular point has no Frobenius
+series).
 
 Exception subclasses
 --------------------
@@ -159,7 +163,82 @@ Exception subclasses
 
 .. exception:: OdeError
 
-   Code prefix ``E-ODE-*``. ODE construction or lowering error.
+   Code prefix ``E-ODE-*``. One class for every ODE engine, because the prefix
+   is the subsystem; the number says which engine declined and why.
+
+   - ``E-ODE-001`` … ``003`` — construction or lowering
+   - ``E-ODE-010`` … ``014`` — :func:`~alkahest.experimental.dsolve`.
+     ``013`` is a recognised class whose quadrature did not close, ``014`` a
+     Riccati equation with no particular solution to seed it; both are strictly
+     more informative than ``010`` ("no implemented class matched"), and
+     ``011`` is a candidate that failed substitution verification and is
+     withheld rather than returned
+   - ``E-ODE-020`` … ``026`` — the numeric integrators
+   - ``E-ODE-030`` … ``034`` — :func:`~alkahest.experimental.dsolve_system`
+   - ``E-ODE-040`` … ``045`` — :func:`~alkahest.experimental.series_solve`
+     (Frobenius). ``041`` is a fact about the equation: an irregular singular
+     point has no Frobenius series, so no wider implementation would find one.
+     ``042`` (irrational indicial roots) is a limit of *this* solver's rational
+     recurrence instead.
+
+   .. versionchanged:: 3.10
+      The ``series_solve`` block moved from ``E-ODE-020`` … ``025`` to
+      ``E-ODE-040`` … ``045``. It had collided with the numeric integrators'
+      block since both were written — ``E-ODE-021`` meant both "the adaptive
+      step size fell below the floor" and "the point is irregular singular" —
+      and the series codes had never reached Python at all, because
+      ``series_solve`` raised an uncoded :class:`ValueError`.
+
+.. exception:: TransformError
+
+   Code prefix ``E-TRANSFORM-*``. Laplace, Fourier and Z transforms and their
+   inverses. One class for the whole ``transform`` module, as
+   :exc:`OdeError` is one class for the whole of ``E-ODE-*``; the number says
+   which table (``00x`` Laplace, ``01x`` Fourier, ``10x`` Z) and which failure.
+
+   - ``E-TRANSFORM-001`` / ``011`` / ``101`` — no forward rule matched
+   - ``E-TRANSFORM-002`` / ``102`` — the inverse table does not reach this form
+   - ``E-TRANSFORM-003`` / ``012`` / ``103`` — the two variables are the same
+     symbol
+   - ``E-TRANSFORM-004`` — **refusal.** The unilateral hypothesis is *refuted*:
+     the Laplace integral runs over ``t ≥ 0``, so a Heaviside/Dirac edge at
+     ``a < 0`` is invisible to it (``L{θ(t+1)} = 1/s``, not ``e^s/s``), and an
+     advance factor ``e^{+as}`` on the inverse is the transform of no causal
+     function
+   - ``E-TRANSFORM-013`` — **refusal.** The Fourier table entry's decay
+     hypothesis is refuted: at a non-positive rate the defining integral
+     diverges, and a negative Lorentzian amplitude transforms to the opposite
+     sign and the opposite direction of growth from the tabulated form
+
+   The split matters more than the numbers. A table miss is a fact about *this
+   implementation* — rewrite the input, or wait for a wider table. ``004`` and
+   ``013`` are facts about *the mathematics*: there is nothing to find, and a
+   loop that retries them retries forever. A **symbolic** parameter is reported
+   as neither: it cannot be decided, so it is carried as a side condition on
+   ``side_conditions`` instead.
+
+   .. versionadded:: 3.10
+      These codes existed in the transform modules' message text from the
+      start, but arrived in Python as a bare :class:`ValueError` with no
+      ``.code``.
+
+.. exception:: AsymptoticError
+
+   Code prefix ``E-ASYMPT-*``. :func:`~alkahest.experimental.asymptotic_expand`.
+   ``E-ASYMPT-004`` is an expansion that **was** computed and then withheld,
+   because the numeric ``o()``-gate could not confirm a term of it at large
+   ``x``; ``E-ASYMPT-005`` is a scale outside the implemented rules.
+
+.. exception:: FpsError
+
+   Code prefix ``E-FPS-*``. Formal power series
+   (:class:`~alkahest.experimental.Fps`). ``E-FPS-001`` and ``002`` are the same
+   mathematical fact reached two ways — a pole at the origin makes the object a
+   Laurent series, not a formal *power* series. ``004`` / ``005`` / ``006`` are
+   the constant-term hypotheses the operations need to be well defined
+   (``f(0) = 0`` for composition/``exp``/reversion, ``f(0) = 1`` for ``log``,
+   ``f(0) ≠ 0`` for the inverse), and each ``.remediation`` names the rewrite
+   that removes the obstruction.
 
 .. exception:: DaeError
 

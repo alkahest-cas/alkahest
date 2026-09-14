@@ -101,13 +101,13 @@ use crate::kernel::{ExprData, ExprId, ExprPool};
 /// Errors from the Z-transform routines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ZTransformError {
-    /// No forward rule matched `a[n]` (E-TRANSFORM-101).
+    /// No forward rule matched `a[n]` (`E-TRANSFORM-101`).
     NoRule(String),
     /// The inverse-transform input is not a form the table can invert
-    /// (E-TRANSFORM-102).
+    /// (`E-TRANSFORM-102`).
     NotInvertible(String),
     /// The frequency variable `z` and discrete-index variable `n` must be
-    /// distinct symbols (E-TRANSFORM-103).
+    /// distinct symbols (`E-TRANSFORM-103`).
     SameVariable,
 }
 
@@ -115,21 +115,47 @@ impl std::fmt::Display for ZTransformError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ZTransformError::NoRule(m) => {
-                write!(f, "z_transform: no rule for {m} [E-TRANSFORM-101]")
+                write!(f, "z_transform: no rule for {m}")
             }
-            ZTransformError::NotInvertible(m) => write!(
-                f,
-                "inverse_z_transform: cannot invert {m} [E-TRANSFORM-102]"
-            ),
-            ZTransformError::SameVariable => write!(
-                f,
-                "z_transform: index and frequency variables must differ [E-TRANSFORM-103]"
-            ),
+            ZTransformError::NotInvertible(m) => {
+                write!(f, "inverse_z_transform: cannot invert {m}")
+            }
+            ZTransformError::SameVariable => {
+                write!(f, "z_transform: index and frequency variables must differ")
+            }
         }
     }
 }
 
 impl std::error::Error for ZTransformError {}
+
+impl crate::errors::AlkahestError for ZTransformError {
+    fn code(&self) -> &'static str {
+        match self {
+            ZTransformError::NoRule(_) => "E-TRANSFORM-101",
+            ZTransformError::NotInvertible(_) => "E-TRANSFORM-102",
+            ZTransformError::SameVariable => "E-TRANSFORM-103",
+        }
+    }
+
+    fn remediation(&self) -> Option<&'static str> {
+        match self {
+            ZTransformError::NoRule(_) => Some(
+                "z_transform is table-based: reduce a[n] to sums of constants, n, n², \
+                 aⁿ, sin/cos of ωn, and products of those with aⁿ or n",
+            ),
+            ZTransformError::NotInvertible(_) => Some(
+                "inverse_z_transform inverts X(z) whose partial-fraction terms are \
+                 A·z^p/(z − a)^k with k ≤ 2; a constant term would invert to the \
+                 Kronecker delta δ[n], for which there is no primitive here, so it is \
+                 declined rather than fabricated",
+            ),
+            ZTransformError::SameVariable => {
+                Some("pass distinct symbols for the index and frequency variables")
+            }
+        }
+    }
+}
 
 use crate::deriv::SideCondition;
 use crate::simplify::assumptions::AssumptionContext;
