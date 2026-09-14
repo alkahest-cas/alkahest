@@ -6,6 +6,34 @@
 * A `LOCAL-AGENTS.md` file may exist at the repo root — it is untracked by git and contains device-specific instructions (paths, local tooling, machine-specific overrides). If present, follow its instructions in addition to this file.
 * If asked to write a report do not include time estimates for how long implementation will take like "~1 week" etc
 
+## Keeping a branch current
+
+**Rebase a pull request onto `origin/main` rather than merging `main` into it,
+and re-run CI after you do.** Merging leaves a branch whose checks were green
+against a `main` that has since moved; rebasing makes the checks mean what they
+appear to mean.
+
+This is not hypothetical. In the 3.11 cycle several pull requests merged on
+their own green checks while `main` had moved underneath them, and one of them
+merged with **no conflict at all and could not have compiled**: the branch had
+widened a function's signature and the other side still called it at the old
+arity. Git reported `MERGEABLE` for that happily, because a textual merge cannot
+see an arity. Three rules follow:
+
+* A clean merge is not a compiling merge. Rebuild.
+* A compiling merge is not a passing one. **Run** the suites — `cargo test
+  --workspace` and `pytest tests/` — rather than `cargo check`.
+* Resolve conflicts at **item** granularity: whole functions, whole `Case(...)`
+  entries, whole changelog bullets. A both-sides-appended conflict usually
+  splits mid-item, with the closing brace below the `>>>>>>>` marker and shared
+  by both sides; keeping both halves without restoring it produces a file that
+  can still parse, still format and still lint while being wrong. Before
+  committing, `grep -rn '^<<<<<<<\|^>>>>>>>\|^=======$'` over the tree, and
+  stage resolved files **by name** — never `git add -A`.
+
+When several pull requests are in flight over the same files, land them one at a
+time, rebasing each onto the new `main` before it merges.
+
 ## Demo playground
 
 [`demo-playground/`](demo-playground/) contains an interactive web app for demoing and recording Alkahest. It has a notebook interface, an AI agent chat mode, and a CLI for orchestrating and recording demos as video.
