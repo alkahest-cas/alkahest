@@ -947,12 +947,12 @@
     },
     {
       "operation": "diff",
-      "shape": "diff/form=product/funcs=erf/fn_arg=var/mul=scalar/pow=none/pow_base=none",
+      "shape": "diff/form=product/funcs=erf,sqrt/fn_arg=other/mul=general/pow=none/pow_base=none",
       "features": {
         "form": "product",
-        "funcs": "erf",
-        "fn_arg": "var",
-        "mul": "scalar",
+        "funcs": "erf,sqrt",
+        "fn_arg": "other",
+        "mul": "general",
         "pow": "none",
         "pow_base": "none"
       },
@@ -964,10 +964,12 @@
       },
       "blocking_rules": [
         "diff_primitive_registry",
+        "diff_sqrt",
+        "mul_zero",
         "product_rule"
       ],
       "examples": [
-        "(8.8622692545275794e-1 * erf(x))"
+        "(1/2 * erf(x) * sqrt(pi))"
       ]
     },
     {

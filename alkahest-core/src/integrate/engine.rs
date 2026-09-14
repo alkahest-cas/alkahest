@@ -5419,6 +5419,12 @@ mod tests {
     /// Assert `∫src dx` comes back as a gate-verified answer naming exactly
     /// `basis`.  Verification is by differentiation against the *original*
     /// integrand, never by comparing printed forms.
+    ///
+    /// The *parametric* gate, because that is the gate the emitter itself used:
+    /// it binds `π` to its value instead of treating it as a free symbol, and
+    /// an exact Gaussian or Fresnel constant names `π`.  The plain gate would
+    /// hand `eval_interp` an unbound symbol and report a decline that says
+    /// nothing about the answer.
     fn assert_emits(f: ExprId, x: ExprId, pool: &ExprPool, basis: &[&str]) -> ExprId {
         let r = integrate(f, x, pool)
             .unwrap_or_else(|e| panic!("∫ {} dx should emit {basis:?}; got {e}", pool.display(f)));
@@ -5430,7 +5436,7 @@ mod tests {
             pool.display(r.value)
         );
         assert!(
-            verify_antiderivative_status(r.value, f, x, pool).is_some(),
+            verify_antiderivative_status_parametric(r.value, f, x, pool).is_some(),
             "emitted {} for ∫ {} dx but d/dx F ≠ f",
             pool.display(r.value),
             pool.display(f)
@@ -7455,7 +7461,8 @@ mod tests {
             );
             assert_eq!(answer.basis(), [basis], "∫ {src} dx");
             assert!(
-                verify_antiderivative_status(answer.antiderivative(), f, x, &pool).is_some(),
+                verify_antiderivative_status_parametric(answer.antiderivative(), f, x, &pool)
+                    .is_some(),
                 "∫ {src} dx emitted an answer that does not differentiate back"
             );
         }
@@ -8051,10 +8058,15 @@ mod tests {
         assert!(verify_antiderivative_status_parametric(wrong, f, x, &pool).is_none());
     }
 
-    /// `∫_{-∞}^{∞} exp(−x²/2) dx = √(2π)`.  The indefinite answer has been
-    /// `1.2533…·erf(0.7071…·x)` for some time; what was missing was
-    /// `lim_{x→±∞} erf = ±1`, without which `eval_bound` (correctly) refuses to
-    /// substitute an unestablished limit into the FTC difference.
+    /// `∫_{-∞}^{∞} exp(−x²/2) dx = √(2π)`.  The indefinite answer is
+    /// `(√(2π)/2)·erf(x/√2)`; what was missing was `lim_{x→±∞} erf = ±1`,
+    /// without which `eval_bound` (correctly) refuses to substitute an
+    /// unestablished limit into the FTC difference.
+    ///
+    /// The answer is now the *exact* `√(2π)` rather than `2.5066…`, so `π` has
+    /// to be bound before it is a number — as everywhere else in the crate, it
+    /// is an ordinary symbol that already denotes one.  Both halves are
+    /// checked: the number, and that it did not arrive as a decimal.
     #[test]
     fn the_gaussian_integral_over_the_line_is_root_two_pi() {
         let pool = p();
@@ -8066,7 +8078,16 @@ mod tests {
         let value = integrate_definite(f, x, neg, pos, &pool)
             .expect("√(2π)")
             .value;
-        let got = crate::eval::eval_f64(value, &pool, &HashMap::new())
+        let pi = pool.symbol("pi", Domain::Real);
+        let two_pi = pool.mul(vec![pool.integer(2_i32), pi]);
+        assert_eq!(
+            value,
+            simplify(pool.func("sqrt", vec![two_pi]), &pool).value,
+            "∫_{{-∞}}^{{∞}} exp(−x²/2) dx should be the exact √(2π), got {}",
+            pool.display(value)
+        );
+        let bindings = HashMap::from([(pi, std::f64::consts::PI)]);
+        let got = crate::eval::eval_f64(value, &pool, &bindings)
             .unwrap_or_else(|e| panic!("{} did not evaluate: {e}", pool.display(value)));
         let want = (2.0 * std::f64::consts::PI).sqrt();
         assert!(

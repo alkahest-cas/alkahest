@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased
+
+- **The `erf` and Fresnel antiderivatives carry their constants exactly.**
+  `integrate/special.rs` built `√π/2`, `√(π/2|A|)` and `√(2|A|/π)` in `f64` and
+  dropped them into the pool as float literals, even when the integrand was
+  exact. `√π/2` became `0.8862269254527579`, and once it did, nothing
+  downstream could put it back:
+
+  | | before | after |
+  |---|---|---|
+  | `∫exp(−x²) dx` | `0.8862269254527579·erf(x)` | `(√π/2)·erf(x)` |
+  | `∫exp(−2x²) dx` | `0.6266570686577501·erf(1.4142…·x)` | `(√(π/2)/2)·erf(√2·x)` |
+  | `∫x²·exp(−x²) dx` | `−x·e^{−x²}/2 + 0.886…·erf(x)/2` | `−x·e^{−x²}/2 + (√π/4)·erf(x)` |
+  | `∫sin(x²) dx` | `1.2533141373155001·S(0.7978…·x)` | `√(2/π)⁻¹·S(√(2/π)·x)` |
+  | `∫exp(−a·x²) dx`, `a > 0` | `0.886…·erf(√a·x)/√a` | `(1/2)·√(π/a)·erf(√a·x)` |
+
+  The cost was not cosmetic. `√(π/2)/√(2π)` is exactly `1/2` and is nothing at
+  all once one side is a float, so every closed form built on top of these
+  stopped closing. `E[e^X]` for `X ~ Normal(μ, σ)` — the moment generating
+  function, textbook `e^{μ+σ²/2}` — came back as
+  `2·√(2π)⁻¹·e^{μ+σ²/2}·1.2533141373155001`, a product of constants that *is*
+  `1` but was `1 + 2·10⁻¹⁶`; it is now `exp(μ + σ²/2)` as returned, with no
+  simplification asked for. `E[max(S−K,0)]` under a `LogNormal` now expands to
+  the Black–Scholes formula, `e^{μ+Σ²/2}Φ(d₁) − KΦ(d₂)`, where before the
+  `1.2533141373155001/√(2π)` pairs survived every simplifier.
+
+  The exact constant is spelled as a single radical, `√(π/(−A))/2` rather than
+  `√π/(2√(−A))`, precisely so it cancels against the `√(2π)` of a Gaussian
+  density by ordinary power arithmetic.
+
+  **No false exactness.** A coefficient the caller wrote as a float stays a
+  float — `∫exp(−0.5·x²) dx` keeps its `0.5` — and a coefficient whose sign is
+  only decidable numerically (`1 − √2`) still goes through the `f64` route it
+  always did. What changed is that an exact integrand now gets an exact answer.
+
+  **Behaviour change to plan for.** These answers now name `pi`, which is an
+  ordinary symbol in alkahest rather than a distinguished constant node, so a
+  caller that evaluates one must bind it: `eval_expr(F, {x: 0.5, pi: math.pi})`.
+  That was already true of every other answer in the library that names `π`
+  (`∫_{-∞}^{∞} dx/(x⁴+1) = π/√2`, among others); it is newly true of the
+  Gaussian and Fresnel antiderivatives.
+
 ## 3.10.0 — 2026-09-10
 
 - **Series with a fractional valuation are expanded rather than refused.** New

@@ -604,14 +604,29 @@ class TestSpecialFunctionOutputBasis:
         assert str(twice) == rendered, f"{src} does not round trip via {rendered}"
 
     def test_an_emitted_antiderivative_reads_back(self):
-        """The end-to-end property: integrate, print, parse, and agree."""
+        """The end-to-end property: integrate, print, parse, and agree.
+
+        Agreement is checked **after ``simplify``**, not on the printed string,
+        because printing is not a fixed point of parsing for an exact rational
+        coefficient: the printer renders ``Rational(1, 2)`` as ``1/2`` and
+        neither parser folds a literal quotient back into a rational node, so
+        it reads as ``1 * 2^-1``.  That divergence is general and pre-dates the
+        special-function basis — ``∫x dx = (x^2 * 1/2)`` has always drifted the
+        same way, which is why it is in the list below.  What the parser must
+        get right, and what is asserted here, is the *function*: every name in
+        the answer resolves and the expression that comes back is the one that
+        went out.
+        """
         pool = ExprPool()
         x = pool.symbol("x")
-        for src in ("exp(x)/x", "sin(x)/x", "1/log(x)", "exp(-x^2)", "sin(x^2)"):
+        for src in ("exp(x)/x", "sin(x)/x", "1/log(x)", "exp(-x^2)", "sin(x^2)", "x"):
             f = parse(src, pool)
-            printed = str(alkahest.integrate(f, x).value)
+            out = alkahest.integrate(f, x).value
+            printed = str(out)
             back = parse(printed, pool)
-            assert str(back) == printed, f"∫{src} dx = {printed} does not re-parse"
+            assert alkahest.simplify(back).value == alkahest.simplify(out).value, (
+                f"∫{src} dx = {printed} does not re-parse to itself, got {back}"
+            )
 
     def test_cbrt_desugars_to_a_third_power(self):
         """``cbrt(u)`` is ``u^(1/3)``; no ``cbrt`` node exists in the pool.
