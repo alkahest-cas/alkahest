@@ -79,7 +79,7 @@ After installing `+jit` or `+full`, `capabilities()["features"]["llvm_jit"]` sho
 **Target layout (roadmap):** a small **extra index** URL (PEP 503) hosting only `+jit` / `+full` wheels, mirroring PyTorch’s `--extra-index-url` workflow:
 
 ```bash
-pip install 'alkahest==3.8.0+full' --extra-index-url https://EXAMPLE/alkahest-extras/simple
+pip install 'alkahest==3.10.0+full' --extra-index-url https://EXAMPLE/alkahest-extras/simple
 ```
 
 ### From source
