@@ -790,10 +790,10 @@ fn solve_exact(mut mat: Vec<Vec<Rational>>, mut rhs: Vec<Rational>) -> Option<Ve
     Some(rhs)
 }
 
-/// The `π` symbol, in the crate-wide convention (a `Domain::Real` symbol named
-/// `pi`, which is what the Python binding binds and what `sum::special` emits).
+/// The `π` symbol, in the crate-wide convention — a `Domain::Real` symbol named
+/// `pi`, the same node `sum::special` emits and every evaluator resolves.
 fn pi_symbol(pool: &ExprPool) -> ExprId {
-    pool.symbol("pi", crate::kernel::Domain::Real)
+    crate::eval::symbols::pi_symbol(pool)
 }
 
 /// `π · e`.
@@ -802,12 +802,12 @@ fn times_pi(e: ExprId, pool: &ExprPool) -> ExprId {
     crate::simplify::engine::simplify(pool.mul(vec![pi, e]), pool).value
 }
 
-/// Evaluate `expr` in `f64`, binding `π` — the plain evaluator treats `pi` as
-/// an unbound symbol, and every value this module produces contains one.
+/// Evaluate `expr` in `f64`.
+///
+/// No bindings: every value this module produces contains a `π`, and
+/// [`crate::eval::eval_f64`] resolves that itself.
 fn numeric_value(expr: ExprId, pool: &ExprPool) -> Option<f64> {
-    let mut bindings = std::collections::HashMap::new();
-    bindings.insert(pi_symbol(pool), std::f64::consts::PI);
-    let v = crate::eval::eval_f64(expr, pool, &bindings).ok()?;
+    let v = crate::eval::eval_f64(expr, pool, &std::collections::HashMap::new()).ok()?;
     v.is_finite().then_some(v)
 }
 

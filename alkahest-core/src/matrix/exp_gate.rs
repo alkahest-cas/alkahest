@@ -36,7 +36,7 @@
 //! which is the same classification [`crate::matrix::spectrum`] and
 //! `integrate`'s antiderivative gates use.
 
-use crate::eval::symbols::{collect_free_symbols, collect_named_constants, is_pi};
+use crate::eval::symbols::collect_free_symbols;
 use crate::eval::{eval_complex_f64, ComplexF64};
 use crate::kernel::{ExprId, ExprPool};
 use crate::matrix::Matrix;
@@ -367,8 +367,10 @@ pub(crate) fn confirm_matrix_exponential(
 
     let mut checked = 0usize;
     for ps in PARAM_SETS {
+        // No constants are seeded: `eval_complex_f64` resolves `π` and the
+        // imaginary unit itself, and `collect_free_symbols` already declines to
+        // sample either of them.
         let mut env: HashMap<ExprId, ComplexF64> = HashMap::new();
-        bind_constants(pool, &mut env, a, candidate);
         for (i, &p) in params.iter().enumerate() {
             env.insert(p, ComplexF64::new(ps[i % ps.len()], 0.0));
         }
@@ -428,31 +430,6 @@ fn eval_grid(m: &Matrix, pool: &ExprPool, env: &HashMap<ExprId, ComplexF64>) -> 
         out.push(row);
     }
     Some(out)
-}
-
-/// Bind the named constants the eigen formulas emit but that
-/// [`eval_complex_f64`] has no value for.
-///
-/// `pi` is a plain symbol in this crate (see [`crate::eval::symbols`]), so
-/// binding it here is what stops it being collected as a free *parameter* and
-/// given a sample value — which would turn a correct answer into a spurious
-/// refusal. The imaginary unit is deliberately *not* bound: `eval_complex_f64`
-/// knows it natively.
-fn bind_constants(
-    pool: &ExprPool,
-    env: &mut HashMap<ExprId, ComplexF64>,
-    a: &Matrix,
-    candidate: &Matrix,
-) {
-    let mut all: Vec<ExprId> = Vec::new();
-    for &e in a.entries().iter().chain(candidate.entries().iter()) {
-        collect_named_constants(e, pool, &mut all);
-    }
-    for s in all {
-        if is_pi(s, pool) {
-            env.insert(s, ComplexF64::new(std::f64::consts::PI, 0.0));
-        }
-    }
 }
 
 #[cfg(test)]

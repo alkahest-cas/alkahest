@@ -366,15 +366,29 @@ fn fresnel_asymptotic_ball(x: &Float, prec: u32) -> Option<(ArbBall, ArbBall)> {
 // Primitives
 // ---------------------------------------------------------------------------
 
-/// `π/2` as a pool literal — the constant in `S′(x) = sin(πx²/2)`.
+/// `π/2` — the constant in `S′(x) = sin(πx²/2)` — exactly, as the symbol `π`
+/// times `1/2`, not as the `f64` literal `1.5707963267948966`.
 ///
-/// A `Float` literal, not the symbol `pi`: a derivative carrying a free symbol
-/// would make `diff(fresnels(x), x)` an expression with an *unbound* variable,
-/// which every numeric consumer — the verification gate included — would then
-/// refuse, or worse treat as a second dimension.  `erf` already makes the same
-/// choice for `2/√π`.
+/// The float was defended on the grounds that a derivative carrying a free
+/// symbol is one the numeric consumers cannot evaluate.  That was true while
+/// `π` was a symbol nobody bound; it stopped being true when
+/// [`crate::eval::eval_f64`] and [`crate::jit::eval_interp`] learned to resolve
+/// it themselves (see [`crate::eval::symbols`]).
+///
+/// # What it buys, and what it does not
+///
+/// `integrate` emits `∫sin(x²) dx = √(2/π)⁻¹·S(√(2/π)·x)` with an exact
+/// coefficient, and `d/dx` of that is `√(2/π)⁻¹·√(2/π)·sin(π·(√(2/π)·x)²/2)`.
+/// The outer pair now cancels — it could not while one side was a float — and
+/// the residual is down to `sin(π·(√(2/π)·x)²/2) − sin(x²)`.  Finishing it
+/// needs `(a·b)ⁿ → aⁿ·bⁿ` and `(√u)² → u`, neither of which `simplify` has, so
+/// the Fresnel antiderivatives are still `Numeric` at the gate.  The exact
+/// constant is a precondition for closing that, not the whole of it.
 fn half_pi(pool: &ExprPool) -> ExprId {
-    pool.float(std::f64::consts::FRAC_PI_2, 53)
+    pool.mul(vec![
+        crate::eval::symbols::pi_symbol(pool),
+        pool.rational(1, 2),
+    ])
 }
 
 /// `sin(πx²/2)` or `cos(πx²/2)`.
@@ -474,6 +488,47 @@ impl Primitive for FresnelCPrimitive {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `π/2` in `S′(x) = sin(πx²/2)` is that number, not
+    /// `1.5707963267948966`.
+    ///
+    /// Numeric agreement is checked separately, by
+    /// `primitive::tests::fresnel_derivatives_round_trip_through_evaluation` —
+    /// exactness on its own would be satisfied by a constant that is precisely
+    /// the wrong number.
+    #[test]
+    fn the_fresnel_phase_constant_is_exact() {
+        use crate::kernel::{Domain, ExprData};
+
+        fn has_float(expr: ExprId, pool: &ExprPool) -> bool {
+            pool.with(expr, |data| match data {
+                ExprData::Float(_) => true,
+                ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
+                    args.iter().any(|&a| has_float(a, pool))
+                }
+                ExprData::Pow { base, exp } => has_float(*base, pool) || has_float(*exp, pool),
+                _ => false,
+            })
+        }
+
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        for name in ["fresnels", "fresnelc"] {
+            let d = crate::diff::diff(pool.func(name, vec![x]), x, &pool)
+                .unwrap()
+                .value;
+            assert!(
+                !has_float(d, &pool),
+                "d/dx {name}(x) must carry no float literal, got {}",
+                pool.display(d)
+            );
+            assert!(
+                pool.display(d).to_string().contains("pi"),
+                "the phase should name π, got {}",
+                pool.display(d)
+            );
+        }
+    }
 
     /// `(x, S(x), C(x))`.
     ///

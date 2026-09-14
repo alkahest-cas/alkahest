@@ -14,9 +14,16 @@ from typing import Callable
 import alkahest as ak
 from contracts import Case, Raises, RefusesOr, Returns
 
-from ._shared import POOL, X, _int, _rat
+from ._shared import PI, POOL, X, _int, _rat
 
 HAND = "hand derivation from the definition"
+
+
+def _f64_code(expr: ak.Expr) -> str:
+    """The stable code ``evaluate(mode="f64")`` declines *expr* with, or the
+    number it produced instead (which is the failure worth seeing)."""
+    r = ak.evaluate(expr, {}, mode="f64")
+    return r.reason if r.value is None else f"returned {r.value!r}"
 
 
 def _enclosure_contains(expr: ak.Expr, lo: float, hi: float, truth: float) -> Callable[[], bool]:
@@ -307,6 +314,53 @@ CASES: list[Case] = [
             "Python: Decimal('0.1').as_integer_ratio() == (1, 10), while "
             "Fraction(0.1) == Fraction(3602879701896397, 36028797018963968). The whole "
             "point of Decimal is that it is not the binary float."
+        ),
+    ),
+    # `pi` is a symbol that denotes a number.  The evaluators resolve it; an
+    # ordinary free symbol they must still refuse.
+    # -----------------------------------------------------------------------
+    Case(
+        id="eval_pi_is_a_constant_not_a_free_symbol",
+        subsystem="evaluation",
+        statement="eval_expr(sqrt(pi)/2 * erf(x)) at x=1 needs no binding for pi",
+        op=lambda: float(ak.eval_expr(ak.sqrt(PI) / _int(2) * ak.erf(X), {X: 1.0})),
+        contract=Returns(0.7468241328124270, tol=1e-12),
+        verified_by=(
+            "mpmath: sqrt(pi)/2 * erf(1) = 0.88622692545275801365 * 0.84270079294971486934 "
+            "= 0.74682413281242702540. This is the antiderivative of exp(-x^2) at 1, i.e. "
+            "the integral from 0 to 1, which Abramowitz & Stegun Table 7.1 gives as "
+            "erf(1) = 0.8427008."
+        ),
+        note=(
+            "`pi` is an ordinary Symbol in alkahest, not a distinguished constant node. "
+            "Refusing to evaluate an answer the library itself just emitted is a refusal "
+            "caused by the spelling, not by the mathematics."
+        ),
+    ),
+    Case(
+        id="eval_control_a_genuinely_free_symbol_still_refuses",
+        subsystem="evaluation",
+        statement="eval_expr(sqrt(pi)/2 * erf(y)) with nothing bound must still refuse",
+        op=lambda: float(
+            ak.eval_expr(ak.sqrt(PI) / _int(2) * ak.erf(POOL.symbol("eval_free_y")), {})
+        ),
+        contract=RefusesOr(),
+        verified_by=(
+            "An expression in a free variable has no value. The control for "
+            "eval_pi_is_a_constant_not_a_free_symbol: a library that answered this one "
+            "would be inventing numbers, which is the sin the case above must not buy."
+        ),
+    ),
+    Case(
+        id="eval_control_unbound_symbol_is_reported_as_unbound",
+        subsystem="evaluation",
+        statement="evaluate(pi*y, mode='f64') with y free is E-EVAL-001, not a number",
+        op=lambda: _f64_code(PI * POOL.symbol("eval_free_y")),
+        contract=Returns("E-EVAL-001"),
+        verified_by=(
+            "E-EVAL-001 is `UnboundSymbol` (alkahest-core/src/eval/mod.rs). The sharper "
+            "half of the control above: the refusal has to name the *unbound symbol*, "
+            "and pi resolving must not make y resolve too."
         ),
     ),
 ]

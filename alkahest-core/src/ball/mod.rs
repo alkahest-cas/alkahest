@@ -1123,6 +1123,24 @@ impl ArbBall {
     }
 }
 
+/// `π` as a ball that provably contains it.
+///
+/// `Float::with_val(prec, Constant::Pi)` is correctly rounded, so the midpoint
+/// is within half an ulp of π; [`ArbBall::add_rounding_error`] widens by
+/// `(|mid| + rad)·2^{2−prec}`, which is more than four ulps at this magnitude.
+/// The enclosure is therefore sound with room to spare, and — unlike a radius
+/// derived by re-evaluating π at higher precision and differencing — it cannot
+/// collapse to zero when the extra bits happen to vanish.
+pub(crate) fn pi_ball(prec: u32) -> ArbBall {
+    let mut b = ArbBall {
+        mid: Float::with_val(prec, rug::float::Constant::Pi),
+        rad: Float::new(prec),
+        prec,
+    };
+    b.add_rounding_error();
+    b
+}
+
 /// `2/√π ≈ 1.1283791…`, the Lipschitz constant of `erf` and `erfc`, rounded
 /// **up**.  `Float::with_val(prec, 2.0/π.sqrt())` rounds to nearest, and a
 /// Lipschitz constant rounded down is not a Lipschitz constant.
@@ -1441,7 +1459,16 @@ impl IntervalEval {
             ExprData::Integer(n) => Some(ArbBall::from_integer(&n.0, self.prec)),
             ExprData::Rational(r) => Some(ArbBall::from_rational(&r.0, self.prec)),
             ExprData::Float(f) => Some(ArbBall::from_f64(f.inner.to_f64(), self.prec)),
-            ExprData::Symbol { .. } => self.bindings.get(&expr).cloned(),
+            // `π` encloses itself without a binding — it is an ordinary
+            // symbol in this crate, not a constant node, and a rigorous
+            // evaluator that reports `None` for `π/2` is reporting the
+            // spelling rather than the mathematics.  An explicit binding still
+            // wins.  The imaginary unit stays unbound: it is not a real ball.
+            ExprData::Symbol { .. } => self
+                .bindings
+                .get(&expr)
+                .cloned()
+                .or_else(|| crate::eval::symbols::is_pi(expr, pool).then(|| pi_ball(self.prec))),
             ExprData::Add(args) => {
                 let mut acc = ArbBall::from_f64(0.0, self.prec);
                 for &a in &args {

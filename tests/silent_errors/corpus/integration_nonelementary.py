@@ -12,18 +12,16 @@ from typing import Callable
 import alkahest as ak
 from contracts import Case, Measured, Raises, Returns
 
-from ._shared import PI, X, _num
+from ._shared import X, _num
 
 
 def _env(at: float) -> dict[ak.Expr, float]:
-    """``x`` at the sample point, and ``pi`` at its value.
+    """``x`` at the sample point.
 
-    ``pi`` is an ordinary symbol in alkahest, not a distinguished constant node
-    (see ``eval/symbols.rs``), so an antiderivative that names it — every exact
-    Gaussian and Fresnel answer does — has to be handed its value like any
-    other binding.  ``eval_expr`` will not invent one.
+    ``pi`` needs no entry: every exact Gaussian and Fresnel antiderivative
+    names it, and ``eval_expr`` resolves it (see ``eval/symbols.rs``).
     """
-    return {X: at, PI: math.pi}
+    return {X: at}
 
 
 def float_literals(expr: ak.Expr) -> int:

@@ -232,10 +232,8 @@ mod tests {
         let hi = pool.pos_infinity();
         let value = basel_family_closed_form(term, k, lo, hi, &pool).expect("Basel sum");
 
-        let pi = pool.symbol("pi", Domain::Real);
-        let mut env = HashMap::new();
-        env.insert(pi, std::f64::consts::PI);
-        let got = eval_interp(value, &env, &pool).expect("eval");
+        // `eval_interp` resolves `pi`; the closed form needs nothing bound.
+        let got = eval_interp(value, &HashMap::new(), &pool).expect("eval");
         let want = std::f64::consts::PI.powi(2) / 6.0;
         assert!((got - want).abs() < 1e-9, "got {got} want {want}");
     }
@@ -249,10 +247,8 @@ mod tests {
         let hi = pool.pos_infinity();
         let value = basel_family_closed_form(term, k, lo, hi, &pool).expect("zeta(4)");
 
-        let pi = pool.symbol("pi", Domain::Real);
-        let mut env = HashMap::new();
-        env.insert(pi, std::f64::consts::PI);
-        let got = eval_interp(value, &env, &pool).expect("eval");
+        // `eval_interp` resolves `pi`; the closed form needs nothing bound.
+        let got = eval_interp(value, &HashMap::new(), &pool).expect("eval");
         let want = std::f64::consts::PI.powi(4) / 90.0;
         assert!((got - want).abs() < 1e-9, "got {got} want {want}");
     }
@@ -270,10 +266,8 @@ mod tests {
         let hi = pool.pos_infinity();
         let value = basel_family_closed_form(term, k, lo, hi, &pool).expect("3·zeta(2)");
 
-        let pi = pool.symbol("pi", Domain::Real);
-        let mut env = HashMap::new();
-        env.insert(pi, std::f64::consts::PI);
-        let got = eval_interp(value, &env, &pool).expect("eval");
+        // `eval_interp` resolves `pi`; the closed form needs nothing bound.
+        let got = eval_interp(value, &HashMap::new(), &pool).expect("eval");
         let want = 3.0 * std::f64::consts::PI.powi(2) / 6.0;
         assert!((got - want).abs() < 1e-9, "got {got} want {want}");
     }

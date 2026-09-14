@@ -6,7 +6,6 @@ discovered, concatenated and checked.
 
 from __future__ import annotations
 
-import math
 from typing import Callable
 
 import alkahest as ak
@@ -17,7 +16,7 @@ from ._shared import PI, POOL, _int
 
 #: Symbols the transform cases share.  `T`/`S` are the Laplace pair, `XX`/`XI`
 #: the Fourier pair, `NN`/`ZZ` the Z pair; `PI` is the interned π the Fourier
-#: table emits and has to be bound before anything can be evaluated.
+#: table emits, which the evaluators resolve on their own.
 T = POOL.symbol("t")
 S = POOL.symbol("s")
 XX = POOL.symbol("xspace")
@@ -35,7 +34,6 @@ def _unconditional(build: Callable[[], ak.Expr], env: dict) -> Callable[[], floa
     caller was told, which is exactly the distinction this gate measures — so it
     is surfaced as a refusal rather than scored as a stated value.
 
-    ``PI`` is bound for the Fourier table, which emits the interned π symbol.
     """
 
     def op() -> float:
@@ -43,7 +41,7 @@ def _unconditional(build: Callable[[], ak.Expr], env: dict) -> Callable[[], floa
         conds = ex.transform_side_conditions()
         if conds:
             raise ValueError(f"answer holds only under {conds}")
-        return float(ak.eval_expr(out, {**env, PI: math.pi}))
+        return float(ak.eval_expr(out, env))
 
     return op
 

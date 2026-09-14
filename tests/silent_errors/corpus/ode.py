@@ -6,7 +6,6 @@ discovered, concatenated and checked.
 
 from __future__ import annotations
 
-import math
 from typing import Any, Callable
 
 import alkahest as ak
@@ -41,9 +40,8 @@ def _ode_branch(equation: ak.Expr, order: int) -> dict[str, Any]:
 
 
 def _ode_env(extra: dict[ak.Expr, float]) -> dict[ak.Expr, float]:
-    env: dict[ak.Expr, float] = {_PI: math.pi}
-    env.update(extra)
-    return env
+    # `pi` needs no entry: the evaluators resolve it themselves.
+    return dict(extra)
 
 
 def ode_residual(

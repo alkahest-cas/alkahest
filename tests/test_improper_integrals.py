@@ -41,8 +41,8 @@ def _line(pool, x, src):
 
 
 def _num(pool, expr):
-    """Numeric value of a closed form, binding the ``pi`` symbol."""
-    return float(eval_expr(expr, {pool.symbol("pi"): math.pi}))
+    """Numeric value of a closed form; ``eval_expr`` resolves ``pi`` itself."""
+    return float(eval_expr(expr, {}))
 
 
 def _value(pool, x, src):

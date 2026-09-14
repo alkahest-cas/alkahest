@@ -4312,10 +4312,11 @@ const GATE_MAX_PARAMS: usize = 2;
 /// [`verify_antiderivative_status`]'s numeric tier binds `var` and nothing
 /// else, so a symbol like the `a` of `∫exp(−a·x²) dx` is an unbound symbol to
 /// [`crate::jit::eval_interp`], every sample is `NoInformation`, the quorum is
-/// never met and the candidate is declined. The symbolic tier cannot rescue it
-/// either: `d/dx erf` is registered with the *float* coefficient `2/√π`, so the
-/// residual of a correct `√π/(2√a)·erf(√a·x)` never reduces to a syntactic
-/// zero. A parameterised answer was therefore unreachable however right it was.
+/// never met and the candidate is declined. The symbolic tier does not rescue
+/// it either: `d/dx erf` now carries an exact `2/√π`, which is enough for
+/// `(√π/2)·erf(x)` to reduce to a syntactic zero, but `√π/(2√a)·erf(√a·x)`
+/// still needs `√a·√b = √(ab)` to finish, and `simplify` has no such rule.
+/// Without this gate a parameterised answer is unreachable however right it is.
 ///
 /// # What this gate establishes, and what it does not
 ///
@@ -4346,10 +4347,11 @@ const GATE_MAX_PARAMS: usize = 2;
 /// who does not gets a refusal rather than an expression that evaluates to
 /// `NaN` on half its parameter range.
 ///
-/// `pi` is bound to its value rather than treated as a parameter: it is the
-/// codebase-wide spelling of the constant (`pool.symbol("pi", Domain::Real)`),
-/// not a free variable, and leaving it unbound would make every sample
-/// uninformative.
+/// `pi` and the imaginary unit are not swept: they are already numbers, and the
+/// module docs of `alkahest-core/src/eval/symbols.rs` spell out why binding them
+/// to samples is a false-refusal machine.  Resolving `pi` to `π` is the
+/// *evaluator's* job ([`crate::jit::eval_interp`] does it), so this gate only
+/// has to decline to invent a value for it.
 ///
 /// # Stated limitations
 ///
@@ -4374,12 +4376,11 @@ pub fn verify_antiderivative_status_parametric(
         return Some(AntiderivativeVerification::Exact);
     }
 
-    let mut constants: HashMap<ExprId, f64> = HashMap::new();
     let mut params: Vec<ExprId> = Vec::new();
-    collect_gate_parameters(candidate, var, pool, &mut params, &mut constants);
-    collect_gate_parameters(integrand, var, pool, &mut params, &mut constants);
+    collect_gate_parameters(candidate, var, pool, &mut params);
+    collect_gate_parameters(integrand, var, pool, &mut params);
 
-    if params.is_empty() && constants.is_empty() {
+    if params.is_empty() {
         return verify_antiderivative_status(candidate, integrand, var, pool);
     }
     if params.len() > GATE_MAX_PARAMS {
@@ -4394,7 +4395,7 @@ pub fn verify_antiderivative_status_parametric(
     let grids: Vec<[f64; 3]> = params.iter().map(|&p| parameter_samples(p, pool)).collect();
     let combinations = grids.iter().map(|g| g.len()).product::<usize>();
     for index in 0..combinations {
-        let mut env = constants.clone();
+        let mut env: HashMap<ExprId, f64> = HashMap::new();
         let mut rest = index;
         for (slot, grid) in grids.iter().enumerate() {
             env.insert(params[slot], grid[rest % grid.len()]);
@@ -4412,26 +4413,25 @@ pub fn verify_antiderivative_status_parametric(
     Some(AntiderivativeVerification::Numeric)
 }
 
-/// Split the symbols of `expr` other than `var` into sweepable **parameters**
-/// and already-valued **constants**.
+/// Collect the symbols of `expr`, other than `var`, that this gate is allowed
+/// to sweep.
 ///
-/// `∞` is neither: it is a sentinel symbol, it can only appear in a bound, and
-/// binding it to a float would be a fiction. Its presence makes the expression
-/// unsweepable, which the caller sees as an empty agreement count.
-fn collect_gate_parameters(
-    expr: ExprId,
-    var: ExprId,
-    pool: &ExprPool,
-    params: &mut Vec<ExprId>,
-    constants: &mut HashMap<ExprId, f64>,
-) {
+/// Two kinds are excluded:
+///
+/// * **Named constants** — `pi` and the imaginary unit. They already denote a
+///   number; [`crate::eval::symbols::is_named_constant`] is the predicate and
+///   its module docs are the argument. Nothing has to be bound here for them:
+///   `eval_interp` resolves `π` itself, and `I` has no real value to sample.
+/// * **`∞`** — a sentinel symbol that can only appear in a bound, and binding
+///   it to a float would be a fiction. Its presence makes the expression
+///   unsweepable, which the caller sees as an empty agreement count.
+fn collect_gate_parameters(expr: ExprId, var: ExprId, pool: &ExprPool, params: &mut Vec<ExprId>) {
     match pool.get(expr) {
         ExprData::Symbol { name, .. } => {
-            if expr == var || name == crate::kernel::pool::POS_INFINITY_SYMBOL {
-                return;
-            }
-            if name == "pi" {
-                constants.insert(expr, std::f64::consts::PI);
+            if expr == var
+                || name == crate::kernel::pool::POS_INFINITY_SYMBOL
+                || crate::eval::symbols::is_named_constant(expr, pool)
+            {
                 return;
             }
             if !params.contains(&expr) {
@@ -4440,12 +4440,12 @@ fn collect_gate_parameters(
         }
         ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
             for a in args {
-                collect_gate_parameters(a, var, pool, params, constants);
+                collect_gate_parameters(a, var, pool, params);
             }
         }
         ExprData::Pow { base, exp } => {
-            collect_gate_parameters(base, var, pool, params, constants);
-            collect_gate_parameters(exp, var, pool, params, constants);
+            collect_gate_parameters(base, var, pool, params);
+            collect_gate_parameters(exp, var, pool, params);
         }
         _ => {}
     }
@@ -6452,10 +6452,8 @@ mod tests {
         let n = 4_i32;
         let f = recip_x_pow_plus_one(n, x, &pool);
         if let Ok(r) = over_the_line(f, x, &pool) {
-            // The answer is `π/√2`; bind `π` so the value is a number.
-            let mut bindings = HashMap::new();
-            bindings.insert(pool.symbol("pi", Domain::Real), std::f64::consts::PI);
-            let v = crate::eval::eval_f64(r.value, &pool, &bindings)
+            // The answer is `π/√2`; `eval_f64` resolves the `π` itself.
+            let v = crate::eval::eval_f64(r.value, &pool, &HashMap::new())
                 .unwrap_or_else(|e| panic!("returned a non-evaluable value: {e}"));
             let want = std::f64::consts::PI / 2.0_f64.sqrt();
             assert!(
@@ -8086,8 +8084,7 @@ mod tests {
             "∫_{{-∞}}^{{∞}} exp(−x²/2) dx should be the exact √(2π), got {}",
             pool.display(value)
         );
-        let bindings = HashMap::from([(pi, std::f64::consts::PI)]);
-        let got = crate::eval::eval_f64(value, &pool, &bindings)
+        let got = crate::eval::eval_f64(value, &pool, &HashMap::new())
             .unwrap_or_else(|e| panic!("{} did not evaluate: {e}", pool.display(value)));
         let want = (2.0 * std::f64::consts::PI).sqrt();
         assert!(

@@ -669,6 +669,34 @@ pub mod builtins {
         }
     }
 
+    /// `±2/√π`, the constant in `d/dx erf(x) = (2/√π)·e^{−x²}` — exactly, as
+    /// `±2·√π⁻¹`, not as the `f64` literal `1.1283791670955126` it used to be.
+    ///
+    /// # Why the spelling matters
+    ///
+    /// `integrate` emits `∫e^{−x²} dx = (√π/2)·erf(x)` carrying *this* `√π`
+    /// node (both go through `pool.symbol("pi", Domain::Real)`), so the
+    /// residual `d/dx F − f` contains `√π·2⁻¹·2·√π⁻¹`, which ordinary power
+    /// arithmetic collapses to `1` and leaves a syntactic zero. Folded into a
+    /// single radical — `√(4/π)` — it would be the same number and would
+    /// cancel against nothing.
+    ///
+    /// # The free symbol this introduces
+    ///
+    /// `π` is an ordinary [`ExprData::Symbol`] in this crate, so a derivative
+    /// carrying one used to be a derivative the numeric gates could not
+    /// evaluate; that was the stated reason for the float. It stopped being
+    /// true when [`crate::eval::eval_f64`] and [`crate::jit::eval_interp`]
+    /// learned to resolve named constants themselves — see
+    /// [`crate::eval::symbols`].
+    fn two_over_sqrt_pi(sign: i32, pool: &ExprPool) -> ExprId {
+        let root = pool.func("sqrt", vec![crate::eval::symbols::pi_symbol(pool)]);
+        pool.mul(vec![
+            pool.integer(2 * sign),
+            pool.pow(root, pool.integer(-1_i32)),
+        ])
+    }
+
     macro_rules! symbolic_complex_primitive {
         ($type:ident, $name:literal) => {
             pub struct $type;
@@ -1461,13 +1489,13 @@ pub mod builtins {
         }
 
         fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
-            // d/dx erf(x) = (2/sqrt(π)) * exp(-x²) * dx
+            // d/dx erf(x) = (2/√π) * exp(-x²) * dx
             let x = args[0];
             let dx = crate::diff::diff(x, wrt, pool).ok()?.value;
             let x2 = pool.pow(x, pool.integer(2_i32));
             let neg_x2 = pool.mul(vec![pool.integer(-1_i32), x2]);
             let exp_neg_x2 = pool.func("exp", vec![neg_x2]);
-            let coeff = pool.float(2.0 / std::f64::consts::PI.sqrt(), 53);
+            let coeff = two_over_sqrt_pi(1, pool);
             Some(pool.mul(vec![coeff, exp_neg_x2, dx]))
         }
 
@@ -1481,7 +1509,7 @@ pub mod builtins {
             let x2 = pool.pow(x, pool.integer(2_i32));
             let neg_x2 = pool.mul(vec![pool.integer(-1_i32), x2]);
             let exp_neg_x2 = pool.func("exp", vec![neg_x2]);
-            let coeff = pool.float(2.0 / std::f64::consts::PI.sqrt(), 53);
+            let coeff = two_over_sqrt_pi(1, pool);
             Some(vec![pool.mul(vec![cotan, coeff, exp_neg_x2])])
         }
 
@@ -1513,7 +1541,7 @@ pub mod builtins {
             let x2 = pool.pow(x, pool.integer(2_i32));
             let neg_x2 = pool.mul(vec![pool.integer(-1_i32), x2]);
             let exp_neg_x2 = pool.func("exp", vec![neg_x2]);
-            let coeff = pool.float(-2.0 / std::f64::consts::PI.sqrt(), 53);
+            let coeff = two_over_sqrt_pi(-1, pool);
             Some(pool.mul(vec![coeff, exp_neg_x2, dx]))
         }
 
@@ -1527,7 +1555,7 @@ pub mod builtins {
             let x2 = pool.pow(x, pool.integer(2_i32));
             let neg_x2 = pool.mul(vec![pool.integer(-1_i32), x2]);
             let exp_neg_x2 = pool.func("exp", vec![neg_x2]);
-            let coeff = pool.float(-2.0 / std::f64::consts::PI.sqrt(), 53);
+            let coeff = two_over_sqrt_pi(-1, pool);
             Some(vec![pool.mul(vec![cotan, coeff, exp_neg_x2])])
         }
 
@@ -3191,44 +3219,18 @@ mod tests {
 
     // ── Elliptic special functions ─────────────────────────────────────────────
 
-    /// Recursively evaluate an expression to f64, substituting `var := val`,
-    /// dispatching named functions through the default registry.
+    /// Evaluate an expression to `f64` with `var := val`, `NaN` for anything
+    /// the interpreter cannot value.
+    ///
+    /// This used to be a hand-rolled tree walk that answered `NaN` for every
+    /// symbol other than `var` — which was fine while the derivative rules
+    /// spelled their constants as floats, and started reporting `S′(0) = NaN`
+    /// the moment `π` became a symbol in one. [`crate::jit::eval_interp`] is the
+    /// interpreter these tests were imitating, and it resolves `π` itself, so
+    /// there is no second implementation to keep in step.
     fn eval_expr_f64(expr: ExprId, var: ExprId, val: f64, pool: &ExprPool) -> f64 {
-        use crate::kernel::ExprData;
-        let reg = PrimitiveRegistry::default_registry();
-        fn go(
-            expr: ExprId,
-            var: ExprId,
-            val: f64,
-            pool: &ExprPool,
-            reg: &PrimitiveRegistry,
-        ) -> f64 {
-            pool.with(expr, |data| match data {
-                ExprData::Integer(n) => n.0.to_f64(),
-                ExprData::Rational(q) => q.0.to_f64(),
-                ExprData::Float(f) => f.inner.to_f64(),
-                ExprData::Symbol { .. } => {
-                    if expr == var {
-                        val
-                    } else {
-                        f64::NAN
-                    }
-                }
-                ExprData::Add(args) => args.iter().map(|&a| go(a, var, val, pool, reg)).sum(),
-                ExprData::Mul(args) => args.iter().map(|&a| go(a, var, val, pool, reg)).product(),
-                ExprData::Pow { base, exp } => {
-                    let b = go(*base, var, val, pool, reg);
-                    let e = go(*exp, var, val, pool, reg);
-                    b.powf(e)
-                }
-                ExprData::Func { name, args } => {
-                    let vals: Vec<f64> = args.iter().map(|&a| go(a, var, val, pool, reg)).collect();
-                    reg.numeric_f64(name, &vals).unwrap_or(f64::NAN)
-                }
-                _ => f64::NAN,
-            })
-        }
-        go(expr, var, val, pool, &reg)
+        let env = std::collections::HashMap::from([(var, val)]);
+        crate::jit::eval_interp(expr, &env, pool).unwrap_or(f64::NAN)
     }
 
     #[test]
@@ -3642,6 +3644,103 @@ mod tests {
                 assert!((got - want).abs() < 1e-13, "{name}′({x0}): {got} vs {want}");
             }
         }
+    }
+
+    /// Is there an inexact literal anywhere in `expr`?
+    fn has_float(expr: ExprId, pool: &ExprPool) -> bool {
+        use crate::kernel::ExprData;
+        pool.with(expr, |data| match data {
+            ExprData::Float(_) => true,
+            ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
+                args.iter().any(|&a| has_float(a, pool))
+            }
+            ExprData::Pow { base, exp } => has_float(*base, pool) || has_float(*exp, pool),
+            _ => false,
+        })
+    }
+
+    /// `d/dx erf(x)` carries `2/√π` as *that number*, not as
+    /// `1.1283791670955126`.
+    ///
+    /// Pinned in two directions, because a constant that is exact and *wrong*
+    /// is worse than a float: no `Float` node anywhere in the rule's output,
+    /// **and** the rule still evaluates to `2/√π·e^{−x²}` at real points.
+    #[test]
+    fn the_erf_and_erfc_derivative_constants_are_exact_and_right() {
+        use crate::kernel::Domain;
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+
+        for (name, sign) in [("erf", 1.0_f64), ("erfc", -1.0)] {
+            let d = crate::diff::diff(pool.func(name, vec![x]), x, &pool)
+                .unwrap()
+                .value;
+            assert!(
+                !has_float(d, &pool),
+                "d/dx {name}(x) must carry no float literal, got {}",
+                pool.display(d)
+            );
+            let shown = pool.display(d).to_string();
+            assert!(
+                shown.contains("sqrt") && shown.contains("pi"),
+                "the constant should be a radical of π, got {shown}"
+            );
+            // …and the registry's reverse rule, which carries its own copy
+            // of the constant and would otherwise be pinned by nothing.  (It
+            // is reached through `PrimitiveRegistry::diff_reverse`, not
+            // through `diff::grad`: `grad` keeps a hard-coded table of its own
+            // that has never known `erf`.)
+            let rev = PrimitiveRegistry::default_registry()
+                .diff_reverse(name, &[x], pool.integer(1_i32), &pool)
+                .expect("a reverse rule");
+            assert!(
+                !has_float(rev[0], &pool),
+                "reverse {name}(x) must carry no float literal, got {}",
+                pool.display(rev[0])
+            );
+
+            for x0 in [0.0_f64, 0.37, 1.4, -2.6, 3.9] {
+                let want = sign * 2.0 / std::f64::consts::PI.sqrt() * (-x0 * x0).exp();
+                for (which, e) in [("forward", d), ("reverse", rev[0])] {
+                    let got = eval_expr_f64(e, x, x0, &pool);
+                    assert!(
+                        (got - want).abs() < 1e-15,
+                        "{which} {name}′({x0}): {got} vs {want}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The payoff: `d/dx[(√π/2)·erf(x)] − e^{−x²}` reaches a **syntactic**
+    /// zero, which is what upgrades the Gaussian antiderivatives from
+    /// `Numeric` to `Exact` at the integrator's gate.  With the float
+    /// coefficient the residual was `0.886…·1.128… − 1` — a true statement
+    /// about no expression `simplify` could reduce.
+    #[test]
+    fn the_exact_constant_is_what_makes_the_erf_residual_collapse() {
+        use crate::kernel::Domain;
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+
+        let sqrt_pi = pool.func("sqrt", vec![crate::eval::symbols::pi_symbol(&pool)]);
+        let f = pool.mul(vec![
+            pool.rational(1, 2),
+            sqrt_pi,
+            pool.func("erf", vec![x]),
+        ]);
+        let d = crate::diff::diff(f, x, &pool).unwrap().value;
+        let want = pool.func(
+            "exp",
+            vec![pool.mul(vec![pool.integer(-1_i32), pool.pow(x, pool.integer(2_i32))])],
+        );
+        let residual = pool.add(vec![d, pool.mul(vec![pool.integer(-1_i32), want])]);
+        assert_eq!(
+            crate::simplify::engine::simplify(residual, &pool).value,
+            pool.integer(0_i32),
+            "d/dx[(√π/2)·erf(x)] − e^{{−x²}} did not reduce to 0; it is {}",
+            pool.display(crate::simplify::engine::simplify(residual, &pool).value)
+        );
     }
 
     /// `d/dx Li₂(x) = −log(1−x)/x`, evaluated rather than pattern-matched.
