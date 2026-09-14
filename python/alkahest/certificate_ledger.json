@@ -963,6 +963,7 @@
         "no_derivation": 0
       },
       "blocking_rules": [
+        "collect_mul_factors",
         "diff_primitive_registry",
         "diff_sqrt",
         "mul_zero",

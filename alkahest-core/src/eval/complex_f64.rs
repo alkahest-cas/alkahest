@@ -164,6 +164,11 @@ fn eval_node(
                 // Canonical I evaluates to 0+1j in complex mode without an
                 // explicit binding (matches symbolic `i² → −1` folding).
                 Ok(ComplexF64::new(0.0, 1.0))
+            } else if super::symbols::is_pi(expr, pool) {
+                // The other named constant, for the same reason: `pi` is an
+                // ordinary symbol in this crate and binding it to a sample is
+                // a false-refusal machine.  An explicit binding still wins.
+                Ok(ComplexF64::new(std::f64::consts::PI, 0.0))
             } else {
                 Err(error(UnsupportedReason::UnboundSymbol { symbol: expr }))
             }

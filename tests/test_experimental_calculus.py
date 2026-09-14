@@ -126,10 +126,10 @@ def test_fourier_gaussian_self_dual():
     # Numerically self-dual: F{e^{-pi x^2}}(xi) = e^{-pi xi^2}.
     import math
 
-    assert abs(_numeric(got, {pi: math.pi, xi: 0.7}) - math.exp(-math.pi * 0.49)) < 1e-9
+    assert abs(_numeric(got, {xi: 0.7}) - math.exp(-math.pi * 0.49)) < 1e-9
     # Inverse returns the same Gaussian (in x).
     back = ex.inverse_fourier_transform(got, xi, x)
-    assert abs(_numeric(back, {pi: math.pi, x: 0.7}) - math.exp(-math.pi * 0.49)) < 1e-9
+    assert abs(_numeric(back, {x: 0.7}) - math.exp(-math.pi * 0.49)) < 1e-9
 
 
 # ---------------------------------------------------------------------------

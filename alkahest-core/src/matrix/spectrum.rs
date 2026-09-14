@@ -47,7 +47,7 @@
 //! Putzer expansion, which turns a bad spectrum into a page-long candidate —
 //! ask for `SpectrumCheck::Confirmed` explicitly.
 
-use crate::eval::symbols::{collect_free_symbols, collect_named_constants, is_pi};
+use crate::eval::symbols::collect_free_symbols;
 use crate::eval::{eval_complex_f64, ComplexF64};
 use crate::kernel::{ExprId, ExprPool};
 use crate::matrix::Matrix;
@@ -284,8 +284,10 @@ pub(crate) fn confirm_spectrum(
 
     let mut checked = 0usize;
     for ps in PARAM_SETS {
+        // No constants are seeded: `eval_complex_f64` resolves `π` and the
+        // imaginary unit itself, and `collect_free_symbols` already declines to
+        // sample either of them.
         let mut env: HashMap<ExprId, ComplexF64> = HashMap::new();
-        bind_constants(pool, &mut env, a, lambdas);
         for (i, &p) in params.iter().enumerate() {
             env.insert(p, ComplexF64::new(ps[i % ps.len()], 0.0));
         }
@@ -347,40 +349,6 @@ pub(crate) fn confirm_spectrum(
         Ok(SpectrumCheck::Unevaluated)
     } else {
         Ok(SpectrumCheck::Confirmed { samples: checked })
-    }
-}
-
-/// Bind the named constants the eigen formulas emit but that
-/// [`eval_complex_f64`] has no value for.
-///
-/// `pi` is a plain symbol in this crate (see [`crate::eval::symbols`]), so the
-/// casus irreducibilis form `2√(−p/3)·cos((acos c + 2πk)/3)` would otherwise be
-/// unevaluable — and, worse, `pi` would be collected as a free *parameter* and
-/// given a sample value, turning a correct spectrum into a spurious refusal.
-/// Binding it here is what lets the three-real-roots branch be confirmed rather
-/// than merely tolerated.
-///
-/// The imaginary unit is the other symbol
-/// [`collect_named_constants`](crate::eval::symbols::collect_named_constants)
-/// reports, and it is deliberately *not* bound: `eval_complex_f64` knows it
-/// natively, and binding it here would overwrite `i` with `π`.
-fn bind_constants(
-    pool: &ExprPool,
-    env: &mut HashMap<ExprId, ComplexF64>,
-    a: &Matrix,
-    lambdas: &[ExprId],
-) {
-    let mut all: Vec<ExprId> = Vec::new();
-    for &e in a.entries() {
-        collect_named_constants(e, pool, &mut all);
-    }
-    for &l in lambdas {
-        collect_named_constants(l, pool, &mut all);
-    }
-    for s in all {
-        if is_pi(s, pool) {
-            env.insert(s, ComplexF64::new(std::f64::consts::PI, 0.0));
-        }
     }
 }
 

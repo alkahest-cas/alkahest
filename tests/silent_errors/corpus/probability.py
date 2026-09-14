@@ -6,14 +6,13 @@ discovered, concatenated and checked.
 
 from __future__ import annotations
 
-import math
 from typing import Any, Callable
 
 import alkahest as ak
 import alkahest.experimental as ex
 from contracts import Case, Raises, RefusesOr, Returns
 
-from ._shared import PI, POOL, _int, _rat
+from ._shared import POOL, _int, _rat
 
 PROB_T = POOL.symbol("prob_t")
 PROB_X = POOL.symbol("prob_x")
@@ -23,12 +22,12 @@ PROB_Z = POOL.symbol("prob_z")
 def _prob_value(build: Callable[[], Any], env: dict | None = None) -> Callable[[], float]:
     """Answer = a probability closed form reduced to a number.
 
-    ``PI`` is bound because the Gaussian normalising constant is written with the
-    interned π symbol.
+    The Gaussian normalising constant is written with the interned π symbol,
+    which the evaluators resolve without a binding.
     """
 
     def op() -> float:
-        return float(ak.eval_expr(build(), {**(env or {}), PI: math.pi}))
+        return float(ak.eval_expr(build(), (env or {})))
 
     return op
 
@@ -42,7 +41,7 @@ def _prob_phi(build: Callable[[], Any], env: dict | None = None) -> Callable[[],
     """
 
     def op() -> tuple:
-        v = ak.evaluate(build(), {**(env or {}), PI: math.pi}, mode="complex").value
+        v = ak.evaluate(build(), (env or {}), mode="complex").value
         return (float(v.real), float(v.imag))
 
     return op
@@ -64,7 +63,7 @@ def _prob_unconditional(build: Callable[[], Any], env: dict) -> Callable[[], flo
         conds = ex.prob_side_conditions()
         if conds:
             raise ValueError(f"answer holds only under {conds}")
-        return float(ak.eval_expr(out, {**env, PI: math.pi}))
+        return float(ak.eval_expr(out, env))
 
     return op
 
@@ -80,7 +79,7 @@ def _phi_real_mode(build: Callable[[], Any], env: dict) -> Callable[[], float]:
     """
 
     def op() -> float:
-        r = ak.evaluate(build(), {**env, PI: math.pi}, mode="f64")
+        r = ak.evaluate(build(), env, mode="f64")
         if r.value is None:
             raise ValueError(f"real evaluation declined: {r.status} {r.reason}")
         return float(r.value)
@@ -104,7 +103,7 @@ def _moment_via_charfun(build: Callable[[], Any], n: int) -> Callable[[], float]
             e = ak.simplify(ak.diff(e, PROB_T))
             if isinstance(e, ak.DerivedResult):
                 e = e.value
-        v = ak.evaluate(e, {PROB_T: 0.0, PI: math.pi}, mode="complex").value
+        v = ak.evaluate(e, {PROB_T: 0.0}, mode="complex").value
         return [v.real, v.imag, -v.real, -v.imag][n % 4]
 
     return op

@@ -3425,9 +3425,8 @@ mod numeric_refutation_tests {
         ] {
             let (p, r) = at_infinity(name, sign);
             let v = r.unwrap_or_else(|e| panic!("lim {name} at {sign}∞: {e}"));
-            let mut binds = HashMap::new();
-            binds.insert(p.symbol("pi", Domain::Real), std::f64::consts::PI);
-            let got = crate::eval::eval_f64(v, &p, &binds)
+            // No binding for `pi`: `eval_f64` resolves it (Si(±∞) = ±π/2).
+            let got = crate::eval::eval_f64(v, &p, &HashMap::new())
                 .unwrap_or_else(|e| panic!("{} did not evaluate: {e}", p.display(v)));
             assert!(
                 (got - want).abs() < 1e-12,

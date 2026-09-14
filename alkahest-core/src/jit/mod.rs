@@ -708,7 +708,13 @@ fn eval_interp_inner(
         ExprData::Integer(n) => Some(integer_to_f64(&n.0)),
         ExprData::Rational(r) => Some(rational_to_f64(&r.0)),
         ExprData::Float(f) => Some(f.inner.to_f64()),
-        ExprData::Symbol { .. } => env.get(&expr).copied(),
+        // `π` is an ordinary symbol in this crate, so it resolves to its own
+        // value rather than being reported unevaluable; an explicit `env` entry
+        // still wins.  See [`crate::eval::symbols`].
+        ExprData::Symbol { .. } => env
+            .get(&expr)
+            .copied()
+            .or_else(|| crate::eval::symbols::is_pi(expr, pool).then_some(std::f64::consts::PI)),
         ExprData::Add(args) => {
             let mut sum = 0.0f64;
             for &a in &args {
@@ -858,7 +864,11 @@ fn try_expr_f64_snap(
         ExprData::Integer(n) => Some(integer_to_f64(&n.0)),
         ExprData::Rational(r) => Some(rational_to_f64(&r.0)),
         ExprData::Float(f) => Some(f.inner.to_f64()),
-        ExprData::Symbol { .. } => env.get(&expr).copied(),
+        // `π` resolves without a binding, as in every other evaluator here.
+        ExprData::Symbol { name, .. } => env
+            .get(&expr)
+            .copied()
+            .or_else(|| (name == crate::eval::symbols::PI_NAME).then_some(std::f64::consts::PI)),
         ExprData::Add(args) => {
             let mut s = 0.0f64;
             for &a in args {
@@ -971,7 +981,13 @@ fn eval_interp_snap(
         ExprData::Integer(n) => Some(integer_to_f64(&n.0)),
         ExprData::Rational(r) => Some(rational_to_f64(&r.0)),
         ExprData::Float(f) => Some(f.inner.to_f64()),
-        ExprData::Symbol { .. } => env.get(&expr).copied(),
+        // Same rule as [`eval_interp_inner`].  A snapshot has no pool to ask,
+        // so the name is read off the node directly — the two must agree or the
+        // snapshot path would disagree with the interpreter it mirrors.
+        ExprData::Symbol { name, .. } => env
+            .get(&expr)
+            .copied()
+            .or_else(|| (name == crate::eval::symbols::PI_NAME).then_some(std::f64::consts::PI)),
         ExprData::Add(args) => {
             let args = args.clone();
             let mut s = 0.0f64;

@@ -146,6 +146,16 @@ fn codegen_node(
         ExprData::Integer(n) => Ok(builder.ins().f64const(integer_to_f64(&n.0))),
         ExprData::Rational(r) => Ok(builder.ins().f64const(rational_to_f64(&r.0))),
         ExprData::Float(f) => Ok(builder.ins().f64const(f.inner.to_f64())),
+        // `π` is a constant, not an input.  `load_input_vars` has already
+        // populated `values` for every declared input and the caller skips
+        // those nodes, so an input *named* `pi` still wins; this arm is only
+        // reached for a `pi` nobody declared.  Without it the compiled function
+        // and [`crate::jit::eval_interp`] disagree about `sin(π·x)` — one
+        // answers, the other refuses — and the agreement tests exist precisely
+        // to stop that.
+        ExprData::Symbol { name, .. } if name == crate::eval::symbols::PI_NAME => {
+            Ok(builder.ins().f64const(std::f64::consts::PI))
+        }
         ExprData::Symbol { name, .. } => Err(JitError::UnsupportedNode(format!(
             "unbound symbol '{name}'"
         ))),

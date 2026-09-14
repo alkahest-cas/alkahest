@@ -299,13 +299,12 @@ pub fn width(b: &ArbBall) -> Float {
 }
 
 /// π enclosed as a ball.
+///
+/// One implementation, in [`crate::ball`], because the numeric evaluators need
+/// the same constant and three copies of an enclosure is three chances to get
+/// the radius wrong.
 pub fn pi_ball(prec: u32) -> ArbBall {
-    let mid = Float::with_val(prec, rug::float::Constant::Pi);
-    inflate(&ArbBall {
-        mid,
-        rad: Float::new(prec),
-        prec,
-    })
+    crate::ball::pi_ball(prec)
 }
 
 #[cfg(test)]

@@ -36,37 +36,13 @@ UNIT_INTERVAL_POINTS: tuple[float, ...] = (-0.8, -0.4, 0.1, 0.5, 0.9)  # asin/ac
 SMALL_POINTS: tuple[float, ...] = (0.05, 0.1, -0.15, 0.2, -0.3)  # near-0 series/limit checks
 
 
-def named_constants(expr: ak.Expr) -> dict[ak.Expr, float]:
-    """``{pi: 3.14159…}`` for the named constants *expr* actually mentions.
-
-    ``pi`` is an ordinary symbol in alkahest, not a distinguished constant node
-    (``alkahest-core/src/eval/symbols.rs`` says why), so ``eval_expr`` will not
-    invent a value for it — an antiderivative such as ``(√π/2)·erf(x)`` is
-    unevaluable until someone binds it.  Collecting it off the expression keeps
-    the helpers pool-agnostic: the symbol handed back is the one in *expr*'s own
-    pool, which is the only one ``eval_expr`` will match.
-    """
-    found: dict[ak.Expr, float] = {}
-    stack = [expr]
-    while stack:
-        node_expr = stack.pop()
-        node = node_expr.node()
-        tag = node[0]
-        if tag == "symbol":
-            if node[1] == "pi":
-                found[node_expr] = math.pi
-        elif tag in ("add", "mul"):
-            stack.extend(node[1])
-        elif tag == "pow":
-            stack.extend((node[1], node[2]))
-        elif tag == "func":
-            stack.extend(node[2])
-    return found
-
-
 def eval_at(expr: ak.Expr, var: ak.Expr, value: float) -> float:
-    """Numerically evaluate ``expr`` with ``var`` bound to ``value``."""
-    return ak.eval_expr(expr, {var: value, **named_constants(expr)})
+    """Numerically evaluate ``expr`` with ``var`` bound to ``value``.
+
+    ``pi`` needs no binding: ``eval_expr`` resolves it, so an antiderivative
+    such as ``(√π/2)·erf(x)`` evaluates like any other expression.
+    """
+    return ak.eval_expr(expr, {var: value})
 
 
 def assert_matches_reference(
@@ -220,13 +196,10 @@ def assert_infinite_sum_value(
     it against a known numeric constant (e.g. the Basel sum, `pi**2/6`).
 
     Recognized infinite sums come back as an exact multiple of the symbolic
-    `pi` — the interned `Domain.Real` symbol named `"pi"`, same convention as
-    `pool.symbol("pi")` — so this binds that symbol to `math.pi` before
-    evaluating, mirroring how a caller would do it themselves.
+    `pi`, which ``eval_expr`` resolves without a binding.
     """
     s = ak.sum_definite(term_expr, k, lo, pool.pos_infinity()).value
-    pi = pool.symbol("pi")
-    got = ak.eval_expr(s, {pi: math.pi})
+    got = ak.eval_expr(s, {})
     assert math.isclose(got, expected, rel_tol=rtol, abs_tol=atol), (
         f"infinite sum: alkahest={got!r} expected={expected!r}"
     )

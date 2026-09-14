@@ -29,7 +29,7 @@ import alkahest as ak
 import alkahest.experimental as ex
 from contracts import Case, Raises, RefusesOr, Returns
 
-from ._shared import PI, POOL, _int, _rat
+from ._shared import POOL, _int, _rat
 
 IT_A = POOL.symbol("it_a")
 IT_B = POOL.symbol("it_b")
@@ -38,12 +38,12 @@ IT_B = POOL.symbol("it_b")
 def _it_value(build: Callable[[], Any]) -> Callable[[], float]:
     """Answer = an information-theoretic closed form reduced to a number.
 
-    ``PI`` is bound because the Gaussian entropy is written with the interned
-    pi symbol.
+    The Gaussian entropy is written with the interned pi symbol, which
+    ``eval_expr`` resolves without a binding.
     """
 
     def op() -> float:
-        return float(ak.eval_expr(build(), {PI: math.pi}))
+        return float(ak.eval_expr(build(), {}))
 
     return op
 
@@ -62,7 +62,7 @@ def _it_unconditional(build: Callable[[], Any], env: dict) -> Callable[[], float
         conds = ex.prob_side_conditions()
         if conds:
             raise ValueError(f"answer holds only under {conds}")
-        return float(ak.eval_expr(out, {**env, PI: math.pi}))
+        return float(ak.eval_expr(out, env))
 
     return op
 
@@ -80,8 +80,8 @@ def _asymmetry_gap() -> Callable[[], float]:
 
     def op() -> float:
         p, q = ex.Poisson(_rat(12, 5)), ex.Poisson(_int(1))
-        forward = float(ak.eval_expr(ex.kl_divergence(p, q), {PI: math.pi}))
-        backward = float(ak.eval_expr(ex.kl_divergence(q, p), {PI: math.pi}))
+        forward = float(ak.eval_expr(ex.kl_divergence(p, q), {}))
+        backward = float(ak.eval_expr(ex.kl_divergence(q, p), {}))
         return forward - backward
 
     return op
@@ -349,6 +349,6 @@ def _gibbs_min() -> float:
     worst = math.inf
     for p in laws:
         for q in laws:
-            v = float(ak.eval_expr(ex.kl_divergence(p, q), {PI: math.pi}))
+            v = float(ak.eval_expr(ex.kl_divergence(p, q), {}))
             worst = min(worst, v)
     return worst

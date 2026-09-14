@@ -2131,7 +2131,7 @@ impl TaylorModel {
 
     /// `π` as an outward-rounded ball at `prec`.
     fn pi_ball(prec: u32) -> ArbBall {
-        from_float(&Float::with_val(prec + 32, rug::float::Constant::Pi), prec)
+        crate::ball::pi_ball(prec)
     }
 
     /// `(sⁿ, cⁿ)` for `n = 0..count`, where `s(x) = sin(πx²/2)` and
@@ -2816,6 +2816,13 @@ impl<'a> TaylorContext<'a> {
                         self.order,
                         self.prec,
                     ))
+                } else if crate::eval::symbols::is_pi(expr, self.pool) {
+                    // `π` is a number, not a coordinate of the box.  A box
+                    // *may* still name it — the `vars` lookup above wins — but
+                    // a caller should not have to invent an interval for a
+                    // constant, and `S′(x) = sin(πx²/2)` is unboundable if
+                    // they do not.  See `crate::eval::symbols`.
+                    Ok(self.konst(crate::ball::pi_ball(self.prec)))
                 } else {
                     Err(ValidatedError::UnboundSymbol {
                         name: name.to_string(),
@@ -4144,6 +4151,34 @@ mod tests {
         let boxes = vec![(x, f(0.0), f(1.0))];
         let err = taylor_range(e, &pool, &boxes, 6, P).unwrap_err();
         assert_eq!(crate::errors::AlkahestError::code(&err), "E-VALIDATED-002");
+    }
+
+    /// `π` is not a coordinate of the box and does not have to be given one:
+    /// it is a number.  `S′(x) = sin(πx²/2)` — which the Fresnel derivative
+    /// rule now spells exactly — would otherwise be unboundable.
+    #[test]
+    fn pi_needs_no_interval_but_an_explicit_one_still_wins() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let pi = crate::eval::symbols::pi_symbol(&pool);
+        let e = pool.mul(vec![pi, x]);
+
+        let r = taylor_range(e, &pool, &[(x, f(1.0), f(1.0))], 6, P).expect("π is a number");
+        let (lo, hi) = (r.lo().to_f64(), r.hi().to_f64());
+        assert!(lo <= std::f64::consts::PI && std::f64::consts::PI <= hi);
+        assert!(hi - lo < 1e-20, "π enclosure is not tight: {r}");
+
+        // A caller who puts `pi` in the box is sweeping it as a variable and is
+        // obeyed; the constant is a default, not a reservation of the name.
+        let swept = taylor_range(
+            e,
+            &pool,
+            &[(x, f(1.0), f(1.0)), (pi, f(10.0), f(10.0))],
+            6,
+            P,
+        )
+        .expect("bound");
+        assert!(swept.lo().to_f64() <= 10.0 && 10.0 <= swept.hi().to_f64());
     }
 
     #[test]

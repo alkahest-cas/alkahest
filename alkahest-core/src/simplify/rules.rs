@@ -8,11 +8,14 @@ use std::collections::{HashMap, HashSet};
 // ---------------------------------------------------------------------------
 
 pub(super) fn as_rational(expr: ExprId, pool: &ExprPool) -> Option<rug::Rational> {
-    match pool.get(expr) {
+    // `pool.with` rather than `pool.get`: this runs on every `Add`, `Mul` and
+    // `Pow` node the engine visits, and `get` would clone the whole node — for
+    // a wide `Mul`, a `Vec<ExprId>` — only to discover it is not a literal.
+    pool.with(expr, |data| match data {
         ExprData::Integer(n) => Some(rug::Rational::from(n.0.clone())),
         ExprData::Rational(r) => Some(r.0.clone()),
         _ => None,
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -736,6 +739,49 @@ fn intern_rational(r: rug::Rational, pool: &ExprPool) -> ExprId {
     }
 }
 
+/// Largest numerator or denominator, in bits, [`ConstFold`] will produce by
+/// raising an exact literal to a literal integer power.
+///
+/// 65 536 bits is 8 KiB per component, about 19 700 decimal digits — larger
+/// than any constant a closed form in this crate has ever needed, and still
+/// folded by GMP in well under a millisecond.  A bound is needed at all for
+/// two reasons:
+///
+/// * **Cost.** The fold runs inside the simplifier's fixpoint loop, on every
+///   pass that visits the node.  `(2/3)^100000000` is three characters of
+///   input and ~50 MB of output, allocated repeatedly; that is a
+///   denial of service triggered by a literal, not a simplification.
+/// * **It stops being a simplification.** `2^1000000` is one `Pow` node with
+///   two small leaves before and a 301 030-digit literal after.  Past this
+///   bound the "simplified" form is the larger one, and leaving the power
+///   written as a power is the better answer.
+///
+/// The bound applies to integer bases as well as rational ones, so `2^1000000`
+/// — which folded before this rule was widened to rationals — now stands.  It
+/// is deliberate: nothing in the crate wanted that literal, and an unbounded
+/// fold was reachable from parsed input.
+const MAX_CONST_POW_BITS: u64 = 1 << 16;
+
+/// Will `base^exp` stay inside [`MAX_CONST_POW_BITS`]?
+///
+/// Checked *before* the power is computed — a bound tested on the result is no
+/// bound at all — using `bits(b^n) ≤ n · bits(b)`.  That never under-estimates,
+/// which is the direction that matters, and it is loose by up to a factor of
+/// two for a small base (`bits(2) = 2`, so `2^n` is charged `2n` bits for the
+/// `n+1` it occupies).  Sharpening it would mean computing a logarithm to save
+/// a fold nobody wants at this size, so the loose bound stands and the
+/// effective ceiling for base 2 is ~32 700 bits rather than 65 536.
+fn const_pow_within_budget(base: &rug::Rational, exp: u32) -> bool {
+    let widest = base
+        .numer()
+        .significant_bits()
+        .max(base.denom().significant_bits()) as u64;
+    match widest.checked_mul(exp as u64) {
+        Some(bits) => bits <= MAX_CONST_POW_BITS,
+        None => false,
+    }
+}
+
 pub struct ConstFold;
 
 impl RewriteRule for ConstFold {
@@ -929,7 +975,15 @@ impl RewriteRule for ConstFold {
                     }
                 }
 
-                let b = as_integer(base, pool)?;
+                // b^e for an exact numeric base and a literal integer
+                // exponent.  `as_rational` covers `Integer` and `Rational`
+                // alike and deliberately not `Float`, on the same grounds as
+                // every other numeric fold in this file: a float literal
+                // carries a declared precision, and folding it is a rounding
+                // decision this rule has no basis on which to make.  So
+                // `0.5^{-1}` still stands — which is a limitation, not an
+                // oversight.
+                let b = as_rational(base, pool)?;
                 let e = as_integer(exp, pool)?;
                 // 1^e = 1 and (-1)^e = ±1 for any integer e (including negative)
                 if b == 1 {
@@ -947,27 +1001,26 @@ impl RewriteRule for ConstFold {
                     }
                     return Some((after, one_step(self.name(), expr, after)));
                 }
-                if e < 0 {
-                    // b^e for nonzero integer base `b` and negative integer
-                    // exponent `e` is the rational `1 / b^|e|`. Sound for any
-                    // nonzero b (b == 0, ±1 handled above / 0 excluded since
-                    // 0^(negative) is undefined and `as_integer` would give 0
-                    // only for base literal 0, which we reject here).
-                    if b == 0 {
-                        return None; // 0^(negative) undefined
-                    }
-                    let e_u32 = (-e.clone()).to_u32()?;
-                    let denom: rug::Integer = b.pow(e_u32);
-                    let result = rug::Rational::from((rug::Integer::from(1), denom));
-                    let after = intern_rational(result, pool);
-                    if after == expr {
-                        return None;
-                    }
-                    return Some((after, one_step(self.name(), expr, after)));
+                // `0^{-n}` is not a number; leave it standing so the
+                // `ZeroToNegativePower` machinery downstream can refuse it by
+                // name rather than receiving a fabricated `∞`.
+                if b == 0 && e < 0 {
+                    return None;
                 }
-                let e_u32 = e.to_u32()?;
-                let result: rug::Integer = b.pow(e_u32);
-                let after = pool.integer(result);
+                let e_u32 = e.clone().abs().to_u32()?;
+                if !const_pow_within_budget(&b, e_u32) {
+                    return None;
+                }
+                let (num, den) = b.into_numer_denom();
+                let (num, den) = (num.pow(e_u32), den.pow(e_u32));
+                // A negative exponent inverts; `num` is nonzero here (b == 0
+                // with e < 0 was refused above, and e ≥ 0 never inverts).
+                let result = if e < 0 {
+                    rug::Rational::from((den, num))
+                } else {
+                    rug::Rational::from((num, den))
+                };
+                let after = intern_rational(result, pool);
                 if after == expr {
                     return None;
                 }
@@ -2105,6 +2158,7 @@ impl RewriteRule for PrimitiveFold {
 mod tests {
     use super::*;
     use crate::kernel::{Domain, ExprPool};
+    use crate::simplify::engine::simplify;
 
     fn p() -> ExprPool {
         ExprPool::new()
@@ -2351,6 +2405,97 @@ mod tests {
         let expr = pool.pow(two, ten);
         let (result, _) = ConstFold.apply(expr, &pool).unwrap();
         assert_eq!(result, pool.integer(1024_i32));
+    }
+
+    /// `Rational^Integer` folds like `Integer^Integer` does, in both signs.
+    ///
+    /// It used to not, and the gap was invisible while the constants that hit
+    /// it were `f64`: a stray `(1/2)^{-1}` inside `√(π·(1/2)⁻¹)/2` is exactly
+    /// what stopped it cancelling against a Gaussian density's `√(2π)`, and a
+    /// stray `(−1/5)^2` in a completed square is what turned `exp(−4/5)` into
+    /// `exp(−1 + 5·(−1/5)^2)`.
+    #[test]
+    fn const_fold_folds_rational_powers_in_both_signs() {
+        let pool = p();
+        for (num, den, exp, want_num, want_den) in [
+            (1_i32, 5_i32, 2_i32, 1_i32, 25_i32),
+            (2, 3, 3, 8, 27),
+            (-1, 5, 2, 1, 25),
+            (-1, 5, 3, -1, 125),
+            (1, 2, -1, 2, 1),
+            (3, 4, -2, 16, 9),
+            (7, 1, -2, 1, 49),
+        ] {
+            let base = pool.rational(num, den);
+            let expr = pool.pow(base, pool.integer(exp));
+            let got = simplify(expr, &pool).value;
+            let want = if want_den == 1 {
+                pool.integer(want_num)
+            } else {
+                pool.rational(want_num, want_den)
+            };
+            assert_eq!(
+                got,
+                want,
+                "({num}/{den})^{exp} = {} not {}",
+                pool.display(want),
+                pool.display(got)
+            );
+        }
+    }
+
+    /// The traps: `0^{-1}` is not a number, a fractional exponent is not this
+    /// rule's business, and an inexact base stays inexact.
+    #[test]
+    fn const_fold_declines_the_powers_that_are_not_its_business() {
+        let pool = p();
+
+        // `0^{-1}` — undefined, and folding it would fabricate an ∞.
+        let zero_inv = pool.pow(pool.integer(0_i32), pool.integer(-1_i32));
+        assert_eq!(simplify(zero_inv, &pool).value, zero_inv);
+
+        // `(−1/5)^{1/2}` — not real; a rational exponent is not an integer one.
+        let neg_root = pool.pow(pool.rational(-1, 5), pool.rational(1, 2));
+        assert_eq!(simplify(neg_root, &pool).value, neg_root);
+
+        // `(1/2)^{1/2}` — a legitimate real number, but not a rational one.
+        let root = pool.pow(pool.rational(1, 2), pool.rational(1, 2));
+        assert_eq!(simplify(root, &pool).value, root);
+
+        // `0.5^{-1}` — `2.0` is the right number, but promoting a caller's
+        // float to an exact `2` would claim a precision they did not give.
+        let float_inv = pool.pow(pool.float(0.5, 53), pool.integer(-1_i32));
+        assert_eq!(simplify(float_inv, &pool).value, float_inv);
+    }
+
+    /// Past [`MAX_CONST_POW_BITS`] the fold is refused: the "simplified" form
+    /// would be the larger one, and the work is unbounded in a literal.
+    #[test]
+    fn const_fold_refuses_a_power_too_large_to_be_a_simplification() {
+        let pool = p();
+
+        // 2^30000 — charged 60 000 bits, inside the budget, folds.
+        let small = pool.pow(pool.integer(2_i32), pool.integer(30_000_i32));
+        assert!(matches!(
+            pool.get(simplify(small, &pool).value),
+            ExprData::Integer(_)
+        ));
+
+        // 2^100000 and (2/3)^100000 — beyond it, both stand.
+        for base in [pool.integer(2_i32), pool.rational(2, 3)] {
+            let big = pool.pow(base, pool.integer(100_000_i32));
+            assert_eq!(
+                simplify(big, &pool).value,
+                big,
+                "{} folded past the budget",
+                pool.display(big)
+            );
+        }
+
+        // The estimate is on the *result*, so a wide base hits it sooner.
+        let wide = pool.rational(rug::Integer::from(1_i32) << 20_000, rug::Integer::from(3));
+        let expr = pool.pow(wide, pool.integer(8_i32));
+        assert_eq!(simplify(expr, &pool).value, expr);
     }
 
     #[test]

@@ -376,7 +376,7 @@ fn quot(a: ExprId, b: ExprId, pool: &ExprPool) -> ExprId {
 /// produce a `π` that does not intern with everyone else's and would never
 /// cancel against one.
 fn pi(pool: &ExprPool) -> ExprId {
-    pool.symbol("pi", crate::kernel::Domain::Real)
+    crate::eval::symbols::pi_symbol(pool)
 }
 
 /// The constant in `∫exp(−α²·w²) dw = (√π/2α)·erf(α·w)`, given `−A = α²`.
@@ -393,14 +393,11 @@ fn pi(pool: &ExprPool) -> ExprId {
 ///
 /// An earlier revision of this module argued the opposite — that `pi` is a
 /// free symbol and an answer carrying one is an answer the numeric gate cannot
-/// evaluate.  That stopped being true when `collect_gate_parameters` learned to
-/// *bind* `π` rather than sample it: both this module's gate
-/// ([`verify_antiderivative_status_parametric`]) and `prob::quad::eval_ball`
-/// give it its value before evaluating anything.  What remains true is that a
-/// *caller* holding the answer has to bind `π` like any other symbol —
-/// [`crate::eval::eval_f64`] will not invent one — which is already the case
-/// for every answer in the crate that names it, `∫dx/(x⁴+1)` over the line
-/// included.
+/// evaluate.  It is not: [`crate::eval::eval_f64`],
+/// [`crate::jit::eval_interp`] and [`crate::eval::eval_interval`] all resolve
+/// `π` to its own value, so an answer naming it evaluates like any other and a
+/// caller has nothing to bind.  (An explicit binding still overrides, for the
+/// caller who wants `pi` treated as a parameter.)
 ///
 /// # Why one radical rather than `√π/2 · α⁻¹`
 ///
@@ -415,42 +412,14 @@ fn gaussian_constant(neg_aa: ExprId, pool: &ExprPool) -> ExprId {
     simplify(pool.mul(vec![pool.rational(1, 2), root]), pool).value
 }
 
-/// `base^n` with an exact numeric `base` folded to a number, and an ordinary
-/// `Pow` node otherwise.
+/// `1/e`, folded to a number when `e` is an exact one.
 ///
-/// `simplify` folds `3^2` to `9` but leaves `(1/5)^2` and `(1/2)^{-1}` exactly
-/// as written — a gap that was invisible while these constants were `f64` and
-/// is unmissable now that they are not. A stray `(1/2)^{-1}` inside a radical
-/// is precisely what stops `√(2π)⁻¹·√(π·(1/2)⁻¹)/2` from collapsing to `1/2`,
-/// and a stray `(−1/5)^2` in a completed square is what turns `exp(−4/5)` into
-/// `exp(−1 + 5·(−1/5)^2)`. Folding at the handful of sites that build these
-/// keeps the answers readable; widening `simplify` is a separate change with a
-/// much larger blast radius.
-fn exact_pow(base: ExprId, n: i32, pool: &ExprPool) -> ExprId {
-    use rug::ops::Pow;
-    let q = match pool.get(base) {
-        ExprData::Integer(i) => rug::Rational::from((i.0.clone(), rug::Integer::from(1))),
-        ExprData::Rational(r) => r.0.clone(),
-        _ => return pool.pow(base, pool.integer(n)),
-    };
-    // `0^{-n}` is not a number; hand it back unfolded and let the usual
-    // machinery refuse it.
-    if n < 0 && *q.numer() == 0 {
-        return pool.pow(base, pool.integer(n));
-    }
-    let m = n.unsigned_abs();
-    let num = q.numer().clone().pow(m);
-    let den = q.denom().clone().pow(m);
-    if n < 0 {
-        pool.rational(den, num)
-    } else {
-        pool.rational(num, den)
-    }
-}
-
-/// `1/e`, exact when `e` is.
+/// The fold is `simplify`'s (`ConstFold`'s `Pow` arm), not a local one: it
+/// covers `Rational^Integer` as of this change, which is what a stray
+/// `(1/2)^{-1}` inside `√(π·(1/2)⁻¹)/2` needed to stop blocking the
+/// cancellation against a Gaussian density's `√(2π)`.
 fn reciprocal(e: ExprId, pool: &ExprPool) -> ExprId {
-    exact_pow(e, -1, pool)
+    simplify(pool.pow(e, pool.integer(-1_i32)), pool).value
 }
 
 /// Split a product into its `var`-free part and its `var`-dependent factors.
@@ -903,7 +872,7 @@ fn match_gaussian_symbolic(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option
     let two_a = simplify(pool.mul(vec![pool.integer(2_i32), aa]), pool).value;
     let h = quot(bb, two_a, pool);
     let shifted = simplify(pool.add(vec![var, h]), pool).value;
-    let h2 = exact_pow(h, 2, pool);
+    let h2 = pool.pow(h, pool.integer(2_i32));
     let k = simplify(
         pool.add(vec![cc, pool.mul(vec![pool.integer(-1_i32), aa, h2])]),
         pool,
@@ -1644,6 +1613,71 @@ mod tests {
             "a float coefficient must not be laundered into an exact one, got {}",
             pool.display(out)
         );
+    }
+
+    /// The exact `2/√π` in `d/dx erf` is a **behaviour change in what the
+    /// integrator reports**, not just in how the answer prints: these three
+    /// were `Numeric` on the previous commit and are `Exact` now, because the
+    /// residual `d/dx F − f` reaches a syntactic zero for the first time.
+    ///
+    /// Measured on `010b142`, one commit before this change:
+    ///
+    /// ```text
+    ///   ∫exp(−x²) dx      (erf(x)·√π·1/2)                    Numeric → Exact
+    ///   ∫x²·exp(−x²) dx   (… + erf(x)·√π·1/4)                Numeric → Exact
+    ///   ∫x⁴·exp(−x²) dx   (… + (… + erf(x)·√π·1/4)·3/2)      Numeric → Exact
+    /// ```
+    #[test]
+    fn the_unscaled_gaussians_now_verify_exactly() {
+        for src in ["exp(-x^2)", "x^2*exp(-x^2)", "x^4*exp(-x^2)"] {
+            let (pool, f, x) = parsed(src);
+            let out = crate::integrate::integrate(f, x, &pool).expect("antiderivative");
+            assert!(
+                crate::integrate::verify_antiderivative_exact(out.value, f, x, &pool),
+                "∫{src} dx = {} did not verify exactly",
+                pool.display(out.value)
+            );
+        }
+    }
+
+    /// …and the scaled ones do **not**, which is worth saying out loud rather
+    /// than leaving a reader to assume the constant fixed everything.
+    ///
+    /// `d/dx[√(π/2)/2·erf(√2·x)] = √(π/2)·√2·(2/√π)/2·e^{−2x²}`.  Every factor
+    /// is exact and their product is exactly `1`, but establishing that needs
+    /// `√a·√b = √(ab)`, which `simplify` does not have (it would have to know
+    /// the signs).  So the verdict stays `Numeric`: sampled evidence, honestly
+    /// labelled, not a claim of an identity nobody proved.
+    #[test]
+    fn a_scaled_gaussian_still_only_reaches_numeric() {
+        let (pool, f, x) = parsed("exp(-2*x^2)");
+        let out = crate::integrate::integrate(f, x, &pool).expect("antiderivative");
+        assert!(!crate::integrate::verify_antiderivative_exact(
+            out.value, f, x, &pool
+        ));
+        assert_eq!(
+            crate::integrate::verify_antiderivative_status(out.value, f, x, &pool),
+            Some(crate::integrate::AntiderivativeVerification::Numeric)
+        );
+    }
+
+    /// `∫erf(x) dx = x·erf(x) + e^{−x²}/√π` — and the `1/√π` used to be
+    /// `1/2 · 1.1283791670955126`, a float in a *returned answer*, reached
+    /// straight from the `erf` derivative rule rather than from this module.
+    #[test]
+    fn the_erf_antiderivative_carries_no_float_either() {
+        let (pool, f, x) = parsed("erf(x)");
+        let out = crate::integrate::integrate(f, x, &pool).expect("antiderivative");
+        assert!(
+            !has_float(out.value, &pool),
+            "∫erf(x) dx must carry no float literal, got {}",
+            pool.display(out.value)
+        );
+        // Correct, not merely exact: F′ = f at a point the constant matters at.
+        let d = crate::diff::diff(out.value, x, &pool).unwrap().value;
+        let env = std::collections::HashMap::from([(x, 0.7_f64)]);
+        let got = crate::jit::eval_interp(d, &env, &pool).expect("evaluates");
+        assert!((got - libm::erf(0.7)).abs() < 1e-14, "F′(0.7) = {got}");
     }
 
     /// `∫x³·exp(−x²) dx` is elementary and the rule engine already answers it;

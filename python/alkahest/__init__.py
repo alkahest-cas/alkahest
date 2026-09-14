@@ -1361,9 +1361,8 @@ def sum_definite(expr, k, lo, hi):
     of recognized closed forms — currently the Basel-family even p-series
     ``Σ_{k=1}^∞ c/k^(2m) = c·ζ(2m)``, e.g.::
 
-        pi = pool.symbol("pi")
         s = ak.sum_definite(1 / k**2, k, pool.integer(1), pool.pos_infinity())
-        ak.eval_expr(s.value, {pi: math.pi})  # -> pi**2/6 ≈ 1.6449...
+        ak.eval_expr(s.value, {})  # -> pi**2/6 ≈ 1.6449...
 
     Odd powers (``Σ 1/k³``, Apéry's ``ζ(3)``, …) and any other unrecognized
     infinite-bound sum raise ``SumError`` (``E-SUM-002``) rather than

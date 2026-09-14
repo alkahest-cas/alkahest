@@ -171,6 +171,10 @@ fn eval_rational_node(
         ExprData::Integer(n) => Ok(Rational::from(n.0.clone())),
         ExprData::Rational(r) => Ok(r.0.clone()),
         ExprData::Float(_) => Err(error(UnsupportedReason::FloatLiteralInExactMode)),
+        // `π` is **not** resolved here, unlike in every other mode: this
+        // evaluator returns exact rationals, and π is not one.  Handing back a
+        // 53-bit approximation under the name "exact" is the failure this mode
+        // exists to prevent, so an unbound `pi` stays `E-EVAL-001`.
         ExprData::Symbol { .. } => bindings
             .get(&expr)
             .cloned()
@@ -314,9 +318,16 @@ fn eval_f64_node(
         ExprData::Integer(n) => Ok(integer_to_f64(&n.0)),
         ExprData::Rational(r) => Ok(rational_to_f64(&r.0)),
         ExprData::Float(f) => Ok(f.inner.to_f64()),
+        // `π` resolves to its own value without a binding; see the module docs
+        // of [`symbols`] for why it must never be sampled instead.  An explicit
+        // binding still wins, so a caller that deliberately wants `pi` to be a
+        // free parameter can still say so.  The imaginary unit is the other
+        // named constant and is deliberately *not* resolved here: it has no
+        // `f64` value, and `UnboundSymbol` is the honest refusal.
         ExprData::Symbol { .. } => bindings
             .get(&expr)
             .copied()
+            .or_else(|| symbols::is_pi(expr, pool).then_some(std::f64::consts::PI))
             .ok_or(error(UnsupportedReason::UnboundSymbol { symbol: expr })),
         ExprData::Add(args) => {
             let mut sum = 0.0;
