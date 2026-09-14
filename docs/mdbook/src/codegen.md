@@ -61,7 +61,7 @@ x = pool.symbol("x")
 cache = CompileCache()
 f = cache.compile(x**2, [x])         # JIT compiles on first call — (expr, inputs)
 g = cache.compile(x**2, [x])         # cache hit — O(1)
-print(cache.stats())                 # {'len', 'compiles', 'hits', 'hit_rate'}
+print(cache.stats())                 # keys: len, compiles, hits, hit_rate
 ```
 
 ## eval_expr

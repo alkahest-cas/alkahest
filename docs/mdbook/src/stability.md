@@ -50,4 +50,7 @@ renumbering. `scripts/check_error_codes.py` now fails any PR that reintroduces a
 
 ## Diagnostic codes and their stability
 
-Error codes are part of the stable surface from the version they first appear. See [Error handling](./errors.md) for the current code table.
+A code joins the stable surface at the version where it first becomes **reachable from a
+released binding** — which is usually the version it is written in, but not always; see the
+qualifier above. From that point it is not renumbered or removed within the major cycle.
+See [Error handling](./errors.md) for the current code table.

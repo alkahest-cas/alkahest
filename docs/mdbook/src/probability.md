@@ -40,7 +40,7 @@ There is one way to ask each question, and it is `dist.method(...)`, never
 
 | Method | Returns |
 |---|---|
-| `mean()`, `variance()` | first and second central moment |
+| `mean()`, `variance()` | `E[X]` (the first *raw* moment — the first central moment is identically zero) and the second *central* moment |
 | `moment(k)` | raw `E[X^k]` |
 | `pdf(x)`, `cdf(x)`, `quantile(p)` | density, distribution function, inverse |
 | `characteristic_function(t)` | `E[e^{itX}]` — **complex-valued**, see below |
