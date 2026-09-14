@@ -57,10 +57,13 @@ No formula is typed in. We ask for the expectation and see what comes back.
 # ---
 
 payoff = ak.max(S - K, pool.integer(0))
-lemma = ex.expectation(payoff, S, lognormal)
+lemma = ak.simplify_expanded(ex.expectation(payoff, S, lognormal)).value
 
 print("E[(S-K)^+] for S ~ LogNormal(mu, Sigma):")
 print(f"$${latex(lemma)}$$")
+print()
+print("Every constant is exact — no floats. Each 1/2 came out of")
+print("sqrt(pi/2)/sqrt(2*pi), which only cancels because both sides stayed symbolic.")
 
 # ---
 
@@ -90,18 +93,21 @@ $\Sigma=\sigma\sqrt T$. Substitute, discount, and the call price falls out.
 
 # ---
 
-call = ak.exp(-r * T) * ak.subs(
-    lemma,
-    {mu: ak.log(S0) + (r - half * sigma**2) * T, Sigma: sigma * ak.sqrt(T)},
-)
+call = ak.simplify(
+    ak.exp(-r * T)
+    * ak.subs(lemma, {mu: ak.log(S0) + (r - half * sigma**2) * T, Sigma: sigma * ak.sqrt(T)})
+).value
 print(f"$$C = {latex(call)}$$")
 
 # ---
 
 ## 5 — Is it the textbook formula?
 
-$C=S_0\Phi(d_1)-Ke^{-rT}\Phi(d_2)$ — written out independently, from
-`math.erf`, and compared. Alkahest never sees this formula.
+Read the four terms off section 4: with
+$\Phi(z)=\tfrac12\left(1+\operatorname{erf}(z/\sqrt2)\right)$ they are
+$e^{\mu+\Sigma^2/2}\Phi(d_1)-K\Phi(d_2)$. But rather than argue, compare
+against $C=S_0\Phi(d_1)-Ke^{-rT}\Phi(d_2)$ written out independently from
+`math.erf`. Alkahest never sees that formula.
 
 # ---
 
