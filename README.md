@@ -11,6 +11,16 @@
 
 Alkahest is a high-performance computer algebra system built for both humans and agents. It is especially well suited for autoresearch agents doing work in pure and applied mathematics. Available as a Python package or a Rust crate.
 
+> [!IMPORTANT]
+> **Alkahest is in beta.** The API is still moving, and — despite the
+> verification machinery described below — it will contain bugs, including
+> answers that are wrong without saying so. Treat a result that matters as
+> unverified until you have checked it: read the derivation log, export the Lean
+> certificate where one is available, or cross-check against an independent
+> source. `tests/silent_errors/` measures how often the library returns a
+> confident wrong answer rather than refusing; that rate is not zero for inputs
+> nobody has tried yet. Please report what you find.
+
 The main stack is: Rust kernel → FLINT/Arb (polynomials, ball arithmetic) → egglog + colored e-graphs (simplification) → Cranelift/LLVM JIT + MLIR (native and GPU codegen) → PyO3 → Python
 
 ## Highlights
