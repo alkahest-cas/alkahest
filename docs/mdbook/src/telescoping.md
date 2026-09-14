@@ -166,6 +166,31 @@ zero of `1/Γ`). A strictly positive total order *is* an exact zero. A negative
 one means `G` is unbounded at the endpoint, and that is reported as `"unknown"`.
 Nothing that merely looks like zero can produce `"vanishes"`.
 
+That order count is an expansion in `k`, so it leaves behind the factors that no
+longer move with `k` at the endpoint — a `Γ(a·n + c)^e` list. A **zero** has to
+be weighed against those before it is a zero, because `0 · ∞` is not `0` and a
+verdict carries an implied "for every `n`". `Σ_{k=0}^{10} C(10,k)·(n−k)!/n!` is
+the shape: at `k = 11` the `1/Γ(11−k) = 1/Γ(0)` zero is real, and so is the
+`Γ(n−k+1) = Γ(n−10)` pole left behind with it. `G(9,11)` is `1/9!`, and the
+`"vanishes"` this used to return licensed a recurrence whose `n = 9` instance —
+where the leading coefficient `9−n` is zero — reads `110·S(11) = 100·S(10)`
+about two perfectly well-defined numbers that differ by exactly `1/9!`.
+
+The test is on where the pole *is*, not on the shape of the factor. `Γ` is
+infinite exactly at the non-positive integers and every coefficient is an
+integer, so a fractional constant term is out of reach entirely, a positive `a`
+puts the last pole at `n = ⌊−c/a⌋`, and a negative `a` puts one at every large
+`n`. A binomial's `Γ(n+1)` has its poles at `n ≤ −1`, which is why every
+classical natural boundary is untouched: `C(n,k)`, `C(n,k)²`, Franel, Dixon,
+Apéry, `2^k·C(n,k)`, `C(n,k)·C(m,k)` and the Pochhammer family
+`C(10,k)·(n+1)_k` all still vanish, and `C(n,k)/(k+1)` is still `"nonzero"`.
+What it costs is the summands whose endpoint zero really is multiplied by
+something that blows up on the domain — `Γ(n−k+1+d)/Γ(n+1)` against a
+fixed-length range, `Γ(n−k−m)`, `C(n−m,k)` for `m > 0` — which were `"vanishes"`
+and are now `"unknown"`. Note this is a *refusal*, not a narrowed domain:
+`Σ_{k=0}^{n} C(n−3,k)` does satisfy `S(n+1) = 2·S(n)` from `n = 3` on, and that
+verdict is lost rather than reported with `n ≥ 3` attached.
+
 The verdict also accounts for a subtlety that is easy to miss: when the limits
 move with `n`, `Σ_{k=0}^{n} F(n+i,k)` is **not** `S(n+i)`. For `Σ_{k=0}^{n}
 C(n,k)` the telescoped difference alone is `−1`, and it is the missing term

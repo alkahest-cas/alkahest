@@ -158,6 +158,23 @@ def _zeilberger_boundary_tag(term: ak.Expr) -> Callable[[], str]:
     return op
 
 
+def _zeilberger_boundary_at_tag(term: ak.Expr, lo: int, hi: int) -> Callable[[], str]:
+    """Answer = the same verdict over an explicit *constant* range ``k = lo..hi``.
+
+    ``cert.boundary`` asks about the natural ``k = 0..n``; ``boundary_at`` asks
+    the same certificate about a range that does not move with ``n``.  That is
+    the cheapest place to see an endpoint whose value depends on which ``n`` you
+    are at, because the endpoint ``k = hi + 1`` is then a fixed integer while the
+    summand's Γ arguments still slide past their poles as ``n`` changes.
+    """
+
+    def op() -> str:
+        cert = ak.zeilberger(term, N, K)
+        return str(cert.boundary_at(_int(lo), _int(hi))["boundary"])
+
+    return op
+
+
 def _sum_binomial_over_k_plus_one(m: int) -> Fraction:
     """``Σ_{k=0}^{m} C(m,k)/(k+1) = (2^{m+1} − 1)/(m+1)``, by hand."""
     return sum((Fraction(math.comb(m, j), j + 1) for j in range(m + 1)), Fraction(0))
@@ -608,6 +625,57 @@ CASES: list[Case] = [
             "C(n,k) is finite at every integer k, and vanishes outside 0 ≤ k ≤ n, so the "
             "homogeneous S(n+1) = 2·S(n) holds — as 1, 2, 4, 8 confirms. The second control: a "
             "guard that fired on the shape rather than on a pole would break this."
+        ),
+    ),
+    # An endpoint zero that is multiplied by an infinity.  The two guards above
+    # both look for a pole that is inside the range for every *large* `n`; this
+    # one is at `k = n+1`, which is inside `k = 0..10` only while `n ≤ 9`, and a
+    # verdict carrying an implied "for every n" cannot rest on an argument that
+    # only holds for large n.
+    # -----------------------------------------------------------------------
+    Case(
+        id="zeilberger_endpoint_gamma_pole_is_not_cancelled_by_the_gamma_zero",
+        subsystem="sums_products",
+        statement=(
+            "Σ_{k=0}^{10} C(10,k)·(n-k)!/n!: the boundary endpoint at k=11 is worth 1/9!, not 0"
+        ),
+        op=_zeilberger_boundary_at_tag(
+            _binom(_int(10), K) * ak.gamma(N - K + _int(1)) / ak.gamma(N + _int(1)), 0, 10
+        ),
+        contract=Returns("unknown"),
+        verified_by=(
+            "At the endpoint k=11 the 1/Γ(11-k) = 1/Γ(0) zero is real - and so is the "
+            "Γ(n-k+1) = Γ(n-10) pole, which no longer moves with k there and so is carried "
+            "out of the order count as a finite factor. alkahest returned boundary='vanishes' "
+            "with coefficients 9-n, -(n+1)², (n+1)(n+2); at n=9 the first is 0, so the licensed "
+            "recurrence asserts 110·S(11) = 100·S(10) about two numbers that are both perfectly "
+            "well defined. Summing C(10,k)·(n-k)!/n! term by term in exact rational arithmetic "
+            "(Fraction with math.comb and math.factorial, no alkahest anywhere) gives "
+            "S(10) = 9864101/3628800 and S(11) = 4697191/1900800, and 110·S(11) - 100·S(10) = "
+            "1/362880 = 1/9! - which is exactly the endpoint value the verdict called zero."
+        ),
+    ),
+    Case(
+        id="zeilberger_control_endpoint_gamma_with_no_pole_in_range_still_vanishes",
+        subsystem="sums_products",
+        statement=(
+            "Σ_{k=0}^{10} C(10,k)·(n+1)_k is a polynomial in n, so its boundary really does vanish"
+        ),
+        op=_zeilberger_boundary_at_tag(
+            _binom(_int(10), K) * ak.gamma(N + K + _int(1)) / ak.gamma(N + _int(1)), 0, 10
+        ),
+        contract=Returns("vanishes"),
+        verified_by=(
+            "The minimal pair for the case above: one sign flipped in the Γ argument, and the "
+            "endpoint k=11 now carries Γ(n+k+1) = Γ(n+12), whose poles are all at n ≤ -12 - "
+            "nowhere near the n a verdict here covers - so the 1/Γ(0) zero really is a zero. "
+            "Independently: every term C(10,k)·(n+1)(n+2)···(n+k) is a polynomial in n, so "
+            "S(n) is a polynomial of degree 10, finite at every integer n (S(0) = 9864101, "
+            "S(1) = 98641011, S(-1) = 1, computed with math.comb alone), and the eleventh finite "
+            "difference Σ_{i=0}^{11} (-1)^i C(11,i)·S(n+11-i) is 0 for every n - a homogeneous "
+            "recurrence for the sum, checked at n = 0, 3, 7. The control: a guard that refused "
+            "every positive-exponent Γ whose argument moves with n, instead of asking where its "
+            "poles actually are, would lose this one."
         ),
     ),
     # `verify_wz_pair` — a verifier's false *negative* is not a lie, but it is
