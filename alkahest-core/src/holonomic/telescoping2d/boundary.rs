@@ -316,8 +316,8 @@ fn const_limit(
     Ok(d)
 }
 
-/// The largest number of integer points [`rational_pole_in_box`] will scan
-/// before declining to scan at all.
+/// The largest number of integer points [`boundary_status_md`] will scan when
+/// checking that `F` is defined on all of the box, before declining to scan.
 ///
 /// Every other way `F` can fail to have a value is settled structurally, in
 /// `O(m)` per `Γ` factor, so this cost is paid only by a summand whose rational
