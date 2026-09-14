@@ -607,8 +607,20 @@ the certificate's own numerator (the classical-WZ-certificate case, e.g. a
 certificate proportional to `k` that vanishes at `k = 0` even though `F`
 itself does not).
 
-Two restrictions are real, not unfinished polish:
+Three restrictions are real, not unfinished polish:
 
+* **`F` has to be provably defined on the whole rectangle, faces
+  included.** A `1/Γ` zero is a statement about a *value* of `F`, so it
+  says nothing where `F` has none. Two things take that away, and neither
+  is visible to the four strip evaluations: a pole strictly inside the
+  rectangle, which leaves `S(n)` with no value at all while the certificate
+  identity — living in `Q(n,j,k)`, where a pole in `j` or `k` is harmless —
+  verifies happily; and a `Γ(·)^e` factor with `e > 0` whose argument still
+  moves with `n`, which is not a constant along a strip and so is not
+  weighed against the `1/Γ` zero there, even though `0 · ∞` is not `0`.
+  Both are refused as `"unknown"`. Factors are weighed one at a time, which
+  is blunt: `Γ(n+k+1)/Γ(n+1)` is a Pochhammer with no pole anywhere, and is
+  refused on its numerator alone.
 * **Only constant (not `n`-dependent) rectangles are supported.** The
   single-sum engine's `b(n)` formula has a `D_i(n)` correction term
   precisely because summing `F(n+i, k)` over `k`'s range *at `n`* is not
@@ -677,7 +689,10 @@ summation against the actual sum, not just against the telescoping identity.
 point evaluations at the box's corners. The same sufficient (not necessary)
 pointwise-vanishing criterion applies, generalized mechanically: fix one axis
 to a constant and check that a gamma factor's argument no longer depends on
-`n` or on any *other* bound index.
+`n` or on any *other* bound index. The same precondition applies too — `F`
+has to be provably defined at every integer point of the box and its `2m`
+faces before any face verdict means anything, and a box that cannot be shown
+to be free of poles is `"unknown"`.
 
 ### A real scaling cliff, and the resource ceilings that bound it
 

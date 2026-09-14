@@ -371,6 +371,7 @@ from .exceptions import (
     AlkahestError,
     AnsatzError,
     AssumptionError,
+    AsymptoticError,
     BudgetExceededError,
     CadError,
     CertificateUnavailableError,
@@ -384,6 +385,7 @@ from .exceptions import (
     DomainError,
     EigenError,
     FactorError,
+    FpsError,
     HolonomicError,
     HomotopyError,
     IntegrationError,
@@ -413,6 +415,7 @@ from .exceptions import (
     SparseGcdError,
     SparseInterpError,
     SumError,
+    TransformError,
     ValidatedError,
 )
 from .smt import to_smtlib
@@ -420,6 +423,10 @@ from .smt import to_smtlib
 _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "AlkahestError",
     "AssumptionError",
+    # Asymptotic expansions at infinity (E-ASYMPT-*). E-ASYMPT-004 is an
+    # expansion that was computed and then withheld, because the numeric
+    # o()-gate could not confirm a term of it.
+    "AsymptoticError",
     "BudgetExceededError",
     "CadError",
     "ConversionError",
@@ -435,6 +442,8 @@ _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "DomainError",
     "EigenError",
     "FactorError",
+    # Formal power series (E-FPS-*).
+    "FpsError",
     "HolonomicError",
     "HomotopyError",
     "IntegrationError",
@@ -468,6 +477,10 @@ _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "SparseGcdError",
     "SparseInterpError",
     "SumError",
+    # Laplace / Fourier / Z transforms (E-TRANSFORM-*). One class for the
+    # module, as OdeError is one class for E-ODE-*; the code says which table
+    # declined, and whether the decline is a gap or a refuted hypothesis.
+    "TransformError",
     "ValidatedError",
 )
 
@@ -2352,6 +2365,7 @@ __all__ = [
     "ArbBall",
     "AssumptionError",
     "Assumptions",
+    "AsymptoticError",
     # P1 search plumbing items 4–5 — budgets + batch/streaming fan-out
     "BatchItem",
     # Verdict from `bounds_supported`
@@ -2395,6 +2409,7 @@ __all__ = [
     "ExprPool",
     "FactorError",
     "Forall",
+    "FpsError",
     "GbPoly",
     "GradTracedFn",
     "GroebnerBasis",
@@ -2460,6 +2475,7 @@ __all__ = [
     "SumError",
     # PA-7
     "TracedFn",
+    "TransformError",
     # PA-10
     "TreeDef",
     # Polynomials

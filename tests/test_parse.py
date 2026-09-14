@@ -504,6 +504,48 @@ class TestErrors:
         start, end = exc_info.value.span
         assert end > start
 
+    @pytest.mark.parametrize(
+        "src",
+        ["1e", "1E", "1e+", "1e-", "2.5e", "2.5E-", ".5e", "1.e", "0e", "1e*2", "x^2e"],
+    )
+    def test_a_truncated_exponent_is_a_coded_parse_error(self, pool, src):
+        """A two-character string must not take the process down.
+
+        The Rust lexer (``alkahest-core/src/parse.rs``) consumed ``e``/``E`` and
+        an optional sign unconditionally once it had seen a digit, so ``"1e"``
+        lexed as the number ``"1e"`` and ``"1e".parse::<f64>().unwrap()``
+        *panicked*.  This file exercises the Python parser, which rejects the
+        same shapes by grammar; the assertion that matters either way is that a
+        caller feeding in text it did not write gets a structured
+        :class:`ParseError` with a ``.code`` and a ``.span``, and never a
+        ``pyo3_runtime.PanicException`` or an abort.
+        """
+        with pytest.raises(ParseError) as exc_info:
+            parse(src, pool)
+        err = exc_info.value
+        assert err.code.startswith("E-PARSE-"), err.code
+        assert err.span is not None
+        start, end = err.span
+        assert 0 <= start < end <= len(src)
+
+    @pytest.mark.parametrize(
+        ("src", "expected"),
+        [
+            ("1e5", 1e5),
+            ("1E5", 1e5),
+            ("1e+5", 1e5),
+            ("1e-5", 1e-5),
+            ("2.5e3", 2.5e3),
+            (".5e3", 0.5e3),
+            ("1.", 1.0),
+            ("1.e5", 1e5),
+            ("0.", 0.0),
+        ],
+    )
+    def test_well_formed_exponents_still_parse(self, pool, src, expected):
+        """The control: rejecting ``1e`` must not reject ``1e5`` or ``1.``."""
+        assert float(alkahest.eval_expr(parse(src, pool), {})) == expected
+
 
 # ---------------------------------------------------------------------------
 # Public API

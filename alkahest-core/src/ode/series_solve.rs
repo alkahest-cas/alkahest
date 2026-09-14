@@ -187,14 +187,25 @@ impl fmt::Display for SeriesError {
 impl std::error::Error for SeriesError {}
 
 impl crate::errors::AlkahestError for SeriesError {
+    /// `E-ODE-040 … 045`.
+    ///
+    /// These were `E-ODE-020 … 025` until 3.10, which is the block
+    /// [`crate::ode::numeric::NumericOdeError`] already owned and has in the
+    /// registry — so `E-ODE-021` meant both "step size below the floor" and
+    /// "irregular singular point", and a caller branching on it could not tell
+    /// a numerical integrator giving up from a Frobenius expansion that does
+    /// not exist. Renumbering this side rather than that one is deliberate:
+    /// these codes had never reached Python at all (`series_solve` raised a
+    /// bare `ValueError`), so nothing could be depending on them, while
+    /// `NumericOdeError`'s have been on the wire with `.code` set.
     fn code(&self) -> &'static str {
         match self {
-            SeriesError::NotAnalytic(_) => "E-ODE-020",
-            SeriesError::IrregularSingular => "E-ODE-021",
-            SeriesError::IrrationalIndicialRoot => "E-ODE-022",
-            SeriesError::DegenerateLeadingCoefficient => "E-ODE-023",
-            SeriesError::VerificationFailed(_) => "E-ODE-024",
-            SeriesError::SecondSolutionDeclined(_) => "E-ODE-025",
+            SeriesError::NotAnalytic(_) => "E-ODE-040",
+            SeriesError::IrregularSingular => "E-ODE-041",
+            SeriesError::IrrationalIndicialRoot => "E-ODE-042",
+            SeriesError::DegenerateLeadingCoefficient => "E-ODE-043",
+            SeriesError::VerificationFailed(_) => "E-ODE-044",
+            SeriesError::SecondSolutionDeclined(_) => "E-ODE-045",
         }
     }
 

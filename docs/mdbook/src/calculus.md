@@ -311,14 +311,17 @@ checked expansion from an unchecked one.
 
 ### Exact fractional exponents from Python
 
-`Expr.__pow__` coerces its exponent through `f64`, so `x ** Fraction(1, 3)` is **not**
-`x^(1/3)` — it is the exact binary rational `6004799503160661/18014398509481984`, and
-`puiseux_series` refuses it (ramification far past the verifiable range) rather than rounding
-it to the fraction you probably meant. Dyadic exponents like `Fraction(3, 2)` are exact
-through `f64` and work as written. For anything else, build the power node directly:
+`x ** Fraction(1, 3)` is `x^(1/3)`. It used not to be: `Expr.__pow__` coerced its exponent
+through `f64`, so the exponent that reached the kernel was the binary rational
+`6004799503160661/18014398509481984` and `puiseux_series` refused it (ramification far past
+the verifiable range) rather than rounding it to the fraction you probably meant.
+
+An exponent with an exact value now reaches the pool exactly — a `Fraction`, a
+`decimal.Decimal`, and a Python `int` of any width, including one too large for an `i64`. A
+Python `float` is still a float node, because a float is what it is.
 
 ```python
-cube_root = sin(x).pow_expr(pool.rational(1, 3))
+cube_root = sin(x) ** Fraction(1, 3)             # or sin(x).pow_expr(pool.rational(1, 3))
 px = puiseux_series(cube_root, x, pool.integer(0), 5)
 px.ramification                                  # 3
 [(str(e), str(c)) for e, c in px.terms]

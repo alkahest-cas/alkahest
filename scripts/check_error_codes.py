@@ -5,8 +5,18 @@ Checks:
   1. Every code in REGISTRY appears in at least one Rust AlkahestError impl.
   2. No Rust impl returns a code that is absent from REGISTRY.
   3. No PyO3 error-raise path emits E-UNKNOWN.
-  4. Every PyO3 exception class name (Py*Error) has a matching Python class in
+  4. No code is returned by two different AlkahestError impls, except for the
+     handful of deliberate aliases listed in DELIBERATE_ALIASES.
+  5. Every PyO3 exception class name (Py*Error) has a matching Python class in
      alkahest/exceptions.py.
+
+Check 4 is not pedantry about tidiness. `E-ODE-021` meant "the adaptive step
+size fell below the floor" in `ode::numeric` and "the point is irregular
+singular" in `ode::series_solve` at the same time, for as long as both existed.
+An agent told it can branch on a stable code, branching on that one, would have
+read a numerical integrator giving up as a proof that no Frobenius series
+exists. REGISTRY's own `no_duplicate_codes` test could not see it: the registry
+listed the code once, and the second impl simply never appeared there.
 
 Usage:
     python scripts/check_error_codes.py
@@ -37,6 +47,51 @@ def parse_registry(path: Path) -> set[str]:
 # ---------------------------------------------------------------------------
 # Collect codes from Rust AlkahestError impls
 # ---------------------------------------------------------------------------
+
+# Codes deliberately returned by more than one impl, with the reason. Each is a
+# case where two error *types* report the same fact and want the same Python
+# class, so a caller's `except` and branch on `.code` behave identically either
+# way — an alias, not a collision.
+DELIBERATE_ALIASES: dict[str, str] = {
+    # PuiseuxError is the series engine widened to fractional exponents, not a
+    # new subsystem; it reuses SeriesError's codes so that `except SeriesError`
+    # keeps covering both. See the E-SERIES block in codes.rs.
+    "E-SERIES-001": "PuiseuxError reuses SeriesError's differentiation-failed code",
+    "E-SERIES-002": "PuiseuxError reuses SeriesError's invalid-order code",
+    "E-SERIES-003": "PuiseuxError reuses SeriesRefusal's work-ceiling code",
+    # Both holonomic error types report a malformed call the same way.
+    "E-HOLO-004": "holonomic::ModularError and HolonomicError share InvalidInput",
+}
+
+
+def collect_rust_code_owners(core: Path) -> dict[str, set[str]]:
+    """Map each code to the set of AlkahestError impls that can return it.
+
+    Brace-matched rather than line-based: a code mentioned in a doc comment or a
+    unit test is not a *return*, and only the impl body counts.
+    """
+    header = re.compile(r"impl\s+(?:crate::errors::)?AlkahestError\s+for\s+([\w:]+)\s*\{")
+    code_pat = re.compile(r'"(E-[A-Z]+-\d+)"')
+    owners: dict[str, set[str]] = {}
+
+    for rs in sorted(core.rglob("*.rs")):
+        text = rs.read_text(errors="replace")
+        for m in header.finditer(text):
+            start = m.end() - 1
+            depth = 0
+            end = len(text)
+            for i in range(start, len(text)):
+                if text[i] == "{":
+                    depth += 1
+                elif text[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+            for code in code_pat.findall(text[start:end]):
+                owners.setdefault(code, set()).add(m.group(1))
+    return owners
+
 
 def collect_rust_codes(core: Path) -> tuple[set[str], set[str]]:
     """Return (codes_in_impls, e_unknown_files)."""
@@ -99,7 +154,24 @@ def main() -> int:
     for f in sorted(unknown_files):
         errors.append(f'E-UNKNOWN found in {f} — every raised error must have a real code')
 
-    # 4. PyO3 class <→ Python class coverage
+    # 4. One code, one meaning — no code returned by two unrelated impls.
+    owners = collect_rust_code_owners(CORE)
+    for code, impls in sorted(owners.items()):
+        if len(impls) > 1 and code not in DELIBERATE_ALIASES:
+            errors.append(
+                f"Code {code} is returned by {len(impls)} different AlkahestError impls "
+                f"({', '.join(sorted(impls))}) — one code must mean one thing. "
+                "Renumber the block that has not shipped, or add it to "
+                "DELIBERATE_ALIASES with the reason it is the same fact."
+            )
+    for code in sorted(DELIBERATE_ALIASES):
+        if len(owners.get(code, ())) < 2:
+            errors.append(
+                f"{code} is listed in DELIBERATE_ALIASES but is no longer shared; "
+                "drop the entry so the allowlist keeps meaning something"
+            )
+
+    # 5. PyO3 class <→ Python class coverage
     pyo3_classes = collect_pyo3_classes(PY_LIB)
     py_classes = collect_python_classes(EXCEPTIONS_PY)
 

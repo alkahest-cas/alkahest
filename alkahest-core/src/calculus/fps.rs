@@ -730,6 +730,47 @@ impl crate::errors::AlkahestError for FpsError {
             FpsError::Series(_) => "E-FPS-007",
         }
     }
+
+    fn remediation(&self) -> Option<&'static str> {
+        Some(match self {
+            // 001/002 are the same mathematical fact reached two ways: the
+            // object has a pole at the origin, so it is a Laurent series and
+            // not a formal *power* series. Saying "unsupported" would send a
+            // caller looking for a wider implementation that cannot exist.
+            FpsError::DenominatorVanishesAtZero => {
+                "q(0) = 0 makes p/q singular at the origin, so it has no power-series \
+                 expansion there: divide out the common factor of x, or expand about a point \
+                 where q does not vanish"
+            }
+            FpsError::NotAnalyticAtZero => {
+                "the expression has a pole at x = 0, so its expansion is a Laurent series and \
+                 not a formal power series: multiply by the polar factor first, or use \
+                 `series` / `experimental.puiseux_series`, which return the polar part"
+            }
+            FpsError::NonRationalCoefficient => {
+                "Fps carries exact rational coefficients only; substitute rationals for the \
+                 symbolic parameters, or clear an irrational constant factor out front"
+            }
+            FpsError::ConstantTermMustBeZero => {
+                "composition, exp and reversion need f(0) = 0 so the composed series is well \
+                 defined coefficient by coefficient: subtract the constant term (exp(f) = \
+                 exp(f(0))·exp(f − f(0)))"
+            }
+            FpsError::ConstantTermMustBeOne => {
+                "log and the default n-th root need f(0) = 1 to pick a branch: factor the \
+                 constant term out (log(f) = log(f(0)) + log(f/f(0)))"
+            }
+            FpsError::ConstantTermMustBeNonzero => {
+                "the multiplicative inverse needs f(0) ≠ 0; when f vanishes to order k, \
+                 divide x^k out first — 1/f is then x^{−k} times the inverse of f/x^k"
+            }
+            FpsError::Series(_) => {
+                "the underlying Taylor expansion failed; the inner message names the reason — \
+                 ensure every function has a differentiation rule and the expansion point is \
+                 regular"
+            }
+        })
+    }
 }
 
 impl From<SeriesError> for FpsError {
