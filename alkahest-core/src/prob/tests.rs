@@ -1130,3 +1130,505 @@ fn moments_from_the_characteristic_function_agree_with_the_moment_table() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Information theory
+// ---------------------------------------------------------------------------
+//
+// Every literal in this section is from mpmath 40 dps or from a hand
+// derivation, both recorded beside the value. The two identities
+// (`H(P,Q) = H(P) + D(P‖Q)` and `D(P‖P) = 0`) are asserted *symbolically*,
+// which is stronger than any number: they have to hold for every parameter at
+// once, and they are what a transcription slip between the entropy table and
+// the divergence table breaks.
+
+/// `h(X)` for the continuous laws, against `scipy.stats.<dist>.entropy()` —
+/// an independent implementation of the same quantity.
+#[test]
+fn differential_entropy_matches_an_independent_implementation() {
+    let p = pool();
+    let cases: Vec<(Distribution, f64)> = vec![
+        // scipy.stats.norm(0, 1).entropy() = 1.4189385332046727
+        (
+            Distribution::normal(p.integer(0), p.integer(1), &p).unwrap(),
+            1.4189385332046727,
+        ),
+        // scipy.stats.norm(2, 1.5).entropy() = 1.8244036413128367
+        (
+            Distribution::normal(p.integer(2), p.rational(3, 2), &p).unwrap(),
+            1.8244036413128368,
+        ),
+        // scipy.stats.lognorm(s=0.5, scale=exp(0.2)).entropy() = 0.9257913526447273
+        (
+            Distribution::log_normal(p.rational(1, 5), p.rational(1, 2), &p).unwrap(),
+            0.9257913526447272,
+        ),
+        // log(5); scipy.stats.uniform(-2, 5).entropy()
+        (
+            Distribution::uniform(p.integer(-2), p.integer(3), &p).unwrap(),
+            1.60943791243413,
+        ),
+        // 1 - log(1.75); scipy.stats.expon(scale=1/1.75).entropy()
+        (
+            Distribution::exponential(p.rational(7, 4), &p).unwrap(),
+            0.44038421206458056,
+        ),
+        // scipy.stats.gamma(3.5, scale=0.8).entropy() = 1.7199384494197568
+        (
+            Distribution::gamma(p.rational(7, 2), p.rational(4, 5), &p).unwrap(),
+            1.7199384494197565,
+        ),
+        // scipy.stats.beta(2, 3).entropy() = -0.2349066497880
+        (
+            Distribution::beta(p.integer(2), p.integer(3), &p).unwrap(),
+            -0.23490664978800016,
+        ),
+    ];
+    for (d, want) in &cases {
+        let h = d.entropy(None, &p).unwrap().value;
+        assert_close!(at(&p, h, &[]), *want);
+    }
+}
+
+/// `H(X)` for the discrete laws, against a sum done by hand.
+#[test]
+fn shannon_entropy_matches_the_defining_sum() {
+    let p = pool();
+    // -0.3 log 0.3 - 0.7 log 0.7
+    let bern = Distribution::bernoulli(p.rational(3, 10), &p).unwrap();
+    assert_close!(
+        at(&p, bern.entropy(None, &p).unwrap().value, &[]),
+        0.610864302054894
+    );
+    // scipy.stats.binom(5, 0.35).entropy() = 1.4642429369178962
+    let binom = Distribution::binomial(p.integer(5), p.rational(7, 20), &p).unwrap();
+    assert_close!(
+        at(&p, binom.entropy(None, &p).unwrap().value, &[]),
+        1.464242936917896
+    );
+}
+
+/// `h(Normal(μ, σ)) = ½log(2πeσ²)`, and it does not depend on `μ`.
+///
+/// The `μ`-independence is asserted on the *expression*, not on two numbers: a
+/// formula that happened to contain a `μ` which cancelled numerically at the
+/// sampled points would pass a numeric check and fail this one.
+#[test]
+fn gaussian_entropy_is_half_log_two_pi_e_sigma_squared_and_free_of_mu() {
+    let p = pool();
+    let sigma = p.rational(3, 2);
+    let mut seen = None;
+    for mu in [
+        p.integer(0),
+        p.integer(3),
+        p.rational(-7, 2),
+        sym(&p, "mu_free"),
+    ] {
+        let h = Distribution::normal(mu, sigma, &p)
+            .unwrap()
+            .entropy(None, &p)
+            .unwrap()
+            .value;
+        match seen {
+            None => seen = Some(h),
+            Some(first) => assert_eq!(first, h, "entropy depends on mu"),
+        }
+    }
+    // ½log(2πe·2.25) = 1.8244036413128368 (mpmath 40 dps).
+    assert_close!(at(&p, seen.unwrap(), &[]), 1.8244036413128368);
+}
+
+/// Differential entropy is **not** invariant under a change of variables: it
+/// shifts by `E[log|dx/dy|]`.
+///
+/// `LogNormal(μ, σ) = e^{Normal(μ, σ)}` is a smooth bijection onto `(0, ∞)`,
+/// so the shift is `E[Y] = μ`. Treating `h` as relabelling-invariant — which
+/// Shannon entropy genuinely is — makes this difference `0`.
+#[test]
+fn differential_entropy_shifts_by_the_log_jacobian_under_exp() {
+    let p = pool();
+    let (mu, sigma) = (sym(&p, "mu_j"), sym(&p, "sigma_j"));
+    let normal = Distribution::normal(mu, sigma, &p).unwrap();
+    let log_normal = Distribution::log_normal(mu, sigma, &p).unwrap();
+    let gap = simplify(
+        sub(
+            log_normal.entropy(None, &p).unwrap().value,
+            normal.entropy(None, &p).unwrap().value,
+            &p,
+        ),
+        &p,
+    )
+    .value;
+    assert_eq!(gap, mu, "h(e^Y) - h(Y) should be exactly mu");
+}
+
+/// `D(P‖P) = 0`, symbolically, for every family.
+#[test]
+fn a_divergence_from_a_law_to_itself_is_exactly_zero() {
+    let p = pool();
+    let zero = p.integer(0);
+    let families = [
+        Distribution::normal(sym(&p, "m0"), sym(&p, "s0"), &p).unwrap(),
+        Distribution::log_normal(sym(&p, "m0"), sym(&p, "s0"), &p).unwrap(),
+        Distribution::uniform(sym(&p, "ua"), sym(&p, "ub"), &p).unwrap(),
+        Distribution::exponential(sym(&p, "lam0"), &p).unwrap(),
+        Distribution::gamma(sym(&p, "k0"), sym(&p, "th0"), &p).unwrap(),
+        Distribution::beta(sym(&p, "al0"), sym(&p, "be0"), &p).unwrap(),
+        Distribution::bernoulli(sym(&p, "pp0"), &p).unwrap(),
+        Distribution::binomial(p.integer(5), sym(&p, "pb0"), &p).unwrap(),
+        Distribution::poisson(sym(&p, "lm0"), &p).unwrap(),
+    ];
+    for d in &families {
+        let v = kl_divergence(d, d, None, &p).unwrap().value;
+        assert_eq!(
+            simplify(v, &p).value,
+            zero,
+            "D(P‖P) for {} is {}",
+            d.kind().name(),
+            p.display(v)
+        );
+    }
+}
+
+/// `H(P, Q) = H(P) + D(P‖Q)`, symbolically.
+///
+/// The cross-entropy is assembled from both tables and then checked against
+/// `-E_P[log q]`, which is neither of them, so this identity is a genuine
+/// constraint tying the two tables together rather than a restatement of how
+/// the value was built.
+#[test]
+fn cross_entropy_is_entropy_plus_divergence() {
+    let p = pool();
+    let zero = p.integer(0);
+    let pairs: Vec<(Distribution, Distribution)> = vec![
+        (
+            Distribution::normal(sym(&p, "m1"), sym(&p, "s1"), &p).unwrap(),
+            Distribution::normal(sym(&p, "m2"), sym(&p, "s2"), &p).unwrap(),
+        ),
+        (
+            Distribution::exponential(sym(&p, "l1"), &p).unwrap(),
+            Distribution::exponential(sym(&p, "l2"), &p).unwrap(),
+        ),
+        (
+            Distribution::gamma(sym(&p, "k1"), sym(&p, "t1"), &p).unwrap(),
+            Distribution::gamma(sym(&p, "k2"), sym(&p, "t2"), &p).unwrap(),
+        ),
+        (
+            Distribution::beta(sym(&p, "a1"), sym(&p, "b1"), &p).unwrap(),
+            Distribution::beta(sym(&p, "a2"), sym(&p, "b2"), &p).unwrap(),
+        ),
+        (
+            Distribution::bernoulli(sym(&p, "q1"), &p).unwrap(),
+            Distribution::bernoulli(sym(&p, "q2"), &p).unwrap(),
+        ),
+        (
+            Distribution::binomial(p.integer(4), sym(&p, "r1"), &p).unwrap(),
+            Distribution::binomial(p.integer(4), sym(&p, "r2"), &p).unwrap(),
+        ),
+    ];
+    for (a, b) in &pairs {
+        let ce = cross_entropy(a, b, None, &p).unwrap().value;
+        let h = a.entropy(None, &p).unwrap().value;
+        let d = kl_divergence(a, b, None, &p).unwrap().value;
+        let gap = simplify(sub(ce, p.add(vec![h, d]), &p), &p).value;
+        assert_eq!(gap, zero, "{} cross-entropy identity", a.kind().name());
+    }
+}
+
+/// Gibbs: `D(P‖Q) ≥ 0`, with equality only on the diagonal.
+///
+/// Swept rather than sampled. A sign error in a closed form — the `Gamma`
+/// entry's `(k₁-k₂)ψ(k₁)` and `k₁(θ₁-θ₂)/θ₂` have opposite signs and are easy
+/// to transpose — stays positive near the diagonal and only goes negative
+/// further out, so one point proves nothing.
+#[test]
+fn gibbs_every_divergence_is_non_negative() {
+    let p = pool();
+    let grid = [(1, 2), (1, 1), (3, 2), (5, 2)];
+    let mut gammas = Vec::new();
+    let mut normals = Vec::new();
+    let mut bernoullis = Vec::new();
+    for (a, b) in grid {
+        gammas.push(Distribution::gamma(p.rational(a, 2), p.rational(b, 2), &p).unwrap());
+        normals.push(Distribution::normal(p.rational(a - 3, 2), p.rational(b, 2), &p).unwrap());
+    }
+    for k in 1..10 {
+        bernoullis.push(Distribution::bernoulli(p.rational(k, 10), &p).unwrap());
+    }
+    for family in [&gammas, &normals, &bernoullis] {
+        for a in family.iter() {
+            for b in family.iter() {
+                let v = at(&p, kl_divergence(a, b, None, &p).unwrap().value, &[]);
+                assert!(
+                    v >= -1e-12,
+                    "D({} ‖ {}) = {v} is negative",
+                    a.kind().name(),
+                    b.kind().name()
+                );
+                if a == b {
+                    assert!(v.abs() < 1e-12, "D(P‖P) = {v}");
+                }
+            }
+        }
+    }
+}
+
+/// Closed-form divergences against an independent computation.
+#[test]
+fn divergences_match_independent_values() {
+    let p = pool();
+    // mpmath 40 dps of ∫p log(p/q), and the closed forms by hand.
+    let cases: Vec<(Distribution, Distribution, f64)> = vec![
+        // log(1.5) + (1 + 4)/(2·2.25) - 0.5
+        (
+            Distribution::normal(p.integer(0), p.integer(1), &p).unwrap(),
+            Distribution::normal(p.integer(2), p.rational(3, 2), &p).unwrap(),
+            1.016576219219275,
+        ),
+        // log(1/4) + 4 - 1 = 3 - 2log2
+        (
+            Distribution::exponential(p.integer(1), &p).unwrap(),
+            Distribution::exponential(p.integer(4), &p).unwrap(),
+            1.613705638880109,
+        ),
+        // log 4 + 1/4 - 1 — the *other* direction, deliberately: D is not
+        // symmetric, and these two numbers differ by 3log4 - 3.
+        (
+            Distribution::exponential(p.integer(4), &p).unwrap(),
+            Distribution::exponential(p.integer(1), &p).unwrap(),
+            0.636294361119891,
+        ),
+        // log((3-(-2))/(1-0)) = log 5
+        (
+            Distribution::uniform(p.integer(0), p.integer(1), &p).unwrap(),
+            Distribution::uniform(p.integer(-2), p.integer(3), &p).unwrap(),
+            1.6094379124341,
+        ),
+        // 2.4 log 2.4 + 1 - 2.4
+        (
+            Distribution::poisson(p.rational(12, 5), &p).unwrap(),
+            Distribution::poisson(p.integer(1), &p).unwrap(),
+            0.701124969649360,
+        ),
+        // 0.5 log(5/7) + 0.5 log(5/3); scipy.stats.entropy([.5,.5],[.3,.7])
+        (
+            Distribution::bernoulli(p.rational(1, 2), &p).unwrap(),
+            Distribution::bernoulli(p.rational(7, 10), &p).unwrap(),
+            0.087176693572389,
+        ),
+        // 0.3 log(3/5) + 0.7 log(7/5) — the other direction, a different
+        // number: scipy.stats.entropy([.3,.7],[.5,.5]) = 0.08228287850505175.
+        (
+            Distribution::bernoulli(p.rational(3, 10), &p).unwrap(),
+            Distribution::bernoulli(p.rational(1, 2), &p).unwrap(),
+            0.082282878505052,
+        ),
+    ];
+    for (a, b, want) in &cases {
+        let v = kl_divergence(a, b, None, &p).unwrap().value;
+        assert_close!(at(&p, v, &[]), *want);
+    }
+}
+
+/// `supp P ⊄ supp Q` makes `D = +∞`, and the closed form there is a clean
+/// finite **negative** number that nothing in the arithmetic objects to.
+#[test]
+fn a_divergence_off_a_nested_support_is_infinite_not_the_formula() {
+    let p = pool();
+    let wide = Distribution::uniform(p.integer(0), p.integer(1), &p).unwrap();
+    let narrow = Distribution::uniform(p.integer(0), p.rational(1, 2), &p).unwrap();
+    // The formula, if it were applied: log((1/2 - 0)/(1 - 0)) = -log 2.
+    assert_eq!(
+        kl_divergence(&wide, &narrow, None, &p).unwrap_err().code(),
+        "E-PROB-006"
+    );
+    // A Q whose support Q ⊅ P on the *left* too.
+    let shifted = Distribution::uniform(p.rational(1, 4), p.rational(3, 4), &p).unwrap();
+    assert_eq!(
+        kl_divergence(&wide, &shifted, None, &p).unwrap_err().code(),
+        "E-PROB-006"
+    );
+    // Discrete: Q gives the atom `0` no mass at all.
+    let fair = Distribution::bernoulli(p.rational(1, 2), &p).unwrap();
+    for degenerate in [p.integer(0), p.integer(1)] {
+        let q = Distribution::bernoulli(degenerate, &p).unwrap();
+        assert_eq!(
+            kl_divergence(&fair, &q, None, &p).unwrap_err().code(),
+            "E-PROB-006"
+        );
+    }
+    // The control: nesting restored, a value comes back.
+    let containing = Distribution::uniform(p.integer(-2), p.integer(3), &p).unwrap();
+    assert_close!(
+        at(
+            &p,
+            kl_divergence(&wide, &containing, None, &p).unwrap().value,
+            &[]
+        ),
+        1.6094379124341
+    );
+}
+
+/// An undecidable containment is **published**, not assumed.
+#[test]
+fn a_symbolic_containment_travels_as_a_side_condition() {
+    let p = pool();
+    let (a1, b1) = (sym(&p, "ca"), sym(&p, "cb"));
+    let inner = Distribution::uniform(a1, b1, &p).unwrap();
+    let outer = Distribution::uniform(p.integer(-2), p.integer(3), &p).unwrap();
+    match kl_divergence(&inner, &outer, None, &p) {
+        Ok(_) => {
+            let conds = take_prob_side_conditions();
+            assert!(
+                conds.len() >= 2,
+                "a symbolic [a, b] against [-2, 3] must publish both containments, got {conds:?}"
+            );
+        }
+        // Refusing to verify is also acceptable — what is not acceptable is
+        // answering with the containment silently assumed.
+        Err(e) => assert_eq!(e.code(), "E-PROB-005"),
+    }
+}
+
+/// The units convert, and a base that is not a base is refused.
+#[test]
+fn entropy_in_bits_is_entropy_in_nats_over_log_two() {
+    let p = pool();
+    let fair = Distribution::bernoulli(p.rational(1, 2), &p).unwrap();
+    // A fair coin is one bit, by definition, and log 2 nats.
+    assert_close!(
+        at(&p, fair.entropy(Some(p.integer(2)), &p).unwrap().value, &[]),
+        1.0
+    );
+    assert_close!(
+        at(&p, fair.entropy(None, &p).unwrap().value, &[]),
+        std::f64::consts::LN_2
+    );
+    // log 1 = 0: there is no base-1 logarithm and no base-1 entropy.
+    for bad in [p.integer(1), p.integer(0), p.integer(-2)] {
+        assert_eq!(
+            fair.entropy(Some(bad), &p).unwrap_err().code(),
+            "E-PROB-001"
+        );
+    }
+}
+
+/// The refusals, and their controls.
+#[test]
+fn information_theory_refusals_name_what_is_missing() {
+    let p = pool();
+    // The Poisson entropy's residual sum is not a standard function.
+    let pois = Distribution::poisson(p.rational(12, 5), &p).unwrap();
+    assert_eq!(pois.entropy(None, &p).unwrap_err().code(), "E-PROB-004");
+    // …but its divergence closes: `log k!` cancels between the two densities.
+    let pois2 = Distribution::poisson(p.integer(1), &p).unwrap();
+    assert_close!(
+        at(
+            &p,
+            kl_divergence(&pois, &pois2, None, &p).unwrap().value,
+            &[]
+        ),
+        0.701124969649360
+    );
+    // Cross-family is not the same-family formula with the names swapped.
+    let normal = Distribution::normal(p.integer(0), p.integer(1), &p).unwrap();
+    let expo = Distribution::exponential(p.integer(1), &p).unwrap();
+    assert_eq!(
+        kl_divergence(&normal, &expo, None, &p).unwrap_err().code(),
+        "E-PROB-002"
+    );
+    // A Binomial past the assembly limit.
+    let big = Distribution::binomial(p.integer(80), p.rational(1, 3), &p).unwrap();
+    assert_eq!(big.entropy(None, &p).unwrap_err().code(), "E-PROB-002");
+}
+
+/// A point mass has entropy exactly `0` — the `0 log 0 = 0` convention, taken
+/// before the closed form (which is `NaN` there) is reached.
+#[test]
+fn the_entropy_of_a_point_mass_is_zero_not_nan() {
+    let p = pool();
+    let zero = p.integer(0);
+    for degenerate in [p.integer(0), p.integer(1)] {
+        let d = Distribution::bernoulli(degenerate, &p).unwrap();
+        assert_eq!(d.entropy(None, &p).unwrap().value, zero);
+        let b = Distribution::binomial(p.integer(4), degenerate, &p).unwrap();
+        assert_eq!(b.entropy(None, &p).unwrap().value, zero);
+    }
+    let none = Distribution::binomial(p.integer(0), p.rational(1, 3), &p).unwrap();
+    assert_eq!(none.entropy(None, &p).unwrap().value, zero);
+}
+
+/// `I(X; Y) = 0` under an assumed independence, and the assumption is the
+/// caller's — it is in the function's name, not checked.
+#[test]
+fn mutual_information_of_an_independent_pair_is_zero() {
+    let p = pool();
+    let x = Distribution::normal(p.integer(0), p.integer(1), &p).unwrap();
+    let y = Distribution::poisson(p.integer(3), &p).unwrap();
+    assert_eq!(
+        mutual_information_independent(&x, &y, None, &p)
+            .unwrap()
+            .value,
+        p.integer(0)
+    );
+}
+
+/// The entropy and divergence gates are **able to fail**.
+///
+/// A check that has never rejected anything is decoration. These feed the same
+/// verifier the same defining integrals with a deliberately wrong claim — the
+/// two mistakes a reader would most easily make — and require a refusal.
+#[test]
+fn the_gate_rejects_a_wrong_entropy_and_a_wrong_divergence() {
+    let p = pool();
+    let (mu, sigma) = (sym(&p, "mu_g"), sym(&p, "sigma_g"));
+    let normal = Distribution::normal(mu, sigma, &p).unwrap();
+    let x = dists::fresh_var(normal.params(), &p);
+    let density = dists::pdf(&normal, x, &p);
+    let integrand = p.mul(vec![
+        p.mul(vec![p.integer(-1), p.func("log", vec![density])]),
+        density,
+    ]);
+
+    // `½log(2πeσ)` instead of `½log(2πeσ²)` — right at σ = 1, wrong elsewhere,
+    // and off by a smooth factor rather than an obvious one.
+    let wrong = p.add(vec![
+        p.mul(vec![
+            p.rational(1, 2),
+            p.func("log", vec![p.mul(vec![p.integer(2), pi(&p), sigma])]),
+        ]),
+        p.rational(1, 2),
+    ]);
+    let err = verify::check(simplify(wrong, &p).value, integrand, x, &normal, &p).unwrap_err();
+    assert_eq!(err.code(), "E-PROB-005");
+
+    // A divergence with the two scales the wrong way round: `log(σ₁/σ₂)`
+    // instead of `log(σ₂/σ₁)`, which is still 0 on the diagonal and still
+    // finite everywhere.
+    let q = Distribution::normal(sym(&p, "mu_h"), sym(&p, "sigma_h"), &p).unwrap();
+    let (dp, dq) = (dists::pdf(&normal, x, &p), dists::pdf(&q, x, &p));
+    let kl_integrand = p.mul(vec![p.func("log", vec![div(dp, dq, &p)]), dp]);
+    let good = kl_divergence(&normal, &q, None, &p).unwrap().value;
+    let flipped = simplify(
+        p.add(vec![
+            good,
+            p.mul(vec![
+                p.integer(-2),
+                p.func("log", vec![div(q.params()[1], sigma, &p)]),
+            ]),
+        ]),
+        &p,
+    )
+    .value;
+    let err = verify::check_pair(
+        flipped,
+        kl_integrand,
+        x,
+        &normal,
+        &q,
+        &q.constraints(&p),
+        &p,
+    )
+    .unwrap_err();
+    assert_eq!(err.code(), "E-PROB-005");
+}
