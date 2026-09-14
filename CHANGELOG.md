@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- **`zeilberger`'s boundary verdict no longer reads a zero off `0 · ∞`.** An
+  endpoint of `G(n,k)` is evaluated by order counting in `k`, and a strictly
+  positive order was taken to mean "exactly zero, for every `n`". The count is
+  an expansion in `k`, so it leaves behind the factors that no longer move with
+  `k` at the endpoint — a `Γ(a·n + c)^e` list — and a `Γ` there with `e > 0` is
+  *infinite* wherever its argument is a non-positive integer.
+  `F(n,k) = C(10,k)·Γ(n−k+1)/Γ(n+1)` over `k = 0..10` is the shape: at `k = 11`
+  the `1/Γ(11−k) = 1/Γ(0)` zero is real and so is the `Γ(n−10)` pole beside it,
+  `G(9,11)` is `1/9!`, and `cert.boundary_at(0, 10)` returned `"vanishes"`. The
+  recurrence that licensed has coefficients `9−n`, `−(n+1)²`, `(n+1)(n+2)`,
+  whose `n = 9` instance — leading coefficient zero — reads
+  `110·S(11) = 100·S(10)` about two well-defined numbers. In exact rational
+  arithmetic `S(10) = 9864101/3628800`, `S(11) = 4697191/1900800`, and
+  `110·S(11) − 100·S(10) = 1/362880 = 1/9!`. It is now `"unknown"`.
+
+  The refusal is on the pole's **location**, not on the factor's shape: `Γ` is
+  infinite exactly at the non-positive integers and every coefficient is an
+  integer, so a fractional constant term is out of reach, `a > 0` puts the last
+  pole at `n = ⌊−c/a⌋`, and `a < 0` puts one at every large `n`. A binomial's
+  `Γ(n+1)` has its poles at `n ≤ −1`, so every classical natural boundary is
+  untouched — `C(n,k)`, `C(n,k)²`, Franel, Dixon, Apéry, `2^k·C(n,k)`,
+  `C(n,k)·C(m,k)`, `C(2n,k)` still `"vanishes"`, `C(n,k)/(k+1)` still
+  `"nonzero"` — including the Pochhammer family `C(10,k)·(n+1)_k`, which the
+  `m`-index module's blunter shape-based test for the same defect gives up.
+
+  The cost, measured rather than assumed: summands whose endpoint zero really
+  is multiplied by something that blows up on the domain — `Γ(n−k+1+d)/Γ(n+1)`
+  and `2^k·C(m,k)·Γ(n−k+1)/Γ(n+1)` against a fixed-length range, `C(n−m,k)` for
+  `m > 0` — were `"vanishes"` and are now `"unknown"`. Some of those had a true
+  recurrence on a smaller domain: `Σ_{k=0}^{n} C(n−3,k)` does satisfy
+  `S(n+1) = 2·S(n)` from `n = 3` on. Reporting that as a narrowed
+  `boundary_valid_from` instead of refusing would be strictly better and is not
+  what this change does; a refusal is the honest answer until it exists.
+
 - **The `erf` and Fresnel antiderivatives carry their constants exactly.**
   `integrate/special.rs` built `√π/2`, `√(π/2|A|)` and `√(2|A|/π)` in `f64` and
   dropped them into the pool as float literals, even when the integrand was

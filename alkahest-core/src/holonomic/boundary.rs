@@ -57,7 +57,8 @@
 //!    factor whose argument at `k*` is an `n`-free non-positive integer
 //!    contributes `−e` (a simple pole of `Γ`, or a simple zero of `1/Γ`) with an
 //!    exact residue `(−1)^m/(m!·b)`. A strictly positive total order means the
-//!    value **is** `0`, exactly, for every `n`; a negative one means `G` is
+//!    value **is** `0`, exactly, for every `n` — subject to the next section,
+//!    which is where that "for every `n`" is earned; a negative one means `G` is
 //!    unbounded there, which breaks step 1 and is reported as `Unknown`.
 //! 3. The resulting terms are put in a canonical form — `Γ(x+1) = x·Γ(x)` is
 //!    applied until every argument is `a·n + c` with `c ∈ [0,1)`, the excess
@@ -70,6 +71,49 @@
 //! *witness*, an integer `n₀` at which `b(n₀)` evaluates in exact rational
 //! arithmetic to something other than zero. Sampling that finds only zeros
 //! proves nothing, and yields `Unknown` — never `Vanishes`.
+//!
+//! # An order of `+1` is a zero in `k`, not a zero against an infinity
+//!
+//! The order counting in step 2 is an expansion in `k` around `k*`, and it
+//! leaves behind the factors that do not move with `k` there: a `Γ(a·n + c)^e`
+//! list, which `GammaAt::Finite` describes as "finite and nonzero for all but
+//! finitely many `n`". For a `Value::Finite` that is honest — the factor goes
+//! into the closed form and is still there when `b(n)` is evaluated. For a
+//! **zero** it is not, because the finitely many `n` are the whole hazard:
+//! `0 · ∞` is not `0`, and a verdict carries an implied "for every `n`".
+//!
+//! `F(n,k) = C(10,k)·Γ(n−k+1)/Γ(n+1)` over `k = 0..10` is the shape. At the
+//! upper endpoint `k = 11` the `1/Γ(11−k) = 1/Γ(0)` zero is real and gives
+//! order `+1` — but `Γ(n−k+1) = Γ(n−10)` is left in the `Γ`-in-`n` list with a
+//! **positive** exponent, and it is a pole at every integer `n ≤ 10`. `G(9,11)`
+//! is `1/9!`, not `0`. The `Vanishes` this used to return licensed
+//! `(9−n)·S(n) − (n+1)²·S(n+1) + (n+1)(n+2)·S(n+2) = 0`, whose `n = 9`
+//! instance has a zero leading coefficient and so reads `110·S(11) = 100·S(10)`
+//! about two numbers that are both perfectly well defined — and that differ by
+//! exactly `1/9!`.
+//!
+//! So `value_at` refuses to read a zero off an expansion whose surviving
+//! positive-exponent `Γ(a·n + c)` has a pole at an integer `n` in the domain the
+//! verdict covers, and the verdict is [`BoundaryStatus::Unknown`]. The test is
+//! on the *location* of the pole, not on the shape of the factor: `Γ` is
+//! infinite exactly at the non-positive integers, `a` and `n` are integers, so
+//! a fractional `c` is out of reach entirely, `a > 0` puts the last pole at
+//! `n = ⌊−c/a⌋`, and `a < 0` puts one at every large `n`. That is deliberately
+//! narrower than the same fix in [`super::telescoping2d::boundary`], which
+//! weighs each factor by shape — "the argument moves with `n`, so refuse" — and
+//! pays for it by losing the `C(10,k)·(n+1)_k` family. Here `(n+1)_k`
+//! contributes `Γ(n+k+1) → Γ(n+12)` at the endpoint, whose poles are all at
+//! `n ≤ −12`, far below any domain this module claims, so it keeps its verdict.
+//!
+//! What it does cost is every summand whose endpoint zero is multiplied by a
+//! `Γ` that really can blow up on the domain: a falling-factorial
+//! `Γ(n−k+1+d)/Γ(n+1)` against a constant-length range, `Γ(n−k−m)`, `C(n−m,k)`
+//! for `m > 0`. Those were `Vanishes` and are now `Unknown`; none of them was a
+//! verdict worth keeping, since the endpoint they rested on is not zero. The
+//! classical natural boundaries are untouched, because a binomial's `Γ(n+1)`
+//! has its poles at `n ≤ −1`: `C(n,k)`, `C(n,k)²`, Franel, Dixon, Apéry,
+//! `2^k·C(n,k)`, `C(n,k)·C(m,k)` and `C(n,k)·(n+1)_k` all still vanish, and the
+//! A279013 `C(n,k)/(k+1)` is still `Nonzero`.
 //!
 //! # The domain a verdict is a theorem on
 //!
@@ -405,9 +449,13 @@ pub fn boundary_verdict(
         };
     }
 
-    let status = match collect_terms(&setup, result, n, k, pool) {
+    // The domain the verdict is claimed on, as a lower bound: the same one the
+    // `Nonzero` witness search is confined to, and the one an endpoint value has
+    // to be a value on. See `value_at`.
+    let n_floor = valid_from.unwrap_or(1).max(1);
+    let status = match collect_terms(&setup, result, n, k, n_floor, pool) {
         Err(reason) => BoundaryStatus::Unknown { reason },
-        Ok(terms) => decide(&terms, n, valid_from.unwrap_or(1).max(1), pool),
+        Ok(terms) => decide(&terms, n, n_floor, pool),
     };
     BoundaryVerdict {
         status,
@@ -470,6 +518,7 @@ fn collect_terms(
     result: &ZeilbergerResult,
     n: ExprId,
     k: ExprId,
+    n_floor: i64,
     pool: &ExprPool,
 ) -> Result<Vec<HypTerm>, String> {
     let (f, r, lo_pt, hi_pt) = (&setup.f, &setup.r, setup.lo, setup.hi);
@@ -478,10 +527,18 @@ fn collect_terms(
 
     // The telescoped part: + G(n, k_hi+1) − G(n, k_lo).
     let at_hi = hi_pt.offset(1);
-    push_value(&mut terms, value_at(r, f, 0, at_hi), &rn_one())
-        .map_err(|e| format!("G(n, k_hi+1) could not be evaluated: {e}"))?;
-    push_value(&mut terms, value_at(r, f, 0, lo_pt), &rn_neg(&rn_one()))
-        .map_err(|e| format!("G(n, k_lo) could not be evaluated: {e}"))?;
+    push_value(
+        &mut terms,
+        value_at(r, f, 0, at_hi, Some(n_floor)),
+        &rn_one(),
+    )
+    .map_err(|e| format!("G(n, k_hi+1) could not be evaluated: {e}"))?;
+    push_value(
+        &mut terms,
+        value_at(r, f, 0, lo_pt, Some(n_floor)),
+        &rn_neg(&rn_one()),
+    )
+    .map_err(|e| format!("G(n, k_lo) could not be evaluated: {e}"))?;
 
     // The range-shift corrections: Σ_i a_i(n)·D_i(n).
     let one = RatK::one();
@@ -496,15 +553,23 @@ fn collect_terms(
         for (t, sign) in signed_window(1, hi_pt.alpha * i64_i) {
             let weight = scale_sign(&a_i, sign);
             let at = hi_pt.offset(t);
-            push_value(&mut terms, value_at(&one, f, i64_i, at), &weight)
-                .map_err(|e| format!("the upper range-shift correction failed: {e}"))?;
+            push_value(
+                &mut terms,
+                value_at(&one, f, i64_i, at, Some(n_floor)),
+                &weight,
+            )
+            .map_err(|e| format!("the upper range-shift correction failed: {e}"))?;
         }
         // Lower window: Σ_{k=κ₀(n+i)}^{κ₀(n)−1} F(n+i, k).
         for (t, sign) in signed_window(lo_pt.alpha * i64_i, -1) {
             let weight = scale_sign(&a_i, sign);
             let at = lo_pt.offset(t);
-            push_value(&mut terms, value_at(&one, f, i64_i, at), &weight)
-                .map_err(|e| format!("the lower range-shift correction failed: {e}"))?;
+            push_value(
+                &mut terms,
+                value_at(&one, f, i64_i, at, Some(n_floor)),
+                &weight,
+            )
+            .map_err(|e| format!("the lower range-shift correction failed: {e}"))?;
         }
     }
     Ok(terms)
@@ -691,7 +756,7 @@ fn summand_pole_inside(f: &ProperTerm, lo: Point, hi: Point) -> Option<Point> {
         };
         for beta in blo..=bhi {
             let pt = Point { alpha, beta };
-            if let Value::Pole { .. } = value_at(&one, f, 0, pt) {
+            if let Value::Pole { .. } = value_at(&one, f, 0, pt, None) {
                 return Some(pt);
             }
         }
@@ -853,8 +918,10 @@ fn interior_poles(setup: &Setup) -> Vec<PolePoint> {
             // cannot place it and says so rather than assuming it away.
             let regular = match cand.as_integer_point() {
                 Some(at) => {
-                    is_finite(value_at(&setup.r, &setup.f, 0, at))
-                        && is_finite(value_at(&RatK::one(), &setup.f, 0, at))
+                    // `None`: this asks only whether the point is finite, and
+                    // makes no claim about any particular `n`.
+                    is_finite(value_at(&setup.r, &setup.f, 0, at, None))
+                        && is_finite(value_at(&RatK::one(), &setup.f, 0, at, None))
                 }
                 None => false,
             };
@@ -1036,7 +1103,15 @@ const MAX_GAMMA_ARG: i64 = 4096;
 const MAX_GAMMA_SHIFT: i64 = 512;
 
 /// Evaluate `extra(n,k) · F(n + n_shift, k)` at `k = α·n + β`, by order counting.
-fn value_at(extra: &RatK, f: &ProperTerm, n_shift: i64, at: Point) -> Value {
+///
+/// `n_floor` is the smallest `n` the caller's claim has to cover. It is only
+/// ever used to reject a **zero**: an exact zero read off a positive order in
+/// `k` is a claim for every `n` in that domain, and it is not one where a
+/// surviving `Γ(a·n + c)^{e>0}` is infinite. `None` asks for the local order
+/// count alone and makes no claim about any `n`, which is all
+/// [`summand_pole_inside`] wants — a [`Value::Pole`] is decided before the
+/// check and is never suppressed by it.
+fn value_at(extra: &RatK, f: &ProperTerm, n_shift: i64, at: Point, n_floor: Option<i64>) -> Value {
     let q = extra.mul(&f.rat.shift_n(n_shift)).normalize();
     if q.num.is_zero() {
         return Value::Zero;
@@ -1092,23 +1167,106 @@ fn value_at(extra: &RatK, f: &ProperTerm, n_shift: i64, at: Point) -> Value {
         }
     }
 
-    if order > 0 {
-        // A strictly positive order is an exact zero, for every n.
-        return Value::Zero;
-    }
     if order < 0 {
         return Value::Pole {
             order: order.unsigned_abs(),
         };
     }
-    if rn_is_zero(&coeff) {
+
+    // Both remaining ways out below claim the value is *exactly zero, for every
+    // `n`*: a strictly positive order in `k`, or a rational part that is the
+    // zero element of `Q(n)`. Neither is a zero at an `n` where one of the
+    // factors it is multiplied by is infinite — `0 · ∞` is not `0` — and the
+    // `Γ(a·n + c)^{e>0}` left in `gammas` are exactly the factors that can be.
+    // `GammaAt::Finite` means "finite for all but finitely many `n`", not
+    // "finite"; the finitely many are the whole of this hazard. See the module
+    // docs: the `Γ` ladder is honest about this in a `Value::Finite`, which
+    // carries the offending factor into the closed form rather than dropping it.
+    if order > 0 || rn_is_zero(&coeff) {
+        if let Some(fl) = n_floor {
+            if let Some((g, n0)) = gammas
+                .iter()
+                .find_map(|g| gamma_n_pole_from(g, fl).map(|n0| (g, n0)))
+            {
+                return Value::Undecidable(format!(
+                    "the value was read off as an exact zero, but its factor {} is infinite \
+                     at n = {n0}, an integer in the domain the verdict covers, and a zero \
+                     times an infinity is not a zero",
+                    gamma_n_label(g)
+                ));
+            }
+        }
         return Value::Zero;
     }
+
     Value::Finite(HypTerm {
         coeff,
         base,
         gammas,
     })
+}
+
+/// The smallest integer `n ≥ n_floor` at which `Γ(a·n + c)^e` with `e > 0` is
+/// **infinite**, when there is one.
+///
+/// `Γ` is infinite exactly at the non-positive integers and `a` is an integer,
+/// so `a·n + c` can only land on one when `c` is an integer too — a fractional
+/// `c` is out of reach whatever `n` does. From there it is a linear inequality
+/// in `n`: `a < 0` puts a pole at every sufficiently large `n`, `a > 0` puts the
+/// last one at `n = ⌊−c/a⌋`, and `a = 0` cannot arrive here at all, because a
+/// constant non-positive integer argument was already counted as a pole in `k`
+/// by [`gamma_at_point`] and never reaches `GammaAt::Finite`.
+///
+/// A negative exponent is `1/Γ(·)^{|e|}`, which is entire: it is a *zero* at
+/// those points, not an infinity, and a zero is no obstacle to having a value.
+fn gamma_n_pole_from(g: &GammaN, n_floor: i64) -> Option<i64> {
+    if g.e <= 0 || *g.c.clone().denom() != 1 {
+        return None;
+    }
+    if g.a == 0 {
+        return None;
+    }
+    // The pole set is the integer half-line `{ n : a·n + c ≤ 0 }`, whose edge is
+    // `−c/a`.
+    let edge = Rational::from(-g.c.numer().clone()) / Rational::from(g.a);
+    if g.a > 0 {
+        // Poles at every `n ≤ ⌊−c/a⌋`. If even the last one is below the floor
+        // the domain is clear; otherwise the floor itself is one of them.
+        (edge >= n_floor).then_some(n_floor)
+    } else {
+        // Poles at every `n ≥ ⌈−c/a⌉`, so there are infinitely many of them and
+        // no floor escapes: report the first one at or above it.
+        let first = -floor_rat(&(-edge));
+        let saturated = if first < 0 { i64::MIN } else { i64::MAX };
+        Some(first.to_i64().unwrap_or(saturated).max(n_floor))
+    }
+}
+
+/// `Γ(a·n + c)^e` as it reads in a refusal message.
+fn gamma_n_label(g: &GammaN) -> String {
+    let arg = match (g.a, &g.c) {
+        (0, c) => format!("{c}"),
+        (a, c) if *c == 0 => {
+            if a == 1 {
+                "n".to_string()
+            } else {
+                format!("{a}*n")
+            }
+        }
+        (a, c) => {
+            let head = if a == 1 {
+                "n".to_string()
+            } else {
+                format!("{a}*n")
+            };
+            if *c > 0 {
+                format!("{head} + {c}")
+            } else {
+                format!("{head} - {}", -c.clone())
+            }
+        }
+    };
+    format!("gamma({arg})^{}", g.e)
 }
 
 enum GammaAt {
@@ -1690,6 +1848,130 @@ mod tests {
             );
             assert!(!status.implies_sum_recurrence());
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // A zero of order +1 against an infinity (see the module docs)
+    // -----------------------------------------------------------------------
+
+    /// `Σ_{k=0}^{10} C(10,k)·(n−k)!/n!`, exactly, from the definition — no part
+    /// of this module is involved in producing it.
+    fn s_falling(ni: u32) -> Rational {
+        let fact = |v: u32| -> Integer { Integer::from(Integer::factorial(v)) };
+        let mut acc = Rational::from(0);
+        for kk in 0..=10_u32 {
+            let c = fact(10) / (fact(kk) * fact(10 - kk));
+            acc += Rational::from((c * fact(ni - kk), fact(ni)));
+        }
+        acc
+    }
+
+    /// `C(10,k)·Γ(n−k+1)/Γ(n+1)` over `k = 0..10`: the `1/Γ(11−k) = 1/Γ(0)`
+    /// zero at the endpoint `k = 11` is real, and so is the
+    /// `Γ(n−k+1) = Γ(n−10)` pole sitting on top of it. Order counting sees only
+    /// the first, because the second no longer moves with `k` there and is
+    /// carried out as a `Γ`-in-`n` factor that the zero throws away.
+    ///
+    /// The damage is exact, and this test measures it without asking this
+    /// module anything. The certificate's coefficients are `9−n`, `−(n+1)²`,
+    /// `(n+1)(n+2)`; at `n = 9` the first is `0`, so a `Vanishes` verdict
+    /// licenses `110·S(11) − 100·S(10) = 0` about two numbers that are both
+    /// perfectly well defined. Their true difference is `1/9!` — which is
+    /// exactly the endpoint value `G(9,11)` that was called zero.
+    #[test]
+    fn a_gamma_pole_at_the_endpoint_is_not_a_zero() {
+        // First: the claim a `Vanishes` verdict would license is false, by
+        // exact rational arithmetic over the definition of the sum.
+        let residual = Rational::from(110) * s_falling(11) - Rational::from(100) * s_falling(10);
+        assert_eq!(
+            residual,
+            Rational::from((1, Integer::from(Integer::factorial(9)))),
+            "the homogeneous recurrence is false at n = 9 by exactly 1/9!"
+        );
+
+        let pool = ExprPool::new();
+        let (n, k) = nk(&pool);
+        let one = pool.integer(1_i32);
+        let gamma = |a: ExprId| pool.func("gamma", vec![a]);
+        let f = pool.mul(vec![
+            binom(&pool, pool.integer(10_i32), k),
+            gamma(pool.add(vec![n, pool.mul(vec![k, pool.integer(-1_i32)]), one])),
+            pool.pow(gamma(pool.add(vec![n, one])), pool.integer(-1_i32)),
+        ]);
+        let limits = Some((pool.integer(0_i32), pool.integer(10_i32)));
+        let status = verdict(f, n, k, &pool, limits);
+        let BoundaryStatus::Unknown { reason } = &status else {
+            panic!("a zero times an infinity is not a zero; got {status:?}");
+        };
+        assert!(
+            reason.contains("gamma(n - 10)^1"),
+            "the reason must name the factor that is infinite: {reason}"
+        );
+        assert!(!status.implies_sum_recurrence());
+    }
+
+    /// The control, and the one place this module is deliberately sharper than
+    /// [`super::super::telescoping2d::boundary`]'s fix for the same defect.
+    ///
+    /// `Σ_{k=0}^{10} C(10,k)·(n+1)_k` is a Pochhammer, so the endpoint keeps a
+    /// `Γ(n+k+1) → Γ(n+12)` with a *positive* exponent — the very shape the
+    /// two-index module refuses on sight. Its poles are all at `n ≤ −12`,
+    /// nowhere near the domain the verdict covers, so asking *where* the pole
+    /// is rather than *whether the argument moves with `n`* keeps this verdict.
+    /// A guard that fired on the shape would lose it.
+    #[test]
+    fn an_endpoint_gamma_whose_poles_are_outside_the_domain_still_vanishes() {
+        let pool = ExprPool::new();
+        let (n, k) = nk(&pool);
+        let one = pool.integer(1_i32);
+        let gamma = |a: ExprId| pool.func("gamma", vec![a]);
+        // (n+1)_k = Γ(n+k+1)/Γ(n+1).
+        let f = pool.mul(vec![
+            binom(&pool, pool.integer(10_i32), k),
+            gamma(pool.add(vec![n, k, one])),
+            pool.pow(gamma(pool.add(vec![n, one])), pool.integer(-1_i32)),
+        ]);
+        let limits = Some((pool.integer(0_i32), pool.integer(10_i32)));
+        let status = verdict(f, n, k, &pool, limits);
+        assert_eq!(status, BoundaryStatus::Vanishes, "got {status:?}");
+    }
+
+    /// The pole-location arithmetic on its own: a half-line of integers, and
+    /// the three ways a factor can be out of reach of it.
+    #[test]
+    fn a_gamma_in_n_is_infinite_exactly_on_a_half_line_of_integers() {
+        let g = |a: i64, c: i64, e: i32| GammaN {
+            a,
+            c: Rational::from(c),
+            e,
+        };
+        // Γ(n − 10): poles at n ≤ 10, so the floor itself is one of them.
+        assert_eq!(gamma_n_pole_from(&g(1, -10, 1), 1), Some(1));
+        assert_eq!(gamma_n_pole_from(&g(1, -10, 1), 10), Some(10));
+        // ... and nothing at or above 11.
+        assert_eq!(gamma_n_pole_from(&g(1, -10, 1), 11), None);
+        // Γ(n + 1), the binomial's: poles at n ≤ −1 only, which is why every
+        // classical natural boundary is untouched by this.
+        assert_eq!(gamma_n_pole_from(&g(1, 1, 1), 0), None);
+        assert_eq!(gamma_n_pole_from(&g(1, 1, 1), -5), Some(-5));
+        // Γ(2n − 3): poles at 2n ≤ 3, i.e. n ≤ 1.
+        assert_eq!(gamma_n_pole_from(&g(2, -3, 1), 1), Some(1));
+        assert_eq!(gamma_n_pole_from(&g(2, -3, 1), 2), None);
+        // Γ(−n + 5): poles at every n ≥ 5, so no floor escapes.
+        assert_eq!(gamma_n_pole_from(&g(-1, 5, 1), 0), Some(5));
+        assert_eq!(gamma_n_pole_from(&g(-1, 5, 1), 100), Some(100));
+        // A fractional constant term is out of reach of every pole of Γ.
+        let half = GammaN {
+            a: 1,
+            c: Rational::from((-21, 2)),
+            e: 1,
+        };
+        assert_eq!(gamma_n_pole_from(&half, 1), None);
+        // A negative exponent is 1/Γ, which is entire: a zero, never an ∞.
+        assert_eq!(gamma_n_pole_from(&g(1, -10, -1), 1), None);
+        // A k-free constant argument never reaches here as `Finite`; treat it
+        // as no obstacle rather than guessing.
+        assert_eq!(gamma_n_pole_from(&g(0, -3, 1), 1), None);
     }
 
     /// The control the guard must not swallow: a pole *outside* the range.
