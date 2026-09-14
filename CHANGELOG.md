@@ -2,6 +2,59 @@
 
 ## 3.10.0 — 2026-09-10
 
+- **The transform, ODE and series engines say *why* they declined.** Eight
+  conversion functions in `alkahest-py/src/lib.rs` ended at
+  `PyValueError::new_err(e.to_string())` — a bare `ValueError` with no `.code`,
+  no `.remediation`, no `.span` — covering `laplace_transform`,
+  `fourier_transform`, `z_transform` and their inverses, `dsolve`,
+  `dsolve_system`, `series_solve`, `asymptotic_expand` and `Fps`. A caller
+  could not tell "this Laplace transform's causality hypothesis is refuted"
+  from "this integrand is not in the table yet" without matching English prose,
+  and those two call for opposite next steps.
+
+  All eight now go through `make_structured_err`, with three new exception
+  classes: `TransformError` (`E-TRANSFORM-*`), `AsymptoticError`
+  (`E-ASYMPT-*`) and `FpsError` (`E-FPS-*`). `dsolve`, `dsolve_system` and
+  `series_solve` raise the existing `OdeError`, because they raise `E-ODE-*`
+  codes and the library's rule is one Python class per code prefix. All of
+  them subclass `AlkahestError`, which subclasses `ValueError`, so
+  `except ValueError` around any of these calls is unaffected.
+
+  Two codes are new, and they are the point of the exercise:
+
+  | code | meaning |
+  |---|---|
+  | `E-TRANSFORM-004` | The unilateral hypothesis is **refuted**. `L{θ(t+1)}` is `1/s`, not the `e^{s}/s` the shift rule would emit, because the edge lies outside the range `∫₀^∞` sees; an advance factor `e^{+as}` on the inverse is the transform of no causal function. |
+  | `E-TRANSFORM-013` | The Fourier entry's decay hypothesis is **refuted**. At a non-positive rate the defining integral diverges, and a negative Lorentzian amplitude transforms to the opposite sign *and* the opposite direction of growth from the tabulated form. |
+
+  Both were previously folded into the same `NoRule`/`NotInvertible` code as an
+  ordinary table miss. The distinction they draw is between a fact about this
+  implementation, which a wider table would close, and a fact about the
+  mathematics, which nothing will: a loop that retries the second retries
+  forever. Neither is reported for a *symbolic* parameter — that cannot be
+  decided, so it stays a side condition on `side_conditions` as before.
+
+  `E-FPS-001` … `007` had codes but no `.remediation`; they have one now.
+
+- **Fixed: `E-ODE-021` meant two incompatible things.**
+  `ode::numeric::NumericOdeError::StepSizeTooSmall` and
+  `ode::series_solve::SeriesError::IrregularSingular` both returned it, and the
+  same collision ran across `E-ODE-020` … `025`. An agent told it can branch on
+  stable codes would have read "the adaptive integrator gave up" as "this
+  equation has no Frobenius series at this point". `REGISTRY`'s own
+  `no_duplicate_codes` test could not see it — the registry listed each code
+  once, and the second impl simply never appeared there.
+
+  The `series_solve` block moved to `E-ODE-040` … `045`. That side moved
+  because it had never surfaced: `series_solve` raised an uncoded `ValueError`,
+  so nothing could have been reading it, while `NumericOdeError`'s codes have
+  been on the wire with `.code` set. `scripts/check_error_codes.py` now fails
+  on any code claimed by two `AlkahestError` impls, with an explicit
+  `DELIBERATE_ALIASES` allowlist for the four that are genuinely the same fact
+  (`PuiseuxError` reusing `E-SERIES-001..003`, and the two holonomic
+  `InvalidInput`s sharing `E-HOLO-004`).
+
+
 - **Series with a fractional valuation are expanded rather than refused.** New
   `alkahest.experimental.puiseux_series` /
   `alkahest_cas::experimental::puiseux_series`. `series` refused every

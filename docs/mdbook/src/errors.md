@@ -14,7 +14,10 @@ AlkahestError (base)
 │   ├── LinearAlgebraError (E-LINALG-*) — elimination, decompositions, canonical forms
 │   └── EigenError         (E-EIGEN-*)  — eigenvalues, eigenvectors, Jordan form
 ├── CadError          (E-CAD-*)    — real quantifier elimination, see [Positivity](./positivity.md#decide-refuses-rather-than-guessing)
-├── OdeError          (E-ODE-*)    — ODE construction or lowering
+├── OdeError          (E-ODE-*)    — every ODE engine: construction, dsolve, dsolve_system, series_solve, numeric
+├── TransformError    (E-TRANSFORM-*) — Laplace / Fourier / Z transforms and their inverses
+├── AsymptoticError   (E-ASYMPT-*) — asymptotic expansion at infinity
+├── FpsError          (E-FPS-*)    — formal power series
 ├── DaeError          (E-DAE-*)    — DAE structural analysis
 ├── SolverError       (E-SOLVE-*)  — polynomial system solving
 ├── JitError          (E-JIT-*)    — LLVM/JIT codegen
@@ -145,6 +148,11 @@ loop must record as **undecided**, never as a negative result.
 | `E-SERIES-006` | `SeriesError` | `experimental.puiseux_series` **computed** an expansion and then withheld it, because its verifier could not confirm it — the truncation residual did not decay at the claimed rate, or nothing near the point could be evaluated (a branch that is not real on the side sampled, a head with no numeric kernel). Distinct from `E-SERIES-005` on purpose: that one says there is nothing to return, this one says there was something and it is not trustworthy |
 | `E-INT-004` | `IntegrationError` | Proven non-elementary. **This one is a verdict, not a refusal** — keep it apart from the rest |
 | `E-BUDGET-001..005` | `BudgetExceededError` | Ran out of the time, steps or memory it was given, was cancelled, or is about to exhaust the process address-space limit |
+| `E-TRANSFORM-004` | `TransformError` | The unilateral transform's causality hypothesis is **refuted**. `L{θ(t+1)}` is `1/s`; the shift rule would emit `e^{s}/s`, because the edge at `a = −1` lies outside the range `∫₀^∞` sees. On the inverse, an advance factor `e^{+as}` is the transform of no causal function. **A verdict, not a refusal** — there is nothing a wider table would find |
+| `E-TRANSFORM-013` | `TransformError` | A Fourier table entry's decay hypothesis is **refuted**: at a non-positive rate the defining integral diverges, and a negative Lorentzian amplitude has a transform whose sign *and* direction of growth are opposite to the tabulated one. Also a verdict |
+| `E-ODE-011` | `OdeError` | `dsolve` produced a candidate closed form and then withheld it, because substituting it back into the equation did not verify. Distinct from `E-ODE-010` on purpose: that one says no class matched, this one says something was found and is not trustworthy |
+| `E-ODE-044` | `OdeError` | The same for `series_solve`: a candidate Frobenius series that failed the exact-residual gate |
+| `E-ASYMPT-004` | `AsymptoticError` | `asymptotic_expand` computed an expansion and then withheld it, because the numeric `o()`-gate rejected every candidate term at large `x`. The function may have an oscillatory or non-power-scale tail |
 
 `E-SERIES-003` and `E-SERIES-004` travel out of band for the same reason (`SeriesError` is
 exhaustive) but *are* wired into the bindings: `series` returns `SeriesError::InvalidOrder`
@@ -254,7 +262,10 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-LINALG-*` | `LinearAlgebraError` *(subclass of `MatrixError`)* | Elimination, decompositions, canonical forms; `E-LINALG-010` is the undecidable-entry refusal |
 | `E-EIGEN-*` | `EigenError` *(subclass of `MatrixError`)* | Eigenvalues, eigenvectors, Jordan form, diagonalisation |
 | `E-CAD-*` | `CadError` | Real quantifier elimination — outside the fragment, or an untestable irrational boundary point |
-| `E-ODE-*` | `OdeError` | ODE construction, lowering, event handling |
+| `E-ODE-*` | `OdeError` | Every ODE engine, one class per prefix: construction and lowering (`001`–`003`), `dsolve` (`010`–`014`), the numeric integrators (`020`–`026`), `dsolve_system` (`030`–`034`), and `series_solve` (`040`–`045`, moved off `020`–`025` in 3.10 where they collided with the numeric block) |
+| `E-TRANSFORM-*` | `TransformError` | Laplace (`00x`), Fourier (`01x`) and Z (`10x`) transform tables and their inverses. `E-TRANSFORM-004` and `E-TRANSFORM-013` are **refuted hypotheses**, not table gaps — see below |
+| `E-ASYMPT-*` | `AsymptoticError` | `experimental.asymptotic_expand`; `E-ASYMPT-004` is an expansion the numeric `o()`-gate could not confirm, withheld rather than returned |
+| `E-FPS-*` | `FpsError` | Formal power series (`experimental.Fps`) — a pole at the origin (`001`/`002`), a non-rational coefficient (`003`), or one of the constant-term hypotheses `f(0) = 0` / `1` / `≠ 0` that make composition, `log` and the inverse well defined (`004`–`006`) |
 | `E-DAE-*` | `DaeError` | DAE structural analysis (Pantelides, index reduction) |
 | `E-SOLVE-*` | `SolverError` | Polynomial system solving, Gröbner basis |
 | `E-LAT-*` | `LatticeError` | Exact LLL lattice reduction over ℤ |
@@ -272,6 +283,51 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-RESIDUE-*` | `AlkahestError` | `residue` — not a rational function, zero denominator, pole order out of range, or (`E-RESIDUE-005`) a point that is not an exact constant in ℚ(i) |
 | `E-VEC-*` | `VectorError` | Vector calculus over an orthogonal chart — a non-differentiable component, a repeated or non-symbol coordinate, a chart that could not be *proven* orthogonal (`E-VEC-004`), or a degenerate scale factor (`E-VEC-005`). See [Vector calculus and quaternions](#vector-calculus-and-quaternions) |
 | `E-QUAT-*` | `QuaternionError` | Quaternion algebra and rotations — a zero or undecided norm (`E-QUAT-001`), the axis of the identity rotation, which does not exist (`E-QUAT-002`), or a matrix that could not be checked to be a proper rotation (`E-QUAT-003`) |
+
+### Transforms: a table gap is not a refuted hypothesis
+
+`E-TRANSFORM-*` covers three tables under one prefix and one class — Laplace
+(`00x`), Fourier (`01x`), Z (`10x`) — the way `E-ODE-*` covers five ODE engines
+under `OdeError`. The number says which table and which failure; a caller who
+wants only one of them filters on the code.
+
+The split that matters is not between the tables but *inside* each of them:
+
+| Code | Reading |
+|---|---|
+| `E-TRANSFORM-001` / `011` / `101` | No forward rule matched. A fact about **this implementation** — these are table-driven, and a wider table would close it |
+| `E-TRANSFORM-002` / `102` | The inverse table does not reach this form. Same kind of fact |
+| `E-TRANSFORM-003` / `012` / `103` | The two variables passed are the same symbol |
+| `E-TRANSFORM-004` | The unilateral (causality) hypothesis is **refuted** |
+| `E-TRANSFORM-013` | A Fourier entry's decay hypothesis is **refuted** |
+
+"Not in the table yet" and "no such transform exists" are opposite instructions.
+The first says rewrite the input or wait for a wider table; the second says stop
+looking. Before 3.10 all of these arrived as a bare `ValueError` with no `.code`
+at all, so telling them apart meant matching English prose.
+
+A **symbolic** parameter is reported as neither. `θ(t−a)` with a symbolic `a`
+cannot be decided, so the hypothesis `a ≥ 0` is recorded and returned on
+`side_conditions` rather than assumed or refused:
+
+```python
+import alkahest as ak
+from alkahest import experimental as ex
+
+pool = ak.ExprPool()
+t, s = pool.symbol("t"), pool.symbol("s")
+
+# A literal negative edge: refuted, and nothing to find.
+theta = pool.func("heaviside", [t + pool.integer(1)])
+try:
+    ex.laplace_transform(theta, t, s)
+except ak.TransformError as e:
+    print(e.code)          # E-TRANSFORM-004
+    print(e.remediation)   # "the unilateral transform integrates over t ≥ 0 only, ..."
+
+# The control: shift it the other way and the rule applies.
+ex.laplace_transform(pool.func("heaviside", [t - pool.integer(1)]), t, s)
+```
 
 ### Vector calculus and quaternions
 
@@ -344,6 +400,7 @@ with ak.context(require_certificate=True):
 
 1. Does it fit an existing subsystem? Add a variant and a code one higher than the current max for that prefix.
 2. Does it name a new subsystem? Add a prefix, a class, and an entry in `REGISTRY` in the same PR. Do not reuse prefixes across unrelated subsystems.
+2b. **One code, one meaning.** Two `AlkahestError` impls under the same prefix must not return the same number. `REGISTRY`'s `no_duplicate_codes` test cannot catch this — it only sees the registry, and the colliding impl is typically the one that never got registered. `scripts/check_error_codes.py` compares the impls themselves and fails on any code claimed by two of them; a genuine alias (the same fact reported by two types that share a Python class) goes in its `DELIBERATE_ALIASES` with the reason.
 3. Write the `remediation` before the message — if you cannot say what the user should do, the taxonomy is telling you this is an internal bug, not a user error.
 
 Users match on subsystem (the exception class); triagers filter on cause (the code suffix and remediation text).

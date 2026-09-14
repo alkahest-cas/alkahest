@@ -1037,7 +1037,7 @@ dict with `y_of_t`, `constants`, `fundamental_matrix` (`e^{At}`), `method`,
 PK model `x' = -ka·x`, `y' = ka·x - ke·y` solves, with `ka ≠ ke` reported as a
 side condition because the returned expression divides by that difference. A
 defective (non-diagonalizable) `A` is handled without any Jordan machinery. It
-refuses (`ValueError`, `E-ODE-030`…`E-ODE-034`) for a nonlinear system, a
+refuses (`OdeError`, `E-ODE-030`…`E-ODE-034`) for a nonlinear system, a
 time-dependent coefficient, or a symbolic non-triangular 3×3, whose spectrum
 needs Cardano radicals that do not verify.
 
@@ -1048,7 +1048,13 @@ Other experimental exports worth knowing: `asymptotic_expand`, `multilimit`,
 Transform round-trips are supported but not total — inverse Laplace covers
 repeated irreducible quadratic poles and sinh/cosh forms as of 3.8.0. Literal
 negative Heaviside/Dirac shifts (`θ(t+a)`, `δ(t+a)` with `a > 0`) are **refused**
-with `E-TRANSFORM-001` rather than silently applying the wrong unilateral formula.
+with `E-TRANSFORM-004` (`E-TRANSFORM-001` before 3.10) rather than silently
+applying the wrong unilateral formula. That code is the one to branch on: it
+means the unilateral hypothesis is *refuted*, so unlike the table-gap codes
+there is nothing a wider table would ever find. Since 3.10 these arrive as
+`TransformError` with `.code` and `.remediation` set, not as a bare
+`ValueError`; the same release did the same for `dsolve`, `dsolve_system`,
+`series_solve`, `asymptotic_expand` and `Fps`.
 
 ---
 
@@ -1283,7 +1289,10 @@ All errors inherit `AlkahestError` and carry `.code`, `.remediation`, `.span`.
 | `SosError` | `E-SOS-*` | No positivity certificate of this shape/degree (`E-SOS-002` — **a refusal: record `unknown`, not "not SOS"**); proved negative with a witness point (`E-SOS-003` — the only SOS verdict) |
 | `HolonomicError` | `E-HOLO-*` | `zeilberger` outside the proper-hypergeometric class; `q_zeilberger` outside the `q`-hypergeometric one (`E-HOLO-020`) or with a non-rational shift quotient (`E-HOLO-024` — **permanent, not a bounds problem**); `telescope2d`/`telescope_md` outside the proper-hypergeometric-in-the-bound-indices class (`E-HOLO-040`), search exhausted — including a resource ceiling refusal, see item 31 — (`E-HOLO-041`), or a malformed call (`E-HOLO-042` — indices not pairwise distinct, or empty); `guess_holonomic` given too few terms to confirm a fit (`E-HOLO-005` — **a refusal: record `unknown`, not "no recurrence"**); `ModularRecurrence` / `binomial_mod` given an unsupported prime-power modulus (`E-HOLO-006`), a step with no `p`-adic integer answer (`E-HOLO-007` — **permanent**) or a working precision past `2**62` (`E-HOLO-008` — **resource: record `unknown`**) |
 | `ValidatedError` | `E-VALIDATED-*` | Rigorous-bounds request unsupported / singular / malformed |
-| `OdeError` | `E-ODE-*` | ODE construction failed |
+| `OdeError` | `E-ODE-*` | Every ODE engine, one class per prefix: construction (`001`–`003`), `dsolve` (`010`–`014`; `011` = a candidate that failed substitution verification and was **withheld**, `013` = class recognised but its quadrature did not close, `014` = Riccati with no particular solution to seed it), the numeric integrators (`020`–`026`), `dsolve_system` (`030`–`034`), `series_solve` (`040`–`045`; `041` = an irregular singular point, where **no** Frobenius series exists, `044` = a candidate series that failed the exact-residual gate). The `series_solve` block moved off `020`–`025` in 3.10, where it collided with the numeric one |
+| `TransformError` | `E-TRANSFORM-*` | Laplace (`00x`), Fourier (`01x`), Z (`10x`) and their inverses. `001`/`011`/`101` and `002`/`102` are **table gaps** — a wider table would close them. `004` and `013` are **refuted hypotheses**: the unilateral transform sees `t ≥ 0` only (`L{θ(t+1)} = 1/s`, not `e^s/s`; an advance factor `e^{+as}` on the inverse is the transform of no causal function), and a non-positive Fourier decay rate makes the defining integral diverge. Record the second kind as **there is nothing to find**, not as "try again later". A *symbolic* parameter is neither — it is carried on `side_conditions` |
+| `AsymptoticError` | `E-ASYMPT-*` | `asymptotic_expand`; `004` = an expansion the numeric `o()`-gate could not confirm, **withheld** rather than returned; `005` = a scale outside the implemented rules |
+| `FpsError` | `E-FPS-*` | Formal power series — a pole at the origin (`001`/`002`), a non-rational coefficient (`003`), or a constant-term hypothesis (`004`–`006`: `f(0) = 0` for composition/`exp`/reversion, `= 1` for `log`, `≠ 0` for the inverse) |
 | `DaeError` | `E-DAE-*` | DAE index reduction failed |
 | `JitError` | `E-JIT-*` | JIT compilation failed |
 | `SolverError` | `E-SOLVE-*` | Polynomial solver failed |

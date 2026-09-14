@@ -474,6 +474,15 @@ pyo3::create_exception!(alkahest, PyBudgetExceededError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyHolonomicError, PyAlkahestError);
 // Probability distributions and expectations (E-PROB-*).
 pyo3::create_exception!(alkahest, PyProbabilityError, PyAlkahestError);
+// Integral / sequence transforms (E-TRANSFORM-*). One class for the whole
+// `transform` module, as `OdeError` is one class for the whole of E-ODE-*:
+// the number says which table (00x Laplace, 01x Fourier, 10x Z) and whether the
+// decline is a gap in the implementation or a refuted hypothesis.
+pyo3::create_exception!(alkahest, PyTransformError, PyAlkahestError);
+// Asymptotic expansions at infinity (E-ASYMPT-*).
+pyo3::create_exception!(alkahest, PyAsymptoticError, PyAlkahestError);
+// Formal power series (E-FPS-*).
+pyo3::create_exception!(alkahest, PyFpsError, PyAlkahestError);
 
 /// Build a structured exception with `.code`, `.remediation`, `.span` attributes.
 fn make_structured_err<E: AlkahestErrorTrait>(
@@ -4704,26 +4713,66 @@ fn rational_to_py(py: Python<'_>, r: &Rational) -> PyResult<PyObject> {
     Ok(frac.call1((format!("{numer}/{denom}"),))?.into_py(py))
 }
 
+// Every one of these flattened to a bare `ValueError` carrying only
+// `e.to_string()` until 3.10 — no `.code`, no `.remediation`, no `.span`. A
+// caller could not tell "this Laplace transform's causality hypothesis is
+// refuted" from "this integrand is not in the table yet" without matching on
+// English prose, and those two call for opposite next steps. All eight now go
+// through `make_structured_err` like the rest of the library.
+//
+// `PyAlkahestError` subclasses `ValueError`, so `except ValueError` around any
+// of these keeps working unchanged.
+
 fn dsolve_error_to_py(e: CoreDsolveError) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(e.to_string())
+    // E-ODE-010..014: the same prefix, and so the same class, as `OdeError`.
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyOdeError>();
+        make_structured_err(py, &exc_type, &e)
+    })
 }
+
 fn laplace_error_to_py(e: CoreLaplaceError) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(e.to_string())
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyTransformError>();
+        make_structured_err(py, &exc_type, &e)
+    })
 }
+
 fn fourier_error_to_py(e: CoreFourierError) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(e.to_string())
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyTransformError>();
+        make_structured_err(py, &exc_type, &e)
+    })
 }
+
 fn ztransform_error_to_py(e: CoreZTransformError) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(e.to_string())
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyTransformError>();
+        make_structured_err(py, &exc_type, &e)
+    })
 }
+
 fn asymptotic_error_to_py(e: CoreAsymptoticError) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(e.to_string())
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyAsymptoticError>();
+        make_structured_err(py, &exc_type, &e)
+    })
 }
+
 fn series_solve_error_to_py(e: CoreSeriesSolveError) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(e.to_string())
+    // E-ODE-040..045 — see the note on `SeriesError::code` for why this block
+    // moved off 020..025, which `NumericOdeError` already owned.
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyOdeError>();
+        make_structured_err(py, &exc_type, &e)
+    })
 }
+
 fn fps_error_to_py(e: CoreFpsError) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(e.to_string())
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyFpsError>();
+        make_structured_err(py, &exc_type, &e)
+    })
 }
 
 /// `experimental.dsolve(equation, x, y, [y', y'', …], assumptions=None)` —
@@ -4827,7 +4876,11 @@ fn py_dsolve(
 }
 
 fn dsolve_system_error_to_py(e: CoreDsolveSystemError) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(e.to_string())
+    // E-ODE-030..034, alongside `dsolve_error_to_py` — same prefix, same class.
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyOdeError>();
+        make_structured_err(py, &exc_type, &e)
+    })
 }
 
 /// `experimental.dsolve_system(ode, assumptions=None)` — solve a linear
@@ -18676,6 +18729,15 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("CudaError", m.py().get_type_bound::<PyCudaError>())?;
     m.add("IoError", m.py().get_type_bound::<PyIoError>())?;
     m.add("ParseError", m.py().get_type_bound::<PyParseError>())?;
+    m.add(
+        "TransformError",
+        m.py().get_type_bound::<PyTransformError>(),
+    )?;
+    m.add(
+        "AsymptoticError",
+        m.py().get_type_bound::<PyAsymptoticError>(),
+    )?;
+    m.add("FpsError", m.py().get_type_bound::<PyFpsError>())?;
     m.add("FactorError", m.py().get_type_bound::<PyFactorError>())?;
     m.add(
         "ResultantError",
