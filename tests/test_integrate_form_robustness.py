@@ -19,6 +19,8 @@ Every case below is verified by differentiating the result back, never by
 matching a display string.
 """
 
+import math
+
 import alkahest as ak
 import pytest
 from alkahest.alkahest import ArbBall, ExprPool, diff, integrate, interval_eval
@@ -34,9 +36,13 @@ def _parse(src, pool):
 def _check_antiderivative(pool, x, f, cap, label):
     """d/dx F(x) == f(x) at several real points."""
     d = diff(cap, x).value
+    # `pi` is an ordinary symbol in alkahest, not a distinguished constant node,
+    # so an answer that names it — every exact Gaussian and Fresnel constant
+    # does — has to be handed its value like any other binding.
+    pi = pool.symbol("pi")
     checked = 0
     for pt in _TEST_POINTS:
-        bindings = {x: ArbBall(pt)}
+        bindings = {x: ArbBall(pt), pi: ArbBall(math.pi)}
         lhs = interval_eval(d, bindings).mid
         rhs = interval_eval(f, bindings).mid
         if lhs != lhs or rhs != rhs:  # NaN at a singularity — skip

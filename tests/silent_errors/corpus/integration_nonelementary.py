@@ -12,7 +12,37 @@ from typing import Callable
 import alkahest as ak
 from contracts import Case, Measured, Raises, Returns
 
-from ._shared import X, _num
+from ._shared import PI, X, _num
+
+
+def _env(at: float) -> dict[ak.Expr, float]:
+    """``x`` at the sample point, and ``pi`` at its value.
+
+    ``pi`` is an ordinary symbol in alkahest, not a distinguished constant node
+    (see ``eval/symbols.rs``), so an antiderivative that names it — every exact
+    Gaussian and Fresnel answer does — has to be handed its value like any
+    other binding.  ``eval_expr`` will not invent one.
+    """
+    return {X: at, PI: math.pi}
+
+
+def float_literals(expr: ak.Expr) -> int:
+    """How many inexact (``Float``) literals *expr* contains.
+
+    Structural, via ``Expr.node()``, rather than a substring hunt for a decimal
+    point: the question is about the tree, and the printer is free to change.
+    """
+    node = expr.node()
+    tag = node[0]
+    if tag == "float":
+        return 1
+    if tag in ("add", "mul"):
+        return sum(float_literals(child) for child in node[1])
+    if tag == "pow":
+        return float_literals(node[1]) + float_literals(node[2])
+    if tag == "func":
+        return sum(float_literals(arg) for arg in node[2])
+    return 0
 
 
 def antiderivative_slope(integrand: ak.Expr, at: float) -> Callable[[], Measured]:
@@ -29,7 +59,7 @@ def antiderivative_slope(integrand: ak.Expr, at: float) -> Callable[[], Measured
     def op() -> Measured:
         r = ak.integrate(integrand, X)
         slope = ak.diff(r.value, X).value
-        return Measured(float(ak.eval_expr(slope, {X: at})), r.verification)
+        return Measured(float(ak.eval_expr(slope, _env(at))), r.verification)
 
     return op
 
@@ -79,7 +109,36 @@ def nonelementary_closed_form_slope(integrand: ak.Expr, at: float) -> Callable[[
         if not any(name in shown for name in _NONELEMENTARY_BASIS):
             raise AssertionError(f"antiderivative {shown} is elementary — the integral is not")
         slope = ak.diff(r.value, X).value
-        return Measured(float(ak.eval_expr(slope, {X: at})), r.verification)
+        return Measured(float(ak.eval_expr(slope, _env(at))), r.verification)
+
+    return op
+
+
+def exact_antiderivative_slope(integrand: ak.Expr, at: float) -> Callable[[], Measured]:
+    """:func:`antiderivative_slope`, plus: the antiderivative must be **exact**.
+
+    The correctness half is unchanged and is still the fundamental theorem —
+    differentiate and compare — because that is the half a shape assertion
+    cannot do.  What it *cannot* see is a constant that is right to sixteen
+    digits and exact to none, which is why this helper adds the second half.
+
+    ``∫exp(−α²w²) dw = (√π/2α)·erf(αw)``: the constant in front is an exact
+    number.  Emitted as ``0.8862269254527579`` it stops being one, and
+    everything downstream that wanted a closed form gets decimals instead —
+    ``√(π/2)/√(2π)`` is exactly ``1/2`` and is nothing at all once either side
+    is a float.  A float literal anywhere in the answer fails this case.
+    """
+
+    def op() -> Measured:
+        r = ak.integrate(integrand, X)
+        inexact = float_literals(r.value)
+        if inexact:
+            raise AssertionError(
+                f"antiderivative {r.value} carries {inexact} float literal(s); "
+                "the constant of an exact Gaussian is exact"
+            )
+        slope = ak.diff(r.value, X).value
+        return Measured(float(ak.eval_expr(slope, _env(at))), r.verification)
 
     return op
 
@@ -128,6 +187,15 @@ CASES: list[Case] = [
         contract=Returns(0.7788007830714049),
         verified_by="(√π/2)·erf(x); erf is not elementary (Liouville). "
         "d/dx at 0.5 is e^{-0.25} = 0.7788007830714049.",
+    ),
+    Case(
+        id="nonelementary_gaussian_constant_stays_exact",
+        subsystem="integration_nonelementary",
+        statement="∫ e^{-4x²} dx = (√π/4)·erf(2x) — and the √π/4 is exact, not 0.4431134627…",
+        op=exact_antiderivative_slope(ak.exp(-4 * X**2), 0.5),
+        contract=Returns(0.36787944117144233),
+        verified_by="Hand derivation: ∫exp(−α²w²) dw = (√π/2α)·erf(αw), here α = 2, so the "
+        "constant is √π/4 — an exact number. d/dx at 0.5 is e^{-1} = 0.36787944117144233.",
     ),
     Case(
         id="nonelementary_sinc",

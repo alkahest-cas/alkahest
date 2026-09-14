@@ -295,8 +295,15 @@ pub fn try_special_antiderivative(
         match_quotient_family(work, var, pool),
         match_quotient_power(work, var, pool),
         match_log_reciprocal(work, var, pool),
-        match_gaussian(work, var, pool),
+        // The symbolic Gaussian first, and `match_gaussian` only as its
+        // fallback. Both match `∫exp(−x²) dx`; the difference is that one
+        // hands back `√π/2·erf(x)` and the other hands back
+        // `0.8862269254527579·erf(x)`, and an exact integrand deserves the
+        // exact answer. The `f64` route still earns its place — it reads a
+        // coefficient like `1 − √2`, whose sign `is_structurally_positive`
+        // cannot establish — so it stays, one rung down.
         match_gaussian_symbolic(work, var, pool),
+        match_gaussian(work, var, pool),
         match_gaussian_moment(work, var, pool),
         match_fresnel(work, var, pool),
         match_dilog(work, var, pool),
@@ -360,6 +367,90 @@ fn is_zero_const(expr: ExprId, pool: &ExprPool) -> bool {
 /// `a / b`, built and simplified.
 fn quot(a: ExprId, b: ExprId, pool: &ExprPool) -> ExprId {
     simplify(pool.mul(vec![a, pool.pow(b, pool.integer(-1_i32))]), pool).value
+}
+
+/// `π`, in the one spelling the rest of the crate uses.
+///
+/// It is an ordinary [`ExprData::Symbol`] rather than a distinguished constant
+/// node — see [`crate::eval::symbols`] — so building it any other way would
+/// produce a `π` that does not intern with everyone else's and would never
+/// cancel against one.
+fn pi(pool: &ExprPool) -> ExprId {
+    pool.symbol("pi", crate::kernel::Domain::Real)
+}
+
+/// The constant in `∫exp(−α²·w²) dw = (√π/2α)·erf(α·w)`, given `−A = α²`.
+///
+/// # Why this is symbolic and not a `f64`
+///
+/// `√π/2` folded to `0.8862269254527579` is an *exact* number spelled
+/// inexactly, and the cost is paid twice over.  `simplify` can no longer close
+/// a form around it — `√(π/2)/√(2π)` is exactly `1/2`, and is nothing at all
+/// once one side is a float, which is why the Black–Scholes expectation used
+/// to arrive as a pile of decimals instead of `e^{μ+σ²/2}Φ(d₁) − KΦ(d₂)`.  And
+/// a caller who wanted a number could always have had one, whereas a caller
+/// who wanted the closed form could not recover it.
+///
+/// An earlier revision of this module argued the opposite — that `pi` is a
+/// free symbol and an answer carrying one is an answer the numeric gate cannot
+/// evaluate.  That stopped being true when `collect_gate_parameters` learned to
+/// *bind* `π` rather than sample it: both this module's gate
+/// ([`verify_antiderivative_status_parametric`]) and `prob::quad::eval_ball`
+/// give it its value before evaluating anything.  What remains true is that a
+/// *caller* holding the answer has to bind `π` like any other symbol —
+/// [`crate::eval::eval_f64`] will not invent one — which is already the case
+/// for every answer in the crate that names it, `∫dx/(x⁴+1)` over the line
+/// included.
+///
+/// # Why one radical rather than `√π/2 · α⁻¹`
+///
+/// `√(π/(−A))/2` and `√π/(2·√(−A))` are the same number, but only the first
+/// cancels against the `√(2π)` a Gaussian density carries by ordinary power
+/// arithmetic: with `A = −1/2` it *is* `√(2π)/2`, so `√(2π)⁻¹·√(2π)/2` collapses
+/// to `1/2` without anyone needing a `√a·√b = √(ab)` rule.  Splitting it into
+/// two radicals leaves `√π·√2` sitting next to `√(2π)` forever.
+fn gaussian_constant(neg_aa: ExprId, pool: &ExprPool) -> ExprId {
+    let ratio = pool.mul(vec![pi(pool), reciprocal(neg_aa, pool)]);
+    let root = pool.func("sqrt", vec![simplify(ratio, pool).value]);
+    simplify(pool.mul(vec![pool.rational(1, 2), root]), pool).value
+}
+
+/// `base^n` with an exact numeric `base` folded to a number, and an ordinary
+/// `Pow` node otherwise.
+///
+/// `simplify` folds `3^2` to `9` but leaves `(1/5)^2` and `(1/2)^{-1}` exactly
+/// as written — a gap that was invisible while these constants were `f64` and
+/// is unmissable now that they are not. A stray `(1/2)^{-1}` inside a radical
+/// is precisely what stops `√(2π)⁻¹·√(π·(1/2)⁻¹)/2` from collapsing to `1/2`,
+/// and a stray `(−1/5)^2` in a completed square is what turns `exp(−4/5)` into
+/// `exp(−1 + 5·(−1/5)^2)`. Folding at the handful of sites that build these
+/// keeps the answers readable; widening `simplify` is a separate change with a
+/// much larger blast radius.
+fn exact_pow(base: ExprId, n: i32, pool: &ExprPool) -> ExprId {
+    use rug::ops::Pow;
+    let q = match pool.get(base) {
+        ExprData::Integer(i) => rug::Rational::from((i.0.clone(), rug::Integer::from(1))),
+        ExprData::Rational(r) => r.0.clone(),
+        _ => return pool.pow(base, pool.integer(n)),
+    };
+    // `0^{-n}` is not a number; hand it back unfolded and let the usual
+    // machinery refuse it.
+    if n < 0 && *q.numer() == 0 {
+        return pool.pow(base, pool.integer(n));
+    }
+    let m = n.unsigned_abs();
+    let num = q.numer().clone().pow(m);
+    let den = q.denom().clone().pow(m);
+    if n < 0 {
+        pool.rational(den, num)
+    } else {
+        pool.rational(num, den)
+    }
+}
+
+/// `1/e`, exact when `e` is.
+fn reciprocal(e: ExprId, pool: &ExprPool) -> ExprId {
+    exact_pow(e, -1, pool)
 }
 
 /// Split a product into its `var`-free part and its `var`-dependent factors.
@@ -790,11 +881,9 @@ fn monomial(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<(f64, u32)> {
 /// `a` declared merely `Real` declines here, and declines again at the gate
 /// (which samples it on both sides of zero) if it somehow got this far.
 ///
-/// The `√π/2` is emitted as a `f64` literal rather than as `sqrt(pi)` on
-/// purpose: `pi` is an ordinary free symbol in this codebase, and an answer
-/// carrying one is an answer [`crate::jit::eval_interp`] cannot evaluate — the
-/// numeric half of the gate would go blind, and so would every caller that
-/// later asks for a number.
+/// The `√π/(2α)` is emitted **exactly**, as `√(π/(−A))/2` — see
+/// [`gaussian_constant`] for why it is one radical rather than two, and for why
+/// the `f64` literal this used to be was a mistake.
 fn match_gaussian_symbolic(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
     let (c, rest) = split_constant(expr, var, pool);
     if rest.len() != 1 {
@@ -807,13 +896,14 @@ fn match_gaussian_symbolic(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option
         return None;
     }
     let (aa, bb, cc) = quadratic_coeffs_sym(args[0], var, pool)?;
-    let alpha = negated_square_root(aa, pool)?;
+    let neg_aa = negated_coefficient(aa, pool)?;
+    let alpha = square_root(neg_aa, pool);
 
     // h = B/(2A); K = C − A·h².
     let two_a = simplify(pool.mul(vec![pool.integer(2_i32), aa]), pool).value;
     let h = quot(bb, two_a, pool);
     let shifted = simplify(pool.add(vec![var, h]), pool).value;
-    let h2 = pool.pow(h, pool.integer(2_i32));
+    let h2 = exact_pow(h, 2, pool);
     let k = simplify(
         pool.add(vec![cc, pool.mul(vec![pool.integer(-1_i32), aa, h2])]),
         pool,
@@ -825,8 +915,7 @@ fn match_gaussian_symbolic(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option
     let outer = pool.mul(vec![
         c,
         pool.func("exp", vec![k]),
-        pool.float(std::f64::consts::PI.sqrt() / 2.0, 53),
-        pool.pow(alpha, pool.integer(-1_i32)),
+        gaussian_constant(neg_aa, pool),
         erf,
     ]);
     Some(outer)
@@ -901,8 +990,8 @@ fn match_gaussian_moment(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<E
     if n < 2 || n % 2 != 0 {
         return None;
     }
-    let alpha = negated_square_root(aa, pool)?;
-    Some(pool.mul(vec![c, gaussian_moment(n, g, aa, alpha, var, pool)?]))
+    let neg_aa = negated_coefficient(aa, pool)?;
+    Some(pool.mul(vec![c, gaussian_moment(n, g, aa, neg_aa, var, pool)?]))
 }
 
 /// The recursion of [`match_gaussian_moment`], as an expression.
@@ -910,7 +999,7 @@ fn gaussian_moment(
     n: u32,
     g: ExprId,
     aa: ExprId,
-    alpha: ExprId,
+    neg_aa: ExprId,
     var: ExprId,
     pool: &ExprPool,
 ) -> Option<ExprId> {
@@ -929,11 +1018,10 @@ fn gaussian_moment(
                 g,
                 pool.pow(pool.func("exp", vec![axx]), pool.integer(-1_i32)),
             ]);
-            let arg = simplify(pool.mul(vec![alpha, var]), pool).value;
+            let arg = simplify(pool.mul(vec![square_root(neg_aa, pool), var]), pool).value;
             Some(pool.mul(vec![
                 simplify(expc, pool).value,
-                pool.float(std::f64::consts::PI.sqrt() / 2.0, 53),
-                pool.pow(alpha, pool.integer(-1_i32)),
+                gaussian_constant(neg_aa, pool),
                 pool.func("erf", vec![arg]),
             ]))
         }
@@ -947,7 +1035,7 @@ fn gaussian_moment(
             let tail = pool.mul(vec![
                 pool.integer(-(n as i32 - 1)),
                 inv_two_a,
-                gaussian_moment(n - 2, g, aa, alpha, var, pool)?,
+                gaussian_moment(n - 2, g, aa, neg_aa, var, pool)?,
             ]);
             Some(pool.add(vec![head, tail]))
         }
@@ -1053,19 +1141,26 @@ fn monomial_sym(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<(ExprId, u
     Some((coeff, degree))
 }
 
-/// `Some(√(−A))` when `−A` is **provably** a positive real, else `None`.
+/// `Some(−A)` when `−A` is **provably** a positive real, else `None`.
 ///
 /// "Provably" here is structural and deliberately small: a positive numeric
 /// literal, a symbol declared [`crate::kernel::Domain::Positive`], an `exp`, an
 /// even power, or a product/sum built from those.  It is a sufficient
 /// condition, never a necessary one — declining is free, and a wrong `yes`
 /// would emit `√` of a negative number.
-fn negated_square_root(aa: ExprId, pool: &ExprPool) -> Option<ExprId> {
+///
+/// The *square* is returned rather than its root because both callers need it:
+/// `α = √(−A)` goes inside the `erf`, and `√(π/(−A))/2` — see
+/// [`gaussian_constant`] — is the constant in front, and building that one from
+/// `α` would split a radical that is better left whole.
+fn negated_coefficient(aa: ExprId, pool: &ExprPool) -> Option<ExprId> {
     let neg = simplify(pool.mul(vec![pool.integer(-1_i32), aa]), pool).value;
-    if !is_structurally_positive(neg, pool) {
-        return None;
-    }
-    Some(simplify(pool.func("sqrt", vec![neg]), pool).value)
+    is_structurally_positive(neg, pool).then_some(neg)
+}
+
+/// `√(−A)`, the `α` of `∫exp(−α²·w²) dw`, from an already-checked `−A`.
+fn square_root(neg_aa: ExprId, pool: &ExprPool) -> ExprId {
+    simplify(pool.func("sqrt", vec![neg_aa]), pool).value
 }
 
 /// A sufficient structural test for `e > 0`.
@@ -1111,6 +1206,13 @@ fn is_structurally_positive(e: ExprId, pool: &ExprPool) -> bool {
 /// below rejects it, which is why the gate is not optional either.
 ///
 /// `sin` is odd and `cos` even, which is where the `sgn(A)` comes from.
+///
+/// Both constants are emitted **exactly**.  They are reciprocals of one
+/// another — `√(π/2|A|) = √(2|A|/π)⁻¹` — so the answer names the radical once
+/// and raises it to `−1`, which is what lets `simplify` cancel it against
+/// anything else carrying the same root instead of staring at two unrelated
+/// decimals.  `A` still has to be numeric; it is its *sign* that is needed, and
+/// this matcher has no way to establish one for a symbol.
 fn match_fresnel(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
     let (c, rest) = split_constant(expr, var, pool);
     if rest.len() != 1 {
@@ -1129,20 +1231,36 @@ fn match_fresnel(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
     };
     // A pure quadratic only: `sin(A·x² + B·x)` needs an angle-addition split
     // this module does not do, and `B ≠ 0` would silently give a wrong answer.
-    let (aa, bb, cc) = quadratic_coeffs(args[0], var, pool)?;
-    if bb != 0.0 || cc != 0.0 {
+    //
+    // The coefficients are taken symbolically and only *then* evaluated, so an
+    // exact `A` reaches the answer exact.  `quadratic_coeffs`, the `f64` twin,
+    // would have folded it away before this matcher ever saw it.
+    let (aa, bb, cc) = quadratic_coeffs_sym(args[0], var, pool)?;
+    if !is_zero_const(bb, pool) || !is_zero_const(cc, pool) {
         return None;
     }
-    let mag = aa.abs();
-    let scale = (2.0 * mag / std::f64::consts::PI).sqrt();
-    let outer = (std::f64::consts::PI / (2.0 * mag)).sqrt();
-    if !scale.is_finite() || !outer.is_finite() || scale == 0.0 {
+    let a_val = const_f64(aa, var, pool)?;
+    if !a_val.is_finite() || a_val == 0.0 {
         return None;
     }
-    let sign = if odd && aa < 0.0 { -1.0 } else { 1.0 };
-    let arg = pool.mul(vec![pool.float(scale, 53), var]);
+    // |A|, still as an expression.
+    let mag = if a_val < 0.0 {
+        simplify(pool.mul(vec![pool.integer(-1_i32), aa]), pool).value
+    } else {
+        aa
+    };
+    // `S(x·√(2|A|/π))`, and the `√(π/2|A|)` in front is that same root inverted.
+    let ratio = pool.mul(vec![
+        pool.integer(2_i32),
+        mag,
+        pool.pow(pi(pool), pool.integer(-1_i32)),
+    ]);
+    let scale = simplify(pool.func("sqrt", vec![ratio]), pool).value;
+    let outer = pool.pow(scale, pool.integer(-1_i32));
+    let sign = if odd && a_val < 0.0 { -1_i32 } else { 1_i32 };
+    let arg = pool.mul(vec![scale, var]);
     let f = pool.func(out, vec![arg]);
-    Some(pool.mul(vec![c, pool.float(sign * outer, 53), f]))
+    Some(pool.mul(vec![c, pool.integer(sign), outer, f]))
 }
 
 // ---------------------------------------------------------------------------
@@ -1436,6 +1554,96 @@ mod tests {
         let (pool, f, x) = parsed("exp(-q^2*x^2)");
         let (out, _) = try_special_antiderivative(f, x, &pool).expect("erf");
         assert_eq!(basis_functions_used(out, &pool), vec!["erf"]);
+    }
+
+    /// Is there an inexact literal anywhere in `expr`?
+    fn has_float(expr: ExprId, pool: &ExprPool) -> bool {
+        match pool.get(expr) {
+            ExprData::Float(_) => true,
+            ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
+                args.iter().any(|&a| has_float(a, pool))
+            }
+            ExprData::Pow { base, exp } => has_float(base, pool) || has_float(exp, pool),
+            _ => false,
+        }
+    }
+
+    /// `∫exp(−x²) dx` is `(√π/2)·erf(x)`, and the `√π/2` is *that number*, not
+    /// `0.8862269254527579`.
+    ///
+    /// The float spelling is what stops `simplify` closing a form around the
+    /// answer — `√(π/2)/√(2π)` is exactly `1/2` and is nothing at all once one
+    /// side is inexact — so the exactness is pinned here rather than left to
+    /// whichever caller notices.
+    #[test]
+    fn the_gaussian_constant_is_exact() {
+        let (pool, f, x) = parsed("exp(-x^2)");
+        let (out, _) = try_special_antiderivative(f, x, &pool).expect("erf");
+        assert!(
+            !has_float(out, &pool),
+            "∫exp(−x²) dx must carry no float literal, got {}",
+            pool.display(out)
+        );
+        let shown = pool.display(out).to_string();
+        assert!(
+            shown.contains("sqrt") && shown.contains("pi"),
+            "the constant should be a radical of π, got {shown}"
+        );
+    }
+
+    /// The same, for every exact Gaussian shape the module emits: a scaled one,
+    /// a shifted one, a symbolic one, and the by-parts moment recursion.
+    #[test]
+    fn every_exact_gaussian_keeps_an_exact_constant() {
+        for src in [
+            "exp(-2*x^2)",
+            "exp(-x^2/2)",
+            "3*exp(-5*x^2+2*x-1)",
+            "exp(-(x-b)^2)",
+            "exp(-p*x^2)",
+            "x^2*exp(-x^2)",
+            "x^4*exp(-3*x^2)",
+        ] {
+            let (pool, f, x) = parsed(src);
+            let (out, _) = try_special_antiderivative(f, x, &pool).expect("erf");
+            assert!(
+                !has_float(out, &pool),
+                "∫{src} dx must carry no float literal, got {}",
+                pool.display(out)
+            );
+        }
+    }
+
+    /// The Fresnel scaling is exact too — `√(2|A|/π)` and its reciprocal, not
+    /// `0.7978845608028654` and `1.2533141373155001`.
+    #[test]
+    fn the_fresnel_constants_are_exact() {
+        for src in ["sin(x^2)", "cos(3*x^2)", "sin(-2*x^2)", "7*sin(x^2/3)"] {
+            let (pool, f, x) = parsed(src);
+            let (out, _) = try_special_antiderivative(f, x, &pool).expect("fresnel");
+            assert!(
+                !has_float(out, &pool),
+                "∫{src} dx must carry no float literal, got {}",
+                pool.display(out)
+            );
+        }
+    }
+
+    /// **No false exactness.**  A coefficient the caller wrote as a float is a
+    /// float, and `0.5` is not promoted to `1/2` on the way through: the
+    /// answer says exactly as much as the question did.
+    #[test]
+    fn an_inexact_coefficient_stays_inexact() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let arg = pool.mul(vec![pool.float(-0.5, 53), pool.pow(x, pool.integer(2_i32))]);
+        let f = pool.func("exp", vec![arg]);
+        let (out, _) = try_special_antiderivative(f, x, &pool).expect("erf");
+        assert!(
+            has_float(out, &pool),
+            "a float coefficient must not be laundered into an exact one, got {}",
+            pool.display(out)
+        );
     }
 
     /// `∫x³·exp(−x²) dx` is elementary and the rule engine already answers it;
