@@ -9,7 +9,16 @@ function parseCellFile(filePath: string): string[] {
 }
 
 function encodeCells(codes: string[]): string {
-  return Buffer.from(JSON.stringify(codes)).toString('base64');
+  // base64**url**, not base64. The value travels in a query string, where
+  // `URLSearchParams.get` decodes `+` as a space — so a plain base64 payload
+  // that happens to contain a `+` arrives corrupted, `atob` throws, and the
+  // notebook quietly falls back to the default starter cells. The recording
+  // then looks fine and shows the wrong notebook.
+  return Buffer.from(JSON.stringify(codes), 'utf-8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
 }
 
 export async function recordCommand(
@@ -26,8 +35,14 @@ export async function recordCommand(
     layout?: string;
     headless?: boolean;
     hideLineNumbers?: boolean;
+    pace?: string;
   },
 ) {
+  // Every wait in this function is expressed as a base duration times `pace`.
+  // The defaults were tuned for a quick smoke check; a demo someone is meant to
+  // read needs two or three times as long on each frame.
+  const pace = Number(opts.pace) || 1;
+  const hold = (ms: number) => delay(Math.round(ms * pace));
   const outputPath = path.resolve(opts.output);
   const outputDir = path.dirname(outputPath);
   fs.mkdirSync(outputDir, { recursive: true });
@@ -131,7 +146,7 @@ export async function recordCommand(
     ).catch(() => {});
   }
 
-  await delay(800);
+  await hold(800);
   console.log(chalk.cyan('  Running cells…'));
 
   let serverDied = false;
@@ -145,11 +160,29 @@ export async function recordCommand(
     }
   }, 3000);
 
+  // "Nothing is running" is also true *before* the first cell starts and in the
+  // gap between two cells, so waiting on that alone stops the recording after
+  // cell one and captures a notebook full of unexecuted cells. A run is over
+  // when no cell is running *and* no code cell is still idle.
   await page.waitForFunction(() => {
-    return document.querySelectorAll('[data-cell-status="running"]').length === 0;
-  }, { timeout: 180_000, polling: 500 }).catch(() => {
-    if (!serverDied) console.log(chalk.yellow('  Warning: timed out waiting for cells to finish'));
+    const running = document.querySelectorAll('[data-cell-status="running"]').length;
+    const pending = document.querySelectorAll(
+      '[data-cell-type="code"][data-cell-status="idle"]',
+    ).length;
+    return running === 0 && pending === 0;
+  }, { timeout: 180_000, polling: 500 }).catch((err) => {
+    if (!serverDied) {
+      console.log(chalk.yellow(`  Warning: stopped waiting for cells — ${err}`));
+    }
   });
+
+  // A demo may show an error on purpose (alkahest refusing something is worth
+  // filming), so this reports rather than fails — but a recording that quietly
+  // captured a traceback is worth knowing about before you publish it.
+  const errored = await page.$$eval('[data-cell-status="error"]', (els) => els.length);
+  if (errored > 0) {
+    console.log(chalk.yellow(`  Note: ${errored} cell(s) finished with an error`));
+  }
 
   clearInterval(healthInterval);
 
@@ -159,7 +192,7 @@ export async function recordCommand(
     process.exit(1);
   }
 
-  await delay(1500);
+  await hold(2000);
 
   console.log(chalk.cyan('  Scrolling to show all content…'));
   const pageHeight = await page.evaluate(() => document.body.scrollHeight);
@@ -168,23 +201,23 @@ export async function recordCommand(
     const scrollSteps = Math.ceil((pageHeight - viewportHeight) / 50);
     for (let i = 0; i < scrollSteps; i++) {
       await page.evaluate(() => window.scrollBy(0, 50));
-      await delay(50);
+      await hold(50);
     }
     if (isSplit) {
       // For split layout: hold at bottom showing outputs, then end
-      await delay(4000);
+      await hold(4000);
     } else {
-      await delay(1500);
+      await hold(1500);
       for (let i = scrollSteps; i > 0; i--) {
         await page.evaluate(() => window.scrollBy(0, -50));
-        await delay(35);
+        await hold(35);
       }
-      await delay(500);
+      await hold(500);
     }
   }
 
   console.log(chalk.green('  All cells done — holding final frame'));
-  await delay(isSplit ? 500 : 2500);
+  await hold(isSplit ? 500 : 2500);
 
   await context.close();
   await browser.close();
