@@ -68,7 +68,7 @@ A *shape class* is an operation plus a structural fingerprint of its arguments: 
 | ✅ certified | `form=product, funcs=cos,sin, fn_arg=var, mul=general, pow=none, pow_base=none` | `(cos(x) * sin(x))` | — |
 | ✅ certified | `form=product, funcs=cos, fn_arg=other, mul=scalar, pow=none, pow_base=none` | `(-1/4 * cos((2 * x)))` | — |
 | ✅ certified | `form=product, funcs=cos, fn_arg=var, mul=scalar, pow=none, pow_base=none` | `(-1 * cos(x))` | — |
-| ⛔ withheld | `form=product, funcs=erf, fn_arg=var, mul=scalar, pow=none, pow_base=none` | `(8.8622692545275794e-1 * erf(x))` | `diff_primitive_registry`, `product_rule` |
+| ⛔ withheld | `form=product, funcs=erf,sqrt, fn_arg=other, mul=general, pow=none, pow_base=none` | `(1/2 * erf(x) * sqrt(pi))` | `diff_primitive_registry`, `diff_sqrt`, `mul_zero`, `product_rule` |
 | ⛔ withheld | `form=product, funcs=exp,log, fn_arg=other, mul=general, pow=none, pow_base=none` | `(C1 * exp(log(x)))` | `diff_exp`, `product_rule` |
 | ✅ certified | `form=product, funcs=exp,log, fn_arg=var, mul=general, pow=none, pow_base=none` | `(exp(x) * log(x))` | — |
 | ✅ certified | `form=product, funcs=exp,sin, fn_arg=var, mul=general, pow=none, pow_base=none` | `(exp(x) * sin(x))` | — |

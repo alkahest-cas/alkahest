@@ -209,6 +209,16 @@ second. Known-slow inputs are documented here rather than added:
   here cover the same machinery more cheaply: the divergence probe, the payoff-
   free expectations, and the characteristic-function cross-check.
 
+* The Gibbs sweep `D(P‖Q) ≥ 0` over the **continuous** families. Each value
+  carries a verifying quadrature of `∫p log(p/q)`, so a 4×4 Gamma grid is ~10 s
+  — and one point is not a check, because a sign error in a closed form stays
+  positive near the diagonal and only goes negative further out. The sweep over
+  Gamma, Normal and Bernoulli lives in `alkahest-core/src/prob/tests.rs`
+  (`gibbs_every_divergence_is_non_negative`). What is here is the same sweep
+  over 81 `Bernoulli` pairs, where the support is two atoms and the whole grid
+  costs ~80 ms, plus single-point cases against mpmath for the families the
+  Rust sweep covers.
+
 ## Known-broken cases: `xfail(strict=True)`, never deletion
 
 A case alkahest currently fails is not removed — it is marked:

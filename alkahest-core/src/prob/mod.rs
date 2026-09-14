@@ -70,6 +70,7 @@ use crate::kernel::{Domain, ExprId, ExprPool};
 mod charfun;
 mod cplx;
 mod dists;
+mod entropy;
 mod expect;
 mod genfun;
 mod moments;
@@ -79,6 +80,9 @@ mod tests;
 mod verify;
 
 pub use charfun::characteristic_function;
+pub use entropy::{
+    cross_entropy, entropy, kl_divergence, mutual_information_independent, MAX_BINOMIAL_ENTROPY_N,
+};
 pub use expect::{expectation, expectation_affine, variance_affine_independent};
 pub use genfun::{
     cumulant, cumulant_generating_function, excess_kurtosis, factorial_moment,
@@ -148,6 +152,22 @@ pub(crate) fn conditions_of(log: &crate::deriv::DerivationLog) -> Vec<SideCondit
             out.push(c.clone());
         }
     }
+    // `e > 0` subsumes `e ≥ 0`, and a route can record both: the entropy of a
+    // `Bernoulli(p)` needs the strict `p > 0` (the closed form is `NaN` at the
+    // endpoint) on top of the constructor's `p ≥ 0`. Publishing the weaker one
+    // alongside the stronger is not wrong, it is noise — and a caller reading
+    // four hypotheses where there are two stops reading them.
+    let strict: Vec<ExprId> = out
+        .iter()
+        .filter_map(|c| match c {
+            SideCondition::Positive(e) => Some(*e),
+            _ => None,
+        })
+        .collect();
+    out.retain(|c| {
+        !matches!(c,
+        SideCondition::InDomain(e, Domain::NonNegative) if strict.contains(e))
+    });
     out
 }
 
@@ -687,6 +707,30 @@ impl Distribution {
         pool: &ExprPool,
     ) -> Result<crate::deriv::DerivedExpr<ExprId>, ProbError> {
         charfun::characteristic_function(self, t, pool)
+    }
+
+    /// The entropy — Shannon `H = -Σ p log p` on a discrete support,
+    /// differential `h = -∫ f log f` on a continuous one — in nats unless
+    /// `base` says otherwise, verified against its own defining integral.
+    ///
+    /// **The two are different quantities**, and this method returns whichever
+    /// the support calls for rather than pretending they are one. `h` is not
+    /// the limit of `H`, is not non-negative (`h(Uniform(0, ½)) = log ½`), and
+    /// is not invariant under a change of variables. See
+    /// [`crate::prob::entropy`] before treating a value from here as "the
+    /// information content" of anything.
+    ///
+    /// # Errors
+    ///
+    /// [`ProbError::NoClosedForm`] for `Poisson`, whose entropy needs a closed
+    /// form for `e^{-λ}Σ λ^k log(k!)/k!` that does not exist; see
+    /// [`crate::prob::entropy`] for the rest.
+    pub fn entropy(
+        &self,
+        base: Option<ExprId>,
+        pool: &ExprPool,
+    ) -> Result<crate::deriv::DerivedExpr<ExprId>, ProbError> {
+        entropy::entropy(self, base, pool)
     }
 
     /// The quantile `F⁻¹(p)`, in closed form, verified.
