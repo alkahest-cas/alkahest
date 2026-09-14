@@ -220,6 +220,8 @@ export default function Notebook({
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [serverStatus, setServerStatus] = useState<'unknown' | 'online' | 'offline'>('unknown');
   const [autoRunPending, setAutoRunPending] = useState(false);
+  const autoRunStarted = useRef(false);
+  const sessionPromise = useRef<Promise<string> | null>(null);
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
   const [focusTargetId, setFocusTargetId] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -355,7 +357,16 @@ export default function Notebook({
     }
   }
 
-  // Create kernel session on mount; optionally auto-run all cells
+  // Create kernel session on mount; optionally auto-run all cells.
+  //
+  // The in-flight promise is memoised in a ref because React mounts, unmounts
+  // and remounts effects in development: without it the page opened *two*
+  // kernels, published the second as the live one, and orphaned the first —
+  // and the old cleanup could not free either, since `sessionId` was still
+  // `null` in its closure. Two kernels also split an auto-run in half: the
+  // cells that import alkahest landed in one and the rest in the other, which
+  // is why `?autorun=1` recordings showed `NameError: name 'ak' is not defined`
+  // from cell three onwards.
   useEffect(() => {
     const conn = connectionFromConfig(cfg.current);
     if (!conn.httpUrl) {
@@ -364,26 +375,22 @@ export default function Notebook({
       if (autoRun) setTimeout(() => setAutoRunPending(true), 800);
       return;
     }
-    (async () => {
-      try {
-        const id = await createSession(conn);
+    if (!sessionPromise.current) sessionPromise.current = createSession(conn);
+    sessionPromise.current
+      .then((id) => {
         setSessionId(id);
         setServerStatus('online');
         onServerStatusChange?.('online');
-        if (autoRun) {
-          // Small delay to let the UI settle, then run all cells sequentially
-          setTimeout(() => {
-            setAutoRunPending(true);
-          }, 800);
-        }
-      } catch {
+        // Let the UI settle, then run all cells sequentially.
+        if (autoRun) setTimeout(() => setAutoRunPending(true), 800);
+      })
+      .catch(() => {
+        sessionPromise.current = null;
         setServerStatus('offline');
         onServerStatusChange?.('offline');
-      }
-    })();
-    return () => {
-      if (sessionId) destroySession(connectionFromConfig(cfg.current), sessionId);
-    };
+      });
+    // No cleanup: the session outlives a development remount on purpose, and
+    // `restartKernel` is what actually disposes of one.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -396,19 +403,27 @@ export default function Notebook({
     }
   }, [cells, onReady]);
 
-  // Auto-run all cells sequentially when triggered by ?autorun=1
+  // Auto-run all cells sequentially when triggered by ?autorun=1.
+  //
+  // Keyed on the kernel session rather than guarded by a cancel flag set from
+  // the effect's cleanup. Two things broke that: clearing `autoRunPending`
+  // inside the effect flipped one of its own dependencies, and React re-invokes
+  // effects (and their cleanups) on mount in development. Either one ran the
+  // cleanup while the loop was still on its first cell, so every `?autorun=1`
+  // page executed exactly one cell and left the rest idle — which is what every
+  // CLI recording has been filming.
   useEffect(() => {
-    if (!autoRunPending || !sessionId) return;
-    setAutoRunPending(false);
-    let cancelled = false;
+    if (!autoRunPending || !sessionId || autoRunStarted.current) return;
+    autoRunStarted.current = true;
     (async () => {
-      for (const cell of cells) {
-        if (cancelled || cell.cellType === 'markdown') continue;
+      for (const cell of cellsRef.current) {
+        if (cell.cellType === 'markdown') continue;
         runCell(cell.id);
-        await waitForCellDone(cell.id, () => cancelled);
+        await waitForCellDone(cell.id, () => false);
       }
     })();
-    return () => { cancelled = true; };
+    // Deliberately no cleanup. Cancelling from one would abort the run on the
+    // first development remount, which is the other half of the one-cell bug.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRunPending, sessionId]);
 

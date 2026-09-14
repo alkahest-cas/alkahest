@@ -115,7 +115,7 @@ function OutputItemView({
         </pre>
       );
     }
-    return <MarkdownRender source={item.text} />;
+    return <StdoutRender text={item.text} />;
   }
 
   if (item.type === 'latex') {
@@ -175,6 +175,46 @@ function OutputItemView({
   }
 
   return null;
+}
+
+const MATH_BLOCK = /\$\$[\s\S]*?\$\$/g;
+
+/** Render a stdout stream, keeping non-maths text exactly as it was printed.
+ *
+ * A cell prints two different kinds of thing: `$$...$$`, which is meant as
+ * maths, and column-aligned tables, which are meant literally. Sending the
+ * whole stream through the markdown renderer collapses runs of spaces and
+ * newlines, so every printed table arrived as one reflowed paragraph. Split the
+ * maths blocks out and leave everything between them preformatted.
+ */
+function StdoutRender({ text }: { text: string }) {
+  const parts: { math: boolean; text: string }[] = [];
+  let cursor = 0;
+  for (const match of text.matchAll(MATH_BLOCK)) {
+    const at = match.index ?? 0;
+    if (at > cursor) parts.push({ math: false, text: text.slice(cursor, at) });
+    parts.push({ math: true, text: match[0] });
+    cursor = at + match[0].length;
+  }
+  if (cursor < text.length) parts.push({ math: false, text: text.slice(cursor) });
+
+  return (
+    <>
+      {parts.map((part, i) => {
+        if (part.math) return <MarkdownRender key={i} source={part.text} />;
+        const body = part.text.replace(/^\n+|\n+$/g, '');
+        if (!body.trim()) return null;
+        return (
+          <pre
+            key={i}
+            className="overflow-x-auto whitespace-pre font-mono text-sm leading-relaxed"
+          >
+            {body}
+          </pre>
+        );
+      })}
+    </>
+  );
 }
 
 function SafeHtml({ html }: { html: string }) {
