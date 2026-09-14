@@ -370,7 +370,6 @@ CASES: list[Case] = [
             "and pi resolving must not make y resolve too."
         ),
     ),
-
     # An exact integer exponent the evaluator used to reduce to f64 first.
     # -----------------------------------------------------------------------
     Case(
