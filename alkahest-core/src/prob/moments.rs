@@ -177,7 +177,7 @@ fn factorial(n: u32) -> Integer {
 }
 
 /// `N(N-1)⋯(N-r+1)`, zero once `r > N`.
-fn falling_factorial(n: u32, r: u32) -> Integer {
+pub(crate) fn falling_factorial(n: u32, r: u32) -> Integer {
     if r > n {
         return Integer::from(0);
     }

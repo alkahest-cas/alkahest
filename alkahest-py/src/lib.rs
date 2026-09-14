@@ -17225,6 +17225,126 @@ impl PyDistribution {
         let id = t.id;
         self.derived(py, move |d, pool| core_characteristic_function(d, id, pool))
     }
+
+    /// The moment generating function ``M_X(t) = E[e^{tX}]``, verified against
+    /// its defining integral, **with its region of convergence reported rather
+    /// than assumed**.
+    ///
+    /// This is where a table lookup and a correct answer part company.
+    /// ``M_X(t) = lambda/(lambda - t)`` for an ``Exponential(lambda)`` holds
+    /// only on ``t < lambda``; outside that strip the same expression is
+    /// finite, clean, and the value of no integral. So:
+    ///
+    /// * a ``t`` that can be **decided** to sit outside the strip raises
+    ///   ``E-PROB-006`` — the quantity is ``+inf``, not a rational function;
+    /// * a ``t`` that cannot be decided returns the closed form with
+    ///   ``lambda - t > 0`` on :func:`prob_side_conditions`;
+    /// * a law whose MGF is entire records that in the derivation log and
+    ///   leaves the condition list empty — so empty means *checked*, not
+    ///   *not looked at*.
+    ///
+    /// Raises ``E-PROB-006`` for ``LogNormal`` at a positive or undecidable
+    /// ``t``: ``E[e^{tX}]`` diverges for **every** ``t > 0``, and completing
+    /// the square anyway is the archetypal silent error this module exists to
+    /// prevent. A ``t`` decidably ``<= 0`` raises ``E-PROB-004`` instead —
+    /// there the expectation is finite and what is missing is a closed form.
+    /// ``Beta`` raises ``E-PROB-004``: its MGF is ``1F1(a; a+b; t)``.
+    fn moment_generating_function(&self, py: Python<'_>, t: PyRef<PyExpr>) -> PyResult<PyExpr> {
+        let id = t.id;
+        self.derived(py, move |d, pool| d.moment_generating_function(id, pool))
+    }
+
+    /// The cumulant generating function ``K_X(t) = log M_X(t)``, verified as
+    /// ``exp(K(t)) == E[e^{tX}]`` — so the logarithm is exercised rather than
+    /// cancelled.
+    ///
+    /// Carries the same convergence strip as
+    /// :meth:`moment_generating_function`, through the same channel: the
+    /// logarithm of a divergent expectation is not a cumulant generating
+    /// function. ``Beta`` raises ``E-PROB-004`` here while :meth:`cumulant`
+    /// does not — ``K`` is analytic at the origin for a Beta, it simply has no
+    /// name in this library.
+    fn cumulant_generating_function(&self, py: Python<'_>, t: PyRef<PyExpr>) -> PyResult<PyExpr> {
+        let id = t.id;
+        self.derived(py, move |d, pool| d.cumulant_generating_function(id, pool))
+    }
+
+    /// The probability generating function ``G_X(z) = E[z**X]``, verified
+    /// against ``sum_k z**k P(X = k)``.
+    ///
+    /// Defined only for a law supported on the non-negative integers —
+    /// ``Bernoulli``, ``Binomial``, ``Poisson``. Everything else raises
+    /// ``E-PROB-002`` naming its support. ``E[z**X]`` for a ``Normal`` is a
+    /// category error rather than a harder integral: the formal rewrite
+    /// ``E[exp(X log z)]`` returns a clean number, that number is the *moment*
+    /// generating function at ``log z``, and it says nothing about any
+    /// ``P(X = k)`` — all of which are zero.
+    ///
+    /// All three integer laws here converge for every ``z``: two because
+    /// ``G`` is a polynomial, the Poisson because ``G`` is entire. The
+    /// derivation log says which.
+    fn probability_generating_function(
+        &self,
+        py: Python<'_>,
+        z: PyRef<PyExpr>,
+    ) -> PyResult<PyExpr> {
+        let id = z.id;
+        self.derived(py, move |d, pool| {
+            d.probability_generating_function(id, pool)
+        })
+    }
+
+    /// The factorial moment ``E[X(X-1)...(X-n+1)]``, which is ``G_X**(n)(1)``,
+    /// verified against the defining sum.
+    ///
+    /// Raises ``E-PROB-002`` for a continuous law — there is no ``G`` to
+    /// differentiate — and for ``n`` past ``MAX_MOMENT_ORDER``.
+    fn factorial_moment(&self, py: Python<'_>, n: u32) -> PyResult<PyExpr> {
+        self.derived(py, move |d, pool| d.factorial_moment(n, pool))
+    }
+
+    /// The ``n``-th cumulant ``kappa_n = K_X**(n)(0)``, verified.
+    ///
+    /// ``kappa_1`` is the mean and ``kappa_2`` the variance; for a ``Normal``
+    /// every ``kappa_n`` with ``n >= 3`` is exactly ``0``, and for a
+    /// ``Poisson(lam)`` every ``kappa_n`` is ``lam``.
+    ///
+    /// The claim comes from the moment-cumulant recursion over the raw-moment
+    /// table and is checked against the expression of ``kappa_n`` in the
+    /// **central** moments, each quadratured from its own defining integral —
+    /// a different identity on different data, because re-running the same
+    /// recursion over quadratured raw moments would agree with a wrong
+    /// recursion.
+    ///
+    /// Raises ``E-PROB-006`` for ``LogNormal``, whose ``K`` exists on no
+    /// neighbourhood of the origin: the recursion runs perfectly well and what
+    /// it computes is the coefficient of a divergent series. Use
+    /// :meth:`skewness` and :meth:`excess_kurtosis`, which are defined from
+    /// central moments and do exist there. Raises ``E-PROB-002`` for ``n = 0``
+    /// and for ``n`` past ``MAX_CUMULANT_ORDER`` (6).
+    fn cumulant(&self, py: Python<'_>, n: u32) -> PyResult<PyExpr> {
+        self.derived(py, move |d, pool| d.cumulant(n, pool))
+    }
+
+    /// ``gamma_1 = E[((X - mu)/sigma)**3] = kappa_3/sigma**3``, verified
+    /// against that expectation.
+    ///
+    /// Built from central moments rather than from :meth:`cumulant`, and the
+    /// difference is not cosmetic: a ``LogNormal`` has no cumulants and does
+    /// have the skewness ``(exp(s**2) + 2)*sqrt(exp(s**2) - 1)`` that every
+    /// reference prints.
+    fn skewness(&self, py: Python<'_>) -> PyResult<PyExpr> {
+        self.derived(py, |d, pool| d.skewness(pool))
+    }
+
+    /// ``gamma_2 = E[((X - mu)/sigma)**4] - 3 = kappa_4/sigma**4``, verified.
+    ///
+    /// **Excess** kurtosis: ``0`` for a normal, not ``3``. The two conventions
+    /// differ by exactly the constant a reader is least likely to notice, so
+    /// the one returned is the one whose name says which it is.
+    fn excess_kurtosis(&self, py: Python<'_>) -> PyResult<PyExpr> {
+        self.derived(py, |d, pool| d.excess_kurtosis(pool))
+    }
 }
 
 impl PyDistribution {
