@@ -54,6 +54,83 @@
   exponent out of the block, and one that fails if the `expectation` fix
   disturbs an unbounded support.
 
+- **An exact integer exponent survives numeric evaluation.**
+  `ak.eval_expr(x ** (10**30 + 1), {x: -1})` returned **`1.0`**. The exponent
+  is odd, so the answer is `-1`. Since #376 the *expression* holds the exponent
+  exactly — `ExprPool::integer` is `rug`-backed and unbounded — but every `f64`
+  evaluator reduced it to a double before computing, `10**30 + 1` rounds to
+  `1e30`, and `1e30` is even. A clean, plausible, confidently-returned number
+  with the wrong sign, which no numeric probe downstream can distinguish from
+  the truth.
+
+  What rounding an integer exponent to `f64` destroys is exactly one thing that
+  changes the *answer* rather than its precision — the parity, and only for a
+  negative base — so `kernel::pow_f64` corrects that and nothing else. Measured:
+
+  | | before | after |
+  |---|---|---|
+  | `eval_expr(x**(10**30+1), {x: -1})` | `1.0` | `-1.0` |
+  | `eval_expr(x**(2**53+1), {x: -1})` | `1.0` | `-1.0` |
+  | `eval_expr(x**(10**30+1), {x: -0.5})` | `+0.0` | `-0.0` |
+  | `evaluate(…, mode="complex")` at `-1` | `1+0j` | `-1+0j` |
+  | `evaluate(…, mode="exact")` at `-1` | `E-EVAL-003` | `Fraction(-1, 1)` |
+  | `evaluate(x**(10**12), {x: 2}, mode="exact")` | **`SIGABRT`** | `E-EVAL-012` |
+  | `eval_expr(x**(10**30+1), {x: 2})` | `E-EVAL-009` | `E-EVAL-009` (unchanged) |
+  | `x**3`, `x**(10**30)`, `x**(2**60)`, `x**1e30` | unchanged | unchanged |
+
+  The boundary: where the *magnitude* is representable the answer is now
+  correctly signed; where it is not, the overflow is `±inf` and every checked
+  entry point turns it into `E-EVAL-009`. `(-1)` to a `10**30` power is a
+  number; `2` is a refusal.
+
+  Each path, and what it was:
+
+  * `eval_expr` / `eval_interp` / `eval_interp_checked`, `eval_f64`, and the
+    two snapshot interpreters behind `compile()`'s fallback tier — all
+    `base.powf(exp)`, all wrong. Fixed through one shared `pow_f64`.
+  * `eval_complex_f64` — worse: `n.to_i64().unwrap_or(0)`, so an exponent
+    wider than `i64` silently became **zero** and every such power evaluated to
+    `1 + 0i` whatever the base. A real base is now exact by parity; a base off
+    the real axis is a refusal, because `n·θ mod 2π` past `2^63` has no correct
+    bits left in a double.
+  * `eval_exact_rational` — refused any exponent wider than `i64` as
+    `E-EVAL-003` "only integer exponents are supported", for an exponent that
+    is an integer; and for a *narrower* one it tried to build the result, so
+    `evaluate(x**(10**12), {x: 2}, mode="exact")` **aborted the process**
+    (GMP calls `abort()` on a failed allocation — no `except` catches that).
+    Now `0`, `±1` are answered at any exponent, and anything whose exact result
+    would exceed 2^24 bits is `E-EVAL-012`.
+  * The Cranelift and LLVM backends lower the exponent to an `f64` constant and
+    cannot see the node, so an expression carrying one is compiled at the
+    interpreter tier — `compile_tier()` reports the downgrade.
+  * `emit_c_expr` emitted `pow(x, 1e30)`, so the generated C disagreed with
+    `eval_expr` on the same node. It now emits
+    `copysign(pow(fabs(x), 1e30), x)` for an odd exponent and
+    `pow(fabs(x), 1e30)` for an even one — the double carries the magnitude,
+    which is all it was ever able to carry, and the sign comes off the exact
+    node. Verified by compiling both forms with `cc`: the old one prints `1` at
+    `x = -1`, the new one `-1`, and both still print `inf` at `x = 2`.
+  * `eval_interval` / `ArbBall` — **already sound**, and unchanged. It declines
+    (`E-EVAL-010`) or widens to an unbounded ball rather than narrowing wrongly.
+  * **Not changed**: the StableHLO emitter (`stablehlo/mod.rs`, the
+    `stablehlo.power` fall-through) and the PTX emitter (`jit/nvptx.rs`, the
+    `__nv_pow` fall-through) have the same shape. Unlike the C emitter, neither
+    emitted program can be executed here — MLIR needs `mlir-opt` and PTX needs
+    the `cuda` feature and a GPU — so the fix is left to a change that can
+    measure its own result.
+
+  Cost, measured rather than assumed: the fast path is one `fabs` and one
+  predictable compare, and the exponent node is never looked at below `2^53`.
+  A `powf` call goes from 22.78 ns to 23.09 ns (+1.4%, min-of-40 batches),
+  which against the ~190 ns a `Pow` node costs in the interpreter is under
+  0.2%; `jit/interp_poly_deg19` shows no change outside run-to-run noise.
+
+  Also: `evaluate(expr, {x: 0.1}, mode="exact")` reported `E-EVAL-001`,
+  *unbound symbol*, for a symbol that was bound — exact mode ran against the
+  partial binding map it had built before rejecting the float. It is now
+  `E-EVAL-002`.
+
+
 ## 3.11.0 — 2026-09-14
 
 ### Silent errors fixed — do results you already computed need rechecking?

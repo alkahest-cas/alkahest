@@ -49,7 +49,7 @@ closes a branch it never explored.
 
 Refusals: ``E-CAD-001``, ``E-LINALG-010``, ``E-MAT-004``, ``E-SOS-002``,
 ``E-ANSATZ-003``, ``E-SMT-003``, ``E-INT-001``, ``E-BUDGET-001..003``,
-``E-ASYMPT-004``, ``E-ODE-011``, ``E-ODE-044``.
+``E-ASYMPT-004``, ``E-ODE-011``, ``E-ODE-044``, ``E-EVAL-012``.
 
 Verdicts: ``E-INT-004`` (proven non-elementary), ``E-MAT-003`` (proven
 singular), ``E-EVAL-009`` (undefined at this point), ``E-TRANSFORM-004`` and
