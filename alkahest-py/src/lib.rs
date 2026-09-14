@@ -4896,11 +4896,12 @@ fn dsolve_system_error_to_py(e: CoreDsolveSystemError) -> PyErr {
 /// `method` (`str`), `side_conditions` (list of `str`) and `notes` (list of
 /// `str`).
 ///
-/// Raises `ValueError` when the system is not linear (`E-ODE-030`), has a
-/// time-dependent coefficient (`E-ODE-031`), has no closed-form spectrum
-/// (`E-ODE-032`), has a forcing term whose required integral is not elementary
-/// (`E-ODE-033`), or produced a candidate that failed the substitution gate
-/// (`E-ODE-034`). It never returns an unverified solution.
+/// Raises `OdeError` (a `ValueError` subclass) when the system is not linear
+/// (`E-ODE-030`), has a time-dependent coefficient (`E-ODE-031`), has no
+/// closed-form spectrum (`E-ODE-032`), has a forcing term whose required
+/// integral is not elementary (`E-ODE-033`), or produced a candidate that
+/// failed the substitution gate (`E-ODE-034`). It never returns an unverified
+/// solution.
 ///
 /// The two-compartment pharmacokinetic model
 /// `x' = -ka*x`, `y' = ka*x - ke*y` solves with symbolic `ka`, `ke`; because
