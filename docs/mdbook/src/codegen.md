@@ -43,7 +43,7 @@ CPU compilation uses a **three-tier dispatch** chosen by `CompileConfig` (expres
 
 1. **Interpreter** — small DAGs and few planned evaluations (zero compile latency)
 2. **Cranelift** (`--features cranelift`) — pure Rust, ~10× faster compile than LLVM; no system LLVM required
-3. **LLVM** (`--features jit`) — inkwell / LLVM 15 MCJIT; best throughput for large batch sweeps
+3. **LLVM** (`--features jit`) — inkwell / LLVM 21 MCJIT; best throughput for large batch sweeps
 
 Default PyPI wheels use the interpreter only. `+jit` / `+full` release wheels enable LLVM. Add `cranelift` to a from-source build for the fast-compile tier without LLVM.
 
@@ -191,7 +191,7 @@ print(mlir_text)  # valid input to mlir-opt / XLA
 
 ## GPU codegen (NVPTX)
 
-With `--features cuda` and an LLVM 15 installation with NVPTX support — **not** in any
+With `--features cuda` and an LLVM 21 installation with NVPTX support — **not** in any
 published wheel, so `pip install alkahest` never has this. Full detail, including
 build prerequisites, the supported node set, error codes and the state of testing, is
 in [GPU support (CUDA)](./gpu.md).

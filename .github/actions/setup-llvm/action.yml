@@ -1,0 +1,36 @@
+name: Set up LLVM 21
+description: >
+  Install llvm-21-dev on an Ubuntu runner and export LLVM_SYS_211_PREFIX.
+  Factored out because Ubuntu 24.04's universe stops at llvm-19-dev, so every
+  job that builds the `jit` feature needs the apt.llvm.org repository — and
+  there are eight such jobs across five workflows.
+
+runs:
+  using: composite
+  steps:
+    - name: Add apt.llvm.org and install LLVM 21
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Ubuntu ships llvm-18-dev and llvm-19-dev in universe but not 21, so the
+        # upstream LLVM repository is required. Keyed by codename so this keeps
+        # working when the runner image moves off noble.
+        codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+          | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
+        # apt.llvm.org retires older branches as new ones land, so this pin will
+        # eventually 404 and this step will fail loudly at `apt-get update` rather
+        # than silently building against the wrong LLVM. When that happens, bump
+        # the 21 here together with inkwell's `llvm21-1-*` feature in
+        # alkahest-core/Cargo.toml and `LLVM_SYS_211_PREFIX` below — all three
+        # must move as one.
+        echo "deb http://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-21 main" \
+          | sudo tee /etc/apt/sources.list.d/llvm-21.list > /dev/null
+        sudo apt-get update
+        sudo apt-get install -y llvm-21-dev llvm-21
+
+    - name: Export LLVM_SYS_211_PREFIX
+      shell: bash
+      run: |
+        echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21" >> "$GITHUB_ENV"
+        echo "/usr/lib/llvm-21/bin" >> "$GITHUB_PATH"

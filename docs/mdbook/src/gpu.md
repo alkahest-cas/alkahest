@@ -6,7 +6,7 @@ is required, and each feature has different build prerequisites.
 
 | Cargo feature | What it provides | Build prerequisites | Reachable from Python? |
 |---|---|---|---|
-| `cuda` | NVPTX codegen: [`compile_cuda`](#compile_cuda) turns an expression into a GPU kernel | **LLVM 15 with the NVPTX target** (`cuda` implies `alkahest-core/jit`, i.e. inkwell), plus `libcuda.so.1` at runtime | **Yes** — `compile_cuda`, `CudaCompiledFn` |
+| `cuda` | NVPTX codegen: [`compile_cuda`](#compile_cuda) turns an expression into a GPU kernel | **LLVM 21 with the NVPTX target** (`cuda` implies `alkahest-core/jit`, i.e. inkwell), plus `libcuda.so.1` at runtime | **Yes** — `compile_cuda`, `CudaCompiledFn` |
 | `groebner-cuda` | A Macaulay-matrix mod-p row reduction kernel used by the Rust function `compute_groebner_basis_gpu` | Only `cudarc` — **no LLVM**, because the kernel is a static PTX string rather than LLVM output | **No** — see [below](#groebner-cuda-is-not-reachable-from-python) |
 
 The two do not imply each other. `cuda = ["jit", "dep:cudarc"]` and
@@ -15,7 +15,7 @@ The two do not imply each other. `cuda = ["jit", "dep:cudarc"]` and
 ## Building
 
 ```bash
-# NVPTX expression codegen. Needs LLVM 15 built with NVPTX:
+# NVPTX expression codegen. Needs LLVM 21 built with NVPTX:
 #   llc --version | grep nvptx     # must list nvptx64
 maturin develop --manifest-path alkahest-py/Cargo.toml --release --features cuda
 
@@ -28,7 +28,7 @@ maturin develop --manifest-path alkahest-py/Cargo.toml --release \
 ```
 
 `cudarc` uses dynamic loading, so **the extension builds on a machine with no CUDA
-installed**; the driver is only needed when a kernel actually launches. LLVM 15 with
+installed**; the driver is only needed when a kernel actually launches. LLVM 21 with
 NVPTX, by contrast, is needed at *build* time for `cuda` — a build without it fails
 or produces `E-CUDA-001` at compile time.
 
@@ -121,7 +121,7 @@ bug bit `groebner_cuda.rs::gpu_available` and `nvptx_gpu.rs::device_available`.
 
 Earlier releases documented a workaround here — launch on an ordinal and catch
 `E-CUDA-003` — because a `cuda_device_count` binding could not be verified by
-anything on an ordinary dev box: `cuda` implies LLVM 15 with NVPTX, so it could not
+anything on an ordinary dev box: `cuda` implies LLVM 21 with NVPTX, so it could not
 even be *compiled*, and no CI job built the Python extension with the feature. It
 shipped once both could be done on real hardware, which is the standard the
 capability overclaims this page documents were failing.

@@ -284,23 +284,38 @@ mod tests {
     #[test]
     fn gmp_accounting_tracks_a_big_rational() {
         assert!(install(), "GMP accounting must install");
-        let before = gmp_live_bytes();
-        let big = {
-            let mut z = rug::Integer::from(1);
-            z <<= 8_000_000; // ~1 MB of limbs
-            z
-        };
-        let during = gmp_live_bytes();
-        assert!(
-            during > before + 500_000,
-            "expected the shift to be counted: {before} -> {during}"
-        );
-        drop(big);
-        let after = gmp_live_bytes();
-        assert!(
-            after < during,
-            "freeing must decrement the live total: {during} -> {after}"
-        );
+        // `gmp_live_bytes()` is a *process-global* total, and under
+        // `cargo test --workspace` some 2360 other tests are allocating GMP
+        // memory on other threads for the whole run. A single sample pair is
+        // therefore spoilable by an unrelated allocation landing between two
+        // reads — observed once in four workspace runs, with `after` coming back
+        // 8x larger than `during` (another thread's ~7 MB, not a missed
+        // decrement). Sample until one attempt is clean: the interference is
+        // transient, so a working counter produces a clean pair quickly, while a
+        // counter that genuinely never responds fails every attempt.
+        let mut last = String::new();
+        for attempt in 0..8 {
+            let before = gmp_live_bytes();
+            let big = {
+                let mut z = rug::Integer::from(1);
+                z <<= 8_000_000; // ~1 MB of limbs
+                z
+            };
+            let during = gmp_live_bytes();
+            if during <= before + 500_000 {
+                last = format!("attempt {attempt}: shift not counted: {before} -> {during}");
+                drop(big);
+                continue;
+            }
+            drop(big);
+            let after = gmp_live_bytes();
+            if after >= during {
+                last = format!("attempt {attempt}: free did not decrement: {during} -> {after}");
+                continue;
+            }
+            return; // both halves held on an uncontended sample
+        }
+        panic!("GMP accounting never produced a clean sample; last failure: {last}");
     }
 
     #[test]

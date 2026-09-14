@@ -98,7 +98,7 @@ Expressions are lowered through multiple IR levels:
 
 The custom dialect is where math-aware optimizations happen. Standard MLIR passes handle the remainder. Multiple hardware targets are supported through MLIR's existing target infrastructure: CPU (default, with autovectorization), NVIDIA GPU (via PTX), and XLA/TPU targets (via StableHLO).
 
-CPU evaluation uses three tiers selected by `CompileConfig`: tree-walking interpreter (small DAGs / few evals), Cranelift JIT (fast compile, pure Rust), and LLVM JIT (best batch throughput, requires LLVM 15). `CompileCache` memoizes `(ExprId, inputs) → CompiledFn` within a session. Native JIT backends expose a bulk column-major entry point for batch sweeps. When no JIT feature is enabled, the interpreter is used automatically.
+CPU evaluation uses three tiers selected by `CompileConfig`: tree-walking interpreter (small DAGs / few evals), Cranelift JIT (fast compile, pure Rust), and LLVM JIT (best batch throughput, requires LLVM 21). `CompileCache` memoizes `(ExprId, inputs) → CompiledFn` within a session. Native JIT backends expose a bulk column-major entry point for batch sweeps. When no JIT feature is enabled, the interpreter is used automatically.
 
 ### Proof Certificates
 

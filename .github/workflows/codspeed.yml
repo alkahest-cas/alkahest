@@ -42,7 +42,10 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install system dependencies
-        run: sudo apt-get install -y libflint-dev llvm-15-dev llvm-15
+        run: sudo apt-get install -y libflint-dev
+
+      - name: Set up LLVM 21 (for the jit feature)
+        uses: ./.github/actions/setup-llvm
 
       # Build the Rust extension with groebner so all Python tasks are available.
       # The groebner bench groups in alkahest_bench.rs are also enabled this way.
