@@ -17,6 +17,8 @@ from contracts import Case, RefusesOr, Returns
 from ._shared import POOL, N, _int, _num, _rat
 
 K = POOL.symbol("k")
+#: Second bound index, for the double-sum (`telescope2d`) cases.
+J = POOL.symbol("j")
 #: Symbolic geometric ratio, for the `Σ rᵏ` cases.
 R = POOL.symbol("r")
 
@@ -171,6 +173,42 @@ def _zeilberger_boundary_at_tag(term: ak.Expr, lo: int, hi: int) -> Callable[[],
     def op() -> str:
         cert = ak.zeilberger(term, N, K)
         return str(cert.boundary_at(_int(lo), _int(hi))["boundary"])
+
+    return op
+
+
+def _telescope2d_boundary_tag(
+    term: ak.Expr, limits: tuple[int, int, int, int]
+) -> Callable[[], str]:
+    """Answer = the double-sum boundary verdict, ``telescope2d``'s ``status``.
+
+    ``telescope2d`` proves an identity about the summand in ``Q(n,j,k)``, which
+    a pole in ``j`` or ``k`` leaves undisturbed; the verdict is the separate
+    claim that a recurrence for ``S(n) = Σ_j Σ_k F(n,j,k)`` over the declared
+    rectangle follows from it.  Only the four boundary strips are ever
+    evaluated, so nothing in the analysis visits the *inside* of the rectangle.
+    """
+
+    def op() -> str:
+        cert = ex.telescope2d(term, N, J, K)
+        return str(cert.boundary_status(*limits)["status"])
+
+    return op
+
+
+def _telescope_md_boundary_tag(
+    term: ak.Expr, limits: tuple[int, int], **opts: int
+) -> Callable[[], str]:
+    """Answer = the same verdict from the general ``m``-index engine, at ``m=1``.
+
+    ``telescope_md`` and ``telescope2d`` share one boundary analysis
+    (``boundary_status_2d`` is a wrapper around ``boundary_status_md``), so a
+    single bound index is the cheapest place to pin a face-level defect.
+    """
+
+    def op() -> str:
+        cert = ex.telescope_md(term, N, [K], **opts)
+        return str(cert.boundary_status([limits])["status"])
 
     return op
 
@@ -676,6 +714,75 @@ CASES: list[Case] = [
             "recurrence for the sum, checked at n = 0, 3, 7. The control: a guard that refused "
             "every positive-exponent Γ whose argument moves with n, instead of asking where its "
             "poles actually are, would lose this one."
+        ),
+    ),
+    # The same two questions asked of the *multi-index* engine, which shares no
+    # code with the single-sum boundary module and inherited neither guard.  A
+    # rectangle's four boundary strips see even less than two endpoints do: they
+    # never visit the inside of the box, and a Γ pole that moves with n is not a
+    # constant at a strip and so is skipped there too.
+    # -----------------------------------------------------------------------
+    Case(
+        id="telescope2d_boundary_pole_inside_the_box",
+        subsystem="sums_products",
+        statement=(
+            "Σ_{j=0}^{15} Σ_{k=0}^{15} 2ⁿ·C(10,j)·C(j,k)/(k-3) has no value, so its certificate "
+            "implies no recurrence for the double sum"
+        ),
+        op=_telescope2d_boundary_tag(
+            _int(2) ** N * _binom(_int(10), J) * _binom(J, K) / (K - _int(3)),
+            (0, 15, 0, 15),
+        ),
+        contract=Returns("unknown"),
+        verified_by=(
+            "Every term with k = 3 is C(j,3)·2ⁿ/0, so no n has a value for S(n) at all. The "
+            "rectangle's four boundary strips are j=0, j=16, k=0 and k=16; none of them is "
+            "k=3, which is why evaluating them cannot see it. It is the two-index form of "
+            "Σ_{k=0}^{n} C(n,k)/(k-3), which the single-sum engine already refuses — see "
+            "zeilberger_boundary_pole_inside_range above."
+        ),
+    ),
+    Case(
+        id="telescope_md_face_pole_cancels_the_gamma_zero",
+        subsystem="sums_products",
+        statement=(
+            "Σ_{k=0}^{10} C(10,k)·(n-k)!/n!: the boundary face at k=11 is worth 1/9!, not 0"
+        ),
+        op=_telescope_md_boundary_tag(
+            _binom(_int(10), K) * ak.gamma(N - K + _int(1)) / ak.gamma(N + _int(1)),
+            (0, 10),
+            max_order=2,
+            max_a_degree=2,
+            max_cert_degree=5,
+        ),
+        contract=Returns("unknown"),
+        verified_by=(
+            "The face at k=11 carries a 1/Γ(11-k) = 1/Γ(0) zero — and a Γ(n-k+1) = Γ(n-10) "
+            "pole, which is not a constant along the face and so is not weighed against it. "
+            "alkahest returned status='vanishes' with coefficients 9-n, -(n+1)², (n+1)(n+2); "
+            "at n=9 the first is 0, so the licensed recurrence asserts 110·S(11) = 100·S(10) "
+            "about two numbers that are both perfectly well defined. Summing C(10,k)·(n-k)!/n! "
+            "term by term in exact rational arithmetic (Fraction with math.comb and "
+            "math.factorial) gives S(10) = 9864101/3628800 and S(11) = 4697191/1900800, and "
+            "110·S(11) - 100·S(10) = 1/362880 = 1/9! — which is exactly the value of the face "
+            "the verdict called zero."
+        ),
+    ),
+    Case(
+        id="telescope2d_control_natural_boundary_still_vanishes",
+        subsystem="sums_products",
+        statement="Σ_j Σ_k 2ⁿ·C(10,j)·C(j,k) = 2ⁿ·3¹⁰ — the textbook natural boundary",
+        op=_telescope2d_boundary_tag(
+            _int(2) ** N * _binom(_int(10), J) * _binom(J, K), (0, 15, 0, 15)
+        ),
+        contract=Returns("vanishes"),
+        verified_by=(
+            "Σ_k C(j,k) = 2^j and Σ_j C(10,j)·2^j = 3^10 by the binomial theorem twice, so "
+            "S(n) = 2ⁿ·3¹⁰ and the homogeneous S(n+1) = 2·S(n) holds. Every term is finite at "
+            "every integer (j,k) and both binomials vanish outside 0 ≤ k ≤ j ≤ 10, for every n. "
+            "The control for both refusals above: C(j,k) contributes Γ(j+1) with a *positive* "
+            "exponent, so a guard that refused every positive-exponent Γ instead of asking "
+            "whether its argument can reach a pole over the declared rectangle would kill this."
         ),
     ),
     # `verify_wz_pair` — a verifier's false *negative* is not a lie, but it is
