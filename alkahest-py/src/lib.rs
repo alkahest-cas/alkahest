@@ -11229,6 +11229,22 @@ fn py_evaluate(
             }
         }
     }
+    if mode == "exact" && !exact_possible {
+        // `exact` is the *partial* map the loop built before it gave up, so
+        // running exact mode against it reported `E-EVAL-001`, an unbound
+        // symbol — for a symbol the caller had bound. The binding is what
+        // exact mode cannot take, and `E-EVAL-002` is the code for that.
+        return Ok(PyEvaluationResult {
+            value: py.None(),
+            status: "unsupported".into(),
+            backend: "none".into(),
+            requested_mode: mode.into(),
+            requested_precision_bits: precision_bits,
+            achieved_precision_bits: None,
+            enclosure: None,
+            reason: Some("E-EVAL-002".to_owned()),
+        });
+    }
     if mode == "exact" || (mode == "auto" && exact_possible) {
         return Ok(
             match core_eval_exact_rational(expr.id, &pool.inner, &exact) {
@@ -11256,7 +11272,7 @@ fn py_evaluate(
                     requested_precision_bits: precision_bits,
                     achieved_precision_bits: None,
                     enclosure: None,
-                    reason: Some(error.reason.code().to_owned()),
+                    reason: Some(error.reason.agent_code().to_owned()),
                 },
             },
         );

@@ -42,7 +42,9 @@
 
 use crate::kernel::eval_const::try_predicate_bool_from_expr;
 use crate::kernel::expr::PredicateKind;
-use crate::kernel::{integer_to_f64, rational_to_f64, ExprData, ExprId, ExprPool};
+use crate::kernel::{
+    integer_is_exact_f64, integer_to_f64, pow_f64, rational_to_f64, ExprData, ExprId, ExprPool,
+};
 use crate::primitive::PrimitiveRegistry;
 use std::collections::HashMap;
 use std::fmt;
@@ -472,12 +474,64 @@ fn compile_for_tier(
     }
 }
 
+/// True when `expr` contains a power whose exponent is an exact integer that
+/// `f64` cannot hold.
+///
+/// Both native backends materialise the exponent as an `f64` constant and call
+/// `pow` — Cranelift through `alkahest_pow`, LLVM through `llvm.pow.f64` —
+/// which is exactly the reduction [`crate::kernel::pow_f64`] exists to undo.
+/// Neither can see the exact node from inside the emitted code, so the fix
+/// belongs where the tier is chosen: an expression like `x^(10^30 + 1)` is
+/// evaluated by the interpreter, which still has the node and gets the sign
+/// right.  It is one DAG walk per *compile*, never per call.
+fn needs_exact_integer_exponent(expr: ExprId, pool: &ExprPool) -> bool {
+    let mut visited = std::collections::HashSet::new();
+    let mut stack = vec![expr];
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        let data = pool.get(id);
+        if let ExprData::Pow { exp, .. } = &data {
+            let n = match pool.get(*exp) {
+                ExprData::Integer(n) => Some(n.0.clone()),
+                ExprData::Rational(r) if *r.0.denom() == 1 => Some(r.0.numer().clone()),
+                _ => None,
+            };
+            if n.is_some_and(|n| !integer_is_exact_f64(&n)) {
+                return true;
+            }
+        }
+        match &data {
+            ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
+                stack.extend_from_slice(args);
+            }
+            ExprData::Pow { base, exp } => {
+                stack.push(*base);
+                stack.push(*exp);
+            }
+            ExprData::BigO(inner) => stack.push(*inner),
+            _ => {}
+        }
+    }
+    false
+}
+
 fn compile_with_fallbacks(
     tier: CompileTier,
     expr: ExprId,
     inputs: &[ExprId],
     pool: &ExprPool,
 ) -> Result<CompiledFn, JitError> {
+    // Correctness outranks the tier, including a forced one: `compile_tier()`
+    // reports `Interpreter` afterwards, so the downgrade is visible rather
+    // than silent.
+    let tier =
+        if matches!(tier, CompileTier::Interpreter) || !needs_exact_integer_exponent(expr, pool) {
+            tier
+        } else {
+            CompileTier::Interpreter
+        };
     match compile_for_tier(tier, expr, inputs, pool) {
         Ok(f) => Ok(f),
         Err(e) => match tier {
@@ -732,7 +786,7 @@ fn eval_interp_inner(
         ExprData::Pow { base, exp } => {
             let b = eval_interp_inner(base, env, pool, memo)?;
             let e = eval_interp_inner(exp, env, pool, memo)?;
-            Some(b.powf(e))
+            Some(pow_f64(b, e, || Some(pool.get(exp))))
         }
         ExprData::Func { name, args } => {
             let mut vals = Vec::with_capacity(args.len());
@@ -883,10 +937,12 @@ fn try_expr_f64_snap(
             }
             Some(p)
         }
-        ExprData::Pow { base, exp } => Some(
-            try_expr_f64_snap(*base, snap, env, memo)?
-                .powf(try_expr_f64_snap(*exp, snap, env, memo)?),
-        ),
+        ExprData::Pow { base, exp } => {
+            let (base, exp) = (*base, *exp);
+            let b = try_expr_f64_snap(base, snap, env, memo)?;
+            let e = try_expr_f64_snap(exp, snap, env, memo)?;
+            Some(pow_f64(b, e, || snap_data(snap, exp).cloned()))
+        }
         ExprData::Func { name, args } => {
             let mut vals = Vec::with_capacity(args.len());
             for &a in args {
@@ -1005,8 +1061,10 @@ fn eval_interp_snap(
             Some(p)
         }
         ExprData::Pow { base, exp } => {
-            let (b, e) = (*base, *exp);
-            Some(eval_interp_snap(b, env, snap, memo)?.powf(eval_interp_snap(e, env, snap, memo)?))
+            let (base, exp) = (*base, *exp);
+            let b = eval_interp_snap(base, env, snap, memo)?;
+            let e = eval_interp_snap(exp, env, snap, memo)?;
+            Some(pow_f64(b, e, || snap.nodes.get(&exp).cloned()))
         }
         ExprData::Func { name, args } => {
             let args = args.clone();
@@ -1691,6 +1749,65 @@ mod tests {
 
     /// Deeply shared DAG: 20 levels of squaring produces 21 nodes but
     /// 2^20 tree references — must terminate in O(n) time.
+    #[test]
+    fn eval_interp_keeps_the_parity_of_an_exponent_wider_than_f64() {
+        use rug::{ops::Pow, Integer};
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let n = Integer::from(10).pow(30) + 1u32;
+        let expr = p.pow(x, p.integer(n.clone()));
+        let env = HashMap::from([(x, -1.0)]);
+
+        // The exponent is odd; its `f64` image `1e30` is even, and `eval_expr`
+        // returned `1.0` for a value that is `-1`.
+        assert_eq!(integer_to_f64(&n), 1e30);
+        assert_eq!(eval_interp(expr, &env, &p), Some(-1.0));
+        assert_eq!(eval_interp_checked(expr, &env, &p), Ok(-1.0));
+
+        // Controls: the even neighbour, a small odd exponent, and an exponent
+        // past 2^53 that is still exactly representable.
+        let even = p.pow(x, p.integer(Integer::from(10).pow(30)));
+        assert_eq!(eval_interp(even, &env, &p), Some(1.0));
+        assert_eq!(
+            eval_interp(p.pow(x, p.integer(3_i32)), &env, &p),
+            Some(-1.0)
+        );
+        let wide_even = p.pow(x, p.integer(Integer::from(1u64 << 60)));
+        assert_eq!(eval_interp(wide_even, &env, &p), Some(1.0));
+
+        // A magnitude `f64` cannot hold stays a refusal rather than becoming a
+        // signed guess.
+        assert_eq!(
+            eval_interp_checked(expr, &HashMap::from([(x, 2.0)]), &p),
+            Err(InterpEvalError::NonFinite)
+        );
+    }
+
+    #[test]
+    fn a_wide_integer_exponent_is_evaluated_by_the_interpreter_not_a_backend() {
+        use rug::{ops::Pow, Integer};
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let wide = p.pow(x, p.integer(Integer::from(10).pow(30) + 1u32));
+        // A batch hint big enough that tier selection reaches for a native
+        // backend wherever one is compiled in. Both lower the exponent to an
+        // `f64` constant, so neither can be trusted with this node.
+        let expr = p.add(vec![wide, p.mul(vec![x, x])]);
+        let f = compile_with(expr, &[x], &p, CompileConfig::for_batch(1 << 20)).expect("compile");
+        assert_eq!(f.compile_tier(), CompileTier::Interpreter);
+        assert_eq!(f.call(&[-1.0]), 0.0, "-1 + 1");
+        assert!(needs_exact_integer_exponent(expr, &p));
+
+        // Control: nothing else is downgraded, including a wide exponent that
+        // `f64` *can* hold exactly.
+        let plain = p.add(vec![p.pow(x, p.integer(19_i32)), p.mul(vec![x, x])]);
+        assert!(!needs_exact_integer_exponent(plain, &p));
+        assert!(!needs_exact_integer_exponent(
+            p.pow(x, p.integer(Integer::from(1u64 << 60))),
+            &p
+        ));
+    }
+
     #[test]
     fn eval_interp_deep_dag_terminates() {
         let pool = p();

@@ -11,8 +11,8 @@ pub(crate) mod symbols;
 
 use crate::ball::{ArbBall, IntervalEval};
 use crate::kernel::expr::PredicateKind;
-use crate::kernel::{integer_to_f64, rational_to_f64, ExprData, ExprId, ExprPool};
-use rug::Rational;
+use crate::kernel::{integer_to_f64, pow_f64, rational_to_f64, ExprData, ExprId, ExprPool};
+use rug::{Integer, Rational};
 use std::collections::HashMap;
 use std::fmt;
 
@@ -84,11 +84,20 @@ impl UnsupportedReason {
         }
     }
 
-    /// Agent-facing error code, including complex branch-cut declines that
-    /// reuse [`UnsupportedReason::UnsupportedExpression`] without a breaking enum variant.
+    /// Agent-facing error code, including the declines that reuse
+    /// [`UnsupportedReason::UnsupportedExpression`] with a distinguishing
+    /// `kind` rather than adding a variant to this public exhaustive enum.
     pub fn agent_code(&self) -> &'static str {
         match self {
             Self::UnsupportedExpression { kind: "branch_cut" } => "E-EVAL-011",
+            // An exact integer exponent whose *answer* the requested
+            // representation cannot hold: an exact power that would need
+            // megabytes of digits, or a complex power whose phase is past the
+            // last correct bit of a double. Both are refusals rather than the
+            // plausible wrong number the callers used to return.
+            Self::UnsupportedExpression {
+                kind: "exact_pow_overflow" | "unrepresentable_exponent",
+            } => "E-EVAL-012",
             other => other.code(),
         }
     }
@@ -196,7 +205,7 @@ fn eval_rational_node(
         ExprData::Pow { base, exp } => {
             let base = eval_rational_node(base, pool, bindings)?;
             let exponent = integer_exponent(exp, pool)?;
-            rational_pow(base, exponent)
+            rational_pow(base, &exponent)
         }
         ExprData::Piecewise { branches, default } => {
             for (condition, value) in branches {
@@ -218,27 +227,75 @@ fn eval_rational_node(
     }
 }
 
-fn integer_exponent(expr: ExprId, pool: &ExprPool) -> Result<i64, EvalError> {
+/// The largest exact power [`eval_exact_rational`] will build, in bits.
+///
+/// `b^n` occupies about `n · bits(b)` bits, and GMP **aborts the process**
+/// when an allocation that size fails — `evaluate(x**(10**12), {x: 2},
+/// mode="exact")` used to die with `GNU MP: Cannot allocate memory` and a core
+/// dump, which no `except` can catch.  So the size has to be refused before the
+/// multiplication rather than recovered from after it.
+///
+/// `2^24` bits is 2 MiB, a little over five million decimal digits: past
+/// anything `evaluate` can even hand back (`fractions.Fraction` is built from a
+/// decimal string, and CPython refuses to parse one over 4300 digits by
+/// default) and still under a millisecond of work.
+const MAX_EXACT_POW_BITS: u64 = 1 << 24;
+
+/// The exact integer an exponent node holds.
+///
+/// Unbounded on purpose: this used to return `i64` and reported an exponent of
+/// `10**30` — an ordinary integer the pool holds exactly — as
+/// [`UnsupportedReason::NonIntegerExponent`], which it is not.  Whether the
+/// *result* is affordable is [`rational_pow`]'s question, and it is a different
+/// one: `(-1)^(10**30 + 1)` costs nothing.
+fn integer_exponent(expr: ExprId, pool: &ExprPool) -> Result<Integer, EvalError> {
     match pool.get(expr) {
-        ExprData::Integer(n) => {
-            n.0.to_i64()
-                .ok_or(error(UnsupportedReason::NonIntegerExponent))
-        }
-        ExprData::Rational(r) if *r.0.denom() == 1 => {
-            r.0.numer()
-                .to_i64()
-                .ok_or(error(UnsupportedReason::NonIntegerExponent))
-        }
+        ExprData::Integer(n) => Ok(n.0.clone()),
+        ExprData::Rational(r) if *r.0.denom() == 1 => Ok(r.0.numer().clone()),
         _ => Err(error(UnsupportedReason::NonIntegerExponent)),
     }
 }
 
-fn rational_pow(mut base: Rational, exponent: i64) -> Result<Rational, EvalError> {
-    if exponent < 0 && base == 0 {
-        return Err(error(UnsupportedReason::ZeroToNegativePower));
+fn rational_pow(mut base: Rational, exponent: &Integer) -> Result<Rational, EvalError> {
+    if *exponent == 0 {
+        return Ok(Rational::from(1));
     }
+    let negative = *exponent < 0;
+    // The three bases whose powers cost nothing at any exponent at all. They
+    // are also the three the `f64` evaluator gets wrong by rounding, so exact
+    // mode should not be the one that gives up on them.
+    if base == 0 {
+        return if negative {
+            Err(error(UnsupportedReason::ZeroToNegativePower))
+        } else {
+            Ok(Rational::from(0))
+        };
+    }
+    if base == 1 {
+        return Ok(Rational::from(1));
+    }
+    if base == -1 {
+        return Ok(Rational::from(if exponent.is_odd() { -1 } else { 1 }));
+    }
+    // Every other base grows geometrically. `significant_bits() >= 1` here
+    // (both parts are non-zero), so a surviving exponent is at most
+    // `MAX_EXACT_POW_BITS` and fits `u32` comfortably.
+    let bits = base
+        .numer()
+        .significant_bits()
+        .max(base.denom().significant_bits()) as u64;
+    let mut power = exponent
+        .clone()
+        .abs()
+        .to_u64()
+        .and_then(|n| n.checked_mul(bits))
+        .filter(|&cost| cost <= MAX_EXACT_POW_BITS)
+        .and_then(|_| exponent.clone().abs().to_u32())
+        .ok_or(error(UnsupportedReason::UnsupportedExpression {
+            kind: "exact_pow_overflow",
+        }))?;
+
     let mut result = Rational::from(1);
-    let mut power = exponent.unsigned_abs();
     while power != 0 {
         if power & 1 == 1 {
             result *= &base;
@@ -248,7 +305,7 @@ fn rational_pow(mut base: Rational, exponent: i64) -> Result<Rational, EvalError
             base *= base.clone();
         }
     }
-    if exponent < 0 {
+    if negative {
         Ok(Rational::from(1) / result)
     } else {
         Ok(result)
@@ -344,7 +401,9 @@ fn eval_f64_node(
             Ok(product)
         }
         ExprData::Pow { base, exp } => {
-            Ok(eval_f64_node(base, pool, bindings)?.powf(eval_f64_node(exp, pool, bindings)?))
+            let b = eval_f64_node(base, pool, bindings)?;
+            let e = eval_f64_node(exp, pool, bindings)?;
+            Ok(pow_f64(b, e, || Some(pool.get(exp))))
         }
         ExprData::Func { name, args } if args.len() == 1 => {
             let arg = eval_f64_node(args[0], pool, bindings)?;
@@ -471,6 +530,7 @@ mod tests {
     use super::*;
     use crate::ball::ArbBall;
     use crate::kernel::Domain;
+    use rug::ops::Pow;
 
     #[test]
     fn exact_rational_mode_preserves_fractional_result() {
@@ -504,6 +564,111 @@ mod tests {
                 .unwrap_err()
                 .reason,
             UnsupportedReason::FloatLiteralInExactMode
+        );
+    }
+
+    /// `10^30 + 1` is odd; its `f64` image `1e30` is even.
+    fn odd_wide_exponent(pool: &ExprPool) -> ExprId {
+        pool.integer(Integer::from(10).pow(30) + 1u32)
+    }
+
+    #[test]
+    fn f64_mode_keeps_the_parity_of_an_exponent_wider_than_f64() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.pow(x, odd_wide_exponent(&pool));
+        let bindings = HashMap::from([(x, -1.0)]);
+
+        // A product of an odd number of factors of −1 is −1. Was `1.0`.
+        assert_eq!(eval_f64(expr, &pool, &bindings).unwrap(), -1.0);
+
+        // Control: the neighbouring even exponent, and a small odd one.
+        let even = pool.pow(x, pool.integer(Integer::from(10).pow(30)));
+        assert_eq!(eval_f64(even, &pool, &bindings).unwrap(), 1.0);
+        let three = pool.pow(x, pool.integer(3_i32));
+        assert_eq!(eval_f64(three, &pool, &bindings).unwrap(), -1.0);
+    }
+
+    #[test]
+    fn f64_mode_refuses_a_wide_power_it_cannot_represent() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.pow(x, odd_wide_exponent(&pool));
+        // 2^(10^30) is not a number `f64` has; the sign fix does not pretend
+        // otherwise, it just signs the overflow.
+        for base in [2.0, -2.0] {
+            assert_eq!(
+                eval_f64(expr, &pool, &HashMap::from([(x, base)]))
+                    .unwrap_err()
+                    .reason,
+                UnsupportedReason::NonFiniteResult,
+                "base {base}"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_mode_answers_a_wide_exponent_over_a_base_that_costs_nothing() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.pow(x, odd_wide_exponent(&pool));
+
+        // Used to be `E-EVAL-003` ("only integer exponents"), for an exponent
+        // that is an integer.
+        for (base, want) in [(-1, -1), (1, 1), (0, 0)] {
+            assert_eq!(
+                eval_exact_rational(expr, &pool, &HashMap::from([(x, Rational::from(base))]))
+                    .unwrap(),
+                Rational::from(want),
+                "base {base}"
+            );
+        }
+        let even = pool.pow(x, pool.integer(Integer::from(10).pow(30)));
+        assert_eq!(
+            eval_exact_rational(even, &pool, &HashMap::from([(x, Rational::from(-1))])).unwrap(),
+            Rational::from(1)
+        );
+    }
+
+    #[test]
+    fn exact_mode_refuses_a_power_too_large_to_build_instead_of_aborting() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        // 2^(10^12) needs 10^12 bits — 125 GB. `rational_pow` used to try, and
+        // GMP aborts the *process* on a failed allocation ("GNU MP: Cannot
+        // allocate memory"), which no caller can catch.
+        for exp in [Integer::from(10).pow(12), Integer::from(10).pow(30) + 1u32] {
+            let expr = pool.pow(x, pool.integer(exp.clone()));
+            let err = eval_exact_rational(expr, &pool, &HashMap::from([(x, Rational::from(2))]))
+                .unwrap_err();
+            assert_eq!(err.reason.agent_code(), "E-EVAL-012", "{exp}");
+        }
+
+        // Control: a big-but-affordable power still evaluates exactly.
+        let expr = pool.pow(x, pool.integer(1000_i32));
+        let got =
+            eval_exact_rational(expr, &pool, &HashMap::from([(x, Rational::from(2))])).unwrap();
+        assert_eq!(*got.numer(), Integer::from(1u32) << 1000);
+        assert_eq!(*got.denom(), 1);
+
+        // And a rational base: (2/3)^-3 is 27/8.
+        let expr = pool.pow(x, pool.integer(-3_i32));
+        assert_eq!(
+            eval_exact_rational(expr, &pool, &HashMap::from([(x, Rational::from((2, 3)))]))
+                .unwrap(),
+            Rational::from((27, 8))
+        );
+    }
+
+    #[test]
+    fn exact_mode_still_rejects_a_genuinely_non_integer_exponent() {
+        let pool = ExprPool::new();
+        let expr = pool.pow(pool.integer(4_i32), pool.rational(1, 2));
+        assert_eq!(
+            eval_exact_rational(expr, &pool, &HashMap::new())
+                .unwrap_err()
+                .reason,
+            UnsupportedReason::NonIntegerExponent
         );
     }
 

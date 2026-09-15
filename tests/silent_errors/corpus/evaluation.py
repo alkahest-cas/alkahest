@@ -18,6 +18,13 @@ from ._shared import PI, POOL, X, _int, _rat
 
 HAND = "hand derivation from the definition"
 
+#: The whole argument for the wide-exponent cases, and it needs no library.
+PARITY = (
+    "the parity of the exponent, which needs no library at all: 10**30 + 1 is odd "
+    "(it ends in 1), and a product of an odd number of factors of -1 is -1. "
+    "Python's own int arithmetic agrees: (-1) ** (10**30 + 1) == -1."
+)
+
 
 def _f64_code(expr: ak.Expr) -> str:
     """The stable code ``evaluate(mode="f64")`` declines *expr* with, or the
@@ -362,5 +369,136 @@ CASES: list[Case] = [
             "half of the control above: the refusal has to name the *unbound symbol*, "
             "and pi resolving must not make y resolve too."
         ),
+    ),
+    # An exact integer exponent the evaluator used to reduce to f64 first.
+    # -----------------------------------------------------------------------
+    Case(
+        id="eval_odd_exponent_wider_than_f64",
+        subsystem="evaluation",
+        statement="(-1) ** (10**30 + 1) = -1 — the exponent is odd, f64 rounds it to an even one",
+        op=lambda: float(ak.eval_expr(X ** (10**30 + 1), {X: -1})),
+        contract=Returns(-1.0),
+        verified_by=PARITY,
+        note=(
+            "The expression held the exponent exactly (`pool.integer` is rug-backed and "
+            "unbounded); the evaluator threw it away, computing pow(-1.0, 1e30). 1e30 is "
+            "even, so the answer came back +1.0 — the right magnitude with the wrong sign, "
+            "which no numeric probe downstream can distinguish from the truth."
+        ),
+    ),
+    Case(
+        id="eval_control_even_exponent_wider_than_f64",
+        subsystem="evaluation",
+        statement="(-1) ** (10**30) = +1 — the even neighbour, which was never wrong",
+        op=lambda: float(ak.eval_expr(X ** (10**30), {X: -1})),
+        contract=Returns(1.0),
+        verified_by=(
+            "10**30 is even (it ends in 0), and a product of an even number of factors "
+            "of -1 is +1. Python: (-1) ** (10**30) == 1."
+        ),
+    ),
+    Case(
+        id="eval_control_exponent_exactly_representable",
+        subsystem="evaluation",
+        statement="(-1) ** (2**53 + 1) = -1 — the first odd exponent f64 cannot hold",
+        op=lambda: float(ak.eval_expr(X ** (2**53 + 1), {X: -1})),
+        contract=Returns(-1.0),
+        verified_by=(
+            "2**53 + 1 is odd. It is also the smallest odd integer that is not its own "
+            "float: Python float(2**53 + 1) == float(2**53), so this is exactly where the "
+            "rounding starts. 2**53 itself *is* exact, and (-1) ** (2**53) == 1."
+        ),
+    ),
+    Case(
+        id="eval_control_small_odd_exponent",
+        subsystem="evaluation",
+        statement="(-1) ** 3 = -1 — the ordinary case a fast path must not break",
+        op=lambda: float(ak.eval_expr(X**3, {X: -1})),
+        contract=Returns(-1.0),
+        verified_by="(-1)(-1)(-1) = -1.",
+    ),
+    Case(
+        id="eval_unrepresentable_wide_power_refuses",
+        subsystem="evaluation",
+        statement="2 ** (10**30 + 1) has no f64 value — an overflow is a refusal, not a number",
+        op=lambda: float(ak.eval_expr(X ** (10**30 + 1), {X: 2})),
+        contract=Raises("E-EVAL-009"),
+        verified_by=(
+            "2 ** (10**30) exceeds the largest finite double (about 1.8e308 = 2**1024) by "
+            "a factor of 2**(10**30 - 1024). Getting the sign right does not make the "
+            "magnitude representable, and the pair with eval_odd_exponent_wider_than_f64 "
+            "is the whole boundary: (-1) to that power is fine, 2 is not."
+        ),
+    ),
+    Case(
+        id="eval_exact_mode_wide_exponent_is_answered",
+        subsystem="evaluation",
+        statement="exact mode evaluates (-1) ** (10**30 + 1) rather than declining it",
+        op=lambda: int(ak.evaluate(X ** (10**30 + 1), {X: -1}, mode="exact").value),
+        contract=Returns(-1),
+        verified_by=PARITY,
+        note=(
+            "Exact mode used to report E-EVAL-003, 'only integer exponents are supported', "
+            "for an exponent that is an integer — it was really refusing anything wider "
+            "than i64."
+        ),
+    ),
+    Case(
+        id="eval_exact_mode_unaffordable_power_refuses",
+        subsystem="evaluation",
+        statement="exact mode refuses 2 ** (10**12) with a code instead of aborting the process",
+        op=lambda: ak.evaluate(X ** (10**12), {X: 2}, mode="exact").reason,
+        contract=Returns("E-EVAL-012"),
+        verified_by=(
+            "2 ** (10**12) needs 10**12 bits = 125 GB to write down. GMP calls abort() "
+            "when an allocation that size fails, so this used to kill the interpreter "
+            "with 'GNU MP: Cannot allocate memory' and a core dump."
+        ),
+        note="The control is eval_exact_mode_affordable_power: a large power that still fits.",
+    ),
+    Case(
+        id="eval_exact_mode_affordable_power",
+        subsystem="evaluation",
+        statement="exact mode still evaluates 2 ** 1000 exactly",
+        op=lambda: int(ak.evaluate(X**1000, {X: 2}, mode="exact").value) == 2**1000,
+        contract=Returns(True),
+        verified_by="Python's own int arithmetic computes 2 ** 1000 exactly.",
+    ),
+    Case(
+        id="eval_complex_mode_wide_exponent",
+        subsystem="evaluation",
+        statement="complex mode gives (-1) ** (10**30 + 1) = -1+0j, not 1+0j",
+        op=lambda: (
+            complex(ak.evaluate(X ** (10**30 + 1), {X: complex(-1, 0)}, mode="complex").value).real
+        ),
+        contract=Returns(-1.0),
+        verified_by=PARITY,
+        note=(
+            "The complex evaluator read the exponent as `n.to_i64().unwrap_or(0)`, so an "
+            "exponent wider than i64 silently became **zero** and every such power "
+            "evaluated to 1+0j regardless of the base."
+        ),
+    ),
+    Case(
+        id="eval_complex_mode_wide_exponent_off_axis_refuses",
+        subsystem="evaluation",
+        statement="i ** (10**30 + 1) has no double-precision phase — a refusal, not a number",
+        op=lambda: ak.evaluate(POOL.imaginary_unit() ** (10**30 + 1), {}, mode="complex").reason,
+        contract=Returns("E-EVAL-012"),
+        verified_by=(
+            "z**n = |z|**n * exp(i*n*theta). For z = i, theta = pi/2 and n*theta must be "
+            "reduced mod 2*pi; with n past 2**63 a double holds none of the low bits that "
+            "reduction depends on. (The exact answer, 10**30 + 1 = 1 mod 4, so i**n = i, "
+            "is available to integer arithmetic but not to this evaluator.)"
+        ),
+        note="Control: eval_control_complex_small_exponent, where the phase is exact.",
+    ),
+    Case(
+        id="eval_control_complex_small_exponent",
+        subsystem="evaluation",
+        statement="i ** 3 = -i — the ordinary complex power still answers",
+        op=lambda: complex(ak.evaluate(POOL.imaginary_unit() ** 3, {}, mode="complex").value).imag,
+        contract=Returns(-1.0),
+        verified_by="i**2 = -1, so i**3 = -i. Python: 1j ** 3 == -1j.",
     ),
 ]

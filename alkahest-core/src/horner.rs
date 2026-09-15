@@ -17,7 +17,9 @@
 //! [`ExprData::Func`] nodes.  This is the general entry point;
 //! [`emit_horner_c`] remains available for the polynomial-only Horner form.
 
-use crate::kernel::{integer_to_f64, rational_to_f64, ExprData, ExprId, ExprPool};
+use crate::kernel::{
+    integer_is_exact_f64, integer_to_f64, rational_to_f64, ExprData, ExprId, ExprPool,
+};
 use crate::poly::{ConversionError, UniPoly};
 use std::collections::HashMap;
 
@@ -357,20 +359,25 @@ fn emit_expr_inner(
             // Specialise integer exponents to repeated multiplication for
             // small n, otherwise use pow().
             match pool.get(exp) {
-                ExprData::Integer(ref n) => {
-                    if let Some(k) = n.0.to_i32() {
-                        match k {
-                            0 => "1.0".to_string(),
-                            1 => b,
-                            2 => format!("({b} * {b})"),
-                            3 => format!("({b} * {b} * {b})"),
-                            -1 => format!("(1.0 / {b})"),
-                            _ => format!("pow({b}, {e})"),
-                        }
-                    } else {
-                        format!("pow({b}, {e})")
-                    }
-                }
+                ExprData::Integer(ref n) => match n.0.to_i32() {
+                    Some(0) => "1.0".to_string(),
+                    Some(1) => b,
+                    Some(2) => format!("({b} * {b})"),
+                    Some(3) => format!("({b} * {b} * {b})"),
+                    Some(-1) => format!("(1.0 / {b})"),
+                    _ if integer_is_exact_f64(&n.0) => format!("pow({b}, {e})"),
+                    // `e` is the exponent *rounded to a double* — there is no
+                    // other kind of literal a C program has — and C's `pow`
+                    // takes the sign of a negative base from that rounded
+                    // exponent's parity. `10^30 + 1` rounds to the even
+                    // `1e30`, so the emitted program computed
+                    // `pow(-1.0, 1e30)` and returned `+1` where the answer is
+                    // `-1`, disagreeing with `eval_expr` on the same node.
+                    // Split the sign off and let the double carry only the
+                    // magnitude, which is all it was ever able to carry.
+                    _ if n.0.is_odd() => format!("copysign(pow(fabs({b}), {e}), {b})"),
+                    _ => format!("pow(fabs({b}), {e})"),
+                },
                 _ => format!("pow({b}, {e})"),
             }
         }
@@ -749,6 +756,46 @@ mod tests {
             ExprData::Pow { base, exp } => count_muls(base, pool) + count_muls(exp, pool),
             _ => 0,
         }
+    }
+
+    #[test]
+    fn emitted_c_keeps_the_parity_of_an_exponent_a_double_cannot_hold() {
+        use rug::ops::Pow;
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let n = rug::Integer::from(10).pow(30) + 1u32;
+
+        // The literal a C program can hold is `1e30`, which is *even*, so
+        // `pow(x, 1e30)` is `+1` at `x = -1` and the answer is `-1`.
+        let odd = emit_expr_c(
+            pool.pow(x, pool.integer(n.clone())),
+            &[x],
+            &["x"],
+            "f",
+            &pool,
+        )
+        .unwrap();
+        assert!(odd.contains("copysign(pow(fabs(x), 1e30), x)"), "{odd}");
+
+        let even = emit_expr_c(
+            pool.pow(x, pool.integer(n - 1u32)),
+            &[x],
+            &["x"],
+            "g",
+            &pool,
+        )
+        .unwrap();
+        assert!(even.contains("pow(fabs(x), 1e30)"), "{even}");
+        assert!(!even.contains("copysign"), "{even}");
+
+        // Controls: every exponent a double holds exactly is emitted as before.
+        for k in [5_i32, 19, -7] {
+            let code = emit_expr_c(pool.pow(x, pool.integer(k)), &[x], &["x"], "h", &pool).unwrap();
+            assert!(code.contains(&format!("pow(x, {k}.0)")), "k = {k}: {code}");
+        }
+        let wide_exact = pool.pow(x, pool.integer(rug::Integer::from(1u64 << 60)));
+        let code = emit_expr_c(wide_exact, &[x], &["x"], "h", &pool).unwrap();
+        assert!(code.contains("pow(x, 1.152921504606847e18)"), "{code}");
     }
 
     #[test]

@@ -288,6 +288,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-EVAL-009", class: "EvalError", cause: Cause::Domain,      remediation: Some("result is not finite") },
     ErrorSpec { code: "E-EVAL-010", class: "EvalError", cause: Cause::Domain,      remediation: Some("interval evaluation failed or branch is indeterminate") },
     ErrorSpec { code: "E-EVAL-011", class: "EvalError", cause: Cause::Domain,      remediation: Some("principal Arg/log branch cut — expression stays unevaluated at this point") },
+    ErrorSpec { code: "E-EVAL-012", class: "EvalError", cause: Cause::Resource,    remediation: Some("the exponent is an exact integer whose power the requested representation cannot hold — reduce the exponent, or evaluate a base of 0 or ±1 where the answer is the parity alone") },
     ErrorSpec { code: "E-RESIDUE-001", class: "ResidueError", cause: Cause::UserInput,   remediation: Some("input must be a rational function of the variable over ℚ") },
     ErrorSpec { code: "E-RESIDUE-002", class: "ResidueError", cause: Cause::Domain,      remediation: Some("denominator must be non-zero") },
     ErrorSpec { code: "E-RESIDUE-003", class: "ResidueError", cause: Cause::Unsupported, remediation: Some("pole order exceeds supported bound; essential singularities are out of scope") },

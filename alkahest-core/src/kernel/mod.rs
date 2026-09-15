@@ -15,7 +15,8 @@ pub use depth::{check_expr_depth, check_expr_depths, DepthLimitError, MAX_EXPR_D
 pub use display::{render_latex, render_unicode};
 pub use domain::Domain;
 pub use eval_const::{
-    integer_to_f64, rational_to_f64, try_expr_f64, try_predicate_bool, try_predicate_bool_from_expr,
+    integer_is_exact_f64, integer_to_f64, pow_f64, pow_f64_integer_exponent, rational_to_f64,
+    try_expr_f64, try_predicate_bool, try_predicate_bool_from_expr,
 };
 pub use expr::{BigFloat, BigInt, BigRat, ExprData, ExprId};
 pub use expr_props::{expr_contains_noncommutative_symbol, mult_tree_is_commutative};

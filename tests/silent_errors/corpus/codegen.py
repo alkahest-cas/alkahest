@@ -146,6 +146,36 @@ CASES: list[Case] = [
         note="emit_c_expr reported success while returning a function that does not compile.",
     ),
     Case(
+        id="codegen_emit_c_expr_keeps_the_parity_of_a_wide_exponent",
+        subsystem="codegen",
+        statement="the C emitted for x^(10**30 + 1) gives -1 at x = -1, as eval_expr does",
+        op=lambda: _c_body(ak.emit_c_expr(X ** (10**30 + 1), [X], var_names=["x"])),
+        contract=Returns("double _t0 = copysign(pow(fabs(x), 1e30), x);"),
+        verified_by=(
+            "10**30 + 1 is odd, so (-1) ** (10**30 + 1) == -1 in Python's own integers. "
+            "A C program has no literal for it: float(10**30 + 1) == 1e30, which is even, "
+            "so plain pow(x, 1e30) returns +1 there. Checked by compiling both forms with "
+            "cc: the old emission prints 1, the new one -1, and both print 1 at "
+            "x = -1 for the even neighbour 10**30."
+        ),
+        note=(
+            "The double carries the magnitude, which is all it was ever able to carry; the "
+            "sign comes off the exact node. Pairs with "
+            "codegen_control_emit_c_expr_small_exponent, which must stay a plain pow."
+        ),
+    ),
+    Case(
+        id="codegen_control_emit_c_expr_small_exponent",
+        subsystem="codegen",
+        statement="an exponent a double holds exactly is still emitted as a plain pow",
+        op=lambda: _c_body(ak.emit_c_expr(X**19, [X], var_names=["x"])),
+        contract=Returns("return pow(x, 19.0);"),
+        verified_by=(
+            "float(19) == 19 exactly, so the rounded exponent has the same parity as the "
+            "exact one and C's pow already signs a negative base correctly."
+        ),
+    ),
+    Case(
         id="codegen_stablehlo_preserves_coefficients_past_i64",
         subsystem="codegen",
         statement="to_stablehlo of 2^70·x + 1 does not lower the coefficient to the constant 0",
