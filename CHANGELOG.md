@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 3.11.0 — 2026-09-15
+
+### Silent errors fixed — do results you already computed need rechecking?
 
 - **`E[f(X)]` over a bounded support integrated from `a` to `a`.**
   `prob/expect.rs`'s `map_bound` maps an `x`-bound through the distribution's
@@ -129,11 +131,6 @@
   *unbound symbol*, for a symbol that was bound — exact mode ran against the
   partial binding map it had built before rejecting the float. It is now
   `E-EVAL-002`.
-
-
-## 3.11.0 — 2026-09-14
-
-### Silent errors fixed — do results you already computed need rechecking?
 
 - **`matrix_exp` was wrong for every defective matrix, and `jordan_form`
   returned a `P` that was not a basis.** Both shipped in 3.10.0.
