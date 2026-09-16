@@ -1,6 +1,7 @@
 # Summary
 
 - [Introduction](./intro.md)
+- [Quickstart](./quickstart.md)
 - [Getting started](./getting-started.md)
 - [Python API reference](./python-api.md)
 - [Kernel design](./kernel.md)
