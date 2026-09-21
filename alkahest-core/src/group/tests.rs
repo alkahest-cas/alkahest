@@ -730,8 +730,9 @@ fn a_subgroup_generated_by_one_element_is_its_cyclic_group() {
 fn mathieu_24_has_order_244823040() {
     // A third, larger Mathieu group, from the standard degree-24 generators.
     // Its order is 2^10·3^3·5·7·11·23, and no part of the chain for it is
-    // guessable from the S_n cases: the base has five points and the basic
-    // orbits are 24, 23, 22, 21, 48.
+    // guessable from the S_n cases: for these generators the base has seven
+    // points and the basic orbits are 24, 23, 22, 21, 20, 16, 3 — whose
+    // product is exactly the order asserted below.
     let a = Permutation::from_cycles_one_based(24, &[(1..=23).collect()]).unwrap();
     let b = Permutation::from_cycles_one_based(
         24,
@@ -773,3 +774,4 @@ fn mathieu_24_has_order_244823040() {
         assert!(g.contains(&g.random_element(seed).unwrap()).unwrap());
     }
 }
+
