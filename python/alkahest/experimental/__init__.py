@@ -326,8 +326,12 @@ from alkahest.alkahest import (
     Coordinates,
     Distribution,
     Exponential,
+    FiniteField,
+    FiniteFieldError,
     Fps,
     Gamma,
+    GfMatrix,
+    GfRref,
     LogNormal,
     Normal,
     OdeTrajectory,
@@ -437,9 +441,19 @@ __all__ = [
     "Distribution",
     "EvaluationResult",
     "Exponential",
+    # Linear algebra over GF(q), q = p^k — built for linear codes. Rectangular
+    # shapes are first-class and `GfMatrix.nullspace()` over GF(2) is the path
+    # the rest is arranged around. A non-prime characteristic or a reducible
+    # defining polynomial is refused (E-GFQ-001 / E-GFQ-004) rather than
+    # approximated: the quotient would be a ring with zero divisors, in which
+    # "rank" and "nullspace" are not well defined.
+    "FiniteField",
+    "FiniteFieldError",
     "Fps",
     "Gamma",
     "GbPoly",
+    "GfMatrix",
+    "GfRref",
     "GroebnerBasis",
     # Probability (continued)
     "LogNormal",

@@ -15,6 +15,7 @@ pub mod deriv;
 pub mod diff;
 pub mod errors;
 pub mod eval;
+pub mod ffield;
 pub mod flint;
 pub mod horner;
 // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
@@ -384,6 +385,14 @@ pub mod experimental {
     pub use crate::eval::{
         eval_complex_f64, eval_exact_rational, eval_f64, eval_interval, evaluate, ComplexF64,
         EvalError, EvalMode, EvalValue, UnsupportedReason,
+    };
+    /// Dense linear algebra over the finite fields GF(q), q = p^k, backed by
+    /// FLINT's `nmod_mat` (prime fields) and `fq_nmod_mat` (extensions).
+    /// Built for linear codes: rectangular shapes are first-class and
+    /// `nullspace` over GF(2) is the path everything else is arranged around.
+    /// See [`crate::ffield`] for what is deliberately out of scope.
+    pub use crate::ffield::{
+        FieldElement, FiniteField, FiniteFieldError, GfMatrix, Rref, MAX_EXTENSION_DEGREE,
     };
     /// Continuous (differential) creative telescoping — Almkvist–Zeilberger,
     /// the twin of `q_zeilberger`/`telescope2d` on the `D_x` side. Rust-only

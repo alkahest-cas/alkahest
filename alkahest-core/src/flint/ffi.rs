@@ -138,6 +138,97 @@ pub struct FmpzFactorStruct {
     pub num: slong,
 }
 
+// ---------------------------------------------------------------------------
+// nmod_mat / fq_nmod_mat — dense matrices over GF(p) and GF(p^k)
+// ---------------------------------------------------------------------------
+//
+// READ BEFORE TOUCHING THESE.
+//
+// `nmod_mat_struct` and `fq_nmod_mat_struct` underwent the *same* layout change
+// as `fmpz_mat_struct` above: FLINT 2.x / 3.0.x stored an array of row pointers,
+// later FLINT 3 releases replaced it with a `stride`. Both fields are
+// pointer-sized, so the two layouts have identical `size_of` and a misdetection
+// is **not** a compile error and **not** a size mismatch — it is an integer
+// dereferenced as a pointer, i.e. silent memory corruption.
+//
+// Two independent defences are in place:
+//
+//  1. The declarations below are selected by the same `flint3_stride` cfg that
+//     `build.rs` reads out of `flint/fmpz_types.h` — the existing precedent.
+//  2. **Nothing in this crate ever does pointer arithmetic on `entries`.** Every
+//     entry read and write goes through FLINT's own accessors
+//     (`nmod_mat_set_entry`, `nmod_mat_get_entry`, `fq_nmod_mat_entry`,
+//     `fq_nmod_mat_entry_set`), which compute the offset from whichever field
+//     the installed FLINT actually has. Only `r` and `c` are read directly, and
+//     those sit at offsets 8 and 16 in *both* layouts.
+//
+// `crate::ffield::tests` additionally round-trips every entry of several
+// non-square shapes through FLINT and asserts equality, which is the check that
+// catches a wrong stride (a wrong stride frequently still passes on square or
+// 1-column matrices).
+
+/// `nmod_mat_struct` — row-pointer layout (FLINT 2.x and FLINT 3.0.x).
+#[repr(C)]
+#[cfg(not(flint3_stride))]
+pub struct NmodMatStruct {
+    pub entries: *mut ulong,
+    pub r: slong,
+    pub c: slong,
+    pub rows: *mut *mut ulong,
+    pub mod_: NmodStruct,
+}
+
+/// `nmod_mat_struct` — stride layout (FLINT 3.1+, detected via fmpz_types.h).
+#[repr(C)]
+#[cfg(flint3_stride)]
+pub struct NmodMatStruct {
+    pub entries: *mut ulong,
+    pub r: slong,
+    pub c: slong,
+    pub stride: slong,
+    pub mod_: NmodStruct,
+}
+
+/// `fq_nmod_mat_struct` — row-pointer layout (FLINT 2.x and FLINT 3.0.x).
+///
+/// Entries are `fq_nmod_struct`, which FLINT `typedef`s to `nmod_poly_struct`.
+#[repr(C)]
+#[cfg(not(flint3_stride))]
+pub struct FqNmodMatStruct {
+    pub entries: *mut NmodPolyStruct,
+    pub r: slong,
+    pub c: slong,
+    pub rows: *mut *mut NmodPolyStruct,
+}
+
+/// `fq_nmod_mat_struct` — stride layout (FLINT 3.1+).
+#[repr(C)]
+#[cfg(flint3_stride)]
+pub struct FqNmodMatStruct {
+    pub entries: *mut NmodPolyStruct,
+    pub r: slong,
+    pub c: slong,
+    pub stride: slong,
+}
+
+/// Opaque storage for one `fq_nmod_ctx_t`.
+///
+/// FLINT does not export the size and this box ships no `fq_nmod_types.h`, so
+/// the struct is held as an over-sized aligned byte array rather than a mirrored
+/// `#[repr(C)]` declaration — over-allocating an opaque C struct is safe, while
+/// mirroring a layout that has changed twice upstream is not.
+///
+/// Measured on FLINT 3.5.0 (x86-64): `fq_nmod_ctx_init_ui` writes 160 bytes.
+/// 512 is a 3.2× margin. `ffield::tests::fq_ctx_buffer_has_generous_slack` fills the
+/// buffer with a sentinel and asserts the tail survives initialisation, so a
+/// future FLINT that outgrows the buffer fails a test rather than the heap.
+#[repr(C, align(8))]
+pub struct FqNmodCtxBuf(pub [u8; 512]);
+
+/// Opaque storage for one `fq_nmod_poly_t` (24 bytes on FLINT 3.5.0; 128 here).
+#[repr(C, align(8))]
+pub struct FqNmodPolyBuf(pub [u8; 128]);
+
 #[link(name = "flint")]
 extern "C" {
     // -----------------------------------------------------------------------
@@ -435,4 +526,192 @@ extern "C" {
     pub fn fmpz_mat_snf(s: *mut FmpzMatStruct, a: *const FmpzMatStruct);
     pub fn fmpz_mat_is_in_hnf(a: *const FmpzMatStruct) -> c_int;
     pub fn fmpz_mat_is_in_snf(a: *const FmpzMatStruct) -> c_int;
+
+    // -----------------------------------------------------------------------
+    // Word-sized primality (used to refuse a non-prime GF(q) characteristic)
+    // -----------------------------------------------------------------------
+    pub fn n_is_prime(n: ulong) -> c_int;
+
+    // -----------------------------------------------------------------------
+    // nmod_poly — extra entry points for GF(p^k) defining polynomials
+    // -----------------------------------------------------------------------
+    pub fn nmod_poly_is_irreducible(f: *const NmodPolyStruct) -> c_int;
+
+    // -----------------------------------------------------------------------
+    // nmod_mat — dense matrices over GF(p), p prime and word-sized
+    // -----------------------------------------------------------------------
+    //
+    // Signatures below were confirmed against FLINT 3.5.0 by disassembly
+    // (which argument registers each entry point reads) rather than from a
+    // header, because this box ships none. In particular `nmod_mat_rref` is
+    // **in place and single-argument** — it reads only `%rdi` — while the
+    // `fq_nmod_mat` sibling takes a separate destination.
+    pub fn nmod_mat_init(mat: *mut NmodMatStruct, rows: slong, cols: slong, n: ulong);
+    pub fn nmod_mat_clear(mat: *mut NmodMatStruct);
+    pub fn nmod_mat_set(dst: *mut NmodMatStruct, src: *const NmodMatStruct);
+    pub fn nmod_mat_equal(a: *const NmodMatStruct, b: *const NmodMatStruct) -> c_int;
+    /// Entry write. Goes through FLINT so the row offset is computed by the
+    /// installed library, never by us — see the layout note above.
+    pub fn nmod_mat_set_entry(mat: *mut NmodMatStruct, i: slong, j: slong, x: ulong);
+    /// Entry read. Same reasoning as `nmod_mat_set_entry`.
+    pub fn nmod_mat_get_entry(mat: *const NmodMatStruct, i: slong, j: slong) -> ulong;
+    pub fn nmod_mat_add(c: *mut NmodMatStruct, a: *const NmodMatStruct, b: *const NmodMatStruct);
+    pub fn nmod_mat_sub(c: *mut NmodMatStruct, a: *const NmodMatStruct, b: *const NmodMatStruct);
+    pub fn nmod_mat_neg(b: *mut NmodMatStruct, a: *const NmodMatStruct);
+    pub fn nmod_mat_scalar_mul(b: *mut NmodMatStruct, a: *const NmodMatStruct, c: ulong);
+    pub fn nmod_mat_mul(c: *mut NmodMatStruct, a: *const NmodMatStruct, b: *const NmodMatStruct);
+    pub fn nmod_mat_transpose(b: *mut NmodMatStruct, a: *const NmodMatStruct);
+    pub fn nmod_mat_rank(a: *const NmodMatStruct) -> slong;
+    /// Reduced row echelon form, **in place**, returning the rank.
+    pub fn nmod_mat_rref(a: *mut NmodMatStruct) -> slong;
+    /// Right nullspace basis in the first `nullity` columns of `x`; returns the
+    /// nullity. `x` must have at least `a->c` rows and `a->c` columns.
+    pub fn nmod_mat_nullspace(x: *mut NmodMatStruct, a: *const NmodMatStruct) -> slong;
+    /// Returns non-zero on success, `0` when `a` is singular.
+    pub fn nmod_mat_inv(b: *mut NmodMatStruct, a: *const NmodMatStruct) -> c_int;
+    pub fn nmod_mat_det(a: *const NmodMatStruct) -> ulong;
+    pub fn nmod_mat_charpoly(p: *mut NmodPolyStruct, m: *const NmodMatStruct);
+    /// Solves `a·x = b` for possibly rectangular / rank-deficient `a`.
+    /// Returns `1` when a solution exists (and writes one), `0` otherwise.
+    pub fn nmod_mat_can_solve(
+        x: *mut NmodMatStruct,
+        a: *const NmodMatStruct,
+        b: *const NmodMatStruct,
+    ) -> c_int;
+
+    // -----------------------------------------------------------------------
+    // fq_nmod_ctx — GF(p^k) field context
+    // -----------------------------------------------------------------------
+    /// Conway polynomial when FLINT has one tabulated for `(p, d)`, otherwise a
+    /// deterministic minimal-weight irreducible. Reproducible either way.
+    pub fn fq_nmod_ctx_init_ui(ctx: *mut FqNmodCtxBuf, p: ulong, d: slong, var: *const c_char);
+    /// Build the field from a caller-supplied irreducible `modulus` over ℤ/pℤ.
+    pub fn fq_nmod_ctx_init_modulus(
+        ctx: *mut FqNmodCtxBuf,
+        modulus: *const NmodPolyStruct,
+        var: *const c_char,
+    );
+    pub fn fq_nmod_ctx_clear(ctx: *mut FqNmodCtxBuf);
+    pub fn fq_nmod_ctx_modulus(ctx: *const FqNmodCtxBuf) -> *const NmodPolyStruct;
+
+    // -----------------------------------------------------------------------
+    // fq_nmod — an element of GF(p^k). FLINT typedefs `fq_nmod_t` to
+    // `nmod_poly_t`, so `NmodPolyStruct` is the element type, `nmod_poly_init`
+    // over the characteristic is a valid `fq_nmod_init`, and the
+    // `nmod_poly_*` coefficient accessors apply to it directly. Only the two
+    // entry points this module actually calls are declared: every signature
+    // here is exercised by `crate::ffield::tests`.
+    // -----------------------------------------------------------------------
+    pub fn fq_nmod_zero(rop: *mut NmodPolyStruct, ctx: *const FqNmodCtxBuf);
+    pub fn fq_nmod_mul(
+        rop: *mut NmodPolyStruct,
+        op1: *const NmodPolyStruct,
+        op2: *const NmodPolyStruct,
+        ctx: *const FqNmodCtxBuf,
+    );
+
+    // -----------------------------------------------------------------------
+    // fq_nmod_mat — dense matrices over GF(p^k)
+    // -----------------------------------------------------------------------
+    pub fn fq_nmod_mat_init(
+        mat: *mut FqNmodMatStruct,
+        rows: slong,
+        cols: slong,
+        ctx: *const FqNmodCtxBuf,
+    );
+    pub fn fq_nmod_mat_clear(mat: *mut FqNmodMatStruct, ctx: *const FqNmodCtxBuf);
+    pub fn fq_nmod_mat_set(
+        dst: *mut FqNmodMatStruct,
+        src: *const FqNmodMatStruct,
+        ctx: *const FqNmodCtxBuf,
+    );
+    pub fn fq_nmod_mat_equal(
+        a: *const FqNmodMatStruct,
+        b: *const FqNmodMatStruct,
+        ctx: *const FqNmodCtxBuf,
+    ) -> c_int;
+    /// Pointer to entry `(i, j)`. Takes no context in FLINT 3.5.0 (verified by
+    /// disassembly: it reads `mat`, `i`, `j` only).
+    pub fn fq_nmod_mat_entry(
+        mat: *const FqNmodMatStruct,
+        i: slong,
+        j: slong,
+    ) -> *mut NmodPolyStruct;
+    pub fn fq_nmod_mat_entry_set(
+        mat: *mut FqNmodMatStruct,
+        i: slong,
+        j: slong,
+        x: *const NmodPolyStruct,
+        ctx: *const FqNmodCtxBuf,
+    );
+    pub fn fq_nmod_mat_add(
+        c: *mut FqNmodMatStruct,
+        a: *const FqNmodMatStruct,
+        b: *const FqNmodMatStruct,
+        ctx: *const FqNmodCtxBuf,
+    );
+    pub fn fq_nmod_mat_sub(
+        c: *mut FqNmodMatStruct,
+        a: *const FqNmodMatStruct,
+        b: *const FqNmodMatStruct,
+        ctx: *const FqNmodCtxBuf,
+    );
+    pub fn fq_nmod_mat_neg(
+        b: *mut FqNmodMatStruct,
+        a: *const FqNmodMatStruct,
+        ctx: *const FqNmodCtxBuf,
+    );
+    pub fn fq_nmod_mat_mul(
+        c: *mut FqNmodMatStruct,
+        a: *const FqNmodMatStruct,
+        b: *const FqNmodMatStruct,
+        ctx: *const FqNmodCtxBuf,
+    );
+    pub fn fq_nmod_mat_transpose(
+        b: *mut FqNmodMatStruct,
+        a: *const FqNmodMatStruct,
+        ctx: *const FqNmodCtxBuf,
+    );
+    pub fn fq_nmod_mat_rank(a: *const FqNmodMatStruct, ctx: *const FqNmodCtxBuf) -> slong;
+    /// Unlike `nmod_mat_rref`, this one writes to a separate destination `b`
+    /// (verified by disassembly: it forwards `(b, a, gr_ctx)` to `gr_mat_rref`).
+    pub fn fq_nmod_mat_rref(
+        b: *mut FqNmodMatStruct,
+        a: *const FqNmodMatStruct,
+        ctx: *const FqNmodCtxBuf,
+    ) -> slong;
+    pub fn fq_nmod_mat_nullspace(
+        x: *mut FqNmodMatStruct,
+        a: *const FqNmodMatStruct,
+        ctx: *const FqNmodCtxBuf,
+    ) -> slong;
+    pub fn fq_nmod_mat_inv(
+        b: *mut FqNmodMatStruct,
+        a: *const FqNmodMatStruct,
+        ctx: *const FqNmodCtxBuf,
+    ) -> c_int;
+    pub fn fq_nmod_mat_charpoly(
+        p: *mut FqNmodPolyBuf,
+        m: *const FqNmodMatStruct,
+        ctx: *const FqNmodCtxBuf,
+    );
+    pub fn fq_nmod_mat_can_solve(
+        x: *mut FqNmodMatStruct,
+        a: *const FqNmodMatStruct,
+        b: *const FqNmodMatStruct,
+        ctx: *const FqNmodCtxBuf,
+    ) -> c_int;
+
+    // -----------------------------------------------------------------------
+    // fq_nmod_poly — only what `charpoly` needs to be read back
+    // -----------------------------------------------------------------------
+    pub fn fq_nmod_poly_init(poly: *mut FqNmodPolyBuf, ctx: *const FqNmodCtxBuf);
+    pub fn fq_nmod_poly_clear(poly: *mut FqNmodPolyBuf, ctx: *const FqNmodCtxBuf);
+    pub fn fq_nmod_poly_length(poly: *const FqNmodPolyBuf, ctx: *const FqNmodCtxBuf) -> slong;
+    pub fn fq_nmod_poly_get_coeff(
+        x: *mut NmodPolyStruct,
+        poly: *const FqNmodPolyBuf,
+        n: slong,
+        ctx: *const FqNmodCtxBuf,
+    );
 }

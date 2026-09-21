@@ -496,6 +496,24 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // the conventional (0,0,1) is a stated answer to a question with no answer.
     ErrorSpec { code: "E-QUAT-002", class: "QuaternionError", cause: Cause::Domain,    remediation: Some("the rotation is the identity — report the angle as 0 and pick whatever axis your convention prefers, explicitly, at the call site") },
     ErrorSpec { code: "E-QUAT-003", class: "QuaternionError", cause: Cause::UserInput, remediation: Some("pass a 3×3 matrix of numbers with RᵀR = I and det R = +1; a reflection (det = −1) is not a rotation and has no quaternion") },
+    // E-GFQ — FiniteFieldError (linear algebra over GF(q), q = p^k)
+    //
+    // 001/002 guard the field itself. A composite modulus gives a ring with zero
+    // divisors, where Gaussian elimination can meet a pivot that is non-zero and
+    // still not invertible — every "rank" reported over it is a guess, so the
+    // field is refused rather than the answer caveated.
+    ErrorSpec { code: "E-GFQ-001", class: "FiniteFieldError", cause: Cause::UserInput,   remediation: Some("GF(q) needs a prime characteristic: pass a prime p, or factor the modulus and work over each prime factor separately. Z/nZ for composite n is a ring with zero divisors and has no well-defined rank or nullspace") },
+    ErrorSpec { code: "E-GFQ-002", class: "FiniteFieldError", cause: Cause::Unsupported, remediation: Some("the nmod/fq_nmod backend is word-sized: use a prime below 2^64. A multi-precision prime field would need FLINT's fmpz_mod_mat, which is not wrapped") },
+    ErrorSpec { code: "E-GFQ-003", class: "FiniteFieldError", cause: Cause::UserInput,   remediation: Some("the extension degree must lie in 1..=64; degree 1 is the prime field itself") },
+    ErrorSpec { code: "E-GFQ-004", class: "FiniteFieldError", cause: Cause::UserInput,   remediation: Some("supply a polynomial of degree >= 1 that is irreducible over GF(p); coefficients ascend, so x^3+x+1 over GF(2) is [1, 1, 0, 1]. A reducible modulus would make the quotient a ring with zero divisors") },
+    ErrorSpec { code: "E-GFQ-005", class: "FiniteFieldError", cause: Cause::UserInput,   remediation: Some("an element of GF(p^k) has at most k coefficients over the prime subfield; reduce it modulo the defining polynomial at the call site if that is what was meant") },
+    ErrorSpec { code: "E-GFQ-006", class: "FiniteFieldError", cause: Cause::UserInput,   remediation: Some("rebuild both operands over the same FiniteField; two fields of the same order but different defining polynomials are isomorphic, not interchangeable — an element's coordinates mean different things in each") },
+    ErrorSpec { code: "E-GFQ-007", class: "FiniteFieldError", cause: Cause::UserInput,   remediation: Some("check the shapes: A*B needs A.ncols == B.nrows, add and sub need identical shapes, and solve needs A.nrows == B.nrows") },
+    ErrorSpec { code: "E-GFQ-008", class: "FiniteFieldError", cause: Cause::UserInput,   remediation: Some("determinant, charpoly and inverse are defined only for square matrices; for a rectangular one use rank, rref or nullspace") },
+    ErrorSpec { code: "E-GFQ-009", class: "FiniteFieldError", cause: Cause::Domain,      remediation: Some("the matrix is singular over this field: use nullspace to see the kernel, or solve, which returns a particular solution whenever one exists") },
+    ErrorSpec { code: "E-GFQ-010", class: "FiniteFieldError", cause: Cause::Domain,      remediation: Some("the right-hand side is outside the column space, so no solution exists; check that rank([A|b]) == rank(A)") },
+    ErrorSpec { code: "E-GFQ-011", class: "FiniteFieldError", cause: Cause::UserInput,   remediation: Some("indices are zero-based and must satisfy i < nrows and j < ncols") },
+    ErrorSpec { code: "E-GFQ-012", class: "FiniteFieldError", cause: Cause::Resource,    remediation: Some("the requested shape exceeds what the FLINT backend can allocate; a dense matrix over GF(q) costs at least one machine word per entry") },
 ];
 
 #[cfg(test)]

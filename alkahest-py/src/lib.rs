@@ -249,6 +249,7 @@ use rug::{Complete, Integer, Rational};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+mod ffield;
 
 // ---------------------------------------------------------------------------
 // V1-3: Structured Python exception hierarchy
@@ -18768,6 +18769,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // `GNU MP: Cannot allocate memory`, which no `except` clause can catch.
     alkahest_core::budget::install_memory_accounting();
     m.add_function(wrap_pyfunction!(version, m)?)?;
+    ffield::register(m)?;
     m.add_function(wrap_pyfunction!(py_derived_result_context_simplify, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify_egraph, m)?)?;
