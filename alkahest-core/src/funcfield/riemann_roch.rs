@@ -688,4 +688,28 @@ mod tests {
         }
         assert_eq!(got, series_mul(&ys, &ys, k));
     }
+
+    /// Independent check of the whole `L(n·∞)` ladder on `y² = x⁵ + 1` (g = 2),
+    /// derived from pole orders rather than from Riemann-Roch.
+    ///
+    /// The functions regular away from `∞` are `ℚ[x] ⊕ ℚ[x]·y`, and at `∞` the
+    /// pole orders are `v(xⁱ) = 2i` and `v(xⁱ·y) = 2i + 5`. So `dim L(n·∞)` is
+    /// just a count of monomials with pole order ≤ n. That count is independent
+    /// of RR, which matters most for `n ≤ 2g − 2 = 2`, where the RR *equality*
+    /// says nothing and the existing tests do not reach.
+    #[test]
+    fn pole_order_ladder_on_a_genus_2_curve() {
+        let f = c2();
+        for n in 0i64..=9 {
+            let expected = (0..=n / 2).count()                       // 1, x, x², …
+                + if n >= 5 { (0..=(n - 5) / 2).count() } else { 0 }; // y, xy, …
+            let got = riemann_roch(&div(&f, &[inf(n)])).unwrap().dimension();
+            assert_eq!(got, expected, "dim L({n}·∞) on y² = x⁵ + 1");
+        }
+        // Spot-check the two ends against values worked out by hand.
+        assert_eq!(riemann_roch(&div(&f, &[inf(0)])).unwrap().dimension(), 1);
+        assert_eq!(riemann_roch(&div(&f, &[inf(2)])).unwrap().dimension(), 2);
+        assert_eq!(riemann_roch(&div(&f, &[inf(5)])).unwrap().dimension(), 4);
+        assert_eq!(riemann_roch(&div(&f, &[inf(7)])).unwrap().dimension(), 6);
+    }
 }
