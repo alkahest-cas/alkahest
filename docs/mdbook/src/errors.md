@@ -29,6 +29,7 @@ AlkahestError (base)
 ├── VectorError       (E-VEC-*)    — vector calculus over an orthogonal chart, see below
 ├── QuaternionError   (E-QUAT-*)   — quaternion algebra and rotations, see below
 ├── ProbabilityError  (E-PROB-*)   — distributions, expectations, generating functions, entropy, see below
+├── GroupError        (E-GRP-*)    — permutation groups: orbits, Schreier–Sims, membership
 └── BudgetExceededError (E-BUDGET-*) — budget/cancellation trip, see [Budgets](./budgets.md)
 ```
 
@@ -301,6 +302,7 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-VEC-*` | `VectorError` | Vector calculus over an orthogonal chart — a non-differentiable component, a repeated or non-symbol coordinate, a chart that could not be *proven* orthogonal (`E-VEC-004`), or a degenerate scale factor (`E-VEC-005`). See [Vector calculus and quaternions](#vector-calculus-and-quaternions) |
 | `E-QUAT-*` | `QuaternionError` | Quaternion algebra and rotations — a zero or undecided norm (`E-QUAT-001`), the axis of the identity rotation, which does not exist (`E-QUAT-002`), or a matrix that could not be checked to be a proper rotation (`E-QUAT-003`) |
 | `E-GFQ-*` | `FiniteFieldError` | Linear algebra over the finite fields GF(q), q = p^k (`alkahest.experimental.FiniteField` / `GfMatrix`). `001` a non-prime characteristic and `002` one past a machine word — both refusals, because ℤ/nℤ for composite n has zero divisors and no well-defined rank; `004` a reducible defining polynomial; `009` a singular matrix; `010` a linear system with no solution, refused rather than approximated |
+| `E-GRP-*` | `GroupError` | Permutation groups (`alkahest.experimental`) — an images array that is not a bijection (`E-GRP-001`), a degree mismatch, which is never repaired by padding with fixed points (`E-GRP-002`), a point outside `0..degree` — points are **0-based** here (`E-GRP-003`), a group too large to list element by element, whose order is still exact (`E-GRP-004`), a degree above the Schreier–Sims memory limit (`E-GRP-005`), or a standard family asked for below the `n` where its degree-`n` action is faithful, e.g. `dihedral(2)` (`E-GRP-006`) |
 | `E-PROB-*` | `ProbabilityError` | `alkahest.experimental`'s distribution surface — laws, expectations, moments, characteristic and generating functions, entropy and KL divergence. `E-PROB-005` and `E-PROB-006` are the two to branch on: one is a closed form that was **withheld**, the other says the quantity **does not exist**. See [Probability: four ways not to answer](#probability-four-ways-not-to-answer) |
 | `E-LIMIT-*` | `LimitError` | `limit` could not be established; `E-LIMIT-006` is a limit that turns on the sign of a free parameter nothing states — assume it, or declare the symbol `Domain.Positive` |
 | `E-SERIES-*` | `SeriesError` | `series` and `experimental.puiseux_series`. `003` a work ceiling, `004` an indeterminate coefficient, `005` no Puiseux expansion exists, `006` one computed and withheld |

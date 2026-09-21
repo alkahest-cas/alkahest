@@ -99,6 +99,8 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-QUAT-001 … E-QUAT-003      QuaternionError (002 = the axis of the identity
                                  rotation, which does not exist; 003 = a matrix that
                                  could not be checked to be a proper rotation)
+    E-GRP-001 … E-GRP-006        GroupError (permutation groups; 004 = an order that
+                                 is exact but a list that is refused)
     E-PROB-001 … E-PROB-006      ProbabilityError (distributions, expectations,
                                  generating functions and information theory;
                                  001 = a numeric parameter outside its constraint,
@@ -1033,6 +1035,32 @@ class QuaternionError(AlkahestError):
         self,
         message: str,
         code: str = "E-QUAT-001",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)
+
+
+class GroupError(AlkahestError):
+    """A permutation-group operation refused (``E-GRP-001`` … ``E-GRP-006``).
+
+    Raised by the :mod:`alkahest.experimental` permutation-group surface. Two
+    of the six are worth reading before the first call:
+
+    - ``E-GRP-003`` — points are **0-based**. Group-theory literature, GAP and
+      the ATLAS all number points from 1, so a generator transcribed by hand is
+      the likeliest way to get a wrong answer here;
+      ``Permutation.from_cycles_one_based`` exists so that a cycle copied out of
+      a paper can be typed in unchanged.
+    - ``E-GRP-004`` — the group is too large to list element by element. Its
+      order is still exact and still available from ``order()``; it is the
+      *list* that is refused, and the two must not be confused.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-GRP-001",
         remediation: str | None = None,
         span: tuple[int, int] | None = None,
     ):

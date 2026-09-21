@@ -514,6 +514,20 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-GFQ-010", class: "FiniteFieldError", cause: Cause::Domain,      remediation: Some("the right-hand side is outside the column space, so no solution exists; check that rank([A|b]) == rank(A)") },
     ErrorSpec { code: "E-GFQ-011", class: "FiniteFieldError", cause: Cause::UserInput,   remediation: Some("indices are zero-based and must satisfy i < nrows and j < ncols") },
     ErrorSpec { code: "E-GFQ-012", class: "FiniteFieldError", cause: Cause::Resource,    remediation: Some("the requested shape exceeds what the FLINT backend can allocate; a dense matrix over GF(q) costs at least one machine word per entry") },
+    // E-GRP — GroupError (permutation groups: orbits, Schreier–Sims, membership)
+    ErrorSpec { code: "E-GRP-001", class: "GroupError", cause: Cause::UserInput,   remediation: Some("supply each of 0..n exactly once as an image; points are 0-based, so a cycle copied from GAP or the ATLAS needs `Permutation::from_cycles_one_based`") },
+    // Degrees are never widened by padding with fixed points: S_3 inside S_5 is a
+    // different subgroup of a different symmetric group from S_3 itself, and which
+    // one the caller meant is not recoverable from the arguments.
+    ErrorSpec { code: "E-GRP-002", class: "GroupError", cause: Cause::UserInput,   remediation: Some("embed the smaller permutation with `Permutation::extend_degree(n)` before composing, or rebuild both at the common degree") },
+    ErrorSpec { code: "E-GRP-003", class: "GroupError", cause: Cause::UserInput,   remediation: Some("points are 0-based: the valid range is 0..degree") },
+    // A group of order 10^20 has a perfectly computable order and no listable
+    // element set. Refusing the list keeps those two facts apart.
+    ErrorSpec { code: "E-GRP-004", class: "GroupError", cause: Cause::Resource,    remediation: Some("use `order()`, `contains()` or `random_element()` instead of listing the elements, or raise the cap with `elements_with_cap` if the list really fits in memory") },
+    ErrorSpec { code: "E-GRP-005", class: "GroupError", cause: Cause::Resource,    remediation: Some("orbits and orbit representatives are available at any degree; only the stabilizer chain (and therefore `order`, `contains` and `elements`) is capped") },
+    // Below its stated minimum, a standard family's natural degree-n action is not
+    // faithful, so the group returned would not be the group the name promises.
+    ErrorSpec { code: "E-GRP-006", class: "GroupError", cause: Cause::Unsupported, remediation: Some("these constructors build the natural degree-n action; below the stated minimum that action is not faithful, so build the group by hand on the point set you actually mean") },
 ];
 
 #[cfg(test)]

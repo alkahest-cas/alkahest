@@ -17,6 +17,7 @@ pub mod errors;
 pub mod eval;
 pub mod ffield;
 pub mod flint;
+pub mod group;
 pub mod horner;
 // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
 pub mod holonomic;
@@ -393,6 +394,17 @@ pub mod experimental {
     /// See [`crate::ffield`] for what is deliberately out of scope.
     pub use crate::ffield::{
         FieldElement, FiniteField, FiniteFieldError, GfMatrix, Rref, MAX_EXTENSION_DEGREE,
+    };
+    /// Computational group theory: permutation groups, orbits with Schreier
+    /// vectors, a base and strong generating set from Schreier–Sims, exact
+    /// arbitrary-precision group order, and membership by sifting. Points are
+    /// 0-based and composition is **left-to-right** (`p.compose(&q)` applies
+    /// `p` first) — see [`crate::group`] for the conventions and for the
+    /// explicit list of what is out of scope.
+    pub use crate::group::{
+        alternating, cyclic, dihedral, symmetric, trivial as trivial_group, GroupError, Orbit,
+        Permutation, PermutationGroup, SchreierEntry, SiftResult, StabilizerChain, StabilizerLevel,
+        DEFAULT_ELEMENT_CAP, MAX_BSGS_DEGREE, MAX_ELEMENT_CAP,
     };
     /// Continuous (differential) creative telescoping — Almkvist–Zeilberger,
     /// the twin of `q_zeilberger`/`telescope2d` on the `D_x` side. Rust-only

@@ -1,3 +1,4 @@
+mod group;
 use alkahest_core::{
     adjoint_system as core_adjoint_system,
     cad_lift as core_cad_lift,
@@ -18768,6 +18769,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // solve that outgrows the machine `abort()`s the interpreter with
     // `GNU MP: Cannot allocate memory`, which no `except` clause can catch.
     alkahest_core::budget::install_memory_accounting();
+    group::register(m)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     ffield::register(m)?;
     m.add_function(wrap_pyfunction!(py_derived_result_context_simplify, m)?)?;
