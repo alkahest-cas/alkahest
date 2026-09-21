@@ -774,4 +774,3 @@ fn mathieu_24_has_order_244823040() {
         assert!(g.contains(&g.random_element(seed).unwrap()).unwrap());
     }
 }
-
