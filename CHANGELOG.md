@@ -1,5 +1,93 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Linear algebra over the finite fields GF(q).**
+  `alkahest.experimental.FiniteField` and `GfMatrix` — GF(p) for a word-sized
+  prime and GF(p^k) from FLINT's Conway polynomial or a caller-supplied
+  irreducible (checked for irreducibility first, because a reducible modulus
+  would make the quotient a ring with zero divisors and every reported rank a
+  guess). Matrices of any shape: `add`, `sub`, `neg`, `scalar_mul`, `mul`,
+  `transpose`, `rank`, `rref` (returning the transform `U` with `U·A = R`),
+  `nullspace`, `solve`, `inverse`, `determinant`, `charpoly`. Backed by FLINT's
+  `nmod_mat` and `fq_nmod_mat`.
+
+  Built for linear codes, so rectangular shapes are first-class — a
+  parity-check matrix is never square — and `nullspace` over GF(2) is the path
+  everything else is arranged around. `E-GFQ-001` refuses a composite
+  characteristic rather than caveating the answer; `E-GFQ-002` a prime past a
+  machine word.
+
+  The FLINT struct layout changed from row pointers to a stride in 3.1, and
+  getting it wrong is silent memory corruption rather than a compile error. It
+  was settled by disassembling FLINT's own entry points, not by inference —
+  and then made moot: every entry access goes through FLINT's accessors and
+  only `r`/`c` are read from the struct, which sit at the same offset in both
+  layouts. AddressSanitizer runs over the module.
+
+- **Computational group theory: permutation groups.**
+  `alkahest.experimental.Permutation` and `PermutationGroup` — cycle
+  decomposition, sign, order, orbits with Schreier vectors, a base and strong
+  generating set from Schreier–Sims, exact arbitrary-precision group order,
+  membership by sifting, and the stabilizer chain itself. Constructors for the
+  symmetric, alternating, cyclic and dihedral families.
+
+  Points are **0-based** and composition is **left-to-right** (`p.compose(&q)`
+  applies `p` first), both pinned by tests rather than left to a doc comment.
+  `from_cycles_one_based` exists so generators copied from GAP or the ATLAS
+  transcribe unchanged.
+
+  Correctness is anchored on the Mathieu groups — `|M11| = 7920`,
+  `|M12| = 95040`, `|M24| = 244823040` from standard generators — because a
+  stabilizer chain that is wrong in an interesting way still gets `|S_n| = n!`
+  right. A group too large to list refuses with `E-GRP-004` while its order
+  stays exact; the two facts are kept apart deliberately.
+
+  Not attempted, and documented as such: finitely-presented groups and
+  Todd–Coxeter, character tables, matrix groups over GF(q), group cohomology.
+
+- **Function fields of algebraic curves: divisors, Pic⁰ and Riemann–Roch.**
+  `alkahest.experimental.FunctionField`, `Place`, `Divisor`, `DivisorClass`
+  and `riemann_roch` — `dim L(D)` **and an explicit basis**, the canonical
+  divisor, divisor class arithmetic via Cantor reduction, exact class
+  equality, principality, and torsion order.
+
+  This exposes machinery that already existed inside the Risch integrator
+  rather than duplicating it: `integrate/algebraic/`'s Cantor arithmetic on
+  Jacobians in Mumford representation was widened to `pub(crate)`, with no
+  logic changes, so the class group and the integrator cannot drift apart.
+
+  **Scope is narrow and enforced.** Genus is computed for any accepted model;
+  everything else requires the imaginary (odd-degree) hyperelliptic model
+  `y² = a(x)` with `a` squarefree and ℚ-rational places. Even-degree "real"
+  models are refused (`E-FFLD-002`), as is `deg_y f > 2` (`E-FFLD-001`) and a
+  place of degree ≥ 2 (`E-FFLD-003`). That last one is the boundary reached
+  most often in practice: `div(y)` on `y² = x⁵ + 1` refuses, because four of
+  the five branch points are irrational. The restriction is not arbitrary —
+  on the odd-degree model the two candidate pole orders at infinity have
+  opposite parity, which is what makes `v_∞(p + q·y)` an exact minimum with no
+  cancellation, and the argument fails in even degree.
+
+  `E-FFLD-011` is the withheld-answer code: `div(u)` cross-checks the pole
+  order at infinity two ways and `riemann_roch` checks its dimension against
+  both Riemann's inequality and the Riemann–Roch equality, refusing rather
+  than returning on disagreement. `E-FFLD-007` (a non-torsion verdict) is
+  deliberately a different code from `E-FFLD-006` (undecided).
+
+### Testing and tooling
+
+- 201 new Rust tests (46 `ffield`, 60 `group`, 95 `funcfield`) and a
+  17-case `tests/silent_errors/corpus/function_fields.py`. The silent-error
+  gate reports 0 silent errors across 558 cases.
+- GF(2) is pinned end to end against the binary Hamming [7,4,3] code — rank,
+  nullspace, rank-nullity, then all 16 codewords brute-forced to confirm the
+  minimum distance is 3 — rather than only against matrix shapes.
+- `dim L(n·∞)` on `y² = x⁵ + 1` is pinned by counting monomials of bounded
+  pole order, which is independent of the Riemann–Roch equality and so covers
+  `n ≤ 2g − 2`, where that equality determines nothing.
+
 ## 3.11.0 — 2026-09-15
 
 ### Silent errors fixed — do results you already computed need rechecking?
