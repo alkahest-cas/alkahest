@@ -89,7 +89,7 @@ fn invmod(a: u64, p: u64) -> u64 {
 }
 
 /// Reduce a rational `r = n/d` to `F_p`; `None` if `p | d`.
-fn rat_to_fp(r: &Rational, p: u64) -> Option<u64> {
+pub(crate) fn rat_to_fp(r: &Rational, p: u64) -> Option<u64> {
     let pb = Integer::from(p);
     let dm = {
         let m = r.denom().clone() % pb.clone();
@@ -111,9 +111,9 @@ fn rat_to_fp(r: &Rational, p: u64) -> Option<u64> {
 // F_p[x] polynomial arithmetic — dense, little-endian (index = degree).
 // ===========================================================================
 
-type FpPoly = Vec<u64>;
+pub(crate) type FpPoly = Vec<u64>;
 
-fn fp_trim(mut a: FpPoly) -> FpPoly {
+pub(crate) fn fp_trim(mut a: FpPoly) -> FpPoly {
     while a.last() == Some(&0) {
         a.pop();
     }
@@ -121,7 +121,7 @@ fn fp_trim(mut a: FpPoly) -> FpPoly {
 }
 
 /// Degree, or `None` for the zero polynomial.
-fn fp_deg(a: &[u64]) -> Option<usize> {
+pub(crate) fn fp_deg(a: &[u64]) -> Option<usize> {
     let a = fp_trim(a.to_vec());
     if a.is_empty() {
         None
@@ -141,7 +141,7 @@ fn fp_add(a: &[u64], b: &[u64], p: u64) -> FpPoly {
     fp_trim(r)
 }
 
-fn fp_sub(a: &[u64], b: &[u64], p: u64) -> FpPoly {
+pub(crate) fn fp_sub(a: &[u64], b: &[u64], p: u64) -> FpPoly {
     let n = a.len().max(b.len());
     let mut r = vec![0u64; n];
     for (i, slot) in r.iter_mut().enumerate() {
@@ -159,7 +159,7 @@ fn fp_scale(a: &[u64], s: u64, p: u64) -> FpPoly {
     fp_trim(a.iter().map(|&c| mulmod(c, s, p)).collect())
 }
 
-fn fp_mul(a: &[u64], b: &[u64], p: u64) -> FpPoly {
+pub(crate) fn fp_mul(a: &[u64], b: &[u64], p: u64) -> FpPoly {
     if a.is_empty() || b.is_empty() {
         return vec![];
     }
@@ -211,11 +211,11 @@ fn fp_divrem(a: &[u64], b: &[u64], p: u64) -> (FpPoly, FpPoly) {
     (fp_trim(q), r)
 }
 
-fn fp_rem(a: &[u64], b: &[u64], p: u64) -> FpPoly {
+pub(crate) fn fp_rem(a: &[u64], b: &[u64], p: u64) -> FpPoly {
     fp_divrem(a, b, p).1
 }
 
-fn fp_gcd(a: &[u64], b: &[u64], p: u64) -> FpPoly {
+pub(crate) fn fp_gcd(a: &[u64], b: &[u64], p: u64) -> FpPoly {
     let mut a = fp_trim(a.to_vec());
     let mut b = fp_trim(b.to_vec());
     while !b.is_empty() {
@@ -262,7 +262,7 @@ fn fp_eval(a: &[u64], x: u64, p: u64) -> u64 {
     acc
 }
 
-fn fp_deriv(a: &[u64], p: u64) -> FpPoly {
+pub(crate) fn fp_deriv(a: &[u64], p: u64) -> FpPoly {
     if a.len() <= 1 {
         return vec![];
     }
@@ -282,33 +282,33 @@ fn fp_deriv(a: &[u64], p: u64) -> FpPoly {
 /// `u` monic with `deg u ≤ g`, `deg v < deg u`, and `u | (v² − F)`.
 /// The identity (zero class) is `(1, 0)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Mumford {
-    u: FpPoly,
-    v: FpPoly,
+pub(crate) struct Mumford {
+    pub(crate) u: FpPoly,
+    pub(crate) v: FpPoly,
 }
 
 /// Imaginary hyperelliptic curve `y² = F(x)` over `F_p`, `F` monic of degree
 /// `2g+1`.
-struct HypFp {
-    p: u64,
-    f: FpPoly,
-    g: usize,
+pub(crate) struct HypFp {
+    pub(crate) p: u64,
+    pub(crate) f: FpPoly,
+    pub(crate) g: usize,
 }
 
 impl HypFp {
-    fn identity(&self) -> Mumford {
+    pub(crate) fn identity(&self) -> Mumford {
         Mumford {
             u: vec![1],
             v: vec![],
         }
     }
 
-    fn is_identity(d: &Mumford) -> bool {
+    pub(crate) fn is_identity(d: &Mumford) -> bool {
         fp_deg(&d.u) == Some(0)
     }
 
     /// The class of `(X₀, Y₀) − ∞`, i.e. `u = x − X₀`, `v = Y₀`.
-    fn point_class(&self, x0: u64, y0: u64) -> Mumford {
+    pub(crate) fn point_class(&self, x0: u64, y0: u64) -> Mumford {
         Mumford {
             u: fp_trim(vec![submod(0, x0, self.p), 1]),
             v: if y0 == 0 { vec![] } else { vec![y0] },
@@ -316,7 +316,7 @@ impl HypFp {
     }
 
     /// Inverse class `(u, −v mod u)`.
-    fn neg(&self, d: &Mumford) -> Mumford {
+    pub(crate) fn neg(&self, d: &Mumford) -> Mumford {
         let nv = fp_sub(&[], &d.v, self.p);
         let nv = if nv.is_empty() {
             vec![]
@@ -331,7 +331,7 @@ impl HypFp {
 
     /// Cantor reduction: while `deg u > g`, replace `(u, v)` by the reduced
     /// equivalent class.
-    fn reduce(&self, mut u: FpPoly, mut v: FpPoly) -> Mumford {
+    pub(crate) fn reduce(&self, mut u: FpPoly, mut v: FpPoly) -> Mumford {
         let p = self.p;
         while fp_deg(&u).map(|d| d > self.g).unwrap_or(false) {
             // u' = (F − v²) / u   (exact), then make monic
@@ -359,7 +359,7 @@ impl HypFp {
     }
 
     /// Cantor composition + reduction: `d1 + d2` in `Jac(F_p)`.
-    fn add(&self, d1: &Mumford, d2: &Mumford) -> Mumford {
+    pub(crate) fn add(&self, d1: &Mumford, d2: &Mumford) -> Mumford {
         let p = self.p;
         let (u1, v1) = (&d1.u, &d1.v);
         let (u2, v2) = (&d2.u, &d2.v);
@@ -396,7 +396,7 @@ impl HypFp {
     }
 
     /// `k · D` by double-and-add (`k ≥ 0`).
-    fn mul(&self, k: u64, d: &Mumford) -> Mumford {
+    pub(crate) fn mul(&self, k: u64, d: &Mumford) -> Mumford {
         let mut acc = self.identity();
         let mut base = d.clone();
         let mut k = k;
@@ -413,7 +413,7 @@ impl HypFp {
     /// Order of the class `d` in `Jac(F_p)` (always finite — a finite group).
     /// Bounded by the Weil ceiling `(√p + 1)^{2g}`; returns `None` if the cap is
     /// somehow exceeded (a bad reduction we failed to filter — caller skips it).
-    fn order(&self, d: &Mumford) -> Option<u64> {
+    pub(crate) fn order(&self, d: &Mumford) -> Option<u64> {
         if Self::is_identity(d) {
             return Some(1);
         }
@@ -678,37 +678,37 @@ fn q_rem(a: &QPoly, b: &QPoly) -> QPoly {
 
 /// A reduced Mumford class `(u, v)` over ℚ (`u` monic, `deg v < deg u ≤ g`).
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct MumQ {
-    u: QPoly,
-    v: QPoly,
+pub(crate) struct MumQ {
+    pub(crate) u: QPoly,
+    pub(crate) v: QPoly,
 }
 
 /// Imaginary hyperelliptic curve `y² = F(x)` over ℚ, `F` monic of odd degree.
-struct HypQ {
-    f: QPoly,
-    g: usize,
+pub(crate) struct HypQ {
+    pub(crate) f: QPoly,
+    pub(crate) g: usize,
 }
 
 impl HypQ {
-    fn identity(&self) -> MumQ {
+    pub(crate) fn identity(&self) -> MumQ {
         MumQ {
             u: vec![Rational::from(1)],
             v: vec![],
         }
     }
 
-    fn is_identity(d: &MumQ) -> bool {
+    pub(crate) fn is_identity(d: &MumQ) -> bool {
         degree(&d.u) == 0
     }
 
-    fn point_class(&self, x0: &Rational, y0: &Rational) -> MumQ {
+    pub(crate) fn point_class(&self, x0: &Rational, y0: &Rational) -> MumQ {
         MumQ {
             u: trim(vec![-x0.clone(), Rational::from(1)]),
             v: if *y0 == 0 { vec![] } else { vec![y0.clone()] },
         }
     }
 
-    fn neg(&self, d: &MumQ) -> MumQ {
+    pub(crate) fn neg(&self, d: &MumQ) -> MumQ {
         let nv = poly_scale(&d.v, &Rational::from(-1));
         let nv = if q_is_zero(&nv) {
             vec![]
@@ -721,7 +721,7 @@ impl HypQ {
         }
     }
 
-    fn reduce(&self, mut u: QPoly, mut v: QPoly) -> MumQ {
+    pub(crate) fn reduce(&self, mut u: QPoly, mut v: QPoly) -> MumQ {
         while degree(&u) > self.g as i64 {
             let v2 = poly_mul(&v, &v);
             let num = poly_sub(&self.f, &v2);
@@ -745,7 +745,7 @@ impl HypQ {
         MumQ { u, v }
     }
 
-    fn add(&self, d1: &MumQ, d2: &MumQ) -> MumQ {
+    pub(crate) fn add(&self, d1: &MumQ, d2: &MumQ) -> MumQ {
         let (u1, v1) = (&d1.u, &d1.v);
         let (u2, v2) = (&d2.u, &d2.v);
         let (g1, a1, b1) = q_ext_gcd(u1, u2);
@@ -774,7 +774,7 @@ impl HypQ {
         self.reduce(u, v)
     }
 
-    fn mul(&self, k: u64, d: &MumQ) -> MumQ {
+    pub(crate) fn mul(&self, k: u64, d: &MumQ) -> MumQ {
         let mut acc = self.identity();
         let mut base = d.clone();
         let mut k = k;
@@ -1146,7 +1146,7 @@ fn decide_odd(a: &QPoly, places: &[Place], alg: &[AlgPlace]) -> FindOrder {
 /// From the per-prime orders `data = [(p, mₚ)]`, reconstruct the candidate
 /// torsion order `N` (prime-to-p injectivity pins each `v_ℓ(N)`).  Returns
 /// `None` on a prime-to-`ℓ` inconsistency — a sound non-torsion certificate.
-fn reconstruct_candidate_order(data: &[(u64, u64)]) -> Option<u64> {
+pub(crate) fn reconstruct_candidate_order(data: &[(u64, u64)]) -> Option<u64> {
     let mut ls: Vec<u64> = Vec::new();
     for (_, m) in data {
         for f in prime_factors(*m) {

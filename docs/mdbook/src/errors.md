@@ -30,6 +30,7 @@ AlkahestError (base)
 ├── QuaternionError   (E-QUAT-*)   — quaternion algebra and rotations, see below
 ├── ProbabilityError  (E-PROB-*)   — distributions, expectations, generating functions, entropy, see below
 ├── GroupError        (E-GRP-*)    — permutation groups: orbits, Schreier–Sims, membership
+├── FunctionFieldError (E-FFLD-*) — divisors, Pic⁰ and Riemann–Roch on algebraic curves, see below
 └── BudgetExceededError (E-BUDGET-*) — budget/cancellation trip, see [Budgets](./budgets.md)
 ```
 
@@ -304,6 +305,7 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-GFQ-*` | `FiniteFieldError` | Linear algebra over the finite fields GF(q), q = p^k (`alkahest.experimental.FiniteField` / `GfMatrix`). `001` a non-prime characteristic and `002` one past a machine word — both refusals, because ℤ/nℤ for composite n has zero divisors and no well-defined rank; `004` a reducible defining polynomial; `009` a singular matrix; `010` a linear system with no solution, refused rather than approximated |
 | `E-GRP-*` | `GroupError` | Permutation groups (`alkahest.experimental`) — an images array that is not a bijection (`E-GRP-001`), a degree mismatch, which is never repaired by padding with fixed points (`E-GRP-002`), a point outside `0..degree` — points are **0-based** here (`E-GRP-003`), a group too large to list element by element, whose order is still exact (`E-GRP-004`), a degree above the Schreier–Sims memory limit (`E-GRP-005`), or a standard family asked for below the `n` where its degree-`n` action is faithful, e.g. `dihedral(2)` (`E-GRP-006`) |
 | `E-PROB-*` | `ProbabilityError` | `alkahest.experimental`'s distribution surface — laws, expectations, moments, characteristic and generating functions, entropy and KL divergence. `E-PROB-005` and `E-PROB-006` are the two to branch on: one is a closed form that was **withheld**, the other says the quantity **does not exist**. See [Probability: four ways not to answer](#probability-four-ways-not-to-answer) |
+| `E-FFLD-*` | `FunctionFieldError` | `alkahest.experimental`'s function-field surface — divisors, the divisor class group `Pic⁰`, torsion order and Riemann–Roch. The implemented class is the **imaginary hyperelliptic** model `y² = a(x)` with `a` squarefree of **odd** degree and **ℚ-rational places**, because that is what the Mumford/Cantor machinery reused from the algebraic integrator is scoped to; every boundary outside it is one of these codes rather than a guess. Three to keep apart: `E-FFLD-007` is a **verdict** (the class has infinite order), `E-FFLD-006` is the matching **undecided**, and `E-FFLD-011` is an answer that was computed and then **withheld** for failing its own check. The most common one in practice is `E-FFLD-003`: the divisor has a place of degree ≥ 2, which cannot be represented. See [Function fields: what is modelled](#function-fields-what-is-modelled) |
 | `E-LIMIT-*` | `LimitError` | `limit` could not be established; `E-LIMIT-006` is a limit that turns on the sign of a free parameter nothing states — assume it, or declare the symbol `Domain.Positive` |
 | `E-SERIES-*` | `SeriesError` | `series` and `experimental.puiseux_series`. `003` a work ceiling, `004` an indeterminate coefficient, `005` no Puiseux expansion exists, `006` one computed and withheld |
 | `E-SUM-*` | `SumError` | Symbolic summation (`sum_indefinite`, `sum_definite`) — not hypergeometric, or not Gosper-summable |
@@ -515,3 +517,45 @@ with ak.context(require_certificate=True):
 3. Write the `remediation` before the message — if you cannot say what the user should do, the taxonomy is telling you this is an internal bug, not a user error.
 
 Users match on subsystem (the exception class); triagers filter on cause (the code suffix and remediation text).
+
+## Function fields: what is modelled
+
+`E-FFLD-*` is one prefix over one class, and the eleven numbers exist because
+the honest answer to most function-field questions, in most of the space of
+possible inputs, is *not this implementation*.
+
+The implemented class is
+
+```text
+    K = ℚ(x)[y] / (y² − a(x)),    a squarefree,  deg a = 2g + 1 odd,
+```
+
+with divisors supported on **ℚ-rational places** — the degree-one points
+`(α, β)` with `α, β ∈ ℚ`, plus the single place at infinity. That is not a
+convenience boundary. The divisor class group here is Cantor arithmetic on
+Mumford pairs, reached through the code the algebraic integrator already uses
+(`integrate::algebraic::jacobian_torsion`, `coates`), and that code measures
+every class against **one rational place at infinity**. An even-degree ("real")
+model has two, and `n > 2` has no Mumford representation at all.
+
+| Code | What it means | What to do |
+|---|---|---|
+| `E-FFLD-001` | `deg_y f ≠ 2`, a non-constant `y²` coefficient, or a discriminant that is zero or constant | Restate as `c₂y² + c₁(x)y + c₀(x)` with `c₂` a non-zero rational constant. Superelliptic `yⁿ = a(x)` with `n > 2` is genuinely not implemented |
+| `E-FFLD-002` | The **real** (even-degree) model. Two places above `x = ∞` | The **genus is still returned** — it does not depend on the model. Only divisors, `Pic⁰` and Riemann–Roch refuse. Sending a rational root of `a` to infinity moves the model to odd degree |
+| `E-FFLD-003` | A place of degree ≥ 2 appears — a conjugate pair `(α, ±√c)` with `c` a non-square, or a place over an irrational `α` | Record it as *not representable*, **never as absent**: dropping the place would silently change `deg D`. The rational-root search is capped, so this never proves irreducibility. `div(y)` on `y² = x⁵ + 1` lands here, because `x⁵ + 1` has one rational root |
+| `E-FFLD-004` | A place `(α, β)` with `β² ≠ a(α)` | Coordinates are in the **normalised** model — check `FunctionField::curve()` and `normalisation()` before assuming they are the ones you wrote |
+| `E-FFLD-005` | A class-group operation on a divisor of non-zero degree | `Pic⁰` is the group modelled; subtract `deg(D)·∞` |
+| `E-FFLD-006` | The torsion order was **not decided**: too few good primes, or a candidate past the exact-confirmation cap | Record as undecided. **Not** a non-torsion certificate |
+| `E-FFLD-007` | The class has **infinite order**. A verdict | Stop looking for a principal multiple. Reduction mod good primes is injective on prime-to-`p` torsion, so disagreeing orders refute torsion outright |
+| `E-FFLD-008` | `div(0)` | The zero function has no divisor |
+| `E-FFLD-009` | Two operands from different function fields | Rebuild both over one `FunctionField` |
+| `E-FFLD-010` | A multiplicity, order or linear system past the work cap | Reduce the divisor |
+| `E-FFLD-011` | A result was **computed and then withheld** for failing its own check — `div(u)`'s pole order at infinity disagreeing with the degrees of `p` and `q`, or a Riemann–Roch dimension violating Riemann's inequality | A bug in this module, not in the input. Report it; the point is that the wrong answer was not returned |
+
+The last row is the one worth dwelling on. `div(u)` derives the multiplicity at
+infinity from `deg div(u) = 0` and then checks it against
+`v_∞(p + qy) = min(−2 deg p, −deg a − 2 deg q)`, which is exact on the
+odd-degree model because the two candidates differ in parity. Riemann–Roch
+checks its dimension against `dim ≥ deg D + 1 − g` and, above the canonical
+degree, against the equality. Neither check can fire on valid input; both exist
+so that a wrong answer arrives as `E-FFLD-011` rather than as a divisor.

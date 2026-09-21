@@ -18,6 +18,7 @@ pub mod eval;
 pub mod ffield;
 pub mod flint;
 pub mod group;
+pub mod funcfield;
 pub mod horner;
 // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
 pub mod holonomic;
@@ -405,6 +406,13 @@ pub mod experimental {
         alternating, cyclic, dihedral, symmetric, trivial as trivial_group, GroupError, Orbit,
         Permutation, PermutationGroup, SchreierEntry, SiftResult, StabilizerChain, StabilizerLevel,
         DEFAULT_ELEMENT_CAP, MAX_BSGS_DEGREE, MAX_ELEMENT_CAP,
+    };
+    /// Function fields of algebraic curves: divisors, the divisor class group
+    /// and Riemann–Roch, for the imaginary hyperelliptic model with rational
+    /// places.  See `funcfield`'s module docs for exactly what is refused.
+    pub use crate::funcfield::{
+        riemann_roch, Divisor, DivisorClass, FunctionField, FunctionFieldElement,
+        FunctionFieldError, Normalisation, Place, RiemannRochSpace,
     };
     /// Continuous (differential) creative telescoping — Almkvist–Zeilberger,
     /// the twin of `q_zeilberger`/`telescope2d` on the `D_x` side. Rust-only

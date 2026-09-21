@@ -64,6 +64,7 @@ alkahest/
 │   │   ├── simplify/      # rule engine + e-graph simplification (egglog)
 │   │   ├── diff/          # symbolic differentiation
 │   │   ├── integrate/     # symbolic integration
+│   │   ├── funcfield/     # function fields of curves: divisors, Pic⁰, Riemann–Roch
 │   │   ├── calculus/      # series / limits / Euler–Maclaurin asymptotics
 │   │   ├── jit/           # LLVM JIT and interpreter
 │   │   ├── ball/          # Arb ball arithmetic

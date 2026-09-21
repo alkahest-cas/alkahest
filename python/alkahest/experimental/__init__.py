@@ -370,10 +370,15 @@ from alkahest.alkahest import (
     Binomial,
     Coordinates,
     Distribution,
+    Divisor,
+    DivisorClass,
     Exponential,
     FiniteField,
     FiniteFieldError,
     Fps,
+    FunctionField,
+    FunctionFieldElement,
+    FunctionFieldError,
     Gamma,
     GfMatrix,
     GfRref,
@@ -385,6 +390,7 @@ from alkahest.alkahest import (
     # Computational group theory (permutation groups)
     Permutation,
     PermutationGroup,
+    Place,
     Poisson,
     # Puiseux (fractional-exponent) expansion — verified before it is returned
     PuiseuxExpansion,
@@ -393,6 +399,7 @@ from alkahest.alkahest import (
     Quaternion,
     QuaternionError,
     QZeilbergerCertificate,
+    RiemannRochSpace,
     SiftResult,
     Telescoping2dCertificate,
     TelescopingMdCertificate,
@@ -432,6 +439,7 @@ from alkahest.alkahest import (
     prob_side_conditions,
     puiseux_series,
     q_zeilberger,
+    riemann_roch,
     series_solve,
     telescope2d,
     telescope_md,
@@ -493,6 +501,8 @@ __all__ = [
     "Coordinates",
     "CudaCompiledFn",
     "Distribution",
+    "Divisor",
+    "DivisorClass",
     "EvaluationResult",
     "Exponential",
     # Linear algebra over GF(q), q = p^k — built for linear codes. Rectangular
@@ -504,6 +514,9 @@ __all__ = [
     "FiniteField",
     "FiniteFieldError",
     "Fps",
+    "FunctionField",
+    "FunctionFieldElement",
+    "FunctionFieldError",
     "Gamma",
     "GbPoly",
     "GfMatrix",
@@ -530,6 +543,7 @@ __all__ = [
     # Computational group theory (permutation groups)
     "Permutation",
     "PermutationGroup",
+    "Place",
     # Probability (continued)
     "Poisson",
     # Puiseux (fractional-exponent) expansion
@@ -547,6 +561,7 @@ __all__ = [
     "RecurrenceAsymptotics",
     # M11 — novelty filtering
     "RecurrenceClaim",
+    "RiemannRochSpace",
     # Sifting an element through a stabilizer chain
     "SiftResult",
     # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
@@ -623,6 +638,7 @@ __all__ = [
     "qpochhammer",
     "re",
     "residue",
+    "riemann_roch",
     "series_solve",
     "solve",
     # M4 — double-sum (Apagodu-Zeilberger) creative telescoping

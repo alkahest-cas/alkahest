@@ -528,6 +528,32 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // Below its stated minimum, a standard family's natural degree-n action is not
     // faithful, so the group returned would not be the group the name promises.
     ErrorSpec { code: "E-GRP-006", class: "GroupError", cause: Cause::Unsupported, remediation: Some("these constructors build the natural degree-n action; below the stated minimum that action is not faithful, so build the group by hand on the point set you actually mean") },
+    // E-FFLD — FunctionFieldError (divisors, Pic⁰ and Riemann–Roch on curves)
+    //
+    // The whole point of this prefix is the boundary it marks. The implemented
+    // class is the *imaginary* hyperelliptic model `y² = a(x)` with `a`
+    // squarefree of odd degree and ℚ-rational places, because that is exactly
+    // what the Mumford/Cantor machinery in `integrate::algebraic` — which this
+    // layer reuses rather than reimplements — is scoped to. Everything outside
+    // it is a typed refusal, never a guess.
+    //
+    // Three of these are *not* refusals and must be kept apart by any caller
+    // branching on the code: E-FFLD-007 is a **verdict** (the class has
+    // infinite order, and no wider search will change that), E-FFLD-006 is the
+    // matching **undecided** (neither torsion nor non-torsion was established),
+    // and E-FFLD-011 reports an answer that was computed and then **withheld**
+    // because it failed its own consistency check.
+    ErrorSpec { code: "E-FFLD-001", class: "FunctionFieldError", cause: Cause::Unsupported, remediation: Some("supply c₂·y² + c₁(x)·y + c₀(x) with c₂ a non-zero rational constant, whose discriminant c₁² − 4c₂c₀ is non-constant; higher-degree plane curves are not modelled") },
+    ErrorSpec { code: "E-FFLD-002", class: "FunctionFieldError", cause: Cause::Unsupported, remediation: Some("move the model to odd degree by sending a rational root of a(x) to infinity, or use genus() alone, which is model-independent") },
+    ErrorSpec { code: "E-FFLD-003", class: "FunctionFieldError", cause: Cause::Unsupported, remediation: Some("restrict to divisors supported on rational places, or work with the divisor class (Mumford form), which represents conjugate places implicitly") },
+    ErrorSpec { code: "E-FFLD-004", class: "FunctionFieldError", cause: Cause::UserInput,   remediation: Some("check the sign and the model: the place must satisfy y² = a(x) in the *normalised* coordinates reported by FunctionField::curve()") },
+    ErrorSpec { code: "E-FFLD-005", class: "FunctionFieldError", cause: Cause::UserInput,   remediation: Some("replace D by D − deg(D)·∞ before asking for its class") },
+    ErrorSpec { code: "E-FFLD-006", class: "FunctionFieldError", cause: Cause::Unsupported, remediation: Some("record the result as undecided — never as non-torsion; a larger prime search or a different model may settle it") },
+    ErrorSpec { code: "E-FFLD-007", class: "FunctionFieldError", cause: Cause::Domain,      remediation: Some("this is a verdict: no multiple of the divisor is principal, so stop looking for one") },
+    ErrorSpec { code: "E-FFLD-008", class: "FunctionFieldError", cause: Cause::UserInput,   remediation: Some("pass a non-zero function; div(0) is not defined") },
+    ErrorSpec { code: "E-FFLD-009", class: "FunctionFieldError", cause: Cause::UserInput,   remediation: Some("rebuild both operands over the same FunctionField") },
+    ErrorSpec { code: "E-FFLD-010", class: "FunctionFieldError", cause: Cause::Resource,    remediation: Some("reduce the multiplicities or the degree of the divisor; the Cantor and linear-algebra steps here are bounded by a machine word") },
+    ErrorSpec { code: "E-FFLD-011", class: "FunctionFieldError", cause: Cause::Internal,    remediation: Some("report this as a bug with the curve and divisor that produced it; the answer was withheld rather than returned wrong") },
 ];
 
 #[cfg(test)]
