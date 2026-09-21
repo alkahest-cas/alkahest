@@ -1185,3 +1185,60 @@ proptest! {
         prop_assert!(a.mul(&n).unwrap().is_zero());
     }
 }
+
+/// Independent integration check: the binary Hamming [7,4,3] code.
+///
+/// H has the non-zero binary 3-vectors as columns, so rank 3, nullity 4, and
+/// the nullspace *is* the Hamming code. Minimum distance is verified by brute
+/// force over all 16 codewords, which pins the code rather than just its shape.
+#[test]
+fn hamming_7_4_3_code_over_gf2() {
+    let f = FiniteField::prime(2).unwrap();
+    let h = GfMatrix::from_u64(
+        &f,
+        3,
+        7,
+        &[
+            0, 0, 0, 1, 1, 1, 1, //
+            0, 1, 1, 0, 0, 1, 1, //
+            1, 0, 1, 0, 1, 0, 1,
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(h.rank(), 3, "parity-check matrix must have full row rank");
+    let n = h.nullspace().unwrap();
+    assert_eq!(n.ncols(), 4, "k = n - rank = 7 - 3 = 4");
+    assert_eq!(n.nrows(), 7);
+    assert_eq!(h.rank() + n.ncols(), h.ncols(), "rank-nullity");
+
+    // Every basis vector is a codeword: H * N == 0.
+    assert!(h.mul(&n).unwrap().is_zero(), "H * N must vanish");
+
+    // Brute-force the 16 codewords c = N * m and take the minimum weight.
+    let mut min_w = usize::MAX;
+    for mask in 0u32..16 {
+        let m = GfMatrix::from_u64(
+            &f,
+            4,
+            1,
+            &[
+                (mask & 1) as u64,
+                ((mask >> 1) & 1) as u64,
+                ((mask >> 2) & 1) as u64,
+                ((mask >> 3) & 1) as u64,
+            ],
+        )
+        .unwrap();
+        let c = n.mul(&m).unwrap();
+        assert!(
+            h.mul(&c).unwrap().is_zero(),
+            "every codeword satisfies H c = 0"
+        );
+        let w = c.to_u64().unwrap().iter().filter(|&&b| b != 0).count();
+        if mask != 0 && w < min_w {
+            min_w = w;
+        }
+    }
+    assert_eq!(min_w, 3, "Hamming [7,4] has minimum distance 3");
+}
