@@ -735,3 +735,36 @@ fn a_gfq_failure_keeps_its_own_code_across_the_boundary() {
     let e: StabilizerError = crate::ffield::FiniteFieldError::Inconsistent.into();
     assert_eq!(e.code(), "E-GFQ-010");
 }
+
+/// Independent anchor: the quantum Hamming `[[15, 7, 3]]` CSS code.
+///
+/// Built from the classical `[15, 11, 3]` Hamming parity check used as both
+/// `H_X` and `H_Z`. The CSS condition holds for a reason worth stating: over
+/// GF(2), `(H·Hᵀ)_{ii}` counts columns with bit `i` set (8 of them, even) and
+/// `(H·Hᵀ)_{ij}` counts columns with both bits set (4, even), so `H·Hᵀ = 0`.
+///
+/// This is a different family from Steane/Shor and, with `k = 7`, it is the
+/// only anchor here that exercises the multi-logical path — seven independent
+/// `X̄/Z̄` pairs whose pairing matrix must invert to `δᵢⱼ`.
+#[test]
+fn quantum_hamming_15_7_3() {
+    // Columns are the binary expansions of 1..=15, MSB in row 0.
+    let mut entries = Vec::with_capacity(4 * 15);
+    for row in 0..4u32 {
+        for col in 1..=15u64 {
+            entries.push((col >> (3 - row)) & 1);
+        }
+    }
+    let h = mat(4, 15, &entries);
+
+    // Construction succeeding *is* the `H_X · H_Zᵀ = 0` check.
+    let code = CssCode::new(&h, &h).unwrap();
+    assert_eq!(code.n(), 15);
+    assert_eq!(code.x_rank(), 4);
+    assert_eq!(code.z_rank(), 4);
+    assert_eq!(code.k(), 7, "k = n - rank(H_X) - rank(H_Z) = 15 - 4 - 4");
+    assert_eq!(code.minimum_distance().unwrap(), Distance::Exact(3));
+
+    // The quantum Singleton (Knill-Laflamme) bound: n - k >= 2(d - 1).
+    assert!(15 - 7 >= 2 * (3 - 1));
+}
