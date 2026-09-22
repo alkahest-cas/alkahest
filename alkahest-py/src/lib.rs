@@ -260,8 +260,8 @@ mod ffield;
 // V1-3: structured exception hierarchy.
 // Base inherits from ValueError for backward compat with existing `except ValueError` tests.
 mod funcfield;
-mod stabilizer;
 mod numfield;
+mod stabilizer;
 pyo3::create_exception!(alkahest, PyAlkahestError, pyo3::exceptions::PyValueError);
 pyo3::create_exception!(alkahest, PyConversionError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyDomainError, PyAlkahestError);
