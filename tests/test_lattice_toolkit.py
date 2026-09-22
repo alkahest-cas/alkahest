@@ -19,7 +19,43 @@ from alkahest import LatticeError
 from alkahest.experimental import (
     LATTICE_MAX_ENUM_RANK,
     Lattice,
+    LatticeGeometryError,
 )
+
+
+def test_toolkit_errors_are_catchable_as_lattice_errors():
+    """The toolkit raises its own exception type for versioning reasons on the
+    Rust side (`LatticeError` is an exhaustive enum in the stable surface). That
+    must not leak into Python: one ``except LatticeError`` has to keep catching
+    everything the subsystem raises, and the code must still read ``E-LAT-NNN``.
+    """
+    assert issubclass(LatticeGeometryError, LatticeError)
+    with pytest.raises(LatticeError) as exc:
+        Lattice.from_gram([[1, 2], [2, 1]])
+    assert isinstance(exc.value, LatticeGeometryError)
+    assert exc.value.code == "E-LAT-007"
+
+    # A reduction failure underneath a toolkit call keeps its own code rather
+    # than being re-labelled.
+    with pytest.raises(LatticeError) as exc:
+        Lattice.from_basis([[1, 2, 3], [1, 2]])
+    assert exc.value.code == "E-LAT-002"
+
+
+def test_repeated_queries_reuse_one_enumeration():
+    """`minimum`, `kissing_number`, `hermite_invariant` and the densities share
+    a single shortest-vector pass, while an explicit budget always does the work
+    under that budget."""
+    e8 = Lattice.e8()
+    assert e8.minimum() == 2
+    assert e8.kissing_number() == 240
+    assert e8.hermite_invariant() == pytest.approx(2.0)
+    assert e8.center_density_exact() == Fraction(1, 16)
+    assert e8.shortest_vector().norm() == 2
+    # The memo does not swallow an explicit budget.
+    with pytest.raises(LatticeError) as exc:
+        e8.minimum(budget=3)
+    assert exc.value.code == "E-LAT-009"
 
 
 def test_standard_lattices_have_their_textbook_invariants():

@@ -407,6 +407,7 @@ from alkahest.alkahest import (
     GroupError,
     # Lattices: standard families, exact SVP/CVP, theta series, densities
     Lattice,
+    LatticeGeometryError,
     LatticeVector,
     LinearCode,
     LogNormal,
@@ -641,6 +642,10 @@ __all__ = [
     # series, densities) depends on the Gram matrix alone. SVP/CVP/theta are
     # exact enumeration, capped at LATTICE_MAX_ENUM_RANK.
     "Lattice",
+    # The toolkit's refusals (E-LAT-005 … E-LAT-014). A *subclass* of
+    # alkahest.LatticeError, so `except LatticeError` catches the reduction
+    # errors (E-LAT-001 … E-LAT-004) and these together.
+    "LatticeGeometryError",
     "LatticeVector",
     "LinearCode",
     # Probability (continued)

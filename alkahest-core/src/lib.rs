@@ -455,9 +455,14 @@ pub mod experimental {
     /// heuristic, exponential in the rank, capped at [`MAX_ENUM_RANK`] with a
     /// node budget, and a typed refusal above either. See [`crate::lattice`]
     /// for the full list of scope limits.
+    /// The toolkit's refusals are [`LatticeGeometryError`]
+    /// (`E-LAT-005` … `E-LAT-014`), which is `#[non_exhaustive]`, not the
+    /// stable [`crate::LatticeError`] (`E-LAT-001` … `E-LAT-004`) that basis
+    /// reduction uses. The former wraps the latter, so a reduction failure
+    /// underneath a toolkit call keeps its own code.
     pub use crate::lattice::{
-        a_n, d_n, e8, lattice_reduce_rows_exact, leech, zn, Lattice, LatticeVector,
-        DEFAULT_ENUM_NODE_BUDGET, MAX_ENUM_RANK, MAX_THETA_NORM,
+        a_n, d_n, e8, lattice_reduce_rows_exact, leech, zn, Lattice, LatticeGeometryError,
+        LatticeVector, DEFAULT_ENUM_NODE_BUDGET, MAX_ENUM_RANK, MAX_THETA_NORM,
     };
     pub use crate::lean::emit_lean_expr as emit_lean;
     pub use crate::matrix::{

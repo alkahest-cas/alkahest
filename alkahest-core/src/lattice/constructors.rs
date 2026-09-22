@@ -19,9 +19,10 @@
 //! before it is used. [`leech`] refuses rather than returning an unverified
 //! lattice if any of that fails.
 
+use super::error::LatticeGeometryError;
 use super::flint_backend;
 use super::lattice::Lattice;
-use super::lll::{lattice_reduce_rows, LatticeError};
+use super::lll::lattice_reduce_rows;
 use rug::{Integer, Rational};
 
 fn int_rows(rows: Vec<Vec<i64>>) -> Vec<Vec<Integer>> {
@@ -31,9 +32,9 @@ fn int_rows(rows: Vec<Vec<i64>>) -> Vec<Vec<Integer>> {
 }
 
 /// The integer lattice `ℤⁿ`, `n ≥ 1`.
-pub fn zn(n: usize) -> Result<Lattice, LatticeError> {
+pub fn zn(n: usize) -> Result<Lattice, LatticeGeometryError> {
     if n == 0 {
-        return Err(LatticeError::InvalidParameter {
+        return Err(LatticeGeometryError::InvalidParameter {
             detail: "Z^n needs n >= 1",
         });
     }
@@ -47,9 +48,9 @@ pub fn zn(n: usize) -> Result<Lattice, LatticeError> {
 ///
 /// Determinant `n + 1`; minimum 2; kissing number `n(n+1)`. `A_2` is the
 /// hexagonal lattice.
-pub fn a_n(n: usize) -> Result<Lattice, LatticeError> {
+pub fn a_n(n: usize) -> Result<Lattice, LatticeGeometryError> {
     if n == 0 {
-        return Err(LatticeError::InvalidParameter {
+        return Err(LatticeGeometryError::InvalidParameter {
             detail: "A_n needs n >= 1",
         });
     }
@@ -68,9 +69,9 @@ pub fn a_n(n: usize) -> Result<Lattice, LatticeError> {
 ///
 /// Determinant 4; minimum 2; kissing number `2n(n−1)`. `D_4` is the 24-cell
 /// lattice.
-pub fn d_n(n: usize) -> Result<Lattice, LatticeError> {
+pub fn d_n(n: usize) -> Result<Lattice, LatticeGeometryError> {
     if n < 2 {
-        return Err(LatticeError::InvalidParameter {
+        return Err(LatticeGeometryError::InvalidParameter {
             detail: "D_n needs n >= 2",
         });
     }
@@ -94,7 +95,7 @@ pub fn d_n(n: usize) -> Result<Lattice, LatticeError> {
 ///
 /// Even and unimodular: determinant 1, minimum 2, 240 vectors of norm 2,
 /// centre density `1/16`.
-pub fn e8() -> Result<Lattice, LatticeError> {
+pub fn e8() -> Result<Lattice, LatticeGeometryError> {
     let half = Rational::from((1, 2));
     let mut rows: Vec<Vec<Rational>> = Vec::with_capacity(8);
     // α₁ = ½(e₁ − e₂ − e₃ − e₄ − e₅ − e₆ − e₇ + e₈)
@@ -201,8 +202,8 @@ fn golay_codewords() -> Option<Vec<u32>> {
 ///
 /// Even and unimodular: determinant 1, minimum 4, 196560 vectors of norm 4,
 /// no vectors of norm 2.
-pub fn leech() -> Result<Lattice, LatticeError> {
-    const REFUSAL: LatticeError = LatticeError::InvalidParameter {
+pub fn leech() -> Result<Lattice, LatticeGeometryError> {
+    const REFUSAL: LatticeGeometryError = LatticeGeometryError::InvalidParameter {
         detail: "Leech lattice construction failed its own verification",
     };
     let words = golay_codewords().ok_or(REFUSAL)?;

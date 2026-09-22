@@ -32,7 +32,7 @@
 //! the rank ([`super::MAX_ENUM_RANK`]) and pass a node budget; exceeding either
 //! is a typed refusal, never a truncated answer.
 
-use super::lll::LatticeError;
+use super::error::LatticeGeometryError;
 use rug::ops::DivRounding;
 use rug::{Integer, Rational};
 
@@ -88,7 +88,7 @@ impl Enumerator {
         center: Option<&[Rational]>,
         half: bool,
         visit: &mut F,
-    ) -> Result<(), LatticeError>
+    ) -> Result<(), LatticeGeometryError>
     where
         F: FnMut(Found<'_>),
     {
@@ -127,13 +127,13 @@ impl Enumerator {
         center: Option<&[Rational]>,
         leading_free: bool,
         visit: &mut F,
-    ) -> Result<(), LatticeError>
+    ) -> Result<(), LatticeGeometryError>
     where
         F: FnMut(Found<'_>),
     {
         self.nodes += 1;
         if self.nodes > self.budget {
-            return Err(LatticeError::EnumerationBudget {
+            return Err(LatticeGeometryError::EnumerationBudget {
                 budget: self.budget,
             });
         }
@@ -357,6 +357,9 @@ mod tests {
         let mut e = Enumerator::new(mu, b, 3);
         let mut seen = 0usize;
         let err = e.enumerate(&Rational::from(100), None, false, &mut |_| seen += 1);
-        assert!(matches!(err, Err(LatticeError::EnumerationBudget { .. })));
+        assert!(matches!(
+            err,
+            Err(LatticeGeometryError::EnumerationBudget { .. })
+        ));
     }
 }

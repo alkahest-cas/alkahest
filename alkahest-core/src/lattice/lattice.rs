@@ -18,8 +18,8 @@
 //!   Their cost is exponential in the rank. The rank ceiling is
 //!   [`MAX_ENUM_RANK`] = 24 (chosen so the Leech lattice is inside it) and
 //!   every enumerating method also takes a node budget. Above the ceiling, or
-//!   past the budget, you get [`LatticeError::RankTooLarge`] or
-//!   [`LatticeError::EnumerationBudget`] — never a heuristic answer. There is
+//!   past the budget, you get [`LatticeGeometryError::RankTooLarge`] or
+//!   [`LatticeGeometryError::EnumerationBudget`] — never a heuristic answer. There is
 //!   deliberately no "approximate SVP" in this module: a non-shortest vector
 //!   returned from a function called `shortest_vector` is the failure mode this
 //!   crate exists to avoid. Use [`super::lattice_reduce_rows`] if what you want
@@ -30,13 +30,18 @@
 //!   is easy.
 //! * **Theta series need an integral Gram matrix** — otherwise "the number of
 //!   vectors of norm `n`" indexes over the wrong set. Non-integral forms are
-//!   refused with [`LatticeError::NonIntegralGram`].
-//! * **Every method that mentions `λ₁` runs its own enumeration.**
-//!   [`Lattice::minimum`], [`Lattice::kissing_number`],
-//!   [`Lattice::hermite_invariant`], [`Lattice::center_density`] and
-//!   [`Lattice::center_density_exact`] each cost one full SVP pass; nothing is
-//!   cached between calls. At rank 24 that is tens of seconds apiece, so hold
-//!   on to the result rather than asking twice.
+//!   refused with [`LatticeGeometryError::NonIntegralGram`].
+//! * **One enumeration is memoised per `Lattice`, and only one.**
+//!   [`Lattice::minimum`], [`Lattice::shortest_vector`],
+//!   [`Lattice::kissing_number`], [`Lattice::hermite_invariant`],
+//!   [`Lattice::center_density`] and [`Lattice::center_density_exact`] share a
+//!   single shortest-vector pass, so asking all six costs what asking one
+//!   costs. [`Lattice::minimal_vectors`] and [`Lattice::theta_series`] do not
+//!   share it — they need the vectors themselves, not just the count — and
+//!   every `*_with_budget` entry point deliberately bypasses the memo, because
+//!   passing a budget is a request to do the work under that budget. At rank
+//!   24 a pass is tens of seconds, so hold on to the `Lattice` rather than
+//!   rebuilding it.
 //! * **Densities are `f64`.** `center_density` and `packing_density` return
 //!   floating-point numbers because `Δ` involves `π^{m/2}`.
 //!   [`Lattice::center_density_exact`] gives the exact rational when the
@@ -44,9 +49,13 @@
 //!   rather than a rounded stand-in when it does not.
 
 use super::enumerate::Enumerator;
-use super::lll::{lattice_reduce_rows, LatticeError};
+use super::error::LatticeGeometryError;
+use super::lll::lattice_reduce_rows;
+use super::lll::LatticeError;
 use super::quadform;
 use rug::{Integer, Rational};
+use std::fmt;
+use std::sync::OnceLock;
 
 /// Hard ceiling on the rank of a lattice this module will enumerate.
 ///
@@ -55,7 +64,7 @@ use rug::{Integer, Rational};
 pub const MAX_ENUM_RANK: usize = 24;
 
 /// Default Fincke–Pohst node budget. Exceeding it is
-/// [`LatticeError::EnumerationBudget`], never a truncated answer.
+/// [`LatticeGeometryError::EnumerationBudget`], never a truncated answer.
 pub const DEFAULT_ENUM_NODE_BUDGET: u64 = 50_000_000;
 
 /// Largest norm a theta series will be tabulated up to, to keep the returned
@@ -81,15 +90,64 @@ pub struct LatticeVector {
 }
 
 /// A lattice of rank `m`, carried by its Gram matrix.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Holds a memo of one successful default-budget shortest-vector pass, so that
+/// [`Lattice::minimum`], [`Lattice::shortest_vector`],
+/// [`Lattice::kissing_number`], [`Lattice::hermite_invariant`],
+/// [`Lattice::center_density`] and [`Lattice::center_density_exact`] together
+/// cost **one** enumeration rather than six. The memo is part of no observable
+/// behaviour: it is skipped by every `*_with_budget` entry point, it is not
+/// compared by `PartialEq`, it is not printed by `Debug`, and a clone starts
+/// cold.
 pub struct Lattice {
     basis: Option<Vec<Vec<Rational>>>,
     gram: Vec<Vec<Rational>>,
+    /// `None` until a default-budget [`Lattice::minimal_pass`] has *succeeded*.
+    /// Failures are never cached, so a refusal stays reproducible.
+    minimal: OnceLock<MinimalPass>,
+}
+
+impl Clone for Lattice {
+    /// The clone starts with a cold memo: copying tens of megabytes of
+    /// enumeration results is not what a caller asks for by cloning a lattice.
+    fn clone(&self) -> Self {
+        Self {
+            basis: self.basis.clone(),
+            gram: self.gram.clone(),
+            minimal: OnceLock::new(),
+        }
+    }
+}
+
+/// Equality of *representation*, not of lattice.
+///
+/// Two different Gram matrices can present the same lattice in different bases;
+/// this does not attempt to decide that (lattice isomorphism is a hard problem
+/// and a wrong answer would be worse than no answer). Compare
+/// [`Lattice::determinant`], [`Lattice::minimum`] and [`Lattice::theta_series`]
+/// if what you want is evidence of isometry.
+impl PartialEq for Lattice {
+    fn eq(&self, other: &Self) -> bool {
+        self.basis == other.basis && self.gram == other.gram
+    }
+}
+
+impl Eq for Lattice {}
+
+impl fmt::Debug for Lattice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Lattice")
+            .field("rank", &self.rank())
+            .field("ambient_dimension", &self.ambient_dimension())
+            .field("gram", &self.gram)
+            .field("basis", &self.basis)
+            .finish()
+    }
 }
 
 impl Lattice {
     /// From an integer row basis. Rows must be linearly independent.
-    pub fn from_basis(rows: &[Vec<Integer>]) -> Result<Self, LatticeError> {
+    pub fn from_basis(rows: &[Vec<Integer>]) -> Result<Self, LatticeGeometryError> {
         let rational: Vec<Vec<Rational>> = rows
             .iter()
             .map(|r| r.iter().map(Rational::from).collect())
@@ -98,13 +156,13 @@ impl Lattice {
     }
 
     /// From a rational row basis. Rows must be linearly independent.
-    pub fn from_rational_basis(rows: &[Vec<Rational>]) -> Result<Self, LatticeError> {
+    pub fn from_rational_basis(rows: &[Vec<Rational>]) -> Result<Self, LatticeGeometryError> {
         if rows.is_empty() {
-            return Err(LatticeError::EmptyBasis);
+            return Err(LatticeError::EmptyBasis.into());
         }
         let cols = rows[0].len();
         if cols == 0 {
-            return Err(LatticeError::EmptyBasis);
+            return Err(LatticeError::EmptyBasis.into());
         }
         for (i, r) in rows.iter().enumerate() {
             if r.len() != cols {
@@ -112,7 +170,8 @@ impl Lattice {
                     row: i,
                     expected_cols: cols,
                     got_cols: r.len(),
-                });
+                }
+                .into());
             }
         }
         let gram = quadform::gram_of_rows(rows);
@@ -121,16 +180,18 @@ impl Lattice {
         Ok(Self {
             basis: Some(rows.to_vec()),
             gram,
+            minimal: OnceLock::new(),
         })
     }
 
     /// From a symmetric positive-definite rational Gram matrix.
-    pub fn from_gram(g: &[Vec<Rational>]) -> Result<Self, LatticeError> {
+    pub fn from_gram(g: &[Vec<Rational>]) -> Result<Self, LatticeGeometryError> {
         quadform::validate_gram(g)?;
         quadform::gram_schmidt(g)?;
         Ok(Self {
             basis: None,
             gram: g.to_vec(),
+            minimal: OnceLock::new(),
         })
     }
 
@@ -190,7 +251,7 @@ impl Lattice {
     /// Its Gram matrix is `G⁻¹`; when this lattice has a basis, the dual basis
     /// `G⁻¹ B` is carried along, so `dual().dual()` returns the original
     /// lattice and not merely an isometric copy.
-    pub fn dual(&self) -> Result<Self, LatticeError> {
+    pub fn dual(&self) -> Result<Self, LatticeGeometryError> {
         let inv = quadform::inverse(&self.gram)?;
         let basis = self.basis.as_ref().map(|b| {
             let m = b.len();
@@ -209,7 +270,11 @@ impl Lattice {
                 })
                 .collect()
         });
-        Ok(Self { basis, gram: inv })
+        Ok(Self {
+            basis,
+            gram: inv,
+            minimal: OnceLock::new(),
+        })
     }
 
     // ---------------------------------------------------------------------
@@ -219,9 +284,9 @@ impl Lattice {
     /// Gram–Schmidt data of an LLL-reduced form of this lattice, the
     /// unimodular `U` taking the original basis to the reduced one, and the
     /// reduced Gram matrix.
-    fn reduced_enumerator(&self, budget: u64) -> Result<ReducedEnumerator, LatticeError> {
+    fn reduced_enumerator(&self, budget: u64) -> Result<ReducedEnumerator, LatticeGeometryError> {
         if self.rank() > MAX_ENUM_RANK {
-            return Err(LatticeError::RankTooLarge {
+            return Err(LatticeGeometryError::RankTooLarge {
                 rank: self.rank(),
                 max: MAX_ENUM_RANK,
             });
@@ -279,7 +344,11 @@ impl Lattice {
     /// each `±v` pair, in reduced coordinates. The starting radius is the
     /// smallest diagonal entry of the *reduced* Gram matrix — a genuine lattice
     /// vector's norm, so the ball provably contains a minimal vector.
-    fn minimal_pass(&self, budget: u64, collect: bool) -> Result<MinimalPass, LatticeError> {
+    fn minimal_pass(
+        &self,
+        budget: u64,
+        collect: bool,
+    ) -> Result<MinimalPass, LatticeGeometryError> {
         let (mut e, u, g) = self.reduced_enumerator(budget)?;
         let bound = (0..g.len())
             .map(|i| g[i][i].clone())
@@ -318,20 +387,42 @@ impl Lattice {
                 }
             }
         })?;
-        let best = best.ok_or(LatticeError::NotPositiveDefinite { pivot: 1 })?;
+        let best = best.ok_or(LatticeGeometryError::NotPositiveDefinite { pivot: 1 })?;
         if !collect {
             reps.push(witness);
         }
         Ok((best, count * 2, reps, u))
     }
 
+    /// The memoised default-budget shortest-vector pass.
+    ///
+    /// Only the no-budget entry points come through here; every
+    /// `*_with_budget` method enumerates afresh, so passing a budget always
+    /// means what it says. Only a *successful* pass is stored — a refusal is
+    /// reproducible on the next call.
+    fn minimal_cached(&self) -> Result<&MinimalPass, LatticeGeometryError> {
+        if let Some(v) = self.minimal.get() {
+            return Ok(v);
+        }
+        let computed = self.minimal_pass(DEFAULT_ENUM_NODE_BUDGET, false)?;
+        // A concurrent caller may have won the race; either value is correct,
+        // because both are the same lattice's minimum.
+        let _ = self.minimal.set(computed);
+        self.minimal.get().ok_or(LatticeGeometryError::Internal {
+            detail: "the shortest-vector memo was empty immediately after being set",
+        })
+    }
+
     /// Squared norm of the shortest non-zero vector, exactly.
-    pub fn minimum(&self) -> Result<Rational, LatticeError> {
-        self.minimum_with_budget(DEFAULT_ENUM_NODE_BUDGET)
+    pub fn minimum(&self) -> Result<Rational, LatticeGeometryError> {
+        Ok(self.minimal_cached()?.0.clone())
     }
 
     /// [`Lattice::minimum`] with an explicit Fincke–Pohst node budget.
-    pub fn minimum_with_budget(&self, budget: u64) -> Result<Rational, LatticeError> {
+    ///
+    /// Bypasses the memo — a budget is a request to do the work under that
+    /// budget.
+    pub fn minimum_with_budget(&self, budget: u64) -> Result<Rational, LatticeGeometryError> {
         Ok(self.minimal_pass(budget, false)?.0)
     }
 
@@ -339,12 +430,17 @@ impl Lattice {
     ///
     /// Exact: the returned vector attains the minimum. Which of the (at least
     /// two, `±v`) minimal vectors comes back is unspecified.
-    pub fn shortest_vector(&self) -> Result<LatticeVector, LatticeError> {
-        self.shortest_vector_with_budget(DEFAULT_ENUM_NODE_BUDGET)
+    pub fn shortest_vector(&self) -> Result<LatticeVector, LatticeGeometryError> {
+        let (norm, _, reps, u) = self.minimal_cached()?;
+        let x = reps.first().ok_or(LatticeError::EmptyBasis)?;
+        Ok(self.vector_from(x, u, norm.clone()))
     }
 
     /// [`Lattice::shortest_vector`] with an explicit node budget.
-    pub fn shortest_vector_with_budget(&self, budget: u64) -> Result<LatticeVector, LatticeError> {
+    pub fn shortest_vector_with_budget(
+        &self,
+        budget: u64,
+    ) -> Result<LatticeVector, LatticeGeometryError> {
         let (norm, _, reps, u) = self.minimal_pass(budget, false)?;
         let x = reps.first().ok_or(LatticeError::EmptyBasis)?;
         Ok(self.vector_from(x, &u, norm))
@@ -352,7 +448,12 @@ impl Lattice {
 
     /// Every vector attaining the minimum — the shell at radius `λ₁`, both
     /// signs included. Its length is the kissing number.
-    pub fn minimal_vectors(&self) -> Result<Vec<LatticeVector>, LatticeError> {
+    ///
+    /// Runs its own enumeration: the memo that [`Lattice::minimum`] and
+    /// [`Lattice::kissing_number`] share keeps one representative vector, not
+    /// the whole shell, because for the Leech lattice the whole shell is
+    /// 196560 vectors and nobody asking for a *number* wants to pay for it.
+    pub fn minimal_vectors(&self) -> Result<Vec<LatticeVector>, LatticeGeometryError> {
         self.minimal_vectors_with_budget(DEFAULT_ENUM_NODE_BUDGET)
     }
 
@@ -360,7 +461,7 @@ impl Lattice {
     pub fn minimal_vectors_with_budget(
         &self,
         budget: u64,
-    ) -> Result<Vec<LatticeVector>, LatticeError> {
+    ) -> Result<Vec<LatticeVector>, LatticeGeometryError> {
         let (norm, _, reps, u) = self.minimal_pass(budget, true)?;
         let mut out = Vec::with_capacity(reps.len() * 2);
         for x in reps {
@@ -380,12 +481,12 @@ impl Lattice {
     }
 
     /// The kissing number: how many lattice vectors attain the minimum.
-    pub fn kissing_number(&self) -> Result<u64, LatticeError> {
-        self.kissing_number_with_budget(DEFAULT_ENUM_NODE_BUDGET)
+    pub fn kissing_number(&self) -> Result<u64, LatticeGeometryError> {
+        Ok(self.minimal_cached()?.1)
     }
 
     /// [`Lattice::kissing_number`] with an explicit node budget.
-    pub fn kissing_number_with_budget(&self, budget: u64) -> Result<u64, LatticeError> {
+    pub fn kissing_number_with_budget(&self, budget: u64) -> Result<u64, LatticeGeometryError> {
         Ok(self.minimal_pass(budget, false)?.1)
     }
 
@@ -393,7 +494,7 @@ impl Lattice {
     /// for `n = 0 ..= max_norm`. `theta[0] = 1`.
     ///
     /// Requires an integral Gram matrix.
-    pub fn theta_series(&self, max_norm: u64) -> Result<Vec<Integer>, LatticeError> {
+    pub fn theta_series(&self, max_norm: u64) -> Result<Vec<Integer>, LatticeGeometryError> {
         self.theta_series_with_budget(max_norm, DEFAULT_ENUM_NODE_BUDGET)
     }
 
@@ -402,26 +503,52 @@ impl Lattice {
         &self,
         max_norm: u64,
         budget: u64,
-    ) -> Result<Vec<Integer>, LatticeError> {
+    ) -> Result<Vec<Integer>, LatticeGeometryError> {
         if max_norm > MAX_THETA_NORM {
-            return Err(LatticeError::InvalidParameter {
+            return Err(LatticeGeometryError::InvalidParameter {
                 detail: "theta series bound exceeds MAX_THETA_NORM",
             });
         }
         for (i, row) in self.gram.iter().enumerate() {
             for (j, x) in row.iter().enumerate() {
                 if *x.denom() != 1i32 {
-                    return Err(LatticeError::NonIntegralGram { row: i, col: j });
+                    return Err(LatticeGeometryError::NonIntegralGram { row: i, col: j });
                 }
             }
         }
         let (mut e, _, _) = self.reduced_enumerator(budget)?;
         let mut counts = vec![Integer::new(); (max_norm as usize) + 1];
+        // An integral Gram matrix makes every `Q(x)` a non-negative integer, and
+        // the enumeration bound makes it `≤ max_norm`, so `slot` is always
+        // `Some` — but "always" here is a property of two other functions, and
+        // this runs under a PyO3 boundary where a panic arrives as a
+        // `BaseException` that `except Exception` does not catch. So it is a
+        // refusal the caller can handle, not an `expect`.
+        let mut broken: Option<&'static str> = None;
         e.enumerate(&Rational::from(max_norm), None, true, &mut |found| {
-            // Integral Gram ⟹ every norm is a non-negative integer ≤ max_norm.
-            let n = found.norm.numer().to_u64().expect("bounded by max_norm");
-            counts[n as usize] += 1u32;
+            let slot = if *found.norm.denom() != 1i32 {
+                None
+            } else {
+                found
+                    .norm
+                    .numer()
+                    .to_u64()
+                    .and_then(|n| usize::try_from(n).ok())
+                    .filter(|n| *n < counts.len())
+            };
+            match slot {
+                Some(n) => counts[n] += 1u32,
+                None => {
+                    broken.get_or_insert(
+                        "an enumerated norm was not an integer in 0..=max_norm, \
+                         despite an integral Gram matrix",
+                    );
+                }
+            }
         })?;
+        if let Some(detail) = broken {
+            return Err(LatticeGeometryError::Internal { detail });
+        }
         // The half-space enumeration saw one of each `±v` pair, and the origin
         // exactly once.
         for c in counts.iter_mut().skip(1) {
@@ -434,8 +561,11 @@ impl Lattice {
     /// A lattice vector closest to `target` (given in **ambient** coordinates).
     ///
     /// Exact. Requires a basis; a Gram-only lattice has no ambient space to
-    /// name a target in and is refused with [`LatticeError::NoBasis`].
-    pub fn closest_vector(&self, target: &[Rational]) -> Result<LatticeVector, LatticeError> {
+    /// name a target in and is refused with [`LatticeGeometryError::NoBasis`].
+    pub fn closest_vector(
+        &self,
+        target: &[Rational],
+    ) -> Result<LatticeVector, LatticeGeometryError> {
         self.closest_vector_with_budget(target, DEFAULT_ENUM_NODE_BUDGET)
     }
 
@@ -444,11 +574,11 @@ impl Lattice {
         &self,
         target: &[Rational],
         budget: u64,
-    ) -> Result<LatticeVector, LatticeError> {
-        let basis = self.basis.as_ref().ok_or(LatticeError::NoBasis)?;
+    ) -> Result<LatticeVector, LatticeGeometryError> {
+        let basis = self.basis.as_ref().ok_or(LatticeGeometryError::NoBasis)?;
         let n = basis[0].len();
         if target.len() != n {
-            return Err(LatticeError::DimensionMismatch {
+            return Err(LatticeGeometryError::DimensionMismatch {
                 expected: n,
                 got: target.len(),
             });
@@ -506,7 +636,7 @@ impl Lattice {
                 best = Some((found.x.to_vec(), found.norm.clone()));
             }
         })?;
-        let (x, norm) = best.ok_or(LatticeError::NotPositiveDefinite { pivot: 1 })?;
+        let (x, norm) = best.ok_or(LatticeGeometryError::NotPositiveDefinite { pivot: 1 })?;
         let coefficients = self.lift(&x, &u);
         let coordinates = self.coordinates_of(&coefficients);
         Ok(LatticeVector {
@@ -523,7 +653,7 @@ impl Lattice {
     /// Hermite invariant `γ = λ₁² / (det G)^{1/m}` (with `λ₁²` the minimum).
     ///
     /// `2.0` for `E_8`, `4.0` for the Leech lattice.
-    pub fn hermite_invariant(&self) -> Result<f64, LatticeError> {
+    pub fn hermite_invariant(&self) -> Result<f64, LatticeGeometryError> {
         let min = self.minimum()?.to_f64();
         let det = self.determinant().to_f64();
         Ok(min / det.powf(1.0 / self.rank() as f64))
@@ -532,7 +662,7 @@ impl Lattice {
     /// Centre density `δ = (λ₁²/4)^{m/2} / sqrt(det G)`.
     ///
     /// `1/16` for `E_8`.
-    pub fn center_density(&self) -> Result<f64, LatticeError> {
+    pub fn center_density(&self) -> Result<f64, LatticeGeometryError> {
         let min = self.minimum()?.to_f64();
         let det = self.determinant().to_f64();
         Ok((min / 4.0).powf(self.rank() as f64 / 2.0) / det.sqrt())
@@ -543,7 +673,7 @@ impl Lattice {
     /// Returns `None` rather than a rounded stand-in: `δ` is rational exactly
     /// when `(λ₁²/4)^{m/2}` and `sqrt(det G)` both are, which needs an even
     /// rank and a square determinant.
-    pub fn center_density_exact(&self) -> Result<Option<Rational>, LatticeError> {
+    pub fn center_density_exact(&self) -> Result<Option<Rational>, LatticeGeometryError> {
         let m = self.rank();
         if m % 2 != 0 {
             return Ok(None);
@@ -561,7 +691,7 @@ impl Lattice {
 
     /// Sphere-packing density `Δ = δ · V_m`, `V_m` the volume of the unit
     /// `m`-ball. `≈ 0.2537` for `E_8`.
-    pub fn packing_density(&self) -> Result<f64, LatticeError> {
+    pub fn packing_density(&self) -> Result<f64, LatticeGeometryError> {
         Ok(self.center_density()? * unit_ball_volume(self.rank()))
     }
 
@@ -570,7 +700,7 @@ impl Lattice {
     /// When this lattice has an **integer** basis the reduction runs through
     /// FLINT (see [`super::lattice_reduce_rows`]); otherwise it is the exact
     /// rational Gram-driven reduction, and only the Gram matrix is reduced.
-    pub fn lll_reduced(&self) -> Result<Self, LatticeError> {
+    pub fn lll_reduced(&self) -> Result<Self, LatticeGeometryError> {
         if let Some(b) = &self.basis {
             if b.iter().all(|r| r.iter().all(|x| *x.denom() == 1i32)) {
                 let int_rows: Vec<Vec<Integer>> = b
@@ -599,7 +729,11 @@ impl Lattice {
                 })
                 .collect()
         });
-        Ok(Self { basis, gram: g })
+        Ok(Self {
+            basis,
+            gram: g,
+            minimal: OnceLock::new(),
+        })
     }
 }
 

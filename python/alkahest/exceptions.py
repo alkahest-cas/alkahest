@@ -29,11 +29,14 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-HOMOTOPY-002 … E-HOMOTOPY-004 HomotopyError (numerical continuation — V2-14)
     E-SOLVE-010 … E-SOLVE-011  SolverError  (GPU Gröbner)
     E-JIT-001   … E-JIT-004    JitError
-    E-LAT-001 … E-LAT-013      LatticeError (001-004 LLL; 005-007 Gram matrix
+    E-LAT-001 … E-LAT-004      LatticeError (LLL reduction)
+    E-LAT-005 … E-LAT-014      LatticeGeometryError, a *subclass* of
+                                 LatticeError (005-007 Gram matrix
                                  shape/symmetry/definiteness; 008-009 the exact
                                  enumeration refusals; 010-013 theta-series
-                                 integrality, vector length, constructor range,
-                                 and ambient coordinates)
+                                 integrality, vector length, constructor range
+                                 and ambient coordinates; 014 an internal
+                                 invariant, refused rather than panicked)
     E-PSLQ-001 … E-PSLQ-005    PslqError  (004 = input precision below requested,
                                  005 = the relation is false for the exact rationals
                                  supplied; both raised from Python, so both are absent

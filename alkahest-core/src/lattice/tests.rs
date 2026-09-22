@@ -222,6 +222,63 @@ fn leech_has_196560_minimal_vectors() {
 }
 
 // ---------------------------------------------------------------------------
+// The shortest-vector memo
+// ---------------------------------------------------------------------------
+
+/// The memo must be invisible: same answers, and an explicit budget still means
+/// what it says rather than being served a cached result.
+#[test]
+fn the_shortest_vector_memo_changes_no_answer() {
+    let e = e8().unwrap();
+    // Cold, then warm, in both orders across the six sharing methods.
+    assert_eq!(e.kissing_number().unwrap(), 240);
+    assert_eq!(e.minimum().unwrap(), Rational::from(2));
+    assert_eq!(e.shortest_vector().unwrap().norm, Rational::from(2));
+    assert_eq!(e.kissing_number().unwrap(), 240);
+    assert!((e.hermite_invariant().unwrap() - 2.0).abs() < 1e-12);
+    assert_eq!(
+        e.center_density_exact().unwrap(),
+        Some(Rational::from((1, 16)))
+    );
+
+    // A clone starts cold and agrees.
+    let c = e.clone();
+    assert_eq!(c.minimum().unwrap(), Rational::from(2));
+    assert_eq!(c, e, "the memo is not part of equality");
+
+    // An explicit budget is never served from the memo.
+    assert!(matches!(
+        e.minimum_with_budget(3),
+        Err(LatticeGeometryError::EnumerationBudget { .. })
+    ));
+    assert!(matches!(
+        e.kissing_number_with_budget(3),
+        Err(LatticeGeometryError::EnumerationBudget { .. })
+    ));
+    // …and a failed budgeted call does not poison the memo.
+    assert_eq!(e.minimum().unwrap(), Rational::from(2));
+}
+
+/// A refusal must be reproducible: nothing caches a failure.
+#[test]
+fn a_refused_pass_is_not_memoised() {
+    let big: Vec<Vec<Integer>> = (0..MAX_ENUM_RANK + 1)
+        .map(|i| {
+            (0..MAX_ENUM_RANK + 1)
+                .map(|j| Integer::from(i64::from(i == j)))
+                .collect()
+        })
+        .collect();
+    let l = Lattice::from_basis(&big).unwrap();
+    for _ in 0..3 {
+        assert!(matches!(
+            l.minimum(),
+            Err(LatticeGeometryError::RankTooLarge { .. })
+        ));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Duals
 // ---------------------------------------------------------------------------
 
@@ -323,12 +380,12 @@ fn closest_vector_needs_ambient_coordinates() {
     let t = vec![Rational::from(0); 8];
     assert!(matches!(
         gram_only.closest_vector(&t),
-        Err(LatticeError::NoBasis)
+        Err(LatticeGeometryError::NoBasis)
     ));
     let z = zn(2).unwrap();
     assert!(matches!(
         z.closest_vector(&[Rational::from(1)]),
-        Err(LatticeError::DimensionMismatch { .. })
+        Err(LatticeGeometryError::DimensionMismatch { .. })
     ));
 }
 
@@ -350,13 +407,16 @@ fn refusals_are_typed_and_coded() {
         .collect();
     let l = Lattice::from_basis(&big).unwrap();
     let err = l.minimum().unwrap_err();
-    assert!(matches!(err, LatticeError::RankTooLarge { .. }));
+    assert!(matches!(err, LatticeGeometryError::RankTooLarge { .. }));
     assert_eq!(err.code(), "E-LAT-008");
 
     // Node budget.
     let z = zn(6).unwrap();
     let err = z.theta_series_with_budget(400, 50).unwrap_err();
-    assert!(matches!(err, LatticeError::EnumerationBudget { .. }));
+    assert!(matches!(
+        err,
+        LatticeGeometryError::EnumerationBudget { .. }
+    ));
     assert_eq!(err.code(), "E-LAT-009");
 
     // Non-integral Gram matrix.
@@ -366,13 +426,16 @@ fn refusals_are_typed_and_coded() {
     ];
     let l = Lattice::from_gram(&g).unwrap();
     let err = l.theta_series(4).unwrap_err();
-    assert!(matches!(err, LatticeError::NonIntegralGram { .. }));
+    assert!(matches!(err, LatticeGeometryError::NonIntegralGram { .. }));
     assert_eq!(err.code(), "E-LAT-010");
 
     // Degenerate forms.
     let dependent = rows_i64(&[&[1, 2], &[2, 4]]);
     let err = Lattice::from_basis(&dependent).unwrap_err();
-    assert!(matches!(err, LatticeError::NotPositiveDefinite { .. }));
+    assert!(matches!(
+        err,
+        LatticeGeometryError::NotPositiveDefinite { .. }
+    ));
     assert_eq!(err.code(), "E-LAT-007");
 
     let asym = vec![
@@ -496,6 +559,63 @@ fn reduction_preserves_the_lattice_itself_not_merely_its_determinant() {
             "exact reduction changed the lattice"
         );
     }
+}
+
+/// The FLINT backend must not have widened what the *existing* reduction API
+/// can fail with.
+///
+/// `LatticeError` is an exhaustive public enum in the stable surface, so a new
+/// failure mode on these three functions would have to become a new variant,
+/// and that is a semver-major change. It has not: `fmpz_lll` returns `void` and
+/// has no failure channel, the FLINT wrapper reports "not my case" as `None`
+/// rather than as an error, and the size-reduction sweep is infallible — so
+/// every error still comes from `validate_rows`, `validate_delta` or the exact
+/// loop's iteration guard.
+#[test]
+fn the_reduction_api_still_fails_only_in_the_four_original_ways() {
+    use crate::errors::AlkahestError;
+
+    let delta = Rational::from((3, 4));
+    let cases: Vec<Vec<Vec<Integer>>> = vec![
+        vec![],                           // empty
+        rows_i64(&[&[1, 2, 3], &[4, 5]]), // ragged
+        rows_i64(&[&[1, 2], &[2, 4]]),    // rank-deficient
+        rows_i64(&[&[0, 0], &[0, 0]]),    // zero
+        rows_i64(&[&[1]]),                // 1x1
+        rows_i64(&[&[1, 1], &[0, 1]]),    // fine
+        rows_i64(&[&[1, 0, 0, 12345], &[0, 1, 0, 23456], &[0, 0, 1, 34567]]),
+    ];
+    let allowed = ["E-LAT-001", "E-LAT-002", "E-LAT-003", "E-LAT-004"];
+    for basis in &cases {
+        for result in [
+            lattice_reduce_rows(basis),
+            lattice_reduce_rows_with_delta(basis, delta.clone()),
+            lattice_reduce_rows_exact(basis, delta.clone()),
+        ] {
+            if let Err(e) = result {
+                assert!(
+                    allowed.contains(&e.code()),
+                    "reduction produced {} — a code outside the four the stable \
+                     LatticeError enum has always had",
+                    e.code()
+                );
+            }
+        }
+    }
+    // And each of the four is still reachable and still carries its own code.
+    assert_eq!(lattice_reduce_rows(&[]).unwrap_err().code(), "E-LAT-001");
+    assert_eq!(
+        lattice_reduce_rows(&rows_i64(&[&[1, 2, 3], &[4, 5]]))
+            .unwrap_err()
+            .code(),
+        "E-LAT-002"
+    );
+    assert_eq!(
+        lattice_reduce_rows_with_delta(&rows_i64(&[&[1, 0], &[0, 1]]), Rational::from(2))
+            .unwrap_err()
+            .code(),
+        "E-LAT-003"
+    );
 }
 
 #[test]

@@ -23,15 +23,28 @@
 //! Their cost is exponential in the rank. The rank is capped at
 //! [`MAX_ENUM_RANK`] = 24 and every enumerating method takes a node budget;
 //! above either, the answer is a typed refusal
-//! ([`LatticeError::RankTooLarge`], [`LatticeError::EnumerationBudget`]) and
+//! ([`LatticeGeometryError::RankTooLarge`],
+//! [`LatticeGeometryError::EnumerationBudget`]) and
 //! never a heuristic. If a *short* vector is what you need rather than *the
 //! shortest*, reduce the basis and take the first row.
 //!
 //! Theta series additionally need an integral Gram matrix
-//! ([`LatticeError::NonIntegralGram`]).
+//! ([`LatticeGeometryError::NonIntegralGram`]).
+//!
+//! # Two error types
+//!
+//! [`LatticeError`] (`E-LAT-001` … `E-LAT-004`) belongs to basis reduction and
+//! is unchanged. The toolkit raises [`LatticeGeometryError`]
+//! (`E-LAT-005` … `E-LAT-014`), which is `#[non_exhaustive]` and wraps a
+//! `LatticeError` when a reduction underneath it fails — so the reduction codes
+//! reach a caller unchanged. The split exists because `LatticeError` is an
+//! exhaustive enum in the stable surface and extending it would be a
+//! semver-major change; see [`LatticeGeometryError`] for the full reasoning. In Python the two
+//! are a class and its subclass, so `except LatticeError` catches both.
 
 mod constructors;
 mod enumerate;
+mod error;
 mod flint_backend;
 #[allow(clippy::module_inception)]
 mod lattice;
@@ -39,6 +52,7 @@ pub mod lll;
 mod quadform;
 
 pub use constructors::{a_n, d_n, e8, leech, zn};
+pub use error::LatticeGeometryError;
 pub use lattice::{
     Lattice, LatticeVector, DEFAULT_ENUM_NODE_BUDGET, MAX_ENUM_RANK, MAX_THETA_NORM,
 };

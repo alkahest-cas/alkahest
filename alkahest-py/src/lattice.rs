@@ -35,12 +35,48 @@ use pyo3::prelude::*;
 use pyo3::types::PyModule;
 use rug::{Integer, Rational};
 
+use alkahest_core::errors::AlkahestError as AlkahestErrorTrait;
 use alkahest_core::lattice::{
-    a_n, d_n, e8, leech, zn, Lattice, LatticeVector, DEFAULT_ENUM_NODE_BUDGET, MAX_ENUM_RANK,
-    MAX_THETA_NORM,
+    a_n, d_n, e8, leech, zn, Lattice, LatticeGeometryError, LatticeVector,
+    DEFAULT_ENUM_NODE_BUDGET, MAX_ENUM_RANK, MAX_THETA_NORM,
 };
 
-use crate::lattice_error_to_py as lat;
+// The toolkit's exception, and deliberately **a subclass of `LatticeError`**.
+//
+// `LatticeGeometryError` exists on the Rust side only because `LatticeError` is
+// an exhaustive enum in the stable surface, so extending it would force a major
+// version bump — see `alkahest_core::lattice::LatticeGeometryError`. Making it
+// a subclass here keeps that a Rust-side detail: one `except LatticeError`
+// still catches every refusal the lattice subsystem raises, and `.code` still
+// reads `E-LAT-NNN` across the whole range.
+pyo3::create_exception!(alkahest, PyLatticeGeometryError, crate::PyLatticeError);
+
+/// Build a structured exception carrying `.code`, `.remediation` and `.span`.
+///
+/// Mirrors `lib.rs`'s `make_structured_err`; kept local so that adding this
+/// module touches `lib.rs` in exactly two lines.
+fn lat(e: LatticeGeometryError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyLatticeGeometryError>();
+        let msg = e.to_string();
+        let code = e.code();
+        let remediation = e.remediation().unwrap_or("");
+        let full = if remediation.is_empty() {
+            format!("[{code}] {msg}")
+        } else {
+            format!("[{code}] {msg}\nRemediation: {remediation}")
+        };
+        match exc_type.call1((full,)) {
+            Ok(exc) => {
+                exc.setattr("code", code).ok();
+                exc.setattr("remediation", e.remediation()).ok();
+                exc.setattr("span", e.span()).ok();
+                PyErr::from_value_bound(exc)
+            }
+            Err(err) => err,
+        }
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Exact conversion
@@ -304,23 +340,27 @@ impl PyLattice {
     }
 
     /// Squared norm of the shortest non-zero vector, exactly.
+    ///
+    /// With no `budget`, shares one enumeration with `shortest_vector`,
+    /// `kissing_number`, `hermite_invariant` and the densities. Passing a
+    /// `budget` always does the work under that budget.
     #[pyo3(signature = (budget=None))]
     fn minimum(&self, py: Python<'_>, budget: Option<u64>) -> PyResult<PyObject> {
-        let m = self
-            .inner
-            .minimum_with_budget(budget_or_default(budget))
-            .map_err(lat)?;
+        let m = match budget {
+            None => self.inner.minimum().map_err(lat)?,
+            Some(b) => self.inner.minimum_with_budget(b).map_err(lat)?,
+        };
         rational_to_py(py, &m)
     }
 
     /// A shortest non-zero lattice vector. Exact — it attains the minimum.
     #[pyo3(signature = (budget=None))]
     fn shortest_vector(&self, budget: Option<u64>) -> PyResult<PyLatticeVector> {
-        Ok(vec_to_py(
-            self.inner
-                .shortest_vector_with_budget(budget_or_default(budget))
-                .map_err(lat)?,
-        ))
+        let v = match budget {
+            None => self.inner.shortest_vector().map_err(lat)?,
+            Some(b) => self.inner.shortest_vector_with_budget(b).map_err(lat)?,
+        };
+        Ok(vec_to_py(v))
     }
 
     /// Every vector attaining the minimum, both signs included.
@@ -338,9 +378,10 @@ impl PyLattice {
     /// How many lattice vectors attain the minimum.
     #[pyo3(signature = (budget=None))]
     fn kissing_number(&self, budget: Option<u64>) -> PyResult<u64> {
-        self.inner
-            .kissing_number_with_budget(budget_or_default(budget))
-            .map_err(lat)
+        match budget {
+            None => self.inner.kissing_number().map_err(lat),
+            Some(b) => self.inner.kissing_number_with_budget(b).map_err(lat),
+        }
     }
 
     /// `theta[n]` = the number of vectors of squared norm exactly `n`, for
@@ -416,6 +457,10 @@ impl PyLattice {
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLattice>()?;
     m.add_class::<PyLatticeVector>()?;
+    m.add(
+        "LatticeGeometryError",
+        m.py().get_type_bound::<PyLatticeGeometryError>(),
+    )?;
     m.add("LATTICE_MAX_ENUM_RANK", MAX_ENUM_RANK)?;
     m.add("LATTICE_DEFAULT_ENUM_NODE_BUDGET", DEFAULT_ENUM_NODE_BUDGET)?;
     m.add("LATTICE_MAX_THETA_NORM", MAX_THETA_NORM)?;

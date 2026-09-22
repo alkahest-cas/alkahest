@@ -66,27 +66,6 @@ pub enum LatticeError {
     InvalidDelta { provided: Rational },
     /// Swap loop exceeded the iteration budget — basis may be degenerate or the implementation buggy.
     IterationLimit { iterations: usize },
-    /// A Gram matrix must be square.
-    NonSquareGram { rows: usize, cols: usize },
-    /// A Gram matrix must be symmetric; `G[row][col] != G[col][row]`.
-    AsymmetricGram { row: usize, col: usize },
-    /// The quadratic form is not positive definite — the `pivot`-th leading
-    /// principal minor is not positive, so the "lattice" is degenerate.
-    NotPositiveDefinite { pivot: usize },
-    /// Enumeration (SVP/CVP/theta) was asked for above the hard rank ceiling.
-    RankTooLarge { rank: usize, max: usize },
-    /// Enumeration exhausted its node budget without finishing.
-    EnumerationBudget { budget: u64 },
-    /// An integral Gram matrix is required (theta series, kissing numbers);
-    /// entry `(row, col)` is not an integer.
-    NonIntegralGram { row: usize, col: usize },
-    /// A supplied vector has the wrong length for this lattice.
-    DimensionMismatch { expected: usize, got: usize },
-    /// A constructor parameter is out of the supported range.
-    InvalidParameter { detail: &'static str },
-    /// The operation needs ambient coordinates and the lattice was built from a
-    /// Gram matrix alone.
-    NoBasis,
 }
 
 impl fmt::Display for LatticeError {
@@ -108,39 +87,6 @@ impl fmt::Display for LatticeError {
                 f,
                 "LLL reduction aborted after {iterations} swaps (degenerate span or oversized basis)"
             ),
-            LatticeError::NonSquareGram { rows, cols } => {
-                write!(f, "a Gram matrix must be square; got {rows}x{cols}")
-            }
-            LatticeError::AsymmetricGram { row, col } => write!(
-                f,
-                "Gram matrix is not symmetric: entry ({row},{col}) differs from ({col},{row})"
-            ),
-            LatticeError::NotPositiveDefinite { pivot } => write!(
-                f,
-                "quadratic form is not positive definite (leading minor {pivot} is not positive)"
-            ),
-            LatticeError::RankTooLarge { rank, max } => write!(
-                f,
-                "lattice enumeration is capped at rank {max}; this lattice has rank {rank}"
-            ),
-            LatticeError::EnumerationBudget { budget } => write!(
-                f,
-                "lattice enumeration exceeded its budget of {budget} nodes without finishing"
-            ),
-            LatticeError::NonIntegralGram { row, col } => write!(
-                f,
-                "this operation needs an integral Gram matrix; entry ({row},{col}) is not an integer"
-            ),
-            LatticeError::DimensionMismatch { expected, got } => {
-                write!(f, "expected a vector of length {expected}, got {got}")
-            }
-            LatticeError::InvalidParameter { detail } => {
-                write!(f, "unsupported lattice parameter: {detail}")
-            }
-            LatticeError::NoBasis => write!(
-                f,
-                "this lattice was built from a Gram matrix and has no ambient coordinates"
-            ),
         }
     }
 }
@@ -154,15 +100,6 @@ impl AlkahestError for LatticeError {
             LatticeError::RaggedBasis { .. } => "E-LAT-002",
             LatticeError::InvalidDelta { .. } => "E-LAT-003",
             LatticeError::IterationLimit { .. } => "E-LAT-004",
-            LatticeError::NonSquareGram { .. } => "E-LAT-005",
-            LatticeError::AsymmetricGram { .. } => "E-LAT-006",
-            LatticeError::NotPositiveDefinite { .. } => "E-LAT-007",
-            LatticeError::RankTooLarge { .. } => "E-LAT-008",
-            LatticeError::EnumerationBudget { .. } => "E-LAT-009",
-            LatticeError::NonIntegralGram { .. } => "E-LAT-010",
-            LatticeError::DimensionMismatch { .. } => "E-LAT-011",
-            LatticeError::InvalidParameter { .. } => "E-LAT-012",
-            LatticeError::NoBasis => "E-LAT-013",
         }
     }
 
@@ -179,33 +116,6 @@ impl AlkahestError for LatticeError {
             }
             LatticeError::IterationLimit { .. } => Some(
                 "check for rank-deficient rows, reduce dimension, or report a bug with a minimal basis",
-            ),
-            LatticeError::NonSquareGram { .. } => {
-                Some("a Gram matrix has one row and one column per basis vector")
-            }
-            LatticeError::AsymmetricGram { .. } => {
-                Some("a Gram matrix is G[i][j] = <b_i, b_j>; supply the full symmetric matrix")
-            }
-            LatticeError::NotPositiveDefinite { .. } => Some(
-                "basis rows must be linearly independent and a Gram matrix positive definite",
-            ),
-            LatticeError::RankTooLarge { .. } => Some(
-                "enumeration is exponential in the rank; project to a sublattice or use LLL/BKZ approximations instead",
-            ),
-            LatticeError::EnumerationBudget { .. } => Some(
-                "raise the node budget explicitly, lower the norm bound, or reduce the basis first",
-            ),
-            LatticeError::NonIntegralGram { .. } => Some(
-                "scale the lattice so that all inner products are integers, or ask for the minimum instead of a theta series",
-            ),
-            LatticeError::DimensionMismatch { .. } => {
-                Some("supply a vector with one entry per ambient coordinate")
-            }
-            LatticeError::InvalidParameter { .. } => {
-                Some("check the documented parameter range for this constructor")
-            }
-            LatticeError::NoBasis => Some(
-                "build the lattice from a basis (Lattice::from_basis) if you need ambient coordinates",
             ),
         }
     }

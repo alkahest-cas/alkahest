@@ -10,6 +10,7 @@
 //! inside the *pruning bound* of the enumeration, where it silently drops
 //! lattice vectors instead of reporting a problem.
 
+use super::error::LatticeGeometryError;
 use super::lll::LatticeError;
 use rug::ops::DivRounding;
 use rug::{Integer, Rational};
@@ -19,14 +20,14 @@ use rug::{Integer, Rational};
 pub(crate) type ReducedGram = (Vec<Vec<Rational>>, Vec<Vec<Integer>>);
 
 /// A square, symmetric rational matrix. Returns the rank (side length).
-pub(crate) fn validate_gram(g: &[Vec<Rational>]) -> Result<usize, LatticeError> {
+pub(crate) fn validate_gram(g: &[Vec<Rational>]) -> Result<usize, LatticeGeometryError> {
     if g.is_empty() {
-        return Err(LatticeError::EmptyBasis);
+        return Err(LatticeError::EmptyBasis.into());
     }
     let m = g.len();
     for (i, row) in g.iter().enumerate() {
         if row.len() != m {
-            return Err(LatticeError::NonSquareGram {
+            return Err(LatticeGeometryError::NonSquareGram {
                 rows: m,
                 cols: row.len(),
             });
@@ -35,7 +36,7 @@ pub(crate) fn validate_gram(g: &[Vec<Rational>]) -> Result<usize, LatticeError> 
         // row-major order makes the message reproducible.
         for (j, _) in row.iter().enumerate().take(i) {
             if g[i][j] != g[j][i] {
-                return Err(LatticeError::AsymmetricGram { row: i, col: j });
+                return Err(LatticeGeometryError::AsymmetricGram { row: i, col: j });
             }
         }
     }
@@ -45,12 +46,12 @@ pub(crate) fn validate_gram(g: &[Vec<Rational>]) -> Result<usize, LatticeError> 
 /// Gram–Schmidt data derived from a Gram matrix alone.
 ///
 /// `mu[i][j]` (for `j < i`) is `⟨b_i, b*_j⟩ / ‖b*_j‖²` and `b[i]` is `‖b*_i‖²`.
-/// Fails with [`LatticeError::NotPositiveDefinite`] as soon as a
+/// Fails with [`LatticeGeometryError::NotPositiveDefinite`] as soon as a
 /// `‖b*_i‖²` is non-positive, which is exactly the statement that the
 /// `i`-th leading principal minor is not positive.
 pub(crate) fn gram_schmidt(
     g: &[Vec<Rational>],
-) -> Result<(Vec<Vec<Rational>>, Vec<Rational>), LatticeError> {
+) -> Result<(Vec<Vec<Rational>>, Vec<Rational>), LatticeGeometryError> {
     let m = g.len();
     let mut mu = vec![vec![Rational::new(); m]; m];
     let mut b = vec![Rational::new(); m];
@@ -67,7 +68,7 @@ pub(crate) fn gram_schmidt(
             acc -= Rational::from(&mu[i][t] * &mu[i][t]) * &b[t];
         }
         if acc <= 0 {
-            return Err(LatticeError::NotPositiveDefinite { pivot: i + 1 });
+            return Err(LatticeGeometryError::NotPositiveDefinite { pivot: i + 1 });
         }
         b[i] = acc;
     }
@@ -75,13 +76,13 @@ pub(crate) fn gram_schmidt(
 }
 
 /// `det G` for a symmetric positive-definite `G`, as `∏ ‖b*_i‖²`.
-pub(crate) fn determinant(g: &[Vec<Rational>]) -> Result<Rational, LatticeError> {
+pub(crate) fn determinant(g: &[Vec<Rational>]) -> Result<Rational, LatticeGeometryError> {
     let (_, b) = gram_schmidt(g)?;
     Ok(b.into_iter().fold(Rational::from(1), |a, x| a * x))
 }
 
 /// Exact inverse by Gauss–Jordan. `g` must already be validated and invertible.
-pub(crate) fn inverse(g: &[Vec<Rational>]) -> Result<Vec<Vec<Rational>>, LatticeError> {
+pub(crate) fn inverse(g: &[Vec<Rational>]) -> Result<Vec<Vec<Rational>>, LatticeGeometryError> {
     let m = g.len();
     let mut a: Vec<Vec<Rational>> = g.to_vec();
     let mut inv: Vec<Vec<Rational>> = (0..m)
@@ -89,7 +90,7 @@ pub(crate) fn inverse(g: &[Vec<Rational>]) -> Result<Vec<Vec<Rational>>, Lattice
         .collect();
     for col in 0..m {
         let Some(p) = (col..m).find(|&r| a[r][col] != 0) else {
-            return Err(LatticeError::NotPositiveDefinite { pivot: col + 1 });
+            return Err(LatticeGeometryError::NotPositiveDefinite { pivot: col + 1 });
         };
         a.swap(col, p);
         inv.swap(col, p);
@@ -201,7 +202,7 @@ fn swap_rows(g: &mut [Vec<Rational>], u: &mut [Vec<Integer>], a: usize, b: usize
 pub(crate) fn gram_lll(
     g0: &[Vec<Rational>],
     delta: &Rational,
-) -> Result<ReducedGram, LatticeError> {
+) -> Result<ReducedGram, LatticeGeometryError> {
     let m = validate_gram(g0)?;
     let mut g = g0.to_vec();
     let mut u: Vec<Vec<Integer>> = (0..m)
@@ -224,7 +225,8 @@ pub(crate) fn gram_lll(
         if guard > max_steps {
             return Err(LatticeError::IterationLimit {
                 iterations: guard as usize,
-            });
+            }
+            .into());
         }
         let (mut mu, b) = gram_schmidt(&g)?;
         for j in (0..k).rev() {
@@ -314,17 +316,17 @@ mod tests {
         let ns = rat_mat(&[&[1, 2], &[3, 1]]);
         assert!(matches!(
             validate_gram(&ns),
-            Err(LatticeError::AsymmetricGram { .. })
+            Err(LatticeGeometryError::AsymmetricGram { .. })
         ));
         let nsq = rat_mat(&[&[1, 2, 3], &[3, 1, 0]]);
         assert!(matches!(
             validate_gram(&nsq),
-            Err(LatticeError::NonSquareGram { .. })
+            Err(LatticeGeometryError::NonSquareGram { .. })
         ));
         let indefinite = rat_mat(&[&[1, 2], &[2, 1]]);
         assert!(matches!(
             gram_schmidt(&indefinite),
-            Err(LatticeError::NotPositiveDefinite { .. })
+            Err(LatticeGeometryError::NotPositiveDefinite { .. })
         ));
     }
 
