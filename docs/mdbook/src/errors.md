@@ -288,7 +288,7 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-FPS-*` | `FpsError` | Formal power series (`experimental.Fps`) — a pole at the origin (`001`/`002`), a non-rational coefficient (`003`), or one of the constant-term hypotheses `f(0) = 0` / `1` / `≠ 0` that make composition, `log` and the inverse well defined (`004`–`006`) |
 | `E-DAE-*` | `DaeError` | DAE structural analysis (Pantelides, index reduction) |
 | `E-SOLVE-*` | `SolverError` | Polynomial system solving, Gröbner basis |
-| `E-LAT-*` | `LatticeError` | Exact LLL lattice reduction over ℤ |
+| `E-LAT-*` | `LatticeError` | Lattices over ℤ. `001`–`004` are LLL reduction (empty/ragged basis, `δ` outside `(¼, 1)`, iteration guard); `005`–`007` reject a Gram matrix that is not square, not symmetric or not positive definite; `008`/`009` are the exact-enumeration refusals (rank above the ceiling, node budget exhausted) and are **not** an invitation to approximate — there is no heuristic SVP/CVP here; `010` needs an integral Gram matrix for a theta series, `011` is a vector of the wrong length, `012` an out-of-range constructor parameter, `013` an operation needing ambient coordinates on a Gram-only lattice |
 | `E-PSLQ-*` | `PslqError` | Integer-relation search (`guess_relation`); `E-PSLQ-004` is the input-precision refusal and `E-PSLQ-005` the exact refutation |
 | `E-JIT-*` | `JitError` | LLVM/Cranelift codegen and linking |
 | `E-CUDA-*` | `CudaError` | NVPTX compile, kernel launch, driver/runtime failures |

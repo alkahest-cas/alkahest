@@ -244,6 +244,15 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-LAT-002", class: "LatticeError", cause: Cause::UserInput,   remediation: Some("every row must lie in ℤ^m for fixed ambient dimension m") },
     ErrorSpec { code: "E-LAT-003", class: "LatticeError", cause: Cause::UserInput,   remediation: Some("pick δ strictly between ¼ and 1; the default δ = ¾ is standard") },
     ErrorSpec { code: "E-LAT-004", class: "LatticeError", cause: Cause::Unsupported, remediation: Some("check for rank deficiency; try a smaller basis or report a minimal reproducer") },
+    ErrorSpec { code: "E-LAT-005", class: "LatticeError", cause: Cause::UserInput,   remediation: Some("a Gram matrix has one row and one column per basis vector") },
+    ErrorSpec { code: "E-LAT-006", class: "LatticeError", cause: Cause::UserInput,   remediation: Some("supply the full symmetric matrix G[i][j] = <b_i, b_j>") },
+    ErrorSpec { code: "E-LAT-007", class: "LatticeError", cause: Cause::UserInput,   remediation: Some("basis rows must be linearly independent and a Gram matrix positive definite") },
+    ErrorSpec { code: "E-LAT-008", class: "LatticeError", cause: Cause::Unsupported, remediation: Some("exact SVP/CVP is exponential in the rank; project to a sublattice or use LLL instead of enumeration") },
+    ErrorSpec { code: "E-LAT-009", class: "LatticeError", cause: Cause::Resource,    remediation: Some("raise the enumeration node budget, lower the norm bound, or reduce the basis first") },
+    ErrorSpec { code: "E-LAT-010", class: "LatticeError", cause: Cause::Unsupported, remediation: Some("scale the lattice to an integral Gram matrix, or ask for the minimum rather than a theta series") },
+    ErrorSpec { code: "E-LAT-011", class: "LatticeError", cause: Cause::UserInput,   remediation: Some("supply a vector with one entry per ambient coordinate") },
+    ErrorSpec { code: "E-LAT-012", class: "LatticeError", cause: Cause::UserInput,   remediation: Some("check the documented parameter range for this lattice constructor") },
+    ErrorSpec { code: "E-LAT-013", class: "LatticeError", cause: Cause::UserInput,   remediation: Some("build the lattice from a basis if you need ambient coordinates") },
     // E-LOGIC — first-order formulas (V3-3)
     ErrorSpec { code: "E-LOGIC-001", class: "LogicError", cause: Cause::UserInput, remediation: Some("pass a predicate or quantified Expr; use pool.gt/… or And/Or/Not") },
     // E-PSLQ — PslqError (V2-6 augmented-lattice relation heuristic)

@@ -363,6 +363,10 @@ from alkahest.alkahest import (
     GROUP_DEFAULT_ELEMENT_CAP,
     GROUP_MAX_BSGS_DEGREE,
     GROUP_MAX_ELEMENT_CAP,
+    # Caps on exact lattice enumeration (SVP/CVP/theta series)
+    LATTICE_DEFAULT_ENUM_NODE_BUDGET,
+    LATTICE_MAX_ENUM_RANK,
+    LATTICE_MAX_THETA_NORM,
     # Caps on the stabilizer layer: qubits, the exhaustive distance search,
     # and brute-force matrix-group enumeration
     STABILIZER_MAX_DISTANCE_SEARCH_DIM,
@@ -401,6 +405,9 @@ from alkahest.alkahest import (
     GfMatrix,
     GfRref,
     GroupError,
+    # Lattices: standard families, exact SVP/CVP, theta series, densities
+    Lattice,
+    LatticeVector,
     LinearCode,
     LogNormal,
     MatrixGroup,
@@ -566,6 +573,11 @@ __all__ = [
     "GROUP_DEFAULT_ELEMENT_CAP",
     "GROUP_MAX_BSGS_DEGREE",
     "GROUP_MAX_ELEMENT_CAP",
+    # Caps on exact lattice enumeration; above them the call raises
+    # LatticeError (E-LAT-008 / E-LAT-009) rather than approximating
+    "LATTICE_DEFAULT_ENUM_NODE_BUDGET",
+    "LATTICE_MAX_ENUM_RANK",
+    "LATTICE_MAX_THETA_NORM",
     # Binary symplectic / stabilizer codes: the (x | z) form over GF(2),
     # Pauli operators with a Z4 phase, stabilizer and CSS codes, and the
     # classical matrix groups GL / SL / Sp over GF(q). Distance is exhaustive
@@ -623,6 +635,13 @@ __all__ = [
     "GfRref",
     "GroebnerBasis",
     "GroupError",
+    # Lattices. `Lattice.from_gram` is the general constructor — E_8 and the
+    # Leech lattice have no rational basis in their natural embedding, and
+    # every invariant here (determinant, dual, minimum, kissing number, theta
+    # series, densities) depends on the Gram matrix alone. SVP/CVP/theta are
+    # exact enumeration, capped at LATTICE_MAX_ENUM_RANK.
+    "Lattice",
+    "LatticeVector",
     "LinearCode",
     # Probability (continued)
     "LogNormal",

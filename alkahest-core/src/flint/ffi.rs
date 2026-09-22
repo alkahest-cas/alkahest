@@ -128,6 +128,37 @@ pub struct FmpzMatStruct {
     pub stride: slong,
 }
 
+/// `fmpz_lll_struct` / `fmpz_lll_t` — the LLL parameter context.
+///
+/// FLINT ships no `fmpz_lll.h` on this box, so this layout was recovered
+/// **empirically** from FLINT 3.5.0 rather than read from a header:
+///
+/// * `fmpz_lll_context_init_default` writes one 16-byte SSE store at offset 0
+///   (the two `double`s `delta`, `eta`) and then `movq $1, 0x10(%rdi)` — a
+///   single 8-byte store covering offsets 16..24. That is two 4-byte `enum`
+///   fields, `rt = 1` and `gt = 0`.
+/// * `fmpz_lll_context_init` takes `delta` in `xmm0`, `eta` in `xmm1`, `rt` in
+///   `esi` and `gt` in `edx`, and writes them to offsets 0, 8, 16, 20.
+/// * `fmpz_lll_is_reduced` reads `cmpl $0x1, 0x10(%rsi)`, confirming `rt` is a
+///   4-byte field at offset 16 whose `Z_BASIS` value is `1`.
+///
+/// The defaults `fmpz_lll_context_init_default` installs are `delta = 0.9925`,
+/// `eta = 0.5225`, `rt = Z_BASIS`, `gt = APPROX` (read out of `.rodata`).
+#[repr(C)]
+pub struct FmpzLllStruct {
+    pub delta: f64,
+    pub eta: f64,
+    /// `rep_type`: `GRAM = 0`, `Z_BASIS = 1`.
+    pub rt: c_int,
+    /// `gram_type`: `APPROX = 0`, `EXACT = 1`.
+    pub gt: c_int,
+}
+
+/// `rep_type::Z_BASIS` — the rows of the matrix are the lattice basis.
+pub const FMPZ_LLL_Z_BASIS: c_int = 1;
+/// `gram_type::EXACT` — use exact (`fmpz`) Gram computations, not `double`s.
+pub const FMPZ_LLL_EXACT: c_int = 1;
+
 /// `fmpz_factor_struct` / `fmpz_factor_t` — integer factorisation container.
 #[repr(C)]
 pub struct FmpzFactorStruct {
@@ -597,6 +628,48 @@ extern "C" {
     pub fn fmpz_mat_snf(s: *mut FmpzMatStruct, a: *const FmpzMatStruct);
     pub fn fmpz_mat_is_in_hnf(a: *const FmpzMatStruct) -> c_int;
     pub fn fmpz_mat_is_in_snf(a: *const FmpzMatStruct) -> c_int;
+    /// Pointer to entry `(i, j)`.
+    ///
+    /// **Always go through this rather than doing pointer arithmetic on
+    /// `entries`.** FLINT swapped `fmpz_mat_struct`'s row-pointer array for a
+    /// `stride` in 3.1; both fields are pointer-sized, so guessing wrong is
+    /// silent memory corruption rather than a compile error. Disassembly of
+    /// FLINT 3.5.0 shows this entry point computing
+    /// `entries + (mat->stride * i + j)` with `stride` at offset 24 — which is
+    /// the layout the `flint3_stride` cfg selects, and is *checked at runtime*
+    /// by `lattice::flint_backend::tests::entry_round_trip_non_square`.
+    pub fn fmpz_mat_entry(mat: *const FmpzMatStruct, i: slong, j: slong) -> *mut fmpz;
+    /// Exact determinant of a square matrix.
+    pub fn fmpz_mat_det(det: *mut fmpz, a: *const FmpzMatStruct);
+    pub fn fmpz_mat_rank(a: *const FmpzMatStruct) -> slong;
+    /// Row-style Hermite normal form (no transform matrix).
+    pub fn fmpz_mat_hnf(h: *mut FmpzMatStruct, a: *const FmpzMatStruct);
+
+    // -----------------------------------------------------------------------
+    // fmpz_lll — Lenstra–Lenstra–Lovász basis reduction
+    // -----------------------------------------------------------------------
+    //
+    // Signatures recovered by disassembly against FLINT 3.5.0; see
+    // `FmpzLllStruct` above for how the context layout was established.
+    // `fmpz_lll` itself is a three-argument tail call into
+    // `fmpz_lll_with_removal_ulll(B, U, 250, NULL, fl)`, so `U` may be null.
+    pub fn fmpz_lll_context_init_default(fl: *mut FmpzLllStruct);
+    pub fn fmpz_lll_context_init(
+        fl: *mut FmpzLllStruct,
+        delta: f64,
+        eta: f64,
+        rt: c_int,
+        gt: c_int,
+    );
+    /// LLL-reduce the rows of `b` in place. `u`, when non-null, accumulates the
+    /// unimodular transform.
+    pub fn fmpz_lll(b: *mut FmpzMatStruct, u: *mut FmpzMatStruct, fl: *const FmpzLllStruct);
+    /// FLINT's own reducedness oracle, to `prec` bits.
+    pub fn fmpz_lll_is_reduced(
+        b: *const FmpzMatStruct,
+        fl: *const FmpzLllStruct,
+        prec: ulong,
+    ) -> c_int;
 
     // -----------------------------------------------------------------------
     // Word-sized primality (used to refuse a non-prime GF(q) characteristic)

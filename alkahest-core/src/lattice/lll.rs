@@ -1,13 +1,52 @@
 //! Lenstra–Lenstra–Lovász lattice basis reduction over ℤ (row basis vectors).
 //!
+//! # Two stages, and why
+//!
+//! The reduction runs FLINT's `fmpz_lll` first and then *finishes the job
+//! exactly in Rust*. That is not belt-and-braces; the two stages compute
+//! different things.
+//!
+//! FLINT's LLL is a floating-point algorithm parameterised by `(δ, η)` with
+//! `η > 1/2` **strictly** — a float Gram–Schmidt cannot promise the exact
+//! `|μ_ij| ≤ 1/2` that the textbook definition of a size-reduced basis asks
+//! for, so it promises `|μ_ij| ≤ η` (FLINT's default `η` is `0.5225`). This
+//! crate's public predicate [`validate_lll_rows`] tests the textbook `1/2`,
+//! exactly, in rational arithmetic, and so do the callers' regression tests.
+//! Returning FLINT's output unmodified would therefore return bases that this
+//! module's own oracle rejects.
+//!
+//! So: FLINT reduces (fast, and with a decade of hardening behind it), then a
+//! bounded number of **exact rational size-reduction sweeps** closes the
+//! `(1/2, η]` gap, and then [`validate_lll_rows`] is run for real. Only if
+//! that check fails does the exact rational LLL loop run — seeded from FLINT's
+//! output, so it starts a swap or two from the answer rather than at the
+//! original basis. A caller therefore never receives a basis that has not been
+//! *verified* to satisfy the exact size-reduction and Lovász inequalities at
+//! the requested `δ`.
+//!
+//! A rank-deficient basis is sent straight to the exact path: a zero
+//! Gram–Schmidt norm is a division by zero for a floating-point LLL, and the
+//! exact implementation has named regression tests for that case.
+//!
+//! # The exact stage
+//!
 //! Algorithm structure follows Henri Cohen (*A Course in Computational Algebraic Number
 //! Theory*, §2.6): Gram–Schmidt orthogonalisation with exact [`rug::Rational`] arithmetic,
 //! iterative size reductions and pairwise swaps enforcing the Lovász condition.
 //!
-//! This is intended for modest dimensions (`n,m ≲ 300`) where squared norms stay
+//! It is intended for modest dimensions (`n,m ≲ 300`) where squared norms stay
 //! representable comfortably in exact rationals — the primary consumers (van-Hoeij knapsacks)
-//! rarely exceed that.
+//! rarely exceed that. Reaching it at all is now the exception rather than the rule.
+//!
+//! # What is *not* promised
+//!
+//! An LLL-reduced basis is not unique. Two implementations, or the same
+//! implementation on two days, may return different bases that are both
+//! correctly reduced. Tests must assert the *defining properties* —
+//! size-reduction, the Lovász condition, and that the lattice is unchanged —
+//! and never an exact matrix.
 
+use super::flint_backend;
 use crate::errors::AlkahestError;
 use rug::{Assign, Float, Integer, Rational};
 use std::fmt;
@@ -27,6 +66,27 @@ pub enum LatticeError {
     InvalidDelta { provided: Rational },
     /// Swap loop exceeded the iteration budget — basis may be degenerate or the implementation buggy.
     IterationLimit { iterations: usize },
+    /// A Gram matrix must be square.
+    NonSquareGram { rows: usize, cols: usize },
+    /// A Gram matrix must be symmetric; `G[row][col] != G[col][row]`.
+    AsymmetricGram { row: usize, col: usize },
+    /// The quadratic form is not positive definite — the `pivot`-th leading
+    /// principal minor is not positive, so the "lattice" is degenerate.
+    NotPositiveDefinite { pivot: usize },
+    /// Enumeration (SVP/CVP/theta) was asked for above the hard rank ceiling.
+    RankTooLarge { rank: usize, max: usize },
+    /// Enumeration exhausted its node budget without finishing.
+    EnumerationBudget { budget: u64 },
+    /// An integral Gram matrix is required (theta series, kissing numbers);
+    /// entry `(row, col)` is not an integer.
+    NonIntegralGram { row: usize, col: usize },
+    /// A supplied vector has the wrong length for this lattice.
+    DimensionMismatch { expected: usize, got: usize },
+    /// A constructor parameter is out of the supported range.
+    InvalidParameter { detail: &'static str },
+    /// The operation needs ambient coordinates and the lattice was built from a
+    /// Gram matrix alone.
+    NoBasis,
 }
 
 impl fmt::Display for LatticeError {
@@ -48,6 +108,39 @@ impl fmt::Display for LatticeError {
                 f,
                 "LLL reduction aborted after {iterations} swaps (degenerate span or oversized basis)"
             ),
+            LatticeError::NonSquareGram { rows, cols } => {
+                write!(f, "a Gram matrix must be square; got {rows}x{cols}")
+            }
+            LatticeError::AsymmetricGram { row, col } => write!(
+                f,
+                "Gram matrix is not symmetric: entry ({row},{col}) differs from ({col},{row})"
+            ),
+            LatticeError::NotPositiveDefinite { pivot } => write!(
+                f,
+                "quadratic form is not positive definite (leading minor {pivot} is not positive)"
+            ),
+            LatticeError::RankTooLarge { rank, max } => write!(
+                f,
+                "lattice enumeration is capped at rank {max}; this lattice has rank {rank}"
+            ),
+            LatticeError::EnumerationBudget { budget } => write!(
+                f,
+                "lattice enumeration exceeded its budget of {budget} nodes without finishing"
+            ),
+            LatticeError::NonIntegralGram { row, col } => write!(
+                f,
+                "this operation needs an integral Gram matrix; entry ({row},{col}) is not an integer"
+            ),
+            LatticeError::DimensionMismatch { expected, got } => {
+                write!(f, "expected a vector of length {expected}, got {got}")
+            }
+            LatticeError::InvalidParameter { detail } => {
+                write!(f, "unsupported lattice parameter: {detail}")
+            }
+            LatticeError::NoBasis => write!(
+                f,
+                "this lattice was built from a Gram matrix and has no ambient coordinates"
+            ),
         }
     }
 }
@@ -61,6 +154,15 @@ impl AlkahestError for LatticeError {
             LatticeError::RaggedBasis { .. } => "E-LAT-002",
             LatticeError::InvalidDelta { .. } => "E-LAT-003",
             LatticeError::IterationLimit { .. } => "E-LAT-004",
+            LatticeError::NonSquareGram { .. } => "E-LAT-005",
+            LatticeError::AsymmetricGram { .. } => "E-LAT-006",
+            LatticeError::NotPositiveDefinite { .. } => "E-LAT-007",
+            LatticeError::RankTooLarge { .. } => "E-LAT-008",
+            LatticeError::EnumerationBudget { .. } => "E-LAT-009",
+            LatticeError::NonIntegralGram { .. } => "E-LAT-010",
+            LatticeError::DimensionMismatch { .. } => "E-LAT-011",
+            LatticeError::InvalidParameter { .. } => "E-LAT-012",
+            LatticeError::NoBasis => "E-LAT-013",
         }
     }
 
@@ -77,6 +179,33 @@ impl AlkahestError for LatticeError {
             }
             LatticeError::IterationLimit { .. } => Some(
                 "check for rank-deficient rows, reduce dimension, or report a bug with a minimal basis",
+            ),
+            LatticeError::NonSquareGram { .. } => {
+                Some("a Gram matrix has one row and one column per basis vector")
+            }
+            LatticeError::AsymmetricGram { .. } => {
+                Some("a Gram matrix is G[i][j] = <b_i, b_j>; supply the full symmetric matrix")
+            }
+            LatticeError::NotPositiveDefinite { .. } => Some(
+                "basis rows must be linearly independent and a Gram matrix positive definite",
+            ),
+            LatticeError::RankTooLarge { .. } => Some(
+                "enumeration is exponential in the rank; project to a sublattice or use LLL/BKZ approximations instead",
+            ),
+            LatticeError::EnumerationBudget { .. } => Some(
+                "raise the node budget explicitly, lower the norm bound, or reduce the basis first",
+            ),
+            LatticeError::NonIntegralGram { .. } => Some(
+                "scale the lattice so that all inner products are integers, or ask for the minimum instead of a theta series",
+            ),
+            LatticeError::DimensionMismatch { .. } => {
+                Some("supply a vector with one entry per ambient coordinate")
+            }
+            LatticeError::InvalidParameter { .. } => {
+                Some("check the documented parameter range for this constructor")
+            }
+            LatticeError::NoBasis => Some(
+                "build the lattice from a basis (Lattice::from_basis) if you need ambient coordinates",
             ),
         }
     }
@@ -326,14 +455,110 @@ fn lll_reduce_once(
     Ok(basis)
 }
 
+/// One exact rational size-reduction sweep over the whole basis.
+///
+/// Returns `true` when any row changed. Gram–Schmidt is computed **once**:
+/// size reduction subtracts an integer multiple of `b_j` from `b_k` for `j < k`,
+/// which leaves every `b*_i` and every `‖b*_i‖²` untouched and only shifts the
+/// `μ` coefficients by known integers — so the update below is exact and the
+/// orthogonalisation does not need redoing inside the sweep.
+fn size_reduce_sweep(basis: &mut [Vec<Integer>]) -> bool {
+    let n = basis.len();
+    if n < 2 {
+        return false;
+    }
+    let (mut mu, _, b_norm_sq) = gram_schmidt_rows(basis);
+    let mut changed = false;
+    for k in 1..n {
+        for j in (0..k).rev() {
+            if b_norm_sq[j].is_zero() {
+                continue;
+            }
+            if !exceeds_half(&mu[k][j]) {
+                continue;
+            }
+            let q = nearest_integer_rational(&mu[k][j]);
+            if q == 0 {
+                continue;
+            }
+            changed = true;
+            let row_j = basis[j].clone();
+            for (dst, src) in basis[k].iter_mut().zip(row_j.iter()) {
+                *dst -= Integer::from(&q * src);
+            }
+            let qr = Rational::from(q.clone());
+            // `j < k`, so the two `mu` rows sit on opposite sides of the split.
+            let (head, tail) = mu.split_at_mut(k);
+            for (dst, src) in tail[0].iter_mut().zip(head[j].iter()).take(j) {
+                *dst -= Rational::from(&qr * src);
+            }
+            mu[k][j] -= qr;
+        }
+    }
+    changed
+}
+
+/// How many exact sweeps to spend closing FLINT's `(1/2, η]` size-reduction gap.
+///
+/// In exact arithmetic **one** is enough: [`size_reduce_sweep`] walks `j`
+/// downwards from `k − 1`, and reducing at `j` only ever perturbs `μ_{k,i}` for
+/// `i < j`, so a coefficient this sweep has already brought inside `±½` is
+/// never disturbed again. The loop exists so that a future change to that
+/// ordering degrades into a second pass rather than into an unreduced basis;
+/// the second call normally reports "nothing changed" and returns.
+const MAX_POLISH_SWEEPS: usize = 8;
+
+/// FLINT first, exact verification always. See the module docs.
+fn lll_reduce_dispatch(
+    basis_rows: &[Vec<Integer>],
+    delta: &Rational,
+) -> Result<Vec<Vec<Integer>>, LatticeError> {
+    validate_rows(basis_rows)?;
+    validate_delta(delta)?;
+
+    let Some(mut reduced) = flint_backend::flint_lll_rows(basis_rows, delta.to_f64()) else {
+        // Rank-deficient, empty or degenerate shape: the exact path owns it.
+        return lll_reduce_once(basis_rows, delta);
+    };
+
+    for _ in 0..MAX_POLISH_SWEEPS {
+        if !size_reduce_sweep(&mut reduced) {
+            break;
+        }
+    }
+
+    if validate_lll_rows(&reduced, delta).is_ok() {
+        return Ok(reduced);
+    }
+    // Rare: FLINT's δ was not quite the caller's, or a `|μ|` it left just above
+    // ½ cost a Lovász swap. Finish exactly, seeded from FLINT's basis.
+    lll_reduce_once(&reduced, delta)
+}
+
 /// Run LLL on integer row vectors using the conventional Lovász parameter `δ = ¾`.
+///
+/// Backed by FLINT's `fmpz_lll`, with the output verified against the exact
+/// rational LLL inequalities before it is returned — see the module docs.
 pub fn lattice_reduce_rows(basis_rows: &[Vec<Integer>]) -> Result<Vec<Vec<Integer>>, LatticeError> {
     let delta = Rational::from((3u32, 4u32));
-    lll_reduce_once(basis_rows, &delta)
+    lll_reduce_dispatch(basis_rows, &delta)
 }
 
 /// Same as [`lattice_reduce_rows`], with an explicit `δ ∈ (¼, 1)`.
 pub fn lattice_reduce_rows_with_delta(
+    basis_rows: &[Vec<Integer>],
+    delta: Rational,
+) -> Result<Vec<Vec<Integer>>, LatticeError> {
+    lll_reduce_dispatch(basis_rows, &delta)
+}
+
+/// The exact rational LLL, with FLINT bypassed entirely.
+///
+/// Kept public as a cross-check oracle: [`lattice_reduce_rows`] and this
+/// function must agree on the *properties* of their output (both bases are
+/// reduced, both span the same lattice) while being free to return different
+/// bases, since an LLL-reduced basis is not unique.
+pub fn lattice_reduce_rows_exact(
     basis_rows: &[Vec<Integer>],
     delta: Rational,
 ) -> Result<Vec<Vec<Integer>>, LatticeError> {

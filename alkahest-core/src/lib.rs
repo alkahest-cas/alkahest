@@ -104,7 +104,8 @@ pub use real::{
 pub use simplify::{simplify_with_assumptions, AssumptionContext, AssumptionError};
 // V2-6 — LLL + integer relations (augmented lattice heuristic)
 pub use lattice::{
-    lattice_reduce_rows, lattice_reduce_rows_with_delta, validate_lll_rows, LatticeError,
+    lattice_reduce_rows, lattice_reduce_rows_exact, lattice_reduce_rows_with_delta,
+    validate_lll_rows, LatticeError,
 };
 pub use matrix::{
     characteristic_polynomial_lambda_minus_m, cholesky, column_space_basis, diagonalize,
@@ -443,6 +444,21 @@ pub mod experimental {
     };
     pub use crate::horner::{emit_expr_c, emit_expr_c_vec, emit_horner_c, horner, EmitCError};
     pub use crate::hybrid::{Event, GuardStructure, HybridODE};
+    /// Lattices over ℤ: the standard families (`zn`, `a_n`, `d_n`, `e8`,
+    /// `leech`), determinants and duals, **exact** shortest and closest
+    /// vectors, theta series, kissing numbers and sphere-packing densities.
+    ///
+    /// `Lattice::from_gram` is the general constructor — `E_8` and the Leech
+    /// lattice have no rational basis in their natural embedding, while every
+    /// invariant here depends on the Gram matrix alone. SVP, CVP, minimal
+    /// vectors and theta series are exact Fincke–Pohst enumeration: no
+    /// heuristic, exponential in the rank, capped at [`MAX_ENUM_RANK`] with a
+    /// node budget, and a typed refusal above either. See [`crate::lattice`]
+    /// for the full list of scope limits.
+    pub use crate::lattice::{
+        a_n, d_n, e8, lattice_reduce_rows_exact, leech, zn, Lattice, LatticeVector,
+        DEFAULT_ENUM_NODE_BUDGET, MAX_ENUM_RANK, MAX_THETA_NORM,
+    };
     pub use crate::lean::emit_lean_expr as emit_lean;
     pub use crate::matrix::{
         cholesky, column_space_basis, jordan_form, lu_decomposition, matrix_exponential,
