@@ -585,6 +585,24 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-STAB-011", class: "StabilizerError", cause: Cause::Resource,    remediation: Some("use order(), which is a closed-form product and has no size limit, instead of listing the elements; enumeration scans all q^(d²) matrices") },
     ErrorSpec { code: "E-STAB-012", class: "StabilizerError", cause: Cause::UserInput,   remediation: Some("rebuild both operands over the same FiniteField; two GF(q) of the same order with different defining polynomials are not interchangeable") },
     ErrorSpec { code: "E-STAB-013", class: "StabilizerError", cause: Cause::Internal,    remediation: Some("report this as a bug with the generators or check matrices that produced it; the answer was withheld rather than returned wrong") },
+    // E-CODE — CodingError
+    //
+    // Classical linear codes, weight enumerators and the Delsarte linear
+    // programme. Two of these guard the only two ways this subsystem could
+    // return a confident wrong answer. E-CODE-004 refuses a truncated
+    // codeword enumeration, because the minimum weight of *some* of the
+    // codewords is an upper bound on d wearing d's name. E-CODE-007 withholds
+    // an LP bound whose dual certificate did not pass its own exact
+    // feasibility check — an upper bound that is too small is worse than no
+    // bound, since it "rules out" codes that exist.
+    ErrorSpec { code: "E-CODE-001", class: "CodingError", cause: Cause::UserInput,   remediation: Some("give the code a positive length; a generator or parity-check matrix needs at least one column") },
+    ErrorSpec { code: "E-CODE-002", class: "CodingError", cause: Cause::UserInput,   remediation: Some("pass a minimum distance in 1..=n; d = 0 bounds nothing and d > n describes an empty code") },
+    ErrorSpec { code: "E-CODE-003", class: "CodingError", cause: Cause::Domain,      remediation: Some("read the embedded E-GFQ code: the finite-field backend refused the elimination, usually for a field mismatch or a shape that does not conform") },
+    ErrorSpec { code: "E-CODE-004", class: "CodingError", cause: Cause::Resource,    remediation: Some("reduce k, or accept that q^k codewords cannot be enumerated; there is no partial answer, because a truncated search reports an upper bound on d as if it were d") },
+    ErrorSpec { code: "E-CODE-005", class: "CodingError", cause: Cause::Resource,    remediation: Some("reduce n below MAX_LP_LENGTH; the Delsarte programme is dense and exact, so its cost is superlinear in the length") },
+    ErrorSpec { code: "E-CODE-006", class: "CodingError", cause: Cause::UserInput,   remediation: Some("check the weight distribution: a linear code has A_0 = 1, no negative multiplicity, and a MacWilliams sum divisible by |C| at every index") },
+    ErrorSpec { code: "E-CODE-007", class: "CodingError", cause: Cause::Internal,    remediation: Some("report this as a bug with n, d and q; the uncertified bound was withheld rather than returned, because an upper bound that is too small rules out codes that exist") },
+    ErrorSpec { code: "E-CODE-008", class: "CodingError", cause: Cause::UserInput,   remediation: Some("use an alphabet size of at least 2; for the enumeration paths the field must also be small enough to list element by element") },
 ];
 
 #[cfg(test)]

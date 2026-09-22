@@ -250,6 +250,7 @@ use rug::{Complete, Integer, Rational};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+mod coding;
 mod ffield;
 
 // ---------------------------------------------------------------------------
@@ -18773,6 +18774,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     alkahest_core::budget::install_memory_accounting();
     group::register(m)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
+    coding::register(m)?;
     ffield::register(m)?;
     m.add_function(wrap_pyfunction!(py_derived_result_context_simplify, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify, m)?)?;

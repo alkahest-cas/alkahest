@@ -373,9 +373,14 @@ from alkahest.alkahest import (
     Bernoulli,
     Beta,
     Binomial,
+    # Classical linear codes, weight enumerators and the certified Delsarte
+    # LP bound on A_q(n, d) — exact rational arithmetic throughout, and the
+    # bound comes with the dual certificate that proves it.
+    CodingError,
     Coordinates,
     # Binary symplectic / stabilizer codes
     CssCode,
+    DelsarteBound,
     Distance,
     Distribution,
     Divisor,
@@ -391,6 +396,7 @@ from alkahest.alkahest import (
     GfMatrix,
     GfRref,
     GroupError,
+    LinearCode,
     LogNormal,
     MatrixGroup,
     Normal,
@@ -418,6 +424,7 @@ from alkahest.alkahest import (
     TelescopingMdCertificate,
     Uniform,
     VectorError,
+    WeightEnumerator,
     apart_side_conditions,
     asymptotic_expand,
     # P1 item 10 — asymptotic expansion at scale
@@ -426,6 +433,7 @@ from alkahest.alkahest import (
     cross_entropy,
     curl,
     cyclotomic_polynomial,
+    delsarte_lp_bound,
     dirac_delta,
     divergence,
     dot,
@@ -436,6 +444,7 @@ from alkahest.alkahest import (
     expectation_affine,
     fourier_transform,
     gradient,
+    hamming_bound,
     heaviside,
     integrate_parallel_risch,
     inverse_fourier_transform,
@@ -443,6 +452,8 @@ from alkahest.alkahest import (
     inverse_z_transform,
     is_symplectic,
     kl_divergence,
+    krawtchouk,
+    krawtchouk_poly,
     laplace_transform,
     laplacian,
     multilimit,
@@ -455,6 +466,7 @@ from alkahest.alkahest import (
     q_zeilberger,
     riemann_roch,
     series_solve,
+    singleton_bound,
     symplectic_complement,
     symplectic_form,
     symplectic_gram_matrix,
@@ -523,10 +535,19 @@ __all__ = [
     "Bernoulli",
     "Beta",
     "Binomial",
+    # Classical coding theory. The Delsarte LP bound is *certified*: the
+    # number is read off the dual programme and comes with the non-negative
+    # multipliers that prove it, all in exact rational arithmetic, so it is an
+    # upper bound rather than a floating-point estimate of one. A bound that
+    # came out too small would "rule out" codes that exist, so the constructor
+    # refuses (E-CODE-007) rather than return one whose certificate did not
+    # re-verify.
+    "CodingError",
     # Vector calculus over orthogonal curvilinear charts
     "Coordinates",
     "CssCode",
     "CudaCompiledFn",
+    "DelsarteBound",
     "Distance",
     "Distribution",
     "Divisor",
@@ -551,6 +572,7 @@ __all__ = [
     "GfRref",
     "GroebnerBasis",
     "GroupError",
+    "LinearCode",
     # Probability (continued)
     "LogNormal",
     "MatrixGroup",
@@ -603,6 +625,7 @@ __all__ = [
     # Probability (continued)
     "Uniform",
     "VectorError",
+    "WeightEnumerator",
     # Hypotheses the last `apart` on this thread rests on (ℚ(params) path).
     "apart_side_conditions",
     "arg",
@@ -624,6 +647,7 @@ __all__ = [
     "curl",
     # M4 — root-of-unity specialisation
     "cyclotomic_polynomial",
+    "delsarte_lp_bound",
     "digamma",
     "dirac_delta",
     # Vector calculus
@@ -638,6 +662,7 @@ __all__ = [
     "fourier_transform",
     # Vector calculus
     "gradient",
+    "hamming_bound",
     "heaviside",
     "im",
     # Risch-Norman (parallel Risch) heuristic integrator.  Returns a result
@@ -649,6 +674,9 @@ __all__ = [
     "is_symplectic",
     # Information theory: not symmetric, and +inf off a nested support
     "kl_divergence",
+    # Eigenvalues of the Hamming association scheme, exactly
+    "krawtchouk",
+    "krawtchouk_poly",
     "lambert_w",
     "laplace_transform",
     # Vector calculus
@@ -674,6 +702,7 @@ __all__ = [
     "residue",
     "riemann_roch",
     "series_solve",
+    "singleton_bound",
     "solve",
     "symplectic_complement",
     "symplectic_form",

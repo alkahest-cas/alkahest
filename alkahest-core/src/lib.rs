@@ -10,6 +10,7 @@ pub mod ball;
 // P1 search plumbing item 4 — budgets, cancellation, determinism
 pub mod budget;
 pub mod calculus;
+pub mod coding;
 pub mod dae;
 pub mod deriv;
 pub mod diff;
@@ -384,6 +385,16 @@ pub mod experimental {
     pub use crate::calculus::puiseux::{
         puiseux_series, Evidence, NotPuiseuxReason, PuiseuxError, PuiseuxExpansion,
         UnverifiedReason, MAX_RAMIFICATION,
+    };
+    /// Classical linear codes over GF(q): weight enumerators, MacWilliams,
+    /// Krawtchouk polynomials, and the Delsarte linear-programming bound on
+    /// `A_q(n, d)` — solved in exact rational arithmetic and returned with the
+    /// dual certificate that proves it. See [`crate::coding`] for scope.
+    pub use crate::coding::{
+        binomial, binomial_generalised, delsarte_lp_bound, hamming_bound, krawtchouk,
+        krawtchouk_pairing, krawtchouk_poly, singleton_bound, CodingError, DelsarteBound,
+        LinearCode, WeightEnumerator, MAX_ENUMERATED_CODEWORDS, MAX_ENUMERATION_CELLS,
+        MAX_LP_LENGTH,
     };
     pub use crate::deriv::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
     pub use crate::eval::{

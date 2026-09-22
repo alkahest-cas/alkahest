@@ -303,6 +303,7 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-VEC-*` | `VectorError` | Vector calculus over an orthogonal chart — a non-differentiable component, a repeated or non-symbol coordinate, a chart that could not be *proven* orthogonal (`E-VEC-004`), or a degenerate scale factor (`E-VEC-005`). See [Vector calculus and quaternions](#vector-calculus-and-quaternions) |
 | `E-QUAT-*` | `QuaternionError` | Quaternion algebra and rotations — a zero or undecided norm (`E-QUAT-001`), the axis of the identity rotation, which does not exist (`E-QUAT-002`), or a matrix that could not be checked to be a proper rotation (`E-QUAT-003`) |
 | `E-GFQ-*` | `FiniteFieldError` | Linear algebra over the finite fields GF(q), q = p^k (`alkahest.experimental.FiniteField` / `GfMatrix`). `001` a non-prime characteristic and `002` one past a machine word — both refusals, because ℤ/nℤ for composite n has zero divisors and no well-defined rank; `004` a reducible defining polynomial; `009` a singular matrix; `010` a linear system with no solution, refused rather than approximated |
+| `E-CODE-*` | `CodingError` | Classical linear codes over GF(q), weight enumerators, MacWilliams, Krawtchouk polynomials and the Delsarte LP bound (`alkahest.experimental.LinearCode` / `delsarte_lp_bound`). Two matter most. `E-CODE-004` refuses a codeword enumeration past its hard cap rather than truncating it — the minimum weight of *some* codewords is an upper bound on `d` wearing `d`'s name. `E-CODE-007` **withholds** an LP bound whose dual certificate failed its own exact feasibility check, because an upper bound that came out too small "rules out" codes that exist. The rest: `001` a zero-length code, `002` a distance outside `1..=n`, `003` a GF(q) refusal passed through with its own `E-GFQ` code kept visible in the message, `005` a length past the LP cap, `006` a vector that is not the weight distribution of a linear code, `008` an unusable alphabet size. See [Certified coding bounds](#certified-coding-bounds) |
 | `E-GRP-*` | `GroupError` | Permutation groups (`alkahest.experimental`) — an images array that is not a bijection (`E-GRP-001`), a degree mismatch, which is never repaired by padding with fixed points (`E-GRP-002`), a point outside `0..degree` — points are **0-based** here (`E-GRP-003`), a group too large to list element by element, whose order is still exact (`E-GRP-004`), a degree above the Schreier–Sims memory limit (`E-GRP-005`), or a standard family asked for below the `n` where its degree-`n` action is faithful, e.g. `dihedral(2)` (`E-GRP-006`) |
 | `E-PROB-*` | `ProbabilityError` | `alkahest.experimental`'s distribution surface — laws, expectations, moments, characteristic and generating functions, entropy and KL divergence. `E-PROB-005` and `E-PROB-006` are the two to branch on: one is a closed form that was **withheld**, the other says the quantity **does not exist**. See [Probability: four ways not to answer](#probability-four-ways-not-to-answer) |
 | `E-FFLD-*` | `FunctionFieldError` | `alkahest.experimental`'s function-field surface — divisors, the divisor class group `Pic⁰`, torsion order and Riemann–Roch. The implemented class is the **imaginary hyperelliptic** model `y² = a(x)` with `a` squarefree of **odd** degree and **ℚ-rational places**, because that is what the Mumford/Cantor machinery reused from the algebraic integrator is scoped to; every boundary outside it is one of these codes rather than a guess. Three to keep apart: `E-FFLD-007` is a **verdict** (the class has infinite order), `E-FFLD-006` is the matching **undecided**, and `E-FFLD-011` is an answer that was computed and then **withheld** for failing its own check. The most common one in practice is `E-FFLD-003`: the divisor has a place of degree ≥ 2, which cannot be represented. See [Function fields: what is modelled](#function-fields-what-is-modelled) |
@@ -597,3 +598,27 @@ odd-degree model because the two candidates differ in parity. Riemann–Roch
 checks its dimension against `dim ≥ deg D + 1 − g` and, above the canonical
 degree, against the equality. Neither check can fire on valid input; both exist
 so that a wrong answer arrives as `E-FFLD-011` rather than as a divisor.
+
+## Certified coding bounds
+
+`delsarte_lp_bound(n, d, q)` returns an upper bound on `A_q(n, d)` — the largest
+possible size of *any* code (linear or not) of length `n` over an alphabet of
+size `q` with minimum distance at least `d`. Every step is exact rational
+arithmetic, but exactness alone is not what makes the number trustworthy: a
+solver that stopped early would report a bound that is too *small*, and a bound
+that is too small silently rules out codes that exist.
+
+So the number is read off the **dual** programme and comes with the multipliers
+that prove it. `DelsarteBound.certificate()` is a vector `y ≥ 0` satisfying
+`Σ_k y_k K_k(i) ≤ −1` for every `i` in `d..=n`; from that alone, with no
+reference to this implementation, `|C| ≤ 1 + Σ_k y_k K_k(0)` for every such
+code. `DelsarteBound.verify_certificate()` re-checks it from scratch, and the
+constructor refuses with `E-CODE-007` rather than returning a bound whose
+certificate did not pass. A caller who does not trust this crate can re-verify
+the certificate with nothing but a Krawtchouk evaluator.
+
+This is the plain Delsarte programme. Schrijver's semidefinite strengthening and
+the extra inequalities that beat it on specific `(n, d)` are not implemented:
+what is returned is always a valid upper bound, not always the tightest one
+known.
+
