@@ -377,6 +377,11 @@ from alkahest.alkahest import (
     # LP bound on A_q(n, d) — exact rational arithmetic throughout, and the
     # bound comes with the dual certificate that proves it.
     CodingError,
+    # Riemann theta, modular and Weierstrass functions as rigorous
+    # enclosures (FLINT/Arb). Every value is a `ComplexBall` carrying its
+    # own error bound; `ComplexBall.value()` refuses rather than hand back
+    # a midpoint with nothing behind it.
+    ComplexBall,
     Coordinates,
     # Binary symplectic / stabilizer codes
     CssCode,
@@ -419,16 +424,21 @@ from alkahest.alkahest import (
     QuaternionError,
     QZeilbergerCertificate,
     RiemannRochSpace,
+    SiegelMatrix,
+    SiegelReduction,
     SiftResult,
     StabilizerCode,
     StabilizerError,
     StabilizerGroup,
     Telescoping2dCertificate,
     TelescopingMdCertificate,
+    ThetaError,
+    ThetaValues,
     Uniform,
     VectorError,
     WeightEnumerator,
     apart_side_conditions,
+    arb_backend_available,
     asymptotic_expand,
     bernoulli_number,
     # P1 item 10 — asymptotic expansion at scale
@@ -438,6 +448,7 @@ from alkahest.alkahest import (
     curl,
     cyclotomic_polynomial,
     cyclotomic_polynomial_coeffs,
+    dedekind_eta,
     delsarte_lp_bound,
     dirac_delta,
     divergence,
@@ -445,6 +456,7 @@ from alkahest.alkahest import (
     dot,
     dsolve,
     dsolve_system,
+    eisenstein_series,
     euler_maclaurin,
     euler_number,
     expectation,
@@ -459,11 +471,16 @@ from alkahest.alkahest import (
     inverse_laplace_transform,
     inverse_z_transform,
     is_symplectic,
+    j_invariant,
+    jacobi_theta,
+    jacobi_theta_null,
     kl_divergence,
     krawtchouk,
     krawtchouk_poly,
     laplace_transform,
     laplacian,
+    modular_discriminant,
+    modular_lambda,
     moebius_mu,
     multilimit,
     mutual_information_independent,
@@ -475,7 +492,13 @@ from alkahest.alkahest import (
     puiseux_series,
     q_zeilberger,
     riemann_roch,
+    riemann_theta,
+    riemann_theta_available,
+    riemann_theta_characteristic,
+    riemann_theta_squared,
     series_solve,
+    siegel_is_reduced,
+    siegel_reduce,
     singleton_bound,
     stirling_first,
     stirling_first_unsigned,
@@ -487,9 +510,18 @@ from alkahest.alkahest import (
     symplectic_gram_schmidt,
     telescope2d,
     telescope_md,
+    theta_characteristic_bits,
+    theta_characteristic_index,
+    theta_characteristic_is_even,
     transform_side_conditions,
     variance_affine_independent,
     vector_laplacian,
+    weierstrass_invariants,
+    weierstrass_p,
+    weierstrass_p_prime,
+    weierstrass_roots,
+    weierstrass_sigma,
+    weierstrass_zeta,
     z_transform,
 )
 
@@ -557,6 +589,11 @@ __all__ = [
     # refuses (E-CODE-007) rather than return one whose certificate did not
     # re-verify.
     "CodingError",
+    # Riemann theta functions, the classical modular functions and the
+    # Weierstrass family, as rigorous enclosures backed by FLINT's Arb
+    # layer. Genus 1 and 2 are the tested regime; see the module docs for
+    # the genus ceiling and what `Precision.AccurateTo` refuses.
+    "ComplexBall",
     # Vector calculus over orthogonal curvilinear charts
     "Coordinates",
     "CssCode",
@@ -639,6 +676,8 @@ __all__ = [
     # M11 — novelty filtering
     "RecurrenceClaim",
     "RiemannRochSpace",
+    "SiegelMatrix",
+    "SiegelReduction",
     # Sifting an element through a stabilizer chain
     "SiftResult",
     "StabilizerCode",
@@ -647,12 +686,15 @@ __all__ = [
     # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
     "Telescoping2dCertificate",
     "TelescopingMdCertificate",
+    "ThetaError",
+    "ThetaValues",
     # Probability (continued)
     "Uniform",
     "VectorError",
     "WeightEnumerator",
     # Hypotheses the last `apart` on this thread rests on (ℚ(params) path).
     "apart_side_conditions",
+    "arb_backend_available",
     "arg",
     "asymptotic_expand",
     # M5 — recurrence -> asymptotics
@@ -674,6 +716,7 @@ __all__ = [
     # M4 — root-of-unity specialisation
     "cyclotomic_polynomial",
     "cyclotomic_polynomial_coeffs",
+    "dedekind_eta",
     "delsarte_lp_bound",
     "digamma",
     "dirac_delta",
@@ -683,6 +726,7 @@ __all__ = [
     "dot",
     "dsolve",
     "dsolve_system",
+    "eisenstein_series",
     "euler_maclaurin",
     "euler_number",
     "evaluate",
@@ -702,6 +746,9 @@ __all__ = [
     "inverse_laplace_transform",
     "inverse_z_transform",
     "is_symplectic",
+    "j_invariant",
+    "jacobi_theta",
+    "jacobi_theta_null",
     # Information theory: not symmetric, and +inf off a nested support
     "kl_divergence",
     # Eigenvalues of the Hamming association scheme, exactly
@@ -711,6 +758,8 @@ __all__ = [
     "laplace_transform",
     # Vector calculus
     "laplacian",
+    "modular_discriminant",
+    "modular_lambda",
     "moebius_mu",
     "multilimit",
     # Information theory: 0, under an independence the caller asserts
@@ -733,7 +782,13 @@ __all__ = [
     "re",
     "residue",
     "riemann_roch",
+    "riemann_theta",
+    "riemann_theta_available",
+    "riemann_theta_characteristic",
+    "riemann_theta_squared",
     "series_solve",
+    "siegel_is_reduced",
+    "siegel_reduce",
     "singleton_bound",
     "solve",
     "stirling_first",
@@ -747,6 +802,9 @@ __all__ = [
     # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
     "telescope2d",
     "telescope_md",
+    "theta_characteristic_bits",
+    "theta_characteristic_index",
+    "theta_characteristic_is_even",
     "to_jax",
     "to_lean",
     "to_stablehlo",
@@ -755,5 +813,11 @@ __all__ = [
     "variance_affine_independent",
     # Vector calculus
     "vector_laplacian",
+    "weierstrass_invariants",
+    "weierstrass_p",
+    "weierstrass_p_prime",
+    "weierstrass_roots",
+    "weierstrass_sigma",
+    "weierstrass_zeta",
     "z_transform",
 ]

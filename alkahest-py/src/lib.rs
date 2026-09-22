@@ -262,6 +262,7 @@ mod ffield;
 mod funcfield;
 mod numfield;
 mod stabilizer;
+mod theta;
 pyo3::create_exception!(alkahest, PyAlkahestError, pyo3::exceptions::PyValueError);
 pyo3::create_exception!(alkahest, PyConversionError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyDomainError, PyAlkahestError);
@@ -18827,6 +18828,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     funcfield::register(m)?;
     stabilizer::register(m)?;
     numfield::register(m)?;
+    theta::register(m)?;
     m.add_function(wrap_pyfunction!(py_euler_maclaurin, m)?)?;
     m.add_function(wrap_pyfunction!(py_coefficient_asymptotics, m)?)?;
     // P1 item 7 — creative telescoping / holonomic (D-finite) machinery

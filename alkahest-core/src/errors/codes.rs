@@ -619,6 +619,39 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-NUMF-006", class: "NumberFieldError", cause: Cause::UserInput,   remediation: Some("rebuild both operands over one NumberField; two fields with different canonical defining polynomials are treated as different even when isomorphic, because an element's coordinates mean different things in each") },
     ErrorSpec { code: "E-NUMF-007", class: "NumberFieldError", cause: Cause::UserInput,   remediation: Some("an element of a degree-d field has at most d coordinates in the power basis 1, a, a^2, ...; reduce modulo the defining polynomial at the call site if that is what was meant") },
     ErrorSpec { code: "E-NUMF-008", class: "NumberFieldError", cause: Cause::UserInput,   remediation: Some("Q(zeta_n) needs n >= 1 with phi(n) <= 1024; note phi(n) is the degree, so n = 2048 is allowed (degree 1024) while n = 3^7 is not") },
+    // E-THETA — ThetaError (Riemann theta, modular and Weierstrass functions)
+    //
+    // This prefix guards a surface whose failure mode is uniquely hard to spot
+    // downstream: a theta value is a number nobody can sanity-check by eye, so
+    // a wrong *error bound* would travel further than a wrong value. Three of
+    // these are therefore about the bound rather than about the input.
+    //
+    // E-THETA-010 is the load-bearing one. It fires when a value was computed
+    // and then **withheld** because its enclosure was too wide to be worth
+    // reading. It is reachable in two quite different situations and the
+    // `achieved_bits` field is what tells them apart: `Some(n)` with `n` far
+    // below the request means more precision may help, while a value that is
+    // exactly zero — `j(rho)`, `theta_1(0, tau)` — has no relative accuracy at
+    // any precision and will refuse forever. That is not a defect: relative
+    // accuracy of zero is not a thing, and `Precision::Bits` plus
+    // `ComplexBall::contains_zero` is the right question to ask there.
+    //
+    // E-THETA-002 exists because `arb_struct` and `acb_struct` cross the FFI
+    // boundary by value inside arrays, so a size disagreement with the
+    // installed FLINT is silent memory corruption rather than a link error. It
+    // is raised by a run-time probe that re-derives the sizes from FLINT itself.
+    ErrorSpec { code: "E-THETA-001", class: "ThetaError", cause: Cause::Unsupported, remediation: Some("build against FLINT >= 3.1 for the modular functions and >= 3.2 for genus-g Riemann theta; `riemann_theta_available()` and `arb_backend_available()` report what this build has") },
+    ErrorSpec { code: "E-THETA-002", class: "ThetaError", cause: Cause::Internal,    remediation: Some("the installed FLINT's ball struct layout differs from the one this binary was compiled against; rebuild alkahest against the FLINT it will run with, and report the measured sizes as a bug") },
+    ErrorSpec { code: "E-THETA-003", class: "ThetaError", cause: Cause::UserInput,   remediation: Some("ask for a working precision between 2 and 1048576 bits") },
+    ErrorSpec { code: "E-THETA-004", class: "ThetaError", cause: Cause::Resource,    remediation: Some("theta returns 4^g values, so the output alone is exponential in the genus; genus 1 and 2 are the tested regime") },
+    ErrorSpec { code: "E-THETA-005", class: "ThetaError", cause: Cause::UserInput,   remediation: Some("the argument z needs exactly g entries and the period matrix g*g (or g(g+1)/2 for the upper triangle)") },
+    ErrorSpec { code: "E-THETA-006", class: "ThetaError", cause: Cause::UserInput,   remediation: Some("build the period matrix with SiegelMatrix::from_upper_triangle, which fills the lower half by copying; symmetry is checked as ball identity, so two separately-computed enclosures of one number are two different inputs") },
+    ErrorSpec { code: "E-THETA-007", class: "ThetaError", cause: Cause::Domain,      remediation: Some("this means `not proved`, never `proved false`: raise the working precision, or tighten the input balls until Im(tau) is certainly positive definite") },
+    ErrorSpec { code: "E-THETA-008", class: "ThetaError", cause: Cause::UserInput,   remediation: Some("characteristics run over 0..4^g; build the index with theta_characteristic_index rather than by hand") },
+    ErrorSpec { code: "E-THETA-009", class: "ThetaError", cause: Cause::Domain,      remediation: Some("the modular functions need Im(tau) certainly > 0; as with E-THETA-007 a refusal means `not proved`") },
+    ErrorSpec { code: "E-THETA-010", class: "ThetaError", cause: Cause::Resource,    remediation: Some("read `achieved_bits`: a value far below the request may come good at higher precision, but a quantity that is exactly zero has no relative accuracy at any precision — use Precision::Bits and ComplexBall::contains_zero there") },
+    ErrorSpec { code: "E-THETA-011", class: "ThetaError", cause: Cause::Domain,      remediation: Some("the result could not be bounded at all; check for a pole (Weierstrass p at a lattice point) or an input ball that was already indeterminate") },
+    ErrorSpec { code: "E-THETA-012", class: "ThetaError", cause: Cause::Resource,    remediation: Some("the midpoint or radius has an exponent outside the range that moves between FLINT and MPFR without rounding; rescale the problem") },
 ];
 
 #[cfg(test)]

@@ -50,6 +50,13 @@
 //!
 //! All raw C pointers are confined to `ffi.rs`; everything above is safe Rust.
 
+/// Genuine `arb_t` / `acb_t` bindings (FLINT >= 3.1 only; see `build.rs`'s
+/// `flint_arb` probe). Separate from, and with no effect on, the MPFR-backed
+/// [`crate::ball`] module.
+#[cfg(flint_arb)]
+pub mod acb;
+#[cfg(flint_arb)]
+pub mod arb;
 pub(crate) mod ffi;
 pub mod integer;
 pub(crate) mod mat;

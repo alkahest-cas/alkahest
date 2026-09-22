@@ -61,6 +61,7 @@ pub mod stabilizer;
 // V2-10 — Gosper / creative telescoping (WZ certificates)
 pub mod stablehlo;
 pub mod sum;
+pub mod theta;
 // §3.3 — symbolic integral transforms (Laplace and inverse Laplace)
 pub mod transform;
 // P1 item 9 — rigorous global bounds (Taylor models / validated numerics)
@@ -522,6 +523,24 @@ pub mod experimental {
         MAX_MATRIX_ENUMERATION, MAX_QUBITS,
     };
     pub use crate::stablehlo::emit_stablehlo;
+    /// Riemann theta functions, classical modular functions (`eta`, `j`,
+    /// `lambda`, `Delta`, Eisenstein) and the Weierstrass family, as
+    /// **rigorous enclosures** backed by FLINT's Arb layer. Every value is a
+    /// [`crate::theta::ComplexBall`] carrying its own error bound, and
+    /// [`crate::theta::Precision::AccurateTo`] refuses rather than returning a
+    /// midpoint with nothing behind it. Genus 1 and 2 are what this is built
+    /// and tested for; see [`crate::theta`] for the genus ceiling and the rest
+    /// of the scope limits.
+    pub use crate::theta::{
+        arb_backend_available, dedekind_eta, eisenstein_series, j_invariant, jacobi_theta,
+        jacobi_theta_null, modular_discriminant, modular_lambda, riemann_theta,
+        riemann_theta_available, riemann_theta_characteristic, riemann_theta_squared,
+        siegel_is_reduced, siegel_reduce, theta_characteristic_bits, theta_characteristic_index,
+        theta_characteristic_is_even, weierstrass_invariants, weierstrass_p, weierstrass_p_prime,
+        weierstrass_roots, weierstrass_sigma, weierstrass_zeta, ComplexBall, Precision, RealBall,
+        SiegelMatrix, SiegelReduction, ThetaError, ThetaValues, DEFAULT_PRECISION_BITS, MAX_GENUS,
+        MAX_PRECISION_BITS, MIN_PRECISION_BITS,
+    };
     pub use crate::transform::fourier::fourier_derivative_rule;
     pub use crate::transform::laplace::laplace_derivative_rule;
     pub use crate::transform::{
