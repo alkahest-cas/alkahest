@@ -61,3 +61,13 @@ kernel::pool::
 # function pointer; `jit::tests::par_batch_*` drive it. `jit::cache` is folded
 # in because it is the same module tree and costs seconds.
 jit::
+
+# ── A shared FLINT number-field context read from many threads ─────────────
+# `NumberField` wraps an `nf_t` behind `unsafe impl Sync`, justified by
+# `nf_init` precomputing eagerly so the context is read-only thereafter. That
+# is an assumption about FLINT's internals rather than a documented guarantee,
+# so `numfield::tests::a_shared_field_survives_concurrent_use` puts eight
+# threads on one field — and this entry is what makes the shard actually run
+# it. If a future Antic makes any of that precompute lazy, this is where it
+# surfaces.
+numfield::tests
