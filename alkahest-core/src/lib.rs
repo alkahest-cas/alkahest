@@ -54,6 +54,8 @@ pub mod special;
 // V2-13 — Differential algebra / Rosenfeld–Gröbner
 #[cfg(feature = "groebner")]
 pub mod diffalg;
+// Binary symplectic / stabilizer codes, and classical matrix groups over GF(q)
+pub mod stabilizer;
 // V2-10 — Gosper / creative telescoping (WZ certificates)
 pub mod stablehlo;
 pub mod sum;
@@ -476,6 +478,18 @@ pub mod experimental {
     pub use crate::simplify::{
         simplify_colored, simplify_egraph, simplify_expanded, ColorId, ColoredEgraph,
         CONTEXT_COLOR, ROOT_COLOR,
+    };
+    /// The binary symplectic / stabilizer layer: the `(x | z)` symplectic form
+    /// over GF(2), Pauli operators with a `Z₄` phase, stabilizer and CSS codes
+    /// with their logical operators and syndrome map, and the classical matrix
+    /// groups `GL`, `SL`, `Sp` over GF(q). The `(x | z)` convention and the
+    /// scope limits — no Clifford simulation, no decoding, distance only by
+    /// capped exhaustive search — are in [`crate::stabilizer`].
+    pub use crate::stabilizer::{
+        is_symplectic, symplectic_complement, symplectic_form, symplectic_gram_matrix,
+        symplectic_gram_schmidt, CssCode, Distance, HyperbolicBasis, MatrixGroup, MatrixGroupKind,
+        PauliOperator, StabilizerCode, StabilizerError, StabilizerGroup, MAX_DISTANCE_SEARCH_DIM,
+        MAX_MATRIX_ENUMERATION, MAX_QUBITS,
     };
     pub use crate::stablehlo::emit_stablehlo;
     pub use crate::transform::fourier::fourier_derivative_rule;

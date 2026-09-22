@@ -200,11 +200,11 @@ impl PyFiniteField {
 /// Rectangular shapes are first-class — parity-check matrices are never square.
 #[pyclass(name = "GfMatrix", module = "alkahest")]
 pub struct PyGfMatrix {
-    inner: GfMatrix,
+    pub(crate) inner: GfMatrix,
 }
 
 impl PyGfMatrix {
-    fn wrap(inner: GfMatrix) -> Self {
+    pub(crate) fn wrap(inner: GfMatrix) -> Self {
         Self { inner }
     }
 }

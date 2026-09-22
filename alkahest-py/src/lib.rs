@@ -259,6 +259,7 @@ mod ffield;
 // V1-3: structured exception hierarchy.
 // Base inherits from ValueError for backward compat with existing `except ValueError` tests.
 mod funcfield;
+mod stabilizer;
 pyo3::create_exception!(alkahest, PyAlkahestError, pyo3::exceptions::PyValueError);
 pyo3::create_exception!(alkahest, PyConversionError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyDomainError, PyAlkahestError);
@@ -18821,6 +18822,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_vector_cross, m)?)?;
     m.add_function(wrap_pyfunction!(py_vector_norm, m)?)?;
     funcfield::register(m)?;
+    stabilizer::register(m)?;
     m.add_function(wrap_pyfunction!(py_euler_maclaurin, m)?)?;
     m.add_function(wrap_pyfunction!(py_coefficient_asymptotics, m)?)?;
     // P1 item 7 — creative telescoping / holonomic (D-finite) machinery

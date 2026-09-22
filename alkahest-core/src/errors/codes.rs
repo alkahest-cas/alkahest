@@ -554,6 +554,37 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-FFLD-009", class: "FunctionFieldError", cause: Cause::UserInput,   remediation: Some("rebuild both operands over the same FunctionField") },
     ErrorSpec { code: "E-FFLD-010", class: "FunctionFieldError", cause: Cause::Resource,    remediation: Some("reduce the multiplicities or the degree of the divisor; the Cantor and linear-algebra steps here are bounded by a machine word") },
     ErrorSpec { code: "E-FFLD-011", class: "FunctionFieldError", cause: Cause::Internal,    remediation: Some("report this as a bug with the curve and divisor that produced it; the answer was withheld rather than returned wrong") },
+    // E-STAB — StabilizerError (binary symplectic form, Pauli and stabilizer
+    // codes, CSS codes, and the classical matrix groups over GF(q))
+    //
+    // The prefix exists to keep three different kinds of "no" apart. E-STAB-004,
+    // -005 and -006 are *structural*: the generators offered do not define a
+    // stabilizer group at all, and no amount of extra work will make them.
+    // E-STAB-007 and -008 are about the *question*: a [[n, 0]] code has no
+    // minimum distance to report, and above the search cap the distance is not
+    // unknown-for-now but unreached — the answer on offer instead is a
+    // `Distance::UpperBound`, a different variant, so a caller cannot store a
+    // bound in a field it reads as a distance. E-STAB-013 is the one that must
+    // never fire: a result computed, failed against its own invariant, and
+    // withheld.
+    //
+    // Note that `StabilizerError::FiniteField` does *not* have a code here. It
+    // carries a `FiniteFieldError` out of the GF(q) layer unchanged and
+    // delegates `.code()` to it, so a shape or singularity refusal still
+    // reports its own `E-GFQ-NNN` rather than being relabelled at the boundary.
+    ErrorSpec { code: "E-STAB-001", class: "StabilizerError", cause: Cause::Unsupported, remediation: Some("the Pauli and stabilizer surface is GF(2) only; qudit stabilizer codes are a different theory, not a widening of this one. Only MatrixGroup is defined over general GF(q)") },
+    ErrorSpec { code: "E-STAB-002", class: "StabilizerError", cause: Cause::UserInput,   remediation: Some("symplectic vectors have length 2n in (x | z) layout, and Sp membership needs a square matrix of even size; check which half of the vector you filled") },
+    ErrorSpec { code: "E-STAB-003", class: "StabilizerError", cause: Cause::UserInput,   remediation: Some("qubit counts are not padded with identities automatically; rebuild both operators on the same number of qubits") },
+    ErrorSpec { code: "E-STAB-004", class: "StabilizerError", cause: Cause::Domain,      remediation: Some("a stabilizer group is abelian: the two named generators anticommute, so they share no +1 eigenspace. Check the (x | z) layout first — a (z | x) transcription commutes for a different code") },
+    ErrorSpec { code: "E-STAB-005", class: "StabilizerError", cause: Cause::Domain,      remediation: Some("the CSS condition H_X · H_Zᵀ = 0 fails at the named entry; the X-type generator from that row of H_X anticommutes with the Z-type one from that row of H_Z") },
+    ErrorSpec { code: "E-STAB-006", class: "StabilizerError", cause: Cause::Domain,      remediation: Some("the named generators multiply to −I, so the stabilized subspace is {0}; negate one of them, or drop the dependent generator") },
+    ErrorSpec { code: "E-STAB-007", class: "StabilizerError", cause: Cause::Domain,      remediation: Some("an [[n, 0]] code has no logical qubits, so N(S) \\ S is empty and there is no minimum distance to report") },
+    ErrorSpec { code: "E-STAB-008", class: "StabilizerError", cause: Cause::Resource,    remediation: Some("minimum distance is NP-hard and the only algorithm here is exhaustive; raise the cap with minimum_distance_with_cap if 2^(n+k) really is affordable, or take distance_upper_bound() and report it as a bound") },
+    ErrorSpec { code: "E-STAB-009", class: "StabilizerError", cause: Cause::Resource,    remediation: Some("reduce the qubit count; every symplectic vector here is dense and the centralizer computation is cubic in n") },
+    ErrorSpec { code: "E-STAB-010", class: "StabilizerError", cause: Cause::UserInput,   remediation: Some("Pauli bits must be 0 or 1, letters must be I, X, Y or Z, and a stabilizer generator must be Hermitian — parse a string such as \"-XZZXI\" or use PauliOperator::hermitian, which picks the phase for you") },
+    ErrorSpec { code: "E-STAB-011", class: "StabilizerError", cause: Cause::Resource,    remediation: Some("use order(), which is a closed-form product and has no size limit, instead of listing the elements; enumeration scans all q^(d²) matrices") },
+    ErrorSpec { code: "E-STAB-012", class: "StabilizerError", cause: Cause::UserInput,   remediation: Some("rebuild both operands over the same FiniteField; two GF(q) of the same order with different defining polynomials are not interchangeable") },
+    ErrorSpec { code: "E-STAB-013", class: "StabilizerError", cause: Cause::Internal,    remediation: Some("report this as a bug with the generators or check matrices that produced it; the answer was withheld rather than returned wrong") },
 ];
 
 #[cfg(test)]

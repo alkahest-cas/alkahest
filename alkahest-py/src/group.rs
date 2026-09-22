@@ -275,11 +275,11 @@ impl PySiftResult {
 /// (``E-GRP-005``).
 #[pyclass(name = "PermutationGroup", module = "alkahest")]
 pub struct PyPermutationGroup {
-    inner: PermutationGroup,
+    pub(crate) inner: PermutationGroup,
 }
 
 impl PyPermutationGroup {
-    fn wrap(inner: PermutationGroup) -> PyPermutationGroup {
+    pub(crate) fn wrap(inner: PermutationGroup) -> PyPermutationGroup {
         PyPermutationGroup { inner }
     }
 }

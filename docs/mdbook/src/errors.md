@@ -306,6 +306,7 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-GRP-*` | `GroupError` | Permutation groups (`alkahest.experimental`) — an images array that is not a bijection (`E-GRP-001`), a degree mismatch, which is never repaired by padding with fixed points (`E-GRP-002`), a point outside `0..degree` — points are **0-based** here (`E-GRP-003`), a group too large to list element by element, whose order is still exact (`E-GRP-004`), a degree above the Schreier–Sims memory limit (`E-GRP-005`), or a standard family asked for below the `n` where its degree-`n` action is faithful, e.g. `dihedral(2)` (`E-GRP-006`) |
 | `E-PROB-*` | `ProbabilityError` | `alkahest.experimental`'s distribution surface — laws, expectations, moments, characteristic and generating functions, entropy and KL divergence. `E-PROB-005` and `E-PROB-006` are the two to branch on: one is a closed form that was **withheld**, the other says the quantity **does not exist**. See [Probability: four ways not to answer](#probability-four-ways-not-to-answer) |
 | `E-FFLD-*` | `FunctionFieldError` | `alkahest.experimental`'s function-field surface — divisors, the divisor class group `Pic⁰`, torsion order and Riemann–Roch. The implemented class is the **imaginary hyperelliptic** model `y² = a(x)` with `a` squarefree of **odd** degree and **ℚ-rational places**, because that is what the Mumford/Cantor machinery reused from the algebraic integrator is scoped to; every boundary outside it is one of these codes rather than a guess. Three to keep apart: `E-FFLD-007` is a **verdict** (the class has infinite order), `E-FFLD-006` is the matching **undecided**, and `E-FFLD-011` is an answer that was computed and then **withheld** for failing its own check. The most common one in practice is `E-FFLD-003`: the divisor has a place of degree ≥ 2, which cannot be represented. See [Function fields: what is modelled](#function-fields-what-is-modelled) |
+| `E-STAB-*` | `StabilizerError` | `alkahest.experimental`'s symplectic / stabilizer surface — the `(x \| z)` binary symplectic form, Pauli operators, stabilizer and CSS codes, and the classical matrix groups `GL`/`SL`/`Sp` over GF(q). `E-STAB-004`, `-005` and `-006` are **structural**: the generators do not define a stabilizer code at all (they anticommute, fail `H_X · H_Zᵀ = 0`, or multiply to `−I`). `E-STAB-008` is the exhaustive minimum-distance search past its cap — minimum distance is NP-hard and nothing here approximates it; the answer on offer instead is a `Distance` with `exact == False`. `E-STAB-013` is a result computed, failed against its own invariant, and withheld. A failure raised inside the GF(q) layer keeps its own `E-GFQ-*` code rather than being relabelled. See [Stabilizer codes: the `(x \| z)` convention](#stabilizer-codes-the-x--z-convention) |
 | `E-LIMIT-*` | `LimitError` | `limit` could not be established; `E-LIMIT-006` is a limit that turns on the sign of a free parameter nothing states — assume it, or declare the symbol `Domain.Positive` |
 | `E-SERIES-*` | `SeriesError` | `series` and `experimental.puiseux_series`. `003` a work ceiling, `004` an indeterminate coefficient, `005` no Puiseux expansion exists, `006` one computed and withheld |
 | `E-SUM-*` | `SumError` | Symbolic summation (`sum_indefinite`, `sum_definite`) — not hypergeometric, or not Gosper-summable |
@@ -519,6 +520,43 @@ with ak.context(require_certificate=True):
 Users match on subsystem (the exception class); triagers filter on cause (the code suffix and remediation text).
 
 ## Function fields: what is modelled
+
+## Stabilizer codes: the `(x | z)` convention
+
+`E-STAB-*` has thirteen numbers and only one of them is about running out of
+room. The rest exist because the commonest failure in this area is not a
+resource limit — it is a set of generators that looks like a stabilizer code,
+type-checks like a stabilizer code, and is not one.
+
+Everything in this layer writes a Pauli operator as `2n` bits in **`(x | z)`
+layout**: the first `n` are the `X` exponents, the last `n` the `Z` exponents,
+with
+
+```text
+    ⟨(x₁ | z₁), (x₂ | z₂)⟩  =  x₁·z₂ + z₁·x₂     (mod 2)
+```
+
+and two Paulis commuting exactly when that vanishes. The `(z | x)` layout is
+also in use in the literature. A check matrix transcribed from a paper that uses
+it produces generators that commute, have the right rank, and encode a different
+code — and no error at all. There is nothing this library can do about that
+except say so loudly, which is why the convention is repeated at the top of
+every module in the layer. If a code comes out with the right `n` and `k` and
+the wrong distance, suspect the layout before suspecting the search.
+
+Three of the codes deserve to be read apart from the rest:
+
+| Code | What it means | What to do |
+|---|---|---|
+| `E-STAB-004` | Two proposed generators **anticommute** | A stabilizer group is abelian; these two share no `+1` eigenspace. Check the `(x \| z)` layout, then the transcription |
+| `E-STAB-006` | A product of the generators is `−I` | The stabilized subspace is `{0}`: the code encodes nothing. Only reachable from a *dependent* generating list. Negate one generator, or drop the dependent one |
+| `E-STAB-008` | The exhaustive distance search is past its cap | There is no cleverer algorithm behind the cap — minimum distance is NP-hard and the only method here enumerates `2^(n+k)` centralizer elements. Take `distance_upper_bound()`, which returns a `Distance` with `exact == False`, and report it **as a bound** |
+
+The last one is the reason `minimum_distance()` does not return an `int`. A
+`Distance` carries `.value` and `.exact`, and the upper-bound path sets `.exact`
+to `False`. A caller that stores `.value` in a field named `d` has thrown away
+the one fact that made the number safe to publish.
+
 
 `E-FFLD-*` is one prefix over one class, and the eleven numbers exist because
 the honest answer to most function-field questions, in most of the space of

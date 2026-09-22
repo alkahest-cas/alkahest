@@ -101,6 +101,13 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
                                  could not be checked to be a proper rotation)
     E-GRP-001 … E-GRP-006        GroupError (permutation groups; 004 = an order that
                                  is exact but a list that is refused)
+    E-STAB-001 … E-STAB-013      StabilizerError (binary symplectic form, Pauli and
+                                 stabilizer codes, CSS codes, matrix groups over
+                                 GF(q); 004/005/006 = the generators do not define a
+                                 stabilizer code at all, 008 = the exhaustive
+                                 distance search past its cap — take
+                                 `distance_upper_bound()` and report it as a bound,
+                                 013 = a result computed and then withheld)
     E-PROB-001 … E-PROB-006      ProbabilityError (distributions, expectations,
                                  generating functions and information theory;
                                  001 = a numeric parameter outside its constraint,
@@ -1061,6 +1068,49 @@ class GroupError(AlkahestError):
         self,
         message: str,
         code: str = "E-GRP-001",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)
+
+
+class StabilizerError(AlkahestError):
+    """A symplectic, Pauli, stabilizer-code or matrix-group operation refused
+    (``E-STAB-001`` … ``E-STAB-013``).
+
+    Raised by the :mod:`alkahest.experimental` stabilizer surface. The thirteen
+    codes fall into three groups that call for three different next steps, and
+    collapsing them would send a caller looking for a bigger machine when the
+    input simply is not a stabilizer code:
+
+    - **Structural** — ``E-STAB-004`` (two generators anticommute),
+      ``E-STAB-005`` (``H_X @ H_Z.T != 0``, the CSS condition) and
+      ``E-STAB-006`` (a product of the generators is ``-I``, so the stabilized
+      subspace is ``{0}``). These say the generators do not define a stabilizer
+      code at all. Before rewriting them, check the ``(x | z)`` layout: a
+      ``(z | x)`` transcription commutes perfectly well, for a different code.
+    - **About the question** — ``E-STAB-007``, an ``[[n, 0]]`` code, which has
+      no ``N(S) \\ S`` and therefore no minimum distance; and ``E-STAB-008``,
+      the exhaustive distance search past its cap. Minimum distance is
+      ``NP``-hard and nothing here approximates it. What is on offer instead is
+      ``distance_upper_bound()``, which returns a ``Distance`` with
+      ``exact == False`` — a different object, so a bound cannot be stored in a
+      field that is read as a distance.
+    - **Withheld** — ``E-STAB-013``, a result that was computed, failed its own
+      invariant (logical operators that do not commute with the stabilizer, a
+      centralizer of the wrong dimension) and was withheld rather than
+      returned. That is a bug in alkahest, not in the input; please report it.
+
+    A failure that came out of the GF(q) linear-algebra layer keeps its own
+    ``E-GFQ-NNN`` code rather than being relabelled at the boundary, so
+    ``except FiniteFieldError`` still catches a singular matrix even when the
+    call that produced it was ``CssCode(...)``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-STAB-001",
         remediation: str | None = None,
         span: tuple[int, int] | None = None,
     ):

@@ -363,12 +363,20 @@ from alkahest.alkahest import (
     GROUP_DEFAULT_ELEMENT_CAP,
     GROUP_MAX_BSGS_DEGREE,
     GROUP_MAX_ELEMENT_CAP,
+    # Caps on the stabilizer layer: qubits, the exhaustive distance search,
+    # and brute-force matrix-group enumeration
+    STABILIZER_MAX_DISTANCE_SEARCH_DIM,
+    STABILIZER_MAX_MATRIX_ENUMERATION,
+    STABILIZER_MAX_QUBITS,
     # P1 item 10 — asymptotic expansion at scale
     AsymptoticReport,
     Bernoulli,
     Beta,
     Binomial,
     Coordinates,
+    # Binary symplectic / stabilizer codes
+    CssCode,
+    Distance,
     Distribution,
     Divisor,
     DivisorClass,
@@ -384,9 +392,11 @@ from alkahest.alkahest import (
     GfRref,
     GroupError,
     LogNormal,
+    MatrixGroup,
     Normal,
     OdeTrajectory,
     ParallelRischResult,
+    PauliOperator,
     # Computational group theory (permutation groups)
     Permutation,
     PermutationGroup,
@@ -401,6 +411,9 @@ from alkahest.alkahest import (
     QZeilbergerCertificate,
     RiemannRochSpace,
     SiftResult,
+    StabilizerCode,
+    StabilizerError,
+    StabilizerGroup,
     Telescoping2dCertificate,
     TelescopingMdCertificate,
     Uniform,
@@ -428,6 +441,7 @@ from alkahest.alkahest import (
     inverse_fourier_transform,
     inverse_laplace_transform,
     inverse_z_transform,
+    is_symplectic,
     kl_divergence,
     laplace_transform,
     laplacian,
@@ -441,6 +455,10 @@ from alkahest.alkahest import (
     q_zeilberger,
     riemann_roch,
     series_solve,
+    symplectic_complement,
+    symplectic_form,
+    symplectic_gram_matrix,
+    symplectic_gram_schmidt,
     telescope2d,
     telescope_md,
     transform_side_conditions,
@@ -490,6 +508,14 @@ __all__ = [
     "GROUP_DEFAULT_ELEMENT_CAP",
     "GROUP_MAX_BSGS_DEGREE",
     "GROUP_MAX_ELEMENT_CAP",
+    # Binary symplectic / stabilizer codes: the (x | z) form over GF(2),
+    # Pauli operators with a Z4 phase, stabilizer and CSS codes, and the
+    # classical matrix groups GL / SL / Sp over GF(q). Distance is exhaustive
+    # and capped; above the cap it refuses (E-STAB-008) rather than guessing,
+    # and a bound comes back as `Distance(at_most=...)`, not as an int.
+    "STABILIZER_MAX_DISTANCE_SEARCH_DIM",
+    "STABILIZER_MAX_MATRIX_ENUMERATION",
+    "STABILIZER_MAX_QUBITS",
     "Assumptions",
     # P1 item 10 — asymptotic expansion at scale
     "AsymptoticReport",
@@ -499,7 +525,9 @@ __all__ = [
     "Binomial",
     # Vector calculus over orthogonal curvilinear charts
     "Coordinates",
+    "CssCode",
     "CudaCompiledFn",
+    "Distance",
     "Distribution",
     "Divisor",
     "DivisorClass",
@@ -525,6 +553,7 @@ __all__ = [
     "GroupError",
     # Probability (continued)
     "LogNormal",
+    "MatrixGroup",
     "Normal",
     # M11 — novelty filtering
     "NoveltyMatch",
@@ -541,6 +570,7 @@ __all__ = [
     "ParametricRosenfeldGroebnerResult",
     # Risch-Norman heuristic integration result
     # Computational group theory (permutation groups)
+    "PauliOperator",
     "Permutation",
     "PermutationGroup",
     "Place",
@@ -564,6 +594,9 @@ __all__ = [
     "RiemannRochSpace",
     # Sifting an element through a stabilizer chain
     "SiftResult",
+    "StabilizerCode",
+    "StabilizerError",
+    "StabilizerGroup",
     # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
     "Telescoping2dCertificate",
     "TelescopingMdCertificate",
@@ -613,6 +646,7 @@ __all__ = [
     "inverse_fourier_transform",
     "inverse_laplace_transform",
     "inverse_z_transform",
+    "is_symplectic",
     # Information theory: not symmetric, and +inf off a nested support
     "kl_divergence",
     "lambert_w",
@@ -641,6 +675,10 @@ __all__ = [
     "riemann_roch",
     "series_solve",
     "solve",
+    "symplectic_complement",
+    "symplectic_form",
+    "symplectic_gram_matrix",
+    "symplectic_gram_schmidt",
     # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
     "telescope2d",
     "telescope_md",
