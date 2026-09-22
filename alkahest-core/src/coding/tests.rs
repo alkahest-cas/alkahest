@@ -750,3 +750,30 @@ fn delsarte_timing_probe() {
         assert!(b.verify_certificate());
     }
 }
+
+/// Independent anchor: the Plotkin regime `A_2(2d, d) = 4d` for even `d`.
+///
+/// This is a *theorem*, not a table lookup, so it checks the LP in a range no
+/// literature value was consulted for. The Delsarte LP is known to be tight
+/// here, so the bound must land exactly on `4d` - too high means the LP is
+/// weak, too low means it is unsound and would rule out codes that exist.
+///
+/// `d = 4` overlaps the existing `A_2(8,4) = 16` anchor on purpose, as a
+/// control; `d = 6, 8, 10` are new.
+#[test]
+fn delsarte_matches_plotkin_on_a_2_2d_d() {
+    for d in [4u32, 6, 8, 10] {
+        let n = 2 * d;
+        let expected = Integer::from(4 * d);
+        let b = delsarte_lp_bound(n as usize, d as usize, 2).unwrap();
+        assert_eq!(
+            *b.bound(),
+            expected,
+            "A_2({n}, {d}) should be 4d = {expected} by Plotkin"
+        );
+        assert!(
+            b.verify_certificate(),
+            "dual certificate failed at ({n}, {d})"
+        );
+    }
+}
