@@ -209,6 +209,24 @@ impl FlintPoly {
         c
     }
 
+    /// Discriminant of the polynomial (`fmpz_poly_discriminant`).
+    ///
+    /// This is the discriminant of *this polynomial*, `(-1)^(d(d-1)/2) ·
+    /// res(f, f') / lc(f)`. For the defining polynomial of a number field that
+    /// is **not** the same thing as the discriminant of the field: they differ
+    /// by the square of the index `[O_K : Z[a]]`. Zero for degree < 1.
+    pub fn discriminant(&self) -> super::integer::FlintInteger {
+        let mut res = super::integer::FlintInteger::new();
+        unsafe { ffi::fmpz_poly_discriminant(res.inner_mut_ptr(), &self.inner) };
+        res
+    }
+
+    /// Raw pointer to the underlying `fmpz_poly_struct`, for the few callers
+    /// outside this module that hand a polynomial straight to FLINT.
+    pub(crate) fn inner_ptr(&self) -> *const ffi::FmpzPolyStruct {
+        &self.inner
+    }
+
     /// Formal derivative: `d/dx [c₀ + c₁x + … + cₙxⁿ] = c₁ + 2c₂x + … + ncₙxⁿ⁻¹`.
     pub fn derivative(&self) -> Self {
         let deg = self.degree();

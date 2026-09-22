@@ -272,6 +272,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-NT-003", class: "NumberTheoryError", cause: Cause::Domain, remediation: Some("adjust residue, base, or root degree until a modular solution exists") },
     ErrorSpec { code: "E-NT-004", class: "NumberTheoryError", cause: Cause::Domain, remediation: Some("use prime moduli for discrete_log/nthroot_mod as documented") },
     ErrorSpec { code: "E-NT-005", class: "NumberTheoryError", cause: Cause::Unsupported, remediation: Some("use quadratic roots or gcd(k,p−1)=1; general radicals require more machinery") },
+    ErrorSpec { code: "E-NT-006", class: "NumberTheoryError", cause: Cause::Resource, remediation: Some("the arithmetic-function argument is past this crate's work cap; p(n), B_n, E_n and H_n all grow superpolynomially in the number of digits, so the cap is a refusal to sit in FLINT for an unbounded time rather than a statement that the value does not exist") },
     // E-PARSE — expression parser (V2-21)
     ErrorSpec { code: "E-PARSE-001", class: "ParseError", cause: Cause::UserInput,   remediation: Some("only ASCII arithmetic expressions are supported") },
     ErrorSpec { code: "E-PARSE-002", class: "ParseError", cause: Cause::UserInput,   remediation: Some("check parentheses and operator placement") },
@@ -603,6 +604,21 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-CODE-006", class: "CodingError", cause: Cause::UserInput,   remediation: Some("check the weight distribution: a linear code has A_0 = 1, no negative multiplicity, and a MacWilliams sum divisible by |C| at every index") },
     ErrorSpec { code: "E-CODE-007", class: "CodingError", cause: Cause::Internal,    remediation: Some("report this as a bug with n, d and q; the uncertified bound was withheld rather than returned, because an upper bound that is too small rules out codes that exist") },
     ErrorSpec { code: "E-CODE-008", class: "CodingError", cause: Cause::UserInput,   remediation: Some("use an alphabet size of at least 2; for the enumeration paths the field must also be small enough to list element by element") },
+    // E-NUMF — NumberFieldError (algebraic number fields Q[x]/(f) on FLINT's
+    // `nf`/`nf_elem`, and the cyclotomic fields Q(zeta_n))
+    //
+    // E-NUMF-003 is the one this module exists for. Q[x]/(f) is a field only
+    // when f is irreducible; for a reducible f it is a ring with zero divisors,
+    // in which `inverse` has no answer for some non-zero elements and `norm`
+    // stops being multiplicative. The polynomial is checked, never assumed.
+    ErrorSpec { code: "E-NUMF-001", class: "NumberFieldError", cause: Cause::UserInput,   remediation: Some("supply at least one non-zero coefficient; coefficients ascend in degree, so x^2 - 2 is [-2, 0, 1]") },
+    ErrorSpec { code: "E-NUMF-002", class: "NumberFieldError", cause: Cause::UserInput,   remediation: Some("the defining polynomial must have degree in 1..=1024; degree 0 would make Q[x]/(f) the zero ring rather than a field, and degree 1 is Q itself") },
+    ErrorSpec { code: "E-NUMF-003", class: "NumberFieldError", cause: Cause::UserInput,   remediation: Some("pass an irreducible polynomial — the error names a proper factor. Factor f and build one field per irreducible factor: Q[x]/(f) for reducible f has zero divisors, so inverses and norms there would be wrong rather than merely unavailable") },
+    ErrorSpec { code: "E-NUMF-004", class: "NumberFieldError", cause: Cause::UserInput,   remediation: Some("write each coefficient as a decimal integer or a fraction \"p/q\", without spaces") },
+    ErrorSpec { code: "E-NUMF-005", class: "NumberFieldError", cause: Cause::Domain,      remediation: Some("zero has no inverse; test with is_zero() before dividing. In a genuine number field zero is the only non-invertible element, which is why the defining polynomial is checked") },
+    ErrorSpec { code: "E-NUMF-006", class: "NumberFieldError", cause: Cause::UserInput,   remediation: Some("rebuild both operands over one NumberField; two fields with different canonical defining polynomials are treated as different even when isomorphic, because an element's coordinates mean different things in each") },
+    ErrorSpec { code: "E-NUMF-007", class: "NumberFieldError", cause: Cause::UserInput,   remediation: Some("an element of a degree-d field has at most d coordinates in the power basis 1, a, a^2, ...; reduce modulo the defining polynomial at the call site if that is what was meant") },
+    ErrorSpec { code: "E-NUMF-008", class: "NumberFieldError", cause: Cause::UserInput,   remediation: Some("Q(zeta_n) needs n >= 1 with phi(n) <= 1024; note phi(n) is the degree, so n = 2048 is allowed (degree 1024) while n = 3^7 is not") },
 ];
 
 #[cfg(test)]

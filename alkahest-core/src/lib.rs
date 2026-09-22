@@ -38,6 +38,7 @@ pub mod modular;
 // V3-1 — Integer number theory (`fmpz` helpers)
 pub mod number_theory;
 pub mod numeric;
+pub mod numfield;
 pub mod ode;
 pub mod parse;
 pub mod pattern;
@@ -452,7 +453,25 @@ pub mod experimental {
         is_prime, lift_crt, mignotte_bound, rational_reconstruction, reduce_mod,
         select_lucky_prime, ModularError, ModularValue, MultiPolyFp,
     };
+    /// The classical arithmetic functions, on FLINT's `arith`, `bernoulli` and
+    /// `partitions`. **FLINT's Bernoulli convention is `B_1 = -1/2`** (DLMF /
+    /// Mathematica / SymPy); the other convention differs in exactly that one
+    /// value and nowhere else, which is what makes picking the wrong one so
+    /// quiet a bug. See [`crate::number_theory`].
+    pub use crate::number_theory::{
+        bernoulli_number, divisor_sigma, euler_number, harmonic_number, moebius_mu,
+        partition_number, stirling_first, stirling_first_unsigned, stirling_second, sum_of_squares,
+        MAX_BERNOULLI_N, MAX_EULER_N, MAX_HARMONIC_N, MAX_PARTITION_N, MAX_STIRLING_N,
+    };
     pub use crate::numeric::{guess_integer_relation, PslqError};
+    /// Algebraic number fields Q[x]/(f) on FLINT's `nf`/`nf_elem`, including
+    /// the cyclotomic fields Q(zeta_n). The defining polynomial is **checked**
+    /// for irreducibility, and `polynomial_discriminant` is the discriminant
+    /// of that polynomial — *not* the field discriminant, which this module
+    /// does not compute. See [`crate::numfield`].
+    pub use crate::numfield::{
+        cyclotomic_polynomial, NumberField, NumberFieldElement, NumberFieldError, MAX_FIELD_DEGREE,
+    };
     pub use crate::ode::dsolve::system::{
         dsolve_system, dsolve_system_with, DsolveSystemError, SystemSolution,
     };

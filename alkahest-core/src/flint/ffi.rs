@@ -229,6 +229,77 @@ pub struct FqNmodCtxBuf(pub [u8; 512]);
 #[repr(C, align(8))]
 pub struct FqNmodPolyBuf(pub [u8; 128]);
 
+// ---------------------------------------------------------------------------
+// fmpq / fmpq_poly / nf / nf_elem — rationals, rational polynomials and the
+// algebraic number fields of FLINT's absorbed Antic library
+// ---------------------------------------------------------------------------
+//
+// READ BEFORE TOUCHING THESE.
+//
+// `nf_t` and `nf_elem_t` are the trap in this file. `nf_elem_struct` is a
+// **union whose active member depends on the degree of the field**: Antic
+// special-cases degree 1 (two `fmpz`, a numerator and a denominator) and
+// degree 2 (three `fmpz` numerators and a denominator) and uses an
+// `fmpq_poly_struct` for everything else. A degree-2 element therefore does
+// not have the layout of a degree-3 one, and picking the wrong arm is silent
+// memory corruption rather than a compile error.
+//
+// The defence is the same one `nmod_mat` uses above, taken further: **neither
+// struct is mirrored here at all.** Both are opaque, over-sized, aligned byte
+// arrays, and every read and write goes through a FLINT entry point that also
+// receives the `nf_t` and so can pick the right union arm itself. Nothing in
+// this crate computes an offset into either.
+//
+// The sizes below were measured on FLINT 3.5.0 (x86-64) with a C probe that
+// filled the buffer with a sentinel byte and counted how many trailing bytes
+// `nf_init` / `nf_elem_init` left untouched:
+//
+//   sizeof(nf_struct)      = 112  (fmpq_poly pol, preinv/powers unions,
+//                                  fmpq_poly traces, ulong flag)
+//   sizeof(nf_elem_struct) =  32  (degree 1 writes 16, everything else 32)
+//
+// `numfield::tests` re-runs that measurement from Rust — see
+// `nf_buffers_have_generous_slack` — so a future FLINT that outgrows either
+// buffer fails a test rather than the heap.
+
+/// C layout of `fmpq` — FLINT's rational number, a numerator and a
+/// denominator in lowest terms with a positive denominator.
+///
+/// Unlike `nf_elem_struct` this one *is* mirrored, because `fmpq_numref` and
+/// `fmpq_denref` are C macros rather than exported symbols, so there is no
+/// accessor to route through. The layout is part of FLINT's documented API and
+/// was confirmed twice here: by disassembly (`arith_bernoulli_number` passes
+/// `x` and `x + 8` to `_arith_bernoulli_number` as numerator and denominator)
+/// and by a C probe. `numfield::tests::fmpq_layout_matches_flint` cross-checks
+/// the fields against `fmpq_get_str` at run time.
+#[repr(C)]
+pub struct Fmpq {
+    /// Numerator.
+    pub num: fmpz,
+    /// Denominator, always positive once canonicalised.
+    pub den: fmpz,
+}
+
+/// Opaque storage for one `fmpq_poly_t` (32 bytes on FLINT 3.5.0; 64 here).
+///
+/// Held opaquely for the same reason as [`NfBuf`]: nothing in this crate needs
+/// a field of it, and `fmpq_poly_*` covers every access.
+#[repr(C, align(8))]
+pub struct FmpqPolyBuf(pub [u8; 64]);
+
+/// Opaque storage for one `nf_t` (112 bytes on FLINT 3.5.0; 512 here).
+#[repr(C, align(8))]
+pub struct NfBuf(pub [u8; 512]);
+
+/// Opaque storage for one `nf_elem_t` (16 or 32 bytes depending on the degree
+/// of the field; 128 here).
+///
+/// The size varies **with the field**, which is why this is a fixed over-sized
+/// buffer and never an array: FLINT would stride an `nf_elem_struct[]` by the
+/// union's size, not by this buffer's.
+#[repr(C, align(8))]
+pub struct NfElemBuf(pub [u8; 128]);
+
 #[link(name = "flint")]
 extern "C" {
     // -----------------------------------------------------------------------
@@ -714,4 +785,116 @@ extern "C" {
         n: slong,
         ctx: *const FqNmodCtxBuf,
     );
+
+    // -----------------------------------------------------------------------
+    // fmpq — rationals
+    // -----------------------------------------------------------------------
+    pub fn fmpq_init(x: *mut Fmpq);
+    pub fn fmpq_clear(x: *mut Fmpq);
+    /// Reduce `num`/`den` to lowest terms with a positive denominator.
+    pub fn fmpq_canonicalise(x: *mut Fmpq);
+    /// Allocates and returns `"p"` or `"p/q"`. Caller must `flint_free` it.
+    pub fn fmpq_get_str(str_: *mut c_char, b: c_int, x: *const Fmpq) -> *mut c_char;
+
+    // -----------------------------------------------------------------------
+    // fmpq_poly — dense univariate polynomials over ℚ
+    // -----------------------------------------------------------------------
+    pub fn fmpq_poly_init(poly: *mut FmpqPolyBuf);
+    pub fn fmpq_poly_clear(poly: *mut FmpqPolyBuf);
+    pub fn fmpq_poly_degree(poly: *const FmpqPolyBuf) -> slong;
+    pub fn fmpq_poly_set_fmpz_poly(rop: *mut FmpqPolyBuf, op: *const FmpzPolyStruct);
+    pub fn fmpq_poly_set_coeff_fmpq(poly: *mut FmpqPolyBuf, n: slong, x: *const Fmpq);
+
+    // -----------------------------------------------------------------------
+    // nf / nf_elem — algebraic number fields ℚ[x]/(f) (FLINT's absorbed Antic)
+    // -----------------------------------------------------------------------
+    //
+    // Every signature below was confirmed against FLINT 3.5.0 by disassembly —
+    // which argument register each entry point reads, and which one it treats
+    // as the `nf_t` by loading the flag word at offset 0x68 — and then
+    // exercised end to end by a C probe in degrees 1, 2, 3 and 4. This box
+    // ships no `nf.h`, so there was no header to copy them from.
+    //
+    // Note the argument order: the `nf_t` comes **last**, and
+    // `nf_elem_get_str_pretty` takes `(elem, var, nf)`.
+    pub fn nf_init(nf: *mut NfBuf, pol: *const FmpqPolyBuf);
+    pub fn nf_clear(nf: *mut NfBuf);
+
+    pub fn nf_elem_init(a: *mut NfElemBuf, nf: *const NfBuf);
+    pub fn nf_elem_clear(a: *mut NfElemBuf, nf: *const NfBuf);
+    pub fn nf_elem_set(a: *mut NfElemBuf, b: *const NfElemBuf, nf: *const NfBuf);
+    pub fn nf_elem_zero(a: *mut NfElemBuf, nf: *const NfBuf);
+    pub fn nf_elem_one(a: *mut NfElemBuf, nf: *const NfBuf);
+    pub fn nf_elem_gen(a: *mut NfElemBuf, nf: *const NfBuf);
+    pub fn nf_elem_is_zero(a: *const NfElemBuf, nf: *const NfBuf) -> c_int;
+    pub fn nf_elem_is_one(a: *const NfElemBuf, nf: *const NfBuf) -> c_int;
+    pub fn nf_elem_equal(a: *const NfElemBuf, b: *const NfElemBuf, nf: *const NfBuf) -> c_int;
+    pub fn nf_elem_neg(r: *mut NfElemBuf, a: *const NfElemBuf, nf: *const NfBuf);
+    pub fn nf_elem_add(
+        r: *mut NfElemBuf,
+        a: *const NfElemBuf,
+        b: *const NfElemBuf,
+        nf: *const NfBuf,
+    );
+    pub fn nf_elem_sub(
+        r: *mut NfElemBuf,
+        a: *const NfElemBuf,
+        b: *const NfElemBuf,
+        nf: *const NfBuf,
+    );
+    pub fn nf_elem_mul(
+        r: *mut NfElemBuf,
+        a: *const NfElemBuf,
+        b: *const NfElemBuf,
+        nf: *const NfBuf,
+    );
+    pub fn nf_elem_div(
+        r: *mut NfElemBuf,
+        a: *const NfElemBuf,
+        b: *const NfElemBuf,
+        nf: *const NfBuf,
+    );
+    pub fn nf_elem_inv(r: *mut NfElemBuf, a: *const NfElemBuf, nf: *const NfBuf);
+    pub fn nf_elem_pow(r: *mut NfElemBuf, a: *const NfElemBuf, e: ulong, nf: *const NfBuf);
+    pub fn nf_elem_norm(res: *mut Fmpq, a: *const NfElemBuf, nf: *const NfBuf);
+    pub fn nf_elem_trace(res: *mut Fmpq, a: *const NfElemBuf, nf: *const NfBuf);
+    pub fn nf_elem_get_coeff_fmpq(c: *mut Fmpq, a: *const NfElemBuf, i: slong, nf: *const NfBuf);
+    pub fn nf_elem_set_fmpq_poly(a: *mut NfElemBuf, pol: *const FmpqPolyBuf, nf: *const NfBuf);
+    /// Allocates and returns the element written in terms of `var`. Caller must
+    /// `flint_free` it. Argument order is `(elem, var, nf)`.
+    pub fn nf_elem_get_str_pretty(
+        a: *const NfElemBuf,
+        var: *const c_char,
+        nf: *const NfBuf,
+    ) -> *mut c_char;
+
+    // -----------------------------------------------------------------------
+    // arith / bernoulli / partitions — classical arithmetic functions
+    // -----------------------------------------------------------------------
+    //
+    // Two of these changed argument order between FLINT 2 and FLINT 3 and are
+    // easy to get backwards: `fmpz_divisor_sigma` and `arith_sum_of_squares`
+    // both take `(result, k, n)` here — the *exponent* before the argument.
+    // Confirmed by disassembly (it is `%rdx`, not `%rsi`, that is dereferenced
+    // as an `fmpz` pointer) and by a C probe against σ₁(12) = 28, σ₂(12) = 210
+    // and r₂(5) = 8.
+    pub fn arith_number_of_partitions(x: *mut fmpz, n: ulong);
+    pub fn arith_bernoulli_number(x: *mut Fmpq, n: ulong);
+    pub fn arith_euler_number(res: *mut fmpz, n: ulong);
+    pub fn arith_harmonic_number(x: *mut Fmpq, n: slong);
+    /// Signed Stirling number of the first kind, `s(n, k)`.
+    pub fn arith_stirling_number_1(s: *mut fmpz, n: slong, k: slong);
+    /// Unsigned Stirling number of the first kind, `c(n, k) = |s(n, k)|`.
+    pub fn arith_stirling_number_1u(s: *mut fmpz, n: slong, k: slong);
+    /// Stirling number of the second kind, `S(n, k)`.
+    pub fn arith_stirling_number_2(s: *mut fmpz, n: slong, k: slong);
+    /// Number of representations of `n` as an ordered sum of `k` squares.
+    pub fn arith_sum_of_squares(r: *mut fmpz, k: ulong, n: *const fmpz);
+    pub fn fmpz_moebius_mu(n: *const fmpz) -> c_int;
+    pub fn fmpz_divisor_sigma(res: *mut fmpz, k: ulong, n: *const fmpz);
+
+    // -----------------------------------------------------------------------
+    // fmpz_poly — discriminant (used for the defining polynomial of a field)
+    // -----------------------------------------------------------------------
+    pub fn fmpz_poly_discriminant(res: *mut fmpz, poly: *const FmpzPolyStruct);
 }

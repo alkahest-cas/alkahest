@@ -400,6 +400,9 @@ from alkahest.alkahest import (
     LogNormal,
     MatrixGroup,
     Normal,
+    NumberField,
+    NumberFieldElement,
+    NumberFieldError,
     OdeTrajectory,
     ParallelRischResult,
     PauliOperator,
@@ -427,24 +430,29 @@ from alkahest.alkahest import (
     WeightEnumerator,
     apart_side_conditions,
     asymptotic_expand,
+    bernoulli_number,
     # P1 item 10 — asymptotic expansion at scale
     coefficient_asymptotics,
     cross,
     cross_entropy,
     curl,
     cyclotomic_polynomial,
+    cyclotomic_polynomial_coeffs,
     delsarte_lp_bound,
     dirac_delta,
     divergence,
+    divisor_sigma,
     dot,
     dsolve,
     dsolve_system,
     euler_maclaurin,
+    euler_number,
     expectation,
     expectation_affine,
     fourier_transform,
     gradient,
     hamming_bound,
+    harmonic_number,
     heaviside,
     integrate_parallel_risch,
     inverse_fourier_transform,
@@ -456,17 +464,23 @@ from alkahest.alkahest import (
     krawtchouk_poly,
     laplace_transform,
     laplacian,
+    moebius_mu,
     multilimit,
     mutual_information_independent,
     norm,
     ode_integrate_rk4,
     ode_integrate_rk45,
+    partition_number,
     prob_side_conditions,
     puiseux_series,
     q_zeilberger,
     riemann_roch,
     series_solve,
     singleton_bound,
+    stirling_first,
+    stirling_first_unsigned,
+    stirling_second,
+    sum_of_squares,
     symplectic_complement,
     symplectic_form,
     symplectic_gram_matrix,
@@ -580,6 +594,17 @@ __all__ = [
     # M11 — novelty filtering
     "NoveltyMatch",
     "NoveltyVerdict",
+    # Algebraic number fields Q[x]/(f), on FLINT's `nf`/`nf_elem`, including
+    # the cyclotomic fields Q(zeta_n) that lattice cryptography and ZK proof
+    # systems are built over. The defining polynomial is **checked** for
+    # irreducibility (E-NUMF-003), because Q[x]/(f) for reducible f is a ring
+    # with zero divisors in which `inverse` has no answer. Note
+    # `polynomial_discriminant` is the discriminant of the defining
+    # polynomial, not the field discriminant: the ring of integers is not
+    # computed.
+    "NumberField",
+    "NumberFieldElement",
+    "NumberFieldError",
     "OdeTrajectory",
     # M11 — novelty filtering
     "OeisCache",
@@ -632,6 +657,7 @@ __all__ = [
     "asymptotic_expand",
     # M5 — recurrence -> asymptotics
     "asymptotics_from_recurrence",
+    "bernoulli_number",
     "bessel_j0",
     "bessel_j1",
     # M11 — novelty filtering
@@ -647,15 +673,18 @@ __all__ = [
     "curl",
     # M4 — root-of-unity specialisation
     "cyclotomic_polynomial",
+    "cyclotomic_polynomial_coeffs",
     "delsarte_lp_bound",
     "digamma",
     "dirac_delta",
     # Vector calculus
     "divergence",
+    "divisor_sigma",
     "dot",
     "dsolve",
     "dsolve_system",
     "euler_maclaurin",
+    "euler_number",
     "evaluate",
     "expectation",
     "expectation_affine",
@@ -663,6 +692,7 @@ __all__ = [
     # Vector calculus
     "gradient",
     "hamming_bound",
+    "harmonic_number",
     "heaviside",
     "im",
     # Risch-Norman (parallel Risch) heuristic integrator.  Returns a result
@@ -681,6 +711,7 @@ __all__ = [
     "laplace_transform",
     # Vector calculus
     "laplacian",
+    "moebius_mu",
     "multilimit",
     # Information theory: 0, under an independence the caller asserts
     "mutual_information_independent",
@@ -690,6 +721,7 @@ __all__ = [
     "novelty",
     "ode_integrate_rk4",
     "ode_integrate_rk45",
+    "partition_number",
     # Hypotheses the last Distribution method / expectation call rests on
     "prob_side_conditions",
     # Puiseux (fractional-exponent) expansion
@@ -704,6 +736,10 @@ __all__ = [
     "series_solve",
     "singleton_bound",
     "solve",
+    "stirling_first",
+    "stirling_first_unsigned",
+    "stirling_second",
+    "sum_of_squares",
     "symplectic_complement",
     "symplectic_form",
     "symplectic_gram_matrix",
