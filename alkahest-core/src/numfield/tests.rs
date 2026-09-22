@@ -624,3 +624,44 @@ fn clone_is_independent() {
     drop(a);
     assert_eq!(b.norm(), q(-2));
 }
+
+/// Exercise the `unsafe impl Sync for NfInner` claim rather than only arguing it.
+///
+/// The safety comment rests on `nf_init` precomputing eagerly, so a shared
+/// `nf_t` is read-only thereafter. That is an assumption about FLINT's
+/// internals, so hammer it: eight threads share one field and do arithmetic
+/// concurrently, each checking a value it can verify locally.
+///
+/// This cannot prove the absence of a race, but combined with the nightly
+/// ThreadSanitizer shard it is much better than reasoning alone - and if a
+/// future FLINT makes any of that precompute lazy, this is where it shows up.
+#[test]
+fn a_shared_field_survives_concurrent_use() {
+    use std::sync::Arc;
+
+    // Q(zeta_12), degree 4 - the fmpq_poly arm of the nf_elem union.
+    let k = Arc::new(NumberField::cyclotomic(12).unwrap());
+    let handles: Vec<_> = (0..8u64)
+        .map(|t| {
+            let k = Arc::clone(&k);
+            std::thread::spawn(move || {
+                let z = k.generator();
+                for i in 0..200u64 {
+                    // zeta_12 is a root of unity of order 12: zeta^12 = 1.
+                    assert_eq!(z.pow(12 * (i % 3 + 1)), k.one());
+                    // Norm is multiplicative on a value that varies per thread.
+                    let a = z.add(&k.rational(&q(t as i64 + 1))).unwrap();
+                    let b = z.pow(i % 4 + 1);
+                    let lhs = a.mul(&b).unwrap().norm();
+                    assert_eq!(lhs, a.norm() * b.norm());
+                }
+                z.norm()
+            })
+        })
+        .collect();
+
+    // N(zeta_12) = Phi_12(0) = 1 for every thread.
+    for h in handles {
+        assert_eq!(h.join().unwrap(), q(1));
+    }
+}
