@@ -372,6 +372,10 @@ from alkahest.alkahest import (
     STABILIZER_MAX_DISTANCE_SEARCH_DIM,
     STABILIZER_MAX_MATRIX_ENUMERATION,
     STABILIZER_MAX_QUBITS,
+    # The classical arithmetic functions' work cap (E-NT-006). A *subclass*
+    # of alkahest.NumberTheoryError, so `except NumberTheoryError` catches
+    # it together with the domain refusals (E-NT-001 / E-NT-002).
+    ArithmeticError,
     # P1 item 10 — asymptotic expansion at scale
     AsymptoticReport,
     Bernoulli,
@@ -587,6 +591,10 @@ __all__ = [
     "STABILIZER_MAX_DISTANCE_SEARCH_DIM",
     "STABILIZER_MAX_MATRIX_ENUMERATION",
     "STABILIZER_MAX_QUBITS",
+    # The classical arithmetic functions' work cap (E-NT-006). A *subclass*
+    # of alkahest.NumberTheoryError, so `except NumberTheoryError` catches it
+    # together with the domain refusals (E-NT-001 / E-NT-002).
+    "ArithmeticError",
     "Assumptions",
     # P1 item 10 — asymptotic expansion at scale
     "AsymptoticReport",

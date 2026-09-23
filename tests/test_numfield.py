@@ -13,6 +13,7 @@ from fractions import Fraction
 
 import pytest
 from alkahest.experimental import (
+    ArithmeticError,
     NumberField,
     NumberFieldError,
     bernoulli_number,
@@ -274,3 +275,29 @@ def test_work_caps_refuse_rather_than_hang():
     with pytest.raises(NumberTheoryError) as excinfo:
         partition_number(10**9)
     assert excinfo.value.code == "E-NT-006"
+
+
+def test_arithmetic_errors_are_catchable_as_number_theory_errors():
+    """The arithmetic functions raise their own exception type for versioning
+    reasons on the Rust side (``NumberTheoryError`` is an exhaustive enum in the
+    stable surface). That must not leak into Python: one ``except
+    NumberTheoryError`` has to keep catching everything this surface raises, and
+    the code must still read ``E-NT-NNN``.
+    """
+    from alkahest.number_theory import NumberTheoryError
+
+    assert issubclass(ArithmeticError, NumberTheoryError)
+
+    with pytest.raises(NumberTheoryError) as excinfo:
+        partition_number(10**9)
+    assert isinstance(excinfo.value, ArithmeticError)
+    assert excinfo.value.code == "E-NT-006"
+
+    # A domain violation underneath an arithmetic function keeps its own code
+    # rather than being re-labelled as the work cap.
+    with pytest.raises(NumberTheoryError) as excinfo:
+        moebius_mu(0)
+    assert excinfo.value.code == "E-NT-002"
+    with pytest.raises(NumberTheoryError) as excinfo:
+        divisor_sigma(1, -4)
+    assert excinfo.value.code == "E-NT-002"

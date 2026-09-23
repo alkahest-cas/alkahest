@@ -282,7 +282,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-NT-003", class: "NumberTheoryError", cause: Cause::Domain, remediation: Some("adjust residue, base, or root degree until a modular solution exists") },
     ErrorSpec { code: "E-NT-004", class: "NumberTheoryError", cause: Cause::Domain, remediation: Some("use prime moduli for discrete_log/nthroot_mod as documented") },
     ErrorSpec { code: "E-NT-005", class: "NumberTheoryError", cause: Cause::Unsupported, remediation: Some("use quadratic roots or gcd(k,p−1)=1; general radicals require more machinery") },
-    ErrorSpec { code: "E-NT-006", class: "NumberTheoryError", cause: Cause::Resource, remediation: Some("the arithmetic-function argument is past this crate's work cap; p(n), B_n, E_n and H_n all grow superpolynomially in the number of digits, so the cap is a refusal to sit in FLINT for an unbounded time rather than a statement that the value does not exist") },
+    ErrorSpec { code: "E-NT-006", class: "ArithmeticError", cause: Cause::Resource, remediation: Some("the arithmetic-function argument is past this crate's work cap; p(n), B_n, E_n and H_n all grow superpolynomially in the number of digits, so the cap is a refusal to sit in FLINT for an unbounded time rather than a statement that the value does not exist") },
     // E-PARSE — expression parser (V2-21)
     ErrorSpec { code: "E-PARSE-001", class: "ParseError", cause: Cause::UserInput,   remediation: Some("only ASCII arithmetic expressions are supported") },
     ErrorSpec { code: "E-PARSE-002", class: "ParseError", cause: Cause::UserInput,   remediation: Some("check parentheses and operator placement") },

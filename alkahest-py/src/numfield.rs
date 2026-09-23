@@ -6,7 +6,9 @@
 //! `bernoulli_number`, `euler_number`, `harmonic_number`, the Stirling
 //! numbers, `moebius_mu`, `divisor_sigma` and `sum_of_squares`. Refusals
 //! arrive as `alkahest.experimental.NumberFieldError` (stable `E-NUMF-NNN`
-//! `.code`) or `alkahest.number_theory.NumberTheoryError` (`E-NT-NNN`).
+//! `.code`) or `alkahest.experimental.ArithmeticError` (`E-NT-NNN`), which is
+//! a **subclass** of `alkahest.number_theory.NumberTheoryError` — so one
+//! `except NumberTheoryError` catches the whole number-theory surface.
 //!
 //! # How a number crosses the boundary
 //!
@@ -25,12 +27,23 @@ use pyo3::types::{PyModule, PyType};
 use alkahest_core::experimental::{
     cyclotomic_polynomial, NumberField, NumberFieldElement, NumberFieldError,
 };
-use alkahest_core::number_theory::{
+use alkahest_core::number_theory::arith::{
     bernoulli_number, divisor_sigma, euler_number, harmonic_number, moebius_mu, partition_number,
-    stirling_first, stirling_first_unsigned, stirling_second, sum_of_squares, NumberTheoryError,
+    stirling_first, stirling_first_unsigned, stirling_second, sum_of_squares, ArithmeticError,
 };
 
 pyo3::create_exception!(alkahest, PyNumberFieldError, crate::PyAlkahestError);
+
+// The arithmetic functions' exception, and deliberately **a subclass of
+// `NumberTheoryError`**.
+//
+// `ArithmeticError` exists on the Rust side only because `NumberTheoryError`
+// is an exhaustive enum in the stable surface, so extending it would force a
+// major version bump — see `alkahest_core::number_theory::arith`. Making it a
+// subclass here keeps that a Rust-side detail: one `except NumberTheoryError`
+// still catches every refusal this surface raises, and `.code` still reads
+// `E-NT-NNN` across the whole range.
+pyo3::create_exception!(alkahest, PyArithmeticError, crate::PyNumberTheoryError);
 
 fn nf_err(e: NumberFieldError) -> PyErr {
     Python::with_gil(|py| {
@@ -39,9 +52,9 @@ fn nf_err(e: NumberFieldError) -> PyErr {
     })
 }
 
-fn nt_err(e: NumberTheoryError) -> PyErr {
+fn nt_err(e: ArithmeticError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<crate::PyNumberTheoryError>();
+        let exc_type = py.get_type_bound::<PyArithmeticError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
@@ -488,6 +501,10 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "NumberFieldError",
         m.py().get_type_bound::<PyNumberFieldError>(),
+    )?;
+    m.add(
+        "ArithmeticError",
+        m.py().get_type_bound::<PyArithmeticError>(),
     )?;
     m.add_function(wrap_pyfunction!(py_cyclotomic_polynomial_coeffs, m)?)?;
     m.add_function(wrap_pyfunction!(py_partition_number, m)?)?;

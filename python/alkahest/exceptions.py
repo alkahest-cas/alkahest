@@ -52,6 +52,12 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-RSOLVE-001 … E-RSOLVE-005 RsolveError (V2-18 difference equations)
     E-DIOPH-001 … E-DIOPH-004 DiophantineError (V2-19)
     E-NT-001 … E-NT-005    NumberTheoryError (V3-1 integer number theory)
+    E-NT-006               ArithmeticError, a *subclass* of NumberTheoryError
+                             (the work cap on the classical arithmetic
+                             functions — p(n), Bernoulli, Euler, Stirling and
+                             harmonic numbers, Möbius μ, σ_k, sums of squares).
+                             Domain and parse failures under those functions
+                             still arrive as E-NT-001 / E-NT-002
     E-SERIES-001 … E-SERIES-006 SeriesError  (003 = expansion ran past its work
                                  ceiling / budget before reaching the requested
                                  order; refused rather than returned short.

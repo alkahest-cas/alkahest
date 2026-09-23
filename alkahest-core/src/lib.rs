@@ -479,11 +479,18 @@ pub mod experimental {
     /// `partitions`. **FLINT's Bernoulli convention is `B_1 = -1/2`** (DLMF /
     /// Mathematica / SymPy); the other convention differs in exactly that one
     /// value and nowhere else, which is what makes picking the wrong one so
-    /// quiet a bug. See [`crate::number_theory`].
-    pub use crate::number_theory::{
+    /// quiet a bug.
+    ///
+    /// These refuse with [`ArithmeticError`], which is `#[non_exhaustive]`, not
+    /// the stable [`crate::NumberTheoryError`] the rest of
+    /// [`crate::number_theory`] uses. `ArithmeticError` *wraps* the latter for
+    /// domain and parse failures, so `E-NT-001` / `E-NT-002` reach a caller
+    /// unchanged, and `E-NT-006` is its own work cap.
+    pub use crate::number_theory::arith::{
         bernoulli_number, divisor_sigma, euler_number, harmonic_number, moebius_mu,
         partition_number, stirling_first, stirling_first_unsigned, stirling_second, sum_of_squares,
-        MAX_BERNOULLI_N, MAX_EULER_N, MAX_HARMONIC_N, MAX_PARTITION_N, MAX_STIRLING_N,
+        ArithmeticError, MAX_BERNOULLI_N, MAX_EULER_N, MAX_HARMONIC_N, MAX_PARTITION_N,
+        MAX_STIRLING_N,
     };
     pub use crate::numeric::{guess_integer_relation, PslqError};
     /// Algebraic number fields Q[x]/(f) on FLINT's `nf`/`nf_elem`, including

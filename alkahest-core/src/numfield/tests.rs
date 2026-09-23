@@ -40,7 +40,7 @@ fn fmpq_layout_matches_flint() {
     // no exported symbol to route through. Cross-check the mirrored fields
     // against FLINT's own printer: B_12 = -691/2730.
     assert_eq!(std::mem::size_of::<ffi::Fmpq>(), 16);
-    let b12 = crate::number_theory::bernoulli_number(12).unwrap();
+    let b12 = crate::number_theory::arith::bernoulli_number(12).unwrap();
     assert_eq!(*b12.numer(), Integer::from(-691));
     assert_eq!(*b12.denom(), Integer::from(2730));
 }
