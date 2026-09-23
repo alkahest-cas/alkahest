@@ -346,11 +346,14 @@ extern "C" {
     /// buffer's address — which is larger and equally aligned — to
     /// `*mut FmpzMatStruct` at the call.
     ///
-    /// `fmpz_mat_entry` is declared here because nothing else declares it, and
-    /// because taking the entry address from FLINT is the whole point: it is a
-    /// real exported function in FLINT 3.1+, not the layout-dependent macro it
-    /// used to be.
-    pub fn fmpz_mat_entry(mat: *const FmpzMatBuf, i: slong, j: slong) -> *mut fmpz;
+    // `fmpz_mat_entry` is deliberately NOT declared here. `super::ffi` already
+    // declares it over `FmpzMatStruct`, and two `extern "C"` declarations of one
+    // symbol with different parameter types is a `clashing_extern_declarations`
+    // error under `-D warnings`. The comment this replaces said "nothing else
+    // declares it", which was true on the branch this module was written on and
+    // false once it met the lattice work. `acb.rs` casts its opaque buffer to
+    // `FmpzMatStruct` at the one call site instead; both are `#[repr(C)]` views
+    // of the same `fmpz_mat_t`, and only FLINT ever computes an entry address.
 
     // -- acb_modular -------------------------------------------------------
     pub fn acb_modular_eta(z: *mut AcbStruct, tau: *const AcbStruct, prec: slong);

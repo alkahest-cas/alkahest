@@ -840,7 +840,11 @@ impl IntMat {
         // SAFETY: bounds checked; `fmpz_mat_entry` is a real exported function
         // in FLINT 3.1+, so the row offset is computed by the library.
         unsafe {
-            let p = arb::fmpz_mat_entry(&self.buf, i as ffi::slong, j as ffi::slong);
+            let p = ffi::fmpz_mat_entry(
+                (&self.buf as *const arb::FmpzMatBuf).cast::<ffi::FmpzMatStruct>(),
+                i as ffi::slong,
+                j as ffi::slong,
+            );
             let mut tmp = FlintInteger::new();
             ffi::fmpz_set(tmp.inner_mut_ptr(), p);
             tmp.to_rug()

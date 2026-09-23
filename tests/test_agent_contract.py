@@ -248,6 +248,30 @@ def _probe_cuda():
 #: needs a named way to cash it in. `test_every_advertised_feature_has_an_entry_point`
 #: below fails if a bit is added without one — which is what `groebner_cuda`
 #: and `numpy` both lacked.
+def _probe_arb_backend():
+    # Not a Cargo feature: `build.rs` probes libflint's symbol table, because
+    # FLINT absorbed Arb in 3.0. `hasattr` is not a witness here — the names
+    # exist on every build and refuse with `E-THETA-001` when the backend is
+    # absent — so cash the bit by actually computing something. `j(i) = 1728`
+    # exactly, and the returned ball must contain it.
+    from alkahest import experimental
+
+    tau = experimental.ComplexBall(0.0, 1.0, 128)
+    assert experimental.j_invariant(tau).contains(1728.0)
+
+
+def _probe_riemann_theta():
+    # A second, narrower probe: `acb_theta`'s API was rewritten in FLINT 3.2,
+    # so a build can have the Arb backend and still lack genus-g theta. Genus 1
+    # at z = 0, tau = i must return all 4^g = 4 characteristic values.
+    from alkahest import experimental
+
+    tau = experimental.SiegelMatrix(1, [experimental.ComplexBall(0.0, 1.0, 128)], 128)
+    values = experimental.riemann_theta([experimental.ComplexBall(0.0, 0.0, 128)], tau)
+    assert values.genus == 1
+    assert len(values.values()) == 4
+
+
 _FEATURE_ENTRY_POINTS = {
     "egraph": _probe_egraph,
     "groebner": _probe_groebner,
@@ -257,6 +281,8 @@ _FEATURE_ENTRY_POINTS = {
     "cranelift_jit": _probe_native_jit,
     "parallel": _probe_parallel,
     "cuda": _probe_cuda,
+    "arb_backend": _probe_arb_backend,
+    "riemann_theta": _probe_riemann_theta,
 }
 
 #: `(owner, attribute)` pairs that exist if and only if the bit is `True`.

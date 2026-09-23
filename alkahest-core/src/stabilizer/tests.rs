@@ -763,8 +763,19 @@ fn quantum_hamming_15_7_3() {
     assert_eq!(code.x_rank(), 4);
     assert_eq!(code.z_rank(), 4);
     assert_eq!(code.k(), 7, "k = n - rank(H_X) - rank(H_Z) = 15 - 4 - 4");
-    assert_eq!(code.minimum_distance().unwrap(), Distance::Exact(3));
+    let Distance::Exact(d) = code.minimum_distance().unwrap() else {
+        panic!("expected an exact distance for a code this size");
+    };
+    assert_eq!(d, 3);
 
-    // The quantum Singleton (Knill-Laflamme) bound: n - k >= 2(d - 1).
-    assert!(15 - 7 >= 2 * (3 - 1));
+    // The quantum Singleton (Knill-Laflamme) bound, read off the values the
+    // code actually reported rather than off the literals in its name - the
+    // first version of this line compared constants and clippy was right to
+    // call it out as testing nothing.
+    assert!(
+        code.n() - code.k() >= 2 * (d - 1),
+        "quantum Singleton bound violated: [[{}, {}, {d}]]",
+        code.n(),
+        code.k()
+    );
 }
