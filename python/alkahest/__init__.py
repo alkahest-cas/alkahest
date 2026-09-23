@@ -2221,6 +2221,18 @@ def capabilities() -> dict:
     better than one that reads ``True`` and lies, and a bit that correlates
     with nothing is better removed than left to be misread.
 
+    ``features`` also carries two bits that are **not** Cargo features:
+    ``arb_backend`` and ``riemann_theta``. ``alkahest-core/build.rs`` probes
+    ``libflint``'s symbol table for them, because FLINT absorbed Arb in 3.0 but
+    rewrote the ``acb_theta`` API in 3.2 — so the same Cargo invocation against
+    an older FLINT produces a build whose ``theta`` module is entirely stubbed.
+    Both bits satisfy the falsifiability rule above: ``False`` guarantees every
+    entry point behind them raises ``E-THETA-001`` instead of computing, so the
+    two states are distinguishable by observation rather than by trust. Check
+    ``caps["features"]["riemann_theta"]`` before calling
+    :func:`~alkahest.experimental.riemann_theta`. ``contract_version`` stays
+    ``3``: the row gained keys and lost none.
+
     Example
     -------
     >>> import alkahest as ak

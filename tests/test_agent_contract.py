@@ -25,6 +25,12 @@ def test_capabilities_reports_installed_build_features():
         "cranelift_jit",
         "parallel",
         "cuda",
+        # Probed from libflint's symbol table by build.rs, not Cargo features:
+        # FLINT absorbed Arb in 3.0 and rewrote acb_theta in 3.2, so a build
+        # against an older FLINT stubs the theta module. `contract_version`
+        # stays 3 - the row gained keys and lost none.
+        "arb_backend",
+        "riemann_theta",
     } == caps["features"].keys()
     assert "groebner_cuda" not in caps["features"]
     assert "numpy" not in caps["features"]

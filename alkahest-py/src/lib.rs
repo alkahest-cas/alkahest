@@ -10398,6 +10398,22 @@ fn py_build_features() -> std::collections::HashMap<String, bool> {
         // `cuda` stays: it is falsifiable. `true` guarantees `ak.compile_cuda`
         // and `ak.CudaCompiledFn` exist, `false` guarantees they do not.
         ("cuda", cfg!(feature = "cuda")),
+        // The two theta bits are not Cargo features — `build.rs` probes
+        // libflint's symbol table, because FLINT absorbed Arb in 3.0 and
+        // rewrote the acb_theta API in 3.2. Both are falsifiable in the sense
+        // this contract requires: `false` guarantees every entry point behind
+        // them refuses with `E-THETA-001` rather than computing, so a caller
+        // can distinguish the two states by observation. They are reported
+        // here because the alternative is a suite that passes without
+        // executing any theta, which is what a stock-apt FLINT produces.
+        (
+            "arb_backend",
+            alkahest_core::experimental::arb_backend_available(),
+        ),
+        (
+            "riemann_theta",
+            alkahest_core::experimental::riemann_theta_available(),
+        ),
     ]
     .into_iter()
     .map(|(name, enabled)| (name.to_string(), enabled))
