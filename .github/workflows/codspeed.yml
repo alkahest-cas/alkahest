@@ -41,8 +41,8 @@ jobs:
           key: ${{ runner.os }}-cargo-codspeed-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      - name: Install system dependencies
-        run: sudo apt-get install -y libflint-dev
+      - name: Set up FLINT
+        uses: ./.github/actions/setup-flint
 
       - name: Set up LLVM 21 (for the jit feature)
         uses: ./.github/actions/setup-llvm

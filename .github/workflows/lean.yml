@@ -84,8 +84,8 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install FLINT (native extension link)
-        run: sudo apt-get update && sudo apt-get install -y libflint-dev
+      - name: Set up FLINT
+        uses: ./.github/actions/setup-flint
 
       - name: Install maturin and build alkahest
         run: |
