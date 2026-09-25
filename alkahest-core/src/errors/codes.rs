@@ -713,6 +713,40 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-FPGRP-010", class: "FpGroupError", cause: Cause::UserInput,   remediation: Some("module invariants are non-negative (0 for a Z summand, d >= 1 for Z/d), and there must be one square rank-by-rank action matrix per group generator") },
     ErrorSpec { code: "E-FPGRP-011", class: "FpGroupError", cause: Cause::Domain,      remediation: Some("check that every relator's matrix product is the identity on M and that each generator's matrix maps the module's relation lattice into itself; GModule::trivial cannot fail either check") },
     ErrorSpec { code: "E-FPGRP-012", class: "FpGroupError", cause: Cause::Internal,    remediation: Some("this is a bug in the fp-group subsystem: report it with the presentation that produced it") },
+    // E-CHAR — CharacterError (conjugacy classes and character tables)
+    //
+    // This prefix guards a surface where a wrong answer is unusually hard to
+    // notice: a character table is a small grid of algebraic numbers that looks
+    // plausible whatever it says, and downstream code branches on it rather
+    // than eyeballing it. So the load-bearing code here is E-CHAR-007, which is
+    // a table that was **computed, failed its own orthogonality check, and
+    // withheld** — not an input error at all. The orthogonality relations are
+    // implied by the group axioms, so a violation is a defect in alkahest, and
+    // returning the table with a caveat is not an option: a caller cannot tell
+    // a checked table from an unchecked one once it is in their hands.
+    //
+    // E-CHAR-001 and E-CHAR-003 are the two ceilings, and they are ceilings on
+    // different things. 001 is on |G|, because conjugacy classes here are the
+    // orbits of G acting on itself and every element is held in memory. 003 is
+    // on phi(exp G), the degree of the one cyclotomic field every value lives
+    // in — a limit on the arithmetic rather than on the group. The two are
+    // independent: a group of small exponent passes 003 at any order and meets
+    // 001 instead, while the cyclic group of order 1000 is refused by 003
+    // despite being small.
+    //
+    // A failure raised inside the permutation-group layer, the cyclotomic
+    // field or the GF(p) matrix layer keeps its own E-GRP / E-NUMF / E-GFQ code
+    // rather than being relabelled: `CharacterError`'s three delegating
+    // variants forward `code()` and `remediation()` unchanged.
+    ErrorSpec { code: "E-CHAR-001", class: "CharacterError", cause: Cause::Resource,    remediation: Some("conjugacy classes here are found by conjugating every element, so the whole group is held in memory; use `order()` and the stabilizer chain instead, or raise the cap with `ConjugacyClasses::of_with_cap` if |G| images arrays really fit. There is no partial class partition on offer — half the classes of a group is a wrong answer, not a coarse one") },
+    ErrorSpec { code: "E-CHAR-002", class: "CharacterError", cause: Cause::Resource,    remediation: Some("the hard ceiling bounds memory, not patience: work with a smaller group, or with the subgroup or quotient whose table is actually wanted") },
+    ErrorSpec { code: "E-CHAR-003", class: "CharacterError", cause: Cause::Resource,    remediation: Some("every value lives in Q(zeta_e) for e = exp G, and the orthogonality checks multiply there O(r^3) times, so the cap is on phi(exp G) and not on |G| at all; a group of small exponent passes this ceiling at any order and meets the |G| cap instead, while a cyclic group of order 1000 (phi = 400) is refused here despite being small") },
+    ErrorSpec { code: "E-CHAR-004", class: "CharacterError", cause: Cause::Internal,    remediation: Some("Dirichlet guarantees a prime p = 1 mod exp G above |G| exists, so this is a search-bound miss rather than a mathematical obstruction; report the group as a bug") },
+    ErrorSpec { code: "E-CHAR-005", class: "CharacterError", cause: Cause::UserInput,   remediation: Some("test with `PermutationGroup::contains` first; points are 0-based here and composition is left-to-right, so a generator transcribed from GAP or the ATLAS needs `Permutation::from_cycles_one_based`") },
+    ErrorSpec { code: "E-CHAR-006", class: "CharacterError", cause: Cause::UserInput,   remediation: Some("class and character indices run over 0..len(), with class 0 always the identity class and row 0 always the trivial character") },
+    ErrorSpec { code: "E-CHAR-007", class: "CharacterError", cause: Cause::Internal,    remediation: Some("this is a defect in alkahest, not in the input: row and column orthogonality, sum of squared degrees = |G|, and the eigenvalue-multiplicity checksums are all implied by the group axioms, so a violation means the table is wrong and it is withheld rather than returned. Report the generators as a minimal failing example") },
+    ErrorSpec { code: "E-CHAR-008", class: "CharacterError", cause: Cause::Internal,    remediation: Some("with p prime to |G| and p = 1 mod exp G the class algebra is split semisimple over GF(p), so the class multiplication matrices must split the space into one line per class; report the generators as a minimal failing example") },
+    ErrorSpec { code: "E-CHAR-009", class: "CharacterError", cause: Cause::Internal,    remediation: Some("report the generators as a minimal failing example") },
 ];
 
 #[cfg(test)]

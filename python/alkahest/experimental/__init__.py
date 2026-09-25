@@ -314,10 +314,11 @@ Computational group theory (permutation groups):
   must not be confused; ``order()`` keeps working
 - Scope of :class:`PermutationGroup` itself: permutation groups only.
   Finitely presented groups, Todd–Coxeter coset enumeration and low-degree
-  group cohomology are :class:`FpGroup`, and matrix groups over ``GF(q)`` are
-  :class:`MatGroup` — both below. There are still no character tables and
-  nothing that needs backtrack search (Sylow subgroups, conjugacy classes,
-  centralizers, subgroup lattices). See the Rust module docs
+  group cohomology are :class:`FpGroup`; matrix groups over ``GF(q)`` are
+  :class:`MatGroup`; conjugacy classes and character tables are
+  :class:`CharacterTable` — all three below. What is still absent is anything
+  needing backtrack search: Sylow subgroups, element centralizers, subgroup
+  lattices and normaliser computations. See the Rust module docs
   (``alkahest_cas::group``) for the full list
 
 Matrix groups over GF(q):
@@ -429,6 +430,13 @@ from alkahest._recurrence_asymptotics import (
 
 # Calculus / ODE / transform surface (still experimental).
 from alkahest.alkahest import (
+    # Caps on conjugacy-class enumeration and on the cyclotomic field a
+    # character table's values live in. The first bounds |G| (every element is
+    # held in memory), the second bounds phi(exp G) and not the order at all.
+    CHARACTER_DEFAULT_CLASS_CAP,
+    CHARACTER_DEFAULT_TABLE_CAP,
+    CHARACTER_MAX_CLASS_CAP,
+    CHARACTER_MAX_EXPONENT_FIELD_DEGREE,
     # Caps on the finitely-presented-group layer: Todd-Coxeter cosets, the
     # presentation rank, and the cohomology's group order / module rank /
     # cochain dimension. Above the coset cap the call raises E-FPGRP-004,
@@ -474,6 +482,13 @@ from alkahest.alkahest import (
     Bernoulli,
     Beta,
     Binomial,
+    # Conjugacy classes and exact character tables of permutation groups, by
+    # Dixon-Schneider. Values are elements of Q(zeta_exp G), so A_4's cube
+    # roots of unity and A_5's golden-ratio pair are values, not
+    # approximations. Row/column orthogonality is checked before a table is
+    # returned; a violation is E-CHAR-007 and nothing comes back.
+    CharacterError,
+    CharacterTable,
     # Classical linear codes, weight enumerators and the certified Delsarte
     # LP bound on A_q(n, d) — exact rational arithmetic throughout, and the
     # bound comes with the dual certificate that proves it.
@@ -483,6 +498,8 @@ from alkahest.alkahest import (
     # own error bound; `ComplexBall.value()` refuses rather than hand back
     # a midpoint with nothing behind it.
     ComplexBall,
+    ConjugacyClass,
+    ConjugacyClasses,
     Coordinates,
     CosetTable,
     # Binary symplectic / stabilizer codes
@@ -688,6 +705,15 @@ with contextlib.suppress(ImportError):
     from alkahest.alkahest import CudaCompiledFn, compile_cuda
 
 __all__ = [
+    # Conjugacy classes and character tables. CHARACTER_*_CLASS_CAP and
+    # CHARACTER_DEFAULT_TABLE_CAP bound |G|, because the class partition holds
+    # every element; CHARACTER_MAX_EXPONENT_FIELD_DEGREE bounds phi(exp G), the
+    # degree of the one cyclotomic field every value lives in, and is a limit
+    # on the exponent rather than on the order.
+    "CHARACTER_DEFAULT_CLASS_CAP",
+    "CHARACTER_DEFAULT_TABLE_CAP",
+    "CHARACTER_MAX_CLASS_CAP",
+    "CHARACTER_MAX_EXPONENT_FIELD_DEGREE",
     # Caps on finitely presented groups. Above FPGROUP_DEFAULT_MAX_COSETS a
     # coset enumeration raises E-FPGRP-004, which means "did not complete
     # within the cap" and is **not** a claim that the group is infinite; that
@@ -748,12 +774,24 @@ __all__ = [
     # came out too small would "rule out" codes that exist, so the constructor
     # refuses (E-CODE-007) rather than return one whose certificate did not
     # re-verify.
+    # Conjugacy classes and the exact ordinary character table, by
+    # Dixon–Schneider. Values are elements of Q(zeta_exp G) rather than floats
+    # or rationals-when-convenient, so A_4's cube roots of unity and A_5's
+    # golden-ratio pair come out of the same code path that gives S_4 its
+    # integers. Row and column orthogonality, sum chi(1)**2 == |G| and one
+    # character per class are checked as exact identities before a table is
+    # returned: a table that failed them is withheld (E-CHAR-007), never
+    # returned with a caveat.
+    "CharacterError",
+    "CharacterTable",
     "CodingError",
     # Riemann theta functions, the classical modular functions and the
     # Weierstrass family, as rigorous enclosures backed by FLINT's Arb
     # layer. Genus 1 and 2 are the tested regime; see the module docs for
     # the genus ceiling and what `Precision.AccurateTo` refuses.
     "ComplexBall",
+    "ConjugacyClass",
+    "ConjugacyClasses",
     # Vector calculus over orthogonal curvilinear charts
     "Coordinates",
     # A complete Todd-Coxeter coset table, and the permutation representation

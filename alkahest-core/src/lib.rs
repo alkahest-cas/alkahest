@@ -10,6 +10,7 @@ pub mod ball;
 // P1 search plumbing item 4 — budgets, cancellation, determinism
 pub mod budget;
 pub mod calculus;
+pub mod character;
 pub mod coding;
 pub mod dae;
 pub mod deriv;
@@ -390,6 +391,23 @@ pub mod experimental {
     pub use crate::calculus::puiseux::{
         puiseux_series, Evidence, NotPuiseuxReason, PuiseuxError, PuiseuxExpansion,
         UnverifiedReason, MAX_RAMIFICATION,
+    };
+    /// Conjugacy classes and **exact** ordinary character tables of finite
+    /// permutation groups, by Dixon–Schneider. Class representatives, sizes,
+    /// centraliser orders and the class multiplication coefficients `a_{ijk}`;
+    /// then the irreducible characters as elements of the cyclotomic field
+    /// `ℚ(ζ_{exp G})` — genuinely exact, so `A_4`'s cube roots of unity and
+    /// `A_5`'s golden-ratio pair are values rather than approximations.
+    ///
+    /// Row and column orthogonality, `Σ χ_i(1)² = |G|` and "one character per
+    /// class" are checked as exact identities *before* a table is returned; a
+    /// violation is [`CharacterError::SelfCheckFailed`] and nothing comes back.
+    /// Classes are found by conjugating every element, so `|G|` is capped —
+    /// see [`crate::character`] for both ceilings and for what is out of scope.
+    pub use crate::character::{
+        CharacterError, CharacterTable, ConjugacyClass, ConjugacyClasses,
+        DEFAULT_CHARACTER_TABLE_CAP, DEFAULT_CLASS_ENUMERATION_CAP, MAX_CLASS_ENUMERATION_CAP,
+        MAX_EXPONENT_FIELD_DEGREE,
     };
     /// Classical linear codes over GF(q): weight enumerators, MacWilliams,
     /// Krawtchouk polynomials, and the Delsarte linear-programming bound on

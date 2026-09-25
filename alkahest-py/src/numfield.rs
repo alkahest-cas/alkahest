@@ -111,7 +111,7 @@ fn coeff_strings(obj: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
 #[pyclass(name = "NumberField", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyNumberField {
-    inner: NumberField,
+    pub(crate) inner: NumberField,
 }
 
 #[pymethods]
@@ -254,7 +254,7 @@ impl PyNumberField {
 #[pyclass(name = "NumberFieldElement", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyNumberFieldElement {
-    inner: NumberFieldElement,
+    pub(crate) inner: NumberFieldElement,
 }
 
 #[pymethods]

@@ -64,20 +64,23 @@
 //! * **Finitely-presented groups and Todd–Coxeter coset enumeration.** A
 //!   presentation `⟨X | R⟩` is a different object with different algorithms
 //!   (and no termination guarantee); there is no `FpGroup` type here at all.
-//! * **Character tables and ordinary/modular representation theory.** These
-//!   need conjugacy classes, a cyclotomic field and Dixon–Schneider; none of
-//!   that machinery exists yet.
+//! * **Ordinary character tables** are no longer absent, but they are not
+//!   *here*: conjugacy classes and the Dixon–Schneider table live in
+//!   [`crate::character`], which takes a [`PermutationGroup`] as its input and
+//!   caps `|G|` because it enumerates. Modular representation theory and Brauer
+//!   characters remain unimplemented.
 //! * **Matrix groups over `GF(q)`.** `alkahest` has no finite-field type that
 //!   this module could be generic over, so a matrix group would have to invent
 //!   one. Permutation groups only.
 //! * **Group cohomology**, group extensions, and the solvable/polycyclic
 //!   machinery (`PcGroup`).
 //! * **Group-theoretic structure beyond the chain**: no Sylow subgroups, no
-//!   conjugacy classes, no normal-closure/derived-series/composition-series
-//!   computations, no subgroup lattice, no automorphism groups, no
-//!   backtrack search (set/partition stabilizers, centralizers, intersections).
-//!   `contains` and `order` come from the chain; everything that needs
-//!   backtracking is absent.
+//!   normal-closure/derived-series/composition-series computations, no subgroup
+//!   lattice, no automorphism groups, no backtrack search (set/partition
+//!   stabilizers, centralizers, intersections). `contains` and `order` come
+//!   from the chain; everything that needs backtracking is absent. Conjugacy
+//!   classes are in [`crate::character`] and are found by enumerating the
+//!   group, not by backtrack search, which is why they are capped there.
 //! * **Randomised (Monte-Carlo) Schreier–Sims.** The implementation here is the
 //!   deterministic Schreier-generator algorithm: always correct, and
 //!   comfortably fast at the degrees this module admits, but not the
