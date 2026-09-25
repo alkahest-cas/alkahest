@@ -10,6 +10,7 @@ pub mod ball;
 // P1 search plumbing item 4 — budgets, cancellation, determinism
 pub mod budget;
 pub mod calculus;
+pub mod character;
 pub mod coding;
 pub mod dae;
 pub mod deriv;
@@ -18,6 +19,7 @@ pub mod errors;
 pub mod eval;
 pub mod ffield;
 pub mod flint;
+pub mod fpgroup;
 pub mod funcfield;
 pub mod group;
 pub mod horner;
@@ -32,6 +34,7 @@ pub mod logic;
 // V2-6 — LLL + PSLQ (PSLQ in `numeric`)
 pub mod lattice;
 pub mod lean;
+pub mod matgroup;
 pub mod matrix;
 // V2-1 — Modular / CRT framework
 pub mod modular;
@@ -389,6 +392,23 @@ pub mod experimental {
         puiseux_series, Evidence, NotPuiseuxReason, PuiseuxError, PuiseuxExpansion,
         UnverifiedReason, MAX_RAMIFICATION,
     };
+    /// Conjugacy classes and **exact** ordinary character tables of finite
+    /// permutation groups, by Dixon–Schneider. Class representatives, sizes,
+    /// centraliser orders and the class multiplication coefficients `a_{ijk}`;
+    /// then the irreducible characters as elements of the cyclotomic field
+    /// `ℚ(ζ_{exp G})` — genuinely exact, so `A_4`'s cube roots of unity and
+    /// `A_5`'s golden-ratio pair are values rather than approximations.
+    ///
+    /// Row and column orthogonality, `Σ χ_i(1)² = |G|` and "one character per
+    /// class" are checked as exact identities *before* a table is returned; a
+    /// violation is [`CharacterError::SelfCheckFailed`] and nothing comes back.
+    /// Classes are found by conjugating every element, so `|G|` is capped —
+    /// see [`crate::character`] for both ceilings and for what is out of scope.
+    pub use crate::character::{
+        CharacterError, CharacterTable, ConjugacyClass, ConjugacyClasses,
+        DEFAULT_CHARACTER_TABLE_CAP, DEFAULT_CLASS_ENUMERATION_CAP, MAX_CLASS_ENUMERATION_CAP,
+        MAX_EXPONENT_FIELD_DEGREE,
+    };
     /// Classical linear codes over GF(q): weight enumerators, MacWilliams,
     /// Krawtchouk polynomials, and the Delsarte linear-programming bound on
     /// `A_q(n, d)` — solved in exact rational arithmetic and returned with the
@@ -411,6 +431,27 @@ pub mod experimental {
     /// See [`crate::ffield`] for what is deliberately out of scope.
     pub use crate::ffield::{
         FieldElement, FiniteField, FiniteFieldError, GfMatrix, Rref, MAX_EXTENSION_DEGREE,
+    };
+    /// Finitely presented groups `⟨X | R⟩`: Todd–Coxeter coset enumeration,
+    /// the permutation representation on the cosets, the abelianisation
+    /// `G/[G, G]`, Reidemeister–Schreier presentations of finite-index
+    /// subgroups, and `H⁰`/`H¹`/`H²` of a finite group with coefficients in a
+    /// finitely generated abelian module.
+    ///
+    /// Read [`crate::fpgroup`]'s module docs before the first call. Almost
+    /// every question about a presentation is undecidable, and the two refusals
+    /// this subsystem has are **not** interchangeable:
+    /// [`FpGroupError::EnumerationIncomplete`] (`E-FPGRP-004`) means the coset
+    /// cap was reached and says nothing about whether the group is finite,
+    /// while [`FpGroupError::ProvablyInfinite`] (`E-FPGRP-005`) is a proof that
+    /// it is infinite. The `(2,3,7)` triangle group is infinite and lands on
+    /// the former.
+    pub use crate::fpgroup::{
+        default_max_cosets, enumerate as enumerate_cosets, reidemeister_schreier,
+        AbelianInvariants, CosetTable, FpGroup, FpGroupError, FreeGroup, GModule,
+        SubgroupPresentation, Word, DEFAULT_MAX_COSETS, MAX_COCHAIN_DIMENSION,
+        MAX_COHOMOLOGY_DEGREE, MAX_COHOMOLOGY_GROUP_ORDER, MAX_COSET_TABLE_CELLS, MAX_FREE_RANK,
+        MAX_MODULE_RANK,
     };
     /// Function fields of algebraic curves: divisors, the divisor class group
     /// and Riemann–Roch, for the imaginary hyperelliptic model with rational
@@ -465,6 +506,22 @@ pub mod experimental {
         LatticeVector, DEFAULT_ENUM_NODE_BUDGET, MAX_ENUM_RANK, MAX_THETA_NORM,
     };
     pub use crate::lean::emit_lean_expr as emit_lean;
+    /// Matrix groups over GF(q) from **arbitrary generators**: exact order and
+    /// membership from a Schreier–Sims base and strong generating set on the
+    /// action on vectors, orbits on vectors and on projective points, random
+    /// elements by product replacement, and the derived subgroup, centre and
+    /// normal closure. Supersedes [`crate::stabilizer::MatrixGroup`], which
+    /// describes `GL`/`SL`/`Sp` by formula and has no generators; the two are
+    /// asserted to agree where both can answer. The action is on **row**
+    /// vectors, `v ↦ v·M`. Every unbounded search is capped with a typed
+    /// refusal — see [`crate::matgroup`] for the degree, orbit and field-size
+    /// ceilings.
+    pub use crate::matgroup::{
+        gl_order, sl_order, sp_order, MatGroup, MatGroupError, MatrixOrbit, MatrixSchreierEntry,
+        MatrixSiftResult, MatrixStabilizerChain, MatrixStabilizerLevel,
+        DEFAULT_MATGROUP_ELEMENT_CAP, MAX_MATGROUP_COMMUTANT_ELEMENTS, MAX_MATGROUP_DEGREE,
+        MAX_MATGROUP_FIELD_ORDER, MAX_MATGROUP_ORBIT, MAX_MATGROUP_SCHREIER_WORK,
+    };
     pub use crate::matrix::{
         cholesky, column_space_basis, jordan_form, lu_decomposition, matrix_exponential,
         matrix_inverse, minimal_polynomial, nullspace_basis, qr_decomposition, rank,

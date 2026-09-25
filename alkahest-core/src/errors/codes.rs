@@ -662,6 +662,91 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-THETA-010", class: "ThetaError", cause: Cause::Resource,    remediation: Some("read `achieved_bits`: a value far below the request may come good at higher precision, but a quantity that is exactly zero has no relative accuracy at any precision — use Precision::Bits and ComplexBall::contains_zero there") },
     ErrorSpec { code: "E-THETA-011", class: "ThetaError", cause: Cause::Domain,      remediation: Some("the result could not be bounded at all; check for a pole (Weierstrass p at a lattice point) or an input ball that was already indeterminate") },
     ErrorSpec { code: "E-THETA-012", class: "ThetaError", cause: Cause::Resource,    remediation: Some("the midpoint or radius has an exponent outside the range that moves between FLINT and MPFR without rounding; rescale the problem") },
+    // E-MATGRP — MatGroupError (matrix groups over GF(q) from generators).
+    //
+    // This is a `#[non_exhaustive]` enum that *wraps* FiniteFieldError and
+    // GroupError through delegating variants, so `E-GFQ-*` and `E-GRP-*` reach
+    // a caller of `matgroup` with their own codes. No code below is a duplicate
+    // of one of those.
+    //
+    // E-MATGRP-007 is the one to read twice. Schreier-Sims that runs out of
+    // budget must *refuse*, because a chain missing a level reports the product
+    // of the orbits it did build: a proper divisor of |G|, indistinguishable
+    // from a correct answer for a smaller group. Returning a partial chain is
+    // the exact confident-wrong-answer shape this registry exists to prevent.
+    // The same reasoning makes E-MATGRP-006 a refusal rather than a truncated
+    // orbit.
+    ErrorSpec { code: "E-MATGRP-001", class: "MatGroupError", cause: Cause::UserInput,   remediation: Some("group elements are d x d matrices; pass a square matrix") },
+    ErrorSpec { code: "E-MATGRP-002", class: "MatGroupError", cause: Cause::UserInput,   remediation: Some("build the matrix at the group's degree; vectors are 1 x d row vectors, because the action is v -> v*M") },
+    ErrorSpec { code: "E-MATGRP-003", class: "MatGroupError", cause: Cause::UserInput,   remediation: Some("use the same FiniteField object the group was built with; two isomorphic fields with different defining polynomials are different fields here") },
+    ErrorSpec { code: "E-MATGRP-004", class: "MatGroupError", cause: Cause::Domain,      remediation: Some("check the determinant of every generator; a singular matrix generates no group") },
+    ErrorSpec { code: "E-MATGRP-005", class: "MatGroupError", cause: Cause::Resource,    remediation: Some("these algorithms store explicit transversals and are built for small degrees; large-degree matrix groups need constructive recognition, which is not implemented") },
+    ErrorSpec { code: "E-MATGRP-006", class: "MatGroupError", cause: Cause::Resource,    remediation: Some("an orbit on vectors is bounded by q^d - 1, so this caps q^d and not |G|; use the projective action, whose orbits are (q-1) times smaller") },
+    ErrorSpec { code: "E-MATGRP-007", class: "MatGroupError", cause: Cause::Resource,    remediation: Some("raise the budget with MatGroup::with_budget if the group really is this large; no order is reported, because an incomplete chain reports a proper divisor of the true one") },
+    ErrorSpec { code: "E-MATGRP-008", class: "MatGroupError", cause: Cause::Resource,    remediation: Some("use order(), contains() or random_element() instead of listing the elements, or raise the cap with elements_with_cap") },
+    ErrorSpec { code: "E-MATGRP-009", class: "MatGroupError", cause: Cause::Resource,    remediation: Some("order, membership and the orbit of a given vector never enumerate GF(q); the projective point list, the classical constructors and the centre do") },
+    ErrorSpec { code: "E-MATGRP-010", class: "MatGroupError", cause: Cause::Unsupported, remediation: Some("build the group from explicit generators with MatGroup::new; the constructors here cover GL, SL, Sp and Singer cycles only") },
+    ErrorSpec { code: "E-MATGRP-011", class: "MatGroupError", cause: Cause::Resource,    remediation: Some("a large centralizing algebra means a very reducible module; split it first, or take the centre of a smaller group") },
+    ErrorSpec { code: "E-MATGRP-012", class: "MatGroupError", cause: Cause::Domain,      remediation: Some("pass a non-zero row vector; the zero vector spans no line and is fixed by every matrix") },
+    ErrorSpec { code: "E-MATGRP-013", class: "MatGroupError", cause: Cause::Internal,    remediation: Some("this is a bug: please report it with the generators that produced it") },
+    // E-FPGRP — FpGroupError (finitely presented groups, Todd-Coxeter,
+    // Reidemeister-Schreier, low-degree group cohomology).
+    //
+    // 004 and 005 are the two codes this whole subsystem is arranged around, and
+    // they must never be collapsed. 004 says coset enumeration hit its cap — the
+    // word problem is undecidable, so it is *not* a claim that the group is
+    // infinite, nor that it is finite. 005 says the group **is** infinite,
+    // because its abelianisation has an infinite cyclic factor, which is a
+    // terminating Smith normal form. An agent told it can branch on a stable code
+    // would, if these shared one, read "I could not decide" as "no such order
+    // exists". The (2,3,7) triangle group is infinite with a trivial
+    // abelianisation and lands on 004.
+    ErrorSpec { code: "E-FPGRP-001", class: "FpGroupError", cause: Cause::UserInput,   remediation: Some("word letters are signed and 1-based: +k is the k-th generator, -k its inverse, and 0 is not a letter; build words with FreeGroup::word or FreeGroup::parse, which check against the rank") },
+    ErrorSpec { code: "E-FPGRP-002", class: "FpGroupError", cause: Cause::UserInput,   remediation: Some("generator names must be non-empty, pairwise distinct, free of the reserved characters * ^ ( ) + - and not start with a digit; the rank is capped at MAX_FREE_RANK") },
+    ErrorSpec { code: "E-FPGRP-003", class: "FpGroupError", cause: Cause::UserInput,   remediation: Some("the word syntax is a product of powers of generator names and parenthesised sub-words, e.g. a^2, (a*b)^5, a*b^-1*a^-1*b; 1 is the identity") },
+    ErrorSpec { code: "E-FPGRP-004", class: "FpGroupError", cause: Cause::Resource,    remediation: Some("raise max_cosets if the group may simply be large, or call abelian_invariants(), which always terminates, to look for an infinite cyclic factor; this refusal is NOT evidence either way about whether the group is finite") },
+    ErrorSpec { code: "E-FPGRP-005", class: "FpGroupError", cause: Cause::Domain,      remediation: Some("the group is proved infinite, so no order exists: ask for abelian_invariants() instead of order(), or pass to a finite-index subgroup or a finite quotient") },
+    ErrorSpec { code: "E-FPGRP-006", class: "FpGroupError", cause: Cause::Resource,    remediation: Some("lower the coset cap or reduce the number of generators; the table costs 2 * rank machine words per coset") },
+    ErrorSpec { code: "E-FPGRP-007", class: "FpGroupError", cause: Cause::UserInput,   remediation: Some("cosets are 0-based and coset 0 is the subgroup H itself; the valid range is 0..index()") },
+    ErrorSpec { code: "E-FPGRP-008", class: "FpGroupError", cause: Cause::Unsupported, remediation: Some("only H^0, H^1 and H^2 are implemented; H^2 is the one that classifies extensions, and higher degrees need a resolution this module does not build") },
+    ErrorSpec { code: "E-FPGRP-009", class: "FpGroupError", cause: Cause::Resource,    remediation: Some("use a smaller group or module: the degree-(d+1) cochain group has rank(M) * |G|^(d+1) generators, so H^2 is cubic in |G| and is capped at MAX_COCHAIN_DIMENSION") },
+    ErrorSpec { code: "E-FPGRP-010", class: "FpGroupError", cause: Cause::UserInput,   remediation: Some("module invariants are non-negative (0 for a Z summand, d >= 1 for Z/d), and there must be one square rank-by-rank action matrix per group generator") },
+    ErrorSpec { code: "E-FPGRP-011", class: "FpGroupError", cause: Cause::Domain,      remediation: Some("check that every relator's matrix product is the identity on M and that each generator's matrix maps the module's relation lattice into itself; GModule::trivial cannot fail either check") },
+    ErrorSpec { code: "E-FPGRP-012", class: "FpGroupError", cause: Cause::Internal,    remediation: Some("this is a bug in the fp-group subsystem: report it with the presentation that produced it") },
+    // E-CHAR — CharacterError (conjugacy classes and character tables)
+    //
+    // This prefix guards a surface where a wrong answer is unusually hard to
+    // notice: a character table is a small grid of algebraic numbers that looks
+    // plausible whatever it says, and downstream code branches on it rather
+    // than eyeballing it. So the load-bearing code here is E-CHAR-007, which is
+    // a table that was **computed, failed its own orthogonality check, and
+    // withheld** — not an input error at all. The orthogonality relations are
+    // implied by the group axioms, so a violation is a defect in alkahest, and
+    // returning the table with a caveat is not an option: a caller cannot tell
+    // a checked table from an unchecked one once it is in their hands.
+    //
+    // E-CHAR-001 and E-CHAR-003 are the two ceilings, and they are ceilings on
+    // different things. 001 is on |G|, because conjugacy classes here are the
+    // orbits of G acting on itself and every element is held in memory. 003 is
+    // on phi(exp G), the degree of the one cyclotomic field every value lives
+    // in — a limit on the arithmetic rather than on the group. The two are
+    // independent: a group of small exponent passes 003 at any order and meets
+    // 001 instead, while the cyclic group of order 1000 is refused by 003
+    // despite being small.
+    //
+    // A failure raised inside the permutation-group layer, the cyclotomic
+    // field or the GF(p) matrix layer keeps its own E-GRP / E-NUMF / E-GFQ code
+    // rather than being relabelled: `CharacterError`'s three delegating
+    // variants forward `code()` and `remediation()` unchanged.
+    ErrorSpec { code: "E-CHAR-001", class: "CharacterError", cause: Cause::Resource,    remediation: Some("conjugacy classes here are found by conjugating every element, so the whole group is held in memory; use `order()` and the stabilizer chain instead, or raise the cap with `ConjugacyClasses::of_with_cap` if |G| images arrays really fit. There is no partial class partition on offer — half the classes of a group is a wrong answer, not a coarse one") },
+    ErrorSpec { code: "E-CHAR-002", class: "CharacterError", cause: Cause::Resource,    remediation: Some("the hard ceiling bounds memory, not patience: work with a smaller group, or with the subgroup or quotient whose table is actually wanted") },
+    ErrorSpec { code: "E-CHAR-003", class: "CharacterError", cause: Cause::Resource,    remediation: Some("every value lives in Q(zeta_e) for e = exp G, and the orthogonality checks multiply there O(r^3) times, so the cap is on phi(exp G) and not on |G| at all; a group of small exponent passes this ceiling at any order and meets the |G| cap instead, while a cyclic group of order 1000 (phi = 400) is refused here despite being small") },
+    ErrorSpec { code: "E-CHAR-004", class: "CharacterError", cause: Cause::Internal,    remediation: Some("Dirichlet guarantees a prime p = 1 mod exp G above |G| exists, so this is a search-bound miss rather than a mathematical obstruction; report the group as a bug") },
+    ErrorSpec { code: "E-CHAR-005", class: "CharacterError", cause: Cause::UserInput,   remediation: Some("test with `PermutationGroup::contains` first; points are 0-based here and composition is left-to-right, so a generator transcribed from GAP or the ATLAS needs `Permutation::from_cycles_one_based`") },
+    ErrorSpec { code: "E-CHAR-006", class: "CharacterError", cause: Cause::UserInput,   remediation: Some("class and character indices run over 0..len(), with class 0 always the identity class and row 0 always the trivial character") },
+    ErrorSpec { code: "E-CHAR-007", class: "CharacterError", cause: Cause::Internal,    remediation: Some("this is a defect in alkahest, not in the input: row and column orthogonality, sum of squared degrees = |G|, and the eigenvalue-multiplicity checksums are all implied by the group axioms, so a violation means the table is wrong and it is withheld rather than returned. Report the generators as a minimal failing example") },
+    ErrorSpec { code: "E-CHAR-008", class: "CharacterError", cause: Cause::Internal,    remediation: Some("with p prime to |G| and p = 1 mod exp G the class algebra is split semisimple over GF(p), so the class multiplication matrices must split the space into one line per class; report the generators as a minimal failing example") },
+    ErrorSpec { code: "E-CHAR-009", class: "CharacterError", cause: Cause::Internal,    remediation: Some("report the generators as a minimal failing example") },
 ];
 
 #[cfg(test)]

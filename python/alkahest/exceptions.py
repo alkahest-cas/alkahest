@@ -114,6 +114,13 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
                                  could not be checked to be a proper rotation)
     E-GRP-001 … E-GRP-006        GroupError (permutation groups; 004 = an order that
                                  is exact but a list that is refused)
+    E-MATGRP-001 … E-MATGRP-013  MatGroupError (matrix groups over GF(q) from
+                                 generators; 006/007 = an orbit or a Schreier–Sims
+                                 budget past its cap, refused rather than answered
+                                 from an incomplete chain, 008 = an order that is
+                                 exact but a list that is refused). Wraps
+                                 FiniteFieldError and GroupError, which keep their
+                                 own codes
     E-STAB-001 … E-STAB-013      StabilizerError (binary symplectic form, Pauli and
                                  stabilizer codes, CSS codes, matrix groups over
                                  GF(q); 004/005/006 = the generators do not define a
@@ -1087,6 +1094,46 @@ class GroupError(AlkahestError):
         super().__init__(message, code=code, remediation=remediation, span=span)
 
 
+class MatGroupError(AlkahestError):
+    """A matrix-group operation refused (``E-MATGRP-001`` … ``E-MATGRP-013``).
+
+    Raised by :class:`alkahest.experimental.MatGroup` — matrix groups over
+    GF(q) built from arbitrary generators, with order and membership from a
+    Schreier–Sims base and strong generating set. It also *wraps*
+    ``FiniteFieldError`` and ``GroupError``: a refusal raised inside the GF(q)
+    or permutation layer keeps its own ``E-GFQ-*`` / ``E-GRP-*`` code rather
+    than acquiring a second identity.
+
+    Four of the thirteen are the ones to branch on:
+
+    - ``E-MATGRP-007`` — Schreier–Sims exhausted its work budget. This is a
+      **refusal, not a partial answer**: a chain missing a level reports the
+      product of the orbits it did build, which is a proper *divisor* of
+      ``|G|`` and indistinguishable from the correct order of a smaller group.
+      Raise the budget with ``MatGroup.with_budget`` if the group really is
+      this large.
+    - ``E-MATGRP-006`` — a basic orbit passed its cap. Because an orbit on
+      vectors is bounded by ``q**d - 1``, this caps ``q**d`` and **not**
+      ``|G|``: a symplectic group of order ``10**40`` is fine while
+      ``GL(2, 4096)`` is not. The projective action has orbits ``q - 1`` times
+      smaller.
+    - ``E-MATGRP-008`` — the group is too large to list element by element.
+      ``order()`` is still exact; it is the *list* that is refused.
+    - ``E-MATGRP-002`` — a degree mismatch. Vectors here are ``1 x d``
+      **rows**, because the action is ``v -> v @ M``; a ``d x 1`` column is
+      this error and not a silent transpose.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-MATGRP-001",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)
+
+
 class StabilizerError(AlkahestError):
     """A symplectic, Pauli, stabilizer-code or matrix-group operation refused
     (``E-STAB-001`` … ``E-STAB-013``).
@@ -1169,6 +1216,46 @@ class ProbabilityError(AlkahestError):
         self,
         message: str,
         code: str = "E-PROB-001",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)
+
+
+class FpGroupError(AlkahestError):
+    """A finitely-presented-group operation refused (``E-FPGRP-001`` …
+    ``E-FPGRP-012``).
+
+    Raised by the :mod:`alkahest.experimental` ``FpGroup`` surface. Two of the
+    twelve are **different facts and must not be confused**, which is the reason
+    they have different codes:
+
+    - ``E-FPGRP-004`` — Todd–Coxeter coset enumeration hit its cap. The word
+      problem for finitely presented groups is undecidable, so this says only
+      *"I did not finish"*. It is **not** a claim that the group is infinite,
+      and not a claim that it is finite. Raise ``max_cosets``, or ask
+      ``abelian_invariants()``, which always terminates.
+    - ``E-FPGRP-005`` — the group **is** infinite, proved: its abelianisation
+      ``G/[G, G]`` has an infinite cyclic factor, and that is a Smith normal
+      form, not a search. Raising the cap will not change it.
+
+    ``FpGroup(["a", "b"], ["a^2", "b^3", "(a*b)^7"])`` is the ``(2,3,7)``
+    triangle group — infinite, with a *trivial* abelianisation — so it lands on
+    ``E-FPGRP-004`` and not on ``E-FPGRP-005``. Branch on ``.code``.
+
+    The rest: ``001``–``003`` are malformed words, alphabets and relator syntax;
+    ``006``–``007`` an out-of-range coset cap or coset number (cosets are
+    **0-based**, and coset 0 is the subgroup ``H``); ``008``–``009`` the
+    cohomology's degree and size limits; ``010`` a malformed module; ``011`` an
+    "action" that is not one, because some relator does not act as the identity
+    on ``M`` — refused rather than used; ``012`` an internal invariant, reported
+    rather than panicked because these run under a PyO3 boundary.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-FPGRP-001",
         remediation: str | None = None,
         span: tuple[int, int] | None = None,
     ):

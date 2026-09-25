@@ -50,7 +50,7 @@ fn big_int(py: Python<'_>, value: &rug::Integer) -> PyResult<PyObject> {
 #[pyclass(name = "Permutation", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyPermutation {
-    inner: Permutation,
+    pub(crate) inner: Permutation,
 }
 
 impl PyPermutation {
