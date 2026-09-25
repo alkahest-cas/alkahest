@@ -312,12 +312,13 @@ Computational group theory (permutation groups):
   ``GROUP_DEFAULT_ELEMENT_CAP`` with ``E-GRP-004``. A group of order ``10**20``
   has a perfectly computable order and no listable element set, and the two
   must not be confused; ``order()`` keeps working
-- Scope: permutation groups only. There are no finitely-presented groups or
-  Todd–Coxeter coset enumeration, no character tables, no group cohomology, and
+- Scope of :class:`PermutationGroup` itself: permutation groups only.
+  Finitely presented groups, Todd–Coxeter coset enumeration and low-degree
+  group cohomology are :class:`FpGroup`, and matrix groups over ``GF(q)`` are
+  :class:`MatGroup` — both below. There are still no character tables and
   nothing that needs backtrack search (Sylow subgroups, conjugacy classes,
-  centralizers, subgroup lattices). Matrix groups over ``GF(q)`` are
-  :class:`MatGroup`, below. See the Rust module docs (``alkahest_cas::group``)
-  for the full list
+  centralizers, subgroup lattices). See the Rust module docs
+  (``alkahest_cas::group``) for the full list
 
 Matrix groups over GF(q):
 - :class:`MatGroup` — a subgroup of ``GL(d, q)`` given by **any** list of
@@ -364,6 +365,29 @@ Matrix groups over GF(q):
   ``PGL``/``PSL`` exist only as permutation groups, because a quotient of
   matrix groups is not a matrix group
 
+Finitely presented groups (``alkahest_cas::fpgroup``):
+- :class:`FpGroup` — a presentation ``<X | R>``, built from generator names and
+  relator strings: ``FpGroup(["a", "b"], ["a^2", "b^3", "(a*b)^5"])`` is
+  ``A5``. Relators are products of powers of names and parenthesised sub-words,
+  and juxtaposition is multiplication, so ``"ab"`` and ``"a*b"`` agree
+- :meth:`~FpGroup.order`, :meth:`~FpGroup.index`,
+  :meth:`~FpGroup.coset_table` and :meth:`~FpGroup.permutation_group` — HLT
+  Todd–Coxeter coset enumeration with lookahead. **These can refuse**, and the
+  two refusals are different facts: ``E-FPGRP-004`` means the coset cap was
+  reached and says *nothing* about whether the group is finite, while
+  ``E-FPGRP-005`` is a **proof** that it is infinite. The ``(2,3,7)`` triangle
+  group ``FpGroup(["a", "b"], ["a^2", "b^3", "(a*b)^7"])`` is infinite with a
+  trivial abelianisation, so it lands on ``E-FPGRP-004``
+- :meth:`~FpGroup.abelian_invariants` — ``G/[G, G]`` from a Smith normal form,
+  and the one question here that **always terminates**
+- :meth:`~FpGroup.subgroup_presentation` — Reidemeister–Schreier, unsimplified
+- :meth:`~FpGroup.cohomology` — ``H^0``, ``H^1`` and ``H^2`` of a finite group
+  with coefficients in a finitely generated abelian module, from the bar
+  resolution. ``H^2`` classifies extensions. Capped at ``|G| <=
+  FPGROUP_MAX_COHOMOLOGY_GROUP_ORDER`` and ``rank(M) * |G|**(d+1) <=
+  FPGROUP_MAX_COCHAIN_DIMENSION``; an action whose matrices do not satisfy the
+  relators is refused (``E-FPGRP-011``), never used
+
 Numeric ODE integrators (Phase 16b):
 - :func:`ode_integrate_rk4` — fixed-step 4th-order Runge–Kutta integrator
 - :func:`ode_integrate_rk45` — adaptive Dormand–Prince RK4(5) integrator
@@ -405,6 +429,16 @@ from alkahest._recurrence_asymptotics import (
 
 # Calculus / ODE / transform surface (still experimental).
 from alkahest.alkahest import (
+    # Caps on the finitely-presented-group layer: Todd-Coxeter cosets, the
+    # presentation rank, and the cohomology's group order / module rank /
+    # cochain dimension. Above the coset cap the call raises E-FPGRP-004,
+    # which means "did not complete" and NOT "the group is infinite".
+    FPGROUP_DEFAULT_MAX_COSETS,
+    FPGROUP_MAX_COCHAIN_DIMENSION,
+    FPGROUP_MAX_COHOMOLOGY_DEGREE,
+    FPGROUP_MAX_COHOMOLOGY_GROUP_ORDER,
+    FPGROUP_MAX_FREE_RANK,
+    FPGROUP_MAX_MODULE_RANK,
     # Caps on permutation-group element enumeration and on Schreier–Sims
     GROUP_DEFAULT_ELEMENT_CAP,
     GROUP_MAX_BSGS_DEGREE,
@@ -430,6 +464,10 @@ from alkahest.alkahest import (
     # The classical arithmetic functions' work cap (E-NT-006). A *subclass*
     # of alkahest.NumberTheoryError, so `except NumberTheoryError` catches
     # it together with the domain refusals (E-NT-001 / E-NT-002).
+    # A finitely generated abelian group as a free rank plus invariant
+    # factors — the answer type of `FpGroup.abelian_invariants()` and of
+    # `FpGroup.cohomology()`.
+    AbelianInvariants,
     ArithmeticError,
     # P1 item 10 — asymptotic expansion at scale
     AsymptoticReport,
@@ -446,6 +484,7 @@ from alkahest.alkahest import (
     # a midpoint with nothing behind it.
     ComplexBall,
     Coordinates,
+    CosetTable,
     # Binary symplectic / stabilizer codes
     CssCode,
     DelsarteBound,
@@ -456,6 +495,11 @@ from alkahest.alkahest import (
     Exponential,
     FiniteField,
     FiniteFieldError,
+    # Finitely presented groups <X | R>: Todd-Coxeter enumeration, the
+    # permutation representation on the cosets, the abelianisation,
+    # Reidemeister-Schreier, and H^0/H^1/H^2.
+    FpGroup,
+    FpGroupError,
     Fps,
     FunctionField,
     FunctionFieldElement,
@@ -505,6 +549,7 @@ from alkahest.alkahest import (
     StabilizerCode,
     StabilizerError,
     StabilizerGroup,
+    SubgroupPresentation,
     Telescoping2dCertificate,
     TelescopingMdCertificate,
     ThetaError,
@@ -512,6 +557,7 @@ from alkahest.alkahest import (
     Uniform,
     VectorError,
     WeightEnumerator,
+    Word,
     apart_side_conditions,
     arb_backend_available,
     asymptotic_expand,
@@ -642,6 +688,16 @@ with contextlib.suppress(ImportError):
     from alkahest.alkahest import CudaCompiledFn, compile_cuda
 
 __all__ = [
+    # Caps on finitely presented groups. Above FPGROUP_DEFAULT_MAX_COSETS a
+    # coset enumeration raises E-FPGRP-004, which means "did not complete
+    # within the cap" and is **not** a claim that the group is infinite; that
+    # claim is E-FPGRP-005, and only the abelianisation can prove it.
+    "FPGROUP_DEFAULT_MAX_COSETS",
+    "FPGROUP_MAX_COCHAIN_DIMENSION",
+    "FPGROUP_MAX_COHOMOLOGY_DEGREE",
+    "FPGROUP_MAX_COHOMOLOGY_GROUP_ORDER",
+    "FPGROUP_MAX_FREE_RANK",
+    "FPGROUP_MAX_MODULE_RANK",
     # Computational group theory (permutation groups)
     "GROUP_DEFAULT_ELEMENT_CAP",
     "GROUP_MAX_BSGS_DEGREE",
@@ -673,6 +729,10 @@ __all__ = [
     # The classical arithmetic functions' work cap (E-NT-006). A *subclass*
     # of alkahest.NumberTheoryError, so `except NumberTheoryError` catches it
     # together with the domain refusals (E-NT-001 / E-NT-002).
+    # A finitely generated abelian group: free rank plus invariant factors.
+    # `order()` returns None exactly when the group is infinite — a proof, not
+    # a failure to decide.
+    "AbelianInvariants",
     "ArithmeticError",
     "Assumptions",
     # P1 item 10 — asymptotic expansion at scale
@@ -696,6 +756,9 @@ __all__ = [
     "ComplexBall",
     # Vector calculus over orthogonal curvilinear charts
     "Coordinates",
+    # A complete Todd-Coxeter coset table, and the permutation representation
+    # it is. Cosets are 0-based and coset 0 is the subgroup H.
+    "CosetTable",
     "CssCode",
     "CudaCompiledFn",
     "DelsarteBound",
@@ -713,6 +776,14 @@ __all__ = [
     # "rank" and "nullspace" are not well defined.
     "FiniteField",
     "FiniteFieldError",
+    # Finitely presented groups <X | R>. `order()` is the index of the trivial
+    # subgroup by Todd-Coxeter, which may refuse (E-FPGRP-004) because the word
+    # problem is undecidable; `abelian_invariants()` always terminates and can
+    # prove a group infinite (E-FPGRP-005). `cohomology(2, ...)` classifies
+    # extensions, and is capped at small groups and modules rather than being
+    # general-looking and unverifiable.
+    "FpGroup",
+    "FpGroupError",
     "Fps",
     "FunctionField",
     "FunctionFieldElement",
@@ -803,6 +874,10 @@ __all__ = [
     "StabilizerCode",
     "StabilizerError",
     "StabilizerGroup",
+    # A Reidemeister-Schreier presentation of a finite-index subgroup. Not
+    # simplified: no Tietze pass, so the generator count is the raw
+    # [G:H]*|X| - [G:H] + 1.
+    "SubgroupPresentation",
     # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
     "Telescoping2dCertificate",
     "TelescopingMdCertificate",
@@ -812,6 +887,9 @@ __all__ = [
     "Uniform",
     "VectorError",
     "WeightEnumerator",
+    # A free-group word: signed, 1-based generator indices, freely reduced on
+    # construction.
+    "Word",
     # Hypotheses the last `apart` on this thread rests on (ℚ(params) path).
     "apart_side_conditions",
     "arb_backend_available",

@@ -85,17 +85,34 @@ impl FlintMat {
             ffi::fmpz_mat_hnf_transform(&mut h.inner, &mut u.inner, &self.inner);
         }
     }
-}
 
-/// SNF oracle and shape checks used only from `matrix::normal_form` unit tests.
-#[cfg(test)]
-impl FlintMat {
+    /// Hermite normal form **without** a transform matrix.
+    ///
+    /// [`FlintMat::hnf_transform`] also produces the unimodular `U` with
+    /// `U·A = H`, and on a rank-deficient input `U`'s entries can be orders of
+    /// magnitude larger than `H`'s — the cost of computing it dominates.
+    /// Callers that only want the echelon basis should use this.
+    pub(crate) fn hnf(&self, h: &mut FlintMat) {
+        unsafe {
+            ffi::fmpz_mat_hnf(&mut h.inner, &self.inner);
+        }
+    }
+
+    /// Smith normal form, diagonal only — no transform matrices.
+    ///
+    /// `matrix::normal_form` uses it two ways: as the oracle its own
+    /// transform-tracking port is tested against, and as the implementation of
+    /// `smith_invariants` for callers that never look at `U` and `V`.
     pub(crate) fn snf_diagonal(&self, s: &mut FlintMat) {
         unsafe {
             ffi::fmpz_mat_snf(&mut s.inner, &self.inner);
         }
     }
+}
 
+/// Shape checks used only from `matrix::normal_form` unit tests.
+#[cfg(test)]
+impl FlintMat {
     pub(crate) fn is_in_hnf(&self) -> bool {
         unsafe { ffi::fmpz_mat_is_in_hnf(&self.inner) != 0 }
     }

@@ -252,6 +252,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 mod coding;
 mod ffield;
+mod fpgroup;
 mod lattice;
 mod matgroup;
 
@@ -18796,6 +18797,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     coding::register(m)?;
     ffield::register(m)?;
+    fpgroup::register(m)?;
     lattice::register(m)?;
     matgroup::register(m)?;
     m.add_function(wrap_pyfunction!(py_derived_result_context_simplify, m)?)?;

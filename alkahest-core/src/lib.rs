@@ -18,6 +18,7 @@ pub mod errors;
 pub mod eval;
 pub mod ffield;
 pub mod flint;
+pub mod fpgroup;
 pub mod funcfield;
 pub mod group;
 pub mod horner;
@@ -412,6 +413,27 @@ pub mod experimental {
     /// See [`crate::ffield`] for what is deliberately out of scope.
     pub use crate::ffield::{
         FieldElement, FiniteField, FiniteFieldError, GfMatrix, Rref, MAX_EXTENSION_DEGREE,
+    };
+    /// Finitely presented groups `⟨X | R⟩`: Todd–Coxeter coset enumeration,
+    /// the permutation representation on the cosets, the abelianisation
+    /// `G/[G, G]`, Reidemeister–Schreier presentations of finite-index
+    /// subgroups, and `H⁰`/`H¹`/`H²` of a finite group with coefficients in a
+    /// finitely generated abelian module.
+    ///
+    /// Read [`crate::fpgroup`]'s module docs before the first call. Almost
+    /// every question about a presentation is undecidable, and the two refusals
+    /// this subsystem has are **not** interchangeable:
+    /// [`FpGroupError::EnumerationIncomplete`] (`E-FPGRP-004`) means the coset
+    /// cap was reached and says nothing about whether the group is finite,
+    /// while [`FpGroupError::ProvablyInfinite`] (`E-FPGRP-005`) is a proof that
+    /// it is infinite. The `(2,3,7)` triangle group is infinite and lands on
+    /// the former.
+    pub use crate::fpgroup::{
+        default_max_cosets, enumerate as enumerate_cosets, reidemeister_schreier,
+        AbelianInvariants, CosetTable, FpGroup, FpGroupError, FreeGroup, GModule,
+        SubgroupPresentation, Word, DEFAULT_MAX_COSETS, MAX_COCHAIN_DIMENSION,
+        MAX_COHOMOLOGY_DEGREE, MAX_COHOMOLOGY_GROUP_ORDER, MAX_COSET_TABLE_CELLS, MAX_FREE_RANK,
+        MAX_MODULE_RANK,
     };
     /// Function fields of algebraic curves: divisors, the divisor class group
     /// and Riemann–Roch, for the imaginary hyperelliptic model with rational

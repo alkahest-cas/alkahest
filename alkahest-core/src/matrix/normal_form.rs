@@ -123,7 +123,15 @@ impl IntegerMatrix {
         })
     }
 
-    fn from_rug_rows(rows: Vec<Vec<Integer>>) -> Result<Self, NormalFormError> {
+    /// Build from nested rows of arbitrary-precision integers (must be
+    /// rectangular).
+    ///
+    /// The `i64` sibling [`IntegerMatrix::from_nested`] covers most callers;
+    /// this one exists for the ones whose entries are already `rug::Integer`
+    /// and have no bound — the Hermite transform matrix `U` of a large lattice,
+    /// for instance, which `fpgroup`'s cohomology feeds straight back into a
+    /// second normal form.
+    pub fn from_rug_rows(rows: Vec<Vec<Integer>>) -> Result<Self, NormalFormError> {
         if rows.is_empty() {
             return Ok(Self {
                 rows: 0,
@@ -247,6 +255,47 @@ impl IntegerMatrix {
             data,
         }
     }
+}
+
+/// Hermite normal form **without** the transform: `H` such that `H` and `M` span
+/// the same row lattice.
+///
+/// [`hermite_form`] also returns the unimodular `U` with `U·M = H`, which is
+/// what an integer kernel needs; when only the echelon basis of the row lattice
+/// is wanted, computing `U` is the expensive half — its entries grow with the
+/// rank deficiency of `M`, not with `H`.
+pub fn hermite_basis(m: &IntegerMatrix) -> IntegerMatrix {
+    if m.rows == 0 || m.cols == 0 {
+        return IntegerMatrix {
+            rows: m.rows,
+            cols: m.cols,
+            data: vec![],
+        };
+    }
+    let a = m.to_flint();
+    let mut h = FlintMat::new(m.rows, m.cols);
+    a.hnf(&mut h);
+    IntegerMatrix::from_flint(&h)
+}
+
+/// The **invariant factors** of a Smith normal form, without the transforms.
+///
+/// `smith_invariants(m)[i]` is the `i`-th diagonal entry of the `S` that
+/// [`smith_form`] returns, so the two agree entry for entry — a unit test in
+/// `fpgroup` asserts that on square and rectangular shapes alike. This one is
+/// backed by FLINT's `fmpz_mat_snf`; [`smith_form`] is the transform-tracking
+/// port, which also builds `U` and `V` and multiplies them out. Use this
+/// whenever those are not needed — the abelian invariants of a quotient
+/// lattice, for instance.
+pub fn smith_invariants(m: &IntegerMatrix) -> Vec<Integer> {
+    if m.rows == 0 || m.cols == 0 {
+        return Vec::new();
+    }
+    let a = m.to_flint();
+    let mut s = FlintMat::new(m.rows, m.cols);
+    a.snf_diagonal(&mut s);
+    let d = m.rows.min(m.cols);
+    (0..d).map(|i| s.get_flint(i, i).to_rug()).collect()
 }
 
 /// Smith normal form: `(S, U, V)` with `S == U * M * V`, `S` rectangular-diagonal, invariant

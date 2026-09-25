@@ -689,6 +689,30 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-MATGRP-011", class: "MatGroupError", cause: Cause::Resource,    remediation: Some("a large centralizing algebra means a very reducible module; split it first, or take the centre of a smaller group") },
     ErrorSpec { code: "E-MATGRP-012", class: "MatGroupError", cause: Cause::Domain,      remediation: Some("pass a non-zero row vector; the zero vector spans no line and is fixed by every matrix") },
     ErrorSpec { code: "E-MATGRP-013", class: "MatGroupError", cause: Cause::Internal,    remediation: Some("this is a bug: please report it with the generators that produced it") },
+    // E-FPGRP — FpGroupError (finitely presented groups, Todd-Coxeter,
+    // Reidemeister-Schreier, low-degree group cohomology).
+    //
+    // 004 and 005 are the two codes this whole subsystem is arranged around, and
+    // they must never be collapsed. 004 says coset enumeration hit its cap — the
+    // word problem is undecidable, so it is *not* a claim that the group is
+    // infinite, nor that it is finite. 005 says the group **is** infinite,
+    // because its abelianisation has an infinite cyclic factor, which is a
+    // terminating Smith normal form. An agent told it can branch on a stable code
+    // would, if these shared one, read "I could not decide" as "no such order
+    // exists". The (2,3,7) triangle group is infinite with a trivial
+    // abelianisation and lands on 004.
+    ErrorSpec { code: "E-FPGRP-001", class: "FpGroupError", cause: Cause::UserInput,   remediation: Some("word letters are signed and 1-based: +k is the k-th generator, -k its inverse, and 0 is not a letter; build words with FreeGroup::word or FreeGroup::parse, which check against the rank") },
+    ErrorSpec { code: "E-FPGRP-002", class: "FpGroupError", cause: Cause::UserInput,   remediation: Some("generator names must be non-empty, pairwise distinct, free of the reserved characters * ^ ( ) + - and not start with a digit; the rank is capped at MAX_FREE_RANK") },
+    ErrorSpec { code: "E-FPGRP-003", class: "FpGroupError", cause: Cause::UserInput,   remediation: Some("the word syntax is a product of powers of generator names and parenthesised sub-words, e.g. a^2, (a*b)^5, a*b^-1*a^-1*b; 1 is the identity") },
+    ErrorSpec { code: "E-FPGRP-004", class: "FpGroupError", cause: Cause::Resource,    remediation: Some("raise max_cosets if the group may simply be large, or call abelian_invariants(), which always terminates, to look for an infinite cyclic factor; this refusal is NOT evidence either way about whether the group is finite") },
+    ErrorSpec { code: "E-FPGRP-005", class: "FpGroupError", cause: Cause::Domain,      remediation: Some("the group is proved infinite, so no order exists: ask for abelian_invariants() instead of order(), or pass to a finite-index subgroup or a finite quotient") },
+    ErrorSpec { code: "E-FPGRP-006", class: "FpGroupError", cause: Cause::Resource,    remediation: Some("lower the coset cap or reduce the number of generators; the table costs 2 * rank machine words per coset") },
+    ErrorSpec { code: "E-FPGRP-007", class: "FpGroupError", cause: Cause::UserInput,   remediation: Some("cosets are 0-based and coset 0 is the subgroup H itself; the valid range is 0..index()") },
+    ErrorSpec { code: "E-FPGRP-008", class: "FpGroupError", cause: Cause::Unsupported, remediation: Some("only H^0, H^1 and H^2 are implemented; H^2 is the one that classifies extensions, and higher degrees need a resolution this module does not build") },
+    ErrorSpec { code: "E-FPGRP-009", class: "FpGroupError", cause: Cause::Resource,    remediation: Some("use a smaller group or module: the degree-(d+1) cochain group has rank(M) * |G|^(d+1) generators, so H^2 is cubic in |G| and is capped at MAX_COCHAIN_DIMENSION") },
+    ErrorSpec { code: "E-FPGRP-010", class: "FpGroupError", cause: Cause::UserInput,   remediation: Some("module invariants are non-negative (0 for a Z summand, d >= 1 for Z/d), and there must be one square rank-by-rank action matrix per group generator") },
+    ErrorSpec { code: "E-FPGRP-011", class: "FpGroupError", cause: Cause::Domain,      remediation: Some("check that every relator's matrix product is the identity on M and that each generator's matrix maps the module's relation lattice into itself; GModule::trivial cannot fail either check") },
+    ErrorSpec { code: "E-FPGRP-012", class: "FpGroupError", cause: Cause::Internal,    remediation: Some("this is a bug in the fp-group subsystem: report it with the presentation that produced it") },
 ];
 
 #[cfg(test)]

@@ -1220,3 +1220,43 @@ class ProbabilityError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code=code, remediation=remediation, span=span)
+
+
+class FpGroupError(AlkahestError):
+    """A finitely-presented-group operation refused (``E-FPGRP-001`` …
+    ``E-FPGRP-012``).
+
+    Raised by the :mod:`alkahest.experimental` ``FpGroup`` surface. Two of the
+    twelve are **different facts and must not be confused**, which is the reason
+    they have different codes:
+
+    - ``E-FPGRP-004`` — Todd–Coxeter coset enumeration hit its cap. The word
+      problem for finitely presented groups is undecidable, so this says only
+      *"I did not finish"*. It is **not** a claim that the group is infinite,
+      and not a claim that it is finite. Raise ``max_cosets``, or ask
+      ``abelian_invariants()``, which always terminates.
+    - ``E-FPGRP-005`` — the group **is** infinite, proved: its abelianisation
+      ``G/[G, G]`` has an infinite cyclic factor, and that is a Smith normal
+      form, not a search. Raising the cap will not change it.
+
+    ``FpGroup(["a", "b"], ["a^2", "b^3", "(a*b)^7"])`` is the ``(2,3,7)``
+    triangle group — infinite, with a *trivial* abelianisation — so it lands on
+    ``E-FPGRP-004`` and not on ``E-FPGRP-005``. Branch on ``.code``.
+
+    The rest: ``001``–``003`` are malformed words, alphabets and relator syntax;
+    ``006``–``007`` an out-of-range coset cap or coset number (cosets are
+    **0-based**, and coset 0 is the subgroup ``H``); ``008``–``009`` the
+    cohomology's degree and size limits; ``010`` a malformed module; ``011`` an
+    "action" that is not one, because some relator does not act as the identity
+    on ``M`` — refused rather than used; ``012`` an internal invariant, reported
+    rather than panicked because these run under a PyO3 boundary.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-FPGRP-001",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)
