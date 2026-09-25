@@ -1042,3 +1042,39 @@ fn smith_invariants_agrees_with_the_full_smith_form() {
         assert_eq!(smith_invariants(&m), diag, "disagreement on {rows:?}");
     }
 }
+
+/// Independent anchor: the Coxeter presentation of type `A_{n-1}` is `S_n`.
+///
+/// `<s_1..s_{n-1} | s_i^2, (s_i s_{i+1})^3, (s_i s_j)^2 for |i-j| >= 2>` presents
+/// the symmetric group, so the index of the trivial subgroup must be `n!`.
+///
+/// This is a different shape from the von Dyck tests above: those all have two
+/// generators, so nothing there exercises a presentation whose relator set
+/// grows with the generator count, or the commuting relators between distant
+/// generators. `n = 5` needs 4 generators, 4 involutions, 3 braid relators and
+/// 3 commuting relators, and enumerates 120 cosets.
+#[test]
+fn coxeter_type_a_presents_the_symmetric_group() {
+    let mut factorial = 1u32;
+    for n in 2usize..=5 {
+        factorial *= n as u32;
+        let names: Vec<String> = (1..n).map(|i| format!("s{i}")).collect();
+        let mut rels: Vec<String> = names.iter().map(|g| format!("{g}^2")).collect();
+        for i in 0..names.len() {
+            for j in (i + 1)..names.len() {
+                let e = if j == i + 1 { 3 } else { 2 };
+                rels.push(format!("({}*{})^{e}", names[i], names[j]));
+            }
+        }
+        let g = group(
+            &names.iter().map(String::as_str).collect::<Vec<_>>(),
+            &rels.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            order_of(&g),
+            Integer::from(factorial),
+            "Coxeter A_{} should present S_{n} of order {factorial}",
+            n - 1
+        );
+    }
+}
