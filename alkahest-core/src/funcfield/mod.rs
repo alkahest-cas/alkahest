@@ -18,8 +18,8 @@
 //!
 //! together with **ℚ-rational places only**.  That boundary is not an
 //! accident: the Mumford/Cantor representation reused from
-//! [`crate::integrate::algebraic::jacobian_torsion`] and
-//! [`crate::integrate::algebraic::coates`] is built on a *single rational place
+//! `crate::integrate::algebraic::jacobian_torsion` and
+//! `crate::integrate::algebraic::coates` is built on a *single rational place
 //! at infinity*, and those modules are themselves explicitly scoped to `n = 2`
 //! with `a` of odd degree.  Nothing here claims more.
 //!

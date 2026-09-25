@@ -35,7 +35,7 @@
 //!   enumerator polynomial, and the **MacWilliams transform**, which is
 //!   verified in both directions against directly enumerated duals in the
 //!   tests.
-//! * [`krawtchouk`] / [`krawtchouk_poly`] — the eigenvalues of the Hamming
+//! * [`krawtchouk()`] / [`krawtchouk_poly`] — the eigenvalues of the Hamming
 //!   association scheme, exactly.
 //! * [`delsarte_lp_bound`] — the headline: an upper bound on `A_q(n, d)`
 //!   computed by an exact-rational simplex and returned **with the dual

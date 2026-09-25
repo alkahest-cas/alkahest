@@ -37,7 +37,7 @@
 //!   declared at all.** These are the structs FLINT 3.1 changed from a row
 //!   pointer array to a `stride` — a change with *no size difference*, so
 //!   getting it wrong is an integer dereferenced as a pointer. Following the
-//!   precedent set by `nmod_mat`/`fq_nmod_mat` in [`crate::flint::ffi`], this
+//!   precedent set by `nmod_mat`/`fq_nmod_mat` in `crate::flint::ffi`, this
 //!   module declares them as **opaque over-sized byte buffers** and reaches
 //!   every entry through FLINT's own `acb_mat_entry_ptr` / `arb_mat_entry_ptr`
 //!   / `fmpz_mat_entry` accessor functions, which compute the offset inside
@@ -339,7 +339,7 @@ extern "C" {
     pub fn acb_mat_get_imag(im: *mut ArbMatBuf, mat: *const AcbMatBuf);
 
     /// `fmpz_mat_init` and `fmpz_mat_clear` are **not** redeclared here: they
-    /// already exist in [`crate::flint::ffi`] against `FmpzMatStruct`, and two
+    /// already exist in `crate::flint::ffi` against `FmpzMatStruct`, and two
     /// `extern` declarations of one symbol with different argument types is a
     /// `clashing_extern_declarations` warning (and, under `-D warnings`, an
     /// error). [`crate::flint::acb::IntMat`] calls those, casting its opaque

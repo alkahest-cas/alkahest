@@ -74,7 +74,7 @@
 //! row pointers became a stride — in exactly the way `fmpz_mat_struct` did.
 //! Both layouts have the same size, so getting it wrong is silent memory
 //! corruption rather than a compile error. The declarations in
-//! [`crate::flint::ffi`] follow the existing `flint3_stride` cfg precedent,
+//! `crate::flint::ffi` follow the existing `flint3_stride` cfg precedent,
 //! **and** nothing in this module ever computes an entry address itself: every
 //! read and write goes through FLINT's own accessors. The round-trip tests in
 //! `ffield::tests` fill several non-square shapes entry by entry and read them

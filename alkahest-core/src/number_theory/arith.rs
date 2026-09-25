@@ -14,7 +14,7 @@
 //! from the generating function `t/(eᵗ − 1)`. The other convention, from
 //! `t·eᵗ/(eᵗ − 1)`, gives `B₁ = +1/2`. The two differ in **exactly that one
 //! value** and nowhere else, which is what makes choosing the wrong one so
-//! quiet a bug. See [`bernoulli_number`].
+//! quiet a bug. See `bernoulli_number()`.
 //!
 //! # Why the refusals are not [`NumberTheoryError`]
 //!
@@ -22,14 +22,14 @@
 //! `alkahest_cas::stable`, so adding a variant to it is a semver-major change:
 //! `cargo semver-checks` reports `enum_variant_added` and demands a new major
 //! version. Forcing a major bump for a new experimental surface is the wrong
-//! trade, so the work-cap refusal lives on [`ArithmeticError`] instead.
+//! trade, so the work-cap refusal lives on `ArithmeticError` instead.
 //!
 //! That enum is **`#[non_exhaustive]` from birth**, which is the point: every
 //! future arithmetic-function refusal can be added without another break. The
 //! two share the `E-NT-NNN` code space, and
-//! [`ArithmeticError::Input`] *delegates* its code, message and remediation to
+//! `ArithmeticError::Input` *delegates* its code, message and remediation to
 //! the [`NumberTheoryError`] it wraps — so a domain violation reaching a caller
-//! of [`moebius_mu`] still reads `E-NT-002` rather than acquiring a second
+//! of `moebius_mu()` still reads `E-NT-002` rather than acquiring a second
 //! identity. The two can be consolidated at a deliberate major bump. In Python
 //! the split is invisible: `ArithmeticError` is created as a **subclass** of
 //! `NumberTheoryError`, so one `except NumberTheoryError` still catches
@@ -72,7 +72,7 @@ pub enum ArithmeticError {
     /// Present because these functions parse arbitrary-precision arguments with
     /// the same helpers the rest of [`crate::number_theory`] uses: `μ(0)` is
     /// undefined for the same reason and with the same remediation whether it
-    /// is reached through [`moebius_mu`] or through anything else, and
+    /// is reached through `moebius_mu()` or through anything else, and
     /// re-coding it here would have given one condition two codes.
     Input(NumberTheoryError),
 }
@@ -122,7 +122,7 @@ impl AlkahestError for ArithmeticError {
 
 /// Largest `n` accepted by [`partition_number`].
 pub const MAX_PARTITION_N: u64 = 1_000_000;
-/// Largest `n` accepted by [`bernoulli_number`].
+/// Largest `n` accepted by `bernoulli_number()`.
 pub const MAX_BERNOULLI_N: u64 = 50_000;
 /// Largest `n` accepted by [`euler_number`].
 pub const MAX_EULER_N: u64 = 20_000;

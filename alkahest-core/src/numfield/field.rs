@@ -11,7 +11,7 @@
 //! field — degree 1 and degree 2 are special-cased by Antic and do not have
 //! the layout of degree 3. Nothing in this file knows or cares: the buffer is
 //! opaque, and every operation on it passes the `nf_t` to FLINT, which picks
-//! the arm. See the notes in [`crate::flint::ffi`].
+//! the arm. See the notes in `crate::flint::ffi`.
 
 #[cfg(test)]
 use std::ffi::{CStr, CString};

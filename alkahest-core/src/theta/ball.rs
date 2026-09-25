@@ -251,7 +251,7 @@ impl RealBall {
     }
 
     /// `[mid - rad, mid + rad]` as a pair of `f64`s, rounded **outward** — the
-    /// counterpart of [`RealBall::inner_endpoints`], for reporting an enclosure
+    /// counterpart of `RealBall::inner_endpoints`, for reporting an enclosure
     /// rather than for deciding a predicate.
     pub fn interval_f64(&self) -> (f64, f64) {
         let m = self.midpoint_f64();

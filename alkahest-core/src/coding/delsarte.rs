@@ -17,7 +17,7 @@
 //! ```
 //!
 //! The last family is dual feasibility in the Hamming association scheme: the
-//! `K_k` are its eigenvalues ([`super::krawtchouk`]), and the inequality says a
+//! `K_k` are its eigenvalues ([`super::krawtchouk()`]), and the inequality says a
 //! certain Gram matrix has a non-negative entry.
 //!
 //! # Why this is a *certified* bound and not an estimate

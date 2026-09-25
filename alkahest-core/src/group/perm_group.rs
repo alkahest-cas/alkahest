@@ -228,7 +228,7 @@ impl StabilizerLevel {
 ///
 /// `|G| = Π_i |Δ_i|`, and an element is in `G` exactly when it sifts to the
 /// identity through the chain. Both facts are theorems about a *correct* BSGS;
-/// the correctness here rests on [`schreier_sims`], the deterministic
+/// the correctness here rests on `schreier_sims`, the deterministic
 /// Schreier-generator algorithm, which is tested against `|S_n| = n!`,
 /// `|A_n| = n!/2`, `|M₁₁| = 7920` and `|M₁₂| = 95040`.
 #[derive(Clone, Debug)]

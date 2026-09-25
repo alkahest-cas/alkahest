@@ -27,7 +27,7 @@
 //!     P        =  i^e · X^x Z^z  =  i^(e − y) · letters
 //! ```
 //!
-//! and [`PauliOperator::to_string`] prints `i^(e − y)` as its prefix. That is
+//! and `PauliOperator::to_string` prints `i^(e − y)` as its prefix. That is
 //! why `"+Y"` round-trips to an operator whose stored `phase()` is `1` rather
 //! than `0`: `Y = i·XZ`.
 //!

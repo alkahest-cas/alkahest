@@ -8,12 +8,12 @@
 //!
 //! | FLINT C type | wrapper      | `Drop` calls       |
 //! |--------------|--------------|--------------------|
-//! | `arb_t`      | [`Arb`]      | `arb_clear`        |
-//! | `acb_t`      | [`Acb`]      | `acb_clear`        |
-//! | `acb_ptr`    | [`AcbVec`]   | `_acb_vec_clear`   |
-//! | `arb_mat_t`  | [`ArbMat`]   | `arb_mat_clear`    |
-//! | `acb_mat_t`  | [`AcbMat`]   | `acb_mat_clear`    |
-//! | `fmpz_mat_t` | [`IntMat`]   | `fmpz_mat_clear`   |
+//! | `arb_t`      | `Arb`      | `arb_clear`        |
+//! | `acb_t`      | `Acb`      | `acb_clear`        |
+//! | `acb_ptr`    | `AcbVec`   | `_acb_vec_clear`   |
+//! | `arb_mat_t`  | `ArbMat`   | `arb_mat_clear`    |
+//! | `acb_mat_t`  | `AcbMat`   | `acb_mat_clear`    |
+//! | `fmpz_mat_t` | `IntMat`   | `fmpz_mat_clear`   |
 //!
 //! # Exact interchange with `rug::Float`
 //!
