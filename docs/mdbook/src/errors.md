@@ -29,6 +29,9 @@ AlkahestError (base)
 ├── VectorError       (E-VEC-*)    — vector calculus over an orthogonal chart, see below
 ├── QuaternionError   (E-QUAT-*)   — quaternion algebra and rotations, see below
 ├── ProbabilityError  (E-PROB-*)   — distributions, expectations, generating functions, entropy, see below
+├── GroupError        (E-GRP-*)    — permutation groups: orbits, Schreier–Sims, membership
+├── FunctionFieldError (E-FFLD-*) — divisors, Pic⁰ and Riemann–Roch on algebraic curves, see below
+├── ThetaError        (E-THETA-*)  — Riemann theta, modular and Weierstrass functions as rigorous enclosures
 └── BudgetExceededError (E-BUDGET-*) — budget/cancellation trip, see [Budgets](./budgets.md)
 ```
 
@@ -285,7 +288,7 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-FPS-*` | `FpsError` | Formal power series (`experimental.Fps`) — a pole at the origin (`001`/`002`), a non-rational coefficient (`003`), or one of the constant-term hypotheses `f(0) = 0` / `1` / `≠ 0` that make composition, `log` and the inverse well defined (`004`–`006`) |
 | `E-DAE-*` | `DaeError` | DAE structural analysis (Pantelides, index reduction) |
 | `E-SOLVE-*` | `SolverError` | Polynomial system solving, Gröbner basis |
-| `E-LAT-*` | `LatticeError` | Exact LLL lattice reduction over ℤ |
+| `E-LAT-*` | `LatticeError` (`001`–`004`), `LatticeGeometryError` (`005`–`014`) | Lattices over ℤ. `001`–`004` are LLL reduction (empty/ragged basis, `δ` outside `(¼, 1)`, iteration guard) and stay on the stable `LatticeError`. The experimental lattice toolkit raises `LatticeGeometryError`, which is `#[non_exhaustive]` and **wraps** a `LatticeError` when a reduction under it fails, so `001`–`004` reach a caller unchanged; in Python it is a *subclass* of `LatticeError`, so one `except` still catches both. `005`–`007` reject a Gram matrix that is not square, not symmetric or not positive definite; `008`/`009` are the exact-enumeration refusals (rank above the ceiling, node budget exhausted) and are **not** an invitation to approximate — there is no heuristic SVP/CVP here; `010` needs an integral Gram matrix for a theta series, `011` is a vector of the wrong length, `012` an out-of-range constructor parameter, `013` an operation needing ambient coordinates on a Gram-only lattice, and `014` an internal invariant, reported rather than panicked because these run under a PyO3 boundary |
 | `E-PSLQ-*` | `PslqError` | Integer-relation search (`guess_relation`); `E-PSLQ-004` is the input-precision refusal and `E-PSLQ-005` the exact refutation |
 | `E-JIT-*` | `JitError` | LLVM/Cranelift codegen and linking |
 | `E-CUDA-*` | `CudaError` | NVPTX compile, kernel launch, driver/runtime failures |
@@ -300,7 +303,14 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-RESIDUE-*` | `AlkahestError` | `residue` — not a rational function, zero denominator, pole order out of range, or (`E-RESIDUE-005`) a point that is not an exact constant in ℚ(i) |
 | `E-VEC-*` | `VectorError` | Vector calculus over an orthogonal chart — a non-differentiable component, a repeated or non-symbol coordinate, a chart that could not be *proven* orthogonal (`E-VEC-004`), or a degenerate scale factor (`E-VEC-005`). See [Vector calculus and quaternions](#vector-calculus-and-quaternions) |
 | `E-QUAT-*` | `QuaternionError` | Quaternion algebra and rotations — a zero or undecided norm (`E-QUAT-001`), the axis of the identity rotation, which does not exist (`E-QUAT-002`), or a matrix that could not be checked to be a proper rotation (`E-QUAT-003`) |
+| `E-GFQ-*` | `FiniteFieldError` | Linear algebra over the finite fields GF(q), q = p^k (`alkahest.experimental.FiniteField` / `GfMatrix`). `001` a non-prime characteristic and `002` one past a machine word — both refusals, because ℤ/nℤ for composite n has zero divisors and no well-defined rank; `004` a reducible defining polynomial; `009` a singular matrix; `010` a linear system with no solution, refused rather than approximated |
+| `E-CODE-*` | `CodingError` | Classical linear codes over GF(q), weight enumerators, MacWilliams, Krawtchouk polynomials and the Delsarte LP bound (`alkahest.experimental.LinearCode` / `delsarte_lp_bound`). Two matter most. `E-CODE-004` refuses a codeword enumeration past its hard cap rather than truncating it — the minimum weight of *some* codewords is an upper bound on `d` wearing `d`'s name. `E-CODE-007` **withholds** an LP bound whose dual certificate failed its own exact feasibility check, because an upper bound that came out too small "rules out" codes that exist. The rest: `001` a zero-length code, `002` a distance outside `1..=n`, `003` a GF(q) refusal passed through with its own `E-GFQ` code kept visible in the message, `005` a length past the LP cap, `006` a vector that is not the weight distribution of a linear code, `008` an unusable alphabet size. See [Certified coding bounds](#certified-coding-bounds) |
+| `E-NUMF-*` | `NumberFieldError` | Algebraic number fields ℚ[x]/(f) and the cyclotomic fields ℚ(ζ_n) (`alkahest.experimental.NumberField`). `E-NUMF-003` is the one that matters: the defining polynomial is **checked** for irreducibility and a reducible one is refused, because ℚ[x]/(f) for reducible f is a ring with zero divisors in which `inverse` has no answer and `norm` is not multiplicative — the error names a proper factor. `005` zero has no inverse; `006` two fields with different canonical defining polynomials, which are not interchangeable even when isomorphic; `008` ℚ(ζ_n) with φ(n) past the degree cap. Note `polynomial_discriminant` is the discriminant of the **defining polynomial**, not the field discriminant — the ring of integers is not computed |
+| `E-GRP-*` | `GroupError` | Permutation groups (`alkahest.experimental`) — an images array that is not a bijection (`E-GRP-001`), a degree mismatch, which is never repaired by padding with fixed points (`E-GRP-002`), a point outside `0..degree` — points are **0-based** here (`E-GRP-003`), a group too large to list element by element, whose order is still exact (`E-GRP-004`), a degree above the Schreier–Sims memory limit (`E-GRP-005`), or a standard family asked for below the `n` where its degree-`n` action is faithful, e.g. `dihedral(2)` (`E-GRP-006`) |
 | `E-PROB-*` | `ProbabilityError` | `alkahest.experimental`'s distribution surface — laws, expectations, moments, characteristic and generating functions, entropy and KL divergence. `E-PROB-005` and `E-PROB-006` are the two to branch on: one is a closed form that was **withheld**, the other says the quantity **does not exist**. See [Probability: four ways not to answer](#probability-four-ways-not-to-answer) |
+| `E-FFLD-*` | `FunctionFieldError` | `alkahest.experimental`'s function-field surface — divisors, the divisor class group `Pic⁰`, torsion order and Riemann–Roch. The implemented class is the **imaginary hyperelliptic** model `y² = a(x)` with `a` squarefree of **odd** degree and **ℚ-rational places**, because that is what the Mumford/Cantor machinery reused from the algebraic integrator is scoped to; every boundary outside it is one of these codes rather than a guess. Three to keep apart: `E-FFLD-007` is a **verdict** (the class has infinite order), `E-FFLD-006` is the matching **undecided**, and `E-FFLD-011` is an answer that was computed and then **withheld** for failing its own check. The most common one in practice is `E-FFLD-003`: the divisor has a place of degree ≥ 2, which cannot be represented. See [Function fields: what is modelled](#function-fields-what-is-modelled) |
+| `E-STAB-*` | `StabilizerError` | `alkahest.experimental`'s symplectic / stabilizer surface — the `(x \| z)` binary symplectic form, Pauli operators, stabilizer and CSS codes, and the classical matrix groups `GL`/`SL`/`Sp` over GF(q). `E-STAB-004`, `-005` and `-006` are **structural**: the generators do not define a stabilizer code at all (they anticommute, fail `H_X · H_Zᵀ = 0`, or multiply to `−I`). `E-STAB-008` is the exhaustive minimum-distance search past its cap — minimum distance is NP-hard and nothing here approximates it; the answer on offer instead is a `Distance` with `exact == False`. `E-STAB-013` is a result computed, failed against its own invariant, and withheld. A failure raised inside the GF(q) layer keeps its own `E-GFQ-*` code rather than being relabelled. See [Stabilizer codes: the `(x \| z)` convention](#stabilizer-codes-the-x--z-convention) |
+| `E-THETA-*` | `ThetaError` | `alkahest.experimental`'s theta surface — genus-`g` Riemann theta `θ[a;b](z, τ)`, the classical modular functions `η`, `j`, `λ`, `Δ`, the Jacobi theta functions and the Weierstrass family, each returned as a **ball** carrying its own error bound. `E-THETA-010` is the one to branch on: a value was computed and then **withheld** because its enclosure was too wide to read, and its `achieved_bits` field separates "needs more precision" from "is exactly zero, and so has no relative accuracy at any precision" (`j(ρ)`, `θ₁(0, τ)`) — use `Precision.bits(...)` and `ComplexBall.contains_zero()` for those. `E-THETA-007` / `E-THETA-009` mean `Im(τ)` could not be **proved** positive (definite), never that it was disproved. `E-THETA-001` is a FLINT too old to carry Arb (< 3.1) or `acb_theta` (< 3.2) |
 | `E-LIMIT-*` | `LimitError` | `limit` could not be established; `E-LIMIT-006` is a limit that turns on the sign of a free parameter nothing states — assume it, or declare the symbol `Domain.Positive` |
 | `E-SERIES-*` | `SeriesError` | `series` and `experimental.puiseux_series`. `003` a work ceiling, `004` an indeterminate coefficient, `005` no Puiseux expansion exists, `006` one computed and withheld |
 | `E-SUM-*` | `SumError` | Symbolic summation (`sum_indefinite`, `sum_definite`) — not hypergeometric, or not Gosper-summable |
@@ -309,7 +319,7 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-RSOLVE-*` | `RsolveError` | Difference equations (`rsolve`) |
 | `E-HOLO-*` | `HolonomicError` | One prefix, five engines: `001`–`008` single-index `zeilberger` plus modular / `p`-adic evaluation, `020`–`024` `q_zeilberger`, `040`–`042` `experimental.telescope2d` / `telescope_md`, `060`–`064` the continuous (Almkvist–Zeilberger) engine, which has no Python entry point yet. See [Creative telescoping](./telescoping.md) |
 | `E-VALIDATED-*` | `ValidatedError` | Rigorous Taylor-model bounds. **Every variant is a refusal, never a guess** — see [Rigorous global bounds](./validated-bounds.md) |
-| `E-NT-*` | `NumberTheoryError` | FLINT-backed integer number theory (`alkahest.number_theory`) |
+| `E-NT-*` | `NumberTheoryError` (`001`–`005`), `ArithmeticError` (`006`) | FLINT-backed integer number theory (`alkahest.number_theory`), including the classical arithmetic functions, which are exposed under `alkahest.experimental` — the partition function, Bernoulli, Euler, Stirling and harmonic numbers, Möbius μ, σ_k and sums of squares. Those refuse with `ArithmeticError`, which is `#[non_exhaustive]` and **wraps** a `NumberTheoryError` when the argument is out of domain, so `001`/`002` reach a caller unchanged; in Python it is a *subclass* of `NumberTheoryError`, so one `except` still catches both. `E-NT-006` is a **work cap**, not a claim that the value does not exist: `p(10^9)` is a perfectly good integer, this module simply will not spend unbounded time on a call that looked cheap. Note the Bernoulli convention is `B₁ = −1/2` |
 | `E-MOD-*` | `ModularError` | Modular / CRT reconstruction (`alkahest.modular`) |
 | `E-DIOPH-*` | `DiophantineError` | Integer Diophantine solving — linear and quadratic patterns |
 | `E-ROOT-*` | `RealRootError` | Real root isolation (VAS) |
@@ -512,3 +522,106 @@ with ak.context(require_certificate=True):
 3. Write the `remediation` before the message — if you cannot say what the user should do, the taxonomy is telling you this is an internal bug, not a user error.
 
 Users match on subsystem (the exception class); triagers filter on cause (the code suffix and remediation text).
+
+## Function fields: what is modelled
+
+## Stabilizer codes: the `(x | z)` convention
+
+`E-STAB-*` has thirteen numbers and only one of them is about running out of
+room. The rest exist because the commonest failure in this area is not a
+resource limit — it is a set of generators that looks like a stabilizer code,
+type-checks like a stabilizer code, and is not one.
+
+Everything in this layer writes a Pauli operator as `2n` bits in **`(x | z)`
+layout**: the first `n` are the `X` exponents, the last `n` the `Z` exponents,
+with
+
+```text
+    ⟨(x₁ | z₁), (x₂ | z₂)⟩  =  x₁·z₂ + z₁·x₂     (mod 2)
+```
+
+and two Paulis commuting exactly when that vanishes. The `(z | x)` layout is
+also in use in the literature. A check matrix transcribed from a paper that uses
+it produces generators that commute, have the right rank, and encode a different
+code — and no error at all. There is nothing this library can do about that
+except say so loudly, which is why the convention is repeated at the top of
+every module in the layer. If a code comes out with the right `n` and `k` and
+the wrong distance, suspect the layout before suspecting the search.
+
+Three of the codes deserve to be read apart from the rest:
+
+| Code | What it means | What to do |
+|---|---|---|
+| `E-STAB-004` | Two proposed generators **anticommute** | A stabilizer group is abelian; these two share no `+1` eigenspace. Check the `(x \| z)` layout, then the transcription |
+| `E-STAB-006` | A product of the generators is `−I` | The stabilized subspace is `{0}`: the code encodes nothing. Only reachable from a *dependent* generating list. Negate one generator, or drop the dependent one |
+| `E-STAB-008` | The exhaustive distance search is past its cap | There is no cleverer algorithm behind the cap — minimum distance is NP-hard and the only method here enumerates `2^(n+k)` centralizer elements. Take `distance_upper_bound()`, which returns a `Distance` with `exact == False`, and report it **as a bound** |
+
+The last one is the reason `minimum_distance()` does not return an `int`. A
+`Distance` carries `.value` and `.exact`, and the upper-bound path sets `.exact`
+to `False`. A caller that stores `.value` in a field named `d` has thrown away
+the one fact that made the number safe to publish.
+
+
+`E-FFLD-*` is one prefix over one class, and the eleven numbers exist because
+the honest answer to most function-field questions, in most of the space of
+possible inputs, is *not this implementation*.
+
+The implemented class is
+
+```text
+    K = ℚ(x)[y] / (y² − a(x)),    a squarefree,  deg a = 2g + 1 odd,
+```
+
+with divisors supported on **ℚ-rational places** — the degree-one points
+`(α, β)` with `α, β ∈ ℚ`, plus the single place at infinity. That is not a
+convenience boundary. The divisor class group here is Cantor arithmetic on
+Mumford pairs, reached through the code the algebraic integrator already uses
+(`integrate::algebraic::jacobian_torsion`, `coates`), and that code measures
+every class against **one rational place at infinity**. An even-degree ("real")
+model has two, and `n > 2` has no Mumford representation at all.
+
+| Code | What it means | What to do |
+|---|---|---|
+| `E-FFLD-001` | `deg_y f ≠ 2`, a non-constant `y²` coefficient, or a discriminant that is zero or constant | Restate as `c₂y² + c₁(x)y + c₀(x)` with `c₂` a non-zero rational constant. Superelliptic `yⁿ = a(x)` with `n > 2` is genuinely not implemented |
+| `E-FFLD-002` | The **real** (even-degree) model. Two places above `x = ∞` | The **genus is still returned** — it does not depend on the model. Only divisors, `Pic⁰` and Riemann–Roch refuse. Sending a rational root of `a` to infinity moves the model to odd degree |
+| `E-FFLD-003` | A place of degree ≥ 2 appears — a conjugate pair `(α, ±√c)` with `c` a non-square, or a place over an irrational `α` | Record it as *not representable*, **never as absent**: dropping the place would silently change `deg D`. The rational-root search is capped, so this never proves irreducibility. `div(y)` on `y² = x⁵ + 1` lands here, because `x⁵ + 1` has one rational root |
+| `E-FFLD-004` | A place `(α, β)` with `β² ≠ a(α)` | Coordinates are in the **normalised** model — check `FunctionField::curve()` and `normalisation()` before assuming they are the ones you wrote |
+| `E-FFLD-005` | A class-group operation on a divisor of non-zero degree | `Pic⁰` is the group modelled; subtract `deg(D)·∞` |
+| `E-FFLD-006` | The torsion order was **not decided**: too few good primes, or a candidate past the exact-confirmation cap | Record as undecided. **Not** a non-torsion certificate |
+| `E-FFLD-007` | The class has **infinite order**. A verdict | Stop looking for a principal multiple. Reduction mod good primes is injective on prime-to-`p` torsion, so disagreeing orders refute torsion outright |
+| `E-FFLD-008` | `div(0)` | The zero function has no divisor |
+| `E-FFLD-009` | Two operands from different function fields | Rebuild both over one `FunctionField` |
+| `E-FFLD-010` | A multiplicity, order or linear system past the work cap | Reduce the divisor |
+| `E-FFLD-011` | A result was **computed and then withheld** for failing its own check — `div(u)`'s pole order at infinity disagreeing with the degrees of `p` and `q`, or a Riemann–Roch dimension violating Riemann's inequality | A bug in this module, not in the input. Report it; the point is that the wrong answer was not returned |
+
+The last row is the one worth dwelling on. `div(u)` derives the multiplicity at
+infinity from `deg div(u) = 0` and then checks it against
+`v_∞(p + qy) = min(−2 deg p, −deg a − 2 deg q)`, which is exact on the
+odd-degree model because the two candidates differ in parity. Riemann–Roch
+checks its dimension against `dim ≥ deg D + 1 − g` and, above the canonical
+degree, against the equality. Neither check can fire on valid input; both exist
+so that a wrong answer arrives as `E-FFLD-011` rather than as a divisor.
+
+## Certified coding bounds
+
+`delsarte_lp_bound(n, d, q)` returns an upper bound on `A_q(n, d)` — the largest
+possible size of *any* code (linear or not) of length `n` over an alphabet of
+size `q` with minimum distance at least `d`. Every step is exact rational
+arithmetic, but exactness alone is not what makes the number trustworthy: a
+solver that stopped early would report a bound that is too *small*, and a bound
+that is too small silently rules out codes that exist.
+
+So the number is read off the **dual** programme and comes with the multipliers
+that prove it. `DelsarteBound.certificate()` is a vector `y ≥ 0` satisfying
+`Σ_k y_k K_k(i) ≤ −1` for every `i` in `d..=n`; from that alone, with no
+reference to this implementation, `|C| ≤ 1 + Σ_k y_k K_k(0)` for every such
+code. `DelsarteBound.verify_certificate()` re-checks it from scratch, and the
+constructor refuses with `E-CODE-007` rather than returning a bound whose
+certificate did not pass. A caller who does not trust this crate can re-verify
+the certificate with nothing but a Krawtchouk evaluator.
+
+This is the plain Delsarte programme. Schrijver's semidefinite strengthening and
+the extra inequalities that beat it on specific `(n, d)` are not implemented:
+what is returned is always a valid upper bound, not always the tightest one
+known.
+

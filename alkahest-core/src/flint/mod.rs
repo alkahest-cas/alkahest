@@ -44,15 +44,26 @@
 //! | `nmod_poly_t`           | `nmod::FlintNmodPoly`      | `nmod_poly_clear`         |
 //! | `nmod_poly_factor_t`    | `nmod::FlintNmodPolyFactor`| `nmod_poly_factor_clear`  |
 //! | `fmpz_mat_t`            | `mat::FlintMat`            | `fmpz_mat_clear`          |
+//! | `fmpq_t`                | `rational::FlintRational`  | `fmpq_clear`              |
+//! | `fmpq_poly_t`           | `numfield::field::FqPoly`  | `fmpq_poly_clear`         |
+//! | `nf_t` / `nf_elem_t`    | `numfield::field`          | `nf_clear` / `nf_elem_clear` |
 //!
 //! All raw C pointers are confined to `ffi.rs`; everything above is safe Rust.
 
+/// Genuine `arb_t` / `acb_t` bindings (FLINT >= 3.1 only; see `build.rs`'s
+/// `flint_arb` probe). Separate from, and with no effect on, the MPFR-backed
+/// [`crate::ball`] module.
+#[cfg(flint_arb)]
+pub mod acb;
+#[cfg(flint_arb)]
+pub mod arb;
 pub(crate) mod ffi;
 pub mod integer;
 pub(crate) mod mat;
 pub(crate) mod mpoly;
 pub(crate) mod nmod;
 pub mod poly;
+pub(crate) mod rational;
 
 pub use integer::FlintInteger;
 pub use poly::FlintPoly;

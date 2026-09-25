@@ -10,12 +10,16 @@ pub mod ball;
 // P1 search plumbing item 4 — budgets, cancellation, determinism
 pub mod budget;
 pub mod calculus;
+pub mod coding;
 pub mod dae;
 pub mod deriv;
 pub mod diff;
 pub mod errors;
 pub mod eval;
+pub mod ffield;
 pub mod flint;
+pub mod funcfield;
+pub mod group;
 pub mod horner;
 // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
 pub mod holonomic;
@@ -34,6 +38,7 @@ pub mod modular;
 // V3-1 — Integer number theory (`fmpz` helpers)
 pub mod number_theory;
 pub mod numeric;
+pub mod numfield;
 pub mod ode;
 pub mod parse;
 pub mod pattern;
@@ -51,9 +56,12 @@ pub mod special;
 // V2-13 — Differential algebra / Rosenfeld–Gröbner
 #[cfg(feature = "groebner")]
 pub mod diffalg;
+// Binary symplectic / stabilizer codes, and classical matrix groups over GF(q)
+pub mod stabilizer;
 // V2-10 — Gosper / creative telescoping (WZ certificates)
 pub mod stablehlo;
 pub mod sum;
+pub mod theta;
 // §3.3 — symbolic integral transforms (Laplace and inverse Laplace)
 pub mod transform;
 // P1 item 9 — rigorous global bounds (Taylor models / validated numerics)
@@ -96,7 +104,8 @@ pub use real::{
 pub use simplify::{simplify_with_assumptions, AssumptionContext, AssumptionError};
 // V2-6 — LLL + integer relations (augmented lattice heuristic)
 pub use lattice::{
-    lattice_reduce_rows, lattice_reduce_rows_with_delta, validate_lll_rows, LatticeError,
+    lattice_reduce_rows, lattice_reduce_rows_exact, lattice_reduce_rows_with_delta,
+    validate_lll_rows, LatticeError,
 };
 pub use matrix::{
     characteristic_polynomial_lambda_minus_m, cholesky, column_space_basis, diagonalize,
@@ -380,10 +389,46 @@ pub mod experimental {
         puiseux_series, Evidence, NotPuiseuxReason, PuiseuxError, PuiseuxExpansion,
         UnverifiedReason, MAX_RAMIFICATION,
     };
+    /// Classical linear codes over GF(q): weight enumerators, MacWilliams,
+    /// Krawtchouk polynomials, and the Delsarte linear-programming bound on
+    /// `A_q(n, d)` — solved in exact rational arithmetic and returned with the
+    /// dual certificate that proves it. See [`crate::coding`] for scope.
+    pub use crate::coding::{
+        binomial, binomial_generalised, delsarte_lp_bound, hamming_bound, krawtchouk,
+        krawtchouk_pairing, krawtchouk_poly, singleton_bound, CodingError, DelsarteBound,
+        LinearCode, WeightEnumerator, MAX_ENUMERATED_CODEWORDS, MAX_ENUMERATION_CELLS,
+        MAX_LP_LENGTH,
+    };
     pub use crate::deriv::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
     pub use crate::eval::{
         eval_complex_f64, eval_exact_rational, eval_f64, eval_interval, evaluate, ComplexF64,
         EvalError, EvalMode, EvalValue, UnsupportedReason,
+    };
+    /// Dense linear algebra over the finite fields GF(q), q = p^k, backed by
+    /// FLINT's `nmod_mat` (prime fields) and `fq_nmod_mat` (extensions).
+    /// Built for linear codes: rectangular shapes are first-class and
+    /// `nullspace` over GF(2) is the path everything else is arranged around.
+    /// See [`crate::ffield`] for what is deliberately out of scope.
+    pub use crate::ffield::{
+        FieldElement, FiniteField, FiniteFieldError, GfMatrix, Rref, MAX_EXTENSION_DEGREE,
+    };
+    /// Function fields of algebraic curves: divisors, the divisor class group
+    /// and Riemann–Roch, for the imaginary hyperelliptic model with rational
+    /// places.  See `funcfield`'s module docs for exactly what is refused.
+    pub use crate::funcfield::{
+        riemann_roch, Divisor, DivisorClass, FunctionField, FunctionFieldElement,
+        FunctionFieldError, Normalisation, Place, RiemannRochSpace,
+    };
+    /// Computational group theory: permutation groups, orbits with Schreier
+    /// vectors, a base and strong generating set from Schreier–Sims, exact
+    /// arbitrary-precision group order, and membership by sifting. Points are
+    /// 0-based and composition is **left-to-right** (`p.compose(&q)` applies
+    /// `p` first) — see [`crate::group`] for the conventions and for the
+    /// explicit list of what is out of scope.
+    pub use crate::group::{
+        alternating, cyclic, dihedral, symmetric, trivial as trivial_group, GroupError, Orbit,
+        Permutation, PermutationGroup, SchreierEntry, SiftResult, StabilizerChain, StabilizerLevel,
+        DEFAULT_ELEMENT_CAP, MAX_BSGS_DEGREE, MAX_ELEMENT_CAP,
     };
     /// Continuous (differential) creative telescoping — Almkvist–Zeilberger,
     /// the twin of `q_zeilberger`/`telescope2d` on the `D_x` side. Rust-only
@@ -399,6 +444,26 @@ pub mod experimental {
     };
     pub use crate::horner::{emit_expr_c, emit_expr_c_vec, emit_horner_c, horner, EmitCError};
     pub use crate::hybrid::{Event, GuardStructure, HybridODE};
+    /// Lattices over ℤ: the standard families (`zn`, `a_n`, `d_n`, `e8`,
+    /// `leech`), determinants and duals, **exact** shortest and closest
+    /// vectors, theta series, kissing numbers and sphere-packing densities.
+    ///
+    /// `Lattice::from_gram` is the general constructor — `E_8` and the Leech
+    /// lattice have no rational basis in their natural embedding, while every
+    /// invariant here depends on the Gram matrix alone. SVP, CVP, minimal
+    /// vectors and theta series are exact Fincke–Pohst enumeration: no
+    /// heuristic, exponential in the rank, capped at [`MAX_ENUM_RANK`] with a
+    /// node budget, and a typed refusal above either. See [`crate::lattice`]
+    /// for the full list of scope limits.
+    /// The toolkit's refusals are [`LatticeGeometryError`]
+    /// (`E-LAT-005` … `E-LAT-014`), which is `#[non_exhaustive]`, not the
+    /// stable [`crate::LatticeError`] (`E-LAT-001` … `E-LAT-004`) that basis
+    /// reduction uses. The former wraps the latter, so a reduction failure
+    /// underneath a toolkit call keeps its own code.
+    pub use crate::lattice::{
+        a_n, d_n, e8, lattice_reduce_rows_exact, leech, zn, Lattice, LatticeGeometryError,
+        LatticeVector, DEFAULT_ENUM_NODE_BUDGET, MAX_ENUM_RANK, MAX_THETA_NORM,
+    };
     pub use crate::lean::emit_lean_expr as emit_lean;
     pub use crate::matrix::{
         cholesky, column_space_basis, jordan_form, lu_decomposition, matrix_exponential,
@@ -410,7 +475,33 @@ pub mod experimental {
         is_prime, lift_crt, mignotte_bound, rational_reconstruction, reduce_mod,
         select_lucky_prime, ModularError, ModularValue, MultiPolyFp,
     };
+    /// The classical arithmetic functions, on FLINT's `arith`, `bernoulli` and
+    /// `partitions`. **FLINT's Bernoulli convention is `B_1 = -1/2`** (DLMF /
+    /// Mathematica / SymPy); the other convention differs in exactly that one
+    /// value and nowhere else, which is what makes picking the wrong one so
+    /// quiet a bug.
+    ///
+    /// These refuse with [`crate::number_theory::arith::ArithmeticError`], which
+    /// is `#[non_exhaustive]`, not
+    /// the stable [`crate::NumberTheoryError`] the rest of
+    /// [`crate::number_theory`] uses. `ArithmeticError` *wraps* the latter for
+    /// domain and parse failures, so `E-NT-001` / `E-NT-002` reach a caller
+    /// unchanged, and `E-NT-006` is its own work cap.
+    pub use crate::number_theory::arith::{
+        bernoulli_number, divisor_sigma, euler_number, harmonic_number, moebius_mu,
+        partition_number, stirling_first, stirling_first_unsigned, stirling_second, sum_of_squares,
+        ArithmeticError, MAX_BERNOULLI_N, MAX_EULER_N, MAX_HARMONIC_N, MAX_PARTITION_N,
+        MAX_STIRLING_N,
+    };
     pub use crate::numeric::{guess_integer_relation, PslqError};
+    /// Algebraic number fields `Q[x]/(f)` on FLINT's `nf`/`nf_elem`, including
+    /// the cyclotomic fields Q(zeta_n). The defining polynomial is **checked**
+    /// for irreducibility, and `polynomial_discriminant` is the discriminant
+    /// of that polynomial — *not* the field discriminant, which this module
+    /// does not compute. See [`crate::numfield`].
+    pub use crate::numfield::{
+        cyclotomic_polynomial, NumberField, NumberFieldElement, NumberFieldError, MAX_FIELD_DEGREE,
+    };
     pub use crate::ode::dsolve::system::{
         dsolve_system, dsolve_system_with, DsolveSystemError, SystemSolution,
     };
@@ -448,7 +539,37 @@ pub mod experimental {
         simplify_colored, simplify_egraph, simplify_expanded, ColorId, ColoredEgraph,
         CONTEXT_COLOR, ROOT_COLOR,
     };
+    /// The binary symplectic / stabilizer layer: the `(x | z)` symplectic form
+    /// over GF(2), Pauli operators with a `Z₄` phase, stabilizer and CSS codes
+    /// with their logical operators and syndrome map, and the classical matrix
+    /// groups `GL`, `SL`, `Sp` over GF(q). The `(x | z)` convention and the
+    /// scope limits — no Clifford simulation, no decoding, distance only by
+    /// capped exhaustive search — are in [`crate::stabilizer`].
+    pub use crate::stabilizer::{
+        is_symplectic, symplectic_complement, symplectic_form, symplectic_gram_matrix,
+        symplectic_gram_schmidt, CssCode, Distance, HyperbolicBasis, MatrixGroup, MatrixGroupKind,
+        PauliOperator, StabilizerCode, StabilizerError, StabilizerGroup, MAX_DISTANCE_SEARCH_DIM,
+        MAX_MATRIX_ENUMERATION, MAX_QUBITS,
+    };
     pub use crate::stablehlo::emit_stablehlo;
+    /// Riemann theta functions, classical modular functions (`eta`, `j`,
+    /// `lambda`, `Delta`, Eisenstein) and the Weierstrass family, as
+    /// **rigorous enclosures** backed by FLINT's Arb layer. Every value is a
+    /// [`crate::theta::ComplexBall`] carrying its own error bound, and
+    /// [`crate::theta::Precision::AccurateTo`] refuses rather than returning a
+    /// midpoint with nothing behind it. Genus 1 and 2 are what this is built
+    /// and tested for; see [`crate::theta`] for the genus ceiling and the rest
+    /// of the scope limits.
+    pub use crate::theta::{
+        arb_backend_available, dedekind_eta, eisenstein_series, j_invariant, jacobi_theta,
+        jacobi_theta_null, modular_discriminant, modular_lambda, riemann_theta,
+        riemann_theta_available, riemann_theta_characteristic, riemann_theta_squared,
+        siegel_is_reduced, siegel_reduce, theta_characteristic_bits, theta_characteristic_index,
+        theta_characteristic_is_even, weierstrass_invariants, weierstrass_p, weierstrass_p_prime,
+        weierstrass_roots, weierstrass_sigma, weierstrass_zeta, ComplexBall, Precision, RealBall,
+        SiegelMatrix, SiegelReduction, ThetaError, ThetaValues, DEFAULT_PRECISION_BITS, MAX_GENUS,
+        MAX_PRECISION_BITS, MIN_PRECISION_BITS,
+    };
     pub use crate::transform::fourier::fourier_derivative_rule;
     pub use crate::transform::laplace::laplace_derivative_rule;
     pub use crate::transform::{

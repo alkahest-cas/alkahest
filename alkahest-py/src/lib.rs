@@ -1,3 +1,4 @@
+mod group;
 use alkahest_core::{
     adjoint_system as core_adjoint_system,
     cad_lift as core_cad_lift,
@@ -249,6 +250,9 @@ use rug::{Complete, Integer, Rational};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+mod coding;
+mod ffield;
+mod lattice;
 
 // ---------------------------------------------------------------------------
 // V1-3: Structured Python exception hierarchy
@@ -256,6 +260,10 @@ use std::hash::{Hash, Hasher};
 
 // V1-3: structured exception hierarchy.
 // Base inherits from ValueError for backward compat with existing `except ValueError` tests.
+mod funcfield;
+mod numfield;
+mod stabilizer;
+mod theta;
 pyo3::create_exception!(alkahest, PyAlkahestError, pyo3::exceptions::PyValueError);
 pyo3::create_exception!(alkahest, PyConversionError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyDomainError, PyAlkahestError);
@@ -10391,6 +10399,22 @@ fn py_build_features() -> std::collections::HashMap<String, bool> {
         // `cuda` stays: it is falsifiable. `true` guarantees `ak.compile_cuda`
         // and `ak.CudaCompiledFn` exist, `false` guarantees they do not.
         ("cuda", cfg!(feature = "cuda")),
+        // The two theta bits are not Cargo features — `build.rs` probes
+        // libflint's symbol table, because FLINT absorbed Arb in 3.0 and
+        // rewrote the acb_theta API in 3.2. Both are falsifiable in the sense
+        // this contract requires: `false` guarantees every entry point behind
+        // them refuses with `E-THETA-001` rather than computing, so a caller
+        // can distinguish the two states by observation. They are reported
+        // here because the alternative is a suite that passes without
+        // executing any theta, which is what a stock-apt FLINT produces.
+        (
+            "arb_backend",
+            alkahest_core::experimental::arb_backend_available(),
+        ),
+        (
+            "riemann_theta",
+            alkahest_core::experimental::riemann_theta_available(),
+        ),
     ]
     .into_iter()
     .map(|(name, enabled)| (name.to_string(), enabled))
@@ -18767,7 +18791,11 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // solve that outgrows the machine `abort()`s the interpreter with
     // `GNU MP: Cannot allocate memory`, which no `except` clause can catch.
     alkahest_core::budget::install_memory_accounting();
+    group::register(m)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
+    coding::register(m)?;
+    ffield::register(m)?;
+    lattice::register(m)?;
     m.add_function(wrap_pyfunction!(py_derived_result_context_simplify, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify_egraph, m)?)?;
@@ -18815,6 +18843,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_vector_dot, m)?)?;
     m.add_function(wrap_pyfunction!(py_vector_cross, m)?)?;
     m.add_function(wrap_pyfunction!(py_vector_norm, m)?)?;
+    funcfield::register(m)?;
+    stabilizer::register(m)?;
+    numfield::register(m)?;
+    theta::register(m)?;
     m.add_function(wrap_pyfunction!(py_euler_maclaurin, m)?)?;
     m.add_function(wrap_pyfunction!(py_coefficient_asymptotics, m)?)?;
     // P1 item 7 — creative telescoping / holonomic (D-finite) machinery

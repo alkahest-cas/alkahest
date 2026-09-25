@@ -4,6 +4,15 @@
 //! modular square roots (`fmpz_sqrtmod`), nth roots modulo primes when Coprime holds,
 //! brute-force discrete logs, and quadratic Dirichlet characters (odd square-free conductor).
 
+/// The classical arithmetic functions — the partition function, Bernoulli,
+/// Euler, Stirling and harmonic numbers, Möbius μ, σ_k and sums of squares.
+///
+/// A child module rather than more entry points here, because its refusals
+/// live on a separate `#[non_exhaustive]` enum: [`NumberTheoryError`] below is
+/// exhaustive and in the stable surface, so a new variant on it would force a
+/// major version bump. See [`arith::ArithmeticError`].
+pub mod arith;
+
 use crate::errors::AlkahestError;
 use crate::flint::ffi;
 use crate::flint::integer::FlintIntFactor;

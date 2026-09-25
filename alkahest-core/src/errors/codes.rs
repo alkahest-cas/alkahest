@@ -244,6 +244,16 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-LAT-002", class: "LatticeError", cause: Cause::UserInput,   remediation: Some("every row must lie in ℤ^m for fixed ambient dimension m") },
     ErrorSpec { code: "E-LAT-003", class: "LatticeError", cause: Cause::UserInput,   remediation: Some("pick δ strictly between ¼ and 1; the default δ = ¾ is standard") },
     ErrorSpec { code: "E-LAT-004", class: "LatticeError", cause: Cause::Unsupported, remediation: Some("check for rank deficiency; try a smaller basis or report a minimal reproducer") },
+    ErrorSpec { code: "E-LAT-005", class: "LatticeGeometryError", cause: Cause::UserInput,   remediation: Some("a Gram matrix has one row and one column per basis vector") },
+    ErrorSpec { code: "E-LAT-006", class: "LatticeGeometryError", cause: Cause::UserInput,   remediation: Some("supply the full symmetric matrix G[i][j] = <b_i, b_j>") },
+    ErrorSpec { code: "E-LAT-007", class: "LatticeGeometryError", cause: Cause::UserInput,   remediation: Some("basis rows must be linearly independent and a Gram matrix positive definite") },
+    ErrorSpec { code: "E-LAT-008", class: "LatticeGeometryError", cause: Cause::Unsupported, remediation: Some("exact SVP/CVP is exponential in the rank; project to a sublattice or use LLL instead of enumeration") },
+    ErrorSpec { code: "E-LAT-009", class: "LatticeGeometryError", cause: Cause::Resource,    remediation: Some("raise the enumeration node budget, lower the norm bound, or reduce the basis first") },
+    ErrorSpec { code: "E-LAT-010", class: "LatticeGeometryError", cause: Cause::Unsupported, remediation: Some("scale the lattice to an integral Gram matrix, or ask for the minimum rather than a theta series") },
+    ErrorSpec { code: "E-LAT-011", class: "LatticeGeometryError", cause: Cause::UserInput,   remediation: Some("supply a vector with one entry per ambient coordinate") },
+    ErrorSpec { code: "E-LAT-012", class: "LatticeGeometryError", cause: Cause::UserInput,   remediation: Some("check the documented parameter range for this lattice constructor") },
+    ErrorSpec { code: "E-LAT-013", class: "LatticeGeometryError", cause: Cause::UserInput,   remediation: Some("build the lattice from a basis if you need ambient coordinates") },
+    ErrorSpec { code: "E-LAT-014", class: "LatticeGeometryError", cause: Cause::Internal,    remediation: Some("this is a bug: please report it with the lattice that produced it") },
     // E-LOGIC — first-order formulas (V3-3)
     ErrorSpec { code: "E-LOGIC-001", class: "LogicError", cause: Cause::UserInput, remediation: Some("pass a predicate or quantified Expr; use pool.gt/… or And/Or/Not") },
     // E-PSLQ — PslqError (V2-6 augmented-lattice relation heuristic)
@@ -272,6 +282,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-NT-003", class: "NumberTheoryError", cause: Cause::Domain, remediation: Some("adjust residue, base, or root degree until a modular solution exists") },
     ErrorSpec { code: "E-NT-004", class: "NumberTheoryError", cause: Cause::Domain, remediation: Some("use prime moduli for discrete_log/nthroot_mod as documented") },
     ErrorSpec { code: "E-NT-005", class: "NumberTheoryError", cause: Cause::Unsupported, remediation: Some("use quadratic roots or gcd(k,p−1)=1; general radicals require more machinery") },
+    ErrorSpec { code: "E-NT-006", class: "ArithmeticError", cause: Cause::Resource, remediation: Some("the arithmetic-function argument is past this crate's work cap; p(n), B_n, E_n and H_n all grow superpolynomially in the number of digits, so the cap is a refusal to sit in FLINT for an unbounded time rather than a statement that the value does not exist") },
     // E-PARSE — expression parser (V2-21)
     ErrorSpec { code: "E-PARSE-001", class: "ParseError", cause: Cause::UserInput,   remediation: Some("only ASCII arithmetic expressions are supported") },
     ErrorSpec { code: "E-PARSE-002", class: "ParseError", cause: Cause::UserInput,   remediation: Some("check parentheses and operator placement") },
@@ -496,6 +507,161 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // the conventional (0,0,1) is a stated answer to a question with no answer.
     ErrorSpec { code: "E-QUAT-002", class: "QuaternionError", cause: Cause::Domain,    remediation: Some("the rotation is the identity — report the angle as 0 and pick whatever axis your convention prefers, explicitly, at the call site") },
     ErrorSpec { code: "E-QUAT-003", class: "QuaternionError", cause: Cause::UserInput, remediation: Some("pass a 3×3 matrix of numbers with RᵀR = I and det R = +1; a reflection (det = −1) is not a rotation and has no quaternion") },
+    // E-GFQ — FiniteFieldError (linear algebra over GF(q), q = p^k)
+    //
+    // 001/002 guard the field itself. A composite modulus gives a ring with zero
+    // divisors, where Gaussian elimination can meet a pivot that is non-zero and
+    // still not invertible — every "rank" reported over it is a guess, so the
+    // field is refused rather than the answer caveated.
+    ErrorSpec { code: "E-GFQ-001", class: "FiniteFieldError", cause: Cause::UserInput,   remediation: Some("GF(q) needs a prime characteristic: pass a prime p, or factor the modulus and work over each prime factor separately. Z/nZ for composite n is a ring with zero divisors and has no well-defined rank or nullspace") },
+    ErrorSpec { code: "E-GFQ-002", class: "FiniteFieldError", cause: Cause::Unsupported, remediation: Some("the nmod/fq_nmod backend is word-sized: use a prime below 2^64. A multi-precision prime field would need FLINT's fmpz_mod_mat, which is not wrapped") },
+    ErrorSpec { code: "E-GFQ-003", class: "FiniteFieldError", cause: Cause::UserInput,   remediation: Some("the extension degree must lie in 1..=64; degree 1 is the prime field itself") },
+    ErrorSpec { code: "E-GFQ-004", class: "FiniteFieldError", cause: Cause::UserInput,   remediation: Some("supply a polynomial of degree >= 1 that is irreducible over GF(p); coefficients ascend, so x^3+x+1 over GF(2) is [1, 1, 0, 1]. A reducible modulus would make the quotient a ring with zero divisors") },
+    ErrorSpec { code: "E-GFQ-005", class: "FiniteFieldError", cause: Cause::UserInput,   remediation: Some("an element of GF(p^k) has at most k coefficients over the prime subfield; reduce it modulo the defining polynomial at the call site if that is what was meant") },
+    ErrorSpec { code: "E-GFQ-006", class: "FiniteFieldError", cause: Cause::UserInput,   remediation: Some("rebuild both operands over the same FiniteField; two fields of the same order but different defining polynomials are isomorphic, not interchangeable — an element's coordinates mean different things in each") },
+    ErrorSpec { code: "E-GFQ-007", class: "FiniteFieldError", cause: Cause::UserInput,   remediation: Some("check the shapes: A*B needs A.ncols == B.nrows, add and sub need identical shapes, and solve needs A.nrows == B.nrows") },
+    ErrorSpec { code: "E-GFQ-008", class: "FiniteFieldError", cause: Cause::UserInput,   remediation: Some("determinant, charpoly and inverse are defined only for square matrices; for a rectangular one use rank, rref or nullspace") },
+    ErrorSpec { code: "E-GFQ-009", class: "FiniteFieldError", cause: Cause::Domain,      remediation: Some("the matrix is singular over this field: use nullspace to see the kernel, or solve, which returns a particular solution whenever one exists") },
+    ErrorSpec { code: "E-GFQ-010", class: "FiniteFieldError", cause: Cause::Domain,      remediation: Some("the right-hand side is outside the column space, so no solution exists; check that rank([A|b]) == rank(A)") },
+    ErrorSpec { code: "E-GFQ-011", class: "FiniteFieldError", cause: Cause::UserInput,   remediation: Some("indices are zero-based and must satisfy i < nrows and j < ncols") },
+    ErrorSpec { code: "E-GFQ-012", class: "FiniteFieldError", cause: Cause::Resource,    remediation: Some("the requested shape exceeds what the FLINT backend can allocate; a dense matrix over GF(q) costs at least one machine word per entry") },
+    // E-GRP — GroupError (permutation groups: orbits, Schreier–Sims, membership)
+    ErrorSpec { code: "E-GRP-001", class: "GroupError", cause: Cause::UserInput,   remediation: Some("supply each of 0..n exactly once as an image; points are 0-based, so a cycle copied from GAP or the ATLAS needs `Permutation::from_cycles_one_based`") },
+    // Degrees are never widened by padding with fixed points: S_3 inside S_5 is a
+    // different subgroup of a different symmetric group from S_3 itself, and which
+    // one the caller meant is not recoverable from the arguments.
+    ErrorSpec { code: "E-GRP-002", class: "GroupError", cause: Cause::UserInput,   remediation: Some("embed the smaller permutation with `Permutation::extend_degree(n)` before composing, or rebuild both at the common degree") },
+    ErrorSpec { code: "E-GRP-003", class: "GroupError", cause: Cause::UserInput,   remediation: Some("points are 0-based: the valid range is 0..degree") },
+    // A group of order 10^20 has a perfectly computable order and no listable
+    // element set. Refusing the list keeps those two facts apart.
+    ErrorSpec { code: "E-GRP-004", class: "GroupError", cause: Cause::Resource,    remediation: Some("use `order()`, `contains()` or `random_element()` instead of listing the elements, or raise the cap with `elements_with_cap` if the list really fits in memory") },
+    ErrorSpec { code: "E-GRP-005", class: "GroupError", cause: Cause::Resource,    remediation: Some("orbits and orbit representatives are available at any degree; only the stabilizer chain (and therefore `order`, `contains` and `elements`) is capped") },
+    // Below its stated minimum, a standard family's natural degree-n action is not
+    // faithful, so the group returned would not be the group the name promises.
+    ErrorSpec { code: "E-GRP-006", class: "GroupError", cause: Cause::Unsupported, remediation: Some("these constructors build the natural degree-n action; below the stated minimum that action is not faithful, so build the group by hand on the point set you actually mean") },
+    // E-FFLD — FunctionFieldError (divisors, Pic⁰ and Riemann–Roch on curves)
+    //
+    // The whole point of this prefix is the boundary it marks. The implemented
+    // class is the *imaginary* hyperelliptic model `y² = a(x)` with `a`
+    // squarefree of odd degree and ℚ-rational places, because that is exactly
+    // what the Mumford/Cantor machinery in `integrate::algebraic` — which this
+    // layer reuses rather than reimplements — is scoped to. Everything outside
+    // it is a typed refusal, never a guess.
+    //
+    // Three of these are *not* refusals and must be kept apart by any caller
+    // branching on the code: E-FFLD-007 is a **verdict** (the class has
+    // infinite order, and no wider search will change that), E-FFLD-006 is the
+    // matching **undecided** (neither torsion nor non-torsion was established),
+    // and E-FFLD-011 reports an answer that was computed and then **withheld**
+    // because it failed its own consistency check.
+    ErrorSpec { code: "E-FFLD-001", class: "FunctionFieldError", cause: Cause::Unsupported, remediation: Some("supply c₂·y² + c₁(x)·y + c₀(x) with c₂ a non-zero rational constant, whose discriminant c₁² − 4c₂c₀ is non-constant; higher-degree plane curves are not modelled") },
+    ErrorSpec { code: "E-FFLD-002", class: "FunctionFieldError", cause: Cause::Unsupported, remediation: Some("move the model to odd degree by sending a rational root of a(x) to infinity, or use genus() alone, which is model-independent") },
+    ErrorSpec { code: "E-FFLD-003", class: "FunctionFieldError", cause: Cause::Unsupported, remediation: Some("restrict to divisors supported on rational places, or work with the divisor class (Mumford form), which represents conjugate places implicitly") },
+    ErrorSpec { code: "E-FFLD-004", class: "FunctionFieldError", cause: Cause::UserInput,   remediation: Some("check the sign and the model: the place must satisfy y² = a(x) in the *normalised* coordinates reported by FunctionField::curve()") },
+    ErrorSpec { code: "E-FFLD-005", class: "FunctionFieldError", cause: Cause::UserInput,   remediation: Some("replace D by D − deg(D)·∞ before asking for its class") },
+    ErrorSpec { code: "E-FFLD-006", class: "FunctionFieldError", cause: Cause::Unsupported, remediation: Some("record the result as undecided — never as non-torsion; a larger prime search or a different model may settle it") },
+    ErrorSpec { code: "E-FFLD-007", class: "FunctionFieldError", cause: Cause::Domain,      remediation: Some("this is a verdict: no multiple of the divisor is principal, so stop looking for one") },
+    ErrorSpec { code: "E-FFLD-008", class: "FunctionFieldError", cause: Cause::UserInput,   remediation: Some("pass a non-zero function; div(0) is not defined") },
+    ErrorSpec { code: "E-FFLD-009", class: "FunctionFieldError", cause: Cause::UserInput,   remediation: Some("rebuild both operands over the same FunctionField") },
+    ErrorSpec { code: "E-FFLD-010", class: "FunctionFieldError", cause: Cause::Resource,    remediation: Some("reduce the multiplicities or the degree of the divisor; the Cantor and linear-algebra steps here are bounded by a machine word") },
+    ErrorSpec { code: "E-FFLD-011", class: "FunctionFieldError", cause: Cause::Internal,    remediation: Some("report this as a bug with the curve and divisor that produced it; the answer was withheld rather than returned wrong") },
+    // E-STAB — StabilizerError (binary symplectic form, Pauli and stabilizer
+    // codes, CSS codes, and the classical matrix groups over GF(q))
+    //
+    // The prefix exists to keep three different kinds of "no" apart. E-STAB-004,
+    // -005 and -006 are *structural*: the generators offered do not define a
+    // stabilizer group at all, and no amount of extra work will make them.
+    // E-STAB-007 and -008 are about the *question*: a [[n, 0]] code has no
+    // minimum distance to report, and above the search cap the distance is not
+    // unknown-for-now but unreached — the answer on offer instead is a
+    // `Distance::UpperBound`, a different variant, so a caller cannot store a
+    // bound in a field it reads as a distance. E-STAB-013 is the one that must
+    // never fire: a result computed, failed against its own invariant, and
+    // withheld.
+    //
+    // Note that `StabilizerError::FiniteField` does *not* have a code here. It
+    // carries a `FiniteFieldError` out of the GF(q) layer unchanged and
+    // delegates `.code()` to it, so a shape or singularity refusal still
+    // reports its own `E-GFQ-NNN` rather than being relabelled at the boundary.
+    ErrorSpec { code: "E-STAB-001", class: "StabilizerError", cause: Cause::Unsupported, remediation: Some("the Pauli and stabilizer surface is GF(2) only; qudit stabilizer codes are a different theory, not a widening of this one. Only MatrixGroup is defined over general GF(q)") },
+    ErrorSpec { code: "E-STAB-002", class: "StabilizerError", cause: Cause::UserInput,   remediation: Some("symplectic vectors have length 2n in (x | z) layout, and Sp membership needs a square matrix of even size; check which half of the vector you filled") },
+    ErrorSpec { code: "E-STAB-003", class: "StabilizerError", cause: Cause::UserInput,   remediation: Some("qubit counts are not padded with identities automatically; rebuild both operators on the same number of qubits") },
+    ErrorSpec { code: "E-STAB-004", class: "StabilizerError", cause: Cause::Domain,      remediation: Some("a stabilizer group is abelian: the two named generators anticommute, so they share no +1 eigenspace. Check the (x | z) layout first — a (z | x) transcription commutes for a different code") },
+    ErrorSpec { code: "E-STAB-005", class: "StabilizerError", cause: Cause::Domain,      remediation: Some("the CSS condition H_X · H_Zᵀ = 0 fails at the named entry; the X-type generator from that row of H_X anticommutes with the Z-type one from that row of H_Z") },
+    ErrorSpec { code: "E-STAB-006", class: "StabilizerError", cause: Cause::Domain,      remediation: Some("the named generators multiply to −I, so the stabilized subspace is {0}; negate one of them, or drop the dependent generator") },
+    ErrorSpec { code: "E-STAB-007", class: "StabilizerError", cause: Cause::Domain,      remediation: Some("an [[n, 0]] code has no logical qubits, so N(S) \\ S is empty and there is no minimum distance to report") },
+    ErrorSpec { code: "E-STAB-008", class: "StabilizerError", cause: Cause::Resource,    remediation: Some("minimum distance is NP-hard and the only algorithm here is exhaustive; raise the cap with minimum_distance_with_cap if 2^(n+k) really is affordable, or take distance_upper_bound() and report it as a bound") },
+    ErrorSpec { code: "E-STAB-009", class: "StabilizerError", cause: Cause::Resource,    remediation: Some("reduce the qubit count; every symplectic vector here is dense and the centralizer computation is cubic in n") },
+    ErrorSpec { code: "E-STAB-010", class: "StabilizerError", cause: Cause::UserInput,   remediation: Some("Pauli bits must be 0 or 1, letters must be I, X, Y or Z, and a stabilizer generator must be Hermitian — parse a string such as \"-XZZXI\" or use PauliOperator::hermitian, which picks the phase for you") },
+    ErrorSpec { code: "E-STAB-011", class: "StabilizerError", cause: Cause::Resource,    remediation: Some("use order(), which is a closed-form product and has no size limit, instead of listing the elements; enumeration scans all q^(d²) matrices") },
+    ErrorSpec { code: "E-STAB-012", class: "StabilizerError", cause: Cause::UserInput,   remediation: Some("rebuild both operands over the same FiniteField; two GF(q) of the same order with different defining polynomials are not interchangeable") },
+    ErrorSpec { code: "E-STAB-013", class: "StabilizerError", cause: Cause::Internal,    remediation: Some("report this as a bug with the generators or check matrices that produced it; the answer was withheld rather than returned wrong") },
+    // E-CODE — CodingError
+    //
+    // Classical linear codes, weight enumerators and the Delsarte linear
+    // programme. Two of these guard the only two ways this subsystem could
+    // return a confident wrong answer. E-CODE-004 refuses a truncated
+    // codeword enumeration, because the minimum weight of *some* of the
+    // codewords is an upper bound on d wearing d's name. E-CODE-007 withholds
+    // an LP bound whose dual certificate did not pass its own exact
+    // feasibility check — an upper bound that is too small is worse than no
+    // bound, since it "rules out" codes that exist.
+    ErrorSpec { code: "E-CODE-001", class: "CodingError", cause: Cause::UserInput,   remediation: Some("give the code a positive length; a generator or parity-check matrix needs at least one column") },
+    ErrorSpec { code: "E-CODE-002", class: "CodingError", cause: Cause::UserInput,   remediation: Some("pass a minimum distance in 1..=n; d = 0 bounds nothing and d > n describes an empty code") },
+    ErrorSpec { code: "E-CODE-003", class: "CodingError", cause: Cause::Domain,      remediation: Some("read the embedded E-GFQ code: the finite-field backend refused the elimination, usually for a field mismatch or a shape that does not conform") },
+    ErrorSpec { code: "E-CODE-004", class: "CodingError", cause: Cause::Resource,    remediation: Some("reduce k, or accept that q^k codewords cannot be enumerated; there is no partial answer, because a truncated search reports an upper bound on d as if it were d") },
+    ErrorSpec { code: "E-CODE-005", class: "CodingError", cause: Cause::Resource,    remediation: Some("reduce n below MAX_LP_LENGTH; the Delsarte programme is dense and exact, so its cost is superlinear in the length") },
+    ErrorSpec { code: "E-CODE-006", class: "CodingError", cause: Cause::UserInput,   remediation: Some("check the weight distribution: a linear code has A_0 = 1, no negative multiplicity, and a MacWilliams sum divisible by |C| at every index") },
+    ErrorSpec { code: "E-CODE-007", class: "CodingError", cause: Cause::Internal,    remediation: Some("report this as a bug with n, d and q; the uncertified bound was withheld rather than returned, because an upper bound that is too small rules out codes that exist") },
+    ErrorSpec { code: "E-CODE-008", class: "CodingError", cause: Cause::UserInput,   remediation: Some("use an alphabet size of at least 2; for the enumeration paths the field must also be small enough to list element by element") },
+    // E-NUMF — NumberFieldError (algebraic number fields Q[x]/(f) on FLINT's
+    // `nf`/`nf_elem`, and the cyclotomic fields Q(zeta_n))
+    //
+    // E-NUMF-003 is the one this module exists for. Q[x]/(f) is a field only
+    // when f is irreducible; for a reducible f it is a ring with zero divisors,
+    // in which `inverse` has no answer for some non-zero elements and `norm`
+    // stops being multiplicative. The polynomial is checked, never assumed.
+    ErrorSpec { code: "E-NUMF-001", class: "NumberFieldError", cause: Cause::UserInput,   remediation: Some("supply at least one non-zero coefficient; coefficients ascend in degree, so x^2 - 2 is [-2, 0, 1]") },
+    ErrorSpec { code: "E-NUMF-002", class: "NumberFieldError", cause: Cause::UserInput,   remediation: Some("the defining polynomial must have degree in 1..=1024; degree 0 would make Q[x]/(f) the zero ring rather than a field, and degree 1 is Q itself") },
+    ErrorSpec { code: "E-NUMF-003", class: "NumberFieldError", cause: Cause::UserInput,   remediation: Some("pass an irreducible polynomial — the error names a proper factor. Factor f and build one field per irreducible factor: Q[x]/(f) for reducible f has zero divisors, so inverses and norms there would be wrong rather than merely unavailable") },
+    ErrorSpec { code: "E-NUMF-004", class: "NumberFieldError", cause: Cause::UserInput,   remediation: Some("write each coefficient as a decimal integer or a fraction \"p/q\", without spaces") },
+    ErrorSpec { code: "E-NUMF-005", class: "NumberFieldError", cause: Cause::Domain,      remediation: Some("zero has no inverse; test with is_zero() before dividing. In a genuine number field zero is the only non-invertible element, which is why the defining polynomial is checked") },
+    ErrorSpec { code: "E-NUMF-006", class: "NumberFieldError", cause: Cause::UserInput,   remediation: Some("rebuild both operands over one NumberField; two fields with different canonical defining polynomials are treated as different even when isomorphic, because an element's coordinates mean different things in each") },
+    ErrorSpec { code: "E-NUMF-007", class: "NumberFieldError", cause: Cause::UserInput,   remediation: Some("an element of a degree-d field has at most d coordinates in the power basis 1, a, a^2, ...; reduce modulo the defining polynomial at the call site if that is what was meant") },
+    ErrorSpec { code: "E-NUMF-008", class: "NumberFieldError", cause: Cause::UserInput,   remediation: Some("Q(zeta_n) needs n >= 1 with phi(n) <= 1024; note phi(n) is the degree, so n = 2048 is allowed (degree 1024) while n = 3^7 is not") },
+    // E-THETA — ThetaError (Riemann theta, modular and Weierstrass functions)
+    //
+    // This prefix guards a surface whose failure mode is uniquely hard to spot
+    // downstream: a theta value is a number nobody can sanity-check by eye, so
+    // a wrong *error bound* would travel further than a wrong value. Three of
+    // these are therefore about the bound rather than about the input.
+    //
+    // E-THETA-010 is the load-bearing one. It fires when a value was computed
+    // and then **withheld** because its enclosure was too wide to be worth
+    // reading. It is reachable in two quite different situations and the
+    // `achieved_bits` field is what tells them apart: `Some(n)` with `n` far
+    // below the request means more precision may help, while a value that is
+    // exactly zero — `j(rho)`, `theta_1(0, tau)` — has no relative accuracy at
+    // any precision and will refuse forever. That is not a defect: relative
+    // accuracy of zero is not a thing, and `Precision::Bits` plus
+    // `ComplexBall::contains_zero` is the right question to ask there.
+    //
+    // E-THETA-002 exists because `arb_struct` and `acb_struct` cross the FFI
+    // boundary by value inside arrays, so a size disagreement with the
+    // installed FLINT is silent memory corruption rather than a link error. It
+    // is raised by a run-time probe that re-derives the sizes from FLINT itself.
+    ErrorSpec { code: "E-THETA-001", class: "ThetaError", cause: Cause::Unsupported, remediation: Some("build against FLINT >= 3.1 for the modular functions and >= 3.2 for genus-g Riemann theta; `riemann_theta_available()` and `arb_backend_available()` report what this build has") },
+    ErrorSpec { code: "E-THETA-002", class: "ThetaError", cause: Cause::Internal,    remediation: Some("the installed FLINT's ball struct layout differs from the one this binary was compiled against; rebuild alkahest against the FLINT it will run with, and report the measured sizes as a bug") },
+    ErrorSpec { code: "E-THETA-003", class: "ThetaError", cause: Cause::UserInput,   remediation: Some("ask for a working precision between 2 and 1048576 bits") },
+    ErrorSpec { code: "E-THETA-004", class: "ThetaError", cause: Cause::Resource,    remediation: Some("theta returns 4^g values, so the output alone is exponential in the genus; genus 1 and 2 are the tested regime") },
+    ErrorSpec { code: "E-THETA-005", class: "ThetaError", cause: Cause::UserInput,   remediation: Some("the argument z needs exactly g entries and the period matrix g*g (or g(g+1)/2 for the upper triangle)") },
+    ErrorSpec { code: "E-THETA-006", class: "ThetaError", cause: Cause::UserInput,   remediation: Some("build the period matrix with SiegelMatrix::from_upper_triangle, which fills the lower half by copying; symmetry is checked as ball identity, so two separately-computed enclosures of one number are two different inputs") },
+    ErrorSpec { code: "E-THETA-007", class: "ThetaError", cause: Cause::Domain,      remediation: Some("this means `not proved`, never `proved false`: raise the working precision, or tighten the input balls until Im(tau) is certainly positive definite") },
+    ErrorSpec { code: "E-THETA-008", class: "ThetaError", cause: Cause::UserInput,   remediation: Some("characteristics run over 0..4^g; build the index with theta_characteristic_index rather than by hand") },
+    ErrorSpec { code: "E-THETA-009", class: "ThetaError", cause: Cause::Domain,      remediation: Some("the modular functions need Im(tau) certainly > 0; as with E-THETA-007 a refusal means `not proved`") },
+    ErrorSpec { code: "E-THETA-010", class: "ThetaError", cause: Cause::Resource,    remediation: Some("read `achieved_bits`: a value far below the request may come good at higher precision, but a quantity that is exactly zero has no relative accuracy at any precision — use Precision::Bits and ComplexBall::contains_zero there") },
+    ErrorSpec { code: "E-THETA-011", class: "ThetaError", cause: Cause::Domain,      remediation: Some("the result could not be bounded at all; check for a pole (Weierstrass p at a lattice point) or an input ball that was already indeterminate") },
+    ErrorSpec { code: "E-THETA-012", class: "ThetaError", cause: Cause::Resource,    remediation: Some("the midpoint or radius has an exponent outside the range that moves between FLINT and MPFR without rounding; rescale the problem") },
 ];
 
 #[cfg(test)]

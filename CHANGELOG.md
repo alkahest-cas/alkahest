@@ -1,5 +1,212 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Linear algebra over the finite fields GF(q).**
+  `alkahest.experimental.FiniteField` and `GfMatrix` — GF(p) for a word-sized
+  prime and GF(p^k) from FLINT's Conway polynomial or a caller-supplied
+  irreducible (checked for irreducibility first, because a reducible modulus
+  would make the quotient a ring with zero divisors and every reported rank a
+  guess). Matrices of any shape: `add`, `sub`, `neg`, `scalar_mul`, `mul`,
+  `transpose`, `rank`, `rref` (returning the transform `U` with `U·A = R`),
+  `nullspace`, `solve`, `inverse`, `determinant`, `charpoly`. Backed by FLINT's
+  `nmod_mat` and `fq_nmod_mat`.
+
+  Built for linear codes, so rectangular shapes are first-class — a
+  parity-check matrix is never square — and `nullspace` over GF(2) is the path
+  everything else is arranged around. `E-GFQ-001` refuses a composite
+  characteristic rather than caveating the answer; `E-GFQ-002` a prime past a
+  machine word.
+
+  The FLINT struct layout changed from row pointers to a stride in 3.1, and
+  getting it wrong is silent memory corruption rather than a compile error. It
+  was settled by disassembling FLINT's own entry points, not by inference —
+  and then made moot: every entry access goes through FLINT's accessors and
+  only `r`/`c` are read from the struct, which sit at the same offset in both
+  layouts. AddressSanitizer runs over the module.
+
+- **Computational group theory: permutation groups.**
+  `alkahest.experimental.Permutation` and `PermutationGroup` — cycle
+  decomposition, sign, order, orbits with Schreier vectors, a base and strong
+  generating set from Schreier–Sims, exact arbitrary-precision group order,
+  membership by sifting, and the stabilizer chain itself. Constructors for the
+  symmetric, alternating, cyclic and dihedral families.
+
+  Points are **0-based** and composition is **left-to-right** (`p.compose(&q)`
+  applies `p` first), both pinned by tests rather than left to a doc comment.
+  `from_cycles_one_based` exists so generators copied from GAP or the ATLAS
+  transcribe unchanged.
+
+  Correctness is anchored on the Mathieu groups — `|M11| = 7920`,
+  `|M12| = 95040`, `|M24| = 244823040` from standard generators — because a
+  stabilizer chain that is wrong in an interesting way still gets `|S_n| = n!`
+  right. A group too large to list refuses with `E-GRP-004` while its order
+  stays exact; the two facts are kept apart deliberately.
+
+  Not attempted, and documented as such: finitely-presented groups and
+  Todd–Coxeter, character tables, matrix groups over GF(q), group cohomology.
+
+- **Function fields of algebraic curves: divisors, Pic⁰ and Riemann–Roch.**
+  `alkahest.experimental.FunctionField`, `Place`, `Divisor`, `DivisorClass`
+  and `riemann_roch` — `dim L(D)` **and an explicit basis**, the canonical
+  divisor, divisor class arithmetic via Cantor reduction, exact class
+  equality, principality, and torsion order.
+
+  This exposes machinery that already existed inside the Risch integrator
+  rather than duplicating it: `integrate/algebraic/`'s Cantor arithmetic on
+  Jacobians in Mumford representation was widened to `pub(crate)`, with no
+  logic changes, so the class group and the integrator cannot drift apart.
+
+  **Scope is narrow and enforced.** Genus is computed for any accepted model;
+  everything else requires the imaginary (odd-degree) hyperelliptic model
+  `y² = a(x)` with `a` squarefree and ℚ-rational places. Even-degree "real"
+  models are refused (`E-FFLD-002`), as is `deg_y f > 2` (`E-FFLD-001`) and a
+  place of degree ≥ 2 (`E-FFLD-003`). That last one is the boundary reached
+  most often in practice: `div(y)` on `y² = x⁵ + 1` refuses, because four of
+  the five branch points are irrational. The restriction is not arbitrary —
+  on the odd-degree model the two candidate pole orders at infinity have
+  opposite parity, which is what makes `v_∞(p + q·y)` an exact minimum with no
+  cancellation, and the argument fails in even degree.
+
+  `E-FFLD-011` is the withheld-answer code: `div(u)` cross-checks the pole
+  order at infinity two ways and `riemann_roch` checks its dimension against
+  both Riemann's inequality and the Riemann–Roch equality, refusing rather
+  than returning on disagreement. `E-FFLD-007` (a non-torsion verdict) is
+  deliberately a different code from `E-FFLD-006` (undecided).
+
+- **Symplectic linear algebra and stabilizer codes.**
+  `alkahest.experimental` gains `PauliOperator` (symplectic `(x|z)` with a
+  `Z_4` phase), `StabilizerGroup`, `StabilizerCode` and `CssCode`, plus the
+  symplectic form over GF(2), symplectic Gram-Schmidt, complements, and
+  `Sp(2n,2)` membership. CSS construction **checks** `H_X · H_Z^T = 0` rather
+  than assuming it (`E-STAB-005` names the offending entry). Logical operators
+  come from Gram-Schmidt on the centralizer modulo the stabilizer, and the
+  pairing is asserted, not assumed.
+
+  Minimum distance is exhaustive and capped; above the cap it refuses rather
+  than guessing, and where only a bound is available the result says so
+  (`Distance::UpperBound`, never a number dressed as exact). Anchored on
+  Steane `[[7,1,3]]`, Shor `[[9,1,3]]`, the five-qubit `[[5,1,3]]` perfect
+  code (which exercises the non-CSS path) and quantum Hamming `[[15,7,3]]`
+  (the only one with `k > 1`, so the multi-logical pairing is exercised).
+
+  Also `GL(n,q)`, `SL(n,q)`, `Sp(2n,q)` with exact orders from the product
+  formulas, cross-checked three ways: formula, enumeration, and Schreier-Sims
+  on the induced permutation action.
+
+- **Classical linear codes and a certified Delsarte LP bound.**
+  `LinearCode` over GF(q) from either a generator or parity-check matrix,
+  duals, weight distributions in exact integers, the MacWilliams transform,
+  and Krawtchouk polynomials implemented **twice** (closed form and three-term
+  recurrence) and tested against each other.
+
+  `delsarte_lp_bound` is the headline. The returned number is read off the
+  **dual** programme, not the primal: any dual-feasible `y` proves
+  `|C| <= 1 + sum_k y_k K_k(0)` without reference to the solver, so a simplex
+  that stopped early or was outright wrong cannot produce an unsound bound.
+  The certificate is re-checked entry by entry in exact rationals and
+  `E-CODE-007` is returned rather than an unproved number; `certificate()`
+  hands `y` back for independent audit. It reproduces `A_2(24,8) = 4096` and
+  `A_2(23,7) = 4096` (the tight Golay cases) exactly, `A_2(7,3) = A_2(8,4) =
+  16`, and Plotkin's `A_2(2d,d) = 4d`.
+
+  This reuses the exact-rational simplex that was already in
+  `real/sos/lp.rs`; that module gained documentation for a second consumer and
+  **no behaviour change**.
+
+- **Function fields of algebraic curves: divisors, Pic^0 and Riemann-Roch.**
+  (Landed earlier in this cycle.) See the entry above.
+
+- **A lattice toolkit, and LLL moved onto FLINT.**
+  `lattice_reduce_rows` keeps its signature but now runs FLINT's `fmpz_lll`,
+  followed by exact rational size-reduction sweeps and this repo's own
+  `validate_lll_rows` — because FLINT's float Gram-Schmidt is parameterised by
+  `eta > 1/2` strictly and cannot promise the exact `|mu_ij| <= 1/2` the
+  validator checks. Rank-deficient input skips FLINT entirely (a float LLL
+  divides by zero on a zero GS norm). The old exact loop survives as
+  `lattice_reduce_rows_exact` and as the fallback.
+
+  New: `Lattice` from a basis or a Gram matrix, determinant, dual, exact SVP
+  and CVP, minimal vectors, kissing number, theta series, packing and centre
+  density, Hermite invariant, and the `Z^n`, `A_n`, `D_n`, `E_8` and Leech
+  constructors. Enumeration is exact integer Fincke-Pohst, never a float
+  Cholesky — float pruning drops vectors exactly at the ball boundary, which
+  is where every interesting count lives. `E_8` gives 240 minimal vectors and
+  Leech gives **196560**, each verified rather than asserted by construction.
+
+  The toolkit's refusals live on a new `#[non_exhaustive]`
+  `LatticeGeometryError`, leaving the semver-stable `LatticeError` untouched;
+  in Python the new class **subclasses** the old one, so a single
+  `except LatticeError` still catches everything and `.code` still reads
+  `E-LAT-*` across the range.
+
+- **Algebraic number fields, and the classical arithmetic functions.**
+  `NumberField` = `Q[x]/(f)` on FLINT's `nf`/`nf_elem`, with irreducibility
+  **checked** (`E-NUMF-003` names a proper factor), element arithmetic, norm,
+  trace, and minimal polynomial. `NumberField::cyclotomic(n)` is a first-class
+  constructor and skips the factorisation (`Phi_n` irreducible is a theorem),
+  which is what makes `Q(zeta_2048)` at degree 1024 cheap.
+
+  `number_theory` gains `partition_number`, `bernoulli_number`,
+  `euler_number`, `harmonic_number`, `stirling_first`/`_second`, `moebius_mu`,
+  `divisor_sigma` and `sum_of_squares`, all FLINT-backed. **FLINT's Bernoulli
+  convention is `B_1 = -1/2`** (DLMF); that is documented on every surface and
+  pinned by a test whose only job is that one value, with the denominators
+  additionally checked against von Staudt-Clausen.
+
+- **Riemann theta, modular and Weierstrass functions, as rigorous balls.**
+  Genus-1 `dedekind_eta`, `j_invariant`, `modular_lambda`,
+  `modular_discriminant`, `eisenstein_series`, `jacobi_theta`, the Weierstrass
+  family, and genus-`g` `riemann_theta` with characteristics and Siegel
+  reduction. This adds the first real `arb`/`acb` FFI to the crate
+  (`flint/arb.rs`, `flint/acb.rs`); `ball/mod.rs` keeps its existing
+  MPFR-backed behaviour and is untouched.
+
+  Every result is an enclosure. `Precision::AccurateTo(n)` refines and then
+  **refuses** with `E-THETA-010` carrying the accuracy actually achieved, and
+  `value_if_accurate` is the only route to an `f64`. `accuracy_bits` is one
+  bit more conservative than FLINT's own, and every predicate rounds inward,
+  so the API can say "not established" but never over-claim.
+
+  Anchored on `j(i) = 1728`, `j(rho) = 0`, `Delta = eta^24`, and — more
+  usefully — on structure the obvious tests cannot see: a genus-2 theta with a
+  diagonal period matrix must factorise into genus-1 thetas, and the two
+  independent FLINT paths (`acb_theta` and `acb_modular`) must agree through
+  the documented sign dictionary, with the wrong sign asserted to fail.
+
+### Build and packaging
+
+- **CI and the manylinux wheels now build a pinned FLINT 3.5.0.** Ubuntu
+  24.04's `libflint-dev` is 3.0.1, and the wheel job previously fell back to
+  building **2.9.0**. FLINT absorbed Arb in 3.0 but rewrote the `acb_theta`
+  API in 3.2, and `build.rs` probes the symbol table and silently stubs the
+  `theta` module when those entry points are absent — so the old configuration
+  would have shipped wheels with theta quietly missing, and passed a CI suite
+  that executed no theta at all. New `.github/actions/setup-flint` builds and
+  caches a pinned release, prints which probe symbols are present, and the
+  wheel build now fails loudly if `acb_theta_ql_exact` is absent.
+
+- **`capabilities()["features"]` gains `arb_backend` and `riemann_theta`.**
+  Neither is a Cargo feature; both are probed from `libflint`. They satisfy
+  the same falsifiability rule the v3 contract applied when it *removed* two
+  keys: `False` guarantees the entry points behind them refuse with
+  `E-THETA-001` rather than computing. `contract_version` stays `3` — the row
+  gained keys and lost none.
+
+### Testing and tooling
+
+- 201 new Rust tests (46 `ffield`, 60 `group`, 95 `funcfield`) and a
+  17-case `tests/silent_errors/corpus/function_fields.py`. The silent-error
+  gate reports 0 silent errors across 558 cases.
+- GF(2) is pinned end to end against the binary Hamming [7,4,3] code — rank,
+  nullspace, rank-nullity, then all 16 codewords brute-forced to confirm the
+  minimum distance is 3 — rather than only against matrix shapes.
+- `dim L(n·∞)` on `y² = x⁵ + 1` is pinned by counting monomials of bounded
+  pole order, which is independent of the Riemann–Roch equality and so covers
+  `n ≤ 2g − 2`, where that equality determines nothing.
+
 ## 3.11.0 — 2026-09-15
 
 ### Silent errors fixed — do results you already computed need rechecking?

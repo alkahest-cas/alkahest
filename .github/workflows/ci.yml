@@ -66,10 +66,8 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libflint-dev
+      - name: Set up FLINT
+        uses: ./.github/actions/setup-flint
 
       - name: Set up LLVM 21 (for the jit feature)
         uses: ./.github/actions/setup-llvm
@@ -224,8 +222,8 @@ jobs:
           targets: x86_64-unknown-linux-gnu
           components: rust-src
 
-      - name: Install system dependencies
-        run: sudo apt-get install -y libflint-dev
+      - name: Set up FLINT
+        uses: ./.github/actions/setup-flint
 
       - name: Set up LLVM 21 (for the jit feature)
         uses: ./.github/actions/setup-llvm
@@ -290,11 +288,8 @@ jobs:
           key: ${{ runner.os }}-cargo-wheel-smoke-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-wheel-smoke-
 
-      - name: Install system dependencies
-        run: sudo apt-get install -y libflint-dev
-
-      # Deliberately a plain `maturin build` (real wheel) into its own venv,
-      # not `maturin develop` -- see the job comment above for why.
+      - name: Set up FLINT
+        uses: ./.github/actions/setup-flint
       - name: Build wheel (PyPI-parity features)
         run: |
           python -m venv .venv-build
@@ -348,10 +343,8 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libflint-dev
+      - name: Set up FLINT
+        uses: ./.github/actions/setup-flint
 
       - name: Set up LLVM 21 (for the jit feature)
         uses: ./.github/actions/setup-llvm
@@ -432,10 +425,8 @@ jobs:
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
           echo "VIRTUAL_ENV=$PWD/.venv" >> $GITHUB_ENV
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libflint-dev
+      - name: Set up FLINT
+        uses: ./.github/actions/setup-flint
 
       - name: Set up LLVM 21 (for the jit feature)
         uses: ./.github/actions/setup-llvm

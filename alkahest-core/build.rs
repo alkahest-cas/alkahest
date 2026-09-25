@@ -10,6 +10,18 @@ fn main() {
     // FLINT 3.2.2 still uses `rows`; the change lands by 3.5.0. Read from the
     // header (`flint/fmpz_types.h`), never guessed, unless no header is found.
     println!("cargo::rustc-check-cfg=cfg(flint3_stride)");
+    // flint_arb: libflint exports the Arb/Acb ball types (FLINT >= 3.0 absorbed
+    // Arb; FLINT 2.x did not ship them at all, and `release-build.yml` still
+    // falls back to building FLINT 2.9.0 on manylinux). Probed by symbol, not
+    // by version, because the question is only ever "will `-lflint` resolve
+    // `acb_modular_j`".
+    println!("cargo::rustc-check-cfg=cfg(flint_arb)");
+    // flint_acb_theta: the genus-g Riemann theta module. Its user-facing API
+    // was rewritten in FLINT 3.2 (`acb_theta_naive_*` -> `acb_theta_sum` /
+    // `acb_theta_ql_*` / `acb_theta_jet`), so exporting `acb_theta_all` alone
+    // is not enough to pin the calling convention — the probe below asks for
+    // the 3.2-and-later entry points together.
+    println!("cargo::rustc-check-cfg=cfg(flint_acb_theta)");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=FLINT_LIB_DIR");
     println!("cargo:rerun-if-env-changed=FLINT_INCLUDE_DIR");
@@ -58,6 +70,14 @@ fn main() {
 
     if detect_flint3_stride() {
         println!("cargo:rustc-cfg=flint3_stride");
+    }
+
+    let arb = detect_flint_arb();
+    if arb {
+        println!("cargo:rustc-cfg=flint_arb");
+    }
+    if arb && detect_flint_acb_theta() {
+        println!("cargo:rustc-cfg=flint_acb_theta");
     }
 
     // Fail fast, with an actionable message, when no FLINT can be found.
@@ -510,4 +530,117 @@ fn locate_flint_library() -> Option<String> {
         .find(|p| !p.is_empty())?;
     flint_probe_note(format!("FLINT library found by ldconfig: {lib_path}"));
     Some(lib_path)
+}
+
+/// Symbols exported by the located `libflint`, or `None` when no library could
+/// be found or `nm` is unavailable (Windows, or a stripped import library).
+fn flint_exported_symbols() -> Option<std::collections::HashSet<String>> {
+    let lib_path = locate_flint_library()?;
+    // `-D` lists dynamic symbols on ELF; macOS `nm` ignores it and lists the
+    // same table, so one invocation covers both. A failure (no `nm`) returns
+    // `None` and the callers fall back to the version number.
+    let out = std::process::Command::new("nm")
+        .args(["-D", "--defined-only", &lib_path])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut set = std::collections::HashSet::new();
+    for line in text.lines() {
+        if let Some(sym) = line.split_whitespace().last() {
+            // macOS prefixes every C symbol with an underscore.
+            set.insert(sym.trim_start_matches('_').to_string());
+        }
+    }
+    if set.is_empty() {
+        return None;
+    }
+    Some(set)
+}
+
+/// FLINT version as `(major, minor)`, when it could be read at all.
+fn flint_major_minor() -> Option<(u32, u32)> {
+    let ver = flint_version_string()?;
+    let parts: Vec<u32> = ver.split('.').filter_map(|s| s.parse().ok()).collect();
+    match parts.len() {
+        0 => None,
+        1 => Some((parts[0], 0)),
+        _ => Some((parts[0], parts[1])),
+    }
+}
+
+/// Does this FLINT carry the Arb/Acb ball types this crate's `flint::arb`,
+/// `flint::acb` and `theta` modules call?
+///
+/// `acb_mat_entry_ptr` is in the list deliberately: it is the *function* form
+/// of what used to be a layout-dependent macro, and every matrix entry access
+/// in `flint::acb` goes through it precisely so that no Rust declaration has to
+/// know whether `acb_mat_struct` stores row pointers or a stride. A FLINT that
+/// does not export it is one this crate must not try to use.
+fn detect_flint_arb() -> bool {
+    const REQUIRED: &[&str] = &[
+        "arb_init",
+        "acb_init",
+        "acb_mat_init",
+        "acb_mat_entry_ptr",
+        "arb_mat_entry_ptr",
+        "arb_mat_cho",
+        "acb_modular_j",
+        "acb_modular_eta",
+        "acb_modular_theta",
+        "acb_elliptic_p",
+        "arf_get_fmpz_2exp",
+        "arb_rel_accuracy_bits",
+    ];
+    if let Some(syms) = flint_exported_symbols() {
+        let found = REQUIRED.iter().all(|s| syms.contains(*s));
+        flint_probe_note(format!("FLINT arb/acb symbol probe -> flint_arb={found}"));
+        return found;
+    }
+    // No symbol table to read. Arb was merged into FLINT in 3.0, and
+    // `acb_mat_entry_ptr` landed in 3.1, so 3.1 is the first version that can
+    // satisfy the list above.
+    let by_version =
+        matches!(flint_major_minor(), Some((ma, mi)) if ma > 3 || (ma == 3 && mi >= 1));
+    flint_probe_note(format!(
+        "FLINT arb/acb symbol probe unavailable; version heuristic -> flint_arb={by_version}"
+    ));
+    by_version
+}
+
+/// Does this FLINT carry the FLINT 3.2-and-later `acb_theta` interface?
+///
+/// `acb_theta` exists from FLINT 3.1, but 3.2 replaced the whole user-facing
+/// surface: `acb_theta_naive_*` became `acb_theta_sum`, and `acb_theta_all`
+/// and `acb_theta_one` became thin wrappers over `acb_theta_jet`, whose
+/// argument list changed. Asking for `acb_theta_ctx_tau_init` and
+/// `acb_theta_ql_exact` — both introduced by that rewrite — pins the calling
+/// convention that `flint::arb`'s declarations were written against.
+fn detect_flint_acb_theta() -> bool {
+    const REQUIRED: &[&str] = &[
+        "acb_theta_all",
+        "acb_theta_one",
+        "acb_theta_jet",
+        "acb_theta_ctx_tau_init",
+        "acb_theta_ql_exact",
+        "acb_theta_char_dot",
+        "acb_siegel_reduce",
+        "acb_siegel_is_reduced",
+        "acb_siegel_transform",
+    ];
+    if let Some(syms) = flint_exported_symbols() {
+        let found = REQUIRED.iter().all(|s| syms.contains(*s));
+        flint_probe_note(format!(
+            "FLINT acb_theta symbol probe -> flint_acb_theta={found}"
+        ));
+        return found;
+    }
+    let by_version =
+        matches!(flint_major_minor(), Some((ma, mi)) if ma > 3 || (ma == 3 && mi >= 2));
+    flint_probe_note(format!(
+        "FLINT acb_theta symbol probe unavailable; version heuristic -> flint_acb_theta={by_version}"
+    ));
+    by_version
 }

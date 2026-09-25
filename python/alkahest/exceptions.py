@@ -29,7 +29,14 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-HOMOTOPY-002 … E-HOMOTOPY-004 HomotopyError (numerical continuation — V2-14)
     E-SOLVE-010 … E-SOLVE-011  SolverError  (GPU Gröbner)
     E-JIT-001   … E-JIT-004    JitError
-    E-LAT-001 … E-LAT-004      LatticeError
+    E-LAT-001 … E-LAT-004      LatticeError (LLL reduction)
+    E-LAT-005 … E-LAT-014      LatticeGeometryError, a *subclass* of
+                                 LatticeError (005-007 Gram matrix
+                                 shape/symmetry/definiteness; 008-009 the exact
+                                 enumeration refusals; 010-013 theta-series
+                                 integrality, vector length, constructor range
+                                 and ambient coordinates; 014 an internal
+                                 invariant, refused rather than panicked)
     E-PSLQ-001 … E-PSLQ-005    PslqError  (004 = input precision below requested,
                                  005 = the relation is false for the exact rationals
                                  supplied; both raised from Python, so both are absent
@@ -45,6 +52,12 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-RSOLVE-001 … E-RSOLVE-005 RsolveError (V2-18 difference equations)
     E-DIOPH-001 … E-DIOPH-004 DiophantineError (V2-19)
     E-NT-001 … E-NT-005    NumberTheoryError (V3-1 integer number theory)
+    E-NT-006               ArithmeticError, a *subclass* of NumberTheoryError
+                             (the work cap on the classical arithmetic
+                             functions — p(n), Bernoulli, Euler, Stirling and
+                             harmonic numbers, Möbius μ, σ_k, sums of squares).
+                             Domain and parse failures under those functions
+                             still arrive as E-NT-001 / E-NT-002
     E-SERIES-001 … E-SERIES-006 SeriesError  (003 = expansion ran past its work
                                  ceiling / budget before reaching the requested
                                  order; refused rather than returned short.
@@ -99,6 +112,15 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-QUAT-001 … E-QUAT-003      QuaternionError (002 = the axis of the identity
                                  rotation, which does not exist; 003 = a matrix that
                                  could not be checked to be a proper rotation)
+    E-GRP-001 … E-GRP-006        GroupError (permutation groups; 004 = an order that
+                                 is exact but a list that is refused)
+    E-STAB-001 … E-STAB-013      StabilizerError (binary symplectic form, Pauli and
+                                 stabilizer codes, CSS codes, matrix groups over
+                                 GF(q); 004/005/006 = the generators do not define a
+                                 stabilizer code at all, 008 = the exhaustive
+                                 distance search past its cap — take
+                                 `distance_upper_bound()` and report it as a bound,
+                                 013 = a result computed and then withheld)
     E-PROB-001 … E-PROB-006      ProbabilityError (distributions, expectations,
                                  generating functions and information theory;
                                  001 = a numeric parameter outside its constraint,
@@ -1033,6 +1055,75 @@ class QuaternionError(AlkahestError):
         self,
         message: str,
         code: str = "E-QUAT-001",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)
+
+
+class GroupError(AlkahestError):
+    """A permutation-group operation refused (``E-GRP-001`` … ``E-GRP-006``).
+
+    Raised by the :mod:`alkahest.experimental` permutation-group surface. Two
+    of the six are worth reading before the first call:
+
+    - ``E-GRP-003`` — points are **0-based**. Group-theory literature, GAP and
+      the ATLAS all number points from 1, so a generator transcribed by hand is
+      the likeliest way to get a wrong answer here;
+      ``Permutation.from_cycles_one_based`` exists so that a cycle copied out of
+      a paper can be typed in unchanged.
+    - ``E-GRP-004`` — the group is too large to list element by element. Its
+      order is still exact and still available from ``order()``; it is the
+      *list* that is refused, and the two must not be confused.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-GRP-001",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)
+
+
+class StabilizerError(AlkahestError):
+    """A symplectic, Pauli, stabilizer-code or matrix-group operation refused
+    (``E-STAB-001`` … ``E-STAB-013``).
+
+    Raised by the :mod:`alkahest.experimental` stabilizer surface. The thirteen
+    codes fall into three groups that call for three different next steps, and
+    collapsing them would send a caller looking for a bigger machine when the
+    input simply is not a stabilizer code:
+
+    - **Structural** — ``E-STAB-004`` (two generators anticommute),
+      ``E-STAB-005`` (``H_X @ H_Z.T != 0``, the CSS condition) and
+      ``E-STAB-006`` (a product of the generators is ``-I``, so the stabilized
+      subspace is ``{0}``). These say the generators do not define a stabilizer
+      code at all. Before rewriting them, check the ``(x | z)`` layout: a
+      ``(z | x)`` transcription commutes perfectly well, for a different code.
+    - **About the question** — ``E-STAB-007``, an ``[[n, 0]]`` code, which has
+      no ``N(S) \\ S`` and therefore no minimum distance; and ``E-STAB-008``,
+      the exhaustive distance search past its cap. Minimum distance is
+      ``NP``-hard and nothing here approximates it. What is on offer instead is
+      ``distance_upper_bound()``, which returns a ``Distance`` with
+      ``exact == False`` — a different object, so a bound cannot be stored in a
+      field that is read as a distance.
+    - **Withheld** — ``E-STAB-013``, a result that was computed, failed its own
+      invariant (logical operators that do not commute with the stabilizer, a
+      centralizer of the wrong dimension) and was withheld rather than
+      returned. That is a bug in alkahest, not in the input; please report it.
+
+    A failure that came out of the GF(q) linear-algebra layer keeps its own
+    ``E-GFQ-NNN`` code rather than being relabelled at the boundary, so
+    ``except FiniteFieldError`` still catches a singular matrix even when the
+    call that produced it was ``CssCode(...)``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-STAB-001",
         remediation: str | None = None,
         span: tuple[int, int] | None = None,
     ):

@@ -1,0 +1,74 @@
+name: Set up FLINT
+description: >
+  Build and cache a pinned FLINT on an Ubuntu runner, then export
+  FLINT_LIB_DIR / FLINT_INCLUDE_DIR / LD_LIBRARY_PATH. Factored out because
+  Ubuntu 24.04's libflint-dev is 3.0.1, which is too old for the acb_theta
+  module: FLINT absorbed Arb in 3.0 but rewrote the theta API in 3.2
+  (acb_theta_naive_* -> acb_theta_sum / acb_theta_ql_* / acb_theta_jet).
+  `alkahest-core/build.rs` probes libflint's symbol table and silently stubs
+  the `theta` module when those entry points are absent — so on stock apt
+  FLINT the theta tests would pass without executing anything. This action is
+  what keeps that from happening.
+
+inputs:
+  version:
+    description: FLINT release to build (must be >= 3.2 for genus-g theta).
+    required: false
+    default: "3.5.0"
+
+runs:
+  using: composite
+  steps:
+    - name: Install FLINT's build dependencies
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y libgmp-dev libmpfr-dev
+
+    - name: Restore cached FLINT
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.local/flint
+        key: flint-${{ inputs.version }}-${{ runner.os }}-${{ runner.arch }}
+
+    - name: Build FLINT ${{ inputs.version }}
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Pinned by tag, so a yanked or re-rolled release fails loudly at the
+        # download rather than quietly changing what CI links against.
+        curl -fsSL "https://github.com/flintlib/flint/releases/download/v${{ inputs.version }}/flint-${{ inputs.version }}.tar.gz" \
+          | tar xz -C /tmp
+        cd "/tmp/flint-${{ inputs.version }}"
+        ./configure --prefix="$HOME/.local/flint" --disable-static
+        make -j"$(nproc)"
+        make install
+
+    - name: Export FLINT paths
+      shell: bash
+      run: |
+        set -euo pipefail
+        prefix="$HOME/.local/flint"
+        echo "FLINT_LIB_DIR=$prefix/lib"          >> "$GITHUB_ENV"
+        echo "FLINT_INCLUDE_DIR=$prefix/include"  >> "$GITHUB_ENV"
+        echo "LD_LIBRARY_PATH=$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
+    - name: Report what the build will actually see
+      shell: bash
+      run: |
+        set -euo pipefail
+        lib="$HOME/.local/flint/lib/libflint.so"
+        echo "FLINT version: $(grep -m1 'define FLINT_VERSION ' "$HOME/.local/flint/include/flint/flint.h" || echo unknown)"
+        # These two probes mirror build.rs exactly. Printing them means a
+        # stubbed `theta` module is visible in the log instead of being
+        # inferred from a suspiciously fast, suspiciously green test run.
+        for sym in acb_modular_j acb_mat_entry_ptr acb_theta_ctx_tau_init acb_theta_ql_exact; do
+          if nm -D --defined-only "$lib" | grep -q " T $sym$"; then
+            echo "  present: $sym"
+          else
+            echo "  MISSING: $sym  <-- theta will be stubbed"
+          fi
+        done

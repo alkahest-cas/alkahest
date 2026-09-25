@@ -6,9 +6,25 @@
 //! provably cycle-free; in exact arithmetic that makes termination
 //! unconditional (no epsilon tolerances, no degeneracy stalls).
 //!
-//! It is deliberately local to the positivity subsystem: it is tuned for the
-//! small, highly structured programmes that Gram-matrix and Handelman searches
-//! produce, and no other part of the crate depends on it.
+//! It is tuned for the small, highly structured programmes that Gram-matrix and
+//! Handelman searches produce, and it was written for them alone.  It now has a
+//! second consumer, [`crate::coding::delsarte`], which solves the Delsarte
+//! linear programme through it for exactly the same reason: a bound is only a
+//! bound if no step of it was rounded.  Nothing here was changed to admit it —
+//! the Delsarte programme is stated in [`Lp`]'s existing vocabulary — and the
+//! numerical behaviour (Bland's rule, the pivot budget, the phase-1 artificial
+//! drive-out) must stay exactly as it is, because the positivity certificates
+//! are reproduced against it.
+//!
+//! Two consequences worth stating for any third consumer:
+//!
+//! * [`Lp::solve`] returns the optimal *point*, not the optimal *value*.  The
+//!   caller computes `c · x` itself, which keeps this module free of any
+//!   opinion about what the objective means.
+//! * The objective is always **minimised**, and every variable is implicitly
+//!   `≥ 0`.  A maximisation is passed in negated, and a sign-unrestricted
+//!   variable must be split by the caller; [`super::gram`] does exactly that
+//!   for the off-diagonal Gram entries.
 
 use rug::Rational;
 
