@@ -313,10 +313,56 @@ Computational group theory (permutation groups):
   has a perfectly computable order and no listable element set, and the two
   must not be confused; ``order()`` keeps working
 - Scope: permutation groups only. There are no finitely-presented groups or
-  Todd–Coxeter coset enumeration, no character tables, no matrix groups over
-  ``GF(q)``, no group cohomology, and nothing that needs backtrack search
-  (Sylow subgroups, conjugacy classes, centralizers, subgroup lattices). See
-  the Rust module docs (``alkahest_cas::group``) for the full list
+  Todd–Coxeter coset enumeration, no character tables, no group cohomology, and
+  nothing that needs backtrack search (Sylow subgroups, conjugacy classes,
+  centralizers, subgroup lattices). Matrix groups over ``GF(q)`` are
+  :class:`MatGroup`, below. See the Rust module docs (``alkahest_cas::group``)
+  for the full list
+
+Matrix groups over GF(q):
+- :class:`MatGroup` — a subgroup of ``GL(d, q)`` given by **any** list of
+  invertible :class:`GfMatrix` generators, not only a classical family. The
+  action is on **row** vectors, ``v -> v @ M``, so a vector is a ``1 x d``
+  ``GfMatrix`` and ``M @ N`` means "apply ``M``, then ``N``" — the same
+  left-to-right order as :class:`Permutation`
+- :meth:`~MatGroup.order`, :meth:`~MatGroup.contains` and
+  :meth:`~MatGroup.sift` read off a base and strong generating set computed by
+  Schreier–Sims **on the action on vectors**, with the base always inside the
+  standard basis (a matrix fixing every ``e_i`` is the identity, so the chain
+  has at most ``d`` levels). The order is a computation, not a formula:
+  :func:`matgroup_gl_order`, :func:`matgroup_sl_order` and
+  :func:`matgroup_sp_order` are the closed forms to check it against
+- Constructors :meth:`~MatGroup.general_linear`,
+  :meth:`~MatGroup.special_linear`, :meth:`~MatGroup.symplectic` (the argument
+  is ``n``; the matrices are ``2n x 2n``), :meth:`~MatGroup.singer_cycle` (a
+  cyclic subgroup of order ``q**n - 1``) and :meth:`~MatGroup.trivial`
+- :meth:`~MatGroup.vector_orbit` / :meth:`~MatGroup.vector_orbits`, and
+  :meth:`~MatGroup.projective_orbit` / :meth:`~MatGroup.projective_orbits` on
+  the ``(q**d - 1)/(q - 1)`` one-dimensional subspaces, returned as canonical
+  representatives (first non-zero coordinate scaled to ``1``)
+- :meth:`~MatGroup.permutation_action_on_vectors` (faithful, so the
+  :class:`PermutationGroup` it returns has exactly ``order()`` elements) and
+  :meth:`~MatGroup.permutation_action_on_projective_points`, which is
+  ``PGL``/``PSL``/``PSp``: **not** faithful, its order being ``|G|`` divided by
+  the number of scalars in ``G``. ``PSL(2, 7)`` is the projective action of
+  ``SL(2, 7)`` on the 8 points of ``PG(1, 7)``, of order 168
+- :meth:`~MatGroup.random_element` by product replacement, seeded so it is
+  reproducible. Every value is a product of generators, so it is in the group
+  by construction; the distribution is the standard heuristic and is not
+  claimed uniform
+- :meth:`~MatGroup.derived_subgroup`, :meth:`~MatGroup.centre` and
+  :meth:`~MatGroup.normal_closure`. The centre avoids backtrack search: it is
+  ``G`` intersected with the algebra of matrices commuting with the generators,
+  and that algebra is a **nullspace** (:meth:`~MatGroup.commutant_basis`)
+- Scope: the caps are ``MATGROUP_MAX_DEGREE``, ``MATGROUP_MAX_ORBIT`` (a cap on
+  ``q**d``, not on ``|G|``), ``MATGROUP_MAX_SCHREIER_WORK``,
+  ``MATGROUP_DEFAULT_ELEMENT_CAP`` and ``MATGROUP_MAX_FIELD_ORDER``. Each is a
+  typed ``MatGroupError`` refusal; in particular an exhausted Schreier–Sims
+  budget reports **no order at all**, because an incomplete chain reports a
+  proper divisor of the true one. ``GU``/``SU``/``SO``/``O`` and the twisted
+  types have no constructor here — build them from your own generators.
+  ``PGL``/``PSL`` exist only as permutation groups, because a quotient of
+  matrix groups is not a matrix group
 
 Numeric ODE integrators (Phase 16b):
 - :func:`ode_integrate_rk4` — fixed-step 4th-order Runge–Kutta integrator
@@ -367,6 +413,15 @@ from alkahest.alkahest import (
     LATTICE_DEFAULT_ENUM_NODE_BUDGET,
     LATTICE_MAX_ENUM_RANK,
     LATTICE_MAX_THETA_NORM,
+    # Caps on the matrix-group layer: degree, basic orbit size, Schreier–Sims
+    # work budget, element enumeration, GF(q) enumeration and the centralizing
+    # algebra the centre is read off
+    MATGROUP_DEFAULT_ELEMENT_CAP,
+    MATGROUP_MAX_COMMUTANT_ELEMENTS,
+    MATGROUP_MAX_DEGREE,
+    MATGROUP_MAX_FIELD_ORDER,
+    MATGROUP_MAX_ORBIT,
+    MATGROUP_MAX_SCHREIER_WORK,
     # Caps on the stabilizer layer: qubits, the exhaustive distance search,
     # and brute-force matrix-group enumeration
     STABILIZER_MAX_DISTANCE_SEARCH_DIM,
@@ -415,7 +470,15 @@ from alkahest.alkahest import (
     LatticeVector,
     LinearCode,
     LogNormal,
+    # Matrix groups over GF(q) from *arbitrary* generators: order and
+    # membership from a Schreier–Sims BSGS on the action on vectors, orbits on
+    # vectors and on projective points, product-replacement random elements,
+    # derived subgroup, centre and normal closure. Supersedes MatrixGroup,
+    # which describes GL/SL/Sp by formula and has no generators.
+    MatGroup,
+    MatGroupError,
     MatrixGroup,
+    MatSiftResult,
     Normal,
     NumberField,
     NumberFieldElement,
@@ -491,6 +554,11 @@ from alkahest.alkahest import (
     krawtchouk_poly,
     laplace_transform,
     laplacian,
+    # The closed-form classical orders, so a caller can check MatGroup.order()
+    # (which is computed by Schreier–Sims) against the product formula.
+    matgroup_gl_order,
+    matgroup_sl_order,
+    matgroup_sp_order,
     modular_discriminant,
     modular_lambda,
     moebius_mu,
@@ -583,6 +651,17 @@ __all__ = [
     "LATTICE_DEFAULT_ENUM_NODE_BUDGET",
     "LATTICE_MAX_ENUM_RANK",
     "LATTICE_MAX_THETA_NORM",
+    # Caps on matrix groups over GF(q). MATGROUP_MAX_ORBIT is a cap on q**d and
+    # *not* on |G|, because an orbit on vectors is bounded by q**d - 1; and
+    # MATGROUP_MAX_SCHREIER_WORK is a refusal (E-MATGRP-007) rather than a
+    # partial chain, because a chain missing a level reports a proper divisor
+    # of the true order.
+    "MATGROUP_DEFAULT_ELEMENT_CAP",
+    "MATGROUP_MAX_COMMUTANT_ELEMENTS",
+    "MATGROUP_MAX_DEGREE",
+    "MATGROUP_MAX_FIELD_ORDER",
+    "MATGROUP_MAX_ORBIT",
+    "MATGROUP_MAX_SCHREIER_WORK",
     # Binary symplectic / stabilizer codes: the (x | z) form over GF(2),
     # Pauli operators with a Z4 phase, stabilizer and CSS codes, and the
     # classical matrix groups GL / SL / Sp over GF(q). Distance is exhaustive
@@ -658,6 +737,15 @@ __all__ = [
     "LinearCode",
     # Probability (continued)
     "LogNormal",
+    # Matrix groups over GF(q) from *arbitrary* generators. The action is on
+    # **row** vectors, v -> v @ M, so vectors are 1 x d GfMatrix objects.
+    # `order()` is a Schreier-Sims computation, not a formula — the three
+    # `matgroup_*_order` functions give the closed forms to check it against.
+    "MatGroup",
+    # E-MATGRP-001 … E-MATGRP-013. Wraps FiniteFieldError and GroupError, which
+    # keep their own E-GFQ-* / E-GRP-* codes.
+    "MatGroupError",
+    "MatSiftResult",
     "MatrixGroup",
     "Normal",
     # M11 — novelty filtering
@@ -790,6 +878,10 @@ __all__ = [
     "laplace_transform",
     # Vector calculus
     "laplacian",
+    # The classical orders in closed form, as an oracle for MatGroup.order()
+    "matgroup_gl_order",
+    "matgroup_sl_order",
+    "matgroup_sp_order",
     "modular_discriminant",
     "modular_lambda",
     "moebius_mu",

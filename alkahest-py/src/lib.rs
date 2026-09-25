@@ -253,6 +253,7 @@ use std::hash::{Hash, Hasher};
 mod coding;
 mod ffield;
 mod lattice;
+mod matgroup;
 
 // ---------------------------------------------------------------------------
 // V1-3: Structured Python exception hierarchy
@@ -18796,6 +18797,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     coding::register(m)?;
     ffield::register(m)?;
     lattice::register(m)?;
+    matgroup::register(m)?;
     m.add_function(wrap_pyfunction!(py_derived_result_context_simplify, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify_egraph, m)?)?;

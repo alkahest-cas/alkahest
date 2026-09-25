@@ -114,6 +114,13 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
                                  could not be checked to be a proper rotation)
     E-GRP-001 … E-GRP-006        GroupError (permutation groups; 004 = an order that
                                  is exact but a list that is refused)
+    E-MATGRP-001 … E-MATGRP-013  MatGroupError (matrix groups over GF(q) from
+                                 generators; 006/007 = an orbit or a Schreier–Sims
+                                 budget past its cap, refused rather than answered
+                                 from an incomplete chain, 008 = an order that is
+                                 exact but a list that is refused). Wraps
+                                 FiniteFieldError and GroupError, which keep their
+                                 own codes
     E-STAB-001 … E-STAB-013      StabilizerError (binary symplectic form, Pauli and
                                  stabilizer codes, CSS codes, matrix groups over
                                  GF(q); 004/005/006 = the generators do not define a
@@ -1081,6 +1088,46 @@ class GroupError(AlkahestError):
         self,
         message: str,
         code: str = "E-GRP-001",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)
+
+
+class MatGroupError(AlkahestError):
+    """A matrix-group operation refused (``E-MATGRP-001`` … ``E-MATGRP-013``).
+
+    Raised by :class:`alkahest.experimental.MatGroup` — matrix groups over
+    GF(q) built from arbitrary generators, with order and membership from a
+    Schreier–Sims base and strong generating set. It also *wraps*
+    ``FiniteFieldError`` and ``GroupError``: a refusal raised inside the GF(q)
+    or permutation layer keeps its own ``E-GFQ-*`` / ``E-GRP-*`` code rather
+    than acquiring a second identity.
+
+    Four of the thirteen are the ones to branch on:
+
+    - ``E-MATGRP-007`` — Schreier–Sims exhausted its work budget. This is a
+      **refusal, not a partial answer**: a chain missing a level reports the
+      product of the orbits it did build, which is a proper *divisor* of
+      ``|G|`` and indistinguishable from the correct order of a smaller group.
+      Raise the budget with ``MatGroup.with_budget`` if the group really is
+      this large.
+    - ``E-MATGRP-006`` — a basic orbit passed its cap. Because an orbit on
+      vectors is bounded by ``q**d - 1``, this caps ``q**d`` and **not**
+      ``|G|``: a symplectic group of order ``10**40`` is fine while
+      ``GL(2, 4096)`` is not. The projective action has orbits ``q - 1`` times
+      smaller.
+    - ``E-MATGRP-008`` — the group is too large to list element by element.
+      ``order()`` is still exact; it is the *list* that is refused.
+    - ``E-MATGRP-002`` — a degree mismatch. Vectors here are ``1 x d``
+      **rows**, because the action is ``v -> v @ M``; a ``d x 1`` column is
+      this error and not a silent transpose.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-MATGRP-001",
         remediation: str | None = None,
         span: tuple[int, int] | None = None,
     ):

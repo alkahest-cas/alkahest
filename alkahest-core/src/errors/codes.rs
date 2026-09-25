@@ -662,6 +662,33 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-THETA-010", class: "ThetaError", cause: Cause::Resource,    remediation: Some("read `achieved_bits`: a value far below the request may come good at higher precision, but a quantity that is exactly zero has no relative accuracy at any precision — use Precision::Bits and ComplexBall::contains_zero there") },
     ErrorSpec { code: "E-THETA-011", class: "ThetaError", cause: Cause::Domain,      remediation: Some("the result could not be bounded at all; check for a pole (Weierstrass p at a lattice point) or an input ball that was already indeterminate") },
     ErrorSpec { code: "E-THETA-012", class: "ThetaError", cause: Cause::Resource,    remediation: Some("the midpoint or radius has an exponent outside the range that moves between FLINT and MPFR without rounding; rescale the problem") },
+    // E-MATGRP — MatGroupError (matrix groups over GF(q) from generators).
+    //
+    // This is a `#[non_exhaustive]` enum that *wraps* FiniteFieldError and
+    // GroupError through delegating variants, so `E-GFQ-*` and `E-GRP-*` reach
+    // a caller of `matgroup` with their own codes. No code below is a duplicate
+    // of one of those.
+    //
+    // E-MATGRP-007 is the one to read twice. Schreier-Sims that runs out of
+    // budget must *refuse*, because a chain missing a level reports the product
+    // of the orbits it did build: a proper divisor of |G|, indistinguishable
+    // from a correct answer for a smaller group. Returning a partial chain is
+    // the exact confident-wrong-answer shape this registry exists to prevent.
+    // The same reasoning makes E-MATGRP-006 a refusal rather than a truncated
+    // orbit.
+    ErrorSpec { code: "E-MATGRP-001", class: "MatGroupError", cause: Cause::UserInput,   remediation: Some("group elements are d x d matrices; pass a square matrix") },
+    ErrorSpec { code: "E-MATGRP-002", class: "MatGroupError", cause: Cause::UserInput,   remediation: Some("build the matrix at the group's degree; vectors are 1 x d row vectors, because the action is v -> v*M") },
+    ErrorSpec { code: "E-MATGRP-003", class: "MatGroupError", cause: Cause::UserInput,   remediation: Some("use the same FiniteField object the group was built with; two isomorphic fields with different defining polynomials are different fields here") },
+    ErrorSpec { code: "E-MATGRP-004", class: "MatGroupError", cause: Cause::Domain,      remediation: Some("check the determinant of every generator; a singular matrix generates no group") },
+    ErrorSpec { code: "E-MATGRP-005", class: "MatGroupError", cause: Cause::Resource,    remediation: Some("these algorithms store explicit transversals and are built for small degrees; large-degree matrix groups need constructive recognition, which is not implemented") },
+    ErrorSpec { code: "E-MATGRP-006", class: "MatGroupError", cause: Cause::Resource,    remediation: Some("an orbit on vectors is bounded by q^d - 1, so this caps q^d and not |G|; use the projective action, whose orbits are (q-1) times smaller") },
+    ErrorSpec { code: "E-MATGRP-007", class: "MatGroupError", cause: Cause::Resource,    remediation: Some("raise the budget with MatGroup::with_budget if the group really is this large; no order is reported, because an incomplete chain reports a proper divisor of the true one") },
+    ErrorSpec { code: "E-MATGRP-008", class: "MatGroupError", cause: Cause::Resource,    remediation: Some("use order(), contains() or random_element() instead of listing the elements, or raise the cap with elements_with_cap") },
+    ErrorSpec { code: "E-MATGRP-009", class: "MatGroupError", cause: Cause::Resource,    remediation: Some("order, membership and the orbit of a given vector never enumerate GF(q); the projective point list, the classical constructors and the centre do") },
+    ErrorSpec { code: "E-MATGRP-010", class: "MatGroupError", cause: Cause::Unsupported, remediation: Some("build the group from explicit generators with MatGroup::new; the constructors here cover GL, SL, Sp and Singer cycles only") },
+    ErrorSpec { code: "E-MATGRP-011", class: "MatGroupError", cause: Cause::Resource,    remediation: Some("a large centralizing algebra means a very reducible module; split it first, or take the centre of a smaller group") },
+    ErrorSpec { code: "E-MATGRP-012", class: "MatGroupError", cause: Cause::Domain,      remediation: Some("pass a non-zero row vector; the zero vector spans no line and is fixed by every matrix") },
+    ErrorSpec { code: "E-MATGRP-013", class: "MatGroupError", cause: Cause::Internal,    remediation: Some("this is a bug: please report it with the generators that produced it") },
 ];
 
 #[cfg(test)]

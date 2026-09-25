@@ -32,6 +32,7 @@ pub mod logic;
 // V2-6 — LLL + PSLQ (PSLQ in `numeric`)
 pub mod lattice;
 pub mod lean;
+pub mod matgroup;
 pub mod matrix;
 // V2-1 — Modular / CRT framework
 pub mod modular;
@@ -465,6 +466,22 @@ pub mod experimental {
         LatticeVector, DEFAULT_ENUM_NODE_BUDGET, MAX_ENUM_RANK, MAX_THETA_NORM,
     };
     pub use crate::lean::emit_lean_expr as emit_lean;
+    /// Matrix groups over GF(q) from **arbitrary generators**: exact order and
+    /// membership from a Schreier–Sims base and strong generating set on the
+    /// action on vectors, orbits on vectors and on projective points, random
+    /// elements by product replacement, and the derived subgroup, centre and
+    /// normal closure. Supersedes [`crate::stabilizer::MatrixGroup`], which
+    /// describes `GL`/`SL`/`Sp` by formula and has no generators; the two are
+    /// asserted to agree where both can answer. The action is on **row**
+    /// vectors, `v ↦ v·M`. Every unbounded search is capped with a typed
+    /// refusal — see [`crate::matgroup`] for the degree, orbit and field-size
+    /// ceilings.
+    pub use crate::matgroup::{
+        gl_order, sl_order, sp_order, MatGroup, MatGroupError, MatrixOrbit, MatrixSchreierEntry,
+        MatrixSiftResult, MatrixStabilizerChain, MatrixStabilizerLevel,
+        DEFAULT_MATGROUP_ELEMENT_CAP, MAX_MATGROUP_COMMUTANT_ELEMENTS, MAX_MATGROUP_DEGREE,
+        MAX_MATGROUP_FIELD_ORDER, MAX_MATGROUP_ORBIT, MAX_MATGROUP_SCHREIER_WORK,
+    };
     pub use crate::matrix::{
         cholesky, column_space_basis, jordan_form, lu_decomposition, matrix_exponential,
         matrix_inverse, minimal_polynomial, nullspace_basis, qr_decomposition, rank,
