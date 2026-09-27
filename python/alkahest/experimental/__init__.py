@@ -312,11 +312,82 @@ Computational group theory (permutation groups):
   ``GROUP_DEFAULT_ELEMENT_CAP`` with ``E-GRP-004``. A group of order ``10**20``
   has a perfectly computable order and no listable element set, and the two
   must not be confused; ``order()`` keeps working
-- Scope: permutation groups only. There are no finitely-presented groups or
-  Todd–Coxeter coset enumeration, no character tables, no matrix groups over
-  ``GF(q)``, no group cohomology, and nothing that needs backtrack search
-  (Sylow subgroups, conjugacy classes, centralizers, subgroup lattices). See
-  the Rust module docs (``alkahest_cas::group``) for the full list
+- Scope of :class:`PermutationGroup` itself: permutation groups only.
+  Finitely presented groups, Todd–Coxeter coset enumeration and low-degree
+  group cohomology are :class:`FpGroup`; matrix groups over ``GF(q)`` are
+  :class:`MatGroup`; conjugacy classes and character tables are
+  :class:`CharacterTable` — all three below. What is still absent is anything
+  needing backtrack search: Sylow subgroups, element centralizers, subgroup
+  lattices and normaliser computations. See the Rust module docs
+  (``alkahest_cas::group``) for the full list
+
+Matrix groups over GF(q):
+- :class:`MatGroup` — a subgroup of ``GL(d, q)`` given by **any** list of
+  invertible :class:`GfMatrix` generators, not only a classical family. The
+  action is on **row** vectors, ``v -> v @ M``, so a vector is a ``1 x d``
+  ``GfMatrix`` and ``M @ N`` means "apply ``M``, then ``N``" — the same
+  left-to-right order as :class:`Permutation`
+- :meth:`~MatGroup.order`, :meth:`~MatGroup.contains` and
+  :meth:`~MatGroup.sift` read off a base and strong generating set computed by
+  Schreier–Sims **on the action on vectors**, with the base always inside the
+  standard basis (a matrix fixing every ``e_i`` is the identity, so the chain
+  has at most ``d`` levels). The order is a computation, not a formula:
+  :func:`matgroup_gl_order`, :func:`matgroup_sl_order` and
+  :func:`matgroup_sp_order` are the closed forms to check it against
+- Constructors :meth:`~MatGroup.general_linear`,
+  :meth:`~MatGroup.special_linear`, :meth:`~MatGroup.symplectic` (the argument
+  is ``n``; the matrices are ``2n x 2n``), :meth:`~MatGroup.singer_cycle` (a
+  cyclic subgroup of order ``q**n - 1``) and :meth:`~MatGroup.trivial`
+- :meth:`~MatGroup.vector_orbit` / :meth:`~MatGroup.vector_orbits`, and
+  :meth:`~MatGroup.projective_orbit` / :meth:`~MatGroup.projective_orbits` on
+  the ``(q**d - 1)/(q - 1)`` one-dimensional subspaces, returned as canonical
+  representatives (first non-zero coordinate scaled to ``1``)
+- :meth:`~MatGroup.permutation_action_on_vectors` (faithful, so the
+  :class:`PermutationGroup` it returns has exactly ``order()`` elements) and
+  :meth:`~MatGroup.permutation_action_on_projective_points`, which is
+  ``PGL``/``PSL``/``PSp``: **not** faithful, its order being ``|G|`` divided by
+  the number of scalars in ``G``. ``PSL(2, 7)`` is the projective action of
+  ``SL(2, 7)`` on the 8 points of ``PG(1, 7)``, of order 168
+- :meth:`~MatGroup.random_element` by product replacement, seeded so it is
+  reproducible. Every value is a product of generators, so it is in the group
+  by construction; the distribution is the standard heuristic and is not
+  claimed uniform
+- :meth:`~MatGroup.derived_subgroup`, :meth:`~MatGroup.centre` and
+  :meth:`~MatGroup.normal_closure`. The centre avoids backtrack search: it is
+  ``G`` intersected with the algebra of matrices commuting with the generators,
+  and that algebra is a **nullspace** (:meth:`~MatGroup.commutant_basis`)
+- Scope: the caps are ``MATGROUP_MAX_DEGREE``, ``MATGROUP_MAX_ORBIT`` (a cap on
+  ``q**d``, not on ``|G|``), ``MATGROUP_MAX_SCHREIER_WORK``,
+  ``MATGROUP_DEFAULT_ELEMENT_CAP`` and ``MATGROUP_MAX_FIELD_ORDER``. Each is a
+  typed ``MatGroupError`` refusal; in particular an exhausted Schreier–Sims
+  budget reports **no order at all**, because an incomplete chain reports a
+  proper divisor of the true one. ``GU``/``SU``/``SO``/``O`` and the twisted
+  types have no constructor here — build them from your own generators.
+  ``PGL``/``PSL`` exist only as permutation groups, because a quotient of
+  matrix groups is not a matrix group
+
+Finitely presented groups (``alkahest_cas::fpgroup``):
+- :class:`FpGroup` — a presentation ``<X | R>``, built from generator names and
+  relator strings: ``FpGroup(["a", "b"], ["a^2", "b^3", "(a*b)^5"])`` is
+  ``A5``. Relators are products of powers of names and parenthesised sub-words,
+  and juxtaposition is multiplication, so ``"ab"`` and ``"a*b"`` agree
+- :meth:`~FpGroup.order`, :meth:`~FpGroup.index`,
+  :meth:`~FpGroup.coset_table` and :meth:`~FpGroup.permutation_group` — HLT
+  Todd–Coxeter coset enumeration with lookahead. **These can refuse**, and the
+  two refusals are different facts: ``E-FPGRP-004`` means the coset cap was
+  reached and says *nothing* about whether the group is finite, while
+  ``E-FPGRP-005`` is a **proof** that it is infinite. The ``(2,3,7)`` triangle
+  group ``FpGroup(["a", "b"], ["a^2", "b^3", "(a*b)^7"])`` is infinite with a
+  trivial abelianisation, so it lands on ``E-FPGRP-004``
+- :meth:`~FpGroup.abelian_invariants` — ``G/[G, G]`` from a Smith normal form,
+  and the one question here that **always terminates**
+- :meth:`~FpGroup.subgroup_presentation` — Reidemeister–Schreier, unsimplified
+- :meth:`~FpGroup.cohomology` — ``H^0``, ``H^1`` and ``H^2`` of a finite group
+  with coefficients in a finitely generated abelian module, from the bar
+  resolution. ``H^2`` classifies extensions. Capped at ``|G| <=
+  FPGROUP_MAX_COHOMOLOGY_GROUP_ORDER`` and ``rank(M) * |G|**(d+1) <=
+  FPGROUP_MAX_COCHAIN_DIMENSION``; an action whose matrices do not satisfy the
+  relators is refused (``E-FPGRP-011``), never used
 
 Numeric ODE integrators (Phase 16b):
 - :func:`ode_integrate_rk4` — fixed-step 4th-order Runge–Kutta integrator
@@ -359,6 +430,23 @@ from alkahest._recurrence_asymptotics import (
 
 # Calculus / ODE / transform surface (still experimental).
 from alkahest.alkahest import (
+    # Caps on conjugacy-class enumeration and on the cyclotomic field a
+    # character table's values live in. The first bounds |G| (every element is
+    # held in memory), the second bounds phi(exp G) and not the order at all.
+    CHARACTER_DEFAULT_CLASS_CAP,
+    CHARACTER_DEFAULT_TABLE_CAP,
+    CHARACTER_MAX_CLASS_CAP,
+    CHARACTER_MAX_EXPONENT_FIELD_DEGREE,
+    # Caps on the finitely-presented-group layer: Todd-Coxeter cosets, the
+    # presentation rank, and the cohomology's group order / module rank /
+    # cochain dimension. Above the coset cap the call raises E-FPGRP-004,
+    # which means "did not complete" and NOT "the group is infinite".
+    FPGROUP_DEFAULT_MAX_COSETS,
+    FPGROUP_MAX_COCHAIN_DIMENSION,
+    FPGROUP_MAX_COHOMOLOGY_DEGREE,
+    FPGROUP_MAX_COHOMOLOGY_GROUP_ORDER,
+    FPGROUP_MAX_FREE_RANK,
+    FPGROUP_MAX_MODULE_RANK,
     # Caps on permutation-group element enumeration and on Schreier–Sims
     GROUP_DEFAULT_ELEMENT_CAP,
     GROUP_MAX_BSGS_DEGREE,
@@ -367,6 +455,15 @@ from alkahest.alkahest import (
     LATTICE_DEFAULT_ENUM_NODE_BUDGET,
     LATTICE_MAX_ENUM_RANK,
     LATTICE_MAX_THETA_NORM,
+    # Caps on the matrix-group layer: degree, basic orbit size, Schreier–Sims
+    # work budget, element enumeration, GF(q) enumeration and the centralizing
+    # algebra the centre is read off
+    MATGROUP_DEFAULT_ELEMENT_CAP,
+    MATGROUP_MAX_COMMUTANT_ELEMENTS,
+    MATGROUP_MAX_DEGREE,
+    MATGROUP_MAX_FIELD_ORDER,
+    MATGROUP_MAX_ORBIT,
+    MATGROUP_MAX_SCHREIER_WORK,
     # Caps on the stabilizer layer: qubits, the exhaustive distance search,
     # and brute-force matrix-group enumeration
     STABILIZER_MAX_DISTANCE_SEARCH_DIM,
@@ -375,12 +472,23 @@ from alkahest.alkahest import (
     # The classical arithmetic functions' work cap (E-NT-006). A *subclass*
     # of alkahest.NumberTheoryError, so `except NumberTheoryError` catches
     # it together with the domain refusals (E-NT-001 / E-NT-002).
+    # A finitely generated abelian group as a free rank plus invariant
+    # factors — the answer type of `FpGroup.abelian_invariants()` and of
+    # `FpGroup.cohomology()`.
+    AbelianInvariants,
     ArithmeticError,
     # P1 item 10 — asymptotic expansion at scale
     AsymptoticReport,
     Bernoulli,
     Beta,
     Binomial,
+    # Conjugacy classes and exact character tables of permutation groups, by
+    # Dixon-Schneider. Values are elements of Q(zeta_exp G), so A_4's cube
+    # roots of unity and A_5's golden-ratio pair are values, not
+    # approximations. Row/column orthogonality is checked before a table is
+    # returned; a violation is E-CHAR-007 and nothing comes back.
+    CharacterError,
+    CharacterTable,
     # Classical linear codes, weight enumerators and the certified Delsarte
     # LP bound on A_q(n, d) — exact rational arithmetic throughout, and the
     # bound comes with the dual certificate that proves it.
@@ -390,7 +498,10 @@ from alkahest.alkahest import (
     # own error bound; `ComplexBall.value()` refuses rather than hand back
     # a midpoint with nothing behind it.
     ComplexBall,
+    ConjugacyClass,
+    ConjugacyClasses,
     Coordinates,
+    CosetTable,
     # Binary symplectic / stabilizer codes
     CssCode,
     DelsarteBound,
@@ -401,6 +512,11 @@ from alkahest.alkahest import (
     Exponential,
     FiniteField,
     FiniteFieldError,
+    # Finitely presented groups <X | R>: Todd-Coxeter enumeration, the
+    # permutation representation on the cosets, the abelianisation,
+    # Reidemeister-Schreier, and H^0/H^1/H^2.
+    FpGroup,
+    FpGroupError,
     Fps,
     FunctionField,
     FunctionFieldElement,
@@ -415,7 +531,15 @@ from alkahest.alkahest import (
     LatticeVector,
     LinearCode,
     LogNormal,
+    # Matrix groups over GF(q) from *arbitrary* generators: order and
+    # membership from a Schreier–Sims BSGS on the action on vectors, orbits on
+    # vectors and on projective points, product-replacement random elements,
+    # derived subgroup, centre and normal closure. Supersedes MatrixGroup,
+    # which describes GL/SL/Sp by formula and has no generators.
+    MatGroup,
+    MatGroupError,
     MatrixGroup,
+    MatSiftResult,
     Normal,
     NumberField,
     NumberFieldElement,
@@ -442,6 +566,7 @@ from alkahest.alkahest import (
     StabilizerCode,
     StabilizerError,
     StabilizerGroup,
+    SubgroupPresentation,
     Telescoping2dCertificate,
     TelescopingMdCertificate,
     ThetaError,
@@ -449,6 +574,7 @@ from alkahest.alkahest import (
     Uniform,
     VectorError,
     WeightEnumerator,
+    Word,
     apart_side_conditions,
     arb_backend_available,
     asymptotic_expand,
@@ -491,6 +617,11 @@ from alkahest.alkahest import (
     krawtchouk_poly,
     laplace_transform,
     laplacian,
+    # The closed-form classical orders, so a caller can check MatGroup.order()
+    # (which is computed by Schreier–Sims) against the product formula.
+    matgroup_gl_order,
+    matgroup_sl_order,
+    matgroup_sp_order,
     modular_discriminant,
     modular_lambda,
     moebius_mu,
@@ -574,6 +705,25 @@ with contextlib.suppress(ImportError):
     from alkahest.alkahest import CudaCompiledFn, compile_cuda
 
 __all__ = [
+    # Conjugacy classes and character tables. CHARACTER_*_CLASS_CAP and
+    # CHARACTER_DEFAULT_TABLE_CAP bound |G|, because the class partition holds
+    # every element; CHARACTER_MAX_EXPONENT_FIELD_DEGREE bounds phi(exp G), the
+    # degree of the one cyclotomic field every value lives in, and is a limit
+    # on the exponent rather than on the order.
+    "CHARACTER_DEFAULT_CLASS_CAP",
+    "CHARACTER_DEFAULT_TABLE_CAP",
+    "CHARACTER_MAX_CLASS_CAP",
+    "CHARACTER_MAX_EXPONENT_FIELD_DEGREE",
+    # Caps on finitely presented groups. Above FPGROUP_DEFAULT_MAX_COSETS a
+    # coset enumeration raises E-FPGRP-004, which means "did not complete
+    # within the cap" and is **not** a claim that the group is infinite; that
+    # claim is E-FPGRP-005, and only the abelianisation can prove it.
+    "FPGROUP_DEFAULT_MAX_COSETS",
+    "FPGROUP_MAX_COCHAIN_DIMENSION",
+    "FPGROUP_MAX_COHOMOLOGY_DEGREE",
+    "FPGROUP_MAX_COHOMOLOGY_GROUP_ORDER",
+    "FPGROUP_MAX_FREE_RANK",
+    "FPGROUP_MAX_MODULE_RANK",
     # Computational group theory (permutation groups)
     "GROUP_DEFAULT_ELEMENT_CAP",
     "GROUP_MAX_BSGS_DEGREE",
@@ -583,6 +733,17 @@ __all__ = [
     "LATTICE_DEFAULT_ENUM_NODE_BUDGET",
     "LATTICE_MAX_ENUM_RANK",
     "LATTICE_MAX_THETA_NORM",
+    # Caps on matrix groups over GF(q). MATGROUP_MAX_ORBIT is a cap on q**d and
+    # *not* on |G|, because an orbit on vectors is bounded by q**d - 1; and
+    # MATGROUP_MAX_SCHREIER_WORK is a refusal (E-MATGRP-007) rather than a
+    # partial chain, because a chain missing a level reports a proper divisor
+    # of the true order.
+    "MATGROUP_DEFAULT_ELEMENT_CAP",
+    "MATGROUP_MAX_COMMUTANT_ELEMENTS",
+    "MATGROUP_MAX_DEGREE",
+    "MATGROUP_MAX_FIELD_ORDER",
+    "MATGROUP_MAX_ORBIT",
+    "MATGROUP_MAX_SCHREIER_WORK",
     # Binary symplectic / stabilizer codes: the (x | z) form over GF(2),
     # Pauli operators with a Z4 phase, stabilizer and CSS codes, and the
     # classical matrix groups GL / SL / Sp over GF(q). Distance is exhaustive
@@ -594,6 +755,10 @@ __all__ = [
     # The classical arithmetic functions' work cap (E-NT-006). A *subclass*
     # of alkahest.NumberTheoryError, so `except NumberTheoryError` catches it
     # together with the domain refusals (E-NT-001 / E-NT-002).
+    # A finitely generated abelian group: free rank plus invariant factors.
+    # `order()` returns None exactly when the group is infinite — a proof, not
+    # a failure to decide.
+    "AbelianInvariants",
     "ArithmeticError",
     "Assumptions",
     # P1 item 10 — asymptotic expansion at scale
@@ -609,14 +774,29 @@ __all__ = [
     # came out too small would "rule out" codes that exist, so the constructor
     # refuses (E-CODE-007) rather than return one whose certificate did not
     # re-verify.
+    # Conjugacy classes and the exact ordinary character table, by
+    # Dixon–Schneider. Values are elements of Q(zeta_exp G) rather than floats
+    # or rationals-when-convenient, so A_4's cube roots of unity and A_5's
+    # golden-ratio pair come out of the same code path that gives S_4 its
+    # integers. Row and column orthogonality, sum chi(1)**2 == |G| and one
+    # character per class are checked as exact identities before a table is
+    # returned: a table that failed them is withheld (E-CHAR-007), never
+    # returned with a caveat.
+    "CharacterError",
+    "CharacterTable",
     "CodingError",
     # Riemann theta functions, the classical modular functions and the
     # Weierstrass family, as rigorous enclosures backed by FLINT's Arb
     # layer. Genus 1 and 2 are the tested regime; see the module docs for
     # the genus ceiling and what `Precision.AccurateTo` refuses.
     "ComplexBall",
+    "ConjugacyClass",
+    "ConjugacyClasses",
     # Vector calculus over orthogonal curvilinear charts
     "Coordinates",
+    # A complete Todd-Coxeter coset table, and the permutation representation
+    # it is. Cosets are 0-based and coset 0 is the subgroup H.
+    "CosetTable",
     "CssCode",
     "CudaCompiledFn",
     "DelsarteBound",
@@ -634,6 +814,14 @@ __all__ = [
     # "rank" and "nullspace" are not well defined.
     "FiniteField",
     "FiniteFieldError",
+    # Finitely presented groups <X | R>. `order()` is the index of the trivial
+    # subgroup by Todd-Coxeter, which may refuse (E-FPGRP-004) because the word
+    # problem is undecidable; `abelian_invariants()` always terminates and can
+    # prove a group infinite (E-FPGRP-005). `cohomology(2, ...)` classifies
+    # extensions, and is capped at small groups and modules rather than being
+    # general-looking and unverifiable.
+    "FpGroup",
+    "FpGroupError",
     "Fps",
     "FunctionField",
     "FunctionFieldElement",
@@ -658,6 +846,15 @@ __all__ = [
     "LinearCode",
     # Probability (continued)
     "LogNormal",
+    # Matrix groups over GF(q) from *arbitrary* generators. The action is on
+    # **row** vectors, v -> v @ M, so vectors are 1 x d GfMatrix objects.
+    # `order()` is a Schreier-Sims computation, not a formula — the three
+    # `matgroup_*_order` functions give the closed forms to check it against.
+    "MatGroup",
+    # E-MATGRP-001 … E-MATGRP-013. Wraps FiniteFieldError and GroupError, which
+    # keep their own E-GFQ-* / E-GRP-* codes.
+    "MatGroupError",
+    "MatSiftResult",
     "MatrixGroup",
     "Normal",
     # M11 — novelty filtering
@@ -715,6 +912,10 @@ __all__ = [
     "StabilizerCode",
     "StabilizerError",
     "StabilizerGroup",
+    # A Reidemeister-Schreier presentation of a finite-index subgroup. Not
+    # simplified: no Tietze pass, so the generator count is the raw
+    # [G:H]*|X| - [G:H] + 1.
+    "SubgroupPresentation",
     # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
     "Telescoping2dCertificate",
     "TelescopingMdCertificate",
@@ -724,6 +925,9 @@ __all__ = [
     "Uniform",
     "VectorError",
     "WeightEnumerator",
+    # A free-group word: signed, 1-based generator indices, freely reduced on
+    # construction.
+    "Word",
     # Hypotheses the last `apart` on this thread rests on (ℚ(params) path).
     "apart_side_conditions",
     "arb_backend_available",
@@ -790,6 +994,10 @@ __all__ = [
     "laplace_transform",
     # Vector calculus
     "laplacian",
+    # The classical orders in closed form, as an oracle for MatGroup.order()
+    "matgroup_gl_order",
+    "matgroup_sl_order",
+    "matgroup_sp_order",
     "modular_discriminant",
     "modular_lambda",
     "moebius_mu",

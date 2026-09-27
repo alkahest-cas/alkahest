@@ -35,8 +35,8 @@ pub use linear_algebra::{
     LinearAlgebraError, LuDecomposition, QrDecomposition,
 };
 pub use normal_form::{
-    hermite_form, hermite_form_poly, smith_form, smith_form_poly, IntegerMatrix, NormalFormError,
-    PolyMatrixQ, RatUniPoly,
+    hermite_basis, hermite_form, hermite_form_poly, smith_form, smith_form_poly, smith_invariants,
+    IntegerMatrix, NormalFormError, PolyMatrixQ, RatUniPoly,
 };
 pub use spectrum::{take_spectrum_refusal, SpectrumRefusal};
 pub use zero_test::{take_zero_test_refusal, ZeroTestRefusal};

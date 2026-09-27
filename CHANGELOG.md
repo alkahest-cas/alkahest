@@ -195,6 +195,136 @@
   `E-THETA-001` rather than computing. `contract_version` stays `3` — the row
   gained keys and lost none.
 
+- **Computational group theory is now complete across all four pillars.**
+  Permutation groups landed earlier in this cycle; this adds the other three.
+
+  **Matrix groups over GF(q)** — `MatGroup` is a subgroup of `GL(d, q)` from
+  **any** list of invertible generators, not only a classical family. Order,
+  membership and sifting come from a base and strong generating set computed by
+  Schreier–Sims **on the action on vectors**, with the base always inside the
+  standard basis: a matrix fixing every `e_i` is the identity, so a base always
+  exists inside the basis, the chain has at most `d` levels, and applying a
+  generator to a base point is a row read rather than a multiply. The order is
+  a computation, not a formula — `matgroup_gl_order`, `matgroup_sl_order` and
+  `matgroup_sp_order` are the closed forms to check it against, and the tests
+  assert the two agree on around thirty `(n, q)` pairs.
+
+  This is a separate implementation from the permutation Schreier–Sims for a
+  measured reason: `MAX_BSGS_DEGREE = 256` caps a faithful vector action at
+  `q^d − 1 ≤ 256`, which stops at `GL(8,2)`, and a degree-`q^d` permutation
+  costs `q^d` words where the matrix costs `d²`. `GL(4,3)`, of order
+  24,261,120, takes 0.14 s in a debug build. The permutation action is still
+  used as an **independent oracle**: `permutation_action_on_vectors().order()`
+  must equal `MatGroup::order()`, which makes two unrelated Schreier–Sims
+  implementations agree, in a unit test and a proptest.
+
+  Also orbits on vectors and on projective points, product-replacement random
+  elements (seeded, so reproducible), derived subgroup, centre and normal
+  closure.
+
+  **Finitely presented groups** — `FpGroup` from generator names and relator
+  strings, with HLT Todd–Coxeter coset enumeration (lookahead and table
+  compaction), the coset table, the index, `order()`, the permutation
+  representation on cosets, abelian invariants from a Smith normal form, and
+  Reidemeister–Schreier subgroup presentations.
+
+  **The two refusals here are different facts and the subsystem is built to
+  keep them apart.** `E-FPGRP-004` means the coset cap was reached and says
+  **nothing** about whether the group is finite; `E-FPGRP-005` is a *proof* of
+  infiniteness, from an infinite cyclic factor in `G/[G,G]`. `order()` asks the
+  terminating question first, so `⟨a,b | [a,b]⟩` is proved infinite without
+  enumerating anything, while the `(2,3,7)` triangle group — infinite, but with
+  trivial abelianisation — correctly lands on the honest "did not complete".
+  An `assert_ne!` on the two codes keeps them from silently converging. The
+  word problem is undecidable, and conflating "I could not decide" with "no
+  such value exists" is the shape of defect this whole subsystem is arranged
+  to avoid.
+
+  Every returned coset table is verified before it leaves — rows complete,
+  every edge reversible, every relator closing at every coset — so a
+  mishandled coincidence is `E-FPGRP-012` rather than a wrong index.
+
+  Four ways this surface could have answered wrongly or died, found in review
+  and closed before the merge. The first was a **silent wrong answer**:
+  `Word::from_letters` rejected `0` but not `i32::MIN`, and free reduction
+  decides cancellation by `last == -l`. `-i32::MIN` wraps back to `i32::MIN` in
+  a release build, so that letter cancelled *itself* — `Word([i32::MIN] * 2)`
+  freely reduced to the identity, which is a false statement about free-group
+  equality rather than a refusal. It is now `E-FPGRP-001`. The others were
+  unbounded allocations, in a crate whose one memory-abort issue cost an
+  unattended loop its whole interpreter: `Word::pow` is capped on the length of
+  its **result** (`E-FPGRP-013`), because the parser caps a *literal* exponent at
+  100 000 but exponents nest and `(a^100000)^100000` asks for 10^10 letters;
+  `multiplication_table` is capped at `MAX_MULTIPLICATION_TABLE_ORDER`
+  (`E-FPGRP-014`), far below the coset cap, because the table is `|G|²` words
+  *and* `|G|²` transversal traces of up to `|G|/2` letters — cubic in `|G|`, so
+  the cap is set where the *time* becomes unreasonable rather than where the
+  allocator gives up; and `matgroup_sl_order(1, n)` divided a
+  `rug::Integer` by `q − 1 = 0`, which **panicked** — reaching Python as
+  `PanicException`, a `BaseException` that `except Exception` does not catch, so
+  it escaped every handler a caller could write. All three are typed refusals
+  now. Reidemeister–Schreier also checks its Schreier rank *before* rewriting
+  rather than after, and deduplicates with a `HashSet`: at index 20 000 it used
+  to do ~1.8·10⁹ `Word` comparisons and then refuse anyway.
+
+  Two smaller ones from the same review. `for c in ConjugacyClasses(g)` **raised**
+  instead of stopping: with `__len__` and `__getitem__` but no `__iter__`, Python
+  falls back to the sequence protocol, which ends only on `IndexError`, and an
+  out-of-range index raised `E-CHAR-006` — so iterating raised past the last
+  class. There is an `__iter__` now, `__getitem__` takes negative indices, and
+  out of range is `IndexError`; every *named* accessor still carries the code.
+  And `MatGroupError`'s remediation strings named two methods that do not exist
+  and put the projective orbit factor at `(q^d − 1)/(q − 1)` instead of `q − 1`.
+
+  The **capacity examples in the docs were wrong, and wrong again once**: the
+  ceilings on degree, basic orbit and Schreier–Sims work are independent, and
+  several docs named groups that one of the three refuses. `|Sp(12, 3)| ≈ 10^40`
+  was cited as "fine" when its orbit is `3^12 − 1`; `Sp(12, 2)`, whose orbit does
+  fit, turned out to exhaust the *work* budget instead. Every example is now one
+  that was run, and a test pins them, because prose about a ceiling is exactly
+  the kind of claim that drifts silently away from the constant beside it.
+
+  **Group cohomology** — `H⁰`, `H¹` and `H²` of a finite group with
+  coefficients in a finitely generated abelian module, from the bar resolution,
+  with an arbitrary integer action that is **checked against the relators**
+  before use (`E-FPGRP-011`). `H²` classifies extensions. `H¹` with trivial
+  coefficients is additionally cross-checked against `abelian_invariants()`,
+  which is a different computation.
+
+  **Conjugacy classes and character tables** — `CharacterTable` via
+  **Dixon–Schneider**: the class multiplication matrices commute and share the
+  eigenvector `ω(χ)_i = |K_i|·χ(g_i)/χ(1)`, so choosing `p ≡ 1 (mod exp G)`
+  with `p > |G|` puts every eigenvalue in `GF(p)` and reduces the whole
+  eigen-decomposition to `r × r` work over a word-sized prime field.
+
+  **Values are exact cyclotomic integers, with no floating-point path and no
+  rationals-only fallback.** Every entry is a `NumberFieldElement` of
+  `Q(ζ_{exp G})`. `A4`'s linear characters come out as exactly `ζ₃` and `ζ₃²`;
+  `A5`'s degree-3 pair satisfies `u + v = 1 ∧ uv = −1 ∧ u² = u + 1`, which is
+  the golden ratio checked algebraically rather than numerically; `D5`'s
+  degree-2 characters carry the *other* √5 quadratic in a different field. The
+  lift out of `GF(p)` is exact rather than a bounded heuristic: what is lifted
+  is an eigenvalue *multiplicity* `n_k` with `0 ≤ n_k ≤ χ(1) ≤ √|G| < p`, so
+  its residue **is** its value — no symmetric lift, no rational
+  reconstruction, no bound to get wrong. `Σ_k n_k = χ(1)` is checked per entry,
+  so every value carries its own checksum.
+
+  The orthogonality relations are enforced *inside* the implementation, not
+  only in tests: a table that fails row or column orthogonality is refused
+  rather than returned.
+
+  `D4` and `Q8` are the textbook pair of non-isomorphic groups with
+  **identical** character tables, and the tests assert exactly that — the value
+  matrices equal, the class data different (element orders `[1,2,2,2,4]`
+  against `[1,2,4,4,4]`). A test demanding different tables would have been
+  demanding a wrong answer.
+
+  What is still absent across all four pillars is anything needing backtrack
+  search: Sylow subgroups, element centralizers, subgroup lattices and
+  normalisers. Conjugacy classes are found by enumeration, so the ceiling is
+  `|G| ≤ 200_000` and no ATLAS group fits — enforced, and documented as a
+  ceiling rather than an aspiration.
+
 ### Testing and tooling
 
 - 201 new Rust tests (46 `ffield`, 60 `group`, 95 `funcfield`) and a
