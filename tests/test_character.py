@@ -248,9 +248,7 @@ def test_d4_and_q8_share_a_table_but_not_their_class_data():
     def fingerprint(table):
         rows = []
         for i in range(len(table)):
-            rows.append(
-                sorted(tuple(value.coefficients()) for value in table.character(i))
-            )
+            rows.append(sorted(tuple(value.coefficients()) for value in table.character(i)))
         return sorted(rows)
 
     assert fingerprint(d4) == fingerprint(q8)
