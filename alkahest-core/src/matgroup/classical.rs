@@ -63,6 +63,13 @@ pub fn gl_order(q: &Integer, n: usize) -> Integer {
 }
 
 /// `|GL(n, q)| / (q − 1)` — the closed form for `|SL(n, q)|`.
+///
+/// # Panics
+///
+/// If `q == 1`, on the division by `q − 1`. One is not the order of a field, so
+/// there is no `SL(n, 1)` for this to return; callers that take `q` from outside
+/// must check it first. The PyO3 wrapper does, because a panic there would reach
+/// Python as an uncatchable `PanicException`.
 pub fn sl_order(q: &Integer, n: usize) -> Integer {
     gl_order(q, n) / (q.clone() - Integer::from(1))
 }

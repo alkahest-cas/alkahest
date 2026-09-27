@@ -282,11 +282,12 @@ impl AlkahestError for MatGroupError {
             MatGroupError::OrbitTooLarge { .. } => Some(
                 "an orbit on vectors is bounded by q^d - 1, so this is a cap on q^d rather \
                  than on |G|; use a smaller field or degree, or work with the projective \
-                 action, whose orbits are (q^d - 1)/(q - 1) times smaller",
+                 action, whose orbits are (q - 1) times smaller",
             ),
             MatGroupError::WorkBudgetExhausted { .. } => Some(
-                "raise the budget with `order_with_budget` / `stabilizer_chain_with_budget` \
-                 if the group really is this large, or supply a smaller generating set",
+                "raise the budget with `MatGroup::with_budget` (Python `with_budget`) if the \
+                 group really is this large, or supply a smaller generating set; no order is \
+                 reported, because an incomplete chain reports a proper divisor of the true one",
             ),
             MatGroupError::EnumerationTooLarge { .. } => Some(
                 "use `order()`, `contains()` or `random_element()` instead of listing the \
@@ -298,7 +299,7 @@ impl AlkahestError for MatGroupError {
             ),
             MatGroupError::UnsupportedConstruction { .. } => Some(
                 "build the group from explicit generators with `MatGroup::new`; the classical \
-                 constructors here cover GL, SL and Sp only",
+                 constructors here cover GL, SL, Sp and Singer cycles only",
             ),
             MatGroupError::CommutantTooLarge { .. } => Some(
                 "a large centralizing algebra means the module is very reducible; split it \

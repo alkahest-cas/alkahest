@@ -10,6 +10,22 @@ use crate::group::PermutationGroup;
 use rug::Integer;
 use std::fmt;
 
+/// Largest `|G|` for which [`FpGroup::multiplication_table`] builds a table.
+///
+/// The table is `|G|^2` machine words *and* `|G|^2` transversal traces, each of
+/// which follows a word of up to about `|G|/2` letters — so it is **cubic** in
+/// `|G|` in time and quadratic in memory, while coset enumeration itself admits
+/// up to [`super::DEFAULT_MAX_COSETS`] cosets.
+///
+/// The cap is on the cubic term, not on what the allocator would tolerate. At
+/// 1024 the table is 8 MB and the traces are about `5 · 10^8` letter-steps —
+/// seconds. Raising it to the point where the *memory* was the problem would
+/// mean a call that returns after hours, which is not a better failure than a
+/// refusal. Cohomology, the main consumer, is bounded by
+/// [`super::MAX_COHOMOLOGY_GROUP_ORDER`] long before it reaches this; the other
+/// consumer is a Latin-square self-check, which wants a small group anyway.
+pub const MAX_MULTIPLICATION_TABLE_ORDER: usize = 1024;
+
 /// A finitely presented group `⟨X | R⟩`: a free group and a list of relators.
 ///
 /// A *relator* is a word that is trivial in the quotient. Relators are stored
@@ -210,9 +226,22 @@ impl FpGroup {
     /// `table[a][b]` is the index of `g_a · g_b`. Needed by the cohomology, and
     /// exposed because a Latin-square check on it is a cheap independent test of
     /// the enumeration.
+    ///
+    /// Capped at [`MAX_MULTIPLICATION_TABLE_ORDER`]. Enumeration itself admits
+    /// up to [`super::DEFAULT_MAX_COSETS`] cosets, and the table is cubic in
+    /// `|G|` in time and quadratic in memory — so this refuses with
+    /// [`FpGroupError::MultiplicationTableTooLarge`] rather than asking the
+    /// allocator for it. [`Self::permutation_group`] answers the same questions
+    /// in `|G|` words per generator instead of `|G|^2`.
     pub fn multiplication_table(&self) -> Result<Vec<Vec<usize>>, FpGroupError> {
         let table = self.coset_table(&[])?;
         let n = table.index();
+        if n > MAX_MULTIPLICATION_TABLE_ORDER {
+            return Err(FpGroupError::MultiplicationTableTooLarge {
+                order: n,
+                max: MAX_MULTIPLICATION_TABLE_ORDER,
+            });
+        }
         let transversal = table.transversal()?;
         let mut mult = vec![vec![0usize; n]; n];
         for (a, row) in mult.iter_mut().enumerate() {

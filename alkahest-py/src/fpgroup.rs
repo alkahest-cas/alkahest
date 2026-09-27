@@ -118,8 +118,10 @@ impl PyWord {
                 "pow() with a modulus is not defined for free-group words",
             ));
         }
+        // `E-FPGRP-013` when the result would be too long: exponents nest, so
+        // `(a**100000)**100000` asks for 10^10 letters.
         Ok(PyWord {
-            inner: self.inner.pow(exponent),
+            inner: self.inner.pow(exponent).map_err(fp_err)?,
         })
     }
 

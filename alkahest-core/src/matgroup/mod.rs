@@ -73,8 +73,12 @@
 //! * **Basic orbits** at most [`MAX_MATGROUP_ORBIT`] points, each costing a
 //!   transversal matrix and its inverse — `O(Σᵢ |Δᵢ| · d²)` words. Because an
 //!   orbit on vectors is bounded by `q^d − 1`, this is in practice a cap on
-//!   `q^d` and **not** on `|G|`: `|Sp(12, 3)| ≈ 10^{40}` is fine, while
-//!   `GL(2, 4096)` is refused.
+//!   `q^d` and **not** on `|G|`: `GL(4, 8)` computes an order of `≈ 2 · 10^{14}`
+//!   from a 4095-point orbit, and `GL(6, 4)` one of `≈ 3 · 10^{21}` from another,
+//!   while `GL(2, 4096)` is refused despite being a far smaller group. The three
+//!   ceilings here are independent and any of them can bind first — `GL(12, 2)`
+//!   has a 4095-point orbit and a degree inside the cap, and still refuses, on
+//!   the work budget below.
 //! * **Schreier–Sims work** at most [`MAX_MATGROUP_SCHREIER_WORK`] elementary
 //!   matrix operations. Exhausting it is
 //!   [`MatGroupError::WorkBudgetExhausted`], never a partial chain: an
@@ -143,18 +147,31 @@ pub use group::MatGroup;
 /// The largest matrix size this module accepts.
 ///
 /// The chain stores explicit `d × d` transversal matrices, and every orbit is
-/// inside `GF(q)^d`, so the cost grows fast in `d`. Sixteen covers `GL(16, 2)`,
-/// `Sp(16, 2)`, `GL(6, 4)` and everything smaller, which is the regime the
+/// inside `GF(q)^d`, so the cost grows fast in `d`. Sixteen is the regime the
 /// deterministic algorithms here are appropriate for.
+///
+/// This cap is rarely the one a caller meets, and being inside it is **not**
+/// sufficient: a basic orbit on vectors has up to `q^d − 1` points, so `d` and
+/// `q` are capped together by [`MAX_MATGROUP_ORBIT`], and the search is capped
+/// again by [`MAX_MATGROUP_SCHREIER_WORK`]. `GL(16, 2)` is inside this degree
+/// ceiling and refused on its orbit (`2^16 − 1`); `GL(12, 2)` is inside both the
+/// degree *and* the orbit ceiling and still refused, on the work budget.
 pub const MAX_MATGROUP_DEGREE: usize = 16;
 
 /// The largest basic orbit, in points.
 ///
 /// Each point costs a transversal matrix **and** its inverse, so a level with
 /// `|Δ|` points costs `2·|Δ|·d²` words. Since an orbit on vectors is bounded by
-/// `q^d − 1`, this is effectively a cap on `q^d`: `4096` admits `GL(12, 2)`,
-/// `GL(6, 4)`, `GL(4, 8)`, `GL(4, 5)` and `Sp(8, 3)`, and refuses
-/// `GL(2, 10007)`.
+/// `q^d − 1`, this is effectively a cap on `q^d`. It refuses `GL(2, 10007)`, and
+/// also `Sp(8, 3)` and `GL(16, 2)`, whose degrees are inside
+/// [`MAX_MATGROUP_DEGREE`] but whose orbits (`6560` and `65535`) are not.
+///
+/// Passing this cap is necessary and not sufficient — [`MAX_MATGROUP_SCHREIER_WORK`]
+/// is a separate ceiling on the search. `GL(6, 4)`, `GL(4, 8)` and `GL(4, 5)`
+/// complete at the default budget; `GL(12, 2)` and `Sp(12, 2)` have orbits inside
+/// this cap (`4095` points) and still refuse, with
+/// [`MatGroupError::WorkBudgetExhausted`] rather than a wrong order. Raise it
+/// with [`MatGroup::with_budget`] for those.
 pub const MAX_MATGROUP_ORBIT: usize = 4096;
 
 /// The default Schreier–Sims work budget, in elementary matrix operations.

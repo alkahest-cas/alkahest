@@ -56,6 +56,81 @@ def test_the_four_headline_orders(gf2, gf5):
     assert MatGroup.general_linear(gf4, 2).order() == 180
 
 
+def test_the_documented_capacity_examples_are_true():
+    """The ceilings are independent, and the docs name only groups that behave.
+
+    Three separate caps — degree, basic orbit, and Schreier-Sims work — and any
+    of them can bind first, so "inside the orbit cap" does not mean
+    "answerable". The module docs, ``errors.md`` and ``MatGroupError``'s
+    docstring all cite these examples, and they drifted once already.
+
+    The two claims that need a *default* budget to mean anything cost 60-90 s
+    each; they are in ``test_the_default_budget_capacity_claims`` below, marked
+    slow.
+    """
+    # Large |G| from an orbit exactly at the cap: 8**4 - 1 = 4095 points, and an
+    # order of 2.4e14 — while the much smaller GL(2, 4096) is refused outright.
+    assert MatGroup.general_linear(FiniteField(2, 3), 4).order() == matgroup_gl_order(8, 4)
+    assert matgroup_gl_order(8, 4) > 10**14
+
+    # Refused on the *orbit* cap, with degrees inside MATGROUP_MAX_DEGREE — so
+    # the degree ceiling is not the one a caller meets here.
+    assert MATGROUP_MAX_DEGREE >= 16
+    with pytest.raises(MatGroupError) as exc:
+        MatGroup.general_linear(FiniteField(2), 16).order()
+    assert exc.value.code == "E-MATGRP-006"
+    with pytest.raises(MatGroupError) as exc:
+        MatGroup.symplectic(FiniteField(3), 4).order()
+    assert exc.value.code == "E-MATGRP-006"
+
+    # Inside the degree *and* the orbit cap (4095 points) and still refused, on
+    # work — which is the claim the docs would otherwise be overstating. Shown
+    # here with an explicit small budget so the test stays fast; the
+    # default-budget version is the slow test below.
+    gl122 = MatGroup.general_linear(FiniteField(2), 12).with_budget(100_000)
+    with pytest.raises(MatGroupError) as exc:
+        gl122.order()
+    assert exc.value.code == "E-MATGRP-007"
+
+
+@pytest.mark.slow
+def test_the_default_budget_capacity_claims():
+    """The same two claims at the *default* budget: ~90 s and ~70 s.
+
+    ``GL(6, 4)`` is the largest group the docs claim outright, and ``GL(12, 2)``
+    is the one whose orbit fits while its search does not. Both statements are
+    about ``MATGROUP_MAX_SCHREIER_WORK`` at its default, so neither can be shown
+    with a lowered budget.
+    """
+    assert MatGroup.general_linear(FiniteField(2, 2), 6).order() == matgroup_gl_order(4, 6)
+    assert matgroup_gl_order(4, 6) > 10**21
+    with pytest.raises(MatGroupError) as exc:
+        MatGroup.general_linear(FiniteField(2), 12).order()
+    assert exc.value.code == "E-MATGRP-007"
+
+
+def test_the_closed_form_orders_refuse_rather_than_panic():
+    """``q = 1`` divided by zero in rug, which panics.
+
+    A panic crossing the PyO3 boundary arrives as ``PanicException`` — a
+    ``BaseException`` that ``except Exception`` does not catch, so it escapes
+    every handler a caller can write. And an unbounded ``n`` made the formula run
+    for ``n`` big-integer powers rather than refuse.
+    """
+    for fn in (matgroup_gl_order, matgroup_sl_order, matgroup_sp_order):
+        with pytest.raises(MatGroupError) as exc:
+            fn(1, 2)
+        assert exc.value.code == "E-MATGRP-010"
+        with pytest.raises(MatGroupError) as exc:
+            fn(2, 10**9)
+        assert exc.value.code == "E-MATGRP-005"
+    # Sp's argument is the *half* degree, so the bound applies to 2n.
+    assert matgroup_sp_order(2, MATGROUP_MAX_DEGREE // 2) > 0
+    with pytest.raises(MatGroupError) as exc:
+        matgroup_sp_order(2, MATGROUP_MAX_DEGREE // 2 + 1)
+    assert exc.value.code == "E-MATGRP-005"
+
+
 @pytest.mark.parametrize("p", [2, 3, 5, 7])
 @pytest.mark.parametrize("n", [1, 2, 3])
 def test_order_from_the_chain_equals_the_closed_form(p, n):

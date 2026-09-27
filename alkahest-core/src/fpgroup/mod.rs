@@ -97,9 +97,9 @@ pub use cohomology::{
     MAX_MODULE_RANK,
 };
 pub use error::FpGroupError;
-pub use presentation::FpGroup;
+pub use presentation::{FpGroup, MAX_MULTIPLICATION_TABLE_ORDER};
 pub use reidemeister::{reidemeister_schreier, SubgroupPresentation};
 pub use todd_coxeter::{
     default_max_cosets, enumerate, CosetTable, DEFAULT_MAX_COSETS, MAX_COSET_TABLE_CELLS,
 };
-pub use word::{FreeGroup, Word, MAX_FREE_RANK};
+pub use word::{FreeGroup, Word, MAX_FREE_RANK, MAX_WORD_LETTERS};

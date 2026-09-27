@@ -398,25 +398,64 @@ impl PyMatGroup {
     }
 }
 
+/// The two preconditions the closed forms carry, checked here because this is
+/// where untrusted arguments arrive.
+///
+/// `q >= 2`: `q = 1` is not the order of a field, and `|SL| = |GL| / (q - 1)`
+/// divides a `rug::Integer` by zero, which **panics**. A panic crossing the PyO3
+/// boundary reaches Python as `PanicException`, a `BaseException` that
+/// `except Exception` does not catch — so it would escape every handler a caller
+/// can reasonably write. `MatGroupError::Internal` documents why this module
+/// refuses rather than panics.
+///
+/// `degree <= MAX_MATGROUP_DEGREE`: these formulas are `O(degree)` big-integer
+/// powers, so `n = 10**9` does not overflow, it simply never returns. The bound
+/// is the degree a `MatGroup` can actually have, which is the whole point of
+/// these functions — checking `MatGroup.order()` against a formula.
+fn check_order_arguments(family: &'static str, q: u64, degree: usize) -> Result<(), MatGroupError> {
+    if q < 2 {
+        return Err(MatGroupError::UnsupportedConstruction {
+            family,
+            reason: "q must be at least 2: 1 is not the order of a field, and |SL| = |GL|/(q-1) \
+                     has no value at q = 1",
+        });
+    }
+    if degree > MAX_MATGROUP_DEGREE {
+        return Err(MatGroupError::DegreeTooLarge {
+            degree,
+            max: MAX_MATGROUP_DEGREE,
+        });
+    }
+    Ok(())
+}
+
 /// ``|GL(n, q)|`` from the product formula ``prod(q**n - q**i)``.
 ///
-/// Closed form, with no enumeration and no cap — provided so that a caller can
-/// check `MatGroup.order()` against it, which is what this module's Rust tests
-/// do.
+/// Closed form, with no enumeration — provided so that a caller can check
+/// `MatGroup.order()` against it, which is what this module's Rust tests do.
+/// `q >= 2` and `n <= MATGROUP_MAX_DEGREE`; see `check_order_arguments`.
 #[pyfunction]
 fn matgroup_gl_order(py: Python<'_>, q: u64, n: usize) -> PyResult<PyObject> {
+    check_order_arguments("GL", q, n).map_err(mg_err)?;
     big_int(py, &core_gl_order(&rug::Integer::from(q), n))
 }
 
 /// ``|SL(n, q)| = |GL(n, q)| / (q - 1)``.
+///
+/// `q >= 2` and `n <= MATGROUP_MAX_DEGREE`; see `check_order_arguments`.
 #[pyfunction]
 fn matgroup_sl_order(py: Python<'_>, q: u64, n: usize) -> PyResult<PyObject> {
+    check_order_arguments("SL", q, n).map_err(mg_err)?;
     big_int(py, &core_sl_order(&rug::Integer::from(q), n))
 }
 
 /// ``|Sp(2n, q)| = q**(n*n) * prod(q**(2i) - 1)``. The argument is ``n``.
+///
+/// `q >= 2` and `2n <= MATGROUP_MAX_DEGREE` — the bound is on the matrix size,
+/// which is `2n` here, so it matches the degree a `MatGroup` can have.
 #[pyfunction]
 fn matgroup_sp_order(py: Python<'_>, q: u64, n: usize) -> PyResult<PyObject> {
+    check_order_arguments("Sp", q, n.saturating_mul(2)).map_err(mg_err)?;
     big_int(py, &core_sp_order(&rug::Integer::from(q), n))
 }
 

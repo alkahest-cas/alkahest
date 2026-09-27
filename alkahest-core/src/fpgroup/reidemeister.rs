@@ -27,7 +27,8 @@
 
 use super::error::FpGroupError;
 use super::presentation::FpGroup;
-use super::word::{FreeGroup, Word};
+use super::word::{FreeGroup, Word, MAX_FREE_RANK};
+use std::collections::HashSet;
 
 /// A presentation for a finite-index subgroup, together with each of its
 /// generators written as a word in the parent group's generators.
@@ -110,8 +111,31 @@ pub fn reidemeister_schreier(
         });
     }
 
+    // The rank check *before* the rewriting loop, not after. `with_names` below
+    // refuses more than MAX_FREE_RANK generators, and the loop's work is
+    // `index * |R|` rewrites either way — so a subgroup of index 20 000 in a
+    // 2-generator group used to rewrite 60 000 relators and only then report
+    // E-FPGRP-002 for its 20 001 generators. The count is known here.
+    if generator_words.len() > MAX_FREE_RANK {
+        return Err(FpGroupError::InvalidPresentation {
+            detail: format!(
+                "this subgroup needs {} Schreier generators, above MAX_FREE_RANK ({}); \
+                 Reidemeister-Schreier produces index * rank - (index - 1) of them, so the \
+                 index is what has to come down",
+                generator_words.len(),
+                MAX_FREE_RANK
+            ),
+        });
+    }
+
     // Rewrite each relator from each coset.
+    //
+    // `seen` rather than `relators.contains(&w)`: the linear scan made
+    // deduplication quadratic in `index * |R|`, which is ~1.8e9 Word comparisons
+    // at index 20 000. `relators` still carries the order, which the returned
+    // presentation is specified to preserve.
     let mut relators: Vec<Word> = Vec::new();
+    let mut seen: HashSet<Word> = HashSet::new();
     for c in 0..index {
         for r in group.relators() {
             let mut letters: Vec<i32> = Vec::new();
@@ -134,7 +158,7 @@ pub fn reidemeister_schreier(
                 });
             }
             let w = Word::from_letters(&letters)?;
-            if !w.is_empty() && !relators.contains(&w) {
+            if !w.is_empty() && seen.insert(w.clone()) {
                 relators.push(w);
             }
         }

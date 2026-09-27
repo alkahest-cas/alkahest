@@ -774,8 +774,8 @@ impl MatGroup {
     ///   enumerating its `q^dim` elements and keeping the invertible ones that
     ///   are in `G`.
     ///
-    /// The second route is what makes `Z(GL(20, 3))` cheap: the algebra is
-    /// 1-dimensional, so it is three candidates rather than `|GL(20, 3)|`.
+    /// The second route is what makes `Z(GL(4, 3))` cheap: the algebra is
+    /// 1-dimensional, so it is three candidates rather than `|GL(4, 3)|`.
     ///
     /// # Errors
     ///

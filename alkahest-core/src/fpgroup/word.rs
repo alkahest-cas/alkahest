@@ -30,6 +30,17 @@ use std::fmt;
 /// four-figure rank is a memory decision rather than a mathematical one.
 pub const MAX_FREE_RANK: usize = 1024;
 
+/// Largest number of letters a single [`Word`] may hold.
+///
+/// [`Word::pow`] is the only way to reach it: its result has
+/// `|base| * |exponent|` letters. The parser caps a *literal* exponent at
+/// 100 000, but exponents nest, and `(a^100000)^100000` asks for 10^10 letters
+/// — 40 GB — so the ceiling has to be on the length of the result rather than
+/// on any one exponent. Ten million letters is 40 MB, comfortably above any
+/// word these algorithms build and far below an allocation that would abort the
+/// process.
+pub const MAX_WORD_LETTERS: usize = 10_000_000;
+
 /// An element of a free group: a freely reduced sequence of signed, 1-based
 /// generator indices.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -64,10 +75,19 @@ impl Word {
     ///
     /// Letters are checked for being non-zero but **not** against any rank; use
     /// [`FreeGroup::word`] when the rank is known.
+    ///
+    /// `i32::MIN` is rejected along with `0`, and not as a formality: free
+    /// reduction, [`Word::inverse`] and [`Word::times`] all decide whether two
+    /// letters cancel by comparing `last == -l`, and `-i32::MIN` overflows. In a
+    /// debug build that panics; in a release build it wraps back to `i32::MIN`,
+    /// so `x` would appear to cancel *itself* and `Word([i32::MIN; 2])` would
+    /// freely reduce to the identity — a wrong answer about free-group equality
+    /// rather than a refusal. The letter has no inverse representable in `i32`,
+    /// so there is no generator it can name.
     pub fn from_letters(letters: &[i32]) -> Result<Word, FpGroupError> {
         for &l in letters {
-            if l == 0 {
-                return Err(FpGroupError::InvalidGenerator { letter: 0, rank: 0 });
+            if l == 0 || l == i32::MIN {
+                return Err(FpGroupError::InvalidGenerator { letter: l, rank: 0 });
             }
         }
         Ok(Word {
@@ -130,9 +150,9 @@ impl Word {
     /// Linear in the length of the result, not quadratic: repeated `times`
     /// would copy the accumulator on every step, and the parser admits
     /// exponents up to five figures.
-    pub fn pow(&self, exponent: i32) -> Word {
+    pub fn pow(&self, exponent: i32) -> Result<Word, FpGroupError> {
         if exponent == 0 || self.is_empty() {
-            return Word::identity();
+            return Ok(Word::identity());
         }
         let base = if exponent < 0 {
             self.inverse()
@@ -140,6 +160,16 @@ impl Word {
             self.clone()
         };
         let repeats = exponent.unsigned_abs() as usize;
+        // Checked in u128 and *before* the reserve: `base.len() * repeats` is
+        // the exact number of letters pushed, and the product overflows usize
+        // on a 32-bit target well before it exhausts memory on a 64-bit one.
+        let wanted = base.len() as u128 * repeats as u128;
+        if wanted > MAX_WORD_LETTERS as u128 {
+            return Err(FpGroupError::WordTooLong {
+                letters: wanted,
+                max: MAX_WORD_LETTERS,
+            });
+        }
         let mut letters: Vec<i32> = Vec::with_capacity(base.len().saturating_mul(repeats));
         for _ in 0..repeats {
             for &l in base.letters() {
@@ -150,7 +180,7 @@ impl Word {
                 }
             }
         }
-        Word { letters }
+        Ok(Word { letters })
     }
 
     /// The largest 0-based generator index occurring, or `None` for the
@@ -450,7 +480,7 @@ impl FreeGroup {
         if *pos < bytes.len() && bytes[*pos] == b'^' {
             *pos += 1;
             let e = parse_exponent(bytes, pos)?;
-            return Ok(base.pow(e));
+            return base.pow(e);
         }
         Ok(base)
     }

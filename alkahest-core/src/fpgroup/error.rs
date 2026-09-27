@@ -171,6 +171,30 @@ pub enum FpGroupError {
         /// What was violated.
         detail: String,
     },
+    /// A word would have more letters than [`super::MAX_WORD_LETTERS`].
+    ///
+    /// Reached by [`super::Word::pow`], whose result is `|base| * |exponent|`
+    /// letters. The parser caps a *literal* exponent at 100 000, but exponents
+    /// nest — `(a^100000)^100000` asks for 10^10 letters, 40 GB — so the cap
+    /// has to be on the result rather than on any one exponent.
+    WordTooLong {
+        /// How many letters the result would have had.
+        letters: u128,
+        /// The ceiling, [`super::MAX_WORD_LETTERS`].
+        max: usize,
+    },
+    /// `|G|` is above [`super::MAX_MULTIPLICATION_TABLE_ORDER`], so no `n x n`
+    /// multiplication table is built.
+    ///
+    /// The table is `n^2` machine words *and* `n^2` transversal traces of up to
+    /// `n/2` letters each, so it is cubic in `n` and is refused well below the
+    /// coset cap that enumeration itself allows.
+    MultiplicationTableTooLarge {
+        /// The order the enumeration reached.
+        order: usize,
+        /// The ceiling, [`super::MAX_MULTIPLICATION_TABLE_ORDER`].
+        max: usize,
+    },
 }
 
 impl fmt::Display for FpGroupError {
@@ -232,6 +256,16 @@ impl fmt::Display for FpGroupError {
             FpGroupError::Internal { detail } => {
                 write!(f, "internal fp-group invariant violated: {detail}")
             }
+            FpGroupError::WordTooLong { letters, max } => write!(
+                f,
+                "this word would have {letters} letters, above the cap {max}; exponents nest, so \
+                 the ceiling is on the length of the result and not on any one exponent"
+            ),
+            FpGroupError::MultiplicationTableTooLarge { order, max } => write!(
+                f,
+                "|G| = {order} is above the multiplication-table cap {max}; the table is {order}^2 \
+                 words and {order}^2 transversal traces"
+            ),
         }
     }
 }
@@ -265,6 +299,8 @@ impl AlkahestError for FpGroupError {
             FpGroupError::ModuleShape { .. } => "E-FPGRP-010",
             FpGroupError::ActionNotWellDefined { .. } => "E-FPGRP-011",
             FpGroupError::Internal { .. } => "E-FPGRP-012",
+            FpGroupError::WordTooLong { .. } => "E-FPGRP-013",
+            FpGroupError::MultiplicationTableTooLarge { .. } => "E-FPGRP-014",
             FpGroupError::Permutation(e) => e.code(),
             FpGroupError::NormalForm(e) => e.code(),
         }
@@ -320,6 +356,15 @@ impl AlkahestError for FpGroupError {
             FpGroupError::Internal { .. } => {
                 Some("this is a bug: please report it with the presentation that produced it")
             }
+            FpGroupError::WordTooLong { .. } => Some(
+                "exponents nest, so the cap is on the length of the resulting word and not on \
+                 any one exponent; reduce the exponent or the length of the base word",
+            ),
+            FpGroupError::MultiplicationTableTooLarge { .. } => Some(
+                "the table is |G|^2 words and |G|^2 transversal traces; use \
+                 `permutation_group()`, whose degree is |G| rather than |G|^2, or take a \
+                 smaller quotient",
+            ),
             FpGroupError::Permutation(e) => e.remediation(),
             FpGroupError::NormalForm(e) => e.remediation(),
         }
@@ -367,6 +412,8 @@ mod tests {
             FpGroupError::Internal {
                 detail: String::new(),
             },
+            FpGroupError::WordTooLong { letters: 1, max: 0 },
+            FpGroupError::MultiplicationTableTooLarge { order: 2, max: 1 },
         ];
         let codes: Vec<&str> = all.iter().map(|e| e.code()).collect();
         assert_eq!(
@@ -384,6 +431,8 @@ mod tests {
                 "E-FPGRP-010",
                 "E-FPGRP-011",
                 "E-FPGRP-012",
+                "E-FPGRP-013",
+                "E-FPGRP-014",
             ]
         );
         for e in &all {

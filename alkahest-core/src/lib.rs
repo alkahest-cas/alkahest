@@ -451,7 +451,7 @@ pub mod experimental {
         AbelianInvariants, CosetTable, FpGroup, FpGroupError, FreeGroup, GModule,
         SubgroupPresentation, Word, DEFAULT_MAX_COSETS, MAX_COCHAIN_DIMENSION,
         MAX_COHOMOLOGY_DEGREE, MAX_COHOMOLOGY_GROUP_ORDER, MAX_COSET_TABLE_CELLS, MAX_FREE_RANK,
-        MAX_MODULE_RANK,
+        MAX_MODULE_RANK, MAX_MULTIPLICATION_TABLE_ORDER, MAX_WORD_LETTERS,
     };
     /// Function fields of algebraic curves: divisors, the divisor class group
     /// and Riemann–Roch, for the imaginary hyperelliptic model with rational

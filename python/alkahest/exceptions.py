@@ -1114,8 +1114,11 @@ class MatGroupError(AlkahestError):
       this large.
     - ``E-MATGRP-006`` — a basic orbit passed its cap. Because an orbit on
       vectors is bounded by ``q**d - 1``, this caps ``q**d`` and **not**
-      ``|G|``: a symplectic group of order ``10**40`` is fine while
-      ``GL(2, 4096)`` is not. The projective action has orbits ``q - 1`` times
+      ``|G|``: ``GL(4, 8)``, of order about ``2 * 10**14``, is fine because its
+      orbit is ``8**4 - 1 = 4095`` points, while the far smaller ``GL(2, 4096)``
+      is not. Being inside this cap is necessary and not sufficient —
+      ``GL(12, 2)`` has a 4095-point orbit and still refuses, with
+      ``E-MATGRP-007``. The projective action has orbits ``q - 1`` times
       smaller.
     - ``E-MATGRP-008`` — the group is too large to list element by element.
       ``order()`` is still exact; it is the *list* that is refused.
@@ -1224,11 +1227,11 @@ class ProbabilityError(AlkahestError):
 
 class FpGroupError(AlkahestError):
     """A finitely-presented-group operation refused (``E-FPGRP-001`` …
-    ``E-FPGRP-012``).
+    ``E-FPGRP-014``).
 
-    Raised by the :mod:`alkahest.experimental` ``FpGroup`` surface. Two of the
-    twelve are **different facts and must not be confused**, which is the reason
-    they have different codes:
+    Raised by the :mod:`alkahest.experimental` ``FpGroup`` surface. Two of them
+    are **different facts and must not be confused**, which is the reason they
+    have different codes:
 
     - ``E-FPGRP-004`` — Todd–Coxeter coset enumeration hit its cap. The word
       problem for finitely presented groups is undecidable, so this says only

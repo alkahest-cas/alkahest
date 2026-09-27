@@ -157,12 +157,35 @@ impl PyConjugacyClasses {
         self.inner.len()
     }
 
-    /// ``classes[i]``, the class at ``i``.
-    fn __getitem__(&self, index: usize) -> PyResult<PyConjugacyClass> {
+    /// ``classes[i]``, the class at ``i``; negative indices count from the end.
+    ///
+    /// Out of range is `IndexError`, not `E-CHAR-006`. With `__len__` and
+    /// `__getitem__` but no `__iter__`, Python iterates via the sequence
+    /// protocol, which stops only on `IndexError` — so a `CharacterError` here
+    /// made `for c in classes` and `list(classes)` raise after the last class
+    /// instead of ending. `__iter__` below makes that moot for iteration, and
+    /// this keeps direct indexing behaving like a sequence either way.
+    fn __getitem__(&self, index: isize) -> PyResult<PyConjugacyClass> {
+        let n = self.inner.len() as isize;
+        let i = if index < 0 { index + n } else { index };
+        if i < 0 || i >= n {
+            return Err(pyo3::exceptions::PyIndexError::new_err(
+                "ConjugacyClasses index out of range",
+            ));
+        }
         self.inner
-            .class(index)
+            .class(i as usize)
             .map(|c| PyConjugacyClass { inner: c.clone() })
             .map_err(char_err)
+    }
+
+    /// Iterate over the classes as :class:`ConjugacyClass`.
+    fn __iter__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let list = pyo3::types::PyList::empty_bound(py);
+        for c in self.inner.classes() {
+            list.append(Py::new(py, PyConjugacyClass { inner: c.clone() })?)?;
+        }
+        Ok(list.as_any().iter()?.into_py(py))
     }
 
     /// The degree of the underlying permutation group.

@@ -713,6 +713,8 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-FPGRP-010", class: "FpGroupError", cause: Cause::UserInput,   remediation: Some("module invariants are non-negative (0 for a Z summand, d >= 1 for Z/d), and there must be one square rank-by-rank action matrix per group generator") },
     ErrorSpec { code: "E-FPGRP-011", class: "FpGroupError", cause: Cause::Domain,      remediation: Some("check that every relator's matrix product is the identity on M and that each generator's matrix maps the module's relation lattice into itself; GModule::trivial cannot fail either check") },
     ErrorSpec { code: "E-FPGRP-012", class: "FpGroupError", cause: Cause::Internal,    remediation: Some("this is a bug in the fp-group subsystem: report it with the presentation that produced it") },
+    ErrorSpec { code: "E-FPGRP-013", class: "FpGroupError", cause: Cause::Resource,    remediation: Some("exponents nest, so the cap is on the length of the resulting word and not on any one exponent; reduce the exponent or the length of the base word") },
+    ErrorSpec { code: "E-FPGRP-014", class: "FpGroupError", cause: Cause::Resource,    remediation: Some("the table is |G|^2 words and |G|^2 transversal traces; use permutation_group(), whose degree is |G| rather than |G|^2, or take a smaller quotient") },
     // E-CHAR — CharacterError (conjugacy classes and character tables)
     //
     // This prefix guards a surface where a wrong answer is unusually hard to

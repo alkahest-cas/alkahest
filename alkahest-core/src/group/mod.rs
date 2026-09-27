@@ -69,11 +69,17 @@
 //!   [`crate::character`], which takes a [`PermutationGroup`] as its input and
 //!   caps `|G|` because it enumerates. Modular representation theory and Brauer
 //!   characters remain unimplemented.
-//! * **Matrix groups over `GF(q)`.** `alkahest` has no finite-field type that
-//!   this module could be generic over, so a matrix group would have to invent
-//!   one. Permutation groups only.
-//! * **Group cohomology**, group extensions, and the solvable/polycyclic
-//!   machinery (`PcGroup`).
+//! * **Matrix groups over `GF(q)`** are no longer absent either, and likewise
+//!   not *here*: [`crate::matgroup`] builds a subgroup of `GL(d, q)` from
+//!   arbitrary generators over [`crate::ffield::FiniteField`], with its own
+//!   Schreier–Sims on the action on vectors. This module stays permutation-only,
+//!   and the two agree where both can answer — `MatGroup`'s tests check its order
+//!   against `permutation_action_on_vectors().order()` computed here.
+//! * **Group cohomology** in degrees 0, 1 and 2 is implemented, in
+//!   [`crate::fpgroup`], for a finite group with coefficients in a finitely
+//!   generated abelian module — not here, and not in higher degrees. Group
+//!   extensions beyond what `H²` classifies, and the solvable/polycyclic
+//!   machinery (`PcGroup`), remain unimplemented.
 //! * **Group-theoretic structure beyond the chain**: no Sylow subgroups, no
 //!   normal-closure/derived-series/composition-series computations, no subgroup
 //!   lattice, no automorphism groups, no backtrack search (set/partition

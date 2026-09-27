@@ -87,6 +87,30 @@ def test_s3_classes():
     assert all(isinstance(c.centraliser_order, int) for c in classes.classes())
 
 
+def test_conjugacy_classes_iterates_and_indexes_like_a_sequence():
+    """``for c in classes`` must stop, not raise.
+
+    With ``__len__`` and ``__getitem__`` but no ``__iter__``, Python iterates via
+    the sequence protocol, which ends only on ``IndexError``. An out-of-range
+    index used to raise ``E-CHAR-006``, so iteration raised past the last class
+    instead of finishing, and a negative index raised ``OverflowError``.
+    """
+    classes = ConjugacyClasses(symmetric(3))
+    assert len(list(classes)) == 3
+    assert [c.size for c in classes] == [1, 3, 2]
+    # Same classes, same order as `classes()` — compared by value, because
+    # ConjugacyClass has no __eq__.
+    assert [c.size for c in classes] == [c.size for c in classes.classes()]
+    assert [c.element_order for c in classes] == [c.element_order for c in classes.classes()]
+    # Negative indices count from the end, as for any sequence.
+    assert classes[-1].size == classes[2].size
+    assert classes[-3].representative.is_identity()
+    with pytest.raises(IndexError):
+        classes[3]
+    with pytest.raises(IndexError):
+        classes[-4]
+
+
 def test_class_sizes_divide_and_sum_to_the_order():
     for group in (symmetric(4), alternating(5), dihedral(6), quaternion_group()):
         classes = ConjugacyClasses(group)
@@ -378,8 +402,14 @@ def test_an_element_outside_the_group_is_refused():
 def test_out_of_range_indices_are_refused():
     classes = ConjugacyClasses(symmetric(3))
     table = CharacterTable(symmetric(3))
+    # `classes[i]` is the one exception, and deliberately so: it is the sequence
+    # protocol's `__getitem__`, which Python's own iteration drives and ends on
+    # `IndexError`. Raising E-CHAR-006 there made `for c in classes` raise past
+    # the last class instead of stopping. Every named accessor below still
+    # carries the code.
+    with pytest.raises(IndexError):
+        classes[3]
     for call in (
-        lambda: classes[3],
         lambda: classes.inverse_class(9),
         lambda: classes.class_elements(3),
         lambda: classes.multiplication_matrix(3),

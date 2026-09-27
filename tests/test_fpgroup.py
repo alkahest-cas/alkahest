@@ -76,6 +76,53 @@ def test_words_are_signed_one_based_and_freely_reduced():
     assert exc.value.code == "E-FPGRP-001"
 
 
+def test_i32_min_is_not_a_letter():
+    """A letter whose negation overflows would cancel *itself*.
+
+    ``free_reduce`` decides cancellation by ``last == -l``. ``-i32::MIN`` wraps
+    back to ``i32::MIN`` in a release build, so ``Word([i32::MIN] * 2)`` reduced
+    to the identity — a wrong answer about free-group equality, not a refusal.
+    """
+    i32_min = -(2**31)
+    with pytest.raises(FpGroupError) as exc:
+        Word([i32_min])
+    assert exc.value.code == "E-FPGRP-001"
+    # The pair is the case that used to reduce to the identity rather than raise.
+    with pytest.raises(FpGroupError) as exc:
+        Word([i32_min, i32_min])
+    assert exc.value.code == "E-FPGRP-001"
+    # One above it is a perfectly good letter.
+    assert Word([i32_min + 1]).letters == [i32_min + 1]
+
+
+def test_a_word_too_long_to_hold_is_refused_not_allocated():
+    """Exponents nest, so the cap is on the result, not on any one exponent.
+
+    ``(a*b)^100000`` is fine at 200 000 letters; raising *that* to 100 000 again
+    asks for 2*10^10 letters — 80 GB — which is ``E-FPGRP-013`` rather than an
+    allocation that aborts the interpreter.
+    """
+    long_word = Word([1, 2]) ** 100_000
+    assert len(long_word) == 200_000
+    with pytest.raises(FpGroupError) as exc:
+        long_word**100_000
+    assert exc.value.code == "E-FPGRP-013"
+    assert "letters" in str(exc.value)
+
+
+def test_a_multiplication_table_too_large_to_build_is_refused():
+    """Cubic in ``|G|``, so the cap is well below the coset cap.
+
+    ``<a | a^2000>`` enumerates happily — 2000 cosets is far inside the default
+    cap — while its table is 2000^2 words *and* 2000^2 transversal traces.
+    """
+    big = FpGroup(["a"], ["a^2000"])
+    assert big.order() == 2000
+    with pytest.raises(FpGroupError) as exc:
+        big.multiplication_table()
+    assert exc.value.code == "E-FPGRP-014"
+
+
 def test_parse_and_repr():
     g = a5()
     assert g.parse("(a*b)^5").letters == [1, 2] * 5

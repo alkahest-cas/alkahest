@@ -40,13 +40,57 @@ fn zero_is_not_a_letter() {
 }
 
 #[test]
+fn i32_min_is_not_a_letter_because_its_negation_overflows() {
+    // free_reduce, inverse and times all decide cancellation by `last == -l`.
+    // -i32::MIN wraps back to i32::MIN in release, so the letter would cancel
+    // itself and `x x` would freely reduce to the identity.
+    let e = Word::from_letters(&[i32::MIN]).unwrap_err();
+    assert_eq!(e.code(), "E-FPGRP-001");
+    assert!(Word::from_letters(&[i32::MIN, i32::MIN]).is_err());
+    assert!(Word::from_letters(&[1, i32::MIN]).is_err());
+    // The neighbouring value is a perfectly good letter.
+    assert!(Word::from_letters(&[i32::MIN + 1]).is_ok());
+}
+
+#[test]
+fn a_word_longer_than_the_cap_is_refused_before_it_is_allocated() {
+    let base = Word::from_letters(&[1, 2]).unwrap();
+    // Exponents nest: the parser caps one literal exponent at 100 000, so this
+    // is reachable in two steps and asks for 2 * 10^10 letters.
+    let long = base.pow(100_000).unwrap();
+    assert_eq!(long.len(), 200_000);
+    let e = long.pow(100_000).unwrap_err();
+    assert_eq!(e.code(), "E-FPGRP-013");
+    match e {
+        FpGroupError::WordTooLong { letters, max } => {
+            assert_eq!(letters, 200_000u128 * 100_000u128);
+            assert_eq!(max, MAX_WORD_LETTERS);
+        }
+        other => panic!("expected WordTooLong, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_multiplication_table_above_the_cap_is_refused_not_allocated() {
+    // 2000 cosets enumerate inside the default cap; the table is refused at
+    // 1024, because its cost is cubic in |G| rather than merely large.
+    let g = group(&["a"], &["a^2000"]);
+    assert_eq!(order_of(&g), Integer::from(2000));
+    let e = g.multiplication_table().unwrap_err();
+    assert_eq!(e.code(), "E-FPGRP-014");
+    // Well inside the cap, the table is still built.
+    let small = group(&["a"], &["a^6"]);
+    assert_eq!(small.multiplication_table().unwrap().len(), 6);
+}
+
+#[test]
 fn word_arithmetic_respects_the_free_group() {
     let a = Word::generator(0).unwrap();
     let b = Word::generator(1).unwrap();
     assert_eq!(a.times(&a.inverse()), Word::identity());
-    assert_eq!(a.pow(3).letters(), &[1, 1, 1]);
-    assert_eq!(a.pow(-2).letters(), &[-1, -1]);
-    assert_eq!(a.pow(0), Word::identity());
+    assert_eq!(a.pow(3).unwrap().letters(), &[1, 1, 1]);
+    assert_eq!(a.pow(-2).unwrap().letters(), &[-1, -1]);
+    assert_eq!(a.pow(0).unwrap(), Word::identity());
     // (uv)^-1 = v^-1 u^-1
     let uv = a.times(&b);
     assert_eq!(uv.inverse(), b.inverse().times(&a.inverse()));
