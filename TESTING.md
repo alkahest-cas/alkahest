@@ -218,6 +218,7 @@ Given the computational expense of fuzzing and PBT, our GitHub Actions / CI pipe
 ### Tier 2: Nightly integration (heavy matrix)
 * **Triggers**: Cron on `main` (02:00 UTC); shards run in parallel.
 * **Time Budget**: up to several hours per shard host cap.
+* **Kani** (`.github/workflows/kani.yml`, its own workflow): the full-width model-checking harnesses on every PR, all harnesses nightly — see [§7](#7-bounded-model-checking-kani).
 * **Suites** (each is a separate matrix job): deep `proptest` (`PROPTEST_CASES=50000`, `--release`), deep `hypothesis` (`HYPOTHESIS_MAX_EXAMPLES=5000`, full `pytest tests/`), TSan, LSan, Valgrind, AFL fuzz targets, “extras” (oracle file if present, `cargo bench`, benchmark report scripts), etc.
 
 ---
@@ -238,6 +239,106 @@ Use this checklist when you want **more than** `cargo test --workspace` on a bee
 | **extras** | `maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner`; `pytest tests/test_oracle.py -v` if configured; `cargo bench --workspace`; optional scripts under `benchmarks/` (may need SymPy / optional CAS; CI sets `RUN_COMMERCIAL_CAS` where applicable) |
 
 **Lean / docs / cross-platform** workflows have their own YAML files (e.g. `.github/workflows/lean.yml`, `ci-cross.yml`); run those suites locally only when you touch those areas.
+
+---
+
+## 7. Bounded model checking (Kani)
+
+[Kani](https://github.com/model-checking/kani) turns a harness into a SAT
+problem over *every* input in a stated range, so a passing harness is a proof
+for that range, not a sample. It only sees Rust: anything that reaches
+FLINT/GMP/MPFR (`rug::Integer`, `flint::*`) is out of scope, so the harnesses
+cover the pure machine-word kernels.
+
+Harnesses live in `#[cfg(kani)] mod verification { ... }` next to the code
+they check, so private helpers stay private. `build.rs` declares `cfg(kani)`
+to keep `unexpected_cfgs` quiet.
+
+```bash
+# Install (once). Kani pins its own nightly toolchain and CBMC.
+cargo install --locked kani-verifier
+cargo kani setup
+
+# Every harness in the crate (-j: one CBMC per core; needs terse output)
+cargo kani -p alkahest-cas -Z stubbing --output-format terse -j
+
+# The PR tier only: the full-width harnesses, a few minutes in all
+cargo kani -p alkahest-cas -Z stubbing --harness _full_width --output-format terse -j
+
+# One harness, with the counterexample trace if it fails
+cargo kani -p alkahest-cas -Z stubbing --harness modular::verification::mod_inverse_small_modulus
+```
+
+`-Z stubbing` is required: the compositional harnesses replace a proven
+function with its contract (e.g. `mul_mod` by "any value `< m`") so the caller
+can be checked at full width. FLINT does not need to be installed — Kani never
+links — but `build.rs`'s presence probe does run; set
+`ALKAHEST_SKIP_FLINT_CHECK=1` on a machine without it. CI runs this in
+`.github/workflows/kani.yml`: `*_full_width` harnesses on every PR, all of them
+nightly.
+
+**What is proven.** "Full width" means every value the precondition allows.
+Anything narrower says so in the harness's doc comment. Times are per-harness
+CBMC time with the default solver (CaDiCaL), measured locally with Kani 0.68.0
+running 16 harnesses at once; the whole suite took 9.5 min wall-clock.
+
+| Harness | Property | Range | Time |
+|---|---|---|---|
+| `modular::…::mul_mod_in_range_full_width` | no panic, result `< m` (lossless narrowing) | all `a, b`; `m >= 1` | 0.2 s |
+| `modular::…::mul_mod_matches_u64_small` | equals `a·b mod m` | `a, b, m < 2^8` | 61 s |
+| `modular::…::pow_mod_in_range_full_width` | no panic, ≤ 64 rounds, result `< m` (`mul_mod` stubbed by its contract) | all `base, exp`; `m >= 1` | 4.2 s |
+| `modular::…::pow_mod_exp_zero_full_width` | `x^0 = 1 mod m` (the `m = 1` bug) | all `base`; `m >= 1` | 0.1 s |
+| `modular::…::mod_inverse_special_values_full_width` | `1⁻¹ = 1`; `2⁻¹ = (m+1)/2` for odd `m` | all `m >= 3` | 209 s |
+| `modular::…::mod_inverse_in_range_large_modulus` | no panic / `i128` overflow, result `< m` | `m >= 2` all; `1 <= a < 2^4` | 552 s |
+| `modular::…::mod_inverse_small_modulus` | result `< m`; `a·inv ≡ 1` whenever `a` is invertible (incl. `a >= m`) | `2 <= m < 2^4`; `a < 2^8` | 473 s |
+| `modular::…::crt_step_u64_no_overflow_full_width` | no panic, `t < p` (inverse stubbed) | all `p >= 2`; residues `< p` | 0.6 s |
+| `modular::…::crt_step_u64_solves_congruence` | `a + m·t ≡ aᵢ (mod p)`, `t < p` | `2 <= p < 2^4` | 324 s |
+| `modular::…::modular_value_{add,sub,neg}_full_width` | exact canonical result | all `m >= 1`; values `< m` | 4 s / 15 s / 1.6 s |
+| `modular::…::modular_value_mul_in_range_full_width` | canonical result | all `m >= 1`; values `< m` | 0.7 s |
+| `modular::…::is_prime_no_panic_full_width` | no panic/overflow; each Miller–Rabin round gets `n >= 2`, `1 <= r <= 63` | every `u64` | 21 s |
+| `modular::…::miller_rabin_round_no_panic_full_width` | no panic/overflow (`pow_mod`/`mul_mod` stubbed) | `n >= 2`, `1 <= r <= 63`; `d, a` all | 3.5 s |
+| `modular::…::is_prime_small_agrees_with_trial_division` | agrees with trial division, unstubbed | `n < 2^6` | 531 s |
+| `holonomic::modular::…::{add,sub}_mod_full_width` | exact canonical result | `m <= 2^62`; values `< m` | 0.3 s each |
+| `holonomic::modular::…::index_mod_in_range_full_width` | no panic, result `< m` | all `i64`; `1 <= m <= 2^62` | 0.3 s |
+| `holonomic::modular::…::pow_mod_exp_zero_full_width` | `x^0 = 1 mod m` | all `base`; `m >= 1` | 0.1 s |
+| `holonomic::modular::…::inv_mod_small` | `Some(inv)` with `a·inv ≡ 1` iff `gcd(a, m) = 1` | `m, a < 2^4` | 115 s |
+| `holonomic::modular::…::valuation_exact_below_cap` | `v <= cap`; exact below the cap | `x, p < 2^8`; `cap <= 4` | 5.4 s |
+| `jacobian_torsion::…::{addmod,submod}_full_width` | exact canonical result | `p <= 2^63` (add), all `p` (sub); values `< p` | 0.2–0.3 s |
+| `holonomic::boundary::…::ceil_div_no_overflow_full_width` | no overflow | all `a`; all `b > 0` | 0.5 s |
+| `holonomic::boundary::…::ceil_div_exact_small` | `(q−1)·b < a <= q·b` | `-2^10 <= a <= 2^10`, `1 <= b <= 2^10` | 16 s |
+| `calculus::puiseux::…::gcd_lcm_small` | gcd divides both; lcm a common multiple `<= a·b` | `a, b < 2^5` | 17 s |
+| `simplify::rules::…::integer_sqrt_u64_is_floor_sqrt` | `⌊√n⌋`, no overflow | `n < 2^16` | 64 s |
+| `simplify::rules::…::expansion_products_saturates` | exact `m^n`, else `u64::MAX` | `m < 2^8`, `n <= 9` | 34 s |
+| `character::table::…::isqrt_is_floor_sqrt` | `⌊√n⌋` (f64 estimate + correction) | `n < 2^16` | 195 s |
+
+**What is not proven.**
+
+- That the Miller–Rabin witness sets in `is_prime` decide primality. That is a
+  number-theoretic theorem (Jaeschke; Sorenson–Webster), not a bit-level fact;
+  the harnesses show only that `is_prime` cannot panic or overflow.
+- Full-width *value* identities through a symbolic 64/128-bit divider
+  (`a·b mod m` equals its definition for all `a, b, m`, `mod_inverse_u64` for a
+  64-bit modulus and a 64-bit `a`). Neither CaDiCaL nor Kissat closed the
+  full-width `mul_mod` equality in 24–35 minutes; `--solver z3` was slower
+  than CaDiCaL on the small-range harnesses, and `--solver bitwuzla` (0.9.1)
+  reported every harness failed with zero failing checks, i.e. the back end did
+  not run. Those identities are checked on small ranges instead.
+- `pow_mod` for exponents above 0. Against repeated multiplication, `exp <= 3`
+  with `m < 2^8` did not finish in an hour; only `x^0` and panic
+  freedom/range are proven, the rest is unit-tested.
+- Anything below `rug`/FLINT: the other half of `crt_combine`, `lift_crt`,
+  `rational_reconstruction`, `reduce_mod`.
+
+**Writing a new harness.** What costs time is a division (or remainder) by a
+*symbolic* divisor: the SAT back end bit-blasts the full 64/128-bit divider
+whatever `any_where` bounds the values to, and a chain of them — Euclid,
+square-and-multiply — becomes a multiplier-equivalence problem it does not
+close. So prefer range facts (`r < m`) over value equalities at full width,
+replace an already-proven callee by its contract with `#[kani::stub]`, and
+split nested loops into separately checked functions: `is_prime`'s witness
+and squaring loops went from not finishing in 35 min to 25 s together once
+split. Name a harness `*_full_width` only if it covers the whole precondition
+and finishes in a few minutes at most; it then runs on every PR.
 
 ---
 

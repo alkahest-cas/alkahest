@@ -1643,3 +1643,107 @@ mod tests {
         assert_eq!(binomial_mod(10, -1, 7, 2).unwrap(), 0);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking (see TESTING.md § Kani)
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    fn any_modulus() -> u64 {
+        kani::any_where(|m: &u64| *m >= 1 && *m <= MAX_MODULUS)
+    }
+
+    /// Full width over the documented domain `a, b < m <= MAX_MODULUS (2^62)`:
+    /// no overflow, canonical result, and equal to `(a + b) mod m`.
+    #[kani::proof]
+    fn add_mod_full_width() {
+        let m = any_modulus();
+        let a: u64 = kani::any_where(|x: &u64| *x < m);
+        let b: u64 = kani::any_where(|x: &u64| *x < m);
+        let r = add_mod(a, b, m);
+        assert!(r < m);
+        assert!(r == a + b || r + m == a + b);
+    }
+
+    /// Full width over `a, b < m <= 2^62`: canonical result with `r + b ≡ a`.
+    #[kani::proof]
+    fn sub_mod_full_width() {
+        let m = any_modulus();
+        let a: u64 = kani::any_where(|x: &u64| *x < m);
+        let b: u64 = kani::any_where(|x: &u64| *x < m);
+        let r = sub_mod(a, b, m);
+        assert!(r < m);
+        assert!(r + b == a || r + b == a + m);
+    }
+
+    /// Full width: every `i64` index and every `1 <= m <= 2^62`. No panic,
+    /// the `m as i64` cast is lossless and the result is in `[0, m)`.
+    /// (Congruence with `n` is `rem_euclid`'s contract; restating it here
+    /// costs a second symbolic 64-bit divider for no new information.)
+    #[kani::proof]
+    fn index_mod_in_range_full_width() {
+        let n: i64 = kani::any();
+        let m = any_modulus();
+        assert!(index_mod(n, m) < m);
+    }
+
+    /// `x^0 ≡ 1 (mod m)` for every `x` and every `m >= 1`, including
+    /// `m = 1` (where the `1 % m` start matters). Larger exponents are out of
+    /// SAT's reach — see `crate::modular`'s harness of the same name.
+    #[kani::proof]
+    fn pow_mod_exp_zero_full_width() {
+        let base: u64 = kani::any();
+        let m: u64 = kani::any_where(|m: &u64| *m >= 1);
+        assert_eq!(pow_mod(base, 0, m), 1 % m);
+    }
+
+    /// `inv_mod` returns `Some(inv)` with `a·inv ≡ 1` exactly when
+    /// `gcd(a, m) = 1`, and `None` otherwise.
+    /// Bounds: `2 <= m < 2^4`, `a < 2^4` (every extended-Euclid round is
+    /// an `i128` division by a symbolic divisor; 8-bit inputs did not finish
+    /// in an hour).
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn inv_mod_small() {
+        let m: u64 = kani::any_where(|m: &u64| *m >= 2 && *m < (1 << 4));
+        let a: u64 = kani::any_where(|a: &u64| *a < (1 << 4));
+        let (mut x, mut y) = (a, m);
+        while y != 0 {
+            (x, y) = (y, x % y);
+        }
+        match inv_mod(a, m) {
+            Some(inv) => {
+                assert!(x == 1);
+                assert!(inv < m);
+                assert_eq!(a * inv % m, 1);
+            }
+            None => {
+                assert!(x != 1);
+            }
+        }
+    }
+
+    /// `valuation` never exceeds `cap`, and below the cap it is exact:
+    /// `p^v | x` and `p^(v+1) ∤ x`. Bounds: `x < 2^8`, `2 <= p < 2^8`,
+    /// `cap <= 4`.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn valuation_exact_below_cap() {
+        let x: u64 = kani::any_where(|x: &u64| *x < (1 << 8));
+        let p: u64 = kani::any_where(|p: &u64| *p >= 2 && *p < (1 << 8));
+        let cap: u32 = kani::any_where(|c: &u32| *c <= 4);
+        let v = valuation(x, p, cap);
+        assert!(v <= cap);
+        if x != 0 && v < cap {
+            let mut y = x;
+            for _ in 0..v {
+                assert_eq!(y % p, 0);
+                y /= p;
+            }
+            assert_ne!(y % p, 0);
+        }
+    }
+}

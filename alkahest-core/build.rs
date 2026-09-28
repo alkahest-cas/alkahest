@@ -22,6 +22,9 @@ fn main() {
     // is not enough to pin the calling convention — the probe below asks for
     // the 3.2-and-later entry points together.
     println!("cargo::rustc-check-cfg=cfg(flint_acb_theta)");
+    // kani: set by `cargo kani` (Kani bounded model checker) when it compiles
+    // the `#[cfg(kani)] mod verification` harnesses. See TESTING.md § Kani.
+    println!("cargo::rustc-check-cfg=cfg(kani)");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=FLINT_LIB_DIR");
     println!("cargo:rerun-if-env-changed=FLINT_INCLUDE_DIR");

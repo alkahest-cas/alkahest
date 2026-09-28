@@ -2232,3 +2232,34 @@ mod tests {
         assert_eq!(floor_rat(&Rational::from(0)), Integer::from(0));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking (see TESTING.md § Kani)
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// Full width: every `i64` numerator and every `b > 0`. No overflow —
+    /// `q + 1` is only taken when the division is inexact, so `q < i64::MAX`
+    /// (`i64::MIN / -1` cannot arise: `b > 0`).
+    #[kani::proof]
+    fn ceil_div_no_overflow_full_width() {
+        let a: i64 = kani::any();
+        let b: i64 = kani::any_where(|b: &i64| *b > 0);
+        let _ = ceil_div(a, b);
+    }
+
+    /// The result is exactly `⌈a/b⌉`: `(q − 1)·b < a <= q·b`.
+    /// Bounds: `|a| <= 2^10`, `1 <= b <= 2^10` (value checks through a
+    /// symbolic 64-bit divider are what the SAT back end finds expensive).
+    #[kani::proof]
+    fn ceil_div_exact_small() {
+        let a: i64 = kani::any_where(|a: &i64| *a >= -(1 << 10) && *a <= 1 << 10);
+        let b: i64 = kani::any_where(|b: &i64| *b >= 1 && *b <= 1 << 10);
+        let q = ceil_div(a, b);
+        assert!(q * b >= a);
+        assert!((q - 1) * b < a);
+    }
+}
