@@ -29,7 +29,9 @@ source with ``maturin``.
    # alkahest-cas = { version = "3", features = ["groebner", "parallel", "egraph"] }
 
 Requires ``libflint-dev`` / ``libgmp-dev`` / ``libmpfr-dev`` at build time (``apt-get`` or
-``brew install flint``). See `docs.rs/alkahest-cas <https://docs.rs/alkahest-cas>`_ for the
+``brew install flint``), with GMP ≥ 6.3 and MPFR ≥ 4.2 for the default ``system-gmp`` feature,
+which links rug against the same GMP as FLINT (``default-features = false`` falls back to a
+bundled GMP on older distributions). See `docs.rs/alkahest-cas <https://docs.rs/alkahest-cas>`_ for the
 full Rust API reference.
 
 For optional Cargo features (``jit``, ``parallel``, ``cuda``, …) and full developer setup, see the

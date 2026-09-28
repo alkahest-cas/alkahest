@@ -10,6 +10,13 @@ description: >
   FLINT the theta tests would pass without executing anything. This action is
   what keeps that from happening.
 
+  It also guarantees GMP >= 6.3 and MPFR >= 4.2. The crate's default
+  `system-gmp` feature links rug against the system libgmp/libmpfr (the same
+  ones FLINT uses), and gmp-mpfr-sys refuses anything older. Ubuntu 24.04's
+  apt packages qualify (6.3.0 / 4.2.1); 22.04's (6.2.1 / 4.1.0) do not, so on
+  such a runner pinned GMP/MPFR are built into the same prefix *first* and
+  FLINT is configured against them — one GMP for FLINT and rug alike.
+
 inputs:
   version:
     description: FLINT release to build (must be >= 3.2 for genus-g theta).
@@ -24,14 +31,48 @@ runs:
       run: |
         set -euo pipefail
         sudo apt-get update
-        sudo apt-get install -y libgmp-dev libmpfr-dev
+        sudo apt-get install -y libgmp-dev libmpfr-dev m4
+
+    # The prefix below is cached, so the key has to separate runner images:
+    # a prefix built on 22.04 carries its own GMP, one built on 24.04 does not.
+    - name: Decide whether apt's GMP/MPFR are new enough
+      id: gmp
+      shell: bash
+      run: |
+        set -euo pipefail
+        ver() { dpkg-query -W -f='${Version}' "$1" | sed -E 's/^[0-9]+://; s/[+~-].*//'; }
+        gmp=$(ver libgmp-dev); mpfr=$(ver libmpfr-dev)
+        echo "apt GMP $gmp, MPFR $mpfr (need >= 6.3 / >= 4.2)"
+        if dpkg --compare-versions "$gmp" ge 6.3 && dpkg --compare-versions "$mpfr" ge 4.2; then
+          echo "build=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "build=true" >> "$GITHUB_OUTPUT"
+        fi
+        echo "os=$(. /etc/os-release && echo "$ID-$VERSION_ID")" >> "$GITHUB_OUTPUT"
 
     - name: Restore cached FLINT
       id: cache
       uses: actions/cache@v4
       with:
         path: ~/.local/flint
-        key: flint-${{ inputs.version }}-${{ runner.os }}-${{ runner.arch }}
+        key: flint-${{ inputs.version }}-gmp${{ steps.gmp.outputs.build == 'true' && '-6.3.0-mpfr-4.2.2' || '-apt' }}-${{ steps.gmp.outputs.os }}-${{ runner.arch }}
+
+    - name: Build GMP 6.3.0 + MPFR 4.2.2 (apt's are too old)
+      if: steps.cache.outputs.cache-hit != 'true' && steps.gmp.outputs.build == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        prefix="$HOME/.local/flint"
+        cd /tmp
+        curl -fsSLO https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz
+        curl -fsSLO https://ftp.gnu.org/gnu/mpfr/mpfr-4.2.2.tar.xz
+        sha256sum -c - <<'SUMS'
+        a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898  gmp-6.3.0.tar.xz
+        b67ba0383ef7e8a8563734e2e889ef5ec3c3b898a01d00fa0a6869ad81c6ce01  mpfr-4.2.2.tar.xz
+        SUMS
+        tar xf gmp-6.3.0.tar.xz && tar xf mpfr-4.2.2.tar.xz
+        ( cd gmp-6.3.0 && ./configure --prefix="$prefix" --enable-shared --disable-static && make -j"$(nproc)" && make install )
+        ( cd mpfr-4.2.2 && ./configure --prefix="$prefix" --with-gmp="$prefix" --enable-shared --disable-static && make -j"$(nproc)" && make install )
 
     - name: Build FLINT ${{ inputs.version }}
       if: steps.cache.outputs.cache-hit != 'true'
@@ -43,7 +84,12 @@ runs:
         curl -fsSL "https://github.com/flintlib/flint/releases/download/v${{ inputs.version }}/flint-${{ inputs.version }}.tar.gz" \
           | tar xz -C /tmp
         cd "/tmp/flint-${{ inputs.version }}"
-        ./configure --prefix="$HOME/.local/flint" --disable-static
+        prefix="$HOME/.local/flint"
+        with_gmp=()
+        if [ "${{ steps.gmp.outputs.build }}" = true ]; then
+          with_gmp=(--with-gmp="$prefix" --with-mpfr="$prefix")
+        fi
+        ./configure --prefix="$prefix" --disable-static "${with_gmp[@]}"
         make -j"$(nproc)"
         make install
 
@@ -55,6 +101,12 @@ runs:
         echo "FLINT_LIB_DIR=$prefix/lib"          >> "$GITHUB_ENV"
         echo "FLINT_INCLUDE_DIR=$prefix/include"  >> "$GITHUB_ENV"
         echo "LD_LIBRARY_PATH=$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+        # gmp-mpfr-sys (use-system-libs) probes GMP/MPFR with a bare
+        # `cc probe.c -lgmp`, which honours only the compiler's default paths
+        # and these two variables. Prepending the prefix makes a source-built
+        # GMP win over an older apt one; with apt's GMP it is a no-op.
+        echo "CPATH=$prefix/include${CPATH:+:$CPATH}"                    >> "$GITHUB_ENV"
+        echo "LIBRARY_PATH=$prefix/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"   >> "$GITHUB_ENV"
 
     - name: Report what the build will actually see
       shell: bash
@@ -62,6 +114,7 @@ runs:
         set -euo pipefail
         lib="$HOME/.local/flint/lib/libflint.so"
         echo "FLINT version: $(grep -m1 'define FLINT_VERSION ' "$HOME/.local/flint/include/flint/flint.h" || echo unknown)"
+        echo "FLINT links: $(ldd "$lib" | grep -E 'libgmp|libmpfr' | tr -s ' \t' ' ' | tr '\n' ';')"
         # These two probes mirror build.rs exactly. Printing them means a
         # stubbed `theta` module is visible in the log instead of being
         # inferred from a suspiciously fast, suspiciously green test run.

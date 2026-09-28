@@ -19260,6 +19260,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_is_cancelled, m)?)?;
     // V1-15: compile-time flag so Python tests can skip egraph-dependent assertions.
     m.add("HAS_EGRAPH", cfg!(feature = "egraph"))?;
+    // `system-gmp`: rug and FLINT share one libgmp, so `gmp_live_bytes()` and
+    // `Budget(max_bytes=...)` also see FLINT's bignum allocations. Lets the
+    // test that pins this skip on a bundled-GMP (opt-out) build.
+    m.add("GMP_SHARED_WITH_FLINT", cfg!(feature = "system-gmp"))?;
     // P1 search-plumbing item 6: versioned DerivedResult.to_dict/to_json envelope.
     m.add("RESULT_SCHEMA_VERSION", RESULT_SCHEMA_VERSION)?;
     m.add("STEPS_SCHEMA_VERSION", STEPS_SCHEMA_VERSION)?;

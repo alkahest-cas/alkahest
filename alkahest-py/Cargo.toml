@@ -10,7 +10,12 @@ name = "alkahest"
 crate-type = ["cdylib"]
 
 [features]
-default = ["egraph", "groebner"]
+default = ["egraph", "groebner", "system-gmp"]
+# Share the system libgmp/libmpfr with FLINT (one GMP in the process); see the
+# feature of the same name in alkahest-core/Cargo.toml. On a distribution older
+# than GMP 6.3 / MPFR 4.2, opt out with
+# `maturin build --no-default-features --features "egraph groebner"`.
+system-gmp = ["alkahest-core/system-gmp"]
 egraph = ["alkahest-core/egraph"]
 jit = ["alkahest-core/jit"]
 cranelift = ["alkahest-core/cranelift"]
@@ -29,8 +34,14 @@ cuda = ["alkahest-core/cuda"]
 pyo3-build-config = "0.21"
 
 [dependencies]
-alkahest-core = { path = "../alkahest-core", package = "alkahest-cas" }
+# default-features = false so `system-gmp` (an alkahest-core default) can be
+# switched off from here; this crate's own `default` list re-selects it, and
+# `groebner` was already forwarded explicitly.
+alkahest-core = { path = "../alkahest-core", package = "alkahest-cas", default-features = false }
 pyo3.workspace = true
-rug = { version = "1", features = ["integer", "rational"] }
+# default-features = false keeps rug's `complex` (and with it gmp-mpfr-sys's
+# `mpc`, i.e. a system libmpc under `system-gmp`) out of the build; see
+# alkahest-core/Cargo.toml.
+rug = { version = "1", default-features = false, features = ["std", "integer", "rational"] }
 
 [dev-dependencies]

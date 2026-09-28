@@ -47,6 +47,11 @@ jobs:
           # path (/usr/local/lib) so rust-lld can always resolve -lflint.
           RUSTFLAGS: "-L/usr/local/lib -L/usr/lib -L/usr/lib64"
           PKG_CONFIG_PATH: "/usr/local/lib/pkgconfig:/usr/lib64/pkgconfig"
+          # gmp-mpfr-sys (the default `system-gmp` feature) probes GMP/MPFR
+          # with a bare `gcc probe.c -lgmp`; gcc searches /usr/local/include
+          # by default but not /usr/local/lib. Also exported in the
+          # before-script, in case the container does not inherit it.
+          LIBRARY_PATH: "/usr/local/lib"
         with:
           command: build
           # Explicit CPython list — --find-interpreter also picks up PyPy and
@@ -63,13 +68,43 @@ jobs:
             # when they are missing. A wheel built against an older FLINT would
             # therefore ship with theta quietly absent rather than failing to
             # build, so the version is pinned here and not negotiated.
+            #
+            # GMP and MPFR are source-built for the same reason, and *before*
+            # FLINT so FLINT links them: the default `system-gmp` feature makes
+            # rug use the system libgmp/libmpfr (one GMP shared with FLINT),
+            # and gmp-mpfr-sys requires GMP >= 6.3 / MPFR >= 4.2, while
+            # AlmaLinux 8's gmp-devel / mpfr-devel are 6.1 / 3.1. The dnf
+            # -devel packages are deliberately NOT installed, so no older
+            # gmp.h or libgmp.so can shadow these. (The 6.1 *runtime* stays —
+            # the compiler itself needs it — hence the ld.so.conf entry below,
+            # which puts /usr/local/lib ahead of it for the loader and for
+            # maturin's auditwheel pass.)
             set -euo pipefail
-            dnf install -y gmp-devel mpfr-devel make gcc
+            dnf install -y make gcc m4 xz
+            export LIBRARY_PATH=/usr/local/lib
+            # No bare `cd`: the maturin command runs after this script in the
+            # same shell, from the checkout.
+            curl -fsSL -o /tmp/gmp-6.3.0.tar.xz https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz
+            curl -fsSL -o /tmp/mpfr-4.2.2.tar.xz https://ftp.gnu.org/gnu/mpfr/mpfr-4.2.2.tar.xz
+            printf '%s  %s\n' \
+              a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898 /tmp/gmp-6.3.0.tar.xz \
+              b67ba0383ef7e8a8563734e2e889ef5ec3c3b898a01d00fa0a6869ad81c6ce01 /tmp/mpfr-4.2.2.tar.xz \
+              | sha256sum -c -
+            tar xf /tmp/gmp-6.3.0.tar.xz -C /tmp && tar xf /tmp/mpfr-4.2.2.tar.xz -C /tmp
+            ( cd /tmp/gmp-6.3.0 && ./configure --prefix=/usr/local --enable-shared --disable-static && make -j"$(nproc)" && make install )
+            ( cd /tmp/mpfr-4.2.2 && ./configure --prefix=/usr/local --with-gmp=/usr/local --enable-shared --disable-static && make -j"$(nproc)" && make install )
+            echo /usr/local/lib > /etc/ld.so.conf.d/00-usr-local.conf
+            ldconfig
+            export LD_LIBRARY_PATH=/usr/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
             curl -fsSL \
               https://github.com/flintlib/flint/releases/download/v3.5.0/flint-3.5.0.tar.gz \
               | tar xz -C /tmp
-            ( cd /tmp/flint-3.5.0 && ./configure --prefix=/usr/local --disable-static && make -j"$(nproc)" && make install )
-            ldconfig /usr/local/lib
+            ( cd /tmp/flint-3.5.0 && ./configure --prefix=/usr/local --with-gmp=/usr/local --with-mpfr=/usr/local --disable-static && make -j"$(nproc)" && make install )
+            ldconfig
+            # One GMP: FLINT must resolve the libgmp just built, not the 6.1 runtime.
+            ldd /usr/local/lib/libflint.so | grep -E 'libgmp|libmpfr'
+            ldd /usr/local/lib/libflint.so | grep -q '/usr/local/lib/libgmp.so' \
+              || { echo 'libflint does not resolve /usr/local/lib/libgmp.so'; exit 1; }
             # Fail the wheel build loudly if theta would be stubbed.
             nm -D --defined-only /usr/local/lib/libflint.so | grep -q ' T acb_theta_ql_exact$' \
               || { echo 'FLINT lacks acb_theta_ql_exact; theta would ship stubbed'; exit 1; }
@@ -330,7 +365,14 @@ jobs:
 
       - name: Install system deps (macOS)
         if: runner.os == 'macOS'
-        run: brew install flint
+        run: |
+          brew install flint
+          # `system-gmp` (default): rug links Homebrew's gmp/mpfr, the ones
+          # flint uses. gmp-mpfr-sys probes with a bare `cc … -lgmp` and Apple
+          # clang does not search /opt/homebrew — see ci-cross.yml.
+          gmp=$(brew --prefix gmp); mpfr=$(brew --prefix mpfr)
+          echo "CPATH=$gmp/include:$mpfr/include${CPATH:+:$CPATH}" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=$gmp/lib:$mpfr/lib${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
 
       - name: Set up MSYS2 (Windows)
         if: runner.os == 'Windows'
@@ -341,8 +383,12 @@ jobs:
           # path-type: inherit lets the MSYS2 shell see Windows PATH so cargo,
           # rustup, and Python (installed by setup-python) are reachable.
           path-type: inherit
-          # base-devel pulls in m4, autoconf, automake, libtool, make — all
-          # required by gmp-mpfr-sys's bundled GMP/MPFR configure scripts.
+          # pkg-config is required: with the default `system-gmp` feature,
+          # gmp-mpfr-sys finds MSYS2's libgmp via `pkg-config gmp` and links
+          # it (the same one FLINT uses) instead of compiling its own.
+          # base-devel (m4, autoconf, make, …) is only needed if a build falls
+          # back to the bundled GMP/MPFR (--no-default-features); kept so that
+          # fallback still works here.
           install: >-
             base-devel
             mingw-w64-x86_64-gcc
@@ -370,8 +416,9 @@ jobs:
 
       - name: Build wheel (Windows)
         if: runner.os == 'Windows'
-        # msys2 {0} runs inside the MINGW64 shell where gcc, sh, and the
-        # gmp-mpfr-sys configure script's ${host}-gcc are all on PATH. The
+        # msys2 {0} runs inside the MINGW64 shell where gcc, sh, pkg-config and
+        # /mingw64/bin's DLLs (gmp-mpfr-sys runs its system-GMP probe binary)
+        # are all on PATH. The
         # previous Git-bash approach only set PATH in the outer shell, so the
         # build script's `sh -c "configure ..."` couldn't find the compiler.
         shell: msys2 {0}

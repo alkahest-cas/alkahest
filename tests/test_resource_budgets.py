@@ -191,6 +191,38 @@ def test_gmp_accounting_is_installed_and_counts(pool):
     assert before >= 0
 
 
+@pytest.mark.skipif(
+    not getattr(ak.alkahest, "GMP_SHARED_WITH_FLINT", False),
+    reason="bundled-GMP build (system-gmp feature off): FLINT uses a different GMP",
+)
+def test_gmp_accounting_counts_flint_bignums(pool):
+    """FLINT's ``fmpz`` bignums are counted, not just rug's.
+
+    Before the ``system-gmp`` build the extension carried a private static GMP
+    for rug and linked the system libgmp for FLINT, so the accounting hooks
+    were installed in one copy while FLINT allocated from the other: a
+    polynomial holding a ~1 MB coefficient left ``gmp_live_bytes()`` flat.
+    The coefficient here is computed and held entirely inside FLINT
+    (``fmpz_poly_pow`` on a constant), so no rug allocation can stand in for it.
+    """
+    native = ak.alkahest
+    x = pool.symbol("x")
+    three = ak.UniPoly.from_coefficients([3], x)
+    last = ""
+    # The counter is process-wide; retry a few times in case another thread's
+    # GMP traffic lands between the two reads.
+    for _ in range(8):
+        before = native.gmp_live_bytes()
+        big = three**5_000_000  # 3^5e6: ~7.9 Mbit, ~1 MB of limbs
+        during = native.gmp_live_bytes()
+        del big
+        after = native.gmp_live_bytes()
+        if during - before > 500_000 and after < during:
+            return
+        last = f"{before} -> {during} -> {after}"
+    pytest.fail(f"FLINT bignum allocation not seen by GMP accounting: {last}")
+
+
 # ---------------------------------------------------------------------------
 # #10 — q_zeilberger's resource ceiling
 # ---------------------------------------------------------------------------

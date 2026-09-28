@@ -188,6 +188,37 @@
   caches a pinned release, prints which probe symbols are present, and the
   wheel build now fails loudly if `acb_theta_ql_exact` is absent.
 
+- **One GMP per process: rug now links the system libgmp/libmpfr that FLINT
+  uses.** The extension used to carry *two* GMPs — a static copy that
+  `gmp-mpfr-sys` compiled from source for rug, and the shared libgmp FLINT
+  links — and GMP's allocation hooks are per copy. `Budget(max_bytes=...)` and
+  the address-space guard therefore counted only rug's limbs: a polynomial
+  holding a megabyte-sized FLINT coefficient left `gmp_live_bytes()` flat.
+  The new `system-gmp` feature (on by default in both `alkahest-cas` and the
+  Python wheel) enables `gmp-mpfr-sys/use-system-libs`, so FLINT's `fmpz`
+  bignums are now counted too (`tests/test_resource_budgets.py` pins it). It
+  also drops the minutes-long GMP/MPFR compile from every clean build and the
+  statically linked LGPL GMP from the wheel. Memory FLINT takes through
+  `flint_malloc` (Arb/Acb mantissas, `nmod` buffers) is still not counted.
+
+  **Source builds now need GMP ≥ 6.3 and MPFR ≥ 4.2** headers and libraries —
+  `gmp-mpfr-sys` refuses anything older. Ubuntu 24.04, Debian 13, Fedora,
+  Homebrew and MSYS2 qualify; **Ubuntu 22.04 and Debian 12 do not** (GMP 6.2).
+  There, build with `--no-default-features --features "egraph groebner"` (or
+  `default-features = false` from Cargo) to fall back to the bundled GMP, or
+  build GMP/MPFR into a prefix first. Homebrew users must export
+  `CPATH`/`LIBRARY_PATH` for the `gmp` and `mpfr` kegs, because
+  `gmp-mpfr-sys` probes with a bare `cc … -lgmp`. `*-windows-msvc` targets are
+  not supported by the feature (the Windows wheel is MinGW, and needs
+  `pkg-config`). docs.rs builds with `no-default-features`, so the published
+  API docs are unaffected. rug's unused `complex` feature (and with it any
+  need for MPC) is dropped.
+
+  The manylinux wheel job now source-builds pinned GMP 6.3.0 / MPFR 4.2.2
+  (sha256-checked) before FLINT, since AlmaLinux 8 ships 6.1 / 3.1, and
+  `setup-flint` does the same on any Ubuntu runner whose apt packages are too
+  old (the 22.04 Lean job).
+
 - **`capabilities()["features"]` gains `arb_backend` and `riemann_theta`.**
   Neither is a Cargo feature; both are probed from `libflint`. They satisfy
   the same falsifiability rule the v3 contract applied when it *removed* two

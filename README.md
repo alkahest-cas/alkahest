@@ -129,6 +129,12 @@ Required to enable optional features (`jit`, `cuda`) or for development. The `gr
   ```
 
   Both variables are also used for FLINT version detection, so a locally built FLINT 3 is recognised as FLINT 3. `ALKAHEST_SKIP_FLINT_CHECK=1` bypasses the presence probe if FLINT is reachable by a route it does not cover. If you do not need a source build at all, the prebuilt PyPI wheels already have FLINT linked in.
+- **GMP ≥ 6.3 and MPFR ≥ 4.2** (headers + libraries; FLINT's own dependencies): `apt install libgmp-dev libmpfr-dev` · `dnf install gmp-devel mpfr-devel` · Homebrew and MSYS2 get them with `flint`.
+
+  The default `system-gmp` feature links rug against these same libraries, so the process has one GMP shared with FLINT (which is what lets `Budget(max_bytes=...)` see FLINT's bignums) and nothing is compiled from GMP source. Its probe runs a bare `cc … -lgmp`, so the libraries must be on the compiler's default search path:
+  - **Homebrew:** `export CPATH=$(brew --prefix gmp)/include:$(brew --prefix mpfr)/include LIBRARY_PATH=$(brew --prefix gmp)/lib:$(brew --prefix mpfr)/lib`
+  - **User-local prefix:** the same two variables pointing at `$PREFIX/include` / `$PREFIX/lib` (plus `LD_LIBRARY_PATH` at run time); build FLINT against that prefix too (`./configure --with-gmp=$PREFIX --with-mpfr=$PREFIX`) so there really is only one.
+  - **Older distributions** (Ubuntu 22.04, Debian 12 — GMP 6.2) or `*-windows-msvc`: opt out with `--no-default-features --features "egraph groebner …"`, which falls back to a bundled, statically linked GMP/MPFR compiled from source (slower build, and FLINT's allocations are then invisible to `max_bytes`).
 
 ```bash
 # Install dev tools (maturin, pytest, ruff, ty, …) without building the Rust extension:
@@ -144,7 +150,7 @@ pip install maturin
 maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph jit groebner"
 ```
 
-Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_par`), `egraph` (vendored egglog backend; **default** in PyPI wheels), `groebner` (Gröbner solver + Diophantine + homotopy; **default** in both the Rust crate and PyPI wheels), `cranelift` (pure-Rust Tier-1 JIT), `jit` (LLVM JIT), `cuda` (NVPTX codegen — needs LLVM 21 with the NVPTX target; adds `compile_cuda`), `groebner-cuda` (CUDA Macaulay-matrix kernel — needs only `cudarc`, and is a Rust-crate entry point that no Python call reaches). Neither GPU feature is in any published wheel: see the [GPU guide](docs/mdbook/src/gpu.md).
+Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_par`), `egraph` (vendored egglog backend; **default** in PyPI wheels), `groebner` (Gröbner solver + Diophantine + homotopy; **default** in both the Rust crate and PyPI wheels), `system-gmp` (rug links the system GMP/MPFR that FLINT uses; **default** everywhere — see the GMP prerequisite above), `cranelift` (pure-Rust Tier-1 JIT), `jit` (LLVM JIT), `cuda` (NVPTX codegen — needs LLVM 21 with the NVPTX target; adds `compile_cuda`), `groebner-cuda` (CUDA Macaulay-matrix kernel — needs only `cudarc`, and is a Rust-crate entry point that no Python call reaches). Neither GPU feature is in any published wheel: see the [GPU guide](docs/mdbook/src/gpu.md).
 
 ### Rust crate
 
@@ -164,9 +170,11 @@ alkahest-cas = "3"
 # Debian / Ubuntu
 sudo apt-get install -y libflint-dev libgmp-dev libmpfr-dev
 
-# macOS
+# macOS (and export CPATH / LIBRARY_PATH for the gmp and mpfr kegs — see above)
 brew install flint
 ```
+
+GMP must be ≥ 6.3 and MPFR ≥ 4.2 for the default `system-gmp` feature (rug shares FLINT's libgmp). On an older distribution use `alkahest-cas = { version = "3", default-features = false, features = ["groebner"] }` to fall back to a bundled GMP.
 
 The `jit` feature additionally requires LLVM 21 dev headers (`apt install llvm-21-dev` / `brew install llvm@21`). A self-contained runnable example is in [`examples/rust_quickstart/`](examples/rust_quickstart/).
 
