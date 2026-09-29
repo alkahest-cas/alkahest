@@ -916,18 +916,9 @@ fn qp_divmod(a: &QPoly, b: &QPoly) -> Option<(QPoly, QPoly)> {
     Some((qp_trim(q), r))
 }
 
-/// Monic gcd over `ℚ`.
+/// Monic gcd over `ℚ` (`[0]` for `gcd(0, 0)`, this module's zero).
 fn qp_gcd(a: &QPoly, b: &QPoly) -> QPoly {
-    let mut x = qp_trim(a.clone());
-    let mut y = qp_trim(b.clone());
-    while !qp_is_zero(&y) {
-        let Some((_, r)) = qp_divmod(&x, &y) else {
-            break;
-        };
-        x = y;
-        y = qp_trim(r);
-    }
-    qp_monic(&x)
+    qp_trim(crate::flint::qgcd::qpoly_gcd_monic(a, b))
 }
 
 /// Yun's squarefree decomposition: returns `[f_1, f_2, …]` with

@@ -658,6 +658,10 @@ extern "C" {
     /// Row-style Hermite normal form (no transform matrix).
     pub fn fmpz_mat_hnf(h: *mut FmpzMatStruct, a: *const FmpzMatStruct);
 
+    // --- perf/flint-gcd-det: exact rational rref via fraction-free fmpz_mat ---
+    /// `B = den · rref(A)`; returns the rank. `B` must have `A`'s shape.
+    pub fn fmpz_mat_rref(b: *mut FmpzMatStruct, den: *mut fmpz, a: *const FmpzMatStruct) -> slong;
+
     // -----------------------------------------------------------------------
     // fmpz_lll — Lenstra–Lenstra–Lovász basis reduction
     // -----------------------------------------------------------------------

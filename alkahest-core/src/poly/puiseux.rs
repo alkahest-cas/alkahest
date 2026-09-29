@@ -1838,23 +1838,9 @@ fn is_squarefree_q(f: &[Rational]) -> bool {
     g.len() <= 1
 }
 
-/// Monic `ℚ`-GCD (ascending) via the Euclidean algorithm.
+/// Monic `ℚ`-GCD (ascending); the empty vector for `gcd(0, 0)`.
 fn q_gcd(a: &[Rational], b: &[Rational]) -> Vec<Rational> {
-    let mut a = trim_q(a.to_vec());
-    let mut b = trim_q(b.to_vec());
-    while !b.is_empty() {
-        let r = q_rem(&a, &b);
-        a = b;
-        b = trim_q(r);
-    }
-    if let Some(lc) = a.last().cloned() {
-        if lc != 0 {
-            for c in a.iter_mut() {
-                *c /= &lc;
-            }
-        }
-    }
-    a
+    crate::flint::qgcd::qpoly_gcd_monic(a, b)
 }
 
 /// The compositum `K' = ℚ(θ')`, `θ' = θ + λ·z`, of `K = ℚ[t]/(nf.modulus())` and a
