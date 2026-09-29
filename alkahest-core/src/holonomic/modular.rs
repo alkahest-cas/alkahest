@@ -1746,4 +1746,33 @@ mod verification {
             assert_ne!(y % p, 0);
         }
     }
+
+    /// Every base `p >= 2` (callers pass primes) and every `u32` exponent:
+    /// no panic or `u128` overflow, at most 63 rounds before `None`, and a
+    /// `Some` is at most `MAX_MODULUS` — so every modulus built from it is in
+    /// the range the `*_mod` kernels above are proven for.
+    #[kani::proof]
+    #[kani::unwind(64)]
+    fn prime_power_in_range_full_width() {
+        let p: u64 = kani::any_where(|p: &u64| *p >= 2);
+        let e: u32 = kani::any();
+        if let Some(v) = prime_power(p, e) {
+            assert!(v >= 1 && v <= MAX_MODULUS);
+            assert!(e <= 62);
+        }
+    }
+
+    /// `prime_power(p, e) = p^e` when it fits, `None` exactly when
+    /// `p^e > 2^62`. Bounds: `2 <= p < 2^8`, `e <= 8`.
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn prime_power_exact_small() {
+        let p: u64 = kani::any_where(|p: &u64| *p >= 2 && *p < (1 << 8));
+        let e: u32 = kani::any_where(|e: &u32| *e <= 8);
+        let exact = (p as u128).pow(e);
+        match prime_power(p, e) {
+            Some(v) => assert_eq!(v as u128, exact),
+            None => assert!(exact > MAX_MODULUS as u128),
+        }
+    }
 }

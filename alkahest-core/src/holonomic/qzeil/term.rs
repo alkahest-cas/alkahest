@@ -1074,7 +1074,7 @@ fn divisibility(u: &Affine, d: i64) -> Divisibility {
             Divisibility::Never
         };
     }
-    let g = gcd_i64(gcd_i64(u.cn.abs(), u.ck.abs()), d.abs());
+    let g = gcd_i64(gcd_i64(u.cn, u.ck), d);
     if g != 0 && u.c0 % g != 0 {
         Divisibility::Never
     } else {
@@ -1094,15 +1094,7 @@ fn divide_form(u: &Affine, d: i64) -> Option<Lin> {
     }
 }
 
-fn gcd_i64(a: i64, b: i64) -> i64 {
-    let (mut a, mut b) = (a.abs(), b.abs());
-    while b != 0 {
-        let t = a % b;
-        a = b;
-        b = t;
-    }
-    a
-}
+use crate::modular::gcd_i64;
 
 fn affine_lin(a: &Affine) -> Lin {
     Lin {

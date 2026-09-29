@@ -3,6 +3,10 @@
 // `-D warnings` this newly fails the build.  Allow it crate-wide (toolchain
 // adaptation; idiomatic `?` rewrites can follow as a separate cleanup).
 #![allow(clippy::question_mark)]
+// Kani loop contracts (`#[cfg_attr(kani, kani::loop_invariant(..))]` on a
+// `while`) are attribute macros on a statement; Kani builds with its own
+// nightly, so these gates only ever apply under `cargo kani`. TESTING.md § 7.
+#![cfg_attr(kani, feature(stmt_expr_attributes, proc_macro_hygiene))]
 
 pub mod acausal;
 pub mod algebra;

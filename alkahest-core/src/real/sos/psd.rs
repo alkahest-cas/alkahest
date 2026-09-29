@@ -1837,3 +1837,26 @@ mod diag {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking (see TESTING.md § 7)
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::pack_len;
+
+    /// Every `n < 2^32` (an `n × n` Gram matrix past that is not
+    /// allocatable): `n(n+1)` does not overflow, and the result is the exact
+    /// triangular number, i.e. the packed upper triangle has `n` more entries
+    /// than the one for `n − 1`.
+    #[kani::proof]
+    fn pack_len_exact_full_width() {
+        let n: usize = kani::any_where(|n: &usize| *n < (1 << 32));
+        let l = pack_len(n);
+        assert_eq!(l as u128 * 2, n as u128 * (n as u128 + 1));
+        if n >= 1 {
+            assert_eq!(l, pack_len(n - 1) + n);
+        }
+    }
+}

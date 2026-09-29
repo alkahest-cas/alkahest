@@ -326,6 +326,12 @@ fn radical_core(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<(ExprId, u
     Some((base, n))
 }
 
+/// `lcm(a, b)`, or `None` when it overflows `usize` (or `a = b = 0`).
+///
+/// The product is checked: `(a / g) * b` used to wrap, so that e.g.
+/// `lcm(3, 6148914691236517207)` came out as `5` and passed the caller's
+/// `<= 12` screen — a radical `g^(1/d)` with a huge `d` next to a `g^(1/3)`
+/// was then substituted as `g = t^5`.
 fn lcm(a: usize, b: usize) -> Option<usize> {
     fn gcd(a: usize, b: usize) -> usize {
         if b == 0 {
@@ -334,7 +340,7 @@ fn lcm(a: usize, b: usize) -> Option<usize> {
             gcd(b, a % b)
         }
     }
-    a.checked_div(gcd(a, b)).map(|q| q * b)
+    a.checked_div(gcd(a, b))?.checked_mul(b)
 }
 
 fn scan_radicals(expr: ExprId, var: ExprId, pool: &ExprPool, out: &mut Vec<(usize, ExprId)>) {
@@ -710,6 +716,19 @@ fn eval_poly(coeffs: &[f64], x: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lcm_does_not_wrap() {
+        use super::lcm;
+        assert_eq!(lcm(4, 6), Some(12));
+        assert_eq!(lcm(1, 7), Some(7));
+        assert_eq!(lcm(0, 5), Some(0));
+        assert_eq!(lcm(0, 0), None);
+        // (3 / 1) · 6148914691236517207 = 2^64 + 5: wrapped to 5 before.
+        assert_eq!(lcm(3, 6_148_914_691_236_517_207), None);
+        assert_eq!(lcm(4, 4_611_686_018_427_387_907), None);
+        assert_eq!(lcm(2, usize::MAX / 2), Some(usize::MAX - 1));
+    }
+
     use super::*;
 
     fn setup() -> (ExprPool, ExprId) {
@@ -905,5 +924,44 @@ mod tests {
             }
             other => panic!("expected a rigorous enclosure, got {other:?}"),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking (see TESTING.md § 7)
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::lcm;
+
+    /// The caller's precondition — `a` is the running lcm, capped at 12 —
+    /// and every `usize` degree `b`: no panic, and a `Some` is a genuine
+    /// common multiple `>= max(a, b)`, so a wrapped product can no longer
+    /// slip under the caller's `<= 12` screen. Exactness (least) is checked
+    /// on `a, b < 2^5`.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn lcm_no_wrap_full_width() {
+        let a: usize = kani::any_where(|a: &usize| *a <= 12);
+        let b: usize = kani::any();
+        if let Some(l) = lcm(a, b) {
+            if a != 0 && b != 0 {
+                assert!(l >= a && l >= b);
+                assert!(l % a == 0);
+            }
+        }
+    }
+
+    /// `lcm(a, b)` is the least common multiple. Bounds: `1 <= a, b < 2^5`.
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn lcm_is_least_small() {
+        let a: usize = kani::any_where(|a: &usize| *a >= 1 && *a < 32);
+        let b: usize = kani::any_where(|b: &usize| *b >= 1 && *b < 32);
+        let l = lcm(a, b).unwrap();
+        assert!(l % a == 0 && l % b == 0);
+        let c: usize = kani::any_where(|c: &usize| *c >= 1 && *c < l);
+        assert!(c % a != 0 || c % b != 0);
     }
 }

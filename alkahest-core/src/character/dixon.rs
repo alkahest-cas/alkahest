@@ -56,9 +56,13 @@ pub(super) fn inv_mod(a: u64, p: u64) -> Result<u64, CharacterError> {
 pub(super) fn distinct_prime_factors(mut n: u64) -> Vec<u64> {
     let mut out = Vec::new();
     let mut d = 2u64;
-    while d * d <= n {
+    // `d <= n / d`, not `d * d <= n`: the square wraps once `d` reaches
+    // `2^32` (a prime cofactor above `(2^32 − 1)^2`).
+    #[cfg_attr(kani, kani::loop_invariant(d >= 2))]
+    while d <= n / d {
         if n % d == 0 {
             out.push(d);
+            #[cfg_attr(kani, kani::loop_invariant(d >= 2 && n >= 1))]
             while n % d == 0 {
                 n /= d;
             }
@@ -376,4 +380,23 @@ pub(super) fn common_eigenvectors(
         out.push(entries(part)?);
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking (see TESTING.md § 7)
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::distinct_prime_factors;
+
+    /// Every `u64`: no panic or overflow in the trial division, whose two
+    /// loops are checked once each through their invariants
+    /// (`-Z loop-contracts`) instead of being unrolled. `d * d <= n` used to
+    /// wrap for a prime cofactor above `(2^32 − 1)^2`.
+    #[kani::proof]
+    fn distinct_prime_factors_no_overflow_full_width() {
+        let n: u64 = kani::any();
+        let _ = distinct_prime_factors(n);
+    }
 }

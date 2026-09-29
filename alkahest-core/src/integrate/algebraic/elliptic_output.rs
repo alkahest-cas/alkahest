@@ -1607,7 +1607,10 @@ fn is_squarefree(mut n: i64) -> bool {
         return false;
     }
     let mut d = 2i64;
-    while d * d <= n {
+    // `d <= n / d` rather than `d * d <= n`: the square overflows `i64` once
+    // `d` passes `⌊√i64::MAX⌋` (`n` a large prime).
+    #[cfg_attr(kani, kani::loop_invariant(d >= 2 && n >= 1))]
+    while d <= n / d {
         if n % (d * d) == 0 {
             return false;
         }
@@ -1630,11 +1633,14 @@ fn is_quartic_radical(n: i64) -> bool {
         return false;
     }
     let r = (n as f64).sqrt().round() as i64;
-    if r * r == n {
+    if r.checked_mul(r) == Some(n) {
         return false; // perfect square → use the √ form instead
     }
     let mut d = 2i64;
-    while d * d * d * d <= n {
+    // `d² <= ⌊n / d²⌋` ⟺ `d⁴ <= n`, without forming `d⁴` (which overflows).
+    // `d⁴ <= i64::MAX` keeps `d <= 55108` inside the loop.
+    #[cfg_attr(kani, kani::loop_invariant((2..=55_109).contains(&d)))]
+    while d * d <= n / (d * d) {
         if n % (d * d * d * d) == 0 {
             return false;
         }
@@ -3038,5 +3044,57 @@ mod tests {
             try_elliptic_output_higher_kind(zero, b, p, x, &pool).is_none(),
             "∫dx/((x−3)√(x³+1)) must decline (non-elementary twin)"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking (see TESTING.md § 7)
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::{is_quartic_radical, is_squarefree};
+
+    /// Every `i64`: no panic or overflow in the trial-division loop, which is
+    /// checked once for an arbitrary iteration through its loop invariant
+    /// (`-Z loop-contracts`) instead of being unrolled ~3·10⁹ times. `d * d`
+    /// used to be formed before the `d * d <= n` test could stop it.
+    #[kani::proof]
+    fn is_squarefree_no_overflow_full_width() {
+        let n: i64 = kani::any();
+        let _ = is_squarefree(n);
+    }
+
+    /// Agrees with the definition: `n >= 2` and no `k >= 2` has `k² | n`.
+    /// Bounds: `n < 2^8`.
+    #[kani::proof]
+    #[kani::unwind(30)]
+    fn is_squarefree_matches_definition_small() {
+        let n: i64 = kani::any_where(|n: &i64| *n < (1 << 8));
+        let k: i64 = kani::any_where(|k: &i64| *k >= 2 && *k < (1 << 4));
+        let sf = is_squarefree(n);
+        if sf {
+            assert!(n >= 2 && n % (k * k) != 0);
+        } else if n >= 2 {
+            // Not squarefree: some square divides n. Checked against the
+            // witness the harness can pick, by trying all of them.
+            let mut found = false;
+            let mut j = 2;
+            while j * j <= n {
+                if n % (j * j) == 0 {
+                    found = true;
+                }
+                j += 1;
+            }
+            assert!(found);
+        }
+    }
+
+    /// Every `i64`: no panic or overflow (`r * r` and `d⁴` used to be formed
+    /// unchecked). The fourth-root loop is checked through its invariant.
+    #[kani::proof]
+    fn is_quartic_radical_no_overflow_full_width() {
+        let n: i64 = kani::any();
+        let _ = is_quartic_radical(n);
     }
 }

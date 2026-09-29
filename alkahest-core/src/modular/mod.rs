@@ -613,6 +613,31 @@ fn mul_mod(a: u64, b: u64, m: u64) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
+// Machine-word gcd
+// ---------------------------------------------------------------------------
+
+/// `gcd(a, b)` by Euclid; `gcd(0, 0) = 0`.
+pub(crate) fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
+/// `gcd(|a|, |b|)` for signed machine words; `gcd(0, 0) = 0`.
+///
+/// The one crate-wide copy: four modules (by-parts integration, the algebraic
+/// RDE, `find_order` and the q-Zeilberger term code) each had their own, all
+/// starting from `a.abs()`, which panics on `i64::MIN` in a debug build and
+/// stays negative in a release one. This takes `unsigned_abs` instead. The
+/// result is non-negative except in the single case the gcd is `2^63`
+/// (`a, b ∈ {0, i64::MIN}`, not both 0), which is returned as `i64::MIN` —
+/// same divisors, so `x % g` and "`g == 1`" tests stay correct.
+pub(crate) fn gcd_i64(a: i64, b: i64) -> i64 {
+    gcd_u64(a.unsigned_abs(), b.unsigned_abs()) as i64
+}
+
+// ---------------------------------------------------------------------------
 // Kani bounded model checking
 // ---------------------------------------------------------------------------
 //
@@ -656,6 +681,14 @@ mod verification {
         pub fn miller_rabin_round(n: u64, _d: u64, r: u32, _a: u64) -> bool {
             assert!(n >= 2 && r >= 1 && r <= 63);
             kani::any()
+        }
+        /// `gcd_u64`'s range contract: zero iff `a = b = 0`, else at most
+        /// each nonzero argument.
+        pub fn gcd_u64(a: u64, b: u64) -> u64 {
+            if a == 0 && b == 0 {
+                return 0;
+            }
+            kani::any_where(|g: &u64| *g >= 1 && (a == 0 || *g <= a) && (b == 0 || *g <= b))
         }
     }
 
@@ -914,6 +947,55 @@ mod verification {
             q += 1;
         }
         assert_eq!(is_prime(n), expect);
+    }
+
+    // --- gcd_u64 / gcd_i64 -------------------------------------------------
+
+    /// `gcd_u64` is the greatest common divisor, `gcd(0, 0) = 0`.
+    /// Bounds: `a, b < 2^6` (Euclid is a chain of symbolic divisions).
+    #[kani::proof]
+    #[kani::unwind(11)]
+    fn gcd_u64_is_gcd_small() {
+        let a: u64 = kani::any_where(|a: &u64| *a < (1 << 6));
+        let b: u64 = kani::any_where(|b: &u64| *b < (1 << 6));
+        let g = gcd_u64(a, b);
+        if a == 0 && b == 0 {
+            assert_eq!(g, 0);
+        } else {
+            assert!(g >= 1 && a % g == 0 && b % g == 0);
+            let c: u64 = kani::any_where(|c: &u64| *c > g && *c < (1 << 6));
+            assert!(a % c != 0 || b % c != 0);
+        }
+    }
+
+    /// Every pair of `i64`s, including `i64::MIN` (where the four copies this
+    /// replaced called `.abs()`): no panic, and the result is `>= 0` except for
+    /// gcd `2^63`, returned as `i64::MIN`. `gcd_u64` is stubbed by its range
+    /// contract (at most each nonzero argument, zero only for `(0, 0)`),
+    /// which `gcd_u64_in_range_full_width` proves.
+    #[kani::proof]
+    #[kani::stub(gcd_u64, stubs::gcd_u64)]
+    fn gcd_i64_sign_full_width() {
+        let a: i64 = kani::any();
+        let b: i64 = kani::any();
+        let g = gcd_i64(a, b);
+        if g < 0 {
+            assert_eq!(g, i64::MIN);
+            assert!(a == 0 || a == i64::MIN);
+            assert!(b == 0 || b == i64::MIN);
+        }
+        assert_eq!(g == 0, a == 0 && b == 0);
+    }
+
+    /// Signed values against the same small table, both signs.
+    /// Bounds: `|a|, |b| < 2^5`.
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn gcd_i64_matches_abs_small() {
+        let a: i64 = kani::any_where(|a: &i64| *a > -(1 << 5) && *a < (1 << 5));
+        let b: i64 = kani::any_where(|b: &i64| *b > -(1 << 5) && *b < (1 << 5));
+        assert_eq!(gcd_i64(a, b), gcd_u64(a.unsigned_abs(), b.unsigned_abs()) as i64);
+        assert_eq!(gcd_i64(a, b), gcd_i64(-a, b));
     }
 }
 

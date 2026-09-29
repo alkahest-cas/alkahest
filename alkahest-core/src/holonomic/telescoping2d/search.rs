@@ -1030,3 +1030,50 @@ mod tests {
         assert!(result.order >= 1);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking (see TESTING.md § 7)
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::{flatten, unflatten};
+
+    /// The caller's precondition: `box_len^num_axes` fits (`checked_pow` in
+    /// the probe loop) and every exponent is `< box_len`. Then `flatten` does
+    /// not overflow and lands inside the certificate block,
+    /// `< box_len^num_axes`, so `idx_cert` columns of different `t` never
+    /// overlap. Bounds: every `box_len >= 1`; `num_axes <= 3`, i.e. up to two
+    /// bound indices (more axes only lengthen the fold).
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn flatten_in_block_full_width() {
+        let num_axes: usize = kani::any_where(|n: &usize| *n <= 3);
+        let box_len: usize = kani::any_where(|b: &usize| *b >= 1);
+        let Some(count) = box_len.checked_pow(num_axes as u32) else {
+            return;
+        };
+        let exps: [usize; 3] = [
+            kani::any_where(|e: &usize| *e < box_len),
+            kani::any_where(|e: &usize| *e < box_len),
+            kani::any_where(|e: &usize| *e < box_len),
+        ];
+        assert!(flatten(&exps[..num_axes], box_len) < count);
+    }
+
+    /// `unflatten` inverts `flatten` (so distinct exponent vectors get
+    /// distinct columns). Bounds: `1 <= box_len < 2^4`, `num_axes <= 3`.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn flatten_roundtrip_small() {
+        let num_axes: usize = kani::any_where(|n: &usize| *n <= 3);
+        let box_len: usize = kani::any_where(|b: &usize| *b >= 1 && *b < 16);
+        let exps: [usize; 3] = [
+            kani::any_where(|e: &usize| *e < box_len),
+            kani::any_where(|e: &usize| *e < box_len),
+            kani::any_where(|e: &usize| *e < box_len),
+        ];
+        let back = unflatten(flatten(&exps[..num_axes], box_len), num_axes, box_len);
+        assert_eq!(&back[..], &exps[..num_axes]);
+    }
+}

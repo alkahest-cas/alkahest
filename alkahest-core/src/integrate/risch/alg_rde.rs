@@ -1023,17 +1023,7 @@ fn poly_inverse_mod(a: &QPoly, m: &QPoly) -> Option<QPoly> {
     Some(poly_divrem(&poly_scale(&t0, &inv), m).1)
 }
 
-/// `gcd` of two `i64`s (by absolute value).
-fn gcd_i64(mut a: i64, mut b: i64) -> i64 {
-    a = a.abs();
-    b = b.abs();
-    while b != 0 {
-        let t = a % b;
-        a = b;
-        b = t;
-    }
-    a
-}
+use crate::modular::gcd_i64;
 
 // ---------------------------------------------------------------------------
 // The ansatz system

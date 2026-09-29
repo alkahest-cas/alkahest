@@ -163,22 +163,30 @@ fn mul_mod(a: u64, b: u64, p: u64) -> u64 {
     ((a as u128 * b as u128) % p as u128) as u64
 }
 
+/// `(a + b) mod p` for `a, b < p`.
+///
+/// The sum is formed with its carry: for a prime above `2^63` (which the
+/// public entry points accept) `a + b` can pass `2^64`, and the plain `u64`
+/// sum wrapped — `add_mod(p−1, p−1, p)` returned `2^64 − 120` instead of
+/// `p − 2` for `p = 2^64 − 59`.
 #[inline]
 fn add_mod(a: u64, b: u64, p: u64) -> u64 {
-    let s = a + b;
-    if s >= p {
-        s - p
+    let (s, carry) = a.overflowing_add(b);
+    if carry || s >= p {
+        s.wrapping_sub(p)
     } else {
         s
     }
 }
 
+/// `(a − b) mod p` for `a, b < p`. `p − (b − a)` rather than `a + p − b`,
+/// whose intermediate overflows for `p > 2^63`.
 #[inline]
 fn sub_mod(a: u64, b: u64, p: u64) -> u64 {
     if a >= b {
         a - b
     } else {
-        a + p - b
+        p - (b - a)
     }
 }
 
@@ -261,7 +269,10 @@ pub fn primitive_root(p: u64) -> u64 {
 fn prime_factors(mut n: u64) -> Vec<u64> {
     let mut factors = Vec::new();
     let mut d = 2u64;
-    while d * d <= n {
+    // `d <= n / d`, not `d * d <= n`, which wraps once `d` reaches `2^32`
+    // (a prime cofactor above `(2^32 − 1)^2`; `p − 1` is even, so the
+    // callers here never have one — this is the overflow-free form).
+    while d <= n / d {
         if n % d == 0 {
             factors.push(d);
             while n % d == 0 {
@@ -1527,6 +1538,27 @@ pub fn gcd_sparse_modular(
 
 #[cfg(test)]
 mod tests {
+    /// The largest 64-bit prime: `a + b` for residues near it passes `2^64`.
+    #[test]
+    fn add_sub_mod_above_2_63() {
+        let p = u64::MAX - 58; // 2^64 − 59
+        assert!(crate::modular::is_prime(p));
+        assert_eq!(super::add_mod(p - 1, p - 1, p), p - 2);
+        assert_eq!(super::add_mod(p - 1, 1, p), 0);
+        assert_eq!(super::add_mod(1 << 63, 1 << 63, p), 59);
+        assert_eq!(super::sub_mod(p - 2, p - 1, p), p - 1);
+        assert_eq!(super::sub_mod(0, p - 1, p), 1);
+        assert_eq!(super::sub_mod(5, 3, p), 2);
+    }
+
+    #[test]
+    fn prime_factors_with_a_factor_above_2_32() {
+        let q = 4_294_967_311_u64; // prime, 2^32 + 15
+        assert_eq!(super::prime_factors(2 * q), vec![2, q]);
+        assert_eq!(super::prime_factors(360), vec![2, 3, 5]);
+        assert_eq!(super::prime_factors(1), Vec::<u64>::new());
+    }
+
     use super::*;
     use crate::kernel::{Domain, ExprPool};
 
@@ -2123,5 +2155,43 @@ mod tests {
             Some(rug::Integer::from(1)),
             "coeff of y should be 1"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking (see TESTING.md § 7)
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::{add_mod, sub_mod};
+
+    /// Every modulus `p >= 1` and residues `a, b < p`: the exact canonical
+    /// `(a + b) mod p`, checked against `u128` arithmetic. Covers `p > 2^63`,
+    /// where the old `a + b` wrapped.
+    #[kani::proof]
+    fn interp_add_mod_full_width() {
+        let p: u64 = kani::any_where(|p: &u64| *p >= 1);
+        let a: u64 = kani::any_where(|a: &u64| *a < p);
+        let b: u64 = kani::any_where(|b: &u64| *b < p);
+        let r = add_mod(a, b, p);
+        assert!(r < p);
+        let s = a as u128 + b as u128;
+        let expect = if s >= p as u128 { s - p as u128 } else { s };
+        assert_eq!(r as u128, expect);
+    }
+
+    /// Every modulus `p >= 1` and residues `a, b < p`: the exact canonical
+    /// `(a − b) mod p`, checked against `i128` arithmetic.
+    #[kani::proof]
+    fn interp_sub_mod_full_width() {
+        let p: u64 = kani::any_where(|p: &u64| *p >= 1);
+        let a: u64 = kani::any_where(|a: &u64| *a < p);
+        let b: u64 = kani::any_where(|b: &u64| *b < p);
+        let r = sub_mod(a, b, p);
+        assert!(r < p);
+        let d = a as i128 - b as i128;
+        let expect = if d < 0 { d + p as i128 } else { d };
+        assert_eq!(r as i128, expect);
     }
 }
