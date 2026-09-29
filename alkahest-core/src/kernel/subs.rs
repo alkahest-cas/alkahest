@@ -39,10 +39,18 @@
 /// // (x + 1) with x→y  becomes (y + 1)
 /// assert_eq!(result, pool.add(vec![y, pool.integer(1_i32)]));
 /// ```
+///
+/// # Cost on shared sub-expressions
+///
+/// The walk is memoised per call, so a sub-expression shared by many parents
+/// (a DAG, e.g. the Chebyshev recurrence `T_{n+1} = 2x·T_n − T_{n−1}`) is
+/// rewritten once, not once per path: the cost is linear in the number of
+/// *distinct* nodes.  A node none of whose children changed is returned as
+/// the original [`ExprId`] rather than re-interned.
 use crate::kernel::eval_const::try_predicate_bool;
 use crate::kernel::expr::PredicateKind;
 use crate::kernel::{ExprData, ExprId, ExprPool};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Replace sub-expressions according to `mapping`.
 ///
@@ -50,67 +58,173 @@ use std::collections::HashMap;
 /// as a key, the corresponding value is returned immediately.  Otherwise the
 /// substitution recurses into children.
 pub fn subs(expr: ExprId, mapping: &HashMap<ExprId, ExprId>, pool: &ExprPool) -> ExprId {
+    let mut memo: HashMap<ExprId, ExprId> = HashMap::new();
+    subs_memo(expr, mapping, pool, &mut memo)
+}
+
+/// Rewrite each of `args`; `None` when every child came back unchanged.
+fn subs_args(
+    args: &[ExprId],
+    mapping: &HashMap<ExprId, ExprId>,
+    pool: &ExprPool,
+    memo: &mut HashMap<ExprId, ExprId>,
+) -> Option<Vec<ExprId>> {
+    let new_args: Vec<ExprId> = args
+        .iter()
+        .map(|&a| subs_memo(a, mapping, pool, memo))
+        .collect();
+    (new_args.as_slice() != args).then_some(new_args)
+}
+
+/// Worker for [`subs`].  `memo` maps a node to its image **under this exact
+/// `mapping`**; a binder that shadows a key gets a fresh memo for its body
+/// (see the `Forall`/`Exists` arms), because the same node inside and outside
+/// that scope can have different images.
+fn subs_memo(
+    expr: ExprId,
+    mapping: &HashMap<ExprId, ExprId>,
+    pool: &ExprPool,
+    memo: &mut HashMap<ExprId, ExprId>,
+) -> ExprId {
     if let Some(&replacement) = mapping.get(&expr) {
         return replacement;
     }
-    let data = pool.get(expr);
-    match data {
-        ExprData::Add(args) => {
-            let new_args: Vec<ExprId> = args.iter().map(|&a| subs(a, mapping, pool)).collect();
-            pool.add(new_args)
-        }
-        ExprData::Mul(args) => {
-            let new_args: Vec<ExprId> = args.iter().map(|&a| subs(a, mapping, pool)).collect();
-            pool.mul(new_args)
-        }
+    if let Some(&done) = memo.get(&expr) {
+        return done;
+    }
+    let out = match pool.get(expr) {
+        ExprData::Add(args) => match subs_args(&args, mapping, pool, memo) {
+            Some(new_args) => pool.add(new_args),
+            None => expr,
+        },
+        ExprData::Mul(args) => match subs_args(&args, mapping, pool, memo) {
+            Some(new_args) => pool.mul(new_args),
+            None => expr,
+        },
         ExprData::Pow { base, exp } => {
-            let b = subs(base, mapping, pool);
-            let e = subs(exp, mapping, pool);
-            pool.pow(b, e)
+            let b = subs_memo(base, mapping, pool, memo);
+            let e = subs_memo(exp, mapping, pool, memo);
+            if b == base && e == exp {
+                expr
+            } else {
+                pool.pow(b, e)
+            }
         }
-        ExprData::Func { name, args } => {
-            let new_args: Vec<ExprId> = args.iter().map(|&a| subs(a, mapping, pool)).collect();
-            pool.func(name, new_args)
-        }
+        ExprData::Func { name, args } => match subs_args(&args, mapping, pool, memo) {
+            Some(new_args) => pool.func(name, new_args),
+            None => expr,
+        },
         ExprData::Piecewise { branches, default } => {
             let new_branches: Vec<(ExprId, ExprId)> = branches
                 .iter()
-                .map(|(c, v)| (subs(*c, mapping, pool), subs(*v, mapping, pool)))
+                .map(|&(c, v)| {
+                    (
+                        subs_memo(c, mapping, pool, memo),
+                        subs_memo(v, mapping, pool, memo),
+                    )
+                })
                 .collect();
-            let nd = subs(default, mapping, pool);
-            pool.piecewise(new_branches, nd)
+            let nd = subs_memo(default, mapping, pool, memo);
+            if nd == default && new_branches == branches {
+                expr
+            } else {
+                pool.piecewise(new_branches, nd)
+            }
         }
-        ExprData::Predicate { kind, args } => {
-            let new_args: Vec<ExprId> = args.iter().map(|&a| subs(a, mapping, pool)).collect();
-            pool.predicate(kind.clone(), new_args)
-        }
+        ExprData::Predicate { kind, args } => match subs_args(&args, mapping, pool, memo) {
+            Some(new_args) => pool.predicate(kind, new_args),
+            None => expr,
+        },
         ExprData::Forall { var, body } => {
-            let mut m2 = mapping.clone();
-            m2.remove(&var);
-            let nb = subs(body, &m2, pool);
-            pool.forall(var, nb)
+            let nb = subs_binder_body(var, body, mapping, pool, memo);
+            if nb == body {
+                expr
+            } else {
+                pool.forall(var, nb)
+            }
         }
         ExprData::Exists { var, body } => {
-            let mut m2 = mapping.clone();
-            m2.remove(&var);
-            let nb = subs(body, &m2, pool);
-            pool.exists(var, nb)
+            let nb = subs_binder_body(var, body, mapping, pool, memo);
+            if nb == body {
+                expr
+            } else {
+                pool.exists(var, nb)
+            }
         }
         ExprData::BigO(arg) => {
-            let a = subs(arg, mapping, pool);
-            pool.big_o(a)
+            let a = subs_memo(arg, mapping, pool, memo);
+            if a == arg {
+                expr
+            } else {
+                pool.big_o(a)
+            }
         }
-        // Atoms have no children — if not in mapping, return as-is
+        // Atoms have no children — if not in mapping, return as-is.  (A
+        // `RootSum` is deliberately not descended into, as before.)
         _ => expr,
+    };
+    memo.insert(expr, out);
+    out
+}
+
+/// Substitute into the body of a `Forall`/`Exists` binding `var`.
+///
+/// The bound variable shadows any key equal to it.  When it does shadow one,
+/// the body is rewritten under the reduced mapping with its **own** memo:
+/// entries in the outer memo were computed with `var` still mapped and must
+/// not leak into (or out of) the binder's scope.
+fn subs_binder_body(
+    var: ExprId,
+    body: ExprId,
+    mapping: &HashMap<ExprId, ExprId>,
+    pool: &ExprPool,
+    memo: &mut HashMap<ExprId, ExprId>,
+) -> ExprId {
+    if mapping.contains_key(&var) {
+        let mut inner = mapping.clone();
+        inner.remove(&var);
+        let mut scope_memo: HashMap<ExprId, ExprId> = HashMap::new();
+        subs_memo(body, &inner, pool, &mut scope_memo)
+    } else {
+        subs_memo(body, mapping, pool, memo)
     }
 }
 
 /// Fold predicates with numeric arguments (e.g. `(2 > 0)` → `True`) and simplify
 /// piecewise when a branch condition becomes provably true/false.
+///
+/// Memoised per call, like [`subs`]: linear in the number of distinct nodes.
 pub fn fold_predicates(expr: ExprId, pool: &ExprPool) -> ExprId {
+    let mut memo: HashMap<ExprId, ExprId> = HashMap::new();
+    fold_predicates_memo(expr, pool, &mut memo)
+}
+
+fn fold_predicates_memo(
+    expr: ExprId,
+    pool: &ExprPool,
+    memo: &mut HashMap<ExprId, ExprId>,
+) -> ExprId {
+    if let Some(&done) = memo.get(&expr) {
+        return done;
+    }
+    let out = fold_predicates_node(expr, pool, memo);
+    memo.insert(expr, out);
+    out
+}
+
+fn fold_predicates_node(
+    expr: ExprId,
+    pool: &ExprPool,
+    memo: &mut HashMap<ExprId, ExprId>,
+) -> ExprId {
+    let fold_all = |args: &[ExprId], memo: &mut HashMap<ExprId, ExprId>| -> Vec<ExprId> {
+        args.iter()
+            .map(|&a| fold_predicates_memo(a, pool, memo))
+            .collect()
+    };
     match pool.get(expr) {
         ExprData::Predicate { kind, args } => {
-            let folded_args: Vec<ExprId> = args.iter().map(|&a| fold_predicates(a, pool)).collect();
+            let folded_args = fold_all(&args, memo);
             if let Some(b) = try_predicate_bool(&kind, &folded_args, pool) {
                 return pool.predicate(
                     if b {
@@ -126,11 +240,11 @@ pub fn fold_predicates(expr: ExprId, pool: &ExprPool) -> ExprId {
         ExprData::Piecewise { branches, default } => {
             let mut folded_branches = Vec::with_capacity(branches.len());
             for (c, v) in branches {
-                let fc = fold_predicates(c, pool);
-                let fv = fold_predicates(v, pool);
+                let fc = fold_predicates_memo(c, pool, memo);
+                let fv = fold_predicates_memo(v, pool, memo);
                 folded_branches.push((fc, fv));
             }
-            let fd = fold_predicates(default, pool);
+            let fd = fold_predicates_memo(default, pool, memo);
             for (c, v) in &folded_branches {
                 if matches!(
                     pool.get(*c),
@@ -139,7 +253,7 @@ pub fn fold_predicates(expr: ExprId, pool: &ExprPool) -> ExprId {
                         ..
                     }
                 ) {
-                    return fold_predicates(*v, pool);
+                    return fold_predicates_memo(*v, pool, memo);
                 }
             }
             let remaining: Vec<(ExprId, ExprId)> = folded_branches
@@ -160,24 +274,93 @@ pub fn fold_predicates(expr: ExprId, pool: &ExprPool) -> ExprId {
             pool.piecewise(remaining, fd)
         }
         ExprData::Add(args) => {
-            let new_args: Vec<ExprId> = args.iter().map(|&a| fold_predicates(a, pool)).collect();
+            let new_args = fold_all(&args, memo);
             pool.add(new_args)
         }
         ExprData::Mul(args) => {
-            let new_args: Vec<ExprId> = args.iter().map(|&a| fold_predicates(a, pool)).collect();
+            let new_args = fold_all(&args, memo);
             pool.mul(new_args)
         }
         ExprData::Pow { base, exp } => {
-            let b = fold_predicates(base, pool);
-            let e = fold_predicates(exp, pool);
+            let b = fold_predicates_memo(base, pool, memo);
+            let e = fold_predicates_memo(exp, pool, memo);
             pool.pow(b, e)
         }
         ExprData::Func { name, args } => {
-            let new_args: Vec<ExprId> = args.iter().map(|&a| fold_predicates(a, pool)).collect();
+            let new_args = fold_all(&args, memo);
             pool.func(name, new_args)
         }
         _ => expr,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Variable occurrence
+// ---------------------------------------------------------------------------
+
+/// `true` when `var` occurs **free** anywhere in `expr`.
+///
+/// Descends into every node kind, including the branching and binding ones a
+/// quick `Add`/`Mul`/`Pow`/`Func` walk skips (`Piecewise`, `Predicate`,
+/// `RootSum`, `Forall`/`Exists`, `BigO`), so it never under-reports a
+/// dependence.  A binder whose bound variable *is* `var` shadows it: the body
+/// of `Forall(var, …)`, `Exists(var, …)` or `RootSum(p, var, …)` does not count
+/// (a `RootSum`'s defining polynomial is outside the binder and does).
+///
+/// Iterative, with a visited set, so the cost is linear in the number of
+/// distinct nodes of a DAG (a tree walk is exponential on e.g. the Chebyshev
+/// recurrence) and deep chains cannot overflow the stack.  A node reached
+/// twice is known var-free the second time — the answer does not depend on
+/// the path, since shadowing only ever *skips* a body.
+pub(crate) fn mentions_var(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    let mut seen: HashSet<ExprId> = HashSet::new();
+    let mut stack: Vec<ExprId> = vec![expr];
+    while let Some(node) = stack.pop() {
+        if node == var {
+            return true;
+        }
+        if !seen.insert(node) {
+            continue;
+        }
+        pool.with(node, |data| match data {
+            ExprData::Add(xs) | ExprData::Mul(xs) => stack.extend_from_slice(xs),
+            ExprData::Func { args, .. } | ExprData::Predicate { args, .. } => {
+                stack.extend_from_slice(args)
+            }
+            ExprData::Pow { base, exp } => {
+                stack.push(*base);
+                stack.push(*exp);
+            }
+            ExprData::Piecewise { branches, default } => {
+                for &(c, v) in branches {
+                    stack.push(c);
+                    stack.push(v);
+                }
+                stack.push(*default);
+            }
+            ExprData::RootSum {
+                poly,
+                var: bound,
+                body,
+            } => {
+                stack.push(*poly);
+                if *bound != var {
+                    stack.push(*body);
+                }
+            }
+            ExprData::Forall { var: bound, body } | ExprData::Exists { var: bound, body } => {
+                if *bound != var {
+                    stack.push(*body);
+                }
+            }
+            ExprData::BigO(a) => stack.push(*a),
+            ExprData::Symbol { .. }
+            | ExprData::Integer(_)
+            | ExprData::Rational(_)
+            | ExprData::Float(_) => {}
+        });
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -310,5 +493,228 @@ mod tests {
         );
         let folded = fold_predicates(pw, &p);
         assert_eq!(folded, x);
+    }
+
+    // -----------------------------------------------------------------------
+    // DAG sharing, binder scopes, and a differential check against the old
+    // tree walk.
+    // -----------------------------------------------------------------------
+
+    /// The Chebyshev recurrence `T_{k+1} = 2x·T_k − T_{k−1}`: ~3n distinct
+    /// nodes, ~fib(n) root-to-leaf paths.
+    fn cheb(p: &ExprPool, x: ExprId, n: usize) -> ExprId {
+        let (two, m1) = (p.integer(2_i32), p.integer(-1_i32));
+        let (mut a, mut b) = (p.integer(1_i32), x);
+        for _ in 1..n {
+            let c = p.add(vec![p.mul(vec![two, x, b]), p.mul(vec![m1, a])]);
+            a = b;
+            b = c;
+        }
+        b
+    }
+
+    /// The pre-memo `subs`: a plain tree walk, kept as the differential
+    /// reference.
+    fn subs_tree(expr: ExprId, mapping: &HashMap<ExprId, ExprId>, pool: &ExprPool) -> ExprId {
+        if let Some(&r) = mapping.get(&expr) {
+            return r;
+        }
+        let all = |args: &[ExprId]| -> Vec<ExprId> {
+            args.iter().map(|&a| subs_tree(a, mapping, pool)).collect()
+        };
+        match pool.get(expr) {
+            ExprData::Add(args) => pool.add(all(&args)),
+            ExprData::Mul(args) => pool.mul(all(&args)),
+            ExprData::Pow { base, exp } => pool.pow(
+                subs_tree(base, mapping, pool),
+                subs_tree(exp, mapping, pool),
+            ),
+            ExprData::Func { name, args } => pool.func(name, all(&args)),
+            ExprData::Piecewise { branches, default } => {
+                let nb = branches
+                    .iter()
+                    .map(|&(c, v)| (subs_tree(c, mapping, pool), subs_tree(v, mapping, pool)))
+                    .collect();
+                pool.piecewise(nb, subs_tree(default, mapping, pool))
+            }
+            ExprData::Predicate { kind, args } => pool.predicate(kind, all(&args)),
+            ExprData::Forall { var, body } => {
+                let mut m2 = mapping.clone();
+                m2.remove(&var);
+                pool.forall(var, subs_tree(body, &m2, pool))
+            }
+            ExprData::Exists { var, body } => {
+                let mut m2 = mapping.clone();
+                m2.remove(&var);
+                pool.exists(var, subs_tree(body, &m2, pool))
+            }
+            ExprData::BigO(a) => pool.big_o(subs_tree(a, mapping, pool)),
+            _ => expr,
+        }
+    }
+
+    /// The pre-memo occurrence check (tree walk), as the reference for
+    /// [`mentions_var`].
+    fn mentions_tree(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+        if expr == var {
+            return true;
+        }
+        match pool.get(expr) {
+            ExprData::Add(xs) | ExprData::Mul(xs) => {
+                xs.iter().any(|&a| mentions_tree(a, var, pool))
+            }
+            ExprData::Pow { base, exp } => {
+                mentions_tree(base, var, pool) || mentions_tree(exp, var, pool)
+            }
+            ExprData::Func { args, .. } | ExprData::Predicate { args, .. } => {
+                args.iter().any(|&a| mentions_tree(a, var, pool))
+            }
+            ExprData::RootSum {
+                poly,
+                var: bound,
+                body,
+            } => mentions_tree(poly, var, pool) || (bound != var && mentions_tree(body, var, pool)),
+            ExprData::Piecewise { branches, default } => {
+                branches
+                    .iter()
+                    .any(|&(c, v)| mentions_tree(c, var, pool) || mentions_tree(v, var, pool))
+                    || mentions_tree(default, var, pool)
+            }
+            ExprData::Forall { var: bound, body } | ExprData::Exists { var: bound, body } => {
+                bound != var && mentions_tree(body, var, pool)
+            }
+            ExprData::BigO(a) => mentions_tree(a, var, pool),
+            _ => false,
+        }
+    }
+
+    /// Build a random shared DAG from `(op, i, j)` instructions over a growing
+    /// node list (so later nodes reuse earlier ones), including binders over
+    /// `x` and `y`.
+    fn random_dag(p: &ExprPool, ops: &[(u8, usize, usize)]) -> (Vec<ExprId>, [ExprId; 3]) {
+        let x = p.symbol("x", Domain::Real);
+        let y = p.symbol("y", Domain::Real);
+        let z = p.symbol("z", Domain::Real);
+        let c = p.symbol("c", Domain::Real);
+        let mut nodes = vec![x, y, z, p.integer(2_i32), p.integer(-1_i32)];
+        for &(op, i, j) in ops {
+            let a = nodes[i % nodes.len()];
+            let b = nodes[j % nodes.len()];
+            let n = match op % 10 {
+                0 => p.add(vec![a, b]),
+                1 => p.mul(vec![a, b]),
+                2 => p.pow(a, p.integer((j % 3) as i64 + 2)),
+                3 => p.func("sin", vec![a]),
+                4 => p.forall(x, p.pred_gt(a, b)),
+                5 => p.exists(y, p.pred_lt(a, b)),
+                6 => p.piecewise(vec![(p.pred_gt(a, p.integer(0_i32)), b)], a),
+                7 => p.big_o(a),
+                8 => p.root_sum(
+                    p.add(vec![p.pow(c, p.integer(2_i32)), a]),
+                    c,
+                    p.mul(vec![c, b]),
+                ),
+                _ => p.add(vec![a, b, p.integer(1_i32)]),
+            };
+            nodes.push(n);
+        }
+        (nodes, [x, y, z])
+    }
+
+    fn ops_strategy() -> impl proptest::strategy::Strategy<Value = Vec<(u8, usize, usize)>> {
+        proptest::collection::vec((0u8..10, 0usize..64, 0usize..64), 1..14)
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(300))]
+
+        /// Memoised `subs` agrees with the old tree walk on random shared DAGs
+        /// with binders — including mappings that the binders shadow.
+        #[test]
+        fn subs_matches_tree_walk(ops in ops_strategy(), pick in 0usize..4) {
+            let p = pool();
+            let (nodes, [x, y, z]) = random_dag(&p, &ops);
+            let root = *nodes.last().unwrap();
+            let mut m = HashMap::new();
+            match pick {
+                0 => {
+                    m.insert(x, y);
+                }
+                1 => {
+                    m.insert(x, p.add(vec![y, p.integer(1_i32)]));
+                    m.insert(y, x);
+                }
+                2 => {
+                    m.insert(z, p.integer(3_i32));
+                    m.insert(y, z);
+                }
+                _ => {
+                    m.insert(nodes[nodes.len() / 2], x);
+                }
+            }
+            proptest::prop_assert_eq!(subs(root, &m, &p), subs_tree(root, &m, &p));
+        }
+
+        /// The shared visited-set walker agrees with the old tree walk.
+        #[test]
+        fn mentions_var_matches_tree_walk(ops in ops_strategy()) {
+            let p = pool();
+            let (nodes, vars) = random_dag(&p, &ops);
+            for &root in nodes.iter().rev().take(4) {
+                for v in vars {
+                    proptest::prop_assert_eq!(
+                        mentions_var(root, v, &p),
+                        mentions_tree(root, v, &p)
+                    );
+                }
+            }
+        }
+    }
+
+    /// A node shared between the inside and the outside of a binder has
+    /// different images in the two scopes; the memo must not carry one across.
+    #[test]
+    fn subs_memo_respects_binder_scope() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let y = p.symbol("y", Domain::Real);
+        let s = p.add(vec![x, p.integer(1_i32)]);
+        let bound = p.forall(x, p.pred_gt(s, p.integer(0_i32)));
+        let mut m = HashMap::new();
+        m.insert(x, y);
+        // Whichever scope is visited first, the other must not reuse its image.
+        for e in [p.add(vec![s, bound]), p.mul(vec![bound, s])] {
+            assert_eq!(subs(e, &m, &p), subs_tree(e, &m, &p));
+        }
+        let out = subs(p.add(vec![s, bound]), &m, &p);
+        let expected = p.add(vec![p.add(vec![y, p.integer(1_i32)]), bound]);
+        assert_eq!(out, expected, "x inside ∀x stays bound");
+    }
+
+    /// `subs`, `fold_predicates` and `mentions_var` on a DAG with ~120
+    /// distinct nodes and ~fib(40) ≈ 10⁸ paths.  The tree walk took 0.54 s
+    /// (`subs`) at n = 28, growing ×φ per level.
+    #[test]
+    fn subs_is_linear_on_a_shared_dag() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let y = p.symbol("y", Domain::Real);
+        let e = cheb(&p, x, 40);
+        let t0 = std::time::Instant::now();
+        let mut m = HashMap::new();
+        m.insert(x, y);
+        assert_eq!(subs(e, &m, &p), cheb(&p, y, 40));
+        // A mapping that touches nothing returns the very same node.
+        let mut none = HashMap::new();
+        none.insert(p.symbol("w", Domain::Real), x);
+        assert_eq!(subs(e, &none, &p), e);
+        assert_eq!(fold_predicates(e, &p), e);
+        assert!(mentions_var(e, x, &p));
+        assert!(!mentions_var(e, y, &p));
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(2),
+            "took {:?}",
+            t0.elapsed()
+        );
     }
 }

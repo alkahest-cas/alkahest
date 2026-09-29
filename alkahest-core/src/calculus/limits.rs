@@ -2150,34 +2150,9 @@ fn is_neg_infinity(e: ExprId, pool: &ExprPool) -> bool {
 }
 
 fn depends_on(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
-    if expr == var {
-        return true;
-    }
-    match pool.get(expr) {
-        ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().any(|a| depends_on(*a, var, pool)),
-        ExprData::Pow { base, exp } => depends_on(base, var, pool) || depends_on(exp, var, pool),
-        ExprData::Func { args, .. } => args.iter().any(|a| depends_on(*a, var, pool)),
-        ExprData::Piecewise { branches, default } => {
-            branches
-                .iter()
-                .any(|(c, v)| depends_on(*c, var, pool) || depends_on(*v, var, pool))
-                || depends_on(default, var, pool)
-        }
-        ExprData::Predicate { args, .. } => args.iter().any(|a| depends_on(*a, var, pool)),
-        ExprData::Forall { var: bv, body } | ExprData::Exists { var: bv, body } => {
-            bv != var && depends_on(body, var, pool)
-        }
-        ExprData::RootSum {
-            poly,
-            var: bv,
-            body,
-        } => depends_on(poly, var, pool) || (bv != var && depends_on(body, var, pool)),
-        ExprData::BigO(a) => depends_on(a, var, pool),
-        ExprData::Integer(_)
-        | ExprData::Rational(_)
-        | ExprData::Float(_)
-        | ExprData::Symbol { .. } => false,
-    }
+    // Shared memoised walker: linear on DAG-shared inputs, and it descends into
+    // `Piecewise`/`Predicate`/`RootSum`/`BigO`/quantifiers (bound variables shadow).
+    crate::kernel::subs::mentions_var(expr, var, pool)
 }
 
 fn try_direct_substitution(

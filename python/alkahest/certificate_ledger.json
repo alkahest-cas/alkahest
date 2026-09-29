@@ -8,7 +8,7 @@
       "tests/lean_gosper_corpus.py",
       "tests/textbook_gate/"
     ],
-    "observations": 329,
+    "observations": 330,
     "shape_classes": 208
   },
   "rows": [
@@ -1381,13 +1381,14 @@
       },
       "verdict": "certified",
       "observations": {
-        "certified": 1,
+        "certified": 2,
         "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
       "examples": [
-        "((-1 * 2 * x^2) + (-1 * 7) + (3 * x^3) + (5 * x))"
+        "((-1 * 2 * x^2) + (-1 * 7) + (3 * x^3) + (5 * x))",
+        "((2 * x) + x^3)"
       ]
     },
     {

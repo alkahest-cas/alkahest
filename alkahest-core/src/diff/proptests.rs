@@ -147,4 +147,40 @@ proptest! {
             );
         }
     }
+
+    /// On random *shared* polynomial DAGs, `diff` equals the dense derivative
+    /// — whichever route it takes: the root fast path (when the expansion is
+    /// small), the rules (when it is not), and the rules forced by adding a
+    /// foreign symbol `y` (so the input is no longer univariate).
+    #[test]
+    fn diff_of_shared_polynomial_dag_matches_dense_derivative(
+        ops in proptest::collection::vec((0u8..3, 0usize..32, 0usize..32), 1..10),
+    ) {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let mut nodes = vec![x, pool.integer(2_i32), pool.integer(-3_i32), pool.integer(1_i32)];
+        for (op, i, j) in ops {
+            let a = nodes[i % nodes.len()];
+            let b = nodes[j % nodes.len()];
+            nodes.push(match op {
+                0 => pool.add(vec![a, b]),
+                1 => pool.mul(vec![a, b]),
+                _ => pool.pow(a, pool.integer((j % 3) as i64 + 2)),
+            });
+        }
+        let e = *nodes.last().unwrap();
+        let dense = UniPoly::from_symbolic(e, x, &pool).unwrap();
+        // Keep the reference computation cheap.
+        prop_assume!(dense.degree() <= 200);
+        let want = dense.derivative();
+
+        let d = diff(e, x, &pool).unwrap();
+        let got = UniPoly::from_symbolic(d.value, x, &pool).unwrap();
+        prop_assert_eq!(&got, &want);
+
+        let dy = diff(pool.add(vec![e, y]), x, &pool).unwrap();
+        let got_y = UniPoly::from_symbolic(simplify(dy.value, &pool).value, x, &pool).unwrap();
+        prop_assert_eq!(&got_y, &want);
+    }
 }
