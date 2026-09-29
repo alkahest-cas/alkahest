@@ -2302,3 +2302,35 @@ mod tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking (see TESTING.md § Kani)
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// `gcd_u64` divides both inputs and `lcm_u64` is a common multiple no
+    /// larger than `a·b` (`lcm(a, 0) = 0`). Bounds: `a, b < 2^5` (the Euclid
+    /// loop is ≤ 7 rounds there); `lcm_u64`'s `saturating_mul` cannot
+    /// saturate in this range, so saturation is not exercised.
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn gcd_lcm_small() {
+        let a: u64 = kani::any_where(|a: &u64| *a < (1 << 5));
+        let b: u64 = kani::any_where(|b: &u64| *b < (1 << 5));
+        let g = gcd_u64(a, b);
+        if a == 0 && b == 0 {
+            assert_eq!(g, 0);
+        } else {
+            assert!(g >= 1 && a % g == 0 && b % g == 0);
+        }
+        let l = lcm_u64(a, b);
+        if a == 0 || b == 0 {
+            assert_eq!(l, 0);
+        } else {
+            assert!(l % a == 0 && l % b == 0 && l <= a * b);
+        }
+    }
+}

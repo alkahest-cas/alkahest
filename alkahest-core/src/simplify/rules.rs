@@ -3287,3 +3287,44 @@ mod tests {
         assert_eq!(crate::simplify::simplify(e, &pool).value, e);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking (see TESTING.md § Kani)
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// Newton's `integer_sqrt_u64` returns `⌊√n⌋` with no overflow in
+    /// `x + n / x`. Bounds: `n < 2^16` (each Newton round is a symbolic
+    /// 64-bit division; from `x = n` the iteration needs ≤ 12 rounds here).
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn integer_sqrt_u64_is_floor_sqrt() {
+        let n: u64 = kani::any_where(|n: &u64| *n < (1 << 16));
+        let x = integer_sqrt_u64(n).unwrap();
+        assert!(x * x <= n);
+        assert!((x + 1) * (x + 1) > n);
+    }
+
+    /// Saturating count of distributed products: exact when `m^n` fits,
+    /// `u64::MAX` otherwise. Bounds: `summands < 2^8`, `exp <= 9` (enough
+    /// to cross 2^64: 255^9 > 2^71).
+    #[kani::proof]
+    #[kani::unwind(11)]
+    fn expansion_products_saturates() {
+        let m: usize = kani::any_where(|m: &usize| *m < (1 << 8));
+        let n: u32 = kani::any_where(|n: &u32| *n <= 9);
+        let mut exact: u128 = 1;
+        for _ in 0..n {
+            exact *= m as u128;
+        }
+        let got = expansion_products(m, n);
+        if exact <= u64::MAX as u128 {
+            assert_eq!(got as u128, exact);
+        } else {
+            assert_eq!(got, u64::MAX);
+        }
+    }
+}

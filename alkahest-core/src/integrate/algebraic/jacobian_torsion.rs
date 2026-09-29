@@ -1395,3 +1395,39 @@ mod tests {
         assert_eq!(find_order_genus_ge2(2, &a, &div), FindOrder::NonElementary);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking (see TESTING.md § Kani)
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// Full width over `a, b < p <= 2^63`. The no-u128 `a + b` needs
+    /// `2p − 2 < 2^64`, so that is the real precondition (every prime used
+    /// here is far below it).
+    #[kani::proof]
+    fn addmod_full_width() {
+        let p: u64 = kani::any_where(|p: &u64| *p >= 1 && *p <= 1 << 63);
+        let a: u64 = kani::any_where(|x: &u64| *x < p);
+        let b: u64 = kani::any_where(|x: &u64| *x < p);
+        let r = addmod(a, b, p);
+        assert!(r < p);
+        assert!(
+            r as u128 == a as u128 + b as u128 || r as u128 + p as u128 == a as u128 + b as u128
+        );
+    }
+
+    /// Full width over `a, b < p`, any `p >= 1`: canonical, `r + b ≡ a`.
+    #[kani::proof]
+    fn submod_full_width() {
+        let p: u64 = kani::any_where(|p: &u64| *p >= 1);
+        let a: u64 = kani::any_where(|x: &u64| *x < p);
+        let b: u64 = kani::any_where(|x: &u64| *x < p);
+        let r = submod(a, b, p);
+        assert!(r < p);
+        let s = r as u128 + b as u128;
+        assert!(s == a as u128 || s == a as u128 + p as u128);
+    }
+}

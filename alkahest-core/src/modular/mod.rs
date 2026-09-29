@@ -139,7 +139,10 @@ impl ModularValue {
             self.modulus, other.modulus,
             "ModularValue: mismatched moduli"
         );
-        let v = (self.value + self.modulus - other.value % self.modulus) % self.modulus;
+        // u128 like `add`: `value + modulus` overflows u64 once the modulus
+        // exceeds 2^63 (found by the Kani harness `modular_value_sub_full_width`).
+        let v = ((self.value as u128 + self.modulus as u128 - (other.value % self.modulus) as u128)
+            % self.modulus as u128) as u64;
         ModularValue::new(v, self.modulus)
     }
 
@@ -469,17 +472,26 @@ fn crt_combine(pairs: &[(u64, u64)]) -> (Integer, Integer) {
     for &(ai, pi) in &pairs[1..] {
         // a_new ≡ a (mod m) and a_new ≡ ai (mod pi)
         // a_new = a + m * t, where t ≡ (ai − a) · m⁻¹ (mod pi)
-        let a_mod_pi = rug_mod_u64(&a, pi);
-        let diff = ((ai as u128 + pi as u128 - a_mod_pi as u128) % pi as u128) as u64;
-        let m_mod_pi = rug_mod_u64(&m, pi);
-        let m_inv = mod_inverse_u64(m_mod_pi, pi);
-        let t = ((diff as u128 * m_inv as u128) % pi as u128) as u64;
+        let t = crt_step_u64(rug_mod_u64(&a, pi), rug_mod_u64(&m, pi), ai, pi);
         // a_new = a + m*t; since t < pi, a_new < m*pi = new_m  ✓
         a += m.clone() * t;
         m *= Integer::from(pi);
     }
 
     (a, m)
+}
+
+/// The machine-word half of one CRT step: the `t ∈ [0, pi)` with
+/// `a_mod_pi + m_mod_pi · t ≡ ai (mod pi)`.
+///
+/// Preconditions: `a_mod_pi, m_mod_pi < pi` and `gcd(m_mod_pi, pi) = 1`. Split
+/// out of [`crt_combine`] so the `u64` arithmetic can be model-checked without
+/// the `rug` (GMP) calls around it — see `verification` below.
+#[inline]
+fn crt_step_u64(a_mod_pi: u64, m_mod_pi: u64, ai: u64, pi: u64) -> u64 {
+    let diff = ((ai as u128 + pi as u128 - a_mod_pi as u128) % pi as u128) as u64;
+    let m_inv = mod_inverse_u64(m_mod_pi, pi);
+    ((diff as u128 * m_inv as u128) % pi as u128) as u64
 }
 
 /// Center `a ∈ [0, M)` in the symmetric range `(-M/2, M/2]`.
@@ -551,27 +563,39 @@ pub fn is_prime(n: u64) -> bool {
         &[2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37]
     };
 
-    'outer: for &a in witnesses {
-        if a >= n {
-            continue;
+    for &a in witnesses {
+        if a < n && !miller_rabin_round(n, d, r, a) {
+            return false;
         }
-        let mut x = pow_mod(a, d, n);
-        if x == 1 || x == n - 1 {
-            continue;
-        }
-        for _ in 0..r - 1 {
-            x = mul_mod(x, x, n);
-            if x == n - 1 {
-                continue 'outer;
-            }
-        }
-        return false;
     }
     true
 }
 
+/// One Miller–Rabin round: `true` if `n` is a strong probable prime to base
+/// `a`, where `n − 1 = 2^r · d` with `d` odd.
+///
+/// Preconditions (established by [`is_prime`]): `n >= 2`, `1 <= r <= 63`.
+/// Split out so the model checker can treat the witness loop and the squaring
+/// loop separately — nested, they unroll to 66 × 66 copies.
+fn miller_rabin_round(n: u64, d: u64, r: u32, a: u64) -> bool {
+    let mut x = pow_mod(a, d, n);
+    if x == 1 || x == n - 1 {
+        return true;
+    }
+    for _ in 0..r - 1 {
+        x = mul_mod(x, x, n);
+        if x == n - 1 {
+            return true;
+        }
+    }
+    false
+}
+
 fn pow_mod(mut base: u64, mut exp: u64, modulus: u64) -> u64 {
-    let mut result = 1u64;
+    // `1 % modulus`, not `1`: for `modulus = 1` and `exp = 0` the answer is
+    // the residue 0, and a bare `1` escaped the `[0, modulus)` range (found by
+    // Kani; now pinned by `pow_mod_exp_zero_full_width`; `is_prime` never passes 1).
+    let mut result = 1 % modulus;
     base %= modulus;
     while exp > 0 {
         if exp & 1 == 1 {
@@ -586,6 +610,311 @@ fn pow_mod(mut base: u64, mut exp: u64, modulus: u64) -> u64 {
 #[inline]
 fn mul_mod(a: u64, b: u64, m: u64) -> u64 {
     ((a as u128 * b as u128) % m as u128) as u64
+}
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking
+// ---------------------------------------------------------------------------
+//
+// Run with (see TESTING.md § Kani):
+//   cargo kani -p alkahest-cas -Z stubbing --harness modular::verification::
+//
+// Each harness states the exact input region it covers. "Full width" means
+// every u64 value the preconditions allow; anything narrower is written down
+// next to the harness, together with why it was narrowed. What is *not*
+// claimed anywhere below: that the Miller–Rabin witness sets in `is_prime`
+// decide primality. That is a number-theoretic fact (Jaeschke / Sorenson–Webster
+// bounds), not something a bit-level model checker can establish; the
+// harnesses only show `is_prime` cannot panic or overflow.
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// Stand-ins for the compositional harnesses. Each returns an arbitrary
+    /// value in `[0, m)`. For `mul_mod` and `pow_mod` that contract is proven
+    /// at full width below; for `mod_inverse_u64` only on bounded ranges (see
+    /// `crt_step_u64_no_overflow_full_width`).
+    /// Referenced only from `#[kani::stub]`, which rustc's dead-code pass
+    /// does not see.
+    #[allow(dead_code)]
+    mod stubs {
+        fn any_below(m: u64) -> u64 {
+            kani::any_where(|r: &u64| *r < m)
+        }
+        pub fn mul_mod(_a: u64, _b: u64, m: u64) -> u64 {
+            any_below(m)
+        }
+        pub fn pow_mod(_base: u64, _exp: u64, m: u64) -> u64 {
+            any_below(m)
+        }
+        pub fn mod_inverse_u64(_a: u64, m: u64) -> u64 {
+            any_below(m)
+        }
+        /// Checks the caller meets `miller_rabin_round`'s preconditions,
+        /// which `miller_rabin_round_no_panic_full_width` assumes.
+        pub fn miller_rabin_round(n: u64, _d: u64, r: u32, _a: u64) -> bool {
+            assert!(n >= 2 && r >= 1 && r <= 63);
+            kani::any()
+        }
+    }
+
+    // --- mul_mod -----------------------------------------------------------
+
+    /// Full width: all `a, b` and all `m > 0`. No panic, and the narrowing
+    /// `u128 → u64` cast is lossless because the result is `< m`.
+    #[kani::proof]
+    fn mul_mod_in_range_full_width() {
+        let a: u64 = kani::any();
+        let b: u64 = kani::any();
+        let m: u64 = kani::any_where(|m: &u64| *m > 0);
+        assert!(mul_mod(a, b, m) < m);
+    }
+
+    /// Value check against plain u64 arithmetic. Bounds: `a, b < 2^8`,
+    /// `1 <= m < 2^8` — a full-width `a·b mod m` equality is a 128-bit
+    /// multiply-and-divide circuit; CaDiCaL had not closed it after 35 min
+    /// and Kissat after 24 min, when both were stopped.
+    #[kani::proof]
+    fn mul_mod_matches_u64_small() {
+        let a: u64 = kani::any_where(|a: &u64| *a < (1 << 8));
+        let b: u64 = kani::any_where(|b: &u64| *b < (1 << 8));
+        let m: u64 = kani::any_where(|m: &u64| *m >= 1 && *m < (1 << 8));
+        assert_eq!(mul_mod(a, b, m), a * b % m);
+    }
+
+    // --- pow_mod -----------------------------------------------------------
+
+    /// Full width in `base`, `exp` and `m >= 1`, with `mul_mod` replaced by
+    /// its proven contract (any value `< m`, `mul_mod_in_range_full_width`).
+    /// Shows the square-and-multiply loop itself cannot panic or overflow,
+    /// terminates within 64 rounds, and returns a value `< m` — including
+    /// `m = 1`, which returned 1 before the `1 % modulus` fix.
+    #[kani::proof]
+    #[kani::stub(mul_mod, stubs::mul_mod)]
+    #[kani::unwind(66)]
+    fn pow_mod_in_range_full_width() {
+        let base: u64 = kani::any();
+        let exp: u64 = kani::any();
+        let m: u64 = kani::any_where(|m: &u64| *m >= 1);
+        assert!(pow_mod(base, exp, m) < m);
+    }
+
+    /// `x^0 ≡ 1 (mod m)` for every `x` and every `m >= 1`, as a canonical
+    /// residue — so `pow_mod(x, 0, 1) = 0`, the case Kani caught returning 1.
+    ///
+    /// No value check for larger exponents. A chain of modular products is
+    /// an equivalence-of-multipliers problem that SAT does not close: against
+    /// repeated multiplication, `exp <= 3` with `m < 2^8` did not finish in an
+    /// hour, a `u32` re-statement with `m < 2^16` not in 50 minutes, and even
+    /// `exp <= 1` not in 10. The general exponent is left to the unit tests;
+    /// `pow_mod_in_range_full_width` covers panic freedom and range.
+    #[kani::proof]
+    fn pow_mod_exp_zero_full_width() {
+        let base: u64 = kani::any();
+        let m: u64 = kani::any_where(|m: &u64| *m >= 1);
+        assert_eq!(pow_mod(base, 0, m), 1 % m);
+    }
+
+    // --- mod_inverse_u64 ---------------------------------------------------
+    //
+    // "gcd(a, m) = 1" is phrased as "some x < m has a·x ≡ 1": equivalent, and
+    // one multiply instead of a second Euclid loop in the harness.
+
+    /// Small modulus, `a` up to 2^8 (so `a >= m` is covered).
+    /// Bounds: `2 <= m < 2^4`, `a < 2^8`. Result `< m`, and whenever `a` is
+    /// invertible mod `m`, `a · inv ≡ 1 (mod m)`. Tiny because every Euclid
+    /// round is an `i128` division by a symbolic divisor; 8-bit moduli did
+    /// not finish in an hour.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn mod_inverse_small_modulus() {
+        let a: u64 = kani::any_where(|a: &u64| *a < (1 << 8));
+        let m: u64 = kani::any_where(|m: &u64| *m >= 2 && *m < (1 << 4));
+        let inv = mod_inverse_u64(a, m);
+        assert!(inv < m);
+        let x: u64 = kani::any_where(|x: &u64| *x < m);
+        if mul_mod(a, x, m) == 1 {
+            assert_eq!(mul_mod(a, inv, m), 1);
+        }
+    }
+
+    /// Modulus anywhere in the u64 range, up to `u64::MAX`, small `a`: no
+    /// panic or `i128` overflow and a result `< m`. Bounds: `m >= 2` full
+    /// width, `1 <= a < 2^4`. After the first swap the remainders are `< a`,
+    /// so this exercises the casts, a quotient near `2^64`, and the final
+    /// normalisation at the top of the range. (Adding the `a·inv ≡ 1` check
+    /// here — a 128-bit remainder by a full-width symbolic `m` — did not
+    /// finish in 25 minutes even for `a < 4`; the special values below check
+    /// the answer at full width instead.)
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn mod_inverse_in_range_large_modulus() {
+        let a: u64 = kani::any_where(|a: &u64| *a >= 1 && *a < (1 << 4));
+        let m: u64 = kani::any_where(|m: &u64| *m >= 2);
+        assert!(mod_inverse_u64(a, m) < m);
+    }
+
+    /// Exact inverses at full width, where they have a closed form:
+    /// `1⁻¹ = 1` and, for odd `m`, `2⁻¹ = (m+1)/2`. Bounds: every `m >= 3`,
+    /// so the i128 path — a quotient of `m` itself, the sign flip and the
+    /// final normalisation — is checked up to `u64::MAX`. (`(m−1)⁻¹ = m−1`
+    /// was dropped: its `m / (m−1)` is a division by a symbolic divisor and
+    /// did not finish in 25 minutes.)
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn mod_inverse_special_values_full_width() {
+        let m: u64 = kani::any_where(|m: &u64| *m >= 3);
+        assert_eq!(mod_inverse_u64(1, m), 1);
+        if m % 2 == 1 {
+            assert_eq!(mod_inverse_u64(2, m), m / 2 + 1);
+        }
+    }
+
+    // --- crt_combine (u64 step) --------------------------------------------
+
+    /// One CRT step: for `ai, a_mod_pi, m_mod_pi < pi` with `m_mod_pi`
+    /// invertible mod `pi`, the returned `t` is `< pi` and
+    /// `a_mod_pi + m_mod_pi · t ≡ ai (mod pi)` — i.e. `a + M·t` satisfies both
+    /// congruences. Bounds: `2 <= pi < 2^4` (the inverse loop, as above).
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn crt_step_u64_solves_congruence() {
+        let pi: u64 = kani::any_where(|p: &u64| *p >= 2 && *p < (1 << 4));
+        let ai: u64 = kani::any_where(|x: &u64| *x < pi);
+        let a_mod_pi: u64 = kani::any_where(|x: &u64| *x < pi);
+        let m_mod_pi: u64 = kani::any_where(|x: &u64| *x < pi);
+        let x: u64 = kani::any_where(|x: &u64| *x < pi);
+        kani::assume(m_mod_pi * x % pi == 1);
+        let t = crt_step_u64(a_mod_pi, m_mod_pi, ai, pi);
+        assert!(t < pi);
+        assert_eq!((a_mod_pi + m_mod_pi * t) % pi, ai);
+    }
+
+    /// Panic freedom of the step's own arithmetic at full width, with the
+    /// inverse replaced by an arbitrary value `< pi`. That contract holds
+    /// whenever `mod_inverse_u64` returns — its last step is a `rem_euclid`-
+    /// style `% m` — and is checked above on the ranges where it finishes;
+    /// full-width panic freedom of the inverse itself is *not* proven.
+    /// Bounds: `pi >= 2` full width, `ai, a_mod_pi, m_mod_pi < pi`.
+    #[kani::proof]
+    #[kani::stub(mod_inverse_u64, stubs::mod_inverse_u64)]
+    fn crt_step_u64_no_overflow_full_width() {
+        let pi: u64 = kani::any_where(|p: &u64| *p >= 2);
+        let ai: u64 = kani::any_where(|x: &u64| *x < pi);
+        let a_mod_pi: u64 = kani::any_where(|x: &u64| *x < pi);
+        let m_mod_pi: u64 = kani::any_where(|x: &u64| *x < pi);
+        assert!(crt_step_u64(a_mod_pi, m_mod_pi, ai, pi) < pi);
+    }
+
+    // --- ModularValue ------------------------------------------------------
+
+    fn any_value() -> ModularValue {
+        let modulus: u64 = kani::any_where(|m: &u64| *m > 0);
+        any_value_mod(modulus)
+    }
+
+    fn any_value_mod(modulus: u64) -> ModularValue {
+        let value: u64 = kani::any_where(|v: &u64| *v < modulus);
+        ModularValue { value, modulus }
+    }
+
+    /// Full width: every modulus `> 0` and residues in `[0, m)`.
+    #[kani::proof]
+    fn modular_value_add_full_width() {
+        let a = any_value();
+        let b = any_value_mod(a.modulus);
+        let r = a.add(&b);
+        let s = a.value as u128 + b.value as u128;
+        let m = a.modulus as u128;
+        assert_eq!(r.value as u128, if s >= m { s - m } else { s });
+        assert_eq!(r.modulus, a.modulus);
+    }
+
+    /// Full width: every modulus `> 0` and residues in `[0, m)`.
+    #[kani::proof]
+    fn modular_value_sub_full_width() {
+        let a = any_value();
+        let b = any_value_mod(a.modulus);
+        let r = a.sub(&b);
+        let expect = if a.value >= b.value {
+            a.value - b.value
+        } else {
+            a.modulus - (b.value - a.value)
+        };
+        assert_eq!(r.value, expect);
+    }
+
+    /// Full width: every modulus `> 0` and residues in `[0, m)`; the result
+    /// is a canonical residue (no panic, lossless narrowing). The value itself
+    /// is `mul_mod`'s formula, checked by `mul_mod_matches_u64_small`.
+    #[kani::proof]
+    fn modular_value_mul_in_range_full_width() {
+        let a = any_value();
+        let b = any_value_mod(a.modulus);
+        let r = a.mul(&b);
+        assert!(r.value < a.modulus);
+        assert_eq!(r.modulus, a.modulus);
+    }
+
+    /// Full width: `a + (−a) ≡ 0` and the result is a canonical residue.
+    #[kani::proof]
+    fn modular_value_neg_full_width() {
+        let a = any_value();
+        let n = a.neg();
+        assert!(n.value < a.modulus);
+        assert_eq!((a.value as u128 + n.value as u128) % a.modulus as u128, 0);
+    }
+
+    // --- is_prime ------------------------------------------------------------
+
+    /// Panic/overflow freedom of `is_prime` for **every** `u64`, with each
+    /// Miller–Rabin round replaced by a stub that *asserts* the round's
+    /// preconditions (`n >= 2`, `1 <= r <= 63`) and returns an arbitrary
+    /// verdict. Covers the trial-division prefix, the `n − 1 = 2^r · d`
+    /// decomposition (≤ 63 halvings, `r` never 0 because `n` is odd there),
+    /// and both witness tables. Says nothing about whether the answer is
+    /// right — see the note at the top of this section.
+    #[kani::proof]
+    #[kani::stub(miller_rabin_round, stubs::miller_rabin_round)]
+    #[kani::unwind(66)]
+    fn is_prime_no_panic_full_width() {
+        let n: u64 = kani::any();
+        let _ = is_prime(n);
+    }
+
+    /// Panic/overflow freedom of one Miller–Rabin round over its whole
+    /// precondition (`n >= 2`, `1 <= r <= 63`; `d`, `a` full width), with
+    /// `pow_mod` / `mul_mod` replaced by their proven contract (any value in
+    /// `[0, n)`). Together with the harness above, `is_prime` cannot panic.
+    #[kani::proof]
+    #[kani::stub(pow_mod, stubs::pow_mod)]
+    #[kani::stub(mul_mod, stubs::mul_mod)]
+    #[kani::unwind(64)]
+    fn miller_rabin_round_no_panic_full_width() {
+        let n: u64 = kani::any_where(|n: &u64| *n >= 2);
+        let r: u32 = kani::any_where(|r: &u32| *r >= 1 && *r <= 63);
+        let _ = miller_rabin_round(n, kani::any(), r, kani::any());
+    }
+
+    /// End-to-end agreement with trial division, unstubbed, for `n < 2^6`.
+    /// Exhaustive testing in model-checker form: it pins the small cases
+    /// (where witnesses `a >= n` are skipped) and proves nothing about large
+    /// `n`.
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn is_prime_small_agrees_with_trial_division() {
+        let n: u64 = kani::any_where(|n: &u64| *n < (1 << 6));
+        let mut expect = n >= 2;
+        let mut q = 2;
+        while q * q <= n {
+            if n % q == 0 {
+                expect = false;
+            }
+            q += 1;
+        }
+        assert_eq!(is_prime(n), expect);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -640,6 +969,16 @@ mod tests {
         assert_eq!(mod_inverse_u64(3, 7), 5); // 3·5 = 15 ≡ 1 (mod 7)
         assert_eq!(mod_inverse_u64(2, 101), 51); // 2·51 = 102 ≡ 1 (mod 101)
         assert_eq!(mod_inverse_u64(1, 7), 1);
+    }
+
+    // --- pow_mod ---
+
+    #[test]
+    fn pow_mod_modulus_one_is_zero() {
+        // Regression (found by Kani): x^0 mod 1 returned 1, outside [0, 1).
+        assert_eq!(pow_mod(5, 0, 1), 0);
+        assert_eq!(pow_mod(5, 3, 1), 0);
+        assert_eq!(pow_mod(5, 0, 7), 1);
     }
 
     // --- reduce_mod ---
@@ -911,6 +1250,18 @@ mod tests {
         let a = ModularValue::new(3, 7);
         let b = ModularValue::new(5, 7);
         assert_eq!(a.sub(&b), ModularValue::new(5, 7)); // (3-5) mod 7 = -2 ≡ 5
+    }
+
+    #[test]
+    fn modular_value_sub_modulus_above_2_63() {
+        // Regression (found by Kani): `value + modulus` overflowed u64 for a
+        // modulus > 2^63 — a debug-build panic, a wrapped wrong residue in
+        // release. 18446744073709551557 = 2^64 − 59 is the largest u64 prime.
+        let m = 18_446_744_073_709_551_557u64;
+        let a = ModularValue::new(m - 1, m);
+        let b = ModularValue::new(1, m);
+        assert_eq!(a.sub(&b), ModularValue::new(m - 2, m));
+        assert_eq!(b.sub(&a), ModularValue::new(2, m));
     }
 
     #[test]

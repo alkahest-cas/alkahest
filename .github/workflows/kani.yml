@@ -1,0 +1,97 @@
+# Kani bounded model checking of the pure-Rust integer kernels.
+#
+# The harnesses live in `#[cfg(kani)] mod verification` blocks next to the code
+# they check (modular arithmetic, the CRT step, Miller–Rabin panic freedom, …).
+# What each one proves, and over which input range, is in TESTING.md § 7.
+#
+# Two tiers, split by harness name:
+#   * `*_full_width` — every input the precondition allows; seconds to ~3 min each.
+#     Run on every PR and push to main.
+#   * everything else — functional correctness over a stated small range
+#     (a symbolic 64/128-bit divider is expensive for the SAT back end, so
+#     these take minutes). Nightly, and on demand.
+#
+# Its own workflow, not a job in ci.yml: nothing waits on it and it waits on
+# nothing, so a slow solver run never holds up Tier 1.
+#
+# No FLINT here. Kani compiles the crate to CBMC goto-programs and never links
+# native libraries, and no harness reaches FLINT/GMP/MPFR code (Kani fails a
+# harness that does, as an unsupported foreign call). `ALKAHEST_SKIP_FLINT_CHECK`
+# only turns off build.rs's "is libflint linkable?" probe, which would otherwise
+# refuse to build. gmp-mpfr-sys still compiles its bundled GMP/MPFR because rug
+# is a dependency; that is most of the build time on a cold cache.
+name: Kani
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "30 3 * * *"   # 03:30 UTC, after ci.yml's 02:00 nightly
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kani-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+env:
+  ALKAHEST_SKIP_FLINT_CHECK: "1"
+
+jobs:
+  full-width:
+    name: Kani — full-width harnesses (alkahest-cas)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-kani-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-kani-
+
+      - name: Run Kani (full-width harnesses)
+        uses: model-checking/kani-github-action@v1
+        with:
+          # Pinned: a new Kani/CBMC can shift solver times or change the
+          # unstable `-Z stubbing` interface under us.
+          kani-version: "0.68.0"
+          args: >-
+            -p alkahest-cas -Z stubbing
+            --harness _full_width
+            --output-format terse -j
+
+  all:
+    name: Kani — all harnesses (alkahest-cas)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-kani-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-kani-
+
+      - name: Run Kani (all harnesses)
+        uses: model-checking/kani-github-action@v1
+        with:
+          kani-version: "0.68.0"
+          args: >-
+            -p alkahest-cas -Z stubbing
+            --output-format terse -j

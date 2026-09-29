@@ -643,3 +643,25 @@ fn euler_phi(n: u64) -> usize {
     }
     result as usize
 }
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking (see TESTING.md § Kani)
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// `isqrt` (an `f64` estimate corrected by integer steps) is exactly
+    /// `⌊√n⌋`, with no overflow in the `x + 1` correction.
+    /// Bounds: `n < 2^16`, where the float estimate is within one of the
+    /// answer, so each correction loop runs at most twice.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn isqrt_is_floor_sqrt() {
+        let n: u64 = kani::any_where(|n: &u64| *n < (1 << 16));
+        let x = isqrt(n);
+        assert!(x * x <= n);
+        assert!((x + 1) * (x + 1) > n);
+    }
+}

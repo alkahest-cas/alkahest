@@ -325,6 +325,18 @@
   `|G| ≤ 200_000` and no ATLAS group fits — enforced, and documented as a
   ceiling rather than an aspiration.
 
+### Fixed
+
+- **`ModularValue::sub` overflowed for a modulus above 2^63.** It formed
+  `value + modulus` in `u64`, which panics in a debug build and, in release,
+  wraps and returns a wrong residue with no error — e.g. modulo the largest
+  64-bit prime `2^64 − 59`, `(m−1) − 1` came out as `m − 61`. It now works in
+  `u128` like `add` already did. Rust API only (`ModularValue` has no Python
+  binding) and no in-crate caller uses a modulus that large. Found by Kani.
+- `modular::pow_mod(x, 0, 1)` returned 1, outside `[0, 1)`; it now starts
+  from `1 % modulus`. Private, and its only caller (`is_prime`) never passes a
+  modulus below 11, so no result changes. Found by Kani.
+
 ### Performance
 
 - **Integers cross between rug and FLINT by limbs, not decimal strings.**
@@ -350,6 +362,19 @@
   one for integers from 0 to ~12 800 bits (plus `0`, `±1`, `i64::MIN/MAX`,
   `u64::MAX`, `±2^64` and FLINT's inline/heap boundary at `2^62`), through
   FLINT arithmetic, polynomial coefficients, and `fmpq` rationals.
+- **Kani bounded model checking** of the pure-Rust integer kernels. Harnesses
+  live in `#[cfg(kani)] mod verification` blocks next to the code they check:
+  `modular` (`mul_mod`, `pow_mod`, `mod_inverse_u64`, the machine-word half of
+  `crt_combine`, `ModularValue` arithmetic, and panic freedom of `is_prime`
+  for every `u64`), the `holonomic::modular` word arithmetic, the GF(p)
+  helpers in `jacobian_torsion`, `puiseux`'s gcd/lcm, the two integer square
+  roots, `expansion_products` and `boundary::ceil_div`. Each harness states
+  the exact input range it covers; the ones named `*_full_width` cover every
+  value the precondition allows and run on every PR (`.github/workflows/kani.yml`),
+  the narrower functional-correctness ones run nightly. See TESTING.md § 7.
+  `is_prime`'s Miller–Rabin round moved into a private helper so the two
+  loops can be checked separately (behaviour unchanged); `crt_combine`'s
+  `u64` step likewise.
 - 201 new Rust tests (46 `ffield`, 60 `group`, 95 `funcfield`) and a
   17-case `tests/silent_errors/corpus/function_fields.py`. The silent-error
   gate reports 0 silent errors across 558 cases.
