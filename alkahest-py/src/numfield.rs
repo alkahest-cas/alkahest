@@ -60,22 +60,15 @@ fn nt_err(e: ArithmeticError) -> PyErr {
 }
 
 /// A decimal string into a Python `int`, with no width limit anywhere on the
-/// path.
+/// path — parsed by GMP and handed over as bytes, so
+/// `sys.get_int_max_str_digits()` does not apply.
 fn py_int(py: Python<'_>, decimal: &str) -> PyResult<PyObject> {
-    Ok(py
-        .import_bound("builtins")?
-        .getattr("int")?
-        .call1((decimal,))?
-        .into())
+    crate::bigint::int_from_decimal(py, decimal)
 }
 
-/// A `rug::Rational` into a `fractions.Fraction`, via its `"p/q"` text.
+/// A `rug::Rational` into a `fractions.Fraction`, built from two ints.
 fn py_fraction(py: Python<'_>, r: &rug::Rational) -> PyResult<PyObject> {
-    Ok(py
-        .import_bound("fractions")?
-        .getattr("Fraction")?
-        .call1((r.to_string(),))?
-        .into())
+    crate::bigint::fraction_to_py(py, r.numer(), r.denom())
 }
 
 /// Read a sequence of coefficients as decimal text.
@@ -87,7 +80,7 @@ fn py_fraction(py: Python<'_>, r: &rug::Rational) -> PyResult<PyObject> {
 fn coeff_strings(obj: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
     let mut out = Vec::new();
     for item in obj.iter()? {
-        out.push(item?.str()?.to_string_lossy().into_owned());
+        out.push(crate::bigint::rational_text_of(&item?)?);
     }
     Ok(out)
 }
@@ -151,7 +144,7 @@ impl PyNumberField {
         self.inner
             .defining_polynomial()
             .iter()
-            .map(|c| py_int(py, &c.to_string()))
+            .map(|c| crate::bigint::int_to_py(py, c))
             .collect()
     }
 
@@ -165,7 +158,7 @@ impl PyNumberField {
     /// this with.
     #[getter]
     fn polynomial_discriminant(&self, py: Python<'_>) -> PyResult<PyObject> {
-        py_int(py, &self.inner.polynomial_discriminant().to_string())
+        crate::bigint::int_to_py(py, &self.inner.polynomial_discriminant())
     }
 
     /// ``n`` if this field was built as ``Q(zeta_n)``, else ``None``.
@@ -394,7 +387,7 @@ impl PyNumberFieldElement {
 fn py_cyclotomic_polynomial_coeffs(py: Python<'_>, n: u64) -> PyResult<Vec<PyObject>> {
     cyclotomic_polynomial(n)
         .iter()
-        .map(|c| py_int(py, &c.to_string()))
+        .map(|c| crate::bigint::int_to_py(py, c))
         .collect()
 }
 
@@ -469,7 +462,7 @@ fn py_stirling_second(py: Python<'_>, n: u64, k: u64) -> PyResult<PyObject> {
 #[pyfunction]
 #[pyo3(name = "moebius_mu")]
 fn py_moebius_mu(n: &Bound<'_, PyAny>) -> PyResult<i32> {
-    let decimal = n.str()?.to_string_lossy().into_owned();
+    let decimal = crate::bigint::decimal_of(n)?;
     moebius_mu(&decimal).map_err(nt_err)
 }
 
@@ -480,7 +473,7 @@ fn py_moebius_mu(n: &Bound<'_, PyAny>) -> PyResult<i32> {
 #[pyfunction]
 #[pyo3(name = "divisor_sigma")]
 fn py_divisor_sigma(py: Python<'_>, k: u64, n: &Bound<'_, PyAny>) -> PyResult<PyObject> {
-    let decimal = n.str()?.to_string_lossy().into_owned();
+    let decimal = crate::bigint::decimal_of(n)?;
     py_int(py, &divisor_sigma(k, &decimal).map_err(nt_err)?)
 }
 
@@ -489,7 +482,7 @@ fn py_divisor_sigma(py: Python<'_>, k: u64, n: &Bound<'_, PyAny>) -> PyResult<Py
 #[pyfunction]
 #[pyo3(name = "sum_of_squares")]
 fn py_sum_of_squares(py: Python<'_>, k: u64, n: &Bound<'_, PyAny>) -> PyResult<PyObject> {
-    let decimal = n.str()?.to_string_lossy().into_owned();
+    let decimal = crate::bigint::decimal_of(n)?;
     py_int(py, &sum_of_squares(k, &decimal).map_err(nt_err)?)
 }
 

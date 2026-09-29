@@ -93,6 +93,9 @@ fn to_rational(obj: &Bound<'_, PyAny>) -> PyResult<Rational> {
     if let Ok(v) = obj.extract::<i64>() {
         return Ok(Rational::from(v));
     }
+    if let Some(r) = crate::bigint::rational_from_py(obj)? {
+        return Ok(r);
+    }
     let s = obj.str()?.to_string_lossy().into_owned();
     Rational::from_str(s.trim()).map_err(|_| {
         PyValueError::new_err(format!("could not read `{s}` as an exact rational number"))
@@ -113,23 +116,13 @@ fn rows_from_py(obj: &Bound<'_, PyAny>) -> PyResult<Vec<Vec<Rational>>> {
 }
 
 fn integer_to_py(py: Python<'_>, i: &Integer) -> PyResult<PyObject> {
-    if let Some(v) = i.to_i64() {
-        return Ok(v.into_py(py));
-    }
-    Ok(py
-        .eval_bound(&format!("int('{i}')"), None, None)?
-        .into_py(py))
+    crate::bigint::int_to_py(py, i)
 }
 
 /// Exact rational back to Python: an `int` when integral, else a
 /// `fractions.Fraction`. Never a `float`.
 fn rational_to_py(py: Python<'_>, r: &Rational) -> PyResult<PyObject> {
-    if r.is_integer() {
-        return integer_to_py(py, r.numer());
-    }
-    let fractions = PyModule::import_bound(py, "fractions")?;
-    let frac = fractions.getattr("Fraction")?;
-    Ok(frac.call1((r.to_string(),))?.into_py(py))
+    crate::bigint::rational_to_py(py, r)
 }
 
 fn matrix_to_py(py: Python<'_>, m: &[Vec<Rational>]) -> PyResult<Vec<Vec<PyObject>>> {

@@ -80,6 +80,9 @@ fn to_rational(obj: &Bound<'_, PyAny>) -> PyResult<Rational> {
     if let Ok(v) = obj.extract::<i64>() {
         return Ok(Rational::from(v));
     }
+    if let Some(r) = crate::bigint::rational_from_py(obj)? {
+        return Ok(r);
+    }
     let s = obj.str()?.to_string_lossy().into_owned();
     Rational::from_str(s.trim()).map_err(|_| {
         PyValueError::new_err(format!("could not read `{s}` as an exact rational number"))
@@ -90,6 +93,9 @@ fn to_integer(obj: &Bound<'_, PyAny>) -> PyResult<Integer> {
     if let Ok(v) = obj.extract::<i64>() {
         return Ok(Integer::from(v));
     }
+    if obj.is_instance_of::<pyo3::types::PyInt>() {
+        return crate::bigint::int_from_py(obj);
+    }
     let s = obj.str()?.to_string_lossy().into_owned();
     Integer::from_str(s.trim())
         .map_err(|_| PyValueError::new_err(format!("could not read `{s}` as an integer")))
@@ -98,24 +104,11 @@ fn to_integer(obj: &Bound<'_, PyAny>) -> PyResult<Integer> {
 /// Exact rational back to Python: an `int` when integral, else a
 /// `fractions.Fraction`.
 fn rational_to_py(py: Python<'_>, r: &Rational) -> PyResult<PyObject> {
-    if r.is_integer() {
-        return integer_to_py(py, r.numer());
-    }
-    // `Fraction("9/4")` — the single-string form, because `Fraction(str, str)`
-    // rejects its arguments and the integers may not fit a machine word.
-    let fractions = PyModule::import_bound(py, "fractions")?;
-    let frac = fractions.getattr("Fraction")?;
-    Ok(frac.call1((r.to_string(),))?.into_py(py))
+    crate::bigint::rational_to_py(py, r)
 }
 
 fn integer_to_py(py: Python<'_>, i: &Integer) -> PyResult<PyObject> {
-    if let Some(v) = i.to_i64() {
-        return Ok(v.into_py(py));
-    }
-    // Arbitrary precision: hand Python the decimal digits.
-    Ok(py
-        .eval_bound(&format!("int('{i}')"), None, None)?
-        .into_py(py))
+    crate::bigint::int_to_py(py, i)
 }
 
 fn coeffs_from_py(obj: &Bound<'_, PyAny>) -> PyResult<Vec<Rational>> {

@@ -23,7 +23,7 @@
 //! `table.inner_product(i, i) == 1` a true statement rather than a near miss.
 
 use pyo3::prelude::*;
-use pyo3::types::{PyInt, PyModule};
+use pyo3::types::PyModule;
 
 use alkahest_core::character::{
     CharacterError, CharacterTable, ConjugacyClass, ConjugacyClasses, DEFAULT_CHARACTER_TABLE_CAP,
@@ -44,17 +44,12 @@ fn char_err(e: CharacterError) -> PyErr {
 
 /// A `rug::Integer` as an exact Python `int`, at any size.
 fn big_int(py: Python<'_>, value: &rug::Integer) -> PyResult<PyObject> {
-    let int_cls = py.get_type_bound::<PyInt>();
-    Ok(int_cls.call1((value.to_string(),))?.into_py(py))
+    crate::bigint::int_to_py(py, value)
 }
 
-/// A `rug::Rational` as a `fractions.Fraction`, via its `"p/q"` text.
+/// A `rug::Rational` as a `fractions.Fraction`, built from two ints.
 fn py_fraction(py: Python<'_>, r: &rug::Rational) -> PyResult<PyObject> {
-    Ok(py
-        .import_bound("fractions")?
-        .getattr("Fraction")?
-        .call1((r.to_string(),))?
-        .into())
+    crate::bigint::fraction_to_py(py, r.numer(), r.denom())
 }
 
 // ---------------------------------------------------------------------------

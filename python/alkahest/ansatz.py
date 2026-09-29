@@ -185,12 +185,12 @@ def _rational_value(expr: Any) -> Fraction:
         that lets :func:`fit` *skip* a sample point instead of quietly building
         a row out of ``2 * 0^-1``.
     """
-    node = expr.node()
+    node = expr._node_exact()
     tag = node[0]
     if tag == "integer":
-        return Fraction(int(node[1]))
+        return Fraction(node[1])
     if tag == "rational":
-        return Fraction(int(node[1]), int(node[2]))
+        return Fraction(node[1], node[2])
     if tag == "float":
         return Fraction(str(node[1]))
     if tag == "add":

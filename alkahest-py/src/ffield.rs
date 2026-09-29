@@ -92,7 +92,7 @@ impl PyFiniteField {
         // "this characteristic does not fit in a machine word" — which has a
         // stable code, `E-GFQ-002`, and a documented remediation — into a bare
         // `OverflowError` naming nothing.
-        let decimal = p.str()?.to_string_lossy().into_owned();
+        let decimal = crate::bigint::decimal_of(p)?;
         let base = FiniteField::prime_from_decimal(&decimal).map_err(ff_err)?;
         if k == 1 {
             return Ok(Self { inner: base });

@@ -59,11 +59,11 @@ def _negate_literal(pool, operand):
     their own normalising view of an integer exponent.  This is the first of
     two layers, not a replacement for the second.
     """
-    node = operand.node()
+    node = operand._node_exact()
     if node[0] == "integer":
-        return pool.integer(-int(node[1]))
+        return pool.integer(-node[1])
     if node[0] == "rational":
-        return pool.rational(-int(node[1]), int(node[2]))
+        return pool.rational(-node[1], node[2])
     return None
 
 

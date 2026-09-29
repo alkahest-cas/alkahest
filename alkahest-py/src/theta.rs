@@ -100,12 +100,7 @@ fn ball_from_any(obj: &Bound<'_, PyAny>, prec: u32) -> PyResult<ComplexBall> {
 
 /// Hand Python an exact integer of any size.
 fn integer_to_py(py: Python<'_>, i: &rug::Integer) -> PyResult<PyObject> {
-    if let Some(v) = i.to_i64() {
-        return Ok(v.into_py(py));
-    }
-    Ok(py
-        .eval_bound(&format!("int('{i}')"), None, None)?
-        .into_py(py))
+    crate::bigint::int_to_py(py, i)
 }
 
 #[pymethods]

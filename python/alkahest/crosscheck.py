@@ -364,7 +364,9 @@ class Translator(ABC):
     # -- the walk -----------------------------------------------------------
 
     def _walk(self, expr: Any) -> Any:
-        node = expr.node()
+        # `_node_exact` hands integer/rational payloads over as ints, so a
+        # literal past `sys.get_int_max_str_digits()` translates too.
+        node = expr._node_exact()
         tag = node[0]
         handler = self._DISPATCH.get(tag)
         if handler is None:
@@ -436,8 +438,8 @@ class Translator(ABC):
         lhs, rhs = args
         if lhs.node()[0] != "symbol":
             return None
-        rhs_node = rhs.node()
-        if rhs_node[0] != "integer" or int(rhs_node[1]) != 0:
+        rhs_node = rhs._node_exact()
+        if rhs_node[0] != "integer" or rhs_node[1] != 0:
             return None
         return str(lhs.node()[1]), flag
 
@@ -504,10 +506,10 @@ class SymPyTranslator(Translator):
         return self.sympy.Symbol(name, **self._flags.get(name, {}))
 
     def _integer(self, node: Sequence[Any]) -> Any:
-        return self.sympy.Integer(int(node[1]))
+        return self.sympy.Integer(node[1])
 
     def _rational(self, node: Sequence[Any]) -> Any:
-        return self.sympy.Rational(int(node[1]), int(node[2]))
+        return self.sympy.Rational(node[1], node[2])
 
     def _float(self, node: Sequence[Any]) -> Any:
         # Alkahest prints floats at full precision; ``Float(str)`` keeps every
@@ -1454,8 +1456,8 @@ def _free_symbols(expr: Any) -> dict[str, Any]:
 
 
 def _is_exact_zero(expr: Any) -> bool:
-    node = expr.node()
-    return node[0] == "integer" and int(node[1]) == 0
+    node = expr._node_exact()
+    return node[0] == "integer" and node[1] == 0
 
 
 def _unwrap(value: Any) -> Any:

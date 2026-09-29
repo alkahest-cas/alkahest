@@ -20,7 +20,7 @@
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyInt, PyType};
+use pyo3::types::PyType;
 use rug::{Integer, Rational};
 
 use alkahest_core::experimental::{
@@ -43,18 +43,12 @@ fn coding_err(e: CodingError) -> PyErr {
 
 /// A `rug::Integer` as an exact Python `int`, at any size.
 fn big_int(py: Python<'_>, value: &Integer) -> PyResult<PyObject> {
-    let int_cls = py.get_type_bound::<PyInt>();
-    Ok(int_cls.call1((value.to_string(),))?.into_py(py))
+    crate::bigint::int_to_py(py, value)
 }
 
 /// A `rug::Rational` as an `int` when integral, else a `fractions.Fraction`.
 fn big_rat(py: Python<'_>, value: &Rational) -> PyResult<PyObject> {
-    if value.is_integer() {
-        return big_int(py, value.numer());
-    }
-    let fractions = PyModule::import_bound(py, "fractions")?;
-    let frac = fractions.getattr("Fraction")?;
-    Ok(frac.call1((value.to_string(),))?.into_py(py))
+    crate::bigint::rational_to_py(py, value)
 }
 
 fn int_list(py: Python<'_>, values: &[Integer]) -> PyResult<Vec<PyObject>> {
