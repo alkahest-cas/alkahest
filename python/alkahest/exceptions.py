@@ -79,9 +79,10 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-PARSE-*                  ParseError  (reserved; parser not yet integrated)
     E-DOMAIN-*                 DomainError  (reserved; Python-only pending Rust impl)
     E-CERT-001                 CertificateUnavailableError  (Python-only; certificate ledger)
-    E-BUDGET-001 … E-BUDGET-005 BudgetExceededError (P1 search plumbing item 4;
+    E-BUDGET-001 … E-BUDGET-006 BudgetExceededError (P1 search plumbing item 4;
                                  001 wall clock, 002 max_steps, 003 cancelled,
-                                 004 memory, 005 address-space ceiling)
+                                 004 memory, 005 address-space ceiling,
+                                 006 result larger than the machine / GMP)
     E-VALIDATED-001 … E-VALIDATED-005  ValidatedError (P1 item 9 — validated numerics)
     E-SOS-001 … E-SOS-005      SosError (P1 item 8 — positivity certificates)
     E-HOLO-001 … E-HOLO-064    HolonomicError.  One prefix, five engines:

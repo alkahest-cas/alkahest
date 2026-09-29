@@ -207,15 +207,62 @@ fn check_shape(rows: usize, cols: usize) -> Result<(), FiniteFieldError> {
     Ok(())
 }
 
+/// Refuse, before FLINT sees them, allocations of these `(rows, cols)` shapes
+/// that could not succeed.
+///
+/// [`check_shape`] rejects shapes FLINT cannot address at all; this also
+/// estimates the bytes the matrices need and asks
+/// [`crate::budget::preflight_bytes`] — physical memory, the active budget's
+/// `max_bytes`, and the process's `RLIMIT_AS`. FLINT's matrix constructors
+/// abort the process on a failed allocation, so this is the only point at
+/// which a too-large shape can still be an error. The resource cause is left
+/// in [`crate::budget::take_trip`] for the bindings, since
+/// [`FiniteFieldError`] is exhaustive and reports `E-GFQ-012` alone.
+fn check_alloc(field: &FiniteField, shapes: &[(usize, usize)]) -> Result<(), FiniteFieldError> {
+    // An `nmod` entry is one word. An `fq_nmod` entry is an `nmod_poly_struct`
+    // (six words) plus the `degree` coefficient words FLINT allocates for it.
+    let per_entry: u64 = if field.is_prime_field() {
+        8
+    } else {
+        48 + 8 * field.degree() as u64
+    };
+    crate::budget::clear_trip();
+    let mut bytes: u64 = 0;
+    for &(rows, cols) in shapes {
+        check_shape(rows, cols)?;
+        let entries = rows as u64 * cols as u64;
+        bytes = bytes
+            .saturating_add(entries.saturating_mul(per_entry))
+            .saturating_add(rows as u64 * 8);
+    }
+    if let Err(trip) = crate::budget::preflight_bytes(bytes) {
+        crate::budget::record_trip(trip);
+        let (rows, cols) = shapes
+            .iter()
+            .copied()
+            .max_by_key(|&(r, c)| r as u128 * c as u128)
+            .unwrap_or((0, 0));
+        return Err(FiniteFieldError::DimensionTooLarge { rows, cols });
+    }
+    Ok(())
+}
+
 impl GfMatrix {
+    /// A zero `rows × cols` matrix, after [`check_alloc`].
+    fn alloc(field: &FiniteField, rows: usize, cols: usize) -> Result<Self, FiniteFieldError> {
+        check_alloc(field, &[(rows, cols)])?;
+        Ok(Self::zeros_unchecked(field, rows, cols))
+    }
+
     /// The all-zero `rows × cols` matrix.
     ///
     /// # Errors
     ///
-    /// `E-GFQ-012` when the shape exceeds what FLINT can allocate.
+    /// `E-GFQ-012` when the shape exceeds what FLINT can allocate — more
+    /// entries than it can address, or more memory than the machine, the
+    /// active budget or the address-space limit allows.
     pub fn zeros(field: &FiniteField, rows: usize, cols: usize) -> Result<Self, FiniteFieldError> {
-        check_shape(rows, cols)?;
-        Ok(Self::zeros_unchecked(field, rows, cols))
+        Self::alloc(field, rows, cols)
     }
 
     fn zeros_unchecked(field: &FiniteField, rows: usize, cols: usize) -> Self {
@@ -261,7 +308,7 @@ impl GfMatrix {
         cols: usize,
         entries: &[u64],
     ) -> Result<Self, FiniteFieldError> {
-        check_shape(rows, cols)?;
+        check_alloc(field, &[(rows, cols)])?;
         if entries.len() != rows * cols {
             return Err(FiniteFieldError::DimensionMismatch {
                 op: "fill",
@@ -293,7 +340,7 @@ impl GfMatrix {
         cols: usize,
         entries: &[FieldElement],
     ) -> Result<Self, FiniteFieldError> {
-        check_shape(rows, cols)?;
+        check_alloc(field, &[(rows, cols)])?;
         if entries.len() != rows * cols {
             return Err(FiniteFieldError::DimensionMismatch {
                 op: "fill",
@@ -481,7 +528,7 @@ impl GfMatrix {
             });
         }
         let (r, c) = self.shape();
-        let mut out = Self::zeros_unchecked(&self.field, r, c);
+        let mut out = Self::alloc(&self.field, r, c)?;
         match (&self.repr, &other.repr) {
             // SAFETY: shapes and moduli agree (checked above); all three
             // matrices are live and distinct.
@@ -516,7 +563,7 @@ impl GfMatrix {
             });
         }
         let (r, c) = self.shape();
-        let mut out = Self::zeros_unchecked(&self.field, r, c);
+        let mut out = Self::alloc(&self.field, r, c)?;
         match (&self.repr, &other.repr) {
             // SAFETY: as `add`.
             (Repr::Prime(a), Repr::Prime(b)) => unsafe {
@@ -562,7 +609,7 @@ impl GfMatrix {
             });
         }
         let (r, cols) = self.shape();
-        let mut out = Self::zeros_unchecked(&self.field, r, cols);
+        let mut out = Self::alloc(&self.field, r, cols)?;
         match &self.repr {
             Repr::Prime(a) => {
                 // SAFETY: shapes and moduli agree by construction.
@@ -625,7 +672,9 @@ impl GfMatrix {
                 rhs: other.shape(),
             });
         }
-        let mut out = Self::zeros_unchecked(&self.field, self.nrows(), other.ncols());
+        // A (n×1)·(1×n) product of two tiny matrices is n² entries: the
+        // result's shape, not the operands', is what has to fit.
+        let mut out = Self::alloc(&self.field, self.nrows(), other.ncols())?;
         match (&self.repr, &other.repr) {
             // SAFETY: inner dimensions agree (checked above); the destination
             // was allocated with the product shape.
@@ -708,7 +757,8 @@ impl GfMatrix {
         let wide = n
             .checked_add(m)
             .ok_or(FiniteFieldError::DimensionTooLarge { rows: m, cols: n })?;
-        check_shape(m, wide)?;
+        // The augmented matrix, FLINT's reduced copy of it, R and U.
+        check_alloc(&self.field, &[(m, wide), (m, wide), (m, n), (m, m)])?;
 
         let mut aug = Self::zeros_unchecked(&self.field, m, n + m);
         let mut scratch = NmodPoly::new(self.field.characteristic());
@@ -795,7 +845,8 @@ impl GfMatrix {
     /// `E-GFQ-012` when `ncols × ncols` exceeds what FLINT can allocate.
     pub fn nullspace(&self) -> Result<Self, FiniteFieldError> {
         let (_, n) = self.shape();
-        check_shape(n, n)?;
+        // The n×n basis FLINT fills, and the n×nullity copy returned.
+        check_alloc(&self.field, &[(n, n), (n, n)])?;
         if n == 0 {
             return Self::zeros(&self.field, 0, 0);
         }
@@ -843,6 +894,12 @@ impl GfMatrix {
                 rhs: rhs.shape(),
             });
         }
+        // The solution, and FLINT's working copy of the augmented system.
+        let wide = self.ncols().saturating_add(rhs.ncols());
+        check_alloc(
+            &self.field,
+            &[(self.ncols(), rhs.ncols()), (self.nrows(), wide)],
+        )?;
         let mut out = Self::zeros_unchecked(&self.field, self.ncols(), rhs.ncols());
         let ok = match (&self.repr, &rhs.repr, &mut out.repr) {
             // SAFETY: `x` is (a->c) × (b->c), the shape FLINT requires.
@@ -867,6 +924,8 @@ impl GfMatrix {
     /// `E-GFQ-008` for a non-square matrix, `E-GFQ-009` when it is singular.
     pub fn inverse(&self) -> Result<Self, FiniteFieldError> {
         let n = self.require_square("inverse")?;
+        // The inverse, and FLINT's working copy.
+        check_alloc(&self.field, &[(n, n), (n, n)])?;
         let mut out = Self::zeros_unchecked(&self.field, n, n);
         let ok = match (&self.repr, &mut out.repr) {
             // SAFETY: both matrices are n×n over the same field.

@@ -1242,3 +1242,60 @@ fn hamming_7_4_3_code_over_gf2() {
     }
     assert_eq!(min_w, 3, "Hamming [7,4] has minimum distance 3");
 }
+
+// ---------------------------------------------------------------------------
+// Allocations FLINT cannot survive
+// ---------------------------------------------------------------------------
+
+/// A shape that is addressable but larger than the machine used to reach
+/// `nmod_mat_init`, which aborts the process when the allocation fails.
+#[test]
+fn shape_larger_than_physical_memory_is_refused() {
+    let Some(phys) = crate::budget::memory::physical_memory() else {
+        return;
+    };
+    // (2^31)^2 = 2^62 entries is past MAX_ENTRIES; pick a shape within it
+    // whose entries alone exceed physical memory.
+    let side = ((phys / 8) as f64).sqrt() as usize * 2;
+    if (side as u128) * (side as u128) > 1u128 << 32 {
+        // Beyond the addressability bound anyway: still a refusal.
+        assert!(GfMatrix::zeros(&gf(7), side, side).is_err());
+        return;
+    }
+    let Err(e) = GfMatrix::zeros(&gf(7), side, side) else {
+        panic!("refused");
+    };
+    assert_eq!(e.code(), "E-GFQ-012");
+}
+
+/// Under a memory budget, construction and every derived allocation are
+/// refused before FLINT is asked — including a product of two tiny matrices
+/// whose *result* is n² entries.
+#[test]
+fn derived_allocations_respect_the_memory_budget() {
+    let f = gf(7);
+    let col = GfMatrix::zeros(&f, 65_536, 1).unwrap();
+    let row = GfMatrix::zeros(&f, 1, 65_536).unwrap();
+    // 60000² entries is addressable (below 2³²) but 28 GB: only the budget
+    // can refuse it, which is what this test is about.
+    let wide = GfMatrix::zeros(&f, 1, 60_000).unwrap();
+    let tall = GfMatrix::zeros(&f, 60_000, 1).unwrap();
+    let _g = crate::budget::enter_with_memory(crate::budget::Budget::new(), Some(1 << 30));
+    let check = |r: Result<GfMatrix, FiniteFieldError>, what: &str| {
+        let e = r.err().unwrap_or_else(|| panic!("{what} was not refused"));
+        assert_eq!(e.code(), "E-GFQ-012", "{what}");
+        let trip = crate::budget::take_trip().unwrap_or_else(|| panic!("{what}: no trip"));
+        assert!(trip.code().starts_with("E-BUDGET-"), "{what}: {trip}");
+    };
+    check(col.mul(&row), "65536x1 * 1x65536");
+    check(wide.nullspace(), "nullspace of 1x60000");
+    check(tall.rref().map(|r| r.matrix), "rref of 60000x1");
+    check(GfMatrix::zeros(&f, 40_000, 40_000), "zeros 40000x40000");
+    check(
+        GfMatrix::zeros(&gf8(), 30_000, 30_000),
+        "zeros 30000x30000 over GF(8)",
+    );
+    // Small work under the same budget is unaffected.
+    assert!(row.mul(&col).is_ok());
+    assert!(GfMatrix::identity(&f, 100).unwrap().inverse().is_ok());
+}

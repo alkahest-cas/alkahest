@@ -641,6 +641,54 @@ fn singleton_and_hamming_bounds_are_the_textbook_values() {
     assert_eq!(singleton_bound(4, 3, 4).unwrap(), Integer::from(16));
 }
 
+/// The exponent used to be cast to `u32`: `singleton_bound(2^32 + 5, 1, 2)`
+/// returned 2^5 and `hamming_bound(2^32 + 5, 3, 2)` returned 0. Bounds too
+/// large to hold reached GMP, which raised SIGFPE or aborted.
+#[test]
+fn bounds_too_large_to_hold_are_refused_not_truncated_or_aborted() {
+    let big = (1usize << 32) + 5;
+    // Each call clears the trip slot on entry, so inspect each one before
+    // making the next.
+    let calls: [&dyn Fn() -> Result<Integer, CodingError>; 5] = [
+        &|| singleton_bound(big, 1, 2),
+        &|| hamming_bound(big, 3, 2),
+        &|| singleton_bound(1 << 32, 2, u64::MAX),
+        &|| singleton_bound(1 << 40, 3, 2),
+        &|| hamming_bound(usize::MAX, 1, 2),
+    ];
+    for call in calls {
+        let e = call().unwrap_err();
+        assert_eq!(e.code(), "E-CODE-005", "{e}");
+        let trip = crate::budget::take_trip().expect("the size refusal is recorded");
+        assert!(trip.code().starts_with("E-BUDGET-"), "{trip}");
+    }
+    // Sizes that fit are exact, including past the old u32 cast of `i`.
+    assert_eq!(
+        singleton_bound(1000, 1, 2).unwrap(),
+        Integer::from(2).pow(1000u32)
+    );
+    let n = 200usize;
+    let mut vol = Integer::new();
+    for i in 0..=2u32 {
+        vol += Integer::from(n).binomial(i) * Integer::from(2).pow(i);
+    }
+    assert_eq!(
+        hamming_bound(n, 5, 3).unwrap(),
+        Integer::from(3).pow(n as u32).div_rem_floor(vol).0
+    );
+}
+
+/// `LinearCode::hamming` enumerated every element of the field before
+/// checking `q^r` against the cap: GF(2^32 − 5) asked for ~100 GB and aborted.
+#[test]
+fn hamming_code_over_a_huge_field_is_refused_before_enumerating_it() {
+    let f = FiniteField::prime(4_294_967_291).unwrap();
+    let Err(e) = LinearCode::hamming(&f, 2) else {
+        panic!("refused");
+    };
+    assert_eq!(e.code(), "E-CODE-004");
+}
+
 // ---------------------------------------------------------------------------
 // Refusals
 // ---------------------------------------------------------------------------

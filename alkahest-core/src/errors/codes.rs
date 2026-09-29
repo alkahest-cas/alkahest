@@ -31,7 +31,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-POLY-006", class: "ConversionError", cause: Cause::Unsupported, remediation: Some("only polynomial expressions are supported; remove transcendental functions") },
     ErrorSpec { code: "E-POLY-007", class: "ConversionError", cause: Cause::Domain,      remediation: Some("ensure the denominator is non-zero before converting") },
     ErrorSpec { code: "E-POLY-008", class: "FactorError", cause: Cause::UserInput,   remediation: Some("factorization is only defined for non-zero polynomials") },
-    ErrorSpec { code: "E-POLY-009", class: "FactorError", cause: Cause::UserInput,   remediation: Some("use a modulus ≥ 2 that fits in a machine word (FLINT nmod)") },
+    ErrorSpec { code: "E-POLY-009", class: "FactorError", cause: Cause::UserInput,   remediation: Some("use a prime modulus p ≥ 2 that fits in a machine word (FLINT nmod); ℤ/nℤ for composite n is not a field") },
     ErrorSpec { code: "E-POLY-010", class: "FactorError", cause: Cause::Internal,    remediation: Some("report the polynomial as a minimal failing example") },
     // E-DIFF — DiffError (symbolic + forward-mode)
     ErrorSpec { code: "E-DIFF-001", class: "DiffError", cause: Cause::Unsupported, remediation: Some("register the function in PrimitiveRegistry, or use diff_forward with a custom rule") },
@@ -318,6 +318,9 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // turns GMP's `abort()` under a `ulimit -v` into a catchable refusal.
     ErrorSpec { code: "E-BUDGET-004", class: "BudgetError", cause: Cause::Resource, remediation: Some("raise Budget(max_bytes=...), or ask for a smaller problem (fewer unknowns, a lower order/degree) — the exact coefficients, not the shape of the system, are what grew") },
     ErrorSpec { code: "E-BUDGET-005", class: "BudgetError", cause: Cause::Resource, remediation: Some("raise the process address-space limit (ulimit -v, or the container/cgroup memory limit), or ask for a smaller problem — this refusal replaces the uncatchable abort that would otherwise follow") },
+    // E-BUDGET-006 — BudgetTrip::Oversized: a single result larger than physical
+    // memory, or than GMP can represent as one integer. Fires with no budget.
+    ErrorSpec { code: "E-BUDGET-006", class: "BudgetError", cause: Cause::Resource, remediation: Some("ask for a smaller result (a smaller exponent, degree or shape) — no limit setting can make this one fit; this refusal replaces the uncatchable abort that would otherwise follow") },
     // E-DEPTH — DepthLimitError (expression nesting ceiling; see kernel::depth).
     // Resource, not UserInput: the expression is well-formed, we decline to
     // recurse over it because a native stack overflow would kill the process.

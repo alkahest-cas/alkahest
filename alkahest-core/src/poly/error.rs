@@ -120,7 +120,7 @@ impl ConversionError {
 pub enum FactorError {
     /// The zero polynomial has no multiplicative factorization.
     ZeroPolynomial,
-    /// Modulus must be an integer ≥ 2 for 𝔽_p factoring.
+    /// Modulus must be a prime `p ≥ 2` for 𝔽_p factoring.
     InvalidModulus,
     /// FLINT returned an error (rare for well-formed input).
     FlintFailure,
@@ -130,7 +130,7 @@ impl fmt::Display for FactorError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FactorError::ZeroPolynomial => write!(f, "cannot factor the zero polynomial"),
-            FactorError::InvalidModulus => write!(f, "modulus must be at least 2"),
+            FactorError::InvalidModulus => write!(f, "modulus must be a prime p ≥ 2"),
             FactorError::FlintFailure => {
                 write!(f, "polynomial factorization failed internally (FLINT)")
             }
@@ -153,7 +153,8 @@ impl crate::errors::AlkahestError for FactorError {
         Some(match self {
             FactorError::ZeroPolynomial => "factorization is only defined for non-zero polynomials",
             FactorError::InvalidModulus => {
-                "use a modulus ≥ 2 that fits in a machine word (FLINT `nmod`)"
+                "use a prime modulus p ≥ 2 that fits in a machine word (FLINT `nmod`); \
+                 ℤ/nℤ for composite n is not a field"
             }
             FactorError::FlintFailure => "report the polynomial as a minimal failing example",
         })

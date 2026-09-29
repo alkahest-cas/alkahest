@@ -32,8 +32,8 @@ mod proptests;
 pub use cancel::{cancel, together, together_parts};
 pub use error::{ConversionError, FactorError};
 pub use factor::{
-    factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z, MultiPolyFactorization,
-    UniPolyFactorModP, UniPolyFactorization,
+    factor_multivariate_z, factor_univariate_mod_p, factor_univariate_mod_p_with_unit,
+    factor_univariate_z, MultiPolyFactorization, UniPolyFactorModP, UniPolyFactorization,
 };
 // V2-3 — Sparse interpolation and sparse modular GCD
 pub use gauss::GaussRat;

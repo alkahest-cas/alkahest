@@ -14,7 +14,7 @@ use alkahest_core::{
     emit_horner_c as core_emit_horner_c,
     emit_stablehlo as core_emit_stablehlo,
     eval_interp_checked as core_eval_interp_checked,
-    factor_univariate_mod_p as core_factor_univariate_mod_p,
+    factor_univariate_mod_p_with_unit as core_factor_univariate_mod_p_with_unit,
     // V2-3 — Sparse interpolation and sparse modular GCD
     gcd_sparse_modular as core_gcd_sparse_modular,
     grad as core_grad,
@@ -1173,6 +1173,13 @@ fn conv_error_to_py(e: alkahest_core::ConversionError) -> PyErr {
 
 fn factor_error_to_py(e: FactorError) -> PyErr {
     Python::with_gil(|py| {
+        // A size refusal is reported as `FlintFailure` with its cause left in
+        // the budget's trip slot; raise that as `BudgetExceededError`.
+        if matches!(e, FactorError::FlintFailure) {
+            if let Some(err) = budget_trip_to_py(py) {
+                return err;
+            }
+        }
         let exc_type = py.get_type_bound::<PyFactorError>();
         make_structured_err(py, &exc_type, &e)
     })
@@ -4113,6 +4120,7 @@ fn factor_verification_dict<'py>(py: Python<'py>, verified: bool) -> Bound<'py, 
 #[pyclass(name = "UniPolyFactorModP")]
 struct PyUniPolyFactorModP {
     inner: UniPolyFactorModP,
+    unit: u64,
 }
 
 #[pymethods]
@@ -4120,6 +4128,13 @@ impl PyUniPolyFactorModP {
     #[getter]
     fn modulus(&self) -> u64 {
         self.inner.modulus
+    }
+
+    /// The leading coefficient ``u`` of the input mod ``p``: the input is
+    /// ``u * prod(f**e for f, e in factor_list())`` with every ``f`` monic.
+    #[getter]
+    fn unit(&self) -> u64 {
+        self.unit
     }
 
     fn factor_list(&self) -> Vec<(Vec<u64>, u32)> {
@@ -12541,11 +12556,15 @@ fn py_refine_root(
 
 /// Factor a dense univariate polynomial over :math:`\mathbb{F}_p` from ascending
 /// integer coefficients (reduced mod ``p``).
+///
+/// ``p`` must be prime (``E-POLY-009`` otherwise) and the polynomial non-zero
+/// mod ``p`` (``E-POLY-008``). The factors are monic; ``.unit`` is the leading
+/// coefficient that restores the input.
 #[pyfunction]
 #[pyo3(name = "factor_univariate_mod_p")]
 fn py_factor_univariate_mod_p(coeffs: Vec<i64>, modulus: u64) -> PyResult<PyUniPolyFactorModP> {
-    core_factor_univariate_mod_p(&coeffs, modulus)
-        .map(|inner| PyUniPolyFactorModP { inner })
+    core_factor_univariate_mod_p_with_unit(&coeffs, modulus)
+        .map(|(unit, inner)| PyUniPolyFactorModP { inner, unit })
         .map_err(factor_error_to_py)
 }
 

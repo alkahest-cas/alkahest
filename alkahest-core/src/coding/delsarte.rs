@@ -431,7 +431,10 @@ pub fn delsarte_lp_bound(n: usize, d: usize, q: u64) -> Result<DelsarteBound, Co
 /// `E-CODE-008` for `q < 2`.
 pub fn singleton_bound(n: usize, d: usize, q: u64) -> Result<Integer, CodingError> {
     check_ndq(n, d, q)?;
-    Ok(Integer::from(q).pow((n - d + 1) as u32))
+    let e = n - d + 1;
+    check_power_size(e, q)?;
+    // `check_power_size` bounds `e·log2 q` by 2³¹ bits, so `e` fits a u32.
+    Ok(Integer::from(q).pow(e as u32))
 }
 
 /// The Hamming (sphere-packing) bound
@@ -443,14 +446,43 @@ pub fn singleton_bound(n: usize, d: usize, q: u64) -> Result<Integer, CodingErro
 /// `E-CODE-008` for `q < 2`.
 pub fn hamming_bound(n: usize, d: usize, q: u64) -> Result<Integer, CodingError> {
     check_ndq(n, d, q)?;
+    check_power_size(n, q)?;
     let t = (d - 1) / 2;
     let qm1 = Integer::from(q) - 1u32;
-    let mut volume = Integer::from(0);
-    for i in 0..=t {
-        volume += super::krawtchouk::binomial(n, i) * qm1.clone().pow(i as u32);
+    // Σ C(n,i)(q−1)^i, each term from the last: exact, and `n`, `i` never
+    // pass through a narrowing cast.
+    let mut term = Integer::from(1);
+    let mut volume = Integer::from(1);
+    for i in 0..t {
+        term *= &qm1;
+        term *= n - i;
+        term /= i + 1;
+        volume += &term;
     }
+    // `check_power_size` bounds `n·log2 q` by 2³¹ bits, so `n` fits a u32.
     let total = Integer::from(q).pow(n as u32);
     Ok(total.div_rem_floor(volume).0)
+}
+
+/// Refuse `q^e` when it cannot be held. The bounds are `q^(n−d+1)` and `q^n`
+/// exactly; GMP raises `SIGFPE` or aborts for one too large, and the exponent
+/// used to be cast to `u32`, so `2^(2^32 + 5)` silently came out as `2^5`.
+///
+/// The cause is left in [`crate::budget::take_trip`] (the bindings raise it as
+/// `BudgetExceededError`); [`CodingError`] is exhaustive, so the Rust error is
+/// `E-CODE-005` with the largest length that would fit as its cap.
+fn check_power_size(e: usize, q: u64) -> Result<(), CodingError> {
+    let log2_q = 64 - u64::from(q.leading_zeros());
+    let bits = (e as u64).saturating_mul(log2_q);
+    crate::budget::clear_trip();
+    if let Err(trip) = crate::budget::preflight_bignum_bits(bits, 4) {
+        crate::budget::record_trip(trip);
+        return Err(CodingError::LengthTooLarge {
+            n: e,
+            cap: (crate::budget::MAX_INTEGER_BITS / log2_q.max(1)) as usize,
+        });
+    }
+    Ok(())
 }
 
 fn check_ndq(n: usize, d: usize, q: u64) -> Result<(), CodingError> {

@@ -97,4 +97,7 @@ pub mod field;
 mod tests;
 
 pub use error::NumberFieldError;
-pub use field::{cyclotomic_polynomial, NumberField, NumberFieldElement, MAX_FIELD_DEGREE};
+pub use field::{
+    cyclotomic_polynomial, try_cyclotomic_polynomial, NumberField, NumberFieldElement,
+    MAX_CYCLOTOMIC_POLYNOMIAL_DEGREE, MAX_FIELD_DEGREE,
+};

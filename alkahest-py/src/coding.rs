@@ -36,6 +36,13 @@ pyo3::create_exception!(alkahest, PyCodingError, crate::PyAlkahestError);
 
 fn coding_err(e: CodingError) -> PyErr {
     Python::with_gil(|py| {
+        // A bound too large to hold leaves its cause in the budget's trip
+        // slot; raise it as the `BudgetExceededError` other engines raise.
+        if matches!(e, CodingError::LengthTooLarge { .. }) {
+            if let Some(err) = crate::budget_trip_to_py(py) {
+                return err;
+            }
+        }
         let exc_type = py.get_type_bound::<PyCodingError>();
         crate::make_structured_err(py, &exc_type, &e)
     })

@@ -266,6 +266,36 @@ fn page_size() -> u64 {
     })
 }
 
+/// Total physical memory of the machine in bytes, or `None` where it cannot be
+/// read.
+///
+/// Used as a hard ceiling by [`crate::budget::preflight_bytes`]: a single
+/// result larger than the whole machine cannot be allocated whatever the
+/// limits say, and asking GMP or FLINT for it ends in `abort()`. Read once and
+/// cached.
+pub fn physical_memory() -> Option<u64> {
+    static PHYS: OnceLock<Option<u64>> = OnceLock::new();
+    *PHYS.get_or_init(read_physical_memory)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn read_physical_memory() -> Option<u64> {
+    // SAFETY: `sysconf` takes an int and returns a long; no pointers.
+    let pages = unsafe { libc::sysconf(libc::_SC_PHYS_PAGES) };
+    // SAFETY: as above.
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if pages > 0 && page > 0 {
+        Some((pages as u64).saturating_mul(page as u64))
+    } else {
+        None
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn read_physical_memory() -> Option<u64> {
+    None
+}
+
 /// Headroom the address-space guard keeps in reserve below `RLIMIT_AS`.
 ///
 /// Sized to be crossed by *many* checkpoint intervals, not by one: the
