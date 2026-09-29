@@ -407,6 +407,19 @@
   19.3 ms → 22 µs and 14.4 ms → 13 µs. Public signatures are unchanged.
   `fmpq` built from a `rug::Rational` also skips the redundant
   `fmpq_canonicalise` (a gcd), since rug keeps rationals in lowest terms.
+- **Number atoms hash without allocating, and `intern` hashes each node
+  once.** `BigInt`, `BigRat` and `BigFloat` used to hash by formatting
+  themselves as a hex string — a heap allocation on every intern lookup and
+  on every key each time the intern table grew. They now hash their limbs
+  (value-based, so `Hash` still agrees with `Eq`: `+0`/`-0` and every NaN hash
+  alike, and a `BigFloat`'s internal MPFR precision does not leak in, while
+  its `prec` field still does). The intern index also stores each key's hash
+  alongside it, so a miss no longer hashes the `ExprData` a second time and a
+  resize rehashes nothing. Hashing a small integer: 80 → 27 ns; `3^2000`:
+  1.3 µs → 0.1 µs; a `pool.integer(k)` hit 109–125 → 73–109 ns;
+  `pool.float(1.1, 53)` 213–224 → 106–143 ns; a 100 000-bit integer hit
+  38 µs → 3.3–4.2 µs; interning a fresh integer ~1 µs → ~0.5 µs. Nothing
+  persisted these hashes, so no file format or output order changes.
 
 ### Testing and tooling
 

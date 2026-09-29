@@ -19,15 +19,16 @@ pub const POS_INFINITY_SYMBOL: &str = "\u{221e}";
 //     insertion to preserve hash-cons uniqueness:
 //     - Under `--features parallel` we use `DashMap::entry` which holds a
 //       per-shard write-lock only for the duration of the insert.  The
-//       closure passed to `or_insert_with` calls `boxcar::push` (lock-free)
-//       while the shard lock is held, so no two threads can insert the same
-//       key.
+//       vacant-entry branch calls `boxcar::push` (lock-free) while the shard
+//       lock is held, so no two threads can insert the same key.
+//     - Keys are `HashedKey`s (see below): each `ExprData` is hashed once
+//       per `intern`, not once per probe or per table resize.
 //     - Without `parallel` the `Mutex<HashMap>` serialises all inserts as
 //       before; the boxcar push happens while the Mutex is held.
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "parallel")]
-use dashmap::DashMap;
+use dashmap::{mapref::entry::Entry, DashMap};
 
 #[cfg(not(feature = "parallel"))]
 use std::collections::HashMap;
@@ -35,42 +36,135 @@ use std::collections::HashMap;
 #[cfg(not(feature = "parallel"))]
 use std::sync::Mutex;
 
+use std::collections::hash_map::RandomState;
+use std::hash::{BuildHasher, BuildHasherDefault, Hash, Hasher};
+
 // ---------------------------------------------------------------------------
-// PoolState — two variants depending on build features
+// Pre-hashed index keys
+//
+// `intern` used to hash an `ExprData` twice on a miss — once for the lock-free
+// `get`, again inside `entry` — and the map re-hashed every stored `ExprData`
+// each time it grew.  Instead the index key carries its hash, computed exactly
+// once per `intern` call with the pool's `RandomState` (so the table keeps its
+// HashDoS resistance), and the map's own hasher just passes that `u64` through.
+// Lookup, insertion and every resize then cost no `ExprData` hashing at all.
+// ---------------------------------------------------------------------------
+
+/// An `ExprData` together with its (seeded) hash.
+struct HashedKey {
+    hash: u64,
+    data: ExprData,
+}
+
+impl PartialEq for HashedKey {
+    fn eq(&self, other: &Self) -> bool {
+        // The hash comparison is only a fast reject; equality is decided by
+        // the data, so a hash collision can never merge two distinct nodes.
+        self.hash == other.hash && self.data == other.data
+    }
+}
+impl Eq for HashedKey {}
+
+impl Hash for HashedKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_u64(self.hash);
+    }
+}
+
+/// Hasher for [`HashedKey`]: returns the precomputed hash unchanged.
+#[derive(Default)]
+struct PassThroughHasher(u64);
+
+impl Hasher for PassThroughHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write_u64(&mut self, h: u64) {
+        self.0 = h;
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        // Only `HashedKey` is ever hashed with this hasher, and it writes a
+        // single `u64`.  Stay correct (if slow) should that ever change.
+        for &b in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(b);
+        }
+    }
+}
+
+type PassThrough = BuildHasherDefault<PassThroughHasher>;
+
+// ---------------------------------------------------------------------------
+// PoolIndex — two variants depending on build features
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "parallel")]
-struct PoolIndex(DashMap<ExprData, ExprId>);
+struct PoolIndex {
+    map: DashMap<HashedKey, ExprId, PassThrough>,
+    seed: RandomState,
+}
 
 #[cfg(not(feature = "parallel"))]
-struct PoolIndex(HashMap<ExprData, ExprId>);
+struct PoolIndex {
+    map: HashMap<HashedKey, ExprId, PassThrough>,
+    seed: RandomState,
+}
+
+impl PoolIndex {
+    fn key(&self, data: ExprData) -> HashedKey {
+        HashedKey {
+            hash: self.seed.hash_one(&data),
+            data,
+        }
+    }
+}
 
 #[cfg(feature = "parallel")]
 impl PoolIndex {
     fn new() -> Self {
-        PoolIndex(DashMap::new())
+        PoolIndex {
+            map: DashMap::with_hasher(PassThrough::default()),
+            seed: RandomState::new(),
+        }
     }
-    fn get(&self, data: &ExprData) -> Option<ExprId> {
-        self.0.get(data).map(|v| *v)
-    }
-    /// Atomically return the existing id for `key`, or call `f` to produce one
-    /// and insert it.  The DashMap shard write-lock is held for the duration of
-    /// `f`, guaranteeing at most one call to `f` per unique key.
-    fn or_insert_with(&self, key: ExprData, f: impl FnOnce() -> ExprId) -> ExprId {
-        *self.0.entry(key).or_insert_with(f)
+    /// Return the id for `data`, calling `make` to create it if absent.
+    ///
+    /// Hit: one shard read-lock.  Miss: `DashMap::entry` takes the shard
+    /// write-lock and re-probes under it, and `make` runs while that lock is
+    /// held — so two threads interning the same value concurrently serialise on
+    /// the shard, the second finds the first's entry, and `make` runs at most
+    /// once per unique key (hash-cons uniqueness).
+    fn get_or_insert_with(&self, data: ExprData, make: impl FnOnce(&ExprData) -> ExprId) -> ExprId {
+        let key = self.key(data);
+        if let Some(id) = self.map.get(&key) {
+            return *id;
+        }
+        match self.map.entry(key) {
+            Entry::Occupied(o) => *o.get(),
+            Entry::Vacant(v) => {
+                let id = make(&v.key().data);
+                *v.insert(id)
+            }
+        }
     }
 }
 
 #[cfg(not(feature = "parallel"))]
 impl PoolIndex {
     fn new() -> Self {
-        PoolIndex(HashMap::new())
+        PoolIndex {
+            map: HashMap::with_hasher(PassThrough::default()),
+            seed: RandomState::new(),
+        }
     }
-    fn get(&self, data: &ExprData) -> Option<ExprId> {
-        self.0.get(data).copied()
-    }
-    fn insert(&mut self, data: ExprData, id: ExprId) {
-        self.0.insert(data, id);
+    /// Return the id for `data`, calling `make` to create it if absent.  The
+    /// caller holds the index `Mutex`, which serialises every insert.
+    fn get_or_insert_with(
+        &mut self,
+        data: ExprData,
+        make: impl FnOnce(&ExprData) -> ExprId,
+    ) -> ExprId {
+        let key = self.key(data);
+        *self.map.entry(key).or_insert_with_key(|k| make(&k.data))
     }
 }
 
@@ -160,31 +254,24 @@ impl ExprPool {
     /// Intern `data`, returning a shared [`ExprId`]. Identical structures
     /// always return the same id; structural equality ⟺ id equality.
     pub fn intern(&self, data: ExprData) -> ExprId {
+        // `boxcar::push` is lock-free, so it is safe to call while the shard
+        // lock (parallel) or the index Mutex (serial) is held.
+        let make = |d: &ExprData| {
+            let node = self.make_node(d.clone());
+            ExprId(self.nodes.push(node) as u32)
+        };
+
         #[cfg(feature = "parallel")]
         {
-            // Fast path: lock-free DashMap read.
-            if let Some(id) = self.index.get(&data) {
-                return id;
-            }
-            // Slow path: DashMap shard write-lock ensures at most one push
-            // per unique key.  `boxcar::push` is lock-free so it can be
-            // called safely while the shard lock is held.
-            self.index.or_insert_with(data.clone(), || {
-                let node = self.make_node(data);
-                ExprId(self.nodes.push(node) as u32)
-            })
+            self.index.get_or_insert_with(data, make)
         }
 
         #[cfg(not(feature = "parallel"))]
         {
-            let mut idx = self.index.lock().expect("ExprPool index Mutex poisoned");
-            if let Some(id) = idx.get(&data) {
-                return id;
-            }
-            let node = self.make_node(data.clone());
-            let id = ExprId(self.nodes.push(node) as u32);
-            idx.insert(data, id);
-            id
+            self.index
+                .lock()
+                .expect("ExprPool index Mutex poisoned")
+                .get_or_insert_with(data, make)
         }
     }
 
@@ -1189,5 +1276,182 @@ mod flat_arity_cap_tests {
         let z = pool.symbol("z", Domain::Real);
         let inner = pool.mul(vec![x, y]);
         assert_eq!(pool.mul(vec![inner, z]), pool.mul(vec![x, y, z]));
+    }
+}
+
+#[cfg(test)]
+mod intern_index_tests {
+    use super::*;
+    use crate::kernel::Domain;
+    use std::sync::Barrier;
+
+    /// Every thread interns the same values, in a different order, all
+    /// starting at once.  Hash-consing must still give one id per value.
+    #[test]
+    fn concurrent_intern_of_the_same_values_agrees() {
+        const THREADS: usize = 8;
+        const N: i64 = 2_000;
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let before = pool.len();
+        let barrier = Barrier::new(THREADS);
+        let per_thread: Vec<Vec<ExprId>> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..THREADS)
+                .map(|t| {
+                    let (pool, barrier) = (&pool, &barrier);
+                    s.spawn(move || {
+                        barrier.wait();
+                        // Visit 0..N in a thread-specific order (stride coprime
+                        // to N), but record ids by value so they line up.
+                        let stride = [1, 3, 7, 9, 11, 13, 17, 19][t];
+                        let mut ids = vec![ExprId(u32::MAX); 4 * N as usize];
+                        for j in 0..N {
+                            let k = (j * stride) % N;
+                            let i = k as usize;
+                            ids[4 * i] = pool.integer(k - N / 2);
+                            ids[4 * i + 1] = pool.rational(k, 7);
+                            ids[4 * i + 2] = pool.float(k as f64 * 0.25, 53);
+                            ids[4 * i + 3] = pool.add(vec![x, pool.integer(k + N)]);
+                        }
+                        ids
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        for ids in &per_thread[1..] {
+            assert_eq!(ids, &per_thread[0], "threads disagree on an id");
+        }
+        // Distinct values created: N integers in [-N/2, N/2), N rationals
+        // k/7 (the multiples of 7 are integers already present, except those
+        // outside [-N/2, N/2)), N floats, N integers k+N, N sums.
+        let serial = ExprPool::new();
+        let sx = serial.symbol("x", Domain::Real);
+        let serial_before = serial.len();
+        for k in 0..N {
+            serial.integer(k - N / 2);
+            serial.rational(k, 7);
+            serial.float(k as f64 * 0.25, 53);
+            serial.add(vec![sx, serial.integer(k + N)]);
+        }
+        assert_eq!(
+            pool.len() - before,
+            serial.len() - serial_before,
+            "a racing intern created a duplicate node"
+        );
+        // And every id resolves back to the data that produced it.
+        for k in 0..N {
+            let i = 4 * k as usize;
+            assert_eq!(
+                pool.get(per_thread[0][i]),
+                ExprData::Integer(crate::kernel::expr::BigInt(rug::Integer::from(k - N / 2)))
+            );
+        }
+    }
+
+    /// A collision in the 64-bit key hash must not merge distinct nodes: the
+    /// index compares the data, not just the hash.
+    #[test]
+    fn hashed_key_equality_compares_data() {
+        let a = HashedKey {
+            hash: 7,
+            data: ExprData::Integer(crate::kernel::expr::BigInt(1.into())),
+        };
+        let b = HashedKey {
+            hash: 7,
+            data: ExprData::Integer(crate::kernel::expr::BigInt(2.into())),
+        };
+        assert!(a != b);
+    }
+
+    /// Growing the index past many resizes keeps every id stable.
+    #[test]
+    fn ids_survive_index_growth() {
+        let pool = ExprPool::new();
+        let ids: Vec<ExprId> = (0..50_000i64).map(|k| pool.integer(k)).collect();
+        for (k, id) in ids.iter().enumerate() {
+            assert_eq!(pool.integer(k as i64), *id);
+        }
+        assert_eq!(pool.len(), 50_000);
+    }
+}
+
+#[cfg(test)]
+mod intern_timing {
+    //! `#[ignore]`d timing harness for number-atom hashing and interning.
+    //! Run with
+    //! `cargo test --release -p alkahest-core --lib intern_timing -- --ignored --nocapture`.
+    use super::*;
+    use crate::kernel::expr::{BigFloat, BigInt};
+    use rug::ops::Pow;
+    use std::hash::BuildHasher;
+    use std::time::Instant;
+
+    fn per_op(label: &str, iters: u32, mut f: impl FnMut()) {
+        for _ in 0..(iters / 10).max(1) {
+            f();
+        }
+        let t = Instant::now();
+        for _ in 0..iters {
+            f();
+        }
+        let ns = t.elapsed().as_nanos() as f64 / f64::from(iters);
+        println!("{label:<40} {ns:>12.1} ns/op");
+    }
+
+    #[test]
+    #[ignore]
+    fn number_atom_hash_and_intern_timings() {
+        let rs = std::collections::hash_map::RandomState::new();
+        let small = BigInt(rug::Integer::from(123_456_789));
+        let big = BigInt(rug::Integer::from(3).pow(2000));
+        let huge = rug::Integer::from(1) << 100_000u32;
+        let flt = BigFloat {
+            inner: rug::Float::with_val(53, 1.1),
+            prec: 53,
+        };
+        per_op("hash BigInt small", 1_000_000, || {
+            std::hint::black_box(rs.hash_one(std::hint::black_box(&small)));
+        });
+        per_op("hash BigInt 3^2000", 100_000, || {
+            std::hint::black_box(rs.hash_one(std::hint::black_box(&big)));
+        });
+        per_op("hash BigFloat 53-bit", 1_000_000, || {
+            std::hint::black_box(rs.hash_one(std::hint::black_box(&flt)));
+        });
+
+        let p = ExprPool::new();
+        for k in 0..1000i64 {
+            p.integer(k);
+        }
+        let mut k = 0i64;
+        per_op("pool.integer(k) hit", 1_000_000, || {
+            k = (k + 1) % 1000;
+            std::hint::black_box(p.integer(k));
+        });
+        per_op("pool.rational(1,3) hit", 1_000_000, || {
+            std::hint::black_box(p.rational(1, 3));
+        });
+        per_op("pool.float(1.1,53) hit", 1_000_000, || {
+            std::hint::black_box(p.float(1.1, 53));
+        });
+        p.integer(huge.clone());
+        per_op("pool.integer(2^100000) hit", 10_000, || {
+            std::hint::black_box(p.integer(huge.clone()));
+        });
+
+        let fresh = ExprPool::new();
+        let mut n = 0i64;
+        per_op("pool.integer miss (fresh values)", 1_000_000, || {
+            n += 1;
+            std::hint::black_box(fresh.integer(n));
+        });
+        let x = fresh.symbol("x", crate::kernel::Domain::Real);
+        let mut m = 0i64;
+        per_op("pool.add([x, k]) miss", 500_000, || {
+            m += 1;
+            let c = fresh.integer(m);
+            std::hint::black_box(fresh.add(vec![x, c]));
+        });
     }
 }
