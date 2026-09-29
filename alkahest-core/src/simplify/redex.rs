@@ -362,6 +362,8 @@ fn build_levels(root: ExprId, pool: &ExprPool) -> (Vec<Vec<ExprId>>, Table) {
             }
             levels[level].push(id);
         } else {
+            // Lossless: the keys are `ExprId`s (a `u32`), so there are at
+            // most 2^32 of them and `slot.len()` is below 2^32 before insert.
             let next = slot.len() as u32;
             if let std::collections::hash_map::Entry::Vacant(e) = slot.entry(id) {
                 e.insert(Slot {
@@ -646,6 +648,33 @@ mod tests {
             let pool = p();
             let e = build_dag(&pool, &ops, false);
             prop_assert_eq!(simplify_redex(e, &pool).value, simplify(e, &pool).value);
+        }
+
+        /// The dense index mapping: every reached node gets exactly one cell,
+        /// the cells are exactly `0..n` (so `cells[cell]` is always in bounds),
+        /// each node sits in one level at its recorded height, and all of its
+        /// children sit in strictly lower levels.
+        #[test]
+        fn table_cells_are_a_dense_bijection(ops in dag_ops(14)) {
+            let pool = p();
+            let e = build_dag(&pool, &ops, false);
+            let (levels, table) = build_levels(e, &pool);
+            let n = table.slot.len();
+            prop_assert_eq!(table.cells.len(), n);
+            prop_assert_eq!(levels.iter().map(Vec::len).sum::<usize>(), n);
+            let mut cells: Vec<u32> = table.slot.values().map(|s| s.cell).collect();
+            cells.sort_unstable();
+            prop_assert!(cells.iter().copied().eq(0..n as u32));
+            for (h, level) in levels.iter().enumerate() {
+                for &id in level {
+                    prop_assert_eq!(table.slot[&id].height as usize, h);
+                    let mut child_ok = true;
+                    pool.with(id, |d| for_each_child(d, |c| {
+                        child_ok &= (table.slot[&c].height as usize) < h;
+                    }));
+                    prop_assert!(child_ok);
+                }
+            }
         }
     }
 }

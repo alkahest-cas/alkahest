@@ -157,15 +157,35 @@ pub(crate) unsafe fn fmpz_get_rug(f: *const ffi::fmpz) -> rug::Integer {
     let negative = ffi::fmpz_cmp_si(f, 0) < 0;
     let mut abs = FlintInteger::new();
     ffi::fmpz_abs(&mut abs.inner, f);
-    let len = ffi::fmpz_bits(&abs.inner).div_ceil(64) as usize;
-    let mut words = vec![0u64; len];
-    ffi::fmpz_get_ui_array(words.as_mut_ptr(), len as ffi::slong, &abs.inner);
+    let words = fmpz_abs_words(&abs.inner);
     let r = rug::Integer::from_digits(&words, rug::integer::Order::Lsf);
     if negative {
         -r
     } else {
         r
     }
+}
+
+/// Number of 64-bit words that hold a `bits`-bit magnitude: `⌈bits / 64⌉`.
+fn words_for_bits(bits: u64) -> usize {
+    bits.div_ceil(64) as usize
+}
+
+/// The magnitude of the nonnegative `fmpz` at `abs` as least-significant-first
+/// 64-bit words, exactly `⌈fmpz_bits / 64⌉` of them.
+///
+/// Split out of [`fmpz_get_rug`] so the only memory FLINT writes into a Rust
+/// allocation can be model-checked with the FFI stubbed (TESTING.md § 7):
+/// `fmpz_get_ui_array` writes `n` words, so the buffer must hold `n` and `n`
+/// must cover `fmpz_bits`.
+///
+/// # Safety
+/// `abs` must point to an initialised, nonnegative `fmpz`.
+unsafe fn fmpz_abs_words(abs: *const ffi::fmpz) -> Vec<u64> {
+    let len = words_for_bits(ffi::fmpz_bits(abs));
+    let mut words = vec![0u64; len];
+    ffi::fmpz_get_ui_array(words.as_mut_ptr(), len as ffi::slong, abs);
+    words
 }
 
 impl Default for FlintInteger {
@@ -374,7 +394,11 @@ impl FlintIntFactor {
     pub fn base_at(&self, i: usize) -> FlintInteger {
         // A real check, not `debug_assert!`: this is a safe fn, and an index
         // past `len()` reads out of bounds of the FLINT array in release.
-        assert!(i < self.len(), "factor index {i} out of range (len {})", self.len());
+        assert!(
+            i < self.len(),
+            "factor index {i} out of range (len {})",
+            self.len()
+        );
         let mut f = FlintInteger::new();
         // SAFETY: `i < num` so the pointer is in bounds.
         unsafe { ffi::fmpz_set(f.inner_mut_ptr(), self.inner.p.add(i)) };
@@ -385,7 +409,11 @@ impl FlintIntFactor {
     pub fn exp_at(&self, i: usize) -> u64 {
         // A real check, not `debug_assert!`: this is a safe fn, and an index
         // past `len()` reads out of bounds of the FLINT array in release.
-        assert!(i < self.len(), "factor index {i} out of range (len {})", self.len());
+        assert!(
+            i < self.len(),
+            "factor index {i} out of range (len {})",
+            self.len()
+        );
         unsafe { *self.inner.exp.add(i) }
     }
 }
@@ -400,6 +428,81 @@ impl Drop for FlintIntFactor {
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking (TESTING.md § 7)
+// ---------------------------------------------------------------------------
+//
+// FLINT is C: Kani cannot see into it, and a harness that reaches an FFI call
+// fails as an unsupported foreign call. So the harnesses below replace each
+// FLINT function they reach with a Rust *model* of its documented contract
+// (`#[kani::stub(ffi::f, models::f)]`), and check the Rust side against it:
+// the model asserts FLINT's precondition and performs FLINT's memory writes,
+// so an out-of-bounds write into a Rust buffer is a Kani failure.
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// Models of the FLINT calls `fmpz_abs_words` makes. The model `fmpz` is
+    /// not FLINT's tagged word: it stores the bit length of the magnitude it
+    /// stands for, which is all these two functions depend on.
+    mod models {
+        use super::ffi;
+
+        /// `fmpz_bits(f)`: the bit length of `|f|`.
+        pub unsafe fn fmpz_bits(f: *const ffi::fmpz) -> ffi::ulong {
+            *f as ffi::ulong
+        }
+
+        /// `fmpz_get_ui_array(out, n, in)`: requires `n` words to hold `in`
+        /// (FLINT asserts `n >= 1` only in debug builds and otherwise reads
+        /// past the limbs), then writes exactly `n` words, zero-padding.
+        pub unsafe fn fmpz_get_ui_array(
+            out: *mut ffi::ulong,
+            n: ffi::slong,
+            in_: *const ffi::fmpz,
+        ) {
+            let bits = *in_ as u64;
+            assert!(n >= 0, "negative word count");
+            assert!(
+                (n as u128) * 64 >= bits as u128,
+                "buffer does not cover fmpz_bits"
+            );
+            let mut i: isize = 0;
+            while (i as i64) < n {
+                *out.offset(i) = kani::any();
+                i += 1;
+            }
+        }
+    }
+
+    /// Every bit length: `words_for_bits(b)` is the least word count covering
+    /// `b` bits, and fits the `slong` it is handed to FLINT as.
+    #[kani::proof]
+    fn words_for_bits_full_width() {
+        let bits: u64 = kani::any();
+        let n = words_for_bits(bits);
+        assert!(n as u128 * 64 >= bits as u128);
+        assert!(n == 0 || (n as u128 - 1) * 64 < bits as u128);
+        assert!(n as u64 <= i64::MAX as u64);
+    }
+
+    /// With FLINT stubbed by its contract: for every magnitude up to 4 words,
+    /// `fmpz_abs_words` hands FLINT a buffer that covers `fmpz_bits`, every
+    /// word FLINT writes lands inside it, and it returns exactly that many
+    /// words. (The word count is the full-width fact above; four words is
+    /// what keeps the write loop's unrolling small.)
+    #[kani::proof]
+    #[kani::unwind(6)]
+    #[kani::stub(ffi::fmpz_bits, models::fmpz_bits)]
+    #[kani::stub(ffi::fmpz_get_ui_array, models::fmpz_get_ui_array)]
+    fn abs_words_buffer_covers_fmpz_bits_small() {
+        let f: ffi::fmpz = kani::any_where(|b: &ffi::fmpz| (0..=256).contains(b));
+        let words = unsafe { fmpz_abs_words(&f) };
+        assert_eq!(words.len() as u64, (f as u64).div_ceil(64));
+    }
+}
 
 #[cfg(test)]
 mod tests {

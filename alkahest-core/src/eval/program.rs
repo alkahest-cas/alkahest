@@ -251,7 +251,7 @@ impl NumericProgram {
             ops.push(Op { kind, dst });
         }
 
-        Some(Self {
+        let prog = Self {
             n_inputs,
             result: slot_of[&expr],
             template,
@@ -259,7 +259,9 @@ impl NumericProgram {
             operands,
             exp_nodes,
             always_fails,
-        })
+        };
+        debug_assert!(prog.is_well_formed(), "compiled an ill-formed program");
+        Some(prog)
     }
 
     /// A scratch buffer for [`eval_in`](Self::eval_in); reusable across calls.
@@ -340,14 +342,14 @@ impl NumericProgram {
                 OpKind::Mul2(a, b) => 1.0 * s[a as usize] * s[b as usize],
                 OpKind::Add { start, len } => {
                     let mut acc = 0.0f64;
-                    for &a in &self.operands[start as usize..(start + len) as usize] {
+                    for &a in &self.operands[operand_range(start, len)] {
                         acc += s[a as usize];
                     }
                     acc
                 }
                 OpKind::Mul { start, len } => {
                     let mut acc = 1.0f64;
-                    for &a in &self.operands[start as usize..(start + len) as usize] {
+                    for &a in &self.operands[operand_range(start, len)] {
                         acc *= s[a as usize];
                     }
                     acc
@@ -358,7 +360,7 @@ impl NumericProgram {
                 }
                 OpKind::Func1 { f, arg } => f.numeric_f64(&[s[arg as usize]])?,
                 OpKind::FuncN { f, start, len } => {
-                    let args = &self.operands[start as usize..(start + len) as usize];
+                    let args = &self.operands[operand_range(start, len)];
                     if args.len() <= 8 {
                         let mut buf = [0.0f64; 8];
                         for (k, &a) in args.iter().enumerate() {
@@ -379,6 +381,130 @@ impl NumericProgram {
 
 fn slot(n: usize) -> Option<Slot> {
     Slot::try_from(n).ok().filter(|&s| s != u32::MAX)
+}
+
+/// `operands[start..start + len]` as a `usize` range. Summed in `usize`, not
+/// `u32`: `start + len` in `u32` would wrap once the operand list passed
+/// `u32::MAX` entries, which `compile` does not rule out on its own.
+#[inline]
+fn operand_range(start: u32, len: u32) -> std::ops::Range<usize> {
+    start as usize..start as usize + len as usize
+}
+
+impl NumericProgram {
+    /// The invariant `run` relies on for every index it takes: each operation
+    /// writes a fresh slot after the inputs, in increasing order, and reads
+    /// only slots below its own (inputs, constants, or earlier results); every
+    /// operand range lies inside `operands`; a wide power's exponent index is
+    /// `u32::MAX` or inside `exp_nodes`; the result is a slot. `compile`
+    /// `debug_assert`s it, and a Kani harness proves `run` in bounds on any
+    /// program that satisfies it (TESTING.md § 7).
+    #[cfg(any(debug_assertions, kani))]
+    fn is_well_formed(&self) -> bool {
+        let len = self.template.len();
+        if self.n_inputs > len || self.result as usize >= len {
+            return false;
+        }
+        let range_ok = |start: u32, n: u32, dst: Slot| {
+            let r = operand_range(start, n);
+            r.end <= self.operands.len() && self.operands[r].iter().all(|&a| a < dst)
+        };
+        let mut prev: Option<Slot> = None;
+        for op in &self.ops {
+            let dst = op.dst;
+            if (dst as usize) < self.n_inputs
+                || dst as usize >= len
+                || prev.is_some_and(|p| dst <= p)
+            {
+                return false;
+            }
+            prev = Some(dst);
+            let ok = match op.kind {
+                OpKind::Add2(a, b) | OpKind::Mul2(a, b) => a < dst && b < dst,
+                OpKind::Add { start, len } | OpKind::Mul { start, len } => {
+                    range_ok(start, len, dst)
+                }
+                OpKind::Pow { base, exp, wide } => {
+                    base < dst
+                        && exp < dst
+                        && (wide == u32::MAX || (wide as usize) < self.exp_nodes.len())
+                }
+                OpKind::Func1 { arg, .. } => arg < dst,
+                OpKind::FuncN { start, len, .. } => range_ok(start, len, dst),
+            };
+            if !ok {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    const MAX_SLOTS: u32 = 5;
+
+    fn any_arith_op() -> Op {
+        let a: u32 = kani::any_where(|&x| x < MAX_SLOTS);
+        let b: u32 = kani::any_where(|&x| x < MAX_SLOTS);
+        let dst: u32 = kani::any_where(|&x| x < MAX_SLOTS);
+        let kind = match kani::any::<u8>() % 4 {
+            0 => OpKind::Add2(a, b),
+            1 => OpKind::Mul2(a, b),
+            // `a`, `b` double as `start`, `len` of an n-ary range.
+            2 => OpKind::Add { start: a, len: b },
+            _ => OpKind::Mul { start: a, len: b },
+        };
+        Op { kind, dst }
+    }
+
+    /// Any program of up to two arithmetic operations over up to five slots
+    /// and three operand entries — every slot index, operand range and
+    /// destination symbolic — that passes `is_well_formed` runs without an
+    /// out-of-bounds index or a panic. Constants are `1.0`: indexing, not
+    /// arithmetic, is what is checked. `Pow`/`Func*` read slots through the
+    /// same `s[x as usize]` and are bounded by the same clauses, but their
+    /// kernels (`pow_f64`, `dyn Primitive`) are outside what Kani can run.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn run_in_bounds_when_well_formed_small() {
+        let n_slots: usize = kani::any_where(|&n| n >= 1 && n <= MAX_SLOTS as usize);
+        let n_ops: usize = kani::any_where(|&n| n <= 2);
+        let n_operands: usize = kani::any_where(|&n| n <= 3);
+        let mut ops = Vec::new();
+        for _ in 0..n_ops {
+            ops.push(any_arith_op());
+        }
+        let mut operands = Vec::new();
+        for _ in 0..n_operands {
+            operands.push(kani::any_where(|&x: &u32| x < MAX_SLOTS));
+        }
+        let prog = NumericProgram {
+            n_inputs: kani::any_where(|&n| n <= n_slots),
+            template: vec![1.0; n_slots],
+            ops,
+            operands,
+            exp_nodes: Vec::new(),
+            result: kani::any_where(|&x: &u32| x < MAX_SLOTS),
+            always_fails: false,
+        };
+        kani::assume(prog.is_well_formed());
+        let mut scratch = prog.scratch();
+        assert!(prog.run(&mut scratch).is_some());
+    }
+
+    /// `operand_range` never wraps: for every `start` and `len` the range
+    /// has exactly `len` entries (it once summed them in `u32`).
+    #[kani::proof]
+    fn operand_range_no_wrap_full_width() {
+        let start: u32 = kani::any();
+        let len: u32 = kani::any();
+        let r = operand_range(start, len);
+        assert_eq!(r.start, start as usize);
+        assert_eq!(r.end - r.start, len as usize);
+    }
 }
 
 #[cfg(test)]
