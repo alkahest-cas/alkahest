@@ -188,6 +188,42 @@
   caches a pinned release, prints which probe symbols are present, and the
   wheel build now fails loudly if `acb_theta_ql_exact` is absent.
 
+- **One GMP per process in the PyPI wheels: rug now links the system
+  libgmp/libmpfr that FLINT uses.** The extension used to carry *two* GMPs — a
+  static copy that `gmp-mpfr-sys` compiled from source for rug, and the shared
+  libgmp FLINT links — and GMP's allocation hooks are per copy.
+  `Budget(max_bytes=...)` and the address-space guard therefore counted only
+  rug's limbs: a polynomial holding a megabyte-sized FLINT coefficient left
+  `gmp_live_bytes()` flat. The new opt-in `system-gmp` Cargo feature (in both
+  `alkahest-cas` and the Python extension) enables
+  `gmp-mpfr-sys/use-system-libs`, so FLINT's `fmpz` bignums are counted too
+  (`tests/test_resource_budgets.py` pins it, and skips on a build without the
+  feature via `alkahest.alkahest.GMP_SHARED_WITH_FLINT`). It also drops the
+  minutes-long GMP/MPFR compile and the statically linked LGPL GMP. Memory
+  FLINT takes through `flint_malloc` (Arb/Acb mantissas, `nmod` buffers) is
+  still not counted.
+
+  **Every published wheel is built with `system-gmp`** (each wheel's smoke
+  test asserts it), so `pip install alkahest` users get the accounting with no
+  action. **Source builds are unchanged by default**: the feature is not a
+  default, because it needs GMP ≥ 6.3 and MPFR ≥ 4.2 headers and libraries
+  (`gmp-mpfr-sys` refuses anything older) and Ubuntu 22.04 / Debian 12 ship
+  GMP 6.2. To opt in, pass `--features system-gmp` (Ubuntu 24.04, Debian 13,
+  Fedora, Homebrew and MSYS2 qualify). Homebrew users must also export
+  `CPATH`/`LIBRARY_PATH` for the `gmp` and `mpfr` kegs, because `gmp-mpfr-sys`
+  probes with a bare `cc … -lgmp`. `*-windows-msvc` targets are not supported
+  by the feature (the Windows wheel is MinGW, and needs `pkg-config`). rug's
+  unused `complex` feature (and with it any need for MPC) is dropped.
+
+  The manylinux wheel job now source-builds pinned GMP 6.3.0 / MPFR 4.2.2
+  (sha256-checked) before FLINT, since AlmaLinux 8 ships 6.1 / 3.1. That also
+  fixes the manylinux Release job, which had been failing since FLINT 3.5's
+  configure started requiring GMP > 6.2.1. `setup-flint` does the same on any
+  Ubuntu runner whose apt packages are too old (the 22.04 Lean job). A manual
+  dispatch of the Release workflow from a branch other than `main` now builds
+  and smoke-tests every wheel without publishing to TestPyPI, so changes to
+  the wheel build can be checked before they merge.
+
 - **`capabilities()["features"]` gains `arb_backend` and `riemann_theta`.**
   Neither is a Cargo feature; both are probed from `libflint`. They satisfy
   the same falsifiability rule the v3 contract applied when it *removed* two

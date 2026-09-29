@@ -41,6 +41,30 @@
 //!   stops inside that number instead of dying at it. With no limit set
 //!   (`ulimit -v unlimited`), the guard is inert and behaviour is unchanged.
 //!
+//! # Which allocations are seen
+//!
+//! GMP's allocation hooks are per *copy of GMP*, not per process. With the
+//! `system-gmp` feature (opt-in; every PyPI wheel enables it) rug and FLINT link the same shared
+//! libgmp/libmpfr, so the hooks see rug's limbs, MPFR's, and FLINT's `fmpz`
+//! bignums (FLINT promotes a large `fmpz` to an `mpz_t` and grows it through
+//! `mpz_*`, i.e. through these functions). Without the feature, gmp-mpfr-sys
+//! links a private static GMP into this crate; in a shared library such as
+//! the Python extension its symbols stay hidden, FLINT binds to the system
+//! libgmp instead, the hooks reach only rug's copy, and FLINT's bignum memory
+//! escapes both ceilings. (In an executable the linker exports the static
+//! copy to satisfy libflint, so the two happen to coincide there.)
+//!
+//! Sharing the hooks with FLINT is sound: FLINT never calls
+//! `mp_set_memory_functions` (its own `flint_set_memory_functions` governs
+//! `flint_malloc` only), and every block it obtains through GMP it releases
+//! through GMP (`mpz_clear` / `mpz_realloc2`), which passes the true size. The
+//! one mismatch — FLINT's LLP64 `flint_mpz_set_si` compat shim, which fills a
+//! lazily-unallocated `mpz_t` with `flint_malloc` and leaves GMP to free it —
+//! is only ever a free the wrappers never saw allocated, i.e. an under-count,
+//! which `sub_live` saturates. Memory FLINT takes with `flint_malloc` (Arb/Acb
+//! mantissas, `nmod` and matrix buffers, FLINT's `fmpz` page headers) is still
+//! not counted: it never passes through GMP.
+//!
 //! # What remains
 //!
 //! The guard is checkpoint-granular. A single allocation large enough to jump
@@ -316,6 +340,47 @@ mod tests {
             return; // both halves held on an uncontended sample
         }
         panic!("GMP accounting never produced a clean sample; last failure: {last}");
+    }
+
+    /// A bignum FLINT builds (an `fmpz` promoted to `mpz_t` and grown by
+    /// `fmpz_pow_ui`) moves the same counter rug's limbs do.
+    ///
+    /// Not gated on `system-gmp`, and it cannot tell the two builds apart: in
+    /// a test *executable* the linker exports a static GMP's symbols to the
+    /// dynamic table because libflint references them, so FLINT binds to the
+    /// bundled copy and there is one GMP either way. The split only exists in
+    /// the Python `cdylib`, whose version script hides those symbols; the
+    /// discriminating check is `test_gmp_accounting_counts_flint_bignums` in
+    /// `tests/test_resource_budgets.py`. This one pins that nothing about
+    /// FLINT's allocation pattern (sizes, realloc-on-clear) confuses the
+    /// counter.
+    #[test]
+    fn gmp_accounting_sees_flint_bignums() {
+        use crate::flint::FlintInteger;
+        assert!(install(), "GMP accounting must install");
+        // Same process-global-counter caveat, and the same retry, as above.
+        let mut last = String::new();
+        for attempt in 0..8 {
+            let before = gmp_live_bytes();
+            // 3^5_000_000 is ~7.9 Mbit, ~1 MB of limbs, all allocated by
+            // FLINT's `fmpz_pow_ui` through GMP's allocation functions.
+            let big = FlintInteger::from_i64(3).pow(5_000_000);
+            let during = gmp_live_bytes();
+            if during <= before + 500_000 {
+                last = format!("attempt {attempt}: FLINT bignum not counted: {before} -> {during}");
+                drop(big);
+                continue;
+            }
+            drop(big);
+            let after = gmp_live_bytes();
+            if after >= during {
+                last =
+                    format!("attempt {attempt}: FLINT free did not decrement: {during} -> {after}");
+                continue;
+            }
+            return;
+        }
+        panic!("FLINT's GMP allocations are not reaching the hooks; last failure: {last}");
     }
 
     #[test]

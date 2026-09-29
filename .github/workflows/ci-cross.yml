@@ -17,8 +17,13 @@ name: ci-cross
 # compiled for macOS/Windows was the release job itself — which runs on tags,
 # i.e. after the point where a build failure is cheap to fix.
 #
-# Windows cargo steps use `shell: msys2 {0}` so bundled GMP/MPFR builds and
-# the MinGW toolchain are on PATH (same rationale as `release.yml`).
+# Windows cargo steps use `shell: msys2 {0}` so the MinGW toolchain is on PATH
+# (same rationale as `release.yml`). With the `system-gmp` feature (in the matrix below),
+# gmp-mpfr-sys links MSYS2's own libgmp/libmpfr (the ones FLINT uses): its
+# probe compiles and *runs* a test program with MinGW gcc, so /mingw64/bin must
+# be on PATH, and it locates the import libraries with `pkg-config gmp`, which
+# is why mingw-w64-x86_64-pkg-config is installed. Only the
+# no-default-features baseline (bundled GMP) still compiles GMP/MPFR from source.
 
 on:
   pull_request:
@@ -45,15 +50,19 @@ jobs:
         include:
           - os: macos-14
             rust_toolchain: stable
-            features: "parallel egraph cranelift jit"
+            features: "parallel egraph cranelift jit system-gmp"
             python: true
           # MSVC host Rust + gnu target matches `release.yml` wheel builds.
           # Native `*-windows-gnu` rustc makes HOST==TARGET so gmp-mpfr-sys runs
           # GMP's `make check`, which flakes on GitHub's MinGW; cross-building
           # skips those upstream tests while still compiling the same artefact.
+          # (Only the bundled-GMP no-default-features baseline compiles GMP at
+          # all now; the cross setup is kept so it and the wheel stay
+          # MSVC-host → GNU-target, which is also why alkahest-core keeps
+          # gmp-mpfr-sys's `force-cross` feature.)
           - os: windows-2022
             rust_toolchain: stable
-            features: "parallel egraph cranelift"
+            features: "parallel egraph cranelift system-gmp"
             python: false
 
     steps:
@@ -73,7 +82,17 @@ jobs:
       # ── Platform dependencies ────────────────────────────────────────────────
       - name: Install FLINT (macOS)
         if: runner.os == 'macOS'
-        run: brew install flint
+        run: |
+          brew install flint
+          # The `system-gmp` feature (in the matrix) links rug against Homebrew's
+          # gmp/mpfr (the ones flint depends on). gmp-mpfr-sys probes them
+          # with a bare `cc probe.c -lgmp`, and Apple clang does not search
+          # /opt/homebrew, so point CPATH / LIBRARY_PATH at the two kegs.
+          # (Scoped to those kegs rather than all of $(brew --prefix) so no
+          # other Homebrew header can shadow a system one.)
+          gmp=$(brew --prefix gmp); mpfr=$(brew --prefix mpfr)
+          echo "CPATH=$gmp/include:$mpfr/include${CPATH:+:$CPATH}" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=$gmp/lib:$mpfr/lib${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
 
       - name: Install LLVM 21 (macOS, for jit feature)
         if: runner.os == 'macOS'
@@ -162,7 +181,7 @@ jobs:
 
       - name: maturin develop
         if: matrix.python
-        run: .venv/bin/maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
+        run: .venv/bin/maturin develop --manifest-path alkahest-py/Cargo.toml --features "groebner system-gmp"
 
       # Skip `slow` roadmap stress tests here — they still run on Linux tier1. Keeps macOS
       # runners within budget (10-var Zippel × 20 seeds is very CPU-heavy on ARM VMs).
