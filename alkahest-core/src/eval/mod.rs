@@ -6,6 +6,8 @@
 //! single dispatch point and reports unsupported constructs structurally.
 
 mod complex_f64;
+mod id_map;
+pub(crate) mod program;
 mod root_sum;
 pub(crate) mod symbols;
 
@@ -17,6 +19,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 pub use complex_f64::{eval_complex_f64, ComplexF64};
+pub(crate) use id_map::IdMap;
 pub(crate) use root_sum::eval_root_sum_f64;
 
 /// Input bindings and representation selected for an evaluation.
@@ -138,7 +141,13 @@ pub fn eval_exact_rational(
     pool: &ExprPool,
     bindings: &HashMap<ExprId, Rational>,
 ) -> Result<Rational, EvalError> {
-    eval_rational_node(expr, pool, bindings)
+    // One memo per call: pool expressions are DAGs, and a node shared by two
+    // parents used to be evaluated once per *path* to it — exponential on a
+    // recurrence such as Chebyshev's `T_{n+1} = 2x·T_n − T_{n−1}`. The memo
+    // holds only successes; the first failure still aborts the whole call, so
+    // the result (value or error) is the one the tree walk returned.
+    let mut memo = RationalMemo::default();
+    eval_rational_node(expr, pool, bindings, &mut memo)
 }
 
 /// Evaluate using IEEE-754 double precision.
@@ -147,7 +156,9 @@ pub fn eval_f64(
     pool: &ExprPool,
     bindings: &HashMap<ExprId, f64>,
 ) -> Result<f64, EvalError> {
-    let result = eval_f64_node(expr, pool, bindings)?;
+    // Memoized per call for the same reason as [`eval_exact_rational`].
+    let mut memo = F64Memo::default();
+    let result = eval_f64_node(expr, pool, bindings, &mut memo)?;
     if result.is_finite() {
         Ok(result)
     } else {
@@ -171,12 +182,39 @@ fn error(reason: UnsupportedReason) -> EvalError {
     EvalError { reason }
 }
 
+type RationalMemo = IdMap<Rational>;
+
 fn eval_rational_node(
     expr: ExprId,
     pool: &ExprPool,
     bindings: &HashMap<ExprId, Rational>,
+    memo: &mut RationalMemo,
 ) -> Result<Rational, EvalError> {
-    match pool.get(expr) {
+    if let Some(v) = memo.get(&expr) {
+        return Ok(v.clone());
+    }
+    let (value, interior) = pool.with(expr, |data| {
+        let interior = !matches!(
+            data,
+            ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Symbol { .. }
+        );
+        eval_rational_data(expr, data, pool, bindings, memo).map(|v| (v, interior))
+    })?;
+    // A leaf is as cheap to rebuild as to look up; memoize interior nodes.
+    if interior {
+        memo.insert(expr, value.clone());
+    }
+    Ok(value)
+}
+
+fn eval_rational_data(
+    expr: ExprId,
+    data: &ExprData,
+    pool: &ExprPool,
+    bindings: &HashMap<ExprId, Rational>,
+    memo: &mut RationalMemo,
+) -> Result<Rational, EvalError> {
+    match data {
         ExprData::Integer(n) => Ok(Rational::from(n.0.clone())),
         ExprData::Rational(r) => Ok(r.0.clone()),
         ExprData::Float(_) => Err(error(UnsupportedReason::FloatLiteralInExactMode)),
@@ -190,39 +228,39 @@ fn eval_rational_node(
             .ok_or(error(UnsupportedReason::UnboundSymbol { symbol: expr })),
         ExprData::Add(args) => {
             let mut sum = Rational::from(0);
-            for arg in args {
-                sum += eval_rational_node(arg, pool, bindings)?;
+            for &arg in args {
+                sum += eval_rational_node(arg, pool, bindings, memo)?;
             }
             Ok(sum)
         }
         ExprData::Mul(args) => {
             let mut product = Rational::from(1);
-            for arg in args {
-                product *= eval_rational_node(arg, pool, bindings)?;
+            for &arg in args {
+                product *= eval_rational_node(arg, pool, bindings, memo)?;
             }
             Ok(product)
         }
         ExprData::Pow { base, exp } => {
-            let base = eval_rational_node(base, pool, bindings)?;
-            let exponent = integer_exponent(exp, pool)?;
+            let base = eval_rational_node(*base, pool, bindings, memo)?;
+            let exponent = integer_exponent(*exp, pool)?;
             rational_pow(base, &exponent)
         }
         ExprData::Piecewise { branches, default } => {
-            for (condition, value) in branches {
-                if eval_rational_predicate(condition, pool, bindings)? {
-                    return eval_rational_node(value, pool, bindings);
+            for &(condition, value) in branches {
+                if eval_rational_predicate(condition, pool, bindings, memo)? {
+                    return eval_rational_node(value, pool, bindings, memo);
                 }
             }
-            eval_rational_node(default, pool, bindings)
+            eval_rational_node(*default, pool, bindings, memo)
         }
         ExprData::Predicate { .. } => Ok(Rational::from(eval_rational_predicate(
-            expr, pool, bindings,
+            expr, pool, bindings, memo,
         )? as i32)),
         ExprData::Func { name, .. } => Err(error(UnsupportedReason::UnsupportedFunction {
             name: name.clone(),
         })),
         other => Err(error(UnsupportedReason::UnsupportedExpression {
-            kind: expr_kind(&other),
+            kind: expr_kind(other),
         })),
     }
 }
@@ -316,6 +354,7 @@ fn eval_rational_predicate(
     expr: ExprId,
     pool: &ExprPool,
     bindings: &HashMap<ExprId, Rational>,
+    memo: &mut RationalMemo,
 ) -> Result<bool, EvalError> {
     let ExprData::Predicate { kind, args } = pool.get(expr) else {
         return Err(error(UnsupportedReason::IndeterminatePredicate));
@@ -327,10 +366,11 @@ fn eval_rational_predicate(
             predicate_arg(&kind, &args, 0)?,
             pool,
             bindings,
+            memo,
         )?),
         PredicateKind::And => {
             for &arg in &args {
-                if !eval_rational_predicate(arg, pool, bindings)? {
+                if !eval_rational_predicate(arg, pool, bindings, memo)? {
                     return Ok(false);
                 }
             }
@@ -338,7 +378,7 @@ fn eval_rational_predicate(
         }
         PredicateKind::Or => {
             for &arg in &args {
-                if eval_rational_predicate(arg, pool, bindings)? {
+                if eval_rational_predicate(arg, pool, bindings, memo)? {
                     return Ok(true);
                 }
             }
@@ -351,8 +391,8 @@ fn eval_rational_predicate(
         | PredicateKind::Eq
         | PredicateKind::Ne => {
             check_arity(&kind, &args, 2)?;
-            let lhs = eval_rational_node(args[0], pool, bindings)?;
-            let rhs = eval_rational_node(args[1], pool, bindings)?;
+            let lhs = eval_rational_node(args[0], pool, bindings, memo)?;
+            let rhs = eval_rational_node(args[1], pool, bindings, memo)?;
             Ok(match kind {
                 PredicateKind::Lt => lhs < rhs,
                 PredicateKind::Le => lhs <= rhs,
@@ -366,12 +406,38 @@ fn eval_rational_predicate(
     }
 }
 
+/// Per-call memo for [`eval_f64`]: numeric values and predicate truth values
+/// of the nodes already evaluated successfully.
+#[derive(Default)]
+struct F64Memo {
+    values: IdMap<f64>,
+    predicates: IdMap<bool>,
+}
+
 fn eval_f64_node(
     expr: ExprId,
     pool: &ExprPool,
     bindings: &HashMap<ExprId, f64>,
+    memo: &mut F64Memo,
 ) -> Result<f64, EvalError> {
-    match pool.get(expr) {
+    if let Some(&v) = memo.values.get(&expr) {
+        return Ok(v);
+    }
+    // Borrow the node instead of cloning it: `pool.get` copies the argument
+    // vector (and a `Func`'s name) on every visit.
+    let value = pool.with(expr, |data| eval_f64_data(expr, data, pool, bindings, memo))?;
+    memo.values.insert(expr, value);
+    Ok(value)
+}
+
+fn eval_f64_data(
+    expr: ExprId,
+    data: &ExprData,
+    pool: &ExprPool,
+    bindings: &HashMap<ExprId, f64>,
+    memo: &mut F64Memo,
+) -> Result<f64, EvalError> {
+    match data {
         ExprData::Integer(n) => Ok(integer_to_f64(&n.0)),
         ExprData::Rational(r) => Ok(rational_to_f64(&r.0)),
         ExprData::Float(f) => Ok(f.inner.to_f64()),
@@ -381,32 +447,32 @@ fn eval_f64_node(
         // free parameter can still say so.  The imaginary unit is the other
         // named constant and is deliberately *not* resolved here: it has no
         // `f64` value, and `UnboundSymbol` is the honest refusal.
-        ExprData::Symbol { .. } => bindings
+        ExprData::Symbol { name, .. } => bindings
             .get(&expr)
             .copied()
-            .or_else(|| symbols::is_pi(expr, pool).then_some(std::f64::consts::PI))
+            .or_else(|| (name == symbols::PI_NAME).then_some(std::f64::consts::PI))
             .ok_or(error(UnsupportedReason::UnboundSymbol { symbol: expr })),
         ExprData::Add(args) => {
             let mut sum = 0.0;
-            for arg in args {
-                sum += eval_f64_node(arg, pool, bindings)?;
+            for &arg in args {
+                sum += eval_f64_node(arg, pool, bindings, memo)?;
             }
             Ok(sum)
         }
         ExprData::Mul(args) => {
             let mut product = 1.0;
-            for arg in args {
-                product *= eval_f64_node(arg, pool, bindings)?;
+            for &arg in args {
+                product *= eval_f64_node(arg, pool, bindings, memo)?;
             }
             Ok(product)
         }
         ExprData::Pow { base, exp } => {
-            let b = eval_f64_node(base, pool, bindings)?;
-            let e = eval_f64_node(exp, pool, bindings)?;
-            Ok(pow_f64(b, e, || Some(pool.get(exp))))
+            let b = eval_f64_node(*base, pool, bindings, memo)?;
+            let e = eval_f64_node(*exp, pool, bindings, memo)?;
+            Ok(pow_f64(b, e, || Some(pool.get(*exp))))
         }
         ExprData::Func { name, args } if args.len() == 1 => {
-            let arg = eval_f64_node(args[0], pool, bindings)?;
+            let arg = eval_f64_node(args[0], pool, bindings, memo)?;
             match name.as_str() {
                 "sin" => Ok(arg.sin()),
                 "cos" => Ok(arg.cos()),
@@ -422,16 +488,18 @@ fn eval_f64_node(
             name: name.clone(),
         })),
         ExprData::Piecewise { branches, default } => {
-            for (condition, value) in branches {
-                if eval_f64_predicate(condition, pool, bindings)? {
-                    return eval_f64_node(value, pool, bindings);
+            for &(condition, value) in branches {
+                if eval_f64_predicate(condition, pool, bindings, memo)? {
+                    return eval_f64_node(value, pool, bindings, memo);
                 }
             }
-            eval_f64_node(default, pool, bindings)
+            eval_f64_node(*default, pool, bindings, memo)
         }
-        ExprData::Predicate { .. } => Ok(eval_f64_predicate(expr, pool, bindings)? as i32 as f64),
+        ExprData::Predicate { .. } => {
+            Ok(eval_f64_predicate(expr, pool, bindings, memo)? as i32 as f64)
+        }
         other => Err(error(UnsupportedReason::UnsupportedExpression {
-            kind: expr_kind(&other),
+            kind: expr_kind(other),
         })),
     }
 }
@@ -440,6 +508,21 @@ fn eval_f64_predicate(
     expr: ExprId,
     pool: &ExprPool,
     bindings: &HashMap<ExprId, f64>,
+    memo: &mut F64Memo,
+) -> Result<bool, EvalError> {
+    if let Some(&b) = memo.predicates.get(&expr) {
+        return Ok(b);
+    }
+    let value = eval_f64_predicate_uncached(expr, pool, bindings, memo)?;
+    memo.predicates.insert(expr, value);
+    Ok(value)
+}
+
+fn eval_f64_predicate_uncached(
+    expr: ExprId,
+    pool: &ExprPool,
+    bindings: &HashMap<ExprId, f64>,
+    memo: &mut F64Memo,
 ) -> Result<bool, EvalError> {
     let ExprData::Predicate { kind, args } = pool.get(expr) else {
         return Err(error(UnsupportedReason::IndeterminatePredicate));
@@ -451,10 +534,11 @@ fn eval_f64_predicate(
             predicate_arg(&kind, &args, 0)?,
             pool,
             bindings,
+            memo,
         )?),
         PredicateKind::And => {
             for &arg in &args {
-                if !eval_f64_predicate(arg, pool, bindings)? {
+                if !eval_f64_predicate(arg, pool, bindings, memo)? {
                     return Ok(false);
                 }
             }
@@ -462,7 +546,7 @@ fn eval_f64_predicate(
         }
         PredicateKind::Or => {
             for &arg in &args {
-                if eval_f64_predicate(arg, pool, bindings)? {
+                if eval_f64_predicate(arg, pool, bindings, memo)? {
                     return Ok(true);
                 }
             }
@@ -475,8 +559,8 @@ fn eval_f64_predicate(
         | PredicateKind::Eq
         | PredicateKind::Ne => {
             check_arity(&kind, &args, 2)?;
-            let lhs = eval_f64_node(args[0], pool, bindings)?;
-            let rhs = eval_f64_node(args[1], pool, bindings)?;
+            let lhs = eval_f64_node(args[0], pool, bindings, memo)?;
+            let rhs = eval_f64_node(args[1], pool, bindings, memo)?;
             Ok(match kind {
                 PredicateKind::Lt => lhs < rhs,
                 PredicateKind::Le => lhs <= rhs,
@@ -669,6 +753,148 @@ mod tests {
                 .unwrap_err()
                 .reason,
             UnsupportedReason::NonIntegerExponent
+        );
+    }
+
+    /// Chebyshev recurrence `T_{k+1} = 2x·T_k − T_{k−1}`: `~3n` distinct nodes
+    /// but `~fib(n)` root-to-leaf paths, so an unmemoized walk is exponential.
+    fn chebyshev(pool: &ExprPool, x: ExprId, n: usize) -> ExprId {
+        let (two, minus_one) = (pool.integer(2_i32), pool.integer(-1_i32));
+        let (mut a, mut b) = (pool.integer(1_i32), x);
+        for _ in 1..n {
+            let next = pool.add(vec![
+                pool.mul(vec![two, x, b]),
+                pool.mul(vec![minus_one, a]),
+            ]);
+            a = b;
+            b = next;
+        }
+        b
+    }
+
+    #[test]
+    fn every_mode_evaluates_a_shared_dag_in_linear_time() {
+        // T_40 has ~1.6e8 paths: the tree walk this replaces took minutes.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let t40 = chebyshev(&pool, x, 40);
+        let start = std::time::Instant::now();
+
+        // T_n(cos θ) = cos(nθ).
+        let theta = 0.3f64;
+        let v = eval_f64(t40, &pool, &HashMap::from([(x, theta.cos())])).unwrap();
+        assert!((v - (40.0 * theta).cos()).abs() < 1e-8, "{v}");
+
+        let c = eval_complex_f64(
+            t40,
+            &pool,
+            &HashMap::from([(x, ComplexF64::new(theta.cos(), 0.0))]),
+        )
+        .unwrap();
+        assert!((c.re - (40.0 * theta).cos()).abs() < 1e-8, "{c:?}");
+
+        // T_n(1) = 1 exactly; T_n(1/2) = cos(nπ/3) = −1/2 for n = 40.
+        let one = eval_exact_rational(t40, &pool, &HashMap::from([(x, Rational::from(1))]));
+        assert_eq!(one.unwrap(), Rational::from(1));
+        let half = eval_exact_rational(t40, &pool, &HashMap::from([(x, Rational::from((1, 2)))]));
+        assert_eq!(half.unwrap(), Rational::from((-1, 2)));
+
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "took {:?}",
+            start.elapsed()
+        );
+    }
+
+    /// Timing probe for the numeric evaluators (not a CI test):
+    /// `cargo test --release -p alkahest-cas --lib numeric_eval_timings -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn numeric_eval_timings() {
+        use std::time::Instant;
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        // sin(x)·exp(−x²/2) + x³ − 2xy + y²
+        let e = pool.add(vec![
+            pool.mul(vec![
+                pool.func("sin", vec![x]),
+                pool.func(
+                    "exp",
+                    vec![pool.mul(vec![pool.rational(-1, 2), pool.pow(x, pool.integer(2_i32))])],
+                ),
+            ]),
+            pool.pow(x, pool.integer(3_i32)),
+            pool.mul(vec![pool.integer(-2_i32), x, y]),
+            pool.pow(y, pool.integer(2_i32)),
+        ]);
+        let n = 200_000;
+        let per = |label: &str, f: &mut dyn FnMut(f64) -> f64| {
+            let mut best = f64::INFINITY;
+            let mut sink = 0.0;
+            for _ in 0..5 {
+                let t = Instant::now();
+                for i in 0..n {
+                    sink += f(i as f64 * 1e-6);
+                }
+                best = best.min(t.elapsed().as_secs_f64() / n as f64);
+            }
+            println!("{label:44} {:8.1} ns/point  (sink {sink:.3})", best * 1e9);
+        };
+        per("eval::eval_f64 (small)", &mut |v| {
+            eval_f64(e, &pool, &HashMap::from([(x, v), (y, 0.7)])).unwrap()
+        });
+        per("jit::eval_interp (small)", &mut |v| {
+            crate::jit::eval_interp(e, &HashMap::from([(x, v), (y, 0.7)]), &pool).unwrap()
+        });
+        let f = crate::jit::compile(e, &[x, y], &pool).unwrap();
+        per("CompiledFn::call, interpreter tier (small)", &mut |v| {
+            f.call(&[v, 0.7])
+        });
+        let prog = program::NumericProgram::compile(e, &[x, y], &pool).unwrap();
+        let mut scratch = prog.scratch();
+        per("NumericProgram::eval_in (small)", &mut |v| {
+            prog.eval_in(&[v, 0.7], &mut scratch).unwrap()
+        });
+        let s = crate::jit::Sampler::new(e, x, &HashMap::from([(y, 0.7)]), &pool);
+        per("jit::Sampler::eval (small)", &mut |v| s.eval(v).unwrap());
+        let xs: Vec<f64> = (0..n).map(|i| i as f64 * 1e-6).collect();
+        let ys = vec![0.7; n];
+        let mut out = vec![0.0; n];
+        let t = Instant::now();
+        f.call_batch(&[&xs, &ys], &mut out);
+        println!(
+            "{:44} {:8.1} ns/point",
+            "CompiledFn::call_batch, interpreter tier",
+            t.elapsed().as_secs_f64() / n as f64 * 1e9
+        );
+
+        for k in [16usize, 20, 24, 28, 40] {
+            let t_k = chebyshev(&pool, x, k);
+            let t = Instant::now();
+            let v = eval_f64(t_k, &pool, &HashMap::from([(x, 0.3)])).unwrap();
+            println!("eval_f64(T_{k}) {:?} ({v:.6})", t.elapsed());
+        }
+    }
+
+    /// The memo must not change *which* error a failing evaluation reports:
+    /// the first failure in evaluation order still wins.
+    #[test]
+    fn memoized_walk_reports_the_same_first_failure() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let z = pool.symbol("z", Domain::Real);
+        // `Pow` evaluates base before exponent and its operands are not
+        // reordered by the pool, so the first failure is the base's.
+        let shared = pool.func("sin", vec![x]);
+        let base = pool.func("zeta_unknown", vec![shared]);
+        let expr = pool.pow(pool.pow(base, pool.add(vec![shared, z])), shared);
+        let err = eval_f64(expr, &pool, &HashMap::from([(x, 0.5)])).unwrap_err();
+        assert_eq!(
+            err.reason,
+            UnsupportedReason::UnsupportedFunction {
+                name: "zeta_unknown".into()
+            }
         );
     }
 

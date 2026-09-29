@@ -40,6 +40,8 @@
 //! assert!((result - 25.0).abs() < 1e-10);
 //! ```
 
+use crate::eval::program::NumericProgram;
+use crate::eval::IdMap;
 use crate::kernel::eval_const::try_predicate_bool_from_expr;
 use crate::kernel::expr::PredicateKind;
 use crate::kernel::{
@@ -61,7 +63,7 @@ use std::sync::OnceLock;
 /// args }` node through `registry().numeric_f64(name, &vals)` so that *every*
 /// primitive with a `numeric_f64` kernel is automatically evaluable here —
 /// new primitives don't need a hand-written match arm in this module.
-fn registry() -> &'static PrimitiveRegistry {
+pub(crate) fn registry() -> &'static PrimitiveRegistry {
     static REGISTRY: OnceLock<PrimitiveRegistry> = OnceLock::new();
     REGISTRY.get_or_init(PrimitiveRegistry::default_registry)
 }
@@ -218,7 +220,24 @@ enum CompiledFnInner {
     },
 
     Interpreter(InterpreterFn),
+
+    /// The interpreter tier for an expression [`NumericProgram`] can model:
+    /// the DAG flattened once at compile time, so a call is a loop over
+    /// operations with no hashing and no allocation.
+    Program(Box<NumericProgram>),
 }
+
+thread_local! {
+    /// Scratch slots for [`CompiledFn::call`] on the program tier, so a scalar
+    /// call does not allocate. Taken out and put back rather than borrowed, so
+    /// a re-entrant call (a primitive that evaluates something itself) simply
+    /// finds it empty and allocates its own.
+    static PROGRAM_SCRATCH: std::cell::Cell<Vec<f64>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
+/// Points per Rayon task in [`CompiledFn::call_batch_par`].
+#[cfg(feature = "parallel")]
+const PAR_CHUNK: usize = 2048;
 
 /// A compiled function that evaluates a symbolic expression numerically.
 ///
@@ -253,6 +272,17 @@ impl CompiledFn {
                 fn_ptr(inputs.as_ptr(), inputs.len() as u64)
             },
             CompiledFnInner::Interpreter(f) => f(inputs),
+            CompiledFnInner::Program(p) => {
+                let mut scratch = PROGRAM_SCRATCH.with(|c| c.take());
+                if scratch.len() != p.scratch_len() {
+                    scratch = p.scratch();
+                } else {
+                    p.reset_scratch(&mut scratch);
+                }
+                let v = p.eval_in(inputs, &mut scratch).unwrap_or(f64::NAN);
+                PROGRAM_SCRATCH.with(|c| c.set(scratch));
+                v
+            }
         }
     }
 
@@ -301,6 +331,9 @@ impl CompiledFn {
                 )
             };
         }
+        if let CompiledFnInner::Program(p) = &self.inner {
+            return p.eval_columns(inputs_flat, output);
+        }
         let mut point = vec![0.0f64; self.n_inputs];
         for j in 0..n_points {
             for (i, slot) in point.iter_mut().enumerate() {
@@ -331,6 +364,11 @@ impl CompiledFn {
         }
         if self.n_inputs == 0 {
             return;
+        }
+        // The program tier reads the columns in place; the copy below exists
+        // only to give the native bulk entry points their flat layout.
+        if let CompiledFnInner::Program(p) = &self.inner {
+            return p.eval_slices(inputs, output, 0);
         }
         // Column-major flat layout matches `call_bulk` / Python `call_batch_raw`.
         let mut flat = Vec::with_capacity(self.n_inputs * n);
@@ -370,11 +408,25 @@ impl CompiledFn {
             assert_eq!(col.len(), n, "all input arrays must have the same length");
         }
 
-        // Each point `j` is independent — reuse scalar `call` (bulk JIT is sequential).
-        output.par_iter_mut().enumerate().for_each(|(j, out)| {
-            let point: Vec<f64> = inputs.iter().map(|col| col[j]).collect();
-            *out = self.call(&point);
-        });
+        // Each point is independent. Work is split into chunks so the
+        // per-task state (a point buffer, or the program's scratch slots) is
+        // allocated once per chunk rather than once per point.
+        output
+            .par_chunks_mut(PAR_CHUNK)
+            .enumerate()
+            .for_each(|(c, chunk)| {
+                let offset = c * PAR_CHUNK;
+                if let CompiledFnInner::Program(p) = &self.inner {
+                    return p.eval_slices(inputs, chunk, offset);
+                }
+                let mut point = vec![0.0f64; self.n_inputs];
+                for (j, out) in chunk.iter_mut().enumerate() {
+                    for (slot, col) in point.iter_mut().zip(inputs) {
+                        *slot = col[offset + j];
+                    }
+                    *out = self.call(&point);
+                }
+            });
     }
 
     /// Backend tier used to implement this function.
@@ -627,8 +679,83 @@ pub fn compile_jit_only(
 /// Shared subexpressions (same `ExprId`) are evaluated once per call via an
 /// internal memo table.
 pub fn eval_interp(expr: ExprId, env: &HashMap<ExprId, f64>, pool: &ExprPool) -> Option<f64> {
-    let mut memo: HashMap<ExprId, f64> = HashMap::new();
+    let mut memo: IdMap<f64> = IdMap::default();
     eval_interp_inner(expr, env, pool, &mut memo)
+}
+
+/// One expression sampled at many values of one variable, every other binding
+/// held fixed — the shape of the integrator's pole and jump scans.
+///
+/// [`Sampler::eval`]`(t)` returns exactly what
+/// `eval_interp(expr, fixed ∪ {var: t}, pool)` returns, but the expression is
+/// flattened into a [`NumericProgram`] once, so each sample is a pass over a
+/// slot array rather than a hashed walk of the pool. Forms the program does
+/// not model (`Piecewise`, `RootSum`, …) fall back to [`eval_interp`].
+pub(crate) struct Sampler<'a> {
+    expr: ExprId,
+    var: ExprId,
+    pool: &'a ExprPool,
+    state: std::cell::RefCell<SamplerState>,
+}
+
+enum SamplerState {
+    /// `inputs[0]` is `var`; the rest are the fixed bindings.
+    Program {
+        program: NumericProgram,
+        inputs: Vec<f64>,
+        scratch: Vec<f64>,
+    },
+    Walk(HashMap<ExprId, f64>),
+}
+
+impl<'a> Sampler<'a> {
+    pub(crate) fn new(
+        expr: ExprId,
+        var: ExprId,
+        fixed: &HashMap<ExprId, f64>,
+        pool: &'a ExprPool,
+    ) -> Self {
+        let mut vars = vec![var];
+        let mut inputs = vec![0.0];
+        for (&k, &v) in fixed {
+            if k != var {
+                vars.push(k);
+                inputs.push(v);
+            }
+        }
+        let state = match NumericProgram::compile(expr, &vars, pool) {
+            Some(program) => SamplerState::Program {
+                scratch: program.scratch(),
+                program,
+                inputs,
+            },
+            None => SamplerState::Walk(fixed.clone()),
+        };
+        Self {
+            expr,
+            var,
+            pool,
+            state: std::cell::RefCell::new(state),
+        }
+    }
+
+    /// The expression's value with `var = t`; see the type docs.
+    pub(crate) fn eval(&self, t: f64) -> Option<f64> {
+        match &mut *self.state.borrow_mut() {
+            SamplerState::Program {
+                program,
+                inputs,
+                scratch,
+            } => {
+                inputs[0] = t;
+                program.eval_in(inputs, scratch)
+            }
+            SamplerState::Walk(env) => {
+                env.insert(self.var, t);
+                eval_interp(self.expr, env, self.pool)
+            }
+        }
+    }
 }
 
 /// Why [`eval_interp_checked`] could not produce a usable number.
@@ -694,7 +821,7 @@ fn eval_interp_predicate(
     pred: ExprId,
     env: &HashMap<ExprId, f64>,
     pool: &ExprPool,
-    memo: &mut HashMap<ExprId, f64>,
+    memo: &mut IdMap<f64>,
 ) -> Option<bool> {
     if let Some(b) = try_predicate_bool_from_expr(pred, pool) {
         return Some(b);
@@ -753,57 +880,78 @@ fn eval_interp_inner(
     expr: ExprId,
     env: &HashMap<ExprId, f64>,
     pool: &ExprPool,
-    memo: &mut HashMap<ExprId, f64>,
+    memo: &mut IdMap<f64>,
 ) -> Option<f64> {
     if let Some(&cached) = memo.get(&expr) {
         return Some(cached);
     }
-    let val = match pool.get(expr) {
+    // Borrow the node rather than `pool.get` it: a clone copies the argument
+    // vector, and a `Func`'s name, on every visit.
+    let val = pool.with(expr, |data| eval_interp_data(expr, data, env, pool, memo));
+    if let Some(v) = val {
+        memo.insert(expr, v);
+    }
+    val
+}
+
+fn eval_interp_data(
+    expr: ExprId,
+    data: &ExprData,
+    env: &HashMap<ExprId, f64>,
+    pool: &ExprPool,
+    memo: &mut IdMap<f64>,
+) -> Option<f64> {
+    match data {
         ExprData::Integer(n) => Some(integer_to_f64(&n.0)),
         ExprData::Rational(r) => Some(rational_to_f64(&r.0)),
         ExprData::Float(f) => Some(f.inner.to_f64()),
         // `π` is an ordinary symbol in this crate, so it resolves to its own
         // value rather than being reported unevaluable; an explicit `env` entry
         // still wins.  See [`crate::eval::symbols`].
-        ExprData::Symbol { .. } => env
+        ExprData::Symbol { name, .. } => env
             .get(&expr)
             .copied()
-            .or_else(|| crate::eval::symbols::is_pi(expr, pool).then_some(std::f64::consts::PI)),
+            .or_else(|| (name == crate::eval::symbols::PI_NAME).then_some(std::f64::consts::PI)),
         ExprData::Add(args) => {
             let mut sum = 0.0f64;
-            for &a in &args {
+            for &a in args {
                 sum += eval_interp_inner(a, env, pool, memo)?;
             }
             Some(sum)
         }
         ExprData::Mul(args) => {
             let mut prod = 1.0f64;
-            for &a in &args {
+            for &a in args {
                 prod *= eval_interp_inner(a, env, pool, memo)?;
             }
             Some(prod)
         }
         ExprData::Pow { base, exp } => {
-            let b = eval_interp_inner(base, env, pool, memo)?;
-            let e = eval_interp_inner(exp, env, pool, memo)?;
-            Some(pow_f64(b, e, || Some(pool.get(exp))))
+            let b = eval_interp_inner(*base, env, pool, memo)?;
+            let e = eval_interp_inner(*exp, env, pool, memo)?;
+            Some(pow_f64(b, e, || Some(pool.get(*exp))))
         }
         ExprData::Func { name, args } => {
+            // Unary heads (the common case) need no heap buffer.
+            if let [a] = args.as_slice() {
+                let v = eval_interp_inner(*a, env, pool, memo)?;
+                return registry().numeric_f64(name.as_str(), &[v]);
+            }
             let mut vals = Vec::with_capacity(args.len());
-            for &a in &args {
+            for &a in args {
                 vals.push(eval_interp_inner(a, env, pool, memo)?);
             }
             registry().numeric_f64(name.as_str(), &vals)
         }
         ExprData::Piecewise { branches, default } => {
-            for (c, v) in branches {
+            for &(c, v) in branches {
                 match eval_interp_predicate(c, env, pool, memo) {
                     Some(true) => return eval_interp_inner(v, env, pool, memo),
                     Some(false) => {}
                     None => return None,
                 }
             }
-            eval_interp_inner(default, env, pool, memo)
+            eval_interp_inner(*default, env, pool, memo)
         }
         ExprData::Predicate { .. } => Some(if eval_interp_predicate(expr, env, pool, memo)? {
             1.0
@@ -819,13 +967,9 @@ fn eval_interp_inner(
             poly,
             var: rvar,
             body,
-        } => crate::eval::eval_root_sum_f64(poly, rvar, body, env, pool),
+        } => crate::eval::eval_root_sum_f64(*poly, *rvar, *body, env, pool),
         _ => None,
-    };
-    if let Some(v) = val {
-        memo.insert(expr, v);
     }
-    val
 }
 
 // ---------------------------------------------------------------------------
@@ -839,6 +983,15 @@ fn compile_interpreter(
 ) -> Result<CompiledFn, JitError> {
     let inputs_vec = inputs.to_vec();
     let n = inputs_vec.len();
+    if let Some(program) = NumericProgram::compile(expr, inputs, pool) {
+        return Ok(CompiledFn {
+            inner: CompiledFnInner::Program(Box::new(program)),
+            n_inputs: n,
+            tier: CompileTier::Interpreter,
+        });
+    }
+    // Lazy forms (`Piecewise`) keep the snapshot walker, which evaluates only
+    // the branch a point selects.
     let snapshot = snapshot_expr(expr, pool);
 
     let interp = move |vals: &[f64]| -> f64 {
@@ -1820,6 +1973,110 @@ mod tests {
         env.insert(x, 0.0); // (0+1)^(2^20) = 1
         let val = eval_interp(cur, &env, &pool).unwrap();
         assert!((val - 1.0).abs() < 1e-10);
+    }
+
+    /// The interpreter tier's flat program and the snapshot walker it replaced
+    /// for straight-line expressions agree bit for bit through every entry
+    /// point (scalar, bulk, batch, parallel batch).
+    #[test]
+    fn interpreter_tier_entry_points_agree_with_eval_interp() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let expr = pool.add(vec![
+            pool.mul(vec![
+                pool.func("sin", vec![x]),
+                pool.func(
+                    "exp",
+                    vec![pool.mul(vec![pool.rational(-1, 2), pool.pow(x, pool.integer(2_i32))])],
+                ),
+            ]),
+            pool.pow(x, pool.integer(3_i32)),
+            pool.mul(vec![pool.integer(-2_i32), x, y]),
+            pool.pow(y, pool.integer(2_i32)),
+            pool.func("log", vec![y]), // NaN for y < 0
+        ]);
+        let f = compile(expr, &[x, y], &pool).unwrap();
+        assert_eq!(f.compile_tier(), CompileTier::Interpreter);
+        assert!(matches!(f.inner, CompiledFnInner::Program(_)));
+
+        const N: usize = 5_000;
+        let xs: Vec<f64> = (0..N).map(|i| (i as f64 - 2500.0) / 700.0).collect();
+        let ys: Vec<f64> = (0..N).map(|i| (i as f64 - 1000.0) / 900.0).collect();
+        let bits = |v: f64| if v.is_nan() { u64::MAX } else { v.to_bits() };
+        let want: Vec<u64> = (0..N)
+            .map(|j| {
+                let env = HashMap::from([(x, xs[j]), (y, ys[j])]);
+                bits(eval_interp(expr, &env, &pool).unwrap_or(f64::NAN))
+            })
+            .collect();
+
+        let scalar: Vec<u64> = (0..N).map(|j| bits(f.call(&[xs[j], ys[j]]))).collect();
+        assert_eq!(scalar, want);
+
+        let mut out = vec![0.0; N];
+        f.call_batch(&[&xs, &ys], &mut out);
+        assert_eq!(out.iter().map(|&v| bits(v)).collect::<Vec<_>>(), want);
+
+        let mut flat = xs.clone();
+        flat.extend_from_slice(&ys);
+        let mut out = vec![0.0; N];
+        f.call_bulk(&flat, &mut out);
+        assert_eq!(out.iter().map(|&v| bits(v)).collect::<Vec<_>>(), want);
+
+        #[cfg(feature = "parallel")]
+        {
+            let mut out = vec![0.0; N];
+            f.call_batch_par(&[&xs, &ys], &mut out);
+            assert_eq!(out.iter().map(|&v| bits(v)).collect::<Vec<_>>(), want);
+        }
+    }
+
+    /// Two programs of the same slot count share the thread-local scratch;
+    /// each must see its own constants.
+    #[test]
+    fn interpreter_tier_scalar_calls_do_not_leak_constants_between_functions() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = compile(pool.add(vec![x, pool.integer(1_i32)]), &[x], &pool).unwrap();
+        let g = compile(pool.add(vec![x, pool.integer(5_i32)]), &[x], &pool).unwrap();
+        for _ in 0..3 {
+            assert_eq!(f.call(&[1.0]), 2.0);
+            assert_eq!(g.call(&[1.0]), 6.0);
+        }
+    }
+
+    #[test]
+    fn sampler_matches_eval_interp_including_fallback_forms() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let a = pool.symbol("a", Domain::Real);
+        let straight = pool.add(vec![
+            pool.func("tan", vec![pool.mul(vec![a, x])]),
+            pool.pow(x, pool.rational(-1, 3)),
+        ]);
+        let piecewise = pool.piecewise(
+            vec![(
+                pool.pred_lt(x, pool.integer(0_i32)),
+                pool.func("sin", vec![x]),
+            )],
+            pool.mul(vec![a, x]),
+        );
+        let fixed = HashMap::from([(a, 1.7), (x, 99.0)]); // `x` is overridden
+        for expr in [straight, piecewise] {
+            let s = Sampler::new(expr, x, &fixed, &pool);
+            for t in [-2.0, -0.5, 0.0, 0.25, 1.0, 3.0] {
+                let env = HashMap::from([(a, 1.7), (x, t)]);
+                let want = eval_interp(expr, &env, &pool);
+                let got = s.eval(t);
+                assert!(
+                    want.map(f64::to_bits) == got.map(f64::to_bits)
+                        || (want.is_some_and(f64::is_nan) && got.is_some_and(f64::is_nan)),
+                    "{} at {t}: {want:?} vs {got:?}",
+                    pool.display(expr)
+                );
+            }
+        }
     }
 
     /// `call_batch_par` produces the same results as `call_batch` on N points.

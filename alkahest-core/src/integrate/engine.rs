@@ -2997,11 +2997,11 @@ fn numeric_interior_singularity_at(
     // `tan 2 - 2 = -4.19`, a negative number for a non-negative integrand whose
     // integral diverges. `eval_interp` covers the primitive vocabulary the
     // integrator itself works over.
-    let at = |t: f64| -> Option<f64> {
-        let mut bindings = params.clone();
-        bindings.insert(var, t);
-        crate::jit::eval_interp(integrand, &bindings, pool).filter(|v| v.is_finite())
-    };
+    //
+    // Several hundred samples of one expression: compile it once (same values
+    // as `eval_interp`, see `jit::Sampler`).
+    let sampler = crate::jit::Sampler::new(integrand, var, params, pool);
+    let at = |t: f64| -> Option<f64> { sampler.eval(t).filter(|v| v.is_finite()) };
 
     // Coarse scan for the largest magnitude on the grid.
     let scan_width = scan_hi - scan_lo;
@@ -3304,10 +3304,19 @@ fn antiderivative_jump(
         return Some(reason);
     }
 
+    // Both expressions are sampled hundreds of times: compile each once (same
+    // values as `eval_interp`, see `jit::Sampler`).
+    let no_params = HashMap::new();
+    let f_sampler = crate::jit::Sampler::new(f, var, &no_params, pool);
+    let integrand_sampler = crate::jit::Sampler::new(integrand, var, &no_params, pool);
     let at = |e: ExprId, t: f64| -> Option<f64> {
-        let mut bindings = HashMap::new();
-        bindings.insert(var, t);
-        crate::jit::eval_interp(e, &bindings, pool).filter(|v| v.is_finite())
+        let v = if e == f {
+            f_sampler.eval(t)
+        } else {
+            debug_assert_eq!(e, integrand);
+            integrand_sampler.eval(t)
+        };
+        v.filter(|v| v.is_finite())
     };
     // `sup |integrand|` over `[c0, c1]`, sampled. `None` when nothing on the
     // cell evaluates, which makes the cell undecidable rather than suspicious.

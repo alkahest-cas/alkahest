@@ -6,7 +6,7 @@ use crate::kernel::{
 use rug::Integer;
 use std::collections::HashMap;
 
-use super::{error, EvalError, UnsupportedReason};
+use super::{error, EvalError, IdMap, UnsupportedReason};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ComplexF64 {
@@ -171,7 +171,11 @@ pub fn eval_complex_f64(
     pool: &ExprPool,
     bindings: &HashMap<ExprId, ComplexF64>,
 ) -> Result<ComplexF64, EvalError> {
-    let v = eval_node(expr, pool, bindings)?;
+    // One memo per call: a DAG node shared by several parents is evaluated
+    // once, not once per path (exponential on e.g. a Chebyshev recurrence).
+    // Only successes are stored; the first error still aborts the call.
+    let mut memo = IdMap::default();
+    let v = eval_node(expr, pool, bindings, &mut memo)?;
     if v.re.is_finite() && v.im.is_finite() {
         Ok(v)
     } else {
@@ -183,6 +187,21 @@ fn eval_node(
     expr: ExprId,
     pool: &ExprPool,
     bindings: &HashMap<ExprId, ComplexF64>,
+    memo: &mut IdMap<ComplexF64>,
+) -> Result<ComplexF64, EvalError> {
+    if let Some(&v) = memo.get(&expr) {
+        return Ok(v);
+    }
+    let v = eval_node_uncached(expr, pool, bindings, memo)?;
+    memo.insert(expr, v);
+    Ok(v)
+}
+
+fn eval_node_uncached(
+    expr: ExprId,
+    pool: &ExprPool,
+    bindings: &HashMap<ExprId, ComplexF64>,
+    memo: &mut IdMap<ComplexF64>,
 ) -> Result<ComplexF64, EvalError> {
     match pool.get(expr) {
         ExprData::Integer(n) => Ok(ComplexF64::new(integer_to_f64(&n.0), 0.0)),
@@ -205,20 +224,20 @@ fn eval_node(
             }
         }
         ExprData::Add(args) => args.iter().try_fold(ComplexF64::ZERO, |a, &x| {
-            Ok(a.add(eval_node(x, pool, bindings)?))
+            Ok(a.add(eval_node(x, pool, bindings, memo)?))
         }),
         ExprData::Mul(args) => args.iter().try_fold(ComplexF64::ONE, |a, &x| {
-            Ok(a.mul(eval_node(x, pool, bindings)?))
+            Ok(a.mul(eval_node(x, pool, bindings, memo)?))
         }),
         ExprData::Pow { base, exp } => {
-            let b = eval_node(base, pool, bindings)?;
+            let b = eval_node(base, pool, bindings, memo)?;
             match pool.get(exp) {
                 ExprData::Integer(n) => b.powi_big(&n.0),
                 ExprData::Rational(r) if *r.0.denom() == 1 => b.powi_big(r.0.numer()),
                 // Principal branch: z^w = exp(w · Log z). Covers float and
                 // non-integer rational exponents (e.g. (-1)^(1/2) → i).
                 _ => {
-                    let e = eval_node(exp, pool, bindings)?;
+                    let e = eval_node(exp, pool, bindings, memo)?;
                     // Fast path: pure integer-valued real exponent.
                     if e.im == 0.0 && e.re.fract() == 0.0 && e.re.abs() < (i64::MAX as f64) {
                         b.powi(e.re as i64)
@@ -229,7 +248,7 @@ fn eval_node(
             }
         }
         ExprData::Func { name, args } if args.len() == 1 => {
-            let x = eval_node(args[0], pool, bindings)?;
+            let x = eval_node(args[0], pool, bindings, memo)?;
             match name.as_str() {
                 "sin" => Ok(x.sin()),
                 "cos" => Ok(x.cos()),

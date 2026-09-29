@@ -71,6 +71,14 @@ class TracedFn:
         self.pool = pool
         self.symbols = symbols
         self._names: list[str] = names or [f"x{i}" for i in range(len(symbols))]
+        # Compiled lazily on the first array call and kept: `expr` and
+        # `symbols` never change, so recompiling per call bought nothing.
+        self._compiled = None
+
+    def _compiled_fn(self):
+        if self._compiled is None:
+            self._compiled = compile_expr(self.expr, self.symbols)
+        return self._compiled
 
     # ── numeric evaluation ────────────────────────────────────────────────────
 
@@ -91,8 +99,7 @@ class TracedFn:
             if any(a.ndim > 0 for a in arr_inputs):
                 from . import numpy_eval
 
-                compiled = compile_expr(self.expr, self.symbols)
-                return numpy_eval(compiled, *values)
+                return numpy_eval(self._compiled_fn(), *values)
         except ImportError:
             pass
         # Scalar path: build env dict and call eval_interp
@@ -183,6 +190,15 @@ class GradTracedFn:
         for sym in self._wrt:
             dr = _diff(traced.expr, sym)
             self._grad_exprs.append(dr.value)
+        # One compiled function per partial, built on the first array call.
+        self._compiled: list | None = None
+
+    def _compiled_fns(self) -> list:
+        if self._compiled is None:
+            self._compiled = [
+                compile_expr(g_expr, self._traced.symbols) for g_expr in self._grad_exprs
+            ]
+        return self._compiled
 
     def __call__(self, *values) -> list:
         """Return the gradient as a list, one value per ``wrt`` variable."""
@@ -195,11 +211,7 @@ class GradTracedFn:
             if any(a.ndim > 0 for a in arr_inputs):
                 from . import numpy_eval
 
-                results = []
-                for g_expr in self._grad_exprs:
-                    compiled = compile_expr(g_expr, self._traced.symbols)
-                    results.append(numpy_eval(compiled, *values))
-                return results
+                return [numpy_eval(c, *values) for c in self._compiled_fns()]
         except ImportError:
             pass
         from .alkahest import eval_expr
@@ -223,8 +235,8 @@ class CompiledGradTracedFn:
 
     def __init__(self, grad: GradTracedFn):
         self._grad = grad
-        traced = grad._traced
-        self._compiled = [compile_expr(g_expr, traced.symbols) for g_expr in grad._grad_exprs]
+        # Shares the gradient's compiled partials (compiling them if needed).
+        self._compiled = grad._compiled_fns()
 
     @property
     def symbols(self) -> list[Expr]:
@@ -245,10 +257,10 @@ class CompiledGradTracedFn:
                 return [numpy_eval(c, *values) for c in self._compiled]
         except ImportError:
             pass
-        from .alkahest import eval_expr
-
-        env = {sym: float(val) for sym, val in zip(self._grad._traced.symbols, values)}
-        return [eval_expr(g_expr, env) for g_expr in self._grad._grad_exprs]
+        # Scalar: the compiled partials, as `CompiledTracedFn` does for the
+        # forward function — this used to re-walk each gradient expression.
+        point = [float(v) for v in values]
+        return [c(point) for c in self._compiled]
 
     def __repr__(self) -> str:
         return f"CompiledGradTracedFn({self._grad!r})"

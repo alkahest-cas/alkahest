@@ -512,6 +512,24 @@
   only revisits what the previous one built. Results and derivation logs are
   unchanged, checked step for step against the old code.
 
+- **Numeric evaluation no longer walks a shared DAG once per path, and small
+  expressions stop paying interpreter prices on large batches.**
+  `evaluate` (`f64`, `exact` and `complex` modes) memoizes per call: on the
+  Chebyshev recurrence `T_28` went from 238 ms / 1.1 s / 379 ms to ~20 µs /
+  ~110 µs / ~30 µs, and `T_40` (~1.6e8 paths) now finishes in microseconds.
+  The interpreter tier of `compile_expr` flattens the expression once into a
+  post-order slot program — 2.0 µs → 0.10 µs per point, with no per-point
+  allocation — and `eval_expr` borrows nodes instead of cloning them. The
+  batch entry points behind `numpy_eval` recompile an interpreter-tier
+  function natively (cached on the `CompiledFn`) once a batch reaches 4096
+  points: the audit's small expression at 1e6 points went from 2.05 s to
+  0.22 s. `compile_expr` takes an additive `expected_evals=` hint and reports
+  `CompiledFn.tier`. `trace`/`grad` compile once per traced function instead
+  of on every array call (1k points: 2.2 ms → ~0.3 ms; gradient 3.9 ms →
+  ~0.3 ms). All tiers agree bit for bit with the tree-walking interpreter
+  (property-tested). The "no JIT" warning now points at the dependency-free
+  `cranelift` feature instead of only at LLVM.
+
 ### Testing and tooling
 
 - Proptests pin the new rug ⇄ FLINT conversion against the old decimal-string
