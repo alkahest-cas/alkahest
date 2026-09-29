@@ -220,6 +220,36 @@ impl FlintMPoly {
         result
     }
 
+    /// Product `self * other`. Both must share a context (same `nvars`).
+    pub(crate) fn mul(&self, other: &FlintMPoly) -> FlintMPoly {
+        let mut r = FlintMPoly::new(Arc::clone(&self.ctx));
+        // SAFETY: all three polynomials are initialised in compatible contexts;
+        // `r` is freshly allocated so it aliases neither input.
+        unsafe {
+            super::ffi::fmpz_mpoly_mul(
+                r.as_mut_ptr(),
+                self.as_ptr(),
+                other.as_ptr(),
+                self.ctx.as_ptr(),
+            );
+        }
+        r
+    }
+
+    /// Power `self^k`, or `None` if FLINT reports failure.
+    pub(crate) fn pow_ui(&self, k: u64) -> Option<FlintMPoly> {
+        let mut r = FlintMPoly::new(Arc::clone(&self.ctx));
+        // SAFETY: as in `mul`.
+        let ok = unsafe {
+            super::ffi::fmpz_mpoly_pow_ui(r.as_mut_ptr(), self.as_ptr(), k, self.ctx.as_ptr())
+        };
+        if ok != 0 {
+            Some(r)
+        } else {
+            None
+        }
+    }
+
     /// Exact division: `Some(Q)` where `Q = self / divisor` if `divisor | self`,
     /// `None` otherwise (i.e. when the division is not exact or FLINT fails).
     ///

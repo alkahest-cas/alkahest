@@ -449,6 +449,22 @@
   6.1 ms → 1.5 ms). Outputs are unchanged — the monic GCD, the determinant and
   the reduced row echelon form are unique — and differential property tests
   pin each new path to the algorithm it replaced.
+- **Polynomial construction does its arithmetic in FLINT.**
+  `UniPoly::from_symbolic` built a `BTreeMap` of rug coefficients with
+  schoolbook products and only then copied it into an `fmpz_poly`; it now
+  builds the `fmpz_poly` directly (`(x+1)^1000`: 120–190 ms → 0.12 ms), and
+  `FlintPoly::derivative` is one `fmpz_poly_derivative` call instead of a rug
+  round trip per coefficient. `diff` tries that conversion at every non-atom
+  node, so `diff((x+1)^300·sin x)` goes 26 → 2.6 ms. The conversion also
+  memoises shared DAG nodes (in `MultiPoly::from_symbolic` too): a
+  Chebyshev-style recurrence `T_{n+1} = 2x·T_n − T_{n−1}` used to be walked once
+  per path, so `diff(T_24)` took 280–430 ms and now takes 0.2 ms. `MultiPoly`
+  products and powers above a small size go through `fmpz_mpoly_mul` /
+  `fmpz_mpoly_pow_ui` (`p·p` for 286 terms 17 → 0.8 ms;
+  `from_symbolic((x+y+z+1)^20)` 40–70 → 1.3 ms). Results are unchanged,
+  including which error a non-polynomial input reports; proptests pin every
+  path against the previous algorithms, which stay as the fallback for
+  degrees too sparse to hold densely and for exponents that would overflow.
 
 ### Testing and tooling
 

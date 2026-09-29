@@ -228,18 +228,13 @@ impl FlintPoly {
     }
 
     /// Formal derivative: `d/dx [c₀ + c₁x + … + cₙxⁿ] = c₁ + 2c₂x + … + ncₙxⁿ⁻¹`.
+    ///
+    /// One `fmpz_poly_derivative` call; the coefficients never leave FLINT.
     pub fn derivative(&self) -> Self {
-        let deg = self.degree();
-        if deg <= 0 {
-            return Self::new();
-        }
         let mut result = Self::new();
-        for i in 1..=deg as usize {
-            let fi = self.get_coeff_flint(i);
-            let c = fi.to_rug() * i as i64;
-            let fc = super::integer::FlintInteger::from_rug(&c);
-            result.set_coeff_flint(i - 1, &fc);
-        }
+        // SAFETY: both structs are initialised and owned; `result` is distinct
+        // from `self`.
+        unsafe { ffi::fmpz_poly_derivative(&mut result.inner, &self.inner) };
         result
     }
 
