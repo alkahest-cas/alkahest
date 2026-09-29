@@ -8,11 +8,15 @@
 //! from that design transfer to a term-rewriting CAS, even though interaction
 //! nets themselves do not:
 //!
-//! 1. **A flat array with atomic links instead of a hashed side table.**
-//!    `ExprId`s are dense indices into the pool, so the memo can be a
-//!    `Vec<AtomicU32>` indexed directly by id — no hashing, no shard locks,
-//!    one relaxed load per child.  [`super::parallel`] uses a `DashMap`, which
-//!    costs two hashes per node visit and contends across workers.
+//! 1. **A flat array with atomic links instead of a locked side table.**
+//!    The memo is a `Vec<AtomicU32>` with one cell per node reachable from
+//!    the root — no shard locks, one relaxed load per child.  Which cell
+//!    belongs to which `ExprId` is fixed before any worker starts, so that map
+//!    is read-only while the pass runs and costs one uncontended hash per
+//!    child.  (Indexing the array by `ExprId` directly would drop even that
+//!    hash, but sizes the array by the whole pool rather than the expression —
+//!    see `Table`.)  [`super::parallel`] uses a `DashMap`, which costs two
+//!    hashes per node visit and contends across workers.
 //!
 //! 2. **A bag of independent redexes instead of a recursive fork-join.**
 //!    [`super::parallel`] mirrors the sequential traversal and only forks on
@@ -76,6 +80,7 @@
 use crate::deriv::log::{DerivationLog, DerivedExpr};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::simplify::engine::{rules_for_config, SimplifyConfig};
+use crate::simplify::idmap::IdMap;
 use crate::simplify::rules::RewriteRule;
 use rayon::prelude::*;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -148,12 +153,10 @@ fn one_pass(
     pool: &ExprPool,
     rules: &[Box<dyn RewriteRule>],
 ) -> (ExprId, DerivationLog) {
-    let levels = build_levels(root, pool);
-
-    // Substitution table: original id → simplified id.  Sized for the pool as
-    // it stands now; rewrites may intern ids beyond this range, but those are
-    // only ever written as values, never used as keys.
-    let table: Vec<AtomicU32> = (0..pool.len()).map(|_| AtomicU32::new(UNMAPPED)).collect();
+    // Substitution table: original id → simplified id, with one cell per node
+    // reachable from `root`.  Rewrites intern ids outside that set, but those
+    // are only ever written as values, never used as keys.
+    let (levels, table) = build_levels(root, pool);
 
     let mut log = DerivationLog::new();
     for level in &levels {
@@ -185,18 +188,47 @@ fn reduce_node(
     id: ExprId,
     pool: &ExprPool,
     rules: &[Box<dyn RewriteRule>],
-    table: &[AtomicU32],
+    table: &Table,
 ) -> DerivationLog {
     let rebuilt = pool.with(id, |data| rebuild(id, data, pool, table));
     let (current, log) = crate::simplify::engine::apply_rules(rebuilt, pool, rules);
-    table[id.0 as usize].store(current.0, Ordering::Relaxed);
+    table.cell(id).store(current.0, Ordering::Relaxed);
     log
 }
 
-fn lookup(table: &[AtomicU32], id: ExprId) -> ExprId {
-    let mapped = table[id.0 as usize].load(Ordering::Relaxed);
+fn lookup(table: &Table, id: ExprId) -> ExprId {
+    let mapped = table.cell(id).load(Ordering::Relaxed);
     debug_assert_ne!(mapped, UNMAPPED, "child reduced out of level order");
     ExprId(mapped)
+}
+
+/// The substitution table for one pass: a dense array of atomic cells, one
+/// per node reachable from the pass's root, and the map from each such node
+/// to its cell.
+///
+/// This used to be a `Vec<AtomicU32>` indexed directly by `ExprId`, which is
+/// sized by the *pool*: every pass allocated and zeroed one cell per node ever
+/// interned, reachable or not, so a 7-node simplification cost 42 ms in a pool
+/// of 8 million nodes.  Cells are now assigned densely as the traversal
+/// reaches nodes, so the table is sized by the expression.  The map is only
+/// written while the levels are built and only read afterwards, so workers
+/// share it without synchronisation.
+struct Table {
+    slot: IdMap<Slot>,
+    cells: Vec<AtomicU32>,
+}
+
+/// Where a reachable node's cell lives, and its height in the level order.
+#[derive(Clone, Copy)]
+struct Slot {
+    cell: u32,
+    height: u32,
+}
+
+impl Table {
+    fn cell(&self, id: ExprId) -> &AtomicU32 {
+        &self.cells[self.slot[&id].cell as usize]
+    }
 }
 
 /// Rebuild `id` with each child replaced by its mapped value, reusing `id`
@@ -205,7 +237,7 @@ fn lookup(table: &[AtomicU32], id: ExprId) -> ExprId {
 /// `ExprPool::add` and `ExprPool::mul` canonically sort their arguments, so the
 /// reuse shortcut for those is only taken when the original list is already
 /// sorted — otherwise reusing `id` would skip a canonicalisation.
-fn rebuild(id: ExprId, data: &ExprData, pool: &ExprPool, table: &[AtomicU32]) -> ExprId {
+fn rebuild(id: ExprId, data: &ExprData, pool: &ExprPool, table: &Table) -> ExprId {
     let map = |c: ExprId| lookup(table, c);
     match data {
         ExprData::Add(args) => {
@@ -301,40 +333,48 @@ fn is_sorted(args: &[ExprId]) -> bool {
 /// Iterative post-order: a node is emitted after its children, so its height is
 /// one more than the tallest child.  Shared subexpressions are visited once,
 /// which is what makes each level a set of *independent* redexes.
-fn build_levels(root: ExprId, pool: &ExprPool) -> Vec<Vec<ExprId>> {
-    let n = pool.len();
-    let mut height = vec![u32::MAX; n];
-    let mut pushed = vec![false; n];
+///
+/// Also returns the pass's substitution [`Table`], with one unwritten cell per
+/// node reached.  Every side table here is keyed by the nodes the traversal
+/// reaches, never by the pool's size — see [`Table`].
+fn build_levels(root: ExprId, pool: &ExprPool) -> (Vec<Vec<ExprId>>, Table) {
+    // `height` is `u32::MAX` from the moment a node is pushed until it is
+    // emitted; a node absent from the map has not been reached yet.
+    let mut slot: IdMap<Slot> = IdMap::default();
     let mut levels: Vec<Vec<ExprId>> = Vec::new();
     let mut stack: Vec<(ExprId, bool)> = vec![(root, false)];
 
     while let Some((id, expanded)) = stack.pop() {
-        let i = id.0 as usize;
         if expanded {
             let h = pool.with(id, |data| {
                 let mut h = 0_u32;
                 for_each_child(data, |c| {
-                    let ch = height[c.0 as usize];
+                    let ch = slot[&c].height;
                     debug_assert_ne!(ch, u32::MAX, "child emitted after its parent");
                     h = h.max(ch.saturating_add(1));
                 });
                 h
             });
-            height[i] = h;
+            slot.get_mut(&id).expect("pushed before emitted").height = h;
             let level = h as usize;
             if levels.len() <= level {
                 levels.resize_with(level + 1, Vec::new);
             }
             levels[level].push(id);
         } else {
-            if pushed[i] {
+            let next = slot.len() as u32;
+            if let std::collections::hash_map::Entry::Vacant(e) = slot.entry(id) {
+                e.insert(Slot {
+                    cell: next,
+                    height: u32::MAX,
+                });
+            } else {
                 continue;
             }
-            pushed[i] = true;
             stack.push((id, true));
             pool.with(id, |data| {
                 for_each_child(data, |c| {
-                    if !pushed[c.0 as usize] {
+                    if !slot.contains_key(&c) {
                         stack.push((c, false));
                     }
                 })
@@ -342,7 +382,8 @@ fn build_levels(root: ExprId, pool: &ExprPool) -> Vec<Vec<ExprId>> {
         }
     }
 
-    levels
+    let cells = (0..slot.len()).map(|_| AtomicU32::new(UNMAPPED)).collect();
+    (levels, Table { slot, cells })
 }
 
 /// Visit the children a rewrite pass descends into.
@@ -539,5 +580,72 @@ mod tests {
         }
         assert_eq!(logs[0], logs[1]);
         assert_eq!(logs[1], logs[2]);
+    }
+
+    /// The substitution table has one cell per node the pass can reach,
+    /// however large the pool around the expression has grown.  It used to
+    /// have one per pool node, so simplifying 7 nodes in a pool of 8 million
+    /// allocated and zeroed an 8-million-cell table per pass (42 ms).
+    #[test]
+    fn table_is_sized_by_the_expression_not_the_pool() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let mut junk = x;
+        for _ in 0..50_000 {
+            junk = pool.mul(vec![pool.add(vec![junk, y]), x]);
+        }
+        let zero = pool.integer(0_i32);
+        // `pool.add` splices the inner sum: x·x + y + 0 has x, y, 0, x·x, root.
+        let expr = pool.add(vec![pool.mul(vec![x, x]), pool.add(vec![y, zero])]);
+        assert!(pool.len() > 100_000);
+
+        let (levels, table) = build_levels(expr, &pool);
+        assert_eq!(table.cells.len(), 5);
+        assert_eq!(levels.iter().map(Vec::len).sum::<usize>(), 5);
+        assert_eq!(
+            simplify_redex(expr, &pool).value,
+            simplify(expr, &pool).value
+        );
+    }
+
+    /// A shared node gets one cell and one slot in one level.
+    #[test]
+    fn shared_nodes_get_one_cell() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let two = pool.integer(2_i32);
+        let minus_one = pool.integer(-1_i32);
+        let (mut a, mut b) = (pool.integer(1_i32), x);
+        for _ in 1..30 {
+            let c = pool.add(vec![
+                pool.mul(vec![two, x, b]),
+                pool.mul(vec![minus_one, a]),
+            ]);
+            a = b;
+            b = c;
+        }
+        let (levels, table) = build_levels(b, &pool);
+        let placed: usize = levels.iter().map(Vec::len).sum();
+        assert_eq!(table.cells.len(), placed);
+        // 29 `Add`s, 29 `2·x·T` and 29 `−1·T` products (T₁ = x needs no
+        // product of its own beyond the shared leaves), plus x, 1, 2, −1.
+        assert!(placed < 100, "{placed} cells for a ~90-node DAG");
+    }
+
+    use crate::simplify::proptests::{build_dag, dag_ops};
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// The level scheduler, now indexed by reachable node rather than by
+        /// `ExprId`, still agrees with the sequential engine on shared DAGs.
+        #[test]
+        fn matches_sequential_on_random_dags(ops in dag_ops(14)) {
+            let pool = p();
+            let e = build_dag(&pool, &ops, false);
+            prop_assert_eq!(simplify_redex(e, &pool).value, simplify(e, &pool).value);
+        }
     }
 }

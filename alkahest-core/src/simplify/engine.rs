@@ -1,3 +1,4 @@
+use super::idmap::IdMap;
 use super::rules::{
     AddZero, CanonicalOrder, ConstFold, DivSelf, ExpandMul, ExpandPow, FlattenAdd, FlattenMul,
     MulOne, MulZero, NegateAdd, PowOne, PowZero, PrimitiveFold, RewriteRule, SqrtEvenPower,
@@ -6,7 +7,6 @@ use super::rules::{
 use super::rulesets::PatternRuleSet;
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
 use crate::kernel::{ExprData, ExprId, ExprPool};
-use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -148,9 +148,10 @@ pub(crate) fn apply_rules(
 /// places) are simplified exactly once; subsequent hits return the cached result
 /// with an empty derivation log to avoid duplicate log entries.
 ///
-/// The memo is valid for one complete bottom-up pass.  `simplify_with` creates
-/// a fresh `HashMap` per iteration so that the fixed-point loop sees the updated
-/// expression on each pass.
+/// An entry maps a node to its result *within the current pass*, with one
+/// exception: a node that is **settled** — see [`Memo`] — is its own result in
+/// every pass, so the fixed-point drivers keep those entries from one pass to
+/// the next and drop the rest.
 ///
 /// # Depth
 ///
@@ -166,13 +167,13 @@ fn simplify_node(
     expr: ExprId,
     pool: &ExprPool,
     rules: &[Box<dyn RewriteRule>],
-    memo: &mut HashMap<ExprId, ExprId>,
+    memo: &mut Memo,
 ) -> DerivedExpr<ExprId> {
     // Shared-subexpression cache: if we already simplified this node during
     // the current pass, return the cached result immediately.  Checked before
     // entering a stack segment: a hit does no work and must not be charged a
     // recursion level.
-    if let Some(&cached) = memo.get(&expr) {
+    if let Some(&(cached, _)) = memo.get(&expr) {
         return DerivedExpr::new(cached);
     }
 
@@ -189,8 +190,65 @@ fn simplify_node(
         let log = child_log.merge(rule_log);
         DerivedExpr::with_log(current, drain_segment_limits(log, fresh_segment))
     });
-    memo.insert(expr, result.value);
+    let settled = result.value == expr
+        && result.log.is_empty()
+        && pool.with(expr, |data| children_settled(data, memo));
+    memo.insert(expr, (result.value, settled));
     result
+}
+
+/// Per-pass memo for [`simplify_node`]: input node → (result, settled).
+///
+/// A node is **settled** when the pass left it unchanged *without doing
+/// anything*: no rule fired on it, its log is empty, and every child it
+/// descends into is settled too.  Simplifying a settled node again returns the
+/// node itself with an empty log — the rules are pure functions of the node,
+/// which the per-pass memo already relies on, and bottom-up the same children
+/// give the same rebuilt node and the same (non-)firings.  So a settled entry
+/// is valid in every later pass, not just the one that computed it.
+///
+/// That is what makes the final, confirming pass of the fixed-point loop cheap.
+/// It used to re-run every rule on every node of the result, although most of
+/// the result was never touched by the pass before; now only the nodes that
+/// pass *built* are re-examined.  "Settled" is deliberately stricter than
+/// "unchanged": a node whose children were rewritten and whose rules then
+/// rebuilt it exactly is unchanged but not settled, since re-simplifying it
+/// would log those steps again.
+type Memo = IdMap<(ExprId, bool)>;
+
+/// Whether every child [`simplify_children`] descends into is a settled entry
+/// of `memo`.  Called after the children have been simplified, so each child
+/// has an entry.
+fn children_settled(data: &ExprData, memo: &Memo) -> bool {
+    let settled = |c: &ExprId| memo.get(c).is_some_and(|&(_, s)| s);
+    match data {
+        ExprData::Add(args)
+        | ExprData::Mul(args)
+        | ExprData::Func { args, .. }
+        | ExprData::Predicate { args, .. } => args.iter().all(settled),
+        ExprData::Pow { base, exp } => settled(base) && settled(exp),
+        ExprData::Piecewise { branches, default } => {
+            branches.iter().all(|(_, v)| settled(v)) && settled(default)
+        }
+        ExprData::Forall { body, .. } | ExprData::Exists { body, .. } => settled(body),
+        ExprData::BigO(arg) => settled(arg),
+        ExprData::Symbol { .. }
+        | ExprData::Integer(_)
+        | ExprData::Rational(_)
+        | ExprData::Float(_)
+        | ExprData::RootSum { .. } => true,
+    }
+}
+
+/// Start the next pass of a fixed-point loop over `memo`: keep the settled
+/// entries (valid in every pass — see [`Memo`]) when `carry` is set, and
+/// forget everything otherwise.
+fn next_pass(memo: &mut Memo, carry: bool) {
+    if carry {
+        memo.retain(|_, &mut (_, settled)| settled);
+    } else {
+        memo.clear();
+    }
 }
 
 /// Fold this segment's bounded-expansion declines into `log` when the segment
@@ -219,9 +277,9 @@ fn simplify_node_indexed(
     pool: &ExprPool,
     rule_set: &PatternRuleSet,
     child_rules: &[Box<dyn RewriteRule>],
-    memo: &mut HashMap<ExprId, ExprId>,
+    memo: &mut Memo,
 ) -> DerivedExpr<ExprId> {
-    if let Some(&cached) = memo.get(&expr) {
+    if let Some(&(cached, _)) = memo.get(&expr) {
         return DerivedExpr::new(cached);
     }
 
@@ -250,7 +308,11 @@ fn simplify_node_indexed(
         let log = child_log.merge(rule_log);
         DerivedExpr::with_log(current, drain_segment_limits(log, fresh_segment))
     });
-    memo.insert(expr, result.value);
+    // Never settled: this node was tried against the *indexed* candidates,
+    // and a later pass may meet it as an ordinary child of `simplify_node`,
+    // which tries `child_rules` in list order instead.  Only a result of the
+    // same procedure may be reused.
+    memo.insert(expr, (result.value, false));
     result
 }
 
@@ -269,7 +331,7 @@ fn simplify_children(
     data: &ExprData,
     pool: &ExprPool,
     rules: &[Box<dyn RewriteRule>],
-    memo: &mut HashMap<ExprId, ExprId>,
+    memo: &mut Memo,
 ) -> (ExprId, DerivationLog) {
     let mut log = DerivationLog::new();
     match data {
@@ -385,7 +447,7 @@ fn simplify_args(
     args: &[ExprId],
     pool: &ExprPool,
     rules: &[Box<dyn RewriteRule>],
-    memo: &mut HashMap<ExprId, ExprId>,
+    memo: &mut Memo,
     log: &mut DerivationLog,
 ) -> (Vec<ExprId>, bool) {
     let mut changed = false;
@@ -424,10 +486,30 @@ pub fn simplify_with(
     rules: &[Box<dyn RewriteRule>],
     config: SimplifyConfig,
 ) -> DerivedExpr<ExprId> {
+    // Settled nodes are carried from pass to pass (see `Memo`) — except when
+    // expanding: a declined `ExpandPow` leaves a node settled but records the
+    // decline out of band, and a deep traversal drains that record into the
+    // log of whichever pass visits the node, so skipping the revisit could
+    // drop a step the log used to repeat.
+    let carry = !config.expand;
+    simplify_with_carry(expr, pool, rules, config, carry)
+}
+
+/// [`simplify_with`], with the choice of carrying settled memo entries
+/// between passes made explicit.  `carry = false` is the historical
+/// fresh-memo-per-pass loop, which the tests keep as the reference.
+pub(super) fn simplify_with_carry(
+    expr: ExprId,
+    pool: &ExprPool,
+    rules: &[Box<dyn RewriteRule>],
+    config: SimplifyConfig,
+    carry: bool,
+) -> DerivedExpr<ExprId> {
     if config.expand {
         crate::simplify::rules::clear_expand_limits();
     }
     let mut current = DerivedExpr::new(expr);
+    let mut memo = Memo::default();
     for _ in 0..config.max_iterations {
         // Cooperative budget checkpoint, once per full bottom-up pass (P1
         // search plumbing item 4). `simplify` has no `Result` return type, so
@@ -439,10 +521,11 @@ pub fn simplify_with(
         if crate::budget::check().is_err() {
             break;
         }
-        // Fresh memo per pass: maps input ExprId → simplified ExprId.
-        // Shared subexpressions are simplified once and the result reused for
-        // all subsequent occurrences within the same bottom-up sweep.
-        let mut memo: HashMap<ExprId, ExprId> = HashMap::new();
+        // Memo per pass: maps input ExprId → simplified ExprId.  Shared
+        // subexpressions are simplified once and the result reused for all
+        // subsequent occurrences within the same bottom-up sweep; settled
+        // nodes stay known across sweeps.
+        next_pass(&mut memo, carry);
         let result = simplify_node(current.value, pool, rules, &mut memo);
         let merged_log = current.log.merge(result.log);
         if result.value == current.value {
@@ -496,12 +579,13 @@ pub fn simplify_with_pattern_rules(
 ) -> DerivedExpr<ExprId> {
     let child_rules = rule_set.as_dyn_rules();
     let mut current = DerivedExpr::new(expr);
+    let mut memo = Memo::default();
     for _ in 0..config.max_iterations {
         // See the matching checkpoint in `simplify_with` above.
         if crate::budget::check().is_err() {
             break;
         }
-        let mut memo: HashMap<ExprId, ExprId> = HashMap::new();
+        next_pass(&mut memo, true);
         let result = simplify_node_indexed(current.value, pool, rule_set, &child_rules, &mut memo);
         let merged_log = current.log.merge(result.log);
         if result.value == current.value {
@@ -560,6 +644,7 @@ pub fn simplify_batch(exprs: &[ExprId], pool: &ExprPool) -> Vec<DerivedExpr<Expr
     let mut current: Vec<ExprId> = exprs.to_vec();
     let mut logs: Vec<DerivationLog> = vec![DerivationLog::new(); exprs.len()];
     let mut done = vec![false; exprs.len()];
+    let mut memo = Memo::default();
 
     for _ in 0..config.max_iterations {
         // See the matching checkpoint in `simplify_with` above — bounds the
@@ -569,7 +654,7 @@ pub fn simplify_batch(exprs: &[ExprId], pool: &ExprPool) -> Vec<DerivedExpr<Expr
         }
         // One memo shared by every input in this pass: a subexpression that
         // appears in more than one input is simplified only the first time.
-        let mut memo: HashMap<ExprId, ExprId> = HashMap::new();
+        next_pass(&mut memo, true);
         let mut any_changed = false;
         for i in 0..current.len() {
             if done[i] {
@@ -626,17 +711,28 @@ pub(crate) fn expand_powers(expr: ExprId, pool: &ExprPool) -> ExprId {
 /// Restricted to integer exponents, where `(ab)^k = a^k·b^k` holds
 /// unconditionally over ℝ∖{0}.
 pub(crate) fn distribute_recip(expr: ExprId, pool: &ExprPool) -> ExprId {
-    match pool.get(expr) {
+    distribute_recip_memo(expr, pool, &mut IdMap::default())
+}
+
+/// [`distribute_recip`] with a memo, so a subexpression shared by several
+/// parents is rewritten once instead of once per path — the difference
+/// between linear and exponential on a DAG such as a Chebyshev recurrence.
+fn distribute_recip_memo(expr: ExprId, pool: &ExprPool, memo: &mut IdMap<ExprId>) -> ExprId {
+    if let Some(&done) = memo.get(&expr) {
+        return done;
+    }
+    let mut rec = |a: ExprId| distribute_recip_memo(a, pool, memo);
+    let result = match pool.get(expr) {
         ExprData::Add(args) => {
-            let ds: Vec<ExprId> = args.iter().map(|&a| distribute_recip(a, pool)).collect();
+            let ds: Vec<ExprId> = args.iter().map(|&a| rec(a)).collect();
             pool.add(ds)
         }
         ExprData::Mul(args) => {
-            let ds: Vec<ExprId> = args.iter().map(|&a| distribute_recip(a, pool)).collect();
+            let ds: Vec<ExprId> = args.iter().map(|&a| rec(a)).collect();
             pool.mul(ds)
         }
         ExprData::Pow { base, exp } => {
-            let b = distribute_recip(base, pool);
+            let b = rec(base);
             let is_int = matches!(pool.get(exp), ExprData::Integer(_));
             match pool.get(b) {
                 ExprData::Mul(fs) if is_int => {
@@ -646,11 +742,13 @@ pub(crate) fn distribute_recip(expr: ExprId, pool: &ExprPool) -> ExprId {
             }
         }
         ExprData::Func { name, args } => {
-            let ds: Vec<ExprId> = args.iter().map(|&a| distribute_recip(a, pool)).collect();
+            let ds: Vec<ExprId> = args.iter().map(|&a| rec(a)).collect();
             pool.func(&name, ds)
         }
         _ => expr,
-    }
+    };
+    memo.insert(expr, result);
+    result
 }
 
 /// Simplify `expr` to a **trigonometric normal form**.
@@ -1158,5 +1256,97 @@ mod tests {
             elapsed / ITERS as u32,
             elapsed / (ITERS * exprs.len()) as u32
         );
+    }
+
+    /// `distribute_recip` rewrites a shared node once, not once per path:
+    /// a Chebyshev recurrence of depth 40 has ~120 nodes and ~fib(40) ≈ 10⁸
+    /// paths, which the unmemoised recursion walked (and re-interned) in full.
+    #[test]
+    fn distribute_recip_is_linear_on_a_shared_dag() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let two = pool.integer(2_i32);
+        let minus_one = pool.integer(-1_i32);
+        let (mut a, mut b) = (pool.integer(1_i32), x);
+        for _ in 1..40 {
+            let c = pool.add(vec![
+                pool.mul(vec![two, x, b]),
+                pool.mul(vec![minus_one, a]),
+            ]);
+            a = b;
+            b = c;
+        }
+        let start = std::time::Instant::now();
+        // Nothing here is a power of a product, so the rewrite is the identity.
+        assert_eq!(distribute_recip(b, &pool), b);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    /// Timing for the settled-memo carry: the same simplification with and
+    /// without it.  Run with
+    /// `cargo test --release -p alkahest-cas perf_settled_memo_carry -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn perf_settled_memo_carry() {
+        use std::time::Instant;
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let terms: Vec<ExprId> = (0..8000)
+            .map(|i| {
+                let s = pool.symbol(format!("a{i}"), Domain::Real);
+                pool.mul(vec![s, pool.pow(x, pool.integer(i as i64 + 1))])
+            })
+            .collect();
+        let wide = pool.add(terms);
+        let (two, minus_one) = (pool.integer(2_i32), pool.integer(-1_i32));
+        let (mut a, mut b) = (pool.integer(1_i32), x);
+        for _ in 1..22 {
+            let c = pool.add(vec![
+                pool.mul(vec![two, x, b]),
+                pool.mul(vec![minus_one, a]),
+            ]);
+            a = b;
+            b = c;
+        }
+        let config = SimplifyConfig::default();
+        let rules = rules_for_config(&config);
+        for (label, e) in [("sum a_i x^i, n=8000", wide), ("chebyshev n=22", b)] {
+            for carry in [false, true] {
+                let mut best = f64::MAX;
+                for _ in 0..5 {
+                    let t = Instant::now();
+                    let _ = simplify_with_carry(e, &pool, &rules, config.clone(), carry);
+                    best = best.min(t.elapsed().as_secs_f64() * 1e3);
+                }
+                eprintln!("{label:<22} carry={carry:<5} {best:>9.3} ms");
+            }
+        }
+    }
+
+    /// The confirming pass reuses what the previous pass left settled: a
+    /// sum of untouched terms next to one that needs work re-simplifies only
+    /// the new nodes, and the result and log match the fresh-memo loop.
+    #[test]
+    fn settled_nodes_carry_across_passes() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let terms: Vec<ExprId> = (1..50)
+            .map(|k| pool.func("sin", vec![pool.pow(x, pool.integer(k))]))
+            .collect();
+        let mut args = terms;
+        args.push(pool.add(vec![x, pool.mul(vec![pool.integer(-1), x])]));
+        let e = pool.add(args);
+        let config = SimplifyConfig::default();
+        let rules = rules_for_config(&config);
+        let carried = simplify_with_carry(e, &pool, &rules, config.clone(), true);
+        let fresh = simplify_with_carry(e, &pool, &rules, config, false);
+        assert_eq!(carried.value, fresh.value);
+        let key = |l: &DerivationLog| {
+            l.steps()
+                .iter()
+                .map(|s| (s.rule_name, s.before, s.after))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(key(&carried.log), key(&fresh.log));
     }
 }

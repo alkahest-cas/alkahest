@@ -499,6 +499,19 @@
   reference. `expr_contains_noncommutative_symbol` now reads the O(1)
   commutativity flag cached at intern time instead of walking the tree.
 
+- **`simplify` no longer pays per path, per pool node, or per clone.** The
+  static-domain fact walk that ends every `simplify` visited a shared DAG once
+  per *path*: re-simplifying an already-simplified 104-node Chebyshev-style
+  expression took 491 ms and now takes 0.05 ms. `simplify_redex` /
+  `simplify_auto` sized their per-pass tables by the whole pool — a 7-node
+  expression cost 18–20 ms in an 8M-node pool, now 0.008 ms. The hot rewrite
+  rules decline without cloning the node, and `collect_mul_factors` /
+  `collect_add_terms` without building a bignum map: the derivative of a
+  depth-4000 nested `sin` dropped from 7.9 s to 1.3 s. The fixed-point loop
+  keeps nodes it has proved settled between passes, so the confirming pass
+  only revisits what the previous one built. Results and derivation logs are
+  unchanged, checked step for step against the old code.
+
 ### Testing and tooling
 
 - Proptests pin the new rug ⇄ FLINT conversion against the old decimal-string
