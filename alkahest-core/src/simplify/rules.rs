@@ -1,7 +1,7 @@
 use crate::deriv::log::{DerivationLog, RewriteStep, SideCondition};
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
+use crate::kernel::{IdMap, IdSet};
 use rug::ops::Pow;
-use std::collections::{HashMap, HashSet};
 
 #[cfg(test)]
 pub(crate) mod reference;
@@ -1222,7 +1222,7 @@ impl RewriteRule for SubSelf {
         // Sum coefficients by base, preserving first-occurrence order.
         // A `None` coefficient is the implicit `1`.
         let one = Coeff::one();
-        let mut coeff_map: HashMap<ExprId, Coeff> = HashMap::new();
+        let mut coeff_map: IdMap<Coeff> = IdMap::default();
         let mut base_order: Vec<ExprId> = vec![];
         for (coeff, base) in &pairs {
             let entry = coeff_map.entry(*base).or_insert_with(|| {
@@ -1257,7 +1257,7 @@ impl RewriteRule for SubSelf {
 
         // Build new args
         let mut new_args: Vec<ExprId> = vec![];
-        let mut seen: HashSet<ExprId> = HashSet::new();
+        let mut seen: IdSet = IdSet::default();
         for base in &base_order {
             if seen.contains(base) {
                 continue;
@@ -1346,7 +1346,7 @@ impl RewriteRule for DivSelf {
 
         let new_args: Vec<ExprId> = if globally_comm {
             // Commutative: sum exponents for each base anywhere in the product.
-            let mut exp_map: HashMap<ExprId, rug::Integer> = HashMap::new();
+            let mut exp_map: IdMap<rug::Integer> = IdMap::default();
             let mut base_order: Vec<ExprId> = vec![];
             for (exp, base) in &exp_pairs {
                 if !exp_map.contains_key(base) {
@@ -1362,7 +1362,7 @@ impl RewriteRule for DivSelf {
                 return None;
             }
 
-            let mut seen: HashSet<ExprId> = HashSet::new();
+            let mut seen: IdSet = IdSet::default();
             let mut new_args: Vec<ExprId> = vec![];
             for base in &base_order {
                 if seen.contains(base) {

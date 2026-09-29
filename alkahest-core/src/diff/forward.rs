@@ -10,9 +10,9 @@
 /// whose derivative is defined; property tests cross-validate both.
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
 use crate::diff::diff_impl::DiffError;
+use crate::kernel::IdMap;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::simplify::engine::simplify;
-use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Deprecated type alias — `ForwardDiffError` is now folded into `DiffError`
@@ -180,7 +180,7 @@ fn eval_dual(
     expr: ExprId,
     var: ExprId,
     pool: &ExprPool,
-    memo: &mut HashMap<ExprId, DualValue>,
+    memo: &mut IdMap<DualValue>,
 ) -> Result<DualValue, DiffError> {
     // Return cached dual for shared subexpressions.
     if let Some(cached) = memo.get(&expr) {
@@ -322,7 +322,7 @@ pub fn diff_forward(
     var: ExprId,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, DiffError> {
-    let mut memo: HashMap<ExprId, DualValue> = HashMap::new();
+    let mut memo: IdMap<DualValue> = IdMap::default();
     let dual = eval_dual(expr, var, pool, &mut memo)?;
     let tangent_raw = dual.tangent;
 

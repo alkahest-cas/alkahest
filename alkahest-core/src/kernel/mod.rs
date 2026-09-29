@@ -25,3 +25,17 @@ pub use pool::{ExprDisplay, ExprPool};
 pub use pool_persist::PoolPersistError;
 pub use pool_persist::{load_from, open_persistent, save_to, IoError};
 pub use subs::{fold_predicates, subs};
+
+/// Hasher for the crate's internal tables keyed by [`ExprId`] (memo maps,
+/// visited sets).  `std`'s default SipHash is built to resist HashDoS, which
+/// costs several times more per probe than these tables' keys warrant: an
+/// `ExprId` is a pool-assigned index, not attacker-chosen data.  Maps keyed by
+/// strings or other caller-supplied data should keep the default hasher.
+pub(crate) type IdBuildHasher = foldhash::fast::FixedState;
+
+/// `HashMap<ExprId, V>` with the fast [`IdBuildHasher`].  Construct with
+/// `IdMap::default()` (`HashMap::new` exists only for the default hasher).
+pub(crate) type IdMap<V> = std::collections::HashMap<ExprId, V, IdBuildHasher>;
+
+/// `HashSet<ExprId>` with the fast [`IdBuildHasher`].
+pub(crate) type IdSet = std::collections::HashSet<ExprId, IdBuildHasher>;

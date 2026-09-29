@@ -1,9 +1,8 @@
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
-use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::kernel::{ExprData, ExprId, ExprPool, IdMap};
 use crate::poly::UniPoly;
 use crate::simplify::engine::simplify;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 
@@ -124,7 +123,7 @@ pub fn diff(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DerivedExpr<Ex
 // Memo shared with re-entrant calls
 // ---------------------------------------------------------------------------
 
-type MemoTable = Rc<RefCell<HashMap<ExprId, ExprId>>>;
+type MemoTable = Rc<RefCell<IdMap<ExprId>>>;
 
 /// One active top-level `diff` call: the pool and variable it is for and its
 /// raw-derivative memo.
@@ -181,7 +180,7 @@ impl DiffMemo {
                 .map(|a| Rc::clone(&a.memo))
         });
         DiffMemo {
-            own: Rc::new(RefCell::new(HashMap::new())),
+            own: Rc::new(RefCell::new(IdMap::default())),
             outer,
             pool: pool_addr,
             var,
@@ -281,7 +280,7 @@ fn zpoly_degree_bound(
     expr: ExprId,
     var: ExprId,
     pool: &ExprPool,
-    memo: &mut HashMap<ExprId, u64>,
+    memo: &mut IdMap<u64>,
 ) -> Option<u64> {
     if let Some(&d) = memo.get(&expr) {
         return Some(d);
@@ -338,7 +337,7 @@ fn build_zpoly(
     expr: ExprId,
     var: ExprId,
     pool: &ExprPool,
-    memo: &mut HashMap<ExprId, UniPoly>,
+    memo: &mut IdMap<UniPoly>,
 ) -> Option<UniPoly> {
     if let Some(p) = memo.get(&expr) {
         return Some(p.clone());
@@ -403,13 +402,13 @@ fn root_univariate_fastpath(
     {
         return None;
     }
-    let mut deg_memo: HashMap<ExprId, u64> = HashMap::new();
+    let mut deg_memo: IdMap<u64> = IdMap::default();
     let deg = zpoly_degree_bound(expr, var, pool, &mut deg_memo)?;
     let nodes = deg_memo.len() as u64;
     if deg.saturating_add(1) > nodes.saturating_mul(2) {
         return None;
     }
-    let poly = build_zpoly(expr, var, pool, &mut HashMap::new())?;
+    let poly = build_zpoly(expr, var, pool, &mut IdMap::default())?;
     let der = poly.derivative();
     let result = der.to_symbolic_expr(pool);
     let mut log = DerivationLog::new();
@@ -1115,11 +1114,11 @@ mod tests {
                 pool.pow(pool.func("cos", vec![u]), pool.integer(-1_i32)),
             ])
         };
-        let mut m = HashMap::new();
+        let mut m = std::collections::HashMap::new();
         m.insert(t1, q(x));
         m.insert(t2, q(q(x)));
         let d_sc = crate::kernel::subs::subs(d, &m, &pool);
-        let mut env = HashMap::new();
+        let mut env = std::collections::HashMap::new();
         env.insert(x, 0.3_f64);
         let got = crate::eval_f64(d_sc, &pool, &env).unwrap();
         let sec2 = |v: f64| 1.0 + v.tan() * v.tan();

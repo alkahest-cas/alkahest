@@ -62,7 +62,7 @@ use std::sync::Arc;
 const PAR_THRESHOLD: usize = 4;
 
 /// Per-pass memo: input `ExprId` → simplified `ExprId`.
-type Memo = DashMap<ExprId, ExprId>;
+type Memo = DashMap<ExprId, ExprId, crate::kernel::IdBuildHasher>;
 
 /// Shared rule list handed to every worker.
 ///
@@ -97,7 +97,7 @@ pub fn simplify_par_with_config(
     for _ in 0..config.max_iterations {
         // Fresh memo per pass, exactly as `simplify_with` does, so each sweep
         // sees the expression produced by the previous one.
-        let memo = Memo::new();
+        let memo = Memo::default();
         let result = simplify_node_par(current, pool, &rules, &memo);
         full_log = full_log.merge(result.log);
         if result.value == current {

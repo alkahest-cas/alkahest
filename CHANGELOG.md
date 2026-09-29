@@ -626,6 +626,21 @@
   `*_side_conditions()` channels are unaffected: the work stays on the calling
   thread.
 
+- **The expression pool stores each node once, and its hot tables use a fast
+  hasher.** The intern index was a map *keyed by* `ExprData`, so every node
+  lived twice — in the node array and, deep-cloned, as the map key — and every
+  miss paid for the clone. The index is now a table of ids (plus 32 hash bits)
+  that compares through the node array, sharded behind `RwLock`s under
+  `parallel`; a miss re-probes under the shard's write lock before it inserts,
+  so two threads interning the same value still get the same id. The pool
+  index and the `ExprId`-keyed memo tables in `simplify`, `diff` and
+  `eval_interp` hash with foldhash instead of SipHash (these keys are
+  pool-assigned indices, so HashDoS resistance bought nothing there). Resident
+  memory for 1.5 M distinct nodes: 225 → 114 bytes/node (1 M integers: 284 →
+  116); interning a fresh integer 377–403 → 170–193 ns, a fresh `Add`
+  448–462 → 264–298 ns; hits 20–40 % faster (`add([x, c])` 79–89 → 63–67 ns).
+  No output, id assignment order or persisted format changes.
+
 ### Testing and tooling
 
 - Proptests pin the new rug ⇄ FLINT conversion against the old decimal-string

@@ -21,7 +21,7 @@
 ## Resource model — read this before writing a long-running loop
 
 `ExprPool` is an **append-only** hash-consed arena (a `boxcar::Vec` of nodes plus a
-`DashMap` index). There is no `clear`, no `truncate`, no refcount and no GC: **the only
+sharded index of ids into it; each node is stored once). There is no `clear`, no `truncate`, no refcount and no GC: **the only
 way to reclaim interned nodes is to drop the whole pool.** Every `Expr`, `Matrix`,
 `Series` and `DerivedResult` holds a *strong* reference to its pool, so retaining one
 result retains every node ever interned alongside it.

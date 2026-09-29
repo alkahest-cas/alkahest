@@ -47,6 +47,7 @@ use crate::kernel::expr::PredicateKind;
 use crate::kernel::{
     integer_is_exact_f64, integer_to_f64, pow_f64, rational_to_f64, ExprData, ExprId, ExprPool,
 };
+use crate::kernel::{IdMap, IdSet};
 use crate::primitive::PrimitiveRegistry;
 use std::collections::HashMap;
 use std::fmt;
@@ -999,7 +1000,7 @@ fn compile_interpreter(
         for (&var, &val) in inputs_vec.iter().zip(vals.iter()) {
             env.insert(var, val);
         }
-        let mut memo: HashMap<ExprId, f64> = HashMap::new();
+        let mut memo: IdMap<f64> = IdMap::default();
         eval_interp_snap(expr, &env, &snapshot, &mut memo).unwrap_or(f64::NAN)
     };
 
@@ -1021,7 +1022,7 @@ pub struct ExprSnapshot {
 }
 
 fn snapshot_expr(root: ExprId, pool: &ExprPool) -> ExprSnapshot {
-    let mut visited: std::collections::HashSet<ExprId> = std::collections::HashSet::new();
+    let mut visited: IdSet = IdSet::default();
     let mut stack = vec![root];
     let mut nodes: HashMap<ExprId, ExprData> = HashMap::new();
     while let Some(id) = stack.pop() {
@@ -1062,7 +1063,7 @@ fn try_expr_f64_snap(
     expr: ExprId,
     snap: &ExprSnapshot,
     env: &HashMap<ExprId, f64>,
-    memo: &mut HashMap<ExprId, f64>,
+    memo: &mut IdMap<f64>,
 ) -> Option<f64> {
     if let Some(&cached) = memo.get(&expr) {
         return Some(cached);
@@ -1116,7 +1117,7 @@ fn try_predicate_bool_snap(
     args: &[ExprId],
     snap: &ExprSnapshot,
     env: &HashMap<ExprId, f64>,
-    memo: &mut HashMap<ExprId, f64>,
+    memo: &mut IdMap<f64>,
 ) -> Option<bool> {
     match kind {
         PredicateKind::True => Some(true),
@@ -1169,7 +1170,7 @@ fn try_predicate_bool_snap_expr(
     expr: ExprId,
     snap: &ExprSnapshot,
     env: &HashMap<ExprId, f64>,
-    memo: &mut HashMap<ExprId, f64>,
+    memo: &mut IdMap<f64>,
 ) -> Option<bool> {
     match snap_data(snap, expr)? {
         ExprData::Predicate { kind, args } => try_predicate_bool_snap(kind, args, snap, env, memo),
@@ -1181,7 +1182,7 @@ fn eval_interp_snap(
     expr: ExprId,
     env: &HashMap<ExprId, f64>,
     snap: &ExprSnapshot,
-    memo: &mut HashMap<ExprId, f64>,
+    memo: &mut IdMap<f64>,
 ) -> Option<f64> {
     if let Some(&cached) = memo.get(&expr) {
         return Some(cached);
@@ -1255,19 +1256,14 @@ fn eval_interp_snap(
 // optional features are disabled.
 #[cfg_attr(not(any(feature = "jit", feature = "cranelift")), allow(dead_code))]
 pub(super) fn topo_sort(root: ExprId, pool: &ExprPool) -> Vec<ExprId> {
-    let mut visited = std::collections::HashSet::new();
+    let mut visited = IdSet::default();
     let mut order = Vec::new();
     topo_dfs(root, pool, &mut visited, &mut order);
     order
 }
 
 #[cfg_attr(not(any(feature = "jit", feature = "cranelift")), allow(dead_code))]
-fn topo_dfs(
-    node: ExprId,
-    pool: &ExprPool,
-    visited: &mut std::collections::HashSet<ExprId>,
-    order: &mut Vec<ExprId>,
-) {
+fn topo_dfs(node: ExprId, pool: &ExprPool, visited: &mut IdSet, order: &mut Vec<ExprId>) {
     if !visited.insert(node) {
         return;
     }
