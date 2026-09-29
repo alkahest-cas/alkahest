@@ -126,21 +126,6 @@ pub fn poly_monic(p: &QPoly) -> QPoly {
     poly_scale(&p, &(Rational::from(1) / lc))
 }
 
-/// Clear denominators: the primitive integer associate of a `ℚ`-polynomial,
-/// as a FLINT `fmpz_poly`.  Scaling by a nonzero rational does not change a
-/// *monic* GCD, so this is lossless for [`poly_gcd`]'s purposes.
-fn qpoly_to_fmpz(p: &[Rational]) -> crate::flint::FlintPoly {
-    let mut l = rug::Integer::from(1);
-    for c in p.iter().filter(|c| **c != 0) {
-        l.lcm_mut(c.denom());
-    }
-    let ints: Vec<rug::Integer> = p
-        .iter()
-        .map(|c| c.numer() * rug::Integer::from(&l / c.denom()))
-        .collect();
-    crate::flint::FlintPoly::from_rug_coefficients(&ints)
-}
-
 /// Monic GCD of `a` and `b` over ℚ.
 ///
 /// # Why this goes through FLINT
@@ -154,25 +139,16 @@ fn qpoly_to_fmpz(p: &[Rational]) -> crate::flint::FlintPoly {
 /// clearing denominators and handing the integer problem to FLINT's modular
 /// `fmpz_poly_gcd` takes **0.3 s** for a bit-identical answer.
 ///
+/// The implementation is shared with the rest of the crate as
+/// `flint::qgcd::qpoly_gcd_monic`.
+///
 /// The result is unchanged, not merely equivalent: the monic GCD of two
 /// polynomials over a field is unique, and clearing denominators multiplies
 /// each input by a nonzero rational, which cannot change it.
 /// `poly_gcd_euclid` (crate-internal) remains as the reference implementation and is what the
 /// two agree-on-random-input property tests compare against.
 pub fn poly_gcd(a: &QPoly, b: &QPoly) -> QPoly {
-    let a = trim(a.clone());
-    let b = trim(b.clone());
-    if a.is_empty() {
-        return poly_monic(&b);
-    }
-    if b.is_empty() {
-        return poly_monic(&a);
-    }
-    let g = qpoly_to_fmpz(&a).gcd(&qpoly_to_fmpz(&b));
-    let coeffs: Vec<Rational> = (0..g.length())
-        .map(|i| Rational::from(g.get_coeff_flint(i).to_rug()))
-        .collect();
-    poly_monic(&coeffs)
+    crate::flint::qgcd::qpoly_gcd_monic(a, b)
 }
 
 /// The textbook Euclidean algorithm over `ℚ` — the reference [`poly_gcd`] is

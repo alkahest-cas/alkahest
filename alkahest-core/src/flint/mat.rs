@@ -80,6 +80,24 @@ impl FlintMat {
         out
     }
 
+    /// Exact determinant (`fmpz_mat_det`). The matrix must be square.
+    pub(crate) fn det(&self) -> FlintInteger {
+        assert_eq!(self.rows(), self.cols(), "det of a non-square matrix");
+        let mut d = FlintInteger::new();
+        unsafe { ffi::fmpz_mat_det(d.inner_mut_ptr(), &self.inner) };
+        d
+    }
+
+    /// Fraction-free reduced row echelon form (`fmpz_mat_rref`): returns
+    /// `(rank, den, B)` with `B / den` the (unique) reduced row echelon form of
+    /// `self` over ℚ, `den > 0` when the rank is positive.
+    pub(crate) fn rref(&self) -> (usize, FlintInteger, FlintMat) {
+        let mut b = FlintMat::new(self.rows(), self.cols());
+        let mut den = FlintInteger::new();
+        let rank = unsafe { ffi::fmpz_mat_rref(&mut b.inner, den.inner_mut_ptr(), &self.inner) };
+        (rank as usize, den, b)
+    }
+
     pub(crate) fn hnf_transform(&self, h: &mut FlintMat, u: &mut FlintMat) {
         unsafe {
             ffi::fmpz_mat_hnf_transform(&mut h.inner, &mut u.inner, &self.inner);

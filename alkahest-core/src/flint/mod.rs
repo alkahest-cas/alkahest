@@ -61,6 +61,7 @@ pub(crate) mod mat;
 pub(crate) mod mpoly;
 pub(crate) mod nmod;
 pub mod poly;
+pub(crate) mod qgcd;
 pub(crate) mod rational;
 
 pub use integer::FlintInteger;

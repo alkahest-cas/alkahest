@@ -378,7 +378,68 @@ fn unsupported_field() -> LinearAlgebraError {
     LinearAlgebraError::UnsupportedField
 }
 
+/// Reduced row echelon form of a rational matrix: `(pivot columns, pivot-row
+/// flags, echelon grid)`.
+///
+/// Every row is scaled by the lcm of its denominators (row scaling does not
+/// change the RREF) and the integer matrix goes to FLINT's fraction-free
+/// `fmpz_mat_rref`, which returns `den · rref`. The RREF is unique, so this is
+/// the same grid, pivot set and flags as the Gauss–Jordan elimination over
+/// `rug::Rational` it replaced (kept as `rational_row_echelon_reference` for
+/// the differential tests).
 fn rational_row_echelon_pivots(
+    mat: &[Vec<Rational>],
+    rows: usize,
+    cols: usize,
+) -> (Vec<usize>, Vec<bool>, Vec<Vec<Rational>>) {
+    use crate::flint::{mat::FlintMat, FlintInteger};
+    if rows == 0 || cols == 0 {
+        return (Vec::new(), vec![false; rows], mat.to_vec());
+    }
+    let mut fm = FlintMat::new(rows, cols);
+    for (i, row) in mat.iter().enumerate() {
+        let mut l = rug::Integer::from(1);
+        for c in row {
+            if *c.denom() != 1 {
+                l.lcm_mut(c.denom());
+            }
+        }
+        for (j, c) in row.iter().enumerate() {
+            let v = if l == 1 {
+                c.numer().clone()
+            } else {
+                c.numer() * rug::Integer::from(&l / c.denom())
+            };
+            fm.set_entry(i, j, &FlintInteger::from_rug(&v));
+        }
+    }
+    let (rank, den, b) = fm.rref();
+    let mut out = vec![vec![Rational::new(); cols]; rows];
+    let mut pivot_cols = Vec::with_capacity(rank);
+    let mut pivot_row_flags = vec![false; rows];
+    if rank > 0 {
+        let den = den.to_rug();
+        for (i, out_row) in out.iter_mut().enumerate().take(rank) {
+            for (j, o) in out_row.iter_mut().enumerate() {
+                let e = b.get_flint(i, j).to_rug();
+                if e != 0 {
+                    if !pivot_row_flags[i] {
+                        pivot_row_flags[i] = true;
+                        pivot_cols.push(j);
+                    }
+                    *o = Rational::from((e, den.clone()));
+                }
+            }
+        }
+    }
+    (pivot_cols, pivot_row_flags, out)
+}
+
+/// The Gauss–Jordan elimination over `rug::Rational` that
+/// [`rational_row_echelon_pivots`] replaced — the reference its differential
+/// tests compare against.
+#[cfg(test)]
+fn rational_row_echelon_reference(
     mat: &[Vec<Rational>],
     rows: usize,
     cols: usize,
@@ -3837,5 +3898,122 @@ mod tests {
         // `R`'s second row is zero, which is what makes the filled column free.
         assert_eq!(simplify(qr.r.get(1, 1), &p).value, p.integer(0_i32));
         assert_eq!(simplify(qr.r.get(1, 0), &p).value, p.integer(0_i32));
+    }
+
+    // ---- rational_row_echelon_pivots (FLINT) vs the Gauss–Jordan reference --
+
+    fn arb_grid() -> impl proptest::strategy::Strategy<Value = (usize, usize, Vec<Vec<Rational>>)> {
+        use proptest::prelude::*;
+        let entry = prop_oneof![
+            4 => (-6i64..7).prop_map(Rational::from),
+            2 => (-30i64..30, 1i64..8).prop_map(|(a, b)| Rational::from((a, b))),
+            1 => (any::<i64>(), any::<i64>()).prop_map(|(a, b)| {
+                Rational::from(rug::Integer::from(a) * rug::Integer::from(b) * 3u32)
+            }),
+            3 => Just(Rational::new()),
+        ];
+        (0usize..7, 0usize..7).prop_flat_map(move |(r, c)| {
+            (
+                Just(r),
+                Just(c),
+                prop::collection::vec(prop::collection::vec(entry.clone(), c), r),
+            )
+        })
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn rref_flint_matches_gauss_jordan((r, c, g) in arb_grid(), dup in 0usize..7, k in -2i64..3) {
+            proptest::prop_assert_eq!(
+                rational_row_echelon_pivots(&g, r, c),
+                rational_row_echelon_reference(&g, r, c)
+            );
+            // Rank-deficient variant: last row := k · row `dup` + first row.
+            if r >= 2 {
+                let mut g = g;
+                let d = dup % (r - 1);
+                let new_row: Vec<Rational> = (0..c)
+                    .map(|j| Rational::from(k) * g[d][j].clone() + g[0][j].clone())
+                    .collect();
+                g[r - 1] = new_row;
+                proptest::prop_assert_eq!(
+                    rational_row_echelon_pivots(&g, r, c),
+                    rational_row_echelon_reference(&g, r, c)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rref_flint_small_cases() {
+        let q = |a: i64, b: i64| Rational::from((a, b));
+        for (g, r, c) in [
+            (vec![], 0, 0),
+            (vec![], 0, 3),
+            (vec![vec![], vec![]], 2, 0),
+            (vec![vec![q(0, 1)]], 1, 1),
+            (vec![vec![q(-3, 4)]], 1, 1),
+            (vec![vec![q(0, 1), q(0, 1)], vec![q(1, 1), q(0, 1)]], 2, 2),
+            (vec![vec![q(0, 1); 3]; 3], 3, 3),
+        ] {
+            assert_eq!(
+                rational_row_echelon_pivots(&g, r, c),
+                rational_row_echelon_reference(&g, r, c),
+                "{g:?}"
+            );
+        }
+    }
+
+    /// `cargo test --release -p alkahest-cas rref_timing -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn rref_timing() {
+        // Warm FLINT up so the first row does not carry its one-time setup.
+        let _ = rational_row_echelon_pivots(&[vec![Rational::from(1)]], 1, 1);
+        for &(r, c) in &[
+            (3usize, 3usize),
+            (4, 6),
+            (10, 10),
+            (20, 25),
+            (40, 40),
+            (60, 50),
+        ] {
+            let g: Vec<Vec<Rational>> = (0..r)
+                .map(|i| {
+                    (0..c)
+                        .map(|j| {
+                            let k = (i * c + j) as i64;
+                            let v = ((k * 7919 + 13) % 201) - 100;
+                            if k % 5 == 0 {
+                                Rational::from((v, 7))
+                            } else {
+                                Rational::from(v)
+                            }
+                        })
+                        .collect()
+                })
+                .collect();
+            let reps = if r <= 5 {
+                2000
+            } else if r <= 20 {
+                20
+            } else {
+                3
+            };
+            let t = std::time::Instant::now();
+            let mut a = None;
+            for _ in 0..reps {
+                a = Some(rational_row_echelon_reference(&g, r, c));
+            }
+            let old = t.elapsed().as_secs_f64() * 1e3 / reps as f64;
+            let t = std::time::Instant::now();
+            let mut b = None;
+            for _ in 0..reps {
+                b = Some(rational_row_echelon_pivots(&g, r, c));
+            }
+            let new = t.elapsed().as_secs_f64() * 1e3 / reps as f64;
+            assert_eq!(a, b);
+            println!("rref {r}x{c}: gauss-jordan {old:.3} ms, flint {new:.3} ms");
+        }
     }
 }

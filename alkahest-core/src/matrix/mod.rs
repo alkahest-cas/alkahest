@@ -317,46 +317,20 @@ impl Matrix {
             .collect()
     }
 
-    /// Determinant of a matrix whose entries are all numeric literals, by
-    /// Bareiss fraction-free elimination.
+    /// Determinant of a matrix whose entries are all numeric literals.
     ///
-    /// `O(n³)` ring operations, against the `O(n!)` of the cofactor expansion
-    /// in [`det`](Matrix::det) — measured on integer matrices as 2.7 ms at
-    /// `n = 6`, 148 ms at `n = 8` and 1.42 s at `n = 9` before, against 3.5 ms
-    /// for SymPy at `n = 9`. The value is exact and identical either way, so
-    /// this is purely a route change.
+    /// `O(n³)` against the `O(n!)` of the cofactor expansion in
+    /// [`det`](Matrix::det). Each row is scaled by the lcm of its
+    /// denominators, the integer determinant is taken by FLINT's
+    /// `fmpz_mat_det` (multimodular / fraction-free, chosen by FLINT), and the
+    /// product of the row scales is divided back out. The value is exact and
+    /// unique, so this is identical to the Bareiss elimination over
+    /// `rug::Rational` it replaced (kept as `det_bareiss_reference` for the
+    /// differential tests) — measured 0.21 ms → 0.006 ms at `n = 10` and
+    /// 45 ms → 1 ms at `n = 60`, conversion included.
     fn det_numeric(&self, pool: &ExprPool) -> Option<ExprId> {
-        let n = self.rows;
-        let mut m = self.numeric_entries(pool)?;
-        let at = |i: usize, j: usize| i * n + j;
-        let mut prev = rug::Rational::from(1);
-        let mut sign = 1i32;
-        for k in 0..n.saturating_sub(1) {
-            if m[at(k, k)] == 0 {
-                // Pivot: swap in a row below with a nonzero entry in column k.
-                let Some(r) = (k + 1..n).find(|&r| m[at(r, k)] != 0) else {
-                    return Some(pool.integer(0_i32)); // singular
-                };
-                for j in 0..n {
-                    m.swap(at(k, j), at(r, j));
-                }
-                sign = -sign;
-            }
-            for i in k + 1..n {
-                for j in k + 1..n {
-                    // Bareiss: the division is exact over any integral domain.
-                    let v = (m[at(i, j)].clone() * m[at(k, k)].clone()
-                        - m[at(i, k)].clone() * m[at(k, j)].clone())
-                        / prev.clone();
-                    m[at(i, j)] = v;
-                }
-            }
-            prev = m[at(k, k)].clone();
-        }
-        let mut d = m[at(n - 1, n - 1)].clone();
-        if sign < 0 {
-            d = -d;
-        }
+        let m = self.numeric_entries(pool)?;
+        let d = det_rational_flint(&m, self.rows);
         Some(if *d.denom() == 1 {
             pool.integer(d.numer().clone())
         } else {
@@ -593,6 +567,77 @@ impl Matrix {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Exact determinant of the `n × n` row-major rational matrix `m`, through
+/// `fmpz_mat_det` after clearing each row's denominators.
+pub(crate) fn det_rational_flint(m: &[rug::Rational], n: usize) -> rug::Rational {
+    use crate::flint::{mat::FlintMat, FlintInteger};
+    debug_assert_eq!(m.len(), n * n);
+    if n == 0 {
+        return rug::Rational::from(1);
+    }
+    let mut fm = FlintMat::new(n, n);
+    let mut scale = rug::Integer::from(1);
+    for i in 0..n {
+        let row = &m[i * n..(i + 1) * n];
+        let mut l = rug::Integer::from(1);
+        for c in row {
+            if *c.denom() != 1 {
+                l.lcm_mut(c.denom());
+            }
+        }
+        for (j, c) in row.iter().enumerate() {
+            let v = if l == 1 {
+                c.numer().clone()
+            } else {
+                c.numer() * rug::Integer::from(&l / c.denom())
+            };
+            fm.set_entry(i, j, &FlintInteger::from_rug(&v));
+        }
+        scale *= l;
+    }
+    rug::Rational::from((fm.det().to_rug(), scale))
+}
+
+/// The Bareiss fraction-free elimination over `rug::Rational` that
+/// [`det_rational_flint`] replaced — the reference its differential tests
+/// compare against.
+#[cfg(test)]
+pub(crate) fn det_bareiss_reference(m: &[rug::Rational], n: usize) -> rug::Rational {
+    if n == 0 {
+        return rug::Rational::from(1);
+    }
+    let mut m = m.to_vec();
+    let at = |i: usize, j: usize| i * n + j;
+    let mut prev = rug::Rational::from(1);
+    let mut sign = 1i32;
+    for k in 0..n.saturating_sub(1) {
+        if m[at(k, k)] == 0 {
+            let Some(r) = (k + 1..n).find(|&r| m[at(r, k)] != 0) else {
+                return rug::Rational::new();
+            };
+            for j in 0..n {
+                m.swap(at(k, j), at(r, j));
+            }
+            sign = -sign;
+        }
+        for i in k + 1..n {
+            for j in k + 1..n {
+                let v = (m[at(i, j)].clone() * m[at(k, k)].clone()
+                    - m[at(i, k)].clone() * m[at(k, j)].clone())
+                    / prev.clone();
+                m[at(i, j)] = v;
+            }
+        }
+        prev = m[at(k, k)].clone();
+    }
+    let d = m[at(n - 1, n - 1)].clone();
+    if sign < 0 {
+        -d
+    } else {
+        d
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -813,5 +858,113 @@ mod tests {
         // ∂f1/∂y = 0, ∂f2/∂x = 0
         assert_eq!(j.get(0, 1), pool.integer(0_i32));
         assert_eq!(j.get(1, 0), pool.integer(0_i32));
+    }
+
+    // ---- det_rational_flint vs the Bareiss reference ----------------------
+
+    fn arb_entry() -> impl proptest::strategy::Strategy<Value = rug::Rational> {
+        use proptest::prelude::*;
+        prop_oneof![
+            4 => (-9i64..10).prop_map(rug::Rational::from),
+            2 => (-40i64..40, 1i64..9).prop_map(|(a, b)| rug::Rational::from((a, b))),
+            1 => (any::<i64>(), any::<i64>(), 1u32..4).prop_map(|(a, b, e)| {
+                // Huge entries: well past one limb.
+                let v = rug::Integer::from(a) * rug::ops::Pow::pow(rug::Integer::from(b), e) + 1;
+                rug::Rational::from(v)
+            }),
+            1 => Just(rug::Rational::new()),
+        ]
+    }
+
+    fn arb_square() -> impl proptest::strategy::Strategy<Value = (usize, Vec<rug::Rational>)> {
+        use proptest::prelude::*;
+        (0usize..8).prop_flat_map(|n| (Just(n), prop::collection::vec(arb_entry(), n * n)))
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn det_flint_matches_bareiss((n, m) in arb_square()) {
+            proptest::prop_assert_eq!(det_rational_flint(&m, n), det_bareiss_reference(&m, n));
+        }
+
+        #[test]
+        fn det_flint_matches_bareiss_singular((n, m) in arb_square(), k in 0usize..8, c in -3i64..4) {
+            // Force a dependent row: row n-1 := c · row k.
+            let mut m = m;
+            if n >= 2 {
+                let k = k % (n - 1);
+                for j in 0..n {
+                    m[(n - 1) * n + j] = rug::Rational::from(c) * m[k * n + j].clone();
+                }
+                proptest::prop_assert_eq!(det_rational_flint(&m, n), rug::Rational::new());
+            }
+            proptest::prop_assert_eq!(det_rational_flint(&m, n), det_bareiss_reference(&m, n));
+        }
+    }
+
+    #[test]
+    fn det_flint_small_cases() {
+        let r = |a: i64, b: i64| rug::Rational::from((a, b));
+        assert_eq!(det_rational_flint(&[], 0), 1);
+        assert_eq!(det_rational_flint(&[r(-7, 3)], 1), r(-7, 3));
+        let m = [r(1, 2), r(1, 3), r(1, 4), r(1, 5)];
+        assert_eq!(det_rational_flint(&m, 2), r(1, 10) - r(1, 12));
+        // Through the public entry point: 3×3 with rational entries.
+        let pool = p();
+        let q = |a: i64, b: i64| pool.rational(a, b);
+        let mat = Matrix::new(vec![
+            vec![q(1, 2), pool.integer(3), q(-5, 7)],
+            vec![pool.integer(0), q(2, 9), pool.integer(4)],
+            vec![q(11, 3), pool.integer(-1), q(1, 1)],
+        ])
+        .unwrap();
+        let entries = mat.numeric_entries(&pool).unwrap();
+        let expect = det_bareiss_reference(&entries, 3);
+        let got = mat.det(&pool).unwrap();
+        assert_eq!(
+            got,
+            pool.rational(expect.numer().clone(), expect.denom().clone())
+        );
+    }
+
+    /// `cargo test --release -p alkahest-cas det_timing -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn det_timing() {
+        // Warm FLINT up so the first row does not carry its one-time setup.
+        let _ = det_rational_flint(&[rug::Rational::from(1)], 1);
+        for &n in &[3usize, 5, 10, 20, 40, 60] {
+            let m: Vec<rug::Rational> = (0..n * n)
+                .map(|k| {
+                    let v = ((k as i64 * 7919 + 13) % 201) - 100;
+                    if k % 5 == 0 {
+                        rug::Rational::from((v, 7))
+                    } else {
+                        rug::Rational::from(v)
+                    }
+                })
+                .collect();
+            let reps = if n <= 5 {
+                2000
+            } else if n <= 20 {
+                20
+            } else {
+                3
+            };
+            let t = std::time::Instant::now();
+            let mut a = rug::Rational::new();
+            for _ in 0..reps {
+                a = det_bareiss_reference(&m, n);
+            }
+            let old = t.elapsed().as_secs_f64() * 1e3 / reps as f64;
+            let t = std::time::Instant::now();
+            let mut b = rug::Rational::new();
+            for _ in 0..reps {
+                b = det_rational_flint(&m, n);
+            }
+            let new = t.elapsed().as_secs_f64() * 1e3 / reps as f64;
+            assert_eq!(a, b);
+            println!("det n={n}: bareiss {old:.3} ms, flint {new:.3} ms");
+        }
     }
 }
