@@ -44,10 +44,10 @@ use crate::eval::program::NumericProgram;
 use crate::eval::IdMap;
 use crate::kernel::eval_const::try_predicate_bool_from_expr;
 use crate::kernel::expr::PredicateKind;
+use crate::kernel::IdSet;
 use crate::kernel::{
     integer_is_exact_f64, integer_to_f64, pow_f64, rational_to_f64, ExprData, ExprId, ExprPool,
 };
-use crate::kernel::{IdMap, IdSet};
 use crate::primitive::PrimitiveRegistry;
 use std::collections::HashMap;
 use std::fmt;
