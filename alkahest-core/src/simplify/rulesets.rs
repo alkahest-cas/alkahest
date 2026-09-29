@@ -109,7 +109,7 @@ fn is_nonneg_real(expr: ExprId, pool: &ExprPool) -> bool {
     match pool.get(expr) {
         ExprData::Integer(n) => n.0.cmp0() != Ordering::Less,
         ExprData::Rational(r) => r.0.cmp0() != Ordering::Less,
-        ExprData::Float(f) => f.inner.to_f64() >= 0.0,
+        ExprData::Float(f) => matches!(f.inner.cmp0(), Some(Ordering::Greater | Ordering::Equal)),
         ExprData::Symbol { domain, .. } => {
             matches!(domain, Domain::Positive | Domain::NonNegative)
         }
@@ -124,7 +124,7 @@ fn is_positive_real(expr: ExprId, pool: &ExprPool) -> bool {
     match pool.get(expr) {
         ExprData::Integer(n) => n.0.cmp0() == Ordering::Greater,
         ExprData::Rational(r) => r.0.cmp0() == Ordering::Greater,
-        ExprData::Float(f) => f.inner.to_f64() > 0.0,
+        ExprData::Float(f) => f.inner.cmp0() == Some(Ordering::Greater),
         ExprData::Symbol { domain, .. } => matches!(domain, Domain::Positive),
         _ => false,
     }
@@ -2441,5 +2441,37 @@ mod tests {
         let r = simplify_with_pattern_rules(expr, &pool, &rule_set, SimplifyConfig::default());
         let expected = pool.mul(vec![pool.integer(2_i32), x]);
         assert_eq!(r.value, expected);
+    }
+}
+
+/// A float whose magnitude is past the `f64` exponent range (`±1e-400`).
+#[cfg(test)]
+fn tiny_float(pool: &ExprPool, negative: bool) -> ExprId {
+    let mut f = rug::Float::with_val(64, rug::Float::i_exp(1, -1400));
+    if negative {
+        f = -f;
+    }
+    assert_eq!(f.to_f64(), 0.0, "the premise: f64 flushes it to zero");
+    pool.intern(ExprData::Float(crate::kernel::BigFloat {
+        inner: f,
+        prec: 64,
+    }))
+}
+
+/// Audit A4 sweep: `is_nonneg_real` / `is_positive_real` read a float's sign
+/// through `to_f64`, so `-1e-400` was "non-negative" and `1e-400` not
+/// positive.
+#[cfg(test)]
+mod float_sign_tests {
+    use super::*;
+
+    #[test]
+    fn a_float_below_f64_range_keeps_its_sign() {
+        let pool = ExprPool::new();
+        let (pos, neg) = (tiny_float(&pool, false), tiny_float(&pool, true));
+        assert!(!is_nonneg_real(neg, &pool));
+        assert!(is_nonneg_real(pos, &pool));
+        assert!(is_positive_real(pos, &pool));
+        assert!(!is_positive_real(neg, &pool));
     }
 }

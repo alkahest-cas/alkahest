@@ -311,12 +311,14 @@ fn assumed_sign_at(expr: ExprId, pool: &ExprPool, depth: u32) -> Option<Sign> {
     match pool.get(expr) {
         ExprData::Integer(n) => Some(Sign::of_ordering(n.0.cmp(&rug::Integer::ZERO))),
         ExprData::Rational(r) => Some(Sign::of_ordering(r.0.cmp0())),
+        // The sign of the `rug` value itself: `to_f64` flushes a float past
+        // the `f64` exponent range (`1e-400` at any precision) to zero, and
+        // this used to report such a float as `Sign::Zero`.
         ExprData::Float(f) => {
-            let v = f.inner.to_f64();
-            if !v.is_finite() {
+            if !f.inner.is_finite() {
                 return None;
             }
-            Some(Sign::of_ordering(v.partial_cmp(&0.0)?))
+            Some(Sign::of_ordering(f.inner.cmp0()?))
         }
         ExprData::Symbol {
             domain: Domain::Positive,
@@ -819,5 +821,39 @@ mod tests {
         assert!(start.elapsed() < std::time::Duration::from_secs(2));
         assert_eq!(twice.value, once);
         assert!(twice.log.is_empty());
+    }
+}
+
+/// A float whose magnitude is past the `f64` exponent range (`±1e-400`).
+#[cfg(test)]
+fn tiny_float(pool: &ExprPool, negative: bool) -> ExprId {
+    let mut f = rug::Float::with_val(64, rug::Float::i_exp(1, -1400));
+    if negative {
+        f = -f;
+    }
+    assert_eq!(f.to_f64(), 0.0, "the premise: f64 flushes it to zero");
+    pool.intern(ExprData::Float(crate::kernel::BigFloat {
+        inner: f,
+        prec: 64,
+    }))
+}
+
+/// Audit A4 sweep: the sign of a float was read through `to_f64`.
+#[cfg(test)]
+mod float_sign_tests {
+    use super::*;
+
+    #[test]
+    fn a_float_below_f64_range_is_not_zero() {
+        let pool = ExprPool::new();
+        assert_eq!(
+            assumed_sign(tiny_float(&pool, false), &pool),
+            Some(Sign::Positive)
+        );
+        assert_eq!(
+            assumed_sign(tiny_float(&pool, true), &pool),
+            Some(Sign::Negative)
+        );
+        assert_eq!(assumed_sign(pool.float(0.0, 53), &pool), Some(Sign::Zero));
     }
 }

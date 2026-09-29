@@ -163,12 +163,12 @@ fn fold_exact_coefficient(parts: Vec<ExprId>, pool: &ExprPool) -> ExprId {
             _ => rest.push(part),
         }
     }
-    let (num, den) = (coeff.numer().to_i64(), coeff.denom().to_i64());
-    let atom = match (num, den) {
-        (Some(n), Some(1)) => pool.integer(n),
-        (Some(n), Some(d)) => pool.rational(n, d),
-        // Out of `i64` range: leave the product alone rather than guess.
-        _ => return pool.mul(rest),
+    // Built from the exact value: a coefficient past `i64` has to round-trip
+    // like any other (audit A2), so it is not left unfolded.
+    let atom = if *coeff.denom() == 1 {
+        pool.integer(coeff.numer().clone())
+    } else {
+        pool.rational(coeff.numer().clone(), coeff.denom().clone())
     };
     if rest.is_empty() {
         return atom;
@@ -1139,4 +1139,110 @@ fn the_typeset_readers_are_not_vacuous() {
     assert_eq!(read_unicode("(x + 1)¹").unwrap(), "(x + 1)^(1)");
     assert_eq!(read_unicode("√x").unwrap(), "(x)^(1/2)");
     assert_eq!(read_unicode("½·x").unwrap(), "(1/2)*x");
+}
+
+// ---------------------------------------------------------------------------
+// Numbers past `i64` (audit A2)
+// ---------------------------------------------------------------------------
+
+/// `s` with Unicode superscript digits and signs read as ASCII, so a digit
+/// string can be found in an exponent or a radical index.
+fn unsuperscript(s: &str) -> String {
+    s.chars()
+        .map(|c| from_superscript(c).unwrap_or(c))
+        .collect()
+}
+
+/// A decimal integer of `digits` digits (no leading zero), from a seed.
+fn big_integer(digits: usize, seed: &[u8]) -> rug::Integer {
+    let mut s = String::with_capacity(digits);
+    for i in 0..digits {
+        let b = seed[i % seed.len()].wrapping_add((i as u8).wrapping_mul(37));
+        let d = if i == 0 { 1 + b % 9 } else { b % 10 };
+        s.push(char::from(b'0' + d));
+    }
+    s.parse().expect("decimal digits")
+}
+
+mod big_number_props {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Every shape a coefficient or an exponent can take.
+    fn shapes(h: &Harness, n: &rug::Integer, q: &rug::Rational) -> Vec<(ExprId, bool)> {
+        let p = &h.pool;
+        let x = h.syms[0];
+        let rat = || p.rational(q.numer().clone(), q.denom().clone());
+        // `(expr, carries q rather than n)`
+        vec![
+            (p.integer(n.clone()), false),
+            (rat(), true),
+            (p.mul(vec![p.integer(n.clone()), x]), false),
+            (p.mul(vec![rat(), x]), true),
+            (p.add(vec![x, p.integer(n.clone())]), false),
+            (p.add(vec![x, rat()]), true),
+            (p.pow(x, p.integer(n.clone())), false),
+            (
+                p.mul(vec![p.integer(3), p.pow(x, p.integer(-n.clone().abs()))]),
+                false,
+            ),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn every_printer_keeps_every_digit_and_round_trips(
+            n_digits in 1usize..45,
+            d_digits in 2usize..45,
+            seed in proptest::collection::vec(any::<u8>(), 2..16),
+            negative in any::<bool>(),
+        ) {
+            let h = Harness::new();
+            let mut n = big_integer(n_digits, &seed);
+            if negative {
+                n = -n;
+            }
+            // `x^0` and `x^1` print no exponent at all, and a unit
+            // coefficient prints as a bare sign (`-1·x` is `-x`).
+            prop_assume!(n.clone().abs() > 1);
+            let d = big_integer(d_digits, &seed[1..]);
+            let q = rug::Rational::from((n.clone(), d));
+            // No vulgar-fraction glyph stands in for the digits.
+            prop_assume!(*q.denom() >= 11);
+            prop_assume!(q.numer().clone().abs() > 1);
+            let n_digits_s = n.clone().abs().to_string();
+            let q_digits = [q.numer().clone().abs().to_string(), q.denom().to_string()];
+            let mut cases = shapes(&h, &n, &q);
+            // A radical index past `i64`.
+            cases.push((h.pool.pow(h.syms[0], h.pool.rational(1, q.denom().clone())), true));
+            for (i, (id, is_q)) in cases.into_iter().enumerate() {
+                let wanted: Vec<&str> = match (is_q, i) {
+                    (true, 8) => vec![q_digits[1].as_str()],
+                    (true, _) => q_digits.iter().map(String::as_str).collect(),
+                    (false, _) => vec![n_digits_s.as_str()],
+                };
+                let outputs = [
+                    ("str", h.pool.display(id).to_string()),
+                    ("latex", crate::kernel::render_latex(id, &h.pool)),
+                    ("unicode", unsuperscript(&crate::kernel::render_unicode(id, &h.pool))),
+                ];
+                for (printer, out) in &outputs {
+                    for w in &wanted {
+                        prop_assert!(out.contains(w), "{} lost {}: {}", printer, w, out);
+                    }
+                    prop_assert!(!out.contains("--"), "{}: {}", printer, out);
+                }
+                let (printed, verdict) = h.check(id);
+                prop_assert_eq!(verdict, Verdict::Structural, "str: {}", printed);
+                let (printed, verdict) =
+                    h.check_typeset(id, crate::kernel::render_latex, read_latex);
+                prop_assert_ne!(verdict, Verdict::Mismatch, "latex: {}", printed);
+                let (printed, verdict) =
+                    h.check_typeset(id, crate::kernel::render_unicode, read_unicode);
+                prop_assert_ne!(verdict, Verdict::Mismatch, "unicode: {}", printed);
+            }
+        }
+    }
 }
