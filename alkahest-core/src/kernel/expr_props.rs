@@ -1,10 +1,12 @@
 //! Predicates on expression trees for noncommutative algebra (V3-2).
 
+#[cfg(test)]
 use crate::kernel::expr::ExprData;
 use crate::kernel::pool::ExprPool;
 use crate::kernel::ExprId;
 
-/// `true` iff no non-commutative [`ExprData::Symbol`] appears anywhere in `expr`.
+/// `true` iff no non-commutative [`ExprData::Symbol`](crate::kernel::ExprData::Symbol)
+/// appears anywhere in `expr`.
 ///
 /// Used to decide whether multiplication may be canonically sorted or whether
 /// rules like [`crate::simplify::rules::DivSelf`] may merge powers by base.
@@ -21,38 +23,34 @@ pub fn mult_tree_is_commutative(pool: &ExprPool, expr: ExprId) -> bool {
 ///
 /// E-graph simplification assumes freely commuting numeric factors in its `Mul`
 /// rules; we disable that backend when this predicate holds.
+///
+/// This is exactly the negation of [`mult_tree_is_commutative`]: both follow
+/// the same recurrence (a symbol contributes its own flag, numbers commute,
+/// every other node combines all of its children — `RootSum` skipping its
+/// bound `var` in both), so the answer is the O(1) flag cached at intern time
+/// rather than a walk that visited a shared subterm once per path to it.
 pub fn expr_contains_noncommutative_symbol(pool: &ExprPool, expr: ExprId) -> bool {
+    !pool.is_mult_commutative(expr)
+}
+
+/// The subtree walk `expr_contains_noncommutative_symbol` used to perform,
+/// kept as its test oracle.
+#[cfg(test)]
+fn contains_noncommutative_walk(pool: &ExprPool, expr: ExprId) -> bool {
+    let rec = |c: ExprId| contains_noncommutative_walk(pool, c);
     pool.with(expr, |data| match data {
         ExprData::Symbol { commutative, .. } => !*commutative,
         ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => false,
-        ExprData::Add(args) | ExprData::Mul(args) => args
-            .iter()
-            .any(|&c| expr_contains_noncommutative_symbol(pool, c)),
-        ExprData::Pow { base, exp } => {
-            expr_contains_noncommutative_symbol(pool, *base)
-                || expr_contains_noncommutative_symbol(pool, *exp)
-        }
-        ExprData::Func { args, .. } => args
-            .iter()
-            .any(|&c| expr_contains_noncommutative_symbol(pool, c)),
+        ExprData::Add(args) | ExprData::Mul(args) => args.iter().any(|&c| rec(c)),
+        ExprData::Pow { base, exp } => rec(*base) || rec(*exp),
+        ExprData::Func { args, .. } => args.iter().any(|&c| rec(c)),
         ExprData::Piecewise { branches, default } => {
-            branches.iter().any(|(c, v)| {
-                expr_contains_noncommutative_symbol(pool, *c)
-                    || expr_contains_noncommutative_symbol(pool, *v)
-            }) || expr_contains_noncommutative_symbol(pool, *default)
+            branches.iter().any(|(c, v)| rec(*c) || rec(*v)) || rec(*default)
         }
-        ExprData::Predicate { args, .. } => args
-            .iter()
-            .any(|&c| expr_contains_noncommutative_symbol(pool, c)),
-        ExprData::Forall { var, body } | ExprData::Exists { var, body } => {
-            expr_contains_noncommutative_symbol(pool, *var)
-                || expr_contains_noncommutative_symbol(pool, *body)
-        }
-        ExprData::BigO(inner) => expr_contains_noncommutative_symbol(pool, *inner),
-        ExprData::RootSum { poly, body, .. } => {
-            expr_contains_noncommutative_symbol(pool, *poly)
-                || expr_contains_noncommutative_symbol(pool, *body)
-        }
+        ExprData::Predicate { args, .. } => args.iter().any(|&c| rec(c)),
+        ExprData::Forall { var, body } | ExprData::Exists { var, body } => rec(*var) || rec(*body),
+        ExprData::BigO(inner) => rec(*inner),
+        ExprData::RootSum { poly, body, .. } => rec(*poly) || rec(*body),
     })
 }
 
@@ -127,6 +125,45 @@ mod tests {
                 mult_tree_is_commutative(&pool, id),
                 reference(&pool, id),
                 "cached flag disagrees with full walk for {}",
+                crate::kernel::display::render_unicode(id, &pool)
+            );
+        }
+    }
+
+    /// `expr_contains_noncommutative_symbol` now reads the cached flag; it
+    /// must agree with the subtree walk it replaced on every node kind.
+    #[test]
+    fn contains_noncommutative_matches_walk() {
+        let pool = ExprPool::new();
+        let c = pool.symbol("c", Domain::Real);
+        let nc = pool.symbol_commutative("nc", Domain::Real, false);
+        let two = pool.integer(2_i32);
+        let half = pool.rational(1, 2);
+        let f = pool.float(0.5, 53);
+        let mut nodes = vec![c, nc, two, half, f];
+        for leaf in [c, nc] {
+            let s = pool.add(vec![leaf, two]);
+            nodes.push(s);
+            nodes.push(pool.mul(vec![s, half]));
+            nodes.push(pool.pow(two, s));
+            nodes.push(pool.func("atan2", vec![c, s]));
+            nodes.push(pool.pred_lt(s, f));
+            nodes.push(pool.piecewise(vec![(pool.pred_gt(c, two), s)], two));
+            nodes.push(pool.piecewise(vec![(pool.pred_gt(s, two), c)], two));
+            nodes.push(pool.piecewise(vec![(pool.pred_gt(c, two), c)], s));
+            nodes.push(pool.forall(c, pool.pred_ge(s, two)));
+            nodes.push(pool.exists(c, pool.pred_ge(s, two)));
+            nodes.push(pool.big_o(s));
+            nodes.push(pool.root_sum(s, c, c));
+            nodes.push(pool.root_sum(c, c, s));
+            // A non-commutative *bound* variable is skipped by both.
+            nodes.push(pool.root_sum(c, leaf, c));
+        }
+        for id in nodes {
+            assert_eq!(
+                expr_contains_noncommutative_symbol(&pool, id),
+                contains_noncommutative_walk(&pool, id),
+                "cached flag disagrees with walk for {}",
                 crate::kernel::display::render_unicode(id, &pool)
             );
         }

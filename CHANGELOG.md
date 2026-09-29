@@ -483,6 +483,21 @@
   katsura-4 12.7 → 2.2 ms, katsura-5 219 → 19 ms, katsura-6 4.2 s → 0.24 s.
   `reduce`, FGLM's normal forms and `solve` on polynomial systems use the same
   engine (the exact rational variant where the remainder itself is returned).
+- **`simplify_egraph` is sized by the expression DAG, not its tree, and no
+  longer re-parses its rule program on every call.** A subterm shared by many
+  parents used to be written out once per path to it — `e_{k+1} =
+  sin(e_k)·cos(e_k)` doubled per level, so depth 14 took 1.3 s and depth 30 was
+  out of reach, and the `node_limit` guard, which counts *distinct* nodes, let
+  a 120-node DAG through to build ~10⁸ terms. Shared nodes are now bound once
+  by egglog `let`s, the result is decoded from egglog's hash-consed `TermDag`
+  instead of re-parsed from its printed tree, and the post-extraction passes
+  are memoised per node, so the guard now bounds the real work: depth 30 takes
+  ~2–3 ms and the Chebyshev DAG `T_40` ~5–8 ms. The configuration-only prelude
+  (datatype and rulesets) is parsed once per thread and cloned, which takes a
+  trivial call such as `x + 0` from ~1.2 ms to ~0.3–0.45 ms. Results are
+  identical to the tree pipeline, which is kept as a differential-test
+  reference. `expr_contains_noncommutative_symbol` now reads the O(1)
+  commutativity flag cached at intern time instead of walking the tree.
 
 ### Testing and tooling
 
