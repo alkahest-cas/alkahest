@@ -390,7 +390,11 @@ impl FlintMPolyFactor {
     pub fn base_at(&self, i: usize) -> FlintMPoly {
         // A real check, not `debug_assert!`: this is a safe fn, and an index
         // past `len()` reads out of bounds of the FLINT array in release.
-        assert!(i < self.len(), "factor index {i} out of range (len {})", self.len());
+        assert!(
+            i < self.len(),
+            "factor index {i} out of range (len {})",
+            self.len()
+        );
         let mut base = FlintMPoly::new(Arc::clone(&self.ctx));
         unsafe {
             super::ffi::fmpz_mpoly_factor_get_base(

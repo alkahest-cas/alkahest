@@ -42,7 +42,11 @@ impl FlintPolyFactor {
     pub fn poly_at(&self, i: usize) -> FlintPoly {
         // A real check, not `debug_assert!`: this is a safe fn, and an index
         // past `len()` reads out of bounds of the FLINT array in release.
-        assert!(i < self.len(), "factor index {i} out of range (len {})", self.len());
+        assert!(
+            i < self.len(),
+            "factor index {i} out of range (len {})",
+            self.len()
+        );
         let mut p = FlintPoly::new();
         unsafe { ffi::fmpz_poly_factor_get_fmpz_poly(&mut p.inner, &self.inner, i as ffi::slong) };
         p
@@ -52,7 +56,11 @@ impl FlintPolyFactor {
     pub fn exp_at(&self, i: usize) -> u32 {
         // A real check, not `debug_assert!`: this is a safe fn, and an index
         // past `len()` reads out of bounds of the FLINT array in release.
-        assert!(i < self.len(), "factor index {i} out of range (len {})", self.len());
+        assert!(
+            i < self.len(),
+            "factor index {i} out of range (len {})",
+            self.len()
+        );
         // SAFETY: `i < num` so the pointer arithmetic is in bounds.
         unsafe { *self.inner.exp.add(i) as u32 }
     }

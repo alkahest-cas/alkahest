@@ -73,7 +73,7 @@ pub use poly::FlintPoly;
 /// in debug. These pin the panic in both (`cargo test --release` included).
 #[cfg(test)]
 mod factor_index_tests {
-    use super::integer::{FlintInteger, FlintIntFactor};
+    use super::integer::{FlintIntFactor, FlintInteger};
     use super::mpoly::{FlintMPoly, FlintMPolyCtx, FlintMPolyFactor};
     use super::nmod::{FlintNmodPoly, FlintNmodPolyFactor};
     use super::poly::{FlintPoly, FlintPolyFactor};

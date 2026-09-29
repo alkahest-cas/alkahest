@@ -3067,7 +3067,9 @@ mod squarefree_tests {
             let square = (0..=n).take_while(|r| r * r <= n).any(|r| r * r == n);
             let q = n >= 2
                 && !square
-                && (2..=n).take_while(|d| d * d * d * d <= n).all(|d| n % (d * d * d * d) != 0);
+                && (2..=n)
+                    .take_while(|d| d * d * d * d <= n)
+                    .all(|d| n % (d * d * d * d) != 0);
             assert_eq!(is_quartic_radical(n), q, "is_quartic_radical({n})");
         }
         // 2^61 − 1 is prime: the trial division runs to √n.
