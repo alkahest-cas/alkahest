@@ -17,7 +17,9 @@ use std::collections::BinaryHeap;
 use crate::poly::groebner::ideal::GbPoly;
 use crate::poly::groebner::monomial_order::MonomialOrder;
 use crate::poly::groebner::pairs::{update_pairs, CriticalPair};
-use crate::poly::groebner::reduce::{reduce, s_polynomial};
+#[cfg(test)]
+use crate::poly::groebner::reduce::reduce;
+use crate::poly::groebner::reduce::Divisors;
 
 // ---------------------------------------------------------------------------
 // Main algorithm
@@ -44,6 +46,8 @@ pub fn compute_buchberger_basis(generators: Vec<GbPoly>, order: MonomialOrder) -
     // is non-zero (the generators were filtered and reductions are only added
     // when they do not vanish), so `leading_exp` always yields a value.
     let mut basis_lead: Vec<Vec<u32>> = Vec::with_capacity(initial.len() * 2);
+    // The basis prepared for reduction, kept in step with `basis`.
+    let mut divisors = Divisors::new_fraction_free(&[], order);
     let mut pair_vec: Vec<CriticalPair> = Vec::new();
 
     // Add initial generators one by one, applying GM update after each.
@@ -53,6 +57,7 @@ pub fn compute_buchberger_basis(generators: Vec<GbPoly>, order: MonomialOrder) -
             continue;
         };
         let new_idx = basis.len();
+        divisors.push(&gen);
         basis.push(gen);
         basis_sugar.push(sugar);
         basis_lead.push(lead);
@@ -63,8 +68,9 @@ pub fn compute_buchberger_basis(generators: Vec<GbPoly>, order: MonomialOrder) -
     let mut heap: BinaryHeap<CriticalPair> = BinaryHeap::from(pair_vec);
 
     while let Some(pair) = heap.pop() {
-        let sp = s_polynomial(&basis[pair.i], &basis[pair.j], order);
-        let r = reduce(&sp, &basis, order);
+        // A multiple of reduce(s_polynomial(basis[i], basis[j]), basis),
+        // computed in place and fraction-free; make_monic below normalises it.
+        let r = divisors.reduce_s_pair_scaled(pair.i, pair.j);
 
         if !r.is_zero() {
             let r = r.make_monic(order);
@@ -73,6 +79,7 @@ pub fn compute_buchberger_basis(generators: Vec<GbPoly>, order: MonomialOrder) -
                 continue;
             };
             let new_idx = basis.len();
+            divisors.push(&r);
             basis.push(r);
             basis_sugar.push(sugar);
             basis_lead.push(lead);
@@ -94,19 +101,18 @@ pub fn compute_buchberger_basis(generators: Vec<GbPoly>, order: MonomialOrder) -
 /// Interreduce a Gröbner basis: reduce each element by all others and remove
 /// elements whose leading term is divisible by another's.
 pub(crate) fn interreduce(mut basis: Vec<GbPoly>, order: MonomialOrder) -> Vec<GbPoly> {
+    // Reducing basis[i] by "every other element" is done by index skip on a
+    // prepared divisor list kept in step with `basis`, not by cloning the rest.
+    let mut divisors = Divisors::new_fraction_free(&basis, order);
     let mut i = 0;
     while i < basis.len() {
-        let others: Vec<GbPoly> = basis
-            .iter()
-            .enumerate()
-            .filter(|&(j, _)| j != i)
-            .map(|(_, g)| g.clone())
-            .collect();
-        let reduced = reduce(&basis[i], &others, order);
+        let reduced = divisors.reduce_scaled(&basis[i], Some(i));
         if reduced.is_zero() {
             basis.remove(i);
+            divisors.remove(i);
         } else {
             basis[i] = reduced.make_monic(order);
+            divisors.set(i, &basis[i]);
             i += 1;
         }
     }
@@ -120,9 +126,249 @@ pub(crate) fn interreduce(mut basis: Vec<GbPoly>, order: MonomialOrder) -> Vec<G
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::poly::groebner::reduce::{reduce_reference, s_polynomial};
+    use proptest::prelude::*;
 
     fn rat(n: i64, d: i64) -> rug::Rational {
         rug::Rational::from((n, d))
+    }
+
+    // -- Reference: Buchberger exactly as it was before the in-place engine --
+
+    fn interreduce_reference(mut basis: Vec<GbPoly>, order: MonomialOrder) -> Vec<GbPoly> {
+        let mut i = 0;
+        while i < basis.len() {
+            let others: Vec<GbPoly> = basis
+                .iter()
+                .enumerate()
+                .filter(|&(j, _)| j != i)
+                .map(|(_, g)| g.clone())
+                .collect();
+            let reduced = reduce_reference(&basis[i], &others, order);
+            if reduced.is_zero() {
+                basis.remove(i);
+            } else {
+                basis[i] = reduced.make_monic(order);
+                i += 1;
+            }
+        }
+        basis
+    }
+
+    fn buchberger_reference(generators: Vec<GbPoly>, order: MonomialOrder) -> Vec<GbPoly> {
+        let initial: Vec<GbPoly> = generators
+            .into_iter()
+            .filter(|g| !g.is_zero())
+            .map(|g| g.make_monic(order))
+            .collect();
+        if initial.is_empty() {
+            return initial;
+        }
+        let mut basis: Vec<GbPoly> = Vec::new();
+        let mut basis_sugar: Vec<u32> = Vec::new();
+        let mut basis_lead: Vec<Vec<u32>> = Vec::new();
+        let mut pair_vec: Vec<CriticalPair> = Vec::new();
+        for gen in initial {
+            let sugar = gen.sugar();
+            let Some(lead) = gen.leading_exp(order) else {
+                continue;
+            };
+            let new_idx = basis.len();
+            basis.push(gen);
+            basis_sugar.push(sugar);
+            basis_lead.push(lead);
+            update_pairs(&basis_lead, &basis_sugar, &mut pair_vec, new_idx);
+        }
+        let mut heap: BinaryHeap<CriticalPair> = BinaryHeap::from(pair_vec);
+        while let Some(pair) = heap.pop() {
+            let sp = s_polynomial(&basis[pair.i], &basis[pair.j], order);
+            let r = reduce_reference(&sp, &basis, order);
+            if !r.is_zero() {
+                let r = r.make_monic(order);
+                let sugar = r.sugar();
+                let Some(lead) = r.leading_exp(order) else {
+                    continue;
+                };
+                let new_idx = basis.len();
+                basis.push(r);
+                basis_sugar.push(sugar);
+                basis_lead.push(lead);
+                let mut pv: Vec<CriticalPair> = heap.into_vec();
+                update_pairs(&basis_lead, &basis_sugar, &mut pv, new_idx);
+                heap = BinaryHeap::from(pv);
+            }
+        }
+        interreduce_reference(basis, order)
+    }
+
+    /// Same generators, same order, same terms, same coefficients.
+    fn assert_same_basis(new: &[GbPoly], old: &[GbPoly], what: &str) {
+        assert_eq!(new.len(), old.len(), "{what}: basis length differs");
+        for (k, (a, b)) in new.iter().zip(old).enumerate() {
+            assert_eq!(a.n_vars, b.n_vars, "{what}: n_vars differs at {k}");
+            assert_eq!(a.terms, b.terms, "{what}: generator {k} differs");
+        }
+    }
+
+    // -- Benchmark systems --
+
+    fn var(i: usize, n: usize) -> GbPoly {
+        let mut e = vec![0u32; n];
+        e[i] = 1;
+        GbPoly::monomial(e, rat(1, 1))
+    }
+
+    fn cyclic(n: usize) -> Vec<GbPoly> {
+        let mut out = vec![];
+        for k in 1..n {
+            let mut s = GbPoly::zero(n);
+            for i in 0..n {
+                let mut p = GbPoly::constant(rat(1, 1), n);
+                for j in 0..k {
+                    p = p.mul(&var((i + j) % n, n));
+                }
+                s = s.add(&p);
+            }
+            out.push(s);
+        }
+        let mut p = GbPoly::constant(rat(1, 1), n);
+        for i in 0..n {
+            p = p.mul(&var(i, n));
+        }
+        out.push(p.sub(&GbPoly::constant(rat(1, 1), n)));
+        out
+    }
+
+    fn katsura(n: usize) -> Vec<GbPoly> {
+        let nv = n + 1;
+        let u = |l: i64| -> GbPoly {
+            let l = l.unsigned_abs() as usize;
+            if l <= n {
+                var(l, nv)
+            } else {
+                GbPoly::zero(nv)
+            }
+        };
+        let mut out = vec![];
+        for m in 0..n as i64 {
+            let mut s = GbPoly::zero(nv);
+            for l in -(n as i64)..=(n as i64) {
+                s = s.add(&u(l).mul(&u(m - l)));
+            }
+            out.push(s.sub(&u(m)));
+        }
+        let mut s = GbPoly::zero(nv);
+        for l in -(n as i64)..=(n as i64) {
+            s = s.add(&u(l));
+        }
+        out.push(s.sub(&GbPoly::constant(rat(1, 1), nv)));
+        out
+    }
+
+    const ORDERS: [MonomialOrder; 3] = [
+        MonomialOrder::Lex,
+        MonomialOrder::GrLex,
+        MonomialOrder::GRevLex,
+    ];
+
+    #[test]
+    fn identical_to_reference_on_benchmark_systems() {
+        let mut cases: Vec<(&str, Vec<GbPoly>, &[MonomialOrder])> = vec![
+            ("cyclic-3", cyclic(3), &ORDERS),
+            ("cyclic-4", cyclic(4), &ORDERS),
+            ("katsura-2", katsura(2), &ORDERS),
+            ("katsura-3", katsura(3), &ORDERS),
+            ("katsura-4", katsura(4), &[MonomialOrder::GRevLex]),
+        ];
+        cases.push((
+            "circle-parabola",
+            vec![
+                poly(&[(&[2, 0], 1), (&[0, 2], 1), (&[0, 0], -4)]),
+                poly(&[(&[0, 1], 1), (&[2, 0], -1), (&[0, 0], 1)]),
+            ],
+            &ORDERS,
+        ));
+        for (name, gens, orders) in cases {
+            for &order in orders {
+                let new = compute_buchberger_basis(gens.clone(), order);
+                let old = buchberger_reference(gens.clone(), order);
+                assert_same_basis(&new, &old, &format!("{name} {order:?}"));
+            }
+        }
+    }
+
+    /// cyclic-5 / katsura-5 under GRevLex (a few seconds unoptimised).
+    #[test]
+    #[ignore]
+    fn identical_to_reference_on_larger_systems() {
+        for (name, gens) in [("cyclic-5", cyclic(5)), ("katsura-5", katsura(5))] {
+            let new = compute_buchberger_basis(gens.clone(), MonomialOrder::GRevLex);
+            let old = buchberger_reference(gens, MonomialOrder::GRevLex);
+            assert_same_basis(&new, &old, name);
+        }
+    }
+
+    /// Before/after timing of the Buchberger loop:
+    /// `cargo test --release --features groebner -p alkahest-cas groebner_timing -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn groebner_timing() {
+        use std::time::Instant;
+        let systems = [
+            ("cyclic-4", cyclic(4)),
+            ("katsura-4", katsura(4)),
+            ("cyclic-5", cyclic(5)),
+            ("katsura-5", katsura(5)),
+            ("katsura-6", katsura(6)),
+        ];
+        for (name, gens) in systems {
+            let time = |f: &dyn Fn() -> Vec<GbPoly>| {
+                (0..3)
+                    .map(|_| {
+                        let t = Instant::now();
+                        std::hint::black_box(f());
+                        t.elapsed().as_secs_f64() * 1e3
+                    })
+                    .fold(f64::MAX, f64::min)
+            };
+            let new = time(&|| compute_buchberger_basis(gens.clone(), MonomialOrder::GRevLex));
+            let old = time(&|| buchberger_reference(gens.clone(), MonomialOrder::GRevLex));
+            println!("{name:<10} grevlex  reference {old:9.3} ms   current {new:9.3} ms");
+        }
+    }
+
+    fn small_system() -> impl Strategy<Value = (Vec<GbPoly>, usize)> {
+        // 2–3 variables, 2–3 generators of degree ≤ 2 with coefficients in
+        // [-3, 3] — small enough that every Buchberger run stays cheap.
+        (2usize..=3, 2usize..=3, 0usize..3).prop_flat_map(|(n, m, ord)| {
+            let term = (proptest::collection::vec(0u32..=2, n), -3i64..=3);
+            let gen = proptest::collection::vec(term, 1..=4).prop_map(move |ts| {
+                let mut p = GbPoly::zero(n);
+                for (e, c) in ts {
+                    if e.iter().sum::<u32>() <= 2 {
+                        p = p.add(&GbPoly::monomial(e, rat(c, 1)));
+                    }
+                }
+                p
+            });
+            (proptest::collection::vec(gen, m), Just(ord))
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(96))]
+
+        #[test]
+        fn basis_identical_to_reference((gens, ord) in small_system()) {
+            let order = ORDERS[ord];
+            let new = compute_buchberger_basis(gens.clone(), order);
+            let old = buchberger_reference(gens, order);
+            prop_assert_eq!(new.len(), old.len());
+            for (a, b) in new.iter().zip(&old) {
+                prop_assert_eq!(&a.terms, &b.terms);
+                prop_assert_eq!(a.n_vars, b.n_vars);
+            }
+        }
     }
 
     fn poly(terms: &[(&[u32], i64)]) -> GbPoly {
