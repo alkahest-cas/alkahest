@@ -66,9 +66,12 @@ def batch_map_iter(fn, items, *, parallel=False, max_workers=None, **kwargs) -> 
 ```
 
 Both call `fn(item, **kwargs)` once per item. `parallel=True` fans the calls out over a
-`concurrent.futures.ThreadPoolExecutor`; some Alkahest hot paths (`integrate`, `limit`,
-the parallel simplifiers, NumPy evaluation) release the GIL for their native work, so a
-thread pool can genuinely overlap them. For calls that hold the GIL throughout, `parallel=True`
+`concurrent.futures.ThreadPoolExecutor`; the heavy Alkahest entry points (`simplify`,
+`diff`, `integrate`, `limit`, `solve`, `evaluate`, the parallel simplifiers, factoring,
+Gröbner bases, matrix operations, NumPy evaluation) release the GIL for their native
+work, so a thread pool can genuinely overlap them. Building expressions from Python
+(`x**i`, `pool.add(...)`) still holds it, so a worker that spends most of its time
+constructing its input overlaps correspondingly less. For calls that hold the GIL throughout, `parallel=True`
 mainly helps when `fn` itself does I/O or otherwise yields the GIL — it never makes
 anything *incorrect*, only sometimes not faster.
 

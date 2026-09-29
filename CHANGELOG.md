@@ -545,6 +545,18 @@
   subexpression and no longer interns partial sums into the caller's pool.
   `docs/mdbook/src/kernel.md` now says how to build large sums
   (`pool.add(terms)`, not `sum()`).
+- **`DerivedResult` renders its derivation lazily, and the heavy entry points
+  release the GIL.** `.derivation` and `.steps` used to be rendered — twice,
+  every `before`/`after` of every step — when the result was built, whether or
+  not anyone read them: 41% of `diff` on a 200-term polynomial. They are now
+  rendered from the stored log on first access; the strings are identical.
+  `simplify` (and its variants), `diff`, `solve`, `cancel`/`together`/`apart`,
+  `sum_*`/`product_*`, `rsolve`, `evaluate`, `integrate_definite`, `factor_z`,
+  `GroebnerBasis.compute*` and the symbolic `Matrix` operations now run their
+  core call under `py.allow_threads`, as `integrate` already did, so
+  `batch_map(parallel=True)` overlaps them. Budgets, ambient assumptions and the
+  `*_side_conditions()` channels are unaffected: the work stays on the calling
+  thread.
 
 ### Testing and tooling
 
