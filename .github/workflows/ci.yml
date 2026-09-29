@@ -141,15 +141,17 @@ jobs:
         run: ruff format --check python/ tests/
 
       # These are the exact features release-build.yml gives the default PyPI
-      # wheel. Keep the two lists in lockstep: the whole point of this step is
+      # wheel (including `system-gmp`, which is what makes
+      # test_gmp_accounting_counts_flint_bignums run rather than skip). Keep
+      # the two lists in lockstep: the whole point of this step is
       # that the pytest run below exercises the same binary users get, and
       # `parallel` is the feature where a mismatch is invisible — the `*_par`
       # entry points exist either way and just stop being parallel.
       - name: maturin develop (PyPI-parity features)
-        run: maturin develop --manifest-path alkahest-py/Cargo.toml --features "groebner egraph cranelift parallel"
+        run: maturin develop --manifest-path alkahest-py/Cargo.toml --features "groebner egraph cranelift parallel system-gmp"
 
       - name: Capability smoke test (default-wheel parity)
-        run: python -c "import alkahest as ak; f = ak.capabilities()['features']; assert f['cranelift_jit'] and f['parallel'] and not f['llvm_jit']; assert ak.jit_is_available()"
+        run: python -c "import alkahest as ak; f = ak.capabilities()['features']; assert f['cranelift_jit'] and f['parallel'] and not f['llvm_jit']; assert ak.jit_is_available(); assert ak.alkahest.GMP_SHARED_WITH_FLINT"
 
       - name: ty check
         run: ty check python/alkahest/
@@ -296,7 +298,7 @@ jobs:
           .venv-build/bin/pip install -q -U pip maturin
           .venv-build/bin/maturin build --release --strip \
             --manifest-path alkahest-py/Cargo.toml \
-            --features "egraph groebner cranelift parallel" \
+            --features "egraph groebner cranelift parallel system-gmp" \
             --out dist
 
       - name: Install wheel into a clean venv

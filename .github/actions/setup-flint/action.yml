@@ -10,8 +10,9 @@ description: >
   FLINT the theta tests would pass without executing anything. This action is
   what keeps that from happening.
 
-  It also guarantees GMP >= 6.3 and MPFR >= 4.2. The crate's default
-  `system-gmp` feature links rug against the system libgmp/libmpfr (the same
+  It also guarantees GMP >= 6.3 and MPFR >= 4.2. The crate's opt-in
+  `system-gmp` feature (which the PyPI wheels and the PyPI-parity CI builds
+  enable) links rug against the system libgmp/libmpfr (the same
   ones FLINT uses), and gmp-mpfr-sys refuses anything older. Ubuntu 24.04's
   apt packages qualify (6.3.0 / 4.2.1); 22.04's (6.2.1 / 4.1.0) do not, so on
   such a runner pinned GMP/MPFR are built into the same prefix *first* and

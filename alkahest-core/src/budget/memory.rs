@@ -44,7 +44,7 @@
 //! # Which allocations are seen
 //!
 //! GMP's allocation hooks are per *copy of GMP*, not per process. With the
-//! `system-gmp` feature (the default) rug and FLINT link the same shared
+//! `system-gmp` feature (opt-in; every PyPI wheel enables it) rug and FLINT link the same shared
 //! libgmp/libmpfr, so the hooks see rug's limbs, MPFR's, and FLINT's `fmpz`
 //! bignums (FLINT promotes a large `fmpz` to an `mpz_t` and grows it through
 //! `mpz_*`, i.e. through these functions). Without the feature, gmp-mpfr-sys

@@ -16,17 +16,15 @@ readme        = "../README.md"
 # Build docs with feature-gated APIs visible; jit omitted because
 # docs.rs does not have LLVM 21 headers available.
 #
-# `no-default-features` drops `system-gmp`: docs.rs's build image is not
-# guaranteed to carry GMP >= 6.3 / MPFR >= 4.2 headers, and gmp-mpfr-sys has
-# no docs.rs fallback of its own, so the docs build uses the bundled GMP
-# (rustdoc never links, so which copy it would have been is moot).
-no-default-features = true
+# `system-gmp` is deliberately not listed: docs.rs's build image is not
+# guaranteed to carry GMP >= 6.3 / MPFR >= 4.2 headers, so the docs build uses
+# the bundled GMP (rustdoc never links, so which copy it would be is moot).
 features      = ["egraph", "groebner", "parallel"]
 rustdoc-args  = ["--cfg", "docsrs"]
 
 [features]
-default = ["groebner", "system-gmp"]
-# Link rug against the *system* libgmp / libmpfr — the same ones FLINT links —
+default = ["groebner"]
+# Opt-in (not a default): link rug against the *system* libgmp / libmpfr — the same ones FLINT links —
 # instead of the static copies gmp-mpfr-sys otherwise compiles from source.
 # With it on there is exactly one GMP in the process, so the allocation hooks
 # in `budget::memory` see FLINT's bignum (`fmpz`) allocations as well as rug's,
@@ -36,10 +34,14 @@ default = ["groebner", "system-gmp"]
 # compiler's *default* search path: gmp-mpfr-sys probes with a bare
 # `cc … -lgmp`, so a Homebrew or user-local prefix needs CPATH / LIBRARY_PATH
 # (and LD_LIBRARY_PATH / DYLD_FALLBACK_LIBRARY_PATH at run time). Not supported
-# for `*-windows-msvc` targets; MinGW additionally needs `pkg-config`. On an
-# older distribution (Ubuntu 22.04 and Debian 12 ship GMP 6.2) build with
-# `default-features = false` plus whichever other defaults you want, which
-# falls back to the bundled, statically linked GMP/MPFR.
+# for `*-windows-msvc` targets; MinGW additionally needs `pkg-config`.
+#
+# Not a default because Ubuntu 22.04 and Debian 12 ship GMP 6.2 / MPFR 4.1, and
+# a plain `cargo build` there must keep working: without the feature
+# gmp-mpfr-sys compiles its own bundled, statically linked GMP/MPFR. The
+# published PyPI wheels always enable it (`.github/workflows/release-build.yml`
+# passes it to every `maturin build`, and each wheel's smoke test asserts
+# `GMP_SHARED_WITH_FLINT`).
 system-gmp = ["gmp-mpfr-sys/use-system-libs"]
 egraph = ["dep:egglog"]
 # Requires LLVM 21 dev headers (llvm-21-dev / llvm@21) at compile time.

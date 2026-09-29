@@ -129,7 +129,7 @@ This adds `verifiers` and `datasets`. Environment code ships in the main wheel u
 
 For optional Cargo features (`jit`, `parallel`, `cuda`, …), GPU/NVPTX, or development, build the PyO3 extension with [maturin](https://github.com/PyO3/maturin). The `groebner` and `egraph` features are default and included automatically.
 
-Prerequisites (typical): **Rust** stable (≥ 1.76) and nightly, **LLVM 21** (only for `--features jit`), **FLINT** (≥ 2.9, 3.x recommended; pulls in GMP/MPFR), and **GMP ≥ 6.3 / MPFR ≥ 4.2** for the default `system-gmp` feature, which makes rug share FLINT's libgmp instead of compiling its own (on Homebrew, export `CPATH`/`LIBRARY_PATH` for the `gmp` and `mpfr` kegs; on older distributions such as Ubuntu 22.04, pass `--no-default-features --features "egraph groebner"` to fall back to a bundled GMP). See the repository `README` for distro-specific package names.
+Prerequisites (typical): **Rust** stable (≥ 1.76) and nightly, **LLVM 21** (only for `--features jit`), **FLINT** (≥ 2.9, 3.x recommended; pulls in GMP/MPFR). The PyPI wheels are built with the opt-in `system-gmp` feature, which makes rug share FLINT's libgmp instead of compiling its own; to match them add `system-gmp` to `--features`, which needs **GMP ≥ 6.3 / MPFR ≥ 4.2** (not Ubuntu 22.04 / Debian 12; on Homebrew, export `CPATH`/`LIBRARY_PATH` for the `gmp` and `mpfr` kegs). See the repository `README` for distro-specific package names.
 
 > **FLINT is a hard requirement of every source build.** There is no FLINT-free
 > configuration: `UniPoly` is a FLINT polynomial, and factorization, resultants,

@@ -47,7 +47,7 @@ jobs:
           # path (/usr/local/lib) so rust-lld can always resolve -lflint.
           RUSTFLAGS: "-L/usr/local/lib -L/usr/lib -L/usr/lib64"
           PKG_CONFIG_PATH: "/usr/local/lib/pkgconfig:/usr/lib64/pkgconfig"
-          # gmp-mpfr-sys (the default `system-gmp` feature) probes GMP/MPFR
+          # gmp-mpfr-sys (the `system-gmp` feature every wheel is built with) probes GMP/MPFR
           # with a bare `gcc probe.c -lgmp`; gcc searches /usr/local/include
           # by default but not /usr/local/lib. Also exported in the
           # before-script, in case the container does not inherit it.
@@ -56,7 +56,7 @@ jobs:
           command: build
           # Explicit CPython list — --find-interpreter also picks up PyPy and
           # Python 3.14, which PyO3 0.21 cannot target.
-          args: --release --strip --out dist --features egraph,groebner,cranelift,parallel --interpreter python3.9 python3.10 python3.11 python3.12 python3.13
+          args: --release --strip --out dist --features egraph,groebner,cranelift,parallel,system-gmp --interpreter python3.9 python3.10 python3.11 python3.12 python3.13
           manylinux: "2_28"
           before-script-linux: |
             # FLINT is built from a pinned source release rather than taken from
@@ -70,7 +70,7 @@ jobs:
             # build, so the version is pinned here and not negotiated.
             #
             # GMP and MPFR are source-built for the same reason, and *before*
-            # FLINT so FLINT links them: the default `system-gmp` feature makes
+            # FLINT so FLINT links them: the `system-gmp` feature (passed below) makes
             # rug use the system libgmp/libmpfr (one GMP shared with FLINT),
             # and gmp-mpfr-sys requires GMP >= 6.3 / MPFR >= 4.2, while
             # AlmaLinux 8's gmp-devel / mpfr-devel are 6.1 / 3.1. The dnf
@@ -120,6 +120,8 @@ jobs:
           print(ak.simplify(x + 0).value)
           print(ak.simplify_egraph(x + 0).value)
           assert hasattr(ak, 'solve'), 'expected groebner APIs in default wheel'
+          # `system-gmp` is opt-in for source builds but every wheel ships it.
+          assert ak.alkahest.GMP_SHARED_WITH_FLINT, 'wheel built without system-gmp'
           f = ak.capabilities()["features"]
           # `numpy` and `groebner_cuda` are deliberately absent (contract v3):
           # neither named anything a Python caller could reach.
@@ -224,7 +226,7 @@ jobs:
       # on working, just sequentially, with no warning. The only remaining delta
       # against the default wheel is llvm_jit instead of cranelift_jit.
       - name: Build JIT wheel
-        run: maturin build --release --strip --features "jit egraph parallel" --out dist
+        run: maturin build --release --strip --features "jit egraph parallel system-gmp" --out dist
 
       # Maturin/auditwheel vendors deps under site-packages/alkahest.libs/. Transitive
       # loads (e.g. libLLVM → libffi with hashed soname) need that dir on LD_LIBRARY_PATH
@@ -236,7 +238,7 @@ jobs:
           if [ -n "$SITE_LIBS" ]; then
             export LD_LIBRARY_PATH="${SITE_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           fi
-          python -c "import alkahest as ak; caps = ak.capabilities(); f = caps['features']; assert f['llvm_jit'] and not f['cranelift_jit'], 'expected LLVM-only JIT in +jit wheel'; assert f['parallel'], '+jit must not drop parallel relative to the default wheel'"
+          python -c "import alkahest as ak; caps = ak.capabilities(); f = caps['features']; assert f['llvm_jit'] and not f['cranelift_jit'], 'expected LLVM-only JIT in +jit wheel'; assert f['parallel'], '+jit must not drop parallel relative to the default wheel'; assert ak.alkahest.GMP_SHARED_WITH_FLINT, 'wheel built without system-gmp'"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -319,7 +321,7 @@ jobs:
       - name: Build +full wheel
         run: >-
           maturin build --release --strip
-          --features "jit cranelift groebner parallel egraph"
+          --features "jit cranelift groebner parallel egraph system-gmp"
           --out dist
 
       - name: Smoke test (+full)
@@ -329,7 +331,7 @@ jobs:
           if [ -n "$SITE_LIBS" ]; then
             export LD_LIBRARY_PATH="${SITE_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           fi
-          python -c "import alkahest as ak; caps = ak.capabilities(); f = caps['features']; assert f['llvm_jit'] and f['cranelift_jit'], 'expected BOTH JIT backends in +full wheel'; assert f['parallel'] and f['egraph']; assert hasattr(ak, 'solve'), 'expected groebner APIs in +full wheel'"
+          python -c "import alkahest as ak; caps = ak.capabilities(); f = caps['features']; assert f['llvm_jit'] and f['cranelift_jit'], 'expected BOTH JIT backends in +full wheel'; assert f['parallel'] and f['egraph']; assert hasattr(ak, 'solve'), 'expected groebner APIs in +full wheel'; assert ak.alkahest.GMP_SHARED_WITH_FLINT, 'wheel built without system-gmp'"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -367,7 +369,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew install flint
-          # `system-gmp` (default): rug links Homebrew's gmp/mpfr, the ones
+          # `system-gmp` (passed to maturin below): rug links Homebrew's gmp/mpfr, the ones
           # flint uses. gmp-mpfr-sys probes with a bare `cc … -lgmp` and Apple
           # clang does not search /opt/homebrew — see ci-cross.yml.
           gmp=$(brew --prefix gmp); mpfr=$(brew --prefix mpfr)
@@ -383,11 +385,11 @@ jobs:
           # path-type: inherit lets the MSYS2 shell see Windows PATH so cargo,
           # rustup, and Python (installed by setup-python) are reachable.
           path-type: inherit
-          # pkg-config is required: with the default `system-gmp` feature,
+          # pkg-config is required: with the `system-gmp` feature (passed below),
           # gmp-mpfr-sys finds MSYS2's libgmp via `pkg-config gmp` and links
           # it (the same one FLINT uses) instead of compiling its own.
           # base-devel (m4, autoconf, make, …) is only needed if a build falls
-          # back to the bundled GMP/MPFR (--no-default-features); kept so that
+          # back to the bundled GMP/MPFR (a build without system-gmp); kept so that
           # fallback still works here.
           install: >-
             base-devel
@@ -412,7 +414,7 @@ jobs:
       # new toolchain requirement to either runner.
       - name: Build wheel (macOS)
         if: runner.os == 'macOS'
-        run: maturin build --release --strip --features "egraph groebner cranelift parallel" --out dist
+        run: maturin build --release --strip --features "egraph groebner cranelift parallel system-gmp" --out dist
 
       - name: Build wheel (Windows)
         if: runner.os == 'Windows'
@@ -423,7 +425,7 @@ jobs:
         # build script's `sh -c "configure ..."` couldn't find the compiler.
         shell: msys2 {0}
         run: |
-          maturin build --release --strip --features "egraph groebner cranelift parallel" --target x86_64-pc-windows-gnu --out dist
+          maturin build --release --strip --features "egraph groebner cranelift parallel system-gmp" --target x86_64-pc-windows-gnu --out dist
 
       - name: Repair wheel with delvewheel (Windows)
         if: runner.os == 'Windows'
@@ -446,7 +448,7 @@ jobs:
       - name: Smoke test
         run: |
           pip install --no-index --find-links dist alkahest
-          python -c "import alkahest; p = alkahest.ExprPool(); x = p.symbol('x'); print(alkahest.simplify(x + 0)); caps = alkahest.capabilities(); f = caps['features']; assert f['egraph'] and f['groebner'] and f['cranelift_jit'] and f['parallel']; assert not f['llvm_jit']; assert caps['jit'] and alkahest.jit_is_available()"
+          python -c "import alkahest; p = alkahest.ExprPool(); x = p.symbol('x'); print(alkahest.simplify(x + 0)); caps = alkahest.capabilities(); f = caps['features']; assert f['egraph'] and f['groebner'] and f['cranelift_jit'] and f['parallel']; assert not f['llvm_jit']; assert caps['jit'] and alkahest.jit_is_available(); assert alkahest.alkahest.GMP_SHARED_WITH_FLINT, 'wheel built without system-gmp'"
 
       # See build-linux's identical step: catches the class of bug (B1, B6)
       # that only reproduces against a real wheel install in a fresh
@@ -467,8 +469,12 @@ jobs:
     name: publish to TestPyPI
     needs: [build-linux, build-wheels]
     runs-on: ubuntu-latest
+    # A manual dispatch publishes only from main. Dispatching from any other
+    # branch builds and smoke-tests every wheel without uploading anything,
+    # which is how a PR that changes this workflow is checked before merge:
+    # the `pull_request` trigger above fires only once a PR has merged.
     if: >-
-      github.event_name == 'workflow_dispatch'
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
       || (github.event_name == 'pull_request' && github.event.pull_request.merged)
     environment: release
     permissions:
