@@ -46,6 +46,7 @@
 //! (so a *proved empty* region really is empty over the integers too).
 
 use super::field::{q_monomial, PolyX, PolyY, Qq, RatX, RatY};
+use super::search::checkpoint;
 use super::QHolonomicError;
 use crate::holonomic::qfield::{rn_inv, rn_is_zero, rn_mul, rn_one, rn_rat, rn_var};
 use crate::kernel::{ExprData, ExprId, ExprPool};
@@ -231,6 +232,9 @@ impl QProperTerm {
         let mut acc = self.rat.qshift_y(1).div(&self.rat).ok_or_else(|| {
             QHolonomicError::NotQHypergeometric("term vanishes identically".into())
         })?;
+        // Between multiplications, not only before them: see
+        // `search::checkpoint` for why a trip must end this loop at once.
+        checkpoint()?;
         acc = acc.mul(&RatY::from_ratx(RatX::from_rn(self.z.clone())));
         if !self.quad.is_trivial() {
             // The exponent gains A·(2k+1) + B·n + D.
@@ -240,6 +244,7 @@ impl QProperTerm {
             acc = acc.mul(&form.monomial());
         }
         for f in &self.poch {
+            checkpoint()?;
             let step = self.poch_ratio(f, f.u.ck, f.v.ck)?;
             acc = acc.mul(&step.pow_i32(f.e).ok_or_else(|| {
                 QHolonomicError::NotQHypergeometric(
@@ -260,6 +265,7 @@ impl QProperTerm {
         })?;
         let wi = qq_pow_of(&self.w, i)
             .ok_or_else(|| QHolonomicError::NotQHypergeometric("w^n has a zero base".into()))?;
+        checkpoint()?;
         acc = acc.mul(&RatY::from_ratx(RatX::from_rn(wi)));
         if !self.quad.is_trivial() {
             // The exponent gains B·i·k + 2C·i·n + (C·i² + E·i).
@@ -280,6 +286,7 @@ impl QProperTerm {
                 f.v.cn
                     .checked_mul(i)
                     .ok_or_else(|| QHolonomicError::Unsupported("shift overflow".into()))?;
+            checkpoint()?;
             let step = self.poch_ratio(f, du, dv)?;
             acc = acc.mul(&step.pow_i32(f.e).ok_or_else(|| {
                 QHolonomicError::NotQHypergeometric(

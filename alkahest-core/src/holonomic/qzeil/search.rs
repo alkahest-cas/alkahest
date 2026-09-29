@@ -37,15 +37,15 @@
 //!    result a proof.
 
 use super::field::{
-    clear_denominators_x, clear_field_refusal, qq_pow, ratx_terms, take_field_refusal,
-    FieldRefusal, PolyX, PolyY, RatX, RatY, MAX_FIELD_ELEMENT_TERMS,
+    clear_denominators_x, clear_field_refusal, peek_field_refusal, qq_pow, ratx_terms,
+    take_field_refusal, FieldRefusal, PolyX, PolyY, RatX, RatY, MAX_FIELD_ELEMENT_TERMS,
 };
 use super::term::QProperTerm;
 use super::QHolonomicError;
 use crate::holonomic::hyperterm::rn_to_expr;
 use crate::holonomic::qfield::{
-    clear_denominators, clear_gcd_stop, enter_gcd_work_scope, rn_div, rn_is_zero, rn_poly,
-    take_gcd_stop, GcdStop, Rn,
+    clear_denominators, clear_gcd_stop, enter_gcd_work_scope, gcd_work_exhausted, peek_gcd_stop,
+    rn_div, rn_is_zero, rn_poly, take_gcd_stop, GcdStop, Rn,
 };
 use crate::holonomic::zeilberger::OrderSearch;
 use crate::kernel::{ExprId, ExprPool};
@@ -320,8 +320,35 @@ fn trip_to_error(trip: crate::budget::BudgetTrip) -> QHolonomicError {
 /// Cooperative checkpoint: wall clock, steps, cancellation, and the memory
 /// ceilings of [`crate::budget::memory`]. Before this existed, `q_zeilberger`
 /// honoured no budget at all — `Budget(wall_ms=...)` did not stop it.
-fn checkpoint() -> Result<(), QHolonomicError> {
-    crate::budget::check_all().map_err(trip_to_error)
+///
+/// Also called between the individual multiplications that assemble the
+/// search's inputs ([`QProperTerm::ratio_k`], [`QProperTerm::ratio_n`],
+/// [`order_state`]). Those steps are few, but they must not continue past a
+/// trip: once a budget has tripped, every `gcd` in the tower refuses (see
+/// [`FieldRefusal`]), each later `Q(q)(x)(y)` operation runs on unreduced
+/// representations, and the size of an unreduced sum of fractions compounds
+/// with each operation — a handful of them on the `q`-Vandermonde square
+/// summand ran for minutes. Every trip that can cause this (an expired wall
+/// clock, a cancellation, a process inside the address-space guard's
+/// reserve) persists, so checking between steps stops the call after at
+/// most one unreduced operation on small inputs.
+///
+/// A trip that a `gcd` has already recorded out of band stops the call too,
+/// even when the budget no longer shows it: the address-space guard is a
+/// point-in-time measurement that can trip at one probe and pass at the next
+/// (a mapping freed in between, or a growth estimate that settles), but the
+/// gcd that saw the trip has already returned an unreduced result, and the
+/// operations after it would compound that. Size and work ceilings are not budget trips and
+/// are left to [`q_zeilberger_on_term`]'s per-probe handling.
+pub(super) fn checkpoint() -> Result<(), QHolonomicError> {
+    crate::budget::check_all().map_err(trip_to_error)?;
+    if let Some(FieldRefusal::Budget(t)) = peek_field_refusal() {
+        return Err(trip_to_error(t));
+    }
+    if let Some(GcdStop::Budget(t)) = peek_gcd_stop() {
+        return Err(trip_to_error(t));
+    }
+    Ok(())
 }
 
 /// Marker error for a [`MAX_FIELD_ELEMENT_TERMS`] trip.
@@ -447,8 +474,10 @@ fn order_state(
 
     let mut dden = PolyY::one();
     for ci in &c {
+        checkpoint()?;
         dden = PolyY::lcm(&dden, &ci.den);
     }
+    checkpoint()?;
     if dden.is_zero() {
         return Ok(None);
     }
@@ -525,8 +554,16 @@ pub fn q_zeilberger_on_term(
             "max_order and max_degree must both be at least 1".into(),
         ));
     }
-    // Only this call's trip may be attributed to this call.
+    // Only this call's trip may be attributed to this call — and only this
+    // call's field refusal: one left on the thread by an earlier call is not
+    // evidence about this one.
     crate::budget::clear_trip();
+    clear_field_refusal();
+    // A budget that is already exhausted is refused here, before any field
+    // arithmetic: the first operation below would otherwise trip it, lose
+    // cancellation for everything after it, and run without end (see
+    // [`checkpoint`]).
+    checkpoint()?;
     // The `Z[q][x]` gcd under every `Q(q)(x)` operation is bounded for the
     // whole search, not per probe: once the ceiling is reached, the remaining
     // probes refuse immediately instead of each paying it again.
@@ -543,6 +580,7 @@ pub fn q_zeilberger_on_term(
     // threading a `Result` through the whole coefficient tower.
     macro_rules! bail_on_field_refusal {
         () => {
+            checkpoint()?;
             match take_field_refusal() {
                 None => {}
                 Some(FieldRefusal::Budget(t)) => return Err(trip_to_error(t)),
@@ -562,8 +600,16 @@ pub fn q_zeilberger_on_term(
         };
     }
     for (order, d) in search_plan(opts.max_order, opts.max_degree, opts.search) {
-        degrees_failed[order - 1] += 1;
         checkpoint()?;
+        // The gcd work ceiling is scope-wide and permanent: once it is spent,
+        // every gcd for the rest of this search gives up at once, so each
+        // later probe would only redo its setup on unreduced arithmetic and be
+        // refused by the same ceiling. Stop retrying and report the refusal.
+        if gcd_work_exhausted() {
+            refused_by_ceiling = true;
+            break;
+        }
+        degrees_failed[order - 1] += 1;
         clear_field_refusal();
         clear_gcd_stop();
         while states.len() < order {
@@ -632,6 +678,7 @@ pub fn q_zeilberger_on_term(
         // result at all.
         let mut lhs = RatY::zero();
         for (i, ci) in state.c.iter().enumerate() {
+            checkpoint()?;
             lhs = lhs.add(&RatY::from_ratx(RatX::from_poly(a_int[i].clone())).mul(ci));
         }
         bail_on_field_refusal!();

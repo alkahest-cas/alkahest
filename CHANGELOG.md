@@ -212,6 +212,38 @@
     checks in `limit`, the Puiseux and asymptotic expanders and summation now
     share one visited-set walker that descends into every node kind.
 
+### Fixed
+
+- **`q_zeilberger` hung, instead of refusing, when a budget check tripped
+  inside its field arithmetic** — a pending `request_cancel()`, an expired
+  `Budget` wall clock, or the address-space guard under `ulimit -v`. The
+  `gcd` that saw the trip gave up (correctly, but leaving its result
+  unreduced), every `gcd` after it gave up too, and the unreduced fractions
+  compounded with each operation until the next checkpoint that happened to
+  look — the `q`-Vandermonde square summand, 0.4 s normally, ran without
+  end. The call now checks the budget before any field arithmetic and
+  between the steps that assemble the search's inputs, stops on a budget
+  refusal a `gcd` has already recorded even if the budget reads clear again,
+  and refuses in milliseconds with the trip's own code (`E-BUDGET-003` /
+  `-001` / `-005`). Once the search's gcd work ceiling is spent it also
+  stops, instead of retrying every remaining `(order, degree)` probe on
+  arithmetic that can no longer cancel.
+- **The address-space guard refused, once, at the first checkpoint after a
+  long idle stretch.** Its reserve grows with the address space mapped since
+  the thread's previous probe — meant as one probe interval's growth, but the
+  previous probe could belong to a call that finished minutes earlier, so
+  everything the process had mapped since read as growth. A full
+  `pytest tests/` run under `ulimit -v 16G` hit a 34 GB "reserve" at 15.6 of
+  17.2 GB mapped, and the refusal cleared again at the next probe. A sample
+  older than one second (`GROWTH_WINDOW`) now starts a fresh history.
+  Together these made `test_novelty.py::test_a_q_certificate_becomes_a_claim`
+  and the `test_q_root_of_unity.py` tests hang in a full run under
+  `ulimit -v` while passing on their own and in CI (no `ulimit`). The
+  depth-limit tests' threads leave ~10 GB of glibc malloc-arena reservations
+  on a 32-core machine, which is what put the process near its limit;
+  `tests/conftest.py` now caps glibc's arena count so the suite's
+  address-space footprint no longer scales with the core count.
+
 ### Build and packaging
 
 - **CI and the manylinux wheels now build a pinned FLINT 3.5.0.** Ubuntu

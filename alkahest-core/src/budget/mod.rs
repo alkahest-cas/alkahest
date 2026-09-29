@@ -425,11 +425,40 @@ const PROBE_INTERVAL: u32 = 16;
 /// fits.
 const GROWTH_RESERVE_FACTOR: u64 = 4;
 
+/// How recent the previous probe must be for the difference to count as
+/// *growth* in [`GROWTH_RESERVE_FACTOR`]'s sense.
+///
+/// The growth term is meant to measure one probe interval of one computation.
+/// The previous sample is per thread, though, and a thread's previous probe
+/// can belong to a call that finished long ago — in a long-lived process
+/// (a pytest run, a notebook kernel) minutes and thousands of unrelated calls
+/// earlier. Everything the process mapped in between (thread stacks, malloc
+/// arenas) then read as one interval's growth: a full `pytest tests/` run
+/// under `ulimit -v 16G` saw 8.4 GB of it, a 34 GB "reserve", and a refusal at
+/// 15.6 of 17.2 GB mapped — which cleared again at the very next probe, when
+/// the difference was back to zero. That transient trip is what stopped a
+/// `gcd` inside `q_zeilberger` and left the search running on unreduced
+/// arithmetic. A stale sample now starts a fresh history instead; the flat
+/// [`memory::reserve_bytes`] floor still applies to that first probe.
+const GROWTH_WINDOW: Duration = Duration::from_secs(1);
+
+/// The address-space reserve for a probe that sees `used` bytes mapped now,
+/// given this thread's previous probe `prev = (bytes mapped, when)`.
+fn address_space_reserve(limit: u64, used: u64, prev: Option<(u64, Instant)>, now: Instant) -> u64 {
+    let growth = match prev {
+        Some((prev_used, at)) if now.saturating_duration_since(at) <= GROWTH_WINDOW => {
+            used.saturating_sub(prev_used)
+        }
+        _ => 0,
+    };
+    memory::reserve_bytes(limit).max(growth.saturating_mul(GROWTH_RESERVE_FACTOR))
+}
+
 thread_local! {
     static PROBE_TICK: Cell<u32> = const { Cell::new(0) };
-    /// Address space mapped at the previous probe, for the growth term above.
-    /// `0` means "no history yet on this thread".
-    static LAST_VSZ: Cell<u64> = const { Cell::new(0) };
+    /// Address space mapped at the previous probe, and when, for the growth
+    /// term above. `None` means "no history yet on this thread".
+    static LAST_VSZ: Cell<Option<(u64, Instant)>> = const { Cell::new(None) };
     /// The trip behind the engine-specific error the current thread is about
     /// to return — see [`record_trip`].
     static LAST_TRIP: Cell<Option<BudgetTrip>> = const { Cell::new(None) };
@@ -475,14 +504,9 @@ pub fn check_memory() -> Result<(), BudgetTrip> {
             if let (Some(limit), Some(used)) =
                 (memory::address_space_limit(), memory::address_space_used())
             {
-                let prev = LAST_VSZ.with(|c| c.replace(used));
-                let growth = if prev == 0 {
-                    0
-                } else {
-                    used.saturating_sub(prev)
-                };
-                let reserve =
-                    memory::reserve_bytes(limit).max(growth.saturating_mul(GROWTH_RESERVE_FACTOR));
+                let now = Instant::now();
+                let prev = LAST_VSZ.with(|c| c.replace(Some((used, now))));
+                let reserve = address_space_reserve(limit, used, prev, now);
                 if used.saturating_add(reserve) >= limit {
                     return Err(BudgetTrip::AddressSpace {
                         limit,
@@ -754,6 +778,38 @@ impl AlkahestError for BudgetTrip {
 mod tests {
     use super::*;
     use std::sync::{Mutex, MutexGuard};
+
+    /// The growth term tightens the guard only for growth observed across one
+    /// recent probe interval; a stale sample from an earlier, unrelated call
+    /// must not be read as growth (see [`GROWTH_WINDOW`]).
+    #[test]
+    fn address_space_growth_counts_only_across_a_recent_probe() {
+        const GB: u64 = 1 << 30;
+        let limit = 16 * GB;
+        let flat = memory::reserve_bytes(limit);
+        let now = Instant::now();
+        let recent = now - Duration::from_millis(5);
+        let stale = now - (GROWTH_WINDOW + Duration::from_secs(60));
+
+        assert_eq!(address_space_reserve(limit, 15 * GB, None, now), flat);
+        // A fast-growing computation: 1 GB in one interval reserves 4 GB.
+        assert_eq!(
+            address_space_reserve(limit, 15 * GB, Some((14 * GB, recent)), now),
+            4 * GB
+        );
+        // The same difference against a sample from long ago is history, not
+        // growth: this is the 16 GB full-suite case, which used to refuse at
+        // 15.6 GB mapped and pass again one probe later.
+        assert_eq!(
+            address_space_reserve(limit, 15 * GB, Some((7 * GB, stale)), now),
+            flat
+        );
+        // Shrinkage is never growth.
+        assert_eq!(
+            address_space_reserve(limit, 7 * GB, Some((15 * GB, recent)), now),
+            flat
+        );
+    }
 
     /// `CANCELLED` is a process-wide `AtomicBool` by design (see the module
     /// docs) so an orchestrator thread can cancel a heavy call running on a

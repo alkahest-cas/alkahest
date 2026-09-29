@@ -303,6 +303,32 @@ def test_cancel_flag_trips_check_and_clears(pool, x):
     assert result.value is not None
 
 
+def test_q_zeilberger_refuses_a_pending_cancel_instead_of_hanging():
+    """A budget that is already exhausted when ``q_zeilberger`` starts must be
+    refused at once.
+
+    It used to hang: the first budget check inside the ``Q(q)(x)(y)`` field
+    arithmetic tripped, every ``gcd`` after it gave up, and the unreduced
+    fractions compounded with each operation. The same thing happened, with no
+    cancel at all, to a long ``pytest tests/`` run under ``ulimit -v`` whose
+    address space had crept into the guard's reserve — which is how
+    ``test_novelty.py::test_a_q_certificate_becomes_a_claim`` came to hang
+    only in the full suite.
+    """
+    from alkahest.experimental import q_zeilberger, qbinomial
+
+    p = ak.ExprPool()
+    n, k, q = p.symbol("n"), p.symbol("k"), p.symbol("q")
+    b = qbinomial(p, n, k)
+    ak.request_cancel()
+    with pytest.raises(ak.BudgetExceededError) as excinfo:
+        q_zeilberger(b * b * q ** (k * k), q, n, k)
+    assert excinfo.value.code == "E-BUDGET-003"
+    ak.clear_cancel()
+    # And the refusal leaves nothing behind: the same call now succeeds.
+    assert q_zeilberger(b * b * q ** (k * k), q, n, k).order == 1
+
+
 def test_cancel_trips_even_without_a_budget_context(pool, x):
     """Cancellation is process-wide, not scoped to a Budget frame — it trips
     the cooperative checkpoint even with no context(budget=...) active."""
