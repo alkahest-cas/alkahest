@@ -98,6 +98,10 @@ def _note_frame_popped() -> None:
 
 def _get() -> dict[str, Any]:
     """Return the current context dict (empty if none is active)."""
+    # No frame open on any thread: skip the thread-local probe, which costs
+    # most of a microsecond when this thread never opened a context.
+    if not _live_frames:
+        return {}
     if not hasattr(_state, "stack") or not _state.stack:
         return {}
     return _state.stack[-1]
