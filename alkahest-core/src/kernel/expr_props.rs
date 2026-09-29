@@ -5,7 +5,8 @@ use crate::kernel::expr::ExprData;
 use crate::kernel::pool::ExprPool;
 use crate::kernel::ExprId;
 
-/// `true` iff no non-commutative [`ExprData::Symbol`] appears anywhere in `expr`.
+/// `true` iff no non-commutative [`ExprData::Symbol`](crate::kernel::ExprData::Symbol)
+/// appears anywhere in `expr`.
 ///
 /// Used to decide whether multiplication may be canonically sorted or whether
 /// rules like [`crate::simplify::rules::DivSelf`] may merge powers by base.
