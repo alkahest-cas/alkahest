@@ -1,7 +1,7 @@
 //! Polynomial reduction (division algorithm) for Gröbner bases.
 //!
 //! The division algorithm runs on a private working representation (see
-//! [`Divisors`]) rather than on [`GbPoly`] values:
+//! `Divisors`) rather than on [`GbPoly`] values:
 //!
 //! * the dividend lives in a `BTreeMap` keyed by an *order-preserving encoding*
 //!   of each exponent vector, so its leading term is the map's last entry —
@@ -27,7 +27,7 @@
 //! the same remainder, which `make_monic` maps to the same polynomial.)  Inputs the
 //! fast path does not model (exponent vectors of mixed length, explicitly
 //! stored zero coefficients) are routed to that straightforward algorithm,
-//! [`reduce_reference`], unchanged.
+//! `reduce_reference`, unchanged.
 
 use std::collections::BTreeMap;
 
