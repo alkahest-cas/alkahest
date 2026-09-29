@@ -2774,8 +2774,15 @@ def __getattr__(name: str):
 
 
 def __dir__():
-    # `to_jax` is lazy (see `__getattr__`) but was always listed; keep it so.
-    return sorted(set(globals()) | {"to_jax"})
+    # `to_jax` is lazy (see `__getattr__`).  The eager import made it exist
+    # exactly when numpy was importable (jax itself is checked at call time),
+    # so list it under the same condition — without importing numpy here.
+    names = set(globals())
+    import importlib.util
+
+    if importlib.util.find_spec("numpy") is not None:
+        names.add("to_jax")
+    return sorted(names)
 
 
 # ---------------------------------------------------------------------------

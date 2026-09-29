@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 import random
 import subprocess
@@ -277,6 +278,13 @@ def test_import_alkahest_does_not_import_jax():
     assert out.split() == ["False", "False"]
 
 
+_HAS_NUMPY = importlib.util.find_spec("numpy") is not None
+needs_numpy = pytest.mark.skipif(
+    not _HAS_NUMPY, reason="`alkahest.to_jax` exists only when numpy is importable"
+)
+
+
+@needs_numpy
 def test_to_jax_still_resolves_lazily():
     out = _run(
         """
@@ -290,6 +298,20 @@ def test_to_jax_still_resolves_lazily():
     assert out.split() == ["True", "True", "True"]
 
 
+def test_to_jax_listed_iff_it_resolves():
+    # Without numpy the name never existed (the eager import was suppressed);
+    # `dir()` must not advertise what `getattr` cannot deliver.
+    out = _run(
+        """
+        import alkahest
+        listed = "to_jax" in dir(alkahest)
+        print(listed == hasattr(alkahest, "to_jax"))
+        """
+    )
+    assert out.split() == ["True"]
+
+
+@needs_numpy
 def test_to_jax_without_jax_names_the_install():
     out = _run(
         """
