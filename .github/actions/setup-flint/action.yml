@@ -119,8 +119,11 @@ runs:
         # These two probes mirror build.rs exactly. Printing them means a
         # stubbed `theta` module is visible in the log instead of being
         # inferred from a suspiciously fast, suspiciously green test run.
+        # Symbol table captured once: `nm | grep -q` under pipefail reports a
+        # *found* symbol as missing (grep exits early, nm gets SIGPIPE).
+        syms=$(nm -D --defined-only "$lib")
         for sym in acb_modular_j acb_mat_entry_ptr acb_theta_ctx_tau_init acb_theta_ql_exact; do
-          if nm -D --defined-only "$lib" | grep -q " T $sym$"; then
+          if grep -q " T $sym$" <<<"$syms"; then
             echo "  present: $sym"
           else
             echo "  MISSING: $sym  <-- theta will be stubbed"

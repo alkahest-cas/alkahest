@@ -103,10 +103,15 @@ jobs:
             ldconfig
             # One GMP: FLINT must resolve the libgmp just built, not the 6.1 runtime.
             ldd /usr/local/lib/libflint.so | grep -E 'libgmp|libmpfr'
-            ldd /usr/local/lib/libflint.so | grep -q '/usr/local/lib/libgmp.so' \
+            # Never `producer | grep -q` under pipefail: grep -q exits at the
+            # first match, the producer dies of SIGPIPE, and the pipeline
+            # "fails" precisely when the pattern is found. Capture, then grep.
+            ldd /usr/local/lib/libflint.so > /tmp/libflint.ldd
+            grep -q '/usr/local/lib/libgmp.so' /tmp/libflint.ldd \
               || { echo 'libflint does not resolve /usr/local/lib/libgmp.so'; exit 1; }
             # Fail the wheel build loudly if theta would be stubbed.
-            nm -D --defined-only /usr/local/lib/libflint.so | grep -q ' T acb_theta_ql_exact$' \
+            nm -D --defined-only /usr/local/lib/libflint.so > /tmp/libflint.syms
+            grep -q ' T acb_theta_ql_exact$' /tmp/libflint.syms \
               || { echo 'FLINT lacks acb_theta_ql_exact; theta would ship stubbed'; exit 1; }
 
       - name: Smoke test
