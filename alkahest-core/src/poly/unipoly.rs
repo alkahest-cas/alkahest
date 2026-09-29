@@ -2,7 +2,7 @@ use super::error::ConversionError;
 use crate::flint::{integer::FlintInteger, FlintPoly};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use rug::{Integer, Rational};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::ops::{Add, Mul, Sub};
 
@@ -301,6 +301,199 @@ fn expr_to_univariate_coeffs(
 }
 
 // ---------------------------------------------------------------------------
+// Direct FLINT construction used by `from_symbolic`.
+//
+// Walks the expression in the same order as `expr_to_univariate_coeffs`, so a
+// non-polynomial input fails with the same error, but does the arithmetic on
+// dense `fmpz_poly`s. Results for DAG nodes reached more than once are
+// memoised, so shared subexpressions (a Chebyshev-style recurrence, say) cost
+// linear rather than exponential time.
+//
+// Dense arithmetic allocates one word per degree, whereas the coefficient map
+// is sparse. When an intermediate degree would exceed `DENSE_DEGREE_LIMIT`
+// the builder gives up and the caller reruns the sparse map algorithm, which
+// keeps behaviour for huge sparse exponents — including terms that cancel,
+// and the map's own u32 degree arithmetic — exactly as it was.
+// ---------------------------------------------------------------------------
+
+/// Largest intermediate degree the dense FLINT builder will materialise.
+const DENSE_DEGREE_LIMIT: i64 = 1 << 22;
+
+enum BuildError {
+    Conversion(ConversionError),
+    /// An intermediate degree exceeded [`DENSE_DEGREE_LIMIT`].
+    TooSparse,
+}
+
+impl From<ConversionError> for BuildError {
+    fn from(e: ConversionError) -> Self {
+        BuildError::Conversion(e)
+    }
+}
+
+/// One expression node, read out of the pool before recursing.
+enum UniNode {
+    Var,
+    Small(i64),
+    Big(Integer),
+    Add(Vec<ExprId>),
+    Mul(Vec<ExprId>),
+    Pow(ExprId, ExprId),
+    Fail(ConversionError),
+}
+
+struct UniBuilder<'a> {
+    var: ExprId,
+    pool: &'a ExprPool,
+    /// Compound nodes converted at least once.
+    seen: HashSet<ExprId>,
+    /// Results for compound nodes reached a second time, i.e. shared ones.
+    /// Only shared nodes are stored, so a tree pays no copying and holds no
+    /// extra intermediates; a DAG node is computed at most twice.
+    memo: HashMap<ExprId, FlintPoly>,
+}
+
+impl<'a> UniBuilder<'a> {
+    fn new(var: ExprId, pool: &'a ExprPool) -> Self {
+        UniBuilder {
+            var,
+            pool,
+            seen: HashSet::new(),
+            memo: HashMap::new(),
+        }
+    }
+
+    fn node(&self, expr: ExprId) -> UniNode {
+        let var = self.var;
+        // Same case split as `expr_to_univariate_coeffs`, same errors.
+        self.pool.with(expr, |d| match d {
+            ExprData::Symbol { .. } if expr == var => UniNode::Var,
+            ExprData::Symbol { name, .. } => {
+                UniNode::Fail(ConversionError::UnexpectedSymbol(name.clone()))
+            }
+            ExprData::Integer(n) => match n.0.to_i64() {
+                Some(v) => UniNode::Small(v),
+                None => UniNode::Big(n.0.clone()),
+            },
+            ExprData::Rational(r) if *r.0.denom() == 1 => match r.0.numer().to_i64() {
+                Some(v) => UniNode::Small(v),
+                None => UniNode::Big(r.0.numer().clone()),
+            },
+            ExprData::Rational(_) | ExprData::Float(_) => {
+                UniNode::Fail(ConversionError::NonIntegerCoefficient)
+            }
+            ExprData::Add(args) => UniNode::Add(args.clone()),
+            ExprData::Mul(args) => UniNode::Mul(args.clone()),
+            ExprData::Pow { base, exp } => UniNode::Pow(*base, *exp),
+            ExprData::Func { name, .. } => {
+                UniNode::Fail(ConversionError::NonPolynomialFunction(name.clone()))
+            }
+            ExprData::Piecewise { .. } => UniNode::Fail(ConversionError::NonPolynomialFunction(
+                "Piecewise".to_string(),
+            )),
+            ExprData::Predicate { .. } => UniNode::Fail(ConversionError::NonPolynomialFunction(
+                "Predicate".to_string(),
+            )),
+            ExprData::Forall { .. } | ExprData::Exists { .. } => UniNode::Fail(
+                ConversionError::NonPolynomialFunction("quantifier".to_string()),
+            ),
+            ExprData::BigO(_) => {
+                UniNode::Fail(ConversionError::NonPolynomialFunction("BigO".to_string()))
+            }
+            ExprData::RootSum { .. } => UniNode::Fail(ConversionError::NonPolynomialFunction(
+                "RootSum".to_string(),
+            )),
+        })
+    }
+
+    fn build(&mut self, expr: ExprId) -> Result<FlintPoly, BuildError> {
+        let node = match self.node(expr) {
+            UniNode::Var => return Ok(FlintPoly::from_coefficients(&[0, 1])),
+            UniNode::Small(v) => return Ok(FlintPoly::from_coefficients(&[v])),
+            UniNode::Big(n) => return Ok(FlintPoly::from_rug_coefficients(&[n])),
+            UniNode::Fail(e) => return Err(e.into()),
+            compound => compound,
+        };
+        if let Some(p) = self.memo.get(&expr) {
+            return Ok(p.clone());
+        }
+        let result = match node {
+            UniNode::Add(args) => {
+                let mut acc = FlintPoly::new();
+                for arg in args {
+                    let sub = self.build(arg)?;
+                    acc = if acc.is_zero() { sub } else { &acc + &sub };
+                }
+                acc
+            }
+            UniNode::Mul(args) => {
+                let mut acc: Option<FlintPoly> = None;
+                for arg in args {
+                    let sub = self.build(arg)?;
+                    acc = Some(match acc {
+                        None => sub,
+                        Some(a) => {
+                            if !a.is_zero()
+                                && !sub.is_zero()
+                                && a.degree() + sub.degree() > DENSE_DEGREE_LIMIT
+                            {
+                                return Err(BuildError::TooSparse);
+                            }
+                            &a * &sub
+                        }
+                    });
+                }
+                acc.unwrap_or_else(|| FlintPoly::from_coefficients(&[1]))
+            }
+            UniNode::Pow(base, exp) => {
+                // The exponent is checked before the base is converted, as in
+                // `expr_to_univariate_coeffs`.
+                let n = match self.pool.get(exp) {
+                    ExprData::Integer(n) => n.0,
+                    _ => return Err(ConversionError::NonConstantExponent.into()),
+                };
+                if n < 0 {
+                    return Err(ConversionError::NegativeExponent.into());
+                }
+                let n_u32 = n.to_u32().ok_or(ConversionError::ExponentTooLarge)?;
+                let b = self.build(base)?;
+                if b.degree() > 0 && b.degree() * i64::from(n_u32) > DENSE_DEGREE_LIMIT {
+                    return Err(BuildError::TooSparse);
+                }
+                match n_u32 {
+                    1 => b,
+                    _ => b.pow(n_u32),
+                }
+            }
+            UniNode::Var | UniNode::Small(_) | UniNode::Big(_) | UniNode::Fail(_) => {
+                unreachable!("atoms return early")
+            }
+        };
+        if !self.seen.insert(expr) {
+            self.memo.insert(expr, result.clone());
+        }
+        Ok(result)
+    }
+}
+
+/// `expr` as a dense ℤ\[var\] polynomial: FLINT arithmetic when every
+/// intermediate degree is at most [`DENSE_DEGREE_LIMIT`], the sparse
+/// coefficient map otherwise. Both give the same polynomial, or the same error.
+fn expr_to_flintpoly(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Result<FlintPoly, ConversionError> {
+    match UniBuilder::new(var, pool).build(expr) {
+        Ok(p) => Ok(p),
+        Err(BuildError::Conversion(e)) => Err(e),
+        Err(BuildError::TooSparse) => {
+            expr_to_univariate_coeffs(expr, var, pool).map(|m| coeffmap_to_flintpoly(&m))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // UniPoly
 // ---------------------------------------------------------------------------
 
@@ -342,8 +535,7 @@ impl UniPoly {
         var: ExprId,
         pool: &ExprPool,
     ) -> Result<Self, ConversionError> {
-        let map = expr_to_univariate_coeffs(expr, var, pool)?;
-        let coeffs = coeffmap_to_flintpoly(&map);
+        let coeffs = expr_to_flintpoly(expr, var, pool)?;
         Ok(UniPoly { var, coeffs })
     }
 
@@ -636,6 +828,7 @@ impl fmt::Debug for UniPoly {
 mod tests {
     use super::*;
     use crate::kernel::{Domain, ExprPool};
+    use proptest::prelude::*;
 
     fn pool_and_var() -> (ExprPool, ExprId) {
         let p = ExprPool::new();
@@ -835,5 +1028,218 @@ mod tests {
         let poly = UniPoly::from_symbolic(p.add(vec![x, p.integer(1_i32)]), x, &p).unwrap();
         let s = poly.to_string();
         assert!(s.contains('x'), "display should mention x: {s}");
+    }
+
+    // --- FLINT builder vs the coefficient-map algorithm ---
+
+    /// The pre-FLINT `from_symbolic`: sparse coefficient map, then dense.
+    fn reference(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<FlintPoly, ConversionError> {
+        expr_to_univariate_coeffs(expr, var, pool).map(|m| coeffmap_to_flintpoly(&m))
+    }
+
+    /// The pre-FLINT `FlintPoly::derivative`, coefficient by coefficient.
+    fn reference_derivative(p: &FlintPoly) -> FlintPoly {
+        let deg = p.degree();
+        let mut result = FlintPoly::new();
+        for i in 1..=deg.max(0) as usize {
+            let c = p.get_coeff_flint(i).to_rug() * i as i64;
+            result.set_coeff_flint(i - 1, &FlintInteger::from_rug(&c));
+        }
+        result
+    }
+
+    /// Expression recipe, built into a pool once the strategy has run.
+    #[derive(Debug, Clone)]
+    enum Recipe {
+        Var,
+        Other,
+        Int(i64),
+        Big(i64, u32),
+        Rat(i64, i64),
+        Sin,
+        Add(Vec<Recipe>),
+        Mul(Vec<Recipe>),
+        Pow(Box<Recipe>, i64),
+        PowVar(Box<Recipe>),
+    }
+
+    fn recipe() -> impl Strategy<Value = Recipe> {
+        let leaf = prop_oneof![
+            10 => Just(Recipe::Var),
+            1 => Just(Recipe::Other),
+            4 => (-5i64..=5).prop_map(Recipe::Int),
+            2 => any::<i64>().prop_map(Recipe::Int),
+            1 => (any::<i64>(), 60u32..200).prop_map(|(a, b)| Recipe::Big(a, b)),
+            1 => (-6i64..=6, 1i64..=3).prop_map(|(a, b)| Recipe::Rat(a, b)),
+            1 => Just(Recipe::Sin),
+        ];
+        leaf.prop_recursive(4, 40, 4, |inner| {
+            prop_oneof![
+                prop::collection::vec(inner.clone(), 0..4).prop_map(Recipe::Add),
+                prop::collection::vec(inner.clone(), 0..4).prop_map(Recipe::Mul),
+                (inner.clone(), -1i64..=5).prop_map(|(b, n)| Recipe::Pow(Box::new(b), n)),
+                inner.prop_map(|b| Recipe::PowVar(Box::new(b))),
+            ]
+        })
+    }
+
+    fn build(r: &Recipe, p: &ExprPool, x: ExprId, y: ExprId) -> ExprId {
+        match r {
+            Recipe::Var => x,
+            Recipe::Other => y,
+            Recipe::Int(n) => p.integer(*n),
+            Recipe::Big(a, b) => p.integer(Integer::from(*a) << *b),
+            Recipe::Rat(a, b) => p.rational(*a, *b),
+            Recipe::Sin => p.func("sin", vec![x]),
+            Recipe::Add(v) => p.add(v.iter().map(|c| build(c, p, x, y)).collect()),
+            Recipe::Mul(v) => p.mul(v.iter().map(|c| build(c, p, x, y)).collect()),
+            Recipe::Pow(b, n) => p.pow(build(b, p, x, y), p.integer(*n)),
+            Recipe::PowVar(b) => p.pow(build(b, p, x, y), x),
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1024))]
+
+        /// Same polynomial, or the same error, as the coefficient-map path.
+        #[test]
+        fn flint_builder_matches_coeffmap(r in recipe()) {
+            let p = ExprPool::new();
+            let x = p.symbol("x", Domain::Real);
+            let y = p.symbol("y", Domain::Real);
+            let e = build(&r, &p, x, y);
+            prop_assert_eq!(expr_to_flintpoly(e, x, &p), reference(e, x, &p));
+        }
+
+        #[test]
+        fn derivative_matches_per_coefficient(
+            coeffs in prop::collection::vec((any::<i64>(), 0u32..130), 0..40)
+        ) {
+            let c: Vec<Integer> = coeffs.iter().map(|&(a, s)| Integer::from(a) << s).collect();
+            let f = FlintPoly::from_rug_coefficients(&c);
+            prop_assert_eq!(f.derivative(), reference_derivative(&f));
+        }
+    }
+
+    /// `T_{n+1} = 2x·T_n − T_{n−1}` shares each `T_n` between two parents, so
+    /// an unmemoised walk is exponential in `n`.
+    #[test]
+    fn from_symbolic_is_linear_on_shared_dag() {
+        let (p, x) = pool_and_var();
+        let two_x = p.mul(vec![p.integer(2_i32), x]);
+        let (mut t0, mut t1) = (p.integer(1_i32), x);
+        let (mut f0, mut f1) = (
+            FlintPoly::from_coefficients(&[1]),
+            FlintPoly::from_coefficients(&[0, 1]),
+        );
+        let fx2 = FlintPoly::from_coefficients(&[0, 2]);
+        for _ in 0..60 {
+            let t2 = p.add(vec![
+                p.mul(vec![two_x, t1]),
+                p.mul(vec![p.integer(-1_i32), t0]),
+            ]);
+            let f2 = &(&fx2 * &f1) - &f0;
+            (t0, t1, f0, f1) = (t1, t2, f1, f2);
+        }
+        let start = std::time::Instant::now();
+        let got = UniPoly::from_symbolic(t1, x, &p).unwrap();
+        assert!(
+            start.elapsed().as_secs() < 5,
+            "T_61 took {:?}",
+            start.elapsed()
+        );
+        assert_eq!(got.coeffs, f1);
+        assert_eq!(got.degree(), 61);
+    }
+
+    /// Past the dense-degree limit the sparse map takes over, so a huge
+    /// exponent that cancels or is multiplied by zero stays cheap.
+    #[test]
+    fn huge_sparse_degree_falls_back_to_the_map() {
+        let (p, x) = pool_and_var();
+        let big = p.pow(x, p.integer(3_000_000_000_u64));
+        let zero_times = p.mul(vec![p.integer(0_i32), big]);
+        assert!(UniPoly::from_symbolic(zero_times, x, &p).unwrap().is_zero());
+        let cancels = p.add(vec![
+            big,
+            p.mul(vec![p.integer(-1_i32), big]),
+            p.integer(7_i32),
+        ]);
+        let got = UniPoly::from_symbolic(cancels, x, &p).unwrap();
+        assert_eq!(got.coefficients_i64(), vec![7]);
+        // An error after the huge factor is still the coefficient map's error.
+        let with_sin = p.mul(vec![big, p.func("sin", vec![x])]);
+        assert_eq!(
+            UniPoly::from_symbolic(with_sin, x, &p).err(),
+            reference(with_sin, x, &p).err()
+        );
+    }
+
+    #[test]
+    fn from_symbolic_power_edge_cases() {
+        let (p, x) = pool_and_var();
+        let zero = p.integer(0_i32);
+        // 0^0 = 1, as in the coefficient map.
+        let e = p.pow(zero, zero);
+        assert_eq!(
+            UniPoly::from_symbolic(e, x, &p).unwrap().coefficients_i64(),
+            vec![1]
+        );
+        // Exponent beyond u32.
+        let e = p.pow(x, p.integer(1_u64 << 40));
+        assert_eq!(
+            UniPoly::from_symbolic(e, x, &p).err(),
+            Some(ConversionError::ExponentTooLarge)
+        );
+        // The exponent is checked before the base: 1/2 inside a negative power.
+        let e = p.pow(p.rational(1, 2), p.integer(-1_i32));
+        assert_eq!(
+            UniPoly::from_symbolic(e, x, &p).err(),
+            Some(ConversionError::NegativeExponent)
+        );
+    }
+
+    /// Timing comparison, run by hand:
+    /// `cargo test --release -p alkahest-cas --lib unipoly::tests::timing -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn timing_from_symbolic_and_derivative() {
+        fn best(mut f: impl FnMut()) -> f64 {
+            (0..5)
+                .map(|_| {
+                    let t = std::time::Instant::now();
+                    f();
+                    t.elapsed().as_secs_f64() * 1e3
+                })
+                .fold(f64::MAX, f64::min)
+        }
+        let (p, x) = pool_and_var();
+        for n in [400_i32, 1000] {
+            let e = p.pow(p.add(vec![x, p.integer(1_i32)]), p.integer(n));
+            let new = best(|| drop(expr_to_flintpoly(e, x, &p).unwrap()));
+            let old = best(|| drop(reference(e, x, &p).unwrap()));
+            println!("from_symbolic((x+1)^{n}): map {old:.3} ms, flint {new:.3} ms");
+            let f = expr_to_flintpoly(e, x, &p).unwrap();
+            let new = best(|| drop(f.derivative()));
+            let old = best(|| drop(reference_derivative(&f)));
+            println!("derivative deg {n}: per-coeff {old:.3} ms, fmpz_poly_derivative {new:.3} ms");
+        }
+        let two_x = p.mul(vec![p.integer(2_i32), x]);
+        let (mut t0, mut t1) = (p.integer(1_i32), x);
+        for n in 1..=24 {
+            let t2 = p.add(vec![
+                p.mul(vec![two_x, t1]),
+                p.mul(vec![p.integer(-1_i32), t0]),
+            ]);
+            (t0, t1) = (t1, t2);
+            if n % 4 == 0 {
+                let new = best(|| drop(expr_to_flintpoly(t1, x, &p).unwrap()));
+                let old = best(|| drop(reference(t1, x, &p).unwrap()));
+                println!(
+                    "Chebyshev T_{}: map {old:.3} ms, flint+memo {new:.3} ms",
+                    n + 1
+                );
+            }
+        }
     }
 }

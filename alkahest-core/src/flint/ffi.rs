@@ -530,6 +530,30 @@ extern "C" {
         ctx: *const FmpzMPolyCtxBuf,
     ) -> c_int;
 
+    // -----------------------------------------------------------------------
+    // perf/poly-construction-flint: FLINT-side arithmetic for building
+    // UniPoly / MultiPoly (formal derivative, sparse product and power)
+    // -----------------------------------------------------------------------
+
+    /// `res = d/dx poly`.
+    pub fn fmpz_poly_derivative(res: *mut FmpzPolyStruct, poly: *const FmpzPolyStruct);
+
+    /// `A = B * C`.
+    pub fn fmpz_mpoly_mul(
+        A: *mut FmpzMPolyBuf,
+        B: *const FmpzMPolyBuf,
+        C: *const FmpzMPolyBuf,
+        ctx: *const FmpzMPolyCtxBuf,
+    );
+
+    /// `A = B^k`. Returns 1 on success, 0 on failure.
+    pub fn fmpz_mpoly_pow_ui(
+        A: *mut FmpzMPolyBuf,
+        B: *const FmpzMPolyBuf,
+        k: ulong,
+        ctx: *const FmpzMPolyCtxBuf,
+    ) -> c_int;
+
     // fmpz_mpoly — full factorization over `ℤ[x₁,…,xₙ]` (Bernardin–Monagan, etc.)
     pub fn fmpz_mpoly_factor_init(f: *mut FmpzMPolyFactorStruct, ctx: *const FmpzMPolyCtxBuf);
     pub fn fmpz_mpoly_factor_clear(f: *mut FmpzMPolyFactorStruct, ctx: *const FmpzMPolyCtxBuf);
