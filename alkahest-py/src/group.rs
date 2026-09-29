@@ -11,7 +11,6 @@ use alkahest_core::group::{
     PermutationGroup, DEFAULT_ELEMENT_CAP, MAX_BSGS_DEGREE, MAX_ELEMENT_CAP,
 };
 use pyo3::prelude::*;
-use pyo3::types::PyInt;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -26,8 +25,7 @@ fn group_error_to_py(e: GroupError) -> PyErr {
 
 /// A `rug::Integer` as an exact Python `int`, at any size.
 fn big_int(py: Python<'_>, value: &rug::Integer) -> PyResult<PyObject> {
-    let int_cls = py.get_type_bound::<PyInt>();
-    Ok(int_cls.call1((value.to_string(),))?.into_py(py))
+    crate::bigint::int_to_py(py, value)
 }
 
 // ---------------------------------------------------------------------------

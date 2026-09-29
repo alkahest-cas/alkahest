@@ -420,6 +420,22 @@
   `pool.float(1.1, 53)` 213–224 → 106–143 ns; a 100 000-bit integer hit
   38 µs → 3.3–4.2 µs; interning a fresh integer ~1 µs → ~0.5 µs. Nothing
   persisted these hashes, so no file format or output order changes.
+- **Big Python ints cross the binding by bytes, not decimal text — and no
+  longer break past 4300 digits.** Every `int` that did not fit an `i64` went
+  through `str(n)` → GMP parse on the way in and `int(text)` /
+  `Fraction("p/q")` on the way out. CPython caps that conversion at
+  `sys.get_int_max_str_digits()` (4300 digits by default), so
+  `ExprPool().integer(10**5000 + 7)`, `x ** 10**5000`, `x + Fraction(10**5000, 3)`,
+  `number_theory.isprime(10**5000 + 1)`, `evaluate(3**12000, mode="exact")` and
+  big polynomial coefficients all raised `ValueError`, and
+  `evaluate(y + 1, {y: 10**5000}, mode="exact")` misreported `E-EVAL-002`. It
+  was also quadratic: `pool.integer` of a 10⁶-digit int took 10.9 s and now
+  takes 4 ms; reading it back 4.1 s → 2 ms. One helper module
+  (`alkahest-py/src/bigint.rs`, `int.to_bytes`/`from_bytes` ↔
+  `rug::Integer::{from_digits,to_digits}`) now serves every binding file, and
+  `Fraction`s are built from two ints. `Expr.node()` keeps returning decimal
+  strings; the internal Python helpers use the new `Expr._node_exact()`, which
+  returns ints. The `nt_*` / `modular_*` natives also accept ints directly.
 
 ### Testing and tooling
 

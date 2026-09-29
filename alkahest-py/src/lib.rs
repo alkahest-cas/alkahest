@@ -246,10 +246,11 @@ use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyComplex, PyDict, PyFloat, PyInt, PyList, PyTuple};
-use rug::{Complete, Integer, Rational};
+use rug::{Integer, Rational};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+mod bigint;
 mod character;
 mod coding;
 mod ffield;
@@ -371,9 +372,10 @@ fn integer_into_pool(pool: &ExprPool, n: &Bound<'_, PyAny>) -> PyResult<ExprId> 
 
 /// A Python int of any size as an exact `rug::Integer`.
 ///
-/// `extract::<i64>()` first for the common case, then the decimal string, which
-/// is what makes arbitrary precision work. `pool.integer` has accepted bignums
-/// this way for a long time; `pool.rational` did not, and took `i64` directly —
+/// `extract::<i64>()` first for the common case, then bytes (see
+/// [`bigint::int_from_py`]) — never decimal text, which is quadratic and capped
+/// at `sys.get_int_max_str_digits()` digits. `pool.integer` has accepted bignums
+/// for a long time; `pool.rational` did not, and took `i64` directly —
 /// so `pool.rational(math.factorial(30), 7)` raised `OverflowError: Python int
 /// too large to convert to C long` while `pool.integer(math.factorial(30))` was
 /// fine. Factorial- and binomial-scale numerators are ordinary in this domain,
@@ -382,6 +384,9 @@ fn integer_into_pool(pool: &ExprPool, n: &Bound<'_, PyAny>) -> PyResult<ExprId> 
 fn big_integer_from_py(n: &Bound<'_, PyAny>) -> PyResult<Integer> {
     if let Ok(v) = n.extract::<i64>() {
         return Ok(Integer::from(v));
+    }
+    if n.is_instance_of::<PyInt>() || n.hasattr("__index__")? {
+        return bigint::int_from_py(n);
     }
     let s = n.str()?.to_string();
     Integer::parse(&s).map(Integer::from).map_err(|_| {
@@ -424,8 +429,13 @@ fn number_into_pool(pool: &ExprPool, ob: &Bound<'_, PyAny>) -> PyResult<Option<E
         return Ok(Some(integer_into_pool(pool, ob)?));
     }
     // NumPy integer scalars and anything else that is an integer by protocol.
-    if let Ok(index) = ob.call_method0("__index__") {
-        return Ok(Some(integer_into_pool(pool, &index)?));
+    // `PyIndex_Check` is a type-slot test, so a `Fraction` or `Decimal` no
+    // longer pays for a raised-and-discarded `AttributeError` here.
+    // SAFETY: `ob` is a live, GIL-bound object pointer.
+    if unsafe { pyo3::ffi::PyIndex_Check(ob.as_ptr()) } != 0 {
+        if let Ok(index) = ob.call_method0("__index__") {
+            return Ok(Some(integer_into_pool(pool, &index)?));
+        }
     }
     if let Some(id) = exact_ratio_into_pool(pool, ob)? {
         return Ok(Some(id));
@@ -438,8 +448,14 @@ fn number_into_pool(pool: &ExprPool, ob: &Bound<'_, PyAny>) -> PyResult<Option<E
 
 /// True when *ob* is a `decimal.Decimal` (or a subclass of one).
 fn is_decimal(ob: &Bound<'_, PyAny>) -> PyResult<bool> {
-    let cls = ob.py().import_bound("decimal")?.getattr("Decimal")?;
-    ob.is_instance(&cls)
+    // Cached: this runs on every `x + Fraction` / `x + Decimal` coercion, and
+    // re-importing `decimal` each time was measurable.
+    static DECIMAL: pyo3::sync::GILOnceCell<PyObject> = pyo3::sync::GILOnceCell::new();
+    let py = ob.py();
+    let cls = DECIMAL.get_or_try_init(py, || -> PyResult<PyObject> {
+        Ok(py.import_bound("decimal")?.getattr("Decimal")?.unbind())
+    })?;
+    ob.is_instance(cls.bind(py))
 }
 
 /// The exact value of *ob* as an integer or rational node, when it publishes one
@@ -801,7 +817,7 @@ fn resolve_domain_arg(py: Python<'_>, ob: Option<&Bound<'_, PyAny>>) -> PyResult
 }
 
 fn py_int_decimal(v: &Bound<'_, PyAny>) -> PyResult<String> {
-    v.str()?.extract::<String>()
+    bigint::decimal_of(v)
 }
 
 fn diff_error_to_py(e: DiffError) -> PyErr {
@@ -1676,6 +1692,133 @@ struct PyExpr {
     pool: Py<PyExprPool>,
 }
 
+/// Shared body of `Expr.node()` / `Expr._node_exact()`.
+fn expr_node_impl(this: &PyExpr, py: Python<'_>, exact: bool) -> PyResult<PyObject> {
+    let data = {
+        let pool = this.pool.borrow(py);
+        pool.inner.get(this.id)
+    };
+
+    macro_rules! wrap {
+        ($id:expr) => {
+            PyExpr {
+                id: $id,
+                pool: this.pool.clone_ref(py),
+            }
+            .into_py(py)
+        };
+    }
+
+    macro_rules! ids_to_pylist {
+        ($ids:expr) => {{
+            let items: Vec<PyObject> = $ids.iter().map(|&id| wrap!(id)).collect();
+            PyList::new_bound(py, items).into_py(py)
+        }};
+    }
+
+    Ok(match data {
+        alkahest_core::ExprData::Symbol { name, .. } => {
+            PyList::new_bound(py, vec!["symbol".into_py(py), name.into_py(py)]).into_py(py)
+        }
+        alkahest_core::ExprData::Integer(n) => {
+            let value = if exact {
+                bigint::int_to_py(py, &n.0)?
+            } else {
+                n.0.to_string().into_py(py)
+            };
+            PyList::new_bound(py, vec!["integer".into_py(py), value]).into_py(py)
+        }
+        alkahest_core::ExprData::Rational(r) => {
+            let (numer, denom) = if exact {
+                (
+                    bigint::int_to_py(py, r.0.numer())?,
+                    bigint::int_to_py(py, r.0.denom())?,
+                )
+            } else {
+                (
+                    r.0.numer().to_string().into_py(py),
+                    r.0.denom().to_string().into_py(py),
+                )
+            };
+            PyList::new_bound(py, vec!["rational".into_py(py), numer, denom]).into_py(py)
+        }
+        alkahest_core::ExprData::Float(f) => PyList::new_bound(
+            py,
+            vec!["float".into_py(py), f.inner.to_string().into_py(py)],
+        )
+        .into_py(py),
+        alkahest_core::ExprData::Add(args) => {
+            PyList::new_bound(py, vec!["add".into_py(py), ids_to_pylist!(args)]).into_py(py)
+        }
+        alkahest_core::ExprData::Mul(args) => {
+            PyList::new_bound(py, vec!["mul".into_py(py), ids_to_pylist!(args)]).into_py(py)
+        }
+        alkahest_core::ExprData::Pow { base, exp } => {
+            PyList::new_bound(py, vec!["pow".into_py(py), wrap!(base), wrap!(exp)]).into_py(py)
+        }
+        alkahest_core::ExprData::Func { name, args } => PyList::new_bound(
+            py,
+            vec!["func".into_py(py), name.into_py(py), ids_to_pylist!(args)],
+        )
+        .into_py(py),
+        alkahest_core::ExprData::Piecewise { branches, default } => {
+            let br_items: Vec<PyObject> = branches
+                .iter()
+                .map(|&(cond, val)| {
+                    PyTuple::new_bound(py, vec![wrap!(cond), wrap!(val)]).into_py(py)
+                })
+                .collect();
+            PyList::new_bound(
+                py,
+                vec![
+                    "piecewise".into_py(py),
+                    PyList::new_bound(py, br_items).into_py(py),
+                    wrap!(default),
+                ],
+            )
+            .into_py(py)
+        }
+        alkahest_core::ExprData::Predicate { kind, args } => {
+            let kind_str = match kind {
+                PredicateKind::Lt => "lt",
+                PredicateKind::Le => "le",
+                PredicateKind::Gt => "gt",
+                PredicateKind::Ge => "ge",
+                PredicateKind::Eq => "eq",
+                PredicateKind::Ne => "ne",
+                PredicateKind::And => "and",
+                PredicateKind::Or => "or",
+                PredicateKind::Not => "not",
+                PredicateKind::True => "true",
+                PredicateKind::False => "false",
+            };
+            PyList::new_bound(
+                py,
+                vec![
+                    "predicate".into_py(py),
+                    kind_str.into_py(py),
+                    ids_to_pylist!(args),
+                ],
+            )
+            .into_py(py)
+        }
+        alkahest_core::ExprData::Forall { var, body } => {
+            PyList::new_bound(py, vec!["forall".into_py(py), wrap!(var), wrap!(body)]).into_py(py)
+        }
+        alkahest_core::ExprData::Exists { var, body } => {
+            PyList::new_bound(py, vec!["exists".into_py(py), wrap!(var), wrap!(body)]).into_py(py)
+        }
+        alkahest_core::ExprData::BigO(inner) => {
+            PyList::new_bound(py, vec!["big_o".into_py(py), wrap!(inner)]).into_py(py)
+        }
+        alkahest_core::ExprData::RootSum { poly, var, body } => PyList::new_bound(
+            py,
+            vec!["root_sum".into_py(py), wrap!(poly), wrap!(var), wrap!(body)],
+        )
+        .into_py(py),
+    })
+}
+
 #[pymethods]
 impl PyExpr {
     fn __eq__(&self, other: PyRef<PyExpr>) -> bool {
@@ -1950,123 +2093,19 @@ impl PyExpr {
     //   ["func",      name: str, [arg: Expr, ...]]
     //   ["piecewise", [[cond: Expr, val: Expr], ...], default: Expr]
     //   ["predicate", kind: str, [arg: Expr, ...]]
-    fn node(&self, py: Python<'_>) -> PyObject {
-        let data = {
-            let pool = self.pool.borrow(py);
-            pool.inner.get(self.id)
-        };
+    fn node(&self, py: Python<'_>) -> PyResult<PyObject> {
+        expr_node_impl(self, py, false)
+    }
 
-        macro_rules! wrap {
-            ($id:expr) => {
-                PyExpr {
-                    id: $id,
-                    pool: self.pool.clone_ref(py),
-                }
-                .into_py(py)
-            };
-        }
-
-        macro_rules! ids_to_pylist {
-            ($ids:expr) => {{
-                let items: Vec<PyObject> = $ids.iter().map(|&id| wrap!(id)).collect();
-                PyList::new_bound(py, items).into_py(py)
-            }};
-        }
-
-        match data {
-            alkahest_core::ExprData::Symbol { name, .. } => {
-                PyList::new_bound(py, vec!["symbol".into_py(py), name.into_py(py)]).into_py(py)
-            }
-            alkahest_core::ExprData::Integer(n) => {
-                PyList::new_bound(py, vec!["integer".into_py(py), n.0.to_string().into_py(py)])
-                    .into_py(py)
-            }
-            alkahest_core::ExprData::Rational(r) => PyList::new_bound(
-                py,
-                vec![
-                    "rational".into_py(py),
-                    r.0.numer().to_string().into_py(py),
-                    r.0.denom().to_string().into_py(py),
-                ],
-            )
-            .into_py(py),
-            alkahest_core::ExprData::Float(f) => PyList::new_bound(
-                py,
-                vec!["float".into_py(py), f.inner.to_string().into_py(py)],
-            )
-            .into_py(py),
-            alkahest_core::ExprData::Add(args) => {
-                PyList::new_bound(py, vec!["add".into_py(py), ids_to_pylist!(args)]).into_py(py)
-            }
-            alkahest_core::ExprData::Mul(args) => {
-                PyList::new_bound(py, vec!["mul".into_py(py), ids_to_pylist!(args)]).into_py(py)
-            }
-            alkahest_core::ExprData::Pow { base, exp } => {
-                PyList::new_bound(py, vec!["pow".into_py(py), wrap!(base), wrap!(exp)]).into_py(py)
-            }
-            alkahest_core::ExprData::Func { name, args } => PyList::new_bound(
-                py,
-                vec!["func".into_py(py), name.into_py(py), ids_to_pylist!(args)],
-            )
-            .into_py(py),
-            alkahest_core::ExprData::Piecewise { branches, default } => {
-                let br_items: Vec<PyObject> = branches
-                    .iter()
-                    .map(|&(cond, val)| {
-                        PyTuple::new_bound(py, vec![wrap!(cond), wrap!(val)]).into_py(py)
-                    })
-                    .collect();
-                PyList::new_bound(
-                    py,
-                    vec![
-                        "piecewise".into_py(py),
-                        PyList::new_bound(py, br_items).into_py(py),
-                        wrap!(default),
-                    ],
-                )
-                .into_py(py)
-            }
-            alkahest_core::ExprData::Predicate { kind, args } => {
-                let kind_str = match kind {
-                    PredicateKind::Lt => "lt",
-                    PredicateKind::Le => "le",
-                    PredicateKind::Gt => "gt",
-                    PredicateKind::Ge => "ge",
-                    PredicateKind::Eq => "eq",
-                    PredicateKind::Ne => "ne",
-                    PredicateKind::And => "and",
-                    PredicateKind::Or => "or",
-                    PredicateKind::Not => "not",
-                    PredicateKind::True => "true",
-                    PredicateKind::False => "false",
-                };
-                PyList::new_bound(
-                    py,
-                    vec![
-                        "predicate".into_py(py),
-                        kind_str.into_py(py),
-                        ids_to_pylist!(args),
-                    ],
-                )
-                .into_py(py)
-            }
-            alkahest_core::ExprData::Forall { var, body } => {
-                PyList::new_bound(py, vec!["forall".into_py(py), wrap!(var), wrap!(body)])
-                    .into_py(py)
-            }
-            alkahest_core::ExprData::Exists { var, body } => {
-                PyList::new_bound(py, vec!["exists".into_py(py), wrap!(var), wrap!(body)])
-                    .into_py(py)
-            }
-            alkahest_core::ExprData::BigO(inner) => {
-                PyList::new_bound(py, vec!["big_o".into_py(py), wrap!(inner)]).into_py(py)
-            }
-            alkahest_core::ExprData::RootSum { poly, var, body } => PyList::new_bound(
-                py,
-                vec!["root_sum".into_py(py), wrap!(poly), wrap!(var), wrap!(body)],
-            )
-            .into_py(py),
-        }
+    /// Like :meth:`node`, but ``"integer"`` and ``"rational"`` nodes carry
+    /// Python ``int`` values instead of decimal strings.
+    ///
+    /// Internal: the pure-Python helpers use this instead of
+    /// ``int(e.node()[1])``, which is quadratic in the digit count and raises
+    /// ``ValueError`` past ``sys.get_int_max_str_digits()`` (4300 by default).
+    /// ``node()`` keeps its string shape for compatibility.
+    fn _node_exact(&self, py: Python<'_>) -> PyResult<PyObject> {
+        expr_node_impl(self, py, true)
     }
 }
 
@@ -2174,14 +2213,10 @@ fn py_to_rational(ob: &Bound<'_, PyAny>) -> PyResult<Rational> {
     }
     // Fraction-like: has integer `numerator` / `denominator` attributes.
     if let (Ok(n), Ok(d)) = (ob.getattr("numerator"), ob.getattr("denominator")) {
-        let ns = n.str()?.to_string();
-        let ds = d.str()?.to_string();
-        let nz = Integer::parse(&ns)
-            .map_err(|_| PyTypeError::new_err(format!("invalid numerator: {ns}")))?;
-        let dz = Integer::parse(&ds)
-            .map_err(|_| PyTypeError::new_err(format!("invalid denominator: {ds}")))?;
-        let nz = Integer::from(nz);
-        let dz = Integer::from(dz);
+        let nz = bigint::int_from_py(&n)
+            .map_err(|_| PyTypeError::new_err("invalid numerator: expected an int"))?;
+        let dz = bigint::int_from_py(&d)
+            .map_err(|_| PyTypeError::new_err("invalid denominator: expected an int"))?;
         if dz == 0 {
             return Err(pyo3::exceptions::PyZeroDivisionError::new_err(
                 "Fps coefficient denominator is zero",
@@ -2190,6 +2225,9 @@ fn py_to_rational(ob: &Bound<'_, PyAny>) -> PyResult<Rational> {
         return Ok(Rational::from((nz, dz)));
     }
     // Bare big integer.
+    if ob.is_instance_of::<PyInt>() {
+        return Ok(Rational::from(bigint::int_from_py(ob)?));
+    }
     let s = ob.str()?.to_string();
     let z = Integer::parse(&s)
         .map_err(|_| PyTypeError::new_err(format!("cannot coerce {s} to a rational")))?;
@@ -4024,11 +4062,10 @@ impl PyUniPoly {
     /// against, and it is reachable from ordinary use, since `factor_z`,
     /// resultants and pseudo-division all grow coefficients past 64 bits.
     fn coefficients(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
-        let int_cls = py.get_type_bound::<PyInt>();
         self.inner
             .coefficients()
-            .into_iter()
-            .map(|c| Ok(int_cls.call1((c.to_string(),))?.into_py(py)))
+            .iter()
+            .map(|c| bigint::int_to_py(py, c))
             .collect()
     }
 
@@ -4042,10 +4079,7 @@ impl PyUniPoly {
     /// A property, not a method: it is a single FLINT coefficient read.
     #[getter]
     fn leading_coeff(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let int_cls = py.get_type_bound::<PyInt>();
-        Ok(int_cls
-            .call1((self.inner.leading_coeff().to_string(),))?
-            .into_py(py))
+        bigint::int_to_py(py, &self.inner.leading_coeff())
     }
 
     /// Degree of the polynomial (`-1` for the zero polynomial).
@@ -4828,17 +4862,7 @@ fn py_limit(
 /// Convert a rug `Rational` into a Python `int` (when integral) or
 /// `fractions.Fraction` (otherwise), so Fps coefficients are exact in Python.
 fn rational_to_py(py: Python<'_>, r: &Rational) -> PyResult<PyObject> {
-    let numer = r.numer().to_string();
-    let denom = r.denom().to_string();
-    if *r.denom() == 1 {
-        let int_cls = py.get_type_bound::<PyInt>();
-        return Ok(int_cls.call1((numer,))?.into_py(py));
-    }
-    let fractions = py.import_bound("fractions")?;
-    let frac = fractions.getattr("Fraction")?;
-    // Fraction(str) accepts the "numer/denom" form; the two-argument form
-    // requires Rational instances, not strings.
-    Ok(frac.call1((format!("{numer}/{denom}"),))?.into_py(py))
+    bigint::rational_to_py(py, r)
 }
 
 // Every one of these flattened to a bare `ValueError` carrying only
@@ -11095,9 +11119,10 @@ fn py_type_name(value: &Bound<'_, PyAny>) -> String {
         .unwrap_or_else(|_| "<unknown>".to_string())
 }
 
-/// `str(value.<attr>)`, or `None` if the attribute is missing or unreadable.
-fn attr_as_string(value: &Bound<'_, PyAny>, attr: &str) -> Option<String> {
-    value.getattr(attr).ok()?.str().ok()?.extract().ok()
+/// `value.<attr>` as an exact integer (converted by bytes, so with no digit
+/// limit), or `None` if the attribute is missing or is not an integer.
+fn attr_as_integer(value: &Bound<'_, PyAny>, attr: &str) -> Option<Integer> {
+    bigint::int_from_py(&value.getattr(attr).ok()?).ok()
 }
 
 fn exact_binding(value: &Bound<'_, PyAny>) -> PyResult<Rational> {
@@ -11111,8 +11136,8 @@ fn exact_binding(value: &Bound<'_, PyAny>) -> PyResult<Rational> {
     // mistake, and `AttributeError` is not an `AlkahestError`, so it escaped
     // `except ak.AlkahestError` entirely. Probe instead of propagate.
     let (numerator, denominator) = match (
-        attr_as_string(value, "numerator"),
-        attr_as_string(value, "denominator"),
+        attr_as_integer(value, "numerator"),
+        attr_as_integer(value, "denominator"),
     ) {
         (Some(n), Some(d)) => (n, d),
         _ => {
@@ -11122,12 +11147,6 @@ fn exact_binding(value: &Bound<'_, PyAny>) -> PyResult<Rational> {
             )))
         }
     };
-    let numerator = Integer::parse(numerator)
-        .map_err(|_| PyTypeError::new_err("exact bindings must be int or fractions.Fraction"))?
-        .complete();
-    let denominator = Integer::parse(denominator)
-        .map_err(|_| PyTypeError::new_err("exact bindings must be int or fractions.Fraction"))?
-        .complete();
     if denominator == 0 {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "exact binding denominator must be non-zero",
@@ -11276,12 +11295,9 @@ fn py_evaluate(
         return Ok(
             match core_eval_exact_rational(expr.id, &pool.inner, &exact) {
                 Ok(value) => {
-                    let fraction = py
-                        .import_bound("fractions")?
-                        .getattr("Fraction")?
-                        .call1((format!("{}/{}", value.numer(), value.denom()),))?;
+                    let fraction = bigint::fraction_to_py(py, value.numer(), value.denom())?;
                     PyEvaluationResult {
-                        value: fraction.into_py(py),
+                        value: fraction,
                         status: "ok".into(),
                         backend: "exact_rational".into(),
                         requested_mode: mode.into(),
@@ -16715,23 +16731,31 @@ fn py_modular_lift_crt(
 
 /// Rational reconstruction: find a/b ≡ n (mod m) with small |a| and b.
 ///
-/// Returns `(a_str, b_str)` as decimal strings (convert with `int()`),
+/// Returns `(a_str, b_str)` as decimal strings (convert with
+/// `alkahest.alkahest._decimal_to_int`, which has no digit limit),
 /// or `None` if no rational with norm ≤ ⌊√(m/2)⌋ exists.
-/// Both `n_str` and `m_str` are decimal integer strings.
+/// `n_str` and `m_str` are Python ints or decimal integer strings.
 #[pyfunction]
 #[pyo3(name = "modular_rational_reconstruction")]
 fn py_modular_rational_reconstruction(
-    n_str: &str,
-    m_str: &str,
+    n_str: &Bound<'_, PyAny>,
+    m_str: &Bound<'_, PyAny>,
 ) -> PyResult<Option<(String, String)>> {
-    use rug::{Complete, Integer};
-    let n = Integer::parse(n_str)
-        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid integer for n"))?
-        .complete();
-    let m = Integer::parse(m_str)
-        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid integer for m"))?
-        .complete();
+    let n = int_or_decimal_arg(n_str, "n")?;
+    let m = int_or_decimal_arg(m_str, "m")?;
     Ok(core_rational_reconstruction(&n, &m).map(|(a, b)| (a.to_string(), b.to_string())))
+}
+
+/// A Python `int` (converted by bytes) or a decimal integer string.
+fn int_or_decimal_arg(ob: &Bound<'_, PyAny>, what: &str) -> PyResult<Integer> {
+    if let Ok(s) = ob.downcast::<pyo3::types::PyString>() {
+        let s = s.to_cow()?;
+        return Integer::parse(s.as_ref())
+            .map(Integer::from)
+            .map_err(|_| PyValueError::new_err(format!("invalid integer for {what}")));
+    }
+    bigint::int_from_py(ob)
+        .map_err(|_| PyValueError::new_err(format!("invalid integer for {what}")))
 }
 
 /// Compute the Mignotte coefficient bound for a polynomial.
@@ -16745,14 +16769,15 @@ fn py_modular_mignotte_bound(poly: PyRef<PyMultiPoly>) -> String {
 
 /// Select the smallest lucky prime not in `used` that does not divide `avoid_divisor_str`.
 ///
-/// `avoid_divisor_str` is a decimal integer string. Pass `"0"` for no constraint.
+/// `avoid_divisor_str` is a Python int or a decimal integer string. Pass `0`
+/// for no constraint.
 #[pyfunction]
 #[pyo3(name = "modular_select_lucky_prime")]
-fn py_modular_select_lucky_prime(avoid_divisor_str: &str, used: Vec<u64>) -> PyResult<u64> {
-    use rug::{Complete, Integer};
-    let avoid = Integer::parse(avoid_divisor_str)
-        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid integer for avoid_divisor"))?
-        .complete();
+fn py_modular_select_lucky_prime(
+    avoid_divisor_str: &Bound<'_, PyAny>,
+    used: Vec<u64>,
+) -> PyResult<u64> {
+    let avoid = int_or_decimal_arg(avoid_divisor_str, "avoid_divisor")?;
     Ok(core_select_lucky_prime(&avoid, &used))
 }
 
@@ -16820,16 +16845,10 @@ fn py_guess_relation(
         // the low bits away. Ints take the same decimal-string route as
         // strings, so the two input forms mean the same thing.
         if item.is_instance_of::<pyo3::types::PyInt>() {
-            let s = item.str()?.to_string();
-            xs.push(
-                Float::parse(s.trim())
-                    .map_err(|_| {
-                        pyo3::exceptions::PyValueError::new_err(
-                            "could not parse integer constant as a floating constant",
-                        )
-                    })?
-                    .complete(precision_bits),
-            );
+            // By bytes, then one correctly-rounded conversion — the same
+            // value the decimal route produced, without its digit limit.
+            let z = bigint::int_from_py(&item)?;
+            xs.push(Float::with_val(precision_bits, &z));
         } else if let Ok(v) = item.extract::<f64>() {
             xs.push(Float::with_val(precision_bits, v));
         } else if let Ok(s) = item.extract::<String>() {
@@ -17138,18 +17157,14 @@ impl PyModularRecurrence {
 
     /// ``[S(start), …, S(start+J-1)]`` as ints or :class:`fractions.Fraction`.
     fn initial(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
-        let int_cls = py.get_type_bound::<PyInt>();
-        let fraction_cls = py.import_bound("fractions")?.getattr("Fraction")?;
         self.inner
             .initial_values()
             .iter()
             .map(|(num, den)| {
-                let n = int_cls.call1((num.to_string(),))?;
                 if *den == 1 {
-                    Ok(n.into_py(py))
+                    bigint::int_to_py(py, num)
                 } else {
-                    let d = int_cls.call1((den.to_string(),))?;
-                    Ok(fraction_cls.call1((n, d))?.into_py(py))
+                    bigint::fraction_to_py(py, num, den)
                 }
             })
             .collect()
@@ -17209,11 +17224,7 @@ impl PyModularRecurrence {
 }
 
 fn integers_to_py(py: Python<'_>, values: &[Integer]) -> PyResult<Vec<PyObject>> {
-    let int_cls = py.get_type_bound::<PyInt>();
-    values
-        .iter()
-        .map(|c| Ok(int_cls.call1((c.to_string(),))?.into_py(py)))
-        .collect()
+    values.iter().map(|c| bigint::int_to_py(py, c)).collect()
 }
 
 /// Sort and de-duplicate, returning the sorted indices and, for each original
@@ -18795,6 +18806,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // `GNU MP: Cannot allocate memory`, which no `except` clause can catch.
     alkahest_core::budget::install_memory_accounting();
     group::register(m)?;
+    bigint::register(m)?;
     m.add_function(wrap_pyfunction!(version, m)?)?;
     character::register(m)?;
     coding::register(m)?;

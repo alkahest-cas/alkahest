@@ -34,7 +34,7 @@ use alkahest_core::fpgroup::{
     MAX_COHOMOLOGY_DEGREE, MAX_COHOMOLOGY_GROUP_ORDER, MAX_FREE_RANK, MAX_MODULE_RANK,
 };
 use pyo3::prelude::*;
-use pyo3::types::{PyInt, PyModule};
+use pyo3::types::PyModule;
 use rug::Integer;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -50,8 +50,7 @@ fn fp_err(e: FpGroupError) -> PyErr {
 
 /// A `rug::Integer` as an exact Python `int`, at any size.
 fn big_int(py: Python<'_>, value: &Integer) -> PyResult<PyObject> {
-    let int_cls = py.get_type_bound::<PyInt>();
-    Ok(int_cls.call1((value.to_string(),))?.into_py(py))
+    crate::bigint::int_to_py(py, value)
 }
 
 // ---------------------------------------------------------------------------

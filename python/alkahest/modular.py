@@ -27,6 +27,7 @@ from __future__ import annotations
 from .alkahest import (
     ModularError,
     MultiPolyFp,
+    _decimal_to_int,
     modular_lift_crt,
     modular_mignotte_bound,
     modular_rational_reconstruction,
@@ -101,11 +102,11 @@ def rational_reconstruction(n: int, m: int) -> tuple[int, int] | None:
         ``(a, b)`` in lowest terms with ``b > 0``, or ``None`` if the prime
         product is too small to uniquely determine the rational.
     """
-    result = modular_rational_reconstruction(str(n), str(m))
+    result = modular_rational_reconstruction(int(n), int(m))
     if result is None:
         return None
     a_str, b_str = result
-    return int(a_str), int(b_str)
+    return _decimal_to_int(a_str), _decimal_to_int(b_str)
 
 
 def mignotte_bound(poly) -> int:
@@ -114,7 +115,7 @@ def mignotte_bound(poly) -> int:
     The CRT product of primes must exceed ``2 * mignotte_bound(poly)`` to
     guarantee correct reconstruction.
     """
-    return int(modular_mignotte_bound(poly))
+    return _decimal_to_int(modular_mignotte_bound(poly))
 
 
 def select_lucky_prime(avoid_divisor: int = 0, used: list[int] | None = None) -> int:
@@ -130,4 +131,4 @@ def select_lucky_prime(avoid_divisor: int = 0, used: list[int] | None = None) ->
     """
     if used is None:
         used = []
-    return modular_select_lucky_prime(str(avoid_divisor), [int(p) for p in used])
+    return modular_select_lucky_prime(int(avoid_divisor), [int(p) for p in used])

@@ -577,12 +577,12 @@ def _normalise(shifts: dict) -> tuple:
 
 def _poly_from_expr(expr: Any, var: str) -> tuple:
     """Read a polynomial in *var* out of an :class:`alkahest.Expr`, exactly."""
-    node = expr.node()
+    node = expr._node_exact()
     head = node[0]
     if head == "integer":
-        return _trim((Fraction(int(node[1])),))
+        return _trim((Fraction(node[1]),))
     if head == "rational":
-        return _trim((Fraction(int(node[1]), int(node[2])),))
+        return _trim((Fraction(node[1], node[2]),))
     if head == "symbol":
         if node[1] != var:
             hint = " — a q-recurrence is a QRecurrenceClaim, not this one" if node[1] == "q" else ""
@@ -881,13 +881,13 @@ def _q_exponent(expr: Any, var: str) -> tuple | None:
 
 def _qpoly_from_expr(expr: Any, qname: str, var: str) -> tuple:
     """``(numerator, denominator)`` in ``ℚ[q^±1, Q^±1]``, ``Q = q^n``, exactly."""
-    node = expr.node()
+    node = expr._node_exact()
     head = node[0]
     one = {(0, 0): Fraction(1)}
     if head == "integer":
-        return _q_trim({(0, 0): Fraction(int(node[1]))}), one
+        return _q_trim({(0, 0): Fraction(node[1])}), one
     if head == "rational":
-        return _q_trim({(0, 0): Fraction(int(node[1]), int(node[2]))}), one
+        return _q_trim({(0, 0): Fraction(node[1], node[2])}), one
     if head == "symbol":
         if node[1] == qname:
             return {(1, 0): Fraction(1)}, one

@@ -181,11 +181,11 @@ def _fraction_from_expr(entry: Expr) -> Fraction:
     means an assumption of this module no longer holds, and approximating it
     would be exactly the silent-wrong-answer this file exists to avoid.
     """
-    node = entry.node()
+    node = entry._node_exact()
     if entry.node_tag() == "integer":
-        return Fraction(int(node[1]))
+        return Fraction(node[1])
     if node and node[0] == "rational":
-        return Fraction(int(node[1]), int(node[2]))
+        return Fraction(node[1], node[2])
     # Unreachable by construction — the matrix is all-integer — so this is an
     # invariant check, not a user-facing path. It still refuses rather than
     # approximating, because an approximation here would be certified later.

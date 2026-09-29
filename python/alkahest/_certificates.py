@@ -158,8 +158,8 @@ def _is_one_plus_var_sq(expr, var) -> bool:
         return False
 
     def is_one(term) -> bool:
-        tag, *rest = term.node()
-        return tag == "integer" and int(rest[0]) == 1
+        tag, *rest = term._node_exact()
+        return tag == "integer" and rest[0] == 1
 
     def is_var_sq(term) -> bool:
         n = term.node()
@@ -167,7 +167,7 @@ def _is_one_plus_var_sq(expr, var) -> bool:
             n[0] == "pow"
             and _is_var(n[1], var)
             and n[2].node()[0] == "integer"
-            and int(n[2].node()[1]) == 2
+            and n[2]._node_exact()[1] == 2
         )
 
     a, b = node[1]
@@ -242,21 +242,21 @@ def _limit_point_kind(point) -> str:
     expression ``1/x`` (or ``(1+1/x)^x`` vs ``(1+x)^{1/x}``) would mix
     certified and withheld observations in one ledger class.
     """
-    node = point.node()
+    node = point._node_exact()
     tag = node[0]
     if tag == "symbol" and node[1] == "∞":
         return "atTop"
-    if tag == "integer" and int(node[1]) == 0:
+    if tag == "integer" and node[1] == 0:
         return "zero"
     if tag == "mul":
         has_inf = False
         has_neg_one = False
         extra = False
         for part in node[1]:
-            pn = part.node()
+            pn = part._node_exact()
             if pn[0] == "symbol" and pn[1] == "∞":
                 has_inf = True
-            elif pn[0] == "integer" and int(pn[1]) == -1:
+            elif pn[0] == "integer" and pn[1] == -1:
                 has_neg_one = True
             else:
                 extra = True
@@ -302,9 +302,9 @@ def shape_features(expr, var=None, definite: bool | None = None) -> dict[str, st
                 if _FN_ARG_RANK[kind] > _FN_ARG_RANK[fn_arg]:
                     fn_arg = kind
         elif tag == "pow":
-            exponent = node[2].node()
+            exponent = node[2]._node_exact()
             if exponent[0] == "integer":
-                n = int(exponent[1])
+                n = exponent[1]
                 if n >= 0:
                     kind = "nat"
                 elif n == -1:

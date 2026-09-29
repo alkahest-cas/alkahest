@@ -26,7 +26,7 @@
 //! that it must not be stored in a field the reader takes for a distance.
 
 use pyo3::prelude::*;
-use pyo3::types::{PyInt, PyType};
+use pyo3::types::PyType;
 
 use alkahest_core::experimental::{
     is_symplectic as core_is_symplectic, symplectic_complement as core_complement,
@@ -50,8 +50,7 @@ fn stab_err(e: StabilizerError) -> PyErr {
 
 /// A `rug::Integer` as an exact Python `int`, at any size.
 fn big_int(py: Python<'_>, value: &rug::Integer) -> PyResult<PyObject> {
-    let int_cls = py.get_type_bound::<PyInt>();
-    Ok(int_cls.call1((value.to_string(),))?.into_py(py))
+    crate::bigint::int_to_py(py, value)
 }
 
 fn bits_from_py(v: &[i64]) -> PyResult<Vec<u8>> {

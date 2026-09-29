@@ -21,7 +21,7 @@
 //! accessor convention.
 
 use pyo3::prelude::*;
-use pyo3::types::{PyInt, PyType};
+use pyo3::types::PyType;
 
 use alkahest_core::experimental::{
     gl_order as core_gl_order, sl_order as core_sl_order, sp_order as core_sp_order, MatGroup,
@@ -43,8 +43,7 @@ fn mg_err(e: MatGroupError) -> PyErr {
 
 /// A `rug::Integer` as an exact Python `int`, at any size.
 fn big_int(py: Python<'_>, value: &rug::Integer) -> PyResult<PyObject> {
-    let int_cls = py.get_type_bound::<PyInt>();
-    Ok(int_cls.call1((value.to_string(),))?.into_py(py))
+    crate::bigint::int_to_py(py, value)
 }
 
 fn matrices(items: &[PyRef<'_, PyGfMatrix>]) -> Vec<alkahest_core::ffield::GfMatrix> {
