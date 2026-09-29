@@ -202,8 +202,15 @@ fn expr_to_rational(
         ExprData::Add(args) => Node::Add(args.clone()),
         ExprData::Mul(args) => Node::Mul(args.clone()),
         ExprData::Pow { base, exp } => {
+            // An integer beyond i64 saturates, so `pow_rf` refuses it as too
+            // large rather than as a non-constant exponent.
             let exp_i64 = pool.with(*exp, |e| match e {
-                ExprData::Integer(n) => n.0.to_i64(),
+                ExprData::Integer(n) => {
+                    Some(
+                        n.0.to_i64()
+                            .unwrap_or(if n.0 < 0 { i64::MIN } else { i64::MAX }),
+                    )
+                }
                 _ => None,
             });
             Node::Pow {
@@ -303,6 +310,10 @@ fn const_rf(c: i64, gens: &[ExprId]) -> RationalFunction {
 }
 
 /// Raise a rational function to an integer power `n` (negative inverts).
+///
+/// `|n|` above `u32::MAX` is refused with `ExponentTooLarge`; so is any
+/// intermediate exponent past it. The power is formed by repeated squaring —
+/// it used to be `|n|` successive products, a hang for `x^(2^40)`.
 fn pow_rf(
     base: RationalFunction,
     n: i64,
@@ -311,21 +322,28 @@ fn pow_rf(
     if n == 0 {
         return Ok(const_rf(1, gens));
     }
-    let (b, exp) = if n < 0 {
+    let exp = u32::try_from(n.unsigned_abs()).map_err(|_| ConversionError::ExponentTooLarge)?;
+    let b = if n < 0 {
         // Invert: (num/den)^-1 = den/num.
         if base.numer.is_zero() {
             return Err(ConversionError::ZeroDenominator);
         }
-        (
-            RationalFunction::new(base.denom.clone(), base.numer.clone())?,
-            (-n) as u64,
-        )
+        RationalFunction::new(base.denom.clone(), base.numer.clone())?
     } else {
-        (base, n as u64)
+        base
     };
     let mut acc = const_rf(1, gens);
-    for _ in 0..exp {
-        acc = (acc * b.clone())?;
+    let mut cur = b;
+    let mut rem = exp;
+    while rem > 0 {
+        if rem & 1 == 1 {
+            acc = (acc * cur.clone())?;
+        }
+        rem >>= 1;
+        // No square past the top bit: it can overflow when the power does not.
+        if rem > 0 {
+            cur = (cur.clone() * cur)?;
+        }
     }
     Ok(acc)
 }

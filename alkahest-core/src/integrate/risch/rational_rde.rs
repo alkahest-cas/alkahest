@@ -1344,10 +1344,12 @@ pub fn expr_to_qrational(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<(
             // identical `a/b` succeeded.
             let n = super::tower::literal_integer(exp, pool)?;
             let (bn, bd) = expr_to_qrational(base, var, pool)?;
+            // `n as u32` truncated: x^(2^32) read as 1 and x^-(2^32+1) as 1/x,
+            // so `residue(x^-(2^32+1), x, 0)` answered 1. Decline instead.
+            let m = u32::try_from(n.unsigned_abs()).ok()?;
             if n >= 0 {
-                Some((poly_pow(&bn, n as u32), poly_pow(&bd, n as u32)))
+                Some((poly_pow(&bn, m), poly_pow(&bd, m)))
             } else {
-                let m = (-n) as u32;
                 if trim(bn.clone()).is_empty() {
                     return None; // 1 / 0
                 }

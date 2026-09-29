@@ -4255,16 +4255,20 @@ impl PyUniPoly {
         }
     }
 
-    fn __mul__(&self, other: PyRef<PyUniPoly>) -> PyUniPoly {
-        PyUniPoly {
-            inner: &self.inner * &other.inner,
-        }
+    fn __mul__(&self, other: PyRef<PyUniPoly>) -> PyResult<PyUniPoly> {
+        // Checked: a product past the dense-degree ceiling is refused with
+        // E-POLY-004 before FLINT's allocation can abort the process.
+        self.inner
+            .checked_mul(&other.inner)
+            .map(|inner| PyUniPoly { inner })
+            .map_err(conv_error_to_py)
     }
 
-    fn __pow__(&self, exp: u32, _modulo: Option<PyObject>) -> PyUniPoly {
-        PyUniPoly {
-            inner: self.inner.pow(exp),
-        }
+    fn __pow__(&self, exp: u32, _modulo: Option<PyObject>) -> PyResult<PyUniPoly> {
+        self.inner
+            .checked_pow(exp)
+            .map(|inner| PyUniPoly { inner })
+            .map_err(conv_error_to_py)
     }
 
     fn __floordiv__(&self, other: PyRef<PyUniPoly>) -> PyResult<PyUniPoly> {
@@ -4386,7 +4390,11 @@ impl PyMultiPoly {
             ));
         }
         Ok(PyMultiPoly {
-            inner: self.inner.clone() * other.inner.clone(),
+            // Checked: an exponent past u32 is refused (E-POLY-004), never wrapped.
+            inner: self
+                .inner
+                .checked_mul(&other.inner)
+                .map_err(conv_error_to_py)?,
             pool: merge_mp_pool(&self.pool, &other.pool),
         })
     }

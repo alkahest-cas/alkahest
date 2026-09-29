@@ -1102,6 +1102,12 @@ fn accumulate_poly(
                 ExprData::Integer(n) => n.0.to_u32(),
                 _ => None,
             })?;
+            // `convolve` refuses degrees past 64, but a constant base never
+            // grows, so `n` itself must be bounded or the loop below runs
+            // for up to 2^32 iterations.
+            if n > 4096 {
+                return None;
+            }
             let mut base_map: BTreeMap<u32, Rational> = BTreeMap::new();
             accumulate_poly(
                 base,

@@ -782,7 +782,10 @@ fn bt_univariate(
         }
         let r = mod_inv(ro, prime); // r = g^{e_j}
         let e = bsgs_dlog(g, r, prime).ok_or(SparseInterpError::RootFindingFailed)?;
-        exps.push(e as u32);
+        // A discrete log past u32::MAX (possible for a prime above 2^32) is
+        // not an exponent this representation can hold; truncating it would
+        // name a different monomial.
+        exps.push(u32::try_from(e).map_err(|_| SparseInterpError::RootFindingFailed)?);
     }
 
     // --- Step 5: Solve Vandermonde for coefficients ---
@@ -1423,6 +1426,17 @@ pub fn gcd_sparse_modular(
     }
     if g.is_zero() {
         return Ok(f.clone());
+    }
+
+    // Huge degrees defeat this algorithm: the univariate images are dense in
+    // x₁ (a 2^31-degree input allocated 16 GiB and aborted), and the Mignotte
+    // bound 2^deg needs more primes than the search can supply. FLINT's sparse
+    // multivariate gcd handles them exactly; normalise it the same way.
+    const HUGE_DEGREE: u32 = 1 << 20;
+    if f.total_degree() > HUGE_DEGREE || g.total_degree() > HUGE_DEGREE {
+        if let Some(h) = f.gcd(g) {
+            return Ok(h.primitive_part());
+        }
     }
 
     let vars = f.vars.clone();

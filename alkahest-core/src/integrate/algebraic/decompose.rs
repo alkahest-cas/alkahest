@@ -188,14 +188,15 @@ fn decompose_elem(
                     return Some(FieldElem::one(pool));
                 }
                 if n > 0 {
-                    let n_u = n as u32;
-                    if n_u % 2 == 0 {
+                    // Halved in i64: `n as u32` truncated, so sqrt(P)^(2^32+2)
+                    // decomposed as P^1.
+                    if n % 2 == 0 {
                         // P^(n/2) — fully rational
-                        let p_pow = pool.pow(p_expr, pool.integer(n_u / 2));
+                        let p_pow = pool.pow(p_expr, pool.integer(n / 2));
                         return Some(FieldElem::pure_rational(p_pow, pool));
                     } else {
                         // P^((n-1)/2) * sqrt(P)
-                        let p_pow = pool.pow(p_expr, pool.integer((n_u - 1) / 2));
+                        let p_pow = pool.pow(p_expr, pool.integer((n - 1) / 2));
                         return Some(FieldElem::pure_sqrt(p_pow, pool));
                     }
                 } else {

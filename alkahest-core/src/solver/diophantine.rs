@@ -861,7 +861,8 @@ fn classify_and_solve(
 
     let mut max_deg = 0u32;
     for e in terms.keys() {
-        let tdeg: u32 = e.iter().sum();
+        // `expr_to_gbpoly` bounds every total degree by u32::MAX.
+        let tdeg: u32 = crate::poly::exponent::total_degree_or_panic(e);
         max_deg = max_deg.max(tdeg);
     }
 
@@ -890,7 +891,7 @@ fn classify_and_solve(
             ));
         }
         for e in terms.keys() {
-            let s: u32 = e.iter().sum();
+            let s: u32 = crate::poly::exponent::total_degree_or_panic(e);
             if s > 1 {
                 return Err(DiophantineError::Unsupported(
                     "mixed-degree polynomial".into(),

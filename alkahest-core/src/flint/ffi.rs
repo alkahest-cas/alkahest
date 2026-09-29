@@ -1011,4 +1011,15 @@ extern "C" {
     // fmpz_poly — discriminant (used for the defining polynomial of a field)
     // -----------------------------------------------------------------------
     pub fn fmpz_poly_discriminant(res: *mut fmpz, poly: *const FmpzPolyStruct);
+
+    // -----------------------------------------------------------------------
+    // fmpz_mpoly — exponent width check (fix/poly-exponent-overflow).
+    // `fmpz_mpoly_get_term_exp_ui` throws (aborts) when an exponent of term
+    // `i` does not fit in a word; test it first and refuse instead.
+    // -----------------------------------------------------------------------
+    pub fn fmpz_mpoly_term_exp_fits_ui(
+        A: *const FmpzMPolyBuf,
+        i: slong,
+        ctx: *const FmpzMPolyCtxBuf,
+    ) -> c_int;
 }

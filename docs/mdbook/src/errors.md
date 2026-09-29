@@ -79,7 +79,7 @@ Raised when an expression cannot be converted to a polynomial or rational functi
 | `E-POLY-001` | A symbol the conversion could not place | Remove it, or declare it as a parameter |
 | `E-POLY-002` | A coefficient is not a rational integer | Rationalize, or substitute |
 | `E-POLY-003` | A negative or non-integer exponent | Only non-negative integer exponents are supported |
-| `E-POLY-004` | Degree ceiling exceeded | Reduce the degree, or use the sparse representation |
+| `E-POLY-004` | Degree ceiling exceeded: an exponent, or a monomial's total degree, above `u32::MAX` (including one produced by multiplying terms, e.g. `x^(2^31)·x^(2^31)`), or a dense univariate degree above 2^26 or the active `Budget(max_bytes=...)` | Reduce the degree (e.g. substitute `t = x^k`), or keep the expression symbolic |
 | `E-POLY-005` | Symbolic exponent (a variable in the exponent) | Substitute a concrete integer first |
 | `E-POLY-006` | A non-polynomial **function** in the input (e.g. `sin`) | Use `Expr` directly, or expand as a series first. This — not `E-POLY-001` — is what `UniPoly.from_symbolic(sin(x), x)` raises |
 | `E-POLY-007` | The denominator is zero | Ensure it is non-zero before converting |

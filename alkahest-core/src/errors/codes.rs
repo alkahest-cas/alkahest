@@ -26,7 +26,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-POLY-001", class: "ConversionError", cause: Cause::UserInput,   remediation: Some("remove the unsupported symbol, or declare it as a parameter") },
     ErrorSpec { code: "E-POLY-002", class: "ConversionError", cause: Cause::UserInput,   remediation: Some("all coefficients must be rational integers; rationalize or substitute") },
     ErrorSpec { code: "E-POLY-003", class: "ConversionError", cause: Cause::UserInput,   remediation: Some("only non-negative integer exponents are supported in poly_normal") },
-    ErrorSpec { code: "E-POLY-004", class: "ConversionError", cause: Cause::UserInput,   remediation: Some("reduce the degree or switch to a sparse representation") },
+    ErrorSpec { code: "E-POLY-004", class: "ConversionError", cause: Cause::UserInput,   remediation: Some("reduce the degree (e.g. substitute t = x^k), or keep the expression symbolic") },
     ErrorSpec { code: "E-POLY-005", class: "ConversionError", cause: Cause::UserInput,   remediation: Some("substitute a concrete integer for the exponent before calling poly_normal") },
     ErrorSpec { code: "E-POLY-006", class: "ConversionError", cause: Cause::Unsupported, remediation: Some("only polynomial expressions are supported; remove transcendental functions") },
     ErrorSpec { code: "E-POLY-007", class: "ConversionError", cause: Cause::Domain,      remediation: Some("ensure the denominator is non-zero before converting") },

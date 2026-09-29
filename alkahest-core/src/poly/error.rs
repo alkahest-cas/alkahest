@@ -9,7 +9,11 @@ pub enum ConversionError {
     NonIntegerCoefficient,
     /// An exponent was a negative integer (produces a rational function, not a poly).
     NegativeExponent,
-    /// An exponent was a non-negative integer too large to fit in u32.
+    /// An exponent or degree cannot be represented: an input exponent, a
+    /// product exponent or a monomial's total degree above `u32::MAX`, or a
+    /// univariate degree above the dense-representation ceiling
+    /// ([`crate::poly::unipoly::MAX_DENSE_DEGREE`], or less under an active
+    /// memory budget).  Refused rather than wrapped.
     ExponentTooLarge,
     /// An exponent was not a constant integer (e.g. symbolic or float).
     NonConstantExponent,
@@ -38,7 +42,12 @@ impl fmt::Display for ConversionError {
                 )
             }
             ConversionError::ExponentTooLarge => {
-                write!(f, "exponent exceeds u32::MAX")
+                write!(
+                    f,
+                    "exponent or degree too large to represent exactly (an exponent or total \
+                     degree above u32::MAX = 4294967295, or a dense univariate degree above \
+                     the memory ceiling)"
+                )
             }
             ConversionError::NonConstantExponent => {
                 write!(f, "exponent is not a constant integer")
@@ -93,7 +102,7 @@ impl ConversionError {
                 "pass all free variables in the `vars` argument to poly_normal",
             ),
             ConversionError::ExponentTooLarge => Some(
-                "exponent exceeds u32::MAX; consider working with rational functions",
+                "reduce the degree (e.g. substitute t = x^k), or keep the expression symbolic",
             ),
             ConversionError::ZeroDenominator => None,
         }

@@ -3,6 +3,8 @@ mod apart_param;
 // Rational-function cancel/together normalization
 pub mod cancel;
 pub mod error;
+// Checked exponent arithmetic: an exponent that does not fit is refused, never wrapped
+pub(crate) mod exponent;
 // V2-7 — Polynomial factorization
 pub mod factor;
 pub mod gauss;

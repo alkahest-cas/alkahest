@@ -29,16 +29,16 @@ impl MonomialOrder {
                 a.len().cmp(&b.len())
             }
             MonomialOrder::GrLex => {
-                let da: u32 = a.iter().sum();
-                let db: u32 = b.iter().sum();
+                let da: u64 = a.iter().map(|&e| u64::from(e)).sum();
+                let db: u64 = b.iter().map(|&e| u64::from(e)).sum();
                 match da.cmp(&db) {
                     Ordering::Equal => MonomialOrder::Lex.cmp(a, b),
                     c => c,
                 }
             }
             MonomialOrder::GRevLex => {
-                let da: u32 = a.iter().sum();
-                let db: u32 = b.iter().sum();
+                let da: u64 = a.iter().map(|&e| u64::from(e)).sum();
+                let db: u64 = b.iter().map(|&e| u64::from(e)).sum();
                 match da.cmp(&db) {
                     Ordering::Equal => {
                         for (ai, bi) in a.iter().rev().zip(b.iter().rev()) {

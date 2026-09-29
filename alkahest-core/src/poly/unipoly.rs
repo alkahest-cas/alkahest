@@ -1,4 +1,5 @@
 use super::error::ConversionError;
+use super::exponent;
 use crate::flint::{integer::FlintInteger, FlintPoly};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use rug::{Integer, Rational};
@@ -27,7 +28,9 @@ fn coeffmap_add(mut a: CoeffMap, b: CoeffMap) -> CoeffMap {
     a
 }
 
-fn coeffmap_mul(a: &CoeffMap, b: &CoeffMap) -> CoeffMap {
+/// `ExponentTooLarge` if a product degree exceeds `u32::MAX` (it used to wrap:
+/// `x^(2^31)·x^(2^31)` became the constant `1`).
+fn coeffmap_mul(a: &CoeffMap, b: &CoeffMap) -> Result<CoeffMap, ConversionError> {
     let mut result = CoeffMap::new();
     for (&da, ca) in a {
         for (&db, cb) in b {
@@ -35,42 +38,87 @@ fn coeffmap_mul(a: &CoeffMap, b: &CoeffMap) -> CoeffMap {
             if prod == 0 {
                 continue;
             }
-            let entry = result
-                .entry(da + db)
-                .or_insert_with(|| rug::Integer::from(0));
+            let d = exponent::add(da, db)?;
+            let entry = result.entry(d).or_insert_with(|| rug::Integer::from(0));
             *entry += prod;
             if *entry == 0 {
-                result.remove(&(da + db));
+                result.remove(&d);
             }
         }
     }
-    result
+    Ok(result)
 }
 
-fn coeffmap_pow(base: &CoeffMap, n: u32) -> CoeffMap {
+fn coeffmap_pow(base: &CoeffMap, n: u32) -> Result<CoeffMap, ConversionError> {
     if n == 0 {
         let mut one = CoeffMap::new();
         one.insert(0, rug::Integer::from(1));
-        return one;
+        return Ok(one);
     }
     if n == 1 {
-        return base.clone();
+        return Ok(base.clone());
     }
-    let half = coeffmap_pow(base, n / 2);
-    let mut result = coeffmap_mul(&half, &half);
+    let half = coeffmap_pow(base, n / 2)?;
+    let mut result = coeffmap_mul(&half, &half)?;
     if n % 2 == 1 {
-        result = coeffmap_mul(&result, base);
+        result = coeffmap_mul(&result, base)?;
     }
-    result
+    Ok(result)
 }
 
-fn coeffmap_to_flintpoly(map: &CoeffMap) -> FlintPoly {
+/// Largest degree [`UniPoly`] will materialise densely: 2^26, i.e. half a
+/// GiB of coefficient slots before a single limb is stored.
+///
+/// `UniPoly` is a dense `fmpz_poly`, so `x^n + 1` costs `8·(n + 1)` bytes up
+/// front, and FLINT aborts the whole process when that allocation fails —
+/// `UniPoly.from_symbolic(x^(2^31) + 1)` asked for 16 GiB and took the
+/// interpreter with it, even under `Budget(max_bytes=...)`. Conversions refuse
+/// a larger degree with `E-POLY-004` before FLINT is called, and a smaller one
+/// that would not fit the active memory budget (see [`check_dense_degree`]).
+pub const MAX_DENSE_DEGREE: u32 = 1 << 26;
+
+/// Refuse (with `ExponentTooLarge`) to allocate a dense polynomial of degree
+/// `deg` above [`MAX_DENSE_DEGREE`], or one whose `8·(deg + 1)`-byte
+/// coefficient array would pass the active `Budget(max_bytes=...)` or the
+/// process's address-space headroom. Checked *before* FLINT allocates, since
+/// FLINT cannot fail gracefully once called. Degrees below 2^16 (half a MiB)
+/// skip the memory probes, which cost a `/proc` read.
+pub(crate) fn check_dense_degree(deg: u64) -> Result<(), ConversionError> {
+    if deg > u64::from(MAX_DENSE_DEGREE) {
+        return Err(ConversionError::ExponentTooLarge);
+    }
+    if deg < 1 << 16 {
+        return Ok(());
+    }
+    let bytes = (deg + 1) * std::mem::size_of::<u64>() as u64;
+    if let Some(limit) = crate::budget::max_bytes() {
+        if crate::budget::bytes_used().saturating_add(bytes) > limit {
+            return Err(ConversionError::ExponentTooLarge);
+        }
+    }
+    use crate::budget::memory::{address_space_limit, address_space_used, reserve_bytes};
+    if let (Some(limit), Some(used)) = (address_space_limit(), address_space_used()) {
+        if used
+            .saturating_add(bytes)
+            .saturating_add(reserve_bytes(limit))
+            >= limit
+        {
+            return Err(ConversionError::ExponentTooLarge);
+        }
+    }
+    Ok(())
+}
+
+fn coeffmap_to_flintpoly(map: &CoeffMap) -> Result<FlintPoly, ConversionError> {
+    if let Some((&top, _)) = map.last_key_value() {
+        check_dense_degree(u64::from(top))?;
+    }
     let mut poly = FlintPoly::new();
     for (&deg, coeff) in map {
         let fi = FlintInteger::from_rug(coeff);
         poly.set_coeff_flint(deg as usize, &fi);
     }
-    poly
+    Ok(poly)
 }
 
 fn coeffmap_rat_add(mut a: CoeffRatMap, b: CoeffRatMap) -> CoeffRatMap {
@@ -84,7 +132,7 @@ fn coeffmap_rat_add(mut a: CoeffRatMap, b: CoeffRatMap) -> CoeffRatMap {
     a
 }
 
-fn coeffmap_rat_mul(a: &CoeffRatMap, b: &CoeffRatMap) -> CoeffRatMap {
+fn coeffmap_rat_mul(a: &CoeffRatMap, b: &CoeffRatMap) -> Result<CoeffRatMap, ConversionError> {
     let mut result = CoeffRatMap::new();
     for (&da, ca) in a {
         for (&db, cb) in b {
@@ -92,31 +140,32 @@ fn coeffmap_rat_mul(a: &CoeffRatMap, b: &CoeffRatMap) -> CoeffRatMap {
             if prod == 0 {
                 continue;
             }
-            let entry = result.entry(da + db).or_insert_with(|| Rational::from(0));
+            let d = exponent::add(da, db)?;
+            let entry = result.entry(d).or_insert_with(|| Rational::from(0));
             *entry += prod;
             if *entry == 0 {
-                result.remove(&(da + db));
+                result.remove(&d);
             }
         }
     }
-    result
+    Ok(result)
 }
 
-fn coeffmap_rat_pow(base: &CoeffRatMap, n: u32) -> CoeffRatMap {
+fn coeffmap_rat_pow(base: &CoeffRatMap, n: u32) -> Result<CoeffRatMap, ConversionError> {
     if n == 0 {
         let mut one = CoeffRatMap::new();
         one.insert(0, Rational::from(1));
-        return one;
+        return Ok(one);
     }
     if n == 1 {
-        return base.clone();
+        return Ok(base.clone());
     }
-    let half = coeffmap_rat_pow(base, n / 2);
-    let mut result = coeffmap_rat_mul(&half, &half);
+    let half = coeffmap_rat_pow(base, n / 2)?;
+    let mut result = coeffmap_rat_mul(&half, &half)?;
     if n % 2 == 1 {
-        result = coeffmap_rat_mul(&result, base);
+        result = coeffmap_rat_mul(&result, base)?;
     }
-    result
+    Ok(result)
 }
 
 /// Scale each ℚ coefficient so all become integers after multiplying by `lcm`; returns ℤ coeff map.
@@ -187,18 +236,15 @@ fn expr_to_univariate_rat_coeffs(
             acc.insert(0, Rational::from(1));
             for &arg in &args {
                 let sub = expr_to_univariate_rat_coeffs(arg, var, pool)?;
-                acc = coeffmap_rat_mul(&acc, &sub);
+                acc = coeffmap_rat_mul(&acc, &sub)?;
             }
             Ok(acc)
         }
         ExprData::Pow { base, exp } => match pool.get(exp) {
             ExprData::Integer(n) => {
-                if n.0 < 0 {
-                    return Err(ConversionError::NegativeExponent);
-                }
-                let n_u32 = n.0.to_u32().ok_or(ConversionError::ExponentTooLarge)?;
+                let n_u32 = exponent::exponent_u32(&n.0)?;
                 let base_coeffs = expr_to_univariate_rat_coeffs(base, var, pool)?;
-                Ok(coeffmap_rat_pow(&base_coeffs, n_u32))
+                coeffmap_rat_pow(&base_coeffs, n_u32)
             }
             _ => Err(ConversionError::NonConstantExponent),
         },
@@ -267,19 +313,16 @@ fn expr_to_univariate_coeffs(
             acc.insert(0, rug::Integer::from(1));
             for &arg in &args {
                 let sub = expr_to_univariate_coeffs(arg, var, pool)?;
-                acc = coeffmap_mul(&acc, &sub);
+                acc = coeffmap_mul(&acc, &sub)?;
             }
             Ok(acc)
         }
         // Power with a constant non-negative integer exponent
         ExprData::Pow { base, exp } => match pool.get(exp) {
             ExprData::Integer(n) => {
-                if n.0 < 0 {
-                    return Err(ConversionError::NegativeExponent);
-                }
-                let n_u32 = n.0.to_u32().ok_or(ConversionError::ExponentTooLarge)?;
+                let n_u32 = exponent::exponent_u32(&n.0)?;
                 let base_coeffs = expr_to_univariate_coeffs(base, var, pool)?;
-                Ok(coeffmap_pow(&base_coeffs, n_u32))
+                coeffmap_pow(&base_coeffs, n_u32)
             }
             _ => Err(ConversionError::NonConstantExponent),
         },
@@ -433,11 +476,12 @@ impl<'a> UniBuilder<'a> {
                     acc = Some(match acc {
                         None => sub,
                         Some(a) => {
-                            if !a.is_zero()
-                                && !sub.is_zero()
-                                && a.degree() + sub.degree() > DENSE_DEGREE_LIMIT
-                            {
-                                return Err(BuildError::TooSparse);
+                            if !a.is_zero() && !sub.is_zero() {
+                                let d = a.degree() + sub.degree();
+                                if d > DENSE_DEGREE_LIMIT {
+                                    return Err(BuildError::TooSparse);
+                                }
+                                check_dense_degree(d as u64)?;
                             }
                             &a * &sub
                         }
@@ -452,14 +496,16 @@ impl<'a> UniBuilder<'a> {
                     ExprData::Integer(n) => n.0,
                     _ => return Err(ConversionError::NonConstantExponent.into()),
                 };
-                if n < 0 {
-                    return Err(ConversionError::NegativeExponent.into());
-                }
-                let n_u32 = n.to_u32().ok_or(ConversionError::ExponentTooLarge)?;
+                let n_u32 = exponent::exponent_u32(&n)?;
                 let b = self.build(base)?;
-                if b.degree() > 0 && b.degree() * i64::from(n_u32) > DENSE_DEGREE_LIMIT {
-                    return Err(BuildError::TooSparse);
+                if b.degree() > 0 {
+                    let d = b.degree() * i64::from(n_u32);
+                    if d > DENSE_DEGREE_LIMIT {
+                        return Err(BuildError::TooSparse);
+                    }
+                    check_dense_degree(d as u64)?;
                 }
+
                 match n_u32 {
                     1 => b,
                     _ => b.pow(n_u32),
@@ -488,7 +534,7 @@ fn expr_to_flintpoly(
         Ok(p) => Ok(p),
         Err(BuildError::Conversion(e)) => Err(e),
         Err(BuildError::TooSparse) => {
-            expr_to_univariate_coeffs(expr, var, pool).map(|m| coeffmap_to_flintpoly(&m))
+            coeffmap_to_flintpoly(&expr_to_univariate_coeffs(expr, var, pool)?)
         }
     }
 }
@@ -552,7 +598,8 @@ impl UniPoly {
             Err(ConversionError::NonIntegerCoefficient) => {
                 let map = expr_to_univariate_rat_coeffs(expr, var, pool)?;
                 let intmap = rat_coeffmap_to_integer(&map)?;
-                let coeffs = coeffmap_to_flintpoly(&intmap);
+                let coeffs = coeffmap_to_flintpoly(&intmap)?;
+
                 Ok(UniPoly { var, coeffs })
             }
             Err(e) => Err(e),
@@ -594,11 +641,43 @@ impl UniPoly {
         self.coeffs.is_zero()
     }
 
+    /// `self^exp`.
+    ///
+    /// # Panics
+    ///
+    /// If the result's degree would pass the dense ceiling (see
+    /// [`Self::checked_pow`]). FLINT used to be asked for the allocation and
+    /// abort the process; a panic can at least be caught.
     pub fn pow(&self, exp: u32) -> Self {
-        UniPoly {
+        self.checked_pow(exp)
+            .unwrap_or_else(|e| panic!("UniPoly::pow: {e} (E-POLY-004)"))
+    }
+
+    /// `self^exp`, or [`ConversionError::ExponentTooLarge`] if the result's
+    /// degree would exceed [`MAX_DENSE_DEGREE`] or the active memory budget.
+    pub fn checked_pow(&self, exp: u32) -> Result<Self, ConversionError> {
+        let deg = u64::try_from(self.degree()).unwrap_or(0);
+        check_dense_degree(deg.saturating_mul(u64::from(exp)))?;
+        Ok(UniPoly {
             var: self.var,
             coeffs: self.coeffs.pow(exp),
+        })
+    }
+
+    /// `self * rhs`, or [`ConversionError::ExponentTooLarge`] if the product's
+    /// degree would exceed [`MAX_DENSE_DEGREE`] or the active memory budget
+    /// (checked before FLINT allocates, since FLINT aborts on failure).
+    ///
+    /// # Panics
+    ///
+    /// If the operands have different variables (as for `*`).
+    pub fn checked_mul(&self, rhs: &Self) -> Result<Self, ConversionError> {
+        if !self.is_zero() && !rhs.is_zero() {
+            let d = u64::try_from(self.degree()).unwrap_or(0)
+                + u64::try_from(rhs.degree()).unwrap_or(0);
+            check_dense_degree(d)?;
         }
+        Ok(self * rhs)
     }
 
     /// Pseudo-division: returns `(quotient, remainder)` satisfying
@@ -1034,7 +1113,7 @@ mod tests {
 
     /// The pre-FLINT `from_symbolic`: sparse coefficient map, then dense.
     fn reference(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<FlintPoly, ConversionError> {
-        expr_to_univariate_coeffs(expr, var, pool).map(|m| coeffmap_to_flintpoly(&m))
+        expr_to_univariate_coeffs(expr, var, pool).and_then(|m| coeffmap_to_flintpoly(&m))
     }
 
     /// The pre-FLINT `FlintPoly::derivative`, coefficient by coefficient.
@@ -1173,6 +1252,121 @@ mod tests {
             UniPoly::from_symbolic(with_sin, x, &p).err(),
             reference(with_sin, x, &p).err()
         );
+    }
+
+    // --- Exponent overflow and the dense-degree ceiling (audit A1, B4) ---
+
+    const B31: u64 = 1 << 31;
+
+    #[test]
+    fn product_degree_past_u32_is_refused_not_wrapped() {
+        // x^(2^31) · x^(2^31) - 4: the map path used to wrap the degree to 0
+        // and see the constant -3 (so `real_roots` found no roots).
+        let (p, x) = pool_and_var();
+        let h = p.pow(x, p.integer(B31));
+        let w = p.add(vec![p.mul(vec![h, h]), p.integer(-4_i32)]);
+        assert_eq!(
+            UniPoly::from_symbolic(w, x, &p).err(),
+            Some(ConversionError::ExponentTooLarge)
+        );
+        // Same through the ℚ-coefficient path.
+        let wq = p.add(vec![p.mul(vec![h, h]), p.rational(1, 2)]);
+        assert_eq!(
+            UniPoly::from_symbolic_clear_denoms(wq, x, &p).err(),
+            Some(ConversionError::ExponentTooLarge)
+        );
+        assert_eq!(
+            coeffmap_mul(
+                &CoeffMap::from([(u32::MAX, Integer::from(1))]),
+                &CoeffMap::from([(1, Integer::from(1))])
+            ),
+            Err(ConversionError::ExponentTooLarge)
+        );
+    }
+
+    #[test]
+    fn dense_degree_ceiling_refuses_before_flint_allocates() {
+        // x^(2^31) + 1 asked FLINT for 16 GiB and aborted the process.
+        let (p, x) = pool_and_var();
+        for e in [
+            u64::from(MAX_DENSE_DEGREE) + 1,
+            B31,
+            1 << 32,
+            1 << 63,
+            u64::MAX,
+        ] {
+            let f = p.add(vec![p.pow(x, p.integer(e)), p.integer(1_i32)]);
+            assert_eq!(
+                UniPoly::from_symbolic(f, x, &p).err(),
+                Some(ConversionError::ExponentTooLarge),
+                "degree {e}"
+            );
+        }
+        // The ceiling itself is allowed by the check (not allocated here).
+        assert_eq!(check_dense_degree(u64::from(MAX_DENSE_DEGREE)), Ok(()));
+        // A huge degree that cancels is still fine: nothing dense is built.
+        let big = p.pow(x, p.integer(B31));
+        let cancels = p.add(vec![big, p.mul(vec![p.integer(-1_i32), big])]);
+        assert!(UniPoly::from_symbolic(cancels, x, &p).unwrap().is_zero());
+    }
+
+    #[test]
+    fn pow_past_the_dense_ceiling_is_refused_before_flint_allocates() {
+        // PyUniPoly.__pow__((x+1), 2^31) aborted inside FLINT.
+        let (p, x) = pool_and_var();
+        let xp1 = UniPoly::from_symbolic(p.add(vec![x, p.integer(1_i32)]), x, &p).unwrap();
+        assert_eq!(
+            xp1.checked_pow(1 << 31).err(),
+            Some(ConversionError::ExponentTooLarge)
+        );
+        assert_eq!(
+            xp1.checked_pow(u32::MAX).err(),
+            Some(ConversionError::ExponentTooLarge)
+        );
+        assert_eq!(xp1.checked_pow(3).unwrap(), xp1.pow(3));
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| xp1.pow(1 << 31)));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn checked_mul_respects_the_dense_ceiling() {
+        let (p, x) = pool_and_var();
+        let f = UniPoly::from_symbolic(
+            p.add(vec![p.pow(x, p.integer(1 << 16)), p.integer(1)]),
+            x,
+            &p,
+        )
+        .unwrap();
+        assert_eq!(f.checked_mul(&f).unwrap(), &f * &f);
+        let zero = UniPoly::zero(x);
+        assert!(f.checked_mul(&zero).unwrap().is_zero());
+        let _g = crate::budget::enter_with_memory(crate::budget::Budget::default(), Some(1 << 20));
+        assert_eq!(
+            f.checked_mul(&f).err(),
+            Some(ConversionError::ExponentTooLarge)
+        );
+    }
+
+    #[test]
+    fn dense_degree_respects_the_memory_budget() {
+        let (p, x) = pool_and_var();
+        // 2^21 goes through the dense FLINT builder, 2^23 through the sparse
+        // map; they need 16 and 64 MiB of slots, and a 1 MiB budget refuses
+        // both before anything is allocated.
+        let f = |e: u32| p.add(vec![p.pow(x, p.integer(e)), p.integer(1_i32)]);
+        {
+            let _g =
+                crate::budget::enter_with_memory(crate::budget::Budget::default(), Some(1 << 20));
+            for e in [1_u32 << 21, 1 << 23] {
+                assert_eq!(
+                    UniPoly::from_symbolic(f(e), x, &p).err(),
+                    Some(ConversionError::ExponentTooLarge),
+                    "degree {e}"
+                );
+            }
+        }
+        let got = UniPoly::from_symbolic(f(1 << 21), x, &p).unwrap();
+        assert_eq!(got.degree(), 1 << 21);
     }
 
     #[test]

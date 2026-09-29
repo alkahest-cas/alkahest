@@ -209,9 +209,11 @@ fn rat_to_f64(r: &Rational) -> f64 {
 }
 
 fn total_degree(p: &GbPoly) -> u32 {
+    // `expr_to_gbpoly` bounds every total degree by u32::MAX, so this cannot
+    // wrap (it used to: x^(2^31)·y^(2^31) had degree 0).
     p.terms
         .keys()
-        .map(|e| e.iter().sum::<u32>())
+        .map(|e| crate::poly::exponent::total_degree_or_panic(e))
         .max()
         .unwrap_or(0)
 }

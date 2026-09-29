@@ -184,11 +184,45 @@ impl FlintMPoly {
     ///
     /// Exponent vectors have length equal to `ctx.nvars()` with trailing zeros
     /// stripped.  Terms with zero coefficient are omitted.
+    ///
+    /// # Panics
+    ///
+    /// If an exponent exceeds `u32::MAX` (FLINT exponents are unbounded, so a
+    /// product or resultant can produce one). It used to be truncated to its
+    /// low 32 bits — `x^(2^32)` read back as `1`. Use [`Self::try_terms`] or
+    /// [`Self::terms_u64`] to handle that case.
     pub fn terms(&self) -> BTreeMap<Vec<u32>, rug::Integer> {
+        self.try_terms()
+            .unwrap_or_else(|| crate::poly::exponent::overflow_panic())
+    }
+
+    /// [`Self::terms`], or `None` if some exponent exceeds `u32::MAX`.
+    pub(crate) fn try_terms(&self) -> Option<BTreeMap<Vec<u32>, rug::Integer>> {
+        let wide = self.terms_u64()?;
+        let mut result = BTreeMap::new();
+        for (exp, coeff) in wide {
+            let exp: Option<Vec<u32>> = exp.into_iter().map(|e| u32::try_from(e).ok()).collect();
+            result.insert(exp?, coeff);
+        }
+        Some(result)
+    }
+
+    /// All terms with `u64` exponents (trailing zeros stripped, zero
+    /// coefficients omitted), or `None` if some exponent does not fit in a
+    /// machine word.
+    pub(crate) fn terms_u64(&self) -> Option<BTreeMap<Vec<u64>, rug::Integer>> {
         let nvars = self.ctx.nvars();
         let len = self.length();
         let mut result = BTreeMap::new();
         for i in 0..len {
+            // SAFETY: `i < length`, and both pointers are initialised.
+            let fits = unsafe {
+                super::ffi::fmpz_mpoly_term_exp_fits_ui(self.as_ptr(), i as i64, self.ctx.as_ptr())
+            };
+            if fits == 0 {
+                // `fmpz_mpoly_get_term_exp_ui` would throw (abort) here.
+                return None;
+            }
             // FlintInteger is drop-safe — no raw fmpz_init/fmpz_clear needed.
             let mut coeff_fz = FlintInteger::new();
             let mut exp_u64 = vec![0u64; nvars];
@@ -211,13 +245,12 @@ impl FlintMPoly {
                 continue;
             }
             // Truncate trailing zeros from the exponent vector.
-            let mut exp_u32: Vec<u32> = exp_u64.iter().map(|&e| e as u32).collect();
-            while exp_u32.last() == Some(&0) {
-                exp_u32.pop();
+            while exp_u64.last() == Some(&0) {
+                exp_u64.pop();
             }
-            result.insert(exp_u32, coeff);
+            result.insert(exp_u64, coeff);
         }
-        result
+        Some(result)
     }
 
     /// Product `self * other`. Both must share a context (same `nvars`).
@@ -374,13 +407,17 @@ impl FlintMPolyFactor {
     /// only reading the data), so we need `&mut self` here.
     pub fn exp_at(&mut self, i: usize) -> u32 {
         debug_assert!(i < self.len());
-        unsafe {
+        let e = unsafe {
             super::ffi::fmpz_mpoly_factor_get_exp_si(
                 &mut self.inner,
                 i as super::ffi::slong,
                 self.ctx.as_ptr(),
-            ) as u32
-        }
+            )
+        };
+        // A multiplicity is at most the degree of the factored polynomial, and
+        // those enter through `u32`-exponent terms, so this cannot fail for a
+        // polynomial built by this crate; refuse to truncate if it ever does.
+        u32::try_from(e).unwrap_or_else(|_| crate::poly::exponent::overflow_panic())
     }
 }
 

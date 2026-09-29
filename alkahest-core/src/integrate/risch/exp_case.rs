@@ -1519,9 +1519,12 @@ fn expr_to_kpoly_general(
                 _ => return None,
             };
             let b = expr_to_kpoly_general(base, var, gens, field, pool)?;
+            // `-n` overflowed for i64::MIN (an empty loop in release: c^(-2^63)
+            // read as 1); bound |n| like the other conversions and decline.
+            let m = u32::try_from(n.unsigned_abs()).ok()?;
             if n >= 0 {
                 let mut acc: KPoly = vec![field.from_int(1)];
-                for _ in 0..n {
+                for _ in 0..m {
                     acc = field.kpoly_mul(&acc, &b);
                 }
                 Some(acc)
@@ -1532,7 +1535,7 @@ fn expr_to_kpoly_general(
                 }
                 let inv = field.inv(&b[0])?;
                 let mut acc = field.from_int(1);
-                for _ in 0..(-n) {
+                for _ in 0..m {
                     acc = field.mul(&acc, &inv);
                 }
                 Some(vec![acc])
@@ -1590,13 +1593,11 @@ pub(super) fn expr_to_krational_general(
                 _ => return None,
             };
             let (bn, bd) = expr_to_krational_general(base, var, gens, field, pool)?;
+            // `n as u32` truncated exponents of 2^32 and more; decline them.
+            let m = u32::try_from(n.unsigned_abs()).ok()?;
             if n >= 0 {
-                Some((
-                    field.kpoly_pow(&bn, n as u32),
-                    field.kpoly_pow(&bd, n as u32),
-                ))
+                Some((field.kpoly_pow(&bn, m), field.kpoly_pow(&bd, m)))
             } else {
-                let m = (-n) as u32;
                 Some((field.kpoly_pow(&bd, m), field.kpoly_pow(&bn, m)))
             }
         }
@@ -1877,9 +1878,12 @@ fn expr_to_kpoly(
                 _ => return None,
             };
             let b = expr_to_kpoly(base, var, sqrt_expr, field, pool)?;
+            // `-n` overflowed for i64::MIN (an empty loop in release: c^(-2^63)
+            // read as 1); bound |n| like the other conversions and decline.
+            let m = u32::try_from(n.unsigned_abs()).ok()?;
             if n >= 0 {
                 let mut acc: KPoly = vec![field.from_int(1)];
-                for _ in 0..n {
+                for _ in 0..m {
                     acc = field.kpoly_mul(&acc, &b);
                 }
                 Some(acc)
@@ -1891,7 +1895,7 @@ fn expr_to_kpoly(
                 }
                 let inv = field.inv(&b[0])?;
                 let mut acc = field.from_int(1);
-                for _ in 0..(-n) {
+                for _ in 0..m {
                     acc = field.mul(&acc, &inv);
                 }
                 Some(vec![acc])
@@ -2008,13 +2012,11 @@ fn expr_to_krational(
                 _ => return None,
             };
             let (bn, bd) = expr_to_krational(base, var, sqrt_expr, field, pool)?;
+            // `n as u32` truncated exponents of 2^32 and more; decline them.
+            let m = u32::try_from(n.unsigned_abs()).ok()?;
             if n >= 0 {
-                Some((
-                    field.kpoly_pow(&bn, n as u32),
-                    field.kpoly_pow(&bd, n as u32),
-                ))
+                Some((field.kpoly_pow(&bn, m), field.kpoly_pow(&bd, m)))
             } else {
-                let m = (-n) as u32;
                 if NumberField::kdeg(&bn) < 0 {
                     return None; // 1 / 0
                 }
