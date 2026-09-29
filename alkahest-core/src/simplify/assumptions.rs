@@ -531,6 +531,13 @@ fn push_unique(facts: &mut Vec<SideCondition>, fact: SideCondition) {
 /// discarded a second copy — so the order is still the first-occurrence
 /// pre-order the recursion produced.  Only interior nodes are recorded: a leaf
 /// is cheaper to re-read than to hash.
+///
+/// # Why most calls return immediately
+///
+/// The pool records, per node, whether its subtree holds any `Positive` or
+/// `NonZero` symbol at all ([`ExprPool::has_static_domain_fact`]).  A subtree
+/// without one contributes no fact, so it is skipped whole — and for the
+/// common expression with no such symbol anywhere the walk ends at the root.
 pub(crate) fn collect_static_domain_facts(
     expr: ExprId,
     pool: &ExprPool,
@@ -541,6 +548,7 @@ pub(crate) fn collect_static_domain_facts(
     let mut current = expr;
     loop {
         pool.with(current, |data| match data {
+            _ if !pool.has_static_domain_fact(current) => {}
             ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => {}
             ExprData::Symbol { domain, .. } => match domain {
                 Domain::Positive => {
@@ -765,6 +773,31 @@ mod tests {
             facts,
             vec![SideCondition::Positive(y), SideCondition::NonZero(y)]
         );
+    }
+
+    /// The intern-time flag the walk prunes on sees a fact-bearing symbol
+    /// anywhere the walk would, piecewise conditions and binders included.
+    #[test]
+    fn static_domain_fact_flag_tracks_the_walk() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.symbol("p", Domain::Positive);
+        let n = pool.symbol("n", Domain::NonZero);
+        let plain = pool.add(vec![x, pool.func("sin", vec![x])]);
+        assert!(!pool.has_static_domain_fact(plain));
+        assert!(pool.has_static_domain_fact(p));
+        assert!(pool.has_static_domain_fact(pool.pow(x, n)));
+        let cond = pool.pred_gt(p, pool.integer(0_i32));
+        let pw = pool.piecewise(vec![(cond, x)], x);
+        assert!(pool.has_static_domain_fact(pw));
+        let bound = pool.forall(n, x);
+        assert!(pool.has_static_domain_fact(bound));
+        for e in [plain, pw, bound] {
+            let (mut fast, mut slow) = (Vec::new(), Vec::new());
+            collect_static_domain_facts(e, &pool, &mut fast);
+            collect_static_domain_facts_reference(e, &pool, &mut slow);
+            assert_eq!(fast, slow);
+        }
     }
 
     /// Every `simplify` ends in the fact walk, so re-simplifying an

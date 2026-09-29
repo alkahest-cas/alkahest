@@ -198,6 +198,14 @@ struct Node {
     /// This is what lets every recursive consumer refuse a too-deep expression
     /// in O(1) rather than discovering the problem by overflowing the stack.
     depth: u32,
+    /// Whether some symbol in this subtree has [`Domain::Positive`] or
+    /// [`Domain::NonZero`] — the domains
+    /// `simplify::assumptions::collect_static_domain_facts` turns into
+    /// rewrite facts.  Every `simplify` ends with that collection, and almost
+    /// no expression has such a symbol, so the walk can answer from the root
+    /// in O(1) and prune every subtree without one.  Computed like the flags
+    /// above; the children counted are every child that walk descends into.
+    static_domain_fact: bool,
 }
 
 pub struct ExprPool {
@@ -280,10 +288,12 @@ impl ExprPool {
     fn make_node(&self, data: ExprData) -> Node {
         let mult_commutative = self.compute_mult_commutative(&data);
         let depth = self.compute_depth(&data);
+        let static_domain_fact = self.compute_static_domain_fact(&data);
         Node {
             data,
             mult_commutative,
             depth,
+            static_domain_fact,
         }
     }
 
@@ -354,6 +364,39 @@ impl ExprPool {
     /// PyO3 entry points compare it against `MAX_EXPR_DEPTH` to decline a tree
     /// too deep to recurse over — see
     /// [`crate::kernel::depth::check_expr_depth`].
+    /// One level of the static-domain-fact recurrence, from the children's
+    /// cached flags.  Covers *every* child, piecewise conditions and binder
+    /// variables included, because the fact walk descends into all of them.
+    fn compute_static_domain_fact(&self, data: &ExprData) -> bool {
+        let child = |c: ExprId| self.node(c).static_domain_fact;
+        match data {
+            ExprData::Symbol { domain, .. } => {
+                matches!(domain, Domain::Positive | Domain::NonZero)
+            }
+            ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => false,
+            ExprData::Add(args)
+            | ExprData::Mul(args)
+            | ExprData::Func { args, .. }
+            | ExprData::Predicate { args, .. } => args.iter().copied().any(child),
+            ExprData::Pow { base, exp } => child(*base) || child(*exp),
+            ExprData::Piecewise { branches, default } => {
+                branches.iter().any(|&(c, v)| child(c) || child(v)) || child(*default)
+            }
+            ExprData::Forall { var, body } | ExprData::Exists { var, body } => {
+                child(*var) || child(*body)
+            }
+            ExprData::BigO(inner) => child(*inner),
+            ExprData::RootSum { poly, var, body } => child(*poly) || child(*var) || child(*body),
+        }
+    }
+
+    /// Whether the subtree rooted at `id` contains a symbol whose domain is
+    /// `Positive` or `NonZero`.  O(1): computed when `id` was interned.  When
+    /// it is `false`, static domain-fact collection has nothing to find there.
+    pub(crate) fn has_static_domain_fact(&self, id: ExprId) -> bool {
+        self.node(id).static_domain_fact
+    }
+
     pub fn depth(&self, id: ExprId) -> u32 {
         self.node(id).depth
     }
