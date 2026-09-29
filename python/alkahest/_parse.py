@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from .alkahest import Expr as _Expr
+from .alkahest import PoolError as _PoolError
 from .exceptions import ParseError
 
 # ---------------------------------------------------------------------------
@@ -256,12 +258,87 @@ class _Parser:
         left = self._nud(tok)
         while True:
             tok = self._peek()
-            lbp = _INFIX_BP.get(tok[0], 0)
+            kind = tok[0]
+            lbp = _INFIX_BP.get(kind, 0)
             if lbp <= rbp:
                 break
             self._advance()
-            left = self._led(tok, left)
+            if kind == "+" or kind == "-":
+                left = self._additive_run(left, kind)
+            elif kind == "*" or kind == "/":
+                left = self._multiplicative_run(left, kind)
+            else:
+                left = self._led(tok, left)
         return left
+
+    # -- n-ary runs --
+    #
+    # A run of one precedence level, ``a + b - c + d`` or ``a * b * c``, is
+    # gathered and interned with a single ``pool.add`` / ``pool.mul`` call.
+    # Folding it left to right (``left + right`` per operator) interned a new,
+    # one-wider flat ``Add`` at every step: quadratic time, and quadratic pool
+    # memory the pool never gives back.  The node is the same either way:
+    # ``add`` flattens nested children and sorts canonically, so the one-shot
+    # constructor sees exactly the operand multiset the fold would have
+    # spliced together.  ``mul`` sorts only when every factor commutes, so a
+    # product goes through ``_mul_left_fold``, which reproduces the fold's
+    # sorted-prefix shape.  ``tests/test_py_wrapper_boundary.py`` checks both
+    # against the fold on random inputs, non-commutative symbols included.
+
+    def _additive_run(self, left, kind: str):
+        ops = []
+        while True:
+            ops.append((kind, self._expr(_BP_ADD)))
+            kind = self._peek()[0]
+            if kind != "+" and kind != "-":
+                break
+            self._advance()
+        if type(left) is _Expr and all(type(r) is _Expr for _, r in ops):
+            # `left - r` is `left + (-1)*r`, which is exactly what `-r` builds.
+            terms = [left]
+            terms.extend(r if k == "+" else -r for k, r in ops)
+            try:
+                return self._pool.add(terms)
+            except _PoolError:
+                # Operands from a caller-supplied symbol map that live in a
+                # different pool: the fold below reproduces the operators'
+                # own behaviour (build there, or raise the mismatch).
+                pass
+        for k, r in ops:
+            left = left + r if k == "+" else left - r
+        return left
+
+    def _multiplicative_run(self, left, kind: str):
+        factors = [left]
+        while True:
+            right = self._expr(_BP_MUL)
+            if kind == "*":
+                factors.append(right)
+            else:
+                # Division goes through `Expr.__truediv__`, which owns the
+                # literal-zero check; the quotient then heads the next run.
+                factors = [self._product(factors) / right]
+            kind = self._peek()[0]
+            if kind != "*" and kind != "/":
+                break
+            self._advance()
+        return self._product(factors)
+
+    def _product(self, factors: list):
+        if len(factors) == 1:
+            return factors[0]
+        if all(type(f) is _Expr for f in factors):
+            try:
+                # Not `mul`: with a non-commutative factor the fold sorts
+                # only the commutative prefix, and `_mul_left_fold` builds
+                # exactly that node (see its docstring).
+                return self._pool._mul_left_fold(factors)
+            except _PoolError:
+                pass  # foreign-pool operands: see `_additive_run`
+        acc = factors[0]
+        for f in factors[1:]:
+            acc = acc * f
+        return acc
 
     # -- null denotation (prefix / atom) --
 
@@ -312,19 +389,8 @@ class _Parser:
     # -- left denotation (infix) --
 
     def _led(self, tok, left):
+        # `+ - * /` never reach here: `_expr` hands them to the n-ary runs.
         kind, text, offset = tok
-
-        if kind == "+":
-            return left + self._expr(_BP_ADD)
-
-        if kind == "-":
-            return left - self._expr(_BP_ADD)
-
-        if kind == "*":
-            return left * self._expr(_BP_MUL)
-
-        if kind == "/":
-            return left / self._expr(_BP_MUL)
 
         if kind in ("^", "**"):
             # Right-associative: use BP_POW - 1 as the right-binding-power.

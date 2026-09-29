@@ -32,7 +32,7 @@ to thread an ``Assumptions`` object through every call by hand::
 from __future__ import annotations
 
 from contextlib import contextmanager
-from threading import local
+from threading import RLock, local
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -45,6 +45,18 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 _state = local()
+
+#: Context frames open on *any* thread.  Zero means no thread has a frame, so
+#: a hot-path reader (`_certificates.certificate_required`, run on every
+#: derivation entry point) can answer without touching the thread-local
+#: stack.  Nonzero says nothing about *this* thread; readers then fall back to
+#: `_state.stack`.  Updated under a lock: pushes and pops are rare, and a lost
+#: update reading 0 while a frame is open would skip a certificate check.  The
+#: lock is re-entrant because a pop can run from a garbage-collected
+#: `context()` generator's `finally` at any allocation — including one inside
+#: this critical section on the same thread.
+_live_frames = 0
+_live_frames_lock = RLock()
 
 
 def _note_frame_pushed() -> None:
@@ -60,6 +72,9 @@ def _note_frame_pushed() -> None:
     Best-effort: if the extension is not importable, the native side simply
     never takes its fast path and reads the stack as before.
     """
+    global _live_frames
+    with _live_frames_lock:
+        _live_frames += 1
     try:
         from . import alkahest as _native
 
@@ -70,6 +85,9 @@ def _note_frame_pushed() -> None:
 
 def _note_frame_popped() -> None:
     """Counterpart to :func:`_note_frame_pushed`; called from a ``finally``."""
+    global _live_frames
+    with _live_frames_lock:
+        _live_frames -= 1
     try:
         from . import alkahest as _native
 
@@ -80,6 +98,10 @@ def _note_frame_popped() -> None:
 
 def _get() -> dict[str, Any]:
     """Return the current context dict (empty if none is active)."""
+    # No frame open on any thread: skip the thread-local probe, which costs
+    # most of a microsecond when this thread never opened a context.
+    if not _live_frames:
+        return {}
     if not hasattr(_state, "stack") or not _state.stack:
         return {}
     return _state.stack[-1]

@@ -57,6 +57,7 @@ import inspect
 import json
 import math
 import threading
+from collections import deque
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -261,8 +262,8 @@ def _as_expr(obj: Any) -> Any:
 _MAX_PARTIAL_NARY = 6
 
 
-def _partial_nary(tag: str, children: Sequence[Any]) -> Iterator[Any]:
-    """Yield the proper sub-sums / sub-products of one flat ``Add``/``Mul``.
+def _partial_nary(tag: str, children: Sequence[Any]) -> Iterator[tuple]:
+    """Yield the keys of the proper sub-sums / sub-products of a flat node.
 
     ``Add`` and ``Mul`` are flat at construction, so ``2 * a * b`` is a single
     three-factor node and the ``a * b`` that a previous step produced is *not*
@@ -271,58 +272,45 @@ def _partial_nary(tag: str, children: Sequence[Any]) -> Iterator[Any]:
     old left-associative binary chains did not, because there ``2 * (a * b)``
     really did contain an ``a * b`` node.
 
-    Rebuilding the subset with ``*``/``+`` goes back through the kernel
-    constructors, so the candidate it produces is exactly the node the earlier
-    step interned.  Only proper subsets of size >= 2 are worth yielding: the
-    whole node and the individual children are already visited.
+    The candidates are yielded as :func:`_expr_key` keys, ``(tag, children)``,
+    rather than rebuilt as nodes.  Rebuilding them with ``+``/``*`` interned up
+    to ``2**k`` partial sums into the *caller's* pool on every lookup — nodes
+    nobody asked for, which the pool never frees.  The key is exact without
+    building anything: the kernel keeps an ``Add``'s children sorted (and a
+    ``Mul``'s, when commutative), and splices without reordering otherwise, so
+    the node for a subset has exactly the subset's children in the parent's
+    order.  Only proper subsets of size >= 2 are worth yielding: the whole
+    node and the individual children are already visited.
     """
     k = len(children)
     if not 2 <= k <= _MAX_PARTIAL_NARY:
         return
     for mask in range(1, (1 << k) - 1):
-        picked = [children[i] for i in range(k) if mask & (1 << i)]
-        if len(picked) < 2:
+        if mask & (mask - 1) == 0:  # a single child
             continue
-        combined = picked[0]
-        try:
-            for item in picked[1:]:
-                combined = combined + item if tag == "add" else combined * item
-        except Exception:
-            continue
-        yield combined
+        yield (tag, tuple(children[i] for i in range(k) if mask >> i & 1))
 
 
-def _subexpressions(expr: Any, limit: int = 4096) -> Iterator[Any]:
-    """Yield *expr* and every distinct subexpression, breadth first.
-
-    For flat ``Add``/``Mul`` nodes this also yields their proper sub-sums and
-    sub-products (see :func:`_partial_nary`), so a value buried in a wider sum
-    or product is still recognised.
-
-    Traversal is bounded by *limit* nodes so dependency inference cannot become
-    the dominant cost of a hot loop.
-    """
+def _walk(expr: Any, limit: int) -> Iterator[tuple[Any, Any]]:
+    """Breadth-first ``(subexpression, node())`` pairs, each distinct once."""
     if not _is_expr(expr):
         return
-    seen: set[int] = set()
-    frontier = [expr]
+    # Keyed by the expression itself: `Expr` equality and hashing include the
+    # pool, so this is exact (a bare `hash()` set could conflate two nodes).
+    seen: set[Any] = set()
+    frontier = deque([expr])
     while frontier and len(seen) < limit:
-        current = frontier.pop(0)
-        try:
-            key = hash(current)
-        except TypeError:  # pragma: no cover - Expr is hashable
+        current = frontier.popleft()
+        if current in seen:
             continue
-        if key in seen:
-            continue
-        seen.add(key)
-        yield current
+        seen.add(current)
         try:
             node = current.node()
         except Exception:
+            node = None
+        yield current, node
+        if node is None:
             continue
-        if node and node[0] in ("add", "mul") and isinstance(node[1], (list, tuple)):
-            for partial in _partial_nary(node[0], node[1]):
-                frontier.append(partial)
         stack = [node]
         while stack:
             item = stack.pop()
@@ -332,20 +320,54 @@ def _subexpressions(expr: Any, limit: int = 4096) -> Iterator[Any]:
                 stack.extend(item)
 
 
+def _subexpressions(expr: Any, limit: int = 4096) -> Iterator[Any]:
+    """Yield *expr* and every distinct subexpression, breadth first.
+
+    Traversal is bounded by *limit* nodes so dependency inference cannot become
+    the dominant cost of a hot loop.  :func:`_subexpression_keys` is the lookup
+    form, which also covers the partial sums/products of flat nodes.
+    """
+    for sub, _node in _walk(expr, limit):
+        yield sub
+
+
+def _is_nary(node: Any) -> bool:
+    return bool(node) and node[0] in ("add", "mul") and isinstance(node[1], (list, tuple))
+
+
+def _node_key(expr: Any, node: Any) -> tuple:
+    # A flat `Add`/`Mul` is keyed by its children so that a partial sum of a
+    # wider node (see `_partial_nary`) can be matched without being built.
+    if _is_nary(node):
+        return (node[0], tuple(node[1]))
+    return ("expr", expr)
+
+
+def _subexpression_keys(expr: Any, limit: int = 4096) -> Iterator[tuple]:
+    """:func:`_expr_key` of every subexpression of *expr*, plus the keys of the
+    proper sub-sums / sub-products of each flat ``Add``/``Mul`` in it."""
+    for sub, node in _walk(expr, limit):
+        yield _node_key(sub, node)
+        if _is_nary(node):
+            yield from _partial_nary(node[0], node[1])
+
+
 def _expr_key(expr: Any) -> tuple | None:
     """A hashable identity for an interned expression.
 
-    ``Expr.__hash__`` returns the raw interned ``ExprId``, which is only unique
-    within one :class:`~alkahest.ExprPool`; the rendered form is folded in so
-    that same-``ExprId`` expressions from two different pools do not collide
-    into a spurious dependency edge.
+    ``Expr`` equality and hashing are by (pool, interned id), so the key holds
+    the expression itself — or, for a flat ``Add``/``Mul``, its tag and
+    children, which is the same identity in a form partial sums can match.
+    (This used to fold ``str(expr)`` in to keep two pools apart, when ``Expr``
+    compared ids alone; rendering every subexpression made lookups quadratic.)
     """
     if not _is_expr(expr):
         return None
     try:
-        return ("expr", hash(expr), str(expr))
-    except TypeError:  # pragma: no cover - Expr is hashable
-        return None
+        node = expr.node()
+    except Exception:
+        node = None
+    return _node_key(expr, node)
 
 
 # ---------------------------------------------------------------------------
@@ -2134,10 +2156,7 @@ class ResearchSession:
         if expr is None or not self._origins:
             return []
         found: dict[str, None] = {}
-        for sub in _subexpressions(expr):
-            key = _expr_key(sub)
-            if key is None:
-                continue
+        for key in _subexpression_keys(expr):
             origin = self._origins.get(key)
             if origin is not None:
                 found[origin] = None

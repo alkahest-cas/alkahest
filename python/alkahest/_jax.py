@@ -26,26 +26,29 @@ from __future__ import annotations
 
 from typing import Callable
 
-try:
-    import jax  # noqa: F401
-    import jax.numpy as jnp
-    from jax import core as jax_core
-    from jax.interpreters import ad as jax_ad
-    from jax.interpreters import batching as jax_batching
-
-    _JAX_AVAILABLE = True
-except ImportError:
-    _JAX_AVAILABLE = False
-
 import numpy as np
 
 import alkahest
 from alkahest._dlpack import _call_batch
 
 
-def _require_jax() -> None:
-    if not _JAX_AVAILABLE:
-        raise ImportError("JAX is not installed. Run: pip install jax[cuda12] or pip install jax")
+def _require_jax():
+    """Import jax on first use and return ``(jnp, core, ad, batching)``.
+
+    Deferred rather than done at module level: importing jax costs most of a
+    second, and this module is reachable from ``import alkahest`` (via
+    ``alkahest.to_jax``) and ``import alkahest.experimental``.
+    """
+    try:
+        import jax.numpy as jnp
+        from jax import core as jax_core
+        from jax.interpreters import ad as jax_ad
+        from jax.interpreters import batching as jax_batching
+    except ImportError:
+        raise ImportError(
+            "JAX is not installed. Run: pip install jax[cuda12] or pip install jax"
+        ) from None
+    return jnp, jax_core, jax_ad, jax_batching
 
 
 def as_jax_primitive(expr, inputs: list) -> Callable:
@@ -72,7 +75,7 @@ def as_jax_primitive(expr, inputs: list) -> Callable:
     - JVP (forward-mode) via ``alkahest.grad``.
     - Transpose rule for reverse-mode.
     """
-    _require_jax()
+    jnp, jax_core, jax_ad, jax_batching = _require_jax()
 
     # Compute gradients symbolically, once at wrap time.
     grad_exprs = alkahest.symbolic_grad(expr, inputs)

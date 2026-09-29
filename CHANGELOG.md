@@ -529,6 +529,22 @@
   ~0.3 ms). All tiers agree bit for bit with the tree-walking interpreter
   (property-tested). The "no JIT" warning now points at the dependency-free
   `cranelift` feature instead of only at LLVM.
+- **Python boundary: pool-aware `Expr` identity, linear parsing of long sums,
+  and `import alkahest` without jax.** `Expr.__eq__`/`__hash__` compared the
+  interned id alone, so `pool_p.symbol("x") == pool_q.symbol("zzz")` was
+  `True` and expressions from two pools collided as dict keys; they now
+  compare (pool, id), and `pool.add`/`mul`/`func` refuse an expression from
+  another pool with `PoolError` (`E-POOL-001`) instead of reading its id as a
+  local one. `parse` interns each run of `+`/`-` (and `*`) with one
+  constructor call instead of a left fold that re-interned a one-wider `Add`
+  per term — the same node, now linear (10 000-term sum 1.8 s → 86 ms).
+  `to_jax` resolves lazily, so `import alkahest` no longer imports jax
+  (~480 ms → ~70 ms on one machine). The ambient certificate gate on every
+  derivation entry point costs ~0.2 µs instead of ~2 µs, and research
+  dependency lookup keys by `Expr` instead of rendering `str()` per
+  subexpression and no longer interns partial sums into the caller's pool.
+  `docs/mdbook/src/kernel.md` now says how to build large sums
+  (`pool.add(terms)`, not `sum()`).
 
 ### Testing and tooling
 

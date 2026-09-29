@@ -45,6 +45,13 @@ import json
 import os
 from typing import Any
 
+# `_context` imports nothing from this package, so binding its thread-local
+# state here cannot cycle.  `certificate_required()` runs on every derivation
+# entry point (see `_certificate_gate` in `__init__.py`), so it reads the
+# stack directly instead of re-importing on each call.
+from . import _context
+from ._context import _state as _context_state
+
 __all__ = [
     "Certifiability",
     "certifiable",
@@ -858,6 +865,12 @@ def require_certificate(result):
 
 def certificate_required() -> bool:
     """Return ``True`` when ``context(require_certificate=True)`` is active."""
-    from ._context import get_context_value
-
-    return bool(get_context_value("require_certificate", False))
+    # Same lookup as `get_context_value("require_certificate", False)`: the
+    # innermost frame decides.  With no frame open on any thread — the common
+    # case — this is one module-attribute read.
+    if not _context._live_frames:
+        return False
+    stack = getattr(_context_state, "stack", None)
+    if not stack:
+        return False
+    return bool(stack[-1].get("require_certificate", False))
