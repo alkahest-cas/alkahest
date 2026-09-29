@@ -325,8 +325,31 @@
   `|G| ≤ 200_000` and no ATLAS group fits — enforced, and documented as a
   ceiling rather than an aspiration.
 
+### Performance
+
+- **Integers cross between rug and FLINT by limbs, not decimal strings.**
+  `FlintInteger::from_rug` / `to_rug` (and the internal `fmpq` ⇄
+  `rug::Rational` conversion) printed the number in base 10 and parsed it on
+  the other side — superlinear in the bit size, on every path that hands an
+  integer to FLINT: polynomial factoring and gcds, Hermite/Smith normal forms,
+  number theory, primary decomposition, the Risch rational RDE. They now copy
+  64-bit limbs (`fmpz_set_ui_array` / `fmpz_get_ui_array`, both in FLINT 2.9
+  and 3.x), with an `fmpz_set_si` / `fmpz_get_si` fast path for word-sized
+  values. No `mpz_t` crosses between the two libraries — rug's limbs are only
+  read and FLINT writes only into a Rust-owned buffer — so the conversion is
+  safe whether rug and FLINT share one GMP or each link their own. Measured on
+  one machine (release build, FLINT 3.5.0), per conversion: 100 000 bits
+  `from_rug` 854 µs → 2 µs and `to_rug` 744 µs → 1.6 µs; 1 000 000 bits
+  19.3 ms → 22 µs and 14.4 ms → 13 µs. Public signatures are unchanged.
+  `fmpq` built from a `rug::Rational` also skips the redundant
+  `fmpq_canonicalise` (a gcd), since rug keeps rationals in lowest terms.
+
 ### Testing and tooling
 
+- Proptests pin the new rug ⇄ FLINT conversion against the old decimal-string
+  one for integers from 0 to ~12 800 bits (plus `0`, `±1`, `i64::MIN/MAX`,
+  `u64::MAX`, `±2^64` and FLINT's inline/heap boundary at `2^62`), through
+  FLINT arithmetic, polynomial coefficients, and `fmpq` rationals.
 - 201 new Rust tests (46 `ffield`, 60 `group`, 95 `funcfield`) and a
   17-case `tests/silent_errors/corpus/function_fields.py`. The silent-error
   gate reports 0 silent errors across 558 cases.

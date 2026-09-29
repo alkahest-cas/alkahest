@@ -349,6 +349,19 @@ extern "C" {
     pub fn fmpz_get_str(str_: *mut c_char, b: c_int, f: *const fmpz) -> *mut c_char;
     /// Parse a string into an fmpz. Returns 0 on success, -1 on failure.
     pub fn fmpz_set_str(f: *mut fmpz, str_: *const c_char, b: c_int) -> c_int;
+    /// Nonzero iff `f` fits a `slong`. Exported by FLINT 2.x and 3.x.
+    pub fn fmpz_fits_si(f: *const fmpz) -> c_int;
+    /// Bit length of `|f|` (0 for zero). Returns `flint_bitcnt_t`, which is
+    /// `ulong` in FLINT 2.x and 3.x — unlike `fmpz_size`, whose `mp_size_t`
+    /// is platform-dependent.
+    pub fn fmpz_bits(f: *const fmpz) -> ulong;
+    /// Set `out` to the nonnegative integer whose `n` least-significant-first
+    /// limbs are `in_`. Exported by FLINT ≥ 2.6 and 3.x.
+    pub fn fmpz_set_ui_array(out: *mut fmpz, in_: *const ulong, n: slong);
+    /// Write the nonnegative `in_` into `n` limbs of `out`, least significant
+    /// first, zero-padding; `n` must cover `fmpz_bits(in_)`. Exported by
+    /// FLINT ≥ 2.6 and 3.x.
+    pub fn fmpz_get_ui_array(out: *mut ulong, n: slong, in_: *const fmpz);
     pub fn fmpz_equal(f: *const fmpz, g: *const fmpz) -> c_int;
     pub fn fmpz_cmp_ui(f: *const fmpz, x: ulong) -> c_int;
     pub fn fmpz_add(f: *mut fmpz, g: *const fmpz, h: *const fmpz);
