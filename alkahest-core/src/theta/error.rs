@@ -148,7 +148,7 @@ impl fmt::Display for ThetaError {
             ThetaError::BackendUnavailable { capability } => write!(
                 f,
                 "this build's FLINT does not provide the `{capability}` layer; \
-                 theta and modular functions need FLINT >= 3.1 (>= 3.2 for acb_theta)"
+                 theta and modular functions need FLINT >= 3.1 (>= 3.4 for acb_theta)"
             ),
             ThetaError::AbiMismatch { detail } => {
                 write!(f, "FLINT ball ABI mismatch: {detail}")

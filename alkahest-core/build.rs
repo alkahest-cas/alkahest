@@ -11,10 +11,9 @@ fn main() {
     // header (`flint/fmpz_types.h`), never guessed, unless no header is found.
     println!("cargo::rustc-check-cfg=cfg(flint3_stride)");
     // flint_arb: libflint exports the Arb/Acb ball types (FLINT >= 3.0 absorbed
-    // Arb; FLINT 2.x did not ship them at all, and `release-build.yml` still
-    // falls back to building FLINT 2.9.0 on manylinux). Probed by symbol, not
-    // by version, because the question is only ever "will `-lflint` resolve
-    // `acb_modular_j`".
+    // Arb). Every FLINT this crate accepts (>= 3.3, see
+    // `check_flint_min_version`) has them; the probe stays symbol-based because
+    // the question is only ever "will `-lflint` resolve `acb_modular_j`".
     println!("cargo::rustc-check-cfg=cfg(flint_arb)");
     // flint_acb_theta: the genus-g Riemann theta module. Its user-facing API
     // was rewritten in FLINT 3.2 (`acb_theta_naive_*` -> `acb_theta_sum` /
@@ -89,6 +88,7 @@ fn main() {
     // shared object full of undefined symbols that only fails at
     // `import alkahest` with `undefined symbol: nmod_poly_init`.
     check_flint_present();
+    check_flint_min_version();
 
     // NOTE: this link is deliberately *unconditional*, and must stay that way.
     //
@@ -221,7 +221,7 @@ fn check_flint_present() {
     }
     panic!(
         "\n\
-         alkahest-cas requires a system FLINT (>= 2.9, >= 3.0 recommended) and none was found.\n\
+         alkahest-cas requires a system FLINT (>= 3.3; >= 3.4 for Riemann theta) and none was found.\n\
          FLINT is a hard dependency, not an optional feature: polynomial and integer arithmetic\n\
          call it directly and there is no pure-Rust fallback. The `flint3` Cargo feature selects\n\
          which FLINT *version's* API to use; it does not make FLINT optional.\n\
@@ -243,6 +243,60 @@ fn check_flint_present() {
          \n\
          Set ALKAHEST_SKIP_FLINT_CHECK=1 to bypass this probe if you know FLINT is reachable\n\
          by some route it does not cover.\n"
+    );
+}
+
+/// Oldest FLINT this crate links against.
+///
+/// 3.3 is set by the newest symbol the bindings call unconditionally:
+/// `fq_nmod_mat_transpose` first appears in FLINT 3.3, and the `nf_*`,
+/// `fq_nmod_ctx_init_ui` and `acb_mat_get_imag` bindings need 3.1. An older
+/// FLINT compiles every Rust file and then dies at link time with
+/// `undefined reference to fq_nmod_mat_transpose`, which names neither FLINT
+/// nor a version, so the version is checked here instead.
+///
+/// Genus-g Riemann theta additionally needs 3.4: in 3.3 `acb_theta_all` and
+/// `acb_theta_one` are `static inline` in the header, not exported, so the
+/// `flint_acb_theta` probe below finds them missing and the `theta` backend is
+/// stubbed. That is a feature being unavailable, not a build failure.
+const FLINT_MIN: (u32, u32) = (3, 3);
+
+/// Refuse a FLINT older than [`FLINT_MIN`] with a message that says so.
+///
+/// The header/pkg-config version is authoritative. When it cannot be read,
+/// the symbol table is consulted for `fq_nmod_mat_transpose` (the symbol that
+/// fixes the minimum); when neither is available the build proceeds and the
+/// linker has the last word.
+fn check_flint_min_version() {
+    if std::env::var("ALKAHEST_SKIP_FLINT_CHECK").is_ok() || std::env::var("DOCS_RS").is_ok() {
+        return;
+    }
+    let (min_ma, min_mi) = FLINT_MIN;
+    let found = match flint_major_minor() {
+        Some((ma, mi)) if (ma, mi) >= FLINT_MIN => return,
+        Some((ma, mi)) => format!("FLINT {ma}.{mi}"),
+        None => match flint_exported_symbols() {
+            Some(syms) if !syms.contains("fq_nmod_mat_transpose") => {
+                "a FLINT without `fq_nmod_mat_transpose`".to_string()
+            }
+            _ => return,
+        },
+    };
+    panic!(
+        "\n\
+         alkahest-cas requires FLINT >= {min_ma}.{min_mi} (>= 3.4 for Riemann theta); found {found}.\n\
+         \n\
+         Distribution packages are often older (Ubuntu 24.04's libflint-dev is 3.0.1,\n\
+         Debian 12's 2.9). Build a current FLINT into a prefix instead:\n\
+         \x20 curl -fsSL https://github.com/flintlib/flint/releases/download/v3.6.0/flint-3.6.0.tar.gz | tar xz\n\
+         \x20 cd flint-3.6.0 && ./configure --prefix=$PREFIX --disable-static && make -j && make install\n\
+         then point this build at it:\n\
+         \x20 FLINT_LIB_DIR=$PREFIX/lib FLINT_INCLUDE_DIR=$PREFIX/include cargo build\n\
+         (and LD_LIBRARY_PATH=$PREFIX/lib, or DYLD_LIBRARY_PATH on macOS, at run time).\n\
+         FLINT >= 3.3 needs GMP >= 6.2.1; pass --with-gmp=/--with-mpfr= if yours is older.\n\
+         \n\
+         Or skip the source build: `pip install alkahest` ships wheels with FLINT linked in.\n\
+         Set ALKAHEST_SKIP_FLINT_CHECK=1 to bypass this check.\n"
     );
 }
 

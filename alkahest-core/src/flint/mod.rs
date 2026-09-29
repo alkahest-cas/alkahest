@@ -1,7 +1,9 @@
 //! Layer 0 — Foundation bindings to FLINT (Fast Library for Number Theory).
 //!
 //! **Design decision (v0.1):** We link against a system-installed FLINT
-//! (`libflint-dev` / `flint-devel` / `brew install flint`, ≥ 2.9) rather than
+//! (`libflint-dev` / `flint-devel` / `brew install flint`, ≥ 3.3; ≥ 3.4 for
+//! Riemann theta — `build.rs`'s `check_flint_min_version` enforces the
+//! former) rather than
 //! using a bundled source build. Rationale: system FLINT coexists cleanly with
 //! the `rug`/`gmp-mpfr-sys` dependency (no duplicate GMP symbols) and build
 //! times stay short.
@@ -19,13 +21,9 @@
 //! Set `FLINT_LIB_DIR` / `FLINT_INCLUDE_DIR` to build against a FLINT in a
 //! non-standard (e.g. user-local, root-free) prefix.
 //!
-//! TODO(flint3): Before v0.5 (verified computation / IntervalValue), migrate to
-//! FLINT 3.x.  FLINT 3.0 absorbed the Arb library, making `arb_t`/`acb_t` ball
-//! arithmetic first-class types — required for `IntervalValue` tracers and
-//! rigorous interval evaluation.  Migration scope is narrow: update `build.rs`
-//! to link `flint` from `libflint3-dev`, revise the type declarations in
-//! `ffi.rs` for any renamed symbols, and add `arb.rs` / `acb.rs` wrapper
-//! modules.  Safe wrapper APIs above `ffi.rs` are unaffected.
+//! The FLINT 3 migration this module once carried a TODO for is done: FLINT
+//! 3.0 absorbed Arb, and `arb.rs` / `acb.rs` bind its ball types directly.
+//! FLINT 2.x is no longer accepted at all (see the minimum above).
 //!
 //! # Memory safety design
 //!

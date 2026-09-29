@@ -24,7 +24,7 @@ import pytest
 PREC = 256
 
 # The whole surface needs a FLINT carrying Arb (>= 3.1) for the modular
-# functions and >= 3.2 for genus-g Riemann theta.  On an older FLINT the module
+# functions and >= 3.4 for genus-g Riemann theta.  On an older FLINT the module
 # still imports and every evaluator refuses with ``E-THETA-001`` -- which is
 # checked once below rather than by 30 failing tests.
 HAVE_ARB = ex.arb_backend_available()

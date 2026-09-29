@@ -1,9 +1,11 @@
 //! The no-FLINT-Arb implementation of [`crate::theta`]'s backend.
 //!
 //! Selected when `build.rs`'s `flint_arb` symbol probe comes back negative —
-//! that is, when `libflint` is a FLINT 2.x that never shipped Arb. The manylinux
-//! wheel job still falls back to building FLINT 2.9.0 when `flint-devel` is not
-//! installable, so this is a live configuration, not a theoretical one.
+//! that is, when `libflint` does not export the Arb ball layer. `build.rs` now
+//! refuses any FLINT older than 3.3, all of which ship Arb, so in practice this
+//! backend is reached only through a FLINT whose symbol table could not be read
+//! or that was built without those entry points. It is kept so that case still
+//! fails with a reason rather than at link time.
 //!
 //! Every function here refuses with `E-THETA-001`. That is deliberately not the
 //! same thing as omitting the module: the Rust API and the Python surface exist

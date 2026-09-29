@@ -20,9 +20,16 @@ description: >
 
 inputs:
   version:
-    description: FLINT release to build (must be >= 3.2 for genus-g theta).
+    description: FLINT release to build (>= 3.3 to link at all, >= 3.4 for genus-g theta).
     required: false
-    default: "3.5.0"
+    default: "3.6.0"
+  sha256:
+    description: >
+      SHA-256 of the release tarball. Required for the default version; pass
+      an empty string only together with a non-default `version`, which is
+      then built unverified.
+    required: false
+    default: "b95e2c7792f5eea4a1c8d2d42c4098434756832e57a094b295eb5dfdc9b4c36b"
 
 runs:
   using: composite
@@ -82,8 +89,14 @@ runs:
         set -euo pipefail
         # Pinned by tag, so a yanked or re-rolled release fails loudly at the
         # download rather than quietly changing what CI links against.
-        curl -fsSL "https://github.com/flintlib/flint/releases/download/v${{ inputs.version }}/flint-${{ inputs.version }}.tar.gz" \
-          | tar xz -C /tmp
+        tarball="/tmp/flint-${{ inputs.version }}.tar.gz"
+        curl -fsSL -o "$tarball" "https://github.com/flintlib/flint/releases/download/v${{ inputs.version }}/flint-${{ inputs.version }}.tar.gz"
+        if [ -n "${{ inputs.sha256 }}" ]; then
+          echo "${{ inputs.sha256 }}  $tarball" | sha256sum -c -
+        else
+          echo "::warning::FLINT ${{ inputs.version }} tarball not checksum-verified (no sha256 input)"
+        fi
+        tar xzf "$tarball" -C /tmp
         cd "/tmp/flint-${{ inputs.version }}"
         prefix="$HOME/.local/flint"
         with_gmp=()

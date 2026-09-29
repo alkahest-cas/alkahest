@@ -96,10 +96,14 @@ jobs:
             echo /usr/local/lib > /etc/ld.so.conf.d/00-usr-local.conf
             ldconfig
             export LD_LIBRARY_PATH=/usr/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
-            curl -fsSL \
-              https://github.com/flintlib/flint/releases/download/v3.5.0/flint-3.5.0.tar.gz \
-              | tar xz -C /tmp
-            ( cd /tmp/flint-3.5.0 && ./configure --prefix=/usr/local --with-gmp=/usr/local --with-mpfr=/usr/local --disable-static && make -j"$(nproc)" && make install )
+            # FLINT >= 3.3 is the floor build.rs enforces (>= 3.4 for theta);
+            # keep this pin in step with the default in .github/actions/setup-flint.
+            curl -fsSL -o /tmp/flint-3.6.0.tar.gz \
+              https://github.com/flintlib/flint/releases/download/v3.6.0/flint-3.6.0.tar.gz
+            echo 'b95e2c7792f5eea4a1c8d2d42c4098434756832e57a094b295eb5dfdc9b4c36b  /tmp/flint-3.6.0.tar.gz' \
+              | sha256sum -c -
+            tar xzf /tmp/flint-3.6.0.tar.gz -C /tmp
+            ( cd /tmp/flint-3.6.0 && ./configure --prefix=/usr/local --with-gmp=/usr/local --with-mpfr=/usr/local --disable-static && make -j"$(nproc)" && make install )
             ldconfig
             # One GMP: FLINT must resolve the libgmp just built, not the 6.1 runtime.
             ldd /usr/local/lib/libflint.so | grep -E 'libgmp|libmpfr'
