@@ -124,14 +124,18 @@ impl FlintNmodPolyFactor {
 
     /// Exponent (multiplicity) of the `i`-th factor.
     pub fn exp_at(&self, i: usize) -> u32 {
-        debug_assert!(i < self.len());
+        // A real check, not `debug_assert!`: this is a safe fn, and an index
+        // past `len()` reads out of bounds of the FLINT array in release.
+        assert!(i < self.len(), "factor index {i} out of range (len {})", self.len());
         // SAFETY: `i < num` so the pointer arithmetic is in bounds.
         unsafe { *self.inner.exp.add(i) as u32 }
     }
 
     /// Copy the `i`-th irreducible factor into a new [`FlintNmodPoly`].
     pub fn poly_at(&self, modulus: u64, i: usize) -> FlintNmodPoly {
-        debug_assert!(i < self.len());
+        // A real check, not `debug_assert!`: this is a safe fn, and an index
+        // past `len()` reads out of bounds of the FLINT array in release.
+        assert!(i < self.len(), "factor index {i} out of range (len {})", self.len());
         let mut z = FlintNmodPoly::new(modulus);
         unsafe {
             // FLINT 2.x: nmod_poly_factor_get_nmod_poly takes *mut fac

@@ -58,11 +58,11 @@ pub(super) fn distinct_prime_factors(mut n: u64) -> Vec<u64> {
     let mut d = 2u64;
     // `d <= n / d`, not `d * d <= n`: the square wraps once `d` reaches
     // `2^32` (a prime cofactor above `(2^32 − 1)^2`).
-    #[cfg_attr(kani, kani::loop_invariant(d >= 2))]
+    #[cfg_attr(kani_loop_contracts, kani::loop_invariant(d >= 2))]
     while d <= n / d {
         if n % d == 0 {
             out.push(d);
-            #[cfg_attr(kani, kani::loop_invariant(d >= 2 && n >= 1))]
+            #[cfg_attr(kani_loop_contracts, kani::loop_invariant(d >= 2 && n >= 1))]
             while n % d == 0 {
                 n /= d;
             }
@@ -394,8 +394,9 @@ mod verification {
     /// loops are checked once each through their invariants
     /// (`-Z loop-contracts`) instead of being unrolled. `d * d <= n` used to
     /// wrap for a prime cofactor above `(2^32 − 1)^2`.
+    #[cfg(kani_loop_contracts)]
     #[kani::proof]
-    fn distinct_prime_factors_no_overflow_full_width() {
+    fn distinct_prime_factors_no_overflow_inductive() {
         let n: u64 = kani::any();
         let _ = distinct_prime_factors(n);
     }

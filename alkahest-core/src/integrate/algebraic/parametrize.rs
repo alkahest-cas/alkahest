@@ -896,7 +896,9 @@ fn to_t(
         ExprData::Pow { base, exp } => match pool.get(exp) {
             ExprData::Integer(m) => {
                 let inner = to_t(base, var, quad, sqrt_t, x_of_t, pool)?;
-                Some(pool.pow(inner, pool.integer(m.0.to_i64()? as i32)))
+                // The exponent itself, not `to_i64()? as i32`, which kept the
+                // low 32 bits: `(…)^(2^32 + 1)` was rewritten as `(…)^1`.
+                Some(pool.pow(inner, pool.integer(m.0.clone())))
             }
             ExprData::Rational(r) => {
                 radical_power(base, r.0.numer().to_i64()?, r.0.denom().to_i64()?, pool)
@@ -969,7 +971,7 @@ fn to_t_scaled(
                 // product `radical_power` produced, so `√(quad)^{-1}` becomes
                 // `k_a^{-1} · sqrt_u^{-1}` (separate factors) rather than
                 // `(k_a·sqrt_u)^{-1}` (which reads as a two-variable inverse).
-                Some(pow_int_distribute(inner, m.0.to_i64()? as i32, pool))
+                Some(pow_int_distribute(inner, &m.0, pool))
             }
             ExprData::Rational(r) => {
                 radical_power(base, r.0.numer().to_i64()?, r.0.denom().to_i64()?, pool)
@@ -1036,8 +1038,12 @@ fn integrate_scaled_rational(expr: ExprId, t: ExprId, pool: &ExprPool) -> Option
 /// inside a single `(…)^m` (which the rational engine treats as one opaque
 /// var-dependent factor).  Used only by [`to_t_scaled`] on the small
 /// `k_a^M · sqrt_u^M` shapes it builds.
-fn pow_int_distribute(base: ExprId, m: i32, pool: &ExprPool) -> ExprId {
-    if m == 1 {
+///
+/// `m` and the product `e·m` are exact integers: `m` used to arrive as
+/// `to_i64()? as i32` (low 32 bits of the exponent) and `e·m` was an `i32`
+/// product, which overflowed for `(x^3)^(2^30)`.
+fn pow_int_distribute(base: ExprId, m: &rug::Integer, pool: &ExprPool) -> ExprId {
+    if *m == 1 {
         return base;
     }
     match pool.get(base) {
@@ -1050,13 +1056,11 @@ fn pow_int_distribute(base: ExprId, m: i32, pool: &ExprPool) -> ExprId {
         }
         ExprData::Pow { base: b, exp } => {
             if let ExprData::Integer(e) = pool.get(exp) {
-                if let Some(ei) = e.0.to_i64() {
-                    return pool.pow(b, pool.integer(ei as i32 * m));
-                }
+                return pool.pow(b, pool.integer(rug::Integer::from(&e.0 * m)));
             }
-            pool.pow(base, pool.integer(m))
+            pool.pow(base, pool.integer(m.clone()))
         }
-        _ => pool.pow(base, pool.integer(m)),
+        _ => pool.pow(base, pool.integer(m.clone())),
     }
 }
 
@@ -1185,7 +1189,8 @@ fn to_s(
         ExprData::Pow { base, exp } => match pool.get(exp) {
             ExprData::Integer(m) => {
                 let inner = to_s(base, var, num, den, n, s, x_of_s, pool)?;
-                Some(pool.pow(inner, pool.integer(m.0.to_i64()? as i32)))
+                // Exact exponent (was `to_i64()? as i32`, truncating).
+                Some(pool.pow(inner, pool.integer(m.0.clone())))
             }
             ExprData::Rational(r) => {
                 radical_power(base, r.0.numer().to_i64()?, r.0.denom().to_i64()?, pool)
@@ -1455,6 +1460,33 @@ fn mentions_internal_symbol(expr: ExprId, pool: &ExprPool) -> bool {
         hit || kids.iter().any(|&c| walk(c, pool, seen))
     }
     walk(expr, pool, &mut std::collections::HashSet::new())
+}
+
+#[cfg(test)]
+mod exponent_width_tests {
+    use super::*;
+
+    /// `(x^3)^(2^30)` distributes to `x^(3·2^30)`: the `i32` product
+    /// `3 · 2^30` overflowed (a panic in debug, a wrapped exponent in release).
+    #[test]
+    fn pow_int_distribute_does_not_overflow() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let x3 = pool.pow(x, pool.integer(3));
+        let m = rug::Integer::from(1_i64 << 30);
+        assert_eq!(
+            pow_int_distribute(x3, &m, &pool),
+            pool.pow(x, pool.integer(3_i64 << 30))
+        );
+        // An exponent past `i32` survives intact (it was cut to its low
+        // 32 bits at the call site).
+        let big = rug::Integer::from((1_i64 << 32) + 1);
+        let y = pool.symbol("y", Domain::Real);
+        assert_eq!(
+            pow_int_distribute(y, &big, &pool),
+            pool.pow(y, pool.integer((1_i64 << 32) + 1))
+        );
+    }
 }
 
 #[cfg(test)]

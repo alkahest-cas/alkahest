@@ -372,7 +372,9 @@ impl FlintIntFactor {
 
     /// The `i`-th prime base as a [`FlintInteger`].
     pub fn base_at(&self, i: usize) -> FlintInteger {
-        debug_assert!(i < self.len());
+        // A real check, not `debug_assert!`: this is a safe fn, and an index
+        // past `len()` reads out of bounds of the FLINT array in release.
+        assert!(i < self.len(), "factor index {i} out of range (len {})", self.len());
         let mut f = FlintInteger::new();
         // SAFETY: `i < num` so the pointer is in bounds.
         unsafe { ffi::fmpz_set(f.inner_mut_ptr(), self.inner.p.add(i)) };
@@ -381,7 +383,9 @@ impl FlintIntFactor {
 
     /// Exponent of the `i`-th prime factor.
     pub fn exp_at(&self, i: usize) -> u64 {
-        debug_assert!(i < self.len());
+        // A real check, not `debug_assert!`: this is a safe fn, and an index
+        // past `len()` reads out of bounds of the FLINT array in release.
+        assert!(i < self.len(), "factor index {i} out of range (len {})", self.len());
         unsafe { *self.inner.exp.add(i) }
     }
 }

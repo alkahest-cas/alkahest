@@ -1551,6 +1551,27 @@ mod tests {
         assert_eq!(super::sub_mod(5, 3, p), 2);
     }
 
+    /// A black box `x^E` with `E = 2^32 + 3` over the prime `p = 2^32 + 15`:
+    /// the discrete log is `E` itself, which used to be truncated to the
+    /// term `x^3`, a wrong answer rather than an error.
+    #[test]
+    fn exponent_above_u32_is_not_truncated() {
+        let p = 4_294_967_311_u64; // 2^32 + 15, prime
+        let e = (1_u64 << 32) + 3;
+        let eval = |x: u64| super::pow_mod(x, e, p);
+        let r = super::sparse_interpolate_univariate(&eval, 1, p);
+        assert!(
+            matches!(r, Err(super::SparseInterpError::RootFindingFailed)),
+            "{r:?}"
+        );
+        // An in-range exponent at the same prime is still recovered.
+        let eval = |x: u64| super::pow_mod(x, 1 << 31, p);
+        assert_eq!(
+            super::sparse_interpolate_univariate(&eval, 1, p).unwrap(),
+            vec![(1, 1 << 31)]
+        );
+    }
+
     #[test]
     fn prime_factors_with_a_factor_above_2_32() {
         let q = 4_294_967_311_u64; // prime, 2^32 + 15

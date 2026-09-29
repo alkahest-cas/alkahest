@@ -524,6 +524,23 @@ fn mod_inverse_u64(a: u64, m: u64) -> u64 {
     let mut old_s: i128 = 1;
     let mut s: i128 = 0;
 
+    // Under `kani_loop_contracts` (TESTING.md § 7) the loop is checked once
+    // through this invariant, for every `a` and `m`, instead of unrolled.
+    // With `s_i·a ≡ r_i (mod m)` the Bézout coefficients alternate in sign
+    // and satisfy `|s|·old_r + |old_s|·r = m`, so each stays `<= m` and
+    // `q·s` cannot overflow `i128`.
+    #[cfg_attr(kani_loop_contracts, kani::loop_invariant(
+        old_r >= 0
+            && r >= 0
+            && old_r <= u64::MAX as i128
+            && r <= u64::MAX as i128
+            && old_s.unsigned_abs() <= m as u128
+            && s.unsigned_abs() <= m as u128
+            && ((old_s >= 0 && s <= 0) || (old_s <= 0 && s >= 0))
+            && (s.unsigned_abs() * old_r as u128)
+                .checked_add(old_s.unsigned_abs() * r as u128)
+                == Some(m as u128)
+    ))]
     while r != 0 {
         let q = old_r / r;
         let tmp_r = r;
@@ -618,6 +635,18 @@ fn mul_mod(a: u64, b: u64, m: u64) -> u64 {
 
 /// `gcd(a, b)` by Euclid; `gcd(0, 0) = 0`.
 pub(crate) fn gcd_u64(mut a: u64, mut b: u64) -> u64 {
+    // Under Kani (`-Z loop-contracts`) the loop is checked through this
+    // invariant instead of being unrolled: either nothing has run yet, or
+    // `a` is a nonzero earlier remainder bounded by each nonzero argument
+    // (`b == a₀` covers the one step where `b₀ > a₀` puts `b₀` in `a`).
+    #[cfg_attr(kani_loop_contracts, kani::loop_invariant(
+        (a == on_entry(a) && b == on_entry(b))
+            || (a != 0
+                && a <= on_entry(b)
+                && b <= on_entry(b)
+                && (on_entry(a) == 0 || b <= on_entry(a))
+                && (on_entry(a) == 0 || a <= on_entry(a) || b == on_entry(a)))
+    ))]
     while b != 0 {
         (a, b) = (b, a % b);
     }
@@ -804,6 +833,20 @@ mod verification {
         }
     }
 
+    /// Every `a` and every modulus `m >= 1`, both full width: no panic, no
+    /// `i128` overflow, and a result `< m`. The extended-Euclid loop is
+    /// checked once through its invariant (the Bézout identity
+    /// `|s|·old_r + |old_s|·r = m` with alternating signs), not unrolled.
+    /// This is the range contract `stubs::mod_inverse_u64` assumes. The value
+    /// `a·inv ≡ 1` is still only checked on the small ranges above.
+    #[cfg(kani_loop_contracts)]
+    #[kani::proof]
+    fn mod_inverse_in_range_inductive() {
+        let a: u64 = kani::any();
+        let m: u64 = kani::any_where(|m: &u64| *m >= 1);
+        assert!(mod_inverse_u64(a, m) < m);
+    }
+
     // --- crt_combine (u64 step) --------------------------------------------
 
     /// One CRT step: for `ai, a_mod_pi, m_mod_pi < pi` with `m_mod_pi`
@@ -951,28 +994,28 @@ mod verification {
 
     // --- gcd_u64 / gcd_i64 -------------------------------------------------
 
-    /// `gcd_u64` is the greatest common divisor, `gcd(0, 0) = 0`.
-    /// Bounds: `a, b < 2^6` (Euclid is a chain of symbolic divisions).
+    /// Every pair of `u64`s: no panic, and the range contract `gcd_i64`'s
+    /// harness stubs `gcd_u64` by — zero iff `a = b = 0`, otherwise at most
+    /// each nonzero argument. Euclid's loop is checked once through its
+    /// invariant (`-Z loop-contracts`) rather than unrolled ~93 times.
+    /// Divisibility is a value identity through the symbolic divider; it is
+    /// tested exhaustively on small arguments instead (`gcd_tests`).
+    #[cfg(kani_loop_contracts)]
     #[kani::proof]
-    #[kani::unwind(11)]
-    fn gcd_u64_is_gcd_small() {
-        let a: u64 = kani::any_where(|a: &u64| *a < (1 << 6));
-        let b: u64 = kani::any_where(|b: &u64| *b < (1 << 6));
+    fn gcd_u64_in_range_inductive() {
+        let a: u64 = kani::any();
+        let b: u64 = kani::any();
         let g = gcd_u64(a, b);
-        if a == 0 && b == 0 {
-            assert_eq!(g, 0);
-        } else {
-            assert!(g >= 1 && a % g == 0 && b % g == 0);
-            let c: u64 = kani::any_where(|c: &u64| *c > g && *c < (1 << 6));
-            assert!(a % c != 0 || b % c != 0);
-        }
+        assert_eq!(g == 0, a == 0 && b == 0);
+        assert!(a == 0 || g <= a);
+        assert!(b == 0 || g <= b);
     }
 
     /// Every pair of `i64`s, including `i64::MIN` (where the four copies this
     /// replaced called `.abs()`): no panic, and the result is `>= 0` except for
     /// gcd `2^63`, returned as `i64::MIN`. `gcd_u64` is stubbed by its range
     /// contract (at most each nonzero argument, zero only for `(0, 0)`),
-    /// which `gcd_u64_in_range_full_width` proves.
+    /// which `gcd_u64_in_range_inductive` proves.
     #[kani::proof]
     #[kani::stub(gcd_u64, stubs::gcd_u64)]
     fn gcd_i64_sign_full_width() {
@@ -985,17 +1028,6 @@ mod verification {
             assert!(b == 0 || b == i64::MIN);
         }
         assert_eq!(g == 0, a == 0 && b == 0);
-    }
-
-    /// Signed values against the same small table, both signs.
-    /// Bounds: `|a|, |b| < 2^5`.
-    #[kani::proof]
-    #[kani::unwind(10)]
-    fn gcd_i64_matches_abs_small() {
-        let a: i64 = kani::any_where(|a: &i64| *a > -(1 << 5) && *a < (1 << 5));
-        let b: i64 = kani::any_where(|b: &i64| *b > -(1 << 5) && *b < (1 << 5));
-        assert_eq!(gcd_i64(a, b), gcd_u64(a.unsigned_abs(), b.unsigned_abs()) as i64);
-        assert_eq!(gcd_i64(a, b), gcd_i64(-a, b));
     }
 }
 
@@ -1377,5 +1409,49 @@ mod tests {
         assert_eq!(ModularError::IncompatiblePolynomials.code(), "E-MOD-002");
         assert_eq!(ModularError::EmptyImageList.code(), "E-MOD-003");
         assert_eq!(ModularError::ReconstructionFailed.code(), "E-MOD-004");
+    }
+}
+
+#[cfg(test)]
+mod gcd_tests {
+    use super::{gcd_i64, gcd_u64};
+
+    /// Exhaustive on `a, b < 2^7`: the greatest common divisor, by
+    /// definition. (Kani proves only the range contract at full width; its
+    /// loop contract abstracts the value.)
+    #[test]
+    fn gcd_u64_is_gcd_exhaustive_small() {
+        for a in 0..128u64 {
+            for b in 0..128u64 {
+                let g = gcd_u64(a, b);
+                if a == 0 && b == 0 {
+                    assert_eq!(g, 0);
+                    continue;
+                }
+                assert!(g >= 1 && a % g == 0 && b % g == 0, "gcd({a}, {b}) = {g}");
+                assert!((g + 1..=a.max(b)).all(|c| a % c != 0 || b % c != 0));
+            }
+        }
+    }
+
+    #[test]
+    fn gcd_i64_signs_and_extremes() {
+        for a in -64..64i64 {
+            for b in -64..64i64 {
+                let g = gcd_i64(a, b);
+                assert_eq!(g, gcd_u64(a.unsigned_abs(), b.unsigned_abs()) as i64);
+                assert_eq!(g, gcd_i64(-a, b));
+                assert!(g >= 0);
+            }
+        }
+        // `.abs()` panicked (debug) / stayed negative (release) on these.
+        assert_eq!(gcd_i64(i64::MIN, 6), 2);
+        assert_eq!(gcd_i64(6, i64::MIN), 2);
+        assert_eq!(gcd_i64(i64::MIN, 3), 1);
+        assert_eq!(gcd_i64(i64::MIN, 0), i64::MIN); // 2^63, the one negative result
+        assert_eq!(gcd_i64(i64::MIN, i64::MIN), i64::MIN);
+        assert_eq!(gcd_i64(i64::MAX, i64::MIN), 1);
+        assert_eq!(gcd_u64(u64::MAX, u64::MAX - 1), 1);
+        assert_eq!(gcd_u64(0, 0), 0);
     }
 }

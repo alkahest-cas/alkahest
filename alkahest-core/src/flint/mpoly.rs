@@ -388,7 +388,9 @@ impl FlintMPolyFactor {
 
     /// Copy the `i`-th irreducible factor into a new [`FlintMPoly`].
     pub fn base_at(&self, i: usize) -> FlintMPoly {
-        debug_assert!(i < self.len());
+        // A real check, not `debug_assert!`: this is a safe fn, and an index
+        // past `len()` reads out of bounds of the FLINT array in release.
+        assert!(i < self.len(), "factor index {i} out of range (len {})", self.len());
         let mut base = FlintMPoly::new(Arc::clone(&self.ctx));
         unsafe {
             super::ffi::fmpz_mpoly_factor_get_base(
@@ -406,7 +408,9 @@ impl FlintMPolyFactor {
     /// Note: FLINT's `fmpz_mpoly_factor_get_exp_si` takes `*mut` (despite
     /// only reading the data), so we need `&mut self` here.
     pub fn exp_at(&mut self, i: usize) -> u32 {
-        debug_assert!(i < self.len());
+        // A real check, not `debug_assert!`: this is a safe fn, and an index
+        // past `len()` reads out of bounds of the FLINT array in release.
+        assert!(i < self.len(), "factor index {i} out of range (len {})", self.len());
         let e = unsafe {
             super::ffi::fmpz_mpoly_factor_get_exp_si(
                 &mut self.inner,
