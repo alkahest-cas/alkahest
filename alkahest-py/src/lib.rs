@@ -7,7 +7,7 @@ use alkahest_core::{
     cancel as core_cancel,
     capacitor as core_capacitor,
     // Phase 21 — JIT
-    compile as core_compile,
+    compile_with as core_compile_with,
     decide_expr as core_decide_expr,
     emit_expr_c as core_emit_expr_c,
     emit_expr_c_vec as core_emit_expr_c_vec,
@@ -10326,23 +10326,30 @@ fn py_voltage_source(py: Python<'_>, name: &str, voltage: PyRef<PyExpr>) -> PyRe
 /// Compile a symbolic expression to a fast native function.
 ///
 /// Returns a callable Python object (PyCompiledFn).
+///
+/// `expected_evals`, when given, is the number of evaluations the caller plans
+/// (e.g. the length of the arrays it will pass to `numpy_eval`); it lets a
+/// small expression that would otherwise get the interpreter be compiled
+/// natively up front. Without it, the first large batch call upgrades the
+/// function on its own (see `PyCompiledFn::batch_fn`).
 #[pyfunction]
-#[pyo3(name = "compile_expr")]
+#[pyo3(name = "compile_expr", signature = (expr, inputs, expected_evals = None))]
 fn py_compile_expr(
     py: Python<'_>,
     expr: PyRef<PyExpr>,
     inputs: &Bound<'_, PyList>,
+    expected_evals: Option<u64>,
 ) -> PyResult<PyCompiledFn> {
     if !core_jit_available() {
         let warnings = py.import_bound("warnings")?;
         warnings.call_method1(
             "warn",
             (
-                "JIT compilation (LLVM) is not available in this build; \
-                 compile_expr() is falling back to the tree-walking interpreter. \
-                 For native performance install a release wheel tagged +jit (see README), \
-                 or rebuild with LLVM 21 via \
-                 maturin develop --manifest-path alkahest-py/Cargo.toml --features jit.",
+                "No native JIT backend (Cranelift or LLVM) is compiled into this build; \
+                 compile_expr() is using the interpreter. For native performance install a \
+                 wheel built with the `cranelift` feature (no system dependencies) or \
+                 rebuild with maturin develop --manifest-path alkahest-py/Cargo.toml \
+                 --features cranelift (or `jit` for LLVM 21).",
                 py.get_type_bound::<pyo3::exceptions::PyRuntimeWarning>(),
                 // stack level 2 so the warning points at the caller's site
                 2i32,
@@ -10362,13 +10369,19 @@ fn py_compile_expr(
     drop(pool);
 
     let pool_ref = expr.pool.borrow(py);
-    let compiled = core_compile(expr.id, &input_ids, &pool_ref.inner)
+    let config = expected_evals
+        .map(alkahest_core::CompileConfig::for_batch)
+        .unwrap_or_default();
+    let compiled = core_compile_with(expr.id, &input_ids, &pool_ref.inner, config)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
     drop(pool_ref);
 
-    Ok(PyCompiledFn {
-        inner: Arc::new(compiled),
-    })
+    Ok(PyCompiledFn::with_source(
+        Arc::new(compiled),
+        expr.pool.clone_ref(py),
+        expr.id,
+        input_ids,
+    ))
 }
 
 /// Return True if any native JIT backend is available in this build.
@@ -10495,6 +10508,89 @@ struct PyCompiledFn {
     /// Shared ownership — multiple `PyCompiledFn` objects from a `CompileCache`
     /// reference the same compiled code without recompilation.
     inner: Arc<alkahest_core::CompiledFn>,
+    /// What `inner` was compiled from, kept so a large batch can recompile
+    /// it natively (see [`PyCompiledFn::batch_fn`]).
+    source: Option<CompiledFnSource>,
+    /// The natively compiled function for large batches, once built — or
+    /// `inner` again if the upgrade could not produce a native one, so it is
+    /// attempted only once.
+    batch: std::cell::RefCell<Option<Arc<alkahest_core::CompiledFn>>>,
+}
+
+struct CompiledFnSource {
+    pool: Py<PyExprPool>,
+    expr: ExprId,
+    inputs: Vec<ExprId>,
+}
+
+/// Smallest batch for which an interpreter-tier function is recompiled
+/// natively before evaluating. Cranelift takes ~0.5 ms to compile a small
+/// expression that the interpreter evaluates in ~0.1 µs per point, so the
+/// recompilation pays for itself only a few thousand points in.
+const BATCH_JIT_MIN_POINTS: usize = 4096;
+
+impl PyCompiledFn {
+    fn with_source(
+        inner: Arc<alkahest_core::CompiledFn>,
+        pool: Py<PyExprPool>,
+        expr: ExprId,
+        inputs: Vec<ExprId>,
+    ) -> Self {
+        PyCompiledFn {
+            inner,
+            source: Some(CompiledFnSource { pool, expr, inputs }),
+            batch: std::cell::RefCell::new(None),
+        }
+    }
+
+    /// The function a batch of `n_points` should run on.
+    ///
+    /// `compile_expr` has no idea how many points it will be asked for, so a
+    /// small expression gets the interpreter even when a native backend is
+    /// compiled in. The batch entry points *do* know, and for a large batch the
+    /// native code wins by an order of magnitude or more — so the first such
+    /// call recompiles with that hint and caches the result on this object.
+    /// Both tiers compute the same values (the backends' agreement tests are
+    /// bit-exact), so which one answers is a speed question only.
+    fn batch_fn(&self, py: Python<'_>, n_points: usize) -> Arc<alkahest_core::CompiledFn> {
+        if let Some(f) = self.batch.borrow().as_ref() {
+            return f.clone();
+        }
+        let upgradable = core_jit_available()
+            && n_points >= BATCH_JIT_MIN_POINTS
+            && self.inner.compile_tier() == alkahest_core::CompileTier::Interpreter;
+        let Some(src) = self.source.as_ref().filter(|_| upgradable) else {
+            return self.inner.clone();
+        };
+        let upgraded = {
+            let Ok(pool) = src.pool.try_borrow(py) else {
+                return self.inner.clone();
+            };
+            core_compile_with(
+                src.expr,
+                &src.inputs,
+                &pool.inner,
+                alkahest_core::CompileConfig::for_batch(n_points as u64),
+            )
+        };
+        let f = upgraded
+            .map(Arc::new)
+            .unwrap_or_else(|_| self.inner.clone());
+        *self.batch.borrow_mut() = Some(f.clone());
+        f
+    }
+}
+
+fn compile_tier_name(tier: alkahest_core::CompileTier) -> &'static str {
+    match tier {
+        alkahest_core::CompileTier::Interpreter => "interpreter",
+        #[cfg(feature = "cranelift")]
+        alkahest_core::CompileTier::Cranelift => "cranelift",
+        #[cfg(feature = "jit")]
+        alkahest_core::CompileTier::Llvm => "llvm",
+        #[allow(unreachable_patterns)]
+        _ => "native",
+    }
 }
 
 #[pymethods]
@@ -10545,7 +10641,28 @@ impl PyCompiledFn {
     }
 
     fn __repr__(&self) -> String {
-        format!("<CompiledFn n_inputs={}>", self.inner.n_inputs)
+        format!(
+            "<CompiledFn n_inputs={} tier={}>",
+            self.inner.n_inputs,
+            compile_tier_name(self.inner.compile_tier())
+        )
+    }
+
+    /// Backend that evaluates single-point calls: ``"interpreter"``,
+    /// ``"cranelift"`` or ``"llvm"``.
+    #[getter]
+    fn tier(&self) -> &'static str {
+        compile_tier_name(self.inner.compile_tier())
+    }
+
+    /// Backend the batch entry points have switched to, or ``None`` before a
+    /// batch large enough to recompile for (diagnostics).
+    #[getter]
+    fn _batch_tier(&self) -> Option<&'static str> {
+        self.batch
+            .borrow()
+            .as_ref()
+            .map(|f| compile_tier_name(f.compile_tier()))
     }
 
     /// Batch-evaluate over N points (Phase 25 — NumPy/JAX array evaluation).
@@ -10557,6 +10674,7 @@ impl PyCompiledFn {
     /// `alkahest.numpy_eval` helper that handles the buffer-protocol conversion.
     fn call_batch_raw(
         &self,
+        py: Python<'_>,
         inputs_flat: Vec<f64>,
         n_vars: usize,
         n_points: usize,
@@ -10583,7 +10701,8 @@ impl PyCompiledFn {
             .map(|i| &inputs_flat[i * n_points..(i + 1) * n_points])
             .collect();
         let mut output = vec![0.0f64; n_points];
-        self.inner.call_batch(&cols, &mut output);
+        let f = self.batch_fn(py, n_points);
+        f.call_batch(&cols, &mut output);
         Ok(output)
     }
 
@@ -10624,10 +10743,11 @@ impl PyCompiledFn {
             .map(|i| &inputs_flat[i * n_points..(i + 1) * n_points])
             .collect();
         let mut output = vec![0.0f64; n_points];
+        let f = self.batch_fn(py, n_points);
         // Release the GIL for the duration of parallel evaluation so other
         // Python threads can run while Rayon works on the native side.
         py.allow_threads(|| {
-            self.inner.call_batch_par(&cols, &mut output);
+            f.call_batch_par(&cols, &mut output);
         });
         Ok(output)
     }
@@ -10661,8 +10781,9 @@ impl PyCompiledFn {
         let col_refs: Vec<&[f64]> = cols.iter().map(|v| v.as_slice()).collect();
 
         let mut out_vec = vec![0.0f64; n_points];
+        let f = self.batch_fn(py, n_points);
         py.allow_threads(|| {
-            self.inner.call_batch(&col_refs, &mut out_vec);
+            f.call_batch(&col_refs, &mut out_vec);
         });
 
         output.copy_from_slice(py, &out_vec).map_err(|e| {
@@ -10688,8 +10809,9 @@ impl PyCompiledFn {
         let col_refs: Vec<&[f64]> = cols.iter().map(|v| v.as_slice()).collect();
 
         let mut out_vec = vec![0.0f64; n_points];
+        let f = self.batch_fn(py, n_points);
         py.allow_threads(|| {
-            self.inner.call_batch_par(&col_refs, &mut out_vec);
+            f.call_batch_par(&col_refs, &mut out_vec);
         });
 
         output.copy_from_slice(py, &out_vec).map_err(|e| {
@@ -10814,7 +10936,12 @@ impl PyCompileCache {
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
         drop(pool_ref);
 
-        Ok(PyCompiledFn { inner: arc })
+        Ok(PyCompiledFn::with_source(
+            arc,
+            expr.pool.clone_ref(py),
+            expr.id,
+            input_ids,
+        ))
     }
 
     /// Number of ``(expr, inputs)`` pairs currently cached.

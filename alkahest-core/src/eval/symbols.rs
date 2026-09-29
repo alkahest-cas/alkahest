@@ -50,7 +50,10 @@ pub(crate) const PI_NAME: &str = "pi";
 
 /// Is `expr` the symbol `π`?
 pub(crate) fn is_pi(expr: ExprId, pool: &ExprPool) -> bool {
-    matches!(pool.get(expr), ExprData::Symbol { name, .. } if name == PI_NAME)
+    pool.with(
+        expr,
+        |d| matches!(d, ExprData::Symbol { name, .. } if name == PI_NAME),
+    )
 }
 
 /// The symbol `π`, interned in `pool`.
