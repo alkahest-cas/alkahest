@@ -332,9 +332,10 @@ from .alkahest import (
     integrate_definite as _native_integrate_definite,
 )
 
-# V5-7: JAX primitive integration (optional — requires JAX)
-with _suppress(ImportError):
-    from ._jax import to_jax  # noqa: F401
+# V5-7: JAX primitive integration (optional — requires JAX).  `to_jax` is
+# resolved lazily by the module `__getattr__` at the bottom of this file:
+# importing `._jax` here pulled in jax (and numpy) on every `import alkahest`,
+# which was most of the import time for a feature few sessions touch.
 
 # V1-4 / V1-16: Polynomial system solver + Gröbner basis
 # groebner is a default Cargo feature since 2.3.1 — present in all PyPI wheels.
@@ -2336,10 +2337,14 @@ def _certificate_gate(fn):
     use is already served by :func:`require_certificate`.
     """
 
+    # Bound once: this wrapper sits on every derivation entry point, so a
+    # module-attribute lookup per call is measurable against a µs-scale op.
+    certificate_required = _certificates.certificate_required
+
     @_functools.wraps(fn)
     def wrapper(*args, **kwargs):
         result = fn(*args, **kwargs)
-        if _certificates.certificate_required() and isinstance(result, DerivedResult):
+        if certificate_required() and isinstance(result, DerivedResult):
             return require_certificate(result)
         return result
 
@@ -2754,7 +2759,23 @@ def __getattr__(name: str):
         import importlib
 
         return importlib.import_module(f".{name}", __name__)
+    if name == "to_jax":
+        # Deferred so `import alkahest` does not import jax.  `._jax` itself
+        # imports jax only when a wrapper is built, so this succeeds without
+        # jax installed and `to_jax(...)` raises the install hint at call
+        # time — the behaviour the eager import had.
+        try:
+            from ._jax import to_jax
+        except ImportError as exc:  # numpy missing: the name never existed
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+        globals()["to_jax"] = to_jax
+        return to_jax
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    # `to_jax` is lazy (see `__getattr__`) but was always listed; keep it so.
+    return sorted(set(globals()) | {"to_jax"})
 
 
 # ---------------------------------------------------------------------------

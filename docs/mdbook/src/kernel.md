@@ -22,7 +22,22 @@ x = pool.symbol("x")       # intern a Symbol node
 n = pool.integer(42)       # intern an Integer node
 ```
 
-Multiple pools are independent. An `ExprId` from one pool must not be mixed into another — the pool validates this in debug builds.
+Multiple pools are independent. An `ExprId` from one pool must not be mixed into another — the pool validates this in debug builds. From Python, an `Expr` carries its pool: equality and hashing are by (pool, id), so expressions from two pools never compare equal, and the operators and the `pool.add` / `pool.mul` / `pool.func` constructors raise `PoolError` (`E-POOL-001`) when handed an expression from another pool.
+
+### Building large sums and products
+
+`pool.add(terms)` and `pool.mul(factors)` are the bulk constructors: one call interns one flat node, linear in the number of operands.
+
+Accumulating with an operator is not. `Add` is flat, so `s = s + t` interns a new node one child wider than the last at every step — quadratic time, and quadratic pool memory that the pool never returns (see [ExprId and memory](#exprid-and-memory)). Builtin `sum()` is the same loop:
+
+```python
+terms = [x**i for i in range(10_000)]
+
+s = pool.add(terms)      # ~30 ms, one node
+s = sum(terms[1:], terms[0])   # ~2 s and ~400 MB of dead intermediate sums
+```
+
+The two give the same expression. `alkahest.parse` gathers each run of `+`/`-` (and of `*`) and uses the bulk constructors, so parsing a long sum is linear too.
 
 **Persistent pool (V1-14).** A pool can be serialized to disk and reopened, preserving all `ExprId`s across sessions:
 

@@ -372,6 +372,11 @@ Exception subclasses
    Code prefix ``E-POOL-*``. ``ExprPool`` misuse: closed pool, cross-pool
    expression mixing, persisted-handle mismatch.
 
+   - ``E-POOL-001`` — an expression from a different pool was passed to
+     ``pool.add`` / ``pool.mul`` / ``pool.func`` (or as ``n`` to
+     ``asymptotics_from_recurrence``). An expression's id only has
+     meaning in the pool that interned it; build every argument from one pool.
+
 .. exception:: CertificateUnavailableError
 
    Code prefix ``E-CERT-*``. A Lean certificate was required but the emitter

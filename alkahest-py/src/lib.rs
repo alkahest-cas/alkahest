@@ -1460,6 +1460,38 @@ fn ode_error_to_py(e: OdeError) -> PyErr {
 // PyExprPool
 // ---------------------------------------------------------------------------
 
+/// The `ExprId`s of *args*, provided every one belongs to *pool*.
+///
+/// `pool.add` / `pool.mul` / `pool.func` used to read each argument's raw id
+/// without looking at which pool it came from, so a foreign expression was
+/// silently reinterpreted as whatever node sits at that index here.  The
+/// operators already refuse that through `coerce_scalar`; the bulk
+/// constructors now do too, with a stable code (`E-POOL-001`).
+fn own_pool_ids(pool: &PyRef<'_, PyExprPool>, args: &[PyExpr], op: &str) -> PyResult<Vec<ExprId>> {
+    let pool_ptr = pool.as_ptr();
+    let mut ids = Vec::with_capacity(args.len());
+    for (i, e) in args.iter().enumerate() {
+        if e.pool.as_ptr() != pool_ptr {
+            let py = pool.py();
+            let err = PyPoolError::new_err(format!(
+                "[E-POOL-001] pool.{op}(): argument {i} belongs to a different ExprPool"
+            ));
+            let v = err.value_bound(py);
+            v.setattr("code", "E-POOL-001").ok();
+            v.setattr(
+                "remediation",
+                "build every argument from the pool the constructor is called on; \
+                 an expression's id only has meaning inside the pool that interned it",
+            )
+            .ok();
+            v.setattr("span", py.None()).ok();
+            return Err(err);
+        }
+        ids.push(e.id);
+    }
+    Ok(ids)
+}
+
 #[pyclass(name = "ExprPool")]
 struct PyExprPool {
     inner: ExprPool,
@@ -1540,34 +1572,75 @@ impl PyExprPool {
 
     /// Apply a named primitive or symbolic function: ``pool.func("sin", [x])``, ``pool.func("f", [n])``.
     #[pyo3(name = "func")]
-    fn apply_named(slf: PyRef<'_, Self>, name: &str, args: Vec<PyExpr>) -> PyExpr {
-        let ids: Vec<ExprId> = args.iter().map(|e| e.id).collect();
+    fn apply_named(slf: PyRef<'_, Self>, name: &str, args: Vec<PyExpr>) -> PyResult<PyExpr> {
+        let ids = own_pool_ids(&slf, &args, "func")?;
         let id = slf.inner.func(name, ids);
         let pool: Py<PyExprPool> = slf.into();
-        PyExpr { id, pool }
+        Ok(PyExpr { id, pool })
     }
 
     /// Build an addition node: ``pool.add([x, y, z])`` → `x + y + z`.
     ///
     /// Children are sorted canonically so ``pool.add([b, a]) == pool.add([a, b])``.
-    fn add(slf: PyRef<'_, Self>, args: Vec<PyExpr>) -> PyExpr {
-        let ids: Vec<ExprId> = args.iter().map(|e| e.id).collect();
+    ///
+    /// This is the bulk path for a large sum: one call interns one node, so
+    /// it is linear in ``len(args)``.  Accumulating with ``s = s + t`` (or the
+    /// builtin ``sum()``) interns a new, one-wider ``Add`` at every step —
+    /// quadratic in time and in pool memory, which the pool never gives back.
+    ///
+    /// Every argument must come from this pool; one from another pool raises
+    /// ``PoolError`` (``E-POOL-001``).
+    fn add(slf: PyRef<'_, Self>, args: Vec<PyExpr>) -> PyResult<PyExpr> {
+        let ids = own_pool_ids(&slf, &args, "add")?;
         let id = slf.inner.add(ids);
         let pool: Py<PyExprPool> = slf.into();
-        PyExpr { id, pool }
+        Ok(PyExpr { id, pool })
     }
 
     /// Build a multiplication node: ``pool.mul([x, y, z])`` → `x * y * z`.
-    fn mul(slf: PyRef<'_, Self>, args: Vec<PyExpr>) -> PyExpr {
-        let ids: Vec<ExprId> = args.iter().map(|e| e.id).collect();
+    ///
+    /// The bulk path for a large product, as ``add`` is for a sum.  Every
+    /// argument must come from this pool (``PoolError``, ``E-POOL-001``).
+    fn mul(slf: PyRef<'_, Self>, args: Vec<PyExpr>) -> PyResult<PyExpr> {
+        let ids = own_pool_ids(&slf, &args, "mul")?;
         let id = slf.inner.mul(ids);
         let pool: Py<PyExprPool> = slf.into();
-        PyExpr { id, pool }
+        Ok(PyExpr { id, pool })
     }
 
     fn float(slf: PyRef<'_, Self>, value: f64, prec: Option<u32>) -> PyResult<PyExpr> {
         let prec = checked_prec(prec.unwrap_or(53))?;
         let id = slf.inner.float(value, prec);
+        let pool: Py<PyExprPool> = slf.into();
+        Ok(PyExpr { id, pool })
+    }
+
+    /// The node ``((f0 * f1) * f2) * ...`` — exactly what folding the factors
+    /// with ``*`` interns — in one pass, without the ``n - 1`` intermediate
+    /// products.  Private: the parser's bulk path for a ``*`` run.
+    ///
+    /// Plain ``mul(args)`` is not always that node.  ``mul`` sorts only when
+    /// every factor commutes, so the fold sorts the commutative *prefix* at
+    /// each step and stops sorting at the first non-commutative factor ``k``:
+    /// ``0 * 8 * B`` (``B`` non-commutative) folds to ``Mul[8, 0, B]`` when
+    /// ``8`` was interned first, where ``mul([0, 8, B])`` keeps ``[0, 8, B]``.
+    /// The fold is therefore ``mul([mul(args[..k]), args[k..]...])``, which is
+    /// what this builds; the inner product is the one intermediate the fold
+    /// would also have interned.
+    fn _mul_left_fold(slf: PyRef<'_, Self>, args: Vec<PyExpr>) -> PyResult<PyExpr> {
+        let mut ids = own_pool_ids(&slf, &args, "_mul_left_fold")?;
+        let pool_inner = &slf.inner;
+        let k = ids
+            .iter()
+            .position(|&a| !alkahest_core::kernel::mult_tree_is_commutative(pool_inner, a))
+            .unwrap_or(ids.len());
+        let id = if k >= 2 && k < ids.len() {
+            let prefix = pool_inner.mul(ids[..k].to_vec());
+            ids.splice(..k, [prefix]);
+            pool_inner.mul(ids)
+        } else {
+            pool_inner.mul(ids)
+        };
         let pool: Py<PyExprPool> = slf.into();
         Ok(PyExpr { id, pool })
     }
@@ -1821,13 +1894,23 @@ fn expr_node_impl(this: &PyExpr, py: Python<'_>, exact: bool) -> PyResult<PyObje
 
 #[pymethods]
 impl PyExpr {
+    // An `ExprId` is an index into *one* pool, so identity is the pair
+    // (pool, id).  Comparing the id alone made `pool_p.symbol("x") ==
+    // pool_q.symbol("zzz")` true whenever the two were interned at the same
+    // index, and made such expressions collide as dict keys.
+    //
+    // The pool is identified by its Python object address — the same test
+    // (`Py::is`) every cross-pool check in this module uses.  Every `PyExpr`
+    // holds a strong reference to its pool, so the address cannot be reused
+    // while an expression hashed with it is alive.
     fn __eq__(&self, other: PyRef<PyExpr>) -> bool {
-        self.id == other.id
+        self.id == other.id && self.pool.is(&other.pool)
     }
 
     fn __hash__(&self) -> u64 {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         self.id.hash(&mut h);
+        (self.pool.as_ptr() as usize).hash(&mut h);
         h.finish()
     }
 

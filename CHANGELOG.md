@@ -176,6 +176,24 @@
   independent FLINT paths (`acb_theta` and `acb_modular`) must agree through
   the documented sign dictionary, with the wrong sign asserted to fail.
 
+### Performance
+
+- **Python boundary: pool-aware `Expr` identity, linear parsing of long sums,
+  and `import alkahest` without jax.** `Expr.__eq__`/`__hash__` compared the
+  interned id alone, so `pool_p.symbol("x") == pool_q.symbol("zzz")` was
+  `True` and expressions from two pools collided as dict keys; they now
+  compare (pool, id), and `pool.add`/`mul`/`func` refuse an expression from
+  another pool with `PoolError` (`E-POOL-001`) instead of reading its id as a
+  local one. `parse` interns each run of `+`/`-` (and `*`) with one
+  constructor call instead of a left fold that re-interned a one-wider `Add`
+  per term (3000-term sum: 206 ms → see PR; same node). `to_jax` resolves
+  lazily, so `import alkahest` no longer imports jax (805 of 955 ms). The
+  ambient certificate gate on every derivation entry point skips its
+  per-call import, and research dependency lookup keys by `Expr` instead of
+  rendering `str()` per subexpression, and no longer interns partial sums into
+  the caller's pool. `docs/mdbook/src/kernel.md` now says how to build large
+  sums (`pool.add(terms)`, not `sum()`).
+
 ### Build and packaging
 
 - **CI and the manylinux wheels now build a pinned FLINT 3.5.0.** Ubuntu
