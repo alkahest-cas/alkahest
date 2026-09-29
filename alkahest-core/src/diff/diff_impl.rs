@@ -574,9 +574,22 @@ fn diff_raw(
             } else {
                 let df = diff_raw(base, var, pool, memo, log)?;
                 let r_id = const_node(pool, r.clone());
-                let r_minus_1 = const_node(pool, r - 1);
-                let base_pow = pool.pow(base, r_minus_1);
-                let result_id = pool.mul(vec![r_id, base_pow, df]);
+                let r_minus_1 = r - 1;
+                // Emit `r·f` rather than `r·f^1·1` for the common `x²` case:
+                // the monomial no longer takes the dense-polynomial fast path,
+                // and leaving `f^1` / `·1` for `simplify` to fold costs more
+                // than the whole derivative (CodSpeed `test_diff_sin_x_squared`).
+                let base_pow = if r_minus_1 == 1 {
+                    base
+                } else {
+                    pool.pow(base, const_node(pool, r_minus_1))
+                };
+                let one = pool.integer(1_i32);
+                let result_id = if df == one {
+                    pool.mul(vec![r_id, base_pow])
+                } else {
+                    pool.mul(vec![r_id, base_pow, df])
+                };
                 log.push(RewriteStep::simple("power_rule", expr, result_id));
                 result_id
             }
