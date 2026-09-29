@@ -7,6 +7,9 @@
 # Two tiers, split by harness name:
 #   * `*_full_width` — every input the precondition allows; seconds to ~3 min each.
 #     Run on every PR and push to main.
+#   * `*_inductive` — full width too, with loops checked through their
+#     `kani::loop_invariant`s (a second run: ALKAHEST_KANI_LOOP_CONTRACTS=1,
+#     `-Z loop-contracts`). Also on every PR.
 #   * everything else — functional correctness over a stated small range
 #     (a symbolic 64/128-bit divider is expensive for the SAT back end, so
 #     these take minutes). Nightly, and on demand.
@@ -45,7 +48,7 @@ jobs:
     name: Kani — full-width harnesses (alkahest-cas)
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
 
@@ -68,6 +71,21 @@ jobs:
           args: >-
             -p alkahest-cas -Z stubbing
             --harness _full_width
+            --output-format terse -j
+
+      # The `*_inductive` harnesses check a loop once through its
+      # `kani::loop_invariant` instead of unrolling it (TESTING.md § 7). The
+      # invariants are compiled in only with ALKAHEST_KANI_LOOP_CONTRACTS=1
+      # (build.rs sets `cfg(kani_loop_contracts)`), so they get their own run.
+      - name: Run Kani (loop-contract harnesses)
+        uses: model-checking/kani-github-action@v1
+        env:
+          ALKAHEST_KANI_LOOP_CONTRACTS: "1"
+        with:
+          kani-version: "0.68.0"
+          args: >-
+            -p alkahest-cas -Z stubbing -Z loop-contracts
+            --harness _inductive
             --output-format terse -j
 
   all:
@@ -94,4 +112,15 @@ jobs:
           kani-version: "0.68.0"
           args: >-
             -p alkahest-cas -Z stubbing
+            --output-format terse -j
+
+      - name: Run Kani (loop-contract harnesses)
+        uses: model-checking/kani-github-action@v1
+        env:
+          ALKAHEST_KANI_LOOP_CONTRACTS: "1"
+        with:
+          kani-version: "0.68.0"
+          args: >-
+            -p alkahest-cas -Z stubbing -Z loop-contracts
+            --harness _inductive
             --output-format terse -j

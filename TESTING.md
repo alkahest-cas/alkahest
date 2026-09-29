@@ -269,13 +269,47 @@ cargo kani -p alkahest-cas -Z stubbing --harness _full_width --output-format ter
 cargo kani -p alkahest-cas -Z stubbing --harness modular::verification::mod_inverse_small_modulus
 ```
 
+```bash
+# The loop-contract harnesses (`*_inductive`): a separate build, see below
+ALKAHEST_KANI_LOOP_CONTRACTS=1 \
+  cargo kani -p alkahest-cas -Z stubbing -Z loop-contracts --harness _inductive --output-format terse -j
+```
+
 `-Z stubbing` is required: the compositional harnesses replace a proven
 function with its contract (e.g. `mul_mod` by "any value `< m`") so the caller
 can be checked at full width. FLINT does not need to be installed — Kani never
 links — but `build.rs`'s presence probe does run; set
 `ALKAHEST_SKIP_FLINT_CHECK=1` on a machine without it. CI runs this in
-`.github/workflows/kani.yml`: `*_full_width` harnesses on every PR, all of them
-nightly.
+`.github/workflows/kani.yml`: `*_full_width` and `*_inductive` harnesses on
+every PR, all of them nightly.
+
+**Loop contracts.** A loop whose trip count grows with the input — trial
+division to `√n`, Euclid on two `u64`s — cannot be unrolled at full width. Such
+a loop carries a `kani::loop_invariant`, written as
+`#[cfg_attr(kani_loop_contracts, kani::loop_invariant(...))]` on the `while`, and
+its harness is named `*_inductive` and gated `#[cfg(kani_loop_contracts)]`.
+Kani then checks the invariant holds on entry and is preserved by one
+arbitrary iteration, and continues after the loop from *any* state satisfying
+it — so the harness proves panic/overflow freedom (and whatever the invariant
+states) for every input, but sees nothing about the value the loop computes
+beyond the invariant. The value is covered by exhaustive unit tests on small
+inputs next to the harness. `build.rs` sets `cfg(kani_loop_contracts)` only
+under `cargo kani` with `ALKAHEST_KANI_LOOP_CONTRACTS=1`; without it the
+attributes vanish and the loops are unrolled as usual, which is what the
+value-checking harnesses that run through the same loops need.
+
+**Stubbing FLINT (FFI).** Kani cannot execute C, so a harness that reaches a
+FLINT call fails as an unsupported foreign call. For the Rust code *around*
+FFI calls — buffer sizing, index bounds — stub each `extern` function with a
+Rust model of its documented contract:
+`#[kani::stub(ffi::fmpz_get_ui_array, models::fmpz_get_ui_array)]`. The model
+`assert!`s the C function's precondition and performs its writes through the
+raw pointer it was given, so an undersized Rust buffer is an out-of-bounds
+pointer write Kani reports. The model's `fmpz` need not be FLINT's tagged
+word: in `flint::integer::verification` it simply stores the bit length
+`fmpz_bits` reports. `rug`/GMP calls cannot be stubbed this way in practice
+(they are generic Rust over many FFI calls); split the FLINT-facing part into
+its own function first, as `fmpz_abs_words` is.
 
 **What is proven.** "Full width" means every value the precondition allows.
 Anything narrower says so in the harness's doc comment. Times are per-harness
