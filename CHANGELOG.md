@@ -176,22 +176,6 @@
   independent FLINT paths (`acb_theta` and `acb_modular`) must agree through
   the documented sign dictionary, with the wrong sign asserted to fail.
 
-### Performance
-
-- **ℚ[x] GCDs, rational determinants and rational `rref` go through FLINT.**
-  `RatUniPoly::gcd` (every rational-function operation in summation, Gosper's
-  shifted GCD, polynomial Smith/Hermite forms) was the textbook Euclidean
-  algorithm over `ℚ`; it now clears denominators and calls `fmpz_poly_gcd`,
-  sharing one crate-private helper with the Risch code that already did so, and
-  with the Puiseux and holonomic-asymptotics GCDs (degree 40: 12 ms → 0.06 ms;
-  degree 80: 235 ms → 0.1 ms). `Matrix::det` on numeric entries takes
-  `fmpz_mat_det` after scaling each row by its denominators' lcm instead of
-  Bareiss over `rug::Rational` (60×60: 14 ms → 1.4 ms), and the rational path
-  of `rref`/`rank`/`nullspace`/`row_space_basis` uses `fmpz_mat_rref` (60×50:
-  6.1 ms → 1.5 ms). Outputs are unchanged — the monic GCD, the determinant and
-  the reduced row echelon form are unique — and differential property tests
-  pin each new path to the algorithm it replaced.
-
 ### Build and packaging
 
 - **CI and the manylinux wheels now build a pinned FLINT 3.5.0.** Ubuntu
@@ -452,6 +436,19 @@
   `Fraction`s are built from two ints. `Expr.node()` keeps returning decimal
   strings; the internal Python helpers use the new `Expr._node_exact()`, which
   returns ints. The `nt_*` / `modular_*` natives also accept ints directly.
+- **ℚ[x] GCDs, rational determinants and rational `rref` go through FLINT.**
+  `RatUniPoly::gcd` (every rational-function operation in summation, Gosper's
+  shifted GCD, polynomial Smith/Hermite forms) was the textbook Euclidean
+  algorithm over `ℚ`; it now clears denominators and calls `fmpz_poly_gcd`,
+  sharing one crate-private helper with the Risch code that already did so, and
+  with the Puiseux and holonomic-asymptotics GCDs (degree 40: 12 ms → 0.06 ms;
+  degree 80: 235 ms → 0.1 ms). `Matrix::det` on numeric entries takes
+  `fmpz_mat_det` after scaling each row by its denominators' lcm instead of
+  Bareiss over `rug::Rational` (60×60: 14 ms → 1.4 ms), and the rational path
+  of `rref`/`rank`/`nullspace`/`row_space_basis` uses `fmpz_mat_rref` (60×50:
+  6.1 ms → 1.5 ms). Outputs are unchanged — the monic GCD, the determinant and
+  the reduced row echelon form are unique — and differential property tests
+  pin each new path to the algorithm it replaced.
 
 ### Testing and tooling
 
