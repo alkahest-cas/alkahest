@@ -139,9 +139,17 @@ proptest! {
     }
 
     /// The Krawtchouk recurrence, over a wider range than the unit test walks.
+    ///
+    /// `k < n` is drawn directly rather than assumed: roughly half of an
+    /// independent `(n, k)` draw has `k ≥ n`, which is harmless at 48 cases but
+    /// exhausts proptest's 1024 global rejects under the nightly's
+    /// `PROPTEST_CASES=50000`.
     #[test]
-    fn krawtchouk_recurrence(n in 1usize..=14, k in 0usize..14, x in -4i64..20, q in 2u64..=6) {
-        prop_assume!(k < n);
+    fn krawtchouk_recurrence(
+        (n, k) in (1usize..=14).prop_flat_map(|n| (Just(n), 0..n)),
+        x in -4i64..20,
+        q in 2u64..=6,
+    ) {
         let lhs = Integer::from(k as u32 + 1) * krawtchouk(k + 1, x, n, q);
         let coeff = Integer::from(k as u64)
             + Integer::from((q - 1) * (n - k) as u64)

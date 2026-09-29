@@ -657,13 +657,33 @@ mod props {
     use super::*;
     use proptest::prelude::*;
 
+    /// The `dim × dim` entries, row-major, of a **non-singular** integer
+    /// matrix with entries in `-bound..=bound`.
+    ///
+    /// Singular draws are removed by `prop_filter`, not by a `prop_assume!` in
+    /// the test body. The two differ in which proptest budget they spend: an
+    /// assumption is a *global* reject (1024 per test, whatever the case
+    /// count), a filter is a *local* one (65536, retried inside generation).
+    /// A 2 × 2 draw from `-6..=6` is singular about 4.5 % of the time, so the
+    /// assumption form survived the default 256 cases and aborted with "Too
+    /// many global rejects" under the nightly's `PROPTEST_CASES=50000`.
+    fn nonsingular_entries(bound: i64, dim: usize) -> impl Strategy<Value = Vec<i64>> {
+        prop::collection::vec(-bound..=bound, dim * dim).prop_filter(
+            "the basis must be non-singular",
+            move |e| {
+                let rows: Vec<&[i64]> = e.chunks(dim).collect();
+                det_abs(&rows_i64(&rows)) != 0
+            },
+        )
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(24))]
 
         /// LLL never changes the lattice, so it never changes |det|.
         #[test]
         fn reduction_preserves_the_determinant(
-            entries in prop::collection::vec(-40i64..=40, 9)
+            entries in nonsingular_entries(40, 3)
         ) {
             let basis = rows_i64(&[
                 &entries[0..3],
@@ -671,7 +691,6 @@ mod props {
                 &entries[6..9],
             ]);
             let before = det_abs(&basis);
-            prop_assume!(before != 0);
             let reduced = lattice_reduce_rows(&basis).unwrap();
             prop_assert_eq!(det_abs(&reduced), before);
         }
@@ -679,23 +698,21 @@ mod props {
         /// … and the output really is reduced, at the default δ = ¾.
         #[test]
         fn reduction_output_is_reduced(
-            entries in prop::collection::vec(-40i64..=40, 9)
+            entries in nonsingular_entries(40, 3)
         ) {
             let basis = rows_i64(&[
                 &entries[0..3],
                 &entries[3..6],
                 &entries[6..9],
             ]);
-            prop_assume!(det_abs(&basis) != 0);
             let reduced = lattice_reduce_rows(&basis).unwrap();
             prop_assert!(validate_lll_rows(&reduced, &Rational::from((3, 4))).is_ok());
         }
 
         /// `(L*)* = L`.
         #[test]
-        fn dual_is_an_involution(entries in prop::collection::vec(-12i64..=12, 4)) {
+        fn dual_is_an_involution(entries in nonsingular_entries(12, 2)) {
             let basis = rows_i64(&[&entries[0..2], &entries[2..4]]);
-            prop_assume!(det_abs(&basis) != 0);
             let l = Lattice::from_basis(&basis).unwrap();
             let dd = l.dual().unwrap().dual().unwrap();
             prop_assert_eq!(dd.gram_matrix(), l.gram_matrix());
@@ -703,9 +720,8 @@ mod props {
 
         /// The zeroth theta coefficient counts the origin, and nothing else.
         #[test]
-        fn theta_zero_is_one(entries in prop::collection::vec(-6i64..=6, 4)) {
+        fn theta_zero_is_one(entries in nonsingular_entries(6, 2)) {
             let basis = rows_i64(&[&entries[0..2], &entries[2..4]]);
-            prop_assume!(det_abs(&basis) != 0);
             let l = Lattice::from_basis(&basis).unwrap();
             let theta = l.theta_series(4).unwrap();
             prop_assert_eq!(theta[0].clone(), Integer::from(1));
@@ -720,10 +736,9 @@ mod props {
         /// enumeration agrees with a brute-force scan of a small box.
         #[test]
         fn svp_matches_brute_force_in_the_plane(
-            entries in prop::collection::vec(-9i64..=9, 4)
+            entries in nonsingular_entries(9, 2)
         ) {
             let basis = rows_i64(&[&entries[0..2], &entries[2..4]]);
-            prop_assume!(det_abs(&basis) != 0);
             let l = Lattice::from_basis(&basis).unwrap();
             let min = l.minimum().unwrap();
             let mut brute: Option<Rational> = None;

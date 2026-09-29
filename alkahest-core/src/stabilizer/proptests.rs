@@ -208,10 +208,17 @@ proptest! {
 
     /// Perturbing a valid CSS pair so that `H_X · H_Zᵀ ≠ 0` is always refused,
     /// and always with `E-STAB-005`.
+    ///
+    /// `i ≠ j`, both below `n`, is drawn directly (`j` from the `n − 1` other
+    /// indices) rather than assumed: an independent draw rejected over half of
+    /// all cases, which exhausts proptest's 1024 global rejects under the
+    /// nightly's `PROPTEST_CASES=50000`.
     #[test]
-    fn a_broken_css_condition_is_always_refused(n in 2usize..=5, i in 0usize..5, j in 0usize..5) {
+    fn a_broken_css_condition_is_always_refused(
+        (n, i, j) in (2usize..=5).prop_flat_map(|n| (Just(n), 0..n, 0..n - 1))
+            .prop_map(|(n, i, j)| (n, i, if j >= i { j + 1 } else { j })),
+    ) {
         use crate::errors::AlkahestError;
-        prop_assume!(i < n && j < n && i != j);
         let f = FiniteField::prime(2).unwrap();
         // H_X = e_i, H_Z = e_j: orthogonal, so CSS. Then flip H_Z to e_i.
         let mut ex = vec![0u8; n];

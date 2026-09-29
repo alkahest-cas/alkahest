@@ -174,10 +174,15 @@ proptest! {
 
     #[test]
     fn membership_is_exactly_membership_in_the_enumeration(
-        g in arb_small_group(),
-        p in (3usize..=6).prop_flat_map(arb_permutation),
+        // The candidate is drawn at the group's own degree. Drawing it
+        // independently and assuming the degrees match rejected ~3/4 of all
+        // cases, which exhausts proptest's 1024 global rejects under the
+        // nightly's `PROPTEST_CASES=50000`.
+        (g, p) in arb_small_group().prop_flat_map(|g| {
+            let degree = g.degree();
+            (Just(g), arb_permutation(degree))
+        }),
     ) {
-        prop_assume!(p.degree() == g.degree());
         let set: HashSet<Permutation> = g.elements().unwrap().into_iter().collect();
         prop_assert_eq!(g.contains(&p).unwrap(), set.contains(&p));
     }
