@@ -650,7 +650,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // boundary by value inside arrays, so a size disagreement with the
     // installed FLINT is silent memory corruption rather than a link error. It
     // is raised by a run-time probe that re-derives the sizes from FLINT itself.
-    ErrorSpec { code: "E-THETA-001", class: "ThetaError", cause: Cause::Unsupported, remediation: Some("build against FLINT >= 3.1 for the modular functions and >= 3.2 for genus-g Riemann theta; `riemann_theta_available()` and `arb_backend_available()` report what this build has") },
+    ErrorSpec { code: "E-THETA-001", class: "ThetaError", cause: Cause::Unsupported, remediation: Some("build against FLINT >= 3.1 for the modular functions and >= 3.4 for genus-g Riemann theta; `riemann_theta_available()` and `arb_backend_available()` report what this build has") },
     ErrorSpec { code: "E-THETA-002", class: "ThetaError", cause: Cause::Internal,    remediation: Some("the installed FLINT's ball struct layout differs from the one this binary was compiled against; rebuild alkahest against the FLINT it will run with, and report the measured sizes as a bug") },
     ErrorSpec { code: "E-THETA-003", class: "ThetaError", cause: Cause::UserInput,   remediation: Some("ask for a working precision between 2 and 1048576 bits") },
     ErrorSpec { code: "E-THETA-004", class: "ThetaError", cause: Cause::Resource,    remediation: Some("theta returns 4^g values, so the output alone is exponential in the genus; genus 1 and 2 are the tested regime") },

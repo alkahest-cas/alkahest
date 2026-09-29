@@ -224,6 +224,22 @@
   and smoke-tests every wheel without publishing to TestPyPI, so changes to
   the wheel build can be checked before they merge.
 
+- **FLINT ≥ 3.3 is now required, and `build.rs` says so.** The bindings call
+  `fq_nmod_mat_transpose` (new in FLINT 3.3) and the `nf_*`,
+  `fq_nmod_ctx_init_ui` and `acb_mat_get_imag` entry points (3.1), so an older
+  FLINT used to compile every file and then fail at link time with
+  `undefined reference to fq_nmod_mat_transpose`. `build.rs` now reads the
+  FLINT version (header, then pkg-config, then the symbol table) and stops
+  with "alkahest-cas requires FLINT >= 3.3 (>= 3.4 for Riemann theta); found
+  FLINT x.y" plus instructions for building FLINT into a prefix. Genus-g
+  Riemann theta needs 3.4, because 3.3 has `acb_theta_all` / `acb_theta_one`
+  only as header inlines; on 3.3 the theta backend is stubbed and reports
+  `E-THETA-001`. Ubuntu 24.04's `libflint-dev` (3.0.1) and Debian 12's (2.9)
+  are too old. README, the getting-started guide and the error text used to
+  say "≥ 2.9". CI's `setup-flint` action and the manylinux wheel job now
+  build FLINT 3.6.0 from its sha256-checked release tarball; `setup-flint`
+  still caches the built prefix.
+
 - **`capabilities()["features"]` gains `arb_backend` and `riemann_theta`.**
   Neither is a Cargo feature; both are probed from `libflint`. They satisfy
   the same falsifiability rule the v3 contract applied when it *removed* two
