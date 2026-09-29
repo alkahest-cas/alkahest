@@ -72,6 +72,22 @@ fn arb_group() -> impl Strategy<Value = MatGroup> {
         })
 }
 
+/// [`arb_group`], restricted to groups of order at most 2000 — the ones whose
+/// full element list, centre and closures are cheap enough to enumerate.
+///
+/// The bound is a `prop_filter` on the strategy, not a `prop_assume!` in the
+/// test body. About 11 % of `arb_group` draws (degree 3 over GF(3) or GF(5))
+/// exceed it; as global rejects that is harmless at 48 cases but exhausts
+/// proptest's fixed 1024-reject budget under the nightly's
+/// `PROPTEST_CASES=50000`. A filter spends the separate 65536 local budget
+/// instead. The order is cached in the group's stabilizer chain, so the test
+/// body's own `order()` call does not recompute it.
+fn arb_group_of_order_at_most_2000() -> impl Strategy<Value = MatGroup> {
+    arb_group().prop_filter("|G| <= 2000, so the element list is cheap", |group| {
+        group.order().is_ok_and(|order| order <= 2_000)
+    })
+}
+
 /// The multiplicative order of `m`, by repeated multiplication. Bounded by
 /// `limit` so a bug cannot hang the test.
 fn element_order(group: &MatGroup, m: &GfMatrix, limit: u64) -> Option<u64> {
@@ -152,9 +168,8 @@ proptest! {
     /// The chain's element list is closed under multiplication and inverses,
     /// has exactly `|G|` distinct members, and every member is recognised.
     #[test]
-    fn the_element_list_is_a_group(group in arb_group()) {
+    fn the_element_list_is_a_group(group in arb_group_of_order_at_most_2000()) {
         let order = group.order().expect("small group");
-        prop_assume!(order <= 2_000);
         let elements = group.elements().expect("below the cap");
         prop_assert_eq!(Integer::from(elements.len()), order.clone());
         let keys: std::collections::HashSet<Vec<u64>> =
@@ -186,9 +201,8 @@ proptest! {
     /// The derived subgroup is a subgroup, its order divides `|G|`, and the
     /// abelianisation is abelian — i.e. every commutator is in `G'`.
     #[test]
-    fn the_derived_subgroup_contains_every_commutator(group in arb_group()) {
+    fn the_derived_subgroup_contains_every_commutator(group in arb_group_of_order_at_most_2000()) {
         let order = group.order().expect("small group");
-        prop_assume!(order <= 2_000);
         let derived = group.derived_subgroup().expect("small group");
         let derived_order = derived.order().expect("small group");
         prop_assert!(order.is_divisible(&derived_order));
@@ -202,9 +216,8 @@ proptest! {
 
     /// The centre is central, abelian, and its order divides `|G|`.
     #[test]
-    fn the_centre_is_central(group in arb_group()) {
+    fn the_centre_is_central(group in arb_group_of_order_at_most_2000()) {
         let order = group.order().expect("small group");
-        prop_assume!(order <= 2_000);
         let central = group.centre_elements().expect("small group");
         prop_assert!(!central.is_empty(), "the centre always contains the identity");
         prop_assert!(order.is_divisible(&Integer::from(central.len())));
@@ -233,9 +246,8 @@ proptest! {
     /// The normal closure of the generators is the group itself, and the normal
     /// closure of anything is a normal subgroup whose order divides `|G|`.
     #[test]
-    fn normal_closure_is_normal(group in arb_group()) {
+    fn normal_closure_is_normal(group in arb_group_of_order_at_most_2000()) {
         let order = group.order().expect("small group");
-        prop_assume!(order <= 2_000);
         let whole = group.normal_closure(group.generators()).expect("small group");
         prop_assert_eq!(whole.order().expect("small group"), order.clone());
 
