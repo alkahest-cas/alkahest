@@ -106,7 +106,10 @@ impl RatPoly {
     /// still complete, and a zero target is handled separately everywhere
     /// upstream of that decision).
     pub fn is_homogeneous(&self) -> Option<u32> {
-        let mut degs = self.terms.keys().map(|e| e.iter().sum::<u32>());
+        let mut degs = self
+            .terms
+            .keys()
+            .map(|e| crate::poly::exponent::total_degree_or_panic(e));
         let first = degs.next().unwrap_or(0);
         if degs.all(|d| d == first) {
             Some(first)
@@ -118,7 +121,7 @@ impl RatPoly {
     pub fn total_degree(&self) -> u32 {
         self.terms
             .keys()
-            .map(|e| e.iter().sum::<u32>())
+            .map(|e| crate::poly::exponent::total_degree_or_panic(e))
             .max()
             .unwrap_or(0)
     }
@@ -195,26 +198,52 @@ impl RatPoly {
         }
     }
 
+    /// # Panics
+    ///
+    /// If a product exponent or total degree exceeds `u32::MAX` (it used to
+    /// wrap). [`Self::from_expr`] refuses such inputs up front.
     pub fn mul(&self, other: &Self) -> Self {
+        self.checked_mul(other)
+            .unwrap_or_else(|| crate::poly::exponent::overflow_panic())
+    }
+
+    /// `self · other`, or `None` if a product exponent or total degree
+    /// exceeds `u32::MAX`.
+    fn checked_mul(&self, other: &Self) -> Option<Self> {
         debug_assert_eq!(self.nvars, other.nvars);
         let mut out = RatPoly::zero(self.nvars);
         for (ea, ca) in &self.terms {
             for (eb, cb) in &other.terms {
-                let e: Exponents = ea.iter().zip(eb).map(|(a, b)| a + b).collect();
+                let e: Exponents = crate::poly::exponent::add_vecs(ea, eb).ok()?;
                 out.insert_add(e, Rational::from(ca * cb));
             }
         }
-        out
+        Some(out)
     }
 
     pub fn square(&self) -> Self {
         self.mul(self)
     }
 
+    /// `self^n` by repeated squaring (it used to be `n` successive products,
+    /// a hang for `x^(2^31)`).
+    ///
+    /// # Panics
+    ///
+    /// If an exponent or total degree of the result exceeds `u32::MAX`.
     pub fn pow(&self, n: u32) -> Self {
         let mut acc = RatPoly::one(self.nvars);
-        for _ in 0..n {
-            acc = acc.mul(self);
+        let mut cur = self.clone();
+        let mut rem = n;
+        while rem > 0 {
+            if rem & 1 == 1 {
+                acc = acc.mul(&cur);
+            }
+            rem >>= 1;
+            // No square past the top bit: it can overflow when the power does not.
+            if rem > 0 {
+                cur = cur.square();
+            }
         }
         acc
     }
@@ -278,7 +307,9 @@ impl RatPoly {
             ExprData::Mul(args) => {
                 let mut acc = RatPoly::one(nvars);
                 for &a in args {
-                    acc = acc.mul(&RatPoly::from_expr(a, vars, pool)?);
+                    acc = acc
+                        .checked_mul(&RatPoly::from_expr(a, vars, pool)?)
+                        .ok_or_else(exponent_too_large)?;
                 }
                 Ok(acc)
             }
@@ -290,6 +321,11 @@ impl RatPoly {
                 match k {
                     Some(k) if k >= 0 => {
                         let b = RatPoly::from_expr(*base, vars, pool)?;
+                        // Every exponent and total degree of `b^k` is at most
+                        // k · deg(b); bound it so `pow` cannot wrap.
+                        if u64::from(b.total_degree()) * k as u64 > u64::from(u32::MAX) {
+                            return Err(exponent_too_large());
+                        }
                         Ok(b.pow(k as u32))
                     }
                     // A negative exponent is still polynomial when the base is a
@@ -433,6 +469,14 @@ impl RatPoly {
     }
 }
 
+/// The refusal for an exponent or total degree past `u32::MAX`.
+fn exponent_too_large() -> String {
+    format!(
+        "{} (E-POLY-004)",
+        crate::poly::ConversionError::ExponentTooLarge
+    )
+}
+
 fn node_kind(data: &ExprData) -> &'static str {
     match data {
         ExprData::Func { .. } => "function application",
@@ -558,5 +602,28 @@ mod tests {
         let y = pool.symbol("y", Domain::Real);
         let e = pool.add(vec![x, y]);
         assert!(RatPoly::from_expr(e, &[x], &pool).is_err());
+    }
+
+    /// x^(2^31-1) · x^(2^31-1) · x^2 = x^(2^32) used to wrap to the constant 1
+    /// (audit A1); so did the total degree of x^(2^31) · y^(2^31).
+    #[test]
+    fn from_expr_refuses_exponent_overflow() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let big = |b, e: i64| pool.pow(b, pool.integer(e));
+        let m = i64::from(i32::MAX);
+        let w = pool.mul(vec![big(x, m), big(x, m), big(x, 2)]);
+        let err = RatPoly::from_expr(w, &[x], &pool).unwrap_err();
+        assert!(err.contains("E-POLY-004"), "{err}");
+        let t = pool.mul(vec![big(x, m), big(y, m), big(y, 2)]);
+        assert!(RatPoly::from_expr(t, &[x, y], &pool).is_err());
+        // (x^65536)^65536: each step fits, the power does not.
+        let nested = pool.pow(big(x, 65536), pool.integer(65536_i64));
+        assert!(RatPoly::from_expr(nested, &[x], &pool).is_err());
+        // At the boundary it is accepted.
+        let ok = pool.mul(vec![big(x, m), big(x, m), x]);
+        let p = RatPoly::from_expr(ok, &[x], &pool).unwrap();
+        assert_eq!(p.total_degree(), u32::MAX);
     }
 }
