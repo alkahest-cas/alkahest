@@ -134,6 +134,9 @@ jobs:
               "egraph": True, "groebner": True, "jit": False,
               "cranelift": True, "llvm_jit": False, "cranelift_jit": True,
               "parallel": True, "cuda": False,
+              # Not Cargo features: build.rs probes libflint. The
+              # before-script refuses a FLINT without acb_theta, so both hold.
+              "arb_backend": True, "riemann_theta": True,
           }
           assert ak.jit_is_available(), "expected Cranelift JIT in default wheel"
           print('default wheel ok (groebner + cranelift + parallel)')
