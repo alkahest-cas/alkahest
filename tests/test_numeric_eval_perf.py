@@ -159,3 +159,13 @@ def test_traced_functions_compile_once():
         s_comp = gj(0.3, 0.7)
         for u, v in zip(s_interp, s_comp):
             assert math.isclose(u, v, rel_tol=1e-14, abs_tol=1e-300)
+
+
+def test_no_jit_warning_points_at_cranelift():
+    if ak.jit_is_available():
+        pytest.skip("a native backend is compiled in; no fallback warning")
+    p = ak.ExprPool()
+    x = p.symbol("x")
+    with pytest.warns(RuntimeWarning, match="not available") as rec:
+        ak.compile_expr(x, [x])
+    assert any("cranelift" in str(w.message) for w in rec)

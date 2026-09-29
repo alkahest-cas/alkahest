@@ -10345,7 +10345,7 @@ fn py_compile_expr(
         warnings.call_method1(
             "warn",
             (
-                "No native JIT backend (Cranelift or LLVM) is compiled into this build; \
+                "Native JIT compilation (Cranelift or LLVM) is not available in this build; \
                  compile_expr() is using the interpreter. For native performance install a \
                  wheel built with the `cranelift` feature (no system dependencies) or \
                  rebuild with maturin develop --manifest-path alkahest-py/Cargo.toml \
