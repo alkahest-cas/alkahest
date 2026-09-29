@@ -78,6 +78,83 @@ mod backend {
         !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
     }
 
+    /// One node of the input, classified by how the egglog datatype
+    /// represents it.
+    enum Node {
+        Num(i64),
+        Add(Vec<ExprId>),
+        Mul(Vec<ExprId>),
+        Pow(ExprId, ExprId),
+        /// One of the datatype's built-in unary constructors.
+        Known(&'static str, ExprId),
+        /// Uninterpreted unary function: `(Fn "name" arg)`.
+        Fn(String, ExprId),
+        /// Not expressible in the datatype — becomes an opaque atom.
+        Atom,
+    }
+
+    fn classify(pool: &ExprPool, expr: ExprId) -> Node {
+        pool.with(expr, |data| match data {
+            // Integers outside i64 cannot be represented by `(Num i64)`.
+            // Clamping would silently change the value, so they become
+            // opaque atoms instead.
+            ExprData::Integer(n) => match n.0.to_i64() {
+                Some(v) => Node::Num(v),
+                None => Node::Atom,
+            },
+            ExprData::Add(args) => Node::Add(args.clone()),
+            ExprData::Mul(args) => Node::Mul(args.clone()),
+            ExprData::Pow { base, exp } => Node::Pow(*base, *exp),
+            ExprData::Func { name, args } if args.len() == 1 => match known_unary(name) {
+                Some(ctor) => Node::Known(ctor, args[0]),
+                None if is_plain_ident(name) => Node::Fn(name.clone(), args[0]),
+                None => Node::Atom,
+            },
+            // Symbols (see module docs), rationals, floats, and every
+            // structured node the datatype cannot express.
+            _ => Node::Atom,
+        })
+    }
+
+    /// Whether `expr` encodes to an egglog constructor with `Expr` children
+    /// (as opposed to a `Num`/`Var` leaf).  Mirrors [`classify`] without
+    /// cloning argument vectors.
+    fn is_interior(pool: &ExprPool, expr: ExprId) -> bool {
+        pool.with(expr, |data| match data {
+            ExprData::Add(_) | ExprData::Mul(_) | ExprData::Pow { .. } => true,
+            ExprData::Func { name, args } if args.len() == 1 => {
+                known_unary(name).is_some() || is_plain_ident(name)
+            }
+            _ => false,
+        })
+    }
+
+    /// Whether some interior node of `expr` is reachable along two different
+    /// parent edges — i.e. whether writing `expr` out as a tree would repeat
+    /// work.  Linear in the number of distinct nodes.
+    fn has_shared_interior(pool: &ExprPool, root: ExprId) -> bool {
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(root);
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            let children: Vec<ExprId> = match classify(pool, id) {
+                Node::Add(args) | Node::Mul(args) => args,
+                Node::Pow(b, e) => vec![b, e],
+                Node::Known(_, a) | Node::Fn(_, a) => vec![a],
+                Node::Num(_) | Node::Atom => continue,
+            };
+            for c in children {
+                if is_interior(pool, c) {
+                    if !seen.insert(c) {
+                        return true;
+                    }
+                    stack.push(c);
+                }
+            }
+        }
+        false
+    }
+
     /// Serialiser state: the atom table built while walking the expression.
     pub(super) struct Encoder<'p> {
         pool: &'p ExprPool,
@@ -85,6 +162,13 @@ mod backend {
         atom_of: HashMap<ExprId, String>,
         /// Generated atom name → subterm (used on the way out).
         expr_of: HashMap<String, ExprId>,
+    }
+
+    /// An expression serialised for egglog: top-level `let` bindings (empty
+    /// for a tree-shaped input) followed by the root term.
+    pub(super) struct Encoded {
+        pub(super) lets: String,
+        pub(super) root: String,
     }
 
     impl<'p> Encoder<'p> {
@@ -96,84 +180,198 @@ mod backend {
             }
         }
 
-        /// The atom-name → subterm table, for [`parse_egglog_term`].
+        /// The atom-name → subterm table, for decoding extracted terms.
         pub(super) fn atoms(&self) -> &HashMap<String, ExprId> {
             &self.expr_of
         }
 
-        /// Return the opaque atom standing for `expr`, allocating it on
-        /// first use so equal subterms share one atom.
-        fn atom(&mut self, expr: ExprId) -> String {
-            if let Some(name) = self.atom_of.get(&expr) {
-                return format!("(Var \"{name}\")");
-            }
-            let name = format!("{ATOM_PREFIX}{}", self.atom_of.len());
-            self.atom_of.insert(expr, name.clone());
-            self.expr_of.insert(name.clone(), expr);
-            format!("(Var \"{name}\")")
+        /// Write the opaque atom standing for `expr`, allocating it on first
+        /// use so equal subterms share one atom.
+        fn write_atom(&mut self, expr: ExprId, out: &mut String) {
+            let next = self.atom_of.len();
+            let expr_of = &mut self.expr_of;
+            let name = self.atom_of.entry(expr).or_insert_with(|| {
+                let name = format!("{ATOM_PREFIX}{next}");
+                expr_of.insert(name.clone(), expr);
+                name
+            });
+            out.push_str("(Var \"");
+            out.push_str(name);
+            out.push_str("\")");
         }
 
-        pub(super) fn encode(&mut self, expr: ExprId) -> String {
-            enum Node {
-                Num(i64),
-                Add(Vec<ExprId>),
-                Mul(Vec<ExprId>),
-                Pow(ExprId, ExprId),
-                /// One of the datatype's built-in unary constructors.
-                Known(&'static str, ExprId),
-                /// Uninterpreted unary function: `(Fn "name" arg)`.
-                Fn(String, ExprId),
-                /// Not expressible in the datatype — becomes an opaque atom.
-                Atom,
+        /// Serialise `expr`, sized by its *DAG*, not its tree.
+        ///
+        /// A tree-shaped input (no interior node reached twice) is written
+        /// out as one term, byte-for-byte what the tree encoder always
+        /// produced. When some interior node is shared, the tree can be
+        /// exponentially larger than the DAG — `e_{k+1} = sin(e_k)·cos(e_k)`
+        /// doubles per level — so instead *every* distinct node is bound once
+        /// by a top-level `(let __tK …)` and referred to by name.
+        ///
+        /// Binding every node, rather than only the shared ones, is what keeps
+        /// the resulting e-graph *identical* to the one the tree text builds:
+        /// the lets are emitted in the tree's post-order of first occurrence,
+        /// so egglog inserts the same e-nodes in the same order, allocates the
+        /// same e-class ids, and so breaks extraction-cost ties the same way.
+        /// Opaque atoms are numbered in the same left-to-right order too.
+        /// Globals are `:unextractable` in egglog, so the bindings never show
+        /// up in the extracted term.
+        pub(super) fn encode(&mut self, expr: ExprId) -> Encoded {
+            let mut root = String::new();
+            let mut lets = String::new();
+            if has_shared_interior(self.pool, expr) {
+                let mut names = HashMap::new();
+                self.write_dag_body(expr, &mut root, &mut names, &mut lets);
+            } else {
+                self.write_tree(expr, &mut root);
             }
+            Encoded { lets, root }
+        }
 
-            let pool = self.pool;
-            let node = pool.with(expr, |data| match data {
-                // Integers outside i64 cannot be represented by `(Num i64)`.
-                // Clamping would silently change the value, so they become
-                // opaque atoms instead.
-                ExprData::Integer(n) => match n.0.to_i64() {
-                    Some(v) => Node::Num(v),
-                    None => Node::Atom,
-                },
-                ExprData::Add(args) => Node::Add(args.clone()),
-                ExprData::Mul(args) => Node::Mul(args.clone()),
-                ExprData::Pow { base, exp } => Node::Pow(*base, *exp),
-                ExprData::Func { name, args } if args.len() == 1 => match known_unary(name) {
-                    Some(ctor) => Node::Known(ctor, args[0]),
-                    None if is_plain_ident(name) => Node::Fn(name.clone(), args[0]),
-                    None => Node::Atom,
-                },
-                // Symbols (see module docs), rationals, floats, and every
-                // structured node the datatype cannot express.
-                _ => Node::Atom,
-            });
-
-            match node {
-                Node::Num(n) => format!("(Num {n})"),
-                Node::Atom => self.atom(expr),
+        /// Write `expr` as a single egglog term (tree-shaped input).
+        ///
+        /// An n-ary `Add`/`Mul` becomes a binary left-fold — `(Add (Add a b)
+        /// c)` for `[a, b, c]` — written into the one buffer, so a wide sum
+        /// costs linear rather than quadratic time.
+        fn write_tree(&mut self, expr: ExprId, out: &mut String) {
+            use std::fmt::Write as _;
+            match classify(self.pool, expr) {
+                Node::Num(n) => {
+                    let _ = write!(out, "(Num {n})");
+                }
+                Node::Atom => self.write_atom(expr, out),
+                // Binary left-fold; the decoder flattens this back to n-ary.
                 Node::Add(args) => {
-                    // Binary left-fold; the parser flattens this back to n-ary.
-                    let mut it = args.into_iter();
-                    let first = it.next().expect(
+                    let (&first, rest) = args.split_first().expect(
                         "Add node must have at least one argument — ExprPool invariant violated",
                     );
-                    let init = self.encode(first);
-                    it.fold(init, |acc, id| format!("(Add {acc} {})", self.encode(id)))
+                    out.push_str(&"(Add ".repeat(rest.len()));
+                    self.write_tree(first, out);
+                    for &id in rest {
+                        out.push(' ');
+                        self.write_tree(id, out);
+                        out.push(')');
+                    }
                 }
                 Node::Mul(args) => {
-                    let mut it = args.into_iter();
-                    let first = it.next().expect(
+                    let (&first, rest) = args.split_first().expect(
                         "Mul node must have at least one argument — ExprPool invariant violated",
                     );
-                    let init = self.encode(first);
-                    it.fold(init, |acc, id| format!("(Mul {acc} {})", self.encode(id)))
+                    out.push_str(&"(Mul ".repeat(rest.len()));
+                    self.write_tree(first, out);
+                    for &id in rest {
+                        out.push(' ');
+                        self.write_tree(id, out);
+                        out.push(')');
+                    }
                 }
                 Node::Pow(base, exp) => {
-                    format!("(Pow {} {})", self.encode(base), self.encode(exp))
+                    out.push_str("(Pow ");
+                    self.write_tree(base, out);
+                    out.push(' ');
+                    self.write_tree(exp, out);
+                    out.push(')');
                 }
-                Node::Known(ctor, arg) => format!("({ctor} {})", self.encode(arg)),
-                Node::Fn(name, arg) => format!("(Fn \"{name}\" {})", self.encode(arg)),
+                Node::Known(ctor, arg) => {
+                    out.push('(');
+                    out.push_str(ctor);
+                    out.push(' ');
+                    self.write_tree(arg, out);
+                    out.push(')');
+                }
+                Node::Fn(name, arg) => {
+                    let _ = write!(out, "(Fn \"{name}\" ");
+                    self.write_tree(arg, out);
+                    out.push(')');
+                }
+            }
+        }
+
+        /// Bind `expr` (and, first, everything below it) to a `let` global,
+        /// returning its name; memoised on `ExprId`.
+        fn bind_dag(
+            &mut self,
+            expr: ExprId,
+            names: &mut HashMap<ExprId, String>,
+            lets: &mut String,
+        ) -> String {
+            if let Some(name) = names.get(&expr) {
+                return name.clone();
+            }
+            let mut body = String::new();
+            self.write_dag_body(expr, &mut body, names, lets);
+            let name = format!("__t{}", names.len());
+            lets.push_str("(let ");
+            lets.push_str(&name);
+            lets.push(' ');
+            lets.push_str(&body);
+            lets.push_str(")\n");
+            names.insert(expr, name.clone());
+            name
+        }
+
+        /// Write the constructor for `expr` with every child replaced by the
+        /// name of its binding. Children are bound left to right first, which
+        /// is the tree's post-order.
+        fn write_dag_body(
+            &mut self,
+            expr: ExprId,
+            out: &mut String,
+            names: &mut HashMap<ExprId, String>,
+            lets: &mut String,
+        ) {
+            use std::fmt::Write as _;
+            let fold = |ctor: &str, kids: &[String], out: &mut String| {
+                let (first, rest) = kids.split_first().unwrap_or_else(|| {
+                    panic!(
+                        "{ctor} node must have at least one argument — ExprPool invariant violated"
+                    )
+                });
+                for _ in rest {
+                    out.push('(');
+                    out.push_str(ctor);
+                    out.push(' ');
+                }
+                out.push_str(first);
+                for k in rest {
+                    out.push(' ');
+                    out.push_str(k);
+                    out.push(')');
+                }
+            };
+            match classify(self.pool, expr) {
+                Node::Num(n) => {
+                    let _ = write!(out, "(Num {n})");
+                }
+                Node::Atom => self.write_atom(expr, out),
+                Node::Add(args) => {
+                    let kids: Vec<String> = args
+                        .iter()
+                        .map(|&a| self.bind_dag(a, names, lets))
+                        .collect();
+                    fold("Add", &kids, out);
+                }
+                Node::Mul(args) => {
+                    let kids: Vec<String> = args
+                        .iter()
+                        .map(|&a| self.bind_dag(a, names, lets))
+                        .collect();
+                    fold("Mul", &kids, out);
+                }
+                Node::Pow(base, exp) => {
+                    let b = self.bind_dag(base, names, lets);
+                    let e = self.bind_dag(exp, names, lets);
+                    let _ = write!(out, "(Pow {b} {e})");
+                }
+                Node::Known(ctor, arg) => {
+                    let a = self.bind_dag(arg, names, lets);
+                    let _ = write!(out, "({ctor} {a})");
+                }
+                Node::Fn(name, arg) => {
+                    let a = self.bind_dag(arg, names, lets);
+                    let _ = write!(out, "(Fn \"{name}\" {a})");
+                }
             }
         }
     }
@@ -325,7 +523,18 @@ mod backend {
         }
     }
 
-    fn egglog_program(expr_str: &str, config: &super::EgraphConfig) -> String {
+    /// Build the egglog program for `enc` as `(prelude, schedule)`.
+    ///
+    /// The *prelude* — options, datatype, rulesets — depends on `config`
+    /// alone, never on the expression, so it is parsed once and cached (see
+    /// [`prelude_egraph`]). The *schedule* carries the expression's bindings,
+    /// the phased `run`s and the final `extract`. Their concatenation is the
+    /// whole program this module has always run.
+    fn egglog_program(
+        lets: &str,
+        expr_str: &str,
+        config: &super::EgraphConfig,
+    ) -> (String, String) {
         // node_limit is enforced as a pre-saturation DAG-size check in
         // simplify_egraph_impl; egglog 0.4 does not expose a per-run node cap.
         let node_limit_line = String::new();
@@ -418,7 +627,7 @@ mod backend {
                 s
             };
             let schedule = format!(
-                r#"(let __expr {expr})
+                r#"{lets}(let __expr {expr})
 (run shrink-add {si})
 (run shrink-mul {si})
 (run shrink-pow {si})
@@ -430,6 +639,7 @@ mod backend {
 (extract __expr)
 "#,
                 explore_runs = explore_runs,
+                lets = lets,
                 expr = expr_str,
                 si = si,
                 ci = ci,
@@ -463,7 +673,7 @@ mod backend {
                 log_exp_rules = log_exp_rules,
             );
             let schedule = format!(
-                r#"(let __expr {expr})
+                r#"{lets}(let __expr {expr})
 (run shrink {si})
 (run const-fold {ci})
 (run explore {ei})
@@ -471,6 +681,7 @@ mod backend {
 (run const-fold {ci})
 (extract __expr)
 "#,
+                lets = lets,
                 expr = expr_str,
                 si = si,
                 ei = ei,
@@ -479,7 +690,7 @@ mod backend {
             (shrink, schedule)
         };
 
-        format!(
+        let prelude = format!(
             r#"
 {node_limit_line}{iter_limit_line}(datatype Expr
   (Num i64)
@@ -505,13 +716,82 @@ mod backend {
 ; Integer Pow folding is done in Rust after extraction: egglog's i64 `^` is XOR.
 
 ; ── phased schedule ───────────────────────────────────────────────────────────
-{schedule}
 "#,
             node_limit_line = node_limit_line,
             iter_limit_line = iter_limit_line,
             rules_block = rules_block,
-            schedule = schedule,
-        )
+        );
+        (prelude, schedule)
+    }
+
+    /// Upper bound on distinct cached preludes per thread. A prelude is keyed
+    /// by its full text, so this only fills up if a caller cycles through
+    /// many `iter_limit` values; the cache is then simply rebuilt.
+    const PRELUDE_CACHE_CAP: usize = 16;
+
+    thread_local! {
+        /// Prelude text → an e-graph that has run exactly that prelude.
+        static PRELUDE_CACHE: std::cell::RefCell<HashMap<String, egglog::EGraph>> =
+            std::cell::RefCell::new(HashMap::new());
+    }
+
+    /// A fresh e-graph that has already run `prelude`.
+    ///
+    /// Parsing and type-checking the datatype and a few dozen rules is most
+    /// of the cost of a small `simplify_egraph` call, and it depends only on
+    /// the configuration. So the prelude is run once per thread and the
+    /// resulting e-graph *cloned* for each call.
+    ///
+    /// The cache is keyed by the prelude text itself, so every
+    /// configuration field that reaches the rules or options is part of the
+    /// key by construction — there is no separate key to fall out of sync.
+    /// `egglog::EGraph: Clone` copies its tables, union-find, rulesets and
+    /// symbol generator by value; the only shared parts are `Arc`'d sorts
+    /// and primitives, and the sorts this datatype uses (`i64`, `String`,
+    /// the `Expr` eq-sort) carry no mutable state. The cached graph has not
+    /// run any rule, holds no e-nodes and has flushed its messages, so a
+    /// clone is indistinguishable from a graph that has just parsed the
+    /// prelude afresh. `None` if egglog rejects the prelude (the caller then
+    /// falls back to the input, as it always did on a failed program).
+    fn prelude_egraph(prelude: &str) -> Option<egglog::EGraph> {
+        PRELUDE_CACHE.with(|cache| {
+            if let Some(eg) = cache.borrow().get(prelude) {
+                return Some(eg.clone());
+            }
+            let mut eg = egglog::EGraph::default();
+            eg.parse_and_run_program(None, prelude).ok()?;
+            let mut cache = cache.borrow_mut();
+            if cache.len() >= PRELUDE_CACHE_CAP {
+                cache.clear();
+            }
+            cache.insert(prelude.to_owned(), eg.clone());
+            Some(eg)
+        })
+    }
+
+    /// Run `schedule` on top of `prelude` and return the extracted term
+    /// decoded back to an [`ExprId`].
+    ///
+    /// Messages are switched off before the schedule runs: egglog would
+    /// otherwise render the extracted term with `TermDag::to_string`, which
+    /// is tree-sized. The same extraction is read from the extract report as
+    /// a hash-consed [`egglog::TermDag`] and decoded node by node instead.
+    fn run_and_extract(
+        prelude: &str,
+        schedule: &str,
+        pool: &ExprPool,
+        atoms: &HashMap<String, ExprId>,
+    ) -> Option<ExprId> {
+        let mut egraph = prelude_egraph(prelude)?;
+        egraph.disable_messages();
+        egraph.parse_and_run_program(None, schedule).ok()?;
+        match egraph.get_extract_report() {
+            Some(egglog::ExtractReport::Best { termdag, term, .. }) => {
+                let root = termdag.lookup(term);
+                decode_term(termdag, root, pool, atoms, &mut HashMap::new())
+            }
+            _ => None,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -540,13 +820,84 @@ mod backend {
         }
     }
 
-    /// Parse an extracted egglog term back to an [`ExprId`].
+    /// Decode an extracted egglog term back to an [`ExprId`].
+    ///
+    /// The term lives in a hash-consed [`egglog::TermDag`], so shared
+    /// subterms are decoded once each through `memo` — linear in the
+    /// extracted DAG, where re-parsing its printed (tree-shaped) text was
+    /// exponential in the depth of sharing. Binary `Add`/`Mul` are flattened
+    /// back to n-ary on the way out (RW-1).
     ///
     /// `atoms` is the atom-name → subterm table produced by [`Encoder`].
     /// Every `Var` egglog can emit was generated by the encoder, so a miss
     /// means the output is not something we produced; returning `None` makes
     /// the caller fall back to the input expression rather than inventing a
     /// symbol.
+    fn decode_term(
+        dag: &egglog::TermDag,
+        id: egglog::TermId,
+        pool: &ExprPool,
+        atoms: &HashMap<String, ExprId>,
+        memo: &mut HashMap<egglog::TermId, Option<ExprId>>,
+    ) -> Option<ExprId> {
+        use egglog::ast::Literal;
+        use egglog::Term;
+        if let Some(&done) = memo.get(&id) {
+            return done;
+        }
+        let string_lit = |t: egglog::TermId| match dag.get(t) {
+            Term::Lit(Literal::String(s)) => Some(s.as_str()),
+            _ => None,
+        };
+        let Term::App(head, kids) = dag.get(id) else {
+            return None;
+        };
+        let mut sub = |t: egglog::TermId| decode_term(dag, t, pool, atoms, memo);
+        let result = match (head.as_str(), kids.as_slice()) {
+            ("Num", &[k]) => match dag.get(k) {
+                Term::Lit(Literal::Int(n)) => Some(pool.integer(*n)),
+                _ => None,
+            },
+            ("Var", &[k]) => string_lit(k).and_then(|name| atoms.get(name).copied()),
+            ("Add", &[a, b]) => (|| {
+                let a = sub(a)?;
+                let b = sub(b)?;
+                let mut children = flatten_add_args(a, pool);
+                children.extend(flatten_add_args(b, pool));
+                Some(pool.add(children))
+            })(),
+            ("Mul", &[a, b]) => (|| {
+                let a = sub(a)?;
+                let b = sub(b)?;
+                let mut children = flatten_mul_args(a, pool);
+                children.extend(flatten_mul_args(b, pool));
+                Some(pool.mul(children))
+            })(),
+            ("Pow", &[a, b]) => (|| {
+                let a = sub(a)?;
+                let b = sub(b)?;
+                Some(pool.pow(a, b))
+            })(),
+            ("Fn", &[name, a]) => (|| {
+                let name = string_lit(name)?;
+                let arg = sub(a)?;
+                Some(pool.func(name, vec![arg]))
+            })(),
+            ("Sin", &[a]) => sub(a).map(|a| pool.func("sin", vec![a])),
+            ("Cos", &[a]) => sub(a).map(|a| pool.func("cos", vec![a])),
+            ("Exp", &[a]) => sub(a).map(|a| pool.func("exp", vec![a])),
+            ("Log", &[a]) => sub(a).map(|a| pool.func("log", vec![a])),
+            ("Sqrt", &[a]) => sub(a).map(|a| pool.func("sqrt", vec![a])),
+            _ => None,
+        };
+        memo.insert(id, result);
+        result
+    }
+
+    /// Parse an extracted egglog term, printed as text, back to an
+    /// [`ExprId`] — the pre-`TermDag` decoder, kept as the reference that
+    /// [`decode_term`] is tested against.
+    #[cfg(test)]
     fn parse_egglog_term(
         s: &str,
         pool: &ExprPool,
@@ -611,16 +962,19 @@ mod backend {
     ///
     /// Deliberately stricter than `trim_matches('"')`: an unquoted token is
     /// rejected rather than silently accepted.
+    #[cfg(test)]
     fn unquote(s: &str) -> Option<&str> {
         s.trim().strip_prefix('"')?.strip_suffix('"')
     }
 
+    #[cfg(test)]
     fn split_head(s: &str) -> Option<(&str, &str)> {
         let s = s.trim();
         let pos = s.find(|c: char| c.is_whitespace())?;
         Some((&s[..pos], &s[pos + 1..]))
     }
 
+    #[cfg(test)]
     fn split_two_args(s: &str) -> Option<(String, String)> {
         let s = s.trim();
         let (first, remainder) = consume_term(s)?;
@@ -628,6 +982,7 @@ mod backend {
         Some((first.to_string(), second.to_string()))
     }
 
+    #[cfg(test)]
     fn consume_term(s: &str) -> Option<(&str, &str)> {
         let s = s.trim_start();
         if s.starts_with('(') {
@@ -688,20 +1043,54 @@ mod backend {
     /// Egglog's i64 `^` is bitwise XOR, so Pow constant folding cannot be done
     /// inside the egglog program without polluting the e-graph.
     pub(super) fn fold_numeric_pow(expr: ExprId, pool: &ExprPool) -> ExprId {
+        fold_numeric_pow_memo(expr, pool, &mut HashMap::new())
+    }
+
+    /// Run `pass` on `expr` through `memo`: each post-pass below is a pure
+    /// function of the `ExprId` it is given, so a subterm shared by many
+    /// parents is rewritten once. Without this a DAG-shaped result — which is
+    /// what a shared input extracts to — is walked as a tree.
+    fn memoized(
+        expr: ExprId,
+        memo: &mut HashMap<ExprId, ExprId>,
+        pass: impl FnOnce(&mut HashMap<ExprId, ExprId>) -> ExprId,
+    ) -> ExprId {
+        if let Some(&done) = memo.get(&expr) {
+            return done;
+        }
+        let out = pass(memo);
+        memo.insert(expr, out);
+        out
+    }
+
+    fn fold_numeric_pow_memo(
+        expr: ExprId,
+        pool: &ExprPool,
+        memo: &mut HashMap<ExprId, ExprId>,
+    ) -> ExprId {
+        memoized(expr, memo, |memo| fold_numeric_pow_node(expr, pool, memo))
+    }
+
+    fn fold_numeric_pow_node(
+        expr: ExprId,
+        pool: &ExprPool,
+        memo: &mut HashMap<ExprId, ExprId>,
+    ) -> ExprId {
         use crate::simplify::rules::RewriteRule;
         use rug::ops::Pow;
+        let mut rec = |a: ExprId| fold_numeric_pow_memo(a, pool, memo);
         match pool.get(expr) {
             ExprData::Add(args) => {
-                let args: Vec<ExprId> = args.iter().map(|&a| fold_numeric_pow(a, pool)).collect();
+                let args: Vec<ExprId> = args.iter().map(|&a| rec(a)).collect();
                 pool.add(args)
             }
             ExprData::Mul(args) => {
-                let args: Vec<ExprId> = args.iter().map(|&a| fold_numeric_pow(a, pool)).collect();
+                let args: Vec<ExprId> = args.iter().map(|&a| rec(a)).collect();
                 pool.mul(args)
             }
             ExprData::Pow { base, exp } => {
-                let base = fold_numeric_pow(base, pool);
-                let exp = fold_numeric_pow(exp, pool);
+                let base = rec(base);
+                let exp = rec(exp);
                 if let (ExprData::Integer(b), ExprData::Integer(e)) =
                     (pool.get(base), pool.get(exp))
                 {
@@ -722,7 +1111,7 @@ mod backend {
                 pool.pow(base, exp)
             }
             ExprData::Func { name, args } => {
-                let args: Vec<ExprId> = args.iter().map(|&a| fold_numeric_pow(a, pool)).collect();
+                let args: Vec<ExprId> = args.iter().map(|&a| rec(a)).collect();
                 let folded = pool.func(&name, args);
                 if name == "sqrt" {
                     if let Some((after, _)) =
@@ -744,10 +1133,28 @@ mod backend {
     ///
     /// Example: `2*x + 3*x + y` → `5*x + y`.
     pub(super) fn canonicalize_linear(expr: ExprId, pool: &ExprPool) -> ExprId {
+        canonicalize_linear_memo(expr, pool, &mut HashMap::new())
+    }
+
+    fn canonicalize_linear_memo(
+        expr: ExprId,
+        pool: &ExprPool,
+        memo: &mut HashMap<ExprId, ExprId>,
+    ) -> ExprId {
+        memoized(expr, memo, |memo| {
+            canonicalize_linear_node(expr, pool, memo)
+        })
+    }
+
+    fn canonicalize_linear_node(
+        expr: ExprId,
+        pool: &ExprPool,
+        memo: &mut HashMap<ExprId, ExprId>,
+    ) -> ExprId {
+        let mut rec = |a: ExprId| canonicalize_linear_memo(a, pool, memo);
         match pool.get(expr) {
             ExprData::Add(args) => {
-                let args: Vec<ExprId> =
-                    args.iter().map(|&a| canonicalize_linear(a, pool)).collect();
+                let args: Vec<ExprId> = args.iter().map(|&a| rec(a)).collect();
 
                 let mut coeff_map: HashMap<ExprId, i64> = HashMap::new();
                 let mut non_linear: Vec<ExprId> = Vec::new();
@@ -785,18 +1192,16 @@ mod backend {
                 }
             }
             ExprData::Mul(args) => {
-                let args: Vec<ExprId> =
-                    args.iter().map(|&a| canonicalize_linear(a, pool)).collect();
+                let args: Vec<ExprId> = args.iter().map(|&a| rec(a)).collect();
                 pool.mul(args)
             }
             ExprData::Pow { base, exp } => {
-                let base = canonicalize_linear(base, pool);
-                let exp = canonicalize_linear(exp, pool);
+                let base = rec(base);
+                let exp = rec(exp);
                 pool.pow(base, exp)
             }
             ExprData::Func { name, args } => {
-                let args: Vec<ExprId> =
-                    args.iter().map(|&a| canonicalize_linear(a, pool)).collect();
+                let args: Vec<ExprId> = args.iter().map(|&a| rec(a)).collect();
                 pool.func(&name, args)
             }
             _ => expr,
@@ -833,9 +1238,26 @@ mod backend {
     /// so this bounded local fold is sufficient to pick up the constant
     /// folds above without re-running the whole simplifier.
     pub(super) fn apply_const_folds(expr: ExprId, pool: &ExprPool) -> ExprId {
+        apply_const_folds_memo(expr, pool, &mut HashMap::new())
+    }
+
+    fn apply_const_folds_memo(
+        expr: ExprId,
+        pool: &ExprPool,
+        memo: &mut HashMap<ExprId, ExprId>,
+    ) -> ExprId {
+        memoized(expr, memo, |memo| apply_const_folds_node(expr, pool, memo))
+    }
+
+    fn apply_const_folds_node(
+        expr: ExprId,
+        pool: &ExprPool,
+        memo: &mut HashMap<ExprId, ExprId>,
+    ) -> ExprId {
         use crate::simplify::rules::{
             AddZero, ConstFold, MulOne, MulZero, PowOne, PowZero, RewriteRule,
         };
+        let mut rec = |a: ExprId| apply_const_folds_memo(a, pool, memo);
 
         // Recurse into children first, then flatten nested Add/Mul so
         // numeric factors from sibling subtrees share one n-ary node.
@@ -843,7 +1265,7 @@ mod backend {
             ExprData::Add(args) => {
                 let args: Vec<ExprId> = args
                     .iter()
-                    .map(|&a| apply_const_folds(a, pool))
+                    .map(|&a| rec(a))
                     .flat_map(|a| flatten_add_args(a, pool))
                     .collect();
                 match args.len() {
@@ -855,7 +1277,7 @@ mod backend {
             ExprData::Mul(args) => {
                 let args: Vec<ExprId> = args
                     .iter()
-                    .map(|&a| apply_const_folds(a, pool))
+                    .map(|&a| rec(a))
                     .flat_map(|a| flatten_mul_args(a, pool))
                     .collect();
                 match args.len() {
@@ -865,12 +1287,12 @@ mod backend {
                 }
             }
             ExprData::Pow { base, exp } => {
-                let base = apply_const_folds(base, pool);
-                let exp = apply_const_folds(exp, pool);
+                let base = rec(base);
+                let exp = rec(exp);
                 pool.pow(base, exp)
             }
             ExprData::Func { name, args } => {
-                let args: Vec<ExprId> = args.iter().map(|&a| apply_const_folds(a, pool)).collect();
+                let args: Vec<ExprId> = args.iter().map(|&a| rec(a)).collect();
                 pool.func(&name, args)
             }
             _ => expr,
@@ -944,6 +1366,13 @@ mod backend {
         // Enforce the node limit before handing the expression to egglog.
         // Saturation can materialise exponentially many equivalent forms, so a
         // hard pre-check on input size prevents OOM on pathological inputs.
+        //
+        // Counting *distinct* nodes bounds the real work because every stage
+        // after this is DAG-sized: the encoder binds shared nodes once, the
+        // extracted term is decoded from egglog's hash-consed `TermDag`, and
+        // the post-passes are memoised per `ExprId`. (When the encoder wrote
+        // the DAG out as a tree, a 120-node input passed this check and then
+        // tried to build ~10⁸ terms.)
         if let Some(limit) = config.node_limit {
             let n = count_dag_nodes(expr, pool);
             if n > limit {
@@ -958,18 +1387,22 @@ mod backend {
         }
 
         let mut encoder = Encoder::new(pool);
-        let expr_str = encoder.encode(expr);
-        let program = egglog_program(&expr_str, config);
+        let encoded = encoder.encode(expr);
+        let (prelude, schedule) = egglog_program(&encoded.lets, &encoded.root, config);
+        let result = run_and_extract(&prelude, &schedule, pool, encoder.atoms());
 
-        let result: Option<ExprId> = (|| {
-            let mut egraph = egglog::EGraph::default();
-            let outputs = egraph.parse_and_run_program(None, &program).ok()?;
-            let term_str = outputs.into_iter().last()?;
-            parse_egglog_term(&term_str, pool, encoder.atoms())
-        })();
+        post_process(result.unwrap_or(expr), expr, pool)
+    }
 
-        let simplified = result.unwrap_or(expr);
-        let simplified = fold_numeric_pow(simplified, pool);
+    /// The post-extraction passes and derivation log shared by the
+    /// implementation and its test reference.
+    fn post_process(
+        extracted: ExprId,
+        expr: ExprId,
+        pool: &ExprPool,
+    ) -> crate::deriv::log::DerivedExpr<ExprId> {
+        use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
+        let simplified = fold_numeric_pow(extracted, pool);
         // RW-3: apply linear canonizer as a post-extraction pass.
         let simplified = canonicalize_linear(simplified, pool);
         // Final post-extraction pass: apply only the cheap constant-folding
@@ -986,6 +1419,89 @@ mod backend {
             log.push(RewriteStep::simple("egraph_simplify", expr, simplified));
         }
         DerivedExpr::with_log(simplified, log)
+    }
+
+    // -----------------------------------------------------------------------
+    // Test reference: the pre-DAG pipeline
+    // -----------------------------------------------------------------------
+
+    /// The tree serialiser exactly as it was before the DAG encoder:
+    /// `format!`-folded, no sharing. Kept to pin [`Encoder::encode`]'s tree
+    /// path byte-for-byte.
+    #[cfg(test)]
+    pub(super) fn encode_tree_reference(enc: &mut Encoder<'_>, expr: ExprId) -> String {
+        match classify(enc.pool, expr) {
+            Node::Num(n) => format!("(Num {n})"),
+            Node::Atom => {
+                let mut s = String::new();
+                enc.write_atom(expr, &mut s);
+                s
+            }
+            Node::Add(args) => {
+                let mut it = args.into_iter();
+                let init = encode_tree_reference(enc, it.next().unwrap());
+                it.fold(init, |acc, id| {
+                    format!("(Add {acc} {})", encode_tree_reference(enc, id))
+                })
+            }
+            Node::Mul(args) => {
+                let mut it = args.into_iter();
+                let init = encode_tree_reference(enc, it.next().unwrap());
+                it.fold(init, |acc, id| {
+                    format!("(Mul {acc} {})", encode_tree_reference(enc, id))
+                })
+            }
+            Node::Pow(base, exp) => format!(
+                "(Pow {} {})",
+                encode_tree_reference(enc, base),
+                encode_tree_reference(enc, exp)
+            ),
+            Node::Known(ctor, arg) => format!("({ctor} {})", encode_tree_reference(enc, arg)),
+            Node::Fn(name, arg) => format!("(Fn \"{name}\" {})", encode_tree_reference(enc, arg)),
+        }
+    }
+
+    /// Test-only: the pipeline as it was before this module went DAG-sized —
+    /// the input written out as a tree, a fresh `EGraph` running the whole
+    /// program, and the printed extraction re-parsed as text. Exponential on
+    /// shared inputs; the differential tests keep them small.
+    #[cfg(test)]
+    pub(super) fn simplify_egraph_reference(
+        expr: ExprId,
+        pool: &ExprPool,
+        config: &super::EgraphConfig,
+    ) -> ExprId {
+        use crate::kernel::expr_props::expr_contains_noncommutative_symbol;
+        if expr_contains_noncommutative_symbol(pool, expr)
+            || has_provably_zero_denominator(expr, pool)
+        {
+            return super::super::engine::simplify(expr, pool).value;
+        }
+        let mut encoder = Encoder::new(pool);
+        let expr_str = encode_tree_reference(&mut encoder, expr);
+        let (prelude, schedule) = egglog_program("", &expr_str, config);
+        let result: Option<ExprId> = (|| {
+            let mut egraph = egglog::EGraph::default();
+            let outputs = egraph
+                .parse_and_run_program(None, &format!("{prelude}{schedule}"))
+                .ok()?;
+            let term_str = outputs.into_iter().last()?;
+            parse_egglog_term(&term_str, pool, encoder.atoms())
+        })();
+        post_process(result.unwrap_or(expr), expr, pool).value
+    }
+
+    /// Test-only: the new encoder's output, for byte-level comparison.
+    #[cfg(test)]
+    pub(super) fn encode_for_test(pool: &ExprPool, expr: ExprId) -> (String, String) {
+        let mut enc = Encoder::new(pool);
+        let e = enc.encode(expr);
+        (e.lets, e.root)
+    }
+
+    #[cfg(test)]
+    pub(super) fn encode_tree_reference_for_test(pool: &ExprPool, expr: ExprId) -> String {
+        encode_tree_reference(&mut Encoder::new(pool), expr)
     }
 }
 
@@ -2016,6 +2532,332 @@ mod opaque_atom_proptests {
                     );
                 }
             }
+        }
+
+        /// The single-buffer tree writer is byte-for-byte the old
+        /// `format!`-folded encoder whenever the input is tree-shaped.
+        #[test]
+        fn tree_encoding_is_byte_identical(ast in ast_strategy()) {
+            let pool = ExprPool::new();
+            let x = pool.symbol("x", Domain::Real);
+            let y = pool.symbol("y", Domain::Real);
+            let expr = build(&ast, &pool, x, y);
+            let (lets, root) = backend::encode_for_test(&pool, expr);
+            if lets.is_empty() {
+                prop_assert_eq!(root, backend::encode_tree_reference_for_test(&pool, expr));
+            }
+        }
+
+        /// Differential: the DAG-sized pipeline (let-bound sharing, cached
+        /// prelude, `TermDag` decoding, memoised post-passes) returns exactly
+        /// the `ExprId` the old tree-text pipeline did — on plain inputs and
+        /// on inputs built to share interior subterms.
+        #[test]
+        fn dag_pipeline_matches_tree_reference(
+            a in ast_strategy(),
+            b in ast_strategy(),
+            shape in 0u8..4,
+            disjoint in any::<bool>(),
+            trig in any::<bool>(),
+        ) {
+            let pool = ExprPool::new();
+            let x = pool.symbol("x", Domain::Real);
+            let y = pool.symbol("y", Domain::Real);
+            let ea = build(&a, &pool, x, y);
+            let eb = build(&b, &pool, x, y);
+            let expr = match shape {
+                0 => ea,
+                // `ea` reached along two parent edges.
+                1 => pool.add(vec![pool.mul(vec![ea, eb]), pool.func("sin", vec![ea])]),
+                2 => pool.mul(vec![pool.func("sin", vec![ea]), pool.func("cos", vec![ea])]),
+                _ => pool.add(vec![
+                    pool.pow(pool.add(vec![ea, eb]), pool.integer(2_i32)),
+                    pool.mul(vec![pool.integer(-1_i32), pool.add(vec![ea, eb])]),
+                    ea,
+                ]),
+            };
+            let config = EgraphConfig {
+                disjoint_schedule: disjoint,
+                include_trig_rules: trig,
+                ..EgraphConfig::default()
+            };
+            let new = simplify_egraph_with(expr, &pool, &config, &SizeCost).value;
+            let old = backend::simplify_egraph_reference(expr, &pool, &config);
+            prop_assert_eq!(
+                new,
+                old,
+                "{}: new {} vs reference {}",
+                pool.display(expr),
+                pool.display(new),
+                pool.display(old)
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DAG-sized encoding, prelude cache and node-limit guard
+// ---------------------------------------------------------------------------
+
+#[cfg(all(test, feature = "egraph"))]
+mod dag_tests {
+    use super::*;
+    use crate::kernel::{Domain, ExprPool};
+    use std::time::{Duration, Instant};
+
+    /// `e_{k+1} = sin(e_k)·cos(e_k)`: `3k + 3` distinct nodes, `~2^k` as a tree.
+    fn sin_cos_dag(pool: &ExprPool, depth: usize) -> ExprId {
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let mut e = pool.add(vec![x, y]);
+        for _ in 0..depth {
+            e = pool.mul(vec![pool.func("sin", vec![e]), pool.func("cos", vec![e])]);
+        }
+        e
+    }
+
+    /// Chebyshev recurrence `T_{n+1} = 2x·T_n − T_{n−1}`, unexpanded: every
+    /// `T_n` is shared by the next two.
+    fn chebyshev_dag(pool: &ExprPool, n: usize) -> ExprId {
+        let x = pool.symbol("x", Domain::Real);
+        let (mut prev, mut cur) = (pool.integer(1_i32), x);
+        for _ in 1..n {
+            let next = pool.add(vec![
+                pool.mul(vec![pool.integer(2_i32), x, cur]),
+                pool.mul(vec![pool.integer(-1_i32), prev]),
+            ]);
+            prev = cur;
+            cur = next;
+        }
+        cur
+    }
+
+    fn dag_size(pool: &ExprPool, root: ExprId) -> usize {
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            match pool.get(id) {
+                crate::kernel::ExprData::Add(a) | crate::kernel::ExprData::Mul(a) => {
+                    stack.extend(a)
+                }
+                crate::kernel::ExprData::Func { args, .. } => stack.extend(args),
+                crate::kernel::ExprData::Pow { base, exp } => stack.extend([base, exp]),
+                _ => {}
+            }
+        }
+        seen.len()
+    }
+
+    /// Depth 30 is a ~2³⁰-node tree. Before the DAG encoder, depth 13 already
+    /// took ~190 ms and each level multiplied that by ~4.
+    #[test]
+    fn deep_sin_cos_dag_is_polynomial() {
+        let pool = ExprPool::new();
+        let e = sin_cos_dag(&pool, 30);
+        let t = Instant::now();
+        let out = simplify_egraph(e, &pool).value;
+        let took = t.elapsed();
+        assert!(
+            took < Duration::from_secs(1),
+            "depth-30 sin·cos DAG took {took:?}"
+        );
+        // Nothing to simplify: the input comes back as itself.
+        assert_eq!(out, e);
+    }
+
+    #[test]
+    fn deep_chebyshev_dag_is_polynomial() {
+        let pool = ExprPool::new();
+        let e = chebyshev_dag(&pool, 40);
+        let t = Instant::now();
+        let out = simplify_egraph(e, &pool).value;
+        let took = t.elapsed();
+        assert!(took < Duration::from_secs(1), "T_40 DAG took {took:?}");
+        assert!(dag_size(&pool, out) <= 2 * dag_size(&pool, e));
+    }
+
+    /// The shared encoding still simplifies *inside* shared subterms, and
+    /// the rewrite reaches every parent: `s = x + 0` appears under both
+    /// `sin` and `cos`.
+    #[test]
+    fn shared_subterm_simplifies_everywhere() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let s = pool.add(vec![x, pool.integer(0_i32)]);
+        let mut e = s;
+        for _ in 0..20 {
+            e = pool.mul(vec![pool.func("sin", vec![e]), pool.func("cos", vec![e])]);
+        }
+        let mut want = x;
+        for _ in 0..20 {
+            want = pool.mul(vec![
+                pool.func("sin", vec![want]),
+                pool.func("cos", vec![want]),
+            ]);
+        }
+        assert_eq!(simplify_egraph(e, &pool).value, want);
+    }
+
+    /// A shared `sin²+cos²` collapses to 1 in every position.
+    #[test]
+    fn shared_trig_identity_collapses() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let two = pool.integer(2_i32);
+        let one_ish = pool.add(vec![
+            pool.pow(pool.func("sin", vec![x]), two),
+            pool.pow(pool.func("cos", vec![x]), two),
+        ]);
+        let e = pool.add(vec![
+            pool.func("tan", vec![one_ish]),
+            pool.pow(one_ish, two),
+        ]);
+        let want = pool.add(vec![
+            pool.func("tan", vec![pool.integer(1_i32)]),
+            pool.integer(1_i32),
+        ]);
+        assert_eq!(simplify_egraph(e, &pool).value, want);
+    }
+
+    /// The node-limit guard counts distinct nodes, and that is now the real
+    /// size of the work: a 120-node DAG whose tree has ~2³⁹ nodes both
+    /// passes a limit of 200 *and* finishes promptly…
+    #[test]
+    fn node_limit_bounds_actual_work() {
+        let pool = ExprPool::new();
+        let e = sin_cos_dag(&pool, 39);
+        let n = dag_size(&pool, e);
+        assert!(n <= 125, "{n}");
+        let config = EgraphConfig {
+            node_limit: Some(200),
+            ..EgraphConfig::default()
+        };
+        let t = Instant::now();
+        let r = simplify_egraph_with(e, &pool, &config, &SizeCost);
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        assert_eq!(r.value, e);
+        assert!(r
+            .log
+            .steps()
+            .iter()
+            .all(|s| s.rule_name != "egraph_node_limit_exceeded"));
+
+        // …while a limit below the DAG size still refuses it up front.
+        let tight = EgraphConfig {
+            node_limit: Some(n - 1),
+            ..EgraphConfig::default()
+        };
+        let r = simplify_egraph_with(e, &pool, &tight, &SizeCost);
+        assert_eq!(r.value, e);
+        assert!(r
+            .log
+            .steps()
+            .iter()
+            .any(|s| s.rule_name == "egraph_node_limit_exceeded"));
+    }
+
+    /// The prelude cache is keyed by everything that changes the program,
+    /// and a cached e-graph carries nothing from one call into the next.
+    #[test]
+    fn prelude_cache_does_not_leak_between_configs_or_calls() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let two = pool.integer(2_i32);
+        let pyth = pool.add(vec![
+            pool.pow(pool.func("sin", vec![x]), two),
+            pool.pow(pool.func("cos", vec![x]), two),
+        ]);
+        let one = pool.integer(1_i32);
+        let on = EgraphConfig::default();
+        let off = EgraphConfig {
+            include_trig_rules: false,
+            ..EgraphConfig::default()
+        };
+        let joint = EgraphConfig {
+            disjoint_schedule: false,
+            ..EgraphConfig::default()
+        };
+        let joint_off = EgraphConfig {
+            disjoint_schedule: false,
+            include_trig_rules: false,
+            ..EgraphConfig::default()
+        };
+        for _ in 0..3 {
+            assert_eq!(simplify_egraph_with(pyth, &pool, &on, &SizeCost).value, one);
+            assert_ne!(
+                simplify_egraph_with(pyth, &pool, &off, &SizeCost).value,
+                one
+            );
+            assert_eq!(
+                simplify_egraph_with(pyth, &pool, &joint, &SizeCost).value,
+                one
+            );
+            assert_ne!(
+                simplify_egraph_with(pyth, &pool, &joint_off, &SizeCost).value,
+                one
+            );
+        }
+        // An unrelated expression right after must not see the previous
+        // call's `__expr` or e-classes: `x + 0` is still just `x`, and a
+        // bare `sin(x)` is not unified with anything.
+        let x0 = pool.add(vec![x, pool.integer(0_i32)]);
+        assert_eq!(simplify_egraph(x0, &pool).value, x);
+        let sx = pool.func("sin", vec![x]);
+        assert_eq!(simplify_egraph(sx, &pool).value, sx);
+    }
+
+    /// Timing harness for the PR description; run with
+    /// `cargo test --release --features egraph -- --ignored egraph_dag_timings --nocapture`.
+    #[test]
+    #[ignore]
+    fn egraph_dag_timings() {
+        fn best<F: FnMut()>(reps: usize, mut f: F) -> f64 {
+            let mut b = f64::MAX;
+            for _ in 0..reps {
+                let t = Instant::now();
+                f();
+                b = b.min(t.elapsed().as_secs_f64());
+            }
+            b * 1e3
+        }
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let e0 = pool.add(vec![x, pool.integer(0_i32)]);
+        let t = best(50, || {
+            std::hint::black_box(simplify_egraph(e0, &pool));
+        });
+        println!("x + 0: {t:.3} ms");
+        let two = pool.integer(2_i32);
+        let pyth = pool.add(vec![
+            pool.pow(pool.func("sin", vec![x]), two),
+            pool.pow(pool.func("cos", vec![x]), two),
+        ]);
+        let t = best(20, || {
+            std::hint::black_box(simplify_egraph(pyth, &pool));
+        });
+        println!("sin^2 x + cos^2 x: {t:.3} ms");
+        for k in [8usize, 10, 12, 20, 30] {
+            let e = sin_cos_dag(&pool, k);
+            let t = best(3, || {
+                std::hint::black_box(simplify_egraph(e, &pool));
+            });
+            println!(
+                "sin·cos DAG depth {k} ({} nodes): {t:.3} ms",
+                dag_size(&pool, e)
+            );
+        }
+        for n in [8usize, 10, 12, 14, 20, 40] {
+            let e = chebyshev_dag(&pool, n);
+            let t = best(3, || {
+                std::hint::black_box(simplify_egraph(e, &pool));
+            });
+            println!(
+                "Chebyshev DAG n={n} ({} nodes): {t:.3} ms",
+                dag_size(&pool, e)
+            );
         }
     }
 }
