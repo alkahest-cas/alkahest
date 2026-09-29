@@ -176,10 +176,15 @@ Two things that follow, and one that does not:
 - **Cancellation is cooperative, not preemptive.** The flag is observed at the
   checkpoints listed above, so the call stops at the next one — not instantly. An
   engine stretch with no checkpoint runs to its end.
-- **Other calls still hold the GIL.** Only `integrate` and `limit` release it (plus
-  the parallel simplifiers and the compiled-function batch paths, for unrelated
-  reasons). `request_cancel()` cannot reach a running Gröbner basis or homotopy
-  continuation, because those do not check the budget at all yet.
+- **Releasing the GIL is not the same as honouring the budget.** The other heavy
+  entry points — `simplify` and its variants, `diff`, `solve`, `cancel` /
+  `together` / `apart`, the `sum_*` / `product_*` family, `rsolve`, `evaluate`,
+  `factor_z`, `GroebnerBasis.compute*` and the symbolic `Matrix` operations — now
+  release the GIL for their core call too, so a thread pool overlaps them. But
+  `request_cancel()` still cannot stop a running Gröbner basis or homotopy
+  continuation, because those do not check the budget at all yet. The work stays
+  on the calling thread either way, so the thread-local budget frame, ambient
+  assumptions and every `*_side_conditions()` channel are the caller's.
 - **Nothing about pool safety changes.** `ExprPool` is `Send + Sync` and interns
   through a lock-free index; releasing the GIL around a call that holds only a shared
   `&ExprPool` is strictly weaker than the concurrent Rayon access `simplify_par`

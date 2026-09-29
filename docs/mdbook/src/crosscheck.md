@@ -239,9 +239,9 @@ to a few MB and then stops; that part is bounded.) See
 [`ExprPool` never reclaims](./budgets.md#exprpool-never-reclaims).
 
 **Neither side of a check is bounded, and this module does not pretend otherwise.** Most
-heavy engines hold the GIL, so a non-terminating call in one of them cannot be timed out
-from Python — a worker thread cannot be stopped, and abandoning one wedges the
-interpreter just the same. SymPy is no better placed. So:
+heavy engines have no cooperative checkpoint, so a non-terminating call in one of them
+cannot be timed out from Python — a worker thread cannot be stopped, and abandoning one
+leaves it burning a core (and holding its pool) for the life of the process. SymPy is no better placed. So:
 
 - run the nightly job under an **OS-level timeout**;
 - wrap the sweep in `context(budget=…)` for the engines that *are* cooperative

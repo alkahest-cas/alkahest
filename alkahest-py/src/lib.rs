@@ -104,6 +104,7 @@ use alkahest_core::pattern::{
 use alkahest_core::{compile_cuda as core_compile_cuda, CudaCompiledFn as CoreCudaCompiledFn};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::OnceLock;
 // V2-1 — Modular / CRT framework
 use alkahest_core::deriv::RewriteStep;
 use alkahest_core::modular::{
@@ -2597,25 +2598,35 @@ impl PyAssumptions {
     }
 
     /// Simplify an expression under this explicit assumption context.
-    fn simplify(&self, py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedResult> {
-        if !expr.pool.is(&self.pool) {
+    ///
+    /// Takes `slf` rather than `&self` so the borrow of this object is released
+    /// before the GIL is: the core call runs on a copy of the context (a couple
+    /// of small vectors), and a `refine` on another thread meanwhile neither
+    /// waits on this call nor meets a held borrow.
+    fn simplify(
+        slf: &Bound<'_, Self>,
+        py: Python<'_>,
+        expr: PyRef<PyExpr>,
+    ) -> PyResult<PyDerivedResult> {
+        let (pool_py, ctx) = {
+            let this = slf.borrow();
+            (this.pool.clone_ref(py), this.inner.clone())
+        };
+        if !expr.pool.is(&pool_py) {
             return Err(pool_mismatch_err());
         }
         let derived = {
-            let pool = self.pool.borrow(py);
+            let pool = pool_py.borrow(py);
             // Not `guard_simplify_depth`: explicit facts send *every* input
             // through the colored e-graph, so the recursion this bounds is
             // taken unconditionally here rather than only for expressions
             // carrying a static domain.
             guard_depth(&pool.inner, expr.id)?;
-            self.inner.simplify(expr.id, &pool.inner)
+            // GIL released for the core call; see `py_integrate`.
+            let (id, pool) = (expr.id, &pool.inner);
+            py.allow_threads(move || ctx.simplify(id, pool))
         };
-        Ok(make_derived_result(
-            py,
-            derived,
-            self.pool.clone_ref(py),
-            None,
-        ))
+        Ok(make_derived_result(py, derived, pool_py, None))
     }
 
     /// True when this context has a strict-positivity fact for `expr` —
@@ -2689,6 +2700,9 @@ impl PyAssumptions {
 const RESULT_SCHEMA_VERSION: u32 = 1;
 const STEPS_SCHEMA_VERSION: u32 = 1;
 
+/// One rendered derivation step: `(rule, before, after, side_conditions)`.
+type StepText = (String, String, String, Vec<String>);
+
 /// Inclusive `(lo, hi)` bounds on a definite Gosper sum; `None` is indefinite.
 type GosperBounds = Option<(ExprId, ExprId)>;
 /// `(term, k, bounds)` for a Gosper sum. See [`GosperBounds`].
@@ -2697,8 +2711,19 @@ type GosperCertInput = (ExprId, ExprId, GosperBounds);
 #[pyclass(name = "DerivedResult")]
 struct PyDerivedResult {
     value: PyExpr,
-    derivation: String,
-    steps_raw: Vec<(String, String, String, Vec<String>)>,
+    /// `.derivation`, rendered from `raw.log` on first access.
+    ///
+    /// Rendering is lazy because it is not free: `diff` of a 200-term
+    /// polynomial logs ~1 400 steps, and printing every `before`/`after` of
+    /// them — twice, once here and once for `.steps` — was ~40% of the call,
+    /// paid by every caller whether or not it ever looked at the log. The text
+    /// is a pure function of `raw.log` and the (append-only, immutable-node)
+    /// pool, so rendering it later produces exactly the string rendering it
+    /// eagerly did.
+    derivation_text: OnceLock<String>,
+    /// `(rule, before, after, side_conditions)` per step, backing `.steps`;
+    /// rendered on first access for the same reason as `derivation_text`.
+    steps_text: OnceLock<Vec<StepText>>,
     raw: DerivedExpr<ExprId>,
     /// Differentiation variable when this result comes from :func:`diff`.
     wrt: Option<ExprId>,
@@ -2739,14 +2764,17 @@ impl PyDerivedResult {
     }
 
     #[getter]
-    fn derivation(&self) -> &str {
-        &self.derivation
+    fn derivation(&self, py: Python<'_>) -> &str {
+        self.derivation_text.get_or_init(|| {
+            let pool = self.value.pool.borrow(py);
+            render_derivation(&pool.inner, &self.raw.log)
+        })
     }
 
     #[getter]
     fn steps<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
         let list = PyList::empty_bound(py);
-        for (rule, before, after, conds) in &self.steps_raw {
+        for (rule, before, after, conds) in self.steps_text(py) {
             let d = PyDict::new_bound(py);
             d.set_item("rule", rule).unwrap();
             d.set_item("before", before).unwrap();
@@ -3010,9 +3038,22 @@ impl PyDerivedResult {
             .unwrap();
 
         let side_conditions = PyList::empty_bound(py);
-        for (_, _, _, conditions) in &self.steps_raw {
-            for condition in conditions {
-                side_conditions.append(condition).unwrap();
+        if let Some(steps) = self.steps_text.get() {
+            for (_, _, _, conditions) in steps {
+                for condition in conditions {
+                    side_conditions.append(condition).unwrap();
+                }
+            }
+        } else {
+            // Render only the side conditions — the same strings `.steps`
+            // would carry — rather than forcing every `before`/`after` too.
+            let pool = self.value.pool.borrow(py);
+            for step in self.raw.log.steps() {
+                for condition in &step.side_conditions {
+                    side_conditions
+                        .append(render_side_condition_or_depth(&pool.inner, condition))
+                        .unwrap();
+                }
             }
         }
         metadata
@@ -3160,6 +3201,34 @@ fn derived_result_mode_is_compact(mode: &str) -> PyResult<bool> {
 }
 
 impl PyDerivedResult {
+    /// A result for `raw` in `pool_py`, with no certificate inputs set and the
+    /// derivation text left to be rendered on first access.
+    fn new(raw: DerivedExpr<ExprId>, pool_py: Py<PyExprPool>, wrt: Option<ExprId>) -> Self {
+        PyDerivedResult {
+            value: PyExpr {
+                id: raw.value,
+                pool: pool_py,
+            },
+            derivation_text: OnceLock::new(),
+            steps_text: OnceLock::new(),
+            raw,
+            wrt,
+            integration_verification_input: None,
+            definite_integration_input: None,
+            tendsto_input: None,
+            gosper_input: None,
+            product_input: None,
+        }
+    }
+
+    /// The per-step text behind `.steps`, rendered on first access.
+    fn steps_text(&self, py: Python<'_>) -> &[StepText] {
+        self.steps_text.get_or_init(|| {
+            let pool = self.value.pool.borrow(py);
+            render_steps(&pool.inner, &self.raw.log)
+        })
+    }
+
     /// Lean source for a `Filter.Tendsto` certificate, when `tendsto_input`
     /// is set and the emitter recognises the pattern without `sorry`.
     fn tendsto_lean_source(&self, py: Python<'_>) -> Option<String> {
@@ -3206,7 +3275,7 @@ impl PyDerivedResult {
     /// `s` entirely when `side_conditions` is empty.
     fn steps_dict_list<'py>(&self, py: Python<'py>, compact: bool) -> Bound<'py, PyList> {
         let list = PyList::empty_bound(py);
-        for (rule, before, after, conds) in &self.steps_raw {
+        for (rule, before, after, conds) in self.steps_text(py) {
             let d = PyDict::new_bound(py);
             if compact {
                 d.set_item("r", rule).unwrap();
@@ -3301,50 +3370,33 @@ fn render_derivation(pool: &ExprPool, log: &alkahest_core::DerivationLog) -> Str
     out
 }
 
+/// Every step of `log` as `(rule, before, after, side_conditions)` text.
+fn render_steps(pool: &ExprPool, log: &alkahest_core::DerivationLog) -> Vec<StepText> {
+    log.steps()
+        .iter()
+        .map(|step| {
+            let before_str = render_expr_or_depth(pool, step.before);
+            let after_str = render_expr_or_depth(pool, step.after);
+            let conds: Vec<String> = step
+                .side_conditions
+                .iter()
+                .map(|c| render_side_condition_or_depth(pool, c))
+                .collect();
+            (step.rule_name.to_string(), before_str, after_str, conds)
+        })
+        .collect()
+}
+
+/// Wrap a core result for Python. Renders nothing: `.derivation` / `.steps`
+/// are produced from the stored log on first access (see
+/// [`PyDerivedResult::derivation_text`]).
 fn make_derived_result(
-    py: Python<'_>,
+    _py: Python<'_>,
     derived: alkahest_core::DerivedExpr<alkahest_core::ExprId>,
     pool_py: Py<PyExprPool>,
     wrt: Option<ExprId>,
 ) -> PyDerivedResult {
-    let derivation = {
-        let pool = pool_py.borrow(py);
-        render_derivation(&pool.inner, &derived.log)
-    };
-    let steps_raw: Vec<_> = {
-        let pool = pool_py.borrow(py);
-        derived
-            .log
-            .steps()
-            .iter()
-            .map(|step| {
-                let before_str = render_expr_or_depth(&pool.inner, step.before);
-                let after_str = render_expr_or_depth(&pool.inner, step.after);
-                let conds: Vec<String> = step
-                    .side_conditions
-                    .iter()
-                    .map(|c| render_side_condition_or_depth(&pool.inner, c))
-                    .collect();
-                (step.rule_name.to_string(), before_str, after_str, conds)
-            })
-            .collect()
-    };
-    let value = PyExpr {
-        id: derived.value,
-        pool: pool_py,
-    };
-    PyDerivedResult {
-        value,
-        derivation,
-        steps_raw,
-        raw: derived,
-        wrt,
-        integration_verification_input: None,
-        definite_integration_input: None,
-        tendsto_input: None,
-        gosper_input: None,
-        product_input: None,
-    }
+    PyDerivedResult::new(derived, pool_py, wrt)
 }
 
 /// Post-process a :class:`DerivedResult` with algebraic :func:`simplify` when
@@ -3358,13 +3410,16 @@ fn py_derived_result_context_simplify(
     let pool_py = dr.value.pool.clone_ref(py);
     let simplified = {
         let pool = pool_py.borrow(py);
-        core_simplify(dr.value.id, &pool.inner)
+        let (id, pool) = (dr.value.id, &pool.inner);
+        py.allow_threads(|| core_simplify(id, pool))
     };
     if simplified.value == dr.value.id {
         return Ok(PyDerivedResult {
             value: dr.value.clone(),
-            derivation: dr.derivation.clone(),
-            steps_raw: dr.steps_raw.clone(),
+            // Cloning a not-yet-rendered cell is free; a rendered one carries
+            // its text over rather than rendering it a second time.
+            derivation_text: dr.derivation_text.clone(),
+            steps_text: dr.steps_text.clone(),
             raw: dr.raw.clone(),
             wrt: dr.wrt,
             integration_verification_input: dr.integration_verification_input,
@@ -3782,7 +3837,11 @@ fn py_simplify(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedResult>
     let derived = {
         let pool = expr.pool.borrow(py);
         guard_simplify_depth(&pool.inner, expr.id)?;
-        core_simplify(expr.id, &pool.inner)
+        // GIL released for the core call; see `py_integrate` for why this is
+        // sound (and why budgets / assumption scopes / cancellation still
+        // apply: the work stays on this thread).
+        let (id, pool) = (expr.id, &pool.inner);
+        py.allow_threads(|| core_simplify(id, pool))
     };
     let pool_py = expr.pool.clone_ref(py);
     Ok(make_derived_result(py, derived, pool_py, None))
@@ -3882,7 +3941,8 @@ fn py_simplify_egraph(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerived
     let derived = {
         let pool = expr.pool.borrow(py);
         guard_depth(&pool.inner, expr.id)?;
-        core_simplify_egraph(expr.id, &pool.inner)
+        let (id, pool) = (expr.id, &pool.inner);
+        py.allow_threads(|| core_simplify_egraph(id, pool))
     };
     let pool_py = expr.pool.clone_ref(py);
     Ok(make_derived_result(py, derived, pool_py, None))
@@ -3902,7 +3962,8 @@ fn py_simplify_egraph_with(
     let derived = {
         let pool = expr.pool.borrow(py);
         guard_depth(&pool.inner, expr.id)?;
-        core_simplify_egraph_with(expr.id, &pool.inner, &config.inner, &SizeCost)
+        let (id, pool, config) = (expr.id, &pool.inner, &config.inner);
+        py.allow_threads(|| core_simplify_egraph_with(id, pool, config, &SizeCost))
     };
     let pool_py = expr.pool.clone_ref(py);
     Ok(make_derived_result(py, derived, pool_py, None))
@@ -3914,7 +3975,10 @@ fn py_diff(py: Python<'_>, expr: PyRef<PyExpr>, var: PyRef<PyExpr>) -> PyResult<
     let derived = {
         let pool = expr.pool.borrow(py);
         guard_depth(&pool.inner, expr.id)?;
-        core_diff(expr.id, var.id, &pool.inner).map_err(diff_error_to_py)?
+        // GIL released for the core call; see `py_integrate`.
+        let (id, var_id, pool) = (expr.id, var.id, &pool.inner);
+        py.allow_threads(|| core_diff(id, var_id, pool))
+            .map_err(diff_error_to_py)?
     };
     let pool_py = expr.pool.clone_ref(py);
     Ok(make_derived_result(py, derived, pool_py, Some(var.id)))
@@ -3930,7 +3994,9 @@ fn py_diff_forward(
     let derived = {
         let pool = expr.pool.borrow(py);
         guard_depth(&pool.inner, expr.id)?;
-        core_diff_forward(expr.id, var.id, &pool.inner).map_err(diff_error_to_py)?
+        let (id, var_id, pool) = (expr.id, var.id, &pool.inner);
+        py.allow_threads(|| core_diff_forward(id, var_id, pool))
+            .map_err(diff_error_to_py)?
     };
     let pool_py = expr.pool.clone_ref(py);
     Ok(make_derived_result(py, derived, pool_py, Some(var.id)))
@@ -4223,9 +4289,10 @@ impl PyUniPoly {
     }
 
     /// Factor over ℤ (FLINT).
-    fn factor_z(&self) -> PyResult<PyUniPolyFactorization> {
-        self.inner
-            .factor_z()
+    fn factor_z(&self, py: Python<'_>) -> PyResult<PyUniPolyFactorization> {
+        // GIL released for the FLINT call; see `py_integrate`.
+        let poly = &self.inner;
+        py.allow_threads(|| poly.factor_z())
             .map(|inner| PyUniPolyFactorization {
                 inner,
                 original: self.inner.clone(),
@@ -4347,9 +4414,10 @@ impl PyMultiPoly {
     }
 
     /// Factor over ℤ (multivariate FLINT).
-    fn factor_z(&self) -> PyResult<PyMultiPolyFactorization> {
-        self.inner
-            .factor_z()
+    fn factor_z(&self, py: Python<'_>) -> PyResult<PyMultiPolyFactorization> {
+        // GIL released for the FLINT call; see `py_integrate`.
+        let poly = &self.inner;
+        py.allow_threads(|| poly.factor_z())
             .map(|inner| PyMultiPolyFactorization {
                 inner,
                 original: self.inner.clone(),
@@ -4571,7 +4639,9 @@ fn py_integrate_definite(
 ) -> PyResult<PyDerivedResult> {
     let derived = {
         let pool = expr.pool.borrow(py);
-        core_integrate_definite(expr.id, var.id, lower.id, upper.id, &pool.inner)
+        // GIL released for the core call; see `py_integrate`.
+        let (id, var_id, lo, hi, pool) = (expr.id, var.id, lower.id, upper.id, &pool.inner);
+        py.allow_threads(|| core_integrate_definite(id, var_id, lo, hi, pool))
             .map_err(integrate_error_to_py)?
     };
     let pool_py = expr.pool.clone_ref(py);
@@ -4719,7 +4789,10 @@ fn py_apart(py: Python<'_>, expr: PyRef<PyExpr>, var: PyRef<PyExpr>) -> PyResult
     let id = {
         let pool = pool_py.borrow(py);
         guard_depth(&pool.inner, expr.id)?;
-        let out = core_apart(expr.id, var.id, &pool.inner);
+        // GIL released for the core call; see `py_integrate`. The side
+        // conditions are drained below, on this same thread.
+        let (id, var_id, pool_ref) = (expr.id, var.id, &pool.inner);
+        let out = py.allow_threads(|| core_apart(id, var_id, pool_ref));
         // Capture on both paths: a caller must be able to read the hypotheses
         // of the call that just happened, not of some earlier one.
         capture_apart_side_conditions(&pool.inner);
@@ -6013,7 +6086,10 @@ fn py_sum_indefinite(
     let derived = {
         let pool = expr.pool.borrow(py);
         guard_depth(&pool.inner, expr.id)?;
-        core_sum_indefinite(expr.id, k.id, &pool.inner).map_err(sum_error_to_py)?
+        // GIL released for the core call; see `py_integrate`.
+        let (id, k_id, pool) = (expr.id, k.id, &pool.inner);
+        py.allow_threads(|| core_sum_indefinite(id, k_id, pool))
+            .map_err(sum_error_to_py)?
     };
     let mut result = make_derived_result(py, derived, expr.pool.clone_ref(py), None);
     result.gosper_input = Some((expr.id, k.id, None));
@@ -6032,7 +6108,9 @@ fn py_sum_definite(
     let derived = {
         let pool = expr.pool.borrow(py);
         guard_depth(&pool.inner, expr.id)?;
-        core_sum_definite(expr.id, k.id, lo.id, hi.id, &pool.inner).map_err(sum_error_to_py)?
+        let (id, k_id, lo_id, hi_id, pool) = (expr.id, k.id, lo.id, hi.id, &pool.inner);
+        py.allow_threads(|| core_sum_definite(id, k_id, lo_id, hi_id, pool))
+            .map_err(sum_error_to_py)?
     };
     let mut result = make_derived_result(py, derived, expr.pool.clone_ref(py), None);
     // Infinite bounds are Basel-family table lookups, not Gosper telescopes.
@@ -6056,7 +6134,9 @@ fn py_product_indefinite(
     let derived = {
         let pool = expr.pool.borrow(py);
         guard_depth(&pool.inner, expr.id)?;
-        core_product_indefinite(expr.id, k.id, &pool.inner).map_err(product_error_to_py)?
+        let (id, k_id, pool) = (expr.id, k.id, &pool.inner);
+        py.allow_threads(|| core_product_indefinite(id, k_id, pool))
+            .map_err(product_error_to_py)?
     };
     Ok(make_derived_result(
         py,
@@ -6078,7 +6158,8 @@ fn py_product_definite(
     let derived = {
         let pool = expr.pool.borrow(py);
         guard_depth(&pool.inner, expr.id)?;
-        core_product_definite(expr.id, k.id, lo.id, hi.id, &pool.inner)
+        let (id, k_id, lo_id, hi_id, pool) = (expr.id, k.id, lo.id, hi.id, &pool.inner);
+        py.allow_threads(|| core_product_definite(id, k_id, lo_id, hi_id, pool))
             .map_err(product_error_to_py)?
     };
     let mut result = make_derived_result(py, derived, expr.pool.clone_ref(py), None);
@@ -6144,15 +6225,13 @@ fn py_rsolve(
     let pool_py = equation.pool.clone_ref(py);
     let id = {
         let pool = pool_py.borrow(py);
-        let raw = core_rsolve(
-            &pool.inner,
-            equation.id,
-            n.id,
-            seq_name,
-            init_storage.as_ref(),
-        )
-        .map_err(rsolve_error_to_py)?;
-        core_simplify(raw, &pool.inner).value
+        // GIL released for the core calls; see `py_integrate`.
+        let (eq_id, n_id, pool, inits) = (equation.id, n.id, &pool.inner, init_storage.as_ref());
+        py.allow_threads(|| {
+            core_rsolve(pool, eq_id, n_id, seq_name, inits)
+                .map(|raw| core_simplify(raw, pool).value)
+        })
+        .map_err(rsolve_error_to_py)?
     };
     Ok(PyExpr { id, pool: pool_py })
 }
@@ -8513,14 +8592,18 @@ fn py_simplify_with(
         // when the expression carries static domain facts, and that recursion
         // segfaults on a deep enough input.
         guard_simplify_depth(&pool.inner, expr.id)?;
-        // Build boxed rules list
-        let boxed: Vec<Box<dyn RewriteRule>> = lhs_rhs
-            .into_iter()
-            .map(|(lhs, rhs)| {
-                Box::new(PatternRule::new(Pattern::from_expr(lhs), rhs)) as Box<dyn RewriteRule>
-            })
-            .collect();
-        core_simplify_with(expr.id, &pool.inner, &boxed, SimplifyConfig::default())
+        // GIL released for the core call; see `py_integrate`. The rule boxes
+        // are built inside the closure: only the `(lhs, rhs)` ids cross.
+        let (id, pool) = (expr.id, &pool.inner);
+        py.allow_threads(move || {
+            let boxed: Vec<Box<dyn RewriteRule>> = lhs_rhs
+                .into_iter()
+                .map(|(lhs, rhs)| {
+                    Box::new(PatternRule::new(Pattern::from_expr(lhs), rhs)) as Box<dyn RewriteRule>
+                })
+                .collect();
+            core_simplify_with(id, pool, &boxed, SimplifyConfig::default())
+        })
     };
     Ok(make_derived_result(py, derived, pool_py, None))
 }
@@ -8534,7 +8617,8 @@ fn py_simplify_expanded(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDeriv
     let derived = {
         let pool = expr.pool.borrow(py);
         guard_simplify_depth(&pool.inner, expr.id)?;
-        alkahest_core::simplify_expanded(expr.id, &pool.inner)
+        let (id, pool) = (expr.id, &pool.inner);
+        py.allow_threads(|| alkahest_core::simplify_expanded(id, pool))
     };
     let pool_py = expr.pool.clone_ref(py);
     Ok(make_derived_result(py, derived, pool_py, None))
@@ -8547,8 +8631,11 @@ fn py_simplify_trig(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedRe
     let derived = {
         let pool = expr.pool.borrow(py);
         guard_simplify_depth(&pool.inner, expr.id)?;
-        let rules = trig_rules();
-        core_simplify_with(expr.id, &pool.inner, &rules, SimplifyConfig::default())
+        let (id, pool) = (expr.id, &pool.inner);
+        py.allow_threads(|| {
+            let rules = trig_rules();
+            core_simplify_with(id, pool, &rules, SimplifyConfig::default())
+        })
     };
     let pool_py = expr.pool.clone_ref(py);
     Ok(make_derived_result(py, derived, pool_py, None))
@@ -8574,7 +8661,8 @@ fn py_simplify_trig_normal_form(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult
     let derived = {
         let pool = expr.pool.borrow(py);
         guard_simplify_depth(&pool.inner, expr.id)?;
-        core_simplify_trig_normal_form(expr.id, &pool.inner)
+        let (id, pool) = (expr.id, &pool.inner);
+        py.allow_threads(|| core_simplify_trig_normal_form(id, pool))
     };
     let pool_py = expr.pool.clone_ref(py);
     Ok(make_derived_result(py, derived, pool_py, None))
@@ -8604,7 +8692,8 @@ fn py_simplify_log_exp(
             Some(a) => a.inner.facts().to_vec(),
             None => Vec::new(),
         };
-        core_simplify_log_exp(expr.id, &pool.inner, &facts)
+        let (id, pool) = (expr.id, &pool.inner);
+        py.allow_threads(|| core_simplify_log_exp(id, pool, &facts))
     };
     let pool_py = expr.pool.clone_ref(py);
     Ok(make_derived_result(py, derived, pool_py, None))
@@ -9147,7 +9236,11 @@ impl PyMatrix {
 
     fn det(&self, py: Python<'_>) -> PyResult<PyExpr> {
         let pool = self.pool.borrow(py);
-        let d = self.inner.det(&pool.inner).map_err(matrix_error_to_py)?;
+        // GIL released for the core call; see `py_integrate`.
+        let (inner, pool_ref) = (&self.inner, &pool.inner);
+        let d = py
+            .allow_threads(|| inner.det(pool_ref))
+            .map_err(matrix_error_to_py)?;
         drop(pool);
         Ok(PyExpr {
             id: d,
@@ -9161,9 +9254,10 @@ impl PyMatrix {
         py: Python<'_>,
     ) -> PyResult<(PyExpr, PyExpr)> {
         let pool = self.pool.borrow(py);
-        let (poly, lam) = self
-            .inner
-            .characteristic_polynomial_lambda_minus_m(&pool.inner)
+        // GIL released for the core call; see `py_integrate`.
+        let (inner, pool_ref) = (&self.inner, &pool.inner);
+        let (poly, lam) = py
+            .allow_threads(|| inner.characteristic_polynomial_lambda_minus_m(pool_ref))
             .map_err(eigen_error_to_py)?;
         drop(pool);
         let pq = self.pool.clone_ref(py);
@@ -9179,9 +9273,10 @@ impl PyMatrix {
     /// Dictionary mapping each eigenvalue expression to its algebraic multiplicity.
     fn eigenvals(&self, py: Python<'_>) -> PyResult<PyObject> {
         let pool = self.pool.borrow(py);
-        let pairs = self
-            .inner
-            .eigenvalues(&pool.inner)
+        // GIL released for the core call; see `py_integrate`.
+        let (inner, pool_ref) = (&self.inner, &pool.inner);
+        let pairs = py
+            .allow_threads(|| inner.eigenvalues(pool_ref))
             .map_err(eigen_error_to_py)?;
         drop(pool);
         let out = PyDict::new_bound(py);
@@ -9199,9 +9294,10 @@ impl PyMatrix {
     /// SymPy-style triples `(eigenvalue, multiplicity, [column eigenvectors …])`.
     fn eigenvects(&self, py: Python<'_>) -> PyResult<Vec<(PyExpr, usize, Vec<PyMatrix>)>> {
         let pool = self.pool.borrow(py);
-        let triples = self
-            .inner
-            .eigenvectors(&pool.inner)
+        // GIL released for the core call; see `py_integrate`.
+        let (inner, pool_ref) = (&self.inner, &pool.inner);
+        let triples = py
+            .allow_threads(|| inner.eigenvectors(pool_ref))
             .map_err(eigen_error_to_py)?;
         drop(pool);
         Ok(triples
@@ -9227,9 +9323,10 @@ impl PyMatrix {
     /// `(P, D)` with `M @ P == P @ D` when the matrix is diagonalizable.
     fn diagonalize(&self, py: Python<'_>) -> PyResult<(PyMatrix, PyMatrix)> {
         let pool = self.pool.borrow(py);
-        let (p, d) = self
-            .inner
-            .diagonalize(&pool.inner)
+        // GIL released for the core call; see `py_integrate`.
+        let (inner, pool_ref) = (&self.inner, &pool.inner);
+        let (p, d) = py
+            .allow_threads(|| inner.diagonalize(pool_ref))
             .map_err(eigen_error_to_py)?;
         drop(pool);
         let pq = self.pool.clone_ref(py);
@@ -9244,9 +9341,10 @@ impl PyMatrix {
 
     fn nullspace(&self, py: Python<'_>) -> PyResult<Vec<PyMatrix>> {
         let pool = self.pool.borrow(py);
-        let bas = self
-            .inner
-            .nullspace(&pool.inner)
+        // GIL released for the core call; see `py_integrate`.
+        let (inner, pool_ref) = (&self.inner, &pool.inner);
+        let bas = py
+            .allow_threads(|| inner.nullspace(pool_ref))
             .map_err(linear_algebra_error_to_py)?;
         drop(pool);
         Ok(bas
@@ -9267,9 +9365,10 @@ impl PyMatrix {
 
     fn rref(&self, py: Python<'_>) -> PyResult<PyMatrix> {
         let pool = self.pool.borrow(py);
-        let r = self
-            .inner
-            .rref(&pool.inner)
+        // GIL released for the core call; see `py_integrate`.
+        let (inner, pool_ref) = (&self.inner, &pool.inner);
+        let r = py
+            .allow_threads(|| inner.rref(pool_ref))
             .map_err(linear_algebra_error_to_py)?;
         drop(pool);
         Ok(PyMatrix {
@@ -9280,9 +9379,10 @@ impl PyMatrix {
 
     fn column_space(&self, py: Python<'_>) -> PyResult<Vec<PyMatrix>> {
         let pool = self.pool.borrow(py);
-        let bas = self
-            .inner
-            .column_space(&pool.inner)
+        // GIL released for the core call; see `py_integrate`.
+        let (inner, pool_ref) = (&self.inner, &pool.inner);
+        let bas = py
+            .allow_threads(|| inner.column_space(pool_ref))
             .map_err(linear_algebra_error_to_py)?;
         drop(pool);
         Ok(bas
@@ -9296,9 +9396,10 @@ impl PyMatrix {
 
     fn row_space(&self, py: Python<'_>) -> PyResult<Vec<PyMatrix>> {
         let pool = self.pool.borrow(py);
-        let bas = self
-            .inner
-            .row_space(&pool.inner)
+        // GIL released for the core call; see `py_integrate`.
+        let (inner, pool_ref) = (&self.inner, &pool.inner);
+        let bas = py
+            .allow_threads(|| inner.row_space(pool_ref))
             .map_err(linear_algebra_error_to_py)?;
         drop(pool);
         Ok(bas
@@ -9312,9 +9413,10 @@ impl PyMatrix {
 
     fn lu(&self, py: Python<'_>) -> PyResult<(PyMatrix, PyMatrix, Vec<usize>)> {
         let pool = self.pool.borrow(py);
-        let lu = self
-            .inner
-            .lu(&pool.inner)
+        // GIL released for the core call; see `py_integrate`.
+        let (inner, pool_ref) = (&self.inner, &pool.inner);
+        let lu = py
+            .allow_threads(|| inner.lu(pool_ref))
             .map_err(linear_algebra_error_to_py)?;
         drop(pool);
         let pq = self.pool.clone_ref(py);
@@ -9333,9 +9435,10 @@ impl PyMatrix {
 
     fn qr(&self, py: Python<'_>) -> PyResult<(PyMatrix, PyMatrix)> {
         let pool = self.pool.borrow(py);
-        let qr = self
-            .inner
-            .qr(&pool.inner)
+        // GIL released for the core call; see `py_integrate`.
+        let (inner, pool_ref) = (&self.inner, &pool.inner);
+        let qr = py
+            .allow_threads(|| inner.qr(pool_ref))
             .map_err(linear_algebra_error_to_py)?;
         drop(pool);
         let pq = self.pool.clone_ref(py);
@@ -9353,9 +9456,10 @@ impl PyMatrix {
 
     fn cholesky(&self, py: Python<'_>) -> PyResult<PyMatrix> {
         let pool = self.pool.borrow(py);
-        let l = self
-            .inner
-            .cholesky(&pool.inner)
+        // GIL released for the core call; see `py_integrate`.
+        let (inner, pool_ref) = (&self.inner, &pool.inner);
+        let l = py
+            .allow_threads(|| inner.cholesky(pool_ref))
             .map_err(linear_algebra_error_to_py)?;
         drop(pool);
         Ok(PyMatrix {
@@ -9366,9 +9470,10 @@ impl PyMatrix {
 
     fn jordan_form(&self, py: Python<'_>) -> PyResult<(PyMatrix, PyMatrix)> {
         let pool = self.pool.borrow(py);
-        let (p, j) = self
-            .inner
-            .jordan_form(&pool.inner)
+        // GIL released for the core call; see `py_integrate`.
+        let (inner, pool_ref) = (&self.inner, &pool.inner);
+        let (p, j) = py
+            .allow_threads(|| inner.jordan_form(pool_ref))
             .map_err(linear_algebra_error_to_py)?;
         drop(pool);
         let pq = self.pool.clone_ref(py);
@@ -9383,9 +9488,10 @@ impl PyMatrix {
 
     fn rational_canonical_form(&self, py: Python<'_>) -> PyResult<(PyMatrix, PyMatrix)> {
         let pool = self.pool.borrow(py);
-        let (p, c) = self
-            .inner
-            .rational_canonical_form(&pool.inner)
+        // GIL released for the core call; see `py_integrate`.
+        let (inner, pool_ref) = (&self.inner, &pool.inner);
+        let (p, c) = py
+            .allow_threads(|| inner.rational_canonical_form(pool_ref))
             .map_err(linear_algebra_error_to_py)?;
         drop(pool);
         let pq = self.pool.clone_ref(py);
@@ -9400,9 +9506,10 @@ impl PyMatrix {
 
     fn minimal_polynomial(&self, py: Python<'_>) -> PyResult<PyExpr> {
         let pool = self.pool.borrow(py);
-        let (poly, _lam) = self
-            .inner
-            .minimal_polynomial(&pool.inner)
+        // GIL released for the core call; see `py_integrate`.
+        let (inner, pool_ref) = (&self.inner, &pool.inner);
+        let (poly, _lam) = py
+            .allow_threads(|| inner.minimal_polynomial(pool_ref))
             .map_err(linear_algebra_error_to_py)?;
         drop(pool);
         Ok(PyExpr {
@@ -9425,10 +9532,11 @@ impl PyMatrix {
     /// on is listed by :func:`alkahest.matrix_exp_side_conditions`.
     fn matrix_exp(&self, py: Python<'_>) -> PyResult<PyMatrix> {
         let pool = self.pool.borrow(py);
+        // GIL released for the core call; see `py_integrate`.
+        let (inner, pool_ref) = (&self.inner, &pool.inner);
         reset_matrix_exp_side_conditions();
-        let expm = self
-            .inner
-            .matrix_exp(&pool.inner)
+        let expm = py
+            .allow_threads(|| inner.matrix_exp(pool_ref))
             .map_err(linear_algebra_error_to_py)?;
         capture_matrix_exp_side_conditions(&pool.inner);
         drop(pool);
@@ -9446,10 +9554,11 @@ impl PyMatrix {
     /// :func:`alkahest.matrix_inverse_side_conditions`.
     fn inverse(&self, py: Python<'_>) -> PyResult<PyMatrix> {
         let pool = self.pool.borrow(py);
+        // GIL released for the core call; see `py_integrate`.
+        let (inner, pool_ref) = (&self.inner, &pool.inner);
         MATRIX_INVERSE_SIDE_CONDITIONS.with(|c| c.borrow_mut().clear());
-        let inv = self
-            .inner
-            .inverse(&pool.inner)
+        let inv = py
+            .allow_threads(|| inner.inverse(pool_ref))
             .map_err(matrix_error_to_py)?;
         let rendered: Vec<String> = alkahest_core::matrix::take_matrix_inverse_side_conditions()
             .iter()
@@ -9465,7 +9574,9 @@ impl PyMatrix {
 
     fn simplify(&self, py: Python<'_>) -> PyMatrix {
         let pool = self.pool.borrow(py);
-        let m = self.inner.simplify_entries(&pool.inner);
+        // GIL released for the core call; see `py_integrate`.
+        let (inner, pool_ref) = (&self.inner, &pool.inner);
+        let m = py.allow_threads(|| inner.simplify_entries(pool_ref));
         drop(pool);
         PyMatrix {
             inner: m,
@@ -11384,6 +11495,9 @@ fn py_evaluate(
     }
     let pool = expr.pool.borrow(py);
     guard_depth(&pool.inner, expr.id)?;
+    // Each backend's core call below runs with the GIL released (see
+    // `py_integrate`); bindings are converted to Rust values before it.
+    let (id, pool_ref) = (expr.id, &pool.inner);
     let wants_interval = mode == "interval"
         || (mode == "auto"
             && (precision_bits.is_some()
@@ -11400,7 +11514,9 @@ fn py_evaluate(
                 .map_err(|_| PyTypeError::new_err("interval bindings must be ArbBall values"))?;
             evaluator.bind(var.id, ball.inner.clone());
         }
-        return Ok(match core_eval_interval(expr.id, &pool.inner, &evaluator) {
+        let evaluator = &evaluator;
+        let result = py.allow_threads(|| core_eval_interval(id, pool_ref, evaluator));
+        return Ok(match result {
             Ok(ball) => {
                 let py_ball = Py::new(py, PyArbBall { inner: ball })?;
                 PyEvaluationResult {
@@ -11445,7 +11561,9 @@ fn py_evaluate(
                 })?,
             );
         }
-        return Ok(match core_eval_complex_f64(expr.id, &pool.inner, &env) {
+        let env = &env;
+        let result = py.allow_threads(|| core_eval_complex_f64(id, pool_ref, env));
+        return Ok(match result {
             Ok(value) => {
                 let pc = PyComplex::from_doubles_bound(py, value.re, value.im);
                 PyEvaluationResult {
@@ -11502,40 +11620,42 @@ fn py_evaluate(
         });
     }
     if mode == "exact" || (mode == "auto" && exact_possible) {
-        return Ok(
-            match core_eval_exact_rational(expr.id, &pool.inner, &exact) {
-                Ok(value) => {
-                    let fraction = bigint::fraction_to_py(py, value.numer(), value.denom())?;
-                    PyEvaluationResult {
-                        value: fraction,
-                        status: "ok".into(),
-                        backend: "exact_rational".into(),
-                        requested_mode: mode.into(),
-                        requested_precision_bits: precision_bits,
-                        achieved_precision_bits: None,
-                        enclosure: None,
-                        reason: None,
-                    }
-                }
-                Err(error) => PyEvaluationResult {
-                    value: py.None(),
-                    status: "unsupported".into(),
-                    backend: "none".into(),
+        let exact = &exact;
+        let result = py.allow_threads(|| core_eval_exact_rational(id, pool_ref, exact));
+        return Ok(match result {
+            Ok(value) => {
+                let fraction = bigint::fraction_to_py(py, value.numer(), value.denom())?;
+                PyEvaluationResult {
+                    value: fraction,
+                    status: "ok".into(),
+                    backend: "exact_rational".into(),
                     requested_mode: mode.into(),
                     requested_precision_bits: precision_bits,
                     achieved_precision_bits: None,
                     enclosure: None,
-                    reason: Some(error.reason.agent_code().to_owned()),
-                },
+                    reason: None,
+                }
+            }
+            Err(error) => PyEvaluationResult {
+                value: py.None(),
+                status: "unsupported".into(),
+                backend: "none".into(),
+                requested_mode: mode.into(),
+                requested_precision_bits: precision_bits,
+                achieved_precision_bits: None,
+                enclosure: None,
+                reason: Some(error.reason.agent_code().to_owned()),
             },
-        );
+        });
     }
     let mut env = std::collections::HashMap::new();
     for (key, value) in bindings.iter() {
         let var: PyRef<PyExpr> = key.extract()?;
         env.insert(var.id, value.extract::<f64>()?);
     }
-    Ok(match core_eval_f64(expr.id, &pool.inner, &env) {
+    let env = &env;
+    let result = py.allow_threads(|| core_eval_f64(id, pool_ref, env));
+    Ok(match result {
         Ok(value) => PyEvaluationResult {
             value: value.into_py(py),
             status: "ok".into(),
@@ -12131,7 +12251,10 @@ fn py_cancel(
             Some(v) => v.iter().map(|v| v.id).collect(),
             None => alkahest_core::collect_free_vars(expr.id, &pool.inner),
         };
-        core_cancel(expr.id, var_ids, &pool.inner).map_err(conv_error_to_py)?
+        // GIL released for the core call; see `py_integrate`.
+        let (id, pool) = (expr.id, &pool.inner);
+        py.allow_threads(move || core_cancel(id, var_ids, pool))
+            .map_err(conv_error_to_py)?
     };
     Ok(PyExpr {
         id: result,
@@ -12165,7 +12288,10 @@ fn py_together(
             Some(v) => v.iter().map(|v| v.id).collect(),
             None => alkahest_core::collect_free_vars(expr.id, &pool.inner),
         };
-        core_together(expr.id, var_ids, &pool.inner).map_err(conv_error_to_py)?
+        // GIL released for the core call; see `py_integrate`.
+        let (id, pool) = (expr.id, &pool.inner);
+        py.allow_threads(move || core_together(id, var_ids, pool))
+            .map_err(conv_error_to_py)?
     };
     Ok(PyExpr {
         id: result,
@@ -14248,10 +14374,11 @@ impl PyGroebnerBasis {
         let parsed_order = order
             .and_then(MonomialOrder::from_str)
             .unwrap_or(MonomialOrder::Lex);
-        let inner = match parsed_order {
+        // GIL released for the core call; see `py_integrate`.
+        let inner = py.allow_threads(move || match parsed_order {
             MonomialOrder::Lex => GroebnerBasis::compute_lex(gb_polys),
             other => GroebnerBasis::compute(gb_polys, other),
-        };
+        });
         Ok(Py::new(
             py,
             PyGroebnerBasis {
@@ -14297,7 +14424,7 @@ impl PyGroebnerBasis {
         let parsed_order = order
             .and_then(MonomialOrder::from_str)
             .unwrap_or(MonomialOrder::Lex);
-        let inner = GroebnerBasis::compute_f5(gb_polys, parsed_order);
+        let inner = py.allow_threads(move || GroebnerBasis::compute_f5(gb_polys, parsed_order));
         Ok(PyGroebnerBasis {
             inner,
             pool: Some(pool_py),
@@ -14339,10 +14466,10 @@ impl PyGroebnerBasis {
         let parsed_order = order
             .and_then(MonomialOrder::from_str)
             .unwrap_or(MonomialOrder::Lex);
-        let inner = match parsed_order {
+        let inner = py.allow_threads(move || match parsed_order {
             MonomialOrder::Lex => GroebnerBasis::compute_lex(raw),
             other => GroebnerBasis::compute(raw, other),
-        };
+        });
         Ok(PyGroebnerBasis {
             inner,
             pool,
@@ -16339,7 +16466,9 @@ fn py_solve(
         let opts = HomotopyOpts::default();
         let pts = {
             let pool = pool_py.borrow(py);
-            solve_numerical(&eq_ids, &var_ids, &pool.inner, &opts)
+            // GIL released for the core call; see `py_integrate`.
+            let (eqs, vs, pool, opts) = (&eq_ids, &var_ids, &pool.inner, &opts);
+            py.allow_threads(|| solve_numerical(eqs, vs, pool, opts))
         };
         return match pts {
             Err(e) => Err(homotopy_err_to_py(e)),
@@ -16374,7 +16503,8 @@ fn py_solve(
     if eq_ids.len() == 1 && var_ids.len() == 1 {
         let trans = {
             let pool = pool_py.borrow(py);
-            solve_transcendental(eq_ids[0], var_ids[0], &pool.inner)
+            let (eq, v, pool) = (eq_ids[0], var_ids[0], &pool.inner);
+            py.allow_threads(|| solve_transcendental(eq, v, pool))
         };
         if let TranscendentalOutcome::Solved(values) = trans {
             // Each value is a solution for the single variable.
@@ -16387,7 +16517,11 @@ fn py_solve(
 
     let result = {
         let pool = pool_py.borrow(py);
-        let r = solve_polynomial_system(eq_ids.clone(), var_ids.clone(), &pool.inner);
+        // GIL released for the core call; see `py_integrate`. The side
+        // conditions it records are thread-local and drained just below, on
+        // this same thread.
+        let (eqs, vs, pool_ref) = (eq_ids.clone(), var_ids.clone(), &pool.inner);
+        let r = py.allow_threads(move || solve_polynomial_system(eqs, vs, pool_ref));
         // Whatever the back-substitution had to assume about a parametric
         // leading coefficient, rendered while the pool is in hand — see
         // `py_solve_side_conditions`.
@@ -16402,7 +16536,8 @@ fn py_solve(
             let opts = HomotopyOpts::default();
             let pts = {
                 let pool = pool_py.borrow(py);
-                solve_numerical(&eq_ids, &var_ids, &pool.inner, &opts)
+                let (eqs, vs, pool, opts) = (&eq_ids, &var_ids, &pool.inner, &opts);
+                py.allow_threads(|| solve_numerical(eqs, vs, pool, opts))
             };
             return match pts {
                 Err(e) => Err(homotopy_err_to_py(e)),

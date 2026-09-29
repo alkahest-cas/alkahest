@@ -176,6 +176,21 @@
   independent FLINT paths (`acb_theta` and `acb_modular`) must agree through
   the documented sign dictionary, with the wrong sign asserted to fail.
 
+### Performance
+
+- **`DerivedResult` renders its derivation lazily, and the heavy entry points
+  release the GIL.** `.derivation` and `.steps` used to be rendered — twice,
+  every `before`/`after` of every step — when the result was built, whether or
+  not anyone read them: 41% of `diff` on a 200-term polynomial. They are now
+  rendered from the stored log on first access; the strings are identical.
+  `simplify` (and its variants), `diff`, `solve`, `cancel`/`together`/`apart`,
+  `sum_*`/`product_*`, `rsolve`, `evaluate`, `integrate_definite`, `factor_z`,
+  `GroebnerBasis.compute*` and the symbolic `Matrix` operations now run their
+  core call under `py.allow_threads`, as `integrate` already did, so
+  `batch_map(parallel=True)` overlaps them. Budgets, ambient assumptions and the
+  `*_side_conditions()` channels are unaffected: the work stays on the calling
+  thread.
+
 ### Build and packaging
 
 - **CI and the manylinux wheels now build a pinned FLINT 3.5.0.** Ubuntu
