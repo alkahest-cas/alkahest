@@ -88,7 +88,11 @@ def _tags_from_binding_source() -> set[str] | None:
     if not source_path.is_file():
         return None
     text = source_path.read_text(encoding="utf-8")
-    start = text.find("fn node(")
+    # `node()` and `_node_exact()` share one body, `expr_node_impl`; older
+    # checkouts had the match inline in `fn node(`.
+    start = text.find("fn expr_node_impl(")
+    if start == -1:
+        start = text.find("fn node(")
     if start == -1:
         return None
     # Brace-match the function body rather than guessing at an end marker.

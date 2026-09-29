@@ -365,8 +365,10 @@ class Translator(ABC):
 
     def _walk(self, expr: Any) -> Any:
         # `_node_exact` hands integer/rational payloads over as ints, so a
-        # literal past `sys.get_int_max_str_digits()` translates too.
-        node = expr._node_exact()
+        # literal past `sys.get_int_max_str_digits()` translates too.  Duck-typed
+        # nodes that only offer `node()` still work: SymPy accepts decimal text.
+        exact = getattr(expr, "_node_exact", None)
+        node = exact() if exact is not None else expr.node()
         tag = node[0]
         handler = self._DISPATCH.get(tag)
         if handler is None:
