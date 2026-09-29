@@ -6,6 +6,7 @@ pub mod discrimination_net;
 pub mod dispatch;
 pub mod egraph;
 pub mod engine;
+pub(crate) mod idmap;
 #[cfg(feature = "parallel")]
 pub mod parallel;
 #[cfg(feature = "parallel")]

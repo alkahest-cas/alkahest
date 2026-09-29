@@ -36,6 +36,7 @@
 use crate::deriv::log::DerivedExpr;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::simplify::engine::SimplifyConfig;
+use crate::simplify::idmap::IdMap;
 
 /// Average level width at or above which fork-join is preferred.
 ///
@@ -107,39 +108,42 @@ pub fn choose_strategy(expr: ExprId, pool: &ExprPool) -> Strategy {
 /// Iterative, so it cannot overflow the stack on the deep expressions this is
 /// meant to detect.  Costs one traversal, which is small next to the many
 /// rule-matching passes that follow.
+///
+/// The side table is a map over the nodes reached, not an array indexed by
+/// `ExprId`: an array is sized by the whole pool, which made the probe for a
+/// 7-node expression allocate and zero 8 million entries once the pool had
+/// grown that large.
 fn shape(root: ExprId, pool: &ExprPool) -> (usize, u32) {
-    let n = pool.len();
-    let mut height = vec![u32::MAX; n];
-    let mut pushed = vec![false; n];
+    // Present once pushed; `u32::MAX` until the node has been measured.
+    let mut height: IdMap<u32> = IdMap::default();
     let mut stack: Vec<(ExprId, bool)> = vec![(root, false)];
     let mut nodes = 0_usize;
     let mut max_height = 0_u32;
 
     while let Some((id, expanded)) = stack.pop() {
-        let i = id.0 as usize;
         if expanded {
             let h = pool.with(id, |data| {
                 let mut h = 0_u32;
                 for_each_child(data, |c| {
-                    let ch = height[c.0 as usize];
+                    let ch = height[&c];
                     debug_assert_ne!(ch, u32::MAX, "child measured after its parent");
                     h = h.max(ch.saturating_add(1));
                 });
                 h
             });
-            height[i] = h;
+            height.insert(id, h);
             max_height = max_height.max(h);
             nodes += 1;
             continue;
         }
-        if pushed[i] {
+        if height.contains_key(&id) {
             continue;
         }
-        pushed[i] = true;
+        height.insert(id, u32::MAX);
         stack.push((id, true));
         pool.with(id, |data| {
             for_each_child(data, |c| {
-                if !pushed[c.0 as usize] {
+                if !height.contains_key(&c) {
                     stack.push((c, false));
                 }
             })
@@ -289,5 +293,19 @@ mod tests {
             (nodes as f64 / height as f64) < WIDTH_THRESHOLD,
             "a chain must read as narrow"
         );
+    }
+
+    /// The probe counts distinct reachable nodes, independent of how much
+    /// else the pool holds — its side table is no longer sized by the pool.
+    #[test]
+    fn shape_ignores_the_rest_of_the_pool() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let _ = junk(&pool, y, 20_000);
+        let shared = pool.add(vec![x, y]);
+        // (x + y)·(x + y)² — `x + y` is shared; x, y, x+y, 2, pow, root.
+        let expr = pool.mul(vec![shared, pool.pow(shared, pool.integer(2_i32))]);
+        assert_eq!(shape(expr, &pool), (6, 4));
     }
 }

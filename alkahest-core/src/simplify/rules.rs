@@ -3,6 +3,9 @@ use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 use rug::ops::Pow;
 use std::collections::{HashMap, HashSet};
 
+#[cfg(test)]
+pub(crate) mod reference;
+
 // ---------------------------------------------------------------------------
 // Internal helper — extract numeric value (Integer or Rational) as rug::Rational
 // ---------------------------------------------------------------------------
@@ -150,6 +153,14 @@ fn is_positive_domain_symbol(expr: ExprId, pool: &ExprPool) -> bool {
 
 fn is_zero(expr: ExprId, pool: &ExprPool) -> bool {
     integer_is(expr, pool, 0)
+}
+
+/// Whether `expr` is an `Integer` or `Rational` literal — `as_rational(..)
+/// .is_some()` without building the `rug::Rational`.
+fn is_exact_literal(expr: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| {
+        matches!(d, ExprData::Integer(_) | ExprData::Rational(_))
+    })
 }
 
 fn is_one(expr: ExprId, pool: &ExprPool) -> bool {
@@ -354,7 +365,9 @@ fn extract_numeric_coeff(
             _ => None,
         })
     };
-    match pool.get(expr) {
+    // Borrowed: `collect_add_terms` runs this over every term of every `Add`,
+    // and `pool.get` cloned each term's factor list to inspect it.
+    pool.with(expr, |data| match data {
         ExprData::Integer(n) => (Some(Coeff::Int(n.0.clone())), pool.integer(1_i32)),
         ExprData::Rational(r) if rationals_too => {
             (Some(Coeff::Rat(r.0.clone())), pool.integer(1_i32))
@@ -362,7 +375,7 @@ fn extract_numeric_coeff(
         ExprData::Mul(args) => {
             let mut product: Option<Coeff> = None;
             let mut rest: Vec<ExprId> = vec![];
-            for &a in &args {
+            for &a in args {
                 match literal(a) {
                     Some(n) => match &mut product {
                         Some(p) => p.mul_assign(n),
@@ -383,7 +396,7 @@ fn extract_numeric_coeff(
             (product, base)
         }
         _ => (None, expr),
-    }
+    })
 }
 
 /// Extract (integer_coeff, base) from a Mul where some factors are integers.
@@ -427,10 +440,13 @@ fn imaginary_unit_exp(expr: ExprId, pool: &ExprPool) -> Option<rug::Integer> {
     if pool.is_imaginary_unit(expr) {
         return Some(rug::Integer::from(1));
     }
-    match pool.get(expr) {
-        ExprData::Pow { base, exp } if pool.is_imaginary_unit(base) => as_integer(exp, pool),
+    // Borrowed: `ConstFold` probes every factor of every `Mul` with this, and
+    // `pool.get` cloned each one — a `Func`'s name and arguments included.
+    let exp = pool.with(expr, |d| match d {
+        ExprData::Pow { base, exp } if pool.is_imaginary_unit(*base) => Some(*exp),
         _ => None,
-    }
+    })?;
+    as_integer(exp, pool)
 }
 
 /// Build `i^r` in fully reduced form for `r = n mod 4 ∈ {0,1,2,3}`:
@@ -462,15 +478,45 @@ fn mod4_nonneg(n: &rug::Integer) -> u32 {
 /// that `n * n^(-1) → 1` is handled correctly.
 /// Returns (n, base) for `Pow(base, Integer(n))`.
 fn extract_int_exp(expr: ExprId, pool: &ExprPool) -> Option<(rug::Integer, ExprId)> {
-    match pool.get(expr) {
-        // Integer n is treated as n^1 so that n * n^(-1) can cancel.
-        ExprData::Integer(_) => Some((rug::Integer::from(1), expr)),
-        ExprData::Pow { base, exp } => match pool.get(exp) {
-            ExprData::Integer(n) => Some((n.0.clone(), base)),
+    // Borrowed, not `pool.get`: the factor is usually a `Func` or a `Mul`, and
+    // cloning it (name `String`, argument `Vec`) only to learn it is not a
+    // `Pow` was 15% of a chain-rule simplification.
+    //
+    // Integer n is treated as n^1 so that n * n^(-1) can cancel.
+    pool.with(expr, |d| match d {
+        ExprData::Pow { base, exp } => pool.with(*exp, |e| match e {
+            ExprData::Integer(n) => Some((n.0.clone(), *base)),
             _ => Some((rug::Integer::from(1), expr)),
-        },
+        }),
         _ => Some((rug::Integer::from(1), expr)),
+    })
+}
+
+/// Whether [`DivSelf`] could possibly rewrite a product of `args`: some base
+/// (as [`extract_int_exp`] splits a factor) occurs twice, or some factor has
+/// the literal exponent `0`.
+///
+/// When neither holds, every per-base exponent sum is the single exponent of
+/// that base — nonzero — and nothing merges, so both of `DivSelf`'s branches
+/// decline.  Answering that needs only the bases and whether each exponent is
+/// zero, so this borrows the nodes and never builds a bignum.
+fn may_collect_factors(args: &[ExprId], pool: &ExprPool) -> bool {
+    let mut bases: Vec<ExprId> = Vec::with_capacity(args.len());
+    for &a in args {
+        let (zero_exp, base) = pool.with(a, |d| match d {
+            ExprData::Pow { base, exp } => pool.with(*exp, |e| match e {
+                ExprData::Integer(n) => (n.0.is_zero(), *base),
+                _ => (false, a),
+            }),
+            _ => (false, a),
+        });
+        if zero_exp {
+            return true;
+        }
+        bases.push(base);
     }
+    bases.sort_unstable();
+    bases.windows(2).any(|w| w[0] == w[1])
 }
 
 /// Rebuild `coeff · base` in the canonical shape the extractors invert.
@@ -512,13 +558,12 @@ impl RewriteRule for AddZero {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        let args = match pool.get(expr) {
-            ExprData::Add(v) => v,
-            _ => return None,
-        };
-        if !args.iter().any(|&a| is_zero(a, pool)) {
-            return None;
-        }
+        // Borrowed: this rule is offered every `Add` and declines almost
+        // all of them, so the argument list is cloned only on a hit.
+        let args = pool.with(expr, |d| match d {
+            ExprData::Add(v) if v.iter().any(|&a| is_zero(a, pool)) => Some(v.clone()),
+            _ => None,
+        })?;
         let filtered: Vec<ExprId> = args.into_iter().filter(|&a| !is_zero(a, pool)).collect();
         let after = match filtered.len() {
             0 => pool.integer(0_i32),
@@ -544,13 +589,12 @@ impl RewriteRule for MulOne {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        let args = match pool.get(expr) {
-            ExprData::Mul(v) => v,
-            _ => return None,
-        };
-        if !args.iter().any(|&a| is_one(a, pool)) {
-            return None;
-        }
+        // Borrowed: this rule is offered every `Mul` and declines almost
+        // all of them, so the argument list is cloned only on a hit.
+        let args = pool.with(expr, |d| match d {
+            ExprData::Mul(v) if v.iter().any(|&a| is_one(a, pool)) => Some(v.clone()),
+            _ => None,
+        })?;
         let filtered: Vec<ExprId> = args.into_iter().filter(|&a| !is_one(a, pool)).collect();
         let after = match filtered.len() {
             0 => pool.integer(1_i32),
@@ -576,13 +620,12 @@ impl RewriteRule for MulZero {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        let args = match pool.get(expr) {
-            ExprData::Mul(v) => v,
-            _ => return None,
-        };
-        if !args.iter().any(|&a| is_zero(a, pool)) {
-            return None;
-        }
+        // Borrowed: this rule is offered every `Mul` and declines almost
+        // all of them, so the argument list is cloned only on a hit.
+        let args = pool.with(expr, |d| match d {
+            ExprData::Mul(v) if v.iter().any(|&a| is_zero(a, pool)) => Some(v.clone()),
+            _ => None,
+        })?;
         // Do not fold `0 * 0^(-1) * ...` (or `0 * 0^(-2)`, etc.) to `0`: a
         // literal `0^(negative)` factor is itself undefined (division by
         // zero), so the product is indeterminate, not `0`. This is the
@@ -610,10 +653,10 @@ impl RewriteRule for PowOne {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        let (base, exp) = match pool.get(expr) {
-            ExprData::Pow { base, exp } => (base, exp),
-            _ => return None,
-        };
+        let (base, exp) = pool.with(expr, |d| match d {
+            ExprData::Pow { base, exp } => Some((*base, *exp)),
+            _ => None,
+        })?;
         if !is_one(exp, pool) {
             return None;
         }
@@ -636,10 +679,10 @@ impl RewriteRule for SqrtInteger {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        let arg = match pool.get(expr) {
-            ExprData::Func { name, args } if name == "sqrt" && args.len() == 1 => args[0],
-            _ => return None,
-        };
+        let arg = pool.with(expr, |d| match d {
+            ExprData::Func { name, args } if name == "sqrt" && args.len() == 1 => Some(args[0]),
+            _ => None,
+        })?;
         let n = as_integer(arg, pool)?;
         if n <= 0 {
             return None;
@@ -682,10 +725,10 @@ impl RewriteRule for PowZero {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        let (base, exp) = match pool.get(expr) {
-            ExprData::Pow { base, exp } => (base, exp),
-            _ => return None,
-        };
+        let (base, exp) = pool.with(expr, |d| match d {
+            ExprData::Pow { base, exp } => Some((*base, *exp)),
+            _ => None,
+        })?;
         if !is_zero(exp, pool) {
             return None;
         }
@@ -797,18 +840,29 @@ impl RewriteRule for ConstFold {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        match pool.get(expr) {
+        // Borrow the node: this rule is offered every `Add`, `Mul`, `Pow` and
+        // `Func`, declines nearly all of them, and `pool.get` cloned the
+        // argument vector (and a `Func`'s name) each time just to say no.
+        pool.with(expr, |data| self.apply_to(expr, data, pool))
+    }
+}
+
+impl ConstFold {
+    fn apply_to(
+        &self,
+        expr: ExprId,
+        data: &ExprData,
+        pool: &ExprPool,
+    ) -> Option<(ExprId, DerivationLog)> {
+        match data {
             ExprData::Add(args) => {
-                let numeric_count = args
-                    .iter()
-                    .filter(|&&a| as_rational(a, pool).is_some())
-                    .count();
+                let numeric_count = args.iter().filter(|&&a| is_exact_literal(a, pool)).count();
                 if numeric_count < 2 {
                     return None;
                 }
                 let mut sum = rug::Rational::from(0);
                 let mut non_numeric: Vec<ExprId> = vec![];
-                for &a in &args {
+                for &a in args {
                     match as_rational(a, pool) {
                         Some(r) => sum += r,
                         None => non_numeric.push(a),
@@ -841,10 +895,7 @@ impl RewriteRule for ConstFold {
                     .iter()
                     .filter(|&&a| imaginary_unit_exp(a, pool).is_some())
                     .count();
-                let numeric_count = args
-                    .iter()
-                    .filter(|&&a| as_rational(a, pool).is_some())
-                    .count();
+                let numeric_count = args.iter().filter(|&&a| is_exact_literal(a, pool)).count();
                 if numeric_count < 2 && imag_factor_count < 2 {
                     return None;
                 }
@@ -852,7 +903,7 @@ impl RewriteRule for ConstFold {
                 // Total imaginary-unit exponent collected from i / i^k factors.
                 let mut imag_exp = rug::Integer::from(0);
                 let mut non_numeric: Vec<ExprId> = vec![];
-                for &a in &args {
+                for &a in args {
                     if let Some(r) = as_rational(a, pool) {
                         prod *= r;
                     } else if let Some(k) = imaginary_unit_exp(a, pool) {
@@ -902,7 +953,7 @@ impl RewriteRule for ConstFold {
                 }
                 Some((after, one_step(self.name(), expr, after)))
             }
-            ExprData::Pow { base, exp } => {
+            &ExprData::Pow { base, exp } => {
                 // i^n → {1, i, −1, −i} for a literal integer exponent n,
                 // cycling with period 4 (ImaginaryUnitPow). Pure algebra; no
                 // branch cuts. Cheap discriminant: the base must be the
@@ -941,11 +992,10 @@ impl RewriteRule for ConstFold {
 
                 // (x^a)^b → x^(a·b) for literal integer a, b (PowOfPow).
                 // Cheap discriminant: base must itself be a Pow node.
-                if let ExprData::Pow {
-                    base: inner_base,
-                    exp: inner_exp,
-                } = pool.get(base)
-                {
+                if let Some((inner_base, inner_exp)) = pool.with(base, |d| match d {
+                    ExprData::Pow { base, exp } => Some((*base, *exp)),
+                    _ => None,
+                }) {
                     if let (Some(a), Some(b)) = (as_integer(inner_exp, pool), as_integer(exp, pool))
                     {
                         let new_exp = pool.integer(a * b);
@@ -1034,28 +1084,16 @@ impl RewriteRule for ConstFold {
                     "conjugate" if pool.is_imaginary_unit(arg) => {
                         pool.mul(vec![pool.integer(-1_i32), arg])
                     }
-                    "conjugate" => match pool.get(arg) {
+                    "conjugate" => pool.with(arg, |d| match d {
                         ExprData::Func {
                             name: inner,
                             args: inner_args,
-                        } if inner == "conjugate" && inner_args.len() == 1 => inner_args[0],
-                        ExprData::Integer(_) | ExprData::Rational(_) => arg,
-                        _ => return None,
-                    },
-                    "re" if matches!(
-                        pool.get(arg),
-                        ExprData::Integer(_) | ExprData::Rational(_)
-                    ) =>
-                    {
-                        arg
-                    }
-                    "im" if matches!(
-                        pool.get(arg),
-                        ExprData::Integer(_) | ExprData::Rational(_)
-                    ) =>
-                    {
-                        pool.integer(0_i32)
-                    }
+                        } if inner == "conjugate" && inner_args.len() == 1 => Some(inner_args[0]),
+                        ExprData::Integer(_) | ExprData::Rational(_) => Some(arg),
+                        _ => None,
+                    })?,
+                    "re" if is_exact_literal(arg, pool) => arg,
+                    "im" if is_exact_literal(arg, pool) => pool.integer(0_i32),
                     // Principal Arg ∈ (−π, π]: only literal/domain-safe cases.
                     // Leave arg(0), negative reals, and generic complex inputs
                     // unevaluated — no atan2/log/sqrt rewrites.
@@ -1114,10 +1152,11 @@ fn even_power_sign_fold(base: ExprId, exp: ExprId, pool: &ExprPool) -> Option<Ex
     if !n.is_even() || n == 0 {
         return None;
     }
-    let args = match pool.get(base) {
-        ExprData::Mul(v) => v,
-        _ => return None,
-    };
+    // Borrowed; cloned only when a literal `-1` factor is there to drop.
+    let args = pool.with(base, |d| match d {
+        ExprData::Mul(v) if v.iter().any(|&a| integer_is(a, pool, -1)) => Some(v.clone()),
+        _ => None,
+    })?;
     // Find a literal -1 factor.
     let neg_pos = args
         .iter()
@@ -1151,23 +1190,34 @@ impl RewriteRule for SubSelf {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        let args = match pool.get(expr) {
-            ExprData::Add(v) => v,
-            _ => return None,
-        };
-        if args.len() < 2 {
-            return None;
-        }
-
         // Extract (coeff, base) for each arg.  Coefficients admit a
         // *rational*: restricting them to integers made `¾·u + (−¾)·u` two
         // unrelated bases, so a term-wise cancellation that is pure arithmetic
         // never happened.  All of it is exact `rug` arithmetic — nothing here
-        // is a numerical approximation.
-        let pairs: Vec<(Option<Coeff>, ExprId)> = args
+        // is a numerical approximation.  The node is borrowed, not cloned.
+        let pairs: Vec<(Option<Coeff>, ExprId)> = pool.with(expr, |d| match d {
+            ExprData::Add(args) if args.len() >= 2 => Some(
+                args.iter()
+                    .map(|&a| extract_rational_coeff(a, pool))
+                    .collect(),
+            ),
+            _ => None,
+        })?;
+
+        // Decline before any coefficient arithmetic when no base repeats and
+        // no single coefficient is zero: each base's sum is then its one
+        // coefficient, nonzero, and nothing merges — the test below would say
+        // no after building a map and a bignum sum per term.
+        if !pairs
             .iter()
-            .map(|&a| extract_rational_coeff(a, pool))
-            .collect();
+            .any(|(c, _)| c.as_ref().is_some_and(Coeff::is_zero))
+        {
+            let mut bases: Vec<ExprId> = pairs.iter().map(|&(_, b)| b).collect();
+            bases.sort_unstable();
+            if !bases.windows(2).any(|w| w[0] == w[1]) {
+                return None;
+            }
+        }
 
         // Sum coefficients by base, preserving first-occurrence order.
         // A `None` coefficient is the implicit `1`.
@@ -1247,13 +1297,24 @@ impl RewriteRule for DivSelf {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
+        // Reject path first, borrowed and bignum-free.  This rule is offered
+        // every `Mul` the engine visits and almost always declines, and a
+        // chain-rule product is a `Mul` of hundreds of distinct factors:
+        // collecting them into a `HashMap<ExprId, rug::Integer>` just to find
+        // no base twice was 67% of simplifying the derivative of a nested
+        // `sin`.  Everything below fires only if some base repeats or some
+        // exponent is literally zero; with neither, both branches would build
+        // a map with one entry per factor and no zero sum, and decline.
+        if !pool.with(expr, |d| match d {
+            ExprData::Mul(args) if args.len() >= 2 => may_collect_factors(args, pool),
+            _ => false,
+        }) {
+            return None;
+        }
         let args = match pool.get(expr) {
             ExprData::Mul(v) => v,
             _ => return None,
         };
-        if args.len() < 2 {
-            return None;
-        }
 
         let globally_comm = args
             .iter()
@@ -1369,10 +1430,17 @@ impl RewriteRule for FlattenMul {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        let args = match pool.get(expr) {
-            ExprData::Mul(v) => v,
-            _ => return None,
-        };
+        // Borrowed, and cloned only once a nested `Mul` is known to be
+        // there: this rule is offered every `Mul` the engine visits.
+        let args = pool.with(expr, |d| match d {
+            ExprData::Mul(v)
+                if v.iter()
+                    .any(|&a| pool.with(a, |c| matches!(c, ExprData::Mul(_)))) =>
+            {
+                Some(v.clone())
+            }
+            _ => None,
+        })?;
         let mut flat = Vec::new();
         let mut changed = false;
         for &a in &args {
@@ -1409,10 +1477,17 @@ impl RewriteRule for FlattenAdd {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        let args = match pool.get(expr) {
-            ExprData::Add(v) => v,
-            _ => return None,
-        };
+        // Borrowed, and cloned only once a nested `Add` is known to be
+        // there: this rule is offered every `Add` the engine visits.
+        let args = pool.with(expr, |d| match d {
+            ExprData::Add(v)
+                if v.iter()
+                    .any(|&a| pool.with(a, |c| matches!(c, ExprData::Add(_)))) =>
+            {
+                Some(v.clone())
+            }
+            _ => None,
+        })?;
         let mut flat = Vec::new();
         let mut changed = false;
         for &a in &args {
@@ -1453,33 +1528,30 @@ impl RewriteRule for CanonicalOrder {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        match pool.get(expr) {
-            ExprData::Add(args) => {
-                let mut sorted = args.clone();
-                sorted.sort_unstable();
-                if sorted == args {
-                    return None;
-                }
-                let after = pool.add(sorted);
-                Some((after, one_step(self.name(), expr, after)))
-            }
-            ExprData::Mul(args) => {
-                if !args
-                    .iter()
-                    .all(|&a| crate::kernel::expr_props::mult_tree_is_commutative(pool, a))
-                {
-                    return None;
-                }
-                let mut sorted = args.clone();
-                sorted.sort_unstable();
-                if sorted == args {
-                    return None;
-                }
-                let after = pool.mul(sorted);
-                Some((after, one_step(self.name(), expr, after)))
+        // Borrowed, and an already-sorted list (the usual case: `pool.add` and
+        // `pool.mul` sort on construction) is recognised without cloning it.
+        // `sort_unstable` of a sorted list is the list itself, so declining
+        // here is exactly the old `sorted == args` test.
+        let is_sorted = |args: &[ExprId]| args.windows(2).all(|w| w[0] <= w[1]);
+        let (is_add, mut sorted) = pool.with(expr, |d| match d {
+            ExprData::Add(args) if !is_sorted(args) => Some((true, args.clone())),
+            ExprData::Mul(args)
+                if !is_sorted(args)
+                    && args
+                        .iter()
+                        .all(|&a| crate::kernel::expr_props::mult_tree_is_commutative(pool, a)) =>
+            {
+                Some((false, args.clone()))
             }
             _ => None,
-        }
+        })?;
+        sorted.sort_unstable();
+        let after = if is_add {
+            pool.add(sorted)
+        } else {
+            pool.mul(sorted)
+        };
+        Some((after, one_step(self.name(), expr, after)))
     }
 }
 
@@ -1818,20 +1890,20 @@ impl RewriteRule for ExpandMul {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        let args = match pool.get(expr) {
-            ExprData::Mul(v) => v,
-            _ => return None,
-        };
+        let is_add = |a: ExprId| pool.with(a, |d| matches!(d, ExprData::Add(_)));
+        // Borrowed; cloned only when there is an `Add` factor to distribute.
+        let args = pool.with(expr, |d| match d {
+            ExprData::Mul(v) if v.iter().any(|&a| is_add(a)) => Some(v.clone()),
+            _ => None,
+        })?;
 
         // Find the first Add factor
-        let add_pos = args
-            .iter()
-            .position(|&a| pool.with(a, |d| matches!(d, ExprData::Add(_))))?;
+        let add_pos = args.iter().position(|&a| is_add(a))?;
 
-        let add_args = match pool.get(args[add_pos]) {
-            ExprData::Add(v) => v,
-            _ => return None,
-        };
+        let add_args = pool.with(args[add_pos], |d| match d {
+            ExprData::Add(v) => Some(v.clone()),
+            _ => None,
+        })?;
 
         // The remaining (non-add) factors become the common multiplier
         let other: Vec<ExprId> = args
@@ -1981,15 +2053,15 @@ impl RewriteRule for ExpandPow {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        let (base, exp) = match pool.get(expr) {
-            ExprData::Pow { base, exp } => (base, exp),
-            _ => return None,
-        };
+        let (base, exp) = pool.with(expr, |d| match d {
+            ExprData::Pow { base, exp } => Some((*base, *exp)),
+            _ => None,
+        })?;
         // Base must be a sum; otherwise there is nothing to distribute.
-        let summands = match pool.get(base) {
-            ExprData::Add(v) => v,
-            _ => return None,
-        };
+        let summands = pool.with(base, |d| match d {
+            ExprData::Add(v) => Some(v.clone()),
+            _ => None,
+        })?;
         let n = as_integer(exp, pool)?;
         if n <= 1 {
             return None;
@@ -2043,15 +2115,15 @@ impl RewriteRule for ExpPow {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        let (base, exp) = match pool.get(expr) {
-            ExprData::Pow { base, exp } => (base, exp),
-            _ => return None,
-        };
+        let (base, exp) = pool.with(expr, |d| match d {
+            ExprData::Pow { base, exp } => Some((*base, *exp)),
+            _ => None,
+        })?;
         // base must be exp(h)
-        let h = match pool.get(base) {
-            ExprData::Func { name, args } if name == "exp" && args.len() == 1 => args[0],
-            _ => return None,
-        };
+        let h = pool.with(base, |d| match d {
+            ExprData::Func { name, args } if name == "exp" && args.len() == 1 => Some(args[0]),
+            _ => None,
+        })?;
         // exp must be an integer
         let n = as_integer(exp, pool)?;
         let n_id = pool.integer(n.clone());
@@ -2135,14 +2207,23 @@ impl RewriteRule for PrimitiveFold {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        let (name, args) = match pool.get(expr) {
-            ExprData::Func { name, args } => (name, args),
-            _ => return None,
-        };
         use std::sync::OnceLock;
         static REG: OnceLock<crate::primitive::PrimitiveRegistry> = OnceLock::new();
-        let reg = REG.get_or_init(crate::primitive::PrimitiveRegistry::default_registry);
-        let after = reg.get(&name)?.simplify(&args, pool)?;
+        // Borrowed: this is offered every `Func` node, and `pool.get` cloned
+        // its name and arguments only to look the name up.
+        //
+        // The registry is initialised only once a `Func` is in hand, never
+        // before the kind check: building it probes the primitives, which
+        // simplifies, which (in debug builds, via `apply_rules`' skipped-rule
+        // assertion) offers this rule non-`Func` nodes — and re-entering
+        // `get_or_init` from inside its own initialiser deadlocks.
+        let after = pool.with(expr, |d| match d {
+            ExprData::Func { name, args } => {
+                let reg = REG.get_or_init(crate::primitive::PrimitiveRegistry::default_registry);
+                reg.get(name)?.simplify(args, pool)
+            }
+            _ => None,
+        })?;
         if after == expr {
             return None;
         }

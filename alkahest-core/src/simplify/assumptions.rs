@@ -1,5 +1,6 @@
 //! Explicit, conservative assumptions for condition-gated simplification.
 
+use super::idmap::IdSet;
 use crate::deriv::SideCondition;
 use crate::errors::AlkahestError;
 use crate::kernel::expr::PredicateKind;
@@ -514,7 +515,74 @@ fn push_unique(facts: &mut Vec<SideCondition>, fact: SideCondition) {
 /// Children are pushed in reverse so popping yields them left to right: the
 /// order facts land in `facts` is exactly what the recursion produced, and
 /// this is a behaviour-preserving change rather than merely an equivalent one.
+///
+/// # Why each interior node is expanded once
+///
+/// The pool is a DAG, and a walk that re-enters a shared subtree every time a
+/// parent reaches it visits it once per *path* rather than once per node — a
+/// Chebyshev-style recurrence `T(n+1) = 2x·T(n) − T(n−1)`, where every `T(k)`
+/// has two parents, has `O(n)` nodes and `O(fib(n))` paths.  Every `simplify`
+/// ends here, so re-simplifying an already-simplified 104-node expression of
+/// that shape took 726 ms at `n = 34`, nearly all of it in this walk.
+/// `expanded` makes the walk linear in the number of distinct nodes.
+///
+/// Skipping a revisit cannot change `facts`: a node's facts depend on the node
+/// alone, its first visit already pushed them, and [`push_unique`] would have
+/// discarded a second copy — so the order is still the first-occurrence
+/// pre-order the recursion produced.  Only interior nodes are recorded: a leaf
+/// is cheaper to re-read than to hash.
 pub(crate) fn collect_static_domain_facts(
+    expr: ExprId,
+    pool: &ExprPool,
+    facts: &mut Vec<SideCondition>,
+) {
+    let mut pending: Vec<ExprId> = Vec::new();
+    let mut expanded = IdSet::default();
+    let mut current = expr;
+    loop {
+        pool.with(current, |data| match data {
+            ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => {}
+            ExprData::Symbol { domain, .. } => match domain {
+                Domain::Positive => {
+                    push_unique(facts, SideCondition::Positive(current));
+                    push_unique(facts, SideCondition::NonZero(current));
+                }
+                Domain::NonZero => push_unique(facts, SideCondition::NonZero(current)),
+                _ => {}
+            },
+            // Already expanded: every child is queued or done, so nothing
+            // below it can add a fact the first visit did not.
+            _ if !expanded.insert(current) => {}
+            ExprData::Add(args)
+            | ExprData::Mul(args)
+            | ExprData::Func { args, .. }
+            | ExprData::Predicate { args, .. } => pending.extend(args.iter().rev()),
+            ExprData::Pow { base, exp } => pending.extend([*exp, *base]),
+            ExprData::Piecewise { branches, default } => {
+                pending.push(*default);
+                for (condition, value) in branches.iter().rev() {
+                    pending.extend([*value, *condition]);
+                }
+            }
+            ExprData::Forall { var, body } | ExprData::Exists { var, body } => {
+                pending.extend([*body, *var]);
+            }
+            ExprData::BigO(arg) => pending.push(*arg),
+            ExprData::RootSum { poly, var, body } => {
+                pending.extend([*body, *var, *poly]);
+            }
+        });
+        match pending.pop() {
+            Some(next) => current = next,
+            None => return,
+        }
+    }
+}
+
+/// [`collect_static_domain_facts`] as it was before it kept a visited set —
+/// one visit per *path* — kept as the oracle for the differential tests.
+#[cfg(test)]
+pub(crate) fn collect_static_domain_facts_reference(
     expr: ExprId,
     pool: &ExprPool,
     facts: &mut Vec<SideCondition>,
@@ -663,5 +731,60 @@ mod tests {
                 .value,
             x
         );
+    }
+
+    /// Chebyshev recurrence `T(k+1) = 2y·T(k) − T(k−1)`: every `T(k)` has two
+    /// parents, so the expression has `O(n)` nodes and `O(fib(n))` paths.
+    fn chebyshev(pool: &ExprPool, y: ExprId, n: usize) -> ExprId {
+        let two = pool.integer(2_i32);
+        let minus_one = pool.integer(-1_i32);
+        let (mut a, mut b) = (pool.integer(1_i32), y);
+        for _ in 1..n {
+            let c = pool.add(vec![
+                pool.mul(vec![two, y, b]),
+                pool.mul(vec![minus_one, a]),
+            ]);
+            a = b;
+            b = c;
+        }
+        b
+    }
+
+    /// The walk visits each shared node once.  One visit per path is
+    /// `fib(60) ≈ 1.5·10¹²` visits here, which never finishes.
+    #[test]
+    fn static_domain_facts_on_a_shared_dag_are_linear() {
+        let pool = ExprPool::new();
+        let y = pool.symbol("y", Domain::Positive);
+        let e = chebyshev(&pool, y, 60);
+        let start = std::time::Instant::now();
+        let mut facts = Vec::new();
+        collect_static_domain_facts(e, &pool, &mut facts);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(
+            facts,
+            vec![SideCondition::Positive(y), SideCondition::NonZero(y)]
+        );
+    }
+
+    /// Every `simplify` ends in the fact walk, so re-simplifying an
+    /// already-simplified shared DAG was exponential too: 726 ms at `n = 34`
+    /// (release), ~13 s extrapolated at `n = 40`.
+    #[test]
+    fn simplify_of_a_simplified_shared_dag_is_linear() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let (mut a, mut b) = (pool.integer(1_i32), x);
+        for _ in 1..40 {
+            let c = pool.add(vec![pool.mul(vec![x, b]), a]);
+            a = b;
+            b = c;
+        }
+        let once = crate::simplify::simplify(b, &pool).value;
+        let start = std::time::Instant::now();
+        let twice = crate::simplify::simplify(once, &pool);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(twice.value, once);
+        assert!(twice.log.is_empty());
     }
 }
