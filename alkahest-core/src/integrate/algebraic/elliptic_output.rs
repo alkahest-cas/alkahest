@@ -3047,10 +3047,6 @@ mod tests {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Kani bounded model checking (see TESTING.md § 7)
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod squarefree_tests {
     use super::{is_quartic_radical, is_squarefree};
@@ -3081,6 +3077,10 @@ mod squarefree_tests {
         assert!(!is_quartic_radical(3_037_000_499 * 3_037_000_499));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking (see TESTING.md § 7)
+// ---------------------------------------------------------------------------
 
 #[cfg(kani)]
 mod verification {

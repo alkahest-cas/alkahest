@@ -244,6 +244,17 @@ fn gcd_u32(mut a: u32, mut b: u32) -> u32 {
 mod tests {
     use super::*;
 
+    /// `65536 · 65537 = 2^32 + 65536` wrapped to `65536` in `u32`, a wrong
+    /// torsion order that would have been reported as `Principal`.
+    #[test]
+    fn lcm_u32_does_not_wrap() {
+        assert_eq!(lcm_u32(4, 6), Some(12));
+        assert_eq!(lcm_u32(0, 7), Some(0));
+        assert_eq!(lcm_u32(65_536, 65_537), None);
+        assert_eq!(lcm_u32(u32::MAX, u32::MAX), Some(u32::MAX));
+        assert_eq!(lcm_u32(u32::MAX, 2), None);
+    }
+
     fn qp(cs: &[i64]) -> QPoly {
         cs.iter().map(|&c| Rational::from(c)).collect()
     }
