@@ -10,7 +10,7 @@
 use crate::poly::groebner::buchberger::interreduce;
 use crate::poly::groebner::ideal::GbPoly;
 use crate::poly::groebner::monomial_order::MonomialOrder;
-use crate::poly::groebner::reduce::reduce;
+use crate::poly::groebner::reduce::Divisors;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
@@ -115,6 +115,9 @@ pub fn fglm(grevlex_basis: &[GbPoly], n_vars: usize) -> Option<Vec<GbPoly>> {
         }
     }
 
+    // The GRevLex basis, prepared once for the many normal forms below.
+    let grevlex_divisors = Divisors::new(grevlex_basis, MonomialOrder::GRevLex);
+
     // Enqueue each variable.
     for i in 0..n_vars {
         let mut exp = vec![0u32; n_vars];
@@ -136,7 +139,7 @@ pub fn fglm(grevlex_basis: &[GbPoly], n_vars: usize) -> Option<Vec<GbPoly>> {
 
         // Compute NF(m_exp) under GRevLex.
         let m_poly = GbPoly::monomial(m_exp.clone(), rug::Rational::from(1));
-        let nf = reduce(&m_poly, grevlex_basis, MonomialOrder::GRevLex);
+        let nf = grevlex_divisors.reduce(&m_poly, None);
         let v = coord_vector(&nf, &staircase_idx, d);
 
         match gauss.insert_or_express(v) {

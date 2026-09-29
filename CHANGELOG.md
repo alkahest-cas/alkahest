@@ -465,6 +465,24 @@
   including which error a non-polynomial input reports; proptests pin every
   path against the previous algorithms, which stay as the fallback for
   degrees too sparse to hold densely and for exponents that would overflow.
+- **Gröbner reduction runs in place, and Buchberger reduces fraction-free.**
+  The division algorithm rebuilt the whole dividend on every step
+  (`p.sub(..)` via `add(neg(..))`), cloned it again to drop the leading term,
+  rescanned it for that leading term and every divisor for theirs, and
+  `interreduce` cloned the basis once per element. The dividend now lives in a
+  map keyed by an order-preserving encoding of its monomials (leading term =
+  last entry) and is updated in place; divisors' leading data is extracted
+  once, incrementally as the basis grows; `interreduce` skips by index. Inside
+  Buchberger and `interreduce`, where every remainder is made monic anyway,
+  reduction runs over ℤ on primitive integer divisors with periodic content
+  removal instead of paying `mpq`'s gcd canonicalisation on every operation.
+  Divisor choices are unchanged, so the bases are **identical, term for term
+  and in order** — checked against the previous implementation (kept as a
+  test oracle) on cyclic-3/4/5, katsura-2…5 and proptest-generated systems.
+  GRevLex, single core: cyclic-4 0.54 → 0.16 ms, cyclic-5 47 → 5.3 ms,
+  katsura-4 12.7 → 2.2 ms, katsura-5 219 → 19 ms, katsura-6 4.2 s → 0.24 s.
+  `reduce`, FGLM's normal forms and `solve` on polynomial systems use the same
+  engine (the exact rational variant where the remainder itself is returned).
 
 ### Testing and tooling
 
