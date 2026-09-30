@@ -91,7 +91,12 @@ jobs:
               b67ba0383ef7e8a8563734e2e889ef5ec3c3b898a01d00fa0a6869ad81c6ce01 /tmp/mpfr-4.2.2.tar.xz \
               | sha256sum -c -
             tar xf /tmp/gmp-6.3.0.tar.xz -C /tmp && tar xf /tmp/mpfr-4.2.2.tar.xz -C /tmp
-            ( cd /tmp/gmp-6.3.0 && ./configure --prefix=/usr/local --enable-shared --disable-static && make -j"$(nproc)" && make install )
+            # --enable-fat: without it GMP's configure tunes its assembly to the
+            # build runner's CPU, and the wheel ships that libgmp (auditwheel
+            # bundles it) to every user; on an older CPU that is SIGILL on the
+            # first bignum multiply. A fat build carries every x86_64 kernel and
+            # picks one at load time via CPUID.
+            ( cd /tmp/gmp-6.3.0 && ./configure --prefix=/usr/local --enable-shared --disable-static --enable-fat && make -j"$(nproc)" && make install )
             ( cd /tmp/mpfr-4.2.2 && ./configure --prefix=/usr/local --with-gmp=/usr/local --enable-shared --disable-static && make -j"$(nproc)" && make install )
             echo /usr/local/lib > /etc/ld.so.conf.d/00-usr-local.conf
             ldconfig
