@@ -4729,6 +4729,24 @@ mod perfect_power_tests {
         assert!(!is_perfect_square(r * r + 1));
         assert!(!is_perfect_square(i64::MAX));
     }
+
+    /// Completeness: every square `c²` is recognised, i.e. the `f64` square
+    /// root lands within one of `c` — for the bottom and the top `2^16` roots
+    /// and a stride through the rest. (A symbolic `f64` square root at full
+    /// width did not finish under Kani in 25 minutes.)
+    #[test]
+    fn every_square_is_recognised() {
+        let top = 3_037_000_499_i64; // ⌊√i64::MAX⌋
+        let low = 0..1 << 16;
+        let high = top - (1 << 16)..=top;
+        let stride = (0..=top).step_by(9_973);
+        for c in low.chain(high).chain(stride) {
+            assert!(is_perfect_square(c * c), "{c}²");
+            if c > 1 {
+                assert!(!is_perfect_square(c * c - 1), "{c}² − 1");
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4763,13 +4781,4 @@ mod verification {
         }
     }
 
-    /// Completeness at full width: every square `c²` in `i64` is recognised,
-    /// i.e. the `f64` square root lands within one of `c` for every
-    /// `0 <= c <= ⌊√i64::MAX⌋`.
-    #[kani::proof]
-    #[kani::unwind(5)]
-    fn perfect_square_complete_full_width() {
-        let c: i64 = kani::any_where(|c: &i64| *c >= 0 && *c <= 3_037_000_499);
-        assert!(is_perfect_square(c * c));
-    }
 }

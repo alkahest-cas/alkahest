@@ -447,9 +447,10 @@ mod verification {
     const MAX_SLOTS: u32 = 5;
 
     fn any_arith_op() -> Op {
-        let a: u32 = kani::any_where(|&x| x < MAX_SLOTS);
-        let b: u32 = kani::any_where(|&x| x < MAX_SLOTS);
-        let dst: u32 = kani::any_where(|&x| x < MAX_SLOTS);
+        // Full `u32` range: `is_well_formed` must reject what `run` cannot index.
+        let a: u32 = kani::any();
+        let b: u32 = kani::any();
+        let dst: u32 = kani::any();
         let kind = match kani::any::<u8>() % 4 {
             0 => OpKind::Add2(a, b),
             1 => OpKind::Mul2(a, b),
@@ -460,34 +461,25 @@ mod verification {
         Op { kind, dst }
     }
 
-    /// Any program of up to two arithmetic operations over up to five slots
-    /// and three operand entries — every slot index, operand range and
-    /// destination symbolic — that passes `is_well_formed` runs without an
-    /// out-of-bounds index or a panic. Constants are `1.0`: indexing, not
-    /// arithmetic, is what is checked. `Pow`/`Func*` read slots through the
-    /// same `s[x as usize]` and are bounded by the same clauses, but their
-    /// kernels (`pow_f64`, `dyn Primitive`) are outside what Kani can run.
+    /// Any program of two arithmetic operations over five slots and three
+    /// operand entries — every `u32` slot index, operand range, destination, the
+    /// input count and the result symbolic — that passes `is_well_formed`
+    /// runs without an out-of-bounds index or a panic. The sizes are fixed
+    /// (a symbolic-length `Vec` multiplies the solver's work) and constants
+    /// are `1.0`: indexing, not arithmetic, is what is checked. `Pow`/`Func*`
+    /// read slots through the same `s[x as usize]` and are bounded by the
+    /// same clauses, but their kernels (`pow_f64`, `dyn Primitive`) are
+    /// outside what Kani can run.
     #[kani::proof]
     #[kani::unwind(6)]
     fn run_in_bounds_when_well_formed_small() {
-        let n_slots: usize = kani::any_where(|&n| n >= 1 && n <= MAX_SLOTS as usize);
-        let n_ops: usize = kani::any_where(|&n| n <= 2);
-        let n_operands: usize = kani::any_where(|&n| n <= 3);
-        let mut ops = Vec::new();
-        for _ in 0..n_ops {
-            ops.push(any_arith_op());
-        }
-        let mut operands = Vec::new();
-        for _ in 0..n_operands {
-            operands.push(kani::any_where(|&x: &u32| x < MAX_SLOTS));
-        }
         let prog = NumericProgram {
-            n_inputs: kani::any_where(|&n| n <= n_slots),
-            template: vec![1.0; n_slots],
-            ops,
-            operands,
+            n_inputs: kani::any_where(|&n| n <= MAX_SLOTS as usize),
+            template: vec![1.0; MAX_SLOTS as usize],
+            ops: vec![any_arith_op(), any_arith_op()],
+            operands: vec![kani::any(), kani::any(), kani::any()],
             exp_nodes: Vec::new(),
-            result: kani::any_where(|&x: &u32| x < MAX_SLOTS),
+            result: kani::any(),
             always_fails: false,
         };
         kani::assume(prog.is_well_formed());
