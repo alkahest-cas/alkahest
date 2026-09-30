@@ -65,7 +65,7 @@
 use crate::kernel::expr::PredicateKind;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::primitive::PrimitiveRegistry;
-use rug::{float::Round, ops::Pow, Float};
+use rug::{float::Round, ops::Pow, Assign, Float};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::OnceLock;
@@ -302,10 +302,11 @@ impl ArbBall {
         // The magnitude is accumulated at *extra* precision: rounding it to
         // `prec` first could round the bump itself down, which is the very
         // shortfall this term exists to cover. `>>` is an exact exponent shift.
-        let mut scale = Float::with_val(
-            self.prec + 32,
-            Float::with_val(self.prec + 32, self.mid.abs_ref()) + &self.rad,
-        );
+        // (Built in place: the sum rounds once at `prec + 32` either way, and
+        // an extra copy of it was a second MPFR allocation on every ball
+        // operation.)
+        let mut scale = Float::with_val(self.prec + 32, self.mid.abs_ref());
+        scale += &self.rad;
         scale >>= self.prec.saturating_sub(2);
         self.rad += &scale;
     }
@@ -329,6 +330,14 @@ impl PartialEq for ArbBall {
 impl std::ops::Add for ArbBall {
     type Output = Self;
     fn add(self, rhs: Self) -> Self {
+        self.add_ref(&rhs)
+    }
+}
+
+impl ArbBall {
+    /// `self + rhs` without consuming (or cloning) either operand; exactly
+    /// the same ball as the `Add` impl, which delegates here.
+    pub(crate) fn add_ref(&self, rhs: &Self) -> Self {
         let prec = self.prec.max(rhs.prec);
         let mid = Float::with_val(prec, &self.mid + &rhs.mid);
         // The radius sum is accumulated at extra precision and rounded once, so
@@ -355,22 +364,31 @@ impl std::ops::Sub for ArbBall {
 impl std::ops::Mul for ArbBall {
     type Output = Self;
     fn mul(self, rhs: Self) -> Self {
+        self.mul_ref(&rhs)
+    }
+}
+
+impl ArbBall {
+    /// `self * rhs` without consuming (or cloning) either operand; exactly
+    /// the same ball as the `Mul` impl, which delegates here.
+    pub(crate) fn mul_ref(&self, rhs: &Self) -> Self {
         let prec = self.prec.max(rhs.prec);
         // |a*b| ≤ |a|*|b|
         // rad(a*b) = |mid_a|*rad_b + |mid_b|*rad_a + rad_a*rad_b
         let mid = Float::with_val(prec, &self.mid * &rhs.mid);
         let work = prec + 32;
-        let ma = Float::with_val(work, self.mid.abs_ref());
-        let mb = Float::with_val(work, rhs.mid.abs_ref());
         // Five roundings if this is done at `prec`; done at `prec + 32` and
         // rounded once, it is covered by `add_rounding_error` like every other
-        // rule.
-        let rad = Float::with_val(
-            prec,
-            Float::with_val(work, &ma * &rhs.rad)
-                + Float::with_val(work, &mb * &self.rad)
-                + Float::with_val(work, &self.rad * &rhs.rad),
-        );
+        // rule.  Each product and partial sum is rounded to `work` bits, in
+        // place, in the order `(|a|·r_b + |b|·r_a) + r_a·r_b`.
+        let mut acc = Float::with_val(work, self.mid.abs_ref());
+        acc *= &rhs.rad;
+        let mut t = Float::with_val(work, rhs.mid.abs_ref());
+        t *= &self.rad;
+        acc += &t;
+        t.assign(&self.rad * &rhs.rad);
+        acc += &t;
+        let rad = Float::with_val(prec, &acc);
         let mut out = ArbBall { mid, rad, prec };
         out.add_rounding_error();
         out.sanitized()
@@ -2422,6 +2440,112 @@ mod special_kernel_tests {
                     .is_none(),
                 "Γ on [{lo},{hi}] should refuse"
             );
+        }
+    }
+
+    // ── the allocation-lean `add_ref` / `mul_ref` against the old formulas ──
+
+    /// `add_rounding_error` as it was written before the in-place rewrite.
+    fn reference_add_rounding_error(b: &mut ArbBall) {
+        if b.mid.is_infinite() || b.mid.is_nan() || b.rad.is_nan() {
+            b.mid = Float::new(b.prec);
+            b.rad = Float::with_val(b.prec, f64::INFINITY);
+            return;
+        }
+        let mut scale = Float::with_val(
+            b.prec + 32,
+            Float::with_val(b.prec + 32, b.mid.abs_ref()) + &b.rad,
+        );
+        scale >>= b.prec.saturating_sub(2);
+        b.rad += &scale;
+    }
+
+    fn reference_add(a: &ArbBall, b: &ArbBall) -> ArbBall {
+        let prec = a.prec.max(b.prec);
+        let mid = Float::with_val(prec, &a.mid + &b.mid);
+        let rad = Float::with_val(prec, Float::with_val(prec + 32, &a.rad + &b.rad));
+        let mut out = ArbBall { mid, rad, prec };
+        reference_add_rounding_error(&mut out);
+        out.sanitized()
+    }
+
+    fn reference_mul(a: &ArbBall, b: &ArbBall) -> ArbBall {
+        let prec = a.prec.max(b.prec);
+        let mid = Float::with_val(prec, &a.mid * &b.mid);
+        let work = prec + 32;
+        let ma = Float::with_val(work, a.mid.abs_ref());
+        let mb = Float::with_val(work, b.mid.abs_ref());
+        let rad = Float::with_val(
+            prec,
+            Float::with_val(work, &ma * &b.rad)
+                + Float::with_val(work, &mb * &a.rad)
+                + Float::with_val(work, &a.rad * &b.rad),
+        );
+        let mut out = ArbBall { mid, rad, prec };
+        reference_add_rounding_error(&mut out);
+        out.sanitized()
+    }
+
+    /// Bitwise equality, NaN included (a sanitised ball can carry one).
+    fn same_bits(x: &ArbBall, y: &ArbBall) -> bool {
+        let eq = |p: &Float, q: &Float| {
+            p.prec() == q.prec()
+                && ((p.is_nan() && q.is_nan())
+                    || (p == q && p.is_sign_negative() == q.is_sign_negative()))
+        };
+        x.prec == y.prec && eq(&x.mid, &y.mid) && eq(&x.rad, &y.rad)
+    }
+
+    /// A ball from generated parts: the midpoint's significand is a quotient
+    /// so it does not fit in 53 bits, and the exponent spans enough range
+    /// for the radius terms to dominate or vanish.
+    fn gen_ball(num: i64, den: i64, exp: i32, rad: f64, prec: u32, special: u8) -> ArbBall {
+        let mut mid = Float::with_val(prec, num) / Float::with_val(prec, den.max(1));
+        mid <<= exp;
+        let rad = Float::with_val(prec, rad.abs());
+        let mid = match special {
+            1 => Float::new(prec),
+            2 => Float::with_val(prec, f64::INFINITY),
+            3 => Float::with_val(prec, f64::NAN),
+            _ => mid,
+        };
+        let rad = match special {
+            4 => Float::with_val(prec, f64::INFINITY),
+            5 => Float::new(prec),
+            _ => rad,
+        };
+        ArbBall { mid, rad, prec }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(2000))]
+        #[test]
+        fn ref_ops_match_the_old_formulas_bit_for_bit(
+            n1 in proptest::prelude::any::<i64>(), d1 in 1i64..1_000_000,
+            e1 in -300i32..300, r1 in 0.0f64..1e3, p1 in proptest::sample::select(vec![53u32, 64, 128, 200]),
+            s1 in 0u8..12,
+            n2 in proptest::prelude::any::<i64>(), d2 in 1i64..1_000_000,
+            e2 in -300i32..300, r2 in 0.0f64..1e-3, p2 in proptest::sample::select(vec![53u32, 64, 128, 200]),
+            s2 in 0u8..12,
+        ) {
+            let a = gen_ball(n1, d1, e1, r1, p1, s1);
+            let b = gen_ball(n2, d2, e2, r2, p2, s2);
+            proptest::prop_assert!(same_bits(&a.add_ref(&b), &reference_add(&a, &b)));
+            proptest::prop_assert!(same_bits(&(a.clone() + b.clone()), &reference_add(&a, &b)));
+            proptest::prop_assert!(same_bits(&a.mul_ref(&b), &reference_mul(&a, &b)));
+            proptest::prop_assert!(same_bits(&(a.clone() * b.clone()), &reference_mul(&a, &b)));
+            proptest::prop_assert!(same_bits(&b.mul_ref(&a), &reference_mul(&b, &a)));
+            let sub = a.clone() - b.clone();
+            let mut want = {
+                let prec = a.prec.max(b.prec);
+                ArbBall {
+                    mid: Float::with_val(prec, &a.mid - &b.mid),
+                    rad: Float::with_val(prec, Float::with_val(prec + 32, &a.rad + &b.rad)),
+                    prec,
+                }
+            };
+            reference_add_rounding_error(&mut want);
+            proptest::prop_assert!(same_bits(&sub, &want.sanitized()));
         }
     }
 }

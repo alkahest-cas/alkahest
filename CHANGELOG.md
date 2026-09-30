@@ -190,6 +190,22 @@
   adjugate. Measured on one machine (release wheel, a dense matrix of
   polynomials in `x`, `y`): 7×7 42 → 11 ms, 8×8 336 → 74 ms.
   Output is unchanged (differential tests against the unmemoised expansion).
+- **Small-input regressions from this cycle's performance work, recovered.**
+  CodSpeed flagged five micro-benchmarks. The instruction counts were bisected
+  across #394–#407 with a fixed toolchain, and each regression was fixed where
+  it was introduced:
+  `MultiPoly::from_symbolic` on a quartic or a four-term bivariate had gained
+  11% / 8% (#399's shared-node memo inserted every compound node into a
+  SipHash `HashSet`, which allocated and rehashed three times on a quartic).
+  The UniPoly and MultiPoly builders now record visited nodes in an inline
+  16-slot set that spills to an `ExprId`-hashed set, which brings the
+  overhead to ~2.5%. `ArbBall` multiplication now builds its radius in place.
+  It allocates 5 MPFR temporaries instead of 9 and addition 4 instead of 5,
+  with bit-identical results (a proptest checks this against the old
+  formulas). That is −15% instructions per `arb_mul` and −6% per `arb_add`.
+  `intern::build_add3` (+5% at #397) is superseded by #411's pool index;
+  `gcd_deg4` did not move in any commit and follows the CI's FLINT 3.5 → 3.6
+  update (#410).
 - **`diff`, `subs`, `match_pattern` and the free-of-variable checks are linear
   on shared expressions — and `integrate` no longer treats a `Piecewise` or
   `RootSum` as a constant.** Expressions are hash-consed DAGs, and these walks
