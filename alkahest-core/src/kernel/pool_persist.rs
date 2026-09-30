@@ -595,7 +595,19 @@ pub fn load_from(path: impl AsRef<Path>) -> Result<Option<ExprPool>, IoError> {
         return Err(IoError::BadMagic);
     }
 
-    let version = read_u32(&mut r)?;
+    let pool = ExprPool::new();
+    read_body(&mut r, &pool)?;
+    Ok(Some(pool))
+}
+
+/// Read everything after the magic — version, flags, node count, nodes —
+/// interning each node into `pool`.  Returns the file-index → pool-id table.
+///
+/// `pool` need not be empty: every child reference goes through the table,
+/// so nodes that already exist in `pool` (or collapse onto one another when
+/// canonicalised) are reused, never assumed to sit at their file index.
+fn read_body(r: &mut Bounded<impl Read>, pool: &ExprPool) -> Result<Vec<ExprId>, IoError> {
+    let version = read_u32(r)?;
     if version != POOL_FORMAT_V1
         && version != POOL_FORMAT_V2
         && version != POOL_FORMAT_V3
@@ -604,10 +616,9 @@ pub fn load_from(path: impl AsRef<Path>) -> Result<Option<ExprPool>, IoError> {
     {
         return Err(IoError::UnsupportedVersion(version));
     }
-    let _flags = read_u32(&mut r)?;
+    let _flags = read_u32(r)?;
 
-    let pool = ExprPool::new();
-    let count = read_u64(&mut r)?;
+    let count = read_u64(r)?;
     // Each node takes at least `MIN_NODE_BYTES`, so a count the rest of the
     // file cannot hold is a truncated (or corrupt) file, refused before the
     // loop rather than after it has run out of bytes.
@@ -629,7 +640,7 @@ pub fn load_from(path: impl AsRef<Path>) -> Result<Option<ExprPool>, IoError> {
     // node now occupies that index.
     let mut ids: Vec<ExprId> = Vec::new();
     for index in 0..count {
-        let data = read_node(&mut r, version)?;
+        let data = read_node(r, version)?;
         // `Add`/`Mul` go through their constructors, not bare `intern`, so a
         // nested or unsorted node an older build saved is flattened and put
         // in canonical order — otherwise it would sit in the pool beside the
@@ -641,8 +652,7 @@ pub fn load_from(path: impl AsRef<Path>) -> Result<Option<ExprPool>, IoError> {
         };
         ids.push(id);
     }
-
-    Ok(Some(pool))
+    Ok(ids)
 }
 
 /// Rewrite every child reference in `data` (a node read at file position
@@ -653,7 +663,7 @@ pub fn load_from(path: impl AsRef<Path>) -> Result<Option<ExprPool>, IoError> {
 /// `index` is corrupt data, and following it would read a node that does not
 /// exist yet.
 fn remap_children(data: ExprData, ids: &[ExprId], index: usize) -> Result<ExprData, IoError> {
-    let map = |c: ExprId| -> Result<ExprId, IoError> {
+    map_children(data, |c| {
         ids.get(c.0 as usize).copied().ok_or_else(|| {
             IoError::Io(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -663,50 +673,160 @@ fn remap_children(data: ExprData, ids: &[ExprId], index: usize) -> Result<ExprDa
                 ),
             ))
         })
-    };
-    let map_all =
-        |v: Vec<ExprId>| -> Result<Vec<ExprId>, IoError> { v.into_iter().map(map).collect() };
+    })
+}
+
+/// `data` with every child reference replaced by `f(child)`, in a fixed
+/// order (the order the file format lists them).
+fn map_children(
+    data: ExprData,
+    mut f: impl FnMut(ExprId) -> Result<ExprId, IoError>,
+) -> Result<ExprData, IoError> {
+    fn map_all(
+        v: Vec<ExprId>,
+        f: &mut impl FnMut(ExprId) -> Result<ExprId, IoError>,
+    ) -> Result<Vec<ExprId>, IoError> {
+        v.into_iter().map(f).collect()
+    }
     Ok(match data {
         ExprData::Symbol { .. }
         | ExprData::Integer(_)
         | ExprData::Rational(_)
         | ExprData::Float(_) => data,
-        ExprData::Add(args) => ExprData::Add(map_all(args)?),
-        ExprData::Mul(args) => ExprData::Mul(map_all(args)?),
+        ExprData::Add(args) => ExprData::Add(map_all(args, &mut f)?),
+        ExprData::Mul(args) => ExprData::Mul(map_all(args, &mut f)?),
         ExprData::Pow { base, exp } => ExprData::Pow {
-            base: map(base)?,
-            exp: map(exp)?,
+            base: f(base)?,
+            exp: f(exp)?,
         },
         ExprData::Func { name, args } => ExprData::Func {
             name,
-            args: map_all(args)?,
+            args: map_all(args, &mut f)?,
         },
         ExprData::Piecewise { branches, default } => ExprData::Piecewise {
             branches: branches
                 .into_iter()
-                .map(|(c, v)| Ok((map(c)?, map(v)?)))
+                .map(|(c, v)| Ok((f(c)?, f(v)?)))
                 .collect::<Result<_, IoError>>()?,
-            default: map(default)?,
+            default: f(default)?,
         },
         ExprData::Predicate { kind, args } => ExprData::Predicate {
             kind,
-            args: map_all(args)?,
+            args: map_all(args, &mut f)?,
         },
         ExprData::Forall { var, body } => ExprData::Forall {
-            var: map(var)?,
-            body: map(body)?,
+            var: f(var)?,
+            body: f(body)?,
         },
         ExprData::Exists { var, body } => ExprData::Exists {
-            var: map(var)?,
-            body: map(body)?,
+            var: f(var)?,
+            body: f(body)?,
         },
-        ExprData::BigO(inner) => ExprData::BigO(map(inner)?),
+        ExprData::BigO(inner) => ExprData::BigO(f(inner)?),
         ExprData::RootSum { poly, var, body } => ExprData::RootSum {
-            poly: map(poly)?,
-            var: map(var)?,
-            body: map(body)?,
+            poly: f(poly)?,
+            var: f(var)?,
+            body: f(body)?,
         },
     })
+}
+
+// ---------------------------------------------------------------------------
+// Sub-DAG serialisation (pickling)
+// ---------------------------------------------------------------------------
+
+/// Magic of a serialised expression DAG (as opposed to a whole pool file).
+const DAG_MAGIC: &[u8; 4] = b"ALKD";
+
+/// Serialise the expressions `roots` — every node reachable from them, and
+/// nothing else in `pool` — to bytes that [`dag_from_bytes`] reads back into
+/// any pool.
+///
+/// The layout is a pool file (see the module docs) whose node list holds only
+/// the reachable nodes, children before parents, renumbered from 0; the magic
+/// is `"ALKD"` instead of `"ALKP"`, and after the nodes come `n_roots: u32`
+/// and `n_roots × u32` node indices.  This is what `pickle` uses for an
+/// `Expr`: the size is that of the expression, not of the pool it lives in.
+///
+/// Iterative, so an expression of any depth serialises.
+pub fn dag_to_bytes(pool: &ExprPool, roots: &[ExprId]) -> Vec<u8> {
+    use std::collections::HashMap;
+    // Post-order DFS with an explicit stack: a node is emitted after all of
+    // its children, so every child index in the output is an earlier one.
+    let mut index: HashMap<ExprId, u32> = HashMap::new();
+    let mut order: Vec<ExprData> = Vec::new();
+    let mut stack: Vec<(ExprId, bool)> = roots.iter().rev().map(|&r| (r, false)).collect();
+    while let Some((id, expanded)) = stack.pop() {
+        if index.contains_key(&id) {
+            continue;
+        }
+        let data = pool.get(id);
+        if expanded {
+            let local = map_children(data, |c| Ok(ExprId(index[&c])))
+                .expect("every child was emitted before its parent");
+            index.insert(id, order.len() as u32);
+            order.push(local);
+            continue;
+        }
+        stack.push((id, true));
+        let mut children = Vec::new();
+        let _ = map_children(data, |c| {
+            children.push(c);
+            Ok(c)
+        });
+        for c in children.into_iter().rev() {
+            if !index.contains_key(&c) {
+                stack.push((c, false));
+            }
+        }
+    }
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(DAG_MAGIC);
+    out.extend_from_slice(&POOL_FORMAT_WRITE.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&(order.len() as u64).to_le_bytes());
+    for node in &order {
+        write_node(&mut out, node).expect("writing to a Vec cannot fail");
+    }
+    out.extend_from_slice(&(roots.len() as u32).to_le_bytes());
+    for r in roots {
+        out.extend_from_slice(&index[r].to_le_bytes());
+    }
+    out
+}
+
+/// Read bytes written by [`dag_to_bytes`] into `pool`, returning the roots'
+/// ids in `pool`.  Nodes `pool` already holds are reused (hash-consing), so
+/// loading into the pool the DAG came from returns the original ids.
+///
+/// The bytes are validated exactly as a pool file is — every length bounded
+/// by the input, children strictly earlier — and a malformed input is an
+/// `IoError`, never a panic.
+pub fn dag_from_bytes(pool: &ExprPool, bytes: &[u8]) -> Result<Vec<ExprId>, IoError> {
+    let mut r = Bounded::new(bytes, bytes.len() as u64);
+    let mut magic = [0u8; 4];
+    r.read_exact(&mut magic)?;
+    if &magic != DAG_MAGIC {
+        return Err(IoError::BadMagic);
+    }
+    let ids = read_body(&mut r, pool)?;
+    let n_roots = u64::from(read_u32(&mut r)?);
+    r.ensure(n_roots, 4)?;
+    let mut roots = Vec::with_capacity(n_roots as usize);
+    for _ in 0..n_roots {
+        let i = read_u32(&mut r)?;
+        let id = ids.get(i as usize).copied().ok_or_else(|| {
+            IoError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "expression DAG root {i} is not one of its {} nodes",
+                    ids.len()
+                ),
+            ))
+        })?;
+        roots.push(id);
+    }
+    Ok(roots)
 }
 
 /// Load if `path` exists, else return a fresh pool.
@@ -1129,5 +1249,112 @@ mod tests {
             }
         }
         assert!(bad.is_empty(), "panicked on: {bad:?}");
+    }
+
+    // -- Sub-DAG bytes (pickling) -------------------------------------------
+
+    /// Structural rendering, pool-independent.
+    fn show(pool: &ExprPool, id: ExprId) -> String {
+        pool.display(id).to_string()
+    }
+
+    #[test]
+    fn dag_round_trips_into_a_fresh_pool_and_carries_only_what_is_reachable() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let y = p.symbol("y", Domain::Positive);
+        // Junk the expressions do not reach.
+        for i in 0..200 {
+            let _ = p.add(vec![x, p.integer(i)]);
+        }
+        let s = p.add(vec![x, y]);
+        let e1 = p.pow(s, p.rational(3, 7));
+        let e2 = p.func("sin", vec![p.mul(vec![s, p.float(0.25, 80)])]);
+        let bytes = dag_to_bytes(&p, &[e1, e2, e1]);
+        assert!(
+            bytes.len() < 400,
+            "{} bytes for two small expressions",
+            bytes.len()
+        );
+
+        let q = ExprPool::new();
+        let got = dag_from_bytes(&q, &bytes).unwrap();
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[0], got[2]);
+        assert_eq!(show(&q, got[0]), show(&p, e1));
+        assert_eq!(show(&q, got[1]), show(&p, e2));
+        // Domains survive: y is Positive in q too.
+        assert_eq!(q.get(q.symbol("y", Domain::Positive)), p.get(y));
+        let qy = q.symbol("y", Domain::Positive);
+        let qx = q.symbol("x", Domain::Real);
+        assert_eq!(q.add(vec![qx, qy]), q.add(vec![qy, qx]));
+        let before = q.len();
+        let _ = q.add(vec![qx, qy]);
+        assert_eq!(q.len(), before, "the shared x + y was not reused");
+    }
+
+    #[test]
+    fn dag_loaded_into_its_own_pool_returns_the_original_ids() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let e = p.add(vec![p.pow(x, p.integer(2)), p.func("exp", vec![x])]);
+        let before = p.len();
+        let got = dag_from_bytes(&p, &dag_to_bytes(&p, &[e])).unwrap();
+        assert_eq!(got, vec![e]);
+        assert_eq!(p.len(), before);
+    }
+
+    #[test]
+    fn dag_of_a_very_deep_expression_serialises_iteratively() {
+        let p = ExprPool::new();
+        let mut e = p.symbol("x", Domain::Real);
+        for _ in 0..200_000 {
+            e = p.func("sin", vec![e]);
+        }
+        let bytes = dag_to_bytes(&p, &[e]);
+        let q = ExprPool::new();
+        let got = dag_from_bytes(&q, &bytes).unwrap();
+        assert_eq!(q.len(), p.len());
+        assert!(matches!(q.get(got[0]), ExprData::Func { .. }));
+    }
+
+    #[test]
+    fn corrupt_dag_bytes_are_errors_not_panics() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let e = p.add(vec![p.pow(x, p.rational(1, 3)), p.float(1.5, 64), x]);
+        let good = dag_to_bytes(&p, &[e]);
+        let mut bad = Vec::new();
+        let try_load = |b: &[u8]| {
+            std::panic::catch_unwind(|| {
+                let q = ExprPool::new();
+                if let Ok(roots) = dag_from_bytes(&q, b) {
+                    for r in roots {
+                        let _ = q.display(r).to_string();
+                    }
+                }
+            })
+            .is_ok()
+        };
+        for n in 0..good.len() {
+            if !try_load(&good[..n]) {
+                bad.push(format!("truncated to {n}"));
+            }
+        }
+        for i in 0..good.len() {
+            for bit in 0..8 {
+                let mut b = good.clone();
+                b[i] ^= 1 << bit;
+                if !try_load(&b) {
+                    bad.push(format!("byte {i} bit {bit}"));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "panicked on: {bad:?}");
+        // A pool file is not a DAG and vice versa.
+        assert!(matches!(
+            dag_from_bytes(&p, b"ALKP"),
+            Err(IoError::BadMagic)
+        ));
     }
 }
