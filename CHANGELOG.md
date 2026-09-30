@@ -178,6 +178,18 @@
 
 ### Performance
 
+- **Symbolic determinants and inverses no longer take factorial time.**
+  `Matrix::det` on a matrix with symbolic entries expanded cofactors along the
+  first row recursively, re-deriving every sub-minor once per path that
+  reached it — `O(n!)` calls. The expansion is now memoised on the
+  `(rows, columns)` bit masks of each sub-minor, so each of the `O(2ⁿ)`
+  distinct sub-determinants is computed once, by exactly the step the plain
+  recursion takes (numeric Bareiss for an all-numeric block, `ad − bc` for a
+  2×2, first-row expansion otherwise), and the hash-consed result is the same
+  `ExprId`. `Matrix::inverse` shares one memo across all `n²` cofactors of the
+  adjugate. Measured on one machine (release wheel, a dense matrix of
+  polynomials in `x`, `y`): 7×7 42 → 11 ms, 8×8 336 → 74 ms.
+  Output is unchanged (differential tests against the unmemoised expansion).
 - **`diff`, `subs`, `match_pattern` and the free-of-variable checks are linear
   on shared expressions — and `integrate` no longer treats a `Piecewise` or
   `RootSum` as a constant.** Expressions are hash-consed DAGs, and these walks
