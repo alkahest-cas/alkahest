@@ -1,9 +1,11 @@
 //! Constant folding helpers for predicates and numeric evaluation.
 
+use crate::ball::IntervalEval;
 use crate::kernel::expr::PredicateKind;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use rug::float::Round;
 use rug::{Float, Integer, Rational};
+use std::cmp::Ordering;
 
 /// The exact integer `n` rounded to the nearest `f64` (ties to even).
 ///
@@ -162,6 +164,21 @@ pub fn try_expr_f64(expr: ExprId, pool: &ExprPool) -> Option<f64> {
 }
 
 /// Evaluate a predicate when all arguments are numeric constants.
+///
+/// Comparisons are decided **exactly** or not at all.  They used to be decided
+/// by rounding both sides to `f64`, so `10^30 + 1 = 10^30` folded to `True`,
+/// `3333333333333333/10^16 ≠ 1/3` to `False`, `1/10^400 = 0` to `True`, and a
+/// `Piecewise` guarded by `x > 2^53` took its default branch at `2^53 + 1`.
+///
+/// * Two numeric literals (`Integer`, `Rational`, `Float`) are compared as the
+///   exact numbers they are — a `Float` is a dyadic rational, so this is exact
+///   too.  A NaN keeps its IEEE meaning: every ordering and `=` are false,
+///   `≠` is true.
+/// * Otherwise both sides are enclosed with rigorous ball arithmetic
+///   ([`crate::ball::IntervalEval`]).  The comparison is decided only when the
+///   enclosures prove it — separated balls for an ordering or `≠`, and
+///   identical *exact* balls for `=` — and is left unevaluated (`None`) when
+///   they overlap, rather than guessed.
 pub fn try_predicate_bool(kind: &PredicateKind, args: &[ExprId], pool: &ExprPool) -> Option<bool> {
     match kind {
         PredicateKind::True => Some(true),
@@ -186,13 +203,107 @@ pub fn try_predicate_bool(kind: &PredicateKind, args: &[ExprId], pool: &ExprPool
             }
             Some(false)
         }
-        PredicateKind::Lt => Some(try_expr_f64(args[0], pool)? < try_expr_f64(args[1], pool)?),
-        PredicateKind::Le => Some(try_expr_f64(args[0], pool)? <= try_expr_f64(args[1], pool)?),
-        PredicateKind::Gt => Some(try_expr_f64(args[0], pool)? > try_expr_f64(args[1], pool)?),
-        PredicateKind::Ge => Some(try_expr_f64(args[0], pool)? >= try_expr_f64(args[1], pool)?),
-        PredicateKind::Eq => Some(try_expr_f64(args[0], pool)? == try_expr_f64(args[1], pool)?),
-        PredicateKind::Ne => Some(try_expr_f64(args[0], pool)? != try_expr_f64(args[1], pool)?),
+        PredicateKind::Lt
+        | PredicateKind::Le
+        | PredicateKind::Gt
+        | PredicateKind::Ge
+        | PredicateKind::Eq
+        | PredicateKind::Ne => {
+            let [lhs, rhs] = args else {
+                return None;
+            };
+            match exact_numeric_cmp(*lhs, *rhs, pool) {
+                Some(ord) => Some(decide_ordering(kind, ord)),
+                None => ball_decide(kind, *lhs, *rhs, pool),
+            }
+        }
     }
+}
+
+/// The truth of `kind` given the exact ordering of its two sides (`None` when
+/// they are unordered, i.e. a NaN is involved).
+fn decide_ordering(kind: &PredicateKind, ord: Option<Ordering>) -> bool {
+    match (kind, ord) {
+        (PredicateKind::Ne, None) => true,
+        (_, None) => false,
+        (PredicateKind::Lt, Some(o)) => o == Ordering::Less,
+        (PredicateKind::Le, Some(o)) => o != Ordering::Greater,
+        (PredicateKind::Gt, Some(o)) => o == Ordering::Greater,
+        (PredicateKind::Ge, Some(o)) => o != Ordering::Less,
+        (PredicateKind::Eq, Some(o)) => o == Ordering::Equal,
+        (PredicateKind::Ne, Some(o)) => o != Ordering::Equal,
+        _ => unreachable!("only comparisons reach decide_ordering"),
+    }
+}
+
+/// An exact numeric literal.
+enum ExactNumber {
+    Rational(Rational),
+    Float(Float),
+}
+
+fn exact_number(expr: ExprId, pool: &ExprPool) -> Option<ExactNumber> {
+    match pool.get(expr) {
+        ExprData::Integer(n) => Some(ExactNumber::Rational(Rational::from(n.0))),
+        ExprData::Rational(r) => Some(ExactNumber::Rational(r.0)),
+        ExprData::Float(f) => Some(ExactNumber::Float(f.inner)),
+        _ => None,
+    }
+}
+
+/// The exact ordering of two numeric literals: `None` when either is not a
+/// literal, `Some(None)` when they are unordered (a NaN).
+fn exact_numeric_cmp(a: ExprId, b: ExprId, pool: &ExprPool) -> Option<Option<Ordering>> {
+    let (a, b) = (exact_number(a, pool)?, exact_number(b, pool)?);
+    Some(match (&a, &b) {
+        (ExactNumber::Rational(x), ExactNumber::Rational(y)) => Some(x.cmp(y)),
+        (ExactNumber::Rational(x), ExactNumber::Float(y)) => {
+            y.partial_cmp(x).map(Ordering::reverse)
+        }
+        (ExactNumber::Float(x), ExactNumber::Rational(y)) => x.partial_cmp(y),
+        (ExactNumber::Float(x), ExactNumber::Float(y)) => x.partial_cmp(y),
+    })
+}
+
+/// Working precisions for [`ball_decide`]: a cheap attempt, then one retry for
+/// operands that agree to more than `128` bits.
+const BALL_PRECISIONS: [u32; 2] = [128, 512];
+
+/// Decide a comparison between two closed constant expressions (`√2`, `π/2`,
+/// `exp(1)`) by rigorous enclosure, or return `None`.
+fn ball_decide(kind: &PredicateKind, a: ExprId, b: ExprId, pool: &ExprPool) -> Option<bool> {
+    for prec in BALL_PRECISIONS {
+        let ev = IntervalEval::new(prec);
+        // `None`: a free symbol, a complex or undefined value, an unsupported
+        // function — nothing to decide, at any precision.
+        let (x, y) = (ev.eval(a, pool)?, ev.eval(b, pool)?);
+        let (x_lo, x_hi, y_lo, y_hi) = (x.lo(), x.hi(), y.lo(), y.hi());
+        // The endpoints are rounded outward, and an indeterminate ball is
+        // `(-∞, ∞)`, so a NaN never reaches these comparisons and a strict
+        // separation is a proof.
+        let below = x_hi < y_lo;
+        let above = x_lo > y_hi;
+        let same_point = x.is_exact() && y.is_exact() && x.mid == y.mid;
+        let decided = match kind {
+            PredicateKind::Lt if below => Some(true),
+            PredicateKind::Lt if above || same_point => Some(false),
+            PredicateKind::Le if below || same_point => Some(true),
+            PredicateKind::Le if above => Some(false),
+            PredicateKind::Gt if above => Some(true),
+            PredicateKind::Gt if below || same_point => Some(false),
+            PredicateKind::Ge if above || same_point => Some(true),
+            PredicateKind::Ge if below => Some(false),
+            PredicateKind::Eq if same_point => Some(true),
+            PredicateKind::Eq if below || above => Some(false),
+            PredicateKind::Ne if below || above => Some(true),
+            PredicateKind::Ne if same_point => Some(false),
+            _ => None,
+        };
+        if decided.is_some() {
+            return decided;
+        }
+    }
+    None
 }
 
 /// Evaluate a predicate expression node (may be nested `And`/`Or` trees).
@@ -371,5 +482,140 @@ mod conversion_tests {
         // rather than to zero.
         let denom = Integer::from(2u32).pow(1074);
         assert_eq!(rational_to_f64(&Rational::from((1, denom))), 5e-324);
+    }
+}
+
+/// Audit A4: predicates over exact numbers were decided in `f64`.
+#[cfg(test)]
+mod exact_predicate_tests {
+    use super::*;
+    use crate::kernel::subs::{fold_predicates, subs};
+    use crate::kernel::Domain;
+    use rug::ops::Pow;
+    use std::collections::HashMap;
+
+    fn big(e: u32) -> Integer {
+        Integer::from(10).pow(e)
+    }
+
+    fn decide(p: &ExprPool, pred: ExprId) -> Option<bool> {
+        try_predicate_bool_from_expr(pred, p)
+    }
+
+    #[test]
+    fn integers_past_f64_compare_exactly() {
+        let p = ExprPool::new();
+        let a = p.integer(big(30));
+        let b = p.integer(big(30) + 1u32);
+        assert_eq!(decide(&p, p.pred_eq(b, a)), Some(false));
+        assert_eq!(decide(&p, p.pred_ne(b, a)), Some(true));
+        assert_eq!(decide(&p, p.pred_lt(a, b)), Some(true));
+        assert_eq!(decide(&p, p.pred_le(b, a)), Some(false));
+        assert_eq!(decide(&p, p.pred_gt(b, a)), Some(true));
+        assert_eq!(decide(&p, p.pred_ge(a, b)), Some(false));
+        let two53 = p.integer(Integer::from(1u64 << 53));
+        let two53p1 = p.integer(Integer::from((1u64 << 53) + 1));
+        assert_eq!(decide(&p, p.pred_gt(two53p1, two53)), Some(true));
+    }
+
+    #[test]
+    fn rationals_compare_exactly() {
+        let p = ExprPool::new();
+        let third = p.rational(1, 3);
+        let approx = p.rational(3_333_333_333_333_333_i64, big(16));
+        assert_eq!(decide(&p, p.pred_ne(approx, third)), Some(true));
+        assert_eq!(decide(&p, p.pred_eq(approx, third)), Some(false));
+        assert_eq!(decide(&p, p.pred_lt(approx, third)), Some(true));
+        // Underflows `f64` to 0, and is not 0.
+        let tiny = p.rational(1, big(400));
+        let zero = p.integer(0);
+        assert_eq!(decide(&p, p.pred_eq(zero, tiny)), Some(false));
+        assert_eq!(decide(&p, p.pred_lt(zero, tiny)), Some(true));
+        // Overflows `f64` to ∞ on both sides, and they differ.
+        let h1 = p.rational(big(400) + 1u32, 3);
+        let h2 = p.rational(big(400) + 2u32, 3);
+        assert_eq!(decide(&p, p.pred_lt(h1, h2)), Some(true));
+    }
+
+    #[test]
+    fn floats_compare_as_the_dyadic_rationals_they_are() {
+        let p = ExprPool::new();
+        // The double nearest 1/3 is strictly below it.
+        let f = p.float(1.0 / 3.0, 53);
+        let third = p.rational(1, 3);
+        assert_eq!(decide(&p, p.pred_lt(f, third)), Some(true));
+        assert_eq!(decide(&p, p.pred_eq(f, third)), Some(false));
+        assert_eq!(decide(&p, p.pred_gt(third, f)), Some(true));
+        let half = p.float(0.5, 53);
+        assert_eq!(decide(&p, p.pred_eq(half, p.rational(1, 2))), Some(true));
+        // NaN keeps its IEEE meaning.
+        let nan = p.float(f64::NAN, 53);
+        let one = p.integer(1);
+        assert_eq!(decide(&p, p.pred_eq(nan, one)), Some(false));
+        assert_eq!(decide(&p, p.pred_ne(nan, one)), Some(true));
+        assert_eq!(decide(&p, p.pred_lt(one, nan)), Some(false));
+    }
+
+    #[test]
+    fn subs_folds_exact_comparisons_and_picks_the_right_branch() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let at = |e: ExprId, v: Integer| {
+            let mut m = HashMap::new();
+            m.insert(x, p.integer(v));
+            fold_predicates(subs(e, &m, &p), &p)
+        };
+        let t = p.pred_true();
+        let f = p.pred_false();
+        assert_eq!(at(p.pred_eq(x, p.integer(big(30))), big(30) + 1u32), f);
+        assert_eq!(at(p.pred_lt(x, p.integer(big(30) + 1u32)), big(30)), t);
+        let two53 = Integer::from(1u64 << 53);
+        let pw = p.piecewise(
+            vec![(p.pred_gt(x, p.integer(two53.clone())), p.integer(1))],
+            p.integer(0),
+        );
+        assert_eq!(at(pw, two53 + 1u32), p.integer(1));
+    }
+
+    #[test]
+    fn closed_constants_are_decided_by_enclosure() {
+        let p = ExprPool::new();
+        let sqrt2 = p.pow(p.integer(2), p.rational(1, 2));
+        let one = p.integer(1);
+        assert_eq!(decide(&p, p.pred_gt(sqrt2, one)), Some(true));
+        assert_eq!(decide(&p, p.pred_eq(sqrt2, one)), Some(false));
+        let pi = p.symbol("pi", Domain::Real);
+        let approx = p.rational(355, 113);
+        // 355/113 − π ≈ 2.7e-7.
+        assert_eq!(decide(&p, p.pred_lt(pi, approx)), Some(true));
+        assert_eq!(decide(&p, p.pred_ne(pi, approx)), Some(true));
+        // Agrees with its argument past 128 bits: needs the 512-bit retry.
+        let close = p.add(vec![one, p.rational(1, Integer::from(2).pow(200))]);
+        assert_eq!(decide(&p, p.pred_gt(close, one)), Some(true));
+    }
+
+    #[test]
+    fn an_overlap_is_left_undecided_rather_than_guessed() {
+        let p = ExprPool::new();
+        let two = p.integer(2);
+        // (√2)² is exactly 2, but no finite enclosure proves it.
+        let sq = p.pow(p.pow(two, p.rational(1, 2)), two);
+        assert_eq!(decide(&p, p.pred_eq(sq, two)), None);
+        assert_eq!(decide(&p, p.pred_lt(sq, two)), None);
+        assert_eq!(decide(&p, p.pred_ge(sq, two)), None);
+        // A free symbol decides nothing.
+        let x = p.symbol("x", Domain::Real);
+        assert_eq!(decide(&p, p.pred_gt(x, two)), None);
+    }
+
+    #[test]
+    fn a_sum_past_the_working_precision_is_decided_on_retry() {
+        // `10^50` needs 167 bits: at 128 the `+ 1` is inside the enclosure's
+        // rounding and nothing is proved; the 512-bit retry proves it.
+        let p = ExprPool::new();
+        let a = p.integer(big(50));
+        let b = p.add(vec![p.integer(big(50)), p.integer(1)]);
+        assert_eq!(decide(&p, p.pred_eq(a, b)), Some(false));
+        assert_eq!(decide(&p, p.pred_lt(a, b)), Some(true));
     }
 }

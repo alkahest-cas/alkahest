@@ -553,9 +553,13 @@ impl<'a> Parser<'a> {
                     })?;
                     Ok(pool.float(value, 53))
                 } else {
-                    let n: i64 = s.parse().map_err(|_| {
+                    // Arbitrary precision, like every integer the pool
+                    // holds: parsing into `i64` refused `10^20` written out,
+                    // so a printed expression with a large coefficient did
+                    // not read back.
+                    let n: rug::Integer = s.parse().map_err(|_| {
                         ParseError::lex(
-                            format!("integer literal out of range: {s}"),
+                            format!("malformed integer literal: {s}"),
                             (tok.offset, tok.offset + s.len()),
                         )
                     })?;
@@ -1455,5 +1459,25 @@ mod tests {
                 let _ = parse(src, &pool, &mut syms);
             }
         }
+    }
+
+    /// An integer literal past `i64` is an ordinary integer.  It used to be a
+    /// `ParseError`, so the printed form of `10^20·x` did not read back.
+    #[test]
+    fn integer_literals_past_i64_parse_exactly() {
+        let pool = ExprPool::new();
+        let mut syms = HashMap::new();
+        for lit in [
+            "9223372036854775808",
+            "100000000000000000000",
+            "51090942171709440000",
+        ] {
+            let id = parse(lit, &pool, &mut syms).expect("parses");
+            let want: rug::Integer = lit.parse().unwrap();
+            assert_eq!(id, pool.integer(want), "{lit}");
+        }
+        let id = parse("-9223372036854775808", &pool, &mut syms).expect("parses");
+        let x = pool.display(id).to_string();
+        assert!(x.contains("9223372036854775808"), "{x}");
     }
 }

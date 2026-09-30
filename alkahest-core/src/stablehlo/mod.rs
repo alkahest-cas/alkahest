@@ -19,7 +19,9 @@
 //! assert!(mlir.contains("stablehlo.sine"));
 //! ```
 
-use crate::kernel::{integer_to_f64, rational_to_f64, ExprData, ExprId, ExprPool};
+use crate::kernel::{
+    integer_is_exact_f64, integer_to_f64, rational_to_f64, ExprData, ExprId, ExprPool,
+};
 use std::collections::HashMap;
 
 /// Emit a StableHLO MLIR text module for `expr` as a function named `fn_name`.
@@ -222,6 +224,38 @@ impl Emitter {
                     } else if n == 0 {
                         return self.emit_const_f64(1.0);
                     }
+                }
+                // An odd integer exponent that `f64` cannot hold rounds to an
+                // *even* double (every double past 2^53 is even), so a plain
+                // `power` loses the sign: `x^(2^63+1)` at `x = -1` gave `+1`.
+                // Emit `|x|^n` and negate it where `x < 0` — the same parity
+                // correction `eval_const::pow_f64_integer_exponent` makes.
+                let wide_odd = pool.with(exp, |d| match d {
+                    ExprData::Integer(n) => n.0.is_odd() && !integer_is_exact_f64(&n.0),
+                    _ => false,
+                });
+                if wide_odd {
+                    let exp_v = self.emit_expr(exp, pool);
+                    let abs_v = self.fresh();
+                    self.body
+                        .push(format!("{abs_v} = stablehlo.abs {base_v} : tensor<f64>"));
+                    let mag = self.fresh();
+                    self.body.push(format!(
+                        "{mag} = stablehlo.power {abs_v}, {exp_v} : tensor<f64>"
+                    ));
+                    let neg = self.fresh();
+                    self.body
+                        .push(format!("{neg} = stablehlo.negate {mag} : tensor<f64>"));
+                    let zero = self.emit_const_f64(0.0);
+                    let is_neg = self.fresh();
+                    self.body.push(format!(
+                        "{is_neg} = stablehlo.compare LT, {base_v}, {zero}, FLOAT : (tensor<f64>, tensor<f64>) -> tensor<i1>"
+                    ));
+                    let v = self.fresh();
+                    self.body.push(format!(
+                        "{v} = stablehlo.select {is_neg}, {neg}, {mag} : tensor<i1>, tensor<f64>"
+                    ));
+                    return v;
                 }
                 // General: use power op
                 let exp_v = self.emit_expr(exp, pool);
@@ -550,5 +584,28 @@ mod large_constant_tests {
                 );
             }
         }
+    }
+
+    /// Audit A11: `to_stablehlo(x^(2^63+1))` emitted the exponent as the `f64`
+    /// `2^63`, which is even, so `power(-1, 2^63)` is `+1` where the answer is
+    /// `-1`.  An odd exponent past `2^53` now carries its sign explicitly.
+    #[test]
+    fn an_odd_exponent_past_f64_keeps_its_sign() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let odd = rug::Integer::from(2u32).pow(63) + 1u32;
+        let mlir = emit_stablehlo(pool.pow(x, pool.integer(odd.clone())), &[x], "f", &pool);
+        assert!(mlir.contains("stablehlo.compare LT"), "{mlir}");
+        assert!(mlir.contains("stablehlo.select"), "{mlir}");
+        assert!(mlir.contains("stablehlo.negate"), "{mlir}");
+        // An even exponent has nothing to lose and stays a plain `power`.
+        let even = pool.pow(x, pool.integer(odd - 1u32));
+        let mlir = emit_stablehlo(even, &[x], "f", &pool);
+        assert!(!mlir.contains("stablehlo.select"), "{mlir}");
+        assert!(mlir.contains("stablehlo.power"), "{mlir}");
+        // So does an odd exponent `f64` holds exactly: `powf` keeps its parity.
+        let small = pool.pow(x, pool.integer(9_007_199_254_740_991_i64));
+        let mlir = emit_stablehlo(small, &[x], "f", &pool);
+        assert!(!mlir.contains("stablehlo.select"), "{mlir}");
     }
 }

@@ -119,22 +119,53 @@ impl ArbBall {
     }
 
     pub fn from_integer(n: &rug::Integer, prec: u32) -> Self {
-        ArbBall {
-            mid: Float::with_val(prec, n),
-            rad: Float::with_val(prec, 0.0),
-            prec,
-        }
+        // An integer wider than `prec` bits is rounded, and a radius of `0`
+        // would then claim `10^50 + 1` *is* its 128-bit rounding.
+        let (mid, dir) = Float::with_val_round(prec, n, Round::Nearest);
+        Self::rounded(mid, dir, prec)
     }
 
     pub fn from_rational(r: &rug::Rational, prec: u32) -> Self {
-        // mid = round(r),  rad = |r - mid| ≤ 2^(exp-prec)
-        let mid = Float::with_val(prec, r);
-        let exact = Float::with_val(prec * 2, r);
-        let diff = Float::with_val(prec, &exact - &mid).abs();
-        ArbBall {
-            mid,
-            rad: diff,
-            prec,
+        // mid = round(r), rad = one ulp of mid ≥ |r − mid|.
+        //
+        // The radius used to be `|round_{2·prec}(r) − mid|`, rounded to
+        // nearest — an *estimate* of the error, which can fall short of the
+        // true distance by the `2·prec` rounding, so the ball could exclude
+        // `r` itself.  One ulp is a bound, not an estimate.
+        let (mid, dir) = Float::with_val_round(prec, r, Round::Nearest);
+        Self::rounded(mid, dir, prec)
+    }
+
+    /// The ball enclosing an arbitrary-precision `Float` exactly.
+    ///
+    /// Interval evaluation used to go through `f.to_f64()` with radius `0`,
+    /// which claimed that a 200-bit float *is* its 53-bit rounding — and that
+    /// a float past the `f64` exponent range is `0` or `∞`.
+    pub(crate) fn from_float(f: &Float, prec: u32) -> Self {
+        if !f.is_finite() {
+            return ArbBall::from_f64(f.to_f64(), prec);
+        }
+        let (mid, dir) = Float::with_val_round(prec, f, Round::Nearest);
+        Self::rounded(mid, dir, prec)
+    }
+
+    /// `mid` rounded from an exact value in direction `dir`: radius `0` when
+    /// the rounding was exact, one ulp of `mid` otherwise.
+    fn rounded(mid: Float, dir: std::cmp::Ordering, prec: u32) -> Self {
+        if dir == std::cmp::Ordering::Equal {
+            return ArbBall {
+                mid,
+                rad: Float::new(prec),
+                prec,
+            };
+        }
+        match mid.get_exp() {
+            Some(e) => {
+                let rad = Float::with_val(prec, Float::i_exp(1, e - prec as i32));
+                ArbBall { mid, rad, prec }
+            }
+            // Rounded to zero or to infinity: nothing honest to say.
+            None => ArbBall::infinity(prec),
         }
     }
 
@@ -1458,7 +1489,7 @@ impl IntervalEval {
         match pool.get(expr) {
             ExprData::Integer(n) => Some(ArbBall::from_integer(&n.0, self.prec)),
             ExprData::Rational(r) => Some(ArbBall::from_rational(&r.0, self.prec)),
-            ExprData::Float(f) => Some(ArbBall::from_f64(f.inner.to_f64(), self.prec)),
+            ExprData::Float(f) => Some(ArbBall::from_float(&f.inner, self.prec)),
             // `π` encloses itself without a binding — it is an ordinary
             // symbol in this crate, not a constant node, and a rigorous
             // evaluator that reports `None` for `π/2` is reporting the
@@ -2392,5 +2423,49 @@ mod special_kernel_tests {
                 "Γ on [{lo},{hi}] should refuse"
             );
         }
+    }
+}
+
+/// The literal constructors must enclose the exact value they are given.
+#[cfg(test)]
+mod exact_literal_tests {
+    use super::*;
+    use rug::{Integer, Rational};
+
+    #[test]
+    fn a_wide_integer_is_enclosed_not_rounded() {
+        // 10^50 + 1 needs 167 bits.  Rounded to 128 with radius 0, the ball
+        // excluded the integer it was built from.
+        let n = Integer::from(Integer::u_pow_u(10, 50)) + 1u32;
+        let b = ArbBall::from_integer(&n, 128);
+        assert!(!b.is_exact());
+        assert!(b.lo() <= n && b.hi() >= n, "{b:?}");
+        // A narrow integer is still an exact point.
+        assert!(ArbBall::from_integer(&Integer::from(12345), 128).is_exact());
+    }
+
+    #[test]
+    fn a_rational_is_enclosed_by_a_bound_not_an_estimate() {
+        let r = Rational::from((1, 3));
+        let b = ArbBall::from_rational(&r, 64);
+        assert!(b.lo() <= r && b.hi() >= r);
+        assert!(ArbBall::from_rational(&Rational::from((1, 2)), 64).is_exact());
+    }
+
+    #[test]
+    fn an_arbitrary_precision_float_is_not_squeezed_through_f64() {
+        let pool = ExprPool::new();
+        // 1 + 2^-100 at 200 bits: its `f64` image is exactly 1.
+        let f = Float::with_val(200, 1) + Float::with_val(200, Float::i_exp(1, -100));
+        let id = pool.intern(ExprData::Float(crate::kernel::BigFloat {
+            inner: f.clone(),
+            prec: 200,
+        }));
+        let ball = IntervalEval::new(256).eval(id, &pool).unwrap();
+        assert!(ball.lo() > 1, "{ball:?}");
+        assert!(ball.lo() <= f && ball.hi() >= f);
+        // Rounded to fewer bits, it is enclosed rather than claimed exact.
+        let narrow = ArbBall::from_float(&f, 64);
+        assert!(narrow.lo() <= f && narrow.hi() >= f);
     }
 }

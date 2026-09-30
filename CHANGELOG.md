@@ -456,6 +456,36 @@
 - `modular::pow_mod(x, 0, 1)` returned 1, outside `[0, 1)`; it now starts
   from `1 % modulus`. Private, and its only caller (`is_prime`) never passes a
   modulus below 11, so no result changes. Found by Kani.
+- **`latex()` and `unicode_str()` dropped or corrupted integers past `i64`.**
+  Coefficients, rationals and exponents were read through
+  `to_i64().unwrap_or(0/1)` and multiplied in a wrapping `i64`, so
+  `latex(x + 10**20)` printed `x + 0`, `10**30·x` printed `x`, `x/2**64`
+  printed `x`, `unicode_str(1/21!)` printed `1/1` (the `x²¹` coefficient of the
+  `exp` series printed as `1`), `10**30/7` printed `0/7`, `x**(1/10**20)`
+  printed `x^(1/1)`, and `-2**63·x` printed `--9223372036854775808·x`. They now
+  print the exact value. The Rust parser (`alkahest_cas::parse`) also rejected
+  integer literals past `i64` with "integer literal out of range", so a printed
+  large coefficient did not read back; it now parses them exactly.
+- **`to_stablehlo(x**n)` lost the sign for an odd `n` past `2^53`.** The
+  exponent is emitted as an `f64`, and every double that large is even, so the
+  module computed `(-1)**(2**63 + 1)` as `+1`. An odd exponent `f64` cannot
+  hold now lowers to `|x|**n` negated where `x < 0`.
+- **Comparisons of exact numbers were decided in `f64`.** `subs` (and
+  everything that folds a constant predicate, including `Piecewise` branch
+  selection and the JIT's constant conditions) rounded both sides to a double:
+  `Eq(x, 10**30)` at `x = 10**30 + 1` folded to `True`, `x < 10**30 + 1` at
+  `x = 10**30` to `False`, `Ne(3333333333333333/10**16, 1/3)` to `False`,
+  `Eq(x, 1/10**400)` at `0` to `True`, and `Piecewise((1, x > 2**53))` took its
+  default at `2**53 + 1`. Integers, rationals and floats are now compared
+  exactly; a comparison between closed constants (`√2 > 1`, `π < 355/113`) is
+  decided by rigorous ball arithmetic and left unevaluated when the enclosures
+  overlap, never guessed. The ball constructors behind that also enclosed
+  inexactly: an integer or float wider than the working precision was rounded
+  with radius `0`, and a float was squeezed through `f64` first.
+- **The sign of a float past the `f64` exponent range was read as zero.**
+  `assumed_sign` reported `1e-400` as `Zero`, and the `sqrt`/`log` realness
+  checks in `simplify` treated `-1e-400` as non-negative, because both went
+  through `to_f64`. They now use the sign of the arbitrary-precision value.
 
 ### Performance
 

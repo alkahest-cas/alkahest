@@ -5,6 +5,7 @@
 /// the `if t == "symbol":` / `if t == "add":` pattern-matching in Python.
 use crate::kernel::expr::{ExprData, PredicateKind};
 use crate::kernel::{ExprId, ExprPool};
+use rug::{Integer, Rational};
 
 /// Logical connectives, all *below* [`PREC_ADD`] so an arithmetic operand of a
 /// comparison is never parenthesised.  The relative order is the standard one
@@ -247,8 +248,14 @@ fn rational_as_integer(r: &crate::kernel::expr::BigRat) -> Option<String> {
     }
 }
 
-fn unicode_frac(num: i64, den: i64) -> String {
-    match (num, den) {
+/// `num/den` in Unicode, as a single vulgar-fraction glyph where one exists.
+///
+/// Takes the exact values: this used to take `i64`s that every caller filled
+/// with `to_i64().unwrap_or(0/1)`, so `1/21!` printed as `1/1` and
+/// `10^30/7` as `0/7`.
+fn unicode_frac(num: &Integer, den: &Integer) -> String {
+    let small = num.to_i64().zip(den.to_i64());
+    match small.unwrap_or((0, 0)) {
         (1, 2) => "½".into(),
         (1, 3) => "⅓".into(),
         (2, 3) => "⅔".into(),
@@ -268,6 +275,37 @@ fn unicode_frac(num: i64, den: i64) -> String {
         (1, 9) => "⅑".into(),
         (1, 10) => "⅒".into(),
         _ => format!("{num}/{den}"),
+    }
+}
+
+/// The numeric coefficient of a product, split from its other factors.
+///
+/// Returns `(sign, |numerator|, denominator, others)` with the coefficient in
+/// lowest terms.  The product is accumulated in `rug` — it used to be two
+/// `i64`s filled by `to_i64().unwrap_or(1)` and multiplied with a wrapping
+/// `*=`, so `10^30·x` printed as `x`, `x/2^64` as `x`, and `-2^63·x` as
+/// `--9223372036854775808·x` (negating `i64::MIN` is `i64::MIN`).
+fn split_coefficient(args: &[ExprId], pool: &ExprPool) -> (i32, Integer, Integer, Vec<ExprId>) {
+    let mut coeff = Rational::from(1);
+    let mut others: Vec<ExprId> = Vec::new();
+    for &child in args {
+        pool.with(child, |data| match data {
+            ExprData::Integer(n) => coeff *= &n.0,
+            ExprData::Rational(r) => coeff *= &r.0,
+            _ => others.push(child),
+        });
+    }
+    let sign = if coeff < 0 { -1 } else { 1 };
+    let (numer, denom) = coeff.into_numer_denom();
+    (sign, numer.abs(), denom, others)
+}
+
+/// `|n|` for a negative power exponent `n` repeated `mult` times, or `None`
+/// when the exponent is not a negative integer.
+fn negative_exponent_abs(exp: ExprId, mult: i64, pool: &ExprPool) -> Option<Integer> {
+    match pool.get(exp) {
+        ExprData::Integer(n) if n.0 < 0 => Some(Integer::from(-&n.0) * mult),
+        _ => None,
     }
 }
 
@@ -384,12 +422,13 @@ fn latex_wrap(id: ExprId, pool: &ExprPool, req_prec: i32) -> String {
 /// Returns `(sign, abs_latex)` for a term that might be negated.
 fn latex_signed(id: ExprId, pool: &ExprPool) -> (i32, String) {
     pool.with(id, |data| match data {
+        // Rendered from the `rug` value: `to_i64().unwrap_or(0)` printed
+        // `x + 10^20` as `x + 0`.
         ExprData::Integer(n) => {
-            let v = n.0.to_i64().unwrap_or(0);
-            if v < 0 {
-                (-1, (-v).to_string())
+            if n.0 < 0 {
+                (-1, n.0.as_abs().to_string())
             } else {
-                (1, v.to_string())
+                (1, n.0.to_string())
             }
         }
         ExprData::Rational(r) => {
@@ -419,35 +458,7 @@ fn latex_signed(id: ExprId, pool: &ExprPool) -> (i32, String) {
 }
 
 fn latex_signed_mul(args: &[ExprId], pool: &ExprPool) -> (i32, String) {
-    let mut numer_i = 1i64;
-    let mut denom_i = 1i64;
-    let mut others: Vec<ExprId> = Vec::new();
-
-    for &child in args {
-        pool.with(child, |data| match data {
-            ExprData::Integer(n) => {
-                numer_i *= n.0.to_i64().unwrap_or(1);
-            }
-            ExprData::Rational(r) => {
-                numer_i *= r.0.numer().to_i64().unwrap_or(1);
-                denom_i *= r.0.denom().to_i64().unwrap_or(1);
-            }
-            _ => others.push(child),
-        });
-    }
-
-    let sign = if numer_i < 0 {
-        numer_i = -numer_i;
-        -1i32
-    } else {
-        1i32
-    };
-    let sign = if denom_i < 0 {
-        denom_i = -denom_i;
-        -sign
-    } else {
-        sign
-    };
+    let (sign, numer_i, denom_i, others) = split_coefficient(args, pool);
 
     let mut num_parts: Vec<String> = Vec::new();
     let mut den_parts: Vec<String> = Vec::new();
@@ -455,20 +466,16 @@ fn latex_signed_mul(args: &[ExprId], pool: &ExprPool) -> (i32, String) {
     for (child, mult) in collapse_runs(&others) {
         let pushed = pool.with(child, |data| {
             if let ExprData::Pow { base, exp } = data {
-                if let ExprData::Integer(n) = pool.get(*exp) {
-                    let v = n.0.to_i64().unwrap_or(0);
-                    if v < 0 {
-                        let exp_abs = (-v).saturating_mul(mult);
-                        if exp_abs == 1 {
-                            // `\frac{}{}` groups its denominator already, so the
-                            // factor only has to be safe against its siblings.
-                            den_parts.push(latex_factor(*base, pool));
-                        } else {
-                            let base_tex = latex_wrap(*base, pool, PREC_POW + 1);
-                            den_parts.push(latex_sup(&base_tex, &exp_abs.to_string()));
-                        }
-                        return true;
+                if let Some(exp_abs) = negative_exponent_abs(*exp, mult, pool) {
+                    if exp_abs == 1 {
+                        // `\frac{}{}` groups its denominator already, so the
+                        // factor only has to be safe against its siblings.
+                        den_parts.push(latex_factor(*base, pool));
+                    } else {
+                        let base_tex = latex_wrap(*base, pool, PREC_POW + 1);
+                        den_parts.push(latex_sup(&base_tex, &exp_abs.to_string()));
                     }
+                    return true;
                 }
             }
             false
@@ -531,13 +538,12 @@ fn latex_add(args: &[ExprId], pool: &ExprPool) -> String {
 fn latex_pow(base: ExprId, exp: ExprId, pool: &ExprPool) -> String {
     // x^(1/n) → nth-root
     if let ExprData::Rational(r) = pool.get(exp) {
-        let num = r.0.numer().to_i64().unwrap_or(0);
-        let den = r.0.denom().to_i64().unwrap_or(1);
-        if num == 1 && den >= 2 {
+        let (num, den) = (r.0.numer(), r.0.denom());
+        if *num == 1 && *den >= 2 {
             // The radical is delimited by its own braces, so the radicand needs
             // no parentheses of its own.
             let (base_tex, _) = latex_r(base, pool);
-            return if den == 2 {
+            return if *den == 2 {
                 format!(r"\sqrt{{{base_tex}}}")
             } else {
                 format!(r"\sqrt[{den}]{{{base_tex}}}")
@@ -546,7 +552,7 @@ fn latex_pow(base: ExprId, exp: ExprId, pool: &ExprPool) -> String {
     }
     // x^(-1) → 1/x
     if let ExprData::Integer(n) = pool.get(exp) {
-        if n.0.to_i64() == Some(-1) {
+        if n.0 == -1 {
             let base_tex = latex_factor(base, pool);
             return latex_frac("1", &base_tex);
         }
@@ -840,24 +846,23 @@ fn unicode_factor(id: ExprId, pool: &ExprPool) -> String {
 fn unicode_signed(id: ExprId, pool: &ExprPool) -> (i32, String) {
     pool.with(id, |data| match data {
         ExprData::Integer(n) => {
-            let v = n.0.to_i64().unwrap_or(0);
-            if v < 0 {
-                (-1, (-v).to_string())
+            if n.0 < 0 {
+                (-1, n.0.as_abs().to_string())
             } else {
-                (1, v.to_string())
+                (1, n.0.to_string())
             }
         }
         ExprData::Rational(r) => {
-            let num = r.0.numer().to_i64().unwrap_or(0);
-            let den = r.0.denom().to_i64().unwrap_or(1);
-            let render = |n: i64| match rational_as_integer(r) {
-                Some(_) => n.to_string(),
-                None => unicode_frac(n, den),
+            let (num, den) = (r.0.numer(), r.0.denom());
+            let abs = num.as_abs();
+            let s = match rational_as_integer(r) {
+                Some(_) => abs.to_string(),
+                None => unicode_frac(&abs, den),
             };
-            if num < 0 {
-                (-1, render(-num))
+            if *num < 0 {
+                (-1, s)
             } else {
-                (1, render(num))
+                (1, s)
             }
         }
         ExprData::Mul(args) => unicode_signed_mul(args, pool),
@@ -872,35 +877,7 @@ fn unicode_signed(id: ExprId, pool: &ExprPool) -> (i32, String) {
 }
 
 fn unicode_signed_mul(args: &[ExprId], pool: &ExprPool) -> (i32, String) {
-    let mut numer_i = 1i64;
-    let mut denom_i = 1i64;
-    let mut others: Vec<ExprId> = Vec::new();
-
-    for &child in args {
-        pool.with(child, |data| match data {
-            ExprData::Integer(n) => {
-                numer_i *= n.0.to_i64().unwrap_or(1);
-            }
-            ExprData::Rational(r) => {
-                numer_i *= r.0.numer().to_i64().unwrap_or(1);
-                denom_i *= r.0.denom().to_i64().unwrap_or(1);
-            }
-            _ => others.push(child),
-        });
-    }
-
-    let sign = if numer_i < 0 {
-        numer_i = -numer_i;
-        -1i32
-    } else {
-        1i32
-    };
-    let sign = if denom_i < 0 {
-        denom_i = -denom_i;
-        -sign
-    } else {
-        sign
-    };
+    let (sign, numer_i, denom_i, others) = split_coefficient(args, pool);
 
     let mut num_parts: Vec<String> = Vec::new();
     let mut den_parts: Vec<String> = Vec::new();
@@ -908,20 +885,16 @@ fn unicode_signed_mul(args: &[ExprId], pool: &ExprPool) -> (i32, String) {
     for (child, mult) in collapse_runs(&others) {
         let pushed = pool.with(child, |data| {
             if let ExprData::Pow { base, exp } = data {
-                if let ExprData::Integer(n) = pool.get(*exp) {
-                    let v = n.0.to_i64().unwrap_or(0);
-                    if v < 0 {
-                        let exp_abs = (-v).saturating_mul(mult);
-                        let base_tex = unicode_wrap(*base, pool, PREC_POW + 1);
-                        // `x^-1` is `1/x`, not `1/x¹`: the exponent has already
-                        // been spent by moving the factor into the denominator.
-                        den_parts.push(if exp_abs == 1 {
-                            base_tex
-                        } else {
-                            unicode_sup(&base_tex, &exp_abs.to_string())
-                        });
-                        return true;
-                    }
+                if let Some(exp_abs) = negative_exponent_abs(*exp, mult, pool) {
+                    let base_tex = unicode_wrap(*base, pool, PREC_POW + 1);
+                    // `x^-1` is `1/x`, not `1/x¹`: the exponent has already
+                    // been spent by moving the factor into the denominator.
+                    den_parts.push(if exp_abs == 1 {
+                        base_tex
+                    } else {
+                        unicode_sup(&base_tex, &exp_abs.to_string())
+                    });
+                    return true;
                 }
             }
             false
@@ -938,7 +911,7 @@ fn unicode_signed_mul(args: &[ExprId], pool: &ExprPool) -> (i32, String) {
 
     if numer_i != 1 || denom_i != 1 {
         let coeff = if denom_i != 1 {
-            unicode_frac(numer_i, denom_i)
+            unicode_frac(&numer_i, &denom_i)
         } else {
             numer_i.to_string()
         };
@@ -988,16 +961,16 @@ fn unicode_add(args: &[ExprId], pool: &ExprPool) -> String {
 
 fn unicode_pow(base: ExprId, exp: ExprId, pool: &ExprPool) -> String {
     if let ExprData::Rational(r) = pool.get(exp) {
-        let num = r.0.numer().to_i64().unwrap_or(0);
-        let den = r.0.denom().to_i64().unwrap_or(1);
+        let (num, den) = (r.0.numer(), r.0.denom());
         // `den >= 2` guards the radical branch: `x^(1/1)` is `x`, and the
-        // fallback below printed it as the nonsense `¹√x`.
-        if num == 1 && den >= 2 {
+        // fallback below printed it as the nonsense `¹√x`.  Compared as `rug`
+        // values: `to_i64().unwrap_or(1)` read `1/10^20` as `1/1`.
+        if *num == 1 && *den >= 2 {
             let base_tex = unicode_wrap(base, pool, PREC_POW + 1);
-            return match den {
-                2 => format!("√{base_tex}"),
-                3 => format!("∛{base_tex}"),
-                4 => format!("∜{base_tex}"),
+            return match den.to_u8() {
+                Some(2) => format!("√{base_tex}"),
+                Some(3) => format!("∛{base_tex}"),
+                Some(4) => format!("∜{base_tex}"),
                 _ => to_superscript(&den.to_string())
                     .map(|s| format!("{s}√{base_tex}"))
                     .unwrap_or_else(|| format!("{base_tex}^(1/{den})")),
@@ -1017,12 +990,13 @@ fn unicode_pow(base: ExprId, exp: ExprId, pool: &ExprPool) -> String {
     format!("{base_tex}^({exp_tex})")
 }
 
-/// The exponent as an `i64` when it is one — an `Integer`, or a `Rational`
-/// that reduced to one (`Rational(2, 1)` is a distinct node from `Integer(2)`).
-fn integral_exponent(exp: ExprId, pool: &ExprPool) -> Option<i64> {
+/// The exponent as an exact integer when it is one — an `Integer`, or a
+/// `Rational` that reduced to one (`Rational(2, 1)` is a distinct node from
+/// `Integer(2)`).
+fn integral_exponent(exp: ExprId, pool: &ExprPool) -> Option<Integer> {
     match pool.get(exp) {
-        ExprData::Integer(n) => n.0.to_i64(),
-        ExprData::Rational(r) if *r.0.denom() == 1 => r.0.numer().to_i64(),
+        ExprData::Integer(n) => Some(n.0),
+        ExprData::Rational(r) if *r.0.denom() == 1 => Some(r.0.numer().clone()),
         _ => None,
     }
 }
@@ -1145,17 +1119,17 @@ fn unicode_r(id: ExprId, pool: &ExprPool) -> (String, i32) {
         ExprData::Symbol { name, .. } => (unicode_symbol(name), PREC_ATOM),
         ExprData::Integer(n) => (n.0.to_string(), literal_prec(&n.0.to_string())),
         ExprData::Rational(r) => {
-            let num = r.0.numer().to_i64().unwrap_or(0);
-            let den = r.0.denom().to_i64().unwrap_or(1);
+            let (num, den) = (r.0.numer(), r.0.denom());
+            let abs = num.as_abs();
             let s = match rational_as_integer(r) {
-                Some(_) => num.abs().to_string(),
-                None => unicode_frac(num.abs(), den),
+                Some(_) => abs.to_string(),
+                None => unicode_frac(&abs, den),
             };
             // `unicode_frac` returns a single vulgar-fraction glyph (`½`) for a
             // handful of values and a `num/den` quotient otherwise; only the
             // former is atomic under `^`.
             let prec = if s.contains('/') { PREC_MUL } else { PREC_ATOM };
-            if num < 0 {
+            if *num < 0 {
                 (format!("-{s}"), prec.min(PREC_NEG))
             } else {
                 (s, prec)
@@ -1582,5 +1556,87 @@ mod tests {
         let inner = p.func("abs", vec![x]);
         assert_eq!(render_unicode(inner, &p), "|x|");
         assert_eq!(render_unicode(p.func("abs", vec![inner]), &p), "|(|x|)|");
+    }
+
+    fn pow10(e: u32) -> Integer {
+        use rug::ops::Pow;
+        Integer::from(10).pow(e)
+    }
+
+    /// Audit A2: numbers past `i64` were read with `to_i64().unwrap_or(0/1)`.
+    #[test]
+    fn integers_past_i64_are_printed_exactly() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let e20 = pow10(20).to_string();
+        let sum = p.add(vec![x, p.integer(pow10(20))]);
+        assert_eq!(render_latex(sum, &p), format!("x + {e20}"));
+        assert_eq!(render_unicode(sum, &p), format!("x + {e20}"));
+        let diff = p.add(vec![x, p.integer(-pow10(20))]);
+        assert_eq!(render_latex(diff, &p), format!("x - {e20}"));
+        assert_eq!(render_unicode(diff, &p), format!("x - {e20}"));
+
+        let e30 = pow10(30).to_string();
+        let prod = p.mul(vec![p.integer(pow10(30)), x]);
+        assert_eq!(render_latex(prod, &p), format!("{e30} x"));
+        assert_eq!(render_unicode(prod, &p), format!("{e30}·x"));
+    }
+
+    #[test]
+    fn i64_min_coefficient_has_one_minus_sign() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let prod = p.mul(vec![p.integer(i64::MIN), x]);
+        assert_eq!(render_latex(prod, &p), "-9223372036854775808 x");
+        assert_eq!(render_unicode(prod, &p), "-9223372036854775808·x");
+        let sum = p.add(vec![x, p.integer(i64::MIN)]);
+        assert_eq!(render_unicode(sum, &p), "x - 9223372036854775808");
+        assert_eq!(render_latex(sum, &p), "x - 9223372036854775808");
+    }
+
+    #[test]
+    fn rationals_past_i64_are_printed_exactly() {
+        use rug::Complete;
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let f21 = Integer::factorial(21).complete();
+        let r = p.rational(1, f21.clone());
+        assert_eq!(render_unicode(r, &p), format!("1/{f21}"));
+        assert_eq!(render_latex(r, &p), format!("\\frac{{1}}{{{f21}}}"));
+        let r = p.rational(pow10(30), 7);
+        assert_eq!(render_unicode(r, &p), format!("{}/7", pow10(30)));
+        assert_eq!(render_latex(r, &p), format!("\\frac{{{}}}{{7}}", pow10(30)));
+        let r = p.rational(-pow10(30), 7);
+        assert_eq!(render_unicode(r, &p), format!("-{}/7", pow10(30)));
+        // As a coefficient, and as a term of a sum.
+        let two64 = Integer::from(1u128 << 64);
+        let over = p.mul(vec![p.rational(1, two64.clone()), x]);
+        assert_eq!(render_unicode(over, &p), format!("1/{two64}·x"));
+        assert_eq!(render_latex(over, &p), format!("\\frac{{1}}{{{two64}}} x"));
+        let term = p.add(vec![x, p.rational(-1, f21.clone())]);
+        assert_eq!(render_unicode(term, &p), format!("x - 1/{f21}"));
+    }
+
+    #[test]
+    fn exponents_past_i64_are_printed_exactly() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let e20 = pow10(20);
+        // A radical index past `i64`: was `x^(1/1)`.
+        let root = p.pow(x, p.rational(1, e20.clone()));
+        assert_eq!(
+            render_unicode(root, &p),
+            format!("{}√x", to_superscript(&e20.to_string()).unwrap())
+        );
+        assert_eq!(render_latex(root, &p), format!("\\sqrt[{e20}]{{x}}"));
+        // A negative exponent past `i64` goes to the denominator exactly.
+        let inv = p.mul(vec![p.integer(3), p.pow(x, p.integer(-e20.clone()))]);
+        assert_eq!(render_latex(inv, &p), format!("\\frac{{3}}{{x^{{{e20}}}}}"));
+        assert_eq!(
+            render_unicode(inv, &p),
+            format!("3/x{}", to_superscript(&e20.to_string()).unwrap())
+        );
+        let big = p.pow(x, p.integer(e20.clone()));
+        assert_eq!(render_latex(big, &p), format!("x^{{{e20}}}"));
     }
 }
