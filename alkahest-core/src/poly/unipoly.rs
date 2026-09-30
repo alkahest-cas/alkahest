@@ -74,7 +74,7 @@ fn coeffmap_pow(base: &CoeffMap, n: u32) -> Result<CoeffMap, ConversionError> {
 /// `UniPoly.from_symbolic(x^(2^31) + 1)` asked for 16 GiB and took the
 /// interpreter with it, even under `Budget(max_bytes=...)`. Conversions refuse
 /// a larger degree with `E-POLY-004` before FLINT is called, and a smaller one
-/// that would not fit the active memory budget (see [`check_dense_degree`]).
+/// that would not fit the active memory budget (see `check_dense_degree`).
 pub const MAX_DENSE_DEGREE: u32 = 1 << 26;
 
 /// Refuse (with `ExponentTooLarge`) to allocate a dense polynomial of degree

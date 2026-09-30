@@ -516,6 +516,11 @@
   of materialising them. The Python `UniPoly` `**` and `*` operators check the
   same ceiling (new `UniPoly::checked_pow` / `checked_mul`) and raise
   `ConversionError` instead of aborting.
+- **`UniPoly.from_symbolic(x^(2^21) + 1)` took gigabytes and over a minute.**
+  FLINT raises any length-2 polynomial through its binomial expansion, so
+  `x^n` (the polynomial `[0, 1]`) computed all `n + 1` binomial coefficients
+  before multiplying them by zero. A monomial `c·x^k` is now raised directly
+  as `c^n·x^(k·n)`.
 - **Exponents truncated or wrapped in a few more places of the same kind:**
   the Risch rational and exponential conversions (`n as u32`:
   `residue(x^−(2^32+1), x, 0)` answered `1`, and `c^(−2^63)` read as `1`), the
