@@ -11279,7 +11279,19 @@ fn check_batch_raw_shape(
             .ok()
             .and_then(|n| n.checked_mul(std::mem::size_of::<f64>() as u64))
             .unwrap_or(u64::MAX);
-        alkahest_core::budget::preflight_bytes(bytes).map_err(|trip| {
+        // `preflight_bytes` has no machine ceiling where physical memory
+        // cannot be read (Windows); stand in with 256 GiB there.
+        let fallback =
+            alkahest_core::budget::memory::physical_memory().map_or(1 << 38, |_| u64::MAX);
+        let checked = if bytes > fallback {
+            Err(alkahest_core::budget::BudgetTrip::Oversized {
+                requested: bytes,
+                ceiling: fallback,
+            })
+        } else {
+            alkahest_core::budget::preflight_bytes(bytes)
+        };
+        checked.map_err(|trip| {
             Python::with_gil(|py| {
                 let exc_type = py.get_type_bound::<PyBudgetExceededError>();
                 make_structured_err(py, &exc_type, &trip)

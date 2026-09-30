@@ -97,9 +97,17 @@ pub(crate) fn check_power_size(
     if bytes < PROBE_BYTES {
         return Ok(());
     }
+    // Where physical memory cannot be read (`preflight_bytes` then has no
+    // machine ceiling to apply, e.g. on Windows) a fixed one stands in.
+    if crate::budget::memory::physical_memory().is_none() && bytes > FALLBACK_CEILING_BYTES {
+        return Err(ConversionError::ExponentTooLarge);
+    }
     // `as u64` saturates for anything past u64::MAX (and for infinity).
     crate::budget::preflight_bytes(bytes as u64).map_err(|_| ConversionError::ExponentTooLarge)
 }
+
+/// The machine ceiling used where physical memory is unknown: 256 GiB.
+const FALLBACK_CEILING_BYTES: f64 = (1u64 << 38) as f64;
 
 #[cfg(test)]
 mod tests {

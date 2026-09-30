@@ -43,11 +43,16 @@ mod tests {
                 rug::Integer::from(n)
             ))),
             // Rationals: denom must be non-zero; use 1..1000 to avoid division
+            // A ratio that reduces to an integer is generated as the Integer
+            // node: the pool canonicalises a denominator-1 Rational to it, so
+            // `n/d` with `d | n` would not round-trip as a Rational.
             (i32::MIN..=i32::MAX, 1_i32..=10000_i32).prop_map(|(n, d)| {
-                ExprData::Rational(crate::kernel::expr::BigRat(rug::Rational::from((
-                    rug::Integer::from(n),
-                    rug::Integer::from(d),
-                ))))
+                let r = rug::Rational::from((rug::Integer::from(n), rug::Integer::from(d)));
+                if *r.denom() == 1 {
+                    ExprData::Integer(crate::kernel::expr::BigInt(r.numer().clone()))
+                } else {
+                    ExprData::Rational(crate::kernel::expr::BigRat(r))
+                }
             }),
         ]
     }
