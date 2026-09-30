@@ -196,6 +196,203 @@ impl crate::errors::AlkahestError for JitError {
 }
 
 // ---------------------------------------------------------------------------
+// Unbound symbols — refused at compile time (E-JIT-005)
+// ---------------------------------------------------------------------------
+
+/// A compile request whose expression depends on a symbol the input list does
+/// not bind (`E-JIT-005`).
+///
+/// A compiled function takes its values *only* from its inputs. A symbol that
+/// is neither an input nor `π` has no value at any point, so the function it
+/// would produce is undefined everywhere: the interpreter tier used to return
+/// `NaN` for every call, silently, while `eval_expr` on the same expression
+/// raised. [`compile`], [`compile_with`] and [`compile_jit_only`] refuse such a
+/// request instead.
+///
+/// # Why this is not a [`JitError`] variant
+///
+/// `JitError` is a public exhaustive enum, and a new variant is a major semver
+/// break. The refusal is therefore returned in band as
+/// [`JitError::UnsupportedNode`] naming the symbols, and recorded out of band
+/// for [`take_unbound_symbols`] — the pattern
+/// [`crate::calculus::take_series_refusal`] uses. Callers that want the check
+/// without compiling call [`check_inputs_bind`] directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnboundSymbolsError {
+    /// Display names of the unbound symbols, sorted and de-duplicated.
+    names: Vec<String>,
+    /// Names among `names` that *do* appear in the input list, but as a
+    /// different symbol (same name, another domain or commutativity).
+    shadowed: Vec<String>,
+}
+
+impl UnboundSymbolsError {
+    /// Names of the symbols the input list does not bind, sorted.
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+}
+
+impl fmt::Display for UnboundSymbolsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let plural = if self.names.len() == 1 { "" } else { "s" };
+        write!(
+            f,
+            "cannot compile: the expression depends on symbol{plural} {} that the input \
+             list does not bind, so the compiled function would have no value at any point",
+            self.names.join(", ")
+        )?;
+        if !self.shadowed.is_empty() {
+            write!(
+                f,
+                " ({} appears in the input list, but as a different symbol: same name, \
+                 different domain)",
+                self.shadowed.join(", ")
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for UnboundSymbolsError {}
+
+impl crate::errors::AlkahestError for UnboundSymbolsError {
+    fn code(&self) -> &'static str {
+        "E-JIT-005"
+    }
+
+    fn remediation(&self) -> Option<&'static str> {
+        Some(
+            "add every free symbol of the expression to the input list, or substitute a value \
+             for each parameter before compiling",
+        )
+    }
+}
+
+thread_local! {
+    static LAST_UNBOUND: std::cell::RefCell<Option<UnboundSymbolsError>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Take the unbound-symbols refusal behind the [`JitError`] that just came
+/// back from a compile on this thread, if that is what it was.
+///
+/// `Some` means the error was an `E-JIT-005` refusal; `None` means the error
+/// means what its variant says. Consuming, and cleared at the start of every
+/// compile, so a refusal is never attributed to a later, unrelated failure.
+pub fn take_unbound_symbols() -> Option<UnboundSymbolsError> {
+    LAST_UNBOUND.with(|c| c.borrow_mut().take())
+}
+
+/// Check that every free symbol of `expr` is bound by `inputs`.
+///
+/// `π` needs no binding: every evaluator resolves an unbound `pi` to its
+/// value (an input named `pi` still takes precedence). Bound variables of
+/// binders (a `RootSum`'s root placeholder, a quantifier's variable) are not
+/// free. The walk is iterative, so a deep expression cannot overflow the
+/// stack, and it runs once per compile, never per call.
+pub fn check_inputs_bind(
+    expr: ExprId,
+    inputs: &[ExprId],
+    pool: &ExprPool,
+) -> Result<(), UnboundSymbolsError> {
+    // Only a symbol binds anything: the evaluators consult their environment at
+    // `Symbol` nodes alone, so an input like `x + 1` leaves `x` unbound.
+    let input_set: IdSet = inputs
+        .iter()
+        .copied()
+        .filter(|&i| pool.with(i, |d| matches!(d, ExprData::Symbol { .. })))
+        .collect();
+    // Binder scopes as `(parent scope, bound variable)`; scope 0 is the root
+    // and binds nothing (its entry is a placeholder).
+    let mut scopes: Vec<(usize, ExprId)> = vec![(0, expr)];
+    let is_bound = |scopes: &[(usize, ExprId)], mut scope: usize, id: ExprId| {
+        while scope != 0 {
+            let (parent, var) = scopes[scope];
+            if var == id {
+                return true;
+            }
+            scope = parent;
+        }
+        false
+    };
+    let mut visited: std::collections::HashSet<(ExprId, usize)> = Default::default();
+    let mut unbound: std::collections::BTreeSet<String> = Default::default();
+    let mut stack: Vec<(ExprId, usize)> = vec![(expr, 0)];
+    while let Some((id, scope)) = stack.pop() {
+        if input_set.contains(&id) || !visited.insert((id, scope)) {
+            continue;
+        }
+        pool.with(id, |data| match data {
+            ExprData::Symbol { name, .. } => {
+                if name != crate::eval::symbols::PI_NAME && !is_bound(&scopes, scope, id) {
+                    unbound.insert(name.clone());
+                }
+            }
+            ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => {}
+            ExprData::Add(args)
+            | ExprData::Mul(args)
+            | ExprData::Func { args, .. }
+            | ExprData::Predicate { args, .. } => {
+                stack.extend(args.iter().map(|&a| (a, scope)));
+            }
+            ExprData::Pow { base, exp } => {
+                stack.push((*base, scope));
+                stack.push((*exp, scope));
+            }
+            ExprData::Piecewise { branches, default } => {
+                for &(c, v) in branches {
+                    stack.push((c, scope));
+                    stack.push((v, scope));
+                }
+                stack.push((*default, scope));
+            }
+            ExprData::BigO(inner) => stack.push((*inner, scope)),
+            ExprData::Forall { var, body } | ExprData::Exists { var, body } => {
+                scopes.push((scope, *var));
+                stack.push((*body, scopes.len() - 1));
+            }
+            ExprData::RootSum { poly, var, body } => {
+                scopes.push((scope, *var));
+                let inner = scopes.len() - 1;
+                stack.push((*poly, inner));
+                stack.push((*body, inner));
+            }
+        });
+    }
+    if unbound.is_empty() {
+        return Ok(());
+    }
+    let input_names: std::collections::HashSet<String> = inputs
+        .iter()
+        .filter_map(|&i| {
+            pool.with(i, |d| match d {
+                ExprData::Symbol { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+        })
+        .collect();
+    let names: Vec<String> = unbound.into_iter().collect();
+    let shadowed = names
+        .iter()
+        .filter(|n| input_names.contains(*n))
+        .cloned()
+        .collect();
+    Err(UnboundSymbolsError { names, shadowed })
+}
+
+/// Refuse a compile whose expression has an unbound symbol, recording the
+/// refusal for [`take_unbound_symbols`].
+fn refuse_unbound(expr: ExprId, inputs: &[ExprId], pool: &ExprPool) -> Result<(), JitError> {
+    LAST_UNBOUND.with(|c| *c.borrow_mut() = None);
+    check_inputs_bind(expr, inputs, pool).map_err(|e| {
+        let err = JitError::UnsupportedNode(e.to_string());
+        LAST_UNBOUND.with(|c| *c.borrow_mut() = Some(e));
+        err
+    })
+}
+
+// ---------------------------------------------------------------------------
 // CompiledFn — wraps a callable function from any backend
 // ---------------------------------------------------------------------------
 
@@ -216,8 +413,10 @@ enum CompiledFnInner {
     Cranelift {
         fn_ptr: JitScalarFn,
         bulk_fn: Option<JitBulkFn>,
-        /// JITModule owns the code pages; must outlive `fn_ptr`.
-        _module: Box<cranelift_jit::JITModule>,
+        /// Owns the code pages `fn_ptr` and `bulk_fn` point into, and frees
+        /// them when this variant is dropped (see
+        /// [`cranelift_backend::OwnedJitModule`]).
+        _module: Box<cranelift_backend::OwnedJitModule>,
     },
 
     Interpreter(InterpreterFn),
@@ -363,9 +562,12 @@ impl CompiledFn {
         for col in inputs {
             assert_eq!(col.len(), n, "all input arrays must have the same length");
         }
-        if self.n_inputs == 0 {
-            return;
-        }
+        // No early return for `n_inputs == 0`: a function of no inputs is a
+        // constant, and a batch of N points is that constant N times. An
+        // early return here used to leave `output` as the caller allocated
+        // it — zeros — so `compile(5, [])` batched to `[0, 0, 0]` while
+        // `call(&[])` answered 5. Every path below handles zero columns.
+        //
         // The program tier reads the columns in place; the copy below exists
         // only to give the native bulk entry points their flat layout.
         if let CompiledFnInner::Program(p) = &self.inner {
@@ -616,6 +818,7 @@ pub fn compile_with(
     pool: &ExprPool,
     config: CompileConfig,
 ) -> Result<CompiledFn, JitError> {
+    refuse_unbound(expr, inputs, pool)?;
     let tier = select_compile_tier(expr, pool, &config);
     compile_with_fallbacks(tier, expr, inputs, pool)
 }
@@ -653,6 +856,7 @@ pub fn compile_jit_only(
     inputs: &[ExprId],
     pool: &ExprPool,
 ) -> Result<CompiledFn, JitError> {
+    refuse_unbound(expr, inputs, pool)?;
     #[cfg(feature = "cranelift")]
     return cranelift_backend::compile_cranelift(expr, inputs, pool);
 
@@ -1574,6 +1778,12 @@ mod llvm_backend {
             ExprData::Integer(n) => Ok(f64_type.const_float(integer_to_f64(&n.0))),
             ExprData::Rational(r) => Ok(f64_type.const_float(rational_to_f64(&r.0))),
             ExprData::Float(f) => Ok(f64_type.const_float(f.inner.to_f64())),
+            // `π` is a constant, not an input — as in the Cranelift backend
+            // and the interpreter. Declared inputs were loaded before codegen,
+            // so an input *named* `pi` still wins.
+            ExprData::Symbol { name, .. } if name == crate::eval::symbols::PI_NAME => {
+                Ok(f64_type.const_float(std::f64::consts::PI))
+            }
             ExprData::Symbol { name, .. } => Err(JitError::UnsupportedNode(format!(
                 "unbound symbol '{name}'"
             ))),
@@ -2359,5 +2569,175 @@ mod tests {
         let half_pi = std::f64::consts::PI / 2.0;
         assert!((k0 - half_pi).abs() < 1e-9);
         assert!((e0 - half_pi).abs() < 1e-9);
+    }
+}
+
+/// Constant functions in batch, and unbound symbols at compile time (audit A11).
+#[cfg(test)]
+mod constant_and_unbound_tests {
+    use super::*;
+    use crate::errors::AlkahestError;
+    use crate::kernel::Domain;
+
+    /// Every tier this build has, forced, for `expr` over `inputs`.
+    fn every_tier(expr: ExprId, inputs: &[ExprId], pool: &ExprPool) -> Vec<CompiledFn> {
+        #[allow(unused_mut)]
+        let mut tiers = vec![CompileTier::Interpreter];
+        #[cfg(feature = "cranelift")]
+        tiers.push(CompileTier::Cranelift);
+        #[cfg(feature = "jit")]
+        tiers.push(CompileTier::Llvm);
+        tiers
+            .into_iter()
+            .map(|t| {
+                let config = CompileConfig {
+                    expected_evals: None,
+                    force_tier: Some(t),
+                };
+                let f = compile_with(expr, inputs, pool, config).expect("compiles");
+                assert_eq!(f.compile_tier(), t, "the forced tier was used");
+                f
+            })
+            .collect()
+    }
+
+    fn assert_batches_to(f: &CompiledFn, want: f64) {
+        let tier = f.compile_tier();
+        assert_eq!(f.call(&[]), want, "{tier:?}: scalar call");
+
+        let mut out = vec![0.0; 3];
+        f.call_batch(&[], &mut out);
+        assert_eq!(out, [want; 3], "{tier:?}: call_batch of a constant");
+
+        let mut out = vec![0.0; 3];
+        f.call_bulk(&[], &mut out);
+        assert_eq!(out, [want; 3], "{tier:?}: call_bulk of a constant");
+
+        #[cfg(feature = "parallel")]
+        {
+            // More than one Rayon chunk, so every chunk is checked.
+            let mut out = vec![0.0; 2 * PAR_CHUNK + 3];
+            f.call_batch_par(&[], &mut out);
+            assert!(
+                out.iter().all(|&v| v == want),
+                "{tier:?}: call_batch_par of a constant"
+            );
+        }
+    }
+
+    /// `call_batch` returned early for a function of no inputs, leaving the
+    /// caller's zero-filled buffer as the "answer": `[0, 0, 0]` for `5`.
+    #[test]
+    fn a_function_of_no_inputs_batches_to_its_constant() {
+        let pool = ExprPool::new();
+        let five = pool.integer(5_i32);
+        for f in every_tier(five, &[], &pool) {
+            assert_batches_to(&f, 5.0);
+        }
+        // `π` resolves to its value.
+        let pi = pool.symbol(crate::eval::symbols::PI_NAME, Domain::Real);
+        for f in every_tier(pi, &[], &pool) {
+            assert_batches_to(&f, std::f64::consts::PI);
+        }
+        // A Piecewise takes the interpreter's closure path rather than the
+        // flattened program.
+        let constant_piecewise = pool.piecewise(
+            vec![(pool.pred_gt(pool.integer(2_i32), pool.integer(1_i32)), five)],
+            pool.integer(-1_i32),
+        );
+        let f = compile(constant_piecewise, &[], &pool).unwrap();
+        assert!(matches!(f.inner, CompiledFnInner::Interpreter(_)));
+        assert_batches_to(&f, 5.0);
+    }
+
+    /// `compile(x + y, [x])` used to succeed and return `NaN` at every point.
+    #[test]
+    fn compile_refuses_a_symbol_the_inputs_do_not_bind() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let z = pool.symbol("z", Domain::Real);
+        let expr = pool.add(vec![x, pool.mul(vec![y, z]), y]);
+
+        let err = compile(expr, &[x], &pool).err().expect("refused");
+        assert!(matches!(err, JitError::UnsupportedNode(_)), "{err:?}");
+        assert!(err.to_string().contains("y, z"), "{err}");
+        let refusal = take_unbound_symbols().expect("recorded out of band");
+        assert_eq!(refusal.code(), "E-JIT-005");
+        assert_eq!(refusal.names(), ["y", "z"]);
+        assert!(take_unbound_symbols().is_none(), "consumed");
+
+        // Every entry point and every forced tier refuses, not only the default.
+        for tier in [Some(CompileTier::Interpreter), None] {
+            let config = CompileConfig {
+                expected_evals: Some(1 << 20),
+                force_tier: tier,
+            };
+            assert!(compile_with(expr, &[x], &pool, config).is_err());
+            assert!(take_unbound_symbols().is_some());
+        }
+        let mut cache = CompileCache::new();
+        assert!(cache.compile(expr, &[x], &pool).is_err());
+        assert!(take_unbound_symbols().is_some());
+        #[cfg(any(feature = "cranelift", feature = "jit"))]
+        {
+            assert!(compile_jit_only(expr, &[x], &pool).is_err());
+            assert!(take_unbound_symbols().is_some());
+        }
+
+        // Bound, it compiles, and the success leaves no refusal behind.
+        let f = compile(expr, &[x, y, z], &pool).unwrap();
+        assert_eq!(f.call(&[1.0, 2.0, 3.0]), 9.0);
+        assert!(take_unbound_symbols().is_none());
+    }
+
+    #[test]
+    fn what_does_not_need_binding() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        // π is a constant.
+        let pi = pool.symbol(crate::eval::symbols::PI_NAME, Domain::Real);
+        let sin_pi_x = pool.func("sin", vec![pool.mul(vec![pi, x])]);
+        assert_eq!(check_inputs_bind(sin_pi_x, &[x], &pool), Ok(()));
+        assert!(compile(sin_pi_x, &[x], &pool).is_ok());
+        // A RootSum's placeholder is bound by the RootSum, not by the inputs...
+        let c = pool.symbol("c", Domain::Complex);
+        let poly = pool.add(vec![pool.pow(c, pool.integer(2_i32)), pool.integer(1_i32)]);
+        let body = pool.func(
+            "log",
+            vec![pool.add(vec![x, pool.mul(vec![pool.integer(-1_i32), c])])],
+        );
+        let rs = pool.root_sum(poly, c, body);
+        assert_eq!(check_inputs_bind(rs, &[x], &pool), Ok(()));
+        // ...but the same symbol outside the binder is free.
+        let both = pool.add(vec![rs, c]);
+        assert_eq!(
+            check_inputs_bind(both, &[x], &pool).unwrap_err().names(),
+            ["c"]
+        );
+    }
+
+    #[test]
+    fn a_same_named_symbol_of_another_domain_is_named_as_such() {
+        let pool = ExprPool::new();
+        let x_real = pool.symbol("x", Domain::Real);
+        let x_complex = pool.symbol("x", Domain::Complex);
+        let expr = pool.add(vec![x_complex, pool.integer(1_i32)]);
+        let err = check_inputs_bind(expr, &[x_real], &pool).unwrap_err();
+        assert_eq!(err.names(), ["x"]);
+        assert!(err.to_string().contains("different domain"), "{err}");
+    }
+
+    /// Only a symbol binds: the evaluators look values up at `Symbol` nodes,
+    /// so an input `x + 1` leaves the `x` inside it unbound.
+    #[test]
+    fn a_non_symbol_input_binds_nothing() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let x1 = pool.add(vec![x, pool.integer(1_i32)]);
+        assert_eq!(
+            check_inputs_bind(x1, &[x1], &pool).unwrap_err().names(),
+            ["x"]
+        );
     }
 }

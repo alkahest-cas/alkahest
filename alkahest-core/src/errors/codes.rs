@@ -202,6 +202,10 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-JIT-002", class: "JitError", cause: Cause::Resource,    remediation: Some("check LLVM 21 installation; run with RUST_LOG=debug for details") },
     ErrorSpec { code: "E-JIT-003", class: "JitError", cause: Cause::Resource,    remediation: Some("ensure LLVM_SYS_211_PREFIX is set correctly") },
     ErrorSpec { code: "E-JIT-004", class: "JitError", cause: Cause::UserInput, remediation: None },
+    // The expression has a free symbol the input list does not bind, so the compiled
+    // function would be NaN everywhere. Carried out of band on `JitError::UnsupportedNode`
+    // (exhaustive public enum) — see `jit::take_unbound_symbols`.
+    ErrorSpec { code: "E-JIT-005", class: "UnboundSymbolsError", cause: Cause::UserInput, remediation: Some("add every free symbol of the expression to the input list, or substitute a value for each parameter before compiling") },
     // E-CAD — CadError (V2-9 QE / cylindrical decomposition)
     ErrorSpec {
         code: "E-CAD-001",

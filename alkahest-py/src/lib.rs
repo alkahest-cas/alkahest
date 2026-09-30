@@ -11092,6 +11092,23 @@ fn py_voltage_source(py: Python<'_>, name: &str, voltage: PyRef<PyExpr>) -> PyRe
 // Phase 21 — JIT compiled evaluation
 // ---------------------------------------------------------------------------
 
+/// A compile failure as a Python exception.
+///
+/// An expression with a free symbol the input list does not bind is refused
+/// with `E-JIT-005`, carried out of band because `JitError` is an exhaustive
+/// public enum; recover it so it raises `JitError` with its own code instead
+/// of the `NaN`-everywhere function it used to produce. Any other failure
+/// keeps the `RuntimeError` it has always raised.
+fn jit_compile_error_to_py(e: alkahest_core::JitError) -> PyErr {
+    if let Some(refusal) = alkahest_core::take_unbound_symbols() {
+        return Python::with_gil(|py| {
+            let exc_type = py.get_type_bound::<PyJitError>();
+            make_structured_err(py, &exc_type, &refusal)
+        });
+    }
+    pyo3::exceptions::PyRuntimeError::new_err(e.to_string())
+}
+
 /// Compile a symbolic expression to a fast native function.
 ///
 /// Returns a callable Python object (PyCompiledFn).
@@ -11142,7 +11159,7 @@ fn py_compile_expr(
         .map(alkahest_core::CompileConfig::for_batch)
         .unwrap_or_default();
     let compiled = core_compile_with(expr.id, &input_ids, &pool_ref.inner, config)
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        .map_err(jit_compile_error_to_py)?;
     drop(pool_ref);
 
     Ok(PyCompiledFn::with_source(
@@ -11750,7 +11767,7 @@ impl PyCompileCache {
         let arc = self
             .inner
             .compile(expr.id, &input_ids, &pool_ref.inner)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+            .map_err(jit_compile_error_to_py)?;
         drop(pool_ref);
 
         Ok(PyCompiledFn::with_source(

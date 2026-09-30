@@ -182,6 +182,7 @@ pub use sum::{
 };
 
 // Phase 21 — JIT
+pub use jit::{check_inputs_bind, take_unbound_symbols, UnboundSymbolsError};
 pub use jit::{
     compile, compile_jit_only, compile_with, eval_interp, eval_interp_checked, expr_subgraph_size,
     jit_available, select_compile_tier, CompileCache, CompileConfig, CompileTier, CompiledFn,

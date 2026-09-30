@@ -26,6 +26,70 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
 use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
+
+// ---------------------------------------------------------------------------
+// Owned JIT module — frees its code pages on drop
+// ---------------------------------------------------------------------------
+
+/// A [`JITModule`] that returns its memory to the OS when it is dropped.
+///
+/// `cranelift_jit` cannot know whether a function pointer it handed out is
+/// still in use, so its own `Drop` deliberately *leaks* every mapping
+/// (`mem::forget` on each allocation) and leaves releasing them to the
+/// `unsafe` [`JITModule::free_memory`]. Nothing called that, so every
+/// compile-and-drop kept its code, read-only and writable pages mapped for
+/// the life of the process: about 4 kB resident per compile, so 20 000
+/// compiles grew the process by 80 MB.
+///
+/// Freeing is sound here because of where the pointers live. The scalar and
+/// bulk entry points of a compiled function are stored only inside the
+/// [`CompiledFnInner::Cranelift`] variant that also owns this module; they
+/// are never handed out, and every call goes through `&CompiledFn`. The module
+/// is therefore dropped only once no call can be in flight and none can start.
+///
+/// The wrapper is taken on as soon as the module exists, so a compile that
+/// fails half-way (after some functions were already defined) frees its pages
+/// too.
+pub(super) struct OwnedJitModule(Option<JITModule>);
+
+impl OwnedJitModule {
+    fn new(module: JITModule) -> Self {
+        Self(Some(module))
+    }
+}
+
+impl Deref for OwnedJitModule {
+    type Target = JITModule;
+    fn deref(&self) -> &JITModule {
+        self.0.as_ref().expect("JIT module used after it was freed")
+    }
+}
+
+impl DerefMut for OwnedJitModule {
+    fn deref_mut(&mut self) -> &mut JITModule {
+        self.0.as_mut().expect("JIT module used after it was freed")
+    }
+}
+
+impl Drop for OwnedJitModule {
+    fn drop(&mut self) {
+        if let Some(module) = self.0.take() {
+            // SAFETY: see the type's documentation — every pointer into this
+            // module's memory is owned by the value being dropped.
+            unsafe { module.free_memory() };
+            #[cfg(test)]
+            FREED_MODULES.with(|n| n.set(n.get() + 1));
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Modules freed on this thread — lets a test observe the release path
+    /// without depending on RSS, which parallel tests make noisy.
+    static FREED_MODULES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 // ---------------------------------------------------------------------------
 // Math trampolines — extern "C" wrappers called by JIT-compiled code
@@ -374,7 +438,7 @@ pub fn compile_cranelift(
     jit_builder.symbol("alkahest_round", tramp_round as *const u8);
     jit_builder.symbol("alkahest_sign", tramp_sign as *const u8);
 
-    let mut module = JITModule::new(jit_builder);
+    let mut module = OwnedJitModule::new(JITModule::new(jit_builder));
 
     // ------------------------------------------------------------------
     // 3. Declare imported math functions
@@ -565,6 +629,33 @@ mod tests {
 
     fn p() -> ExprPool {
         ExprPool::new()
+    }
+
+    /// `cranelift_jit`'s `Drop` leaks a module's code pages by design; every
+    /// compile-and-drop used to keep them mapped for the life of the process
+    /// (about 4 kB resident per compile). Dropping a compiled
+    /// function — or a compile that fails part-way — must release them.
+    #[test]
+    fn dropping_a_compiled_function_frees_its_code_pages() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.func("sin", vec![pool.add(vec![x, pool.integer(1_i32)])]);
+        let freed = || FREED_MODULES.with(|n| n.get());
+
+        let before = freed();
+        for i in 0..4 {
+            let f = compile_cranelift(expr, &[x], &pool).unwrap();
+            assert_eq!(f.call(&[0.5]), 1.5_f64.sin());
+            assert_eq!(freed(), before + i, "still alive: not freed yet");
+            drop(f);
+            assert_eq!(freed(), before + i + 1, "freed on drop");
+        }
+
+        // An unbound symbol is refused by codegen after the module exists.
+        let y = pool.symbol("y", Domain::Real);
+        let before = freed();
+        assert!(compile_cranelift(pool.add(vec![x, y]), &[x], &pool).is_err());
+        assert_eq!(freed(), before + 1, "a failed compile frees its module too");
     }
 
     #[test]

@@ -326,6 +326,9 @@ Exception subclasses
 .. exception:: JitError
 
    Code prefix ``E-JIT-*``. LLVM/JIT compilation or linking error.
+   ``E-JIT-005`` is raised by :func:`compile_expr` and
+   ``CompileCache.compile`` when the expression has a free symbol the input
+   list does not bind; the compiled function would have no value at any point.
 
 .. exception:: CudaError
 
