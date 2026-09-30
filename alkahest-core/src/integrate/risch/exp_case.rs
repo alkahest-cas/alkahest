@@ -1390,6 +1390,11 @@ fn scan_algebraic_gens(
 }
 
 /// Returns true if `d` is a perfect m-th power (i.e. ∃ integer k with k^m = d).
+///
+/// `k^m` is computed with `checked_pow`: a wrapped power used to make this
+/// return `true` for non-powers in release builds, e.g. `7^23 ≡
+/// 8922003266371364727 (mod 2^64)`, so `8922003266371364727` was taken for a
+/// perfect 23rd power (and a debug build panicked instead).
 fn is_perfect_mth_power(d: i64, m: u32) -> bool {
     if d <= 0 || m == 0 {
         return false;
@@ -1398,7 +1403,7 @@ fn is_perfect_mth_power(d: i64, m: u32) -> bool {
         return true;
     }
     let root = (d as f64).powf(1.0 / m as f64).round() as i64;
-    (root - 1..=root + 1).any(|k| k > 0 && k.pow(m) == d)
+    (root.saturating_sub(1)..=root.saturating_add(1)).any(|k| k > 0 && k.checked_pow(m) == Some(d))
 }
 
 /// Build the `NumberField` for an `AlgebraicExtension` and return the list of
@@ -1824,12 +1829,15 @@ fn scan_sqrt(expr: ExprId, pool: &ExprPool, out: &mut Vec<(i64, ExprId)>) {
 }
 
 /// Is `d` a perfect square?
+///
+/// `c * c` is checked: near `i64::MAX` the float estimate rounds up to
+/// `3037000500`, whose square overflows `i64`.
 fn is_perfect_square(d: i64) -> bool {
     if d < 0 {
         return false;
     }
     let r = (d as f64).sqrt() as i64;
-    (r - 1..=r + 1).any(|c| c >= 0 && c * c == d)
+    (r.saturating_sub(1)..=r.saturating_add(1)).any(|c| c >= 0 && c.checked_mul(c) == Some(d))
 }
 
 /// Parse `expr` as a polynomial in `var` whose coefficients lie in `K = ℚ(√d)`
@@ -4686,5 +4694,76 @@ mod tests {
 
         // No radical → None.
         assert!(detect_algebraic_extension(x, &pool).is_none());
+    }
+}
+
+#[cfg(test)]
+mod perfect_power_tests {
+    use super::{is_perfect_mth_power, is_perfect_square};
+
+    /// `7^23` wraps to `8922003266371364727` in `i64`. That value is not a
+    /// 23rd power (`6^23 < d < 7^23`) and used to be reported as one — the
+    /// float root rounds to 7, and `7_i64.pow(23)` wrapped onto `d`.
+    #[test]
+    fn wrapped_power_is_not_a_perfect_power() {
+        let d = 8_922_003_266_371_364_727_i64;
+        assert_eq!(7_i64.wrapping_pow(23), d);
+        assert!(!is_perfect_mth_power(d, 23));
+        // More of the same shape: k^m mod 2^64 lands on a positive d whose
+        // float m-th root rounds to within one of k.
+        assert!(!is_perfect_mth_power(6_i64.wrapping_pow(26), 26));
+        assert!(!is_perfect_mth_power(5_i64.wrapping_pow(28), 28));
+    }
+
+    #[test]
+    fn perfect_powers_near_the_top_of_i64() {
+        assert!(is_perfect_mth_power(3_i64.pow(39), 39));
+        assert!(!is_perfect_mth_power(3_i64.pow(39) + 1, 39));
+        assert!(is_perfect_mth_power(2_i64.pow(62), 62));
+        assert!(is_perfect_mth_power(2_i64.pow(62), 31));
+        assert!(!is_perfect_mth_power(i64::MAX, 2));
+        assert!(!is_perfect_mth_power(i64::MAX, 63));
+        assert!(!is_perfect_mth_power(2, u32::MAX));
+        let r = 3_037_000_499_i64; // ⌊√i64::MAX⌋
+        assert!(is_perfect_square(r * r));
+        assert!(!is_perfect_square(r * r + 1));
+        assert!(!is_perfect_square(i64::MAX));
+    }
+
+    /// Completeness: every square `c²` is recognised, i.e. the `f64` square
+    /// root lands within one of `c` — for the bottom and the top `2^16` roots
+    /// and a stride through the rest. (A symbolic `f64` square root at full
+    /// width did not finish under Kani in 25 minutes.)
+    #[test]
+    fn every_square_is_recognised() {
+        let top = 3_037_000_499_i64; // ⌊√i64::MAX⌋
+        let low = 0..1 << 16;
+        let high = top - (1 << 16)..=top;
+        let stride = (0..=top).step_by(9_973);
+        for c in low.chain(high).chain(stride) {
+            assert!(is_perfect_square(c * c), "{c}²");
+            if c > 1 {
+                assert!(!is_perfect_square(c * c - 1), "{c}² − 1");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking (see TESTING.md § 7)
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::is_perfect_square;
+
+    /// Every `d`: no panic or overflow (`3037000500²` used to overflow).
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn perfect_square_no_overflow_full_width() {
+        let d: i64 = kani::any();
+        if is_perfect_square(d) {
+            assert!(d >= 0);
+        }
     }
 }

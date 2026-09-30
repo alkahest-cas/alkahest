@@ -577,20 +577,16 @@ fn snap_rational(c: f64) -> Option<(i64, i64)> {
             if num == 0 {
                 return None; // `w` is identically 0 — a solved integral, not a cycle
             }
-            let g = gcd_i64(num.abs(), den);
+            let g = gcd_i64(num, den);
             return Some((num / g, den / g));
         }
     }
     None
 }
 
-fn gcd_i64(mut a: i64, mut b: i64) -> i64 {
-    while b != 0 {
-        let t = a % b;
-        a = b;
-        b = t;
-    }
-    a.max(1)
+/// `gcd(|a|, |b|)`, at least 1 (so dividing by it is always safe).
+fn gcd_i64(a: i64, b: i64) -> i64 {
+    crate::modular::gcd_i64(a, b).max(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -1725,7 +1721,7 @@ struct Rat {
 impl Rat {
     fn new(n: i64, d: i64) -> Self {
         let s = if d < 0 { -1 } else { 1 };
-        let g = gcd_i64(n.abs(), d.abs());
+        let g = gcd_i64(n, d);
         Rat {
             n: s * n / g,
             d: s * d / g,

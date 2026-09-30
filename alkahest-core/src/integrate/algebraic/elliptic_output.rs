@@ -1607,7 +1607,10 @@ fn is_squarefree(mut n: i64) -> bool {
         return false;
     }
     let mut d = 2i64;
-    while d * d <= n {
+    // `d <= n / d` rather than `d * d <= n`: the square overflows `i64` once
+    // `d` passes `⌊√i64::MAX⌋` (`n` a large prime).
+    #[cfg_attr(kani_loop_contracts, kani::loop_invariant(d >= 2 && n >= 1))]
+    while d <= n / d {
         if n % (d * d) == 0 {
             return false;
         }
@@ -1630,11 +1633,14 @@ fn is_quartic_radical(n: i64) -> bool {
         return false;
     }
     let r = (n as f64).sqrt().round() as i64;
-    if r * r == n {
+    if r.checked_mul(r) == Some(n) {
         return false; // perfect square → use the √ form instead
     }
     let mut d = 2i64;
-    while d * d * d * d <= n {
+    // `d² <= ⌊n / d²⌋` ⟺ `d⁴ <= n`, without forming `d⁴` (which overflows).
+    // `d⁴ <= i64::MAX` keeps `d <= 55108` inside the loop.
+    #[cfg_attr(kani_loop_contracts, kani::loop_invariant((2..=55_109).contains(&d)))]
+    while d * d <= n / (d * d) {
         if n % (d * d * d * d) == 0 {
             return false;
         }
@@ -3038,5 +3044,65 @@ mod tests {
             try_elliptic_output_higher_kind(zero, b, p, x, &pool).is_none(),
             "∫dx/((x−3)√(x³+1)) must decline (non-elementary twin)"
         );
+    }
+}
+
+#[cfg(test)]
+mod squarefree_tests {
+    use super::{is_quartic_radical, is_squarefree};
+
+    /// Exhaustive on `n < 2^12` against the definitions, plus the tops of the
+    /// range where `d * d` / `d⁴` used to overflow. (Kani proves overflow
+    /// freedom at full width through the loop invariants, which abstract
+    /// the value.)
+    #[test]
+    fn squarefree_and_quartic_match_definitions() {
+        for n in -4..(1i64 << 12) {
+            let sf = n >= 2 && (2..=n).take_while(|k| k * k <= n).all(|k| n % (k * k) != 0);
+            assert_eq!(is_squarefree(n), sf, "is_squarefree({n})");
+            let square = (0..=n).take_while(|r| r * r <= n).any(|r| r * r == n);
+            let q = n >= 2
+                && !square
+                && (2..=n)
+                    .take_while(|d| d * d * d * d <= n)
+                    .all(|d| n % (d * d * d * d) != 0);
+            assert_eq!(is_quartic_radical(n), q, "is_quartic_radical({n})");
+        }
+        // 2^61 − 1 is prime: the trial division runs to √n.
+        assert!(is_squarefree((1 << 61) - 1));
+        assert!(!is_squarefree(i64::MAX)); // 7² · 73 · …
+        assert!(!is_squarefree(3_037_000_493 * 3_037_000_493));
+        assert!(!is_quartic_radical(16 * ((1 << 59) - 1)));
+        assert!(is_quartic_radical((1 << 61) - 1));
+        assert!(!is_quartic_radical(3_037_000_499 * 3_037_000_499));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking (see TESTING.md § 7)
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::{is_quartic_radical, is_squarefree};
+
+    /// Every `i64`: no panic or overflow in the trial-division loop, which is
+    /// checked once for an arbitrary iteration through its loop invariant
+    /// (`-Z loop-contracts`) instead of being unrolled ~3·10⁹ times. `d * d`
+    /// used to be formed before the `d * d <= n` test could stop it.
+    #[cfg(kani_loop_contracts)]
+    #[kani::proof]
+    fn is_squarefree_no_overflow_inductive() {
+        let n: i64 = kani::any();
+        let _ = is_squarefree(n);
+    }
+
+    /// Every `i64`: no panic or overflow (`r * r` and `d⁴` used to be formed
+    /// unchecked). The fourth-root loop is checked through its invariant.
+    #[cfg(kani_loop_contracts)]
+    #[kani::proof]
+    fn is_quartic_radical_no_overflow_inductive() {
+        let n: i64 = kani::any();
+        let _ = is_quartic_radical(n);
     }
 }

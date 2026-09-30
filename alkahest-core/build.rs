@@ -24,6 +24,20 @@ fn main() {
     // kani: set by `cargo kani` (Kani bounded model checker) when it compiles
     // the `#[cfg(kani)] mod verification` harnesses. See TESTING.md § Kani.
     println!("cargo::rustc-check-cfg=cfg(kani)");
+    // kani_loop_contracts: `ALKAHEST_KANI_LOOP_CONTRACTS=1 cargo kani -Z
+    // loop-contracts …` attaches the `kani::loop_invariant`s to their loops
+    // and compiles the `*_inductive` harnesses that rely on them. Off, the
+    // same loops are unrolled as usual, so the value-checking harnesses that
+    // run through them still see concrete iterations. TESTING.md § 7.
+    println!("cargo::rustc-check-cfg=cfg(kani_loop_contracts)");
+    println!("cargo:rerun-if-env-changed=ALKAHEST_KANI_LOOP_CONTRACTS");
+    // `CARGO_CFG_KANI`: only under `cargo kani` (a plain build would not
+    // resolve `kani::loop_invariant`).
+    if std::env::var_os("ALKAHEST_KANI_LOOP_CONTRACTS").is_some()
+        && std::env::var_os("CARGO_CFG_KANI").is_some()
+    {
+        println!("cargo:rustc-cfg=kani_loop_contracts");
+    }
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=FLINT_LIB_DIR");
     println!("cargo:rerun-if-env-changed=FLINT_INCLUDE_DIR");

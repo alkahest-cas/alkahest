@@ -343,16 +343,7 @@ fn divisors(n: &Integer) -> Vec<Integer> {
     ds
 }
 
-fn gcd_i64(mut a: i64, mut b: i64) -> i64 {
-    a = a.abs();
-    b = b.abs();
-    while b != 0 {
-        let t = b;
-        b = a % b;
-        a = t;
-    }
-    a
-}
+use crate::modular::gcd_i64;
 
 #[cfg(test)]
 mod tests {

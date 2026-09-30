@@ -1385,7 +1385,9 @@ fn lcm_small(a: u32, b: u32) -> Option<u32> {
     if b == 0 {
         return None;
     }
-    let l = a / gcd(a, b) * b;
+    // Checked: `a / g * b` wrapped in `u32`, so `lcm_small(2, 2^31 + 1)` was
+    // `Some(2)` — `√x + x^(1/2147483649)` passed the index screen as `2`.
+    let l = (a / gcd(a, b)).checked_mul(b)?;
     (l <= MAX_PUISEUX_INDEX).then_some(l)
 }
 
@@ -2668,6 +2670,22 @@ fn signed_infinity(pool: &ExprPool, sign: i8) -> ExprId {
 }
 
 #[cfg(test)]
+mod lcm_small_tests {
+    use super::lcm_small;
+
+    #[test]
+    fn lcm_small_does_not_wrap() {
+        assert_eq!(lcm_small(2, 3), Some(6));
+        assert_eq!(lcm_small(4, 6), Some(12));
+        assert_eq!(lcm_small(5, 3), None); // 15 > 12
+        assert_eq!(lcm_small(1, 0), None);
+        // 2 · (2^31 + 1) = 2^32 + 2: wrapped to 2 before.
+        assert_eq!(lcm_small(2, 2_147_483_649), None);
+        assert_eq!(lcm_small(1, 2_147_483_649), None);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::kernel::Domain;
@@ -3494,5 +3512,28 @@ mod numeric_refutation_tests {
         )
         .unwrap()
         .is_none());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking (see TESTING.md § 7)
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::{lcm_small, MAX_PUISEUX_INDEX};
+
+    /// Every accumulator `a` the caller can hold (`1 <= a <= 12`) and every
+    /// `u32` root index `b`: a `Some(l)` is a genuine common multiple within
+    /// the Puiseux cap — no wrapped product passes the screen.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn lcm_small_no_wrap_full_width() {
+        let a: u32 = kani::any_where(|a: &u32| *a >= 1 && *a <= MAX_PUISEUX_INDEX);
+        let b: u32 = kani::any();
+        if let Some(l) = lcm_small(a, b) {
+            assert!(l <= MAX_PUISEUX_INDEX);
+            assert!(l >= 1 && l % a == 0 && l % b == 0);
+        }
     }
 }

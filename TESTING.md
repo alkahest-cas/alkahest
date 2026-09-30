@@ -269,13 +269,50 @@ cargo kani -p alkahest-cas -Z stubbing --harness _full_width --output-format ter
 cargo kani -p alkahest-cas -Z stubbing --harness modular::verification::mod_inverse_small_modulus
 ```
 
+```bash
+# The loop-contract harnesses (`*_inductive`): a separate build, see below
+ALKAHEST_KANI_LOOP_CONTRACTS=1 \
+  cargo kani -p alkahest-cas -Z stubbing -Z loop-contracts --harness _inductive --output-format terse -j
+```
+
 `-Z stubbing` is required: the compositional harnesses replace a proven
 function with its contract (e.g. `mul_mod` by "any value `< m`") so the caller
 can be checked at full width. FLINT does not need to be installed — Kani never
 links — but `build.rs`'s presence probe does run; set
 `ALKAHEST_SKIP_FLINT_CHECK=1` on a machine without it. CI runs this in
-`.github/workflows/kani.yml`: `*_full_width` harnesses on every PR, all of them
-nightly.
+`.github/workflows/kani.yml`: `*_full_width` harnesses (including the
+`*_inductive_full_width` loop-contract ones) on every PR, all of them nightly.
+The name decides the tier, so a harness is named `*_full_width` only once its
+runtime has been measured; an unmeasured one runs nightly until it has.
+
+**Loop contracts.** A loop whose trip count grows with the input — trial
+division to `√n`, Euclid on two `u64`s — cannot be unrolled at full width. Such
+a loop carries a `kani::loop_invariant`, written as
+`#[cfg_attr(kani_loop_contracts, kani::loop_invariant(...))]` on the `while`, and
+its harness is named `*_inductive` (`*_inductive_full_width` once measured,
+which puts it in the PR tier) and gated `#[cfg(kani_loop_contracts)]`.
+Kani then checks the invariant holds on entry and is preserved by one
+arbitrary iteration, and continues after the loop from *any* state satisfying
+it — so the harness proves panic/overflow freedom (and whatever the invariant
+states) for every input, but sees nothing about the value the loop computes
+beyond the invariant. The value is covered by exhaustive unit tests on small
+inputs next to the harness. `build.rs` sets `cfg(kani_loop_contracts)` only
+under `cargo kani` with `ALKAHEST_KANI_LOOP_CONTRACTS=1`; without it the
+attributes vanish and the loops are unrolled as usual, which is what the
+value-checking harnesses that run through the same loops need.
+
+**Stubbing FLINT (FFI).** Kani cannot execute C, so a harness that reaches a
+FLINT call fails as an unsupported foreign call. For the Rust code *around*
+FFI calls — buffer sizing, index bounds — stub each `extern` function with a
+Rust model of its documented contract:
+`#[kani::stub(ffi::fmpz_get_ui_array, models::fmpz_get_ui_array)]`. The model
+`assert!`s the C function's precondition and performs its writes through the
+raw pointer it was given, so an undersized Rust buffer is an out-of-bounds
+pointer write Kani reports. The model's `fmpz` need not be FLINT's tagged
+word: in `flint::integer::verification` it simply stores the bit length
+`fmpz_bits` reports. `rug`/GMP calls cannot be stubbed this way in practice
+(they are generic Rust over many FFI calls); split the FLINT-facing part into
+its own function first, as `fmpz_abs_words` is.
 
 **What is proven.** "Full width" means every value the precondition allows.
 Anything narrower says so in the harness's doc comment. Times are per-harness
@@ -311,6 +348,37 @@ running 16 harnesses at once; the whole suite took 9.5 min wall-clock.
 | `simplify::rules::…::expansion_products_saturates` | exact `m^n`, else `u64::MAX` | `m < 2^8`, `n <= 9` | 34 s |
 | `character::table::…::isqrt_is_floor_sqrt` | `⌊√n⌋` (f64 estimate + correction) | `n < 2^16` | 195 s |
 
+Round 2 (overflow and indexing in the callers of those kernels). Times were
+measured locally with Kani 0.68.0, two harnesses at once, or on the CI runner
+(four at once) where marked; **unmeasured** means no run has finished it yet,
+so it is not in the PR tier (its name has no `_full_width`) and runs nightly
+only. Loop-contract
+(`*_inductive…`) harnesses need `ALKAHEST_KANI_LOOP_CONTRACTS=1 -Z loop-contracts`.
+
+| Harness | Property | Range | Tier | Time |
+|---|---|---|---|---|
+| `modular::…::gcd_u64_in_range_inductive_full_width` | no panic; `0` iff `a = b = 0`, else `<=` each nonzero argument (loop invariant) | all `a, b` | PR | 2.9 s |
+| `modular::…::gcd_i64_sign_full_width` | no panic at `i64::MIN`; result `>= 0` except gcd `2^63` (`gcd_u64` stubbed) | all `a, b` | PR | 0.1 s |
+| `modular::…::mod_inverse_in_range_inductive` | no panic / `i128` overflow, result `< m` (Bézout invariant) | all `a`; `m >= 1` | nightly | unmeasured |
+| `poly::interp::…::interp_{add,sub}_mod_full_width` | exact canonical result (`p > 2^63` wrapped before) | all `p >= 1`; values `< p` | PR | 0.5 s / 0.4 s |
+| `calculus::limits::…::lcm_small_no_wrap_full_width` | a `Some` is a true common multiple within the cap | `1 <= a <= 12`; all `u32 b` | PR | 0.4 s |
+| `integrate::algebraic::subst::…::lcm_no_wrap_full_width` | no panic; a `Some` is a true common multiple `>= max(a, b)` | `1 <= a <= 12`; all `usize b` | PR | 133 s |
+| `integrate::algebraic::subst::…::lcm_is_least_small` | least common multiple | `1 <= a, b < 2^5` | nightly | 18 s (CI) |
+| `integrate::algebraic::trager_log::…::lcm_u32_no_wrap_large_a` | no panic; a `Some` is a true common multiple | all `a`; `b < 2^4` | nightly | 33 s |
+| `integrate::algebraic::trager_log::…::lcm_u32_is_least_small` | least common multiple, `None` only past `u32::MAX` | `a, b < 2^5` | nightly | 2.8 s |
+| `integrate::risch::exp_case::…::perfect_square_no_overflow_full_width` | no panic / overflow | every `i64` | PR | 6.0 s |
+| `integrate::algebraic::elliptic_output::…::is_squarefree_no_overflow_inductive` | no panic / overflow (loop invariant) | every `i64` | nightly | unmeasured |
+| `integrate::algebraic::elliptic_output::…::is_quartic_radical_no_overflow_inductive` | no panic / overflow (loop invariant) | every `i64` | nightly | unmeasured |
+| `character::dixon::…::distinct_prime_factors_no_overflow_inductive` | no panic / overflow (two loop invariants) | every `u64` | nightly | unmeasured |
+| `holonomic::modular::…::prime_power_in_range_full_width` | no panic / `u128` overflow; `<= 63` rounds; a `Some` is `<= 2^62` | all `p >= 2`; all `u32 e` | PR | 130 s |
+| `holonomic::modular::…::prime_power_exact_small` | `p^e` when it fits, `None` exactly past `2^62` | `2 <= p < 2^8`; `e <= 8` | nightly | 52 s |
+| `holonomic::telescoping2d::search::…::flatten_in_block_small` | no overflow; index `< box_len^num_axes` | `1 <= box_len < 2^8`; `num_axes <= 3` | nightly | 15 s (CI) |
+| `holonomic::telescoping2d::search::…::flatten_roundtrip_small` | `unflatten ∘ flatten = id` | `1 <= box_len < 2^4`; `num_axes <= 3` | nightly | 30 s (CI) |
+| `eval::program::…::operand_range_no_wrap_full_width` | the range has exactly `len` entries | all `start, len` | PR | 0.04 s |
+| `eval::program::…::run_in_bounds_when_well_formed_small` | a program passing `is_well_formed` runs without an out-of-bounds index | 2 ops, 5 slots, 3 operands; every `u32` index | nightly | 79 s (CI) |
+| `flint::integer::…::words_for_bits_full_width` | least word count; fits `slong` | every bit length | PR | 0.06 s |
+| `flint::integer::…::abs_words_buffer_covers_fmpz_bits_small` | buffer covers `fmpz_bits`; every FLINT write in bounds (FFI stubbed by its contract) | magnitudes up to 4 words | nightly | 0.8 s |
+
 **What is not proven.**
 
 - That the Miller–Rabin witness sets in `is_prime` decide primality. That is a
@@ -328,6 +396,21 @@ running 16 harnesses at once; the whole suite took 9.5 min wall-clock.
   freedom/range are proven, the rest is unit-tested.
 - Anything below `rug`/FLINT: the other half of `crt_combine`, `lift_crt`,
   `rational_reconstruction`, `reduce_mod`.
+- FLINT itself. The `fmpz_abs_words` harness checks the Rust buffer against a
+  model of FLINT's documented contract, not FLINT's C code.
+- The value a loop-contract (`*_inductive`) loop computes, beyond its
+  invariant. Those values are covered by exhaustive unit tests on small inputs.
+- `is_perfect_mth_power` for every `d` and `m`: the `f64` root estimate and
+  the `checked_pow` chain are nonlinear 64-bit problems that ran the CI runner
+  out of memory. Its fix (`checked_pow`, `saturating_*`) cannot wrap by
+  construction, and unit tests pin the `7^23 (mod 2^64)` case and the powers
+  near `i64::MAX`.
+- `real::sos::psd::pack_len` for every `n < 2^32`: the harness (a symbolic
+  128-bit multiplication equality) did not finish in 100 minutes on the CI
+  runner. A unit test checks the top and bottom `2^12` values of `n`.
+- That every square is recognised by `is_perfect_square` at full width (a
+  symbolic `f64` square root did not finish in 25 minutes); a unit test covers
+  the bottom and top `2^16` roots and a stride through the rest.
 
 **Writing a new harness.** What costs time is a division (or remainder) by a
 *symbolic* divisor: the SAT back end bit-blasts the full 64/128-bit divider

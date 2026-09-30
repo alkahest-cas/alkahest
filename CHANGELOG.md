@@ -683,6 +683,32 @@
   (`sos_decompose` and friends) multiplied exponents with a plain `+` too
   (`x^(2^31−1)·x^(2^31−1)·x²` read as `1`) and raised powers by `n` successive
   products; it now refuses with `E-POLY-004` and squares.
+- **Machine-word overflows that returned wrong answers, found in a second
+  Kani round** (each has a regression test next to its fix):
+  - Risch exponential case: `is_perfect_mth_power` compared a wrapped
+    `k.pow(m)`, so in release `8922003266371364727 ≡ 7^23 (mod 2^64)` was
+    taken for a perfect 23rd power (a debug build panicked). Now
+    `checked_pow`; `is_perfect_square` likewise no longer overflows near
+    `i64::MAX`.
+  - Three private `lcm`s wrapped their product and slipped under a size cap:
+    radical substitution (`lcm(3, 6148914691236517207)` came out `5`),
+    Puiseux limits (`lcm_small(2, 2^31 + 1)` came out `2`), and Trager's
+    torsion order (`lcm_u32(65536, 65537)` came out `65536`, reported as
+    `Principal`; now `NotDecided`).
+  - Sparse interpolation (`poly::interp`): `add_mod`/`sub_mod` wrapped for a
+    prime above `2^63`, which the public entry points accept.
+  - Algebraic-integral parametrisation kept the low 32 bits of an integer
+    exponent (`to_i64()? as i32`): `(…)^(2^32 + 1)` was rewritten as `(…)^1`,
+    and `(x^3)^(2^30)` overflowed an `i32` product. Exponents stay exact.
+  - The FLINT factor containers' `base_at`/`exp_at`/`poly_at` bounds check was
+    a `debug_assert!` in a safe `pub fn`: an index past `len()` read out of
+    bounds (UB) in release. Now an `assert!`.
+  - Four private `i64` gcds (by-parts, algebraic RDE, `find_order`,
+    q-Zeilberger terms) called `.abs()`, which panics on `i64::MIN` in debug
+    and stays negative in release; they are one `modular::gcd_i64` now.
+  - Trial-division loops formed `d * d` (or `d⁴`) before the bound check and
+    overflowed for a large prime `n` (`elliptic_output`'s squarefree and
+    quartic tests, `character::dixon`, `poly::interp::prime_factors`).
 
 ### Performance
 
@@ -887,6 +913,17 @@
   `is_prime`'s Miller–Rabin round moved into a private helper so the two
   loops can be checked separately (behaviour unchanged); `crt_combine`'s
   `u64` step likewise.
+- **Kani, second round.** Harnesses for the fixes above, plus the
+  telescoping search's flat index, `holonomic::modular::prime_power`, the
+  interpreter's flat program (any program that passes the new `is_well_formed` check — which `compile` now
+  `debug_assert`s — runs in bounds) and the rug ⇄ FLINT limb buffer, checked
+  with FLINT's `fmpz_bits`/`fmpz_get_ui_array` stubbed by Rust models of
+  their contracts. Loops that cannot be unrolled at full width (Euclid, trial
+  division to `√n`, extended Euclid in `mod_inverse_u64`) carry
+  `kani::loop_invariant`s, compiled in only with
+  `ALKAHEST_KANI_LOOP_CONTRACTS=1`; their `*_inductive` harnesses run as a
+  second Kani step. Harnesses whose runtime has not been measured run nightly
+  only; TESTING.md § 7 says which, and documents both patterns.
 - 201 new Rust tests (46 `ffield`, 60 `group`, 95 `funcfield`) and a
   17-case `tests/silent_errors/corpus/function_fields.py`. The silent-error
   gate reports 0 silent errors across 558 cases.

@@ -133,7 +133,10 @@ pub(crate) fn trager_log_criterion(
             .collect();
         match find_order_placed(n, a, &div_k) {
             FindOrder::NonElementary => return FindOrder::NonElementary,
-            FindOrder::Principal { order } => lcm_order = lcm_u32(lcm_order, order),
+            FindOrder::Principal { order } => match lcm_u32(lcm_order, order) {
+                Some(l) => lcm_order = l,
+                None => return FindOrder::NotDecided,
+            },
             FindOrder::NotDecided => return FindOrder::NotDecided,
         }
     }
@@ -208,18 +211,24 @@ pub(crate) fn trager_log_criterion_alg(
             .collect();
         match find_order_genus_ge2_alg(n, a, &rat_div, &alg_div) {
             FindOrder::NonElementary => return FindOrder::NonElementary,
-            FindOrder::Principal { order } => lcm_order = lcm_u32(lcm_order, order),
+            FindOrder::Principal { order } => match lcm_u32(lcm_order, order) {
+                Some(l) => lcm_order = l,
+                None => return FindOrder::NotDecided,
+            },
             FindOrder::NotDecided => return FindOrder::NotDecided,
         }
     }
     FindOrder::Principal { order: lcm_order }
 }
 
-fn lcm_u32(a: u32, b: u32) -> u32 {
+/// `lcm(a, b)` (`0` if either is `0`), or `None` when it does not fit a
+/// `u32`. The product used to wrap, which would have reported a wrong torsion
+/// order as `Principal`; callers now answer `NotDecided` instead.
+fn lcm_u32(a: u32, b: u32) -> Option<u32> {
     if a == 0 || b == 0 {
-        return 0;
+        return Some(0);
     }
-    a / gcd_u32(a, b) * b
+    (a / gcd_u32(a, b)).checked_mul(b)
 }
 
 fn gcd_u32(mut a: u32, mut b: u32) -> u32 {
@@ -234,6 +243,17 @@ fn gcd_u32(mut a: u32, mut b: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `65536 · 65537 = 2^32 + 65536` wrapped to `65536` in `u32`, a wrong
+    /// torsion order that would have been reported as `Principal`.
+    #[test]
+    fn lcm_u32_does_not_wrap() {
+        assert_eq!(lcm_u32(4, 6), Some(12));
+        assert_eq!(lcm_u32(0, 7), Some(0));
+        assert_eq!(lcm_u32(65_536, 65_537), None);
+        assert_eq!(lcm_u32(u32::MAX, u32::MAX), Some(u32::MAX));
+        assert_eq!(lcm_u32(u32::MAX, 2), None);
+    }
 
     fn qp(cs: &[i64]) -> QPoly {
         cs.iter().map(|&c| Rational::from(c)).collect()
@@ -349,5 +369,43 @@ mod tests {
             trager_log_criterion(2, &a, &places, &residues, 2),
             FindOrder::Principal { order: 6 }
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Kani bounded model checking (see TESTING.md § 7)
+// ---------------------------------------------------------------------------
+
+#[cfg(kani)]
+mod verification {
+    use super::lcm_u32;
+
+    /// `lcm_u32` is the least common multiple, `None` only past `u32::MAX`.
+    /// Bounds: `a, b < 2^5` for exactness (Euclid's symbolic divisions);
+    /// the overflow branch is covered by `lcm_u32_no_wrap_large_a`.
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn lcm_u32_is_least_small() {
+        let a: u32 = kani::any_where(|a: &u32| *a >= 1 && *a < 32);
+        let b: u32 = kani::any_where(|b: &u32| *b >= 1 && *b < 32);
+        let l = lcm_u32(a, b).unwrap();
+        assert!(l % a == 0 && l % b == 0);
+        let c: u32 = kani::any_where(|c: &u32| *c >= 1 && *c < l);
+        assert!(c % a != 0 || c % b != 0);
+    }
+
+    /// Every `a`, every `b < 2^4` (the torsion orders `find_order` returns
+    /// are small; `b` bounds Euclid's length): no panic, and a `Some` is a
+    /// true common multiple, never a wrapped product.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn lcm_u32_no_wrap_large_a() {
+        let a: u32 = kani::any();
+        let b: u32 = kani::any_where(|b: &u32| *b < 16);
+        if let Some(l) = lcm_u32(a, b) {
+            if a != 0 && b != 0 {
+                assert!(l >= a && l % b == 0);
+            }
+        }
     }
 }

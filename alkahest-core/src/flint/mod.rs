@@ -66,3 +66,107 @@ pub(crate) mod rational;
 
 pub use integer::FlintInteger;
 pub use poly::FlintPoly;
+
+/// The factor containers' `*_at(i)` accessors are safe fns over raw FLINT
+/// arrays. Their bounds check used to be a `debug_assert!`, so an index past
+/// `len()` was an out-of-bounds read in a release build (UB) and a panic only
+/// in debug. These pin the panic in both (`cargo test --release` included).
+#[cfg(test)]
+mod factor_index_tests {
+    use super::integer::{FlintIntFactor, FlintInteger};
+    use super::mpoly::{FlintMPoly, FlintMPolyCtx, FlintMPolyFactor};
+    use super::nmod::{FlintNmodPoly, FlintNmodPolyFactor};
+    use super::poly::{FlintPoly, FlintPolyFactor};
+
+    fn int_factor_of_12() -> FlintIntFactor {
+        let mut f = FlintIntFactor::new();
+        f.factor(&FlintInteger::from_i64(12));
+        assert_eq!(f.len(), 2);
+        f
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn int_factor_base_at_past_len() {
+        let f = int_factor_of_12();
+        let _ = f.base_at(2);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn int_factor_exp_at_past_len() {
+        let f = int_factor_of_12();
+        let _ = f.exp_at(2);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn int_factor_exp_at_on_empty() {
+        let _ = FlintIntFactor::new().exp_at(0);
+    }
+
+    fn poly_factor_of_x2_minus_1() -> FlintPolyFactor {
+        let mut f = FlintPolyFactor::new();
+        f.factor(&FlintPoly::from_coefficients(&[-1, 0, 1]));
+        assert_eq!(f.len(), 2);
+        f
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn poly_factor_poly_at_past_len() {
+        let _ = poly_factor_of_x2_minus_1().poly_at(2);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn poly_factor_exp_at_past_len() {
+        let _ = poly_factor_of_x2_minus_1().exp_at(2);
+    }
+
+    fn nmod_factor_of_x2_minus_1() -> FlintNmodPolyFactor {
+        let mut p = FlintNmodPoly::new(7);
+        p.set_coeff(0, 6);
+        p.set_coeff(2, 1);
+        let mut f = FlintNmodPolyFactor::new();
+        f.factor(&p);
+        assert_eq!(f.len(), 2);
+        f
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn nmod_factor_exp_at_past_len() {
+        let _ = nmod_factor_of_x2_minus_1().exp_at(2);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn nmod_factor_poly_at_past_len() {
+        let _ = nmod_factor_of_x2_minus_1().poly_at(7, 2);
+    }
+
+    fn mpoly_factor_of_x2_minus_y2() -> FlintMPolyFactor {
+        let ctx = FlintMPolyCtx::new(2);
+        let mut p = FlintMPoly::new(ctx.clone());
+        p.push_term(&rug::Integer::from(1), &[2, 0]);
+        p.push_term(&rug::Integer::from(-1), &[0, 2]);
+        p.finish();
+        let mut f = FlintMPolyFactor::new(ctx);
+        assert!(f.factor(&p));
+        assert_eq!(f.len(), 2);
+        f
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn mpoly_factor_base_at_past_len() {
+        let _ = mpoly_factor_of_x2_minus_y2().base_at(2);
+    }
+
+    #[test]
+    #[should_panic(expected = "out of range")]
+    fn mpoly_factor_exp_at_past_len() {
+        let _ = mpoly_factor_of_x2_minus_y2().exp_at(2);
+    }
+}
