@@ -1,0 +1,523 @@
+name: Release wheels
+
+# Reusable workflow: builds and smoke-tests the release wheels. Publishes
+# nothing and needs nothing but a read-only token. Every job declares
+# `contents: read`.
+#
+# Callers:
+#   * release-build.yml. After a merge, on a tag, or on dispatch it calls this
+#     workflow twice: once for the default wheels, once with
+#     `optional_variants: true` for the +jit / +full ones. The upload jobs
+#     stay in release-build.yml itself, because PyPI's trusted publisher is
+#     bound to that workflow filename and the `release` environment.
+#   * release-wheel-smoke.yml. On an open PR it calls with `pr_smoke: true`,
+#     which builds one manylinux py3.12 wheel and one Windows py3.12 wheel
+#     exactly as a release does, and smoke-tests them. release-build.yml's
+#     `pull_request` trigger fires only after a merge, so without this a
+#     wheel-only break (#395's PyIndex_Check, fixed in #419) stayed
+#     invisible to PR CI for 13 merges.
+
+on:
+  workflow_call:
+    inputs:
+      pr_smoke:
+        description: Build and smoke-test a reduced matrix (Linux + Windows, py3.12) only.
+        type: boolean
+        default: false
+      optional_variants:
+        description: Build the +jit / +full Linux wheels instead of the default ones.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  # On merged PRs, build the merge commit on main (not the PR head). A
+  # pr_smoke call builds the PR's test merge commit (github.sha), which is what
+  # the post-merge build would see if the PR merged now. (`github` here is the
+  # caller's context.)
+  RELEASE_REF: ${{ inputs.pr_smoke && github.sha || github.event.pull_request.merge_commit_sha || github.sha }}
+
+jobs:
+  # Linux: one job builds all Python versions at once. maturin-action runs
+  # inside a manylinux_2_28 Docker container that ships Python 3.9–3.13; the
+  # matrix python on the host runner is NOT visible inside Docker, so a
+  # per-version matrix all produces the same wheel. We pass each interpreter
+  # explicitly because --find-interpreter also matches PyPy and Python 3.14,
+  # which PyO3 0.21 cannot target.
+  build-linux:
+    name: wheels / ubuntu-22.04
+    runs-on: ubuntu-22.04
+    if: ${{ !inputs.optional_variants }}
+    permissions:
+      contents: read
+    env:
+      # PyO3 0.21 supports up to 3.12; this allows 3.13 via the stable ABI.
+      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_REF }}
+
+      # The smoke steps below install the wheel into *this* interpreter, so a
+      # pr_smoke build (python3.12 only) needs a 3.12 host.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.pr_smoke && '3.12' || '3.11' }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build wheels (manylinux, all Python versions)
+        uses: PyO3/maturin-action@v1
+        env:
+          # maturin-action passes runner env vars into the Docker container.
+          # Covers both the dnf-installed path (/usr/lib64) and the source-built
+          # path (/usr/local/lib) so rust-lld can always resolve -lflint.
+          RUSTFLAGS: "-L/usr/local/lib -L/usr/lib -L/usr/lib64"
+          PKG_CONFIG_PATH: "/usr/local/lib/pkgconfig:/usr/lib64/pkgconfig"
+          # gmp-mpfr-sys (the `system-gmp` feature every wheel is built with) probes GMP/MPFR
+          # with a bare `gcc probe.c -lgmp`; gcc searches /usr/local/include
+          # by default but not /usr/local/lib. Also exported in the
+          # before-script, in case the container does not inherit it.
+          LIBRARY_PATH: "/usr/local/lib"
+        with:
+          command: build
+          # Explicit CPython list — --find-interpreter also picks up PyPy and
+          # Python 3.14, which PyO3 0.21 cannot target.
+          args: --release --strip --out dist --features egraph,groebner,cranelift,parallel,system-gmp --interpreter ${{ inputs.pr_smoke && 'python3.12' || 'python3.9 python3.10 python3.11 python3.12 python3.13' }}
+          manylinux: "2_28"
+          before-script-linux: |
+            # FLINT is built from a pinned source release rather than taken from
+            # dnf. The distro package is whatever the manylinux base happens to
+            # carry, and the previous fallback pinned 2.9.0 — both predate or
+            # undershoot what this crate needs. FLINT absorbed Arb in 3.0 and
+            # rewrote the acb_theta API in 3.2, and `alkahest-core/build.rs`
+            # probes for those symbols and silently stubs the `theta` module
+            # when they are missing. A wheel built against an older FLINT would
+            # therefore ship with theta quietly absent rather than failing to
+            # build, so the version is pinned here and not negotiated.
+            #
+            # GMP and MPFR are source-built for the same reason, and *before*
+            # FLINT so FLINT links them: the `system-gmp` feature (passed below) makes
+            # rug use the system libgmp/libmpfr (one GMP shared with FLINT),
+            # and gmp-mpfr-sys requires GMP >= 6.3 / MPFR >= 4.2, while
+            # AlmaLinux 8's gmp-devel / mpfr-devel are 6.1 / 3.1. The dnf
+            # -devel packages are deliberately NOT installed, so no older
+            # gmp.h or libgmp.so can shadow these. (The 6.1 *runtime* stays —
+            # the compiler itself needs it — hence the ld.so.conf entry below,
+            # which puts /usr/local/lib ahead of it for the loader and for
+            # maturin's auditwheel pass.)
+            set -euo pipefail
+            dnf install -y make gcc m4 xz
+            export LIBRARY_PATH=/usr/local/lib
+            # No bare `cd`: the maturin command runs after this script in the
+            # same shell, from the checkout.
+            curl -fsSL -o /tmp/gmp-6.3.0.tar.xz https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz
+            curl -fsSL -o /tmp/mpfr-4.2.2.tar.xz https://ftp.gnu.org/gnu/mpfr/mpfr-4.2.2.tar.xz
+            printf '%s  %s\n' \
+              a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898 /tmp/gmp-6.3.0.tar.xz \
+              b67ba0383ef7e8a8563734e2e889ef5ec3c3b898a01d00fa0a6869ad81c6ce01 /tmp/mpfr-4.2.2.tar.xz \
+              | sha256sum -c -
+            tar xf /tmp/gmp-6.3.0.tar.xz -C /tmp && tar xf /tmp/mpfr-4.2.2.tar.xz -C /tmp
+            # --enable-fat: without it GMP's configure tunes its assembly to the
+            # build runner's CPU, and the wheel ships that libgmp (auditwheel
+            # bundles it) to every user; on an older CPU that is SIGILL on the
+            # first bignum multiply. A fat build carries every x86_64 kernel and
+            # picks one at load time via CPUID.
+            ( cd /tmp/gmp-6.3.0 && ./configure --prefix=/usr/local --enable-shared --disable-static --enable-fat && make -j"$(nproc)" && make install )
+            ( cd /tmp/mpfr-4.2.2 && ./configure --prefix=/usr/local --with-gmp=/usr/local --enable-shared --disable-static && make -j"$(nproc)" && make install )
+            echo /usr/local/lib > /etc/ld.so.conf.d/00-usr-local.conf
+            ldconfig
+            export LD_LIBRARY_PATH=/usr/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+            # FLINT >= 3.3 is the floor build.rs enforces (>= 3.4 for theta);
+            # keep this pin in step with the default in .github/actions/setup-flint.
+            curl -fsSL -o /tmp/flint-3.6.0.tar.gz \
+              https://github.com/flintlib/flint/releases/download/v3.6.0/flint-3.6.0.tar.gz
+            echo 'b95e2c7792f5eea4a1c8d2d42c4098434756832e57a094b295eb5dfdc9b4c36b  /tmp/flint-3.6.0.tar.gz' \
+              | sha256sum -c -
+            tar xzf /tmp/flint-3.6.0.tar.gz -C /tmp
+            ( cd /tmp/flint-3.6.0 && ./configure --prefix=/usr/local --with-gmp=/usr/local --with-mpfr=/usr/local --disable-static && make -j"$(nproc)" && make install )
+            ldconfig
+            # One GMP: FLINT must resolve the libgmp just built, not the 6.1 runtime.
+            ldd /usr/local/lib/libflint.so | grep -E 'libgmp|libmpfr'
+            # Never `producer | grep -q` under pipefail: grep -q exits at the
+            # first match, the producer dies of SIGPIPE, and the pipeline
+            # "fails" precisely when the pattern is found. Capture, then grep.
+            ldd /usr/local/lib/libflint.so > /tmp/libflint.ldd
+            grep -q '/usr/local/lib/libgmp.so' /tmp/libflint.ldd \
+              || { echo 'libflint does not resolve /usr/local/lib/libgmp.so'; exit 1; }
+            # Fail the wheel build loudly if theta would be stubbed.
+            nm -D --defined-only /usr/local/lib/libflint.so > /tmp/libflint.syms
+            grep -q ' T acb_theta_ql_exact$' /tmp/libflint.syms \
+              || { echo 'FLINT lacks acb_theta_ql_exact; theta would ship stubbed'; exit 1; }
+
+      - name: Smoke test
+        run: |
+          pip install --no-index --find-links dist alkahest
+          # Heredoc (not python -c) so bash does not strip Python "..." quotes.
+          python - <<'PY'
+          import alkahest as ak
+          p = ak.ExprPool()
+          # A bignum through the number-conversion path: #395's
+          # PyIndex_Check bound to a PyPy-only symbol and broke exactly this.
+          assert str(p.integer(10**30)) == str(10**30)
+          x = p.symbol('x')
+          print(ak.simplify(x + 0).value)
+          print(ak.simplify_egraph(x + 0).value)
+          assert hasattr(ak, 'solve'), 'expected groebner APIs in default wheel'
+          # `system-gmp` is opt-in for source builds but every wheel ships it.
+          assert ak.alkahest.GMP_SHARED_WITH_FLINT, 'wheel built without system-gmp'
+          f = ak.capabilities()["features"]
+          # `numpy` and `groebner_cuda` are deliberately absent (contract v3):
+          # neither named anything a Python caller could reach.
+          assert f == {
+              "egraph": True, "groebner": True, "jit": False,
+              "cranelift": True, "llvm_jit": False, "cranelift_jit": True,
+              "parallel": True, "cuda": False,
+              # Not Cargo features: build.rs probes libflint. The
+              # before-script refuses a FLINT without acb_theta, so both hold.
+              "arb_backend": True, "riemann_theta": True,
+          }
+          assert ak.jit_is_available(), "expected Cranelift JIT in default wheel"
+          print('default wheel ok (groebner + cranelift + parallel)')
+          PY
+
+      # Real user-perspective check: the capability-flag smoke test above already
+      # calls several other alkahest APIs before this point, so on its own it
+      # cannot catch a bug that only reproduces when parse() is the FIRST thing
+      # a fresh interpreter asks the installed wheel to do (see B1 -- masked in
+      # the old test suite because an earlier test happened to import
+      # alkahest.experimental first). It also never executed the README, so
+      # stale/wrong quickstart output (see B6) went unnoticed.
+      # tests/smoke_readme.py runs in its own fresh `python` process against
+      # the wheel just installed above (no maturin develop / editable install
+      # involved) to close both gaps.
+      - name: README quickstart + fresh-interpreter parse smoke
+        run: python tests/smoke_readme.py
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-ubuntu-22.04
+          path: dist/*.whl
+
+  # LLVM JIT: separate wheels with PEP 440 local version X.Y.Z+jit (PyTorch-style).
+  # Not uploaded to main PyPI — avoids pip preferring +jit over the default release.
+  #
+  # Built natively on ubuntu-24.04 (not manylinux Docker) because llvm-21-dev is
+  # available via apt there, whereas the AlmaLinux 8 manylinux_2_28 image has no
+  # pre-packaged LLVM 21 and building from source takes 30+ min on a 2-core runner.
+  # 24.04 (not 22.04) because jammy's universe stops at llvm-15-dev; noble carries
+  # llvm-21-dev. This raises these wheels' glibc floor from 2.35 to 2.39 — acceptable
+  # only because they are linux_x86_64-tagged, GitHub-Release-only, never on PyPI.
+  # JIT wheels are only attached to GitHub Releases (never PyPI), so the linux_x86_64
+  # tag (vs manylinux) is acceptable for this advanced use-case wheel.
+  build-linux-jit:
+    name: wheels (JIT) / ubuntu-24.04 / py${{ matrix.python }}
+    runs-on: ubuntu-24.04
+    if: inputs.optional_variants
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    env:
+      # No LLVM_SYS_211_PREFIX here on purpose: `setup-llvm` writes the real
+      # prefix (/usr/lib/llvm-21) to $GITHUB_ENV, and a workflow-file `env:`
+      # would override it. The old `/usr` was only ever correct because
+      # llvm-15-dev came from jammy's universe, which populates /usr/bin via
+      # alternatives; the apt.llvm.org debs put llvm-config solely at
+      # /usr/lib/llvm-21/bin and ship nothing directly in /usr/bin.
+      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_REF }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up FLINT
+        uses: ./.github/actions/setup-flint
+
+      - name: Set up LLVM 21 (for the jit feature)
+        uses: ./.github/actions/setup-llvm
+
+      - name: Use JIT local version in pyproject.toml
+        run: |
+          python - <<'PY'
+          import pathlib, re
+          p = pathlib.Path("pyproject.toml")
+          text = p.read_text()
+          m = re.search(r'^version = "([^"]+)"', text, re.M)
+          if not m:
+              raise SystemExit("no project.version in pyproject.toml")
+          base = m.group(1)
+          text = re.sub(
+              r'^version = "[^"]+"',
+              f'version = "{base}+jit"',
+              text,
+              count=1,
+              flags=re.M,
+          )
+          p.write_text(text)
+          print(f"wheel metadata version -> {base}+jit")
+          PY
+
+      - name: Install maturin
+        run: pip install maturin
+
+      # `parallel` is included so this wheel is never a *downgrade* from the
+      # default PyPI wheel, which now ships it. Before, installing +jit to gain
+      # the LLVM backend silently cost you threads — and `*_par` would have gone
+      # on working, just sequentially, with no warning. The only remaining delta
+      # against the default wheel is llvm_jit instead of cranelift_jit.
+      - name: Build JIT wheel
+        run: maturin build --release --strip --features "jit egraph parallel system-gmp" --out dist
+
+      # Maturin/auditwheel vendors deps under site-packages/alkahest.libs/. Transitive
+      # loads (e.g. libLLVM → libffi with hashed soname) need that dir on LD_LIBRARY_PATH
+      # on some glibc setups until every .so in the wheel has a consistent $ORIGIN RPATH.
+      - name: Smoke test (JIT available)
+        run: |
+          pip install --no-index --find-links dist alkahest
+          SITE_LIBS="$(python -c "import os, site; roots=site.getsitepackages(); hits=[os.path.join(r, 'alkahest.libs') for r in roots if os.path.isdir(os.path.join(r, 'alkahest.libs'))]; print(os.pathsep.join(hits))")"
+          if [ -n "$SITE_LIBS" ]; then
+            export LD_LIBRARY_PATH="${SITE_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          fi
+          python -c "import alkahest as ak; caps = ak.capabilities(); f = caps['features']; assert f['llvm_jit'] and not f['cranelift_jit'], 'expected LLVM-only JIT in +jit wheel'; assert f['parallel'], '+jit must not drop parallel relative to the default wheel'; assert ak.alkahest.GMP_SHARED_WITH_FLINT, 'wheel built without system-gmp'"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-ubuntu-24.04-jit-py${{ matrix.python }}
+          path: dist/*.whl
+
+  # Full optional stack (JIT + groebner + parallel + egraph): PEP 440 local version X.Y.Z+full.
+  # Same non-PyPI / GitHub Release policy as +jit (see build-linux-jit). Linux x86_64 only in CI.
+  #
+  # Moving `parallel` into the default wheel briefly made this variant's feature
+  # set identical to +jit's — two names for one build. Resolved by giving +full
+  # `cranelift` as well, so it is the only wheel carrying *both* JIT backends and
+  # a strict superset of every other wheel, which is what its name promises.
+  build-linux-full:
+    # ubuntu-24.04 for the same reason as build-linux-jit: this variant carries the
+    # LLVM JIT backend, and llvm-21-dev is not in jammy's universe.
+    name: wheels (+full) / ubuntu-24.04 / py${{ matrix.python }}
+    runs-on: ubuntu-24.04
+    if: inputs.optional_variants
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    env:
+      # No LLVM_SYS_211_PREFIX here on purpose: `setup-llvm` writes the real
+      # prefix (/usr/lib/llvm-21) to $GITHUB_ENV, and a workflow-file `env:`
+      # would override it. The old `/usr` was only ever correct because
+      # llvm-15-dev came from jammy's universe, which populates /usr/bin via
+      # alternatives; the apt.llvm.org debs put llvm-config solely at
+      # /usr/lib/llvm-21/bin and ship nothing directly in /usr/bin.
+      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_REF }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up FLINT
+        uses: ./.github/actions/setup-flint
+
+      - name: Set up LLVM 21 (for the jit feature)
+        uses: ./.github/actions/setup-llvm
+
+      - name: Use +full local version in pyproject.toml
+        run: |
+          python - <<'PY'
+          import pathlib, re
+          p = pathlib.Path("pyproject.toml")
+          text = p.read_text()
+          m = re.search(r'^version = "([^"]+)"', text, re.M)
+          if not m:
+              raise SystemExit("no project.version in pyproject.toml")
+          base = m.group(1)
+          text = re.sub(
+              r'^version = "[^"]+"',
+              f'version = "{base}+full"',
+              text,
+              count=1,
+              flags=re.M,
+          )
+          p.write_text(text)
+          print(f"wheel metadata version -> {base}+full")
+          PY
+
+      - name: Install maturin
+        run: pip install maturin
+
+      # `+full` earns its name by being a strict superset of every other wheel:
+      # the only build carrying *both* JIT backends. Until `parallel` moved into
+      # the default wheel, `parallel` was this variant's entire distinction from
+      # `+jit`; afterwards the two resolved to an identical feature set
+      # (`groebner` and `egraph` are defaults in alkahest-py, so naming them
+      # here adds nothing), and the release would have shipped two byte-identical
+      # wheels under different names. `cranelift` is what makes it distinct again.
+      - name: Build +full wheel
+        run: >-
+          maturin build --release --strip
+          --features "jit cranelift groebner parallel egraph system-gmp"
+          --out dist
+
+      - name: Smoke test (+full)
+        run: |
+          pip install --no-index --find-links dist alkahest
+          SITE_LIBS="$(python -c "import os, site; roots=site.getsitepackages(); hits=[os.path.join(r, 'alkahest.libs') for r in roots if os.path.isdir(os.path.join(r, 'alkahest.libs'))]; print(os.pathsep.join(hits))")"
+          if [ -n "$SITE_LIBS" ]; then
+            export LD_LIBRARY_PATH="${SITE_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          fi
+          python -c "import alkahest as ak; caps = ak.capabilities(); f = caps['features']; assert f['llvm_jit'] and f['cranelift_jit'], 'expected BOTH JIT backends in +full wheel'; assert f['parallel'] and f['egraph']; assert hasattr(ak, 'solve'), 'expected groebner APIs in +full wheel'; assert ak.alkahest.GMP_SHARED_WITH_FLINT, 'wheel built without system-gmp'"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-ubuntu-24.04-full-py${{ matrix.python }}
+          path: dist/*.whl
+
+  build-wheels:
+    name: wheel ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    if: ${{ !inputs.optional_variants }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-14 = arm64 (Apple Silicon). Intel (x86_64) wheels are no longer
+        # produced: macos-13 Intel runners were deprecated by GitHub, and the
+        # macos-15 arm64 runner does not ship x86_64 Homebrew, making
+        # cross-compilation of libflint impractical. Intel Mac users can install
+        # from the sdist or run the arm64 wheel under Rosetta on ARM hardware.
+        # A pr_smoke call builds Windows/py3.12 only: its link step is where a
+        # missing symbol fails loudest (Linux defers it to import time).
+        os: ${{ fromJSON(inputs.pr_smoke && '["windows-2022"]' || '["macos-14", "windows-2022"]') }}
+        python: ${{ fromJSON(inputs.pr_smoke && '["3.12"]' || '["3.9", "3.10", "3.11", "3.12", "3.13"]') }}
+    env:
+      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_REF }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system deps (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install flint
+          # `system-gmp` (passed to maturin below): rug links Homebrew's gmp/mpfr, the ones
+          # flint uses. gmp-mpfr-sys probes with a bare `cc … -lgmp` and Apple
+          # clang does not search /opt/homebrew — see ci-cross.yml.
+          gmp=$(brew --prefix gmp); mpfr=$(brew --prefix mpfr)
+          echo "CPATH=$gmp/include:$mpfr/include${CPATH:+:$CPATH}" >> "$GITHUB_ENV"
+          echo "LIBRARY_PATH=$gmp/lib:$mpfr/lib${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
+
+      - name: Set up MSYS2 (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          # path-type: inherit lets the MSYS2 shell see Windows PATH so cargo,
+          # rustup, and Python (installed by setup-python) are reachable.
+          path-type: inherit
+          # pkg-config is required: with the `system-gmp` feature (passed below),
+          # gmp-mpfr-sys finds MSYS2's libgmp via `pkg-config gmp` and links
+          # it (the same one FLINT uses) instead of compiling its own.
+          # base-devel (m4, autoconf, make, …) is only needed if a build falls
+          # back to the bundled GMP/MPFR (a build without system-gmp); kept so that
+          # fallback still works here.
+          install: >-
+            base-devel
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-flint
+            mingw-w64-x86_64-pkg-config
+
+      - name: Add GNU Rust target (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: rustup target add x86_64-pc-windows-gnu
+
+      - name: Install maturin
+        run: pip install maturin
+
+      # Feature set must stay identical to build-linux's: this is the same
+      # default PyPI wheel, and `parallel` in particular has to be on every
+      # platform or `capabilities()["features"]["parallel"]` means something
+      # different depending on where the user installed from. rayon + dashmap
+      # are pure Rust with no system dependency, and ci-cross.yml already builds
+      # `parallel` on both macos-14 and windows-2022 (MinGW), so this adds no
+      # new toolchain requirement to either runner.
+      - name: Build wheel (macOS)
+        if: runner.os == 'macOS'
+        run: maturin build --release --strip --features "egraph groebner cranelift parallel system-gmp" --out dist
+
+      - name: Build wheel (Windows)
+        if: runner.os == 'Windows'
+        # msys2 {0} runs inside the MINGW64 shell where gcc, sh, pkg-config and
+        # /mingw64/bin's DLLs (gmp-mpfr-sys runs its system-GMP probe binary)
+        # are all on PATH. The
+        # previous Git-bash approach only set PATH in the outer shell, so the
+        # build script's `sh -c "configure ..."` couldn't find the compiler.
+        shell: msys2 {0}
+        run: |
+          maturin build --release --strip --features "egraph groebner cranelift parallel system-gmp" --target x86_64-pc-windows-gnu --out dist
+
+      - name: Repair wheel with delvewheel (Windows)
+        if: runner.os == 'Windows'
+        # The mingw-built wheel dynamically links libflint, libgmp, libmpfr,
+        # libgcc_s_seh, libwinpthread from MSYS2. delvewheel is the Windows
+        # equivalent of auditwheel — it copies those DLLs into the wheel's
+        # *.libs/ directory and rewrites the .pyd's import table so end users
+        # don't need MSYS2 installed.
+        shell: msys2 {0}
+        run: |
+          python -m pip install delvewheel
+          MSYS2_BIN=$(cygpath -w /mingw64/bin)
+          mkdir -p dist-repaired
+          for whl in dist/*.whl; do
+            python -m delvewheel repair --add-path "$MSYS2_BIN" -w dist-repaired "$whl"
+          done
+          rm dist/*.whl
+          mv dist-repaired/*.whl dist/
+
+      - name: Smoke test
+        run: |
+          pip install --no-index --find-links dist alkahest
+          python -c "import alkahest; p = alkahest.ExprPool(); assert str(p.integer(10**30)) == str(10**30); x = p.symbol('x'); print(alkahest.simplify(x + 0)); caps = alkahest.capabilities(); f = caps['features']; assert f['egraph'] and f['groebner'] and f['cranelift_jit'] and f['parallel']; assert not f['llvm_jit']; assert caps['jit'] and alkahest.jit_is_available(); assert alkahest.alkahest.GMP_SHARED_WITH_FLINT, 'wheel built without system-gmp'"
+
+      # See build-linux's identical step: catches the class of bug (B1, B6)
+      # that only reproduces against a real wheel install in a fresh
+      # interpreter, not an editable/dev environment or a warmed-up process.
+      # PYTHONIOENCODING: Windows runners default to cp1252; Lean certs print ∫.
+      - name: README quickstart + fresh-interpreter parse smoke
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: "1"
+        run: python tests/smoke_readme.py
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-${{ matrix.os }}-py${{ matrix.python }}
+          path: dist/*.whl
