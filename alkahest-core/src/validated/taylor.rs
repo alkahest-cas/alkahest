@@ -215,9 +215,20 @@ impl TaylorModel {
 
     fn insert(&mut self, idx: MultiIndex, c: ArbBall) {
         match self.coeffs.get_mut(&idx) {
-            Some(existing) => *existing = existing.clone() + c,
+            Some(existing) => *existing = existing.add_ref(&c),
             None => {
                 self.coeffs.insert(idx, c);
+            }
+        }
+    }
+
+    /// [`Self::insert`] from borrowed parts: the index and ball are cloned
+    /// only when the monomial is new.
+    fn insert_ref(&mut self, idx: &MultiIndex, c: &ArbBall) {
+        match self.coeffs.get_mut(idx) {
+            Some(existing) => *existing = existing.add_ref(c),
+            None => {
+                self.coeffs.insert(idx.clone(), c.clone());
             }
         }
     }
@@ -234,11 +245,11 @@ impl TaylorModel {
         let mut acc = zero.clone();
         for (idx, c) in &self.coeffs {
             if idx.iter().all(|&e| e == 0) {
-                acc = acc + c.clone();
+                acc = acc.add_ref(c);
             } else if idx.iter().all(|&e| e % 2 == 0) {
-                acc = acc + hull(&zero, c);
+                acc = acc.add_ref(&hull(&zero, c));
             } else {
-                acc = acc + symmetric(&mag(c), self.prec);
+                acc = acc.add_ref(&symmetric(&mag(c), self.prec));
             }
         }
         acc
@@ -246,7 +257,7 @@ impl TaylorModel {
 
     /// Rigorous enclosure of `f` over the whole box: `P([-1,1]ⁿ) + I`.
     pub fn range(&self) -> ArbBall {
-        self.poly_bound() + self.remainder.clone()
+        self.poly_bound().add_ref(&self.remainder)
     }
 
     fn check_finite(&self, what: &str) -> Result<()> {
@@ -276,9 +287,9 @@ impl TaylorModel {
     pub fn add(&self, other: &Self) -> Self {
         let mut out = self.clone();
         for (idx, c) in &other.coeffs {
-            out.insert(idx.clone(), c.clone());
+            out.insert_ref(idx, c);
         }
-        out.remainder = out.remainder + other.remainder.clone();
+        out.remainder = out.remainder.add_ref(&other.remainder);
         out
     }
 
@@ -293,9 +304,9 @@ impl TaylorModel {
         out.coeffs = self
             .coeffs
             .iter()
-            .map(|(i, c)| (i.clone(), c.clone() * k.clone()))
+            .map(|(i, c)| (i.clone(), c.mul_ref(k)))
             .collect();
-        out.remainder = self.remainder.clone() * k.clone();
+        out.remainder = self.remainder.mul_ref(k);
         out
     }
 
@@ -315,25 +326,30 @@ impl TaylorModel {
         let zero = ArbBall::from_f64(0.0, prec);
         let mut out = TaylorModel::zero(self.nvars, order, prec);
         let mut truncated = zero.clone();
+        // One scratch exponent vector for every product's index.
+        let mut idx: MultiIndex = vec![0; self.nvars];
 
         for (a_idx, a) in &self.coeffs {
             for (b_idx, b) in &other.coeffs {
-                let deg: u32 = a_idx.iter().zip(b_idx).map(|(x, y)| x + y).sum();
-                let prod = a.clone() * b.clone();
+                idx.clear();
+                idx.extend(a_idx.iter().zip(b_idx).map(|(x, y)| x + y));
+                let deg: u32 = idx.iter().sum();
+                let prod = a.mul_ref(b);
                 if deg as usize <= order {
-                    let idx: MultiIndex = a_idx.iter().zip(b_idx).map(|(x, y)| x + y).collect();
-                    out.insert(idx, prod);
+                    match out.coeffs.get_mut(&idx) {
+                        Some(existing) => *existing = existing.add_ref(&prod),
+                        None => {
+                            out.coeffs.insert(idx.clone(), prod);
+                        }
+                    }
                 } else {
                     // The dropped monomial lies in [-1,1] (or [0,1] when all
                     // exponents are even); bound it and keep it.
-                    let all_even = a_idx
-                        .iter()
-                        .zip(b_idx)
-                        .all(|(x, y)| (x + y) % 2 == 0 && (x + y) > 0);
+                    let all_even = idx.iter().all(|&e| e % 2 == 0 && e > 0);
                     if all_even {
-                        truncated = truncated + hull(&zero, &prod);
+                        truncated = truncated.add_ref(&hull(&zero, &prod));
                     } else {
-                        truncated = truncated + symmetric(&mag(&prod), prec);
+                        truncated = truncated.add_ref(&symmetric(&mag(&prod), prec));
                     }
                 }
             }
@@ -343,9 +359,9 @@ impl TaylorModel {
         let pb_a = self.poly_bound();
         let pb_b = other.poly_bound();
         out.remainder = truncated
-            + pb_a * other.remainder.clone()
-            + pb_b * self.remainder.clone()
-            + self.remainder.clone() * other.remainder.clone();
+            .add_ref(&pb_a.mul_ref(&other.remainder))
+            .add_ref(&pb_b.mul_ref(&self.remainder))
+            .add_ref(&self.remainder.mul_ref(&other.remainder));
         out
     }
 
@@ -2962,6 +2978,91 @@ mod tests {
 
     fn f(v: f64) -> Float {
         Float::with_val(P, v)
+    }
+
+    /// `TaylorModel::mul` as written before it stopped cloning its operands.
+    fn reference_mul(s: &TaylorModel, other: &TaylorModel) -> TaylorModel {
+        let prec = s.prec.max(other.prec);
+        let order = s.order.min(other.order);
+        let zero = ArbBall::from_f64(0.0, prec);
+        let mut out = TaylorModel::zero(s.nvars, order, prec);
+        let mut truncated = zero.clone();
+        for (a_idx, a) in &s.coeffs {
+            for (b_idx, b) in &other.coeffs {
+                let deg: u32 = a_idx.iter().zip(b_idx).map(|(x, y)| x + y).sum();
+                let prod = a.clone() * b.clone();
+                if deg as usize <= order {
+                    let idx: MultiIndex = a_idx.iter().zip(b_idx).map(|(x, y)| x + y).collect();
+                    match out.coeffs.get_mut(&idx) {
+                        Some(existing) => *existing = existing.clone() + prod,
+                        None => {
+                            out.coeffs.insert(idx, prod);
+                        }
+                    }
+                } else {
+                    let all_even = a_idx
+                        .iter()
+                        .zip(b_idx)
+                        .all(|(x, y)| (x + y) % 2 == 0 && (x + y) > 0);
+                    if all_even {
+                        truncated = truncated + hull(&zero, &prod);
+                    } else {
+                        truncated = truncated + symmetric(&mag(&prod), prec);
+                    }
+                }
+            }
+        }
+        let pb_a = s.poly_bound();
+        let pb_b = other.poly_bound();
+        out.remainder = truncated
+            + pb_a * other.remainder.clone()
+            + pb_b * s.remainder.clone()
+            + s.remainder.clone() * other.remainder.clone();
+        out
+    }
+
+    fn same_model(a: &TaylorModel, b: &TaylorModel) -> bool {
+        let same = |x: &ArbBall, y: &ArbBall| x.mid == y.mid && x.rad == y.rad && x.prec == y.prec;
+        a.order == b.order
+            && a.coeffs.len() == b.coeffs.len()
+            && a.coeffs
+                .iter()
+                .zip(&b.coeffs)
+                .all(|((i, x), (j, y))| i == j && same(x, y))
+            && same(&a.remainder, &b.remainder)
+    }
+
+    /// The borrow-only `mul` builds exactly the model the cloning version
+    /// did, on bivariate models with truncation, all-even and odd dropped
+    /// monomials, and non-zero remainders.
+    #[test]
+    fn mul_matches_the_cloning_reference() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let exprs = [
+            pool.add(vec![x, pool.mul(vec![pool.integer(3_i32), y])]),
+            pool.func("exp", vec![pool.mul(vec![x, y])]),
+            pool.func(
+                "sin",
+                vec![pool.add(vec![x, pool.pow(y, pool.integer(2_i32))])],
+            ),
+            pool.pow(pool.add(vec![x, pool.integer(4_i32)]), pool.integer(-1_i32)),
+            pool.func(
+                "sqrt",
+                vec![pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(2_i32)])],
+            ),
+        ];
+        for order in [1usize, 2, 4, 7] {
+            let boxes = [(x, f(0.25), f(0.75)), (y, f(-0.5), f(0.125))];
+            let mut ctx = TaylorContext::new(&pool, &boxes, order, P).unwrap();
+            let models: Vec<TaylorModel> = exprs.iter().map(|&e| ctx.eval(e).unwrap()).collect();
+            for a in &models {
+                for b in &models {
+                    assert!(same_model(&a.mul(b), &reference_mul(a, b)), "order {order}");
+                }
+            }
+        }
     }
 
     fn range_of(expr: ExprId, pool: &ExprPool, b: &[(ExprId, f64, f64)], order: usize) -> ArbBall {

@@ -190,6 +190,16 @@
   adjugate. Measured on one machine (release wheel, a dense matrix of
   polynomials in `x`, `y`): 7×7 42 → 11 ms, 8×8 336 → 74 ms.
   Output is unchanged (differential tests against the unmemoised expansion).
+- **Validated Taylor-model arithmetic stops cloning its operands.**
+  `TaylorModel::mul`, `add`, `scale`, `poly_bound` and `range` cloned every
+  ball coefficient they read (two MPFR allocations each) and rebuilt each
+  product's exponent vector twice. They now borrow, using the in-place
+  `ArbBall` operations, and reuse one scratch exponent vector. The balls are
+  bit-identical, and a differential test checks this against the cloning
+  `mul`. The verification gate that dominates algebraic integration gets
+  faster: six `∫ p(x)/√q(x)` integrals ×3 went from 2.26–2.40 s to
+  1.59–1.73 s, and `bound_on_box` on four bivariate functions at orders
+  2/6/10 went from 5.49–5.88 s to 4.64–4.66 s, both with identical results.
 - **Small-input regressions from this cycle's performance work, recovered.**
   CodSpeed flagged five micro-benchmarks. The instruction counts were bisected
   across #394–#407 with a fixed toolchain, and each regression was fixed where
