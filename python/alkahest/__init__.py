@@ -1229,7 +1229,9 @@ def series(expr, var, point, order):
     point : Expr
         Expansion point.
     order : int
-        Truncation order.
+        Truncation order: every term with exponent ``< order`` is present and
+        the remainder is ``O(h**order)``, for a Laurent series (a pole at
+        *point*) as for a Taylor one.
 
     Returns
     -------
@@ -1253,7 +1255,7 @@ def series(expr, var, point, order):
     A **removable singularity** at *point* is expanded, not refused: the
     expression is put over a common denominator and the two power series are
     divided, so ``series(sin(x)/x, x, 0, 4)`` is ``1 - x**2/6 + O(x**4)`` and
-    ``series(1/sin(x), x, 0, 3)`` is ``x**-1 + x/6 + O(x)``.  Substituting the
+    ``series(1/sin(x), x, 0, 3)`` is ``x**-1 + x/6 + O(x**3)``.  Substituting the
     expansion point into repeated derivatives would give ``0/0`` for the first
     of those, which is why the direct route cannot see it.
 

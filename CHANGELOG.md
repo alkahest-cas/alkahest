@@ -311,6 +311,19 @@
   negative or oversized argument (`HolonomicError` `E-HOLO-004` / `E-HOLO-006`),
   and `EgraphConfig(-1)` (`ValueError`).
 
+- **`series` dropped terms at a pole and labelled the remainder `O(h)`.**
+  For a Laurent series it computed `order` coefficients past the pole and
+  then wrote `O(h)`, a false claim whenever the pole order was at least
+  `order`: `series(sin(x)**-4, x, 0, 4)` omitted the `11/45` constant term,
+  `(x + x**2)**-3` at order 3 omitted `-10`. The working precision is now
+  raised by the valuation shift, and `order` means what it means for
+  `puiseux_series`: every term with exponent `< order`, remainder
+  `O(h**order)`. Separately, `((x - 2)/x)**-1` expanded to a bare `O(x**4)`
+  because `simplify` folded its singular-in-form coefficients
+  (`(-2·0⁻¹)⁻¹ → 0`); such a coefficient is now kept unsimplified, recognised
+  as indeterminate, and the expression is expanded as the quotient `x/(x−2)`.
+  Checked against Mathematica `Series` over `f**-k` for eleven `f`,
+  `k = 1..6`, orders 1–5 (audit A9).
 - **`simplify` folded indeterminate forms to numbers: `oo - oo → 0`,
   `oo * 0 → 0`, `oo / oo → 1`, and for IEEE floats `NaN - NaN → 0`,
   `NaN * 0 → 0`, `inf * 0 → 0`, `inf - inf → 0`, `x*inf - x*inf → 0`.**
