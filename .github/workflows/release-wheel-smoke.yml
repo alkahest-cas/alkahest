@@ -1,17 +1,21 @@
 name: Release wheel smoke
 
-# Builds the release-style default wheel on a PR, before it merges, and
-# smoke-tests it: one manylinux py3.12 wheel and one Windows py3.12 wheel,
-# built by release-build.yml itself (same features incl. system-gmp, same
-# maturin invocation, same manylinux container and before-script, same
-# delvewheel repair), so this check cannot drift from what a release ships.
+# Builds the release-style default wheels on a PR, before it merges, and
+# smoke-tests them: one manylinux py3.12 wheel and one Windows py3.12 wheel.
+# They are built by release-wheels.yml, the same reusable workflow the
+# release uses (same features incl. system-gmp, same maturin invocation, same
+# manylinux container and before-script, same delvewheel repair), so this
+# check cannot drift from what a release ships.
 #
 # Why: release-build.yml's `pull_request` trigger fires only once a PR has
 # merged. #395 called `pyo3::ffi::PyIndex_Check`, which pyo3-ffi 0.21 binds to
-# the PyPy symbol `PyPyIndex_Check`; the dev builds PR CI makes were fine, but
+# the PyPy symbol `PyPyIndex_Check`. The dev builds PR CI makes were fine, but
 # every release wheel failed to import (Linux) or to link (Windows) for 13
-# merges until #419. Nothing in this workflow can publish: in pr_smoke mode
-# release-build.yml runs only its build + smoke jobs.
+# merges, until #419.
+#
+# Read-only throughout: release-wheels.yml contains no publish or upload jobs
+# and asks for nothing beyond `contents: read`. That makes this safe for PRs
+# from forks, whose token is read-only anyway.
 
 on:
   pull_request:
@@ -23,6 +27,7 @@ on:
       - "Cargo.*"
       - "pyproject.toml"
       - ".github/workflows/release-build.yml"
+      - ".github/workflows/release-wheels.yml"
       - ".github/workflows/release-wheel-smoke.yml"
       - ".github/actions/**"
       - "tests/smoke_readme.py"
@@ -37,15 +42,8 @@ concurrency:
 jobs:
   release-wheels:
     name: release wheels
-    uses: ./.github/workflows/release-build.yml
-    # GitHub validates a called workflow's job permissions before evaluating
-    # any `if:`, so the caller must be allowed what release-build.yml's publish
-    # jobs *declare* (id-token for trusted publishing, contents for the
-    # release upload), or the run is a startup failure. Those jobs are always
-    # skipped here (see the comment at the top of release-build.yml), and
-    # still need the protected `release` environment besides.
     permissions:
-      contents: write
-      id-token: write
+      contents: read
+    uses: ./.github/workflows/release-wheels.yml
     with:
       pr_smoke: true
