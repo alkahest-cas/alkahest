@@ -290,6 +290,12 @@
 
 ### Build and packaging
 
+- **The manylinux wheels' GMP is built with `--enable-fat`.** Since the wheels
+  started shipping a source-built GMP 6.3 (one GMP shared by rug and FLINT),
+  that GMP was configured without `--enable-fat`, which tunes its assembly to
+  the build runner's CPU; `auditwheel` then ships it to every user, and an
+  older CPU would take SIGILL on the first bignum multiply. A fat build carries
+  every x86_64 kernel and selects one at load time.
 - **CI and the manylinux wheels now build a pinned FLINT 3.5.0.** Ubuntu
   24.04's `libflint-dev` is 3.0.1, and the wheel job previously fell back to
   building **2.9.0**. FLINT absorbed Arb in 3.0 but rewrote the `acb_theta`
