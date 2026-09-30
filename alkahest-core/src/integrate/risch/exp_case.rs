@@ -4763,7 +4763,7 @@ mod verification {
     /// `7^23 ≡ d (mod 2^64)` bug).
     #[kani::proof]
     #[kani::unwind(35)]
-    fn perfect_mth_power_no_overflow_full_width() {
+    fn perfect_mth_power_no_overflow() {
         let d: i64 = kani::any();
         let m: u32 = kani::any();
         if is_perfect_mth_power(d, m) {

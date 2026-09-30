@@ -922,8 +922,9 @@
   their contracts. Loops that cannot be unrolled at full width (Euclid, trial
   division to `√n`, extended Euclid in `mod_inverse_u64`) carry
   `kani::loop_invariant`s, compiled in only with
-  `ALKAHEST_KANI_LOOP_CONTRACTS=1`; their `*_inductive` harnesses run on every
-  PR as a second Kani step. TESTING.md § 7 documents both patterns.
+  `ALKAHEST_KANI_LOOP_CONTRACTS=1`; their `*_inductive` harnesses run as a
+  second Kani step. Harnesses whose runtime has not been measured run nightly
+  only; TESTING.md § 7 says which, and documents both patterns.
 - 201 new Rust tests (46 `ffield`, 60 `group`, 95 `funcfield`) and a
   17-case `tests/silent_errors/corpus/function_fields.py`. The silent-error
   gate reports 0 silent errors across 558 cases.

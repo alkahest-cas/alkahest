@@ -1851,7 +1851,7 @@ mod verification {
     /// triangular number, i.e. the packed upper triangle has `n` more entries
     /// than the one for `n − 1`.
     #[kani::proof]
-    fn pack_len_exact_full_width() {
+    fn pack_len_exact() {
         let n: usize = kani::any_where(|n: &usize| *n < (1 << 32));
         let l = pack_len(n);
         assert_eq!(l as u128 * 2, n as u128 * (n as u128 + 1));

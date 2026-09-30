@@ -5,21 +5,24 @@
 # What each one proves, and over which input range, is in TESTING.md § 7.
 #
 # Two tiers, split by harness name:
-#   * `*_full_width` — every input the precondition allows; seconds to ~3 min each.
-#     Run on every PR and push to main.
-#   * `*_inductive` — full width too, with loops checked through their
-#     `kani::loop_invariant`s (a second run: ALKAHEST_KANI_LOOP_CONTRACTS=1,
-#     `-Z loop-contracts`). Also on every PR.
+#   * `*_full_width` — every input the precondition allows, with a measured
+#     runtime of seconds to ~3 min each. Run on every PR and push to main.
+#     `*_inductive_full_width` harnesses check loops through their
+#     `kani::loop_invariant`s and need a second build
+#     (ALKAHEST_KANI_LOOP_CONTRACTS=1, `-Z loop-contracts`); also on every PR.
 #   * everything else — functional correctness over a stated small range
 #     (a symbolic 64/128-bit divider is expensive for the SAT back end, so
-#     these take minutes). Nightly, and on demand.
+#     these take minutes), plus any harness whose runtime has not been
+#     measured yet (including unmeasured `*_inductive` ones). Nightly, and on
+#     demand. TESTING.md § 7 lists which is which.
 #
 # Its own workflow, not a job in ci.yml: nothing waits on it and it waits on
 # nothing, so a slow solver run never holds up Tier 1.
 #
 # No FLINT here. Kani compiles the crate to CBMC goto-programs and never links
-# native libraries, and no harness reaches FLINT/GMP/MPFR code (Kani fails a
-# harness that does, as an unsupported foreign call). `ALKAHEST_SKIP_FLINT_CHECK`
+# native libraries, and no harness executes FLINT/GMP/MPFR code (Kani fails a
+# harness that does, as an unsupported foreign call; the few harnesses around a
+# FLINT call replace it with a Rust model via `-Z stubbing`). `ALKAHEST_SKIP_FLINT_CHECK`
 # only turns off build.rs's "is libflint linkable?" probe, which would otherwise
 # refuse to build. gmp-mpfr-sys still compiles its bundled GMP/MPFR because rug
 # is a dependency; that is most of the build time on a cold cache.
@@ -73,7 +76,7 @@ jobs:
             --harness _full_width
             --output-format terse -j
 
-      # The `*_inductive` harnesses check a loop once through its
+      # The `*_inductive_full_width` harnesses check a loop once through its
       # `kani::loop_invariant` instead of unrolling it (TESTING.md § 7). The
       # invariants are compiled in only with ALKAHEST_KANI_LOOP_CONTRACTS=1
       # (build.rs sets `cfg(kani_loop_contracts)`), so they get their own run.
@@ -85,7 +88,7 @@ jobs:
           kani-version: "0.68.0"
           args: >-
             -p alkahest-cas -Z stubbing -Z loop-contracts
-            --harness _inductive
+            --harness _inductive_full_width
             --output-format terse -j
 
   all:

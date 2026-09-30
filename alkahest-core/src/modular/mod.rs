@@ -1002,7 +1002,7 @@ mod verification {
     /// tested exhaustively on small arguments instead (`gcd_tests`).
     #[cfg(kani_loop_contracts)]
     #[kani::proof]
-    fn gcd_u64_in_range_inductive() {
+    fn gcd_u64_in_range_inductive_full_width() {
         let a: u64 = kani::any();
         let b: u64 = kani::any();
         let g = gcd_u64(a, b);
@@ -1015,7 +1015,7 @@ mod verification {
     /// replaced called `.abs()`): no panic, and the result is `>= 0` except for
     /// gcd `2^63`, returned as `i64::MIN`. `gcd_u64` is stubbed by its range
     /// contract (at most each nonzero argument, zero only for `(0, 0)`),
-    /// which `gcd_u64_in_range_inductive` proves.
+    /// which `gcd_u64_in_range_inductive_full_width` proves.
     #[kani::proof]
     #[kani::stub(gcd_u64, stubs::gcd_u64)]
     fn gcd_i64_sign_full_width() {

@@ -1047,7 +1047,7 @@ mod verification {
     /// bound indices (more axes only lengthen the fold).
     #[kani::proof]
     #[kani::unwind(4)]
-    fn flatten_in_block_full_width() {
+    fn flatten_in_block() {
         let num_axes: usize = kani::any_where(|n: &usize| *n <= 3);
         let box_len: usize = kani::any_where(|b: &usize| *b >= 1);
         let Some(count) = box_len.checked_pow(num_axes as u32) else {
@@ -1074,6 +1074,11 @@ mod verification {
             kani::any_where(|e: &usize| *e < box_len),
         ];
         let back = unflatten(flatten(&exps[..num_axes], box_len), num_axes, box_len);
-        assert_eq!(&back[..], &exps[..num_axes]);
+        // Element by element: a slice `==` lowers to a byte `memcmp` whose
+        // loop would need an unwind bound of 8·num_axes + 1.
+        assert_eq!(back.len(), num_axes);
+        for i in 0..num_axes {
+            assert_eq!(back[i], exps[i]);
+        }
     }
 }
