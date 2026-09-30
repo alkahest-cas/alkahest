@@ -176,6 +176,42 @@
   independent FLINT paths (`acb_theta` and `acb_modular`) must agree through
   the documented sign dictionary, with the wrong sign asserted to fail.
 
+### Performance
+
+- **`diff`, `subs`, `match_pattern` and the free-of-variable checks are linear
+  on shared expressions — and `integrate` no longer treats a `Piecewise` or
+  `RootSum` as a constant.** Expressions are hash-consed DAGs, and these walks
+  treated them as trees, so their cost grew with the number of root-to-leaf
+  paths (exponential for a recurrence like Chebyshev's) rather than with the
+  number of distinct nodes.
+  - `diff` tried its dense ℤ-polynomial fast path at *every* node. On
+    `e ← e·e + 1` iterated that meant expanding a degree-2^k polynomial
+    (k = 12: 1.4 s → 0.24 ms; the Python call at k = 14 took 36 s and returned
+    an 18.7 MB derivation), and `Σ aᵢ·xⁱ` was quadratic (n = 5000: 12 s →
+    60 ms). The fast path now runs once, at the root, and only when the
+    expanded result is at most about twice the input's size. **Output shape
+    changes:** a compact power stays factored — `d/dx (x+1)^800` is
+    `800·(x+1)^799`, not an 800-term expansion — and an inner polynomial (the
+    `x²` in `sin(x²)`, a monomial `x³`) is logged as `power_rule` rather than
+    `diff_univariate_poly`.
+  - A registry primitive (`tan`, `atan`, `erf`, …) differentiates its argument
+    with a nested `diff` call; nested calls now read the enclosing call's memo
+    instead of re-deriving it (`tan` nested 16 deep: 1.5 s → 0.4 ms).
+  - `subs` and `fold_predicates` are memoised per call (with a separate scope
+    under a `∀`/`∃` that shadows a key) and return the original node when
+    nothing below it changed (Chebyshev T₂₈: 540 ms → 0.04 ms).
+  - `match_pattern` visits each distinct node once, so a shared sub-expression
+    is **one** match site: Chebyshev T₂₄ returned 75 024 duplicate matches
+    and now returns 23, in pre-order of first occurrence.
+  - The integrator's `is_free_of` looked only through `Add`/`Mul`/`Pow`/`Func`
+    and called every other node free of the variable, so the constant rules
+    pulled a `var`-dependent `Piecewise` or `RootSum` out of the integral:
+    `∫ y·Piecewise((x>0, x), 0) dx` returned `x·y·Piecewise(…)` and
+    `∫ sin(Piecewise((x>0, x), 0)) dx` returned `x·sin(Piecewise(…))` — both
+    wrong. It, the Risch/transform `is_free_of_var`, and the `depends_on`
+    checks in `limit`, the Puiseux and asymptotic expanders and summation now
+    share one visited-set walker that descends into every node kind.
+
 ### Build and packaging
 
 - **CI and the manylinux wheels now build a pinned FLINT 3.5.0.** Ubuntu

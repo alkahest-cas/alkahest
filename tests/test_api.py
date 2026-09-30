@@ -286,12 +286,19 @@ class TestDiff:
             raise ValueError("cannot differentiate unknown function 'zeta'")
 
     def test_diff_log_has_univariate_poly_step(self):
-        # sin(x^2): chain rule emits diff_sin + diff_univariate_poly (fast-path for ℤ-polys).
+        # The dense ℤ-polynomial fast path is tried once, at the root of the
+        # call: a whole-input polynomial takes it ...
         x = self.x
-        r = diff(sin(x**2), x)
+        r = diff(x**3 + 2 * x**2 + x, x)
         rules = [s["rule"] for s in r.steps]
         assert "diff_univariate_poly" in rules
-        assert len(rules) > 1
+        # ... while an inner polynomial (here x^2 under sin) takes the ordinary
+        # rules, so the chain rule and power rule are both logged.
+        r = diff(sin(x**2), x)
+        rules = [s["rule"] for s in r.steps]
+        assert "diff_sin" in rules
+        assert "power_rule" in rules
+        assert "diff_univariate_poly" not in rules
 
     def test_derived_result_repr(self):
         r = diff(self.x, self.x)

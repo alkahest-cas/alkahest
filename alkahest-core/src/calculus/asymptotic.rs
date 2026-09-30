@@ -665,15 +665,9 @@ fn mul_with_scale_factor(
 }
 
 fn depends_on(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
-    if expr == var {
-        return true;
-    }
-    match pool.get(expr) {
-        ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().any(|a| depends_on(*a, var, pool)),
-        ExprData::Pow { base, exp } => depends_on(base, var, pool) || depends_on(exp, var, pool),
-        ExprData::Func { args, .. } => args.iter().any(|a| depends_on(*a, var, pool)),
-        _ => false,
-    }
+    // Shared memoised walker: linear on DAG-shared inputs, and it descends into
+    // `Piecewise`/`Predicate`/`RootSum`/`BigO`/quantifiers (bound variables shadow).
+    crate::kernel::subs::mentions_var(expr, var, pool)
 }
 
 // ---------------------------------------------------------------------------

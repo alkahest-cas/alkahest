@@ -336,7 +336,14 @@ def test_lean_diff_export():
     assert "MeasureTheory" not in lean
     assert "sorry" not in lean
     assert "admit" not in lean
-    assert any(step["rule"] == "diff_univariate_poly" for step in result.steps)
+    # A monomial takes the power rule; the dense ℤ-polynomial fast path is for
+    # a whole-input polynomial that is not a monomial.
+    assert any(step["rule"] == "power_rule" for step in result.steps)
+    poly = diff(x**3 + p.integer(2) * x, x)
+    assert any(step["rule"] == "diff_univariate_poly" for step in poly.steps)
+    lean = to_lean(poly)
+    assert "deriv (fun" in lean
+    assert "sorry" not in lean
 
 
 def test_lean_integrate_certifies_via_ftc_derivative():

@@ -23,7 +23,7 @@
 /// need exhaustive matching on large sums/products should pass a custom
 /// config in future (extension point).
 use crate::kernel::{ExprData, ExprId, ExprPool};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // Maximum depth of AC nodes traversed during recursive matching.
 const MAX_AC_DEPTH: usize = 6;
@@ -543,6 +543,13 @@ fn try_subsets(
 /// search recurses into sub-expressions so that `match_pattern(a + b, f(x + y))`
 /// can match `x + y` inside `f(...)`.
 ///
+/// A *match site* is a distinct sub-expression node.  Expressions are
+/// hash-consed, so a sub-expression that occurs in several places (`x²` in
+/// `x² + sin(x²)`, or every `T_k` of a Chebyshev recurrence) is **one** node
+/// and is reported **once**, in pre-order of its first occurrence.  (The
+/// search used to walk the DAG as a tree and report such a node once per
+/// path — exponentially many identical substitutions on a shared DAG.)
+///
 /// # Example
 /// ```
 /// # use alkahest_cas::kernel::{ExprPool, Domain};
@@ -572,7 +579,12 @@ pub fn match_pattern_with_config(
     results
 }
 
-/// Recursively search `expr` and its sub-expressions for matches of `pat`.
+/// Search `expr` and its sub-expressions for matches of `pat`, visiting each
+/// distinct node once (pre-order, children left to right).
+///
+/// Iterative with an explicit stack, so a deep expression cannot overflow the
+/// native stack, and with a visited set, so the cost is linear in the number
+/// of distinct nodes rather than the number of root-to-leaf paths.
 fn collect_matches(
     pat: ExprId,
     expr: ExprId,
@@ -580,21 +592,27 @@ fn collect_matches(
     cfg: MatchConfig,
     results: &mut Vec<Substitution>,
 ) {
-    // Try matching at this node
-    if let Some(s) = match_one(pat, expr, Substitution::new(), pool, 0, cfg) {
-        results.push(s);
-    }
-
-    // Recurse into children
-    let children: Vec<ExprId> = pool.with(expr, |data| match data {
-        ExprData::Add(args) | ExprData::Mul(args) => args.clone(),
-        ExprData::Pow { base, exp } => vec![*base, *exp],
-        ExprData::Func { args, .. } => args.clone(),
-        _ => vec![],
-    });
-
-    for child in children {
-        collect_matches(pat, child, pool, cfg, results);
+    let mut seen: HashSet<ExprId> = HashSet::new();
+    let mut stack: Vec<ExprId> = vec![expr];
+    while let Some(node) = stack.pop() {
+        if !seen.insert(node) {
+            continue;
+        }
+        // Try matching at this node
+        if let Some(s) = match_one(pat, node, Substitution::new(), pool, 0, cfg) {
+            results.push(s);
+        }
+        // Push children in reverse so they pop left to right.
+        pool.with(node, |data| match data {
+            ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
+                stack.extend(args.iter().rev().copied())
+            }
+            ExprData::Pow { base, exp } => {
+                stack.push(*exp);
+                stack.push(*base);
+            }
+            _ => {}
+        });
     }
 }
 
@@ -738,5 +756,61 @@ mod tests {
         assert!(!match_pattern(&pat, p.add(vec![x, x]), &p).is_empty());
         // x + y should NOT match
         assert!(match_pattern(&pat, p.add(vec![x, y]), &p).is_empty());
+    }
+
+    /// Hash-consing makes a repeated sub-expression one node, and it is one
+    /// match site: reported once, not once per occurrence.
+    #[test]
+    fn a_shared_subexpression_is_one_match_site() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let a = p.symbol("a", Domain::Real);
+        let x2 = p.pow(x, p.integer(2_i32));
+        let expr = p.add(vec![x2, p.func("sin", vec![x2]), p.func("cos", vec![x2])]);
+        let pat = Pattern::from_expr(p.pow(a, p.integer(2_i32)));
+        let matches = match_pattern(&pat, expr, &p);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].bindings["a"], x);
+    }
+
+    /// Pre-order of first occurrence: a parent before its children.
+    #[test]
+    fn matches_come_in_pre_order() {
+        let p = pool();
+        let x = p.symbol("X", Domain::Real);
+        let a = p.symbol("a", Domain::Real);
+        let inner = p.func("f", vec![x]);
+        let outer = p.func("f", vec![inner]);
+        let pat = Pattern::from_expr(p.func("f", vec![a]));
+        let m = match_pattern(&pat, outer, &p);
+        assert_eq!(m.len(), 2);
+        assert_eq!(m[0].bindings["a"], inner);
+        assert_eq!(m[1].bindings["a"], x);
+    }
+
+    /// The Chebyshev recurrence DAG: ~3n distinct nodes, ~fib(n) paths.  The
+    /// tree walk took 217 ms and returned 75 024 duplicate matches at n = 24;
+    /// n = 40 would be ~10⁸.  Each level has exactly one `2·x·T_k` node.
+    #[test]
+    fn match_pattern_is_linear_on_a_shared_dag() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let (two, m1) = (p.integer(2_i32), p.integer(-1_i32));
+        let (mut t0, mut t1) = (p.integer(1_i32), x);
+        for _ in 1..40 {
+            let t2 = p.add(vec![p.mul(vec![two, x, t1]), p.mul(vec![m1, t0])]);
+            t0 = t1;
+            t1 = t2;
+        }
+        let a = p.symbol("a", Domain::Real);
+        let pat = Pattern::from_expr(p.mul(vec![p.integer(2_i32), a]));
+        let start = std::time::Instant::now();
+        let m = match_pattern(&pat, t1, &p);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "took {:?}",
+            start.elapsed()
+        );
+        assert_eq!(m.len(), 39);
     }
 }

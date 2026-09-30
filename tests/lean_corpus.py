@@ -160,15 +160,24 @@ STRICT_CASES = [
         "pow_one",
         lambda pool: alkahest.simplify(pool.symbol("x") ** 1),
     ),
+    # A monomial takes the power rule; the dense ℤ-polynomial fast path is
+    # tried only on a whole-input polynomial that is not a monomial.
     (
         "diff_x_cubed",
-        "diff_univariate_poly",
+        "power_rule",
         lambda pool: alkahest.diff(pool.symbol("x") ** 3, pool.symbol("x")),
     ),
     (
         "diff_x_squared",
-        "diff_univariate_poly",
+        "power_rule",
         lambda pool: alkahest.diff(pool.symbol("x") ** 2, pool.symbol("x")),
+    ),
+    (
+        "diff_cubic_polynomial",
+        "diff_univariate_poly",
+        lambda pool: alkahest.diff(
+            pool.symbol("x") ** 3 + pool.integer(2) * pool.symbol("x"), pool.symbol("x")
+        ),
     ),
     (
         "diff_sin",

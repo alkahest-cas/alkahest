@@ -509,44 +509,14 @@ fn collect_qpoly(
 }
 
 /// Return `true` if `expr` syntactically does not involve `var`.
+///
+/// Uses the shared crate walker (`kernel::subs::mentions_var`):
+/// linear in the number of distinct nodes, and it looks inside `Piecewise`,
+/// `Predicate`, `RootSum`, `BigO` and quantifiers (bound variables shadow).
+/// This used to call every node other than `Add`/`Mul`/`Pow`/`Func` free of
+/// `var`, so a `var`-dependent `Piecewise` passed as a constant.
 pub fn is_free_of_var(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
-    // Per-call `ExprId`-keyed memo (`var` is fixed for the duration of one call,
-    // so `ExprId` alone is a valid key).  Without this, a DAG-shared input — the
-    // same subexpression appearing in many positions, as the M4 tower-recursive
-    // integrator routinely produces — is re-traversed once per occurrence,
-    // degrading to exponential time on highly-shared expressions.  Mirrors the
-    // memoised `engine::is_free_of` (commit `cd76984`).
-    let mut cache: std::collections::HashMap<ExprId, bool> = std::collections::HashMap::new();
-    is_free_of_var_memo(expr, var, pool, &mut cache)
-}
-
-fn is_free_of_var_memo(
-    expr: ExprId,
-    var: ExprId,
-    pool: &ExprPool,
-    cache: &mut std::collections::HashMap<ExprId, bool>,
-) -> bool {
-    if expr == var {
-        return false;
-    }
-    if let Some(&hit) = cache.get(&expr) {
-        return hit;
-    }
-    let result = match pool.get(expr) {
-        ExprData::Add(args) | ExprData::Mul(args) => args
-            .iter()
-            .all(|&a| is_free_of_var_memo(a, var, pool, cache)),
-        ExprData::Pow { base, exp } => {
-            is_free_of_var_memo(base, var, pool, cache)
-                && is_free_of_var_memo(exp, var, pool, cache)
-        }
-        ExprData::Func { ref args, .. } => args
-            .iter()
-            .all(|&a| is_free_of_var_memo(a, var, pool, cache)),
-        _ => true,
-    };
-    cache.insert(expr, result);
-    result
+    !crate::kernel::subs::mentions_var(expr, var, pool)
 }
 
 /// Try to extract the rational value of a constant expression.

@@ -326,36 +326,19 @@ fn as_integer(expr: ExprId, pool: &ExprPool) -> Option<i64> {
 
 /// Return `true` if `expr` does not involve `var` (is a constant w.r.t. `var`).
 ///
-/// Internally memoises into `cache` (keyed by `ExprId`, valid for a fixed `var`).
-/// Use [`is_free_of`] from call sites; [`is_free_of_inner`] is the recursive worker.
+/// Descends into **every** node kind — `Piecewise` branches and conditions,
+/// `Predicate` arguments, a `RootSum`'s polynomial and body, `BigO`, and
+/// quantifier bodies — with bound variables shadowing (see
+/// [`crate::kernel::subs::mentions_var`]).  It used to look only through
+/// `Add`/`Mul`/`Pow`/`Func` and call every other node free, so the
+/// constant-multiple and constant rules pulled a `var`-dependent `Piecewise`
+/// or `RootSum` out of the integral: `∫ y·Piecewise((x>0, x), 0) dx` came back
+/// as `x·y·Piecewise(…)` and `∫ sin(Piecewise(…)) dx` as `x·sin(Piecewise(…))`.
+///
+/// Linear in the number of distinct nodes (visited set), so DAG-shared inputs
+/// cost what their size says.
 pub(crate) fn is_free_of(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
-    let mut cache: HashMap<ExprId, bool> = HashMap::new();
-    is_free_of_inner(expr, var, pool, &mut cache)
-}
-
-fn is_free_of_inner(
-    expr: ExprId,
-    var: ExprId,
-    pool: &ExprPool,
-    cache: &mut HashMap<ExprId, bool>,
-) -> bool {
-    if expr == var {
-        return false;
-    }
-    if let Some(&cached) = cache.get(&expr) {
-        return cached;
-    }
-    let children: Vec<ExprId> = pool.with(expr, |data| match data {
-        ExprData::Add(args) | ExprData::Mul(args) => args.clone(),
-        ExprData::Pow { base, exp } => vec![*base, *exp],
-        ExprData::Func { args, .. } => args.clone(),
-        _ => vec![],
-    });
-    let result = children
-        .into_iter()
-        .all(|c| is_free_of_inner(c, var, pool, cache));
-    cache.insert(expr, result);
-    result
+    !crate::kernel::subs::mentions_var(expr, var, pool)
 }
 
 /// If `expr = a*var + b` where `a`, `b` are free of `var`, return `Some((a, b))`.
@@ -3844,8 +3827,8 @@ fn expr_is_non_finite(expr: ExprId, pool: &ExprPool) -> bool {
 }
 
 /// True when `expr` mentions `var` anywhere, **including** inside binding and
-/// branching nodes that the general-purpose [`is_free_of`] does not descend
-/// into (`RootSum`, `Piecewise`, `Predicate`, `Forall`/`Exists`, `BigO`).
+/// branching nodes (`RootSum`, `Piecewise`, `Predicate`, `Forall`/`Exists`,
+/// `BigO`) — the negation of [`is_free_of`], which now shares its walker.
 ///
 /// Used on the improper-integral path, where "does the value still depend on
 /// the variable?" decides between a real answer and a silent wrong one, so it
@@ -3853,37 +3836,7 @@ fn expr_is_non_finite(expr: ExprId, pool: &ExprPool) -> bool {
 /// whose own root variable happens to be `var` does not count as a dependence
 /// in its body (only in its defining polynomial).
 fn mentions_var(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
-    if expr == var {
-        return true;
-    }
-    match pool.get(expr) {
-        ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().any(|x| mentions_var(*x, var, pool)),
-        ExprData::Pow { base, exp } => {
-            mentions_var(base, var, pool) || mentions_var(exp, var, pool)
-        }
-        ExprData::Func { args, .. } | ExprData::Predicate { args, .. } => {
-            args.iter().any(|a| mentions_var(*a, var, pool))
-        }
-        ExprData::RootSum {
-            poly,
-            var: bound,
-            body,
-        } => mentions_var(poly, var, pool) || (bound != var && mentions_var(body, var, pool)),
-        ExprData::Piecewise { branches, default } => {
-            branches
-                .iter()
-                .any(|(c, v)| mentions_var(*c, var, pool) || mentions_var(*v, var, pool))
-                || mentions_var(default, var, pool)
-        }
-        ExprData::Forall { var: bound, body } | ExprData::Exists { var: bound, body } => {
-            bound != var && mentions_var(body, var, pool)
-        }
-        ExprData::BigO(a) => mentions_var(a, var, pool),
-        ExprData::Integer(_)
-        | ExprData::Rational(_)
-        | ExprData::Float(_)
-        | ExprData::Symbol { .. } => false,
-    }
+    crate::kernel::subs::mentions_var(expr, var, pool)
 }
 
 /// True when `bound` is exactly `-∞` — `(-1)·(+∞)`, the documented convention.
@@ -4574,6 +4527,121 @@ mod tests {
 
     fn p() -> ExprPool {
         ExprPool::new()
+    }
+
+    /// `is_free_of` must see `var` inside every node kind.  It used to walk only
+    /// `Add`/`Mul`/`Pow`/`Func` and call anything else free.
+    #[test]
+    fn is_free_of_descends_into_every_node_kind() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let c = pool.symbol("c", Domain::Real);
+        let zero = pool.integer(0_i32);
+        let quad = pool.add(vec![pool.pow(c, pool.integer(2_i32)), pool.integer(-2_i32)]);
+        let depends = [
+            pool.piecewise(vec![(pool.pred_gt(x, zero), y)], zero), // condition only
+            pool.piecewise(vec![(pool.pred_gt(y, zero), x)], zero), // branch value
+            pool.piecewise(vec![(pool.pred_gt(y, zero), y)], x),    // default
+            pool.pred_gt(x, zero),
+            pool.root_sum(quad, c, pool.add(vec![x, c])),
+            pool.big_o(x),
+            pool.forall(y, pool.pred_gt(x, y)),
+        ];
+        for e in depends {
+            assert!(!is_free_of(e, x, &pool), "{} depends on x", pool.display(e));
+        }
+        // Bound occurrences are not free occurrences.
+        let free = [
+            pool.root_sum(quad, c, pool.add(vec![y, c])),
+            pool.forall(x, pool.pred_gt(x, y)),
+            pool.exists(x, pool.pred_gt(x, y)),
+            pool.piecewise(vec![(pool.pred_gt(y, zero), y)], zero),
+        ];
+        for e in free {
+            assert!(is_free_of(e, x, &pool), "{} is free of x", pool.display(e));
+        }
+    }
+
+    /// Integrands whose `x`-dependence sits inside a `Piecewise` or `RootSum`
+    /// were integrated as constants: `∫ y·Piecewise((x>0, x), 0) dx` returned
+    /// `x·y·Piecewise(…)`, whose derivative is `2xy` on `x > 0`, and
+    /// `∫ y·RootSum(c²−2, c ↦ x + c) dx` returned `x·y·RootSum(…)` (derivative
+    /// `4xy`, integrand `2xy`).  Declining is fine; a wrong antiderivative is not.
+    #[test]
+    fn piecewise_and_root_sum_are_not_integrated_as_constants() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let c = pool.symbol("c", Domain::Real);
+        let zero = pool.integer(0_i32);
+        let quad = pool.add(vec![pool.pow(c, pool.integer(2_i32)), pool.integer(-2_i32)]);
+        let pw = |v: ExprId, d: ExprId| pool.piecewise(vec![(pool.pred_gt(x, zero), v)], d);
+        let integrands = [
+            pool.mul(vec![y, pw(x, zero)]),
+            pool.mul(vec![
+                pool.integer(3_i32),
+                pw(pool.pow(x, pool.integer(2_i32)), x),
+            ]),
+            pool.func("sin", vec![pw(x, zero)]),
+            pool.pow(pw(x, pool.integer(1_i32)), pool.integer(2_i32)),
+            pool.mul(vec![y, pool.root_sum(quad, c, pool.add(vec![x, c]))]),
+        ];
+        for f in integrands {
+            let Ok(r) = integrate(f, x, &pool) else {
+                continue;
+            };
+            // Any answer must differentiate back to the integrand, checked at
+            // points on both sides of the breakpoint.
+            let df = diff(r.value, x, &pool)
+                .expect("antiderivative differentiates")
+                .value;
+            let mut env = HashMap::new();
+            env.insert(y, 1.3);
+            for xv in [-1.7, -0.4, 0.6, 2.1] {
+                env.insert(x, xv);
+                let lhs = crate::eval_f64(df, &pool, &env);
+                let rhs = crate::eval_f64(f, &pool, &env);
+                match (lhs, rhs) {
+                    (Ok(a), Ok(b)) => assert!(
+                        (a - b).abs() < 1e-9 * (1.0 + b.abs()),
+                        "∫ {} dx = {} is wrong at x = {xv}: F' = {a}, f = {b}",
+                        pool.display(f),
+                        pool.display(r.value)
+                    ),
+                    _ => panic!(
+                        "∫ {} dx = {} could not be checked at x = {xv}",
+                        pool.display(f),
+                        pool.display(r.value)
+                    ),
+                }
+            }
+        }
+    }
+
+    /// `is_free_of` on a DAG with ~3n distinct nodes but ~fib(n) paths (the
+    /// Chebyshev recurrence in `y`), reached through the constant-multiple
+    /// rule.  The tree walk took 1.8 s at n = 24 and 11.9 s at n = 28.
+    #[test]
+    fn is_free_of_is_linear_on_a_shared_dag() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let (two, m1) = (pool.integer(2_i32), pool.integer(-1_i32));
+        let (mut a, mut b) = (pool.integer(1_i32), y);
+        for _ in 1..40 {
+            let c = pool.add(vec![pool.mul(vec![two, y, b]), pool.mul(vec![m1, a])]);
+            a = b;
+            b = c;
+        }
+        let t0 = std::time::Instant::now();
+        assert!(is_free_of(b, x, &pool));
+        assert!(!is_free_of(pool.mul(vec![b, x]), y, &pool));
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(2),
+            "is_free_of on a 40-level shared DAG took {:?}",
+            t0.elapsed()
+        );
     }
 
     /// `∫ cos(x)·sinⁿ(x)/(sin^d(x) + sin x + 1) dx` — declined by every rule, so

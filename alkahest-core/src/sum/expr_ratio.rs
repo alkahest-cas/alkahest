@@ -167,15 +167,9 @@ fn ratio_factor(f: ExprId, k: ExprId, pool: &ExprPool) -> Result<RatFunc, SumErr
 }
 
 pub(super) fn is_free_of_k(expr: ExprId, k: ExprId, pool: &ExprPool) -> bool {
-    if expr == k {
-        return false;
-    }
-    match pool.get(expr) {
-        ExprData::Add(args) | ExprData::Mul(args) => args.iter().all(|&a| is_free_of_k(a, k, pool)),
-        ExprData::Pow { base, exp } => is_free_of_k(base, k, pool) && is_free_of_k(exp, k, pool),
-        ExprData::Func { args, .. } => args.iter().all(|&a| is_free_of_k(a, k, pool)),
-        _ => true,
-    }
+    // Shared memoised walker: linear on DAG-shared inputs, and it descends into
+    // `Piecewise`/`Predicate`/`RootSum`/`BigO`/quantifiers (bound variables shadow).
+    !crate::kernel::subs::mentions_var(expr, k, pool)
 }
 
 fn const_to_rational(expr: ExprId, pool: &ExprPool) -> Result<Rational, SumError> {
