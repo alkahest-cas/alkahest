@@ -430,12 +430,10 @@ fn number_into_pool(pool: &ExprPool, ob: &Bound<'_, PyAny>) -> PyResult<Option<E
         return Ok(Some(integer_into_pool(pool, ob)?));
     }
     // NumPy integer scalars and anything else that is an integer by protocol.
-    // The test is made on the *type*, so a `Fraction` or `Decimal` instance
-    // doesn't pay for calling `__index__` and discarding the `TypeError`.
-    // Not `pyo3::ffi::PyIndex_Check`: pyo3-ffi 0.21 binds it to the PyPy
-    // symbol `PyPyIndex_Check`, so a CPython wheel built with it fails to
-    // import on Linux (undefined symbol) and fails to link on Windows.
-    if ob.get_type().hasattr("__index__")? {
+    // `PyIndex_Check` is a type-slot test, so a `Fraction` or `Decimal` no
+    // longer pays for a raised-and-discarded `AttributeError` here.
+    // SAFETY: `ob` is a live, GIL-bound object pointer.
+    if unsafe { pyo3::ffi::PyIndex_Check(ob.as_ptr()) } != 0 {
         if let Ok(index) = ob.call_method0("__index__") {
             return Ok(Some(integer_into_pool(pool, &index)?));
         }
