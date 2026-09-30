@@ -414,7 +414,11 @@ impl FlintMPolyFactor {
     pub fn exp_at(&mut self, i: usize) -> u32 {
         // A real check, not `debug_assert!`: this is a safe fn, and an index
         // past `len()` reads out of bounds of the FLINT array in release.
-        assert!(i < self.len(), "factor index {i} out of range (len {})", self.len());
+        assert!(
+            i < self.len(),
+            "factor index {i} out of range (len {})",
+            self.len()
+        );
         let e = unsafe {
             super::ffi::fmpz_mpoly_factor_get_exp_si(
                 &mut self.inner,
