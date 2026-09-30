@@ -2,7 +2,8 @@ use super::error::ConversionError;
 use super::exponent;
 use crate::flint::mpoly::{FlintMPoly, FlintMPolyCtx};
 use crate::kernel::{ExprData, ExprId, ExprPool};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use crate::kernel::{IdMap, IdSeen};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::{Add, Mul, Neg, Sub};
 use std::sync::Arc;
@@ -205,11 +206,14 @@ struct MultiBuild {
     /// FLINT-backed product/power above the size thresholds; `false` gives the
     /// plain schoolbook algorithm (the test reference).
     fast: bool,
-    /// Compound nodes converted at least once.
-    seen: HashSet<ExprId>,
+    /// Compound nodes converted at least once.  Inline while small, then
+    /// keyed with the `ExprId` hasher: every compound node is inserted here,
+    /// and on a small polynomial a growing SipHash set was a visible share of
+    /// the conversion.
+    seen: IdSeen,
     /// Results for compound nodes reached a second time (shared DAG nodes), so
     /// each node is converted at most twice. Empty when `memoize` is off.
-    memo: HashMap<ExprId, TermMap>,
+    memo: IdMap<TermMap>,
     memoize: bool,
 }
 
@@ -217,8 +221,8 @@ impl MultiBuild {
     fn new() -> Self {
         MultiBuild {
             fast: true,
-            seen: HashSet::new(),
-            memo: HashMap::new(),
+            seen: IdSeen::default(),
+            memo: IdMap::default(),
             memoize: true,
         }
     }

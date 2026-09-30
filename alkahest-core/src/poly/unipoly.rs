@@ -2,8 +2,9 @@ use super::error::ConversionError;
 use super::exponent;
 use crate::flint::{integer::FlintInteger, FlintPoly};
 use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::kernel::{IdMap, IdSeen};
 use rug::{Integer, Rational};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::{Add, Mul, Sub};
 
@@ -389,11 +390,15 @@ struct UniBuilder<'a> {
     var: ExprId,
     pool: &'a ExprPool,
     /// Compound nodes converted at least once.
-    seen: HashSet<ExprId>,
+    ///
+    /// Keyed with the `ExprId` hasher and inline while small: every
+    /// compound node is inserted here, and on a small polynomial a growing
+    /// SipHash set was a visible share of the whole conversion.
+    seen: IdSeen,
     /// Results for compound nodes reached a second time, i.e. shared ones.
     /// Only shared nodes are stored, so a tree pays no copying and holds no
     /// extra intermediates; a DAG node is computed at most twice.
-    memo: HashMap<ExprId, FlintPoly>,
+    memo: IdMap<FlintPoly>,
 }
 
 impl<'a> UniBuilder<'a> {
@@ -401,8 +406,8 @@ impl<'a> UniBuilder<'a> {
         UniBuilder {
             var,
             pool,
-            seen: HashSet::new(),
-            memo: HashMap::new(),
+            seen: IdSeen::default(),
+            memo: IdMap::default(),
         }
     }
 

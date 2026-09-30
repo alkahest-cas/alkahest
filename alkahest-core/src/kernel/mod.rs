@@ -39,3 +39,78 @@ pub(crate) type IdMap<V> = std::collections::HashMap<ExprId, V, IdBuildHasher>;
 
 /// `HashSet<ExprId>` with the fast [`IdBuildHasher`].
 pub(crate) type IdSet = std::collections::HashSet<ExprId, IdBuildHasher>;
+
+/// A "visited" set of [`ExprId`]s that stays off the heap while small.
+///
+/// The polynomial builders record every compound node they convert, so that
+/// a node reached a second time (a shared DAG node) can be memoised.  On the
+/// small polynomials that dominate real use, allocating and growing a hash
+/// set for that — three allocations and two rehashes for a quartic — cost
+/// more than the conversion's own arithmetic.  The first [`Self::INLINE`] ids
+/// live in an inline array searched linearly; beyond that they move to an
+/// [`IdSet`].
+pub(crate) struct IdSeen {
+    inline: [ExprId; IdSeen::INLINE],
+    len: usize,
+    spill: IdSet,
+}
+
+impl Default for IdSeen {
+    fn default() -> Self {
+        IdSeen {
+            inline: [ExprId(0); IdSeen::INLINE],
+            len: 0,
+            spill: IdSet::default(),
+        }
+    }
+}
+
+impl IdSeen {
+    const INLINE: usize = 16;
+
+    /// Adds `id`; returns `true` if it was not already present (the
+    /// [`std::collections::HashSet::insert`] contract).
+    pub(crate) fn insert(&mut self, id: ExprId) -> bool {
+        if self.len < Self::INLINE {
+            if self.inline[..self.len].contains(&id) {
+                return false;
+            }
+            self.inline[self.len] = id;
+            self.len += 1;
+            return true;
+        }
+        if self.spill.is_empty() {
+            if self.inline.contains(&id) {
+                return false;
+            }
+            self.spill.reserve(2 * Self::INLINE);
+            self.spill.extend(self.inline);
+        }
+        self.spill.insert(id)
+    }
+}
+
+#[cfg(test)]
+mod id_seen_tests {
+    use super::*;
+
+    /// `IdSeen::insert` answers exactly as `HashSet::insert` does, below,
+    /// at and past the inline capacity, with repeats before and after the
+    /// spill.
+    #[test]
+    fn id_seen_matches_a_hash_set_across_the_spill() {
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
+        for round in 0..200u32 {
+            let universe = 1 + round % 60;
+            let mut seen = IdSeen::default();
+            let mut reference = std::collections::HashSet::new();
+            for _ in 0..(3 * universe) {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                let id = ExprId((state % u64::from(universe)) as u32);
+                assert_eq!(seen.insert(id), reference.insert(id), "round {round}");
+            }
+        }
+    }
+}
