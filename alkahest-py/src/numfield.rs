@@ -24,13 +24,13 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyModule, PyType};
 
-use alkahest_core::experimental::{
-    cyclotomic_polynomial, NumberField, NumberFieldElement, NumberFieldError,
-};
+use alkahest_core::budget::BudgetTrip;
+use alkahest_core::experimental::{NumberField, NumberFieldElement, NumberFieldError};
 use alkahest_core::number_theory::arith::{
     bernoulli_number, divisor_sigma, euler_number, harmonic_number, moebius_mu, partition_number,
     stirling_first, stirling_first_unsigned, stirling_second, sum_of_squares, ArithmeticError,
 };
+use alkahest_core::numfield::try_cyclotomic_polynomial;
 
 pyo3::create_exception!(alkahest, PyNumberFieldError, crate::PyAlkahestError);
 
@@ -52,7 +52,19 @@ fn nf_err(e: NumberFieldError) -> PyErr {
     })
 }
 
+/// A size or budget refusal, raised as the same `BudgetExceededError`
+/// (`E-BUDGET-*`) every other engine raises.
+fn trip_err(t: BudgetTrip) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<crate::PyBudgetExceededError>();
+        crate::make_structured_err(py, &exc_type, &t)
+    })
+}
+
 fn nt_err(e: ArithmeticError) -> PyErr {
+    if let ArithmeticError::Resource(t) = e {
+        return trip_err(t);
+    }
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyArithmeticError>();
         crate::make_structured_err(py, &exc_type, &e)
@@ -353,11 +365,11 @@ impl PyNumberFieldElement {
             // inverse of zero is the one thing a field cannot give.
             let inv = self.inner.inverse().map_err(nf_err)?;
             return Ok(Self {
-                inner: inv.pow(exp.unsigned_abs()),
+                inner: inv.try_pow(exp.unsigned_abs()).map_err(trip_err)?,
             });
         }
         Ok(Self {
-            inner: self.inner.pow(exp as u64),
+            inner: self.inner.try_pow(exp as u64).map_err(trip_err)?,
         })
     }
 
@@ -381,11 +393,13 @@ impl PyNumberFieldElement {
 /// The cyclotomic polynomial ``Phi_n``, ascending in degree, as ``int``
 /// coefficients. Its degree is ``phi(n)``.
 ///
-/// ``Phi_1 = x - 1``, ``Phi_2 = x + 1``, ``Phi_6 = x**2 - x + 1``.
+/// ``Phi_1 = x - 1``, ``Phi_2 = x + 1``, ``Phi_6 = x**2 - x + 1``. Raises
+/// ``E-NT-006`` when ``phi(n)`` exceeds ``2**24``.
 #[pyfunction]
 #[pyo3(name = "cyclotomic_polynomial_coeffs")]
 fn py_cyclotomic_polynomial_coeffs(py: Python<'_>, n: u64) -> PyResult<Vec<PyObject>> {
-    cyclotomic_polynomial(n)
+    try_cyclotomic_polynomial(n)
+        .map_err(nt_err)?
         .iter()
         .map(|c| crate::bigint::int_to_py(py, c))
         .collect()

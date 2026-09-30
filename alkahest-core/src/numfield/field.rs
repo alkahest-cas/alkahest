@@ -26,6 +26,16 @@ use crate::flint::poly::{FlintPoly, FlintPolyFactor};
 use crate::flint::rational::FlintRational as Fq;
 use crate::flint::FlintInteger;
 
+/// Below this estimated total size (bits over all coordinates) of a power,
+/// [`NumberFieldElement::try_pow`] hands the exponent straight to FLINT.
+const FAST_POW_BITS: u64 = 1 << 26;
+
+/// Largest degree `φ(n)` accepted by [`try_cyclotomic_polynomial`].
+///
+/// A work cap, not a mathematical limit: `Φ_n` has `φ(n) + 1` coefficients,
+/// every one of which is materialised (and, from Python, becomes an `int`).
+pub const MAX_CYCLOTOMIC_POLYNOMIAL_DEGREE: u64 = 1 << 24;
+
 /// Largest field degree this module will build.
 ///
 /// Not a mathematical limit — a guard on memory and on the irreducibility
@@ -473,6 +483,17 @@ impl NumberFieldElement {
         }
     }
 
+    /// The largest `bits(numerator) + bits(denominator)` over the coordinates.
+    fn max_coefficient_bits(&self) -> u64 {
+        self.coefficients()
+            .iter()
+            .map(|c| {
+                u64::from(c.numer().significant_bits()) + u64::from(c.denom().significant_bits())
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Coordinates in the power basis `1, a, a², …`, ascending, always exactly
     /// `degree` of them.
     pub fn coefficients(&self) -> Vec<Rational> {
@@ -600,8 +621,99 @@ impl NumberFieldElement {
     }
 
     /// `self^exp` for a non-negative exponent. `0^0` is 1.
+    ///
+    /// # Panics
+    ///
+    /// When the power is too large to hold (see [`try_pow`](Self::try_pow)).
+    /// FLINT would otherwise abort the process on the allocation.
     #[must_use]
     pub fn pow(&self, exp: u64) -> Self {
+        self.try_pow(exp)
+            .unwrap_or_else(|t| panic!("NumberFieldElement::pow: {t}"))
+    }
+
+    /// `self^exp`, refusing a power too large to compute instead of letting
+    /// FLINT abort the process.
+    ///
+    /// The coefficients of `a^e` grow roughly linearly in `e` unless `a` is a
+    /// root of unity (then they stay bounded), so the size cannot be judged
+    /// from `e` alone. The power is computed by repeated squaring and every
+    /// product's size is estimated from its actual operands before it is
+    /// formed; the first one that would not fit is refused.
+    ///
+    /// # Errors
+    ///
+    /// A [`BudgetTrip`](crate::budget::BudgetTrip): `E-BUDGET-006` for a
+    /// product larger than physical memory or than the single-integer ceiling
+    /// [`MAX_INTEGER_BITS`](crate::budget::MAX_INTEGER_BITS), and
+    /// `E-BUDGET-004`/`005` under a memory budget or address-space limit.
+    pub fn try_pow(&self, exp: u64) -> Result<Self, crate::budget::BudgetTrip> {
+        if exp <= 1 || self.is_zero() || self.is_one() {
+            return Ok(self.pow_unchecked(exp));
+        }
+        let d = self.field.degree() as u64;
+        // Bits a reduction modulo the defining polynomial can add to a
+        // product, on top of the operands' own sizes.
+        let slack = self
+            .field
+            .defining_polynomial()
+            .iter()
+            .map(|c| u64::from(c.significant_bits()))
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+            .saturating_mul(d)
+            .saturating_add(64);
+        // Fast path: even if every squaring doubled the size, the result
+        // stays small, so FLINT's own powering is safe.
+        let base_bits = self.max_coefficient_bits().saturating_add(slack);
+        if exp.saturating_mul(base_bits).saturating_mul(d + 1) <= FAST_POW_BITS {
+            return Ok(self.pow_unchecked(exp));
+        }
+        let check = |x: &Self, y: &Self| {
+            let bits = x
+                .max_coefficient_bits()
+                .saturating_add(y.max_coefficient_bits())
+                .saturating_add(slack);
+            // Operands, the unreduced product and the result: a few copies of
+            // (d + 1) integers (d coordinates and a denominator) that size.
+            crate::budget::preflight_bignum_bits(bits, (d + 1).saturating_mul(4))
+        };
+        let mut result = self.field.one();
+        let mut base = self.clone();
+        let mut e = exp;
+        loop {
+            if e & 1 == 1 {
+                check(&result, &base)?;
+                result = result.mul_unchecked(&base);
+            }
+            e >>= 1;
+            if e == 0 {
+                return Ok(result);
+            }
+            check(&base, &base)?;
+            let before = base.max_coefficient_bits();
+            base = base.mul_unchecked(&base);
+            // The rest of the answer is base^e. Once squaring visibly grows
+            // the coordinates they keep growing about linearly in the
+            // exponent, so project the final size now rather than squaring
+            // up to the ceiling first. A root of unity never grows and is
+            // never refused here.
+            let after = base.max_coefficient_bits();
+            if after > before.saturating_add(slack) {
+                let projected = (after - before).saturating_mul(e);
+                crate::budget::preflight_bignum_bits(projected, (d + 1).saturating_mul(4))?;
+            }
+        }
+    }
+
+    /// `self · other` for two elements already known to share a field.
+    fn mul_unchecked(&self, other: &Self) -> Self {
+        self.mul(other)
+            .expect("both operands come from the same field")
+    }
+
+    fn pow_unchecked(&self, exp: u64) -> Self {
         let mut out = Self::blank(&self.field);
         // SAFETY: live element, live field, distinct destination.
         unsafe { ffi::nf_elem_pow(out.as_mut_ptr(), self.as_ptr(), exp, self.field.nf_ptr()) };
@@ -766,13 +878,42 @@ impl fmt::Debug for NumberFieldElement {
 ///
 /// `Φ_1 = x − 1`, `Φ_2 = x + 1`, `Φ_6 = x² − x + 1`. Its degree is `φ(n)`.
 /// `n = 0` has no cyclotomic polynomial and returns the constant `1`.
+///
+/// # Panics
+///
+/// When `φ(n)` exceeds [`MAX_CYCLOTOMIC_POLYNOMIAL_DEGREE`]; FLINT would
+/// otherwise abort the process on the allocation for a large enough `n`. Use
+/// [`try_cyclotomic_polynomial`] for a refusal instead.
 pub fn cyclotomic_polynomial(n: u64) -> Vec<Integer> {
+    try_cyclotomic_polynomial(n).unwrap_or_else(|e| panic!("cyclotomic_polynomial: {e}"))
+}
+
+/// [`cyclotomic_polynomial`], refusing a degree `φ(n)` above
+/// [`MAX_CYCLOTOMIC_POLYNOMIAL_DEGREE`] instead of handing FLINT an
+/// allocation it would abort on (`Φ_{10¹²}` has 4·10¹¹ coefficients).
+///
+/// # Errors
+///
+/// `E-NT-006` ([`ArithmeticError::WorkLimitExceeded`]) past the cap.
+///
+/// [`ArithmeticError::WorkLimitExceeded`]: crate::number_theory::arith::ArithmeticError::WorkLimitExceeded
+pub fn try_cyclotomic_polynomial(
+    n: u64,
+) -> Result<Vec<Integer>, crate::number_theory::arith::ArithmeticError> {
     if n == 0 {
-        return vec![Integer::from(1)];
+        return Ok(vec![Integer::from(1)]);
+    }
+    if euler_phi_u64(n) > MAX_CYCLOTOMIC_POLYNOMIAL_DEGREE {
+        return Err(
+            crate::number_theory::arith::ArithmeticError::WorkLimitExceeded {
+                function: "cyclotomic_polynomial (degree phi(n))",
+                limit: MAX_CYCLOTOMIC_POLYNOMIAL_DEGREE,
+            },
+        );
     }
     let p = FlintPoly::cyclotomic(n);
     let len = p.length();
-    (0..len).map(|i| p.get_coeff_flint(i).to_rug()).collect()
+    Ok((0..len).map(|i| p.get_coeff_flint(i).to_rug()).collect())
 }
 
 /// Euler's totient `φ(n)` for a machine-word `n`, via FLINT's `fmpz_euler_phi`.

@@ -447,6 +447,68 @@
 
 ### Fixed
 
+- **`factor_univariate_mod_p` killed the interpreter for a composite
+  modulus.** `factor_univariate_mod_p([6, 5, 1], 15)` (and moduli 4, 9, 12,
+  21, …) reached FLINT's `nmod_poly_factor`, which aborted with "Cannot invert
+  modulo 3*5"; `[1, 0, 1]` mod 15 returned a meaningless "factorisation". The
+  modulus must now be prime (`E-POLY-009`).
+- **`factor_univariate_mod_p` dropped the unit.** `[5]` mod 7 factored as the
+  empty product and `[0, 2]` (`2x`) as `x`. The factors are still monic; the
+  new `UniPolyFactorModP.unit` (Rust: `factor_univariate_mod_p_with_unit`) is
+  the leading coefficient that restores the input. A polynomial that is zero
+  mod `p` now raises `E-POLY-008`, as over ℤ, instead of returning `[]`.
+- **`divisor_sigma(k, n)` with a large `k` killed the interpreter.**
+  `divisor_sigma(10**12, 2)` died of `SIGFPE` (GMP's signal for an integer too
+  large to represent) and `divisor_sigma(2**32 + 1, 2)` of a GMP out-of-memory
+  abort. The size of σ_k(n), about `k·log2 n` bits, is now checked first and
+  refused with `BudgetExceededError`.
+- **`sum_of_squares(k, n)` aborted or truncated for large `n`.** For `k ≥ 6`
+  FLINT expands a series of length `n + 1` and aborts once `n` passes a
+  machine word; for `k = 3, 5` it silently used `n mod 2^64`. Those paths now
+  refuse `n` above 10^5 (`k ≥ 6`) and 10^12 (`k = 3, 5`) with `E-NT-006`; the
+  closed forms for `k = 1, 2, 4` still take any `n`.
+- **`cyclotomic_polynomial_coeffs(10**12)` killed the interpreter** on a FLINT
+  allocation of 4·10^11 coefficients. A degree `φ(n)` above 2^24 is now
+  refused with `E-NT-006` (Rust: `try_cyclotomic_polynomial`).
+- **A huge power of a number-field element killed the interpreter.**
+  `(K.generator() + 1) ** 10**12` in `ℚ(√2)` (and negative exponents) aborted
+  inside `nf_elem_pow`. Powers are now formed by repeated squaring with each
+  product's size checked against the machine, GMP's integer limit and any
+  memory budget before it is formed, raising `BudgetExceededError`; a root of
+  unity, whose powers never grow, still takes any exponent. Rust:
+  `NumberFieldElement::try_pow`.
+- **`GfMatrix` shapes that fit the address check but not the machine killed
+  the interpreter.** `GfMatrix.zeros(F, 65536, 65536)` under an 8 GB limit,
+  `(30000, 30000)` over GF(7³), and derived results such as a
+  `(65536×1)·(1×65536)` product or the `n×n` scratch of `nullspace` reached
+  FLINT's allocator, which aborts. Every allocation is now estimated first and
+  refused (`BudgetExceededError`, or `E-GFQ-012` from Rust) when it exceeds
+  physical memory, `Budget(max_bytes=...)` or the process's address-space
+  limit.
+- **Coding-theory bounds truncated or killed the interpreter for huge
+  lengths.** `singleton_bound` and `hamming_bound` cast the exponent to `u32`,
+  so `singleton_bound(2**32 + 5, 1, 2)` returned `2**5`, and a bound too large
+  to hold reached GMP, which raised `SIGFPE` or aborted; they now refuse with
+  `BudgetExceededError` (`E-CODE-005` from Rust). `LinearCode.hamming` over
+  GF(2³² − 5) enumerated the whole field (~100 GB) before its size check and
+  aborted; the field order is now checked first (`E-CODE-004`).
+- **`nt.discrete_log` missed answers for negative inputs.**
+  `discrete_log(2, -1, 5)` reported no solution although `2² ≡ −1 (mod 5)`:
+  rug's `%` truncates, so a negative residue or base was never normalised.
+  `nthroot_mod` had the same reduction. Also `discrete_log(1, 0, p)` now
+  returns `0` (`0⁰ = 1`) instead of no solution.
+- **Rust API: FLINT wrappers that aborted or read out of bounds.**
+  `FlintInteger / 0` and `% 0`, `FlintPoly::div_exact`, `pseudo_divrem` and
+  `scalar_divexact_fmpz` by zero aborted the process; they now panic like
+  Rust's own integer division, with new `checked_div`, `checked_rem` and
+  `checked_div_exact`. `FlintPoly::get_coeff(usize::MAX)` read before the
+  coefficient array and now returns 0; `set_coeff_flint(usize::MAX, …)`
+  corrupted the heap and now panics. `FlintNmodPoly::get_coeff` with a negative
+  index likewise returns 0.
+- New error code **`E-BUDGET-006`** (`BudgetTrip::Oversized`): a single
+  result larger than physical memory or than GMP can represent. It fires with
+  no budget active, replacing an abort, and is raised as `BudgetExceededError`.
+  Rust: `budget::preflight_bytes` and `budget::preflight_bignum_bits`.
 - **`ModularValue::sub` overflowed for a modulus above 2^63.** It formed
   `value + modulus` in `u64`, which panics in a debug build and, in release,
   wraps and returns a wrong residue with no error — e.g. modulo the largest

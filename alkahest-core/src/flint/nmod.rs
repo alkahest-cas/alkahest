@@ -24,7 +24,12 @@ unsafe impl Sync for FlintNmodPoly {}
 #[allow(dead_code)]
 impl FlintNmodPoly {
     /// Construct a zero polynomial over `ℤ/modulus·ℤ`.
+    ///
+    /// # Panics
+    ///
+    /// When `modulus` is zero: FLINT's `nmod` arithmetic divides by it.
     pub fn new(modulus: u64) -> Self {
+        assert!(modulus != 0, "an nmod polynomial needs a non-zero modulus");
         // SAFETY: zeroed() gives a valid starting point; nmod_poly_init
         // overwrites every field before any read.
         let mut inner: ffi::NmodPolyStruct = unsafe { std::mem::zeroed() };
@@ -33,7 +38,13 @@ impl FlintNmodPoly {
     }
 
     /// Set the coefficient of `x^i` to `c` (reduced mod `p` internally by FLINT).
+    ///
+    /// # Panics
+    ///
+    /// When `i` is past [`super::poly::MAX_COEFF_INDEX`] — FLINT would
+    /// otherwise see a negative index or abort on the allocation.
     pub fn set_coeff(&mut self, i: usize, c: u64) {
+        super::poly::check_coeff_index(i);
         unsafe { ffi::nmod_poly_set_coeff_ui(&mut self.inner, i as ffi::slong, c) };
     }
 
@@ -42,8 +53,13 @@ impl FlintNmodPoly {
         unsafe { ffi::nmod_poly_degree(&self.inner) }
     }
 
-    /// Coefficient of `x^j` as a `u64`.
+    /// Coefficient of `x^j` as a `u64`; zero for `j` outside `0..length`.
     pub fn get_coeff(&self, j: i64) -> u64 {
+        // FLINT checks only the upper bound; a negative `j` would read before
+        // the coefficient array.
+        if j < 0 {
+            return 0;
+        }
         unsafe { ffi::nmod_poly_get_coeff_ui(&self.inner, j) }
     }
 

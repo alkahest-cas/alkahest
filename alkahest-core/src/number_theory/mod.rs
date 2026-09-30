@@ -17,6 +17,7 @@ use crate::errors::AlkahestError;
 use crate::flint::ffi;
 use crate::flint::integer::FlintIntFactor;
 use crate::flint::FlintInteger;
+use rug::ops::RemRounding;
 use rug::Complete;
 use rug::Integer;
 use std::cmp::Ordering;
@@ -231,8 +232,9 @@ pub fn nthroot_mod(a: &str, k: u64, p: &str) -> Result<String, NumberTheoryError
         return Err(NumberTheoryError::CompositeModulus);
     }
 
-    let mut ared = parse_int(a)?;
-    ared %= &pm;
+    // Least non-negative residue: rug's `%` truncates toward zero, so a
+    // negative `a` would otherwise stay negative.
+    let ared = parse_int(a)?.rem_euc(&pm);
 
     let mut out = FlintInteger::new();
 
@@ -282,13 +284,17 @@ pub fn discrete_log(residue: &str, base: &str, p: &str) -> Result<String, Number
     }
 
     let ord = pm.clone() - Integer::from(1);
-    let mut b = parse_int(base)?;
-    let mut r = parse_int(residue)?;
-    r %= &pm;
-    b %= &pm;
+    // Least non-negative residues. rug's `%` truncates toward zero, so
+    // `-1 % 5` is `-1`, which no power of the base ever equals: the sweep
+    // below used to report NoSolution for `discrete_log(-1, 2, 5)` = 2.
+    let b = parse_int(base)?.rem_euc(&pm);
+    let r = parse_int(residue)?.rem_euc(&pm);
 
     if b.is_zero() {
-        return if r.is_zero() {
+        // 0^0 = 1 and 0^e = 0 for every e >= 1.
+        return if r == 1 {
+            Ok("0".into())
+        } else if r.is_zero() {
             Ok("1".into())
         } else {
             Err(NumberTheoryError::NoSolution)
@@ -348,6 +354,33 @@ mod tests {
     use super::*;
     use rug::ops::Pow;
     use std::collections::HashMap;
+
+    /// A negative residue or base used to stay negative (rug's `%`
+    /// truncates), so the sweep never matched: `discrete_log(-1, 2, 5)` said
+    /// NoSolution although 2^2 = 4 ≡ -1.
+    #[test]
+    fn discrete_log_normalises_negative_residues() {
+        assert_eq!(discrete_log("-1", "2", "5").unwrap(), "2");
+        assert_eq!(discrete_log("4", "-3", "5").unwrap(), "2");
+        assert_eq!(discrete_log("-4", "-3", "5").unwrap(), "0");
+        assert_eq!(discrete_log("-16", "3", "17").unwrap(), "0");
+        assert_eq!(discrete_log("1", "0", "7").unwrap(), "0");
+        assert_eq!(discrete_log("0", "0", "7").unwrap(), "1");
+        assert_eq!(discrete_log("-7", "7", "7").unwrap(), "1");
+        assert!(matches!(
+            discrete_log("3", "0", "7"),
+            Err(NumberTheoryError::NoSolution)
+        ));
+    }
+
+    #[test]
+    fn nthroot_mod_normalises_negative_input() {
+        let x: i64 = nthroot_mod("-1", 2, "5").unwrap().parse().unwrap();
+        assert_eq!((x * x) % 5, 4);
+        let x: i64 = nthroot_mod("-4", 3, "11").unwrap().parse().unwrap();
+        assert_eq!((x * x * x) % 11, 7);
+        assert!((0..11).contains(&x));
+    }
 
     #[test]
     fn mersenne_m127_prime() {

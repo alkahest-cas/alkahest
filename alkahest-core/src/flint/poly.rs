@@ -61,6 +61,23 @@ impl Drop for FlintPolyFactor {
     }
 }
 
+/// The largest coefficient index a FLINT polynomial wrapper will accept.
+///
+/// A dense polynomial of length `n + 1` needs `(n + 1)` machine words before a
+/// single coefficient is big; past this no allocation can succeed, and an
+/// index above `i64::MAX` would reach FLINT as a negative `slong`.
+pub const MAX_COEFF_INDEX: usize = (isize::MAX as usize) / std::mem::size_of::<ffi::fmpz>() - 1;
+
+/// Panic (rather than let FLINT corrupt the heap or abort) on an index no
+/// polynomial can have.
+#[track_caller]
+pub(crate) fn check_coeff_index(n: usize) {
+    assert!(
+        n <= MAX_COEFF_INDEX,
+        "coefficient index {n} is past the largest addressable polynomial length"
+    );
+}
+
 /// Safe wrapper over FLINT's `fmpz_poly_t` — dense univariate polynomial
 /// over the integers (`ℤ[x]`).
 ///
@@ -88,9 +105,17 @@ impl FlintPoly {
     }
 
     /// Construct from coefficient slice in ascending degree order.
+    ///
+    /// # Panics
+    ///
+    /// As [`set_coeff_flint`](Self::set_coeff_flint), for a slice longer
+    /// than [`MAX_COEFF_INDEX`].
     /// `from_coefficients(&[1, 2, 3])` → `1 + 2x + 3x²`.
     pub fn from_coefficients(coeffs: &[i64]) -> Self {
         let mut p = Self::new();
+        if let Some(last) = coeffs.len().checked_sub(1) {
+            check_coeff_index(last);
+        }
         for (i, &c) in coeffs.iter().enumerate() {
             unsafe { ffi::fmpz_poly_set_coeff_si(&mut p.inner, i as ffi::slong, c) };
         }
@@ -109,6 +134,12 @@ impl FlintPoly {
 
     /// Coefficient of `x^n` as `i64`. Returns 0 for out-of-range indices.
     pub fn get_coeff(&self, n: usize) -> i64 {
+        // An index past the length is zero by definition. Checking here also
+        // keeps `n > i64::MAX` from reaching FLINT as a *negative* `slong`,
+        // which it would use to read before the coefficient array.
+        if n >= self.length() {
+            return 0;
+        }
         unsafe { ffi::fmpz_poly_get_coeff_si(&self.inner, n as ffi::slong) }
     }
 
@@ -143,6 +174,12 @@ impl FlintPoly {
         res
     }
 
+    /// [`div_exact`](Self::div_exact), or `None` when `divisor` is the zero
+    /// polynomial.
+    pub fn checked_div_exact(&self, divisor: &Self) -> Option<Self> {
+        (!divisor.is_zero()).then(|| self.div_exact(divisor))
+    }
+
     pub fn gcd(&self, other: &Self) -> Self {
         let mut res = Self::new();
         unsafe { ffi::fmpz_poly_gcd(&mut res.inner, &self.inner, &other.inner) };
@@ -150,7 +187,17 @@ impl FlintPoly {
     }
 
     /// Exact polynomial division: returns `self / divisor`, assuming `divisor` divides `self`.
+    ///
+    /// # Panics
+    ///
+    /// When `divisor` is the zero polynomial (FLINT would `abort()` the
+    /// process). [`checked_div_exact`](Self::checked_div_exact) returns
+    /// `None` instead.
     pub fn div_exact(&self, divisor: &Self) -> Self {
+        assert!(
+            !divisor.is_zero(),
+            "attempt to divide a FlintPoly by the zero polynomial"
+        );
         let mut res = Self::new();
         unsafe { ffi::fmpz_poly_div(&mut res.inner, &self.inner, &divisor.inner) };
         res
@@ -171,7 +218,12 @@ impl FlintPoly {
     }
 
     /// Divide every coefficient by `c` (exact — caller ensures divisibility).
+    ///
+    /// # Panics
+    ///
+    /// When `c` is zero (FLINT would `abort()` the process).
     pub fn scalar_divexact_fmpz(&self, c: &super::integer::FlintInteger) -> Self {
+        assert!(!c.is_zero(), "attempt to divide a FlintPoly by zero");
         let mut res = Self::new();
         unsafe { ffi::fmpz_poly_scalar_divexact_fmpz(&mut res.inner, &self.inner, c.inner_ptr()) };
         res
@@ -197,7 +249,15 @@ impl FlintPoly {
     }
 
     /// Pseudo-division: returns `(Q, R, d)` such that `lc(other)^d * self = Q * other + R`.
+    ///
+    /// # Panics
+    ///
+    /// When `other` is the zero polynomial (FLINT would `abort()` the process).
     pub fn pseudo_divrem(&self, other: &Self) -> (Self, Self, u64) {
+        assert!(
+            !other.is_zero(),
+            "attempt to pseudo-divide a FlintPoly by the zero polynomial"
+        );
         let mut q = Self::new();
         let mut r = Self::new();
         let mut d: ffi::ulong = 0;
@@ -214,13 +274,24 @@ impl FlintPoly {
     }
 
     /// Set coefficient of x^n from a `FlintInteger` (supports values beyond i64 range).
+    ///
+    /// # Panics
+    ///
+    /// When `n` is past the longest coefficient array that can be addressed
+    /// ([`MAX_COEFF_INDEX`]). FLINT would otherwise receive `n` as a negative
+    /// `slong` and write outside the array, or fail its allocation and
+    /// `abort()`.
     pub fn set_coeff_flint(&mut self, n: usize, c: &super::integer::FlintInteger) {
+        check_coeff_index(n);
         unsafe { ffi::fmpz_poly_set_coeff_fmpz(&mut self.inner, n as ffi::slong, c.inner_ptr()) };
     }
 
-    /// Get coefficient of x^n as a `FlintInteger`.
+    /// Get coefficient of x^n as a `FlintInteger`. Zero past the length.
     pub fn get_coeff_flint(&self, n: usize) -> super::integer::FlintInteger {
         let mut c = super::integer::FlintInteger::new();
+        if n >= self.length() {
+            return c;
+        }
         unsafe { ffi::fmpz_poly_get_coeff_fmpz(c.inner_mut_ptr(), &self.inner, n as ffi::slong) };
         c
     }
@@ -420,6 +491,93 @@ impl fmt::Debug for FlintPoly {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- out-of-range indices and zero divisors ---------------------------
+    //
+    // Each of these used to reach FLINT: a `usize` index past `i64::MAX`
+    // became a negative `slong` (an out-of-bounds read, or a heap-corrupting
+    // write), and a zero divisor made FLINT `abort()` the process.
+
+    #[test]
+    fn get_coeff_past_the_end_is_zero() {
+        let p = FlintPoly::from_coefficients(&[1, 2, 3]);
+        for n in [3, 4, 1 << 40, i64::MAX as usize, usize::MAX] {
+            assert_eq!(p.get_coeff(n), 0, "{n}");
+            assert!(p.get_coeff_flint(n).is_zero(), "{n}");
+        }
+        assert_eq!(p.get_coeff(2), 3);
+        assert_eq!(p.get_coeff_flint(1).to_i64(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "past the largest addressable polynomial length")]
+    fn set_coeff_at_usize_max_panics_instead_of_corrupting_the_heap() {
+        let mut p = FlintPoly::from_coefficients(&[1, 2, 3]);
+        p.set_coeff_flint(
+            usize::MAX,
+            &super::super::integer::FlintInteger::from_i64(5),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "past the largest addressable polynomial length")]
+    fn set_coeff_past_i64_max_panics() {
+        let mut p = FlintPoly::new();
+        p.set_coeff_flint(
+            i64::MAX as usize + 1,
+            &super::super::integer::FlintInteger::from_i64(5),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "zero polynomial")]
+    fn div_exact_by_zero_panics_instead_of_aborting() {
+        let p = FlintPoly::from_coefficients(&[1, 2, 3]);
+        let _ = p.div_exact(&FlintPoly::new());
+    }
+
+    #[test]
+    #[should_panic(expected = "zero polynomial")]
+    fn pseudo_divrem_by_zero_panics_instead_of_aborting() {
+        let p = FlintPoly::from_coefficients(&[1, 2, 3]);
+        let _ = p.pseudo_divrem(&FlintPoly::new());
+    }
+
+    #[test]
+    #[should_panic(expected = "divide a FlintPoly by zero")]
+    fn scalar_divexact_by_zero_panics_instead_of_aborting() {
+        let p = FlintPoly::from_coefficients(&[2, 4]);
+        let _ = p.scalar_divexact_fmpz(&super::super::integer::FlintInteger::from_i64(0));
+    }
+
+    #[test]
+    fn checked_div_exact() {
+        let p = FlintPoly::from_coefficients(&[-1, 0, 1]);
+        let d = FlintPoly::from_coefficients(&[1, 1]);
+        assert!(p.checked_div_exact(&FlintPoly::new()).is_none());
+        assert_eq!(
+            p.checked_div_exact(&d).unwrap(),
+            FlintPoly::from_coefficients(&[-1, 1])
+        );
+    }
+
+    #[test]
+    fn nmod_get_coeff_negative_index_is_zero() {
+        let mut p = super::super::nmod::FlintNmodPoly::new(7);
+        p.set_coeff(0, 3);
+        p.set_coeff(1, 5);
+        assert_eq!(p.get_coeff(-1), 0);
+        assert_eq!(p.get_coeff(i64::MIN), 0);
+        assert_eq!(p.get_coeff(1), 5);
+        assert_eq!(p.get_coeff(9), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "past the largest addressable polynomial length")]
+    fn nmod_set_coeff_at_usize_max_panics() {
+        let mut p = super::super::nmod::FlintNmodPoly::new(7);
+        p.set_coeff(usize::MAX, 1);
+    }
 
     // --- construction ---
 

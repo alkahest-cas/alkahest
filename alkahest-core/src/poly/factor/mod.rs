@@ -177,22 +177,72 @@ impl MultiPoly {
     }
 }
 
-/// Reduce coefficients mod `p` (must satisfy 2 ≤ p ≤ 2⁶³) and factor over 𝔽_p.
+/// Reduce coefficients mod `p` and factor over 𝔽_p.
+///
+/// The factors are **monic**; the leading coefficient that makes their
+/// product equal the input is dropped here and returned by
+/// [`factor_univariate_mod_p_with_unit`].
+///
+/// # Errors
+///
+/// `E-POLY-009` unless `modulus` is a prime (a composite modulus is not a
+/// field, and FLINT's factoriser aborts the process on the first
+/// non-invertible leading coefficient it meets); `E-POLY-008` when the
+/// polynomial is zero modulo `p`.
 pub fn factor_univariate_mod_p(
     coeffs: &[i64],
     modulus: u64,
 ) -> Result<UniPolyFactorModP, FactorError> {
-    if modulus < 2 {
+    factor_univariate_mod_p_with_unit(coeffs, modulus).map(|(_, fac)| fac)
+}
+
+/// [`factor_univariate_mod_p`], also returning the unit: the leading
+/// coefficient `u` of the input reduced mod `p`, so that
+/// `polynomial ≡ u · ∏ fᵢ^eᵢ (mod p)` with every `fᵢ` monic.
+///
+/// A non-zero constant factors as `(u, [])`, and `2x` mod 7 as
+/// `(2, [([0, 1], 1)])`.
+///
+/// # Errors
+///
+/// As [`factor_univariate_mod_p`].
+pub fn factor_univariate_mod_p_with_unit(
+    coeffs: &[i64],
+    modulus: u64,
+) -> Result<(u64, UniPolyFactorModP), FactorError> {
+    // `nmod_poly_factor` assumes a field: over ℤ/nℤ with n composite it meets
+    // a leading coefficient with no inverse and calls `flint_throw`, which
+    // aborts the process. Primality is the precondition, not a nicety.
+    crate::budget::clear_trip();
+    // SAFETY: `n_is_prime` is a pure function of a machine word.
+    if modulus < 2 || unsafe { crate::flint::ffi::n_is_prime(modulus) } == 0 {
         return Err(FactorError::InvalidModulus);
     }
     let p = modulus as i128;
+    let reduced: Vec<u64> = coeffs
+        .iter()
+        .map(|&c| (c as i128).rem_euclid(p) as u64)
+        .collect();
+    let Some(last) = reduced.iter().rposition(|&c| c != 0) else {
+        // ≡ 0 mod p: no factorisation, exactly as over ℤ.
+        return Err(FactorError::ZeroPolynomial);
+    };
+    let unit = reduced[last];
+
+    // The factoriser works in several copies of the input; refuse up front a
+    // size that would abort inside FLINT instead. The cause is left for the
+    // bindings in `budget::take_trip` (FactorError is exhaustive).
+    let words = (last as u64 + 1).saturating_mul(16);
+    if let Err(trip) = crate::budget::preflight_bytes(words.saturating_mul(8)) {
+        crate::budget::record_trip(trip);
+        return Err(FactorError::FlintFailure);
+    }
 
     // FlintNmodPoly and FlintNmodPolyFactor are drop-safe: no manual
     // nmod_poly_clear / nmod_poly_factor_clear needed.
     let mut poly = FlintNmodPoly::new(modulus);
-    for (i, &c) in coeffs.iter().enumerate() {
-        let r = ((c as i128 % p) + p) % p;
-        poly.set_coeff(i, r as u64);
+    for (i, &r) in reduced[..=last].iter().enumerate() {
+        poly.set_coeff(i, r);
     }
 
     let mut fac = FlintNmodPolyFactor::new();
@@ -207,7 +257,7 @@ pub fn factor_univariate_mod_p(
         })
         .collect();
 
-    Ok(UniPolyFactorModP { modulus, factors })
+    Ok((unit, UniPolyFactorModP { modulus, factors }))
 }
 
 #[cfg(test)]
@@ -258,6 +308,78 @@ mod tests {
             fac.factors.len() >= 2,
             "Φ_105 should have multiple factors over GF(2)"
         );
+    }
+
+    /// A composite modulus used to reach `nmod_poly_factor`, which aborts the
+    /// process ("Cannot invert modulo 3*5") on the first non-invertible leading
+    /// coefficient. It must be refused before FLINT sees it.
+    #[test]
+    fn composite_modulus_is_refused_not_aborted() {
+        for m in [4u64, 9, 12, 15, 21, 1 << 32, u64::MAX] {
+            for coeffs in [&[6i64, 5, 1][..], &[1, 0, 1], &[0, 0, 1], &[1, 2, 1]] {
+                assert_eq!(
+                    factor_univariate_mod_p(coeffs, m),
+                    Err(FactorError::InvalidModulus),
+                    "{coeffs:?} mod {m}"
+                );
+            }
+        }
+        assert_eq!(
+            factor_univariate_mod_p(&[1, 0, 1], 1),
+            Err(FactorError::InvalidModulus)
+        );
+        // Primes up to the top of the machine word are still accepted.
+        let big = factor_univariate_mod_p(&[1, 0, 1], 18_446_744_073_709_551_557).unwrap();
+        assert!(!big.factors.is_empty());
+    }
+
+    /// The unit used to be dropped silently: `5` mod 7 factored as the empty
+    /// product (i.e. 1) and `2x` as `x`.
+    #[test]
+    fn mod_p_factorisation_keeps_the_unit() {
+        let (u, f) = factor_univariate_mod_p_with_unit(&[5], 7).unwrap();
+        assert_eq!((u, f.factors), (5, vec![]));
+        let (u, f) = factor_univariate_mod_p_with_unit(&[0, 2], 7).unwrap();
+        assert_eq!((u, f.factors), (2, vec![(vec![0, 1], 1)]));
+        // Negative coefficients reduce to their least non-negative residue.
+        let (u, f) = factor_univariate_mod_p_with_unit(&[2, -5], 7).unwrap();
+        assert_eq!(u, 2);
+        assert_eq!(f.factors, vec![(vec![1, 1], 1)]);
+        // Reconstruct u·∏fᵢ^eᵢ and compare with the reduced input.
+        let input = [3i64, -4, 0, 6, 2];
+        let p = 11u64;
+        let (u, f) = factor_univariate_mod_p_with_unit(&input, p).unwrap();
+        let mul = |a: &[u64], b: &[u64]| {
+            let mut out = vec![0u64; a.len() + b.len() - 1];
+            for (i, &x) in a.iter().enumerate() {
+                for (j, &y) in b.iter().enumerate() {
+                    out[i + j] = (out[i + j] + x * y) % p;
+                }
+            }
+            out
+        };
+        let mut prod = vec![u];
+        for (g, e) in &f.factors {
+            for _ in 0..*e {
+                prod = mul(&prod, g);
+            }
+        }
+        let want: Vec<u64> = input
+            .iter()
+            .map(|&c| c.rem_euclid(p as i64) as u64)
+            .collect();
+        assert_eq!(prod, want);
+    }
+
+    #[test]
+    fn zero_mod_p_is_the_zero_polynomial() {
+        for coeffs in [&[][..], &[7i64], &[0, 14, -21]] {
+            assert_eq!(
+                factor_univariate_mod_p(coeffs, 7),
+                Err(FactorError::ZeroPolynomial),
+                "{coeffs:?}"
+            );
+        }
     }
 
     #[test]

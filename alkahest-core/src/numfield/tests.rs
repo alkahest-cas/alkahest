@@ -665,3 +665,69 @@ fn a_shared_field_survives_concurrent_use() {
         assert_eq!(h.join().unwrap(), q(1));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Sizes FLINT cannot survive
+// ---------------------------------------------------------------------------
+
+/// `(1 + √2)^(10¹²)` has coordinates of about 8.8·10¹¹ bits. `nf_elem_pow`
+/// used to be called with the exponent as given and FLINT aborted the process
+/// on the allocation. Now the powering stops at the first product that cannot
+/// be held.
+#[test]
+fn huge_power_is_refused_not_aborted() {
+    let k = field(&[-2, 0, 1]);
+    let a = k.generator().add(&k.one()).unwrap();
+    for e in [1u64 << 40, 1_000_000_000_000, u64::MAX] {
+        let t = a.try_pow(e).unwrap_err();
+        assert!(t.code().starts_with("E-BUDGET-"), "{e}: {t}");
+    }
+    // Moderate powers still work and agree with FLINT's powering.
+    let p = a.try_pow(1000).unwrap();
+    assert_eq!(p, a.pow(1000));
+    let mut acc = k.one();
+    for _ in 0..37 {
+        acc = acc.mul(&a).unwrap();
+    }
+    assert_eq!(a.try_pow(37).unwrap(), acc);
+}
+
+/// A root of unity never grows, so its huge powers must still be computed —
+/// the refusal is judged from the actual operands, not from the exponent.
+#[test]
+fn huge_power_of_a_root_of_unity_is_computed() {
+    let k = NumberField::cyclotomic(5).unwrap();
+    let z = k.generator();
+    let e = 1_000_000_000_003u64; // ≡ 3 (mod 5)
+    assert_eq!(z.try_pow(e).unwrap(), z.pow(3));
+    assert_eq!(z.pow(e), z.pow(3));
+    let minus_one = k.one().neg();
+    assert_eq!(minus_one.try_pow(u64::MAX).unwrap(), minus_one);
+    assert!(k.zero().try_pow(u64::MAX).unwrap().is_zero());
+}
+
+#[test]
+#[should_panic(expected = "NumberFieldElement::pow")]
+fn pow_panics_rather_than_aborting() {
+    let k = field(&[-2, 0, 1]);
+    let a = k.generator().add(&k.one()).unwrap();
+    let _ = a.pow(1_000_000_000_000);
+}
+
+/// `Φ_{10¹²}` has 4·10¹¹ coefficients; FLINT aborted on the allocation.
+#[test]
+fn huge_cyclotomic_polynomial_is_refused() {
+    for n in [1_000_000_000_000u64, 1 << 40, u64::MAX] {
+        let e = try_cyclotomic_polynomial(n).unwrap_err();
+        assert_eq!(e.code(), "E-NT-006", "{n}");
+    }
+    assert_eq!(
+        try_cyclotomic_polynomial(12).unwrap(),
+        ints(&[1, 0, -1, 0, 1])
+    );
+    assert_eq!(try_cyclotomic_polynomial(0).unwrap(), ints(&[1]));
+    // 2^25 has φ = 2^24, exactly the cap.
+    let at_cap = try_cyclotomic_polynomial(1 << 25).unwrap();
+    assert_eq!(at_cap.len() as u64, MAX_CYCLOTOMIC_POLYNOMIAL_DEGREE + 1);
+    assert!(try_cyclotomic_polynomial(1 << 26).is_err());
+}

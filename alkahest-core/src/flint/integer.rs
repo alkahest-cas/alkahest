@@ -42,6 +42,26 @@ impl FlintInteger {
         res
     }
 
+    /// `true` when this integer is zero.
+    pub fn is_zero(&self) -> bool {
+        // `fmpz_is_zero` is a header inline: an `fmpz` is zero exactly when
+        // its word is zero (a heap-backed value is a tagged non-zero pointer).
+        self.inner == 0
+    }
+
+    /// Truncated division `self / rhs`, or `None` when `rhs` is zero.
+    ///
+    /// The `/` operator panics on a zero divisor (FLINT would abort the
+    /// process); this is the form for a divisor that came from user input.
+    pub fn checked_div(&self, rhs: &Self) -> Option<Self> {
+        (!rhs.is_zero()).then(|| self / rhs)
+    }
+
+    /// Remainder of truncated division, or `None` when `rhs` is zero.
+    pub fn checked_rem(&self, rhs: &Self) -> Option<Self> {
+        (!rhs.is_zero()).then(|| self % rhs)
+    }
+
     pub fn pow(&self, exp: u64) -> Self {
         let mut res = Self::new();
         unsafe { ffi::fmpz_pow_ui(&mut res.inner, &self.inner, exp) };
@@ -233,7 +253,13 @@ impl Div for FlintInteger {
 }
 impl<'b> Div<&'b FlintInteger> for &FlintInteger {
     type Output = FlintInteger;
+    /// # Panics
+    ///
+    /// On division by zero, as Rust's built-in `/` does. FLINT itself would
+    /// `abort()` the process; use [`FlintInteger::checked_div`] for a
+    /// non-panicking form.
     fn div(self, rhs: &'b FlintInteger) -> FlintInteger {
+        assert!(!rhs.is_zero(), "attempt to divide a FlintInteger by zero");
         let mut res = FlintInteger::new();
         unsafe { ffi::fmpz_tdiv_q(&mut res.inner, &self.inner, &rhs.inner) };
         res
@@ -249,7 +275,16 @@ impl Rem for FlintInteger {
 }
 impl<'b> Rem<&'b FlintInteger> for &FlintInteger {
     type Output = FlintInteger;
+    /// # Panics
+    ///
+    /// On a zero divisor, as Rust's built-in `%` does. FLINT itself would
+    /// `abort()` the process; use [`FlintInteger::checked_rem`] for a
+    /// non-panicking form.
     fn rem(self, rhs: &'b FlintInteger) -> FlintInteger {
+        assert!(
+            !rhs.is_zero(),
+            "attempt to calculate the remainder of a FlintInteger with a divisor of zero"
+        );
         let mut q = FlintInteger::new();
         let mut r = FlintInteger::new();
         unsafe { ffi::fmpz_tdiv_qr(&mut q.inner, &mut r.inner, &self.inner, &rhs.inner) };
@@ -365,6 +400,41 @@ impl Drop for FlintIntFactor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- zero divisors (FLINT aborts the process; these must not reach it) ---
+
+    #[test]
+    #[should_panic(expected = "divide a FlintInteger by zero")]
+    fn division_by_zero_panics_instead_of_aborting() {
+        let _ = FlintInteger::from_i64(7) / FlintInteger::from_i64(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "divisor of zero")]
+    fn remainder_by_zero_panics_instead_of_aborting() {
+        let _ = FlintInteger::from_i64(7) % FlintInteger::from_i64(0);
+    }
+
+    #[test]
+    fn checked_division() {
+        let a = FlintInteger::from_i64(-7);
+        let zero = FlintInteger::from_i64(0);
+        assert!(a.checked_div(&zero).is_none());
+        assert!(a.checked_rem(&zero).is_none());
+        assert_eq!(
+            a.checked_div(&FlintInteger::from_i64(2)).unwrap().to_i64(),
+            -3
+        );
+        assert_eq!(
+            a.checked_rem(&FlintInteger::from_i64(2)).unwrap().to_i64(),
+            -1
+        );
+        assert!(zero.is_zero());
+        assert!(!a.is_zero());
+        let big = FlintInteger::from_rug(&(rug::Integer::from(1) << 200u32));
+        assert!(!big.is_zero());
+        assert!(big.checked_div(&zero).is_none());
+    }
 
     // --- construction and equality ---
 

@@ -408,8 +408,9 @@ alone. And `max_bytes` counts GMP memory, not Rust-side allocations.
 | `E-BUDGET-003` | `request_cancel()` was called and not yet cleared |
 | `E-BUDGET-004` | The active budget's `max_bytes` ceiling was reached |
 | `E-BUDGET-005` | The process is about to exhaust its address-space limit |
+| `E-BUDGET-006` | One result would exceed physical memory, or GMP's largest integer |
 
-All five are `Cause::Resource` in the Rust registry (`alkahest_cas::errors::codes`) —
+All six are `Cause::Resource` in the Rust registry (`alkahest_cas::errors::codes`) —
 a budget/cancellation trip is an environment/policy limit, not a statement about the
 mathematics, so it is never conflated with e.g. `IntegrationError::NonElementary` (a
 proof that no elementary antiderivative exists). `alkahest.integrate` and

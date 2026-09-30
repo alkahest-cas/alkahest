@@ -421,6 +421,10 @@ Exception subclasses
    - ``E-BUDGET-004`` — the declared memory budget was exceeded
    - ``E-BUDGET-005`` — the process address-space limit was about to be
      exhausted; this refusal replaces the uncatchable abort that would follow
+   - ``E-BUDGET-006`` — a single result would be larger than physical memory,
+     or than GMP can represent as one integer; raised with no budget active,
+     in place of the abort (or ``SIGFPE``) GMP and FLINT would otherwise
+     produce
 
    Example::
 

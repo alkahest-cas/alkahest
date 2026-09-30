@@ -80,6 +80,7 @@
 //! |----------------|-------------------------------|-------------------|
 //! | `E-BUDGET-004` | [`BudgetTrip::Memory`]        | the active budget's `max_bytes` ceiling |
 //! | `E-BUDGET-005` | [`BudgetTrip::AddressSpace`]  | the process is about to exhaust `RLIMIT_AS` |
+//! | `E-BUDGET-006` | [`BudgetTrip::Oversized`]     | one result is larger than the machine, or than GMP, can hold |
 //!
 //! See [`mod@memory`] for why the memory ceiling is enforced at these
 //! checkpoints rather than inside a fallible allocator (GMP does not have
@@ -528,6 +529,12 @@ pub fn check_memory() -> Result<(), BudgetTrip> {
 /// *before* the allocation rather than after the next checkpoint.
 pub fn check_alloc(bytes: u64) -> Result<(), BudgetTrip> {
     check()?;
+    check_alloc_memory(bytes)
+}
+
+/// The memory half of [`check_alloc`]: the active budget's `max_bytes` and
+/// the process's `RLIMIT_AS`, without the wall/step/cancel checks.
+fn check_alloc_memory(bytes: u64) -> Result<(), BudgetTrip> {
     let framed = STACK.with(|s| {
         let stack = s.borrow();
         stack.last().and_then(|f| {
@@ -560,6 +567,64 @@ pub fn check_alloc(bytes: u64) -> Result<(), BudgetTrip> {
         }
     }
     Ok(())
+}
+
+/// The largest integer GMP can represent, in bits.
+///
+/// An `mpz_t` records its length in limbs in a C `int`, so a value past
+/// `INT_MAX` 64-bit limbs cannot exist. GMP does not fail when asked for one:
+/// `mpz_pow_ui` and friends detect the overflow and raise `SIGFPE`
+/// (`__gmp_overflow_in_mpz`), and FLINT's `fmpz` inherits the same ceiling.
+pub const GMP_MAX_BITS: u64 = (i32::MAX as u64) * 64;
+
+/// The largest single integer [`preflight_bignum_bits`] lets a computation
+/// produce: 2³¹ bits (256 MiB, about 646 million decimal digits).
+///
+/// A sanity ceiling well inside [`GMP_MAX_BITS`], not a memory budget. It
+/// keeps an innocent-looking call (`σ_k(2)` with `k = 2³²`, a number-field
+/// power with a twelve-digit exponent) from spending minutes and gigabytes
+/// before it is refused, and it keeps sizes within what `rug` reports as a
+/// `u32` bit count.
+pub const MAX_INTEGER_BITS: u64 = 1 << 31;
+
+/// Pre-flight check for an allocation of `bytes` that a caller can size before
+/// handing the work to GMP or FLINT, neither of which can fail gracefully.
+///
+/// Refuses with [`BudgetTrip::Oversized`] when `bytes` exceeds the machine's
+/// physical memory ([`memory::physical_memory`]) — such a request can only end
+/// in `abort()` — and otherwise defers to [`check_alloc`], which applies the
+/// active budget's `max_bytes` and the process's `RLIMIT_AS`.
+///
+/// Only memory is consulted — not the wall clock, the step count or
+/// cancellation — so a constructor that calls this refuses exactly the sizes
+/// that cannot fit and nothing else. Nor does it apply a work cap of its own:
+/// a request that fits is allowed however long it takes.
+pub fn preflight_bytes(bytes: u64) -> Result<(), BudgetTrip> {
+    if let Some(ceiling) = memory::physical_memory() {
+        if bytes > ceiling {
+            return Err(BudgetTrip::Oversized {
+                requested: bytes,
+                ceiling,
+            });
+        }
+    }
+    check_alloc_memory(bytes)
+}
+
+/// [`preflight_bytes`] for a computation whose largest integer has about
+/// `bits` bits and which holds about `copies` integers of that size at once.
+///
+/// Also refuses, with [`BudgetTrip::Oversized`], an integer past
+/// [`MAX_INTEGER_BITS`] (and so past [`GMP_MAX_BITS`], which GMP cannot
+/// represent at any memory size).
+pub fn preflight_bignum_bits(bits: u64, copies: u64) -> Result<(), BudgetTrip> {
+    if bits > MAX_INTEGER_BITS {
+        return Err(BudgetTrip::Oversized {
+            requested: bits.div_ceil(8),
+            ceiling: MAX_INTEGER_BITS / 8,
+        });
+    }
+    preflight_bytes(bits.div_ceil(8).saturating_mul(copies.max(1)))
 }
 
 // ---------------------------------------------------------------------------
@@ -700,6 +765,17 @@ pub enum BudgetTrip {
         /// the last two probes.
         reserve: u64,
     },
+    /// One result is larger than the machine can hold — more than its
+    /// physical memory, or one integer past [`MAX_INTEGER_BITS`] (GMP itself
+    /// stops at [`GMP_MAX_BITS`]) — so the allocation would `abort()` (or GMP
+    /// would raise `SIGFPE`), or run for minutes first. Fires with no budget
+    /// active; see [`preflight_bytes`] and [`preflight_bignum_bits`].
+    Oversized {
+        /// Estimated size of the refused allocation, in bytes.
+        requested: u64,
+        /// The ceiling it exceeds, in bytes.
+        ceiling: u64,
+    },
 }
 
 impl From<BudgetError> for BudgetTrip {
@@ -738,6 +814,12 @@ impl fmt::Display for BudgetTrip {
                  ({used} of {limit} bytes mapped, reserve {reserve} bytes) — the allocation \
                  that would follow cannot fail safely, GMP and the Rust allocator both abort"
             ),
+            BudgetTrip::Oversized { requested, ceiling } => write!(
+                f,
+                "refusing a result of about {requested} bytes: it is larger than the \
+                 {ceiling}-byte ceiling (physical memory, or the largest single integer \
+                 computed here), and the allocation cannot fail safely — GMP and FLINT abort"
+            ),
         }
     }
 }
@@ -750,6 +832,7 @@ impl AlkahestError for BudgetTrip {
             BudgetTrip::Budget(e) => e.code(),
             BudgetTrip::Memory { .. } => "E-BUDGET-004",
             BudgetTrip::AddressSpace { .. } => "E-BUDGET-005",
+            BudgetTrip::Oversized { .. } => "E-BUDGET-006",
         }
     }
 
@@ -765,6 +848,11 @@ impl AlkahestError for BudgetTrip {
                 "raise the process address-space limit (ulimit -v, or the container/cgroup \
                  memory limit), or ask for a smaller problem — this refusal replaces the \
                  uncatchable abort that would otherwise follow",
+            ),
+            BudgetTrip::Oversized { .. } => Some(
+                "ask for a smaller result (a smaller exponent, degree or shape) — no limit \
+                 setting can make this one fit; this refusal replaces the uncatchable abort \
+                 that would otherwise follow",
             ),
         }
     }

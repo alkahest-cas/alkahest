@@ -40,6 +40,7 @@ use std::fmt;
 use rug::Rational;
 
 use super::{parse_nonnegative, parse_positive, NumberTheoryError};
+use crate::budget::BudgetTrip;
 use crate::errors::AlkahestError;
 use crate::flint::ffi;
 use crate::flint::rational::FlintRational;
@@ -75,6 +76,14 @@ pub enum ArithmeticError {
     /// is reached through `moebius_mu()` or through anything else, and
     /// re-coding it here would have given one condition two codes.
     Input(NumberTheoryError),
+    /// The value is too large to compute here at all: its size exceeds what
+    /// the machine (or GMP, for one integer) can hold, or the active budget's
+    /// memory ceiling. Carries the [`BudgetTrip`] and its `E-BUDGET-*` code.
+    ///
+    /// These functions call into GMP and FLINT, which cannot fail gracefully:
+    /// asked for `σ_k(2)` with `k = 10¹²` GMP raises `SIGFPE` and kills the
+    /// process. The size is estimated and refused before the call instead.
+    Resource(BudgetTrip),
 }
 
 impl fmt::Display for ArithmeticError {
@@ -86,11 +95,18 @@ impl fmt::Display for ArithmeticError {
                  this module just will not spend unbounded time computing it"
             ),
             ArithmeticError::Input(e) => write!(f, "{e}"),
+            ArithmeticError::Resource(t) => write!(f, "{t}"),
         }
     }
 }
 
 impl std::error::Error for ArithmeticError {}
+
+impl From<BudgetTrip> for ArithmeticError {
+    fn from(t: BudgetTrip) -> Self {
+        ArithmeticError::Resource(t)
+    }
+}
 
 impl From<NumberTheoryError> for ArithmeticError {
     fn from(e: NumberTheoryError) -> Self {
@@ -103,6 +119,7 @@ impl AlkahestError for ArithmeticError {
         match self {
             ArithmeticError::WorkLimitExceeded { .. } => "E-NT-006",
             ArithmeticError::Input(e) => e.code(),
+            ArithmeticError::Resource(t) => t.code(),
         }
     }
 
@@ -112,6 +129,7 @@ impl AlkahestError for ArithmeticError {
                 Some("reduce the argument, or call FLINT directly if the wait is acceptable")
             }
             ArithmeticError::Input(e) => e.remediation(),
+            ArithmeticError::Resource(t) => t.remediation(),
         }
     }
 }
@@ -130,6 +148,12 @@ pub const MAX_EULER_N: u64 = 20_000;
 pub const MAX_HARMONIC_N: u64 = 1_000_000;
 /// Largest `n` accepted by the Stirling-number entry points.
 pub const MAX_STIRLING_N: u64 = 10_000;
+/// Largest `n` accepted by [`sum_of_squares`] for `k = 3` or `k = 5`, whose
+/// FLINT path sums over all `j² <= n` and factors `n - j²` each time.
+pub const MAX_SUM_OF_SQUARES_RECURSIVE_N: u64 = 1_000_000_000_000;
+/// Largest `n` accepted by [`sum_of_squares`] for `k = 6, 7, …`, whose FLINT
+/// path expands a theta series of length `n + 1`.
+pub const MAX_SUM_OF_SQUARES_SERIES_N: u64 = 100_000;
 
 fn work_cap(function: &'static str, n: u64, limit: u64) -> Result<(), ArithmeticError> {
     if n > limit {
@@ -304,9 +328,22 @@ pub fn moebius_mu(n: &str) -> Result<i32, ArithmeticError> {
 ///
 /// # Errors
 ///
-/// `E-NT-002` for `n < 1`.
+/// `E-NT-002` for `n < 1`. `E-BUDGET-006` (or `E-BUDGET-004`/`005` under a
+/// memory budget or address-space limit) when \(\sigma_k(n)\), which has
+/// about `k·log2(n)` bits, is too large to hold — GMP would otherwise raise
+/// `SIGFPE` or abort on the allocation.
 pub fn divisor_sigma(k: u64, n: &str) -> Result<String, ArithmeticError> {
     let z = parse_positive(n).map_err(ArithmeticError::Input)?;
+    if z == 1 {
+        // σ_k(1) = 1 for every k; no size to check.
+        return Ok("1".into());
+    }
+    // FLINT computes Π (p^(k(e+1)) − 1)/(p^k − 1): the largest intermediate
+    // is p^(k(e+1)), at most 2·k·log2(n) bits, with a few such values live.
+    let bits = k
+        .saturating_mul(2)
+        .saturating_mul(u64::from(z.significant_bits()));
+    crate::budget::preflight_bignum_bits(bits, 4)?;
     let fz = FlintInteger::from_rug(&z);
     let mut out = FlintInteger::new();
     // SAFETY: `out` and `fz` are live `fmpz`. Note the argument order —
@@ -324,7 +361,12 @@ pub fn divisor_sigma(k: u64, n: &str) -> Result<String, ArithmeticError> {
 ///
 /// # Errors
 ///
-/// `E-NT-002` for `n < 0` or `k == 0`.
+/// `E-NT-002` for `n < 0` or `k == 0`. `E-NT-006` for `k = 3, 5` with `n`
+/// above [`MAX_SUM_OF_SQUARES_RECURSIVE_N`], and for `k >= 6` with `n` above
+/// [`MAX_SUM_OF_SQUARES_SERIES_N`] — FLINT's algorithms for those `k` walk (or
+/// allocate) all of `0..=n`, and for an `n` past a machine word they either
+/// abort or silently use `n mod 2^64`. `E-BUDGET-*` when the result itself
+/// (about `n·log2(2k)` bits) is too large to hold.
 pub fn sum_of_squares(k: u64, n: &str) -> Result<String, ArithmeticError> {
     if k == 0 {
         return Err(ArithmeticError::Input(NumberTheoryError::Domain {
@@ -332,6 +374,37 @@ pub fn sum_of_squares(k: u64, n: &str) -> Result<String, ArithmeticError> {
         }));
     }
     let z = parse_nonnegative(n).map_err(ArithmeticError::Input)?;
+    match k {
+        // Closed forms via the factorisation of n: no size in n to bound.
+        1 | 2 | 4 => {}
+        3 | 5 => {
+            let cap = MAX_SUM_OF_SQUARES_RECURSIVE_N;
+            if z > cap {
+                return Err(ArithmeticError::WorkLimitExceeded {
+                    function: "sum_of_squares",
+                    limit: cap,
+                });
+            }
+        }
+        _ => {
+            let cap = MAX_SUM_OF_SQUARES_SERIES_N;
+            if z > cap {
+                return Err(ArithmeticError::WorkLimitExceeded {
+                    function: "sum_of_squares",
+                    limit: cap,
+                });
+            }
+            // r_k(n) <= (2n+1)^k and <= (2k)^n·C(k+n, n): the series holds n+1
+            // integers of up to about n·log2(2k)+n bits each.
+            let n_small = z.to_u64().unwrap_or(u64::MAX);
+            let k_bits = 64 - (k.saturating_mul(2)).leading_zeros() as u64 + 1;
+            let bits = n_small.saturating_mul(k_bits.saturating_add(1)).max(64);
+            crate::budget::preflight_bignum_bits(
+                bits,
+                n_small.saturating_add(1).saturating_mul(3),
+            )?;
+        }
+    }
     let fz = FlintInteger::from_rug(&z);
     let mut out = FlintInteger::new();
     // SAFETY: `out` and `fz` are live `fmpz`. Argument order `(result, k, n)`
@@ -392,6 +465,53 @@ mod tests {
             ArithmeticError::Input(e) => e,
             other => panic!("expected a wrapped input error, got {other:?}"),
         }
+    }
+
+    /// `σ_k(n)` with a huge `k` used to reach GMP, which raised `SIGFPE`
+    /// (`k = 10¹²`) or aborted on the allocation (`k = 2³² + 1`), killing the
+    /// process. Both must be refusals now.
+    #[test]
+    fn divisor_sigma_refuses_results_too_large_to_hold() {
+        for (k, n) in [
+            (1_000_000_000_000u64, "2"),
+            (1u64 << 40, "2"),
+            ((1u64 << 32) + 1, "2"),
+            (u64::MAX, "12"),
+        ] {
+            let e = divisor_sigma(k, n).unwrap_err();
+            assert!(matches!(e, ArithmeticError::Resource(_)), "{k} {n}: {e:?}");
+            assert!(e.code().starts_with("E-BUDGET-"), "{e}");
+        }
+        // σ_k(1) = 1 whatever k is.
+        assert_eq!(divisor_sigma(u64::MAX, "1").unwrap(), "1");
+        // Modest sizes still compute.
+        assert_eq!(divisor_sigma(3, "2").unwrap(), "9");
+        assert_eq!(divisor_sigma(2, "1000000000000").unwrap().len(), 25);
+    }
+
+    /// For `k >= 6` FLINT expands a theta series of length `n + 1`, and for an
+    /// `n` beyond a machine word it calls `flint_throw` (abort); for `k = 3, 5`
+    /// it silently used `n mod 2^64`.
+    #[test]
+    fn sum_of_squares_bounds_the_series_paths() {
+        let big = "18446744073709551617"; // 2^64 + 1
+        for k in [3u64, 5, 6, 7, 100] {
+            let e = sum_of_squares(k, big).unwrap_err();
+            assert_eq!(e.code(), "E-NT-006", "k={k}");
+        }
+        assert_eq!(
+            sum_of_squares(6, "1000000000000").unwrap_err().code(),
+            "E-NT-006"
+        );
+        // The closed-form paths take any n.
+        assert_eq!(sum_of_squares(2, big).unwrap(), "16");
+        assert_eq!(sum_of_squares(1, big).unwrap(), "0");
+        // Small values are unchanged: r_3(5) = 24, r_6(1) = 12, r_8(1) = 16.
+        assert_eq!(sum_of_squares(3, "5").unwrap(), "24");
+        assert_eq!(sum_of_squares(6, "1").unwrap(), "12");
+        assert_eq!(sum_of_squares(8, "1").unwrap(), "16");
+        // r_k(5) is a polynomial in k, so a huge k with small n is fine.
+        assert!(sum_of_squares(1_000_000_000_000, "5").is_ok());
     }
 
     #[test]

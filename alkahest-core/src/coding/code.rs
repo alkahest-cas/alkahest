@@ -450,10 +450,17 @@ pub(crate) fn field_elements(field: &FiniteField) -> Result<Vec<FieldElement>, C
         q: format!("{p}^{deg}"),
         reason: "the field order overflows a u128".to_string(),
     })?;
-    let q = usize::try_from(q).map_err(|_| CodingError::InvalidAlphabet {
-        q: q.to_string(),
-        reason: "the field is far too large to enumerate element by element".to_string(),
-    })?;
+    // Every caller enumerates at least all q elements; a field past the
+    // enumeration cap would only allocate its way to an abort
+    // (`LinearCode.hamming(GF(2^32 - 5), 2)` asked for ~100 GB).
+    if q > MAX_ENUMERATED_CODEWORDS {
+        return Err(CodingError::EnumerationTooLarge {
+            codewords: q.to_string(),
+            n: 0,
+            limit: format!("at most {MAX_ENUMERATED_CODEWORDS} field elements to enumerate"),
+        });
+    }
+    let q = q as usize;
     if deg == 1 {
         return Ok((0..p).map(|x| field.scalar(x)).collect());
     }
@@ -541,9 +548,9 @@ impl LinearCode {
                 n: r as usize,
             });
         }
-        let elems = field_elements(field)?;
-        let q = elems.len();
-        let total = (q as u128)
+        // Size the sieve from the field order *before* enumerating the field.
+        let q = field.order().unwrap_or(u128::MAX);
+        let total = q
             .checked_pow(r)
             .ok_or_else(|| CodingError::EnumerationTooLarge {
                 codewords: format!("q^r with q = {q}, r = {r}"),
@@ -559,6 +566,8 @@ impl LinearCode {
                 ),
             });
         }
+        let elems = field_elements(field)?;
+        let q = elems.len();
 
         // One column per projective point, in lexicographic order of the
         // mixed-radix encoding with coordinate 0 most significant.

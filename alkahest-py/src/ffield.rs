@@ -22,6 +22,14 @@ pyo3::create_exception!(alkahest, PyFiniteFieldError, crate::PyAlkahestError);
 
 fn ff_err(e: FiniteFieldError) -> PyErr {
     Python::with_gil(|py| {
+        // A shape refused for memory (rather than for being unaddressable)
+        // leaves its cause in the budget's trip slot: raise that as the
+        // `BudgetExceededError` every other engine raises.
+        if matches!(e, FiniteFieldError::DimensionTooLarge { .. }) {
+            if let Some(err) = crate::budget_trip_to_py(py) {
+                return err;
+            }
+        }
         let exc_type = py.get_type_bound::<PyFiniteFieldError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
