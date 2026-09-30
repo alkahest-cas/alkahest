@@ -899,30 +899,21 @@ mod tests {
         );
     }
 
+    /// Serializes the tests below, which share process-wide state (the memory
+    /// ones read the global GMP byte counter).
+    ///
+    /// No test in this crate's unit-test binary may call [`request_cancel`].
     /// `CANCELLED` is a process-wide `AtomicBool` by design (see the module
-    /// docs) so an orchestrator thread can cancel a heavy call running on a
-    /// worker thread. That means tests which flip it must not run
-    /// concurrently with *any* other test that calls [`check`] — including
-    /// tests in this module that never touch cancellation themselves — or
-    /// they'll intermittently observe a stale `true` from a racing test and
-    /// fail with `Cancelled` instead of the error under test. Every test
-    /// below acquires this lock for its whole body to serialize with the
-    /// cancel-flipping tests; `cargo test` still runs them in parallel with
-    /// unrelated tests elsewhere in the crate, but nothing else in the crate
-    /// calls `request_cancel`, so those stay unaffected.
+    /// docs), and *every* test in the binary reaches [`check`] — `simplify`
+    /// calls it once per pass and stops rewriting when it trips. A lock here
+    /// serializes only this module: while one of these tests held the flag
+    /// set, a quaternion test running in parallel got back an unsimplified
+    /// `k·k` and failed `k² = -1`. The cancellation tests therefore live in
+    /// `tests/budget_cancel.rs`, which is a separate process.
     static TEST_SERIAL: Mutex<()> = Mutex::new(());
 
     fn serial() -> MutexGuard<'static, ()> {
         TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// Clears cancellation on drop so a panicking assertion mid-test doesn't
-    /// leave `CANCELLED` set for the next test to acquire the lock.
-    struct CancelGuard;
-    impl Drop for CancelGuard {
-        fn drop(&mut self) {
-            clear_cancel();
-        }
     }
 
     #[test]
@@ -1003,30 +994,6 @@ mod tests {
         assert!(!is_active());
     }
 
-    #[test]
-    fn cancel_flag_trips_check_and_clears() {
-        let _serial = serial();
-        let _cancel_guard = CancelGuard;
-        assert!(!is_cancelled());
-        request_cancel();
-        assert!(is_cancelled());
-        let err = check().unwrap_err();
-        assert_eq!(err.code(), "E-BUDGET-003");
-        assert_eq!(err, BudgetError::Cancelled);
-        clear_cancel();
-        assert!(!is_cancelled());
-        assert!(check().is_ok());
-    }
-
-    #[test]
-    fn cancel_trips_even_with_a_generous_budget_active() {
-        let _serial = serial();
-        let _cancel_guard = CancelGuard;
-        let _guard = enter(Budget::new().with_max_steps(1_000_000));
-        request_cancel();
-        assert_eq!(check().unwrap_err(), BudgetError::Cancelled);
-    }
-
     /// The whole point of the size half: a step that asks for more work than
     /// any budget allows is refused *before* it allocates, with no budget
     /// entered at all. There is no later checkpoint to refuse at — the
@@ -1073,19 +1040,15 @@ mod tests {
     }
 
     /// A growth checkpoint is also an ordinary one, so a call site needs only
-    /// one of them: wall clock and cancellation still trip through it.
+    /// one of them: the wall clock still trips through it (and so does
+    /// cancellation — see `tests/budget_cancel.rs`).
     #[test]
-    fn growth_checkpoint_still_reports_wall_and_cancel() {
+    fn growth_checkpoint_still_reports_the_wall_clock() {
         let _serial = serial();
-        {
-            let _guard = enter(Budget::new().with_wall(Duration::from_millis(10)));
-            assert!(check_growth(1).is_ok());
-            std::thread::sleep(Duration::from_millis(25));
-            assert_eq!(check_growth(1).unwrap_err().code(), "E-BUDGET-001");
-        }
-        let _cancel_guard = CancelGuard;
-        request_cancel();
-        assert_eq!(check_growth(1).unwrap_err(), BudgetError::Cancelled);
+        let _guard = enter(Budget::new().with_wall(Duration::from_millis(10)));
+        assert!(check_growth(1).is_ok());
+        std::thread::sleep(Duration::from_millis(25));
+        assert_eq!(check_growth(1).unwrap_err().code(), "E-BUDGET-001");
     }
 
     /// The comparison is per request and holds no state, so a refusal cannot
