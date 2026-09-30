@@ -136,19 +136,30 @@ fn subs_memo(
             None => expr,
         },
         ExprData::Forall { var, body } => {
-            let nb = subs_binder_body(var, body, mapping, pool, memo);
-            if nb == body {
+            let (nv, [nb]) = subs_binder(var, [body], mapping, pool, memo);
+            if nv == var && nb == body {
                 expr
             } else {
-                pool.forall(var, nb)
+                pool.forall(nv, nb)
             }
         }
         ExprData::Exists { var, body } => {
-            let nb = subs_binder_body(var, body, mapping, pool, memo);
-            if nb == body {
+            let (nv, [nb]) = subs_binder(var, [body], mapping, pool, memo);
+            if nv == var && nb == body {
                 expr
             } else {
-                pool.exists(var, nb)
+                pool.exists(nv, nb)
+            }
+        }
+        // `RootSum(p, c, body)` binds `c` in both the defining polynomial
+        // `p(c)` and the summand; everything else in them (a parameter of the
+        // integrand, say) is free and is substituted like anywhere else.
+        ExprData::RootSum { poly, var, body } => {
+            let (nv, [np, nb]) = subs_binder(var, [poly, body], mapping, pool, memo);
+            if nv == var && np == poly && nb == body {
+                expr
+            } else {
+                pool.root_sum(np, nv, nb)
             }
         }
         ExprData::BigO(arg) => {
@@ -159,35 +170,151 @@ fn subs_memo(
                 pool.big_o(a)
             }
         }
-        // Atoms have no children — if not in mapping, return as-is.  (A
-        // `RootSum` is deliberately not descended into, as before.)
-        _ => expr,
+        // Atoms have no children — if not in mapping, return as-is.
+        ExprData::Symbol { .. }
+        | ExprData::Integer(_)
+        | ExprData::Rational(_)
+        | ExprData::Float(_) => expr,
     };
     memo.insert(expr, out);
     out
 }
 
-/// Substitute into the body of a `Forall`/`Exists` binding `var`.
+/// Substitute into the scope of a binder (`Forall`/`Exists`/`RootSum`) that
+/// binds `var` over `parts`; returns the (possibly renamed) bound variable and
+/// the rewritten parts.
 ///
-/// The bound variable shadows any key equal to it.  When it does shadow one,
-/// the body is rewritten under the reduced mapping with its **own** memo:
-/// entries in the outer memo were computed with `var` still mapped and must
-/// not leak into (or out of) the binder's scope.
-fn subs_binder_body(
+/// The mapping that applies inside the scope is [`binder_scope`]'s.  When it
+/// differs from the outer one the parts are rewritten with their **own**
+/// memo: entries in the outer memo were computed under a different mapping
+/// and must not leak into (or out of) the binder's scope.
+fn subs_binder<const N: usize>(
     var: ExprId,
-    body: ExprId,
+    parts: [ExprId; N],
     mapping: &HashMap<ExprId, ExprId>,
     pool: &ExprPool,
     memo: &mut HashMap<ExprId, ExprId>,
-) -> ExprId {
-    if mapping.contains_key(&var) {
-        let mut inner = mapping.clone();
-        inner.remove(&var);
-        let mut scope_memo: HashMap<ExprId, ExprId> = HashMap::new();
-        subs_memo(body, &inner, pool, &mut scope_memo)
-    } else {
-        subs_memo(body, mapping, pool, memo)
+) -> (ExprId, [ExprId; N]) {
+    match binder_scope(var, &parts, mapping, pool) {
+        None => (var, parts.map(|e| subs_memo(e, mapping, pool, memo))),
+        Some((nv, inner)) => {
+            let mut scope_memo: HashMap<ExprId, ExprId> = HashMap::new();
+            (
+                nv,
+                parts.map(|e| subs_memo(e, &inner, pool, &mut scope_memo)),
+            )
+        }
     }
+}
+
+/// The mapping that applies inside a binder of `var` whose scope is `parts`,
+/// with the bound variable to use — or `None` when that is the outer mapping
+/// and `var` unchanged.
+///
+/// * **Shadowing.**  A key that mentions `var` free — `var` itself, or a
+///   compound key such as `var^2` — names the *outer* `var`, which the binder
+///   hides; it does not apply inside.  (It used to be dropped only when it was
+///   `var` itself, so `subs(∃y. y² > 1, {y²: 0})` rewrote the bound `y`.)
+/// * **Capture.**  A key that occurs in the scope and whose value mentions
+///   `var` free would have that occurrence captured by the binder —
+///   `subs(∀y. x + y > 0, {x: y})` read `∀y. y + y > 0`.  The binder is then
+///   alpha-renamed to a fresh variable (see [`fresh_bound_var`]) by adding
+///   `var ↦ fresh` to the mapping, so renaming and substitution are one
+///   simultaneous walk: `∀y₁. y + y₁ > 0`.
+fn binder_scope(
+    var: ExprId,
+    parts: &[ExprId],
+    mapping: &HashMap<ExprId, ExprId>,
+    pool: &ExprPool,
+) -> Option<(ExprId, HashMap<ExprId, ExprId>)> {
+    let shadowed: Vec<ExprId> = mapping
+        .keys()
+        .copied()
+        .filter(|&k| k == var || mentions_var(k, var, pool))
+        .collect();
+    let captures = mapping.iter().any(|(&k, &v)| {
+        !shadowed.contains(&k)
+            && mentions_var(v, var, pool)
+            && parts.iter().any(|&p| mentions_var(p, k, pool))
+    });
+    if shadowed.is_empty() && !captures {
+        return None;
+    }
+    let mut inner = mapping.clone();
+    for k in &shadowed {
+        inner.remove(k);
+    }
+    if !captures {
+        return Some((var, inner));
+    }
+    let fresh = fresh_bound_var(var, parts, &inner, pool);
+    inner.insert(var, fresh);
+    Some((fresh, inner))
+}
+
+/// A variable to rename the bound `var` to: the same domain and
+/// commutativity, named `{var}_1`, `{var}_2`, … — the first that occurs
+/// nowhere (free *or* bound) in the scope `parts` or in any key or value of
+/// `mapping`, so nothing can capture it and it can capture nothing.
+fn fresh_bound_var(
+    var: ExprId,
+    parts: &[ExprId],
+    mapping: &HashMap<ExprId, ExprId>,
+    pool: &ExprPool,
+) -> ExprId {
+    let (base, domain, commutative) = match pool.get(var) {
+        ExprData::Symbol {
+            name,
+            domain,
+            commutative,
+        } => (name, domain, commutative),
+        // Binders are only ever built over symbols; be total anyway.
+        _ => ("v".to_string(), crate::kernel::Domain::Complex, true),
+    };
+    let mut roots: Vec<ExprId> = parts.to_vec();
+    for (&k, &v) in mapping {
+        roots.push(k);
+        roots.push(v);
+    }
+    let used = all_nodes(&roots, pool);
+    (1u64..)
+        .map(|i| pool.symbol_commutative(format!("{base}_{i}"), domain, commutative))
+        .find(|c| !used.contains(c))
+        .expect("a pool holds finitely many nodes")
+}
+
+/// Every node reachable from `roots`, binder variables included.
+fn all_nodes(roots: &[ExprId], pool: &ExprPool) -> HashSet<ExprId> {
+    let mut seen: HashSet<ExprId> = HashSet::new();
+    let mut stack: Vec<ExprId> = roots.to_vec();
+    while let Some(node) = stack.pop() {
+        if !seen.insert(node) {
+            continue;
+        }
+        pool.with(node, |data| match data {
+            ExprData::Add(xs) | ExprData::Mul(xs) => stack.extend_from_slice(xs),
+            ExprData::Func { args, .. } | ExprData::Predicate { args, .. } => {
+                stack.extend_from_slice(args)
+            }
+            ExprData::Pow { base, exp } => stack.extend([*base, *exp]),
+            ExprData::Piecewise { branches, default } => {
+                for &(c, v) in branches {
+                    stack.extend([c, v]);
+                }
+                stack.push(*default);
+            }
+            ExprData::RootSum { poly, var, body } => stack.extend([*poly, *var, *body]),
+            ExprData::Forall { var, body } | ExprData::Exists { var, body } => {
+                stack.extend([*var, *body])
+            }
+            ExprData::BigO(a) => stack.push(*a),
+            ExprData::Symbol { .. }
+            | ExprData::Integer(_)
+            | ExprData::Rational(_)
+            | ExprData::Float(_) => {}
+        });
+    }
+    seen
 }
 
 /// Fold predicates with numeric arguments (e.g. `(2 > 0)` → `True`) and simplify
@@ -538,15 +665,21 @@ mod tests {
                 pool.piecewise(nb, subs_tree(default, mapping, pool))
             }
             ExprData::Predicate { kind, args } => pool.predicate(kind, all(&args)),
-            ExprData::Forall { var, body } => {
-                let mut m2 = mapping.clone();
-                m2.remove(&var);
-                pool.forall(var, subs_tree(body, &m2, pool))
-            }
-            ExprData::Exists { var, body } => {
-                let mut m2 = mapping.clone();
-                m2.remove(&var);
-                pool.exists(var, subs_tree(body, &m2, pool))
+            // Scoping (shadowing, alpha-renaming) is `binder_scope`'s; what this
+            // reference checks is that the memo never carries an image across
+            // a scope boundary.
+            ExprData::Forall { var, body } => match binder_scope(var, &[body], mapping, pool) {
+                None => pool.forall(var, subs_tree(body, mapping, pool)),
+                Some((nv, m2)) => pool.forall(nv, subs_tree(body, &m2, pool)),
+            },
+            ExprData::Exists { var, body } => match binder_scope(var, &[body], mapping, pool) {
+                None => pool.exists(var, subs_tree(body, mapping, pool)),
+                Some((nv, m2)) => pool.exists(nv, subs_tree(body, &m2, pool)),
+            },
+            ExprData::RootSum { poly, var, body } => {
+                let (nv, m2) = binder_scope(var, &[poly, body], mapping, pool)
+                    .unwrap_or_else(|| (var, mapping.clone()));
+                pool.root_sum(subs_tree(poly, &m2, pool), nv, subs_tree(body, &m2, pool))
             }
             ExprData::BigO(a) => pool.big_o(subs_tree(a, mapping, pool)),
             _ => expr,
@@ -669,6 +802,162 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn sym_name(p: &ExprPool, id: ExprId) -> String {
+        match p.get(id) {
+            ExprData::Symbol { name, .. } => name,
+            other => panic!("not a symbol: {other:?}"),
+        }
+    }
+
+    /// Audit A7: substituting a free variable by an expression that mentions
+    /// the bound one must not capture it — the binder is alpha-renamed.
+    #[test]
+    fn subs_does_not_capture_under_forall_or_exists() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let y = p.symbol("y", Domain::Real);
+        let zero = p.integer(0_i32);
+        let mut m = HashMap::new();
+        m.insert(x, y);
+        for exists in [false, true] {
+            let body = p.pred_gt(p.add(vec![x, y]), zero);
+            let f = if exists {
+                p.exists(y, body)
+            } else {
+                p.forall(y, body)
+            };
+            let out = subs(f, &m, &p);
+            let (nv, nb) = match p.get(out) {
+                ExprData::Forall { var, body } if !exists => (var, body),
+                ExprData::Exists { var, body } if exists => (var, body),
+                other => panic!("binder lost: {other:?}"),
+            };
+            assert_ne!(nv, y, "the binder must be renamed");
+            assert_eq!(sym_name(&p, nv), "y_1");
+            // ∀y₁. y + y₁ > 0 — the free y and the bound y₁ stay distinct.
+            assert_eq!(nb, p.pred_gt(p.add(vec![y, nv]), zero));
+            assert!(mentions_var(out, y, &p), "the substituted y is free");
+        }
+    }
+
+    /// The fresh name skips one already in use in the scope.
+    #[test]
+    fn subs_fresh_bound_name_avoids_existing_symbols() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let y = p.symbol("y", Domain::Real);
+        let y1 = p.symbol("y_1", Domain::Real);
+        let f = p.forall(y, p.pred_gt(p.add(vec![x, y, y1]), p.integer(0_i32)));
+        let mut m = HashMap::new();
+        m.insert(x, y);
+        let out = subs(f, &m, &p);
+        let ExprData::Forall { var, body } = p.get(out) else {
+            panic!("binder lost")
+        };
+        assert_eq!(sym_name(&p, var), "y_2");
+        assert_eq!(
+            body,
+            p.pred_gt(p.add(vec![y, var, y1]), p.integer(0_i32)),
+            "y_1 in the body is untouched"
+        );
+    }
+
+    /// No capture possible → no renaming, and the node is returned unchanged
+    /// when nothing inside it is substituted.
+    #[test]
+    fn subs_renames_only_when_needed() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let y = p.symbol("y", Domain::Real);
+        let z = p.symbol("z", Domain::Real);
+        let f = p.forall(y, p.pred_gt(p.add(vec![x, y]), p.integer(0_i32)));
+        let mut m = HashMap::new();
+        m.insert(x, z);
+        assert_eq!(
+            subs(f, &m, &p),
+            p.forall(y, p.pred_gt(p.add(vec![z, y]), p.integer(0_i32)))
+        );
+        // The value mentions y, but x does not occur in the scope.
+        let g = p.forall(y, p.pred_gt(y, p.integer(0_i32)));
+        let mut m2 = HashMap::new();
+        m2.insert(x, y);
+        assert_eq!(subs(g, &m2, &p), g);
+    }
+
+    /// Audit A7: a compound key that mentions the bound variable names the
+    /// outer one; it must not rewrite inside the binder.
+    #[test]
+    fn subs_compound_key_does_not_reach_the_bound_variable() {
+        let p = pool();
+        let y = p.symbol("y", Domain::Real);
+        let ysq = p.pow(y, p.integer(2_i32));
+        let e = p.exists(y, p.pred_gt(ysq, p.integer(1_i32)));
+        let mut m = HashMap::new();
+        m.insert(ysq, p.integer(0_i32));
+        assert_eq!(subs(e, &m, &p), e);
+        // Outside the binder the same key still applies.
+        let both = p.add(vec![ysq, e]);
+        assert_eq!(subs(both, &m, &p), p.add(vec![p.integer(0_i32), e]));
+    }
+
+    /// Audit A7: `subs` descends into a `RootSum`'s polynomial and summand,
+    /// with the root variable bound in both.
+    #[test]
+    fn subs_descends_into_root_sum() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let c = p.symbol("c", Domain::Complex);
+        let poly = p.add(vec![
+            p.pow(c, p.integer(3_i32)),
+            p.mul(vec![x, c]),
+            p.integer(1_i32),
+        ]);
+        let body = p.mul(vec![c, p.func("log", vec![p.add(vec![x, c])])]);
+        let rs = p.root_sum(poly, c, body);
+        let two = p.integer(2_i32);
+        let mut m = HashMap::new();
+        m.insert(x, two);
+        let expected = p.root_sum(
+            p.add(vec![
+                p.pow(c, p.integer(3_i32)),
+                p.mul(vec![two, c]),
+                p.integer(1_i32),
+            ]),
+            c,
+            p.mul(vec![c, p.func("log", vec![p.add(vec![two, c])])]),
+        );
+        assert_eq!(subs(rs, &m, &p), expected);
+        // The root variable itself is bound: a key on it does not apply.
+        let mut mc = HashMap::new();
+        mc.insert(c, two);
+        assert_eq!(subs(rs, &mc, &p), rs);
+        // And a value mentioning it is not captured.
+        let mut mx = HashMap::new();
+        mx.insert(x, c);
+        let out = subs(rs, &mx, &p);
+        let ExprData::RootSum { var, body, .. } = p.get(out) else {
+            panic!("RootSum lost")
+        };
+        assert_ne!(var, c);
+        assert_eq!(
+            body,
+            p.mul(vec![var, p.func("log", vec![p.add(vec![c, var])])])
+        );
+    }
+
+    /// Audit A7 (4): since #424 a `Rational` with denominator 1 is interned as
+    /// the `Integer`, so an integer key reaches it.
+    #[test]
+    fn subs_integer_key_matches_whole_rational() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let y = p.symbol("y", Domain::Real);
+        let e = p.add(vec![x, p.rational(2, 1)]);
+        let mut m = HashMap::new();
+        m.insert(p.integer(2_i32), y);
+        assert_eq!(subs(e, &m, &p), p.add(vec![x, y]));
     }
 
     /// A node shared between the inside and the outside of a binder has

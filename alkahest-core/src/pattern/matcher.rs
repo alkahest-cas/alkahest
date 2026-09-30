@@ -173,7 +173,6 @@ fn match_one(
 ) -> Option<Substitution> {
     enum PatNode {
         Wildcard(String),
-        Integer(i64),
         Symbol(String),
         Add(Vec<ExprId>),
         Mul(Vec<ExprId>),
@@ -183,7 +182,6 @@ fn match_one(
     }
 
     enum ExprNode {
-        Integer(i64),
         Symbol(String),
         Add(Vec<ExprId>),
         Mul(Vec<ExprId>),
@@ -197,12 +195,14 @@ fn match_one(
             PatNode::Wildcard(name.clone())
         }
         ExprData::Symbol { name, .. } => PatNode::Symbol(name.clone()),
-        ExprData::Integer(n) => PatNode::Integer(n.0.to_i64().unwrap_or(i64::MIN)),
         ExprData::Add(args) => PatNode::Add(args.clone()),
         ExprData::Mul(args) => PatNode::Mul(args.clone()),
         ExprData::Pow { base, exp } => PatNode::Pow(*base, *exp),
         ExprData::Func { name, args } => PatNode::Func(name.clone(), args.clone()),
-        ExprData::Rational(_) | ExprData::Float(_) => PatNode::Literal,
+        // Numeric literals match by node identity: the pool hash-conses them,
+        // so equal ids ⇔ equal values.  (Comparing through `to_i64()` made
+        // every integer past i64 compare equal to every other one.)
+        ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => PatNode::Literal,
         ExprData::Piecewise { .. } | ExprData::Predicate { .. } => PatNode::Literal,
         ExprData::Forall { .. }
         | ExprData::Exists { .. }
@@ -212,7 +212,6 @@ fn match_one(
 
     let expr_node = pool.with(expr, |data| match data {
         ExprData::Symbol { name, .. } => ExprNode::Symbol(name.clone()),
-        ExprData::Integer(n) => ExprNode::Integer(n.0.to_i64().unwrap_or(i64::MIN)),
         ExprData::Add(args) => ExprNode::Add(args.clone()),
         ExprData::Mul(args) => ExprNode::Mul(args.clone()),
         ExprData::Pow { base, exp } => ExprNode::Pow(*base, *exp),
@@ -226,15 +225,6 @@ fn match_one(
             let mut s = subst;
             if s.bind(&name, expr) {
                 Some(s)
-            } else {
-                None
-            }
-        }
-
-        // Literal integer — must match exactly
-        PatNode::Integer(pn) => {
-            if matches!(expr_node, ExprNode::Integer(en) if en == pn) {
-                Some(subst)
             } else {
                 None
             }
@@ -292,7 +282,7 @@ fn match_one(
             match_args_exact(&pargs, &eargs, subst, pool, ac_depth + 1, cfg)
         }
 
-        // Rational/Float literal in pattern — match only if same id (structural equality)
+        // Numeric (or other opaque) literal in pattern — match only if same id (structural equality)
         PatNode::Literal => {
             if pat == expr {
                 Some(subst)
@@ -812,5 +802,35 @@ mod tests {
             start.elapsed()
         );
         assert_eq!(m.len(), 39);
+    }
+
+    /// Audit A3: integer literals past i64 used to compare through
+    /// `to_i64().unwrap_or(i64::MIN)`, so every one of them matched every
+    /// other one.
+    #[test]
+    fn big_integer_literals_compare_exactly() {
+        let p = pool();
+        let x = p.symbol("X", Domain::Real); // literal (upper case)
+        let big = |s: &str| p.integer(s.parse::<rug::Integer>().unwrap());
+        let e20 = big("100000000000000000000");
+        let e21 = big("1000000000000000000000");
+        let pat = Pattern::from_expr(p.mul(vec![x, e20]));
+        assert!(match_pattern(&pat, p.mul(vec![x, e21]), &p).is_empty());
+        assert!(match_pattern(&pat, p.mul(vec![x, p.integer(i64::MIN)]), &p).is_empty());
+        assert_eq!(match_pattern(&pat, p.mul(vec![x, e20]), &p).len(), 1);
+        let two64 = big("18446744073709551616");
+        let two65 = big("36893488147419103232");
+        assert!(match_pattern(&Pattern::from_expr(two64), two65, &p).is_empty());
+        assert_eq!(
+            match_pattern(&Pattern::from_expr(two64), two64, &p).len(),
+            1
+        );
+        // Small integers still match by value.
+        let pat5 = Pattern::from_expr(p.mul(vec![x, p.integer(5_i32)]));
+        assert!(match_pattern(&pat5, p.mul(vec![x, p.integer(6_i32)]), &p).is_empty());
+        assert_eq!(
+            match_pattern(&pat5, p.mul(vec![x, p.integer(5_i32)]), &p).len(),
+            1
+        );
     }
 }

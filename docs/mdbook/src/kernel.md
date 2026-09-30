@@ -22,7 +22,7 @@ x = pool.symbol("x")       # intern a Symbol node
 n = pool.integer(42)       # intern an Integer node
 ```
 
-Multiple pools are independent. An `ExprId` from one pool must not be mixed into another — the pool validates this in debug builds. From Python, an `Expr` carries its pool: equality and hashing are by (pool, id), so expressions from two pools never compare equal, and the operators and the `pool.add` / `pool.mul` / `pool.func` constructors raise `PoolError` (`E-POOL-001`) when handed an expression from another pool.
+Multiple pools are independent. An `ExprId` from one pool must not be mixed into another — the pool validates this in debug builds. From Python, an `Expr` carries its pool: equality and hashing are by (pool, id), so expressions from two pools never compare equal, and the operators, the pool constructors and every function taking more than one expression raise `PoolError` (`E-POOL-001`) when handed an expression from another pool.
 
 ### Building large sums and products
 
