@@ -10801,10 +10801,18 @@ impl PyCompiledFn {
         if let Some(f) = self.batch.borrow().as_ref() {
             return f.clone();
         }
-        let upgradable = core_jit_available()
-            && n_points >= BATCH_JIT_MIN_POINTS
-            && self.inner.compile_tier() == alkahest_core::CompileTier::Interpreter;
-        let Some(src) = self.source.as_ref().filter(|_| upgradable) else {
+        if n_points < BATCH_JIT_MIN_POINTS
+            || self.inner.compile_tier() != alkahest_core::CompileTier::Interpreter
+        {
+            return self.inner.clone();
+        }
+        // A large batch settles which backend batches run on. With no native
+        // backend compiled in (or no source to recompile from) the answer is
+        // the interpreter, and it is recorded like any other so `_batch_tier`
+        // says "interpreter" rather than `None`, which reads as "no large
+        // batch seen yet".
+        let Some(src) = self.source.as_ref().filter(|_| core_jit_available()) else {
+            *self.batch.borrow_mut() = Some(self.inner.clone());
             return self.inner.clone();
         };
         let upgraded = {
@@ -10900,8 +10908,9 @@ impl PyCompiledFn {
         compile_tier_name(self.inner.compile_tier())
     }
 
-    /// Backend the batch entry points have switched to, or ``None`` before a
-    /// batch large enough to recompile for (diagnostics).
+    /// Backend the batch entry points have settled on after the first batch
+    /// large enough to recompile for — ``"interpreter"`` when no native backend
+    /// is available — or ``None`` before any such batch (diagnostics).
     #[getter]
     fn _batch_tier(&self) -> Option<&'static str> {
         self.batch

@@ -288,6 +288,13 @@
   (`ExprPool::func` stays unchecked), and the renderers, the Lean emitter and
   the primitive registry treat a wrong-arity node that still reaches them as a
   plain call or a declined operation instead of panicking.
+- **`CompiledFn._batch_tier` stayed `None` after a large batch on a build
+  with no JIT.** A batch of 4096 points or more fixes which backend batches
+  run on, and records it; with no Cranelift/LLVM backend compiled in, that
+  record was skipped. So the diagnostic kept reading "no large batch seen yet"
+  instead of `"interpreter"`, and
+  `test_large_batch_upgrades_the_interpreter_tier_once_and_agrees` failed on
+  such builds. Values were never affected.
 - **Release wheels failed to import (`undefined symbol: PyPyIndex_Check`).**
   The integer-coercion fast path called `pyo3::ffi::PyIndex_Check`, which
   pyo3-ffi 0.21 binds to the PyPy symbol name. Test builds never exercised
@@ -896,6 +903,14 @@
 
 ### Testing and tooling
 
+- The cancellation tests moved out of the `alkahest-cas` unit-test binary
+  into `alkahest-core/tests/budget_cancel.rs`. The cancel flag is
+  process-wide, and `simplify` stops rewriting while it is set. So any test
+  that happened to be simplifying at that moment got an unsimplified answer.
+  `algebra::quaternion_tests::the_hamilton_product_table` failed `k² = -1`
+  that way, intermittently, in full `cargo test --workspace` runs: in about 1
+  run in 4 when run next to the cancel tests alone, and in 0 of 500 after
+  the move.
 - Proptests pin the new rug ⇄ FLINT conversion against the old decimal-string
   one for integers from 0 to ~12 800 bits (plus `0`, `±1`, `i64::MIN/MAX`,
   `u64::MAX`, `±2^64` and FLINT's inline/heap boundary at `2^62`), through
