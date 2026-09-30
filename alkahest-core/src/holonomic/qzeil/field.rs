@@ -76,7 +76,7 @@ thread_local! {
 /// answer — `div_rem` returns `None`, which `gcd` already handles by returning
 /// `1`, which `normalize` already handles by not cancelling. Nothing becomes
 /// wrong; the caller is expected to check [`take_field_refusal`] and stop.
-fn note_refusal(r: FieldRefusal) {
+pub(crate) fn note_refusal(r: FieldRefusal) {
     REFUSAL.with(|c| c.set(Some(r)));
 }
 
@@ -88,6 +88,11 @@ pub fn clear_field_refusal() {
 /// Take (and clear) the refusal recorded on this thread, if any.
 pub fn take_field_refusal() -> Option<FieldRefusal> {
     REFUSAL.with(|c| c.take())
+}
+
+/// The refusal recorded on this thread, if any, without clearing it.
+pub(crate) fn peek_field_refusal() -> Option<FieldRefusal> {
+    REFUSAL.with(|c| c.get())
 }
 
 /// The largest coefficient of `p`, by [`ratx_terms`].

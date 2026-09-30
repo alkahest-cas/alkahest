@@ -1033,6 +1033,21 @@ pub fn gcd_stop_pending() -> bool {
     gcd_stopped()
 }
 
+/// The gcd stop recorded on this thread, if any, without clearing it.
+pub(crate) fn peek_gcd_stop() -> Option<GcdStop> {
+    GCD_STOP.with(|c| c.get())
+}
+
+/// `true` when the innermost [`GcdWorkScope`] has spent its `MAX_GCD_WORK`.
+///
+/// Unlike a size stop, this one is permanent for the rest of the scope: the
+/// counter never goes down, so every later gcd in it gives up at once, and
+/// work that depends on reduced representations can only be refused in turn.
+/// A search loop should stop on it rather than move on to its next probe.
+pub(crate) fn gcd_work_exhausted() -> bool {
+    GCD_WORK.with(|c| c.get().is_some_and(|n| n > MAX_GCD_WORK))
+}
+
 fn gcd_stopped() -> bool {
     GCD_STOP.with(|c| {
         let v = c.get();
@@ -1041,7 +1056,7 @@ fn gcd_stopped() -> bool {
     })
 }
 
-fn note_gcd_stop(s: GcdStop) {
+pub(crate) fn note_gcd_stop(s: GcdStop) {
     GCD_STOP.with(|c| c.set(Some(s)));
 }
 
@@ -1672,6 +1687,33 @@ mod tests {
             }
             .trim(),
         )
+    }
+
+    /// The work ceiling is permanent within its scope, which is what lets the
+    /// q-Zeilberger search stop on it instead of retrying probe after probe;
+    /// and it is scoped, so it never outlives the search that spent it.
+    #[test]
+    fn gcd_work_exhaustion_is_scoped_and_permanent_within_the_scope() {
+        assert!(!gcd_work_exhausted(), "inert outside every scope");
+        {
+            let _scope = enter_gcd_work_scope();
+            assert!(!gcd_work_exhausted());
+            GCD_WORK.with(|c| c.set(Some(MAX_GCD_WORK)));
+            assert!(!gcd_work_exhausted(), "the ceiling is passed, not reached");
+            assert!(gcd_should_stop(0), "one more unit passes it");
+            assert!(gcd_work_exhausted());
+            clear_gcd_stop();
+            assert!(
+                gcd_work_exhausted(),
+                "clearing the stop does not refund the work"
+            );
+            assert!(gcd_should_stop(0), "and every later gcd gives up at once");
+        }
+        assert!(
+            !gcd_work_exhausted(),
+            "leaving the scope restores the outer state"
+        );
+        assert!(!gcd_stop_pending());
     }
 
     #[test]

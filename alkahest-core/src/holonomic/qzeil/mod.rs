@@ -635,6 +635,98 @@ mod tests {
         assert_eq!(trip.code(), "E-BUDGET-001");
     }
 
+    /// A budget that is *already* exhausted when the call starts — an expired
+    /// wall clock here; in the field, a pending `request_cancel()` or a
+    /// process already inside the address-space guard's reserve under
+    /// `ulimit -v` — must be refused at once.
+    ///
+    /// It used to hang. `check_all` then fails at *every* checkpoint, so the
+    /// field arithmetic's out-of-band refusal fired on every `gcd`, every
+    /// `Q(q)(x)` element came back unreduced, and a search that decides in a
+    /// third of a second without a budget ran without end. This is what made
+    /// `tests/test_novelty.py::test_a_q_certificate_becomes_a_claim` hang in a
+    /// full `pytest tests/` run under `ulimit -v`: two thousand earlier tests
+    /// had left the process within the guard's reserve, and the first budget
+    /// check inside `q_zeilberger` tripped.
+    #[test]
+    fn q_zeilberger_refuses_an_already_exhausted_budget_promptly() {
+        // Run inline rather than on a watchdog thread: a spawned thread would
+        // put this module in the ThreadSanitizer shard's scope
+        // (`tests/tsan_scope.rs`) for the sake of a test harness. A regression
+        // shows up as this test not finishing, which CI's job timeout reports.
+        let pool = ExprPool::new();
+        let (q, n, k) = syms(&pool);
+        let b = qbinom(&pool, n, k);
+        let f = pool.mul(vec![b, b, pool.pow(q, pool.mul(vec![k, k]))]);
+        let start = std::time::Instant::now();
+        let outcome = {
+            let _guard = crate::budget::enter(
+                crate::budget::Budget::new().with_wall(std::time::Duration::ZERO),
+            );
+            q_zeilberger(f, q, n, k, &pool, &QZeilbergerOpts::default())
+                .map(|_| ())
+                .map_err(|e| (e.code(), crate::budget::take_trip().map(|t| t.code())))
+        };
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(30),
+            "q_zeilberger must return promptly under an exhausted budget, took {:?}",
+            start.elapsed()
+        );
+        assert_eq!(
+            outcome,
+            Err(("E-HOLO-021", Some("E-BUDGET-001"))),
+            "an exhausted budget must be refused as a recorded budget trip"
+        );
+    }
+
+    /// The address-space guard is a point-in-time measurement: it can trip at
+    /// one probe and pass at the next. A `gcd` that
+    /// saw the trip has already returned an unreduced result and recorded the
+    /// refusal out of band, so a later checkpoint must stop on that record even
+    /// though `check_all` passes again — otherwise the unreduced arithmetic
+    /// compounds, which is the other way the full-suite hang arose.
+    #[test]
+    fn a_recorded_budget_refusal_stops_the_search_after_the_budget_clears() {
+        use crate::budget::BudgetTrip;
+        use crate::holonomic::qfield::{clear_gcd_stop, note_gcd_stop, GcdStop};
+        let trip = BudgetTrip::AddressSpace {
+            limit: 16 << 30,
+            used: 16 << 30,
+            reserve: 256 << 20,
+        };
+
+        crate::budget::clear_trip();
+        field::note_refusal(field::FieldRefusal::Budget(trip));
+        let err = search::checkpoint().expect_err("a recorded field refusal must stop the call");
+        assert!(
+            matches!(err, QHolonomicError::SearchExhausted(_)),
+            "{err:?}"
+        );
+        assert_eq!(
+            crate::budget::take_trip().map(|t| t.code()),
+            Some("E-BUDGET-005")
+        );
+        field::clear_field_refusal();
+
+        note_gcd_stop(GcdStop::Budget(trip));
+        let err = search::checkpoint().expect_err("a recorded gcd stop must stop the call");
+        assert!(
+            matches!(err, QHolonomicError::SearchExhausted(_)),
+            "{err:?}"
+        );
+        assert_eq!(
+            crate::budget::take_trip().map(|t| t.code()),
+            Some("E-BUDGET-005")
+        );
+        clear_gcd_stop();
+
+        // A ceiling stop is not a budget trip: the search handles it per probe.
+        note_gcd_stop(GcdStop::Work(1));
+        assert!(search::checkpoint().is_ok());
+        clear_gcd_stop();
+        assert!(search::checkpoint().is_ok());
+    }
+
     #[test]
     fn q_zeilberger_refuses_at_a_resource_ceiling_rather_than_running_unbounded() {
         let pool = ExprPool::new();
