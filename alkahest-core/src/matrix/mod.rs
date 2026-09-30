@@ -342,13 +342,59 @@ impl Matrix {
     ///
     /// All-numeric matrices take the `O(n³)` Bareiss route in
     /// `det_numeric` (private); symbolic entries fall back to
-    /// cofactor expansion along the first row, which is `O(n!)` and is the
-    /// reason symbolic determinants beyond about `n = 7` are impractical (see
-    /// `temp-alkahest/testing/3.8-performance-audit.md`).
+    /// cofactor expansion along the first row.  The expansion is memoised on
+    /// the `(rows, columns)` of each sub-minor (see `DetMemo`), so it
+    /// evaluates `O(n·2ⁿ)` sub-determinants rather than the `O(n!)` of the
+    /// plain recursion, and returns exactly the same expression.
     pub fn det(&self, pool: &ExprPool) -> Result<ExprId, MatrixError> {
         if self.rows != self.cols {
             return Err(MatrixError::NotSquare);
         }
+        let n = self.rows;
+        if n == 0 {
+            return Ok(pool.integer(1_i32));
+        }
+        if n <= DetMemo::MAX_DIM {
+            let mut memo = DetMemo::new(self, pool);
+            let all = DetMemo::full_mask(n);
+            return Ok(memo.det(self, all, all, pool));
+        }
+        self.det_unmemoized(pool)
+    }
+
+    /// Determinant of the minor that removes row `skip_row` and column
+    /// `skip_col`, sharing `memo` with other minors of the same matrix.
+    ///
+    /// Identical to `self.minor(skip_row, skip_col).det(pool)`; the adjugate
+    /// asks for all `n²` minors, and with a shared memo their common
+    /// sub-minors are expanded once rather than once per cofactor.
+    pub(crate) fn minor_det_memo(
+        &self,
+        skip_row: usize,
+        skip_col: usize,
+        memo: &mut DetMemo,
+        pool: &ExprPool,
+    ) -> ExprId {
+        let n = self.rows;
+        debug_assert_eq!(n, self.cols);
+        debug_assert!(n >= 1);
+        if n - 1 == 0 {
+            return pool.integer(1_i32);
+        }
+        if n > DetMemo::MAX_DIM {
+            return self
+                .minor(skip_row, skip_col)
+                .det_unmemoized(pool)
+                .expect("a minor of a square matrix is square");
+        }
+        let all = DetMemo::full_mask(n);
+        memo.det(self, all & !(1 << skip_row), all & !(1 << skip_col), pool)
+    }
+
+    /// The original recursive cofactor expansion, for matrices too large for
+    /// [`DetMemo`]'s bit masks (where a symbolic expansion cannot finish
+    /// anyway).  [`DetMemo::det`] computes exactly the same expression.
+    fn det_unmemoized(&self, pool: &ExprPool) -> Result<ExprId, MatrixError> {
         let n = self.rows;
         if n == 0 {
             return Ok(pool.integer(1_i32));
@@ -372,7 +418,7 @@ impl Matrix {
         let mut terms: Vec<ExprId> = Vec::new();
         for j in 0..n {
             let minor = self.minor(0, j);
-            let minor_det = minor.det(pool)?;
+            let minor_det = minor.det_unmemoized(pool)?;
             let sign = if j % 2 == 0 {
                 pool.integer(1_i32)
             } else {
@@ -567,6 +613,146 @@ impl Matrix {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Memo for the symbolic cofactor expansion in [`Matrix::det`].
+///
+/// Expanding along the first remaining row, every sub-determinant that the
+/// recursion reaches is the determinant of the submatrix picked out by a set
+/// of rows and a set of columns of the original matrix (both kept in their
+/// original order).  The plain recursion re-derives each of them once per
+/// path that reaches it — `n!` leaf calls for an `n×n` matrix — while there
+/// are only `2ⁿ` distinct column sets at each depth.  Keying on the
+/// `(rows, cols)` bit masks computes each once.
+///
+/// Every step is exactly the step the plain recursion takes on the same
+/// submatrix (numeric Bareiss for an all-numeric block of size ≥ 3, `ad − bc`
+/// for size 2, first-row expansion otherwise), and the pool is hash-consed,
+/// so the result is the same `ExprId` the unmemoised expansion returns.
+pub(crate) struct DetMemo {
+    /// `(row mask, column mask) → det` of that submatrix.
+    table: std::collections::HashMap<(u64, u64), ExprId>,
+    /// Per row, the columns whose entry is *not* a numeric literal.
+    symbolic_cols: Vec<u64>,
+}
+
+impl DetMemo {
+    /// Largest dimension the `u64` masks can describe.
+    const MAX_DIM: usize = 64;
+
+    fn full_mask(n: usize) -> u64 {
+        if n >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << n) - 1
+        }
+    }
+
+    pub(crate) fn new(m: &Matrix, pool: &ExprPool) -> Self {
+        let symbolic_cols = (0..m.rows)
+            .map(|r| {
+                let mut bits = 0u64;
+                for c in 0..m.cols.min(Self::MAX_DIM) {
+                    let numeric = pool.with(m.get(r, c), |d| {
+                        matches!(
+                            d,
+                            crate::kernel::ExprData::Integer(_)
+                                | crate::kernel::ExprData::Rational(_)
+                        )
+                    });
+                    if !numeric {
+                        bits |= 1 << c;
+                    }
+                }
+                bits
+            })
+            .collect();
+        DetMemo {
+            table: std::collections::HashMap::new(),
+            symbolic_cols,
+        }
+    }
+
+    /// Ascending bit positions of `mask`.
+    fn bits(mut mask: u64) -> impl Iterator<Item = usize> {
+        std::iter::from_fn(move || {
+            if mask == 0 {
+                None
+            } else {
+                let i = mask.trailing_zeros() as usize;
+                mask &= mask - 1;
+                Some(i)
+            }
+        })
+    }
+
+    /// The submatrix of `m` on `rows × cols`, as a `Matrix`.
+    fn submatrix(m: &Matrix, rows: u64, cols: u64) -> Matrix {
+        let k = rows.count_ones() as usize;
+        let mut data = Vec::with_capacity(k * k);
+        for r in Self::bits(rows) {
+            for c in Self::bits(cols) {
+                data.push(m.get(r, c));
+            }
+        }
+        Matrix {
+            data,
+            rows: k,
+            cols: k,
+        }
+    }
+
+    /// `det` of `m` restricted to `rows × cols` (equal popcounts, ≥ 1).
+    fn det(&mut self, m: &Matrix, rows: u64, cols: u64, pool: &ExprPool) -> ExprId {
+        let k = rows.count_ones() as usize;
+        debug_assert_eq!(k, cols.count_ones() as usize);
+        debug_assert!(k >= 1);
+        if k == 1 {
+            return m.get(
+                rows.trailing_zeros() as usize,
+                cols.trailing_zeros() as usize,
+            );
+        }
+        if let Some(&d) = self.table.get(&(rows, cols)) {
+            return d;
+        }
+        let d = self.det_uncached(m, rows, cols, pool);
+        self.table.insert((rows, cols), d);
+        d
+    }
+
+    fn det_uncached(&mut self, m: &Matrix, rows: u64, cols: u64, pool: &ExprPool) -> ExprId {
+        let k = rows.count_ones() as usize;
+        if k >= 3 && Self::bits(rows).all(|r| self.symbolic_cols[r] & cols == 0) {
+            if let Some(d) = Self::submatrix(m, rows, cols).det_numeric(pool) {
+                return d;
+            }
+        }
+        let r0 = rows.trailing_zeros() as usize;
+        let rest = rows & (rows - 1);
+        if k == 2 {
+            // ad - bc, exactly as `Matrix::det` builds it for a 2×2.
+            let mut cs = Self::bits(cols);
+            let (c0, c1) = (cs.next().unwrap(), cs.next().unwrap());
+            let r1 = rest.trailing_zeros() as usize;
+            let ad = pool.mul(vec![m.get(r0, c0), m.get(r1, c1)]);
+            let bc = pool.mul(vec![m.get(r0, c1), m.get(r1, c0)]);
+            let neg_bc = pool.mul(vec![pool.integer(-1_i32), bc]);
+            return simplify(pool.add(vec![ad, neg_bc]), pool).value;
+        }
+        // Cofactor expansion along the first remaining row.
+        let mut terms: Vec<ExprId> = Vec::with_capacity(k);
+        for (j, c) in Self::bits(cols).enumerate() {
+            let minor_det = self.det(m, rest, cols & !(1 << c), pool);
+            let sign = if j % 2 == 0 {
+                pool.integer(1_i32)
+            } else {
+                pool.integer(-1_i32)
+            };
+            terms.push(pool.mul(vec![sign, m.get(r0, c), minor_det]));
+        }
+        simplify(pool.add(terms), pool).value
+    }
+}
+
 /// Exact determinant of the `n × n` row-major rational matrix `m`, through
 /// `fmpz_mat_det` after clearing each row's denominators.
 pub(crate) fn det_rational_flint(m: &[rug::Rational], n: usize) -> rug::Rational {
@@ -666,6 +852,146 @@ mod tests {
             terms.push(pool.mul(vec![sign, m.get(0, j), minor_det]));
         }
         simplify(pool.add(terms), pool).value
+    }
+
+    /// A mixed symbolic/numeric `n×n` matrix: symbols, sums, powers, integer
+    /// and rational literals, and zero rows/blocks so that some sub-minors
+    /// take the all-numeric route and some are singular.
+    fn mixed_matrix(n: usize, seed: u64, pool: &ExprPool) -> Matrix {
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut rnd = |m: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % m
+        };
+        let rows: Vec<Vec<ExprId>> = (0..n)
+            .map(|_| {
+                (0..n)
+                    .map(|_| match rnd(8) {
+                        0 => x,
+                        1 => pool.add(vec![x, pool.integer(rnd(5) as i64 - 2)]),
+                        2 => pool.mul(vec![pool.integer(rnd(7) as i64 - 3), y]),
+                        3 => pool.pow(x, pool.integer(rnd(3) as i64 + 2)),
+                        4 => pool
+                            .rational(rug::Integer::from(rnd(9) as i64 - 4), rug::Integer::from(3)),
+                        5 => pool.integer(0_i32),
+                        _ => pool.integer(rnd(9) as i64 - 4),
+                    })
+                    .collect()
+            })
+            .collect();
+        Matrix::new(rows).expect("square")
+    }
+
+    #[test]
+    fn memoised_det_is_the_same_expr_as_the_plain_expansion() {
+        let pool = p();
+        for n in 1..=7usize {
+            for seed in 0..10u64 {
+                let m = mixed_matrix(n, seed * 31 + n as u64, &pool);
+                assert_eq!(
+                    m.det(&pool).unwrap(),
+                    m.det_unmemoized(&pool).unwrap(),
+                    "n={n} seed={seed}"
+                );
+            }
+        }
+        // All-numeric blocks inside a symbolic matrix: a symbolic first row
+        // over an integer block, so every sub-minor below row 0 is numeric.
+        let x = pool.symbol("x", Domain::Real);
+        let mut rows: Vec<Vec<ExprId>> = vec![(0..5).map(|_| x).collect()];
+        for r in 1..5 {
+            rows.push(
+                (0..5)
+                    .map(|c| pool.integer((r * 7 + c * 3) as i64 % 5))
+                    .collect(),
+            );
+        }
+        let m = Matrix::new(rows).unwrap();
+        assert_eq!(m.det(&pool).unwrap(), m.det_unmemoized(&pool).unwrap());
+    }
+
+    #[test]
+    fn shared_memo_minors_match_each_minor_det() {
+        let pool = p();
+        for n in 2..=6usize {
+            for seed in 0..4u64 {
+                let m = mixed_matrix(n, seed + 100 * n as u64, &pool);
+                let mut memo = DetMemo::new(&m, &pool);
+                for i in 0..n {
+                    for j in 0..n {
+                        assert_eq!(
+                            m.minor_det_memo(j, i, &mut memo, &pool),
+                            m.minor(j, i).det_unmemoized(&pool).unwrap(),
+                            "n={n} seed={seed} minor ({j},{i})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The cofactor expansion is `O(n!)` unmemoised (a 10×10 never finished
+    /// in practice: 6.8 s at `n = 9`, ×10 per step).  With the memo every
+    /// sub-determinant is keyed by its `(rows, cols)` masks, and the rows
+    /// are always a suffix of the matrix's rows, so at most `2ⁿ` entries are
+    /// ever computed.  Asserted on the memo itself rather than on wall-clock
+    /// time, which sanitizer builds stretch arbitrarily.
+    #[test]
+    fn symbolic_det_memo_is_at_most_two_to_the_n() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let n = 8;
+        let rows: Vec<Vec<ExprId>> = (0..n)
+            .map(|i| {
+                (0..n)
+                    .map(|j: usize| {
+                        if i == j {
+                            pool.add(vec![x, pool.integer(i as i64)])
+                        } else {
+                            pool.add(vec![
+                                pool.pow(x, pool.integer(i.abs_diff(j) as i64)),
+                                pool.mul(vec![pool.integer(i as i64 + 1), y]),
+                            ])
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        let m = Matrix::new(rows).unwrap();
+        let mut memo = DetMemo::new(&m, &pool);
+        let all = DetMemo::full_mask(n);
+        let d = memo.det(&m, all, all, &pool);
+        assert_eq!(d, m.det(&pool).unwrap());
+        assert!(
+            memo.table.len() < 1 << n,
+            "{} memo entries for n = {n}",
+            memo.table.len()
+        );
+    }
+
+    #[test]
+    #[ignore = "timing report, run with --ignored --nocapture"]
+    fn symbolic_det_timing() {
+        // Separate pools, so neither run profits from the other's interning
+        // or simplifier memo.
+        for n in 4..=9usize {
+            let pa = p();
+            let ma = mixed_matrix(n, 7, &pa);
+            let t = std::time::Instant::now();
+            let _ = ma.det(&pa).unwrap();
+            let memo = t.elapsed();
+            let pb = p();
+            let mb = mixed_matrix(n, 7, &pb);
+            let t = std::time::Instant::now();
+            let _ = mb.det_unmemoized(&pb).unwrap();
+            let plain = t.elapsed();
+            println!("n={n}: memo {memo:?}  plain {plain:?}");
+        }
     }
 
     #[test]

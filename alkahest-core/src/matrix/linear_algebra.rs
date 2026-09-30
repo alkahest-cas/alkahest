@@ -1949,16 +1949,17 @@ fn symbolic_inverse(m: &Matrix, pool: &ExprPool) -> Result<Matrix, MatrixError> 
     }
     let inv_det = simplify(pool.pow(det, pool.integer(-1_i32)), pool).value;
 
+    // One memo for all n² minors: they share most of their sub-minors.
+    let mut memo = super::DetMemo::new(m, pool);
     let mut rows: Vec<Vec<ExprId>> = Vec::with_capacity(n);
     for i in 0..n {
         let mut row: Vec<ExprId> = Vec::with_capacity(n);
         for j in 0..n {
             // Transposed cofactor: minor removes row j and column i.
-            let minor = m.minor(j, i);
             let minor_det = if n == 1 {
                 pool.integer(1_i32)
             } else {
-                simplify_expanded(minor.det(pool)?, pool).value
+                simplify_expanded(m.minor_det_memo(j, i, &mut memo, pool), pool).value
             };
             let sign = if (i + j) % 2 == 0 {
                 pool.integer(1_i32)
