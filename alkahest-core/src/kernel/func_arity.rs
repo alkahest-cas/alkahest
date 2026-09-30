@@ -13,7 +13,7 @@
 //! Python `pool.func` and both parsers refuse a built-in name at the wrong
 //! arity with [`FuncArityError`] (`E-POOL-002`); the renderers and the
 //! primitive registry consult the same table so that a node which reached the
-//! pool some other way (the unchecked [`ExprPool::func`], `intern`, a pool
+//! pool some other way (the unchecked [`ExprPool::func`](crate::kernel::ExprPool::func), `intern`, a pool
 //! file) degrades to a generic rendering or a declined operation rather than
 //! a panic.
 

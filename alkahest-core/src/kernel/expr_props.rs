@@ -4,7 +4,7 @@ use crate::kernel::expr::ExprData;
 use crate::kernel::pool::{ExprPool, POS_INFINITY_SYMBOL};
 use crate::kernel::ExprId;
 
-/// `true` iff no non-commutative [`ExprData::Symbol`](crate::kernel::ExprData::Symbol)
+/// `true` iff no non-commutative [`ExprData::Symbol`]
 /// appears anywhere in `expr`.
 ///
 /// Used to decide whether multiplication may be canonically sorted or whether
