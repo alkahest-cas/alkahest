@@ -1861,7 +1861,10 @@ mod tests {
 
     // Audit C2: any `iter_limit` panicked with "Unknown option
     // 'iteration_limit'" — the option was emitted as a `set-option` egglog
-    // 0.4 does not know. It now caps every `(run …)` step.
+    // 0.4 does not know. It now caps every `(run …)` step. (Without the
+    // `egraph` feature `simplify_egraph_with` is the rule engine, which has
+    // no Pythagorean rule, so there is nothing to cap.)
+    #[cfg(feature = "egraph")]
     #[test]
     fn egraph_iter_limit_is_accepted_and_honoured() {
         let pool = ExprPool::new();
