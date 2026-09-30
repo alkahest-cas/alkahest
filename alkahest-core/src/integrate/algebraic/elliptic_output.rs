@@ -3092,7 +3092,7 @@ mod verification {
     /// used to be formed before the `d * d <= n` test could stop it.
     #[cfg(kani_loop_contracts)]
     #[kani::proof]
-    fn is_squarefree_no_overflow_inductive() {
+    fn is_squarefree_no_overflow_inductive_full_width() {
         let n: i64 = kani::any();
         let _ = is_squarefree(n);
     }
@@ -3101,7 +3101,7 @@ mod verification {
     /// unchecked). The fourth-root loop is checked through its invariant.
     #[cfg(kani_loop_contracts)]
     #[kani::proof]
-    fn is_quartic_radical_no_overflow_inductive() {
+    fn is_quartic_radical_no_overflow_inductive_full_width() {
         let n: i64 = kani::any();
         let _ = is_quartic_radical(n);
     }
