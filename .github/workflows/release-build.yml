@@ -9,10 +9,27 @@ on:
     branches:
       - main
   workflow_dispatch:
+  # Pre-merge wheel check: release-wheel-smoke.yml calls this workflow on every
+  # open PR that touches the build, with `pr_smoke: true`. That builds one
+  # Linux (manylinux, py3.12) and one Windows (py3.12) default wheel exactly
+  # as a release does and smoke-tests them, and nothing else: the +jit/+full
+  # jobs, macOS and every publish/attach job stay skipped, because their
+  # conditions below are unchanged and a called workflow sees the caller's
+  # unmerged `pull_request` event. The `pull_request: closed` trigger above
+  # fires only after a merge, so without this a wheel-only break (#395's
+  # PyIndex_Check, fixed in #419) stayed invisible to PR CI.
+  workflow_call:
+    inputs:
+      pr_smoke:
+        description: Build and smoke-test a reduced matrix only; never publish.
+        type: boolean
+        default: false
 
 env:
   # On merged PRs, build/publish the merge commit on main (not the PR head).
-  RELEASE_REF: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+  # A pr_smoke call builds the PR's test merge commit (github.sha), which is
+  # what the post-merge build would see if the PR merged now.
+  RELEASE_REF: ${{ inputs.pr_smoke && github.sha || github.event.pull_request.merge_commit_sha || github.sha }}
 
 jobs:
   # Linux: one job builds all Python versions at once. maturin-action runs
@@ -24,7 +41,7 @@ jobs:
   build-linux:
     name: wheels / ubuntu-22.04
     runs-on: ubuntu-22.04
-    if: github.event_name != 'pull_request' || github.event.pull_request.merged
+    if: inputs.pr_smoke || github.event_name != 'pull_request' || github.event.pull_request.merged
     env:
       # PyO3 0.21 supports up to 3.12; this allows 3.13 via the stable ABI.
       PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
@@ -33,9 +50,11 @@ jobs:
         with:
           ref: ${{ env.RELEASE_REF }}
 
+      # The smoke steps below install the wheel into *this* interpreter, so a
+      # pr_smoke build (python3.12 only) needs a 3.12 host.
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: ${{ inputs.pr_smoke && '3.12' || '3.11' }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -56,7 +75,7 @@ jobs:
           command: build
           # Explicit CPython list — --find-interpreter also picks up PyPy and
           # Python 3.14, which PyO3 0.21 cannot target.
-          args: --release --strip --out dist --features egraph,groebner,cranelift,parallel,system-gmp --interpreter python3.9 python3.10 python3.11 python3.12 python3.13
+          args: --release --strip --out dist --features egraph,groebner,cranelift,parallel,system-gmp --interpreter ${{ inputs.pr_smoke && 'python3.12' || 'python3.9 python3.10 python3.11 python3.12 python3.13' }}
           manylinux: "2_28"
           before-script-linux: |
             # FLINT is built from a pinned source release rather than taken from
@@ -130,6 +149,9 @@ jobs:
           python - <<'PY'
           import alkahest as ak
           p = ak.ExprPool()
+          # A bignum through the number-conversion path: #395's
+          # PyIndex_Check bound to a PyPy-only symbol and broke exactly this.
+          assert str(p.integer(10**30)) == str(10**30)
           x = p.symbol('x')
           print(ak.simplify(x + 0).value)
           print(ak.simplify_egraph(x + 0).value)
@@ -358,7 +380,7 @@ jobs:
   build-wheels:
     name: wheel ${{ matrix.os }} / py${{ matrix.python }}
     runs-on: ${{ matrix.os }}
-    if: github.event_name != 'pull_request' || github.event.pull_request.merged
+    if: inputs.pr_smoke || github.event_name != 'pull_request' || github.event.pull_request.merged
     strategy:
       fail-fast: false
       matrix:
@@ -367,8 +389,10 @@ jobs:
         # macos-15 arm64 runner does not ship x86_64 Homebrew, making
         # cross-compilation of libflint impractical. Intel Mac users can install
         # from the sdist or run the arm64 wheel under Rosetta on ARM hardware.
-        os: [macos-14, windows-2022]
-        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        # A pr_smoke call builds Windows/py3.12 only: its link step is where a
+        # missing symbol fails loudest (Linux defers it to import time).
+        os: ${{ fromJSON(inputs.pr_smoke && '["windows-2022"]' || '["macos-14", "windows-2022"]') }}
+        python: ${{ fromJSON(inputs.pr_smoke && '["3.12"]' || '["3.9", "3.10", "3.11", "3.12", "3.13"]') }}
     env:
       PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
     steps:
@@ -465,7 +489,7 @@ jobs:
       - name: Smoke test
         run: |
           pip install --no-index --find-links dist alkahest
-          python -c "import alkahest; p = alkahest.ExprPool(); x = p.symbol('x'); print(alkahest.simplify(x + 0)); caps = alkahest.capabilities(); f = caps['features']; assert f['egraph'] and f['groebner'] and f['cranelift_jit'] and f['parallel']; assert not f['llvm_jit']; assert caps['jit'] and alkahest.jit_is_available(); assert alkahest.alkahest.GMP_SHARED_WITH_FLINT, 'wheel built without system-gmp'"
+          python -c "import alkahest; p = alkahest.ExprPool(); assert str(p.integer(10**30)) == str(10**30); x = p.symbol('x'); print(alkahest.simplify(x + 0)); caps = alkahest.capabilities(); f = caps['features']; assert f['egraph'] and f['groebner'] and f['cranelift_jit'] and f['parallel']; assert not f['llvm_jit']; assert caps['jit'] and alkahest.jit_is_available(); assert alkahest.alkahest.GMP_SHARED_WITH_FLINT, 'wheel built without system-gmp'"
 
       # See build-linux's identical step: catches the class of bug (B1, B6)
       # that only reproduces against a real wheel install in a fresh
