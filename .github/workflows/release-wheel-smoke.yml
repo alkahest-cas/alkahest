@@ -38,5 +38,14 @@ jobs:
   release-wheels:
     name: release wheels
     uses: ./.github/workflows/release-build.yml
+    # GitHub validates a called workflow's job permissions before evaluating
+    # any `if:`, so the caller must be allowed what release-build.yml's publish
+    # jobs *declare* (id-token for trusted publishing, contents for the
+    # release upload), or the run is a startup failure. Those jobs are always
+    # skipped here (see the comment at the top of release-build.yml), and
+    # still need the protected `release` environment besides.
+    permissions:
+      contents: write
+      id-token: write
     with:
       pr_smoke: true
