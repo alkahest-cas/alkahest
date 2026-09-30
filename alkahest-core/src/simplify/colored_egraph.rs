@@ -561,7 +561,10 @@ fn rule_mul_inverse_nonzero(expr: ExprId, pool: &ExprPool) -> Option<(ExprId, Ve
         else {
             continue;
         };
-        if inverse_base == base && is_int_n(exp, -1, pool) {
+        // `x ≠ 0` is not enough for an infinite `x`: `∞ · ∞⁻¹` is `∞ / ∞`,
+        // indeterminate, and `∞` carries a static `Positive` (hence
+        // `NonZero`) fact that would otherwise license this.
+        if inverse_base == base && is_int_n(exp, -1, pool) && !pool.has_non_finite(base) {
             return Some((pool.integer(1_i32), vec![SideCondition::NonZero(base)]));
         }
     }

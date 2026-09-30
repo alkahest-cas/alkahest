@@ -224,6 +224,9 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-CUDA-004", class: "CudaError", cause: Cause::Unsupported, remediation: Some("V1.0 stub; track feature request") },
     ErrorSpec { code: "E-CUDA-005", class: "CudaError", cause: Cause::Resource,    remediation: Some("install nvidia-cuda-toolkit or set ALKAHEST_LIBDEVICE_PATH") },
     ErrorSpec { code: "E-CUDA-006", class: "CudaError", cause: Cause::Resource,    remediation: Some("check grid/block dimensions; rerun with compute-sanitizer") },
+    // E-POOL — ExprPool construction (E-POOL-001, cross-pool arguments, is raised
+    // only by the Python bindings)
+    ErrorSpec { code: "E-POOL-002", class: "PoolError", cause: Cause::UserInput, remediation: Some("a built-in function name has a fixed number of arguments; use a different name for a user-defined function of another arity") },
     // E-IO — IoError (formerly PoolPersistError with E-POOL-* codes)
     ErrorSpec { code: "E-IO-001", class: "IoError", cause: Cause::Resource,  remediation: None },
     ErrorSpec { code: "E-IO-002", class: "IoError", cause: Cause::UserInput, remediation: Some("file is not an alkahest pool; check the path or regenerate with ExprPool::checkpoint()") },

@@ -1363,6 +1363,14 @@ mod backend {
             return super::super::engine::simplify(expr, pool);
         }
 
+        // `∞` and non-finite floats are opaque atoms to egglog, so its
+        // `x + (−1)·x → 0`, `x · 0 → 0` and `x · x⁻¹ → 1` rewrites fire on them
+        // and prove `∞ − ∞ = 0`.  The rule engine knows those identities fail
+        // there (see `SubSelf::apply_non_finite`); hand it the expression.
+        if pool.has_non_finite(expr) {
+            return super::super::engine::simplify(expr, pool);
+        }
+
         // Enforce the node limit before handing the expression to egglog.
         // Saturation can materialise exponentially many equivalent forms, so a
         // hard pre-check on input size prevents OOM on pathological inputs.
@@ -1474,6 +1482,7 @@ mod backend {
         use crate::kernel::expr_props::expr_contains_noncommutative_symbol;
         if expr_contains_noncommutative_symbol(pool, expr)
             || has_provably_zero_denominator(expr, pool)
+            || pool.has_non_finite(expr)
         {
             return super::super::engine::simplify(expr, pool).value;
         }

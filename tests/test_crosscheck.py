@@ -193,8 +193,11 @@ def test_registry_primitives_are_classified(pool, x):
 def test_refused_primitives_refuse_with_a_reason(pool, name):
     _sympy()
     x = pool.symbol("x")
+    # Each at an arity it has: `EllipticF`/`EllipticPi` have no unary form,
+    # and `pool.func` refuses one (`E-POOL-002`).
+    nargs = {"EllipticF": 2, "EllipticPi": 3}.get(name, 1)
     with pytest.raises(CrossCheckError) as info:
-        to_sympy(pool.func(name, [x]))
+        to_sympy(pool.func(name, [x] * nargs))
     assert info.value.code == "E-XCHECK-001"
     assert REFUSED_FUNCTIONS[name] in str(info.value)
 

@@ -292,7 +292,7 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-PSLQ-*` | `PslqError` | Integer-relation search (`guess_relation`); `E-PSLQ-004` is the input-precision refusal and `E-PSLQ-005` the exact refutation |
 | `E-JIT-*` | `JitError` | LLVM/Cranelift codegen and linking |
 | `E-CUDA-*` | `CudaError` | NVPTX compile, kernel launch, driver/runtime failures |
-| `E-POOL-*` | `PoolError` | `ExprPool` misuse (closed, cross-pool, persisted-handle mismatch). `E-POOL-001`: an expression from another pool handed to `pool.add` / `pool.mul` / `pool.func` (or to `asymptotics_from_recurrence`) |
+| `E-POOL-*` | `PoolError` | `ExprPool` misuse (closed, cross-pool, persisted-handle mismatch). `E-POOL-001`: an expression from another pool handed to `pool.add` / `pool.mul` / `pool.func` (or to `asymptotics_from_recurrence`). `E-POOL-002`: a built-in function name given the wrong number of arguments (`pool.func("sqrt", [])`, `pool.func("EllipticPi", [x])`) |
 | `E-PARSE-*` | `ParseError` *(reserved)* | Parser integration — owns `span()` by default |
 | `E-IO-*` | `IoError` *(reserved)* | Checkpoint/serde paths (`PoolPersistError`) |
 | `E-CERT-*` | `CertificateUnavailableError` | A Lean certificate was required but withheld |

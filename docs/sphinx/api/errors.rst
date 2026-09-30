@@ -376,6 +376,11 @@ Exception subclasses
      ``pool.add`` / ``pool.mul`` / ``pool.func`` (or as ``n`` to
      ``asymptotics_from_recurrence``). An expression's id only has
      meaning in the pool that interned it; build every argument from one pool.
+   - ``E-POOL-002`` — a built-in function name was given the wrong number of
+     arguments (``pool.func("sqrt", [])``, ``pool.func("EllipticPi", [x])``).
+     Every consumer of a built-in reads its arguments by position, so such a
+     node is refused at construction; a name that is not built in (a
+     user-defined ``f``) takes any number of arguments.
 
 .. exception:: CertificateUnavailableError
 

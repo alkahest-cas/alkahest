@@ -146,7 +146,7 @@ def test_ztransform_table_and_fibonacci_decline():
     assert str(got) == "(z * (z + -2)^-1)"
     # Inverse recovers 2^n.
     back = ex.inverse_z_transform(z * (z - 2) ** (-1), z, n)
-    assert str(back) == "(2^n)"
+    assert str(back) == "2^n"
 
 
 def test_ztransform_unit():

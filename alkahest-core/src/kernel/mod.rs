@@ -5,6 +5,7 @@ pub mod eval_const;
 mod eval_proptests;
 pub mod expr;
 pub mod expr_props;
+pub mod func_arity;
 pub mod pool;
 pub mod pool_persist;
 mod printer_roundtrip;
@@ -19,7 +20,11 @@ pub use eval_const::{
     try_expr_f64, try_predicate_bool, try_predicate_bool_from_expr,
 };
 pub use expr::{BigFloat, BigInt, BigRat, ExprData, ExprId};
-pub use expr_props::{expr_contains_noncommutative_symbol, mult_tree_is_commutative};
+pub use expr_props::{
+    contains_non_finite_atom, expr_contains_noncommutative_symbol, is_non_finite_atom,
+    mult_tree_is_commutative,
+};
+pub use func_arity::{func_arity_ok, known_func_arity, FuncArityError};
 pub use pool::{ExprDisplay, ExprPool};
 #[allow(deprecated)]
 pub use pool_persist::PoolPersistError;

@@ -200,6 +200,11 @@ struct Node {
     /// in O(1) and prune every subtree without one.  Computed like the flags
     /// above; the children counted are every child that walk descends into.
     static_domain_fact: bool,
+    /// Whether some node in this subtree is `∞` or a non-finite `Float`
+    /// (see [`crate::kernel::expr_props::is_non_finite_atom`]).  Computed like
+    /// the flags above, so the simplifier can ask "may this term be infinite
+    /// or NaN?" in O(1) before cancelling it.
+    non_finite: bool,
 }
 
 pub struct ExprPool {
@@ -250,7 +255,26 @@ impl ExprPool {
 
     /// Intern `data`, returning a shared [`ExprId`]. Identical structures
     /// always return the same id; structural equality ⟺ id equality.
+    ///
+    /// `data` is first brought to its canonical spelling, so that two
+    /// spellings of one value cannot hold two ids:
+    ///
+    /// * a `Rational` whose denominator is `1` is the `Integer` numerator
+    ///   (`rational(4, 2)` *is* `integer(2)`);
+    /// * an `Add` or `Mul` of one argument is that argument, the empty `Add`
+    ///   is `0` and the empty `Mul` is `1`;
+    /// * a `Float` zero or `NaN` is stored with a positive sign.  `BigFloat`'s
+    ///   `Eq` already identifies `-0.0` with `0.0` (and every `NaN` with every
+    ///   other), so without this the node a pool kept would depend on which
+    ///   spelling happened to be interned first.
+    ///
+    /// The result may therefore be a node of a different kind than `data`.
+    /// Every constructor, and the pool-file loader, goes through here.
     pub fn intern(&self, data: ExprData) -> ExprId {
+        let data = match self.canonical_form(data) {
+            Ok(d) => d,
+            Err(id) => return id,
+        };
         // `boxcar::push` is lock-free, so it is safe to call while the index
         // shard's write lock is held.  `data` is moved into the node, not
         // cloned: the index keeps only the id.
@@ -261,17 +285,44 @@ impl ExprPool {
         self.index.get_or_insert_with(&self.nodes, data, make)
     }
 
+    /// The canonical spelling of `data` (see [`ExprPool::intern`]), or
+    /// `Err(id)` when it is already an interned node.
+    fn canonical_form(&self, data: ExprData) -> Result<ExprData, ExprId> {
+        match data {
+            ExprData::Rational(r) if *r.0.denom() == 1 => {
+                Ok(ExprData::Integer(BigInt(r.0.into_numer_denom().0)))
+            }
+            ExprData::Float(mut f)
+                if (f.inner.is_zero() || f.inner.is_nan()) && f.inner.is_sign_negative() =>
+            {
+                f.inner.abs_mut();
+                Ok(ExprData::Float(f))
+            }
+            ExprData::Add(args) if args.len() <= 1 => match args.first() {
+                Some(&only) => Err(only),
+                None => Err(self.integer(0_i32)),
+            },
+            ExprData::Mul(args) if args.len() <= 1 => match args.first() {
+                Some(&only) => Err(only),
+                None => Err(self.integer(1_i32)),
+            },
+            other => Ok(other),
+        }
+    }
+
     /// Wrap `data` with its cached properties.  Children are already interned,
     /// so their flags are just array reads.
     fn make_node(&self, data: ExprData) -> Node {
         let mult_commutative = self.compute_mult_commutative(&data);
         let depth = self.compute_depth(&data);
         let static_domain_fact = self.compute_static_domain_fact(&data);
+        let non_finite = self.compute_non_finite(&data);
         Node {
             data,
             mult_commutative,
             depth,
             static_domain_fact,
+            non_finite,
         }
     }
 
@@ -366,6 +417,36 @@ impl ExprPool {
             ExprData::BigO(inner) => child(*inner),
             ExprData::RootSum { poly, var, body } => child(*poly) || child(*var) || child(*body),
         }
+    }
+
+    /// One level of the `non_finite` recurrence (every child, bound variables
+    /// included — a flag that over-reports only makes a rule decline).
+    fn compute_non_finite(&self, data: &ExprData) -> bool {
+        let child = |c: ExprId| self.node(c).non_finite;
+        match data {
+            ExprData::Symbol { name, .. } => name == POS_INFINITY_SYMBOL,
+            ExprData::Float(f) => !f.inner.is_finite(),
+            ExprData::Integer(_) | ExprData::Rational(_) => false,
+            ExprData::Add(args)
+            | ExprData::Mul(args)
+            | ExprData::Func { args, .. }
+            | ExprData::Predicate { args, .. } => args.iter().copied().any(child),
+            ExprData::Pow { base, exp } => child(*base) || child(*exp),
+            ExprData::Piecewise { branches, default } => {
+                branches.iter().any(|&(c, v)| child(c) || child(v)) || child(*default)
+            }
+            ExprData::Forall { var, body } | ExprData::Exists { var, body } => {
+                child(*var) || child(*body)
+            }
+            ExprData::BigO(inner) => child(*inner),
+            ExprData::RootSum { poly, var, body } => child(*poly) || child(*var) || child(*body),
+        }
+    }
+
+    /// Whether some node of the subtree rooted at `id` is `∞` or a
+    /// non-finite `Float`.  O(1): computed when `id` was interned.
+    pub(crate) fn has_non_finite(&self, id: ExprId) -> bool {
+        self.node(id).non_finite
     }
 
     /// Whether the subtree rooted at `id` contains a symbol whose domain is
@@ -606,11 +687,31 @@ impl ExprPool {
         self.intern(ExprData::Pow { base, exp })
     }
 
+    /// `name(args…)`, unchecked.
+    ///
+    /// The arity of a built-in name is *not* validated here — this is the
+    /// infallible constructor the library itself uses, always at the right
+    /// arity.  Input from outside (a user, a parser, a file) should go through
+    /// [`ExprPool::try_func`], which refuses `sin()` or `EllipticPi(x)`.
     pub fn func(&self, name: impl Into<String>, args: Vec<ExprId>) -> ExprId {
         self.intern(ExprData::Func {
             name: name.into(),
             args,
         })
+    }
+
+    /// `name(args…)`, refusing a built-in function name at the wrong arity
+    /// (see [`crate::kernel::func_arity::known_func_arity`]) with
+    /// [`FuncArityError`](crate::kernel::FuncArityError) (`E-POOL-002`).
+    /// Names outside the built-in table (user functions) take any arity.
+    pub fn try_func(
+        &self,
+        name: impl Into<String>,
+        args: Vec<ExprId>,
+    ) -> Result<ExprId, crate::kernel::FuncArityError> {
+        let name = name.into();
+        crate::kernel::FuncArityError::check(&name, args.len())?;
+        Ok(self.func(name, args))
     }
 
     // -----------------------------------------------------------------------
@@ -832,7 +933,7 @@ fn fmt_data(data: &ExprData, pool: &ExprPool, f: &mut fmt::Formatter<'_>) -> fmt
         ExprData::Predicate { kind, args } => match kind {
             crate::kernel::expr::PredicateKind::True => write!(f, "True"),
             crate::kernel::expr::PredicateKind::False => write!(f, "False"),
-            crate::kernel::expr::PredicateKind::Not => {
+            crate::kernel::expr::PredicateKind::Not if args.len() == 1 => {
                 write!(f, "¬({})", pool.display(args[0]))
             }
             crate::kernel::expr::PredicateKind::And | crate::kernel::expr::PredicateKind::Or => {
@@ -845,7 +946,7 @@ fn fmt_data(data: &ExprData, pool: &ExprPool, f: &mut fmt::Formatter<'_>) -> fmt
                 }
                 write!(f, ")")
             }
-            _ => {
+            _ if args.len() == 2 => {
                 write!(
                     f,
                     "({} {} {})",
@@ -853,6 +954,19 @@ fn fmt_data(data: &ExprData, pool: &ExprPool, f: &mut fmt::Formatter<'_>) -> fmt
                     kind,
                     pool.display(args[1])
                 )
+            }
+            // A comparison or `Not` with the wrong operand count — only the
+            // raw `predicate` constructor can build one.  Print it rather
+            // than index past the end.
+            _ => {
+                write!(f, "{kind}(")?;
+                for (i, &arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", pool.display(arg))?;
+                }
+                write!(f, ")")
             }
         },
         ExprData::Forall { var, body } => {
@@ -944,6 +1058,79 @@ mod tests {
         let r1 = p.rational(2_i32, 4_i32);
         let r2 = p.rational(1_i32, 2_i32);
         assert_eq!(r1, r2, "rationals must be reduced to canonical form");
+    }
+
+    /// One value, one id: a `Rational` with denominator 1 *is* the integer.
+    #[test]
+    fn rational_with_unit_denominator_is_the_integer() {
+        let p = pool();
+        assert_eq!(p.rational(4_i32, 2_i32), p.integer(2_i32));
+        assert_eq!(p.rational(-6_i32, 3_i32), p.integer(-2_i32));
+        assert_eq!(p.rational(0_i32, 5_i32), p.integer(0_i32));
+        assert!(matches!(
+            p.get(p.rational(4_i32, 2_i32)),
+            ExprData::Integer(_)
+        ));
+        // Also through the raw `intern`, which the pool-file loader uses.
+        let raw = p.intern(ExprData::Rational(BigRat(rug::Rational::from(7))));
+        assert_eq!(raw, p.integer(7_i32));
+    }
+
+    /// `Add`/`Mul` of one argument is that argument; of none, the identity.
+    #[test]
+    fn unary_and_empty_sums_and_products_collapse() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        assert_eq!(p.add(vec![x]), x);
+        assert_eq!(p.mul(vec![x]), x);
+        assert_eq!(p.add(vec![]), p.integer(0_i32));
+        assert_eq!(p.mul(vec![]), p.integer(1_i32));
+        assert_eq!(p.add(vec![p.add(vec![x])]), x);
+        assert_eq!(p.intern(ExprData::Mul(vec![x])), x);
+        assert_eq!(p.intern(ExprData::Add(vec![])), p.integer(0_i32));
+        // A non-commutative generator alone is still just itself.
+        let a = p.symbol_commutative("A", Domain::Real, false);
+        assert_eq!(p.mul(vec![a]), a);
+        assert_eq!(p.display(p.add(vec![])).to_string(), "0");
+        assert_eq!(p.display(p.mul(vec![])).to_string(), "1");
+    }
+
+    /// `-0.0` and `0.0` are one node (as `BigFloat`'s `Eq` already says), and
+    /// the node kept is `+0.0` whichever spelling is interned first.
+    #[test]
+    fn signed_zero_floats_are_one_node_stored_positive() {
+        let p = pool();
+        let neg = p.float(-0.0, 53);
+        let pos = p.float(0.0, 53);
+        assert_eq!(neg, pos);
+        match p.get(neg) {
+            ExprData::Float(f) => assert!(f.inner.is_zero() && !f.inner.is_sign_negative()),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(p.display(neg).to_string(), "0.0");
+        let n1 = p.float(f64::NAN, 53);
+        let n2 = p.float(-f64::NAN, 53);
+        assert_eq!(n1, n2);
+    }
+
+    /// A `Float` never prints as something that reads back as an `Integer`.
+    #[test]
+    fn float_display_is_never_integer_shaped() {
+        let p = pool();
+        for (v, prec) in [
+            (0.0, 53),
+            (1.0, 53),
+            (2.0_f64.powi(60), 53),
+            (3.0, 64),
+            (0.0, 200),
+        ] {
+            let s = p.display(p.float(v, prec)).to_string();
+            assert!(s.contains(['.', 'e']), "{v} at {prec} printed as {s}");
+            match p.get(crate::parse::parse(&s, &p, &mut Default::default()).unwrap()) {
+                ExprData::Float(_) => {}
+                other => panic!("{s} re-parsed as {other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -1109,16 +1296,20 @@ mod tests {
         assert_eq!(nary_args(&p, flat).len(), N as usize + 1);
     }
 
-    /// The empty product is 1 and the empty sum is 0, so splicing an empty
-    /// child away is value-preserving too.
+    /// The empty product is 1 and the empty sum is 0 — and since `intern`
+    /// canonicalises them to exactly those literals, no empty same-operator
+    /// child is left to splice: `x · Mul([])` is the ordinary `x · 1`, which
+    /// `simplify` (not construction) reduces.
     #[test]
-    fn splicing_drops_empty_same_operator_children() {
+    fn empty_same_operator_children_are_the_identity_literals() {
         let p = pool();
         let x = p.symbol("x", Domain::Real);
         let empty_mul = p.mul(vec![]);
-        assert_eq!(p.mul(vec![x, empty_mul]), p.mul(vec![x]));
+        assert_eq!(empty_mul, p.integer(1_i32));
+        assert_eq!(p.mul(vec![x, empty_mul]), p.mul(vec![x, p.integer(1_i32)]));
         let empty_add = p.add(vec![]);
-        assert_eq!(p.add(vec![x, empty_add]), p.add(vec![x]));
+        assert_eq!(empty_add, p.integer(0_i32));
+        assert_eq!(p.add(vec![x, empty_add]), p.add(vec![x, p.integer(0_i32)]));
     }
 
     /// Flattening only ever *increases* sharing: the three spellings of a

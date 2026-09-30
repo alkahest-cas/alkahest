@@ -3673,7 +3673,13 @@ fn expr_to_lean_opts(expr: ExprId, pool: &ExprPool, neg_form: bool) -> String {
             // Always parenthesize the argument: `Real.log Real.exp x` parses as
             // `(Real.log Real.exp) x`, and `Real.log x ^ 3` parses as
             // `(Real.log x) ^ 3` — both are type/math errors.
+            //
+            // A built-in at the wrong arity (only an unchecked constructor or a
+            // pool file can make one) keeps its plain spelling instead of
+            // indexing past its arguments.
+            let known = crate::kernel::func_arity_ok(name, args.len());
             match name.as_str() {
+                _ if !known => format!("{name} ({})", arg_strs.join(", ")),
                 "sin" => format!("Real.sin ({})", arg_strs[0]),
                 "cos" => format!("Real.cos ({})", arg_strs[0]),
                 "tan" => format!("Real.tan ({})", arg_strs[0]),

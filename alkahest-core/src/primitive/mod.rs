@@ -325,6 +325,11 @@ impl PrimitiveRegistry {
 
     /// Call `diff_forward` on a registered primitive.
     /// Returns `None` if the primitive is unknown or lacks `DIFF_FORWARD`.
+    ///
+    /// Every dispatch method below also returns `None` for a call at the
+    /// wrong arity (`sin()`, `EllipticPi(x)` — see
+    /// [`crate::kernel::known_func_arity`]): the primitives index their
+    /// arguments by position, and such a node has no value to compute.
     pub fn diff_forward(
         &self,
         name: &str,
@@ -332,6 +337,9 @@ impl PrimitiveRegistry {
         wrt: ExprId,
         pool: &ExprPool,
     ) -> Option<ExprId> {
+        if !crate::kernel::func_arity_ok(name, args.len()) {
+            return None;
+        }
         let entry = self.map.get(name)?;
         entry.primitive.diff_forward(args, wrt, pool)
     }
@@ -344,18 +352,27 @@ impl PrimitiveRegistry {
         cotan: ExprId,
         pool: &ExprPool,
     ) -> Option<Vec<ExprId>> {
+        if !crate::kernel::func_arity_ok(name, args.len()) {
+            return None;
+        }
         let entry = self.map.get(name)?;
         entry.primitive.diff_reverse(args, cotan, pool)
     }
 
     /// Call `numeric_f64` on a registered primitive.
     pub fn numeric_f64(&self, name: &str, args: &[f64]) -> Option<f64> {
+        if !crate::kernel::func_arity_ok(name, args.len()) {
+            return None;
+        }
         let entry = self.map.get(name)?;
         entry.primitive.numeric_f64(args)
     }
 
     /// Call `numeric_ball` on a registered primitive.
     pub fn numeric_ball(&self, name: &str, args: &[ArbBall]) -> Option<ArbBall> {
+        if !crate::kernel::func_arity_ok(name, args.len()) {
+            return None;
+        }
         let entry = self.map.get(name)?;
         entry.primitive.numeric_ball(args)
     }

@@ -348,7 +348,17 @@ class _Parser:
 
         if kind == _TK_NUM:
             if "." in text or "e" in text.lower():
-                return pool.float(float(text), 53)
+                # Not ``pool.float(float(text), 53)``: a literal longer than
+                # an ``f64`` holds (a printed high-precision float) is read at
+                # a precision that keeps its digits.  Shared with the Rust
+                # parser (``alkahest_core::parse::float_literal``).
+                node = pool._float_literal(text)
+                if node is None:
+                    raise ParseError(
+                        f"malformed number literal: {text}",
+                        span=(offset, offset + len(text)),
+                    )
+                return node
             return pool.integer(int(text))
 
         if kind == _TK_IDENT:
@@ -518,7 +528,28 @@ def _apply_func(name: str, args: list, offset: int, pool=None):
                 f"known functions: {', '.join(sorted(set(_funcs) | set(_RECIPROCAL_BASE)))}"
             ),
         )
+    # A wrong argument count (``sin()``, ``sin(x, x)``, ``EllipticPi(x)``) is
+    # a parse error, as it is in the Rust parser — not a ``TypeError`` from
+    # the constructor, which is not an ``AlkahestError`` at all.
+    lo, hi = _ARITY.get(name, (1, 1))
+    if not lo <= len(args) <= hi:
+        want = str(lo) if lo == hi else f"{lo} or {hi}"
+        noun = "argument" if lo == hi == 1 else "arguments"
+        raise ParseError(
+            f"{name} takes {want} {noun}, got {len(args)}",
+            span=(offset, offset + len(name)),
+        )
     return fn(*args)
+
+
+# Argument counts of the parser's functions that are not unary.  Mirrors
+# ``known_func_arity`` in ``alkahest-core/src/kernel/func_arity.rs``.
+_ARITY: dict[str, tuple[int, int]] = {
+    "atan2": (2, 2),
+    "EllipticE": (1, 2),
+    "EllipticF": (2, 2),
+    "EllipticPi": (3, 3),
+}
 
 
 # ---------------------------------------------------------------------------
