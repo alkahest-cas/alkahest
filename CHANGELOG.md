@@ -252,6 +252,12 @@
 
 ### Fixed
 
+- **Release wheels failed to import (`undefined symbol: PyPyIndex_Check`).**
+  The integer-coercion fast path called `pyo3::ffi::PyIndex_Check`, which
+  pyo3-ffi 0.21 binds to the PyPy symbol name. Test builds never exercised
+  it, but every CPython release wheel either failed to import (Linux, macOS)
+  or failed to link (Windows). The check is now made on the Python type
+  (`hasattr(type(ob), "__index__")`), with no raw FFI call.
 - **`q_zeilberger` hung, instead of refusing, when a budget check tripped
   inside its field arithmetic** — a pending `request_cancel()`, an expired
   `Budget` wall clock, or the address-space guard under `ulimit -v`. The
