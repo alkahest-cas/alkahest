@@ -1,4 +1,5 @@
 pub mod algebraic;
+pub(crate) mod branch_check;
 pub mod by_parts;
 pub mod engine;
 pub mod gate;

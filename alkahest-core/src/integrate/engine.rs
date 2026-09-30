@@ -2235,7 +2235,68 @@ pub(crate) fn integrate_raw(
 /// For all supported inputs, `diff(integrate(f, x), x)` should simplify to
 /// `f` (modulo simplification of the constant rule).  The property tests in
 /// this module verify this on random polynomials.
+///
+/// That includes the **complex branch**: where the integrand is not real — the
+/// principal `√(tan³x)` for `tan x < 0` — the answer must still differentiate
+/// back to it. The route-level gates only sample where the integrand is real,
+/// so the outermost call checks the rest (the crate-private `branch_check`
+/// module) and
+/// declines an answer that is right on one half of the line and off by a sign
+/// on the other.
 pub fn integrate(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Result<DerivedExpr<ExprId>, IntegrationError> {
+    let frame = IntegrateFrame::enter();
+    let result = integrate_dispatch(expr, var, pool)?;
+    if frame.outermost {
+        if let Some(at) =
+            super::branch_check::complex_branch_mismatch(result.value, expr, var, pool)
+        {
+            return Err(IntegrationError::NotImplemented(format!(
+                "the antiderivative found, {}, differentiates back to the integrand where the \
+                 integrand is real but not on its complex (principal) branch — it disagrees at \
+                 {} = {at} — so it is wrong by a branch on part of the line; declining rather \
+                 than returning it",
+                pool.display(result.value),
+                pool.display(var),
+            )));
+        }
+    }
+    Ok(result)
+}
+
+thread_local! {
+    /// Nesting depth of [`integrate`] on this thread: routes integrate
+    /// sub-problems recursively, and only the outermost answer is the one the
+    /// caller receives (and the one `branch_check` has to vouch for).
+    static INTEGRATE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+struct IntegrateFrame {
+    outermost: bool,
+}
+
+impl IntegrateFrame {
+    fn enter() -> Self {
+        INTEGRATE_DEPTH.with(|d| {
+            let depth = d.get();
+            d.set(depth + 1);
+            IntegrateFrame {
+                outermost: depth == 0,
+            }
+        })
+    }
+}
+
+impl Drop for IntegrateFrame {
+    fn drop(&mut self) {
+        INTEGRATE_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+fn integrate_dispatch(
     expr: ExprId,
     var: ExprId,
     pool: &ExprPool,
@@ -2758,7 +2819,13 @@ fn definite_via_ftc(
     upper: ExprId,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, IntegrationError> {
-    if let Some(reason) = interior_singularity(expr, var, lower, upper, pool) {
+    // The pole scans look at the integrand with its `var`-free summands and
+    // factors removed: a constant adds no pole, and a *non-real* constant made
+    // every check below blind. `∫_{-1}^{2} (1/x + tanh(i)) dx` came back finite
+    // — the exact check needs a single quotient and got a sum, and the numeric
+    // scans evaluate in `f64` and got `NaN` for `tanh(i)` at every sample.
+    let scan = pole_scan_form(expr, var, pool);
+    if let Some(reason) = interior_singularity(scan, var, lower, upper, pool) {
         return Err(IntegrationError::NotImplemented(reason));
     }
 
@@ -2767,7 +2834,7 @@ fn definite_via_ftc(
     // and the FTC difference `tan(2) - tan(0) = -2.185…` is a clean, plausible,
     // *negative* number for an integrand that is positive everywhere and whose
     // integral diverges.  Confirm blow-up numerically instead.
-    if let Some(reason) = numeric_interior_singularity(expr, var, lower, upper, pool) {
+    if let Some(reason) = numeric_interior_singularity(scan, var, lower, upper, pool) {
         return Err(IntegrationError::NotImplemented(reason));
     }
 
@@ -2777,7 +2844,7 @@ fn definite_via_ftc(
     // with an unbound symbol. The FTC difference was then returned as though it
     // held for all parameter values, when for some of them the integral
     // diverges.
-    if let Some(reason) = parametric_interior_singularity(expr, var, lower, upper, pool) {
+    if let Some(reason) = parametric_interior_singularity(scan, var, lower, upper, pool) {
         return Err(IntegrationError::NotImplemented(reason));
     }
 
@@ -2792,6 +2859,19 @@ fn definite_via_ftc(
     // `∫ dx/(a + b·cos x)` picks up a `tan(x/2)`, which jumps at `x = π`.
     if let Some(reason) = antiderivative_jump(f, expr, var, lower, upper, pool) {
         return Err(IntegrationError::NotImplemented(reason));
+    }
+    // `antiderivative_jump` samples `F` where it is real. Where the integrand is
+    // *not* real on part of the interval (`cot(x)^{3/2}` past `π/2`) a
+    // substitution through a pole of the substituted function leaves `F`
+    // continuous on each side and jumping between them, and nothing above
+    // looked there.
+    if let (Some(a), Some(b)) = (numeric_bound(lower, pool), numeric_bound(upper, pool)) {
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        if let Some(reason) =
+            super::branch_check::complex_antiderivative_jump(f, expr, var, lo, hi, pool)
+        {
+            return Err(IntegrationError::NotImplemented(reason));
+        }
     }
 
     // F(upper) and F(lower). For a finite bound this is plain substitution; for
@@ -3596,6 +3676,49 @@ fn extended_numeric_bound(bound: ExprId, pool: &ExprPool) -> Option<f64> {
         return Some(f64::NEG_INFINITY);
     }
     numeric_bound(bound, pool)
+}
+
+/// `expr` with every summand and factor free of `var` dropped — the form the
+/// pole scans in [`definite_via_ftc`] look at.
+///
+/// A constant summand adds no pole; a constant factor `c` leaves the poles of
+/// the rest unchanged unless `c = 0`, in which case reporting one is a refusal
+/// of a zero integral — the safe direction. What the stripping buys is that a
+/// constant the scans cannot handle (a non-real `tanh(i)`, which is `NaN` to
+/// every `f64` evaluator) no longer switches them off.
+fn pole_scan_form(expr: ExprId, var: ExprId, pool: &ExprPool) -> ExprId {
+    let simplified = simplify(expr, pool).value;
+    let strip_factors = |e: ExprId| -> ExprId {
+        let ExprData::Mul(xs) = pool.get(e) else {
+            return e;
+        };
+        let kept: Vec<ExprId> = xs
+            .iter()
+            .copied()
+            .filter(|&f| mentions_var(f, var, pool))
+            .collect();
+        match kept.len() {
+            0 => e,
+            1 => kept[0],
+            _ => pool.mul(kept),
+        }
+    };
+    match pool.get(simplified) {
+        ExprData::Add(xs) => {
+            let kept: Vec<ExprId> = xs
+                .iter()
+                .copied()
+                .filter(|&t| mentions_var(t, var, pool))
+                .map(strip_factors)
+                .collect();
+            match kept.len() {
+                0 => simplified,
+                1 => kept[0],
+                _ => pool.add(kept),
+            }
+        }
+        _ => strip_factors(simplified),
+    }
 }
 
 /// Detect a singularity of `integrand` on the closed interval `[lower, upper]`.
