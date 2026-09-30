@@ -359,7 +359,6 @@ only. Loop-contract
 |---|---|---|---|---|
 | `modular::…::gcd_u64_in_range_inductive_full_width` | no panic; `0` iff `a = b = 0`, else `<=` each nonzero argument (loop invariant) | all `a, b` | PR | 2.9 s |
 | `modular::…::gcd_i64_sign_full_width` | no panic at `i64::MIN`; result `>= 0` except gcd `2^63` (`gcd_u64` stubbed) | all `a, b` | PR | 0.1 s |
-| `modular::…::mod_inverse_in_range_inductive` | no panic / `i128` overflow, result `< m` (Bézout invariant) | all `a`; `m >= 1` | nightly | unmeasured |
 | `poly::interp::…::interp_{add,sub}_mod_full_width` | exact canonical result (`p > 2^63` wrapped before) | all `p >= 1`; values `< p` | PR | 0.5 s / 0.4 s |
 | `calculus::limits::…::lcm_small_no_wrap_full_width` | a `Some` is a true common multiple within the cap | `1 <= a <= 12`; all `u32 b` | PR | 0.4 s |
 | `integrate::algebraic::subst::…::lcm_no_wrap_full_width` | no panic; a `Some` is a true common multiple `>= max(a, b)` | `1 <= a <= 12`; all `usize b` | PR | 133 s |
@@ -367,9 +366,8 @@ only. Loop-contract
 | `integrate::algebraic::trager_log::…::lcm_u32_no_wrap_large_a` | no panic; a `Some` is a true common multiple | all `a`; `b < 2^4` | nightly | 33 s |
 | `integrate::algebraic::trager_log::…::lcm_u32_is_least_small` | least common multiple, `None` only past `u32::MAX` | `a, b < 2^5` | nightly | 2.8 s |
 | `integrate::risch::exp_case::…::perfect_square_no_overflow_full_width` | no panic / overflow | every `i64` | PR | 6.0 s |
-| `integrate::algebraic::elliptic_output::…::is_squarefree_no_overflow_inductive` | no panic / overflow (loop invariant) | every `i64` | nightly | unmeasured |
-| `integrate::algebraic::elliptic_output::…::is_quartic_radical_no_overflow_inductive` | no panic / overflow (loop invariant) | every `i64` | nightly | unmeasured |
-| `character::dixon::…::distinct_prime_factors_no_overflow_inductive` | no panic / overflow (two loop invariants) | every `u64` | nightly | unmeasured |
+| `integrate::algebraic::elliptic_output::…::is_squarefree_no_overflow_inductive_full_width` | no panic / overflow (loop invariant) | every `i64` | PR (loop contracts) | 1.3 s (CI) |
+| `integrate::algebraic::elliptic_output::…::is_quartic_radical_no_overflow_inductive_full_width` | no panic / overflow (loop invariant) | every `i64` | PR (loop contracts) | 6.9 s (CI) |
 | `holonomic::modular::…::prime_power_in_range_full_width` | no panic / `u128` overflow; `<= 63` rounds; a `Some` is `<= 2^62` | all `p >= 2`; all `u32 e` | PR | 130 s |
 | `holonomic::modular::…::prime_power_exact_small` | `p^e` when it fits, `None` exactly past `2^62` | `2 <= p < 2^8`; `e <= 8` | nightly | 52 s |
 | `holonomic::telescoping2d::search::…::flatten_in_block_small` | no overflow; index `< box_len^num_axes` | `1 <= box_len < 2^8`; `num_axes <= 3` | nightly | 15 s (CI) |
@@ -405,6 +403,16 @@ only. Loop-contract
   out of memory. Its fix (`checked_pow`, `saturating_*`) cannot wrap by
   construction, and unit tests pin the `7^23 (mod 2^64)` case and the powers
   near `i64::MAX`.
+- Two loop-contract harnesses that did not close on the CI runner, measured
+  one per job: `mod_inverse_u64` over every `a` and `m` with the Bézout
+  invariant (still running at the job's 60-minute limit), and
+  `character::dixon::distinct_prime_factors` over every `u64` (its two nested
+  invariants over a growing `Vec` ran the runner out of memory in six
+  minutes). `stubs::mod_inverse_u64`'s range contract therefore rests on
+  `mod_inverse_in_range_large_modulus` (every `m`, `a < 2^4`) and the
+  argument in the source comment; dixon's `d <= n / d` bound is overflow-free
+  by inspection, and reaching the old wrap needs ~`2^32` iterations, too many
+  for a unit test.
 - `real::sos::psd::pack_len` for every `n < 2^32`: the harness (a symbolic
   128-bit multiplication equality) did not finish in 100 minutes on the CI
   runner. A unit test checks the top and bottom `2^12` values of `n`.

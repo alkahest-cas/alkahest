@@ -957,15 +957,17 @@
   `u64` step likewise.
 - **Kani, second round.** Harnesses for the fixes above, plus the
   telescoping search's flat index, `holonomic::modular::prime_power`, the
-  interpreter's flat program (any program that passes the new `is_well_formed` check — which `compile` now
-  `debug_assert`s — runs in bounds) and the rug ⇄ FLINT limb buffer, checked
-  with FLINT's `fmpz_bits`/`fmpz_get_ui_array` stubbed by Rust models of
-  their contracts. Loops that cannot be unrolled at full width (Euclid, trial
-  division to `√n`, extended Euclid in `mod_inverse_u64`) carry
-  `kani::loop_invariant`s, compiled in only with
-  `ALKAHEST_KANI_LOOP_CONTRACTS=1`; their `*_inductive` harnesses run as a
-  second Kani step. Harnesses whose runtime has not been measured run nightly
-  only; TESTING.md § 7 says which, and documents both patterns.
+  interpreter's flat program (any program that passes the new
+  `is_well_formed` check — which `compile` now `debug_assert`s — runs in
+  bounds) and the rug ⇄ FLINT limb buffer, checked with FLINT's
+  `fmpz_bits`/`fmpz_get_ui_array` stubbed by Rust models of their contracts.
+  Loops that cannot be unrolled at full width (Euclid in `gcd_u64`, trial
+  division to `√n` in `elliptic_output`) carry `kani::loop_invariant`s,
+  compiled in only with `ALKAHEST_KANI_LOOP_CONTRACTS=1`; their
+  `*_inductive_full_width` harnesses run as a second Kani step on every PR.
+  Harnesses whose runtime has not been measured run nightly only, and the
+  ones that did not close on the CI runner were removed; TESTING.md § 7 lists
+  both, and documents the loop-contract and FFI-stubbing patterns.
 - 201 new Rust tests (46 `ffield`, 60 `group`, 95 `funcfield`) and a
   17-case `tests/silent_errors/corpus/function_fields.py`. The silent-error
   gate reports 0 silent errors across 558 cases.
