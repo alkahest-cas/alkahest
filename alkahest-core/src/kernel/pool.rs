@@ -8,163 +8,157 @@ use std::fmt;
 pub const POS_INFINITY_SYMBOL: &str = "\u{221e}";
 
 // ---------------------------------------------------------------------------
-// Lock-free arena for ExprPool nodes.
+// Lock-free arena for ExprPool nodes, and a single-storage index over it.
 //
 // Strategy:
-//   * The `nodes` array (ExprId → ExprData) is a `boxcar::Vec` — a
-//     lock-free, append-only, reference-stable segmented array.  Reads
-//     (`with`, `get`, `len`) acquire no lock at all; they index directly
-//     into the array via a single atomic load.
-//   * The `index` (ExprData → ExprId) still requires coordination during
-//     insertion to preserve hash-cons uniqueness:
-//     - Under `--features parallel` we use `DashMap::entry` which holds a
-//       per-shard write-lock only for the duration of the insert.  The
-//       vacant-entry branch calls `boxcar::push` (lock-free) while the shard
-//       lock is held, so no two threads can insert the same key.
-//     - Keys are `HashedKey`s (see below): each `ExprData` is hashed once
-//       per `intern`, not once per probe or per table resize.
-//     - Without `parallel` the `Mutex<HashMap>` serialises all inserts as
-//       before; the boxcar push happens while the Mutex is held.
+//   * The `nodes` array (ExprId → Node) is a `boxcar::Vec` — a lock-free,
+//     append-only, reference-stable segmented array.  Reads (`with`, `get`,
+//     `len`) acquire no lock at all; they index directly into the array via a
+//     single atomic load.  This is the *only* place an `ExprData` is stored.
+//   * The `index` (ExprData → ExprId) is a set of 8-byte `Slot`s — an id and
+//     32 bits of the node's hash — in `hashbrown::HashTable`s.  It stores no
+//     `ExprData` of its own: a probe compares the candidate against the node
+//     the slot points at.  (The index used to be a map *keyed by* `ExprData`,
+//     so every node lived twice — once in the array and once, deep-cloned, as
+//     a key — and every miss paid for the clone.)
+//   * Hash-cons uniqueness under concurrency: the index is split into shards,
+//     each behind an `RwLock`, chosen by the top bits of the hash.  A hit takes
+//     the shard's read lock.  A miss takes its write lock, *re-probes under it*,
+//     and only then pushes the node (lock-free) and records its slot, still
+//     under the lock — so two threads interning the same value serialise on the
+//     same shard, the second finds the first's slot, and a node is created at
+//     most once per distinct value.
+//   * Without `parallel` there is one shard; the code path is the same.
+//   * Each `ExprData` is hashed exactly once per `intern`, with a per-pool
+//     random seed (foldhash).  The table grows by re-bucketing the stored
+//     32-bit hashes, so a resize never touches — let alone re-hashes — a node.
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "parallel")]
-use dashmap::{mapref::entry::Entry, DashMap};
+use hashbrown::HashTable;
+use std::hash::BuildHasher;
+use std::sync::{PoisonError, RwLock};
 
-#[cfg(not(feature = "parallel"))]
-use std::collections::HashMap;
-
-#[cfg(not(feature = "parallel"))]
-use std::sync::Mutex;
-
-use std::collections::hash_map::RandomState;
-use std::hash::{BuildHasher, BuildHasherDefault, Hash, Hasher};
-
-// ---------------------------------------------------------------------------
-// Pre-hashed index keys
-//
-// `intern` used to hash an `ExprData` twice on a miss — once for the lock-free
-// `get`, again inside `entry` — and the map re-hashed every stored `ExprData`
-// each time it grew.  Instead the index key carries its hash, computed exactly
-// once per `intern` call with the pool's `RandomState` (so the table keeps its
-// HashDoS resistance), and the map's own hasher just passes that `u64` through.
-// Lookup, insertion and every resize then cost no `ExprData` hashing at all.
-// ---------------------------------------------------------------------------
-
-/// An `ExprData` together with its (seeded) hash.
-struct HashedKey {
-    hash: u64,
-    data: ExprData,
+/// One index entry: the id of an interned node and the low 32 bits of its hash.
+///
+/// The hash bits are a fast reject (most probes that land on the wrong slot
+/// never touch the node) and are what the table re-buckets on growth.  They
+/// never decide equality: a hash collision falls through to comparing the
+/// `ExprData` itself, so two distinct nodes can never be merged.
+#[derive(Clone, Copy)]
+struct Slot {
+    id: u32,
+    hash: u32,
 }
 
-impl PartialEq for HashedKey {
-    fn eq(&self, other: &Self) -> bool {
-        // The hash comparison is only a fast reject; equality is decided by
-        // the data, so a hash collision can never merge two distinct nodes.
-        self.hash == other.hash && self.data == other.data
-    }
-}
-impl Eq for HashedKey {}
-
-impl Hash for HashedKey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u64(self.hash);
-    }
+/// The 64-bit table hash for a slot's 32 stored bits.  Duplicating them into
+/// the high half gives hashbrown's control byte (the top 7 bits) and its bucket
+/// index (the low bits) independent-looking inputs.
+#[inline]
+fn slot_hash(h32: u32) -> u64 {
+    let h = u64::from(h32);
+    h | (h << 32)
 }
 
-/// Hasher for [`HashedKey`]: returns the precomputed hash unchanged.
-#[derive(Default)]
-struct PassThroughHasher(u64);
+/// A shard, padded to its own cache lines so concurrent interns on neighbouring
+/// shards do not contend on the lock word.
+#[repr(align(128))]
+struct Shard(RwLock<HashTable<Slot>>);
 
-impl Hasher for PassThroughHasher {
-    fn finish(&self) -> u64 {
-        self.0
+/// Number of index shards: one without `parallel`; with it, four per available
+/// core rounded up to a power of two (the same rule `DashMap` uses), capped so
+/// an idle pool stays small.  Computed once per process — reading the core
+/// count can mean parsing cgroup files.
+fn shard_count() -> usize {
+    #[cfg(feature = "parallel")]
+    {
+        static SHARDS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        *SHARDS.get_or_init(|| {
+            let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+            (cores * 4).next_power_of_two().clamp(4, 64)
+        })
     }
-    fn write_u64(&mut self, h: u64) {
-        self.0 = h;
-    }
-    fn write(&mut self, bytes: &[u8]) {
-        // Only `HashedKey` is ever hashed with this hasher, and it writes a
-        // single `u64`.  Stay correct (if slow) should that ever change.
-        for &b in bytes {
-            self.0 = self.0.rotate_left(8) ^ u64::from(b);
-        }
+    #[cfg(not(feature = "parallel"))]
+    {
+        1
     }
 }
 
-type PassThrough = BuildHasherDefault<PassThroughHasher>;
-
-// ---------------------------------------------------------------------------
-// PoolIndex — two variants depending on build features
-// ---------------------------------------------------------------------------
-
-#[cfg(feature = "parallel")]
 struct PoolIndex {
-    map: DashMap<HashedKey, ExprId, PassThrough>,
-    seed: RandomState,
+    shards: Box<[Shard]>,
+    /// `64 - log2(shards.len())`; the shard is `hash >> shard_shift` (the top
+    /// bits), disjoint from the low 32 bits a `Slot` stores.
+    shard_shift: u32,
+    seed: foldhash::fast::RandomState,
 }
 
-#[cfg(not(feature = "parallel"))]
-struct PoolIndex {
-    map: HashMap<HashedKey, ExprId, PassThrough>,
-    seed: RandomState,
-}
-
-impl PoolIndex {
-    fn key(&self, data: ExprData) -> HashedKey {
-        HashedKey {
-            hash: self.seed.hash_one(&data),
-            data,
-        }
-    }
-}
-
-#[cfg(feature = "parallel")]
 impl PoolIndex {
     fn new() -> Self {
+        let n = shard_count();
+        debug_assert!(n.is_power_of_two());
         PoolIndex {
-            map: DashMap::with_hasher(PassThrough::default()),
-            seed: RandomState::new(),
+            shards: (0..n)
+                .map(|_| Shard(RwLock::new(HashTable::new())))
+                .collect(),
+            shard_shift: 64 - n.trailing_zeros(),
+            seed: foldhash::fast::RandomState::default(),
         }
     }
-    /// Return the id for `data`, calling `make` to create it if absent.
-    ///
-    /// Hit: one shard read-lock.  Miss: `DashMap::entry` takes the shard
-    /// write-lock and re-probes under it, and `make` runs while that lock is
-    /// held — so two threads interning the same value concurrently serialise on
-    /// the shard, the second finds the first's entry, and `make` runs at most
-    /// once per unique key (hash-cons uniqueness).
-    fn get_or_insert_with(&self, data: ExprData, make: impl FnOnce(&ExprData) -> ExprId) -> ExprId {
-        let key = self.key(data);
-        if let Some(id) = self.map.get(&key) {
-            return *id;
-        }
-        match self.map.entry(key) {
-            Entry::Occupied(o) => *o.get(),
-            Entry::Vacant(v) => {
-                let id = make(&v.key().data);
-                *v.insert(id)
-            }
-        }
-    }
-}
 
-#[cfg(not(feature = "parallel"))]
-impl PoolIndex {
-    fn new() -> Self {
-        PoolIndex {
-            map: HashMap::with_hasher(PassThrough::default()),
-            seed: RandomState::new(),
-        }
-    }
-    /// Return the id for `data`, calling `make` to create it if absent.  The
-    /// caller holds the index `Mutex`, which serialises every insert.
+    /// Return the id for `data`, calling `make` to create the node if absent.
     fn get_or_insert_with(
-        &mut self,
+        &self,
+        nodes: &boxcar::Vec<Node>,
         data: ExprData,
-        make: impl FnOnce(&ExprData) -> ExprId,
+        make: impl FnOnce(ExprData) -> ExprId,
     ) -> ExprId {
-        let key = self.key(data);
-        *self.map.entry(key).or_insert_with_key(|k| make(&k.data))
+        let hash = self.seed.hash_one(&data);
+        self.get_or_insert_hashed(nodes, hash, data, make)
+    }
+
+    /// [`Self::get_or_insert_with`] with the hash supplied, so tests can force
+    /// collisions.
+    ///
+    /// Hit: one shard read-lock.  Miss: the shard write-lock, a re-probe under
+    /// it, and `make` runs while the lock is held — so `make` runs at most once
+    /// per distinct value, however many threads race to intern it.
+    fn get_or_insert_hashed(
+        &self,
+        nodes: &boxcar::Vec<Node>,
+        hash: u64,
+        data: ExprData,
+        make: impl FnOnce(ExprData) -> ExprId,
+    ) -> ExprId {
+        let h32 = hash as u32;
+        let th = slot_hash(h32);
+        // `checked_shr`: with a single shard the shift is 64.
+        let shard = hash.checked_shr(self.shard_shift).unwrap_or(0) as usize;
+        let lock = &self.shards[shard].0;
+        let eq = |s: &Slot| s.hash == h32 && nodes[s.id as usize].data == data;
+
+        // A panic in `make` (say, a child id from another pool) poisons the
+        // lock, but it fires before the slot is recorded, so the table is still
+        // consistent and later interns may carry on.
+        if let Some(s) = lock
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .find(th, eq)
+        {
+            return ExprId(s.id);
+        }
+        let mut table = lock.write().unwrap_or_else(PoisonError::into_inner);
+        if let Some(s) = table.find(th, eq) {
+            return ExprId(s.id);
+        }
+        let id = make(data);
+        table.insert_unique(
+            th,
+            Slot {
+                id: id.0,
+                hash: h32,
+            },
+            |s| slot_hash(s.hash),
+        );
+        id
     }
 }
 
@@ -211,19 +205,17 @@ struct Node {
 pub struct ExprPool {
     /// Lock-free, append-only, reference-stable node array.
     nodes: boxcar::Vec<Node>,
-    /// Deduplication index: ExprData → ExprId.
-    #[cfg(feature = "parallel")]
+    /// Deduplication index: ExprData → ExprId.  Holds ids, not data; see
+    /// [`PoolIndex`].
     index: PoolIndex,
-    #[cfg(not(feature = "parallel"))]
-    index: Mutex<PoolIndex>,
 }
 
 // `ExprPool` is `Send + Sync` *by inference*, not by assertion.
 //
 // This used to be `unsafe impl Send for ExprPool {}` / `unsafe impl Sync`, and
 // nothing about the type ever needed it: every field is already `Send + Sync`
-// (`boxcar::Vec<Node>` where `Node: Send + Sync`, `DashMap` under `parallel`,
-// `Mutex<PoolIndex>` without it).  An unconditional `unsafe impl` on a type that
+// (`boxcar::Vec<Node>` where `Node: Send + Sync`, and `PoolIndex`'s
+// `RwLock`-guarded shards).  An unconditional `unsafe impl` on a type that
 // derives the traits anyway is strictly worse than nothing, because it also
 // *silences the check for the future*: add an `Rc`, a `Cell`, or a raw pointer
 // to `ExprPool`, `Node` or `ExprData` and the compiler would have gone on
@@ -252,35 +244,21 @@ impl ExprPool {
     pub fn new() -> Self {
         ExprPool {
             nodes: boxcar::Vec::new(),
-            #[cfg(feature = "parallel")]
             index: PoolIndex::new(),
-            #[cfg(not(feature = "parallel"))]
-            index: Mutex::new(PoolIndex::new()),
         }
     }
 
     /// Intern `data`, returning a shared [`ExprId`]. Identical structures
     /// always return the same id; structural equality ⟺ id equality.
     pub fn intern(&self, data: ExprData) -> ExprId {
-        // `boxcar::push` is lock-free, so it is safe to call while the shard
-        // lock (parallel) or the index Mutex (serial) is held.
-        let make = |d: &ExprData| {
-            let node = self.make_node(d.clone());
+        // `boxcar::push` is lock-free, so it is safe to call while the index
+        // shard's write lock is held.  `data` is moved into the node, not
+        // cloned: the index keeps only the id.
+        let make = |d: ExprData| {
+            let node = self.make_node(d);
             ExprId(self.nodes.push(node) as u32)
         };
-
-        #[cfg(feature = "parallel")]
-        {
-            self.index.get_or_insert_with(data, make)
-        }
-
-        #[cfg(not(feature = "parallel"))]
-        {
-            self.index
-                .lock()
-                .expect("ExprPool index Mutex poisoned")
-                .get_or_insert_with(data, make)
-        }
+        self.index.get_or_insert_with(&self.nodes, data, make)
     }
 
     /// Wrap `data` with its cached properties.  Children are already interned,
@@ -1392,19 +1370,165 @@ mod intern_index_tests {
         }
     }
 
-    /// A collision in the 64-bit key hash must not merge distinct nodes: the
-    /// index compares the data, not just the hash.
+    /// Intern through the index with a caller-chosen hash, exactly as
+    /// `ExprPool::intern` does with the real one.
+    fn intern_with_hash(pool: &ExprPool, hash: u64, data: ExprData) -> ExprId {
+        pool.index
+            .get_or_insert_hashed(&pool.nodes, hash, data, |d| {
+                ExprId(pool.nodes.push(pool.make_node(d)) as u32)
+            })
+    }
+
+    fn int(n: i64) -> ExprData {
+        ExprData::Integer(crate::kernel::expr::BigInt(rug::Integer::from(n)))
+    }
+
+    /// A full 64-bit hash collision must not merge distinct nodes: the index
+    /// stores only ids and hash bits, and decides equality by comparing the
+    /// candidate against the stored node.
     #[test]
-    fn hashed_key_equality_compares_data() {
-        let a = HashedKey {
-            hash: 7,
-            data: ExprData::Integer(crate::kernel::expr::BigInt(1.into())),
+    fn forced_hash_collision_keeps_nodes_distinct() {
+        let pool = ExprPool::new();
+        // Every value gets the same hash, so they share a shard and a probe
+        // sequence; 200 of them also force the colliding table to grow.
+        let ids: Vec<ExprId> = (0..200)
+            .map(|k| intern_with_hash(&pool, 7, int(k)))
+            .collect();
+        let distinct: std::collections::HashSet<ExprId> = ids.iter().copied().collect();
+        assert_eq!(distinct.len(), 200, "a hash collision merged two nodes");
+        for (k, &id) in ids.iter().enumerate() {
+            assert_eq!(pool.get(id), int(k as i64));
+            // A repeat finds the original, not a fresh copy.
+            assert_eq!(intern_with_hash(&pool, 7, int(k as i64)), id);
+        }
+        // Same low 32 bits (the stored `Slot::hash`), different shard bits.
+        let a = intern_with_hash(&pool, 0x0000_0000_dead_beef, int(-1));
+        let b = intern_with_hash(&pool, 0xffff_ffff_dead_beef, int(-2));
+        assert_ne!(a, b);
+        assert_eq!(pool.len(), 202);
+    }
+
+    /// The pool never holds two nodes with equal data, and every node's data
+    /// interns back to its own id.
+    fn assert_hash_consed(pool: &ExprPool) {
+        let mut seen = std::collections::HashMap::new();
+        for i in 0..pool.len() {
+            let id = ExprId(i as u32);
+            let data = pool.get(id);
+            assert_eq!(
+                pool.intern(data.clone()),
+                id,
+                "node {i} re-interned elsewhere"
+            );
+            if let Some(prev) = seen.insert(data, id) {
+                panic!("nodes {prev:?} and {id:?} hold equal data");
+            }
+        }
+    }
+
+    /// Many threads build the same *compound* structures concurrently — nested
+    /// sums and products whose children are themselves being interned by the
+    /// other threads at the same moment — while the index grows under them.
+    /// Every thread must see the same ids, and no value may be stored twice.
+    #[test]
+    fn concurrent_compound_interning_stays_hash_consed() {
+        const THREADS: usize = 8;
+        const N: i64 = 1_500;
+        let pool = ExprPool::new();
+        let barrier = Barrier::new(THREADS);
+        let per_thread: Vec<Vec<ExprId>> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..THREADS)
+                .map(|t| {
+                    let (pool, barrier) = (&pool, &barrier);
+                    s.spawn(move || {
+                        let x = pool.symbol("x", Domain::Real);
+                        let y = pool.symbol("y", Domain::Real);
+                        barrier.wait();
+                        let mut out = vec![ExprId(u32::MAX); N as usize];
+                        // Half the threads walk forwards, half backwards, so
+                        // the same node is often being created by two threads
+                        // from opposite ends of the range.
+                        let order: Vec<i64> = if t % 2 == 0 {
+                            (0..N).collect()
+                        } else {
+                            (0..N).rev().collect()
+                        };
+                        for k in order {
+                            let c = pool.integer(k);
+                            let p = pool.pow(x, c);
+                            let m = pool.mul(vec![c, p, y]);
+                            let f = pool.func("sin", vec![m]);
+                            out[k as usize] = pool.add(vec![f, p, pool.rational(k, 3)]);
+                        }
+                        out
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        for ids in &per_thread[1..] {
+            assert_eq!(ids, &per_thread[0], "threads disagree on an id");
+        }
+        assert_hash_consed(&pool);
+    }
+
+    /// Readers hitting existing entries while writers grow the same shards:
+    /// every id handed out before or during the growth stays valid and stable.
+    #[test]
+    fn hits_during_concurrent_growth_are_stable() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let base: Vec<ExprId> = (0..500i64)
+            .map(|k| pool.add(vec![x, pool.integer(k)]))
+            .collect();
+        std::thread::scope(|s| {
+            for w in 0..4i64 {
+                let pool = &pool;
+                s.spawn(move || {
+                    for k in 0..20_000i64 {
+                        pool.integer(1_000_000 + w * 20_000 + k);
+                    }
+                });
+            }
+            for _ in 0..4 {
+                let (pool, base) = (&pool, &base);
+                s.spawn(move || {
+                    for round in 0..40 {
+                        for (k, &id) in base.iter().enumerate() {
+                            let again = pool.add(vec![x, pool.integer(k as i64)]);
+                            assert_eq!(again, id, "round {round}: id moved");
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(pool.len(), 1 + 2 * 500 + 80_000);
+        assert_hash_consed(&pool);
+    }
+
+    /// A panic while creating a node (here: a child id from another pool)
+    /// must not wedge the index — it fires under the shard's write lock and
+    /// poisons it, but before the slot is recorded, so later interns into the
+    /// same shard carry on.
+    #[test]
+    fn a_panicking_intern_does_not_wedge_the_pool() {
+        const H: u64 = 0x1234_5678_9abc_def0;
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let bogus = ExprData::Pow {
+            base: x,
+            exp: ExprId(1_000_000),
         };
-        let b = HashedKey {
-            hash: 7,
-            data: ExprData::Integer(crate::kernel::expr::BigInt(2.into())),
-        };
-        assert!(a != b);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            intern_with_hash(&pool, H, bogus);
+        }));
+        assert!(r.is_err());
+        let before = pool.len();
+        // Same hash, so the same (now poisoned) shard.
+        let a = intern_with_hash(&pool, H, int(5));
+        assert_eq!(intern_with_hash(&pool, H, int(5)), a);
+        assert_eq!(pool.get(a), int(5));
+        assert_eq!(pool.len(), before + 1);
     }
 
     /// Growing the index past many resizes keeps every id stable.

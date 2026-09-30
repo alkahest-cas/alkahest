@@ -50,10 +50,11 @@ simplify::engine::
 parse::
 
 # ── The shared data structure itself ───────────────────────────────────────
-# `ExprPool`'s index is a sharded `DashMap` under `--features parallel` and the
-# node array is an append-only `boxcar::Vec`. Its own unit tests are single-
-# threaded, but this is the object every racing thread above converges on, and
-# the tests are cheap, so they stay instrumented.
+# `ExprPool`'s index is a set of `RwLock`-guarded `hashbrown::HashTable` shards
+# of ids that compare through the node array, an append-only `boxcar::Vec`.
+# This is the object every racing thread above converges on, and its
+# `intern_index_tests` put many threads on one pool on purpose (same values,
+# overlapping compound nodes, hits during growth), so they stay instrumented.
 kernel::pool::
 
 # ── Rayon fan-out in the compiled-function batch path ──────────────────────

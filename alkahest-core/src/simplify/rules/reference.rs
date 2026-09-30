@@ -9,6 +9,7 @@
 //! and negative exponents, literal zeros and non-commuting factors.
 
 use super::*;
+use std::collections::{HashMap, HashSet};
 
 /// `SubSelf` as it was.
 pub(crate) struct SubSelfReference;

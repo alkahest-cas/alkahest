@@ -14,8 +14,8 @@
 //!   4. Return `adjoints[v]` for each requested variable v.
 
 use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::kernel::{IdMap, IdSet};
 use crate::simplify::engine::simplify;
-use std::collections::{HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -51,7 +51,7 @@ pub fn grad(expr: ExprId, vars: &[ExprId], pool: &ExprPool) -> Vec<ExprId> {
     }
 
     let topo = topo_sort(expr, pool);
-    let mut adjoints: HashMap<ExprId, ExprId> = HashMap::new();
+    let mut adjoints: IdMap<ExprId> = IdMap::default();
     adjoints.insert(expr, pool.integer(1_i32));
 
     for &node in topo.iter().rev() {
@@ -76,7 +76,7 @@ pub fn grad(expr: ExprId, vars: &[ExprId], pool: &ExprPool) -> Vec<ExprId> {
 // ---------------------------------------------------------------------------
 
 /// Propagate `adj` (the adjoint of `node`) to the children of `node`.
-fn propagate(node: ExprId, adj: ExprId, adjoints: &mut HashMap<ExprId, ExprId>, pool: &ExprPool) {
+fn propagate(node: ExprId, adj: ExprId, adjoints: &mut IdMap<ExprId>, pool: &ExprPool) {
     enum Op {
         Atom,
         Add(Vec<ExprId>),
@@ -169,12 +169,7 @@ fn propagate(node: ExprId, adj: ExprId, adjoints: &mut HashMap<ExprId, ExprId>, 
 }
 
 /// Accumulate `contribution` into the adjoint of `node` (add to existing).
-fn add_adj(
-    node: ExprId,
-    contribution: ExprId,
-    adjoints: &mut HashMap<ExprId, ExprId>,
-    pool: &ExprPool,
-) {
+fn add_adj(node: ExprId, contribution: ExprId, adjoints: &mut IdMap<ExprId>, pool: &ExprPool) {
     match adjoints.get_mut(&node) {
         Some(current) => {
             let new_val = pool.add(vec![*current, contribution]);
@@ -224,13 +219,13 @@ fn func_local_deriv(name: &str, arg: ExprId, pool: &ExprPool) -> Option<ExprId> 
 // ---------------------------------------------------------------------------
 
 fn topo_sort(root: ExprId, pool: &ExprPool) -> Vec<ExprId> {
-    let mut visited: HashSet<ExprId> = HashSet::new();
+    let mut visited: IdSet = IdSet::default();
     let mut order: Vec<ExprId> = Vec::new();
     dfs_post(root, pool, &mut visited, &mut order);
     order
 }
 
-fn dfs_post(node: ExprId, pool: &ExprPool, visited: &mut HashSet<ExprId>, order: &mut Vec<ExprId>) {
+fn dfs_post(node: ExprId, pool: &ExprPool, visited: &mut IdSet, order: &mut Vec<ExprId>) {
     if !visited.insert(node) {
         return;
     }

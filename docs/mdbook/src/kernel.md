@@ -46,7 +46,7 @@ pool.save_to("session.alkp")
 pool2 = ExprPool.load_from("session.alkp")
 ```
 
-**Sharded pool.** With `--features parallel`, the intern table uses a sharded concurrent hashmap (`DashMap`), allowing multiple threads to insert expressions without contention.
+**Sharded pool.** Each node is stored once, in an append-only array; the intern index holds only ids (and hash bits) that compare through that array. With `--features parallel` the index is split into lock-striped shards, so threads interning unrelated expressions rarely contend, and two threads interning the same expression still receive the same id.
 
 ## ExprData variants
 

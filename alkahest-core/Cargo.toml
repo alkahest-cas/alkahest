@@ -113,6 +113,15 @@ dashmap = { version = "6",   optional = true }
 cudarc  = { version = "0.19", default-features = false, features = ["driver", "nvrtc", "fallback-dynamic-loading", "cuda-12060"], optional = true }
 bitflags = "2.11.1"
 boxcar = "0.2.14"
+# The ExprPool index is a `hashbrown::HashTable` of ids that compares through
+# the stored node, so each node is stored once (a `HashMap<ExprData, ExprId>`
+# must own its key).  `HashTable` needs no hasher, hence no default features.
+# Both crates were already in the lock file (hashbrown 0.17 via indexmap,
+# foldhash 0.2 via hashbrown's default hasher).
+hashbrown = { version = "0.17", default-features = false }
+# Fast non-cryptographic hasher for the pool index (seeded per pool) and for
+# the crate-private `IdMap`/`IdSet` memo tables keyed by `ExprId`.
+foldhash = "0.2"
 wide = "0.7"
 
 [dev-dependencies]
