@@ -913,10 +913,9 @@
   `is_prime`'s Miller–Rabin round moved into a private helper so the two
   loops can be checked separately (behaviour unchanged); `crt_combine`'s
   `u64` step likewise.
-- **Kani, second round.** Harnesses for the fixes above, plus
-  `real::sos::psd`'s packed length, the telescoping search's flat index,
-  `holonomic::modular::prime_power`, the interpreter's flat program (any
-  program that passes the new `is_well_formed` check — which `compile` now
+- **Kani, second round.** Harnesses for the fixes above, plus the
+  telescoping search's flat index, `holonomic::modular::prime_power`, the
+  interpreter's flat program (any program that passes the new `is_well_formed` check — which `compile` now
   `debug_assert`s — runs in bounds) and the rug ⇄ FLINT limb buffer, checked
   with FLINT's `fmpz_bits`/`fmpz_get_ui_array` stubbed by Rust models of
   their contracts. Loops that cannot be unrolled at full width (Euclid, trial

@@ -349,9 +349,10 @@ running 16 harnesses at once; the whole suite took 9.5 min wall-clock.
 | `character::table::…::isqrt_is_floor_sqrt` | `⌊√n⌋` (f64 estimate + correction) | `n < 2^16` | 195 s |
 
 Round 2 (overflow and indexing in the callers of those kernels). Times were
-measured locally with Kani 0.68.0, two harnesses at once; **unmeasured** means
-no run has finished it yet, so it is not in the PR tier (its name has no
-`_full_width`) and runs nightly only. Loop-contract
+measured locally with Kani 0.68.0, two harnesses at once, or on the CI runner
+(four at once) where marked; **unmeasured** means no run has finished it yet,
+so it is not in the PR tier (its name has no `_full_width`) and runs nightly
+only. Loop-contract
 (`*_inductive…`) harnesses need `ALKAHEST_KANI_LOOP_CONTRACTS=1 -Z loop-contracts`.
 
 | Harness | Property | Range | Tier | Time |
@@ -362,7 +363,7 @@ no run has finished it yet, so it is not in the PR tier (its name has no
 | `poly::interp::…::interp_{add,sub}_mod_full_width` | exact canonical result (`p > 2^63` wrapped before) | all `p >= 1`; values `< p` | PR | 0.5 s / 0.4 s |
 | `calculus::limits::…::lcm_small_no_wrap_full_width` | a `Some` is a true common multiple within the cap | `1 <= a <= 12`; all `u32 b` | PR | 0.4 s |
 | `integrate::algebraic::subst::…::lcm_no_wrap_full_width` | no panic; a `Some` is a true common multiple `>= max(a, b)` | `1 <= a <= 12`; all `usize b` | PR | 133 s |
-| `integrate::algebraic::subst::…::lcm_is_least_small` | least common multiple | `1 <= a, b < 2^5` | nightly | unmeasured |
+| `integrate::algebraic::subst::…::lcm_is_least_small` | least common multiple | `1 <= a, b < 2^5` | nightly | 18 s (CI) |
 | `integrate::algebraic::trager_log::…::lcm_u32_no_wrap_large_a` | no panic; a `Some` is a true common multiple | all `a`; `b < 2^4` | nightly | 33 s |
 | `integrate::algebraic::trager_log::…::lcm_u32_is_least_small` | least common multiple, `None` only past `u32::MAX` | `a, b < 2^5` | nightly | 2.8 s |
 | `integrate::risch::exp_case::…::perfect_square_no_overflow_full_width` | no panic / overflow | every `i64` | PR | 6.0 s |
@@ -371,11 +372,10 @@ no run has finished it yet, so it is not in the PR tier (its name has no
 | `character::dixon::…::distinct_prime_factors_no_overflow_inductive` | no panic / overflow (two loop invariants) | every `u64` | nightly | unmeasured |
 | `holonomic::modular::…::prime_power_in_range_full_width` | no panic / `u128` overflow; `<= 63` rounds; a `Some` is `<= 2^62` | all `p >= 2`; all `u32 e` | PR | 130 s |
 | `holonomic::modular::…::prime_power_exact_small` | `p^e` when it fits, `None` exactly past `2^62` | `2 <= p < 2^8`; `e <= 8` | nightly | 52 s |
-| `holonomic::telescoping2d::search::…::flatten_in_block_small` | no overflow; index `< box_len^num_axes` | `1 <= box_len < 2^8`; `num_axes <= 3` | nightly | unmeasured |
-| `holonomic::telescoping2d::search::…::flatten_roundtrip_small` | `unflatten ∘ flatten = id` | `1 <= box_len < 2^4`; `num_axes <= 3` | nightly | unmeasured |
-| `real::sos::psd::…::pack_len_exact` | `n(n+1)/2` without overflow, exact | `n < 2^32` | nightly | unmeasured |
+| `holonomic::telescoping2d::search::…::flatten_in_block_small` | no overflow; index `< box_len^num_axes` | `1 <= box_len < 2^8`; `num_axes <= 3` | nightly | 15 s (CI) |
+| `holonomic::telescoping2d::search::…::flatten_roundtrip_small` | `unflatten ∘ flatten = id` | `1 <= box_len < 2^4`; `num_axes <= 3` | nightly | 30 s (CI) |
 | `eval::program::…::operand_range_no_wrap_full_width` | the range has exactly `len` entries | all `start, len` | PR | 0.04 s |
-| `eval::program::…::run_in_bounds_when_well_formed_small` | a program passing `is_well_formed` runs without an out-of-bounds index | 2 ops, 5 slots, 3 operands; every `u32` index | nightly | unmeasured |
+| `eval::program::…::run_in_bounds_when_well_formed_small` | a program passing `is_well_formed` runs without an out-of-bounds index | 2 ops, 5 slots, 3 operands; every `u32` index | nightly | 79 s (CI) |
 | `flint::integer::…::words_for_bits_full_width` | least word count; fits `slong` | every bit length | PR | 0.06 s |
 | `flint::integer::…::abs_words_buffer_covers_fmpz_bits_small` | buffer covers `fmpz_bits`; every FLINT write in bounds (FFI stubbed by its contract) | magnitudes up to 4 words | nightly | 0.8 s |
 
@@ -405,6 +405,9 @@ no run has finished it yet, so it is not in the PR tier (its name has no
   out of memory. Its fix (`checked_pow`, `saturating_*`) cannot wrap by
   construction, and unit tests pin the `7^23 (mod 2^64)` case and the powers
   near `i64::MAX`.
+- `real::sos::psd::pack_len` for every `n < 2^32`: the harness (a symbolic
+  128-bit multiplication equality) did not finish in 100 minutes on the CI
+  runner. A unit test checks the top and bottom `2^12` values of `n`.
 - That every square is recognised by `is_perfect_square` at full width (a
   symbolic `f64` square root did not finish in 25 minutes); a unit test covers
   the bottom and top `2^16` roots and a stride through the rest.
