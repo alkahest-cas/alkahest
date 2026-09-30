@@ -276,6 +276,20 @@
   are refused (`E-IO-009`), and a duplicated node no longer shifts later
   child references (audit B8/B9). A fuzz test loads truncated and
   bit-flipped files in a subprocess and asserts none of them dies.
+- **Three integrator helpers truncated big integer exponents instead of
+  using them exactly.** `numer_denom` in the Risch tower integrator (whose
+  residue criterion *certifies* NonElementary) read `x^k` through
+  `to_i64().unwrap_or(0)` and then negated into an `i32`, so `x^-(2^32+1)`
+  split as `1 / x` and an exponent below `i64::MIN` stayed a negative power in
+  the "numerator"; the radical substitution's `split_num_den` sent
+  `x^k` with `k < i32::MIN` to the denominator as `x^0 = 1` (the factor
+  dropped) and overflowed on `i32::MIN`; and `collect_radical_powers` mapped
+  `a^(m/n)` to `u^m` with `m` cut to its low 32 bits. All three now negate /
+  multiply the `rug::Integer` exactly. The rest of `integrate/` was swept for
+  the same `to_*().unwrap_or(…)` pattern: the three resonance-search bounds
+  fall back to `i64::MAX`, which the next line declines, so they were
+  already safe; the algebraic integrator's extension-degree refusal now
+  reports a huge degree rather than `0`.
 
 - **`simplify` folded indeterminate forms to numbers: `oo - oo → 0`,
   `oo * 0 → 0`, `oo / oo → 1`, and for IEEE floats `NaN - NaN → 0`,

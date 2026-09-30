@@ -347,7 +347,7 @@ fn integrate_via_decompose(
     // Higher-degree generators like P^(1/3) are rejected here.
     if let ExprData::Pow { exp, .. } = pool.get(sqrt_id) {
         if let ExprData::Rational(r) = pool.get(exp) {
-            let q = r.0.denom().to_u32().unwrap_or(0);
+            let q = r.0.denom().to_u32().unwrap_or(u32::MAX);
             if q != 2 {
                 return Err(IntegrationError::UnsupportedExtensionDegree(q));
             }

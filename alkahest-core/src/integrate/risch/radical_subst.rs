@@ -244,10 +244,14 @@ fn collect_radical_powers(
         ExprData::Pow { base, exp } => {
             if base == *a_expr {
                 if let ExprData::Rational(r) = pool.get(exp) {
-                    if let (Some(den), Some(num)) = (r.0.denom().to_i64(), r.0.numer().to_i64()) {
+                    if let Some(den) = r.0.denom().to_i64() {
                         if den >= 1 && (n as i64) % den == 0 {
-                            let m = num * (n as i64 / den);
-                            map.insert(expr, pool.pow(u, pool.integer(m as i32)));
+                            // a^(num/den) = u^(num·n/den), with the exponent
+                            // exact: `num * (n/den)` in `i64` then `as i32`
+                            // kept only the low 32 bits of a large numerator,
+                            // substituting a different power of `u`.
+                            let m = rug::Integer::from(r.0.numer() * (n as i64 / den));
+                            map.insert(expr, pool.pow(u, pool.integer(m)));
                             return;
                         }
                     }
@@ -374,7 +378,11 @@ fn split_num_den(expr: ExprId, pool: &ExprPool) -> (ExprId, ExprId) {
         match pool.get(f) {
             ExprData::Pow { base, exp } => match pool.get(exp) {
                 ExprData::Integer(n) if n.0 < 0 => {
-                    let pos = pool.integer(-(n.0.to_i32().unwrap_or(0)));
+                    // Exact negation.  `-(to_i32().unwrap_or(0))` turned an
+                    // exponent below `i32::MIN` into `base^0 = 1` in the
+                    // denominator — the factor silently dropped — and
+                    // overflowed on `i32::MIN` itself.
+                    let pos = pool.integer(-n.0);
                     den.push(pool.pow(base, pos));
                 }
                 ExprData::Rational(r) if r.0 < 0 => {
@@ -476,6 +484,55 @@ mod tests {
 
     fn p() -> ExprPool {
         ExprPool::new()
+    }
+
+    /// A negative integer exponent past `i32` moves to the denominator with
+    /// its exact magnitude — not as `base^0 = 1` (the factor dropped), and
+    /// `i32::MIN` does not overflow.
+    #[test]
+    fn split_num_den_keeps_exponents_past_i32_exact() {
+        let pool = p();
+        let x = pool.symbol("x", crate::kernel::Domain::Real);
+        let y = pool.symbol("y", crate::kernel::Domain::Real);
+        for k in [
+            rug::Integer::from(i32::MIN),
+            rug::Integer::from(i32::MIN) - 1,
+            rug::Integer::from(i64::MIN) - 1,
+        ] {
+            let e = pool.mul(vec![y, pool.pow(x, pool.integer(k.clone()))]);
+            let (n, d) = split_num_den(e, &pool);
+            assert_eq!(n, y);
+            assert_eq!(
+                d,
+                pool.pow(x, pool.integer(-k.clone())),
+                "x^{k} went to the denominator as {}",
+                pool.display(d)
+            );
+        }
+    }
+
+    /// `a^(m/n) ↦ u^m` with `m` exact: a numerator past `i32` kept only its
+    /// low 32 bits (`a^((2^32+1)/3)` became `u^1`).
+    #[test]
+    fn collect_radical_powers_keeps_large_numerators_exact() {
+        let pool = p();
+        let x = pool.symbol("x", crate::kernel::Domain::Real);
+        let u = pool.symbol("u", crate::kernel::Domain::Real);
+        let a = pool.add(vec![x, pool.integer(1_i32)]);
+        for m in [
+            rug::Integer::from(rug::Integer::u_pow_u(2, 32)) + 1,
+            rug::Integer::from(i64::MAX),
+            rug::Integer::from(rug::Integer::u_pow_u(2, 80)) + 1,
+        ] {
+            let e = pool.pow(a, pool.rational(m.clone(), 3));
+            let mut map = HashMap::new();
+            collect_radical_powers(e, &a, 3, u, &pool, &mut map);
+            assert_eq!(
+                map.get(&e).copied(),
+                Some(pool.pow(u, pool.integer(m.clone()))),
+                "a^({m}/3)"
+            );
+        }
     }
 
     fn assert_diff_matches(f: ExprId, integrand: ExprId, x: ExprId, pool: &ExprPool, pts: &[f64]) {
