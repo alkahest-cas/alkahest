@@ -252,6 +252,19 @@
 
 ### Fixed
 
+- **Loading a corrupt or hostile `.akp` pool file could abort the
+  interpreter or panic.** `ExprPool.load_from` allocated every
+  length-prefixed field (a name, a child list, a piecewise branch list) at
+  its declared size before reading it, so a four-byte length of
+  `0xFFFFFFF0` was a 4 GiB allocation that killed the process; a rational
+  with denominator 0 and a float at precision 0 panicked inside `rug`, and a
+  float at precision `u32::MAX` was allocated. Every length and the node
+  count are now checked against the bytes left in the file first
+  (`E-IO-004`), a zero denominator and a precision outside `1 ..= 2^24` bits
+  are refused (`E-IO-009`), and a duplicated node no longer shifts later
+  child references (audit B8/B9). A fuzz test loads truncated and
+  bit-flipped files in a subprocess and asserts none of them dies.
+
 - **`simplify` folded indeterminate forms to numbers: `oo - oo → 0`,
   `oo * 0 → 0`, `oo / oo → 1`, and for IEEE floats `NaN - NaN → 0`,
   `NaN * 0 → 0`, `inf * 0 → 0`, `inf - inf → 0`, `x*inf - x*inf → 0`.**
