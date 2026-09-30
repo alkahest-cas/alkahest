@@ -187,19 +187,25 @@ pub fn resultant(
         .ok_or(ResultantError::FlintError)?;
 
     // Extract terms from the FLINT result (all in the same nvars-dim context).
-    let res_raw = fr.terms();
+    // The resultant's degree is up to deg(p)·deg(q), so it can pass u32::MAX
+    // even when both inputs fit (res(x² - y^N, x - y^N) = y^2N - y^N): read
+    // the exponents as u64 and build the expression from them directly. They
+    // used to be truncated to u32, turning y^6000000000 into y^1705032704.
+    let res_raw = fr.terms_u64().ok_or(ResultantError::NotAPolynomial(
+        ConversionError::ExponentTooLarge,
+    ))?;
 
-    // Build a MultiPoly for the result, dropping the eliminated variable
-    // dimension (its exponent should be 0 in every term).
+    // Drop the eliminated variable's dimension (its exponent should be 0 in
+    // every term).
     let remaining_vars: Vec<ExprId> = vars
         .iter()
         .enumerate()
         .filter_map(|(i, &v)| if i == var_idx { None } else { Some(v) })
         .collect();
 
-    let mut new_terms: BTreeMap<Vec<u32>, rug::Integer> = BTreeMap::new();
+    let mut new_terms: BTreeMap<Vec<u64>, rug::Integer> = BTreeMap::new();
     for (exp, coeff) in res_raw {
-        let mut new_exp: Vec<u32> = exp
+        let mut new_exp: Vec<u64> = exp
             .into_iter()
             .enumerate()
             .filter_map(|(i, e)| if i == var_idx { None } else { Some(e) })
@@ -214,14 +220,50 @@ pub fn resultant(
     }
     new_terms.retain(|_, v| *v != 0);
 
-    let result_mp = MultiPoly {
-        vars: remaining_vars,
-        terms: new_terms,
-    };
-    let result_expr = result_mp.to_expr(pool);
+    let result_expr = wide_terms_to_expr(&new_terms, &remaining_vars, pool);
 
     let step = RewriteStep::simple("Resultant", p, result_expr);
     Ok(DerivedExpr::with_step(result_expr, step))
+}
+
+/// `Σ c·v₀^e₀·v₁^e₁·…` for `u64`-exponent terms, in the shape
+/// [`MultiPoly::to_expr`] produces for `u32` ones (ascending term order, unit
+/// coefficients omitted, `0` for no terms).
+fn wide_terms_to_expr(
+    terms: &BTreeMap<Vec<u64>, rug::Integer>,
+    vars: &[ExprId],
+    pool: &ExprPool,
+) -> ExprId {
+    let summands: Vec<ExprId> = terms
+        .iter()
+        .map(|(exps, coeff)| {
+            let mut factors = Vec::new();
+            if *coeff != 1 {
+                factors.push(pool.integer(coeff.clone()));
+            }
+            for (i, &e) in exps.iter().enumerate() {
+                if e == 0 || i >= vars.len() {
+                    continue;
+                }
+                let var = vars[i];
+                factors.push(if e == 1 {
+                    var
+                } else {
+                    pool.pow(var, pool.integer(e))
+                });
+            }
+            match factors.len() {
+                0 => pool.integer(1_i32),
+                1 => factors[0],
+                _ => pool.mul(factors),
+            }
+        })
+        .collect();
+    match summands.len() {
+        0 => pool.integer(0_i32),
+        1 => summands[0],
+        _ => pool.add(summands),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -763,6 +805,31 @@ mod tests {
     }
 
     // --- error cases ---
+
+    /// res(x² - y^N, x - y^N, x) = y^(2N) - y^N. For N = 3·10⁹ the result
+    /// degree passes u32::MAX, and it used to be truncated to 32 bits.
+    #[test]
+    fn resultant_degree_past_u32_is_exact() {
+        let (p, x, y) = pool_xy();
+        for n in [3_000_000_000_u64, 1 << 31, u64::from(u32::MAX)] {
+            let yn = p.pow(y, p.integer(n));
+            let f = p.add(vec![
+                p.pow(x, p.integer(2_i32)),
+                p.mul(vec![p.integer(-1_i32), yn]),
+            ]);
+            let g = p.add(vec![x, p.mul(vec![p.integer(-1_i32), yn])]);
+            let r = resultant(f, g, x, &p).unwrap().value;
+            let mut want: BTreeMap<Vec<u64>, rug::Integer> = BTreeMap::new();
+            want.insert(vec![n], rug::Integer::from(-1));
+            want.insert(vec![2 * n], rug::Integer::from(1));
+            assert_eq!(
+                r,
+                wide_terms_to_expr(&want, &[y], &p),
+                "N = {n}: {}",
+                p.display(r)
+            );
+        }
+    }
 
     #[test]
     fn resultant_non_polynomial_error() {

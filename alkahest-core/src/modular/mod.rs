@@ -52,7 +52,7 @@ impl MultiPolyFp {
     pub fn total_degree(&self) -> u32 {
         self.terms
             .keys()
-            .map(|e| e.iter().sum::<u32>())
+            .map(|e| crate::poly::exponent::total_degree_or_panic(e))
             .max()
             .unwrap_or(0)
     }

@@ -27,7 +27,7 @@ pub(crate) fn monomial_divides(a: &[u32], b: &[u32]) -> bool {
 /// Total degree of an exponent vector.
 #[inline]
 pub(crate) fn total_deg(e: &[u32]) -> u32 {
-    e.iter().sum()
+    crate::poly::exponent::total_degree_or_panic(e)
 }
 
 /// A critical pair, ordered for a min-heap by sugar degree then lcm degree.

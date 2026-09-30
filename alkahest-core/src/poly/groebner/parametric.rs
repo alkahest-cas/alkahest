@@ -234,7 +234,7 @@ impl ParamGbPoly {
     pub fn sugar(&self) -> u32 {
         self.terms
             .keys()
-            .map(|e| e.iter().sum::<u32>())
+            .map(|e| crate::poly::exponent::total_degree_or_panic(e))
             .max()
             .unwrap_or(0)
     }
@@ -297,7 +297,7 @@ impl ParamGbPoly {
         let mut out = ParamGbPoly::zero(self.n_vars, self.n_params);
         for (ea, ca) in &self.terms {
             for (eb, cb) in &other.terms {
-                let e: Vec<u32> = ea.iter().zip(eb.iter()).map(|(a, b)| a + b).collect();
+                let e: Vec<u32> = crate::poly::exponent::add_vecs_or_panic(ea, eb);
                 let slot = out
                     .terms
                     .entry(e)
@@ -336,7 +336,7 @@ impl ParamGbPoly {
                 .terms
                 .iter()
                 .map(|(e, v)| {
-                    let ne: Vec<u32> = e.iter().zip(shift.iter()).map(|(a, b)| a + b).collect();
+                    let ne: Vec<u32> = crate::poly::exponent::add_vecs_or_panic(e, shift);
                     (ne, v.mul(c))
                 })
                 .collect(),
@@ -445,13 +445,17 @@ fn reduce_param(
             Some((e, c)) => (e.clone(), c.clone()),
             None => break,
         };
-        let lt_deg: u32 = if is_graded { lt_exp.iter().sum() } else { 0 };
+        let lt_deg: u32 = if is_graded {
+            crate::poly::exponent::total_degree_or_panic(&lt_exp)
+        } else {
+            0
+        };
 
         for offset in 0..gs.len() {
             let idx = (last_divisor + offset) % gs.len();
             let g = &gs[idx];
             if let Some((lg_exp, lg_coeff)) = g.leading_term(order) {
-                if is_graded && lg_exp.iter().sum::<u32>() > lt_deg {
+                if is_graded && crate::poly::exponent::total_degree_or_panic(lg_exp) > lt_deg {
                     continue;
                 }
                 if lt_exp.len() == lg_exp.len()

@@ -134,7 +134,7 @@ impl ParamPoly {
     pub fn total_degree(&self) -> u32 {
         self.terms
             .keys()
-            .map(|e| e.iter().sum::<u32>())
+            .map(|e| crate::poly::exponent::total_degree_or_panic(e))
             .max()
             .unwrap_or(0)
     }
@@ -195,7 +195,8 @@ impl ParamPoly {
         let mut terms: BTreeMap<ParamExp, Integer> = BTreeMap::new();
         for (ea, ca) in &self.terms {
             for (eb, cb) in &other.terms {
-                let e: ParamExp = ea.iter().zip(eb.iter()).map(|(a, b)| a + b).collect();
+                let e: ParamExp = crate::poly::exponent::add_vecs_or_panic(ea, eb);
+
                 let slot = terms.entry(e).or_insert_with(|| Integer::from(0));
                 *slot += Integer::from(ca * cb);
             }

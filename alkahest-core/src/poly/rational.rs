@@ -136,11 +136,12 @@ impl Neg for RationalFunction {
 impl Add for RationalFunction {
     type Output = Result<Self, ConversionError>;
     fn add(self, rhs: Self) -> Result<Self, ConversionError> {
-        // a/b + c/d = (a*d + c*b) / (b*d)
-        let ad = self.numer.clone() * rhs.denom.clone();
-        let cb = rhs.numer.clone() * self.denom.clone();
+        // a/b + c/d = (a*d + c*b) / (b*d); an exponent past u32::MAX is
+        // refused (E-POLY-004), never wrapped.
+        let ad = self.numer.checked_mul(&rhs.denom)?;
+        let cb = rhs.numer.checked_mul(&self.denom)?;
         let numer = ad + cb;
-        let denom = self.denom * rhs.denom;
+        let denom = self.denom.checked_mul(&rhs.denom)?;
         RationalFunction::new(numer, denom)
     }
 }
@@ -156,8 +157,8 @@ impl Mul for RationalFunction {
     type Output = Result<Self, ConversionError>;
     fn mul(self, rhs: Self) -> Result<Self, ConversionError> {
         // (a/b) * (c/d) = (a*c) / (b*d)
-        let numer = self.numer * rhs.numer;
-        let denom = self.denom * rhs.denom;
+        let numer = self.numer.checked_mul(&rhs.numer)?;
+        let denom = self.denom.checked_mul(&rhs.denom)?;
         RationalFunction::new(numer, denom)
     }
 }
@@ -169,8 +170,8 @@ impl Div for RationalFunction {
             return Err(ConversionError::ZeroDenominator);
         }
         // (a/b) / (c/d) = (a*d) / (b*c)
-        let numer = self.numer * rhs.denom;
-        let denom = self.denom * rhs.numer;
+        let numer = self.numer.checked_mul(&rhs.denom)?;
+        let denom = self.denom.checked_mul(&rhs.numer)?;
         RationalFunction::new(numer, denom)
     }
 }
@@ -181,11 +182,16 @@ impl Div for RationalFunction {
 
 /// Convert a MultiPoly to FlintPoly if it is effectively univariate
 /// (all exponent vectors have length ≤ 1, i.e. only the first variable appears).
-/// Returns `None` for multivariate or zero polynomials.
+/// Returns `None` for multivariate or zero polynomials, and for a degree too
+/// large to materialise densely (FLINT would abort the process allocating
+/// it); the gcd reduction this feeds is then skipped, which leaves the
+/// fraction unreduced but correct.
 fn to_flintpoly(p: &MultiPoly) -> Option<FlintPoly> {
     if p.terms.keys().any(|exp| exp.len() > 1) {
         return None;
     }
+    let top = p.terms.keys().filter_map(|e| e.first()).max().copied();
+    super::unipoly::check_dense_degree(u64::from(top.unwrap_or(0))).ok()?;
     let mut fp = FlintPoly::new();
     for (exp, coeff) in &p.terms {
         let deg = exp.first().copied().unwrap_or(0) as usize;
@@ -208,7 +214,8 @@ pub(crate) fn mpoly_exact_div(a: &MultiPoly, b: &MultiPoly) -> Option<MultiPoly>
 
     // FlintMPoly::divides calls fmpz_mpoly_divides internally where ctx.as_ptr() is accessible.
     let q = fa.divides(&fb)?;
-    let terms = q.terms();
+    let terms = q.try_terms()?;
+
     Some(MultiPoly {
         vars: a.vars.clone(),
         terms,

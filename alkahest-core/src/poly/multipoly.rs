@@ -1,4 +1,5 @@
 use super::error::ConversionError;
+use super::exponent;
 use crate::flint::mpoly::{FlintMPoly, FlintMPolyCtx};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -10,6 +11,9 @@ use std::sync::Arc;
 // Exponent vector: ascending by variable index.
 // Invariant: trailing zeros are stripped so that the zero polynomial has no
 // terms and the constant 1 has a single entry with key vec![].
+// Invariant: every exponent and every monomial's total degree fits in u32
+// (see `poly::exponent`); arithmetic that would leave it is refused with
+// `ExponentTooLarge`, never wrapped.
 // ---------------------------------------------------------------------------
 
 type Exponents = Vec<u32>;
@@ -29,8 +33,9 @@ fn termmap_add(mut a: TermMap, b: TermMap) -> TermMap {
 }
 
 /// Schoolbook product over the `BTreeMap`. The reference algorithm, and the
-/// faster one for small operands.
-fn termmap_mul_schoolbook(a: &TermMap, b: &TermMap) -> TermMap {
+/// faster one for small operands. `ExponentTooLarge` if a product monomial's
+/// exponent or total degree exceeds `u32::MAX`.
+fn termmap_mul_schoolbook(a: &TermMap, b: &TermMap) -> Result<TermMap, ConversionError> {
     let mut result = TermMap::new();
     for (ea, ca) in a {
         for (eb, cb) in b {
@@ -38,14 +43,7 @@ fn termmap_mul_schoolbook(a: &TermMap, b: &TermMap) -> TermMap {
             if prod == 0 {
                 continue;
             }
-            let len = ea.len().max(eb.len());
-            let mut exp = vec![0u32; len];
-            for (i, &e) in ea.iter().enumerate() {
-                exp[i] += e;
-            }
-            for (i, &e) in eb.iter().enumerate() {
-                exp[i] += e;
-            }
+            let mut exp = exponent::add_vecs(ea, eb)?;
             // strip trailing zeros
             while exp.last() == Some(&0) {
                 exp.pop();
@@ -59,7 +57,7 @@ fn termmap_mul_schoolbook(a: &TermMap, b: &TermMap) -> TermMap {
             }
         }
     }
-    result
+    Ok(result)
 }
 
 fn termmap_neg(map: TermMap) -> TermMap {
@@ -68,21 +66,21 @@ fn termmap_neg(map: TermMap) -> TermMap {
 
 /// Power by repeated squaring with the schoolbook product. The reference
 /// algorithm, and the faster one for small operands.
-fn termmap_pow_schoolbook(base: &TermMap, n: u32) -> TermMap {
+fn termmap_pow_schoolbook(base: &TermMap, n: u32) -> Result<TermMap, ConversionError> {
     if n == 0 {
         let mut one = TermMap::new();
         one.insert(vec![], rug::Integer::from(1));
-        return one;
+        return Ok(one);
     }
     if n == 1 {
-        return base.clone();
+        return Ok(base.clone());
     }
-    let half = termmap_pow_schoolbook(base, n / 2);
-    let mut result = termmap_mul_schoolbook(&half, &half);
+    let half = termmap_pow_schoolbook(base, n / 2)?;
+    let mut result = termmap_mul_schoolbook(&half, &half)?;
     if n % 2 == 1 {
-        result = termmap_mul_schoolbook(&result, base);
+        result = termmap_mul_schoolbook(&result, base)?;
     }
-    result
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +118,14 @@ fn max_exponents(t: &TermMap, nvars: usize) -> Vec<u64> {
     m
 }
 
+/// Largest monomial total degree over the keys of `t`, in `u64`.
+fn max_total_degree(t: &TermMap) -> u64 {
+    t.keys()
+        .map(|e| e.iter().map(|&x| u64::from(x)).sum::<u64>())
+        .max()
+        .unwrap_or(0)
+}
+
 fn termmap_nvars(t: &TermMap) -> usize {
     t.keys().map(Vec::len).max().unwrap_or(0)
 }
@@ -139,47 +145,56 @@ fn termmap_to_flint(t: &TermMap, ctx: &Arc<FlintMPolyCtx>) -> FlintMPoly {
     fp
 }
 
-/// `a * b` through FLINT, or `None` when some result exponent would not fit
-/// the `u32` keys (the schoolbook loop then reproduces the old behaviour).
+/// `a * b` through FLINT, or `None` when some result exponent or total degree
+/// might not fit the `u32` keys (the checked schoolbook loop then decides
+/// whether the product is representable).
 fn termmap_mul_flint(a: &TermMap, b: &TermMap) -> Option<TermMap> {
     let nvars = termmap_nvars(a).max(termmap_nvars(b)).max(1);
     let (ma, mb) = (max_exponents(a, nvars), max_exponents(b, nvars));
-    if ma.iter().zip(&mb).any(|(x, y)| x + y > u64::from(u32::MAX)) {
-        return None;
-    }
-    let ctx = FlintMPolyCtx::new(nvars);
-    let prod = termmap_to_flint(a, &ctx).mul(&termmap_to_flint(b, &ctx));
-    Some(prod.terms())
-}
-
-/// `base^n` (`n ≥ 2`) through FLINT, or `None` on exponent overflow or a FLINT
-/// failure.
-fn termmap_pow_flint(base: &TermMap, n: u32) -> Option<TermMap> {
-    let nvars = termmap_nvars(base).max(1);
-    if max_exponents(base, nvars)
-        .iter()
-        .any(|&x| x * u64::from(n) > u64::from(u32::MAX))
+    let limit = u64::from(u32::MAX);
+    if ma.iter().zip(&mb).any(|(x, y)| x + y > limit)
+        || max_total_degree(a) + max_total_degree(b) > limit
     {
         return None;
     }
     let ctx = FlintMPolyCtx::new(nvars);
-    Some(termmap_to_flint(base, &ctx).pow_ui(u64::from(n))?.terms())
+    let prod = termmap_to_flint(a, &ctx).mul(&termmap_to_flint(b, &ctx));
+    prod.try_terms()
 }
 
-fn termmap_mul(a: &TermMap, b: &TermMap) -> TermMap {
+/// `base^n` (`n ≥ 2`) through FLINT, or `None` on possible exponent overflow
+/// or a FLINT failure.
+fn termmap_pow_flint(base: &TermMap, n: u32) -> Option<TermMap> {
+    let nvars = termmap_nvars(base).max(1);
+    let limit = u64::from(u32::MAX);
+    // Both factors are at most u32::MAX, so neither product overflows u64.
+    if max_exponents(base, nvars)
+        .iter()
+        .any(|&x| x * u64::from(n) > limit)
+        || max_total_degree(base) * u64::from(n) > limit
+    {
+        return None;
+    }
+    let ctx = FlintMPolyCtx::new(nvars);
+    termmap_to_flint(base, &ctx)
+        .pow_ui(u64::from(n))?
+        .try_terms()
+}
+
+fn termmap_mul(a: &TermMap, b: &TermMap) -> Result<TermMap, ConversionError> {
     if a.len().saturating_mul(b.len()) >= FLINT_MUL_MIN_PAIRS {
         if let Some(r) = termmap_mul_flint(a, b) {
-            return r;
+            return Ok(r);
         }
     }
     termmap_mul_schoolbook(a, b)
 }
 
-fn termmap_pow(base: &TermMap, n: u32) -> TermMap {
+fn termmap_pow(base: &TermMap, n: u32) -> Result<TermMap, ConversionError> {
     let work = (base.len() as u64).saturating_pow(n);
     if n >= 2 && base.len() >= 2 && work >= FLINT_POW_MIN_WORK {
         if let Some(r) = termmap_pow_flint(base, n) {
-            return r;
+            return Ok(r);
         }
     }
     termmap_pow_schoolbook(base, n)
@@ -208,7 +223,7 @@ impl MultiBuild {
         }
     }
 
-    fn mul(&self, a: &TermMap, b: &TermMap) -> TermMap {
+    fn mul(&self, a: &TermMap, b: &TermMap) -> Result<TermMap, ConversionError> {
         if self.fast {
             termmap_mul(a, b)
         } else {
@@ -216,7 +231,7 @@ impl MultiBuild {
         }
     }
 
-    fn pow(&self, base: &TermMap, n: u32) -> TermMap {
+    fn pow(&self, base: &TermMap, n: u32) -> Result<TermMap, ConversionError> {
         if self.fast {
             termmap_pow(base, n)
         } else {
@@ -317,7 +332,7 @@ fn build_multi(
             };
             for arg in args {
                 let sub = build_multi(arg, vars, pool, st)?;
-                acc = st.mul(&acc, &sub);
+                acc = st.mul(&acc, &sub)?;
             }
             acc
         }
@@ -329,12 +344,9 @@ fn build_multi(
                     _ => None,
                 })
                 .ok_or(ConversionError::NonConstantExponent)?;
-            if n < 0 {
-                return Err(ConversionError::NegativeExponent);
-            }
-            let n_u32 = n.to_u32().ok_or(ConversionError::ExponentTooLarge)?;
+            let n_u32 = exponent::exponent_u32(&n)?;
             let base_coeffs = build_multi(base, vars, pool, st)?;
-            st.pow(&base_coeffs, n_u32)
+            st.pow(&base_coeffs, n_u32)?
         }
         NodeInfo::Func(name) => return Err(ConversionError::NonPolynomialFunction(name)),
     };
@@ -388,10 +400,18 @@ impl MultiPoly {
         self.terms.is_empty()
     }
 
+    /// Largest total degree of a term (0 for the zero polynomial).
+    ///
+    /// # Panics
+    ///
+    /// If a term's total degree exceeds `u32::MAX`. [`Self::from_symbolic`]
+    /// and the arithmetic operators never build such a polynomial (they refuse
+    /// with `E-POLY-004`), so this only fires for a hand-assembled `terms`
+    /// map; it used to return the degree wrapped modulo 2^32.
     pub fn total_degree(&self) -> u32 {
         self.terms
             .keys()
-            .map(|exp| exp.iter().sum::<u32>())
+            .map(|exp| exponent::total_degree_or_panic(exp))
             .max()
             .unwrap_or(0)
     }
@@ -441,8 +461,9 @@ impl MultiPoly {
 
         let g = a.gcd(&b)?;
 
-        // Convert the GCD back to MultiPoly
-        let terms = g.terms();
+        // Convert the GCD back to MultiPoly. A divisor's exponents are bounded
+        // by the inputs', so `try_terms` only fails on a FLINT inconsistency.
+        let terms = g.try_terms()?;
         let mut gcd = MultiPoly {
             vars: self.vars.clone(),
             terms,
@@ -561,7 +582,8 @@ impl MultiPoly {
             out.push((
                 MultiPoly {
                     vars: self.vars.clone(),
-                    terms: base.terms(),
+                    // A factor divides the input, so its exponents fit too.
+                    terms: base.try_terms()?,
                 },
                 mult,
             ));
@@ -647,14 +669,31 @@ impl Sub for MultiPoly {
     }
 }
 
+impl MultiPoly {
+    /// `self * rhs`, or [`ConversionError::ExponentTooLarge`] if a product
+    /// exponent or total degree exceeds `u32::MAX`.
+    ///
+    /// # Panics
+    ///
+    /// If the operands have different variable lists (as for `*`).
+    pub fn checked_mul(&self, rhs: &Self) -> Result<Self, ConversionError> {
+        same_vars(self, rhs);
+        Ok(MultiPoly {
+            vars: self.vars.clone(),
+            terms: termmap_mul(&self.terms, &rhs.terms)?,
+        })
+    }
+}
+
 impl Mul for MultiPoly {
     type Output = Self;
+    /// # Panics
+    ///
+    /// If a product exponent or total degree exceeds `u32::MAX` (it used to
+    /// wrap); use [`MultiPoly::checked_mul`] to handle that as an error.
     fn mul(self, rhs: Self) -> Self {
-        same_vars(&self, &rhs);
-        MultiPoly {
-            vars: self.vars.clone(),
-            terms: termmap_mul(&self.terms, &rhs.terms),
-        }
+        self.checked_mul(&rhs)
+            .unwrap_or_else(|_| exponent::overflow_panic())
     }
 }
 
@@ -915,9 +954,9 @@ mod tests {
         fn flint_mul_matches_schoolbook(
             (a, b) in (1usize..7).prop_flat_map(|n| (raw_termmap(n, 40), raw_termmap(n, 40))),
         ) {
-            let expect = termmap_mul_schoolbook(&a, &b);
+            let expect = termmap_mul_schoolbook(&a, &b).unwrap();
             prop_assert_eq!(termmap_mul_flint(&a, &b), Some(expect.clone()));
-            prop_assert_eq!(termmap_mul(&a, &b), expect);
+            prop_assert_eq!(termmap_mul(&a, &b).unwrap(), expect);
         }
 
         #[test]
@@ -925,11 +964,11 @@ mod tests {
             base in (1usize..5).prop_flat_map(|n| termmap(n, 6)),
             n in 0u32..6,
         ) {
-            let expect = termmap_pow_schoolbook(&base, n);
+            let expect = termmap_pow_schoolbook(&base, n).unwrap();
             if n >= 2 {
                 prop_assert_eq!(termmap_pow_flint(&base, n), Some(expect.clone()));
             }
-            prop_assert_eq!(termmap_pow(&base, n), expect);
+            prop_assert_eq!(termmap_pow(&base, n).unwrap(), expect);
         }
 
         /// `MultiPoly * MultiPoly` over the public type.
@@ -943,7 +982,7 @@ mod tests {
             let vars = vec![x, y, z];
             let pa = MultiPoly { vars: vars.clone(), terms: a.clone() };
             let pb = MultiPoly { vars, terms: b.clone() };
-            prop_assert_eq!((pa * pb).terms, termmap_mul_schoolbook(&a, &b));
+            prop_assert_eq!((pa * pb).terms, termmap_mul_schoolbook(&a, &b).unwrap());
         }
 
         /// `from_symbolic` (FLINT arithmetic, DAG memo) against the schoolbook,
@@ -1016,7 +1055,7 @@ mod tests {
             .collect();
         assert_eq!(
             termmap_mul_flint(&a, &b).unwrap(),
-            termmap_mul_schoolbook(&a, &b)
+            termmap_mul_schoolbook(&a, &b).unwrap()
         );
     }
 
@@ -1034,6 +1073,129 @@ mod tests {
         let two = TermMap::from([(vec![2], rug::Integer::from(1))]);
         assert!(termmap_mul_flint(&a, &two).is_none());
         assert!(termmap_pow_flint(&a, 2).is_none());
+        // ... and the schoolbook refuses instead of wrapping to x^0.
+        assert_eq!(
+            termmap_mul(&a, &two),
+            Err(ConversionError::ExponentTooLarge)
+        );
+        assert_eq!(termmap_pow(&a, 2), Err(ConversionError::ExponentTooLarge));
+    }
+
+    // --- Exponent overflow: refused, never wrapped (audit A1) ---
+
+    const B31: u32 = 1 << 31;
+
+    /// `x^e`, as a `Pow` node (or `x` itself for `e = 1`).
+    fn xpow(p: &ExprPool, x: ExprId, e: impl Into<rug::Integer>) -> ExprId {
+        p.pow(x, p.integer(e.into()))
+    }
+
+    #[test]
+    fn from_symbolic_refuses_a_product_exponent_past_u32() {
+        // x^(2^31) · x^(2^31) = x^(2^32): used to wrap to the constant 1.
+        let (p, x, y) = pool_xy();
+        let w = p.mul(vec![xpow(&p, x, B31), xpow(&p, x, B31)]);
+        assert_eq!(
+            MultiPoly::from_symbolic(w, vec![x, y], &p),
+            Err(ConversionError::ExponentTooLarge)
+        );
+        // With an extra factor it used to come back as `1 + x`.
+        let w2 = p.mul(vec![
+            xpow(&p, x, B31),
+            p.add(vec![x, p.integer(1)]),
+            xpow(&p, x, B31),
+        ]);
+        assert_eq!(
+            MultiPoly::from_symbolic(w2, vec![x, y], &p),
+            Err(ConversionError::ExponentTooLarge)
+        );
+        // (x^65536)^65536 = x^(2^32).
+        let nested = p.pow(xpow(&p, x, 65536u32), p.integer(65536u32));
+        assert_eq!(
+            MultiPoly::from_symbolic(nested, vec![x], &p),
+            Err(ConversionError::ExponentTooLarge)
+        );
+    }
+
+    #[test]
+    fn from_symbolic_exponent_boundaries() {
+        let (p, x, y) = pool_xy();
+        // 2^31 and u32::MAX are representable, directly and as a product.
+        let top = MultiPoly::from_symbolic(xpow(&p, x, u32::MAX), vec![x, y], &p).unwrap();
+        assert_eq!(top.terms[&vec![u32::MAX]], 1);
+        let split = p.mul(vec![xpow(&p, x, B31), xpow(&p, x, B31 - 1)]);
+        let q = MultiPoly::from_symbolic(split, vec![x, y], &p).unwrap();
+        assert_eq!(q.terms, top.terms);
+        // 2^32, 2^63, u64::MAX and beyond are not.
+        for e in [
+            rug::Integer::from(1u64 << 32),
+            rug::Integer::from(1u64 << 63),
+            rug::Integer::from(u64::MAX),
+            rug::Integer::from(u64::MAX) + 1u32,
+        ] {
+            assert_eq!(
+                MultiPoly::from_symbolic(xpow(&p, x, e), vec![x, y], &p),
+                Err(ConversionError::ExponentTooLarge)
+            );
+        }
+    }
+
+    #[test]
+    fn from_symbolic_refuses_a_total_degree_past_u32() {
+        // x^(2^31) · y^(2^31): each exponent fits, the total degree 2^32 does
+        // not; `total_degree` used to report 0.
+        let (p, x, y) = pool_xy();
+        let e = p.mul(vec![xpow(&p, x, B31), xpow(&p, y, B31)]);
+        assert_eq!(
+            MultiPoly::from_symbolic(e, vec![x, y], &p),
+            Err(ConversionError::ExponentTooLarge)
+        );
+        let ok = p.mul(vec![xpow(&p, x, B31), xpow(&p, y, B31 - 1)]);
+        let mp = MultiPoly::from_symbolic(ok, vec![x, y], &p).unwrap();
+        assert_eq!(mp.total_degree(), u32::MAX);
+    }
+
+    #[test]
+    fn flint_sized_product_refuses_overflow_too() {
+        // Large enough for the FLINT path; one product term overflows.
+        let (p, x, y) = pool_xy();
+        let many: Vec<ExprId> = (0..20u32).map(|i| xpow(&p, y, i + 1)).collect();
+        let a = p.add([many.clone(), vec![xpow(&p, x, B31)]].concat());
+        let b = p.add([many, vec![xpow(&p, x, B31)]].concat());
+        assert_eq!(
+            MultiPoly::from_symbolic(p.mul(vec![a, b]), vec![x, y], &p),
+            Err(ConversionError::ExponentTooLarge)
+        );
+    }
+
+    #[test]
+    fn checked_mul_and_operator() {
+        let (p, x, y) = pool_xy();
+        let a = MultiPoly::from_symbolic(xpow(&p, x, B31), vec![x, y], &p).unwrap();
+        assert_eq!(a.checked_mul(&a), Err(ConversionError::ExponentTooLarge));
+        let b = MultiPoly::from_symbolic(xpow(&p, x, B31 - 1), vec![x, y], &p).unwrap();
+        let ab = a.checked_mul(&b).unwrap();
+        assert_eq!(ab.terms[&vec![u32::MAX]], 1);
+        assert_eq!(ab, a.clone() * b);
+    }
+
+    #[test]
+    #[should_panic(expected = "polynomial exponent overflow")]
+    fn mul_operator_panics_instead_of_wrapping() {
+        let (p, x, y) = pool_xy();
+        let a = MultiPoly::from_symbolic(xpow(&p, x, B31), vec![x, y], &p).unwrap();
+        let _ = a.clone() * a;
+    }
+
+    #[test]
+    #[should_panic(expected = "polynomial exponent overflow")]
+    fn total_degree_of_a_hand_built_overflowing_map_panics() {
+        let (_p, x, y) = pool_xy();
+        let mp = MultiPoly {
+            vars: vec![x, y],
+            terms: TermMap::from([(vec![B31, B31], rug::Integer::from(1))]),
+        };
+        let _ = mp.total_degree();
     }
 
     #[test]
@@ -1047,7 +1209,8 @@ mod tests {
             assert_eq!(termmap_pow(&zero, n), termmap_pow_schoolbook(&zero, n));
             assert_eq!(termmap_pow(&p, n), termmap_pow_schoolbook(&p, n));
         }
-        assert!(termmap_mul(&zero, &p).is_empty());
+        assert!(termmap_mul(&zero, &p).unwrap().is_empty());
+
         assert_eq!(termmap_mul_flint(&zero, &p), Some(TermMap::new()));
     }
 

@@ -209,7 +209,7 @@ pub fn bezout_number(polys: &[GbPoly]) -> usize {
         .map(|p| {
             p.terms
                 .keys()
-                .map(|e| e.iter().sum::<u32>())
+                .map(|e| crate::poly::exponent::total_degree_or_panic(e))
                 .max()
                 .unwrap_or(1) as usize
         })
@@ -447,6 +447,18 @@ pub fn mixed_volume(polys: &[GbPoly]) -> Option<usize> {
     let np1 = NewtonPolytope::from_poly(&polys[0]);
     let np2 = NewtonPolytope::from_poly(&polys[1]);
     if np1.n_vars != 2 || np2.n_vars != 2 {
+        return None;
+    }
+    // The hull arithmetic is `i32` coordinates with `i64` areas. An exponent
+    // of 2^31 or more turned negative in the cast (a wrong mixed volume, so a
+    // wrong path-count decision); bounding them at 2^20 keeps every
+    // coordinate, Minkowski sum and doubled area exact. Past that, fall back
+    // to the Bézout count like any other unsupported shape.
+    const MAX_EXP: u32 = 1 << 20;
+    if [&np1, &np2]
+        .iter()
+        .any(|np| np.support.iter().flatten().any(|&e| e > MAX_EXP))
+    {
         return None;
     }
     Some(mixed_volume_2d(&np1, &np2))

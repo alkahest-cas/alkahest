@@ -36,6 +36,9 @@ use rug::{Assign, Integer, Rational};
 
 use crate::poly::groebner::ideal::GbPoly;
 use crate::poly::groebner::monomial_order::MonomialOrder;
+// Exponent sums panic rather than wrap: a wrapped exponent is a different
+// monomial, i.e. a wrong basis (see `poly::exponent`).
+use crate::poly::exponent::{add_or_panic, total_degree_or_panic};
 
 /// Divide `f` by the ordered list `gs` and return the remainder.
 ///
@@ -104,13 +107,13 @@ pub fn s_polynomial(f: &GbPoly, g: &GbPoly, order: MonomialOrder) -> GbPoly {
 fn encode_shifted(order: MonomialOrder, e: &[u32], shift: &[u32], out: &mut Vec<u32>) {
     out.clear();
     match order {
-        MonomialOrder::Lex => out.extend(e.iter().zip(shift).map(|(a, b)| a + b)),
+        MonomialOrder::Lex => out.extend(e.iter().zip(shift).map(|(&a, &b)| add_or_panic(a, b))),
         MonomialOrder::GrLex => {
             out.push(0);
             let mut deg = 0u32;
-            for (a, b) in e.iter().zip(shift) {
-                let x = a + b;
-                deg += x;
+            for (&a, &b) in e.iter().zip(shift) {
+                let x = add_or_panic(a, b);
+                deg = add_or_panic(deg, x);
                 out.push(x);
             }
             out[0] = deg;
@@ -118,9 +121,9 @@ fn encode_shifted(order: MonomialOrder, e: &[u32], shift: &[u32], out: &mut Vec<
         MonomialOrder::GRevLex => {
             out.push(0);
             let mut deg = 0u32;
-            for (a, b) in e.iter().zip(shift).rev() {
-                let x = a + b;
-                deg += x;
+            for (&a, &b) in e.iter().zip(shift).rev() {
+                let x = add_or_panic(a, b);
+                deg = add_or_panic(deg, x);
                 out.push(u32::MAX - x);
             }
             out[0] = deg;
@@ -314,7 +317,7 @@ impl Divisor {
         Some(Divisor {
             int,
             lead: lead.clone(),
-            lead_deg: lead.iter().sum(),
+            lead_deg: total_degree_or_panic(lead),
             lc_is_one: *lc == 1,
             lc: lc.clone(),
             tail,
@@ -690,14 +693,18 @@ pub(crate) fn reduce_reference(f: &GbPoly, gs: &[GbPoly], order: MonomialOrder) 
         };
         // For graded orders, precompute the total degree of the current leading term.
         // Any basis element whose LM has higher total degree cannot divide it.
-        let lt_deg: u32 = if is_graded { lt_exp.iter().sum() } else { 0 };
+        let lt_deg: u32 = if is_graded {
+            total_degree_or_panic(&lt_exp)
+        } else {
+            0
+        };
 
         // Try gs[last_divisor], then wrap around through all of gs.
         for offset in 0..gs.len() {
             let idx = (last_divisor + offset) % gs.len();
             let g = &gs[idx];
             if let Some((lg_exp, lg_coeff)) = g.leading_term(order) {
-                if is_graded && lg_exp.iter().sum::<u32>() > lt_deg {
+                if is_graded && total_degree_or_panic(lg_exp) > lt_deg {
                     continue;
                 }
                 if lt_exp.len() == lg_exp.len()

@@ -237,6 +237,12 @@ pub fn take_undefined_equation() -> Option<UndefinedEquation> {
 /// Convert an `Expr` (which must be a polynomial in `vars`) to a `GbPoly`
 /// with rational coefficients.  The variable order in the exponent vector
 /// follows the order of `vars`.
+///
+/// Every exponent and every monomial's total degree of the result fits in
+/// `u32`; an input that needs more (`x^(2^32)`, `x^(2^31)·x^(2^31)`,
+/// `x^(2^31)·y^(2^31)`) is refused with `NotPolynomial` rather than wrapped —
+/// it used to come back as a different polynomial (`solve` then reported no
+/// solutions).
 pub fn expr_to_gbpoly(
     expr: ExprId,
     vars: &[ExprId],
@@ -244,6 +250,47 @@ pub fn expr_to_gbpoly(
 ) -> Result<GbPoly, SolverError> {
     let n = vars.len();
     expr_to_gbpoly_rec(expr, vars, n, pool)
+}
+
+/// The refusal for an exponent or total degree that does not fit in `u32`.
+fn exponent_too_large() -> SolverError {
+    SolverError::NotPolynomial(format!(
+        "{} (E-POLY-004)",
+        crate::poly::ConversionError::ExponentTooLarge
+    ))
+}
+
+/// `a · b` for two `GbPoly`s with every product exponent and total degree
+/// checked, unlike [`GbPoly::mul`] (which panics on overflow).
+pub(super) fn gb_mul_checked(a: &GbPoly, b: &GbPoly) -> Result<GbPoly, SolverError> {
+    let mut result = GbPoly::zero(a.n_vars);
+    for (ea, ca) in &a.terms {
+        for (eb, cb) in &b.terms {
+            let e = crate::poly::exponent::add_vecs(ea, eb).map_err(|_| exponent_too_large())?;
+            let entry = result.terms.entry(e).or_insert_with(|| Rational::from(0));
+            *entry += Rational::from(ca * cb);
+        }
+    }
+    result.terms.retain(|_, v| *v != 0);
+    Ok(result)
+}
+
+/// `base^n` by repeated squaring, checked. The square after the top bit is
+/// never formed: for `x^(2^31)` it would be `x^(2^32)`, which is refused even
+/// though the power itself fits.
+fn gb_pow_checked(base: GbPoly, mut n: u32) -> Result<GbPoly, SolverError> {
+    let mut result = GbPoly::constant(Rational::from(1), base.n_vars);
+    let mut cur = base;
+    while n > 0 {
+        if n & 1 == 1 {
+            result = gb_mul_checked(&result, &cur)?;
+        }
+        n >>= 1;
+        if n > 0 {
+            cur = gb_mul_checked(&cur, &cur)?;
+        }
+    }
+    Ok(result)
 }
 
 fn expr_to_gbpoly_rec(
@@ -320,7 +367,7 @@ fn expr_to_gbpoly_rec(
             let mut result = GbPoly::constant(Rational::from(1), n_vars);
             for a in args {
                 let p = expr_to_gbpoly_rec(a, vars, n_vars, pool)?;
-                result = result.mul(&p);
+                result = gb_mul_checked(&result, &p)?;
             }
             Ok(result)
         }
@@ -331,25 +378,14 @@ fn expr_to_gbpoly_rec(
             });
             match exp_node {
                 Some(n) => {
-                    let n_val = n.to_i64().unwrap_or(-1);
-                    if n_val < 0 {
+                    if n < 0 {
                         return Err(SolverError::NotPolynomial(format!(
-                            "negative exponent {n_val} in polynomial"
+                            "negative exponent {n} in polynomial"
                         )));
                     }
+                    let n_u32 = n.to_u32().ok_or_else(exponent_too_large)?;
                     let base_poly = expr_to_gbpoly_rec(base, vars, n_vars, pool)?;
-                    let mut result = GbPoly::constant(Rational::from(1), n_vars);
-                    let mut cur = base_poly;
-                    let mut rem = n_val as u64;
-                    while rem > 0 {
-                        if rem & 1 == 1 {
-                            result = result.mul(&cur);
-                        }
-                        let cur2 = cur.clone();
-                        cur = cur.mul(&cur2);
-                        rem >>= 1;
-                    }
-                    Ok(result)
+                    gb_pow_checked(base_poly, n_u32)
                 }
                 None => Err(SolverError::NotPolynomial(
                     "symbolic or non-integer exponent".to_string(),
@@ -388,7 +424,58 @@ pub fn expr_to_param_gbpoly(
     params: &[ExprId],
     pool: &ExprPool,
 ) -> Result<ParamGbPoly, SolverError> {
+    // The ℚ(params) arithmetic below is infallible (and panics rather than
+    // wrap on exponent overflow), so bound every degree it can reach first.
+    if param_degree_bound(expr, vars, params, pool, &mut BTreeMap::new()) > u64::from(u32::MAX) {
+        return Err(exponent_too_large());
+    }
     expr_to_param_gbpoly_rec(expr, vars, params, pool)
+}
+
+/// An upper bound, saturating, on every exponent and total degree — in the
+/// ring variables and in the parameters, numerators and denominators alike —
+/// that converting `expr` can produce. Sums are bounded by the *sum* of their
+/// terms' bounds, because adding fractions of `Q(params)` multiplies their
+/// denominators.
+fn param_degree_bound(
+    expr: ExprId,
+    vars: &[ExprId],
+    params: &[ExprId],
+    pool: &ExprPool,
+    memo: &mut BTreeMap<ExprId, u64>,
+) -> u64 {
+    if vars.contains(&expr) || params.contains(&expr) {
+        return 1;
+    }
+    if let Some(&b) = memo.get(&expr) {
+        return b;
+    }
+    enum Shape {
+        Leaf,
+        Sum(Vec<ExprId>),
+        Pow(ExprId, ExprId),
+    }
+    let shape = pool.with(expr, |d| match d {
+        ExprData::Add(args) | ExprData::Mul(args) => Shape::Sum(args.clone()),
+        ExprData::Pow { base, exp } => Shape::Pow(*base, *exp),
+        _ => Shape::Leaf,
+    });
+    let b = match shape {
+        Shape::Leaf => 0,
+        Shape::Sum(args) => args.into_iter().fold(0u64, |acc, a| {
+            acc.saturating_add(param_degree_bound(a, vars, params, pool, memo))
+        }),
+        Shape::Pow(base, exp) => {
+            // A non-integer exponent is refused by the conversion itself.
+            let k = pool.with(exp, |e| match e {
+                ExprData::Integer(n) => n.0.clone().abs().to_u64().unwrap_or(u64::MAX),
+                _ => 0,
+            });
+            param_degree_bound(base, vars, params, pool, memo).saturating_mul(k)
+        }
+    };
+    memo.insert(expr, b);
+    b
 }
 
 fn param_constant(c: QParam, n_vars: usize, n_params: usize) -> ParamGbPoly {
@@ -506,9 +593,13 @@ fn expr_to_param_gbpoly_rec(
                 if rem & 1 == 1 {
                     result = result.mul(&cur);
                 }
-                let cur2 = cur.clone();
-                cur = cur.mul(&cur2);
                 rem >>= 1;
+                // No square past the top bit: it can overflow when the power
+                // itself does not.
+                if rem > 0 {
+                    let cur2 = cur.clone();
+                    cur = cur.mul(&cur2);
+                }
             }
             Ok(result)
         }

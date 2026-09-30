@@ -43,7 +43,7 @@ impl Signature {
                 .exp
                 .iter()
                 .zip(shift.iter())
-                .map(|(a, b)| a + b)
+                .map(|(&a, &b)| crate::poly::exponent::add_or_panic(a, b))
                 .collect(),
             index: self.index,
         }
@@ -71,7 +71,7 @@ fn divides_exp(u: &[u32], v: &[u32]) -> bool {
 }
 
 fn total_deg(exp: &[u32]) -> u32 {
-    exp.iter().sum()
+    crate::poly::exponent::total_degree_or_panic(exp)
 }
 
 /// Labelled basis element used during F5.

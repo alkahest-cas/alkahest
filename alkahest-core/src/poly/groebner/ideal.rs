@@ -114,11 +114,16 @@ impl GbPoly {
     }
 
     /// Multiply two polynomials.
+    ///
+    /// # Panics
+    ///
+    /// If a product exponent or total degree exceeds `u32::MAX` (it used to
+    /// wrap). [`crate::solver::expr_to_gbpoly`] refuses such inputs up front.
     pub fn mul(&self, other: &GbPoly) -> GbPoly {
         let mut result = GbPoly::zero(self.n_vars);
         for (ea, ca) in &self.terms {
             for (eb, cb) in &other.terms {
-                let e: Vec<u32> = ea.iter().zip(eb.iter()).map(|(a, b)| a + b).collect();
+                let e: Vec<u32> = crate::poly::exponent::add_vecs_or_panic(ea, eb);
                 let c = rug::Rational::from(ca * cb);
                 let entry = result
                     .terms
@@ -132,6 +137,10 @@ impl GbPoly {
     }
 
     /// Multiply by a monomial (shift exponents by `exp_shift`, scale by `coeff`).
+    ///
+    /// # Panics
+    ///
+    /// If a shifted exponent or total degree exceeds `u32::MAX`.
     pub fn mul_monomial(&self, exp_shift: &[u32], coeff: &rug::Rational) -> GbPoly {
         if *coeff == 0 {
             return GbPoly::zero(self.n_vars);
@@ -141,8 +150,12 @@ impl GbPoly {
                 .terms
                 .iter()
                 .map(|(e, c)| {
-                    let new_e: Vec<u32> =
-                        e.iter().zip(exp_shift.iter()).map(|(a, b)| a + b).collect();
+                    let new_e: Vec<u32> = e
+                        .iter()
+                        .zip(exp_shift.iter())
+                        .map(|(&a, &b)| crate::poly::exponent::add_or_panic(a, b))
+                        .collect();
+                    crate::poly::exponent::total_degree_or_panic(&new_e);
                     (new_e, rug::Rational::from(c * coeff))
                 })
                 .collect(),
@@ -158,7 +171,7 @@ impl GbPoly {
     pub fn sugar(&self) -> u32 {
         self.terms
             .keys()
-            .map(|e| e.iter().sum::<u32>())
+            .map(|e| crate::poly::exponent::total_degree_or_panic(e))
             .max()
             .unwrap_or(0)
     }

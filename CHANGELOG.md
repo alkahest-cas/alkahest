@@ -486,6 +486,55 @@
   `assumed_sign` reported `1e-400` as `Zero`, and the `sqrt`/`log` realness
   checks in `simplify` treated `-1e-400` as non-negative, because both went
   through `to_f64`. They now use the sign of the arbitrary-precision value.
+- **Polynomial exponents past `u32` wrapped silently, returning answers for a
+  different polynomial.** The sparse polynomial types key terms by `u32`
+  exponents and multiplied monomials with a plain `+`, so in a release build
+  `x^(2^31)·x^(2^31)` became `x^0 = 1`: `MultiPoly.from_symbolic` returned `1`,
+  `total_degree(x^(2^31)·y^(2^31))` returned `0`, `solve([x^(2^32) − 2, y − x])`
+  reported no solutions, `factor_z(x^(2^32) − y²)` factored `1 − y²`,
+  `real_roots(x^(2^32) − 4)` found none, `horner(x^(2^32) + x)` gave `1 + x`
+  and `poly_normal(x^(2^32)·y − y)` gave `0`. Every exponent and every
+  monomial's total degree is now checked where it is formed (`MultiPoly`,
+  `UniPoly`, the Gröbner, rational-function and `solve` conversions), and one
+  that does not fit is refused with `E-POLY-004` (or `E-SOLVE-001` from the
+  solver) instead of wrapped. The infallible Rust operators (`MultiPoly * …`,
+  `GbPoly::mul`, `FlintMPoly::terms`, the Gröbner monomial arithmetic) panic
+  rather than wrap if they are ever handed such a value; `MultiPoly::checked_mul`
+  is new for callers that want the error, and the Python `MultiPoly * MultiPoly`
+  uses it (it used to wrap too).
+- **`resultant` truncated result exponents to 32 bits.** `res(x² − y^N, x − y^N, x)`
+  for `N = 3·10⁹` came back as `−y^3000000000 + y^1705032704` (`6·10⁹ mod 2^32`).
+  The result is now read from FLINT with 64-bit exponents and is exact:
+  `y^6000000000 − y^3000000000`.
+- **`UniPoly.from_symbolic(x^(2^31) + 1)` aborted the interpreter** in FLINT's
+  16 GiB allocation, even under `Budget(max_bytes=...)`. A dense univariate
+  degree above 2^26, or one whose coefficient array would pass the active
+  memory budget or the process's address-space headroom, is now refused with
+  `E-POLY-004` before FLINT allocates. The same guard keeps
+  `cancel`/`together` off the dense path for such degrees, and
+  `gcd_sparse_modular` hands degrees above 2^20 to FLINT's sparse gcd instead
+  of materialising them. The Python `UniPoly` `**` and `*` operators check the
+  same ceiling (new `UniPoly::checked_pow` / `checked_mul`) and raise
+  `ConversionError` instead of aborting.
+- **`UniPoly.from_symbolic(x^(2^21) + 1)` took gigabytes and over a minute.**
+  FLINT raises any length-2 polynomial through its binomial expansion, so
+  `x^n` (the polynomial `[0, 1]`) computed all `n + 1` binomial coefficients
+  before multiplying them by zero. A monomial `c·x^k` is now raised directly
+  as `c^n·x^(k·n)`.
+- **Exponents truncated or wrapped in a few more places of the same kind:**
+  the Risch rational and exponential conversions (`n as u32`:
+  `residue(x^−(2^32+1), x, 0)` answered `1`, and `c^(−2^63)` read as `1`), the
+  algebraic `sqrt(P)^n` decomposition (`sqrt(P)^(2^32+2)` read as `P`), the
+  mixed-volume path choice of `solve_numerical` (exponents ≥ 2^31 cast to
+  negative `i32`), a sparse-interpolation discrete log above 2^32, and the
+  parametric Gröbner conversion (`x^(2^32)` read as `1`, and one squaring too
+  many that overflowed on `x^(2^31)`). These now decline or refuse. `cancel`
+  and `together` raise a power by repeated squaring instead of `|n|` successive
+  products (a hang for `x^(2^40)`), and `solve_transcendental` bounds a
+  constant base's exponent likewise. The sum-of-squares `RatPoly` conversion
+  (`sos_decompose` and friends) multiplied exponents with a plain `+` too
+  (`x^(2^31−1)·x^(2^31−1)·x²` read as `1`) and raised powers by `n` successive
+  products; it now refuses with `E-POLY-004` and squares.
 
 ### Performance
 

@@ -122,6 +122,22 @@ impl FlintPoly {
     }
 
     pub fn pow(&self, exp: u32) -> Self {
+        // A monomial `c·x^k` is raised directly. FLINT treats a length-2 poly
+        // (`x` itself is `[0, 1]`) as a binomial and builds every binomial
+        // coefficient C(exp, i) before multiplying by the zero constant term,
+        // so `x^(2^21)` took gigabytes and minutes; `c^exp·x^(k·exp)` needs
+        // one coefficient.
+        let deg = self.degree();
+        if deg >= 1 && exp > 1 {
+            if let Some(top) = (deg as usize).checked_mul(exp as usize) {
+                if (0..deg as usize).all(|i| self.get_coeff_flint(i).to_rug() == 0) {
+                    let mut res = Self::new();
+                    let c = self.leading_coeff_fmpz().pow(u64::from(exp));
+                    res.set_coeff_flint(top, &c);
+                    return res;
+                }
+            }
+        }
         let mut res = Self::new();
         unsafe { ffi::fmpz_poly_pow(&mut res.inner, &self.inner, exp as ffi::ulong) };
         res
@@ -507,6 +523,25 @@ mod tests {
         let p = FlintPoly::from_coefficients(&[1, 1]);
         let q = p.pow(2);
         assert_eq!(q.coefficients(), vec![1, 2, 1]);
+    }
+
+    #[test]
+    fn pow_of_a_monomial_skips_the_binomial_expansion() {
+        // (-3x^2)^5 = -243 x^10; (x + 1)^3 still goes through FLINT.
+        let q = FlintPoly::from_coefficients(&[0, 0, -3]).pow(5);
+        let mut want = vec![0; 11];
+        want[10] = -243;
+        assert_eq!(q.coefficients(), want);
+        assert_eq!(
+            FlintPoly::from_coefficients(&[1, 1]).pow(3).coefficients(),
+            vec![1, 3, 3, 1]
+        );
+        // x^(2^21): one coefficient, not 2^21 binomial coefficients (which
+        // FLINT's length-2 path built, taking gigabytes).
+        let big = FlintPoly::from_coefficients(&[0, 1]).pow(1 << 21);
+        assert_eq!(big.degree(), 1 << 21);
+        assert_eq!(big.get_coeff(1 << 21), 1);
+        assert_eq!(big.get_coeff(0), 0);
     }
 
     #[test]

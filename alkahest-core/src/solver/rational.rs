@@ -181,12 +181,12 @@ fn rec(
             let mut dom = one();
             for a in args {
                 let (n2, d2, dom2) = rec(a, vars, n_vars, pool)?;
-                let scaled = if is_one(&den) { n2 } else { n2.mul(&den) };
-                num = if is_one(&d2) { num } else { num.mul(&d2) }.add(&scaled);
+                let scaled = if is_one(&den) { n2 } else { mul(&n2, &den)? };
+                num = if is_one(&d2) { num } else { mul(&num, &d2)? }.add(&scaled);
                 if !is_one(&d2) {
-                    den = den.mul(&d2);
+                    den = mul(&den, &d2)?;
                 }
-                dom = combine_domains(dom, dom2);
+                dom = combine_domains(dom, dom2)?;
             }
             Ok((num, den, dom))
         }
@@ -196,11 +196,11 @@ fn rec(
             let mut dom = one();
             for a in args {
                 let (n2, d2, dom2) = rec(a, vars, n_vars, pool)?;
-                num = num.mul(&n2);
+                num = mul(&num, &n2)?;
                 if !is_one(&d2) {
-                    den = den.mul(&d2);
+                    den = mul(&den, &d2)?;
                 }
-                dom = combine_domains(dom, dom2);
+                dom = combine_domains(dom, dom2)?;
             }
             Ok((num, den, dom))
         }
@@ -230,8 +230,8 @@ fn rec(
             if n_val >= 0 {
                 // A non-negative power is defined wherever its base is.
                 let k = n_val as u64;
-                let den = if is_one(&bd) { bd } else { pow_poly(&bd, k) };
-                Ok((pow_poly(&bn, k), den, bdom))
+                let den = if is_one(&bd) { bd } else { pow_poly(&bd, k)? };
+                Ok((pow_poly(&bn, k)?, den, bdom))
             } else {
                 // `(n/d)^−k = d^k / n^k`: the base's numerator becomes the
                 // denominator, so `n ≠ 0` joins the domain — this is the only
@@ -245,8 +245,8 @@ fn rec(
                     ));
                 }
                 let k = n_val.unsigned_abs();
-                let dom = combine_domains(bdom, bn.clone());
-                Ok((pow_poly(&bd, k), pow_poly(&bn, k), dom))
+                let dom = combine_domains(bdom, bn.clone())?;
+                Ok((pow_poly(&bd, k)?, pow_poly(&bn, k)?, dom))
             }
         }
         Node::Func(name) => Err(SolverError::NotPolynomial(format!(
@@ -263,32 +263,38 @@ fn rec(
 /// Two conditions hold together exactly when their product is non-zero, so a
 /// domain is one polynomial rather than a list — there is no way for a nested
 /// requirement to be dropped on the way up.
-fn combine_domains(a: GbPoly, b: GbPoly) -> GbPoly {
+fn combine_domains(a: GbPoly, b: GbPoly) -> Result<GbPoly, SolverError> {
     if is_one(&b) {
-        a
+        Ok(a)
     } else if is_one(&a) {
-        b
+        Ok(b)
     } else {
-        a.mul(&b)
+        mul(&a, &b)
     }
 }
 
-/// `p^k` by binary exponentiation.
-fn pow_poly(p: &GbPoly, k: u64) -> GbPoly {
+/// `a·b` with every exponent checked: the per-literal check above does not
+/// bound a product (`x^(2^31)·x^(2^31)`), and a wrapped exponent is a
+/// different polynomial.
+fn mul(a: &GbPoly, b: &GbPoly) -> Result<GbPoly, SolverError> {
+    super::gb_mul_checked(a, b)
+}
+
+/// `p^k` by binary exponentiation, checked.
+fn pow_poly(p: &GbPoly, k: u64) -> Result<GbPoly, SolverError> {
     let mut result = GbPoly::constant(Rational::from(1), p.n_vars);
     let mut cur = p.clone();
     let mut rem = k;
     while rem > 0 {
         if rem & 1 == 1 {
-            result = result.mul(&cur);
+            result = mul(&result, &cur)?;
         }
         rem >>= 1;
         if rem > 0 {
-            let cur2 = cur.clone();
-            cur = cur.mul(&cur2);
+            cur = mul(&cur, &cur)?;
         }
     }
-    result
+    Ok(result)
 }
 
 #[cfg(test)]
