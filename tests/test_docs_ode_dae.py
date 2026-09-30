@@ -212,7 +212,7 @@ def test_laplace_snippet():
     f = inverse_laplace_transform(F, s, t)
 
     assert str(F) == "s^-1"
-    assert str(f) == "(1)"
+    assert str(f) == "1"
 
 
 def test_hybrid_snippet():

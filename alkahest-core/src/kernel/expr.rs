@@ -128,8 +128,21 @@ impl Hash for BigFloat {
 }
 
 impl fmt::Display for BigFloat {
+    /// `rug`'s own rendering, made to read back as a float.
+    ///
+    /// `rug` prints a zero as `0`, which every parser in this crate reads as
+    /// the *integer* `0` — a different node, and a different kind of number.
+    /// A finite value whose rendering has neither a point nor an exponent is
+    /// therefore given a `.0`.  The digit count is `rug`'s, which grows with
+    /// `prec`, so the parsers can recover the precision from it (see
+    /// [`crate::parse::float_literal_prec`]).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.inner)
+        let s = self.inner.to_string();
+        if self.inner.is_finite() && !s.contains(['.', 'e', 'E']) {
+            write!(f, "{s}.0")
+        } else {
+            f.write_str(&s)
+        }
     }
 }
 

@@ -1,8 +1,7 @@
 //! Predicates on expression trees for noncommutative algebra (V3-2).
 
-#[cfg(test)]
 use crate::kernel::expr::ExprData;
-use crate::kernel::pool::ExprPool;
+use crate::kernel::pool::{ExprPool, POS_INFINITY_SYMBOL};
 use crate::kernel::ExprId;
 
 /// `true` iff no non-commutative [`ExprData::Symbol`](crate::kernel::ExprData::Symbol)
@@ -31,6 +30,34 @@ pub fn mult_tree_is_commutative(pool: &ExprPool, expr: ExprId) -> bool {
 /// rather than a walk that visited a shared subterm once per path to it.
 pub fn expr_contains_noncommutative_symbol(pool: &ExprPool, expr: ExprId) -> bool {
     !pool.is_mult_commutative(expr)
+}
+
+/// `true` iff `expr` is itself a value that is not a finite number: the
+/// canonical `∞` symbol of [`ExprPool::pos_infinity`], or a `Float` holding
+/// `±inf` or `NaN`.
+///
+/// The algebraic identities the simplifier leans on — `x − x = 0`,
+/// `0 · x = 0`, `x / x = 1` — hold for every finite `x` and fail for exactly
+/// these: `∞ − ∞`, `0 · ∞` and `∞ / ∞` are indeterminate, and IEEE `NaN` is
+/// not even equal to itself.  An ordinary symbol is *not* reported here: its
+/// value is a finite number by the library's standing convention, and the
+/// rules keep treating it that way.
+///
+/// O(1): one node probe.
+pub fn is_non_finite_atom(pool: &ExprPool, expr: ExprId) -> bool {
+    pool.with(expr, |d| match d {
+        ExprData::Symbol { name, .. } => name == POS_INFINITY_SYMBOL,
+        ExprData::Float(f) => !f.inner.is_finite(),
+        _ => false,
+    })
+}
+
+/// `true` iff some node of `expr` satisfies [`is_non_finite_atom`].
+///
+/// O(1): the flag is computed bottom-up when a node is interned, like
+/// [`mult_tree_is_commutative`]'s.
+pub fn contains_non_finite_atom(pool: &ExprPool, expr: ExprId) -> bool {
+    pool.has_non_finite(expr)
 }
 
 /// The subtree walk `expr_contains_noncommutative_symbol` used to perform,

@@ -545,13 +545,12 @@ impl<'a> Parser<'a> {
                     // an `unwrap` here once turned a lexer gap into a process
                     // abort.  Keep the failure structured no matter what the
                     // lexer hands over.
-                    let value = s.parse::<f64>().map_err(|_| {
+                    float_literal(pool, &s).ok_or_else(|| {
                         ParseError::lex(
                             format!("malformed number literal: {s}"),
                             (tok.offset, tok.offset + s.len()),
                         )
-                    })?;
-                    Ok(pool.float(value, 53))
+                    })
                 } else {
                     // Arbitrary precision, like every integer the pool
                     // holds: parsing into `i64` refused `10^20` written out,
@@ -699,8 +698,59 @@ impl<'a> Parser<'a> {
             return Ok(self.pool.pow(args[0], third));
         }
 
-        Ok(self.pool.func(name, args))
+        // A built-in name at the wrong arity (`sin()`, `sin(x, x)`,
+        // `EllipticPi(x)`) is not an expression: every consumer indexes a
+        // built-in's arguments by position.  Refuse it here, as the
+        // reciprocal and `cbrt` desugars above already do for theirs.
+        self.pool
+            .try_func(name, args)
+            .map_err(|e| ParseError::syntax(e.to_string(), (offset, offset + name.len())))
     }
+}
+
+/// Precision, in bits, at which a decimal float literal is read back.
+///
+/// `rug` renders a `prec`-bit float with `1 + ⌈prec · log₁₀ 2⌉` significant
+/// digits — 17 for the default 53 — and [`crate::kernel::BigFloat`]'s
+/// `Display` prints exactly that.  Reading every literal as an `f64`, as the
+/// parser used to, cut a printed 200-bit float back to 53 bits.  So:
+///
+/// * up to 17 significant digits: 53 bits, the `f64` it always was;
+/// * more: the *largest* precision whose rendering has that many digits.
+///   That is never less than the precision that printed it, so no digit
+///   written is thrown away, and re-printing the result gives the same text.
+///
+/// The precision itself is not in the text, so a float printed at, say, 200
+/// bits reads back at 202 (the three precisions 200–202 all print 62 digits).
+pub fn float_literal_prec(text: &str) -> u32 {
+    let mantissa = text.split(['e', 'E']).next().unwrap_or("");
+    let digits = mantissa
+        .chars()
+        .filter(char::is_ascii_digit)
+        .skip_while(|&c| c == '0')
+        .count();
+    if digits <= 17 {
+        return 53;
+    }
+    // Largest p with 1 + ceil(p·log10 2) == digits, i.e. p·log10 2 ≤ digits − 1.
+    let p = ((digits - 1) as f64 / std::f64::consts::LOG10_2).floor();
+    if p >= f64::from(rug::float::prec_max()) {
+        rug::float::prec_max()
+    } else {
+        p as u32
+    }
+}
+
+/// Intern the decimal float literal `text` (`1.5`, `2.5e-3`, `.5`) at
+/// [`float_literal_prec`] bits, or `None` if it is not one.
+pub fn float_literal(pool: &ExprPool, text: &str) -> Option<ExprId> {
+    let prec = float_literal_prec(text);
+    if prec == 53 {
+        return Some(pool.float(text.parse::<f64>().ok()?, 53));
+    }
+    let parsed = rug::Float::parse(text).ok()?;
+    let inner = rug::Float::with_val(prec, parsed);
+    Some(pool.intern(ExprData::Float(crate::kernel::BigFloat { inner, prec })))
 }
 
 // ---------------------------------------------------------------------------
@@ -1352,9 +1402,11 @@ mod tests {
     #[test]
     fn the_special_function_output_basis_round_trips() {
         for name in crate::integrate::SPECIAL_BASIS {
-            // `EllipticF`/`EllipticE` take two arguments in the incomplete form
-            // and one in the complete one; the unary spelling parses for both.
-            let src = format!("{name}(x)");
+            // Each name at its smallest arity: `EllipticE` has a one-argument
+            // complete form, `EllipticF` only the two-argument incomplete one
+            // (`EllipticF(x)` is refused, `E-PARSE-002`).
+            let n = crate::kernel::known_func_arity(name).map_or(1, |(lo, _)| lo);
+            let src = format!("{name}({})", vec!["x"; n].join(", "));
             let (pool, _xyz, mut syms) = pool_xyz();
             let parsed =
                 parse(&src, &pool, &mut syms).unwrap_or_else(|e| panic!("{src} must parse: {e}"));
@@ -1364,7 +1416,7 @@ mod tests {
                     ref args,
                 } => {
                     assert_eq!(got, name, "{src} parsed to the wrong node");
-                    assert_eq!(args.len(), 1, "{src} parsed with the wrong arity");
+                    assert_eq!(args.len(), n, "{src} parsed with the wrong arity");
                 }
                 other => panic!("{src} parsed to {other:?}, not a Func node"),
             }
@@ -1479,5 +1531,107 @@ mod tests {
         let id = parse("-9223372036854775808", &pool, &mut syms).expect("parses");
         let x = pool.display(id).to_string();
         assert!(x.contains("9223372036854775808"), "{x}");
+    }
+}
+
+/// Audit C1 (parser half) and A8 (float round trip).
+#[cfg(test)]
+mod canonical_input_tests {
+    use super::*;
+
+    fn p(src: &str, pool: &ExprPool) -> Result<ExprId, ParseError> {
+        parse(src, pool, &mut HashMap::new())
+    }
+
+    #[test]
+    fn a_builtin_at_the_wrong_arity_is_a_parse_error() {
+        let pool = ExprPool::new();
+        for src in [
+            "sin()",
+            "sin(x, x)",
+            "sqrt()",
+            "exp()",
+            "gamma(x, y, z)",
+            "lambert_w(x, 1, 2)",
+            "EllipticPi(x)",
+            "EllipticPi(1,2,3,4)",
+            "EllipticE(1,2,3)",
+            "EllipticF(x)",
+            "atan2(x)",
+            "atan2()",
+            "log(x, y, z)",
+            "Si()",
+            "dilog(x, y)",
+        ] {
+            let err = p(src, &pool).expect_err(src);
+            assert_eq!(err.code(), "E-PARSE-002", "{src}: {err}");
+            assert!(err.to_string().contains("takes"), "{src}: {err}");
+        }
+        // The right arities still parse.
+        for src in [
+            "sin(x)",
+            "atan2(x, y)",
+            "EllipticE(x)",
+            "EllipticE(x, y)",
+            "EllipticF(x, y)",
+            "EllipticPi(x, y, z)",
+        ] {
+            p(src, &pool).unwrap_or_else(|e| panic!("{src}: {e}"));
+        }
+    }
+
+    #[test]
+    fn float_literal_precision_follows_the_digits() {
+        assert_eq!(float_literal_prec("1.5"), 53);
+        assert_eq!(float_literal_prec("1.0000000000000000"), 53);
+        assert_eq!(float_literal_prec("0.00000000000000000000001"), 53);
+        assert_eq!(float_literal_prec("1.2345678901234567e300"), 53);
+        assert!(float_literal_prec("1.23456789012345678") > 53);
+    }
+
+    /// `str` of a float parses back to a float of at least the precision it
+    /// was printed at, holding the same value to that precision, and prints
+    /// the same text again.
+    #[test]
+    fn printed_floats_read_back_without_losing_digits() {
+        let pool = ExprPool::new();
+        for prec in [2u32, 24, 53, 64, 100, 113, 128, 200, 256, 1000] {
+            for v in [0.1_f64, 1.0 / 3.0, 2.0, 1e-300, 6.02214076e23] {
+                // A value that really uses `prec` bits: v + 2^-(prec-1)·v.
+                let mut exact = rug::Float::with_val(prec, v);
+                let bump = rug::Float::with_val(prec, &exact >> (prec - 1));
+                exact += bump;
+                let e = pool.intern(ExprData::Float(crate::kernel::BigFloat {
+                    inner: exact.clone(),
+                    prec,
+                }));
+                let s = pool.display(e).to_string();
+                let back = p(&s, &pool).unwrap_or_else(|err| panic!("{s}: {err}"));
+                let ExprData::Float(f) = pool.get(back) else {
+                    panic!("{s} (prec {prec}) re-parsed as {:?}", pool.get(back));
+                };
+                if prec <= 53 {
+                    // The f64 path: exact only for precisions an f64 holds.
+                    assert_eq!(f.prec, 53);
+                } else {
+                    assert!(f.prec >= prec, "{s}: read at {} < {prec}", f.prec);
+                    let err = rug::Float::with_val(f.prec + 8, &f.inner - &exact).abs();
+                    let ulp = rug::Float::with_val(prec, &exact >> (prec - 1)).abs();
+                    assert!(err <= ulp, "{s}: value moved by {err} at prec {prec}");
+                    // Once read at the wider precision, the value is stable:
+                    // printing and reading again changes nothing.
+                    let s2 = pool.display(back).to_string();
+                    assert_eq!(p(&s2, &pool).unwrap(), back, "{s2} is not a fixpoint");
+                }
+            }
+        }
+        // 53 bits round-trips structurally.
+        let e = pool.float(0.1, 53);
+        let s = pool.display(e).to_string();
+        assert_eq!(p(&s, &pool).unwrap(), e);
+        let z = pool.float(0.0, 53);
+        assert_eq!(p(&pool.display(z).to_string(), &pool).unwrap(), z);
+        // `super::float_literal` — the test fn above shadows it here.
+        assert!(super::float_literal(&pool, "abc").is_none());
     }
 }

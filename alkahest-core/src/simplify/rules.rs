@@ -633,6 +633,11 @@ impl RewriteRule for MulZero {
         if args.iter().any(|&a| is_zero_to_negative_power(a, pool)) {
             return None;
         }
+        // Nor `0 · ∞` (or `0 · NaN`, `0 · x·∞`): indeterminate, not `0`.
+        // O(1) — the flag is cached on the node.
+        if pool.has_non_finite(expr) {
+            return None;
+        }
         let after = pool.integer(0_i32);
         Some((after, one_step(self.name(), expr, after)))
     }
@@ -935,6 +940,10 @@ impl ConstFold {
                     {
                         return None;
                     }
+                    // Likewise `0 · ∞` / `0 · NaN` — see `MulZero`.
+                    if non_numeric.iter().any(|&a| pool.has_non_finite(a)) {
+                        return None;
+                    }
                     pool.integer(0_i32)
                 } else if non_numeric.is_empty() {
                     intern_rational(prod, pool)
@@ -1128,9 +1137,10 @@ impl ConstFold {
             }
             // Rational(n/1) → Integer(n) (RationalCanon).
             //
-            // `ExprPool::rational` reduces to lowest terms but does not
-            // collapse a denominator of 1 to an `Integer` node — such nodes
-            // can also arise from un-collapsed arithmetic (see PR #147).
+            // `ExprPool::intern` now collapses a denominator of 1 to an
+            // `Integer` node itself, so this arm no longer fires on a pool
+            // node; it is kept as a guard (it used to catch `pool.rational`
+            // and un-collapsed arithmetic, see PR #147).
             // Canonicalizing here ensures `Rational` nodes always have
             // denominator > 1, simplifying downstream pattern matches (e.g.
             // `as_integer`, polynomial coefficient extraction). Always sound:
@@ -1190,6 +1200,11 @@ impl RewriteRule for SubSelf {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
+        // A sum with an infinite or NaN term somewhere cannot be collected
+        // freely; see `apply_non_finite`.  One cached-flag read.
+        if pool.has_non_finite(expr) {
+            return self.apply_non_finite(expr, pool);
+        }
         // Extract (coeff, base) for each arg.  Coefficients admit a
         // *rational*: restricting them to integers made `¾·u + (−¾)·u` two
         // unrelated bases, so a term-wise cancellation that is pure arithmetic
@@ -1203,73 +1218,7 @@ impl RewriteRule for SubSelf {
             ),
             _ => None,
         })?;
-
-        // Decline before any coefficient arithmetic when no base repeats and
-        // no single coefficient is zero: each base's sum is then its one
-        // coefficient, nonzero, and nothing merges — the test below would say
-        // no after building a map and a bignum sum per term.
-        if !pairs
-            .iter()
-            .any(|(c, _)| c.as_ref().is_some_and(Coeff::is_zero))
-        {
-            let mut bases: Vec<ExprId> = pairs.iter().map(|&(_, b)| b).collect();
-            bases.sort_unstable();
-            if !bases.windows(2).any(|w| w[0] == w[1]) {
-                return None;
-            }
-        }
-
-        // Sum coefficients by base, preserving first-occurrence order.
-        // A `None` coefficient is the implicit `1`.
-        let one = Coeff::one();
-        let mut coeff_map: IdMap<Coeff> = IdMap::default();
-        let mut base_order: Vec<ExprId> = vec![];
-        for (coeff, base) in &pairs {
-            let entry = coeff_map.entry(*base).or_insert_with(|| {
-                base_order.push(*base);
-                Coeff::zero()
-            });
-            entry.add_assign(coeff.as_ref().unwrap_or(&one));
-        }
-
-        // Check: any cancellation (coeff → 0) or merging (two args same base)?
-        let any_zero = coeff_map.values().any(Coeff::is_zero);
-        let any_merged = coeff_map.len() < pairs.len();
-        if !any_zero && !any_merged {
-            return None;
-        }
-
-        // Dropping a term whose integer coefficient sums to `0` asserts that
-        // the term's remaining factor is a *number* — `0 · u = 0` is false
-        // when `u` is undefined. `diff(2/(x - x), x)` lands here as
-        // `(0 · 0⁻¹) + (2 · −1 · 0 · 0⁻²)`, where both coefficients are the
-        // literal `0` that came out of the numerator, and dropping both
-        // reported a derivative of `0` for an expression that has none.
-        // Only checked when something actually cancels, so ordinary
-        // `x - x → 0` collection is untouched.
-        if any_zero
-            && coeff_map
-                .iter()
-                .any(|(base, c)| c.is_zero() && has_zero_to_negative_power_factor(*base, pool))
-        {
-            return None;
-        }
-
-        // Build new args
-        let mut new_args: Vec<ExprId> = vec![];
-        let mut seen: IdSet = IdSet::default();
-        for base in &base_order {
-            if seen.contains(base) {
-                continue;
-            }
-            seen.insert(*base);
-            let coeff = coeff_map[base].clone();
-            if coeff.is_zero() {
-                continue;
-            }
-            new_args.push(rebuild_coeff_term(coeff, *base, pool));
-        }
-
+        let new_args = collect_like_terms(&pairs, pool)?;
         let after = match new_args.len() {
             0 => pool.integer(0_i32),
             1 => new_args[0],
@@ -1280,6 +1229,165 @@ impl RewriteRule for SubSelf {
         }
         Some((after, one_step(self.name(), expr, after)))
     }
+}
+
+impl SubSelf {
+    /// Collect like terms in a sum containing `∞` or a non-finite `Float`.
+    ///
+    /// `c₁·b + c₂·b = (c₁ + c₂)·b` is distributivity, which holds for a finite
+    /// `b` and fails for an infinite one exactly when the coefficients differ
+    /// in sign: `∞ − ∞`, `2·∞ − ∞` and `x·∞ − x·∞` are indeterminate, not `0`
+    /// or `∞`.  A `NaN` float is not even equal to itself.  So a base that may
+    /// be non-finite is merged only when every coefficient it carries has the
+    /// same strict sign (`∞ + ∞ → 2·∞`); otherwise its terms are left exactly
+    /// as they were, and the rest of the sum is collected as usual.
+    #[cold]
+    fn apply_non_finite(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
+        let args = pool.with(expr, |d| match d {
+            ExprData::Add(args) if args.len() >= 2 => Some(args.clone()),
+            _ => None,
+        })?;
+        let pairs: Vec<(Option<Coeff>, ExprId)> = args
+            .iter()
+            .map(|&a| extract_rational_coeff(a, pool))
+            .collect();
+        let held = unmergeable_non_finite_bases(
+            pairs.iter().map(|(c, b)| {
+                let sign = match c {
+                    None => 1,
+                    Some(Coeff::Int(n)) => n.cmp0() as i8,
+                    Some(Coeff::Rat(r)) => r.cmp0() as i8,
+                };
+                (sign, *b)
+            }),
+            pool,
+        );
+        let mut kept: Vec<(Option<Coeff>, ExprId)> = Vec::with_capacity(pairs.len());
+        let mut untouched: Vec<ExprId> = Vec::new();
+        for (arg, pair) in args.iter().zip(pairs) {
+            if held.contains(&pair.1) {
+                untouched.push(*arg);
+            } else {
+                kept.push(pair);
+            }
+        }
+        let mut new_args = collect_like_terms(&kept, pool)?;
+        new_args.extend(untouched);
+        let after = match new_args.len() {
+            0 => pool.integer(0_i32),
+            1 => new_args[0],
+            _ => pool.add(new_args),
+        };
+        if after == expr {
+            return None;
+        }
+        Some((after, one_step(self.name(), expr, after)))
+    }
+}
+
+/// The bases among `(sign, base)` pairs that may be non-finite and must not be
+/// merged: one of their signs is `0`, or two of them differ.  Empty in the
+/// common case.
+///
+/// Shared by `collect_add_terms` (the sign of each term's coefficient) and
+/// `collect_mul_factors` (the sign of each factor's exponent: `∞ · ∞⁻¹` is
+/// `∞ / ∞`, indeterminate, and so is `∞² · ∞⁻¹`).
+fn unmergeable_non_finite_bases(
+    pairs: impl Iterator<Item = (i8, ExprId)>,
+    pool: &ExprPool,
+) -> IdSet {
+    let mut sign_of: IdMap<i8> = IdMap::default();
+    let mut held = IdSet::default();
+    for (sign, base) in pairs {
+        if !pool.has_non_finite(base) {
+            continue;
+        }
+        if sign == 0 {
+            held.insert(base);
+            continue;
+        }
+        match sign_of.get(&base) {
+            Some(&prev) if prev != sign => {
+                held.insert(base);
+            }
+            Some(_) => {}
+            None => {
+                sign_of.insert(base, sign);
+            }
+        }
+    }
+    held
+}
+
+/// `collect_add_terms` on `(coefficient, base)` pairs: the new argument list
+/// with like terms summed, or `None` when nothing merges or cancels.
+fn collect_like_terms(pairs: &[(Option<Coeff>, ExprId)], pool: &ExprPool) -> Option<Vec<ExprId>> {
+    // Decline before any coefficient arithmetic when no base repeats and
+    // no single coefficient is zero: each base's sum is then its one
+    // coefficient, nonzero, and nothing merges — the test below would say
+    // no after building a map and a bignum sum per term.
+    if !pairs
+        .iter()
+        .any(|(c, _)| c.as_ref().is_some_and(Coeff::is_zero))
+    {
+        let mut bases: Vec<ExprId> = pairs.iter().map(|&(_, b)| b).collect();
+        bases.sort_unstable();
+        if !bases.windows(2).any(|w| w[0] == w[1]) {
+            return None;
+        }
+    }
+
+    // Sum coefficients by base, preserving first-occurrence order.
+    // A `None` coefficient is the implicit `1`.
+    let one = Coeff::one();
+    let mut coeff_map: IdMap<Coeff> = IdMap::default();
+    let mut base_order: Vec<ExprId> = vec![];
+    for (coeff, base) in pairs {
+        let entry = coeff_map.entry(*base).or_insert_with(|| {
+            base_order.push(*base);
+            Coeff::zero()
+        });
+        entry.add_assign(coeff.as_ref().unwrap_or(&one));
+    }
+
+    // Check: any cancellation (coeff → 0) or merging (two args same base)?
+    let any_zero = coeff_map.values().any(Coeff::is_zero);
+    let any_merged = coeff_map.len() < pairs.len();
+    if !any_zero && !any_merged {
+        return None;
+    }
+
+    // Dropping a term whose integer coefficient sums to `0` asserts that
+    // the term's remaining factor is a *number* — `0 · u = 0` is false
+    // when `u` is undefined. `diff(2/(x - x), x)` lands here as
+    // `(0 · 0⁻¹) + (2 · −1 · 0 · 0⁻²)`, where both coefficients are the
+    // literal `0` that came out of the numerator, and dropping both
+    // reported a derivative of `0` for an expression that has none.
+    // Only checked when something actually cancels, so ordinary
+    // `x - x → 0` collection is untouched.
+    if any_zero
+        && coeff_map
+            .iter()
+            .any(|(base, c)| c.is_zero() && has_zero_to_negative_power_factor(*base, pool))
+    {
+        return None;
+    }
+
+    // Build new args
+    let mut new_args: Vec<ExprId> = vec![];
+    let mut seen: IdSet = IdSet::default();
+    for base in &base_order {
+        if seen.contains(base) {
+            continue;
+        }
+        seen.insert(*base);
+        let coeff = coeff_map[base].clone();
+        if coeff.is_zero() {
+            continue;
+        }
+        new_args.push(rebuild_coeff_term(coeff, *base, pool));
+    }
+    Some(new_args)
 }
 
 // ---------------------------------------------------------------------------
@@ -1344,7 +1452,34 @@ impl RewriteRule for DivSelf {
             return None;
         }
 
-        let new_args: Vec<ExprId> = if globally_comm {
+        // `b^k · b^m = b^(k+m)` fails for an infinite `b` once the exponents
+        // differ in sign: `∞ · ∞⁻¹` is `∞ / ∞`, indeterminate, not `1`, and
+        // `∞² · ∞⁻¹` is not `∞`.  Such a base keeps its factors as they are;
+        // the rest of the product is collected as usual.  O(1) to rule out.
+        let mut held_factors: Vec<ExprId> = Vec::new();
+        if pool.has_non_finite(expr) {
+            let held = unmergeable_non_finite_bases(
+                exp_pairs.iter().map(|(e, b)| (e.cmp0() as i8, *b)),
+                pool,
+            );
+            if !held.is_empty() {
+                if !globally_comm {
+                    return None;
+                }
+                let (keep, hold): (Vec<_>, Vec<_>) =
+                    exp_pairs.into_iter().partition(|(_, b)| !held.contains(b));
+                held_factors = hold
+                    .iter()
+                    .map(|(e, b)| rebuild_exp_term(e, *b, pool))
+                    .collect();
+                exp_pairs = keep;
+                if exp_pairs.len() < 2 {
+                    return None;
+                }
+            }
+        }
+
+        let mut new_args: Vec<ExprId> = if globally_comm {
             // Commutative: sum exponents for each base anywhere in the product.
             let mut exp_map: IdMap<rug::Integer> = IdMap::default();
             let mut base_order: Vec<ExprId> = vec![];
@@ -1400,6 +1535,7 @@ impl RewriteRule for DivSelf {
                 .map(|(e, b)| rebuild_exp_term(&e, b, pool))
                 .collect()
         };
+        new_args.extend(held_factors);
 
         let after = match new_args.len() {
             0 => pool.integer(1_i32),
@@ -2219,6 +2355,9 @@ impl RewriteRule for PrimitiveFold {
         // `get_or_init` from inside its own initialiser deadlocks.
         let after = pool.with(expr, |d| match d {
             ExprData::Func { name, args } => {
+                if !crate::kernel::func_arity_ok(name, args.len()) {
+                    return None;
+                }
                 let reg = REG.get_or_init(crate::primitive::PrimitiveRegistry::default_registry);
                 reg.get(name)?.simplify(args, pool)
             }
@@ -2888,12 +3027,12 @@ mod tests {
     #[test]
     fn rational_with_denom_one_canonicalizes_to_integer() {
         let pool = p();
-        // Build a Rational(3/1) node directly (bypassing ExprPool::rational's
-        // own reduction, which still leaves a Rational node for denom == 1).
+        // A Rational(3/1) interned directly is canonicalised by the pool
+        // itself now, so no such node is left for ConstFold's arm to fold.
         let r = rug::Rational::from((rug::Integer::from(3), rug::Integer::from(1)));
         let expr = pool.intern(ExprData::Rational(crate::kernel::expr::BigRat(r)));
-        let (result, _) = ConstFold.apply(expr, &pool).unwrap();
-        assert_eq!(result, pool.integer(3_i32));
+        assert_eq!(expr, pool.integer(3_i32));
+        assert!(ConstFold.apply(expr, &pool).is_none());
     }
 
     #[test]
@@ -3407,5 +3546,108 @@ mod verification {
         } else {
             assert_eq!(got, u64::MAX);
         }
+    }
+}
+
+/// Audit A5: `∞` and non-finite floats are not numbers the field axioms hold
+/// for, so `x − x = 0`, `0·x = 0` and `x/x = 1` must not fire on them.
+#[cfg(test)]
+mod non_finite_tests {
+    use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
+    use crate::simplify::{simplify, simplify_egraph};
+
+    fn neg(p: &ExprPool, e: ExprId) -> ExprId {
+        p.mul(vec![p.integer(-1_i32), e])
+    }
+
+    fn inv(p: &ExprPool, e: ExprId) -> ExprId {
+        p.pow(e, p.integer(-1_i32))
+    }
+
+    fn is_literal(p: &ExprPool, e: ExprId) -> bool {
+        p.with(e, |d| {
+            matches!(d, ExprData::Integer(_) | ExprData::Rational(_))
+        })
+    }
+
+    /// Neither simplifier may turn `e` into an exact number.
+    fn assert_not_folded(p: &ExprPool, e: ExprId, label: &str) {
+        let r = simplify(e, p).value;
+        assert!(
+            !is_literal(p, r),
+            "simplify({label}) folded to {}",
+            p.display(r)
+        );
+        let r = simplify_egraph(e, p).value;
+        assert!(
+            !is_literal(p, r),
+            "simplify_egraph({label}) folded to {}",
+            p.display(r)
+        );
+    }
+
+    #[test]
+    fn indeterminate_forms_of_infinity_are_not_folded() {
+        let p = ExprPool::new();
+        let oo = p.pos_infinity();
+        let x = p.symbol("x", Domain::Real);
+        let zero = p.integer(0_i32);
+        assert_not_folded(&p, p.add(vec![oo, neg(&p, oo)]), "oo - oo");
+        assert_not_folded(&p, p.mul(vec![oo, zero]), "oo * 0");
+        assert_not_folded(&p, p.mul(vec![oo, inv(&p, oo)]), "oo / oo");
+        assert_not_folded(&p, p.mul(vec![zero, p.integer(3_i32), oo]), "0 * 3 * oo");
+        let x_oo = p.mul(vec![x, oo]);
+        assert_not_folded(&p, p.add(vec![x_oo, neg(&p, x_oo)]), "x*oo - x*oo");
+        // `2·∞ − ∞` must not become `∞` either (it is `∞ − ∞`).
+        let r = simplify(
+            p.add(vec![p.mul(vec![p.integer(2_i32), oo]), neg(&p, oo)]),
+            &p,
+        )
+        .value;
+        assert_ne!(r, oo, "2*oo - oo collapsed to oo");
+        // `∞²/∞` is `∞/∞`, not `∞`.
+        let r = simplify(p.mul(vec![p.pow(oo, p.integer(2_i32)), inv(&p, oo)]), &p).value;
+        assert_ne!(r, oo, "oo^2 / oo collapsed to oo");
+    }
+
+    #[test]
+    fn ieee_non_finite_floats_are_not_folded() {
+        let p = ExprPool::new();
+        let nan = p.float(f64::NAN, 53);
+        let inf = p.float(f64::INFINITY, 53);
+        let x = p.symbol("x", Domain::Real);
+        let zero = p.integer(0_i32);
+        assert_not_folded(&p, p.add(vec![nan, neg(&p, nan)]), "nan - nan");
+        assert_not_folded(&p, p.mul(vec![nan, zero]), "nan * 0");
+        assert_not_folded(&p, p.mul(vec![inf, zero]), "inf * 0");
+        assert_not_folded(&p, p.add(vec![inf, neg(&p, inf)]), "inf - inf");
+        assert_not_folded(&p, p.mul(vec![nan, inv(&p, nan)]), "nan / nan");
+        let x_inf = p.mul(vec![x, inf]);
+        assert_not_folded(&p, p.add(vec![x_inf, neg(&p, x_inf)]), "x*inf - x*inf");
+    }
+
+    /// The finite rules keep firing — alongside a non-finite term, and on
+    /// ordinary symbols, whose finiteness is the library's convention.
+    #[test]
+    fn finite_terms_still_collect() {
+        let p = ExprPool::new();
+        let oo = p.pos_infinity();
+        let x = p.symbol("x", Domain::Real);
+        let zero = p.integer(0_i32);
+        assert_eq!(simplify(p.add(vec![x, neg(&p, x)]), &p).value, zero);
+        assert_eq!(simplify(p.mul(vec![x, zero]), &p).value, zero);
+        assert_eq!(
+            simplify(p.mul(vec![x, inv(&p, x)]), &p).value,
+            p.integer(1_i32)
+        );
+        // `x − x + ∞` → `∞`: the finite pair still cancels.
+        let r = simplify(p.add(vec![x, neg(&p, x), oo]), &p).value;
+        assert_eq!(r, oo, "got {}", p.display(r));
+        // `∞ + ∞` → `2·∞` is sound: both coefficients are positive.
+        let r = simplify(p.add(vec![oo, oo]), &p).value;
+        assert_eq!(r, p.mul(vec![p.integer(2_i32), oo]), "got {}", p.display(r));
+        // `∞ · ∞` → `∞²` likewise.
+        let r = simplify(p.mul(vec![oo, oo]), &p).value;
+        assert_eq!(r, p.pow(oo, p.integer(2_i32)), "got {}", p.display(r));
     }
 }

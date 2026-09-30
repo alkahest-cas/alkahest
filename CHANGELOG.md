@@ -252,6 +252,42 @@
 
 ### Fixed
 
+- **`simplify` folded indeterminate forms to numbers: `oo - oo → 0`,
+  `oo * 0 → 0`, `oo / oo → 1`, and for IEEE floats `NaN - NaN → 0`,
+  `NaN * 0 → 0`, `inf * 0 → 0`, `inf - inf → 0`, `x*inf - x*inf → 0`.**
+  `oo` is a positive symbol and float literals are atoms, so the field
+  identities `x − x = 0`, `0·x = 0` and `x/x = 1` fired on them. Collecting
+  like terms and like factors, `0·…` folding, and the e-graph and
+  assumption-aware `x·x⁻¹ → 1` rewrites now leave a term alone when it
+  contains `∞` or a non-finite float and the merge would be indeterminate
+  (coefficients or exponents of mixed sign, or a zero factor): the result
+  stays unevaluated. Same-sign merges (`oo + oo → 2·oo`, `oo·oo → oo²`) and
+  every rule on ordinary symbols are unchanged.
+- **One value had two nodes, and floats did not print back as floats.**
+  `rational(4, 2)` and `integer(2)` were different expressions (so
+  `subs(x + rational(2, 1), {2: y})` missed), `pool.add([x])`/`pool.mul([x])`
+  were not `x`, `pool.add([])`/`pool.mul([])` printed `()`, and `-0.0` was kept
+  as whichever zero was interned first. `ExprPool::intern` now canonicalises:
+  a denominator-1 `Rational` is the `Integer`, a one-argument `Add`/`Mul` is
+  its argument, the empty sum/product is `0`/`1`, a float zero or NaN is stored
+  with a positive sign. Pool files are loaded through the same path, with child
+  references remapped, so a non-canonical node saved by an older build no
+  longer duplicates (or shifts) the nodes after it; a child reference that is
+  not to an earlier node is refused. `Float(0.0)` printed `0`, which re-parsed
+  as the integer `0`; it now prints `0.0`. Both parsers read a literal of more
+  than 17 significant digits at a precision that keeps them, instead of
+  cutting a printed 200-bit float to an `f64`.
+- **A built-in function at the wrong arity panicked in every consumer.**
+  `pool.func("sqrt", [])`, `pool.func("EllipticPi", [x])`, `parse("sin()")`,
+  `parse("sin(x, x)")` built nodes that raised `PanicException` (index out of
+  bounds) in `latex`, `unicode_str`, `diff`, `series`, `simplify`,
+  `integrate` and `to_lean`. `pool.func` now raises `PoolError`
+  (`E-POOL-002`) and both parsers `ParseError` (`E-PARSE-002`) for a built-in
+  name at the wrong number of arguments; user-defined names take any number.
+  The Rust API adds `ExprPool::try_func` and `kernel::known_func_arity`
+  (`ExprPool::func` stays unchecked), and the renderers, the Lean emitter and
+  the primitive registry treat a wrong-arity node that still reaches them as a
+  plain call or a declined operation instead of panicking.
 - **Release wheels failed to import (`undefined symbol: PyPyIndex_Check`).**
   The integer-coercion fast path called `pyo3::ffi::PyIndex_Check`, which
   pyo3-ffi 0.21 binds to the PyPy symbol name. Test builds never exercised

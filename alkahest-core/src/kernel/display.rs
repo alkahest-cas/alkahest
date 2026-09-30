@@ -236,8 +236,9 @@ fn collapse_runs(args: &[ExprId]) -> Vec<(ExprId, i64)> {
     out
 }
 
-/// `Some(numerator)` when a rational is really an integer (`4/2` interns as
-/// `Rational(2, 1)`, a node distinct from `Integer(2)`).  Rendering it as
+/// `Some(numerator)` when a rational is really an integer.  `ExprPool::intern`
+/// now turns `Rational(2, 1)` into `Integer(2)`, so a pool no longer holds
+/// one; this stays as a guard for a `BigRat` rendered directly.  Rendering it as
 /// `\frac{2}{1}` or `2/1` is not wrong, but `x^(1/1)` reached the Unicode
 /// `ⁿ√` branch and printed `¹√x`.
 fn rational_as_integer(r: &crate::kernel::expr::BigRat) -> Option<String> {
@@ -563,6 +564,12 @@ fn latex_pow(base: ExprId, exp: ExprId, pool: &ExprPool) -> String {
 }
 
 fn latex_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
+    // A built-in name at the wrong arity (which `ExprPool::try_func` and the
+    // parsers refuse, but the unchecked constructors and a pool file do not)
+    // is printed as a plain call: the special forms below index positionally.
+    if !crate::kernel::func_arity_ok(name, args.len()) {
+        return latex_func_generic(name, args, pool);
+    }
     match name {
         "abs" => {
             let (inner, _) = latex_r(args[0], pool);
@@ -610,12 +617,15 @@ fn latex_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
             let (m, _) = latex_r(args[2], pool);
             format!(r"\Pi\!\left({n};{phi}\,\middle|\,{m}\right)")
         }
-        _ => {
-            let fn_latex = latex_func_name(name);
-            let rendered: Vec<String> = args.iter().map(|&a| latex_r(a, pool).0).collect();
-            format!(r"{fn_latex}\!\left({}\right)", rendered.join(", "))
-        }
+        _ => latex_func_generic(name, args, pool),
     }
+}
+
+/// `name(a, b, …)` with the operator name typeset, and nothing positional.
+fn latex_func_generic(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
+    let fn_latex = latex_func_name(name);
+    let rendered: Vec<String> = args.iter().map(|&a| latex_r(a, pool).0).collect();
+    format!(r"{fn_latex}\!\left({}\right)", rendered.join(", "))
 }
 
 /// Precedence of a rendered function application.
@@ -708,7 +718,7 @@ fn latex_predicate(kind: &PredicateKind, args: &[ExprId], pool: &ExprPool) -> St
     match kind {
         PredicateKind::True => r"\top".into(),
         PredicateKind::False => r"\bot".into(),
-        PredicateKind::Not => {
+        PredicateKind::Not if args.len() == 1 => {
             let inner = latex_wrap(args[0], pool, PREC_NOT + 1);
             format!(r"\lnot {inner}")
         }
@@ -722,7 +732,8 @@ fn latex_predicate(kind: &PredicateKind, args: &[ExprId], pool: &ExprPool) -> St
                 PredicateKind::Ne => r"\ne",
                 PredicateKind::And => r"\land",
                 PredicateKind::Or => r"\lor",
-                _ => unreachable!(),
+                // Only a malformed `Not` (not one argument) reaches here.
+                _ => r"\lnot",
             };
             // `∧`/`∨` are associative, so a same-kind operand needs no
             // parentheses; anything that binds *looser* does.
@@ -765,7 +776,7 @@ fn latex_r(id: ExprId, pool: &ExprPool) -> (String, i32) {
                 (s, PREC_MUL)
             }
         }
-        ExprData::Float(f) => latex_float(&f.inner.to_string()),
+        ExprData::Float(f) => latex_float(&f.to_string()),
         ExprData::Add(args) => (latex_add(args, pool), PREC_ADD),
         ExprData::Mul(args) => {
             let (sign, tex) = latex_signed_mul(args, pool);
@@ -1002,6 +1013,11 @@ fn integral_exponent(exp: ExprId, pool: &ExprPool) -> Option<Integer> {
 }
 
 fn unicode_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
+    // See `latex_func`: a wrong-arity built-in prints as a plain call.
+    if !crate::kernel::func_arity_ok(name, args.len()) {
+        let rendered: Vec<String> = args.iter().map(|&a| unicode_r(a, pool).0).collect();
+        return format!("{name}({})", rendered.join(", "));
+    }
     match name {
         "sqrt" => {
             let inner = unicode_wrap(args[0], pool, PREC_POW + 1);
@@ -1074,7 +1090,7 @@ fn unicode_predicate(kind: &PredicateKind, args: &[ExprId], pool: &ExprPool) -> 
     match kind {
         PredicateKind::True => "⊤".into(),
         PredicateKind::False => "⊥".into(),
-        PredicateKind::Not => {
+        PredicateKind::Not if args.len() == 1 => {
             let inner = unicode_wrap(args[0], pool, PREC_NOT + 1);
             format!("¬{inner}")
         }
@@ -1088,7 +1104,8 @@ fn unicode_predicate(kind: &PredicateKind, args: &[ExprId], pool: &ExprPool) -> 
                 PredicateKind::Ne => "≠",
                 PredicateKind::And => "∧",
                 PredicateKind::Or => "∨",
-                _ => unreachable!(),
+                // Only a malformed `Not` (not one argument) reaches here.
+                _ => "¬",
             };
             let req = predicate_prec(kind);
             let rendered: Vec<String> = args.iter().map(|&a| unicode_wrap(a, pool, req)).collect();
@@ -1136,7 +1153,7 @@ fn unicode_r(id: ExprId, pool: &ExprPool) -> (String, i32) {
             }
         }
         ExprData::Float(f) => {
-            let s = f.inner.to_string();
+            let s = f.to_string();
             let prec = float_prec(&s);
             (s, prec)
         }
@@ -1446,9 +1463,10 @@ mod tests {
         assert_eq!(render_latex(p.symbol("u_0", Domain::Real), &p), "{u}_{0}");
     }
 
-    /// `4/2` interns as `Rational(2, 1)`, a node distinct from `Integer(2)`.
-    /// It is an integer on the page, and `x^(1/1)` reached the Unicode `ⁿ√`
-    /// branch and printed the nonsense `¹√x`.
+    /// `4/2` used to intern as `Rational(2, 1)`, a node distinct from
+    /// `Integer(2)` (it is now `Integer(2)` itself).  It is an integer on the
+    /// page, and `x^(1/1)` reached the Unicode `ⁿ√` branch and printed the
+    /// nonsense `¹√x`.
     #[test]
     fn a_rational_with_denominator_one_prints_as_an_integer() {
         let p = ExprPool::new();

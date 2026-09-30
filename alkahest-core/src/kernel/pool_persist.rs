@@ -545,13 +545,94 @@ pub fn load_from(path: impl AsRef<Path>) -> Result<Option<ExprPool>, IoError> {
 
     let pool = ExprPool::new();
     let count = read_u64(&mut r)? as usize;
-    for expected in 0..count {
+    // File index → id in the rebuilt pool.  These are equal for a file this
+    // build wrote, but not in general: `intern` canonicalises (a `Rational`
+    // with denominator 1 becomes an `Integer`, a one-argument `Add` becomes
+    // its argument, …), so a node an older build saved in a non-canonical
+    // spelling lands on an id that already exists and every later node
+    // shifts down.  Reading children through this table keeps each reference
+    // pointing at the node the file meant, instead of silently at whichever
+    // node now occupies that index.
+    let mut ids: Vec<ExprId> = Vec::new();
+    for index in 0..count {
         let data = read_node(&mut r, version)?;
-        let got = pool.intern(data);
-        debug_assert_eq!(got.0 as usize, expected, "pool id drift during load");
+        // `Add`/`Mul` go through their constructors, not bare `intern`, so a
+        // nested or unsorted node an older build saved is flattened and put
+        // in canonical order — otherwise it would sit in the pool beside the
+        // canonical node for the same sum as a second id.
+        let id = match remap_children(data, &ids, index)? {
+            ExprData::Add(args) => pool.add(args),
+            ExprData::Mul(args) => pool.mul(args),
+            other => pool.intern(other),
+        };
+        ids.push(id);
     }
 
     Ok(Some(pool))
+}
+
+/// Rewrite every child reference in `data` (a node read at file position
+/// `index`) through `ids`, the file-index → pool-id table built so far.
+///
+/// A child must be an *earlier* node: the writer emits the pool in id order
+/// and a node is interned only after its children, so a reference at or past
+/// `index` is corrupt data, and following it would read a node that does not
+/// exist yet.
+fn remap_children(data: ExprData, ids: &[ExprId], index: usize) -> Result<ExprData, IoError> {
+    let map = |c: ExprId| -> Result<ExprId, IoError> {
+        ids.get(c.0 as usize).copied().ok_or_else(|| {
+            IoError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "pool file node {index} refers to node {}, which is not an earlier node",
+                    c.0
+                ),
+            ))
+        })
+    };
+    let map_all =
+        |v: Vec<ExprId>| -> Result<Vec<ExprId>, IoError> { v.into_iter().map(map).collect() };
+    Ok(match data {
+        ExprData::Symbol { .. }
+        | ExprData::Integer(_)
+        | ExprData::Rational(_)
+        | ExprData::Float(_) => data,
+        ExprData::Add(args) => ExprData::Add(map_all(args)?),
+        ExprData::Mul(args) => ExprData::Mul(map_all(args)?),
+        ExprData::Pow { base, exp } => ExprData::Pow {
+            base: map(base)?,
+            exp: map(exp)?,
+        },
+        ExprData::Func { name, args } => ExprData::Func {
+            name,
+            args: map_all(args)?,
+        },
+        ExprData::Piecewise { branches, default } => ExprData::Piecewise {
+            branches: branches
+                .into_iter()
+                .map(|(c, v)| Ok((map(c)?, map(v)?)))
+                .collect::<Result<_, IoError>>()?,
+            default: map(default)?,
+        },
+        ExprData::Predicate { kind, args } => ExprData::Predicate {
+            kind,
+            args: map_all(args)?,
+        },
+        ExprData::Forall { var, body } => ExprData::Forall {
+            var: map(var)?,
+            body: map(body)?,
+        },
+        ExprData::Exists { var, body } => ExprData::Exists {
+            var: map(var)?,
+            body: map(body)?,
+        },
+        ExprData::BigO(inner) => ExprData::BigO(map(inner)?),
+        ExprData::RootSum { poly, var, body } => ExprData::RootSum {
+            poly: map(poly)?,
+            var: map(var)?,
+            body: map(body)?,
+        },
+    })
 }
 
 /// Load if `path` exists, else return a fresh pool.
@@ -706,6 +787,89 @@ mod tests {
         let q = ExprPool::open_persistent(&path).unwrap();
         assert_eq!(p.get(pc), q.get(pc));
         let _ = fs::remove_file(&path);
+    }
+
+    /// Write `nodes` as a pool file exactly as given — no canonicalisation —
+    /// the way an older build could have.
+    fn write_raw(path: &Path, nodes: &[ExprData]) {
+        let mut w = BufWriter::new(File::create(path).unwrap());
+        w.write_all(MAGIC).unwrap();
+        write_u32(&mut w, POOL_FORMAT_WRITE).unwrap();
+        write_u32(&mut w, 0).unwrap();
+        write_u64(&mut w, nodes.len() as u64).unwrap();
+        for n in nodes {
+            write_node(&mut w, n).unwrap();
+        }
+        w.flush().unwrap();
+    }
+
+    /// A file holding non-canonical spellings (a `Rational` with denominator
+    /// 1 beside the `Integer` it equals, a one-argument `Add`, an unsorted
+    /// `Add`) loads onto the canonical nodes, and every later reference still
+    /// points at the node the file meant — not at whatever now sits at that
+    /// index once the duplicates have collapsed.
+    #[test]
+    fn non_canonical_nodes_collapse_without_drift() {
+        let x = ExprData::Symbol {
+            name: "x".into(),
+            domain: Domain::Real,
+            commutative: true,
+        };
+        let y = ExprData::Symbol {
+            name: "y".into(),
+            domain: Domain::Real,
+            commutative: true,
+        };
+        let nodes = vec![
+            x,                                                       // 0
+            ExprData::Rational(BigRat(rug::Rational::from((4, 2)))), // 1: 2/1
+            ExprData::Integer(BigInt(rug::Integer::from(2))),        // 2: 2
+            ExprData::Add(vec![ExprId(0)]),                          // 3: (x)
+            y,                                                       // 4
+            ExprData::Add(vec![ExprId(4), ExprId(3)]),               // 5: y + (x)
+            ExprData::Pow {
+                base: ExprId(5),
+                exp: ExprId(2),
+            }, // 6: (y + x)^2
+            ExprData::Mul(vec![]),                                   // 7: empty product
+            ExprData::Pow {
+                base: ExprId(4),
+                exp: ExprId(7),
+            }, // 8: y^1
+        ];
+        let path = tempfile();
+        write_raw(&path, &nodes);
+        let q = load_from(&path).unwrap().unwrap();
+        let _ = fs::remove_file(&path);
+
+        let x = q.symbol("x", Domain::Real);
+        let y = q.symbol("y", Domain::Real);
+        let two = q.integer(2_i32);
+        let sum = q.add(vec![x, y]);
+        let square = q.pow(sum, two);
+        let y_one = q.pow(y, q.integer(1_i32));
+        // x, 2, y, x + y, (x + y)^2, 1, y^1 — nothing else, nothing twice.
+        assert_eq!(q.len(), 7, "a non-canonical node survived as a duplicate");
+        for id in [x, y, two, sum, square, y_one] {
+            assert!(
+                (id.0 as usize) < 7,
+                "{} was not in the loaded pool",
+                q.display(id)
+            );
+        }
+    }
+
+    #[test]
+    fn a_forward_child_reference_is_refused() {
+        let nodes = vec![ExprData::Add(vec![ExprId(0), ExprId(1)])];
+        let path = tempfile();
+        write_raw(&path, &nodes);
+        let r = load_from(&path);
+        let _ = fs::remove_file(&path);
+        assert!(
+            r.is_err(),
+            "a child reference past the node itself must be refused"
+        );
     }
 
     #[test]

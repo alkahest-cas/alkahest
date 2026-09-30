@@ -1581,12 +1581,38 @@ impl PyExprPool {
     }
 
     /// Apply a named primitive or symbolic function: ``pool.func("sin", [x])``, ``pool.func("f", [n])``.
+    ///
+    /// A built-in name at the wrong number of arguments (``pool.func("sqrt",
+    /// [])``, ``pool.func("EllipticPi", [x])``) raises ``PoolError``
+    /// (``E-POOL-002``); a name that is not built in takes any number.
     #[pyo3(name = "func")]
     fn apply_named(slf: PyRef<'_, Self>, name: &str, args: Vec<PyExpr>) -> PyResult<PyExpr> {
         let ids = own_pool_ids(&slf, &args, "func")?;
-        let id = slf.inner.func(name, ids);
+        let id = slf.inner.try_func(name, ids).map_err(|e| {
+            let py = slf.py();
+            let err = PyPoolError::new_err(format!("[E-POOL-002] pool.func(): {e}"));
+            let v = err.value_bound(py);
+            v.setattr("code", "E-POOL-002").ok();
+            v.setattr(
+                "remediation",
+                alkahest_core::errors::AlkahestError::remediation(&e).unwrap_or(""),
+            )
+            .ok();
+            v.setattr("span", py.None()).ok();
+            err
+        })?;
         let pool: Py<PyExprPool> = slf.into();
         Ok(PyExpr { id, pool })
+    }
+
+    /// Private: the node the parsers build for the decimal float literal
+    /// ``text`` — 53 bits for up to 17 significant digits, more for a longer
+    /// literal, so a printed high-precision float reads back without being
+    /// cut to an ``f64``.  ``None`` if ``text`` is not a float literal.
+    fn _float_literal(slf: PyRef<'_, Self>, text: &str) -> Option<PyExpr> {
+        let id = alkahest_core::parse::float_literal(&slf.inner, text)?;
+        let pool: Py<PyExprPool> = slf.into();
+        Some(PyExpr { id, pool })
     }
 
     /// Build an addition node: ``pool.add([x, y, z])`` → `x + y + z`.

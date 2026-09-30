@@ -52,7 +52,14 @@ def _bound_on_box_accepts(name: str, arity: int) -> bool:
     """
     pool = ak.ExprPool()
     args = [pool.symbol(f"x{i}") for i in range(arity)]
-    call = pool.func(name, args)
+    try:
+        call = pool.func(name, args)
+    except ak.PoolError as exc:
+        # `E-POOL-002`: not this primitive's arity, so there is no call to
+        # bound — the probe says nothing about dispatch.
+        if exc.code != "E-POOL-002":
+            raise
+        return False
     box = [(a, 0.25, 0.5) for a in args]
     try:
         ak.bound_on_box(call, box, **_OPTS)
