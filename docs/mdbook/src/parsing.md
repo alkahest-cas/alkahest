@@ -75,8 +75,17 @@ call.
 
 ## Error handling
 
-`parse` raises `ParseError` (code `E-PARSE-001`) on any lexical or syntax
-error. The exception's `.span` attribute gives the `(start, end)` byte range
+`parse` raises `ParseError` on any malformed input — never `RecursionError`,
+`ValueError`, `TypeError` or `ZeroDivisionError`. The code says which kind:
+
+| Code | Cause |
+|---|---|
+| `E-PARSE-001` | Lexical: an unexpected character, or a number literal out of range. A float literal past the `f64` exponent range (`1e999999`) is read at 53 bits with an arbitrary-precision exponent rather than as `inf` (or `1e-999999` as `0`); one past even that range (about ±3·10⁸ decimal digits of exponent) is refused. Integer literals of any length are exact — Python's `int`-string digit limit does not apply |
+| `E-PARSE-002` | Syntactic, including a wrong argument count for a built-in (`sin()`) and division by the literal `0` (`2/0`; that exception is also a `ZeroDivisionError`, as it was before) |
+| `E-PARSE-003` | Unknown function |
+| `E-PARSE-004` | Nesting deeper than 2048 levels — parentheses, prefix signs, right-associated powers and function arguments each count one. This is the same ceiling as `E-DEPTH-001`, and both parsers enforce it; the Python parser keeps its pending productions on a list, not the interpreter stack, so no input depth raises `RecursionError` |
+
+The exception's `.span` attribute gives the `(start, end)` byte range
 of the offending token, and `.remediation` provides a hint:
 
 ```python

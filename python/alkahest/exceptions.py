@@ -1019,15 +1019,24 @@ class SmtError(AlkahestError):
 
 
 class ParseError(AlkahestError):
-    """Parse error with source span (reserved; parser not yet integrated)."""
+    """Malformed expression text, with the source span (``.span``) of the fault.
+
+    ``E-PARSE-001`` lexical (an unexpected character, a malformed or
+    out-of-range number literal), ``E-PARSE-002`` syntactic (including
+    division by the literal ``0``), ``E-PARSE-003`` unknown function,
+    ``E-PARSE-004`` nesting deeper than the parser's limit (the same ceiling as
+    ``E-DEPTH-001``).  Every malformed input to :func:`alkahest.parse` raises
+    this — never ``RecursionError``, ``ValueError`` or ``ZeroDivisionError``.
+    """
 
     def __init__(
         self,
         message: str,
         remediation: str | None = None,
         span: tuple[int, int] | None = None,
+        code: str = "E-PARSE-001",
     ):
-        super().__init__(message, code="E-PARSE-001", remediation=remediation, span=span)
+        super().__init__(message, code=code, remediation=remediation, span=span)
 
 
 class VectorError(AlkahestError):

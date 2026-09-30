@@ -372,6 +372,45 @@ fn checked_prec(prec: u32) -> PyResult<u32> {
     Ok(prec)
 }
 
+/// A Python ``int`` argument as `T`, or `Ok(None)` when it is an integer that
+/// `T` cannot hold — negative for an unsigned `T`, or past `T::MAX`.
+///
+/// PyO3's own conversion raises `OverflowError` for both, which is not the
+/// error any of these APIs documents: out-of-range values are a
+/// `ValueError` (or an `IndexError`, or the subsystem's typed error) for the
+/// in-range-but-invalid values right next to them, and a caller should not
+/// have to catch two exception types for one mistake.  A non-integer is
+/// still the `TypeError` PyO3 raises.
+fn int_arg<'py, T: FromPyObject<'py>>(ob: &Bound<'py, PyAny>) -> PyResult<Option<T>> {
+    match ob.extract::<T>() {
+        Ok(v) => Ok(Some(v)),
+        Err(e) if e.is_instance_of::<PyOverflowError>(ob.py()) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// [`int_arg`] for a count or limit: out of range is a `ValueError` naming
+/// the argument.
+fn nonneg_arg<'py, T: FromPyObject<'py>>(ob: &Bound<'py, PyAny>, name: &str) -> PyResult<T> {
+    int_arg(ob)?.ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "{name} must be a non-negative integer that fits in {} bits (got {ob})",
+            std::mem::size_of::<T>() * 8
+        ))
+    })
+}
+
+/// A count or limit argument: a negative or oversized ``int`` is a
+/// `ValueError` (see [`nonneg_arg`]), where a bare `usize` parameter raised
+/// PyO3's `OverflowError`.
+struct NonNeg<T>(T);
+
+impl<'py, T: FromPyObject<'py>> FromPyObject<'py> for NonNeg<T> {
+    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
+        nonneg_arg(ob, "argument").map(NonNeg)
+    }
+}
+
 /// Parse a Python ``int`` (any size) into an interned integer expression.
 fn integer_into_pool(pool: &ExprPool, n: &Bound<'_, PyAny>) -> PyResult<ExprId> {
     Ok(pool.integer(big_integer_from_py(n)?))
@@ -1818,6 +1857,19 @@ impl PyExprPool {
         let id = alkahest_core::parse::float_literal(&slf.inner, text)?;
         let pool: Py<PyExprPool> = slf.into();
         Some(PyExpr { id, pool })
+    }
+
+    /// The decimal integer literal `text` (ASCII digits, optional sign), for
+    /// the Python parser.  Not `pool.integer(int(text))`: `int` refuses more
+    /// than `sys.get_int_max_str_digits()` digits (4300 by default) with a
+    /// `ValueError`, and `rug` reads any length in quasi-linear time.
+    fn _integer_literal(slf: PyRef<'_, Self>, text: &str) -> PyResult<PyExpr> {
+        let n: Integer = text.parse().map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(format!("malformed integer literal: {text}"))
+        })?;
+        let id = slf.inner.integer(n);
+        let pool: Py<PyExprPool> = slf.into();
+        Ok(PyExpr { id, pool })
     }
 
     /// Build an addition node: ``pool.add([x, y, z])`` → `x + y + z`.
@@ -4186,9 +4238,9 @@ impl PyEgraphConfig {
     #[new]
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
-        shrink_iters = 5,
-        explore_iters = 3,
-        const_fold_iters = 3,
+        shrink_iters = NonNeg(5),
+        explore_iters = NonNeg(3),
+        const_fold_iters = NonNeg(3),
         node_limit = None,
         iter_limit = None,
         include_trig_rules = true,
@@ -4196,22 +4248,22 @@ impl PyEgraphConfig {
         disjoint_schedule = true,
     ))]
     fn new(
-        shrink_iters: usize,
-        explore_iters: usize,
-        const_fold_iters: usize,
-        node_limit: Option<usize>,
-        iter_limit: Option<usize>,
+        shrink_iters: NonNeg<usize>,
+        explore_iters: NonNeg<usize>,
+        const_fold_iters: NonNeg<usize>,
+        node_limit: Option<NonNeg<usize>>,
+        iter_limit: Option<NonNeg<usize>>,
         include_trig_rules: bool,
         include_log_exp_rules: bool,
         disjoint_schedule: bool,
     ) -> Self {
         PyEgraphConfig {
             inner: EgraphConfig {
-                shrink_iters,
-                explore_iters,
-                const_fold_iters,
-                node_limit,
-                iter_limit,
+                shrink_iters: shrink_iters.0,
+                explore_iters: explore_iters.0,
+                const_fold_iters: const_fold_iters.0,
+                node_limit: node_limit.map(|n| n.0),
+                iter_limit: iter_limit.map(|n| n.0),
                 include_trig_rules,
                 include_log_exp_rules,
                 disjoint_schedule,
@@ -9400,6 +9452,14 @@ impl PyMatrix {
                 "Matrix must have at least one row",
             ));
         }
+        // Before the pool search: `[[]]` has no entry to find a pool in, and
+        // reporting that as "could not determine an ExprPool" (a TypeError)
+        // hides the actual mistake — a matrix with no columns.
+        if rows.iter().any(|r| r.is_empty()) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Matrix must have at least one column (a row is empty)",
+            ));
+        }
         // Find the pool from the first Expr/DerivedResult entry anywhere in `rows`.
         let mut pool_py: Option<Py<PyExprPool>> = None;
         for row in &rows {
@@ -9471,7 +9531,15 @@ impl PyMatrix {
         })
     }
 
-    fn get(&self, py: Python<'_>, r: usize, c: usize) -> PyResult<PyExpr> {
+    fn get(&self, py: Python<'_>, r: &Bound<'_, PyAny>, c: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
+        // A negative or huge subscript is out of range like any other, so it
+        // is the same `IndexError` — not PyO3's `OverflowError`.
+        let (rows, cols) = (self.inner.rows, self.inner.cols);
+        let (Some(r), Some(c)) = (int_arg::<usize>(r)?, int_arg::<usize>(c)?) else {
+            return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                "matrix index ({r}, {c}) out of range for a {rows}x{cols} matrix"
+            )));
+        };
         // `Matrix::get` indexes `data[r * cols + c]` with no bounds check, so
         // an out-of-range subscript was a panic — a `BaseException` on the
         // Python side — rather than the `IndexError` a caller expects.  Note
@@ -11915,9 +11983,15 @@ fn py_interval_eval(
     py: Python<'_>,
     expr: PyRef<PyExpr>,
     bindings: &Bound<'_, PyDict>,
-    prec: Option<u32>,
+    prec: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyArbBall> {
-    let prec = checked_prec(prec.unwrap_or(128))?;
+    // Past `u32` is as out of range as past `MAX_PRECISION_BITS`: one
+    // `ValueError` for both, not an `OverflowError` for the first.
+    let prec = match prec {
+        None => 128,
+        Some(ob) => int_arg::<u32>(ob)?.unwrap_or(u32::MAX),
+    };
+    let prec = checked_prec(prec)?;
     let pool = expr.pool.borrow(py);
     guard_depth(&pool.inner, expr.id)?;
     let mut eval = CoreIntervalEval::new(prec);
@@ -18231,8 +18305,37 @@ fn sorted_unique_with_index(indices: &[i64]) -> (Vec<i64>, Vec<usize>) {
 /// 0
 #[pyfunction]
 #[pyo3(name = "binomial_mod", signature = (a, b, p, k))]
-fn py_binomial_mod(a: u64, b: i128, p: u64, k: u32) -> PyResult<u64> {
-    core_binomial_mod(a, b, p, k).map_err(holonomic_modular_error_to_py)
+fn py_binomial_mod(
+    a: &Bound<'_, PyAny>,
+    b: &Bound<'_, PyAny>,
+    p: &Bound<'_, PyAny>,
+    k: &Bound<'_, PyAny>,
+) -> PyResult<u64> {
+    // Out-of-range arguments are the subsystem's own typed errors (with
+    // their `E-HOLO` codes), not PyO3's bare `OverflowError`: a modulus
+    // `p^k` that is not a positive prime power is `E-HOLO-006` exactly as a
+    // composite `p` is, and an `a`/`b` outside the supported range is a
+    // malformed call, `E-HOLO-004`.
+    let invalid =
+        |what: String| holonomic_modular_error_to_py(CoreHolonomicModularError::InvalidInput(what));
+    let modulus = |what: String| {
+        holonomic_modular_error_to_py(CoreHolonomicModularError::ModulusUnsupported(what))
+    };
+    let a_v = int_arg::<u64>(a)?.ok_or_else(|| {
+        invalid(format!(
+            "binomial_mod: a = {a} must be an integer in 0 .. 2^64"
+        ))
+    })?;
+    let b_v = int_arg::<i128>(b)?.ok_or_else(|| {
+        invalid(format!(
+            "binomial_mod: b = {b} is outside the supported range (|b| < 2^127)"
+        ))
+    })?;
+    let p_v = int_arg::<u64>(p)?
+        .ok_or_else(|| modulus(format!("binomial_mod: p = {p} must be a prime below 2^64")))?;
+    let k_v = int_arg::<u32>(k)?
+        .ok_or_else(|| modulus(format!("binomial_mod: k = {k} must be a positive integer")))?;
+    core_binomial_mod(a_v, b_v, p_v, k_v).map_err(holonomic_modular_error_to_py)
 }
 
 // ===========================================================================
