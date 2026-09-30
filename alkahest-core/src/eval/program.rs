@@ -399,7 +399,6 @@ impl NumericProgram {
     /// `u32::MAX` or inside `exp_nodes`; the result is a slot. `compile`
     /// `debug_assert`s it, and a Kani harness proves `run` in bounds on any
     /// program that satisfies it (TESTING.md § 7).
-    #[cfg(any(debug_assertions, kani))]
     fn is_well_formed(&self) -> bool {
         let len = self.template.len();
         if self.n_inputs > len || self.result as usize >= len {
