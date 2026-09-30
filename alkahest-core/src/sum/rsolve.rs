@@ -155,6 +155,19 @@ fn linear_in_sym(expr: ExprId, sym: ExprId, pool: &ExprPool) -> Option<(Rational
     }
 }
 
+/// Largest recurrence order [`rsolve`] accepts: the spread between the
+/// largest and the smallest index shift in the equation.
+///
+/// The order sizes every dense structure the solver builds (the lag
+/// coefficient vector, the characteristic polynomial, one constant per
+/// root), so `f(n + 10¹²) − f(n)` asked for a 32 TB vector and aborted the
+/// process, and `f(n + 10¹⁸) − f(n)` overflowed the capacity computation.
+/// The solver finishes nothing near this order in practice — it peels at
+/// most 64 rational characteristic roots — so a larger order is refused with
+/// `E-RSOLVE-004` before anything is allocated, and the allocations it does
+/// admit are a few hundred KiB at most, far below any memory budget.
+pub const RSOLVE_MAX_ORDER: u64 = 1 << 12;
+
 fn offset_in_n(arg: ExprId, n: ExprId, pool: &ExprPool) -> Result<i64, RsolveError> {
     let (coef, c) = linear_in_sym(arg, n, pool).ok_or_else(|| {
         RsolveError::NotLinearRecurrence(
@@ -170,7 +183,14 @@ fn offset_in_n(arg: ExprId, n: ExprId, pool: &ExprPool) -> Result<i64, RsolveErr
     let den = c.denom();
     if num.clone() % den.clone() == 0 {
         let q = Integer::from(num / den);
-        Ok(q.to_i64().unwrap_or(i64::MIN))
+        // An index shift past i64 used to become i64::MIN, and the lag
+        // arithmetic below then wrapped into a negative array index
+        // (`f(n+1) − f(n − 2⁷⁰)` panicked with an out-of-bounds index).
+        q.to_i64().ok_or_else(|| {
+            RsolveError::Unsupported(format!(
+                "index shift {q} is too large (recurrence order is limited to {RSOLVE_MAX_ORDER})"
+            ))
+        })
     } else {
         Err(RsolveError::NotLinearRecurrence(
             "index shift must be an integer".into(),
@@ -289,16 +309,22 @@ fn extract_recurrence(
     }
 
     let max_o = *by_shift.keys().max().unwrap();
-    let mut shifts: BTreeMap<i64, Rational> = BTreeMap::new();
-    for (&o, c) in &by_shift {
-        let lag = max_o - o;
-        *shifts.entry(lag).or_insert(Rational::from(0)) += c;
+    let min_o = *by_shift.keys().min().unwrap();
+    // The order is the spread of the shifts. Compute it in i128 so two
+    // extreme i64 shifts cannot overflow, and refuse it before sizing
+    // anything by it.
+    let order = i128::from(max_o) - i128::from(min_o);
+    if order > i128::from(RSOLVE_MAX_ORDER) {
+        return Err(RsolveError::Unsupported(format!(
+            "recurrence order {order} exceeds the supported maximum {RSOLVE_MAX_ORDER}"
+        )));
     }
-
-    let d = *shifts.keys().max().unwrap() as usize;
+    // Every lag `max_o − o` now lies in `0..=order`, which fits a usize.
+    let d = order as usize;
     let mut a = vec![Rational::from(0); d + 1];
-    for (&k, v) in &shifts {
-        a[k as usize] = v.clone();
+    for (&o, c) in &by_shift {
+        let lag = (i128::from(max_o) - i128::from(o)) as usize;
+        a[lag] += c;
     }
 
     if a[0] == 0 {
@@ -324,7 +350,7 @@ fn extract_recurrence(
     let rhs_expr = if max_o == 0 {
         rhs_expr
     } else {
-        let shifted_n = simp(pool, pool.add(vec![n, pool.integer(-max_o)]));
+        let shifted_n = simp(pool, pool.add(vec![n, pool.integer(-Integer::from(max_o))]));
         let mut m = HashMap::new();
         m.insert(n, shifted_n);
         simp(pool, subs(rhs_expr, &m, pool))
@@ -1076,6 +1102,51 @@ mod tests {
             ExprData::Func { args, .. } => args.iter().any(|&a| has_sym(a, name, pool)),
             _ => false,
         }
+    }
+
+    /// Audit B5/C3: a huge order or an index shift past i64 is refused with
+    /// `E-RSOLVE-004` before anything is sized by it. `f(n+10¹²) − f(n)`
+    /// aborted the process on a 32 TB allocation, `f(n+10¹⁸) − f(n)` hit a
+    /// capacity overflow, and `f(n+1) − f(n−2⁷⁰)` indexed out of bounds.
+    #[test]
+    fn huge_orders_and_shifts_are_refused_before_allocating() {
+        use crate::errors::AlkahestError;
+        let pool = ExprPool::new();
+        let n = pool.symbol("n", Domain::Real);
+        let f = |shift: Integer| pool.func("f", vec![pool.add(vec![n, pool.integer(shift)])]);
+        let minus = |e: ExprId| pool.mul(vec![e, pool.integer(-1_i32)]);
+        let cases = [
+            (Integer::from(10_u64.pow(12)), Integer::from(0)),
+            (Integer::from(10_u64.pow(18)), Integer::from(0)),
+            (Integer::from(1), -(Integer::from(1) << 70u32)),
+            (Integer::from(i64::MAX), Integer::from(i64::MIN)),
+            (Integer::from(RSOLVE_MAX_ORDER + 1), Integer::from(0)),
+        ];
+        for (hi, lo) in cases {
+            let eq = pool.add(vec![f(hi.clone()), minus(f(lo.clone()))]);
+            let err = rsolve(&pool, eq, n, "f", None).unwrap_err();
+            assert_eq!(err.code(), "E-RSOLVE-004", "f(n+{hi}) - f(n+{lo}): {err}");
+        }
+        // A large shift with a small spread is still an ordinary order-1
+        // recurrence: f(n + 10¹²) = 2 f(n + 10¹² − 1).
+        let big = Integer::from(10_u64.pow(12));
+        let eq = pool.add(vec![
+            f(big.clone()),
+            pool.mul(vec![f(big - 1_u32), pool.integer(-2_i32)]),
+        ]);
+        let sol = rsolve(&pool, eq, n, "f", None).expect("order-1 recurrence");
+        assert!(has_sym(sol, "C0", &pool));
+        // The ceiling itself is fine to parse: x^4096 − 1 has roots ±1 and
+        // the leftover is refused as unsupported, not by the order check.
+        let eq = pool.add(vec![
+            f(Integer::from(RSOLVE_MAX_ORDER)),
+            minus(f(Integer::from(0))),
+        ]);
+        let err = rsolve(&pool, eq, n, "f", None).unwrap_err();
+        assert!(
+            !err.to_string().contains("exceeds the supported maximum"),
+            "{err}"
+        );
     }
 
     #[test]

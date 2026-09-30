@@ -41,7 +41,7 @@ The extraction step minimizes a cost function over e-class representatives. Thre
 The e-graph runs until saturation (no new e-class merges) or until a limit is hit:
 
 - **`node_limit`** — maximum number of e-nodes. Once reached, saturation stops and extraction runs on the current state.
-- **`iter_limit`** — maximum number of saturation rounds.
+- **`iter_limit`** — maximum number of saturation rounds per phase: every `(run …)` step of the schedule runs at most this many rounds (`0` runs no rewrite rules).
 
 For large or complex expressions, saturation can be expensive. The rule-based `simplify` is often sufficient and should be preferred on hot paths.
 

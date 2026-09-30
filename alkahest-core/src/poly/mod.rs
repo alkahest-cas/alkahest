@@ -17,6 +17,8 @@ pub mod partial_fractions;
 pub mod puiseux;
 pub mod rational;
 pub mod residue;
+// Size pre-flight for polynomial powers, before FLINT/GMP allocate
+pub(crate) mod size;
 // V2-2 — Resultants and subresultant PRS
 pub mod resultant;
 // V2-4 — Real root isolation (VAS)

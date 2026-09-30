@@ -78,6 +78,117 @@ CASES = [
     ),
 ]
 
+# Audit B5/C3: a recurrence order or index shift nobody can allocate for.
+# `f(n + 10**12) - f(n)` asked Rust for a 32 TB vector (abort, even under a
+# memory budget), `10**18` overflowed the capacity computation, and a shift
+# past i64 indexed out of bounds.
+RSOLVE = "p = a.ExprPool(); n = p.symbol('n'); f = lambda e: p.func('f', [e])\n"
+CASES += [
+    (
+        "rsolve_shift_1e12",
+        RSOLVE + "a.rsolve(f(n + p.integer(10**12)) - f(n), n, 'f')",
+        "RsolveError",
+        "E-RSOLVE-004",
+    ),
+    (
+        "rsolve_shift_1e12_budget",
+        RSOLVE + "with a.context(budget=a.Budget(max_bytes=10**9)):\n"
+        "    a.rsolve(f(n + p.integer(10**12)) - f(n), n, 'f')",
+        "RsolveError",
+        "E-RSOLVE-004",
+    ),
+    (
+        "rsolve_shift_1e18",
+        RSOLVE + "a.rsolve(f(n + p.integer(10**18)) - f(n), n, 'f')",
+        "RsolveError",
+        "E-RSOLVE-004",
+    ),
+    (
+        "rsolve_shift_neg_2e70",
+        RSOLVE + "a.rsolve(f(n + p.integer(1)) - f(n - p.integer(2**70)), n, 'f')",
+        "RsolveError",
+        "E-RSOLVE-004",
+    ),
+]
+
+# Audit B6: with no input variables nothing bounds the output buffer, and
+# `call_batch_raw([], 0, 2**40)` asked for 8 TiB.
+BATCH = "p = a.ExprPool(); fn = a.compile_expr(p.integer(5), [])\n"
+CASES += [
+    (
+        "batch_raw_2e40",
+        BATCH + "fn.call_batch_raw([], 0, 2**40)",
+        "BudgetExceededError",
+        "E-BUDGET-",
+    ),
+    (
+        "batch_raw_2e62",
+        BATCH + "fn.call_batch_raw([], 0, 2**62)",
+        "BudgetExceededError",
+        "E-BUDGET-",
+    ),
+    (
+        "batch_raw_budget",
+        BATCH + "with a.context(budget=a.Budget(max_bytes=10**6)):\n"
+        "    fn.call_batch_raw([], 0, 10**7)",
+        "BudgetExceededError",
+        "E-BUDGET-",
+    ),
+]
+if hasattr(alkahest.CompiledFn, "call_batch_raw_par"):
+    CASES.append(
+        (
+            "batch_raw_par_2e40",
+            BATCH + "fn.call_batch_raw_par([], 0, 2**40)",
+            "BudgetExceededError",
+            "E-BUDGET-",
+        )
+    )
+
+
+def _physical_memory() -> int | None:
+    try:
+        return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    except (ValueError, OSError, AttributeError):
+        return None
+
+
+# A genuine binomial to a moderate power: `(x + 1)**(2**21)` has two million
+# coefficients of up to two million bits — half a terabyte — and went straight
+# to FLINT. Only a refusal where the machine is smaller than that.
+POLY = "p = a.ExprPool(); x = p.symbol('x'); y = p.symbol('y')\n"
+_mem = _physical_memory()
+if _mem is not None and _mem < 1 << 39:
+    CASES += [
+        (
+            "unipoly_binomial_2e21",
+            POLY + "a.UniPoly.from_symbolic((x + 1) ** (2**21), x)",
+            "ConversionError",
+            "E-POLY-004",
+        ),
+        (
+            "unipoly_pow_binomial_2e21",
+            POLY + "a.UniPoly.from_symbolic(x + 1, x) ** (2**21)",
+            "ConversionError",
+            "E-POLY-004",
+        ),
+    ]
+CASES += [
+    (
+        "multipoly_trinomial_2e16",
+        POLY + "a.MultiPoly.from_symbolic((x + y + 1) ** (2**16), [x, y])",
+        "ConversionError",
+        "E-POLY-004",
+    ),
+    (
+        "unipoly_binomial_budget",
+        POLY + "with a.context(budget=a.Budget(max_bytes=10**6)):\n"
+        "    a.UniPoly.from_symbolic((x + 1) ** 4096, x)",
+        "ConversionError",
+        "E-POLY-004",
+    ),
+]
+
 
 def _run(snippet: str) -> subprocess.CompletedProcess:
     code = (

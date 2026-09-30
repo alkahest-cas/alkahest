@@ -125,3 +125,26 @@ class TestEgraphConfig:
         expr = x + pool.integer(0)
         result = simplify_egraph_with(expr, cfg)
         assert str(result.value) == "x"
+
+    @needs_egraph
+    @pytest.mark.parametrize("limit", [1, 20, 10**6])
+    def test_iter_limit_is_accepted(self, pool, x, limit):
+        """Audit C2: any ``iter_limit`` raised ``PanicException: Unknown option
+        'iteration_limit'`` — the cap was emitted as an egglog ``set-option``
+        that egglog 0.4 does not have. A cap at or above the phase counts
+        changes nothing."""
+        cfg = EgraphConfig(iter_limit=limit)
+        assert cfg.iter_limit == limit
+        result = simplify_egraph_with(sin(x) ** 2 + cos(x) ** 2, cfg)
+        if limit >= 3:
+            assert str(result.value) == "1"
+        assert str(simplify_egraph_with(x + pool.integer(0), cfg).value) == "x"
+
+    @needs_egraph
+    def test_iter_limit_zero_runs_no_rewrite_round(self, pool, x):
+        """The cap is honoured, not just parsed: ``iter_limit=0`` caps every
+        ``(run …)`` step at zero rounds, so the Pythagorean identity never
+        fires."""
+        cfg = EgraphConfig(iter_limit=0)
+        result = simplify_egraph_with(sin(x) ** 2 + cos(x) ** 2, cfg)
+        assert str(result.value) != "1"

@@ -191,7 +191,29 @@ fn termmap_mul(a: &TermMap, b: &TermMap) -> Result<TermMap, ConversionError> {
     termmap_mul_schoolbook(a, b)
 }
 
+/// Refuse `base^n` when its estimated size — at most `C(n + len − 1, len − 1)`
+/// terms (and no more than the dense box of exponents allows), each with a
+/// coefficient of up to `n·log₂‖base‖₁` bits — would not fit the machine or
+/// the active memory budget. FLINT aborts, and the schoolbook loop is killed,
+/// rather than failing on such a power.
+fn check_termmap_pow_size(base: &TermMap, n: u32) -> Result<(), ConversionError> {
+    if n < 2 || base.is_empty() {
+        return Ok(());
+    }
+    let nvars = termmap_nvars(base).max(1);
+    let dense_box = max_exponents(base, nvars)
+        .iter()
+        .fold(1.0_f64, |acc, &e| acc * (e as f64 * f64::from(n) + 1.0));
+    let terms = super::size::power_term_bound(base.len(), n, dense_box);
+    let bits = f64::from(n) * super::size::log2_l1_norm(base.values());
+    // Per term: the exponent vector's heap slots and header, the `Integer`
+    // header, and the B-tree's share.
+    let per_term = 4 * nvars as u64 + 64;
+    super::size::check_power_size(terms, bits, per_term)
+}
+
 fn termmap_pow(base: &TermMap, n: u32) -> Result<TermMap, ConversionError> {
+    check_termmap_pow_size(base, n)?;
     let work = (base.len() as u64).saturating_pow(n);
     if n >= 2 && base.len() >= 2 && work >= FLINT_POW_MIN_WORK {
         if let Some(r) = termmap_pow_flint(base, n) {
@@ -239,6 +261,7 @@ impl MultiBuild {
         if self.fast {
             termmap_pow(base, n)
         } else {
+            check_termmap_pow_size(base, n)?;
             termmap_pow_schoolbook(base, n)
         }
     }
@@ -812,6 +835,38 @@ mod tests {
         let x = p.symbol("x", Domain::Real);
         let y = p.symbol("y", Domain::Real);
         (p, x, y)
+    }
+
+    /// `(x + y + 1)^n` has `C(n + 2, 2)` terms with coefficients of up to
+    /// `n·log₂3` bits; FLINT's `fmpz_mpoly_pow_ui` (and the schoolbook loop
+    /// under it) aborted or were OOM-killed on one that could not fit. The
+    /// power is now sized first and refused with `E-POLY-004`.
+    #[test]
+    fn multinomial_power_past_memory_is_refused_before_allocating() {
+        let (p, x, y) = pool_xy();
+        let base = p.add(vec![x, y, p.integer(1_i32)]);
+        // ~2^31 terms of ~13 KB each: tens of terabytes on any machine.
+        let huge = p.pow(base, p.integer(1_u32 << 16));
+        assert_eq!(
+            MultiPoly::from_symbolic(huge, vec![x, y], &p).err(),
+            Some(ConversionError::ExponentTooLarge)
+        );
+        // A power that fits still converts: (x + y + 1)^3 has 10 terms.
+        let small = p.pow(base, p.integer(3_i32));
+        assert_eq!(
+            MultiPoly::from_symbolic(small, vec![x, y], &p)
+                .unwrap()
+                .terms
+                .len(),
+            10
+        );
+        // Under a 1 MiB budget a ~7 MiB power is refused.
+        let mid = p.pow(base, p.integer(300_i32));
+        let _g = crate::budget::enter_with_memory(crate::budget::Budget::default(), Some(1 << 20));
+        assert_eq!(
+            MultiPoly::from_symbolic(mid, vec![x, y], &p).err(),
+            Some(ConversionError::ExponentTooLarge)
+        );
     }
 
     #[test]

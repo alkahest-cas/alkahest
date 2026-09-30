@@ -295,6 +295,12 @@ fn guard_depth(pool: &ExprPool, id: ExprId) -> PyResult<()> {
     alkahest_core::check_expr_depth(pool, id).map_err(depth_error_to_py)
 }
 
+/// [`guard_depth`] for every expression in `ids`: the first one past the
+/// ceiling is refused.
+fn guard_depth_all(pool: &ExprPool, ids: &[ExprId]) -> PyResult<()> {
+    ids.iter().try_for_each(|&id| guard_depth(pool, id))
+}
+
 /// [`guard_depth`] for an expression still wrapped in its `PyExpr`.
 fn guard_expr_depth(py: Python<'_>, expr: &PyExpr) -> PyResult<()> {
     guard_depth(&expr.pool.borrow(py).inner, expr.id)
@@ -4410,6 +4416,7 @@ impl PyUniPoly {
     fn from_symbolic(py: Python<'_>, expr: PyRef<PyExpr>, var: PyRef<PyExpr>) -> PyResult<Self> {
         same_pool!("UniPoly.from_symbolic"; expr, var);
         let pool = expr.pool.borrow(py);
+        guard_depth(&pool.inner, expr.id)?;
         UniPoly::from_symbolic(expr.id, var.id, &pool.inner)
             .map(|p| PyUniPoly { inner: p })
             .map_err(conv_error_to_py)
@@ -4607,6 +4614,7 @@ impl PyMultiPoly {
     ) -> PyResult<Self> {
         same_pool!("MultiPoly.from_symbolic"; expr, vars);
         let pool = expr.pool.borrow(py);
+        guard_depth(&pool.inner, expr.id)?;
         let var_ids: Vec<_> = match vars {
             Some(v) => v.iter().map(|v| v.id).collect(),
             None => alkahest_core::collect_free_vars(expr.id, &pool.inner),
@@ -4790,6 +4798,7 @@ impl PyRationalFunction {
         same_pool!("RationalFunction.from_symbolic"; numer, denom, vars);
         let var_ids: Vec<_> = vars.iter().map(|v| v.id).collect();
         let pool = numer.pool.borrow(py);
+        guard_depth_all(&pool.inner, &[numer.id, denom.id])?;
         RationalFunction::from_symbolic(numer.id, denom.id, var_ids, &pool.inner)
             .map(|r| PyRationalFunction {
                 inner: r,
@@ -4934,6 +4943,7 @@ fn py_integrate_definite(
     same_pool!("integrate_definite"; expr, var, lower, upper);
     let derived = {
         let pool = expr.pool.borrow(py);
+        guard_depth_all(&pool.inner, &[expr.id, var.id, lower.id, upper.id])?;
         // GIL released for the core call; see `py_integrate`.
         let (id, var_id, lo, hi, pool) = (expr.id, var.id, lower.id, upper.id, &pool.inner);
         py.allow_threads(|| core_integrate_definite(id, var_id, lo, hi, pool))
@@ -5256,7 +5266,7 @@ fn py_series(
     let point_id = coerce_substituent(&pool_py, point, py)?;
     let id = {
         let pool_ref = pool_py.borrow(py);
-        guard_depth(&pool_ref.inner, expr.id)?;
+        guard_depth_all(&pool_ref.inner, &[expr.id, var.id, point_id])?;
         checked_order("series order", order as usize)?;
         // GIL released for the core call, like `limit` and `integrate`: the
         // coefficient loop honours `Budget`, and a `request_cancel()` from
@@ -5292,7 +5302,7 @@ fn py_limit(
     let d = parse_limit_direction(dir);
     let id = {
         let pool_ref = pool_py.borrow(py);
-        guard_depth(&pool_ref.inner, expr.id)?;
+        guard_depth_all(&pool_ref.inner, &[expr.id, var.id, point.id])?;
         // Bind out of the `PyRef` first: it carries a `Python` marker and so is
         // not `Sync`, but the pool and ids themselves are safe to send.
         let (id, var_id, point_id, pool) = (expr.id, var.id, point.id, &pool_ref.inner);
@@ -5435,6 +5445,8 @@ fn py_dsolve(
             derivs: derivs.iter().map(|e| e.id).collect(),
             equation: equation.id,
         };
+        guard_depth_all(&pool.inner, &[input.equation, input.x, input.y])?;
+        guard_depth_all(&pool.inner, &input.derivs)?;
         let ctx = assumptions.as_ref().map_or(&empty, |a| &a.inner);
         core_dsolve_with(&input, ctx, &pool.inner).map_err(dsolve_error_to_py)?
     };
@@ -5818,6 +5830,7 @@ fn py_laplace_transform(
     let pool_py = f.pool.clone_ref(py);
     let id = {
         let pool = pool_py.borrow(py);
+        guard_depth_all(&pool.inner, &[f.id, t.id, s.id])?;
         let out = core_laplace(f.id, t.id, s.id, &pool.inner);
         capture_transform_side_conditions(&pool.inner);
         out.map_err(laplace_error_to_py)?
@@ -5838,6 +5851,7 @@ fn py_inverse_laplace_transform(
     let pool_py = big_f.pool.clone_ref(py);
     let id = {
         let pool = pool_py.borrow(py);
+        guard_depth_all(&pool.inner, &[big_f.id, s.id, t.id])?;
         let out = core_ilaplace(big_f.id, s.id, t.id, &pool.inner);
         capture_transform_side_conditions(&pool.inner);
         out.map_err(laplace_error_to_py)?
@@ -5932,6 +5946,7 @@ fn py_fourier_transform(
     let pool_py = f.pool.clone_ref(py);
     let id = {
         let pool = pool_py.borrow(py);
+        guard_depth_all(&pool.inner, &[f.id, x.id, xi.id])?;
         let out = core_fourier_transform(f.id, x.id, xi.id, &pool.inner);
         capture_transform_side_conditions(&pool.inner);
         out.map_err(fourier_error_to_py)?
@@ -5952,6 +5967,7 @@ fn py_inverse_fourier_transform(
     let pool_py = g.pool.clone_ref(py);
     let id = {
         let pool = pool_py.borrow(py);
+        guard_depth_all(&pool.inner, &[g.id, xi.id, x.id])?;
         let out = core_ifourier(g.id, xi.id, x.id, &pool.inner);
         capture_transform_side_conditions(&pool.inner);
         out.map_err(fourier_error_to_py)?
@@ -5972,6 +5988,7 @@ fn py_z_transform(
     let pool_py = a.pool.clone_ref(py);
     let id = {
         let pool = pool_py.borrow(py);
+        guard_depth_all(&pool.inner, &[a.id, n.id, z.id])?;
         core_ztransform(a.id, n.id, z.id, &pool.inner).map_err(ztransform_error_to_py)?
     };
     Ok(PyExpr { id, pool: pool_py })
@@ -5990,6 +6007,7 @@ fn py_inverse_z_transform(
     let pool_py = big_x.pool.clone_ref(py);
     let id = {
         let pool = pool_py.borrow(py);
+        guard_depth_all(&pool.inner, &[big_x.id, z.id, n.id])?;
         let out = core_iztransform(big_x.id, z.id, n.id, &pool.inner);
         capture_transform_side_conditions(&pool.inner);
         out.map_err(ztransform_error_to_py)?
@@ -6018,6 +6036,7 @@ fn py_multilimit(
     let pool_py = f.pool.clone_ref(py);
     let result = {
         let pool = pool_py.borrow(py);
+        guard_depth_all(&pool.inner, &[f.id, x.id, y.id, a.id, b.id])?;
         core_multilimit(f.id, x.id, y.id, a.id, b.id, &pool.inner)
     };
     let d = PyDict::new_bound(py);
@@ -6074,6 +6093,7 @@ fn py_asymptotic_expand(
     let pool_py = f.pool.clone_ref(py);
     let terms = {
         let pool = pool_py.borrow(py);
+        guard_depth_all(&pool.inner, &[f.id, var.id])?;
         core_asymptotic_expand(f.id, var.id, n_terms, &pool.inner)
             .map_err(asymptotic_error_to_py)?
             .term_exprs()
@@ -6294,7 +6314,7 @@ fn py_puiseux_series(
     let point_id = coerce_substituent(&pool_py, point, py)?;
     let px = {
         let pool_ref = pool_py.borrow(py);
-        guard_depth(&pool_ref.inner, expr.id)?;
+        guard_depth_all(&pool_ref.inner, &[expr.id, var.id, point_id])?;
         checked_order("puiseux order", order as usize)?;
         // GIL released for the core call, like `series`: the expander honours
         // `Budget`, and a `request_cancel()` from another Python thread cannot
@@ -6339,6 +6359,7 @@ fn py_series_solve(
     same_pool!("series_solve"; x, p, q, r, x0);
     let pool_py = x.pool.clone_ref(py);
     let pool = pool_py.borrow(py);
+    guard_depth_all(&pool.inner, &[x.id, p.id, q.id, r.id, x0.id])?;
     let ode = CoreSeriesOde::new(x.id, p.id, q.id, r.id);
     let result =
         core_series_solve(&ode, x0.id, order, &pool.inner).map_err(series_solve_error_to_py)?;
@@ -6420,7 +6441,7 @@ fn py_sum_definite(
     same_pool!("sum_definite"; expr, k, lo, hi);
     let derived = {
         let pool = expr.pool.borrow(py);
-        guard_depth(&pool.inner, expr.id)?;
+        guard_depth_all(&pool.inner, &[expr.id, k.id, lo.id, hi.id])?;
         let (id, k_id, lo_id, hi_id, pool) = (expr.id, k.id, lo.id, hi.id, &pool.inner);
         py.allow_threads(|| core_sum_definite(id, k_id, lo_id, hi_id, pool))
             .map_err(sum_error_to_py)?
@@ -6565,6 +6586,7 @@ fn py_verify_wz_pair(
     same_pool!("verify_wz_pair"; f, g, n, k);
     let _ = py;
     let pool = f.pool.borrow(py);
+    guard_depth_all(&pool.inner, &[f.id, g.id, n.id, k.id])?;
     let pair = WzPair { f: f.id, g: g.id };
     Ok(core_verify_wz_pair(&pair, n.id, k.id, &pool.inner))
 }
@@ -7118,6 +7140,10 @@ fn py_zeilberger(
             core_natural_limits(n.id, &pool.inner)
         }
     };
+    guard_depth_all(
+        &pool_py.borrow(py).inner,
+        &[term.id, n.id, k.id, limits.0, limits.1],
+    )?;
     let (
         order,
         order_is_minimal,
@@ -7716,6 +7742,7 @@ fn py_q_zeilberger(
     };
     let (cert, derivation) = {
         let pool = pool_py.borrow(py);
+        guard_depth_all(&pool.inner, &[term.id, q.id, n.id, k.id])?;
         let derived = core_q_zeilberger(term.id, q.id, n.id, k.id, &pool.inner, &opts)
             .map_err(q_holonomic_error_to_py)?;
         let derivation = derived.log.display_with(&pool.inner).to_string();
@@ -7949,6 +7976,7 @@ fn py_telescope2d(
     };
     let result = {
         let pool = pool_py.borrow(py);
+        guard_depth_all(&pool.inner, &[term.id, n.id, j.id, k.id])?;
         core_telescope2d_search(term.id, n.id, j.id, k.id, &pool.inner, &opts)
             .map_err(telescoping2d_error_to_py)?
     };
@@ -8171,6 +8199,10 @@ fn py_telescope_md(
     };
     let result = {
         let pool = pool_py.borrow(py);
+        guard_depth_all(&pool.inner, &[term.id, n.id])?;
+        for e in &indices {
+            guard_depth(&pool.inner, e.id)?;
+        }
         core_telescope_md_search(term.id, n.id, &index_ids, &pool.inner, &opts)
             .map_err(telescoping2d_error_to_py)?
     };
@@ -8314,6 +8346,7 @@ fn py_euler_maclaurin(
     let pool_py = summand.pool.clone_ref(py);
     let r = {
         let pool = pool_py.borrow(py);
+        guard_depth_all(&pool.inner, &[summand.id, k.id, n.id])?;
         core_euler_maclaurin(summand.id, k.id, a, n.id, corrections, &pool.inner)
             .map_err(asymptotic_error_to_py)?
     };
@@ -8358,6 +8391,7 @@ fn py_coefficient_asymptotics(
     let pool_py = gf.pool.clone_ref(py);
     let r = {
         let pool = pool_py.borrow(py);
+        guard_depth_all(&pool.inner, &[gf.id, z.id, n.id])?;
         core_coefficient_asymptotics(gf.id, z.id, n.id, &pool.inner)
             .map_err(asymptotic_error_to_py)?
     };
@@ -8793,6 +8827,11 @@ fn py_asymptotics_from_recurrence(
     let mut coeff_ids = Vec::with_capacity(coeffs.len());
     for (i, c) in coeffs.iter().enumerate() {
         coeff_ids.push(coerce_recurrence_coefficient(py, &pool_py, n.id, c, i)?);
+    }
+    {
+        let pool = pool_py.borrow(py);
+        guard_depth(&pool.inner, n.id)?;
+        guard_depth_all(&pool.inner, &coeff_ids)?;
     }
     let mut exact_terms = Vec::new();
     for (i, t) in terms.unwrap_or_default().iter().enumerate() {
@@ -9596,6 +9635,7 @@ impl PyMatrix {
         py: Python<'_>,
     ) -> PyResult<(PyExpr, PyExpr)> {
         let pool = self.pool.borrow(py);
+        guard_depth_all(&pool.inner, self.inner.entries())?;
         // GIL released for the core call; see `py_integrate`.
         let (inner, pool_ref) = (&self.inner, &pool.inner);
         let (poly, lam) = py
@@ -9615,6 +9655,7 @@ impl PyMatrix {
     /// Dictionary mapping each eigenvalue expression to its algebraic multiplicity.
     fn eigenvals(&self, py: Python<'_>) -> PyResult<PyObject> {
         let pool = self.pool.borrow(py);
+        guard_depth_all(&pool.inner, self.inner.entries())?;
         // GIL released for the core call; see `py_integrate`.
         let (inner, pool_ref) = (&self.inner, &pool.inner);
         let pairs = py
@@ -9636,6 +9677,7 @@ impl PyMatrix {
     /// SymPy-style triples `(eigenvalue, multiplicity, [column eigenvectors …])`.
     fn eigenvects(&self, py: Python<'_>) -> PyResult<Vec<(PyExpr, usize, Vec<PyMatrix>)>> {
         let pool = self.pool.borrow(py);
+        guard_depth_all(&pool.inner, self.inner.entries())?;
         // GIL released for the core call; see `py_integrate`.
         let (inner, pool_ref) = (&self.inner, &pool.inner);
         let triples = py
@@ -9665,6 +9707,7 @@ impl PyMatrix {
     /// `(P, D)` with `M @ P == P @ D` when the matrix is diagonalizable.
     fn diagonalize(&self, py: Python<'_>) -> PyResult<(PyMatrix, PyMatrix)> {
         let pool = self.pool.borrow(py);
+        guard_depth_all(&pool.inner, self.inner.entries())?;
         // GIL released for the core call; see `py_integrate`.
         let (inner, pool_ref) = (&self.inner, &pool.inner);
         let (p, d) = py
@@ -9683,6 +9726,7 @@ impl PyMatrix {
 
     fn nullspace(&self, py: Python<'_>) -> PyResult<Vec<PyMatrix>> {
         let pool = self.pool.borrow(py);
+        guard_depth_all(&pool.inner, self.inner.entries())?;
         // GIL released for the core call; see `py_integrate`.
         let (inner, pool_ref) = (&self.inner, &pool.inner);
         let bas = py
@@ -9700,6 +9744,7 @@ impl PyMatrix {
 
     fn rank(&self, py: Python<'_>) -> PyResult<usize> {
         let pool = self.pool.borrow(py);
+        guard_depth_all(&pool.inner, self.inner.entries())?;
         self.inner
             .rank(&pool.inner)
             .map_err(linear_algebra_error_to_py)
@@ -9707,6 +9752,7 @@ impl PyMatrix {
 
     fn rref(&self, py: Python<'_>) -> PyResult<PyMatrix> {
         let pool = self.pool.borrow(py);
+        guard_depth_all(&pool.inner, self.inner.entries())?;
         // GIL released for the core call; see `py_integrate`.
         let (inner, pool_ref) = (&self.inner, &pool.inner);
         let r = py
@@ -9721,6 +9767,7 @@ impl PyMatrix {
 
     fn column_space(&self, py: Python<'_>) -> PyResult<Vec<PyMatrix>> {
         let pool = self.pool.borrow(py);
+        guard_depth_all(&pool.inner, self.inner.entries())?;
         // GIL released for the core call; see `py_integrate`.
         let (inner, pool_ref) = (&self.inner, &pool.inner);
         let bas = py
@@ -9738,6 +9785,7 @@ impl PyMatrix {
 
     fn row_space(&self, py: Python<'_>) -> PyResult<Vec<PyMatrix>> {
         let pool = self.pool.borrow(py);
+        guard_depth_all(&pool.inner, self.inner.entries())?;
         // GIL released for the core call; see `py_integrate`.
         let (inner, pool_ref) = (&self.inner, &pool.inner);
         let bas = py
@@ -9755,6 +9803,7 @@ impl PyMatrix {
 
     fn lu(&self, py: Python<'_>) -> PyResult<(PyMatrix, PyMatrix, Vec<usize>)> {
         let pool = self.pool.borrow(py);
+        guard_depth_all(&pool.inner, self.inner.entries())?;
         // GIL released for the core call; see `py_integrate`.
         let (inner, pool_ref) = (&self.inner, &pool.inner);
         let lu = py
@@ -9777,6 +9826,7 @@ impl PyMatrix {
 
     fn qr(&self, py: Python<'_>) -> PyResult<(PyMatrix, PyMatrix)> {
         let pool = self.pool.borrow(py);
+        guard_depth_all(&pool.inner, self.inner.entries())?;
         // GIL released for the core call; see `py_integrate`.
         let (inner, pool_ref) = (&self.inner, &pool.inner);
         let qr = py
@@ -9798,6 +9848,7 @@ impl PyMatrix {
 
     fn cholesky(&self, py: Python<'_>) -> PyResult<PyMatrix> {
         let pool = self.pool.borrow(py);
+        guard_depth_all(&pool.inner, self.inner.entries())?;
         // GIL released for the core call; see `py_integrate`.
         let (inner, pool_ref) = (&self.inner, &pool.inner);
         let l = py
@@ -9812,6 +9863,7 @@ impl PyMatrix {
 
     fn jordan_form(&self, py: Python<'_>) -> PyResult<(PyMatrix, PyMatrix)> {
         let pool = self.pool.borrow(py);
+        guard_depth_all(&pool.inner, self.inner.entries())?;
         // GIL released for the core call; see `py_integrate`.
         let (inner, pool_ref) = (&self.inner, &pool.inner);
         let (p, j) = py
@@ -9830,6 +9882,7 @@ impl PyMatrix {
 
     fn rational_canonical_form(&self, py: Python<'_>) -> PyResult<(PyMatrix, PyMatrix)> {
         let pool = self.pool.borrow(py);
+        guard_depth_all(&pool.inner, self.inner.entries())?;
         // GIL released for the core call; see `py_integrate`.
         let (inner, pool_ref) = (&self.inner, &pool.inner);
         let (p, c) = py
@@ -9848,6 +9901,7 @@ impl PyMatrix {
 
     fn minimal_polynomial(&self, py: Python<'_>) -> PyResult<PyExpr> {
         let pool = self.pool.borrow(py);
+        guard_depth_all(&pool.inner, self.inner.entries())?;
         // GIL released for the core call; see `py_integrate`.
         let (inner, pool_ref) = (&self.inner, &pool.inner);
         let (poly, _lam) = py
@@ -9874,6 +9928,7 @@ impl PyMatrix {
     /// on is listed by :func:`alkahest.matrix_exp_side_conditions`.
     fn matrix_exp(&self, py: Python<'_>) -> PyResult<PyMatrix> {
         let pool = self.pool.borrow(py);
+        guard_depth_all(&pool.inner, self.inner.entries())?;
         // GIL released for the core call; see `py_integrate`.
         let (inner, pool_ref) = (&self.inner, &pool.inner);
         reset_matrix_exp_side_conditions();
@@ -9896,6 +9951,7 @@ impl PyMatrix {
     /// :func:`alkahest.matrix_inverse_side_conditions`.
     fn inverse(&self, py: Python<'_>) -> PyResult<PyMatrix> {
         let pool = self.pool.borrow(py);
+        guard_depth_all(&pool.inner, self.inner.entries())?;
         // GIL released for the core call; see `py_integrate`.
         let (inner, pool_ref) = (&self.inner, &pool.inner);
         MATRIX_INVERSE_SIDE_CONDITIONS.with(|c| c.borrow_mut().clear());
@@ -10106,6 +10162,12 @@ impl PyODE {
         let rhs_ids: Vec<ExprId> = rhs.iter().map(|e| e.id).collect();
         let ode = {
             let pool = pool_py.borrow(py);
+            // Every analysis of an ODE (autonomy, sensitivities, adjoints,
+            // `dsolve_system`, the integrators) walks its right-hand sides
+            // recursively, so a too-deep one is refused here, once.
+            guard_depth_all(&pool.inner, &rhs_ids)?;
+            guard_depth_all(&pool.inner, &state_ids)?;
+            guard_depth(&pool.inner, time_var.id)?;
             ODE::new(state_ids, rhs_ids, time_var.id, &pool.inner).map_err(ode_error_to_py)?
         };
         Ok(PyODE {
@@ -10116,6 +10178,7 @@ impl PyODE {
 
     fn with_ic(&self, py: Python<'_>, var: PyRef<PyExpr>, value: PyRef<PyExpr>) -> PyResult<PyODE> {
         same_pool!("ODE.with_ic"; self.pool, var, value);
+        guard_depth_all(&self.pool.borrow(py).inner, &[var.id, value.id])?;
         Ok(PyODE {
             inner: self.inner.clone().with_ic(var.id, value.id),
             pool: self.pool.clone_ref(py),
@@ -10407,6 +10470,15 @@ impl PyDAE {
         let eq_ids: Vec<ExprId> = equations.iter().map(|e| e.id).collect();
         let var_ids: Vec<ExprId> = variables.iter().map(|e| e.id).collect();
         let deriv_ids: Vec<ExprId> = derivatives.iter().map(|e| e.id).collect();
+        {
+            // Pantelides, index reduction and Rosenfeld–Gröbner all walk the
+            // equations recursively; refuse a too-deep one up front.
+            let pool = pool_py.borrow(py);
+            guard_depth_all(&pool.inner, &eq_ids)?;
+            guard_depth_all(&pool.inner, &var_ids)?;
+            guard_depth_all(&pool.inner, &deriv_ids)?;
+            guard_depth(&pool.inner, time_var.id)?;
+        }
         let dae = DAE::new(eq_ids, var_ids, deriv_ids, time_var.id);
         Ok(PyDAE {
             inner: dae,
@@ -11174,6 +11246,49 @@ fn compile_tier_name(tier: alkahest_core::CompileTier) -> &'static str {
     }
 }
 
+/// Validate the shape arguments of `call_batch_raw` / `call_batch_raw_par`
+/// before anything is sized by them.
+///
+/// `inputs_flat` must hold exactly `n_vars · n_points` values (the product is
+/// checked: it wraps in release, and a wrapped product that happened to equal
+/// the list length let a `2**63`-long slice range through to panic). The
+/// output buffer holds `n_points` values, and when there are no inputs
+/// nothing else bounds it — `call_batch_raw([], 0, 2**40)` asked for 8 TiB
+/// and aborted the process — so its size is checked against the machine, the
+/// active `Budget(max_bytes=…)` and `RLIMIT_AS` first (`E-BUDGET-*`).
+fn check_batch_raw_shape(
+    inputs_len: usize,
+    n_vars: usize,
+    n_points: usize,
+    n_inputs: usize,
+) -> PyResult<()> {
+    let expected = n_vars.checked_mul(n_points);
+    if expected != Some(inputs_len) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "inputs_flat length {inputs_len} != n_vars({n_vars}) * n_points({n_points})"
+        )));
+    }
+    if n_vars != n_inputs {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "expected {n_inputs} variables, got {n_vars}"
+        )));
+    }
+    // Half a MiB of output or less is not worth a probe.
+    if n_points > 1 << 16 {
+        let bytes = u64::try_from(n_points)
+            .ok()
+            .and_then(|n| n.checked_mul(std::mem::size_of::<f64>() as u64))
+            .unwrap_or(u64::MAX);
+        alkahest_core::budget::preflight_bytes(bytes).map_err(|trip| {
+            Python::with_gil(|py| {
+                let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+                make_structured_err(py, &exc_type, &trip)
+            })
+        })?;
+    }
+    Ok(())
+}
+
 #[pymethods]
 impl PyCompiledFn {
     /// Evaluate at **one point**, given as a single sequence of floats.
@@ -11261,24 +11376,7 @@ impl PyCompiledFn {
         n_vars: usize,
         n_points: usize,
     ) -> PyResult<Vec<f64>> {
-        // Checked: the product wraps in release, and a wrapped product that
-        // happens to equal `inputs_flat.len()` let a `2**63`-long slice range
-        // through to panic a few lines below.
-        let expected = n_vars.checked_mul(n_points);
-        if expected != Some(inputs_flat.len()) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "inputs_flat length {} != n_vars({}) * n_points({})",
-                inputs_flat.len(),
-                n_vars,
-                n_points
-            )));
-        }
-        if n_vars != self.inner.n_inputs {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "expected {} variables, got {}",
-                self.inner.n_inputs, n_vars
-            )));
-        }
+        check_batch_raw_shape(inputs_flat.len(), n_vars, n_points, self.inner.n_inputs)?;
         let cols: Vec<&[f64]> = (0..n_vars)
             .map(|i| &inputs_flat[i * n_points..(i + 1) * n_points])
             .collect();
@@ -11303,24 +11401,7 @@ impl PyCompiledFn {
         n_vars: usize,
         n_points: usize,
     ) -> PyResult<Vec<f64>> {
-        // Checked: the product wraps in release, and a wrapped product that
-        // happens to equal `inputs_flat.len()` let a `2**63`-long slice range
-        // through to panic a few lines below.
-        let expected = n_vars.checked_mul(n_points);
-        if expected != Some(inputs_flat.len()) {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "inputs_flat length {} != n_vars({}) * n_points({})",
-                inputs_flat.len(),
-                n_vars,
-                n_points
-            )));
-        }
-        if n_vars != self.inner.n_inputs {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "expected {} variables, got {}",
-                self.inner.n_inputs, n_vars
-            )));
-        }
+        check_batch_raw_shape(inputs_flat.len(), n_vars, n_points, self.inner.n_inputs)?;
         let cols: Vec<&[f64]> = (0..n_vars)
             .map(|i| &inputs_flat[i * n_points..(i + 1) * n_points])
             .collect();
@@ -14070,6 +14151,8 @@ fn py_cad_project(
     }
     let ids: Vec<ExprId> = polys.iter().map(|e| e.id).collect();
     let bor = pool_py.borrow(py);
+    guard_depth_all(&bor.inner, &ids)?;
+    guard_depth(&bor.inner, elim_var.id)?;
     let out = core_cad_project(ids.as_slice(), elim_var.id, &bor.inner).map_err(cad_error_to_py)?;
     Ok(out
         .into_iter()
@@ -14096,6 +14179,8 @@ fn py_cad_lift(
     }
     let ids: Vec<ExprId> = polys.iter().map(|e| e.id).collect();
     let bor = pool_py.borrow(py);
+    guard_depth_all(&bor.inner, &ids)?;
+    guard_depth(&bor.inner, main_var.id)?;
     let intervals =
         core_cad_lift(ids.as_slice(), main_var.id, &bor.inner).map_err(cad_error_to_py)?;
     Ok(intervals.into_iter().map(core_interval_to_py).collect())
@@ -14125,6 +14210,7 @@ fn py_routh_hurwitz(py: Python<'_>, poly: PyRef<PyExpr>, var: PyRef<PyExpr>) -> 
     }
     let rh = {
         let bor = pool_py.borrow(py);
+        guard_depth_all(&bor.inner, &[poly.id, var.id])?;
         core_routh_hurwitz(poly.id, var.id, &bor.inner).map_err(cad_error_to_py)?
     };
     let first_column: Vec<PyObject> = rh
@@ -14679,6 +14765,7 @@ fn py_expr_to_gbpoly(
     let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
     let inner = {
         let pool = pool_py.borrow(py);
+        guard_depth(&pool.inner, expr.id)?;
         expr_to_gbpoly(expr.id, &var_ids, &pool.inner)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
     };
@@ -14741,6 +14828,7 @@ impl PyGroebnerBasis {
             })?;
             same_pool!("GroebnerBasis"; pool_py, expr.borrow());
             let pool = pool_py.borrow(py);
+            guard_depth(&pool.inner, expr.borrow().id)?;
             return expr_to_gbpoly(expr.borrow().id, &self.var_ids, &pool.inner)
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()));
         }
@@ -14809,6 +14897,7 @@ impl PyGroebnerBasis {
         let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
         let mut gb_polys = Vec::with_capacity(polys.len());
         for p in &polys {
+            guard_depth(&pool.inner, p.id)?;
             let gbp = expr_to_gbpoly(p.id, &var_ids, &pool.inner)
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
             gb_polys.push(gbp);
@@ -14860,6 +14949,7 @@ impl PyGroebnerBasis {
         let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
         let mut gb_polys = Vec::with_capacity(polys.len());
         for p in &polys {
+            guard_depth(&pool.inner, p.id)?;
             let gbp = expr_to_gbpoly(p.id, &var_ids, &pool.inner)
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
             gb_polys.push(gbp);
@@ -15458,6 +15548,7 @@ impl PyParamGroebnerBasis {
             for p in &polys {
                 // Rational in the parameters is fine — that is the coefficient
                 // field.  Only a denominator in a *ring variable* is refused.
+                guard_depth(&pool.inner, p.id)?;
                 let pg = expr_to_param_gbpoly(p.id, &var_ids, &param_ids, &pool.inner)
                     .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
                 gens.push(pg);
@@ -15841,6 +15932,7 @@ impl PyParamGroebnerBasis {
             // Over `Q(params)` a `den**-1` factor in the parameters is an
             // ordinary coefficient, not a non-polynomial — so this accepts the
             // basis's own `to_exprs()` output, which always carries them.
+            guard_depth(&pool.inner, expr.borrow().id)?;
             return expr_to_param_gbpoly(
                 expr.borrow().id,
                 &self.var_ids,
@@ -16430,6 +16522,7 @@ fn py_primary_decomposition(
     let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
     let mut gb_polys = Vec::with_capacity(polys.len());
     for p in &polys {
+        guard_depth(&pool.inner, p.id)?;
         let gbp = expr_to_gbpoly(p.id, &var_ids, &pool.inner)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         gb_polys.push(gbp);
@@ -16483,6 +16576,7 @@ fn py_ideal_radical(
         None => {
             let mut set = std::collections::BTreeSet::new();
             for p in &polys {
+                guard_depth(&pool.inner, p.id)?;
                 for v in alkahest_core::collect_free_vars(p.id, &pool.inner) {
                     set.insert(v);
                 }
@@ -16498,6 +16592,7 @@ fn py_ideal_radical(
     };
     let mut gb_polys = Vec::with_capacity(polys.len());
     for p in &polys {
+        guard_depth(&pool.inner, p.id)?;
         let gbp = expr_to_gbpoly(p.id, &var_ids, &pool.inner)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         gb_polys.push(gbp);
@@ -16775,6 +16870,7 @@ fn py_diophantine(
     let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
     let sol = {
         let pool = pool_py.borrow(py);
+        guard_depth(&pool.inner, equation.id)?;
         core_diophantine(&pool.inner, equation.id, &var_ids)
     }
     .map_err(diophantine_error_to_py)?;
@@ -16815,6 +16911,7 @@ fn py_solve_numerical(
     }
     let pts = {
         let pool = pool_py.borrow(py);
+        guard_depth_all(&pool.inner, &eq_ids)?;
         solve_numerical(&eq_ids, &var_ids, &pool.inner, &opts)
     };
     match pts {
@@ -17291,6 +17388,7 @@ fn py_triangularize(
 
     let result = {
         let pool = pool_py.borrow(py);
+        guard_depth_all(&pool.inner, &eq_ids)?;
         triangularize(eq_ids, var_ids.clone(), &pool.inner)
     };
 
@@ -18185,6 +18283,7 @@ impl PyDistribution {
     fn pdf(&self, py: Python<'_>, x: PyRef<PyExpr>) -> PyResult<PyExpr> {
         same_pool!("Distribution.pdf"; self.pool, x);
         let pool = self.pool.borrow(py);
+        guard_depth(&pool.inner, x.id)?;
         let id = self.inner.pdf(x.id, &pool.inner);
         Ok(PyExpr {
             id,
@@ -18216,6 +18315,7 @@ impl PyDistribution {
     fn cdf(&self, py: Python<'_>, x: PyRef<PyExpr>) -> PyResult<PyExpr> {
         same_pool!("Distribution.cdf"; self.pool, x);
         let id = x.id;
+        self.guard_arg(py, id)?;
         self.derived(py, move |d, pool| d.cdf(id, pool))
     }
 
@@ -18226,6 +18326,7 @@ impl PyDistribution {
     fn quantile(&self, py: Python<'_>, p: PyRef<PyExpr>) -> PyResult<PyExpr> {
         same_pool!("Distribution.quantile"; self.pool, p);
         let id = p.id;
+        self.guard_arg(py, id)?;
         self.derived(py, move |d, pool| d.quantile(id, pool))
     }
 
@@ -18246,6 +18347,7 @@ impl PyDistribution {
     fn characteristic_function(&self, py: Python<'_>, t: PyRef<PyExpr>) -> PyResult<PyExpr> {
         same_pool!("Distribution.characteristic_function"; self.pool, t);
         let id = t.id;
+        self.guard_arg(py, id)?;
         self.derived(py, move |d, pool| core_characteristic_function(d, id, pool))
     }
 
@@ -18284,6 +18386,9 @@ impl PyDistribution {
             }
         }
         let b = base.map(|e| e.id);
+        if let Some(id) = b {
+            self.guard_arg(py, id)?;
+        }
         self.derived(py, move |d, pool| d.entropy(b, pool))
     }
 
@@ -18313,6 +18418,7 @@ impl PyDistribution {
     fn moment_generating_function(&self, py: Python<'_>, t: PyRef<PyExpr>) -> PyResult<PyExpr> {
         same_pool!("Distribution.moment_generating_function"; self.pool, t);
         let id = t.id;
+        self.guard_arg(py, id)?;
         self.derived(py, move |d, pool| d.moment_generating_function(id, pool))
     }
 
@@ -18329,6 +18435,7 @@ impl PyDistribution {
     fn cumulant_generating_function(&self, py: Python<'_>, t: PyRef<PyExpr>) -> PyResult<PyExpr> {
         same_pool!("Distribution.cumulant_generating_function"; self.pool, t);
         let id = t.id;
+        self.guard_arg(py, id)?;
         self.derived(py, move |d, pool| d.cumulant_generating_function(id, pool))
     }
 
@@ -18353,6 +18460,7 @@ impl PyDistribution {
     ) -> PyResult<PyExpr> {
         same_pool!("Distribution.probability_generating_function"; self.pool, z);
         let id = z.id;
+        self.guard_arg(py, id)?;
         self.derived(py, move |d, pool| {
             d.probability_generating_function(id, pool)
         })
@@ -18412,6 +18520,11 @@ impl PyDistribution {
 }
 
 impl PyDistribution {
+    /// Refuse an argument too deeply nested for the recursive routes below.
+    fn guard_arg(&self, py: Python<'_>, id: ExprId) -> PyResult<()> {
+        guard_depth(&self.pool.borrow(py).inner, id)
+    }
+
     fn derived<F>(&self, py: Python<'_>, f: F) -> PyResult<PyExpr>
     where
         F: FnOnce(
@@ -18437,10 +18550,14 @@ impl PyDistribution {
 fn build_dist(
     py: Python<'_>,
     pool: Py<PyExprPool>,
+    params: &[ExprId],
     make: impl FnOnce(&alkahest_core::ExprPool) -> Result<CoreDistribution, CoreProbError>,
 ) -> PyResult<PyDistribution> {
     let inner = {
         let pool_ref = pool.borrow(py);
+        // Parameter validation walks each parameter (is it a positive
+        // constant? a probability?), recursively.
+        guard_depth_all(&pool_ref.inner, params)?;
         make(&pool_ref.inner).map_err(prob_error_to_py)?
     };
     Ok(PyDistribution { inner, pool })
@@ -18459,7 +18576,7 @@ fn py_dist_normal(
 ) -> PyResult<PyDistribution> {
     same_pool!("Normal"; mu, sigma);
     let (a, b) = (mu.id, sigma.id);
-    build_dist(py, mu.pool.clone_ref(py), |p| {
+    build_dist(py, mu.pool.clone_ref(py), &[a, b], |p| {
         CoreDistribution::normal(a, b, p)
     })
 }
@@ -18477,7 +18594,7 @@ fn py_dist_log_normal(
 ) -> PyResult<PyDistribution> {
     same_pool!("LogNormal"; mu, sigma);
     let (a, b) = (mu.id, sigma.id);
-    build_dist(py, mu.pool.clone_ref(py), |p| {
+    build_dist(py, mu.pool.clone_ref(py), &[a, b], |p| {
         CoreDistribution::log_normal(a, b, p)
     })
 }
@@ -18488,7 +18605,7 @@ fn py_dist_log_normal(
 fn py_dist_uniform(py: Python<'_>, a: PyRef<PyExpr>, b: PyRef<PyExpr>) -> PyResult<PyDistribution> {
     same_pool!("Uniform"; a, b);
     let (x, y) = (a.id, b.id);
-    build_dist(py, a.pool.clone_ref(py), |p| {
+    build_dist(py, a.pool.clone_ref(py), &[x, y], |p| {
         CoreDistribution::uniform(x, y, p)
     })
 }
@@ -18498,7 +18615,7 @@ fn py_dist_uniform(py: Python<'_>, a: PyRef<PyExpr>, b: PyRef<PyExpr>) -> PyResu
 #[pyo3(name = "Exponential")]
 fn py_dist_exponential(py: Python<'_>, lam: PyRef<PyExpr>) -> PyResult<PyDistribution> {
     let a = lam.id;
-    build_dist(py, lam.pool.clone_ref(py), |p| {
+    build_dist(py, lam.pool.clone_ref(py), &[a], |p| {
         CoreDistribution::exponential(a, p)
     })
 }
@@ -18515,7 +18632,7 @@ fn py_dist_gamma(
 ) -> PyResult<PyDistribution> {
     same_pool!("Gamma"; k, theta);
     let (a, b) = (k.id, theta.id);
-    build_dist(py, k.pool.clone_ref(py), |p| {
+    build_dist(py, k.pool.clone_ref(py), &[a, b], |p| {
         CoreDistribution::gamma(a, b, p)
     })
 }
@@ -18530,7 +18647,7 @@ fn py_dist_beta(
 ) -> PyResult<PyDistribution> {
     same_pool!("Beta"; alpha, beta);
     let (a, b) = (alpha.id, beta.id);
-    build_dist(py, alpha.pool.clone_ref(py), |p| {
+    build_dist(py, alpha.pool.clone_ref(py), &[a, b], |p| {
         CoreDistribution::beta(a, b, p)
     })
 }
@@ -18540,7 +18657,7 @@ fn py_dist_beta(
 #[pyo3(name = "Bernoulli")]
 fn py_dist_bernoulli(py: Python<'_>, prob: PyRef<PyExpr>) -> PyResult<PyDistribution> {
     let a = prob.id;
-    build_dist(py, prob.pool.clone_ref(py), |p| {
+    build_dist(py, prob.pool.clone_ref(py), &[a], |p| {
         CoreDistribution::bernoulli(a, p)
     })
 }
@@ -18559,7 +18676,7 @@ fn py_dist_binomial(
 ) -> PyResult<PyDistribution> {
     same_pool!("Binomial"; n, prob);
     let (a, b) = (n.id, prob.id);
-    build_dist(py, n.pool.clone_ref(py), |p| {
+    build_dist(py, n.pool.clone_ref(py), &[a, b], |p| {
         CoreDistribution::binomial(a, b, p)
     })
 }
@@ -18569,7 +18686,7 @@ fn py_dist_binomial(
 #[pyo3(name = "Poisson")]
 fn py_dist_poisson(py: Python<'_>, lam: PyRef<PyExpr>) -> PyResult<PyDistribution> {
     let a = lam.id;
-    build_dist(py, lam.pool.clone_ref(py), |p| {
+    build_dist(py, lam.pool.clone_ref(py), &[a], |p| {
         CoreDistribution::poisson(a, p)
     })
 }
@@ -18654,6 +18771,7 @@ fn py_expectation(
     let (fid, vid) = (f.id, var.id);
     let out = {
         let pool_ref = pool_py.borrow(py);
+        guard_depth_all(&pool_ref.inner, &[f.id, var.id])?;
         let out = core_expectation(fid, vid, &dist.inner, &pool_ref.inner);
         // Drained on both paths: a refusal must clear the channel, not leave
         // the previous call's hypotheses readable as this one's.
@@ -18700,6 +18818,7 @@ fn py_expectation_affine(
     let args = affine_args(py, variates)?;
     let out = {
         let pool_ref = pool_py.borrow(py);
+        guard_depth_all(&pool_ref.inner, &[expr.id])?;
         core_expectation_affine(eid, &args, &pool_ref.inner).map_err(prob_error_to_py)?
     };
     Ok(PyExpr {
@@ -18729,6 +18848,7 @@ fn py_variance_affine_independent(
     let args = affine_args(py, variates)?;
     let out = {
         let pool_ref = pool_py.borrow(py);
+        guard_depth_all(&pool_ref.inner, &[expr.id])?;
         core_variance_affine_independent(eid, &args, &pool_ref.inner).map_err(prob_error_to_py)?
     };
     Ok(PyExpr {
@@ -19502,7 +19622,10 @@ impl PyQuaternion {
 fn base_id(d: &PyDistribution, base: Option<PyRef<PyExpr>>) -> PyResult<Option<ExprId>> {
     match base {
         Some(b) if !b.pool.is(&d.pool) => Err(pool_mismatch_err()),
-        Some(b) => Ok(Some(b.id)),
+        Some(b) => {
+            guard_depth(&b.pool.borrow(b.py()).inner, b.id)?;
+            Ok(Some(b.id))
+        }
         None => Ok(None),
     }
 }

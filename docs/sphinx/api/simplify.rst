@@ -139,7 +139,8 @@ E-graph simplification
    Config keys:
 
    - ``node_limit`` (int) — stop after this many e-nodes
-   - ``iter_limit`` (int) — stop after this many saturation rounds
+   - ``iter_limit`` (int) — cap every saturation phase at this many rounds
+     (``0`` runs no rewrite rules)
    - ``cost`` (str) — cost function: ``"size"``, ``"depth"``, ``"op"``, ``"stability"``
 
    Example::
