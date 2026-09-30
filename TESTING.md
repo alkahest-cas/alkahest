@@ -350,8 +350,8 @@ running 16 harnesses at once; the whole suite took 9.5 min wall-clock.
 
 Round 2 (overflow and indexing in the callers of those kernels). Times were
 measured locally with Kani 0.68.0, two harnesses at once; **unmeasured** means
-the local run was stopped before that harness finished, so it is not in the
-PR tier (its name has no `_full_width`) and runs nightly only. Loop-contract
+no run has finished it yet, so it is not in the PR tier (its name has no
+`_full_width`) and runs nightly only. Loop-contract
 (`*_inductive…`) harnesses need `ALKAHEST_KANI_LOOP_CONTRACTS=1 -Z loop-contracts`.
 
 | Harness | Property | Range | Tier | Time |
@@ -366,13 +366,12 @@ PR tier (its name has no `_full_width`) and runs nightly only. Loop-contract
 | `integrate::algebraic::trager_log::…::lcm_u32_no_wrap_large_a` | no panic; a `Some` is a true common multiple | all `a`; `b < 2^4` | nightly | 33 s |
 | `integrate::algebraic::trager_log::…::lcm_u32_is_least_small` | least common multiple, `None` only past `u32::MAX` | `a, b < 2^5` | nightly | 2.8 s |
 | `integrate::risch::exp_case::…::perfect_square_no_overflow_full_width` | no panic / overflow | every `i64` | PR | 6.0 s |
-| `integrate::risch::exp_case::…::perfect_mth_power_no_overflow` | no panic / overflow; a `true` is an exact power | all `d`, all `m` | nightly | unmeasured |
 | `integrate::algebraic::elliptic_output::…::is_squarefree_no_overflow_inductive` | no panic / overflow (loop invariant) | every `i64` | nightly | unmeasured |
 | `integrate::algebraic::elliptic_output::…::is_quartic_radical_no_overflow_inductive` | no panic / overflow (loop invariant) | every `i64` | nightly | unmeasured |
 | `character::dixon::…::distinct_prime_factors_no_overflow_inductive` | no panic / overflow (two loop invariants) | every `u64` | nightly | unmeasured |
 | `holonomic::modular::…::prime_power_in_range_full_width` | no panic / `u128` overflow; `<= 63` rounds; a `Some` is `<= 2^62` | all `p >= 2`; all `u32 e` | PR | 130 s |
 | `holonomic::modular::…::prime_power_exact_small` | `p^e` when it fits, `None` exactly past `2^62` | `2 <= p < 2^8`; `e <= 8` | nightly | 52 s |
-| `holonomic::telescoping2d::search::…::flatten_in_block` | no overflow; index `< box_len^num_axes` | all `box_len >= 1`; `num_axes <= 3` | nightly | unmeasured |
+| `holonomic::telescoping2d::search::…::flatten_in_block_small` | no overflow; index `< box_len^num_axes` | `1 <= box_len < 2^8`; `num_axes <= 3` | nightly | unmeasured |
 | `holonomic::telescoping2d::search::…::flatten_roundtrip_small` | `unflatten ∘ flatten = id` | `1 <= box_len < 2^4`; `num_axes <= 3` | nightly | unmeasured |
 | `real::sos::psd::…::pack_len_exact` | `n(n+1)/2` without overflow, exact | `n < 2^32` | nightly | unmeasured |
 | `eval::program::…::operand_range_no_wrap_full_width` | the range has exactly `len` entries | all `start, len` | PR | 0.04 s |
@@ -401,6 +400,11 @@ PR tier (its name has no `_full_width`) and runs nightly only. Loop-contract
   model of FLINT's documented contract, not FLINT's C code.
 - The value a loop-contract (`*_inductive`) loop computes, beyond its
   invariant. Those values are covered by exhaustive unit tests on small inputs.
+- `is_perfect_mth_power` for every `d` and `m`: the `f64` root estimate and
+  the `checked_pow` chain are nonlinear 64-bit problems that ran the CI runner
+  out of memory. Its fix (`checked_pow`, `saturating_*`) cannot wrap by
+  construction, and unit tests pin the `7^23 (mod 2^64)` case and the powers
+  near `i64::MAX`.
 - That every square is recognised by `is_perfect_square` at full width (a
   symbolic `f64` square root did not finish in 25 minutes); a unit test covers
   the bottom and top `2^16` roots and a stride through the rest.

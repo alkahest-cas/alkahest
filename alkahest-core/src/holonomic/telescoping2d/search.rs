@@ -1043,13 +1043,15 @@ mod verification {
     /// the probe loop) and every exponent is `< box_len`. Then `flatten` does
     /// not overflow and lands inside the certificate block,
     /// `< box_len^num_axes`, so `idx_cert` columns of different `t` never
-    /// overlap. Bounds: every `box_len >= 1`; `num_axes <= 3`, i.e. up to two
-    /// bound indices (more axes only lengthen the fold).
+    /// overlap. Bounds: `1 <= box_len < 2^8`; `num_axes <= 3`, i.e. up to two
+    /// bound indices (more axes only lengthen the fold). An unbounded
+    /// `box_len` makes three chained symbolic 64-bit multiplications, which
+    /// exhausted the CI runner's memory.
     #[kani::proof]
     #[kani::unwind(4)]
-    fn flatten_in_block() {
+    fn flatten_in_block_small() {
         let num_axes: usize = kani::any_where(|n: &usize| *n <= 3);
-        let box_len: usize = kani::any_where(|b: &usize| *b >= 1);
+        let box_len: usize = kani::any_where(|b: &usize| *b >= 1 && *b < 1 << 8);
         let Some(count) = box_len.checked_pow(num_axes as u32) else {
             return;
         };
