@@ -6554,8 +6554,13 @@ mod tests {
         let rs = pool.root_sum(poly, a, body);
         let err = eval_bound(rs, x, pool.pos_infinity(), &pool)
             .expect_err("an unevaluated limit must not be accepted as an endpoint value");
+        // Since `subs` descends into a `RootSum`, `limit` rewrites the summand
+        // instead of handing it back untouched, and what comes back carries the
+        // `0^-1` pole artifact — caught by the non-finite guard rather than
+        // the still-mentions-`x` one.  Either refusal is the point.
+        let msg = format!("{err}");
         assert!(
-            format!("{err}").contains("still depends on"),
+            msg.contains("still depends on") || msg.contains("is not finite"),
             "unexpected error: {err}"
         );
     }
