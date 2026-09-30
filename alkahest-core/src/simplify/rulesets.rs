@@ -1107,7 +1107,6 @@ fn match_root_node(
 
     enum PN {
         Wildcard(String),
-        Integer(i64),
         Symbol(String),
         Add(Vec<ExprId>),
         Mul(Vec<ExprId>),
@@ -1116,7 +1115,6 @@ fn match_root_node(
         Literal,
     }
     enum EN {
-        Integer(i64),
         Symbol(String),
         Add(Vec<ExprId>),
         Mul(Vec<ExprId>),
@@ -1130,17 +1128,19 @@ fn match_root_node(
             PN::Wildcard(name.clone())
         }
         ED::Symbol { name, .. } => PN::Symbol(name.clone()),
-        ED::Integer(n) => PN::Integer(n.0.to_i64().unwrap_or(i64::MIN)),
         ED::Add(v) => PN::Add(v.clone()),
         ED::Mul(v) => PN::Mul(v.clone()),
         ED::Pow { base, exp } => PN::Pow(*base, *exp),
         ED::Func { name, args } => PN::Func(name.clone(), args.clone()),
+        // Integers (and every other literal) fall through to `Literal`, which
+        // matches by node identity — exact, because the pool hash-conses
+        // values.  Comparing through `to_i64()` collapsed every integer past
+        // i64 to one value, so `f(2^64) → 0` rewrote `f(2^70)`.
         _ => PN::Literal,
     });
 
     let en = pool.with(expr, |d| match d {
         ED::Symbol { name, .. } => EN::Symbol(name.clone()),
-        ED::Integer(n) => EN::Integer(n.0.to_i64().unwrap_or(i64::MIN)),
         ED::Add(v) => EN::Add(v.clone()),
         ED::Mul(v) => EN::Mul(v.clone()),
         ED::Pow { base, exp } => EN::Pow(*base, *exp),
@@ -1158,13 +1158,6 @@ fn match_root_node(
                 }
             }
             Some(s)
-        }
-        PN::Integer(pv) => {
-            if matches!(en, EN::Integer(ev) if ev == pv) {
-                Some(subst)
-            } else {
-                None
-            }
         }
         PN::Symbol(pname) => {
             if matches!(en, EN::Symbol(ref ename) if *ename == pname) {
@@ -1564,6 +1557,26 @@ mod tests {
 
     fn p() -> ExprPool {
         ExprPool::new()
+    }
+
+    /// Audit A3: a rule `f(2^64) → 0` rewrote `f(2^70)` because both
+    /// integers compared as `i64::MIN`.
+    #[test]
+    fn pattern_rule_compares_big_integers_exactly() {
+        let pool = p();
+        let lhs = pool.func("f", vec![pool.integer(rug::Integer::from(1) << 64u32)]);
+        let rule = PatternRule::new(Pattern::from_expr(lhs), pool.integer(0_i32));
+        let other = pool.func("f", vec![pool.integer(rug::Integer::from(1) << 70u32)]);
+        assert!(rule.apply(other, &pool).is_none());
+        let r = simplify_with(
+            other,
+            &pool,
+            &[Box::new(rule.clone())],
+            SimplifyConfig::default(),
+        );
+        assert_eq!(r.value, other);
+        let (after, _) = rule.apply(lhs, &pool).expect("the rule's own lhs matches");
+        assert_eq!(after, pool.integer(0_i32));
     }
 
     #[test]
