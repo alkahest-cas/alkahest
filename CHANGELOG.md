@@ -330,6 +330,33 @@
   on a 32-core machine, which is what put the process near its limit;
   `tests/conftest.py` now caps glibc's arena count so the suite's
   address-space footprint no longer scales with the core count.
+- **`subs` captured variables under a binder, rewrote bound variables, and
+  skipped `RootSum`.** `subs(∀y. x + y > 0, {x: y})` gave `∀y. y + y > 0`; the
+  binder is now alpha-renamed to a fresh `y_1` (`∀y_1. y + y_1 > 0`) whenever a
+  substituted value mentions the bound variable, for `Forall`, `Exists` and
+  `RootSum` — the kernel's only binders. A compound key that mentions the bound
+  variable (`subs(∃y. y² > 1, {y²: 0})`) names the outer variable and no longer
+  applies inside the binder. `subs` now descends into a `RootSum`'s polynomial
+  and summand, with its root variable bound in both, so substituting a
+  parameter into an antiderivative such as `∫ dx/(x³+x+1)` no longer returns it
+  unchanged (and unevaluable).
+- **Pattern matching treated every integer past `i64` as the same number.**
+  `match_pattern(X·10²⁰, X·10²¹)` matched, and a rule `f(2⁶⁴) → 0` rewrote
+  `f(2⁷⁰)`, because both the matcher and `PatternRule` compared integer
+  literals through `to_i64()` with a shared fallback value. Numeric literals
+  now match by node identity, which is exact because the pool hash-conses them.
+- **Expressions from different pools were silently mixed.** An `ExprId` only
+  means something inside the pool that interned it, but most entry points read
+  every argument's id against the first argument's pool: `diff(x*y, a_other)`
+  differentiated by `y`, `integrate(x, a_other)` gave `x²/2`,
+  `eval_expr(x, {a_other: 2})` gave `2.0`, `x.pow_expr(y_other)` built `x^x`,
+  and `pool.func`/`pool.forall`/`pool.gt`/… accepted foreign ids. Every Python
+  entry point that takes more than one pool-bound argument (expressions,
+  lists and dicts of them, `DerivedResult`s, rules, matrices, distributions,
+  ODE/DAE systems) now raises `PoolError` (`E-POOL-001`, a `ValueError`)
+  naming the offending argument. A `CompileCache` no longer returns a function
+  compiled from one pool for another pool's expression that shares its ids;
+  it raises instead (`clear()` releases it).
 
 ### Build and packaging
 

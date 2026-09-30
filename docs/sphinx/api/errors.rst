@@ -372,10 +372,15 @@ Exception subclasses
    Code prefix ``E-POOL-*``. ``ExprPool`` misuse: closed pool, cross-pool
    expression mixing, persisted-handle mismatch.
 
-   - ``E-POOL-001`` — an expression from a different pool was passed to
-     ``pool.add`` / ``pool.mul`` / ``pool.func`` (or as ``n`` to
-     ``asymptotics_from_recurrence``). An expression's id only has
-     meaning in the pool that interned it; build every argument from one pool.
+   - ``E-POOL-001`` — arguments from different pools were passed to one
+     call: to an operator, to a pool constructor (``pool.add`` /
+     ``pool.func`` / ``pool.forall`` / ``pool.gt`` …), or to any function
+     or method taking more than one expression (``diff(expr, var)``,
+     ``eval_expr(expr, {var: …})``, ``simplify_with(expr, rules)``,
+     ``Matrix + Matrix`` …). The message names the argument. An expression's
+     id only has meaning in the pool that interned it; build every argument
+     from one pool. A ``CompileCache`` is tied to the pool of its first
+     ``compile`` until ``clear()``.
    - ``E-POOL-002`` — a built-in function name was given the wrong number of
      arguments (``pool.func("sqrt", [])``, ``pool.func("EllipticPi", [x])``).
      Every consumer of a built-in reads its arguments by position, so such a

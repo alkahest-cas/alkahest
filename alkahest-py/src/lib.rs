@@ -13199,14 +13199,15 @@ fn py_piecewise(
     py: Python<'_>,
     branches: Vec<(PyRef<PyExpr>, PyRef<PyExpr>)>,
     default: PyRef<PyExpr>,
-) -> PyExpr {
+) -> PyResult<PyExpr> {
+    same_pool!("piecewise"; default, branches);
     let pool_py = default.pool.clone_ref(py);
     let rust_branches: Vec<(ExprId, ExprId)> = branches.iter().map(|(c, v)| (c.id, v.id)).collect();
     let id = {
         let pool = pool_py.borrow(py);
         pool.inner.piecewise(rust_branches, default.id)
     };
-    PyExpr { id, pool: pool_py }
+    Ok(PyExpr { id, pool: pool_py })
 }
 
 // ---------------------------------------------------------------------------
