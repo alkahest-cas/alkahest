@@ -135,7 +135,10 @@ def test_gf_matrix_under_an_address_space_limit(snippet: str) -> None:
         pytest.fail(f"process killed by {signal.Signals(-r.returncode).name}: {r.stderr[-400:]}")
     out = r.stdout.strip().splitlines()[-1]
     assert out.startswith("RAISED"), out
-    assert "E-BUDGET-005" in out or "E-GFQ-012" in out, out
+    # Which check fires first depends on the machine: E-BUDGET-005 when the
+    # address-space limit is the tighter bound, E-BUDGET-006 when physical
+    # memory is below it (e.g. a CI runner with less than 8 GB).
+    assert "E-BUDGET-005" in out or "E-BUDGET-006" in out or "E-GFQ-012" in out, out
 
 
 def test_factor_mod_p_keeps_the_unit() -> None:
