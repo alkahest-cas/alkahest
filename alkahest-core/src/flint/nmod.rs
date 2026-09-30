@@ -33,6 +33,7 @@ impl FlintNmodPoly {
         // SAFETY: zeroed() gives a valid starting point; nmod_poly_init
         // overwrites every field before any read.
         let mut inner: ffi::NmodPolyStruct = unsafe { std::mem::zeroed() };
+        crate::flint::note_thread_uses_flint();
         unsafe { ffi::nmod_poly_init(&mut inner, modulus) };
         Self { inner }
     }
@@ -104,6 +105,7 @@ impl FlintNmodPolyFactor {
     /// Initialise an empty factor container.
     pub fn new() -> Self {
         let mut inner = std::mem::MaybeUninit::<ffi::NmodPolyFactorStruct>::uninit();
+        crate::flint::note_thread_uses_flint();
         unsafe { ffi::nmod_poly_factor_init(inner.as_mut_ptr()) };
         // SAFETY: `nmod_poly_factor_init` fully initialises the struct.
         Self {

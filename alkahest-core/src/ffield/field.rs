@@ -53,6 +53,7 @@ impl FqCtx {
         // SAFETY: `buf` is a 512-byte aligned allocation; FLINT 3.5.0 writes
         // 160 bytes of `fq_nmod_ctx_struct` into it. `var` outlives the call
         // (FLINT copies the string).
+        crate::flint::note_thread_uses_flint();
         unsafe { ffi::fq_nmod_ctx_init_ui(&mut *buf, p, k, var.as_ptr()) };
         Self { buf }
     }
@@ -62,6 +63,7 @@ impl FqCtx {
         let mut buf = Self::blank();
         // SAFETY: as `conway`; `modulus` is a live `nmod_poly_struct` and FLINT
         // copies it into the context.
+        crate::flint::note_thread_uses_flint();
         unsafe { ffi::fq_nmod_ctx_init_modulus(&mut *buf, modulus, var.as_ptr()) };
         Self { buf }
     }
@@ -500,6 +502,7 @@ impl NmodPoly {
         // SAFETY: `zeroed` is a valid starting point; `nmod_poly_init`
         // overwrites every field before any read.
         let mut inner: ffi::NmodPolyStruct = unsafe { std::mem::zeroed() };
+        crate::flint::note_thread_uses_flint();
         unsafe { ffi::nmod_poly_init(&mut inner, p) };
         Self { inner }
     }

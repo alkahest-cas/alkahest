@@ -20,6 +20,7 @@ unsafe impl Sync for FlintInteger {}
 impl FlintInteger {
     pub fn new() -> Self {
         let mut inner: ffi::fmpz = 0;
+        crate::flint::note_thread_uses_flint();
         unsafe { ffi::fmpz_init(&mut inner) };
         FlintInteger { inner }
     }
@@ -368,6 +369,7 @@ pub(crate) struct FlintIntFactor {
 impl FlintIntFactor {
     pub fn new() -> Self {
         let mut inner = std::mem::MaybeUninit::<ffi::FmpzFactorStruct>::uninit();
+        crate::flint::note_thread_uses_flint();
         unsafe { ffi::fmpz_factor_init(inner.as_mut_ptr()) };
         // SAFETY: `fmpz_factor_init` fully initialises the struct.
         Self {

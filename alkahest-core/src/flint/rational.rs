@@ -26,6 +26,7 @@ impl FlintRational {
     pub(crate) fn new() -> Self {
         let mut inner = ffi::Fmpq { num: 0, den: 0 };
         // SAFETY: `fmpq_init` writes both fields of a live `fmpq`.
+        crate::flint::note_thread_uses_flint();
         unsafe { ffi::fmpq_init(&mut inner) };
         Self { inner }
     }

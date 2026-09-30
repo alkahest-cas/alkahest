@@ -47,6 +47,11 @@
 //! | `nf_t` / `nf_elem_t`    | `numfield::field`          | `nf_clear` / `nf_elem_clear` |
 //!
 //! All raw C pointers are confined to `ffi.rs`; everything above is safe Rust.
+//!
+//! FLINT also keeps **per-thread** caches (the `fmpz` free list above all)
+//! that only `flint_cleanup` releases. Each wrapper's constructor calls
+//! `note_thread_uses_flint`, which arranges for `flint_cleanup` to run when
+//! the thread exits — see `thread_cleanup`. A new wrapper must do the same.
 
 /// Genuine `arb_t` / `acb_t` bindings (FLINT >= 3.1 only; see `build.rs`'s
 /// `flint_arb` probe). Separate from, and with no effect on, the MPFR-backed
@@ -63,9 +68,11 @@ pub(crate) mod nmod;
 pub mod poly;
 pub(crate) mod qgcd;
 pub(crate) mod rational;
+mod thread_cleanup;
 
 pub use integer::FlintInteger;
 pub use poly::FlintPoly;
+pub(crate) use thread_cleanup::note_thread_uses_flint;
 
 /// The factor containers' `*_at(i)` accessors are safe fns over raw FLINT
 /// arrays. Their bounds check used to be a `debug_assert!`, so an index past

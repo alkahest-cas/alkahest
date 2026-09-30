@@ -39,6 +39,7 @@ impl NmodMat {
         // every field before any read, and the dimensions were bounds-checked
         // by the caller (`check_shape`).
         let mut inner: ffi::NmodMatStruct = unsafe { std::mem::zeroed() };
+        crate::flint::note_thread_uses_flint();
         unsafe { ffi::nmod_mat_init(&mut inner, rows as ffi::slong, cols as ffi::slong, p) };
         Self { inner }
     }
@@ -92,6 +93,7 @@ impl FqMat {
         // SAFETY: as `NmodMat::new`; `field` is an extension field, so
         // `ctx_ptr` is live for at least as long as this matrix.
         let mut inner: ffi::FqNmodMatStruct = unsafe { std::mem::zeroed() };
+        crate::flint::note_thread_uses_flint();
         unsafe {
             ffi::fq_nmod_mat_init(
                 &mut inner,
@@ -998,6 +1000,7 @@ impl GfMatrix {
                 let mut coeff = NmodPoly::new(self.field.characteristic());
                 // SAFETY: `buf` is an over-sized aligned allocation for an
                 // `fq_nmod_poly_t` (24 bytes on FLINT 3.5.0); `a` is square.
+                crate::flint::note_thread_uses_flint();
                 let out = unsafe {
                     ffi::fq_nmod_poly_init(&mut buf, ctx);
                     ffi::fq_nmod_mat_charpoly(&mut buf, &a.inner, ctx);

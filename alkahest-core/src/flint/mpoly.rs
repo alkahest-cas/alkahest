@@ -44,6 +44,7 @@ impl FlintMPolyCtx {
     /// and [`FlintMPolyFactor`] instances.
     pub fn new(nvars: usize) -> Arc<Self> {
         let mut buf = Box::new(FmpzMPolyCtxBuf([0u8; 608]));
+        crate::flint::note_thread_uses_flint();
         unsafe {
             super::ffi::fmpz_mpoly_ctx_init(buf.as_mut(), nvars as i64, ORD_LEX);
         }
@@ -91,6 +92,7 @@ impl FlintMPoly {
     /// Create a new zero polynomial in the given context.
     pub fn new(ctx: Arc<FlintMPolyCtx>) -> Self {
         let mut buf = Box::new(FmpzMPolyBuf([0u8; 40]));
+        crate::flint::note_thread_uses_flint();
         unsafe {
             super::ffi::fmpz_mpoly_init(buf.as_mut(), ctx.as_ptr());
         }
@@ -342,6 +344,7 @@ impl FlintMPolyFactor {
     /// Initialise an empty factor container for the given context.
     pub fn new(ctx: Arc<FlintMPolyCtx>) -> Self {
         let mut inner = std::mem::MaybeUninit::<FmpzMPolyFactorStruct>::uninit();
+        crate::flint::note_thread_uses_flint();
         unsafe { super::ffi::fmpz_mpoly_factor_init(inner.as_mut_ptr(), ctx.as_ptr()) };
         // SAFETY: `fmpz_mpoly_factor_init` fully initialises the struct.
         Self {
