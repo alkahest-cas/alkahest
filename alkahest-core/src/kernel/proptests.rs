@@ -81,12 +81,21 @@ mod tests {
             prop_assert_eq!(after_second, after_first);
         }
 
-        /// Round-trip: get(intern(data)) == data.
+        /// Round-trip: get(intern(data)) == data, up to the canonicalisation
+        /// `intern` performs — a rational whose denominator is 1 is stored as
+        /// the integer (#424), so the strategy's `Rational(n/1)` reads back
+        /// as `Integer(n)`.
         #[test]
         fn round_trip(data in atom_data_strategy()) {
             let p = ExprPool::new();
             let id = p.intern(data.clone());
-            prop_assert_eq!(p.get(id), data);
+            let expected = match &data {
+                ExprData::Rational(r) if *r.0.denom() == 1 => ExprData::Integer(
+                    crate::kernel::expr::BigInt(r.0.numer().clone()),
+                ),
+                _ => data,
+            };
+            prop_assert_eq!(p.get(id), expected);
         }
 
         /// Two distinct symbols (different names or domains) produce distinct ids.
