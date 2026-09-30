@@ -4699,7 +4699,7 @@ mod tests {
 
 #[cfg(test)]
 mod perfect_power_tests {
-    use super::is_perfect_square;
+    use super::{is_perfect_mth_power, is_perfect_square};
 
     /// `7^23` wraps to `8922003266371364727` in `i64`. That value is not a
     /// 23rd power (`6^23 < d < 7^23`) and used to be reported as one — the
