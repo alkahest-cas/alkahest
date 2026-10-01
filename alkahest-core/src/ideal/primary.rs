@@ -996,7 +996,7 @@ fn factor_gbpoly_q(p: &GbPoly, order: MonomialOrder) -> Option<Vec<(GbPoly, u32)
         return None;
     }
     let mut out = Vec::with_capacity(fac.len());
-    for i in 0..fac.len() {
+    for i in fac.canonical_order() {
         let base = flint_to_gbpoly(&fac.base_at(i), n);
         let exp = fac.exp_at(i);
         if base.is_zero() || is_constant(&base) {

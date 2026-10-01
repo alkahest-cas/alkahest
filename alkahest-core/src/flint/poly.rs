@@ -393,9 +393,39 @@ impl FlintPoly {
     /// Berlekamp, Zassenhaus combination, van Hoeij LLL, etc.).
     ///
     /// Returns `(unit, factors)` with `self = unit · ∏ fᵢ^eᵢ`.  The zero
-    /// polynomial yields `Err(())`.
+    /// polynomial yields `Err(())`. `unit` carries the content and the sign
+    /// of the leading coefficient; every factor is primitive with a positive
+    /// leading coefficient.
+    ///
+    /// # Factor order
+    ///
+    /// The factors are listed in the canonical order of
+    /// [`crate::poly::factor::cmp_univariate_factors`]: ascending degree, then
+    /// the coefficients compared as signed integers from the leading term
+    /// down, then multiplicity. The order is a function of the factors alone,
+    /// so it does not depend on the FLINT version (FLINT's own order comes
+    /// out of its LLL-based recombination and changed between 3.5 and 3.6).
+    ///
+    /// Binomials `a·x^(k+n) + b·x^k` whose primitive part is `u^n·x^n ± v^n`
+    /// (in particular `x^n ± 1`) are factored directly through cyclotomic
+    /// polynomials instead of by FLINT, with identical factors and unit.
     #[allow(clippy::result_unit_err)]
     pub fn factor_over_z(
+        &self,
+    ) -> Result<(super::integer::FlintInteger, Vec<(FlintPoly, u32)>), ()> {
+        let (unit, mut factors) = match crate::poly::factor::binomial::factor_binomial_z(self) {
+            Some(fast) => fast,
+            None => self.factor_over_z_flint_order()?,
+        };
+        factors.sort_by(crate::poly::factor::cmp_univariate_factors);
+        Ok((unit, factors))
+    }
+
+    /// [`Self::factor_over_z`] straight from `fmpz_poly_factor`, in FLINT's
+    /// order and without the binomial fast path (the reference the fast path
+    /// is tested against).
+    #[allow(clippy::result_unit_err)]
+    pub(crate) fn factor_over_z_flint_order(
         &self,
     ) -> Result<(super::integer::FlintInteger, Vec<(FlintPoly, u32)>), ()> {
         if self.is_zero() {
@@ -409,6 +439,42 @@ impl FlintPoly {
             .map(|i| (fac.poly_at(i), fac.exp_at(i)))
             .collect();
         Ok((unit, factors))
+    }
+
+    /// Compare in the canonical factor order: degree first, then the
+    /// coefficients as signed integers from the leading term down.
+    pub(crate) fn cmp_canonical(&self, other: &Self) -> std::cmp::Ordering {
+        let (la, lb) = (self.length(), other.length());
+        if la != lb {
+            return la.cmp(&lb);
+        }
+        for i in (0..la).rev() {
+            // SAFETY: `i < length` for both polynomials, so both pointers
+            // address initialised coefficients.
+            let c = unsafe { ffi::fmpz_cmp(self.inner.coeffs.add(i), other.inner.coeffs.add(i)) };
+            if c != 0 {
+                return c.cmp(&0);
+            }
+        }
+        std::cmp::Ordering::Equal
+    }
+
+    /// `Some((k, n))` when `self = a·x^(k+n) + b·x^k` with `a, b ≠ 0` and
+    /// `n ≥ 1` — exactly two non-zero coefficients.
+    pub(crate) fn binomial_shape(&self) -> Option<(usize, usize)> {
+        let len = self.length();
+        if len < 2 {
+            return None;
+        }
+        // SAFETY: the coefficient array holds `len` initialised `fmpz`; an
+        // `fmpz` is zero exactly when its word is 0.
+        let coeffs = unsafe { std::slice::from_raw_parts(self.inner.coeffs, len) };
+        let k = coeffs.iter().position(|&c| c != 0)?;
+        let top = len - 1;
+        if k == top || coeffs[k + 1..top].iter().any(|&c| c != 0) {
+            return None;
+        }
+        Some((k, top - k))
     }
 
     /// Swinnerton–Dyer polynomial `S_n` (irreducible over ℚ for prime `n`).

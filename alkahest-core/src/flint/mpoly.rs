@@ -410,6 +410,28 @@ impl FlintMPolyFactor {
         base
     }
 
+    /// The indices `0..len()` in the canonical factor order of
+    /// [`crate::poly::factor::cmp_multivariate_terms`], ties broken by
+    /// ascending multiplicity. FLINT's own order depends on its version and
+    /// internal choices; iterate over this instead of `0..len()`.
+    ///
+    /// Falls back to FLINT's order only if some exponent does not fit in a
+    /// machine word (no such factor can be built from this crate's types).
+    pub fn canonical_order(&mut self) -> Vec<usize> {
+        let n = self.len();
+        let mut keyed = Vec::with_capacity(n);
+        for i in 0..n {
+            let Some(terms) = self.base_at(i).terms_u64() else {
+                return (0..n).collect();
+            };
+            keyed.push((i, terms, self.exp_at(i)));
+        }
+        keyed.sort_by(|a, b| {
+            crate::poly::factor::cmp_multivariate_terms(&a.1, &b.1).then(a.2.cmp(&b.2))
+        });
+        keyed.into_iter().map(|(i, _, _)| i).collect()
+    }
+
     /// Exponent (multiplicity) of the `i`-th factor.
     ///
     /// Note: FLINT's `fmpz_mpoly_factor_get_exp_si` takes `*mut` (despite

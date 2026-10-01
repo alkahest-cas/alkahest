@@ -6,6 +6,8 @@
 //! use `nmod_poly_factor` (Berlekamp / Cantor–Zassenhaus / Kaltofen–Shoup per
 //! FLINT’s internal choice).
 
+pub(crate) mod binomial;
+
 use super::error::FactorError;
 use super::multipoly::{multi_to_flint_pub, MultiPoly};
 use super::unipoly::UniPoly;
@@ -102,6 +104,121 @@ impl MultiPolyFactorization {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Canonical factor order
+// ---------------------------------------------------------------------------
+//
+// FLINT lists factors in whatever order its recombination produced them: for
+// `fmpz_poly_factor` that is decided by the row order of an LLL-reduced
+// lattice, and it differs between FLINT 3.5 and 3.6 (`x^156 − 1`, `x^240 − 1`,
+// …). Every factorisation this crate returns is therefore sorted into the
+// order below, which depends on the factors alone.
+
+/// The canonical order of univariate factors over ℤ: ascending degree, then
+/// the coefficients compared as signed integers from the leading term down,
+/// then ascending multiplicity.
+///
+/// `x^12 − 1` factors as `x − 1, x + 1, x² − x + 1, x² + 1, x² + x + 1,
+/// x⁴ − x² + 1` (the order SymPy's `factor_list` uses for squarefree input).
+/// A factor `x` sits between `x − 1` and `x + 1`.
+pub fn cmp_univariate_factors(a: &(FlintPoly, u32), b: &(FlintPoly, u32)) -> std::cmp::Ordering {
+    a.0.cmp_canonical(&b.0).then(a.1.cmp(&b.1))
+}
+
+/// The canonical order of factors over 𝔽_p (ascending coefficient vectors):
+/// ascending degree, then the residues compared from the leading term down,
+/// then ascending multiplicity.
+pub fn cmp_mod_p_factors(a: &(Vec<u64>, u32), b: &(Vec<u64>, u32)) -> std::cmp::Ordering {
+    a.0.len()
+        .cmp(&b.0.len())
+        .then_with(|| a.0.iter().rev().cmp(b.0.iter().rev()))
+        .then(a.1.cmp(&b.1))
+}
+
+/// Compare exponent vectors lexicographically, a missing trailing entry
+/// counting as 0 (`[1]` and `[1, 0]` are the same monomial).
+fn cmp_exponents<T: Copy + Into<u64>>(a: &[T], b: &[T]) -> std::cmp::Ordering {
+    let n = a.len().max(b.len());
+    for i in 0..n {
+        let x: u64 = a.get(i).map_or(0, |&v| v.into());
+        let y: u64 = b.get(i).map_or(0, |&v| v.into());
+        if x != y {
+            return x.cmp(&y);
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
+/// The terms of `m` with their monomials in descending lexicographic order.
+fn terms_descending<T: Copy + Into<u64>>(
+    m: &std::collections::BTreeMap<Vec<T>, rug::Integer>,
+) -> Vec<(&[T], &rug::Integer)> {
+    let mut v: Vec<(&[T], &rug::Integer)> = m.iter().map(|(e, c)| (e.as_slice(), c)).collect();
+    v.sort_by(|x, y| cmp_exponents(y.0, x.0));
+    v
+}
+
+/// The canonical order of multivariate factors (terms as exponent vector →
+/// coefficient): ascending total degree, then the coefficients compared as
+/// signed integers over the monomials in descending lexicographic order
+/// (variables in ring order; a monomial absent from one side counts as a
+/// zero coefficient there). Multiplicity is the caller's final tiebreak.
+///
+/// `x⁶ − y⁶` factors as `x − y, x + y, x² − x·y + y², x² + x·y + y²`.
+pub fn cmp_multivariate_terms<T: Copy + Into<u64>>(
+    a: &std::collections::BTreeMap<Vec<T>, rug::Integer>,
+    b: &std::collections::BTreeMap<Vec<T>, rug::Integer>,
+) -> std::cmp::Ordering {
+    let total = |m: &std::collections::BTreeMap<Vec<T>, rug::Integer>| {
+        m.keys()
+            .map(|e| e.iter().map(|&v| u128::from(v.into())).sum::<u128>())
+            .max()
+            .unwrap_or(0)
+    };
+    let by_degree = total(a).cmp(&total(b));
+    if by_degree.is_ne() {
+        return by_degree;
+    }
+    let (ta, tb) = (terms_descending(a), terms_descending(b));
+    let zero = rug::Integer::new();
+    let (mut i, mut j) = (0, 0);
+    while i < ta.len() || j < tb.len() {
+        // The larger of the two current monomials; its coefficient on the
+        // side that lacks it is zero.
+        let (ca, cb) = match (ta.get(i), tb.get(j)) {
+            (Some(x), Some(y)) => match cmp_exponents(x.0, y.0) {
+                std::cmp::Ordering::Equal => {
+                    i += 1;
+                    j += 1;
+                    (x.1, y.1)
+                }
+                std::cmp::Ordering::Greater => {
+                    i += 1;
+                    (x.1, &zero)
+                }
+                std::cmp::Ordering::Less => {
+                    j += 1;
+                    (&zero, y.1)
+                }
+            },
+            (Some(x), None) => {
+                i += 1;
+                (x.1, &zero)
+            }
+            (None, Some(y)) => {
+                j += 1;
+                (&zero, y.1)
+            }
+            (None, None) => unreachable!(),
+        };
+        let c = ca.cmp(cb);
+        if c.is_ne() {
+            return c;
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
 /// [`UniPoly::factor_z`](UniPoly::factor_z).
 pub fn factor_univariate_z(p: &UniPoly) -> Result<UniPolyFactorization, FactorError> {
     p.factor_z()
@@ -114,6 +231,13 @@ pub fn factor_multivariate_z(p: &MultiPoly) -> Result<MultiPolyFactorization, Fa
 
 impl UniPoly {
     /// Factor over ℤ using FLINT (`fmpz_poly_factor`).
+    ///
+    /// Factors are primitive with positive leading coefficients, the content
+    /// and sign are in `unit`, and the list is in the canonical order of
+    /// [`cmp_univariate_factors`] (ascending degree, then coefficients from
+    /// the leading term down) — independent of the FLINT version. `x^n ± 1`
+    /// and the binomials `u^n·x^n ± v^n` are factored through cyclotomic
+    /// polynomials without calling FLINT's factoriser.
     pub fn factor_z(&self) -> Result<UniPolyFactorization, FactorError> {
         if self.is_zero() {
             return Err(FactorError::ZeroPolynomial);
@@ -143,6 +267,11 @@ impl UniPoly {
 
 impl MultiPoly {
     /// Factor over ℤ[𝑥₁,…] using FLINT `fmpz_mpoly_factor`.
+    ///
+    /// The factors are in the canonical order of [`cmp_multivariate_terms`]
+    /// (ascending total degree, then coefficients over descending lex
+    /// monomials), then ascending multiplicity — independent of the FLINT
+    /// version.
     pub fn factor_z(&self) -> Result<MultiPolyFactorization, FactorError> {
         if self.is_zero() {
             return Err(FactorError::ZeroPolynomial);
@@ -163,7 +292,7 @@ impl MultiPoly {
 
         let unit = fac.unit().to_rug();
         let mut factors = Vec::with_capacity(fac.len());
-        for i in 0..fac.len() {
+        for i in fac.canonical_order() {
             let base = fac.base_at(i);
             let terms = base.terms();
             let mp = MultiPoly {
@@ -178,6 +307,9 @@ impl MultiPoly {
 }
 
 /// Reduce coefficients mod `p` and factor over 𝔽_p.
+///
+/// The factors are listed in the canonical order of [`cmp_mod_p_factors`]
+/// (ascending degree, then residues from the leading term down).
 ///
 /// The factors are **monic**; the leading coefficient that makes their
 /// product equal the input is dropped here and returned by
@@ -248,7 +380,7 @@ pub fn factor_univariate_mod_p_with_unit(
     let mut fac = FlintNmodPolyFactor::new();
     fac.factor(&poly);
 
-    let factors = (0..fac.len())
+    let mut factors: Vec<(Vec<u64>, u32)> = (0..fac.len())
         .map(|i| {
             let z = fac.poly_at(modulus, i);
             let deg = z.degree();
@@ -256,6 +388,8 @@ pub fn factor_univariate_mod_p_with_unit(
             (vc, fac.exp_at(i))
         })
         .collect();
+    // FLINT's order comes out of randomised equal-degree splitting.
+    factors.sort_by(cmp_mod_p_factors);
 
     Ok((unit, UniPolyFactorModP { modulus, factors }))
 }
@@ -276,6 +410,168 @@ mod tests {
         let prod = fac.expand_with_var(x);
         assert_eq!(prod, p);
         assert!(fac.verifies_product(&p));
+    }
+
+    fn coeffs_of(f: &FlintPoly) -> Vec<i64> {
+        f.coefficients()
+    }
+
+    /// `x^12 − 1` in the documented order (SymPy's `factor_list` order).
+    #[test]
+    fn canonical_order_x12_minus_1() {
+        let f = FlintPoly::from_coefficients(&[-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let (unit, fac) = f.factor_over_z().unwrap();
+        assert_eq!(unit.to_rug(), 1);
+        let got: Vec<Vec<i64>> = fac.iter().map(|(p, _)| coeffs_of(p)).collect();
+        assert_eq!(
+            got,
+            vec![
+                vec![-1, 1],
+                vec![1, 1],
+                vec![1, -1, 1],
+                vec![1, 0, 1],
+                vec![1, 1, 1],
+                vec![1, 0, -1, 0, 1],
+            ]
+        );
+    }
+
+    /// The order is a function of the factors alone: strictly increasing in
+    /// the canonical comparison, and the same whatever order the input was
+    /// multiplied together in — including through FLINT's van Hoeij path,
+    /// whose own order differs between FLINT 3.5 and 3.6 on these inputs.
+    #[test]
+    fn canonical_order_is_independent_of_flint() {
+        let x = FlintPoly::from_coefficients(&[0, 1]);
+        let xp2 = FlintPoly::from_coefficients(&[2, 1]);
+        for n in [156usize, 168, 240] {
+            let mut c = vec![0i64; n + 1];
+            c[0] = -1;
+            c[n] = 1;
+            // Not a binomial, so FLINT factors it (van Hoeij on x^n − 1).
+            let f = &(&FlintPoly::from_coefficients(&c) * &xp2) * &x.pow(2);
+            let (unit, fac) = f.factor_over_z().unwrap();
+            for w in fac.windows(2) {
+                assert_eq!(
+                    cmp_univariate_factors(&w[0], &w[1]),
+                    std::cmp::Ordering::Less,
+                    "n = {n}: not strictly sorted"
+                );
+            }
+            let (unit_ref, mut raw) = f.factor_over_z_flint_order().unwrap();
+            assert_eq!(unit, unit_ref);
+            raw.sort_by(cmp_univariate_factors);
+            assert!(raw == fac, "n = {n}");
+            // Degree-1 factors: x − 1, x (squared), x + 1, x + 2.
+            let lin: Vec<(Vec<i64>, u32)> = fac
+                .iter()
+                .take_while(|(p, _)| p.degree() == 1)
+                .map(|(p, e)| (coeffs_of(p), *e))
+                .collect();
+            assert_eq!(
+                lin,
+                vec![
+                    (vec![-1, 1], 1),
+                    (vec![0, 1], 2),
+                    (vec![1, 1], 1),
+                    (vec![2, 1], 1)
+                ]
+            );
+        }
+    }
+
+    /// Random products: the factorisation (unit, factors, multiplicities) is
+    /// FLINT's, and its order does not depend on the order of the input.
+    #[test]
+    fn random_products_canonical_and_unchanged() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |m: i64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % (2 * m as u64 + 1)) as i64 - m
+        };
+        for trial in 0..200 {
+            let k = 1 + (next(2) + 2) as usize;
+            let mut parts = Vec::new();
+            for _ in 0..k {
+                let deg = 1 + (next(1) + 1) as usize;
+                let mut c: Vec<i64> = (0..deg).map(|_| next(4)).collect();
+                c.push(1 + next(1).abs());
+                parts.push(FlintPoly::from_coefficients(&c));
+            }
+            let scale = FlintPoly::from_coefficients(&[
+                next(3).max(1) * if trial % 2 == 0 { 1 } else { -1 }
+            ]);
+            let mut f = scale.clone();
+            for p in &parts {
+                f = &f * p;
+            }
+            let mut g = scale;
+            for p in parts.iter().rev() {
+                g = &g * p;
+            }
+            assert!(f == g);
+            let (uf, ff) = f.factor_over_z().unwrap();
+            let (ur, mut fr) = f.factor_over_z_flint_order().unwrap();
+            fr.sort_by(cmp_univariate_factors);
+            assert!(uf == ur && ff == fr, "trial {trial}");
+            for w in ff.windows(2) {
+                assert_eq!(
+                    cmp_univariate_factors(&w[0], &w[1]),
+                    std::cmp::Ordering::Less
+                );
+            }
+            let up = UniPoly {
+                var: crate::kernel::ExprPool::new().symbol("x", Domain::Real),
+                coeffs: f.clone(),
+            };
+            assert!(
+                up.factor_z().unwrap().verifies_product(&up),
+                "trial {trial}"
+            );
+        }
+    }
+
+    #[test]
+    fn multivariate_canonical_order() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let vars = vec![x, y];
+        let e = pool.add(vec![
+            pool.pow(x, pool.integer(6_i32)),
+            pool.mul(vec![pool.integer(-1_i32), pool.pow(y, pool.integer(6_i32))]),
+        ]);
+        let p = MultiPoly::from_symbolic(e, vars, &pool).unwrap();
+        let fac = p.factor_z().unwrap();
+        assert!(fac.verifies_product(&p));
+        let mut want = Vec::new();
+        for terms in [
+            vec![(vec![1u32], 1i64), (vec![0, 1], -1)],
+            vec![(vec![1], 1), (vec![0, 1], 1)],
+            vec![(vec![2], 1), (vec![1, 1], -1), (vec![0, 2], 1)],
+            vec![(vec![2], 1), (vec![1, 1], 1), (vec![0, 2], 1)],
+        ] {
+            let t: std::collections::BTreeMap<Vec<u32>, rug::Integer> = terms
+                .into_iter()
+                .map(|(e, c)| (e, rug::Integer::from(c)))
+                .collect();
+            want.push(t);
+        }
+        let got: Vec<_> = fac.factors.iter().map(|(m, _)| m.terms.clone()).collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn mod_p_factors_are_sorted() {
+        // x^8 − 1 over 𝔽_17 splits into eight linear factors.
+        let fac = factor_univariate_mod_p(&[-1, 0, 0, 0, 0, 0, 0, 0, 1], 17).unwrap();
+        let roots: Vec<u64> = fac.factors.iter().map(|(f, _)| f[0]).collect();
+        let mut sorted = roots.clone();
+        sorted.sort_unstable();
+        assert_eq!(roots, sorted);
+        assert_eq!(roots.len(), 8);
     }
 
     #[test]

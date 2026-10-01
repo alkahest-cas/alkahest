@@ -603,7 +603,7 @@ impl MultiPoly {
         }
         let unit = fac.unit().to_rug();
         let mut out = Vec::new();
-        for i in 0..fac.len() {
+        for i in fac.canonical_order() {
             let base = fac.base_at(i);
             let mult = fac.exp_at(i);
             out.push((
