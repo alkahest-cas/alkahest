@@ -324,6 +324,26 @@
   as indeterminate, and the expression is expanded as the quotient `x/(x−2)`.
   Checked against Mathematica `Series` over `f**-k` for eleven `f`,
   `k = 1..6`, orders 1–5 (audit A9).
+- **A compiled function of no inputs batched to zeros: `compile(5, [])`
+  gave `[0, 0, 0]` from `call_batch` while `call([])` gave 5.** `call_batch`
+  returned early when `n_inputs == 0`, leaving the caller's zero-filled
+  buffer as the answer (`CompiledFn.call_batch_raw([], 0, 3)` and
+  `call_batch_buffer` in Python). Every tier now fills the batch with the
+  constant.
+- **`compile_expr(x + y, [x])` compiled, and returned `NaN` at every point,
+  while `eval_expr` on the same expression raised.** A free symbol the input
+  list does not bind has no value anywhere, so `compile`, `compile_with`,
+  `compile_jit_only`, `CompileCache` and `compile_expr` now refuse it with
+  `E-JIT-005` (`JitError` in Python), naming the unbound symbols. `π` needs
+  no binding, and a `RootSum`'s placeholder is bound by the `RootSum`. Rust
+  callers get `JitError::UnsupportedNode` in band and the code from
+  `take_unbound_symbols()`, or can check first with `check_inputs_bind`.
+- **Every Cranelift compile leaked its code pages.** `cranelift_jit`'s
+  `JITModule` deliberately leaks its memory on drop unless `free_memory` is
+  called, and nothing called it: each compile-and-drop kept about 4 kB
+  resident for the life of the process (20 000 compiles: +80 MB; now +28 kB).
+  A compiled function now frees its module when it is dropped, and a compile
+  that fails part-way frees it too.
 - **`simplify` folded indeterminate forms to numbers: `oo - oo → 0`,
   `oo * 0 → 0`, `oo / oo → 1`, and for IEEE floats `NaN - NaN → 0`,
   `NaN * 0 → 0`, `inf * 0 → 0`, `inf - inf → 0`, `x*inf - x*inf → 0`.**
