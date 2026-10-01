@@ -61,7 +61,12 @@ impl Drop for ThreadCleanup {
         // only the calling thread's caches and leaves them reusable.
         unsafe { ffi::flint_cleanup() };
         #[cfg(test)]
-        CLEANED.with(|c| c.set(c.get() + 1));
+        {
+            let tag = TAG.with(|t| t.get());
+            if tag != 0 {
+                CLEANED_TAGS.lock().unwrap().push(tag);
+            }
+        }
     }
 }
 
@@ -71,9 +76,15 @@ thread_local! {
 
 #[cfg(test)]
 thread_local! {
-    /// Runs of the guard's `Drop` on this thread.
-    static CLEANED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// A test's label for this thread. A `Cell` of plain data has no
+    /// destructor, so it stays readable while other thread-locals are being
+    /// destroyed, in whatever order a platform runs them.
+    static TAG: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
+
+/// Tags of the threads whose guard ran `flint_cleanup`.
+#[cfg(test)]
+static CLEANED_TAGS: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
 
 /// Register the calling thread for `flint_cleanup` when it exits.
 ///
@@ -91,36 +102,25 @@ mod tests {
     use crate::flint::FlintInteger;
     use rug::ops::Pow;
 
-    /// A thread that made a big integer runs `flint_cleanup` on exit.
+    /// A thread that made a big integer runs `flint_cleanup` on exit, and a
+    /// thread that never touched FLINT does not.
     #[test]
     fn a_thread_that_used_flint_cleans_up_when_it_exits() {
-        let cleaned = std::thread::spawn(|| {
-            // The cleanup counter lives in a thread-local that is destroyed
-            // with the thread, so observe it from a guard registered *before*
-            // FLINT's (thread-local destructors run in reverse order).
-            struct Report(std::sync::mpsc::Sender<usize>);
-            impl Drop for Report {
-                fn drop(&mut self) {
-                    let n = CLEANED.try_with(|c| c.get()).unwrap_or(usize::MAX);
-                    let _ = self.0.send(n);
-                }
-            }
-            let (tx, rx) = std::sync::mpsc::channel();
-            thread_local! {
-                static REPORT: std::cell::RefCell<Option<Report>> =
-                    const { std::cell::RefCell::new(None) };
-            }
-            REPORT.with(|r| *r.borrow_mut() = Some(Report(tx)));
+        const USED: u64 = 0x5eed_0001;
+        const IDLE: u64 = 0x5eed_0002;
+        std::thread::spawn(|| {
+            TAG.with(|t| t.set(USED));
             let big = FlintInteger::from_i64(3).pow(200);
             assert!(big.to_string().len() > 90);
-            drop(big);
-            rx
         })
         .join()
-        .unwrap()
-        .recv()
         .unwrap();
-        assert_eq!(cleaned, 1);
+        std::thread::spawn(|| TAG.with(|t| t.set(IDLE)))
+            .join()
+            .unwrap();
+        let tags = CLEANED_TAGS.lock().unwrap();
+        assert_eq!(tags.iter().filter(|&&t| t == USED).count(), 1);
+        assert!(!tags.contains(&IDLE));
     }
 
     /// The cleanup must not free a block that still backs a live integer: a
