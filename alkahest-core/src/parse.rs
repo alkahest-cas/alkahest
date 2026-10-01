@@ -547,7 +547,7 @@ impl<'a> Parser<'a> {
                     // lexer hands over.
                     float_literal(pool, &s).ok_or_else(|| {
                         ParseError::lex(
-                            format!("malformed number literal: {s}"),
+                            format!("malformed or out-of-range number literal: {s}"),
                             (tok.offset, tok.offset + s.len()),
                         )
                     })
@@ -743,13 +743,30 @@ pub fn float_literal_prec(text: &str) -> u32 {
 
 /// Intern the decimal float literal `text` (`1.5`, `2.5e-3`, `.5`) at
 /// [`float_literal_prec`] bits, or `None` if it is not one.
+///
+/// A literal past the `f64` exponent range (`1e999999`, `1e-999999`) is read
+/// at 53 bits through MPFR, whose exponent reaches about ±3·10⁸ decimal
+/// digits, instead of rounding to `inf` or `0`: `parse("1e999999")` used to
+/// be infinity, silently.  A literal past even that range is `None` — the
+/// callers report it as an out-of-range literal — never `±inf` and never a
+/// zero standing in for a nonzero value.
 pub fn float_literal(pool: &ExprPool, text: &str) -> Option<ExprId> {
     let prec = float_literal_prec(text);
+    let mantissa_nonzero = text
+        .split(['e', 'E'])
+        .next()
+        .is_some_and(|m| m.bytes().any(|b| (b'1'..=b'9').contains(&b)));
     if prec == 53 {
-        return Some(pool.float(text.parse::<f64>().ok()?, 53));
+        let v = text.parse::<f64>().ok()?;
+        if v.is_finite() && (v != 0.0 || !mantissa_nonzero) {
+            return Some(pool.float(v, 53));
+        }
     }
     let parsed = rug::Float::parse(text).ok()?;
     let inner = rug::Float::with_val(prec, parsed);
+    if !inner.is_finite() || (inner.is_zero() && mantissa_nonzero) {
+        return None;
+    }
     Some(pool.intern(ExprData::Float(crate::kernel::BigFloat { inner, prec })))
 }
 
@@ -1510,6 +1527,39 @@ mod tests {
                 // The assertion is that this call returns at all.
                 let _ = parse(src, &pool, &mut syms);
             }
+        }
+    }
+
+    /// A literal past the `f64` exponent range is its value at 53 bits, not
+    /// `inf` or `0`; one past MPFR's range too is refused, not `inf`.
+    #[test]
+    fn float_literal_past_f64_range_is_not_inf_or_zero() {
+        let pool = ExprPool::new();
+        for (lit, sign) in [("1e999999", 1), ("1e-999999", 1), ("0.5e-400", 1)] {
+            let id = super::float_literal(&pool, lit).expect(lit);
+            match pool.get(id) {
+                ExprData::Float(f) => {
+                    assert!(f.inner.is_finite(), "{lit} read as {}", f.inner);
+                    assert!(!f.inner.is_zero(), "{lit} read as zero");
+                    assert_eq!(f.inner.cmp0(), Some(sign.cmp(&0)));
+                }
+                other => panic!("{lit} parsed to {other:?}"),
+            }
+        }
+        // Zero is still zero, and ordinary literals are the plain f64 node.
+        assert_eq!(
+            super::float_literal(&pool, "0e999999"),
+            Some(pool.float(0.0, 53))
+        );
+        assert_eq!(
+            super::float_literal(&pool, "1e300"),
+            Some(pool.float(1e300, 53))
+        );
+        for lit in ["1e99999999999999", "1e-99999999999999"] {
+            assert!(super::float_literal(&pool, lit).is_none(), "{lit}");
+            let mut syms = HashMap::new();
+            let err = parse(lit, &pool, &mut syms).unwrap_err();
+            assert_eq!(err.code(), "E-PARSE-001", "{lit}: {err}");
         }
     }
 

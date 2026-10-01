@@ -290,6 +290,26 @@
   fall back to `i64::MAX`, which the next line declines, so they were
   already safe; the algebraic integrator's extension-degree refusal now
   reports a huge degree rather than `0`.
+- **`alkahest.parse` let non-`ParseError` exceptions escape, and read
+  `1e999999` as infinity.** Deep nesting (`((…x…))`, `x^x^…`, `----x`,
+  `sin(sin(…))`) raised `RecursionError`; a 100 000-digit integer raised
+  Python's int-string-limit `ValueError`; `2/0` raised `ZeroDivisionError`;
+  `1e999999` parsed silently as `inf` and `1e-999999` as `0`. The Python
+  parser is now a trampoline over generator productions — nesting costs list
+  entries, not interpreter frames — with the Rust parser's 2048-level limit
+  (`ParseError` `E-PARSE-004`, the `E-DEPTH-001` ceiling); integer literals go
+  to the kernel as digits (exact at any length); division by a literal zero
+  is `E-PARSE-002` with the `/`'s span (still a `ZeroDivisionError` too, for
+  existing handlers); and a float literal past `f64`'s
+  exponent range is read at 53 bits through MPFR (in both parsers), or
+  refused as out of range (`E-PARSE-001`) past MPFR's — never `inf` or `0`.
+  `ParseError` takes an optional `code` (audit D). Out-of-range integer
+  arguments elsewhere now raise the error their neighbours do instead of
+  PyO3's `OverflowError` / a misleading `TypeError`: `interval_eval(prec=2**40)`
+  (`ValueError`, as for `2**31`), `Matrix([[]])` (`ValueError`, no columns),
+  `Matrix.get(-1, 0)` (`IndexError`, as for `get(5, 0)`), `binomial_mod` with a
+  negative or oversized argument (`HolonomicError` `E-HOLO-004` / `E-HOLO-006`),
+  and `EgraphConfig(-1)` (`ValueError`).
 
 - **`simplify` folded indeterminate forms to numbers: `oo - oo → 0`,
   `oo * 0 → 0`, `oo / oo → 1`, and for IEEE floats `NaN - NaN → 0`,

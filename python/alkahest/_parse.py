@@ -8,6 +8,21 @@ from .alkahest import Expr as _Expr
 from .alkahest import PoolError as _PoolError
 from .exceptions import ParseError
 
+# Deepest grammatical nesting the parser accepts: parentheses, prefix signs,
+# right-associated powers and function arguments each add one level.  Equal
+# to the Rust parser's ``MAX_PARSE_DEPTH`` (itself ``MAX_EXPR_DEPTH``, the
+# ceiling behind ``E-DEPTH-001``): text one parser reads, the other reads too,
+# and anything deeper would be refused by the kernel's depth guard anyway.
+_MAX_PARSE_DEPTH = 2048
+
+
+class _DivisionByZeroParseError(ParseError, ZeroDivisionError):
+    """``a / 0`` in the source: a ``ParseError`` (``E-PARSE-002``, with the
+    span of the ``/``) that is still the ``ZeroDivisionError`` ``parse``
+    raised before, so existing ``except ZeroDivisionError`` handlers keep
+    working."""
+
+
 # ---------------------------------------------------------------------------
 # Token kinds
 # ---------------------------------------------------------------------------
@@ -242,7 +257,7 @@ class _Parser:
     def parse(self):
         if self._peek()[0] == _TK_EOF:
             raise ParseError("empty expression", span=(0, 0))
-        expr = self._expr(0)
+        expr = self._run(0)
         tok = self._peek()
         if tok[0] != _TK_EOF:
             raise ParseError(
@@ -251,11 +266,51 @@ class _Parser:
             )
         return expr
 
+    # -- trampoline --
+    #
+    # The grammar is recursive, but the parser is not: every production is a
+    # generator, and where a recursive-descent parser would call
+    # ``self._expr(rbp)`` for a sub-expression, a production here does
+    # ``yield rbp`` and receives the parsed sub-expression back.  ``_run``
+    # keeps the pending productions on an explicit list, so nesting depth
+    # costs list entries rather than interpreter frames: ``((((…x…))))`` a
+    # hundred thousand levels deep used to escape as ``RecursionError`` (not a
+    # ``ParseError``, and — for an ``except Exception`` caller — the same
+    # stack exhaustion that recursion guards exist to prevent).  The depth is
+    # still bounded, by ``_MAX_PARSE_DEPTH``, with a ``ParseError``.
+
+    def _run(self, rbp: int):
+        stack = [self._expr(rbp)]
+        value = None
+        while True:
+            try:
+                request = stack[-1].send(value)
+            except StopIteration as done:
+                stack.pop()
+                if not stack:
+                    return done.value
+                value = done.value
+                continue
+            if len(stack) >= _MAX_PARSE_DEPTH:
+                offset = self._peek()[2]
+                raise ParseError(
+                    f"expression nesting too deep: exceeds the limit of {_MAX_PARSE_DEPTH} "
+                    "levels (parentheses, prefix signs, powers, function arguments)",
+                    span=(offset, offset + 1),
+                    remediation=(
+                        "reshape the input with less nesting; expressions deeper than "
+                        "this are refused by every operation (E-DEPTH-001) anyway"
+                    ),
+                    code="E-PARSE-004",
+                )
+            stack.append(self._expr(request))
+            value = None
+
     # -- Pratt expression --
 
     def _expr(self, rbp: int):
         tok = self._advance()
-        left = self._nud(tok)
+        left = yield from self._nud(tok)
         while True:
             tok = self._peek()
             kind = tok[0]
@@ -264,11 +319,11 @@ class _Parser:
                 break
             self._advance()
             if kind == "+" or kind == "-":
-                left = self._additive_run(left, kind)
+                left = yield from self._additive_run(left, kind)
             elif kind == "*" or kind == "/":
-                left = self._multiplicative_run(left, kind)
+                left = yield from self._multiplicative_run(left, kind, tok[2])
             else:
-                left = self._led(tok, left)
+                left = yield from self._led(tok, left)
         return left
 
     # -- n-ary runs --
@@ -288,7 +343,7 @@ class _Parser:
     def _additive_run(self, left, kind: str):
         ops = []
         while True:
-            ops.append((kind, self._expr(_BP_ADD)))
+            ops.append((kind, (yield _BP_ADD)))
             kind = self._peek()[0]
             if kind != "+" and kind != "-":
                 break
@@ -308,17 +363,26 @@ class _Parser:
             left = left + r if k == "+" else left - r
         return left
 
-    def _multiplicative_run(self, left, kind: str):
+    def _multiplicative_run(self, left, kind: str, offset: int):
         factors = [left]
         while True:
-            right = self._expr(_BP_MUL)
+            right = yield _BP_MUL
             if kind == "*":
                 factors.append(right)
             else:
                 # Division goes through `Expr.__truediv__`, which owns the
                 # literal-zero check; the quotient then heads the next run.
-                factors = [self._product(factors) / right]
-            kind = self._peek()[0]
+                try:
+                    factors = [self._product(factors) / right]
+                except ZeroDivisionError:
+                    raise _DivisionByZeroParseError(
+                        "division by zero",
+                        span=(offset, offset + 1),
+                        remediation="the divisor is the literal 0",
+                        code="E-PARSE-002",
+                    ) from None
+            tok = self._peek()
+            kind, offset = tok[0], tok[2]
             if kind != "*" and kind != "/":
                 break
             self._advance()
@@ -351,20 +415,28 @@ class _Parser:
                 # Not ``pool.float(float(text), 53)``: a literal longer than
                 # an ``f64`` holds (a printed high-precision float) is read at
                 # a precision that keeps its digits.  Shared with the Rust
-                # parser (``alkahest_core::parse::float_literal``).
+                # parser (``alkahest_core::parse::float_literal``).  The lexer
+                # has already checked the shape, so ``None`` here means the
+                # value is out of range — ``1e999999999``, past even the
+                # arbitrary-precision exponent — which is refused rather than
+                # read as ``inf`` or ``0``.
                 node = pool._float_literal(text)
                 if node is None:
                     raise ParseError(
-                        f"malformed number literal: {text}",
+                        f"number literal out of range: {text}",
                         span=(offset, offset + len(text)),
                     )
                 return node
-            return pool.integer(int(text))
+            # Not ``pool.integer(int(text))``: ``int`` refuses a literal
+            # longer than ``sys.get_int_max_str_digits()`` (4300 by default)
+            # with a ``ValueError``, and is quadratic below that.  The kernel
+            # reads the digits directly, at any length.
+            return pool._integer_literal(text)
 
         if kind == _TK_IDENT:
             # Function call?
             if self._peek()[0] == "(":
-                return self._funcall(text, offset)
+                return (yield from self._funcall(text, offset))
             # Symbol: look up in the caller-supplied map first, then intern.
             sym = self._symbols.get(text)
             if sym is None:
@@ -373,12 +445,12 @@ class _Parser:
             return sym
 
         if kind == "-":
-            operand = self._expr(_BP_UNARY)
+            operand = yield _BP_UNARY
             folded = _negate_literal(pool, operand)
             return -operand if folded is None else folded
 
         if kind == "+":
-            return self._expr(_BP_UNARY)
+            return (yield _BP_UNARY)
 
         if kind == "(":
             if self._peek()[0] == ")":
@@ -387,7 +459,7 @@ class _Parser:
                     span=(offset, offset + 1),
                     remediation="parentheses must contain an expression",
                 )
-            inner = self._expr(0)
+            inner = yield 0
             self._expect(")")
             return inner
 
@@ -404,7 +476,7 @@ class _Parser:
 
         if kind in ("^", "**"):
             # Right-associative: use BP_POW - 1 as the right-binding-power.
-            right = self._expr(_BP_POW - 1)
+            right = yield _BP_POW - 1
             # `pow_expr` takes the exponent node as-is.  Going through `**`
             # instead would round-trip it via `PyExpr.__pow__`, which falls back
             # to an f64 exponent when the integer does not fit in an i64 — a
@@ -419,6 +491,7 @@ class _Parser:
             f"unexpected token {text!r} in infix position",
             span=(offset, offset + len(text)),
         )
+        yield  # unreachable; makes this a generator like every production
 
     # -- function call --
 
@@ -426,10 +499,10 @@ class _Parser:
         self._advance()  # consume "("
         args = []
         if self._peek()[0] != ")":
-            args.append(self._expr(0))
+            args.append((yield 0))
             while self._peek()[0] == ",":
                 self._advance()  # consume ","
-                args.append(self._expr(0))
+                args.append((yield 0))
         self._expect(")")
         return _apply_func(name, args, offset, self._pool)
 
