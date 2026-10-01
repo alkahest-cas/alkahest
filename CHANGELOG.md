@@ -261,6 +261,187 @@
     wrong. It, the Risch/transform `is_free_of_var`, and the `depends_on`
     checks in `limit`, the Puiseux and asymptotic expanders and summation now
     share one visited-set walker that descends into every node kind.
+- **Integers cross between rug and FLINT by limbs, not decimal strings.**
+  `FlintInteger::from_rug` / `to_rug` (and the internal `fmpq` ⇄
+  `rug::Rational` conversion) printed the number in base 10 and parsed it on
+  the other side — superlinear in the bit size, on every path that hands an
+  integer to FLINT: polynomial factoring and gcds, Hermite/Smith normal forms,
+  number theory, primary decomposition, the Risch rational RDE. They now copy
+  64-bit limbs (`fmpz_set_ui_array` / `fmpz_get_ui_array`, both in FLINT 2.9
+  and 3.x), with an `fmpz_set_si` / `fmpz_get_si` fast path for word-sized
+  values. No `mpz_t` crosses between the two libraries — rug's limbs are only
+  read and FLINT writes only into a Rust-owned buffer — so the conversion is
+  safe whether rug and FLINT share one GMP or each link their own. Measured on
+  one machine (release build, FLINT 3.5.0), per conversion: 100 000 bits
+  `from_rug` 854 µs → 2 µs and `to_rug` 744 µs → 1.6 µs; 1 000 000 bits
+  19.3 ms → 22 µs and 14.4 ms → 13 µs. Public signatures are unchanged.
+  `fmpq` built from a `rug::Rational` also skips the redundant
+  `fmpq_canonicalise` (a gcd), since rug keeps rationals in lowest terms.
+- **Number atoms hash without allocating, and `intern` hashes each node
+  once.** `BigInt`, `BigRat` and `BigFloat` used to hash by formatting
+  themselves as a hex string — a heap allocation on every intern lookup and
+  on every key each time the intern table grew. They now hash their limbs
+  (value-based, so `Hash` still agrees with `Eq`: `+0`/`-0` and every NaN hash
+  alike, and a `BigFloat`'s internal MPFR precision does not leak in, while
+  its `prec` field still does). The intern index also stores each key's hash
+  alongside it, so a miss no longer hashes the `ExprData` a second time and a
+  resize rehashes nothing. Hashing a small integer: 80 → 27 ns; `3^2000`:
+  1.3 µs → 0.1 µs; a `pool.integer(k)` hit 109–125 → 73–109 ns;
+  `pool.float(1.1, 53)` 213–224 → 106–143 ns; a 100 000-bit integer hit
+  38 µs → 3.3–4.2 µs; interning a fresh integer ~1 µs → ~0.5 µs. Nothing
+  persisted these hashes, so no file format or output order changes.
+- **Big Python ints cross the binding by bytes, not decimal text — and no
+  longer break past 4300 digits.** Every `int` that did not fit an `i64` went
+  through `str(n)` → GMP parse on the way in and `int(text)` /
+  `Fraction("p/q")` on the way out. CPython caps that conversion at
+  `sys.get_int_max_str_digits()` (4300 digits by default), so
+  `ExprPool().integer(10**5000 + 7)`, `x ** 10**5000`, `x + Fraction(10**5000, 3)`,
+  `number_theory.isprime(10**5000 + 1)`, `evaluate(3**12000, mode="exact")` and
+  big polynomial coefficients all raised `ValueError`, and
+  `evaluate(y + 1, {y: 10**5000}, mode="exact")` misreported `E-EVAL-002`. It
+  was also quadratic: `pool.integer` of a 10⁶-digit int took 10.9 s and now
+  takes 4 ms; reading it back 4.1 s → 2 ms. One helper module
+  (`alkahest-py/src/bigint.rs`, `int.to_bytes`/`from_bytes` ↔
+  `rug::Integer::{from_digits,to_digits}`) now serves every binding file, and
+  `Fraction`s are built from two ints. `Expr.node()` keeps returning decimal
+  strings; the internal Python helpers use the new `Expr._node_exact()`, which
+  returns ints. The `nt_*` / `modular_*` natives also accept ints directly.
+- **ℚ[x] GCDs, rational determinants and rational `rref` go through FLINT.**
+  `RatUniPoly::gcd` (every rational-function operation in summation, Gosper's
+  shifted GCD, polynomial Smith/Hermite forms) was the textbook Euclidean
+  algorithm over `ℚ`; it now clears denominators and calls `fmpz_poly_gcd`,
+  sharing one crate-private helper with the Risch code that already did so, and
+  with the Puiseux and holonomic-asymptotics GCDs (degree 40: 12 ms → 0.06 ms;
+  degree 80: 235 ms → 0.1 ms). `Matrix::det` on numeric entries takes
+  `fmpz_mat_det` after scaling each row by its denominators' lcm instead of
+  Bareiss over `rug::Rational` (60×60: 14 ms → 1.4 ms), and the rational path
+  of `rref`/`rank`/`nullspace`/`row_space_basis` uses `fmpz_mat_rref` (60×50:
+  6.1 ms → 1.5 ms). Outputs are unchanged — the monic GCD, the determinant and
+  the reduced row echelon form are unique — and differential property tests
+  pin each new path to the algorithm it replaced.
+- **Polynomial construction does its arithmetic in FLINT.**
+  `UniPoly::from_symbolic` built a `BTreeMap` of rug coefficients with
+  schoolbook products and only then copied it into an `fmpz_poly`; it now
+  builds the `fmpz_poly` directly (`(x+1)^1000`: 120–190 ms → 0.12 ms), and
+  `FlintPoly::derivative` is one `fmpz_poly_derivative` call instead of a rug
+  round trip per coefficient. `diff` tries that conversion at every non-atom
+  node, so `diff((x+1)^300·sin x)` goes 26 → 2.6 ms. The conversion also
+  memoises shared DAG nodes (in `MultiPoly::from_symbolic` too): a
+  Chebyshev-style recurrence `T_{n+1} = 2x·T_n − T_{n−1}` used to be walked once
+  per path, so `diff(T_24)` took 280–430 ms and now takes 0.2 ms. `MultiPoly`
+  products and powers above a small size go through `fmpz_mpoly_mul` /
+  `fmpz_mpoly_pow_ui` (`p·p` for 286 terms 17 → 0.8 ms;
+  `from_symbolic((x+y+z+1)^20)` 40–70 → 1.3 ms). Results are unchanged,
+  including which error a non-polynomial input reports; proptests pin every
+  path against the previous algorithms, which stay as the fallback for
+  degrees too sparse to hold densely and for exponents that would overflow.
+- **Gröbner reduction runs in place, and Buchberger reduces fraction-free.**
+  The division algorithm rebuilt the whole dividend on every step
+  (`p.sub(..)` via `add(neg(..))`), cloned it again to drop the leading term,
+  rescanned it for that leading term and every divisor for theirs, and
+  `interreduce` cloned the basis once per element. The dividend now lives in a
+  map keyed by an order-preserving encoding of its monomials (leading term =
+  last entry) and is updated in place; divisors' leading data is extracted
+  once, incrementally as the basis grows; `interreduce` skips by index. Inside
+  Buchberger and `interreduce`, where every remainder is made monic anyway,
+  reduction runs over ℤ on primitive integer divisors with periodic content
+  removal instead of paying `mpq`'s gcd canonicalisation on every operation.
+  Divisor choices are unchanged, so the bases are **identical, term for term
+  and in order** — checked against the previous implementation (kept as a
+  test oracle) on cyclic-3/4/5, katsura-2…5 and proptest-generated systems.
+  GRevLex, single core: cyclic-4 0.54 → 0.16 ms, cyclic-5 47 → 5.3 ms,
+  katsura-4 12.7 → 2.2 ms, katsura-5 219 → 19 ms, katsura-6 4.2 s → 0.24 s.
+  `reduce`, FGLM's normal forms and `solve` on polynomial systems use the same
+  engine (the exact rational variant where the remainder itself is returned).
+- **`simplify_egraph` is sized by the expression DAG, not its tree, and no
+  longer re-parses its rule program on every call.** A subterm shared by many
+  parents used to be written out once per path to it — `e_{k+1} =
+  sin(e_k)·cos(e_k)` doubled per level, so depth 14 took 1.3 s and depth 30 was
+  out of reach, and the `node_limit` guard, which counts *distinct* nodes, let
+  a 120-node DAG through to build ~10⁸ terms. Shared nodes are now bound once
+  by egglog `let`s, the result is decoded from egglog's hash-consed `TermDag`
+  instead of re-parsed from its printed tree, and the post-extraction passes
+  are memoised per node, so the guard now bounds the real work: depth 30 takes
+  ~2–3 ms and the Chebyshev DAG `T_40` ~5–8 ms. The configuration-only prelude
+  (datatype and rulesets) is parsed once per thread and cloned, which takes a
+  trivial call such as `x + 0` from ~1.2 ms to ~0.3–0.45 ms. Results are
+  identical to the tree pipeline, which is kept as a differential-test
+  reference. `expr_contains_noncommutative_symbol` now reads the O(1)
+  commutativity flag cached at intern time instead of walking the tree.
+
+- **`simplify` no longer pays per path, per pool node, or per clone.** The
+  static-domain fact walk that ends every `simplify` visited a shared DAG once
+  per *path*: re-simplifying an already-simplified 104-node Chebyshev-style
+  expression took 491 ms and now takes 0.05 ms. `simplify_redex` /
+  `simplify_auto` sized their per-pass tables by the whole pool — a 7-node
+  expression cost 18–20 ms in an 8M-node pool, now 0.008 ms. The hot rewrite
+  rules decline without cloning the node, and `collect_mul_factors` /
+  `collect_add_terms` without building a bignum map: the derivative of a
+  depth-4000 nested `sin` dropped from 7.9 s to 1.3 s. The fixed-point loop
+  keeps nodes it has proved settled between passes, so the confirming pass
+  only revisits what the previous one built. Results and derivation logs are
+  unchanged, checked step for step against the old code.
+
+- **Numeric evaluation no longer walks a shared DAG once per path, and small
+  expressions stop paying interpreter prices on large batches.**
+  `evaluate` (`f64`, `exact` and `complex` modes) memoizes per call: on the
+  Chebyshev recurrence `T_28` went from 238 ms / 1.1 s / 379 ms to ~20 µs /
+  ~110 µs / ~30 µs, and `T_40` (~1.6e8 paths) now finishes in microseconds.
+  The interpreter tier of `compile_expr` flattens the expression once into a
+  post-order slot program — 2.0 µs → 0.10 µs per point, with no per-point
+  allocation — and `eval_expr` borrows nodes instead of cloning them. The
+  batch entry points behind `numpy_eval` recompile an interpreter-tier
+  function natively (cached on the `CompiledFn`) once a batch reaches 4096
+  points: the audit's small expression at 1e6 points went from 2.05 s to
+  0.22 s. `compile_expr` takes an additive `expected_evals=` hint and reports
+  `CompiledFn.tier`. `trace`/`grad` compile once per traced function instead
+  of on every array call (1k points: 2.2 ms → ~0.3 ms; gradient 3.9 ms →
+  ~0.3 ms). All tiers agree bit for bit with the tree-walking interpreter
+  (property-tested). The "no JIT" warning now points at the dependency-free
+  `cranelift` feature instead of only at LLVM.
+- **Python boundary: pool-aware `Expr` identity, linear parsing of long sums,
+  and `import alkahest` without jax.** `Expr.__eq__`/`__hash__` compared the
+  interned id alone, so `pool_p.symbol("x") == pool_q.symbol("zzz")` was
+  `True` and expressions from two pools collided as dict keys; they now
+  compare (pool, id), and `pool.add`/`mul`/`func` refuse an expression from
+  another pool with `PoolError` (`E-POOL-001`) instead of reading its id as a
+  local one. `parse` interns each run of `+`/`-` (and `*`) with one
+  constructor call instead of a left fold that re-interned a one-wider `Add`
+  per term — the same node, now linear (10 000-term sum 1.8 s → 86 ms).
+  `to_jax` resolves lazily, so `import alkahest` no longer imports jax
+  (~480 ms → ~70 ms on one machine). The ambient certificate gate on every
+  derivation entry point costs ~0.2 µs instead of ~2 µs, and research
+  dependency lookup keys by `Expr` instead of rendering `str()` per
+  subexpression and no longer interns partial sums into the caller's pool.
+  `docs/mdbook/src/kernel.md` now says how to build large sums
+  (`pool.add(terms)`, not `sum()`).
+- **`DerivedResult` renders its derivation lazily, and the heavy entry points
+  release the GIL.** `.derivation` and `.steps` used to be rendered — twice,
+  every `before`/`after` of every step — when the result was built, whether or
+  not anyone read them: 41% of `diff` on a 200-term polynomial. They are now
+  rendered from the stored log on first access; the strings are identical.
+  `simplify` (and its variants), `diff`, `solve`, `cancel`/`together`/`apart`,
+  `sum_*`/`product_*`, `rsolve`, `evaluate`, `integrate_definite`, `factor_z`,
+  `GroebnerBasis.compute*` and the symbolic `Matrix` operations now run their
+  core call under `py.allow_threads`, as `integrate` already did, so
+  `batch_map(parallel=True)` overlaps them. Budgets, ambient assumptions and the
+  `*_side_conditions()` channels are unaffected: the work stays on the calling
+  thread.
+
+- **The expression pool stores each node once, and its hot tables use a fast
+  hasher.** The intern index was a map *keyed by* `ExprData`, so every node
+  lived twice — in the node array and, deep-cloned, as the map key — and every
+  miss paid for the clone. The index is now a table of ids (plus 32 hash bits)
+  that compares through the node array, sharded behind `RwLock`s under
+  `parallel`; a miss re-probes under the shard's write lock before it inserts,
+  so two threads interning the same value still get the same id. The pool
+  index and the `ExprId`-keyed memo tables in `simplify`, `diff` and
+  `eval_interp` hash with foldhash instead of SipHash (these keys are
+  pool-assigned indices, so HashDoS resistance bought nothing there). Resident
+  memory for 1.5 M distinct nodes: 225 → 114 bytes/node (1 M integers: 284 →
+  116); interning a fresh integer 377–403 → 170–193 ns, a fresh `Add`
+  448–462 → 264–298 ns; hits 20–40 % faster (`add([x, c])` 79–89 → 63–67 ns).
+  No output, id assignment order or persisted format changes.
 
 ### Fixed
 
@@ -500,216 +681,6 @@
   naming the offending argument. A `CompileCache` no longer returns a function
   compiled from one pool for another pool's expression that shares its ids;
   it raises instead (`clear()` releases it).
-
-### Build and packaging
-
-- **The manylinux wheels' GMP is built with `--enable-fat`.** Since the wheels
-  started shipping a source-built GMP 6.3 (one GMP shared by rug and FLINT),
-  that GMP was configured without `--enable-fat`, which tunes its assembly to
-  the build runner's CPU; `auditwheel` then ships it to every user, and an
-  older CPU would take SIGILL on the first bignum multiply. A fat build carries
-  every x86_64 kernel and selects one at load time.
-- **CI and the manylinux wheels now build a pinned FLINT 3.5.0.** Ubuntu
-  24.04's `libflint-dev` is 3.0.1, and the wheel job previously fell back to
-  building **2.9.0**. FLINT absorbed Arb in 3.0 but rewrote the `acb_theta`
-  API in 3.2, and `build.rs` probes the symbol table and silently stubs the
-  `theta` module when those entry points are absent — so the old configuration
-  would have shipped wheels with theta quietly missing, and passed a CI suite
-  that executed no theta at all. New `.github/actions/setup-flint` builds and
-  caches a pinned release, prints which probe symbols are present, and the
-  wheel build now fails loudly if `acb_theta_ql_exact` is absent.
-
-- **One GMP per process in the PyPI wheels: rug now links the system
-  libgmp/libmpfr that FLINT uses.** The extension used to carry *two* GMPs — a
-  static copy that `gmp-mpfr-sys` compiled from source for rug, and the shared
-  libgmp FLINT links — and GMP's allocation hooks are per copy.
-  `Budget(max_bytes=...)` and the address-space guard therefore counted only
-  rug's limbs: a polynomial holding a megabyte-sized FLINT coefficient left
-  `gmp_live_bytes()` flat. The new opt-in `system-gmp` Cargo feature (in both
-  `alkahest-cas` and the Python extension) enables
-  `gmp-mpfr-sys/use-system-libs`, so FLINT's `fmpz` bignums are counted too
-  (`tests/test_resource_budgets.py` pins it, and skips on a build without the
-  feature via `alkahest.alkahest.GMP_SHARED_WITH_FLINT`). It also drops the
-  minutes-long GMP/MPFR compile and the statically linked LGPL GMP. Memory
-  FLINT takes through `flint_malloc` (Arb/Acb mantissas, `nmod` buffers) is
-  still not counted.
-
-  **Every published wheel is built with `system-gmp`** (each wheel's smoke
-  test asserts it), so `pip install alkahest` users get the accounting with no
-  action. **Source builds are unchanged by default**: the feature is not a
-  default, because it needs GMP ≥ 6.3 and MPFR ≥ 4.2 headers and libraries
-  (`gmp-mpfr-sys` refuses anything older) and Ubuntu 22.04 / Debian 12 ship
-  GMP 6.2. To opt in, pass `--features system-gmp` (Ubuntu 24.04, Debian 13,
-  Fedora, Homebrew and MSYS2 qualify). Homebrew users must also export
-  `CPATH`/`LIBRARY_PATH` for the `gmp` and `mpfr` kegs, because `gmp-mpfr-sys`
-  probes with a bare `cc … -lgmp`. `*-windows-msvc` targets are not supported
-  by the feature (the Windows wheel is MinGW, and needs `pkg-config`). rug's
-  unused `complex` feature (and with it any need for MPC) is dropped.
-
-  The manylinux wheel job now source-builds pinned GMP 6.3.0 / MPFR 4.2.2
-  (sha256-checked) before FLINT, since AlmaLinux 8 ships 6.1 / 3.1. That also
-  fixes the manylinux Release job, which had been failing since FLINT 3.5's
-  configure started requiring GMP > 6.2.1. `setup-flint` does the same on any
-  Ubuntu runner whose apt packages are too old (the 22.04 Lean job). A manual
-  dispatch of the Release workflow from a branch other than `main` now builds
-  and smoke-tests every wheel without publishing to TestPyPI, so changes to
-  the wheel build can be checked before they merge.
-
-- **FLINT ≥ 3.3 is now required, and `build.rs` says so.** The bindings call
-  `fq_nmod_mat_transpose` (new in FLINT 3.3) and the `nf_*`,
-  `fq_nmod_ctx_init_ui` and `acb_mat_get_imag` entry points (3.1), so an older
-  FLINT used to compile every file and then fail at link time with
-  `undefined reference to fq_nmod_mat_transpose`. `build.rs` now reads the
-  FLINT version (header, then pkg-config, then the symbol table) and stops
-  with "alkahest-cas requires FLINT >= 3.3 (>= 3.4 for Riemann theta); found
-  FLINT x.y" plus instructions for building FLINT into a prefix. Genus-g
-  Riemann theta needs 3.4, because 3.3 has `acb_theta_all` / `acb_theta_one`
-  only as header inlines; on 3.3 the theta backend is stubbed and reports
-  `E-THETA-001`. Ubuntu 24.04's `libflint-dev` (3.0.1) and Debian 12's (2.9)
-  are too old. README, the getting-started guide and the error text used to
-  say "≥ 2.9". CI's `setup-flint` action and the manylinux wheel job now
-  build FLINT 3.6.0 from its sha256-checked release tarball; `setup-flint`
-  still caches the built prefix.
-
-- **`capabilities()["features"]` gains `arb_backend` and `riemann_theta`.**
-  Neither is a Cargo feature; both are probed from `libflint`. They satisfy
-  the same falsifiability rule the v3 contract applied when it *removed* two
-  keys: `False` guarantees the entry points behind them refuse with
-  `E-THETA-001` rather than computing. `contract_version` stays `3` — the row
-  gained keys and lost none.
-
-- **Computational group theory is now complete across all four pillars.**
-  Permutation groups landed earlier in this cycle; this adds the other three.
-
-  **Matrix groups over GF(q)** — `MatGroup` is a subgroup of `GL(d, q)` from
-  **any** list of invertible generators, not only a classical family. Order,
-  membership and sifting come from a base and strong generating set computed by
-  Schreier–Sims **on the action on vectors**, with the base always inside the
-  standard basis: a matrix fixing every `e_i` is the identity, so a base always
-  exists inside the basis, the chain has at most `d` levels, and applying a
-  generator to a base point is a row read rather than a multiply. The order is
-  a computation, not a formula — `matgroup_gl_order`, `matgroup_sl_order` and
-  `matgroup_sp_order` are the closed forms to check it against, and the tests
-  assert the two agree on around thirty `(n, q)` pairs.
-
-  This is a separate implementation from the permutation Schreier–Sims for a
-  measured reason: `MAX_BSGS_DEGREE = 256` caps a faithful vector action at
-  `q^d − 1 ≤ 256`, which stops at `GL(8,2)`, and a degree-`q^d` permutation
-  costs `q^d` words where the matrix costs `d²`. `GL(4,3)`, of order
-  24,261,120, takes 0.14 s in a debug build. The permutation action is still
-  used as an **independent oracle**: `permutation_action_on_vectors().order()`
-  must equal `MatGroup::order()`, which makes two unrelated Schreier–Sims
-  implementations agree, in a unit test and a proptest.
-
-  Also orbits on vectors and on projective points, product-replacement random
-  elements (seeded, so reproducible), derived subgroup, centre and normal
-  closure.
-
-  **Finitely presented groups** — `FpGroup` from generator names and relator
-  strings, with HLT Todd–Coxeter coset enumeration (lookahead and table
-  compaction), the coset table, the index, `order()`, the permutation
-  representation on cosets, abelian invariants from a Smith normal form, and
-  Reidemeister–Schreier subgroup presentations.
-
-  **The two refusals here are different facts and the subsystem is built to
-  keep them apart.** `E-FPGRP-004` means the coset cap was reached and says
-  **nothing** about whether the group is finite; `E-FPGRP-005` is a *proof* of
-  infiniteness, from an infinite cyclic factor in `G/[G,G]`. `order()` asks the
-  terminating question first, so `⟨a,b | [a,b]⟩` is proved infinite without
-  enumerating anything, while the `(2,3,7)` triangle group — infinite, but with
-  trivial abelianisation — correctly lands on the honest "did not complete".
-  An `assert_ne!` on the two codes keeps them from silently converging. The
-  word problem is undecidable, and conflating "I could not decide" with "no
-  such value exists" is the shape of defect this whole subsystem is arranged
-  to avoid.
-
-  Every returned coset table is verified before it leaves — rows complete,
-  every edge reversible, every relator closing at every coset — so a
-  mishandled coincidence is `E-FPGRP-012` rather than a wrong index.
-
-  Four ways this surface could have answered wrongly or died, found in review
-  and closed before the merge. The first was a **silent wrong answer**:
-  `Word::from_letters` rejected `0` but not `i32::MIN`, and free reduction
-  decides cancellation by `last == -l`. `-i32::MIN` wraps back to `i32::MIN` in
-  a release build, so that letter cancelled *itself* — `Word([i32::MIN] * 2)`
-  freely reduced to the identity, which is a false statement about free-group
-  equality rather than a refusal. It is now `E-FPGRP-001`. The others were
-  unbounded allocations, in a crate whose one memory-abort issue cost an
-  unattended loop its whole interpreter: `Word::pow` is capped on the length of
-  its **result** (`E-FPGRP-013`), because the parser caps a *literal* exponent at
-  100 000 but exponents nest and `(a^100000)^100000` asks for 10^10 letters;
-  `multiplication_table` is capped at `MAX_MULTIPLICATION_TABLE_ORDER`
-  (`E-FPGRP-014`), far below the coset cap, because the table is `|G|²` words
-  *and* `|G|²` transversal traces of up to `|G|/2` letters — cubic in `|G|`, so
-  the cap is set where the *time* becomes unreasonable rather than where the
-  allocator gives up; and `matgroup_sl_order(1, n)` divided a
-  `rug::Integer` by `q − 1 = 0`, which **panicked** — reaching Python as
-  `PanicException`, a `BaseException` that `except Exception` does not catch, so
-  it escaped every handler a caller could write. All three are typed refusals
-  now. Reidemeister–Schreier also checks its Schreier rank *before* rewriting
-  rather than after, and deduplicates with a `HashSet`: at index 20 000 it used
-  to do ~1.8·10⁹ `Word` comparisons and then refuse anyway.
-
-  Two smaller ones from the same review. `for c in ConjugacyClasses(g)` **raised**
-  instead of stopping: with `__len__` and `__getitem__` but no `__iter__`, Python
-  falls back to the sequence protocol, which ends only on `IndexError`, and an
-  out-of-range index raised `E-CHAR-006` — so iterating raised past the last
-  class. There is an `__iter__` now, `__getitem__` takes negative indices, and
-  out of range is `IndexError`; every *named* accessor still carries the code.
-  And `MatGroupError`'s remediation strings named two methods that do not exist
-  and put the projective orbit factor at `(q^d − 1)/(q − 1)` instead of `q − 1`.
-
-  The **capacity examples in the docs were wrong, and wrong again once**: the
-  ceilings on degree, basic orbit and Schreier–Sims work are independent, and
-  several docs named groups that one of the three refuses. `|Sp(12, 3)| ≈ 10^40`
-  was cited as "fine" when its orbit is `3^12 − 1`; `Sp(12, 2)`, whose orbit does
-  fit, turned out to exhaust the *work* budget instead. Every example is now one
-  that was run, and a test pins them, because prose about a ceiling is exactly
-  the kind of claim that drifts silently away from the constant beside it.
-
-  **Group cohomology** — `H⁰`, `H¹` and `H²` of a finite group with
-  coefficients in a finitely generated abelian module, from the bar resolution,
-  with an arbitrary integer action that is **checked against the relators**
-  before use (`E-FPGRP-011`). `H²` classifies extensions. `H¹` with trivial
-  coefficients is additionally cross-checked against `abelian_invariants()`,
-  which is a different computation.
-
-  **Conjugacy classes and character tables** — `CharacterTable` via
-  **Dixon–Schneider**: the class multiplication matrices commute and share the
-  eigenvector `ω(χ)_i = |K_i|·χ(g_i)/χ(1)`, so choosing `p ≡ 1 (mod exp G)`
-  with `p > |G|` puts every eigenvalue in `GF(p)` and reduces the whole
-  eigen-decomposition to `r × r` work over a word-sized prime field.
-
-  **Values are exact cyclotomic integers, with no floating-point path and no
-  rationals-only fallback.** Every entry is a `NumberFieldElement` of
-  `Q(ζ_{exp G})`. `A4`'s linear characters come out as exactly `ζ₃` and `ζ₃²`;
-  `A5`'s degree-3 pair satisfies `u + v = 1 ∧ uv = −1 ∧ u² = u + 1`, which is
-  the golden ratio checked algebraically rather than numerically; `D5`'s
-  degree-2 characters carry the *other* √5 quadratic in a different field. The
-  lift out of `GF(p)` is exact rather than a bounded heuristic: what is lifted
-  is an eigenvalue *multiplicity* `n_k` with `0 ≤ n_k ≤ χ(1) ≤ √|G| < p`, so
-  its residue **is** its value — no symmetric lift, no rational
-  reconstruction, no bound to get wrong. `Σ_k n_k = χ(1)` is checked per entry,
-  so every value carries its own checksum.
-
-  The orthogonality relations are enforced *inside* the implementation, not
-  only in tests: a table that fails row or column orthogonality is refused
-  rather than returned.
-
-  `D4` and `Q8` are the textbook pair of non-isomorphic groups with
-  **identical** character tables, and the tests assert exactly that — the value
-  matrices equal, the class data different (element orders `[1,2,2,2,4]`
-  against `[1,2,4,4,4]`). A test demanding different tables would have been
-  demanding a wrong answer.
-
-  What is still absent across all four pillars is anything needing backtrack
-  search: Sylow subgroups, element centralizers, subgroup lattices and
-  normalisers. Conjugacy classes are found by enumeration, so the ceiling is
-  `|G| ≤ 200_000` and no ATLAS group fits — enforced, and documented as a
-  ceiling rather than an aspiration.
-
-### Fixed
-
 - **`factor_univariate_mod_p` killed the interpreter for a composite
   modulus.** `factor_univariate_mod_p([6, 5, 1], 15)` (and moduli 4, 9, 12,
   21, …) reached FLINT's `nmod_poly_factor`, which aborted with "Cannot invert
@@ -931,189 +902,212 @@
   `base`. `smt.supported`/`smt.solve` walked the formula recursively in Python
   before reaching the emitter's guard; that walk is now iterative.
 
-### Performance
+### Build and packaging
 
-- **Integers cross between rug and FLINT by limbs, not decimal strings.**
-  `FlintInteger::from_rug` / `to_rug` (and the internal `fmpq` ⇄
-  `rug::Rational` conversion) printed the number in base 10 and parsed it on
-  the other side — superlinear in the bit size, on every path that hands an
-  integer to FLINT: polynomial factoring and gcds, Hermite/Smith normal forms,
-  number theory, primary decomposition, the Risch rational RDE. They now copy
-  64-bit limbs (`fmpz_set_ui_array` / `fmpz_get_ui_array`, both in FLINT 2.9
-  and 3.x), with an `fmpz_set_si` / `fmpz_get_si` fast path for word-sized
-  values. No `mpz_t` crosses between the two libraries — rug's limbs are only
-  read and FLINT writes only into a Rust-owned buffer — so the conversion is
-  safe whether rug and FLINT share one GMP or each link their own. Measured on
-  one machine (release build, FLINT 3.5.0), per conversion: 100 000 bits
-  `from_rug` 854 µs → 2 µs and `to_rug` 744 µs → 1.6 µs; 1 000 000 bits
-  19.3 ms → 22 µs and 14.4 ms → 13 µs. Public signatures are unchanged.
-  `fmpq` built from a `rug::Rational` also skips the redundant
-  `fmpq_canonicalise` (a gcd), since rug keeps rationals in lowest terms.
-- **Number atoms hash without allocating, and `intern` hashes each node
-  once.** `BigInt`, `BigRat` and `BigFloat` used to hash by formatting
-  themselves as a hex string — a heap allocation on every intern lookup and
-  on every key each time the intern table grew. They now hash their limbs
-  (value-based, so `Hash` still agrees with `Eq`: `+0`/`-0` and every NaN hash
-  alike, and a `BigFloat`'s internal MPFR precision does not leak in, while
-  its `prec` field still does). The intern index also stores each key's hash
-  alongside it, so a miss no longer hashes the `ExprData` a second time and a
-  resize rehashes nothing. Hashing a small integer: 80 → 27 ns; `3^2000`:
-  1.3 µs → 0.1 µs; a `pool.integer(k)` hit 109–125 → 73–109 ns;
-  `pool.float(1.1, 53)` 213–224 → 106–143 ns; a 100 000-bit integer hit
-  38 µs → 3.3–4.2 µs; interning a fresh integer ~1 µs → ~0.5 µs. Nothing
-  persisted these hashes, so no file format or output order changes.
-- **Big Python ints cross the binding by bytes, not decimal text — and no
-  longer break past 4300 digits.** Every `int` that did not fit an `i64` went
-  through `str(n)` → GMP parse on the way in and `int(text)` /
-  `Fraction("p/q")` on the way out. CPython caps that conversion at
-  `sys.get_int_max_str_digits()` (4300 digits by default), so
-  `ExprPool().integer(10**5000 + 7)`, `x ** 10**5000`, `x + Fraction(10**5000, 3)`,
-  `number_theory.isprime(10**5000 + 1)`, `evaluate(3**12000, mode="exact")` and
-  big polynomial coefficients all raised `ValueError`, and
-  `evaluate(y + 1, {y: 10**5000}, mode="exact")` misreported `E-EVAL-002`. It
-  was also quadratic: `pool.integer` of a 10⁶-digit int took 10.9 s and now
-  takes 4 ms; reading it back 4.1 s → 2 ms. One helper module
-  (`alkahest-py/src/bigint.rs`, `int.to_bytes`/`from_bytes` ↔
-  `rug::Integer::{from_digits,to_digits}`) now serves every binding file, and
-  `Fraction`s are built from two ints. `Expr.node()` keeps returning decimal
-  strings; the internal Python helpers use the new `Expr._node_exact()`, which
-  returns ints. The `nt_*` / `modular_*` natives also accept ints directly.
-- **ℚ[x] GCDs, rational determinants and rational `rref` go through FLINT.**
-  `RatUniPoly::gcd` (every rational-function operation in summation, Gosper's
-  shifted GCD, polynomial Smith/Hermite forms) was the textbook Euclidean
-  algorithm over `ℚ`; it now clears denominators and calls `fmpz_poly_gcd`,
-  sharing one crate-private helper with the Risch code that already did so, and
-  with the Puiseux and holonomic-asymptotics GCDs (degree 40: 12 ms → 0.06 ms;
-  degree 80: 235 ms → 0.1 ms). `Matrix::det` on numeric entries takes
-  `fmpz_mat_det` after scaling each row by its denominators' lcm instead of
-  Bareiss over `rug::Rational` (60×60: 14 ms → 1.4 ms), and the rational path
-  of `rref`/`rank`/`nullspace`/`row_space_basis` uses `fmpz_mat_rref` (60×50:
-  6.1 ms → 1.5 ms). Outputs are unchanged — the monic GCD, the determinant and
-  the reduced row echelon form are unique — and differential property tests
-  pin each new path to the algorithm it replaced.
-- **Polynomial construction does its arithmetic in FLINT.**
-  `UniPoly::from_symbolic` built a `BTreeMap` of rug coefficients with
-  schoolbook products and only then copied it into an `fmpz_poly`; it now
-  builds the `fmpz_poly` directly (`(x+1)^1000`: 120–190 ms → 0.12 ms), and
-  `FlintPoly::derivative` is one `fmpz_poly_derivative` call instead of a rug
-  round trip per coefficient. `diff` tries that conversion at every non-atom
-  node, so `diff((x+1)^300·sin x)` goes 26 → 2.6 ms. The conversion also
-  memoises shared DAG nodes (in `MultiPoly::from_symbolic` too): a
-  Chebyshev-style recurrence `T_{n+1} = 2x·T_n − T_{n−1}` used to be walked once
-  per path, so `diff(T_24)` took 280–430 ms and now takes 0.2 ms. `MultiPoly`
-  products and powers above a small size go through `fmpz_mpoly_mul` /
-  `fmpz_mpoly_pow_ui` (`p·p` for 286 terms 17 → 0.8 ms;
-  `from_symbolic((x+y+z+1)^20)` 40–70 → 1.3 ms). Results are unchanged,
-  including which error a non-polynomial input reports; proptests pin every
-  path against the previous algorithms, which stay as the fallback for
-  degrees too sparse to hold densely and for exponents that would overflow.
-- **Gröbner reduction runs in place, and Buchberger reduces fraction-free.**
-  The division algorithm rebuilt the whole dividend on every step
-  (`p.sub(..)` via `add(neg(..))`), cloned it again to drop the leading term,
-  rescanned it for that leading term and every divisor for theirs, and
-  `interreduce` cloned the basis once per element. The dividend now lives in a
-  map keyed by an order-preserving encoding of its monomials (leading term =
-  last entry) and is updated in place; divisors' leading data is extracted
-  once, incrementally as the basis grows; `interreduce` skips by index. Inside
-  Buchberger and `interreduce`, where every remainder is made monic anyway,
-  reduction runs over ℤ on primitive integer divisors with periodic content
-  removal instead of paying `mpq`'s gcd canonicalisation on every operation.
-  Divisor choices are unchanged, so the bases are **identical, term for term
-  and in order** — checked against the previous implementation (kept as a
-  test oracle) on cyclic-3/4/5, katsura-2…5 and proptest-generated systems.
-  GRevLex, single core: cyclic-4 0.54 → 0.16 ms, cyclic-5 47 → 5.3 ms,
-  katsura-4 12.7 → 2.2 ms, katsura-5 219 → 19 ms, katsura-6 4.2 s → 0.24 s.
-  `reduce`, FGLM's normal forms and `solve` on polynomial systems use the same
-  engine (the exact rational variant where the remainder itself is returned).
-- **`simplify_egraph` is sized by the expression DAG, not its tree, and no
-  longer re-parses its rule program on every call.** A subterm shared by many
-  parents used to be written out once per path to it — `e_{k+1} =
-  sin(e_k)·cos(e_k)` doubled per level, so depth 14 took 1.3 s and depth 30 was
-  out of reach, and the `node_limit` guard, which counts *distinct* nodes, let
-  a 120-node DAG through to build ~10⁸ terms. Shared nodes are now bound once
-  by egglog `let`s, the result is decoded from egglog's hash-consed `TermDag`
-  instead of re-parsed from its printed tree, and the post-extraction passes
-  are memoised per node, so the guard now bounds the real work: depth 30 takes
-  ~2–3 ms and the Chebyshev DAG `T_40` ~5–8 ms. The configuration-only prelude
-  (datatype and rulesets) is parsed once per thread and cloned, which takes a
-  trivial call such as `x + 0` from ~1.2 ms to ~0.3–0.45 ms. Results are
-  identical to the tree pipeline, which is kept as a differential-test
-  reference. `expr_contains_noncommutative_symbol` now reads the O(1)
-  commutativity flag cached at intern time instead of walking the tree.
+- **The manylinux wheels' GMP is built with `--enable-fat`.** Since the wheels
+  started shipping a source-built GMP 6.3 (one GMP shared by rug and FLINT),
+  that GMP was configured without `--enable-fat`, which tunes its assembly to
+  the build runner's CPU; `auditwheel` then ships it to every user, and an
+  older CPU would take SIGILL on the first bignum multiply. A fat build carries
+  every x86_64 kernel and selects one at load time.
+- **CI and the manylinux wheels now build a pinned FLINT 3.5.0.** Ubuntu
+  24.04's `libflint-dev` is 3.0.1, and the wheel job previously fell back to
+  building **2.9.0**. FLINT absorbed Arb in 3.0 but rewrote the `acb_theta`
+  API in 3.2, and `build.rs` probes the symbol table and silently stubs the
+  `theta` module when those entry points are absent — so the old configuration
+  would have shipped wheels with theta quietly missing, and passed a CI suite
+  that executed no theta at all. New `.github/actions/setup-flint` builds and
+  caches a pinned release, prints which probe symbols are present, and the
+  wheel build now fails loudly if `acb_theta_ql_exact` is absent.
 
-- **`simplify` no longer pays per path, per pool node, or per clone.** The
-  static-domain fact walk that ends every `simplify` visited a shared DAG once
-  per *path*: re-simplifying an already-simplified 104-node Chebyshev-style
-  expression took 491 ms and now takes 0.05 ms. `simplify_redex` /
-  `simplify_auto` sized their per-pass tables by the whole pool — a 7-node
-  expression cost 18–20 ms in an 8M-node pool, now 0.008 ms. The hot rewrite
-  rules decline without cloning the node, and `collect_mul_factors` /
-  `collect_add_terms` without building a bignum map: the derivative of a
-  depth-4000 nested `sin` dropped from 7.9 s to 1.3 s. The fixed-point loop
-  keeps nodes it has proved settled between passes, so the confirming pass
-  only revisits what the previous one built. Results and derivation logs are
-  unchanged, checked step for step against the old code.
+- **One GMP per process in the PyPI wheels: rug now links the system
+  libgmp/libmpfr that FLINT uses.** The extension used to carry *two* GMPs — a
+  static copy that `gmp-mpfr-sys` compiled from source for rug, and the shared
+  libgmp FLINT links — and GMP's allocation hooks are per copy.
+  `Budget(max_bytes=...)` and the address-space guard therefore counted only
+  rug's limbs: a polynomial holding a megabyte-sized FLINT coefficient left
+  `gmp_live_bytes()` flat. The new opt-in `system-gmp` Cargo feature (in both
+  `alkahest-cas` and the Python extension) enables
+  `gmp-mpfr-sys/use-system-libs`, so FLINT's `fmpz` bignums are counted too
+  (`tests/test_resource_budgets.py` pins it, and skips on a build without the
+  feature via `alkahest.alkahest.GMP_SHARED_WITH_FLINT`). It also drops the
+  minutes-long GMP/MPFR compile and the statically linked LGPL GMP. Memory
+  FLINT takes through `flint_malloc` (Arb/Acb mantissas, `nmod` buffers) is
+  still not counted.
 
-- **Numeric evaluation no longer walks a shared DAG once per path, and small
-  expressions stop paying interpreter prices on large batches.**
-  `evaluate` (`f64`, `exact` and `complex` modes) memoizes per call: on the
-  Chebyshev recurrence `T_28` went from 238 ms / 1.1 s / 379 ms to ~20 µs /
-  ~110 µs / ~30 µs, and `T_40` (~1.6e8 paths) now finishes in microseconds.
-  The interpreter tier of `compile_expr` flattens the expression once into a
-  post-order slot program — 2.0 µs → 0.10 µs per point, with no per-point
-  allocation — and `eval_expr` borrows nodes instead of cloning them. The
-  batch entry points behind `numpy_eval` recompile an interpreter-tier
-  function natively (cached on the `CompiledFn`) once a batch reaches 4096
-  points: the audit's small expression at 1e6 points went from 2.05 s to
-  0.22 s. `compile_expr` takes an additive `expected_evals=` hint and reports
-  `CompiledFn.tier`. `trace`/`grad` compile once per traced function instead
-  of on every array call (1k points: 2.2 ms → ~0.3 ms; gradient 3.9 ms →
-  ~0.3 ms). All tiers agree bit for bit with the tree-walking interpreter
-  (property-tested). The "no JIT" warning now points at the dependency-free
-  `cranelift` feature instead of only at LLVM.
-- **Python boundary: pool-aware `Expr` identity, linear parsing of long sums,
-  and `import alkahest` without jax.** `Expr.__eq__`/`__hash__` compared the
-  interned id alone, so `pool_p.symbol("x") == pool_q.symbol("zzz")` was
-  `True` and expressions from two pools collided as dict keys; they now
-  compare (pool, id), and `pool.add`/`mul`/`func` refuse an expression from
-  another pool with `PoolError` (`E-POOL-001`) instead of reading its id as a
-  local one. `parse` interns each run of `+`/`-` (and `*`) with one
-  constructor call instead of a left fold that re-interned a one-wider `Add`
-  per term — the same node, now linear (10 000-term sum 1.8 s → 86 ms).
-  `to_jax` resolves lazily, so `import alkahest` no longer imports jax
-  (~480 ms → ~70 ms on one machine). The ambient certificate gate on every
-  derivation entry point costs ~0.2 µs instead of ~2 µs, and research
-  dependency lookup keys by `Expr` instead of rendering `str()` per
-  subexpression and no longer interns partial sums into the caller's pool.
-  `docs/mdbook/src/kernel.md` now says how to build large sums
-  (`pool.add(terms)`, not `sum()`).
-- **`DerivedResult` renders its derivation lazily, and the heavy entry points
-  release the GIL.** `.derivation` and `.steps` used to be rendered — twice,
-  every `before`/`after` of every step — when the result was built, whether or
-  not anyone read them: 41% of `diff` on a 200-term polynomial. They are now
-  rendered from the stored log on first access; the strings are identical.
-  `simplify` (and its variants), `diff`, `solve`, `cancel`/`together`/`apart`,
-  `sum_*`/`product_*`, `rsolve`, `evaluate`, `integrate_definite`, `factor_z`,
-  `GroebnerBasis.compute*` and the symbolic `Matrix` operations now run their
-  core call under `py.allow_threads`, as `integrate` already did, so
-  `batch_map(parallel=True)` overlaps them. Budgets, ambient assumptions and the
-  `*_side_conditions()` channels are unaffected: the work stays on the calling
-  thread.
+  **Every published wheel is built with `system-gmp`** (each wheel's smoke
+  test asserts it), so `pip install alkahest` users get the accounting with no
+  action. **Source builds are unchanged by default**: the feature is not a
+  default, because it needs GMP ≥ 6.3 and MPFR ≥ 4.2 headers and libraries
+  (`gmp-mpfr-sys` refuses anything older) and Ubuntu 22.04 / Debian 12 ship
+  GMP 6.2. To opt in, pass `--features system-gmp` (Ubuntu 24.04, Debian 13,
+  Fedora, Homebrew and MSYS2 qualify). Homebrew users must also export
+  `CPATH`/`LIBRARY_PATH` for the `gmp` and `mpfr` kegs, because `gmp-mpfr-sys`
+  probes with a bare `cc … -lgmp`. `*-windows-msvc` targets are not supported
+  by the feature (the Windows wheel is MinGW, and needs `pkg-config`). rug's
+  unused `complex` feature (and with it any need for MPC) is dropped.
 
-- **The expression pool stores each node once, and its hot tables use a fast
-  hasher.** The intern index was a map *keyed by* `ExprData`, so every node
-  lived twice — in the node array and, deep-cloned, as the map key — and every
-  miss paid for the clone. The index is now a table of ids (plus 32 hash bits)
-  that compares through the node array, sharded behind `RwLock`s under
-  `parallel`; a miss re-probes under the shard's write lock before it inserts,
-  so two threads interning the same value still get the same id. The pool
-  index and the `ExprId`-keyed memo tables in `simplify`, `diff` and
-  `eval_interp` hash with foldhash instead of SipHash (these keys are
-  pool-assigned indices, so HashDoS resistance bought nothing there). Resident
-  memory for 1.5 M distinct nodes: 225 → 114 bytes/node (1 M integers: 284 →
-  116); interning a fresh integer 377–403 → 170–193 ns, a fresh `Add`
-  448–462 → 264–298 ns; hits 20–40 % faster (`add([x, c])` 79–89 → 63–67 ns).
-  No output, id assignment order or persisted format changes.
+  The manylinux wheel job now source-builds pinned GMP 6.3.0 / MPFR 4.2.2
+  (sha256-checked) before FLINT, since AlmaLinux 8 ships 6.1 / 3.1. That also
+  fixes the manylinux Release job, which had been failing since FLINT 3.5's
+  configure started requiring GMP > 6.2.1. `setup-flint` does the same on any
+  Ubuntu runner whose apt packages are too old (the 22.04 Lean job). A manual
+  dispatch of the Release workflow from a branch other than `main` now builds
+  and smoke-tests every wheel without publishing to TestPyPI, so changes to
+  the wheel build can be checked before they merge.
+
+- **FLINT ≥ 3.3 is now required, and `build.rs` says so.** The bindings call
+  `fq_nmod_mat_transpose` (new in FLINT 3.3) and the `nf_*`,
+  `fq_nmod_ctx_init_ui` and `acb_mat_get_imag` entry points (3.1), so an older
+  FLINT used to compile every file and then fail at link time with
+  `undefined reference to fq_nmod_mat_transpose`. `build.rs` now reads the
+  FLINT version (header, then pkg-config, then the symbol table) and stops
+  with "alkahest-cas requires FLINT >= 3.3 (>= 3.4 for Riemann theta); found
+  FLINT x.y" plus instructions for building FLINT into a prefix. Genus-g
+  Riemann theta needs 3.4, because 3.3 has `acb_theta_all` / `acb_theta_one`
+  only as header inlines; on 3.3 the theta backend is stubbed and reports
+  `E-THETA-001`. Ubuntu 24.04's `libflint-dev` (3.0.1) and Debian 12's (2.9)
+  are too old. README, the getting-started guide and the error text used to
+  say "≥ 2.9". CI's `setup-flint` action and the manylinux wheel job now
+  build FLINT 3.6.0 from its sha256-checked release tarball; `setup-flint`
+  still caches the built prefix.
+
+- **`capabilities()["features"]` gains `arb_backend` and `riemann_theta`.**
+  Neither is a Cargo feature; both are probed from `libflint`. They satisfy
+  the same falsifiability rule the v3 contract applied when it *removed* two
+  keys: `False` guarantees the entry points behind them refuse with
+  `E-THETA-001` rather than computing. `contract_version` stays `3` — the row
+  gained keys and lost none.
+
+- **Computational group theory is now complete across all four pillars.**
+  Permutation groups landed earlier in this cycle; this adds the other three.
+
+  **Matrix groups over GF(q)** — `MatGroup` is a subgroup of `GL(d, q)` from
+  **any** list of invertible generators, not only a classical family. Order,
+  membership and sifting come from a base and strong generating set computed by
+  Schreier–Sims **on the action on vectors**, with the base always inside the
+  standard basis: a matrix fixing every `e_i` is the identity, so a base always
+  exists inside the basis, the chain has at most `d` levels, and applying a
+  generator to a base point is a row read rather than a multiply. The order is
+  a computation, not a formula — `matgroup_gl_order`, `matgroup_sl_order` and
+  `matgroup_sp_order` are the closed forms to check it against, and the tests
+  assert the two agree on around thirty `(n, q)` pairs.
+
+  This is a separate implementation from the permutation Schreier–Sims for a
+  measured reason: `MAX_BSGS_DEGREE = 256` caps a faithful vector action at
+  `q^d − 1 ≤ 256`, which stops at `GL(8,2)`, and a degree-`q^d` permutation
+  costs `q^d` words where the matrix costs `d²`. `GL(4,3)`, of order
+  24,261,120, takes 0.14 s in a debug build. The permutation action is still
+  used as an **independent oracle**: `permutation_action_on_vectors().order()`
+  must equal `MatGroup::order()`, which makes two unrelated Schreier–Sims
+  implementations agree, in a unit test and a proptest.
+
+  Also orbits on vectors and on projective points, product-replacement random
+  elements (seeded, so reproducible), derived subgroup, centre and normal
+  closure.
+
+  **Finitely presented groups** — `FpGroup` from generator names and relator
+  strings, with HLT Todd–Coxeter coset enumeration (lookahead and table
+  compaction), the coset table, the index, `order()`, the permutation
+  representation on cosets, abelian invariants from a Smith normal form, and
+  Reidemeister–Schreier subgroup presentations.
+
+  **The two refusals here are different facts and the subsystem is built to
+  keep them apart.** `E-FPGRP-004` means the coset cap was reached and says
+  **nothing** about whether the group is finite; `E-FPGRP-005` is a *proof* of
+  infiniteness, from an infinite cyclic factor in `G/[G,G]`. `order()` asks the
+  terminating question first, so `⟨a,b | [a,b]⟩` is proved infinite without
+  enumerating anything, while the `(2,3,7)` triangle group — infinite, but with
+  trivial abelianisation — correctly lands on the honest "did not complete".
+  An `assert_ne!` on the two codes keeps them from silently converging. The
+  word problem is undecidable, and conflating "I could not decide" with "no
+  such value exists" is the shape of defect this whole subsystem is arranged
+  to avoid.
+
+  Every returned coset table is verified before it leaves — rows complete,
+  every edge reversible, every relator closing at every coset — so a
+  mishandled coincidence is `E-FPGRP-012` rather than a wrong index.
+
+  Four ways this surface could have answered wrongly or died, found in review
+  and closed before the merge. The first was a **silent wrong answer**:
+  `Word::from_letters` rejected `0` but not `i32::MIN`, and free reduction
+  decides cancellation by `last == -l`. `-i32::MIN` wraps back to `i32::MIN` in
+  a release build, so that letter cancelled *itself* — `Word([i32::MIN] * 2)`
+  freely reduced to the identity, which is a false statement about free-group
+  equality rather than a refusal. It is now `E-FPGRP-001`. The others were
+  unbounded allocations, in a crate whose one memory-abort issue cost an
+  unattended loop its whole interpreter: `Word::pow` is capped on the length of
+  its **result** (`E-FPGRP-013`), because the parser caps a *literal* exponent at
+  100 000 but exponents nest and `(a^100000)^100000` asks for 10^10 letters;
+  `multiplication_table` is capped at `MAX_MULTIPLICATION_TABLE_ORDER`
+  (`E-FPGRP-014`), far below the coset cap, because the table is `|G|²` words
+  *and* `|G|²` transversal traces of up to `|G|/2` letters — cubic in `|G|`, so
+  the cap is set where the *time* becomes unreasonable rather than where the
+  allocator gives up; and `matgroup_sl_order(1, n)` divided a
+  `rug::Integer` by `q − 1 = 0`, which **panicked** — reaching Python as
+  `PanicException`, a `BaseException` that `except Exception` does not catch, so
+  it escaped every handler a caller could write. All three are typed refusals
+  now. Reidemeister–Schreier also checks its Schreier rank *before* rewriting
+  rather than after, and deduplicates with a `HashSet`: at index 20 000 it used
+  to do ~1.8·10⁹ `Word` comparisons and then refuse anyway.
+
+  Two smaller ones from the same review. `for c in ConjugacyClasses(g)` **raised**
+  instead of stopping: with `__len__` and `__getitem__` but no `__iter__`, Python
+  falls back to the sequence protocol, which ends only on `IndexError`, and an
+  out-of-range index raised `E-CHAR-006` — so iterating raised past the last
+  class. There is an `__iter__` now, `__getitem__` takes negative indices, and
+  out of range is `IndexError`; every *named* accessor still carries the code.
+  And `MatGroupError`'s remediation strings named two methods that do not exist
+  and put the projective orbit factor at `(q^d − 1)/(q − 1)` instead of `q − 1`.
+
+  The **capacity examples in the docs were wrong, and wrong again once**: the
+  ceilings on degree, basic orbit and Schreier–Sims work are independent, and
+  several docs named groups that one of the three refuses. `|Sp(12, 3)| ≈ 10^40`
+  was cited as "fine" when its orbit is `3^12 − 1`; `Sp(12, 2)`, whose orbit does
+  fit, turned out to exhaust the *work* budget instead. Every example is now one
+  that was run, and a test pins them, because prose about a ceiling is exactly
+  the kind of claim that drifts silently away from the constant beside it.
+
+  **Group cohomology** — `H⁰`, `H¹` and `H²` of a finite group with
+  coefficients in a finitely generated abelian module, from the bar resolution,
+  with an arbitrary integer action that is **checked against the relators**
+  before use (`E-FPGRP-011`). `H²` classifies extensions. `H¹` with trivial
+  coefficients is additionally cross-checked against `abelian_invariants()`,
+  which is a different computation.
+
+  **Conjugacy classes and character tables** — `CharacterTable` via
+  **Dixon–Schneider**: the class multiplication matrices commute and share the
+  eigenvector `ω(χ)_i = |K_i|·χ(g_i)/χ(1)`, so choosing `p ≡ 1 (mod exp G)`
+  with `p > |G|` puts every eigenvalue in `GF(p)` and reduces the whole
+  eigen-decomposition to `r × r` work over a word-sized prime field.
+
+  **Values are exact cyclotomic integers, with no floating-point path and no
+  rationals-only fallback.** Every entry is a `NumberFieldElement` of
+  `Q(ζ_{exp G})`. `A4`'s linear characters come out as exactly `ζ₃` and `ζ₃²`;
+  `A5`'s degree-3 pair satisfies `u + v = 1 ∧ uv = −1 ∧ u² = u + 1`, which is
+  the golden ratio checked algebraically rather than numerically; `D5`'s
+  degree-2 characters carry the *other* √5 quadratic in a different field. The
+  lift out of `GF(p)` is exact rather than a bounded heuristic: what is lifted
+  is an eigenvalue *multiplicity* `n_k` with `0 ≤ n_k ≤ χ(1) ≤ √|G| < p`, so
+  its residue **is** its value — no symmetric lift, no rational
+  reconstruction, no bound to get wrong. `Σ_k n_k = χ(1)` is checked per entry,
+  so every value carries its own checksum.
+
+  The orthogonality relations are enforced *inside* the implementation, not
+  only in tests: a table that fails row or column orthogonality is refused
+  rather than returned.
+
+  `D4` and `Q8` are the textbook pair of non-isomorphic groups with
+  **identical** character tables, and the tests assert exactly that — the value
+  matrices equal, the class data different (element orders `[1,2,2,2,4]`
+  against `[1,2,4,4,4]`). A test demanding different tables would have been
+  demanding a wrong answer.
+
+  What is still absent across all four pillars is anything needing backtrack
+  search: Sylow subgroups, element centralizers, subgroup lattices and
+  normalisers. Conjugacy classes are found by enumeration, so the ceiling is
+  `|G| ≤ 200_000` and no ATLAS group fits — enforced, and documented as a
+  ceiling rather than an aspiration.
 
 ### Testing and tooling
 
