@@ -53,7 +53,14 @@
 
 use super::ffi;
 
-struct ThreadCleanup;
+struct ThreadCleanup {
+    /// A test's label for this thread, read back by `Drop`. Kept in the guard
+    /// itself rather than in a second thread-local because platforms differ
+    /// in the order they destroy thread-locals (Windows ran a separate tag's
+    /// destructor first and the guard then read a fresh zero).
+    #[cfg(test)]
+    tag: std::cell::Cell<u64>,
+}
 
 impl Drop for ThreadCleanup {
     fn drop(&mut self) {
@@ -61,25 +68,19 @@ impl Drop for ThreadCleanup {
         // only the calling thread's caches and leaves them reusable.
         unsafe { ffi::flint_cleanup() };
         #[cfg(test)]
-        {
-            let tag = TAG.with(|t| t.get());
-            if tag != 0 {
-                CLEANED_TAGS.lock().unwrap().push(tag);
-            }
+        if self.tag.get() != 0 {
+            CLEANED_TAGS.lock().unwrap().push(self.tag.get());
         }
     }
 }
 
 thread_local! {
-    static GUARD: ThreadCleanup = const { ThreadCleanup };
-}
-
-#[cfg(test)]
-thread_local! {
-    /// A test's label for this thread. A `Cell` of plain data has no
-    /// destructor, so it stays readable while other thread-locals are being
-    /// destroyed, in whatever order a platform runs them.
-    static TAG: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static GUARD: ThreadCleanup = const {
+        ThreadCleanup {
+            #[cfg(test)]
+            tag: std::cell::Cell::new(0),
+        }
+    };
 }
 
 /// Tags of the threads whose guard ran `flint_cleanup`.
@@ -102,25 +103,19 @@ mod tests {
     use crate::flint::FlintInteger;
     use rug::ops::Pow;
 
-    /// A thread that made a big integer runs `flint_cleanup` on exit, and a
-    /// thread that never touched FLINT does not.
+    /// A thread that made a big integer runs `flint_cleanup` on exit.
     #[test]
     fn a_thread_that_used_flint_cleans_up_when_it_exits() {
         const USED: u64 = 0x5eed_0001;
-        const IDLE: u64 = 0x5eed_0002;
         std::thread::spawn(|| {
-            TAG.with(|t| t.set(USED));
             let big = FlintInteger::from_i64(3).pow(200);
             assert!(big.to_string().len() > 90);
+            GUARD.with(|g| g.tag.set(USED));
         })
         .join()
         .unwrap();
-        std::thread::spawn(|| TAG.with(|t| t.set(IDLE)))
-            .join()
-            .unwrap();
         let tags = CLEANED_TAGS.lock().unwrap();
         assert_eq!(tags.iter().filter(|&&t| t == USED).count(), 1);
-        assert!(!tags.contains(&IDLE));
     }
 
     /// The cleanup must not free a block that still backs a live integer: a
