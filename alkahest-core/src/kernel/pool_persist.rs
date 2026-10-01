@@ -186,34 +186,85 @@ fn write_ids(w: &mut impl Write, ids: &[ExprId]) -> io::Result<()> {
     Ok(())
 }
 
-fn read_u8(r: &mut impl Read) -> Result<u8, IoError> {
+/// Largest float precision, in bits, a pool file may declare.
+///
+/// `rug::Float::with_val` panics on a precision of 0 or past its own maximum,
+/// and allocates the whole mantissa up front, so a crafted `prec = u32::MAX`
+/// asks for half a gigabyte before a single digit is read.  This is the same
+/// ceiling the Python bindings put on every user-supplied precision.
+const MAX_FILE_FLOAT_PREC: u32 = 1 << 24;
+
+/// The smallest encoding of any node (`tag` + one `u32`), used to bound the
+/// declared node count by the bytes actually present.
+const MIN_NODE_BYTES: u64 = 5;
+
+/// A reader that knows how many bytes are left in the file.
+///
+/// Every length-prefixed field (a string, a child list, a piecewise branch
+/// list) is checked against the bytes remaining *before* anything is
+/// allocated for it.  Without that, a four-byte length of `0xFFFF_FFF0` in a
+/// corrupt or hostile file is a 4 GiB `vec![0; len]` — an allocation failure
+/// that aborts the process instead of returning an error.
+struct Bounded<R> {
+    inner: R,
+    remaining: u64,
+}
+
+impl<R: Read> Bounded<R> {
+    fn new(inner: R, len: u64) -> Self {
+        Bounded {
+            inner,
+            remaining: len,
+        }
+    }
+
+    /// Refuse a field that claims `count` items of `size` bytes each when the
+    /// file does not hold that many bytes.
+    fn ensure(&self, count: u64, size: u64) -> Result<(), IoError> {
+        match count.checked_mul(size) {
+            Some(n) if n <= self.remaining => Ok(()),
+            _ => Err(IoError::Truncated),
+        }
+    }
+
+    fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), IoError> {
+        self.ensure(buf.len() as u64, 1)?;
+        self.inner.read_exact(buf).map_err(|_| IoError::Truncated)?;
+        self.remaining -= buf.len() as u64;
+        Ok(())
+    }
+}
+
+fn read_u8(r: &mut Bounded<impl Read>) -> Result<u8, IoError> {
     let mut b = [0u8; 1];
-    r.read_exact(&mut b).map_err(|_| IoError::Truncated)?;
+    r.read_exact(&mut b)?;
     Ok(b[0])
 }
 
-fn read_u32(r: &mut impl Read) -> Result<u32, IoError> {
+fn read_u32(r: &mut Bounded<impl Read>) -> Result<u32, IoError> {
     let mut b = [0u8; 4];
-    r.read_exact(&mut b).map_err(|_| IoError::Truncated)?;
+    r.read_exact(&mut b)?;
     Ok(u32::from_le_bytes(b))
 }
 
-fn read_u64(r: &mut impl Read) -> Result<u64, IoError> {
+fn read_u64(r: &mut Bounded<impl Read>) -> Result<u64, IoError> {
     let mut b = [0u8; 8];
-    r.read_exact(&mut b).map_err(|_| IoError::Truncated)?;
+    r.read_exact(&mut b)?;
     Ok(u64::from_le_bytes(b))
 }
 
-fn read_str(r: &mut impl Read) -> Result<String, IoError> {
-    let len = read_u32(r)? as usize;
-    let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf).map_err(|_| IoError::Truncated)?;
+fn read_str(r: &mut Bounded<impl Read>) -> Result<String, IoError> {
+    let len = u64::from(read_u32(r)?);
+    r.ensure(len, 1)?;
+    let mut buf = vec![0u8; len as usize];
+    r.read_exact(&mut buf)?;
     String::from_utf8(buf).map_err(|_| IoError::BadUtf8)
 }
 
-fn read_ids(r: &mut impl Read) -> Result<Vec<ExprId>, IoError> {
-    let arity = read_u32(r)? as usize;
-    let mut out = Vec::with_capacity(arity);
+fn read_ids(r: &mut Bounded<impl Read>) -> Result<Vec<ExprId>, IoError> {
+    let arity = u64::from(read_u32(r)?);
+    r.ensure(arity, 4)?;
+    let mut out = Vec::with_capacity(arity as usize);
     for _ in 0..arity {
         out.push(ExprId(read_u32(r)?));
     }
@@ -367,7 +418,7 @@ fn write_node(w: &mut impl Write, node: &ExprData) -> io::Result<()> {
     }
 }
 
-fn read_node(r: &mut impl Read, format_version: u32) -> Result<ExprData, IoError> {
+fn read_node(r: &mut Bounded<impl Read>, format_version: u32) -> Result<ExprData, IoError> {
     let tag = read_u8(r)?;
     match tag {
         0 => {
@@ -400,10 +451,20 @@ fn read_node(r: &mut impl Read, format_version: u32) -> Result<ExprData, IoError
             let d: rug::Integer = dstr
                 .parse()
                 .map_err(|_| IoError::BadNumeric(format!("denom: {dstr}")))?;
+            if d == 0 {
+                // `Rational::from((n, 0))` panics.
+                return Err(IoError::BadNumeric(format!("rational {nstr}/0")));
+            }
             Ok(ExprData::Rational(BigRat(rug::Rational::from((n, d)))))
         }
         3 => {
             let prec = read_u32(r)?;
+            if prec == 0 || prec > MAX_FILE_FLOAT_PREC {
+                // `Float::with_val(0, _)` panics; a huge one allocates first.
+                return Err(IoError::BadNumeric(format!(
+                    "float precision {prec} bits is outside 1..={MAX_FILE_FLOAT_PREC}"
+                )));
+            }
             let s = read_str(r)?;
             let f = rug::Float::parse_radix(&s, 16)
                 .map_err(|_| IoError::BadNumeric(format!("float: {s}")))?;
@@ -423,8 +484,9 @@ fn read_node(r: &mut impl Read, format_version: u32) -> Result<ExprData, IoError
             Ok(ExprData::Func { name, args })
         }
         8 => {
-            let n = read_u32(r)? as usize;
-            let mut branches = Vec::with_capacity(n);
+            let n = u64::from(read_u32(r)?);
+            r.ensure(n, 8)?;
+            let mut branches = Vec::with_capacity(n as usize);
             for _ in 0..n {
                 let c = ExprId(read_u32(r)?);
                 let v = ExprId(read_u32(r)?);
@@ -524,10 +586,11 @@ pub fn load_from(path: impl AsRef<Path>) -> Result<Option<ExprPool>, IoError> {
     }
 
     let f = File::open(path)?;
-    let mut r = BufReader::new(f);
+    let len = f.metadata()?.len();
+    let mut r = Bounded::new(BufReader::new(f), len);
 
     let mut magic = [0u8; 4];
-    r.read_exact(&mut magic).map_err(|_| IoError::Truncated)?;
+    r.read_exact(&mut magic)?;
     if &magic != MAGIC {
         return Err(IoError::BadMagic);
     }
@@ -544,7 +607,18 @@ pub fn load_from(path: impl AsRef<Path>) -> Result<Option<ExprPool>, IoError> {
     let _flags = read_u32(&mut r)?;
 
     let pool = ExprPool::new();
-    let count = read_u64(&mut r)? as usize;
+    let count = read_u64(&mut r)?;
+    // Each node takes at least `MIN_NODE_BYTES`, so a count the rest of the
+    // file cannot hold is a truncated (or corrupt) file, refused before the
+    // loop rather than after it has run out of bytes.
+    r.ensure(count, MIN_NODE_BYTES)?;
+    if count > u64::from(u32::MAX) {
+        return Err(IoError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("pool file declares {count} nodes, more than an ExprId can address"),
+        )));
+    }
+    let count = count as usize;
     // File index → id in the rebuilt pool.  These are equal for a file this
     // build wrote, but not in general: `intern` canonicalises (a `Rational`
     // with denominator 1 becomes an `Integer`, a one-argument `Add` becomes
@@ -882,5 +956,178 @@ mod tests {
         let q = ExprPool::open_persistent(&path).unwrap();
         assert_eq!(q.get(o), p.get(o));
         let _ = fs::remove_file(&path);
+    }
+
+    // -- Corrupt and hostile files (audit B8/B9) ---------------------------
+
+    fn header(count: u64) -> Vec<u8> {
+        let mut v = MAGIC.to_vec();
+        v.extend_from_slice(&POOL_FORMAT_WRITE.to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v.extend_from_slice(&count.to_le_bytes());
+        v
+    }
+
+    fn load_bytes(bytes: &[u8]) -> Result<Option<ExprPool>, IoError> {
+        let path = tempfile();
+        std::fs::write(&path, bytes).unwrap();
+        let r = load_from(&path);
+        let _ = fs::remove_file(&path);
+        r
+    }
+
+    fn le32(v: u32) -> [u8; 4] {
+        v.to_le_bytes()
+    }
+
+    /// Each of these used to abort the process (a length-prefixed field was
+    /// allocated at its declared size before the bytes were read) or panic
+    /// inside `rug`.  All of them must now come back as an `Err`.
+    #[test]
+    fn hostile_headers_are_refused_not_allocated() {
+        let mut cases: Vec<(&str, Vec<u8>, &str)> = Vec::new();
+        // Symbol whose name claims ~4 GiB.
+        let mut b = header(1);
+        b.extend_from_slice(&[0, 0, 1]);
+        b.extend_from_slice(&le32(0xFFFF_FFF0));
+        cases.push(("huge string length", b, "E-IO-004"));
+        // Add whose arity claims ~4 G children.
+        let mut b = header(1);
+        b.push(4);
+        b.extend_from_slice(&le32(0xFFFF_FFF0));
+        cases.push(("huge arity", b, "E-IO-004"));
+        // Piecewise whose branch count claims ~4 G pairs.
+        let mut b = header(1);
+        b.push(8);
+        b.extend_from_slice(&le32(0xFFFF_FFF0));
+        cases.push(("huge branch count", b, "E-IO-004"));
+        // Node count far past what the file holds.
+        let mut b = header(1 << 62);
+        b.extend_from_slice(&[0, 0, 1]);
+        b.extend_from_slice(&le32(1));
+        b.push(b'x');
+        cases.push(("huge node count", b, "E-IO-004"));
+        // Rational with a zero denominator.
+        let mut b = header(1);
+        b.push(2);
+        b.extend_from_slice(&le32(1));
+        b.push(b'1');
+        b.extend_from_slice(&le32(1));
+        b.push(b'0');
+        cases.push(("zero denominator", b, "E-IO-009"));
+        // Floats at precision 0 and u32::MAX.
+        for prec in [0u32, u32::MAX, MAX_FILE_FLOAT_PREC + 1] {
+            let mut b = header(1);
+            b.push(3);
+            b.extend_from_slice(&le32(prec));
+            b.extend_from_slice(&le32(1));
+            b.push(b'1');
+            cases.push(("float precision", b, "E-IO-009"));
+        }
+        use crate::errors::AlkahestError;
+        for (what, bytes, code) in cases {
+            let r = std::panic::catch_unwind(|| load_bytes(&bytes))
+                .unwrap_or_else(|_| panic!("{what}: loading panicked"));
+            match r {
+                Err(e) => assert_eq!(e.code(), code, "{what}: {e}"),
+                Ok(_) => panic!("{what}: a corrupt file loaded"),
+            }
+        }
+    }
+
+    /// Two copies of the same node in a file must not shift every later
+    /// reference by one: `[x, x, y, Pow(1, 2)]` is `x^y`, not `y^?`.
+    #[test]
+    fn duplicate_nodes_do_not_drift_later_references() {
+        let sym = |n: &str| ExprData::Symbol {
+            name: n.into(),
+            domain: Domain::Real,
+            commutative: true,
+        };
+        let nodes = vec![
+            sym("x"),
+            sym("x"),
+            sym("y"),
+            ExprData::Pow {
+                base: ExprId(1),
+                exp: ExprId(2),
+            },
+        ];
+        let path = tempfile();
+        write_raw(&path, &nodes);
+        let q = load_from(&path).unwrap().unwrap();
+        let _ = fs::remove_file(&path);
+        let x = q.symbol("x", Domain::Real);
+        let y = q.symbol("y", Domain::Real);
+        let before = q.len();
+        let _ = q.pow(x, y);
+        assert_eq!(q.len(), before, "x^y was not the node the file meant");
+        assert_eq!(q.len(), 3);
+    }
+
+    /// A pool using every node tag, as bytes.
+    fn every_tag_file() -> Vec<u8> {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let t = p.symbol("t", Domain::Complex);
+        let big = p.integer(rug::Integer::from(rug::Integer::u_pow_u(10, 30)));
+        let r = p.rational(-3, 7);
+        let f = p.float(2.5, 80);
+        let s = p.add(vec![x, big, r, f]);
+        let m = p.mul(vec![x, t]);
+        let pw = p.pow(s, m);
+        let sn = p.func("sin", vec![pw]);
+        let g = p.func("f", vec![x, t, sn]);
+        let c = p.pred_gt(x, p.integer(0));
+        let pc = p.piecewise(vec![(c, g)], r);
+        let fa = p.forall(x, c);
+        let ex = p.exists(t, fa);
+        let o = p.big_o(p.pow(x, p.integer(3)));
+        let poly = p.add(vec![p.pow(t, p.integer(2)), p.integer(1)]);
+        let rs = p.root_sum(poly, t, p.func("log", vec![p.add(vec![x, t])]));
+        let _ = p.add(vec![pc, ex, o, rs]);
+        let path = tempfile();
+        p.checkpoint(&path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let _ = fs::remove_file(&path);
+        bytes
+    }
+
+    /// Load `bytes`; if it loads, print every node.  Either outcome is fine;
+    /// a panic is not.
+    fn load_and_touch(bytes: &[u8]) -> bool {
+        std::panic::catch_unwind(|| {
+            if let Ok(Some(q)) = load_bytes(bytes) {
+                for i in 0..q.len() {
+                    let _ = q.display(ExprId(i as u32)).to_string();
+                }
+            }
+        })
+        .is_ok()
+    }
+
+    /// Every truncation and every single-bit flip of a valid file loads as
+    /// `Ok` or `Err` — never a panic.  (The Python suite re-runs this in a
+    /// subprocess, where an allocation abort would also be caught.)
+    #[test]
+    fn truncated_and_bit_flipped_files_never_panic() {
+        let good = every_tag_file();
+        assert!(load_bytes(&good).unwrap().is_some());
+        let mut bad = Vec::new();
+        for n in 0..good.len() {
+            if !load_and_touch(&good[..n]) {
+                bad.push(format!("truncated to {n}"));
+            }
+        }
+        for i in 0..good.len() {
+            for bit in 0..8 {
+                let mut b = good.clone();
+                b[i] ^= 1 << bit;
+                if !load_and_touch(&b) {
+                    bad.push(format!("byte {i} bit {bit}"));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "panicked on: {bad:?}");
     }
 }
