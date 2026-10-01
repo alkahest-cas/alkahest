@@ -1015,12 +1015,18 @@ fn numer_denom(e: ExprId, pool: &ExprPool) -> (ExprId, ExprId) {
         }
         ExprData::Pow { base, exp } => {
             if let ExprData::Integer(k) = pool.get(exp) {
-                let ki = k.0.to_i64().unwrap_or(0);
+                // The exponent is used exactly.  This read `to_i64()
+                // .unwrap_or(0)` and then negated into an `i32`: an exponent
+                // below `i64::MIN` took the `k ≥ 0` arm (a negative power
+                // left in the "numerator"), and one in `i64` but past `i32`
+                // lost its high bits — `x^-(2^32+1)` split as `(1, x^1)`,
+                // i.e. the wrong function — in the residue criterion whose
+                // `true` certifies NonElementary.
                 let (bn, bd) = numer_denom(base, pool);
-                if ki >= 0 {
+                if k.0 >= 0 {
                     (pool.pow(bn, exp), pool.pow(bd, exp))
                 } else {
-                    let pe = pool.integer((-ki) as i32);
+                    let pe = pool.integer(-k.0);
                     (pool.pow(bd, pe), pool.pow(bn, pe))
                 }
             } else {
@@ -1038,6 +1044,35 @@ mod tests {
 
     fn p() -> ExprPool {
         ExprPool::new()
+    }
+
+    /// `numer_denom` splits `x^k` with the exact exponent for every `k`,
+    /// including ones past `i32` and `i64`.  It truncated the negated
+    /// exponent to `i32` (so `x^-(2^32+1)` became `1 / x^1`) and read an
+    /// exponent past `i64` as `0` (so a negative one stayed a negative
+    /// power in the "numerator").
+    #[test]
+    fn numer_denom_keeps_exponents_past_machine_words_exact() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let one = pool.integer(1_i32);
+        let big = |e: u32| rug::Integer::from(rug::Integer::u_pow_u(2, e));
+        for m in [big(32) + 1, big(63), big(63) + 1, big(70)] {
+            let neg = pool.pow(x, pool.integer(-m.clone()));
+            let (n, d) = numer_denom(neg, &pool);
+            let want_d = pool.pow(x, pool.integer(m.clone()));
+            assert_eq!(
+                (n, d),
+                (pool.pow(one, pool.integer(m.clone())), want_d),
+                "x^-{m} split as {} / {}",
+                pool.display(n),
+                pool.display(d)
+            );
+            let pos = pool.pow(x, pool.integer(m.clone()));
+            let (n, d) = numer_denom(pos, &pool);
+            assert_eq!(n, pos, "x^{m} numerator");
+            assert_eq!(d, pool.pow(one, pool.integer(m.clone())));
+        }
     }
 
     /// Tutorial Example 15:
