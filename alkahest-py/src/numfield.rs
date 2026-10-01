@@ -61,6 +61,16 @@ fn trip_err(t: BudgetTrip) -> PyErr {
     })
 }
 
+/// [`nt_err`] for callers outside this module: a budget trip is the shared
+/// `BudgetExceededError`, an input error keeps the `NumberTheoryError` class
+/// it always had, anything else is an `ArithmeticError`.
+pub(crate) fn arithmetic_error_to_py(e: ArithmeticError) -> PyErr {
+    if let ArithmeticError::Input(inner) = e {
+        return crate::number_theory_error_to_py(inner);
+    }
+    nt_err(e)
+}
+
 fn nt_err(e: ArithmeticError) -> PyErr {
     if let ArithmeticError::Resource(t) = e {
         return trip_err(t);

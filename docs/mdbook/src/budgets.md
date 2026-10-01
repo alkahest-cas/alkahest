@@ -60,7 +60,15 @@ a handful of strategic points — not blanket-inserted into every loop:
   Hermite reduction, Rothstein–Trager, the partial-fraction pass and each of its
   irreducible factors); and inside the two Euclidean loops that dominate a hard
   rational integrand — the ℚ[x] GCD used to reduce `A/D` to lowest terms and the
-  number-field GCD of Lazard–Rioboo–Trager. A trip raises `BudgetExceededError` —
+  number-field GCD of Lazard–Rioboo–Trager; and in the undetermined-coefficient
+  ansatz of the tower Risch differential equation (per candidate denominator, per
+  basis column, per elimination pivot), where `∫(2x + log x)^{-1/2} dx` used to spend
+  400 s before declining and a 3 s budget took 8.6 s to fire. With no budget, the same
+  ansatz stops after a fixed number of steps per top-level call (deterministic, not a
+  clock) and the integral is declined. Converting a power to a
+  dense ℚ[x] polynomial is checked per multiplication and refused past degree 8192,
+  so `1/(x^(2^31)+1)` no longer builds a degree-2³¹ polynomial by repeated
+  multiplication under `integrate` or `apart`. A trip raises `BudgetExceededError` —
   integration has a `Result` return type with a natural place to signal it.
 
   Those last few are not decoration. See
@@ -77,6 +85,17 @@ a handful of strategic points — not blanket-inserted into every loop:
   `BudgetExceededError` exactly as `integrate` does. With **no** budget active the
   same paths are bounded by an internal work ceiling, so an unsolvable limit refuses
   with `LimitError` / `E-LIMIT-004` instead of running unboundedly.
+  An expression with an undefined *constant* in it (`0**-1`, `log(0)`, `1/(1-1)`)
+  is refused up front with `E-LIMIT-005`: it is undefined at every point, and
+  differentiating the unevaluated `0**-1` for Taylor coefficients grows without
+  bound (`limit(x*0**-1, x, 1)` used to exhaust memory).
+- **`alkahest.number_theory.factorint`** — `fmpz_factor` is one uninterruptible FLINT
+  call, so under a budget the factorisation instead climbs a ladder of bounded-effort
+  `fmpz_factor_smooth` passes (ECM tuned for factors of 16, 20, …, 60 bits) with a
+  check between passes, and hands only cofactors of at most 160 bits to the full
+  factoriser. A composite still unsplit when the budget runs out raises
+  `BudgetExceededError`; the overshoot is one pass. With no budget it is unbounded, as
+  before — `(2⁸⁹−1)(2¹⁰⁷−1)(2¹²⁷−1)` can take arbitrarily long.
 - **`alkahest.simplify`** (and `simplify_with`, `simplify_batch`) — once per full
   bottom-up rewrite pass. `simplify` has **no error channel** (`DerivedExpr` isn't a
   `Result`), so a trip here stops further passes early and returns the best value

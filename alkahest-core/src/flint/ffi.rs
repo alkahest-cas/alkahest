@@ -398,6 +398,17 @@ extern "C" {
     pub fn fmpz_factor_init(fac: *mut FmpzFactorStruct);
     pub fn fmpz_factor_clear(fac: *mut FmpzFactorStruct);
     pub fn fmpz_factor(fac: *mut FmpzFactorStruct, n: *const fmpz);
+    // Budget-aware factorisation (`number_theory::factorint_bounded`): a
+    // bounded-effort pass that finds the prime factors up to about `bits` bits
+    // and leaves the (possibly composite) cofactor as the last entry, and the
+    // cheap compositeness screen for that cofactor.
+    pub fn fmpz_factor_smooth(
+        fac: *mut FmpzFactorStruct,
+        n: *const fmpz,
+        bits: slong,
+        proved: c_int,
+    ) -> c_int;
+    pub fn fmpz_is_probabprime(n: *const fmpz) -> c_int;
 
     pub fn fmpz_fdiv_ui(g: *const fmpz, h: ulong) -> ulong;
     pub fn fmpz_get_ui(f: *const fmpz) -> ulong;

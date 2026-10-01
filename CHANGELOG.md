@@ -369,6 +369,32 @@
   refused. `∫_{-1}^{2} (1/x + tanh(i)) dx` returned a finite value because
   the non-real constant turned every pole scan off; the scans now ignore
   summands and factors free of the variable (audit A10).
+- **`limit` of an expression with an undefined constant hung or ran out of
+  memory.** `limit(0**-1 + x, x, 1)` ran for hours and `limit(x*0**-1, x, 1)`,
+  `limit(log(0) + x, x, 1)` exhausted memory: `0⁻¹` stays unevaluated, every
+  rule treats it as an opaque constant, and differentiating it for a Taylor
+  coefficient triples its size per order. An expression containing a negative
+  power or `log` of a constant that is exactly `0` is undefined at every point
+  and is now refused up front (`E-LIMIT-005`) (audit C4).
+- **`integrate` ran for minutes past its budget in the tower Risch-DE
+  ansatz.** `∫(2x + log x)^{-1/2} dx` spent 400 s before declining and a 3 s
+  budget took 8.6 s to fire; nothing between `integrate`'s entry checkpoint
+  and the answer looked at the clock. The ansatz now checks the budget per
+  candidate denominator, per basis column, per linear-system row block and
+  per elimination pivot (the same budget now fires at 3.1 s), and with no
+  budget at all spends at most 600 such steps per top-level `integrate` call
+  before declining — a deterministic ceiling; the whole Python suite spends
+  none, and `∫(2x + log x)^{-1/2} dx` now declines in about 2.4 s instead of
+  400 s (audit C5).
+- **`factorint`, `apart` and `integrate` ignored a wall-clock budget.**
+  `factorint((2⁸⁹−1)(2¹⁰⁷−1)(2¹²⁷−1))` under `Budget(wall_ms=1000)` ran past
+  20 s inside one uninterruptible `fmpz_factor`; under a budget it now climbs a
+  ladder of bounded-effort `fmpz_factor_smooth` passes with a check between
+  them and raises `BudgetExceededError` about one pass after the deadline
+  (unbudgeted it is unchanged, and documented as unbounded). `apart` and
+  `integrate` of `1/(x^(2^31)+1)` built a dense degree-`2³¹` ℚ[x] polynomial by
+  repeated multiplication; that conversion now declines past degree 8192 and
+  checks the budget per multiplication (audit C6).
 - **`simplify` folded indeterminate forms to numbers: `oo - oo → 0`,
   `oo * 0 → 0`, `oo / oo → 1`, and for IEEE floats `NaN - NaN → 0`,
   `NaN * 0 → 0`, `inf * 0 → 0`, `inf - inf → 0`, `x*inf - x*inf → 0`.**

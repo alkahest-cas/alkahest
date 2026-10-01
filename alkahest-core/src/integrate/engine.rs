@@ -2338,6 +2338,8 @@ fn integrate_dispatch(
     // back to the algebraic engine, so the algebraic engine runs *first* only
     // when there are no transcendental (exp/log) generators — and, since #319's
     // sibling fix below, *again* when the Risch tower declines.
+    // Bounds the tower Risch-DE ansatz across the whole call (audit C5).
+    let _rde_work = super::risch::tower_field::RdeWorkFrame::enter();
     let has_algebraic = super::algebraic::contains_algebraic_subterm(expr, pool)
         || super::algebraic::contains_algebraic_func_of_var(expr, var, pool);
     let has_transcendental = super::risch::contains_risch_form(expr, var, pool);

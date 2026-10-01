@@ -420,7 +420,69 @@ pub fn limit(
     let _ceiling = enter_coeff_ceiling(coeff_ceiling(pool));
 
     let expr = substitute_assumed_equalities(expr, var, pool);
+    // An expression with an undefined *constant* in it — `0⁻¹`, `log 0`,
+    // `1/(1−1)` — is undefined at every `x`, so there is no limit to take.
+    // Worse, the engine could not tell: `0⁻¹` stays unevaluated (it is not
+    // `∞`), every rule treats it as an opaque constant, and differentiating it
+    // for a Taylor coefficient produces `0·(−1)·0⁻²`, whose derivatives triple
+    // in size each order without ever simplifying. `lim_{x→1} (0⁻¹ + x)` ran
+    // for hours and `lim_{x→1} x·0⁻¹` exhausted memory (audit C4). Refuse up
+    // front, before any rule runs.
+    if frame.outermost && has_undefined_constant(expr, var, pool) {
+        return Err(LimitError::Unsupported);
+    }
     limit_body(expr, var, point, direction, pool).map_err(|e| attribute_failure(e, pool))
+}
+
+/// True when `expr` contains a subterm free of `var` that denotes no number:
+/// a power of a constant equal to `0` with a negative exponent, or the `log`
+/// of one.
+///
+/// "Equal to `0`" is decided by the interpreter returning exactly `0.0` for a
+/// closed subterm, which is positive evidence (`1 − 1`, `sin 0`, `0`), never a
+/// guess: a constant that is merely tiny, or that the interpreter cannot
+/// evaluate, is left alone.
+fn has_undefined_constant(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    fn is_exact_zero_constant(e: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+        if depends_on(e, var, pool) {
+            return false;
+        }
+        crate::jit::eval_interp(e, &HashMap::new(), pool) == Some(0.0)
+    }
+    fn is_negative_constant(e: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+        match pool.get(e) {
+            ExprData::Integer(n) => n.0 < 0,
+            ExprData::Rational(r) => r.0 < 0,
+            _ => {
+                !depends_on(e, var, pool)
+                    && crate::jit::eval_interp(e, &HashMap::new(), pool).is_some_and(|v| v < 0.0)
+            }
+        }
+    }
+    fn walk(
+        e: ExprId,
+        var: ExprId,
+        pool: &ExprPool,
+        seen: &mut std::collections::HashSet<ExprId>,
+    ) -> bool {
+        if !seen.insert(e) {
+            return false;
+        }
+        match pool.get(e) {
+            ExprData::Pow { base, exp } => {
+                (is_negative_constant(exp, var, pool) && is_exact_zero_constant(base, var, pool))
+                    || walk(base, var, pool, seen)
+                    || walk(exp, var, pool, seen)
+            }
+            ExprData::Func { name, args } => {
+                (name == "log" && args.len() == 1 && is_exact_zero_constant(args[0], var, pool))
+                    || args.iter().any(|&a| walk(a, var, pool, seen))
+            }
+            ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().any(|&x| walk(x, var, pool, seen)),
+            _ => false,
+        }
+    }
+    walk(expr, var, pool, &mut std::collections::HashSet::new())
 }
 
 /// Replace every symbol the ambient assumption scope pins to a literal by that
@@ -2689,6 +2751,58 @@ mod lcm_small_tests {
 mod tests {
     use super::*;
     use crate::kernel::Domain;
+
+    /// Audit C4: an undefined constant makes the expression undefined at every
+    /// point, and differentiating the unevaluated `0⁻¹` for Taylor
+    /// coefficients grew without bound (hours; out of memory). Refused before
+    /// any rule runs.
+    #[test]
+    fn an_undefined_constant_is_refused_up_front() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let zero = p.integer(0);
+        let one = p.integer(1);
+        let inv_zero = p.pow(zero, p.integer(-1));
+        let log_zero = p.func("log", vec![zero]);
+        let one_minus_one = p.add(vec![one, p.integer(-1)]);
+        let cases = [
+            (p.add(vec![inv_zero, x]), one),
+            (p.mul(vec![x, inv_zero]), one),
+            (p.add(vec![log_zero, x]), one),
+            (
+                p.add(vec![p.pow(one_minus_one, p.integer(-1)), x]),
+                p.pos_infinity(),
+            ),
+        ];
+        for (expr, point) in cases {
+            let t = std::time::Instant::now();
+            let r = limit(expr, x, point, LimitDirection::Bidirectional, &p);
+            assert!(
+                matches!(r, Err(LimitError::Unsupported)),
+                "{}: {r:?}",
+                p.display(expr)
+            );
+            assert!(
+                t.elapsed().as_secs() < 5,
+                "{} took {:?}",
+                p.display(expr),
+                t.elapsed()
+            );
+        }
+    }
+
+    /// The control: a symbol that merely *could* be zero is not an undefined
+    /// constant, and a genuinely removable `0/0` in the limit is not one either.
+    #[test]
+    fn a_parameter_is_not_an_undefined_constant() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let a = p.symbol("a", Domain::Real);
+        let expr = p.mul(vec![x, p.pow(a, p.integer(-1))]);
+        assert!(!has_undefined_constant(expr, x, &p));
+        let sinc = p.mul(vec![p.func("sin", vec![x]), p.pow(x, p.integer(-1))]);
+        assert!(!has_undefined_constant(sinc, x, &p));
+    }
 
     #[test]
     fn limit_sin_over_x_zero() {

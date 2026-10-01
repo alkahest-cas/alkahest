@@ -176,6 +176,103 @@ pub fn factorint(n: &str) -> Result<(i32, Vec<(String, u64)>), NumberTheoryError
     Ok((fac.sign(), out))
 }
 
+/// Composite cofactors at most this many bits are handed to FLINT's full
+/// `fmpz_factor` even under a budget: its quadratic sieve finishes a 160-bit
+/// (48-digit) semiprime in well under a second, and without it the only way
+/// to split a balanced one is ECM luck.
+const FACTOR_FULL_BITS: u64 = 160;
+
+/// The `fmpz_factor_smooth` effort ladder, in bits of the factors sought.
+/// Small steps, because a single step is one uninterruptible FLINT call and
+/// the budget can only be looked at between them.
+const FACTOR_SMOOTH_LADDER: [i64; 12] = [16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60];
+
+/// [`factorint`] that honours an active [`crate::budget`].
+///
+/// `fmpz_factor` is one uninterruptible FLINT call, and on a hard composite
+/// it runs for as long as the number takes: `(2⁸⁹−1)(2¹⁰⁷−1)(2¹²⁷−1)`, three
+/// Mersenne primes and no small factor, ran past twenty seconds under
+/// `Budget(wall_ms=1000)` (audit C6). Under a budget this instead climbs a
+/// ladder of bounded-effort `fmpz_factor_smooth` passes (trial division, then
+/// ECM tuned for factors of the given size), checking the budget between
+/// passes, and hands any composite cofactor of at most
+/// 160 bits to the full factoriser. A composite that is
+/// still unsplit when the budget runs out — or once the ladder is exhausted,
+/// which means it has no factor ECM finds cheaply and is larger than the
+/// sieve is handed — is an [`arith::ArithmeticError::Resource`] refusal carrying the
+/// `E-BUDGET-*` trip (for an exhausted ladder, the budget's own error once it
+/// fires; the ladder then keeps retrying the last rung until it does).
+///
+/// With **no** budget active this is exactly [`factorint`]: unbounded, as
+/// documented. The overshoot past the wall-clock limit is at most one ladder
+/// step (measured: well under a second for a 323-bit composite).
+pub fn factorint_bounded(n: &str) -> Result<(i32, Vec<(String, u64)>), arith::ArithmeticError> {
+    use crate::budget::BudgetTrip;
+    if !crate::budget::is_active() {
+        return Ok(factorint(n)?);
+    }
+    let z = parse_int(n)?;
+    if z.is_zero() {
+        return Err(NumberTheoryError::Domain {
+            msg: "factorint(0) is undefined",
+        }
+        .into());
+    }
+    let trip = |e| arith::ArithmeticError::Resource(BudgetTrip::Budget(e));
+    let sign = if z.cmp0() == Ordering::Less { -1 } else { 1 };
+
+    // Primes found so far (with multiplicity), and composites still to split.
+    let mut primes: Vec<(Integer, u64)> = Vec::new();
+    let mut pending: Vec<(Integer, u64)> = vec![(z.abs(), 1)];
+    let mut rung = 0usize;
+    while let Some((c, e)) = pending.pop() {
+        crate::budget::check().map_err(trip)?;
+        if c == 1 {
+            continue;
+        }
+        let fc = FlintInteger::from_rug(&c);
+        let prime = unsafe { ffi::fmpz_is_probabprime(fc.inner_ptr()) } != 0
+            && unsafe { ffi::fmpz_is_prime(fc.inner_ptr()) } != 0;
+        if prime {
+            primes.push((c, e));
+            continue;
+        }
+        let mut fac = FlintIntFactor::new();
+        if c.significant_bits() as u64 <= FACTOR_FULL_BITS {
+            fac.factor(&fc);
+        } else {
+            let bits = FACTOR_SMOOTH_LADDER[rung.min(FACTOR_SMOOTH_LADDER.len() - 1)];
+            rung += 1;
+            fac.factor_smooth(&fc, bits, true);
+        }
+        let parts: Vec<(Integer, u64)> = (0..fac.len())
+            .map(|i| (fac.base_at(i).to_rug(), fac.exp_at(i) * e))
+            .collect();
+        if parts.len() == 1 && parts[0].0 == c {
+            // No progress on this pass: retry on the next rung.
+            pending.push((c, e));
+            continue;
+        }
+        pending.extend(parts);
+    }
+
+    // Merge equal primes (a prime can surface from two cofactors) and sort.
+    primes.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut out: Vec<(String, u64)> = Vec::new();
+    let mut last: Option<Integer> = None;
+    for (p, e) in primes {
+        if last.as_ref() == Some(&p) {
+            if let Some(entry) = out.last_mut() {
+                entry.1 += e;
+            }
+        } else {
+            out.push((p.to_string(), e));
+            last = Some(p);
+        }
+    }
+    Ok((sign, out))
+}
+
 /// Next prime strictly after `n` (`fmpz_nextprime`).
 pub fn nextprime(n: &str, proved: bool) -> Result<String, NumberTheoryError> {
     let z = parse_int(n)?;
@@ -405,6 +502,54 @@ mod tests {
         assert_eq!(sign, 1);
         let m: HashMap<_, _> = pairs.into_iter().collect();
         assert_eq!(m.get("65537").copied(), Some(1));
+    }
+
+    /// Audit C6: `fmpz_factor` on three Mersenne primes ran past twenty
+    /// seconds under a one-second budget. The ladder stops at the budget.
+    #[test]
+    fn factorint_bounded_honours_a_wall_budget() {
+        use crate::budget::{self, Budget};
+        let m = |k: u32| (rug::Integer::from(1) << k) - 1u32;
+        let n = m(89) * m(107) * m(127);
+        let _guard = budget::enter(Budget::new().with_wall(std::time::Duration::from_millis(500)));
+        let t = std::time::Instant::now();
+        let r = factorint_bounded(&n.to_string());
+        assert!(
+            matches!(r, Err(arith::ArithmeticError::Resource(_))),
+            "{r:?}"
+        );
+        assert!(t.elapsed().as_secs_f64() < 5.0, "took {:?}", t.elapsed());
+    }
+
+    /// Under a generous budget the ladder factors what `factorint` factors,
+    /// including a composite with no small factor ((2⁶¹−1)(2⁸⁹−1), 150 bits —
+    /// the full factoriser's range).
+    #[test]
+    fn factorint_bounded_agrees_with_factorint() {
+        use crate::budget::{self, Budget};
+        let m = |k: u32| (rug::Integer::from(1) << k) - 1u32;
+        let cases = [
+            "18446744073709551617".to_string(),
+            "340282366920938463463374607431768211457".to_string(),
+            "-1000000030000002700000007".to_string(),
+            "600851475143".to_string(),
+            (m(61) * m(89)).to_string(),
+            "10000000000000000000000000000000000000001".to_string(),
+        ];
+        for n in &cases {
+            let want = factorint(n).unwrap();
+            let _guard = budget::enter(Budget::new().with_wall(std::time::Duration::from_secs(60)));
+            let got = factorint_bounded(n).unwrap();
+            assert_eq!(got, want, "{n}");
+        }
+        // No budget: exactly `factorint`.
+        assert_eq!(factorint_bounded("97").unwrap(), factorint("97").unwrap());
+        assert!(matches!(
+            factorint_bounded("0"),
+            Err(arith::ArithmeticError::Input(
+                NumberTheoryError::Domain { .. }
+            ))
+        ));
     }
 
     #[test]

@@ -233,10 +233,9 @@ use alkahest_core::calculus::euler_maclaurin::euler_maclaurin as core_euler_macl
 use alkahest_core::calculus::singularity::coefficient_asymptotics as core_coefficient_asymptotics;
 // V3-1 — Integer number theory
 use alkahest_core::number_theory::{
-    discrete_log as nt_discrete_log, factorint as nt_factorint, isprime as nt_isprime,
-    jacobi_symbol as nt_jacobi_symbol, nextprime as nt_nextprime, nthroot_mod as nt_nthroot_mod,
-    totient as nt_totient, NumberTheoryError as CoreNumberTheoryError,
-    QuadraticDirichlet as CoreQuadraticDirichlet,
+    discrete_log as nt_discrete_log, isprime as nt_isprime, jacobi_symbol as nt_jacobi_symbol,
+    nextprime as nt_nextprime, nthroot_mod as nt_nthroot_mod, totient as nt_totient,
+    NumberTheoryError as CoreNumberTheoryError, QuadraticDirichlet as CoreQuadraticDirichlet,
 };
 // The buffer protocol is not in the stable ABI before 3.11, and PyO3 gates
 // `pyo3::buffer` on exactly this cfg. The Python layer already falls back to
@@ -17691,9 +17690,13 @@ fn py_nt_isprime(n: &Bound<'_, PyAny>) -> PyResult<bool> {
 /// Factorisation payload: `(sign, [(prime_decimal, exponent), ...])`.
 #[pyfunction]
 #[pyo3(name = "nt_factorint", signature = (n))]
-fn py_nt_factorint(n: &Bound<'_, PyAny>) -> PyResult<(i32, Vec<(String, u64)>)> {
+fn py_nt_factorint(py: Python<'_>, n: &Bound<'_, PyAny>) -> PyResult<(i32, Vec<(String, u64)>)> {
     let s = py_int_decimal(n)?;
-    nt_factorint(&s).map_err(number_theory_error_to_py)
+    // Budget-aware (`E-BUDGET-*` under an active budget, see
+    // `factorint_bounded`), with the GIL released so `request_cancel()` from
+    // another thread can reach it between factoring passes.
+    py.allow_threads(|| alkahest_core::number_theory::factorint_bounded(&s))
+        .map_err(numfield::arithmetic_error_to_py)
 }
 
 /// Next prime strictly after `n` (full proof when `proved` is `True`).
