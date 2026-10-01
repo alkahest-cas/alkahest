@@ -72,3 +72,10 @@ jit::
 # it. If a future Antic makes any of that precompute lazy, this is where it
 # surfaces.
 numfield::tests
+
+# ── FLINT's per-thread cleanup at thread exit ──────────────────────────────
+# `flint::thread_cleanup` runs `flint_cleanup` from a thread-local destructor.
+# That releases the exiting thread's `fmpz` cache, and a big integer still
+# alive on another thread keeps its block, which FLINT counts with an atomic.
+# Its test spawns a thread that makes a big integer and exits.
+flint::thread_cleanup::

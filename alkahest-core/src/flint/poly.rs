@@ -15,6 +15,7 @@ pub(crate) struct FlintPolyFactor {
 impl FlintPolyFactor {
     pub fn new() -> Self {
         let mut inner = std::mem::MaybeUninit::<ffi::FmpzPolyFactorStruct>::uninit();
+        crate::flint::note_thread_uses_flint();
         unsafe { ffi::fmpz_poly_factor_init(inner.as_mut_ptr()) };
         // SAFETY: `fmpz_poly_factor_init` fully initialises the struct.
         Self {
@@ -112,6 +113,7 @@ impl FlintPoly {
             alloc: 0,
             length: 0,
         };
+        crate::flint::note_thread_uses_flint();
         unsafe { ffi::fmpz_poly_init(&mut inner) };
         FlintPoly { inner }
     }

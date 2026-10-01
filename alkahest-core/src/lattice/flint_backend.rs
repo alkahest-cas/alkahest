@@ -50,6 +50,7 @@ impl FmpzMat {
             c: 0,
             stride: 0,
         };
+        crate::flint::note_thread_uses_flint();
         unsafe { ffi::fmpz_mat_init(&mut inner, rows as ffi::slong, cols as ffi::slong) };
         Self { inner }
     }

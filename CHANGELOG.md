@@ -344,6 +344,16 @@
   resident for the life of the process (20 000 compiles: +80 MB; now +28 kB).
   A compiled function now frees its module when it is dropped, and a compile
   that fails part-way frees it too.
+- **Every thread that made a big integer leaked ~228 kB when it exited.**
+  FLINT keeps a per-thread cache of `mpz_t` structs (a 16-page block, each
+  entry with its own GMP allocation) that only `flint_cleanup` releases, and
+  nothing called it: 5000 short-lived threads that each made one `3^200` grew
+  the process by 1.14 GB. That is the shape of a thread-per-request server or
+  any pool that retires its workers. The FLINT wrappers now register each
+  thread on its first FLINT use, and `flint_cleanup` runs when the thread
+  exits (400 threads: +91 MB before, +4 kB after). It releases only the
+  exiting thread's caches; a big integer still alive elsewhere keeps its block,
+  and Rayon's long-lived workers clean up once, when the pool shuts down.
 - **`simplify` folded indeterminate forms to numbers: `oo - oo → 0`,
   `oo * 0 → 0`, `oo / oo → 1`, and for IEEE floats `NaN - NaN → 0`,
   `NaN * 0 → 0`, `inf * 0 → 0`, `inf - inf → 0`, `x*inf - x*inf → 0`.**

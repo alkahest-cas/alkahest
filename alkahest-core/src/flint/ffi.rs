@@ -337,6 +337,10 @@ extern "C" {
     // Memory
     // -----------------------------------------------------------------------
     pub fn flint_free(ptr: *mut c_void);
+    /// Release the calling thread's FLINT caches (the `fmpz` free list and
+    /// its blocks, registered per-thread cleanup functions, MPFR's cache).
+    /// See `thread_cleanup`.
+    pub fn flint_cleanup();
 
     // -----------------------------------------------------------------------
     // fmpz — arbitrary-precision integers

@@ -57,6 +57,7 @@ impl FqPoly {
     fn new() -> Self {
         let mut buf = Box::new(ffi::FmpqPolyBuf([0u8; 64]));
         // SAFETY: a 64-byte aligned allocation for a 32-byte struct.
+        crate::flint::note_thread_uses_flint();
         unsafe { ffi::fmpq_poly_init(&mut *buf) };
         Self { buf }
     }
@@ -249,6 +250,7 @@ impl NumberField {
         // SAFETY: a 512-byte aligned allocation for a 112-byte struct;
         // `fq_poly` is a live `fmpq_poly_t` of degree >= 1, which is what
         // `nf_init` requires, and FLINT copies it into the context.
+        crate::flint::note_thread_uses_flint();
         unsafe { ffi::nf_init(&mut *nf, fq_poly.as_ptr()) };
 
         Ok(Self {
@@ -452,6 +454,7 @@ impl NumberFieldElement {
         // SAFETY: a 128-byte aligned allocation for a struct of at most 32
         // bytes. `nf_elem_init` reads the field's degree out of the `nf_t` and
         // initialises whichever union arm goes with it.
+        crate::flint::note_thread_uses_flint();
         unsafe { ffi::nf_elem_init(&mut *buf, field.nf_ptr()) };
         Self {
             field: field.clone(),

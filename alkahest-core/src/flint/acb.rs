@@ -129,6 +129,7 @@ unsafe impl Sync for Arb {}
 impl Arb {
     pub fn new() -> Self {
         let mut raw = ArbStruct::zeroed();
+        crate::flint::note_thread_uses_flint();
         unsafe { arb::arb_init(&mut raw) };
         Arb { raw }
     }
@@ -412,6 +413,7 @@ unsafe impl Sync for Acb {}
 impl Acb {
     pub fn new() -> Self {
         let mut raw = AcbStruct::zeroed();
+        crate::flint::note_thread_uses_flint();
         unsafe { arb::acb_init(&mut raw) };
         Acb { raw }
     }
@@ -609,6 +611,7 @@ impl AcbVec {
         let ptr = if len == 0 {
             std::ptr::null_mut()
         } else {
+            crate::flint::note_thread_uses_flint();
             unsafe { arb::_acb_vec_init(len as ffi::slong) }
         };
         AcbVec { ptr, len }
@@ -680,6 +683,7 @@ impl AcbMat {
     pub fn new(rows: usize, cols: usize) -> Self {
         assert!(rows <= i64::MAX as usize && cols <= i64::MAX as usize);
         let mut buf = AcbMatBuf::sentinel();
+        crate::flint::note_thread_uses_flint();
         unsafe { arb::acb_mat_init(&mut buf, rows as ffi::slong, cols as ffi::slong) };
         AcbMat { buf, rows, cols }
     }
@@ -743,6 +747,7 @@ impl ArbMat {
     pub fn new(rows: usize, cols: usize) -> Self {
         assert!(rows <= i64::MAX as usize && cols <= i64::MAX as usize);
         let mut buf = ArbMatBuf::sentinel();
+        crate::flint::note_thread_uses_flint();
         unsafe { arb::arb_mat_init(&mut buf, rows as ffi::slong, cols as ffi::slong) };
         ArbMat { buf, rows, cols }
     }
@@ -816,6 +821,7 @@ impl IntMat {
         // crate never reads a field back out. The cast exists only so that the
         // single `fmpz_mat_init` declaration in `flint::ffi` can be reused —
         // see the note on `fmpz_mat_entry` in `flint::arb`.
+        crate::flint::note_thread_uses_flint();
         unsafe {
             ffi::fmpz_mat_init(
                 (&mut buf as *mut FmpzMatBuf).cast(),
