@@ -94,15 +94,15 @@ impl From<DiffError> for SeriesError {
 
 /// Truncated Taylor or Laurent expansion of `expr` in `var` about `point`.
 ///
-/// Let `h = var - point`. The returned expression has the shape
-/// `⋯ + O(h^k)` where `k = order` for analytic series (`valuation ≥ 0`), and
-/// `k = 1` when a polar term (`valuation < 0`) is present — matching the
-/// Laurent examples in the roadmap (`1/x` about `0` gives `x⁻¹ + O(x)`).
+/// Let `h = var - point`. The returned expression is `∑ cₑ·hᵉ + O(h^order)`
+/// over every exponent `valuation ≤ e < order`, for Taylor and Laurent series
+/// alike (`1/x` about `0` at order 4 gives `x⁻¹ + O(x⁴)`) — the same meaning
+/// `order` has for [`crate::calculus::puiseux::puiseux_series`].
 ///
-/// The `order` parameter matches the Taylor convention used in the roadmap:
-/// include powers `h^e` with `valuation ≤ e < order` when `valuation ≥ 0`, and
-/// when `valuation < 0` include the polar tail using `order` Taylor coefficients
-/// of the analytic factor `h^{-valuation} · f`.
+/// For a pole this takes `order − valuation` Taylor coefficients of the
+/// analytic factor `h^{-valuation} · f`. It used to take `order` of them and
+/// label the result `O(h)`, which was false whenever the pole order was at
+/// least `order`: `sin(x)⁻⁴` at order 4 lost its `11/45`.
 ///
 /// # Termination
 ///
@@ -156,15 +156,49 @@ pub fn series(
     // the prefix it managed to compute.
     let _ceiling = enter_coeff_ceiling(pool.len().saturating_add(MAX_SERIES_POOL_GROWTH));
 
-    let LocalExpansion {
-        valuation,
-        coeffs,
-        h_expr,
-    } = local_expansion(expr, var, point, order, pool)?;
+    let mut exp = local_expansion(expr, var, point, order, pool)?;
 
     if frame.refusal_pending() {
         return Err(SeriesError::InvalidOrder);
     }
+
+    // `local_expansion` hands back `order` coefficients *of the unit part*,
+    // i.e. exponents `valuation .. valuation + order`. For a pole that stops
+    // short of `order` by exactly the pole order: `sin(x)⁻⁴` at order 4 gave
+    // `x⁻⁴ + ⅔x⁻² + O(x)`, silently dropping the `11/45` that `O(x)` claims
+    // is there. The working precision has to be raised by the valuation
+    // shift, so re-expand with `order − valuation` unit-part coefficients.
+    // A pole whose order was only discovered by the first pass may be deeper
+    // on the second (the quotient route probes `order + slack` coefficients
+    // for a valuation), so retry a bounded number of times and refuse rather
+    // than label a short series `O(h^order)`.
+    let mut attempts = 0;
+    while exp.valuation < 0
+        && i64::from(exp.valuation) + (exp.coeffs.len() as i64) < i64::from(order)
+    {
+        attempts += 1;
+        let widened = order.checked_add(exp.valuation.unsigned_abs());
+        let (Some(widened), true) = (widened, attempts <= 3) else {
+            LAST_REFUSAL.with(|c| {
+                c.set(Some(SeriesRefusal {
+                    requested: order,
+                    computed: exp.coeffs.len() as u32,
+                    budget: None,
+                    cause: SeriesRefusalCause::Exhausted,
+                }))
+            });
+            return Err(SeriesError::InvalidOrder);
+        };
+        exp = local_expansion(expr, var, point, widened, pool)?;
+        if frame.refusal_pending() {
+            return Err(SeriesError::InvalidOrder);
+        }
+    }
+    let LocalExpansion {
+        valuation,
+        coeffs,
+        h_expr,
+    } = exp;
 
     // A coefficient that is `0/0`, `1/0` or `log(0)` is not a value, and a
     // `Series` carrying one is the exact failure mode this module exists to
@@ -234,6 +268,27 @@ pub(crate) fn local_expansion(
         if first_indeterminate(&repaired.coeffs, pool).is_none() {
             LAST_REFUSAL.with(|c| c.set(saved));
             return Ok(repaired);
+        }
+    }
+
+    // A removable singularity *inside* a function argument — `log(x·x⁻¹)`,
+    // `exp(x·(−2x⁻¹)⁻¹)` — is invisible to the quotient route, which treats
+    // `log(…)` as an opaque generator. Simplifying the shifted expression
+    // cancels it (`x·x⁻¹ ↦ 1`), which is sound here because a series is a
+    // statement about a punctured neighbourhood: the two forms agree there.
+    // Tried last so it changes nothing that already expanded.
+    let simplified = simplify(shifted, pool).value;
+    if simplified != shifted {
+        let again = expansion_matched_laurent(simplified, xi, h_expr, order, pool)?;
+        if first_indeterminate(&again.coeffs, pool).is_none() {
+            LAST_REFUSAL.with(|c| c.set(saved));
+            return Ok(again);
+        }
+        if let Some(repaired) = quotient_expansion(simplified, xi, h_expr, order, pool)? {
+            if first_indeterminate(&repaired.coeffs, pool).is_none() {
+                LAST_REFUSAL.with(|c| c.set(saved));
+                return Ok(repaired);
+            }
         }
     }
 
@@ -319,22 +374,15 @@ fn quotient_expansion(
         }));
     }
 
-    // Probe depth for the two valuations. A pole deeper than this is not one
-    // this repair claims to handle; the caller refuses rather than guesses.
-    let probe = (order as usize).saturating_add(VALUATION_PROBE_SLACK);
-    let probe_u32 = probe.min(u32::MAX as usize) as u32;
-
-    let d_probe = taylor_coefficients(den, xi, probe_u32, pool)?;
-    let Some(vd) = leading_index(&d_probe, pool) else {
+    let Some((d_probe, vd)) = probe_valuation(den, xi, order, pool)? else {
         return Ok(None);
     };
-    if vd == 0 {
-        // The denominator is fine at the point; whatever went wrong is in the
-        // numerator, and dividing series will not repair it.
-        return Ok(None);
-    }
-    let n_probe = taylor_coefficients(num, xi, probe_u32, pool)?;
-    let Some(vn) = leading_index(&n_probe, pool) else {
+    // `vd == 0` is not an exit: the denominator is a unit at the point, and
+    // the direct route can still have failed because the *form* was singular
+    // there (`((x−2)/x)⁻¹`, which `together` turns into `x/(x−2)`). Dividing
+    // two analytic series by a unit is exactly right; a numerator that is
+    // itself singular is caught by the indeterminate check on `a` below.
+    let Some((n_probe, vn)) = probe_valuation(num, xi, order, pool)? else {
         return Ok(None);
     };
 
@@ -391,14 +439,47 @@ fn quotient_expansion(
     }))
 }
 
-/// How many coefficients past the requested order [`quotient_expansion`] will
-/// look at while hunting for a valuation.
+/// How many coefficients past the requested order [`quotient_expansion`]
+/// first looks at while hunting for a valuation.
 ///
 /// The numerator and denominator valuations are pole/zero orders, which are
-/// small in every expansion anyone writes down (`sin(x)/x`: 1 and 1;
-/// `(1−cos x)/x²`: 2 and 2). The slack buys headroom without turning a failed
-/// probe into a runaway: each probed coefficient is one differentiation.
+/// small in most expansions (`sin(x)/x`: 1 and 1; `(1−cos x)/x²`: 2 and 2),
+/// so the first probe is cheap. A deeper zero — `(1−cos x)³` has valuation 6,
+/// which a first probe at order 1 does not reach — gets a wider probe, up to
+/// [`VALUATION_PROBE_MAX_SLACK`]; every probe runs under the coefficient-loop
+/// ceiling and the ambient budget, so a failed one cannot run away.
 const VALUATION_PROBE_SLACK: usize = 4;
+
+/// The widest valuation probe, past the requested order.
+const VALUATION_PROBE_MAX_SLACK: usize = 64;
+
+/// Taylor coefficients of `expr` at `ξ = 0` deep enough to see its valuation,
+/// and that valuation — or `None` when no nonzero coefficient appears within
+/// `order + VALUATION_PROBE_MAX_SLACK` (or the coefficient loop was stopped).
+///
+/// Before the probe widened, a pole deeper than `order + 3` was refused as
+/// "indeterminate": `sin(x)⁻⁵` expanded at order 5 but not at order 1.
+fn probe_valuation(
+    expr: ExprId,
+    xi: ExprId,
+    order: u32,
+    pool: &ExprPool,
+) -> Result<Option<(Vec<ExprId>, usize)>, SeriesError> {
+    let mut slack = VALUATION_PROBE_SLACK;
+    loop {
+        let probe = (order as usize).saturating_add(slack);
+        let probe_u32 = probe.min(u32::MAX as usize) as u32;
+        let coeffs = taylor_coefficients(expr, xi, probe_u32, pool)?;
+        if let Some(v) = leading_index(&coeffs, pool) {
+            return Ok(Some((coeffs, v)));
+        }
+        if coeffs.len() < probe_u32 as usize || slack >= VALUATION_PROBE_MAX_SLACK {
+            // Stopped by the ceiling/budget, or genuinely deeper than we look.
+            return Ok(None);
+        }
+        slack = (slack * 4).min(VALUATION_PROBE_MAX_SLACK);
+    }
+}
 
 /// `1/expr`, folded when `expr` is a nonzero rational literal.
 ///
@@ -469,14 +550,6 @@ pub(crate) fn expansion_increment(pool: &ExprPool, var: ExprId, point: ExprId) -
     }
 }
 
-fn laurent_big_o_pow(valuation: i32, order: u32) -> i64 {
-    if valuation < 0 {
-        1
-    } else {
-        order as i64
-    }
-}
-
 pub(crate) fn is_structural_zero(id: ExprId, pool: &ExprPool) -> bool {
     matches!(pool.get(id), ExprData::Integer(n) if n.0 == 0)
 }
@@ -487,13 +560,15 @@ pub(crate) fn is_structural_zero(id: ExprId, pool: &ExprPool) -> bool {
 
 /// True when `expr` contains a `0^n` node with `n` a negative constant.
 ///
-/// The syntactic half of [`coefficient_is_indeterminate`], and the only half
-/// that can see through a free parameter: `k · 0⁻¹` is not a number however
-/// unknown `k` is, and no numeric evaluation can discover that.
+/// Subsumed in the engine by [`has_singular_node`] (whose syntactic half this
+/// is, and the only half that can see through a free parameter: `k · 0⁻¹` is
+/// not a number however unknown `k` is); kept as the tests' independent
+/// oracle for "no successful series carries a `0⁻ⁿ`".
 ///
 /// The twin of [`crate::calculus::limits`]'s check of the same name; the two
 /// are deliberately separate because their verdicts differ on `±∞` (an
 /// established divergence is a fine *limit* and never a *series coefficient*).
+#[cfg(test)]
 fn contains_zero_to_negative_power(expr: ExprId, pool: &ExprPool) -> bool {
     match pool.get(expr) {
         ExprData::Pow { base, exp } => {
@@ -547,7 +622,7 @@ fn contains_zero_to_negative_power(expr: ExprId, pool: &ExprPool) -> bool {
 /// predicate gates a refusal, so a false positive turns a working expansion
 /// into an error.
 fn coefficient_is_indeterminate(expr: ExprId, pool: &ExprPool) -> bool {
-    contains_zero_to_negative_power(expr, pool) || has_non_finite_constant(expr, pool)
+    has_singular_node(expr, pool) || has_non_finite_constant(expr, pool)
 }
 
 /// True when some subtree is closed arithmetic that evaluates to `NaN` or `±∞`.
@@ -568,6 +643,47 @@ fn has_non_finite_constant(expr: ExprId, pool: &ExprPool) -> bool {
         ExprData::Pow { base, exp } => {
             has_non_finite_constant(base, pool) || has_non_finite_constant(exp, pool)
         }
+        _ => false,
+    }
+}
+
+/// True when some subtree divides by, or takes the `log` of, a constant that
+/// is `0`: the syntactic `0^{negative}` (which survives a free parameter),
+/// and also the closed forms the interpreter values at exactly `0` —
+/// `asin(0)⁻¹`, `(0 + 0)⁻¹`, `sqrt(0)⁻¹`, `log(0)`.
+///
+/// [`has_non_finite_constant`] stops at the first subtree the interpreter can
+/// value, and IEEE arithmetic can turn the singularity into a finite number on
+/// the way up: `2·log(0)⁻¹` is `−0.0`, `(−2·asin(0)⁻¹)⁻¹` is `−0.0`. Both were
+/// accepted as coefficients (`x²/log x` returned a series). This looks at the
+/// singular nodes themselves. Only a negative-power or `log` node costs an
+/// evaluation, and the walk allocates nothing, so an ordinary coefficient
+/// (`sin`/`cos` of `0`) costs one traversal — this runs on every raw Taylor
+/// coefficient.
+fn has_singular_node(expr: ExprId, pool: &ExprPool) -> bool {
+    fn is_zero_constant(e: ExprId, pool: &ExprPool) -> bool {
+        if matches!(pool.get(e), ExprData::Integer(n) if n.0 == 0) {
+            return true;
+        }
+        crate::jit::eval_interp(e, &HashMap::new(), pool) == Some(0.0)
+    }
+    match pool.get(expr) {
+        ExprData::Pow { base, exp } => {
+            let negative = match pool.get(exp) {
+                ExprData::Integer(n) => n.0 < 0,
+                ExprData::Rational(r) => r.0 < 0,
+                ExprData::Float(f) => f.inner.to_f64() < 0.0,
+                _ => false,
+            };
+            (negative && is_zero_constant(base, pool))
+                || has_singular_node(base, pool)
+                || has_singular_node(exp, pool)
+        }
+        ExprData::Func { name, args } => {
+            (name == "log" && args.len() == 1 && is_zero_constant(args[0], pool))
+                || args.iter().any(|&a| has_singular_node(a, pool))
+        }
+        ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().any(|&x| has_singular_node(x, pool)),
         _ => false,
     }
 }
@@ -934,11 +1050,27 @@ fn taylor_coefficients(
             break;
         }
         let ev = subs(cur, &mapping, pool);
-        let simp = simplify(ev, pool).value;
-        let fc = factorial_u32(k);
-        let inv_fact = pool.rational(rug::Integer::from(1), fc);
-        let coeff = simplify(pool.mul(vec![simp, inv_fact]), pool).value;
-        out.push(coeff);
+        // Syntactic and singular-node checks only: a whole-tree numeric
+        // evaluation here doubled the cost of every ordinary expansion, and
+        // the forms `simplify` launders are exactly a negative power or `log`
+        // of a closed zero, which these see without evaluating anything else.
+        if has_singular_node(ev, pool) {
+            // The derivative is singular *in form* at the point. `simplify`
+            // is free to launder that into a number — `(−2·0⁻¹)⁻¹ ↦ 0` by the
+            // power rule `(ab)⁻¹ = a⁻¹b⁻¹`, `0·(1 + 0⁻¹) ↦ 0`,
+            // `0·sqrt(0)⁻¹ ↦ 0` — and did: `x/(x−2)` written as `((x−2)/x)⁻¹`
+            // expanded to a bare `O(x⁴)`, `x·(1/x + 1)` lost its constant
+            // term, `x²·√(x³)` came back as `0 + O(x⁴)`. Keep the raw
+            // substitution so the coefficient is recognised as indeterminate
+            // and the caller takes the quotient route (or refuses).
+            out.push(ev);
+        } else {
+            let simp = simplify(ev, pool).value;
+            let fc = factorial_u32(k);
+            let inv_fact = pool.rational(rug::Integer::from(1), fc);
+            let coeff = simplify(pool.mul(vec![simp, inv_fact]), pool).value;
+            out.push(coeff);
+        }
         if k + 1 < num {
             cur = diff(cur, xi, pool)?.value;
         }
@@ -959,6 +1091,11 @@ fn assemble_series(
             continue;
         }
         let exp = valuation + k as i32;
+        if i64::from(exp) >= i64::from(order) {
+            // Computed as a by-product of the pole shift; past the requested
+            // truncation, so it belongs to the remainder.
+            break;
+        }
         let pow_term = if exp == 0 {
             pool.integer(1_i32)
         } else if exp == 1 {
@@ -968,8 +1105,11 @@ fn assemble_series(
         };
         terms.push(pool.mul(vec![*coeff, pow_term]));
     }
-    let big_o_pow = laurent_big_o_pow(valuation, order);
-    let o_term = pool.big_o(pool.pow(h_expr, pool.integer(big_o_pow)));
+    // Every term with exponent `< order` is present (see `series`), so the
+    // remainder is `O(h^order)` for Taylor and Laurent series alike. It used
+    // to be `O(h)` for every Laurent series, which is false whenever the pole
+    // order is at least `order`.
+    let o_term = pool.big_o(pool.pow(h_expr, pool.integer(i64::from(order))));
     terms.push(o_term);
     Series(pool.add(terms))
 }
@@ -1218,6 +1358,129 @@ mod tests {
         let s = series(sx, x, p.integer(0), 24, &p).unwrap();
         assert!(contains_big_o(s.expr(), &p));
         assert_eq!(take_series_refusal(), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Truncation at a negative valuation (audit A9)
+    // -----------------------------------------------------------------------
+
+    /// `(exponent, numeric coefficient)` pairs and the `O(x^k)` exponent of a
+    /// `series` result.
+    fn series_terms(s: Series, x: ExprId, p: &ExprPool) -> (Vec<(i64, f64)>, i64) {
+        let power_of_x = |e: ExprId| -> Option<i64> {
+            if e == x {
+                return Some(1);
+            }
+            match p.get(e) {
+                ExprData::Pow { base, exp } if base == x => match p.get(exp) {
+                    ExprData::Integer(n) => n.0.to_i64(),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        let parts = match p.get(s.expr()) {
+            ExprData::Add(xs) => xs,
+            _ => vec![s.expr()],
+        };
+        let env = HashMap::new();
+        let mut terms = Vec::new();
+        let mut big_o = None;
+        for t in parts {
+            if let ExprData::BigO(inner) = p.get(t) {
+                big_o = power_of_x(inner);
+                continue;
+            }
+            let factors = match p.get(t) {
+                ExprData::Mul(xs) => xs,
+                _ => vec![t],
+            };
+            let mut k = 0;
+            let mut c = 1.0;
+            for f in factors {
+                match power_of_x(f) {
+                    Some(e) => k += e,
+                    None => c *= crate::jit::eval_interp(f, &env, p).expect("numeric coefficient"),
+                }
+            }
+            terms.push((k, c));
+        }
+        terms.sort_by_key(|&(k, _)| k);
+        (terms, big_o.expect("an O(.) term"))
+    }
+
+    fn assert_terms(got: &[(i64, f64)], want: &[(i64, f64)]) {
+        assert_eq!(got.len(), want.len(), "got {got:?} want {want:?}");
+        for ((ge, gc), (we, wc)) in got.iter().zip(want) {
+            assert!(
+                ge == we && (gc - wc).abs() < 1e-12,
+                "got {got:?} want {want:?}"
+            );
+        }
+    }
+
+    /// `sin(x)⁻⁴` at order 4 printed `x⁻⁴ + ⅔x⁻² + O(x)`, which claims the
+    /// `x⁰` coefficient is present. It is `11/45` (Mathematica `Series`).
+    #[test]
+    fn a_pole_deeper_than_the_order_keeps_every_term_below_it() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let f = p.pow(p.func("sin", vec![x]), p.integer(-4));
+        let (terms, big_o) = series_terms(series(f, x, p.integer(0), 4, &p).unwrap(), x, &p);
+        assert_terms(
+            &terms,
+            &[
+                (-4, 1.0),
+                (-2, 2.0 / 3.0),
+                (0, 11.0 / 45.0),
+                (2, 62.0 / 945.0),
+            ],
+        );
+        assert_eq!(big_o, 4);
+    }
+
+    /// `(x + x²)⁻³ = x⁻³(1+x)⁻³`; order 3 must reach `x²`.
+    #[test]
+    fn a_rational_pole_is_expanded_to_the_requested_order() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let f = p.pow(p.add(vec![x, p.pow(x, p.integer(2))]), p.integer(-3));
+        let (terms, big_o) = series_terms(series(f, x, p.integer(0), 3, &p).unwrap(), x, &p);
+        assert_terms(
+            &terms,
+            &[
+                (-3, 1.0),
+                (-2, -3.0),
+                (-1, 6.0),
+                (0, -10.0),
+                (1, 15.0),
+                (2, -21.0),
+            ],
+        );
+        assert_eq!(big_o, 3);
+    }
+
+    /// `((x−2)/x)⁻¹ = x/(x−2)` expanded to a bare `O(x⁴)`: every coefficient
+    /// was `(−2·0⁻¹)^{-k}`-shaped and `simplify` folded it to `0`.
+    #[test]
+    fn a_singular_form_of_an_analytic_function_is_not_folded_to_zero() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let q = p.mul(vec![p.add(vec![x, p.integer(-2)]), p.pow(x, p.integer(-1))]);
+        let f = p.pow(q, p.integer(-1));
+        let (terms, big_o) = series_terms(series(f, x, p.integer(0), 4, &p).unwrap(), x, &p);
+        assert_terms(&terms, &[(1, -0.5), (2, -0.25), (3, -0.125)]);
+        assert_eq!(big_o, 4);
+    }
+
+    #[test]
+    fn a_simple_pole_carries_the_requested_remainder() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let f = p.pow(x, p.integer(-1));
+        let (terms, big_o) = series_terms(series(f, x, p.integer(0), 4, &p).unwrap(), x, &p);
+        assert_terms(&terms, &[(-1, 1.0)]);
+        assert_eq!(big_o, 4);
     }
 
     // -----------------------------------------------------------------------

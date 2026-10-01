@@ -253,13 +253,15 @@ px.remainder_order       # 5   — every omitted term has exponent >= 5
 ```
 
 `order` means the same thing it means for `series`: every term with exponent `< order` is
-present, and the remainder is `O(h^order)`. For a *polar* expansion this is sharper than
-`series`, which labels any Laurent result `O(h^1)`:
+present, and the remainder is `O(h^order)` — for a *polar* expansion too:
 
 | call | result |
 |---|---|
-| `series(1/sin(x), x, 0, 4)` | `x^-1 + x/6 + O(x^1)` |
+| `series(1/sin(x), x, 0, 4)` | `x^-1 + x/6 + 7x^3/360 + O(x^4)` |
 | `puiseux_series(1/sin(x), x, 0, 4)` | `x^-1 + x/6 + 7x^3/360 + O(x^4)` |
+
+(Through 3.11 `series` labelled every Laurent result `O(h^1)` and computed only `order`
+coefficients past the pole, so a pole of order `≥ order` lost terms the remainder claimed.)
 
 Where both apply the coefficients are identical — `puiseux_series` routes every analytic
 sub-part through the same expansion engine `series` uses.
