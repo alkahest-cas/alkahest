@@ -1,0 +1,49 @@
+name: Release wheel smoke
+
+# Builds the release-style default wheels on a PR, before it merges, and
+# smoke-tests them: one manylinux py3.12 wheel and one Windows py3.12 wheel.
+# They are built by release-wheels.yml, the same reusable workflow the
+# release uses (same features incl. system-gmp, same maturin invocation, same
+# manylinux container and before-script, same delvewheel repair), so this
+# check cannot drift from what a release ships.
+#
+# Why: release-build.yml's `pull_request` trigger fires only once a PR has
+# merged. #395 called `pyo3::ffi::PyIndex_Check`, which pyo3-ffi 0.21 binds to
+# the PyPy symbol `PyPyIndex_Check`. The dev builds PR CI makes were fine, but
+# every release wheel failed to import (Linux) or to link (Windows) for 13
+# merges, until #419.
+#
+# Read-only throughout: release-wheels.yml contains no publish or upload jobs
+# and asks for nothing beyond `contents: read`. That makes this safe for PRs
+# from forks, whose token is read-only anyway.
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "alkahest-py/**"
+      - "alkahest-core/**"
+      - "Cargo.*"
+      - "pyproject.toml"
+      - ".github/workflows/release-build.yml"
+      - ".github/workflows/release-wheels.yml"
+      - ".github/workflows/release-wheel-smoke.yml"
+      - ".github/actions/**"
+      - "tests/smoke_readme.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-wheel-smoke-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  release-wheels:
+    name: release wheels
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-wheels.yml
+    with:
+      pr_smoke: true
