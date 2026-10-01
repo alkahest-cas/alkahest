@@ -211,6 +211,33 @@ pub fn poly_pow(p: &QPoly, n: u32) -> QPoly {
     acc
 }
 
+/// The largest degree [`expr_to_qrational`] will build a dense `ℚ[x]`
+/// polynomial to.
+///
+/// `QPoly` is a dense vector of GMP rationals multiplied schoolbook, so a power
+/// of degree `D` costs `Θ(D²)` coefficient products and `D` heap rationals.
+/// `1/(x^(2^31)+1)` asked for `2^31` of them by repeated multiplication — a
+/// 64 GiB vector reached after hours, with no checkpoint on the way, so
+/// `apart` and `integrate` ignored a one-second budget (audit C6). Past this
+/// degree the conversion declines, which every caller already reads as "not a
+/// rational function this route handles".
+const MAX_QRATIONAL_DEGREE: usize = 1 << 13;
+
+/// [`poly_pow`] with the size refused up front and the budget honoured between
+/// multiplications. `None` = declined.
+fn poly_pow_bounded(p: &QPoly, n: u32) -> Option<QPoly> {
+    let deg = trim(p.clone()).len().saturating_sub(1);
+    if deg.max(1).saturating_mul(n as usize) > MAX_QRATIONAL_DEGREE {
+        return None;
+    }
+    let mut acc = poly_one();
+    for _ in 0..n {
+        crate::budget::check().ok()?;
+        acc = poly_mul(&acc, p);
+    }
+    Some(acc)
+}
+
 fn polys_equal(a: &QPoly, b: &QPoly) -> bool {
     trim(a.clone()) == trim(b.clone())
 }
@@ -1348,12 +1375,12 @@ pub fn expr_to_qrational(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<(
             // so `residue(x^-(2^32+1), x, 0)` answered 1. Decline instead.
             let m = u32::try_from(n.unsigned_abs()).ok()?;
             if n >= 0 {
-                Some((poly_pow(&bn, m), poly_pow(&bd, m)))
+                Some((poly_pow_bounded(&bn, m)?, poly_pow_bounded(&bd, m)?))
             } else {
                 if trim(bn.clone()).is_empty() {
                     return None; // 1 / 0
                 }
-                Some((poly_pow(&bd, m), poly_pow(&bn, m)))
+                Some((poly_pow_bounded(&bd, m)?, poly_pow_bounded(&bn, m)?))
             }
         }
         _ => None,
@@ -1377,6 +1404,25 @@ fn rat_mul(a: &(QPoly, QPoly), b: &(QPoly, QPoly)) -> (QPoly, QPoly) {
 
 #[cfg(test)]
 mod tests {
+
+    /// Audit C6: `1/(x^(2^31)+1)` asked for a dense degree-`2^31` polynomial
+    /// built by repeated multiplication. Declined up front.
+    #[test]
+    fn a_huge_dense_power_is_declined_not_built() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", crate::kernel::Domain::Real);
+        let big = p.pow(x, p.integer(1_i64 << 31));
+        let f = p.pow(p.add(vec![big, p.integer(1)]), p.integer(-1));
+        let t = std::time::Instant::now();
+        assert!(expr_to_qrational(f, x, &p).is_none());
+        assert!(t.elapsed().as_secs() < 1, "{:?}", t.elapsed());
+        // The ordinary case is unaffected.
+        let small = p.pow(
+            p.add(vec![p.pow(x, p.integer(3)), p.integer(1)]),
+            p.integer(-1),
+        );
+        assert!(expr_to_qrational(small, x, &p).is_some());
+    }
     use super::*;
 
     fn rat(n: i64) -> Rational {

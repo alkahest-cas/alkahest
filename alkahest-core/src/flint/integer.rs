@@ -382,6 +382,21 @@ impl FlintIntFactor {
         unsafe { ffi::fmpz_factor(&mut self.inner, n.inner_ptr()) };
     }
 
+    /// Bounded-effort factorisation (`fmpz_factor_smooth`): the prime factors
+    /// of `n` up to roughly `bits` bits (and possibly some larger ones), with
+    /// whatever is left over appended as the last entry — which may be
+    /// composite. Returns `true` when the factorisation is known complete.
+    pub(crate) fn factor_smooth(&mut self, n: &FlintInteger, bits: i64, proved: bool) -> bool {
+        unsafe {
+            ffi::fmpz_factor_smooth(
+                &mut self.inner,
+                n.inner_ptr(),
+                bits as ffi::slong,
+                i32::from(proved) as std::os::raw::c_int,
+            ) != 0
+        }
+    }
+
     /// Sign of the factored integer (`1` or `-1`).
     pub fn sign(&self) -> i32 {
         self.inner.sign

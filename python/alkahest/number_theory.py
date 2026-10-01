@@ -44,7 +44,17 @@ def isprime(n: int) -> bool:
 
 
 def factorint(n: int) -> dict[int, int]:
-    """Prime factorisation of ``n`` with SymPy-compatible sign handling."""
+    """Prime factorisation of ``n`` with SymPy-compatible sign handling.
+
+    Honours an active :class:`~alkahest.Budget`: under one, the factorisation
+    climbs a ladder of bounded-effort passes (trial division, then ECM tuned
+    for ever larger factors) and checks the budget between them, handing only
+    cofactors of at most 160 bits to FLINT's full (uninterruptible) factoriser.
+    A composite still unsplit when the budget runs out raises
+    :exc:`BudgetExceededError` (``E-BUDGET-*``); the overshoot is at most one
+    pass. With no budget the call is unbounded — a product of large primes
+    with no small factor can take arbitrarily long.
+    """
     sign, pairs = nt_factorint(int(n))
     out: dict[int, int] = {_decimal_to_int(p): int(e) for p, e in pairs}
     if sign < 0:

@@ -363,9 +363,92 @@ pub(crate) fn solve_tower_rde_generic_bounded<F: CoeffField<Elem = TExpr>>(
     c: &TExpr,
     x_bound: Option<usize>,
 ) -> Option<TExpr> {
-    candidate_denominators(field, omega, c)
-        .iter()
-        .find_map(|d| solve_with_denominator(field, omega, c, d, x_bound))
+    // Each candidate denominator is a full ansatz — up to `4 × 49` basis
+    // elements, each normalised by `ℚ(x)[t]` GCDs — and on a large enough
+    // input one of them is minutes of work. `∫(2x + log x)^{-1/2} dx` spent
+    // 400 s here before declining, and a 3 s budget took 8.6 s to fire,
+    // because nothing between the entry checkpoint of `integrate` and the
+    // answer looked at the clock (audit C5). A tripped budget is reported by
+    // the next checkpoint up the stack; here it only has to stop the work.
+    //
+    // Checked before the candidates too: forming them (`dc²·dω`, …) is GCD
+    // work of its own, and once the ceiling is reached every further solve
+    // should cost nothing.
+    if budget_tripped() {
+        return None;
+    }
+    for d in candidate_denominators(field, omega, c) {
+        if budget_tripped() {
+            return None;
+        }
+        if let Some(v) = solve_with_denominator(field, omega, c, &d, x_bound) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// Cooperative budget checkpoint for the ansatz loops in this module: `true`
+/// once the ambient [`crate::budget`] is exhausted or cancelled. The callers
+/// return `None` ("no solution found"), which is always a sound answer here;
+/// the budget error itself surfaces at the next `crate::budget::check()?` up
+/// the stack.
+///
+/// It also enforces [`MAX_RDE_WORK_PER_INTEGRATE`]: with no budget active a
+/// hopeless ansatz is otherwise bounded by nothing but its own size.
+fn budget_tripped() -> bool {
+    let over = RDE_WORK.with(|w| {
+        let (depth, used) = w.get();
+        w.set((depth, used.saturating_add(1)));
+        depth > 0 && used >= MAX_RDE_WORK_PER_INTEGRATE
+    });
+    over || crate::budget::check().is_err()
+}
+
+/// Ansatz steps (candidate denominators + basis columns + linear-system row
+/// blocks + elimination pivots) one top-level `integrate` call may spend in
+/// this module before every further solve answers "no solution found".
+///
+/// Deterministic, unlike a clock. The pathological case it bounds,
+/// `∫(2x + log x)^{-1/2} dx`, runs about 140 steps a second (each column is a
+/// `ℚ(x)[t]` GCD on large polynomials) and needed ~55 000 of them over 400 s
+/// before declining anyway; the whole Python test suite, by contrast, spends
+/// none here at all outside that case, and the Rust suite passes under this
+/// ceiling. A solve that succeeds does so at the first candidate denominators
+/// with a small `x`-degree cap, which costs tens of steps; the steps are spent
+/// by ansätze that fail at every candidate with the cap at its sanity limit.
+const MAX_RDE_WORK_PER_INTEGRATE: u64 = 600;
+
+thread_local! {
+    /// `(nesting depth of RdeWorkFrame, steps spent in the outermost frame)`.
+    static RDE_WORK: std::cell::Cell<(usize, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// Scope of one top-level `integrate` call for [`MAX_RDE_WORK_PER_INTEGRATE`].
+///
+/// `integrate` re-enters itself (by-parts chains, sub-integrals), and the
+/// ceiling must bound the whole call, so only the outermost frame resets the
+/// count. Outside any frame — a direct call into this module — there is no
+/// ceiling.
+pub(crate) struct RdeWorkFrame(());
+
+impl RdeWorkFrame {
+    pub(crate) fn enter() -> Self {
+        RDE_WORK.with(|w| {
+            let (depth, used) = w.get();
+            w.set((depth + 1, if depth == 0 { 0 } else { used }));
+        });
+        RdeWorkFrame(())
+    }
+}
+
+impl Drop for RdeWorkFrame {
+    fn drop(&mut self) {
+        RDE_WORK.with(|w| {
+            let (depth, used) = w.get();
+            w.set((depth.saturating_sub(1), used));
+        });
+    }
 }
 
 /// Solve `v' + ω·v = c` over the exponential tower `ℚ(x)(eˣ)` (the concrete,
@@ -472,16 +555,18 @@ fn solve_with_denominator<F: CoeffField<Elem = TExpr>>(
         .collect();
     // Basis element xᵏtʲ/D, and its image L(·) = D(·) + ω·(·).
     let one = Rational::from(1);
-    let elems: Vec<TExpr> = basis
-        .iter()
-        .map(|&(j, k)| field.mul(&monomial(j, k, &one), &inv_d))
-        .collect();
-    let cols: Vec<TExpr> = elems
-        .iter()
-        .map(|m| field.add(&field.derivation(m), &field.mul(omega, m)))
-        .collect();
+    let mut elems: Vec<TExpr> = Vec::with_capacity(basis.len());
+    let mut cols: Vec<TExpr> = Vec::with_capacity(basis.len());
+    for &(j, k) in &basis {
+        if budget_tripped() {
+            return None;
+        }
+        let m = field.mul(&monomial(j, k, &one), &inv_d);
+        cols.push(field.add(&field.derivation(&m), &field.mul(omega, &m)));
+        elems.push(m);
+    }
 
-    let (matrix, rhs) = extract_linear_system(&cols, c);
+    let (matrix, rhs) = extract_linear_system(&cols, c)?;
     let sol = gauss_solve(matrix, rhs, basis.len())?;
 
     // Reconstruct v = Σ solⱼₖ (xᵏ tʲ / D).
@@ -510,11 +595,19 @@ fn solve_with_denominator<F: CoeffField<Elem = TExpr>>(
 /// Build the exact ℚ-linear system `Σⱼₖ cⱼₖ·colⱼₖ = target` by clearing the
 /// common `t`-denominator (→ match each `tᵖ`) then the common `x`-denominator of
 /// each resulting `ℚ(x)` equation (→ match each `xᵐ`).
-fn extract_linear_system(cols: &[TExpr], target: &TExpr) -> (Vec<Vec<Rational>>, Vec<Rational>) {
+///
+/// `None` when the budget trips part-way.
+fn extract_linear_system(
+    cols: &[TExpr],
+    target: &TExpr,
+) -> Option<(Vec<Vec<Rational>>, Vec<Rational>)> {
     let f = qx();
     // Common t-denominator over all columns and the target.
     let mut d_t = vec![f.one()];
     for col in cols {
+        if budget_tripped() {
+            return None;
+        }
         d_t = tpoly_lcm(&d_t, &col.den);
     }
     d_t = tpoly_lcm(&d_t, &target.den);
@@ -542,6 +635,9 @@ fn extract_linear_system(cols: &[TExpr], target: &TExpr) -> (Vec<Vec<Rational>>,
     let mut matrix: Vec<Vec<Rational>> = Vec::new();
     let mut rhs: Vec<Rational> = Vec::new();
     for p in 0..max_p {
+        if budget_tripped() {
+            return None;
+        }
         // ℚ(x) equation: Σ cⱼₖ·col_rfⱼₖ = tgt_rf.
         let col_rf: Vec<RatFn> = n_cols.iter().map(|n| coeff_t(n, p)).collect();
         let tgt_rf = coeff_t(&n_target, p);
@@ -570,7 +666,7 @@ fn extract_linear_system(cols: &[TExpr], target: &TExpr) -> (Vec<Vec<Rational>>,
             rhs.push(coeff_x(&s_tgt, m));
         }
     }
-    (matrix, rhs)
+    Some((matrix, rhs))
 }
 
 /// Solve `M·x = b` over ℚ by Gauss–Jordan elimination, returning a particular
@@ -586,6 +682,9 @@ fn gauss_solve(
     for col in 0..ncols {
         if row >= nrows {
             break;
+        }
+        if budget_tripped() {
+            return None;
         }
         let Some(sel) = (row..nrows).find(|&r| m[r][col] != 0) else {
             continue;
@@ -749,7 +848,7 @@ pub(crate) fn solve_tower_coupled_radical_rde_bounded<F: CoeffField<Elem = TExpr
     g: &[TExpr],
     x_bound: Option<usize>,
 ) -> Option<Vec<TExpr>> {
-    if n < 2 || field.is_zero(a) {
+    if n < 2 || field.is_zero(a) || budget_tripped() {
         return None;
     }
     // Pad f, g to length n.
@@ -777,6 +876,9 @@ pub(crate) fn solve_tower_coupled_radical_rde_bounded<F: CoeffField<Elem = TExpr
     let dens = candidate_denominators(field, &probe, &g_combined(field, &g));
 
     for d in &dens {
+        if budget_tripped() {
+            return None;
+        }
         if let Some(u) = solve_coupled_with_denominator(field, n, a, &f, &g, d, x_bound) {
             return Some(u);
         }
@@ -834,6 +936,9 @@ fn solve_coupled_with_denominator<F: CoeffField<Elem = TExpr>>(
     // L(elem) = D_rad(elem) + f·elem, each a length-n vector.
     let mut cols: Vec<Vec<TExpr>> = Vec::with_capacity(elems.len());
     for elem in &elems {
+        if budget_tripped() {
+            return None;
+        }
         let dv = rad_derivation(field, a, n, elem)?;
         let fv = rad_mul(field, a, n, f, elem);
         let mut lv = vec![field.zero(); n];
@@ -843,7 +948,7 @@ fn solve_coupled_with_denominator<F: CoeffField<Elem = TExpr>>(
         cols.push(lv);
     }
 
-    let (matrix, rhs) = extract_linear_system_coupled(&cols, g, n);
+    let (matrix, rhs) = extract_linear_system_coupled(&cols, g, n)?;
     let sol = gauss_solve(matrix, rhs, basis.len())?;
 
     // Reconstruct u = Σ solᵢ · elemᵢ (each contributes to one component).
@@ -883,7 +988,7 @@ fn extract_linear_system_coupled(
     cols: &[Vec<TExpr>],
     target: &[TExpr],
     n: usize,
-) -> (Vec<Vec<Rational>>, Vec<Rational>) {
+) -> Option<(Vec<Vec<Rational>>, Vec<Rational>)> {
     let mut matrix: Vec<Vec<Rational>> = Vec::new();
     let mut rhs: Vec<Rational> = Vec::new();
     let zero = TExpr::int(0);
@@ -893,11 +998,11 @@ fn extract_linear_system_coupled(
             .map(|c| c.get(comp).cloned().unwrap_or_else(|| zero.clone()))
             .collect();
         let comp_tgt = target.get(comp).cloned().unwrap_or_else(|| zero.clone());
-        let (m, r) = extract_linear_system(&comp_cols, &comp_tgt);
+        let (m, r) = extract_linear_system(&comp_cols, &comp_tgt)?;
         matrix.extend(m);
         rhs.extend(r);
     }
-    (matrix, rhs)
+    Some((matrix, rhs))
 }
 
 // ===========================================================================
