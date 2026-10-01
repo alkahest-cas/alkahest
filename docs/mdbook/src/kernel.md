@@ -46,6 +46,20 @@ pool.save_to("session.alkp")
 pool2 = ExprPool.load_from("session.alkp")
 ```
 
+**Pickling.** `Expr` and `ExprPool` support `pickle` (and so `copy.deepcopy`, `multiprocessing`, `concurrent.futures`, `joblib`):
+
+- An expression pickles as **its own DAG** — the nodes reachable from it, not the pool's whole intern table — plus a reference to its pool.
+- A pool pickles as a **token** naming it, not as its node table. Unpickling the token gives the live pool with that token in the current process if there is one, otherwise a new empty pool that takes the token.
+- So expressions pickled together (one `pickle.dumps` of a list, tuple, dict, …) share one pool on the other side; expressions from the same pool pickled separately also share one pool when loaded into the same process; and results a `multiprocessing` worker sends back land in the **original** pool, where they combine with expressions that never left. In one process, `pickle.loads(pickle.dumps(e)) == e`.
+- `pickle.loads(pickle.dumps(pool))` in a new process is an empty pool: to persist a whole pool, use `save_to` / `load_from`.
+
+```python
+import concurrent.futures, operator
+with concurrent.futures.ProcessPoolExecutor() as ex:
+    products = list(ex.map(operator.mul, [x, y], [y, y]))
+products[0] + x          # fine: the result is back in x's pool
+```
+
 **Sharded pool.** Each node is stored once, in an append-only array; the intern index holds only ids (and hash bits) that compare through that array. With `--features parallel` the index is split into lock-striped shards, so threads interning unrelated expressions rarely contend, and two threads interning the same expression still receive the same id.
 
 ## ExprData variants

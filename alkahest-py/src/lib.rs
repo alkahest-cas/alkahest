@@ -1704,7 +1704,10 @@ fn own_pool_ids(pool: &PyRef<'_, PyExprPool>, args: &[PyExpr], op: &str) -> PyRe
     Ok(ids)
 }
 
-#[pyclass(name = "ExprPool")]
+// `weakref`: `alkahest._pickle` keeps a weak registry of pools by pickle
+// token, so an expression unpickled in a process that still holds its pool
+// lands back in that pool instead of a copy.
+#[pyclass(name = "ExprPool", weakref)]
 struct PyExprPool {
     inner: ExprPool,
 }
@@ -1989,6 +1992,35 @@ impl PyExprPool {
         self.inner.checkpoint(path).map_err(io_error_to_py)
     }
 
+    /// Pickle support — see `alkahest._pickle` for the semantics.  A pool
+    /// pickles as a token naming it, not as its node table: unpickling
+    /// yields the live pool with that token in this process if there is one
+    /// (the original, or an earlier unpickled copy), otherwise a new pool
+    /// that the expressions pickled with it are re-interned into.
+    fn __reduce__(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+        let py = slf.py();
+        let helper = py
+            .import_bound("alkahest._pickle")?
+            .getattr("_reduce_pool")?;
+        Ok(helper.call1((slf,))?.unbind())
+    }
+
+    /// Intern an expression serialised by `Expr.__reduce__` (the reachable
+    /// DAG, see `pool_persist::dag_to_bytes`) into this pool.  Private: the
+    /// unpickler's entry point.  Malformed bytes raise `IoError`.
+    fn _expr_from_dag(slf: PyRef<'_, Self>, data: &[u8]) -> PyResult<PyExpr> {
+        let roots = alkahest_core::kernel::pool_persist::dag_from_bytes(&slf.inner, data)
+            .map_err(io_error_to_py)?;
+        let [id] = roots[..] else {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "expected one pickled expression, found {}",
+                roots.len()
+            )));
+        };
+        let pool: Py<PyExprPool> = slf.into();
+        Ok(PyExpr { id, pool })
+    }
+
     /// Load a persisted pool from `path`.  Returns a new `ExprPool`.
     /// Raises `FileNotFoundError` if `path` does not exist, `IoError` for
     /// other failures.
@@ -2162,6 +2194,30 @@ impl PyExpr {
         self.id.hash(&mut h);
         (self.pool.as_ptr() as usize).hash(&mut h);
         h.finish()
+    }
+
+    /// Pickle support: the expression's reachable DAG (not the whole pool)
+    /// plus a reference to its pool object.
+    ///
+    /// The pool reference is what makes expressions pickled *together* share
+    /// one pool after loading: `pickle` memoises the pool object, so it is
+    /// reduced — and later rebuilt — once per pickle, and every expression
+    /// in that pickle is re-interned into it.  How the pool itself is
+    /// rebuilt is `ExprPool.__reduce__` (see `alkahest._pickle`).
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let bytes = {
+            let pool = self.pool.borrow(py);
+            alkahest_core::kernel::pool_persist::dag_to_bytes(&pool.inner, &[self.id])
+        };
+        let helper = py
+            .import_bound("alkahest._pickle")?
+            .getattr("_reduce_expr")?;
+        Ok(helper
+            .call1((
+                self.pool.clone_ref(py),
+                pyo3::types::PyBytes::new_bound(py, &bytes),
+            ))?
+            .unbind())
     }
 
     // Every renderer below walks the expression recursively, so each one is a

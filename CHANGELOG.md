@@ -4,6 +4,18 @@
 
 ### Added
 
+- **`Expr` and `ExprPool` can be pickled.** `pickle.dumps(expr)` raised
+  `TypeError: cannot pickle 'builtins.Expr'`, so expressions could not be
+  sent to `multiprocessing` / `concurrent.futures` workers, deep-copied or
+  cached. An expression now pickles as its own reachable DAG (not its pool's
+  whole intern table) plus a reference to its pool; a pool pickles as a
+  token, and unpickling it yields the live pool with that token in the
+  current process, or a new pool that takes it. Expressions pickled together
+  share one pool after loading, and results a worker process sends back
+  land in the original pool. Rust: `kernel::pool_persist::dag_to_bytes` /
+  `dag_from_bytes` (validated like a pool file). See *Pickling* in the kernel
+  chapter.
+
 - **Linear algebra over the finite fields GF(q).**
   `alkahest.experimental.FiniteField` and `GfMatrix` — GF(p) for a word-sized
   prime and GF(p^k) from FLINT's Conway polynomial or a caller-supplied
