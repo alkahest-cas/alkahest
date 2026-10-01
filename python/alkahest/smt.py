@@ -408,14 +408,19 @@ def _walk_exprs(obj: Any):
 
     Structural rather than tag-driven on purpose: it stays total when a node
     kind is added to ``Expr.node()``.
+
+    Iterative, in the same pre-order a recursive walk would take: a deeply
+    nested formula must reach :func:`to_smtlib`'s depth guard rather than
+    exhaust the Python stack on the way.
     """
-    if hasattr(obj, "node") and hasattr(obj, "node_tag"):
-        yield obj
-        for child in obj.node()[1:]:
-            yield from _walk_exprs(child)
-    elif isinstance(obj, (list, tuple)):
-        for item in obj:
-            yield from _walk_exprs(item)
+    stack = [obj]
+    while stack:
+        item = stack.pop()
+        if hasattr(item, "node") and hasattr(item, "node_tag"):
+            yield item
+            stack.extend(reversed(item.node()[1:]))
+        elif isinstance(item, (list, tuple)):
+            stack.extend(reversed(item))
 
 
 def _formula_symbols(formula: Any) -> dict[str, Any]:

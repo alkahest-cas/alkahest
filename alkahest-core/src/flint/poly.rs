@@ -164,7 +164,46 @@ impl FlintPoly {
         self.length() == 0
     }
 
+    /// `self^exp`.
+    ///
+    /// # Panics
+    ///
+    /// When the result could not fit in memory (see [`Self::checked_pow`]).
+    /// FLINT used to be asked for it anyway and abort the process;
+    /// `(x + 1)^(2^21)` wanted half a terabyte.
     pub fn pow(&self, exp: u32) -> Self {
+        self.checked_pow(exp).unwrap_or_else(|| {
+            panic!(
+                "FlintPoly::pow: the result of raising a degree-{} polynomial to the \
+                 power {exp} would not fit in memory (E-POLY-004)",
+                self.degree()
+            )
+        })
+    }
+
+    /// `self^exp`, or `None` when the result's estimated size — degree
+    /// `deg·exp`, coefficients of up to `exp·log₂‖self‖₁` bits — would not fit
+    /// the machine's memory, the active `Budget(max_bytes=…)` or `RLIMIT_AS`.
+    /// Checked before FLINT allocates, since FLINT aborts on failure.
+    pub fn checked_pow(&self, exp: u32) -> Option<Self> {
+        let deg = self.degree();
+        if deg >= 0 && exp > 1 {
+            let coeffs: Vec<rug::Integer> = (0..self.length())
+                .map(|i| self.get_coeff_flint(i).to_rug())
+                .collect();
+            let nonzero = coeffs.iter().filter(|c| **c != 0).count();
+            let dense = (deg as f64) * f64::from(exp) + 1.0;
+            let terms = crate::poly::size::power_term_bound(nonzero, exp, dense);
+            let bits = f64::from(exp) * crate::poly::size::log2_l1_norm(&coeffs);
+            // The dense coefficient array costs one 8-byte slot per degree
+            // whether or not the coefficient is zero.
+            crate::poly::size::check_power_size(terms, bits, 8).ok()?;
+            crate::poly::size::check_power_size(dense, 0.0, 8).ok()?;
+        }
+        Some(self.pow_unchecked(exp))
+    }
+
+    fn pow_unchecked(&self, exp: u32) -> Self {
         // A monomial `c·x^k` is raised directly. FLINT treats a length-2 poly
         // (`x` itself is `[0, 1]`) as a binomial and builds every binomial
         // coefficient C(exp, i) before multiplying by the zero constant term,

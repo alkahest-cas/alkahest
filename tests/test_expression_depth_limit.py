@@ -196,6 +196,117 @@ def test_entry_point_refuses_instead_of_recursing(
     assert excinfo.value.code == "E-DEPTH-001"
 
 
+def _xp():
+    import alkahest.experimental as akx
+
+    return akx
+
+
+def _z(p: ak.ExprPool) -> ak.Expr:
+    return p.symbol("z")
+
+
+def _m2(e: ak.Expr, x: ak.Expr, p: ak.ExprPool) -> ak.Matrix:
+    return ak.Matrix([[e, x], [x, p.integer(1)]])
+
+
+#: Entry points that recursed over an argument without the guard, found by
+#: calling every public callable with a 100 000-level argument in each
+#: expression slot (audit B7 and its sweep). Each one killed the interpreter
+#: with SIGSEGV; each must now refuse with ``E-DEPTH-001``.
+SWEPT = [
+    pytest.param(lambda e, x, p: ak.routh_hurwitz(e, x), id="routh_hurwitz"),
+    pytest.param(lambda e, x, p: ak.cad_project([e], x), id="cad_project"),
+    pytest.param(lambda e, x, p: ak.cad_lift([e], x), id="cad_lift"),
+    pytest.param(lambda e, x, p: ak.limit(x, x, e), id="limit_point"),
+    pytest.param(lambda e, x, p: ak.series(x, x, e, 3), id="series_point"),
+    pytest.param(lambda e, x, p: ak.sum_definite(x, x, e, x), id="sum_definite_lo"),
+    pytest.param(lambda e, x, p: ak.sum_definite(x, x, x, e), id="sum_definite_hi"),
+    pytest.param(lambda e, x, p: ak.verify_wz_pair(e, x, x, x), id="verify_wz_pair"),
+    pytest.param(lambda e, x, p: ak.integrate(e, x, x, x), id="integrate_definite"),
+    pytest.param(lambda e, x, p: ak.integrate(x, x, e, x), id="integrate_definite_lo"),
+    pytest.param(lambda e, x, p: _xp().dsolve(e, x, x, [x]), id="dsolve"),
+    pytest.param(lambda e, x, p: _xp().puiseux_series(x, x, e, 3), id="puiseux_point"),
+    pytest.param(lambda e, x, p: _xp().series_solve(x, e, x, x, x, 3), id="series_solve"),
+    pytest.param(lambda e, x, p: _xp().series_solve(x, x, x, x, e, 3), id="series_solve_x0"),
+    pytest.param(lambda e, x, p: _xp().Normal(x, e), id="Normal"),
+    pytest.param(lambda e, x, p: _xp().Beta(e, x), id="Beta"),
+    pytest.param(lambda e, x, p: _xp().Poisson(e), id="Poisson"),
+    pytest.param(lambda e, x, p: _xp().Normal(x, x).cdf(e), id="Distribution.cdf"),
+    pytest.param(lambda e, x, p: _xp().Normal(x, x).pdf(e), id="Distribution.pdf"),
+    pytest.param(
+        lambda e, x, p: _xp().expectation(e, x, _xp().Normal(x, p.integer(1))), id="expectation"
+    ),
+    pytest.param(
+        lambda e, x, p: _xp().kl_divergence(_xp().Normal(x, x), _xp().Normal(x, x), e),
+        id="kl_divergence_base",
+    ),
+    pytest.param(lambda e, x, p: _xp().multilimit(e, x, _z(p), x, x), id="multilimit"),
+    pytest.param(lambda e, x, p: _xp().asymptotic_expand(e, x, 3), id="asymptotic_expand"),
+    pytest.param(lambda e, x, p: _xp().laplace_transform(e, x, _z(p)), id="laplace_transform"),
+    pytest.param(lambda e, x, p: _xp().z_transform(e, x, _z(p)), id="z_transform"),
+    pytest.param(lambda e, x, p: _xp().inverse_z_transform(e, x, _z(p)), id="inverse_z_transform"),
+    pytest.param(lambda e, x, p: ak.zeilberger(x, x, _z(p), limits=(x, e)), id="zeilberger"),
+    pytest.param(lambda e, x, p: _xp().telescope_md(e, x, [_z(p)]), id="telescope_md"),
+    pytest.param(
+        lambda e, x, p: _xp().asymptotics_from_recurrence([e, p.integer(1)], x),
+        id="asymptotics_from_recurrence",
+    ),
+    pytest.param(lambda e, x, p: _m2(e, x, p).inverse(), id="Matrix.inverse"),
+    pytest.param(lambda e, x, p: _m2(e, x, p).eigenvals(), id="Matrix.eigenvals"),
+    pytest.param(lambda e, x, p: _m2(e, x, p).rref(), id="Matrix.rref"),
+    pytest.param(lambda e, x, p: _m2(e, x, p).matrix_exp(), id="Matrix.matrix_exp"),
+    pytest.param(lambda e, x, p: ak.ODE.new([x], [e], _z(p)), id="ODE.new"),
+    pytest.param(lambda e, x, p: ak.DAE.new([e], [x], [p.symbol("dx")], _z(p)), id="DAE.new"),
+    pytest.param(lambda e, x, p: ak.UniPoly.from_symbolic(e, x), id="UniPoly.from_symbolic"),
+    pytest.param(lambda e, x, p: ak.MultiPoly.from_symbolic(e, [x]), id="MultiPoly.from_symbolic"),
+    pytest.param(
+        lambda e, x, p: ak.RationalFunction.from_symbolic(p.integer(1), e, [x]),
+        id="RationalFunction.from_symbolic",
+    ),
+    pytest.param(lambda e, x, p: ak.expr_to_gbpoly(e, [x]), id="expr_to_gbpoly"),
+    pytest.param(lambda e, x, p: ak.GroebnerBasis.compute([e], [x]), id="GroebnerBasis.compute"),
+    pytest.param(lambda e, x, p: ak.primary_decomposition([e], [x]), id="primary_decomposition"),
+    pytest.param(lambda e, x, p: ak.radical([e]), id="radical"),
+    pytest.param(lambda e, x, p: ak.triangularize([e], [x]), id="triangularize"),
+    pytest.param(lambda e, x, p: ak.diophantine(e, [x, _z(p)]), id="diophantine"),
+]
+
+
+@pytest.mark.parametrize("call", SWEPT)
+def test_swept_entry_point_refuses_instead_of_recursing(
+    call, too_deep: ak.Expr, x: ak.Expr, pool: ak.ExprPool
+):
+    with pytest.raises(ak.DepthLimitError) as excinfo:
+        call(too_deep, x, pool)
+    assert excinfo.value.code == "E-DEPTH-001"
+
+
+def test_solve_numerical_refuses_instead_of_recursing(too_deep: ak.Expr, x: ak.Expr):
+    if not hasattr(ak, "solve_numerical"):
+        pytest.skip("solve_numerical needs the groebner feature")
+    with pytest.raises(ak.DepthLimitError):
+        ak.solve_numerical([too_deep], [x])
+
+
+def test_smt_walk_reaches_the_guard_rather_than_the_python_stack(pool: ak.ExprPool):
+    """``smt.supported`` walked the formula recursively in Python before
+    handing it to the native emitter, so a deep formula died in the walk (a
+    ``RecursionError``, or a crash under a raised recursion limit) instead of
+    reaching the emitter's depth guard."""
+    deep = nest(pool.symbol("w", "real"), 5 * MAX_EXPR_DEPTH)
+    with pytest.raises(ak.DepthLimitError):
+        ak.smt.supported(pool.lt(deep, pool.integer(1)))
+
+
+def test_the_guards_still_accept_ordinary_input(x: ak.Expr, pool: ak.ExprPool):
+    """The new guards are O(1) checks of a cached depth; ordinary input goes
+    through unchanged."""
+    assert ak.routh_hurwitz(x**2 + 3 * x + 2, x)["degree"] == 2
+    assert ak.Matrix([[x, pool.integer(1)], [pool.integer(1), x]]).rank() == 2
+    assert ak.UniPoly.from_symbolic(x**3 + 1, x).degree == 3
+
+
 def test_explicit_assumptions_are_refused_at_the_plain_ceiling(
     too_deep: ak.Expr, x: ak.Expr, pool: ak.ExprPool
 ):

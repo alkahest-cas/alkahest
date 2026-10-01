@@ -51,6 +51,20 @@ fn coeffmap_mul(a: &CoeffMap, b: &CoeffMap) -> Result<CoeffMap, ConversionError>
 }
 
 fn coeffmap_pow(base: &CoeffMap, n: u32) -> Result<CoeffMap, ConversionError> {
+    if n >= 2 {
+        if let Some((&top, _)) = base.last_key_value() {
+            // At most `top·n + 1` distinct degrees; each map entry carries a
+            // `u32` key, an `Integer` header and the B-tree's own overhead.
+            let degrees = f64::from(top) * f64::from(n) + 1.0;
+            let terms = super::size::power_term_bound(base.len(), n, degrees);
+            let bits = f64::from(n) * super::size::log2_l1_norm(base.values());
+            super::size::check_power_size(terms, bits, 48)?;
+        }
+    }
+    coeffmap_pow_unchecked(base, n)
+}
+
+fn coeffmap_pow_unchecked(base: &CoeffMap, n: u32) -> Result<CoeffMap, ConversionError> {
     if n == 0 {
         let mut one = CoeffMap::new();
         one.insert(0, rug::Integer::from(1));
@@ -59,7 +73,7 @@ fn coeffmap_pow(base: &CoeffMap, n: u32) -> Result<CoeffMap, ConversionError> {
     if n == 1 {
         return Ok(base.clone());
     }
-    let half = coeffmap_pow(base, n / 2)?;
+    let half = coeffmap_pow_unchecked(base, n / 2)?;
     let mut result = coeffmap_mul(&half, &half)?;
     if n % 2 == 1 {
         result = coeffmap_mul(&result, base)?;
@@ -513,7 +527,9 @@ impl<'a> UniBuilder<'a> {
 
                 match n_u32 {
                     1 => b,
-                    _ => b.pow(n_u32),
+                    _ => b
+                        .checked_pow(n_u32)
+                        .ok_or(ConversionError::ExponentTooLarge)?,
                 }
             }
             UniNode::Var | UniNode::Small(_) | UniNode::Big(_) | UniNode::Fail(_) => {
@@ -659,13 +675,18 @@ impl UniPoly {
     }
 
     /// `self^exp`, or [`ConversionError::ExponentTooLarge`] if the result's
-    /// degree would exceed [`MAX_DENSE_DEGREE`] or the active memory budget.
+    /// degree would exceed [`MAX_DENSE_DEGREE`], or its estimated size
+    /// (degree times coefficient bits, see [`FlintPoly::checked_pow`]) would
+    /// not fit the machine or the active memory budget.
     pub fn checked_pow(&self, exp: u32) -> Result<Self, ConversionError> {
         let deg = u64::try_from(self.degree()).unwrap_or(0);
         check_dense_degree(deg.saturating_mul(u64::from(exp)))?;
         Ok(UniPoly {
             var: self.var,
-            coeffs: self.coeffs.pow(exp),
+            coeffs: self
+                .coeffs
+                .checked_pow(exp)
+                .ok_or(ConversionError::ExponentTooLarge)?,
         })
     }
 
@@ -1331,6 +1352,51 @@ mod tests {
         assert_eq!(xp1.checked_pow(3).unwrap(), xp1.pow(3));
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| xp1.pow(1 << 31)));
         assert!(r.is_err());
+    }
+
+    /// Follow-up to #413: the degree ceiling stopped `x^(2^31)`, but a genuine
+    /// binomial to a moderate power — `(x+1)^(2^21)`, two million
+    /// coefficients of up to two million bits, half a terabyte — went
+    /// straight to `fmpz_poly_pow` and took the process down. Its size is now
+    /// estimated first and the power refused with `E-POLY-004`.
+    #[test]
+    fn binomial_power_past_memory_is_refused_before_flint_allocates() {
+        let (p, x) = pool_and_var();
+        let xp1_expr = p.add(vec![x, p.integer(1_i32)]);
+        let xp1 = UniPoly::from_symbolic(xp1_expr, x, &p).unwrap();
+        let huge = 1_u32 << 21;
+        // Only meaningful where half a terabyte is more than the machine has;
+        // anywhere else the unbudgeted power is legitimately allowed.
+        let fits = crate::budget::memory::physical_memory().is_none_or(|m| m > 1 << 39);
+        if !fits {
+            assert_eq!(
+                xp1.checked_pow(huge).err(),
+                Some(ConversionError::ExponentTooLarge)
+            );
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| xp1.coeffs.pow(huge)));
+            assert!(r.is_err(), "FlintPoly::pow must refuse, not allocate");
+            // The same power reached through the symbolic converter.
+            let e = p.pow(xp1_expr, p.integer(huge));
+            assert_eq!(
+                UniPoly::from_symbolic(e, x, &p).err(),
+                Some(ConversionError::ExponentTooLarge)
+            );
+        }
+        // A power that fits is untouched: C(4096, 2048) is the middle term.
+        let small = xp1.checked_pow(4096).unwrap();
+        assert_eq!(small.degree(), 4096);
+        // ... and refused under a memory budget it would not fit (about
+        // 2 MiB of coefficients against 1 MiB).
+        let _g = crate::budget::enter_with_memory(crate::budget::Budget::default(), Some(1 << 20));
+        assert_eq!(
+            xp1.checked_pow(4096).err(),
+            Some(ConversionError::ExponentTooLarge)
+        );
+        let e = p.pow(xp1_expr, p.integer(4096));
+        assert_eq!(
+            UniPoly::from_symbolic(e, x, &p).err(),
+            Some(ConversionError::ExponentTooLarge)
+        );
     }
 
     #[test]

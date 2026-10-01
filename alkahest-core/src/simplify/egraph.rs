@@ -538,14 +538,15 @@ mod backend {
         // node_limit is enforced as a pre-saturation DAG-size check in
         // simplify_egraph_impl; egglog 0.4 does not expose a per-run node cap.
         let node_limit_line = String::new();
-        let iter_limit_line = config
-            .iter_limit
-            .map(|n| format!("(set-option iteration_limit {n})\n"))
-            .unwrap_or_default();
-
-        let si = config.shrink_iters;
-        let ei = config.explore_iters;
-        let ci = config.const_fold_iters;
+        // `iter_limit` caps every `(run <ruleset> n)` step of the schedule.
+        // It used to be emitted as `(set-option iteration_limit n)`, which
+        // egglog 0.4 rejects ("Unknown option"), so any `iter_limit` at all
+        // made the program fail; the cap is now applied to the run counts
+        // themselves, which is the only iteration control egglog 0.4 has.
+        let cap = |n: usize| config.iter_limit.map_or(n, |limit| n.min(limit));
+        let si = cap(config.shrink_iters);
+        let ei = cap(config.explore_iters);
+        let ci = cap(config.const_fold_iters);
 
         // Conditionally include trig / log-exp rules based on config flags.
         let trig_rs = if config.disjoint_schedule {
@@ -692,7 +693,7 @@ mod backend {
 
         let prelude = format!(
             r#"
-{node_limit_line}{iter_limit_line}(datatype Expr
+{node_limit_line}(datatype Expr
   (Num i64)
   (Var String)
   (Add Expr Expr)
@@ -718,7 +719,6 @@ mod backend {
 ; ── phased schedule ───────────────────────────────────────────────────────────
 "#,
             node_limit_line = node_limit_line,
-            iter_limit_line = iter_limit_line,
             rules_block = rules_block,
         );
         (prelude, schedule)
@@ -726,7 +726,7 @@ mod backend {
 
     /// Upper bound on distinct cached preludes per thread. A prelude is keyed
     /// by its full text, so this only fills up if a caller cycles through
-    /// many `iter_limit` values; the cache is then simply rebuilt.
+    /// many rule-flag configurations; the cache is then simply rebuilt.
     const PRELUDE_CACHE_CAP: usize = 16;
 
     thread_local! {
@@ -1642,7 +1642,9 @@ pub struct EgraphConfig {
     pub const_fold_iters: usize,
     /// Abort if the e-graph exceeds this many nodes. `None` = unlimited.
     pub node_limit: Option<usize>,
-    /// Per-ruleset iteration cap passed to egglog's scheduler. `None` = unlimited.
+    /// Per-ruleset iteration cap: every `(run <ruleset> n)` step of the
+    /// schedule runs at most this many rounds (`n` is the corresponding
+    /// `*_iters` field). `0` runs no rewrite rules at all. `None` = no cap.
     pub iter_limit: Option<usize>,
     /// Include the Pythagorean trig identity (`sin²+cos²→1`) in the explore phase.
     /// Default `true`.
@@ -1855,6 +1857,43 @@ mod tests {
         };
         let result = simplify_egraph_with(expr, &pool, &config, &SizeCost);
         assert_eq!(result.value, x);
+    }
+
+    // Audit C2: any `iter_limit` panicked with "Unknown option
+    // 'iteration_limit'" — the option was emitted as a `set-option` egglog
+    // 0.4 does not know. It now caps every `(run …)` step. (Without the
+    // `egraph` feature `simplify_egraph_with` is the rule engine, which has
+    // no Pythagorean rule, so there is nothing to cap.)
+    #[cfg(feature = "egraph")]
+    #[test]
+    fn egraph_iter_limit_is_accepted_and_honoured() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let two = pool.integer(2_i32);
+        let pyth = pool.add(vec![
+            pool.pow(pool.func("sin", vec![x]), two),
+            pool.pow(pool.func("cos", vec![x]), two),
+        ]);
+        let with_limit = |limit: usize| EgraphConfig {
+            iter_limit: Some(limit),
+            ..EgraphConfig::default()
+        };
+        // A generous cap changes nothing: sin²+cos² still reaches 1.
+        for limit in [100, 1_000_000] {
+            let r = simplify_egraph_with(pyth, &pool, &with_limit(limit), &SizeCost);
+            assert_eq!(r.value, pool.integer(1_i32), "iter_limit={limit}");
+        }
+        // A zero cap runs no rewrite round, so the identity is never applied.
+        let r = simplify_egraph_with(pyth, &pool, &with_limit(0), &SizeCost);
+        assert_ne!(r.value, pool.integer(1_i32));
+        // The cap only ever lowers the phase counts.
+        let r = simplify_egraph_with(
+            pool.add(vec![x, pool.integer(0_i32)]),
+            &pool,
+            &with_limit(1),
+            &SizeCost,
+        );
+        assert_eq!(r.value, x);
     }
 
     #[test]

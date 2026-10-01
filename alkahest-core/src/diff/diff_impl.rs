@@ -364,7 +364,7 @@ fn build_zpoly(
                 ExprData::Integer(n) => n.0.to_u32(),
                 _ => None,
             })?;
-            build_zpoly(base, var, pool, memo)?.pow(n)
+            build_zpoly(base, var, pool, memo)?.checked_pow(n).ok()?
         }
         // `var` and integer constants: atoms, so the tree conversion is O(1).
         _ => UniPoly::from_symbolic(expr, var, pool).ok()?,

@@ -743,6 +743,50 @@
   - Trial-division loops formed `d * d` (or `d⁴`) before the bound check and
     overflowed for a large prime `n` (`elliptic_output`'s squarefree and
     quartic tests, `character::dixon`, `poly::interp::prime_factors`).
+- **`rsolve` killed the interpreter on a huge shift.** `f(n+10^12) − f(n)`
+  sized its coefficient vector by the order and asked for 32 TB (an abort,
+  even under `Budget(max_bytes=…)`), `f(n+10^18) − f(n)` overflowed the
+  capacity computation, and `f(n+1) − f(n−2^70)` read the shift as `i64::MIN`
+  and indexed out of bounds. Orders above `RSOLVE_MAX_ORDER` (4096) and shifts
+  past `i64` are now refused with `E-RSOLVE-004` before anything is
+  allocated; a large shift with a small spread (`f(n+10^12) − 2f(n+10^12−1)`)
+  is still an order-1 recurrence.
+- **`call_batch_raw([], 0, 2**40)` aborted on an 8 TiB output buffer.** With
+  no inputs nothing bounded `n_points`; the output size is now checked against
+  physical memory, the active memory budget and `RLIMIT_AS` first
+  (`BudgetExceededError`), in `call_batch_raw_par` too.
+- **A genuine binomial to a large power went straight to FLINT.** The degree
+  ceiling stopped `x^(2^31)`, but `(x+1)^(2^21)` — two million coefficients of
+  up to two million bits, half a terabyte — reached `fmpz_poly_pow` and took
+  the process down, and `MultiPoly` powers such as `(x+y+1)^(2^16)` did the
+  same through `fmpz_mpoly_pow_ui`. A power's size (term count times
+  `n·log₂‖p‖₁` coefficient bits) is now estimated first and a power that
+  cannot fit physical memory or the active budget is refused with
+  `E-POLY-004` (`UniPoly`/`MultiPoly`/`RationalFunction` conversion,
+  `UniPoly ** n`, and the new `FlintPoly::checked_pow`; `FlintPoly::pow`
+  panics instead of aborting).
+- **`simplify_egraph_with(EgraphConfig(iter_limit=N))` always panicked** with
+  "Unknown option 'iteration_limit'": the cap was emitted as a `set-option`
+  the vendored egglog 0.4 does not have. It now caps every `(run …)` step of
+  the schedule at `N` rounds, as documented (`0` runs no rewrite rules).
+- **Dozens of entry points segfaulted on a deeply nested argument** instead
+  of raising `DepthLimitError` (`E-DEPTH-001`): `routh_hurwitz`,
+  `cad_project` and `cad_lift` (audit B7), and — found by calling every public
+  callable with a 100 000-level argument in each expression slot — the point
+  of `limit`/`series`/`puiseux_series`, the bounds of `sum_definite` and
+  definite `integrate`, `verify_wz_pair`, `dsolve`, `series_solve`,
+  `multilimit`, `asymptotic_expand`, the integral transforms, `zeilberger`,
+  `q_zeilberger`, `telescope2d`/`telescope_md`, `euler_maclaurin`,
+  `coefficient_asymptotics`, `asymptotics_from_recurrence`, `diophantine`,
+  `expr_to_gbpoly`, `GroebnerBasis.compute`/`compute_f5`, parametric Gröbner
+  bases, `primary_decomposition`, `radical`, `triangularize`,
+  `solve_numerical`, `UniPoly`/`MultiPoly`/`RationalFunction.from_symbolic`,
+  the `Matrix` decompositions and eigen-routines, `ODE.new`/`with_ic` and
+  `DAE.new` (every ODE/DAE analysis walks them), the probability
+  distributions' parameters and `pdf`/`cdf`/`quantile`/generating functions,
+  `expectation*`, `variance_affine_independent` and the information measures'
+  `base`. `smt.supported`/`smt.solve` walked the formula recursively in Python
+  before reaching the emitter's guard; that walk is now iterative.
 
 ### Performance
 
