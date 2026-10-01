@@ -354,6 +354,21 @@
   exits (400 threads: +91 MB before, +4 kB after). It releases only the
   exiting thread's caches; a big integer still alive elsewhere keeps its block,
   and Rayon's long-lived workers clean up once, when the pool shuts down.
+- **`integrate` answers that were wrong where the integrand is not real, and
+  a pole hidden behind a non-real constant.** Every numeric gate sampled only
+  where the integrand is a finite real, so the substitution routes'
+  sign-losing rewrites (`(a³)^{1/2} ↦ (a^{1/2})³`) went unseen on the other
+  half of the line: `∫ 3/2·tan²x(1+tan²x)/√(tan³x) dx` returned `(√tan x)³`,
+  off by a sign wherever `tan x < 0`, and `∫(1/tan x)^{3/2}`, `∫√(tan³x)`
+  likewise. The outermost `integrate` now also checks `d/dx F = f` at points
+  where `f` is finite and non-real (principal branch), the generator
+  substitution uses the same check to pick its sign-repaired candidate, and
+  a definite integral whose integrand is non-real on part of the interval
+  walks `F` on that branch for jumps: `∫_1^{5/2} cot^{3/2}` gave
+  `0.108 + 2.668i` across `π/2` (the value is `0.108 − 0.446i`) and is now
+  refused. `∫_{-1}^{2} (1/x + tanh(i)) dx` returned a finite value because
+  the non-real constant turned every pole scan off; the scans now ignore
+  summands and factors free of the variable (audit A10).
 - **`simplify` folded indeterminate forms to numbers: `oo - oo → 0`,
   `oo * 0 → 0`, `oo / oo → 1`, and for IEEE floats `NaN - NaN → 0`,
   `NaN * 0 → 0`, `inf * 0 → 0`, `inf - inf → 0`, `x*inf - x*inf → 0`.**

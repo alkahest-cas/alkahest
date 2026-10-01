@@ -319,6 +319,17 @@ fn integrate_reduced(
         if !gate::verify(candidate, &target, var, &domain, &opts, pool).is_verified() {
             continue;
         }
+        // The gate samples only where the integrand is real. The radicand
+        // normalization's lost sign is invisible there when the integrand is
+        // *complex* on the other side — `√(tan³x)` for `tan x < 0` — and the
+        // unrepaired `F` then clears the gate while being wrong by a sign on
+        // that half of the line (audit A10). The sign-repaired candidates exist
+        // for exactly this; check the complex branch so the right one wins.
+        if crate::integrate::branch_check::complex_branch_mismatch(candidate, original, var, pool)
+            .is_some()
+        {
+            continue;
+        }
         let real = live
             .iter()
             .filter(|&&x| gate::eval_at(candidate, var, x, pool).is_some_and(f64::is_finite))
