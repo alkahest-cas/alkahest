@@ -239,6 +239,23 @@
   adjugate. Measured on one machine (release wheel, a dense matrix of
   polynomials in `x`, `y`): 7×7 42 → 11 ms, 8×8 336 → 74 ms.
   Output is unchanged (differential tests against the unmemoised expansion).
+- **The symbolic inverse of a polynomial matrix is computed by fraction-free
+  elimination.** `Matrix::inverse` on a matrix with symbolic entries needs
+  `det(A)` and all `n²` first minors in expanded form; it built each as a
+  memoised cofactor expansion (`O(n·2ⁿ)` nested sub-determinants) and then
+  had the simplifier expand it. When every entry is a polynomial with
+  rational coefficients in commutative symbols (and `n ≥ 4`), one
+  fraction-free Gauss–Jordan elimination of `[A | I]` over `ℤ[x₁,…,x_k]`
+  (FLINT `fmpz_mpoly`, exact divisions, rows scaled by the lcm of their
+  denominators) now yields the determinant and the whole adjugate in `O(n³)`
+  polynomial operations. Measured on one machine (release build, the
+  benchmark matrix `x + i` / `x^|i−j| + (i+1)·y`): 6×6 121 → 9 ms, 7×7
+  868 → 20 ms, 8×8 7.6 s → 39 ms; a dense random 8×8 in `x, y, z`
+  4.5 s → 0.35 s. Each entry is the same `ExprId` the cofactor route returns
+  (differential tests against it, kept as the reference). Inputs where that
+  route would stop short of a full expansion — a power `ExpandPow` declines
+  to distribute — keep the cofactor route, as do non-polynomial entries.
+  `Matrix::det` is unchanged: it returns the unexpanded cofactor expression.
 - **Validated Taylor-model arithmetic stops cloning its operands.**
   `TaylorModel::mul`, `add`, `scale`, `poly_bound` and `range` cloned every
   ball coefficient they read (two MPFR allocations each) and rebuilt each

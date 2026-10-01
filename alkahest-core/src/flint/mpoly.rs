@@ -271,6 +271,36 @@ impl FlintMPoly {
         r
     }
 
+    /// Sum `self + other`. Both must share a context (same `nvars`).
+    pub(crate) fn add(&self, other: &FlintMPoly) -> FlintMPoly {
+        let mut r = FlintMPoly::new(Arc::clone(&self.ctx));
+        // SAFETY: as in `mul`.
+        unsafe {
+            super::ffi::fmpz_mpoly_add(
+                r.as_mut_ptr(),
+                self.as_ptr(),
+                other.as_ptr(),
+                self.ctx.as_ptr(),
+            );
+        }
+        r
+    }
+
+    /// Difference `self - other`. Both must share a context (same `nvars`).
+    pub(crate) fn sub(&self, other: &FlintMPoly) -> FlintMPoly {
+        let mut r = FlintMPoly::new(Arc::clone(&self.ctx));
+        // SAFETY: as in `mul`.
+        unsafe {
+            super::ffi::fmpz_mpoly_sub(
+                r.as_mut_ptr(),
+                self.as_ptr(),
+                other.as_ptr(),
+                self.ctx.as_ptr(),
+            );
+        }
+        r
+    }
+
     /// Power `self^k`, or `None` if FLINT reports failure.
     pub(crate) fn pow_ui(&self, k: u64) -> Option<FlintMPoly> {
         let mut r = FlintMPoly::new(Arc::clone(&self.ctx));
@@ -309,6 +339,17 @@ impl FlintMPoly {
     /// A shared reference to this polynomial's context.
     pub fn ctx(&self) -> &Arc<FlintMPolyCtx> {
         &self.ctx
+    }
+}
+
+impl Clone for FlintMPoly {
+    fn clone(&self) -> Self {
+        let mut r = FlintMPoly::new(Arc::clone(&self.ctx));
+        // SAFETY: both initialised in the same context; `r` is fresh.
+        unsafe {
+            super::ffi::fmpz_mpoly_set(r.as_mut_ptr(), self.as_ptr(), self.ctx.as_ptr());
+        }
+        r
     }
 }
 
