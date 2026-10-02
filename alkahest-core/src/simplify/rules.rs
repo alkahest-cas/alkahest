@@ -819,7 +819,7 @@ const MAX_CONST_POW_BITS: u64 = 1 << 16;
 /// `n+1` it occupies).  Sharpening it would mean computing a logarithm to save
 /// a fold nobody wants at this size, so the loose bound stands and the
 /// effective ceiling for base 2 is ~32 700 bits rather than 65 536.
-fn const_pow_within_budget(base: &rug::Rational, exp: u32) -> bool {
+pub(crate) fn const_pow_within_budget(base: &rug::Rational, exp: u32) -> bool {
     let widest = base
         .numer()
         .significant_bits()
@@ -2104,7 +2104,7 @@ impl RewriteRule for ExpandMul {
 /// bound on its own — it permits `(a₁+…+a₂₀)⁴` (160 000 products) while refusing
 /// `(x+y)⁵` (32). [`MAX_EXPAND_POW_PRODUCTS`] is the bound that actually
 /// describes the work.
-const MAX_EXPAND_POW_EXP: u32 = 4;
+pub(crate) const MAX_EXPAND_POW_EXP: u32 = 4;
 
 /// Maximum number of distributed products [`ExpandPow`] will form: a base of
 /// `m` summands raised to `n` produces `mⁿ` of them before like terms are
@@ -2122,7 +2122,7 @@ const MAX_EXPAND_POW_EXP: u32 = 4;
 /// Beyond it the honest answer is `poly_normal`, which is `n^2.1` for the same
 /// result; the recorded log step says so rather than leaving the caller with an
 /// unexpanded expression and no explanation.
-const MAX_EXPAND_POW_PRODUCTS: u64 = 4096;
+pub(crate) const MAX_EXPAND_POW_PRODUCTS: u64 = 4096;
 
 /// How many declined powers one pass will report.  A pass that hits the bound
 /// on hundreds of distinct nodes has said everything useful in the first few,
@@ -2160,7 +2160,7 @@ pub(crate) fn take_expand_limits() -> Vec<(ExprId, u32, usize)> {
 pub(crate) const EXPAND_POW_LIMIT_RULE: &str = "expand_pow_limit_reached";
 
 /// Number of distributed products `(m summands)^n` would form, saturating.
-fn expansion_products(summands: usize, exp: u32) -> u64 {
+pub(crate) fn expansion_products(summands: usize, exp: u32) -> u64 {
     (summands as u64).checked_pow(exp).unwrap_or(u64::MAX)
 }
 

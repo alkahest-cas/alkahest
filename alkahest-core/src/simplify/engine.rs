@@ -682,7 +682,27 @@ pub fn simplify_batch(exprs: &[ExprId], pool: &ExprPool) -> Vec<DerivedExpr<Expr
 }
 
 /// Simplify `expr` with expansion enabled (`(a+b)*c → a*c + b*c`).
+///
+/// Polynomial subexpressions the rule engine is certain to expand completely
+/// are first expanded in one sparse-polynomial product (FLINT), recorded as a
+/// single `expand_polynomial` step each, and the rule engine then runs on the
+/// result; see [`super::poly_expand`].  The value is the one the rule engine
+/// alone produces; the derivation log has one `expand_polynomial` step where
+/// it used to have the `expand_mul` / `expand_pow` / `collect_*` steps that
+/// built the same expansion.
 pub fn simplify_expanded(expr: ExprId, pool: &ExprPool) -> DerivedExpr<ExprId> {
+    let (pre, pre_log) = super::poly_expand::expand_polynomials(expr, pool);
+    let result = simplify_expanded_by_rules(pre, pool);
+    if pre_log.is_empty() {
+        result
+    } else {
+        DerivedExpr::with_log(result.value, pre_log.merge(result.log))
+    }
+}
+
+/// [`simplify_expanded`] by term rewriting alone, with no polynomial fast
+/// path: the reference the fast path is tested against.
+pub(crate) fn simplify_expanded_by_rules(expr: ExprId, pool: &ExprPool) -> DerivedExpr<ExprId> {
     let config = SimplifyConfig {
         expand: true,
         ..SimplifyConfig::default()

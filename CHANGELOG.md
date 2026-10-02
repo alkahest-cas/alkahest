@@ -206,6 +206,27 @@
   5.3 µs (75 ms / 0.18 ms); `n = 720` 4.77 s → 7.7 µs (254 ms / 0.27 ms);
   `n = 1001` 167 ms → 7.8 µs (183 ms / 0.41 ms).
 
+- **`simplify_expanded` expands polynomials in one sparse product.**
+  Expanding `∏(x + i·y + z + i)` by term rewriting distributed one sum at a
+  time, interned every intermediate product and collected like terms over
+  many passes. The polynomial parts of the input — products and powers of
+  sums over symbols with integer or rational coefficients — are now
+  converted to sparse polynomials and multiplied with FLINT
+  (`fmpz_mpoly`), and the rule engine runs on the result. Only parts the
+  rules are certain to expand completely are taken (not a power past
+  `ExpandPow`'s bound, `(x·y)ⁿ`, `(x/2)ⁿ`, `(−x)^odd`, a negative or symbolic
+  exponent, five or more copies of one sum in a product, …), so the value is
+  the `ExprId` the rules alone produce, pinned by a differential proptest
+  against the old path. Products and powers are pre-flighted against memory
+  and the active budget before FLINT allocates; a refusal leaves the input
+  to the rules as before. The derivation log records one `expand_polynomial`
+  step per expanded part instead of the `expand_mul` / `expand_pow` /
+  `collect_*` steps that built it. Measured (release wheel, one machine):
+  `Product[x+i y+z+i, {i,0,19}]` 194 → 6.2 ms (Mathematica 5.0 ms, SymPy
+  5.5 s), the same with 12 factors 21 → 1.2 ms (Mathematica 1.1 ms),
+  `(x+y+z+1)^5` 0.56 → 0.084 ms, `(x+1)(x+2)` 9.5 → 5.8 µs; an expression
+  with nothing to distribute pays one structural walk (`x²+2x+1` 2.2 →
+  2.5 µs).
 - **Symbolic determinants and inverses no longer take factorial time.**
   `Matrix::det` on a matrix with symbolic entries expanded cofactors along the
   first row recursively, re-deriving every sub-minor once per path that
