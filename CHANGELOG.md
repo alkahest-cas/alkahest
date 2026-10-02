@@ -1,6 +1,1083 @@
 # Changelog
 
-## Unreleased
+## 3.12.0 — 2026-10-02
+
+3.12.0 is mostly a correctness and performance release. An audit of the
+kernel and its FFI boundary, plus two rounds of Kani bounded model
+checking, turned up wrong answers that no test had caught: a Laurent series
+that dropped terms at a pole and still claimed `O(h)`, antiderivatives off by
+a sign wherever the integrand is not real, `oo - oo` and `NaN - NaN`
+simplified to `0`, `subs` capturing a bound variable, exact comparisons
+decided in `f64`, printers that turned `10**20` into `0`, and polynomial
+exponents that wrapped past `u32` and answered for a different polynomial.
+Each is listed below with who it affects. Inputs that used to kill the
+interpreter inside FLINT or GMP — a hostile pool file, a composite modulus,
+a degree-`2³¹` polynomial, a 100 000-level nesting — now refuse with a
+stable error code instead. The performance work made the hot walks linear on
+shared expression DAGs and moved arithmetic into FLINT: `x^720 − 1` factors
+in 7.7 µs instead of 4.77 s, an 8×8 symbolic polynomial-matrix inverse takes
+39 ms instead of 7.6 s, katsura-6 goes from 4.2 s to 0.24 s, and the pool
+stores a node in half the memory. New and experimental: linear algebra over
+GF(q), permutation, matrix and finitely presented groups with exact character
+tables, algebraic number fields, lattices, linear and stabilizer codes,
+divisors and Riemann–Roch on hyperelliptic curves, and Riemann theta
+functions as rigorous balls. Expressions can now be pickled. Building from
+source now needs **FLINT ≥ 3.3**; the published wheels are built against
+FLINT 3.6 with a single GMP.
+
+### Silent errors fixed — do results you already computed need rechecking?
+
+- **`series` dropped terms at a pole and labelled the remainder `O(h)`.**
+  For a Laurent series it computed `order` coefficients past the pole and
+  then wrote `O(h)`, a false claim whenever the pole order was at least
+  `order`: `series(sin(x)**-4, x, 0, 4)` omitted the `11/45` constant term,
+  `(x + x**2)**-3` at order 3 omitted `-10`. The working precision is now
+  raised by the valuation shift, and `order` means what it means for
+  `puiseux_series`: every term with exponent `< order`, remainder
+  `O(h**order)`. Separately, `((x - 2)/x)**-1` expanded to a bare `O(x**4)`
+  because `simplify` folded its singular-in-form coefficients
+  (`(-2·0⁻¹)⁻¹ → 0`); such a coefficient is now kept unsimplified, recognised
+  as indeterminate, and the expression is expanded as the quotient `x/(x−2)`.
+  Checked against Mathematica `Series` over `f**-k` for eleven `f`,
+  `k = 1..6`, orders 1–5 (audit A9).
+
+  *Who is affected:* anyone who took a `series` (or anything built on
+  `local_expansion`) of an expression with a pole at the expansion point where
+  the pole order is at least `order`: the result was missing terms and its
+  `O(h)` was false. Taylor series at regular points were not affected.
+
+- **`series` dropped the terms of `x·tanh(x)⁻³` below order 1, and left
+  `tanh(0)`, `atanh(0)` and `asinh(0)` in coefficients.** `simplify` does not
+  fold those three heads at `0`, so the derivative route carried them along:
+  `series(tanh(x), x, 0, 3)` printed `tanh(0) + (1 − tanh(0)²)·x + …`,
+  `atanh(x)⁻¹`, `asinh(x)⁻³` and `log(1 + atanh x)⁻³` were refused
+  (`E-SERIES-004`), and `x·tanh(x)⁻³` at order 1 came back as a bare `O(x)`
+  where the series is `x⁻² + 1 + O(x)`. The power-series route above computes
+  these from recurrences and returns rational literals (`x − x³/3 + 2x⁵/15`
+  for `tanh x`); all checked against Mathematica.
+
+  *Who is affected:* `series` of an expression with a `tanh`, `atanh` or `asinh`
+  factor raised to a negative power; `tanh(0)`-style coefficients were correct
+  but unsimplified, the dropped terms were not.
+
+- **`integrate` answers that were wrong where the integrand is not real, and
+  a pole hidden behind a non-real constant.** Every numeric gate sampled only
+  where the integrand is a finite real, so the substitution routes'
+  sign-losing rewrites (`(a³)^{1/2} ↦ (a^{1/2})³`) went unseen on the other
+  half of the line: `∫ 3/2·tan²x(1+tan²x)/√(tan³x) dx` returned `(√tan x)³`,
+  off by a sign wherever `tan x < 0`, and `∫(1/tan x)^{3/2}`, `∫√(tan³x)`
+  likewise. The outermost `integrate` now also checks `d/dx F = f` at points
+  where `f` is finite and non-real (principal branch), the generator
+  substitution uses the same check to pick its sign-repaired candidate, and
+  a definite integral whose integrand is non-real on part of the interval
+  walks `F` on that branch for jumps: `∫_1^{5/2} cot^{3/2}` gave
+  `0.108 + 2.668i` across `π/2` (the value is `0.108 − 0.446i`) and is now
+  refused. `∫_{-1}^{2} (1/x + tanh(i)) dx` returned a finite value because
+  the non-real constant turned every pole scan off; the scans now ignore
+  summands and factors free of the variable (audit A10).
+
+  *Who is affected:* indefinite integrals through the substitution routes of
+  integrands with fractional powers of a function that changes sign (`tan`,
+  `cot`, …), checked only on the half of the line where they are real; and
+  definite integrals whose integrand contains a non-real constant.
+
+- **`integrate` treated a `Piecewise` or `RootSum` in the variable as a
+  constant.**
+  The integrator's `is_free_of` looked only through `Add`/`Mul`/`Pow`/`Func`
+  and called every other node free of the variable, so the constant rules
+  pulled a `var`-dependent `Piecewise` or `RootSum` out of the integral:
+  `∫ y·Piecewise((x>0, x), 0) dx` returned `x·y·Piecewise(…)` and
+  `∫ sin(Piecewise((x>0, x), 0)) dx` returned `x·sin(Piecewise(…))` — both
+  wrong. It, the Risch/transform `is_free_of_var`, and the `depends_on`
+  checks in `limit`, the Puiseux and asymptotic expanders and summation now
+  share one visited-set walker that descends into every node kind.
+
+  *Who is affected:* `integrate` of any integrand containing a `Piecewise` or a
+  `RootSum` that depends on the integration variable.
+
+- **Three integrator helpers truncated big integer exponents instead of
+  using them exactly.** `numer_denom` in the Risch tower integrator (whose
+  residue criterion *certifies* NonElementary) read `x^k` through
+  `to_i64().unwrap_or(0)` and then negated into an `i32`, so `x^-(2^32+1)`
+  split as `1 / x` and an exponent below `i64::MIN` stayed a negative power in
+  the "numerator"; the radical substitution's `split_num_den` sent
+  `x^k` with `k < i32::MIN` to the denominator as `x^0 = 1` (the factor
+  dropped) and overflowed on `i32::MIN`; and `collect_radical_powers` mapped
+  `a^(m/n)` to `u^m` with `m` cut to its low 32 bits. All three now negate /
+  multiply the `rug::Integer` exactly. The rest of `integrate/` was swept for
+  the same `to_*().unwrap_or(…)` pattern: the three resonance-search bounds
+  fall back to `i64::MAX`, which the next line declines, so they were
+  already safe; the algebraic integrator's extension-degree refusal now
+  reports a huge degree rather than `0`.
+
+  *Who is affected:* only integrands with an exponent past `i32`/`i64`; a
+  NonElementary verdict on such an integrand may have been wrong.
+
+- **`simplify` folded indeterminate forms to numbers: `oo - oo → 0`,
+  `oo * 0 → 0`, `oo / oo → 1`, and for IEEE floats `NaN - NaN → 0`,
+  `NaN * 0 → 0`, `inf * 0 → 0`, `inf - inf → 0`, `x*inf - x*inf → 0`.**
+  `oo` is a positive symbol and float literals are atoms, so the field
+  identities `x − x = 0`, `0·x = 0` and `x/x = 1` fired on them. Collecting
+  like terms and like factors, `0·…` folding, and the e-graph and
+  assumption-aware `x·x⁻¹ → 1` rewrites now leave a term alone when it
+  contains `∞` or a non-finite float and the merge would be indeterminate
+  (coefficients or exponents of mixed sign, or a zero factor): the result
+  stays unevaluated. Same-sign merges (`oo + oo → 2·oo`, `oo·oo → oo²`) and
+  every rule on ordinary symbols are unchanged.
+
+  *Who is affected:* any expression mixing `oo` (or IEEE `inf`/`NaN` float
+  literals) with the cancellations above; `simplify` returned a finite number
+  for an undefined expression. See *Behaviour changes*.
+
+- **One value had two nodes, and floats did not print back as floats.**
+  `rational(4, 2)` and `integer(2)` were different expressions (so
+  `subs(x + rational(2, 1), {2: y})` missed), `pool.add([x])`/`pool.mul([x])`
+  were not `x`, `pool.add([])`/`pool.mul([])` printed `()`, and `-0.0` was kept
+  as whichever zero was interned first. `ExprPool::intern` now canonicalises:
+  a denominator-1 `Rational` is the `Integer`, a one-argument `Add`/`Mul` is
+  its argument, the empty sum/product is `0`/`1`, a float zero or NaN is stored
+  with a positive sign. Pool files are loaded through the same path, with child
+  references remapped, so a non-canonical node saved by an older build no
+  longer duplicates (or shifts) the nodes after it; a child reference that is
+  not to an earlier node is refused. `Float(0.0)` printed `0`, which re-parsed
+  as the integer `0`; it now prints `0.0`. Both parsers read a literal of more
+  than 17 significant digits at a precision that keeps them, instead of
+  cutting a printed 200-bit float to an `f64`.
+
+  *Who is affected:* `subs` and pattern matching on an expression that contained
+  a denominator-1 rational, and anyone who round-tripped a printed float through
+  `parse` (`0.0` came back as the integer `0`; a high-precision float came back
+  at 53 bits).
+
+- **`subs` captured variables under a binder, rewrote bound variables, and
+  skipped `RootSum`.** `subs(∀y. x + y > 0, {x: y})` gave `∀y. y + y > 0`; the
+  binder is now alpha-renamed to a fresh `y_1` (`∀y_1. y + y_1 > 0`) whenever a
+  substituted value mentions the bound variable, for `Forall`, `Exists` and
+  `RootSum` — the kernel's only binders. A compound key that mentions the bound
+  variable (`subs(∃y. y² > 1, {y²: 0})`) names the outer variable and no longer
+  applies inside the binder. `subs` now descends into a `RootSum`'s polynomial
+  and summand, with its root variable bound in both, so substituting a
+  parameter into an antiderivative such as `∫ dx/(x³+x+1)` no longer returns it
+  unchanged (and unevaluable).
+
+  *Who is affected:* `subs` on a `Forall`/`Exists` whose replacement mentions
+  the bound variable, and `subs` into a `RootSum` (for example a parameter of a
+  rational antiderivative), which was silently a no-op.
+
+- **Pattern matching treated every integer past `i64` as the same number.**
+  `match_pattern(X·10²⁰, X·10²¹)` matched, and a rule `f(2⁶⁴) → 0` rewrote
+  `f(2⁷⁰)`, because both the matcher and `PatternRule` compared integer
+  literals through `to_i64()` with a shared fallback value. Numeric literals
+  now match by node identity, which is exact because the pool hash-conses them.
+
+  *Who is affected:* `match_pattern` and `PatternRule`s with an integer literal
+  outside `i64` on either side.
+
+- **Expressions from different pools were silently mixed.** An `ExprId` only
+  means something inside the pool that interned it, but most entry points read
+  every argument's id against the first argument's pool: `diff(x*y, a_other)`
+  differentiated by `y`, `integrate(x, a_other)` gave `x²/2`,
+  `eval_expr(x, {a_other: 2})` gave `2.0`, `x.pow_expr(y_other)` built `x^x`,
+  and `pool.func`/`pool.forall`/`pool.gt`/… accepted foreign ids. Every Python
+  entry point that takes more than one pool-bound argument (expressions,
+  lists and dicts of them, `DerivedResult`s, rules, matrices, distributions,
+  ODE/DAE systems) now raises `PoolError` (`E-POOL-001`, a `ValueError`)
+  naming the offending argument. A `CompileCache` no longer returns a function
+  compiled from one pool for another pool's expression that shares its ids;
+  it raises instead (`clear()` releases it).
+
+  *Who is affected:* any program that uses more than one `ExprPool`. Separately,
+  `Expr.__eq__`/`__hash__` compared the id alone, so expressions from two pools
+  with the same id compared equal and collided as dict keys (fixed in the
+  Python-boundary entry under *Performance*).
+
+- **Comparisons of exact numbers were decided in `f64`.** `subs` (and
+  everything that folds a constant predicate, including `Piecewise` branch
+  selection and the JIT's constant conditions) rounded both sides to a double:
+  `Eq(x, 10**30)` at `x = 10**30 + 1` folded to `True`, `x < 10**30 + 1` at
+  `x = 10**30` to `False`, `Ne(3333333333333333/10**16, 1/3)` to `False`,
+  `Eq(x, 1/10**400)` at `0` to `True`, and `Piecewise((1, x > 2**53))` took its
+  default at `2**53 + 1`. Integers, rationals and floats are now compared
+  exactly; a comparison between closed constants (`√2 > 1`, `π < 355/113`) is
+  decided by rigorous ball arithmetic and left unevaluated when the enclosures
+  overlap, never guessed. The ball constructors behind that also enclosed
+  inexactly: an integer or float wider than the working precision was rounded
+  with radius `0`, and a float was squeezed through `f64` first.
+
+  *Who is affected:* `subs`, `Piecewise` branch selection and JIT constant
+  conditions on numbers that differ beyond 53 bits, or are outside the `f64`
+  range.
+
+- **The sign of a float past the `f64` exponent range was read as zero.**
+  `assumed_sign` reported `1e-400` as `Zero`, and the `sqrt`/`log` realness
+  checks in `simplify` treated `-1e-400` as non-negative, because both went
+  through `to_f64`. They now use the sign of the arbitrary-precision value.
+
+  *Who is affected:* only floats below about `1e-308` in magnitude.
+
+- **`latex()` and `unicode_str()` dropped or corrupted integers past `i64`.**
+  Coefficients, rationals and exponents were read through
+  `to_i64().unwrap_or(0/1)` and multiplied in a wrapping `i64`, so
+  `latex(x + 10**20)` printed `x + 0`, `10**30·x` printed `x`, `x/2**64`
+  printed `x`, `unicode_str(1/21!)` printed `1/1` (the `x²¹` coefficient of the
+  `exp` series printed as `1`), `10**30/7` printed `0/7`, `x**(1/10**20)`
+  printed `x^(1/1)`, and `-2**63·x` printed `--9223372036854775808·x`. They now
+  print the exact value. The Rust parser (`alkahest_cas::parse`) also rejected
+  integer literals past `i64` with "integer literal out of range", so a printed
+  large coefficient did not read back; it now parses them exactly.
+
+  *Who is affected:* any LaTeX or Unicode rendering — including in derivation
+  logs and reports — of a number outside `i64`; the expression itself was right,
+  its printed form was not.
+
+- **`to_stablehlo(x**n)` lost the sign for an odd `n` past `2^53`.** The
+  exponent is emitted as an `f64`, and every double that large is even, so the
+  module computed `(-1)**(2**63 + 1)` as `+1`. An odd exponent `f64` cannot
+  hold now lowers to `|x|**n` negated where `x < 0`.
+
+  *Who is affected:* StableHLO exports of `x**n` with an odd `n > 2^53`
+  evaluated at negative `x`.
+
+- **Polynomial exponents past `u32` wrapped silently, returning answers for a
+  different polynomial.** The sparse polynomial types key terms by `u32`
+  exponents and multiplied monomials with a plain `+`, so in a release build
+  `x^(2^31)·x^(2^31)` became `x^0 = 1`: `MultiPoly.from_symbolic` returned `1`,
+  `total_degree(x^(2^31)·y^(2^31))` returned `0`, `solve([x^(2^32) − 2, y − x])`
+  reported no solutions, `factor_z(x^(2^32) − y²)` factored `1 − y²`,
+  `real_roots(x^(2^32) − 4)` found none, `horner(x^(2^32) + x)` gave `1 + x`
+  and `poly_normal(x^(2^32)·y − y)` gave `0`. Every exponent and every
+  monomial's total degree is now checked where it is formed (`MultiPoly`,
+  `UniPoly`, the Gröbner, rational-function and `solve` conversions), and one
+  that does not fit is refused with `E-POLY-004` (or `E-SOLVE-001` from the
+  solver) instead of wrapped. The infallible Rust operators (`MultiPoly * …`,
+  `GbPoly::mul`, `FlintMPoly::terms`, the Gröbner monomial arithmetic) panic
+  rather than wrap if they are ever handed such a value; `MultiPoly::checked_mul`
+  is new for callers that want the error, and the Python `MultiPoly * MultiPoly`
+  uses it (it used to wrap too).
+
+  *Who is affected:* polynomial routes given an exponent of `2^31` or more (or a
+  monomial whose total degree reaches it), in release builds.
+
+- **`resultant` truncated result exponents to 32 bits.** `res(x² − y^N, x − y^N, x)`
+  for `N = 3·10⁹` came back as `−y^3000000000 + y^1705032704` (`6·10⁹ mod 2^32`).
+  The result is now read from FLINT with 64-bit exponents and is exact:
+  `y^6000000000 − y^3000000000`.
+
+  *Who is affected:* resultants whose result has an exponent of `2^32` or more.
+
+- **Exponents truncated or wrapped in a few more places of the same kind:**
+  the Risch rational and exponential conversions (`n as u32`:
+  `residue(x^−(2^32+1), x, 0)` answered `1`, and `c^(−2^63)` read as `1`), the
+  algebraic `sqrt(P)^n` decomposition (`sqrt(P)^(2^32+2)` read as `P`), the
+  mixed-volume path choice of `solve_numerical` (exponents ≥ 2^31 cast to
+  negative `i32`), a sparse-interpolation discrete log above 2^32, and the
+  parametric Gröbner conversion (`x^(2^32)` read as `1`, and one squaring too
+  many that overflowed on `x^(2^31)`). These now decline or refuse. `cancel`
+  and `together` raise a power by repeated squaring instead of `|n|` successive
+  products (a hang for `x^(2^40)`), and `solve_transcendental` bounds a
+  constant base's exponent likewise. The sum-of-squares `RatPoly` conversion
+  (`sos_decompose` and friends) multiplied exponents with a plain `+` too
+  (`x^(2^31−1)·x^(2^31−1)·x²` read as `1`) and raised powers by `n` successive
+  products; it now refuses with `E-POLY-004` and squares.
+
+  *Who is affected:* inputs with exponents past `u32`/`i32` reaching those
+  routes.
+
+- **Machine-word overflows that returned wrong answers, found in a second
+  Kani round** (each has a regression test next to its fix):
+  - Risch exponential case: `is_perfect_mth_power` compared a wrapped
+    `k.pow(m)`, so in release `8922003266371364727 ≡ 7^23 (mod 2^64)` was
+    taken for a perfect 23rd power (a debug build panicked). Now
+    `checked_pow`; `is_perfect_square` likewise no longer overflows near
+    `i64::MAX`.
+  - Three private `lcm`s wrapped their product and slipped under a size cap:
+    radical substitution (`lcm(3, 6148914691236517207)` came out `5`),
+    Puiseux limits (`lcm_small(2, 2^31 + 1)` came out `2`), and Trager's
+    torsion order (`lcm_u32(65536, 65537)` came out `65536`, reported as
+    `Principal`; now `NotDecided`).
+  - Sparse interpolation (`poly::interp`): `add_mod`/`sub_mod` wrapped for a
+    prime above `2^63`, which the public entry points accept.
+  - Algebraic-integral parametrisation kept the low 32 bits of an integer
+    exponent (`to_i64()? as i32`): `(…)^(2^32 + 1)` was rewritten as `(…)^1`,
+    and `(x^3)^(2^30)` overflowed an `i32` product. Exponents stay exact.
+  - The FLINT factor containers' `base_at`/`exp_at`/`poly_at` bounds check was
+    a `debug_assert!` in a safe `pub fn`: an index past `len()` read out of
+    bounds (UB) in release. Now an `assert!`.
+  - Four private `i64` gcds (by-parts, algebraic RDE, `find_order`,
+    q-Zeilberger terms) called `.abs()`, which panics on `i64::MIN` in debug
+    and stays negative in release; they are one `modular::gcd_i64` now.
+  - Trial-division loops formed `d * d` (or `d⁴`) before the bound check and
+    overflowed for a large prime `n` (`elliptic_output`'s squarefree and
+    quartic tests, `character::dixon`, `poly::interp::prime_factors`).
+
+  *Who is affected:* inputs near the machine-word limits listed, in release
+  builds (a debug build mostly panicked instead).
+
+- **A compiled function of no inputs batched to zeros: `compile(5, [])`
+  gave `[0, 0, 0]` from `call_batch` while `call([])` gave 5.** `call_batch`
+  returned early when `n_inputs == 0`, leaving the caller's zero-filled
+  buffer as the answer (`CompiledFn.call_batch_raw([], 0, 3)` and
+  `call_batch_buffer` in Python). Every tier now fills the batch with the
+  constant.
+
+  *Who is affected:* batch evaluation of a constant compiled function.
+
+- **`factor_univariate_mod_p` killed the interpreter for a composite
+  modulus.** `factor_univariate_mod_p([6, 5, 1], 15)` (and moduli 4, 9, 12,
+  21, …) reached FLINT's `nmod_poly_factor`, which aborted with "Cannot invert
+  modulo 3*5"; `[1, 0, 1]` mod 15 returned a meaningless "factorisation". The
+  modulus must now be prime (`E-POLY-009`).
+
+  *Who is affected:* callers who passed a composite modulus (for which FLINT
+  sometimes returned rather than aborting).
+
+- **`factor_univariate_mod_p` dropped the unit.** `[5]` mod 7 factored as the
+  empty product and `[0, 2]` (`2x`) as `x`. The factors are still monic; the
+  new `UniPolyFactorModP.unit` (Rust: `factor_univariate_mod_p_with_unit`) is
+  the leading coefficient that restores the input. A polynomial that is zero
+  mod `p` now raises `E-POLY-008`, as over ℤ, instead of returning `[]`.
+
+  *Who is affected:* anyone who multiplied the factors back together and
+  expected the input, for a non-monic polynomial.
+
+- **`sum_of_squares(k, n)` aborted or truncated for large `n`.** For `k ≥ 6`
+  FLINT expands a series of length `n + 1` and aborts once `n` passes a
+  machine word; for `k = 3, 5` it silently used `n mod 2^64`. Those paths now
+  refuse `n` above 10^5 (`k ≥ 6`) and 10^12 (`k = 3, 5`) with `E-NT-006`; the
+  closed forms for `k = 1, 2, 4` still take any `n`.
+
+  *Who is affected:* `sum_of_squares(3, n)` and `sum_of_squares(5, n)` with
+  `n ≥ 2^64`.
+
+- **Coding-theory bounds truncated or killed the interpreter for huge
+  lengths.** `singleton_bound` and `hamming_bound` cast the exponent to `u32`,
+  so `singleton_bound(2**32 + 5, 1, 2)` returned `2**5`, and a bound too large
+  to hold reached GMP, which raised `SIGFPE` or aborted; they now refuse with
+  `BudgetExceededError` (`E-CODE-005` from Rust). `LinearCode.hamming` over
+  GF(2³² − 5) enumerated the whole field (~100 GB) before its size check and
+  aborted; the field order is now checked first (`E-CODE-004`).
+
+  *Who is affected:* `singleton_bound` / `hamming_bound` with a length or
+  exponent past `u32`.
+
+- **`nt.discrete_log` missed answers for negative inputs.**
+  `discrete_log(2, -1, 5)` reported no solution although `2² ≡ −1 (mod 5)`:
+  rug's `%` truncates, so a negative residue or base was never normalised.
+  `nthroot_mod` had the same reduction. Also `discrete_log(1, 0, p)` now
+  returns `0` (`0⁰ = 1`) instead of no solution.
+
+  *Who is affected:* `discrete_log` / `nthroot_mod` with a negative base or
+  residue (a false "no solution").
+
+- **`ModularValue::sub` overflowed for a modulus above 2^63.** It formed
+  `value + modulus` in `u64`, which panics in a debug build and, in release,
+  wraps and returns a wrong residue with no error — e.g. modulo the largest
+  64-bit prime `2^64 − 59`, `(m−1) − 1` came out as `m − 61`. It now works in
+  `u128` like `add` already did. Rust API only (`ModularValue` has no Python
+  binding) and no in-crate caller uses a modulus that large. Found by Kani.
+
+  *Who is affected:* Rust callers of `ModularValue` with a modulus above `2^63`.
+
+- **`alkahest.parse` let non-`ParseError` exceptions escape, and read
+  `1e999999` as infinity.** Deep nesting (`((…x…))`, `x^x^…`, `----x`,
+  `sin(sin(…))`) raised `RecursionError`; a 100 000-digit integer raised
+  Python's int-string-limit `ValueError`; `2/0` raised `ZeroDivisionError`;
+  `1e999999` parsed silently as `inf` and `1e-999999` as `0`. The Python
+  parser is now a trampoline over generator productions — nesting costs list
+  entries, not interpreter frames — with the Rust parser's 2048-level limit
+  (`ParseError` `E-PARSE-004`, the `E-DEPTH-001` ceiling); integer literals go
+  to the kernel as digits (exact at any length); division by a literal zero
+  is `E-PARSE-002` with the `/`'s span (still a `ZeroDivisionError` too, for
+  existing handlers); and a float literal past `f64`'s
+  exponent range is read at 53 bits through MPFR (in both parsers), or
+  refused as out of range (`E-PARSE-001`) past MPFR's — never `inf` or `0`.
+  `ParseError` takes an optional `code` (audit D). Out-of-range integer
+  arguments elsewhere now raise the error their neighbours do instead of
+  PyO3's `OverflowError` / a misleading `TypeError`: `interval_eval(prec=2**40)`
+  (`ValueError`, as for `2**31`), `Matrix([[]])` (`ValueError`, no columns),
+  `Matrix.get(-1, 0)` (`IndexError`, as for `get(5, 0)`), `binomial_mod` with a
+  negative or oversized argument (`HolonomicError` `E-HOLO-004` / `E-HOLO-006`),
+  and `EgraphConfig(-1)` (`ValueError`).
+
+  *Who is affected:* parsing a float literal with an exponent past `f64`'s
+  range, which became `inf` or `0`; the other inputs raised the wrong exception
+  rather than returning a wrong value.
+
+### Behaviour changes to plan for
+
+- **A Laurent series now ends in `O(h^order)`, not `O(h)`.** `series` at a
+  pole returns every term with exponent `< order`, matching `puiseux_series`;
+  it used to compute `order` coefficients past the pole and then label the
+  remainder `O(h)`. A caller that expected `order` *terms* from a series with
+  a pole gets fewer, and the remainder exponent changes (see *Silent errors*).
+
+- **`diff` of a compact power stays factored.** `d/dx (x+1)^800` is
+  `800·(x+1)^799`, not an 800-term expansion: the dense polynomial fast path
+  now runs once at the root, and only when the expanded result is at most
+  about twice the input's size. Code that relied on `diff` returning an
+  expanded polynomial should call `simplify_expanded` (see *Performance*).
+
+- **Factor lists come in a canonical order, the same on every FLINT
+  version.** `UniPoly.factor_z()`, `MultiPoly.factor_z()`,
+  `factor_univariate_mod_p` and the internal factorisations behind `apart`,
+  rational integration, residues, Σ/Π, eigenvalues, primary decomposition and
+  the parametric Gröbner code used to list factors in whatever order FLINT's
+  recombination produced them — for `fmpz_poly_factor`, the row order of an
+  LLL-reduced lattice, which differs between FLINT 3.5 and 3.6 (`x^156 − 1`,
+  `x^168 − 1`, `x^240 − 1`, `x^300 − 1` all came out in different orders). The
+  factors, multiplicities and unit are unchanged; only their order is now
+  fixed: ascending degree (total degree for several variables), then the
+  coefficients compared as signed integers from the leading term down (over
+  descending-lex monomials for several variables, residues mod `p` over 𝔽ₚ),
+  then multiplicity. `x^12 − 1` lists `x − 1, x + 1, x² − x + 1, x² + 1,
+  x² + x + 1, x⁴ − x² + 1`, as SymPy's `factor_list` does. Code that indexed
+  into `factor_list()` positionally may see a different factor at a given
+  index. `factorint` lists its primes in ascending order.
+
+- **`∞` and `NaN` indeterminate forms stay unevaluated.** `oo - oo`,
+  `oo * 0`, `oo / oo` and their float counterparts (`NaN - NaN`, `inf * 0`, …)
+  no longer simplify to a number. Same-sign merges (`oo + oo → 2·oo`) and every
+  rule on ordinary symbols are unchanged.
+
+- **Canonical forms at intern time.** `rational(n, 1)` is the `Integer` `n`;
+  a one-argument `Add`/`Mul` is its argument; the empty sum and product are `0`
+  and `1`; a float zero or NaN is stored with a positive sign; and
+  `Float(0.0)` prints `0.0` (it printed `0`). A pool file saved by an older
+  build is canonicalised on load. Code that inspected `node()` for a
+  `Rational` with denominator 1, or a singleton `Add`, sees the simpler node.
+
+- **A built-in function at the wrong number of arguments is refused.**
+  `pool.func("sqrt", [])` raises `PoolError` `E-POOL-002`, and `parse("sin()")`
+  raises `ParseError` `E-PARSE-002`; both used to build a node that panicked in
+  every consumer. User-defined function names still take any number of
+  arguments. Rust: `ExprPool::func` stays unchecked; `ExprPool::try_func` and
+  `kernel::known_func_arity` are new.
+
+- **Arguments from two different pools are refused.** Every Python entry
+  point that takes more than one pool-bound argument raises `PoolError`
+  `E-POOL-001` (a `ValueError`) naming the argument, and `Expr.__eq__` /
+  `__hash__` compare the pool as well as the id, so expressions from two pools
+  are never equal. A `CompileCache` used with a second pool raises; `clear()`
+  releases it.
+
+- **`subs` alpha-renames binders.** When a substituted value mentions a
+  variable bound by `Forall`, `Exists` or `RootSum`, the binder is renamed to a
+  fresh symbol (`∀y. x + y > 0` with `x ↦ y` is `∀y_1. y + y_1 > 0`), and `subs`
+  now descends into a `RootSum`. Code that compared such results against a
+  hard-coded bound-variable name will see `y_1`, `y_2`, …
+
+- **`match_pattern` returns one match per distinct shared node.**
+  Expressions are hash-consed DAGs, and a shared sub-expression is now one match
+  site, in pre-order of first occurrence; it used to be reported once per path
+  (Chebyshev T₂₄: 75 024 matches, now 23).
+
+- **Every malformed input to `parse` raises `ParseError`, with a code.**
+  `E-PARSE-001` lexical (including a float literal past MPFR's exponent range,
+  which used to become `inf` or `0`), `E-PARSE-002` syntactic (including a
+  wrong-arity built-in and division by a literal zero — the latter still also a
+  `ZeroDivisionError`), `E-PARSE-003` unknown function, and `E-PARSE-004` for
+  nesting past 2048 levels, which used to raise `RecursionError`. `ParseError`
+  takes an optional `code`. Integer literals are exact at any length. Some
+  out-of-range integer arguments elsewhere raise `ValueError`/`IndexError`
+  instead of PyO3's `OverflowError` or a `TypeError` (see *Fixed*).
+
+- **Compiling an expression with an unbound free symbol is refused.**
+  `compile_expr(x + y, [x])` (and `compile`, `compile_with`,
+  `compile_jit_only`, `CompileCache`) raises `JitError` `E-JIT-005` naming the
+  unbound symbols; it used to compile and return `NaN` at every point. `π`
+  needs no binding. Rust: `JitError::UnsupportedNode` with
+  `take_unbound_symbols()`, or `check_inputs_bind` beforehand.
+
+- **Derivation logs record different steps in two places.**
+  `simplify_expanded` logs one `expand_polynomial` step per polynomial part it
+  expands in FLINT, instead of the `expand_mul` / `expand_pow` / `collect_*`
+  steps that built it; and `diff` logs an inner polynomial (the `x²` in
+  `sin(x²)`, a monomial `x³`) as `power_rule` rather than
+  `diff_univariate_poly`. The resulting expressions are unchanged.
+
+- **New refusals where the process used to die or hang.** Inputs that
+  reached a FLINT/GMP abort, an unbounded allocation or an unbudgeted loop now
+  raise: `BudgetExceededError` (new `E-BUDGET-006` for a single result larger
+  than memory or GMP's limit, with no budget active), `E-IO-004`/`E-IO-009` for
+  corrupt pool files, `E-LIMIT-005` for a `limit` of an expression with an
+  undefined constant such as `0⁻¹`, `E-RSOLVE-004` for a recurrence order above
+  4096 or a shift past `i64`, `E-POLY-004` for an exponent past `u32` or a
+  power that cannot fit, `E-POLY-009` for a composite modulus in
+  `factor_univariate_mod_p` and `E-POLY-008` for a polynomial that is zero mod
+  `p`, `E-NT-006` for oversized number-theory arguments, and
+  `DepthLimitError` (`E-DEPTH-001`) on deep nesting in dozens of entry points
+  that used to segfault. Every one is listed under *Fixed*. `factorint` under a
+  wall-clock budget now honours it.
+
+- **`import alkahest` no longer imports jax.** `to_jax` resolves lazily on
+  first use. Code that relied on `import alkahest` having imported jax as a
+  side effect must import it itself.
+
+- **Building from source needs FLINT ≥ 3.3** (≥ 3.4 for genus-`g` Riemann
+  theta; on 3.3 the theta backend is stubbed and reports `E-THETA-001`).
+  `build.rs` reads the FLINT version and stops with a message saying so;
+  Ubuntu 24.04's `libflint-dev` (3.0.1) and Debian 12's (2.9) are too old. The
+  new **`system-gmp`** Cargo feature links rug against the system GMP/MPFR that
+  FLINT uses (GMP ≥ 6.3, MPFR ≥ 4.2); it is **opt-in for source builds**, so
+  their default is unchanged. **Every published wheel** is built against FLINT
+  3.6.0 with `system-gmp`, so it has one GMP per process and
+  `Budget(max_bytes=...)` counts FLINT's bignums. See *Build and packaging*.
+
+### Performance
+
+Headline numbers, before → after, each measured on one machine on a release
+build (details and the comparisons with SymPy and Mathematica are in the
+entries below): `factor_z(x^720 − 1)` 4.77 s → 7.7 µs; the symbolic inverse of
+an 8×8 polynomial matrix 7.6 s → 39 ms; katsura-6 Gröbner basis 4.2 s →
+0.24 s; `Product[x+i y+z+i, {i,0,19}]` expanded 194 → 6.2 ms;
+`series(sin(tan x) − tan(sin x))` at order 15 12.3 → 0.24 ms; `diff` of the
+iterated `e ← e·e + 1` at k = 12 1.4 s → 0.24 ms; `simplify_egraph` at depth
+30 out of reach → ~2–3 ms; `evaluate` of Chebyshev `T_28` 238 ms → ~20 µs;
+`pool.integer` of a 10⁶-digit int 10.9 s → 4 ms; resident memory per pool
+node 225 → 114 bytes. Outputs are unchanged unless an entry says otherwise.
+
+- **`x^n ± 1` factors through cyclotomic polynomials instead of van Hoeij.**
+  FLINT's `fmpz_poly_factor` reached the factors of `x^n − 1` by Zassenhaus /
+  van Hoeij recombination and spent nearly all of its time in LLL:
+  `UniPoly.factor_z()` took 40 ms on `x^120 − 1` (SymPy 12 ms, Mathematica
+  0.1 ms) and 5 s on `x^720 − 1`. A binomial `a·x^(k+n) + b·x^k` whose
+  primitive part is `u^n·x^n ± v^n` (in particular `x^n ± 1`) is now factored
+  directly as `∏ Φ_d(u·x, v)` over `d | n` (or `d | 2n, d ∤ n`) with
+  `fmpz_poly_cyclotomic`, giving the same factors and unit — tested against
+  FLINT for every `n ≤ 300` with both signs and for scaled, shifted and
+  non-primitive binomials. Factors past the cyclotomic degree cap (#414), or
+  whose coefficients would not fit the memory budget, still go to FLINT.
+  `factor_z` on `x^n − 1`, before → after (SymPy 1.14 / Mathematica):
+  `n = 120` 37.9 ms → 3.0 µs (10.0 ms / 0.105 ms); `n = 360` 915 ms →
+  5.3 µs (75 ms / 0.18 ms); `n = 720` 4.77 s → 7.7 µs (254 ms / 0.27 ms);
+  `n = 1001` 167 ms → 7.8 µs (183 ms / 0.41 ms).
+- **The symbolic inverse of a polynomial matrix is computed by fraction-free
+  elimination.** `Matrix::inverse` on a matrix with symbolic entries needs
+  `det(A)` and all `n²` first minors in expanded form; it built each as a
+  memoised cofactor expansion (`O(n·2ⁿ)` nested sub-determinants) and then
+  had the simplifier expand it. When every entry is a polynomial with
+  rational coefficients in commutative symbols (and `n ≥ 4`), one
+  fraction-free Gauss–Jordan elimination of `[A | I]` over `ℤ[x₁,…,x_k]`
+  (FLINT `fmpz_mpoly`, exact divisions, rows scaled by the lcm of their
+  denominators) now yields the determinant and the whole adjugate in `O(n³)`
+  polynomial operations. Measured on one machine (release build, the
+  benchmark matrix `x + i` / `x^|i−j| + (i+1)·y`): 6×6 121 → 9 ms, 7×7
+  868 → 20 ms, 8×8 7.6 s → 39 ms; a dense random 8×8 in `x, y, z`
+  4.5 s → 0.35 s. Each entry is the same `ExprId` the cofactor route returns
+  (differential tests against it, kept as the reference). Inputs where that
+  route would stop short of a full expansion — a power `ExpandPow` declines
+  to distribute — keep the cofactor route, as do non-polynomial entries.
+  `Matrix::det` is unchanged: it returns the unexpanded cofactor expression.
+- **Symbolic determinants and inverses no longer take factorial time.**
+  `Matrix::det` on a matrix with symbolic entries expanded cofactors along the
+  first row recursively, re-deriving every sub-minor once per path that
+  reached it — `O(n!)` calls. The expansion is now memoised on the
+  `(rows, columns)` bit masks of each sub-minor, so each of the `O(2ⁿ)`
+  distinct sub-determinants is computed once, by exactly the step the plain
+  recursion takes (numeric Bareiss for an all-numeric block, `ad − bc` for a
+  2×2, first-row expansion otherwise), and the hash-consed result is the same
+  `ExprId`. `Matrix::inverse` shares one memo across all `n²` cofactors of the
+  adjugate. Measured on one machine (release wheel, a dense matrix of
+  polynomials in `x`, `y`): 7×7 42 → 11 ms, 8×8 336 → 74 ms.
+  Output is unchanged (differential tests against the unmemoised expansion).
+- **`simplify_expanded` expands polynomials in one sparse product.**
+  Expanding `∏(x + i·y + z + i)` by term rewriting distributed one sum at a
+  time, interned every intermediate product and collected like terms over
+  many passes. The polynomial parts of the input — products and powers of
+  sums over symbols with integer or rational coefficients — are now
+  converted to sparse polynomials and multiplied with FLINT
+  (`fmpz_mpoly`), and the rule engine runs on the result. Only parts the
+  rules are certain to expand completely are taken (not a power past
+  `ExpandPow`'s bound, `(x·y)ⁿ`, `(x/2)ⁿ`, `(−x)^odd`, a negative or symbolic
+  exponent, five or more copies of one sum in a product, …), so the value is
+  the `ExprId` the rules alone produce, pinned by a differential proptest
+  against the old path. Products and powers are pre-flighted against memory
+  and the active budget before FLINT allocates; a refusal leaves the input
+  to the rules as before. The derivation log records one `expand_polynomial`
+  step per expanded part instead of the `expand_mul` / `expand_pow` /
+  `collect_*` steps that built it. Measured (release wheel, one machine):
+  `Product[x+i y+z+i, {i,0,19}]` 194 → 6.2 ms (Mathematica 5.0 ms, SymPy
+  5.5 s), the same with 12 factors 21 → 1.2 ms (Mathematica 1.1 ms),
+  `(x+y+z+1)^5` 0.56 → 0.084 ms, `(x+1)(x+2)` 9.5 → 5.8 µs; an expression
+  with nothing to distribute pays one structural walk (`x²+2x+1` 2.2 →
+  2.5 µs).
+- **`series` uses truncated power-series arithmetic when every coefficient
+  is rational.** Coefficients came from `order` rounds of differentiate,
+  substitute and simplify, whose derivative trees grow with the order —
+  geometrically for a composition such as `sin(tan x)`. Expressions built
+  from `+ − × ÷`, integer and rational powers, `exp`, `log`, `sin`, `cos`,
+  `tan`, `sinh`, `cosh`, `tanh`, `atan`, `asin`, `atanh`, `asinh` and `sqrt`,
+  wherever no irrational constant appears, are now expanded once per
+  subterm as exact rational vectors: truncated convolution, the reciprocal
+  recurrence, J. C. P. Miller's power recurrence, and the ODE recurrences
+  for the heads, with the working precision raised automatically past
+  cancellations and poles. Everything else — a free parameter, `sin(1 + h)`,
+  a branch point — takes the old route unchanged. The same `local_expansion`
+  serves `limit`, `asymptotic_expand`, `puiseux_series` and the FPS code.
+  Release wheel, best of N: `sin(tan x) − tan(sin x)` at order 15
+  12.3 → 0.24 ms (Mathematica 14: 2.0 ms), `exp(sin x)` at order 20
+  4.5 → 0.058 ms (0.52 ms), `1/cos x` at 20 1.42 → 0.062 ms (0.56 ms),
+  `log(1+x)/(1−x)` at 30 4.7 → 0.18 ms (0.52 ms), `sin x` at 12
+  0.062 → 0.016 ms. Differential tests run the old route in the same pool:
+  the 330-case f⁻ᵏ grid from #435 and the benchmark shapes give the same
+  `ExprId`. Over 9 000 random compositions the only differences are
+  coefficients the old route left as unevaluated constants such as `tanh(0)`
+  (numerically identical, now rational literals) and 12 expansions it
+  refused or got wrong (see Fixed), which match Mathematica `Series`.
+- **Gröbner reduction runs in place, and Buchberger reduces fraction-free.**
+  The division algorithm rebuilt the whole dividend on every step
+  (`p.sub(..)` via `add(neg(..))`), cloned it again to drop the leading term,
+  rescanned it for that leading term and every divisor for theirs, and
+  `interreduce` cloned the basis once per element. The dividend now lives in a
+  map keyed by an order-preserving encoding of its monomials (leading term =
+  last entry) and is updated in place; divisors' leading data is extracted
+  once, incrementally as the basis grows; `interreduce` skips by index. Inside
+  Buchberger and `interreduce`, where every remainder is made monic anyway,
+  reduction runs over ℤ on primitive integer divisors with periodic content
+  removal instead of paying `mpq`'s gcd canonicalisation on every operation.
+  Divisor choices are unchanged, so the bases are **identical, term for term
+  and in order** — checked against the previous implementation (kept as a
+  test oracle) on cyclic-3/4/5, katsura-2…5 and proptest-generated systems.
+  GRevLex, single core: cyclic-4 0.54 → 0.16 ms, cyclic-5 47 → 5.3 ms,
+  katsura-4 12.7 → 2.2 ms, katsura-5 219 → 19 ms, katsura-6 4.2 s → 0.24 s.
+  `reduce`, FGLM's normal forms and `solve` on polynomial systems use the same
+  engine (the exact rational variant where the remainder itself is returned).
+- **`diff`, `subs`, `match_pattern` and the free-of-variable checks are linear
+  on shared expressions — and `integrate` no longer treats a `Piecewise` or
+  `RootSum` as a constant.** (The integrator fix is listed under *Silent
+  errors*.) Expressions are hash-consed DAGs, and these walks
+  treated them as trees, so their cost grew with the number of root-to-leaf
+  paths (exponential for a recurrence like Chebyshev's) rather than with the
+  number of distinct nodes.
+  - `diff` tried its dense ℤ-polynomial fast path at *every* node. On
+    `e ← e·e + 1` iterated that meant expanding a degree-2^k polynomial
+    (k = 12: 1.4 s → 0.24 ms; the Python call at k = 14 took 36 s and returned
+    an 18.7 MB derivation), and `Σ aᵢ·xⁱ` was quadratic (n = 5000: 12 s →
+    60 ms). The fast path now runs once, at the root, and only when the
+    expanded result is at most about twice the input's size. **Output shape
+    changes:** a compact power stays factored — `d/dx (x+1)^800` is
+    `800·(x+1)^799`, not an 800-term expansion — and an inner polynomial (the
+    `x²` in `sin(x²)`, a monomial `x³`) is logged as `power_rule` rather than
+    `diff_univariate_poly`.
+  - A registry primitive (`tan`, `atan`, `erf`, …) differentiates its argument
+    with a nested `diff` call; nested calls now read the enclosing call's memo
+    instead of re-deriving it (`tan` nested 16 deep: 1.5 s → 0.4 ms).
+  - `subs` and `fold_predicates` are memoised per call (with a separate scope
+    under a `∀`/`∃` that shadows a key) and return the original node when
+    nothing below it changed (Chebyshev T₂₈: 540 ms → 0.04 ms).
+  - `match_pattern` visits each distinct node once, so a shared sub-expression
+    is **one** match site: Chebyshev T₂₄ returned 75 024 duplicate matches
+    and now returns 23, in pre-order of first occurrence.
+- **`simplify` no longer pays per path, per pool node, or per clone.** The
+  static-domain fact walk that ends every `simplify` visited a shared DAG once
+  per *path*: re-simplifying an already-simplified 104-node Chebyshev-style
+  expression took 491 ms and now takes 0.05 ms. `simplify_redex` /
+  `simplify_auto` sized their per-pass tables by the whole pool — a 7-node
+  expression cost 18–20 ms in an 8M-node pool, now 0.008 ms. The hot rewrite
+  rules decline without cloning the node, and `collect_mul_factors` /
+  `collect_add_terms` without building a bignum map: the derivative of a
+  depth-4000 nested `sin` dropped from 7.9 s to 1.3 s. The fixed-point loop
+  keeps nodes it has proved settled between passes, so the confirming pass
+  only revisits what the previous one built. Results and derivation logs are
+  unchanged, checked step for step against the old code.
+- **`simplify_egraph` is sized by the expression DAG, not its tree, and no
+  longer re-parses its rule program on every call.** A subterm shared by many
+  parents used to be written out once per path to it — `e_{k+1} =
+  sin(e_k)·cos(e_k)` doubled per level, so depth 14 took 1.3 s and depth 30 was
+  out of reach, and the `node_limit` guard, which counts *distinct* nodes, let
+  a 120-node DAG through to build ~10⁸ terms. Shared nodes are now bound once
+  by egglog `let`s, the result is decoded from egglog's hash-consed `TermDag`
+  instead of re-parsed from its printed tree, and the post-extraction passes
+  are memoised per node, so the guard now bounds the real work: depth 30 takes
+  ~2–3 ms and the Chebyshev DAG `T_40` ~5–8 ms. The configuration-only prelude
+  (datatype and rulesets) is parsed once per thread and cloned, which takes a
+  trivial call such as `x + 0` from ~1.2 ms to ~0.3–0.45 ms. Results are
+  identical to the tree pipeline, which is kept as a differential-test
+  reference. `expr_contains_noncommutative_symbol` now reads the O(1)
+  commutativity flag cached at intern time instead of walking the tree.
+- **Numeric evaluation no longer walks a shared DAG once per path, and small
+  expressions stop paying interpreter prices on large batches.**
+  `evaluate` (`f64`, `exact` and `complex` modes) memoizes per call: on the
+  Chebyshev recurrence `T_28` went from 238 ms / 1.1 s / 379 ms to ~20 µs /
+  ~110 µs / ~30 µs, and `T_40` (~1.6e8 paths) now finishes in microseconds.
+  The interpreter tier of `compile_expr` flattens the expression once into a
+  post-order slot program — 2.0 µs → 0.10 µs per point, with no per-point
+  allocation — and `eval_expr` borrows nodes instead of cloning them. The
+  batch entry points behind `numpy_eval` recompile an interpreter-tier
+  function natively (cached on the `CompiledFn`) once a batch reaches 4096
+  points: the audit's small expression at 1e6 points went from 2.05 s to
+  0.22 s. `compile_expr` takes an additive `expected_evals=` hint and reports
+  `CompiledFn.tier`. `trace`/`grad` compile once per traced function instead
+  of on every array call (1k points: 2.2 ms → ~0.3 ms; gradient 3.9 ms →
+  ~0.3 ms). All tiers agree bit for bit with the tree-walking interpreter
+  (property-tested). The "no JIT" warning now points at the dependency-free
+  `cranelift` feature instead of only at LLVM.
+- **Polynomial construction does its arithmetic in FLINT.**
+  `UniPoly::from_symbolic` built a `BTreeMap` of rug coefficients with
+  schoolbook products and only then copied it into an `fmpz_poly`; it now
+  builds the `fmpz_poly` directly (`(x+1)^1000`: 120–190 ms → 0.12 ms), and
+  `FlintPoly::derivative` is one `fmpz_poly_derivative` call instead of a rug
+  round trip per coefficient. `diff` tries that conversion at every non-atom
+  node, so `diff((x+1)^300·sin x)` goes 26 → 2.6 ms. The conversion also
+  memoises shared DAG nodes (in `MultiPoly::from_symbolic` too): a
+  Chebyshev-style recurrence `T_{n+1} = 2x·T_n − T_{n−1}` used to be walked once
+  per path, so `diff(T_24)` took 280–430 ms and now takes 0.2 ms. `MultiPoly`
+  products and powers above a small size go through `fmpz_mpoly_mul` /
+  `fmpz_mpoly_pow_ui` (`p·p` for 286 terms 17 → 0.8 ms;
+  `from_symbolic((x+y+z+1)^20)` 40–70 → 1.3 ms). Results are unchanged,
+  including which error a non-polynomial input reports; proptests pin every
+  path against the previous algorithms, which stay as the fallback for
+  degrees too sparse to hold densely and for exponents that would overflow.
+- **ℚ[x] GCDs, rational determinants and rational `rref` go through FLINT.**
+  `RatUniPoly::gcd` (every rational-function operation in summation, Gosper's
+  shifted GCD, polynomial Smith/Hermite forms) was the textbook Euclidean
+  algorithm over `ℚ`; it now clears denominators and calls `fmpz_poly_gcd`,
+  sharing one crate-private helper with the Risch code that already did so, and
+  with the Puiseux and holonomic-asymptotics GCDs (degree 40: 12 ms → 0.06 ms;
+  degree 80: 235 ms → 0.1 ms). `Matrix::det` on numeric entries takes
+  `fmpz_mat_det` after scaling each row by its denominators' lcm instead of
+  Bareiss over `rug::Rational` (60×60: 14 ms → 1.4 ms), and the rational path
+  of `rref`/`rank`/`nullspace`/`row_space_basis` uses `fmpz_mat_rref` (60×50:
+  6.1 ms → 1.5 ms). Outputs are unchanged — the monic GCD, the determinant and
+  the reduced row echelon form are unique — and differential property tests
+  pin each new path to the algorithm it replaced.
+- **Integers cross between rug and FLINT by limbs, not decimal strings.**
+  `FlintInteger::from_rug` / `to_rug` (and the internal `fmpq` ⇄
+  `rug::Rational` conversion) printed the number in base 10 and parsed it on
+  the other side — superlinear in the bit size, on every path that hands an
+  integer to FLINT: polynomial factoring and gcds, Hermite/Smith normal forms,
+  number theory, primary decomposition, the Risch rational RDE. They now copy
+  64-bit limbs (`fmpz_set_ui_array` / `fmpz_get_ui_array`, both in FLINT 2.9
+  and 3.x), with an `fmpz_set_si` / `fmpz_get_si` fast path for word-sized
+  values. No `mpz_t` crosses between the two libraries — rug's limbs are only
+  read and FLINT writes only into a Rust-owned buffer — so the conversion is
+  safe whether rug and FLINT share one GMP or each link their own. Measured on
+  one machine (release build, FLINT 3.5.0), per conversion: 100 000 bits
+  `from_rug` 854 µs → 2 µs and `to_rug` 744 µs → 1.6 µs; 1 000 000 bits
+  19.3 ms → 22 µs and 14.4 ms → 13 µs. Public signatures are unchanged.
+  `fmpq` built from a `rug::Rational` also skips the redundant
+  `fmpq_canonicalise` (a gcd), since rug keeps rationals in lowest terms.
+- **Big Python ints cross the binding by bytes, not decimal text — and no
+  longer break past 4300 digits.** Every `int` that did not fit an `i64` went
+  through `str(n)` → GMP parse on the way in and `int(text)` /
+  `Fraction("p/q")` on the way out. CPython caps that conversion at
+  `sys.get_int_max_str_digits()` (4300 digits by default), so
+  `ExprPool().integer(10**5000 + 7)`, `x ** 10**5000`, `x + Fraction(10**5000, 3)`,
+  `number_theory.isprime(10**5000 + 1)`, `evaluate(3**12000, mode="exact")` and
+  big polynomial coefficients all raised `ValueError`, and
+  `evaluate(y + 1, {y: 10**5000}, mode="exact")` misreported `E-EVAL-002`. It
+  was also quadratic: `pool.integer` of a 10⁶-digit int took 10.9 s and now
+  takes 4 ms; reading it back 4.1 s → 2 ms. One helper module
+  (`alkahest-py/src/bigint.rs`, `int.to_bytes`/`from_bytes` ↔
+  `rug::Integer::{from_digits,to_digits}`) now serves every binding file, and
+  `Fraction`s are built from two ints. `Expr.node()` keeps returning decimal
+  strings; the internal Python helpers use the new `Expr._node_exact()`, which
+  returns ints. The `nt_*` / `modular_*` natives also accept ints directly.
+- **The expression pool stores each node once, and its hot tables use a fast
+  hasher.** The intern index was a map *keyed by* `ExprData`, so every node
+  lived twice — in the node array and, deep-cloned, as the map key — and every
+  miss paid for the clone. The index is now a table of ids (plus 32 hash bits)
+  that compares through the node array, sharded behind `RwLock`s under
+  `parallel`; a miss re-probes under the shard's write lock before it inserts,
+  so two threads interning the same value still get the same id. The pool
+  index and the `ExprId`-keyed memo tables in `simplify`, `diff` and
+  `eval_interp` hash with foldhash instead of SipHash (these keys are
+  pool-assigned indices, so HashDoS resistance bought nothing there). Resident
+  memory for 1.5 M distinct nodes: 225 → 114 bytes/node (1 M integers: 284 →
+  116); interning a fresh integer 377–403 → 170–193 ns, a fresh `Add`
+  448–462 → 264–298 ns; hits 20–40 % faster (`add([x, c])` 79–89 → 63–67 ns).
+  No output, id assignment order or persisted format changes.
+- **Number atoms hash without allocating, and `intern` hashes each node
+  once.** `BigInt`, `BigRat` and `BigFloat` used to hash by formatting
+  themselves as a hex string — a heap allocation on every intern lookup and
+  on every key each time the intern table grew. They now hash their limbs
+  (value-based, so `Hash` still agrees with `Eq`: `+0`/`-0` and every NaN hash
+  alike, and a `BigFloat`'s internal MPFR precision does not leak in, while
+  its `prec` field still does). The intern index also stores each key's hash
+  alongside it, so a miss no longer hashes the `ExprData` a second time and a
+  resize rehashes nothing. Hashing a small integer: 80 → 27 ns; `3^2000`:
+  1.3 µs → 0.1 µs; a `pool.integer(k)` hit 109–125 → 73–109 ns;
+  `pool.float(1.1, 53)` 213–224 → 106–143 ns; a 100 000-bit integer hit
+  38 µs → 3.3–4.2 µs; interning a fresh integer ~1 µs → ~0.5 µs. Nothing
+  persisted these hashes, so no file format or output order changes.
+- **Python boundary: pool-aware `Expr` identity, linear parsing of long sums,
+  and `import alkahest` without jax.** `Expr.__eq__`/`__hash__` compared the
+  interned id alone, so `pool_p.symbol("x") == pool_q.symbol("zzz")` was
+  `True` and expressions from two pools collided as dict keys; they now
+  compare (pool, id), and `pool.add`/`mul`/`func` refuse an expression from
+  another pool with `PoolError` (`E-POOL-001`) instead of reading its id as a
+  local one. `parse` interns each run of `+`/`-` (and `*`) with one
+  constructor call instead of a left fold that re-interned a one-wider `Add`
+  per term — the same node, now linear (10 000-term sum 1.8 s → 86 ms).
+  `to_jax` resolves lazily, so `import alkahest` no longer imports jax
+  (~480 ms → ~70 ms on one machine). The ambient certificate gate on every
+  derivation entry point costs ~0.2 µs instead of ~2 µs, and research
+  dependency lookup keys by `Expr` instead of rendering `str()` per
+  subexpression and no longer interns partial sums into the caller's pool.
+  `docs/mdbook/src/kernel.md` now says how to build large sums
+  (`pool.add(terms)`, not `sum()`).
+- **`DerivedResult` renders its derivation lazily, and the heavy entry points
+  release the GIL.** `.derivation` and `.steps` used to be rendered — twice,
+  every `before`/`after` of every step — when the result was built, whether or
+  not anyone read them: 41% of `diff` on a 200-term polynomial. They are now
+  rendered from the stored log on first access; the strings are identical.
+  `simplify` (and its variants), `diff`, `solve`, `cancel`/`together`/`apart`,
+  `sum_*`/`product_*`, `rsolve`, `evaluate`, `integrate_definite`, `factor_z`,
+  `GroebnerBasis.compute*` and the symbolic `Matrix` operations now run their
+  core call under `py.allow_threads`, as `integrate` already did, so
+  `batch_map(parallel=True)` overlaps them. Budgets, ambient assumptions and the
+  `*_side_conditions()` channels are unaffected: the work stays on the calling
+  thread.
+- **Validated Taylor-model arithmetic stops cloning its operands.**
+  `TaylorModel::mul`, `add`, `scale`, `poly_bound` and `range` cloned every
+  ball coefficient they read (two MPFR allocations each) and rebuilt each
+  product's exponent vector twice. They now borrow, using the in-place
+  `ArbBall` operations, and reuse one scratch exponent vector. The balls are
+  bit-identical, and a differential test checks this against the cloning
+  `mul`. The verification gate that dominates algebraic integration gets
+  faster: six `∫ p(x)/√q(x)` integrals ×3 went from 2.26–2.40 s to
+  1.59–1.73 s, and `bound_on_box` on four bivariate functions at orders
+  2/6/10 went from 5.49–5.88 s to 4.64–4.66 s, both with identical results.
+- **Small-input regressions from this cycle's performance work, recovered.**
+  CodSpeed flagged five micro-benchmarks. The instruction counts were bisected
+  across #394–#407 with a fixed toolchain, and each regression was fixed where
+  it was introduced:
+  `MultiPoly::from_symbolic` on a quartic or a four-term bivariate had gained
+  11% / 8% (#399's shared-node memo inserted every compound node into a
+  SipHash `HashSet`, which allocated and rehashed three times on a quartic).
+  The UniPoly and MultiPoly builders now record visited nodes in an inline
+  16-slot set that spills to an `ExprId`-hashed set, which brings the
+  overhead to ~2.5%. `ArbBall` multiplication now builds its radius in place.
+  It allocates 5 MPFR temporaries instead of 9 and addition 4 instead of 5,
+  with bit-identical results (a proptest checks this against the old
+  formulas). That is −15% instructions per `arb_mul` and −6% per `arb_add`.
+  `intern::build_add3` (+5% at #397) is superseded by #411's pool index;
+  `gcd_deg4` did not move in any commit and follows the CI's FLINT 3.5 → 3.6
+  update (#410).
+
+### Fixed
+
+- **`limit((sin(tan x) − tan(sin x))/x⁷, x, 0)` was refused; it is `−1/30`.**
+  Both symbolic routes found `−1/30`; the numeric refutation check then
+  sampled at `x = 10⁻³` and `10⁻⁴`, where the numerator `−x⁷/30` is far below
+  one ulp of either term, so both terms rounded to the same double and the
+  samples settled on `0` — refuting the right answer. A sample is now kept
+  only if a rigorous 53-bit ball evaluation at the same point is resolved to
+  `10⁻⁷` of its magnitude, so cancellation noise can no longer outvote the
+  symbolic result; a sample the ball evaluator cannot evaluate is kept as
+  before, and `x/|x|` is still refuted.
+- **`compile_expr(x + y, [x])` compiled, and returned `NaN` at every point,
+  while `eval_expr` on the same expression raised.** A free symbol the input
+  list does not bind has no value anywhere, so `compile`, `compile_with`,
+  `compile_jit_only`, `CompileCache` and `compile_expr` now refuse it with
+  `E-JIT-005` (`JitError` in Python), naming the unbound symbols. `π` needs
+  no binding, and a `RootSum`'s placeholder is bound by the `RootSum`. Rust
+  callers get `JitError::UnsupportedNode` in band and the code from
+  `take_unbound_symbols()`, or can check first with `check_inputs_bind`.
+- **A built-in function at the wrong arity panicked in every consumer.**
+  `pool.func("sqrt", [])`, `pool.func("EllipticPi", [x])`, `parse("sin()")`,
+  `parse("sin(x, x)")` built nodes that raised `PanicException` (index out of
+  bounds) in `latex`, `unicode_str`, `diff`, `series`, `simplify`,
+  `integrate` and `to_lean`. `pool.func` now raises `PoolError`
+  (`E-POOL-002`) and both parsers `ParseError` (`E-PARSE-002`) for a built-in
+  name at the wrong number of arguments; user-defined names take any number.
+  The Rust API adds `ExprPool::try_func` and `kernel::known_func_arity`
+  (`ExprPool::func` stays unchecked), and the renderers, the Lean emitter and
+  the primitive registry treat a wrong-arity node that still reaches them as a
+  plain call or a declined operation instead of panicking.
+- **`simplify_egraph_with(EgraphConfig(iter_limit=N))` always panicked** with
+  "Unknown option 'iteration_limit'": the cap was emitted as a `set-option`
+  the vendored egglog 0.4 does not have. It now caps every `(run …)` step of
+  the schedule at `N` rounds, as documented (`0` runs no rewrite rules).
+- **`limit` of an expression with an undefined constant hung or ran out of
+  memory.** `limit(0**-1 + x, x, 1)` ran for hours and `limit(x*0**-1, x, 1)`,
+  `limit(log(0) + x, x, 1)` exhausted memory: `0⁻¹` stays unevaluated, every
+  rule treats it as an opaque constant, and differentiating it for a Taylor
+  coefficient triples its size per order. An expression containing a negative
+  power or `log` of a constant that is exactly `0` is undefined at every point
+  and is now refused up front (`E-LIMIT-005`) (audit C4).
+- **`integrate` ran for minutes past its budget in the tower Risch-DE
+  ansatz.** `∫(2x + log x)^{-1/2} dx` spent 400 s before declining and a 3 s
+  budget took 8.6 s to fire; nothing between `integrate`'s entry checkpoint
+  and the answer looked at the clock. The ansatz now checks the budget per
+  candidate denominator, per basis column, per linear-system row block and
+  per elimination pivot (the same budget now fires at 3.1 s), and with no
+  budget at all spends at most 600 such steps per top-level `integrate` call
+  before declining — a deterministic ceiling; the whole Python suite spends
+  none, and `∫(2x + log x)^{-1/2} dx` now declines in about 2.4 s instead of
+  400 s (audit C5).
+- **`factorint`, `apart` and `integrate` ignored a wall-clock budget.**
+  `factorint((2⁸⁹−1)(2¹⁰⁷−1)(2¹²⁷−1))` under `Budget(wall_ms=1000)` ran past
+  20 s inside one uninterruptible `fmpz_factor`; under a budget it now climbs a
+  ladder of bounded-effort `fmpz_factor_smooth` passes with a check between
+  them and raises `BudgetExceededError` about one pass after the deadline
+  (unbudgeted it is unchanged, and documented as unbounded). `apart` and
+  `integrate` of `1/(x^(2^31)+1)` built a dense degree-`2³¹` ℚ[x] polynomial by
+  repeated multiplication; that conversion now declines past degree 8192 and
+  checks the budget per multiplication (audit C6).
+- **`q_zeilberger` hung, instead of refusing, when a budget check tripped
+  inside its field arithmetic** — a pending `request_cancel()`, an expired
+  `Budget` wall clock, or the address-space guard under `ulimit -v`. The
+  `gcd` that saw the trip gave up (correctly, but leaving its result
+  unreduced), every `gcd` after it gave up too, and the unreduced fractions
+  compounded with each operation until the next checkpoint that happened to
+  look — the `q`-Vandermonde square summand, 0.4 s normally, ran without
+  end. The call now checks the budget before any field arithmetic and
+  between the steps that assemble the search's inputs, stops on a budget
+  refusal a `gcd` has already recorded even if the budget reads clear again,
+  and refuses in milliseconds with the trip's own code (`E-BUDGET-003` /
+  `-001` / `-005`). Once the search's gcd work ceiling is spent it also
+  stops, instead of retrying every remaining `(order, degree)` probe on
+  arithmetic that can no longer cancel.
+- **The address-space guard refused, once, at the first checkpoint after a
+  long idle stretch.** Its reserve grows with the address space mapped since
+  the thread's previous probe — meant as one probe interval's growth, but the
+  previous probe could belong to a call that finished minutes earlier, so
+  everything the process had mapped since read as growth. A full
+  `pytest tests/` run under `ulimit -v 16G` hit a 34 GB "reserve" at 15.6 of
+  17.2 GB mapped, and the refusal cleared again at the next probe. A sample
+  older than one second (`GROWTH_WINDOW`) now starts a fresh history.
+  Together these made `test_novelty.py::test_a_q_certificate_becomes_a_claim`
+  and the `test_q_root_of_unity.py` tests hang in a full run under
+  `ulimit -v` while passing on their own and in CI (no `ulimit`). The
+  depth-limit tests' threads leave ~10 GB of glibc malloc-arena reservations
+  on a 32-core machine, which is what put the process near its limit;
+  `tests/conftest.py` now caps glibc's arena count so the suite's
+  address-space footprint no longer scales with the core count.
+- **Loading a corrupt or hostile `.akp` pool file could abort the
+  interpreter or panic.** `ExprPool.load_from` allocated every
+  length-prefixed field (a name, a child list, a piecewise branch list) at
+  its declared size before reading it, so a four-byte length of
+  `0xFFFFFFF0` was a 4 GiB allocation that killed the process; a rational
+  with denominator 0 and a float at precision 0 panicked inside `rug`, and a
+  float at precision `u32::MAX` was allocated. Every length and the node
+  count are now checked against the bytes left in the file first
+  (`E-IO-004`), a zero denominator and a precision outside `1 ..= 2^24` bits
+  are refused (`E-IO-009`), and a duplicated node no longer shifts later
+  child references (audit B8/B9). A fuzz test loads truncated and
+  bit-flipped files in a subprocess and asserts none of them dies.
+- **Dozens of entry points segfaulted on a deeply nested argument** instead
+  of raising `DepthLimitError` (`E-DEPTH-001`): `routh_hurwitz`,
+  `cad_project` and `cad_lift` (audit B7), and — found by calling every public
+  callable with a 100 000-level argument in each expression slot — the point
+  of `limit`/`series`/`puiseux_series`, the bounds of `sum_definite` and
+  definite `integrate`, `verify_wz_pair`, `dsolve`, `series_solve`,
+  `multilimit`, `asymptotic_expand`, the integral transforms, `zeilberger`,
+  `q_zeilberger`, `telescope2d`/`telescope_md`, `euler_maclaurin`,
+  `coefficient_asymptotics`, `asymptotics_from_recurrence`, `diophantine`,
+  `expr_to_gbpoly`, `GroebnerBasis.compute`/`compute_f5`, parametric Gröbner
+  bases, `primary_decomposition`, `radical`, `triangularize`,
+  `solve_numerical`, `UniPoly`/`MultiPoly`/`RationalFunction.from_symbolic`,
+  the `Matrix` decompositions and eigen-routines, `ODE.new`/`with_ic` and
+  `DAE.new` (every ODE/DAE analysis walks them), the probability
+  distributions' parameters and `pdf`/`cdf`/`quantile`/generating functions,
+  `expectation*`, `variance_affine_independent` and the information measures'
+  `base`. `smt.supported`/`smt.solve` walked the formula recursively in Python
+  before reaching the emitter's guard; that walk is now iterative.
+- New error code **`E-BUDGET-006`** (`BudgetTrip::Oversized`): a single
+  result larger than physical memory or than GMP can represent. It fires with
+  no budget active, replacing an abort, and is raised as `BudgetExceededError`.
+  Rust: `budget::preflight_bytes` and `budget::preflight_bignum_bits`.
+- **`UniPoly.from_symbolic(x^(2^31) + 1)` aborted the interpreter** in FLINT's
+  16 GiB allocation, even under `Budget(max_bytes=...)`. A dense univariate
+  degree above 2^26, or one whose coefficient array would pass the active
+  memory budget or the process's address-space headroom, is now refused with
+  `E-POLY-004` before FLINT allocates. The same guard keeps
+  `cancel`/`together` off the dense path for such degrees, and
+  `gcd_sparse_modular` hands degrees above 2^20 to FLINT's sparse gcd instead
+  of materialising them. The Python `UniPoly` `**` and `*` operators check the
+  same ceiling (new `UniPoly::checked_pow` / `checked_mul`) and raise
+  `ConversionError` instead of aborting.
+- **`UniPoly.from_symbolic(x^(2^21) + 1)` took gigabytes and over a minute.**
+  FLINT raises any length-2 polynomial through its binomial expansion, so
+  `x^n` (the polynomial `[0, 1]`) computed all `n + 1` binomial coefficients
+  before multiplying them by zero. A monomial `c·x^k` is now raised directly
+  as `c^n·x^(k·n)`.
+- **A genuine binomial to a large power went straight to FLINT.** The degree
+  ceiling stopped `x^(2^31)`, but `(x+1)^(2^21)` — two million coefficients of
+  up to two million bits, half a terabyte — reached `fmpz_poly_pow` and took
+  the process down, and `MultiPoly` powers such as `(x+y+1)^(2^16)` did the
+  same through `fmpz_mpoly_pow_ui`. A power's size (term count times
+  `n·log₂‖p‖₁` coefficient bits) is now estimated first and a power that
+  cannot fit physical memory or the active budget is refused with
+  `E-POLY-004` (`UniPoly`/`MultiPoly`/`RationalFunction` conversion,
+  `UniPoly ** n`, and the new `FlintPoly::checked_pow`; `FlintPoly::pow`
+  panics instead of aborting).
+- **`rsolve` killed the interpreter on a huge shift.** `f(n+10^12) − f(n)`
+  sized its coefficient vector by the order and asked for 32 TB (an abort,
+  even under `Budget(max_bytes=…)`), `f(n+10^18) − f(n)` overflowed the
+  capacity computation, and `f(n+1) − f(n−2^70)` read the shift as `i64::MIN`
+  and indexed out of bounds. Orders above `RSOLVE_MAX_ORDER` (4096) and shifts
+  past `i64` are now refused with `E-RSOLVE-004` before anything is
+  allocated; a large shift with a small spread (`f(n+10^12) − 2f(n+10^12−1)`)
+  is still an order-1 recurrence.
+- **`call_batch_raw([], 0, 2**40)` aborted on an 8 TiB output buffer.** With
+  no inputs nothing bounded `n_points`; the output size is now checked against
+  physical memory, the active memory budget and `RLIMIT_AS` first
+  (`BudgetExceededError`), in `call_batch_raw_par` too.
+- **`divisor_sigma(k, n)` with a large `k` killed the interpreter.**
+  `divisor_sigma(10**12, 2)` died of `SIGFPE` (GMP's signal for an integer too
+  large to represent) and `divisor_sigma(2**32 + 1, 2)` of a GMP out-of-memory
+  abort. The size of σ_k(n), about `k·log2 n` bits, is now checked first and
+  refused with `BudgetExceededError`.
+- **`cyclotomic_polynomial_coeffs(10**12)` killed the interpreter** on a FLINT
+  allocation of 4·10^11 coefficients. A degree `φ(n)` above 2^24 is now
+  refused with `E-NT-006` (Rust: `try_cyclotomic_polynomial`).
+- **A huge power of a number-field element killed the interpreter.**
+  `(K.generator() + 1) ** 10**12` in `ℚ(√2)` (and negative exponents) aborted
+  inside `nf_elem_pow`. Powers are now formed by repeated squaring with each
+  product's size checked against the machine, GMP's integer limit and any
+  memory budget before it is formed, raising `BudgetExceededError`; a root of
+  unity, whose powers never grow, still takes any exponent. Rust:
+  `NumberFieldElement::try_pow`.
+- **`GfMatrix` shapes that fit the address check but not the machine killed
+  the interpreter.** `GfMatrix.zeros(F, 65536, 65536)` under an 8 GB limit,
+  `(30000, 30000)` over GF(7³), and derived results such as a
+  `(65536×1)·(1×65536)` product or the `n×n` scratch of `nullspace` reached
+  FLINT's allocator, which aborts. Every allocation is now estimated first and
+  refused (`BudgetExceededError`, or `E-GFQ-012` from Rust) when it exceeds
+  physical memory, `Budget(max_bytes=...)` or the process's address-space
+  limit.
+- **Rust API: FLINT wrappers that aborted or read out of bounds.**
+  `FlintInteger / 0` and `% 0`, `FlintPoly::div_exact`, `pseudo_divrem` and
+  `scalar_divexact_fmpz` by zero aborted the process; they now panic like
+  Rust's own integer division, with new `checked_div`, `checked_rem` and
+  `checked_div_exact`. `FlintPoly::get_coeff(usize::MAX)` read before the
+  coefficient array and now returns 0; `set_coeff_flint(usize::MAX, …)`
+  corrupted the heap and now panics. `FlintNmodPoly::get_coeff` with a negative
+  index likewise returns 0.
+- `modular::pow_mod(x, 0, 1)` returned 1, outside `[0, 1)`; it now starts
+  from `1 % modulus`. Private, and its only caller (`is_prime`) never passes a
+  modulus below 11, so no result changes. Found by Kani.
+- **Every Cranelift compile leaked its code pages.** `cranelift_jit`'s
+  `JITModule` deliberately leaks its memory on drop unless `free_memory` is
+  called, and nothing called it: each compile-and-drop kept about 4 kB
+  resident for the life of the process (20 000 compiles: +80 MB; now +28 kB).
+  A compiled function now frees its module when it is dropped, and a compile
+  that fails part-way frees it too.
+- **Every thread that made a big integer leaked ~228 kB when it exited.**
+  FLINT keeps a per-thread cache of `mpz_t` structs (a 16-page block, each
+  entry with its own GMP allocation) that only `flint_cleanup` releases, and
+  nothing called it: 5000 short-lived threads that each made one `3^200` grew
+  the process by 1.14 GB. That is the shape of a thread-per-request server or
+  any pool that retires its workers. The FLINT wrappers now register each
+  thread on its first FLINT use, and `flint_cleanup` runs when the thread
+  exits (400 threads: +91 MB before, +4 kB after). It releases only the
+  exiting thread's caches; a big integer still alive elsewhere keeps its block,
+  and Rayon's long-lived workers clean up once, when the pool shuts down.
+- **`CompiledFn._batch_tier` stayed `None` after a large batch on a build
+  with no JIT.** A batch of 4096 points or more fixes which backend batches
+  run on, and records it; with no Cranelift/LLVM backend compiled in, that
+  record was skipped. So the diagnostic kept reading "no large batch seen yet"
+  instead of `"interpreter"`, and
+  `test_large_batch_upgrades_the_interpreter_tier_once_and_agrees` failed on
+  such builds. Values were never affected.
+- **Release wheels failed to import (`undefined symbol: PyPyIndex_Check`).**
+  The integer-coercion fast path called `pyo3::ffi::PyIndex_Check`, which
+  pyo3-ffi 0.21 binds to the PyPy symbol name. Test builds never exercised
+  it, but every CPython release wheel either failed to import (Linux, macOS)
+  or failed to link (Windows). The check is now made on the Python type
+  (`hasattr(type(ob), "__index__")`), with no raw FFI call.
 
 ### Added
 
@@ -59,1039 +1136,6 @@
 
   Not attempted, and documented as such: finitely-presented groups and
   Todd–Coxeter, character tables, matrix groups over GF(q), group cohomology.
-
-- **Function fields of algebraic curves: divisors, Pic⁰ and Riemann–Roch.**
-  `alkahest.experimental.FunctionField`, `Place`, `Divisor`, `DivisorClass`
-  and `riemann_roch` — `dim L(D)` **and an explicit basis**, the canonical
-  divisor, divisor class arithmetic via Cantor reduction, exact class
-  equality, principality, and torsion order.
-
-  This exposes machinery that already existed inside the Risch integrator
-  rather than duplicating it: `integrate/algebraic/`'s Cantor arithmetic on
-  Jacobians in Mumford representation was widened to `pub(crate)`, with no
-  logic changes, so the class group and the integrator cannot drift apart.
-
-  **Scope is narrow and enforced.** Genus is computed for any accepted model;
-  everything else requires the imaginary (odd-degree) hyperelliptic model
-  `y² = a(x)` with `a` squarefree and ℚ-rational places. Even-degree "real"
-  models are refused (`E-FFLD-002`), as is `deg_y f > 2` (`E-FFLD-001`) and a
-  place of degree ≥ 2 (`E-FFLD-003`). That last one is the boundary reached
-  most often in practice: `div(y)` on `y² = x⁵ + 1` refuses, because four of
-  the five branch points are irrational. The restriction is not arbitrary —
-  on the odd-degree model the two candidate pole orders at infinity have
-  opposite parity, which is what makes `v_∞(p + q·y)` an exact minimum with no
-  cancellation, and the argument fails in even degree.
-
-  `E-FFLD-011` is the withheld-answer code: `div(u)` cross-checks the pole
-  order at infinity two ways and `riemann_roch` checks its dimension against
-  both Riemann's inequality and the Riemann–Roch equality, refusing rather
-  than returning on disagreement. `E-FFLD-007` (a non-torsion verdict) is
-  deliberately a different code from `E-FFLD-006` (undecided).
-
-- **Symplectic linear algebra and stabilizer codes.**
-  `alkahest.experimental` gains `PauliOperator` (symplectic `(x|z)` with a
-  `Z_4` phase), `StabilizerGroup`, `StabilizerCode` and `CssCode`, plus the
-  symplectic form over GF(2), symplectic Gram-Schmidt, complements, and
-  `Sp(2n,2)` membership. CSS construction **checks** `H_X · H_Z^T = 0` rather
-  than assuming it (`E-STAB-005` names the offending entry). Logical operators
-  come from Gram-Schmidt on the centralizer modulo the stabilizer, and the
-  pairing is asserted, not assumed.
-
-  Minimum distance is exhaustive and capped; above the cap it refuses rather
-  than guessing, and where only a bound is available the result says so
-  (`Distance::UpperBound`, never a number dressed as exact). Anchored on
-  Steane `[[7,1,3]]`, Shor `[[9,1,3]]`, the five-qubit `[[5,1,3]]` perfect
-  code (which exercises the non-CSS path) and quantum Hamming `[[15,7,3]]`
-  (the only one with `k > 1`, so the multi-logical pairing is exercised).
-
-  Also `GL(n,q)`, `SL(n,q)`, `Sp(2n,q)` with exact orders from the product
-  formulas, cross-checked three ways: formula, enumeration, and Schreier-Sims
-  on the induced permutation action.
-
-- **Classical linear codes and a certified Delsarte LP bound.**
-  `LinearCode` over GF(q) from either a generator or parity-check matrix,
-  duals, weight distributions in exact integers, the MacWilliams transform,
-  and Krawtchouk polynomials implemented **twice** (closed form and three-term
-  recurrence) and tested against each other.
-
-  `delsarte_lp_bound` is the headline. The returned number is read off the
-  **dual** programme, not the primal: any dual-feasible `y` proves
-  `|C| <= 1 + sum_k y_k K_k(0)` without reference to the solver, so a simplex
-  that stopped early or was outright wrong cannot produce an unsound bound.
-  The certificate is re-checked entry by entry in exact rationals and
-  `E-CODE-007` is returned rather than an unproved number; `certificate()`
-  hands `y` back for independent audit. It reproduces `A_2(24,8) = 4096` and
-  `A_2(23,7) = 4096` (the tight Golay cases) exactly, `A_2(7,3) = A_2(8,4) =
-  16`, and Plotkin's `A_2(2d,d) = 4d`.
-
-  This reuses the exact-rational simplex that was already in
-  `real/sos/lp.rs`; that module gained documentation for a second consumer and
-  **no behaviour change**.
-
-- **Function fields of algebraic curves: divisors, Pic^0 and Riemann-Roch.**
-  (Landed earlier in this cycle.) See the entry above.
-
-- **A lattice toolkit, and LLL moved onto FLINT.**
-  `lattice_reduce_rows` keeps its signature but now runs FLINT's `fmpz_lll`,
-  followed by exact rational size-reduction sweeps and this repo's own
-  `validate_lll_rows` — because FLINT's float Gram-Schmidt is parameterised by
-  `eta > 1/2` strictly and cannot promise the exact `|mu_ij| <= 1/2` the
-  validator checks. Rank-deficient input skips FLINT entirely (a float LLL
-  divides by zero on a zero GS norm). The old exact loop survives as
-  `lattice_reduce_rows_exact` and as the fallback.
-
-  New: `Lattice` from a basis or a Gram matrix, determinant, dual, exact SVP
-  and CVP, minimal vectors, kissing number, theta series, packing and centre
-  density, Hermite invariant, and the `Z^n`, `A_n`, `D_n`, `E_8` and Leech
-  constructors. Enumeration is exact integer Fincke-Pohst, never a float
-  Cholesky — float pruning drops vectors exactly at the ball boundary, which
-  is where every interesting count lives. `E_8` gives 240 minimal vectors and
-  Leech gives **196560**, each verified rather than asserted by construction.
-
-  The toolkit's refusals live on a new `#[non_exhaustive]`
-  `LatticeGeometryError`, leaving the semver-stable `LatticeError` untouched;
-  in Python the new class **subclasses** the old one, so a single
-  `except LatticeError` still catches everything and `.code` still reads
-  `E-LAT-*` across the range.
-
-- **Algebraic number fields, and the classical arithmetic functions.**
-  `NumberField` = `Q[x]/(f)` on FLINT's `nf`/`nf_elem`, with irreducibility
-  **checked** (`E-NUMF-003` names a proper factor), element arithmetic, norm,
-  trace, and minimal polynomial. `NumberField::cyclotomic(n)` is a first-class
-  constructor and skips the factorisation (`Phi_n` irreducible is a theorem),
-  which is what makes `Q(zeta_2048)` at degree 1024 cheap.
-
-  `number_theory` gains `partition_number`, `bernoulli_number`,
-  `euler_number`, `harmonic_number`, `stirling_first`/`_second`, `moebius_mu`,
-  `divisor_sigma` and `sum_of_squares`, all FLINT-backed. **FLINT's Bernoulli
-  convention is `B_1 = -1/2`** (DLMF); that is documented on every surface and
-  pinned by a test whose only job is that one value, with the denominators
-  additionally checked against von Staudt-Clausen.
-
-- **Riemann theta, modular and Weierstrass functions, as rigorous balls.**
-  Genus-1 `dedekind_eta`, `j_invariant`, `modular_lambda`,
-  `modular_discriminant`, `eisenstein_series`, `jacobi_theta`, the Weierstrass
-  family, and genus-`g` `riemann_theta` with characteristics and Siegel
-  reduction. This adds the first real `arb`/`acb` FFI to the crate
-  (`flint/arb.rs`, `flint/acb.rs`); `ball/mod.rs` keeps its existing
-  MPFR-backed behaviour and is untouched.
-
-  Every result is an enclosure. `Precision::AccurateTo(n)` refines and then
-  **refuses** with `E-THETA-010` carrying the accuracy actually achieved, and
-  `value_if_accurate` is the only route to an `f64`. `accuracy_bits` is one
-  bit more conservative than FLINT's own, and every predicate rounds inward,
-  so the API can say "not established" but never over-claim.
-
-  Anchored on `j(i) = 1728`, `j(rho) = 0`, `Delta = eta^24`, and — more
-  usefully — on structure the obvious tests cannot see: a genus-2 theta with a
-  diagonal period matrix must factorise into genus-1 thetas, and the two
-  independent FLINT paths (`acb_theta` and `acb_modular`) must agree through
-  the documented sign dictionary, with the wrong sign asserted to fail.
-
-### Performance
-
-- **`x^n ± 1` factors through cyclotomic polynomials instead of van Hoeij.**
-  FLINT's `fmpz_poly_factor` reached the factors of `x^n − 1` by Zassenhaus /
-  van Hoeij recombination and spent nearly all of its time in LLL:
-  `UniPoly.factor_z()` took 40 ms on `x^120 − 1` (SymPy 12 ms, Mathematica
-  0.1 ms) and 5 s on `x^720 − 1`. A binomial `a·x^(k+n) + b·x^k` whose
-  primitive part is `u^n·x^n ± v^n` (in particular `x^n ± 1`) is now factored
-  directly as `∏ Φ_d(u·x, v)` over `d | n` (or `d | 2n, d ∤ n`) with
-  `fmpz_poly_cyclotomic`, giving the same factors and unit — tested against
-  FLINT for every `n ≤ 300` with both signs and for scaled, shifted and
-  non-primitive binomials. Factors past the cyclotomic degree cap (#414), or
-  whose coefficients would not fit the memory budget, still go to FLINT.
-  `factor_z` on `x^n − 1`, before → after (SymPy 1.14 / Mathematica):
-  `n = 120` 37.9 ms → 3.0 µs (10.0 ms / 0.105 ms); `n = 360` 915 ms →
-  5.3 µs (75 ms / 0.18 ms); `n = 720` 4.77 s → 7.7 µs (254 ms / 0.27 ms);
-  `n = 1001` 167 ms → 7.8 µs (183 ms / 0.41 ms).
-
-- **`simplify_expanded` expands polynomials in one sparse product.**
-  Expanding `∏(x + i·y + z + i)` by term rewriting distributed one sum at a
-  time, interned every intermediate product and collected like terms over
-  many passes. The polynomial parts of the input — products and powers of
-  sums over symbols with integer or rational coefficients — are now
-  converted to sparse polynomials and multiplied with FLINT
-  (`fmpz_mpoly`), and the rule engine runs on the result. Only parts the
-  rules are certain to expand completely are taken (not a power past
-  `ExpandPow`'s bound, `(x·y)ⁿ`, `(x/2)ⁿ`, `(−x)^odd`, a negative or symbolic
-  exponent, five or more copies of one sum in a product, …), so the value is
-  the `ExprId` the rules alone produce, pinned by a differential proptest
-  against the old path. Products and powers are pre-flighted against memory
-  and the active budget before FLINT allocates; a refusal leaves the input
-  to the rules as before. The derivation log records one `expand_polynomial`
-  step per expanded part instead of the `expand_mul` / `expand_pow` /
-  `collect_*` steps that built it. Measured (release wheel, one machine):
-  `Product[x+i y+z+i, {i,0,19}]` 194 → 6.2 ms (Mathematica 5.0 ms, SymPy
-  5.5 s), the same with 12 factors 21 → 1.2 ms (Mathematica 1.1 ms),
-  `(x+y+z+1)^5` 0.56 → 0.084 ms, `(x+1)(x+2)` 9.5 → 5.8 µs; an expression
-  with nothing to distribute pays one structural walk (`x²+2x+1` 2.2 →
-  2.5 µs).
-- **`series` uses truncated power-series arithmetic when every coefficient
-  is rational.** Coefficients came from `order` rounds of differentiate,
-  substitute and simplify, whose derivative trees grow with the order —
-  geometrically for a composition such as `sin(tan x)`. Expressions built
-  from `+ − × ÷`, integer and rational powers, `exp`, `log`, `sin`, `cos`,
-  `tan`, `sinh`, `cosh`, `tanh`, `atan`, `asin`, `atanh`, `asinh` and `sqrt`,
-  wherever no irrational constant appears, are now expanded once per
-  subterm as exact rational vectors: truncated convolution, the reciprocal
-  recurrence, J. C. P. Miller's power recurrence, and the ODE recurrences
-  for the heads, with the working precision raised automatically past
-  cancellations and poles. Everything else — a free parameter, `sin(1 + h)`,
-  a branch point — takes the old route unchanged. The same `local_expansion`
-  serves `limit`, `asymptotic_expand`, `puiseux_series` and the FPS code.
-  Release wheel, best of N: `sin(tan x) − tan(sin x)` at order 15
-  12.3 → 0.24 ms (Mathematica 14: 2.0 ms), `exp(sin x)` at order 20
-  4.5 → 0.058 ms (0.52 ms), `1/cos x` at 20 1.42 → 0.062 ms (0.56 ms),
-  `log(1+x)/(1−x)` at 30 4.7 → 0.18 ms (0.52 ms), `sin x` at 12
-  0.062 → 0.016 ms. Differential tests run the old route in the same pool:
-  the 330-case f⁻ᵏ grid from #435 and the benchmark shapes give the same
-  `ExprId`. Over 9 000 random compositions the only differences are
-  coefficients the old route left as unevaluated constants such as `tanh(0)`
-  (numerically identical, now rational literals) and 12 expansions it
-  refused or got wrong (see Fixed), which match Mathematica `Series`.
-- **Symbolic determinants and inverses no longer take factorial time.**
-  `Matrix::det` on a matrix with symbolic entries expanded cofactors along the
-  first row recursively, re-deriving every sub-minor once per path that
-  reached it — `O(n!)` calls. The expansion is now memoised on the
-  `(rows, columns)` bit masks of each sub-minor, so each of the `O(2ⁿ)`
-  distinct sub-determinants is computed once, by exactly the step the plain
-  recursion takes (numeric Bareiss for an all-numeric block, `ad − bc` for a
-  2×2, first-row expansion otherwise), and the hash-consed result is the same
-  `ExprId`. `Matrix::inverse` shares one memo across all `n²` cofactors of the
-  adjugate. Measured on one machine (release wheel, a dense matrix of
-  polynomials in `x`, `y`): 7×7 42 → 11 ms, 8×8 336 → 74 ms.
-  Output is unchanged (differential tests against the unmemoised expansion).
-- **The symbolic inverse of a polynomial matrix is computed by fraction-free
-  elimination.** `Matrix::inverse` on a matrix with symbolic entries needs
-  `det(A)` and all `n²` first minors in expanded form; it built each as a
-  memoised cofactor expansion (`O(n·2ⁿ)` nested sub-determinants) and then
-  had the simplifier expand it. When every entry is a polynomial with
-  rational coefficients in commutative symbols (and `n ≥ 4`), one
-  fraction-free Gauss–Jordan elimination of `[A | I]` over `ℤ[x₁,…,x_k]`
-  (FLINT `fmpz_mpoly`, exact divisions, rows scaled by the lcm of their
-  denominators) now yields the determinant and the whole adjugate in `O(n³)`
-  polynomial operations. Measured on one machine (release build, the
-  benchmark matrix `x + i` / `x^|i−j| + (i+1)·y`): 6×6 121 → 9 ms, 7×7
-  868 → 20 ms, 8×8 7.6 s → 39 ms; a dense random 8×8 in `x, y, z`
-  4.5 s → 0.35 s. Each entry is the same `ExprId` the cofactor route returns
-  (differential tests against it, kept as the reference). Inputs where that
-  route would stop short of a full expansion — a power `ExpandPow` declines
-  to distribute — keep the cofactor route, as do non-polynomial entries.
-  `Matrix::det` is unchanged: it returns the unexpanded cofactor expression.
-- **Validated Taylor-model arithmetic stops cloning its operands.**
-  `TaylorModel::mul`, `add`, `scale`, `poly_bound` and `range` cloned every
-  ball coefficient they read (two MPFR allocations each) and rebuilt each
-  product's exponent vector twice. They now borrow, using the in-place
-  `ArbBall` operations, and reuse one scratch exponent vector. The balls are
-  bit-identical, and a differential test checks this against the cloning
-  `mul`. The verification gate that dominates algebraic integration gets
-  faster: six `∫ p(x)/√q(x)` integrals ×3 went from 2.26–2.40 s to
-  1.59–1.73 s, and `bound_on_box` on four bivariate functions at orders
-  2/6/10 went from 5.49–5.88 s to 4.64–4.66 s, both with identical results.
-- **Small-input regressions from this cycle's performance work, recovered.**
-  CodSpeed flagged five micro-benchmarks. The instruction counts were bisected
-  across #394–#407 with a fixed toolchain, and each regression was fixed where
-  it was introduced:
-  `MultiPoly::from_symbolic` on a quartic or a four-term bivariate had gained
-  11% / 8% (#399's shared-node memo inserted every compound node into a
-  SipHash `HashSet`, which allocated and rehashed three times on a quartic).
-  The UniPoly and MultiPoly builders now record visited nodes in an inline
-  16-slot set that spills to an `ExprId`-hashed set, which brings the
-  overhead to ~2.5%. `ArbBall` multiplication now builds its radius in place.
-  It allocates 5 MPFR temporaries instead of 9 and addition 4 instead of 5,
-  with bit-identical results (a proptest checks this against the old
-  formulas). That is −15% instructions per `arb_mul` and −6% per `arb_add`.
-  `intern::build_add3` (+5% at #397) is superseded by #411's pool index;
-  `gcd_deg4` did not move in any commit and follows the CI's FLINT 3.5 → 3.6
-  update (#410).
-- **`diff`, `subs`, `match_pattern` and the free-of-variable checks are linear
-  on shared expressions — and `integrate` no longer treats a `Piecewise` or
-  `RootSum` as a constant.** Expressions are hash-consed DAGs, and these walks
-  treated them as trees, so their cost grew with the number of root-to-leaf
-  paths (exponential for a recurrence like Chebyshev's) rather than with the
-  number of distinct nodes.
-  - `diff` tried its dense ℤ-polynomial fast path at *every* node. On
-    `e ← e·e + 1` iterated that meant expanding a degree-2^k polynomial
-    (k = 12: 1.4 s → 0.24 ms; the Python call at k = 14 took 36 s and returned
-    an 18.7 MB derivation), and `Σ aᵢ·xⁱ` was quadratic (n = 5000: 12 s →
-    60 ms). The fast path now runs once, at the root, and only when the
-    expanded result is at most about twice the input's size. **Output shape
-    changes:** a compact power stays factored — `d/dx (x+1)^800` is
-    `800·(x+1)^799`, not an 800-term expansion — and an inner polynomial (the
-    `x²` in `sin(x²)`, a monomial `x³`) is logged as `power_rule` rather than
-    `diff_univariate_poly`.
-  - A registry primitive (`tan`, `atan`, `erf`, …) differentiates its argument
-    with a nested `diff` call; nested calls now read the enclosing call's memo
-    instead of re-deriving it (`tan` nested 16 deep: 1.5 s → 0.4 ms).
-  - `subs` and `fold_predicates` are memoised per call (with a separate scope
-    under a `∀`/`∃` that shadows a key) and return the original node when
-    nothing below it changed (Chebyshev T₂₈: 540 ms → 0.04 ms).
-  - `match_pattern` visits each distinct node once, so a shared sub-expression
-    is **one** match site: Chebyshev T₂₄ returned 75 024 duplicate matches
-    and now returns 23, in pre-order of first occurrence.
-  - The integrator's `is_free_of` looked only through `Add`/`Mul`/`Pow`/`Func`
-    and called every other node free of the variable, so the constant rules
-    pulled a `var`-dependent `Piecewise` or `RootSum` out of the integral:
-    `∫ y·Piecewise((x>0, x), 0) dx` returned `x·y·Piecewise(…)` and
-    `∫ sin(Piecewise((x>0, x), 0)) dx` returned `x·sin(Piecewise(…))` — both
-    wrong. It, the Risch/transform `is_free_of_var`, and the `depends_on`
-    checks in `limit`, the Puiseux and asymptotic expanders and summation now
-    share one visited-set walker that descends into every node kind.
-- **Integers cross between rug and FLINT by limbs, not decimal strings.**
-  `FlintInteger::from_rug` / `to_rug` (and the internal `fmpq` ⇄
-  `rug::Rational` conversion) printed the number in base 10 and parsed it on
-  the other side — superlinear in the bit size, on every path that hands an
-  integer to FLINT: polynomial factoring and gcds, Hermite/Smith normal forms,
-  number theory, primary decomposition, the Risch rational RDE. They now copy
-  64-bit limbs (`fmpz_set_ui_array` / `fmpz_get_ui_array`, both in FLINT 2.9
-  and 3.x), with an `fmpz_set_si` / `fmpz_get_si` fast path for word-sized
-  values. No `mpz_t` crosses between the two libraries — rug's limbs are only
-  read and FLINT writes only into a Rust-owned buffer — so the conversion is
-  safe whether rug and FLINT share one GMP or each link their own. Measured on
-  one machine (release build, FLINT 3.5.0), per conversion: 100 000 bits
-  `from_rug` 854 µs → 2 µs and `to_rug` 744 µs → 1.6 µs; 1 000 000 bits
-  19.3 ms → 22 µs and 14.4 ms → 13 µs. Public signatures are unchanged.
-  `fmpq` built from a `rug::Rational` also skips the redundant
-  `fmpq_canonicalise` (a gcd), since rug keeps rationals in lowest terms.
-- **Number atoms hash without allocating, and `intern` hashes each node
-  once.** `BigInt`, `BigRat` and `BigFloat` used to hash by formatting
-  themselves as a hex string — a heap allocation on every intern lookup and
-  on every key each time the intern table grew. They now hash their limbs
-  (value-based, so `Hash` still agrees with `Eq`: `+0`/`-0` and every NaN hash
-  alike, and a `BigFloat`'s internal MPFR precision does not leak in, while
-  its `prec` field still does). The intern index also stores each key's hash
-  alongside it, so a miss no longer hashes the `ExprData` a second time and a
-  resize rehashes nothing. Hashing a small integer: 80 → 27 ns; `3^2000`:
-  1.3 µs → 0.1 µs; a `pool.integer(k)` hit 109–125 → 73–109 ns;
-  `pool.float(1.1, 53)` 213–224 → 106–143 ns; a 100 000-bit integer hit
-  38 µs → 3.3–4.2 µs; interning a fresh integer ~1 µs → ~0.5 µs. Nothing
-  persisted these hashes, so no file format or output order changes.
-- **Big Python ints cross the binding by bytes, not decimal text — and no
-  longer break past 4300 digits.** Every `int` that did not fit an `i64` went
-  through `str(n)` → GMP parse on the way in and `int(text)` /
-  `Fraction("p/q")` on the way out. CPython caps that conversion at
-  `sys.get_int_max_str_digits()` (4300 digits by default), so
-  `ExprPool().integer(10**5000 + 7)`, `x ** 10**5000`, `x + Fraction(10**5000, 3)`,
-  `number_theory.isprime(10**5000 + 1)`, `evaluate(3**12000, mode="exact")` and
-  big polynomial coefficients all raised `ValueError`, and
-  `evaluate(y + 1, {y: 10**5000}, mode="exact")` misreported `E-EVAL-002`. It
-  was also quadratic: `pool.integer` of a 10⁶-digit int took 10.9 s and now
-  takes 4 ms; reading it back 4.1 s → 2 ms. One helper module
-  (`alkahest-py/src/bigint.rs`, `int.to_bytes`/`from_bytes` ↔
-  `rug::Integer::{from_digits,to_digits}`) now serves every binding file, and
-  `Fraction`s are built from two ints. `Expr.node()` keeps returning decimal
-  strings; the internal Python helpers use the new `Expr._node_exact()`, which
-  returns ints. The `nt_*` / `modular_*` natives also accept ints directly.
-- **ℚ[x] GCDs, rational determinants and rational `rref` go through FLINT.**
-  `RatUniPoly::gcd` (every rational-function operation in summation, Gosper's
-  shifted GCD, polynomial Smith/Hermite forms) was the textbook Euclidean
-  algorithm over `ℚ`; it now clears denominators and calls `fmpz_poly_gcd`,
-  sharing one crate-private helper with the Risch code that already did so, and
-  with the Puiseux and holonomic-asymptotics GCDs (degree 40: 12 ms → 0.06 ms;
-  degree 80: 235 ms → 0.1 ms). `Matrix::det` on numeric entries takes
-  `fmpz_mat_det` after scaling each row by its denominators' lcm instead of
-  Bareiss over `rug::Rational` (60×60: 14 ms → 1.4 ms), and the rational path
-  of `rref`/`rank`/`nullspace`/`row_space_basis` uses `fmpz_mat_rref` (60×50:
-  6.1 ms → 1.5 ms). Outputs are unchanged — the monic GCD, the determinant and
-  the reduced row echelon form are unique — and differential property tests
-  pin each new path to the algorithm it replaced.
-- **Polynomial construction does its arithmetic in FLINT.**
-  `UniPoly::from_symbolic` built a `BTreeMap` of rug coefficients with
-  schoolbook products and only then copied it into an `fmpz_poly`; it now
-  builds the `fmpz_poly` directly (`(x+1)^1000`: 120–190 ms → 0.12 ms), and
-  `FlintPoly::derivative` is one `fmpz_poly_derivative` call instead of a rug
-  round trip per coefficient. `diff` tries that conversion at every non-atom
-  node, so `diff((x+1)^300·sin x)` goes 26 → 2.6 ms. The conversion also
-  memoises shared DAG nodes (in `MultiPoly::from_symbolic` too): a
-  Chebyshev-style recurrence `T_{n+1} = 2x·T_n − T_{n−1}` used to be walked once
-  per path, so `diff(T_24)` took 280–430 ms and now takes 0.2 ms. `MultiPoly`
-  products and powers above a small size go through `fmpz_mpoly_mul` /
-  `fmpz_mpoly_pow_ui` (`p·p` for 286 terms 17 → 0.8 ms;
-  `from_symbolic((x+y+z+1)^20)` 40–70 → 1.3 ms). Results are unchanged,
-  including which error a non-polynomial input reports; proptests pin every
-  path against the previous algorithms, which stay as the fallback for
-  degrees too sparse to hold densely and for exponents that would overflow.
-- **Gröbner reduction runs in place, and Buchberger reduces fraction-free.**
-  The division algorithm rebuilt the whole dividend on every step
-  (`p.sub(..)` via `add(neg(..))`), cloned it again to drop the leading term,
-  rescanned it for that leading term and every divisor for theirs, and
-  `interreduce` cloned the basis once per element. The dividend now lives in a
-  map keyed by an order-preserving encoding of its monomials (leading term =
-  last entry) and is updated in place; divisors' leading data is extracted
-  once, incrementally as the basis grows; `interreduce` skips by index. Inside
-  Buchberger and `interreduce`, where every remainder is made monic anyway,
-  reduction runs over ℤ on primitive integer divisors with periodic content
-  removal instead of paying `mpq`'s gcd canonicalisation on every operation.
-  Divisor choices are unchanged, so the bases are **identical, term for term
-  and in order** — checked against the previous implementation (kept as a
-  test oracle) on cyclic-3/4/5, katsura-2…5 and proptest-generated systems.
-  GRevLex, single core: cyclic-4 0.54 → 0.16 ms, cyclic-5 47 → 5.3 ms,
-  katsura-4 12.7 → 2.2 ms, katsura-5 219 → 19 ms, katsura-6 4.2 s → 0.24 s.
-  `reduce`, FGLM's normal forms and `solve` on polynomial systems use the same
-  engine (the exact rational variant where the remainder itself is returned).
-- **`simplify_egraph` is sized by the expression DAG, not its tree, and no
-  longer re-parses its rule program on every call.** A subterm shared by many
-  parents used to be written out once per path to it — `e_{k+1} =
-  sin(e_k)·cos(e_k)` doubled per level, so depth 14 took 1.3 s and depth 30 was
-  out of reach, and the `node_limit` guard, which counts *distinct* nodes, let
-  a 120-node DAG through to build ~10⁸ terms. Shared nodes are now bound once
-  by egglog `let`s, the result is decoded from egglog's hash-consed `TermDag`
-  instead of re-parsed from its printed tree, and the post-extraction passes
-  are memoised per node, so the guard now bounds the real work: depth 30 takes
-  ~2–3 ms and the Chebyshev DAG `T_40` ~5–8 ms. The configuration-only prelude
-  (datatype and rulesets) is parsed once per thread and cloned, which takes a
-  trivial call such as `x + 0` from ~1.2 ms to ~0.3–0.45 ms. Results are
-  identical to the tree pipeline, which is kept as a differential-test
-  reference. `expr_contains_noncommutative_symbol` now reads the O(1)
-  commutativity flag cached at intern time instead of walking the tree.
-
-- **`simplify` no longer pays per path, per pool node, or per clone.** The
-  static-domain fact walk that ends every `simplify` visited a shared DAG once
-  per *path*: re-simplifying an already-simplified 104-node Chebyshev-style
-  expression took 491 ms and now takes 0.05 ms. `simplify_redex` /
-  `simplify_auto` sized their per-pass tables by the whole pool — a 7-node
-  expression cost 18–20 ms in an 8M-node pool, now 0.008 ms. The hot rewrite
-  rules decline without cloning the node, and `collect_mul_factors` /
-  `collect_add_terms` without building a bignum map: the derivative of a
-  depth-4000 nested `sin` dropped from 7.9 s to 1.3 s. The fixed-point loop
-  keeps nodes it has proved settled between passes, so the confirming pass
-  only revisits what the previous one built. Results and derivation logs are
-  unchanged, checked step for step against the old code.
-
-- **Numeric evaluation no longer walks a shared DAG once per path, and small
-  expressions stop paying interpreter prices on large batches.**
-  `evaluate` (`f64`, `exact` and `complex` modes) memoizes per call: on the
-  Chebyshev recurrence `T_28` went from 238 ms / 1.1 s / 379 ms to ~20 µs /
-  ~110 µs / ~30 µs, and `T_40` (~1.6e8 paths) now finishes in microseconds.
-  The interpreter tier of `compile_expr` flattens the expression once into a
-  post-order slot program — 2.0 µs → 0.10 µs per point, with no per-point
-  allocation — and `eval_expr` borrows nodes instead of cloning them. The
-  batch entry points behind `numpy_eval` recompile an interpreter-tier
-  function natively (cached on the `CompiledFn`) once a batch reaches 4096
-  points: the audit's small expression at 1e6 points went from 2.05 s to
-  0.22 s. `compile_expr` takes an additive `expected_evals=` hint and reports
-  `CompiledFn.tier`. `trace`/`grad` compile once per traced function instead
-  of on every array call (1k points: 2.2 ms → ~0.3 ms; gradient 3.9 ms →
-  ~0.3 ms). All tiers agree bit for bit with the tree-walking interpreter
-  (property-tested). The "no JIT" warning now points at the dependency-free
-  `cranelift` feature instead of only at LLVM.
-- **Python boundary: pool-aware `Expr` identity, linear parsing of long sums,
-  and `import alkahest` without jax.** `Expr.__eq__`/`__hash__` compared the
-  interned id alone, so `pool_p.symbol("x") == pool_q.symbol("zzz")` was
-  `True` and expressions from two pools collided as dict keys; they now
-  compare (pool, id), and `pool.add`/`mul`/`func` refuse an expression from
-  another pool with `PoolError` (`E-POOL-001`) instead of reading its id as a
-  local one. `parse` interns each run of `+`/`-` (and `*`) with one
-  constructor call instead of a left fold that re-interned a one-wider `Add`
-  per term — the same node, now linear (10 000-term sum 1.8 s → 86 ms).
-  `to_jax` resolves lazily, so `import alkahest` no longer imports jax
-  (~480 ms → ~70 ms on one machine). The ambient certificate gate on every
-  derivation entry point costs ~0.2 µs instead of ~2 µs, and research
-  dependency lookup keys by `Expr` instead of rendering `str()` per
-  subexpression and no longer interns partial sums into the caller's pool.
-  `docs/mdbook/src/kernel.md` now says how to build large sums
-  (`pool.add(terms)`, not `sum()`).
-- **`DerivedResult` renders its derivation lazily, and the heavy entry points
-  release the GIL.** `.derivation` and `.steps` used to be rendered — twice,
-  every `before`/`after` of every step — when the result was built, whether or
-  not anyone read them: 41% of `diff` on a 200-term polynomial. They are now
-  rendered from the stored log on first access; the strings are identical.
-  `simplify` (and its variants), `diff`, `solve`, `cancel`/`together`/`apart`,
-  `sum_*`/`product_*`, `rsolve`, `evaluate`, `integrate_definite`, `factor_z`,
-  `GroebnerBasis.compute*` and the symbolic `Matrix` operations now run their
-  core call under `py.allow_threads`, as `integrate` already did, so
-  `batch_map(parallel=True)` overlaps them. Budgets, ambient assumptions and the
-  `*_side_conditions()` channels are unaffected: the work stays on the calling
-  thread.
-
-- **The expression pool stores each node once, and its hot tables use a fast
-  hasher.** The intern index was a map *keyed by* `ExprData`, so every node
-  lived twice — in the node array and, deep-cloned, as the map key — and every
-  miss paid for the clone. The index is now a table of ids (plus 32 hash bits)
-  that compares through the node array, sharded behind `RwLock`s under
-  `parallel`; a miss re-probes under the shard's write lock before it inserts,
-  so two threads interning the same value still get the same id. The pool
-  index and the `ExprId`-keyed memo tables in `simplify`, `diff` and
-  `eval_interp` hash with foldhash instead of SipHash (these keys are
-  pool-assigned indices, so HashDoS resistance bought nothing there). Resident
-  memory for 1.5 M distinct nodes: 225 → 114 bytes/node (1 M integers: 284 →
-  116); interning a fresh integer 377–403 → 170–193 ns, a fresh `Add`
-  448–462 → 264–298 ns; hits 20–40 % faster (`add([x, c])` 79–89 → 63–67 ns).
-  No output, id assignment order or persisted format changes.
-
-### Fixed
-
-- **`series` dropped the terms of `x·tanh(x)⁻³` below order 1, and left
-  `tanh(0)`, `atanh(0)` and `asinh(0)` in coefficients.** `simplify` does not
-  fold those three heads at `0`, so the derivative route carried them along:
-  `series(tanh(x), x, 0, 3)` printed `tanh(0) + (1 − tanh(0)²)·x + …`,
-  `atanh(x)⁻¹`, `asinh(x)⁻³` and `log(1 + atanh x)⁻³` were refused
-  (`E-SERIES-004`), and `x·tanh(x)⁻³` at order 1 came back as a bare `O(x)`
-  where the series is `x⁻² + 1 + O(x)`. The power-series route above computes
-  these from recurrences and returns rational literals (`x − x³/3 + 2x⁵/15`
-  for `tanh x`); all checked against Mathematica.
-- **`limit((sin(tan x) − tan(sin x))/x⁷, x, 0)` was refused; it is `−1/30`.**
-  Both symbolic routes found `−1/30`; the numeric refutation check then
-  sampled at `x = 10⁻³` and `10⁻⁴`, where the numerator `−x⁷/30` is far below
-  one ulp of either term, so both terms rounded to the same double and the
-  samples settled on `0` — refuting the right answer. A sample is now kept
-  only if a rigorous 53-bit ball evaluation at the same point is resolved to
-  `10⁻⁷` of its magnitude, so cancellation noise can no longer outvote the
-  symbolic result; a sample the ball evaluator cannot evaluate is kept as
-  before, and `x/|x|` is still refuted.
-- **Loading a corrupt or hostile `.akp` pool file could abort the
-  interpreter or panic.** `ExprPool.load_from` allocated every
-  length-prefixed field (a name, a child list, a piecewise branch list) at
-  its declared size before reading it, so a four-byte length of
-  `0xFFFFFFF0` was a 4 GiB allocation that killed the process; a rational
-  with denominator 0 and a float at precision 0 panicked inside `rug`, and a
-  float at precision `u32::MAX` was allocated. Every length and the node
-  count are now checked against the bytes left in the file first
-  (`E-IO-004`), a zero denominator and a precision outside `1 ..= 2^24` bits
-  are refused (`E-IO-009`), and a duplicated node no longer shifts later
-  child references (audit B8/B9). A fuzz test loads truncated and
-  bit-flipped files in a subprocess and asserts none of them dies.
-- **Three integrator helpers truncated big integer exponents instead of
-  using them exactly.** `numer_denom` in the Risch tower integrator (whose
-  residue criterion *certifies* NonElementary) read `x^k` through
-  `to_i64().unwrap_or(0)` and then negated into an `i32`, so `x^-(2^32+1)`
-  split as `1 / x` and an exponent below `i64::MIN` stayed a negative power in
-  the "numerator"; the radical substitution's `split_num_den` sent
-  `x^k` with `k < i32::MIN` to the denominator as `x^0 = 1` (the factor
-  dropped) and overflowed on `i32::MIN`; and `collect_radical_powers` mapped
-  `a^(m/n)` to `u^m` with `m` cut to its low 32 bits. All three now negate /
-  multiply the `rug::Integer` exactly. The rest of `integrate/` was swept for
-  the same `to_*().unwrap_or(…)` pattern: the three resonance-search bounds
-  fall back to `i64::MAX`, which the next line declines, so they were
-  already safe; the algebraic integrator's extension-degree refusal now
-  reports a huge degree rather than `0`.
-- **`alkahest.parse` let non-`ParseError` exceptions escape, and read
-  `1e999999` as infinity.** Deep nesting (`((…x…))`, `x^x^…`, `----x`,
-  `sin(sin(…))`) raised `RecursionError`; a 100 000-digit integer raised
-  Python's int-string-limit `ValueError`; `2/0` raised `ZeroDivisionError`;
-  `1e999999` parsed silently as `inf` and `1e-999999` as `0`. The Python
-  parser is now a trampoline over generator productions — nesting costs list
-  entries, not interpreter frames — with the Rust parser's 2048-level limit
-  (`ParseError` `E-PARSE-004`, the `E-DEPTH-001` ceiling); integer literals go
-  to the kernel as digits (exact at any length); division by a literal zero
-  is `E-PARSE-002` with the `/`'s span (still a `ZeroDivisionError` too, for
-  existing handlers); and a float literal past `f64`'s
-  exponent range is read at 53 bits through MPFR (in both parsers), or
-  refused as out of range (`E-PARSE-001`) past MPFR's — never `inf` or `0`.
-  `ParseError` takes an optional `code` (audit D). Out-of-range integer
-  arguments elsewhere now raise the error their neighbours do instead of
-  PyO3's `OverflowError` / a misleading `TypeError`: `interval_eval(prec=2**40)`
-  (`ValueError`, as for `2**31`), `Matrix([[]])` (`ValueError`, no columns),
-  `Matrix.get(-1, 0)` (`IndexError`, as for `get(5, 0)`), `binomial_mod` with a
-  negative or oversized argument (`HolonomicError` `E-HOLO-004` / `E-HOLO-006`),
-  and `EgraphConfig(-1)` (`ValueError`).
-
-- **`series` dropped terms at a pole and labelled the remainder `O(h)`.**
-  For a Laurent series it computed `order` coefficients past the pole and
-  then wrote `O(h)`, a false claim whenever the pole order was at least
-  `order`: `series(sin(x)**-4, x, 0, 4)` omitted the `11/45` constant term,
-  `(x + x**2)**-3` at order 3 omitted `-10`. The working precision is now
-  raised by the valuation shift, and `order` means what it means for
-  `puiseux_series`: every term with exponent `< order`, remainder
-  `O(h**order)`. Separately, `((x - 2)/x)**-1` expanded to a bare `O(x**4)`
-  because `simplify` folded its singular-in-form coefficients
-  (`(-2·0⁻¹)⁻¹ → 0`); such a coefficient is now kept unsimplified, recognised
-  as indeterminate, and the expression is expanded as the quotient `x/(x−2)`.
-  Checked against Mathematica `Series` over `f**-k` for eleven `f`,
-  `k = 1..6`, orders 1–5 (audit A9).
-- **A compiled function of no inputs batched to zeros: `compile(5, [])`
-  gave `[0, 0, 0]` from `call_batch` while `call([])` gave 5.** `call_batch`
-  returned early when `n_inputs == 0`, leaving the caller's zero-filled
-  buffer as the answer (`CompiledFn.call_batch_raw([], 0, 3)` and
-  `call_batch_buffer` in Python). Every tier now fills the batch with the
-  constant.
-- **`compile_expr(x + y, [x])` compiled, and returned `NaN` at every point,
-  while `eval_expr` on the same expression raised.** A free symbol the input
-  list does not bind has no value anywhere, so `compile`, `compile_with`,
-  `compile_jit_only`, `CompileCache` and `compile_expr` now refuse it with
-  `E-JIT-005` (`JitError` in Python), naming the unbound symbols. `π` needs
-  no binding, and a `RootSum`'s placeholder is bound by the `RootSum`. Rust
-  callers get `JitError::UnsupportedNode` in band and the code from
-  `take_unbound_symbols()`, or can check first with `check_inputs_bind`.
-- **Every Cranelift compile leaked its code pages.** `cranelift_jit`'s
-  `JITModule` deliberately leaks its memory on drop unless `free_memory` is
-  called, and nothing called it: each compile-and-drop kept about 4 kB
-  resident for the life of the process (20 000 compiles: +80 MB; now +28 kB).
-  A compiled function now frees its module when it is dropped, and a compile
-  that fails part-way frees it too.
-- **Every thread that made a big integer leaked ~228 kB when it exited.**
-  FLINT keeps a per-thread cache of `mpz_t` structs (a 16-page block, each
-  entry with its own GMP allocation) that only `flint_cleanup` releases, and
-  nothing called it: 5000 short-lived threads that each made one `3^200` grew
-  the process by 1.14 GB. That is the shape of a thread-per-request server or
-  any pool that retires its workers. The FLINT wrappers now register each
-  thread on its first FLINT use, and `flint_cleanup` runs when the thread
-  exits (400 threads: +91 MB before, +4 kB after). It releases only the
-  exiting thread's caches; a big integer still alive elsewhere keeps its block,
-  and Rayon's long-lived workers clean up once, when the pool shuts down.
-- **`integrate` answers that were wrong where the integrand is not real, and
-  a pole hidden behind a non-real constant.** Every numeric gate sampled only
-  where the integrand is a finite real, so the substitution routes'
-  sign-losing rewrites (`(a³)^{1/2} ↦ (a^{1/2})³`) went unseen on the other
-  half of the line: `∫ 3/2·tan²x(1+tan²x)/√(tan³x) dx` returned `(√tan x)³`,
-  off by a sign wherever `tan x < 0`, and `∫(1/tan x)^{3/2}`, `∫√(tan³x)`
-  likewise. The outermost `integrate` now also checks `d/dx F = f` at points
-  where `f` is finite and non-real (principal branch), the generator
-  substitution uses the same check to pick its sign-repaired candidate, and
-  a definite integral whose integrand is non-real on part of the interval
-  walks `F` on that branch for jumps: `∫_1^{5/2} cot^{3/2}` gave
-  `0.108 + 2.668i` across `π/2` (the value is `0.108 − 0.446i`) and is now
-  refused. `∫_{-1}^{2} (1/x + tanh(i)) dx` returned a finite value because
-  the non-real constant turned every pole scan off; the scans now ignore
-  summands and factors free of the variable (audit A10).
-- **`limit` of an expression with an undefined constant hung or ran out of
-  memory.** `limit(0**-1 + x, x, 1)` ran for hours and `limit(x*0**-1, x, 1)`,
-  `limit(log(0) + x, x, 1)` exhausted memory: `0⁻¹` stays unevaluated, every
-  rule treats it as an opaque constant, and differentiating it for a Taylor
-  coefficient triples its size per order. An expression containing a negative
-  power or `log` of a constant that is exactly `0` is undefined at every point
-  and is now refused up front (`E-LIMIT-005`) (audit C4).
-- **`integrate` ran for minutes past its budget in the tower Risch-DE
-  ansatz.** `∫(2x + log x)^{-1/2} dx` spent 400 s before declining and a 3 s
-  budget took 8.6 s to fire; nothing between `integrate`'s entry checkpoint
-  and the answer looked at the clock. The ansatz now checks the budget per
-  candidate denominator, per basis column, per linear-system row block and
-  per elimination pivot (the same budget now fires at 3.1 s), and with no
-  budget at all spends at most 600 such steps per top-level `integrate` call
-  before declining — a deterministic ceiling; the whole Python suite spends
-  none, and `∫(2x + log x)^{-1/2} dx` now declines in about 2.4 s instead of
-  400 s (audit C5).
-- **`factorint`, `apart` and `integrate` ignored a wall-clock budget.**
-  `factorint((2⁸⁹−1)(2¹⁰⁷−1)(2¹²⁷−1))` under `Budget(wall_ms=1000)` ran past
-  20 s inside one uninterruptible `fmpz_factor`; under a budget it now climbs a
-  ladder of bounded-effort `fmpz_factor_smooth` passes with a check between
-  them and raises `BudgetExceededError` about one pass after the deadline
-  (unbudgeted it is unchanged, and documented as unbounded). `apart` and
-  `integrate` of `1/(x^(2^31)+1)` built a dense degree-`2³¹` ℚ[x] polynomial by
-  repeated multiplication; that conversion now declines past degree 8192 and
-  checks the budget per multiplication (audit C6).
-- **`simplify` folded indeterminate forms to numbers: `oo - oo → 0`,
-  `oo * 0 → 0`, `oo / oo → 1`, and for IEEE floats `NaN - NaN → 0`,
-  `NaN * 0 → 0`, `inf * 0 → 0`, `inf - inf → 0`, `x*inf - x*inf → 0`.**
-  `oo` is a positive symbol and float literals are atoms, so the field
-  identities `x − x = 0`, `0·x = 0` and `x/x = 1` fired on them. Collecting
-  like terms and like factors, `0·…` folding, and the e-graph and
-  assumption-aware `x·x⁻¹ → 1` rewrites now leave a term alone when it
-  contains `∞` or a non-finite float and the merge would be indeterminate
-  (coefficients or exponents of mixed sign, or a zero factor): the result
-  stays unevaluated. Same-sign merges (`oo + oo → 2·oo`, `oo·oo → oo²`) and
-  every rule on ordinary symbols are unchanged.
-- **One value had two nodes, and floats did not print back as floats.**
-  `rational(4, 2)` and `integer(2)` were different expressions (so
-  `subs(x + rational(2, 1), {2: y})` missed), `pool.add([x])`/`pool.mul([x])`
-  were not `x`, `pool.add([])`/`pool.mul([])` printed `()`, and `-0.0` was kept
-  as whichever zero was interned first. `ExprPool::intern` now canonicalises:
-  a denominator-1 `Rational` is the `Integer`, a one-argument `Add`/`Mul` is
-  its argument, the empty sum/product is `0`/`1`, a float zero or NaN is stored
-  with a positive sign. Pool files are loaded through the same path, with child
-  references remapped, so a non-canonical node saved by an older build no
-  longer duplicates (or shifts) the nodes after it; a child reference that is
-  not to an earlier node is refused. `Float(0.0)` printed `0`, which re-parsed
-  as the integer `0`; it now prints `0.0`. Both parsers read a literal of more
-  than 17 significant digits at a precision that keeps them, instead of
-  cutting a printed 200-bit float to an `f64`.
-- **A built-in function at the wrong arity panicked in every consumer.**
-  `pool.func("sqrt", [])`, `pool.func("EllipticPi", [x])`, `parse("sin()")`,
-  `parse("sin(x, x)")` built nodes that raised `PanicException` (index out of
-  bounds) in `latex`, `unicode_str`, `diff`, `series`, `simplify`,
-  `integrate` and `to_lean`. `pool.func` now raises `PoolError`
-  (`E-POOL-002`) and both parsers `ParseError` (`E-PARSE-002`) for a built-in
-  name at the wrong number of arguments; user-defined names take any number.
-  The Rust API adds `ExprPool::try_func` and `kernel::known_func_arity`
-  (`ExprPool::func` stays unchecked), and the renderers, the Lean emitter and
-  the primitive registry treat a wrong-arity node that still reaches them as a
-  plain call or a declined operation instead of panicking.
-- **`CompiledFn._batch_tier` stayed `None` after a large batch on a build
-  with no JIT.** A batch of 4096 points or more fixes which backend batches
-  run on, and records it; with no Cranelift/LLVM backend compiled in, that
-  record was skipped. So the diagnostic kept reading "no large batch seen yet"
-  instead of `"interpreter"`, and
-  `test_large_batch_upgrades_the_interpreter_tier_once_and_agrees` failed on
-  such builds. Values were never affected.
-- **Release wheels failed to import (`undefined symbol: PyPyIndex_Check`).**
-  The integer-coercion fast path called `pyo3::ffi::PyIndex_Check`, which
-  pyo3-ffi 0.21 binds to the PyPy symbol name. Test builds never exercised
-  it, but every CPython release wheel either failed to import (Linux, macOS)
-  or failed to link (Windows). The check is now made on the Python type
-  (`hasattr(type(ob), "__index__")`), with no raw FFI call.
-- **`q_zeilberger` hung, instead of refusing, when a budget check tripped
-  inside its field arithmetic** — a pending `request_cancel()`, an expired
-  `Budget` wall clock, or the address-space guard under `ulimit -v`. The
-  `gcd` that saw the trip gave up (correctly, but leaving its result
-  unreduced), every `gcd` after it gave up too, and the unreduced fractions
-  compounded with each operation until the next checkpoint that happened to
-  look — the `q`-Vandermonde square summand, 0.4 s normally, ran without
-  end. The call now checks the budget before any field arithmetic and
-  between the steps that assemble the search's inputs, stops on a budget
-  refusal a `gcd` has already recorded even if the budget reads clear again,
-  and refuses in milliseconds with the trip's own code (`E-BUDGET-003` /
-  `-001` / `-005`). Once the search's gcd work ceiling is spent it also
-  stops, instead of retrying every remaining `(order, degree)` probe on
-  arithmetic that can no longer cancel.
-- **The address-space guard refused, once, at the first checkpoint after a
-  long idle stretch.** Its reserve grows with the address space mapped since
-  the thread's previous probe — meant as one probe interval's growth, but the
-  previous probe could belong to a call that finished minutes earlier, so
-  everything the process had mapped since read as growth. A full
-  `pytest tests/` run under `ulimit -v 16G` hit a 34 GB "reserve" at 15.6 of
-  17.2 GB mapped, and the refusal cleared again at the next probe. A sample
-  older than one second (`GROWTH_WINDOW`) now starts a fresh history.
-  Together these made `test_novelty.py::test_a_q_certificate_becomes_a_claim`
-  and the `test_q_root_of_unity.py` tests hang in a full run under
-  `ulimit -v` while passing on their own and in CI (no `ulimit`). The
-  depth-limit tests' threads leave ~10 GB of glibc malloc-arena reservations
-  on a 32-core machine, which is what put the process near its limit;
-  `tests/conftest.py` now caps glibc's arena count so the suite's
-  address-space footprint no longer scales with the core count.
-- **`subs` captured variables under a binder, rewrote bound variables, and
-  skipped `RootSum`.** `subs(∀y. x + y > 0, {x: y})` gave `∀y. y + y > 0`; the
-  binder is now alpha-renamed to a fresh `y_1` (`∀y_1. y + y_1 > 0`) whenever a
-  substituted value mentions the bound variable, for `Forall`, `Exists` and
-  `RootSum` — the kernel's only binders. A compound key that mentions the bound
-  variable (`subs(∃y. y² > 1, {y²: 0})`) names the outer variable and no longer
-  applies inside the binder. `subs` now descends into a `RootSum`'s polynomial
-  and summand, with its root variable bound in both, so substituting a
-  parameter into an antiderivative such as `∫ dx/(x³+x+1)` no longer returns it
-  unchanged (and unevaluable).
-- **Pattern matching treated every integer past `i64` as the same number.**
-  `match_pattern(X·10²⁰, X·10²¹)` matched, and a rule `f(2⁶⁴) → 0` rewrote
-  `f(2⁷⁰)`, because both the matcher and `PatternRule` compared integer
-  literals through `to_i64()` with a shared fallback value. Numeric literals
-  now match by node identity, which is exact because the pool hash-conses them.
-- **Expressions from different pools were silently mixed.** An `ExprId` only
-  means something inside the pool that interned it, but most entry points read
-  every argument's id against the first argument's pool: `diff(x*y, a_other)`
-  differentiated by `y`, `integrate(x, a_other)` gave `x²/2`,
-  `eval_expr(x, {a_other: 2})` gave `2.0`, `x.pow_expr(y_other)` built `x^x`,
-  and `pool.func`/`pool.forall`/`pool.gt`/… accepted foreign ids. Every Python
-  entry point that takes more than one pool-bound argument (expressions,
-  lists and dicts of them, `DerivedResult`s, rules, matrices, distributions,
-  ODE/DAE systems) now raises `PoolError` (`E-POOL-001`, a `ValueError`)
-  naming the offending argument. A `CompileCache` no longer returns a function
-  compiled from one pool for another pool's expression that shares its ids;
-  it raises instead (`clear()` releases it).
-- **`factor_univariate_mod_p` killed the interpreter for a composite
-  modulus.** `factor_univariate_mod_p([6, 5, 1], 15)` (and moduli 4, 9, 12,
-  21, …) reached FLINT's `nmod_poly_factor`, which aborted with "Cannot invert
-  modulo 3*5"; `[1, 0, 1]` mod 15 returned a meaningless "factorisation". The
-  modulus must now be prime (`E-POLY-009`).
-- **`factor_univariate_mod_p` dropped the unit.** `[5]` mod 7 factored as the
-  empty product and `[0, 2]` (`2x`) as `x`. The factors are still monic; the
-  new `UniPolyFactorModP.unit` (Rust: `factor_univariate_mod_p_with_unit`) is
-  the leading coefficient that restores the input. A polynomial that is zero
-  mod `p` now raises `E-POLY-008`, as over ℤ, instead of returning `[]`.
-- **`divisor_sigma(k, n)` with a large `k` killed the interpreter.**
-  `divisor_sigma(10**12, 2)` died of `SIGFPE` (GMP's signal for an integer too
-  large to represent) and `divisor_sigma(2**32 + 1, 2)` of a GMP out-of-memory
-  abort. The size of σ_k(n), about `k·log2 n` bits, is now checked first and
-  refused with `BudgetExceededError`.
-- **`sum_of_squares(k, n)` aborted or truncated for large `n`.** For `k ≥ 6`
-  FLINT expands a series of length `n + 1` and aborts once `n` passes a
-  machine word; for `k = 3, 5` it silently used `n mod 2^64`. Those paths now
-  refuse `n` above 10^5 (`k ≥ 6`) and 10^12 (`k = 3, 5`) with `E-NT-006`; the
-  closed forms for `k = 1, 2, 4` still take any `n`.
-- **`cyclotomic_polynomial_coeffs(10**12)` killed the interpreter** on a FLINT
-  allocation of 4·10^11 coefficients. A degree `φ(n)` above 2^24 is now
-  refused with `E-NT-006` (Rust: `try_cyclotomic_polynomial`).
-- **A huge power of a number-field element killed the interpreter.**
-  `(K.generator() + 1) ** 10**12` in `ℚ(√2)` (and negative exponents) aborted
-  inside `nf_elem_pow`. Powers are now formed by repeated squaring with each
-  product's size checked against the machine, GMP's integer limit and any
-  memory budget before it is formed, raising `BudgetExceededError`; a root of
-  unity, whose powers never grow, still takes any exponent. Rust:
-  `NumberFieldElement::try_pow`.
-- **`GfMatrix` shapes that fit the address check but not the machine killed
-  the interpreter.** `GfMatrix.zeros(F, 65536, 65536)` under an 8 GB limit,
-  `(30000, 30000)` over GF(7³), and derived results such as a
-  `(65536×1)·(1×65536)` product or the `n×n` scratch of `nullspace` reached
-  FLINT's allocator, which aborts. Every allocation is now estimated first and
-  refused (`BudgetExceededError`, or `E-GFQ-012` from Rust) when it exceeds
-  physical memory, `Budget(max_bytes=...)` or the process's address-space
-  limit.
-- **Coding-theory bounds truncated or killed the interpreter for huge
-  lengths.** `singleton_bound` and `hamming_bound` cast the exponent to `u32`,
-  so `singleton_bound(2**32 + 5, 1, 2)` returned `2**5`, and a bound too large
-  to hold reached GMP, which raised `SIGFPE` or aborted; they now refuse with
-  `BudgetExceededError` (`E-CODE-005` from Rust). `LinearCode.hamming` over
-  GF(2³² − 5) enumerated the whole field (~100 GB) before its size check and
-  aborted; the field order is now checked first (`E-CODE-004`).
-- **`nt.discrete_log` missed answers for negative inputs.**
-  `discrete_log(2, -1, 5)` reported no solution although `2² ≡ −1 (mod 5)`:
-  rug's `%` truncates, so a negative residue or base was never normalised.
-  `nthroot_mod` had the same reduction. Also `discrete_log(1, 0, p)` now
-  returns `0` (`0⁰ = 1`) instead of no solution.
-- **Rust API: FLINT wrappers that aborted or read out of bounds.**
-  `FlintInteger / 0` and `% 0`, `FlintPoly::div_exact`, `pseudo_divrem` and
-  `scalar_divexact_fmpz` by zero aborted the process; they now panic like
-  Rust's own integer division, with new `checked_div`, `checked_rem` and
-  `checked_div_exact`. `FlintPoly::get_coeff(usize::MAX)` read before the
-  coefficient array and now returns 0; `set_coeff_flint(usize::MAX, …)`
-  corrupted the heap and now panics. `FlintNmodPoly::get_coeff` with a negative
-  index likewise returns 0.
-- New error code **`E-BUDGET-006`** (`BudgetTrip::Oversized`): a single
-  result larger than physical memory or than GMP can represent. It fires with
-  no budget active, replacing an abort, and is raised as `BudgetExceededError`.
-  Rust: `budget::preflight_bytes` and `budget::preflight_bignum_bits`.
-- **`ModularValue::sub` overflowed for a modulus above 2^63.** It formed
-  `value + modulus` in `u64`, which panics in a debug build and, in release,
-  wraps and returns a wrong residue with no error — e.g. modulo the largest
-  64-bit prime `2^64 − 59`, `(m−1) − 1` came out as `m − 61`. It now works in
-  `u128` like `add` already did. Rust API only (`ModularValue` has no Python
-  binding) and no in-crate caller uses a modulus that large. Found by Kani.
-- `modular::pow_mod(x, 0, 1)` returned 1, outside `[0, 1)`; it now starts
-  from `1 % modulus`. Private, and its only caller (`is_prime`) never passes a
-  modulus below 11, so no result changes. Found by Kani.
-- **`latex()` and `unicode_str()` dropped or corrupted integers past `i64`.**
-  Coefficients, rationals and exponents were read through
-  `to_i64().unwrap_or(0/1)` and multiplied in a wrapping `i64`, so
-  `latex(x + 10**20)` printed `x + 0`, `10**30·x` printed `x`, `x/2**64`
-  printed `x`, `unicode_str(1/21!)` printed `1/1` (the `x²¹` coefficient of the
-  `exp` series printed as `1`), `10**30/7` printed `0/7`, `x**(1/10**20)`
-  printed `x^(1/1)`, and `-2**63·x` printed `--9223372036854775808·x`. They now
-  print the exact value. The Rust parser (`alkahest_cas::parse`) also rejected
-  integer literals past `i64` with "integer literal out of range", so a printed
-  large coefficient did not read back; it now parses them exactly.
-- **`to_stablehlo(x**n)` lost the sign for an odd `n` past `2^53`.** The
-  exponent is emitted as an `f64`, and every double that large is even, so the
-  module computed `(-1)**(2**63 + 1)` as `+1`. An odd exponent `f64` cannot
-  hold now lowers to `|x|**n` negated where `x < 0`.
-- **Comparisons of exact numbers were decided in `f64`.** `subs` (and
-  everything that folds a constant predicate, including `Piecewise` branch
-  selection and the JIT's constant conditions) rounded both sides to a double:
-  `Eq(x, 10**30)` at `x = 10**30 + 1` folded to `True`, `x < 10**30 + 1` at
-  `x = 10**30` to `False`, `Ne(3333333333333333/10**16, 1/3)` to `False`,
-  `Eq(x, 1/10**400)` at `0` to `True`, and `Piecewise((1, x > 2**53))` took its
-  default at `2**53 + 1`. Integers, rationals and floats are now compared
-  exactly; a comparison between closed constants (`√2 > 1`, `π < 355/113`) is
-  decided by rigorous ball arithmetic and left unevaluated when the enclosures
-  overlap, never guessed. The ball constructors behind that also enclosed
-  inexactly: an integer or float wider than the working precision was rounded
-  with radius `0`, and a float was squeezed through `f64` first.
-- **The sign of a float past the `f64` exponent range was read as zero.**
-  `assumed_sign` reported `1e-400` as `Zero`, and the `sqrt`/`log` realness
-  checks in `simplify` treated `-1e-400` as non-negative, because both went
-  through `to_f64`. They now use the sign of the arbitrary-precision value.
-- **Polynomial exponents past `u32` wrapped silently, returning answers for a
-  different polynomial.** The sparse polynomial types key terms by `u32`
-  exponents and multiplied monomials with a plain `+`, so in a release build
-  `x^(2^31)·x^(2^31)` became `x^0 = 1`: `MultiPoly.from_symbolic` returned `1`,
-  `total_degree(x^(2^31)·y^(2^31))` returned `0`, `solve([x^(2^32) − 2, y − x])`
-  reported no solutions, `factor_z(x^(2^32) − y²)` factored `1 − y²`,
-  `real_roots(x^(2^32) − 4)` found none, `horner(x^(2^32) + x)` gave `1 + x`
-  and `poly_normal(x^(2^32)·y − y)` gave `0`. Every exponent and every
-  monomial's total degree is now checked where it is formed (`MultiPoly`,
-  `UniPoly`, the Gröbner, rational-function and `solve` conversions), and one
-  that does not fit is refused with `E-POLY-004` (or `E-SOLVE-001` from the
-  solver) instead of wrapped. The infallible Rust operators (`MultiPoly * …`,
-  `GbPoly::mul`, `FlintMPoly::terms`, the Gröbner monomial arithmetic) panic
-  rather than wrap if they are ever handed such a value; `MultiPoly::checked_mul`
-  is new for callers that want the error, and the Python `MultiPoly * MultiPoly`
-  uses it (it used to wrap too).
-- **`resultant` truncated result exponents to 32 bits.** `res(x² − y^N, x − y^N, x)`
-  for `N = 3·10⁹` came back as `−y^3000000000 + y^1705032704` (`6·10⁹ mod 2^32`).
-  The result is now read from FLINT with 64-bit exponents and is exact:
-  `y^6000000000 − y^3000000000`.
-- **`UniPoly.from_symbolic(x^(2^31) + 1)` aborted the interpreter** in FLINT's
-  16 GiB allocation, even under `Budget(max_bytes=...)`. A dense univariate
-  degree above 2^26, or one whose coefficient array would pass the active
-  memory budget or the process's address-space headroom, is now refused with
-  `E-POLY-004` before FLINT allocates. The same guard keeps
-  `cancel`/`together` off the dense path for such degrees, and
-  `gcd_sparse_modular` hands degrees above 2^20 to FLINT's sparse gcd instead
-  of materialising them. The Python `UniPoly` `**` and `*` operators check the
-  same ceiling (new `UniPoly::checked_pow` / `checked_mul`) and raise
-  `ConversionError` instead of aborting.
-- **`UniPoly.from_symbolic(x^(2^21) + 1)` took gigabytes and over a minute.**
-  FLINT raises any length-2 polynomial through its binomial expansion, so
-  `x^n` (the polynomial `[0, 1]`) computed all `n + 1` binomial coefficients
-  before multiplying them by zero. A monomial `c·x^k` is now raised directly
-  as `c^n·x^(k·n)`.
-- **Exponents truncated or wrapped in a few more places of the same kind:**
-  the Risch rational and exponential conversions (`n as u32`:
-  `residue(x^−(2^32+1), x, 0)` answered `1`, and `c^(−2^63)` read as `1`), the
-  algebraic `sqrt(P)^n` decomposition (`sqrt(P)^(2^32+2)` read as `P`), the
-  mixed-volume path choice of `solve_numerical` (exponents ≥ 2^31 cast to
-  negative `i32`), a sparse-interpolation discrete log above 2^32, and the
-  parametric Gröbner conversion (`x^(2^32)` read as `1`, and one squaring too
-  many that overflowed on `x^(2^31)`). These now decline or refuse. `cancel`
-  and `together` raise a power by repeated squaring instead of `|n|` successive
-  products (a hang for `x^(2^40)`), and `solve_transcendental` bounds a
-  constant base's exponent likewise. The sum-of-squares `RatPoly` conversion
-  (`sos_decompose` and friends) multiplied exponents with a plain `+` too
-  (`x^(2^31−1)·x^(2^31−1)·x²` read as `1`) and raised powers by `n` successive
-  products; it now refuses with `E-POLY-004` and squares.
-- **Machine-word overflows that returned wrong answers, found in a second
-  Kani round** (each has a regression test next to its fix):
-  - Risch exponential case: `is_perfect_mth_power` compared a wrapped
-    `k.pow(m)`, so in release `8922003266371364727 ≡ 7^23 (mod 2^64)` was
-    taken for a perfect 23rd power (a debug build panicked). Now
-    `checked_pow`; `is_perfect_square` likewise no longer overflows near
-    `i64::MAX`.
-  - Three private `lcm`s wrapped their product and slipped under a size cap:
-    radical substitution (`lcm(3, 6148914691236517207)` came out `5`),
-    Puiseux limits (`lcm_small(2, 2^31 + 1)` came out `2`), and Trager's
-    torsion order (`lcm_u32(65536, 65537)` came out `65536`, reported as
-    `Principal`; now `NotDecided`).
-  - Sparse interpolation (`poly::interp`): `add_mod`/`sub_mod` wrapped for a
-    prime above `2^63`, which the public entry points accept.
-  - Algebraic-integral parametrisation kept the low 32 bits of an integer
-    exponent (`to_i64()? as i32`): `(…)^(2^32 + 1)` was rewritten as `(…)^1`,
-    and `(x^3)^(2^30)` overflowed an `i32` product. Exponents stay exact.
-  - The FLINT factor containers' `base_at`/`exp_at`/`poly_at` bounds check was
-    a `debug_assert!` in a safe `pub fn`: an index past `len()` read out of
-    bounds (UB) in release. Now an `assert!`.
-  - Four private `i64` gcds (by-parts, algebraic RDE, `find_order`,
-    q-Zeilberger terms) called `.abs()`, which panics on `i64::MIN` in debug
-    and stays negative in release; they are one `modular::gcd_i64` now.
-  - Trial-division loops formed `d * d` (or `d⁴`) before the bound check and
-    overflowed for a large prime `n` (`elliptic_output`'s squarefree and
-    quartic tests, `character::dixon`, `poly::interp::prime_factors`).
-- **`rsolve` killed the interpreter on a huge shift.** `f(n+10^12) − f(n)`
-  sized its coefficient vector by the order and asked for 32 TB (an abort,
-  even under `Budget(max_bytes=…)`), `f(n+10^18) − f(n)` overflowed the
-  capacity computation, and `f(n+1) − f(n−2^70)` read the shift as `i64::MIN`
-  and indexed out of bounds. Orders above `RSOLVE_MAX_ORDER` (4096) and shifts
-  past `i64` are now refused with `E-RSOLVE-004` before anything is
-  allocated; a large shift with a small spread (`f(n+10^12) − 2f(n+10^12−1)`)
-  is still an order-1 recurrence.
-- **`call_batch_raw([], 0, 2**40)` aborted on an 8 TiB output buffer.** With
-  no inputs nothing bounded `n_points`; the output size is now checked against
-  physical memory, the active memory budget and `RLIMIT_AS` first
-  (`BudgetExceededError`), in `call_batch_raw_par` too.
-- **A genuine binomial to a large power went straight to FLINT.** The degree
-  ceiling stopped `x^(2^31)`, but `(x+1)^(2^21)` — two million coefficients of
-  up to two million bits, half a terabyte — reached `fmpz_poly_pow` and took
-  the process down, and `MultiPoly` powers such as `(x+y+1)^(2^16)` did the
-  same through `fmpz_mpoly_pow_ui`. A power's size (term count times
-  `n·log₂‖p‖₁` coefficient bits) is now estimated first and a power that
-  cannot fit physical memory or the active budget is refused with
-  `E-POLY-004` (`UniPoly`/`MultiPoly`/`RationalFunction` conversion,
-  `UniPoly ** n`, and the new `FlintPoly::checked_pow`; `FlintPoly::pow`
-  panics instead of aborting).
-- **`simplify_egraph_with(EgraphConfig(iter_limit=N))` always panicked** with
-  "Unknown option 'iteration_limit'": the cap was emitted as a `set-option`
-  the vendored egglog 0.4 does not have. It now caps every `(run …)` step of
-  the schedule at `N` rounds, as documented (`0` runs no rewrite rules).
-- **Dozens of entry points segfaulted on a deeply nested argument** instead
-  of raising `DepthLimitError` (`E-DEPTH-001`): `routh_hurwitz`,
-  `cad_project` and `cad_lift` (audit B7), and — found by calling every public
-  callable with a 100 000-level argument in each expression slot — the point
-  of `limit`/`series`/`puiseux_series`, the bounds of `sum_definite` and
-  definite `integrate`, `verify_wz_pair`, `dsolve`, `series_solve`,
-  `multilimit`, `asymptotic_expand`, the integral transforms, `zeilberger`,
-  `q_zeilberger`, `telescope2d`/`telescope_md`, `euler_maclaurin`,
-  `coefficient_asymptotics`, `asymptotics_from_recurrence`, `diophantine`,
-  `expr_to_gbpoly`, `GroebnerBasis.compute`/`compute_f5`, parametric Gröbner
-  bases, `primary_decomposition`, `radical`, `triangularize`,
-  `solve_numerical`, `UniPoly`/`MultiPoly`/`RationalFunction.from_symbolic`,
-  the `Matrix` decompositions and eigen-routines, `ODE.new`/`with_ic` and
-  `DAE.new` (every ODE/DAE analysis walks them), the probability
-  distributions' parameters and `pdf`/`cdf`/`quantile`/generating functions,
-  `expectation*`, `variance_affine_independent` and the information measures'
-  `base`. `smt.supported`/`smt.solve` walked the formula recursively in Python
-  before reaching the emitter's guard; that walk is now iterative.
-
-### Behaviour changes to plan for
-
-- **Factor lists come in a canonical order, the same on every FLINT
-  version.** `UniPoly.factor_z()`, `MultiPoly.factor_z()`,
-  `factor_univariate_mod_p` and the internal factorisations behind `apart`,
-  rational integration, residues, Σ/Π, eigenvalues, primary decomposition and
-  the parametric Gröbner code used to list factors in whatever order FLINT's
-  recombination produced them — for `fmpz_poly_factor`, the row order of an
-  LLL-reduced lattice, which differs between FLINT 3.5 and 3.6 (`x^156 − 1`,
-  `x^168 − 1`, `x^240 − 1`, `x^300 − 1` all came out in different orders). The
-  factors, multiplicities and unit are unchanged; only their order is now
-  fixed: ascending degree (total degree for several variables), then the
-  coefficients compared as signed integers from the leading term down (over
-  descending-lex monomials for several variables, residues mod `p` over 𝔽ₚ),
-  then multiplicity. `x^12 − 1` lists `x − 1, x + 1, x² − x + 1, x² + 1,
-  x² + x + 1, x⁴ − x² + 1`, as SymPy's `factor_list` does. Code that indexed
-  into `factor_list()` positionally may see a different factor at a given
-  index. `factorint` lists its primes in ascending order.
-
-### Build and packaging
-
-- **The manylinux wheels' GMP is built with `--enable-fat`.** Since the wheels
-  started shipping a source-built GMP 6.3 (one GMP shared by rug and FLINT),
-  that GMP was configured without `--enable-fat`, which tunes its assembly to
-  the build runner's CPU; `auditwheel` then ships it to every user, and an
-  older CPU would take SIGILL on the first bignum multiply. A fat build carries
-  every x86_64 kernel and selects one at load time.
-- **CI and the manylinux wheels now build a pinned FLINT 3.5.0.** Ubuntu
-  24.04's `libflint-dev` is 3.0.1, and the wheel job previously fell back to
-  building **2.9.0**. FLINT absorbed Arb in 3.0 but rewrote the `acb_theta`
-  API in 3.2, and `build.rs` probes the symbol table and silently stubs the
-  `theta` module when those entry points are absent — so the old configuration
-  would have shipped wheels with theta quietly missing, and passed a CI suite
-  that executed no theta at all. New `.github/actions/setup-flint` builds and
-  caches a pinned release, prints which probe symbols are present, and the
-  wheel build now fails loudly if `acb_theta_ql_exact` is absent.
-
-- **One GMP per process in the PyPI wheels: rug now links the system
-  libgmp/libmpfr that FLINT uses.** The extension used to carry *two* GMPs — a
-  static copy that `gmp-mpfr-sys` compiled from source for rug, and the shared
-  libgmp FLINT links — and GMP's allocation hooks are per copy.
-  `Budget(max_bytes=...)` and the address-space guard therefore counted only
-  rug's limbs: a polynomial holding a megabyte-sized FLINT coefficient left
-  `gmp_live_bytes()` flat. The new opt-in `system-gmp` Cargo feature (in both
-  `alkahest-cas` and the Python extension) enables
-  `gmp-mpfr-sys/use-system-libs`, so FLINT's `fmpz` bignums are counted too
-  (`tests/test_resource_budgets.py` pins it, and skips on a build without the
-  feature via `alkahest.alkahest.GMP_SHARED_WITH_FLINT`). It also drops the
-  minutes-long GMP/MPFR compile and the statically linked LGPL GMP. Memory
-  FLINT takes through `flint_malloc` (Arb/Acb mantissas, `nmod` buffers) is
-  still not counted.
-
-  **Every published wheel is built with `system-gmp`** (each wheel's smoke
-  test asserts it), so `pip install alkahest` users get the accounting with no
-  action. **Source builds are unchanged by default**: the feature is not a
-  default, because it needs GMP ≥ 6.3 and MPFR ≥ 4.2 headers and libraries
-  (`gmp-mpfr-sys` refuses anything older) and Ubuntu 22.04 / Debian 12 ship
-  GMP 6.2. To opt in, pass `--features system-gmp` (Ubuntu 24.04, Debian 13,
-  Fedora, Homebrew and MSYS2 qualify). Homebrew users must also export
-  `CPATH`/`LIBRARY_PATH` for the `gmp` and `mpfr` kegs, because `gmp-mpfr-sys`
-  probes with a bare `cc … -lgmp`. `*-windows-msvc` targets are not supported
-  by the feature (the Windows wheel is MinGW, and needs `pkg-config`). rug's
-  unused `complex` feature (and with it any need for MPC) is dropped.
-
-  The manylinux wheel job now source-builds pinned GMP 6.3.0 / MPFR 4.2.2
-  (sha256-checked) before FLINT, since AlmaLinux 8 ships 6.1 / 3.1. That also
-  fixes the manylinux Release job, which had been failing since FLINT 3.5's
-  configure started requiring GMP > 6.2.1. `setup-flint` does the same on any
-  Ubuntu runner whose apt packages are too old (the 22.04 Lean job). A manual
-  dispatch of the Release workflow from a branch other than `main` now builds
-  and smoke-tests every wheel without publishing to TestPyPI, so changes to
-  the wheel build can be checked before they merge.
-
-- **FLINT ≥ 3.3 is now required, and `build.rs` says so.** The bindings call
-  `fq_nmod_mat_transpose` (new in FLINT 3.3) and the `nf_*`,
-  `fq_nmod_ctx_init_ui` and `acb_mat_get_imag` entry points (3.1), so an older
-  FLINT used to compile every file and then fail at link time with
-  `undefined reference to fq_nmod_mat_transpose`. `build.rs` now reads the
-  FLINT version (header, then pkg-config, then the symbol table) and stops
-  with "alkahest-cas requires FLINT >= 3.3 (>= 3.4 for Riemann theta); found
-  FLINT x.y" plus instructions for building FLINT into a prefix. Genus-g
-  Riemann theta needs 3.4, because 3.3 has `acb_theta_all` / `acb_theta_one`
-  only as header inlines; on 3.3 the theta backend is stubbed and reports
-  `E-THETA-001`. Ubuntu 24.04's `libflint-dev` (3.0.1) and Debian 12's (2.9)
-  are too old. README, the getting-started guide and the error text used to
-  say "≥ 2.9". CI's `setup-flint` action and the manylinux wheel job now
-  build FLINT 3.6.0 from its sha256-checked release tarball; `setup-flint`
-  still caches the built prefix.
-
-- **`capabilities()["features"]` gains `arb_backend` and `riemann_theta`.**
-  Neither is a Cargo feature; both are probed from `libflint`. They satisfy
-  the same falsifiability rule the v3 contract applied when it *removed* two
-  keys: `False` guarantees the entry points behind them refuse with
-  `E-THETA-001` rather than computing. `contract_version` stays `3` — the row
-  gained keys and lost none.
 
 - **Computational group theory is now complete across all four pillars.**
   Permutation groups landed earlier in this cycle; this adds the other three.
@@ -1223,20 +1267,229 @@
   `|G| ≤ 200_000` and no ATLAS group fits — enforced, and documented as a
   ceiling rather than an aspiration.
 
+- **Algebraic number fields, and the classical arithmetic functions.**
+  `NumberField` = `Q[x]/(f)` on FLINT's `nf`/`nf_elem`, with irreducibility
+  **checked** (`E-NUMF-003` names a proper factor), element arithmetic, norm,
+  trace, and minimal polynomial. `NumberField::cyclotomic(n)` is a first-class
+  constructor and skips the factorisation (`Phi_n` irreducible is a theorem),
+  which is what makes `Q(zeta_2048)` at degree 1024 cheap.
+
+  `number_theory` gains `partition_number`, `bernoulli_number`,
+  `euler_number`, `harmonic_number`, `stirling_first`/`_second`, `moebius_mu`,
+  `divisor_sigma` and `sum_of_squares`, all FLINT-backed. **FLINT's Bernoulli
+  convention is `B_1 = -1/2`** (DLMF); that is documented on every surface and
+  pinned by a test whose only job is that one value, with the denominators
+  additionally checked against von Staudt-Clausen.
+
+- **A lattice toolkit, and LLL moved onto FLINT.**
+  `lattice_reduce_rows` keeps its signature but now runs FLINT's `fmpz_lll`,
+  followed by exact rational size-reduction sweeps and this repo's own
+  `validate_lll_rows` — because FLINT's float Gram-Schmidt is parameterised by
+  `eta > 1/2` strictly and cannot promise the exact `|mu_ij| <= 1/2` the
+  validator checks. Rank-deficient input skips FLINT entirely (a float LLL
+  divides by zero on a zero GS norm). The old exact loop survives as
+  `lattice_reduce_rows_exact` and as the fallback.
+
+  New: `Lattice` from a basis or a Gram matrix, determinant, dual, exact SVP
+  and CVP, minimal vectors, kissing number, theta series, packing and centre
+  density, Hermite invariant, and the `Z^n`, `A_n`, `D_n`, `E_8` and Leech
+  constructors. Enumeration is exact integer Fincke-Pohst, never a float
+  Cholesky — float pruning drops vectors exactly at the ball boundary, which
+  is where every interesting count lives. `E_8` gives 240 minimal vectors and
+  Leech gives **196560**, each verified rather than asserted by construction.
+
+  The toolkit's refusals live on a new `#[non_exhaustive]`
+  `LatticeGeometryError`, leaving the semver-stable `LatticeError` untouched;
+  in Python the new class **subclasses** the old one, so a single
+  `except LatticeError` still catches everything and `.code` still reads
+  `E-LAT-*` across the range.
+
+- **Classical linear codes and a certified Delsarte LP bound.**
+  `LinearCode` over GF(q) from either a generator or parity-check matrix,
+  duals, weight distributions in exact integers, the MacWilliams transform,
+  and Krawtchouk polynomials implemented **twice** (closed form and three-term
+  recurrence) and tested against each other.
+
+  `delsarte_lp_bound` is the headline. The returned number is read off the
+  **dual** programme, not the primal: any dual-feasible `y` proves
+  `|C| <= 1 + sum_k y_k K_k(0)` without reference to the solver, so a simplex
+  that stopped early or was outright wrong cannot produce an unsound bound.
+  The certificate is re-checked entry by entry in exact rationals and
+  `E-CODE-007` is returned rather than an unproved number; `certificate()`
+  hands `y` back for independent audit. It reproduces `A_2(24,8) = 4096` and
+  `A_2(23,7) = 4096` (the tight Golay cases) exactly, `A_2(7,3) = A_2(8,4) =
+  16`, and Plotkin's `A_2(2d,d) = 4d`.
+
+  This reuses the exact-rational simplex that was already in
+  `real/sos/lp.rs`; that module gained documentation for a second consumer and
+  **no behaviour change**.
+
+- **Symplectic linear algebra and stabilizer codes.**
+  `alkahest.experimental` gains `PauliOperator` (symplectic `(x|z)` with a
+  `Z_4` phase), `StabilizerGroup`, `StabilizerCode` and `CssCode`, plus the
+  symplectic form over GF(2), symplectic Gram-Schmidt, complements, and
+  `Sp(2n,2)` membership. CSS construction **checks** `H_X · H_Z^T = 0` rather
+  than assuming it (`E-STAB-005` names the offending entry). Logical operators
+  come from Gram-Schmidt on the centralizer modulo the stabilizer, and the
+  pairing is asserted, not assumed.
+
+  Minimum distance is exhaustive and capped; above the cap it refuses rather
+  than guessing, and where only a bound is available the result says so
+  (`Distance::UpperBound`, never a number dressed as exact). Anchored on
+  Steane `[[7,1,3]]`, Shor `[[9,1,3]]`, the five-qubit `[[5,1,3]]` perfect
+  code (which exercises the non-CSS path) and quantum Hamming `[[15,7,3]]`
+  (the only one with `k > 1`, so the multi-logical pairing is exercised).
+
+  Also `GL(n,q)`, `SL(n,q)`, `Sp(2n,q)` with exact orders from the product
+  formulas, cross-checked three ways: formula, enumeration, and Schreier-Sims
+  on the induced permutation action.
+
+- **Function fields of algebraic curves: divisors, Pic⁰ and Riemann–Roch.**
+  `alkahest.experimental.FunctionField`, `Place`, `Divisor`, `DivisorClass`
+  and `riemann_roch` — `dim L(D)` **and an explicit basis**, the canonical
+  divisor, divisor class arithmetic via Cantor reduction, exact class
+  equality, principality, and torsion order.
+
+  This exposes machinery that already existed inside the Risch integrator
+  rather than duplicating it: `integrate/algebraic/`'s Cantor arithmetic on
+  Jacobians in Mumford representation was widened to `pub(crate)`, with no
+  logic changes, so the class group and the integrator cannot drift apart.
+
+  **Scope is narrow and enforced.** Genus is computed for any accepted model;
+  everything else requires the imaginary (odd-degree) hyperelliptic model
+  `y² = a(x)` with `a` squarefree and ℚ-rational places. Even-degree "real"
+  models are refused (`E-FFLD-002`), as is `deg_y f > 2` (`E-FFLD-001`) and a
+  place of degree ≥ 2 (`E-FFLD-003`). That last one is the boundary reached
+  most often in practice: `div(y)` on `y² = x⁵ + 1` refuses, because four of
+  the five branch points are irrational. The restriction is not arbitrary —
+  on the odd-degree model the two candidate pole orders at infinity have
+  opposite parity, which is what makes `v_∞(p + q·y)` an exact minimum with no
+  cancellation, and the argument fails in even degree.
+
+  `E-FFLD-011` is the withheld-answer code: `div(u)` cross-checks the pole
+  order at infinity two ways and `riemann_roch` checks its dimension against
+  both Riemann's inequality and the Riemann–Roch equality, refusing rather
+  than returning on disagreement. `E-FFLD-007` (a non-torsion verdict) is
+  deliberately a different code from `E-FFLD-006` (undecided).
+
+- **Riemann theta, modular and Weierstrass functions, as rigorous balls.**
+  Genus-1 `dedekind_eta`, `j_invariant`, `modular_lambda`,
+  `modular_discriminant`, `eisenstein_series`, `jacobi_theta`, the Weierstrass
+  family, and genus-`g` `riemann_theta` with characteristics and Siegel
+  reduction. This adds the first real `arb`/`acb` FFI to the crate
+  (`flint/arb.rs`, `flint/acb.rs`); `ball/mod.rs` keeps its existing
+  MPFR-backed behaviour and is untouched.
+
+  Every result is an enclosure. `Precision::AccurateTo(n)` refines and then
+  **refuses** with `E-THETA-010` carrying the accuracy actually achieved, and
+  `value_if_accurate` is the only route to an `f64`. `accuracy_bits` is one
+  bit more conservative than FLINT's own, and every predicate rounds inward,
+  so the API can say "not established" but never over-claim.
+
+  Anchored on `j(i) = 1728`, `j(rho) = 0`, `Delta = eta^24`, and — more
+  usefully — on structure the obvious tests cannot see: a genus-2 theta with a
+  diagonal period matrix must factorise into genus-1 thetas, and the two
+  independent FLINT paths (`acb_theta` and `acb_modular`) must agree through
+  the documented sign dictionary, with the wrong sign asserted to fail.
+
+- **`capabilities()["features"]` gains `arb_backend` and `riemann_theta`.**
+  Neither is a Cargo feature; both are probed from `libflint`. They satisfy
+  the same falsifiability rule the v3 contract applied when it *removed* two
+  keys: `False` guarantees the entry points behind them refuse with
+  `E-THETA-001` rather than computing. `contract_version` stays `3` — the row
+  gained keys and lost none.
+
+### Build and packaging
+
+- **FLINT ≥ 3.3 is now required, and `build.rs` says so.** The bindings call
+  `fq_nmod_mat_transpose` (new in FLINT 3.3) and the `nf_*`,
+  `fq_nmod_ctx_init_ui` and `acb_mat_get_imag` entry points (3.1), so an older
+  FLINT used to compile every file and then fail at link time with
+  `undefined reference to fq_nmod_mat_transpose`. `build.rs` now reads the
+  FLINT version (header, then pkg-config, then the symbol table) and stops
+  with "alkahest-cas requires FLINT >= 3.3 (>= 3.4 for Riemann theta); found
+  FLINT x.y" plus instructions for building FLINT into a prefix. Genus-g
+  Riemann theta needs 3.4, because 3.3 has `acb_theta_all` / `acb_theta_one`
+  only as header inlines; on 3.3 the theta backend is stubbed and reports
+  `E-THETA-001`. Ubuntu 24.04's `libflint-dev` (3.0.1) and Debian 12's (2.9)
+  are too old. README, the getting-started guide and the error text used to
+  say "≥ 2.9". CI's `setup-flint` action and the manylinux wheel job now
+  build FLINT 3.6.0 from its sha256-checked release tarball; `setup-flint`
+  still caches the built prefix.
+
+- **One GMP per process in the PyPI wheels: rug now links the system
+  libgmp/libmpfr that FLINT uses.** The extension used to carry *two* GMPs — a
+  static copy that `gmp-mpfr-sys` compiled from source for rug, and the shared
+  libgmp FLINT links — and GMP's allocation hooks are per copy.
+  `Budget(max_bytes=...)` and the address-space guard therefore counted only
+  rug's limbs: a polynomial holding a megabyte-sized FLINT coefficient left
+  `gmp_live_bytes()` flat. The new opt-in `system-gmp` Cargo feature (in both
+  `alkahest-cas` and the Python extension) enables
+  `gmp-mpfr-sys/use-system-libs`, so FLINT's `fmpz` bignums are counted too
+  (`tests/test_resource_budgets.py` pins it, and skips on a build without the
+  feature via `alkahest.alkahest.GMP_SHARED_WITH_FLINT`). It also drops the
+  minutes-long GMP/MPFR compile and the statically linked LGPL GMP. Memory
+  FLINT takes through `flint_malloc` (Arb/Acb mantissas, `nmod` buffers) is
+  still not counted.
+
+  **Every published wheel is built with `system-gmp`** (each wheel's smoke
+  test asserts it), so `pip install alkahest` users get the accounting with no
+  action. **Source builds are unchanged by default**: the feature is not a
+  default, because it needs GMP ≥ 6.3 and MPFR ≥ 4.2 headers and libraries
+  (`gmp-mpfr-sys` refuses anything older) and Ubuntu 22.04 / Debian 12 ship
+  GMP 6.2. To opt in, pass `--features system-gmp` (Ubuntu 24.04, Debian 13,
+  Fedora, Homebrew and MSYS2 qualify). Homebrew users must also export
+  `CPATH`/`LIBRARY_PATH` for the `gmp` and `mpfr` kegs, because `gmp-mpfr-sys`
+  probes with a bare `cc … -lgmp`. `*-windows-msvc` targets are not supported
+  by the feature (the Windows wheel is MinGW, and needs `pkg-config`). rug's
+  unused `complex` feature (and with it any need for MPC) is dropped.
+
+  The manylinux wheel job now source-builds pinned GMP 6.3.0 / MPFR 4.2.2
+  (sha256-checked) before FLINT, since AlmaLinux 8 ships 6.1 / 3.1. That also
+  fixes the manylinux Release job, which had been failing since FLINT 3.5's
+  configure started requiring GMP > 6.2.1. `setup-flint` does the same on any
+  Ubuntu runner whose apt packages are too old (the 22.04 Lean job). A manual
+  dispatch of the Release workflow from a branch other than `main` now builds
+  and smoke-tests every wheel without publishing to TestPyPI, so changes to
+  the wheel build can be checked before they merge.
+
+- **CI and the manylinux wheels now build a pinned FLINT 3.5.0.** Ubuntu
+  24.04's `libflint-dev` is 3.0.1, and the wheel job previously fell back to
+  building **2.9.0**. FLINT absorbed Arb in 3.0 but rewrote the `acb_theta`
+  API in 3.2, and `build.rs` probes the symbol table and silently stubs the
+  `theta` module when those entry points are absent — so the old configuration
+  would have shipped wheels with theta quietly missing, and passed a CI suite
+  that executed no theta at all. New `.github/actions/setup-flint` builds and
+  caches a pinned release, prints which probe symbols are present, and the
+  wheel build now fails loudly if `acb_theta_ql_exact` is absent.
+  Later in the cycle the pin moved to FLINT 3.6.0 (previous entry).
+
+- **The manylinux wheels' GMP is built with `--enable-fat`.** Since the wheels
+  started shipping a source-built GMP 6.3 (one GMP shared by rug and FLINT),
+  that GMP was configured without `--enable-fat`, which tunes its assembly to
+  the build runner's CPU; `auditwheel` then ships it to every user, and an
+  older CPU would take SIGILL on the first bignum multiply. A fat build carries
+  every x86_64 kernel and selects one at load time.
+
+- **Rust 1.99's deprecation of `AtomicU64::fetch_update` is allowed, not
+  followed.** CI builds with `-D warnings`, and Rust 1.99 (stable since
+  2026-10-01) deprecates `fetch_update` in favour of `try_update`, which does
+  not exist on older toolchains; the two call sites keep `fetch_update` and
+  allow the lint, so the crate still builds on the toolchains it supported.
+
 ### Testing and tooling
 
-- The cancellation tests moved out of the `alkahest-cas` unit-test binary
-  into `alkahest-core/tests/budget_cancel.rs`. The cancel flag is
-  process-wide, and `simplify` stops rewriting while it is set. So any test
-  that happened to be simplifying at that moment got an unsimplified answer.
-  `algebra::quaternion_tests::the_hamilton_product_table` failed `k² = -1`
-  that way, intermittently, in full `cargo test --workspace` runs: in about 1
-  run in 4 when run next to the cancel tests alone, and in 0 of 500 after
-  the move.
-- Proptests pin the new rug ⇄ FLINT conversion against the old decimal-string
-  one for integers from 0 to ~12 800 bits (plus `0`, `±1`, `i64::MIN/MAX`,
-  `u64::MAX`, `±2^64` and FLINT's inline/heap boundary at `2^62`), through
-  FLINT arithmetic, polynomial coefficients, and `fmpq` rationals.
+- **The release wheels are built and smoke-tested on pull requests.** The
+  Release workflow ran only after a merge, so a wheel-only break was invisible
+  to PR CI — the `PyPyIndex_Check` import failure under *Fixed* shipped in
+  every release wheel for 13 merges. A path-filtered `release-wheel-smoke.yml`
+  now builds one manylinux and one Windows py3.12 wheel with the exact release
+  steps on every PR that touches the build, and smoke-tests them (import, a
+  `10**30` integer, the capability flags, `tests/smoke_readme.py`). The build
+  and smoke jobs live in a read-only reusable `release-wheels.yml` with no
+  upload step, so the PR check gets only `contents: read` and works for forks;
+  `release-build.yml` keeps its triggers and its three publish jobs, so
+  publishing is unchanged.
 - **Kani bounded model checking** of the pure-Rust integer kernels. Harnesses
   live in `#[cfg(kani)] mod verification` blocks next to the code they check:
   `modular` (`mul_mod`, `pow_mod`, `mod_inverse_u64`, the machine-word half of
@@ -1263,6 +1516,23 @@
   Harnesses whose runtime has not been measured run nightly only, and the
   ones that did not close on the CI runner were removed; TESTING.md § 7 lists
   both, and documents the loop-contract and FFI-stubbing patterns.
+- The cancellation tests moved out of the `alkahest-cas` unit-test binary
+  into `alkahest-core/tests/budget_cancel.rs`. The cancel flag is
+  process-wide, and `simplify` stops rewriting while it is set. So any test
+  that happened to be simplifying at that moment got an unsimplified answer.
+  `algebra::quaternion_tests::the_hamilton_product_table` failed `k² = -1`
+  that way, intermittently, in full `cargo test --workspace` runs: in about 1
+  run in 4 when run next to the cancel tests alone, and in 0 of 500 after
+  the move.
+- Proptests pin the new rug ⇄ FLINT conversion against the old decimal-string
+  one for integers from 0 to ~12 800 bits (plus `0`, `±1`, `i64::MIN/MAX`,
+  `u64::MAX`, `±2^64` and FLINT's inline/heap boundary at `2^62`), through
+  FLINT arithmetic, polynomial coefficients, and `fmpq` rationals.
+- The nightly proptest job (`PROPTEST_CASES=50000`) no longer aborts on
+  "Too many global rejects": nine properties whose `prop_assume!` rejected more
+  than ~2% of draws now draw valid inputs directly or filter at the strategy.
+  The kernel's `round_trip` property compares against the canonical form
+  `intern` now stores (a denominator-1 rational reads back as an integer).
 - 201 new Rust tests (46 `ffield`, 60 `group`, 95 `funcfield`) and a
   17-case `tests/silent_errors/corpus/function_fields.py`. The silent-error
   gate reports 0 silent errors across 558 cases.

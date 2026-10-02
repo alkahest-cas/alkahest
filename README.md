@@ -246,6 +246,7 @@ More runnable examples live in [`examples/`](examples/) — polynomials, Risch i
 | Linear algebra | Symbolic matrices, eigenvalues and eigenvectors, Jacobians, Routh–Hurwitz stability | `Matrix.eigenvals` · `jacobian` · `routh_hurwitz` |
 | [ODEs and DAEs](docs/mdbook/src/ode-dae.md) | Symbolic ODE/DAE systems, Pantelides index reduction, sensitivity and adjoint systems, acausal component modeling | `ODE` · `DAE` · `pantelides` · `dae_index_reduce` · `sensitivity_system` |
 | Number theory | FLINT-backed integer theory, Diophantine equations, LLL lattice reduction, PSLQ integer-relation detection | `number_theory` · `diophantine` · `lattice` · `guess_relation` |
+| Algebra and discrete structures *(experimental)* | Linear algebra over GF(q); permutation, matrix and finitely presented groups, group cohomology, exact character tables; algebraic number fields; lattices (exact SVP/CVP, E₈, Leech); linear and stabilizer codes with a certified Delsarte LP bound; divisors and Riemann–Roch on hyperelliptic curves; Riemann theta and modular functions as rigorous balls | `experimental.FiniteField` · `PermutationGroup` · `FpGroup` · `CharacterTable` · `NumberField` · `Lattice` · `LinearCode` · `StabilizerCode` · `riemann_roch` · `riemann_theta` |
 | [Rigorous numerics](docs/mdbook/src/ball-arithmetic.md) | Arb ball arithmetic — every float carries a proven error bound | `ArbBall` · `interval_eval` · `refine_root` |
 | [Code generation](docs/mdbook/src/codegen.md) | JIT to native CPU code (Cranelift or LLVM), [NVPTX GPU kernels](docs/mdbook/src/gpu.md), C source, StableHLO, vectorized NumPy | `compile_expr` · `jit` · `numpy_eval` · `emit_c` · `to_stablehlo` · `compile_cuda` |
 | Program transforms | JAX-style `trace` / `grad` / `jit` over Python functions, plus symbolic gradients and forward-mode dual-number AD | `trace_fn` · `grad` · `symbolic_grad` · `diff_forward` |
@@ -341,7 +342,7 @@ them.
 - **`ExprPool` never reclaims.** The expression arena is append-only: no `clear`, no
   refcount, no GC. The only way to free interned nodes is to **drop the whole pool**, and
   every `Expr` / `Matrix` / `DerivedResult` holds a strong reference to its pool, so
-  keeping one result keeps everything. Growth is roughly 200 bytes per node and linear
+  keeping one result keeps everything. Growth is roughly 115 bytes per node and linear
   forever (~2–3.5 KB per `integrate` call) while per-call **latency stays flat** — so a
   long-running loop on one pool dies by OOM with no slowdown to warn you first. Use **one
   pool per problem** and carry `to_dict()` envelopes, not live `Expr` handles.
@@ -354,8 +355,11 @@ them.
   joins its worker before raising, so it returns when the callee returns:
   `run_with_wall_fallback(time.sleep, 3.0, budget=Budget(wall_ms=50))` raises after
   3000 ms. It exists to turn a silent truncation into a coded error, not to contain an
-  unknown callee. Only `integrate` and `limit` currently honour the cooperative budget and
-  release the GIL, so only they can be cancelled while already running.
+  unknown callee. `integrate` and `limit` are the engines that honour the cooperative
+  budget throughout, so they are the ones that can be cancelled while already running.
+  The other heavy entry points (`simplify`, `diff`, `solve`, `factor_z`, matrix
+  operations, …) also release the GIL, so a thread pool overlaps them — but releasing the
+  GIL does not make them cancellable.
 - **`decide` refuses rather than answering** in cases it cannot establish. It covers
   polynomial bodies in ≤ 2 real variables with a ≤ 2-quantifier prefix, and inside that
   fragment it raises `E-CAD-001` when the only candidate solutions sit at an irrational
