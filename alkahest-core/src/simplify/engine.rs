@@ -686,7 +686,7 @@ pub fn simplify_batch(exprs: &[ExprId], pool: &ExprPool) -> Vec<DerivedExpr<Expr
 /// Polynomial subexpressions the rule engine is certain to expand completely
 /// are first expanded in one sparse-polynomial product (FLINT), recorded as a
 /// single `expand_polynomial` step each, and the rule engine then runs on the
-/// result; see [`super::poly_expand`].  The value is the one the rule engine
+/// result; see the private `simplify::poly_expand` module.  The value is the one the rule engine
 /// alone produces; the derivation log has one `expand_polynomial` step where
 /// it used to have the `expand_mul` / `expand_pow` / `collect_*` steps that
 /// built the same expansion.
