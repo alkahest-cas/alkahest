@@ -104,6 +104,15 @@ impl From<DiffError> for SeriesError {
 /// label the result `O(h)`, which was false whenever the pole order was at
 /// least `order`: `sin(x)⁻⁴` at order 4 lost its `11/45`.
 ///
+/// # Method
+///
+/// When every coefficient is rational the expansion is computed with
+/// truncated power-series arithmetic over ℚ (`calculus::tps`): each subterm
+/// is expanded once and combined by convolution, Miller's power recurrence
+/// and the ODE recurrences for the elementary heads. Everything else goes
+/// through the route below — `order` rounds of differentiate, substitute,
+/// simplify — and gets the same result where both apply.
+///
 /// # Termination
 ///
 /// The coefficient loop is bounded: it honours [`crate::budget`] (wall clock,
@@ -250,6 +259,24 @@ pub(crate) fn local_expansion(
 
     let h_expr = expansion_increment(pool, var, point);
 
+    // Fast path: when every coefficient is rational, expand compositionally
+    // with truncated power-series arithmetic instead of `order` rounds of
+    // differentiate-substitute-simplify. Same coefficients, same literals;
+    // anything it does not cover falls through to the route below unchanged.
+    if tps_enabled() {
+        if let Some((valuation, coeffs)) = super::tps::tps_expansion(shifted, xi, order, pool) {
+            let coeffs = coeffs
+                .iter()
+                .map(|r| super::tps::rational_literal(r, pool))
+                .collect();
+            return Ok(LocalExpansion {
+                valuation,
+                coeffs,
+                h_expr,
+            });
+        }
+    }
+
     let direct = expansion_matched_laurent(shifted, xi, h_expr, order, pool)?;
     if first_indeterminate(&direct.coeffs, pool).is_none() {
         return Ok(direct);
@@ -299,6 +326,37 @@ pub(crate) fn local_expansion(
     // usability and has its own fallback, and `series` itself turns an
     // indeterminate coefficient into a refusal rather than a value.
     Ok(direct)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only switch back to the general route, so the differential tests
+    /// can compare the fast path against it in one pool.
+    static TPS_DISABLED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Run `f` with the truncated-power-series fast path switched off.
+#[cfg(test)]
+pub(crate) fn without_tps<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TPS_DISABLED.with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(TPS_DISABLED.with(|c| c.replace(true)));
+    f()
+}
+
+fn tps_enabled() -> bool {
+    #[cfg(test)]
+    {
+        !TPS_DISABLED.with(|c| c.get())
+    }
+    #[cfg(not(test))]
+    {
+        true
+    }
 }
 
 /// Expand `shifted` about `ξ = 0` by **dividing power series** rather than
@@ -1579,14 +1637,22 @@ mod tests {
             p.pow(x, p.integer(-1)),
             p.mul(vec![p.integer(-1), p.pow(s, p.integer(-1))]),
         ]);
-        // 1/x − 1/sin x = −x/6 − 7x³/360 + O(x⁵): valuation 1, so the
-        // coefficient list starts at the x¹ term.
+        // 1/x − 1/sin x = −x/6 − 7x³/360 + O(x⁵): valuation 1. The general
+        // route reports that as `valuation: 1` with the coefficients of
+        // x¹…x⁴; the power-series fast path as `valuation: 0` with a leading
+        // zero, as the direct Taylor route does. Both cover x⁰…x⁴.
         let exp = local_expansion(e, x, p.integer(0), 5, &p).unwrap();
-        assert_eq!(exp.valuation, 1);
-        assert_close(
-            &coeff_values(e, x, p.integer(0), 5, &p),
-            &[-1.0 / 6.0, 0.0, -7.0 / 360.0, 0.0],
-        );
+        let lead = exp
+            .coeffs
+            .iter()
+            .position(|&c| !is_structural_zero(c, &p))
+            .unwrap();
+        assert_eq!(exp.valuation + lead as i32, 1);
+        assert_eq!(exp.valuation + exp.coeffs.len() as i32, 5);
+        let values = coeff_values(e, x, p.integer(0), 5, &p);
+        assert_close(&values[lead..], &[-1.0 / 6.0, 0.0, -7.0 / 360.0, 0.0]);
+        let general = without_tps(|| local_expansion(e, x, p.integer(0), 5, &p).unwrap());
+        assert_eq!(general.valuation, 1);
     }
 
     /// `(x²−1)/(x−1)` about `x = 1`: the singular factor cancels outright, so
@@ -1878,5 +1944,567 @@ mod tests {
         let e = sin_over_x(&p);
         let l = limit(e, x, p.integer(0), LimitDirection::Bidirectional, &p).unwrap();
         assert_eq!(crate::jit::eval_interp(l, &HashMap::new(), &p), Some(1.0));
+    }
+}
+
+/// The truncated-power-series fast path against the general route it
+/// replaces, in one pool: same `ExprId` (hence the same terms, the same `O(·)`
+/// and the same coefficient literals), or the same error.
+#[cfg(test)]
+mod tps_differential {
+    use super::*;
+    use crate::kernel::Domain;
+
+    /// `Ok(id)` / `Err(code)` — the refusal code when there is one.
+    fn run(
+        e: ExprId,
+        x: ExprId,
+        point: ExprId,
+        order: u32,
+        p: &ExprPool,
+    ) -> Result<ExprId, String> {
+        use crate::errors::AlkahestError;
+        // The general route has pathological inputs of its own (a random
+        // composition can make one coefficient's `simplify` run for minutes),
+        // so every run gets a wall clock; a trip reads `E-BUDGET`.
+        let _budget = crate::budget::enter(
+            crate::budget::Budget::new().with_wall(std::time::Duration::from_secs(5)),
+        );
+        match series(e, x, point, order, p) {
+            Ok(s) => Ok(s.expr()),
+            Err(err) => Err(match take_series_refusal() {
+                Some(r) if r.budget().is_some() => "E-BUDGET".to_string(),
+                Some(r) => r.code().to_string(),
+                None => err.code().to_string(),
+            }),
+        }
+    }
+
+    /// How the fast path's result relates to the general route's.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Outcome {
+        /// The fast path declined; the general route ran (trivially the same).
+        Declined,
+        /// The same `ExprId`.
+        Same,
+        /// Same terms and `O(·)`, but the general route left a coefficient
+        /// unevaluated — `atanh(0)`, `sin(atanh(0))` — that `simplify` does
+        /// not fold and that evaluates to the fast path's rational.
+        Canonicalized,
+        /// The general route refused (`E-SERIES-003`/`004`) a series the fast
+        /// path computes.
+        Recovered,
+        /// A difference the checks above do not explain. Never allowed in
+        /// the committed corpora; in a survey, dumped for an external oracle
+        /// (every one found so far was a general-route error — see
+        /// `the_general_route_was_wrong_here`).
+        Suspect,
+    }
+
+    /// `{exponent: value}` and the `O(·)` exponent of a series in `h`, with
+    /// each coefficient evaluated numerically; also whether every
+    /// coefficient was already a rational literal. `None` when a coefficient
+    /// cannot be evaluated.
+    fn numeric_terms(
+        s: ExprId,
+        h: ExprId,
+        p: &ExprPool,
+    ) -> Option<(std::collections::BTreeMap<i64, f64>, i64, bool)> {
+        let power = |f: ExprId| -> Option<i64> {
+            if f == h {
+                return Some(1);
+            }
+            match p.get(f) {
+                ExprData::Pow { base, exp } if base == h => match p.get(exp) {
+                    ExprData::Integer(n) => n.0.to_i64(),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        let parts = match p.get(s) {
+            ExprData::Add(xs) => xs,
+            _ => vec![s],
+        };
+        let env = HashMap::new();
+        let mut terms = std::collections::BTreeMap::new();
+        let (mut big_o, mut literal) = (None, true);
+        for t in parts {
+            if let ExprData::BigO(arg) = p.get(t) {
+                big_o = power(arg);
+                continue;
+            }
+            let factors = match p.get(t) {
+                ExprData::Mul(xs) => xs,
+                _ => vec![t],
+            };
+            let (mut k, mut v) = (0_i64, 1.0_f64);
+            for f in factors {
+                match power(f) {
+                    Some(e) => k += e,
+                    None => {
+                        literal &= matches!(p.get(f), ExprData::Integer(_) | ExprData::Rational(_));
+                        v *= crate::jit::eval_interp(f, &env, p)?;
+                    }
+                }
+            }
+            *terms.entry(k).or_insert(0.0) += v;
+        }
+        terms.retain(|_, v| *v != 0.0);
+        Some((terms, big_o?, literal))
+    }
+
+    /// `e` in Wolfram Language syntax, so a surveyed case can be checked
+    /// against `Series` directly.
+    fn to_wl(e: ExprId, p: &ExprPool) -> String {
+        let join = |xs: &[ExprId], sep: &str| {
+            xs.iter()
+                .map(|&a| format!("({})", to_wl(a, p)))
+                .collect::<Vec<_>>()
+                .join(sep)
+        };
+        match p.get(e) {
+            ExprData::Integer(n) => format!("({})", n.0),
+            ExprData::Rational(r) => format!("({}/{})", r.0.numer(), r.0.denom()),
+            ExprData::Symbol { name, .. } => name,
+            ExprData::Add(xs) => join(&xs, "+"),
+            ExprData::Mul(xs) => join(&xs, "*"),
+            ExprData::Pow { base, exp } => format!("({})^({})", to_wl(base, p), to_wl(exp, p)),
+            ExprData::Func { name, args } => {
+                let head = match name.as_str() {
+                    "sin" => "Sin",
+                    "cos" => "Cos",
+                    "tan" => "Tan",
+                    "exp" => "Exp",
+                    "log" => "Log",
+                    "sqrt" => "Sqrt",
+                    "atan" => "ArcTan",
+                    "asin" => "ArcSin",
+                    "acos" => "ArcCos",
+                    "sinh" => "Sinh",
+                    "cosh" => "Cosh",
+                    "tanh" => "Tanh",
+                    "atanh" => "ArcTanh",
+                    "asinh" => "ArcSinh",
+                    other => other,
+                };
+                format!("{head}[{}]", join(&args, ","))
+            }
+            ExprData::BigO(_) => "0".to_string(),
+            other => format!("Unsupported[\"{other:?}\"]"),
+        }
+    }
+
+    /// One surveyed case, for `ALKAHEST_TPS_DIFF_SURVEY`: tab-separated
+    /// `kind, f, point, order, fast-path series without its O(·)`.
+    fn survey_line(kind: &str, e: ExprId, point: ExprId, order: u32, s: ExprId, p: &ExprPool) {
+        let parts = match p.get(s) {
+            ExprData::Add(xs) => xs,
+            _ => vec![s],
+        };
+        let kept: Vec<_> = parts
+            .into_iter()
+            .filter(|&t| !matches!(p.get(t), ExprData::BigO(_)))
+            .collect();
+        let poly = if kept.is_empty() {
+            "0".to_string()
+        } else {
+            kept.iter()
+                .map(|&t| format!("({})", to_wl(t, p)))
+                .collect::<Vec<_>>()
+                .join("+")
+        };
+        eprintln!(
+            "SURVEY\t{kind}\t{}\t{}\t{order}\t{poly}",
+            to_wl(e, p),
+            to_wl(point, p)
+        );
+    }
+
+    /// Fast path vs general route for one case.
+    ///
+    /// Panics unless the results are the same `ExprId` or one of the
+    /// documented differences: [`Outcome::Canonicalized`] (checked
+    /// numerically term by term), [`Outcome::Recovered`] (checked against
+    /// every lower order the general route reaches), and
+    /// [`Outcome::Suspect`] — a disagreement neither check explains, which
+    /// fails the corpus unless it is being *surveyed* for an external oracle.
+    fn check(e: ExprId, x: ExprId, point: ExprId, order: u32, p: &ExprPool) -> Outcome {
+        let old = without_tps(|| run(e, x, point, order, p));
+        let new = run(e, x, point, order, p);
+        let xi = p.symbol("__sxp", Domain::Real);
+        let mut m = HashMap::new();
+        m.insert(x, p.add(vec![point, xi]));
+        let fast = super::super::tps::tps_expansion(subs(e, &m, p), xi, order, p).is_some();
+        let shown = |r: &Result<ExprId, String>| match r {
+            Ok(id) => p.display(*id).to_string(),
+            Err(c) => c.clone(),
+        };
+        let what = || {
+            format!(
+                "series({}, order {order}) at {}: general route {} vs fast path {}",
+                p.display(e),
+                p.display(point),
+                shown(&old),
+                shown(&new),
+            )
+        };
+        if old == new {
+            return if fast {
+                Outcome::Same
+            } else {
+                Outcome::Declined
+            };
+        }
+        let budget_trip = |r: &Result<ExprId, String>| matches!(r, Err(c) if c == "E-BUDGET");
+        if !fast && (budget_trip(&old) || budget_trip(&new)) {
+            // The general route twice, against a wall clock: timing, not a
+            // difference.
+            return Outcome::Declined;
+        }
+        assert!(
+            fast,
+            "the fast path declined and still changed the result: {}",
+            what()
+        );
+        let n = *new.as_ref().unwrap_or_else(|_| panic!("{}", what()));
+        let h = expansion_increment(p, x, point);
+        let (nt, no, _) = numeric_terms(n, h, p).expect("fast path is rational");
+        let close = |a: f64, b: f64| (a - b).abs() <= 1e-12 * b.abs().max(1.0);
+        let suspect = || {
+            eprintln!("suspect: {}", what());
+            survey_line("suspect", e, point, order, n, p);
+            Outcome::Suspect
+        };
+        match &old {
+            Ok(o) => {
+                let Some((ot, oo, o_literal)) = numeric_terms(*o, h, p) else {
+                    return suspect();
+                };
+                let same_terms =
+                    oo == no && ot.keys().eq(nt.keys()) && ot.iter().all(|(k, v)| close(*v, nt[k]));
+                if o_literal || !same_terms {
+                    return suspect();
+                }
+                eprintln!("canonicalized: {}", what());
+                Outcome::Canonicalized
+            }
+            Err(code) => {
+                assert!(
+                    matches!(code.as_str(), "E-SERIES-003" | "E-SERIES-004" | "E-BUDGET"),
+                    "the general route failed with {code}: {}",
+                    what()
+                );
+                // Every lower order the general route reaches must be a
+                // prefix of the recovered series.
+                for lower in 1..order {
+                    if let Ok(o) = without_tps(|| run(e, x, point, lower, p)) {
+                        let Some((ot, _, _)) = numeric_terms(o, h, p) else {
+                            return suspect();
+                        };
+                        let want: Vec<_> =
+                            nt.iter().filter(|(k, _)| **k < i64::from(lower)).collect();
+                        let agree = ot.len() == want.len()
+                            && ot
+                                .iter()
+                                .zip(want)
+                                .all(|((gk, gv), (wk, wv))| gk == wk && close(*gv, *wv));
+                        if !agree {
+                            return suspect();
+                        }
+                    }
+                }
+                eprintln!("recovered: {}", what());
+                survey_line("recovered", e, point, order, n, p);
+                Outcome::Recovered
+            }
+        }
+    }
+
+    /// Run a corpus and report how each case came out.
+    fn tally(outcomes: &[Outcome]) -> [usize; 5] {
+        let mut t = [0; 5];
+        for o in outcomes {
+            t[*o as usize] += 1;
+        }
+        t
+    }
+
+    fn assert_series(e: ExprId, x: ExprId, order: u32, want: &[(i64, i64, i64)], p: &ExprPool) {
+        let s = series(e, x, p.integer(0), order, p)
+            .unwrap_or_else(|err| panic!("{}: {err}", p.display(e)))
+            .expr();
+        let (terms, big_o, literal) = numeric_terms(s, x, p).expect("evaluable");
+        assert!(literal, "{}", p.display(s));
+        assert_eq!(big_o, i64::from(order), "{}", p.display(s));
+        let want: Vec<(i64, f64)> = want
+            .iter()
+            .map(|&(k, n, d)| (k, n as f64 / d as f64))
+            .collect();
+        let got: Vec<(i64, f64)> = terms.into_iter().collect();
+        assert_eq!(got.len(), want.len(), "{}", p.display(s));
+        for ((gk, gv), (wk, wv)) in got.iter().zip(&want) {
+            assert_eq!(gk, wk, "{}", p.display(s));
+            assert!((gv - wv).abs() <= 1e-15 * wv.abs(), "{}", p.display(s));
+        }
+    }
+
+    /// Cases the random differential found where the general route was
+    /// wrong or refused, checked against Mathematica 14 `Series`.
+    #[test]
+    fn the_general_route_was_wrong_here() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let tanh = p.func("tanh", vec![x]);
+        // x·tanh(x)⁻³ = x⁻² + 1 + 4x²/15 − x⁴/945 − 11x⁶/4725 + …
+        // The general route answered order 1 with a bare `O(x)` — both terms
+        // below the order missing — and refused every higher order.
+        let e = p.mul(vec![x, p.pow(tanh, p.integer(-3))]);
+        assert_series(e, x, 1, &[(-2, 1, 1), (0, 1, 1)], &p);
+        assert_series(
+            e,
+            x,
+            7,
+            &[
+                (-2, 1, 1),
+                (0, 1, 1),
+                (2, 4, 15),
+                (4, -1, 945),
+                (6, -11, 4725),
+            ],
+            &p,
+        );
+        // log(1 + atanh x)⁻³: refused (E-SERIES-004) at every order.
+        let l = p.func(
+            "log",
+            vec![p.add(vec![p.integer(1), p.func("atanh", vec![x])])],
+        );
+        assert_series(
+            p.pow(l, p.integer(-3)),
+            x,
+            3,
+            &[
+                (-3, 1, 1),
+                (-2, 3, 2),
+                (-1, -1, 2),
+                (0, -1, 1),
+                (1, -23, 240),
+                (2, -49, 480),
+            ],
+            &p,
+        );
+        // tanh x = x − x³/3 + 2x⁵/15: the general route's coefficients were
+        // `tanh(0)`-laden (`1 + (−1·tanh(0)²)` for the x¹ term), which
+        // `simplify` does not fold.
+        assert_series(tanh, x, 6, &[(1, 1, 1), (3, -1, 3), (5, 2, 15)], &p);
+    }
+
+    /// The f⁻ᵏ grid of `tests/test_series_negative_valuation.py` (#435), whose
+    /// coefficients are checked there against Mathematica.
+    #[test]
+    fn negative_power_grid_is_unchanged() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let one = p.integer(1);
+        let neg = |e: ExprId| p.mul(vec![p.integer(-1), e]);
+        let fs = [
+            p.func("sin", vec![x]),
+            p.func("tan", vec![x]),
+            p.func("asin", vec![x]),
+            p.func("atan", vec![x]),
+            p.func("sinh", vec![x]),
+            p.add(vec![x, p.mul(vec![x, x])]),
+            p.add(vec![p.func("exp", vec![x]), p.integer(-1)]),
+            p.func("log", vec![p.add(vec![one, x])]),
+            p.add(vec![one, neg(p.func("cos", vec![x]))]),
+            p.mul(vec![p.add(vec![x, p.integer(-2)]), p.pow(x, p.integer(-1))]),
+            p.mul(vec![x, p.func("cos", vec![x])]),
+        ];
+        let mut outcomes = Vec::new();
+        for f in fs {
+            for k in 1..=6 {
+                for order in 1..=5 {
+                    let e = p.pow(f, p.integer(-k));
+                    outcomes.push(check(e, x, p.integer(0), order, &p));
+                }
+            }
+        }
+        // Every case is in the fast path's domain, and identical.
+        assert_eq!(tally(&outcomes), [0, 330, 0, 0, 0]);
+    }
+
+    /// The existing suite's expansions, and the benchmark shapes.
+    #[test]
+    fn named_cases_are_unchanged() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let a = p.symbol("a", Domain::Real);
+        let (zero, one, two) = (p.integer(0), p.integer(1), p.integer(2));
+        let neg = |e: ExprId| p.mul(vec![p.integer(-1), e]);
+        let inv = |e: ExprId| p.pow(e, p.integer(-1));
+        let f = |n: &str, e: ExprId| p.func(n, vec![e]);
+        let sin_tan = p.add(vec![f("sin", f("tan", x)), neg(f("tan", f("sin", x)))]);
+        let cases: Vec<(ExprId, ExprId, u32)> = vec![
+            (sin_tan, zero, 15),
+            (p.mul(vec![sin_tan, p.pow(x, p.integer(-7))]), zero, 4),
+            (f("exp", f("sin", x)), zero, 20),
+            (inv(f("cos", x)), zero, 20),
+            (
+                p.mul(vec![
+                    f("log", p.add(vec![one, x])),
+                    inv(p.add(vec![one, neg(x)])),
+                ]),
+                zero,
+                30,
+            ),
+            (f("sin", x), zero, 24),
+            (f("tan", x), zero, 16),
+            (f("sqrt", p.add(vec![one, x])), zero, 24),
+            (p.mul(vec![f("sin", x), inv(x)]), zero, 6),
+            (p.mul(vec![f("tan", x), inv(x)]), zero, 6),
+            (inv(f("sin", x)), zero, 3),
+            (p.add(vec![inv(x), neg(inv(f("sin", x)))]), zero, 5),
+            (p.pow(f("sin", x), p.integer(-4)), zero, 4),
+            (
+                p.pow(p.add(vec![x, p.mul(vec![x, x])]), p.integer(-3)),
+                zero,
+                3,
+            ),
+            (
+                inv(p.mul(vec![p.add(vec![x, p.integer(-2)]), inv(x)])),
+                zero,
+                4,
+            ),
+            (p.mul(vec![x, p.add(vec![inv(x), one])]), zero, 3),
+            (
+                f(
+                    "exp",
+                    p.mul(vec![x, inv(p.mul(vec![p.integer(-2), inv(x)]))]),
+                ),
+                zero,
+                5,
+            ),
+            (
+                p.mul(vec![
+                    f("log", p.mul(vec![x, inv(x)])),
+                    p.add(vec![x, p.pow(x, p.integer(3))]),
+                ]),
+                zero,
+                3,
+            ),
+            (
+                p.mul(vec![
+                    two,
+                    x,
+                    f("exp", x),
+                    inv(p.mul(vec![p.add(vec![x, p.integer(-2)]), inv(f("asin", x))])),
+                ]),
+                zero,
+                4,
+            ),
+            // Expansion away from 0 and outside ℚ: the general route decides.
+            (f("log", x), one, 6),
+            (inv(x), two, 5),
+            (f("sin", x), one, 5),
+            (f("exp", p.mul(vec![a, x])), zero, 5),
+            (f("sqrt", x), zero, 4),
+            (f("log", x), zero, 4),
+            (f("exp", inv(x)), zero, 4),
+            (p.mul(vec![x, x, inv(f("log", x))]), zero, 4),
+            (f("acos", x), zero, 5),
+            (f("atanh", x), zero, 9),
+            (f("asinh", x), zero, 9),
+            (f("cosh", f("tanh", x)), zero, 9),
+            (f("sqrt", p.add(vec![p.integer(4), x])), zero, 6),
+            (f("sqrt", p.add(vec![two, x])), zero, 4),
+            (p.pow(p.add(vec![one, x]), p.rational(2, 3)), zero, 6),
+            (p.pow(p.add(vec![one, x]), p.rational(-5, 2)), zero, 6),
+        ];
+        let outcomes: Vec<_> = cases
+            .iter()
+            .map(|&(e, point, order)| check(e, x, point, order, &p))
+            .collect();
+        let [declined, same, canonicalized, recovered, suspect] = tally(&outcomes);
+        eprintln!(
+            "declined {declined} same {same} canonicalized {canonicalized}              recovered {recovered} suspect {suspect}"
+        );
+        assert_eq!(suspect, 0, "{outcomes:?}");
+        assert!(same >= 20, "{outcomes:?}");
+    }
+
+    fn build(p: &ExprPool, x: ExprId, depth: u32, next: &mut dyn FnMut(u64) -> u64) -> ExprId {
+        if depth == 0 || next(4) == 0 {
+            return match next(4) {
+                0 | 1 => x,
+                2 => p.integer(next(5) as i64 - 2),
+                _ => p.rational(next(7) as i64 - 3, 2 + next(3) as i64),
+            };
+        }
+        let a = build(p, x, depth - 1, next);
+        match next(14) {
+            0 | 1 => {
+                let b = build(p, x, depth - 1, next);
+                p.add(vec![a, b])
+            }
+            2 | 3 => {
+                let b = build(p, x, depth - 1, next);
+                p.mul(vec![a, b])
+            }
+            4 => p.pow(a, p.integer(next(6) as i64 - 3)),
+            5 => p.pow(
+                p.add(vec![p.integer(1), a]),
+                p.rational(next(5) as i64 - 2, 2),
+            ),
+            _ => {
+                const HEADS: [&str; 13] = [
+                    "sin", "cos", "tan", "exp", "log", "atan", "asin", "sinh", "cosh", "tanh",
+                    "atanh", "asinh", "sqrt",
+                ];
+                let h = HEADS[next(HEADS.len() as u64) as usize];
+                let arg = if matches!(h, "log" | "sqrt") && next(3) != 0 {
+                    p.add(vec![p.integer(1), a])
+                } else {
+                    a
+                };
+                p.func(h, vec![arg])
+            }
+        }
+    }
+
+    /// Random compositions of the heads the fast path covers (and of shapes
+    /// it declines), at `0` and `1`. `ALKAHEST_TPS_DIFF_N` widens the corpus
+    /// and `ALKAHEST_TPS_DIFF_SEED` moves it.
+    #[test]
+    fn random_compositions_are_unchanged() {
+        let env = |k: &str| std::env::var(k).ok().and_then(|s| s.parse::<u64>().ok());
+        let n = env("ALKAHEST_TPS_DIFF_N").unwrap_or(150) as usize;
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d ^ env("ALKAHEST_TPS_DIFF_SEED").unwrap_or(0);
+        let mut next = move |m: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % m
+        };
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let mut outcomes = Vec::new();
+        for _ in 0..n {
+            let e = build(&p, x, 3, &mut next);
+            let point = if next(5) == 0 {
+                p.integer(1)
+            } else {
+                p.integer(0)
+            };
+            let order = 1 + next(7) as u32;
+            outcomes.push(check(e, x, point, order, &p));
+        }
+        let [declined, same, canonicalized, recovered, suspect] = tally(&outcomes);
+        eprintln!(
+            "declined {declined} same {same} canonicalized {canonicalized}              recovered {recovered} suspect {suspect}"
+        );
+        if std::env::var_os("ALKAHEST_TPS_DIFF_SURVEY").is_none() {
+            assert_eq!(suspect, 0, "{outcomes:?}");
+        }
+        assert!((same + canonicalized) * 5 >= n, "{outcomes:?}");
     }
 }
