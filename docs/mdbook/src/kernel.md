@@ -101,7 +101,7 @@ Available domains: `real`, `positive`, `nonnegative`, `integer`, `complex`. The 
 > **That last clause is a hard limit, not an implementation detail.** The arena is
 > **append-only**: there is no `clear`, no `truncate`, no refcount and no GC, so nothing
 > is ever reclaimed while the pool is alive, and the storage cannot shrink. A distinct
-> expression costs roughly 200 bytes of resident memory per node, permanently. A loop
+> expression costs roughly 115 bytes of resident memory per node, permanently. A loop
 > that builds a module-scope pool once and then calls into it forever grows linearly and
 > without bound, at flat per-call latency — so it OOMs with no slowdown to warn you
 > first. Every `Expr`, `Matrix`, `Series` and `DerivedResult` holds a strong reference to
