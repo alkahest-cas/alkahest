@@ -229,6 +229,13 @@ print(series(sin(x), x, pool.integer(0), 6).expr)
 # (x * 1) + (-1/6 * x^3) + (1/120 * x^5) + O(x^6)
 ```
 
+When every coefficient is a rational number — compositions of `+ − × ÷`, rational powers,
+`exp`, `log`, `sin`, `cos`, `tan`, their hyperbolic forms, `atan`, `asin`, `atanh`, `asinh` and
+`sqrt`, at a point where none of them has an irrational value — the expansion is computed with
+truncated power-series arithmetic over ℚ, so `series(sin(tan(x)) - tan(sin(x)), x, 0, 15)` takes
+a fraction of a millisecond. Anything else (a free parameter, `sin(1 + h)`, a branch point) is
+expanded from repeated derivatives, as before.
+
 Some expansions have **fractional** exponents and there is no `Series` that can hold one:
 `√x` has valuation `1/2`. `series` refuses those with `E-SERIES-004` rather than returning
 a series whose coefficients are `sqrt(0)^-1` — `Ok`, unevaluable, `NaN` on contact.

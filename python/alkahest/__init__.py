@@ -1240,11 +1240,14 @@ def series(expr, var, point, order):
     Notes
     -----
     The expansion is **bounded**: it honours an active :class:`Budget` and, with
-    none, an internal work ceiling.  Coefficients are formed by repeated
-    differentiation without re-simplifying, so an expression whose derivatives
-    do not close — a nested radical such as ``sqrt(t**-2 + t**-1)`` — grows by a
-    constant factor per coefficient, and a high *order* is unreachable rather
-    than merely slow.
+    none, an internal work ceiling.  When every coefficient is rational (``sin``,
+    ``exp``, ``log(1 + x)``, rational functions and their compositions, where
+    no irrational constant such as ``sin(1)`` appears) they come from truncated
+    power-series arithmetic over the rationals, which is fast at any order.
+    Otherwise coefficients are formed by repeated differentiation without
+    re-simplifying, so an expression whose derivatives do not close — a nested
+    radical such as ``sqrt(t**-2 + t**-1)`` — grows by a constant factor per
+    coefficient, and a high *order* is unreachable rather than merely slow.
 
     Running out of room raises :exc:`SeriesError` with code ``E-SERIES-003``
     (or :exc:`BudgetExceededError` when a budget stopped it).  It never returns

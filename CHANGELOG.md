@@ -227,6 +227,29 @@
   `(x+y+z+1)^5` 0.56 → 0.084 ms, `(x+1)(x+2)` 9.5 → 5.8 µs; an expression
   with nothing to distribute pays one structural walk (`x²+2x+1` 2.2 →
   2.5 µs).
+- **`series` uses truncated power-series arithmetic when every coefficient
+  is rational.** Coefficients came from `order` rounds of differentiate,
+  substitute and simplify, whose derivative trees grow with the order —
+  geometrically for a composition such as `sin(tan x)`. Expressions built
+  from `+ − × ÷`, integer and rational powers, `exp`, `log`, `sin`, `cos`,
+  `tan`, `sinh`, `cosh`, `tanh`, `atan`, `asin`, `atanh`, `asinh` and `sqrt`,
+  wherever no irrational constant appears, are now expanded once per
+  subterm as exact rational vectors: truncated convolution, the reciprocal
+  recurrence, J. C. P. Miller's power recurrence, and the ODE recurrences
+  for the heads, with the working precision raised automatically past
+  cancellations and poles. Everything else — a free parameter, `sin(1 + h)`,
+  a branch point — takes the old route unchanged. The same `local_expansion`
+  serves `limit`, `asymptotic_expand`, `puiseux_series` and the FPS code.
+  Release wheel, best of N: `sin(tan x) − tan(sin x)` at order 15
+  12.3 → 0.24 ms (Mathematica 14: 2.0 ms), `exp(sin x)` at order 20
+  4.5 → 0.058 ms (0.52 ms), `1/cos x` at 20 1.42 → 0.062 ms (0.56 ms),
+  `log(1+x)/(1−x)` at 30 4.7 → 0.18 ms (0.52 ms), `sin x` at 12
+  0.062 → 0.016 ms. Differential tests run the old route in the same pool:
+  the 330-case f⁻ᵏ grid from #435 and the benchmark shapes give the same
+  `ExprId`. Over 9 000 random compositions the only differences are
+  coefficients the old route left as unevaluated constants such as `tanh(0)`
+  (numerically identical, now rational literals) and 12 expansions it
+  refused or got wrong (see Fixed), which match Mathematica `Series`.
 - **Symbolic determinants and inverses no longer take factorial time.**
   `Matrix::det` on a matrix with symbolic entries expanded cofactors along the
   first row recursively, re-deriving every sub-minor once per path that
@@ -499,6 +522,24 @@
 
 ### Fixed
 
+- **`series` dropped the terms of `x·tanh(x)⁻³` below order 1, and left
+  `tanh(0)`, `atanh(0)` and `asinh(0)` in coefficients.** `simplify` does not
+  fold those three heads at `0`, so the derivative route carried them along:
+  `series(tanh(x), x, 0, 3)` printed `tanh(0) + (1 − tanh(0)²)·x + …`,
+  `atanh(x)⁻¹`, `asinh(x)⁻³` and `log(1 + atanh x)⁻³` were refused
+  (`E-SERIES-004`), and `x·tanh(x)⁻³` at order 1 came back as a bare `O(x)`
+  where the series is `x⁻² + 1 + O(x)`. The power-series route above computes
+  these from recurrences and returns rational literals (`x − x³/3 + 2x⁵/15`
+  for `tanh x`); all checked against Mathematica.
+- **`limit((sin(tan x) − tan(sin x))/x⁷, x, 0)` was refused; it is `−1/30`.**
+  Both symbolic routes found `−1/30`; the numeric refutation check then
+  sampled at `x = 10⁻³` and `10⁻⁴`, where the numerator `−x⁷/30` is far below
+  one ulp of either term, so both terms rounded to the same double and the
+  samples settled on `0` — refuting the right answer. A sample is now kept
+  only if a rigorous 53-bit ball evaluation at the same point is resolved to
+  `10⁻⁷` of its magnitude, so cancellation noise can no longer outvote the
+  symbolic result; a sample the ball evaluator cannot evaluate is kept as
+  before, and `x/|x|` is still refuted.
 - **Loading a corrupt or hostile `.akp` pool file could abort the
   interpreter or panic.** `ExprPool.load_from` allocated every
   length-prefixed field (a name, a child list, a piecewise branch list) at

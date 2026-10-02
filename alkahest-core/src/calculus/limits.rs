@@ -646,6 +646,37 @@ fn approach_side_is_outside_the_domain(
 /// floating point rather than facts about the function.
 const APPROACH_OFFSETS: [f64; 4] = [1e-1, 1e-2, 1e-3, 1e-4];
 
+/// True unless a double-precision sample of `expr` at `var = t` is provably
+/// dominated by rounding error.
+///
+/// [`APPROACH_OFFSETS`] stops at `1e-4` to keep cancellation out of the
+/// samples, which is enough for `(cos x − 1)/x²` and not for a higher-order
+/// one: in `(sin(tan x) − tan(sin x))/x⁷` the numerator is `−x⁷/30`, far below
+/// one ulp of either term at `x = 10⁻³`, so both round to the same double and
+/// the samples *settle* — on `0`. [`numeric_evidence_contradicts`] then
+/// refuted the correct `−1/30`, turning a right answer into a refusal, which
+/// is the one thing a refutation check must not do.
+///
+/// The test re-evaluates at the same point with a rigorous 53-bit ball: a
+/// result whose radius exceeds `1e-7` of its magnitude is noise at the scale
+/// the comparison uses (tolerance `1e-6`), and the sample is dropped. Only
+/// positive evidence counts — when the ball evaluator does not support a head,
+/// or loses the value entirely (an infinite radius), the sample is kept, as it
+/// was before this check existed.
+fn sample_is_resolved(expr: ExprId, var: ExprId, t: f64, pool: &ExprPool) -> bool {
+    const PREC: u32 = 53;
+    let mut ev = crate::ball::IntervalEval::new(PREC);
+    ev.bind(var, crate::ball::ArbBall::from_f64(t, PREC));
+    let Some(ball) = ev.eval(expr, pool) else {
+        return true;
+    };
+    let (mid, rad) = (ball.mid_f64(), ball.rad_f64());
+    if !mid.is_finite() || !rad.is_finite() {
+        return true;
+    }
+    rad <= 1e-7 * (1.0 + mid.abs())
+}
+
 /// A one-sided numeric estimate, kept only when the samples have settled.
 struct SideEstimate {
     /// Value at the closest offset.
@@ -673,11 +704,13 @@ fn side_estimate(
     let mut samples = Vec::with_capacity(APPROACH_OFFSETS.len());
     let mut env: HashMap<ExprId, f64> = HashMap::with_capacity(1);
     for offset in APPROACH_OFFSETS {
-        env.insert(var, at + sign * offset);
+        let t = at + sign * offset;
+        env.insert(var, t);
         match crate::jit::eval_interp(expr, &env, pool) {
-            Some(v) if v.is_finite() => samples.push(v),
+            Some(v) if v.is_finite() && sample_is_resolved(expr, var, t, pool) => samples.push(v),
             // A single unevaluable or non-finite sample is not evidence of
-            // anything; it just means this offset landed on a hole.
+            // anything; it just means this offset landed on a hole. Nor is
+            // one that is all rounding error (see `sample_is_resolved`).
             _ => continue,
         }
     }
@@ -3626,6 +3659,51 @@ mod numeric_refutation_tests {
         )
         .unwrap()
         .is_none());
+    }
+
+    /// `(sin(tan x) − tan(sin x))/x⁷ → −1/30`. Both symbolic routes found it;
+    /// the numeric refutation check then sampled the quotient at `x = 10⁻³`,
+    /// `10⁻⁴`, where the numerator `−x⁷/30` is far below one ulp of either
+    /// term, saw it settle on `0.0`, and refused the right answer.
+    #[test]
+    fn a_cancellation_below_one_ulp_does_not_refute_the_limit() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let st = p.func("sin", vec![p.func("tan", vec![x])]);
+        let ts = p.func("tan", vec![p.func("sin", vec![x])]);
+        let num = p.add(vec![st, p.mul(vec![p.integer(-1), ts])]);
+        let e = p.mul(vec![num, p.pow(x, p.integer(-7))]);
+        for dir in [
+            LimitDirection::Bidirectional,
+            LimitDirection::Plus,
+            LimitDirection::Minus,
+        ] {
+            let l = limit(e, x, p.integer(0), dir, &p).unwrap();
+            assert_eq!(l, p.rational(-1, 30), "{dir:?}: {}", p.display(l));
+        }
+        // The guard drops only samples that are provably noise.
+        assert!(!sample_is_resolved(e, x, 1e-3, &p));
+        assert!(sample_is_resolved(e, x, 1e-1, &p));
+        let c = p.add(vec![p.func("cos", vec![x]), p.integer(-1)]);
+        let q = p.mul(vec![c, p.pow(x, p.integer(-2))]);
+        assert!(sample_is_resolved(q, x, 1e-4, &p));
+    }
+
+    /// The guard must not blunt the check it guards: `x/|x|` has no two-sided
+    /// limit, and its samples are exact.
+    #[test]
+    fn the_refutation_check_still_refutes_a_sign_jump() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let e = p.mul(vec![x, p.pow(p.func("abs", vec![x]), p.integer(-1))]);
+        assert!(numeric_evidence_contradicts(
+            e,
+            x,
+            p.integer(0),
+            LimitDirection::Bidirectional,
+            p.integer(0),
+            &p
+        ));
     }
 }
 
