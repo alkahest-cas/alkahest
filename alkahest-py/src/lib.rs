@@ -4684,7 +4684,14 @@ impl PyUniPoly {
             .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("gcd: variable mismatch"))
     }
 
-    /// Factor over ℤ (FLINT).
+    /// Factor over ℤ (FLINT; ``x**n ± 1`` and ``u**n * x**n ± v**n`` through
+    /// cyclotomic polynomials).
+    ///
+    /// ``factor_list()`` is in a canonical order that depends only on the
+    /// factors: ascending degree, then coefficients compared as signed
+    /// integers from the leading term down, then multiplicity. ``x**12 - 1``
+    /// gives ``x - 1, x + 1, x**2 - x + 1, x**2 + 1, x**2 + x + 1,
+    /// x**4 - x**2 + 1``.
     fn factor_z(&self, py: Python<'_>) -> PyResult<PyUniPolyFactorization> {
         // GIL released for the FLINT call; see `py_integrate`.
         let poly = &self.inner;
@@ -4820,6 +4827,11 @@ impl PyMultiPoly {
     }
 
     /// Factor over ℤ (multivariate FLINT).
+    ///
+    /// ``factor_list()`` is in a canonical order that depends only on the
+    /// factors: ascending total degree, then coefficients over the monomials
+    /// in descending lexicographic order (variables in ring order), then
+    /// multiplicity.
     fn factor_z(&self, py: Python<'_>) -> PyResult<PyMultiPolyFactorization> {
         // GIL released for the FLINT call; see `py_integrate`.
         let poly = &self.inner;
@@ -13202,7 +13214,8 @@ fn py_refine_root(
 ///
 /// ``p`` must be prime (``E-POLY-009`` otherwise) and the polynomial non-zero
 /// mod ``p`` (``E-POLY-008``). The factors are monic; ``.unit`` is the leading
-/// coefficient that restores the input.
+/// coefficient that restores the input. ``factor_list()`` is sorted by
+/// ascending degree, then by the residues from the leading term down.
 #[pyfunction]
 #[pyo3(name = "factor_univariate_mod_p")]
 fn py_factor_univariate_mod_p(coeffs: Vec<i64>, modulus: u64) -> PyResult<PyUniPolyFactorModP> {

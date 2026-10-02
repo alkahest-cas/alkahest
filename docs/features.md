@@ -38,7 +38,7 @@ Current stable feature surface.
 - `RationalFunction`: quotient with automatic GCD normalization
 - Horner-form rewriting (`horner`); SIMD batch f64 Horner eval (`eval_horner_f64_batch`, Rust)
 - C code emission (`emit_c`)
-- Polynomial factorization over ℤ, ℤ[x₁,...,xₙ], and 𝔽ₚ (Zassenhaus, van Hoeij, Berlekamp, Cantor–Zassenhaus via FLINT); integer factorization outputs include exact in-kernel factor-product reconstruction metadata
+- Polynomial factorization over ℤ, ℤ[x₁,...,xₙ], and 𝔽ₚ (Zassenhaus, van Hoeij, Berlekamp, Cantor–Zassenhaus via FLINT; `x^n ± 1` and `u^n·x^n ± v^n` directly through cyclotomic polynomials); integer factorization outputs include exact in-kernel factor-product reconstruction metadata. **Factors come in a canonical order that depends only on the factors, never on the FLINT version**: ascending degree (total degree for several variables), then coefficients compared as signed integers from the leading term down (over descending-lex monomials for several variables; residues for 𝔽ₚ), then multiplicity — `x^12 − 1` lists `x − 1, x + 1, x² − x + 1, x² + 1, x² + x + 1, x⁴ − x² + 1`. `factorint` lists primes in ascending order
 - Hermite and Smith normal forms for integer matrices and polynomial matrices over ℚ[x]
 - LLL lattice reduction over ℤ (`alkahest.lattice`)
 - Approximate integer-relation finding (`guess_relation`)

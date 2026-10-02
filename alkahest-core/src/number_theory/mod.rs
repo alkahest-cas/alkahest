@@ -159,6 +159,8 @@ pub fn isprime(n: &str) -> Result<bool, NumberTheoryError> {
 }
 
 /// Full factorisation: `(sign, list of (prime, exponent))` for \(\prod p^e\cdot \mathrm{sign}\).
+///
+/// The primes are listed in ascending order.
 pub fn factorint(n: &str) -> Result<(i32, Vec<(String, u64)>), NumberTheoryError> {
     let z = parse_int(n)?;
     if z.is_zero() {
@@ -170,8 +172,14 @@ pub fn factorint(n: &str) -> Result<(i32, Vec<(String, u64)>), NumberTheoryError
     // FlintIntFactor is drop-safe — no manual fmpz_factor_clear needed.
     let mut fac = FlintIntFactor::new();
     fac.factor(&fz);
-    let out = (0..fac.len())
-        .map(|i| (fac.base_at(i).to_string(), fac.exp_at(i)))
+    // Ascending primes, whatever order FLINT's sieve or ECM found them in.
+    let mut primes: Vec<(rug::Integer, u64)> = (0..fac.len())
+        .map(|i| (fac.base_at(i).to_rug(), fac.exp_at(i)))
+        .collect();
+    primes.sort_by(|a, b| a.0.cmp(&b.0));
+    let out = primes
+        .into_iter()
+        .map(|(p, e)| (p.to_string(), e))
         .collect();
     Ok((fac.sign(), out))
 }

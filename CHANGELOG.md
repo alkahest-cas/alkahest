@@ -190,6 +190,22 @@
 
 ### Performance
 
+- **`x^n ± 1` factors through cyclotomic polynomials instead of van Hoeij.**
+  FLINT's `fmpz_poly_factor` reached the factors of `x^n − 1` by Zassenhaus /
+  van Hoeij recombination and spent nearly all of its time in LLL:
+  `UniPoly.factor_z()` took 40 ms on `x^120 − 1` (SymPy 12 ms, Mathematica
+  0.1 ms) and 5 s on `x^720 − 1`. A binomial `a·x^(k+n) + b·x^k` whose
+  primitive part is `u^n·x^n ± v^n` (in particular `x^n ± 1`) is now factored
+  directly as `∏ Φ_d(u·x, v)` over `d | n` (or `d | 2n, d ∤ n`) with
+  `fmpz_poly_cyclotomic`, giving the same factors and unit — tested against
+  FLINT for every `n ≤ 300` with both signs and for scaled, shifted and
+  non-primitive binomials. Factors past the cyclotomic degree cap (#414), or
+  whose coefficients would not fit the memory budget, still go to FLINT.
+  `factor_z` on `x^n − 1`, before → after (SymPy 1.14 / Mathematica):
+  `n = 120` 37.9 ms → 3.0 µs (10.0 ms / 0.105 ms); `n = 360` 915 ms →
+  5.3 µs (75 ms / 0.18 ms); `n = 720` 4.77 s → 7.7 µs (254 ms / 0.27 ms);
+  `n = 1001` 167 ms → 7.8 µs (183 ms / 0.41 ms).
+
 - **Symbolic determinants and inverses no longer take factorial time.**
   `Matrix::det` on a matrix with symbolic entries expanded cofactors along the
   first row recursively, re-deriving every sub-minor once per path that
@@ -901,6 +917,25 @@
   `expectation*`, `variance_affine_independent` and the information measures'
   `base`. `smt.supported`/`smt.solve` walked the formula recursively in Python
   before reaching the emitter's guard; that walk is now iterative.
+
+### Behaviour changes to plan for
+
+- **Factor lists come in a canonical order, the same on every FLINT
+  version.** `UniPoly.factor_z()`, `MultiPoly.factor_z()`,
+  `factor_univariate_mod_p` and the internal factorisations behind `apart`,
+  rational integration, residues, Σ/Π, eigenvalues, primary decomposition and
+  the parametric Gröbner code used to list factors in whatever order FLINT's
+  recombination produced them — for `fmpz_poly_factor`, the row order of an
+  LLL-reduced lattice, which differs between FLINT 3.5 and 3.6 (`x^156 − 1`,
+  `x^168 − 1`, `x^240 − 1`, `x^300 − 1` all came out in different orders). The
+  factors, multiplicities and unit are unchanged; only their order is now
+  fixed: ascending degree (total degree for several variables), then the
+  coefficients compared as signed integers from the leading term down (over
+  descending-lex monomials for several variables, residues mod `p` over 𝔽ₚ),
+  then multiplicity. `x^12 − 1` lists `x − 1, x + 1, x² − x + 1, x² + 1,
+  x² + x + 1, x⁴ − x² + 1`, as SymPy's `factor_list` does. Code that indexed
+  into `factor_list()` positionally may see a different factor at a given
+  index. `factorint` lists its primes in ascending order.
 
 ### Build and packaging
 

@@ -381,7 +381,7 @@ impl ParamPoly {
             return vec![self.primitive_part()];
         }
         let mut out = Vec::with_capacity(fac.len());
-        for i in 0..fac.len() {
+        for i in fac.canonical_order() {
             let base = ParamPoly::from_flint(&fac.base_at(i), self.n_params);
             if base.is_zero() || base.is_nonzero_constant() {
                 continue;

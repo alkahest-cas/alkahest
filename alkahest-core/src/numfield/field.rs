@@ -22,7 +22,7 @@ use rug::{Integer, Rational};
 
 use super::error::NumberFieldError;
 use crate::flint::ffi;
-use crate::flint::poly::{FlintPoly, FlintPolyFactor};
+use crate::flint::poly::FlintPoly;
 use crate::flint::rational::FlintRational as Fq;
 use crate::flint::FlintInteger;
 
@@ -979,12 +979,12 @@ fn proper_factor(poly: &FlintPoly) -> Option<String> {
     if poly.degree() <= 1 {
         return None;
     }
-    let mut fac = FlintPolyFactor::new();
-    fac.factor(poly);
-    if fac.len() == 1 && fac.exp_at(0) == 1 {
+    // The canonical order, so the factor named does not depend on FLINT's.
+    let (_, factors) = poly.factor_over_z().ok()?;
+    if factors.len() == 1 && factors[0].1 == 1 {
         return None;
     }
-    let first = fac.poly_at(0);
+    let first = &factors[0].0;
     let coeffs: Vec<Integer> = (0..first.length())
         .map(|i| first.get_coeff_flint(i).to_rug())
         .collect();
