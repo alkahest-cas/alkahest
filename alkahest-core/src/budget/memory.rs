@@ -111,6 +111,9 @@ fn sub_live(n: usize) {
     // freed through our wrapper without ever having been counted, so the
     // total can legitimately try to go negative. Under-counting only ever
     // makes the ceiling fire late, never spuriously.
+    // `fetch_update` is deprecated (renamed `try_update`) from Rust 1.99, but
+    // `try_update` does not exist on the older toolchains still supported.
+    #[allow(deprecated)]
     let _ = LIVE_BYTES.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
         Some(v.saturating_sub(n as u64))
     });

@@ -1040,6 +1040,9 @@ fn py_note_context_push() {
 #[pyfunction]
 #[pyo3(name = "_note_context_pop")]
 fn py_note_context_pop() {
+    // `fetch_update` is deprecated (renamed `try_update`) from Rust 1.99, but
+    // `try_update` does not exist on the older toolchains still supported.
+    #[allow(deprecated)]
     let _ = ACTIVE_CONTEXT_FRAMES.fetch_update(Ordering::Release, Ordering::Acquire, |n| {
         Some(n.saturating_sub(1))
     });
