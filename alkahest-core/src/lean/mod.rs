@@ -125,7 +125,7 @@ fn rule_to_tactic(rule_name: &str) -> &'static str {
         "int_sin" | "int_cos" | "int_exp" | "log_rule" => "by sorry",
         "collect_add_terms" | "collect_mul_factors" => "by ring",
         "flatten_mul" | "flatten_add" | "canonical_order" => "by ring",
-        "expand_mul" => "by ring",
+        "expand_mul" | "expand_polynomial" => "by ring",
         // `tan_eq_sin_div_cos` yields `/`; Alkahest stores the reciprocal product.
         "tan_expand" => "by rw [Real.tan_eq_sin_div_cos, div_eq_mul_inv]",
         _ => "by ring_nf; simp",

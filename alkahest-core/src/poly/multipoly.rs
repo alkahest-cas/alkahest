@@ -17,10 +17,10 @@ use std::sync::Arc;
 // `ExponentTooLarge`, never wrapped.
 // ---------------------------------------------------------------------------
 
-type Exponents = Vec<u32>;
-type TermMap = BTreeMap<Exponents, rug::Integer>;
+pub(crate) type Exponents = Vec<u32>;
+pub(crate) type TermMap = BTreeMap<Exponents, rug::Integer>;
 
-fn termmap_add(mut a: TermMap, b: TermMap) -> TermMap {
+pub(crate) fn termmap_add(mut a: TermMap, b: TermMap) -> TermMap {
     for (exp, coeff) in b {
         let entry = a
             .entry(exp.clone())
@@ -182,7 +182,7 @@ fn termmap_pow_flint(base: &TermMap, n: u32) -> Option<TermMap> {
         .try_terms()
 }
 
-fn termmap_mul(a: &TermMap, b: &TermMap) -> Result<TermMap, ConversionError> {
+pub(crate) fn termmap_mul(a: &TermMap, b: &TermMap) -> Result<TermMap, ConversionError> {
     if a.len().saturating_mul(b.len()) >= FLINT_MUL_MIN_PAIRS {
         if let Some(r) = termmap_mul_flint(a, b) {
             return Ok(r);
@@ -212,7 +212,7 @@ fn check_termmap_pow_size(base: &TermMap, n: u32) -> Result<(), ConversionError>
     super::size::check_power_size(terms, bits, per_term)
 }
 
-fn termmap_pow(base: &TermMap, n: u32) -> Result<TermMap, ConversionError> {
+pub(crate) fn termmap_pow(base: &TermMap, n: u32) -> Result<TermMap, ConversionError> {
     check_termmap_pow_size(base, n)?;
     let work = (base.len() as u64).saturating_pow(n);
     if n >= 2 && base.len() >= 2 && work >= FLINT_POW_MIN_WORK {

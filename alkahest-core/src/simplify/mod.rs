@@ -9,6 +9,7 @@ pub mod engine;
 pub(crate) mod idmap;
 #[cfg(feature = "parallel")]
 pub mod parallel;
+pub(crate) mod poly_expand;
 #[cfg(feature = "parallel")]
 pub mod redex;
 pub mod rules;
