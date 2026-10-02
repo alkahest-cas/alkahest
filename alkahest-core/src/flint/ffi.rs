@@ -561,6 +561,29 @@ extern "C" {
         ctx: *const FmpzMPolyCtxBuf,
     );
 
+    /// `A = B + C`.
+    pub fn fmpz_mpoly_add(
+        A: *mut FmpzMPolyBuf,
+        B: *const FmpzMPolyBuf,
+        C: *const FmpzMPolyBuf,
+        ctx: *const FmpzMPolyCtxBuf,
+    );
+
+    /// `A = B - C`.
+    pub fn fmpz_mpoly_sub(
+        A: *mut FmpzMPolyBuf,
+        B: *const FmpzMPolyBuf,
+        C: *const FmpzMPolyBuf,
+        ctx: *const FmpzMPolyCtxBuf,
+    );
+
+    /// `A = B`.
+    pub fn fmpz_mpoly_set(
+        A: *mut FmpzMPolyBuf,
+        B: *const FmpzMPolyBuf,
+        ctx: *const FmpzMPolyCtxBuf,
+    );
+
     /// `A = B^k`. Returns 1 on success, 0 on failure.
     pub fn fmpz_mpoly_pow_ui(
         A: *mut FmpzMPolyBuf,

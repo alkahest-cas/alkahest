@@ -16,6 +16,7 @@ pub mod eigen;
 pub mod exp_gate;
 pub mod linear_algebra;
 pub mod normal_form;
+pub(crate) mod poly_det;
 pub(crate) mod putzer;
 mod smith;
 mod smith_poly;

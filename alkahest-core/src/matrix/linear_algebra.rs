@@ -1923,6 +1923,22 @@ pub fn matrix_inverse(m: &Matrix, pool: &ExprPool) -> Result<Matrix, MatrixError
 /// second case additionally records a
 /// [`ZeroTestRefusal`](crate::matrix::ZeroTestRefusal) carrying `E-MAT-004`.
 fn symbolic_inverse(m: &Matrix, pool: &ExprPool) -> Result<Matrix, MatrixError> {
+    symbolic_inverse_with(m, pool, true)
+}
+
+/// Smallest dimension `symbolic_inverse` sends through `poly_det`. Measured
+/// (release): at 3×3 the elimination's FLINT setup costs more than the six
+/// cofactor products it replaces; from 4×4 it is ahead (benchmark matrix
+/// 7.4 → 2.2 ms) and the gap widens to 7.6 s → 39 ms at 8×8.
+const POLY_INVERSE_MIN_DIM: usize = 4;
+
+/// [`symbolic_inverse`]; `use_bareiss = false` is the cofactor-only route it
+/// replaced for polynomial entries, kept as the differential tests' reference.
+fn symbolic_inverse_with(
+    m: &Matrix,
+    pool: &ExprPool,
+    use_bareiss: bool,
+) -> Result<Matrix, MatrixError> {
     let n = m.rows;
     if n == 0 {
         return Ok(Matrix::zeros(0, 0, pool));
@@ -1930,7 +1946,21 @@ fn symbolic_inverse(m: &Matrix, pool: &ExprPool) -> Result<Matrix, MatrixError> 
     // Expand the determinant into canonical polynomial form so that the shared
     // `1/det` factor in the resulting entries cancels cleanly against expanded
     // cofactor numerators (e.g. so A·A⁻¹ collapses to the identity on simplify).
-    let det = simplify_expanded(m.det(pool)?, pool).value;
+    //
+    // Polynomial entries take one fraction-free Gauss–Jordan elimination over
+    // ℤ[vars] (`poly_det`), which returns exactly these expanded expressions —
+    // the determinant and every minor — in O(n³) polynomial operations;
+    // anything else expands the cofactor expansion.
+    // Below 4×4 the cofactor expansion is a handful of products and wins.
+    let poly = if use_bareiss && n >= POLY_INVERSE_MIN_DIM {
+        super::poly_det::PolyMatrix::from_matrix(m, pool)
+    } else {
+        None
+    };
+    let (det, poly_minors) = match poly.as_ref().and_then(|p| p.det_and_minors_expanded(pool)) {
+        Some((d, minors)) => (d, minors),
+        None => (simplify_expanded(m.det(pool)?, pool).value, None),
+    };
     match zero_test::zero_status(pool, det) {
         zero_test::ZeroStatus::Zero => return Err(singular()),
         zero_test::ZeroStatus::NonZero => {
@@ -1958,6 +1988,8 @@ fn symbolic_inverse(m: &Matrix, pool: &ExprPool) -> Result<Matrix, MatrixError> 
             // Transposed cofactor: minor removes row j and column i.
             let minor_det = if n == 1 {
                 pool.integer(1_i32)
+            } else if let Some(minors) = &poly_minors {
+                minors[j * n + i]
             } else {
                 simplify_expanded(m.minor_det_memo(j, i, &mut memo, pool), pool).value
             };
@@ -2913,6 +2945,95 @@ mod tests {
             &Matrix::identity(2, &p),
             &p
         ));
+    }
+
+    /// The Bareiss route for polynomial entries returns the same inverse,
+    /// `ExprId` for `ExprId`, as the cofactor expansion it replaced, and the
+    /// same side condition.
+    #[test]
+    fn symbolic_inverse_bareiss_matches_cofactor_route() {
+        let mut taken = 0;
+        for n in 1..=6usize {
+            for seed in 0..12u64 {
+                let p = pool();
+                let m = super::super::poly_det::tests::poly_matrix(n, seed * 53 + n as u64, &p);
+                if n >= POLY_INVERSE_MIN_DIM
+                    && super::super::poly_det::PolyMatrix::from_matrix(&m, &p).is_some()
+                {
+                    taken += 1;
+                }
+                INVERSE_SIDE_CONDITIONS.with(|c| c.borrow_mut().clear());
+                let fast = symbolic_inverse_with(&m, &p, true);
+                let fast_side =
+                    INVERSE_SIDE_CONDITIONS.with(|c| std::mem::take(&mut *c.borrow_mut()));
+                INVERSE_SIDE_CONDITIONS.with(|c| c.borrow_mut().clear());
+                let slow = symbolic_inverse_with(&m, &p, false);
+                let slow_side =
+                    INVERSE_SIDE_CONDITIONS.with(|c| std::mem::take(&mut *c.borrow_mut()));
+                assert_eq!(fast, slow, "n={n} seed={seed}");
+                assert_eq!(fast_side, slow_side, "n={n} seed={seed}");
+            }
+        }
+        assert!(taken > 25, "only {taken} matrices took the Bareiss route");
+    }
+
+    /// The benchmark harness's matrix: `x + i` on the diagonal,
+    /// `x^|i−j| + (i+1)·y` off it.
+    fn bench_symmat(n: usize, p: &ExprPool) -> Matrix {
+        let x = p.symbol("x", Domain::Real);
+        let y = p.symbol("y", Domain::Real);
+        let rows = (0..n)
+            .map(|i| {
+                (0..n)
+                    .map(|j: usize| {
+                        if i == j {
+                            p.add(vec![x, p.integer(i as i64)])
+                        } else {
+                            p.add(vec![
+                                p.pow(x, p.integer(i.abs_diff(j) as i64)),
+                                p.mul(vec![p.integer(i as i64 + 1), y]),
+                            ])
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        Matrix::new(rows).unwrap()
+    }
+
+    /// `INV_MAX_N=8 cargo test --release -p alkahest-cas symbolic_inverse_timing -- --ignored --nocapture`
+    #[test]
+    #[ignore = "timing report; also a larger differential run"]
+    fn symbolic_inverse_timing() {
+        let max_n: usize = std::env::var("INV_MAX_N")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(7);
+        for n in 3..=max_n {
+            for (label, seed) in [("bench", None), ("dense", Some(7u64))] {
+                let build = |p: &ExprPool| match seed {
+                    None => bench_symmat(n, p),
+                    Some(s) => super::super::poly_det::tests::poly_matrix(n, s + n as u64, p),
+                };
+                let pf = pool();
+                let mf = build(&pf);
+                let t = std::time::Instant::now();
+                let fast = symbolic_inverse_with(&mf, &pf, true);
+                let t_fast = t.elapsed();
+                let ps = pool();
+                let ms = build(&ps);
+                let t = std::time::Instant::now();
+                let _ = symbolic_inverse_with(&ms, &ps, false);
+                let t_slow = t.elapsed();
+                // The identity check, in the same pool.
+                assert_eq!(
+                    fast,
+                    symbolic_inverse_with(&mf, &pf, false),
+                    "{label} n={n}"
+                );
+                println!("inverse {label} n={n}: cofactor {t_slow:?}  bareiss {t_fast:?}");
+            }
+        }
     }
 
     #[test]
