@@ -769,10 +769,17 @@ mod tests {
     }
 
     fn arb_problem() -> impl Strategy<Value = (GbPoly, Vec<GbPoly>, usize)> {
-        (1usize..=3).prop_flat_map(|n| {
+        arb_problem_min(0)
+    }
+
+    // Constrain the divisor count in the generator rather than with
+    // `prop_assume!`: rejects are budgeted globally, so a test that discards a
+    // large share of its cases aborts once the nightly raises PROPTEST_CASES.
+    fn arb_problem_min(min_divisors: usize) -> impl Strategy<Value = (GbPoly, Vec<GbPoly>, usize)> {
+        (1usize..=3).prop_flat_map(move |n| {
             (
                 arb_poly(n, 8),
-                proptest::collection::vec(arb_poly(n, 4), 0..=4),
+                proptest::collection::vec(arb_poly(n, 4), min_divisors..=4),
                 0usize..3,
             )
         })
@@ -849,8 +856,8 @@ mod tests {
 
         /// Skipping index `k` equals dividing by the list with `gs[k]` removed.
         #[test]
-        fn reduce_skip_matches_removal((f, gs, ord) in arb_problem(), k in 0usize..4) {
-            prop_assume!(k < gs.len());
+        fn reduce_skip_matches_removal((f, gs, ord) in arb_problem_min(1), k in 0usize..4) {
+            let k = k % gs.len();
             let order = ORDERS[ord];
             let new = Divisors::new(&gs, order).reduce(&f, Some(k));
             let mut others = gs.clone();
@@ -861,10 +868,9 @@ mod tests {
 
         /// The fused S-pair path equals `reduce_reference(s_polynomial(..))`.
         #[test]
-        fn reduce_s_pair_matches_reference((_f, gs, ord) in arb_problem(), i in 0usize..12, j in 0usize..12) {
-            prop_assume!(gs.len() >= 2);
-            let (i, j) = (i % gs.len(), j % gs.len());
-            prop_assume!(i != j);
+        fn reduce_s_pair_matches_reference((_f, gs, ord) in arb_problem_min(2), i in 0usize..12, j in 0usize..12) {
+            let i = i % gs.len();
+            let j = (i + 1 + j % (gs.len() - 1)) % gs.len();
             let order = ORDERS[ord];
             let new = Divisors::new(&gs, order).reduce_s_pair(i, j);
             let sp = s_polynomial(&gs[i], &gs[j], order);
@@ -887,10 +893,9 @@ mod tests {
         }
 
         #[test]
-        fn reduce_s_pair_scaled_is_a_multiple((_f, gs, ord) in arb_problem(), i in 0usize..12, j in 0usize..12) {
-            prop_assume!(gs.len() >= 2);
-            let (i, j) = (i % gs.len(), j % gs.len());
-            prop_assume!(i != j);
+        fn reduce_s_pair_scaled_is_a_multiple((_f, gs, ord) in arb_problem_min(2), i in 0usize..12, j in 0usize..12) {
+            let i = i % gs.len();
+            let j = (i + 1 + j % (gs.len() - 1)) % gs.len();
             let order = ORDERS[ord];
             let divs = Divisors::new_fraction_free(&gs, order);
             let scaled = divs.reduce_s_pair_scaled(i, j);

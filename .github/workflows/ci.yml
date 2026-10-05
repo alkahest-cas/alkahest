@@ -389,6 +389,7 @@ jobs:
           - tsan
           - lsan
           - valgrind
+          - valgrind-validated
           - fuzz-expr
           - fuzz-simplifier
           - extras
@@ -406,7 +407,8 @@ jobs:
       - name: Install Rust nightly
         if: >-
           matrix.shard == 'asan' || matrix.shard == 'tsan' ||
-          matrix.shard == 'lsan' || matrix.shard == 'valgrind'
+          matrix.shard == 'lsan' || matrix.shard == 'valgrind' ||
+          matrix.shard == 'valgrind-validated'
         uses: dtolnay/rust-toolchain@nightly
         with:
           targets: x86_64-unknown-linux-gnu
@@ -651,7 +653,7 @@ jobs:
             -Z build-std
 
       - name: Install Valgrind
-        if: matrix.shard == 'valgrind'
+        if: matrix.shard == 'valgrind' || matrix.shard == 'valgrind-validated'
         # Without `update` the runner's package index is stale and the fetch
         # 404s ("Unable to fetch some archives"), killing this shard in ~30 s.
         run: |
@@ -659,7 +661,7 @@ jobs:
           sudo apt-get install -y valgrind
 
       - name: Valgrind — Rust/C FFI boundary
-        if: matrix.shard == 'valgrind'
+        if: matrix.shard == 'valgrind' || matrix.shard == 'valgrind-validated'
         env:
           RUSTFLAGS: "-C debuginfo=2 -Z dwarf-version=4"
         run: |
@@ -690,7 +692,24 @@ jobs:
           # match nothing, run zero tests, and report clean. Set
           # ALKAHEST_VALGRIND_FILTER (space separated) to override, or empty for
           # a full sweep.
-          read -r -a filters <<< "${ALKAHEST_VALGRIND_FILTER-ball:: flint rug number_theory:: lattice:: validated::}"
+          #
+          # `validated::` is its own shard because the FFI filters take ~2 h and
+          # `validated::bounds::` does not finish under valgrind at all: the
+          # nightly of 2026-10-05 spent 4 h inside it and was cancelled at the
+          # 6 h cap with most of its 55 tests unrun. Those tests are rigorous
+          # enclosure searches that the ASan shard already memory-checks, so they are
+          # skipped here rather than left to time out.
+          skips=()
+          case "${{ matrix.shard }}" in
+            valgrind-validated)
+              default_filter="validated::"
+              skips=(--skip validated::bounds::)
+              ;;
+            *)
+              default_filter="ball:: flint rug number_theory:: lattice::"
+              ;;
+          esac
+          read -r -a filters <<< "${ALKAHEST_VALGRIND_FILTER-$default_filter}"
           if [ "${#bins[@]}" -eq 0 ]; then
             echo "::error title=Valgrind ran nothing::cargo reported no alkahest_cas test executables" >&2
             jq -r 'select(.executable != null) | .executable' /tmp/cargo-test.json >&2 || true
@@ -713,7 +732,7 @@ jobs:
             valgrind --leak-check=full --error-exitcode=1 \
               --errors-for-leak-kinds=definite,indirect \
               --show-leak-kinds=definite,indirect,possible \
-              --suppressions=valgrind.supp "$bin" "${filters[@]}" 2>&1 | tee /tmp/vg-out.txt
+              --suppressions=valgrind.supp "$bin" "${filters[@]}" "${skips[@]}" 2>&1 | tee /tmp/vg-out.txt
             ran=$(grep -oE '^test result: ok\. [0-9]+ passed' /tmp/vg-out.txt | grep -oE '[0-9]+' | head -1)
             echo "tests executed under valgrind: ${ran:-0}"
             if [ -z "$ran" ] || [ "$ran" -eq 0 ]; then
