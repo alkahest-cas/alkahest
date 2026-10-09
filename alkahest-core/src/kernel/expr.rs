@@ -443,7 +443,9 @@ mod number_hash_tests {
             d in big_integer(),
             k in big_integer(),
         ) {
-            prop_assume!(d != 0 && k != 0);
+            let one = || Integer::from(1);
+            let d = if d == 0 { one() } else { d };
+            let k = if k == 0 { one() } else { k };
             let r = BigRat(Rational::from((n.clone(), d.clone())));
             // Unreduced input with the same value: (n·k)/(d·k).
             let scaled = BigRat(Rational::from((n * &k, d * &k)));

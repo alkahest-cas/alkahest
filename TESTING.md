@@ -234,7 +234,7 @@ Use this checklist when you want **more than** `cargo test --workspace` on a bee
 | **hypothesis** | See §1 Python (`HYPOTHESIS_MAX_EXAMPLES=5000`, `pytest tests/`) |
 | **tsan** | See §3 ThreadSanitizer block |
 | **lsan** | See §3 LeakSanitizer block |
-| **valgrind** | See §3 Valgrind block |
+| **valgrind**, **valgrind-validated** | See §3 Valgrind block; the second runs `validated::` (minus `validated::bounds::`, which cannot finish under valgrind), the first the FFI filters |
 | **fuzz-\*** | See §2; use `--manifest-path fuzz/Cargo.toml` |
 | **extras** | `maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner`; `pytest tests/test_oracle.py -v` if configured; `cargo bench --workspace`; optional scripts under `benchmarks/` (may need SymPy / optional CAS; CI sets `RUN_COMMERCIAL_CAS` where applicable) |
 
