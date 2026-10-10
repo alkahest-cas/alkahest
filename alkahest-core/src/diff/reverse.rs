@@ -643,12 +643,8 @@ mod tests {
         let f = pool.func("atan2", vec![pool.mul(vec![x, y]), pool.add(vec![x, y])]);
         let gs = try_grad(f, &[x, y], &pool).unwrap();
         let binds = [(x, 0.7), (y, -1.3)];
-        for k in 0..2 {
-            assert_close(
-                eval_at(gs[k], &pool, &binds),
-                fd(f, &pool, &binds, k),
-                "atan2",
-            );
+        for (k, &g) in gs.iter().enumerate() {
+            assert_close(eval_at(g, &pool, &binds), fd(f, &pool, &binds, k), "atan2");
         }
     }
 
@@ -668,9 +664,9 @@ mod tests {
         ];
         for f in exprs {
             let gs = try_grad(f, &[x, y], &pool).unwrap();
-            for k in 0..2 {
+            for (k, &g) in gs.iter().enumerate() {
                 assert_close(
-                    eval_at(gs[k], &pool, &binds),
+                    eval_at(g, &pool, &binds),
                     fd(f, &pool, &binds, k),
                     &pool.display(f).to_string(),
                 );
