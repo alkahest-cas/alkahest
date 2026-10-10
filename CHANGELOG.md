@@ -13,6 +13,7 @@
   differentiates a Piecewise branch by branch instead of returning `0`, and
   `series` about a piece boundary refuses (E-SERIES-004) instead of returning
   one side's expansion.
+- `series` about `pool.pos_infinity()` substituted the symbol `∞` into the Taylor formula and returned, as a success, a `Series` full of `∞⁻¹`, `(x − ∞)` and `0·∞`. At `+oo` and `-oo` (new `pool.neg_infinity()`) it now expands in powers of `1/x` — `1/x + 1/(x²+1)` at order 4 is `x⁻¹ + x⁻² + O(x⁻⁴)`, SymPy's convention — and a function with no such expansion (`exp(x)`, `log(x)`, `√x`), or a point that mentions `∞` without being `±∞`, raises the new `E-SERIES-007`; `puiseux_series` raises it for an infinite point instead of a misleading `E-SERIES-006`, and `series` refuses (`E-SERIES-004`) any expansion whose coefficients would contain `∞`. `asymptotic_expand` also returned fewer terms than asked for (`x·log(1 + 1/x)` gave 2 of 4) because its numeric gate measured the residual in `f64`, where rounding at `x = 10⁶` swamps the later terms; the residual is now bounded with ball arithmetic.
 
 ## 3.12.0 — 2026-10-02
 

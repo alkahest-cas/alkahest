@@ -3,6 +3,8 @@
 use crate::budget::BudgetError;
 use crate::diff::{diff, DiffError};
 use crate::flint::FlintPoly;
+use crate::kernel::expr_props::contains_non_finite_atom;
+use crate::kernel::pool::POS_INFINITY_SYMBOL;
 use crate::kernel::{subs, Domain, ExprData, ExprId, ExprPool};
 use crate::poly::{together_parts, RationalFunction, UniPoly};
 use crate::simplify::simplify;
@@ -165,7 +167,62 @@ pub fn series(
     // the prefix it managed to compute.
     let _ceiling = enter_coeff_ceiling(pool.len().saturating_add(MAX_SERIES_POOL_GROWTH));
 
-    let mut exp = local_expansion(expr, var, point, order, pool)?;
+    // An expansion point that mentions `∞` is not a point to substitute: doing
+    // so used to return a "Taylor series about ∞" whose coefficients were
+    // `∞⁻¹`, `0·∞` and `(x − ∞)`, reported as a success. `±∞` expands in
+    // `1/x` instead; anything else mentioning `∞` is refused.
+    if contains_non_finite_atom(pool, point) {
+        return series_at_infinity(expr, var, point, order, &frame, pool);
+    }
+
+    let h_expr = expansion_increment(pool, var, point);
+    let (valuation, coeffs) = complete_expansion(
+        |n| local_expansion(expr, var, point, n, pool),
+        order,
+        SeriesRefusalCause::IndeterminateCoefficient,
+        &frame,
+        pool,
+    )?;
+
+    let out = assemble_series(&coeffs, valuation, h_expr, order, pool);
+    // A coefficient carrying `∞` (because the input mentioned it) is not a
+    // value either, and the indeterminate-coefficient check cannot see a bare
+    // symbol: `∞·x` about `0` has the "coefficient" `∞`.
+    if contains_non_finite_atom(pool, out.0) {
+        return Err(refuse(
+            order,
+            0,
+            SeriesRefusalCause::IndeterminateCoefficient,
+        ));
+    }
+    Ok(out)
+}
+
+/// Record a refusal for [`take_series_refusal`] and return its carrier error.
+fn refuse(requested: u32, computed: u32, cause: SeriesRefusalCause) -> SeriesError {
+    LAST_REFUSAL.with(|c| {
+        c.set(Some(SeriesRefusal {
+            requested,
+            computed,
+            budget: None,
+            cause,
+        }))
+    });
+    SeriesError::InvalidOrder
+}
+
+/// Run `expand` until it covers every exponent below `order`, then check that
+/// the coefficients are numbers. Shared by the finite and the infinite
+/// expansion point; `indeterminate` is the refusal raised when a coefficient
+/// is not a number.
+fn complete_expansion(
+    expand: impl Fn(u32) -> Result<LocalExpansion, SeriesError>,
+    order: u32,
+    indeterminate: SeriesRefusalCause,
+    frame: &SeriesFrame,
+    pool: &ExprPool,
+) -> Result<(i32, Vec<ExprId>), SeriesError> {
+    let mut exp = expand(order)?;
 
     if frame.refusal_pending() {
         return Err(SeriesError::InvalidOrder);
@@ -188,43 +245,196 @@ pub fn series(
         attempts += 1;
         let widened = order.checked_add(exp.valuation.unsigned_abs());
         let (Some(widened), true) = (widened, attempts <= 3) else {
-            LAST_REFUSAL.with(|c| {
-                c.set(Some(SeriesRefusal {
-                    requested: order,
-                    computed: exp.coeffs.len() as u32,
-                    budget: None,
-                    cause: SeriesRefusalCause::Exhausted,
-                }))
-            });
-            return Err(SeriesError::InvalidOrder);
+            return Err(refuse(
+                order,
+                exp.coeffs.len() as u32,
+                SeriesRefusalCause::Exhausted,
+            ));
         };
-        exp = local_expansion(expr, var, point, widened, pool)?;
+        exp = expand(widened)?;
         if frame.refusal_pending() {
             return Err(SeriesError::InvalidOrder);
         }
     }
     let LocalExpansion {
-        valuation,
-        coeffs,
-        h_expr,
+        valuation, coeffs, ..
     } = exp;
 
     // A coefficient that is `0/0`, `1/0` or `log(0)` is not a value, and a
     // `Series` carrying one is the exact failure mode this module exists to
     // avoid: `Ok`, unevaluable, unsimplifiable, `NaN` on contact. Refuse.
     if let Some(idx) = first_indeterminate(&coeffs, pool) {
-        LAST_REFUSAL.with(|c| {
-            c.set(Some(SeriesRefusal {
-                requested: coeffs.len() as u32,
-                computed: idx as u32,
-                budget: None,
-                cause: SeriesRefusalCause::IndeterminateCoefficient,
-            }))
-        });
-        return Err(SeriesError::InvalidOrder);
+        return Err(refuse(coeffs.len() as u32, idx as u32, indeterminate));
     }
+    Ok((valuation, coeffs))
+}
 
-    Ok(assemble_series(&coeffs, valuation, h_expr, order, pool))
+// ---------------------------------------------------------------------------
+// Expansion about ±∞
+// ---------------------------------------------------------------------------
+
+/// `+1` for `+∞`, `−1` for `−∞` (`c·∞` with `c` a nonzero rational constant
+/// counts as `sign(c)·∞`), `None` for any other expression.
+fn infinite_point_sign(point: ExprId, pool: &ExprPool) -> Option<i32> {
+    let is_inf = |e: ExprId| matches!(pool.get(e), ExprData::Symbol { name, .. } if name == POS_INFINITY_SYMBOL);
+    if is_inf(point) {
+        return Some(1);
+    }
+    let ExprData::Mul(args) = pool.get(point) else {
+        return None;
+    };
+    let mut sign = 1;
+    let mut infinities = 0;
+    for &a in &args {
+        if is_inf(a) {
+            infinities += 1;
+            continue;
+        }
+        let s = match pool.get(a) {
+            ExprData::Integer(n) => n.0.cmp0(),
+            ExprData::Rational(r) => r.0.cmp0(),
+            _ => return None,
+        };
+        match s {
+            std::cmp::Ordering::Less => sign = -sign,
+            std::cmp::Ordering::Equal => return None,
+            std::cmp::Ordering::Greater => {}
+        }
+    }
+    (infinities == 1).then_some(sign)
+}
+
+/// Expansion of `expr` in powers of `1/var` as `var → ±∞`.
+///
+/// Substitutes `var = ±1/t` with `t > 0`, expands about `t = 0⁺` with the
+/// ordinary machinery, and maps `c·tᵉ` back to `c·(±1)ᵉ·var⁻ᵉ`. `order` keeps
+/// its meaning in the expansion variable `t = ±1/var`: every term `var⁻ᵉ` with
+/// `e < order` is present and the remainder is `O(var^{−order})`, the same
+/// convention as SymPy's `series(f, x, oo, n)`. The negative exponent inside
+/// the `O(·)` is what marks the bound as one at infinity: at a finite point
+/// the remainder exponent is always `order ≥ 1`.
+///
+/// A function with no Laurent expansion in `1/var` (`e^x`, `log x`, `√x`,
+/// `sin x`) is refused with `E-SERIES-007` rather than returned with `∞`
+/// inside it.
+fn series_at_infinity(
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    order: u32,
+    frame: &SeriesFrame,
+    pool: &ExprPool,
+) -> Result<Series, SeriesError> {
+    let Some(sign) = infinite_point_sign(point, pool) else {
+        return Err(refuse(order, 0, SeriesRefusalCause::InfinitePoint));
+    };
+    let t = pool.symbol("__sinf_t", Domain::Positive);
+    let inv_t = pool.pow(t, pool.integer(-1_i32));
+    let x_of_t = if sign > 0 {
+        inv_t
+    } else {
+        pool.mul(vec![pool.integer(-1_i32), inv_t])
+    };
+    let mut map = HashMap::new();
+    map.insert(var, x_of_t);
+    let g = simplify(subs(expr, &map, pool), pool).value;
+    let zero = pool.integer(0_i32);
+
+    // `regularize_at_zero` pulls the `t`-powers out of radicals
+    // (`√(t⁻² + 1) = t⁻¹·√(1 + t²)` for `t > 0`), which the direct route
+    // cannot do; it declines anything outside the integer power scale, and the
+    // direct expansion of `g` is then the fallback.
+    let mut candidates: Vec<(i32, ExprId)> = Vec::new();
+    if let Some((shift, u)) = crate::calculus::asymptotic::regularize_at_zero(g, t, pool) {
+        if let Ok(shift) = i32::try_from(shift) {
+            if shift.unsigned_abs() <= 1 << 16 {
+                candidates.push((shift, u));
+            }
+        }
+    }
+    candidates.push((0, g));
+
+    let mut last_err = None;
+    for &(shift, u) in &candidates {
+        LAST_REFUSAL.with(|c| c.set(None));
+        // Coefficients of `u` from its own valuation on; the extracted
+        // `t^shift` moves them up by `shift`, so covering every exponent below
+        // `n` takes `n − shift` of them.
+        let expand = |n: u32| -> Result<LocalExpansion, SeriesError> {
+            let need = i64::from(n) - i64::from(shift);
+            let n_u = u32::try_from(need.max(1)).unwrap_or(u32::MAX);
+            let mut e = local_expansion(u, t, zero, n_u, pool)?;
+            e.valuation = e.valuation.saturating_add(shift);
+            Ok(e)
+        };
+        match complete_expansion(
+            expand,
+            order,
+            SeriesRefusalCause::InfinitePoint,
+            frame,
+            pool,
+        ) {
+            Ok((valuation, coeffs)) => {
+                let out = assemble_series_at_infinity(&coeffs, valuation, var, sign, order, pool);
+                if contains_non_finite_atom(pool, out.0)
+                    || crate::kernel::subs::mentions_var(out.0, t, pool)
+                {
+                    last_err = Some(refuse(order, 0, SeriesRefusalCause::InfinitePoint));
+                    continue;
+                }
+                return Ok(out);
+            }
+            // A budget or work-ceiling trip is final: a second candidate would
+            // only spend more of what has already run out.
+            Err(e) if exhaustion_pending() => {
+                return Err(e);
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| refuse(order, 0, SeriesRefusalCause::InfinitePoint)))
+}
+
+/// `true` (leaving it pending) when the refusal on record is an exhaustion.
+fn exhaustion_pending() -> bool {
+    LAST_REFUSAL.with(|c| {
+        c.get()
+            .is_some_and(|r| matches!(r.cause, SeriesRefusalCause::Exhausted))
+    })
+}
+
+/// `∑ cₑ·(±1)ᵉ·var⁻ᵉ + O(var^{−order})` over `valuation ≤ e < order`.
+fn assemble_series_at_infinity(
+    coeffs: &[ExprId],
+    valuation: i32,
+    var: ExprId,
+    sign: i32,
+    order: u32,
+    pool: &ExprPool,
+) -> Series {
+    let x_pow = |e: i64| match e {
+        0 => pool.integer(1_i32),
+        1 => var,
+        _ => pool.pow(var, pool.integer(e)),
+    };
+    let mut terms = Vec::new();
+    for (k, &coeff) in coeffs.iter().enumerate() {
+        if is_structural_zero(coeff, pool) {
+            continue;
+        }
+        let e = i64::from(valuation) + k as i64;
+        if e >= i64::from(order) {
+            break;
+        }
+        let coeff = if sign < 0 && e.rem_euclid(2) == 1 {
+            simplify(pool.mul(vec![pool.integer(-1_i32), coeff]), pool).value
+        } else {
+            coeff
+        };
+        terms.push(pool.mul(vec![coeff, x_pow(-e)]));
+    }
+    terms.push(pool.big_o(x_pow(-i64::from(order))));
+    Series(pool.add(terms))
 }
 
 // ---------------------------------------------------------------------------
@@ -1017,6 +1227,16 @@ pub enum SeriesRefusalCause {
     /// has no Taylor series at that point. Reported under `E-SERIES-004`
     /// (a non-analytic expansion point), with its own message.
     PiecewiseBoundary,
+    /// The expansion point mentions `∞` and no expansion in `1/var` was
+    /// found — `E-SERIES-007`.
+    ///
+    /// `±∞` is expanded by substituting `var = ±1/t` and expanding about
+    /// `t = 0⁺`; this is raised when that has no Laurent expansion (`e^x`,
+    /// `log x`, `√x` and `sin x` at `+∞`), or when the point is some other
+    /// expression involving `∞` (`∞ − 1`, `∞·a`). Substituting `∞` into the
+    /// Taylor formula is never an answer: it used to return coefficients
+    /// such as `∞⁻¹` and `0·∞` as a success.
+    InfinitePoint,
 }
 
 impl SeriesRefusal {
@@ -1076,6 +1296,14 @@ impl fmt::Display for SeriesRefusal {
                  the function has no Taylor series: expanding there would return one \
                  piece's series as if it held on both sides. Refusing"
             ),
+            SeriesRefusalCause::InfinitePoint => write!(
+                f,
+                "no expansion in powers of 1/x at the infinite expansion point: the \
+                 function has no Laurent expansion there (exponential, logarithmic, \
+                 branch-point or oscillatory behaviour at infinity), or the point is \
+                 not +oo or -oo. Refusing to substitute infinity into a Taylor formula, \
+                 which yields 0*oo and oo-oo rather than coefficients"
+            ),
         }
     }
 }
@@ -1088,6 +1316,7 @@ impl crate::errors::AlkahestError for SeriesRefusal {
             SeriesRefusalCause::Exhausted => "E-SERIES-003",
             SeriesRefusalCause::IndeterminateCoefficient => "E-SERIES-004",
             SeriesRefusalCause::PiecewiseBoundary => "E-SERIES-004",
+            SeriesRefusalCause::InfinitePoint => "E-SERIES-007",
         }
     }
 
@@ -1107,6 +1336,12 @@ impl crate::errors::AlkahestError for SeriesRefusal {
             SeriesRefusalCause::PiecewiseBoundary => Some(
                 "expand each piece separately about the boundary (substitute the branch \
                  value for the Piecewise), or expand about a point strictly inside one piece",
+            ),
+            SeriesRefusalCause::InfinitePoint => Some(
+                "pass exactly +oo (`pool.pos_infinity()`) or -oo; for exp/log scales at \
+                 infinity use `experimental.asymptotic_expand`, for fractional powers \
+                 substitute x = 1/t yourself and use `experimental.puiseux_series` at 0, \
+                 and for a single value use `limit`",
             ),
         }
     }
@@ -1614,6 +1849,123 @@ mod tests {
             ],
         );
         assert_eq!(big_o, 4);
+    }
+
+    // -----------------------------------------------------------------------
+    // Expansion about ±∞ (W4)
+    // -----------------------------------------------------------------------
+
+    fn neg_inf(p: &ExprPool) -> ExprId {
+        p.mul(vec![p.integer(-1), p.pos_infinity()])
+    }
+
+    /// The report's repro: this used to be a "Taylor series about ∞" with
+    /// `∞⁻¹`, `(x − ∞)` and `0·∞` in it, returned as `Ok`.
+    #[test]
+    fn series_at_pos_infinity_expands_in_inverse_powers() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let x2p1 = p.add(vec![p.pow(x, p.integer(2)), p.integer(1)]);
+        let f = p.add(vec![p.pow(x, p.integer(-1)), p.pow(x2p1, p.integer(-1))]);
+        let s = series(f, x, p.pos_infinity(), 6, &p).unwrap();
+        assert!(
+            !contains_non_finite_atom(&p, s.expr()),
+            "{}",
+            p.display(s.expr())
+        );
+        let (terms, big_o) = series_terms(s, x, &p);
+        // SymPy: series(f, x, oo, 6) = 1/x + 1/x**2 - 1/x**4 + O(x**-6)
+        assert_terms(&terms, &[(-4, -1.0), (-2, 1.0), (-1, 1.0)]);
+        assert_eq!(big_o, -6);
+    }
+
+    /// `(x + 1)/(x − 1)` at `±∞` is `1 + 2/x + 2/x² + 2/x³ + O(x⁻⁴)` from both
+    /// sides; `x³/(x² + 1) = x − 1/x + 1/x³ + …` keeps its positive power.
+    #[test]
+    fn series_at_infinity_rational_functions_both_sides() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let mobius = p.mul(vec![
+            p.add(vec![x, p.integer(1)]),
+            p.pow(p.add(vec![x, p.integer(-1)]), p.integer(-1)),
+        ]);
+        let pole = p.mul(vec![
+            p.pow(x, p.integer(3)),
+            p.pow(
+                p.add(vec![p.pow(x, p.integer(2)), p.integer(1)]),
+                p.integer(-1),
+            ),
+        ]);
+        for point in [p.pos_infinity(), neg_inf(&p)] {
+            let (terms, big_o) = series_terms(series(mobius, x, point, 4, &p).unwrap(), x, &p);
+            assert_terms(&terms, &[(-3, 2.0), (-2, 2.0), (-1, 2.0), (0, 1.0)]);
+            assert_eq!(big_o, -4);
+            let (terms, big_o) = series_terms(series(pole, x, point, 4, &p).unwrap(), x, &p);
+            assert_terms(&terms, &[(-3, 1.0), (-1, -1.0), (1, 1.0)]);
+            assert_eq!(big_o, -4);
+        }
+    }
+
+    /// `√(x² + 1)` is `x + 1/(2x) − …` at `+∞` and `−x − 1/(2x) + …` at `−∞`.
+    #[test]
+    fn series_at_infinity_radical_has_the_right_sign_at_neg_infinity() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let f = p.func(
+            "sqrt",
+            vec![p.add(vec![p.pow(x, p.integer(2)), p.integer(1)])],
+        );
+        let (terms, _) = series_terms(series(f, x, p.pos_infinity(), 4, &p).unwrap(), x, &p);
+        assert_terms(&terms, &[(-3, -0.125), (-1, 0.5), (1, 1.0)]);
+        let (terms, _) = series_terms(series(f, x, neg_inf(&p), 4, &p).unwrap(), x, &p);
+        assert_terms(&terms, &[(-3, 0.125), (-1, -0.5), (1, -1.0)]);
+    }
+
+    /// No Laurent expansion in `1/x` exists: refuse with E-SERIES-007, never
+    /// return a series with `∞` inside.
+    #[test]
+    fn series_at_infinity_refuses_without_a_laurent_expansion() {
+        use crate::errors::AlkahestError;
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        for f in [
+            p.func("exp", vec![x]),
+            p.func("log", vec![x]),
+            p.func("sqrt", vec![x]),
+            p.func("sin", vec![x]),
+        ] {
+            let r = series(f, x, p.pos_infinity(), 4, &p);
+            assert!(r.is_err(), "{}", p.display(r.unwrap().expr()));
+            let refusal = take_series_refusal().expect("a recorded refusal");
+            assert_eq!(refusal.cause(), SeriesRefusalCause::InfinitePoint);
+            assert_eq!(refusal.code(), "E-SERIES-007");
+        }
+    }
+
+    /// A point that mentions `∞` without being `±∞` is refused, and an `∞`
+    /// inside the expression never reaches a returned coefficient.
+    #[test]
+    fn series_refuses_other_infinite_points_and_infinite_coefficients() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let a = p.symbol("a", Domain::Real);
+        let inv_x = p.pow(x, p.integer(-1));
+        for point in [
+            p.add(vec![p.pos_infinity(), p.integer(1)]),
+            p.mul(vec![a, p.pos_infinity()]),
+        ] {
+            assert!(series(inv_x, x, point, 3, &p).is_err());
+            assert_eq!(
+                take_series_refusal().unwrap().cause(),
+                SeriesRefusalCause::InfinitePoint
+            );
+        }
+        let f = p.mul(vec![p.pos_infinity(), p.func("sin", vec![x])]);
+        assert!(series(f, x, p.integer(0), 3, &p).is_err());
+        assert_eq!(
+            take_series_refusal().unwrap().cause(),
+            SeriesRefusalCause::IndeterminateCoefficient
+        );
     }
 
     /// `(x + x²)⁻³ = x⁻³(1+x)⁻³`; order 3 must reach `x²`.
