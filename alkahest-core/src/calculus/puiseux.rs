@@ -163,6 +163,10 @@ pub enum NotPuiseuxReason {
     /// A coefficient came out as an indeterminate form (`0/0`, `0⁻¹`, `log 0`)
     /// that neither the Laurent engine nor the fractional route could clear.
     IndeterminateCoefficient,
+    /// The expansion point mentions `∞`. A Puiseux expansion here is about a
+    /// finite point; substituting `∞` for it is not an expansion at infinity.
+    /// Reported as `E-SERIES-007`, the code `series` uses for the same point.
+    InfinitePoint,
 }
 
 /// Why `verify` could not confirm an expansion it was handed.
@@ -213,6 +217,9 @@ impl fmt::Display for PuiseuxError {
                     NotPuiseuxReason::IndeterminateCoefficient =>
                         "a coefficient is an indeterminate form (0/0, 0^-1, log 0) rather \
                          than a number",
+                    NotPuiseuxReason::InfinitePoint =>
+                        "the expansion point is infinite; puiseux_series expands about a \
+                         finite point only",
                 }
             ),
             PuiseuxError::Exhausted(_) => write!(
@@ -247,6 +254,7 @@ impl crate::errors::AlkahestError for PuiseuxError {
             PuiseuxError::Diff(_) => "E-SERIES-001",
             PuiseuxError::InvalidOrder => "E-SERIES-002",
             PuiseuxError::Exhausted(_) => "E-SERIES-003",
+            PuiseuxError::NotPuiseux(NotPuiseuxReason::InfinitePoint) => "E-SERIES-007",
             PuiseuxError::NotPuiseux(_) => "E-SERIES-005",
             PuiseuxError::Unverified(_) => "E-SERIES-006",
         }
@@ -263,6 +271,10 @@ impl crate::errors::AlkahestError for PuiseuxError {
             PuiseuxError::Exhausted(_) => Some(
                 "ask for a lower order, raise the budget, or rewrite the expression so its \
                  expansion closes",
+            ),
+            PuiseuxError::NotPuiseux(NotPuiseuxReason::InfinitePoint) => Some(
+                "substitute x = 1/t (x = -1/t for -oo) and expand about t = 0, or use \
+                 `series` (Laurent in 1/x) or `experimental.asymptotic_expand` at +oo",
             ),
             PuiseuxError::NotPuiseux(_) => Some(
                 "a logarithm of a vanishing quantity (`sqrt(x)*log x`) needs a \
@@ -424,6 +436,13 @@ pub fn puiseux_series(
 ) -> Result<PuiseuxExpansion, PuiseuxError> {
     if order == 0 {
         return Err(PuiseuxError::InvalidOrder);
+    }
+    // Substituting `∞ + ξ` for the variable is not an expansion at infinity;
+    // it used to run all the way to the verifier and come back as an
+    // unverifiable E-SERIES-006, which misreports a wrong question as a
+    // failed check.
+    if crate::kernel::expr_props::contains_non_finite_atom(pool, point) {
+        return Err(PuiseuxError::NotPuiseux(NotPuiseuxReason::InfinitePoint));
     }
     let ceiling = pool.len().saturating_add(MAX_SERIES_POOL_GROWTH);
     let _coeff_ceiling = enter_coeff_ceiling(ceiling);
@@ -1964,6 +1983,24 @@ mod tests {
             "{err}"
         );
         assert_eq!(err.code(), "E-SERIES-005");
+    }
+
+    /// An infinite point is refused up front with E-SERIES-007, not run
+    /// through the verifier and withheld as "unverified" (E-SERIES-006).
+    #[test]
+    fn an_infinite_point_is_refused_up_front() {
+        let (p, x) = pool_with_x();
+        for point in [
+            p.pos_infinity(),
+            p.mul(vec![p.integer(-1), p.pos_infinity()]),
+        ] {
+            let err = puiseux_series(p.func("sqrt", vec![x]), x, point, 4, &p).unwrap_err();
+            assert_eq!(
+                err,
+                PuiseuxError::NotPuiseux(NotPuiseuxReason::InfinitePoint)
+            );
+            assert_eq!(err.code(), "E-SERIES-007");
+        }
     }
 
     #[test]

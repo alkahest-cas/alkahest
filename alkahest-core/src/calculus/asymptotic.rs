@@ -586,11 +586,13 @@ fn log_of_arg_peel(
     // so its expansion is a genuine power series in 1/x with no log.
     let remainder = power_scale_terms_raw(log_cofactor, var, order, pool)?;
     let mut candidate: Vec<ExprId> = vec![lead];
-    for (_, e) in remainder.into_iter().take(n_terms.saturating_sub(1)) {
-        // Drop a structurally-zero constant term (limit of log cofactor is 0).
-        if matches!(pool.get(e), ExprData::Integer(n) if n.0 == 0) {
-            continue;
-        }
+    // Drop a structurally-zero constant term (limit of log cofactor is 0)
+    // *before* counting, so it does not take one of the requested slots.
+    for (_, e) in remainder
+        .into_iter()
+        .filter(|(_, e)| !matches!(pool.get(*e), ExprData::Integer(n) if n.0 == 0))
+        .take(n_terms.saturating_sub(1))
+    {
         candidate.push(e);
     }
 
@@ -682,6 +684,12 @@ const GATE_POINTS: [f64; 3] = [1.0e2, 1.0e4, 1.0e6];
 /// bounds the residual up to a constant for finitely many terms).
 const GATE_SLACK: f64 = 8.0;
 
+/// Rounding-noise floor of the gate's f64 residual, in units of
+/// `f64::EPSILON` times the magnitudes that were summed to form it. A term no
+/// larger than this (times [`GATE_SLACK`]) at a gate point is unresolvable
+/// there and that point is skipped for it.
+const GATE_NOISE_ULPS: f64 = 64.0;
+
 /// Filter `candidate` (ordered, most-significant first) down to the longest
 /// verified prefix: term `k+1` must be `o(term k)` and the residual after `k`
 /// terms must be controlled by term `k+1` at every gate point.
@@ -768,9 +776,37 @@ fn gate_terms(f: ExprId, var: ExprId, candidate: &[ExprId], pool: &ExprPool) -> 
 
         let mut residual_ok = true;
         let mut last_rel = f64::INFINITY;
+        let mut resolved_points = 0usize;
         for j in 0..GATE_POINTS.len() {
-            let residual = (f_vals[j] - next_partial[j]).abs();
             let scale = row[j].abs();
+            // The residual `f − Σ` is a difference of nearly equal numbers,
+            // and `f` itself may be ill-conditioned in f64 (`x·log(1 + 1/x)`
+            // at `x = 10⁶` loses ten digits to the rounding of `1 + 1/x`).
+            // That noise is what used to reject `1/(3x²)` and `−1/(4x³)` —
+            // the call returned 2 of the 4 terms asked for. Measure the
+            // residual with ball arithmetic (an upper bound, radius
+            // included); fall back to f64 only where that cannot evaluate,
+            // and there skip a point whose term sits below the rounding floor:
+            // it can be neither confirmed nor refuted there, and the term
+            // must still pass at every point that does resolve it (at least
+            // one).
+            let (residual, noise) =
+                match ball_residual(f, &candidate[..=k], var, GATE_POINTS[j], pool) {
+                    Some(r) => (r, 0.0),
+                    None => {
+                        let magnitude = f_vals[j].abs()
+                            + next_partial[j].abs()
+                            + term_vals[..=k].iter().map(|r| r[j].abs()).sum::<f64>();
+                        (
+                            (f_vals[j] - next_partial[j]).abs(),
+                            GATE_NOISE_ULPS * f64::EPSILON * magnitude,
+                        )
+                    }
+                };
+            if scale * GATE_SLACK <= noise {
+                continue;
+            }
+            resolved_points += 1;
             // After adding term k, the residual must be no bigger than this
             // term (up to slack); this is the "term k+1 = o(term k)" guarantee
             // expressed against the realized residual.
@@ -791,7 +827,7 @@ fn gate_terms(f: ExprId, var: ExprId, candidate: &[ExprId], pool: &ExprPool) -> 
             }
             last_rel = rel;
         }
-        if !residual_ok {
+        if !residual_ok || resolved_points == 0 {
             break;
         }
 
@@ -800,6 +836,28 @@ fn gate_terms(f: ExprId, var: ExprId, candidate: &[ExprId], pool: &ExprPool) -> 
     }
 
     candidate[..accepted].to_vec()
+}
+
+/// Working precision of [`ball_residual`], in bits.
+const GATE_BALL_PREC: u32 = 256;
+
+/// An upper bound on `|f − Σ terms|` at `var = xv`, from ball arithmetic, or
+/// `None` when some node has no ball kernel or the bound is not finite.
+fn ball_residual(
+    f: ExprId,
+    terms: &[ExprId],
+    var: ExprId,
+    xv: f64,
+    pool: &ExprPool,
+) -> Option<f64> {
+    let mut ev = crate::ball::IntervalEval::new(GATE_BALL_PREC);
+    ev.bind(var, crate::ball::ArbBall::from_f64(xv, GATE_BALL_PREC));
+    let mut acc = ev.eval(f, pool)?;
+    for &t in terms {
+        acc = acc - ev.eval(t, pool)?;
+    }
+    let bound = acc.mid_f64().abs() + acc.rad_f64();
+    bound.is_finite().then_some(bound)
 }
 
 #[cfg(test)]
@@ -847,6 +905,31 @@ mod tests {
             last = v;
         }
         (fv - sum).abs() <= last.abs() * 8.0 + 1e-9
+    }
+
+    /// `x·log(1 + 1/x) = 1 − 1/(2x) + 1/(3x²) − 1/(4x³) + …`: four terms asked,
+    /// four returned. The gate used to drop the last one because at `x = 10⁶`
+    /// it is `2.5·10⁻¹⁹`, below the f64 rounding noise of `f − Σ`.
+    #[test]
+    fn gate_does_not_drop_terms_below_rounding_noise() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Positive);
+        let inv = p.pow(x, p.integer(-1));
+        let f = p.mul(vec![x, p.func("log", vec![p.add(vec![p.integer(1), inv])])]);
+        let exp = asymptotic_expand(f, x, 4, &p).unwrap();
+        let terms = exp.term_exprs();
+        assert_eq!(terms.len(), 4);
+        let want = [1.0, -0.5, 1.0 / 3.0, -0.25];
+        for (k, (&t, c)) in terms.iter().zip(want).enumerate() {
+            let mut env = HashMap::new();
+            env.insert(x, 10.0);
+            let v = eval_interp(t, &env, &p).unwrap();
+            assert!(
+                (v - c / 10f64.powi(k as i32)).abs() < 1e-12,
+                "term {k}: {v}"
+            );
+        }
+        assert!(residual_small(f, &terms, x, &p));
     }
 
     #[test]

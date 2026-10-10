@@ -1966,6 +1966,14 @@ impl PyExprPool {
         PyExpr { id, pool }
     }
 
+    /// Canonical `-∞` (`-1 · ∞`), the same expression as ``-pool.pos_infinity()``.
+    fn neg_infinity(slf: PyRef<'_, Self>) -> PyExpr {
+        let inf = slf.inner.pos_infinity();
+        let id = slf.inner.mul(vec![slf.inner.integer(-1_i32), inf]);
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
+    }
+
     // PA-9 — Predicate constructors
     fn lt(slf: PyRef<'_, Self>, a: PyExpr, b: PyExpr) -> PyResult<PyExpr> {
         same_pool!("pool.lt"; slf, a, b);

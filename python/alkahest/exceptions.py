@@ -59,7 +59,7 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
                              harmonic numbers, Möbius μ, σ_k, sums of squares).
                              Domain and parse failures under those functions
                              still arrive as E-NT-001 / E-NT-002
-    E-SERIES-001 … E-SERIES-006 SeriesError  (003 = expansion ran past its work
+    E-SERIES-001 … E-SERIES-007 SeriesError  (003 = expansion ran past its work
                                  ceiling / budget before reaching the requested
                                  order; refused rather than returned short.
                                  004 = a coefficient is an indeterminate form,
@@ -71,7 +71,10 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
                                  (a logarithm, an essential singularity, or a
                                  ramification index past the verifiable range);
                                  006 = one was computed and then withheld
-                                 because its verifier could not confirm it)
+                                 because its verifier could not confirm it;
+                                 007 = series/puiseux_series at an infinite
+                                 point with no expansion in 1/x, or a point
+                                 that mentions oo without being +-oo)
     E-LIMIT-001 … E-LIMIT-006 LimitError  (006 = the limit turns on the sign of
                                  a free parameter that nothing states; assume
                                  it, or declare the symbol Domain.Positive)

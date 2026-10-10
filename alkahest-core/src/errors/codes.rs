@@ -75,6 +75,11 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // with a caveat is not an option: a caller cannot tell a checked expansion from an
     // unchecked one once it is in their hands.
     ErrorSpec { code: "E-SERIES-006", class: "PuiseuxError", cause: Cause::Unsupported, remediation: Some("ask for a lower order, or expand about a point where the function is real and its heads have numeric kernels; an unverified expansion is withheld rather than returned") },
+    // 007: `series` about an infinite point found no expansion in 1/x (`e^x`, `log x`,
+    // `√x` at +∞), or the point mentions ∞ but is not ±∞. Substituting ∞ into the Taylor
+    // formula is what used to happen, and it returned `0·∞` and `∞⁻¹` as coefficients.
+    // Carried out of band on `SeriesError::InvalidOrder` like 003/004.
+    ErrorSpec { code: "E-SERIES-007", class: "SeriesRefusal", cause: Cause::Domain,    remediation: Some("pass exactly +oo or -oo; for exp/log scales at infinity use `experimental.asymptotic_expand`, for fractional powers substitute x = 1/t and use `experimental.puiseux_series` at 0, and for a single value use `limit`") },
     // E-INT — IntegrationError
     ErrorSpec { code: "E-INT-001", class: "IntegrationError", cause: Cause::Unsupported, remediation: Some("use a numeric integrator for arbitrary functions") },
     ErrorSpec { code: "E-INT-002", class: "IntegrationError", cause: Cause::Domain,      remediation: None },
