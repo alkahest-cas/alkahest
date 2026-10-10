@@ -11,6 +11,7 @@ pub mod puiseux;
 pub mod series;
 pub mod singularity;
 mod tps;
+pub(crate) mod trig_pole;
 
 pub use asymptotic::{asymptotic_expand, AsymptoticError, AsymptoticExpansion, AsymptoticTerm};
 pub use fps::{Fps, FpsError};

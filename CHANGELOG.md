@@ -13,6 +13,7 @@
   differentiates a Piecewise branch by branch instead of returning `0`, and
   `series` about a piece boundary refuses (E-SERIES-004) instead of returning
   one side's expansion.
+- `integrate(1/sqrt(1 - sin(x)**2/4), x, 0, pi/2)` returned an "exact" expression built from float-derived rationals (`4503599618403511/4503599627370496`) and `tan(pi/2)`, 3e-9 away from `K(1/4)`. Integrands `(A + B·sin²u)^(∓1/2)` (also `cos²u`, `cos u`, `sin u`) now integrate exactly to `EllipticF`/`EllipticE`, and complete integrals reduce to `EllipticK(m)`/`EllipticE(m)`; a definite integral whose antiderivative carries float-lifted constants is refused (`E-INT-001`) instead of being presented as exact; an antiderivative that substitutes into a pole of `tan`/`cot`/`sec`/`csc` at an endpoint is evaluated by a one-sided limit (or refused), and one with such a pole inside the interval is split there (`∫_0^{2π} dx/(2 + cos x)` now returns `2π/√3` instead of refusing); `limit(atan(2*tan(x)), x, pi/2, '-')` returns `π/2` instead of `atan(2·tan(π/2))`; and incomplete `EllipticF`/`EllipticE` now evaluate to full double precision (Carlson forms) instead of to `1e-11`.
 
 ## 3.12.0 — 2026-10-02
 

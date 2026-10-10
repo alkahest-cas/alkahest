@@ -953,6 +953,16 @@ def integrate(expr, var, a=None, b=None):
     numeric the closed form must denote a finite real: results such as
     ``−log(−1)`` or ``2·(0^{1/2})^{−1}`` are refused, not returned.
 
+    Where the antiderivative passes through a pole of ``tan``/``cot``/``sec``/
+    ``csc`` (the ``tan(x/2)`` of a half-angle substitution), the endpoint value
+    is the one-sided limit, and an interior pole splits the interval, so
+    ``∫_0^{2π} dx/(2 + cos x)`` is ``2π/√3``; when the limit cannot be
+    established the integral is refused. An antiderivative carrying constants
+    lifted from floating point is refused rather than presented as exact.
+    ``(A + B·sin²x)^{∓1/2}`` integrates exactly to ``EllipticF``/``EllipticE``
+    (parameter ``m = k²``), so ``∫_0^{π/2} dx/√(1 − sin²x/4)`` is
+    ``EllipticK(1/4)``.
+
     For an indefinite integral, ``result.verification`` reports
     ``"exactly_verified"`` only when the kernel proves the symbolic residual
     ``diff(result, var) - expr`` is zero. A successful result with

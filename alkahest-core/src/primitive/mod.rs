@@ -1640,6 +1640,106 @@ pub mod builtins {
         Some(std::f64::consts::PI / (2.0 * a))
     }
 
+    /// Carlson's symmetric integral `R_F(x, y, z)` by the duplication theorem
+    /// (DLMF 19.36.1), accurate to a few ulps.  `None` outside its domain
+    /// (a negative argument, or two zero arguments).
+    fn carlson_rf(x: f64, y: f64, z: f64) -> Option<f64> {
+        if !(x >= 0.0 && y >= 0.0 && z >= 0.0) || [x + y, x + z, y + z].contains(&0.0) {
+            return None;
+        }
+        let (mut x, mut y, mut z) = (x, y, z);
+        for _ in 0..200 {
+            let a = (x + y + z) / 3.0;
+            let (dx, dy, dz) = (1.0 - x / a, 1.0 - y / a, 1.0 - z / a);
+            if dx.abs().max(dy.abs()).max(dz.abs()) < 1e-4 {
+                let e2 = dx * dy - dz * dz;
+                let e3 = dx * dy * dz;
+                return Some(
+                    (1.0 - e2 / 10.0 + e3 / 14.0 + e2 * e2 / 24.0 - 3.0 * e2 * e3 / 44.0)
+                        / a.sqrt(),
+                );
+            }
+            let (sx, sy, sz) = (x.sqrt(), y.sqrt(), z.sqrt());
+            let lam = sx * sy + sx * sz + sy * sz;
+            x = 0.25 * (x + lam);
+            y = 0.25 * (y + lam);
+            z = 0.25 * (z + lam);
+        }
+        None
+    }
+
+    /// Carlson's `R_D(x, y, z)` by the duplication theorem (DLMF 19.36.2).
+    fn carlson_rd(x: f64, y: f64, z: f64) -> Option<f64> {
+        if !(x >= 0.0 && y >= 0.0 && z > 0.0) || x + y == 0.0 {
+            return None;
+        }
+        let (mut x, mut y, mut z) = (x, y, z);
+        let (mut sum, mut fac) = (0.0_f64, 1.0_f64);
+        for _ in 0..200 {
+            let (sx, sy, sz) = (x.sqrt(), y.sqrt(), z.sqrt());
+            let lam = sx * (sy + sz) + sy * sz;
+            sum += fac / (sz * (z + lam));
+            fac *= 0.25;
+            x = 0.25 * (x + lam);
+            y = 0.25 * (y + lam);
+            z = 0.25 * (z + lam);
+            let ave = 0.2 * (x + y + 3.0 * z);
+            let (dx, dy, dz) = ((ave - x) / ave, (ave - y) / ave, (ave - z) / ave);
+            if dx.abs().max(dy.abs()).max(dz.abs()) < 1e-4 {
+                let (c1, c2, c3, c4) = (3.0 / 14.0, 1.0 / 6.0, 9.0 / 22.0, 3.0 / 26.0);
+                let (c5, c6) = (0.25 * c3, 1.5 * c4);
+                let ea = dx * dy;
+                let eb = dz * dz;
+                let ec = ea - eb;
+                let ed = ea - 6.0 * eb;
+                let ee = ed + ec + ec;
+                let series = 1.0
+                    + ed * (-c1 + c5 * ed - c6 * dz * ee)
+                    + dz * (c2 * ee + dz * (-c3 * ec + dz * c4 * ea));
+                return Some(3.0 * sum + fac * series / (ave * ave.sqrt()));
+            }
+        }
+        None
+    }
+
+    /// Incomplete `F(φ | m)` (`second = false`) or `E(φ | m)` (`second = true`)
+    /// through Carlson's forms, reducing `φ` to `[−π/2, π/2]` by the
+    /// quasi-periodicity `F(φ + nπ) = F(φ) + 2n·K(m)` (and likewise for `E`).
+    ///
+    /// The adaptive-Simpson quadrature this replaces met only an absolute
+    /// tolerance of `1e-11`, so a closed form like `F(1 | 1/4)` was correct to
+    /// ten or eleven digits where every other primitive gives fifteen.
+    fn carlson_incomplete(phi: f64, m: f64, second: bool) -> Option<f64> {
+        if !phi.is_finite() || !m.is_finite() {
+            return None;
+        }
+        let n = (phi / std::f64::consts::PI).round();
+        let psi = phi - n * std::f64::consts::PI;
+        let (s, c) = psi.sin_cos();
+        let delta2 = 1.0 - m * s * s;
+        if !(delta2 > 0.0) {
+            return None;
+        }
+        let rf = carlson_rf(c * c, delta2, 1.0)?;
+        let mut part = s * rf;
+        if second {
+            part -= m / 3.0 * s * s * s * carlson_rd(c * c, delta2, 1.0)?;
+        }
+        if n == 0.0 {
+            return Some(part);
+        }
+        if !(m < 1.0) {
+            return None;
+        }
+        let complete_rf = carlson_rf(0.0, 1.0 - m, 1.0)?;
+        let complete = if second {
+            complete_rf - m / 3.0 * carlson_rd(0.0, 1.0 - m, 1.0)?
+        } else {
+            complete_rf
+        };
+        Some(2.0 * n * complete + part)
+    }
+
     /// Numeric AGM-based complete elliptic integral of the second kind E(m).
     fn agm_e(m: f64) -> Option<f64> {
         if m >= 1.0 {
@@ -1906,12 +2006,14 @@ pub mod builtins {
                     if !incomplete_domain_ok(phi, m) {
                         return None;
                     }
-                    adaptive_simpson(
-                        &|t: f64| (1.0 - m * t.sin().powi(2)).sqrt(),
-                        0.0,
-                        phi,
-                        1e-11,
-                    )
+                    carlson_incomplete(phi, m, true).or_else(|| {
+                        adaptive_simpson(
+                            &|t: f64| (1.0 - m * t.sin().powi(2)).sqrt(),
+                            0.0,
+                            phi,
+                            1e-11,
+                        )
+                    })
                 }
                 _ => None,
             }
@@ -2026,12 +2128,14 @@ pub mod builtins {
             if !incomplete_domain_ok(phi, m) {
                 return None;
             }
-            adaptive_simpson(
-                &|t: f64| 1.0 / (1.0 - m * t.sin().powi(2)).sqrt(),
-                0.0,
-                phi,
-                1e-11,
-            )
+            carlson_incomplete(phi, m, false).or_else(|| {
+                adaptive_simpson(
+                    &|t: f64| 1.0 / (1.0 - m * t.sin().powi(2)).sqrt(),
+                    0.0,
+                    phi,
+                    1e-11,
+                )
+            })
         }
     }
 
@@ -3273,6 +3377,36 @@ mod tests {
         // φ = 0 gives 0 for both incomplete integrals.
         assert!(reg.numeric_f64("EllipticF", &[0.0, 0.5]).unwrap().abs() < 1e-12);
         assert!(reg.numeric_f64("EllipticE", &[0.0, 0.5]).unwrap().abs() < 1e-12);
+    }
+
+    #[test]
+    fn elliptic_incomplete_numeric_is_full_precision() {
+        // mpmath.ellipf / ellipe at 30 digits; |φ| > π/2 exercises the
+        // quasi-periodic reduction, m > 1 the restricted real range.
+        let reg = PrimitiveRegistry::default_registry();
+        let cases = [
+            (1.0, 0.25, 1.037_356_120_002_177_3, 0.964_876_454_268_627_5),
+            (
+                -2.5,
+                0.7,
+                -3.476_875_190_644_891_6,
+                -1.871_329_430_383_858_8,
+            ),
+            (5.0, -3.0, 3.380_082_932_613_584, 7.835_653_634_007_764),
+            (0.3, 4.0, 0.321_243_014_549_783, 0.281_248_556_340_456_2),
+        ];
+        for (phi, m, f, e) in cases {
+            let gf = reg.numeric_f64("EllipticF", &[phi, m]).unwrap();
+            let ge = reg.numeric_f64("EllipticE", &[phi, m]).unwrap();
+            assert!(
+                (gf - f).abs() <= 4e-15 * f.abs(),
+                "F({phi}|{m}) = {gf}, want {f}"
+            );
+            assert!(
+                (ge - e).abs() <= 4e-15 * e.abs(),
+                "E({phi}|{m}) = {ge}, want {e}"
+            );
+        }
     }
 
     #[test]
