@@ -435,6 +435,11 @@ point (`sqrt(x)`), a logarithmic singularity (`log(x)`) or an essential one
 (`exp(1/x)`) has no Laurent expansion at all and raises `SeriesError` with code
 `E-SERIES-004` — never a `Series` whose coefficients evaluate to `NaN`.
 
+At `pool.pos_infinity()` / `pool.neg_infinity()` the expansion is in powers of
+`1/x` (SymPy's convention): `series(1/x + 1/(x**2+1), x, pool.pos_infinity(), 4)`
+is `x**-1 + x**-2 + O(x**-4)`. No Laurent expansion in `1/x` (`exp(x)`, `log(x)`,
+`sqrt(x)`) raises `E-SERIES-007`; use `experimental.asymptotic_expand` there.
+
 ### Fractional exponents: `experimental.puiseux_series`
 
 A **branch point** is the one of those three that has an expansion `series` cannot

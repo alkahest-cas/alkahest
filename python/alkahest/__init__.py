@@ -1282,6 +1282,20 @@ def series(expr, var, point, order):
         >>> px.ramification, px.valuation                            # doctest: +SKIP
         (2, Fraction(1, 2))
 
+    At an **infinite point** (``pool.pos_infinity()`` or ``pool.neg_infinity()``)
+    the expansion is in powers of ``1/var``, by substituting ``var = ±1/t`` and
+    expanding about ``t = 0+``.  *order* keeps its meaning in ``t``: every term
+    ``var**-e`` with ``e < order`` is present and the remainder is
+    ``O(var**-order)``, as in SymPy's ``series(f, x, oo, n)``::
+
+        >>> series(1/x + 1/(x**2 + 1), x, pool.pos_infinity(), 4)  # doctest: +SKIP
+        x**-1 + x**-2 + O(x**-4)
+
+    A function with no Laurent expansion in ``1/var`` there (``exp(x)``,
+    ``log(x)``, ``sqrt(x)``, ``sin(x)``), or a point that mentions infinity
+    without being ``±oo``, raises :exc:`SeriesError` with code ``E-SERIES-007``
+    — it is never expanded by substituting infinity into the Taylor formula.
+
     Use :meth:`Series.truncated` to get the expansion as an :class:`Expr` with
     the ``O(.)`` term dropped, which is what :func:`eval_expr` and
     :func:`simplify` accept.
