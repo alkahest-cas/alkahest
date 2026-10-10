@@ -33,6 +33,7 @@
 
 pub mod diophantine;
 pub mod homotopy;
+pub mod numeric;
 pub mod polyhedral;
 mod rational;
 pub mod regular_chains;
@@ -45,7 +46,10 @@ pub use regular_chains::{
     extract_regular_chain_from_basis, main_variable_recursive, triangularize, RegularChain,
 };
 
-pub use homotopy::{solve_numerical, CertifiedPoint, HomotopyError, HomotopyOpts};
+pub use homotopy::{
+    solve_numerical, solve_numerical_complex, CertifiedPoint, HomotopyError, HomotopyOpts,
+};
+pub use numeric::{numeric_solution_values, numeric_value, NumericSolveRefusal};
 
 pub use diophantine::{diophantine, DiophantineError, DiophantineSolution};
 

@@ -180,6 +180,8 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // `E-SOLVE-004`, it travels inside `SolverError::NotPolynomial` — see
     // `solver::UndefinedEquation`.
     ErrorSpec { code: "E-SOLVE-005", class: "UndefinedEquation", cause: Cause::UserInput,   remediation: Some("a denominator simplifies to zero, so the equation denotes no function; check the equation for a subtraction that cancels") },
+    ErrorSpec { code: "E-SOLVE-006", class: "NumericSolveRefusal", cause: Cause::UserInput,   remediation: Some("solve with numeric=False to get the solution in terms of the parameter, or substitute a value for the parameter first") },
+    ErrorSpec { code: "E-SOLVE-007", class: "NumericSolveRefusal", cause: Cause::Unsupported, remediation: Some("solve with numeric=False to get the exact solution set") },
     ErrorSpec { code: "E-SOLVE-010", class: "SolverError", cause: Cause::Resource,    remediation: Some("check GPU availability; pass device_id=None to fall back to CPU") },
     ErrorSpec { code: "E-SOLVE-011", class: "SolverError", cause: Cause::Resource,    remediation: Some("CRT reconstruction failed; try adding more equations or use CPU path") },
     // E-IDEAL — PrimaryDecompositionError (ideal/primary.rs) and IdealRefusal

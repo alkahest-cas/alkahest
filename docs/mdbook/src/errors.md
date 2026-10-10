@@ -111,6 +111,8 @@ Raised when a mathematical side condition is violated.
 | `E-SOLVE-002` | High-degree univariate factor (> 2) | Symbolic solution not supported; use numerical solve |
 | `E-SOLVE-003` | Gröbner basis did not terminate | Increase node/iteration limits |
 | `E-SOLVE-005` | An equation's denominator is identically zero (`1/(x - x)`), so it denotes no function and has no solution set | Check the equation for a subtraction that cancels |
+| `E-SOLVE-006` | `solve(..., numeric=True)` was asked for numbers, but a solution depends on a free parameter (`solve([x - y], [x], numeric=True)`) | Solve with `numeric=False` for the parametric answer, or substitute a value for the parameter first |
+| `E-SOLVE-007` | `solve(..., numeric=True)` found a parameter-free solution value that does not evaluate to a finite complex number | Solve with `numeric=False` for the exact solution set |
 
 ### PslqError (E-PSLQ-*)
 
