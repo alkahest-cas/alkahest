@@ -206,6 +206,13 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // function would be NaN everywhere. Carried out of band on `JitError::UnsupportedNode`
     // (exhaustive public enum) — see `jit::take_unbound_symbols`.
     ErrorSpec { code: "E-JIT-005", class: "UnboundSymbolsError", cause: Cause::UserInput, remediation: Some("add every free symbol of the expression to the input list, or substitute a value for each parameter before compiling") },
+    // E-STABLEHLO — StableHloError (`to_stablehlo`). Every refusal used to be an
+    // empty string returned as if it were a module.
+    ErrorSpec { code: "E-STABLEHLO-001", class: "StableHloError", cause: Cause::Unsupported, remediation: Some("rewrite the function in terms of supported ones (see the stablehlo module docs), or substitute it before exporting") },
+    ErrorSpec { code: "E-STABLEHLO-002", class: "StableHloError", cause: Cause::Unsupported, remediation: Some("export a plain numeric expression: remove O() terms, quantifiers and root sums") },
+    ErrorSpec { code: "E-STABLEHLO-003", class: "StableHloError", cause: Cause::UserInput,   remediation: Some("add the symbol to the input list, or substitute a value for it") },
+    ErrorSpec { code: "E-STABLEHLO-004", class: "StableHloError", cause: Cause::UserInput,   remediation: Some("replace the infinite or NaN constant") },
+    ErrorSpec { code: "E-STABLEHLO-005", class: "StableHloError", cause: Cause::UserInput,   remediation: Some("use a name made of letters, digits, '_', '$' and '.', not starting with a digit") },
     // E-CAD — CadError (V2-9 QE / cylindrical decomposition)
     ErrorSpec {
         code: "E-CAD-001",

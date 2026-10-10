@@ -12,7 +12,6 @@ use alkahest_core::{
     emit_expr_c as core_emit_expr_c,
     emit_expr_c_vec as core_emit_expr_c_vec,
     emit_horner_c as core_emit_horner_c,
-    emit_stablehlo as core_emit_stablehlo,
     eval_interp_checked as core_eval_interp_checked,
     factor_univariate_mod_p_with_unit as core_factor_univariate_mod_p_with_unit,
     // V2-3 — Sparse interpolation and sparse modular GCD
@@ -51,6 +50,7 @@ use alkahest_core::{
     sum_definite as core_sum_definite,
     sum_indefinite as core_sum_indefinite,
     together as core_together,
+    try_emit_stablehlo as core_try_emit_stablehlo,
     verify_wz_pair as core_verify_wz_pair,
     voltage_source as core_voltage_source,
     // Phase 22 — Ball arithmetic
@@ -14595,7 +14595,18 @@ impl PyPrimitiveRegistry {
 /// Returns
 /// -------
 /// str
-///     Complete MLIR text module.
+///     Complete MLIR text module, using only ``stablehlo`` ops.
+///
+/// Raises
+/// ------
+/// AlkahestError
+///     ``E-STABLEHLO-001`` for a function with no exact StableHLO lowering
+///     (``erf``, ``gamma``, ``lambert_w``, ``asinh``, a user function …),
+///     ``E-STABLEHLO-002`` for a node with no numeric value (``O(x)``),
+///     ``E-STABLEHLO-003`` for a symbol missing from ``inputs``,
+///     ``E-STABLEHLO-004`` for an infinite/NaN constant, and
+///     ``E-STABLEHLO-005`` for a ``fn_name`` that is not an MLIR identifier.
+///     No module is ever returned partially or with a stand-in.
 #[pyfunction]
 #[pyo3(name = "to_stablehlo")]
 #[pyo3(signature = (expr, inputs, fn_name="alkahest_fn"))]
@@ -14610,12 +14621,13 @@ fn py_to_stablehlo(
     let pool = pool_py.borrow(py);
     guard_depth(&pool.inner, expr.id)?;
     let input_ids: Vec<ExprId> = inputs.iter().map(|e| e.id).collect();
-    Ok(core_emit_stablehlo(
-        expr.id,
-        &input_ids,
-        fn_name,
-        &pool.inner,
-    ))
+    // `emit_stablehlo` returns '' on refusal, and that empty string used to be
+    // handed back as if it were a module: `to_stablehlo(erf(t), [t])` gave ''
+    // with no error. Raise the coded refusal instead.
+    core_try_emit_stablehlo(expr.id, &input_ids, fn_name, &pool.inner).map_err(|e| {
+        let exc_type = py.get_type_bound::<PyAlkahestError>();
+        make_structured_err(py, &exc_type, &e)
+    })
 }
 
 // ---------------------------------------------------------------------------
