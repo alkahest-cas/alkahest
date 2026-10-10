@@ -438,7 +438,7 @@ pub fn puiseux_series(
     let prec = Rational::from(order);
     let mut s = expand(shifted, xi, &prec, pool, 0)?;
     if s.prec < prec {
-        return Err(PuiseuxError::Exhausted(None));
+        return Err(PuiseuxError::Exhausted(crate::budget::tripped()));
     }
     s.truncate(&prec);
 
@@ -686,7 +686,7 @@ fn p_pow_rational(
             let n = alpha.numer().to_u32().unwrap_or(1);
             return Ok(PSeries::empty(qmul(&a.prec, &Rational::from(n))));
         }
-        return Err(PuiseuxError::Exhausted(None));
+        return Err(PuiseuxError::Exhausted(crate::budget::tripped()));
     };
 
     let lead_exp = qmul(&v, alpha);

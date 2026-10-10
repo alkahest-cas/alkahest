@@ -2446,6 +2446,27 @@ pub mod builtins {
             Some(pool.mul(vec![numerator, pool.pow(denominator, neg_one)]))
         }
 
+        /// `∂atan2(y, x)/∂y = x/(x²+y²)`, `∂atan2(y, x)/∂x = −y/(x²+y²)`.
+        fn diff_reverse(
+            &self,
+            args: &[ExprId],
+            cotan: ExprId,
+            pool: &ExprPool,
+        ) -> Option<Vec<ExprId>> {
+            if args.len() != 2 {
+                return None;
+            }
+            let (y, x) = (args[0], args[1]);
+            let two = pool.integer(2_i32);
+            let neg_one = pool.integer(-1_i32);
+            let r2 = pool.add(vec![pool.pow(x, two), pool.pow(y, two)]);
+            let inv_r2 = pool.pow(r2, neg_one);
+            Some(vec![
+                pool.mul(vec![cotan, x, inv_r2]),
+                pool.mul(vec![cotan, neg_one, y, inv_r2]),
+            ])
+        }
+
         // NOTE: no `lean_theorem` override — see the `tan` primitive above
         // for why (generic `diff_primitive_registry` rule, never certified).
     }

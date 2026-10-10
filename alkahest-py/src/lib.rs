@@ -16,7 +16,6 @@ use alkahest_core::{
     factor_univariate_mod_p_with_unit as core_factor_univariate_mod_p_with_unit,
     // V2-3 — Sparse interpolation and sparse modular GCD
     gcd_sparse_modular as core_gcd_sparse_modular,
-    grad as core_grad,
     guess_integer_relation as core_guess_integer_relation,
     // Phase 24 — Horner form
     horner as core_horner,
@@ -51,6 +50,7 @@ use alkahest_core::{
     sum_indefinite as core_sum_indefinite,
     together as core_together,
     try_emit_stablehlo as core_try_emit_stablehlo,
+    try_grad as core_try_grad,
     verify_wz_pair as core_verify_wz_pair,
     voltage_source as core_voltage_source,
     // Phase 22 — Ball arithmetic
@@ -9419,6 +9419,7 @@ fn version() -> &'static str {
 ///
 /// Uses reverse-mode (adjoint) accumulation: O(DAG size) regardless of
 /// the number of variables, vs. O(#vars × DAG size) for repeated `diff`.
+/// Raises `DiffError` (`E-DIFF-001`) for a function with no derivative rule.
 #[pyfunction]
 #[pyo3(name = "grad")]
 fn py_grad(py: Python<'_>, expr: PyRef<PyExpr>, vars: Vec<PyRef<PyExpr>>) -> PyResult<Vec<PyExpr>> {
@@ -9430,7 +9431,9 @@ fn py_grad(py: Python<'_>, expr: PyRef<PyExpr>, vars: Vec<PyRef<PyExpr>>) -> PyR
         // Reverse-mode is the shallowest walker in the library: its post-order
         // DFS overflowed an 8 MiB stack at depth 4 687 (see kernel::depth).
         guard_depth(&pool.inner, expr.id)?;
-        core_grad(expr.id, &var_ids, &pool.inner)
+        // `try_grad`, not `grad`: a node with no derivative rule must raise
+        // `DiffError`, not come back as a partial of `0` (or `NaN`).
+        core_try_grad(expr.id, &var_ids, &pool.inner).map_err(diff_error_to_py)?
     };
     Ok(grads
         .into_iter()

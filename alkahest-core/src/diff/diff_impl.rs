@@ -71,13 +71,13 @@ impl crate::errors::AlkahestError for DiffError {
                 "register the function in PrimitiveRegistry, or use diff_forward with a custom rule",
             ),
             DiffError::NonIntegerExponent => Some(
-                "symbolic exponents require the chain rule; use diff_forward for non-integer powers",
+                "diff applies the general power rule to symbolic exponents, so this is not expected; simplify the exponent first and report the expression if it persists",
             ),
             DiffError::ForwardUnknownFunction(_) => Some(
                 "register the function in PrimitiveRegistry with diff_forward implemented",
             ),
             DiffError::ForwardNonIntegerExponent => Some(
-                "substitute concrete values first; diff_forward requires integer exponents",
+                "diff_forward applies the general power rule to symbolic exponents, so this is not expected; prefer diff, and report the expression if it persists",
             ),
         }
     }
@@ -548,17 +548,40 @@ fn diff_raw(
         }
         // Power rule, constant exponent (integer or rational):
         //   d/dx f^r = r · f^(r-1) · f'.
-        // A var-dependent / non-constant exponent (e.g. x^y, x^x) is a different
-        // rule (logarithmic differentiation) and remains unsupported.
+        // A symbolic exponent takes the general power rule below.
         Node::Pow { base, exp } => {
             // Read the exponent without holding the pool lock during recursion.
-            let r = pool
-                .with(exp, |data| match data {
-                    ExprData::Integer(n) => Some(rug::Rational::from(n.0.clone())),
-                    ExprData::Rational(q) => Some(q.0.clone()),
-                    _ => None,
-                })
-                .ok_or(DiffError::NonIntegerExponent)?;
+            let r = pool.with(exp, |data| match data {
+                ExprData::Integer(n) => Some(rug::Rational::from(n.0.clone())),
+                ExprData::Rational(q) => Some(q.0.clone()),
+                _ => None,
+            });
+
+            let Some(r) = r else {
+                // General power rule (logarithmic differentiation):
+                //   d/dx f^g = g · f^(g−1) · f' + f^g · log(f) · g'.
+                // A term whose factor `f'` / `g'` is free of `var` is omitted,
+                // so `x^a` stays `a·x^(a−1)` and `2^x` is `2^x·log 2`.
+                let mut terms = Vec::with_capacity(2);
+                if crate::kernel::subs::mentions_var(base, var, pool) {
+                    let df = diff_raw(base, var, pool, memo, log)?;
+                    let g_minus_1 = pool.add(vec![exp, pool.integer(-1_i32)]);
+                    terms.push(pool.mul(vec![exp, pool.pow(base, g_minus_1), df]));
+                }
+                if crate::kernel::subs::mentions_var(exp, var, pool) {
+                    let dg = diff_raw(exp, var, pool, memo, log)?;
+                    let log_f = pool.func("log", vec![base]);
+                    terms.push(pool.mul(vec![expr, log_f, dg]));
+                }
+                let result_id = match terms.len() {
+                    0 => pool.integer(0_i32),
+                    1 => terms[0],
+                    _ => pool.add(terms),
+                };
+                log.push(RewriteStep::simple("general_power_rule", expr, result_id));
+                memo.insert(expr, result_id);
+                return Ok(result_id);
+            };
 
             if r == 0 {
                 // Special case r=0: d/dx f^0 = 0
@@ -903,14 +926,34 @@ mod tests {
     }
 
     #[test]
-    fn diff_non_integer_exponent_error() {
+    fn diff_symbolic_exponent_general_power_rule() {
+        // Used to refuse with E-DIFF-002 ("use diff_forward", which refused
+        // too).  Checked numerically: d/dx x^y = y·x^(y−1), d/dy x^y = x^y·log x,
+        // d/dx x^x = x^x·(log x + 1), d/dx 2^x = 2^x·log 2.
+        use std::collections::HashMap;
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let y = pool.symbol("y", Domain::Real);
-        // A *var-dependent* exponent still needs logarithmic differentiation and
-        // remains unsupported.
-        let err = diff(pool.pow(x, y), x, &pool);
-        assert!(matches!(err, Err(DiffError::NonIntegerExponent)));
+        let at = |e: ExprId, xv: f64, yv: f64| {
+            let m: HashMap<ExprId, f64> = [(x, xv), (y, yv)].into_iter().collect();
+            crate::eval::eval_f64(e, &pool, &m).unwrap()
+        };
+        let (xv, yv) = (1.7_f64, 0.6_f64);
+        let xy = pool.pow(x, y);
+        let dx = diff(xy, x, &pool).unwrap().value;
+        assert!((at(dx, xv, yv) - yv * xv.powf(yv - 1.0)).abs() < 1e-12);
+        let dy = diff(xy, y, &pool).unwrap().value;
+        assert!((at(dy, xv, yv) - xv.powf(yv) * xv.ln()).abs() < 1e-12);
+        let xx = diff(pool.pow(x, x), x, &pool).unwrap().value;
+        assert!((at(xx, xv, yv) - xv.powf(xv) * (xv.ln() + 1.0)).abs() < 1e-12);
+        let two_x = diff(pool.pow(pool.integer(2_i32), x), x, &pool)
+            .unwrap()
+            .value;
+        assert!((at(two_x, xv, yv) - 2f64.powf(xv) * 2f64.ln()).abs() < 1e-12);
+        // diff_forward agrees.
+        #[allow(deprecated)]
+        let fwd = crate::diff::diff_forward(xy, y, &pool).unwrap().value;
+        assert!((at(fwd, xv, yv) - xv.powf(yv) * xv.ln()).abs() < 1e-12);
     }
 
     #[test]
