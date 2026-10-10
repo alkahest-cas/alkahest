@@ -8,15 +8,23 @@
 //!
 //! ## Generalized Pell
 //!
-//! `x² - D·y² = N` with `D > 0` non-square: search **continued-fraction convergents** of `√D`,
-//! then a bounded `y`-sweep `N + D·y² = □`.  Solutions multiply by the unit `u² - D·v² = 1`.
-//! `N = 0`: trivial `(0,0)` if `D` is non-square; if `D = s²`, a parametric line `x = s·t`, `y = t`.
+//! `x² - D·y² = N` with `D > 0` non-square: one period of the **continued fraction** of `√D`
+//! gives the fundamental unit (and decides `N = −1`: solvable iff the period is odd).  Other `N`
+//! are decided by sweeping `y` up to **Nagell's bound** (complete), or — when that bound is too
+//! large — by the convergents over two periods (complete for `|N| < √D`); otherwise the solver
+//! refuses rather than report a false "no solution".  Solutions multiply by the unit
+//! `u² - D·v² = 1`.  `D = s²` factors as `(x − s·y)(x + s·y) = N` (finite).
+//! `N = 0`: trivial `(0,0)` unless `D` is a rational square, else a parametric line.
+//!
+//! All loops honour the active [`crate::budget`]; see [`last_budget_trip`].
 
+use crate::budget::BudgetError;
 use crate::errors::AlkahestError;
 use crate::kernel::{Domain, ExprId, ExprPool};
 use crate::poly::groebner::ideal::GbPoly;
-use rug::ops::Pow;
+use rug::ops::{DivRounding, Pow};
 use rug::Integer;
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -622,101 +630,305 @@ fn solve_sum_two_squares(
     solve_sum_two_squares_scan(pool, n)
 }
 
-/// One step of continued fraction for `√d`; updates `(h,k)` convergents.
-#[allow(clippy::too_many_arguments)]
-fn sqrt_cf_step(
-    d: &Integer,
-    a0: &Integer,
-    m: &mut Integer,
-    d_cf: &mut Integer,
-    a: &mut Integer,
-    h_prev: &mut Integer,
-    k_prev: &mut Integer,
-    h: &mut Integer,
-    k: &mut Integer,
-) -> Option<()> {
-    *m = (&*d_cf * &*a - &*m).into();
-    let num = d.clone() - &*m * &*m;
-    *d_cf = div_exact(&num, d_cf)?;
-    if *d_cf == 0 {
-        return None;
+// ---------------------------------------------------------------------------
+// Pell machinery
+// ---------------------------------------------------------------------------
+
+/// Hard cap on the continued-fraction period of `√D` this solver will expand
+/// when no [`crate::budget`] bounds the work.  The fundamental unit has
+/// `Θ(L)` digits for a period of length `L`, and building it costs `Θ(L²)`, so
+/// past this the solver refuses rather than run for hours.
+const MAX_CF_PERIOD: usize = 200_000;
+
+/// Hard cap on the `y`-sweep for `x² − D·y² = N` (see [`nagell_y_bound`]).
+const MAX_Y_SWEEP: u64 = 5_000_000;
+
+thread_local! {
+    static BUDGET_TRIP: Cell<Option<BudgetError>> = const { Cell::new(None) };
+}
+
+/// The [`BudgetError`] that stopped the most recent [`diophantine`] call on this
+/// thread, or `None` if that call was not stopped by a budget.
+///
+/// [`DiophantineError`] is an exhaustive public enum, so a budget trip is
+/// reported as [`DiophantineError::Unsupported`] (an honest "gave up") and
+/// this function tells bindings *why*, so they can raise the dedicated
+/// budget-exceeded error carrying the `E-BUDGET-*` code.  Cleared at the start
+/// of every [`diophantine`] call.
+pub fn last_budget_trip() -> Option<BudgetError> {
+    BUDGET_TRIP.with(|c| c.get())
+}
+
+/// Cooperative budget checkpoint, consulted every 64 iterations of a loop.
+fn checkpoint(iter: u64) -> Result<(), DiophantineError> {
+    if iter % 64 == 0 {
+        if let Err(e) = crate::budget::check() {
+            BUDGET_TRIP.with(|c| c.set(Some(e)));
+            return Err(DiophantineError::Unsupported(format!(
+                "stopped by the active budget: {e}"
+            )));
+        }
     }
-    let sum: Integer = (a0 + &*m).into();
-    *a = div_exact(&sum, d_cf)?;
-    let h_new: Integer = (&*a * &*h + &*h_prev).into();
-    let k_new: Integer = (&*a * &*k + &*k_prev).into();
-    *h_prev = h.clone();
-    *k_prev = k.clone();
-    *h = h_new;
-    *k = k_new;
-    Some(())
+    Ok(())
+}
+
+/// Continued fraction of `√d` for non-square `d > 0`: `(a0, [a1, …, aL])`,
+/// where `a1 … aL` is one full period (so `aL = 2·a0`).
+///
+/// Standard recurrence: `m ← q·a − m`, `q ← (d − m²)/q` (always exact),
+/// `a ← ⌊(a0 + m)/q⌋` (a *floor*, not an exact division).
+fn sqrt_cf_period(d: &Integer) -> Result<(Integer, Vec<Integer>), DiophantineError> {
+    let a0 = d.clone().sqrt();
+    let two_a0 = Integer::from(&a0 * 2u32);
+    let mut m = Integer::from(0);
+    let mut q = Integer::from(1);
+    let mut a = a0.clone();
+    let mut period = Vec::new();
+    loop {
+        checkpoint(period.len() as u64)?;
+        m = Integer::from(&q * &a) - &m;
+        let num: Integer = d.clone() - Integer::from(&m * &m);
+        q = num / &q; // exact by the theory of the expansion
+        if q == 0 {
+            return Err(DiophantineError::Unsupported(
+                "D is a perfect square (no Pell unit)".into(),
+            ));
+        }
+        a = Integer::from(&a0 + &m).div_floor(&q);
+        period.push(a.clone());
+        if a == two_a0 {
+            return Ok((a0, period));
+        }
+        if period.len() > MAX_CF_PERIOD {
+            return Err(DiophantineError::Unsupported(format!(
+                "continued-fraction period of √{d} exceeds {MAX_CF_PERIOD} terms"
+            )));
+        }
+    }
+}
+
+/// Visit the convergents `(p_k, q_k)` of `√d` for `k = 0 .. count-1` (with
+/// their index), stopping early when `visit` returns `Some`.
+fn walk_convergents<T>(
+    a0: &Integer,
+    period: &[Integer],
+    count: usize,
+    mut visit: impl FnMut(usize, &Integer, &Integer) -> Option<T>,
+) -> Result<Option<T>, DiophantineError> {
+    let mut p_prev = Integer::from(1);
+    let mut q_prev = Integer::from(0);
+    let mut p = a0.clone();
+    let mut q = Integer::from(1);
+    for k in 0..count {
+        checkpoint(k as u64)?;
+        if let Some(t) = visit(k, &p, &q) {
+            return Ok(Some(t));
+        }
+        if k + 1 == count {
+            break;
+        }
+        let a = &period[k % period.len()];
+        let p_new = Integer::from(a * &p) + &p_prev;
+        let q_new = Integer::from(a * &q) + &q_prev;
+        p_prev = std::mem::replace(&mut p, p_new);
+        q_prev = std::mem::replace(&mut q, q_new);
+    }
+    Ok(None)
 }
 
 fn pell_norm(h: &Integer, k: &Integer, d: &Integer) -> Integer {
     h.clone() * h - d.clone() * k * k
 }
 
-/// Minimal positive solution to `x² - d·y² = 1` (`d` non-square), via convergents.
-fn pell_fundamental_xy(d: &Integer) -> Option<(Integer, Integer)> {
-    pell_convergent_solution(d, &Integer::from(1))
+/// Units of `ℤ[√d]` for non-square `d > 0`, with the expansion they came from.
+struct PellUnits {
+    a0: Integer,
+    period: Vec<Integer>,
+    /// Fundamental solution of `x² − d·y² = 1`.
+    plus: (Integer, Integer),
+    /// Fundamental solution of `x² − d·y² = −1`; `Some` iff the period is odd.
+    minus: Option<(Integer, Integer)>,
 }
 
-/// Some `(x, y)` with `x² - d·y² = target` if found among convergents or a bounded search.
-fn pell_convergent_solution(d: &Integer, target: &Integer) -> Option<(Integer, Integer)> {
-    let d = d.clone();
-    if d <= 0 {
-        return None;
+/// The convergent `p_{L−1}/q_{L−1}` (`L` = period length) has norm `(−1)^L`.
+/// If `L` is even it is the fundamental `+1` unit and `x² − d·y² = −1` has no
+/// solution; if `L` is odd it is the fundamental `−1` unit and its square is
+/// the fundamental `+1` unit.
+fn pell_units(d: &Integer) -> Result<PellUnits, DiophantineError> {
+    let (a0, period) = sqrt_cf_period(d)?;
+    let l = period.len();
+    let (p, q) = walk_convergents(&a0, &period, l, |k, p, q| {
+        (k + 1 == l).then(|| (p.clone(), q.clone()))
+    })?
+    .expect("the walk visits index L-1");
+    if l % 2 == 0 {
+        debug_assert_eq!(pell_norm(&p, &q, d), 1);
+        Ok(PellUnits {
+            a0,
+            period,
+            plus: (p, q),
+            minus: None,
+        })
+    } else {
+        debug_assert_eq!(pell_norm(&p, &q, d), -1);
+        let x1 = Integer::from(&p * &p) + d.clone() * &q * &q;
+        let y1 = Integer::from(&p * &q) * 2u32;
+        Ok(PellUnits {
+            a0,
+            period,
+            plus: (x1, y1),
+            minus: Some((p, q)),
+        })
     }
-    let (_, rem) = d.clone().sqrt_rem(Integer::new());
-    if rem == 0 {
-        return None;
-    }
-    let a0 = d.clone().sqrt();
-    let mut m = Integer::from(0);
-    let mut d_cf = Integer::from(1);
-    let mut a = a0.clone();
-
-    let mut h_prev = Integer::from(1);
-    let mut h = a0.clone();
-    let mut k_prev = Integer::from(0);
-    let mut k = Integer::from(1);
-
-    let max_steps = 500_000u64;
-    for _ in 0..max_steps {
-        let lhs = pell_norm(&h, &k, &d);
-        if lhs == *target {
-            return Some((h, k));
-        }
-        sqrt_cf_step(
-            &d,
-            &a0,
-            &mut m,
-            &mut d_cf,
-            &mut a,
-            &mut h_prev,
-            &mut k_prev,
-            &mut h,
-            &mut k,
-        )?;
-    }
-    None
 }
 
-/// Try `x² = target + d·y²` for increasing `y`.
-fn pell_y_sweep(d: &Integer, target: &Integer) -> Option<(Integer, Integer)> {
-    let bound = Integer::from(2_000_000);
-    let mut y = Integer::from(0);
-    while y <= bound {
-        let rhs = target.clone() + d.clone() * &y * &y;
+/// Nagell's bound: if `x² − d·y² = n` (`n ≠ 0`) is solvable, every solution
+/// class contains a solution with `0 ≤ y ≤ Y`, where, with `(x1, y1)` the
+/// fundamental `+1` unit,
+/// `Y = y1·√(n / (2(x1+1)))` for `n > 0` and `Y = y1·√(|n| / (2(x1−1)))` for
+/// `n < 0`.  Sweeping `y ∈ [0, Y]` is therefore a complete decision procedure.
+fn nagell_y_bound(n: &Integer, x1: &Integer, y1: &Integer) -> Integer {
+    let den: Integer = if n.cmp0().is_gt() {
+        (x1.clone() + 1u32) * 2u32
+    } else {
+        (x1.clone() - 1u32) * 2u32
+    };
+    let num: Integer = Integer::from(y1 * y1) * n.clone().abs();
+    (num / den).sqrt()
+}
+
+/// Smallest `y ∈ [0, bound]` with `n + d·y²` a perfect square.
+fn pell_y_sweep(
+    d: &Integer,
+    n: &Integer,
+    bound: u64,
+) -> Result<Option<(Integer, Integer)>, DiophantineError> {
+    for yi in 0..=bound {
+        checkpoint(yi)?;
+        let y = Integer::from(yi);
+        let rhs: Integer = n.clone() + d.clone() * &y * &y;
         if rhs.cmp0().is_ge() && is_perfect_square(&rhs) {
             let x = rhs.sqrt();
-            if pell_norm(&x, &y, d) == *target {
-                return Some((x, y));
-            }
+            debug_assert_eq!(pell_norm(&x, &y, d), *n);
+            return Ok(Some((x, y)));
         }
-        y += 1;
     }
-    None
+    Ok(None)
+}
+
+/// Search the convergents of `√d` over two periods for `x² − d·y² = n/g²`
+/// (`g² | n`), returning `g·(p, q)`.  When `|n| < √d` every primitive positive
+/// solution is a convergent (Lagrange), and convergent norms repeat with the
+/// period, so this search is complete in that regime.
+fn pell_convergent_search(
+    d: &Integer,
+    n: &Integer,
+    units: &PellUnits,
+) -> Result<Option<(Integer, Integer)>, DiophantineError> {
+    let n_abs = n.clone().abs();
+    let mut targets: Vec<(Integer, Integer)> = Vec::new();
+    let mut g = Integer::from(1);
+    let mut iter = 0u64;
+    while Integer::from(&g * &g) <= n_abs {
+        checkpoint(iter)?;
+        iter += 1;
+        let g2 = Integer::from(&g * &g);
+        if n.is_divisible(&g2) {
+            targets.push((g.clone(), Integer::from(n / &g2)));
+        }
+        g += 1u32;
+    }
+    let count = 2 * units.period.len();
+    walk_convergents(&units.a0, &units.period, count, |_, p, q| {
+        let norm = pell_norm(p, q, d);
+        targets
+            .iter()
+            .find(|(_, t)| *t == norm)
+            .map(|(g, _)| (Integer::from(g * p), Integer::from(g * q)))
+    })
+}
+
+/// Decide `x² − d·y² = n` (`d > 0` non-square, `n ∉ {0, 1}`), returning a
+/// particular solution, `Ok(None)` when none exists (proved), or a refusal
+/// when the instance is too large to decide.
+fn pell_particular(
+    d: &Integer,
+    n: &Integer,
+    units: &PellUnits,
+) -> Result<Option<(Integer, Integer)>, DiophantineError> {
+    if *n == -1 {
+        return Ok(units.minus.clone());
+    }
+    let (x1, y1) = &units.plus;
+    let bound = nagell_y_bound(n, x1, y1);
+    if let Some(b) = bound.to_u64().filter(|b| *b <= MAX_Y_SWEEP) {
+        return pell_y_sweep(d, n, b);
+    }
+    // The complete Nagell sweep is too long; the convergent search is complete
+    // when |n| < √d and is otherwise still a sound way to find a solution.
+    if let Some(s) = pell_convergent_search(d, n, units)? {
+        return Ok(Some(s));
+    }
+    if Integer::from(n * n) < *d {
+        return Ok(None);
+    }
+    if let Some(s) = pell_y_sweep(d, n, MAX_Y_SWEEP)? {
+        return Ok(Some(s));
+    }
+    Err(DiophantineError::Unsupported(format!(
+        "x² − {d}·y² = {n}: the complete search bound y ≤ {bound} is too large to decide solvability"
+    )))
+}
+
+/// `x² − s²·y² = n` (`s ≥ 1`, `n ≠ 0`) factors as `(x − s·y)(x + s·y) = n`, so
+/// the solutions are finite: for every factorisation `n = e·f`,
+/// `x = (e + f)/2`, `y = (f − e)/(2s)` when both are integers.  Returns the
+/// non-negative representatives (the same convention as `x² + y² = n`).
+fn square_d_solutions(
+    pool: &ExprPool,
+    s: &Integer,
+    n: &Integer,
+) -> Result<DiophantineSolution, DiophantineError> {
+    let n_abs = n.clone().abs();
+    let mut divisors = vec![Integer::from(1)];
+    if n_abs > 1 {
+        for (p, e) in factor_positive(n_abs.clone()) {
+            if !is_probable_prime(&p) {
+                return Err(DiophantineError::Unsupported(format!(
+                    "could not factor {n_abs} to enumerate x² − {}·y² = {n}",
+                    Integer::from(s * s)
+                )));
+            }
+            let mut next = Vec::with_capacity(divisors.len() * (e as usize + 1));
+            for dv in &divisors {
+                let mut pk = dv.clone();
+                for _ in 0..=e {
+                    next.push(pk.clone());
+                    pk *= &p;
+                }
+            }
+            divisors = next;
+        }
+    }
+    let two_s = Integer::from(s * 2u32);
+    let mut pts: std::collections::BTreeSet<(Integer, Integer)> = Default::default();
+    for (i, e) in divisors.iter().enumerate() {
+        checkpoint(i as u64)?;
+        let f = Integer::from(n / e);
+        let sum = Integer::from(e + &f);
+        let diff = Integer::from(&f - e);
+        if sum.is_even() && diff.is_divisible(&two_s) {
+            pts.insert((sum.abs() / 2u32, diff.abs() / &two_s));
+        }
+    }
+    if pts.is_empty() {
+        return Ok(DiophantineSolution::NoSolution);
+    }
+    Ok(DiophantineSolution::Finite(
+        pts.into_iter()
+            .map(|(x, y)| vec![pool.integer(x), pool.integer(y)])
+            .collect(),
+    ))
 }
 
 fn solve_pell_like(
@@ -778,18 +990,12 @@ fn solve_pell_like(
         ));
     }
 
-    let (ux, uy) = match pell_fundamental_xy(&n2) {
-        Some(u) => u,
-        None => {
-            return Err(DiophantineError::Unsupported(
-                "no fundamental unit (D may be a perfect square)".into(),
-            ));
-        }
-    };
-
-    if r2 == 0 {
-        unreachable!("handled above");
+    if is_perfect_square(&n2) {
+        return square_d_solutions(pool, &n2.sqrt(), &r2);
     }
+
+    let units = pell_units(&n2)?;
+    let (ux, uy) = units.plus.clone();
 
     if r2 == 1 {
         return Ok(DiophantineSolution::PellFundamental {
@@ -799,9 +1005,9 @@ fn solve_pell_like(
         });
     }
 
-    let part = pell_convergent_solution(&n2, &r2)
-        .or_else(|| pell_y_sweep(&n2, &r2))
-        .ok_or(DiophantineError::NoSolution)?;
+    let Some(part) = pell_particular(&n2, &r2, &units)? else {
+        return Ok(DiophantineSolution::NoSolution);
+    };
 
     Ok(DiophantineSolution::PellGeneralized {
         d: pool.integer(n2.clone()),
@@ -944,42 +1150,65 @@ fn classify_and_solve(
         return Err(DiophantineError::Unsupported("no quadratic terms".into()));
     }
 
-    if (a2 > 0 && b2 > 0) || (a2 < 0 && b2 < 0) {
+    // Normalise so the x² coefficient is positive: the solution set is
+    // unchanged, and every branch below can assume `a2 > 0`.  (Taking `|a2|`
+    // without negating `cc` flipped the sign of `n` in the ellipse case, and
+    // swapping the roles of x and y in the hyperbola case reported the
+    // solution of `y² − D·x² = N` as values for `(x, y)`.)
+    let (a2, b2, cc) = if a2 < 0 {
+        (-a2, -b2, -cc)
+    } else {
+        (a2, b2, cc)
+    };
+
+    if a2 > 0 && b2 > 0 {
         if a2 != b2 {
             return Err(DiophantineError::Unsupported(
                 "x² and y² must have equal coefficients for the ellipse case".into(),
             ));
         }
-        let a_abs = a2.clone().abs();
-        let (_, rem) = cc.clone().div_rem_euc_ref(&a_abs).into();
+        // a·(x² + y²) + cc = 0
+        let (_, rem) = cc.clone().div_rem_euc_ref(&a2).into();
         if rem != 0 {
             return Ok(DiophantineSolution::NoSolution);
         }
-        let n = -cc / &a_abs;
-        return Ok(solve_sum_two_squares(pool, &a_abs, &n, vx, vy));
+        let n = -cc / &a2;
+        if n < 0 {
+            return Ok(DiophantineSolution::NoSolution);
+        }
+        return Ok(solve_sum_two_squares(pool, &a2, &n, vx, vy));
     }
 
-    if (a2 > 0 && b2 < 0) || (a2 < 0 && b2 > 0) {
-        let pos = if a2 > 0 { a2.clone() } else { b2.clone().abs() };
-        let neg = if a2 > 0 {
-            b2.clone().abs()
-        } else {
-            a2.clone().abs()
-        };
+    if a2 > 0 && b2 < 0 {
+        // pos·x² − neg·y² = rhs
+        let pos = a2;
+        let neg = -b2;
         let rhs = -cc;
 
         if rhs == 0 {
-            let (_, remd) = neg.clone().sqrt_rem(Integer::new());
-            if remd != 0 {
+            // pos·x² = neg·y² has non-zero solutions iff pos/neg is a rational
+            // square: with g = gcd, pos/g = α², neg/g = β², the solutions are
+            // α·x = ±β·y, i.e. (x, y) = (β·t, ±α·t).
+            let g = pos.clone().gcd(&neg);
+            let p1 = pos / &g;
+            let n1 = neg / &g;
+            if !is_perfect_square(&p1) || !is_perfect_square(&n1) {
                 let z = pool.integer(0);
                 return Ok(DiophantineSolution::Finite(vec![vec![z, z]]));
             }
-            let s = neg.sqrt();
+            let alpha = p1.sqrt();
+            let beta = n1.sqrt();
             let t = pool.symbol("_t", Domain::Integer);
-            let st = pool.mul(vec![pool.integer(s), t]);
+            let scaled = |c: Integer| {
+                if c == 1 {
+                    t
+                } else {
+                    pool.mul(vec![pool.integer(c), t])
+                }
+            };
             return Ok(DiophantineSolution::ParametricLinear {
                 parameter: t,
-                values: vec![st, t],
+                values: vec![scaled(beta), scaled(alpha)],
             });
         }
 
@@ -1002,6 +1231,7 @@ pub fn diophantine(
             "exactly two variables are required".into(),
         ));
     }
+    BUDGET_TRIP.with(|c| c.set(None));
     let poly = expr_to_gbpoly(equation, vars, pool)?;
     let int_terms = gbpoly_integer_coeffs(&poly)?;
     for c in poly.terms.values() {
@@ -1145,6 +1375,196 @@ mod tests {
         ]);
         let r = diophantine(&pool, eq, &[x, y]).unwrap();
         assert!(matches!(r, DiophantineSolution::NoSolution));
+    }
+
+    fn int_of(pool: &ExprPool, e: ExprId) -> Integer {
+        match pool.get(e) {
+            ExprData::Integer(i) => i.0.clone(),
+            other => panic!("expected integer, got {other:?}"),
+        }
+    }
+
+    /// `c20·x² + c02·y² + c00`.
+    fn quad(pool: &ExprPool, c20: i64, c02: i64, c00: i64) -> (ExprId, [ExprId; 2]) {
+        let x = pool.symbol("x", Domain::Integer);
+        let y = pool.symbol("y", Domain::Integer);
+        let eq = pool.add(vec![
+            pool.mul(vec![pool.integer(c20), pool.pow(x, pool.integer(2))]),
+            pool.mul(vec![pool.integer(c02), pool.pow(y, pool.integer(2))]),
+            pool.integer(c00),
+        ]);
+        (eq, [x, y])
+    }
+
+    /// Independent fundamental-unit oracle: smallest `y ≥ 1` with `1 + d·y²` square.
+    fn brute_pell(d: u64) -> (u64, u64) {
+        let mut y = 1u64;
+        loop {
+            let r = 1 + d * y * y;
+            let x = (r as f64).sqrt() as u64;
+            for cand in x.saturating_sub(1)..=x + 1 {
+                if cand * cand == r {
+                    return (cand, y);
+                }
+            }
+            y += 1;
+        }
+    }
+
+    #[test]
+    fn pell_fundamental_matches_brute_force() {
+        // Every non-square D ≤ 60 except those with huge units (brute force is slow).
+        for d in 2u64..=60 {
+            if Integer::from(d).is_perfect_square() || [46, 53, 58].contains(&d) {
+                continue;
+            }
+            let (bx, by) = brute_pell(d);
+            let units = pell_units(&Integer::from(d)).unwrap();
+            assert_eq!(units.plus, (Integer::from(bx), Integer::from(by)), "D={d}");
+        }
+        // The report's failures, including the big ones.
+        let pool = ExprPool::new();
+        for (d, x0, y0) in [
+            (13i64, "649", "180"),
+            (61, "1766319049", "226153980"),
+            (94, "2143295", "221064"),
+            (46, "24335", "3588"),
+        ] {
+            let (eq, v) = quad(&pool, 1, -d, -1);
+            match diophantine(&pool, eq, &v).unwrap() {
+                DiophantineSolution::PellFundamental { x0: a, y0: b, .. } => {
+                    assert_eq!(int_of(&pool, a), x0.parse::<Integer>().unwrap(), "D={d}");
+                    assert_eq!(int_of(&pool, b), y0.parse::<Integer>().unwrap(), "D={d}");
+                }
+                r => panic!("D={d}: {r:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn negative_pell_solvable_iff_period_odd() {
+        let pool = ExprPool::new();
+        // D ∈ {2,5,10,13,17,26,29,37,41,50,53,58,61,65,73,74,82,85,89,97} are solvable below 100.
+        let solvable = [
+            2, 5, 10, 13, 17, 26, 29, 37, 41, 50, 53, 58, 61, 65, 73, 74, 82, 85, 89, 97,
+        ];
+        for d in 2i64..100 {
+            if Integer::from(d).is_perfect_square() {
+                continue;
+            }
+            let (eq, v) = quad(&pool, 1, -d, 1);
+            let r = diophantine(&pool, eq, &v).unwrap();
+            match r {
+                DiophantineSolution::PellGeneralized { x0, y0, .. } => {
+                    assert!(solvable.contains(&d), "D={d} reported solvable");
+                    let (x, y) = (int_of(&pool, x0), int_of(&pool, y0));
+                    assert_eq!(pell_norm(&x, &y, &Integer::from(d)), -1, "D={d}");
+                }
+                DiophantineSolution::NoSolution => {
+                    assert!(!solvable.contains(&d), "D={d} reported unsolvable")
+                }
+                r => panic!("D={d}: {r:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn generalized_pell_matches_sweep_oracle() {
+        // x² − D·y² = N against a direct y ≤ 2000 search (all such instances
+        // here have a solution with y well below that if they have one at all,
+        // by Nagell's bound for these small units).
+        let pool = ExprPool::new();
+        for (d, n) in [
+            (7i64, 2i64),
+            (7, 3),
+            (13, 3),
+            (13, -3),
+            (21, 4),
+            (6, -2),
+            (3, -1),
+            (11, 5),
+        ] {
+            let (eq, v) = quad(&pool, 1, -d, -n);
+            let r = diophantine(&pool, eq, &v).unwrap();
+            let oracle = (0i64..2000).any(|y| {
+                let r = n + d * y * y;
+                r >= 0 && Integer::from(r).is_perfect_square()
+            });
+            match r {
+                DiophantineSolution::PellGeneralized { x0, y0, .. } => {
+                    let (x, y) = (int_of(&pool, x0), int_of(&pool, y0));
+                    assert_eq!(pell_norm(&x, &y, &Integer::from(d)), n, "D={d} N={n}");
+                    assert!(oracle);
+                }
+                DiophantineSolution::NoSolution => assert!(!oracle, "D={d} N={n}"),
+                r => panic!("D={d} N={n}: {r:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn negated_and_swapped_quadratics() {
+        let pool = ExprPool::new();
+        // −x² − y² + 5 = 0  ⇔  x² + y² = 5
+        let (eq, v) = quad(&pool, -1, -1, 5);
+        assert!(matches!(
+            diophantine(&pool, eq, &v).unwrap(),
+            DiophantineSolution::Finite(ref s) if s.len() == 2
+        ));
+        // −x² + 2y² + 1 = 0  ⇔  x² − 2y² = 1  (x0 = 3, y0 = 2 in vars order)
+        let (eq, v) = quad(&pool, -1, 2, 1);
+        match diophantine(&pool, eq, &v).unwrap() {
+            DiophantineSolution::PellFundamental { x0, y0, .. } => {
+                assert_eq!(int_of(&pool, x0), 3);
+                assert_eq!(int_of(&pool, y0), 2);
+            }
+            r => panic!("{r:?}"),
+        }
+        // y² − 2x² = 1 is not of the form x² − D·y² = N: refuse, not swap.
+        let (eq, v) = quad(&pool, -2, 1, -1);
+        assert!(matches!(
+            diophantine(&pool, eq, &v),
+            Err(DiophantineError::Unsupported(_))
+        ));
+        // 4x² − 9y² = 0  ⇒  (x, y) = (3t, 2t)
+        let (eq, v) = quad(&pool, 4, -9, 0);
+        match diophantine(&pool, eq, &v).unwrap() {
+            DiophantineSolution::ParametricLinear { parameter, values } => {
+                let t = parameter;
+                assert_eq!(values[0], pool.mul(vec![pool.integer(3), t]));
+                assert_eq!(values[1], pool.mul(vec![pool.integer(2), t]));
+            }
+            r => panic!("{r:?}"),
+        }
+        // x² − 4y² = 5  ⇒  (3, 1) only
+        let (eq, v) = quad(&pool, 1, -4, -5);
+        match diophantine(&pool, eq, &v).unwrap() {
+            DiophantineSolution::Finite(s) => {
+                assert_eq!(s.len(), 1);
+                assert_eq!(int_of(&pool, s[0][0]), 3);
+                assert_eq!(int_of(&pool, s[0][1]), 1);
+            }
+            r => panic!("{r:?}"),
+        }
+        // x² − 4y² = 2 has no solution
+        let (eq, v) = quad(&pool, 1, -4, -2);
+        assert!(matches!(
+            diophantine(&pool, eq, &v).unwrap(),
+            DiophantineSolution::NoSolution
+        ));
+    }
+
+    #[test]
+    fn budget_stops_the_expansion() {
+        use crate::budget::{self, Budget};
+        let pool = ExprPool::new();
+        let (eq, v) = quad(&pool, 1, -13, -1);
+        let r = {
+            let _guard = budget::enter(Budget::new().with_max_steps(0));
+            diophantine(&pool, eq, &v)
+        };
+        assert!(matches!(r, Err(DiophantineError::Unsupported(_))), "{r:?}");
+        assert!(last_budget_trip().is_some());
     }
 
     #[test]

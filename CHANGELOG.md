@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `diophantine` refused most Pell equations `x² − D·y² = 1` (D = 7, 13, 14, 19, …) with a false "no fundamental unit", because the continued-fraction step of `√D` used an exact division where the recurrence takes a floor; and `x² − D·y² = −1` with no solution ran an unbounded loop that ignored the active budget. The unit now comes from one period of the expansion, negative Pell is decided by the period's parity, other `N` by Nagell's complete search bound (refusing with `E-DIOPH-003` rather than claiming "no solution" when that bound is too large), every loop honours `Budget` (raising `BudgetExceededError`), and three sign/role slips in the same classifier are fixed: `−x² − y² + n` answered for `x² + y² = −n`, `y² − D·x² = N` was reported with `x` and `y` swapped, and `a·x² = b·y²` returned the wrong line.
+
 ## 3.12.0 — 2026-10-02
 
 3.12.0 is mostly a correctness and performance release. An audit of the
