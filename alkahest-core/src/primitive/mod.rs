@@ -1717,7 +1717,7 @@ pub mod builtins {
         let psi = phi - n * std::f64::consts::PI;
         let (s, c) = psi.sin_cos();
         let delta2 = 1.0 - m * s * s;
-        if !(delta2 > 0.0) {
+        if delta2 <= 0.0 {
             return None;
         }
         let rf = carlson_rf(c * c, delta2, 1.0)?;
@@ -1728,7 +1728,7 @@ pub mod builtins {
         if n == 0.0 {
             return Some(part);
         }
-        if !(m < 1.0) {
+        if m >= 1.0 {
             return None;
         }
         let complete_rf = carlson_rf(0.0, 1.0 - m, 1.0)?;

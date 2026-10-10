@@ -254,7 +254,7 @@ pub(super) fn try_elliptic_trig(expr: ExprId, var: ExprId, pool: &ExprPool) -> O
     } else {
         return None;
     };
-    if !(numeric(a, pool)? > 0.0) || !acceptable_parameter(m, pool) {
+    if numeric(a, pool)? <= 0.0 || !acceptable_parameter(m, pool) {
         return None;
     }
     let (head, a_pow) = if s < 0 {
