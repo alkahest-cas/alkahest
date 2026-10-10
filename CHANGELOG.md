@@ -15,6 +15,7 @@
   `series` about a piece boundary refuses (E-SERIES-004) instead of returning
   one side's expansion.
 - `solve(..., numeric=True)` returned `NaN` for complex roots (`s**2 + 1` gave `[nan, nan]`), dropped them on the degree > 2 fallback (`s**4 + 1` gave `[]`, `s**3 + 1` only `-1`), and turned a free parameter into `NaN` (`solve([x - y], [x], numeric=True)`). Values are now taken over ℂ, the default domain: a non-real root comes back as a Python `complex`, the fallback uses a new complex solver (`solve_numerical_complex`) that returns every finite root or raises `E-HOMOTOPY-004`, and a solution that depends on a free parameter raises `SolverError` `E-SOLVE-006`.
+- `symbolic_grad` (reverse mode) returned `0` for every partial through a node it had no rule for — `erf`, `gamma`, `lambert_w`, the hyperbolic and inverse-trig functions, Bessel, `Si`/`Ei`, `dilog`, Fresnel, `elliptic_k`, `atan2`, `Piecewise`, and any power with a symbolic exponent (`x**y`, `x**a`, `2**x`) — so a Black–Scholes price had vega = 0. It now differentiates every function `diff` can (registry reverse rules, else the forward rule), applies the general power rule, and raises `DiffError` (`E-DIFF-001`) for a function with no derivative rule instead of returning `0`; Rust gains `try_grad`, and `grad` returns `NaN` rather than `0` when it cannot differentiate. `diff` and `diff_forward` also apply the general power rule now, so `diff(x**y, x)` no longer refuses with `E-DIFF-002`.
 
 ## 3.12.0 — 2026-10-02
 
