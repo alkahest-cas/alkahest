@@ -1502,6 +1502,17 @@ fn rsolve_error_to_py(e: RsolveError) -> PyErr {
 
 #[cfg(feature = "groebner")]
 fn diophantine_error_to_py(e: DiophantineError) -> PyErr {
+    // `DiophantineError` is an exhaustive public enum, so a budget trip is
+    // reported as `Unsupported` and its cause recorded out-of-band (same
+    // pattern as `limit_error_to_py`).
+    if matches!(e, DiophantineError::Unsupported(_)) {
+        if let Some(b) = alkahest_core::solver::diophantine::last_budget_trip() {
+            return Python::with_gil(|py| {
+                let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+                make_structured_err(py, &exc_type, &b)
+            });
+        }
+    }
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyDiophantineError>();
         make_structured_err(py, &exc_type, &e)
