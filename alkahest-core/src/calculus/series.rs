@@ -1209,21 +1209,24 @@ fn taylor_coefficients(
     let mut mapping = HashMap::new();
     mapping.insert(xi, pool.integer(0_i32));
     let mut out = Vec::with_capacity(num as usize);
+    // Inside a `series` call a truncated prefix is not an answer — record why,
+    // for `series` to turn into a refusal. Every other caller wants the
+    // prefix, so nothing is recorded for them and no stale refusal is left
+    // behind for the next `take_series_refusal`.
+    let exhausted_at = |k: u32| {
+        if IN_SERIES.with(|c| c.get()) {
+            let refusal = SeriesRefusal {
+                requested: num,
+                computed: k,
+                budget: crate::budget::check().err(),
+                cause: SeriesRefusalCause::Exhausted,
+            };
+            LAST_REFUSAL.with(|c| c.set(Some(refusal)));
+        }
+    };
     for k in 0..num {
         if k > 0 && coeff_loop_should_stop(pool) {
-            // Inside a `series` call this prefix is not an answer — record why,
-            // for `series` to turn into a refusal. Every other caller wants the
-            // prefix, so nothing is recorded for them and no stale refusal is
-            // left behind for the next `take_series_refusal`.
-            if IN_SERIES.with(|c| c.get()) {
-                let refusal = SeriesRefusal {
-                    requested: num,
-                    computed: k,
-                    budget: crate::budget::check().err(),
-                    cause: SeriesRefusalCause::Exhausted,
-                };
-                LAST_REFUSAL.with(|c| c.set(Some(refusal)));
-            }
+            exhausted_at(k);
             break;
         }
         let ev = subs(cur, &mapping, pool);
@@ -1246,6 +1249,15 @@ fn taylor_coefficients(
             let fc = factorial_u32(k);
             let inv_fact = pool.rational(rug::Integer::from(1), fc);
             let coeff = simplify(pool.mul(vec![simp, inv_fact]), pool).value;
+            // A budget that runs out *inside* `simplify` makes it hand back
+            // its input part-way rewritten, so this coefficient may be an
+            // unfolded `0·(1/14!)` or a raw `tan(0)` tree. The check at the
+            // top of the loop never sees a trip during the last coefficient;
+            // keep only the coefficients that finished.
+            if crate::budget::is_exhausted() {
+                exhausted_at(k);
+                break;
+            }
             out.push(coeff);
         }
         if k + 1 < num {
@@ -2491,6 +2503,47 @@ mod tps_differential {
         }
         // Every case is in the fast path's domain, and identical.
         assert_eq!(tally(&outcomes), [0, 330, 0, 0, 0]);
+    }
+
+    /// A step budget that runs out inside the *last* coefficient's `simplify`
+    /// used to return that coefficient half-simplified — `0·(1/14!)·x¹⁴`, or
+    /// a raw `tan(0)` tree — as a successful series (seen under ASan, where
+    /// the 5 s wall clock of `run` lands there). The smallest step budget
+    /// that yields any answer must yield the full one.
+    #[test]
+    fn budget_trip_in_last_coefficient_is_not_an_answer() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let f = |n: &str, e: ExprId| p.func(n, vec![e]);
+        let e = p.add(vec![
+            f("sin", f("tan", x)),
+            p.mul(vec![p.integer(-1), f("tan", f("sin", x))]),
+        ]);
+        let order = 9;
+        let at = |steps: u64| {
+            let _b = crate::budget::enter(crate::budget::Budget::new().with_max_steps(steps));
+            let r = without_tps(|| series(e, x, p.integer(0), order, &p)).ok();
+            let _ = take_series_refusal();
+            r.map(|s| s.expr())
+        };
+        let full = without_tps(|| series(e, x, p.integer(0), order, &p))
+            .unwrap()
+            .expr();
+        let (mut lo, mut hi) = (1_u64, 1_u64 << 40);
+        assert_eq!(at(hi), Some(full));
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if at(mid).is_some() {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        assert_eq!(
+            at(lo).map(|s| p.display(s).to_string()),
+            Some(p.display(full).to_string()),
+            "smallest succeeding step budget {lo}"
+        );
     }
 
     /// The existing suite's expansions, and the benchmark shapes.
