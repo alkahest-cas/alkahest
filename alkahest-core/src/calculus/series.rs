@@ -1850,9 +1850,7 @@ mod tests {
         let zero = p.integer(0_i32);
         let cond = p.predicate(PredicateKind::Gt, vec![x, zero]);
         let step = p.piecewise(vec![(cond, p.integer(1_i32))], p.integer(-1_i32));
-        let err = series(step, x, zero, 3, &p)
-            .err()
-            .expect("boundary must refuse");
+        let err = series(step, x, zero, 3, &p).expect_err("boundary must refuse");
         assert!(matches!(err, SeriesError::InvalidOrder), "{err:?}");
         let refusal = take_series_refusal().expect("refusal recorded");
         assert_eq!(refusal.cause(), SeriesRefusalCause::PiecewiseBoundary);
