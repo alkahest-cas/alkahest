@@ -67,6 +67,7 @@ DELIBERATE_ALIASES: dict[str, str] = {
     "E-SERIES-001": "PuiseuxError reuses SeriesError's differentiation-failed code",
     "E-SERIES-002": "PuiseuxError reuses SeriesError's invalid-order code",
     "E-SERIES-003": "PuiseuxError reuses SeriesRefusal's work-ceiling code",
+    "E-SERIES-007": "PuiseuxError reuses SeriesRefusal's infinite-expansion-point code",
     # Both holonomic error types report a malformed call the same way.
     "E-HOLO-004": "holonomic::ModularError and HolonomicError share InvalidInput",
 }
