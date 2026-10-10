@@ -1567,7 +1567,8 @@ derivative rule (`exp(x)/x`, `1/log x`, `sin(x)/x`, `cos(x)/x`, `sinh(x)/x`,
 `cosh(x)/x`) and a validated-bounds Taylor rule. They are not yet accepted by
 `parse()` — build them with the callables above.
 
-For `piecewise`, branch conditions must be symbolic predicates from the pool (not Python `>`):
+For `piecewise`, branches are `(condition, value)` pairs (SymPy's `(value, condition)` is also
+accepted) and conditions must be symbolic predicates from the pool (not Python `>`):
 
 ```python
 cond = pool.gt(x, pool.integer(0))

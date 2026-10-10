@@ -13455,11 +13455,16 @@ fn py_gcd_sparse(
 // PA-9 — Piecewise Python bindings
 // ---------------------------------------------------------------------------
 
-/// Build a piecewise expression from a list of (condition_expr, value_expr) pairs
+/// Build a piecewise expression from a list of ``(condition, value)`` pairs
 /// and a default value.
 ///
 /// Conditions must be ``Predicate`` expressions built with the pool's predicate
 /// constructors (``pool.lt``, ``pool.le``, ``pool.gt``, ``pool.ge``, etc.).
+/// SymPy's ``(value, condition)`` order is also accepted: a pair whose second
+/// element is a predicate and whose first is not is read that way.  A pair in
+/// which neither element is a predicate raises ``TypeError`` — it used to be
+/// accepted with the value in the condition slot, which ``diff`` and
+/// ``eval_expr`` then mis-read.
 #[pyfunction(name = "piecewise")]
 fn py_piecewise(
     py: Python<'_>,
@@ -13468,9 +13473,35 @@ fn py_piecewise(
 ) -> PyResult<PyExpr> {
     same_pool!("piecewise"; default, branches);
     let pool_py = default.pool.clone_ref(py);
-    let rust_branches: Vec<(ExprId, ExprId)> = branches.iter().map(|(c, v)| (c.id, v.id)).collect();
     let id = {
         let pool = pool_py.borrow(py);
+        let is_condition = |e: ExprId| {
+            pool.inner.with(e, |d| {
+                matches!(
+                    d,
+                    ExprData::Predicate { .. } | ExprData::Forall { .. } | ExprData::Exists { .. }
+                )
+            })
+        };
+        let mut rust_branches: Vec<(ExprId, ExprId)> = Vec::with_capacity(branches.len());
+        for (i, (a, b)) in branches.iter().enumerate() {
+            let pair = match (is_condition(a.id), is_condition(b.id)) {
+                // (condition, value) — the native order; a predicate-valued
+                // branch (both elements predicates) keeps this reading too.
+                (true, _) => (a.id, b.id),
+                // (value, condition) — SymPy's order.
+                (false, true) => (b.id, a.id),
+                (false, false) => {
+                    return Err(PyTypeError::new_err(format!(
+                        "piecewise: branch {i} has no condition (neither element is a \
+                         predicate). Build conditions with pool.gt / pool.lt / pool.ge / \
+                         pool.le / pool.eq / pool.ne — Python's `>` is not overloaded — \
+                         e.g. piecewise([(pool.gt(x, pool.integer(0)), x)], default)"
+                    )));
+                }
+            };
+            rust_branches.push(pair);
+        }
         pool.inner.piecewise(rust_branches, default.id)
     };
     Ok(PyExpr { id, pool: pool_py })

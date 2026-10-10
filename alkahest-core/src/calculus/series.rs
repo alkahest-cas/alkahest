@@ -252,6 +252,23 @@ pub(crate) fn local_expansion(
         return Err(SeriesError::InvalidOrder);
     }
 
+    // A Piecewise is expanded by differentiating branch by branch and then
+    // evaluating the conditions at `point`. On a piece boundary that picks one
+    // side's Taylor polynomial and presents it as the two-sided expansion
+    // (`Piecewise((x > 0, 1); default=-1)` at 0 came back as `-1 + O(x³)`).
+    // There is no Taylor series there; refuse.
+    if piecewise_boundary_at(expr, var, point, pool) {
+        LAST_REFUSAL.with(|c| {
+            c.set(Some(SeriesRefusal {
+                requested: order,
+                computed: 0,
+                budget: None,
+                cause: SeriesRefusalCause::PiecewiseBoundary,
+            }))
+        });
+        return Err(SeriesError::InvalidOrder);
+    }
+
     let xi = pool.symbol("__sxp", Domain::Real);
     let mut map = HashMap::new();
     map.insert(var, pool.add(vec![point, xi]));
@@ -746,6 +763,92 @@ fn has_singular_node(expr: ExprId, pool: &ExprPool) -> bool {
     }
 }
 
+/// `true` when `expr` holds a `Piecewise` one of whose conditions compares two
+/// sides that are numerically equal at `var = point` — the expansion point
+/// lies on a piece boundary.
+///
+/// Only a decided boundary counts: a condition that cannot be evaluated at
+/// `point` (a free parameter, a symbolic point) is left alone, because this
+/// gates a refusal and a false positive would turn a working expansion into
+/// an error. Equality is tested with a few ulps of slack so a boundary at an
+/// irrational point (`x > √2` about `√2`) is still caught.
+fn piecewise_boundary_at(expr: ExprId, var: ExprId, point: ExprId, pool: &ExprPool) -> bool {
+    use crate::kernel::expr::PredicateKind;
+    use crate::kernel::IdMap;
+
+    fn on_boundary(
+        cond: ExprId,
+        var: ExprId,
+        point: ExprId,
+        pool: &ExprPool,
+        seen: &mut IdMap<()>,
+    ) -> bool {
+        if seen.insert(cond, ()).is_some() {
+            return false;
+        }
+        let ExprData::Predicate { kind, args } = pool.get(cond) else {
+            return false;
+        };
+        match kind {
+            PredicateKind::And | PredicateKind::Or | PredicateKind::Not => {
+                args.iter().any(|&a| on_boundary(a, var, point, pool, seen))
+            }
+            PredicateKind::Lt
+            | PredicateKind::Le
+            | PredicateKind::Gt
+            | PredicateKind::Ge
+            | PredicateKind::Eq
+            | PredicateKind::Ne
+                if args.len() == 2 =>
+            {
+                if !args
+                    .iter()
+                    .any(|&a| crate::kernel::subs::mentions_var(a, var, pool))
+                {
+                    return false;
+                }
+                let mut map = HashMap::new();
+                map.insert(var, point);
+                let env = HashMap::new();
+                let side = |a: ExprId| crate::jit::eval_interp(subs(a, &map, pool), &env, pool);
+                match (side(args[0]), side(args[1])) {
+                    (Some(l), Some(r)) if l.is_finite() && r.is_finite() => {
+                        (l - r).abs() <= 8.0 * f64::EPSILON * l.abs().max(r.abs()).max(1.0)
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    let mut stack = vec![expr];
+    let mut visited: IdMap<()> = IdMap::default();
+    let mut seen_conds: IdMap<()> = IdMap::default();
+    while let Some(e) = stack.pop() {
+        if visited.insert(e, ()).is_some() {
+            continue;
+        }
+        match pool.get(e) {
+            ExprData::Piecewise { branches, default } => {
+                for &(c, v) in &branches {
+                    if on_boundary(c, var, point, pool, &mut seen_conds) {
+                        return true;
+                    }
+                    stack.push(v);
+                }
+                stack.push(default);
+            }
+            ExprData::Add(xs) | ExprData::Mul(xs) | ExprData::Func { args: xs, .. } => {
+                stack.extend(xs)
+            }
+            ExprData::Pow { base, exp } => stack.extend([base, exp]),
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Index of the first coefficient that is not a number, if any.
 pub(crate) fn first_indeterminate(coeffs: &[ExprId], pool: &ExprPool) -> Option<usize> {
     coeffs
@@ -909,6 +1012,11 @@ pub enum SeriesRefusalCause {
     /// coefficient is not a number and the expansion is refused rather than
     /// returned with a `NaN` inside it.
     IndeterminateCoefficient,
+    /// The expansion point lies on a boundary of a `Piecewise` — one of its
+    /// conditions compares two sides that are equal there — so the function
+    /// has no Taylor series at that point. Reported under `E-SERIES-004`
+    /// (a non-analytic expansion point), with its own message.
+    PiecewiseBoundary,
 }
 
 impl SeriesRefusal {
@@ -962,6 +1070,12 @@ impl fmt::Display for SeriesRefusal {
                  coefficients evaluate to NaN or infinity",
                 self.computed, self.requested,
             ),
+            SeriesRefusalCause::PiecewiseBoundary => write!(
+                f,
+                "the expansion point lies on a boundary of a Piecewise expression, where \
+                 the function has no Taylor series: expanding there would return one \
+                 piece's series as if it held on both sides. Refusing"
+            ),
         }
     }
 }
@@ -973,6 +1087,7 @@ impl crate::errors::AlkahestError for SeriesRefusal {
         match self.cause {
             SeriesRefusalCause::Exhausted => "E-SERIES-003",
             SeriesRefusalCause::IndeterminateCoefficient => "E-SERIES-004",
+            SeriesRefusalCause::PiecewiseBoundary => "E-SERIES-004",
         }
     }
 
@@ -988,6 +1103,10 @@ impl crate::errors::AlkahestError for SeriesRefusal {
                  removable one this engine cannot cancel: cancel the singular factor by \
                  hand (`cancel`/`together`), expand about a nearby regular point, or use \
                  `limit` for the single value you need",
+            ),
+            SeriesRefusalCause::PiecewiseBoundary => Some(
+                "expand each piece separately about the boundary (substitute the branch \
+                 value for the Piecewise), or expand about a point strictly inside one piece",
             ),
         }
     }
@@ -1717,6 +1836,47 @@ mod tests {
     // -----------------------------------------------------------------------
     // Singularities that are *not* removable: refuse, never fabricate
     // -----------------------------------------------------------------------
+
+    /// W5 sibling: on a Piecewise boundary the expansion used to evaluate the
+    /// conditions at the point and return one side's Taylor polynomial as the
+    /// two-sided series (`step` at 0 gave `-1 + O(x³)`). Off the boundary the
+    /// branch in force is expanded as before.
+    #[test]
+    fn series_refuses_on_piecewise_boundary() {
+        use crate::errors::AlkahestError;
+        use crate::kernel::expr::PredicateKind;
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let zero = p.integer(0_i32);
+        let cond = p.predicate(PredicateKind::Gt, vec![x, zero]);
+        let step = p.piecewise(vec![(cond, p.integer(1_i32))], p.integer(-1_i32));
+        let err = series(step, x, zero, 3, &p).expect_err("boundary must refuse");
+        assert!(matches!(err, SeriesError::InvalidOrder), "{err:?}");
+        let refusal = take_series_refusal().expect("refusal recorded");
+        assert_eq!(refusal.cause(), SeriesRefusalCause::PiecewiseBoundary);
+        assert_eq!(refusal.code(), "E-SERIES-004");
+
+        // Nested inside arithmetic, and at an irrational boundary.
+        let sqrt2 = p.func("sqrt", vec![p.integer(2_i32)]);
+        let c2 = p.predicate(PredicateKind::Lt, vec![x, sqrt2]);
+        let pw2 = p.piecewise(vec![(c2, x)], p.pow(x, p.integer(2_i32)));
+        let wrapped = p.add(vec![p.func("sin", vec![x]), pw2]);
+        assert!(series(wrapped, x, sqrt2, 2, &p).is_err());
+        let _ = take_series_refusal();
+
+        // Strictly inside a piece: a series.
+        let one = p.integer(1_i32);
+        assert!(
+            series(step, x, one, 3, &p).is_ok(),
+            "interior point expands"
+        );
+        assert!(take_series_refusal().is_none());
+        // A boundary that depends on a free parameter is undecided: no refusal.
+        let a = p.symbol("a", Domain::Real);
+        let ca = p.predicate(PredicateKind::Gt, vec![x, a]);
+        let pa = p.piecewise(vec![(ca, x)], zero);
+        assert!(series(pa, x, zero, 2, &p).is_ok());
+    }
 
     fn assert_refuses_as_indeterminate(expr: ExprId, var: ExprId, order: u32, p: &ExprPool) {
         use crate::errors::AlkahestError;

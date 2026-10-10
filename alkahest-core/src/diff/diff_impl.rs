@@ -1201,4 +1201,43 @@ mod tests {
         });
         assert_eq!(n_terms, n);
     }
+
+    /// W5: the conditions of a Piecewise are carried over untouched and each
+    /// branch value is differentiated.
+    #[test]
+    fn diff_piecewise_keeps_conditions_and_differentiates_branches() {
+        use crate::kernel::expr::PredicateKind;
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let a = pool.symbol("a", Domain::Real);
+        let zero = pool.integer(0_i32);
+        let c1 = pool.predicate(PredicateKind::Gt, vec![x, zero]);
+        let c2 = pool.predicate(PredicateKind::Lt, vec![x, a]);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let sin_x = pool.func("sin", vec![x]);
+        let inner = pool.piecewise(vec![(c2, sin_x)], x2);
+        let neg_x = pool.mul(vec![pool.integer(-1_i32), x]);
+        let pw = pool.piecewise(vec![(c1, inner)], neg_x);
+        let d = diff(pw, x, &pool).unwrap().value;
+        let ExprData::Piecewise { branches, default } = pool.get(d) else {
+            panic!("expected a Piecewise, got {}", pool.display(d));
+        };
+        assert_eq!(branches.len(), 1);
+        assert_eq!(branches[0].0, c1, "outer condition changed");
+        assert_eq!(default, pool.integer(-1_i32));
+        let ExprData::Piecewise {
+            branches: ib,
+            default: idef,
+        } = pool.get(branches[0].1)
+        else {
+            panic!(
+                "expected nested Piecewise, got {}",
+                pool.display(branches[0].1)
+            );
+        };
+        assert_eq!(ib[0].0, c2, "inner condition changed");
+        assert_eq!(ib[0].1, pool.func("cos", vec![x]));
+        let env: std::collections::HashMap<ExprId, f64> = [(x, 3.0)].into_iter().collect();
+        assert_eq!(crate::jit::eval_interp(idef, &env, &pool), Some(6.0));
+    }
 }

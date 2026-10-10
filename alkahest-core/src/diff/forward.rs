@@ -205,6 +205,10 @@ fn eval_dual(
             rvar: ExprId,
             body: ExprId,
         },
+        Piecewise {
+            branches: Vec<(ExprId, ExprId)>,
+            default: ExprId,
+        },
     }
 
     let node = pool.with(expr, |data| match data {
@@ -227,9 +231,13 @@ fn eval_dual(
             name: name.clone(),
             arg: expr,
         },
-        // PA-9: Piecewise and Predicate are treated as constants w.r.t. the
-        // variable being differentiated (predicates don't depend on x algebraically).
-        ExprData::Piecewise { .. } | ExprData::Predicate { .. } => Node::IsConst,
+        // A Piecewise is differentiated branch by branch (below); only a bare
+        // predicate — a piecewise-constant 0/1 indicator — has tangent 0.
+        ExprData::Piecewise { branches, default } => Node::Piecewise {
+            branches: branches.clone(),
+            default: *default,
+        },
+        ExprData::Predicate { .. } => Node::IsConst,
         ExprData::Forall { .. } | ExprData::Exists { .. } => Node::IsConst,
         ExprData::BigO(_) => Node::IsConst,
         ExprData::RootSum { poly, var, body } => Node::RootSum {
@@ -294,6 +302,23 @@ fn eval_dual(
             let inner = eval_dual(body, var, pool, memo)?;
             let value = pool.root_sum(poly, rvar, inner.value);
             let tangent = pool.root_sum(poly, rvar, inner.tangent);
+            Ok(DualValue::new(value, tangent))
+        }
+        Node::Piecewise { branches, default } => {
+            // d/dx Piecewise((c₁, v₁), …; d) = Piecewise((c₁, v₁'), …; d'):
+            // the conditions select a branch and are carried over untouched
+            // (the derivative does not exist on a boundary; this is the
+            // derivative on the interior of each piece).
+            let mut values = Vec::with_capacity(branches.len());
+            let mut tangents = Vec::with_capacity(branches.len());
+            for (cond, val) in branches {
+                let d = eval_dual(val, var, pool, memo)?;
+                values.push((cond, d.value));
+                tangents.push((cond, d.tangent));
+            }
+            let dd = eval_dual(default, var, pool, memo)?;
+            let value = pool.piecewise(values, dd.value);
+            let tangent = pool.piecewise(tangents, dd.tangent);
             Ok(DualValue::new(value, tangent))
         }
     }?;
@@ -507,5 +532,28 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let r = diff_forward(x, x, &pool).unwrap();
         assert!(r.log.steps().iter().any(|s| s.rule_name == "diff_forward"));
+    }
+
+    /// W5: forward mode used to treat a whole Piecewise as a constant and
+    /// return derivative 0.
+    #[test]
+    fn forward_diff_piecewise_is_branchwise() {
+        use crate::kernel::expr::PredicateKind;
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let zero = pool.integer(0_i32);
+        let cond = pool.predicate(PredicateKind::Gt, vec![x, zero]);
+        let x3 = pool.pow(x, pool.integer(3_i32));
+        let pw = pool.piecewise(vec![(cond, x3)], pool.func("exp", vec![x]));
+        let d = diff_forward(pw, x, &pool).unwrap().value;
+        let sym = crate::diff::diff(pw, x, &pool).unwrap().value;
+        for xv in [-1.5_f64, 2.0] {
+            let env: std::collections::HashMap<ExprId, f64> = [(x, xv)].into_iter().collect();
+            let want = if xv > 0.0 { 3.0 * xv * xv } else { xv.exp() };
+            let got = crate::jit::eval_interp(d, &env, &pool).unwrap();
+            assert!((got - want).abs() < 1e-12, "x={xv}: {got} vs {want}");
+            let got_sym = crate::jit::eval_interp(sym, &env, &pool).unwrap();
+            assert!((got_sym - want).abs() < 1e-12, "symbolic x={xv}");
+        }
     }
 }

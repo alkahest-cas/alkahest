@@ -5,6 +5,14 @@
 ### Fixed
 
 - `diophantine` refused most Pell equations `x² − D·y² = 1` (D = 7, 13, 14, 19, …) with a false "no fundamental unit", because the continued-fraction step of `√D` used an exact division where the recurrence takes a floor; and `x² − D·y² = −1` with no solution ran an unbounded loop that ignored the active budget. The unit now comes from one period of the expansion, negative Pell is decided by the period's parity, other `N` by Nagell's complete search bound (refusing with `E-DIOPH-003` rather than claiming "no solution" when that bound is too large), every loop honours `Budget` (raising `BudgetExceededError`), and three sign/role slips in the same classifier are fixed: `−x² − y² + n` answered for `x² + y² = −n`, `y² − D·x² = N` was reported with `x` and `y` swapped, and `a·x² = b·y²` returned the wrong line.
+- `piecewise([(value, condition)], default)` — the order the API docs showed —
+  was silently read as `(condition, value)`, so `diff` turned the value into a
+  `0` "condition" and `eval_expr` refused the result (E-EVAL-008). Both orders
+  are now accepted (a pair with no predicate in it raises `TypeError`), the
+  docs show the native `(condition, value)` order, `diff_forward` now
+  differentiates a Piecewise branch by branch instead of returning `0`, and
+  `series` about a piece boundary refuses (E-SERIES-004) instead of returning
+  one side's expansion.
 
 ## 3.12.0 — 2026-10-02
 
