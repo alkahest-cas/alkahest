@@ -76,7 +76,7 @@ impl AlkahestError for PslqError {
 /// engine minimum (the request has already been checked against it).
 fn effective_search_bits(xs: &[Float], precision_bits: u32) -> u32 {
     let narrowest = xs.iter().map(Float::prec).min().unwrap_or(precision_bits);
-    precision_bits.min(narrowest).max(64).min(16_384)
+    precision_bits.min(narrowest).clamp(64, 16_384)
 }
 
 fn lin_residual(bits: u32, coeffs: &[Integer], xs: &[Float]) -> Float {
