@@ -18003,10 +18003,11 @@ fn py_lat_lll_reduce_rows(
 #[pyfunction]
 #[pyo3(name = "guess_relation", signature=(constants, precision_bits=664, max_abs_coeff=None))]
 fn py_guess_relation(
+    py: Python<'_>,
     constants: Bound<'_, PyAny>,
     precision_bits: u32,
     max_abs_coeff: Option<u128>,
-) -> PyResult<Option<Vec<i64>>> {
+) -> PyResult<Option<Vec<PyObject>>> {
     use rug::ops::CompleteRound;
     use rug::Float;
     let precision_bits = checked_prec(precision_bits)?;
@@ -18054,12 +18055,13 @@ fn py_guess_relation(
     Ok(match rel {
         None => None,
         Some(coeffs) => {
+            // Coefficients come back as Python ints at any size. They used to be
+            // narrowed to i64, and a large (usually spurious) relation escaped
+            // as a raw `OverflowError: coefficient overflows i64` instead of
+            // reaching the precision guard that would have judged it.
             let mut out = Vec::with_capacity(coeffs.len());
-            for z in coeffs {
-                let v = z.to_i64().ok_or_else(|| {
-                    PyOverflowError::new_err("coefficient overflows i64; report for bigint output")
-                })?;
-                out.push(v);
+            for z in &coeffs {
+                out.push(bigint::int_to_py(py, z)?);
             }
             Some(out)
         }

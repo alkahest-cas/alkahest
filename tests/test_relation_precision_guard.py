@@ -90,11 +90,50 @@ def _decimal_strings(n: int, digits: int) -> list[str]:
     return [f"1.{str(k + 1) * digits}"[: digits + 2] for k in range(n)]
 
 
+def _float_minpoly_powers() -> list[float]:
+    """``1, α, …, α⁶`` for ``α = 2^(1/3) + 3^(1/2)``, as doubles.
+
+    The degree-6 minimal polynomial costs ~13 digits to pin down, so 16 digits
+    of float cannot endorse it even when the search happens to find it.
+    """
+    alpha = 2 ** (1 / 3) + 3**0.5
+    return [alpha**k for k in range(7)]
+
+
+def _stand_ins_satisfying(coeffs: list[int], digits: int) -> list[str]:
+    """Decimal strings of *digits* significant figures on which *coeffs* holds.
+
+    The first ``n-1`` are the :func:`_decimal_strings` stand-ins; the last is
+    solved for so that ``Σ aᵢ·cᵢ`` vanishes to ~*digits* digits. A relation is
+    now *evaluated* as well as costed, so a stand-in it does not hold on would
+    be refuted on that ground alone and the test would no longer be about
+    precision.
+    """
+    from decimal import localcontext
+
+    head = _decimal_strings(len(coeffs) - 1, digits)
+    total = sum(Fraction(a) * Fraction(c) for a, c in zip(coeffs, head))
+    last = -total / coeffs[-1]
+    with localcontext() as ctx:
+        ctx.prec = digits
+        tail = Decimal(last.numerator) / Decimal(last.denominator)
+    return [*head, str(tail)]
+
+
 class TestRefusesUnderprecisedInput:
     def test_floats_at_default_precision_are_refused(self):
-        """The reported silent error, now an honest refusal."""
+        """The reported silent error: that relation must never come back.
+
+        The search now runs at the precision the floats carry (53 bits, the
+        64-bit engine minimum) instead of zero-padding them to 664 bits, so the
+        honest answer — no relation — is what returns.
+        """
+        assert ak.guess_relation([float(math.pi), float(math.e), float(math.log(2))]) is None
+
+    def test_a_float_minimal_polynomial_is_refused(self):
+        """Degree 6 at 16 digits: found, but not affordable — so refused."""
         with pytest.raises(ak.PslqError) as excinfo:
-            ak.guess_relation([float(math.pi), float(math.e), float(math.log(2))])
+            ak.guess_relation(_float_minpoly_powers())
         assert excinfo.value.code == "E-PSLQ-004"
 
     def test_a_true_small_relation_is_not_collateral_damage(self):
@@ -114,7 +153,7 @@ class TestRefusesUnderprecisedInput:
     def test_refusal_explains_what_to_do(self):
         """A refusal an agent cannot act on is barely better than a wrong answer."""
         with pytest.raises(ak.PslqError) as excinfo:
-            ak.guess_relation([float(math.pi), float(math.e)])
+            ak.guess_relation(_float_minpoly_powers())
         remediation = excinfo.value.remediation
         assert remediation is not None
         assert "decimal strings" in remediation
@@ -149,8 +188,9 @@ class TestGenuinePrecisionIsUnaffected:
 class TestOptOutAndReporting:
     def test_check_precision_false_restores_old_behaviour(self):
         """Deliberate opt-out for a relation among the supplied rationals themselves."""
-        coeffs = ak.guess_relation([float(math.pi), float(math.e)], check_precision=False)
+        coeffs = ak.guess_relation(_float_minpoly_powers(), check_precision=False)
         assert coeffs is not None
+        assert ak.relation_confidence(_float_minpoly_powers(), coeffs)["credible"] is False
 
     def test_relation_confidence_reports_the_shortfall(self):
         verdict = ak.relation_confidence([0.1, 0.2, 0.7], [60771139, 67263243, 11653676])
@@ -201,7 +241,20 @@ class TestUnknownPrecisionIsNotAPass:
         old gate called all three ``credible: True``.
         """
         constants = _decimal_strings(n, digits)
-        assert ak.relation_confidence(constants, coeffs)["credible"] is None
+        verdict = ak.relation_confidence(constants, coeffs)
+        # Refuted, not merely unjudged: a `digits`-long literal carries at most
+        # `digits` digits, and these relations cost more than that leaves.
+        assert verdict["credible"] is False
+        assert verdict["available_digits"] is None
+
+    @pytest.mark.parametrize(("n", "digits", "coeffs"), SPURIOUS_RELATIONS)
+    def test_undeclared_strings_with_room_are_still_unjudged(self, n, digits, coeffs):
+        """Unknown precision is not a refusal either: the same relations, holding
+        on 60-digit strings, come back ``None`` until the precision is declared."""
+        constants = _stand_ins_satisfying(coeffs, 60)
+        verdict = ak.relation_confidence(constants, coeffs)
+        assert verdict["credible"] is None
+        assert verdict["residual_digits"] >= 55
 
     @pytest.mark.parametrize(("n", "digits", "coeffs"), SPURIOUS_RELATIONS)
     def test_declaring_the_precision_refutes_them(self, n, digits, coeffs):
@@ -214,14 +267,38 @@ class TestUnknownPrecisionIsNotAPass:
 
     @pytest.mark.parametrize(("n", "digits", "coeffs"), SPURIOUS_RELATIONS)
     def test_the_same_relations_survive_at_200_digits(self, n, digits, coeffs):
-        """Not a gate that refuses everything: 200 digits justifies all three."""
-        constants = _decimal_strings(n, digits)
+        """Not a gate that refuses everything: 200 digits justifies all three —
+        on 200-digit constants the relations actually hold on."""
+        constants = _stand_ins_satisfying(coeffs, 200)
         assert ak.relation_confidence(constants, coeffs, digits=200)["credible"] is True
 
+    @pytest.mark.parametrize(("n", "digits", "coeffs"), SPURIOUS_RELATIONS)
+    def test_declaring_more_digits_than_the_strings_hold_buys_nothing(self, n, digits, coeffs):
+        """A declaration is a cap: `digits`-long strings declared at 200 are
+        still judged at `digits` (the W7 rule — precision travels with the
+        input, and the literal's length bounds it)."""
+        constants = _stand_ins_satisfying(coeffs, digits)
+        verdict = ak.relation_confidence(constants, coeffs, digits=200)
+        assert verdict["credible"] is False
+        assert verdict["available_digits"] == pytest.approx(float(digits), abs=0.5)
+        assert verdict["precision_source"] == "content"
+
     def test_precision_bits_is_the_binary_spelling(self):
-        verdict = ak.relation_confidence([PI_60, E_60], [1, -1], precision_bits=664)
-        assert verdict["available_digits"] == pytest.approx(200.0, abs=0.5)
+        verdict = ak.relation_confidence([SQRT2_60, TWO_SQRT2_60], [-2, 1], precision_bits=190)
+        assert verdict["available_digits"] == pytest.approx(57.2, abs=0.5)
+        assert verdict["precision_source"] == "declared"
         assert verdict["credible"] is True
+        capped = ak.relation_confidence([SQRT2_60, TWO_SQRT2_60], [-2, 1], precision_bits=664)
+        assert capped["available_digits"] == pytest.approx(60.0, abs=0.5)
+        assert capped["precision_source"] == "content"
+
+    def test_a_cheap_relation_that_does_not_hold_is_refuted(self):
+        """``π - e = 0`` costs nothing, and used to be ``credible`` at any
+        declared precision because only its cost was looked at."""
+        verdict = ak.relation_confidence([PI_60, E_60], [1, -1], digits=60)
+        assert verdict["credible"] is False
+        assert verdict["residual_digits"] < 2
+        assert verdict["excess_digits"] < 10
 
     def test_digits_and_precision_bits_are_mutually_exclusive(self):
         with pytest.raises(ValueError):
@@ -237,8 +314,8 @@ class TestUnknownPrecisionIsNotAPass:
         """PSLQ returns the *smallest* relation the precision buys, so a
         purchased one lands just under ``consumed <= available`` rather than
         over it. ``margin_digits=0`` is the old, toothless criterion."""
-        n, digits, coeffs = SPURIOUS_RELATIONS[0]
-        constants = _decimal_strings(n, digits)
+        _n, digits, coeffs = SPURIOUS_RELATIONS[0]
+        constants = _stand_ins_satisfying(coeffs, digits)
         assert ak.relation_confidence(constants, coeffs, digits=digits)["credible"] is False
         raw = ak.relation_confidence(constants, coeffs, digits=digits, margin_digits=0)
         assert raw["credible"] is True
@@ -254,16 +331,21 @@ class TestUnknownPrecisionIsNotAPass:
         """
         mpmath = pytest.importorskip("mpmath")
         with mpmath.workprec(80):  # ~24 digits
-            constants = [+mpmath.pi, +mpmath.e]
-            expensive = [5144503108, -5945642943]
-            verdict = ak.relation_confidence(constants, expensive)
+            constants = [+mpmath.pi, 2 * mpmath.pi]
+            verdict = ak.relation_confidence(constants, [-2, 1])
             assert verdict["precision_source"] == "unknown"
             assert verdict["available_digits"] is None
             assert verdict["credible"] is None
-            declared = ak.relation_confidence(constants, expensive, digits=24)
+            declared = ak.relation_confidence(constants, [-2, 1], digits=20)
             assert declared["precision_source"] == "declared"
-            assert declared["credible"] is False
-            assert ak.relation_confidence(constants, [1, -1], digits=24)["credible"] is True
+            assert declared["credible"] is True
+            # Unknown is not unbounded: an 80-bit mantissa caps what the pair
+            # can carry, and a ~20-digit relation does not fit under it.
+            expensive = [5144503108, -5945642943]
+            pi_e = [+mpmath.pi, +mpmath.e]
+            assert ak.relation_confidence(pi_e, expensive)["credible"] is False
+            assert ak.relation_confidence(pi_e, expensive, digits=24)["credible"] is False
+            assert ak.relation_confidence(pi_e, [1, -1], digits=24)["credible"] is False
 
     def test_one_known_input_can_refute_without_the_rest_being_known(self):
         """Unknown is not a licence to give up.
@@ -285,11 +367,16 @@ class TestUnknownPrecisionIsNotAPass:
     def test_a_known_input_only_refutes_when_it_actually_rules_the_relation_out(self):
         """The converse guard: the shortcut must not manufacture verdicts.
 
-        The same mixed inputs with cheap coefficients stay ``None`` — 16 digits
-        does not rule this relation out, and the strings' precision is still
-        unknown, so no judgement is available either way.
+        Mixed inputs with a cheap relation that holds stay ``None`` — 16 digits
+        does not rule this relation out, and the string's precision is still
+        unknown, so no judgement is available either way. (``[0.1, π]`` with
+        ``[1, -1]`` used to be the example; that relation does not hold, and is
+        now refuted on evaluation.)
         """
-        verdict = ak.relation_confidence([0.1, PI_60], [1, -1])
+        half = "0." + "5" * 60
+        verdict = ak.relation_confidence([0.25, half], [2, -1])
+        assert verdict["credible"] is False  # 0.5 vs 0.555…: does not hold
+        verdict = ak.relation_confidence([0.25, "0." + "5" + "0" * 59], [2, -1])
         assert verdict["credible"] is None
         assert verdict["precision_source"] == "unknown"
 
@@ -363,14 +450,15 @@ class TestConversionsThatPreserveTheValueMustNotSwitchTheGuardOff:
         assert verdict["available_digits"] is None
 
     def test_guess_relation_does_not_endorse_the_lifted_floats(self):
-        """It may still *return* the relation — unknown precision is not a
-        refusal — but nothing downstream may read it as endorsed."""
+        """The search runs at the bits the mantissas actually hold (53), not at
+        ``mp.dps``, so the zero-padded relation is never found; and the old
+        spurious relation is refuted outright — the mantissa caps the set."""
         mpmath = pytest.importorskip("mpmath")
         with mpmath.workdps(300):
             lifted = [mpmath.mpf(x) for x in _float_constants()]
-            coeffs = ak.guess_relation(lifted)
-            assert coeffs is not None
-            assert ak.relation_confidence(lifted, coeffs)["credible"] is not True
+            assert ak.guess_relation(lifted) is None
+            verdict = ak.relation_confidence(lifted, SPURIOUS_FLOAT_RELATION)
+            assert verdict["credible"] is False
 
     def test_declaring_the_real_accuracy_refuses_the_lifted_floats(self):
         """The values came out of doubles, so 16 digits is the truth about them."""
@@ -440,19 +528,32 @@ class TestExactInputsAreEvaluatedNotAssumed:
         an exact rational that is *not* the constant it stands for, and the
         relation found among such truncations does not hold for them."""
         constants = _exact_spellings()["20-digit nstr truncation"]
-        with pytest.raises(ak.PslqError) as excinfo:
-            ak.guess_relation(constants)
-        assert excinfo.value.code == "E-PSLQ-005"
-        assert "false for the values supplied" in str(excinfo.value)
-        coeffs = ak.guess_relation(constants, check_precision=False)
-        verdict = ak.relation_confidence(constants, coeffs)
+        # The relation found among the *supplied* rationals is evaluated, not
+        # assumed; a non-zero residual is refuted.
+        verdict = ak.relation_confidence(constants, SPURIOUS_FLOAT_RELATION)
         assert verdict["credible"] is False
         assert verdict["exact_residual"] != 0
+        # A Fraction used to reach the engine through `float()`, so the search
+        # ran on different numbers than the ones supplied; it now receives the
+        # rational itself, and whatever it returns holds exactly for it.
+        coeffs = ak.guess_relation(constants)
+        if coeffs is not None:
+            assert sum(Fraction(a) * c for a, c in zip(coeffs, constants)) == 0
+
+    def test_a_relation_false_for_exact_inputs_is_refused(self):
+        """Exact integers searched narrower than they need: the engine rounds
+        ``2²⁰⁰ + 1`` and ``2²⁰⁰`` together and reports ``[-1, 1, 0]``, whose
+        exact residual is ``-1``."""
+        constants = [2**200 + 1, 2**200, 1]
+        with pytest.raises(ak.PslqError) as excinfo:
+            ak.guess_relation(constants, precision_bits=64)
+        assert excinfo.value.code == "E-PSLQ-005"
+        assert "false for the values supplied" in str(excinfo.value)
+        assert ak.guess_relation(constants) in ([-1, 1, 1], [1, -1, -1])
 
     def test_the_refusal_says_what_to_do_about_it(self):
-        constants = _exact_spellings()["Fraction(str(x))"]
         with pytest.raises(ak.PslqError) as excinfo:
-            ak.guess_relation(constants)
+            ak.guess_relation([2**200 + 1, 2**200, 1], precision_bits=64)
         assert excinfo.value.code == "E-PSLQ-005"
         assert "digits=" in excinfo.value.remediation
 
@@ -472,13 +573,18 @@ class TestExactInputsAreEvaluatedNotAssumed:
         assert sum(Fraction(a) * c for a, c in zip(coeffs, constants)) == 0
 
     def test_a_declaration_turns_the_exact_check_off(self):
-        """``digits=`` says "treat these rationals as approximations", so the
-        affordability test decides and no exact residual is reported."""
+        """``digits=`` says "treat these rationals as approximations", so no
+        exact residual is reported — but the relation must still *hold* to the
+        declared precision, and this one holds to ~9 digits, not 200."""
         constants = _exact_spellings()["Fraction(str(x))"]
         verdict = ak.relation_confidence(constants, SPURIOUS_FLOAT_RELATION, digits=200)
         assert verdict["exact_residual"] is None
         assert verdict["precision_source"] == "declared"
-        assert verdict["credible"] is True
+        assert verdict["residual_digits"] < 30
+        assert verdict["credible"] is False
+        true_relation = ak.relation_confidence([1, 2, 3], [1, 1, -1], digits=200)
+        assert true_relation["exact_residual"] is None
+        assert true_relation["credible"] is True
 
 
 class TestTheKnownWrongFixStaysOut:
@@ -571,11 +677,11 @@ class TestGuessRelationHasAnEscapeHatch:
 
     def test_digits_makes_the_guard_fire_on_otherwise_unjudged_input(self):
         """The other direction, and the one that matters: declaring the real
-        accuracy of `mpf` values turns an unjudged return into `E-PSLQ-004`."""
+        accuracy of `mpf` values turns a degree-6 relation found among them
+        into `E-PSLQ-004` — 16 digits cannot pay for it."""
         mpmath = pytest.importorskip("mpmath")
         with mpmath.workdps(300):
-            lifted = [mpmath.mpf(x) for x in _float_constants()]
-            assert ak.guess_relation(lifted) is not None
+            lifted = [mpmath.mpf(x) for x in _float_minpoly_powers()]
             with pytest.raises(ak.PslqError) as excinfo:
                 ak.guess_relation(lifted, digits=16)
         assert excinfo.value.code == "E-PSLQ-004"
@@ -583,19 +689,18 @@ class TestGuessRelationHasAnEscapeHatch:
     def test_digits_refuses_a_purchased_string_relation(self):
         """The case the docstring used to send the caller elsewhere for.
 
-        pi, e and log 2 truncated to 20 digits buy a 10-digit-per-coefficient
-        relation at the 664-bit default. Undeclared, `guess_relation` returns it
-        unjudged — a decimal string may be exact — and `digits=20` is how the
-        caller says it is not, in the one call that used to require a second.
+        pi, e and log 2 truncated to 20 digits bought a 10-digit-per-coefficient
+        relation at the 664-bit default. The search now runs at the ~66 bits the
+        strings carry, where there is nothing to buy; and the relation, handed
+        to the gate directly, is refuted with or without a declaration.
         """
         constants = [PI_60[:21], E_60[:21], LOG2_60[:22]]
-        unjudged = ak.guess_relation(constants)
-        assert unjudged is not None
-        assert ak.relation_confidence(constants, unjudged)["credible"] is None
-        with pytest.raises(ak.PslqError) as excinfo:
-            ak.guess_relation(constants, digits=20)
-        assert excinfo.value.code == "E-PSLQ-004"
-        assert "purchasable" in str(excinfo.value)
+        assert ak.guess_relation(constants) is None
+        assert ak.guess_relation(constants, digits=20) is None
+        purchased = ak.guess_relation(constants, precision_bits=664, check_precision=False)
+        if purchased is not None:
+            assert ak.relation_confidence(constants, purchased)["credible"] is False
+            assert ak.relation_confidence(constants, purchased, digits=20)["credible"] is False
 
     def test_digits_is_keyword_only_so_it_cannot_be_confused_with_the_search_width(self):
         with pytest.raises(TypeError):
