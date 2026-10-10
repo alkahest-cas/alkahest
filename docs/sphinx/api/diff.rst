@@ -145,12 +145,19 @@ Piecewise
 
    Create a piecewise expression.
 
-   Each case is a ``(value, condition)`` pair where *condition* is a
-   :class:`Predicate` expression. The *default* is used when no condition
-   holds::
+   Each case is a ``(condition, value)`` pair where *condition* is a
+   predicate built with ``pool.gt`` / ``pool.lt`` / ``pool.ge`` / ``pool.le`` /
+   ``pool.eq`` / ``pool.ne`` (Python's ``>`` is not overloaded on
+   expressions). SymPy's ``(value, condition)`` order is accepted too; a case
+   with no predicate in it raises ``TypeError``. The first case whose
+   condition holds wins, and *default* is used when none does::
 
       expr = piecewise(
-          [(x, x > pool.integer(0)),
-           (pool.integer(-1) * x, x < pool.integer(0))],
-          default=pool.integer(0),  # x == 0
+          [(pool.gt(x, pool.integer(0)), x),
+           (pool.lt(x, pool.integer(0)), pool.integer(-1) * x)],
+          pool.integer(0),  # x == 0
       )
+
+   ``diff`` differentiates each branch and keeps the conditions, giving the
+   derivative on the interior of every piece; ``eval_expr``, ``interval_eval``
+   and ``compile_expr`` evaluate it numerically.
