@@ -14,6 +14,7 @@
   differentiates a Piecewise branch by branch instead of returning `0`, and
   `series` about a piece boundary refuses (E-SERIES-004) instead of returning
   one side's expansion.
+- `solve(..., numeric=True)` returned `NaN` for complex roots (`s**2 + 1` gave `[nan, nan]`), dropped them on the degree > 2 fallback (`s**4 + 1` gave `[]`, `s**3 + 1` only `-1`), and turned a free parameter into `NaN` (`solve([x - y], [x], numeric=True)`). Values are now taken over ℂ, the default domain: a non-real root comes back as a Python `complex`, the fallback uses a new complex solver (`solve_numerical_complex`) that returns every finite root or raises `E-HOMOTOPY-004`, and a solution that depends on a free parameter raises `SolverError` `E-SOLVE-006`.
 
 ## 3.12.0 — 2026-10-02
 

@@ -47,7 +47,12 @@ for sol in solutions:
 
 `solve` returns an empty list for inconsistent systems and a `GroebnerBasis` handle for parametric families (infinite solution sets).
 
-Pass `numeric=True` to return float values directly: `solve(eqs, vars, numeric=True)`.
+Pass `numeric=True` to return numbers directly: `solve(eqs, vars, numeric=True)`.
+The domain is ℂ, so a real root is a `float` and a non-real one a Python `complex`
+(`solve([s**2 + 1], [s], numeric=True)` gives `±1j`; `domain="real"` drops them). Past
+degree 2 the numeric path uses complex homotopy continuation and returns every finite root
+or raises `E-HOMOTOPY-004`. A solution that depends on a free parameter has no numeric value
+and raises `E-SOLVE-006`.
 
 ## Rational equations
 

@@ -1982,7 +1982,13 @@ if "solve" in dir():
                 continue
             if not positive:
                 continue
-            if isinstance(value, (int, float)):
+            if isinstance(value, complex):
+                # A numeric non-real root (``solve(..., numeric=True)``) is not
+                # a positive real, whatever its real part.
+                if abs(value.imag) > atol:
+                    return False
+                real_part = value.real
+            elif isinstance(value, (int, float)):
                 real_part = float(value)
             else:
                 result = evaluate(value, {}, mode="complex")
@@ -2047,9 +2053,17 @@ if "solve" in dir():
             symbolic = _native_solve(equations, vars, numeric=False, method=method)
         except SolverError as exc:
             if numeric and getattr(exc, "code", None) == "E-SOLVE-002":
-                # HighDegree with numeric=True falls back to homotopy inside
-                # the native solver, which already yields real roots only.
+                # HighDegree with numeric=True falls back to *complex* homotopy
+                # inside the native solver (the default domain is ℂ); the
+                # non-real roots come back as Python ``complex`` and are
+                # dropped here, which is exactly what ``domain="real"`` asks.
                 result = _native_solve(equations, vars, numeric=True, method=method)
+                if isinstance(result, list):
+                    result = [
+                        sol
+                        for sol in result
+                        if not any(isinstance(v, complex) for v in sol.values())
+                    ]
                 return _filter_by_assumptions(result, assumptions)
             raise
         if not isinstance(symbolic, list):

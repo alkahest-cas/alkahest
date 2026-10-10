@@ -641,7 +641,8 @@ from alkahest import solve, solve_numerical, GroebnerBasis, GbPoly
 
 # solve(equations, vars, *, numeric=False, method="groebner")
 # - method="groebner" (default): Lex/triangular path. Each finite solution is a dict
-#   mapping variable Expr → Expr (symbolic) or float if numeric=True.
+#   mapping variable Expr → Expr (symbolic), or float/complex if numeric=True
+#   (complex roots are kept; a free parameter raises E-SOLVE-006).
 # - Free symbols omitted from vars are parameters (e.g. solve([x**2 - y], [x]) → ±√y).
 # - method="homotopy": numerical continuation in ℂⁿ; dict values are float.
 # - If the ideal is underdetermined / not zero-dimensional finite, Groebner mode may

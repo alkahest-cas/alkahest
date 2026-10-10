@@ -17191,9 +17191,15 @@ fn py_solve_numerical(
 ///     solutions may be expressions in those symbols (e.g. ``solve([x**2 - y],
 ///     [x])`` → ``±sqrt(y)``).
 /// numeric : bool, default False
-///     Used when ``method="groebner"``: symbolic ``Expr`` values vs ``float``.
-///     When Lex back-substitution hits a degree > 2 univariate, ``numeric=True``
-///     falls back to homotopy continuation (same as ``method="homotopy"``).
+///     Used when ``method="groebner"``: symbolic ``Expr`` values vs numbers.
+///     The domain is ℂ, so a real value is a ``float`` and a non-real one a
+///     Python ``complex`` (``solve([s**2 + 1], [s], numeric=True)`` →
+///     ``±1j``). When Lex back-substitution hits a degree > 2 univariate,
+///     ``numeric=True`` falls back to *complex* homotopy continuation, which
+///     returns every finite root or raises ``HomotopyError`` (E-HOMOTOPY-004)
+///     if a path is lost. A solution that depends on a free parameter has no
+///     numeric value and raises ``SolverError`` with ``.code == "E-SOLVE-006"``;
+///     a parameter-free value that cannot be evaluated raises ``E-SOLVE-007``.
 /// method : str, default ``"groebner"``
 ///     ``"groebner"`` — Lex basis + triangular back-substitution.
 ///     ``"homotopy"`` — total-degree homotopy continuation in ``ℂⁿ`` followed
@@ -17202,8 +17208,9 @@ fn py_solve_numerical(
 /// Returns
 /// -------
 /// list[dict]
-///     Each dict maps a variable ``Expr`` to ``Expr`` (symbolic Groebner) or
-///     ``float`` (Groebner with ``numeric=True``, or ``method="homotopy"``).
+///     Each dict maps a variable ``Expr`` to ``Expr`` (symbolic Groebner),
+///     ``float`` or ``complex`` (Groebner with ``numeric=True``), or ``float``
+///     (``method="homotopy"``, which reports real roots only).
 ///     Solutions are a *set*: a double root is one entry, not two. Every
 ///     parameter-free tuple has been substituted back into the equations you
 ///     passed and could not be shown to violate them. A tuple containing a free
@@ -17309,15 +17316,33 @@ fn py_solve(
         r
     };
 
-    // B5: `numeric=True` means the caller accepts floats — when Lex back-substitution
-    // hits a degree > 2 univariate, fall through to homotopy instead of raising.
+    // B5: `numeric=True` means the caller accepts numbers — when Lex
+    // back-substitution hits a degree > 2 univariate, fall through to homotopy
+    // instead of raising. The default domain is ℂ, so this is the *complex*
+    // continuation: the real-only `solve_numerical` used to be called here and
+    // silently dropped every non-real root (`s**4 + 1` → `[]`).
     if numeric {
         if let Err(alkahest_core::SolverError::HighDegree(_)) = &result {
+            let params = {
+                let pool = pool_py.borrow(py);
+                alkahest_core::solver::collect_parameters(&eq_ids, &var_ids, &pool.inner)
+                    .into_iter()
+                    .map(|p| pool.inner.display(p).to_string())
+                    .collect::<Vec<_>>()
+            };
+            if !params.is_empty() {
+                let refusal =
+                    alkahest_core::solver::NumericSolveRefusal::free_parameter(&params.join(", "));
+                let exc = py.get_type_bound::<PySolverError>();
+                return Err(make_structured_err(py, &exc, &refusal));
+            }
             let opts = HomotopyOpts::default();
             let pts = {
                 let pool = pool_py.borrow(py);
                 let (eqs, vs, pool, opts) = (&eq_ids, &var_ids, &pool.inner, &opts);
-                py.allow_threads(|| solve_numerical(eqs, vs, pool, opts))
+                py.allow_threads(|| {
+                    alkahest_core::solver::solve_numerical_complex(eqs, vs, pool, opts)
+                })
             };
             return match pts {
                 Err(e) => Err(homotopy_err_to_py(e)),
@@ -17325,12 +17350,12 @@ fn py_solve(
                     let list = pyo3::types::PyList::empty_bound(py);
                     for p in points {
                         let d = pyo3::types::PyDict::new_bound(py);
-                        for (i, &val) in p.coordinates.iter().enumerate() {
+                        for (i, &val) in p.iter().enumerate() {
                             let var_expr = PyExpr {
                                 id: var_ids[i],
                                 pool: pool_py.clone_ref(py),
                             };
-                            d.set_item(var_expr.into_py(py), val)?;
+                            d.set_item(var_expr.into_py(py), complex_value_to_py(py, val))?;
                         }
                         list.append(d)?;
                     }
@@ -17422,6 +17447,17 @@ fn py_solve_side_conditions() -> Vec<String> {
 
 /// Shared formatting for a [`SolutionSet`] result into the Python return shape
 /// (list of dicts, a `GroebnerBasis`, or a structured error).
+/// A numeric solution component as Python sees it: `float` when it is real,
+/// `complex` otherwise.
+#[cfg(feature = "groebner")]
+fn complex_value_to_py(py: Python<'_>, v: alkahest_core::ComplexF64) -> PyObject {
+    if v.im == 0.0 {
+        v.re.into_py(py)
+    } else {
+        pyo3::types::PyComplex::from_doubles_bound(py, v.re, v.im).into_py(py)
+    }
+}
+
 #[cfg(feature = "groebner")]
 fn finite_solutions_to_py(
     py: Python<'_>,
@@ -17473,19 +17509,34 @@ fn finite_solutions_to_py(
                     .map(|sol| (0..sol.len()).map(|_| out.next().unwrap()).collect())
                     .collect()
             };
+            // Numeric values are taken over ℂ (the default domain): a value the
+            // real interpreter cannot produce used to become NaN — `±i` came
+            // back as `[nan, nan]` and a parametric `x = y` as `x = nan`. Now a
+            // non-real root is a Python `complex`, and a value that is not a
+            // number at all refuses the call (E-SOLVE-006 / E-SOLVE-007).
+            let numeric_values = if numeric {
+                match alkahest_core::solver::numeric_solution_values(&solutions, &pool.inner) {
+                    Ok(v) => v,
+                    Err(refusal) => {
+                        let exc = py.get_type_bound::<PySolverError>();
+                        return Err(make_structured_err(py, &exc, &refusal));
+                    }
+                }
+            } else {
+                Vec::new()
+            };
             for (s, sol) in solutions.iter().enumerate() {
                 let d = pyo3::types::PyDict::new_bound(py);
-                for (i, val) in sol.iter().enumerate() {
+                for (i, _) in sol.iter().enumerate() {
                     let var_expr = PyExpr {
                         id: var_ids[i],
                         pool: pool_py.clone_ref(py),
                     };
                     if numeric {
-                        let env: std::collections::HashMap<ExprId, f64> =
-                            std::collections::HashMap::new();
-                        let f = alkahest_core::jit::eval_interp(*val, &env, &pool.inner)
-                            .unwrap_or(f64::NAN);
-                        d.set_item(var_expr.into_py(py), f)?;
+                        d.set_item(
+                            var_expr.into_py(py),
+                            complex_value_to_py(py, numeric_values[s][i]),
+                        )?;
                     } else {
                         let val_expr = PyExpr {
                             id: simplified[s][i],

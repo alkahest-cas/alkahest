@@ -8,7 +8,7 @@
 mod complex_f64;
 mod id_map;
 pub(crate) mod program;
-mod root_sum;
+pub(crate) mod root_sum;
 pub(crate) mod symbols;
 
 use crate::ball::{ArbBall, IntervalEval};

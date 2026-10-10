@@ -233,7 +233,7 @@ fn minimal_polynomial_roots(
 /// Substituting `z = s·w` with `s` the geometric mean root modulus
 /// `|c₀/cₙ|^{1/n}` puts the whole root set on a circle of radius about 1, where
 /// a relative step criterion and an `f64` Horner evaluation both behave.
-fn polynomial_roots(coeffs: &[f64]) -> Option<Vec<ComplexF64>> {
+pub(crate) fn polynomial_roots(coeffs: &[f64]) -> Option<Vec<ComplexF64>> {
     let mut c = coeffs.to_vec();
     while c.len() > 1 && c.last() == Some(&0.0) {
         c.pop();
@@ -338,7 +338,7 @@ fn cdiv(a: ComplexF64, b: ComplexF64) -> ComplexF64 {
 /// `p(z)` by Horner, together with `Σ |cₖ| · |z|ᵏ` — the size of the largest
 /// intermediate the evaluation passes through, which is the scale a residual
 /// has to be compared against.
-fn horner_with_magnitude(coeffs: &[f64], z: ComplexF64) -> (ComplexF64, f64) {
+pub(crate) fn horner_with_magnitude(coeffs: &[f64], z: ComplexF64) -> (ComplexF64, f64) {
     let az = z.re.hypot(z.im);
     let mut acc = ComplexF64::new(0.0, 0.0);
     let mut magnitude = 0.0f64;
