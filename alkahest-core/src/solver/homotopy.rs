@@ -1294,7 +1294,7 @@ fn jacobian_is_regular(sys: &[GbPoly], z: &[C64]) -> bool {
         .flatten()
         .map(|c| c.norm2())
         .fold(0.0_f64, f64::max);
-    if !(scale > 0.0 && scale.is_finite()) {
+    if scale.is_nan() || scale <= 0.0 || scale.is_infinite() {
         return false;
     }
     for col in 0..n {
@@ -1401,7 +1401,8 @@ fn univariate_complex_roots(eq: ExprId, var: ExprId, pool: &ExprPool) -> Option<
     }
     for &z in &roots {
         let (v, mag) = horner_with_magnitude(&coeffs, z);
-        if !(v.re.hypot(v.im) <= 1e-9 * mag.max(f64::MIN_POSITIVE)) {
+        let r = v.re.hypot(v.im);
+        if r.is_nan() || r > 1e-9 * mag.max(f64::MIN_POSITIVE) {
             return None;
         }
     }
