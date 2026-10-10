@@ -33,11 +33,15 @@ from alkahest._dlpack import _call_batch
 
 
 def _require_jax():
-    """Import jax on first use and return ``(jnp, core, ad, batching)``.
+    """Import jax on first use and return ``(jnp, Primitive, ShapedArray, ad, batching)``.
 
     Deferred rather than done at module level: importing jax costs most of a
     second, and this module is reachable from ``import alkahest`` (via
     ``alkahest.to_jax``) and ``import alkahest.experimental``.
+
+    ``Primitive`` moved to ``jax.extend.core`` and was removed from
+    ``jax.core`` in JAX 0.6, where ``to_jax`` died with ``AttributeError``;
+    the new home is tried first and the old one kept for older JAX.
     """
     try:
         import jax.numpy as jnp
@@ -48,7 +52,11 @@ def _require_jax():
         raise ImportError(
             "JAX is not installed. Run: pip install jax[cuda12] or pip install jax"
         ) from None
-    return jnp, jax_core, jax_ad, jax_batching
+    try:
+        from jax.extend.core import Primitive
+    except ImportError:
+        Primitive = jax_core.Primitive
+    return jnp, Primitive, jax_core.ShapedArray, jax_ad, jax_batching
 
 
 def as_jax_primitive(expr, inputs: list) -> Callable:
@@ -75,14 +83,14 @@ def as_jax_primitive(expr, inputs: list) -> Callable:
     - JVP (forward-mode) via ``alkahest.grad``.
     - Transpose rule for reverse-mode.
     """
-    jnp, jax_core, jax_ad, jax_batching = _require_jax()
+    jnp, Primitive, ShapedArray, jax_ad, jax_batching = _require_jax()
 
     # Compute gradients symbolically, once at wrap time.
     grad_exprs = alkahest.symbolic_grad(expr, inputs)
 
     # Define the JAX primitive
     prim_name = f"alkahest_{id(expr)}"
-    prim = jax_core.Primitive(prim_name)
+    prim = Primitive(prim_name)
     prim.multiple_results = False
 
     # Compile batched eval
@@ -109,7 +117,7 @@ def as_jax_primitive(expr, inputs: list) -> Callable:
 
     # Abstract eval: output has same shape/dtype as first input
     def _abstract_eval(*avals):
-        return jax_core.ShapedArray(avals[0].shape, avals[0].dtype)
+        return ShapedArray(avals[0].shape, avals[0].dtype)
 
     prim.def_abstract_eval(_abstract_eval)
 

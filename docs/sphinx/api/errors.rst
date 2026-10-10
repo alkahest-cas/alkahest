@@ -330,6 +330,14 @@ Exception subclasses
    ``CompileCache.compile`` when the expression has a free symbol the input
    list does not bind; the compiled function would have no value at any point.
 
+.. note::
+
+   :func:`to_stablehlo` raises the base :class:`AlkahestError` with code
+   ``E-STABLEHLO-001`` (no exact StableHLO lowering for a function, named in
+   the message), ``-002`` (a non-numeric node such as ``O(x)``), ``-003`` (a
+   free symbol not in the input list), ``-004`` (an infinite/NaN constant) or
+   ``-005`` (an invalid MLIR function name).
+
 .. exception:: CudaError
 
    Code prefix ``E-CUDA-*``. CUDA device, compilation, or kernel launch

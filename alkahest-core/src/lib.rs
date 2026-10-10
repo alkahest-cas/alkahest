@@ -194,7 +194,7 @@ pub use jit::{
 pub use plot::{render_dot, render_svg, render_svg_opts};
 
 // V5-2 — StableHLO/XLA bridge
-pub use stablehlo::emit_stablehlo;
+pub use stablehlo::{emit_stablehlo, try_emit_stablehlo, StableHloError};
 
 // V5-3 — NVPTX JIT backend
 #[cfg(feature = "cuda")]
@@ -367,7 +367,7 @@ pub mod stable {
         CertifiedPoint, DiophantineError, DiophantineSolution, HomotopyError, HomotopyOpts,
         RegularChain, Solution, SolutionSet, SolverError,
     };
-    pub use crate::stablehlo::emit_stablehlo;
+    pub use crate::stablehlo::{emit_stablehlo, try_emit_stablehlo, StableHloError};
     pub use crate::sum::{
         gosper_certificate, gosper_normal_form, hypergeom_ratio, product_definite,
         product_indefinite, rsolve, solve_linear_recurrence_homogeneous, sum_definite,
@@ -615,7 +615,7 @@ pub mod experimental {
         PauliOperator, StabilizerCode, StabilizerError, StabilizerGroup, MAX_DISTANCE_SEARCH_DIM,
         MAX_MATRIX_ENUMERATION, MAX_QUBITS,
     };
-    pub use crate::stablehlo::emit_stablehlo;
+    pub use crate::stablehlo::{emit_stablehlo, try_emit_stablehlo, StableHloError};
     /// Riemann theta functions, classical modular functions (`eta`, `j`,
     /// `lambda`, `Delta`, Eisenstein) and the Weierstrass family, as
     /// **rigorous enclosures** backed by FLINT's Arb layer. Every value is a

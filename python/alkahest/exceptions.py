@@ -75,6 +75,10 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-LIMIT-001 … E-LIMIT-006 LimitError  (006 = the limit turns on the sign of
                                  a free parameter that nothing states; assume
                                  it, or declare the symbol Domain.Positive)
+    E-STABLEHLO-001 … E-STABLEHLO-005 AlkahestError (to_stablehlo refusals:
+                                 001 = a function with no exact lowering,
+                                 named in the message; 003 = a free symbol
+                                 not in the input list)
     E-CUDA-001  … E-CUDA-006   CudaError
     E-IO-001    … E-IO-009     IoError  (formerly PoolPersistError / E-POOL-*)
     E-PARSE-*                  ParseError  (reserved; parser not yet integrated)

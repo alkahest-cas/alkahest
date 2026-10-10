@@ -12,14 +12,23 @@ MLIR / StableHLO
 
    Emit the expression as textual MLIR in the StableHLO dialect.
 
-   The output is valid input to ``mlir-opt`` and the XLA compiler.
-   Supported ops: ``Add``, ``Mul``, ``Pow``, ``sin``, ``cos``, ``exp``,
-   ``log``, ``sqrt`` → mapped to ``stablehlo.*`` ops.
+   The output is valid input to ``mlir-opt`` and the XLA compiler, and uses
+   only ``stablehlo.*`` ops. Lowered: ``+``, ``*``, ``**``, ``sin``, ``cos``,
+   ``tan``, ``exp``, ``log``, ``sqrt``, ``sinh``, ``cosh``, ``tanh``, ``abs``,
+   ``sign``, ``floor``, ``ceil``, ``round``, ``heaviside``, ``atan2``,
+   ``atan``, ``asin``, ``acos``, ``atanh``, ``max``, ``min``, ``Piecewise``
+   and predicates (via ``select``/``compare``), and an unbound ``pi``.
+   Anything else — ``erf``, ``gamma``, ``lambert_w``, ``asinh``, ``acosh``,
+   user functions — raises :class:`AlkahestError` with ``E-STABLEHLO-001``
+   naming the function; a free symbol not in ``vars`` raises
+   ``E-STABLEHLO-003``. No partial or empty module is ever returned.
 
    :param expr: The expression to lower.
    :param vars: Input variables, in order.
    :param fn_name: Name of the emitted function.
    :returns: Textual MLIR string.
+   :raises AlkahestError: ``E-STABLEHLO-001`` … ``E-STABLEHLO-005`` when the
+      expression cannot be exported exactly.
 
    Example::
 

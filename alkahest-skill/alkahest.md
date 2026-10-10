@@ -809,6 +809,7 @@ poly = pool.integer(1) + pool.integer(2)*x + pool.integer(3)*x**2
 print(horner(poly, x))                        # Horner-form Expr
 c_code = emit_c(poly, x, "x_var", "f")       # C function string
 stablehlo = to_stablehlo(sin(x)+exp(y), [x,y], fn_name="my_fn")  # StableHLO text
+# erf/gamma/lambert_w/asinh/user functions raise AlkahestError E-STABLEHLO-001 (never '')
 ```
 
 ---
