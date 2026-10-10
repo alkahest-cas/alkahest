@@ -1603,7 +1603,9 @@ def _constant_profile(value) -> _ConstantProfile:
         if not d.is_finite():
             return _ConstantProfile(text, None, math.inf, "other")
         sig = _significant_digits(d)
-        if d.as_tuple().exponent >= 0 or sig <= _SHORT_EXACT_DIGITS:
+        # `d` is finite here, so its exponent is an int (not "n"/"N"/"F").
+        exponent = d.as_tuple().exponent
+        if (isinstance(exponent, int) and exponent >= 0) or sig <= _SHORT_EXACT_DIGITS:
             bits = math.inf
         else:
             bits = sig * _BITS_PER_DIGIT
