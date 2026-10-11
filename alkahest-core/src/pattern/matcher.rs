@@ -374,8 +374,14 @@ fn match_ac_args(
         });
 
         if !is_last_wildcard {
-            // No wildcard to absorb the remainder: the pattern's terms must
-            // match a sub-multiset of the expression's (`A·B` in `A·B·D`).
+            // No wildcard to absorb the remainder. At the node being searched
+            // (depth 0) a product pattern may match a sub-multiset of the
+            // product's factors (`A·B` in `A·B·D`); nested inside another
+            // pattern it must match the whole node, or the match would stand
+            // for a node with factors silently dropped.
+            if is_add || ac_depth != 0 {
+                return None;
+            }
             let mut used = vec![false; expr_args.len()];
             return match_submultiset(pat_args, expr_args, &mut used, subst, pool, ac_depth, cfg);
         }
@@ -403,7 +409,9 @@ fn match_ordered_window(
     cfg: MatchConfig,
 ) -> Option<Substitution> {
     let k = pat_args.len();
-    if k == 0 || k > expr_args.len() {
+    // A contiguous run is allowed only at the node being searched (depth 0);
+    // nested inside another pattern the product must match whole.
+    if k == 0 || k > expr_args.len() || (ac_depth != 0 && k != expr_args.len()) {
         return None;
     }
     (0..=expr_args.len() - k).find_map(|start| {

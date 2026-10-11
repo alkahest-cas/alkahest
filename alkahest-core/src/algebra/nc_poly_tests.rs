@@ -505,6 +505,18 @@ fn match_pattern_respects_order() {
     );
     let pat = Pattern::from_expr(p.mul(vec![a, b]));
     assert!(!match_pattern(&pat, p.mul(vec![a, b, d]), &p).is_empty());
+    // Nested in a function, the product must match whole.
+    let f = |e| p.func("f", vec![e]);
+    let pat = Pattern::from_expr(f(p.mul(vec![a, b])));
+    assert!(match_pattern(&pat, f(p.mul(vec![a, b, d])), &p).is_empty());
+    let pat = Pattern::from_expr(f(p.mul(vec![x, pp])));
+    assert!(match_pattern(&pat, f(p.mul(vec![x, pp, pp])), &p).is_empty());
+    // ...but a match is still found at the inner node itself.
+    let pat = Pattern::from_expr(p.mul(vec![x, pp]));
+    assert!(!match_pattern(&pat, f(p.mul(vec![x, pp, pp])), &p).is_empty());
+    // Sums keep their previous behaviour: no partial match without a wildcard.
+    let pat = Pattern::from_expr(p.add(vec![a, b]));
+    assert!(match_pattern(&pat, p.add(vec![a, b, d]), &p).is_empty());
 }
 
 #[test]

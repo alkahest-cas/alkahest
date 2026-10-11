@@ -332,6 +332,7 @@ fn py_gamma_trace(
                 Some(p) => same_pool_or_err(&e.pool, p, "a gamma_trace slot")?,
                 None => pool_py = Some(e.pool.clone_ref(py)),
             }
+            guard_depth(&e.pool.borrow(py).inner, e.id)?;
             parsed.push(GammaSlot::Vector(e.id));
         } else if let Ok(k) = item.extract::<i64>() {
             parsed.push(match k {
