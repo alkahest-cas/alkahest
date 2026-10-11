@@ -1047,6 +1047,10 @@ rational constant and the hypothesis was **discharged**, not skipped. It is rese
 each `inverse` call, so read it before the next one. `matrix_exp_side_conditions()`
 is the same channel for the eigenvalue gaps `matrix_exp` divides by.
 
+`rank()` on symbolic entries is the **generic** rank: `ak.Matrix([[a]]).rank()` is `1`
+and `ak.matrix_rank_side_conditions()` is `['a ≠ 0']` — the non-constant pivots the
+elimination divided by. The rank is exact where they hold and an upper bound everywhere.
+
 Before 3.8, "could not prove `det ≠ 0`" was read as "`det = 0`", and `nullspace()`
 returned a **confident wrong basis** for any 2×2 with a symbolic determinant. If you
 have results computed with 3.7 that came from `nullspace` on symbolic entries, recheck
@@ -1382,6 +1386,29 @@ U.sin(Quantity(90, "deg"))                          # deg converted to rad first
 - `dimension_of` needs a unit for every symbol (`E-UNIT-005`); sums need equal *units*, not only
   dimensions (`E-UNIT-006`: `t_h + t_min`); transcendental arguments must be pure numbers (`E-UNIT-004`).
 - Integration bounds for a dimensional variable must be `Quantity`s (or `0`/`±oo`).
+
+## Controls: transfer functions, state space, Lyapunov / Riccati
+
+```python
+from alkahest import TransferFunction, StateSpace, lyapunov, care, lqr, kronecker, bode, margins
+from alkahest import controls_side_conditions
+G = TransferFunction(1, m*s**2 + b*s + k, s)      # num, den kept as given (no silent cancellation)
+G.poles(); G.zeros(); G.dc_gain()                  # exact (radicals / RootOf), with multiplicity
+G.to_ss()                                          # controllable canonical form == scipy tf2ss; 'm ≠ 0'
+StateSpace(A, B, C, D).to_tf(s)                    # C(sI-A)^-1 B + D over det(sI-A); MIMO -> rows of TFs
+(C_pid * G).feedback(); G.minreal()                # minreal states the cancelled factor
+G.step_response(t); G.impulse_response(t)          # inverse Laplace (E-TRANSFORM-002 propagates)
+G.discretize(T, "tustin"); sys.discretize(T, "zoh")# ZOH exact via matrix_exp of [[A,B],[0,0]]T
+sys.controllability_rank(); controls_side_conditions()   # generic rank + pivot hypotheses
+lyapunov(A, Q)            # A X + X A^T + Q = 0 (python-control lyap); scipy's solve_continuous_lyapunov(A, -Q)
+K, X = lqr(A, B, Q, [[r]])  # exact n<=2: stabilising branch's Hurwitz conditions stated; numeric otherwise
+bode(G, w); margins(G)    # numeric; margins = (gm, pm, w_phase_crossover, w_gain_crossover) like control.margin
+```
+
+- Exact unless an entry is a float (`method="numeric"` returns numpy arrays). Numeric routines need
+  numeric data (`E-CTRL-003`: `G.subs({K: 2})` first) and numpy (`E-CTRL-006`).
+- `E-CTRL-004` = the object does not exist (singular Lyapunov operator `λᵢ+λⱼ=0`, no stabilising
+  ARE solution, infinite DC gain); `E-CTRL-005` = beyond the exact engine (use numeric).
 
 ## Sensitivity and adjoint systems
 

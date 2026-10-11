@@ -9,6 +9,7 @@ from importlib.metadata import version as _meta_version
 from . import (
     _certificates,
     ansatz,  # P2 item 1 — structured ansatz families for conjecture generation
+    controls,  # G10 — LTI systems, Lyapunov / Riccati, Bode / margins
     crosscheck,  # P2 item 2 — cross-CAS differential testing
     lattice,
     modular,  # noqa: F401 — V2-1: expose alkahest.modular submodule
@@ -258,6 +259,8 @@ from .alkahest import (  # noqa: F401
     matrix_exp_side_conditions,
     # The `det ≠ 0` a symbolic `Matrix.inverse` assumed
     matrix_inverse_side_conditions,
+    # The pivot hypotheses a symbolic `Matrix.rank` (generic rank) assumed
+    matrix_rank_side_conditions,
     max,  # symbolic max(a, b) — shadows Python builtin within this module
     milp,
     min,  # symbolic min(a, b) — shadows Python builtin within this module
@@ -345,6 +348,18 @@ from .alkahest import (
 )
 from .alkahest import (
     integrate_definite as _native_integrate_definite,
+)
+from .controls import (  # G10 — controls layer
+    ControlsError,
+    StateSpace,
+    TransferFunction,
+    bode,
+    care,
+    controls_side_conditions,
+    kronecker,
+    lqr,
+    lyapunov,
+    margins,
 )
 from .units import (  # G10 — physical units and dimensional analysis
     Quantity,
@@ -2830,6 +2845,8 @@ __all__ = [
     "Component",
     # M6 — modular / p-adic evaluation of holonomic sequences
     "CongruenceSweep",
+    # G10 — controls layer (LTI systems, Lyapunov / Riccati)
+    "ControlsError",
     "ConversionError",
     "CrossCheckError",
     "CudaError",
@@ -2923,9 +2940,11 @@ __all__ = [
     "SosError",
     "SparseGcdError",
     "SparseInterpError",
+    "StateSpace",
     "SumError",
     # PA-7
     "TracedFn",
+    "TransferFunction",
     "TransformError",
     # PA-10
     "TreeDef",
@@ -2962,6 +2981,7 @@ __all__ = [
     "bessel_j1",
     # M6 — binomial(a, b) mod p**k (Lucas / Granville)
     "binomial_mod",
+    "bode",
     "bound_on_box",
     "bounds_supported",
     # P1 search plumbing item 4
@@ -2971,6 +2991,7 @@ __all__ = [
     "cancel",
     "capabilities",
     "capacitor",
+    "care",
     "ceil",
     # V5-12 — certificate ledger
     "certifiable",
@@ -2983,6 +3004,8 @@ __all__ = [
     "conjugate",
     # RW-7
     "context",
+    "controls",
+    "controls_side_conditions",
     "convert_units",
     "cos",
     # Exponential-integral family (DLMF §6.2)
@@ -3049,6 +3072,7 @@ __all__ = [
     "jacobian",
     "jit",
     "jit_is_available",
+    "kronecker",
     "lambert_w",
     # V2-20
     "latex",
@@ -3060,14 +3084,19 @@ __all__ = [
     # Exponential-integral family (DLMF §6.2)
     "log_integral",
     "lower_to_first_order",
+    "lqr",
+    "lyapunov",
     "make_rule",
     "map_exprs",
+    "margins",
     # Pattern matching & substitution
     "match_pattern",
     # The non-vanishing hypotheses `Matrix.matrix_exp` assumed for a symbolic e^A
     "matrix_exp_side_conditions",
     # The `det ≠ 0` a symbolic `Matrix.inverse` assumed
     "matrix_inverse_side_conditions",
+    # The pivot hypotheses a symbolic `Matrix.rank` (generic rank) assumed
+    "matrix_rank_side_conditions",
     "milp",
     "number_theory",
     # Phase 25
