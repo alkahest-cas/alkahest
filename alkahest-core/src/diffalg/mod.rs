@@ -296,8 +296,9 @@ pub fn rosenfeld_groebner_with_options(
 /// Pair it with [`crate::solver::gbpoly_to_expr`] to recover the input–output
 /// equations as [`ExprId`]s.
 ///
-/// The active [`crate::budget`] is honoured; see [`budget_guarded`] for how a
-/// trip is reported.
+/// The active [`crate::budget`] is honoured: a trip returns
+/// `Err(DiffAlgError::NotPolynomial(..))` naming it, never a partial result, and
+/// leaves the [`crate::budget::BudgetTrip`] in [`crate::budget::take_trip`].
 pub fn rosenfeld_groebner_ranked(
     dae: &DAE,
     pool: &ExprPool,
