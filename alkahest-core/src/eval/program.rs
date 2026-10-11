@@ -143,6 +143,15 @@ impl NumericProgram {
                             Visit::Fail
                         }
                     }
+                    // An algebraic number: a constant slot holding its value
+                    // (a non-real root has no `f64` value, like an unbound
+                    // symbol).
+                    ExprData::Func { name, .. } if name == crate::poly::root_of::ROOT_OF => {
+                        match crate::poly::root_of::root_of_real_f64(id, pool) {
+                            Some(v) => Visit::Const(v),
+                            None => Visit::Fail,
+                        }
+                    }
                     ExprData::Add(_)
                     | ExprData::Mul(_)
                     | ExprData::Pow { .. }

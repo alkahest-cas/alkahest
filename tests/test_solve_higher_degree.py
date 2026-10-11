@@ -185,6 +185,16 @@ def test_root_of_is_a_constant():
     assert str(ak.diff(r, x).value) == "0"
     assert ak.subs(r, {x: p.integer(5)}) == r
     assert abs(ak.eval_expr(r, {}) - 1.324717957244746) < 1e-15
+    # Not an undefined function: no Derivative node, no E-EVAL-005.
+    assert not ak._is_undefined_function_name("RootOf")
+    t = p.symbol("t")
+    e = r * t + 1
+    assert str(ak.diff(e, t).value) == "RootOf(x^3 - x - 1, 0)"
+    assert abs(ak.eval_expr(e, {t: 2.0}) - 3.649435914489492) < 1e-14
+    # Compiled code reads it as the constant it is.
+    f = ak.compile_expr(e, [t])
+    assert abs(f([2.0]) - 3.649435914489492) < 1e-14
+    assert r"\operatorname{RootOf}" in ak.latex(e)
 
 
 def test_root_of_reduces_and_refuses():
