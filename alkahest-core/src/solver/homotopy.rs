@@ -499,7 +499,11 @@ fn track_path_sys(
     let mut t = 0.0_f64;
     let mut dt = opts.dt_initial;
     let mut steps_total = 0usize;
+    let mut ticks = 0u32;
     while t < 1.0 - 1e-15 {
+        if crate::poly::groebner::reduce::poll_due(&mut ticks) && crate::budget::interrupted() {
+            return Err(HomotopyError::TrackerFailed(BUDGET_STOP));
+        }
         if steps_total > opts.max_tracker_steps {
             return Err(HomotopyError::TrackerFailed("max_tracker_steps"));
         }
@@ -654,7 +658,44 @@ fn dedup(points: &[Vec<f64>], tol: f64) -> Vec<Vec<f64>> {
 /// complete complex solution set, so a lost or jumped continuation path raises
 /// `E-HOMOTOPY-004` instead of silently dropping a real root, and an empty result
 /// means the system has no real solution.
+///
+/// # Budget
+///
+/// The active [`crate::budget`] is polled once per path and every
+/// [`crate::budget::INTERRUPT_POLL_INTERVAL`] tracker steps. A trip returns
+/// `Err(HomotopyError::TrackerFailed(..))` — never the roots found so far,
+/// which would be an incomplete set presented as a complete one — and leaves
+/// the [`crate::budget::BudgetTrip`] in [`crate::budget::take_trip`]
+/// (`HomotopyError` is exhaustive).
 pub fn solve_numerical(
+    equations: &[ExprId],
+    vars: &[ExprId],
+    pool: &ExprPool,
+    opts: &HomotopyOpts,
+) -> Result<Vec<CertifiedPoint>, HomotopyError> {
+    budget_guarded(|| solve_numerical_unguarded(equations, vars, pool, opts))
+}
+
+/// The message [`HomotopyError::TrackerFailed`] carries for a budget stop.
+const BUDGET_STOP: &str = "stopped by the active budget before every path was tracked — this is \
+                           not a statement about the system";
+
+/// Run `f` with budget interrupt points armed (see [`crate::budget::arm`]); a
+/// trip inside replaces whatever `f` returned with a `TrackerFailed` carrier
+/// and leaves the trip recorded for the bindings.
+fn budget_guarded<T>(f: impl FnOnce() -> Result<T, HomotopyError>) -> Result<T, HomotopyError> {
+    let interrupts = crate::budget::arm();
+    let result = f();
+    match interrupts.trip() {
+        Some(trip) => {
+            crate::budget::record_trip(trip);
+            Err(HomotopyError::TrackerFailed(BUDGET_STOP))
+        }
+        None => result,
+    }
+}
+
+fn solve_numerical_unguarded(
     equations: &[ExprId],
     vars: &[ExprId],
     pool: &ExprPool,
@@ -710,6 +751,9 @@ pub fn solve_numerical(
             used_polyhedral = true;
             for (start_sys, cell_starts) in cells {
                 for z0 in cell_starts {
+                    if crate::budget::interrupted() {
+                        return Err(HomotopyError::TrackerFailed(BUDGET_STOP));
+                    }
                     paths_started += 1;
                     let z_end = match track_path_sys(&sys, &start_sys, z0, opts) {
                         Ok(z) => z,
@@ -932,6 +976,12 @@ impl ProjectiveHomotopy {
             if steps > opts.max_tracker_steps {
                 return Err(z);
             }
+            // Budget interrupt point; the armed caller discards the result.
+            if steps % crate::budget::INTERRUPT_POLL_INTERVAL as usize == 0
+                && crate::budget::interrupted()
+            {
+                return Err(z);
+            }
             let t_next = (t + dt).min(1.0);
             let rhs: Vec<C64> = self
                 .dh_dt(&z)
@@ -1089,7 +1139,18 @@ fn accept_root(target: &[GbPoly], z: &[C64]) -> bool {
 /// Coordinates whose imaginary parts are negligible and that polish to a real
 /// root are returned with `im == 0.0` exactly.  Multiple roots are returned
 /// once (the result is a set), sorted by real then imaginary part.
+///
+/// The active [`crate::budget`] is honoured as in [`solve_numerical`].
 pub fn solve_numerical_complex(
+    equations: &[ExprId],
+    vars: &[ExprId],
+    pool: &ExprPool,
+    opts: &HomotopyOpts,
+) -> Result<Vec<Vec<ComplexF64>>, HomotopyError> {
+    budget_guarded(|| solve_numerical_complex_unguarded(equations, vars, pool, opts))
+}
+
+fn solve_numerical_complex_unguarded(
     equations: &[ExprId],
     vars: &[ExprId],
     pool: &ExprPool,
@@ -1237,6 +1298,9 @@ fn track_all_complex(
 
     let mut uniq: Vec<Vec<C64>> = Vec::new();
     for w in start_system_roots(degs) {
+        if crate::budget::interrupted() {
+            return Err(HomotopyError::TrackerFailed(BUDGET_STOP));
+        }
         let z_end = match hom.track(hom.start_point(&w), opts) {
             Ok(z) => z,
             // A path into a *singular* solution at infinity may stall just

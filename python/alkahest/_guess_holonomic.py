@@ -82,6 +82,7 @@ from typing import TYPE_CHECKING, Any
 
 from .alkahest import ExprPool, Matrix
 from .alkahest import HolonomicError as _HolonomicError
+from .alkahest import check_budget as _check_budget
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Sequence
@@ -728,6 +729,10 @@ def guess_holonomic(
             if n_equations < 1:
                 skipped.append((order, degree, unknowns + threshold + order))
                 continue
+            # Budget checkpoint once per probe: a budget stop raises
+            # ``BudgetExceededError`` rather than returning ``None``, which
+            # would read as "no relation up to these bounds".
+            _check_budget()
             fitted = _fit(values, order, degree, start, threshold, len(skipped))
             if fitted is None:
                 continue

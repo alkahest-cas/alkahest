@@ -257,6 +257,12 @@ pub(super) fn field_gaussian_solve(mut mat: Vec<Vec<Rn>>, mut rhs: Vec<Rn>) -> O
         if row >= nrows {
             break;
         }
+        // Budget interrupt point (a no-op unless a caller armed it, see
+        // `budget::arm`): one elimination at a high certificate degree can take
+        // minutes. The armed caller reads the trip and discards this `None`.
+        if crate::budget::interrupted() {
+            return None;
+        }
         let pr = (row..nrows).find(|&r| !rn_is_zero(&mat[r][col]));
         let Some(pr) = pr else {
             continue;
@@ -610,6 +616,35 @@ pub fn zeilberger_search(
     opts: &ZeilbergerOpts,
     search: OrderSearch,
 ) -> Result<DerivedExpr<ZeilbergerSearchReport>, HolonomicError> {
+    // The active budget is polled once per `(order, degree)` probe and once
+    // per elimination column. `HolonomicError` is exhaustive, so a trip is
+    // reported as `SearchExhausted` with a message saying it is *not* an
+    // exhausted search, and the trip itself is left in `budget::take_trip`
+    // for the bindings to raise as `BudgetExceededError`.
+    let interrupts = crate::budget::arm();
+    let result = zeilberger_search_unguarded(term, n, k, pool, opts, search);
+    match interrupts.trip() {
+        Some(trip) => {
+            use crate::errors::AlkahestError;
+            crate::budget::record_trip(trip);
+            Err(HolonomicError::SearchExhausted(format!(
+                "the Zeilberger search was stopped by the active budget before it finished — \
+                 this is NOT a statement that no certificate exists: {trip} [{}]",
+                trip.code()
+            )))
+        }
+        None => result,
+    }
+}
+
+fn zeilberger_search_unguarded(
+    term: ExprId,
+    n: ExprId,
+    k: ExprId,
+    pool: &ExprPool,
+    opts: &ZeilbergerOpts,
+    search: OrderSearch,
+) -> Result<DerivedExpr<ZeilbergerSearchReport>, HolonomicError> {
     if n == k {
         return Err(HolonomicError::InvalidInput(
             "the outer index n and the summation index k must be distinct symbols".into(),
@@ -651,6 +686,10 @@ pub fn zeilberger_search(
     let mut states: Vec<Option<OrderState>> = Vec::with_capacity(opts.max_order);
     let mut degrees_failed = vec![0usize; opts.max_order];
     for (order, d) in search_plan(opts.max_order, opts.max_degree, search) {
+        if crate::budget::interrupted() {
+            // Replaced by the budget error in `zeilberger_search`.
+            return Err(HolonomicError::SearchExhausted(String::new()));
+        }
         // Counted before the probe rather than after, because every path out of
         // this body other than `return` is a failure at `(order, d)` — and the
         // minimality test below only ever reads *lower* orders, which are
@@ -885,6 +924,30 @@ mod tests {
     /// therefore unreachable at the shipped defaults while being seconds away at
     /// `max_degree = 4`, i.e. `max_degree` behaved as a starting point rather than
     /// a bound. If that regresses, this test does not fail subtly: it hangs.
+    /// G8: the search honours the active budget. A trip is reported as
+    /// `SearchExhausted` whose message says it is *not* an exhausted search,
+    /// with the trip itself in `budget::take_trip` for the bindings.
+    #[test]
+    fn a_budget_trip_is_not_reported_as_an_exhausted_search() {
+        use crate::budget::{self, Budget, BudgetError, BudgetTrip};
+        let pool = ExprPool::new();
+        let (n, k) = nk(&pool);
+        let c = binom(&pool, n, k);
+        let sign = pool.pow(pool.integer(-1_i32), k);
+        let f = pool.mul(vec![sign, c, c, c]);
+        let _g = budget::enter(Budget::new().with_max_steps(0));
+        let err = zeilberger(f, n, k, &pool, &ZeilbergerOpts::default())
+            .expect_err("a zero step budget must stop the search");
+        assert!(
+            matches!(&err, HolonomicError::SearchExhausted(m) if m.contains("NOT a statement")),
+            "{err:?}"
+        );
+        assert!(matches!(
+            budget::take_trip(),
+            Some(BudgetTrip::Budget(BudgetError::Steps { .. }))
+        ));
+    }
+
     #[test]
     fn dixon_order_two_is_reachable_at_default_bounds() {
         let pool = ExprPool::new();

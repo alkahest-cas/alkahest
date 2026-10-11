@@ -1487,14 +1487,21 @@ ak.budget_seed()         # the active budget's seed, for reproducible sampling
 ak.active_budget(), ak.is_budget_active()
 ```
 
-What actually honours a budget today: **`integrate` and `limit`** (they raise
-`BudgetExceededError`) and **`simplify`** (no error channel — it stops early and returns
-the best value so far, silently). Gröbner bases, homotopy continuation and the other
-heavy primitives do **not** check it yet.
+**There is no default budget**: with no `context(budget=…)` every call is unbounded, and
+some legitimate ones take minutes. In an unattended loop, always set one.
 
-`integrate` and `limit` also **release the GIL** around their core call, so
-`request_cancel()` from another thread reaches one that is already running. Nothing else
-does, so a running Gröbner basis cannot be cancelled.
+What honours a budget (raising `BudgetExceededError`, never a partial result):
+`integrate`, `limit`, `GroebnerBasis.compute`/`compute_f5`/`compute_raw` (incl.
+`params=`), `solve` (Gröbner, back-substitution, `numeric=True`, `method="homotopy"`),
+`solve_numerical`, `primary_decomposition`, `radical`, `triangularize`,
+`rosenfeld_groebner`, `zeilberger`, `guess_holonomic`, `decide`, `sos_decompose` /
+`prove_nonneg`, `factorint`. **`simplify`** has no error channel — it stops early and
+returns the best value so far, silently. A single FLINT call (`factor_z` on one huge
+polynomial) is not interruptible; the budget fires right after it.
+
+The heavy entry points **release the GIL** around their core call, so
+`request_cancel()` from another thread reaches one that is already running, including a
+Gröbner basis or homotopy continuation.
 
 Three limits to state plainly, because they change what you should write:
 

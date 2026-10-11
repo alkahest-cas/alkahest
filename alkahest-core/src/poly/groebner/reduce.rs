@@ -40,6 +40,17 @@ use crate::poly::groebner::monomial_order::MonomialOrder;
 // monomial, i.e. a wrong basis (see `poly::exponent`).
 use crate::poly::exponent::{add_or_panic, total_degree_or_panic};
 
+/// Count one division step; `true` once every
+/// [`crate::budget::INTERRUPT_POLL_INTERVAL`] steps, when the loop should
+/// consult [`crate::budget::interrupted`].  The division loops below can run
+/// for minutes on one S-polynomial, so the budget has to be polled inside
+/// them, and polling on a counter keeps the cost off the hot path.
+#[inline(always)]
+pub(crate) fn poll_due(ticks: &mut u32) -> bool {
+    *ticks = ticks.wrapping_add(1);
+    *ticks % crate::budget::INTERRUPT_POLL_INTERVAL == 0
+}
+
 /// Divide `f` by the ordered list `gs` and return the remainder.
 ///
 /// This is the multivariate division algorithm. The remainder is zero if and
@@ -552,8 +563,13 @@ impl Divisors {
         let mut h = Integer::new();
         let mut mp = Integer::new();
         let mut scalings = 0u32;
+        let mut ticks = 0u32;
 
         while let Some((lt_key, mut mg)) = p.pop_last() {
+            if poll_due(&mut ticks) && crate::budget::interrupted() {
+                // Abandoned: the armed caller discards whatever comes back.
+                break;
+            }
             decode(order, &lt_key, &mut lt_exp);
             let lt_deg = if is_graded { lt_key[0] } else { 0 };
             let Some((idx, d)) = self.find_divisor(&lt_exp, lt_deg, last_divisor, skip) else {
@@ -641,8 +657,12 @@ impl Divisors {
         let mut shift: Vec<u32> = Vec::new();
         let mut key: Vec<u32> = Vec::new();
         let mut tmp = Rational::new();
+        let mut ticks = 0u32;
 
         while let Some((lt_key, mut q)) = p.pop_last() {
+            if poll_due(&mut ticks) && crate::budget::interrupted() {
+                break;
+            }
             decode(order, &lt_key, &mut lt_exp);
             let lt_deg = if is_graded { lt_key[0] } else { 0 };
             let Some((idx, d)) = self.find_divisor(&lt_exp, lt_deg, last_divisor, skip) else {
@@ -685,8 +705,12 @@ pub(crate) fn reduce_reference(f: &GbPoly, gs: &[GbPoly], order: MonomialOrder) 
     let mut last_divisor: usize = 0;
 
     let is_graded = order.is_graded();
+    let mut ticks = 0u32;
 
     'outer: while !p.is_zero() {
+        if poll_due(&mut ticks) && crate::budget::interrupted() {
+            break;
+        }
         let (lt_exp, lt_coeff) = match p.leading_term(order) {
             Some((e, c)) => (e.clone(), c.clone()),
             None => break,

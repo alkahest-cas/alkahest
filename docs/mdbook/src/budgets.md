@@ -21,6 +21,26 @@ with ak.context(pool=p, budget=ak.Budget(wall_ms=50, max_steps=10_000, seed=7)):
         # ... deprioritize this candidate and move on to the next one ...
 ```
 
+## There is no default budget — set one
+
+**No call in Alkahest is time-limited unless you say so.** `integrate`, `solve`,
+`GroebnerBasis.compute` and every other entry point run unbounded when no
+`context(budget=...)` is active, and some legitimate inputs genuinely take minutes
+(a Gröbner basis of cyclic-6, the Lazard–Rioboo–Trager log part of
+`∫(x⁷+3x²−1)/(x¹⁵+x⁴+2x+1)² dx`, which works in a degree-15 number field). An
+unattended loop — an agent, a fan-out search, a notebook cell that must come back —
+should therefore always run its candidates inside a budget:
+
+```python
+with ak.context(budget=ak.Budget(wall_ms=10_000)):
+    result = ak.integrate(f, x)    # BudgetExceededError after ~10 s, never a hang
+```
+
+A silent default was considered and rejected: a limit short enough to protect an
+agent loop breaks legitimate long computations for everyone else, and one long enough
+not to (minutes) protects nobody. The budget is the caller's decision, stated in one
+line, and every engine listed below honours it.
+
 ## Model
 
 A `Budget` is an immutable `(wall_ms, max_steps, seed, max_bytes)` tuple. Every field is
@@ -103,11 +123,56 @@ a handful of strategic points — not blanket-inserted into every loop:
   already does, silently. If you need a hard raise on a `simplify` call specifically,
   wrap it in `alkahest.run_with_wall_fallback` (below).
 
-Other heavy primitives (Gröbner bases, homotopy continuation, …) do not yet check the
-budget; wiring them is a follow-up, not part of this cut. Calling `check()` is cheap
-when no budget is active and cancellation has not been requested (an atomic load, and —
-only if a budget is active — an `Instant::now()`), so it is safe to sprinkle at more
-call sites over time without a performance concern gating it.
+- **Gröbner bases** — `GroebnerBasis.compute` (Buchberger, and grevlex-then-FGLM for
+  `"lex"`), `GroebnerBasis.compute_f5`, `compute_raw` and the parametric engine
+  (`compute(..., params=...)`): once per S-pair, every 16 steps of every division
+  loop, while normalising each new basis element, and once per FGLM step. Cyclic-6
+  under grevlex, which ran for more than two minutes whatever the budget, stops 0.6 s
+  into a 500 ms budget; `compute_f5` on cyclic-5 (> 100 s) stops at 0.5 s.
+- **`alkahest.solve`** (`method="groebner"`, and the homotopy fallback of
+  `numeric=True`), **`solve_numerical`** / `method="homotopy"` — the Gröbner basis,
+  once per back-substitution branch and per candidate verified against the input, once
+  per continuation path and every 16 predictor–corrector steps. The report's
+  `solve([x⁷+y⁵−3xy−1, y⁷−x³y+2], [x, y])` ran 9.1 s against a 300 ms budget; it now
+  stops at 0.55 s against 500 ms.
+- **`primary_decomposition`, `radical`, `triangularize`, `rosenfeld_groebner`** — every
+  Gröbner basis they compute, and once per split of the primary-decomposition
+  recursion and per prolongation round.
+- **`alkahest.zeilberger`** — once per `(order, degree)` probe and once per column of
+  the `Q(n)` elimination (one probe at a high degree can take minutes). The trip raises
+  `BudgetExceededError`, not `HolonomicError`/`E-HOLO-002`, which would read as "no
+  certificate up to these bounds".
+- **`alkahest.guess_holonomic`** — once per `(order, degree)` probe.
+- **`alkahest.decide`** — once per sample cell of the two-variable CAD.
+- **`sos_decompose` / `prove_nonneg`** — between SDP solves (already the case before).
+
+Every one of these raises `BudgetExceededError` on a trip and **never returns what it
+had computed so far**: a basis that stopped part-way is not a Gröbner basis of anything,
+and a partial solution list or an exhausted-looking search would be a wrong answer.
+
+Still **not** interruptible: a single FLINT call — `factor_z` on one huge polynomial,
+`fmpz_factor` outside the budget ladder `factorint` uses — runs to its end, and the
+budget fires at the next checkpoint after it.
+
+### Rust: interrupt points for engines with no error channel
+
+`GroebnerBasis::compute` returns a basis, not a `Result`, and changing a public
+signature is a semver break. Such engines poll `budget::interrupted()`, which answers
+`false` (one thread-local read) unless a caller has **armed** it with `budget::arm()`.
+A caller that arms promises to read the trip (`InterruptGuard::trip`) and discard the
+partial value; `GroebnerBasis::try_compute` / `try_compute_lex` / `try_compute_f5` do
+exactly that and return `Result<_, BudgetTrip>`. Unarmed, the infallible constructors
+behave exactly as before — they ignore the budget. Engines with an exhaustive error
+enum (`solve_polynomial_system`, `primary_decomposition`, `triangularize`,
+`rosenfeld_groebner_*`, `solve_numerical`, `zeilberger`, `decide`) arm for themselves,
+return their existing carrier variant on a trip and leave the trip in
+`budget::take_trip()`; `ParamGroebnerBasis::compute` returns the new
+`ParamGroebnerError::Budget`.
+
+Calling `check()` is cheap when no budget is active and cancellation has not been
+requested (an atomic load, and — only if a budget is active — an `Instant::now()`), so
+it is safe to sprinkle at more call sites over time without a performance concern
+gating it.
 
 ## How tightly `wall_ms` binds
 
@@ -200,8 +265,8 @@ Two things that follow, and one that does not:
   `together` / `apart`, the `sum_*` / `product_*` family, `rsolve`, `evaluate`,
   `factor_z`, `GroebnerBasis.compute*` and the symbolic `Matrix` operations — now
   release the GIL for their core call too, so a thread pool overlaps them. But
-  `request_cancel()` still cannot stop a running Gröbner basis or homotopy
-  continuation, because those do not check the budget at all yet. The work stays
+  `request_cancel()` now stops a running Gröbner basis or homotopy continuation too
+  (see the list above); a single FLINT call still runs to its end. The work stays
   on the calling thread either way, so the thread-local budget frame, ambient
   assumptions and every `*_side_conditions()` channel are the caller's.
 - **Nothing about pool safety changes.** `ExprPool` is `Send + Sync` and interns

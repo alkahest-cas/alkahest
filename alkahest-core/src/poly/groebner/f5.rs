@@ -122,8 +122,12 @@ fn reduce_f5(
     order: MonomialOrder,
 ) -> GbPoly {
     let mut h = poly.clone();
+    let mut ticks = 0u32;
     'outer: loop {
         if h.is_zero() {
+            break;
+        }
+        if crate::poly::groebner::reduce::poll_due(&mut ticks) && crate::budget::interrupted() {
             break;
         }
         let lt_exp = match h.leading_exp(order) {
@@ -241,6 +245,11 @@ pub fn compute_groebner_basis_f5(
     }
 
     while let Some(pair) = heap.pop() {
+        // Budget interrupt point (see `budget::arm`); the armed caller
+        // discards the partial basis.
+        if crate::budget::interrupted() {
+            return basis.into_iter().map(|lp| lp.poly).collect();
+        }
         // Stale-pair check: signature may shift as basis grows.
         let sig_s = match s_pair_signature(&basis[pair.i], &basis[pair.j], poly_order) {
             Some(s) => s,
@@ -252,6 +261,9 @@ pub fn compute_groebner_basis_f5(
 
         let s = s_polynomial(&basis[pair.i].poly, &basis[pair.j].poly, poly_order);
         let h = reduce_f5(&s, &sig_s, &basis, poly_order);
+        if crate::budget::interrupt_pending() {
+            return basis.into_iter().map(|lp| lp.poly).collect();
+        }
         if h.is_zero() {
             continue;
         }
@@ -282,7 +294,7 @@ pub fn compute_groebner_basis_f5(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::poly::groebner::buchberger::compute_buchberger_basis;
     use crate::poly::groebner::reduce::reduce;

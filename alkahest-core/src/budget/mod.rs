@@ -697,6 +697,130 @@ pub fn clear_trip() {
 }
 
 // ---------------------------------------------------------------------------
+// Interrupt points — budget checks inside engines with no error channel
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// Nesting depth of [`arm`] on this thread.
+    static ARMED: Cell<u32> = const { Cell::new(0) };
+}
+
+/// How many iterations of a tight inner loop (one division step, one
+/// predictor–corrector step) run between two [`interrupted`] polls.
+///
+/// A poll is a thread-local read when nothing is armed, and an `Instant::now()`
+/// plus the memory checks when something is. A division step is a `BTreeMap`
+/// update and at least one bignum multiply, and on the inputs that hang a step
+/// can scale a whole remainder of huge integers, so 256 steps were measured to
+/// overshoot a wall budget by seconds (primary decomposition); 16 keeps the
+/// poll far below the cost of the steps it separates.
+pub const INTERRUPT_POLL_INTERVAL: u32 = 16;
+
+/// RAII guard returned by [`arm`]; disarms on drop (including unwind).
+///
+/// Not [`Send`], like [`BudgetGuard`]: the arming depth is thread-local.
+pub struct InterruptGuard {
+    outermost: bool,
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+impl InterruptGuard {
+    /// The trip that stopped the armed block, if any.
+    ///
+    /// The trip stays recorded (see [`take_trip`]) so that a binding further
+    /// out can still raise it; it is cleared by the next outermost [`arm`].
+    pub fn trip(&self) -> Option<BudgetTrip> {
+        LAST_TRIP.with(|c| c.get())
+    }
+
+    /// `true` when this guard is the outermost armed block on the thread.
+    pub fn is_outermost(&self) -> bool {
+        self.outermost
+    }
+}
+
+impl Drop for InterruptGuard {
+    fn drop(&mut self) {
+        ARMED.with(|a| a.set(a.get().saturating_sub(1)));
+    }
+}
+
+/// Arm [`interrupted`] for the scope of the returned guard.
+///
+/// Some heavy engines have **no error channel**: `GroebnerBasis::compute`
+/// returns a basis, not a `Result`, and changing that signature is a major
+/// semver break. They still poll [`interrupted`] in every unbounded loop, but
+/// the poll answers `false` unless a caller has armed it — because an engine
+/// that stops early with nowhere to say so hands back a *partial* result, and
+/// only a caller that knows to look for the trip afterwards may let it.
+///
+/// So a caller that arms promises to consult the trip (via
+/// [`InterruptGuard::trip`] or [`take_trip`]) before trusting anything the
+/// armed block returned, and to discard the result when one is recorded. The
+/// `try_*` Gröbner entry points and the engines that do have an error channel
+/// (`solve`, primary decomposition, triangularization, Rosenfeld–Gröbner) arm
+/// for themselves and turn the trip into an error.
+///
+/// Arming nests. The outermost [`arm`] clears any stale trip, so one left by an
+/// earlier call is never attributed to this one.
+pub fn arm() -> InterruptGuard {
+    let outermost = ARMED.with(|a| {
+        let d = a.get();
+        a.set(d + 1);
+        d == 0
+    });
+    if outermost {
+        clear_trip();
+    }
+    InterruptGuard {
+        outermost,
+        _not_send: std::marker::PhantomData,
+    }
+}
+
+/// `true` when some caller on this thread has [`arm`]ed interrupt points.
+pub fn is_armed() -> bool {
+    ARMED.with(|a| a.get() > 0)
+}
+
+/// Interrupt point for an engine with no error channel: `true` means *stop
+/// now and return anything* — the result will be discarded by whoever armed.
+///
+/// Always `false` (after one thread-local read) when nothing is [`arm`]ed, so
+/// an unarmed call behaves exactly as it did before interrupt points existed.
+/// When armed, it answers `true` if a trip is already recorded, and otherwise
+/// runs [`check_all`] — cancellation, wall clock, step counter, memory — and
+/// records the trip it finds. A recorded trip is sticky for the rest of the
+/// armed block, so every loop above the one that tripped unwinds at its next
+/// poll without doing further work.
+///
+/// Like [`check`], each poll that reaches [`check_all`] charges one step
+/// against `max_steps`; poll once per unit of real work (an S-pair, a path
+/// step), or every [`INTERRUPT_POLL_INTERVAL`] iterations of a tight loop.
+pub fn interrupted() -> bool {
+    if !is_armed() {
+        return false;
+    }
+    if interrupt_pending() {
+        return true;
+    }
+    match check_all() {
+        Ok(()) => false,
+        Err(trip) => {
+            record_trip(trip);
+            true
+        }
+    }
+}
+
+/// `true` when an armed block has already recorded a trip — without checking
+/// the clock or charging a step. For the code just after a call that may have
+/// stopped early, to decide whether to use what it returned.
+pub fn interrupt_pending() -> bool {
+    is_armed() && LAST_TRIP.with(|c| c.get().is_some())
+}
+
+// ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
 

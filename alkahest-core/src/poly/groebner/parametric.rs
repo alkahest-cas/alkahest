@@ -87,6 +87,9 @@ pub enum ParamGroebnerError {
         /// The conditions that vanish at the requested point.
         vanishing: Vec<ParamPoly>,
     },
+    /// The active [`crate::budget`] stopped the computation (wall clock,
+    /// steps, memory or cancellation); no basis is returned.
+    Budget(crate::budget::BudgetTrip),
 }
 
 impl std::fmt::Display for ParamGroebnerError {
@@ -110,6 +113,7 @@ impl std::fmt::Display for ParamGroebnerError {
                  there, so this basis does not describe that point",
                 vanishing.len()
             ),
+            ParamGroebnerError::Budget(trip) => write!(f, "{trip}"),
         }
     }
 }
@@ -123,6 +127,7 @@ impl AlkahestError for ParamGroebnerError {
             ParamGroebnerError::ShapeMismatch { .. } => "E-PARAMGB-002",
             ParamGroebnerError::WrongArity { .. } => "E-PARAMGB-003",
             ParamGroebnerError::Degenerate { .. } => "E-PARAMGB-004",
+            ParamGroebnerError::Budget(trip) => trip.code(),
         }
     }
 
@@ -135,6 +140,7 @@ impl AlkahestError for ParamGroebnerError {
             ParamGroebnerError::WrongArity { .. } => {
                 Some("supply exactly one value per parameter, in the parameter list's order")
             }
+            ParamGroebnerError::Budget(trip) => trip.remediation(),
             ParamGroebnerError::Degenerate { .. } => Some(
                 "compute the basis directly over ℚ at that parameter point, or move the vanishing \
                  factors into the generators and recompute",
@@ -439,8 +445,12 @@ fn reduce_param(
     let mut r = ParamGbPoly::zero(f.n_vars, f.n_params);
     let mut last_divisor: usize = 0;
     let is_graded = order.is_graded();
+    let mut ticks = 0u32;
 
     'outer: while !p.is_zero() {
+        if super::reduce::poll_due(&mut ticks) && crate::budget::interrupted() {
+            break;
+        }
         let (lt_exp, lt_coeff) = match p.leading_term(order) {
             Some((e, c)) => (e.clone(), c.clone()),
             None => break,
@@ -528,6 +538,9 @@ fn interreduce(
 ) -> Vec<ParamGbPoly> {
     let mut i = 0;
     while i < basis.len() {
+        if crate::budget::interrupted() {
+            return basis;
+        }
         let others: Vec<ParamGbPoly> = basis
             .iter()
             .enumerate()
@@ -587,6 +600,9 @@ impl ParamGroebnerBasis {
             }
         }
 
+        // Budget interrupt points below are armed here and turned into
+        // `ParamGroebnerError::Budget` on the way out.
+        let interrupts = crate::budget::arm();
         let mut conds = ConditionLog::default();
         // The input coefficients have to be regular at the parameter point
         // before anything else can be said about them.
@@ -635,8 +651,14 @@ impl ParamGroebnerBasis {
         let mut heap: BinaryHeap<CriticalPair> = BinaryHeap::from(pair_vec);
 
         while let Some(pair) = heap.pop() {
+            if crate::budget::interrupted() {
+                break;
+            }
             let sp = s_polynomial_param(&basis[pair.i], &basis[pair.j], order, &mut conds);
             let r = reduce_param(&sp, &basis, order, &mut conds);
+            if crate::budget::interrupt_pending() {
+                break;
+            }
 
             if !r.is_zero() {
                 let r = r.make_monic(order, &mut conds);
@@ -656,6 +678,9 @@ impl ParamGroebnerBasis {
         }
 
         let generators = interreduce(basis, order, &mut conds);
+        if let Some(trip) = interrupts.trip() {
+            return Err(ParamGroebnerError::Budget(trip));
+        }
         Ok(ParamGroebnerBasis {
             generators,
             order,

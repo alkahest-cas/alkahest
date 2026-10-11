@@ -133,7 +133,7 @@ pub fn fglm(grevlex_basis: &[GbPoly], n_vars: usize) -> Option<Vec<GbPoly>> {
 
     while let Some(Reverse(LexMonomial(m_exp))) = heap.pop() {
         iters += 1;
-        if iters > safety_cap {
+        if iters > safety_cap || crate::budget::interrupted() {
             return None;
         }
 

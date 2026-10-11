@@ -129,6 +129,29 @@ impl AlkahestError for DiffAlgError {
     }
 }
 
+/// Run `f` with budget interrupt points armed (see [`crate::budget::arm`]).
+///
+/// A trip anywhere inside — the Gröbner bases, the prolongation loop —
+/// replaces whatever `f` returned with `DiffAlgError::NotPolynomial` naming the
+/// trip, and leaves the [`crate::budget::BudgetTrip`] in
+/// [`crate::budget::take_trip`] (`DiffAlgError` is exhaustive, so it cannot
+/// carry a budget variant) for the bindings to raise as `BudgetExceededError`.
+fn budget_guarded<T>(f: impl FnOnce() -> Result<T, DiffAlgError>) -> Result<T, DiffAlgError> {
+    let interrupts = crate::budget::arm();
+    let result = f();
+    match interrupts.trip() {
+        Some(trip) => {
+            crate::budget::record_trip(trip);
+            Err(DiffAlgError::NotPolynomial(format!(
+                "stopped by the active budget before the elimination finished — this is not a \
+                 statement about the system: {trip} [{}]",
+                trip.code()
+            )))
+        }
+        None => result,
+    }
+}
+
 fn solver_err_to_diffalg(e: SolverError) -> DiffAlgError {
     DiffAlgError::NotPolynomial(e.to_string())
 }
@@ -242,11 +265,13 @@ pub fn rosenfeld_groebner_algebraic(
     if gens.is_empty() {
         return Err(DiffAlgError::EmptySystem);
     }
-    let gb = GroebnerBasis::compute(gens, order);
-    if is_unit_ideal_gb(&gb) {
-        return Ok(vec![]);
-    }
-    Ok(vec![RegularDifferentialChain { basis: gb }])
+    budget_guarded(|| {
+        let gb = GroebnerBasis::compute(gens, order);
+        if is_unit_ideal_gb(&gb) {
+            return Ok(vec![]);
+        }
+        Ok(vec![RegularDifferentialChain { basis: gb }])
+    })
 }
 
 /// Rosenfeld-style prolongation + Gröbner stabilization for a polynomial DAE.
@@ -270,7 +295,19 @@ pub fn rosenfeld_groebner_with_options(
 /// exponent vectors, so `ranking.vars[i]` is what exponent slot `i` refers to.
 /// Pair it with [`crate::solver::gbpoly_to_expr`] to recover the input–output
 /// equations as [`ExprId`]s.
+///
+/// The active [`crate::budget`] is honoured; see [`budget_guarded`] for how a
+/// trip is reported.
 pub fn rosenfeld_groebner_ranked(
+    dae: &DAE,
+    pool: &ExprPool,
+    order: MonomialOrder,
+    max_prolong_rounds: usize,
+) -> Result<(RosenfeldGroebnerResult, DifferentialRanking), DiffAlgError> {
+    budget_guarded(|| rosenfeld_groebner_ranked_unguarded(dae, pool, order, max_prolong_rounds))
+}
+
+fn rosenfeld_groebner_ranked_unguarded(
     dae: &DAE,
     pool: &ExprPool,
     order: MonomialOrder,
@@ -290,6 +327,11 @@ pub fn rosenfeld_groebner_ranked(
     let mut prolongation_rounds: usize = 0;
 
     for round in 0..max_prolong_rounds {
+        if crate::budget::interrupted() {
+            return Err(DiffAlgError::NotPolynomial(
+                "stopped by the active budget".into(),
+            ));
+        }
         let gb = GroebnerBasis::compute(active.clone(), order);
         if is_unit_ideal_gb(&gb) {
             return Ok((
@@ -640,6 +682,15 @@ pub fn rosenfeld_groebner_parametric(
     params: &[ExprId],
     opts: ParametricProlongOpts<'_>,
 ) -> Result<(ParametricRosenfeldResult, DifferentialRanking), DiffAlgError> {
+    budget_guarded(|| rosenfeld_groebner_parametric_unguarded(dae, pool, params, opts))
+}
+
+fn rosenfeld_groebner_parametric_unguarded(
+    dae: &DAE,
+    pool: &ExprPool,
+    params: &[ExprId],
+    opts: ParametricProlongOpts<'_>,
+) -> Result<(ParametricRosenfeldResult, DifferentialRanking), DiffAlgError> {
     if dae.equations.is_empty() {
         return Err(DiffAlgError::EmptySystem);
     }
@@ -672,6 +723,11 @@ pub fn rosenfeld_groebner_parametric(
     // The budget counts prolongations, so `max + 1` bases get computed: one for
     // the unprolonged system and one after each round.
     for round in 0..=opts.max_prolong_rounds {
+        if crate::budget::interrupted() {
+            return Err(DiffAlgError::NotPolynomial(
+                "stopped by the active budget".into(),
+            ));
+        }
         let gb = ParamGroebnerBasis::compute(active.clone(), opts.order)
             .map_err(param_err_to_diffalg)?;
 

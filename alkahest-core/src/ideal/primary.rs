@@ -301,15 +301,46 @@ fn primitive_flint_from_rational_asc(coeffs: &[rug::Rational]) -> Option<FlintPo
 /// generator was available, which asserted `√I = I` with nothing behind it:
 /// `radical([(x−y)²])` did not contain `x−y`, although
 /// `√⟨(x−y)²⟩ = ⟨x−y⟩` exactly.
+///
+/// The active [`crate::budget`] is honoured: a trip returns
+/// `Err(Factorization(..))` and leaves the [`crate::budget::BudgetTrip`] in
+/// [`crate::budget::take_trip`] (the enum is exhaustive), never a basis
+/// computed from a computation that stopped part-way.
 pub fn radical(
     gens: Vec<GbPoly>,
     order: MonomialOrder,
 ) -> Result<GroebnerBasis, PrimaryDecompositionError> {
     validate_gens(&gens)?;
     forget_ideal_refusal();
-    let gb = GroebnerBasis::compute(gens, order);
-    radical_from_basis(&gb, order)
-        .ok_or_else(|| refuse(RefusalSite::Radical, RADICAL_NOT_CERTIFIABLE))
+    budget_guarded(|| {
+        let gb = GroebnerBasis::compute(gens, order);
+        if crate::budget::interrupt_pending() {
+            return Err(BUDGET_STOP);
+        }
+        radical_from_basis(&gb, order)
+            .ok_or_else(|| refuse(RefusalSite::Radical, RADICAL_NOT_CERTIFIABLE))
+    })
+}
+
+/// The carrier error for a budget stop; the trip itself is in
+/// [`crate::budget::take_trip`].
+const BUDGET_STOP: PrimaryDecompositionError =
+    PrimaryDecompositionError::Factorization("stopped by the active budget");
+
+/// Run `f` with budget interrupt points armed (see [`crate::budget::arm`]); a
+/// trip anywhere inside replaces whatever `f` returned with [`BUDGET_STOP`].
+fn budget_guarded<T>(
+    f: impl FnOnce() -> Result<T, PrimaryDecompositionError>,
+) -> Result<T, PrimaryDecompositionError> {
+    let interrupts = crate::budget::arm();
+    let result = f();
+    match interrupts.trip() {
+        Some(trip) => {
+            crate::budget::record_trip(trip);
+            Err(BUDGET_STOP)
+        }
+        None => result,
+    }
 }
 
 /// Irredundant primary decomposition, or a refusal.
@@ -324,14 +355,19 @@ pub fn primary_decomposition(
 ) -> Result<Vec<PrimaryComponent>, PrimaryDecompositionError> {
     validate_gens(&gens)?;
     forget_ideal_refusal();
-    let gb = GroebnerBasis::compute(gens, order);
-    if is_unit_ideal(&gb) {
-        return Ok(vec![]);
-    }
-    let mut raw = decompose_recursive(gb, order, 0)?;
-    dedup_components(&mut raw);
-    drop_redundant_components(&mut raw);
-    Ok(raw)
+    budget_guarded(|| {
+        let gb = GroebnerBasis::compute(gens, order);
+        if crate::budget::interrupt_pending() {
+            return Err(BUDGET_STOP);
+        }
+        if is_unit_ideal(&gb) {
+            return Ok(vec![]);
+        }
+        let mut raw = decompose_recursive(gb, order, 0)?;
+        dedup_components(&mut raw);
+        drop_redundant_components(&mut raw);
+        Ok(raw)
+    })
 }
 
 fn validate_gens(gens: &[GbPoly]) -> Result<(), PrimaryDecompositionError> {
@@ -484,6 +520,9 @@ fn decompose_recursive(
     if depth > MAX_SPLIT_DEPTH {
         return Err(PrimaryDecompositionError::RecursionDepth);
     }
+    if crate::budget::interrupted() {
+        return Err(BUDGET_STOP);
+    }
     if is_unit_ideal(&gb) {
         return Ok(vec![]);
     }
@@ -524,6 +563,9 @@ fn decompose_recursive(
         let mut sum_gens = gb.generators().to_vec();
         sum_gens.push(var_monomial(n_vars, i));
         let sum_gb = GroebnerBasis::compute(sum_gens, order);
+        if crate::budget::interrupt_pending() {
+            return Err(BUDGET_STOP);
+        }
 
         if is_unit_ideal(&sat_gb) || is_unit_ideal(&sum_gb) {
             continue;
@@ -532,6 +574,9 @@ fn decompose_recursive(
             continue;
         }
         let inter = ideal_intersection(sat_gb.generators(), sum_gb.generators(), order);
+        if crate::budget::interrupt_pending() {
+            return Err(BUDGET_STOP);
+        }
         if !ideals_equal(&inter, &gb) {
             continue;
         }

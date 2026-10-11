@@ -51,6 +51,22 @@ pub use parametric::{ParamGbPoly, ParamGroebnerBasis, ParamGroebnerError};
 pub use paramfield::{ParamPoly, QParam};
 pub use reduce::reduce;
 
+/// Run `f` with budget interrupt points armed, and turn a recorded trip into
+/// an error so the partial value `f` returned is never seen.
+fn armed<T>(f: impl FnOnce() -> T) -> Result<T, crate::budget::BudgetTrip> {
+    let guard = crate::budget::arm();
+    let value = f();
+    match guard.trip() {
+        Some(trip) => {
+            if guard.is_outermost() {
+                crate::budget::clear_trip();
+            }
+            Err(trip)
+        }
+        None => Ok(value),
+    }
+}
+
 /// A computed Gröbner basis.
 #[derive(Clone, Debug)]
 pub struct GroebnerBasis {
@@ -91,6 +107,13 @@ impl GroebnerBasis {
 
         // Step 1: GRevLex basis (fast).
         let grb = compute_buchberger_basis(gens.clone(), MonomialOrder::GRevLex);
+        if crate::budget::interrupt_pending() {
+            // Stopped by an armed budget: the caller discards this.
+            return GroebnerBasis {
+                generators: grb,
+                order: MonomialOrder::GRevLex,
+            };
+        }
 
         // Step 2: Try FGLM.
         if is_zero_dimensional(&grb, n_vars) {
@@ -113,6 +136,50 @@ impl GroebnerBasis {
     pub fn compute_f5(gens: Vec<GbPoly>, order: MonomialOrder) -> Self {
         let generators = compute_groebner_basis_f5(gens, order);
         GroebnerBasis { generators, order }
+    }
+
+    /// [`Self::compute`], honouring the active [`crate::budget`].
+    ///
+    /// The infallible constructors above have no way to report a stop, so
+    /// they run to completion whatever budget is active. This one polls the
+    /// budget (wall clock, `max_steps`, `max_bytes`, cancellation) once per
+    /// S-pair and every [`crate::budget::INTERRUPT_POLL_INTERVAL`] division
+    /// steps, and returns the trip instead of a partial basis — a basis that
+    /// stopped part-way is not a Gröbner basis of anything.
+    ///
+    /// # Errors
+    ///
+    /// The [`crate::budget::BudgetTrip`] that stopped the computation
+    /// (`E-BUDGET-001` wall clock, `-002` steps, `-003` cancelled, `-004`
+    /// memory).
+    pub fn try_compute(
+        gens: Vec<GbPoly>,
+        order: MonomialOrder,
+    ) -> Result<Self, crate::budget::BudgetTrip> {
+        armed(|| Self::compute(gens, order))
+    }
+
+    /// [`Self::compute_lex`] (grevlex, then FGLM), honouring the active budget
+    /// as [`Self::try_compute`] does.
+    ///
+    /// # Errors
+    ///
+    /// The [`crate::budget::BudgetTrip`] that stopped the computation.
+    pub fn try_compute_lex(gens: Vec<GbPoly>) -> Result<Self, crate::budget::BudgetTrip> {
+        armed(|| Self::compute_lex(gens))
+    }
+
+    /// [`Self::compute_f5`], honouring the active budget as
+    /// [`Self::try_compute`] does.
+    ///
+    /// # Errors
+    ///
+    /// The [`crate::budget::BudgetTrip`] that stopped the computation.
+    pub fn try_compute_f5(
+        gens: Vec<GbPoly>,
+        order: MonomialOrder,
+    ) -> Result<Self, crate::budget::BudgetTrip> {
+        armed(|| Self::compute_f5(gens, order))
     }
 
     /// Return the basis generators (interreduced, monic).
@@ -179,6 +246,79 @@ impl GroebnerBasis {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod budget {
+        use super::super::f5::tests::cyclic_system;
+        use super::*;
+        use crate::budget::{self, Budget, BudgetError, BudgetTrip};
+        use std::time::{Duration, Instant};
+
+        fn terms(gb: &GroebnerBasis) -> Vec<&std::collections::BTreeMap<Vec<u32>, rug::Rational>> {
+            gb.generators().iter().map(|g| &g.terms).collect()
+        }
+
+        /// A step budget of zero trips at the first interrupt point, on every
+        /// `try_*` entry point, and the trip is returned — not a basis.
+        #[test]
+        fn try_entry_points_report_a_step_trip() {
+            let gens = cyclic_system(4);
+            let _g = budget::enter(Budget::new().with_max_steps(0));
+            let steps = |r: Result<GroebnerBasis, BudgetTrip>| {
+                matches!(r, Err(BudgetTrip::Budget(BudgetError::Steps { .. })))
+            };
+            assert!(steps(GroebnerBasis::try_compute(
+                gens.clone(),
+                MonomialOrder::GRevLex
+            )));
+            assert!(steps(GroebnerBasis::try_compute_lex(gens.clone())));
+            assert!(steps(GroebnerBasis::try_compute_f5(
+                gens,
+                MonomialOrder::GRevLex
+            )));
+            // The trip was handed back, not left behind for a later call.
+            assert!(budget::take_trip().is_none());
+        }
+
+        /// Without arming, the infallible constructors ignore the budget
+        /// exactly as before, and agree with the `try_*` result under a
+        /// generous one.
+        #[test]
+        fn infallible_constructors_are_unchanged() {
+            let gens = cyclic_system(4);
+            let reference = GroebnerBasis::compute(gens.clone(), MonomialOrder::GRevLex);
+            {
+                let _g = budget::enter(Budget::new().with_max_steps(0));
+                let unarmed = GroebnerBasis::compute(gens.clone(), MonomialOrder::GRevLex);
+                assert_eq!(terms(&unarmed), terms(&reference));
+            }
+            let _g = budget::enter(Budget::new().with_wall(Duration::from_secs(600)));
+            let budgeted = GroebnerBasis::try_compute(gens, MonomialOrder::GRevLex)
+                .expect("a generous budget must not trip");
+            assert_eq!(terms(&budgeted), terms(&reference));
+        }
+
+        /// The report's repro: cyclic-6 under grevlex ran for minutes with any
+        /// budget. Under a 200 ms wall budget it now stops within a small
+        /// multiple of the limit (generous tolerance for loaded CI machines).
+        #[test]
+        fn cyclic6_stops_within_the_wall_budget() {
+            let gens = cyclic_system(6);
+            let _g = budget::enter(Budget::new().with_wall(Duration::from_millis(200)));
+            let t = Instant::now();
+            let r = GroebnerBasis::try_compute(gens.clone(), MonomialOrder::GRevLex);
+            assert!(matches!(
+                r,
+                Err(BudgetTrip::Budget(BudgetError::WallClock { .. }))
+            ));
+            let r5 = GroebnerBasis::try_compute_f5(gens, MonomialOrder::GRevLex);
+            assert!(r5.is_err(), "F5 on cyclic-6 cannot finish in 200 ms");
+            assert!(
+                t.elapsed() < Duration::from_secs(10),
+                "took {:?}",
+                t.elapsed()
+            );
+        }
+    }
 
     #[test]
     fn eliminate_drops_generators() {
