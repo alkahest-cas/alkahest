@@ -408,7 +408,7 @@ fn normalise_product(factors: Term, var: ExprId, pool: &ExprPool) -> ExprId {
                 // coefficient (`2⁻¹`).
                 if let (Some(b), Some(n)) = (as_rational(base, pool), as_small_int(exp, pool)) {
                     if b != 0 && n.unsigned_abs() <= 64 {
-                        let p = rug::Rational::from(b.clone().pow(n.unsigned_abs() as u32));
+                        let p = b.clone().pow(n.unsigned_abs() as u32);
                         coeff *= if n < 0 { p.recip() } else { p };
                         continue;
                     }
@@ -651,11 +651,11 @@ fn read_shape(t: ExprId, var: ExprId, pool: &ExprPool) -> Shape {
             continue;
         }
         match pool.get(f) {
-            ExprData::Pow { base, exp } if base == var && s.power.is_none() => {
-                if is_free_of(exp, var, pool) {
-                    s.power = Some(exp);
-                    continue;
-                }
+            ExprData::Pow { base, exp }
+                if base == var && s.power.is_none() && is_free_of(exp, var, pool) =>
+            {
+                s.power = Some(exp);
+                continue;
             }
             ExprData::Pow { base, exp } if is_int(exp, pool, -1) && s.recip.is_none() => {
                 s.recip = Some(base);
@@ -1044,14 +1044,10 @@ fn verify(
     let grids: Vec<Vec<f64>> = params
         .iter()
         .map(|&p| match pool.get(p) {
-            ExprData::Symbol { domain, .. }
-                if matches!(
-                    domain,
-                    crate::kernel::Domain::Positive | crate::kernel::Domain::NonNegative
-                ) =>
-            {
-                PARAM_POSITIVE.to_vec()
-            }
+            ExprData::Symbol {
+                domain: crate::kernel::Domain::Positive | crate::kernel::Domain::NonNegative,
+                ..
+            } => PARAM_POSITIVE.to_vec(),
             _ => PARAM_GENERAL.to_vec(),
         })
         .collect();
@@ -1209,7 +1205,7 @@ fn rate_power(rate: ExprId, s: ExprId, pool: &ExprPool) -> ExprId {
             let fl = sv.clone().floor();
             if let Some(m) = fl.numer().to_i32().filter(|m| m.unsigned_abs() <= 64) {
                 let ri = r.clone().recip();
-                let mut c = rug::Rational::from(ri.clone().pow(m.unsigned_abs()));
+                let mut c = ri.clone().pow(m.unsigned_abs());
                 if m < 0 {
                     c = c.recip();
                 }
