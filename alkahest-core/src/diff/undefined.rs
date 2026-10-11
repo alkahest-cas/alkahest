@@ -31,7 +31,7 @@
 //! and in SymPy: `Derivative(f(t), t)`, `Derivative(f(x, t), x, t)`, and, for a
 //! slot whose argument is not a plain variable,
 //! `Subs(Derivative(f(_xi_1), _xi_1), _xi_1, g(t))`.  See
-//! `crate::kernel::display` and [`crate::parse`].
+//! `crate::kernel::display` and [`crate::parse()`].
 //!
 //! # What uses it
 //!
