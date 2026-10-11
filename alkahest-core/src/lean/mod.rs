@@ -1388,6 +1388,15 @@ fn sin_double_angle_certificate(before: ExprId, pool: &ExprPool) -> Option<Strin
 /// tactic ([`rule_to_tactic`]) when it doesn't require `sorry`. Returns
 /// `None` when the step must be withheld.
 fn plain_step_certificate(step: &RewriteStep, pool: &ExprPool) -> Option<(Option<String>, String)> {
+    // The goal printed for this step is `before = after`. Withhold it when the
+    // step does not record an equality at all (an algorithm's input ↦ output),
+    // or when the two sides demonstrably differ at a sample point: a false
+    // statement is never a certificate, whatever the tactic table says.
+    if is_non_equational_rule(step.rule_name)
+        || !numerically_consistent(step.before, step.after, pool)
+    {
+        return None;
+    }
     // `sin_double_angle` is unconditional but needs a shape-specific rewrite
     // (`Real.sin_two_mul`); the static table's `ring_nf; simp` fallback cannot
     // close it. Handle it here (withholding if the product shape is unexpected)
@@ -1430,6 +1439,12 @@ fn plain_step_certificate(step: &RewriteStep, pool: &ExprPool) -> Option<(Option
 /// emission gate is [`emit_lean_expr_wrt`] returning a non-empty string.
 pub fn step_is_certifiable(step: &RewriteStep, wrt: Option<ExprId>, pool: &ExprPool) -> bool {
     if is_integration_rule(step.rule_name) {
+        return false;
+    }
+    if wrt.is_none() && is_differentiation_rule(step.rule_name) {
+        return false;
+    }
+    if free_variable_names(&[step.before, step.after], &[], pool).is_none() {
         return false;
     }
     if let Some(var) = wrt {
@@ -1531,8 +1546,12 @@ pub fn emit_tendsto_cert(expr: ExprId, var: ExprId, lim: ExprId, pool: &ExprPool
         "-- Filter.Tendsto certificate: lim_{{{}}} f(x) = {limit_display}\n",
         plan.comment_arrow
     ));
+    let Some(free) = real_binders(&[expr, lim], &[var], "", pool) else {
+        return String::new();
+    };
     out.push_str(&format!(
-        "example : Filter.Tendsto (fun ({var_name} : ℝ) => {body}) {} {codom_filter} :=\n",
+        "example{}: Filter.Tendsto (fun ({var_name} : ℝ) => {body}) {} {codom_filter} :=\n",
+        join_binders(&free, None),
         plan.domain
     ));
     out.push_str("  ");
@@ -1869,7 +1888,12 @@ fn matches_inv_var_at_top(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
 pub fn emit_goal(before: ExprId, after: ExprId, pool: &ExprPool) -> String {
     let before_str = expr_to_lean(before, pool);
     let after_str = expr_to_lean(after, pool);
-    format!("example : {before_str} = {after_str}")
+    let free = real_binders(&[before, after], &[], "", pool)
+        .unwrap_or_else(|| UNREPRESENTABLE.to_string());
+    format!(
+        "example{}: {before_str} = {after_str}",
+        join_binders(&free, None)
+    )
 }
 
 /// True iff `needle` occurs anywhere inside `haystack`. Because the pool
@@ -1927,7 +1951,13 @@ fn diff_goal_body(before: ExprId, after: ExprId, wrt: ExprId, pool: &ExprPool) -
 
 /// Emit a Lean `example` asserting `deriv (fun v => before) v = after`.
 pub fn emit_diff_goal(before: ExprId, after: ExprId, wrt: ExprId, pool: &ExprPool) -> String {
-    format!("example : {}", diff_goal_body(before, after, wrt, pool))
+    let free = real_binders(&[before, after, wrt], &[], "", pool)
+        .unwrap_or_else(|| UNREPRESENTABLE.to_string());
+    format!(
+        "example{}: {}",
+        join_binders(&free, None),
+        diff_goal_body(before, after, wrt, pool)
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1965,10 +1995,13 @@ pub fn emit_step_wrt(step: &RewriteStep, pool: &ExprPool, wrt: Option<ExprId>) -
         let (binders, tactic) =
             diff_step_certificate(step, var, pool).unwrap_or((None, "by sorry".to_string()));
         let body = diff_goal_body(step.before, step.after, var, pool);
-        let mut out = match binders {
-            Some(b) => format!("example {b} : {body} :=\n  {tactic}"),
-            None => format!("example : {body} :=\n  {tactic}"),
-        };
+        let own = binders.as_deref().unwrap_or("");
+        let free = real_binders(&[step.before, step.after, var], &[], own, pool)
+            .unwrap_or_else(|| UNREPRESENTABLE.to_string());
+        let mut out = format!(
+            "example{}: {body} :=\n  {tactic}",
+            join_binders(&free, binders.as_deref())
+        );
         append_side_conditions(&mut out, step, pool);
         return out;
     }
@@ -1977,14 +2010,24 @@ pub fn emit_step_wrt(step: &RewriteStep, pool: &ExprPool, wrt: Option<ExprId>) -
     // algebraic-cleanup step inside a diff log (e.g. `mul_one`,
     // `collect_mul_factors`) — both share the same `before = after` shape,
     // optionally upgraded with an explicit hypothesis binder.
-    let (binders, tactic) =
-        plain_step_certificate(step, pool).unwrap_or((None, "by sorry".to_string()));
+    let (binders, tactic) = if wrt.is_none() && is_differentiation_rule(step.rule_name) {
+        // A derivative step outside a differentiation certificate would print
+        // as the false equality `f = f'`.
+        (None, "by sorry".to_string())
+    } else {
+        plain_step_certificate(step, pool).unwrap_or((None, "by sorry".to_string()))
+    };
     let before_str = expr_to_lean(step.before, pool);
     let after_str = expr_to_lean(step.after, pool);
-    let mut out = match binders {
-        Some(b) => format!("example {b} : {before_str} = {after_str} :=\n  {tactic}"),
-        None => format!("example : {before_str} = {after_str} :=\n  {tactic}"),
-    };
+    let own = binders.as_deref().unwrap_or("");
+    // An unbindable free symbol makes the statement unfaithful: poison it so
+    // the admission guard withholds the whole certificate.
+    let free = real_binders(&[step.before, step.after], &[], own, pool)
+        .unwrap_or_else(|| UNREPRESENTABLE.to_string());
+    let mut out = format!(
+        "example{}: {before_str} = {after_str} :=\n  {tactic}",
+        join_binders(&free, binders.as_deref())
+    );
     append_side_conditions(&mut out, step, pool);
     out
 }
@@ -2029,8 +2072,10 @@ pub fn emit_lean_expr_wrt(
         };
         let e = derived.value;
         let lean_e = expr_to_lean(e, pool);
+        let free = real_binders(&[e], &[], "", pool).unwrap_or_else(|| UNREPRESENTABLE.to_string());
         out.push_str(&format!(
-            "-- No rewrite steps recorded.\nexample : {lean_e} = {lean_e} :=\n  rfl\n"
+            "-- No rewrite steps recorded.\nexample{}: {lean_e} = {lean_e} :=\n  rfl\n",
+            join_binders(&free, None)
         ));
         // This early return used to skip the admission guard at the bottom of
         // the function, so a value the printer cannot spell (a literal outside
@@ -2901,6 +2946,11 @@ fn emit_definite_log_cert(
         ),
     };
 
+    let Some(free) = real_binders(&[integrand, lower, upper], &[var], &example_binders, pool)
+    else {
+        return String::new();
+    };
+    let example_binders = join_binders(&free, Some(example_binders.trim_end()));
     let mut out = emit_definite_log_header();
     out.push_str(&format!(
         "-- ∫ {var_name} in {a_lean}..{b_lean}, {f_lean} = F {b_lean} - F {a_lean}   (F = fun {var_name} => {f_body})\n\
@@ -2909,7 +2959,7 @@ fn emit_definite_log_cert(
          -- IntervalIntegrable log needs 0 ∉ uIcc a b (intervalIntegrable_log + Set.not_mem_uIcc_of_lt).\n"
     ));
     out.push_str(&format!(
-        "example {example_binders}: ∫ {var_name} in ({a_lean})..({b_lean}), {f_lean} = {rhs} := by\n\
+        "example{example_binders}: ∫ {var_name} in ({a_lean})..({b_lean}), {f_lean} = {rhs} := by\n\
          {pos_hyps}\
          \x20 have hderiv : ∀ {var_name} ∈ Set.uIcc ({a_lean}) ({b_lean}),\n\
          \x20     HasDerivAt (fun ({var_name} : ℝ) => {f_body}) ({f_lean}) {var_name} := by\n\
@@ -3023,6 +3073,10 @@ pub fn emit_definite_integration_cert(
         antideriv_body(&a_lean)
     );
 
+    let Some(free) = real_binders(&[integrand, lower, upper], &[var], "", pool) else {
+        return String::new();
+    };
+    let example_binders = join_binders(&free, None);
     let mut out = emit_definite_integral_header();
     out.push_str(&format!(
         "-- ∫ {var_name} in {a_lean}..{b_lean}, {f_lean} = F {b_lean} - F {a_lean}   (F = fun {var_name} => {f_body})\n\
@@ -3030,7 +3084,7 @@ pub fn emit_definite_integration_cert(
          --   intervalIntegral.integral_eq_sub_of_hasDerivAt (deriv F = f on uIcc) (IntervalIntegrable f)\n"
     ));
     out.push_str(&format!(
-        "example : ∫ {var_name} in ({a_lean})..({b_lean}), {f_lean} = {rhs} := by\n\
+        "example{example_binders}: ∫ {var_name} in ({a_lean})..({b_lean}), {f_lean} = {rhs} := by\n\
          \x20 have hderiv : ∀ {var_name} ∈ Set.uIcc ({a_lean}) ({b_lean}),\n\
          \x20     HasDerivAt (fun ({var_name} : ℝ) => {f_body}) ({f_lean}) {var_name} := by\n\
          \x20   intro {var_name} _\n\
@@ -3560,6 +3614,358 @@ pub fn emit_product_cert(
     out.push_str("-- ∏_{k=1}^{n} k = n!  (Mathlib Finset.prod_Ico_id_eq_factorial)\n");
     out.push_str(&format!(
         "{binders} : ∏ k ∈ {icc}, k = Nat.factorial {n_lean} := by\n  rw [← Nat.Ico_succ_right]\n  exact prod_Ico_id_eq_factorial {n_lean}\n"
+    ));
+    if contains_admission(&out) {
+        return String::new();
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Free-variable binders and the statement-faithfulness gate
+// ---------------------------------------------------------------------------
+
+/// Symbol names that print as Mathlib constants rather than as free
+/// variables: `pi` resolves to `Real.pi` under `open Real`, and `∞` is the
+/// infinity marker the limit / sum emitters translate themselves. Binding
+/// either as `(pi : ℝ)` would turn the constant into an arbitrary real.
+const NON_VARIABLE_SYMBOLS: &[&str] = &["pi", "∞"];
+
+/// Lean 4 keywords that would not parse as a binder name.
+const LEAN_KEYWORDS: &[&str] = &[
+    "at",
+    "by",
+    "do",
+    "else",
+    "end",
+    "example",
+    "fun",
+    "have",
+    "if",
+    "in",
+    "let",
+    "match",
+    "show",
+    "then",
+    "theorem",
+    "with",
+    "from",
+    "def",
+    "where",
+    "open",
+    "import",
+    "calc",
+    "Type",
+    "Prop",
+    "Sort",
+    "deriving",
+    "instance",
+    "structure",
+    "class",
+    "namespace",
+    "section",
+];
+
+/// True when `name` can be written as a plain Lean binder `(name : ℝ)`.
+fn is_lean_binder_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_alphabetic() || first == '_')
+        && first != 'λ'
+        && chars.all(|c| c.is_alphanumeric() || c == '_' || c == '\'')
+        && !LEAN_KEYWORDS.contains(&name)
+}
+
+/// Free symbols of `exprs` (minus `skip`) that need a `(v : ℝ)` binder,
+/// as sorted, deduplicated names.
+///
+/// Returns `None` when a free symbol's name cannot be written as a Lean
+/// binder — the statement cannot be closed over it, so the caller withholds.
+fn free_variable_names(exprs: &[ExprId], skip: &[ExprId], pool: &ExprPool) -> Option<Vec<String>> {
+    let mut names = std::collections::BTreeSet::new();
+    for &e in exprs {
+        for v in crate::poly::collect_free_vars(e, pool) {
+            if skip.contains(&v) {
+                continue;
+            }
+            let name = pool.with(v, |d| match d {
+                ExprData::Symbol { name, .. } => Some(name.clone()),
+                _ => None,
+            })?;
+            if NON_VARIABLE_SYMBOLS.contains(&name.as_str()) {
+                continue;
+            }
+            if !is_lean_binder_name(&name) {
+                return None;
+            }
+            names.insert(name);
+        }
+    }
+    Some(names.into_iter().collect())
+}
+
+/// Explicit `(a : ℝ) (y : ℝ)` binders universally closing every free symbol
+/// of `exprs` (minus `skip`) that `existing` — a binder list the emitter
+/// already wrote, e.g. `(x : ℝ) (hx : 0 < x)` — does not bind.
+///
+/// The emitted statements used to rely on Lean's `autoImplicit` to bind a
+/// printed `(x : ℝ)` ascription, so the goal *read* as one about an unbound
+/// `x` and stopped elaborating at all under `autoImplicit false`. Every
+/// statement now quantifies its free variables explicitly.
+///
+/// Returns `None` when a free symbol cannot be bound (see
+/// [`free_variable_names`]); the caller then withholds the certificate.
+fn real_binders(
+    exprs: &[ExprId],
+    skip: &[ExprId],
+    existing: &str,
+    pool: &ExprPool,
+) -> Option<String> {
+    let names = free_variable_names(exprs, skip, pool)?;
+    let parts: Vec<String> = names
+        .into_iter()
+        .filter(|n| !existing.contains(&format!("({n} : ℝ)")))
+        .map(|n| format!("({n} : ℝ)"))
+        .collect();
+    Some(parts.join(" "))
+}
+
+/// Join a generated free-variable binder list and an emitter's own binder
+/// list into the text between `example` and `:` (with surrounding spaces).
+fn join_binders(free: &str, own: Option<&str>) -> String {
+    let parts: Vec<&str> = [Some(free), own]
+        .into_iter()
+        .flatten()
+        .filter(|s| !s.is_empty())
+        .collect();
+    if parts.is_empty() {
+        " ".to_string()
+    } else {
+        format!(" {} ", parts.join(" "))
+    }
+}
+
+/// Rules whose log step records an *input → output* relation of an algorithm,
+/// not a rewrite `before = after`. Printing such a step as an equality states
+/// something false: the resultant step logs `p ↦ Res(p, q)`, which the
+/// exporter used to emit as `example : x^2 - 2 = 1 := by ring_nf; simp`.
+fn is_non_equational_rule(rule_name: &str) -> bool {
+    matches!(
+        rule_name,
+        "Resultant"
+            | "SubresultantPRS"
+            | "dgosper_certificate"
+            | "special_function_integral"
+            | "diff_forward"
+            | "diff_piecewise"
+            | "diff_root_sum"
+    ) || rule_name.starts_with("prob_")
+        || rule_name.starts_with("alg_")
+        || rule_name.starts_with("algebraic_")
+        || rule_name.starts_with("genus2_")
+}
+
+/// Deterministic sample point `trial` for the `j`-th free variable: positive
+/// (so `log`/`sqrt`/positivity-conditioned rewrites are in their domain) and
+/// away from small integers (so removable singularities are not hit exactly).
+fn sample_value(trial: usize, j: usize) -> f64 {
+    let k = (trial * 7 + j * 5 + 3) % 13;
+    0.37 + 0.173 * k as f64 + 0.011 * (j as f64)
+}
+
+/// Numerically check that `before = after` holds at a few sample points of
+/// the free variables.
+///
+/// A plain-equality certificate states `before = after`; if the two sides
+/// evaluate to different numbers, the statement is false and must not be
+/// emitted no matter which tactic the rule table would try. Points where
+/// either side does not evaluate (outside a domain, unsupported function,
+/// `∞`) are skipped — the gate refutes, it never proves. Returns `false` only
+/// on a definite numeric disagreement.
+fn numerically_consistent(before: ExprId, after: ExprId, pool: &ExprPool) -> bool {
+    let mut vars: Vec<ExprId> = crate::poly::collect_free_vars(before, pool);
+    for v in crate::poly::collect_free_vars(after, pool) {
+        if !vars.contains(&v) {
+            vars.push(v);
+        }
+    }
+    for trial in 0..6 {
+        let mut bindings = std::collections::HashMap::new();
+        for (j, &v) in vars.iter().enumerate() {
+            let value = pool.with(v, |d| match d {
+                ExprData::Symbol { name, .. } if name == "pi" => std::f64::consts::PI,
+                _ => sample_value(trial, j),
+            });
+            bindings.insert(v, value);
+        }
+        let (Ok(a), Ok(b)) = (
+            crate::eval::eval_f64(before, pool, &bindings),
+            crate::eval::eval_f64(after, pool, &bindings),
+        ) else {
+            continue;
+        };
+        let scale = 1.0_f64.max(a.abs()).max(b.abs());
+        if (a - b).abs() > 1e-6 * scale {
+            return false;
+        }
+    }
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Resultant certificates (Sylvester determinant)
+// ---------------------------------------------------------------------------
+
+/// Largest Sylvester matrix the emitter states. `simp`'s Laplace expansion
+/// grows factorially: 5×5 checks in seconds, while 6×6 exhausts `simp`'s
+/// recursion depth and leaves `Fin.castSucc` vector accesses unreduced.
+const MAX_SYLVESTER_DIM: usize = 5;
+
+/// Lean term for the coefficient of `var^d` in `poly` (a sum of monomials in
+/// the other variables), or `(0 : ℝ)`.
+fn coeff_lean(
+    terms: &[(Vec<u32>, rug::Integer)],
+    var_idx: usize,
+    d: u32,
+    names: &[String],
+) -> Option<String> {
+    let mut summands = Vec::new();
+    for (exps, c) in terms {
+        if exps.get(var_idx).copied().unwrap_or(0) != d {
+            continue;
+        }
+        let c = c.to_i64()?;
+        let mut factors = vec![format!("({c} : ℝ)")];
+        for (j, &e) in exps.iter().enumerate() {
+            if j == var_idx || e == 0 {
+                continue;
+            }
+            factors.push(format!("({} : ℝ) ^ ({e} : ℕ)", names[j]));
+        }
+        summands.push(factors.join(" * "));
+    }
+    Some(if summands.is_empty() {
+        "(0 : ℝ)".to_string()
+    } else {
+        format!("({})", summands.join(" + "))
+    })
+}
+
+/// Generate a Lean 4 certificate for `Res_var(p, q) = result`.
+///
+/// Mathlib (at the pinned `v4.9.0`) has no `Polynomial.resultant`, so the
+/// statement is the definition itself: the determinant of the Sylvester matrix
+/// of `p` and `q` with respect to `var`, written out entry by entry, equals the
+/// computed resultant. Rows `1..deg q` hold the coefficients of `p` (leading
+/// coefficient first, shifted one column per row); rows `deg q + 1 ..` hold
+/// those of `q`. The remaining variables are universally bound.
+///
+/// Returns `""` (no certificate) when the inputs are not integer polynomials,
+/// a coefficient does not fit in `i64`, both inputs are constant in `var`, or
+/// the Sylvester matrix is larger than 5×5.
+pub fn emit_resultant_cert(
+    p: ExprId,
+    q: ExprId,
+    var: ExprId,
+    result: ExprId,
+    pool: &ExprPool,
+) -> String {
+    let mut all: std::collections::BTreeSet<ExprId> = std::collections::BTreeSet::new();
+    all.extend(crate::poly::collect_free_vars(p, pool));
+    all.extend(crate::poly::collect_free_vars(q, pool));
+    all.insert(var);
+    let vars: Vec<ExprId> = all.into_iter().collect();
+    let Some(var_idx) = vars.iter().position(|&v| v == var) else {
+        return String::new();
+    };
+    let mut names = Vec::with_capacity(vars.len());
+    for &v in &vars {
+        let Some(name) = pool.with(v, |d| match d {
+            ExprData::Symbol { name, .. } => Some(name.clone()),
+            _ => None,
+        }) else {
+            return String::new();
+        };
+        if !is_lean_binder_name(&name) || NON_VARIABLE_SYMBOLS.contains(&name.as_str()) {
+            return String::new();
+        }
+        names.push(name);
+    }
+    let (Ok(mp), Ok(mq)) = (
+        crate::poly::MultiPoly::from_symbolic(p, vars.clone(), pool),
+        crate::poly::MultiPoly::from_symbolic(q, vars.clone(), pool),
+    ) else {
+        return String::new();
+    };
+    let tp: Vec<(Vec<u32>, rug::Integer)> = mp.terms.into_iter().collect();
+    let tq: Vec<(Vec<u32>, rug::Integer)> = mq.terms.into_iter().collect();
+    let degree = |t: &[(Vec<u32>, rug::Integer)]| {
+        t.iter()
+            .map(|(e, _)| e.get(var_idx).copied().unwrap_or(0))
+            .max()
+    };
+    let (Some(m), Some(n)) = (degree(&tp), degree(&tq)) else {
+        // A zero input: the resultant is 0 by convention, but there is no
+        // Sylvester matrix to state it with.
+        return String::new();
+    };
+    let dim = (m + n) as usize;
+    if dim == 0 || dim > MAX_SYLVESTER_DIM {
+        return String::new();
+    }
+    let mut pc = Vec::new();
+    for d in 0..=m {
+        let Some(c) = coeff_lean(&tp, var_idx, d, &names) else {
+            return String::new();
+        };
+        pc.push(c);
+    }
+    let mut qc = Vec::new();
+    for d in 0..=n {
+        let Some(c) = coeff_lean(&tq, var_idx, d, &names) else {
+            return String::new();
+        };
+        qc.push(c);
+    }
+    let zero = "(0 : ℝ)".to_string();
+    let mut rows: Vec<String> = Vec::with_capacity(dim);
+    for (coeffs, deg, shifts) in [(&pc, m, n), (&qc, n, m)] {
+        for i in 0..shifts as usize {
+            let mut row = vec![zero.clone(); dim];
+            for d in 0..=deg {
+                // Leading coefficient first: column `i + (deg - d)` holds c_d.
+                row[i + (deg - d) as usize] = coeffs[d as usize].clone();
+            }
+            rows.push(row.join(", "));
+        }
+    }
+    let Some(free) = real_binders(&[p, q, result], &[var], "", pool) else {
+        return String::new();
+    };
+    let var_name = &names[var_idx];
+    let result_lean = expr_to_lean(result, pool);
+    let mut out = String::from(
+        "import Mathlib.Tactic\n\
+         import Mathlib.LinearAlgebra.Matrix.Determinant.Basic\n\n",
+    );
+    out.push_str(&format!(
+        "-- Resultant: Res_{var_name}(p, q) = {}\n\
+         --   p = {}\n\
+         --   q = {}\n\
+         -- stated as the determinant of the {dim}×{dim} Sylvester matrix of p and q in {var_name}\n\
+         -- (the first {n} rows shift the coefficients of p, leading first; the last {m} those of q).\n",
+        pool.display(result),
+        pool.display(p),
+        pool.display(q),
+    ));
+    out.push_str(&format!(
+        "example{}: Matrix.det !![{}] = {result_lean} := by\n  \
+         simp [Matrix.det_succ_row_zero, Fin.sum_univ_succ, Fin.succAbove, Fin.lt_def]\n  \
+         try ring\n",
+        join_binders(&free, None),
+        rows.join("; "),
     ));
     if contains_admission(&out) {
         return String::new();
@@ -5940,7 +6346,7 @@ mod tests {
         );
         // No `example (x : ℝ) (hx : ...)` binder for `diff_log` — see `diff_sqrt`.
         assert!(
-            lean.contains("example : deriv (fun (x : ℝ) => Real.log"),
+            lean.contains("example (x : ℝ) : deriv (fun (x : ℝ) => Real.log"),
             "diff_log needs no explicit hypothesis binder: {lean}"
         );
     }
@@ -6088,7 +6494,7 @@ mod tests {
             "expected Real.deriv_sinh tactic: {lean}"
         );
         assert!(
-            lean.contains("example : deriv (fun (x : ℝ) => Real.sinh"),
+            lean.contains("example (x : ℝ) : deriv (fun (x : ℝ) => Real.sinh"),
             "diff_sinh needs no explicit hypothesis binder: {lean}"
         );
     }
@@ -6807,5 +7213,140 @@ mod tests {
                 "tactic only covers one addend order: {tactic}"
             );
         }
+    }
+
+    // --- W9: faithful statements --------------------------------------------
+
+    /// `x² − 2`, `x³ − 3` in a fresh pool.
+    fn w9_inputs(pool: &ExprPool) -> (ExprId, ExprId, ExprId) {
+        let x = pool.symbol("x", Domain::Real);
+        let two = pool.integer(2_i32);
+        let three = pool.integer(3_i32);
+        let m1 = pool.integer(-1_i32);
+        let p = pool.add(vec![pool.pow(x, two), pool.mul(vec![two, m1])]);
+        let q = pool.add(vec![pool.pow(x, three), pool.mul(vec![three, m1])]);
+        (p, q, x)
+    }
+
+    #[test]
+    fn w9_resultant_log_is_not_emitted_as_an_equality() {
+        // The resultant log records `p ↦ Res(p, q)`; it used to print as
+        // `example : x^2 + 2*(-1) = 1 := by ring_nf; simp`.
+        let pool = p();
+        let (pp, q, x) = w9_inputs(&pool);
+        let derived = crate::poly::resultant(pp, q, x, &pool).unwrap();
+        assert_eq!(derived.log.steps()[0].rule_name, "Resultant");
+        assert!(!step_is_certifiable(&derived.log.steps()[0], None, &pool));
+        assert_eq!(emit_lean_expr(&derived, &pool), "");
+    }
+
+    #[test]
+    fn w9_resultant_certificate_is_the_sylvester_determinant() {
+        let pool = p();
+        let (pp, q, x) = w9_inputs(&pool);
+        let derived = crate::poly::resultant(pp, q, x, &pool).unwrap();
+        let lean = emit_resultant_cert(pp, q, x, derived.value, &pool);
+        // Univariate: no free variable remains, so no binder either.
+        assert!(lean.contains("example : Matrix.det !![("), "{lean}");
+        assert!(lean.contains("] = (1 : ℝ) := by\n  simp ["), "{lean}");
+        assert!(lean.ends_with("\n  try ring\n"), "{lean}");
+        // 5 rows: three shifts of p = x² − 2, two of q = x³ − 3.
+        let matrix = lean
+            .split("!![")
+            .nth(1)
+            .unwrap()
+            .split("] =")
+            .next()
+            .unwrap();
+        assert_eq!(matrix.split("; ").count(), 5, "{matrix}");
+        assert!(
+            matrix.starts_with("((1 : ℝ)), (0 : ℝ), ((-2 : ℝ)), (0 : ℝ), (0 : ℝ);"),
+            "{matrix}"
+        );
+    }
+
+    #[test]
+    fn w9_resultant_certificate_binds_remaining_variables() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let two = pool.integer(2_i32);
+        let m1 = pool.integer(-1_i32);
+        let pp = pool.add(vec![pool.pow(x, two), pool.pow(y, two), m1]);
+        let q = pool.add(vec![y, pool.mul(vec![x, m1])]);
+        let derived = crate::poly::resultant(pp, q, y, &pool).unwrap();
+        let lean = emit_resultant_cert(pp, q, y, derived.value, &pool);
+        assert!(lean.contains("example (x : ℝ) : Matrix.det"), "{lean}");
+    }
+
+    #[test]
+    fn w9_resultant_certificate_refuses_large_matrices() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let three = pool.integer(3_i32);
+        let one = pool.integer(1_i32);
+        let pp = pool.add(vec![pool.pow(x, three), one]);
+        let q = pool.add(vec![pool.pow(x, three), x]);
+        let derived = crate::poly::resultant(pp, q, x, &pool).unwrap();
+        assert_eq!(emit_resultant_cert(pp, q, x, derived.value, &pool), "");
+    }
+
+    #[test]
+    fn w9_numeric_gate_rejects_a_false_step_with_a_known_rule() {
+        // Even a rule whose table tactic is `by ring` must not certify a step
+        // whose sides differ.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let step = RewriteStep::simple("collect_add_terms", pool.pow(x, pool.integer(2_i32)), x);
+        assert!(plain_step_certificate(&step, &pool).is_none());
+        assert!(!step_is_certifiable(&step, None, &pool));
+        // A true one still certifies.
+        let two_x = pool.add(vec![x, x]);
+        let ok = RewriteStep::simple(
+            "collect_add_terms",
+            two_x,
+            pool.mul(vec![x, pool.integer(2_i32)]),
+        );
+        assert!(step_is_certifiable(&ok, None, &pool));
+    }
+
+    #[test]
+    fn w9_diff_rule_outside_a_diff_certificate_is_withheld() {
+        // `power_rule` logs `x³ ↦ 3x²`; as a plain equality that is false.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let three = pool.integer(3_i32);
+        let step = RewriteStep::simple(
+            "power_rule",
+            pool.pow(x, three),
+            pool.mul(vec![three, pool.pow(x, pool.integer(2_i32))]),
+        );
+        assert!(!step_is_certifiable(&step, None, &pool));
+    }
+
+    #[test]
+    fn w9_plain_steps_bind_every_free_variable() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let zero = pool.integer(0_i32);
+        let expr = pool.add(vec![pool.mul(vec![x, y]), zero]);
+        let lean = emit_lean_expr(&simplify(expr, &pool), &pool);
+        assert!(lean.contains("example (x : ℝ) (y : ℝ) : "), "{lean}");
+        // `pi` is Mathlib's constant under `open Real`, never a binder.
+        let pi = pool.symbol("pi", Domain::Real);
+        let with_pi = pool.add(vec![pool.mul(vec![pi, x]), zero]);
+        let lean = emit_lean_expr(&simplify(with_pi, &pool), &pool);
+        assert!(lean.contains("example (x : ℝ) : "), "{lean}");
+        assert!(!lean.contains("(pi : ℝ) :"), "{lean}");
+    }
+
+    #[test]
+    fn w9_unbindable_symbol_withholds() {
+        let pool = p();
+        let weird = pool.symbol("x y", Domain::Real);
+        let zero = pool.integer(0_i32);
+        let expr = pool.add(vec![weird, zero]);
+        assert_eq!(emit_lean_expr(&simplify(expr, &pool), &pool), "");
     }
 }

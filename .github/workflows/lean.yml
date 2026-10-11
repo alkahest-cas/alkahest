@@ -19,6 +19,7 @@ on:
       - 'tests/lean_tendsto_corpus.py'
       - 'tests/lean_sos_corpus.py'
       - 'tests/lean_gosper_corpus.py'
+      - 'alkahest-core/src/poly/resultant.rs'
       - 'alkahest-core/src/real/sos/**'
       - 'tests/_tg_helpers.py'
       - 'tests/textbook_gate/**'
@@ -44,6 +45,7 @@ on:
       - 'tests/lean_tendsto_corpus.py'
       - 'tests/lean_sos_corpus.py'
       - 'tests/lean_gosper_corpus.py'
+      - 'alkahest-core/src/poly/resultant.rs'
       - 'alkahest-core/src/real/sos/**'
       - 'tests/_tg_helpers.py'
       - 'tests/textbook_gate/**'
@@ -137,7 +139,10 @@ jobs:
                 echo "FAILED: $fname contains an admission"
                 exit 1
               fi
-              lake env lean -DwarningAsError=true "$f" || { echo "FAILED: $fname"; exit 1; }
+              # autoImplicit=false: every free variable must be bound by an
+              # explicit binder. Under Lean's default a printed `(x : ℝ)` was
+              # silently auto-bound, so an unbound variable passed unnoticed.
+              lake env lean -DwarningAsError=true -DautoImplicit=false "$f" || { echo "FAILED: $fname"; exit 1; }
             done
           done
           echo "All generated Lean proofs (fixed corpus + Tendsto corpus + Gosper corpus + full textbook-gate pool + SOS) verified without admissions."

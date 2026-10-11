@@ -120,6 +120,24 @@ def _int_def_arctan_sq_first(_pool):
     return _require_goal(result, "((((x : ℝ)) ^ (2 : ℕ) + (1 : ℝ)))⁻¹", "int_def_arctan_sq_first")
 
 
+def _resultant_case(builder):
+    """Res(p, q) certified as its Sylvester determinant (``Matrix.det !![…]``).
+
+    The resultant log records ``p ↦ Res(p, q)`` — an algorithm's input and
+    output, not an equality. It used to be emitted as the false theorem
+    ``example : x^2 - 2 = 1 := by ring_nf; simp`` (W9).
+    """
+
+    def build(_pool):
+        pool = alkahest.ExprPool()
+        x, y = pool.symbol("x"), pool.symbol("y")
+        p, q, var = builder(pool, x, y)
+        result = alkahest.resultant(p, q, var)
+        return _require_goal(result, "Matrix.det !![", "resultant")
+
+    return build
+
+
 def _log_of_pow_case(pool):
     """log(x^3) -> 3*log(x) under x > 0."""
     x = pool.symbol("x")
@@ -638,6 +656,28 @@ STRICT_CASES = [
     ),
     # Both printed orders of the Pythagorean identity. `rw
     # [Real.sin_sq_add_cos_sq]` found no instance of its pattern in the second.
+    # Resultants: univariate (Res = 1), a common root (Res = 0), and a
+    # parametric elimination whose result is a polynomial in the other variable.
+    (
+        "resultant_x2m2_x3m3",
+        "Resultant",
+        _resultant_case(lambda pool, x, y: (x**2 - 2, x**3 - 3, x)),
+    ),
+    (
+        "resultant_common_root",
+        "Resultant",
+        _resultant_case(lambda pool, x, y: (x**2 - 5 * x + 6, x - 2, x)),
+    ),
+    (
+        "resultant_circle_line",
+        "Resultant",
+        _resultant_case(lambda pool, x, y: (x**2 + y**2 - 1, y - x, y)),
+    ),
+    (
+        "resultant_parametric_5x5",
+        "Resultant",
+        _resultant_case(lambda pool, x, y: (x**2 + y * x - 1, x**3 - y, x)),
+    ),
     ("simplify_trig_pythagorean_sin_first", "sin_sq_plus_cos_sq", _pythagorean_sin_first),
     ("simplify_trig_pythagorean_cos_first", "sin_sq_plus_cos_sq", _pythagorean_cos_first),
     # `∫₀¹ (x² + 1)⁻¹` — the flipped intern order of the case above.

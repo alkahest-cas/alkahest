@@ -3126,6 +3126,10 @@ struct PyDerivedResult {
     /// is certified (Mathlib `prod_Ico_id_eq_factorial`); gamma encodings stay
     /// withheld.
     product_input: Option<(ExprId, ExprId, ExprId, ExprId)>,
+    /// `(p, q, var, result)` for a resultant. The log records the algorithm's
+    /// input ↦ output (`p ↦ Res(p, q)`), never an equality, so the certificate
+    /// states the Sylvester determinant instead.
+    resultant_input: Option<(ExprId, ExprId, ExprId, ExprId)>,
 }
 
 #[pymethods]
@@ -3221,6 +3225,15 @@ impl PyDerivedResult {
         if self.product_input.is_some() {
             return self.product_lean_source(py);
         }
+        if let Some((p, q, var, result)) = self.resultant_input {
+            let pool_py = self.value.pool.clone_ref(py);
+            let pool = pool_py.borrow(py);
+            let src = alkahest_core::emit_resultant_cert(p, q, var, result, &pool.inner);
+            if src.is_empty() || src.contains("sorry") || src.contains("admit") {
+                return None;
+            }
+            return Some(src);
+        }
         if self.raw.log.is_empty() {
             return None;
         }
@@ -3246,7 +3259,8 @@ impl PyDerivedResult {
     ///   ``Filter.Tendsto`` fragment the emitter can encode),
     ///   ``"withheld_gosper_shape"`` (the sum falls outside the Finset
     ///   telescope fragment), ``"withheld_product_shape"`` (the product is
-    ///   not the `∏ k = n!` identity), or
+    ///   not the `∏ k = n!` identity), ``"withheld_resultant_shape"`` (the
+    ///   Sylvester matrix is larger than 5×5 or a coefficient is too large), or
     ///   ``"withheld_uncertifiable_step"``.
     /// * ``blocking_steps`` — for ``withheld_uncertifiable_step``, the list of
     ///   ``{"index", "rule", "before", "after"}`` records whose rewrite rule has
@@ -3270,6 +3284,8 @@ impl PyDerivedResult {
             "withheld_gosper_shape"
         } else if self.product_input.is_some() {
             "withheld_product_shape"
+        } else if self.resultant_input.is_some() {
+            "withheld_resultant_shape"
         } else if self.integration_verification_input.is_some()
             || self.definite_integration_input.is_some()
         {
@@ -3311,58 +3327,9 @@ impl PyDerivedResult {
     #[getter]
     fn verification<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
         let metadata = PyDict::new_bound(py);
-        let lean_certificate = {
-            if let Some((integrand, var)) = self.integration_verification_input {
-                // Integrals certify via the FTC derivative relation (Part A).
-                let pool_py = self.value.pool.clone_ref(py);
-                let pool = pool_py.borrow(py);
-                let src = alkahest_core::emit_integration_cert(
-                    self.raw.value,
-                    integrand,
-                    var,
-                    &pool.inner,
-                );
-                if src.is_empty() || src.contains("sorry") || src.contains("admit") {
-                    None
-                } else {
-                    Some(src)
-                }
-            } else if let Some((integrand, var, lower, upper)) = self.definite_integration_input {
-                // Definite integrals certify via the interval FTC (Part A).
-                let pool_py = self.value.pool.clone_ref(py);
-                let pool = pool_py.borrow(py);
-                let src = alkahest_core::emit_definite_integration_cert(
-                    integrand,
-                    var,
-                    lower,
-                    upper,
-                    &pool.inner,
-                );
-                if src.is_empty() || src.contains("sorry") || src.contains("admit") {
-                    None
-                } else {
-                    Some(src)
-                }
-            } else if self.tendsto_input.is_some() {
-                // Limits certify via Filter.Tendsto (no rewrite log).
-                self.tendsto_lean_source(py)
-            } else if self.gosper_input.is_some() {
-                self.gosper_lean_source(py)
-            } else if self.product_input.is_some() {
-                self.product_lean_source(py)
-            } else if self.raw.log.is_empty() {
-                None
-            } else {
-                let pool_py = self.value.pool.clone_ref(py);
-                let pool = pool_py.borrow(py);
-                let src = alkahest_core::emit_lean_expr_wrt(&self.raw, &pool.inner, self.wrt);
-                if src.is_empty() || src.contains("sorry") || src.contains("admit") {
-                    None
-                } else {
-                    Some(src)
-                }
-            }
-        };
+        // One dispatch for every certificate surface (`.certificate`,
+        // `.certificate_status`, `.verification`, `to_lean`).
+        let lean_certificate = self.certificate(py);
         let has_certificate = lean_certificate.is_some();
         // The *parametric* gate, so that an answer carrying a free parameter
         // — `∫exp(−p·x²) dx = (√π/2√p)·erf(√p·x)` — reports the evidence it was
@@ -3600,6 +3567,7 @@ impl PyDerivedResult {
             tendsto_input: None,
             gosper_input: None,
             product_input: None,
+            resultant_input: None,
         }
     }
 
@@ -3809,6 +3777,7 @@ fn py_derived_result_context_simplify(
             tendsto_input: dr.tendsto_input,
             gosper_input: dr.gosper_input,
             product_input: dr.product_input,
+            resultant_input: dr.resultant_input,
         });
     }
     let mut log = dr.raw.log.clone();
@@ -3827,6 +3796,7 @@ fn py_derived_result_context_simplify(
     result.tendsto_input = dr.tendsto_input;
     result.gosper_input = dr.gosper_input;
     result.product_input = dr.product_input;
+    result.resultant_input = dr.resultant_input;
     Ok(result)
 }
 
@@ -9225,18 +9195,28 @@ fn py_simplify_log_exp(
 ///
 /// Generate a Lean 4 proof certificate from a derivation.
 ///
-/// Accepts either:
+/// Accepts:
 ///
 /// - An :class:`Expr` — the default simplifier runs first, then the
 ///   derivation log is certified.  Equivalent to
 ///   ``to_lean(simplify(expr))``.
-/// - A :class:`DerivedResult` returned by any simplifier (e.g.
-///   ``simplify_trig``, ``simplify_log_exp``, ``simplify_with``) — the
-///   log already recorded in that result is certified directly, so the
-///   choice of simplifier is fully under caller control.
+/// - A :class:`DerivedResult` returned by any operation — exactly its
+///   :attr:`~DerivedResult.certificate`: a rewrite log as one ``example`` per
+///   step, an integral via the FTC derivative relation, a limit via
+///   ``Filter.Tendsto``, a Gosper sum via a ``Finset`` telescope, a resultant
+///   as its Sylvester determinant.
+/// - Any object with its own ``to_lean()`` method (e.g. a
+///   :class:`PositivityCertificate`).
 ///
-/// Returns a string containing the complete ``.lean`` source file
-/// (Mathlib imports + one ``example`` per rewrite step).
+/// Every free variable of the statement is universally bound by an explicit
+/// ``(x : ℝ)`` binder, and the statement is the computed result itself — never
+/// an algorithm's input restated as equal to its output.
+///
+/// Returns a string containing the complete ``.lean`` source file. It never
+/// returns an empty string: when no sound certificate exists (the shape is
+/// outside the certifiable fragment, nothing was derived, or the object has
+/// no Lean encoding at all, e.g. a ``ZeilbergerCertificate``), it raises
+/// :class:`CertificateUnavailableError` (``E-CERT-001``).
 ///
 /// Example::
 ///
@@ -9249,51 +9229,53 @@ fn py_to_lean(py: Python<'_>, arg: &Bound<'_, PyAny>) -> PyResult<String> {
         let d = derived_bound.borrow();
         // `expr_to_lean` recurses once per level with no cap.
         guard_expr_depth(py, &d.value)?;
-        // Integration results certify via the FTC derivative relation
-        // `deriv (fun x => F) x = f` rather than a false `f = F` equality.
-        if let Some((integrand, var)) = d.integration_verification_input {
-            let pool_py = d.value.pool.clone_ref(py);
-            let pool = pool_py.borrow(py);
-            let src =
-                alkahest_core::emit_integration_cert(d.raw.value, integrand, var, &pool.inner);
-            if src.contains("sorry") || src.contains("admit") {
-                return Ok(String::new());
-            }
+        if let Some(src) = d.certificate(py) {
             return Ok(src);
         }
-        // Definite integrals certify via the interval FTC equation.
-        if let Some((integrand, var, lower, upper)) = d.definite_integration_input {
-            let pool_py = d.value.pool.clone_ref(py);
-            let pool = pool_py.borrow(py);
-            let src = alkahest_core::emit_definite_integration_cert(
-                integrand,
-                var,
-                lower,
-                upper,
-                &pool.inner,
-            );
-            if src.contains("sorry") || src.contains("admit") {
-                return Ok(String::new());
+        let status = d.certificate_status(py);
+        let reason: String = status
+            .get_item("reason")
+            .ok()
+            .flatten()
+            .and_then(|r| r.extract().ok())
+            .unwrap_or_else(|| "withheld".to_string());
+        let mut blocking: Vec<String> = Vec::new();
+        if let Ok(Some(steps)) = status.get_item("blocking_steps") {
+            if let Ok(list) = steps.downcast::<PyList>() {
+                for step in list.iter() {
+                    if let Ok(Some(rule)) = step
+                        .downcast::<PyDict>()
+                        .map(|s| s.get_item("rule").ok().flatten())
+                    {
+                        if let Ok(rule) = rule.extract::<String>() {
+                            if !blocking.contains(&rule) {
+                                blocking.push(rule);
+                            }
+                        }
+                    }
+                }
             }
-            return Ok(src);
         }
-        // Limits certify via Filter.Tendsto. Empty / sorry → withhold.
-        if d.tendsto_input.is_some() {
-            return Ok(d.tendsto_lean_source(py).unwrap_or_default());
-        }
-        if d.gosper_input.is_some() {
-            return Ok(d.gosper_lean_source(py).unwrap_or_default());
-        }
-        if d.product_input.is_some() {
-            return Ok(d.product_lean_source(py).unwrap_or_default());
-        }
-        let pool_py = d.value.pool.clone_ref(py);
-        let pool = pool_py.borrow(py);
-        let src = alkahest_core::emit_lean_expr_wrt(&d.raw, &pool.inner, d.wrt);
-        if src.contains("sorry") || src.contains("admit") {
-            return Ok(String::new());
-        }
-        return Ok(src);
+        let remediation = if !blocking.is_empty() {
+            format!(
+                "No sound Lean statement exists for rewrite rule(s) {}. Use \
+                 alkahest.certificate_coverage() to find a certifiable route.",
+                blocking.join(", ")
+            )
+        } else if reason == "withheld_no_derivation" {
+            "The derivation log is empty — the operation changed nothing, so there is \
+             no theorem to certify."
+                .to_string()
+        } else {
+            "This shape is outside the certifiable fragment. Use \
+             alkahest.certificate_coverage() to see which shapes certify."
+                .to_string()
+        };
+        return Err(certificate_unavailable(
+            py,
+            &format!("no Lean certificate available for this result ({reason})"),
+            &remediation,
+        ));
     }
     if let Ok(expr_bound) = arg.downcast::<PyExpr>() {
         let expr = expr_bound.borrow();
@@ -9306,18 +9288,92 @@ fn py_to_lean(py: Python<'_>, arg: &Bound<'_, PyAny>) -> PyResult<String> {
         // Part C: the default simplifier may leave the expression untouched
         // (e.g. `exp(log(x))`, whose rewrite lives in `simplify_log_exp`, not
         // the default set). Emitting `example : e = e := rfl` in that case reads
-        // as a proven theorem about `e` when nothing was actually derived. When
-        // no non-trivial rewrite occurred, withhold instead of presenting a
-        // vacuous reflexive identity as a certificate.
+        // as a proven theorem about `e` when nothing was actually derived.
         if derived.log.is_empty() {
-            return Ok(String::new());
+            return Err(certificate_unavailable(
+                py,
+                "no Lean certificate available for this expression (withheld_no_derivation)",
+                "The default simplifier leaves this expression unchanged, so there is no \
+                 theorem to certify. Run a specific simplifier (simplify_trig, \
+                 simplify_log_exp, …) and pass its DerivedResult.",
+            ));
         }
         let pool = pool_py.borrow(py);
-        return Ok(alkahest_core::emit_lean(&derived, &pool.inner));
+        let src = alkahest_core::emit_lean(&derived, &pool.inner);
+        if src.is_empty() || src.contains("sorry") || src.contains("admit") {
+            return Err(certificate_unavailable(
+                py,
+                "no Lean certificate available for this expression (withheld_uncertifiable_step)",
+                "A rewrite in the simplification has no sound Lean statement. Use \
+                 alkahest.certificate_coverage() to see which shapes certify.",
+            ));
+        }
+        return Ok(src);
     }
-    Err(PyTypeError::new_err(
-        "to_lean() expects an Expr or DerivedResult",
-    ))
+    // Objects that render themselves (`PositivityCertificate.to_lean()`).
+    let type_name: String = arg
+        .get_type()
+        .getattr("__name__")
+        .and_then(|n| n.extract())
+        .unwrap_or_else(|_| "object".to_string());
+    if let Ok(method) = arg.getattr("to_lean") {
+        if method.is_callable() {
+            let out = method.call0()?;
+            if let Ok(Some(src)) = out.extract::<Option<String>>() {
+                if !src.is_empty() && !src.contains("sorry") && !src.contains("admit") {
+                    return Ok(src);
+                }
+            }
+            return Err(certificate_unavailable(
+                py,
+                &format!("no Lean certificate available for this {type_name}"),
+                "Its own to_lean() withheld the statement: it cannot be emitted soundly.",
+            ));
+        }
+    }
+    // An Alkahest result type with no Lean encoding is a coded refusal, not a
+    // TypeError: the call is well-formed, the certificate does not exist.
+    // Native classes report `__module__ == "builtins"`, so identify them by
+    // the public `alkahest.<Name>` binding instead.
+    let module: String = arg
+        .get_type()
+        .getattr("__module__")
+        .and_then(|m| m.extract())
+        .unwrap_or_default();
+    let exported = py
+        .import_bound("alkahest")
+        .and_then(|m| m.getattr(type_name.as_str()))
+        .map(|t| t.is(&arg.get_type()))
+        .unwrap_or(false);
+    if exported || module == "alkahest" || module.starts_with("alkahest.") {
+        return Err(certificate_unavailable(
+            py,
+            &format!(
+                "no Lean certificate available for a {type_name}: to_lean has no emitter for it"
+            ),
+            "to_lean certifies Expr / DerivedResult derivations (rewrites, derivatives, \
+             integrals, limits, Gosper sums, resultants) and objects with their own \
+             to_lean(). Verify this result with its own checks (e.g. .verify()).",
+        ));
+    }
+    Err(PyTypeError::new_err(format!(
+        "to_lean() expects an Expr or DerivedResult, got {type_name}"
+    )))
+}
+
+/// `CertificateUnavailableError` (`E-CERT-001`) — the Python-only exception
+/// the certificate ledger raises — built from Rust.
+fn certificate_unavailable(py: Python<'_>, message: &str, remediation: &str) -> PyErr {
+    let build = || -> PyResult<PyErr> {
+        let cls = py
+            .import_bound("alkahest.exceptions")?
+            .getattr("CertificateUnavailableError")?;
+        let kwargs = PyDict::new_bound(py);
+        kwargs.set_item("remediation", remediation)?;
+        let exc = cls.call((format!("[E-CERT-001] {message}"),), Some(&kwargs))?;
+        Ok(PyErr::from_value_bound(exc))
+    };
+    build().unwrap_or_else(|e| e)
 }
 
 // ---------------------------------------------------------------------------
@@ -13040,7 +13096,10 @@ fn py_resultant(
         alkahest_core::check_expr_depths(&pool.inner, &[p.id, q.id]).map_err(depth_error_to_py)?;
         core_resultant(p.id, q.id, var.id, &pool.inner).map_err(resultant_error_to_py)?
     };
-    Ok(make_derived_result(py, derived, pool_py, None))
+    let value = derived.value;
+    let mut result = make_derived_result(py, derived, pool_py, None);
+    result.resultant_input = Some((p.id, q.id, var.id, value));
+    Ok(result)
 }
 
 /// Compute the subresultant polynomial remainder sequence of two univariate
