@@ -60,7 +60,7 @@ def test_golden_linear_real(pool):
         "(set-logic QF_LRA)\n"
         "(set-option :produce-models true)\n"
         "(declare-fun x () Real)\n"
-        "(assert (and (> x 0) (< x 3)))\n"
+        "(assert (and (< x 3) (> x 0)))\n"
         "(check-sat)\n"
         "(get-model)\n"
     )
@@ -90,7 +90,7 @@ def test_golden_mixed_int_real_coerces_with_to_real(pool):
         "(set-option :produce-models true)\n"
         "(declare-fun n () Int)\n"
         "(declare-fun x () Real)\n"
-        "(assert (and (> x (to_real n)) (>= n 2)))\n"
+        "(assert (and (>= n 2) (> x (to_real n))))\n"
         "(check-sat)\n"
         "(get-model)\n"
     )

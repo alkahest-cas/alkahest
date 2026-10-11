@@ -540,6 +540,23 @@ decide(Forall(x, pool.ge(x**2, pool.integer(0))))   # (True, None)
 from alkahest import cad_project, cad_lift
 ```
 
+### Propositional logic: n-ary connectives, minimisation, BDDs
+
+```python
+ak.And(a, b, c); ak.Or(...); ak.Xor(...); ak.Implies(a, b); ak.Equivalent(...); ak.ITE(c, t, e)
+ak.simplify_logic(f, form="auto"|"dnf"|"cnf", dontcare=None, exact=None)  # exact ≤ 12 vars
+ak.minimize_logic(f).exact          # False → heuristic cover (>12 vars); exact=True refuses E-LOGIC-004
+ak.to_cnf(f); ak.to_dnf(f); ak.to_nnf(f)   # distribution; > 100k terms → E-LOGIC-003
+g = ak.bdd(f, order=None, max_nodes=None)  # & | ^ ~, restrict, exists, forall, sat_count, to_expr
+ak.equivalent(f, g, method="auto"|"truth_table"|"bdd"|"sat", counterexample=False)
+ak.truth_table(f)                   # [((False, False), v), ...]
+```
+`And`/`Or` flatten, dedupe and sort canonically. Relations are opaque atoms for
+normal forms/minimisation; `equivalent` with relations refuses (E-LOGIC-002)
+rather than answer "not equivalent". A BDD past `max_nodes` or the active
+Budget raises (`E-LOGIC-003` / `BudgetExceededError`) — multiplier middle bits
+blow up under every order; use `method="sat"` for those miters.
+
 ### `decide` is NOT complete — it refuses (`E-CAD-001`)
 
 Always wrap `decide` in `try/except ak.CadError`. It covers polynomial bodies over ℚ in

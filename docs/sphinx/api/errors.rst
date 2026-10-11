@@ -70,6 +70,17 @@ Exception subclasses
    Code prefix ``E-DOMAIN-*``. Mathematical side condition violated:
    division by zero, log of non-positive, sqrt of negative.
 
+.. exception:: LogicError
+
+   Code prefix ``E-LOGIC-*``. The propositional layer (:func:`simplify_logic`,
+   :func:`minimize_logic`, :func:`to_cnf`, :func:`to_dnf`, :func:`to_nnf`,
+   :func:`bdd`, :func:`equivalent`, :func:`truth_table`) refused:
+   ``E-LOGIC-002`` not a propositional formula, ``E-LOGIC-003`` a size ceiling
+   (BDD nodes, normal-form terms, SAT decisions) — never a truncated answer,
+   ``E-LOGIC-004`` an exact minimum demanded with ``exact=True`` could not be
+   certified, ``E-LOGIC-005`` a malformed argument, ``E-LOGIC-006`` a failed
+   internal self-check.  A trip of the active budget is ``BudgetExceededError``.
+
 .. exception:: DiffError
 
    Code prefix ``E-DIFF-*``. Symbolic differentiation failed (unknown
