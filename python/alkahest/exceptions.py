@@ -118,6 +118,10 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-VEC-001 … E-VEC-005        VectorError (vector calculus over an orthogonal
                                  chart; 004 = a chart that could not be *proven*
                                  orthogonal, 005 = a degenerate scale factor)
+    E-UNIT-001 … E-UNIT-007      UnitError (physical units; 001 = different
+                                 dimensions, both named, 003 = an affine °C/°F
+                                 in arithmetic, 006 = same dimension but
+                                 different units inside one sum)
     E-QUAT-001 … E-QUAT-003      QuaternionError (002 = the axis of the identity
                                  rotation, which does not exist; 003 = a matrix that
                                  could not be checked to be a proper rotation)

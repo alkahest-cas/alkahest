@@ -79,6 +79,8 @@ pub mod validated;
 pub mod vector;
 // Plot — dependency-free SVG / DOT renderers
 pub mod plot;
+// Physical units and dimensional analysis (G10)
+pub mod units;
 
 pub use acausal::{capacitor, resistor, voltage_source, Component, Port, System};
 pub use calculus::{limit, series, LimitDirection, LimitError, Series, SeriesError};

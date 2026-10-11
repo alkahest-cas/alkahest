@@ -286,6 +286,20 @@ Exception subclasses
    Reached as ``alkahest.experimental.VectorError``; it is not on the
    top-level namespace.
 
+.. exception:: UnitError
+
+   Code prefix ``E-UNIT-*``. Physical units and dimensional analysis
+   (:mod:`alkahest.units`). ``E-UNIT-001`` is an operation that needs equal
+   dimensions — a sum, a conversion — and got two different ones; the message
+   names both. ``E-UNIT-002`` is a malformed or unknown unit string.
+   ``E-UNIT-003`` refuses an affine temperature (``degC``/``degF``) anywhere but
+   on its own in a conversion: ``2 · 20 °C`` has no meaning. ``E-UNIT-004`` is
+   a function argument or symbolic exponent that is not a pure number (an
+   angle must be in ``rad``). ``E-UNIT-005`` is a symbol or function with no
+   known unit; ``E-UNIT-006`` a sum whose terms share a dimension but not a
+   unit (its value depends on which number is in which unit); ``E-UNIT-007``
+   a fractional power whose scale has no exact rational root.
+
 .. exception:: QuaternionError
 
    Code prefix ``E-QUAT-*``. Quaternion algebra and rotations
