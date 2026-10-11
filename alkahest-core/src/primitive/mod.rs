@@ -242,7 +242,32 @@ impl CoverageReport {
 
 struct Entry {
     primitive: Box<dyn Primitive>,
-    caps: Capabilities,
+    /// Whether this entry's capabilities are probed at all
+    /// ([`PrimitiveRegistry::register_unprobed`] entries report `empty()`).
+    probed: bool,
+    /// The probed bits, computed on first read. Probing runs every slot of
+    /// the primitive (derivatives, simplification, `f64` kernels), and most
+    /// registries — the one `simplify` builds to fold `gamma(1)` — never read
+    /// a capability bit, so doing it at registration made every such
+    /// construction pay for ~60 probes it did not need.
+    caps: std::sync::OnceLock<Capabilities>,
+}
+
+impl Entry {
+    fn new(primitive: Box<dyn Primitive>, probed: bool) -> Self {
+        Entry {
+            primitive,
+            probed,
+            caps: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn caps(&self) -> Capabilities {
+        if !self.probed {
+            return Capabilities::empty();
+        }
+        *self.caps.get_or_init(|| probe_caps(&*self.primitive))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -266,13 +291,12 @@ impl PrimitiveRegistry {
         }
     }
 
-    /// Register a primitive.  Probes capabilities by calling each optional
-    /// method with a canonical zero-element input and recording which ones
-    /// return `Some`.
+    /// Register a primitive.  Its capabilities are probed by calling each
+    /// optional method with canonical inputs and recording which ones return
+    /// `Some` — on the first read of them, not here (see `Entry::caps`).
     pub fn register(&mut self, p: Box<dyn Primitive>) {
-        let caps = probe_caps(&*p);
         let name = p.name();
-        self.map.insert(name, Entry { primitive: p, caps });
+        self.map.insert(name, Entry::new(p, true));
     }
 
     /// Register without probing capabilities.
@@ -285,13 +309,7 @@ impl PrimitiveRegistry {
     /// `empty()`; use [`Self::default_registry`] if you need the bits.
     pub fn register_unprobed(&mut self, p: Box<dyn Primitive>) {
         let name = p.name();
-        self.map.insert(
-            name,
-            Entry {
-                primitive: p,
-                caps: Capabilities::empty(),
-            },
-        );
+        self.map.insert(name, Entry::new(p, false));
     }
 
     /// Look up a primitive by name.
@@ -304,7 +322,7 @@ impl PrimitiveRegistry {
     pub fn capabilities(&self, name: &str) -> Capabilities {
         self.map
             .get(name)
-            .map(|e| with_lazy_caps(name, e.caps, &*e.primitive))
+            .map(|e| with_lazy_caps(name, e.caps(), &*e.primitive))
             .unwrap_or(Capabilities::empty())
     }
 
@@ -316,7 +334,7 @@ impl PrimitiveRegistry {
             .iter()
             .map(|(name, e)| CoverageRow {
                 name: name.to_string(),
-                caps: with_lazy_caps(name, e.caps, &*e.primitive),
+                caps: with_lazy_caps(name, e.caps(), &*e.primitive),
             })
             .collect();
         rows.sort_by(|a, b| a.name.cmp(&b.name));
@@ -392,7 +410,12 @@ impl PrimitiveRegistry {
     }
 
     fn build(probe: bool) -> Self {
-        let mut reg = Self::new();
+        // Sized for every built-in up front: growing past a power of two
+        // re-hashes every name, and this runs on first use of `simplify`,
+        // `diff` and interval evaluation.
+        let mut reg = PrimitiveRegistry {
+            map: HashMap::with_capacity(96),
+        };
         reg.register_unprobed(Box::new(builtins::SinPrimitive));
         reg.register_unprobed(Box::new(builtins::CosPrimitive));
         reg.register_unprobed(Box::new(builtins::ExpPrimitive));
@@ -466,10 +489,10 @@ impl PrimitiveRegistry {
         reg
     }
 
-    /// Fill in every entry's capability bits, probing each primitive.
+    /// Mark every entry as probed; the bits are computed on first read.
     fn probe_all(&mut self) {
         for entry in self.map.values_mut() {
-            entry.caps = probe_caps(&*entry.primitive);
+            entry.probed = true;
         }
     }
 
@@ -482,7 +505,7 @@ impl PrimitiveRegistry {
     pub fn iter(&self) -> impl Iterator<Item = (&str, Capabilities)> {
         self.map
             .iter()
-            .map(|(k, e)| (*k, with_lazy_caps(k, e.caps, &*e.primitive)))
+            .map(|(k, e)| (*k, with_lazy_caps(k, e.caps(), &*e.primitive)))
     }
 }
 
