@@ -108,11 +108,12 @@ Raised when a mathematical side condition is violated.
 | Code | Cause | Remediation |
 |---|---|---|
 | `E-SOLVE-001` | An equation is not polynomial *or rational* in the declared variables — a transcendental function, a symbolic exponent, or a symbol the conversion could not place | Restate it as a ratio of polynomials in the unknowns and parameters. (An *inconsistent* system is not an error: it returns an empty list) |
-| `E-SOLVE-002` | High-degree univariate factor (> 2) | Symbolic solution not supported; use numerical solve |
+| `E-SOLVE-002` | Back-substitution reached an irreducible factor of degree ≥ 3 whose coefficients involve free parameters or algebraic numbers (rational-coefficient univariates of any degree are solved, with `RootOf` where no radical form is used) | Substitute values for the parameters, or use `numeric=True` / `method="homotopy"` |
 | `E-SOLVE-003` | Gröbner basis did not terminate | Increase node/iteration limits |
 | `E-SOLVE-005` | An equation's denominator is identically zero (`1/(x - x)`), so it denotes no function and has no solution set | Check the equation for a subtraction that cancels |
 | `E-SOLVE-006` | `solve(..., numeric=True)` was asked for numbers, but a solution depends on a free parameter (`solve([x - y], [x], numeric=True)`) | Solve with `numeric=False` for the parametric answer, or substitute a value for the parameter first |
 | `E-SOLVE-007` | `solve(..., numeric=True)` found a parameter-free solution value that does not evaluate to a finite complex number | Solve with `numeric=False` for the exact solution set |
+| `E-SOLVE-008` | `RootOf(poly, x, k)` was given something that is not a non-constant polynomial in `x` over ℚ, or an index outside `0 ≤ k <` number of distinct roots | Pass a polynomial with rational coefficients and an index in range (real roots ascending, then complex by real then imaginary part) |
 
 ### PslqError (E-PSLQ-*)
 

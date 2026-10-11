@@ -174,7 +174,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-DIFFALG-002", class: "DiffAlgError", cause: Cause::UserInput,   remediation: Some("declare all jet variables; remove transcendental functions") },
     ErrorSpec { code: "E-DIFFALG-003", class: "DiffAlgError", cause: Cause::UserInput, remediation: None },
     ErrorSpec { code: "E-SOLVE-001", class: "SolverError", cause: Cause::UserInput,   remediation: Some("ensure all equations are polynomial or rational in the declared variables") },
-    ErrorSpec { code: "E-SOLVE-002", class: "SolverError", cause: Cause::Unsupported, remediation: Some("only degree ≤ 2 univariate solving is implemented; Gröbner basis is still returned") },
+    ErrorSpec { code: "E-SOLVE-002", class: "SolverError", cause: Cause::Unsupported, remediation: Some("an irreducible factor of degree ≥ 3 with symbolic or algebraic coefficients has no closed form; substitute parameter values, or use numeric=True / method=\"homotopy\"") },
     ErrorSpec { code: "E-SOLVE-003", class: "SolverError", cause: Cause::UserInput,   remediation: Some("provide one equation per variable") },
     // `triangularize` extracts one polynomial per main variable, so two basis
     // generators sharing a main variable lose one of them and the chain describes
@@ -191,6 +191,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-SOLVE-005", class: "UndefinedEquation", cause: Cause::UserInput,   remediation: Some("a denominator simplifies to zero, so the equation denotes no function; check the equation for a subtraction that cancels") },
     ErrorSpec { code: "E-SOLVE-006", class: "NumericSolveRefusal", cause: Cause::UserInput,   remediation: Some("solve with numeric=False to get the solution in terms of the parameter, or substitute a value for the parameter first") },
     ErrorSpec { code: "E-SOLVE-007", class: "NumericSolveRefusal", cause: Cause::Unsupported, remediation: Some("solve with numeric=False to get the exact solution set") },
+    ErrorSpec { code: "E-SOLVE-008", class: "RootOfError", cause: Cause::UserInput,   remediation: Some("pass a non-constant polynomial with rational coefficients and an index 0 <= k < number of distinct roots") },
     ErrorSpec { code: "E-SOLVE-010", class: "SolverError", cause: Cause::Resource,    remediation: Some("check GPU availability; pass device_id=None to fall back to CPU") },
     ErrorSpec { code: "E-SOLVE-011", class: "SolverError", cause: Cause::Resource,    remediation: Some("CRT reconstruction failed; try adding more equations or use CPU path") },
     // E-IDEAL — PrimaryDecompositionError (ideal/primary.rs) and IdealRefusal

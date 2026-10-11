@@ -279,18 +279,23 @@ def test_solve_numerical_linear_system(pool, x, y):
     assert_solutions_satisfy(eqs, [x, y], sols, expected_count=1)
 
 
-# --- degree-3+ default (Gröbner) path: documented unsupported case ------
+# --- degree-3+ default (Gröbner) path ---------------------------------------
 
 
-def test_solve_default_method_rejects_cubic(pool, x):
-    """Sanity check on the documented limit: the default method="groebner"
-    path's symbolic back-substitution only handles degree <= 2 univariate
-    polynomials, so a plain cubic raises SolverError (this is why
-    method="homotopy" / solve_numerical exist as escape hatches, exercised
-    above)."""
+def test_solve_default_method_solves_cubic(pool, x):
+    """The default method="groebner" path used to refuse every degree-3
+    univariate (E-SOLVE-002). It now factors over Q first:
+    x^3 - 6x^2 + 11x - 6 = (x - 1)(x - 2)(x - 3)."""
     eqs = [x**3 - pool.integer(6) * x**2 + pool.integer(11) * x - pool.integer(6)]
+    sols = ak.solve(eqs, [x])
+    assert sorted(str(s[x]) for s in sols) == ["1", "2", "3"]
+
+
+def test_solve_default_method_rejects_parametric_irreducible_cubic(pool, x):
+    """What remains unsupported: an irreducible cubic with a parameter."""
+    a = pool.symbol("a")
     with pytest.raises(ak.SolverError):
-        ak.solve(eqs, [x])
+        ak.solve([x**3 + a * x + pool.integer(1)], [x])
 
 
 # --- B5 regression: numeric=True falls back past HighDegree ---------------

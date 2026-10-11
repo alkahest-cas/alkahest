@@ -940,6 +940,7 @@ pub fn jordan_form(m: &Matrix, pool: &ExprPool) -> Result<(Matrix, Matrix), Line
     }
     let n = m.rows;
     let vals = eigen::eigenvalues(m, pool).map_err(map_eigen_err)?;
+    refuse_root_of_spectrum(vals.iter().map(|v| v.0), pool)?;
     let mut j_blocks: Vec<Matrix> = Vec::new();
     let mut p_cols: Vec<Matrix> = Vec::new();
     for (lambda, alg_m) in vals {
@@ -1721,6 +1722,7 @@ fn spectrum_with_multiplicity(
         return Ok((0..n).map(|i| simplify(m.get(i, i), pool).value).collect());
     }
     let eigs = eigen::eigenvalues(m, pool).map_err(map_eigen_err)?;
+    refuse_root_of_spectrum(eigs.iter().map(|v| v.0), pool)?;
     let mut out = Vec::with_capacity(n);
     for (lam, mult) in eigs {
         for _ in 0..mult {
@@ -2019,6 +2021,22 @@ fn singular() -> MatrixError {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Refuse a spectrum containing a `RootOf` eigenvalue, as before such
+/// eigenvalues existed: the Jordan-chain and Putzer constructions decide pivots
+/// and eigenvalue gaps with a zero test that has no algebraic-number arithmetic
+/// for them.
+fn refuse_root_of_spectrum(
+    lambdas: impl Iterator<Item = ExprId>,
+    pool: &ExprPool,
+) -> Result<(), LinearAlgebraError> {
+    for lam in lambdas {
+        if let Some(degree) = crate::poly::root_of::max_root_of_degree(lam, pool) {
+            return Err(LinearAlgebraError::UnsupportedIrreducibleDegree { degree });
+        }
+    }
+    Ok(())
+}
 
 fn map_eigen_err(e: eigen::EigenError) -> LinearAlgebraError {
     match e {

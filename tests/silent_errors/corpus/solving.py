@@ -389,8 +389,9 @@ CASES: list[Case] = [
         op=real_solution_count([X**4 + 1], [X]),
         contract=RefusesOr(0),
         verified_by="x⁴ ≥ 0, so x⁴+1 ≥ 1 > 0.",
-        note="alkahest refuses with E-SOLVE-002 (degree > 2 back-substitution). Refusing is "
-        "safe; handing back the four complex 8th roots of unity would not be.",
+        note="Since G1 the quartic is factored and its four complex roots (±1 ± i)/√2 are "
+        "returned over ℂ; domain='real' filters all four, so the answer is 0. A refusal "
+        "would still be safe.",
     ),
     Case(
         id="solve_real_roots_of_x_squared_plus_one",

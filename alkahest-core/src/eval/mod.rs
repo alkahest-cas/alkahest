@@ -471,6 +471,12 @@ fn eval_f64_data(
             let e = eval_f64_node(*exp, pool, bindings, memo)?;
             Ok(pow_f64(b, e, || Some(pool.get(*exp))))
         }
+        // A real algebraic number given by its polynomial and root index; a
+        // non-real root has no `f64` value.
+        ExprData::Func { name, .. } if name == crate::poly::root_of::ROOT_OF => {
+            crate::poly::root_of::root_of_real_f64(expr, pool)
+                .ok_or_else(|| error(UnsupportedReason::UnsupportedFunction { name: name.clone() }))
+        }
         ExprData::Func { name, args } if args.len() == 1 => {
             let arg = eval_f64_node(args[0], pool, bindings, memo)?;
             match name.as_str() {

@@ -270,6 +270,8 @@ from .alkahest import (  # noqa: F401
     resistor,
     # V2-2: Resultants and subresultant PRS
     resultant,
+    # G1 — exact indexed roots (RootOf)
+    root_of,
     round,  # symbolic round — use alkahest.round(expr)
     # Parametric Routh–Hurwitz stability conditions
     routh_hurwitz,
@@ -3054,6 +3056,8 @@ __all__ = [
     "resistor",
     # V2-2
     "resultant",
+    # G1 — exact indexed roots (RootOf)
+    "root_of",
     # V2-13 — Differential algebra / Rosenfeld–Gröbner (groebner default feature)
     "rosenfeld_groebner",
     "round",

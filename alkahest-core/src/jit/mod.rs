@@ -1136,6 +1136,10 @@ fn eval_interp_data(
             let e = eval_interp_inner(*exp, env, pool, memo)?;
             Some(pow_f64(b, e, || Some(pool.get(*exp))))
         }
+        // A real algebraic number; a non-real root has no `f64` value.
+        ExprData::Func { name, .. } if name == crate::poly::root_of::ROOT_OF => {
+            crate::poly::root_of::root_of_real_f64(expr, pool)
+        }
         ExprData::Func { name, args } => {
             // Unary heads (the common case) need no heap buffer.
             if let [a] = args.as_slice() {

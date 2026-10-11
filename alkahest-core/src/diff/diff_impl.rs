@@ -472,6 +472,8 @@ fn diff_raw(
             base: *base,
             exp: *exp,
         },
+        // A `RootOf` is a number: its arguments are integer literals.
+        ExprData::Func { name, .. } if name == crate::poly::root_of::ROOT_OF => Node::Const,
         ExprData::Func { name, args } => Node::Func {
             name: name.clone(),
             args: args.clone(),

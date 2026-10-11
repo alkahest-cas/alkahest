@@ -886,6 +886,22 @@ fn fmt_pow_base(id: ExprId, pool: &ExprPool) -> String {
     }
 }
 
+fn fmt_func_generic(
+    name: &str,
+    args: &[ExprId],
+    pool: &ExprPool,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
+    write!(f, "{}(", name)?;
+    for (i, &arg) in args.iter().enumerate() {
+        if i > 0 {
+            write!(f, ", ")?;
+        }
+        write!(f, "{}", pool.display(arg))?;
+    }
+    write!(f, ")")
+}
+
 fn fmt_data(data: &ExprData, pool: &ExprPool, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match data {
         ExprData::Symbol { name, .. } => write!(f, "{}", name),
@@ -919,16 +935,14 @@ fn fmt_data(data: &ExprData, pool: &ExprPool, f: &mut fmt::Formatter<'_>) -> fmt
             let exp_s = fmt_pow_atom(*exp, pool);
             write!(f, "{base_s}^{exp_s}")
         }
-        ExprData::Func { name, args } => {
-            write!(f, "{}(", name)?;
-            for (i, &arg) in args.iter().enumerate() {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
-                write!(f, "{}", pool.display(arg))?;
+        ExprData::Func { name, args } if name == crate::poly::root_of::ROOT_OF => {
+            // `RootOf(x^3 - x - 1, 0)` rather than its raw integer arguments.
+            match crate::poly::root_of::display_root_of_args(args, pool, |k| format!("x^{k}")) {
+                Some(s) => write!(f, "{s}"),
+                None => fmt_func_generic(name, args, pool, f),
             }
-            write!(f, ")")
         }
+        ExprData::Func { name, args } => fmt_func_generic(name, args, pool, f),
         ExprData::Piecewise { branches, default } => {
             write!(f, "Piecewise(")?;
             for (i, (cond, val)) in branches.iter().enumerate() {

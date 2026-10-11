@@ -53,12 +53,10 @@ def test_solve_numeric_true_falls_back_past_degree_two():
     p = alkahest.ExprPool()
     x, y, z = p.symbol("x"), p.symbol("y"), p.symbol("z")
     eqs = [x + y + z - 6, x * y + y * z + z * x - 11, x * y * z - 6]
-    # Symbolic Groebner still raises HighDegree.
-    with pytest.raises(Exception) as exc_info:
-        alkahest.solve(eqs, [x, y, z])
-    msg = str(exc_info.value).lower()
-    code = getattr(exc_info.value, "code", "")
-    assert "degree" in msg or code == "E-SOLVE-002"
+    # The Lex tail is the cubic (z - 1)(z - 2)(z - 3); since G1 the symbolic
+    # path factors it instead of raising E-SOLVE-002.
+    exact = alkahest.solve(eqs, [x, y, z])
+    assert len(exact) == 6
 
     sols = alkahest.solve(eqs, [x, y, z], numeric=True)
     assert len(sols) == 6

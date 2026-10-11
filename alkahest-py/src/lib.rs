@@ -13506,6 +13506,74 @@ fn py_real_roots(
     Ok(intervals.into_iter().map(core_interval_to_py).collect())
 }
 
+/// The ``index``-th distinct root of the polynomial ``poly`` in ``var``, exactly.
+///
+/// ``solve`` returns these for irreducible factors of degree ≥ 3 that have no
+/// radical form it uses (an irreducible quintic, a cubic with three real
+/// roots, …); this function builds the same objects directly.
+///
+/// Roots are numbered in one fixed order: the **real roots in ascending
+/// order**, then the **non-real roots by ascending real part**, ties broken by
+/// ascending imaginary part (a conjugate pair is listed lower half-plane
+/// first). Repeated roots count once.
+///
+/// Parameters
+/// ----------
+/// poly : Expr
+///     A non-constant polynomial in ``var`` with rational coefficients.
+/// var : Expr
+///     The polynomial variable.
+/// index : int
+///     ``0 <= index < `` number of distinct roots.
+///
+/// Returns
+/// -------
+/// Expr
+///     A rational number when the root is rational; otherwise
+///     ``RootOf(f, k)``, where ``f`` is the irreducible factor of ``poly`` the
+///     root belongs to and ``k`` its index among ``f``'s roots. A ``RootOf``
+///     has no free symbols; it is a number to ``diff``, ``subs`` and
+///     ``simplify``, and it evaluates with ``eval_expr`` (real roots),
+///     ``evaluate(..., mode="complex")``, and to any precision with
+///     ``interval_eval`` / ``evaluate(..., precision_bits=...)`` (real roots,
+///     rigorous enclosures from FLINT's root isolation).
+///
+/// Raises
+/// ------
+/// SolverError
+///     ``E-SOLVE-008`` when ``poly`` is not a non-constant polynomial in ``var``
+///     over ℚ, or ``index`` is out of range.
+///
+/// Example::
+///
+///     pool = ExprPool()
+///     x = pool.symbol("x")
+///     r = root_of(x**3 - x - 1, x, 0)     # RootOf(x^3 - x - 1, 0)
+///     eval_expr(r, {})                     # 1.3247179572447...
+#[pyfunction]
+#[pyo3(name = "root_of")]
+fn py_root_of(
+    py: Python<'_>,
+    poly: PyRef<PyExpr>,
+    var: PyRef<PyExpr>,
+    index: usize,
+) -> PyResult<PyExpr> {
+    same_pool!("root_of"; poly, var);
+    let pool = poly.pool.borrow(py);
+    guard_depth(&pool.inner, poly.id)?;
+    let (p, v, pool_ref) = (poly.id, var.id, &pool.inner);
+    let id = py
+        .allow_threads(|| alkahest_core::poly::root_of::root_of(p, v, index, pool_ref))
+        .map_err(|e| {
+            let exc = py.get_type_bound::<PySolverError>();
+            make_structured_err(py, &exc, &e)
+        })?;
+    Ok(PyExpr {
+        id,
+        pool: poly.pool.clone_ref(py),
+    })
+}
+
 /// Refine a :class:`RootInterval` to at least ``prec`` bits of precision.
 ///
 /// Uses bisection with floating-point Horner evaluation.  For exact rational
@@ -17525,7 +17593,8 @@ fn py_solve_numerical(
 ///     Used when ``method="groebner"``: symbolic ``Expr`` values vs numbers.
 ///     The domain is ℂ, so a real value is a ``float`` and a non-real one a
 ///     Python ``complex`` (``solve([s**2 + 1], [s], numeric=True)`` →
-///     ``±1j``). When Lex back-substitution hits a degree > 2 univariate,
+///     ``±1j``). When Lex back-substitution refuses a degree ≥ 3 univariate
+///     (``E-SOLVE-002``, see below),
 ///     ``numeric=True`` falls back to *complex* homotopy continuation, which
 ///     returns every finite root or raises ``HomotopyError`` (E-HOMOTOPY-004)
 ///     if a path is lost. A solution that depends on a free parameter has no
@@ -17542,6 +17611,12 @@ fn py_solve_numerical(
 ///     Each dict maps a variable ``Expr`` to ``Expr`` (symbolic Groebner),
 ///     ``float`` or ``complex`` (Groebner with ``numeric=True``), or ``float``
 ///     (``method="homotopy"``, which reports real roots only).
+///     A univariate of degree ≥ 3 is factored over ℚ (or ℚ[params]) first;
+///     each irreducible factor is solved by formula, by an even / palindromic /
+///     pure-cubic reduction to radicals, or as exact ``RootOf(f, k)`` values
+///     (see :func:`alkahest.root_of` for their order and evaluation). An
+///     irreducible factor of degree ≥ 3 that still involves a parameter, or has
+///     algebraic-number coefficients, raises ``E-SOLVE-002``.
 ///     Solutions are a *set*: a double root is one entry, not two. Every
 ///     parameter-free tuple has been substituted back into the equations you
 ///     passed and could not be shown to violate them. A tuple containing a free
@@ -20724,6 +20799,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // V2-4 — Real root isolation
     m.add_class::<PyRootInterval>()?;
     m.add_function(wrap_pyfunction!(py_real_roots, m)?)?;
+    m.add_function(wrap_pyfunction!(py_root_of, m)?)?;
     m.add_function(wrap_pyfunction!(py_refine_root, m)?)?;
     m.add_function(wrap_pyfunction!(py_factor_univariate_mod_p, m)?)?;
     // V2-6 — Lattice / integer relations

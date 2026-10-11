@@ -55,6 +55,29 @@ Polynomial system solving via Gröbner bases. The ``groebner`` Cargo feature is 
    Pass ``numeric=True`` to return float values directly instead of
    symbolic ``Expr`` solutions.
 
+   A univariate of degree ≥ 3 is factored over ℚ (or ℚ[params]) first; each
+   irreducible factor is solved by formula, by an even / palindromic /
+   pure-cubic reduction to radicals, or as exact :func:`root_of` values
+   ``RootOf(f, k)``. An irreducible parametric factor of degree ≥ 3 raises
+   ``E-SOLVE-002``.
+
+.. function:: root_of(poly: Expr, var: Expr, index: int) -> Expr
+
+   The ``index``-th distinct root of ``poly`` (a polynomial in ``var`` over
+   ℚ), exactly. Roots are ordered real roots ascending, then non-real roots
+   by real part, then imaginary part. Returns a rational number for a
+   rational root, otherwise ``RootOf(f, k)`` for the irreducible factor
+   ``f`` of ``poly`` the root belongs to. A ``RootOf`` has no free symbols,
+   is a constant to ``diff``/``subs``, and evaluates with ``eval_expr``,
+   ``evaluate(..., mode="complex")`` and, to any precision,
+   ``interval_eval``. Raises ``SolverError`` ``E-SOLVE-008`` on a
+   non-polynomial or constant ``poly`` or an out-of-range ``index``.
+
+   Example::
+
+      r = root_of(x**3 - x - 1, x, 0)   # RootOf(x^3 - x - 1, 0)
+      eval_expr(r, {})                   # 1.3247179572447...
+
 GroebnerBasis
 -------------
 
