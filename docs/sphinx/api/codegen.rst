@@ -49,6 +49,45 @@ C code emission
 
    The emitted function has no Alkahest dependency.
 
+.. function:: emit_c_expr(expr: Expr, vars: Expr | list[Expr], var_names=None, fn_name="f") -> str
+.. function:: emit_c_vec(exprs: list[Expr], vars: Expr | list[Expr], var_names=None, fn_name="eval_vec") -> str
+
+   Emit ISO C99 for an arbitrary expression (``double f(double x, …)``) or for
+   several outputs at once (``void eval_vec(double x, …, double *out)``).
+
+   * **Common sub-expressions** are computed once into ``const double``
+     temporaries, across all outputs of ``emit_c_vec`` jointly.  Integer powers
+     up to 4, their reciprocals and half-integer powers become products,
+     divisions and a single shared ``sqrt``; ``a·b⁻¹`` becomes ``a / b``.
+     The n = 4 pendulum's equations of motion emit ~25 kB (was 320 kB); a
+     Black–Scholes price + gradient + Hessian emits one ``log`` and one
+     ``sqrt`` (was 131 and 664).
+   * **Constants**: ``pi`` (unless listed in *vars*) and ``exp(1)`` are
+     emitted as the nearest ``double`` (``3.141592653589793``); rationals as
+     the correctly rounded ``double`` the interpreter uses.
+   * **Functions**: the C99 ``<math.h>`` set (``sin`` … ``atanh``, ``erf``,
+     ``erfc``, ``gamma`` → ``tgamma``, ``floor``, ``ceil``, ``round``,
+     ``atan2``, ``min``/``max`` → ``fmin``/``fmax``); ``sign``, ``heaviside``
+     and ``Piecewise`` as ternaries; ``lambert_w`` through an emitted
+     ``static double alkahest_lambert_w0`` helper (Halley iteration, relative
+     error ≤ 1e-15 for ``x ≥ −1/e + 10⁻³``, ``#ifndef``-guarded).
+
+   :raises AlkahestError: ``E-CODEGEN-001`` a function with no C lowering
+      (``diracdelta``, Bessel, elliptic, digamma, …), ``E-CODEGEN-002`` a node
+      with no straight-line C form (``O(x)``, quantifiers, root sums),
+      ``E-CODEGEN-003`` a free symbol not listed in *vars*.  ``AlkahestError``
+      subclasses ``ValueError``.
+
+   Example::
+
+      print(emit_c_vec([sin(x) * cos(y), sin(x) + cos(y)], [x, y]))
+      # void eval_vec(double x, double y, double *out) {
+      #     const double _t0 = sin(x);
+      #     const double _t1 = cos(y);
+      #     out[0] = (_t0 * _t1);
+      #     out[1] = (_t0 + _t1);
+      # }
+
 Horner form
 -----------
 

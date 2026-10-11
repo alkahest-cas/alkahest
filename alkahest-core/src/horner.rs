@@ -14,14 +14,17 @@
 //!
 //! [`emit_expr_c`] and [`emit_expr_c_vec`] walk the expression DAG and emit C
 //! that calls `<math.h>` functions (sin, cos, exp, log, sqrt, tan, …) for
-//! [`ExprData::Func`] nodes.  This is the general entry point;
+//! [`ExprData::Func`](crate::kernel::ExprData::Func) nodes.  This is the general entry point;
 //! [`emit_horner_c`] remains available for the polynomial-only Horner form.
+//!
+//! Both share common sub-expressions across every output — see the `cemit`
+//! submodule for the lowering, the rewrites, and where the emitted C and the
+//! interpreter differ.
 
-use crate::kernel::{
-    integer_is_exact_f64, integer_to_f64, rational_to_f64, ExprData, ExprId, ExprPool,
-};
+use crate::kernel::{integer_to_f64, ExprId, ExprPool};
 use crate::poly::{ConversionError, UniPoly};
-use std::collections::HashMap;
+
+mod cemit;
 
 // ---------------------------------------------------------------------------
 // horner — symbolic rewrite to Horner form
@@ -220,77 +223,30 @@ impl std::fmt::Display for EmitCError {
 
 impl std::error::Error for EmitCError {}
 
-/// Map an Alkahest function name to its C `<math.h>` equivalent.
-///
-/// Returns `None` for functions that cannot be expressed as a single `<math.h>`
-/// call (e.g. `diracdelta`, elliptic integrals, `heaviside`).
-///
-/// # Where the emitted C and the interpreter differ
-///
-/// Both are documented rather than repaired, because in each case the emitted
-/// C is *not* the wrong side and forcing agreement would cost more than it
-/// buys. Measured over a 606-expression / 10 421-point differential sweep,
-/// these are the only two classes that survive:
-///
-/// * **`gamma`.** Alkahest returns `+∞` at each pole of `Γ` (see
-///   `libm_gamma`), so `1/Γ(−n)` is `0` — the value that makes `1/Γ` entire.
-///   C99's `tgamma` returns `NaN` there, so the emitted C degrades that `0` to
-///   a `NaN`: a weak refusal in place of a correct value, never a wrong number.
-///   Alkahest's `Γ` is also a Lanczos approximation good to ~1e-15 (~1e-12
-///   near the poles), where glibc's `tgamma` is nearly correctly rounded.
-/// * **`x^2` / `x^3`.** The `Pow` arm below emits repeated multiplication,
-///   which rounds twice where the interpreter's `powf` rounds once. That is
-///   ≤ 1 ulp and usually *cheaper and better conditioned* in the surrounding
-///   expression, which is why the specialisation exists. It is only visible
-///   downstream of a function with unbounded derivative — `tan` of an argument
-///   past `1e38`, where no evaluator carries information anyway.
-fn func_to_c(name: &str, arg_exprs: &[String]) -> Option<String> {
-    // Binary functions first
-    if name == "atan2" && arg_exprs.len() == 2 {
-        return Some(format!("atan2({}, {})", arg_exprs[0], arg_exprs[1]));
+impl crate::errors::AlkahestError for EmitCError {
+    fn code(&self) -> &'static str {
+        match self {
+            EmitCError::UnsupportedFunction(_) => "E-CODEGEN-001",
+            EmitCError::UnsupportedNode(_) => "E-CODEGEN-002",
+            EmitCError::MissingVariable(_) => "E-CODEGEN-003",
+        }
     }
-    if name == "pow" && arg_exprs.len() == 2 {
-        return Some(format!("pow({}, {})", arg_exprs[0], arg_exprs[1]));
+
+    fn remediation(&self) -> Option<&'static str> {
+        Some(match self {
+            EmitCError::UnsupportedFunction(_) => {
+                "rewrite the function in terms of <math.h> functions, or evaluate it \
+                 with compile_expr / eval_expr instead of emitting C"
+            }
+            EmitCError::UnsupportedNode(_) => {
+                "remove quantifiers, O() terms and root sums before emitting C; \
+                 Piecewise conditions must be comparisons"
+            }
+            EmitCError::MissingVariable(_) => {
+                "list every free symbol in vars (pi needs no binding)"
+            }
+        })
     }
-    if name == "min" && arg_exprs.len() == 2 {
-        return Some(format!("fmin({}, {})", arg_exprs[0], arg_exprs[1]));
-    }
-    if name == "max" && arg_exprs.len() == 2 {
-        return Some(format!("fmax({}, {})", arg_exprs[0], arg_exprs[1]));
-    }
-    // Unary functions
-    if arg_exprs.len() == 1 {
-        let a = &arg_exprs[0];
-        let c_name = match name {
-            "sin" => "sin",
-            "cos" => "cos",
-            "tan" => "tan",
-            "asin" => "asin",
-            "acos" => "acos",
-            "atan" => "atan",
-            "sinh" => "sinh",
-            "cosh" => "cosh",
-            "tanh" => "tanh",
-            "exp" => "exp",
-            "log" => "log",
-            "sqrt" => "sqrt",
-            "abs" => "fabs",
-            "erf" => "erf",
-            "erfc" => "erfc",
-            "tgamma" | "gamma" => "tgamma",
-            "floor" => "floor",
-            "ceil" => "ceil",
-            "round" => "round",
-            "sign" => return Some(format!("(({a}) > 0.0 ? 1.0 : (({a}) < 0.0 ? -1.0 : 0.0))")),
-            "log10" => "log10",
-            "log2" => "log2",
-            "exp2" => "exp2",
-            "cbrt" => "cbrt",
-            _ => return None,
-        };
-        return Some(format!("{c_name}({a})"));
-    }
-    None
 }
 
 /// Render an `f64` as a C `double` literal.
@@ -308,189 +264,6 @@ fn c_double_literal(v: f64) -> String {
         return if v > 0.0 { "INFINITY" } else { "-INFINITY" }.to_string();
     }
     format!("{v:?}")
-}
-
-/// Internal: emit a C expression for `expr`, collecting temporary variable
-/// assignments into `stmts`.  Returns the C expression string (may be a temp
-/// var name like `_t3` or an inline expression like `sin(_t2)`).
-///
-/// `var_map` maps ExprId → C variable name for the function's arguments.
-/// `memo` caches already-emitted sub-expressions to avoid duplication in the
-/// output (DAG sharing becomes shared temporaries).
-fn emit_expr_inner(
-    expr: ExprId,
-    var_map: &HashMap<ExprId, &str>,
-    pool: &ExprPool,
-    stmts: &mut Vec<String>,
-    memo: &mut HashMap<ExprId, String>,
-    counter: &mut usize,
-) -> Result<String, EmitCError> {
-    if let Some(cached) = memo.get(&expr) {
-        return Ok(cached.clone());
-    }
-    if let Some(&name) = var_map.get(&expr) {
-        return Ok(name.to_string());
-    }
-
-    let result = match pool.get(expr) {
-        ExprData::Integer(n) => c_integer_literal(&n.0),
-        ExprData::Rational(r) => c_double_literal(rational_to_f64(&r.0)),
-        ExprData::Float(f) => c_double_literal(f.inner.to_f64()),
-        ExprData::Symbol { name, .. } => {
-            return Err(EmitCError::MissingVariable(name.clone()));
-        }
-        ExprData::Add(args) => {
-            let mut parts = Vec::with_capacity(args.len());
-            for &a in &args {
-                parts.push(emit_expr_inner(a, var_map, pool, stmts, memo, counter)?);
-            }
-            format!("({})", parts.join(" + "))
-        }
-        ExprData::Mul(args) => {
-            let mut parts = Vec::with_capacity(args.len());
-            for &a in &args {
-                parts.push(emit_expr_inner(a, var_map, pool, stmts, memo, counter)?);
-            }
-            format!("({})", parts.join(" * "))
-        }
-        ExprData::Pow { base, exp } => {
-            let b = emit_expr_inner(base, var_map, pool, stmts, memo, counter)?;
-            let e = emit_expr_inner(exp, var_map, pool, stmts, memo, counter)?;
-            // Specialise integer exponents to repeated multiplication for
-            // small n, otherwise use pow().
-            match pool.get(exp) {
-                ExprData::Integer(ref n) => match n.0.to_i32() {
-                    Some(0) => "1.0".to_string(),
-                    Some(1) => b,
-                    Some(2) => format!("({b} * {b})"),
-                    Some(3) => format!("({b} * {b} * {b})"),
-                    Some(-1) => format!("(1.0 / {b})"),
-                    _ if integer_is_exact_f64(&n.0) => format!("pow({b}, {e})"),
-                    // `e` is the exponent *rounded to a double* — there is no
-                    // other kind of literal a C program has — and C's `pow`
-                    // takes the sign of a negative base from that rounded
-                    // exponent's parity. `10^30 + 1` rounds to the even
-                    // `1e30`, so the emitted program computed
-                    // `pow(-1.0, 1e30)` and returned `+1` where the answer is
-                    // `-1`, disagreeing with `eval_expr` on the same node.
-                    // Split the sign off and let the double carry only the
-                    // magnitude, which is all it was ever able to carry.
-                    _ if n.0.is_odd() => format!("copysign(pow(fabs({b}), {e}), {b})"),
-                    _ => format!("pow(fabs({b}), {e})"),
-                },
-                _ => format!("pow({b}, {e})"),
-            }
-        }
-        ExprData::Func { name, args } => {
-            let mut arg_exprs = Vec::with_capacity(args.len());
-            for &a in &args {
-                arg_exprs.push(emit_expr_inner(a, var_map, pool, stmts, memo, counter)?);
-            }
-            func_to_c(&name, &arg_exprs).ok_or(EmitCError::UnsupportedFunction(name))?
-        }
-        ExprData::Piecewise { branches, default } => {
-            // Emit as a chain of ternary operators.
-            // Conditions must be predicates; we recursively emit them.
-            let default_str = emit_expr_inner(default, var_map, pool, stmts, memo, counter)?;
-            let mut result = default_str;
-            // Iterate in reverse so we build right-to-left ternary nesting.
-            for (cond, val) in branches.iter().rev() {
-                let cond_str = emit_predicate_inner(*cond, var_map, pool, stmts, memo, counter)?;
-                let val_str = emit_expr_inner(*val, var_map, pool, stmts, memo, counter)?;
-                result = format!("(({cond_str}) ? ({val_str}) : ({result}))");
-            }
-            result
-        }
-        other => {
-            return Err(EmitCError::UnsupportedNode(format!("{other:?}")));
-        }
-    };
-
-    // If the result is longer than a simple identifier/literal, assign to a
-    // temporary to keep nested expressions readable.
-    let is_simple = result.len() <= 24
-        || result.starts_with('(')
-        || result
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == '-');
-    if !is_simple {
-        let tmp = format!("_t{}", *counter);
-        *counter += 1;
-        stmts.push(format!("    double {tmp} = {result};"));
-        memo.insert(expr, tmp.clone());
-        return Ok(tmp);
-    }
-    memo.insert(expr, result.clone());
-    Ok(result)
-}
-
-/// Internal: emit a C boolean expression for a `Predicate` node.
-fn emit_predicate_inner(
-    pred: ExprId,
-    var_map: &HashMap<ExprId, &str>,
-    pool: &ExprPool,
-    stmts: &mut Vec<String>,
-    memo: &mut HashMap<ExprId, String>,
-    counter: &mut usize,
-) -> Result<String, EmitCError> {
-    use crate::kernel::expr::PredicateKind;
-    match pool.get(pred) {
-        ExprData::Predicate { kind, args } => match kind {
-            PredicateKind::True => Ok("1".to_string()),
-            PredicateKind::False => Ok("0".to_string()),
-            PredicateKind::Lt => {
-                let l = emit_expr_inner(args[0], var_map, pool, stmts, memo, counter)?;
-                let r = emit_expr_inner(args[1], var_map, pool, stmts, memo, counter)?;
-                Ok(format!("({l}) < ({r})"))
-            }
-            PredicateKind::Le => {
-                let l = emit_expr_inner(args[0], var_map, pool, stmts, memo, counter)?;
-                let r = emit_expr_inner(args[1], var_map, pool, stmts, memo, counter)?;
-                Ok(format!("({l}) <= ({r})"))
-            }
-            PredicateKind::Gt => {
-                let l = emit_expr_inner(args[0], var_map, pool, stmts, memo, counter)?;
-                let r = emit_expr_inner(args[1], var_map, pool, stmts, memo, counter)?;
-                Ok(format!("({l}) > ({r})"))
-            }
-            PredicateKind::Ge => {
-                let l = emit_expr_inner(args[0], var_map, pool, stmts, memo, counter)?;
-                let r = emit_expr_inner(args[1], var_map, pool, stmts, memo, counter)?;
-                Ok(format!("({l}) >= ({r})"))
-            }
-            PredicateKind::Eq => {
-                let l = emit_expr_inner(args[0], var_map, pool, stmts, memo, counter)?;
-                let r = emit_expr_inner(args[1], var_map, pool, stmts, memo, counter)?;
-                Ok(format!("({l}) == ({r})"))
-            }
-            PredicateKind::Ne => {
-                let l = emit_expr_inner(args[0], var_map, pool, stmts, memo, counter)?;
-                let r = emit_expr_inner(args[1], var_map, pool, stmts, memo, counter)?;
-                Ok(format!("({l}) != ({r})"))
-            }
-            PredicateKind::Not => {
-                let inner = emit_predicate_inner(args[0], var_map, pool, stmts, memo, counter)?;
-                Ok(format!("!({inner})"))
-            }
-            PredicateKind::And => {
-                let parts: Result<Vec<_>, _> = args
-                    .iter()
-                    .map(|&a| emit_predicate_inner(a, var_map, pool, stmts, memo, counter))
-                    .collect();
-                Ok(format!("({})", parts?.join(" && ")))
-            }
-            PredicateKind::Or => {
-                let parts: Result<Vec<_>, _> = args
-                    .iter()
-                    .map(|&a| emit_predicate_inner(a, var_map, pool, stmts, memo, counter))
-                    .collect();
-                Ok(format!("({})", parts?.join(" || ")))
-            }
-        },
-        _ => Err(EmitCError::UnsupportedNode(
-            "expected a Predicate node in condition position".to_string(),
-        )),
-    }
 }
 
 /// Emit a C function that evaluates the symbolic expression `expr`.
@@ -545,16 +318,9 @@ pub fn emit_expr_c(
         "vars and var_names must have the same length"
     );
 
-    let mut var_map: HashMap<ExprId, &str> = HashMap::new();
-    for (&id, &name) in vars.iter().zip(var_names.iter()) {
-        var_map.insert(id, name);
-    }
-
-    let mut stmts: Vec<String> = Vec::new();
-    let mut memo: HashMap<ExprId, String> = HashMap::new();
-    let mut counter = 0usize;
-
-    let result = emit_expr_inner(expr, &var_map, pool, &mut stmts, &mut memo, &mut counter)?;
+    let low = cemit::lower_outputs(&[expr], vars, var_names, pool)?;
+    let result = &low.outputs[0];
+    let stmts = low.stmts;
 
     // Build the parameter list.
     let params: Vec<String> = var_names.iter().map(|n| format!("double {n}")).collect();
@@ -570,7 +336,10 @@ pub fn emit_expr_c(
         body
     };
 
-    Ok(format!("double {fn_name}({params_str}) {{\n{body}}}\n"))
+    Ok(format!(
+        "{}double {fn_name}({params_str}) {{\n{body}}}\n",
+        low.prelude
+    ))
 }
 
 /// Emit a C function that writes multiple symbolic expressions into an output
@@ -629,27 +398,9 @@ pub fn emit_expr_c_vec(
         "vars and var_names must have the same length"
     );
 
-    let mut var_map: HashMap<ExprId, &str> = HashMap::new();
-    for (&id, &name) in vars.iter().zip(var_names.iter()) {
-        var_map.insert(id, name);
-    }
-
-    let mut stmts: Vec<String> = Vec::new();
-    let mut memo: HashMap<ExprId, String> = HashMap::new();
-    let mut counter = 0usize;
-
-    // Emit each output component; collect result expressions.
-    let mut result_exprs: Vec<String> = Vec::with_capacity(exprs.len());
-    for &e in exprs {
-        result_exprs.push(emit_expr_inner(
-            e,
-            &var_map,
-            pool,
-            &mut stmts,
-            &mut memo,
-            &mut counter,
-        )?);
-    }
+    let low = cemit::lower_outputs(exprs, vars, var_names, pool)?;
+    let stmts = low.stmts;
+    let result_exprs = low.outputs;
 
     // Build the parameter list: inputs then output pointer.
     let mut params: Vec<String> = var_names.iter().map(|n| format!("double {n}")).collect();
@@ -670,7 +421,10 @@ pub fn emit_expr_c_vec(
         format!("{}\n{}\n", stmts.join("\n"), assignments.join("\n"))
     };
 
-    Ok(format!("void {fn_name}({params_str}) {{\n{body}}}\n"))
+    Ok(format!(
+        "{}void {fn_name}({params_str}) {{\n{body}}}\n",
+        low.prelude
+    ))
 }
 
 // ---------------------------------------------------------------------------

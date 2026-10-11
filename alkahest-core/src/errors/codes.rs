@@ -225,6 +225,10 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-STABLEHLO-003", class: "StableHloError", cause: Cause::UserInput,   remediation: Some("add the symbol to the input list, or substitute a value for it") },
     ErrorSpec { code: "E-STABLEHLO-004", class: "StableHloError", cause: Cause::UserInput,   remediation: Some("replace the infinite or NaN constant") },
     ErrorSpec { code: "E-STABLEHLO-005", class: "StableHloError", cause: Cause::UserInput,   remediation: Some("use a name made of letters, digits, '_', '$' and '.', not starting with a digit") },
+    // E-CODEGEN — EmitCError (emit_c_expr / emit_c_vec C source emission)
+    ErrorSpec { code: "E-CODEGEN-001", class: "EmitCError", cause: Cause::Unsupported, remediation: Some("rewrite the function in terms of <math.h> functions, or evaluate it with compile_expr / eval_expr instead of emitting C") },
+    ErrorSpec { code: "E-CODEGEN-002", class: "EmitCError", cause: Cause::Unsupported, remediation: Some("remove quantifiers, O() terms and root sums before emitting C; Piecewise conditions must be comparisons") },
+    ErrorSpec { code: "E-CODEGEN-003", class: "EmitCError", cause: Cause::UserInput,   remediation: Some("list every free symbol in vars (pi needs no binding)") },
     // E-CAD — CadError (V2-9 QE / cylindrical decomposition)
     ErrorSpec {
         code: "E-CAD-001",

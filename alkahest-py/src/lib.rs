@@ -12913,13 +12913,37 @@ fn extract_univariate_var(expr: &PyExpr, var: &Bound<'_, PyAny>) -> PyResult<Exp
 // Transcendental C emission — general expression DAG walker
 // ---------------------------------------------------------------------------
 
+/// `E-CODEGEN-*` refusals surface as `AlkahestError` (a `ValueError`
+/// subclass, so existing `except ValueError` callers keep working).
+fn emit_c_error_to_py(e: alkahest_core::EmitCError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyAlkahestError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
 /// Emit a C function that evaluates a symbolic expression including
 /// transcendental functions.
 ///
 /// Unlike :func:`emit_c` (which is restricted to univariate polynomials and
 /// uses Horner form), ``emit_c_expr`` supports arbitrary expressions including
 /// ``sin``, ``cos``, ``exp``, ``log``, ``sqrt``, ``tan``, ``atan2``, ``erf``,
-/// ``floor``, ``ceil``, and more.  The emitted code requires ``#include <math.h>``.
+/// ``floor``, ``ceil``, and more.  The emitted code requires ``#include <math.h>``
+/// and is ISO C99.
+///
+/// Every sub-expression used more than once is computed once into a
+/// ``const double`` temporary; ``x**2`` … ``x**4``, ``x**-1`` and half-integer
+/// powers are strength-reduced to products, divisions and one ``sqrt``.
+/// ``pi`` (unless listed in *vars*) and ``exp(1)`` are emitted as the nearest
+/// ``double``; rationals as the correctly rounded ``double``.
+///
+/// Supported functions: ``sin cos tan asin acos atan sinh cosh tanh asinh
+/// acosh atanh exp log sqrt abs erf erfc gamma floor ceil round atan2 min
+/// max`` (C99 ``<math.h>``), ``sign`` / ``heaviside`` / ``Piecewise`` (as
+/// ternaries, with the interpreter's values at 0), and ``lambert_w`` through
+/// an emitted ``static`` helper (relative error ≤ 1e-15 for
+/// ``x ≥ -1/e + 1e-3``; guarded by ``#ifndef`` so several emitted functions can
+/// share a file).
 ///
 /// Parameters
 /// ----------
@@ -12941,10 +12965,12 @@ fn extract_univariate_var(expr: &PyExpr, var: &Bound<'_, PyAny>) -> PyResult<Exp
 ///
 /// Raises
 /// ------
-/// ValueError
-///     If the expression calls a function with no ``<math.h>`` equivalent
-///     (e.g. ``diracdelta``, elliptic integrals) or references a symbol not
-///     listed in *vars*.
+/// AlkahestError
+///     A ``ValueError`` subclass.  ``E-CODEGEN-001``: a function with no C
+///     lowering (``diracdelta``, elliptic integrals, Bessel, digamma, …; the
+///     message names it).  ``E-CODEGEN-002``: a node with no straight-line C
+///     form (``O(x)``, quantifiers, root sums).  ``E-CODEGEN-003``: a free
+///     symbol not listed in *vars*.
 ///
 /// Examples
 /// --------
@@ -13011,7 +13037,7 @@ fn py_emit_c_expr(
 
     let name_refs: Vec<&str> = c_names.iter().map(String::as_str).collect();
     core_emit_expr_c(expr.id, &var_ids, &name_refs, fn_name, &pool_guard.inner)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        .map_err(emit_c_error_to_py)
 }
 
 /// Emit a C function that writes multiple symbolic expressions into an output
@@ -13025,7 +13051,9 @@ fn py_emit_c_expr(
 ///    /* out[0] = exprs[0], out[1] = exprs[1], … */
 ///
 /// All expressions share the same input variables and the same ``<math.h>``
-/// support as :func:`emit_c_expr`.
+/// support as :func:`emit_c_expr`.  Common sub-expressions are shared across
+/// **all** outputs, so a gradient and Hessian emitted together reuse the
+/// price's ``log``, ``sqrt`` and ``erf`` calls rather than recomputing them.
 ///
 /// Parameters
 /// ----------
@@ -13045,8 +13073,9 @@ fn py_emit_c_expr(
 ///
 /// Raises
 /// ------
-/// ValueError
-///     Same conditions as :func:`emit_c_expr`.
+/// AlkahestError
+///     ``E-CODEGEN-001`` … ``E-CODEGEN-003``, as for :func:`emit_c_expr`.
+///     ``ValueError`` for an empty *exprs*.
 ///
 /// Examples
 /// --------
@@ -13123,7 +13152,7 @@ fn py_emit_c_vec(
 
     let name_refs: Vec<&str> = c_names.iter().map(String::as_str).collect();
     core_emit_expr_c_vec(&expr_ids, &var_ids, &name_refs, fn_name, &pool_guard.inner)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        .map_err(emit_c_error_to_py)
 }
 
 // Phase 25 — NumPy / batch evaluation: call_batch_raw is merged into PyCompiledFn above.

@@ -887,6 +887,13 @@ print(horner(poly, x))                        # Horner-form Expr
 c_code = emit_c(poly, x, "x_var", "f")       # C function string
 stablehlo = to_stablehlo(sin(x)+exp(y), [x,y], fn_name="my_fn")  # StableHLO text
 # erf/gamma/lambert_w/asinh/user functions raise AlkahestError E-STABLEHLO-001 (never '')
+
+# General expressions → C99 (<math.h>), with CSE shared across all outputs:
+src = emit_c_expr(sin(pi*x) + x**2, x)                 # pi -> 3.141592653589793 literal
+src = emit_c_vec([C] + grad + hess, [S, K, r, s, T])   # void eval_vec(..., double *out)
+# heaviside/sign/min/max/Piecewise -> ternaries; lambert_w -> emitted static helper.
+# Refusals: AlkahestError E-CODEGEN-001 (no C lowering: diracdelta, bessel, …),
+#           -002 (O(x), quantifiers), -003 (free symbol not in vars).
 ```
 
 ---
