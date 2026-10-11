@@ -2858,7 +2858,29 @@ fn integrate_dispatch(
                 return Ok(DerivedExpr::with_log(s.value, final_log));
             }
 
-            // A trip inside any of the three tiers above surfaces as a
+            // ── Tier 4: pre-normalisation + parametric closed forms ─────────
+            //
+            // Expand powers of sums, merge `exp(a)·exp(b)`, combine powers of
+            // a common base, then integrate termwise with closed forms that
+            // take symbolic parameters (`x^n·e^{αx}·sin(ωx)` tabular,
+            // `1/(ax²+bx+c)` with its discriminant's sign as a side
+            // condition). Last, so every integral the tiers above solve keeps
+            // its answer and its cost; the result is checked against the
+            // original integrand (and its complex branch) before it is
+            // returned. See `super::prenorm`.
+            //
+            // Outermost call only: the routes above integrate sub-problems
+            // through `integrate` (by-parts residuals, u-substitution), and a
+            // residual this tier closes can steer by-parts off the split that
+            // gives the principal-branch answer (`∫dx/(√x·√(1+x))`).
+            crate::budget::check()?;
+            if INTEGRATE_DEPTH.with(|d| d.get()) == 1 {
+                if let Some(r) = super::prenorm::try_prenormalised(expr, var, pool)? {
+                    return Ok(r);
+                }
+            }
+
+            // A trip inside any of the tiers above surfaces as a
             // *decline*: they all end their budget checks with `.ok()?`, which
             // is the only thing an `Option`-returning proposer can do.  Without
             // this re-check that trip would leave `integrate` as `E-INT-001` —
@@ -3099,6 +3121,19 @@ pub fn integrate_definite(
     // check below reasons about the bound's *value*.
     let lower = simplify(lower, pool).value;
     let upper = simplify(upper, pool).value;
+
+    // `∫₀^∞ Σ cᵢ·x^{pᵢ}·e^{−aᵢx} dx = Σ cᵢ·Γ(pᵢ+1)/aᵢ^{pᵢ+1}` — the Gamma
+    // family, termwise, when every `aᵢ > 0` and `pᵢ > −1` is established.
+    // Ahead of the FTC because `x^{−1/2}·e^{−x/2}` (the chi-square
+    // normaliser) has no elementary antiderivative, and because a sum of
+    // decays is exactly the case whose limit at `∞` the limit engine could
+    // not take as a whole. A missing sign declines here, and the FTC route
+    // below then reports which assumption it needed.
+    if is_zero(lower, pool) && upper == pool.pos_infinity() {
+        if let Some(r) = super::prenorm::try_gamma_family(expr, var, pool) {
+            return Ok(r);
+        }
+    }
 
     // `∫_{-∞}^{∞}` of a rational function is not an FTC problem: the
     // antiderivative is a `RootSum` or a sum of logs and arctangents whose
@@ -4273,6 +4308,12 @@ fn eval_bound(
             crate::calculus::LimitDirection::Bidirectional,
             pool,
         )
+        // The limit of a sum is the sum of the limits when every one of them
+        // exists and is finite. `e^{−k_e t}/k_e − e^{−k_a t}/k_a` (the Bateman
+        // AUC) failed as a whole with E-LIMIT-005 while each decay alone is
+        // routine; `termwise_limit` accepts only the all-finite case.
+        .or_else(|e| super::prenorm::termwise_limit(f, var, bound, pool).ok_or(e))
+        .map(|l| super::prenorm::resolve_zero_powers(l, pool))
         .map_err(|e| {
             // When the limit failed for want of a stated fact about a free
             // parameter, say which one: "no rule applies" sends the caller off
@@ -4321,7 +4362,24 @@ fn eval_bound(
         }
         return Ok(lim);
     }
-    let substituted = subs_var(f, var, bound, pool);
+    // `0^{n+1}` at a bound of `x^{n+1}/(n+1)` is `0` once `n + 1 > 0` is
+    // established; left alone it reads as an unresolved pole downstream.
+    let substituted = super::prenorm::resolve_zero_powers(subs_var(f, var, bound, pool), pool);
+    // What is left is a `0^e` whose exponent's sign is not established: `0` for
+    // `e > 0`, a pole for `e < 0`. `∫₀¹ xⁿ dx` with nothing known about `n`
+    // used to come back carrying `0^{n+1}` as though it were a value.
+    if let Some(e) = super::prenorm::unresolved_zero_power(substituted, pool) {
+        return Err(IntegrationError::NotImplemented(format!(
+            "the antiderivative {} at the endpoint {} = {} contains 0^({}), which is 0 when {} > 0 \
+             and a pole otherwise; the sign of the exponent is not established — declare the \
+             parameter Positive or assume it",
+            pool.display(f),
+            pool.display(var),
+            pool.display(bound),
+            pool.display(e),
+            pool.display(e),
+        )));
+    }
     // `kernel::subs` does not descend into a `RootSum` node: its `poly`/`body`
     // children are not visited, so substituting into a `RootSum` antiderivative
     // is a **silent no-op**. `F(b)` and `F(a)` then come back as the *same*
@@ -4968,7 +5026,7 @@ pub fn verify_antiderivative_status(
 /// Irrational-looking values dodge the poles of textbook integrands, and the
 /// grid is two-sided so a sign lost inside a `√` or a `log` cannot hide on the
 /// positive half — see [`verify_antiderivative_status`].
-const GATE_X_SAMPLES: [f64; 12] = [
+pub(super) const GATE_X_SAMPLES: [f64; 12] = [
     0.3719, 0.9137, 1.4231, 2.1719, 2.8123, 3.6411, -0.3719, -0.9137, -1.4231, -2.1719, -2.8123,
     -3.6411,
 ];
@@ -5125,7 +5183,12 @@ pub fn verify_antiderivative_status_parametric(
 /// * **`∞`** — a sentinel symbol that can only appear in a bound, and binding
 ///   it to a float would be a fiction. Its presence makes the expression
 ///   unsweepable, which the caller sees as an empty agreement count.
-fn collect_gate_parameters(expr: ExprId, var: ExprId, pool: &ExprPool, params: &mut Vec<ExprId>) {
+pub(super) fn collect_gate_parameters(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    params: &mut Vec<ExprId>,
+) {
     match pool.get(expr) {
         ExprData::Symbol { name, .. } => {
             if expr == var
@@ -5171,7 +5234,7 @@ fn parameter_samples(param: ExprId, pool: &ExprPool) -> [f64; 3] {
 
 /// What one sample point of the antiderivative gate's grid establishes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SampleVerdict {
+pub(super) enum SampleVerdict {
     /// Both sides produced the same finite real. Counts towards the quorum.
     Agrees,
     /// The sample says nothing about `F′ = f`, and is neither counted nor held
@@ -5213,7 +5276,7 @@ enum SampleVerdict {
 /// below `1` against it would turn a correct antiderivative into a decline.
 /// Symmetrically, `∫dx/x = log|x|` has a genuine pole at `0` in both, which is
 /// the top-left-empty case: both sides non-finite, still no information.
-fn classify_sample(
+pub(super) fn classify_sample(
     d: ExprId,
     integrand: ExprId,
     env: &HashMap<ExprId, f64>,

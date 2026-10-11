@@ -5,6 +5,7 @@ mod elliptic_trig;
 pub mod engine;
 pub mod gate;
 pub mod norman;
+mod prenorm;
 pub(crate) mod residue_theorem;
 pub mod risch;
 pub mod special;

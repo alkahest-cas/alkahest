@@ -402,6 +402,15 @@ except IntegrationError as e:
     print(e.code)         # E-INT-004
 ```
 
+**Symbolic parameters / unnormalised integrands** (after 3.12.0): on a decline,
+`integrate` expands powers of sums, merges `exp(a)·exp(b)`, combines `x·x^(n−1)`,
+then integrates termwise — `x**n*exp(-k*x)`, `x**n*exp(a*x)*sin(w*x)`,
+`1/(k**2+m**2)`, `1/(a*x**2+b)` all work with symbolic `k, a, w, …`. Divisions by
+a parameter and an unknown-sign discriminant (`4ac−b² > 0` for the `atan` form) are
+listed in `r.verification["side_conditions"]`. `integrate(f, x, 0, oo)` of
+`Σ c·x^p·exp(-α·x)` gives `Σ c·Γ(p+1)/α^(p+1)` when `α > 0` is known (Positive symbol
+or `assumptions`), e.g. `exp(-y/2)/sqrt(y)` → `√(2π)`; unknown sign → `E-INT-001`.
+
 **The non-elementary output basis carries *exact* constants** (since 3.11). `erf`,
 the Fresnel pair and their coefficients used to be interned as `f64` nodes, so
 `∫exp(−x²)dx` came back as `0.8862269254527579·erf(x)` and nothing downstream could

@@ -976,6 +976,19 @@ def integrate(expr, var, a=None, b=None):
     (parameter ``m = k²``), so ``∫_0^{π/2} dx/√(1 − sin²x/4)`` is
     ``EllipticK(1/4)``.
 
+    Integrands with symbolic parameters or in unexpanded form —
+    ``x*exp(-k*x)``, ``1/(k**2+m**2)``, ``(s*z)**2*exp(-z**2/2)``,
+    ``exp(-a*t)*exp(-b*(u-t))``, ``x*x**(n-1)`` — are normalised (powers of
+    sums expanded, exponentials merged, powers combined) and integrated
+    termwise when the direct routes decline. A division by a parameter, and
+    the ``4ac - b**2 > 0`` an ``atan`` of a quadratic with an unknown-sign
+    discriminant needs, are listed in ``result.verification["side_conditions"]``.
+    ``integrate(f, x, 0, oo)`` of ``Σ c·x**p·exp(-α·x)`` is
+    ``Σ c·Γ(p+1)/α**(p+1)`` when ``α > 0`` is established (a Positive symbol,
+    a numeric rate or ``assumptions``); with the sign unknown it is refused
+    (``E-INT-001``). So ``integrate(exp(-y/2)/sqrt(y), y, 0, oo)`` is
+    ``√(2π)``.
+
     For an indefinite integral, ``result.verification`` reports
     ``"exactly_verified"`` only when the kernel proves the symbolic residual
     ``diff(result, var) - expr`` is zero. A successful result with
