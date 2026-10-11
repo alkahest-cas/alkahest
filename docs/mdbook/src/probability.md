@@ -121,8 +121,91 @@ Two combination rules, and their names say what they need:
 * `variance_affine_independent(expr, [(var, dist), …])` — which does need
   independence, and says so.
 
-There are **no joint distributions, no conditioning and no covariance** here. A
-product of two variates raises `E-PROB-002` rather than guessing at a joint law.
+`expectation_affine` still raises `E-PROB-002` on a product of two variates: a
+list of marginals says nothing about their dependence. A joint law is declared
+explicitly instead — see [Joint laws](#joint-laws) below.
+
+### Closed-form expectations of common functions
+
+Before the integrator runs, `expectation` tries a table of textbook
+expectations, term by term after expansion. Every term must be in the table or
+the general route runs instead; either way the answer is gated by quadrature.
+
+| law | term | `E[term]` |
+|---|---|---|
+| any | `x**k`, `k` a non-negative integer | the raw-moment table |
+| `Normal(mu, sigma)` | `x**k * exp(a*x)` | `exp(a*mu + a²sigma²/2)·E[Y**k]`, `Y ~ Normal(mu + a·sigma², sigma)` |
+| `Normal(mu, sigma)` | `exp(a*x) * cos(w*x + phi)`, `sin` | `exp(a*mu + (a² − w²)sigma²/2)·cos(w(mu + a·sigma²) + phi)` |
+| `Gamma(k, theta)`, `Exponential` | `x**s * exp(a*x) * log(x)**{0,1}` | `theta**s Γ(k+s)/Γ(k)·(1 − a·theta)**−(k+s)`, times `digamma(k+s) + log theta − log(1 − a·theta)` |
+| `Beta(alpha, beta)` | `x**s * log(x)**{0,1}` | `Γ(alpha+s)Γ(alpha+beta)/(Γ(alpha)Γ(alpha+beta+s))`, times `digamma(alpha+s) − digamma(alpha+beta+s)` |
+| `LogNormal(mu, sigma)` | `x**s * log(x)**{0,1}` | `exp(s·mu + s²sigma²/2)`, times `mu + s·sigma²` |
+
+Each entry has a hypothesis (`k + s > 0`, `1 − a·theta > 0`, `alpha + s > 0`).
+Decidably false is `E-PROB-006` — `E[1/X]` under `Gamma(1, theta)` is `+inf`;
+undecidable is published on `prob_side_conditions()`.
+
+### Binomial with a symbolic `n`, and the negative binomial
+
+`Binomial(n, p)` accepts a symbolic `n`. It carries `n ≥ 0` on `constraints()`
+and `n` integer on `prob_side_conditions()`; moments, generating functions,
+cumulants, skewness and kurtosis come from closed forms in `n`, checked against
+the finite defining sum at integer `n`. What needs to enumerate `{0…n}` — the
+CDF, the entropy, a non-polynomial `expectation` — refuses.
+
+`NegativeBinomial(r, p)` counts failures before the `r`-th success (SciPy's
+`nbinom(r, p)`), `r > 0` real, `0 < p ≤ 1`; mean `r(1−p)/p`. Its MGF converges
+for `t < −log(1 − p)` and its PGF for `|z| < 1/(1 − p)`, both reported like the
+Exponential's strip.
+
+## Joint laws
+
+A joint law is a list of **mutually independent blocks**: `(var, Distribution)`
+or `([vars], MultivariateNormal)`. Dependence exists only inside a
+multivariate-normal block, through its covariance matrix.
+
+```python
+X, Y, Z = (pool.symbol(n) for n in "XYZ")
+mvn = ex.MultivariateNormal([m1, m2], [[s11, s12], [s12, s22]])
+
+mvn.pdf([x1, x2])                       # (2π)^{-1} det(Σ)^{-1/2} exp(-½ qᵀΣ⁻¹q)
+mvn.moment_generating_function([t1, t2])
+mvn.linear_transform(A, b)              # N(Aμ + b, AΣAᵀ)
+mvn.marginal([1])
+mvn.conditional([1], [a]).mean()        # [m1 + s12*(a - m2)/s22]
+mvn.quadratic_form_expectation(A)       # tr(AΣ) + μᵀAμ
+
+blocks = [([X, Y], mvn), (Z, ex.Exponential(lam))]
+ex.joint_expectation(X**2 * Y**2 * Z, blocks)
+ex.covariance(X + Y, X - Y, blocks)     # s11 - s22
+ex.joint_variance(2*X - 3*Y + Z, blocks)
+```
+
+* `MultivariateNormal(mean, cov)` checks that `cov` is symmetric and, by
+  Sylvester's criterion, that no leading principal minor is a number `≤ 0`
+  (`E-PROB-001`); a symbolic minor is carried as a side condition. A linear map
+  whose image is degenerate (`A` without full row rank) is refused the same way.
+* `joint_expectation` expands the expression and splits each term into
+  per-block factors (`E[g(X)h(Z)] = E[g(X)]E[h(Z)]`). A univariate factor goes
+  through `expectation`; a Gaussian factor must be a polynomial times `exp` of
+  an affine form and is computed exactly by **Stein's identity**
+  `E[X_i g(X)] = μ_i E[g] + Σ_j Σ_ij E[∂_j g]` and exponential tilting. A factor
+  coupling two independent blocks non-separably (`sin(X + Z)`) is `E-PROB-002`.
+* `covariance(e1, e2, blocks)` is `E[e1·e2] − E[e1]E[e2]`, and `joint_variance`
+  is its diagonal — the correlated counterpart of `variance_affine_independent`.
+
+`sum_independent([d1, d2, …])` returns the law of a sum of **independent**
+variates where it stays in a closed family: Normals (means and variances add),
+Gammas/Exponentials with a common scale, Poissons, Binomials/Bernoullis with a
+common `p` (symbolic `n` allowed), negative binomials with a common `p`. A
+"common" parameter is the same expression; anything else is `E-PROB-002`.
+
+`order_statistic(dist, n, kind="max")` is the law of the maximum (or minimum)
+of `n` iid copies, `n` literal or symbolic, for `Uniform` and `Exponential`:
+`cdf`, `pdf`, a verified `mean` and `variance`
+(`E[max]` of exponentials is `(digamma(n+1) − digamma(1))/lam = H_n/lam`), and
+`distribution()` where it is a named law (`min` of `Exponential(lam)` is
+`Exponential(n·lam)`; the extremes of `Uniform(0, 1)` are `Beta(n, 1)`,
+`Beta(1, n)`).
 
 ## Entropy, KL divergence, cross-entropy
 

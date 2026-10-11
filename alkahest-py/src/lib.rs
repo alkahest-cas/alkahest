@@ -266,6 +266,7 @@ mod matgroup;
 // V1-3: structured exception hierarchy.
 // Base inherits from ValueError for backward compat with existing `except ValueError` tests.
 mod funcfield;
+mod joint_prob;
 mod numfield;
 mod stabilizer;
 mod theta;
@@ -19082,6 +19083,16 @@ impl PyDistribution {
             ),
             CoreSupport::IntegersUpTo(n) => ("integers_up_to", n.into_py(py)),
             CoreSupport::NonNegativeIntegers => ("non_negative_integers", py.None()),
+            // A `Binomial` whose `n` is symbolic: the same tag, with the
+            // endpoint as an `Expr` instead of an `int`.
+            CoreSupport::IntegersUpToSymbolic(n) => (
+                "integers_up_to",
+                PyExpr {
+                    id: n,
+                    pool: self.pool.clone_ref(py),
+                }
+                .into_py(py),
+            ),
             _ => ("unknown", py.None()),
         };
         Ok(out.into_py(py))
@@ -19491,9 +19502,14 @@ fn py_dist_bernoulli(py: Python<'_>, prob: PyRef<PyExpr>) -> PyResult<PyDistribu
 
 /// ``Binomial(n, p)`` on ``{0…n}``.
 ///
-/// ``n`` must be a literal non-negative integer: every route here enumerates
-/// the support, so a symbolic ``n`` is refused at construction rather than
-/// accepted and then failing on every query.
+/// ``n`` is a non-negative integer literal **or a symbolic expression**. A
+/// symbolic ``n`` carries ``n >= 0`` on :meth:`Distribution.constraints` and
+/// ``n`` integer on :func:`prob_side_conditions`; moments, generating
+/// functions, cumulants, skewness and kurtosis come from closed forms in ``n``
+/// (``n*p``, ``n*p*(1-p)``, ``(1-p+p*exp(t))**n``) checked against the finite
+/// defining sum at integer ``n``. Routes that must enumerate ``{0…n}`` — the
+/// CDF, the entropy, a non-polynomial :func:`expectation` — refuse it. A
+/// numeric ``n`` that is not a non-negative integer raises ``E-PROB-001``.
 #[pyfunction]
 #[pyo3(name = "Binomial")]
 fn py_dist_binomial(
@@ -20642,6 +20658,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     numfield::register(m)?;
     theta::register(m)?;
     units::register(m)?;
+    joint_prob::register(m)?;
     m.add_function(wrap_pyfunction!(py_euler_maclaurin, m)?)?;
     m.add_function(wrap_pyfunction!(py_coefficient_asymptotics, m)?)?;
     // P1 item 7 — creative telescoping / holonomic (D-finite) machinery

@@ -517,6 +517,23 @@ fn discrete_sum(
     let upper = match support {
         Support::IntegersUpTo(n) => Some(*n),
         Support::NonNegativeIntegers => None,
+        // A symbolic trial count, bound by the sampler to an integer: the sum
+        // is the finite definition at that integer. A binding that is not a
+        // non-negative integer is not a point of this law's parameter space.
+        Support::IntegersUpToSymbolic(n) => {
+            let Some(b) = eval_ball(*n, binding, pool, VERIFY_PREC) else {
+                return QuadOutcome::Inconclusive;
+            };
+            // The binding is an exact integer, but arithmetic on it (`n₁ + 1`)
+            // can leave the enclosure a few ulps wide; an integer is still
+            // pinned down when the ball is far narrower than the unit gap.
+            let v = b.mid.to_f64().round();
+            let off = (b.mid.to_f64() - v).abs() + b.rad.to_f64();
+            if off > 1e-9 || v < 0.0 || v > f64::from(MAX_DISCRETE_TERMS) {
+                return QuadOutcome::Inconclusive;
+            }
+            Some(v as u32)
+        }
         _ => unreachable!("only discrete supports reach here"),
     };
     let limit = upper.unwrap_or(MAX_DISCRETE_TERMS);
@@ -626,13 +643,19 @@ fn role_rows(dist: &Distribution) -> &'static [&'static [f64]] {
         Gamma => &[&[2.0, 1.0], &[0.5, 2.0], &[3.5, 0.7], &[1.0, 3.0]],
         Beta => &[&[2.0, 3.0], &[0.5, 0.5], &[1.0, 4.0], &[3.2, 1.4]],
         Bernoulli => &[&[0.3], &[0.5], &[0.8], &[0.125]],
-        Binomial => &[&[0.0, 0.3], &[0.0, 0.5], &[0.0, 0.8], &[0.0, 0.125]],
+        // The `n` slot is read only when `n` is symbolic, and must then be a
+        // non-negative integer: the verifier sums the finite definition.
+        Binomial => &[&[5.0, 0.3], &[8.0, 0.5], &[3.0, 0.8], &[12.0, 0.125]],
+        NegativeBinomial => &[&[2.0, 0.4], &[0.5, 0.7], &[3.5, 0.55], &[1.0, 0.9]],
     }
 }
 
 /// Values tried for a free symbol that is not one of the distribution's own
 /// parameters — a strike, a threshold, a dose.
 const EXTRA_ROWS: [f64; 4] = [0.6, 1.7, 1.2, 0.35];
+
+/// Values for a free symbol inside a symbolic `Binomial` trial count.
+const COUNT_ROWS: [f64; 4] = [4.0, 7.0, 2.0, 9.0];
 
 /// Build up to [`MAX_POINTS`] parameter assignments at which the distribution's
 /// constraints hold.
@@ -712,6 +735,15 @@ fn sample_points(
         };
     }
 
+    let mut count_syms: Vec<ExprId> = Vec::new();
+    for d in std::iter::once(dist).chain(other) {
+        if d.kind() == super::DistKind::Binomial
+            && dists::literal_count(d.params()[0], pool).is_none()
+        {
+            collect_free_symbols(d.params()[0], pool, &mut count_syms);
+        }
+    }
+
     let mut out = Vec::new();
     for (r, c) in candidate_rows(rows.len(), co_rows.map(<[&[f64]]>::len)) {
         let mut binding: Vec<(ExprId, Float)> = Vec::with_capacity(free.len());
@@ -727,6 +759,10 @@ fn sample_points(
                     .and_then(|row| row.get(slot))
                     .copied()
                     .unwrap_or(EXTRA_ROWS[c % EXTRA_ROWS.len()]),
+                // A symbol inside a symbolic trial count must be bound to an
+                // integer, or the count is not one and the finite sum that
+                // defines the law has no meaning.
+                (None, None) if count_syms.contains(&sym) => COUNT_ROWS[(r + i) % COUNT_ROWS.len()],
                 (None, None) => EXTRA_ROWS[(r + i) % EXTRA_ROWS.len()],
             };
             binding.push((sym, fl(VERIFY_PREC, v)));
@@ -811,6 +847,9 @@ pub(crate) fn evidence_step(
             conditions.push(side);
         }
     }
+    // A symbolic trial count is checked at integer values only; `n ∈ ℤ` is
+    // the hypothesis that makes those points representative.
+    conditions.extend(dists::symbolic_count_conditions(dist, pool));
     let _ = evidence;
     RewriteStep::with_conditions("prob_verified_against_quadrature", claim, claim, conditions)
 }

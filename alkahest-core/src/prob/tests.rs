@@ -76,14 +76,17 @@ fn a_numeric_parameter_outside_its_constraint_is_refused() {
             .code(),
         "E-PROB-001"
     );
-    // `n` must be a literal count: a symbolic one is refused at construction
-    // rather than accepted and then failing on every query.
-    assert_eq!(
-        Distribution::binomial(sym(&p, "n"), p.rational(1, 2), &p)
-            .unwrap_err()
-            .code(),
-        "E-PROB-001"
-    );
+    // A *numeric* `n` that is not a non-negative integer is refused; a
+    // symbolic one is accepted (see `joint_tests`).
+    for bad in [p.rational(5, 2), p.integer(-1)] {
+        assert_eq!(
+            Distribution::binomial(bad, p.rational(1, 2), &p)
+                .unwrap_err()
+                .code(),
+            "E-PROB-001"
+        );
+    }
+    assert!(Distribution::binomial(sym(&p, "n"), p.rational(1, 2), &p).is_ok());
 }
 
 #[test]

@@ -133,24 +133,59 @@ fn raw_moment_claim(dist: &Distribution, n: u32, pool: &ExprPool) -> Option<Expr
             // Σ_r S(n,r) · N^{(r)} · pʳ, with S the Stirling numbers of the
             // second kind and N^{(r)} the falling factorial: the factorial-
             // moment expansion, exact for every n.
-            let (nn, prob) = (dists::count_of(p[0], pool), p[1]);
+            let prob = p[1];
             let mut terms = Vec::new();
-            for r in 0..=n {
-                let s = stirling2(n, r);
-                if s == 0 {
-                    continue;
+            match dists::literal_count(p[0], pool) {
+                Some(nn) => {
+                    for r in 0..=n {
+                        let s = stirling2(n, r);
+                        if s == 0 {
+                            continue;
+                        }
+                        let ff = falling_factorial(nn, r);
+                        if ff == 0 {
+                            continue;
+                        }
+                        terms.push(
+                            pool.mul(vec![pool.integer(s * ff), pool.pow(prob, pool.integer(r))]),
+                        );
+                    }
                 }
-                let ff = falling_factorial(nn, r);
-                if ff == 0 {
-                    continue;
+                None => {
+                    // Symbolic N: N^{(r)} = N(N-1)⋯(N-r+1) stays a product.
+                    for r in 0..=n {
+                        let s = stirling2(n, r);
+                        if s == 0 {
+                            continue;
+                        }
+                        let mut f = vec![pool.integer(s), pool.pow(prob, pool.integer(r))];
+                        f.extend((0..r).map(|j| sub(p[0], pool.integer(j), pool)));
+                        terms.push(pool.mul(f));
+                    }
                 }
-                terms.push(pool.mul(vec![pool.integer(s * ff), pool.pow(prob, pool.integer(r))]));
             }
             if terms.is_empty() {
                 pool.integer(0)
             } else {
                 pool.add(terms)
             }
+        }
+        DistKind::NegativeBinomial => {
+            // Σ_r S(n,r) · r^{(r̄)} · (q/p)ʳ, the rising factorial of the
+            // shape against the factorial moments E[X^{(r)}] = r^{(r̄)}(q/p)ʳ.
+            let (shape, prob) = (p[0], p[1]);
+            let ratio = div(sub(one, prob, pool), prob, pool);
+            let mut terms = Vec::new();
+            for r in 0..=n {
+                let s = stirling2(n, r);
+                if s == 0 {
+                    continue;
+                }
+                let mut f = vec![pool.integer(s), pool.pow(ratio, pool.integer(r))];
+                f.extend((0..r).map(|j| pool.add(vec![shape, pool.integer(j)])));
+                terms.push(pool.mul(f));
+            }
+            pool.add(terms)
         }
         DistKind::Poisson => {
             // Touchard: E[Xⁿ] = Σ_r S(n,r) λʳ.
@@ -279,6 +314,12 @@ pub(crate) fn mean_claim(dist: &Distribution, pool: &ExprPool) -> ExprId {
         DistKind::Bernoulli => p[0],
         DistKind::Binomial => pool.mul(vec![p[0], p[1]]),
         DistKind::Poisson => p[0],
+        // r(1-p)/p
+        DistKind::NegativeBinomial => div(
+            pool.mul(vec![p[0], sub(pool.integer(1), p[1], pool)]),
+            p[1],
+            pool,
+        ),
     }
 }
 
@@ -311,6 +352,12 @@ fn variance_claim(dist: &Distribution, pool: &ExprPool) -> ExprId {
         DistKind::Bernoulli => pool.mul(vec![p[0], sub(one, p[0], pool)]),
         DistKind::Binomial => pool.mul(vec![p[0], p[1], sub(one, p[1], pool)]),
         DistKind::Poisson => p[0],
+        // r(1-p)/p²
+        DistKind::NegativeBinomial => div(
+            pool.mul(vec![p[0], sub(one, p[1], pool)]),
+            sq(p[1], pool),
+            pool,
+        ),
     }
 }
 
@@ -371,7 +418,11 @@ fn positive_integer(e: ExprId, pool: &ExprPool) -> Option<u32> {
     }
 }
 
-fn cdf_claim(dist: &Distribution, x: ExprId, pool: &ExprPool) -> Result<ExprId, ProbError> {
+pub(crate) fn cdf_claim(
+    dist: &Distribution,
+    x: ExprId,
+    pool: &ExprPool,
+) -> Result<ExprId, ProbError> {
     let p = dist.params();
     let one = pool.integer(1);
     let neg1 = pool.integer(-1);
@@ -431,7 +482,10 @@ fn cdf_claim(dist: &Distribution, x: ExprId, pool: &ExprPool) -> Result<ExprId, 
             }
             pool.add(terms)
         }
-        DistKind::Bernoulli | DistKind::Binomial | DistKind::Poisson => {
+        DistKind::Bernoulli
+        | DistKind::Binomial
+        | DistKind::Poisson
+        | DistKind::NegativeBinomial => {
             return Err(ProbError::NoClosedForm {
                 quantity: "a discrete CDF",
                 missing: "a step function over the integers, which this module does not model \
@@ -593,13 +647,14 @@ fn quantile_claim(
             missing: "the inverse of an incomplete gamma / incomplete beta, which has no \
                       elementary closed form at all",
         }),
-        DistKind::Bernoulli | DistKind::Binomial | DistKind::Poisson => {
-            Err(ProbError::NoClosedForm {
-                quantity: "a discrete quantile",
-                missing: "a generalised inverse of a step function, which this module does not \
-                          model symbolically",
-            })
-        }
+        DistKind::Bernoulli
+        | DistKind::Binomial
+        | DistKind::Poisson
+        | DistKind::NegativeBinomial => Err(ProbError::NoClosedForm {
+            quantity: "a discrete quantile",
+            missing: "a generalised inverse of a step function, which this module does not \
+                      model symbolically",
+        }),
     }
 }
 
