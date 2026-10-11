@@ -34,13 +34,16 @@
 pub mod diophantine;
 pub mod homotopy;
 pub mod numeric;
+mod opaque;
 pub mod polyhedral;
 mod rational;
 pub mod regular_chains;
 pub mod transcendental;
 mod verify;
 
-pub use transcendental::{solve_transcendental, TranscendentalOutcome};
+pub use transcendental::{
+    solve_transcendental, take_transcendental_refusal, TranscendentalOutcome,
+};
 
 pub use regular_chains::{
     extract_regular_chain_from_basis, main_variable_recursive, triangularize, RegularChain,
@@ -139,8 +142,10 @@ impl AlkahestError for SolverError {
     fn remediation(&self) -> Option<&'static str> {
         match self {
             SolverError::NotPolynomial(_) => Some(
-                "ensure all equations are polynomial or rational in the declared variables; \
-                 transcendental functions are not supported",
+                "the unknowns must appear polynomially or rationally (a sub-expression free \
+                 of them may be anything — it is a coefficient); a single equation with an \
+                 unknown inside exp/log/sin/cos/tan is solved only in the closed-form shapes \
+                 listed under `solve`",
             ),
             SolverError::HighDegree(_) => Some(
                 "an irreducible factor of degree ≥ 3 with symbolic or algebraic coefficients \
@@ -237,6 +242,11 @@ pub(crate) fn refuse_undefined_equation(detail: &str) -> SolverError {
 /// thread-local.
 pub fn take_undefined_equation() -> Option<UndefinedEquation> {
     LAST_UNDEFINED_EQUATION.with(|c| c.borrow_mut().take())
+}
+
+/// Is a refusal waiting behind the `NotPolynomial` that just came back?
+fn undefined_equation_pending() -> bool {
+    LAST_UNDEFINED_EQUATION.with(|c| c.borrow().is_some())
 }
 
 // ---------------------------------------------------------------------------
@@ -922,6 +932,23 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
+thread_local! {
+    /// Hypotheses of other shapes — `c > 0` for a real logarithm, `k ∈ ℤ` for
+    /// the index of a periodic family — recorded by the transcendental path.
+    static ASSUMED_OTHER: std::cell::RefCell<Vec<crate::deriv::log::SideCondition>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Record a hypothesis that is not a plain `≠ 0`.
+pub(crate) fn record_side_condition(cond: crate::deriv::log::SideCondition) {
+    ASSUMED_OTHER.with(|c| {
+        let mut v = c.borrow_mut();
+        if !v.contains(&cond) {
+            v.push(cond);
+        }
+    });
+}
+
 /// Record that the solver divided by `lead` without deciding it is non-zero.
 fn assume_nonzero(lead: ExprId) {
     ASSUMED_NONZERO.with(|c| {
@@ -955,13 +982,22 @@ fn assume_nonzero(lead: ExprId) {
 /// Consuming, so one call's hypotheses cannot be read as a later call's. Empty
 /// means the solver proved every coefficient it divided by to be non-zero — not
 /// that it did not look.
+///
+/// The transcendental path ([`solve_transcendental`]) reports here too, with
+/// two more shapes: [`SideCondition::Positive`](crate::deriv::log::SideCondition::Positive)
+/// for the argument of a real logarithm it could not prove positive
+/// (`log(kₑ/kₐ)` needs `kₑ/kₐ > 0`), and
+/// [`SideCondition::InDomain`](crate::deriv::log::SideCondition::InDomain)`(k, Integer)`
+/// for the index of a periodic solution family (`x = asin(c) + 2πk`).
 pub fn take_solve_side_conditions() -> Vec<crate::deriv::log::SideCondition> {
-    ASSUMED_NONZERO.with(|c| {
+    let mut out: Vec<crate::deriv::log::SideCondition> = ASSUMED_NONZERO.with(|c| {
         std::mem::take(&mut *c.borrow_mut())
             .into_iter()
             .map(crate::deriv::log::SideCondition::NonZero)
             .collect()
-    })
+    });
+    out.extend(ASSUMED_OTHER.with(|c| std::mem::take(&mut *c.borrow_mut())));
+    out
 }
 
 /// Can the degree-`d` coefficient be relied on to be non-zero at this partial
@@ -1698,6 +1734,7 @@ pub fn solve_polynomial_system(
     let _ = take_solve_side_conditions();
     forget_undefined_equation();
     let n_solve = vars.len();
+    let vars_len = n_solve;
     let params = collect_parameters(&equations, &vars, pool);
     let mut all_vars = vars;
     all_vars.extend(params);
@@ -1711,7 +1748,22 @@ pub fn solve_polynomial_system(
     let mut polys: Vec<GbPoly> = Vec::with_capacity(equations.len());
     let mut domains: Vec<GbPoly> = Vec::new();
     for eq in &equations {
-        let cleared = rational::clear_denominators(*eq, &all_vars, pool)?;
+        let cleared = match rational::clear_denominators(*eq, &all_vars, pool) {
+            Ok(c) => c,
+            Err(SolverError::NotPolynomial(msg)) if !undefined_equation_pending() => {
+                // A coefficient that is not polynomial — `sin(q₁)` multiplying
+                // `q̈₁` — is still a coefficient. Retry with every such
+                // sub-expression free of the unknowns frozen into a parameter;
+                // that path checks its own answers (see `opaque`).
+                if let Some(out) =
+                    opaque::solve_with_opaque_coefficients(&equations, &all_vars[..vars_len], pool)
+                {
+                    return out;
+                }
+                return Err(SolverError::NotPolynomial(msg));
+            }
+            Err(e) => return Err(e),
+        };
         if !cleared.is_polynomial() {
             domains.push(cleared.domain);
         }

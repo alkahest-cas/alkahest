@@ -726,6 +726,18 @@ treat an unstated condition as absent rather than assumed. `1/(x - x)` raises
 `E-SOLVE-005`. `method="homotopy"` and `solve_numerical` remain polynomial-only
 (`E-SOLVE-001`).
 
+**Beyond polynomials.** Only the unknowns must be polynomial: `sin(q1)`,
+`cos(q1 - q2)`, `sqrt(a)` are coefficients, so `solve(eom, [qdd1, qdd2])` solves
+multibody equations of motion for the accelerations (every answer is substituted back;
+one that relies on a hidden identity such as `sin² + cos² = 1` is refused). One equation
+in one unknown also solves when it reduces by logs (`ka*exp(-ka*t) - ke*exp(-ke*t)` →
+`log(ke/ka)/(ke - ka)` under `ke/ka > 0`; `2**x = 5`), in Lambert-W form
+(`x*exp(a*x) = b`, `a*x + b*log(x) = c`, Michaelis–Menten, `x**x = c`; refused when a
+second real root needs `W₋₁`), and for `sin`/`cos`/`tan` of an affine argument, as the
+whole periodic family in an integer symbol `k` (`asin(c) + 2πk`, `π − asin(c) + 2πk`;
+`numeric=True` gives the `k = 0` members). Solutions are real; read the hypotheses
+(`k ∈ Integer`, `c > 0`, `a ≠ 0`) from `solve_side_conditions()`.
+
 ### Coefficient fields for elimination: `Q(params)` (M9, experimental)
 
 `GroebnerBasis.compute(polys, vars, params=[...])` puts the listed symbols in the **coefficient field** instead of the ring — they never enter the monomial order or generate S-pairs. This is the difference between eliminating states from `Q[states, Y, params]` and `Q(params)[states, Y]`: for a differential-elimination / structural-identifiability problem (states eliminated from an ODE model's jet equations, rate constants left symbolic), the parametric route can be an order of magnitude faster and produce far fewer basis generators than treating the parameters as ring variables — see `docs/mdbook/src/solving.md` for measured numbers on a worked example.

@@ -174,6 +174,80 @@ all and raises `SolverError` with `.code == "E-SOLVE-005"` rather than being cle
 `method="homotopy"` and `solve_numerical` are **not** covered by this: they take
 polynomial systems only, and a rational equation still raises `E-SOLVE-001` there.
 
+## Beyond polynomials
+
+### Non-polynomial coefficients
+
+Only the *unknowns* have to appear polynomially. A sub-expression free of them —
+`sin(q1)`, `cos(q1 - q2)`, `sqrt(a)`, `exp(-k*T)` — is a coefficient, whatever it is.
+That is the shape of every multibody equation of motion solved for the accelerations:
+
+```python
+eom = [...]                      # Euler–Lagrange equations of a double pendulum
+solve(eom, [qdd1, qdd2])         # → [{qdd1: ..., qdd2: ...}], with sin/cos coefficients
+solve_side_conditions()          # → the mass-matrix determinant ≠ 0
+```
+
+Each such sub-expression is replaced by an opaque parameter, the system is solved, and
+the sub-expressions are substituted back. Treating `sin q` and `cos q` as independent
+loses identities such as `sin² q + cos² q = 1`, so nothing is returned unchecked:
+every hypothesis is zero-tested after substitution, every solution is substituted into
+the equations as written — in ball arithmetic when it has no free symbol, otherwise at
+several generic parameter values — and a solution that only exists because an identity
+was invisible (`(sin² a + cos² a − 1)·x = 1`) is refused with `E-SOLVE-001`. An unknown
+inside a function (`sin(x)` while solving for `x`) is not a coefficient; a single such
+equation goes to the transcendental slice below, a system still refuses.
+
+### Transcendental equations in one unknown
+
+One equation in one unknown with `exp`, `log`, powers with the unknown in the exponent,
+or `sin`/`cos`/`tan` is solved in closed form when it has one of these shapes. The slice
+reports **real** solutions (`exp(x) = -1` has none), and its hypotheses are listed by
+`solve_side_conditions()`.
+
+| Shape | Answer |
+|---|---|
+| `c1·e^{L1} + c2·e^{L2} = 0`, `Li` affine (also `b**L`, `b` free of `x`) | `x = (log(−c2/c1) − Δb)/Δa`, under `−c2/c1 > 0`, `Δa ≠ 0` |
+| polynomial of degree ≤ 2 in one `exp(f)` / `log(f)` (rational roots) | back-substituted through `log` / `exp` |
+| `α·u·e^{u} = c`, `u` affine (`x·e^{a·x} = b`) | `u = W(c/α)` |
+| `A·x + B·log(k·x + m) + C = 0` (integrated Michaelis–Menten) | `y = (B/A')·W((A'/B)·e^{−C'/B})` |
+| `x**x = c` | `x = exp(W(log c))` |
+| `sin f = c`, `cos f = c`, `tan f = c`, `f` affine | the whole family, below |
+
+```python
+solve([ka*exp(-ka*t) - ke*exp(-ke*t)], [t])   # → [{t: log(ke*ka^-1) * (ke - ka)^-1}]
+solve_side_conditions()
+# → ['ka ≠ 0', '(ke + (ka * -1)) ≠ 0', '(ke * ka^-1) > 0']
+```
+
+Declaring `ka` and `ke` positive (`pool.symbol("ka", "positive")`) discharges the
+sign hypothesis.
+
+Lambert W is available on its principal branch only. Where the real solution set also
+has a root on `W₋₁` — `x·eˣ = c` for `−1/e < c < 0`, `x**x = c` for `e^{−1/e} < c < 1`,
+`A'/B < 0` in the log shape — the call is refused rather than answered with half the
+roots; for a symbolic `c` the condition that makes `W₀` complete (`c > 0`) is recorded.
+
+**Periodic families.** A trigonometric equation has infinitely many roots; they are
+returned as families in an integer symbol (named `k`, or `n`, `m`, `j`, `k_1`, … when
+`k` is taken), which `solve_side_conditions()` lists as `k ∈ Integer`:
+
+```python
+solve([sin(x) - half], [x])
+# → [{x: ((k * pi * 2) + asin(1/2))}, {x: (pi + (k * pi * 2) + (-1 * asin(1/2)))}]
+solve_side_conditions()       # → ['k ∈ Integer']
+solve([tan(x) - 2], [x])      # → [{x: ((k * pi) + atan(2))}]
+solve([sin(x) - half], [x], numeric=True)   # → [{x: 0.5236}, {x: 2.618}]  (k = 0)
+```
+
+With `numeric=True` the `k = 0` member of each family is returned, and
+`solve_side_conditions()` says so; it is one representative per family, not the
+solution set.
+
+Anything else — two kernels that do not reduce (`sin(x) + exp(x)`), a kernel with a
+non-affine argument, a system with an unknown inside a function — keeps the coded
+refusal `E-SOLVE-001`. There is no numeric root-finder behind `numeric=True` for those.
+
 ## GroebnerBasis
 
 A `GroebnerBasis` can be constructed directly for ideal-theoretic operations:
