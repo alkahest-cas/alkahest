@@ -56,6 +56,7 @@ For optional Cargo features (``jit``, ``parallel``, ``cuda``, …) and full deve
    api/matrix
    api/ode
    api/solve
+   api/linprog
    api/codegen
    api/workload
    api/autoresearch

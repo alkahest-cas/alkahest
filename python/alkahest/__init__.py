@@ -129,6 +129,10 @@ from .alkahest import (  # noqa: F401
     ExprPool,
     Forall,
     HybridODE,
+    # Exact linear / integer programming (E-LP-*)
+    LinprogError,
+    LPResult,
+    MILPResult,
     # M6 — modular / p-adic evaluation of holonomic sequences
     ModularEvaluation,
     ModularRecurrence,
@@ -242,6 +246,8 @@ from .alkahest import (  # noqa: F401
     jit_is_available,
     lambert_w,
     limit,
+    linprog,
+    linprog_expr,
     log,
     # Exponential-integral family (DLMF §6.2)
     log_integral,
@@ -253,6 +259,7 @@ from .alkahest import (  # noqa: F401
     # The `det ≠ 0` a symbolic `Matrix.inverse` assumed
     matrix_inverse_side_conditions,
     max,  # symbolic max(a, b) — shadows Python builtin within this module
+    milp,
     min,  # symbolic min(a, b) — shadows Python builtin within this module
     pantelides,
     # PA-9: Piecewise
@@ -2850,10 +2857,14 @@ __all__ = [
     # V1-16: IoError
     "IoError",
     "JitError",
+    # Exact linear / integer programming (E-LP-*)
+    "LPResult",
     "LatticeError",
     "LimitError",
     "LinearAlgebraError",
     "LinearRecurrenceError",
+    "LinprogError",
+    "MILPResult",
     # Phase 15
     "Matrix",
     "MatrixError",
@@ -3032,6 +3043,8 @@ __all__ = [
     "latex",
     "lattice",
     "limit",
+    "linprog",
+    "linprog_expr",
     "log",
     # Exponential-integral family (DLMF §6.2)
     "log_integral",
@@ -3044,6 +3057,7 @@ __all__ = [
     "matrix_exp_side_conditions",
     # The `det ≠ 0` a symbolic `Matrix.inverse` assumed
     "matrix_inverse_side_conditions",
+    "milp",
     "number_theory",
     # Phase 25
     "numpy_eval",
