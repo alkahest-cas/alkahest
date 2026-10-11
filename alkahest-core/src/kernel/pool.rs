@@ -821,6 +821,15 @@ pub struct ExprDisplay<'a> {
 impl fmt::Display for ExprDisplay<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let data = self.pool.get(self.id);
+        // A derivative of an undefined function prints in SymPy's spelling
+        // (`Derivative(f(t), t)`), which both parsers read back; see
+        // `crate::diff::undefined`.
+        if matches!(&data, ExprData::Func { name, .. } if name == crate::diff::undefined::DERIVATIVE_FUNC)
+        {
+            if let Some(v) = crate::diff::undefined::view(self.id, self.pool) {
+                return f.write_str(&crate::diff::undefined::plain_form(&v, self.pool));
+            }
+        }
         fmt_data(&data, self.pool, f)
     }
 }

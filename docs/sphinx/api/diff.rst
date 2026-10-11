@@ -54,6 +54,49 @@ Differentiation
       # grads[0] = 2*x*y + y*cos(x*y)
       # grads[1] = x**2 + x*cos(x*y)
 
+Undefined functions
+~~~~~~~~~~~~~~~~~~~
+
+A function name with no built-in, registered or reserved meaning —
+``pool.func("q", [t])`` — is an *undefined function*: an arbitrary smooth
+function. Its derivative is the canonical node
+``Derivative(q(u…), k…)`` (orders per argument slot), printed as SymPy prints
+it: ``Derivative(q(t), t)``, ``Derivative(u(x, t), x, t)``, and
+``Subs(Derivative(f(_xi_1), _xi_1), _xi_1, t^2)`` for ``f'(t²)``. ``diff``,
+``diff_forward`` and ``symbolic_grad`` all differentiate it; ``subs`` with the
+key ``f(t)`` differentiates its value into the derivative nodes; ``parse``
+reads the printed form back once ``f`` is declared (``{"f": f}`` in the
+symbol table); ``eval_expr`` refuses it with ``E-EVAL-005``.
+
+.. function:: euler_lagrange(L: Expr, coords: list[Expr], t: Expr) -> list[Expr]
+
+   Euler–Lagrange equations ``d/dt(∂L/∂q̇ᵢ) − ∂L/∂qᵢ`` (each ``= 0``) for the
+   coordinates ``coords = [q1(t), …]``; higher derivatives in ``L`` add the
+   Euler–Poisson terms. Raises ``DiffError`` ``E-DIFF-005`` (not an undefined
+   function) or ``E-DIFF-007`` (not a function of ``t`` alone).
+
+   Example::
+
+      t = pool.symbol("t"); th = pool.func("theta", [t])
+      L = m*l**2*diff(th, t).value**2/2 + m*g*l*cos(th)
+      euler_lagrange(L, [th], t)   # [g*l*m*sin(theta(t)) + l^2*m*Derivative(theta(t), t, t)]
+
+.. function:: functions_to_symbols(exprs, funcs: list[Expr], t: Expr, domain=None)
+
+   Replace ``q(t)``, ``q'(t)``, ``q''(t)``, … by symbols ``q``, ``q_dot``,
+   ``q_ddot``, ``q_d3`` … (a trailing ``_`` keeps them fresh). Returns
+   ``(new_exprs, {node: symbol})``; use it to hand equations of motion to
+   ``solve`` or ``lambdify``.
+
+.. function:: replace_function(expr: Expr, pattern: Expr, body: Expr) -> Expr
+
+   Substitute the definition ``pattern = f(x1, …)`` ↦ ``body`` for every
+   application and every derivative of ``f``, at any argument (SymPy's
+   ``subs(f, Lambda(x, body)).doit()``).
+
+``dsolve(eq, t, y)`` with ``y = pool.func("y", [t])`` and no ``derivs``
+accepts an equation written with ``y(t)`` and its derivatives.
+
 Registered primitives
 ~~~~~~~~~~~~~~~~~~~~~
 

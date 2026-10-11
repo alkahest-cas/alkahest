@@ -45,6 +45,30 @@ for step in dr.steps:
     print(f"  {step['rule']:25s}  {step['before']}  →  {step['after']}")
 ```
 
+## Undefined functions and Euler–Lagrange
+
+A function name the kernel attaches no meaning to is an undefined (arbitrary
+smooth) function. `diff` returns a canonical derivative node for it, with the
+chain rule applied per argument slot:
+
+```python
+import alkahest as ak
+pool = ak.ExprPool()
+t = pool.symbol("t")
+q = pool.func("q", [t])
+ak.diff(q, t).value                          # Derivative(q(t), t)
+ak.diff(pool.func("f", [t**2]), t).value     # 2*t*Subs(Derivative(f(_xi_1), _xi_1), _xi_1, t^2)
+ak.subs(ak.diff(q, t).value, {q: ak.sin(t)}) # cos(t)
+```
+
+`euler_lagrange(L, [q1, q2], t)` returns the equations of motion
+`d/dt(∂L/∂q̇) − ∂L/∂q`, and `functions_to_symbols(eoms, [q1, q2], t)` turns
+`q`, `q̇`, `q̈` into plain symbols (`q1`, `q1_dot`, `q1_ddot`) for `solve`.
+`replace_function(expr, f(x), body)` substitutes a definition for `f` at every
+argument, derivatives included. The printed form reads back with
+`parse(text, pool, {"q": q, "t": t})`; numeric evaluation refuses an undefined
+function with `E-EVAL-005`.
+
 ## Forward-mode automatic differentiation
 
 `diff_forward` computes the derivative using forward-mode AD (dual numbers). It produces the same result as `diff` but through a different computational path:

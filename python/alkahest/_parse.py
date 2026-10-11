@@ -504,7 +504,69 @@ class _Parser:
                 self._advance()  # consume ","
                 args.append((yield 0))
         self._expect(")")
+        special = _apply_undefined(name, args, offset, self._pool, self._symbols)
+        if special is not None:
+            return special
         return _apply_func(name, args, offset, self._pool)
+
+
+def _declared_function(name: str, symbols) -> bool:
+    """Whether *symbols* declares *name* an undefined function.
+
+    The declaration is an application of that function bound to its own name,
+    ``{"f": pool.func("f", [t])}`` — the same convention as the Rust parser.
+    An undeclared unknown name stays a parse error, so a typo does not
+    silently become a new function.
+    """
+    import alkahest as _ak
+
+    bound = symbols.get(name) if symbols else None
+    if not isinstance(bound, _Expr):
+        return False
+    node = bound.node()
+    return node[0] == "func" and node[1] == name and _ak._is_undefined_function_name(name)
+
+
+def _apply_undefined(name: str, args: list, offset: int, pool, symbols):
+    """``Derivative(e, v, …)``, ``Subs(e, x, v)`` and a declared ``f(…)``.
+
+    These make the printed derivative of an undefined function
+    (``Derivative(f(t), t)``, ``Subs(Derivative(f(_xi_1), _xi_1), _xi_1, t^2)``)
+    read back.  Returns ``None`` for any other name.  Mirrors
+    ``Parser::parse_undefined_call`` in ``alkahest-core/src/parse.rs``.
+    """
+    import alkahest as _ak
+
+    span = (offset, offset + len(name))
+    if name not in ("Derivative", "Subs"):
+        if not _declared_function(name, symbols):
+            return None
+        if not args:
+            raise ParseError(f"{name}() needs at least one argument", span=span)
+        return pool.func(name, args)
+
+    def is_symbol(e):
+        return isinstance(e, _Expr) and e.node()[0] == "symbol"
+
+    if name == "Derivative":
+        if len(args) < 2 or not all(is_symbol(v) for v in args[1:]):
+            raise ParseError(
+                "Derivative(expr, var, …) takes an expression and one or more variables",
+                span=span,
+            )
+        cur = args[0]
+        for v in args[1:]:
+            try:
+                cur = _ak.diff(cur, v).value
+            except _ak.DiffError as exc:
+                raise ParseError(f"Derivative: {exc}", span=span) from exc
+        return cur
+    if len(args) != 3 or not is_symbol(args[1]):
+        raise ParseError(
+            "Subs(expr, var, value) takes an expression, a variable and a value",
+            span=span,
+        )
+    return _ak.subs(args[0], {args[1]: args[2]})
 
 
 def _apply_func(name: str, args: list, offset: int, pool=None):

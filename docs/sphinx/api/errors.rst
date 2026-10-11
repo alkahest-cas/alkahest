@@ -74,6 +74,11 @@ Exception subclasses
 
    Code prefix ``E-DIFF-*``. Symbolic differentiation failed (unknown
    derivative, unsupported expression form).
+   ``E-DIFF-005``–``E-DIFF-007`` come from the undefined-function helpers
+   (:func:`euler_lagrange`, :func:`functions_to_symbols`,
+   :func:`replace_function`): not an undefined function applied to
+   arguments, a derivative order list of the wrong length, a coordinate that
+   is not a function of the time variable alone.
 
 .. exception:: IntegrationError
 

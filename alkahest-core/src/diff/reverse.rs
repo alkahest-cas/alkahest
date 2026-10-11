@@ -202,6 +202,23 @@ fn propagate(
         Opaque,
     }
 
+    // An undefined function `f(u…)` or a derivative `Derivative(f(u…), k…)`
+    // of one: credit each argument `uᵢ` with `adj · ∂^{k+eᵢ}f(u)`.  The
+    // arguments of a `Derivative` node are those of the inner `f(u…)`, not
+    // the node's own children (the inner call and the integer orders).
+    if let Some(v) = super::undefined::view(node, pool) {
+        for (i, &u) in v.args.iter().enumerate() {
+            if !depends.contains(&u) {
+                continue;
+            }
+            let mut k = v.orders.clone();
+            k[i] = k[i].saturating_add(1);
+            let partial = super::undefined::build(v.inner, &k, pool);
+            add_adj(u, pool.mul(vec![adj, partial]), adjoints, pool);
+        }
+        return Ok(());
+    }
+
     let op = pool.with(node, |data| match data {
         ExprData::Symbol { .. }
         | ExprData::Integer(_)
@@ -741,7 +758,7 @@ mod tests {
         let y = pool.symbol("y", Domain::Real);
         for f in [
             pool.func("floor", vec![x]),
-            pool.func("my_undefined_f", vec![x]),
+            pool.func("zeta", vec![x]),
             pool.mul(vec![y, pool.func("trigamma", vec![pool.mul(vec![x, x])])]),
         ] {
             let err = try_grad(f, &[x, y], &pool).unwrap_err();
@@ -751,6 +768,19 @@ mod tests {
                 assert!(pool.with(g, |d| matches!(d, ExprData::Float(f) if f.inner.is_nan())));
             }
         }
+    }
+
+    #[test]
+    fn grad_undefined_function_is_its_derivative_node() {
+        // An undefined function is differentiable: ∂/∂x f(x, y²) = f₁(x, y²),
+        // ∂/∂y = 2y·f₂(x, y²) — the same nodes `diff` builds.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let f = pool.func("my_undefined_f", vec![x, pool.pow(y, pool.integer(2))]);
+        let g = try_grad(f, &[x, y], &pool).unwrap();
+        assert_eq!(g[0], crate::diff::diff(f, x, &pool).unwrap().value);
+        assert_eq!(g[1], crate::diff::diff(f, y, &pool).unwrap().value);
     }
 
     #[test]

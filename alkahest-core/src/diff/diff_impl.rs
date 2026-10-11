@@ -492,6 +492,19 @@ fn diff_raw(
     });
 
     let result = match node {
+        // An undefined function `f(u…)` or a derivative `Derivative(f(u…), k…)`
+        // of one: the chain rule over the argument slots,
+        //   d/dx ∂ᵏf(u) = Σᵢ ∂^{k+eᵢ}f(u) · duᵢ/dx.
+        // Checked before the named-function rules so `Derivative` (reserved,
+        // never an undefined name) and `f` never reach the registry refusal.
+        Node::Func { .. } if super::undefined::view(expr, pool).is_some() => {
+            let v = super::undefined::view(expr, pool).expect("checked by the guard");
+            let r = super::undefined::chain_rule(&v, var, pool, |_, u| {
+                diff_raw(u, var, pool, memo, log)
+            })?;
+            log.push(RewriteStep::simple("diff_undefined_function", expr, r));
+            r
+        }
         // d/dx x = 1
         Node::IdentVar => {
             let one = pool.integer(1_i32);

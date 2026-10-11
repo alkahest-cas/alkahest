@@ -159,6 +159,7 @@ from .alkahest import (  # noqa: F401
     ZeilbergerCertificate,
     _build_features,
     _derived_result_context_simplify,
+    _is_undefined_function_name,
     abs,  # symbolic abs — use alkahest.abs(expr); shadows Python builtin within this module
     acos,
     acosh,
@@ -213,6 +214,8 @@ from .alkahest import (  # noqa: F401
     emit_c_vec,
     erf,
     erfc,
+    # Undefined functions f(t): Euler–Lagrange and friends
+    euler_lagrange,
     eval_expr,
     evaluate,
     exp,
@@ -223,6 +226,7 @@ from .alkahest import (  # noqa: F401
     # 3.10.0 — Fresnel integrals, normalised (pi/2) convention
     fresnelc,
     fresnels,
+    functions_to_symbols,
     gamma,
     # V2-3: Sparse interpolation and sparse modular GCD
     gcd_sparse,
@@ -260,6 +264,7 @@ from .alkahest import (  # noqa: F401
     re,
     real_roots,
     refine_root,
+    replace_function,
     # Rational meromorphic residues at points in ℚ(i)
     residue,
     resistor,
@@ -2936,6 +2941,8 @@ __all__ = [
     "emit_c_vec",
     "erf",
     "erfc",
+    # Undefined functions f(t) under diff
+    "euler_lagrange",
     "eval_expr",
     "evaluate",
     "exp",
@@ -2949,6 +2956,7 @@ __all__ = [
     # 3.10.0 — Fresnel integrals, normalised (pi/2) convention
     "fresnelc",
     "fresnels",
+    "functions_to_symbols",
     # V2-3
     "gcd_sparse",
     "get_context_value",
@@ -3018,6 +3026,7 @@ __all__ = [
     "refine_root",
     # Integer-relation input-precision guard
     "relation_confidence",
+    "replace_function",
     # P1 search plumbing item 4
     "request_cancel",
     # V5-12 — certificate ledger
