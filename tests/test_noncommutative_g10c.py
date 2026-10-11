@@ -9,9 +9,9 @@ import itertools
 import random
 
 import alkahest as ak
-import numpy as np
 import pytest
 
+np = pytest.importorskip("numpy")
 sympy = pytest.importorskip("sympy")
 
 
