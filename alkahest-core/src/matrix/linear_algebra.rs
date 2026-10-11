@@ -191,8 +191,50 @@ fn kernel_failure_to_error(f: KernelFailure, pool: &ExprPool) -> LinearAlgebraEr
 }
 
 /// Rank of `m`.
+///
+/// For a matrix with symbolic entries this is the **generic** rank — the rank
+/// over the field of rational functions in the parameters. Each pivot the
+/// elimination divided by is proven not to be the zero *function*, but it can
+/// still vanish at particular parameter values, where the rank may drop:
+/// `[[a]]` has rank 1 for `a ≠ 0` and rank 0 at `a = 0`. The pivots that are
+/// not non-zero rational constants are recorded as side conditions, read with
+/// [`take_matrix_rank_side_conditions`]. The returned rank is exact wherever
+/// they all hold, and an upper bound everywhere (rank cannot rise under
+/// specialisation).
 pub fn rank(m: &Matrix, pool: &ExprPool) -> Result<usize, LinearAlgebraError> {
     Ok(row_echelon_pivots(m, pool)?.pivot_cols.len())
+}
+
+thread_local! {
+    /// Non-constant pivots divided by in the most recent symbolic
+    /// row-echelon elimination ([`rank`], [`rref`], [`column_space_basis`],
+    /// [`row_space_basis`]) on this thread.
+    static RANK_SIDE_CONDITIONS: std::cell::RefCell<Vec<ExprId>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The hypotheses the most recent [`rank`] / [`rref`] /
+/// [`column_space_basis`] / [`row_space_basis`] call on this thread rests on,
+/// as [`crate::deriv::SideCondition::NonZero`]: one per pivot that is not a
+/// non-zero rational constant.
+///
+/// `rank([[a]]) == 1` holds **for `a ≠ 0`**; this returns `[a ≠ 0]`. The
+/// conditions are sufficient, not necessary — at a point where one of them
+/// fails the rank may or may not drop, and the caller has to re-ask with the
+/// parameters substituted. Empty means the elimination only divided by
+/// non-zero rational constants, so the result holds for every parameter value
+/// (in particular, always empty for a rational matrix).
+///
+/// Out of band for the same reason as
+/// [`take_matrix_inverse_side_conditions`]: `rank` returns a bare `usize`.
+/// Consuming, so one call's hypotheses cannot be read as a later call's.
+pub fn take_matrix_rank_side_conditions() -> Vec<crate::deriv::SideCondition> {
+    RANK_SIDE_CONDITIONS.with(|c| {
+        std::mem::take(&mut *c.borrow_mut())
+            .into_iter()
+            .map(crate::deriv::SideCondition::NonZero)
+            .collect()
+    })
 }
 
 /// Reduced row echelon form of `m`.
@@ -250,6 +292,9 @@ struct RowEchelonInfo {
 }
 
 fn row_echelon_pivots(m: &Matrix, pool: &ExprPool) -> Result<RowEchelonInfo, LinearAlgebraError> {
+    // Cleared on entry, including the rational early return: a stale condition
+    // read as this call's would attach a hypothesis to the wrong answer.
+    RANK_SIDE_CONDITIONS.with(|c| c.borrow_mut().clear());
     let rows = m.rows;
     let cols = m.cols;
     if let Some(grid) = matrix_to_rational_grid(m, pool) {
@@ -281,6 +326,16 @@ fn row_echelon_pivots(m: &Matrix, pool: &ExprPool) -> Result<RowEchelonInfo, Lin
         };
         if pr != r_at {
             a.swap(pr, r_at);
+        }
+        // Proven not the zero function; still a hypothesis at a point unless
+        // it is a non-zero rational constant.
+        if expr_to_rational_strict(piv, pool).is_none() {
+            RANK_SIDE_CONDITIONS.with(|c| {
+                let mut v = c.borrow_mut();
+                if !v.contains(&piv) {
+                    v.push(piv);
+                }
+            });
         }
         let inv_p = simplify(pool.pow(piv, pool.integer(-1_i32)), pool).value;
         for cc in 0..cols {
@@ -2195,6 +2250,41 @@ mod tests {
         let p = pool();
         let id = Matrix::identity(3, &p);
         assert_eq!(rank(&id, &p).unwrap(), 3);
+    }
+
+    /// `rank([[a]]) == 1` is the generic rank: it holds for `a ≠ 0` only, and
+    /// that hypothesis is now stated rather than silent (G10 report §4.2).
+    #[test]
+    fn symbolic_rank_states_its_pivot_hypotheses() {
+        let p = pool();
+        let a = p.symbol("a", Domain::Real);
+        let m = Matrix::new(vec![vec![a]]).unwrap();
+        assert_eq!(rank(&m, &p).unwrap(), 1);
+        let conds = take_matrix_rank_side_conditions();
+        assert_eq!(conds, vec![crate::deriv::SideCondition::NonZero(a)]);
+        // Consuming.
+        assert!(take_matrix_rank_side_conditions().is_empty());
+
+        // Controllability matrix [B, AB] of A=[[0,1],[-k,-b]], B=[0,a]^T:
+        // generic rank 2, with at least one stated pivot hypothesis.
+        let b = p.symbol("b", Domain::Real);
+        let zero = p.integer(0_i32);
+        let ab = p.mul(vec![p.integer(-1_i32), a, b]);
+        let c = Matrix::new(vec![vec![zero, a], vec![a, ab]]).unwrap();
+        assert_eq!(rank(&c, &p).unwrap(), 2);
+        assert!(!take_matrix_rank_side_conditions().is_empty());
+    }
+
+    /// A rational matrix discharges every hypothesis, and a symbolic call's
+    /// conditions are never left behind for the next (rational) call.
+    #[test]
+    fn rational_rank_has_no_side_conditions_and_clears_stale_ones() {
+        let p = pool();
+        let a = p.symbol("a", Domain::Real);
+        let _ = rank(&Matrix::new(vec![vec![a]]).unwrap(), &p).unwrap();
+        let id = Matrix::identity(2, &p);
+        assert_eq!(rank(&id, &p).unwrap(), 2);
+        assert!(take_matrix_rank_side_conditions().is_empty());
     }
 
     /// `exp(a)²` and `exp(2a)` are the same function written two ways.

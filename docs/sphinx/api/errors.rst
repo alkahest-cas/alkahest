@@ -300,6 +300,18 @@ Exception subclasses
    unit (its value depends on which number is in which unit); ``E-UNIT-007``
    a fractional power whose scale has no exact rational root.
 
+.. exception:: ControlsError
+
+   Code prefix ``E-CTRL-*``. The controls layer (:mod:`alkahest.controls`),
+   raised from Python. ``E-CTRL-001`` malformed input (not a rational function
+   of the transfer variable, shapes that do not conform, a MIMO system where a
+   SISO one is needed); ``E-CTRL-002`` an improper transfer function where a
+   proper one is needed; ``E-CTRL-003`` a numeric routine on data with free
+   parameters; ``E-CTRL-004`` the requested object does not exist (singular
+   Lyapunov operator, no stabilising Riccati solution, infinite DC gain);
+   ``E-CTRL-005`` beyond the exact engine — use the numeric route;
+   ``E-CTRL-006`` numpy is required and missing.
+
 .. exception:: QuaternionError
 
    Code prefix ``E-QUAT-*``. Quaternion algebra and rotations

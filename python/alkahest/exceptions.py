@@ -121,6 +121,8 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-VEC-001 … E-VEC-005        VectorError (vector calculus over an orthogonal
                                  chart; 004 = a chart that could not be *proven*
                                  orthogonal, 005 = a degenerate scale factor)
+    E-CTRL-001 … E-CTRL-006      ControlsError (alkahest.controls, raised from
+                                 Python; defined in controls.py)
     E-UNIT-001 … E-UNIT-007      UnitError (physical units; 001 = different
                                  dimensions, both named, 003 = an affine °C/°F
                                  in arithmetic, 006 = same dimension but

@@ -1647,6 +1647,42 @@ fn py_matrix_exp_side_conditions() -> Vec<String> {
 }
 
 thread_local! {
+    /// Pivot hypotheses recorded by the most recent `Matrix.rank` / `rref` on
+    /// this thread, rendered against the pool that call used.
+    static MATRIX_RANK_SIDE_CONDITIONS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The hypotheses the most recent :meth:`alkahest.Matrix.rank` (or
+/// :meth:`~alkahest.Matrix.rref`) on this thread rests on — one string per
+/// pivot that is not a non-zero rational constant, e.g. ``"a ≠ 0"``.
+///
+/// For symbolic entries ``rank()`` is the **generic** rank: the rank over the
+/// field of rational functions in the parameters. ``Matrix([[a]]).rank()`` is
+/// ``1`` *for* ``a ≠ 0``; at ``a = 0`` it is ``0``. The returned rank is exact
+/// wherever every listed condition holds and an upper bound everywhere (rank
+/// can only drop under specialisation). The conditions are sufficient, not
+/// necessary: where one fails, substitute the values and ask again.
+///
+/// An empty list means the elimination divided only by non-zero rational
+/// constants, so the rank holds for every parameter value. Reset by each
+/// ``rank`` / ``rref`` call.
+#[pyfunction]
+#[pyo3(name = "matrix_rank_side_conditions")]
+fn py_matrix_rank_side_conditions() -> Vec<String> {
+    MATRIX_RANK_SIDE_CONDITIONS.with(|c| c.borrow().clone())
+}
+
+/// Render and stash the core's rank hypotheses for `matrix_rank_side_conditions`.
+fn capture_matrix_rank_side_conditions(pool: &alkahest_core::ExprPool) {
+    let rendered: Vec<String> = alkahest_core::matrix::take_matrix_rank_side_conditions()
+        .iter()
+        .map(|c| c.display_with(pool).to_string())
+        .collect();
+    MATRIX_RANK_SIDE_CONDITIONS.with(|c| *c.borrow_mut() = rendered);
+}
+
+thread_local! {
     /// Hypotheses recorded by the most recent `Matrix.inverse` on this thread,
     /// rendered against the pool that call used.
     static MATRIX_INVERSE_SIDE_CONDITIONS: std::cell::RefCell<Vec<String>> =
@@ -2535,6 +2571,16 @@ impl PyExpr {
             id,
             pool: self.pool.clone_ref(py),
         })
+    }
+
+    /// The :class:`ExprPool` this expression lives in.
+    ///
+    /// Internal: pure-Python layers (e.g. :mod:`alkahest.controls`) that must
+    /// mint auxiliary symbols in the caller's pool use this instead of asking
+    /// for the pool as an extra argument.
+    #[getter]
+    fn _pool(&self, py: Python<'_>) -> Py<PyExprPool> {
+        self.pool.clone_ref(py)
     }
 
     fn node_tag(&self, py: Python<'_>) -> String {
@@ -10203,12 +10249,23 @@ impl PyMatrix {
             .collect())
     }
 
+    /// Rank of the matrix.
+    ///
+    /// For symbolic entries this is the **generic** rank (over the field of
+    /// rational functions in the parameters): ``Matrix([[a]]).rank()`` is ``1``
+    /// for ``a ≠ 0``. The pivot hypotheses it rests on are listed by
+    /// :func:`alkahest.matrix_rank_side_conditions`; the rank is exact where
+    /// they all hold and an upper bound everywhere.
     fn rank(&self, py: Python<'_>) -> PyResult<usize> {
         let pool = self.pool.borrow(py);
         guard_depth_all(&pool.inner, self.inner.entries())?;
-        self.inner
+        MATRIX_RANK_SIDE_CONDITIONS.with(|c| c.borrow_mut().clear());
+        let r = self
+            .inner
             .rank(&pool.inner)
-            .map_err(linear_algebra_error_to_py)
+            .map_err(linear_algebra_error_to_py)?;
+        capture_matrix_rank_side_conditions(&pool.inner);
+        Ok(r)
     }
 
     fn rref(&self, py: Python<'_>) -> PyResult<PyMatrix> {
@@ -10216,9 +10273,11 @@ impl PyMatrix {
         guard_depth_all(&pool.inner, self.inner.entries())?;
         // GIL released for the core call; see `py_integrate`.
         let (inner, pool_ref) = (&self.inner, &pool.inner);
+        MATRIX_RANK_SIDE_CONDITIONS.with(|c| c.borrow_mut().clear());
         let r = py
             .allow_threads(|| inner.rref(pool_ref))
             .map_err(linear_algebra_error_to_py)?;
+        capture_matrix_rank_side_conditions(&pool.inner);
         drop(pool);
         Ok(PyMatrix {
             inner: r,
@@ -20796,6 +20855,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMatrix>()?;
     m.add_function(wrap_pyfunction!(py_matrix_exp_side_conditions, m)?)?;
     m.add_function(wrap_pyfunction!(py_matrix_inverse_side_conditions, m)?)?;
+    m.add_function(wrap_pyfunction!(py_matrix_rank_side_conditions, m)?)?;
     // Phase 16
     m.add_class::<PyODE>()?;
     m.add_function(wrap_pyfunction!(py_lower_to_first_order, m)?)?;

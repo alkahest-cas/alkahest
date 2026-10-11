@@ -57,6 +57,13 @@ Matrix
       :exc:`EigenError` from ``eigenvects``) rather than picking a branch.
       Substituting concrete values for the parameters is the remedy.
 
+      On symbolic entries ``rank()`` is the **generic** rank: each pivot the
+      elimination divided by is proven not to be the zero function, but may
+      vanish at particular parameter values. The non-constant pivots are
+      listed by :func:`matrix_rank_side_conditions` (``Matrix([[a]]).rank()``
+      is ``1`` with ``['a ≠ 0']``); the rank is exact where they hold and an
+      upper bound everywhere.
+
    .. method:: eigenvals() -> dict[Expr, int]
 
       Eigenvalue → algebraic multiplicity. For an irreducible cubic with three
