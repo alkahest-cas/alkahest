@@ -22,6 +22,7 @@
 - [ODE and DAE modeling](./ode-dae.md)
 - [Polynomial system solving](./solving.md)
 - [Positivity certificates (SOS)](./positivity.md)
+- [Exact linear and integer programming](./linear-programming.md)
 - [Interoperability](./interop.md)
 - [Reinforcement learning](./rl.md)
 - [Derivation logs](./derivations.md)

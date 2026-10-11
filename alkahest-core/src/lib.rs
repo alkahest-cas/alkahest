@@ -40,6 +40,7 @@ pub mod logic;
 // V2-6 — LLL + PSLQ (PSLQ in `numeric`)
 pub mod lattice;
 pub mod lean;
+pub mod linprog;
 pub mod matgroup;
 pub mod matrix;
 // V2-1 — Modular / CRT framework

@@ -343,6 +343,25 @@ Exception subclasses
    code is available to Rust callers from
    ``alkahest_cas::ideal::take_ideal_refusal()``.
 
+.. exception:: LinprogError
+
+   Code prefix ``E-LP-*``. Exact linear / mixed-integer programming
+   (:func:`linprog`, :func:`milp`, :func:`linprog_expr`):
+
+   - ``E-LP-001`` — malformed shapes (row length, right-hand-side count,
+     bounds, integrality, sense)
+   - ``E-LP-002`` — a float or irrational coefficient; refused, never rounded
+   - ``E-LP-003`` — not affine in the decision variables
+   - ``E-LP-004`` — a strict inequality or a non-relation constraint
+   - ``E-LP-005`` — branch and bound reached ``max_nodes``. Not an answer: the
+     exception carries ``incumbent`` (best integer point, unproven),
+     ``incumbent_fun``, ``bound`` (best open bound) and ``nodes``
+   - ``E-LP-006`` — a certificate failed its own exact check; the result was
+     withheld
+
+   A budget trip during either solver raises :exc:`BudgetExceededError` with
+   the same ``incumbent`` / ``incumbent_fun`` / ``bound`` attributes.
+
 .. exception:: JitError
 
    Code prefix ``E-JIT-*``. LLVM/JIT compilation or linking error.

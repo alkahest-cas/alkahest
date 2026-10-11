@@ -651,6 +651,17 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-CODE-006", class: "CodingError", cause: Cause::UserInput,   remediation: Some("check the weight distribution: a linear code has A_0 = 1, no negative multiplicity, and a MacWilliams sum divisible by |C| at every index") },
     ErrorSpec { code: "E-CODE-007", class: "CodingError", cause: Cause::Internal,    remediation: Some("report this as a bug with n, d and q; the uncertified bound was withheld rather than returned, because an upper bound that is too small rules out codes that exist") },
     ErrorSpec { code: "E-CODE-008", class: "CodingError", cause: Cause::UserInput,   remediation: Some("use an alphabet size of at least 2; for the enumeration paths the field must also be small enough to list element by element") },
+    // E-LP — LinprogError (exact linear / mixed-integer programming, crate::linprog)
+    //
+    // Every outcome of linprog carries a certificate checked exactly before it is
+    // returned; E-LP-006 withholds one that failed. E-LP-005 is a refusal, not an
+    // answer: the incumbent it carries is feasible but not proven optimal.
+    ErrorSpec { code: "E-LP-001", class: "LinprogError", cause: Cause::UserInput,   remediation: Some("make every row of A_ub / A_eq as long as c, give one right-hand side per row, one bound per variable and one integrality flag per variable") },
+    ErrorSpec { code: "E-LP-002", class: "LinprogError", cause: Cause::UserInput,   remediation: Some("pass exact rationals (int, fractions.Fraction, \"p/q\" strings or rational Exprs); a float would make every certificate a statement about a different programme") },
+    ErrorSpec { code: "E-LP-003", class: "LinprogError", cause: Cause::UserInput,   remediation: Some("objective and constraints must be affine in the listed decision variables; substitute numeric values for parameters and linearise products before calling") },
+    ErrorSpec { code: "E-LP-004", class: "LinprogError", cause: Cause::UserInput,   remediation: Some("write constraints as <=, >= or == relations (pool.le / pool.ge / pool.pred_eq); a strict inequality has no optimum in general") },
+    ErrorSpec { code: "E-LP-005", class: "LinprogError", cause: Cause::Resource,    remediation: Some("raise max_nodes or tighten the variable bounds; the incumbent and open bound carried by the error bracket the optimum but do not prove it") },
+    ErrorSpec { code: "E-LP-006", class: "LinprogError", cause: Cause::Internal,    remediation: Some("report the programme as a bug; the certificate failed its exact check and the result was withheld rather than returned") },
     // E-NUMF — NumberFieldError (algebraic number fields Q[x]/(f) on FLINT's
     // `nf`/`nf_elem`, and the cyclotomic fields Q(zeta_n))
     //

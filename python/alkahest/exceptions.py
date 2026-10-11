@@ -48,6 +48,9 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-INTERP-001 … E-INTERP-004 SparseInterpError (V2-3)
     E-INTERP-010 … E-INTERP-012 SparseGcdError (V2-3 sparse modular GCD)
     E-SUM-001 … E-SUM-003      SumError
+    E-LP-001 … E-LP-006        LinprogError (exact LP / MILP; 005 = branch and bound
+                                 hit max_nodes, carrying the unproven incumbent;
+                                 006 = a certificate failed its check, withheld)
     E-PROD-001 … E-PROD-004    ProductError (V2-22)
     E-REC-001 … E-REC-002      LinearRecurrenceError
     E-RSOLVE-001 … E-RSOLVE-005 RsolveError (V2-18 difference equations)

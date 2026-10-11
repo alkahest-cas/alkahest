@@ -256,6 +256,7 @@ mod coding;
 mod ffield;
 mod fpgroup;
 mod lattice;
+mod linprog;
 mod matgroup;
 
 // ---------------------------------------------------------------------------
@@ -20482,6 +20483,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     ffield::register(m)?;
     fpgroup::register(m)?;
     lattice::register(m)?;
+    linprog::register(m)?;
     matgroup::register(m)?;
     m.add_function(wrap_pyfunction!(py_derived_result_context_simplify, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify, m)?)?;

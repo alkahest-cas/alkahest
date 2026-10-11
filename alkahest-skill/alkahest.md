@@ -743,6 +743,20 @@ gb.specialize([-1])            # raises ParamGroebnerError, code "E-PARAMGB-004"
 
 **The basis is generic, not universal.** A leading coefficient in `Q(params)` can be non-zero as a rational function and still vanish at a specific parameter point; `conditions()` reports that locus (sufficient, not necessary — it can flag a point that turns out fine, never miss one that is genuinely wrong), and `specialize` refuses on it rather than returning something that is not a basis. Reads back the same way `GroebnerBasis` does — `ParametricGbPoly.to_expr()` / `.terms()`, `ParametricGroebnerBasis.to_exprs()` — so nothing here is write-only. `eliminate(vars)` has the same `Lex`-eliminated-variables-first contract and refuses to eliminate a coefficient-field parameter. `alkahest.experimental.ParametricGroebnerBasis.compute(polys, vars, params, order=None)` is the equivalent direct constructor. Requires `--features groebner` (default in all PyPI wheels); the class itself is experimental.
 
+## Linear and integer programming (exact, certified)
+
+`linprog(c, A_ub, b_ub, A_eq, b_eq, bounds, sense="min")` uses SciPy's calling convention but solves **exactly over ℚ** (Bland's-rule simplex) and returns `LPResult` with a certificate for its status: `optimal` → `x`, `fun`, duals `ineqlin`/`eqlin`/`lower`/`upper` (SciPy `marginals` signs); `infeasible` → `farkas` weights; `unbounded` → `x` plus `ray`. `res.verify()` re-checks it. Inputs must be `int`/`Fraction`/`"p/q"`/rational `Expr` — **a float raises `E-LP-002`**; `±inf` is accepted only in `bounds`. Default bounds `(0, None)`.
+
+```python
+r = alkahest.linprog([3, 5], A_ub=[[1, 0], [0, 2], [3, 2]], b_ub=[4, 12, 18], sense="max")
+r.x, r.fun, r.ineqlin          # ([2, 6], 36, [0, Fraction(3, 2), 1])
+m = alkahest.milp([10, 13, 7, 8], A_ub=[[4, 6, 3, 5]], b_ub=[12], bounds=(0, 1), sense="max")
+m.x, m.fun, m.gap              # ([1, 0, 1, 1], 25, 0)
+alkahest.linprog_expr(3*x + 2*y, [p.le(x + y, p.integer(4)), p.ge(x, p.integer(0)), p.ge(y, p.integer(0))], [x, y], sense="max")
+```
+
+`milp(..., integrality=None, max_nodes=100000)` (default: all integer) is branch and bound with gap exactly 0 when it returns `optimal`. **`E-LP-005` (node cap) and `BudgetExceededError` are refusals**: they carry `.incumbent` (feasible, *unproven*), `.incumbent_fun` and `.bound`. `linprog_expr` treats variables as **free** unless constrained; non-affine → `E-LP-003`, strict `<` → `E-LP-004`; `integer=True` or a variable list makes it a MILP.
+
 ---
 
 ## JIT compilation and numeric evaluation
