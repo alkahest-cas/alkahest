@@ -1085,6 +1085,9 @@ fn limit_inner(
     if let Some(r) = try_indeterminate_power(expr, var, point, direction, pool, depth)? {
         return Ok(r);
     }
+    if let Some(r) = try_parameter_base_power(expr, var, point, direction, pool, depth)? {
+        return Ok(r);
+    }
 
     // Gruntz algorithm — best for exp/log expressions at +∞ (runs before the 1/t substitution
     // so the exp structure is still visible in the original variable).
@@ -1751,6 +1754,82 @@ fn try_indeterminate_power(
     // Finite inner limit ⇒ exp(L).
     let result = simplify(pool.func("exp", vec![inner_lim]), pool).value;
     Ok(Some(result))
+}
+
+/// `r^g` with a base `r` free of `var` that the assumptions make positive
+/// (`Domain::Positive`, or `r > 0` stated in `alkahest.context`), anywhere in
+/// `expr`: rewritten to `exp(g·log r)`, whose limit the exponential machinery
+/// decides once the sign of `log r` is known — `lim_{n→∞} r^n = 0` under
+/// `0 < r < 1`, and `(r^n − 1)/(r − 1) → 1/(1 − r)`. A literal base is left to
+/// the existing paths, and a base of unknown sign is not touched: `r^n` for a
+/// negative `r` is not real-valued.
+fn try_parameter_base_power(
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    direction: LimitDirection,
+    pool: &ExprPool,
+    depth: u32,
+) -> Result<Option<ExprId>, LimitError> {
+    let rewritten = rewrite_parameter_powers(expr, var, pool, 0);
+    if rewritten == expr {
+        return Ok(None);
+    }
+    // Not re-simplified: that could fold `exp(g·log r)` straight back to `r^g`.
+    match limit_inner(rewritten, var, point, direction, pool, depth + 1) {
+        Ok(l) => Ok(Some(l)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn rewrite_parameter_powers(expr: ExprId, var: ExprId, pool: &ExprPool, level: u32) -> ExprId {
+    if level > 64 || !depends_on(expr, var, pool) {
+        return expr;
+    }
+    match pool.get(expr) {
+        ExprData::Pow { base, exp } => {
+            let exp2 = rewrite_parameter_powers(exp, var, pool, level + 1);
+            if !depends_on(base, var, pool)
+                && !matches!(
+                    pool.get(base),
+                    ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_)
+                )
+                && assumed_sign(base, pool) == Some(Sign::Positive)
+            {
+                let log_base = pool.func("log", vec![base]);
+                return pool.func("exp", vec![pool.mul(vec![exp2, log_base])]);
+            }
+            let base2 = rewrite_parameter_powers(base, var, pool, level + 1);
+            if base2 == base && exp2 == exp {
+                expr
+            } else {
+                pool.pow(base2, exp2)
+            }
+        }
+        ExprData::Add(xs) => {
+            let ys: Vec<ExprId> = xs
+                .iter()
+                .map(|&x| rewrite_parameter_powers(x, var, pool, level + 1))
+                .collect();
+            if ys.iter().zip(xs.iter()).all(|(a, b)| a == b) {
+                expr
+            } else {
+                pool.add(ys)
+            }
+        }
+        ExprData::Mul(xs) => {
+            let ys: Vec<ExprId> = xs
+                .iter()
+                .map(|&x| rewrite_parameter_powers(x, var, pool, level + 1))
+                .collect();
+            if ys.iter().zip(xs.iter()).all(|(a, b)| a == b) {
+                expr
+            } else {
+                pool.mul(ys)
+            }
+        }
+        _ => expr,
+    }
 }
 
 /// Conservative structural test that `e > 0` everywhere it is defined — used to
@@ -3772,5 +3851,64 @@ mod verification {
             assert!(l <= MAX_PUISEUX_INDEX);
             assert!(l >= 1 && l % a == 0 && l % b == 0);
         }
+    }
+}
+
+/// G6: `r^n` with a parameter base whose sign and size the assumptions fix.
+#[cfg(test)]
+mod parameter_base_power_tests {
+    use super::*;
+    use crate::kernel::expr::PredicateKind;
+    use crate::kernel::Domain;
+    use crate::simplify::{enter_assumptions, AssumptionContext};
+
+    #[test]
+    fn geometric_partial_sum_tends_to_its_steady_state() {
+        let pool = ExprPool::new();
+        let r = pool.symbol("r", Domain::Real);
+        let n = pool.symbol("n", Domain::Real);
+        let (zero, one, m1) = (pool.integer(0), pool.integer(1), pool.integer(-1));
+        let r_n = pool.pow(r, n);
+        // Unknown sign: still refused (the value depends on r).
+        assert!(limit(
+            r_n,
+            n,
+            pool.pos_infinity(),
+            LimitDirection::Bidirectional,
+            &pool
+        )
+        .is_err());
+        let mut ctx = AssumptionContext::new();
+        ctx.refine(pool.predicate(PredicateKind::Gt, vec![r, zero]), &pool)
+            .unwrap();
+        ctx.refine(pool.predicate(PredicateKind::Lt, vec![r, one]), &pool)
+            .unwrap();
+        let _g = enter_assumptions(&ctx, &pool);
+        let l = limit(
+            r_n,
+            n,
+            pool.pos_infinity(),
+            LimitDirection::Bidirectional,
+            &pool,
+        )
+        .unwrap();
+        assert_eq!(l, zero);
+        // (r^n − 1)/(r − 1) → 1/(1 − r)
+        let partial = pool.mul(vec![
+            pool.add(vec![r_n, m1]),
+            pool.pow(pool.add(vec![r, m1]), m1),
+        ]);
+        let l = limit(
+            partial,
+            n,
+            pool.pos_infinity(),
+            LimitDirection::Bidirectional,
+            &pool,
+        )
+        .unwrap();
+        let mut env = std::collections::HashMap::new();
+        env.insert(r, 0.25);
+        let got = crate::jit::eval_interp(l, &env, &pool).unwrap();
+        assert!((got - 1.0 / 0.75).abs() < 1e-12, "{}", pool.display(l));
     }
 }

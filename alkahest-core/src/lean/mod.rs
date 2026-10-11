@@ -167,6 +167,13 @@ fn is_integration_rule(rule_name: &str) -> bool {
                 | "gosper_definite_telescope"
                 // Algorithmic Basel/ζ(2m) closed form — no Mathlib step proof yet.
                 | "basel_zeta_even"
+                // G6 closed forms: `r^k = 1/(1 − r)` (a summand equated to its
+                // sum) is false as a rewrite, like the Gosper rules above.
+                | "geometric_symbolic_ratio"
+                | "arithmetico_geometric"
+                | "geometric_series_infinite"
+                | "arithmetico_geometric_infinite"
+                | "rational_series_partial_fractions"
                 // Discrete products: `k = n!` / `k = Γ(n+1)` is false as a rewrite.
                 | "product_definite"
                 | "product_indefinite"

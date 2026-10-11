@@ -1637,6 +1637,7 @@ connectives at their own precedences; `unicode_str` no longer emits the spurious
 ## Summation, products, number theory
 
 - Discrete summation: `sum_indefinite`, `sum_definite`, `verify_wz_pair`; linear recurrences: `solve_linear_recurrence_homogeneous`, `rsolve`.
+- Infinite sums: `sum_definite(term, k, lo, pool.pos_infinity())` (or `parse("oo")`) sums `P(k)·q^k` (geometric / arithmetico-geometric, any ratio free of `k`) and rational terms with linear poles (`Σ 1/(k²+k) = 1`, `Σ 1/k⁴ = π⁴/90`). `|q| < 1` comes back as a side condition (`s.steps[0]["side_conditions"]`, e.g. `'(1 + (-1 * abs(r))) > 0'`) unless the assumptions decide it — declare `Domain.Positive` symbols or use `with ak.context(assumptions=...)` stating `r > 0`, `r < 1`. Divergent series raise `E-SUM-003`; `Σ 1/k³` (odd ζ) raises `E-SUM-002`.
 - Symbolic products: `Product`, `product_indefinite`, `product_definite`.
 - Integer number theory (FLINT-backed): `alkahest.number_theory` (`isprime`, `factorint`, `discrete_log`, …).
 

@@ -1396,18 +1396,35 @@ def sum_definite(expr, k, lo, hi):
     first-course cases directly: Faulhaber sums (``Σ k``, ``Σ k²``, ``Σ k³``,
     …), geometric series (``Σ r^k``), and telescoping products.
 
-    ``hi`` may also be :attr:`ExprPool.pos_infinity` for an infinite sum.
-    Gosper's algorithm doesn't apply there (its antidifference has no reason
-    to vanish at ``∞``), so infinite bounds instead go through a small table
-    of recognized closed forms — currently the Basel-family even p-series
-    ``Σ_{k=1}^∞ c/k^(2m) = c·ζ(2m)``, e.g.::
+    ``hi`` may also be :attr:`ExprPool.pos_infinity` (or ``parse("oo")``) for
+    an infinite sum.  Gosper's algorithm doesn't apply there (its
+    antidifference has no reason to vanish at ``∞``); instead two families are
+    summed exactly, each knowing its own convergence condition:
 
-        s = ak.sum_definite(1 / k**2, k, pool.integer(1), pool.pos_infinity())
-        ak.eval_expr(s.value, {})  # -> pi**2/6 ≈ 1.6449...
+    * **polynomial × geometric** — ``Σ_{k=a}^∞ P(k)·q^k`` for any ``q`` free
+      of ``k`` (``r``, ``exp(-ke*tau)``, ``1/2``), e.g. ``Σ k·rᵏ = r/(1-r)²``.
+      Convergence needs ``|q| < 1``.  When the assumptions (symbol domains,
+      ``alkahest.context(assumptions=...)``) establish it, nothing is attached;
+      when they refute it the sum is refused; otherwise the result carries the
+      hypothesis as a side condition::
 
-    Odd powers (``Σ 1/k³``, Apéry's ``ζ(3)``, …) and any other unrecognized
-    infinite-bound sum raise ``SumError`` (``E-SUM-002``) rather than
-    guessing — there is no known elementary closed form to fall back on.
+          s = ak.sum_definite(r**k, k, pool.integer(0), pool.pos_infinity())
+          s.value                               # -1 * (r - 1)^-1
+          s.steps[0]["side_conditions"]         # ['(1 + (-1 * abs(r))) > 0']
+
+    * **rational series** whose poles are linear in ``k`` — partial fractions,
+      telescoping between poles that differ by an integer, and the Hurwitz-zeta
+      values left over: ``Σ 1/(k²+k) = 1``, ``Σ 1/(4k²−1) = 1/2``,
+      ``Σ_{k≥1} 1/k² = π²/6`` (however ``1/k²`` is spelled),
+      ``Σ 1/(2k+1)² = π²/8``, ``Σ 1/(k(k+½)) = 4 − 4·log 2``; ``digamma`` /
+      ``trigamma`` at non-special points, with the positivity of a symbolic
+      shift stated as a side condition.
+
+    Divergent series (``Σ 1/k``, ``Σ 2ᵏ``, Grandi's ``Σ (−1)ᵏ``, ``Σ rᵏ`` under
+    ``r > 1``) raise ``SumError`` (``E-SUM-003``).  Odd zeta values
+    (``Σ 1/k³``) raise ``E-SUM-002``: there is no ``zeta`` primitive to name
+    them with.  An infinite *lower* bound, ``−∞``, or ``∞ − 1`` is refused with
+    ``E-SUM-003``.
 
     Conventions and refusals
     ------------------------
@@ -1435,9 +1452,9 @@ def sum_definite(expr, k, lo, hi):
         s.steps[0]["side_conditions"]        # ['(r + -1) ≠ 0']
 
     and the returned expression declines to evaluate at ``r = 1`` rather than
-    producing a number there.  An infinite upper bound still refuses: the
-    series converges only for ``|r| < 1``, which is a fact about ``r`` that
-    nothing here establishes.
+    producing a number there.  The same holds for ``Σ k^p·rᵏ`` (finite bounds)
+    and for ratios such as ``exp(-ke*tau)`` — the multiple-dosing
+    superposition ``Σ_{k=0}^{n-1} e^{-ke·k·τ}``.
     """
     return _maybe_context_simplify(
         _native_sum_definite(

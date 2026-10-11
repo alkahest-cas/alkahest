@@ -23,6 +23,15 @@ J = POOL.symbol("j")
 R = POOL.symbol("r")
 
 
+def _geometric_hypothesis_recorded() -> float:
+    s = ak.sum_definite(R**K, K, _int(0), POOL.pos_infinity())
+    conds = [c for st in s.steps for c in st.get("side_conditions", [])]
+    if not any("abs(r)" in c for c in conds):
+        return _num(s.value)
+    inside = ak.eval_expr(s.value, {R: 0.5})
+    return 1.0 if abs(inside - 2.0) < 1e-12 else inside
+
+
 def _rsolve_residual(equation: ak.Expr, initials: dict[int, ak.Expr]) -> Callable[[], float]:
     """Answer = the worst residual of ``rsolve``'s answer *in the given equation*.
 
@@ -855,13 +864,19 @@ CASES: list[Case] = [
     Case(
         id="sum_geometric_symbolic_ratio_to_infinity",
         subsystem="sums_products",
-        statement="Σ_{k=0}^{∞} rᵏ converges only for |r| < 1, which nothing states here",
-        op=lambda: _num(ak.sum_definite(R**K, K, _int(0), POOL.pos_infinity()).value),
-        contract=RefusesOr(),
+        statement=(
+            "Σ_{k=0}^{∞} rᵏ converges only for |r| < 1, which nothing states here: the "
+            "answer 1/(1-r) may only come back carrying that hypothesis"
+        ),
+        op=lambda: _geometric_hypothesis_recorded(),
+        contract=RefusesOr(1.0),
         verified_by=(
             "The series diverges for every |r| ≥ 1, and r is an unconstrained symbol. Returning "
-            "1/(1-r) would be the geometric-series answer stated outside its disc of "
-            "convergence — the same error as summing Σ2ᵏ to -1."
+            "1/(1-r) *unconditionally* would be the geometric-series answer stated outside its "
+            "disc of convergence — the same error as summing Σ2ᵏ to -1. Since G6 the sum is "
+            "returned with the side condition 1 - |r| > 0 on its derivation step; this case "
+            "returns 1.0 only when that condition is present, and the value only matches "
+            "1/(1-r) at a point inside the disc."
         ),
     ),
     Case(
