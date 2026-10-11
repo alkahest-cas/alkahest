@@ -188,6 +188,47 @@ except IntegrationError as e:
 
 For integrands outside the supported classes (e.g. `sqrt(P(x))`, mixed algebraic+transcendental), `integrate` raises `IntegrationError` with code `E-INT-001` (NotImplemented).
 
+### Symbolic parameters and unnormalised integrands
+
+When every route declines an integrand as written, `integrate` normalises it
+and tries again termwise: integer powers of sums are expanded, products of
+exponentials are merged into one (`e^{−aτ}·e^{−b(t−τ)}` → `e^{(b−a)τ − bt}`),
+and powers of a common base are combined (`x·x^{n−1}` → `xⁿ`,
+`τ·(aτ)⁻¹` → `1/a`). The terms then take closed forms that accept symbolic
+parameters:
+
+```python
+k, m, a, b = (pool.symbol(s) for s in "kmab")
+integrate(x * exp(-k * x), x).value        # e^{−kx}·(−x/k − 1/k²), k ≠ 0
+integrate(1 / (k**2 + m**2), k).value      # atan(k/m)/m
+integrate(1 / (a * x**2 + b), x).value     # atan(a·x/√(ab))/√(ab), stated: ab > 0
+integrate(x**2 * exp(2*x) * sin(x), x)     # tabular (repeated by-parts) formula
+```
+
+Every division by a parameter is recorded in `result.verification["side_conditions"]`
+unless its sign is known; the arctangent of a quadratic whose discriminant
+`4ac − b²` has unknown sign carries `4ac − b² > 0`, a provably negative
+discriminant gives logarithms instead. The answer is checked against the
+original integrand before it is returned.
+
+`integrate(f, x, 0, oo)` of a finite sum of `c·x^p·e^{−αx}` uses the Gamma
+integral `Γ(p+1)/α^{p+1}` termwise, when `α > 0` and `p > −1` are established
+(numerically or from symbol domains / `assumptions`):
+
+```python
+y = pool.symbol("y")
+integrate(exp(-y / 2) / sqrt(y), y, pool.integer(0), pool.pos_infinity()).value
+# → √2·√π   (the chi-square normaliser)
+P = ak.Domain.Positive
+t, ke, ka = (pool.symbol(s, P) for s in ("t", "ke", "ka"))
+integrate(exp(-ke*t) - exp(-ka*t), t, pool.integer(0), pool.pos_infinity()).value
+# → 1/ke − 1/ka   (Bateman AUC)
+```
+
+With the sign of `α` unknown it declines (`E-INT-001`, naming the parameter).
+At other infinite bounds, the limit of an antiderivative that is a sum is taken
+term by term when every term's limit exists and is finite.
+
 ### Improper integrals over the whole real line
 
 `integrate(f, x, -oo, oo)` for a **rational** `f` does not go through the
