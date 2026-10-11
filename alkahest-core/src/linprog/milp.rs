@@ -130,7 +130,7 @@ pub fn milp(lp: &LinearProgram, opts: &MilpOptions) -> Result<MilpOutcome, Linpr
             match &node.bound {
                 None => return None,
                 Some(b) => {
-                    if best.as_ref().is_none_or(|cur| b < cur) {
+                    if best.as_ref().map_or(true, |cur| b < cur) {
                         best = Some(b.clone());
                     }
                 }
@@ -214,7 +214,7 @@ pub fn milp(lp: &LinearProgram, opts: &MilpOptions) -> Result<MilpOutcome, Linpr
             // Integer-feasible.
             let obj = lp.objective_at(&point);
             let v = to_min(&obj);
-            if inc_min.as_ref().is_none_or(|z| v < *z) {
+            if inc_min.as_ref().map_or(true, |z| v < *z) {
                 inc_min = Some(v);
                 incumbent = Some(Incumbent {
                     x: point,
@@ -224,18 +224,18 @@ pub fn milp(lp: &LinearProgram, opts: &MilpOptions) -> Result<MilpOutcome, Linpr
             continue;
         };
         let v = &point[j];
-        let fl = Rational::from(v.clone().floor());
-        let ce = Rational::from(v.clone().ceil());
+        let fl = v.clone().floor();
+        let ce = v.clone().ceil();
         let bd = &node.bounds[j];
         // Up child first on the stack, so the down child is explored first.
         let mut up = node.bounds.clone();
-        if bd.lower.as_ref().is_none_or(|l| *l < ce) {
+        if bd.lower.as_ref().map_or(true, |l| *l < ce) {
             up[j].lower = Some(ce);
         }
         if up[j]
             .upper
             .as_ref()
-            .is_none_or(|u| up[j].lower.as_ref().unwrap() <= u)
+            .map_or(true, |u| up[j].lower.as_ref().unwrap() <= u)
         {
             open.push(Node {
                 bounds: up,
@@ -243,13 +243,13 @@ pub fn milp(lp: &LinearProgram, opts: &MilpOptions) -> Result<MilpOutcome, Linpr
             });
         }
         let mut down = node.bounds;
-        if down[j].upper.as_ref().is_none_or(|u| *u > fl) {
+        if down[j].upper.as_ref().map_or(true, |u| *u > fl) {
             down[j].upper = Some(fl);
         }
         if down[j]
             .lower
             .as_ref()
-            .is_none_or(|l| l <= down[j].upper.as_ref().unwrap())
+            .map_or(true, |l| l <= down[j].upper.as_ref().unwrap())
         {
             open.push(Node {
                 bounds: down,

@@ -284,7 +284,7 @@ impl OptimalCertificate {
             if !nonpos(y) {
                 return Err(format!("inequality multiplier {i} has the wrong sign"));
             }
-            let slack = Rational::from(&lp.b_ub[i] - dot(&lp.a_ub[i], &self.x));
+            let slack = lp.b_ub[i].clone() - dot(&lp.a_ub[i], &self.x);
             if *y != 0 && slack != 0 {
                 return Err(format!(
                     "complementary slackness fails on inequality row {i}"
