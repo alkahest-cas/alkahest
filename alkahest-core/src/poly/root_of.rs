@@ -42,7 +42,7 @@
 //!
 //! # Numeric value
 //!
-//! [`root_enclosure`] returns rigorous complex enclosures at any precision. The
+//! `root_enclosure` returns rigorous complex enclosures at any precision. The
 //! roots are isolated with FLINT's `arb_fmpz_poly_complex_roots`; a higher
 //! precision is matched back to the order fixed at [`ORDER_PREC`] by
 //! overlap, never re-sorted. On a FLINT without the Arb layer (no `flint_arb`
@@ -389,13 +389,15 @@ fn rational_enclosure(c: &[Integer]) -> RootEnclosure {
 // Root isolation
 // ---------------------------------------------------------------------------
 
+/// Isolated root sets keyed by (coefficients, precision).
+type RootCache = HashMap<(Vec<Integer>, u32), Vec<RootEnclosure>>;
+
 thread_local! {
     /// Root sets already isolated on this thread, keyed by polynomial and
     /// precision. Evaluators reach the same `RootOf` many times (a solution
     /// tuple is evaluated by the solver's own check, then by `numeric=True`,
     /// then once per sample by a gate), and isolation is the costly step.
-    static CACHE: std::cell::RefCell<HashMap<(Vec<Integer>, u32), Vec<RootEnclosure>>> =
-        std::cell::RefCell::new(HashMap::new());
+    static CACHE: std::cell::RefCell<RootCache> = std::cell::RefCell::new(HashMap::new());
 }
 
 const CACHE_CAP: usize = 128;

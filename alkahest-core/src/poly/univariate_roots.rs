@@ -228,7 +228,7 @@ fn pure_cubic_roots(c0: &Integer, c3: &Integer, pool: &ExprPool) -> Vec<ExprId> 
 fn palindromic_quartic_roots(c: &[Integer], pool: &ExprPool) -> Vec<ExprId> {
     let a = pool.integer(c[4].clone());
     let b = pool.integer(c[3].clone());
-    let cc = pool.integer(Integer::from(&c[2] - Integer::from(&c[4] * 2u32)));
+    let cc = pool.integer(&c[2] - Integer::from(&c[4] * 2u32));
     let one = pool.integer(1);
     let mut out = Vec::with_capacity(4);
     for y in quadratic_roots(a, b, cc, pool) {
