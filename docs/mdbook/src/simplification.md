@@ -20,6 +20,29 @@ The default rule set covers:
 - Basic polynomial simplification (`x + x → 2*x`, `x² * x → x³`)
 - Commutativity and associativity (normalized at construction)
 
+### Special values and zero recognition
+
+Every entry point also folds exact special values (`cos(pi) → -1`,
+`sin(pi/6) → 1/2`, `gamma(1/2) → sqrt(pi)`, `dilog(1) → pi²/6`,
+`asin(1) → pi/2`, `sin(n·pi) → 0` for an integer-domain `n`), radical powers
+(`sqrt(2)² → 2`, `sqrt(8) → 2·sqrt(2)`; `sqrt(x)² → x` only for a provably
+non-negative `x`), `i² = −1` inside products, cancelling exponentials
+(`exp(−x)·exp(x) → 1`), and replaces a sum that is identically zero by `0`.
+
+`is_zero(expr)` / `equals(a, b)` answer the question directly. `True` is only
+ever a proof (simplification to `0`, or a zero numerator in the rational
+normal form over atoms, where trig/hyperbolic functions go through `exp` and
+radicals and `i` are reduced by their defining relations); `False` is a proof
+too (an exact non-zero normal form, or a rigorous Arb ball excluding zero at a
+sample point inside the symbols' domains and the assumptions); `None` is
+undetermined. `equals` reports the provenance, including the numeric-only
+`probably_zero` status, which never counts as `True`.
+
+```python
+is_zero(sin(x)**2 + cos(x)**2 - 1)            # True
+equals(asin(sin(x)), x).status                # 'proved_nonzero'
+```
+
 ### Domain-specific rule sets
 
 ```python

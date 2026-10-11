@@ -5568,9 +5568,11 @@ mod tests {
             "√(x²) is an antiderivative of 1 only on x > 0"
         );
 
-        // And the control: a genuinely two-sided answer that the *symbolic*
-        // half of the gate cannot close still earns `Numeric`.
+        // And the control: a genuinely two-sided answer is accepted.
         // `log(√(1+x²)+x)` is `asinh x`, real and correct on the whole line.
+        // Until G4 the symbolic half could not close it and it earned
+        // `Numeric`; the exact zero test (the radicand `1+x²` is provably
+        // non-negative, so `√(1+x²)² = 1+x²` is used) now proves it.
         let root = pool.func(
             "sqrt",
             vec![pool.add(vec![pool.integer(1_i32), pool.pow(x, pool.integer(2_i32))])],
@@ -5579,7 +5581,7 @@ mod tests {
         let integrand = pool.pow(root, pool.integer(-1_i32));
         assert_eq!(
             verify_antiderivative_status(asinh, integrand, x, &pool),
-            Some(AntiderivativeVerification::Numeric)
+            Some(AntiderivativeVerification::Exact)
         );
     }
 
@@ -6695,6 +6697,8 @@ mod tests {
     /// (Integer/Rational/Add/Mul/Pow/log/atan/sqrt; no free symbols expected).
     fn eval_num(expr: ExprId, pool: &ExprPool) -> f64 {
         match pool.get(expr) {
+            // `atan(1)` folds to `π/4` (G4 special values).
+            ExprData::Symbol { ref name, .. } if name == "pi" => std::f64::consts::PI,
             ExprData::Integer(n) => n.0.to_f64(),
             ExprData::Rational(r) => r.0.to_f64(),
             ExprData::Add(args) => args.iter().map(|&a| eval_num(a, pool)).sum(),

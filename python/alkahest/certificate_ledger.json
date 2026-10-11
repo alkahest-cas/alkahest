@@ -4206,13 +4206,15 @@
         "mul": "general",
         "pow": "none"
       },
-      "verdict": "certified",
+      "verdict": "withheld",
       "observations": {
-        "certified": 1,
-        "withheld": 0,
+        "certified": 0,
+        "withheld": 1,
         "no_derivation": 0
       },
-      "blocking_rules": [],
+      "blocking_rules": [
+        "collect_mul_factors"
+      ],
       "examples": [
         "(cos(x) * tan(x))"
       ]
@@ -4227,11 +4229,11 @@
         "mul": "general",
         "pow": "neg_one"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
+        "certified": 1,
         "withheld": 0,
-        "no_derivation": 1
+        "no_derivation": 0
       },
       "blocking_rules": [],
       "examples": [
@@ -4290,13 +4292,16 @@
         "mul": "general",
         "pow": "neg_one"
       },
-      "verdict": "certified",
+      "verdict": "withheld",
       "observations": {
-        "certified": 1,
-        "withheld": 0,
+        "certified": 0,
+        "withheld": 1,
         "no_derivation": 0
       },
-      "blocking_rules": [],
+      "blocking_rules": [
+        "collect_mul_factors",
+        "pow_of_product_cancel"
+      ],
       "examples": [
         "((tan(x))^-1 * sin(x))"
       ]
@@ -4311,11 +4316,11 @@
         "mul": "general",
         "pow": "neg_one"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
+        "certified": 1,
         "withheld": 0,
-        "no_derivation": 1
+        "no_derivation": 0
       },
       "blocking_rules": [],
       "examples": [
@@ -4399,10 +4404,12 @@
       "verdict": "withheld",
       "observations": {
         "certified": 0,
-        "withheld": 0,
-        "no_derivation": 1
+        "withheld": 1,
+        "no_derivation": 0
       },
-      "blocking_rules": [],
+      "blocking_rules": [
+        "zero_sum"
+      ],
       "examples": [
         "(((((sin(x))^2 * -1 * 2) + 1) * -1) + cos((2 * x)))"
       ]
@@ -4417,11 +4424,11 @@
         "mul": "scalar",
         "pow": "nat"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
+        "certified": 1,
         "withheld": 0,
-        "no_derivation": 1
+        "no_derivation": 0
       },
       "blocking_rules": [],
       "examples": [
@@ -4459,11 +4466,11 @@
         "mul": "scalar",
         "pow": "nat"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
+        "certified": 1,
         "withheld": 0,
-        "no_derivation": 1
+        "no_derivation": 0
       },
       "blocking_rules": [],
       "examples": [
@@ -4480,11 +4487,11 @@
         "mul": "scalar",
         "pow": "nat"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
+        "certified": 1,
         "withheld": 0,
-        "no_derivation": 1
+        "no_derivation": 0
       },
       "blocking_rules": [],
       "examples": [

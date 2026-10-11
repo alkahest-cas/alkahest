@@ -213,6 +213,10 @@ pub struct ExprPool {
     /// Deduplication index: ExprData → ExprId.  Holds ids, not data; see
     /// [`PoolIndex`].
     index: PoolIndex,
+    /// Process-unique identity, so per-pool side tables keyed by `ExprId`
+    /// (the simplifier's zero-sum memo) cannot be confused by a later pool
+    /// allocated at the same address.
+    uid: u64,
 }
 
 // `ExprPool` is `Send + Sync` *by inference*, not by assertion.
@@ -247,10 +251,17 @@ pub(crate) const MAX_FLAT_ARITY: usize = 131_072;
 
 impl ExprPool {
     pub fn new() -> Self {
+        static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         ExprPool {
             nodes: boxcar::Vec::new(),
             index: PoolIndex::new(),
+            uid: NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
+    }
+
+    /// Process-unique identity of this pool (never reused).
+    pub(crate) fn uid(&self) -> u64 {
+        self.uid
     }
 
     /// Intern `data`, returning a shared [`ExprId`]. Identical structures

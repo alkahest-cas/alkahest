@@ -277,7 +277,15 @@ r = simplify_log_exp(log(exp(x)))          # → x
 r = collect_like_terms(x + x + 2*x + y)   # → 4*x + y
 ```
 
-**Simplifier choice:** `simplify` is a general algebraic rewriter; it does **not** apply trig identities. For `sin²+cos²` and similar, use `simplify_trig` (or `simplify_egraph`). For `log`/`exp` laws, use `simplify_log_exp`.
+**Simplifier choice:** `simplify` is a general algebraic rewriter; it does **not** rewrite `sin²+cos²` to `1` inside a larger expression — use `simplify_trig` (or `simplify_egraph`) for that. For `log`/`exp` laws, use `simplify_log_exp`. Every entry point folds special values (`cos(pi) → -1`, `gamma(1/2) → sqrt(pi)`, `sqrt(2)**2 → 2`, `exp(-x)*exp(x) → 1`, `sin(n*pi) → 0` for `Domain.Integer` n) and turns any sum that is identically zero into `0`.
+
+**Zero tests — never compare `str(r) == "0"`:** `is_zero(e)` → `True` (proved symbolically), `False` (proved non-zero, possibly by a rigorous ball at a sample point) or `None` (undetermined). `equals(a, b)` returns a `ZeroTest` with `.value`, `.status` (`proved_zero` / `proved_nonzero` / `probably_zero` / `unknown`) and `.method`; `probably_zero` is numeric evidence only and has `.value is None`. Both take `assumptions=` and respect symbol domains.
+
+```python
+is_zero(sin(x)**2 + cos(x)**2 - 1)        # True
+is_zero(sqrt(x**2) - x)                    # False  (x real: disproved at x < 0)
+equals(exp(2*x), exp(x)**2).status         # 'proved_zero'
+```
 
 ### Assumptions gate the conditional rewrites
 

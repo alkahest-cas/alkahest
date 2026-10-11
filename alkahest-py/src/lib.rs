@@ -121,7 +121,7 @@ use alkahest_core::{
     simplify_batch as core_simplify_batch, simplify_egraph as core_simplify_egraph,
     simplify_egraph_with as core_simplify_egraph_with, simplify_log_exp as core_simplify_log_exp,
     simplify_trig_normal_form as core_simplify_trig_normal_form,
-    simplify_with as core_simplify_with, trig_rules,
+    simplify_with as core_simplify_with,
     verify_antiderivative_status_parametric as core_verify_antiderivative_parametric,
     AlkahestError as AlkahestErrorTrait, AntiderivativeVerification, ApartError,
     AssumptionContext as CoreAssumptionContext, AssumptionError, ComplexF64, DerivedExpr,
@@ -9258,10 +9258,7 @@ fn py_simplify_trig(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedRe
         let pool = expr.pool.borrow(py);
         guard_simplify_depth(&pool.inner, expr.id)?;
         let (id, pool) = (expr.id, &pool.inner);
-        py.allow_threads(|| {
-            let rules = trig_rules();
-            core_simplify_with(id, pool, &rules, SimplifyConfig::default())
-        })
+        py.allow_threads(|| alkahest_core::simplify_trig(id, pool))
     };
     let pool_py = expr.pool.clone_ref(py);
     Ok(make_derived_result(py, derived, pool_py, None))
@@ -9323,6 +9320,29 @@ fn py_simplify_log_exp(
     };
     let pool_py = expr.pool.clone_ref(py);
     Ok(make_derived_result(py, derived, pool_py, None))
+}
+
+/// `alkahest._zero_test(expr, assumptions=None)` — the G4 zero decision
+/// procedure.  Returns `(verdict, status, method, evidence)`; the Python
+/// wrappers `is_zero` / `equals` build on it.
+#[pyfunction]
+#[pyo3(name = "_zero_test", signature = (expr, assumptions=None))]
+fn py_zero_test(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    assumptions: Option<PyRef<PyAssumptions>>,
+) -> PyResult<(Option<bool>, &'static str, &'static str, Vec<String>)> {
+    if let Some(ref a) = assumptions {
+        if !a.pool.is(&expr.pool) {
+            return Err(pool_mismatch_err());
+        }
+    }
+    let pool = expr.pool.borrow(py);
+    guard_depth(&pool.inner, expr.id)?;
+    let ctx = assumptions.as_ref().map(|a| &a.inner);
+    let (id, pool) = (expr.id, &pool.inner);
+    let t = py.allow_threads(|| alkahest_core::zero_test(id, pool, ctx));
+    Ok((t.verdict(), t.status.as_str(), t.method, t.evidence))
 }
 
 // ---------------------------------------------------------------------------
@@ -20675,6 +20695,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_simplify_trig, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify_trig_normal_form, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify_log_exp, m)?)?;
+    m.add_function(wrap_pyfunction!(py_zero_test, m)?)?;
     m.add_function(wrap_pyfunction!(py_evaluate, m)?)?;
     m.add_function(wrap_pyfunction!(py_diff, m)?)?;
     m.add_function(wrap_pyfunction!(py_diff_forward, m)?)?;

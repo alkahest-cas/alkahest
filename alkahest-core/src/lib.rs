@@ -173,9 +173,9 @@ pub use simplify::rulesets::{
 pub use simplify::{
     assumptions_satisfy, check_simplify_depth, rules_for_config, simplify, simplify_batch,
     simplify_colored, simplify_egraph, simplify_egraph_with, simplify_expanded, simplify_log_exp,
-    simplify_trig_normal_form, simplify_with, ColorId, ColoredEgraph, DepthCost, EgraphConfig,
-    EgraphCost, NoncommutativeCost, OpCost, PatternRule, RewriteRule, SimplifyConfig, SizeCost,
-    StabilityCost, CONTEXT_COLOR, ROOT_COLOR,
+    simplify_trig, simplify_trig_normal_form, simplify_with, zero_test, ColorId, ColoredEgraph,
+    DepthCost, EgraphConfig, EgraphCost, NoncommutativeCost, OpCost, PatternRule, RewriteRule,
+    SimplifyConfig, SizeCost, StabilityCost, ZeroStatus, ZeroTest, CONTEXT_COLOR, ROOT_COLOR,
 };
 pub use sum::{
     gosper_certificate, gosper_normal_form, hypergeom_ratio, product_definite, product_indefinite,
