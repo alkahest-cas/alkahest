@@ -653,6 +653,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_funcall(&mut self, name: &str, offset: usize) -> Result<ExprId, ParseError> {
+        // `Derivative(…)`, `Subs(…)` and a declared undefined function `f(…)`;
+        // see `parse_undefined_call`.
+        if let Some(r) = self.parse_undefined_call(name, offset)? {
+            return Ok(r);
+        }
         if !is_known_func(name) {
             return Err(ParseError::unknown_func(
                 format!("unknown function '{name}'"),
@@ -705,6 +710,83 @@ impl<'a> Parser<'a> {
         self.pool
             .try_func(name, args)
             .map_err(|e| ParseError::syntax(e.to_string(), (offset, offset + name.len())))
+    }
+}
+
+impl Parser<'_> {
+    /// The calls that make printed derivatives of undefined functions read
+    /// back (see `crate::diff::undefined`); `Ok(None)` when `name` is none of
+    /// them.
+    ///
+    /// * `f(a, …)` where the symbol table binds `f` to an application of the
+    ///   undefined function `f` (e.g. `{"f": f(t)}`): the call `f(a, …)`.
+    ///   An undeclared unknown name is still an `E-PARSE-003` error, so a typo
+    ///   is not silently a new function.
+    /// * `Derivative(e, v₁, v₂, …)`: `∂ⁿe/∂v₁∂v₂…` via `diff`, each `vᵢ` a
+    ///   variable.  On an undefined function this is the derivative node.
+    /// * `Subs(e, x, v)`: `e` with the variable `x` replaced by `v`.
+    fn parse_undefined_call(
+        &mut self,
+        name: &str,
+        offset: usize,
+    ) -> Result<Option<ExprId>, ParseError> {
+        let declared = !is_known_func(name)
+            && crate::diff::undefined::is_undefined_function_name(name)
+            && self.symbols.get(name).is_some_and(|&id| {
+                self.pool.with(
+                    id,
+                    |d| matches!(d, ExprData::Func { name: n, .. } if n == name),
+                )
+            });
+        if !declared && name != "Derivative" && name != "Subs" {
+            return Ok(None);
+        }
+        let span = (offset, offset + name.len());
+        self.advance(); // consume "("
+        let mut args = Vec::new();
+        if self.peek().tok != Tok::RParen {
+            args.push(self.parse_expr(0)?);
+            while self.peek().tok == Tok::Comma {
+                self.advance();
+                args.push(self.parse_expr(0)?);
+            }
+        }
+        self.expect(&Tok::RParen)?;
+        let pool = self.pool;
+        let is_symbol = |e: ExprId| pool.with(e, |d| matches!(d, ExprData::Symbol { .. }));
+        if declared {
+            if args.is_empty() {
+                return Err(ParseError::syntax(
+                    format!("{name}() needs at least one argument"),
+                    span,
+                ));
+            }
+            return Ok(Some(pool.func(name, args)));
+        }
+        if name == "Derivative" {
+            if args.len() < 2 || !args[1..].iter().all(|&v| is_symbol(v)) {
+                return Err(ParseError::syntax(
+                    "Derivative(expr, var, …) takes an expression and one or more variables",
+                    span,
+                ));
+            }
+            let mut cur = args[0];
+            for &v in &args[1..] {
+                cur = crate::diff::diff(cur, v, pool)
+                    .map_err(|e| ParseError::syntax(format!("Derivative: {e}"), span))?
+                    .value;
+            }
+            return Ok(Some(cur));
+        }
+        // Subs
+        if args.len() != 3 || !is_symbol(args[1]) {
+            return Err(ParseError::syntax(
+                "Subs(expr, var, value) takes an expression, a variable and a value",
+                span,
+            ));
+        }
+        let map = HashMap::from([(args[1], args[2])]);
+        Ok(Some(crate::kernel::subs::subs(args[0], &map, pool)))
     }
 }
 

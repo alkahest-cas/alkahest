@@ -5531,15 +5531,17 @@ fn fps_error_to_py(e: CoreFpsError) -> PyErr {
 /// :class:`Assumptions` context stating e.g. the discriminant is non-zero, or
 /// negative) settles the branch and empties them.
 #[pyfunction]
-#[pyo3(name = "dsolve", signature = (equation, x, y, derivs, assumptions=None))]
+#[pyo3(name = "dsolve", signature = (equation, x, y, derivs=None, assumptions=None))]
 fn py_dsolve(
     py: Python<'_>,
     equation: PyRef<PyExpr>,
     x: PyRef<PyExpr>,
     y: PyRef<PyExpr>,
-    derivs: Vec<PyExpr>,
+    derivs: Option<Vec<PyExpr>>,
     assumptions: Option<PyRef<PyAssumptions>>,
 ) -> PyResult<PyObject> {
+    let derivs_given = derivs.is_some();
+    let derivs = derivs.unwrap_or_default();
     same_pool!("dsolve"; equation, x, y, derivs);
     if let Some(ref a) = assumptions {
         if !a.pool.is(&equation.pool) {
@@ -5548,13 +5550,22 @@ fn py_dsolve(
     }
     let pool_py = equation.pool.clone_ref(py);
     let empty = CoreAssumptionContext::new();
+    // `y` given as the applied function `y(x)` and no derivative symbols: the
+    // equation is written with `y(x)` and `Derivative(y(x), x, …)`.  Replace
+    // them by symbols for the solver and map an implicit answer back.
+    let mut back: HashMap<ExprId, ExprId> = HashMap::new();
     let report = {
         let pool = pool_py.borrow(py);
-        let input = CoreOdeInput {
-            x: x.id,
-            y: y.id,
-            derivs: derivs.iter().map(|e| e.id).collect(),
-            equation: equation.id,
+        let input = if derivs_given {
+            CoreOdeInput {
+                x: x.id,
+                y: y.id,
+                derivs: derivs.iter().map(|e| e.id).collect(),
+                equation: equation.id,
+            }
+        } else {
+            guard_depth_all(&pool.inner, &[equation.id])?;
+            dsolve_input_from_applied(equation.id, x.id, y.id, &pool.inner, &mut back)?
         };
         guard_depth_all(&pool.inner, &[input.equation, input.x, input.y])?;
         guard_depth_all(&pool.inner, &input.derivs)?;
@@ -5579,7 +5590,17 @@ fn py_dsolve(
             .into_py(py)
         };
         d.set_item("y_of_x", sol.y_of_x().map(wrap))?;
-        d.set_item("implicit_relation", sol.implicit_relation().map(wrap))?;
+        d.set_item(
+            "implicit_relation",
+            sol.implicit_relation().map(|r| {
+                if back.is_empty() {
+                    wrap(r)
+                } else {
+                    let pool = pool_py.borrow(py);
+                    wrap(core_subs(r, &back, &pool.inner))
+                }
+            }),
+        )?;
         d.set_item(
             "form",
             if sol.is_explicit() {
@@ -5605,6 +5626,74 @@ fn py_dsolve(
         out.append(d)?;
     }
     Ok(out.into_py(py))
+}
+
+/// `dsolve` input for an equation written with the applied function `y(x)`
+/// and its derivatives: each `y⁽ᵏ⁾(x)` becomes a symbol, `back` receives the
+/// inverse map.  Refuses (`E-DIFF-005`/`E-DIFF-007`) a `y` that is not an
+/// undefined function of `x` alone, and (`ValueError`) an equation without a
+/// derivative of `y`.
+fn dsolve_input_from_applied(
+    equation: ExprId,
+    x: ExprId,
+    y: ExprId,
+    pool: &ExprPool,
+    back: &mut HashMap<ExprId, ExprId>,
+) -> PyResult<CoreOdeInput> {
+    if alkahest_core::diff::undefined::derivative_parts(y, pool).is_some()
+        || !matches!(pool.get(y), ExprData::Func { .. })
+    {
+        return Err(PyValueError::new_err(
+            "dsolve: pass `derivs` (the derivative symbols), or give `y` as the applied \
+             function y(x) and write the equation with diff(y, x)",
+        ));
+    }
+    let (eqs, table) =
+        alkahest_core::diff::functions_to_symbols(&[equation], &[y], x, Domain::Real, pool)
+            .map_err(undefined_error_to_py)?;
+    let order = table.iter().map(|e| e.order).max().unwrap_or(0);
+    if order == 0 {
+        return Err(PyValueError::new_err(
+            "dsolve: the equation contains no derivative of y(x)",
+        ));
+    }
+    let mut taken: Vec<String> = Vec::new();
+    for e in &table {
+        if let ExprData::Symbol { name, .. } = pool.get(e.symbol) {
+            taken.push(name);
+        }
+    }
+    let mut ysym = None;
+    let mut derivs = vec![None; order as usize];
+    for e in &table {
+        back.insert(e.symbol, e.node);
+        if e.order == 0 {
+            ysym = Some(e.symbol);
+        } else {
+            derivs[e.order as usize - 1] = Some(e.symbol);
+        }
+    }
+    // An order absent from the equation (y'' + y = 0 has no y') still needs a
+    // symbol of its own.
+    let derivs: Vec<ExprId> = derivs
+        .into_iter()
+        .enumerate()
+        .map(|(i, d)| {
+            d.unwrap_or_else(|| {
+                let mut name = format!("__alkahest_dsolve_d{}", i + 1);
+                while taken.contains(&name) {
+                    name.push('_');
+                }
+                pool.symbol(name, Domain::Real)
+            })
+        })
+        .collect();
+    Ok(CoreOdeInput {
+        x,
+        y: ysym.expect("functions_to_symbols always maps order 0"),
+        derivs,
+        equation: eqs[0],
+    })
 }
 
 fn dsolve_system_error_to_py(e: CoreDsolveSystemError) -> PyErr {
@@ -9509,6 +9598,159 @@ fn py_grad(py: Python<'_>, expr: PyRef<PyExpr>, vars: Vec<PyRef<PyExpr>>) -> PyR
 }
 
 // ---------------------------------------------------------------------------
+// Undefined functions: Euler–Lagrange, functions → symbols, replace_function
+// ---------------------------------------------------------------------------
+
+fn undefined_error_to_py(e: alkahest_core::diff::UndefinedFunctionError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyDiffError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+/// Private: whether `name` is an undefined function name (no built-in,
+/// registered or reserved meaning) — the Python parser's declaration check.
+#[pyfunction]
+fn _is_undefined_function_name(name: &str) -> bool {
+    alkahest_core::diff::is_undefined_function_name(name)
+}
+
+/// `alkahest.euler_lagrange(L, coords, t)` — the Euler–Lagrange equations.
+///
+/// ``coords`` are applied undefined functions ``[q1(t), q2(t), …]`` (built
+/// with ``pool.func("q1", [t])``); ``L`` is written with them and their time
+/// derivatives (``diff(q1, t)``).  Returns one expression per coordinate, to be
+/// read as ``= 0``::
+///
+///     d/dt(∂L/∂q̇ᵢ) − ∂L/∂qᵢ
+///
+/// (higher derivatives in ``L`` contribute the Euler–Poisson terms).  Pass the
+/// result through :func:`functions_to_symbols` to solve for the accelerations.
+///
+/// Raises ``DiffError``: ``E-DIFF-005`` when a coordinate is not an undefined
+/// function applied to arguments, ``E-DIFF-007`` when it is not a function of
+/// ``t`` alone, ``E-DIFF-001`` when ``L`` contains a function with no
+/// derivative rule.
+#[pyfunction]
+#[pyo3(name = "euler_lagrange")]
+fn py_euler_lagrange(
+    py: Python<'_>,
+    lagrangian: PyRef<PyExpr>,
+    coords: Vec<PyRef<PyExpr>>,
+    t: PyRef<PyExpr>,
+) -> PyResult<Vec<PyExpr>> {
+    same_pool!("euler_lagrange"; lagrangian, coords, t);
+    let pool_py = lagrangian.pool.clone_ref(py);
+    let ids: Vec<ExprId> = coords.iter().map(|c| c.id).collect();
+    let eoms = {
+        let pool = pool_py.borrow(py);
+        guard_depth(&pool.inner, lagrangian.id)?;
+        alkahest_core::diff::euler_lagrange(lagrangian.id, &ids, t.id, &pool.inner)
+            .map_err(undefined_error_to_py)?
+    };
+    Ok(eoms
+        .into_iter()
+        .map(|id| PyExpr {
+            id,
+            pool: pool_py.clone_ref(py),
+        })
+        .collect())
+}
+
+/// `alkahest.functions_to_symbols(exprs, funcs, t, domain=None)` — replace
+/// ``q(t)``, ``q'(t)``, ``q''(t)``, … by plain symbols.
+///
+/// ``exprs`` is an ``Expr`` or a list of them; ``funcs`` the applied
+/// undefined functions ``[q1(t), …]``.  Every ``qᵢ(t)`` and every derivative
+/// of it that occurs becomes a fresh symbol named ``q``, ``q_dot``,
+/// ``q_ddot``, ``q_d3``, … (a trailing ``_`` is added while the name is taken
+/// by a symbol already in ``exprs``), in ``domain`` (default real).
+///
+/// Returns ``(new_exprs, mapping)`` where ``new_exprs`` has the shape of
+/// ``exprs`` and ``mapping`` is a dict ``{node: symbol}``;
+/// ``subs(e, {s: n for n, s in mapping.items()})`` undoes the rewrite.
+///
+/// Raises ``DiffError`` (``E-DIFF-005`` / ``E-DIFF-007``) for an entry of
+/// ``funcs`` that is not an undefined function of ``t`` alone.
+#[pyfunction]
+#[pyo3(name = "functions_to_symbols", signature = (exprs, funcs, t, domain=None))]
+fn py_functions_to_symbols(
+    py: Python<'_>,
+    exprs: &Bound<'_, PyAny>,
+    funcs: Vec<PyRef<PyExpr>>,
+    t: PyRef<PyExpr>,
+    domain: Option<&Bound<'_, PyAny>>,
+) -> PyResult<(PyObject, PyObject)> {
+    let single = exprs.extract::<PyRef<PyExpr>>().is_ok();
+    let list: Vec<PyRef<PyExpr>> = if single {
+        vec![exprs.extract::<PyRef<PyExpr>>()?]
+    } else {
+        exprs.extract()?
+    };
+    same_pool!("functions_to_symbols"; t, funcs, list);
+    let dom = match domain.filter(|o| !o.is_none()) {
+        Some(d) => parse_domain_arg(Some(d))?,
+        None => Domain::Real,
+    };
+    let pool_py = t.pool.clone_ref(py);
+    let ids: Vec<ExprId> = list.iter().map(|e| e.id).collect();
+    let fids: Vec<ExprId> = funcs.iter().map(|e| e.id).collect();
+    let (out, table) = {
+        let pool = pool_py.borrow(py);
+        guard_depth_all(&pool.inner, &ids)?;
+        alkahest_core::diff::functions_to_symbols(&ids, &fids, t.id, dom, &pool.inner)
+            .map_err(undefined_error_to_py)?
+    };
+    let wrap = |id: ExprId| {
+        PyExpr {
+            id,
+            pool: pool_py.clone_ref(py),
+        }
+        .into_py(py)
+    };
+    let mapping = PyDict::new_bound(py);
+    for entry in table {
+        mapping.set_item(wrap(entry.node), wrap(entry.symbol))?;
+    }
+    let out_obj = if single {
+        wrap(out[0])
+    } else {
+        PyList::new_bound(py, out.into_iter().map(wrap)).into_py(py)
+    };
+    Ok((out_obj, mapping.into_py(py)))
+}
+
+/// `alkahest.replace_function(expr, pattern, body)` — substitute a definition
+/// for an undefined function everywhere, derivatives included.
+///
+/// ``pattern`` is ``f(x1, …, xn)`` with distinct variables and ``body`` an
+/// expression in them.  Every ``f(u…)`` becomes ``body`` at ``u…`` and every
+/// derivative of ``f`` becomes the matching derivative of ``body`` at ``u…``
+/// (SymPy's ``subs(f, Lambda(x, body)).doit()``).  :func:`subs` with the key
+/// ``f(x…)`` does the same, but only at that exact argument.
+///
+/// Raises ``DiffError`` ``E-DIFF-005`` when ``pattern`` is not an undefined
+/// function applied to distinct variables.
+#[pyfunction]
+#[pyo3(name = "replace_function")]
+fn py_replace_function(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    pattern: PyRef<PyExpr>,
+    body: PyRef<PyExpr>,
+) -> PyResult<PyExpr> {
+    same_pool!("replace_function"; expr, pattern, body);
+    let pool_py = expr.pool.clone_ref(py);
+    let id = {
+        let pool = pool_py.borrow(py);
+        guard_depth(&pool.inner, expr.id)?;
+        alkahest_core::diff::replace_function(expr.id, pattern.id, body.id, &pool.inner)
+            .map_err(undefined_error_to_py)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+// ---------------------------------------------------------------------------
 // Phase 15: Matrix and jacobian
 // ---------------------------------------------------------------------------
 
@@ -11339,6 +11581,24 @@ fn py_build_features() -> std::collections::HashMap<String, bool> {
     .collect()
 }
 
+/// `E-EVAL-005` when `expr` mentions an undefined function `f(…)` or a
+/// derivative of one: it has no numeric value, and saying so with a code is
+/// better than the generic "could not be evaluated".
+fn refuse_undefined_function(py: Python<'_>, expr: ExprId, pool: &ExprPool) -> PyResult<()> {
+    if alkahest_core::diff::undefined::has_undefined_function(expr, pool) {
+        return Err(domain_error(
+            py,
+            "E-EVAL-005",
+            "expression contains an undefined function or a derivative of one, which has \
+             no numeric value"
+                .to_string(),
+            "substitute a definition first: subs(expr, {f(t): body}) or \
+             replace_function(expr, f(x), body), or functions_to_symbols(...) and bind the symbols",
+        ));
+    }
+    Ok(())
+}
+
 /// Evaluate a symbolic expression numerically using the interpreter.
 ///
 /// `bindings` is a dict mapping Expr → float.
@@ -11358,6 +11618,7 @@ fn py_eval_expr(
     };
     let pool = pool_py.borrow(py);
     guard_depth(&pool.inner, expr_id)?;
+    refuse_undefined_function(py, expr_id, &pool.inner)?;
     let mut env = std::collections::HashMap::new();
     for (key, value) in bindings.iter() {
         let var = extract_expr_in(&key, &pool_py, "eval_expr", "a binding key")?;
@@ -20325,6 +20586,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRewriteRule>()?;
     // Phase 14
     m.add_function(wrap_pyfunction!(py_grad, m)?)?;
+    m.add_function(wrap_pyfunction!(py_euler_lagrange, m)?)?;
+    m.add_function(wrap_pyfunction!(py_functions_to_symbols, m)?)?;
+    m.add_function(wrap_pyfunction!(py_replace_function, m)?)?;
+    m.add_function(wrap_pyfunction!(_is_undefined_function_name, m)?)?;
     // Phase 15
     m.add_function(wrap_pyfunction!(py_jacobian, m)?)?;
     m.add_class::<PyMatrix>()?;

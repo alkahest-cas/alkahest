@@ -110,6 +110,9 @@ fn subs_memo(
                 pool.pow(b, e)
             }
         }
+        ExprData::Func { name, args } if name == crate::diff::undefined::DERIVATIVE_FUNC => {
+            subs_derivative(expr, &args, mapping, pool, memo)
+        }
         ExprData::Func { name, args } => match subs_args(&args, mapping, pool, memo) {
             Some(new_args) => pool.func(name, new_args),
             None => expr,
@@ -178,6 +181,45 @@ fn subs_memo(
     };
     memo.insert(expr, out);
     out
+}
+
+/// Substitute into `Derivative(f(u…), k…)` (see [`crate::diff::undefined`]).
+///
+/// * When `f(u…)` itself is a key whose arguments are distinct variables, the
+///   key *defines* `f`, so the node becomes the derivative of the value:
+///   `{f(t): sin t}` sends `Derivative(f(t), t)` to `cos t`.
+/// * Otherwise only the arguments `u…` are substituted, never the integer
+///   orders and never the function: `{t: 0}` sends `f'(t)` to `f'(0)`, and a
+///   key `f(2t)` (which fixes `f` at one argument, not its derivative there)
+///   leaves `f'(2t)` alone.
+///
+/// A malformed node (not a derivative of an undefined function) is
+/// substituted like any other function.
+fn subs_derivative(
+    expr: ExprId,
+    args: &[ExprId],
+    mapping: &HashMap<ExprId, ExprId>,
+    pool: &ExprPool,
+    memo: &mut HashMap<ExprId, ExprId>,
+) -> ExprId {
+    let Some(v) = crate::diff::undefined::view(expr, pool) else {
+        return match subs_args(args, mapping, pool, memo) {
+            Some(new_args) => pool.func(crate::diff::undefined::DERIVATIVE_FUNC, new_args),
+            None => expr,
+        };
+    };
+    if let Some(&value) = mapping.get(&v.inner) {
+        if let Some(d) = crate::diff::undefined::differentiate_definition(&v, value, pool) {
+            return d;
+        }
+    }
+    match subs_args(&v.args, mapping, pool, memo) {
+        Some(new_args) => {
+            let inner = pool.func(v.name.clone(), new_args);
+            crate::diff::undefined::build(inner, &v.orders, pool)
+        }
+        None => expr,
+    }
 }
 
 /// Substitute into the scope of a binder (`Forall`/`Exists`/`RootSum`) that

@@ -64,6 +64,130 @@ pub fn render_unicode(id: ExprId, pool: &ExprPool) -> String {
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+/// `id` decoded as a derivative of an undefined function, if it is one; see
+/// [`crate::diff::undefined`].  The name test comes first so ordinary nodes
+/// pay for one comparison, not a decode.
+fn derivative_view(id: ExprId, pool: &ExprPool) -> Option<crate::diff::undefined::UndefView> {
+    let is_derivative = pool.with(id, |d| {
+        matches!(d, ExprData::Func { name, .. } if name == crate::diff::undefined::DERIVATIVE_FUNC)
+    });
+    if !is_derivative {
+        return None;
+    }
+    crate::diff::undefined::view(id, pool)
+}
+
+/// Superscript `k` in prime notation: `′`, `″`, `‴`, then `⁽ᵏ⁾`.
+fn unicode_primes(k: u32) -> String {
+    match k {
+        1 => "′".into(),
+        2 => "″".into(),
+        3 => "‴".into(),
+        _ => format!(
+            "⁽{}⁾",
+            to_superscript(&k.to_string()).unwrap_or_else(|| k.to_string())
+        ),
+    }
+}
+
+/// A derivative of an undefined function in LaTeX.
+///
+/// * every differentiated slot a free-standing variable (see
+///   `undefined::clean_slots`): Leibniz notation, `\frac{d^{2}}{d t^{2}} f(t)`
+///   for a function of one argument and `\frac{\partial^{2}}{\partial x \partial t} u(x, t)`
+///   for several;
+/// * otherwise prime notation for one argument, `f'(t^{2})`, and the
+///   per-slot order superscript `f^{(1,0)}(g(t), t)` for several.
+fn latex_derivative(v: &crate::diff::undefined::UndefView, pool: &ExprPool) -> (String, i32) {
+    let call = latex_func_generic(&v.name, &v.args, pool);
+    let clean = crate::diff::undefined::clean_slots(v, pool);
+    let total: u32 = v.orders.iter().sum();
+    let all_clean = v.orders.iter().zip(&clean).all(|(&k, &c)| k == 0 || c);
+    if all_clean {
+        let sup = |k: u32| {
+            if k == 1 {
+                String::new()
+            } else {
+                format!("^{{{k}}}")
+            }
+        };
+        let (d, num) = if v.args.len() == 1 {
+            ("d", format!("d{}", sup(total)))
+        } else {
+            (r"\partial", format!(r"\partial{}", sup(total)))
+        };
+        let den: Vec<String> = v
+            .orders
+            .iter()
+            .zip(&v.args)
+            .filter(|(&k, _)| k > 0)
+            .map(|(&k, &a)| format!("{d} {}{}", latex_r(a, pool).0, sup(k)))
+            .collect();
+        return (
+            format!(r"\frac{{{num}}}{{{}}} {call}", den.join(" ")),
+            PREC_MUL,
+        );
+    }
+    let fname = latex_func_name(&v.name);
+    let rendered: Vec<String> = v.args.iter().map(|&a| latex_r(a, pool).0).collect();
+    let mark = if v.args.len() == 1 {
+        match total {
+            1 => "'".to_string(),
+            2 => "''".to_string(),
+            3 => "'''".to_string(),
+            k => format!("^{{({k})}}"),
+        }
+    } else {
+        let ks: Vec<String> = v.orders.iter().map(|k| k.to_string()).collect();
+        format!("^{{({})}}", ks.join(","))
+    };
+    (
+        format!(r"{fname}{mark}\!\left({}\right)", rendered.join(", ")),
+        PREC_ATOM,
+    )
+}
+
+/// A derivative of an undefined function in Unicode: primes for a function of
+/// one argument (`f′(t)`, `f⁽⁴⁾(t)`); for several, `∂²u(x, t)/∂x∂t` when every
+/// differentiated slot is a free-standing variable, else `u^(1,0)(g(t), t)`.
+fn unicode_derivative(v: &crate::diff::undefined::UndefView, pool: &ExprPool) -> (String, i32) {
+    let rendered: Vec<String> = v.args.iter().map(|&a| unicode_r(a, pool).0).collect();
+    let call_args = rendered.join(", ");
+    if v.args.len() == 1 {
+        return (
+            format!("{}{}({call_args})", v.name, unicode_primes(v.orders[0])),
+            PREC_ATOM,
+        );
+    }
+    let clean = crate::diff::undefined::clean_slots(v, pool);
+    if v.orders.iter().zip(&clean).all(|(&k, &c)| k == 0 || c) {
+        let total: u32 = v.orders.iter().sum();
+        let sup = |k: u32| {
+            if k == 1 {
+                String::new()
+            } else {
+                to_superscript(&k.to_string()).unwrap_or_else(|| format!("^{k}"))
+            }
+        };
+        let den: String = v
+            .orders
+            .iter()
+            .zip(&v.args)
+            .filter(|(&k, _)| k > 0)
+            .map(|(&k, &a)| format!("∂{}{}", unicode_r(a, pool).0, sup(k)))
+            .collect();
+        return (
+            format!("∂{}{}({call_args})/{den}", sup(total), v.name),
+            PREC_MUL,
+        );
+    }
+    let ks: Vec<String> = v.orders.iter().map(|k| k.to_string()).collect();
+    (
+        format!("{}^({})({call_args})", v.name, ks.join(",")),
+        PREC_ATOM,
+    )
+}
+
 fn greek_latex(name: &str) -> Option<&'static str> {
     match name {
         "alpha" => Some(r"\alpha"),
@@ -757,6 +881,9 @@ fn latex_piecewise(branches: &[(ExprId, ExprId)], default: ExprId, pool: &ExprPo
 }
 
 fn latex_r(id: ExprId, pool: &ExprPool) -> (String, i32) {
+    if let Some(v) = derivative_view(id, pool) {
+        return latex_derivative(&v, pool);
+    }
     pool.with(id, |data| match data {
         ExprData::Symbol { name, .. } => (latex_symbol(name), PREC_ATOM),
         ExprData::Integer(n) => (n.0.to_string(), literal_prec(&n.0.to_string())),
@@ -1132,6 +1259,9 @@ fn unicode_piecewise(branches: &[(ExprId, ExprId)], default: ExprId, pool: &Expr
 }
 
 fn unicode_r(id: ExprId, pool: &ExprPool) -> (String, i32) {
+    if let Some(v) = derivative_view(id, pool) {
+        return unicode_derivative(&v, pool);
+    }
     pool.with(id, |data| match data {
         ExprData::Symbol { name, .. } => (unicode_symbol(name), PREC_ATOM),
         ExprData::Integer(n) => (n.0.to_string(), literal_prec(&n.0.to_string())),

@@ -319,6 +319,18 @@ if HAS_EGRAPH:
 
 ## Differentiation
 
+### Undefined functions `f(t)` — Euler–Lagrange, `a(t)` metrics, `y(t)` ODEs
+
+`q = pool.func("q", [t])` (any name with no built-in meaning) is an arbitrary
+smooth function: `diff(q, t).value` is `Derivative(q(t), t)` (chain rule per
+argument; `diff_forward`/`symbolic_grad` agree). `euler_lagrange(L, [q1, q2], t)`
+→ EOMs `d/dt ∂L/∂q̇ − ∂L/∂q`; `functions_to_symbols(eoms, [q1, q2], t)` →
+`(exprs, {node: symbol})` with `q1`, `q1_dot`, `q1_ddot` for `solve`;
+`subs(e, {q: sin(t)})` or `replace_function(e, q_of_x, body)` instantiate and
+differentiate; `dsolve(eq, t, y)` takes `y = pool.func("y", [t])` with no
+`derivs`. `parse` needs the function declared: `{"q": q}`. Numeric eval refuses
+(`E-EVAL-005`) until a definition is substituted.
+
 ### `diff` vs `symbolic_grad` vs `grad` (keep these names)
 
 | API | Input | Output | When to use |

@@ -38,6 +38,10 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-DIFF-002", class: "DiffError", cause: Cause::UserInput,   remediation: Some("diff applies the general power rule to symbolic exponents, so this is not expected; simplify the exponent first and report the expression if it persists") },
     ErrorSpec { code: "E-DIFF-003", class: "DiffError", cause: Cause::Unsupported, remediation: Some("register the function in PrimitiveRegistry with diff_forward implemented") },
     ErrorSpec { code: "E-DIFF-004", class: "DiffError", cause: Cause::UserInput,   remediation: Some("diff_forward applies the general power rule to symbolic exponents, so this is not expected; prefer diff, and report the expression if it persists") },
+    // UndefinedFunctionError — euler_lagrange / functions_to_symbols / derivative_of
+    ErrorSpec { code: "E-DIFF-005", class: "DiffError", cause: Cause::UserInput,   remediation: Some("pass the applied function, e.g. pool.func(\"q\", [t]); a built-in name (sin, gamma, …) or a reserved one (Derivative, binomial, …) is not an undefined function") },
+    ErrorSpec { code: "E-DIFF-006", class: "DiffError", cause: Cause::UserInput,   remediation: Some("give one derivative order per argument of the function") },
+    ErrorSpec { code: "E-DIFF-007", class: "DiffError", cause: Cause::UserInput,   remediation: Some("each coordinate must be applied to the independent variable alone, e.g. q(t) for t") },
     // E-SIMPLIFY — AssumptionError
     ErrorSpec { code: "E-SIMPLIFY-001", class: "AssumptionError", cause: Cause::Domain, remediation: Some("remove the conflicting refinement or create a separate AssumptionContext") },
     // E-SERIES — SeriesError (V2-15 truncated expansions)

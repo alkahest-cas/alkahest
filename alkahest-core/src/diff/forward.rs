@@ -247,6 +247,18 @@ fn eval_dual(
         },
     });
 
+    // An undefined function `f(u…)` or `Derivative(f(u…), k…)`: the value is
+    // the node itself and the tangent is the slot-wise chain rule,
+    // Σᵢ ∂^{k+eᵢ}f(u) · uᵢ'.
+    if let Some(v) = super::undefined::view(expr, pool) {
+        let tangent = super::undefined::chain_rule(&v, var, pool, |_, u| {
+            Ok(eval_dual(u, var, pool, memo)?.tangent)
+        })?;
+        let r = DualValue::new(expr, tangent);
+        memo.insert(expr, r.clone());
+        return Ok(r);
+    }
+
     let result = match node {
         Node::IsVar => Ok(DualValue::seed(expr, pool)),
         Node::IsConst => Ok(DualValue::constant(expr, pool)),
