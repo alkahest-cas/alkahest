@@ -44,6 +44,9 @@
 //! and is carried as a side condition on every derived quantity, exactly like
 //! a symbolic `σ` on a univariate `Normal`.
 
+// Matrix code reads clearest with explicit (i, j) indices into several arrays at once.
+#![allow(clippy::needless_range_loop)]
+
 use std::collections::HashMap;
 
 use crate::deriv::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
