@@ -902,6 +902,7 @@ pub(crate) fn integrate_first_of(
         }
         tried.push(expr);
         match integrate(expr, var, pool) {
+            Ok(d) if is_local_only(&d) => last = last.or(Some(LOCAL_ONLY.to_string())),
             Ok(d) => return Ok(simp(d.value, pool)),
             Err(e) => last = last.or(Some(e.to_string())),
         }
@@ -914,6 +915,7 @@ pub(crate) fn integrate_first_of(
             }
             tried.push(cand);
             match integrate(cand, var, pool) {
+                Ok(d) if is_local_only(&d) => last = last.or(Some(LOCAL_ONLY.to_string())),
                 Ok(d) => return Ok(simp(d.value, pool)),
                 Err(e) => last = last.or(Some(e.to_string())),
             }
@@ -935,6 +937,23 @@ pub(crate) fn integrate_first_of(
         "required integral did not close: {}",
         last.unwrap_or_else(|| "no candidate form".to_string())
     )))
+}
+
+const LOCAL_ONLY: &str = "the antiderivative found is valid on (−π, π) only (half-angle \
+                          substitution), so it does not give a solution on ℝ";
+
+/// Is this antiderivative valid on a sub-interval only?
+///
+/// The integration engine marks a half-angle (`t = tan(x/2)`) antiderivative
+/// that still jumps at the odd multiples of π with
+/// [`WEIERSTRASS_LOCAL_RULE`](crate::integrate::engine::WEIERSTRASS_LOCAL_RULE).
+/// A particular solution built from it is a solution on `(−π, π)` and a
+/// sawtooth outside it, so `dsolve` tries the next spelling instead.
+fn is_local_only(d: &crate::deriv::log::DerivedExpr<ExprId>) -> bool {
+    d.log
+        .steps()
+        .iter()
+        .any(|s| s.rule_name == crate::integrate::engine::WEIERSTRASS_LOCAL_RULE)
 }
 
 /// The most-normalised spelling of `expr` (the last [`integrand_spellings`]
