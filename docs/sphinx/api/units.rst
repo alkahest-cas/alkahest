@@ -92,6 +92,5 @@ unit-free ``0`` and ``±oo``. ``alkahest.units.exp``, ``log``, ``sin``, … (and
 ``apply(f, q)``) require a dimensionless argument and convert ``deg``/``%`` to a
 pure number first.
 
-.. exception:: UnitError
-
-   ``E-UNIT-001`` … ``E-UNIT-007``; see :doc:`errors`.
+Refusals raise :exc:`UnitError` (``E-UNIT-001`` … ``E-UNIT-007``); see
+:doc:`errors`.

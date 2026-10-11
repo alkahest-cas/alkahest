@@ -2,7 +2,7 @@
 
 Oracles: an exact hand-checked conversion table (SI brochure / NIST SP 811
 definitions), ``pint`` when it is installed, SymPy for the pharmacokinetic AUC,
-and mpmath for the angle conversion.
+and math.pi for the angle conversion.
 """
 
 from __future__ import annotations
@@ -155,11 +155,10 @@ def test_affine_temperature_refused_in_arithmetic():
 
 
 def test_degree_to_radian_is_exact_pi_over_180():
-    import mpmath
 
     q = U.convert(Quantity(90, "deg"), "rad")
     assert "pi" in str(q.value)
-    assert alkahest.eval_expr(q.value, {}) == pytest.approx(float(mpmath.pi / 2), rel=1e-15)
+    assert alkahest.eval_expr(q.value, {}) == pytest.approx(math.pi / 2, rel=1e-15)
     assert Unit("deg").scale == (Fraction(1, 180), Fraction(1))
     # sin(90 deg) = 1
     s = U.sin(Quantity(90, "deg"))

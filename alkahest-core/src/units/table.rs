@@ -196,7 +196,7 @@ fn build() -> HashMap<&'static str, UnitDef> {
     put(&["lbf"], lbf.clone(), 0, FORCE, false);
     put(
         &["psi"],
-        Rational::from(&lbf / Rational::from(&inch * &inch)),
+        &lbf / Rational::from(&inch * &inch),
         0,
         PRESSURE,
         false,
@@ -207,19 +207,13 @@ fn build() -> HashMap<&'static str, UnitDef> {
     put(&["mph"], r(1609344, 3600000), 0, SPEED, false);
     put(
         &["gal"],
-        Rational::from(Rational::from(&inch * &inch) * &inch) * 231,
+        (Rational::from(&inch * &inch) * &inch) * 231,
         0,
         VOLUME,
         false,
     );
     // Mechanical horsepower: 550 ft·lbf/s.
-    put(
-        &["hp"],
-        Rational::from(&lbf * dec("0.3048")) * 550,
-        0,
-        POWER,
-        false,
-    );
+    put(&["hp"], (&lbf * dec("0.3048")) * 550, 0, POWER, false);
     put(&["g0", "gn"], gn, 0, [1, 0, -2, 0, 0, 0, 0], false);
 
     // Temperature: Rankine and the two difference units are multiplicative.
@@ -232,7 +226,7 @@ fn build() -> HashMap<&'static str, UnitDef> {
         (
             &["degF", "°F", "fahrenheit"][..],
             r(5, 9),
-            Rational::from(dec("459.67") * r(5, 9)),
+            (dec("459.67") * r(5, 9)),
         ),
     ] {
         for n in names {
