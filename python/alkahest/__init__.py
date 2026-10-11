@@ -750,6 +750,12 @@ def symbolic_grad(expr, vars):
     list[Expr]
         ``[∂expr/∂vars[0], ∂expr/∂vars[1], …]`` (plain expressions, no step log).
 
+    Raises
+    ------
+    DiffError
+        ``E-DIFF-001`` when a function that depends on one of *vars* has no
+        derivative rule (e.g. ``floor``). A partial is never silently ``0``.
+
     See Also
     --------
     diff : single-variable derivative with :class:`~alkahest.DerivedResult` steps.

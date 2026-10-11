@@ -35,9 +35,9 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-POLY-010", class: "FactorError", cause: Cause::Internal,    remediation: Some("report the polynomial as a minimal failing example") },
     // E-DIFF — DiffError (symbolic + forward-mode)
     ErrorSpec { code: "E-DIFF-001", class: "DiffError", cause: Cause::Unsupported, remediation: Some("register the function in PrimitiveRegistry, or use diff_forward with a custom rule") },
-    ErrorSpec { code: "E-DIFF-002", class: "DiffError", cause: Cause::UserInput,   remediation: Some("symbolic exponents require the chain rule; use diff_forward for non-integer powers") },
+    ErrorSpec { code: "E-DIFF-002", class: "DiffError", cause: Cause::UserInput,   remediation: Some("diff applies the general power rule to symbolic exponents, so this is not expected; simplify the exponent first and report the expression if it persists") },
     ErrorSpec { code: "E-DIFF-003", class: "DiffError", cause: Cause::Unsupported, remediation: Some("register the function in PrimitiveRegistry with diff_forward implemented") },
-    ErrorSpec { code: "E-DIFF-004", class: "DiffError", cause: Cause::UserInput,   remediation: Some("substitute concrete values first; diff_forward requires integer exponents") },
+    ErrorSpec { code: "E-DIFF-004", class: "DiffError", cause: Cause::UserInput,   remediation: Some("diff_forward applies the general power rule to symbolic exponents, so this is not expected; prefer diff, and report the expression if it persists") },
     // E-SIMPLIFY — AssumptionError
     ErrorSpec { code: "E-SIMPLIFY-001", class: "AssumptionError", cause: Cause::Domain, remediation: Some("remove the conflicting refinement or create a separate AssumptionContext") },
     // E-SERIES — SeriesError (V2-15 truncated expansions)

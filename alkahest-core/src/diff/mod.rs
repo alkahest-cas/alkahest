@@ -8,4 +8,4 @@ mod proptests;
 pub use diff_impl::{diff, DiffError};
 #[allow(deprecated)]
 pub use forward::{diff_forward, DualValue, ForwardDiffError};
-pub use reverse::grad;
+pub use reverse::{grad, try_grad};

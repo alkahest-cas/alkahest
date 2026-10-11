@@ -266,17 +266,26 @@ fn eval_dual(
         }
         Node::Pow { base, exp } => {
             // Constant exponent: integer → pow_int, rational → pow_rat.
-            let exp_kind = pool
-                .with(exp, |data| match data {
-                    ExprData::Integer(n) => Some(ExpKind::Int(n.0.clone())),
-                    ExprData::Rational(q) => Some(ExpKind::Rat(q.0.clone())),
-                    _ => None,
-                })
-                .ok_or(DiffError::ForwardNonIntegerExponent)?;
+            let exp_kind = pool.with(exp, |data| match data {
+                ExprData::Integer(n) => Some(ExpKind::Int(n.0.clone())),
+                ExprData::Rational(q) => Some(ExpKind::Rat(q.0.clone())),
+                _ => None,
+            });
             let b = eval_dual(base, var, pool, memo)?;
             Ok(match exp_kind {
-                ExpKind::Int(n) => b.pow_int(n, pool),
-                ExpKind::Rat(q) => b.pow_rat(q, pool),
+                Some(ExpKind::Int(n)) => b.pow_int(n, pool),
+                Some(ExpKind::Rat(q)) => b.pow_rat(q, pool),
+                // Symbolic exponent — general power rule:
+                //   d(f^g) = g·f^(g−1)·df + f^g·log(f)·dg.
+                None => {
+                    let g = eval_dual(exp, var, pool, memo)?;
+                    let value = pool.pow(b.value, g.value);
+                    let g_minus_1 = pool.add(vec![g.value, pool.integer(-1_i32)]);
+                    let t1 = pool.mul(vec![g.value, pool.pow(b.value, g_minus_1), b.tangent]);
+                    let log_f = pool.func("log", vec![b.value]);
+                    let t2 = pool.mul(vec![value, log_f, g.tangent]);
+                    DualValue::new(value, pool.add(vec![t1, t2]))
+                }
             })
         }
         Node::Func { name, arg } => {

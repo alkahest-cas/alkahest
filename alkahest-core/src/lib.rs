@@ -85,7 +85,7 @@ pub use calculus::{limit, series, LimitDirection, LimitError, Series, SeriesErro
 pub use dae::{pantelides, DaeError, PantelidesResult, DAE};
 pub use deriv::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
 #[allow(deprecated)]
-pub use diff::{diff, diff_forward, grad, DiffError, DualValue, ForwardDiffError};
+pub use diff::{diff, diff_forward, grad, try_grad, DiffError, DualValue, ForwardDiffError};
 pub use eval::{
     eval_complex_f64, eval_exact_rational, eval_f64, eval_interval, evaluate, ComplexF64,
     EvalError, EvalMode, EvalValue, UnsupportedReason,
@@ -287,7 +287,7 @@ pub mod stable {
     };
     pub use crate::calculus::{limit, series, LimitDirection, LimitError, Series, SeriesError};
     pub use crate::dae::{pantelides, DaeError, DAE};
-    pub use crate::diff::{diff, diff_forward, grad, DiffError};
+    pub use crate::diff::{diff, diff_forward, grad, try_grad, DiffError};
     #[cfg(feature = "groebner")]
     pub use crate::diffalg::{
         dae_index_reduce, dae_index_reduce_ranked, rosenfeld_groebner,

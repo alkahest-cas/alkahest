@@ -343,6 +343,45 @@ pub fn check() -> Result<(), BudgetError> {
     })
 }
 
+/// `true` when a [`check`] has already tripped, or would trip on the wall
+/// clock or cancellation — **without** charging a step.
+///
+/// For asking "did the work I just did run out of budget part-way?" after the
+/// fact (e.g. a `simplify` that hands back its input when its budget trips),
+/// where an extra counted [`check`] would shift every later step-limited
+/// caller's accounting.
+pub(crate) fn is_exhausted() -> bool {
+    tripped().is_some()
+}
+
+/// The error [`check`] would report for a budget that has already run out,
+/// without charging a step; `None` while there is budget left.
+pub(crate) fn tripped() -> Option<BudgetError> {
+    if is_cancelled() {
+        return Some(BudgetError::Cancelled);
+    }
+    STACK.with(|s| {
+        let stack = s.borrow();
+        let frame = stack.last()?;
+        if let Some(wall) = frame.wall {
+            let elapsed = frame.start.elapsed();
+            if elapsed >= wall {
+                return Some(BudgetError::WallClock {
+                    limit: wall,
+                    elapsed,
+                });
+            }
+        }
+        match frame.max_steps {
+            Some(limit) if frame.steps.get() > limit => Some(BudgetError::Steps {
+                limit,
+                taken: frame.steps.get(),
+            }),
+            _ => None,
+        }
+    })
+}
+
 /// Work units a single growth step may ask for when the active [`Budget`]
 /// sets no `max_steps`, and when no budget is active at all.
 ///
