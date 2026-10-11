@@ -14,6 +14,7 @@
 - [Transformations](./transformations.md)
 - [Probability and information theory](./probability.md)
 - [Vector calculus and quaternions](./vector-quaternion.md)
+- [Units and dimensional analysis](./units.md)
 - [Code generation](./codegen.md)
   - [GPU support (CUDA)](./gpu.md)
 - [Ball arithmetic](./ball-arithmetic.md)

@@ -530,6 +530,14 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // refusal rather than an assumption.
     ErrorSpec { code: "E-VEC-004", class: "VectorError", cause: Cause::Domain,      remediation: Some("these formulas hold only for orthogonal charts; supply an orthogonal embedding, or work in Cartesian coordinates and transform the result by hand") },
     ErrorSpec { code: "E-VEC-005", class: "VectorError", cause: Cause::Domain,      remediation: Some("restrict the chart to a region where the scale factor is non-zero, or re-parametrise; a chart that collapses a direction has no unique orthonormal frame there") },
+    // E-UNIT — UnitError (physical units and dimensional analysis, G10)
+    ErrorSpec { code: "E-UNIT-001", class: "UnitError", cause: Cause::UserInput,   remediation: Some("only quantities of the same dimension can be added, compared or converted; check the formula or the units assigned to its symbols") },
+    ErrorSpec { code: "E-UNIT-002", class: "UnitError", cause: Cause::UserInput,   remediation: Some("write units as a product such as \"mg*h/L\", \"m/s^2\" or \"kg m s^-2\"; exponents follow ^ or **, fractional ones in parentheses: \"m^(1/2)\"") },
+    ErrorSpec { code: "E-UNIT-003", class: "UnitError", cause: Cause::UserInput,   remediation: Some("°C and °F are affine scales; convert to K (or use delta_degC / delta_degF for temperature differences) before doing arithmetic") },
+    ErrorSpec { code: "E-UNIT-004", class: "UnitError", cause: Cause::UserInput,   remediation: Some("exp, log, trigonometric and other transcendental functions need a pure-number argument; divide by a reference quantity, or convert angles to rad") },
+    ErrorSpec { code: "E-UNIT-005", class: "UnitError", cause: Cause::UserInput,   remediation: Some("give every symbol (or applied function such as C(t)) a unit in the units mapping") },
+    ErrorSpec { code: "E-UNIT-006", class: "UnitError", cause: Cause::UserInput,   remediation: Some("assign the same unit to every symbol of one dimension (e.g. all times in h), or convert the quantities before forming the sum") },
+    ErrorSpec { code: "E-UNIT-007", class: "UnitError", cause: Cause::Unsupported, remediation: Some("use the coherent SI unit (e.g. m^(1/2) instead of km^(1/2)) for fractional powers") },
     // E-QUAT — QuaternionError (Hamilton quaternions and the rotation operator)
     ErrorSpec { code: "E-QUAT-001", class: "QuaternionError", cause: Cause::Domain,    remediation: Some("use a non-zero quaternion; if the components are symbolic, substitute concrete values or declare the parameters so the norm can be decided") },
     // The identity rotation has no axis — *every* unit vector is one.  Returning

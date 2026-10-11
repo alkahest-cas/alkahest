@@ -1309,6 +1309,25 @@ unlike `ProbabilityError`, which is. All three subclass `ak.AlkahestError`.
 
 ---
 
+## Units and dimensional analysis
+
+```python
+from alkahest import Quantity, Unit, dimension_of, convert_units
+from alkahest import units as U
+convert_units(Quantity(1, "inch"), "m").value      # Fraction(127, 5000) — exact, never float
+(Quantity(2, "kg") * Quantity(3, "m/s^2")).unit == Unit("N")   # semantic equality
+Quantity(1, "mg") + Quantity(1, "L")               # UnitError E-UNIT-001 (names both dimensions)
+convert_units(Quantity(100, "degC"), "degF").value # 212; degC/degF only convert (E-UNIT-003 otherwise)
+dimension_of(C, {D: "mg", V: "L", ka: "1/h", ke: "1/h", t: "h", F: "1"})  # Unit('mg/L')
+U.integrate(Quantity(C, "mg/L"), Quantity(t, "h"), 0, Quantity(oo, "h")).unit  # mg*h/L
+U.sin(Quantity(90, "deg"))                          # deg converted to rad first
+```
+
+- Unit strings: `"mg*h/L"`, `"kg m s^-2"`, `"m^(1/2)"`, SI prefixes (`µ`/`u`), `"m2"` is refused.
+- `dimension_of` needs a unit for every symbol (`E-UNIT-005`); sums need equal *units*, not only
+  dimensions (`E-UNIT-006`: `t_h + t_min`); transcendental arguments must be pure numbers (`E-UNIT-004`).
+- Integration bounds for a dimensional variable must be `Quantity`s (or `0`/`±oo`).
+
 ## Sensitivity and adjoint systems
 
 ```python
@@ -1561,6 +1580,7 @@ All errors inherit `AlkahestError` and carry `.code`, `.remediation`, `.span`.
 | `CertificateUnavailableError` | `E-CERT-*` | A Lean certificate was required but withheld |
 | `ProbabilityError` | `E-PROB-*` | The experimental distribution surface. `001` = a **numeric** parameter outside the law's constraint (a symbolic one goes on `constraints()` instead); `002` = outside the modelled class (joint law, PGF for a non-lattice variate, cross-family KL); `003` = the reduction integral was built and **this integrator** declined it, and the message names it; `004` = no closed form inside this library's primitives (`Gamma`/`Beta` CDF, the normal quantile, the log-normal characteristic function); `005` = a closed form **computed and withheld** because quadrature of its own defining integral did not confirm it — **record `unknown`**; `006` = the quantity **does not exist** (a divergent expectation, an MGF outside its convergence strip, an infinite KL divergence) — **a verdict, stop looking** |
 | `VectorError` | `E-VEC-*` | Vector calculus over an orthogonal chart. `004` = a chart `from_embedding` could not **prove** orthogonal — undecided is a refusal, because the formulas still evaluate on a skew chart, to something that looks like a divergence and is not one; `005` = a degenerate scale factor. Reached as `experimental.VectorError`, not `alkahest.VectorError` |
+| `UnitError` | `E-UNIT-*` | Units (`alkahest.units`). `001` = different dimensions in a sum/conversion (both named); `002` = bad unit string; `003` = `degC`/`degF` used in arithmetic (affine — convert to K); `004` = a function argument that is not a pure number; `005` = a symbol with no unit in `dimension_of`; `006` = same dimension, different units in a sum; `007` = irrational scale under a fractional power |
 | `QuaternionError` | `E-QUAT-*` | `001` = a zero or undecided norm; `002` = the axis of the identity rotation, which **does not exist** — every unit vector is one, and the conventional `(0,0,1)` is a stated answer to a question with no answer; `003` = a matrix that could not be checked to be a proper rotation, including any symbolic matrix. Reached as `experimental.QuaternionError` |
 
 ```python

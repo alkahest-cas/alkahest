@@ -15,6 +15,7 @@ from . import (
     number_theory,
     research,  # session-level claim graph (provenance objects)
     smt,  # P2 item 3 — SMT/SAT bridge
+    units,  # G10 — physical units and dimensional analysis
 )
 from ._batch import (
     BatchItem,
@@ -338,6 +339,16 @@ from .alkahest import (
 from .alkahest import (
     integrate_definite as _native_integrate_definite,
 )
+from .units import (  # G10 — physical units and dimensional analysis
+    Quantity,
+    Unit,
+    UnitError,
+    dimension_of,
+    parse_unit,
+    simplify_units,
+)
+from .units import convert as convert_units
+from .units import to_base as to_base_units
 
 # V5-7: JAX primitive integration (optional — requires JAX).  `to_jax` is
 # resolved lazily by the module `__getattr__` at the bottom of this file:
@@ -2869,6 +2880,8 @@ __all__ = [
     "Product",
     "ProductError",
     "PslqError",
+    # G10 — physical units and dimensional analysis
+    "Quantity",
     "RationalFunction",
     "RealRootError",
     "RegularChain",
@@ -2898,6 +2911,8 @@ __all__ = [
     "UniPoly",
     "UniPolyFactorModP",
     "UniPolyFactorization",
+    "Unit",
+    "UnitError",
     "ValidatedError",
     # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     "ZeilbergerCertificate",
@@ -2946,6 +2961,7 @@ __all__ = [
     "conjugate",
     # RW-7
     "context",
+    "convert_units",
     "cos",
     # Exponential-integral family (DLMF §6.2)
     "cos_integral",
@@ -2962,6 +2978,7 @@ __all__ = [
     "diff_many",
     "digamma",
     "dilog",
+    "dimension_of",
     "diophantine",
     # Elliptic special functions (parameter convention m = k²)
     "elliptic_e",
@@ -3034,6 +3051,7 @@ __all__ = [
     "pantelides",
     # V2-21
     "parse",
+    "parse_unit",
     # PA-9
     "piecewise",
     "plot",
@@ -3099,6 +3117,7 @@ __all__ = [
     "simplify_strategy",
     "simplify_trig",
     "simplify_trig_normal_form",
+    "simplify_units",
     "simplify_with",
     # Math functions (core 5)
     "sin",
@@ -3129,6 +3148,7 @@ __all__ = [
     # V1-12: expanded primitives
     "tan",
     "tanh",
+    "to_base_units",
     # V5-1
     "to_lean",
     "to_smtlib",
@@ -3142,6 +3162,7 @@ __all__ = [
     "trigamma",
     "unflatten_exprs",
     "unicode_str",
+    "units",
     "verified_integral",
     "verified_no_roots",
     "verified_sign",
