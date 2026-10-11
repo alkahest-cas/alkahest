@@ -18,7 +18,8 @@ trig polynomials over a Pythagorean denominator by power reduction instead, and
 
 Oracles: residuals are evaluated from the returned solution on a grid over
 [−20, 20]; continuity is checked by finite differences of y and y′; definite
-integrals are compared with `mpmath.quad`.
+integrals are compared with composite Gauss–Legendre quadrature (pure Python, so
+the oracle runs in CI without mpmath).
 """
 
 from __future__ import annotations
@@ -26,11 +27,42 @@ from __future__ import annotations
 import math
 
 import alkahest as ak
-import mpmath
 import pytest
 from alkahest import experimental as ex
 
 GRID = [-20.0 + 0.37 * i for i in range(109)]  # ≈ [−20, 20], avoids lattice points
+
+
+def _gauss_legendre(n):
+    """Nodes and weights of the n-point Gauss–Legendre rule on [−1, 1]."""
+    nodes, weights = [], []
+    for i in range(1, n + 1):
+        z = math.cos(math.pi * (i - 0.25) / (n + 0.5))
+        for _ in range(100):
+            p0, p1 = 1.0, z
+            for k in range(2, n + 1):
+                p0, p1 = p1, ((2 * k - 1) * z * p1 - (k - 1) * p0) / k
+            dp = n * (z * p1 - p0) / (z * z - 1)
+            step = p1 / dp
+            z -= step
+            if abs(step) < 1e-16:
+                break
+        nodes.append(z)
+        weights.append(2 / ((1 - z * z) * dp * dp))
+    return nodes, weights
+
+
+_GL = _gauss_legendre(10)
+
+
+def _quad(f, a, b, pieces=600):
+    """Composite 10-point Gauss–Legendre: ~1e-14 for the smooth integrands here."""
+    total = 0.0
+    h = (b - a) / pieces
+    for j in range(pieces):
+        mid, half = a + (j + 0.5) * h, 0.5 * h
+        total += half * sum(w * f(mid + half * z) for z, w in zip(*_GL))
+    return total
 
 
 def _ev(expr, sym, v):
@@ -187,7 +219,7 @@ def test_definite_rational_trig_crossing_odd_pi(label, build, a, b):
     pool = ak.ExprPool()
     x = pool.symbol("x")
     f = build(x)
-    num = mpmath.quad(lambda v: _ev(f, x, float(v)), mpmath.linspace(a, b, 40))
+    num = _quad(lambda v: _ev(f, x, v), a, b)
     r = ak.integrate(f, x, pool.float(a), pool.float(b))
     got = ak.eval_expr(r.value, {})
     assert abs(got - float(num)) < 1e-9 * (1 + abs(num)), f"{label}: {got} vs {num}"
