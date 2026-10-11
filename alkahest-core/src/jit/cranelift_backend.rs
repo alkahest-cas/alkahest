@@ -17,10 +17,18 @@
 //! can call them as imported symbols.
 
 use super::{
-    topo_sort, CompileTier, CompiledFn, CompiledFnInner, JitBulkFn, JitError, JitScalarFn,
+    registry, topo_sort, CompileTier, CompiledFn, CompiledFnInner, JitColsFn, JitError, JitScalarFn,
+};
+use crate::kernel::eval_const::{
+    has_hw_fma, pow_f64_narrow, powi_with, small_integer_exponent, sqrt_pow_with, FloatOps,
 };
 use crate::kernel::{integer_to_f64, rational_to_f64, ExprData, ExprId, ExprPool};
-use cranelift_codegen::ir::{condcodes::IntCC, types, AbiParam, BlockArg, InstBuilder, MemFlags};
+use crate::primitive::Primitive;
+use cranelift_codegen::ir::{
+    condcodes::{FloatCC, IntCC},
+    types, AbiParam, BlockArg, InstBuilder, MemFlags, StackSlot, StackSlotData, StackSlotKind,
+    Value,
+};
 use cranelift_codegen::{settings, settings::Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
@@ -116,8 +124,10 @@ extern "C" fn tramp_tan(x: f64) -> f64 {
 extern "C" fn tramp_abs(x: f64) -> f64 {
     x.abs()
 }
+/// `pow_f64_narrow`: the interpreter's kernel for an exponent known only at
+/// run time (a constant exponent is specialised at compile time instead).
 extern "C" fn tramp_pow(base: f64, exp: f64) -> f64 {
-    base.powf(exp)
+    pow_f64_narrow(base, exp)
 }
 extern "C" fn tramp_sinh(x: f64) -> f64 {
     x.sinh()
@@ -155,6 +165,9 @@ extern "C" fn tramp_ceil(x: f64) -> f64 {
 extern "C" fn tramp_round(x: f64) -> f64 {
     x.round()
 }
+extern "C" fn tramp_fma(a: f64, b: f64, c: f64) -> f64 {
+    crate::kernel::eval_const::fma_exact(a, b, c)
+}
 /// Matches `SignPrimitive::numeric_f64`: `0` for `x == 0`, `±1` otherwise.
 extern "C" fn tramp_sign(x: f64) -> f64 {
     if x > 0.0 {
@@ -164,6 +177,48 @@ extern "C" fn tramp_sign(x: f64) -> f64 {
     } else {
         0.0
     }
+}
+
+// ---------------------------------------------------------------------------
+// Registry primitives with no dedicated trampoline
+// ---------------------------------------------------------------------------
+
+/// Evaluate a one-argument registry primitive for compiled code.
+///
+/// `prim` points at a `&'static dyn Primitive` owned by the compiled function
+/// (see [`CraneliftCode::prims`]); `fail` is set to 1 when the kernel has no
+/// value at this point — the interpreter's `None`, which turns the whole
+/// evaluation into `NaN` — and to 0 otherwise. A panic in a kernel is caught
+/// here (unwinding out of an `extern "C"` function would abort the process)
+/// and reported as a failure.
+extern "C" fn tramp_prim1(prim: *const &'static dyn Primitive, a: f64, fail: *mut u8) -> f64 {
+    // SAFETY: `prim` is the address of an element of the boxed slice that the
+    // compiled function owns for as long as its code can run; `fail` is a
+    // stack slot of the calling frame.
+    let p: &'static dyn Primitive = unsafe { *prim };
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| p.numeric_f64(&[a])))
+        .ok()
+        .flatten();
+    unsafe { *fail = u8::from(r.is_none()) };
+    r.unwrap_or(f64::NAN)
+}
+
+/// [`tramp_prim1`] for any other arity: `args` points at `n` values.
+extern "C" fn tramp_primn(
+    prim: *const &'static dyn Primitive,
+    args: *const f64,
+    n: u64,
+    fail: *mut u8,
+) -> f64 {
+    // SAFETY: as in `tramp_prim1`; `args` is a stack slot of the calling frame
+    // holding `n` initialised values.
+    let p: &'static dyn Primitive = unsafe { *prim };
+    let vals = unsafe { std::slice::from_raw_parts(args, n as usize) };
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| p.numeric_f64(vals)))
+        .ok()
+        .flatten();
+    unsafe { *fail = u8::from(r.is_none()) };
+    r.unwrap_or(f64::NAN)
 }
 
 // ---------------------------------------------------------------------------
@@ -192,25 +247,147 @@ struct MathFuncIds {
     ceil_id: FuncId,
     round_id: FuncId,
     sign_id: FuncId,
+    prim1_id: FuncId,
+    primn_id: FuncId,
+}
+
+impl MathFuncIds {
+    /// The dedicated trampoline for a one-argument head, if it has one.
+    fn unary(&self, name: &str) -> Option<FuncId> {
+        Some(match name {
+            "sin" => self.sin_id,
+            "cos" => self.cos_id,
+            "exp" => self.exp_id,
+            "log" => self.log_id,
+            "sqrt" => self.sqrt_id,
+            "tan" => self.tan_id,
+            "abs" => self.abs_id,
+            "sinh" => self.sinh_id,
+            "cosh" => self.cosh_id,
+            "tanh" => self.tanh_id,
+            "asin" => self.asin_id,
+            "acos" => self.acos_id,
+            "atan" => self.atan_id,
+            "asinh" => self.asinh_id,
+            "acosh" => self.acosh_id,
+            "atanh" => self.atanh_id,
+            "floor" => self.floor_id,
+            "ceil" => self.ceil_id,
+            "round" => self.round_id,
+            "sign" => self.sign_id,
+            _ => return None,
+        })
+    }
+}
+
+/// True when `node` is a `Func` that is evaluated through its registry
+/// primitive (no dedicated trampoline), and so can fail at a point.
+fn is_generic_call(node: ExprId, pool: &ExprPool, math: &MathFuncIds) -> bool {
+    pool.with(node, |d| match d {
+        ExprData::Func { name, .. } if name == crate::poly::root_of::ROOT_OF => false,
+        ExprData::Func { name, args } => !(args.len() == 1 && math.unary(name).is_some()),
+        _ => false,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// FloatOps over Cranelift IR — the shared power kernels, emitted inline
+// ---------------------------------------------------------------------------
+
+struct ClifOps<'a, 'b> {
+    builder: &'a mut FunctionBuilder<'b>,
+}
+
+impl FloatOps for ClifOps<'_, '_> {
+    type V = Value;
+    fn konst(&mut self, v: f64) -> Value {
+        self.builder.ins().f64const(v)
+    }
+    fn add(&mut self, a: Value, b: Value) -> Value {
+        self.builder.ins().fadd(a, b)
+    }
+    fn mul(&mut self, a: Value, b: Value) -> Value {
+        self.builder.ins().fmul(a, b)
+    }
+    fn div(&mut self, a: Value, b: Value) -> Value {
+        self.builder.ins().fdiv(a, b)
+    }
+    fn neg(&mut self, a: Value) -> Value {
+        self.builder.ins().fneg(a)
+    }
+    fn fma(&mut self, a: Value, b: Value, c: Value) -> Value {
+        self.builder.ins().fma(a, b, c)
+    }
+    fn sqrt(&mut self, a: Value) -> Value {
+        self.builder.ins().sqrt(a)
+    }
+    fn select_finite(&mut self, t: Value, a: Value, b: Value) -> Value {
+        let abs = self.builder.ins().fabs(t);
+        let inf = self.builder.ins().f64const(f64::INFINITY);
+        let c = self.builder.ins().fcmp(FloatCC::LessThan, abs, inf);
+        self.builder.ins().select(c, a, b)
+    }
+    fn select_finite_nonzero(&mut self, t: Value, a: Value, b: Value) -> Value {
+        let abs = self.builder.ins().fabs(t);
+        let inf = self.builder.ins().f64const(f64::INFINITY);
+        let zero = self.builder.ins().f64const(0.0);
+        let finite = self.builder.ins().fcmp(FloatCC::LessThan, abs, inf);
+        // `NotEqual` is true for NaN, which `finite` excludes anyway (and
+        // matches Rust's `!=`); `OrderedNotEqual` has no aarch64 lowering.
+        let nonzero = self.builder.ins().fcmp(FloatCC::NotEqual, t, zero);
+        let c = self.builder.ins().band(finite, nonzero);
+        self.builder.ins().select(c, a, b)
+    }
+    fn select_neg_inf(&mut self, t: Value, a: Value, b: Value) -> Value {
+        let ninf = self.builder.ins().f64const(f64::NEG_INFINITY);
+        let c = self.builder.ins().fcmp(FloatCC::Equal, t, ninf);
+        self.builder.ins().select(c, a, b)
+    }
 }
 
 // ---------------------------------------------------------------------------
 // codegen_node — emit Cranelift IR for a single DAG node
 // ---------------------------------------------------------------------------
 
+/// Everything node emission needs besides the builder.
+struct Codegen<'a> {
+    pool: &'a ExprPool,
+    math: &'a MathFuncIds,
+    /// Address of each generic primitive's slot in [`CraneliftCode::prims`].
+    prim_addr: &'a HashMap<String, i64>,
+    /// One 8-byte slot the generic trampolines report failure through, and
+    /// one for their arguments (sized for the widest call), if any.
+    fail_slot: Option<StackSlot>,
+    args_slot: Option<StackSlot>,
+}
+
+/// The emitted value of a node, and — for a generic call — its failure flag.
+struct Emitted {
+    value: Value,
+    fail: Option<Value>,
+}
+
 fn codegen_node(
     node: ExprId,
-    pool: &ExprPool,
-    values: &HashMap<ExprId, cranelift_codegen::ir::Value>,
+    cg: &Codegen<'_>,
+    values: &HashMap<ExprId, Value>,
     builder: &mut FunctionBuilder,
     module: &mut JITModule,
-    math: &MathFuncIds,
-) -> Result<cranelift_codegen::ir::Value, JitError> {
+) -> Result<Emitted, JitError> {
+    let pool = cg.pool;
+    let math = cg.math;
+    let get = |id: &ExprId, what: &str| -> Result<Value, JitError> {
+        values
+            .get(id)
+            .copied()
+            .ok_or_else(|| JitError::CompilationFailed(format!("missing {what}")))
+    };
+    let plain = |value| Ok(Emitted { value, fail: None });
     match pool.get(node) {
-        ExprData::Integer(n) => Ok(builder.ins().f64const(integer_to_f64(&n.0))),
-        ExprData::Rational(r) => Ok(builder.ins().f64const(rational_to_f64(&r.0))),
-        ExprData::Float(f) => Ok(builder.ins().f64const(f.inner.to_f64())),
-        // `π` is a constant, not an input.  `load_input_vars` has already
+        ExprData::Integer(n) => plain(builder.ins().f64const(integer_to_f64(&n.0))),
+        ExprData::Rational(r) => plain(builder.ins().f64const(rational_to_f64(&r.0))),
+        ExprData::Float(f) => plain(builder.ins().f64const(f.inner.to_f64())),
+        // `π` is a constant, not an input.  `load_inputs` has already
         // populated `values` for every declared input and the caller skips
         // those nodes, so an input *named* `pi` still wins; this arm is only
         // reached for a `pi` nobody declared.  Without it the compiled function
@@ -218,169 +395,217 @@ fn codegen_node(
         // answers, the other refuses — and the agreement tests exist precisely
         // to stop that.
         ExprData::Symbol { name, .. } if name == crate::eval::symbols::PI_NAME => {
-            Ok(builder.ins().f64const(std::f64::consts::PI))
+            plain(builder.ins().f64const(std::f64::consts::PI))
         }
         ExprData::Symbol { name, .. } => Err(JitError::UnsupportedNode(format!(
             "unbound symbol '{name}'"
         ))),
         ExprData::Add(args) => {
+            // Seeded with +0.0 like the interpreter, so an all-(-0.0) sum is
+            // +0.0 in both.
             let mut acc = builder.ins().f64const(0.0);
-            for &a in &args {
-                let v = *values
-                    .get(&a)
-                    .ok_or_else(|| JitError::CompilationFailed("missing Add child".to_string()))?;
+            for a in &args {
+                let v = get(a, "Add child")?;
                 acc = builder.ins().fadd(acc, v);
             }
-            Ok(acc)
+            plain(acc)
         }
         ExprData::Mul(args) => {
-            let mut acc = builder.ins().f64const(1.0);
-            for &a in &args {
-                let v = *values
-                    .get(&a)
-                    .ok_or_else(|| JitError::CompilationFailed("missing Mul child".to_string()))?;
-                acc = builder.ins().fmul(acc, v);
+            // The interpreter's `1.0 · a · …` seed is the identity on every
+            // value (`1·x` is `x`, signed zeros and NaN included), so it is
+            // not emitted.
+            let mut acc: Option<Value> = None;
+            for a in &args {
+                let v = get(a, "Mul child")?;
+                acc = Some(match acc {
+                    None => v,
+                    Some(p) => builder.ins().fmul(p, v),
+                });
             }
-            Ok(acc)
+            plain(acc.unwrap_or_else(|| builder.ins().f64const(1.0)))
         }
         ExprData::Pow { base, exp } => {
-            let b = *values
-                .get(&base)
-                .ok_or_else(|| JitError::CompilationFailed("missing Pow base".to_string()))?;
-            let e = *values
-                .get(&exp)
-                .ok_or_else(|| JitError::CompilationFailed("missing Pow exp".to_string()))?;
+            let b = get(&base, "Pow base")?;
+            // A constant exponent picks its kernel now, exactly as
+            // `pow_f64_narrow` would at run time.
+            let konst = match pool.get(exp) {
+                ExprData::Integer(n) => Some(integer_to_f64(&n.0)),
+                ExprData::Rational(r) => Some(rational_to_f64(&r.0)),
+                ExprData::Float(f) => Some(f.inner.to_f64()),
+                _ => None,
+            };
+            if let Some(v) = konst {
+                if let Some(n) = small_integer_exponent(v) {
+                    // Exactly the choice `powi_f64` makes at run time.
+                    if (-1..=2).contains(&n) || has_hw_fma() {
+                        return plain(powi_with(&mut ClifOps { builder }, b, n));
+                    }
+                }
+                if v == 0.5 {
+                    return plain(sqrt_pow_with(&mut ClifOps { builder }, b));
+                }
+            }
+            let e = get(&exp, "Pow exp")?;
             let pow_ref = module.declare_func_in_func(math.pow_id, builder.func);
             let call = builder.ins().call(pow_ref, &[b, e]);
-            Ok(builder.inst_results(call)[0])
+            plain(builder.inst_results(call)[0])
         }
-        ExprData::Func { name, args } if args.len() == 1 => {
-            let a = *values
-                .get(&args[0])
-                .ok_or_else(|| JitError::CompilationFailed("missing Func arg".to_string()))?;
-            let func_id = match name.as_str() {
-                "sin" => math.sin_id,
-                "cos" => math.cos_id,
-                "exp" => math.exp_id,
-                "log" => math.log_id,
-                "sqrt" => math.sqrt_id,
-                "tan" => math.tan_id,
-                "abs" => math.abs_id,
-                "sinh" => math.sinh_id,
-                "cosh" => math.cosh_id,
-                "tanh" => math.tanh_id,
-                "asin" => math.asin_id,
-                "acos" => math.acos_id,
-                "atan" => math.atan_id,
-                "asinh" => math.asinh_id,
-                "acosh" => math.acosh_id,
-                "atanh" => math.atanh_id,
-                "floor" => math.floor_id,
-                "ceil" => math.ceil_id,
-                "round" => math.round_id,
-                "sign" => math.sign_id,
-                other => {
-                    return Err(JitError::UnsupportedNode(format!("function '{other}'")));
+        // A real algebraic number is a constant, computed now exactly as the
+        // interpreter does; a non-real one has no `f64` value, which — like
+        // the interpreter's `None` — makes every output reaching it `NaN`.
+        ExprData::Func { name, .. } if name == crate::poly::root_of::ROOT_OF => {
+            match crate::poly::root_of::root_of_real_f64(node, pool) {
+                Some(v) => plain(builder.ins().f64const(v)),
+                None => Ok(Emitted {
+                    value: builder.ins().f64const(f64::NAN),
+                    fail: Some(builder.ins().iconst(types::I8, 1)),
+                }),
+            }
+        }
+        ExprData::Func { name, args } => {
+            if args.len() == 1 {
+                if let Some(func_id) = math.unary(&name) {
+                    let a = get(&args[0], "Func arg")?;
+                    let func_ref = module.declare_func_in_func(func_id, builder.func);
+                    let call = builder.ins().call(func_ref, &[a]);
+                    return plain(builder.inst_results(call)[0]);
                 }
+            }
+            // Any other registered head runs its own `numeric_f64` kernel —
+            // the one the interpreter calls — through a generic trampoline.
+            let &addr = cg
+                .prim_addr
+                .get(name.as_str())
+                .ok_or_else(|| JitError::UnsupportedNode(format!("function '{name}'")))?;
+            let (fail_slot, ptr_ty) = (
+                cg.fail_slot
+                    .ok_or_else(|| JitError::CompilationFailed("no fail slot".into()))?,
+                types::I64,
+            );
+            let prim = builder.ins().iconst(ptr_ty, addr);
+            let fail_addr = builder.ins().stack_addr(ptr_ty, fail_slot, 0);
+            let call = if args.len() == 1 {
+                let a = get(&args[0], "Func arg")?;
+                let r = module.declare_func_in_func(math.prim1_id, builder.func);
+                builder.ins().call(r, &[prim, a, fail_addr])
+            } else {
+                let args_slot = cg
+                    .args_slot
+                    .ok_or_else(|| JitError::CompilationFailed("no args slot".into()))?;
+                for (k, a) in args.iter().enumerate() {
+                    let v = get(a, "Func arg")?;
+                    builder.ins().stack_store(v, args_slot, (k * 8) as i32);
+                }
+                let args_addr = builder.ins().stack_addr(ptr_ty, args_slot, 0);
+                let n = builder.ins().iconst(types::I64, args.len() as i64);
+                let r = module.declare_func_in_func(math.primn_id, builder.func);
+                builder.ins().call(r, &[prim, args_addr, n, fail_addr])
             };
-            let func_ref = module.declare_func_in_func(func_id, builder.func);
-            let call = builder.ins().call(func_ref, &[a]);
-            Ok(builder.inst_results(call)[0])
+            let value = builder.inst_results(call)[0];
+            let fail = builder.ins().stack_load(types::I8, fail_slot, 0);
+            Ok(Emitted {
+                value,
+                fail: Some(fail),
+            })
         }
         other => Err(JitError::UnsupportedNode(format!("{other:?}"))),
     }
 }
 
 // ---------------------------------------------------------------------------
-// Load input variables into the values map (scalar or batch layout)
+// Emitting the outputs of one evaluation point
 // ---------------------------------------------------------------------------
 
-/// What is being compiled: the root node, its input variables, and the pool
-/// they all live in.  These three always travel together, so they are passed
-/// as one value rather than as three positional arguments.
+/// What is being compiled: the output roots, their input variables, and the
+/// pool they all live in.
 #[derive(Clone, Copy)]
 struct EvalTarget<'a> {
-    expr: ExprId,
+    outputs: &'a [ExprId],
     inputs: &'a [ExprId],
     pool: &'a ExprPool,
 }
 
-/// Where the emitted body reads variable `i` from.
-///
-/// The scalar entry point reads it at `ptr[i]`; the bulk entry point reads it
-/// at `ptr[i * n_points + point_idx]`.  Modelling this as an enum instead of
-/// three loose `Option`s makes the half-specified batch layout (a point index
-/// with no point count, or vice versa) unrepresentable.
-#[derive(Clone, Copy)]
-enum InputLayout {
-    /// One point, variables contiguous from `ptr`.
-    Scalar { ptr: cranelift_codegen::ir::Value },
-    /// `n_points` points, variable-major; emitted inside the bulk loop body.
-    Batch {
-        ptr: cranelift_codegen::ir::Value,
-        point_idx: cranelift_codegen::ir::Value,
-        n_points: cranelift_codegen::ir::Value,
-    },
-}
-
-fn load_input_vars(
-    builder: &mut FunctionBuilder,
-    inputs: &[ExprId],
-    values: &mut HashMap<ExprId, cranelift_codegen::ir::Value>,
-    layout: InputLayout,
-) {
-    for (i, &var) in inputs.iter().enumerate() {
-        let val = match layout {
-            InputLayout::Batch {
-                ptr,
-                point_idx,
-                n_points,
-            } => {
-                let var_i = builder.ins().iconst(types::I64, i as i64);
-                let stride = builder.ins().imul(var_i, n_points);
-                let elem = builder.ins().iadd(stride, point_idx);
-                let byte_off = builder.ins().imul_imm(elem, 8);
-                let addr = builder.ins().iadd(ptr, byte_off);
-                builder.ins().load(types::F64, MemFlags::trusted(), addr, 0)
-            }
-            InputLayout::Scalar { ptr } => {
-                let byte_offset = (i * std::mem::size_of::<f64>()) as i32;
-                builder
-                    .ins()
-                    .load(types::F64, MemFlags::trusted(), ptr, byte_offset)
-            }
-        };
-        values.insert(var, val);
-    }
-}
-
-fn emit_eval_body(
+/// Emit every output of one point, given the input values. Shared nodes are
+/// emitted once and reused by every output that reaches them. An output that
+/// reaches a generic call whose kernel failed is `NaN`, as the interpreter's
+/// `None` is; outputs that do not reach it are unaffected.
+fn emit_point(
     target: EvalTarget<'_>,
+    cg: &Codegen<'_>,
+    input_values: &[Value],
     builder: &mut FunctionBuilder,
     module: &mut JITModule,
-    math: &MathFuncIds,
-    layout: InputLayout,
-) -> Result<cranelift_codegen::ir::Value, JitError> {
-    let EvalTarget { expr, inputs, pool } = target;
-    let mut values: HashMap<ExprId, cranelift_codegen::ir::Value> = HashMap::new();
-    load_input_vars(builder, inputs, &mut values, layout);
-    let topo = topo_sort(expr, pool);
-    for &node in &topo {
-        if values.contains_key(&node) {
+) -> Result<Vec<Value>, JitError> {
+    let EvalTarget {
+        outputs,
+        inputs,
+        pool,
+    } = target;
+    let mut values: HashMap<ExprId, Value> = HashMap::new();
+    // A symbol listed twice takes its value from the *last* position, as the
+    // interpreter's environment does.
+    for (&var, &v) in inputs.iter().zip(input_values) {
+        values.insert(var, v);
+    }
+    let mut fails: HashMap<ExprId, Value> = HashMap::new();
+    for &root in outputs {
+        for node in topo_sort(root, pool) {
+            if values.contains_key(&node) {
+                continue;
+            }
+            let e = codegen_node(node, cg, &values, builder, module)?;
+            values.insert(node, e.value);
+            if let Some(f) = e.fail {
+                fails.insert(node, f);
+            }
+        }
+    }
+    let mut results = Vec::with_capacity(outputs.len());
+    for &root in outputs {
+        let r = *values
+            .get(&root)
+            .ok_or_else(|| JitError::CompilationFailed("root node not emitted".to_string()))?;
+        if fails.is_empty() {
+            results.push(r);
             continue;
         }
-        let val = codegen_node(node, pool, &values, builder, module, math)?;
-        values.insert(node, val);
+        let mut mask: Option<Value> = None;
+        for node in topo_sort(root, pool) {
+            if let Some(&f) = fails.get(&node) {
+                mask = Some(match mask {
+                    None => f,
+                    Some(m) => builder.ins().bor(m, f),
+                });
+            }
+        }
+        results.push(match mask {
+            None => r,
+            Some(m) => {
+                let nan = builder.ins().f64const(f64::NAN);
+                builder.ins().select(m, nan, r)
+            }
+        })
     }
-    values
-        .get(&expr)
-        .copied()
-        .ok_or_else(|| JitError::CompilationFailed("root node not emitted".to_string()))
+    Ok(results)
 }
 
 // ---------------------------------------------------------------------------
-// compile_cranelift — public entry point
+// compile — public entry points
 // ---------------------------------------------------------------------------
+
+/// The code Cranelift produced for a set of outputs, and what keeps it valid.
+pub(super) struct CraneliftCode {
+    /// `fn(*const f64, n) -> f64` for the first output (single-output
+    /// compiles only).
+    pub(super) scalar: Option<JitScalarFn>,
+    /// The column entry point, see [`JitColsFn`].
+    pub(super) cols: JitColsFn,
+    /// Owns the code pages both pointers point into.
+    pub(super) module: Box<OwnedJitModule>,
+    /// The primitives the code calls through [`tramp_prim1`] /
+    /// [`tramp_primn`]; the code holds the address of each element.
+    pub(super) prims: Box<[&'static dyn Primitive]>,
+}
 
 /// Compile `expr` to a native function using the Cranelift JIT backend.
 ///
@@ -391,9 +616,42 @@ pub fn compile_cranelift(
     inputs: &[ExprId],
     pool: &ExprPool,
 ) -> Result<CompiledFn, JitError> {
-    // Both entry points below emit the same DAG against the same pool; only the
-    // input layout differs.
-    let target = EvalTarget { expr, inputs, pool };
+    let code = compile_cranelift_code(&[expr], inputs, pool, true)?;
+    Ok(CompiledFn {
+        inner: CompiledFnInner::Cranelift {
+            fn_ptr: code
+                .scalar
+                .ok_or_else(|| JitError::CompilationFailed("no scalar entry".into()))?,
+            cols_fn: code.cols,
+            _prims: code.prims,
+            _module: code.module,
+        },
+        n_inputs: inputs.len(),
+        tier: CompileTier::Cranelift,
+    })
+}
+
+/// Compile several outputs into one column entry point (shared
+/// subexpressions are evaluated once per point).
+pub(super) fn compile_cranelift_many(
+    outputs: &[ExprId],
+    inputs: &[ExprId],
+    pool: &ExprPool,
+) -> Result<CraneliftCode, JitError> {
+    compile_cranelift_code(outputs, inputs, pool, false)
+}
+
+fn compile_cranelift_code(
+    outputs: &[ExprId],
+    inputs: &[ExprId],
+    pool: &ExprPool,
+    want_scalar: bool,
+) -> Result<CraneliftCode, JitError> {
+    let target = EvalTarget {
+        outputs,
+        inputs,
+        pool,
+    };
 
     // ------------------------------------------------------------------
     // 1. ISA — native host architecture, speed optimised
@@ -437,12 +695,19 @@ pub fn compile_cranelift(
     jit_builder.symbol("alkahest_ceil", tramp_ceil as *const u8);
     jit_builder.symbol("alkahest_round", tramp_round as *const u8);
     jit_builder.symbol("alkahest_sign", tramp_sign as *const u8);
+    jit_builder.symbol("alkahest_prim1", tramp_prim1 as *const u8);
+    // Where the ISA has no FMA instruction Cranelift lowers `fma` to a call to
+    // the libcall `fma`; route it to the crate's exactly rounded one, not to
+    // whatever the C library provides (MinGW's is not fused).
+    jit_builder.symbol("fma", tramp_fma as *const u8);
+    jit_builder.symbol("alkahest_primn", tramp_primn as *const u8);
 
     let mut module = OwnedJitModule::new(JITModule::new(jit_builder));
 
     // ------------------------------------------------------------------
     // 3. Declare imported math functions
     // ------------------------------------------------------------------
+    let ptr_type = module.target_config().pointer_type();
     let mut f1_sig = module.make_signature();
     f1_sig.params.push(AbiParam::new(types::F64));
     f1_sig.returns.push(AbiParam::new(types::F64));
@@ -451,6 +716,19 @@ pub fn compile_cranelift(
     f2_sig.params.push(AbiParam::new(types::F64));
     f2_sig.params.push(AbiParam::new(types::F64));
     f2_sig.returns.push(AbiParam::new(types::F64));
+
+    let mut prim1_sig = module.make_signature();
+    prim1_sig.params.push(AbiParam::new(ptr_type));
+    prim1_sig.params.push(AbiParam::new(types::F64));
+    prim1_sig.params.push(AbiParam::new(ptr_type));
+    prim1_sig.returns.push(AbiParam::new(types::F64));
+
+    let mut primn_sig = module.make_signature();
+    primn_sig.params.push(AbiParam::new(ptr_type));
+    primn_sig.params.push(AbiParam::new(ptr_type));
+    primn_sig.params.push(AbiParam::new(types::I64));
+    primn_sig.params.push(AbiParam::new(ptr_type));
+    primn_sig.returns.push(AbiParam::new(types::F64));
 
     let decl = |module: &mut JITModule, name: &str, sig| {
         module
@@ -480,65 +758,142 @@ pub fn compile_cranelift(
         ceil_id: decl(&mut module, "alkahest_ceil", &f1_sig)?,
         round_id: decl(&mut module, "alkahest_round", &f1_sig)?,
         sign_id: decl(&mut module, "alkahest_sign", &f1_sig)?,
+        prim1_id: decl(&mut module, "alkahest_prim1", &prim1_sig)?,
+        primn_id: decl(&mut module, "alkahest_primn", &primn_sig)?,
     };
 
     // ------------------------------------------------------------------
-    // 4–5. Scalar eval: fn(*const f64, i64) -> f64
+    // 4. Resolve the generic heads to their primitives, up front: the code
+    //    embeds the address of each one's slot.
     // ------------------------------------------------------------------
-    let ptr_type = module.target_config().pointer_type();
-
-    let mut eval_sig = module.make_signature();
-    eval_sig.params.push(AbiParam::new(ptr_type));
-    eval_sig.params.push(AbiParam::new(types::I64));
-    eval_sig.returns.push(AbiParam::new(types::F64));
-
-    let scalar_id = module
-        .declare_function("alkahest_eval", Linkage::Export, &eval_sig)
-        .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
-
-    let mut scalar_ctx = module.make_context();
-    scalar_ctx.func.signature = eval_sig;
-    {
-        let mut func_ctx = FunctionBuilderContext::new();
-        let mut builder = FunctionBuilder::new(&mut scalar_ctx.func, &mut func_ctx);
-        let block = builder.create_block();
-        builder.append_block_params_for_function_params(block);
-        builder.switch_to_block(block);
-        builder.seal_block(block);
-        let inputs_ptr = builder.block_params(block)[0];
-        let result = emit_eval_body(
-            target,
-            &mut builder,
-            &mut module,
-            &math,
-            InputLayout::Scalar { ptr: inputs_ptr },
-        )?;
-        builder.ins().return_(&[result]);
-        builder.finalize();
+    let mut prim_names: Vec<String> = Vec::new();
+    let mut max_arity = 0usize;
+    let mut seen = crate::kernel::IdSet::default();
+    for &root in outputs {
+        for node in topo_sort(root, pool) {
+            if !seen.insert(node) || !is_generic_call(node, pool, &math) {
+                continue;
+            }
+            pool.with(node, |d| {
+                if let ExprData::Func { name, args } = d {
+                    if !prim_names.iter().any(|n| n == name) {
+                        prim_names.push(name.clone());
+                    }
+                    if args.len() > 1 {
+                        max_arity = max_arity.max(args.len());
+                    }
+                }
+            });
+        }
     }
-    module
-        .define_function(scalar_id, &mut scalar_ctx)
-        .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
-    module.clear_context(&mut scalar_ctx);
+    let prims: Box<[&'static dyn Primitive]> = prim_names
+        .iter()
+        .map(|name| {
+            registry()
+                .get(name)
+                .ok_or_else(|| JitError::UnsupportedNode(format!("function '{name}'")))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_boxed_slice();
+    let prim_addr: HashMap<String, i64> = prim_names
+        .iter()
+        .zip(prims.iter())
+        .map(|(n, p)| (n.clone(), p as *const &'static dyn Primitive as i64))
+        .collect();
+    let has_generic = !prims.is_empty();
+    let make_codegen = |builder: &mut FunctionBuilder| {
+        let mut slot = |bytes: usize| {
+            builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                bytes as u32,
+                3,
+            ))
+        };
+        let fail_slot = has_generic.then(|| slot(8));
+        let args_slot = (max_arity > 0).then(|| slot(max_arity * 8));
+        (fail_slot, args_slot)
+    };
 
     // ------------------------------------------------------------------
-    // 6. Bulk eval: fn(*const f64, n_vars, *mut f64, n_points) -> ()
+    // 5. Scalar eval: fn(*const f64, i64) -> f64 (single output only)
     // ------------------------------------------------------------------
-    let mut bulk_sig = module.make_signature();
-    bulk_sig.params.push(AbiParam::new(ptr_type));
-    bulk_sig.params.push(AbiParam::new(types::I64));
-    bulk_sig.params.push(AbiParam::new(ptr_type));
-    bulk_sig.params.push(AbiParam::new(types::I64));
+    let mut scalar_id = None;
+    if want_scalar {
+        let mut eval_sig = module.make_signature();
+        eval_sig.params.push(AbiParam::new(ptr_type));
+        eval_sig.params.push(AbiParam::new(types::I64));
+        eval_sig.returns.push(AbiParam::new(types::F64));
 
-    let bulk_id = module
-        .declare_function("alkahest_eval_bulk", Linkage::Export, &bulk_sig)
+        let id = module
+            .declare_function("alkahest_eval", Linkage::Export, &eval_sig)
+            .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+
+        let mut scalar_ctx = module.make_context();
+        scalar_ctx.func.signature = eval_sig;
+        {
+            let mut func_ctx = FunctionBuilderContext::new();
+            let mut builder = FunctionBuilder::new(&mut scalar_ctx.func, &mut func_ctx);
+            let block = builder.create_block();
+            builder.append_block_params_for_function_params(block);
+            builder.switch_to_block(block);
+            builder.seal_block(block);
+            let inputs_ptr = builder.block_params(block)[0];
+            let input_values: Vec<Value> = (0..inputs.len())
+                .map(|i| {
+                    builder.ins().load(
+                        types::F64,
+                        MemFlags::trusted(),
+                        inputs_ptr,
+                        (i * std::mem::size_of::<f64>()) as i32,
+                    )
+                })
+                .collect();
+            let (fail_slot, args_slot) = make_codegen(&mut builder);
+            let cg = Codegen {
+                pool,
+                math: &math,
+                prim_addr: &prim_addr,
+                fail_slot,
+                args_slot,
+            };
+            let result = emit_point(
+                EvalTarget {
+                    outputs: &outputs[..1],
+                    ..target
+                },
+                &cg,
+                &input_values,
+                &mut builder,
+                &mut module,
+            )?;
+            builder.ins().return_(&result[..1]);
+            builder.finalize();
+        }
+        module
+            .define_function(id, &mut scalar_ctx)
+            .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+        module.clear_context(&mut scalar_ctx);
+        scalar_id = Some(id);
+    }
+
+    // ------------------------------------------------------------------
+    // 6. Column eval: fn(cols, outs, start, end) -> ()
+    // ------------------------------------------------------------------
+    let mut cols_sig = module.make_signature();
+    cols_sig.params.push(AbiParam::new(ptr_type));
+    cols_sig.params.push(AbiParam::new(ptr_type));
+    cols_sig.params.push(AbiParam::new(types::I64));
+    cols_sig.params.push(AbiParam::new(types::I64));
+
+    let cols_id = module
+        .declare_function("alkahest_eval_cols", Linkage::Export, &cols_sig)
         .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
 
-    let mut bulk_ctx = module.make_context();
-    bulk_ctx.func.signature = bulk_sig;
+    let mut cols_ctx = module.make_context();
+    cols_ctx.func.signature = cols_sig;
     {
         let mut func_ctx = FunctionBuilderContext::new();
-        let mut builder = FunctionBuilder::new(&mut bulk_ctx.func, &mut func_ctx);
+        let mut builder = FunctionBuilder::new(&mut cols_ctx.func, &mut func_ctx);
         let entry = builder.create_block();
         let loop_hdr = builder.create_block();
         let loop_body = builder.create_block();
@@ -547,40 +902,60 @@ pub fn compile_cranelift(
         builder.append_block_param(loop_hdr, types::I64);
         builder.switch_to_block(entry);
         builder.seal_block(entry);
-        let bulk_inputs_ptr = builder.block_params(entry)[0];
-        let bulk_outputs_ptr = builder.block_params(entry)[2];
-        let bulk_n_points = builder.block_params(entry)[3];
-        let zero = builder.ins().iconst(types::I64, 0);
-        let zero_arg = BlockArg::from(zero);
+        let cols_ptr = builder.block_params(entry)[0];
+        let outs_ptr = builder.block_params(entry)[1];
+        let start = builder.block_params(entry)[2];
+        let end = builder.block_params(entry)[3];
+        // Column and output base pointers are loop-invariant.
+        let col_bases: Vec<Value> = (0..inputs.len())
+            .map(|i| {
+                builder
+                    .ins()
+                    .load(ptr_type, MemFlags::trusted(), cols_ptr, (i * 8) as i32)
+            })
+            .collect();
+        let out_bases: Vec<Value> = (0..outputs.len())
+            .map(|k| {
+                builder
+                    .ins()
+                    .load(ptr_type, MemFlags::trusted(), outs_ptr, (k * 8) as i32)
+            })
+            .collect();
+        let (fail_slot, args_slot) = make_codegen(&mut builder);
+        let cg = Codegen {
+            pool,
+            math: &math,
+            prim_addr: &prim_addr,
+            fail_slot,
+            args_slot,
+        };
+        let start_arg = BlockArg::from(start);
         builder
             .ins()
-            .jump(loop_hdr, std::slice::from_ref(&zero_arg));
+            .jump(loop_hdr, std::slice::from_ref(&start_arg));
 
         builder.switch_to_block(loop_hdr);
-        let loop_idx = builder.block_params(loop_hdr)[0];
+        let idx = builder.block_params(loop_hdr)[0];
         let done = builder
             .ins()
-            .icmp(IntCC::SignedGreaterThanOrEqual, loop_idx, bulk_n_points);
+            .icmp(IntCC::UnsignedGreaterThanOrEqual, idx, end);
         builder.ins().brif(done, exit, &[], loop_body, &[]);
 
         builder.switch_to_block(loop_body);
-        let result = emit_eval_body(
-            target,
-            &mut builder,
-            &mut module,
-            &math,
-            InputLayout::Batch {
-                ptr: bulk_inputs_ptr,
-                point_idx: loop_idx,
-                n_points: bulk_n_points,
-            },
-        )?;
-        let out_byte_off = builder.ins().imul_imm(loop_idx, 8);
-        let out_addr = builder.ins().iadd(bulk_outputs_ptr, out_byte_off);
-        builder
-            .ins()
-            .store(MemFlags::trusted(), result, out_addr, 0);
-        let next = builder.ins().iadd_imm(loop_idx, 1);
+        let byte_off = builder.ins().ishl_imm(idx, 3);
+        let input_values: Vec<Value> = col_bases
+            .iter()
+            .map(|&base| {
+                let addr = builder.ins().iadd(base, byte_off);
+                builder.ins().load(types::F64, MemFlags::trusted(), addr, 0)
+            })
+            .collect();
+        let results = emit_point(target, &cg, &input_values, &mut builder, &mut module)?;
+        for (&base, &r) in out_bases.iter().zip(&results) {
+            let addr = builder.ins().iadd(base, byte_off);
+            builder.ins().store(MemFlags::trusted(), r, addr, 0);
+        }
+        let next = builder.ins().iadd_imm(idx, 1);
         let next_arg = BlockArg::from(next);
         builder
             .ins()
@@ -594,27 +969,28 @@ pub fn compile_cranelift(
         builder.finalize();
     }
     module
-        .define_function(bulk_id, &mut bulk_ctx)
+        .define_function(cols_id, &mut cols_ctx)
         .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
-    module.clear_context(&mut bulk_ctx);
+    module.clear_context(&mut cols_ctx);
 
     module
         .finalize_definitions()
         .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
 
-    let scalar_ptr = module.get_finalized_function(scalar_id);
-    let bulk_ptr = module.get_finalized_function(bulk_id);
-    let fn_ptr: JitScalarFn = unsafe { std::mem::transmute(scalar_ptr) };
-    let bulk_fn: JitBulkFn = unsafe { std::mem::transmute(bulk_ptr) };
+    let scalar = scalar_id.map(|id| {
+        let p = module.get_finalized_function(id);
+        // SAFETY: defined above with exactly this signature.
+        unsafe { std::mem::transmute::<*const u8, JitScalarFn>(p) }
+    });
+    let cols_raw = module.get_finalized_function(cols_id);
+    // SAFETY: defined above with exactly this signature.
+    let cols: JitColsFn = unsafe { std::mem::transmute::<*const u8, JitColsFn>(cols_raw) };
 
-    Ok(CompiledFn {
-        inner: CompiledFnInner::Cranelift {
-            fn_ptr,
-            bulk_fn: Some(bulk_fn),
-            _module: Box::new(module),
-        },
-        n_inputs: inputs.len(),
-        tier: CompileTier::Cranelift,
+    Ok(CraneliftCode {
+        scalar,
+        cols,
+        module: Box::new(module),
+        prims,
     })
 }
 

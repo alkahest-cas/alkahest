@@ -218,6 +218,10 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // function would be NaN everywhere. Carried out of band on `JitError::UnsupportedNode`
     // (exhaustive public enum) — see `jit::take_unbound_symbols`.
     ErrorSpec { code: "E-JIT-005", class: "UnboundSymbolsError", cause: Cause::UserInput, remediation: Some("add every free symbol of the expression to the input list, or substitute a value for each parameter before compiling") },
+    // The expression applies a function with no numeric kernel (an undefined f(x), a
+    // Derivative of one), so the compiled function would be NaN everywhere. Out of band on
+    // `JitError::UnsupportedNode` — see `jit::take_unevaluable_functions`.
+    ErrorSpec { code: "E-JIT-006", class: "UnevaluableFunctionError", cause: Cause::UserInput, remediation: Some("substitute a concrete expression for each undefined function (and evaluate its derivatives) before compiling") },
     // E-STABLEHLO — StableHloError (`to_stablehlo`). Every refusal used to be an
     // empty string returned as if it were a module.
     ErrorSpec { code: "E-STABLEHLO-001", class: "StableHloError", cause: Cause::Unsupported, remediation: Some("rewrite the function in terms of supported ones (see the stablehlo module docs), or substitute it before exporting") },

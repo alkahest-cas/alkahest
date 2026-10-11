@@ -120,9 +120,396 @@ pub fn integer_is_exact_f64(n: &Integer) -> bool {
 #[inline]
 pub fn pow_f64(base: f64, exp: f64, exp_node: impl FnOnce() -> Option<ExprData>) -> f64 {
     if exp.abs() < EXACT_INTEGER_F64_LIMIT {
-        return base.powf(exp);
+        return pow_f64_narrow(base, exp);
     }
     pow_f64_wide_exponent(base, exp, exp_node())
+}
+
+// ---------------------------------------------------------------------------
+// Small exponents: one kernel, shared by every f64 evaluator and the JITs
+// ---------------------------------------------------------------------------
+
+/// Largest `|n|` an integer power is evaluated for by compensated squaring
+/// rather than by `powf`.
+pub(crate) const POWI_MAX: u32 = 64;
+
+/// The small integer `n` with `exp == n` and `|n| <=` [`POWI_MAX`], if any.
+#[inline]
+pub(crate) fn small_integer_exponent(exp: f64) -> Option<i32> {
+    (exp.trunc() == exp && exp.abs() <= POWI_MAX as f64).then_some(exp as i32)
+}
+
+/// `base ^ exp` for an exponent below `2^53` in magnitude — the hot path of
+/// [`pow_f64`], and the value every compiled function (Cranelift, LLVM) must
+/// reproduce bit for bit.
+///
+/// * A small integer exponent (`|n| <=` [`POWI_MAX`], the `x**2`, `r**-7` and
+///   `x**10` of every polynomial, gradient and force law) is evaluated by
+///   [`powi_with`]: `n = 0, ±1, 2` as single correctly rounded operations, any
+///   other `n` by compensated binary powering, within one ulp — `powf` is a
+///   general transcendental and costs an order of magnitude more. The
+///   compensation needs a fused multiply-add; on a CPU without one (x86-64
+///   before Haswell, Rosetta 2) those exponents stay on `powf`, in every
+///   evaluator alike — see [`has_hw_fma`].
+/// * `exp == 1/2` is `sqrt`, correctly rounded, with `pow`'s values at `-0`
+///   (`+0`) and `-inf` (`+inf`).
+/// * Anything else is `powf`.
+///
+/// The JIT backends emit the same operation sequence inline (the algorithm is
+/// written once, over [`FloatOps`]), so the interpreter, `evaluate`, and a
+/// compiled function agree exactly.
+#[inline]
+pub(crate) fn pow_f64_narrow(base: f64, exp: f64) -> f64 {
+    if let Some(n) = small_integer_exponent(exp) {
+        return powi_f64(base, n);
+    }
+    if exp == 0.5 {
+        return sqrt_pow_with(&mut F64Ops, base);
+    }
+    base.powf(exp)
+}
+
+/// `x ^ n` as [`pow_f64_narrow`] defines it: [`powi_with`] where it is a
+/// single operation or the CPU has a hardware FMA, `powf` otherwise.
+#[inline]
+pub(crate) fn powi_f64(x: f64, n: i32) -> f64 {
+    if (-1..=2).contains(&n) {
+        return powi_with(&mut F64Ops, x, n);
+    }
+    powi_f64_compensated(x, n)
+}
+
+/// Whether integer powers beyond `n = 0, ±1, 2` are evaluated by compensated
+/// squaring on this machine (it has a hardware FMA) or by `powf`.
+///
+/// The compensation is a chain of `fma`s; emulating them in software costs
+/// more than the `powf` it replaces, so a CPU without FMA keeps `powf`. Every
+/// evaluator asks this same question — the interpreter here, Cranelift when
+/// it decides whether to inline the power, LLVM through [`pow_f64_narrow`] —
+/// so on any one machine they all compute the same bits.
+#[cfg(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "fma")
+))]
+#[inline]
+#[cfg_attr(not(feature = "cranelift"), allow(dead_code))]
+pub(crate) fn has_hw_fma() -> bool {
+    true
+}
+
+/// See the first definition.
+#[cfg(all(target_arch = "x86_64", not(target_feature = "fma")))]
+#[inline]
+#[cfg_attr(not(feature = "cranelift"), allow(dead_code))]
+pub(crate) fn has_hw_fma() -> bool {
+    std::is_x86_feature_detected!("fma")
+}
+
+/// See the first definition.
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+#[inline]
+#[cfg_attr(not(feature = "cranelift"), allow(dead_code))]
+pub(crate) fn has_hw_fma() -> bool {
+    false
+}
+
+#[cfg(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "fma")
+))]
+#[inline]
+fn powi_f64_compensated(x: f64, n: i32) -> f64 {
+    powi_with(&mut F64Ops, x, n)
+}
+
+#[cfg(all(target_arch = "x86_64", not(target_feature = "fma")))]
+#[inline]
+fn powi_f64_compensated(x: f64, n: i32) -> f64 {
+    if has_hw_fma() {
+        // SAFETY: the CPU supports FMA (checked just above).
+        unsafe { powi_f64_fma(x, n) }
+    } else {
+        x.powf(n as f64)
+    }
+}
+
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+#[inline]
+fn powi_f64_compensated(x: f64, n: i32) -> f64 {
+    x.powf(n as f64)
+}
+
+#[cfg(all(target_arch = "x86_64", not(target_feature = "fma")))]
+#[target_feature(enable = "fma")]
+unsafe fn powi_f64_fma(x: f64, n: i32) -> f64 {
+    powi_with(&mut FmaInsnOps, x, n)
+}
+
+/// [`F64Ops`] with `fma` as the x86 instruction; only instantiated inside a
+/// `target_feature(enable = "fma")` function, after runtime detection.
+#[cfg(all(target_arch = "x86_64", not(target_feature = "fma")))]
+struct FmaInsnOps;
+
+#[cfg(all(target_arch = "x86_64", not(target_feature = "fma")))]
+impl FloatOps for FmaInsnOps {
+    type V = f64;
+    #[inline(always)]
+    fn konst(&mut self, v: f64) -> f64 {
+        v
+    }
+    #[inline(always)]
+    fn add(&mut self, a: f64, b: f64) -> f64 {
+        a + b
+    }
+    #[inline(always)]
+    fn mul(&mut self, a: f64, b: f64) -> f64 {
+        a * b
+    }
+    #[inline(always)]
+    fn div(&mut self, a: f64, b: f64) -> f64 {
+        a / b
+    }
+    #[inline(always)]
+    fn neg(&mut self, a: f64) -> f64 {
+        -a
+    }
+    #[inline(always)]
+    fn fma(&mut self, a: f64, b: f64, c: f64) -> f64 {
+        use std::arch::x86_64::{_mm_cvtsd_f64, _mm_fmadd_sd, _mm_set_sd};
+        // SAFETY: only reached from `powi_f64_fma`, after FMA was detected.
+        unsafe { _mm_cvtsd_f64(_mm_fmadd_sd(_mm_set_sd(a), _mm_set_sd(b), _mm_set_sd(c))) }
+    }
+    #[inline(always)]
+    fn sqrt(&mut self, a: f64) -> f64 {
+        a.sqrt()
+    }
+    #[inline(always)]
+    fn select_finite(&mut self, t: f64, a: f64, b: f64) -> f64 {
+        F64Ops.select_finite(t, a, b)
+    }
+    #[inline(always)]
+    fn select_finite_nonzero(&mut self, t: f64, a: f64, b: f64) -> f64 {
+        F64Ops.select_finite_nonzero(t, a, b)
+    }
+    #[inline(always)]
+    fn select_neg_inf(&mut self, t: f64, a: f64, b: f64) -> f64 {
+        F64Ops.select_neg_inf(t, a, b)
+    }
+}
+
+/// The arithmetic [`powi_with`] and [`sqrt_pow_with`] are written in: plain
+/// `f64` evaluation ([`F64Ops`]) or a JIT backend emitting the same
+/// operations as code. Every operation is a single IEEE operation (`fma` is
+/// fused), so the two produce identical bits.
+pub(crate) trait FloatOps {
+    type V: Copy;
+    fn konst(&mut self, v: f64) -> Self::V;
+    fn add(&mut self, a: Self::V, b: Self::V) -> Self::V;
+    fn mul(&mut self, a: Self::V, b: Self::V) -> Self::V;
+    fn div(&mut self, a: Self::V, b: Self::V) -> Self::V;
+    fn neg(&mut self, a: Self::V) -> Self::V;
+    /// `a · b + c` with a single rounding.
+    fn fma(&mut self, a: Self::V, b: Self::V, c: Self::V) -> Self::V;
+    fn sqrt(&mut self, a: Self::V) -> Self::V;
+    /// `if |t| < ∞ { a } else { b }` (NaN is not finite).
+    fn select_finite(&mut self, t: Self::V, a: Self::V, b: Self::V) -> Self::V;
+    /// `if |t| < ∞ && t != 0 { a } else { b }`.
+    fn select_finite_nonzero(&mut self, t: Self::V, a: Self::V, b: Self::V) -> Self::V;
+    /// `if t == -∞ { a } else { b }`.
+    fn select_neg_inf(&mut self, t: Self::V, a: Self::V, b: Self::V) -> Self::V;
+}
+
+/// `a · b + c` rounded once, on every platform.
+///
+/// Not `f64::mul_add`: without a hardware FMA in the compile target it calls
+/// the C library's `fma`, and MinGW's is not fused — the compensated power
+/// then loses its compensation, and the interpreter stops agreeing with the
+/// JIT (which emits the instruction). Here: the instruction where the target
+/// has it, a runtime-detected instruction on x86-64, and otherwise the
+/// `libm` crate's correctly rounded software `fma`.
+#[cfg(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "fma")
+))]
+#[inline]
+pub(crate) fn fma_exact(a: f64, b: f64, c: f64) -> f64 {
+    a.mul_add(b, c)
+}
+
+/// See the first definition.
+#[cfg(all(target_arch = "x86_64", not(target_feature = "fma")))]
+#[inline]
+pub(crate) fn fma_exact(a: f64, b: f64, c: f64) -> f64 {
+    if std::is_x86_feature_detected!("fma") {
+        // SAFETY: the CPU supports FMA (checked just above).
+        unsafe { fma_x86(a, b, c) }
+    } else {
+        libm::fma(a, b, c)
+    }
+}
+
+/// See the first definition.
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+#[inline]
+pub(crate) fn fma_exact(a: f64, b: f64, c: f64) -> f64 {
+    libm::fma(a, b, c)
+}
+
+#[cfg(all(target_arch = "x86_64", not(target_feature = "fma")))]
+#[target_feature(enable = "fma")]
+unsafe fn fma_x86(a: f64, b: f64, c: f64) -> f64 {
+    use std::arch::x86_64::{_mm_cvtsd_f64, _mm_fmadd_sd, _mm_set_sd};
+    _mm_cvtsd_f64(_mm_fmadd_sd(_mm_set_sd(a), _mm_set_sd(b), _mm_set_sd(c)))
+}
+
+/// [`FloatOps`] evaluated directly.
+pub(crate) struct F64Ops;
+
+impl FloatOps for F64Ops {
+    type V = f64;
+    #[inline(always)]
+    fn konst(&mut self, v: f64) -> f64 {
+        v
+    }
+    #[inline(always)]
+    fn add(&mut self, a: f64, b: f64) -> f64 {
+        a + b
+    }
+    #[inline(always)]
+    fn mul(&mut self, a: f64, b: f64) -> f64 {
+        a * b
+    }
+    #[inline(always)]
+    fn div(&mut self, a: f64, b: f64) -> f64 {
+        a / b
+    }
+    #[inline(always)]
+    fn neg(&mut self, a: f64) -> f64 {
+        -a
+    }
+    #[inline(always)]
+    fn fma(&mut self, a: f64, b: f64, c: f64) -> f64 {
+        fma_exact(a, b, c)
+    }
+    #[inline(always)]
+    fn sqrt(&mut self, a: f64) -> f64 {
+        a.sqrt()
+    }
+    #[inline(always)]
+    fn select_finite(&mut self, t: f64, a: f64, b: f64) -> f64 {
+        if t.abs() < f64::INFINITY {
+            a
+        } else {
+            b
+        }
+    }
+    #[inline(always)]
+    fn select_finite_nonzero(&mut self, t: f64, a: f64, b: f64) -> f64 {
+        if t.abs() < f64::INFINITY && t != 0.0 {
+            a
+        } else {
+            b
+        }
+    }
+    #[inline(always)]
+    fn select_neg_inf(&mut self, t: f64, a: f64, b: f64) -> f64 {
+        if t == f64::NEG_INFINITY {
+            a
+        } else {
+            b
+        }
+    }
+}
+
+/// `x ^ n` for a small integer `n`, written over [`FloatOps`].
+///
+/// `n = 0, ±1, 2` are single operations (`1`, `x`, `1/x`, `x·x`, each
+/// correctly rounded, as `pow` is). Every other `n` is binary powering in
+/// double-double arithmetic — each square and product carries its rounding
+/// error forward through an `fma` — the scheme Julia uses for `Float64 ^
+/// Integer`. Its error stays within one ulp across the range, where naive
+/// repeated squaring loses up to `log2 n` ulps. The operation sequence depends
+/// only on `n`, so a JIT unrolls it straight-line.
+///
+/// IEEE special values come out as `pow` gives them: the final `fma` is used
+/// only when the plain product `x·y` is finite and non-zero, so infinities,
+/// NaN, overflow, underflow and the sign of a zero (`(-0)^3 = -0`) are those
+/// of the product.
+#[inline(always)]
+pub(crate) fn powi_with<O: FloatOps>(o: &mut O, x0: O::V, n: i32) -> O::V {
+    match n {
+        0 => return o.konst(1.0),
+        1 => return x0,
+        -1 => {
+            let one = o.konst(1.0);
+            return o.div(one, x0);
+        }
+        2 => return o.mul(x0, x0),
+        _ => {}
+    }
+    let mut m = n.unsigned_abs();
+    let zero = o.konst(0.0);
+    let (mut x, mut xlo) = if n < 0 {
+        // 1/x and its rounding error, (1 - x·rx)/x ≈ -(x·rx - 1)·rx; the
+        // error term is meaningless (NaN) for an infinite x, where it is 0.
+        let one = o.konst(1.0);
+        let minus_one = o.konst(-1.0);
+        let rx = o.div(one, x0);
+        let r = o.fma(x0, rx, minus_one);
+        let nr = o.neg(r);
+        let c = o.mul(nr, rx);
+        (rx, o.select_finite(x0, c, zero))
+    } else {
+        (x0, zero)
+    };
+    // `y` is statically 1 until the first odd bit, so that first product is
+    // exact and skipped.
+    let mut acc: Option<(O::V, O::V)> = None;
+    let two = o.konst(2.0);
+    while m > 1 {
+        if m & 1 == 1 {
+            acc = Some(match acc {
+                None => (x, xlo),
+                Some((y, ylo)) => {
+                    let xylo = o.mul(x, ylo);
+                    let err = o.fma(y, xlo, xylo);
+                    let hi = o.mul(x, y);
+                    let nhi = o.neg(hi);
+                    let lo = o.fma(x, y, nhi);
+                    (hi, o.add(lo, err))
+                }
+            });
+        }
+        let x2 = o.mul(x, two);
+        let err = o.mul(x2, xlo);
+        let hi = o.mul(x, x);
+        let nhi = o.neg(hi);
+        let lo = o.fma(x, x, nhi);
+        x = hi;
+        xlo = o.add(lo, err);
+        m >>= 1;
+    }
+    let Some((y, ylo)) = acc else {
+        // n was a power of two: the result is x + xlo.
+        let r = o.add(x, xlo);
+        return o.select_finite_nonzero(x, r, x);
+    };
+    let a = o.mul(y, xlo);
+    let b = o.mul(x, ylo);
+    let err = o.add(a, b);
+    let p = o.mul(x, y);
+    let r = o.fma(x, y, err);
+    o.select_finite_nonzero(p, r, p)
+}
+
+/// `x ^ (1/2)`: `sqrt`, with `pow`'s `+0` at `-0` and `+inf` at `-inf`.
+pub(crate) fn sqrt_pow_with<O: FloatOps>(o: &mut O, x: O::V) -> O::V {
+    let s = o.sqrt(x);
+    let zero = o.konst(0.0);
+    // `-0 + 0 = +0`; every other square root is unchanged by adding zero.
+    let s = o.add(s, zero);
+    let inf = o.konst(f64::INFINITY);
+    o.select_neg_inf(x, inf, s)
 }
 
 #[cold]
@@ -397,19 +784,36 @@ mod conversion_tests {
     }
 
     #[test]
-    fn pow_f64_leaves_every_representable_exponent_bit_for_bit_alone() {
-        // The hot path must not merely agree with `powf` — it must *be* it.
+    fn pow_f64_keeps_every_representable_exponent_exact() {
+        // Below 2^53 the exponent's `f64` is the exponent, so the node is never
+        // needed. A small integer or 1/2 takes the shared kernel — the
+        // correctly rounded value up to one ulp (exact whenever it is
+        // representable), with `pow`'s signs and specials; every other
+        // exponent is `powf` itself.
         for &base in &[-3.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 7.25] {
             for &e in &[0.0, 1.0, 2.0, 3.0, -1.0, -2.0, 0.5, -0.5, 53.0, 1e15, -1e15] {
                 let n = Integer::from(e as i64);
                 let node = ExprData::Integer(crate::kernel::BigInt(n));
                 let got = pow_f64(base, e, || Some(node));
                 let want = base.powf(e);
-                assert_eq!(
-                    got.to_bits(),
-                    want.to_bits(),
-                    "{base} ^ {e}: {got} vs {want}"
+                if small_integer_exponent(e).is_none() && e != 0.5 {
+                    assert_eq!(got.to_bits(), want.to_bits(), "{base} ^ {e}");
+                    continue;
+                }
+                if !want.is_finite() || want == 0.0 {
+                    assert_eq!(got.to_bits(), want.to_bits(), "{base} ^ {e}");
+                    continue;
+                }
+                let exact = rug::Float::with_val(300, base).pow(rug::Float::with_val(300, e));
+                let nearest = exact.to_f64();
+                let ulp = (nearest.abs().to_bits() as i64 - got.abs().to_bits() as i64).abs();
+                assert!(
+                    got.signum() == nearest.signum() && ulp <= 1,
+                    "{base} ^ {e}: {got} vs correctly rounded {nearest}"
                 );
+                if rug::Float::with_val(300, nearest) == exact {
+                    assert_eq!(got, nearest, "{base} ^ {e} is representable");
+                }
             }
         }
     }

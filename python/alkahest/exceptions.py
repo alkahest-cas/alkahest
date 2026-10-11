@@ -28,8 +28,9 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-DAE-001  … E-DAE-003     DaeError
     E-HOMOTOPY-002 … E-HOMOTOPY-004 HomotopyError (numerical continuation — V2-14)
     E-SOLVE-010 … E-SOLVE-011  SolverError  (GPU Gröbner)
-    E-JIT-001   … E-JIT-005    JitError  (005 = the expression has a free symbol
-                                 the input list does not bind)
+    E-JIT-001   … E-JIT-006    JitError  (005 = the expression has a free symbol
+                                 the input list does not bind; 006 = it applies
+                                 a function with no numeric implementation)
     E-LAT-001 … E-LAT-004      LatticeError (LLL reduction)
     E-LAT-005 … E-LAT-014      LatticeGeometryError, a *subclass* of
                                  LatticeError (005-007 Gram matrix

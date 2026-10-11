@@ -8,17 +8,30 @@ Compiled evaluation, batch evaluation, and ball arithmetic.
 Compiled evaluation
 -------------------
 
-.. function:: compile_expr(expr: Expr, vars: list[Expr]) -> CompiledFn
+.. function:: compile_expr(expr: Expr | list[Expr], vars: list[Expr], expected_evals: int | None = None) -> CompiledFn | CompiledVecFn
 
    Compile *expr* to a fast callable.
 
-   With ``--features jit``, uses the LLVM backend. Without it, uses the
-   Rust tree-walking interpreter. The API is the same either way.
+   Uses the Cranelift JIT (shipped in every PyPI wheel), LLVM with
+   ``--features jit``, or the Rust interpreter when neither is built in. The
+   API and the values are the same either way: every backend computes,
+   bit for bit, what :func:`eval_expr` computes.
 
-   :param expr: The expression to compile.
+   Given a **list** of expressions, returns a :class:`CompiledVecFn` that
+   evaluates all of them in one pass per point, computing the
+   subexpressions they share once — the shape of a gradient or Jacobian.
+
+   :param expr: The expression to compile, or a list of them.
    :param vars: Input variables in order; the compiled function takes a
       list of floats in this order.
-   :returns: A :class:`CompiledFn` callable.
+   :param expected_evals: Planned number of evaluations (e.g. the batch
+      length); lets a small expression be compiled natively up front.
+   :returns: A :class:`CompiledFn` (one expression) or
+      :class:`CompiledVecFn` (a list).
+   :raises JitError: ``E-JIT-005`` when the expression has a free symbol
+      *vars* does not bind; ``E-JIT-006`` when it applies a function with no
+      numeric implementation (an undefined ``f(x)``, a ``Derivative`` of
+      one) — such a function would be ``NaN`` at every point.
 
    Example::
 
@@ -28,6 +41,9 @@ Compiled evaluation
 
       f = compile_expr(x**2 + sin(y), [x, y])
       print(f([3.0, 0.0]))   # 9.0
+
+      g = compile_expr(symbolic_grad(x**2 * sin(y), [x, y]), [x, y])
+      print(g([3.0, 0.0]))   # [0.0, 9.0]
 
 .. function:: eval_expr(expr: Expr, env: dict[Expr, float]) -> float
 
@@ -47,13 +63,14 @@ Compiled evaluation
    have the same number of elements. Accepts NumPy arrays, PyTorch CPU
    tensors, JAX arrays, or anything with ``__dlpack__`` or ``__array__``.
 
-   Internally this reads each input array via the buffer protocol (one
-   bulk copy per array, not a Python ``float`` per element) and calls
-   :meth:`CompiledFn.call_batch_buffer` with the GIL released, avoiding
-   the ``.tolist()`` round-trip that older versions used.
+   The arrays are read and the result written **in place** (no copy, no
+   Python ``float`` per element) with the GIL released, by one native loop
+   over the whole batch. On every build — including the limited-API wheels
+   for Python 3.9/3.10, which used to fall back to ``.tolist()``.
 
    :returns: ``numpy.ndarray`` of float64 with the same shape as the
-      first input.
+      first input; for a :class:`CompiledVecFn`, shape
+      ``(n_outputs, *first_input.shape)``.
 
    Example::
 
@@ -67,7 +84,28 @@ Compiled evaluation
    Identical to :func:`numpy_eval` but distributes the evaluation points
    across all CPU cores via Rayon (requires ``--features parallel``; falls
    back to :func:`numpy_eval` otherwise). The GIL is released for the
-   duration of the native call.
+   duration of the native call. Batches below about 16 000 points run on
+   one thread, where splitting costs more than it saves.
+
+.. class:: CompiledVecFn
+
+   Several outputs compiled together by ``compile_expr([e1, e2, ...], vars)``.
+
+   .. method:: __call__(inputs: list[float]) -> list[float]
+
+      Evaluate every output at a single point.
+
+   .. attribute:: n_inputs
+
+      Number of input variables.
+
+   .. attribute:: n_outputs
+
+      Number of outputs.
+
+   .. attribute:: tier
+
+      Backend: ``"cranelift"``, ``"llvm"`` or ``"interpreter"``.
 
 .. class:: CompiledFn
 
