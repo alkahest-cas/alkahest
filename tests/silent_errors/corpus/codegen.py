@@ -150,7 +150,7 @@ CASES: list[Case] = [
         subsystem="codegen",
         statement="the C emitted for x^(10**30 + 1) gives -1 at x = -1, as eval_expr does",
         op=lambda: _c_body(ak.emit_c_expr(X ** (10**30 + 1), [X], var_names=["x"])),
-        contract=Returns("double _t0 = copysign(pow(fabs(x), 1e30), x);"),
+        contract=Returns("return copysign(pow(fabs(x), 1e30), x);"),
         verified_by=(
             "10**30 + 1 is odd, so (-1) ** (10**30 + 1) == -1 in Python's own integers. "
             "A C program has no literal for it: float(10**30 + 1) == 1e30, which is even, "

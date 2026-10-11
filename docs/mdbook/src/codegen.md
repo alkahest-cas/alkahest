@@ -159,6 +159,31 @@ c_code = emit_c(expr, [x, y], fn_name="f")
 # → "double f(double x, double y) { return ...; }"
 ```
 
+`emit_c_expr` (one output) and `emit_c_vec` (many outputs into `double *out`)
+emit ISO C99 for arbitrary expressions. Every sub-expression used more than
+once — across all outputs jointly — is computed once into a `const double`
+temporary, and small integer and half-integer powers become products,
+divisions and one shared `sqrt`:
+
+```python
+from alkahest import emit_c_vec, sin, cos
+
+print(emit_c_vec([sin(x) * cos(y), sin(x) + cos(y)], [x, y]))
+# void eval_vec(double x, double y, double *out) {
+#     const double _t0 = sin(x);
+#     const double _t1 = cos(y);
+#     out[0] = (_t0 * _t1);
+#     out[1] = (_t0 + _t1);
+# }
+```
+
+`pi` and `exp(1)` are emitted as the nearest `double`; `sign`, `heaviside`,
+`min`/`max` and `Piecewise` as ternaries / `fmin`/`fmax`; `lambert_w` through
+an emitted, `#ifndef`-guarded `static` helper (relative error ≤ 1e-15 away from
+the branch point). A function with no C lowering is refused with
+`E-CODEGEN-001`, a node with no straight-line form (`O(x)`) with
+`E-CODEGEN-002`, and a free symbol not in `vars` with `E-CODEGEN-003`.
+
 ## MLIR dialect
 
 The `alkahest-mlir` crate exposes the custom MLIR dialect. The dialect ops are:
