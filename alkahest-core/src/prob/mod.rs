@@ -51,15 +51,18 @@
 //! | a closed form the quadrature contradicts | `E-PROB-005`. This is the prime-directive case: something *was* computed and is being withheld |
 //! | `Uniform(a, b).quantile(2)` | `E-PROB-001`: `p` is a probability. The closed form returns `a + 2(b-a)` there — a point outside the support, offered as a quantile |
 //!
-//! # What this module deliberately does not do
+//! # Joint laws
 //!
-//! There is no joint distribution, no conditioning, and no dependence
-//! structure. [`expectation_affine`] applies linearity — `E[aX + bY] = aE[X] +
-//! bE[Y]`, which needs no independence at all — and
-//! [`variance_affine_independent`] applies the variance rule under an
-//! independence assumption the caller states by choosing that function's name.
-//! Anything beyond those two would require a joint-law design, and guessing at
-//! one produces wrong covariances silently.
+//! A list of marginals says nothing about dependence, so the univariate
+//! routes never guess at one: [`expectation_affine`] applies linearity, which
+//! needs no independence, and [`variance_affine_independent`] states its
+//! assumption in its name. Dependence enters only through the `joint` layer
+//! ([`MultivariateNormal`], [`JointBlock`], [`joint_expectation`],
+//! [`covariance`], [`joint_variance`]), where the caller declares the joint
+//! law as mutually independent blocks, each a univariate law or a
+//! multivariate normal. [`sum_independent`] gives the law of a sum of
+//! independent variates where it stays in a closed family, and
+//! [`order_statistic`] the law of the minimum or maximum of `n` iid variates.
 
 use std::fmt;
 
@@ -73,8 +76,13 @@ mod dists;
 mod entropy;
 mod expect;
 mod genfun;
+mod joint;
+#[cfg(test)]
+mod joint_tests;
 mod moments;
+mod order;
 mod quad;
+mod table;
 #[cfg(test)]
 mod tests;
 mod verify;
@@ -88,6 +96,11 @@ pub use genfun::{
     cumulant, cumulant_generating_function, excess_kurtosis, factorial_moment,
     moment_generating_function, probability_generating_function, skewness, MAX_CUMULANT_ORDER,
 };
+pub use joint::{
+    covariance, joint_expectation, joint_variance, sum_independent, JointBlock, MultivariateNormal,
+    MAX_MVN_DIM,
+};
+pub use order::{order_statistic, OrderKind, OrderStatistic};
 pub use verify::Evidence;
 
 pub(crate) use quad::numeric_ball;
@@ -364,6 +377,9 @@ pub enum Support {
     IntegersUpTo(u32),
     /// `{0, 1, 2, …}` — countably infinite.
     NonNegativeIntegers,
+    /// `{0, 1, …, n}` for a **symbolic** `n` — a `Binomial(n, p)` whose trial
+    /// count is not a literal. Finite, but not enumerable until `n` is bound.
+    IntegersUpToSymbolic(ExprId),
 }
 
 impl Support {
@@ -371,7 +387,9 @@ impl Support {
     pub fn is_discrete(&self) -> bool {
         matches!(
             self,
-            Support::IntegersUpTo(_) | Support::NonNegativeIntegers
+            Support::IntegersUpTo(_)
+                | Support::NonNegativeIntegers
+                | Support::IntegersUpToSymbolic(_)
         )
     }
 }
@@ -407,6 +425,10 @@ pub enum DistKind {
     Binomial,
     /// `Poisson(λ)`, `λ > 0`, on `{0, 1, 2, …}`.
     Poisson,
+    /// `NegativeBinomial(r, p)`, `r > 0`, `0 < p ≤ 1`: the number of failures
+    /// before the `r`-th success, mass `Γ(k+r)/(Γ(r)k!)·pʳ(1-p)ᵏ` on
+    /// `{0, 1, 2, …}`, mean `r(1-p)/p`. The SciPy `nbinom(r, p)` convention.
+    NegativeBinomial,
 }
 
 impl DistKind {
@@ -423,6 +445,7 @@ impl DistKind {
             DistKind::Bernoulli => "Bernoulli",
             DistKind::Binomial => "Binomial",
             DistKind::Poisson => "Poisson",
+            DistKind::NegativeBinomial => "NegativeBinomial",
         }
     }
 }
@@ -559,15 +582,18 @@ impl Distribution {
 
     /// `Binomial(n, p)` — `n` trials, requires `0 ≤ p ≤ 1`.
     ///
-    /// `n` must be a literal non-negative integer: the support `{0…n}` is
-    /// enumerated by every route in this module, so a symbolic `n` is not a
-    /// distribution this module can compute with and is refused rather than
-    /// half-supported.
+    /// `n` is a literal non-negative integer **or a symbolic expression**. A
+    /// symbolic `n` is accepted with `n ≥ 0` on [`Distribution::constraints`]
+    /// and `n ∈ ℤ` carried as a side condition by every route that answers;
+    /// the routes that need to enumerate `{0…n}` (the CDF, the entropy, a
+    /// general non-polynomial `E[f(X)]`) refuse it. Moments, generating
+    /// functions, cumulants, skewness and kurtosis come from closed forms in
+    /// `n`, checked against the defining finite sum at integer `n`.
     ///
     /// # Errors
     ///
-    /// [`ProbError::InvalidParameter`] when `n` is not a literal non-negative
-    /// integer, or `p` is a number outside `[0, 1]`.
+    /// [`ProbError::InvalidParameter`] when `n` is a number that is not a
+    /// non-negative integer, or `p` is a number outside `[0, 1]`.
     pub fn binomial(n: ExprId, p: ExprId, pool: &ExprPool) -> Result<Self, ProbError> {
         dists::require_count(n, "n", pool)?;
         dists::require_probability(p, "p", pool)?;
@@ -587,6 +613,22 @@ impl Distribution {
         Ok(Distribution {
             kind: DistKind::Poisson,
             params: vec![lambda],
+        })
+    }
+
+    /// `NegativeBinomial(r, p)` — failures before the `r`-th success, requires
+    /// `r > 0` (real `r` allowed) and `0 < p ≤ 1`.
+    ///
+    /// # Errors
+    ///
+    /// [`ProbError::InvalidParameter`] when `r` is a non-positive number or
+    /// `p` is a number outside `(0, 1]`.
+    pub fn negative_binomial(r: ExprId, p: ExprId, pool: &ExprPool) -> Result<Self, ProbError> {
+        dists::require_positive(r, "r", pool)?;
+        dists::require_success_probability(p, "p", pool)?;
+        Ok(Distribution {
+            kind: DistKind::NegativeBinomial,
+            params: vec![r, p],
         })
     }
 

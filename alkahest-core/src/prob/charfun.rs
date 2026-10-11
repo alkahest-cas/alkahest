@@ -159,6 +159,19 @@ fn claim_for(dist: &Distribution, t: ExprId, pool: &ExprPool) -> Result<ExprId, 
             pool.mul(vec![p[0], sub(exp(pool.mul(vec![i, t]), pool), one, pool)]),
             pool,
         ),
+        // (p / (1 - (1-p) e^{it}))^r
+        DistKind::NegativeBinomial => pool.pow(
+            div(
+                p[1],
+                sub(
+                    one,
+                    pool.mul(vec![sub(one, p[1], pool), exp(pool.mul(vec![i, t]), pool)]),
+                    pool,
+                ),
+                pool,
+            ),
+            p[0],
+        ),
         DistKind::LogNormal => {
             return Err(ProbError::NoClosedForm {
                 quantity: "the log-normal characteristic function",

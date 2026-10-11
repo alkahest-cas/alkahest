@@ -253,7 +253,13 @@ fn entropy_claim(dist: &Distribution, pool: &ExprPool) -> Result<ExprId, ProbErr
             // `(n-k) log q` parts summed in closed form, only the
             // coefficient's logarithm left over — so an error in the algebra
             // shows up as a disagreement.
-            let n = dists::count_of(p[0], pool);
+            let Some(n) = dists::literal_count(p[0], pool) else {
+                return Err(ProbError::NoClosedForm {
+                    quantity: "the Binomial entropy with a symbolic number of trials",
+                    missing: "a closed form for E[log C(n, K)], K ~ Binomial(n, p) — a sum of \
+                              n - 1 terms with no closed form in n",
+                });
+            };
             if n > MAX_BINOMIAL_ENTROPY_N {
                 return Err(ProbError::Unsupported(format!(
                     "H(Binomial(n, p)) has no closed form; the identity \
@@ -276,6 +282,13 @@ fn entropy_claim(dist: &Distribution, pool: &ExprPool) -> Result<ExprId, ProbErr
                 ]));
             }
             pool.add(terms)
+        }
+        DistKind::NegativeBinomial => {
+            return Err(ProbError::NoClosedForm {
+                quantity: "the NegativeBinomial entropy",
+                missing: "a closed form for E[log Γ(K + r)/(Γ(r) K!)] — an infinite sum with \
+                          no elementary or standard special-function value",
+            })
         }
         DistKind::Poisson => {
             return Err(ProbError::NoClosedForm {
@@ -300,7 +313,7 @@ fn degenerate_point_mass(dist: &Distribution, pool: &ExprPool) -> bool {
     let prob = match dist.kind() {
         DistKind::Bernoulli => p[0],
         DistKind::Binomial => {
-            if dists::count_of(p[0], pool) == 0 {
+            if dists::literal_count(p[0], pool) == Some(0) {
                 return true;
             }
             p[1]
@@ -488,7 +501,8 @@ fn support_gates(
         | DistKind::Exponential
         | DistKind::Gamma
         | DistKind::Beta
-        | DistKind::Poisson => Vec::new(),
+        | DistKind::Poisson
+        | DistKind::NegativeBinomial => Vec::new(),
         // [a₁, b₁] ⊆ [a₂, b₂].
         DistKind::Uniform => vec![
             Gate {
@@ -504,11 +518,26 @@ fn support_gates(
         ],
         DistKind::Bernoulli => atom_gates(pp[0], qp[0], pool),
         DistKind::Binomial => {
-            let (n1, n2) = (dists::count_of(pp[0], pool), dists::count_of(qp[0], pool));
-            if n1 > n2 {
-                return Err(diverged("{0…n₁} ⊆ {0…n₂}"));
+            let mut gates = Vec::new();
+            match (
+                dists::literal_count(pp[0], pool),
+                dists::literal_count(qp[0], pool),
+            ) {
+                (Some(n1), Some(n2)) => {
+                    if n1 > n2 {
+                        return Err(diverged("{0…n₁} ⊆ {0…n₂}"));
+                    }
+                }
+                // A symbolic count: `n₁ ≤ n₂` is decided below if it can be,
+                // carried otherwise.
+                _ => gates.push(Gate {
+                    gap: sub(qp[0], pp[0], pool),
+                    strict: false,
+                    reads: "{0…n₁} ⊆ {0…n₂}",
+                }),
             }
-            atom_gates(pp[1], qp[1], pool)
+            gates.extend(atom_gates(pp[1], qp[1], pool));
+            gates
         }
     };
 
@@ -616,8 +645,13 @@ fn kl_claim(p: &Distribution, q: &Distribution, pool: &ExprPool) -> Result<ExprI
         DistKind::Bernoulli => bernoulli_kl(a[0], b[0], pool),
         // n identical trials: D = n·D_Bernoulli(p₁‖p₂).
         DistKind::Binomial => {
-            let (n1, n2) = (dists::count_of(a[0], pool), dists::count_of(b[0], pool));
-            if n1 != n2 {
+            let equal = a[0] == b[0]
+                || matches!(
+                    pool.get(simplify(sub(a[0], b[0], pool), pool).value),
+                    crate::kernel::ExprData::Integer(z) if z.0 == 0
+                );
+            if !equal {
+                let (n1, n2) = (pool.display(a[0]), pool.display(b[0]));
                 return Err(ProbError::Unsupported(format!(
                     "D(Binomial({n1}, p₁) ‖ Binomial({n2}, p₂)) with n₁ ≠ n₂ has no closed \
                      form: log(dP/dQ) carries log(C({n1},k)/C({n2},k)), which does not sum \
@@ -625,6 +659,32 @@ fn kl_claim(p: &Distribution, q: &Distribution, pool: &ExprPool) -> Result<ExprI
                 )));
             }
             pool.mul(vec![a[0], bernoulli_kl(a[1], b[1], pool)])
+        }
+        // Equal r: log(dP/dQ)(k) = r log(p₁/p₂) + k log(q₁/q₂) and E[K] =
+        // r q₁/p₁, so D = r log(p₁/p₂) + (r q₁/p₁) log(q₁/q₂).
+        DistKind::NegativeBinomial => {
+            let equal = a[0] == b[0]
+                || matches!(
+                    pool.get(simplify(sub(a[0], b[0], pool), pool).value),
+                    crate::kernel::ExprData::Integer(z) if z.0 == 0
+                );
+            if !equal {
+                return Err(ProbError::Unsupported(
+                    "D(NegativeBinomial(r₁, p₁) ‖ NegativeBinomial(r₂, p₂)) with r₁ ≠ r₂ has no \
+                     closed form: log(dP/dQ) carries log(Γ(k+r₁)Γ(r₂)/(Γ(k+r₂)Γ(r₁))), which \
+                     does not sum in closed form"
+                        .to_string(),
+                ));
+            }
+            let one = pool.integer(1);
+            let (q1, q2) = (sub(one, a[1], pool), sub(one, b[1], pool));
+            pool.add(vec![
+                pool.mul(vec![a[0], log(div(a[1], b[1], pool), pool)]),
+                pool.mul(vec![
+                    div(pool.mul(vec![a[0], q1]), a[1], pool),
+                    log(div(q1, q2, pool), pool),
+                ]),
+            ])
         }
         // λ₁log(λ₁/λ₂) + λ₂ - λ₁.
         //

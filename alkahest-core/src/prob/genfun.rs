@@ -52,7 +52,7 @@ use rug::Integer;
 
 use crate::deriv::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
 use crate::kernel::{ExprId, ExprPool};
-use crate::simplify::simplify;
+use crate::simplify::{simplify, simplify_expanded};
 
 use super::dists::{self, Sign};
 use super::moments;
@@ -99,8 +99,32 @@ fn mgf_strip(dist: &Distribution, t: ExprId, pool: &ExprPool) -> Option<(ExprId,
             sub(pool.integer(1), pool.mul(vec![p[1], t]), pool),
             "t < 1/theta",
         )),
+        // Σ_k ((1-p)e^t)^k converges iff (1-p)e^t < 1.
+        DistKind::NegativeBinomial => Some((
+            sub(
+                pool.integer(1),
+                pool.mul(vec![sub(pool.integer(1), p[1], pool), exp(t, pool)]),
+                pool,
+            ),
+            "t < -log(1 - p)",
+        )),
         _ => None,
     }
+}
+
+/// `(p / (1 - (1-p)·w))^r`, the negative-binomial generating kernel at `w`
+/// (`w = e^t` for the MGF, `w = z` for the PGF).
+fn negative_binomial_kernel(dist: &Distribution, w: ExprId, pool: &ExprPool) -> ExprId {
+    let p = dist.params();
+    let one = pool.integer(1);
+    pool.pow(
+        div(
+            p[1],
+            sub(one, pool.mul(vec![sub(one, p[1], pool), w]), pool),
+            pool,
+        ),
+        p[0],
+    )
 }
 
 /// Record the convergence region on `log`, or refuse when the argument can be
@@ -176,6 +200,15 @@ fn mgf_ladder(dist: &Distribution, pool: &ExprPool) -> Vec<ExprId> {
                 pool.mul(vec![pool.rational(9, 10), inv_theta]),
             ]
         }
+        DistKind::NegativeBinomial => {
+            // The strip is t < -log(1-p) =: τ > 0.
+            let tau = pool.mul(vec![neg1, log(sub(pool.integer(1), p[1], pool), pool)]);
+            vec![
+                pool.mul(vec![half, tau]),
+                pool.integer(-1),
+                pool.mul(vec![pool.rational(9, 10), tau]),
+            ]
+        }
         _ => vec![half, pool.rational(-3, 4)],
     }
 }
@@ -235,6 +268,8 @@ fn mgf_claim(dist: &Distribution, t: ExprId, pool: &ExprPool) -> Result<ExprId, 
         ),
         // e^{λ(e^t - 1)}
         DistKind::Poisson => exp(pool.mul(vec![p[0], sub(exp(t, pool), one, pool)]), pool),
+        // (p / (1 - (1-p)e^t))^r, for t < -log(1-p)
+        DistKind::NegativeBinomial => negative_binomial_kernel(dist, exp(t, pool), pool),
         DistKind::LogNormal => {
             return Err(lognormal_refusal(
                 t,
@@ -389,6 +424,22 @@ fn cgf_claim(dist: &Distribution, t: ExprId, pool: &ExprPool) -> Result<ExprId, 
         ]),
         // λ(e^t - 1)
         DistKind::Poisson => pool.mul(vec![p[0], sub(exp(t, pool), one, pool)]),
+        // r(log p - log(1 - (1-p)e^t)), for t < -log(1-p)
+        DistKind::NegativeBinomial => pool.mul(vec![
+            p[0],
+            sub(
+                log(p[1], pool),
+                log(
+                    sub(
+                        one,
+                        pool.mul(vec![sub(one, p[1], pool), exp(t, pool)]),
+                        pool,
+                    ),
+                    pool,
+                ),
+                pool,
+            ),
+        ]),
         DistKind::LogNormal => {
             return Err(lognormal_refusal(
                 t,
@@ -494,7 +545,53 @@ fn pgf_claim(dist: &Distribution, z: ExprId, pool: &ExprPool) -> ExprId {
         ),
         // e^{λ(z - 1)}
         DistKind::Poisson => exp(pool.mul(vec![p[0], sub(z, one, pool)]), pool),
-        _ => unreachable!("require_integer_support admits only the three integer laws"),
+        // (p / (1 - (1-p)z))^r, for |z| < 1/(1-p)
+        DistKind::NegativeBinomial => negative_binomial_kernel(dist, z, pool),
+        _ => unreachable!("require_integer_support admits only the integer laws"),
+    }
+}
+
+/// The disc a negative-binomial PGF converges on, `|z| < 1/(1-p)`, written
+/// for real `z` as `1 - (1-p)²z² > 0`: recorded when undecidable, refused
+/// when decidably violated. The other integer laws have entire `G`.
+fn record_pgf_disc(
+    log: &mut DerivationLog,
+    claim: ExprId,
+    dist: &Distribution,
+    z: ExprId,
+    pool: &ExprPool,
+) -> Result<(), ProbError> {
+    if dist.kind() != DistKind::NegativeBinomial {
+        return Ok(());
+    }
+    let one = pool.integer(1);
+    let two = pool.integer(2);
+    let q = sub(one, dist.params()[1], pool);
+    let gap = simplify(
+        sub(
+            one,
+            pool.mul(vec![pool.pow(q, two), pool.pow(z, two)]),
+            pool,
+        ),
+        pool,
+    )
+    .value;
+    match dists::sign_of(gap, pool) {
+        Sign::Positive => Ok(()),
+        Sign::Negative | Sign::Zero => Err(ProbError::Divergent(
+            "the probability generating function of a NegativeBinomial(r, p) converges only \
+             for |z| < 1/(1 - p), and the argument given is outside that disc"
+                .to_string(),
+        )),
+        Sign::Unknown => {
+            log.push(RewriteStep::with_conditions(
+                "prob_pgf_argument_inside_the_disc_of_convergence",
+                claim,
+                claim,
+                vec![SideCondition::Positive(gap)],
+            ));
+            Ok(())
+        }
     }
 }
 
@@ -507,6 +604,7 @@ fn pgf_radius(dist: &Distribution) -> &'static str {
         DistKind::Bernoulli | DistKind::Binomial => {
             "prob_pgf_is_a_polynomial_so_converges_for_all_z"
         }
+        DistKind::NegativeBinomial => "prob_pgf_converges_on_the_disc_abs_z_below_1_over_1_minus_p",
         _ => "prob_pgf_is_entire_so_converges_for_all_z",
     }
 }
@@ -527,12 +625,15 @@ pub fn probability_generating_function(
     require_integer_support(dist, pool)?;
     let claim = simplify(pgf_claim(dist, z, pool), pool).value;
 
+    let mut log = DerivationLog::new();
+    // Before the gate, for the reason `moment_generating_function` gives.
+    record_pgf_disc(&mut log, claim, dist, z, pool)?;
+
     let k = dists::fresh_var(&[claim, z], pool);
     let integrand = verify::definition_integrand(pool.pow(z, k), k, dist, pool);
     let ladder = vec![pool.rational(1, 2), pool.rational(5, 4)];
     let evidence = verify::check_generating(claim, integrand, k, z, &ladder, dist, pool)?;
 
-    let mut log = DerivationLog::new();
     log.push(RewriteStep::simple(
         "prob_probability_generating_function",
         z,
@@ -563,16 +664,27 @@ fn factorial_moment_claim(dist: &Distribution, n: u32, pool: &ExprPool) -> ExprI
             }
         }
         // N^{(n)} pⁿ
-        DistKind::Binomial => {
-            let nn = dists::count_of(p[0], pool);
-            pool.mul(vec![
+        DistKind::Binomial => match dists::literal_count(p[0], pool) {
+            Some(nn) => pool.mul(vec![
                 pool.integer(moments::falling_factorial(nn, n)),
                 pool.pow(p[1], pool.integer(n)),
-            ])
-        }
+            ]),
+            None => {
+                let mut f = vec![pool.pow(p[1], pool.integer(n))];
+                f.extend((0..n).map(|j| sub(p[0], pool.integer(j), pool)));
+                pool.mul(f)
+            }
+        },
         // λⁿ — the identity that makes the Poisson the distribution it is.
         DistKind::Poisson => pool.pow(p[0], pool.integer(n)),
-        _ => unreachable!("require_integer_support admits only the three integer laws"),
+        // r(r+1)⋯(r+n-1) · ((1-p)/p)ⁿ
+        DistKind::NegativeBinomial => {
+            let ratio = div(sub(pool.integer(1), p[1], pool), p[1], pool);
+            let mut f = vec![pool.pow(ratio, pool.integer(n))];
+            f.extend((0..n).map(|j| pool.add(vec![p[0], pool.integer(j)])));
+            pool.mul(f)
+        }
+        _ => unreachable!("require_integer_support admits only the integer laws"),
     }
 }
 
@@ -770,16 +882,25 @@ fn standardised_moment(
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, ProbError> {
     super::stash_prob_side_conditions(Vec::new());
-    let mu2 = central_moment_claim(dist, 2, pool)?;
-    let mu_k = central_moment_claim(dist, order, pool)?;
+    // Expanded: a central moment assembled from raw moments is a polynomial
+    // whose cancellations (`E[X³] - 3μE[X²] + 3μ²E[X] - μ³ = 0` for a normal)
+    // only happen once it is multiplied out.
+    let mu2 = simplify_expanded(central_moment_claim(dist, 2, pool)?, pool).value;
+    let mu_k = simplify_expanded(central_moment_claim(dist, order, pool)?, pool).value;
     // σ^order = (μ₂)^{order/2}: a half-integer power, never `sqrt(μ₂)^order`,
     // so nothing has to decide a branch of the square root.
     let sigma_pow = pool.pow(mu2, pool.rational(i64::from(order), 2));
-    let claim = simplify(
-        pool.add(vec![div(mu_k, sigma_pow, pool), pool.integer(shift)]),
-        pool,
-    )
-    .value;
+    let raw = pool.add(vec![div(mu_k, sigma_pow, pool), pool.integer(shift)]);
+    let claim = simplify(raw, pool).value;
+    // A standardised moment that is a pure number (a normal's 0 and 0, an
+    // exponential's 2 and 6) is reported as that number, not as a ratio of
+    // powers of σ that happens to equal it.
+    let claim = match pool.get(simplify_expanded(claim, pool).value) {
+        d @ (crate::kernel::ExprData::Integer(_) | crate::kernel::ExprData::Rational(_)) => {
+            pool.intern(d)
+        }
+        _ => claim,
+    };
 
     let mean = simplify(moments::mean_claim(dist, pool), pool).value;
     let x = dists::fresh_var(&[claim, mean], pool);

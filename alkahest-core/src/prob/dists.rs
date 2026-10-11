@@ -102,30 +102,78 @@ pub(crate) fn require_probability(
     Ok(())
 }
 
-/// `n` must be a literal non-negative integer: every route over a finite
-/// discrete support enumerates `{0…n}`, so a symbolic `n` is not something
-/// this module can compute with. Refusing at construction is better than
-/// accepting and then failing on every query.
+/// `n` must be a non-negative integer. A literal is checked; a *number* that
+/// is not a non-negative integer (`5/2`, `-1`, a float) is refused; an
+/// expression with a free symbol cannot be decided and is accepted, its
+/// integrality carried as a side condition (see [`symbolic_count_conditions`])
+/// and its non-negativity on [`Distribution::constraints`].
+///
+/// A symbolic `n` changes what the module can do with the law: nothing that
+/// enumerates `{0…n}` is available, and every route that answers does so from
+/// a closed form in `n` (moments, generating functions, cumulants). The
+/// verifier still checks those against the defining **finite sum**, at integer
+/// values of `n`.
 pub(crate) fn require_count(
     expr: ExprId,
     parameter: &'static str,
     pool: &ExprPool,
 ) -> Result<(), ProbError> {
+    let bad = ProbError::InvalidParameter {
+        parameter,
+        requirement: "a non-negative integer (a literal, or a symbolic expression)",
+    };
     match pool.get(expr) {
         ExprData::Integer(n) if n.0 >= 0 && n.0 <= u32::MAX => Ok(()),
-        _ => Err(ProbError::InvalidParameter {
-            parameter,
-            requirement: "a literal non-negative integer",
-        }),
+        ExprData::Integer(_) => Err(bad),
+        _ if super::numeric_ball(expr, pool).is_some() => Err(bad),
+        _ => Ok(()),
     }
 }
 
-/// The literal `n` of a `Binomial`, known to exist by [`require_count`].
-pub(crate) fn count_of(expr: ExprId, pool: &ExprPool) -> u32 {
+/// The literal `n` of a `Binomial`, or `None` when `n` is symbolic.
+pub(crate) fn literal_count(expr: ExprId, pool: &ExprPool) -> Option<u32> {
     match pool.get(expr) {
-        ExprData::Integer(n) => n.0.to_u32().unwrap_or(0),
-        _ => 0,
+        ExprData::Integer(n) => n.0.to_u32(),
+        _ => None,
     }
+}
+
+/// The hypothesis a symbolic trial count carries: `n ∈ ℤ`. Non-negativity is
+/// already on [`Distribution::constraints`]; integrality is not a predicate
+/// the kernel can state there, so it travels as a side condition instead.
+pub(crate) fn symbolic_count_conditions(
+    dist: &Distribution,
+    pool: &ExprPool,
+) -> Vec<crate::deriv::SideCondition> {
+    if dist.kind() == DistKind::Binomial && literal_count(dist.params()[0], pool).is_none() {
+        vec![crate::deriv::SideCondition::InDomain(
+            dist.params()[0],
+            crate::kernel::Domain::Integer,
+        )]
+    } else {
+        Vec::new()
+    }
+}
+
+/// `p ∈ (0, 1]` — a success probability that can actually produce a success.
+/// `NegativeBinomial(r, 0)` waits forever for its `r`-th success.
+pub(crate) fn require_success_probability(
+    expr: ExprId,
+    parameter: &'static str,
+    pool: &ExprPool,
+) -> Result<(), ProbError> {
+    let bad = ProbError::InvalidParameter {
+        parameter,
+        requirement: "0 < p ≤ 1",
+    };
+    if matches!(sign_of(expr, pool), Sign::Negative | Sign::Zero) {
+        return Err(bad);
+    }
+    let one = pool.integer(1);
+    if matches!(sign_of(sub(expr, one, pool), pool), Sign::Positive) {
+        return Err(bad);
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -140,8 +188,11 @@ pub(crate) fn support(dist: &Distribution, pool: &ExprPool) -> Support {
         DistKind::Uniform => Support::Interval(p[0], p[1]),
         DistKind::Beta => Support::Interval(pool.integer(0), pool.integer(1)),
         DistKind::Bernoulli => Support::IntegersUpTo(1),
-        DistKind::Binomial => Support::IntegersUpTo(count_of(p[0], pool)),
-        DistKind::Poisson => Support::NonNegativeIntegers,
+        DistKind::Binomial => match literal_count(p[0], pool) {
+            Some(n) => Support::IntegersUpTo(n),
+            None => Support::IntegersUpToSymbolic(p[0]),
+        },
+        DistKind::Poisson | DistKind::NegativeBinomial => Support::NonNegativeIntegers,
     }
 }
 
@@ -160,6 +211,11 @@ pub(crate) fn constraints(dist: &Distribution, pool: &ExprPool) -> Vec<ExprId> {
         DistKind::Binomial => vec![
             pool.pred_ge(p[0], zero),
             pool.pred_ge(p[1], zero),
+            pool.pred_le(p[1], one),
+        ],
+        DistKind::NegativeBinomial => vec![
+            pool.pred_gt(p[0], zero),
+            pool.pred_gt(p[1], zero),
             pool.pred_le(p[1], one),
         ],
     }
@@ -283,6 +339,25 @@ pub(crate) fn pdf(dist: &Distribution, x: ExprId, pool: &ExprPool) -> ExprId {
             let q = sub(pool.integer(1), prob, pool);
             let coeff = binomial_coefficient(n, x, pool);
             pool.mul(vec![coeff, pool.pow(prob, x), pool.pow(q, sub(n, x, pool))])
+        }
+        DistKind::NegativeBinomial => {
+            // Γ(x+r)/(Γ(r)Γ(x+1)) · p^r (1-p)^x — failures before the r-th
+            // success.
+            let (r, prob) = (p[0], p[1]);
+            let one = pool.integer(1);
+            let coeff = div(
+                gamma_fn(pool.add(vec![x, r]), pool),
+                pool.mul(vec![
+                    gamma_fn(r, pool),
+                    gamma_fn(pool.add(vec![x, one]), pool),
+                ]),
+                pool,
+            );
+            pool.mul(vec![
+                coeff,
+                pool.pow(prob, r),
+                pool.pow(sub(one, prob, pool), x),
+            ])
         }
         DistKind::Poisson => {
             // λ^x e^{-λ} / Γ(x+1)
@@ -455,6 +530,9 @@ pub(crate) fn reduction(dist: &Distribution, x: ExprId, pool: &ExprPool) -> Opti
             lo: zero,
             hi: pool.integer(1),
         },
-        DistKind::Bernoulli | DistKind::Binomial | DistKind::Poisson => return None,
+        DistKind::Bernoulli
+        | DistKind::Binomial
+        | DistKind::Poisson
+        | DistKind::NegativeBinomial => return None,
     })
 }

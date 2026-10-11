@@ -96,6 +96,12 @@ pub fn expectation(
     let (claim, mut log, breaks) = if support.is_discrete() {
         let (c, l) = discrete_expectation(f, x, dist, &support, pool)?;
         (c, l, Vec::new())
+    } else if let Some(table) = super::table::closed_form(f, x, dist, pool) {
+        // Every term of `f` is a standard function with a textbook
+        // expectation (`Xᵏ`, `X^s`, `log X`, `e^{aX}`, `cos(ωX)` …). Still
+        // checked below against quadrature of the definition.
+        let (c, l) = table?;
+        (c, l, Vec::new())
     } else {
         continuous_expectation(f, x, dist, pool)?
     };
@@ -135,15 +141,17 @@ fn discrete_expectation(
             log.push(RewriteStep::simple("prob_finite_expectation_sum", f, total));
             Ok((total, log))
         }
-        Support::NonNegativeIntegers => {
-            // Countably infinite: only a polynomial `f` closes, through the
-            // factorial-moment expansion. Anything else is refused rather than
-            // truncated — a truncated infinite sum returned as an expectation
-            // is a wrong answer with a plausible magnitude.
+        Support::NonNegativeIntegers | Support::IntegersUpToSymbolic(_) => {
+            // Countably infinite, or finite with a symbolic end: only a
+            // polynomial `f` closes, through the factorial-moment expansion.
+            // Anything else is refused rather than truncated — a truncated
+            // infinite sum returned as an expectation is a wrong answer with a
+            // plausible magnitude.
             let Some(coeffs) = polynomial_coefficients(f, x, pool) else {
                 return Err(ProbError::Unsupported(format!(
                     "E[f(X)] over {} needs f to be a polynomial in the variate: the support is \
-                     countably infinite and a general f has no closed-form sum here",
+                     countably infinite (or ends at a symbolic n) and a general f has no \
+                     closed-form sum here",
                     dist.kind().name()
                 )));
             };

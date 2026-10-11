@@ -1190,7 +1190,7 @@ pool = ak.ExprPool()
 mu, sigma, t, x = (pool.symbol(n) for n in ("mu", "sigma", "t", "x"))
 
 N = ex.Normal(mu, sigma)     # also LogNormal, Uniform, Exponential, Gamma, Beta,
-                             # Bernoulli, Binomial, Poisson  — nine laws
+                             # Bernoulli, Binomial, Poisson, NegativeBinomial — ten laws
 N.kind                       # 'Normal'
 N.params()                   # [mu, sigma]
 N.support()                  # ('real', None)
@@ -1225,8 +1225,30 @@ ex.expectation_affine(a * X + b_ * Y, [(X, N), (Y, ex.Exponential(pool.integer(2
 ex.kl_divergence(ex.Normal(pool.integer(0), pool.integer(1)), N)
 ```
 
-**There are no joint distributions, no conditioning and no covariance.** A product
-of two variates raises `E-PROB-002` rather than guessing at a joint law.
+`expectation_affine` still refuses a product of two variates (`E-PROB-002`): a list
+of marginals says nothing about dependence. **Declare the joint law instead**, as
+mutually independent blocks — `(var, Distribution)` or `([vars], MultivariateNormal)`:
+
+```python
+X, Y, Z = (pool.symbol(n) for n in "XYZ")
+mvn = ex.MultivariateNormal([m1, m2], [[s11, s12], [s12, s22]])   # symbolic OK; Sylvester-checked
+mvn.conditional([1], [a]).mean()        # [m1 + s12*(a - m2)/s22]   (Schur complement)
+mvn.linear_transform(A, b); mvn.marginal([0]); mvn.pdf([x1, x2]); mvn.quadratic_form_expectation(A)
+ex.joint_expectation(X**2 * Y**2, [([X, Y], mvn)])   # Stein/Isserlis, exact
+ex.covariance(X + Y, X - Y, [([X, Y], mvn)])         # s11 - s22
+ex.joint_variance(X * Z, [([X, Y], mvn), (Z, ex.Exponential(lam))])  # blocks independent
+ex.sum_independent([ex.Normal(m1, s1), ex.Normal(m2, s2)])  # Normal(m1+m2, sqrt(s1²+s2²))
+ex.order_statistic(ex.Exponential(lam), n, "max").mean()    # (digamma(n+1) - digamma(1))/lam
+ex.Binomial(n, p).variance()            # symbolic n: n*p*(1-p); n integer on prob_side_conditions()
+ex.NegativeBinomial(r, p)               # failures before r-th success (scipy nbinom)
+ex.expectation(ak.log(x), x, ex.Gamma(k, theta))     # digamma(k) + log(theta)
+```
+
+`E[f(X)]` for `f` built from `x**s`, `log x`, `exp(a*x)`, `cos/sin(w*x)` under
+Normal/Gamma/Exponential/Beta/LogNormal comes from a closed-form table (still gated
+by quadrature); a decidably violated hypothesis (`E[1/X]`, `Gamma(1, θ)`) is
+`E-PROB-006`, an undecidable one (`k - 1 > 0`) goes on `prob_side_conditions()`.
+A factor coupling two *independent* blocks non-separably (`sin(X + Y)`) is `E-PROB-002`.
 
 ### The six `E-PROB-*` codes are four different instructions
 

@@ -90,12 +90,26 @@ Probability and statistics:
   cannot see (``E[e**X]`` under ``Exponential(1)``, whose integrand is the
   constant ``1``) arrives as ``E-PROB-003`` instead, so read ``006`` as "proved
   divergent", never ``003`` as "proved convergent". ``max(S - K, 0)`` under a
-  :func:`LogNormal` derives Black–Scholes
+  :func:`LogNormal` derives Black–Scholes. Terms built from ``x**s``,
+  ``log x``, ``exp(a*x)`` and ``cos``/``sin`` of an affine argument close from a
+  table of textbook expectations under Normal / Gamma / Exponential / Beta /
+  LogNormal (``E[log X] = digamma(k) + log(theta)`` for a Gamma), still gated
+  by quadrature; ``E[e**X]`` under ``Exponential(1)`` is now ``E-PROB-006``
 - :func:`expectation_affine` — linearity, which needs no independence at all —
   and :func:`variance_affine_independent`, which does and says so in its name.
-  There are no joint distributions, no conditioning and no covariance here: a
-  product of two variates raises ``E-PROB-002`` rather than guessing at a
-  joint law
+  A product of two variates still raises ``E-PROB-002`` there: marginals do not
+  determine a joint law
+- Joint laws are declared, not guessed: :class:`MultivariateNormal` (density,
+  MGF, :meth:`~MultivariateNormal.linear_transform`,
+  :meth:`~MultivariateNormal.marginal`, Schur-complement
+  :meth:`~MultivariateNormal.conditional`,
+  :meth:`~MultivariateNormal.quadratic_form_expectation`), and
+  :func:`joint_expectation` / :func:`covariance` / :func:`joint_variance` over
+  mutually independent blocks ``(var, Distribution)`` or
+  ``([vars], MultivariateNormal)``. :func:`sum_independent` gives closed-family
+  convolutions; :func:`order_statistic` the min/max of ``n`` iid variates for a
+  symbolic ``n``. :func:`Binomial` accepts a symbolic ``n``;
+  :func:`NegativeBinomial` is the tenth law
 
 Information theory over those same laws:
 - :meth:`Distribution.entropy` — Shannon ``H = -sum p log p`` on a discrete
@@ -540,11 +554,14 @@ from alkahest.alkahest import (
     MatGroupError,
     MatrixGroup,
     MatSiftResult,
+    MultivariateNormal,
+    NegativeBinomial,
     Normal,
     NumberField,
     NumberFieldElement,
     NumberFieldError,
     OdeTrajectory,
+    OrderStatistic,
     ParallelRischResult,
     PauliOperator,
     # Computational group theory (permutation groups)
@@ -581,6 +598,7 @@ from alkahest.alkahest import (
     bernoulli_number,
     # P1 item 10 — asymptotic expansion at scale
     coefficient_asymptotics,
+    covariance,
     cross,
     cross_entropy,
     curl,
@@ -612,6 +630,8 @@ from alkahest.alkahest import (
     j_invariant,
     jacobi_theta,
     jacobi_theta_null,
+    joint_expectation,
+    joint_variance,
     kl_divergence,
     krawtchouk,
     krawtchouk_poly,
@@ -630,6 +650,7 @@ from alkahest.alkahest import (
     norm,
     ode_integrate_rk4,
     ode_integrate_rk45,
+    order_statistic,
     partition_number,
     prob_side_conditions,
     puiseux_series,
@@ -646,6 +667,7 @@ from alkahest.alkahest import (
     stirling_first,
     stirling_first_unsigned,
     stirling_second,
+    sum_independent,
     sum_of_squares,
     symplectic_complement,
     symplectic_form,
@@ -856,6 +878,9 @@ __all__ = [
     "MatGroupError",
     "MatSiftResult",
     "MatrixGroup",
+    # Joint laws: multivariate normal, order statistics, negative binomial
+    "MultivariateNormal",
+    "NegativeBinomial",
     "Normal",
     # M11 — novelty filtering
     "NoveltyMatch",
@@ -876,6 +901,7 @@ __all__ = [
     "OeisCache",
     "OeisEntry",
     "OeisWeb",
+    "OrderStatistic",
     "ParallelRischResult",
     # M9 — coefficient fields for elimination
     "ParametricGbPoly",
@@ -944,6 +970,8 @@ __all__ = [
     "coefficient_asymptotics",
     "compile_cuda",
     "conjugate",
+    # Joint laws: Cov[e1, e2] under independent blocks
+    "covariance",
     # Vector calculus
     "cross",
     # Information theory: H(P, Q) = H(P) + D(P||Q), checked against -E_P[log q]
@@ -985,6 +1013,8 @@ __all__ = [
     "j_invariant",
     "jacobi_theta",
     "jacobi_theta_null",
+    "joint_expectation",
+    "joint_variance",
     # Information theory: not symmetric, and +inf off a nested support
     "kl_divergence",
     # Eigenvalues of the Hamming association scheme, exactly
@@ -1010,6 +1040,7 @@ __all__ = [
     "novelty",
     "ode_integrate_rk4",
     "ode_integrate_rk45",
+    "order_statistic",
     "partition_number",
     # Hypotheses the last Distribution method / expectation call rests on
     "prob_side_conditions",
@@ -1034,6 +1065,7 @@ __all__ = [
     "stirling_first",
     "stirling_first_unsigned",
     "stirling_second",
+    "sum_independent",
     "sum_of_squares",
     "symplectic_complement",
     "symplectic_form",
