@@ -26,8 +26,9 @@ exercised exactly as the gate already exercises them (no duplicated case
 lists to drift out of sync — see ``tests/_tg_helpers.py`` and
 ``tests/textbook_gate/*.py``, which this reuses as-is).
 
-``alkahest.to_lean()`` deliberately WITHHOLDS a certificate (returns ``""``)
-for results it cannot certify soundly yet. Those withheld/empty certificates
+``alkahest.to_lean()`` deliberately WITHHOLDS a certificate (raises
+``CertificateUnavailableError``, ``E-CERT-001``) for results it cannot certify
+soundly yet. Those withheld/empty certificates
 are correct-by-design and are skipped here, not treated as generation
 failures. Only genuinely emitted (non-empty) certificates are sampled and
 written out.
@@ -182,6 +183,9 @@ def main() -> int:
     for name, test_id, idx, result in captured:
         try:
             lean_src = alkahest.to_lean(result)
+        except alkahest.CertificateUnavailableError:
+            empty += 1
+            continue
         except Exception as e:
             print(f"ERROR: to_lean({name} @ {test_id}#{idx}) raised: {e}", file=sys.stderr)
             to_lean_errors += 1

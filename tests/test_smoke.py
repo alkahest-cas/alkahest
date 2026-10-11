@@ -314,16 +314,16 @@ def test_lean_export():
 def test_lean_export_withholds_vacuous_identity():
     """Part C: a bare Expr the default simplifier leaves untouched has no
     derivation, so `to_lean` must not present `example : e = e := rfl` (which
-    reads as a proven theorem). It withholds (returns "") instead."""
+    reads as a proven theorem). It refuses with E-CERT-001 instead."""
     p = pool()
     x = p.symbol("x")
     # `x**2` is already canonical (empty derivation log). The rewrite that would
     # touch `exp(log(x))` lives in `simplify_log_exp`, not the default set, so
     # the default simplifier also leaves it untouched.
     for expr in (x**2, exp(log(x))):
-        src = to_lean(expr)
-        assert src == "", f"vacuous identity must withhold, got: {src!r}"
-        assert "rfl" not in src
+        with pytest.raises(alkahest.CertificateUnavailableError) as info:
+            to_lean(expr)
+        assert info.value.code == "E-CERT-001"
 
 
 def test_lean_diff_export():
@@ -435,7 +435,8 @@ def test_lean_definite_log_withholds_zero_endpoint():
     x = p.symbol("x")
     r = integrate(log(x), x, p.integer(0), p.integer(1))
     assert r.certificate is None
-    assert to_lean(r) == ""
+    with pytest.raises(alkahest.CertificateUnavailableError):
+        to_lean(r)
 
 
 def test_lean_withholds_int_x_log_x_and_diff_of_its_F():
@@ -450,10 +451,12 @@ def test_lean_withholds_int_x_log_x_and_diff_of_its_F():
     x = p.symbol("x")
     r = integrate(x * log(x), x)
     assert r.certificate is None
-    assert to_lean(r) == ""
+    with pytest.raises(alkahest.CertificateUnavailableError):
+        to_lean(r)
     dF = diff(r.value, x)
     assert dF.certificate is None
-    assert to_lean(dF) == ""
+    with pytest.raises(alkahest.CertificateUnavailableError):
+        to_lean(dF)
 
 
 def test_lean_withholds_non_elementary_integrate_certificate():
@@ -464,7 +467,8 @@ def test_lean_withholds_non_elementary_integrate_certificate():
     x = p.symbol("x")
     r = integrate(x * exp(x**2), x)
     assert r.certificate is None
-    assert to_lean(r) == ""
+    with pytest.raises(alkahest.CertificateUnavailableError):
+        to_lean(r)
 
 
 def test_lean_integrate_inv_x_via_log():
@@ -675,7 +679,8 @@ def test_lean_withholds_log_nested_composite():
     x = p.symbol("x")
     r = diff(log(sqrt(x**2 - 1) + x), x)
     assert r.certificate is None
-    assert to_lean(r) == ""
+    with pytest.raises(alkahest.CertificateUnavailableError):
+        to_lean(r)
 
 
 def test_lean_log_exp_parens_and_exp_log_certifies_with_positivity_hyp():
@@ -787,7 +792,8 @@ def test_lean_definite_integral_withholds_sum_with_unsupported_term():
     x = p.symbol("x")
     r = integrate(cos(x) + log(x), x, p.integer(1), p.integer(2))
     assert r.certificate is None
-    assert to_lean(r) == ""
+    with pytest.raises(alkahest.CertificateUnavailableError):
+        to_lean(r)
 
 
 def test_lean_definite_integral_withholds_symbolic_coefficient():
@@ -799,7 +805,8 @@ def test_lean_definite_integral_withholds_symbolic_coefficient():
     y = p.symbol("y")
     r = integrate(y * cos(x), x, p.integer(0), p.integer(1))
     assert r.certificate is None
-    assert to_lean(r) == ""
+    with pytest.raises(alkahest.CertificateUnavailableError):
+        to_lean(r)
 
 
 def test_lean_tendsto_exp_neg_x_certificate():
@@ -877,11 +884,13 @@ def test_lean_tendsto_withholds_unrecognised_finite():
     x = p.symbol("x")
     r = limit((1 - alkahest.cos(x)) / x**2, x, p.integer(0))
     assert r.certificate is None
-    assert to_lean(r) == ""
+    with pytest.raises(alkahest.CertificateUnavailableError):
+        to_lean(r)
     # (1+x)^{1/x} → e as x → 0 has no v4.9.0 one-liner (the Mathlib lemma is at +∞).
     r2 = limit((1 + x) ** (1 / x), x, p.integer(0))
     assert r2.certificate is None
-    assert to_lean(r2) == ""
+    with pytest.raises(alkahest.CertificateUnavailableError):
+        to_lean(r2)
     # 1/x at 0 is a different Tendsto statement than 1/x at +∞.
     r3 = limit(1 / x, x, p.integer(0), dir="+")
     assert r3.certificate is None
@@ -986,7 +995,8 @@ def test_lean_gosper_withholds_basel():
     k = p.symbol("k")
     r = alkahest.sum_definite(k ** p.integer(-2), k, p.integer(1), p.pos_infinity())
     assert r.certificate is None
-    assert to_lean(r) == ""
+    with pytest.raises(alkahest.CertificateUnavailableError):
+        to_lean(r)
 
 
 def test_lean_product_factorial_certificate():

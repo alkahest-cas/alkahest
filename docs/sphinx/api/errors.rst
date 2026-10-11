@@ -404,7 +404,8 @@ Exception subclasses
    withheld one. Unusually among these, the computation *succeeded* — what is
    missing is the machine-checkable evidence, so this is a policy failure
    rather than a mathematical one. Raised only when you ask for it, by
-   :func:`~alkahest.require_certificate` or ambiently inside
+   :func:`~alkahest.require_certificate`, by :func:`~alkahest.to_lean` (which
+   never returns an empty string), or ambiently inside
    ``with alkahest.context(require_certificate=True):``.
 
    - ``E-CERT-001`` — no certificate available for this result

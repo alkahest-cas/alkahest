@@ -207,7 +207,7 @@ you reach for `.value`:
 | `.steps` | `list[dict]` | Rewrite log; each step has `"rule"`, `"before"`, `"after"` keys |
 | `.verification` | `dict` | Evidence status, emitted artifact format, external-check status, and side conditions |
 | `.certificate` | `str \| None` | Generated Lean 4 `.lean` source; generation is not Lean proof checking |
-| `to_lean(result)` | `str` | Same as `.certificate`; also accepts `Expr` (runs `simplify` first) |
+| `to_lean(result)` | `str` | Same as `.certificate`, but raises `CertificateUnavailableError` (E-CERT-001) instead of returning `None`/`""`; also accepts `Expr` (runs `simplify` first) |
 | `.to_dict(mode=…)` / `.to_json(mode=…)` | `dict` / `str` | Versioned envelope with a `"kind": "alkahest.derived_result"` discriminator. `mode="compact"` drops step `before`/`after` text and shortens keys, but **never** hides `verification["status"]` and never includes Lean source. Use this to carry a result out of a pool's lifetime, and in agent context windows. |
 
 ```python

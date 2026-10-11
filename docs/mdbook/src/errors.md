@@ -498,7 +498,8 @@ the silent-error shape these subsystems exist to prevent.
 This one is unusual: the computation *succeeded*. What is missing is the
 machine-checkable evidence, so it is a policy failure rather than a
 mathematical one. It is raised only when you ask for it, by
-`alkahest.require_certificate(result)` or ambiently inside
+`alkahest.require_certificate(result)`, by `alkahest.to_lean(result)` (which
+never returns an empty string), or ambiently inside
 `with alkahest.context(require_certificate=True):`. The remediation names the
 blocking rewrite rules where they can be identified.
 
