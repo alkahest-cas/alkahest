@@ -3864,7 +3864,7 @@ fn coeff_lean(
 ///
 /// Returns `""` (no certificate) when the inputs are not integer polynomials,
 /// a coefficient does not fit in `i64`, both inputs are constant in `var`, or
-/// the matrix is larger than [`MAX_SYLVESTER_DIM`].
+/// the Sylvester matrix is larger than 5×5.
 pub fn emit_resultant_cert(
     p: ExprId,
     q: ExprId,
