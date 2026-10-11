@@ -2472,9 +2472,20 @@ if "solve" in dir():
         real_solutions = [sol for sol in symbolic if _solution_is_real(sol)]
         if not numeric:
             return _filter_by_assumptions(real_solutions, assumptions)
-        numeric_solutions = [
-            {var: eval_expr(val, {}) for var, val in sol.items()} for sol in real_solutions
-        ]
+        try:
+            numeric_solutions = [
+                {var: eval_expr(val, {}) for var, val in sol.items()} for sol in real_solutions
+            ]
+        except ValueError:
+            # A value that is not a number on its own — a periodic family
+            # ``asin(c) + 2*pi*k`` — is evaluated by the native numeric path,
+            # which reports one member per family; keep the real ones.
+            result = _native_solve(equations, vars, numeric=True, method=method)
+            if isinstance(result, list):
+                result = [
+                    sol for sol in result if not any(isinstance(v, complex) for v in sol.values())
+                ]
+            return _filter_by_assumptions(result, assumptions)
         return _filter_by_assumptions(numeric_solutions, assumptions)
 
 

@@ -91,7 +91,12 @@ impl AlkahestError for NumericSolveRefusal {
 /// number it always had; anything it cannot produce (a negative radicand, an
 /// unsupported node) is evaluated in complex double precision.
 pub fn numeric_value(value: ExprId, pool: &ExprPool) -> Result<ComplexF64, NumericSolveRefusal> {
-    let params: BTreeSet<ExprId> = collect_free_vars(value, pool).into_iter().collect();
+    // `pi` (and the imaginary unit) are symbols in this crate but denote
+    // numbers; a periodic family `asin(c) + 2πk` at `k = 0` is a number.
+    let params: BTreeSet<ExprId> = collect_free_vars(value, pool)
+        .into_iter()
+        .filter(|&s| !crate::eval::symbols::is_named_constant(s, pool))
+        .collect();
     if !params.is_empty() {
         let names: Vec<String> = params
             .iter()

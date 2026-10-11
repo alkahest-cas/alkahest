@@ -17579,8 +17579,32 @@ fn py_solve_numerical(
 ///
 /// An equation whose denominator is identically zero (``1/(x - x)``) denotes no
 /// function at all and raises ``SolverError`` with ``.code == "E-SOLVE-005"``.
-/// Transcendental equations outside the closed-form slice keep refusing with
-/// ``E-SOLVE-001``.
+///
+/// Non-polynomial coefficients
+/// ---------------------------
+/// Only the *unknowns* must appear polynomially: a sub-expression free of them
+/// (``sin(q1)``, ``cos(q1 - q2)``, ``sqrt(a)``) is a coefficient, so
+/// ``solve(eom, [qdd1, qdd2])`` solves equations of motion for the
+/// accelerations. Such sub-expressions are solved as opaque parameters and
+/// substituted back; every answer is then checked against the equations as
+/// written, and one that only exists because an identity between them was
+/// invisible (``sin**2 + cos**2 == 1``) is refused with ``E-SOLVE-001``.
+///
+/// Transcendental equations
+/// ------------------------
+/// One equation in one unknown is solved in closed form, over the reals, when
+/// it reduces by taking logs (``ka*exp(-ka*t) - ke*exp(-ke*t)`` →
+/// ``log(ke/ka)/(ke - ka)``; ``2**x - 5``), has a Lambert-W shape
+/// (``x*exp(a*x) - b``, ``a*x + b*log(x) - c``, ``x**x - c``), or is
+/// ``sin``/``cos``/``tan`` of an affine argument equal to a constant. A
+/// trigonometric equation returns the whole periodic family in an integer
+/// symbol ``k`` (``asin(c) + 2*pi*k`` and ``pi - asin(c) + 2*pi*k``), listed as
+/// ``k ∈ Integer`` by :func:`alkahest.solve_side_conditions`; with
+/// ``numeric=True`` the ``k = 0`` member of each family is returned and the
+/// side conditions say so. Hypotheses such as ``ke/ka > 0`` are listed there
+/// too. A Lambert equation whose second real root lies on the ``W₋₁`` branch is
+/// refused rather than answered from ``W₀`` alone. Anything else keeps
+/// refusing with ``E-SOLVE-001``.
 ///
 /// Parameters
 /// ----------
@@ -17695,19 +17719,62 @@ fn py_solve(
     // containing exp/log/Lambert-W/trig, try the scoped closed-form solver before
     // handing off to the polynomial path (which would reject any transcendental).
     // On `Unsupported` we fall straight through to `solve_polynomial_system`.
+    let mut transcendental_refusal: Option<String> = None;
     if eq_ids.len() == 1 && var_ids.len() == 1 {
         let trans = {
             let pool = pool_py.borrow(py);
             let (eq, v, pool) = (eq_ids[0], var_ids[0], &pool.inner);
             py.allow_threads(|| solve_transcendental(eq, v, pool))
         };
-        if let TranscendentalOutcome::Solved(values) = trans {
+        if let TranscendentalOutcome::Solved(mut values) = trans {
+            // What the closed form assumed (`kₑ/kₐ > 0`, `kₑ − kₐ ≠ 0`, the
+            // `k ∈ Integer` index of a periodic family) is reported exactly as
+            // the polynomial path's hypotheses are.
+            let pool = pool_py.borrow(py);
+            let conds = alkahest_core::solver::take_solve_side_conditions();
+            let mut rendered: Vec<String> = conds
+                .iter()
+                .map(|c| c.display_with(&pool.inner).to_string())
+                .collect();
+            if numeric {
+                // A periodic family has no single numeric value: report the
+                // `k = 0` member of each family and say so beside the result.
+                let indices: Vec<ExprId> = conds
+                    .iter()
+                    .filter_map(|c| match c {
+                        alkahest_core::SideCondition::InDomain(
+                            k,
+                            alkahest_core::Domain::Integer,
+                        ) => Some(*k),
+                        _ => None,
+                    })
+                    .collect();
+                if !indices.is_empty() {
+                    let zero = pool.inner.integer(0_i32);
+                    let map: std::collections::HashMap<ExprId, ExprId> =
+                        indices.iter().map(|&k| (k, zero)).collect();
+                    values = values
+                        .into_iter()
+                        .map(|v| alkahest_core::subs(v, &map, &pool.inner))
+                        .collect();
+                    for &k in &indices {
+                        rendered.push(format!(
+                            "numeric=True reports the {} = 0 member of each periodic family; \
+                             solve without numeric=True for the whole set",
+                            pool.inner.display(k)
+                        ));
+                    }
+                }
+            }
+            SOLVE_SIDE_CONDITIONS.with(|c| *c.borrow_mut() = rendered);
+            drop(pool);
             // Each value is a solution for the single variable.
             let solutions: Vec<Vec<ExprId>> = values.into_iter().map(|v| vec![v]).collect();
             let result: Result<SolutionSet, alkahest_core::SolverError> =
                 Ok(SolutionSet::Finite(solutions));
             return finite_solutions_to_py(py, result, &pool_py, &var_ids, &var_ids, numeric);
         }
+        transcendental_refusal = alkahest_core::solver::take_transcendental_refusal();
     }
 
     let result = {
@@ -17722,6 +17789,15 @@ fn py_solve(
         // `py_solve_side_conditions`.
         capture_solve_side_conditions(&pool.inner);
         r
+    };
+    // The transcendental slice recognised the equation but declined it for a
+    // stated reason (a missing W₋₁ root); that reason, not "exp is not a
+    // polynomial", is the refusal the caller should read.
+    let result = match (result, transcendental_refusal) {
+        (Err(alkahest_core::SolverError::NotPolynomial(_)), Some(why)) => {
+            Err(alkahest_core::SolverError::NotPolynomial(why))
+        }
+        (r, _) => r,
     };
 
     // B5: `numeric=True` means the caller accepts numbers — when Lex

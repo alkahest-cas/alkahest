@@ -61,6 +61,24 @@ Polynomial system solving via Gröbner bases. The ``groebner`` Cargo feature is 
    ``RootOf(f, k)``. An irreducible parametric factor of degree ≥ 3 raises
    ``E-SOLVE-002``.
 
+   Only the unknowns must be polynomial: a sub-expression free of them
+   (``sin(q1)``, ``cos(q1 - q2)``, ``sqrt(a)``) is a coefficient, so equations
+   of motion solve for the accelerations. Every such answer is substituted back
+   into the equations as written; one that relies on an identity between the
+   coefficients the solve could not see (``sin**2 + cos**2 == 1``) is refused
+   with ``E-SOLVE-001``.
+
+   One equation in one unknown is also solved in closed form, over the reals,
+   when it reduces by logs (``ka*exp(-ka*t) - ke*exp(-ke*t)`` →
+   ``log(ke/ka)/(ke - ka)``), has a Lambert-W shape (``x*exp(a*x) - b``,
+   ``a*x + b*log(x) - c``, ``x**x - c``), or is ``sin``/``cos``/``tan`` of an
+   affine argument equal to a constant. Trigonometric equations return the
+   whole periodic family in an integer symbol ``k``
+   (``asin(c) + 2*pi*k``, ``pi - asin(c) + 2*pi*k``); ``numeric=True`` returns
+   the ``k = 0`` member of each family. Hypotheses (``k ∈ Integer``,
+   ``ke/ka > 0``, ``ke - ka ≠ 0``) are listed by :func:`solve_side_conditions`.
+   A Lambert equation with a second real root on the ``W₋₁`` branch is refused.
+
 .. function:: root_of(poly: Expr, var: Expr, index: int) -> Expr
 
    The ``index``-th distinct root of ``poly`` (a polynomial in ``var`` over

@@ -37,8 +37,9 @@
 //! `sin`/`cos` with `|c| > 1` yield an empty solution set.
 
 use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::simplify::assumptions::Sign;
 use rug::Rational;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Maximum recursion depth while walking an expression tree (cycle / runaway
 /// guard — the pool is a DAG but defence-in-depth is cheap).
@@ -86,7 +87,75 @@ enum TrigKind {
 /// `exp`/`log`/Lambert-W/trig equations.  Returns
 /// [`TranscendentalOutcome::Unsupported`] when the equation is outside the
 /// supported slice so the caller can fall back.
+///
+/// # Hypotheses
+///
+/// What a returned value assumes is recorded through
+/// [`super::take_solve_side_conditions`], which the caller must read before
+/// the next solve on this thread: a divisor that could not be proved non-zero
+/// (`kₑ − kₐ ≠ 0`), a logarithm argument that could not be proved positive
+/// (`kₑ/kₐ > 0`), and — for a periodic equation — the integer index of the
+/// family (`k ∈ Integer` for `x = asin(c) + 2πk`).
+///
+/// # Real solutions
+///
+/// The slice reports **real** solutions: `exp(x) = −1` returns no solution and
+/// `log(c)` is only used where `c > 0` is proved or recorded as a hypothesis.
+/// A periodic family is reported whole (`k` ranges over ℤ). A Lambert-W
+/// equation whose real solution set needs the `W₋₁` branch, which this crate
+/// does not have, is refused rather than answered from `W₀` alone.
+///
+/// Every value returned is substituted back into `equation` at generic values
+/// of the parameters (and of `k`); one that fails refuses the call.
 pub fn solve_transcendental(
+    equation: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> TranscendentalOutcome {
+    let _ = super::take_solve_side_conditions();
+    let _ = take_transcendental_refusal();
+    let out = solve_transcendental_inner(equation, var, pool);
+    if let TranscendentalOutcome::Solved(values) = &out {
+        for &v in values {
+            if super::opaque::spot_check(&[equation], &[var], &[v], &[], pool)
+                == super::opaque::SpotCheck::Failed
+            {
+                let _ = super::take_solve_side_conditions();
+                return TranscendentalOutcome::Unsupported;
+            }
+        }
+    } else {
+        // Nothing returned, so nothing was assumed.
+        let _ = super::take_solve_side_conditions();
+    }
+    out
+}
+
+thread_local! {
+    /// Why the most recent [`solve_transcendental`] on this thread declined an
+    /// equation it *recognised* — as opposed to one outside its slice.
+    static LAST_REFUSAL: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The reason the most recent [`solve_transcendental`] call on this thread
+/// returned [`TranscendentalOutcome::Unsupported`] for an equation whose shape
+/// it recognised but could not answer completely — `x·eˣ = −1/4`, whose second
+/// real root needs the `W₋₁` branch. `None` when the equation was simply
+/// outside the slice. Consuming.
+///
+/// Out of band because [`TranscendentalOutcome`] is a public exhaustive enum.
+pub fn take_transcendental_refusal() -> Option<String> {
+    LAST_REFUSAL.with(|c| c.borrow_mut().take())
+}
+
+/// Decline a recognised equation, saying why.
+fn refuse(reason: String) -> Option<TranscendentalOutcome> {
+    LAST_REFUSAL.with(|c| *c.borrow_mut() = Some(reason));
+    Some(TranscendentalOutcome::Unsupported)
+}
+
+fn solve_transcendental_inner(
     equation: ExprId,
     var: ExprId,
     pool: &ExprPool,
@@ -97,7 +166,21 @@ pub fn solve_transcendental(
     if let Some(out) = try_lambert_solve(equation, var, pool) {
         return out;
     }
-    solve_exp_log(equation, var, pool)
+    if let Some(out) = try_lambert_log(equation, var, pool) {
+        return out;
+    }
+    if let Some(out) = try_self_power(equation, var, pool) {
+        return out;
+    }
+    match solve_exp_log(equation, var, pool) {
+        TranscendentalOutcome::Unsupported => {}
+        solved => return solved,
+    }
+    let _ = super::take_solve_side_conditions();
+    if let Some(out) = try_log_reducible(equation, var, pool) {
+        return out;
+    }
+    TranscendentalOutcome::Unsupported
 }
 
 /// Existing exp/log kernel-substitution path.
@@ -182,11 +265,21 @@ fn solve_exp_log(equation: ExprId, var: ExprId, pool: &ExprPool) -> Transcendent
 }
 
 /// `sin(f)=c` / `cos(f)=c` / `tan(f)=c` with affine `f` and var-free `c`.
-/// Returns principal inverse only (no `2πk` family).
+///
+/// Returns the **whole** solution set as families indexed by an integer
+/// symbol `k` (recorded as `k ∈ Integer`):
+///
+/// * `sin f = c` — `f = asin c + 2πk` and `f = π − asin c + 2πk`;
+/// * `cos f = c` — `f = acos c + 2πk` and `f = −acos c + 2πk`;
+/// * `tan f = c` — `f = atan c + πk`.
+///
+/// At `c = ±1` the two sine (cosine) families coincide and one is returned.
+/// The formulas are complete over ℂ as well; a numeric `|c| > 1` for `sin` /
+/// `cos` returns no solution, the slice's real convention.
 fn try_trig_solve(equation: ExprId, var: ExprId, pool: &ExprPool) -> Option<TranscendentalOutcome> {
     let mut trigs: Vec<(TrigKind, ExprId, ExprId)> = Vec::new();
     if !collect_trig_kernels(equation, var, pool, 0, &mut trigs) {
-        return None; // mixed / unsupported transcendingals — other paths may apply
+        return None; // mixed / unsupported transcendentals — other paths may apply
     }
     let mut seen = std::collections::HashSet::new();
     trigs.retain(|(_, node, _)| seen.insert(*node));
@@ -195,6 +288,9 @@ fn try_trig_solve(equation: ExprId, var: ExprId, pool: &ExprPool) -> Option<Tran
     }
     let (kind, node, arg) = trigs[0];
     let (a, b) = affine_in_var(arg, var, pool)?;
+    if is_zero_expr(a, pool) {
+        return None;
+    }
 
     let u = pool.symbol("__u_trig__", crate::kernel::Domain::Real);
     let in_u = substitute_node(equation, node, u, pool, 0)?;
@@ -207,31 +303,220 @@ fn try_trig_solve(equation: ExprId, var: ExprId, pool: &ExprPool) -> Option<Tran
         return None;
     }
     // u = -B/A — prefer a rational when both coeffs are numeric.
-    let c = match (as_rational(coeff_0, pool), as_rational(coeff_u, pool)) {
-        (Some(b), Some(a)) if a != 0 => rational_to_expr(&((-b) / a), pool),
-        _ => {
-            let neg_one = pool.integer(-1_i32);
-            let neg_b = pool.mul(vec![neg_one, coeff_0]);
-            let inv_a = pool.pow(coeff_u, neg_one);
-            pool.mul(vec![neg_b, inv_a])
-        }
-    };
+    let c = quotient_neg(coeff_0, coeff_u, pool);
 
     if let Some(false) = trig_rhs_real_ok(kind, c, pool) {
         return Some(TranscendentalOutcome::Solved(vec![]));
     }
+    note_nonzero(coeff_u, pool);
 
-    let inv_name = match kind {
-        TrigKind::Sin => "asin",
-        TrigKind::Cos => "acos",
-        TrigKind::Tan => "atan",
+    let k = family_index(equation, pool);
+    let pi = crate::eval::symbols::pi_symbol(pool);
+    let two_pi_k = pool.mul(vec![pool.integer(2_i32), pi, k]);
+    let pi_k = pool.mul(vec![pi, k]);
+    let neg = |e: ExprId| pool.mul(vec![pool.integer(-1_i32), e]);
+    let c_rat = as_rational(c, pool);
+    let at_extreme = matches!(&c_rat, Some(r) if *r == 1 || *r == -1);
+    let branches: Vec<ExprId> = match kind {
+        TrigKind::Sin => {
+            let s = pool.func("asin", vec![c]);
+            let mut v = vec![pool.add(vec![s, two_pi_k])];
+            if !at_extreme {
+                v.push(pool.add(vec![pi, neg(s), two_pi_k]));
+            }
+            v
+        }
+        TrigKind::Cos => {
+            let s = pool.func("acos", vec![c]);
+            let mut v = vec![pool.add(vec![s, two_pi_k])];
+            if !at_extreme {
+                v.push(pool.add(vec![neg(s), two_pi_k]));
+            }
+            v
+        }
+        TrigKind::Tan => vec![pool.add(vec![pool.func("atan", vec![c]), pi_k])],
     };
-    let rhs = pool.func(inv_name, vec![c]);
-    let var_val = solve_affine(&a, &b, rhs, pool);
-    Some(TranscendentalOutcome::Solved(vec![var_val]))
+    super::record_side_condition(crate::deriv::log::SideCondition::InDomain(
+        k,
+        crate::kernel::Domain::Integer,
+    ));
+    let out = branches
+        .into_iter()
+        .map(|rhs| solve_affine(&a, &b, rhs, pool))
+        .collect();
+    Some(TranscendentalOutcome::Solved(out))
 }
 
-/// Recognise `α · arg · exp(arg) + B = 0` with var-free `α, B` and affine `arg`.
+/// An integer symbol to index a periodic family, named so it cannot be
+/// confused with a symbol of the equation: `k`, else `n`, `m`, `j`, else
+/// `k_1`, `k_2`, ….
+fn family_index(equation: ExprId, pool: &ExprPool) -> ExprId {
+    let taken: std::collections::HashSet<String> = crate::poly::collect_free_vars(equation, pool)
+        .into_iter()
+        .filter_map(|s| {
+            pool.with(s, |d| match d {
+                ExprData::Symbol { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+        })
+        .collect();
+    let fixed = ["k", "n", "m", "j"].iter().map(|s| s.to_string());
+    let numbered = (1..).map(|i| format!("k_{i}"));
+    let name = fixed
+        .chain(numbered)
+        .find(|n| !taken.contains(n))
+        .expect("an unused name exists");
+    pool.symbol(name, crate::kernel::Domain::Integer)
+}
+
+/// `−num/den`, folded to a rational when both are numbers.
+fn quotient_neg(num: ExprId, den: ExprId, pool: &ExprPool) -> ExprId {
+    match (as_rational(num, pool), as_rational(den, pool)) {
+        (Some(n), Some(d)) if d != 0 => rational_to_expr(&((-n) / d), pool),
+        _ => {
+            let neg_one = pool.integer(-1_i32);
+            let neg_n = pool.mul(vec![neg_one, num]);
+            let inv_d = pool.pow(den, neg_one);
+            pool.mul(vec![neg_n, inv_d])
+        }
+    }
+}
+
+fn simp(e: ExprId, pool: &ExprPool) -> ExprId {
+    crate::simplify::engine::simplify(e, pool).value
+}
+
+/// The sign of a var-free expression, when it can be settled: exactly for
+/// rationals, from the declared domains of its symbols, or — for a closed
+/// constant such as `log 2` or `−1/e` — numerically, when the value is not
+/// within rounding of zero.
+fn sign_of(e: ExprId, pool: &ExprPool) -> Option<Sign> {
+    if let Some(r) = as_rational(e, pool) {
+        return Some(sign_of_ordering(r.cmp0()));
+    }
+    let s = simp(e, pool);
+    if let Some(r) = as_rational(s, pool) {
+        return Some(sign_of_ordering(r.cmp0()));
+    }
+    if let Some(sign) = crate::simplify::assumptions::assumed_sign(s, pool) {
+        return Some(sign);
+    }
+    let v = closed_value(s, pool)?;
+    if v.abs() < 1e-12 {
+        return None;
+    }
+    Some(if v > 0.0 {
+        Sign::Positive
+    } else {
+        Sign::Negative
+    })
+}
+
+fn sign_of_ordering(o: std::cmp::Ordering) -> Sign {
+    match o {
+        std::cmp::Ordering::Less => Sign::Negative,
+        std::cmp::Ordering::Equal => Sign::Zero,
+        std::cmp::Ordering::Greater => Sign::Positive,
+    }
+}
+
+/// The real value of a closed constant (no free symbol but `π`).
+fn closed_value(e: ExprId, pool: &ExprPool) -> Option<f64> {
+    let free = crate::poly::collect_free_vars(e, pool);
+    if free
+        .iter()
+        .any(|&s| !crate::eval::symbols::is_named_constant(s, pool))
+    {
+        return None;
+    }
+    let c = crate::eval::eval_complex_f64(e, pool, &HashMap::new()).ok()?;
+    if c.im.abs() > 1e-12 * (1.0 + c.re.abs()) {
+        return None;
+    }
+    Some(c.re)
+}
+
+/// Record `e ≠ 0` unless it is settled.
+///
+/// A product is non-zero when every factor is, and `b⁻ⁿ` is non-zero wherever
+/// it is defined — which is `b ≠ 0` — so the hypothesis is stated on the
+/// factors and bases rather than as `a⁻¹ ≠ 0`.
+fn note_nonzero(e: ExprId, pool: &ExprPool) {
+    let e = simp(e, pool);
+    match pool.get(e) {
+        ExprData::Mul(args) => {
+            for a in args {
+                note_nonzero(a, pool);
+            }
+            return;
+        }
+        ExprData::Pow { base, exp } if pool.with(exp, |d| matches!(d, ExprData::Integer(_))) => {
+            note_nonzero(base, pool);
+            return;
+        }
+        _ => {}
+    }
+    match sign_of(e, pool) {
+        Some(Sign::Positive) | Some(Sign::Negative) => {}
+        _ => super::assume_nonzero(e),
+    }
+}
+
+/// Is `e > 0`?  `Some(true)` proved, `Some(false)` refuted, `None` undecided —
+/// in which case the hypothesis `e > 0` has been recorded.
+fn require_positive(e: ExprId, pool: &ExprPool) -> Option<bool> {
+    match sign_of(e, pool) {
+        Some(Sign::Positive) => Some(true),
+        Some(_) => Some(false),
+        None => {
+            super::record_side_condition(crate::deriv::log::SideCondition::Positive(simp(e, pool)));
+            None
+        }
+    }
+}
+
+/// Does the real equation `w·e^w = c` have all its real roots on the principal
+/// branch?  `Some(true)` — yes (`c ≥ 0`, or `c = −1/e` exactly); `Some(false)`
+/// — it has no real root (`c < −1/e`); `None` — it has a second real root on
+/// `W₋₁` (`−1/e < c < 0`).  An undecided sign records `c > 0` and answers
+/// `Some(true)`.
+fn lambert_branch_complete(c: ExprId, pool: &ExprPool) -> Option<bool> {
+    let neg_inv_e = -std::f64::consts::E.recip();
+    if let Some(r) = as_rational(c, pool) {
+        if r >= 0 {
+            return Some(true);
+        }
+        // A rational is never exactly −1/e.
+        return if r.to_f64() < neg_inv_e {
+            Some(false)
+        } else {
+            None
+        };
+    }
+    match sign_of(c, pool) {
+        Some(Sign::Positive) | Some(Sign::Zero) => Some(true),
+        Some(Sign::Negative) => {
+            // Exactly −1/e (a double root, W₀ = W₋₁ = −1) is the only negative
+            // value whose real solution set W₀ covers.
+            let gap = pool.add(vec![c, pool.func("exp", vec![pool.integer(-1_i32)])]);
+            if is_zero_expr(simp(gap, pool), pool) {
+                return Some(true);
+            }
+            match closed_value(c, pool) {
+                Some(v) if v < neg_inv_e - 1e-12 => Some(false),
+                _ => None,
+            }
+        }
+        None => {
+            super::record_side_condition(crate::deriv::log::SideCondition::Positive(simp(c, pool)));
+            Some(true)
+        }
+    }
+}
+
+/// Recognise `α · arg · exp(arg) + B = 0` with var-free `α, B` and affine `arg`
+/// — including `x·e^{a·x} = b` with symbolic `a`, where the cofactor `x` is
+/// `arg/a`.
 fn try_lambert_solve(
     equation: ExprId,
     var: ExprId,
@@ -263,29 +548,284 @@ fn try_lambert_solve(
     if contains_var(coeff_e, e, pool, 0) {
         return None;
     }
-    let alpha = constant_factor_of(coeff_e, kernel.arg, var, pool)?;
+    let alpha = match constant_factor_of(coeff_e, kernel.arg, var, pool) {
+        Some(al) => al,
+        None => symbolic_proportionality(coeff_e, a, b, var, pool)?,
+    };
     if contains_var(alpha, var, pool, 0) || is_zero_expr(alpha, pool) {
         return None;
     }
 
     // α · arg · exp(arg) + B = 0  ⟹  arg · exp(arg) = -B/α  ⟹  arg = W(-B/α)
-    let c = match (as_rational(coeff_0, pool), as_rational(alpha, pool)) {
-        (Some(b), Some(al)) if al != 0 => rational_to_expr(&((-b) / al), pool),
-        _ => {
-            let neg_one = pool.integer(-1_i32);
-            let neg_b = pool.mul(vec![neg_one, coeff_0]);
-            let inv_alpha = pool.pow(alpha, neg_one);
-            pool.mul(vec![neg_b, inv_alpha])
+    let c = quotient_neg(coeff_0, alpha, pool);
+    match lambert_branch_complete(c, pool) {
+        Some(true) => {}
+        Some(false) => return Some(TranscendentalOutcome::Solved(vec![])),
+        None => {
+            return refuse(format!(
+                "u·exp(u) = c with c = {} has two real solutions (as does any -1/e < c < 0), and the second lies \
+                 on the W₋₁ branch of Lambert W, which is not available; returning only the \
+                 principal one would present half the solution set as all of it",
+                pool.display(c)
+            ))
         }
-    };
-
-    if let Some(false) = lambert_rhs_real_ok(c, pool) {
-        return Some(TranscendentalOutcome::Solved(vec![]));
     }
+    note_nonzero(alpha, pool);
 
     let w = pool.func("lambert_w", vec![c]);
     let var_val = solve_affine(&a, &b, w, pool);
     Some(TranscendentalOutcome::Solved(vec![var_val]))
+}
+
+/// `coeff = α·(a·var + b)` with symbolic coefficients: `coeff = p·var + q`,
+/// `α = p/a`, provided `q·a − p·b` simplifies to zero.
+fn symbolic_proportionality(
+    coeff: ExprId,
+    a: ExprId,
+    b: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    let (p, q) = affine_in_var(coeff, var, pool)?;
+    if is_zero_expr(p, pool) || !independent_of_var(p, var, pool) {
+        return None;
+    }
+    let neg_one = pool.integer(-1_i32);
+    let gap = pool.add(vec![pool.mul(vec![q, a]), pool.mul(vec![neg_one, p, b])]);
+    if !is_zero_expr(simp(gap, pool), pool) {
+        return None;
+    }
+    Some(simp(pool.mul(vec![p, pool.pow(a, neg_one)]), pool))
+}
+
+/// `A·x + B·log(k·x + m) + C = 0` with var-free `A, B, k, m, C` — the shape of
+/// `a·x + b·log x = c` and of the integrated Michaelis–Menten law
+/// `Km·log(S/S₀) + S − S₀ + Vmax·t = 0`.
+///
+/// With `y = k·x + m` it reads `A'·y + B·log y + C' = 0` (`A' = A/k`,
+/// `C' = C − A·m/k`), whose solution is `y = (B/A')·W((A'/B)·e^{−C'/B})`.
+/// The argument of `W` has the sign of `A'/B`; when that is positive the real
+/// root is unique and principal. When it is negative a second real root may sit
+/// on `W₋₁`, so the call is refused; when it is unknown, `A'/B > 0` is recorded.
+fn try_lambert_log(
+    equation: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<TranscendentalOutcome> {
+    let mut kernels: Vec<Kernel> = Vec::new();
+    if !collect_kernels(equation, var, pool, 0, &mut kernels) {
+        return None;
+    }
+    let mut seen = std::collections::HashSet::new();
+    kernels.retain(|k| seen.insert(k.node));
+    if kernels.len() != 1 || kernels[0].kind != KernelKind::Log {
+        return None;
+    }
+    let kernel = kernels[0];
+    let (k, m) = affine_in_var(kernel.arg, var, pool)?;
+    if is_zero_expr(k, pool) {
+        return None;
+    }
+    let l = pool.symbol("__l_lambert__", crate::kernel::Domain::Real);
+    let in_l = substitute_node(equation, kernel.node, l, pool, 0)?;
+    let (coeff_l, rest) = linear_in_placeholder(in_l, l, pool, 0)?;
+    if !independent_of_var(coeff_l, var, pool) || is_zero_expr(coeff_l, pool) {
+        return None;
+    }
+    let (coeff_x, c0) = affine_in_var(rest, var, pool)?;
+    if is_zero_expr(coeff_x, pool) || !independent_of_var(coeff_x, var, pool) {
+        // Pure log equation: the kernel path's business.
+        return None;
+    }
+    let neg_one = pool.integer(-1_i32);
+    let inv = |e: ExprId| pool.pow(e, neg_one);
+    let a1 = simp(pool.mul(vec![coeff_x, inv(k)]), pool);
+    let c1 = simp(
+        pool.add(vec![c0, pool.mul(vec![neg_one, coeff_x, m, inv(k)])]),
+        pool,
+    );
+    let ratio = simp(pool.mul(vec![a1, inv(coeff_l)]), pool);
+    if require_positive(ratio, pool) == Some(false) {
+        return refuse(format!(
+            "A·y + B·log(y) + C = 0 with A/B = {} < 0 can have a second real solution on the \
+             W₋₁ branch of Lambert W, which is not available",
+            pool.display(ratio)
+        ));
+    }
+    note_nonzero(k, pool);
+    let z = pool.mul(vec![
+        ratio,
+        pool.func("exp", vec![pool.mul(vec![neg_one, c1, inv(coeff_l)])]),
+    ]);
+    let y = pool.mul(vec![coeff_l, inv(a1), pool.func("lambert_w", vec![z])]);
+    let x = simp(solve_affine(&k, &m, y, pool), pool);
+    Some(TranscendentalOutcome::Solved(vec![x]))
+}
+
+/// `α·x^x + β = 0`: `x^x = c` with `c = −β/α`. Taking logs, `x·log x = log c`,
+/// i.e. `w·e^w = log c` for `w = log x`, so `x = e^{W(log c)}`.
+///
+/// Real roots: one for `c ≥ 1`; two for `e^{−1/e} < c < 1` (the second on
+/// `W₋₁`, so refused); one at `c = e^{−1/e}`; none below it.  A symbolic `c`
+/// records `c − 1 > 0`.
+fn try_self_power(equation: ExprId, var: ExprId, pool: &ExprPool) -> Option<TranscendentalOutcome> {
+    let node = pool.pow(var, var);
+    if !contains_var(equation, node, pool, 0) {
+        return None;
+    }
+    let u = pool.symbol("__u_selfpow__", crate::kernel::Domain::Real);
+    let in_u = substitute_node(equation, node, u, pool, 0)?;
+    let (cu, c0) = linear_in_placeholder(in_u, u, pool, 0)?;
+    if contains_var(cu, var, pool, 0) || contains_var(c0, var, pool, 0) || is_zero_expr(cu, pool) {
+        return None;
+    }
+    let c = quotient_neg(c0, cu, pool);
+    let threshold = (-std::f64::consts::E.recip()).exp();
+    match (as_rational(c, pool), closed_value(c, pool)) {
+        (Some(r), _) if r >= 1 => {}
+        (_, Some(v)) if v >= 1.0 => {}
+        (_, Some(v)) if v < threshold - 1e-12 => {
+            return Some(TranscendentalOutcome::Solved(vec![]));
+        }
+        (_, Some(_)) => {
+            return refuse(format!(
+                "x^x = c with c = {} has two real solutions (as does any e^(-1/e) < c < 1), and the second lies on \
+                 the W₋₁ branch of Lambert W, which is not available",
+                pool.display(c)
+            ))
+        }
+        _ => {
+            let gap = pool.add(vec![c, pool.integer(-1_i32)]);
+            if require_positive(gap, pool) == Some(false) {
+                return refuse(format!(
+                    "x^x = {} with c < 1 may have a second real solution on the W₋₁ branch of \
+                     Lambert W, which is not available",
+                    pool.display(c)
+                ));
+            }
+        }
+    }
+    let w = pool.func("lambert_w", vec![pool.func("log", vec![c])]);
+    Some(TranscendentalOutcome::Solved(vec![
+        pool.func("exp", vec![w])
+    ]))
+}
+
+/// One additive term as `coeff · exp(Σ la·x + Σ lb)`.
+struct ExpTerm {
+    coeff: ExprId,
+    la: Vec<ExprId>,
+    lb: Vec<ExprId>,
+}
+
+/// Read `term` as a var-free coefficient times exponentials and var-free bases
+/// raised to affine powers: `c · e^{f} · bᵍ`, with `bᵍ = e^{g·log b}`.  A base
+/// that is not proved positive records `b > 0` (a real `bᵍ` needs it).
+fn as_exp_term(term: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExpTerm> {
+    let factors: Vec<ExprId> = match pool.get(term) {
+        ExprData::Mul(args) => args,
+        _ => vec![term],
+    };
+    let mut out = ExpTerm {
+        coeff: pool.integer(1_i32),
+        la: Vec::new(),
+        lb: Vec::new(),
+    };
+    let mut coeff = Vec::new();
+    for f in factors {
+        if !contains_var(f, var, pool, 0) {
+            coeff.push(f);
+            continue;
+        }
+        let (exponent, base): (ExprId, Option<ExprId>) = match pool.get(f) {
+            ExprData::Func { name, args } if name == "exp" && args.len() == 1 => (args[0], None),
+            ExprData::Pow { base, exp } => {
+                let inner_exp = pool.with(base, |d| match d {
+                    ExprData::Func { name, args } if name == "exp" && args.len() == 1 => {
+                        Some(args[0])
+                    }
+                    _ => None,
+                });
+                let int_exp = pool.with(exp, |d| matches!(d, ExprData::Integer(_)));
+                match inner_exp {
+                    // (e^{f})^n = e^{n·f} for an integer n.
+                    Some(inner) if int_exp => (pool.mul(vec![exp, inner]), None),
+                    _ if !contains_var(base, var, pool, 0) => (exp, Some(base)),
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        };
+        let (a, b) = affine_in_var(exponent, var, pool)?;
+        match base {
+            None => {
+                out.la.push(a);
+                out.lb.push(b);
+            }
+            Some(base) => {
+                if require_positive(base, pool) == Some(false) {
+                    return None;
+                }
+                let lg = pool.func("log", vec![base]);
+                out.la.push(pool.mul(vec![a, lg]));
+                out.lb.push(pool.mul(vec![b, lg]));
+            }
+        }
+    }
+    if !coeff.is_empty() {
+        out.coeff = pool.mul(coeff);
+    }
+    Some(out)
+}
+
+/// `c₁·e^{L₁} + c₂·e^{L₂} = 0` with var-free `cᵢ` and `Lᵢ` affine in the
+/// unknown — products and quotients of exponentials and of powers with a
+/// var-free base: `ka·e^{−ka·t} = ke·e^{−ke·t}`, `2ˣ = 5`, `e^{2x} = 3·e^{x}`.
+///
+/// Taking logs is an equivalence on the reals when `−c₂/c₁ > 0`:
+/// `x = (log(−c₂/c₁) − (b₁ − b₂)) / (a₁ − a₂)` is then the only real root.
+/// A ratio proved non-positive has no real root; an undecided one records
+/// `−c₂/c₁ > 0`, and an undecided `a₁ − a₂` records `a₁ − a₂ ≠ 0`.
+fn try_log_reducible(
+    equation: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<TranscendentalOutcome> {
+    let terms: Vec<ExprId> = match pool.get(equation) {
+        ExprData::Add(args) if args.len() == 2 => args,
+        _ => return None,
+    };
+    let mut t1 = as_exp_term(terms[0], var, pool)?;
+    let mut t2 = as_exp_term(terms[1], var, pool)?;
+    if t1.la.is_empty() {
+        // Put the term carrying the unknown first: `exp(x) − c` reads
+        // `x = log c`, not `x = −log(1/c)`.
+        std::mem::swap(&mut t1, &mut t2);
+    }
+    let neg_one = pool.integer(-1_i32);
+    let diff = |p: &[ExprId], q: &[ExprId]| {
+        simp(
+            pool.add(vec![
+                sum(p.to_vec(), pool),
+                pool.mul(vec![neg_one, sum(q.to_vec(), pool)]),
+            ]),
+            pool,
+        )
+    };
+    let da = diff(&t1.la, &t2.la);
+    if is_zero_expr(da, pool) || contains_var(da, var, pool, 0) {
+        return None;
+    }
+    let db = diff(&t1.lb, &t2.lb);
+    let ratio = simp(quotient_neg(t2.coeff, t1.coeff, pool), pool);
+    if require_positive(ratio, pool) == Some(false) {
+        return Some(TranscendentalOutcome::Solved(vec![]));
+    }
+    note_nonzero(t1.coeff, pool);
+    let rhs = pool.func("log", vec![ratio]);
+    Some(TranscendentalOutcome::Solved(vec![solve_affine(
+        &da, &db, rhs, pool,
+    )]))
 }
 
 fn collect_trig_kernels(
@@ -718,15 +1258,6 @@ fn trig_rhs_real_ok(kind: TrigKind, c: ExprId, pool: &ExprPool) -> Option<bool> 
             Some((-1.0..=1.0).contains(&v))
         }
     }
-}
-
-fn lambert_rhs_real_ok(c: ExprId, pool: &ExprPool) -> Option<bool> {
-    let r = as_rational(c, pool)?;
-    let v = r.to_f64();
-    if !v.is_finite() {
-        return Some(false);
-    }
-    Some(v >= -std::f64::consts::E.recip() - 1e-15)
 }
 
 /// Walk the expression collecting `exp`/`log` kernels whose argument mentions
@@ -1199,7 +1730,10 @@ fn solve_poly_rational(coeffs: &[Rational]) -> Option<Vec<Rational>> {
 }
 
 /// Solve `a·var + b = rhs` for `var`, returning `(rhs - b)/a` as an `ExprId`.
+///
+/// Records `a ≠ 0` as a hypothesis unless it is settled.
 fn solve_affine(a: &ExprId, b: &ExprId, rhs: ExprId, pool: &ExprPool) -> ExprId {
+    note_nonzero(*a, pool);
     let neg_one = pool.integer(-1_i32);
     let neg_b = pool.mul(vec![neg_one, *b]);
     let num = pool.add(vec![rhs, neg_b]);
@@ -1309,39 +1843,214 @@ mod tests {
         assert!(sols.is_empty());
     }
 
+    /// Evaluate a family member: bind the integer index to `k`.
+    fn eval_at_k(e: ExprId, kv: f64, pool: &ExprPool) -> f64 {
+        let mut env = HashMap::new();
+        for s in crate::poly::collect_free_vars(e, pool) {
+            if pool.with(s, |d| {
+                matches!(
+                    d,
+                    ExprData::Symbol {
+                        domain: Domain::Integer,
+                        ..
+                    }
+                )
+            }) {
+                env.insert(s, kv);
+            }
+        }
+        eval_interp(e, &env, pool).expect("numeric eval")
+    }
+
+    fn integer_index_recorded() -> bool {
+        super::super::take_solve_side_conditions().iter().any(|c| {
+            matches!(
+                c,
+                crate::deriv::log::SideCondition::InDomain(_, Domain::Integer)
+            )
+        })
+    }
+
     #[test]
-    fn sin_x_eq_half_principal() {
-        // sin(x) - 1/2 = 0 → x = asin(1/2) (principal only).
+    fn sin_x_eq_half_is_two_families() {
+        // sin(x) = 1/2 → x = asin(1/2) + 2πk, x = π − asin(1/2) + 2πk.
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
         let half = pool.rational(rug::Integer::from(-1), rug::Integer::from(2));
         let eq = pool.add(vec![pool.func("sin", vec![x]), half]);
         let sols = solved(eq, x, &pool);
-        assert_eq!(sols.len(), 1);
-        assert!((evalf(sols[0], &pool) - (0.5f64).asin()).abs() < 1e-10);
+        assert!(integer_index_recorded());
+        assert_eq!(sols.len(), 2);
+        let pi = std::f64::consts::PI;
+        let mut reps: Vec<f64> = sols.iter().map(|&s| eval_at_k(s, 0.0, &pool)).collect();
+        reps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!((reps[0] - pi / 6.0).abs() < 1e-12);
+        assert!((reps[1] - 5.0 * pi / 6.0).abs() < 1e-12);
+        for &s in &sols {
+            for kv in [-2.0, -1.0, 1.0, 3.0] {
+                assert!((eval_at_k(s, kv, &pool).sin() - 0.5).abs() < 1e-12);
+            }
+        }
     }
 
     #[test]
-    fn cos_x_eq_zero_principal() {
-        // cos(x) = 0 → x = acos(0) = π/2.
+    fn cos_x_eq_zero_is_two_families() {
+        // cos(x) = 0 → x = ±π/2 + 2πk.
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
         let eq = pool.func("cos", vec![x]);
         let sols = solved(eq, x, &pool);
-        assert_eq!(sols.len(), 1);
-        assert!((evalf(sols[0], &pool) - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+        assert_eq!(sols.len(), 2);
+        for &s in &sols {
+            for kv in [-1.0, 0.0, 2.0] {
+                assert!(eval_at_k(s, kv, &pool).cos().abs() < 1e-12);
+            }
+        }
     }
 
     #[test]
-    fn tan_x_eq_one_principal() {
-        // tan(x) - 1 = 0 → x = atan(1) = π/4.
+    fn cos_at_one_is_one_family() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let eq = pool.add(vec![pool.func("cos", vec![x]), pool.integer(-1_i32)]);
+        let sols = solved(eq, x, &pool);
+        assert_eq!(sols.len(), 1);
+        assert!(eval_at_k(sols[0], 3.0, &pool).cos() - 1.0 < 1e-12);
+    }
+
+    #[test]
+    fn tan_x_eq_one_is_pi_periodic() {
+        // tan(x) - 1 = 0 → x = π/4 + πk.
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
         let neg1 = pool.integer(-1_i32);
         let eq = pool.add(vec![pool.func("tan", vec![x]), neg1]);
         let sols = solved(eq, x, &pool);
         assert_eq!(sols.len(), 1);
-        assert!((evalf(sols[0], &pool) - 1f64.atan()).abs() < 1e-10);
+        assert!((eval_at_k(sols[0], 0.0, &pool) - 1f64.atan()).abs() < 1e-10);
+        assert!(
+            (eval_at_k(sols[0], 1.0, &pool) - 1f64.atan() - std::f64::consts::PI).abs() < 1e-10
+        );
+    }
+
+    #[test]
+    fn tmax_two_exponentials() {
+        // ka·e^{-ka·t} − ke·e^{-ke·t} = 0 → t = log(ke/ka)/(ke − ka).
+        let pool = ExprPool::new();
+        let t = pool.symbol("t", Domain::Real);
+        let ka = pool.symbol("ka", Domain::Real);
+        let ke = pool.symbol("ke", Domain::Real);
+        let m1 = pool.integer(-1_i32);
+        let eq = pool.add(vec![
+            pool.mul(vec![ka, pool.func("exp", vec![pool.mul(vec![m1, ka, t])])]),
+            pool.mul(vec![
+                m1,
+                ke,
+                pool.func("exp", vec![pool.mul(vec![m1, ke, t])]),
+            ]),
+        ]);
+        let sols = solved(eq, t, &pool);
+        assert_eq!(sols.len(), 1);
+        let conds = super::super::take_solve_side_conditions();
+        assert!(conds
+            .iter()
+            .any(|c| matches!(c, crate::deriv::log::SideCondition::Positive(_))));
+        assert!(conds
+            .iter()
+            .any(|c| matches!(c, crate::deriv::log::SideCondition::NonZero(_))));
+        let env: HashMap<ExprId, f64> = [(ka, 1.5), (ke, 0.2)].into_iter().collect();
+        let v = eval_interp(sols[0], &env, &pool).unwrap();
+        assert!((v - (1.5f64 / 0.2).ln() / 1.3).abs() < 1e-12);
+    }
+
+    #[test]
+    fn two_to_the_x_eq_five() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let eq = pool.add(vec![pool.pow(pool.integer(2_i32), x), pool.integer(-5_i32)]);
+        let sols = solved(eq, x, &pool);
+        assert_eq!(sols.len(), 1);
+        assert!((evalf(sols[0], &pool) - 5f64.ln() / 2f64.ln()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn exp_sum_has_no_real_root() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let two_x = pool.mul(vec![pool.integer(2_i32), x]);
+        let eq = pool.add(vec![
+            pool.func("exp", vec![two_x]),
+            pool.mul(vec![pool.integer(3_i32), pool.func("exp", vec![x])]),
+        ]);
+        assert!(solved(eq, x, &pool).is_empty());
+    }
+
+    #[test]
+    fn lambert_symbolic_rate() {
+        // x·e^{a·x} − 2 = 0 → x = W(2a)/a.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let a = pool.symbol("a", Domain::Positive);
+        let eq = pool.add(vec![
+            pool.mul(vec![x, pool.func("exp", vec![pool.mul(vec![a, x])])]),
+            pool.integer(-2_i32),
+        ]);
+        let sols = solved(eq, x, &pool);
+        assert_eq!(sols.len(), 1);
+        let env: HashMap<ExprId, f64> = [(a, 0.7)].into_iter().collect();
+        let v = eval_interp(sols[0], &env, &pool).unwrap();
+        assert!((v * (0.7 * v).exp() - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn lambert_second_real_branch_is_refused() {
+        // x·eˣ = −1/4: two real roots, W₀ alone is incomplete.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let eq = pool.add(vec![
+            pool.mul(vec![x, pool.func("exp", vec![x])]),
+            pool.rational(1, 4),
+        ]);
+        assert!(matches!(
+            solve_transcendental(eq, x, &pool),
+            TranscendentalOutcome::Unsupported
+        ));
+    }
+
+    #[test]
+    fn linear_plus_log() {
+        // 2x + 3·log x − 5 = 0.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let eq = pool.add(vec![
+            pool.mul(vec![pool.integer(2_i32), x]),
+            pool.mul(vec![pool.integer(3_i32), pool.func("log", vec![x])]),
+            pool.integer(-5_i32),
+        ]);
+        let sols = solved(eq, x, &pool);
+        assert_eq!(sols.len(), 1);
+        let v = evalf(sols[0], &pool);
+        assert!((2.0 * v + 3.0 * v.ln() - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn self_power() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let eq = pool.add(vec![pool.pow(x, x), pool.integer(-5_i32)]);
+        let sols = solved(eq, x, &pool);
+        assert_eq!(sols.len(), 1);
+        let v = evalf(sols[0], &pool);
+        assert!((v.powf(v) - 5.0).abs() < 1e-10);
+        // x^x = 4/5 has two real roots → refused.
+        let eq2 = pool.add(vec![pool.pow(x, x), pool.rational(-4, 5)]);
+        assert!(matches!(
+            solve_transcendental(eq2, x, &pool),
+            TranscendentalOutcome::Unsupported
+        ));
+        // x^x = 1/10 < e^{-1/e} has none.
+        let eq3 = pool.add(vec![pool.pow(x, x), pool.rational(-1, 10)]);
+        assert!(solved(eq3, x, &pool).is_empty());
     }
 
     #[test]

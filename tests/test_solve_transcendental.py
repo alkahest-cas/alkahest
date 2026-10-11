@@ -72,22 +72,27 @@ def test_exp_no_real_solution_returns_empty():
 
 
 def test_sin_principal():
-    # sin(x) = 1/2 -> x = asin(1/2) (principal value only; no 2πk family).
+    # sin(x) = 1/2 -> x = asin(1/2) + 2πk, π - asin(1/2) + 2πk; numeric=True
+    # reports the k = 0 member of each family.
     p = alkahest.ExprPool()
     x = p.symbol("x")
     eq = alkahest.sin(x) + p.rational(-1, 2)
     sols = alkahest.solve([eq], [x], numeric=True)
-    assert len(sols) == 1
-    assert abs(sols[0][x] - math.asin(0.5)) < 1e-9
+    vals = sorted(s[x] for s in sols)
+    assert len(vals) == 2
+    assert abs(vals[0] - math.asin(0.5)) < 1e-9
+    assert abs(vals[1] - (math.pi - math.asin(0.5))) < 1e-9
 
 
 def test_cos_principal():
     p = alkahest.ExprPool()
     x = p.symbol("x")
-    eq = alkahest.cos(x)  # cos(x) = 0
+    eq = alkahest.cos(x)  # cos(x) = 0  ->  ±π/2 + 2πk
     sols = alkahest.solve([eq], [x], numeric=True)
-    assert len(sols) == 1
-    assert abs(sols[0][x] - math.pi / 2) < 1e-9
+    vals = sorted(s[x] for s in sols)
+    assert len(vals) == 2
+    assert abs(vals[0] + math.pi / 2) < 1e-9
+    assert abs(vals[1] - math.pi / 2) < 1e-9
 
 
 def test_tan_principal():
