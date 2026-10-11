@@ -440,6 +440,11 @@ class _Parser:
             # Symbol: look up in the caller-supplied map first, then intern.
             sym = self._symbols.get(text)
             if sym is None:
+                if text == "oo":
+                    # SymPy's spelling of +∞.  As a plain symbol it slipped past
+                    # every ``hi == pool.pos_infinity()`` check and came back
+                    # substituted into closed forms (``r^(1 + oo)``).
+                    return pool.pos_infinity()
                 sym = pool.symbol(text)
                 self._symbols[text] = sym
             return sym
@@ -706,7 +711,8 @@ def parse(source: str, pool, symbols: dict[str, object] | None = None):
     symbols : dict[str, Expr] | None
         Optional pre-bound symbol map.  Identifiers not in the map are
         created via ``pool.symbol(name)`` and added to the map so they are
-        reused within the same call.
+        reused within the same call.  ``oo`` (when not in the map) is
+        :meth:`ExprPool.pos_infinity`, as in SymPy.
 
     Returns
     -------

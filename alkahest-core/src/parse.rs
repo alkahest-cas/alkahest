@@ -574,6 +574,11 @@ impl<'a> Parser<'a> {
                     // Look up in caller-supplied map, or intern a new Real symbol.
                     let id = if let Some(&id) = self.symbols.get(&name) {
                         id
+                    } else if name == "oo" {
+                        // SymPy's spelling of +∞. As a plain symbol it slipped
+                        // through every `hi == pos_infinity()` check and came
+                        // back substituted into closed forms (`r^(1 + oo)`).
+                        pool.pos_infinity()
                     } else {
                         let id = pool.symbol(name.clone(), Domain::Real);
                         self.symbols.insert(name, id);

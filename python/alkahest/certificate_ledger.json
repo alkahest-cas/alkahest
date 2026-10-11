@@ -8,7 +8,7 @@
       "tests/lean_gosper_corpus.py",
       "tests/textbook_gate/"
     ],
-    "observations": 330,
+    "observations": 331,
     "shape_classes": 208
   },
   "rows": [
@@ -4596,11 +4596,12 @@
       "verdict": "withheld",
       "observations": {
         "certified": 0,
-        "withheld": 2,
+        "withheld": 3,
         "no_derivation": 0
       },
       "blocking_rules": [
-        "basel_zeta_even"
+        "basel_zeta_even",
+        "rational_series_partial_fractions"
       ],
       "examples": [
         "k^-2",

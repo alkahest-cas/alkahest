@@ -76,7 +76,7 @@ fn factorial(n: u64) -> Integer {
 }
 
 /// Rational coefficient `c` with `ζ(2m) = c·π^{2m}`, for `m ≥ 1`.
-fn zeta_even_coefficient(m: u32) -> Rational {
+pub(super) fn zeta_even_coefficient(m: u32) -> Rational {
     let b = bernoulli_numbers(2 * m as usize);
     let b_2m = b[2 * m as usize].clone();
     let sign: i64 = if m % 2 == 1 { 1 } else { -1 }; // (-1)^(m+1)

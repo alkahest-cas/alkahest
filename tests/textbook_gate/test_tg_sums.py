@@ -152,10 +152,9 @@ def test_sum_k_squared_to_infinity_diverges_and_refuses(pool, k):
         ak.sum_definite(k**2, k, pool.integer(1), pool.pos_infinity())
 
 
-def test_basel_sum_requires_lower_bound_one(pool, k):
-    """Σ_{n=2}^∞ 1/n² has no simple closed form here (would need a finite
-    correction term with no closed form of its own) — honestly refused
-    rather than silently starting from n=1 anyway."""
+def test_basel_sum_from_two_subtracts_the_first_term(pool, k):
+    """Σ_{n=2}^∞ 1/n² = π²/6 − 1 — the finite correction is a rational
+    number, and it must be subtracted rather than the sum silently starting
+    from n=1 anyway (G6: this used to be refused)."""
     term = ak.simplify(k ** pool.integer(-2)).value
-    with pytest.raises(ak.SumError):
-        ak.sum_definite(term, k, pool.integer(2), pool.pos_infinity())
+    assert_infinite_sum_value(term, k, pool.integer(2), pool, math.pi**2 / 6 - 1)

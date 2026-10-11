@@ -338,16 +338,29 @@ fn assumed_sign_at(expr: ExprId, pool: &ExprPool, depth: u32) -> Option<Sign> {
         }
         ExprData::Add(xs) => {
             let mut sign: Option<Sign> = None;
-            for x in xs {
-                let s = assumed_sign_at(x, pool, depth + 1)?;
+            let mut decided = true;
+            for &x in &xs {
+                let Some(s) = assumed_sign_at(x, pool, depth + 1) else {
+                    decided = false;
+                    break;
+                };
                 match (sign, s) {
                     (_, Sign::Zero) => {}
                     (None, s) => sign = Some(s),
                     (Some(a), b) if a == b => {}
-                    _ => return None,
+                    _ => {
+                        decided = false;
+                        break;
+                    }
                 }
             }
-            sign.or(Some(Sign::Zero))
+            if decided {
+                return sign.or(Some(Sign::Zero));
+            }
+            // `c + t` with `c` a literal: decided by a stated numeric bound on
+            // `t` — `1 − r` is positive under `r < 1` although neither summand
+            // has a sign of its own.
+            offset_sign(&xs, pool)
         }
         ExprData::Pow { base, exp } => {
             let base_sign = assumed_sign_at(base, pool, depth + 1);
@@ -376,6 +389,19 @@ fn assumed_sign_at(expr: ExprId, pool: &ExprPool, depth: u32) -> Option<Sign> {
         }
         ExprData::Func { name, args } => match name.as_str() {
             "exp" | "cosh" => Some(Sign::Positive),
+            // `log x` has the sign of `x − 1`, for a real `x > 0`.
+            "log" | "ln" if args.len() == 1 => {
+                let shifted = pool.add(vec![args[0], pool.integer(-1_i32)]);
+                match assumed_sign_at(shifted, pool, depth + 1)? {
+                    // `x > 1` already makes the argument positive.
+                    Sign::Positive => Some(Sign::Positive),
+                    Sign::Zero => Some(Sign::Zero),
+                    Sign::Negative => match assumed_sign_at(args[0], pool, depth + 1)? {
+                        Sign::Positive => Some(Sign::Negative),
+                        _ => None,
+                    },
+                }
+            }
             "abs" if args.len() == 1 => match assumed_sign_at(args[0], pool, depth + 1) {
                 Some(Sign::Zero) => Some(Sign::Zero),
                 Some(_) => Some(Sign::Positive),
@@ -386,6 +412,182 @@ fn assumed_sign_at(expr: ExprId, pool: &ExprPool, depth: u32) -> Option<Sign> {
         },
         _ => None,
     }
+}
+
+/// A literal-valued bound: `(value, strict)`.
+type Bound = (rug::Rational, bool);
+
+/// The tightest lower and upper bounds the ambient frames (and `subject`'s
+/// static domain) state for `subject` against **numeric literals**.
+///
+/// Only `subject OP c` / `c OP subject` with `c` an integer or rational
+/// literal is read, plus `a·s` for a literal `a` (bounds of `s`, scaled and
+/// flipped when `a < 0`). Each such reading is exact, so the bounds are facts;
+/// anything else contributes nothing.
+fn numeric_bounds(subject: ExprId, pool: &ExprPool, depth: u32) -> (Option<Bound>, Option<Bound>) {
+    let mut lower: Option<Bound> = None;
+    let mut upper: Option<Bound> = None;
+    if depth > MAX_SIGN_DEPTH {
+        return (lower, upper);
+    }
+    let tighten_lower = |cur: &mut Option<Bound>, b: Bound| {
+        let better = match cur {
+            None => true,
+            Some((v, strict)) => b.0 > *v || (b.0 == *v && b.1 && !*strict),
+        };
+        if better {
+            *cur = Some(b);
+        }
+    };
+    let tighten_upper = |cur: &mut Option<Bound>, b: Bound| {
+        let better = match cur {
+            None => true,
+            Some((v, strict)) => b.0 < *v || (b.0 == *v && b.1 && !*strict),
+        };
+        if better {
+            *cur = Some(b);
+        }
+    };
+    if let ExprData::Symbol { domain, .. } = pool.get(subject) {
+        match domain {
+            Domain::Positive => tighten_lower(&mut lower, (rug::Rational::new(), true)),
+            Domain::NonNegative => tighten_lower(&mut lower, (rug::Rational::new(), false)),
+            _ => {}
+        }
+    }
+    let addr = pool as *const ExprPool as usize;
+    let mut stated: Vec<(PredicateKind, rug::Rational)> = Vec::new();
+    AMBIENT.with(|s| {
+        for frame in s.borrow().iter().filter(|f| f.pool == addr) {
+            for &p in &frame.predicates {
+                collect_literal_comparisons(p, subject, pool, &mut stated);
+            }
+        }
+    });
+    for (kind, c) in stated {
+        match kind {
+            PredicateKind::Gt => tighten_lower(&mut lower, (c, true)),
+            PredicateKind::Ge => tighten_lower(&mut lower, (c, false)),
+            PredicateKind::Lt => tighten_upper(&mut upper, (c, true)),
+            PredicateKind::Le => tighten_upper(&mut upper, (c, false)),
+            PredicateKind::Eq => {
+                tighten_lower(&mut lower, (c.clone(), false));
+                tighten_upper(&mut upper, (c, false));
+            }
+            _ => {}
+        }
+    }
+    // `a·s` with a literal `a`: scale the bounds of `s`.
+    if let ExprData::Mul(xs) = pool.get(subject) {
+        if xs.len() == 2 {
+            let (a, s) = match (literal_rational(xs[0], pool), literal_rational(xs[1], pool)) {
+                (Some(a), None) => (a, xs[1]),
+                (None, Some(a)) => (a, xs[0]),
+                _ => return (lower, upper),
+            };
+            if a != 0 {
+                let (lo_s, hi_s) = numeric_bounds(s, pool, depth + 1);
+                let scale = |b: Bound| (b.0 * a.clone(), b.1);
+                if a > 0 {
+                    if let Some(b) = lo_s {
+                        tighten_lower(&mut lower, scale(b));
+                    }
+                    if let Some(b) = hi_s {
+                        tighten_upper(&mut upper, scale(b));
+                    }
+                } else {
+                    if let Some(b) = hi_s {
+                        tighten_lower(&mut lower, scale(b));
+                    }
+                    if let Some(b) = lo_s {
+                        tighten_upper(&mut upper, scale(b));
+                    }
+                }
+            }
+        }
+    }
+    (lower, upper)
+}
+
+fn literal_rational(e: ExprId, pool: &ExprPool) -> Option<rug::Rational> {
+    match pool.get(e) {
+        ExprData::Integer(n) => Some(rug::Rational::from(n.0.clone())),
+        ExprData::Rational(r) => Some(r.0.clone()),
+        _ => None,
+    }
+}
+
+/// `subject OP c` comparisons (oriented with `subject` on the left) that
+/// `predicate` states against a numeric literal `c`.
+fn collect_literal_comparisons(
+    predicate: ExprId,
+    subject: ExprId,
+    pool: &ExprPool,
+    out: &mut Vec<(PredicateKind, rug::Rational)>,
+) {
+    let ExprData::Predicate { kind, args } = pool.get(predicate) else {
+        return;
+    };
+    if matches!(kind, PredicateKind::And) {
+        for &part in &args {
+            collect_literal_comparisons(part, subject, pool, out);
+        }
+        return;
+    }
+    if args.len() != 2 {
+        return;
+    }
+    if args[0] == subject {
+        if let Some(c) = literal_rational(args[1], pool) {
+            out.push((kind, c));
+        }
+    } else if args[1] == subject {
+        if let Some(c) = literal_rational(args[0], pool) {
+            let flipped = match kind {
+                PredicateKind::Lt => PredicateKind::Gt,
+                PredicateKind::Le => PredicateKind::Ge,
+                PredicateKind::Gt => PredicateKind::Lt,
+                PredicateKind::Ge => PredicateKind::Le,
+                other => other,
+            };
+            out.push((flipped, c));
+        }
+    }
+}
+
+/// The sign of `c + t` (the summands `xs`, exactly one literal `c` among
+/// them) from a stated numeric bound on `t`: `t > −c` (or `t ≥ −c` with
+/// `c ≠ …` strictness carried through) is positive, `t < −c` negative.
+fn offset_sign(xs: &[ExprId], pool: &ExprPool) -> Option<Sign> {
+    let mut c: Option<rug::Rational> = None;
+    let mut rest: Vec<ExprId> = Vec::new();
+    for &x in xs {
+        match literal_rational(x, pool) {
+            Some(v) if c.is_none() => c = Some(v),
+            Some(_) => return None,
+            None => rest.push(x),
+        }
+    }
+    let c = c?;
+    let t = match rest.len() {
+        0 => return None,
+        1 => rest[0],
+        _ => pool.add(rest),
+    };
+    let (lower, upper) = numeric_bounds(t, pool, 0);
+    if let Some((l, strict)) = lower {
+        let v = l + c.clone();
+        if v > 0 || (v == 0 && strict) {
+            return Some(Sign::Positive);
+        }
+    }
+    if let Some((u, strict)) = upper {
+        let v = u + c;
+        if v < 0 || (v == 0 && strict) {
+            return Some(Sign::Negative);
+        }
+    }
+    None
 }
 
 /// A sign asserted directly about `expr` by some ambient frame, or implied by
@@ -401,16 +603,36 @@ fn stated_sign(expr: ExprId, pool: &ExprPool) -> Option<Sign> {
         return Some(Sign::Positive);
     }
     let addr = pool as *const ExprPool as usize;
-    AMBIENT.with(|s| {
-        for frame in s.borrow().iter().rev().filter(|f| f.pool == addr) {
-            for &p in &frame.predicates {
-                if let Some(sign) = sign_from_predicate(p, expr, pool) {
-                    return Some(sign);
+    AMBIENT
+        .with(|s| {
+            for frame in s.borrow().iter().rev().filter(|f| f.pool == addr) {
+                for &p in &frame.predicates {
+                    if let Some(sign) = sign_from_predicate(p, expr, pool) {
+                        return Some(sign);
+                    }
                 }
             }
-        }
-        None
-    })
+            None
+        })
+        .or_else(|| {
+            // `r > 1/2` says `r` is positive although it is not a comparison
+            // with zero; a literal bound on the right side of zero is a sign.
+            if !ambient_assumptions_active(pool) {
+                return None;
+            }
+            let (lower, upper) = numeric_bounds(expr, pool, 0);
+            if let Some((l, strict)) = lower {
+                if l > 0 || (l == 0 && strict) {
+                    return Some(Sign::Positive);
+                }
+            }
+            if let Some((u, strict)) = upper {
+                if u < 0 || (u == 0 && strict) {
+                    return Some(Sign::Negative);
+                }
+            }
+            None
+        })
 }
 
 /// The sign `predicate` states for `subject`, if it states one.
@@ -855,5 +1077,72 @@ mod float_sign_tests {
             Some(Sign::Negative)
         );
         assert_eq!(assumed_sign(pool.float(0.0, 53), &pool), Some(Sign::Zero));
+    }
+}
+
+/// G6: literal bounds (`r < 1`, `r > 1/2`) are signs of `c + r`, and of `log r`.
+#[cfg(test)]
+mod literal_bound_tests {
+    use super::*;
+
+    fn ctx_with(pool: &ExprPool, preds: Vec<ExprId>) -> AssumptionContext {
+        let mut ctx = AssumptionContext::new();
+        for p in preds {
+            ctx.refine(p, pool).unwrap();
+        }
+        ctx
+    }
+
+    #[test]
+    fn unit_interval_signs() {
+        let pool = ExprPool::new();
+        let r = pool.symbol("r", Domain::Real);
+        let (zero, one) = (pool.integer(0_i32), pool.integer(1_i32));
+        let one_minus_r = pool.add(vec![one, pool.mul(vec![pool.integer(-1_i32), r])]);
+        let r_minus_one = pool.add(vec![r, pool.integer(-1_i32)]);
+        let log_r = pool.func("log", vec![r]);
+        // Nothing stated: nothing decided.
+        assert_eq!(assumed_sign(one_minus_r, &pool), None);
+        assert_eq!(assumed_sign(log_r, &pool), None);
+        let ctx = ctx_with(
+            &pool,
+            vec![
+                pool.predicate(PredicateKind::Gt, vec![r, zero]),
+                pool.predicate(PredicateKind::Lt, vec![r, one]),
+            ],
+        );
+        let _g = enter_assumptions(&ctx, &pool);
+        assert_eq!(assumed_sign(one_minus_r, &pool), Some(Sign::Positive));
+        assert_eq!(assumed_sign(r_minus_one, &pool), Some(Sign::Negative));
+        assert_eq!(assumed_sign(log_r, &pool), Some(Sign::Negative));
+    }
+
+    #[test]
+    fn non_strict_bound_at_the_offset_decides_nothing() {
+        let pool = ExprPool::new();
+        let r = pool.symbol("r", Domain::Real);
+        let one = pool.integer(1_i32);
+        let ctx = ctx_with(&pool, vec![pool.predicate(PredicateKind::Le, vec![r, one])]);
+        let _g = enter_assumptions(&ctx, &pool);
+        // r ≤ 1 leaves 1 − r ≥ 0, which is not a strict sign.
+        let one_minus_r = pool.add(vec![one, pool.mul(vec![pool.integer(-1_i32), r])]);
+        assert_eq!(assumed_sign(one_minus_r, &pool), None);
+        // ... but r ≤ 1 does make r − 2 negative.
+        let r_minus_two = pool.add(vec![r, pool.integer(-2_i32)]);
+        assert_eq!(assumed_sign(r_minus_two, &pool), Some(Sign::Negative));
+    }
+
+    #[test]
+    fn a_positive_literal_lower_bound_is_a_sign() {
+        let pool = ExprPool::new();
+        let r = pool.symbol("r", Domain::Real);
+        let ctx = ctx_with(
+            &pool,
+            vec![pool.predicate(PredicateKind::Gt, vec![r, pool.rational(1, 2)])],
+        );
+        let _g = enter_assumptions(&ctx, &pool);
+        assert_eq!(assumed_sign(r, &pool), Some(Sign::Positive));
+        // log r with r > 1/2 is undecided: it straddles r = 1.
+        assert_eq!(assumed_sign(pool.func("log", vec![r]), &pool), None);
     }
 }

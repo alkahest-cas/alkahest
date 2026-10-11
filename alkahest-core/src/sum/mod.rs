@@ -5,6 +5,7 @@
 //! homogeneous recurrence solving (order ≤ 2), explicit [`rsolve`] for linear
 //! difference equations (V2-18), and optional WZ pair verification.
 
+mod closed_form;
 mod expr_ratio;
 pub(crate) mod gosper;
 mod poly_aux;
@@ -23,7 +24,7 @@ pub use recurrence::{
 };
 pub use rsolve::{rsolve, RsolveError};
 
-use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
+use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
 use crate::kernel::subs::subs;
 use crate::kernel::{ExprId, ExprPool};
 use crate::matrix::normal_form::RatUniPoly;
@@ -69,7 +70,7 @@ impl crate::errors::AlkahestError for SumError {
 
     fn remediation(&self) -> Option<&'static str> {
         Some(
-            "supported indefinite sums are hypergeometric terms built from polynomials in k, products, and gamma(linear(k)); Zeilberger automation is partial — use verify_wz_pair for certificates. For sums to infinity, only recognized Basel-family even p-series (e.g. sum_definite(1/k**2, k, 1, pool.pos_infinity())) resolve to a closed form (pi^2/6, pi^4/90, ...); other improper sums are refused rather than guessed",
+            "supported indefinite sums are hypergeometric terms built from polynomials in k, products, and gamma(linear(k)); Zeilberger automation is partial — use verify_wz_pair for certificates. Sums to infinity (hi = pool.pos_infinity()) are summed for polynomial × geometric terms (under |q| < 1, stated as a side condition when not known) and for rational terms whose poles are linear in k (telescoping, even zeta values, digamma/trigamma); other improper sums, odd zeta values and divergent series are refused rather than guessed",
         )
     }
 }
@@ -133,22 +134,33 @@ pub fn sum_indefinite(
 /// When `hi` is [`ExprPool::pos_infinity`] this is an infinite sum. Gosper's
 /// algorithm never applies there — its antidifference, even when it exists,
 /// is a rational-times-hypergeometric term with no reason to vanish at `∞`,
-/// so blindly substituting `k = ∞` (like [`crate::integrate::integrate_definite`]
-/// warns against for the analogous FTC bound) would fabricate a meaningless
-/// value. Instead an infinite upper bound is checked against a small table of
-/// recognized closed forms — currently the Basel-family even p-series
-/// `Σ_{k=1}^{∞} c/k^{2m} = c·ζ(2m)` (Basel-family even zeta values),
-/// e.g. `sum_definite(1/k**2, k, 1, pool.pos_infinity())` → `π²/6`. Anything
-/// else with an infinite bound honestly returns
-/// [`SumError::NotGosperSummable`] rather than a wrong or unresolved-`∞`
-/// answer.
+/// so blindly substituting `k = ∞` would fabricate a meaningless value.
+/// Instead an infinite upper bound goes to closed forms that know their own
+/// convergence (see `closed_form`):
 ///
-/// One family is summed *off* the Gosper path, on its failure branch only:
-/// `Σ c·r^{a·k+b}` with a **symbolic** ratio, which the `Q(k)` machinery cannot
-/// represent — Gosper's certificate lives in `Q(k)` and a symbolic ratio is not
-/// in `Q`. Its `q = 1` branch is recorded as a [`SideCondition::NonZero`] on the
-/// derivation step rather than assumed away, and an infinite upper bound still
-/// refuses, because convergence needs `|q| < 1` and nothing here knows it.
+/// * **polynomial × geometric,** `Σ_{k=lo}^{∞} P(k)·q^k` for any `q` free of
+///   `k` (`r`, `exp(−λτ)`, `1/2`): exact, under `|q| < 1`. When the assumptions
+///   (symbol domains, `alkahest.context(assumptions=…)`) establish it, no
+///   hypothesis is attached; when they refute it the sum is refused with
+///   `E-SUM-003`; otherwise the result carries the hypothesis as a
+///   [`crate::deriv::log::SideCondition::Positive`] (`1 − |r| > 0`, or
+///   `λτ > 0` for `q = exp(−λτ)`).
+/// * **rational series** whose poles are linear in `k`: partial fractions,
+///   telescoping across poles that differ by an integer, and the remaining
+///   Hurwitz-zeta values exactly — `π^{2m}`-multiples for even orders at
+///   integer and half-integer points (`Σ 1/k² = π²/6`, `Σ 1/(2k+1)² = π²/8`),
+///   `digamma`/`trigamma` elsewhere. Odd zeta values are refused (`E-SUM-002`;
+///   there is no `zeta` primitive), divergent series (`Σ 1/k`, `Σ 2^k`) and
+///   a pole inside the range are refused with `E-SUM-003`.
+///
+/// Infinite bounds anywhere else (a lower bound, `−∞`, `∞ − 1`) are refused
+/// with `E-SUM-003`.
+///
+/// For finite bounds, Gosper runs first; on its failure, polynomial ×
+/// geometric terms with a **symbolic** ratio — which the `Q(k)` machinery
+/// cannot represent — are summed by the same antidifference, and the `q = 1`
+/// branch is recorded as a [`crate::deriv::log::SideCondition::NonZero`]
+/// rather than assumed away.
 pub fn sum_definite(
     term: ExprId,
     k: ExprId,
@@ -156,27 +168,54 @@ pub fn sum_definite(
     hi: ExprId,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, SumError> {
-    if hi == pool.pos_infinity() {
-        let value = special::basel_family_closed_form(term, k, lo, hi, pool)
-            .ok_or(SumError::NotGosperSummable)?;
-        let mut log = DerivationLog::new();
-        log.push(RewriteStep::simple("basel_zeta_even", term, value));
-        return Ok(DerivedExpr::with_log(value, log));
+    let inf = pool.pos_infinity();
+    // `∞` anywhere but as the whole upper bound (`−∞`, `∞ − 1`, an infinite
+    // lower bound) is not a summation range this function has a meaning for;
+    // substituting it into a closed form produced `r^{1 + ∞}`-style junk.
+    if lo == inf
+        || crate::kernel::subs::mentions_var(lo, inf, pool)
+        || (hi != inf && crate::kernel::subs::mentions_var(hi, inf, pool))
+    {
+        return Err(SumError::BoundSubstitution(format!(
+            "unsupported infinite bound (lo = {}, hi = {}): only an upper bound of +∞ \
+             (pool.pos_infinity()) with a finite lower bound is summed",
+            pool.display(lo),
+            pool.display(hi)
+        )));
+    }
+    if hi == inf {
+        if let Some(value) = special::basel_family_closed_form(term, k, lo, hi, pool) {
+            let mut log = DerivationLog::new();
+            log.push(RewriteStep::simple("basel_zeta_even", term, value));
+            return Ok(DerivedExpr::with_log(value, log));
+        }
+        return match closed_form::infinite_sum(term, k, lo, pool) {
+            closed_form::Outcome::Sum {
+                value,
+                conditions,
+                rule,
+            } => {
+                let mut log = DerivationLog::new();
+                log.push(RewriteStep::with_conditions(rule, term, value, conditions));
+                Ok(DerivedExpr::with_log(value, log))
+            }
+            closed_form::Outcome::Refused(why) => Err(SumError::BoundSubstitution(why)),
+            closed_form::Outcome::NotApplicable => Err(SumError::NotGosperSummable),
+        };
     }
     let ind = match sum_indefinite(term, k, pool) {
         Ok(ind) => ind,
         Err(e) => {
-            // The one elementary family the `Q(k)` machinery structurally
-            // cannot see: a geometric series whose ratio is a symbol.
-            if let Some((value, q)) = symbolic_geometric_closed_form(term, k, lo, hi, pool) {
-                let cond = simp(pool, pool.add(vec![q, pool.integer(-1_i32)]));
+            // The family the `Q(k)` machinery structurally cannot see: a
+            // polynomial times a geometric term whose ratio is not a number.
+            if let closed_form::Outcome::Sum {
+                value,
+                conditions,
+                rule,
+            } = closed_form::finite_geometric(term, k, lo, hi, pool)
+            {
                 let mut log = DerivationLog::new();
-                log.push(RewriteStep::with_conditions(
-                    "geometric_symbolic_ratio",
-                    term,
-                    value,
-                    vec![SideCondition::NonZero(cond)],
-                ));
+                log.push(RewriteStep::with_conditions(rule, term, value, conditions));
                 return Ok(DerivedExpr::with_log(value, log));
             }
             return Err(e);
@@ -229,109 +268,6 @@ pub fn sum_definite(
     let mut log = DerivationLog::new();
     log.push(RewriteStep::simple("gosper_definite_telescope", term, diff));
     Ok(DerivedExpr::with_log(diff, log))
-}
-
-/// `Σ_{k=lo}^{hi} c·q^k = c·(q^{hi+1} − q^{lo})/(q − 1)` when the ratio `q` is a
-/// **symbolic** constant, with the `q = 1` branch returned as a side condition
-/// rather than assumed away.
-///
-/// Gosper cannot reach this. Its certificate lives in `Q(k)` and its shift
-/// ratio must be a rational *number*, so [`expr_ratio::hypergeom_ratio`]
-/// refuses `r^k` for a symbol `r` with `E-SUM-001` — not because the sum is
-/// hard but because the whole layer underneath is over `Q`. The series is
-/// elementary, so it is summed here instead, on the failure path only: nothing
-/// that summed before goes through this function.
-///
-/// The returned pair is `(value, q)`. `q = 1` is a genuine second branch —
-/// `Σ_{k=lo}^{hi} 1 = hi − lo + 1`, and the formula is `0/0` there — so the
-/// caller records `q − 1 ≠ 0` on the derivation step. It is not proved, only
-/// stated: a caller that does not read it still gets an expression that is
-/// `0/0` at `q = 1` rather than a wrong number.
-fn symbolic_geometric_closed_form(
-    term: ExprId,
-    k: ExprId,
-    lo: ExprId,
-    hi: ExprId,
-    pool: &ExprPool,
-) -> Option<(ExprId, ExprId)> {
-    use crate::kernel::ExprData;
-    use expr_ratio::{affine_slope_in_k, is_free_of_k};
-
-    if hi == pool.pos_infinity() || lo == pool.pos_infinity() {
-        // A geometric series to infinity converges only for |q| < 1, which is a
-        // fact about a symbol nothing here has established. Refusing is the
-        // honest answer; `E-SUM-002` already says so.
-        return None;
-    }
-
-    let factors: Vec<ExprId> = match pool.get(term) {
-        ExprData::Mul(args) => args.to_vec(),
-        _ => vec![term],
-    };
-
-    // Exactly one factor may mention `k`, and it has to be `base^{a·k + b}`
-    // with `base` free of `k`. Two `k`-dependent factors would make the term
-    // `k·q^k` or `q^k·s^k` — the first is not geometric, the second is, but
-    // folding it would duplicate work Gosper already does for numeric bases.
-    let mut geom: Option<(ExprId, ExprId)> = None;
-    let mut rest: Vec<ExprId> = Vec::new();
-    for f in factors {
-        if is_free_of_k(f, k, pool) {
-            rest.push(f);
-            continue;
-        }
-        if geom.is_some() {
-            return None;
-        }
-        let ExprData::Pow { base, exp } = pool.get(f) else {
-            return None;
-        };
-        if !is_free_of_k(base, k, pool) || is_free_of_k(exp, k, pool) {
-            return None;
-        }
-        geom = Some((base, exp));
-    }
-    let (base, exp) = geom?;
-
-    // A rational base is Gosper's business, and it got here only because
-    // something else about the term was unsupported; claiming it now would
-    // answer a call whose real defect is elsewhere.
-    if matches!(pool.get(base), ExprData::Integer(_) | ExprData::Rational(_)) {
-        return None;
-    }
-
-    let a = affine_slope_in_k(exp, k, pool).ok()?;
-    if a == 0 {
-        return None;
-    }
-    // `b = exp − a·k`, the part of the exponent that does not move with `k`.
-    let b = simp(
-        pool,
-        pool.add(vec![exp, pool.mul(vec![pool.integer(-a), k])]),
-    );
-    if !is_free_of_k(b, k, pool) {
-        return None;
-    }
-
-    let q = simp(pool, pool.pow(base, pool.integer(a)));
-    let one = pool.integer(1_i32);
-    let coeff = {
-        let mut fs = rest;
-        fs.push(pool.pow(base, b));
-        simp(pool, pool.mul(fs))
-    };
-
-    let hi_p1 = simp(pool, pool.add(vec![hi, one]));
-    let numer = pool.add(vec![
-        pool.pow(q, hi_p1),
-        pool.mul(vec![pool.integer(-1_i32), pool.pow(q, lo)]),
-    ]);
-    let denom = pool.add(vec![q, pool.integer(-1_i32)]);
-    let value = simp(
-        pool,
-        pool.mul(vec![coeff, numer, pool.pow(denom, pool.integer(-1_i32))]),
-    );
-    Some((value, q))
 }
 
 /// Largest number of individual indices [`interior_undefined_index`] will
@@ -563,6 +499,7 @@ pub fn verify_wz_pair(pair: &WzPair, n: ExprId, k: ExprId, pool: &ExprPool) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::deriv::log::SideCondition;
     use crate::jit::eval_interp;
     use crate::kernel::ExprId;
     use crate::kernel::{Domain, ExprData};
@@ -815,7 +752,7 @@ mod tests {
         }
     }
 
-    /// The refusals the geometric path must not swallow.
+    /// What the geometric path must still refuse or qualify.
     #[test]
     fn symbolic_geometric_declines_what_it_cannot_sum() {
         let pool = ExprPool::new();
@@ -824,13 +761,14 @@ mod tests {
         let r = pool.symbol("r", Domain::Real);
         let i = |v: i32| pool.integer(v);
 
-        // To infinity: convergence needs |r| < 1, which nothing here knows.
+        // To infinity with nothing known about `r`: summed, but only under the
+        // stated hypothesis `|r| < 1` — never unconditionally.
         let term = pool.pow(r, k);
-        assert!(sum_definite(term, k, i(0), pool.pos_infinity(), &pool).is_err());
+        let s = sum_definite(term, k, i(0), pool.pos_infinity(), &pool).expect("Σ r^k");
+        assert!(s.log.0.iter().any(|st| !st.side_conditions.is_empty()));
 
-        // `k·r^k` is geometric times a polynomial — outside this path, and
-        // Gosper cannot reach it either with a symbolic ratio.
-        let term = pool.mul(vec![k, pool.pow(r, k)]);
+        // A term that is not polynomial × geometric is still refused.
+        let term = pool.pow(r, pool.pow(k, i(2)));
         assert!(sum_definite(term, k, i(0), n, &pool).is_err());
 
         // A numeric base is Gosper's, and still is: `Σ_{k=0}^{n} 2^k`
