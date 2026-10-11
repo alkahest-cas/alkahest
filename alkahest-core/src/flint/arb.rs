@@ -323,6 +323,20 @@ extern "C" {
     pub fn _acb_vec_init(n: slong) -> *mut AcbStruct;
     pub fn _acb_vec_clear(v: *mut AcbStruct, n: slong);
 
+    // -- isolated complex roots of an integer polynomial -------------------
+    /// All complex roots of a **squarefree** `poly`, each to at least
+    /// `target_prec` accurate bits. The real roots come first, in ascending
+    /// order, with their imaginary parts set exactly to zero; the non-real
+    /// roots follow in conjugate pairs. FLINT raises the working precision
+    /// until every root is isolated, so on a polynomial with a repeated root
+    /// it never returns — callers must establish squarefreeness first.
+    pub fn arb_fmpz_poly_complex_roots(
+        roots: *mut AcbStruct,
+        poly: *const super::ffi::FmpzPolyStruct,
+        flags: c_int,
+        target_prec: slong,
+    );
+
     // -- matrices (opaque handles; entries only via the accessors) ---------
     pub fn arb_mat_init(mat: *mut ArbMatBuf, r: slong, c: slong);
     pub fn arb_mat_clear(mat: *mut ArbMatBuf);

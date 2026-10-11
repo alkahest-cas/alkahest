@@ -247,6 +247,12 @@ fn eval_node_uncached(
                 }
             }
         }
+        // An algebraic number given by its polynomial and root index.
+        ExprData::Func { name, .. } if name == crate::poly::root_of::ROOT_OF => {
+            crate::poly::root_of::root_of_c64(expr, pool)
+                .map(|(re, im)| ComplexF64::new(re, im))
+                .ok_or_else(|| error(UnsupportedReason::UnsupportedFunction { name: name.clone() }))
+        }
         ExprData::Func { name, args } if args.len() == 1 => {
             let x = eval_node(args[0], pool, bindings, memo)?;
             match name.as_str() {

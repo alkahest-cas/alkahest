@@ -1554,6 +1554,11 @@ impl IntervalEval {
             // Arity is the primitive's own business: each kernel declines an
             // argument list it does not have a rule for (see `builtins::unary`),
             // which is what makes dispatching the whole list safe.
+            // A real algebraic number, enclosed at this evaluator's precision
+            // by root isolation; a non-real root is not a real ball.
+            ExprData::Func { name, .. } if name == crate::poly::root_of::ROOT_OF => {
+                crate::poly::root_of::root_of_real_ball(expr, pool, self.prec)
+            }
             ExprData::Func { name, args } if !args.is_empty() => {
                 let mut vals = Vec::with_capacity(args.len());
                 for &a in &args {

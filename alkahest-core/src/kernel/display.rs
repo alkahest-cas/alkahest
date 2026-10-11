@@ -688,6 +688,15 @@ fn latex_pow(base: ExprId, exp: ExprId, pool: &ExprPool) -> String {
 }
 
 fn latex_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
+    if name == crate::poly::root_of::ROOT_OF {
+        if let Some((coeffs, k)) = crate::poly::root_of::parts_from_args(args, pool) {
+            let p = crate::poly::root_of::poly_text(&coeffs, |j| format!("x^{{{j}}}"));
+            return format!(
+                r"\operatorname{{RootOf}}\left({}, {k}\right)",
+                p.replace('*', " ")
+            );
+        }
+    }
     // A built-in name at the wrong arity (which `ExprPool::try_func` and the
     // parsers refuse, but the unchecked constructors and a pool file do not)
     // is printed as a plain call: the special forms below index positionally.
@@ -1140,6 +1149,13 @@ fn integral_exponent(exp: ExprId, pool: &ExprPool) -> Option<Integer> {
 }
 
 fn unicode_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
+    if name == crate::poly::root_of::ROOT_OF {
+        if let Some(s) = crate::poly::root_of::display_root_of_args(args, pool, |k| {
+            format!("x{}", to_superscript(&k.to_string()).unwrap_or_default())
+        }) {
+            return s.replace('*', "·");
+        }
+    }
     // See `latex_func`: a wrong-arity built-in prints as a plain call.
     if !crate::kernel::func_arity_ok(name, args.len()) {
         let rendered: Vec<String> = args.iter().map(|&a| unicode_r(a, pool).0).collect();

@@ -267,7 +267,24 @@ fn is_one_int(e: ExprId, pool: &ExprPool) -> bool {
 /// Returns [`CadError::Unsupported`] if `poly` is not polynomial in `var` or
 /// exceeds [`ROUTH_MAX_DEGREE`].
 pub fn routh_hurwitz(poly: ExprId, var: ExprId, pool: &ExprPool) -> Result<RouthHurwitz, CadError> {
-    let coeffs = coeffs_in_var(poly, var, pool)?;
+    // A characteristic polynomial usually arrives factored —
+    // `characteristic_polynomial_lambda_minus_m` returns `det(λI − M)` as a
+    // product such as `(λ + μ)·((λ + σ + μ)(λ + γ + μ) − βσ)`. The coefficient
+    // reader below only walks sums of monomials, so expand once and retry
+    // rather than refuse a polynomial for its spelling.
+    let (poly, coeffs) = match coeffs_in_var(poly, var, pool) {
+        Ok(c) => (poly, c),
+        Err(e) => {
+            let expanded = crate::simplify::engine::simplify_expanded(poly, pool).value;
+            if expanded == poly {
+                return Err(e);
+            }
+            match coeffs_in_var(expanded, var, pool) {
+                Ok(c) => (expanded, c),
+                Err(_) => return Err(e),
+            }
+        }
+    };
     let n = coeffs.len().saturating_sub(1);
     if n == 0 {
         return Ok(RouthHurwitz {
@@ -558,5 +575,29 @@ mod tests {
         // 1/s is not polynomial in s.
         let poly = p.add(vec![p.pow(s, p.integer(-1_i32)), p.integer(1_i32)]);
         assert!(routh_hurwitz(poly, s, &p).is_err());
+    }
+
+    /// The library's own characteristic polynomial arrives as a product; it
+    /// used to be refused with `E-CAD-001` until expanded by hand.
+    #[test]
+    fn a_factored_characteristic_polynomial_is_accepted() {
+        let pool = ExprPool::new();
+        let l = pool.symbol("lam", Domain::Real);
+        let b = pool.symbol("beta", Domain::Positive);
+        let s = pool.symbol("sigma", Domain::Positive);
+        let g = pool.symbol("gamma", Domain::Positive);
+        let mu = pool.symbol("mu", Domain::Positive);
+        // ((λ + σ + μ)(λ + γ + μ) − βσ)(λ + μ)
+        let quad = pool.add(vec![
+            pool.mul(vec![pool.add(vec![l, s, mu]), pool.add(vec![l, g, mu])]),
+            pool.mul(vec![pool.integer(-1), b, s]),
+        ]);
+        let cp = pool.mul(vec![quad, pool.add(vec![l, mu])]);
+        let rh = routh_hurwitz(cp, l, &pool).expect("factored input is a polynomial");
+        assert_eq!(rh.degree, 3);
+        // Same verdict as on the expanded polynomial.
+        let expanded = crate::simplify::engine::simplify_expanded(cp, &pool).value;
+        let direct = routh_hurwitz(expanded, l, &pool).unwrap();
+        assert_eq!(rh.first_column, direct.first_column);
     }
 }

@@ -312,7 +312,8 @@ Exception subclasses
    Common codes:
 
    - ``E-SOLVE-001`` — inconsistent system (no solutions)
-   - ``E-SOLVE-002`` — high-degree factor (degree > 2, no symbolic solution)
+   - ``E-SOLVE-002`` — an irreducible factor of degree ≥ 3 with symbolic or algebraic coefficients (rational-coefficient univariates of any degree are solved, using ``RootOf`` where needed)
+   - ``E-SOLVE-008`` — ``root_of`` was given a non-polynomial / constant input or an out-of-range index
    - ``E-SOLVE-003`` — Gröbner basis did not converge
    - ``E-SOLVE-004`` — ``triangularize`` could not extract a triangular set whose
      ideal contains the input, so it refused rather than return a chain cutting

@@ -290,6 +290,11 @@ impl CBallEval {
                 let b = self.eval(base, pool)?;
                 b.powi(n).ok_or(VerifyGap::Undefined)
             }
+            ExprData::Func { name, .. } if name == crate::poly::root_of::ROOT_OF => {
+                let (re, im) = crate::poly::root_of::root_of_complex_balls(expr, pool, VERIFY_PREC)
+                    .ok_or(VerifyGap::Unsupported)?;
+                Ok(CBall { re, im })
+            }
             ExprData::Func { name, args } if name == "sqrt" && args.len() == 1 => {
                 let x = self.eval(args[0], pool)?;
                 x.sqrt().ok_or(VerifyGap::Undefined)

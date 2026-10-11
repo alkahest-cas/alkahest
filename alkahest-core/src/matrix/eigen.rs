@@ -249,6 +249,9 @@ fn eigenvalues_unchecked(m: &Matrix, pool: &ExprPool) -> Result<Vec<(ExprId, usi
     match eigenvalues_from_char_poly(poly_e, lam, pool) {
         Ok(v) => Ok(v),
         Err(EigenError::CharPolyConversion(_)) => {
+            if let Some(pairs) = factored_symbolic_eigenvalues(poly_e, lam, m.rows, pool) {
+                return Ok(pairs);
+            }
             // The characteristic polynomial has non-rational (free-symbol) coefficients,
             // so it cannot be cleared to ℤ[λ]. For small matrices the eigenvalues are still
             // available in closed form: 2×2 via the quadratic formula, 3×3 via the depressed
@@ -639,6 +642,14 @@ pub fn eigenvectors(
     pool: &ExprPool,
 ) -> Result<Vec<(ExprId, usize, Vec<Matrix>)>, EigenError> {
     let vals = eigenvalues(m, pool)?;
+    // An eigenvalue given as a `RootOf` is exact, but the elimination below
+    // decides its pivots with a zero test that has no algebraic-number
+    // arithmetic for it; refuse rather than risk a wrong kernel.
+    for &(lambda, _) in &vals {
+        if let Some(degree) = crate::poly::root_of::max_root_of_degree(lambda, pool) {
+            return Err(EigenError::UnsupportedIrreducibleDegree { degree });
+        }
+    }
     let mut out = Vec::with_capacity(vals.len());
     for (lambda, mult) in vals {
         let b = m_minus_lambda_scaled(m, lambda, pool);
@@ -737,10 +748,70 @@ fn eigenvalues_from_char_poly(
                     pairs.push((r, exp as usize));
                 }
             }
-            _ => return Err(EigenError::UnsupportedIrreducibleDegree { degree: d }),
+            // Degree ≥ 4: a radical form when the factor is even (biquadratic
+            // and its towers) or a palindromic quartic, `RootOf` otherwise.
+            _ => {
+                let roots =
+                    crate::poly::univariate_roots::irreducible_roots(&base.coefficients(), pool)
+                        .map_err(|degree| EigenError::UnsupportedIrreducibleDegree { degree })?;
+                for r in roots {
+                    pairs.push((simplify(r, pool).value, exp as usize));
+                }
+            }
         }
     }
     sort_eigenpairs(&pairs, pool)
+}
+
+/// Eigenvalues from a characteristic polynomial with **symbolic** coefficients,
+/// by factoring it over ℤ[λ, params] first.
+///
+/// `None` when the polynomial is not an integer polynomial in `λ` and the free
+/// symbols, when it does not split into at least two factors that involve `λ`
+/// (a 2×2 matrix, or a 3×3 irreducible spectrum, is left to the closed-form
+/// paths), or
+/// when some factor has no closed form (degree ≥ 3 in `λ` and not an even
+/// polynomial over a quadratic). The block-triangular SEIR Jacobian, the
+/// three-site ring with its repeated `−t`, and the Hückel quartic of a
+/// four-site chain all factor into pieces of degree ≤ 2.
+fn factored_symbolic_eigenvalues(
+    poly_e: ExprId,
+    lam: ExprId,
+    n: usize,
+    pool: &ExprPool,
+) -> Option<Vec<(ExprId, usize)>> {
+    let mut vars = vec![lam];
+    vars.extend(
+        crate::poly::collect_free_vars(poly_e, pool)
+            .into_iter()
+            .filter(|&v| v != lam),
+    );
+    let expanded = simplify_expanded(poly_e, pool).value;
+    let mp = crate::poly::MultiPoly::from_symbolic(expanded, vars, pool).ok()?;
+    let fac = mp.factor_z().ok()?;
+    let with_lam = fac
+        .factors
+        .iter()
+        .filter(|(f, _)| f.degree_in(0) > 0)
+        .map(|(_, e)| *e as usize)
+        .sum::<usize>();
+    // 2×2 keeps its closed form (and the downstream behaviour built on it:
+    // `matrix_exp`'s Putzer route states the `a − b ≠ 0` gap it divides by,
+    // which a diagonalisation over factored eigenvalues would not). A 3×3
+    // irreducible spectrum is left to Cardano.
+    if n <= 2 || (with_lam < 2 && n == 3) {
+        return None;
+    }
+    let roots = crate::poly::univariate_roots::roots_with_parameters(&mp, 0, pool).ok()?;
+    let pairs: Vec<(ExprId, usize)> = roots
+        .into_iter()
+        .map(|(r, m)| (simplify(r, pool).value, m as usize))
+        .collect();
+    let total: usize = pairs.iter().map(|p| p.1).sum();
+    if total != n {
+        return None;
+    }
+    sort_eigenpairs(&pairs, pool).ok()
 }
 
 fn linear_root(p: &UniPoly, pool: &ExprPool) -> Option<ExprId> {
@@ -2465,5 +2536,162 @@ mod tests {
         let mp = m.mul(&pp, &p).unwrap().simplify_entries(&p);
         let pdd = pp.mul(&dd, &p).unwrap().simplify_entries(&p);
         assert!(matrix_eq_simplified(&mp, &pdd, &p));
+    }
+
+    // -----------------------------------------------------------------------
+    // G1 — factored characteristic polynomials
+    // -----------------------------------------------------------------------
+
+    /// Companion matrix of the monic `λⁿ + c_{n−1}λⁿ⁻¹ + … + c₀` (`c` ascending,
+    /// without the leading 1).
+    fn companion(c: &[i64], p: &ExprPool) -> Matrix {
+        let n = c.len();
+        let rows: Vec<Vec<ExprId>> = (0..n)
+            .map(|i| {
+                (0..n)
+                    .map(|j| {
+                        if j == n - 1 {
+                            p.integer(-c[i])
+                        } else if i == j + 1 {
+                            p.integer(1)
+                        } else {
+                            p.integer(0)
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        Matrix::new(rows).unwrap()
+    }
+
+    fn total_multiplicity(v: &[(ExprId, usize)]) -> usize {
+        v.iter().map(|p| p.1).sum()
+    }
+
+    #[test]
+    fn an_irreducible_biquadratic_spectrum_is_in_radicals() {
+        // λ⁴ − 10λ² + 1, roots ±√2 ± √3.
+        let p = pool();
+        let vals = eigenvalues(&companion(&[1, 0, -10, 0], &p), &p).expect("biquadratic");
+        assert_eq!(vals.len(), 4);
+        let mut re: Vec<f64> = vals
+            .iter()
+            .map(|&(l, _)| {
+                crate::eval::eval_complex_f64(l, &p, &std::collections::HashMap::new())
+                    .unwrap()
+                    .re
+            })
+            .collect();
+        re.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let (s2, s3) = (2f64.sqrt(), 3f64.sqrt());
+        for (g, w) in re.iter().zip([-s2 - s3, s2 - s3, s3 - s2, s2 + s3]) {
+            assert!((g - w).abs() < 1e-12, "{re:?}");
+        }
+    }
+
+    #[test]
+    fn a_quartic_with_no_radical_shortcut_is_root_of_and_eigenvects_refuses() {
+        // λ⁴ − λ − 1: irreducible, neither even nor palindromic.
+        let p = pool();
+        let m = companion(&[-1, -1, 0, 0], &p);
+        match eigenvalues(&m, &p) {
+            Ok(vals) => {
+                assert!(crate::poly::root_of::root_isolation_available());
+                assert_eq!(total_multiplicity(&vals), 4);
+                assert!(vals
+                    .iter()
+                    .all(|&(l, _)| crate::poly::root_of::is_root_of(l, &p)));
+                // Eigenvectors over a RootOf need algebraic-number pivots:
+                // still a coded refusal, never a guessed kernel.
+                assert!(matches!(
+                    eigenvectors(&m, &p),
+                    Err(EigenError::UnsupportedIrreducibleDegree { degree: 4 })
+                ));
+            }
+            Err(e) => {
+                assert!(!crate::poly::root_of::root_isolation_available(), "{e:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_block_triangular_seir_jacobian_factors() {
+        // Disease-free-equilibrium Jacobian of SEIR with vital dynamics.
+        let p = pool();
+        let b = p.symbol("beta", Domain::Positive);
+        let g = p.symbol("gamma", Domain::Positive);
+        let s = p.symbol("sigma", Domain::Positive);
+        let mu = p.symbol("mu", Domain::Positive);
+        let neg = |e: ExprId| p.mul(vec![p.integer(-1), e]);
+        let z = p.integer(0);
+        let m = Matrix::new(vec![
+            vec![neg(mu), z, neg(b)],
+            vec![z, neg(p.add(vec![s, mu])), b],
+            vec![z, s, neg(p.add(vec![g, mu]))],
+        ])
+        .unwrap();
+        let vals = eigenvalues(&m, &p).expect("SEIR spectrum");
+        assert_eq!(total_multiplicity(&vals), 3);
+        let shown: Vec<String> = vals.iter().map(|v| p.display(v.0).to_string()).collect();
+        assert!(
+            vals.iter().any(|&(l, _)| l == neg(mu)
+                || crate::simplify::engine::simplify(p.add(vec![l, mu]), &p).value == p.integer(0)),
+            "−μ missing from {shown:?}"
+        );
+    }
+
+    #[test]
+    fn a_three_site_ring_has_a_repeated_eigenvalue() {
+        let p = pool();
+        let t = p.symbol("t", Domain::Real);
+        let mt = p.mul(vec![p.integer(-1), t]);
+        let z = p.integer(0);
+        let m = Matrix::new(vec![vec![z, mt, mt], vec![mt, z, mt], vec![mt, mt, z]]).unwrap();
+        let vals = eigenvalues(&m, &p).expect("ring spectrum");
+        let mut got: Vec<(String, usize)> = vals
+            .iter()
+            .map(|&(l, k)| (p.display(l).to_string(), k))
+            .collect();
+        got.sort();
+        assert_eq!(total_multiplicity(&vals), 3, "{got:?}");
+        assert!(got.iter().any(|(_, k)| *k == 2), "{got:?}");
+    }
+
+    #[test]
+    fn a_huckel_chain_with_symbolic_alpha_and_beta_is_solved() {
+        let p = pool();
+        let a = p.symbol("alpha", Domain::Real);
+        let b = p.symbol("beta", Domain::Real);
+        let z = p.integer(0);
+        let m = Matrix::new(vec![
+            vec![a, b, z, z],
+            vec![b, a, b, z],
+            vec![z, b, a, b],
+            vec![z, z, b, a],
+        ])
+        .unwrap();
+        let vals = eigenvalues(&m, &p).expect("Hückel spectrum");
+        assert_eq!(total_multiplicity(&vals), 4);
+        // α ± β·(1 ± √5)/2 at α = 0.3, β = −1.1.
+        let env: std::collections::HashMap<ExprId, crate::eval::ComplexF64> = [
+            (a, crate::eval::ComplexF64::new(0.3, 0.0)),
+            (b, crate::eval::ComplexF64::new(-1.1, 0.0)),
+        ]
+        .into_iter()
+        .collect();
+        let mut got: Vec<f64> = vals
+            .iter()
+            .map(|&(l, _)| crate::eval::eval_complex_f64(l, &p, &env).unwrap().re)
+            .collect();
+        got.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        let phi = (1.0 + 5f64.sqrt()) / 2.0;
+        let mut want: Vec<f64> = [phi, phi - 1.0, -phi, 1.0 - phi]
+            .iter()
+            .map(|k| 0.3 + k * -1.1)
+            .collect();
+        want.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        for (g, w) in got.iter().zip(&want) {
+            assert!((g - w).abs() < 1e-12, "{got:?} vs {want:?}");
+        }
     }
 }

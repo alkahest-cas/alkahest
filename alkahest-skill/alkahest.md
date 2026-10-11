@@ -674,6 +674,30 @@ for s in solutions:
 # Certified enclosures / residuals: solve_numerical(eqs, vars, ...)
 ```
 
+**Degree ≥ 3.** A univariate with rational coefficients (directly, or as the Lex
+tail of a system) is factored over ℚ; each irreducible factor is solved by formula
+(degree ≤ 2), by an even / palindromic / pure-cubic reduction to radicals
+(`x**4 + 1`, Legendre `P₄`, `x**3 - 2`), or as an exact **`RootOf(f, k)`**.
+Parametric univariates are factored over ℚ[params] (`s**3 - a*s**2 - s + a` →
+`a, ±1`); an irreducible parametric factor of degree ≥ 3 still raises `E-SOLVE-002`.
+Repeated roots are listed once.
+
+```python
+solve([s**3 + 6*s**2 + 11*s + 6], [s])   # → s = -1, -2, -3
+solve([x**5 - x - 1], [x])               # → RootOf(x^5 - x - 1, 0) … RootOf(x^5 - x - 1, 4)
+r = root_of(x**3 - x - 1, x, 0)          # build one directly (E-SOLVE-008 on bad input)
+eval_expr(r, {})                         # 1.3247179572447… (real roots)
+interval_eval(r, {}, 300)                # rigorous 300-bit enclosure
+evaluate(root_of(x**3 - x - 1, x, 1), {}, mode="complex")  # non-real roots
+```
+
+`RootOf` index order: real roots ascending, then non-real roots by real part, then
+imaginary part. A `RootOf` has no free symbols (it stores its polynomial's
+coefficients), so `diff` gives 0 and `subs` leaves it alone. `eigenvals` uses the same
+machinery for degree-≥4 factors, and factors a symbolic characteristic polynomial
+over ℚ[params] first (SEIR Jacobians, Hückel chains); `eigenvects` / `jordan_form` /
+`matrix_exp` still refuse a `RootOf` eigenvalue.
+
 **Rational equations** (`method="groebner"` only). Equations may be ratios of
 polynomials in the unknowns, which is the form nodal analysis produces — no need to
 clear `1/R` by hand:

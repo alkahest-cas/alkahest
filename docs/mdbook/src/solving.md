@@ -49,10 +49,46 @@ for sol in solutions:
 
 Pass `numeric=True` to return numbers directly: `solve(eqs, vars, numeric=True)`.
 The domain is ℂ, so a real root is a `float` and a non-real one a Python `complex`
-(`solve([s**2 + 1], [s], numeric=True)` gives `±1j`; `domain="real"` drops them). Past
-degree 2 the numeric path uses complex homotopy continuation and returns every finite root
-or raises `E-HOMOTOPY-004`. A solution that depends on a free parameter has no numeric value
+(`solve([s**2 + 1], [s], numeric=True)` gives `±1j`; `domain="real"` drops them). Where
+the symbolic path refuses with `E-SOLVE-002` (see below), the numeric path falls back to
+complex homotopy continuation and returns every finite root or raises `E-HOMOTOPY-004`. A solution that depends on a free parameter has no numeric value
 and raises `E-SOLVE-006`.
+
+### Degree three and above: factor, then `RootOf`
+
+A univariate of degree ≥ 3 — a single equation, or the Lex tail of a system — is
+**factored first**. With rational coefficients it is factored over ℚ (FLINT), and each
+irreducible factor is solved by the first rule that applies:
+
+| factor | result |
+|---|---|
+| degree 1 or 2 | rational root / quadratic formula |
+| even, `q(x²)` with `q` solvable here | `±√r` for each root `r` of `q` (`x⁴ + 1`, Legendre `P₄`, `x⁸ + 1`) |
+| pure cubic `a·x³ + c` | real cube root times `1, ω, ω̄` |
+| palindromic quartic | `y = x + 1/x` reduces it to two quadratics |
+| anything else | `RootOf(f, 0)`, …, `RootOf(f, deg f − 1)` |
+
+```python
+solve([s**3 + 6*s**2 + 11*s + 6], [s])   # → s = -1, -2, -3
+solve([x*(x**2 - 5)], [x])               # → 0, ±√5
+solve([x**5 - x - 1], [x])               # → RootOf(x^5 - x - 1, k), k = 0..4
+```
+
+`RootOf(f, k)` is the `k`-th root of the irreducible integer polynomial `f` in a fixed
+order: **real roots ascending, then non-real roots by real part, ties by imaginary part**
+(a conjugate pair lower half-plane first). It is exact and has no free symbols — it stores
+`f` by its coefficients — so `diff` treats it as a constant and `subs` cannot reach into
+it. It evaluates through `eval_expr` (real roots), `evaluate(..., mode="complex")`, and to
+any precision through `interval_eval` / `evaluate(..., precision_bits=...)` (real roots),
+using FLINT's certified root isolation. Build one directly with
+`root_of(poly, var, index)`, which reduces to the irreducible factor the root belongs to
+and raises `E-SOLVE-008` on a non-polynomial input or an out-of-range index.
+
+With **symbolic parameters** the univariate is factored over ℚ[params]:
+`s**3 - a*s**2 - s + a` gives `a, ±1`. A factor of degree ≥ 3 in the unknown that still
+involves a parameter (and is not even over a quadratic) has no closed form here and raises
+`E-SOLVE-002`, as does a degree-≥3 step whose coefficients contain algebraic numbers from
+an earlier step. Repeated roots are listed once.
 
 ## Rational equations
 

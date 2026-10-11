@@ -97,8 +97,11 @@ pub enum SolverError {
     /// An equation is not a polynomial (nor a rational function) in the given
     /// variables.
     NotPolynomial(String),
-    /// Back-substitution would require solving a degree > 2 univariate — not yet
-    /// implemented for general algebraic numbers.
+    /// Back-substitution reached a univariate of this degree (≥ 3) that it
+    /// cannot solve exactly: its coefficients involve free parameters or
+    /// algebraic numbers and an irreducible factor of this degree has no
+    /// closed form. (Rational-coefficient univariates of any degree are
+    /// solved, with `RootOf` for the factors that need it.)
     HighDegree(usize),
     /// Number of equations doesn't match number of variables (for zero-dim check).
     ShapeMismatch,
@@ -111,7 +114,8 @@ impl fmt::Display for SolverError {
             SolverError::HighDegree(d) => write!(
                 f,
                 "back-substitution requires solving a degree-{d} univariate polynomial \
-                 (only degree ≤ 2 is currently supported)"
+                 whose coefficients are not rational numbers (free parameters or algebraic \
+                 numbers), and it does not factor into pieces of degree ≤ 2"
             ),
             SolverError::ShapeMismatch => write!(
                 f,
@@ -139,8 +143,9 @@ impl AlkahestError for SolverError {
                  transcendental functions are not supported",
             ),
             SolverError::HighDegree(_) => Some(
-                "degree > 2 univariate solving is not yet implemented symbolically; \
-                 retry with numeric=True or method=\"homotopy\"",
+                "an irreducible factor of degree ≥ 3 with symbolic or algebraic coefficients \
+                 has no closed form here; substitute values for the parameters, or retry with \
+                 numeric=True or method=\"homotopy\"",
             ),
             SolverError::ShapeMismatch => {
                 Some("provide one equation per variable for zero-dimensional system solving")
@@ -1030,13 +1035,15 @@ fn find_step(
     vars: &[ExprId],
     n_solve: usize,
     pool: &ExprPool,
-) -> Result<Option<(usize, Vec<ExprId>)>, SolverError> {
-    let mut best: Option<(usize, Vec<ExprId>, u32, Option<ExprId>)> = None;
+) -> Result<Option<Step>, SolverError> {
+    let mut best: Option<(Step, u32, Option<ExprId>)> = None;
     let mut blocked_by_degree: Option<u32> = None;
 
-    for g in gens {
-        let unassigned: Vec<usize> = active_solve_vars(g, n_solve)
-            .into_iter()
+    for (gi, g) in gens.iter().enumerate() {
+        let active = active_solve_vars(g, n_solve);
+        let unassigned: Vec<usize> = active
+            .iter()
+            .copied()
             .filter(|&i| partial[i].is_none())
             .collect();
         let [var_idx] = unassigned[..] else {
@@ -1046,38 +1053,144 @@ fn find_step(
         if deg == 0 {
             continue;
         }
-        if deg > 2 {
-            blocked_by_degree = Some(blocked_by_degree.map_or(deg, |d: u32| d.min(deg)));
-            continue;
-        }
-        if best.as_ref().is_some_and(|(_, _, bd, _)| *bd <= deg) {
+        if best.as_ref().is_some_and(|(_, bd, _)| *bd <= deg) {
             continue;
         }
         let coeffs: Vec<ExprId> = (0..=deg)
             .map(|k| extract_coeff_in_var(g, var_idx, k, vars, partial, pool))
             .collect();
+        // Above degree 2 there is no formula to apply blindly; the univariate
+        // is factored instead, which needs coefficients that are rational
+        // numbers, or a generator that is a polynomial in this unknown and the
+        // free parameters alone (so it can be factored over ℚ[params]).
+        let kind = if deg <= 2 {
+            StepKind::Formula
+        } else if coeffs.iter().all(|&c| rational_value(c, pool).is_some()) {
+            StepKind::Rational
+        } else if active == [var_idx] {
+            StepKind::Parametric(gi)
+        } else {
+            blocked_by_degree = Some(blocked_by_degree.map_or(deg, |d: u32| d.min(deg)));
+            continue;
+        };
         let lead = coeffs[deg as usize];
         let assumed = match leading_is_reliable(lead, pool) {
             LeadStatus::Unusable => continue,
             LeadStatus::Nonzero => None,
             LeadStatus::AssumedNonzero => Some(lead),
         };
-        best = Some((var_idx, coeffs, deg, assumed));
+        best = Some((
+            Step {
+                var_idx,
+                coeffs,
+                kind,
+            },
+            deg,
+            assumed,
+        ));
     }
 
     match best {
         // Only the step actually taken contributes a hypothesis: generators
         // that were examined and passed over divide nothing.
-        Some((var_idx, coeffs, _, assumed)) => {
+        Some((step, _, assumed)) => {
             if let Some(lead) = assumed {
                 assume_nonzero(lead);
             }
-            Ok(Some((var_idx, coeffs)))
+            Ok(Some(step))
         }
         None => match blocked_by_degree {
             Some(d) => Err(SolverError::HighDegree(d as usize)),
             None => Ok(None),
         },
+    }
+}
+
+/// One back-substitution step: the unknown to solve for, the coefficients
+/// (`x^0 … x^d`) of the univariate it satisfies at the current partial
+/// assignment, and how that univariate is solved.
+struct Step {
+    var_idx: usize,
+    coeffs: Vec<ExprId>,
+    kind: StepKind,
+}
+
+/// How a [`Step`]'s univariate is solved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StepKind {
+    /// Degree ≤ 2: the linear / quadratic formula on the coefficients as given.
+    Formula,
+    /// Degree ≥ 3 with rational-number coefficients: factor over ℚ, then each
+    /// factor by formula, radical reduction, or `RootOf`.
+    Rational,
+    /// Degree ≥ 3, and the generator (index into the generator list) is a
+    /// polynomial in this unknown and the free parameters only: factor over
+    /// ℚ[params], then each factor by formula.
+    Parametric(usize),
+}
+
+/// Solve one step's univariate. Every distinct root is returned, once.
+fn solve_step(
+    step: &Step,
+    gens: &[GbPoly],
+    vars: &[ExprId],
+    pool: &ExprPool,
+) -> Result<Vec<ExprId>, SolverError> {
+    match step.kind {
+        StepKind::Formula => solve_univariate_symbolic(&step.coeffs, pool),
+        StepKind::Rational => {
+            let rats: Vec<Rational> = step
+                .coeffs
+                .iter()
+                .map(|&c| rational_value(c, pool).expect("checked rational in find_step"))
+                .collect();
+            let ints = clear_denominators(&rats);
+            crate::poly::univariate_roots::roots_over_q(&ints, pool)
+                .map(|v| v.into_iter().map(|(r, _)| r).collect())
+                .map_err(SolverError::HighDegree)
+        }
+        StepKind::Parametric(gi) => {
+            let mp = gbpoly_to_multipoly(&gens[gi], vars);
+            crate::poly::univariate_roots::roots_with_parameters(&mp, step.var_idx, pool)
+                .map(|v| v.into_iter().map(|(r, _)| r).collect())
+                .map_err(SolverError::HighDegree)
+        }
+    }
+}
+
+/// Integer coefficients with the same roots: multiply through by the lcm of
+/// the denominators.
+fn clear_denominators(rats: &[Rational]) -> Vec<rug::Integer> {
+    let mut l = rug::Integer::from(1);
+    for r in rats {
+        l.lcm_mut(r.denom());
+    }
+    rats.iter()
+        .map(|r| {
+            let v = Rational::from(r * &l);
+            v.numer().clone()
+        })
+        .collect()
+}
+
+/// A Gröbner-ring polynomial over ℚ as an integer [`MultiPoly`] over `vars`
+/// (the same indeterminates, in the same order), denominators cleared.
+///
+/// [`MultiPoly`]: crate::poly::MultiPoly
+fn gbpoly_to_multipoly(g: &GbPoly, vars: &[ExprId]) -> crate::poly::MultiPoly {
+    let rats: Vec<Rational> = g.terms.values().cloned().collect();
+    let ints = clear_denominators(&rats);
+    let mut terms = std::collections::BTreeMap::new();
+    for (exp, c) in g.terms.keys().zip(ints) {
+        let mut e: Vec<u32> = exp.clone();
+        while e.last() == Some(&0) {
+            e.pop();
+        }
+        terms.insert(e, c);
+    }
+    crate::poly::MultiPoly {
+        vars: vars.to_vec(),
+        terms,
     }
 }
 
@@ -1133,16 +1246,16 @@ fn try_backsolve_generators(
                     continue;
                 }
             };
-            let Some((var_idx, coeffs)) = step else {
+            let Some(step) = step else {
                 if partial_is_refuted(gens, partial, n_solve, n_vars, pool) {
                     // A dead branch, not an under-determined one: drop it.
                     continue;
                 }
                 return Ok(BacksolveOutcome::Stuck);
             };
-            for root in solve_univariate_symbolic(&coeffs, pool)? {
+            for root in solve_step(&step, gens, vars, pool)? {
                 let mut np = partial.clone();
-                np[var_idx] = Some(root);
+                np[step.var_idx] = Some(root);
                 new_partials.push(np);
             }
         }
@@ -2498,5 +2611,234 @@ mod tests {
         };
         assert_eq!(sols.len(), 2);
         assert!(take_solve_side_conditions().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // G1 — degree ≥ 3: factor first, then formula / radicals / RootOf
+    // -----------------------------------------------------------------------
+
+    /// `Σ cₖ·xᵏ` from small integer coefficients (ascending).
+    fn upoly(x: ExprId, c: &[i64], pool: &ExprPool) -> ExprId {
+        let terms: Vec<ExprId> = c
+            .iter()
+            .enumerate()
+            .filter(|(_, &v)| v != 0)
+            .map(|(k, &v)| match k {
+                0 => pool.integer(v),
+                1 => pool.mul(vec![pool.integer(v), x]),
+                _ => pool.mul(vec![pool.integer(v), pool.pow(x, pool.integer(k as i64))]),
+            })
+            .collect();
+        pool.add(terms)
+    }
+
+    /// Every value as a complex number, via the evaluator `numeric=True` uses.
+    fn complex_values(sols: &[Solution], pool: &ExprPool) -> Vec<(f64, f64)> {
+        sols.iter()
+            .map(|s| {
+                let c = crate::eval::eval_complex_f64(s[0], pool, &HashMap::new())
+                    .unwrap_or_else(|e| panic!("{}: {e:?}", pool.display(s[0])));
+                (c.re, c.im)
+            })
+            .collect()
+    }
+
+    /// `|p(z)|` small relative to `Σ|cₖ||z|ᵏ` for every value.
+    fn assert_roots_of(c: &[i64], vals: &[(f64, f64)]) {
+        for &(re, im) in vals {
+            let (mut ar, mut ai, mut mag) = (0.0f64, 0.0f64, 0.0f64);
+            let az = re.hypot(im);
+            for &k in c.iter().rev() {
+                let nr = ar * re - ai * im + k as f64;
+                ai = ar * im + ai * re;
+                ar = nr;
+                mag = mag * az + (k as f64).abs();
+            }
+            assert!(
+                ar.hypot(ai) <= 1e-9 * mag.max(1.0),
+                "({re}, {im}) is not a root of {c:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cubic_with_three_rational_roots_is_solved() {
+        let pool = ExprPool::new();
+        let s = pool.symbol("s", Domain::Real);
+        let sols = finite(vec![upoly(s, &[6, 11, 6, 1], &pool)], vec![s], &pool);
+        let mut got: Vec<ExprId> = sols.iter().map(|v| v[0]).collect();
+        got.sort();
+        let mut want = vec![pool.integer(-1), pool.integer(-2), pool.integer(-3)];
+        want.sort();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn report_repros_return_every_root() {
+        for c in [
+            vec![0, -5, 0, 1],               // s(s² − 5)
+            vec![0, -3, 2, 1],               // x³ + 2x² − 3x
+            vec![1, 0, 0, 0, 1],             // s⁴ + 1 (Butterworth, n = 4)
+            vec![1, 0, 0, 0, 0, 0, 0, 0, 1], // s⁸ + 1
+            vec![0, -3, 0, 5],               // 2·P₃
+            vec![3, 0, -30, 0, 35],          // 8·P₄
+        ] {
+            let pool = ExprPool::new();
+            let x = pool.symbol("x", Domain::Real);
+            let sols = finite(vec![upoly(x, &c, &pool)], vec![x], &pool);
+            assert_eq!(sols.len(), c.len() - 1, "{c:?}");
+            let vals = complex_values(&sols, &pool);
+            assert_roots_of(&c, &vals);
+            // Distinct.
+            for i in 0..vals.len() {
+                for j in 0..i {
+                    let d = (vals[i].0 - vals[j].0).hypot(vals[i].1 - vals[j].1);
+                    assert!(d > 1e-6, "{c:?}: repeated value {:?}", vals[i]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_repeated_root_is_reported_once_at_degree_three() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        // (x − 1)²(x + 2) = x³ − 3x + 2
+        let sols = finite(vec![upoly(x, &[2, -3, 0, 1], &pool)], vec![x], &pool);
+        let mut got: Vec<ExprId> = sols.iter().map(|v| v[0]).collect();
+        got.sort();
+        let mut want = vec![pool.integer(1), pool.integer(-2)];
+        want.sort();
+        assert_eq!(got, want);
+    }
+
+    #[cfg(flint_arb)]
+    #[test]
+    fn an_irreducible_quintic_gives_root_of() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let c = [-1, -1, 0, 0, 0, 1];
+        let sols = finite(vec![upoly(x, &c, &pool)], vec![x], &pool);
+        assert_eq!(sols.len(), 5);
+        for (k, s) in sols.iter().enumerate() {
+            assert_eq!(
+                pool.display(s[0]).to_string(),
+                format!("RootOf(x^5 - x - 1, {k})")
+            );
+        }
+        let vals = complex_values(&sols, &pool);
+        assert_roots_of(&c, &vals);
+        // Index 0 is the one real root.
+        assert!(vals[0].1 == 0.0 && (vals[0].0 - 1.1673039782614187).abs() < 1e-14);
+    }
+
+    #[test]
+    fn a_parametric_cubic_with_a_rational_factor_is_solved() {
+        // s³ − a·s² − s + a = (s − a)(s − 1)(s + 1)
+        let pool = ExprPool::new();
+        let s = pool.symbol("s", Domain::Real);
+        let a = pool.symbol("a", Domain::Real);
+        let s2 = pool.pow(s, pool.integer(2));
+        let eq = pool.add(vec![
+            pool.pow(s, pool.integer(3)),
+            pool.mul(vec![pool.integer(-1), a, s2]),
+            pool.mul(vec![pool.integer(-1), s]),
+            a,
+        ]);
+        let sols = finite(vec![eq], vec![s], &pool);
+        let got: std::collections::BTreeSet<String> = sols
+            .iter()
+            .map(|v| {
+                let e = crate::simplify::engine::simplify(v[0], &pool).value;
+                pool.display(e).to_string()
+            })
+            .collect();
+        assert_eq!(sols.len(), 3, "{got:?}");
+        assert!(
+            got.contains("a") && got.contains("1") && got.contains("-1"),
+            "{got:?}"
+        );
+    }
+
+    #[test]
+    fn a_parametric_irreducible_cubic_still_refuses_with_e_solve_002() {
+        // s³ + a·s + 1: irreducible over ℚ(a), no closed form here.
+        let pool = ExprPool::new();
+        let s = pool.symbol("s", Domain::Real);
+        let a = pool.symbol("a", Domain::Real);
+        let eq = pool.add(vec![
+            pool.pow(s, pool.integer(3)),
+            pool.mul(vec![a, s]),
+            pool.integer(1),
+        ]);
+        let err = solve_polynomial_system(vec![eq], vec![s], &pool)
+            .err()
+            .expect("refused");
+        assert_eq!(crate::errors::AlkahestError::code(&err), "E-SOLVE-002");
+    }
+
+    #[test]
+    fn a_multivariate_system_back_substitutes_through_a_cubic() {
+        // e₁ = 6, e₂ = 11, e₃ = 6: the permutations of (1, 2, 3).
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let z = pool.symbol("z", Domain::Real);
+        let e1 = pool.add(vec![x, y, z, pool.integer(-6)]);
+        let e2 = pool.add(vec![
+            pool.mul(vec![x, y]),
+            pool.mul(vec![y, z]),
+            pool.mul(vec![z, x]),
+            pool.integer(-11),
+        ]);
+        let e3 = pool.add(vec![pool.mul(vec![x, y, z]), pool.integer(-6)]);
+        let sols = finite(vec![e1, e2, e3], vec![x, y, z], &pool);
+        let mut got: Vec<[i64; 3]> = sols
+            .iter()
+            .map(|s| {
+                let v: Vec<i64> = s
+                    .iter()
+                    .map(|&e| eval_no_env(e, &pool).round() as i64)
+                    .collect();
+                [v[0], v[1], v[2]]
+            })
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                [1, 2, 3],
+                [1, 3, 2],
+                [2, 1, 3],
+                [2, 3, 1],
+                [3, 1, 2],
+                [3, 2, 1]
+            ]
+        );
+    }
+
+    #[cfg(flint_arb)]
+    #[test]
+    fn a_root_of_coordinate_back_substitutes() {
+        // ⟨x − y², y³ − y − 1⟩: y is a RootOf, x = y².
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let e1 = pool.add(vec![
+            x,
+            pool.mul(vec![pool.integer(-1), pool.pow(y, pool.integer(2))]),
+        ]);
+        let e2 = upoly(y, &[-1, -1, 0, 1], &pool);
+        let sols = finite(vec![e1, e2], vec![x, y], &pool);
+        assert_eq!(sols.len(), 3);
+        let env = HashMap::new();
+        for s in &sols {
+            let xv = crate::eval::eval_complex_f64(s[0], &pool, &env).expect("x evaluates");
+            let yv = crate::eval::eval_complex_f64(s[1], &pool, &env).expect("y evaluates");
+            let (y2r, y2i) = (yv.re * yv.re - yv.im * yv.im, 2.0 * yv.re * yv.im);
+            assert!((xv.re - y2r).hypot(xv.im - y2i) < 1e-12);
+            let (y3r, y3i) = (y2r * yv.re - y2i * yv.im, y2r * yv.im + y2i * yv.re);
+            assert!((y3r - yv.re - 1.0).hypot(y3i - yv.im) < 1e-12);
+        }
     }
 }

@@ -23,7 +23,9 @@ pub(crate) mod size;
 pub mod resultant;
 // V2-4 — Real root isolation (VAS)
 pub mod real_roots;
+pub mod root_of;
 pub mod unipoly;
+pub(crate) mod univariate_roots;
 
 #[cfg(feature = "groebner")]
 pub mod groebner;

@@ -110,6 +110,8 @@ const RESERVED: &[&str] = &[
     "KroneckerDelta",
     "Max",
     "Min",
+    // An algebraic number (`crate::poly::root_of`): a constant, not a function.
+    crate::poly::root_of::ROOT_OF,
 ];
 
 /// Whether `name` is an *undefined function*: a name the kernel attaches no
@@ -1190,5 +1192,27 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let err = functions_to_symbols(&[e], &[pool.func("q", vec![x])], t, Domain::Real, &pool);
         assert_eq!(err.unwrap_err().code(), "E-DIFF-007");
+    }
+
+    /// A `RootOf` is an algebraic number, not an undefined function: `diff`
+    /// must give 0 (not a `Derivative` node) and the detector must not fire.
+    #[test]
+    fn root_of_is_not_an_undefined_function() {
+        let (pool, t) = p();
+        assert!(!is_undefined_function_name(crate::poly::root_of::ROOT_OF));
+        let x = pool.symbol("x", Domain::Real);
+        let poly = pool.add(vec![
+            pool.pow(x, pool.integer(3)),
+            pool.mul(vec![pool.integer(-1), x]),
+            pool.integer(-1),
+        ]);
+        let Ok(r) = crate::poly::root_of::root_of(poly, x, 0, &pool) else {
+            return; // no root isolation in this build
+        };
+        assert!(!has_undefined_function(r, &pool));
+        let e = pool.mul(vec![r, t]);
+        assert!(!has_undefined_function(e, &pool));
+        let d = crate::diff::diff(r, t, &pool).unwrap().value;
+        assert_eq!(d, pool.integer(0));
     }
 }
