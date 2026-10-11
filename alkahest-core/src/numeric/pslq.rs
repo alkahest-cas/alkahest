@@ -71,6 +71,14 @@ impl AlkahestError for PslqError {
     }
 }
 
+/// The width the search may honestly run at: no wider than the request, and no
+/// wider than the narrowest input actually carries. Never below the 64-bit
+/// engine minimum (the request has already been checked against it).
+fn effective_search_bits(xs: &[Float], precision_bits: u32) -> u32 {
+    let narrowest = xs.iter().map(Float::prec).min().unwrap_or(precision_bits);
+    precision_bits.min(narrowest).clamp(64, 16_384)
+}
+
 fn lin_residual(bits: u32, coeffs: &[Integer], xs: &[Float]) -> Float {
     let mut acc = Float::with_val(bits, 0);
     for (c, xv) in coeffs.iter().zip(xs.iter()) {
@@ -84,6 +92,14 @@ fn lin_residual(bits: u32, coeffs: &[Integer], xs: &[Float]) -> Float {
 
 /// Search for integers `(a₀,…,a_{n−1})` with \(|\sum_i a_i x_i|\) below a precision-derived threshold.
 ///
+/// * `precision_bits` — the requested search width. The search never runs wider
+///   than the inputs themselves: the effective width is the smaller of
+///   `precision_bits` and the narrowest input's MPFR precision (floored at the
+///   64-bit engine minimum), and the detection threshold is derived from that
+///   effective width. Searching wider than the data zero-pads the inputs into
+///   exact rationals, which both hides true relations (their residual sits at the
+///   inputs' precision, far above a threshold set by the wider search) and
+///   manufactures spurious ones among the padded values.
 /// * `max_abs_coeff` — optional filter rejecting candidates with any `|a_i|` above the bound.
 pub fn guess_integer_relation(
     xs: &[Float],
@@ -99,7 +115,7 @@ pub fn guess_integer_relation(
             bits: precision_bits,
         });
     }
-    let bits = precision_bits.min(16_384);
+    let bits = effective_search_bits(xs, precision_bits);
 
     let mut normed: Vec<Float> = xs.iter().map(|xv| Float::with_val(bits, xv)).collect();
     let mut ymax = Float::with_val(bits, 0);
@@ -186,6 +202,60 @@ pub fn guess_integer_relation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rug::ops::Pow;
+
+    fn zeta4_and_pi4(prec: u32) -> Vec<Float> {
+        use rug::float::Constant;
+        let pi = Float::with_val(prec, Constant::Pi);
+        let pi4 = Float::with_val(prec, pi.clone().pow(4u32));
+        // ζ(4) = π⁴/90, rounded to `prec` independently of π⁴.
+        let z4 = Float::with_val(
+            prec,
+            Float::with_val(prec + 64, Constant::Pi).pow(4u32) / 90u32,
+        );
+        vec![z4, pi4]
+    }
+
+    #[test]
+    fn search_is_capped_at_the_input_precision() {
+        // 128-bit inputs searched at a requested 664 bits: the true relation's
+        // residual is ~2⁻¹²⁸, far above a threshold derived from 664 bits, so
+        // the uncapped search answered `None` (a false negative).
+        let xs = zeta4_and_pi4(128);
+        let rel = guess_integer_relation(&xs, 664, None).unwrap().unwrap();
+        let mut rel: Vec<i64> = rel.iter().map(|z| z.to_i64().unwrap()).collect();
+        if rel[1] < 0 {
+            rel = rel.iter().map(|a| -a).collect();
+        }
+        assert_eq!(rel, vec![-90, 1]);
+        assert_eq!(effective_search_bits(&xs, 664), 128);
+    }
+
+    #[test]
+    fn effective_bits_never_drop_below_the_engine_minimum() {
+        let xs = vec![Float::with_val(53, 0.5), Float::with_val(53, 0.25)];
+        assert_eq!(effective_search_bits(&xs, 664), 64);
+        assert_eq!(effective_search_bits(&zeta4_and_pi4(400), 300), 300);
+    }
+
+    #[test]
+    fn minimal_polynomial_of_cbrt2_plus_sqrt3_at_input_precision() {
+        // α = 2^(1/3) + 3^(1/2) has minimal polynomial
+        // x⁶ − 9x⁴ − 4x³ + 27x² − 36x − 23.
+        for prec in [200u32, 400, 830] {
+            let a =
+                Float::with_val(prec + 64, 2u32).cbrt() + Float::with_val(prec + 64, 3u32).sqrt();
+            let xs: Vec<Float> = (0..7u32)
+                .map(|k| Float::with_val(prec, a.clone().pow(k)))
+                .collect();
+            let rel = guess_integer_relation(&xs, 664, None).unwrap().unwrap();
+            let mut rel: Vec<i64> = rel.iter().map(|z| z.to_i64().unwrap()).collect();
+            if rel[6] < 0 {
+                rel = rel.iter().map(|c| -c).collect();
+            }
+            assert_eq!(rel, vec![-23, -36, 27, -4, -9, 0, 1], "prec {prec}");
+        }
+    }
 
     #[test]
     fn relation_on_1_2_3() {

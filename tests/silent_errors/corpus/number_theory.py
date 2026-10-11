@@ -39,11 +39,53 @@ def _relation_residual(values: list[int]) -> Callable[[], int]:
 #: over eight such constants during the 2026-08-13 autoresearch run
 #: (``temp-alkahest/testing/autoresearch-issues-2026-08-13.md`` §2).
 #: Re-evaluating that relation at 60 digits gives 3.59e-14 — it is noise bought
-#: with 20 digits, and ``relation_confidence`` called it credible.  Only the
-#: *count* of constants and the declared precision enter the verdict, so these
-#: stand in for the run's values at the same length.
-_PURCHASED_20_DIGIT_CONSTANTS = [f"1.{str(k + 1) * 20}"[:22] for k in range(8)]
+#: with 20 digits, and ``relation_confidence`` called it credible.  The gate now
+#: *evaluates* a relation as well as costing it, so the stand-ins are built for
+#: the relation to hold on them to their full length: the cases stay about
+#: precision, not about a relation that is simply false.
 _PURCHASED_20_DIGIT_COEFFS = [-19, -13, 28, 1, 26, -11, 20, -65]
+
+
+def _stand_ins_satisfying(coeffs: list[int], digits: int) -> list[str]:
+    """Decimal strings of *digits* significant figures on which *coeffs* holds
+    to ~*digits* digits (the last one solved for)."""
+    from decimal import Decimal, localcontext
+    from fractions import Fraction
+
+    head = [f"1.{str(k + 1) * digits}"[: digits + 2] for k in range(len(coeffs) - 1)]
+    last = -sum(Fraction(a) * Fraction(c) for a, c in zip(coeffs, head)) / coeffs[-1]
+    with localcontext() as ctx:
+        ctx.prec = digits
+        tail = Decimal(last.numerator) / Decimal(last.denominator)
+    return [*head, str(tail)]
+
+
+_PURCHASED_20_DIGIT_CONSTANTS = _stand_ins_satisfying(_PURCHASED_20_DIGIT_COEFFS, 20)
+_SAME_RELATION_60_DIGIT_CONSTANTS = _stand_ins_satisfying(_PURCHASED_20_DIGIT_COEFFS, 60)
+_SAME_RELATION_200_DIGIT_CONSTANTS = _stand_ins_satisfying(_PURCHASED_20_DIGIT_COEFFS, 200)
+
+
+#: ζ(4) and π⁴ to 115 significant digits (mpmath, 130-digit working precision),
+#: spelled out so the corpus needs no mpmath at run time. ζ(4) = π⁴/90.
+_ZETA4_115 = (
+    "1.082323233711138191516003696541167902774750951918726907682976215444120616186968846"
+    "556909635941699917232990813908043"
+)
+_PI4_115 = (
+    "97.40909103400243723644033268870511124972758567268542169146785938997085545682719619"
+    "012186723475299255096917325172385"
+)
+
+
+def _sign_normalised_relation(constants: list, **kwargs: Any) -> list[int] | None:
+    """``guess_relation`` with the last nonzero coefficient made positive."""
+    coeffs = ak.guess_relation(constants, **kwargs)
+    if coeffs is None:
+        return None
+    lead = next(c for c in reversed(coeffs) if c != 0)
+    return [-c for c in coeffs] if lead < 0 else list(coeffs)
+
+
 #: ``relation_confidence``'s three-valued verdict as a word, so that *unknown*
 #: is scored as its own answer rather than collapsing into a truthy pass.
 _CONFIDENCE_WORD = {True: "credible", False: "purchasable", None: "unknown"}
@@ -254,13 +296,14 @@ CASES: list[Case] = [
             "relation_confidence must answer 'unknown', not 'credible', when the inputs are "
             "decimal strings of undeclared accuracy"
         ),
-        op=_relation_verdict(_PURCHASED_20_DIGIT_CONSTANTS, _PURCHASED_20_DIGIT_COEFFS),
+        op=_relation_verdict(_SAME_RELATION_60_DIGIT_CONSTANTS, _PURCHASED_20_DIGIT_COEFFS),
         contract=Returns("unknown"),
         verified_by=(
             "A decimal string is both an exact rational and the way a truncated constant is "
             "spelled, and the string does not say which — so no verdict is derivable from it. The "
             "old contract assumed exact and answered 'credible' for every relation among strings, "
-            "which is the input a PSLQ loop actually produces."
+            "which is the input a PSLQ loop actually produces. The strings are 60 digits long and "
+            "the relation holds on them, so neither the literal's length nor evaluation refutes it."
         ),
         note="The gate's own shape: 'unknown' is the honest answer, and must not read as a pass.",
     ),
@@ -271,13 +314,46 @@ CASES: list[Case] = [
             "relation_confidence must still call the same relation credible when the inputs "
             "carry 200 digits"
         ),
-        op=_relation_verdict(_PURCHASED_20_DIGIT_CONSTANTS, _PURCHASED_20_DIGIT_COEFFS, digits=200),
+        op=_relation_verdict(
+            _SAME_RELATION_200_DIGIT_CONSTANTS, _PURCHASED_20_DIGIT_COEFFS, digits=200
+        ),
         contract=Returns("credible"),
         verified_by=(
             "The control for the two cases above: 8 coefficients of size ≤ 65 cost ~14.5 digits, "
             "so 200 digits of agreement is ~185 digits more than the relation could have been "
             "bought with. A gate that answered 'purchasable' here would be passing by refusing "
             "everything."
+        ),
+    ),
+    # W7 (report 10-9) — precision must travel with the input. The mpf path is
+    # covered in tests/test_pslq_precision_travels.py (it needs mpmath).
+    Case(
+        id="pslq_decimal_strings_are_searched_at_their_own_precision",
+        subsystem="number_theory",
+        statement="guess_relation on 115-digit strings of ζ(4), π⁴ must find 90·ζ(4) = π⁴",
+        op=lambda: _sign_normalised_relation([_ZETA4_115, _PI4_115]),
+        contract=Returns([-90, 1]),
+        verified_by=(
+            "ζ(4) = π⁴/90 (Euler). alkahest 3.12.0 searched the 115-digit strings at the 664-bit "
+            "default — 85 digits of zero padding — so the true relation's residual sat far above "
+            "the detection threshold and it returned None."
+        ),
+    ),
+    Case(
+        id="pslq_confidence_evaluates_the_relation",
+        subsystem="number_theory",
+        statement=(
+            "relation_confidence must not call a relation credible at digits=110 when it holds "
+            "to only ~16 digits"
+        ),
+        op=_relation_verdict(
+            [_ZETA4_115, _PI4_115], [-54836443260404016, 609293814004489], digits=110
+        ),
+        contract=Returns("purchasable"),
+        verified_by=(
+            "-54836443260404016·ζ(4) + 609293814004489·π⁴ = -6.49… (mpmath, 120 digits), so the "
+            "relation is false; it is what 3.12.0 returned for 120-digit mpf inputs (searched as "
+            "doubles), and 3.12.0 counted only its cost (34 digits) and called it credible."
         ),
     ),
     # M6 — a holonomic sequence mod p^k, at the indices where the recurrence
