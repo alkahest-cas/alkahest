@@ -1521,16 +1521,15 @@ class StateSpace:
         for c in ak.matrix_inverse_side_conditions():
             _note(str(c))
         # y1 = E (C1 x1 + sign D1 C2 x2 + D1 r);  u = r + sign (C2 x2 + D2 y1)
-        n2 = other.nstates
         Cy_x1 = _msimp(E @ self.C)
-        Cy_x2 = _mscale(E @ self.D @ other.C, sgn) if n2 else None
         Dy = _msimp(E @ self.D)
         # u in terms of (x1, x2, r)
         Cu_x1 = _mscale(other.D @ Cy_x1, sgn)
-        Cu_x2 = _msimp(_mscale(other.C, sgn) + _mscale(other.D @ Cy_x2, sgn)) if n2 else None
         Du = _msimp(_eye(L, m) + _mscale(other.D @ Dy, sgn))
         A11 = _msimp(self.A + self.B @ Cu_x1)
-        if n2:
+        if isinstance(other, StateSpace) and other.nstates:
+            Cy_x2 = _mscale(E @ self.D @ other.C, sgn)
+            Cu_x2 = _msimp(_mscale(other.C, sgn) + _mscale(other.D @ Cy_x2, sgn))
             A12 = _msimp(self.B @ Cu_x2)
             A21 = _msimp(other.B @ Cy_x1)
             A22 = _msimp(other.A + other.B @ Cy_x2)
