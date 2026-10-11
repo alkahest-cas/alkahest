@@ -1,3 +1,4 @@
+use crate::calculus::trig_pole::Side;
 /// Symbolic integration — rule-based Risch subset.
 ///
 /// Handles:
@@ -16,7 +17,7 @@
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::simplify::engine::{simplify, simplify_expanded};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 // ---------------------------------------------------------------------------
@@ -2308,6 +2309,19 @@ fn integrate_dispatch(
     // caller entered a `budget::Budget` — see `crate::budget`.
     crate::budget::check()?;
 
+    // Exact Legendre forms `∫ (A + B·sin²u)^{∓1/2} dx = A^{∓1/2}·F/E(u | −B/A)/u′`
+    // (and the `cos²`, `cos u`, `sin u` variants). Ahead of the algebraic
+    // engine, whose `t = tan x` generator substitution reaches the same
+    // integrands only through an `f64` elliptic reduction — lifted to
+    // `…/2⁵²` rationals and evaluated through `tan(π/2)` at the quarter
+    // period. These forms are definitions, verified by the exact derivative
+    // rule of `EllipticF`/`EllipticE`.
+    if let Some(f) = super::elliptic_trig::try_elliptic_trig(expr, var, pool) {
+        let mut log = DerivationLog::new();
+        log.push(RewriteStep::simple("elliptic_legendre_form", expr, f));
+        return Ok(DerivedExpr::with_log(f, log));
+    }
+
     // ── Dispatch order ──────────────────────────────────────────────────────
     //
     // Ordered by **verification strength**, not by cost, and the two do not
@@ -2853,40 +2867,114 @@ fn definite_via_ftc(
     let antideriv = integrate(expr, var, pool)?;
     let f = antideriv.value;
 
-    // The FTC needs `F` continuous on `[lower, upper]`, and none of the checks
-    // above look at `F` at all — they look at the integrand. A bounded, smooth,
-    // strictly positive integrand can still have an antiderivative that jumps
-    // inside the interval, and then `F(b) - F(a)` is not the integral. The
-    // Weierstrass substitution manufactures exactly that: every
-    // `∫ dx/(a + b·cos x)` picks up a `tan(x/2)`, which jumps at `x = π`.
-    if let Some(reason) = antiderivative_jump(f, expr, var, lower, upper, pool) {
-        return Err(IntegrationError::NotImplemented(reason));
-    }
-    // `antiderivative_jump` samples `F` where it is real. Where the integrand is
-    // *not* real on part of the interval (`cot(x)^{3/2}` past `π/2`) a
-    // substitution through a pole of the substituted function leaves `F`
-    // continuous on each side and jumping between them, and nothing above
-    // looked there.
-    if let (Some(a), Some(b)) = (numeric_bound(lower, pool), numeric_bound(upper, pool)) {
-        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
-        if let Some(reason) =
-            super::branch_check::complex_antiderivative_jump(f, expr, var, lo, hi, pool)
-        {
-            return Err(IntegrationError::NotImplemented(reason));
-        }
+    // An antiderivative carrying `f64`-derived constants (`…/2⁵²` rationals,
+    // what the numeric elliptic reduction emits when it cannot recognise a
+    // closed form) is only *numerically* an antiderivative: its derivative
+    // matches the integrand to sampling tolerance, not exactly. The indefinite
+    // result says so in its verification status; a definite value has no such
+    // channel and would be read as exact. `∫_0^1 dx/√(1 − sin²x/4)` came back
+    // 2e-9 away from `F(1 | 1/4)` that way. Refuse instead.
+    if let Some(c) = float_lifted_constant(f, expr, pool) {
+        return Err(IntegrationError::NotImplemented(format!(
+            "the antiderivative found, {}, carries the floating-point constant {} (a binary \
+             fraction lifted from an f64 computation, not an exact value), so F(b) - F(a) \
+             would only approximate the integral while presenting itself as exact; declining",
+            pool.display(f),
+            pool.display(c),
+        )));
     }
 
-    // F(upper) and F(lower). For a finite bound this is plain substitution; for
-    // `±∞` (V2-16's canonical pos_infinity, or its negation) substitution would
-    // silently treat `∞` as an ordinary free symbol and fabricate a
-    // finite-looking but meaningless expression (e.g. `exp(-k·∞)`). Instead the
-    // bound value is the *limit* of `F` as `var → bound`, computed via
-    // [`crate::calculus::limit`]. If that limit cannot be determined, the
-    // integral errors rather than returning a wrong answer.
-    let f_upper = eval_bound(f, var, upper, pool)?;
-    let f_lower = eval_bound(f, var, lower, pool)?;
-    let neg_lower = pool.mul(vec![pool.integer(-1_i32), f_lower]);
-    let diff_expr = pool.add(vec![f_upper, neg_lower]);
+    // Poles of `tan`/`cot`/`sec`/`csc` *inside* `F` (not the integrand — that
+    // was checked above) are where substitution antiderivatives jump: every
+    // Weierstrass `∫ dx/(a + b·cos x)` carries a `tan(x/2)`. Where those
+    // points can be located exactly, split the interval there and evaluate
+    // each piece with one-sided limits — the FTC on each open piece, which is
+    // what the integral is.
+    let numeric_bounds = (numeric_bound(lower, pool), numeric_bound(upper, pool));
+    let splits = match numeric_bounds {
+        (Some(a), Some(b)) if a != b => substitution_pole_points(f, var, a.min(b), a.max(b), pool),
+        _ => Vec::new(),
+    };
+    // Side from which each bound is approached from inside the interval.
+    let (upper_side, lower_side) = match numeric_bounds {
+        (Some(a), Some(b)) if a < b => (Some(Side::Below), Some(Side::Above)),
+        (Some(a), Some(b)) if a > b => (Some(Side::Above), Some(Side::Below)),
+        _ => (None, None),
+    };
+
+    let diff_expr = if splits.is_empty() {
+        // The FTC needs `F` continuous on `[lower, upper]`, and none of the checks
+        // above look at `F` at all — they look at the integrand. A bounded, smooth,
+        // strictly positive integrand can still have an antiderivative that jumps
+        // inside the interval, and then `F(b) - F(a)` is not the integral. The
+        // Weierstrass substitution manufactures exactly that: every
+        // `∫ dx/(a + b·cos x)` picks up a `tan(x/2)`, which jumps at `x = π`.
+        if let Some(reason) = antiderivative_jump(f, expr, var, lower, upper, pool) {
+            return Err(IntegrationError::NotImplemented(reason));
+        }
+        // `antiderivative_jump` samples `F` where it is real. Where the integrand is
+        // *not* real on part of the interval (`cot(x)^{3/2}` past `π/2`) a
+        // substitution through a pole of the substituted function leaves `F`
+        // continuous on each side and jumping between them, and nothing above
+        // looked there.
+        if let (Some(a), Some(b)) = numeric_bounds {
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            if let Some(reason) =
+                super::branch_check::complex_antiderivative_jump(f, expr, var, lo, hi, pool)
+            {
+                return Err(IntegrationError::NotImplemented(reason));
+            }
+        }
+
+        // F(upper) and F(lower). For a finite bound this is plain substitution; for
+        // `±∞` (V2-16's canonical pos_infinity, or its negation) substitution would
+        // silently treat `∞` as an ordinary free symbol and fabricate a
+        // finite-looking but meaningless expression (e.g. `exp(-k·∞)`). Instead the
+        // bound value is the *limit* of `F` as `var → bound`, computed via
+        // [`crate::calculus::limit`]. If that limit cannot be determined, the
+        // integral errors rather than returning a wrong answer.
+        let f_upper = eval_bound(f, var, upper, upper_side, pool)?;
+        let f_lower = eval_bound(f, var, lower, lower_side, pool)?;
+        let neg_lower = pool.mul(vec![pool.integer(-1_i32), f_lower]);
+        pool.add(vec![f_upper, neg_lower])
+    } else {
+        let (Some(a), Some(b)) = numeric_bounds else {
+            unreachable!("splits are only computed for numeric bounds")
+        };
+        let (lo_e, hi_e, lo, hi) = if a < b {
+            (lower, upper, a, b)
+        } else {
+            (upper, lower, b, a)
+        };
+        let mut points = vec![(lo_e, lo)];
+        points.extend(splits.iter().copied());
+        points.push((hi_e, hi));
+        let mut terms = Vec::with_capacity(2 * points.len());
+        for w in points.windows(2) {
+            let ((p_e, p), (q_e, q)) = (w[0], w[1]);
+            // Each piece must be free of any *other* discontinuity. Its ends are
+            // poles of `F`'s substitution, so keep the scans a hair inside them.
+            let nudge = (q - p) * 1e-9;
+            let (sp, sq) = (p + nudge, q - nudge);
+            if let Some(reason) = antiderivative_jump_on(f, expr, var, sp, sq, pool) {
+                return Err(IntegrationError::NotImplemented(reason));
+            }
+            if let Some(reason) =
+                super::branch_check::complex_antiderivative_jump(f, expr, var, sp, sq, pool)
+            {
+                return Err(IntegrationError::NotImplemented(reason));
+            }
+            terms.push(eval_bound(f, var, q_e, Some(Side::Below), pool)?);
+            let at_p = eval_bound(f, var, p_e, Some(Side::Above), pool)?;
+            terms.push(pool.mul(vec![pool.integer(-1_i32), at_p]));
+        }
+        let total = pool.add(terms);
+        if a < b {
+            total
+        } else {
+            pool.mul(vec![pool.integer(-1_i32), total])
+        }
+    };
 
     let simplified = simplify(diff_expr, pool);
 
@@ -3357,6 +3445,24 @@ fn antiderivative_jump(
     }
     let (a, b) = (numeric_bound(lower, pool)?, numeric_bound(upper, pool)?);
     let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    antiderivative_jump_on(f, integrand, var, lo, hi, pool)
+}
+
+/// [`antiderivative_jump`] on the numeric interval `[lo, hi]`.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+fn antiderivative_jump_on(
+    f: ExprId,
+    integrand: ExprId,
+    var: ExprId,
+    lo: f64,
+    hi: f64,
+    pool: &ExprPool,
+) -> Option<String> {
+    if !free_parameters(f, var, pool).is_empty()
+        || !free_parameters(integrand, var, pool).is_empty()
+    {
+        return None;
+    }
     let width = hi - lo;
     if !(width > 0.0) || !width.is_finite() {
         return None;
@@ -3833,6 +3939,7 @@ fn eval_bound(
     f: ExprId,
     var: ExprId,
     bound: ExprId,
+    side: Option<Side>,
     pool: &ExprPool,
 ) -> Result<ExprId, IntegrationError> {
     if is_infinite_bound(bound, pool) {
@@ -3910,7 +4017,190 @@ fn eval_bound(
             pool.display(var),
         )));
     }
-    Ok(substituted)
+    // Substitution that lands on a pole of `tan`/`cot`/`sec`/`csc` (the
+    // `tan(x/2)` of a Weierstrass antiderivative at `x = π`, the `tan x` of a
+    // `t = tan x` reduction at `π/2`) is not a value — `tan(π/2)` evaluates in
+    // `f64` to `1.6e16` and so passes for finite. The endpoint value is the
+    // one-sided limit from inside the interval; when that cannot be
+    // established, refuse.
+    if crate::calculus::trig_pole::contains_trig_pole(substituted, pool) {
+        let value =
+            side.and_then(|s| crate::calculus::trig_pole::one_sided_value(f, var, bound, s, pool));
+        return match value {
+            Some(v) => Ok(super::elliptic_trig::reduce_elliptic_amplitudes(v, pool)),
+            None => Err(IntegrationError::NotImplemented(format!(
+                "the antiderivative {} is singular at the endpoint {} = {} (substitution gives \
+                 {}, a pole of a trigonometric function), and its one-sided limit from inside \
+                 the interval could not be established; declining rather than evaluating it \
+                 at the pole",
+                pool.display(f),
+                pool.display(var),
+                pool.display(bound),
+                pool.display(substituted),
+            ))),
+        };
+    }
+    Ok(super::elliptic_trig::reduce_elliptic_amplitudes(
+        substituted,
+        pool,
+    ))
+}
+
+/// A rational constant in `f` that can only have come from lifting an `f64`
+/// (`rug::Rational::from_f64`): a power-of-two denominator above `2³²` — or a
+/// float node — that the integrand itself does not contain.
+fn float_lifted_constant(f: ExprId, integrand: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    fn collect(e: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>, seen: &mut HashSet<ExprId>) {
+        if !seen.insert(e) {
+            return;
+        }
+        match pool.get(e) {
+            ExprData::Rational(r) => {
+                let d = r.0.denom();
+                if d.is_power_of_two() && d.significant_bits() > 32 {
+                    out.push(e);
+                }
+            }
+            ExprData::Float(_) => out.push(e),
+            ExprData::Add(xs) | ExprData::Mul(xs) | ExprData::Func { args: xs, .. } => {
+                for x in xs {
+                    collect(x, pool, out, seen);
+                }
+            }
+            ExprData::Pow { base, exp } => {
+                collect(base, pool, out, seen);
+                collect(exp, pool, out, seen);
+            }
+            ExprData::RootSum { poly, body, .. } => {
+                collect(poly, pool, out, seen);
+                collect(body, pool, out, seen);
+            }
+            ExprData::Piecewise { branches, default } => {
+                for (c, v) in branches {
+                    collect(c, pool, out, seen);
+                    collect(v, pool, out, seen);
+                }
+                collect(default, pool, out, seen);
+            }
+            _ => {}
+        }
+    }
+    let mut in_f = Vec::new();
+    collect(f, pool, &mut in_f, &mut HashSet::new());
+    if in_f.is_empty() {
+        return None;
+    }
+    let mut in_integrand = Vec::new();
+    collect(integrand, pool, &mut in_integrand, &mut HashSet::new());
+    if !in_integrand.is_empty() {
+        // The caller brought binary fractions (or floats) of their own; the
+        // antiderivative's are then not evidence of a lift.
+        return None;
+    }
+    in_f.first().copied()
+}
+
+/// Points strictly inside `(lo, hi)` where a `tan`/`cot`/`sec`/`csc` inside
+/// `f` has a pole, as exact expressions with their numeric values, sorted.
+///
+/// Only arguments linear in `var` with a numeric slope and offset are located;
+/// an argument this cannot place leaves the list empty, and the caller falls
+/// back to the whole-interval checks, which refuse a jump they detect.
+fn substitution_pole_points(
+    f: ExprId,
+    var: ExprId,
+    lo: f64,
+    hi: f64,
+    pool: &ExprPool,
+) -> Vec<(ExprId, f64)> {
+    const MAX_POINTS: usize = 64;
+    fn args_of(e: ExprId, var: ExprId, pool: &ExprPool, out: &mut Vec<(String, ExprId)>) {
+        match pool.get(e) {
+            ExprData::Func { name, args } => {
+                if args.len() == 1
+                    && matches!(name.as_str(), "tan" | "cot" | "sec" | "csc")
+                    && mentions_var(args[0], var, pool)
+                {
+                    out.push((name.clone(), args[0]));
+                }
+                for a in args {
+                    args_of(a, var, pool, out);
+                }
+            }
+            ExprData::Add(xs) | ExprData::Mul(xs) => {
+                for x in xs {
+                    args_of(x, var, pool, out);
+                }
+            }
+            ExprData::Pow { base, exp } => {
+                args_of(base, var, pool, out);
+                args_of(exp, var, pool, out);
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    args_of(f, var, pool, &mut found);
+    found.sort();
+    found.dedup();
+    let pi = pool.symbol("pi", crate::kernel::Domain::Real);
+    let num =
+        |e: ExprId| crate::jit::eval_interp(e, &HashMap::new(), pool).filter(|v| v.is_finite());
+    let pi_f = std::f64::consts::PI;
+    let tol = 1e-12 * (hi - lo);
+    let mut points: Vec<(ExprId, f64)> = Vec::new();
+    for (name, u) in found {
+        // u = α·var + β with α, β numeric.
+        let Ok(d) = crate::diff::diff(u, var, pool) else {
+            return Vec::new();
+        };
+        let alpha_e = simplify(d.value, pool).value;
+        let beta_e = simplify(subs_var(u, var, pool.integer(0_i32), pool), pool).value;
+        if mentions_var(alpha_e, var, pool) {
+            return Vec::new();
+        }
+        let (Some(alpha), Some(beta)) = (num(alpha_e), num(beta_e)) else {
+            return Vec::new();
+        };
+        if alpha == 0.0 {
+            return Vec::new();
+        }
+        // Poles at u = (j + c)·π: c = 1/2 for tan/sec, 0 for cot/csc.
+        let half = matches!(name.as_str(), "tan" | "sec");
+        let c = if half { 0.5 } else { 0.0 };
+        let (p, q) = (alpha * lo + beta, alpha * hi + beta);
+        let (u_lo, u_hi) = (p.min(q), p.max(q));
+        let j_lo = (u_lo / pi_f - c).floor() as i64;
+        let j_hi = (u_hi / pi_f - c).ceil() as i64;
+        if j_hi - j_lo > MAX_POINTS as i64 {
+            return Vec::new();
+        }
+        for j in j_lo..=j_hi {
+            let x_f = ((c + j as f64) * pi_f - beta) / alpha;
+            if !(x_f > lo + tol && x_f < hi - tol) {
+                continue;
+            }
+            if points.iter().any(|&(_, p)| (p - x_f).abs() <= tol) {
+                continue;
+            }
+            let twice = rug::Integer::from(2 * j + i64::from(half));
+            let pole = pool.mul(vec![pool.rational(twice, 2), pi]);
+            let x_e = simplify(
+                pool.mul(vec![
+                    pool.add(vec![pole, pool.mul(vec![pool.integer(-1_i32), beta_e])]),
+                    pool.pow(alpha_e, pool.integer(-1_i32)),
+                ]),
+                pool,
+            )
+            .value;
+            points.push((x_e, x_f));
+        }
+        if points.len() > MAX_POINTS {
+            return Vec::new();
+        }
+    }
+    points.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    points
 }
 
 /// True when `expr` is (or contains) `±∞` (the canonical [`ExprPool::pos_infinity`]
@@ -6677,7 +6967,7 @@ mod tests {
         let poly = pool.add(vec![pool.pow(a, pool.integer(2_i32)), pool.integer(1_i32)]);
         let body = pool.mul(vec![a, pool.func("log", vec![pool.add(vec![a, x])])]);
         let rs = pool.root_sum(poly, a, body);
-        let err = eval_bound(rs, x, pool.pos_infinity(), &pool)
+        let err = eval_bound(rs, x, pool.pos_infinity(), None, &pool)
             .expect_err("an unevaluated limit must not be accepted as an endpoint value");
         // Since `subs` descends into a `RootSum`, `limit` rewrites the summand
         // instead of handing it back untouched, and what comes back carries the
@@ -6688,6 +6978,82 @@ mod tests {
             msg.contains("still depends on") || msg.contains("is not finite"),
             "unexpected error: {err}"
         );
+    }
+
+    /// Report 10-9 W3: `∫_0^{π/2} dx/√(1 − sin²x/4)` came back built from
+    /// `f64`-lifted rationals and `tan(π/2)`, 3e-9 from `K(1/4)`.
+    #[test]
+    fn complete_elliptic_integral_is_exact() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let pi = pool.symbol("pi", Domain::Real);
+        let sin2 = pool.pow(pool.func("sin", vec![x]), pool.integer(2_i32));
+        let rad = pool.add(vec![
+            pool.integer(1_i32),
+            pool.mul(vec![pool.rational(-1, 4), sin2]),
+        ]);
+        let f = pool.pow(pool.func("sqrt", vec![rad]), pool.integer(-1_i32));
+        let half_pi = pool.mul(vec![pool.rational(1, 2), pi]);
+        let r = integrate_definite(f, x, pool.integer(0_i32), half_pi, &pool).unwrap();
+        assert_eq!(r.value, pool.func("EllipticK", vec![pool.rational(1, 4)]));
+    }
+
+    /// The endpoint value of a Weierstrass antiderivative at its `tan(x/2)`
+    /// pole is a one-sided limit, and an interior pole splits the interval.
+    #[test]
+    fn substitution_poles_are_limits_not_values() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let pi = pool.symbol("pi", Domain::Real);
+        let val = |e: ExprId| crate::jit::eval_interp(e, &HashMap::new(), &pool).unwrap();
+        let has_pole = |e: ExprId| crate::calculus::trig_pole::contains_trig_pole(e, &pool);
+        // ∫_0^π dx/(5 − 4cos x) = π/3 (pole of tan(x/2) at the upper bound).
+        let den = pool.add(vec![
+            pool.integer(5_i32),
+            pool.mul(vec![pool.integer(-4_i32), pool.func("cos", vec![x])]),
+        ]);
+        let f = pool.pow(den, pool.integer(-1_i32));
+        let r = integrate_definite(f, x, pool.integer(0_i32), pi, &pool).unwrap();
+        assert!(!has_pole(r.value), "{}", pool.display(r.value));
+        assert!((val(r.value) - std::f64::consts::FRAC_PI_3).abs() < 1e-14);
+        // ∫_0^{2π} dx/(2 + cos x) = 2π/√3 (pole inside); it used to be refused.
+        let den = pool.add(vec![pool.integer(2_i32), pool.func("cos", vec![x])]);
+        let f = pool.pow(den, pool.integer(-1_i32));
+        let two_pi = pool.mul(vec![pool.integer(2_i32), pi]);
+        let r = integrate_definite(f, x, pool.integer(0_i32), two_pi, &pool).unwrap();
+        let want = 2.0 * std::f64::consts::PI / 3f64.sqrt();
+        assert!(
+            (val(r.value) - want).abs() < 1e-13,
+            "{}",
+            pool.display(r.value)
+        );
+        // Reversed bounds negate.
+        let r = integrate_definite(f, x, two_pi, pool.integer(0_i32), &pool).unwrap();
+        assert!(
+            (val(r.value) + want).abs() < 1e-13,
+            "{}",
+            pool.display(r.value)
+        );
+    }
+
+    #[test]
+    fn float_lifted_constants_are_detected() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let lifted = pool.rational(
+            rug::Integer::from(4_503_599_618_403_511_i64),
+            rug::Integer::from(4_503_599_627_370_496_i64),
+        );
+        let f = pool.mul(vec![lifted, x]);
+        assert_eq!(
+            float_lifted_constant(f, pool.integer(1_i32), &pool),
+            Some(lifted)
+        );
+        // Brought in by the integrand itself: not evidence of a lift.
+        assert_eq!(float_lifted_constant(f, lifted, &pool), None);
+        // An ordinary binary fraction is exact input, not a lift.
+        let g = pool.mul(vec![pool.rational(3, 1024), x]);
+        assert_eq!(float_lifted_constant(g, pool.integer(1_i32), &pool), None);
     }
 
     #[test]

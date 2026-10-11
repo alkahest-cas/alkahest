@@ -1179,6 +1179,10 @@ fn limit_inner(
         return Ok(r);
     }
 
+    if let Some(r) = try_trig_pole_limit(expr, var, point, direction, pool) {
+        return Ok(r);
+    }
+
     if let Some(r) = try_x_log_x_at_zero(expr, var, point, direction, pool, depth)? {
         return Ok(r);
     }
@@ -2270,10 +2274,51 @@ fn try_direct_substitution(
     let sub = fold_known_reals(simplify(raw, pool).value, pool);
     let dep = depends_on(sub, var, pool);
     let sing = substitution_is_singular(sub, pool);
-    if dep || sing || !is_usable_limit_value(sub, pool) {
+    // `tan(π/2)` is not a value: it is a `Func` node the `f64` interpreter
+    // evaluates to the tangent of the nearest double (`1.6e16`), so
+    // `is_usable_limit_value` waves it through. `lim_{x→π/2⁻} atan(2·tan x)`
+    // came back as `atan(2·tan(π/2))`. See `try_trig_pole_limit`.
+    let pole = super::trig_pole::contains_trig_pole(sub, pool);
+    if dep || sing || pole || !is_usable_limit_value(sub, pool) {
         None
     } else {
         Some(sub)
+    }
+}
+
+/// The limit at a point where substitution lands on a pole of `tan`, `cot`,
+/// `sec` or `csc` *inside* a function that tames it — `atan(2·tan x)` at
+/// `π/2`, the shape every `tan(x/2)` (Weierstrass) antiderivative has.
+///
+/// One-sided limits are computed by [`super::trig_pole::one_sided_value`]; a
+/// two-sided limit is returned only when both sides exist and agree
+/// structurally. Anything else — a divergent side, an indeterminate form —
+/// declines and the remaining rules get their turn.
+fn try_trig_pole_limit(
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    direction: LimitDirection,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    use super::trig_pole::{contains_trig_pole, one_sided_value, Side};
+    if depends_on(point, var, pool) || is_pos_infinity(point, pool) || is_neg_infinity(point, pool)
+    {
+        return None;
+    }
+    let mut m = HashMap::new();
+    m.insert(var, point);
+    if !contains_trig_pole(subs(expr, &m, pool), pool) {
+        return None;
+    }
+    let side = |s| one_sided_value(expr, var, point, s, pool);
+    match direction {
+        LimitDirection::Minus => side(Side::Below),
+        LimitDirection::Plus => side(Side::Above),
+        LimitDirection::Bidirectional => {
+            let (below, above) = (side(Side::Below)?, side(Side::Above)?);
+            (below == above).then_some(below)
+        }
     }
 }
 
