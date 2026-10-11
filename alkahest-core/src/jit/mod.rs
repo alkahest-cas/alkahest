@@ -2870,6 +2870,8 @@ mod tests {
         &[1.0],
         &[1.0, 2.0],
         &[1.0, 2.0, 3.0],
+        // Four arguments: `jacobi_p(n, a, b, x)`.
+        &[2.0, 0.5, 0.5, 0.3],
     ];
 
     /// Every primitive in [`PrimitiveRegistry::default_registry`] that has a

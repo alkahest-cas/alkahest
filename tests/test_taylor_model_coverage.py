@@ -109,7 +109,23 @@ def test_the_flag_is_not_a_restatement_of_numeric_ball():
     ball_only = {
         name for name, row in rows.items() if row["numeric_ball"] and not row["taylor_model"]
     }
-    assert ball_only == {"ceil", "floor"}
+    # The orthogonal-polynomial families (G11a) have Arb ball kernels but are
+    # multi-argument (degree, parameters, x); every Taylor rule in the
+    # validated tier is unary, so they are honestly ball-only. Without Arb in
+    # the build they carry no ball kernel either.
+    orthopoly = {
+        "legendre_p",
+        "assoc_legendre_p",
+        "hermite_h",
+        "hermite_he",
+        "laguerre_l",
+        "assoc_laguerre_l",
+        "chebyshev_t",
+        "chebyshev_u",
+        "gegenbauer_c",
+        "jacobi_p",
+    }
+    assert ball_only - orthopoly == {"ceil", "floor"}
 
 
 def test_supported_set_is_the_elementary_plus_special_fragment():

@@ -312,6 +312,20 @@ Exception subclasses
    ``E-CTRL-005`` beyond the exact engine — use the numeric route;
    ``E-CTRL-006`` numpy is required and missing.
 
+.. exception:: SpecialFunctionError
+
+   Code prefix ``E-SPECFN-*``. Orthogonal polynomials, spherical harmonics and
+   angular-momentum coupling (:func:`alkahest.legendre_p`,
+   :func:`alkahest.wigner_3j`, …). ``E-SPECFN-001`` is an angular-momentum
+   argument that is not an integer or half-integer (``1/3``, ``0.3``, a
+   symbol). ``E-SPECFN-002`` is a negative ``j`` or ``l``. ``E-SPECFN-003`` is a
+   non-integer ``l`` or ``m`` for :func:`alkahest.spherical_harmonic_y`.
+   ``E-SPECFN-004`` is an explicit polynomial past degree 1000 (64 with a
+   symbolic parameter) or a coupling coefficient past ``2j = 20000`` — build the
+   node with ``expand=False`` instead. ``E-SPECFN-005`` is the wrong number of
+   family parameters (Rust API). A selection-rule violation is not an error: the
+   coefficient is an exact ``0``.
+
 .. exception:: QuaternionError
 
    Code prefix ``E-QUAT-*``. Quaternion algebra and rotations

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools as _functools
 import re
 
 from .alkahest import Expr as _Expr
@@ -136,6 +137,18 @@ _FUNC_NAMES = frozenset(
         "fresnelc",
         "dilog",
         "trigamma",
+        # Orthogonal polynomials (G11a).  Read back as the unevaluated node,
+        # like the Rust parser; mirrors ``KNOWN_FUNCS`` there.
+        "legendre_p",
+        "assoc_legendre_p",
+        "hermite_h",
+        "hermite_he",
+        "laguerre_l",
+        "assoc_laguerre_l",
+        "chebyshev_t",
+        "chebyshev_u",
+        "gegenbauer_c",
+        "jacobi_p",
         # Reciprocal trig / hyperbolic functions (desugared to base(x) ** -1).
         "sec",
         "csc",
@@ -627,6 +640,18 @@ def _apply_func(name: str, args: list, offset: int, pool=None):
         "fresnelc": _ak.fresnelc,
         "dilog": _ak.dilog,
         "trigamma": _ak.trigamma,
+        # Orthogonal polynomials (G11a): the node, never the expansion, so
+        # that ``parse(str(e))`` reproduces ``e``.
+        "legendre_p": _functools.partial(_ak.legendre_p, expand=False),
+        "assoc_legendre_p": _functools.partial(_ak.assoc_legendre_p, expand=False),
+        "hermite_h": _functools.partial(_ak.hermite_h, expand=False),
+        "hermite_he": _functools.partial(_ak.hermite_he, expand=False),
+        "laguerre_l": _functools.partial(_ak.laguerre_l, expand=False),
+        "assoc_laguerre_l": _functools.partial(_ak.assoc_laguerre_l, expand=False),
+        "chebyshev_t": _functools.partial(_ak.chebyshev_t, expand=False),
+        "chebyshev_u": _functools.partial(_ak.chebyshev_u, expand=False),
+        "gegenbauer_c": _functools.partial(_ak.gegenbauer_c, expand=False),
+        "jacobi_p": _functools.partial(_ak.jacobi_p, expand=False),
     }
     # Desugar ``cbrt(u)`` to ``u ** (1/3)``.  It is not a registered primitive
     # and is not being made one: the power node already differentiates,
@@ -689,6 +714,16 @@ _ARITY: dict[str, tuple[int, int]] = {
     "EllipticE": (1, 2),
     "EllipticF": (2, 2),
     "EllipticPi": (3, 3),
+    "legendre_p": (2, 2),
+    "hermite_h": (2, 2),
+    "hermite_he": (2, 2),
+    "laguerre_l": (2, 2),
+    "chebyshev_t": (2, 2),
+    "chebyshev_u": (2, 2),
+    "assoc_legendre_p": (3, 3),
+    "assoc_laguerre_l": (3, 3),
+    "gegenbauer_c": (3, 3),
+    "jacobi_p": (4, 4),
 }
 
 

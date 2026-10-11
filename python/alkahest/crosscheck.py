@@ -216,6 +216,20 @@ FUNCTION_MAP: dict[str, str] = {
     # `polygamma(1, x)` — same function, same branch — so the rename is
     # faithful even though SymPy's canonical spelling carries the order.
     "trigamma": "trigamma",
+    # Orthogonal polynomials (G11a). Same argument order and the same DLMF
+    # chapter-18 normalisations; `assoc_legendre` carries the Condon–Shortley
+    # phase in both systems, and `hermite_prob` is SymPy's probabilists'
+    # Hermite. Checked against SymPy exactly in `tests/test_orthopoly.py`.
+    "legendre_p": "legendre",
+    "assoc_legendre_p": "assoc_legendre",
+    "hermite_h": "hermite",
+    "hermite_he": "hermite_prob",
+    "laguerre_l": "laguerre",
+    "assoc_laguerre_l": "assoc_laguerre",
+    "chebyshev_t": "chebyshevt",
+    "chebyshev_u": "chebyshevu",
+    "gegenbauer_c": "gegenbauer",
+    "jacobi_p": "jacobi",
 }
 
 #: Bessel functions of fixed integer order, which SymPy spells with the order as

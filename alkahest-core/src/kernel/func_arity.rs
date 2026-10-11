@@ -42,6 +42,11 @@ pub fn known_func_arity(name: &str) -> Option<(usize, usize)> {
         "EllipticE" => Some((1, 2)),
         "EllipticF" | "atan2" => Some((2, 2)),
         "EllipticPi" => Some((3, 3)),
+        // Orthogonal polynomials (`crate::orthopoly`): `[n, params…, x]`.
+        "legendre_p" | "hermite_h" | "hermite_he" | "laguerre_l" | "chebyshev_t"
+        | "chebyshev_u" => Some((2, 2)),
+        "assoc_legendre_p" | "assoc_laguerre_l" | "gegenbauer_c" => Some((3, 3)),
+        "jacobi_p" => Some((4, 4)),
         "min" | "max" => Some((2, usize::MAX)),
         _ => None,
     }
@@ -238,6 +243,16 @@ mod wrong_arity_sweep {
         "atan2",
         "min",
         "max",
+        "legendre_p",
+        "assoc_legendre_p",
+        "hermite_h",
+        "hermite_he",
+        "laguerre_l",
+        "assoc_laguerre_l",
+        "chebyshev_t",
+        "chebyshev_u",
+        "gegenbauer_c",
+        "jacobi_p",
     ];
 
     type Op<'a> = (&'static str, Box<dyn Fn() + 'a>);

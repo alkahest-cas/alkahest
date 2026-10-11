@@ -1428,6 +1428,26 @@ bode(G, w); margins(G)    # numeric; margins = (gm, pm, w_phase_crossover, w_gai
 - `E-CTRL-004` = the object does not exist (singular Lyapunov operator `λᵢ+λⱼ=0`, no stabilising
   ARE solution, infinite DC gain); `E-CTRL-005` = beyond the exact engine (use numeric).
 
+## Orthogonal polynomials, Y_lm, 3j/6j/Clebsch–Gordan
+
+```python
+ak.legendre_p(3, x)                 # 5/2*x^3 - 3/2*x  (integer n → exact polynomial)
+ak.assoc_legendre_p(2, 1, x)        # Condon–Shortley phase: -3x*(1-x^2)^(1/2)
+ak.assoc_laguerre_l(n-l-1, 2*l+1, 2*r/n)   # hydrogen radial; alpha may be symbolic
+ak.legendre_p(nsym, x)              # symbolic n → node: diff in x, f64/ball eval, P_n(1)=1
+ak.expand_orthopoly(ak.subs(e, {nsym: pool.integer(5)}))   # expand once n is an integer
+ak.spherical_harmonic_y(2, 1, theta, phi)  # explicit, SymPy's Ynm convention, uses I
+ak.wigner_3j(1, 1, 0, 0, 0, 0)      # -1/3*3^(1/2), exact (Racah)
+ak.clebsch_gordan(F(1,2), F(1,2), 1, F(1,2), F(-1,2), 0)  # SymPy order (j1,j2,J,m1,m2,M)
+ak.wigner_6j(1, 1, 1, 1, 1, 1)      # 1/6
+```
+
+- Families: `legendre_p`, `assoc_legendre_p`, `hermite_h` (physicists'), `hermite_he`
+  (probabilists'), `laguerre_l`, `assoc_laguerre_l`, `chebyshev_t/u`, `gegenbauer_c`, `jacobi_p`;
+  `expand=False` keeps the node. Expansion cap: degree 1000 (64 with a symbolic parameter) → `E-SPECFN-004`.
+- `diff` in the degree/parameters refuses (`E-DIFF-001`); in `x` uses DLMF 18.9 identities.
+- Selection rules give exact `0`; non-(half-)integer j → `E-SPECFN-001`, negative j → `E-SPECFN-002`.
+
 ## Sensitivity and adjoint systems
 
 ```python

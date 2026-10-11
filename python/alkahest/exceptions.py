@@ -128,6 +128,10 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
                                  dimensions, both named, 003 = an affine °C/°F
                                  in arithmetic, 006 = same dimension but
                                  different units inside one sum)
+    E-SPECFN-001 … E-SPECFN-005  SpecialFunctionError (orthogonal polynomials,
+                                 spherical harmonics, 3j/6j/Clebsch–Gordan;
+                                 001 = not an integer or half-integer, 004 =
+                                 past the exact-construction cap)
     E-QUAT-001 … E-QUAT-003      QuaternionError (002 = the axis of the identity
                                  rotation, which does not exist; 003 = a matrix that
                                  could not be checked to be a proper rotation)

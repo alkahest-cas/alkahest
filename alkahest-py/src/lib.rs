@@ -268,6 +268,7 @@ mod matgroup;
 mod funcfield;
 mod joint_prob;
 mod numfield;
+mod orthopoly;
 mod stabilizer;
 mod theta;
 mod units;
@@ -21157,6 +21158,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     theta::register(m)?;
     units::register(m)?;
     joint_prob::register(m)?;
+    orthopoly::register(m)?;
     m.add_function(wrap_pyfunction!(py_euler_maclaurin, m)?)?;
     m.add_function(wrap_pyfunction!(py_coefficient_asymptotics, m)?)?;
     // P1 item 7 — creative telescoping / holonomic (D-finite) machinery

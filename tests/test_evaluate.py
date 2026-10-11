@@ -50,6 +50,18 @@ def test_unsupported_evaluation_returns_stable_status():
     assert result.reason == "E-EVAL-001"
 
 
+def _probe_call(pool, name, x):
+    """``name(x)``, or for a multi-argument primitive ``name(2, 1/2, …, x)``
+    (the orthogonal polynomials take ``[n, params…, x]``)."""
+    for arity in range(1, 5):
+        args = [pool.integer(2)] + [pool.rational(1, 2)] * (arity - 2) + [x]
+        try:
+            return pool.func(name, args[-arity:])
+        except ak.PoolError:
+            continue
+    raise AssertionError(f"no arity in 1..4 accepted for {name}")
+
+
 def test_interval_evaluation_covers_every_primitive_that_advertises_numeric_ball():
     """The interval evaluator dispatches through the primitive registry, so the
     set of functions it accepts *is* the set the registry reports a
@@ -70,7 +82,7 @@ def test_interval_evaluation_covers_every_primitive_that_advertises_numeric_ball
     for row in registry.coverage_report():
         if not row["numeric_ball"]:
             continue
-        call = pool.func(row["name"], [x])
+        call = _probe_call(pool, row["name"], x)
         if all(
             evaluate(call, {x: ak.ArbBall(probe, 0.0)}, mode="interval").status != "ok"
             for probe in (1.5, 0.5)

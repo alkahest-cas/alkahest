@@ -117,7 +117,7 @@ impl AlkahestError for ParseError {
             1 => Some("only ASCII arithmetic expressions are supported"),
             2 => Some("check parentheses and operator placement"),
             4 => Some("flatten the expression — deeply nested parentheses, prefix signs or function calls exceed the parser's recursion budget"),
-            _ => Some("use a known function: sin, cos, tan, sec, csc, cot, sinh, cosh, tanh, sech, csch, coth, asin, acos, atan, asinh, acosh, atanh, atan2, exp, log, sqrt, cbrt, abs, sign, floor, ceil, round, erf, erfc, gamma, lambert_w, digamma, trigamma, Ei, li, Si, Ci, Shi, Chi, fresnels, fresnelc, dilog"),
+            _ => Some("use a known function: sin, cos, tan, sec, csc, cot, sinh, cosh, tanh, sech, csch, coth, asin, acos, atan, asinh, acosh, atanh, atan2, exp, log, sqrt, cbrt, abs, sign, floor, ceil, round, erf, erfc, gamma, lambert_w, digamma, trigamma, Ei, li, Si, Ci, Shi, Chi, fresnels, fresnelc, dilog, legendre_p, assoc_legendre_p, hermite_h, hermite_he, laguerre_l, assoc_laguerre_l, chebyshev_t, chebyshev_u, gegenbauer_c, jacobi_p"),
         }
     }
 
@@ -386,6 +386,19 @@ const KNOWN_FUNCS: &[&str] = &[
     "fresnelc",
     "dilog",
     "trigamma",
+    // Orthogonal polynomials (G11a; `alkahest_cas::orthopoly`).  Parsed as the
+    // unevaluated node — `str(legendre_p(n, x))` must read back as itself —
+    // and arity-checked by `known_func_arity` like every other built-in.
+    "legendre_p",
+    "assoc_legendre_p",
+    "hermite_h",
+    "hermite_he",
+    "laguerre_l",
+    "assoc_laguerre_l",
+    "chebyshev_t",
+    "chebyshev_u",
+    "gegenbauer_c",
+    "jacobi_p",
     // Reciprocal trig / hyperbolic functions.  These are *desugared* in
     // `parse_funcall` to their elementary reciprocal definitions (e.g.
     // `sec(x) → cos(x)^(-1)`); no `sec`/`csc`/… node ever enters the pool.

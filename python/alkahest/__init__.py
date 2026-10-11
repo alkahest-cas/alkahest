@@ -159,6 +159,7 @@ from .alkahest import (  # noqa: F401
     # Phase 19: Sensitivity analysis
     SensitivitySystem,
     Series,
+    SpecialFunctionError,
     UniPoly,
     UniPolyFactorization,
     # V2-7: Polynomial factorization
@@ -178,6 +179,8 @@ from .alkahest import (  # noqa: F401
     arg,
     asin,
     asinh,
+    assoc_laguerre_l,
+    assoc_legendre_p,
     atan,
     atan2,
     atanh,
@@ -195,6 +198,9 @@ from .alkahest import (  # noqa: F401
     # Phase 18: Acausal modelling (component constructors)
     capacitor,
     ceil,
+    chebyshev_t,
+    chebyshev_u,
+    clebsch_gordan,
     # Phase 26: collect_like_terms
     collect_like_terms,
     compile_expr,
@@ -229,6 +235,7 @@ from .alkahest import (  # noqa: F401
     exp,
     # Exponential-integral family (DLMF §6.2)
     exp_integral_ei,
+    expand_orthopoly,
     factor_univariate_mod_p,
     floor,
     # 3.10.0 — Fresnel integrals, normalised (pi/2) convention
@@ -238,16 +245,22 @@ from .alkahest import (  # noqa: F401
     gamma,
     # V2-3: Sparse interpolation and sparse modular GCD
     gcd_sparse,
+    gegenbauer_c,
     # V2-6: Approximate integer relations (LLL-backed heuristic — not Ferguson–Bailey PSLQ)
     guess_relation,
+    hermite_h,
+    hermite_he,
     # Phase 24: Horner-form code emission
     horner,
     im,
     integrate,
     interval_eval,
+    jacobi_p,
     jacobian,
     jit_is_available,
+    laguerre_l,
     lambert_w,
+    legendre_p,
     limit,
     linprog,
     linprog_expr,
@@ -316,6 +329,7 @@ from .alkahest import (  # noqa: F401
     sos_decompose,
     sparse_interp,
     sparse_interp_univariate,
+    spherical_harmonic_y,
     sqrt,
     subresultant_prs,
     subs,
@@ -337,6 +351,8 @@ from .alkahest import (  # noqa: F401
     verify_wz_pair,
     version,
     voltage_source,
+    wigner_3j,
+    wigner_6j,
     # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     zeilberger,
 )
@@ -2942,6 +2958,7 @@ __all__ = [
     "SosError",
     "SparseGcdError",
     "SparseInterpError",
+    "SpecialFunctionError",
     "StateSpace",
     "SumError",
     # PA-7
@@ -2976,6 +2993,8 @@ __all__ = [
     "arg",
     "asin",
     "asinh",
+    "assoc_laguerre_l",
+    "assoc_legendre_p",
     "atan",
     "atanh",
     # P1 search plumbing item 5 — batch/streaming fan-out
@@ -3000,8 +3019,11 @@ __all__ = [
     # V5-12 — certificate ledger
     "certifiable",
     "certificate_coverage",
+    "chebyshev_t",
+    "chebyshev_u",
     # P1 search plumbing item 4
     "clear_cancel",
+    "clebsch_gordan",
     # Phase 26
     "collect_like_terms",
     "compile_expr",
@@ -3047,6 +3069,7 @@ __all__ = [
     "exp",
     # Exponential-integral family (DLMF §6.2)
     "exp_integral_ei",
+    "expand_orthopoly",
     # V1-16 — Expr ↔ GbPoly round trip
     "expr_to_gbpoly",
     "factor_univariate_mod_p",
@@ -3058,12 +3081,15 @@ __all__ = [
     "functions_to_symbols",
     # V2-3
     "gcd_sparse",
+    "gegenbauer_c",
     "get_context_value",
     "grad",
     # M2 — fit a P-recursive recurrence to a sequence, guarded
     "guess_holonomic",
     # V2-6
     "guess_relation",
+    "hermite_h",
+    "hermite_he",
     # Phase 24
     "horner",
     "im",
@@ -3075,14 +3101,17 @@ __all__ = [
     "is_budget_active",
     "is_cancelled",
     "is_zero",
+    "jacobi_p",
     "jacobian",
     "jit",
     "jit_is_available",
     "kronecker",
+    "laguerre_l",
     "lambert_w",
     # V2-20
     "latex",
     "lattice",
+    "legendre_p",
     "limit",
     "linprog",
     "linprog_expr",
@@ -3196,6 +3225,7 @@ __all__ = [
     "sos_decompose",
     "sparse_interp",
     "sparse_interp_univariate",
+    "spherical_harmonic_y",
     "sqrt",
     "subresultant_prs",
     "subs",
@@ -3229,6 +3259,8 @@ __all__ = [
     "verify_wz_pair",
     "version",
     "voltage_source",
+    "wigner_3j",
+    "wigner_6j",
     # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     "zeilberger",
 ]

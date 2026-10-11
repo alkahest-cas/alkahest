@@ -453,6 +453,13 @@ impl PrimitiveRegistry {
         reg.register_unprobed(Box::new(fresnel::FresnelCPrimitive));
         reg.register_unprobed(Box::new(polylog::DilogPrimitive));
         reg.register_unprobed(Box::new(builtins::TrigammaPrimitive));
+        // G11a: classical orthogonal polynomials (`crate::orthopoly`), one
+        // primitive per family, arguments `[n, params…, x]`.
+        for family in crate::orthopoly::OrthoFamily::ALL {
+            reg.register_unprobed(Box::new(crate::orthopoly::primitives::OrthoPrimitive(
+                family,
+            )));
+        }
         if probe {
             reg.probe_all();
         }
@@ -500,13 +507,15 @@ fn probe_caps(p: &dyn Primitive) -> Capabilities {
     // capabilities.  We also try a set of small fractional values that lie
     // inside the convergence domain of the elliptic integrals (where larger
     // probe inputs would be rejected as out-of-domain).
-    let probe_f64_sets: [&[f64]; 6] = [
+    let probe_f64_sets: [&[f64]; 7] = [
         &[1.0],
         &[1.0, 2.0],
         &[1.0, 2.0, 3.0],
         &[0.5],
         &[0.5, 0.3],
         &[0.2, 0.3, 0.4],
+        // Four arguments: `jacobi_p(n, a, b, x)`.
+        &[2.0, 0.5, 0.5, 0.3],
     ];
     for args in probe_f64_sets {
         if p.numeric_f64(args).is_some() {
@@ -532,7 +541,8 @@ fn probe_caps(p: &dyn Primitive) -> Capabilities {
     let x = pool.symbol("_probe", crate::kernel::Domain::Real);
     let y = pool.symbol("_probe_y", crate::kernel::Domain::Real);
     let z = pool.symbol("_probe_z", crate::kernel::Domain::Real);
-    let probe_id_sets: [Vec<ExprId>; 3] = [vec![x], vec![x, y], vec![x, y, z]];
+    let w = pool.symbol("_probe_w", crate::kernel::Domain::Real);
+    let probe_id_sets: [Vec<ExprId>; 4] = [vec![x], vec![x, y], vec![x, y, z], vec![x, y, z, w]];
 
     // A primitive may only differentiate w.r.t. *some* of its arguments
     // (e.g. EllipticPi only has a clean ∂/∂φ), so probe differentiating w.r.t.
@@ -611,13 +621,15 @@ fn ball_supported(name: &str, p: &dyn Primitive) -> bool {
     if let Some(&hit) = memo.read().expect("ball probe memo poisoned").get(name) {
         return hit;
     }
-    let probe_f64_sets: [&[f64]; 6] = [
+    let probe_f64_sets: [&[f64]; 7] = [
         &[1.0],
         &[1.0, 2.0],
         &[1.0, 2.0, 3.0],
         &[0.5],
         &[0.5, 0.3],
         &[0.2, 0.3, 0.4],
+        // Four arguments: `jacobi_p(n, a, b, x)`.
+        &[2.0, 0.5, 0.5, 0.3],
     ];
     let answer = probe_f64_sets.iter().any(|args| {
         let balls: Vec<ArbBall> = args.iter().map(|&v| ArbBall::from_f64(v, 128)).collect();

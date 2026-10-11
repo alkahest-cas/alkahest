@@ -82,6 +82,8 @@ pub mod vector;
 pub mod plot;
 // Physical units and dimensional analysis (G10)
 pub mod units;
+// Orthogonal polynomials, spherical harmonics, Wigner/Clebsch–Gordan (G11a)
+pub mod orthopoly;
 
 pub use acausal::{capacitor, resistor, voltage_source, Component, Port, System};
 pub use calculus::{limit, series, LimitDirection, LimitError, Series, SeriesError};
