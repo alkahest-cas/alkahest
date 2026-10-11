@@ -568,7 +568,7 @@ fn rational_linear_roots(coeffs: &[Rational]) -> Option<(Vec<(Rational, u32)>, R
         }
         let c = f.coefficients();
         let root = Rational::from((-c[0].clone(), c[1].clone()));
-        roots.push((root, *m as u32));
+        roots.push((root, *m));
     }
     Some((roots, lc))
 }
