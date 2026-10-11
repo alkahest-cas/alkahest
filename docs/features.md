@@ -29,7 +29,8 @@ Current stable feature surface.
   (`simplify_par`) and level-scheduled (`simplify_redex`, deterministic derivation
   logs), with `simplify_auto` dispatching on shape and `simplify_strategy` reporting
   the choice — see [Simplification](mdbook/src/simplification.md) for which wins where
-- Pauli and Clifford algebra rewrite tables (`simplify_pauli`, `simplify_clifford_orthogonal`)
+- Pauli and Clifford algebra rewrite tables (`simplify_pauli` reduces any σ word, `simplify_clifford_orthogonal`)
+- Noncommutative polynomials: `nc_expand`, `nc_rewrite`, `commutator`, `normal_order` (bosons/fermions), `vacuum_expectation`, Dirac `gamma_trace`; `make_rule` matches inside products
 
 ## Polynomial algebra (FLINT-backed)
 

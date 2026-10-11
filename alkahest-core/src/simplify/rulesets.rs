@@ -1079,9 +1079,12 @@ impl RewriteRule for PatternRule {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        // Try to match the pattern at the root only (engine does bottom-up traversal)
-        let subst = match_at_root(&self.lhs, expr, pool)?;
-        let after = subst.apply(self.rhs, pool);
+        // Try to match the pattern at the root (engine does bottom-up
+        // traversal); failing that, inside a longer product (G10c).
+        let after = match match_at_root(&self.lhs, expr, pool) {
+            Some(subst) => subst.apply(self.rhs, pool),
+            None => rewrite_inside_product(self.lhs.root, self.rhs, expr, pool)?,
+        };
         if after == expr {
             return None;
         }
@@ -1124,9 +1127,13 @@ fn match_root_node(
     }
 
     let pn = pool.with(pat, |d| match d {
-        ED::Symbol { name, .. } if name.starts_with(|c: char| c.is_lowercase()) => {
-            PN::Wildcard(name.clone())
-        }
+        // A non-commutative symbol is an operator, never a wildcard: `a·a†`
+        // means those two operators, whatever their names.
+        ED::Symbol {
+            name,
+            commutative: true,
+            ..
+        } if name.starts_with(|c: char| c.is_lowercase()) => PN::Wildcard(name.clone()),
         ED::Symbol { name, .. } => PN::Symbol(name.clone()),
         ED::Add(v) => PN::Add(v.clone()),
         ED::Mul(v) => PN::Mul(v.clone()),
@@ -1196,6 +1203,124 @@ fn match_root_node(
             }
         }
     }
+}
+
+/// Rewrite one occurrence of a product pattern inside a longer product.
+///
+/// * Non-commutative product: the pattern's factors must match a
+///   **contiguous** run of the product's factors, in order (`X·P` inside
+///   `X·P·P`, but not inside `P·X·P`'s `P·X`). The run is replaced in place.
+/// * Commutative product: the pattern's factors must match a **sub-multiset**
+///   of the product's factors (`A·B` inside `A·B·D`); the matched factors are
+///   replaced by the right-hand side and the rest are kept.
+///
+/// Only the first match (leftmost run / first assignment) is rewritten; the
+/// engine's repeated passes reach the others.
+fn rewrite_inside_product(
+    pat: ExprId,
+    rhs: ExprId,
+    expr: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    let pargs = pool.with(pat, |d| match d {
+        ExprData::Mul(v) => Some(v.clone()),
+        _ => None,
+    })?;
+    let eargs = pool.with(expr, |d| match d {
+        ExprData::Mul(v) => Some(v.clone()),
+        _ => None,
+    })?;
+    let empty = || Substitution {
+        bindings: std::collections::HashMap::new(),
+    };
+    if !pool.is_mult_commutative(expr) {
+        // Read `ad·a·ad²` as the word `ad·a·ad·ad`, so `a·ad` is found
+        // across the power.
+        let pargs = unroll_nc_powers(&pargs, pool);
+        let eargs = unroll_nc_powers(&eargs, pool);
+        let k = pargs.len();
+        if k == 0 || k > eargs.len() {
+            return None;
+        }
+        for start in 0..=eargs.len() - k {
+            if let Some(s) = match_args_exact(&pargs, &eargs[start..start + k], empty(), pool) {
+                let mut out = Vec::with_capacity(eargs.len() - k + 1);
+                out.extend_from_slice(&eargs[..start]);
+                out.push(s.apply(rhs, pool));
+                out.extend_from_slice(&eargs[start + k..]);
+                return Some(pool.mul(out));
+            }
+        }
+        return None;
+    }
+    if !pool.is_mult_commutative(pat) || pargs.is_empty() || pargs.len() >= eargs.len() {
+        return None;
+    }
+    let mut used = vec![false; eargs.len()];
+    let s = match_submultiset(&pargs, &eargs, &mut used, empty(), pool)?;
+    let mut out = vec![s.apply(rhs, pool)];
+    out.extend(
+        eargs
+            .iter()
+            .zip(&used)
+            .filter(|(_, &u)| !u)
+            .map(|(&e, _)| e),
+    );
+    Some(pool.mul(out))
+}
+
+/// Unroll `b^n` (a non-commutative base, small positive integer `n`) into
+/// `n` copies of `b`, leaving every other factor as it is.
+fn unroll_nc_powers(args: &[ExprId], pool: &ExprPool) -> Vec<ExprId> {
+    const MAX_UNROLL: i64 = 64;
+    let mut out = Vec::with_capacity(args.len());
+    for &a in args {
+        let unrolled = pool.with(a, |d| match d {
+            ExprData::Pow { base, exp } if !pool.is_mult_commutative(*base) => {
+                pool.with(*exp, |e| match e {
+                    ExprData::Integer(n) => {
+                        n.0.to_i64()
+                            .filter(|&n| (1..=MAX_UNROLL).contains(&n))
+                            .map(|n| (*base, n as usize))
+                    }
+                    _ => None,
+                })
+            }
+            _ => None,
+        });
+        match unrolled {
+            Some((b, n)) => out.extend(std::iter::repeat(b).take(n)),
+            None => out.push(a),
+        }
+    }
+    out
+}
+
+/// Assign each pattern factor to a distinct, still unused product factor
+/// (backtracking), consistently with the bindings made so far.
+fn match_submultiset(
+    pargs: &[ExprId],
+    eargs: &[ExprId],
+    used: &mut [bool],
+    subst: Substitution,
+    pool: &ExprPool,
+) -> Option<Substitution> {
+    let Some((&p, rest)) = pargs.split_first() else {
+        return Some(subst);
+    };
+    for i in 0..eargs.len() {
+        if used[i] {
+            continue;
+        }
+        if let Some(s) = match_root_node(p, eargs[i], subst.clone(), pool) {
+            used[i] = true;
+            if let Some(done) = match_submultiset(rest, eargs, used, s, pool) {
+                return Some(done);
+            }
+            used[i] = false;
+        }
+    }
+    None
 }
 
 fn match_args_exact(

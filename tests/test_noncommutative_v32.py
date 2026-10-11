@@ -17,9 +17,9 @@ def test_simplify_pauli_sx_sy():
     sx = pool.symbol("sx", "complex", commutative=False)
     sy = pool.symbol("sy", "complex", commutative=False)
     sz = pool.symbol("sz", "complex", commutative=False)
-    imag = pool.symbol("ImagUnit", "complex", commutative=True)
+    # The full Pauli algebra uses the pool's imaginary unit, so i·i = -1 works.
     r = alkahest.simplify_pauli(sx * sy)
-    assert r.value == imag * sz
+    assert r.value == pool.imaginary_unit() * sz
 
 
 def test_simplify_clifford():

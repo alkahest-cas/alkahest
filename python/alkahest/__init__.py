@@ -150,6 +150,7 @@ from .alkahest import (  # noqa: F401
     MultiPolyFactorization,
     # V2-1: Modular / CRT framework
     MultiPolyFp,
+    NcError,
     Not,
     Or,
     Port,
@@ -180,6 +181,7 @@ from .alkahest import (  # noqa: F401
     acos,
     acosh,
     adjoint_system,
+    anticommutator,
     # Partial-fraction decomposition over ℚ
     apart,
     # Symbolic complex constructors (principal Arg)
@@ -211,6 +213,7 @@ from .alkahest import (  # noqa: F401
     clebsch_gordan,
     # Phase 26: collect_like_terms
     collect_like_terms,
+    commutator,
     compile_expr,
     conjugate,
     # Math functions
@@ -252,6 +255,7 @@ from .alkahest import (  # noqa: F401
     fresnels,
     functions_to_symbols,
     gamma,
+    gamma_trace,
     # V2-3: Sparse interpolation and sparse modular GCD
     gcd_sparse,
     gegenbauer_c,
@@ -289,6 +293,10 @@ from .alkahest import (  # noqa: F401
     milp,
     min,  # symbolic min(a, b) — shadows Python builtin within this module
     minimize_logic,
+    nc_expand,
+    nc_rewrite,
+    nc_terms,
+    normal_order,
     pantelides,
     # PA-9: Piecewise
     piecewise,
@@ -360,6 +368,7 @@ from .alkahest import (  # noqa: F401
     # 3.10.0 — trigamma; this is what `digamma` differentiates to
     trigamma,
     truth_table,
+    vacuum_expectation,
     verified_integral,
     verified_no_roots,
     verified_sign,
@@ -2944,6 +2953,7 @@ __all__ = [
     "ModularRecurrence",
     "MultiPoly",
     "MultiPolyFactorization",
+    "NcError",
     "Not",
     "NumberTheoryError",
     "OdeError",
@@ -3014,6 +3024,7 @@ __all__ = [
     "active_pool",
     "adjoint_system",
     "ansatz",
+    "anticommutator",
     "apart",
     "arg",
     "asin",
@@ -3052,6 +3063,7 @@ __all__ = [
     "clebsch_gordan",
     # Phase 26
     "collect_like_terms",
+    "commutator",
     "compile_expr",
     "conjugate",
     # RW-7
@@ -3106,6 +3118,7 @@ __all__ = [
     "fresnelc",
     "fresnels",
     "functions_to_symbols",
+    "gamma_trace",
     # V2-3
     "gcd_sparse",
     "gegenbauer_c",
@@ -3161,6 +3174,10 @@ __all__ = [
     "matrix_rank_side_conditions",
     "milp",
     "minimize_logic",
+    "nc_expand",
+    "nc_rewrite",
+    "nc_terms",
+    "normal_order",
     "number_theory",
     # Phase 25
     "numpy_eval",
@@ -3286,6 +3303,7 @@ __all__ = [
     "unflatten_exprs",
     "unicode_str",
     "units",
+    "vacuum_expectation",
     "verified_integral",
     "verified_no_roots",
     "verified_sign",
