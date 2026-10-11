@@ -1574,6 +1574,18 @@ fn try_weierstrass_rational_trig(
         return Ok(None);
     }
 
+    // A trig *polynomial* spelled over a Pythagorean denominator —
+    // `cos⁴x/(cos²x + sin²x)`, which is what variation of parameters hands over
+    // after dividing by the Wronskian of `{cos, sin}` — is not a rational-trig
+    // integrand at all. Substituting `t = tan(x/2)` into it manufactured an
+    // antiderivative with `atan(tan(x/2))` in it, which equals `x/2` only on
+    // `(−π, π)`. Normalise first, and if the denominator disappears integrate
+    // the polynomial directly: power reduction gives a closed form that is
+    // continuous on ℝ.
+    if let Some(found) = try_trig_normal_form_first(expr, var, pool, log)? {
+        return Ok(Some(found));
+    }
+
     // Fresh half-angle variable t = tan(x/2).
     let t = pool.symbol("__weierstrass_t", crate::kernel::Domain::Real);
 
@@ -1610,20 +1622,331 @@ fn try_weierstrass_rational_trig(
         }
     };
 
-    // Back-substitute t = tan(x/2).
+    // Back-substitute t = tan(x/2), rewriting every `atan(a·t + b)` into a
+    // form that is continuous across the odd multiples of π first (see
+    // [`continuous_atan_of_half_angle`]); a bare `atan(a·tan(x/2) + b)` jumps
+    // by `±π` there.
     let half = pool.rational(1_i32, 2_i32);
     let half_x = pool.mul(vec![half, var]);
     let tan_half = pool.func("tan", vec![half_x]);
     let mut back = HashMap::new();
     back.insert(t, tan_half);
-    let result = simplify(crate::kernel::subs(inner.value, &back, pool), pool).value;
+    let continuous = crate::kernel::subs(
+        continuous_half_angle_atans(inner.value, t, var, pool),
+        &back,
+        pool,
+    );
+    let mut result = simplify(continuous, pool).value;
+    // The `−log(1 + cos x)` halves of the rewritten quadratic logs cancel only
+    // once their coefficients are distributed; plain `simplify` leaves
+    // `c·(log h − log(1 + cos x))` alone. Expand when that is what it takes.
+    let pole_log = pool.func(
+        "log",
+        vec![pool.add(vec![pool.integer(1_i32), pool.func("cos", vec![var])])],
+    );
+    if contains_subexpr(result, pole_log, pool) {
+        let expanded = simplify_expanded(continuous, pool).value;
+        if !contains_subexpr(expanded, pole_log, pool) {
+            result = expanded;
+        }
+    }
 
     // Soundness gate: d/dx(result) must equal the original integrand.
     if !verify_antiderivative(result, expr, var, pool) {
         return Ok(None);
     }
+    // Every term the rewrite above could not reach (an `atan` of a non-linear
+    // function of `t`, a slope whose sign is unknown) still jumps at `x = π`.
+    // The result is then an antiderivative on `(−π, π)` only, and its log step
+    // says so — side condition `π − |x| > 0` — instead of presenting as global.
+    if half_angle_result_jumps(result, expr, var, pool) {
+        let pi = pool.symbol("pi", crate::kernel::Domain::Real);
+        let window = pool.add(vec![
+            pi,
+            pool.mul(vec![pool.integer(-1_i32), pool.func("abs", vec![var])]),
+        ]);
+        log.push(RewriteStep::with_conditions(
+            WEIERSTRASS_LOCAL_RULE,
+            expr,
+            result,
+            vec![crate::deriv::log::SideCondition::Positive(window)],
+        ));
+        return Ok(Some(result));
+    }
     log.push(RewriteStep::simple("int_weierstrass_trig", expr, result));
     Ok(Some(result))
+}
+
+/// Rule name of a half-angle antiderivative that is valid on `(−π, π)` only.
+///
+/// The step carries the side condition `π − |x| > 0`. A caller that needs an
+/// antiderivative on all of ℝ — `dsolve` building a particular solution —
+/// looks for this name and treats the result as not good enough.
+pub(crate) const WEIERSTRASS_LOCAL_RULE: &str = "int_weierstrass_trig_local";
+
+/// Integrate the trig normal form of `expr` instead, when normalising removes
+/// every rational-trig denominator (`cos⁴x/(cos²x + sin²x) → cos⁴x`).
+///
+/// `Ok(None)` when normalising changes nothing useful or the normal form does
+/// not close; a budget error propagates. The candidate is gated against the
+/// *original* integrand.
+fn try_trig_normal_form_first(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Result<Option<ExprId>, IntegrationError> {
+    let normal = crate::simplify::engine::simplify_trig_normal_form(expr, pool).value;
+    if normal == expr || has_rational_trig_denominator(normal, var, pool) {
+        return Ok(None);
+    }
+    // `normal` has no rational-trig denominator, so the half-angle route
+    // cannot fire again on it: the recursion is one level deep.
+    let found = match integrate(normal, var, pool) {
+        Ok(found) => found,
+        Err(e) if e.is_budget() => return Err(e),
+        Err(_) => return Ok(None),
+    };
+    if !verify_antiderivative(found.value, expr, var, pool) {
+        return Ok(None);
+    }
+    log.push(RewriteStep::simple(
+        "int_trig_normal_form",
+        expr,
+        found.value,
+    ));
+    Ok(Some(found.value))
+}
+
+/// Numeric value of a closed constant (no free symbol but `pi`), if any.
+/// Does `e` contain `log(1 + cos x)` — `pole_log`, matched up to the order of
+/// the two summands?
+fn contains_subexpr(e: ExprId, pole_log: ExprId, pool: &ExprPool) -> bool {
+    let same = |a: ExprId| -> bool {
+        if a == pole_log {
+            return true;
+        }
+        let (ExprData::Func { name, args }, ExprData::Func { args: pargs, .. }) =
+            (pool.get(a), pool.get(pole_log))
+        else {
+            return false;
+        };
+        if name != "log" || args.len() != 1 {
+            return false;
+        }
+        match (pool.get(args[0]), pool.get(pargs[0])) {
+            (ExprData::Add(x), ExprData::Add(y)) => {
+                x.len() == y.len() && x.iter().all(|t| y.contains(t))
+            }
+            _ => false,
+        }
+    };
+    if same(e) {
+        return true;
+    }
+    match pool.get(e) {
+        ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
+            args.iter().any(|&a| contains_subexpr(a, pole_log, pool))
+        }
+        ExprData::Pow { base, exp } => {
+            contains_subexpr(base, pole_log, pool) || contains_subexpr(exp, pole_log, pool)
+        }
+        _ => false,
+    }
+}
+
+fn closed_constant_value(e: ExprId, pool: &ExprPool) -> Option<f64> {
+    crate::jit::eval_interp(e, &HashMap::new(), pool).filter(|v| v.is_finite())
+}
+
+/// Rewrite each `atan(a·t + b)` in `f` (`t = tan(x/2)`, `a`, `b` real
+/// constants, `a ≠ 0`) into a form that is continuous on all of ℝ.
+///
+/// With `θ = x/2` and `a > 0`, `atan(a·tan θ + b) − θ` tends to `0` at both
+/// ends of `(−π/2, π/2)`, so it extends to a continuous `π`-periodic function
+/// of `θ`. Its sine and cosine are positive multiples of
+///
+/// ```text
+/// N = (a − 1)·sin x + b·(1 + cos x),   D = (1 + a) + (1 − a)·cos x + b·sin x,
+/// ```
+///
+/// and it lies strictly inside `(−π, π)`, so it is exactly `atan2(N, D)`:
+///
+/// ```text
+/// atan(a·tan(x/2) + b) = x/2 + atan2(N, D)       on (−π, π),
+/// ```
+///
+/// and the right-hand side is continuous on ℝ. When `4a > b²` `D` never
+/// vanishes and `atan2(N, D)` is the plain `atan(N/D)`, which is what is
+/// emitted then. A negative slope goes through `atan(u) = −atan(−u)`.
+/// `atan(tan(x/2))` itself becomes `x/2`.
+///
+/// Terms it cannot rewrite are left alone; [`half_angle_result_jumps`] catches
+/// what remains.
+fn continuous_half_angle_atans(f: ExprId, t: ExprId, var: ExprId, pool: &ExprPool) -> ExprId {
+    if is_free_of(f, t, pool) {
+        return f;
+    }
+    match pool.get(f) {
+        ExprData::Func { name, args } if name == "atan" && args.len() == 1 => {
+            continuous_atan_of_half_angle(args[0], t, var, pool).unwrap_or(f)
+        }
+        ExprData::Func { name, args } if name == "log" && args.len() == 1 => {
+            continuous_log_of_half_angle(args[0], t, var, pool).unwrap_or(f)
+        }
+        ExprData::Add(args) => pool.add(
+            args.iter()
+                .map(|&a| continuous_half_angle_atans(a, t, var, pool))
+                .collect(),
+        ),
+        ExprData::Mul(args) => pool.mul(
+            args.iter()
+                .map(|&a| continuous_half_angle_atans(a, t, var, pool))
+                .collect(),
+        ),
+        _ => f,
+    }
+}
+
+/// `log(A·t² + B·t + C)` with `t = tan(x/2)`, spelled without `tan`.
+///
+/// `cos²(x/2)·(A·tan²(x/2) + B·tan(x/2) + C) = (A(1 − cos x) + B sin x +
+/// C(1 + cos x))/2` and `cos²(x/2) = (1 + cos x)/2`, so
+///
+/// ```text
+/// log(A·t² + B·t + C) = log(A(1 − cos x) + B·sin x + C(1 + cos x)) − log(1 + cos x).
+/// ```
+///
+/// The first term is a trig polynomial, finite across `x = π` when the
+/// quadratic has no real root. The `−log(1 + cos x)` terms each blow up there,
+/// but a half-angle antiderivative of an integrand finite at π has finite
+/// limits as `t → ±∞`, so the weights of its quadratic logs sum to zero and
+/// these terms cancel once `simplify` collects them — leaving no `tan(x/2)` and
+/// no pole for the definite-integration path to take a limit through. When
+/// they do not cancel, the result is no worse than the `tan` form, and
+/// [`half_angle_result_jumps`] still judges it.
+fn continuous_log_of_half_angle(
+    u: ExprId,
+    t: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    let d1 = simplify(crate::diff::diff(u, t, pool).ok()?.value, pool).value;
+    let d2 = simplify(crate::diff::diff(d1, t, pool).ok()?.value, pool).value;
+    if !is_free_of(d2, t, pool) || is_zero(d2, pool) {
+        return None;
+    }
+    let mut at_zero = HashMap::new();
+    at_zero.insert(t, pool.integer(0_i32));
+    let c = simplify(crate::kernel::subs(u, &at_zero, pool), pool).value;
+    let b = simplify(crate::kernel::subs(d1, &at_zero, pool), pool).value;
+    let a = simplify(pool.mul(vec![pool.rational(1_i32, 2_i32), d2]), pool).value;
+    let one = pool.integer(1_i32);
+    let neg = |e: ExprId| pool.mul(vec![pool.integer(-1_i32), e]);
+    let cos_x = pool.func("cos", vec![var]);
+    let one_plus_cos = pool.add(vec![one, cos_x]);
+    let h = simplify(
+        pool.add(vec![
+            pool.mul(vec![a, pool.add(vec![one, neg(cos_x)])]),
+            pool.mul(vec![b, pool.func("sin", vec![var])]),
+            pool.mul(vec![c, one_plus_cos]),
+        ]),
+        pool,
+    )
+    .value;
+    Some(pool.add(vec![
+        pool.func("log", vec![h]),
+        neg(pool.func("log", vec![one_plus_cos])),
+    ]))
+}
+
+/// The continuous replacement for `atan(u)`, `u = a·t + b`; see
+/// [`continuous_half_angle_atans`]. `None` when `u` is not linear in `t` with
+/// a real, numerically signed slope.
+fn continuous_atan_of_half_angle(
+    u: ExprId,
+    t: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    let slope = simplify(crate::diff::diff(u, t, pool).ok()?.value, pool).value;
+    if !is_free_of(slope, t, pool) {
+        return None;
+    }
+    let mut at_zero = HashMap::new();
+    at_zero.insert(t, pool.integer(0_i32));
+    let intercept = simplify(crate::kernel::subs(u, &at_zero, pool), pool).value;
+    let a_num = closed_constant_value(slope, pool)?;
+    let b_num = closed_constant_value(intercept, pool)?;
+    if a_num == 0.0 {
+        return None;
+    }
+    let sign = if a_num > 0.0 { 1_i32 } else { -1_i32 };
+    let s = pool.integer(sign);
+    let a = simplify(pool.mul(vec![s, slope]), pool).value;
+    let b = simplify(pool.mul(vec![s, intercept]), pool).value;
+    let (a_num, b_num) = (a_num.abs(), b_num * f64::from(sign));
+
+    let one = pool.integer(1_i32);
+    let neg = |e: ExprId| pool.mul(vec![pool.integer(-1_i32), e]);
+    let sin_x = pool.func("sin", vec![var]);
+    let cos_x = pool.func("cos", vec![var]);
+    let n = simplify(
+        pool.add(vec![
+            pool.mul(vec![pool.add(vec![a, neg(one)]), sin_x]),
+            pool.mul(vec![b, pool.add(vec![one, cos_x])]),
+        ]),
+        pool,
+    )
+    .value;
+    let d = simplify(
+        pool.add(vec![
+            one,
+            a,
+            pool.mul(vec![pool.add(vec![one, neg(a)]), cos_x]),
+            pool.mul(vec![b, sin_x]),
+        ]),
+        pool,
+    )
+    .value;
+    // `D > 0` everywhere iff `(1 + a)² > (1 − a)² + b²`, i.e. `4a > b²`. Keep a
+    // margin so a rounding-level tie takes the `atan2` branch, which is right
+    // either way.
+    let angle = if 4.0 * a_num - b_num * b_num > 1e-12 * (1.0 + 4.0 * a_num) {
+        pool.func(
+            "atan",
+            vec![pool.mul(vec![n, pool.pow(d, pool.integer(-1_i32))])],
+        )
+    } else {
+        pool.func("atan2", vec![n, d])
+    };
+    let half_x = pool.mul(vec![pool.rational(1_i32, 2_i32), var]);
+    Some(pool.mul(vec![s, pool.add(vec![half_x, angle])]))
+}
+
+/// Does the half-angle antiderivative `f` of `integrand` jump at `x = π`
+/// although the integrand is finite there?
+///
+/// `t = tan(x/2)` runs off to `±∞` at every odd multiple of π, so that is the
+/// only place a term [`continuous_half_angle_atans`] did not rewrite can jump.
+/// Undecidable (free parameters, an `f` the interpreter cannot evaluate, an
+/// integrand singular at π) is reported as *no jump*; the definite-integration
+/// path has its own jump scan.
+fn half_angle_result_jumps(f: ExprId, integrand: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    let at = |e: ExprId, xv: f64| -> Option<f64> {
+        let mut env = HashMap::new();
+        env.insert(var, xv);
+        crate::jit::eval_interp(e, &env, pool).filter(|v| v.is_finite())
+    };
+    let pi = std::f64::consts::PI;
+    if at(integrand, pi).is_none() {
+        return false;
+    }
+    let h = 1e-7;
+    match (at(f, pi - h), at(f, pi + h)) {
+        (Some(l), Some(r)) => (r - l).abs() > 1e-4 * (1.0 + l.abs().max(r.abs())),
+        _ => false,
+    }
 }
 
 /// Small explicit table for `∫ 1/cos²(u) = tan(u)/a`, `∫ 1/sin²(u) = −cot(u)/a`
@@ -8665,5 +8988,192 @@ mod tests {
             "∫_{{-∞}}^{{∞}} exp(−x²/2) dx = √(2π) = {want}; got {got} from {}",
             pool.display(value)
         );
+    }
+}
+
+/// The half-angle route must hand back antiderivatives that are continuous on
+/// ℝ, not on `(−π, π)` only.
+#[cfg(test)]
+mod half_angle_continuity_tests {
+    use super::*;
+    use crate::kernel::Domain;
+
+    fn at(f: ExprId, x: ExprId, v: f64, pool: &ExprPool) -> f64 {
+        let mut env = HashMap::new();
+        env.insert(x, v);
+        crate::jit::eval_interp(f, &env, pool).expect("evaluable")
+    }
+
+    fn contains_func(e: ExprId, name: &str, pool: &ExprPool) -> bool {
+        match pool.get(e) {
+            ExprData::Func { name: n, args } => {
+                n == name || args.iter().any(|&a| contains_func(a, name, pool))
+            }
+            ExprData::Add(args) | ExprData::Mul(args) => {
+                args.iter().any(|&a| contains_func(a, name, pool))
+            }
+            ExprData::Pow { base, exp } => {
+                contains_func(base, name, pool) || contains_func(exp, name, pool)
+            }
+            _ => false,
+        }
+    }
+
+    /// `F` is continuous at the odd multiples of π and `F(b) − F(a)` matches a
+    /// composite Simpson rule over an interval crossing several of them.
+    fn assert_global(f: ExprId, x: ExprId, pool: &ExprPool) -> ExprId {
+        let big_f = integrate(f, x, pool).expect("closes").value;
+        for k in [-3.0, -1.0, 1.0, 3.0] {
+            let p = k * std::f64::consts::PI;
+            let jump = (at(big_f, x, p + 1e-9, pool) - at(big_f, x, p - 1e-9, pool)).abs();
+            assert!(
+                jump < 1e-6,
+                "{} jumps by {jump} at {k}π",
+                pool.display(big_f)
+            );
+        }
+        let (a, b, n) = (-4.0_f64, 9.5_f64, 4000);
+        let h = (b - a) / n as f64;
+        let mut s = at(f, x, a, pool) + at(f, x, b, pool);
+        for i in 1..n {
+            let w = if i % 2 == 1 { 4.0 } else { 2.0 };
+            s += w * at(f, x, a + h * i as f64, pool);
+        }
+        let quad = s * h / 3.0;
+        let ftc = at(big_f, x, b, pool) - at(big_f, x, a, pool);
+        assert!(
+            (quad - ftc).abs() < 1e-8,
+            "F(b) − F(a) = {ftc}, quadrature {quad}: {}",
+            pool.display(big_f)
+        );
+        big_f
+    }
+
+    #[test]
+    fn one_over_two_plus_cos_is_continuous() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(
+            pool.add(vec![pool.integer(2_i32), pool.func("cos", vec![x])]),
+            pool.integer(-1_i32),
+        );
+        let big_f = assert_global(f, x, &pool);
+        // One full period: 2π/√3.
+        let period = at(big_f, x, 2.0 * std::f64::consts::PI, &pool) - at(big_f, x, 0.0, &pool);
+        assert!((period - 2.0 * std::f64::consts::PI / 3f64.sqrt()).abs() < 1e-12);
+    }
+
+    /// `1/(101/100 + sin x)`: the `atan` argument is `a·t + b` with `4a < b²`,
+    /// so the continuous form needs `atan2` (its `D` changes sign).
+    #[test]
+    fn lopsided_quadratic_takes_the_atan2_form() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(
+            pool.add(vec![
+                pool.rational(101_i32, 100_i32),
+                pool.func("sin", vec![x]),
+            ]),
+            pool.integer(-1_i32),
+        );
+        let big_f = assert_global(f, x, &pool);
+        assert!(
+            contains_func(big_f, "atan2", &pool),
+            "{}",
+            pool.display(big_f)
+        );
+    }
+
+    #[test]
+    fn shifted_and_negative_slopes_are_continuous() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let (s, c) = (pool.func("sin", vec![x]), pool.func("cos", vec![x]));
+        let neg = |e: ExprId| pool.mul(vec![pool.integer(-1_i32), e]);
+        for den in [
+            pool.add(vec![c, pool.integer(-3_i32)]),
+            pool.add(vec![
+                pool.integer(3_i32),
+                c,
+                pool.mul(vec![pool.integer(2_i32), s]),
+            ]),
+            pool.add(vec![pool.integer(2_i32), neg(s), c]),
+        ] {
+            assert_global(pool.pow(den, pool.integer(-1_i32)), x, &pool);
+        }
+    }
+
+    /// The `dsolve` repro's integrand: a trig polynomial over the Wronskian
+    /// `cos² + sin²`. It must not go through `t = tan(x/2)` at all.
+    #[test]
+    fn trig_polynomial_over_pythagorean_denominator_avoids_half_angle() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let (s, c) = (pool.func("sin", vec![x]), pool.func("cos", vec![x]));
+        let two = pool.integer(2_i32);
+        let f = pool.mul(vec![
+            pool.pow(c, pool.integer(4_i32)),
+            pool.pow(
+                pool.add(vec![pool.pow(c, two), pool.pow(s, two)]),
+                pool.integer(-1_i32),
+            ),
+        ]);
+        let big_f = assert_global(f, x, &pool);
+        assert!(
+            !contains_func(big_f, "atan", &pool) && !contains_func(big_f, "tan", &pool),
+            "{}",
+            pool.display(big_f)
+        );
+    }
+
+    /// `∫ sin x/(2 + cos x) = log(1 + t²) − log(3 + t²)` in the half-angle
+    /// variable; the quadratic logs are rewritten without `tan(x/2)`, so the
+    /// definite path has no pole to take a limit through.
+    #[test]
+    fn half_angle_logs_lose_their_tan() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.mul(vec![
+            pool.func("sin", vec![x]),
+            pool.pow(
+                pool.add(vec![pool.integer(2_i32), pool.func("cos", vec![x])]),
+                pool.integer(-1_i32),
+            ),
+        ]);
+        let big_f = assert_global(f, x, &pool);
+        assert!(
+            !contains_func(big_f, "tan", &pool),
+            "{}",
+            pool.display(big_f)
+        );
+    }
+
+    #[test]
+    fn atan_of_tan_half_becomes_half_x() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let t = pool.symbol("__weierstrass_t", Domain::Real);
+        let e = continuous_half_angle_atans(pool.func("atan", vec![t]), t, x, &pool);
+        let e = simplify(e, &pool).value;
+        for v in [-7.0, -2.0, 0.5, 3.0, 9.0] {
+            assert!(
+                (at(e, x, v, &pool) - v / 2.0).abs() < 1e-12,
+                "{}",
+                pool.display(e)
+            );
+        }
+    }
+
+    /// What the rewrite cannot reach is detected, so the result is labelled
+    /// valid on `(−π, π)` only.
+    #[test]
+    fn remaining_jump_is_detected() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let half_x = pool.mul(vec![pool.rational(1_i32, 2_i32), x]);
+        let sawtooth = pool.func("atan", vec![pool.func("tan", vec![half_x])]);
+        let half = pool.rational(1_i32, 2_i32);
+        assert!(half_angle_result_jumps(sawtooth, half, x, &pool));
+        assert!(!half_angle_result_jumps(half_x, half, x, &pool));
     }
 }

@@ -73,7 +73,7 @@ def test_weierstrass_endpoint_pole_is_a_limit_not_tan_pi_half(env):
     # F = (2/3)·atan(3·tan(x/2)) reaches tan(π/2) at x = π.
     pool, x, pi = env
     r = integrate(1 / (5 - 4 * cos(x)), x, pool.integer(0), pi)
-    assert "tan" not in str(r.value)
+    assert not re.search(r"(?<!a)tan\(", str(r.value))  # no tan pole left (atan is fine)
     assert abs(eval_expr(r.value, {}) - float(mp.pi / 3)) < 1e-14
 
 
@@ -81,7 +81,7 @@ def test_weierstrass_interior_jump_is_split(env):
     # ∫_0^{2π} dx/(2 + cos x) = 2π/√3; the antiderivative jumps at π.
     pool, x, pi = env
     r = integrate(1 / (2 + cos(x)), x, pool.integer(0), 2 * pi)
-    assert "tan" not in str(r.value)
+    assert not re.search(r"(?<!a)tan\(", str(r.value))
     assert abs(eval_expr(r.value, {}) - float(2 * mp.pi / mp.sqrt(3))) < 1e-13
 
 

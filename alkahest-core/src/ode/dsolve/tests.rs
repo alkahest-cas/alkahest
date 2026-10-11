@@ -1222,3 +1222,78 @@ fn a_candidate_right_at_one_parameter_value_only_is_refused() {
         "a candidate that only works at ζ = 1 must not be certified"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Global validity: no sawtooth particular solutions
+// ---------------------------------------------------------------------------
+
+fn eval_at(e: ExprId, x: ExprId, v: f64, pool: &ExprPool) -> f64 {
+    let mut env = HashMap::new();
+    env.insert(x, v);
+    crate::jit::eval_interp(e, &env, pool).expect("evaluable")
+}
+
+/// `y'' + y = cos³x` used to come back with `sin x·atan(tan(x/2))` in its
+/// particular solution: `y′` jumped by 2.36 at every odd multiple of π.
+#[test]
+fn cos_cubed_forcing_gives_a_global_solution() {
+    let (p, x, y) = setup();
+    let (input, _yp, ypp) = OdeInput::second_order(x, y, &p);
+    let cos3 = p.pow(p.func("cos", vec![x]), p.integer(3_i32));
+    let input = input.with_equation(p.add(vec![ypp, y, p.mul(vec![p.integer(-1_i32), cos3])]));
+    let res = solve_all(&input, &p).expect("y'' + y = cos³x should solve");
+    let sol = &res.solutions[0];
+    assert_verifies(&input, sol, &p);
+    let mut zero = HashMap::new();
+    for &c in &sol.constants {
+        zero.insert(c, p.integer(0_i32));
+    }
+    let yp = crate::kernel::subs(explicit_of(sol), &zero, &p);
+    let d = ddx(yp, x, &p).unwrap();
+    for k in [-3.0, -1.0, 1.0, 3.0] {
+        let at = k * std::f64::consts::PI;
+        let jump = (eval_at(d, x, at + 1e-8, &p) - eval_at(d, x, at - 1e-8, &p)).abs();
+        assert!(jump < 1e-5, "y′ jumps by {jump} at {k}π: {}", p.display(yp));
+    }
+    // (3/8)·x·sin x is the resonant part: y_p(x)/x → (3/8)·sin x for large x.
+    let big = 1000.0 * std::f64::consts::PI + std::f64::consts::FRAC_PI_2;
+    assert!((eval_at(yp, x, big, &p) / big - 0.375).abs() < 1e-3);
+}
+
+/// The gate itself: `atan(tan(x/2))` has derivative `1/2` wherever it is
+/// defined, so it passes every residual sample of `y′ = 1/2` — and is still
+/// not a solution on any interval containing π.
+#[test]
+fn sawtooth_candidate_is_refused() {
+    let (p, x, y) = setup();
+    let (input, yp) = OdeInput::first_order(x, y, &p);
+    let input = input.with_equation(p.add(vec![yp, p.rational(-1_i32, 2_i32)]));
+    let half_x = p.mul(vec![p.rational(1_i32, 2_i32), x]);
+    let sawtooth = p.func("atan", vec![p.func("tan", vec![half_x])]);
+    let err = residual_is_zero(&input, sawtooth, &[], &p).expect_err("piecewise candidate");
+    assert!(err.to_string().contains("jumps"), "{err}");
+    // The global solution is still accepted.
+    residual_is_zero(&input, half_x, &[], &p).expect("x/2 solves y′ = 1/2");
+}
+
+/// A candidate that agrees near the origin and nowhere else is refused by the
+/// wide-range residual check.
+#[test]
+fn candidate_wrong_away_from_origin_is_refused() {
+    let (p, x, y) = setup();
+    let (input, yp) = OdeInput::first_order(x, y, &p);
+    // y′ = cos x; candidate sin x + x⁹/10⁹: its residual 9x⁸/10⁹ is below the
+    // gate's tolerance on (0, 1).
+    let input = input.with_equation(p.add(vec![
+        yp,
+        p.mul(vec![p.integer(-1_i32), p.func("cos", vec![x])]),
+    ]));
+    let cand = p.add(vec![
+        p.func("sin", vec![x]),
+        p.mul(vec![
+            p.rational(1_i32, 1_000_000_000_i32),
+            p.pow(x, p.integer(9_i32)),
+        ]),
+    ]);
+    assert!(residual_is_zero(&input, cand, &[], &p).is_err());
+}

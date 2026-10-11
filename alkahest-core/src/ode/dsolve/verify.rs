@@ -165,7 +165,10 @@ pub(crate) fn residual_is_zero(
     constants: &[ExprId],
     pool: &ExprPool,
 ) -> Result<(), DsolveError> {
-    let outcome = verify_inner(input, y_of_x, constants, pool);
+    let outcome = build_residual(input, y_of_x, pool).and_then(|(residual, derivs)| {
+        verify_inner(input, residual, &derivs, constants, pool)?;
+        global_validity(input, residual, &derivs, constants, pool)
+    });
     #[cfg(test)]
     GATE_TALLY.with(|t| {
         let (offered, refused) = t.get();
@@ -176,12 +179,11 @@ pub(crate) fn residual_is_zero(
 
 fn verify_inner(
     input: &OdeInput,
-    y_of_x: ExprId,
+    residual: ExprId,
+    candidate_derivs: &[ExprId],
     constants: &[ExprId],
     pool: &ExprPool,
 ) -> Result<(), DsolveError> {
-    let (residual, candidate_derivs) = build_residual(input, y_of_x, pool)?;
-
     // Symbolic zero?  Try both the expanded and the plain (non-expanding)
     // normal forms — expansion flattens polynomial cancellations, while plain
     // simplify is better at collapsing products such as `√D·√D⁻¹ → 1`.
@@ -202,8 +204,7 @@ fn verify_inner(
     // classification it applies is the same one.
     let params = free_parameters(input, &[residual], constants, pool);
     if !params.is_empty() || mentions_imaginary_unit(residual, pool) {
-        let report =
-            parametric_report(input, residual, &candidate_derivs, constants, &params, pool);
+        let report = parametric_report(input, residual, candidate_derivs, constants, &params, pool);
         if report.certifies() {
             return Ok(());
         }
@@ -222,7 +223,7 @@ fn verify_inner(
                 pool.display(residual)
             )));
         }
-        let real = numeric_report(input, residual, &candidate_derivs, constants, &params, pool);
+        let real = numeric_report(input, residual, candidate_derivs, constants, &params, pool);
         if real.certifies() {
             return Ok(());
         }
@@ -235,7 +236,7 @@ fn verify_inner(
     }
 
     // Numeric fallback: sample x over several constant assignments.
-    let report = numeric_report(input, residual, &candidate_derivs, constants, &[], pool);
+    let report = numeric_report(input, residual, candidate_derivs, constants, &[], pool);
     if report.certifies() {
         return Ok(());
     }
@@ -244,6 +245,185 @@ fn verify_inner(
         "residual did not reduce to zero ({report}): {}",
         pool.display(residual)
     )))
+}
+
+// ---------------------------------------------------------------------------
+// Global validity: wide-range residual and continuity
+// ---------------------------------------------------------------------------
+
+/// Residual sample points spread over a wide range, both signs.
+///
+/// [`X_SAMPLES`] all sit in `(0, 1)`: they are where the candidate is
+/// *certified*, and they were kept narrow so domain-limited answers (`√(C −
+/// x²)`, `log x`) resolve there. That left the gate blind to a candidate that
+/// is right near the origin and wrong further out. Here only a **finite,
+/// non-zero** residual counts — a sample outside the candidate's domain is no
+/// information — so the wide range costs no correct answer.
+pub(crate) const WIDE_X_SAMPLES: [f64; 8] = [0.3, 2.0, 4.0, 7.0, -5.0, -11.3, 13.7, 19.1];
+
+/// Interval and resolution of the continuity scan.
+const SCAN_LO: f64 = -20.0;
+const SCAN_HI: f64 = 20.0;
+const SCAN_CELLS: usize = 2000;
+/// Bisection depth when localising a suspected jump: `0.02 / 2⁴⁵ ≈ 6e-16`.
+const SCAN_BISECTIONS: usize = 45;
+/// Values above this are a pole, not a jump between two finite sides.
+const SCAN_FINITE_BOUND: f64 = 1e12;
+
+/// Is the certified candidate a solution on the whole range, not just near the
+/// sample points?
+///
+/// Two checks, each of which can only refuse on **positive evidence**:
+///
+/// 1. the residual at [`WIDE_X_SAMPLES`] — a finite residual that is not small
+///    relative to the magnitude of the terms it is made of is a wrong answer;
+/// 2. a continuity scan of `y, y′, …, y⁽ⁿ⁻¹⁾` over `[−20, 20]`: a point where
+///    one of them jumps between two finite values while the equation itself is
+///    regular there is a candidate that solves the equation only piecewise.
+///
+/// The second is what catches `sin t·atan(tan(t/2))`: its residual is zero at
+/// every point where it is defined — the derivative of `atan(tan(t/2))` is
+/// `1/2` everywhere — but `y′` jumps at every odd multiple of π.
+fn global_validity(
+    input: &OdeInput,
+    residual: ExprId,
+    candidate_derivs: &[ExprId],
+    constants: &[ExprId],
+    pool: &ExprPool,
+) -> Result<(), DsolveError> {
+    let params = free_parameters(input, &[residual], constants, pool);
+    let param_env = parameter_env(&params, 0);
+    let mut env = param_env.clone();
+    for (i, &c) in constants.iter().enumerate() {
+        env.insert(c, CONST_SETS[0][i % CONST_SETS[0].len()]);
+    }
+
+    // 1. Wide-range residual.
+    for &xv in &WIDE_X_SAMPLES {
+        env.insert(input.x, xv);
+        let Some(r) = eval(residual, &env, pool).filter(|v| v.is_finite()) else {
+            continue;
+        };
+        let mut scale = 1.0 + magnitude(residual, &env, pool).unwrap_or(0.0);
+        for &d in candidate_derivs {
+            scale += magnitude(d, &env, pool).unwrap_or(0.0);
+        }
+        if r.abs() > 1e-7 * scale {
+            return Err(DsolveError::VerificationFailed(format!(
+                "the candidate solves the equation near the origin but not at x = {xv} \
+                 (residual {r:.3e}): {}",
+                pool.display(residual)
+            )));
+        }
+    }
+
+    // 2. Continuity of y … y⁽ⁿ⁻¹⁾.
+    let order = input.derivs.len().max(1);
+    for (k, &d) in candidate_derivs.iter().take(order).enumerate() {
+        if let Some(at) = finite_jump(d, input.x, &env, pool) {
+            if ode_is_regular_at(input, at, &param_env, pool) {
+                let what = match k {
+                    0 => "y".to_string(),
+                    1 => "y′".to_string(),
+                    _ => format!("y^({k})"),
+                };
+                return Err(DsolveError::VerificationFailed(format!(
+                    "the candidate is not a solution on an interval containing x ≈ {at:.6}: \
+                     {what} jumps there although the equation is regular, so it solves the \
+                     equation only piecewise: {}",
+                    pool.display(candidate_derivs[0])
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `Σ |term|` of `expr` evaluated at `env` (or `|expr|` when it is not a sum):
+/// the size of the numbers a sum of them cancels down from, which is what a
+/// rounding error is relative to.
+fn magnitude(expr: ExprId, env: &HashMap<ExprId, f64>, pool: &ExprPool) -> Option<f64> {
+    let terms = match pool.get(expr) {
+        ExprData::Add(args) => args,
+        _ => vec![expr],
+    };
+    let mut s = 0.0;
+    for t in terms {
+        let v = eval(t, env, pool)?;
+        if v.is_finite() {
+            s += v.abs();
+        }
+    }
+    Some(s)
+}
+
+/// A point of `[SCAN_LO, SCAN_HI]` where `f` jumps between two finite values,
+/// if the scan finds one.
+///
+/// A cell is suspicious when its increment is a spike against both
+/// neighbours'; it is then bisected towards the half carrying the larger
+/// increment. A smooth function's increment shrinks with the bracket, a pole's
+/// values run past [`SCAN_FINITE_BOUND`]; only a jump keeps a finite, non-zero
+/// increment across a bracket of width `~1e-15` with both sides bounded.
+/// Anything the evaluator cannot resolve is no information.
+fn finite_jump(f: ExprId, x: ExprId, env: &HashMap<ExprId, f64>, pool: &ExprPool) -> Option<f64> {
+    let mut env = env.clone();
+    let mut at = |xv: f64| -> Option<f64> {
+        env.insert(x, xv);
+        eval(f, &env, pool).filter(|v| v.is_finite() && v.abs() < SCAN_FINITE_BOUND)
+    };
+    let h = (SCAN_HI - SCAN_LO) / SCAN_CELLS as f64;
+    // The first sample decides whether `f` is evaluable at all; one unknown
+    // construct makes the whole scan no information.
+    let xs: Vec<f64> = (0..=SCAN_CELLS).map(|i| SCAN_LO + h * i as f64).collect();
+    let vs: Vec<Option<f64>> = xs.iter().map(|&xv| at(xv)).collect();
+    let inc = |i: usize| -> Option<f64> { Some((vs[i + 1]? - vs[i]?).abs()) };
+    for i in 0..SCAN_CELLS {
+        let Some(d) = inc(i) else { continue };
+        let left = if i > 0 { inc(i - 1) } else { None };
+        let right = if i + 1 < SCAN_CELLS { inc(i + 1) } else { None };
+        let spike = |n: Option<f64>| n.map_or(true, |n| d > 4.0 * n);
+        if d <= 0.0 || !spike(left) || !spike(right) {
+            continue;
+        }
+        let (mut lo, mut hi) = (xs[i], xs[i + 1]);
+        let (mut flo, mut fhi) = (vs[i]?, vs[i + 1]?);
+        let mut resolved = true;
+        for _ in 0..SCAN_BISECTIONS {
+            let mid = 0.5 * (lo + hi);
+            let Some(fm) = at(mid) else {
+                resolved = false;
+                break;
+            };
+            if (fm - flo).abs() >= (fhi - fm).abs() {
+                hi = mid;
+                fhi = fm;
+            } else {
+                lo = mid;
+                flo = fm;
+            }
+        }
+        if !resolved || (fhi - flo).abs() <= 1e-6 * (1.0 + flo.abs() + fhi.abs()) {
+            continue;
+        }
+        // Confirm it is a jump between two one-sided limits and not a very
+        // slow continuous approach (`1/log x` at `0⁺` keeps a visible increment
+        // over a `1e-16` bracket) or the edge of the candidate's domain: the
+        // increment across `c ± δ` must be defined on both sides and stay the
+        // same size as `δ` shrinks by six orders of magnitude.
+        let c = 0.5 * (lo + hi);
+        let across = |delta: f64, at: &mut dyn FnMut(f64) -> Option<f64>| -> Option<f64> {
+            Some(at(c + delta)? - at(c - delta)?)
+        };
+        let (Some(wide), Some(narrow)) = (across(1e-5, &mut at), across(1e-11, &mut at)) else {
+            continue;
+        };
+        let size = 1e-6 * (1.0 + flo.abs() + fhi.abs());
+        if wide.abs() > size && narrow.abs() > size && (wide - narrow).abs() < 0.1 * wide.abs() {
+            return Some(c);
+        }
+    }
+    None
 }
 
 /// Symbols in `residual` that the numeric sampler would otherwise leave unbound.
@@ -624,6 +804,7 @@ fn eval_func(name: &str, a: &[f64]) -> Option<f64> {
         "asin" => x.asin(),
         "acos" => x.acos(),
         "atan" => x.atan(),
+        "atan2" => x.atan2(*a.get(1)?),
         "abs" => x.abs(),
         // Principal branch only, and `None` (→ "unknown construct", → skip)
         // rather than `NaN` below `−1/e`, so a sample outside `W₀`'s domain is
