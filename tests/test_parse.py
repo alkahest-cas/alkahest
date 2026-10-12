@@ -487,7 +487,7 @@ class TestErrors:
 
     def test_unknown_function(self, pool):
         with pytest.raises(ParseError):
-            parse("zeta(x)", pool)
+            parse("riemann_xi(x)", pool)
 
     def test_extra_token(self, pool):
         with pytest.raises(ParseError):

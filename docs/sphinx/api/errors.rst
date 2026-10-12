@@ -335,7 +335,11 @@ Exception subclasses
    symbolic parameter) or a coupling coefficient past ``2j = 20000`` — build the
    node with ``expand=False`` instead. ``E-SPECFN-005`` is the wrong number of
    family parameters (Rust API). A selection-rule violation is not an error: the
-   coefficient is an exact ``0``.
+   coefficient is an exact ``0``. ``E-SPECFN-006`` is a pole of a Bessel/zeta
+   family function (:func:`alkahest.zeta` at ``1``, :func:`alkahest.polylog` at
+   ``z = 1`` for ``s <= 1``); ``E-SPECFN-007`` a non-integer order for
+   :func:`alkahest.spherical_jn` / :func:`alkahest.spherical_yn`; the Bessel
+   expansion cap (order 200) is ``E-SPECFN-004``.
 
 .. exception:: NcError
 

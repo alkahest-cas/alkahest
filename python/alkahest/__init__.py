@@ -181,6 +181,10 @@ from .alkahest import (  # noqa: F401
     acos,
     acosh,
     adjoint_system,
+    airy_ai,
+    airy_ai_prime,
+    airy_bi,
+    airy_bi_prime,
     anticommutator,
     # Partial-fraction decomposition over ℚ
     apart,
@@ -194,8 +198,12 @@ from .alkahest import (  # noqa: F401
     atan2,
     atanh,
     bdd,
+    bessel_i,
+    bessel_j,
     bessel_j0,
     bessel_j1,
+    bessel_k,
+    bessel_y,
     # M6 — binomial(a, b) mod p**k (Lucas / Granville)
     binomial_mod,
     bound_on_box,
@@ -248,6 +256,7 @@ from .alkahest import (  # noqa: F401
     # Exponential-integral family (DLMF §6.2)
     exp_integral_ei,
     expand_orthopoly,
+    expand_special,
     factor_univariate_mod_p,
     floor,
     # 3.10.0 — Fresnel integrals, normalised (pi/2) convention
@@ -265,6 +274,7 @@ from .alkahest import (  # noqa: F401
     hermite_he,
     # Phase 24: Horner-form code emission
     horner,
+    hurwitz_zeta,
     im,
     integrate,
     interval_eval,
@@ -302,6 +312,7 @@ from .alkahest import (  # noqa: F401
     piecewise,
     # Phase 27: poly_normal
     poly_normal,
+    polylog,
     product_definite,
     product_indefinite,
     prove_nonneg,
@@ -349,6 +360,8 @@ from .alkahest import (  # noqa: F401
     sparse_interp,
     sparse_interp_univariate,
     spherical_harmonic_y,
+    spherical_jn,
+    spherical_yn,
     sqrt,
     subresultant_prs,
     subs,
@@ -381,6 +394,7 @@ from .alkahest import (  # noqa: F401
     wigner_6j,
     # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     zeilberger,
+    zeta,
 )
 from .alkahest import (
     # Phase 15: Symbolic matrices
@@ -1515,9 +1529,9 @@ def sum_definite(expr, k, lo, hi):
       shift stated as a side condition.
 
     Divergent series (``Σ 1/k``, ``Σ 2ᵏ``, Grandi's ``Σ (−1)ᵏ``, ``Σ rᵏ`` under
-    ``r > 1``) raise ``SumError`` (``E-SUM-003``).  Odd zeta values
-    (``Σ 1/k³``) raise ``E-SUM-002``: there is no ``zeta`` primitive to name
-    them with.  An infinite *lower* bound, ``−∞``, or ``∞ − 1`` is refused with
+    ``r > 1``) raise ``SumError`` (``E-SUM-003``).  Odd zeta values are named,
+    not approximated: ``Σ 1/k³ = zeta(3)``, ``Σ 1/(2k+1)³ = 7/8·zeta(3)``.  An
+    infinite *lower* bound, ``−∞``, or ``∞ − 1`` is refused with
     ``E-SUM-003``.
 
     Conventions and refusals
@@ -3025,6 +3039,10 @@ __all__ = [
     "active_domain",
     "active_pool",
     "adjoint_system",
+    "airy_ai",
+    "airy_ai_prime",
+    "airy_bi",
+    "airy_bi_prime",
     "ansatz",
     "anticommutator",
     "apart",
@@ -3039,8 +3057,12 @@ __all__ = [
     "batch_map",
     "batch_map_iter",
     "bdd",
+    "bessel_i",
+    "bessel_j",
     "bessel_j0",
     "bessel_j1",
+    "bessel_k",
+    "bessel_y",
     # M6 — binomial(a, b) mod p**k (Lucas / Granville)
     "binomial_mod",
     "bode",
@@ -3111,6 +3133,7 @@ __all__ = [
     # Exponential-integral family (DLMF §6.2)
     "exp_integral_ei",
     "expand_orthopoly",
+    "expand_special",
     # V1-16 — Expr ↔ GbPoly round trip
     "expr_to_gbpoly",
     "factor_univariate_mod_p",
@@ -3134,6 +3157,7 @@ __all__ = [
     "hermite_he",
     # Phase 24
     "horner",
+    "hurwitz_zeta",
     "im",
     "integrate",
     # P1 search plumbing item 5 — batch/streaming fan-out
@@ -3200,6 +3224,7 @@ __all__ = [
     "plot_svg",
     # Phase 27
     "poly_normal",
+    "polylog",
     "primary_decomposition",
     "product_definite",
     "product_indefinite",
@@ -3274,6 +3299,8 @@ __all__ = [
     "sparse_interp",
     "sparse_interp_univariate",
     "spherical_harmonic_y",
+    "spherical_jn",
+    "spherical_yn",
     "sqrt",
     "subresultant_prs",
     "subs",
@@ -3318,6 +3345,7 @@ __all__ = [
     "wigner_6j",
     # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     "zeilberger",
+    "zeta",
 ]
 
 # Drop import-machinery leaks from ``dir(alkahest)`` / autocomplete. Lazy

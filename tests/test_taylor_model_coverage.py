@@ -125,7 +125,25 @@ def test_the_flag_is_not_a_restatement_of_numeric_ball():
         "gegenbauer_c",
         "jacobi_p",
     }
-    assert ball_only - orthopoly == {"ceil", "floor"}
+    # The Bessel / Airy / zeta / polylog primitives (G11b) likewise have Arb
+    # ball kernels and no validated Taylor rule yet (the unary Airy and zeta
+    # functions included): ball-only, honestly.
+    specfun = {
+        "bessel_j",
+        "bessel_y",
+        "bessel_i",
+        "bessel_k",
+        "spherical_jn",
+        "spherical_yn",
+        "airy_ai",
+        "airy_bi",
+        "airy_ai_prime",
+        "airy_bi_prime",
+        "zeta",
+        "hurwitz_zeta",
+        "polylog",
+    }
+    assert ball_only - orthopoly - specfun == {"ceil", "floor"}
 
 
 def test_supported_set_is_the_elementary_plus_special_fragment():

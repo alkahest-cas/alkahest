@@ -1,4 +1,5 @@
-//! [`SpecialFunctionError`] — the refusals of [`crate::orthopoly`].
+//! [`SpecialFunctionError`] — the refusals of [`crate::orthopoly`] and
+//! [`crate::specfun`].
 
 use std::fmt;
 
@@ -15,6 +16,8 @@ use crate::errors::AlkahestError;
 /// | `E-SPECFN-003` | [`NotAnInteger`](Self::NotAnInteger) | an argument that has to be an integer is not one (`spherical_harmonic_y(1/2, …)`) |
 /// | `E-SPECFN-004` | [`TooLarge`](Self::TooLarge) | an explicit expansion or an exact coupling coefficient past the size cap |
 /// | `E-SPECFN-005` | [`WrongArity`](Self::WrongArity) | the wrong number of parameters for the family |
+/// | `E-SPECFN-006` | [`Pole`](Self::Pole) | the function has a pole at the requested point (`zeta(1)`, `polylog(1, 1)`) |
+/// | `E-SPECFN-007` | [`OrderNotInteger`](Self::OrderNotInteger) | an order that must be an integer literal is not one (`spherical_jn(1/2, x)`) |
 /// | `E-BUDGET-*` | [`Budget`](Self::Budget) | the active `Budget` ran out |
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -32,6 +35,13 @@ pub enum SpecialFunctionError {
         family: &'static str,
         expected: usize,
         got: usize,
+    },
+    /// The function has a pole at the requested argument (`ζ(1)`).
+    Pole { function: &'static str, at: String },
+    /// An order that has to be an integer literal is not one.
+    OrderNotInteger {
+        function: &'static str,
+        value: String,
     },
     /// The active [`crate::budget::Budget`] ran out mid-computation.
     Budget(BudgetError),
@@ -63,6 +73,12 @@ impl fmt::Display for SpecialFunctionError {
                 f,
                 "{family} takes {expected} parameter(s) between the degree and the variable, got {got}"
             ),
+            SpecialFunctionError::Pole { function, at } => {
+                write!(f, "{function} has a pole at {at}; it has no finite value there")
+            }
+            SpecialFunctionError::OrderNotInteger { function, value } => {
+                write!(f, "{function}: the order {value} must be an integer")
+            }
             SpecialFunctionError::Budget(b) => write!(f, "{b}"),
         }
     }
@@ -78,6 +94,8 @@ impl AlkahestError for SpecialFunctionError {
             SpecialFunctionError::NotAnInteger { .. } => "E-SPECFN-003",
             SpecialFunctionError::TooLarge { .. } => "E-SPECFN-004",
             SpecialFunctionError::WrongArity { .. } => "E-SPECFN-005",
+            SpecialFunctionError::Pole { .. } => "E-SPECFN-006",
+            SpecialFunctionError::OrderNotInteger { .. } => "E-SPECFN-007",
             SpecialFunctionError::Budget(b) => b.code(),
         }
     }
@@ -102,6 +120,14 @@ impl AlkahestError for SpecialFunctionError {
             SpecialFunctionError::WrongArity { .. } => {
                 Some("check the family's signature, e.g. jacobi_p(n, a, b, x)")
             }
+            SpecialFunctionError::Pole { .. } => Some(
+                "evaluate at a different point, or take the limit / Laurent expansion \
+                 there (zeta(s) ~ 1/(s - 1) as s -> 1)",
+            ),
+            SpecialFunctionError::OrderNotInteger { .. } => Some(
+                "spherical Bessel functions are built for integer order n; use \
+                 bessel_j(n + 1/2, x) for a general order",
+            ),
             SpecialFunctionError::Budget(b) => b.remediation(),
         }
     }

@@ -79,7 +79,7 @@ Experimental (`alkahest.experimental`); see the [probability guide](./mdbook/src
 ## Discrete mathematics
 
 - Symbolic summation: indefinite and definite via Gosper's algorithm (`sum_indefinite`, `sum_definite`)
-- Infinite and parametric sums (`sum_definite` with `hi = pool.pos_infinity()`): polynomial × geometric terms `Σ P(k)·q^k` for any ratio free of `k` (`r`, `exp(-ke*tau)`), finite and infinite, with `|q| < 1` decided from the assumptions, refused when refuted, or returned as a side condition; convergent rational series with linear poles by partial fractions and telescoping, even zeta values exactly (`Σ 1/k² = π²/6`, `Σ 1/(2k+1)² = π²/8`), `digamma`/`trigamma` elsewhere. Divergent series and odd zeta values are refused (`E-SUM-003` / `E-SUM-002`)
+- Infinite and parametric sums (`sum_definite` with `hi = pool.pos_infinity()`): polynomial × geometric terms `Σ P(k)·q^k` for any ratio free of `k` (`r`, `exp(-ke*tau)`), finite and infinite, with `|q| < 1` decided from the assumptions, refused when refuted, or returned as a side condition; convergent rational series with linear poles by partial fractions and telescoping, even zeta values exactly (`Σ 1/k² = π²/6`, `Σ 1/(2k+1)² = π²/8`), `digamma`/`trigamma` elsewhere. Odd zeta values are named (`Σ 1/k³ = zeta(3)`); divergent series are refused (`E-SUM-003`)
 - Linear recurrence solving (`solve_linear_recurrence_homogeneous`)
 - Difference equations / `rsolve`: constant-coefficient recurrences with polynomial RHS
 - Symbolic products: definite and indefinite via Γ-ratio telescoping (`product_definite`, `product_indefinite`, `Product`)

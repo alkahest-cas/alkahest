@@ -1451,6 +1451,23 @@ bode(G, w); margins(G)    # numeric; margins = (gm, pm, w_phase_crossover, w_gai
 - `E-CTRL-004` = the object does not exist (singular Lyapunov operator `λᵢ+λⱼ=0`, no stabilising
   ARE solution, infinite DC gain); `E-CTRL-005` = beyond the exact engine (use numeric).
 
+## Bessel, Airy, zeta, polylog
+
+```python
+ak.bessel_j(Fraction(1, 2), x)      # sqrt(2)*pi^(-1/2)*x^(-1/2)*sin(x)  (half-integer → elementary)
+ak.bessel_j(nu, x)                  # node; also bessel_y/i/k; bessel_j(0, x) is bessel_j0(x)
+ak.spherical_jn(2, x)               # elementary for integer n; spherical_yn likewise
+ak.airy_ai(x), ak.airy_bi_prime(x)  # Ai'' = x*Ai; exact at 0
+ak.zeta(p.integer(4))               # pi^4/90; zeta(-1) = -1/12; zeta(3) stays; zeta(1) → E-SPECFN-006
+ak.hurwitz_zeta(s, a), ak.polylog(s, z)   # polylog(2, z) is dilog(z); Li_{-n} rational
+ak.expand_special(ak.subs(e, {nu: Fraction(1, 2)}))   # expand after subs
+ak.evaluate(ak.bessel_j(nu, x), {nu: 2+0j, x: 1+1j})   # complex values via Arb
+```
+
+- `diff` in the order / `s`, and of `zeta`, refuses (`E-DIFF-001`); in `x` uses DLMF identities.
+- `Σ 1/k³` sums to `zeta(3)`; `∫x·J0 = x·J1`, `∫J1 = −J0`.
+- f64/ball/complex values from Arb; non-real values (Y, K at x<0; Li_s(x>1)) decline in real mode.
+
 ## Orthogonal polynomials, Y_lm, 3j/6j/Clebsch–Gordan
 
 ```python

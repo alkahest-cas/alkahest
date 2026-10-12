@@ -514,8 +514,54 @@ impl Ctx<'_> {
                 Ok(dense(dinteg(&h, n), n))
             }
             "sqrt" => self.pow(g, &Rational::from((1, 2))),
+            "bessel_j0" => self.bessel(0, false, g),
+            "bessel_j1" => self.bessel(1, false, g),
             _ => Err(Fail::Unsupported),
         }
+    }
+
+    /// `J_n(g)` (or `I_n(g)` when `modified`) for an integer `n ≥ 0` and an
+    /// argument vanishing at the point: `Σ_k (∓1)^k/(k!(n+k)!) (g/2)^{2k+n}`
+    /// (DLMF 10.2.2, 10.25.2), over ℚ.
+    fn bessel(&self, n: u32, modified: bool, g: &Tps) -> R<Tps> {
+        let (gd, len) = self.zero_constant_arg(g)?;
+        let h: Vec<Rational> = gd.iter().map(|c| Rational::from(c / 2u32)).collect();
+        let h2 = dmul(&h, &h, len)?;
+        // (g/2)^n
+        let mut hn = vec![Rational::new(); len];
+        if len > 0 {
+            hn[0] = Rational::from(1);
+        }
+        for _ in 0..n {
+            hn = dmul(&hn, &h, len)?;
+        }
+        // Σ_k c_k (g/2)^{2k}, c_k = (∓1)^k / (k! (n+k)!)
+        let mut fact_n = rug::Integer::from(1);
+        for j in 2..=n {
+            fact_n *= j;
+        }
+        let mut c = Rational::from((rug::Integer::from(1), fact_n));
+        let mut term = vec![Rational::new(); len];
+        if len > 0 {
+            term[0] = Rational::from(1);
+        }
+        let mut sum = vec![Rational::new(); len];
+        let mut k: u32 = 0;
+        while term.iter().any(|t| *t != 0) {
+            checkpoint(k as usize)?;
+            for (s, t) in sum.iter_mut().zip(&term) {
+                if *t != 0 {
+                    *s += Rational::from(&c * t);
+                }
+            }
+            k += 1;
+            c /= Rational::from(k) * Rational::from(n + k);
+            if !modified {
+                c = -c;
+            }
+            term = dmul(&term, &h2, len)?;
+        }
+        Ok(Tps::new(0, dmul(&hn, &sum, len)?, len as i64))
     }
 
     fn eval(&mut self, e: ExprId) -> R<Tps> {
@@ -575,6 +621,18 @@ impl Ctx<'_> {
             ExprData::Func { name, args } if args.len() == 1 => {
                 let g = self.eval(args[0])?;
                 self.func(&name, &g)?
+            }
+            // `bessel_j(n, g)`, `bessel_i(n, g)` for an integer literal n ≥ 0.
+            ExprData::Func { name, args }
+                if args.len() == 2 && matches!(name.as_str(), "bessel_j" | "bessel_i") =>
+            {
+                let n = match self.pool.get(args[0]) {
+                    ExprData::Integer(k) => k.0.to_u32().filter(|&k| k <= 1024),
+                    _ => None,
+                }
+                .ok_or(Fail::Unsupported)?;
+                let g = self.eval(args[1])?;
+                self.bessel(n, name == "bessel_i", &g)?
             }
             _ => return Err(Fail::Unsupported),
         };

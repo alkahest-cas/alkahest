@@ -18,7 +18,7 @@ use crate::{PyDerivedResult, PyExpr, PyExprPool};
 
 pyo3::create_exception!(alkahest, PySpecialFunctionError, crate::PyAlkahestError);
 
-fn specfn_err(e: SpecialFunctionError) -> PyErr {
+pub(crate) fn specfn_err(e: SpecialFunctionError) -> PyErr {
     Python::with_gil(|py| {
         if let SpecialFunctionError::Budget(b) = &e {
             let exc_type = py.get_type_bound::<crate::PyBudgetExceededError>();
@@ -30,7 +30,7 @@ fn specfn_err(e: SpecialFunctionError) -> PyErr {
 }
 
 /// The pool of the first `Expr` (or `DerivedResult`) among `obs`.
-fn pool_of(py: Python<'_>, obs: &[&Bound<'_, PyAny>]) -> Option<Py<PyExprPool>> {
+pub(crate) fn pool_of(py: Python<'_>, obs: &[&Bound<'_, PyAny>]) -> Option<Py<PyExprPool>> {
     for ob in obs {
         if let Ok(e) = ob.extract::<PyRef<'_, PyExpr>>() {
             return Some(e.pool.clone_ref(py));

@@ -396,8 +396,8 @@ mod tests {
         let p = ExprPool::new();
         let z = p.integer(0_i32);
         let m = mat(2, vec![p.integer(2_i32), z, z, p.integer(5_i32)], &p);
-        // `zeta` has no entry in the complex evaluator, so neither λ is a number.
-        let opaque = p.func("zeta", vec![p.integer(3_i32)]);
+        // `erfc` has no entry in the complex evaluator, so neither λ is a number.
+        let opaque = p.func("erfc", vec![p.integer(3_i32)]);
         let out = confirm_spectrum(&m, &[opaque, opaque], &p).unwrap();
         assert_eq!(out, SpectrumCheck::Unevaluated);
     }

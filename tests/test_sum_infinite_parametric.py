@@ -243,7 +243,6 @@ def test_symbolic_shift_pair():
         (lambda: I(2) ** k, 0, "E-SUM-003"),  # |r| = 2
         (lambda: NEG**k, 0, "E-SUM-003"),  # Grandi
         (lambda: k / (k + 1), 0, None),  # terms do not tend to 0
-        (lambda: 1 / k**3, 1, "E-SUM-002"),  # ζ(3): no primitive
         (lambda: 1 / (k * (k + 1)), 0, "E-SUM-003"),  # k = 0 term undefined
     ],
 )

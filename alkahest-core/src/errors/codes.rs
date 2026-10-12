@@ -559,6 +559,8 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-SPECFN-003", class: "SpecialFunctionError", cause: Cause::UserInput,   remediation: Some("spherical harmonics are built explicitly for integer l and m only; substitute integers before calling") },
     ErrorSpec { code: "E-SPECFN-004", class: "SpecialFunctionError", cause: Cause::Resource,    remediation: Some("keep the polynomial symbolic (expand=False) and evaluate it numerically, or ask for a smaller degree / angular momentum") },
     ErrorSpec { code: "E-SPECFN-005", class: "SpecialFunctionError", cause: Cause::UserInput,   remediation: Some("check the family's signature, e.g. jacobi_p(n, a, b, x)") },
+    ErrorSpec { code: "E-SPECFN-006", class: "SpecialFunctionError", cause: Cause::Domain,    remediation: Some("evaluate at a different point, or take the limit / Laurent expansion there (zeta(s) ~ 1/(s - 1) as s -> 1)") },
+    ErrorSpec { code: "E-SPECFN-007", class: "SpecialFunctionError", cause: Cause::UserInput,   remediation: Some("spherical Bessel functions are built for integer order n; use bessel_j(n + 1/2, x) for a general order") },
     // E-NC — NcError (noncommutative algebra: word rewriting, Pauli, ladder operators, Dirac traces, G10c)
     ErrorSpec { code: "E-NC-001", class: "NcError", cause: Cause::Resource,    remediation: Some("check that the rules terminate (each rule should move words toward one fixed order), or raise max_steps") },
     ErrorSpec { code: "E-NC-002", class: "NcError", cause: Cause::Resource,    remediation: Some("expand a smaller expression, or lower the power of the noncommutative factor") },

@@ -20,8 +20,9 @@
 //!    and telescope against each other, leaving finitely many rational terms;
 //!    what does not telescope is a Hurwitz zeta value, returned exactly as a
 //!    rational multiple of `π^{2m}` for an even order at an integer or
-//!    half-integer point, as `digamma`/`trigamma` at any other point, and
-//!    refused otherwise (there is no `zeta` primitive for odd orders).
+//!    half-integer point, as a rational multiple of `zeta(s)` for an odd order
+//!    there (`Σ 1/k³ = ζ(3)`), as `digamma`/`trigamma` at any other point, and
+//!    as `hurwitz_zeta(s, x)` for a higher order at any other point.
 
 use super::expr_ratio::is_free_of_k;
 use super::special::zeta_even_coefficient;
@@ -740,8 +741,10 @@ fn partial_fractions(
     Some(out)
 }
 
-/// `ζ(s, x) = Σ_{i≥0} (x + i)^{−s}` for `s ≥ 2`, in closed form when it has one
-/// here; `None` otherwise.
+/// `ζ(s, x) = Σ_{i≥0} (x + i)^{−s}` for `s ≥ 2`: a closed form at integer and
+/// half-integer `x` (`π^s` multiples for even `s`, `zeta(s)` for odd `s`),
+/// `trigamma` for `s = 2`, else the `hurwitz_zeta(s, x)` node; `None` only
+/// for a non-positive literal start.
 fn hurwitz_zeta(s: usize, x: ExprId, pool: &ExprPool) -> Option<ExprId> {
     let pi = pool.symbol("pi", Domain::Real);
     if let Some(v) = literal(pool, x) {
@@ -754,14 +757,27 @@ fn hurwitz_zeta(s: usize, x: ExprId, pool: &ExprPool) -> Option<ExprId> {
             return if s == 2 {
                 Some(pool.func("trigamma", vec![x]))
             } else {
-                None
+                // ζ(s, x) at another rational point: the Hurwitz node.
+                Some(pool.func("hurwitz_zeta", vec![pool.integer(s as i64), x]))
             };
         };
-        if s % 2 == 1 || v <= 0 {
+        if v <= 0 {
             return None;
         }
         // ζ(s, base) for base ∈ {1, 1/2}, then subtract the leading terms.
-        let zc = zeta_even_coefficient((s / 2) as u32);
+        // Even s: a rational multiple of π^s. Odd s: `zeta(s)` itself, which
+        // has no known closed form (G11b) — named, never approximated.
+        let (zc, zeta_s) = if s % 2 == 0 {
+            (
+                zeta_even_coefficient((s / 2) as u32),
+                pool.pow(pi, pool.integer(s as i64)),
+            )
+        } else {
+            (
+                Rational::from(1),
+                pool.func("zeta", vec![pool.integer(s as i64)]),
+            )
+        };
         let mult = if base == 1 {
             zc
         } else {
@@ -787,16 +803,13 @@ fn hurwitz_zeta(s: usize, x: ExprId, pool: &ExprPool) -> Option<ExprId> {
             }
             corr += Rational::from(1) / p;
         }
-        let zeta = pool.mul(vec![
-            rational_expr(pool, &mult),
-            pool.pow(pi, pool.integer(s as i64)),
-        ]);
+        let zeta = pool.mul(vec![rational_expr(pool, &mult), zeta_s]);
         return Some(pool.add(vec![zeta, rational_expr(pool, &(-corr))]));
     }
     if s == 2 {
         return Some(pool.func("trigamma", vec![x]));
     }
-    None
+    Some(pool.func("hurwitz_zeta", vec![pool.integer(s as i64), x]))
 }
 
 /// `Σ_{k=lo}^{∞} R(k)` for a rational `R` whose poles are linear in `k`.
@@ -1286,9 +1299,17 @@ mod tests {
         // Σ 1/k diverges.
         let e = sum_definite(pool.pow(k, i(-1)), k, i(1), inf, &pool).unwrap_err();
         assert_eq!(e.code(), "E-SUM-003");
-        // Σ 1/k³: ζ(3) has no primitive here.
-        let e = sum_definite(pool.pow(k, i(-3)), k, i(1), inf, &pool).unwrap_err();
-        assert_eq!(e.code(), "E-SUM-002");
+        // Σ 1/k³ is named ζ(3) (G11b), Σ 1/(2k+1)³ is 7/8·ζ(3).
+        let v = sum_definite(pool.pow(k, i(-3)), k, i(1), inf, &pool).unwrap();
+        assert_eq!(v.value, pool.func("zeta", vec![i(3)]));
+        let odd = pool.pow(pool.add(vec![pool.mul(vec![i(2), k]), i(1)]), i(-3));
+        let v = sum_definite(odd, k, i(0), inf, &pool).unwrap();
+        let want = pool.mul(vec![pool.rational(7, 8), pool.func("zeta", vec![i(3)])]);
+        assert_eq!(
+            crate::simplify::simplify(pool.add(vec![v.value, pool.mul(vec![i(-1), want])]), &pool)
+                .value,
+            i(0)
+        );
         // A pole inside the range.
         let t = pool.pow(pool.mul(vec![k, pool.add(vec![k, i(1)])]), i(-1));
         let e = sum_definite(t, k, i(0), inf, &pool).unwrap_err();
