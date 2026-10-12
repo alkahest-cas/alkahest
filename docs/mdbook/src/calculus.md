@@ -258,6 +258,35 @@ is rational and, in radicals, every denominator of degree ≤ 4 after
 even-normalisation. Outside that it declines explicitly — `1/(x⁸+1)` is the
 smallest such case.
 
+### Continuity across substitution poles
+
+A rational function of `sin x` and `cos x` is integrated by `t = tan(x/2)`, or —
+when it is invariant under `x ↦ x + π`, like `1/(1 + sin²x)` — by `t = tan x`.
+Either substitution produces an antiderivative between consecutive poles of the
+tangent only; written naively, its `atan` terms jump by `±π` there although the
+integrand is regular. Alkahest returns antiderivatives that are valid on every
+interval where the integrand is continuous:
+
+```python
+F = integrate(1 / (1 + sin(x)**2), x).value
+# (x + atan(...))/√2 — no jump at π/2 + kπ
+```
+
+`atan(a·tan θ + b)` terms are rewritten into continuous `θ + atan2(N, D)` forms,
+rational terms in `tan θ` are homogenised into `sin θ`/`cos θ`, and any jump that
+remains on the pole lattice is computed exactly by one-sided limits and cancelled
+by `J·x/T − (J/2π)·atan2(sin φ, cos φ)` (log step `int_continuous_step_correction`).
+
+A definite integral whose antiderivative still jumps inside the interval — at a
+pole of the substitution, or where the denominator of an `atan(N/D)` vanishes —
+is evaluated as `F(b) − F(a) − Σ jumps`. Each branch crossing contributes exactly
+`±π` times its coefficient, so only the *number and direction* of crossings is
+located numerically; the corrected value is re-scanned for any remaining jump
+and cross-checked against tanh–sinh quadrature before it is returned, and
+refused (`E-INT-001`) otherwise. `∫ cot(x)^(p/q)` is integrated through the
+reflection `cot u = tan(π/2 − u)`, so `integrate(cot(x)**(3/2), x, 1/5, 1)` is
+`2.17202966873…`.
+
 ### Verification
 
 A common pattern is to verify an antiderivative by differentiating it back:
