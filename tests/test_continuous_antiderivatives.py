@@ -22,8 +22,8 @@ Pinned here:
   integrand is finite, and differentiate back to the integrand there.
 
 Oracle: ``mpmath.quad`` when mpmath is installed, otherwise composite
-Gauss–Legendre in pure Python (≈1e-14 for these smooth integrands), so the
-test runs in every CI shard.
+tanh–sinh in pure Python (≈1e-14 here, endpoint singularities included), so
+the test runs in every CI shard.
 """
 
 from __future__ import annotations
@@ -39,38 +39,30 @@ except ImportError:  # pragma: no cover
     _mp = None
 
 
-def _gauss_legendre(n):
-    nodes, weights = [], []
-    for i in range(1, n + 1):
-        z = math.cos(math.pi * (i - 0.25) / (n + 0.5))
-        for _ in range(100):
-            p0, p1 = 1.0, z
-            for k in range(2, n + 1):
-                p0, p1 = p1, ((2 * k - 1) * z * p1 - (k - 1) * p0) / k
-            dp = n * (z * p1 - p0) / (z * z - 1)
-            step = p1 / dp
-            z -= step
-            if abs(step) < 1e-16:
-                break
-        nodes.append(z)
-        weights.append(2 / ((1 - z * z) * dp * dp))
-    return nodes, weights
-
-
-_GL = _gauss_legendre(10)
-
-
 def _quad(f, a, b):
-    """``∫_a^b f`` to ~1e-13 for the smooth integrands used here."""
+    """``∫_a^b f`` to ~1e-13, including an algebraic endpoint singularity (``√x``)."""
     if _mp is not None:
         _mp.mp.dps = 30
         pts = [a + (b - a) * k / 40 for k in range(41)]
         return float(_mp.quad(lambda t: f(float(t)), pts))
-    total, pieces = 0.0, 800
-    h = (b - a) / pieces
-    for j in range(pieces):
-        mid, half = a + (j + 0.5) * h, 0.5 * h
-        total += half * sum(w * f(mid + half * z) for z, w in zip(*_GL))
+    # Composite tanh–sinh: nodes cluster at every panel end, so an integrable
+    # endpoint singularity costs no accuracy (a Gauss rule loses ~7 digits on
+    # √x at 0).
+    total, panels, step = 0.0, 40, 1.0 / 32
+    width = (b - a) / panels
+    for k in range(panels):
+        lo = a + k * width
+        hi = b if k == panels - 1 else lo + width
+        r = 0.5 * (hi - lo)
+        for j in range(-128, 129):
+            t = j * step
+            u = 0.5 * math.pi * math.sinh(t)
+            gap = r * math.exp(-abs(u)) / math.cosh(u)
+            x = hi - gap if t >= 0 else lo + gap
+            if not lo < x < hi:
+                continue
+            w = step * r * 0.5 * math.pi * math.cosh(t) / math.cosh(u) ** 2
+            total += w * f(x)
     return total
 
 
