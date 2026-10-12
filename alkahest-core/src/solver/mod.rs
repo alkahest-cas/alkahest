@@ -54,7 +54,9 @@ pub use homotopy::{
 };
 pub use numeric::{numeric_solution_values, numeric_value, NumericSolveRefusal};
 
-pub use diophantine::{diophantine, DiophantineError, DiophantineSolution};
+pub use diophantine::{
+    diophantine, diophantine_pell_classes, DiophantineError, DiophantineSolution, PellClasses,
+};
 
 use crate::errors::AlkahestError;
 use crate::kernel::{ExprData, ExprId, ExprPool};

@@ -436,3 +436,28 @@ This surface is experimental (`alkahest.experimental.ParametricGroebnerBasis` / 
 On the `solve_circle_line` benchmark (2-variable quadratic system), Alkahest is approximately **40× faster** than SymPy due to the FLINT-backed polynomial arithmetic and the compiled F4 core.
 
 **Upcoming (v2.0):** F5 / signature-based Gröbner basis, real root isolation, primary decomposition, and other advanced algorithms.
+
+## Generalized Pell equations: every solution class
+
+`diophantine(x**2 - D*y**2 - N, [x, y])` returns one particular solution of
+`x² − D·y² = N` plus the unit. But `N` can have several inequivalent fundamental
+solutions (`x² − 10y² = 9` has `(3, 0)`, `(7, 2)` and `(13, 4)`), and the one-class answer
+omits the rest. `pell_classes(D, N)` returns all of them:
+
+```python
+from alkahest import pell_classes
+
+r = pell_classes(10, 9)
+r["unit"]      # (19, 6): fundamental solution of x² − 10y² = 1
+r["classes"]   # [(3, 0), (7, 2), (13, 4)]
+```
+
+Every integer solution is `x + y√D = ±(x_c + y_c√D)·(ux + uy√D)^k` for exactly
+one class `c` and one `k ∈ ℤ`. Each representative satisfies
+`√|N| ≤ x + y√D < √|N|·u`, so a class and its conjugate are listed separately
+unless they coincide. `negative_unit` is the fundamental solution of
+`x² − D·y² = −1` when one exists, and `classes` is empty when the equation has no
+solution. The search is complete (Nagell's bound, or the convergents of `√D` when
+`|N| < √D`); an instance too large to decide raises `DiophantineError`
+(`E-DIOPH-003`) rather than returning a partial list, and the active `Budget` is
+honoured. `D` must be a positive non-square and `N ≠ 0`.

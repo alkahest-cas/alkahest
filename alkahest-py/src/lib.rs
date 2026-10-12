@@ -1529,6 +1529,59 @@ fn rsolve_error_to_py(e: RsolveError) -> PyErr {
     })
 }
 
+/// `alkahest.pell_classes(d, n)` — every solution class of `x² − d·y² = n`.
+///
+/// `diophantine` reports one particular solution of a generalized Pell
+/// equation, but `n` can have several fundamental solutions (inequivalent
+/// under the unit group).  This returns all of them.
+///
+/// Args:
+///     d: positive non-square integer.
+///     n: nonzero integer.
+///
+/// Returns a ``dict`` with ``d``, ``n``, ``unit`` (the fundamental solution
+/// ``(ux, uy)`` of ``x² − d·y² = 1``), ``negative_unit`` (fundamental solution
+/// of ``x² − d·y² = −1`` or ``None``) and ``classes`` — a list of ``(x, y)``,
+/// one per class, sorted by ``(y, x)``; empty when the equation has no
+/// solution.  Every integer solution is
+/// ``x + y√d = ±(x_c + y_c√d)·(ux + uy√d)^k`` for exactly one class ``c`` and
+/// one ``k ∈ ℤ``.
+///
+/// Raises ``DiophantineError`` (``E-DIOPH-003``) for a square or
+/// non-positive ``d``, ``n = 0``, or an instance whose complete search bound is
+/// too large; ``BudgetExceededError`` when the active budget runs out.
+///
+/// Example::
+///
+///     pell_classes(10, 9)["classes"]   # [(3, 0), (7, 2), (13, 4)]
+#[cfg(feature = "groebner")]
+#[pyfunction]
+#[pyo3(name = "pell_classes", signature = (d, n))]
+fn py_pell_classes(
+    py: Python<'_>,
+    d: &Bound<'_, PyAny>,
+    n: &Bound<'_, PyAny>,
+) -> PyResult<PyObject> {
+    let (dz, nz) = (big_integer_from_py(d)?, big_integer_from_py(n)?);
+    let pc = py
+        .allow_threads(|| alkahest_core::solver::diophantine_pell_classes(&dz, &nz))
+        .map_err(diophantine_error_to_py)?;
+    let pair = |p: &(Integer, Integer)| -> PyResult<PyObject> {
+        Ok((bigint::int_to_py(py, &p.0)?, bigint::int_to_py(py, &p.1)?).into_py(py))
+    };
+    let out = pyo3::types::PyDict::new_bound(py);
+    out.set_item("d", bigint::int_to_py(py, &pc.d)?)?;
+    out.set_item("n", bigint::int_to_py(py, &pc.n)?)?;
+    out.set_item("unit", pair(&pc.unit)?)?;
+    match &pc.negative_unit {
+        Some(u) => out.set_item("negative_unit", pair(u)?)?,
+        None => out.set_item("negative_unit", py.None())?,
+    }
+    let classes = pc.classes.iter().map(&pair).collect::<PyResult<Vec<_>>>()?;
+    out.set_item("classes", classes)?;
+    Ok(out.into())
+}
+
 #[cfg(feature = "groebner")]
 fn diophantine_error_to_py(e: DiophantineError) -> PyErr {
     // `DiophantineError` is an exhaustive public enum, so a budget trip is
@@ -21459,6 +21512,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add_class::<PyDiophantineSolution>()?;
         m.add_function(wrap_pyfunction!(py_solve_numerical, m)?)?;
         m.add_function(wrap_pyfunction!(py_diophantine, m)?)?;
+        m.add_function(wrap_pyfunction!(py_pell_classes, m)?)?;
         m.add_function(wrap_pyfunction!(py_solve, m)?)?;
         m.add_function(wrap_pyfunction!(py_solve_side_conditions, m)?)?;
         m.add_function(wrap_pyfunction!(py_triangularize, m)?)?;

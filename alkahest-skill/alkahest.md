@@ -978,6 +978,9 @@ precision you need instead of assuming a numeric answer.
 `gcd_sparse`, `sparse_interp`, `sparse_interp_univariate`, `factor_univariate_mod_p`,
 `primary_decomposition`, `radical`, `triangularize`, `rosenfeld_groebner`, and
 `diophantine` are all top-level exports for large / structured polynomial work.
+`diophantine` on `x² − D·y² = N` returns one solution class; `pell_classes(D, N)` returns
+every class (`{'unit', 'negative_unit', 'classes': [(x, y), …]}`): all solutions are
+`±(x_c + y_c√D)·(ux + uy√D)^k`.
 
 ---
 

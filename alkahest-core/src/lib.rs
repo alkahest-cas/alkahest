@@ -278,11 +278,11 @@ pub use primitive::{
 };
 #[cfg(feature = "groebner")]
 pub use solver::{
-    diophantine, expr_to_gbpoly, expr_to_param_gbpoly, extract_regular_chain_from_basis,
-    gbpoly_to_expr, main_variable_recursive, solve_numerical, solve_polynomial_system,
-    solve_transcendental, triangularize, CertifiedPoint, DiophantineError, DiophantineSolution,
-    HomotopyError, HomotopyOpts, RegularChain, Solution, SolutionSet, SolverError,
-    TranscendentalOutcome,
+    diophantine, diophantine_pell_classes, expr_to_gbpoly, expr_to_param_gbpoly,
+    extract_regular_chain_from_basis, gbpoly_to_expr, main_variable_recursive, solve_numerical,
+    solve_polynomial_system, solve_transcendental, triangularize, CertifiedPoint, DiophantineError,
+    DiophantineSolution, HomotopyError, HomotopyOpts, PellClasses, RegularChain, Solution,
+    SolutionSet, SolverError, TranscendentalOutcome,
 };
 
 pub fn version() -> &'static str {
