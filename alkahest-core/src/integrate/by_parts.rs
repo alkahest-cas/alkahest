@@ -921,10 +921,10 @@ fn rationalize_reciprocal(base: ExprId, pool: &ExprPool) -> Option<ExprId> {
     // Collect the distinct `sqrt(...)` subterms; exactly one is required.
     fn collect_sqrts(e: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>) {
         match pool.get(e) {
-            ExprData::Func { ref name, ref args } if name == "sqrt" && args.len() == 1 => {
-                if !out.contains(&e) {
-                    out.push(e);
-                }
+            ExprData::Func { ref name, ref args }
+                if name == "sqrt" && args.len() == 1 && !out.contains(&e) =>
+            {
+                out.push(e);
             }
             ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
                 for a in args {

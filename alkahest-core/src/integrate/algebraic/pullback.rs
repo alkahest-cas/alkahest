@@ -214,11 +214,11 @@ fn has_variable_radical(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
     }
     match pool.get(expr) {
         ExprData::Func { ref name, ref args }
-            if (name == "sqrt" || name == "cbrt") && args.len() == 1 =>
+            if (name == "sqrt" || name == "cbrt")
+                && args.len() == 1
+                && !is_free_of_var(args[0], var, pool) =>
         {
-            if !is_free_of_var(args[0], var, pool) {
-                return true;
-            }
+            return true;
         }
         ExprData::Pow { base, exp } => {
             if let ExprData::Rational(r) = pool.get(exp) {
