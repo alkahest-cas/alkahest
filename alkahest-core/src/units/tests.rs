@@ -313,3 +313,160 @@ fn registry_has_every_code() {
         assert!(codes.contains(&format!("E-UNIT-00{c}").as_str()));
     }
 }
+
+// ---------------------------------------------------------------------------
+// F18 follow-ups
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unify_converts_hours_plus_minutes() {
+    let p = ExprPool::new();
+    let a = p.symbol("a", Domain::Real);
+    let b = p.symbol("b", Domain::Real);
+    let mut m = HashMap::new();
+    m.insert(a, u("h"));
+    m.insert(b, u("min"));
+    let sum = p.add(vec![a, b]);
+    // still refused by dimension_of
+    assert_eq!(dimension_of(sum, &m, &p).unwrap_err().code(), "E-UNIT-006");
+    // finest: min, a scaled by 60
+    let (e, unit) = unify_units(sum, &m, &p, UnifyPolicy::Finest).unwrap();
+    assert_eq!(unit, u("min"));
+    assert_eq!(e, p.add(vec![p.mul(vec![p.integer(60), a]), b]));
+    // coarsest: h, b scaled by 1/60
+    let (e, unit) = unify_units(sum, &m, &p, UnifyPolicy::Coarsest).unwrap();
+    assert_eq!(unit, u("h"));
+    assert_eq!(e, p.add(vec![a, p.mul(vec![p.rational(1, 60), b])]));
+    // already-uniform sums come back untouched
+    m.insert(b, u("h"));
+    let (e2, unit) = unify_units(sum, &m, &p, UnifyPolicy::Finest).unwrap();
+    assert_eq!((e2, unit), (sum, u("h")));
+}
+
+#[test]
+fn unify_nested_and_refusals() {
+    let p = ExprPool::new();
+    let a = p.symbol("a", Domain::Real);
+    let b = p.symbol("b", Domain::Real);
+    let x = p.symbol("x", Domain::Real);
+    let c = p.symbol("c", Domain::Real);
+    let mut m = HashMap::new();
+    m.insert(a, u("h"));
+    m.insert(b, u("min"));
+    m.insert(x, u("m"));
+    m.insert(c, u("degC"));
+    // x * (a + b): the inner sum is converted, the product has unit m*min
+    let e = p.mul(vec![x, p.add(vec![a, b])]);
+    let (_, unit) = unify_units(e, &m, &p, UnifyPolicy::Finest).unwrap();
+    assert_eq!(unit, u("m*min"));
+    // different dimensions stay E-UNIT-001
+    let bad = p.add(vec![a, x]);
+    assert_eq!(
+        unify_units(bad, &m, &p, UnifyPolicy::Finest)
+            .unwrap_err()
+            .code(),
+        "E-UNIT-001"
+    );
+    // km^(1/2) stays E-UNIT-007
+    assert_eq!(u("km").pow(&q(1, 2)).unwrap_err().code(), "E-UNIT-007");
+    // an affine unit in a mixed sum is E-UNIT-003
+    let k = p.symbol("k", Domain::Real);
+    m.insert(k, u("degF"));
+    let aff = p.add(vec![c, k]);
+    assert_eq!(
+        unify_units(aff, &m, &p, UnifyPolicy::Finest)
+            .unwrap_err()
+            .code(),
+        "E-UNIT-003"
+    );
+    // max(a, b) converts
+    let mx = p.func("max", vec![a, b]);
+    let (e, unit) = unify_units(mx, &m, &p, UnifyPolicy::Finest).unwrap();
+    assert_eq!(unit, u("min"));
+    assert_eq!(e, p.func("max", vec![p.mul(vec![p.integer(60), a]), b]));
+}
+
+#[test]
+fn derived_unit_recognition() {
+    let n = |s: &str| u(s).simplify_derived(None).1.name();
+    assert_eq!(n("kg*m/s^2"), "N");
+    assert_eq!(n("kg*m^2/s^2"), "J");
+    assert_eq!(n("kg*m^2/s^3"), "W");
+    assert_eq!(n("kg/(m*s^2)"), "Pa");
+    assert_eq!(n("A*s"), "C");
+    assert_eq!(n("kg*m^2/(A*s^3)"), "V");
+    assert_eq!(n("kg*m^2/(A^2*s^3)"), "ohm");
+    assert_eq!(n("A^2*s^4/(kg*m^2)"), "F");
+    assert_eq!(n("kg*m^2/(A^2*s^2)"), "H");
+    assert_eq!(n("kg/(A*s^2)"), "T");
+    assert_eq!(n("kg*m^2/(A*s^2)"), "Wb");
+    assert_eq!(n("A^2*s^3/(kg*m^2)"), "S");
+    assert_eq!(n("1/s"), "Hz");
+    assert_eq!(n("N*m"), "J");
+    // prefixed, exact in steps of 1000
+    assert_eq!(n("g*m/s^2"), "mN");
+    assert_eq!(n("kg*km/s^2"), "kN");
+    // not exact / not applicable: left alone
+    assert_eq!(n("kg*cm/s^2"), "kg*cm/s^2");
+    assert_eq!(n("rad/s"), "rad/s");
+    assert_eq!(n("m/s"), "m/s");
+    assert_eq!(n("N"), "N");
+    assert_eq!(n("kPa"), "kPa");
+    // opt-out / allow-list
+    assert_eq!(u("kg*m/s^2").to_derived(Some(&["J"])), None);
+    assert!(u("kg*m/s^2").to_derived(Some(&["N", "J"])).is_some());
+}
+
+#[test]
+fn dimension_of_through_derivative_nodes() {
+    use crate::diff::undefined::derivative_of;
+    let p = ExprPool::new();
+    let t = p.symbol("t", Domain::Real);
+    let x = p.symbol("x", Domain::Real);
+    let mass = p.symbol("mass", Domain::Real);
+    let f = p.func("f", vec![t]);
+    let g = p.func("g", vec![x, t]);
+    let mut m = HashMap::new();
+    m.insert(t, u("s"));
+    m.insert(x, u("m"));
+    m.insert(f, u("m"));
+    m.insert(g, u("K"));
+    m.insert(mass, u("kg"));
+    let d1 = derivative_of(f, &[1], &p).unwrap();
+    assert_eq!(dimension_of(d1, &m, &p).unwrap(), u("m/s"));
+    let d2 = derivative_of(f, &[2], &p).unwrap();
+    assert_eq!(dimension_of(d2, &m, &p).unwrap(), u("m/s^2"));
+    let gxt = derivative_of(g, &[1, 1], &p).unwrap();
+    assert_eq!(dimension_of(gxt, &m, &p).unwrap(), u("K/(m*s)"));
+    let gxx = derivative_of(g, &[2, 0], &p).unwrap();
+    assert_eq!(dimension_of(gxx, &m, &p).unwrap(), u("K/m^2"));
+    // m * d^2f/dt^2 is a force; adding f is not
+    let force = p.mul(vec![mass, d2]);
+    assert_eq!(dimension_of(force, &m, &p).unwrap(), u("N"));
+    let bad = p.add(vec![d1, f]);
+    assert_eq!(dimension_of(bad, &m, &p).unwrap_err().code(), "E-UNIT-001");
+    // minutes in the independent variable change the scale
+    m.insert(t, u("min"));
+    assert_eq!(dimension_of(d1, &m, &p).unwrap(), u("m/min"));
+    // f with no unit: E-UNIT-005
+    m.remove(&f);
+    assert_eq!(dimension_of(d1, &m, &p).unwrap_err().code(), "E-UNIT-005");
+    // Integral(f, t) and the definite form
+    m.insert(f, u("m"));
+    m.insert(t, u("s"));
+    let i = p.func("Integral", vec![f, t]);
+    assert_eq!(dimension_of(i, &m, &p).unwrap(), u("m*s"));
+    let tt = p.symbol("T", Domain::Real);
+    m.insert(tt, u("s"));
+    let i = p.func("Integral", vec![f, t, p.integer(0), tt]);
+    assert_eq!(dimension_of(i, &m, &p).unwrap(), u("m*s"));
+}
+
+#[test]
+fn log_scale_units_are_refused_with_a_pointer() {
+    for name in ["dB", "Np", "dBm"] {
+        let e = parse_unit(name).unwrap_err();
+        assert_eq!(e.code(), "E-UNIT-002");
+        assert!(e.to_string().contains("logarithmic"), "{e}");
+    }
+}

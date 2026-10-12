@@ -59,10 +59,34 @@ Quantities
 
    ``alkahest.units.to_base``. Express ``q`` in coherent SI base units.
 
-.. function:: simplify_units(q: Quantity) -> Quantity
+.. function:: simplify_units(q: Quantity, derived: bool = True, allowed=None) -> Quantity
 
    Merge factors of equal dimension (``mg/kg·kg → mg``, ``km/m → 1``),
-   folding the exact ratio into the value.
+   folding the exact ratio into the value, then rename an exact match to a
+   named SI derived unit (``kg*m/s^2 → N``; ``N, Pa, J, W, C, V, ohm, F, H, T,
+   Wb, S, Hz``, power-of-1000 prefixes allowed). ``derived=False`` opts out;
+   ``allowed`` restricts the candidate names. ``Unit.to_derived(allowed=None)``
+   is the underlying lookup.
+
+Logarithmic scales
+------------------
+
+``dB``, ``Np`` and ``pH`` are not units (``Unit("dB")`` is ``E-UNIT-002``);
+they are converted explicitly in :mod:`alkahest.units`.
+
+.. function:: db_to_ratio(db, kind="power")
+.. function:: ratio_to_db(ratio, kind="power")
+.. function:: np_to_ratio(np_, kind="field")
+.. function:: ratio_to_np(ratio, kind="field")
+
+   ``10**(db/10)`` (power) or ``10**(db/20)`` (field) and its inverse;
+   ``exp(np)`` (field) or ``exp(2 np)`` (power) and its inverse. Exact for
+   exact powers of ten, symbolic otherwise, a float only for a float input.
+
+.. function:: ph_to_concentration(ph) -> Quantity
+.. function:: concentration_to_ph(c: Quantity)
+
+   ``10**(-pH)`` in ``mol/L`` and ``-log10(c / (1 mol/L))``.
 
 Dimensional analysis
 --------------------
@@ -80,6 +104,20 @@ Dimensional analysis
       C = F*D*ka/(V*(ka - ke)) * (exp(-ke*t) - exp(-ka*t))
       dimension_of(C, {F: "1", D: "mg", ka: "1/h", ke: "1/h", V: "L", t: "h"})
       # Unit('mg/L')
+
+   ``Derivative(f(u…), k…)`` nodes get ``unit(f)/Π unit(uᵢ)^kᵢ`` (so
+   ``f'' `` of ``f`` in ``m`` against ``t`` in ``s`` is ``m/s^2``), and
+   ``Integral(f, x[, a, b])`` nodes ``unit(f)·unit(x)``.
+
+.. function:: alkahest.units.unify_units(expr: Expr, units: dict, prefer="finest") -> Quantity
+
+   Like :func:`dimension_of`, but a sum whose terms share a dimension and
+   differ in unit (``h`` and ``min``) is converted exactly instead of refused
+   with ``E-UNIT-006``: ``a + b`` with ``a`` in ``h``, ``b`` in ``min`` becomes
+   ``60*a + b`` in ``min``. ``prefer`` is ``"finest"`` (default),
+   ``"coarsest"`` or ``"first"``. Also applies to ``min``/``max``/``atan2``
+   arguments and ``Piecewise`` values. Returns a ``Quantity`` (rewritten
+   formula, unit). Other refusals of :func:`dimension_of` stand.
 
 Calculus with units
 -------------------

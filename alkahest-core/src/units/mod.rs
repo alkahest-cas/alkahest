@@ -26,13 +26,15 @@
 //! Unit strings are parsed by [`parse_unit`]: `"mg*h/L"`, `"m/s^2"`,
 //! `"kg m s^-2"`, `"m^(1/2)"`, `"µg/mL"`, `"kWh"`, `"°C"`.
 
+mod derived;
 mod dimension;
 mod parse;
 mod table;
 #[cfg(test)]
 mod tests;
 
-pub use dimension::dimension_of;
+pub use derived::DERIVED_UNITS;
+pub use dimension::{dimension_of, unify_units, UnifyPolicy};
 pub use parse::parse_unit;
 pub use table::known_units;
 
@@ -222,7 +224,7 @@ impl crate::errors::AlkahestError for UnitError {
                 "give every symbol (or applied function such as C(t)) a unit in the units mapping"
             }
             UnitError::MixedScales { .. } => {
-                "assign the same unit to every symbol of one dimension (e.g. all times in h), or convert the quantities before forming the sum"
+                "assign the same unit to every symbol of one dimension (e.g. all times in h), or let alkahest.units.unify_units convert the mixed sum exactly to a common unit"
             }
             UnitError::IrrationalScale { .. } => {
                 "use the coherent SI unit (e.g. m^(1/2) instead of km^(1/2)) for fractional powers"
