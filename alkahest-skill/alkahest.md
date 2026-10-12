@@ -823,7 +823,17 @@ from alkahest import numpy_eval, numpy_eval_par
 xs = np.linspace(0, 1, 1_000_000)
 ys = numpy_eval(f, xs)        # ndarray; much faster than a Python loop
 ys = numpy_eval_par(f, xs)    # multi-core; requires the parallel feature (on in every wheel)
+
+# Several outputs in one pass (gradients, Jacobians): shared subexpressions once
+g = compile_expr(ak.symbolic_grad(U, [x, y]), [x, y])   # CompiledVecFn
+g([1.0, 2.0])                 # -> [dU/dx, dU/dy] (a list)
+numpy_eval(g, xs, ys)         # ndarray of shape (2, len(xs))
 ```
+
+`compile_expr` refuses, rather than returning NaN everywhere: a free symbol missing from
+the input list (`E-JIT-005`) and a function with no numeric implementation — an undefined
+`f(x)` or a `Derivative` of one (`E-JIT-006`). Batch evaluation runs one native loop
+over the arrays in place; expect roughly NumPy/`lambdify` speed single-threaded.
 
 **`parallel` is `True` in the default PyPI wheel** (Linux, macOS and Windows), so `*_par`
 really is multi-core there. But it is not a Cargo *default*: on a source build that did

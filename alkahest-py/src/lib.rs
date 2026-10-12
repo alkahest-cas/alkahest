@@ -11550,6 +11550,12 @@ fn jit_compile_error_to_py(e: alkahest_core::JitError) -> PyErr {
             make_structured_err(py, &exc_type, &refusal)
         });
     }
+    if let Some(refusal) = alkahest_core::take_unevaluable_functions() {
+        return Python::with_gil(|py| {
+            let exc_type = py.get_type_bound::<PyJitError>();
+            make_structured_err(py, &exc_type, &refusal)
+        });
+    }
     pyo3::exceptions::PyRuntimeError::new_err(e.to_string())
 }
 
@@ -11562,14 +11568,27 @@ fn jit_compile_error_to_py(e: alkahest_core::JitError) -> PyErr {
 /// small expression that would otherwise get the interpreter be compiled
 /// natively up front. Without it, the first large batch call upgrades the
 /// function on its own (see `PyCompiledFn::batch_fn`).
+///
+/// Given a list (or tuple) of expressions instead of one, returns a
+/// `CompiledVecFn` evaluating all of them in one pass per point, with the
+/// subexpressions they share computed once — the shape of a gradient or a
+/// Jacobian. `numpy_eval` on it returns an array with one row per output.
 #[pyfunction]
 #[pyo3(name = "compile_expr", signature = (expr, inputs, expected_evals = None))]
 fn py_compile_expr(
     py: Python<'_>,
-    expr: PyRef<PyExpr>,
+    expr: &Bound<'_, PyAny>,
     inputs: &Bound<'_, PyList>,
     expected_evals: Option<u64>,
-) -> PyResult<PyCompiledFn> {
+) -> PyResult<PyObject> {
+    if expr.is_instance_of::<PyList>() || expr.is_instance_of::<PyTuple>() {
+        return py_compile_many(py, expr, inputs).map(|f| f.into_py(py));
+    }
+    let expr: PyRef<PyExpr> = expr.extract()?;
+    py_compile_one(py, expr, inputs, expected_evals).map(|f| f.into_py(py))
+}
+
+fn warn_no_native_jit(py: Python<'_>) -> PyResult<()> {
     if !core_jit_available() {
         let warnings = py.import_bound("warnings")?;
         warnings.call_method1(
@@ -11586,6 +11605,49 @@ fn py_compile_expr(
             ),
         )?;
     }
+    Ok(())
+}
+
+/// `compile_expr([e1, e2, …], inputs)`.
+fn py_compile_many(
+    py: Python<'_>,
+    exprs: &Bound<'_, PyAny>,
+    inputs: &Bound<'_, PyList>,
+) -> PyResult<PyCompiledVecFn> {
+    let items: Vec<Bound<'_, PyAny>> = exprs.iter()?.collect::<PyResult<_>>()?;
+    let Some(first) = items.first() else {
+        return Err(PyValueError::new_err(
+            "compile_expr() was given an empty list of expressions; pass at least one",
+        ));
+    };
+    let first: PyRef<PyExpr> = first.extract()?;
+    let pool_obj = first.pool.clone_ref(py);
+    drop(first);
+    warn_no_native_jit(py)?;
+    let out_ids: Vec<ExprId> = items
+        .iter()
+        .map(|item| Ok(extract_expr_in(item, &pool_obj, "compile_expr", "an output")?.id))
+        .collect::<PyResult<_>>()?;
+    let input_ids: Vec<ExprId> = inputs
+        .iter()
+        .map(|item| Ok(extract_expr_in(&item, &pool_obj, "compile_expr", "an input")?.id))
+        .collect::<PyResult<_>>()?;
+    let pool = pool_obj.borrow(py);
+    guard_depth_all(&pool.inner, &out_ids)?;
+    let compiled = alkahest_core::compile_many(&out_ids, &input_ids, &pool.inner)
+        .map_err(jit_compile_error_to_py)?;
+    Ok(PyCompiledVecFn {
+        inner: Arc::new(compiled),
+    })
+}
+
+fn py_compile_one(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    inputs: &Bound<'_, PyList>,
+    expected_evals: Option<u64>,
+) -> PyResult<PyCompiledFn> {
+    warn_no_native_jit(py)?;
 
     let pool = expr.pool.borrow(py);
     guard_depth(&pool.inner, expr.id)?;
@@ -11838,6 +11900,131 @@ impl PyCompiledFn {
     }
 }
 
+/// Several outputs compiled together: `compile_expr([e1, e2, …], inputs)`.
+///
+/// Calling it on one point returns a list with one value per output;
+/// `numpy_eval(f, xs, ys)` returns an array of shape `(n_outputs, *xs.shape)`.
+/// Subexpressions the outputs share are evaluated once per point, and every
+/// output equals what `compile_expr` of that expression alone returns.
+#[pyclass(name = "CompiledVecFn", unsendable)]
+struct PyCompiledVecFn {
+    inner: Arc<alkahest_core::CompiledVecFn>,
+}
+
+#[pymethods]
+impl PyCompiledVecFn {
+    /// Evaluate every output at one point, given as a single sequence of
+    /// floats (one per input variable). Returns a list of `n_outputs` floats.
+    fn __call__(&self, point: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
+        let n = self.inner.n_inputs();
+        let inputs: Vec<f64> = point.extract().map_err(|_| {
+            PyTypeError::new_err(format!(
+                "CompiledVecFn takes the {n} input value(s) as a single sequence, e.g. \
+                 f([1.0, 2.0]); got {}. To evaluate over arrays use alkahest.numpy_eval(f, xs, ys).",
+                py_type_name(point)
+            ))
+        })?;
+        if inputs.len() != n {
+            return Err(PyValueError::new_err(format!(
+                "expected {n} inputs, got {}",
+                inputs.len()
+            )));
+        }
+        let mut out = vec![0.0; self.inner.n_outputs()];
+        self.inner.call(&inputs, &mut out);
+        Ok(out)
+    }
+
+    #[getter]
+    fn n_inputs(&self) -> usize {
+        self.inner.n_inputs()
+    }
+
+    #[getter]
+    fn n_outputs(&self) -> usize {
+        self.inner.n_outputs()
+    }
+
+    /// Backend evaluating the outputs: ``"interpreter"``, ``"cranelift"`` or
+    /// ``"llvm"``.
+    #[getter]
+    fn tier(&self) -> &'static str {
+        compile_tier_name(self.inner.compile_tier())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "<CompiledVecFn n_inputs={} n_outputs={} tier={}>",
+            self.inner.n_inputs(),
+            self.inner.n_outputs(),
+            compile_tier_name(self.inner.compile_tier())
+        )
+    }
+
+    /// Zero-copy batch evaluation (internal: used by `numpy_eval`).
+    /// `output` is a writable C-contiguous float64 array of shape
+    /// `(n_outputs, n_points)`.
+    #[pyo3(signature = (inputs, output, parallel = false))]
+    fn _call_batch_arrays(
+        &self,
+        py: Python<'_>,
+        inputs: &Bound<'_, PyList>,
+        output: &Bound<'_, PyAny>,
+        parallel: bool,
+    ) -> PyResult<()> {
+        let n_out = self.inner.n_outputs();
+        let out = array_view(output, true, "output")?;
+        if out.shape.len() != 2 || out.shape[0] != n_out {
+            return Err(PyValueError::new_err(format!(
+                "output must have shape ({n_out}, n_points), got {:?}",
+                out.shape
+            )));
+        }
+        let n = out.shape[1];
+        if inputs.len() != self.inner.n_inputs() {
+            return Err(PyValueError::new_err(format!(
+                "expected {} input array(s), got {}",
+                self.inner.n_inputs(),
+                inputs.len()
+            )));
+        }
+        let views: Vec<ArrayView> = inputs
+            .iter()
+            .map(|a| array_view(&a, false, "each input"))
+            .collect::<PyResult<_>>()?;
+        if let Some(v) = views.iter().find(|v| v.len() != n) {
+            return Err(PyValueError::new_err(format!(
+                "all input arrays must have {n} elements, got {}",
+                v.len()
+            )));
+        }
+        if n == 0 || n_out == 0 {
+            return Ok(());
+        }
+        let bytes = n * std::mem::size_of::<f64>();
+        let out_range = out.addr..out.addr + n_out * bytes;
+        let mut owned = Vec::new();
+        // SAFETY: as in `PyCompiledFn::_call_batch_arrays`; the output rows
+        // are disjoint `n`-element slices of one validated array.
+        let cols = unsafe { batch_columns(&views, n, out_range, &mut owned) };
+        let mut rows: Vec<&mut [f64]> = (0..n_out)
+            .map(|k| unsafe {
+                std::slice::from_raw_parts_mut((out.addr + k * bytes) as *mut f64, n)
+            })
+            .collect();
+        let f = self.inner.clone();
+        py.allow_threads(|| {
+            #[cfg(feature = "parallel")]
+            if parallel {
+                return f.call_batch_par(&cols, &mut rows);
+            }
+            let _ = parallel;
+            f.call_batch(&cols, &mut rows)
+        });
+        Ok(())
+    }
+}
+
 fn compile_tier_name(tier: alkahest_core::CompileTier) -> &'static str {
     match tier {
         alkahest_core::CompileTier::Interpreter => "interpreter",
@@ -11848,6 +12035,113 @@ fn compile_tier_name(tier: alkahest_core::CompileTier) -> &'static str {
         #[allow(unreachable_patterns)]
         _ => "native",
     }
+}
+
+/// A C-contiguous native-endian `float64` array, seen through its
+/// `__array_interface__`: the address of its first element and its shape.
+///
+/// This is how `numpy_eval` hands arrays to the compiled code without
+/// copying them. It needs only attribute access, so it works on every build —
+/// including the limited-API (abi3) builds for Python < 3.11, where PyO3's
+/// buffer protocol does not exist and the batch path used to fall back to
+/// `.tolist()`, boxing one Python `float` per element.
+struct ArrayView {
+    addr: usize,
+    shape: Vec<usize>,
+}
+
+impl ArrayView {
+    fn len(&self) -> usize {
+        self.shape.iter().product()
+    }
+}
+
+fn array_view(obj: &Bound<'_, PyAny>, writable: bool, what: &str) -> PyResult<ArrayView> {
+    let bad = |why: &str| {
+        PyTypeError::new_err(format!(
+            "{what} must be a C-contiguous float64 NumPy array ({why})"
+        ))
+    };
+    let iface = obj
+        .getattr("__array_interface__")
+        .map_err(|_| bad("it has no __array_interface__"))?;
+    let d = iface
+        .downcast::<PyDict>()
+        .map_err(|_| bad("__array_interface__ is not a dict"))?;
+    let get = |key: &str| d.get_item(key).ok().flatten();
+    let typestr: String = get("typestr")
+        .and_then(|t| t.extract().ok())
+        .ok_or_else(|| bad("no typestr"))?;
+    let native = if cfg!(target_endian = "little") {
+        "<f8"
+    } else {
+        ">f8"
+    };
+    if typestr != native {
+        return Err(bad(&format!("dtype {typestr}")));
+    }
+    if get("mask").is_some_and(|m| !m.is_none()) {
+        return Err(bad("masked arrays are not supported"));
+    }
+    let shape: Vec<usize> = get("shape")
+        .and_then(|t| t.extract().ok())
+        .ok_or_else(|| bad("no shape"))?;
+    if let Some(strides) = get("strides").filter(|s| !s.is_none()) {
+        let strides: Vec<isize> = strides.extract().map_err(|_| bad("unreadable strides"))?;
+        // C order: the last axis has stride 8, each earlier one the product
+        // of the later extents. Axes of extent 1 may carry any stride.
+        let mut expect = std::mem::size_of::<f64>() as isize;
+        for (&n, &st) in shape.iter().zip(&strides).rev() {
+            if n > 1 && st != expect {
+                return Err(bad("not C-contiguous"));
+            }
+            expect = expect.saturating_mul(n as isize);
+        }
+    }
+    let (addr, readonly): (usize, bool) = get("data")
+        .and_then(|t| t.extract().ok())
+        .ok_or_else(|| bad("no data pointer"))?;
+    if writable && readonly {
+        return Err(PyValueError::new_err(format!("{what} is read-only")));
+    }
+    if addr % std::mem::align_of::<f64>() != 0 {
+        return Err(bad("misaligned data"));
+    }
+    Ok(ArrayView { addr, shape })
+}
+
+/// Input columns for a batch, read in place — except a column that overlaps
+/// the output memory, which is copied first so the evaluation never reads a
+/// value it has already overwritten (`numpy_eval` into one of its own
+/// inputs).
+///
+/// # Safety
+///
+/// Each view must describe a live array of `n` elements, kept alive (and not
+/// resized) by the caller for as long as the returned slices are used.
+unsafe fn batch_columns(
+    views: &[ArrayView],
+    n: usize,
+    out: std::ops::Range<usize>,
+    owned: &mut Vec<Vec<f64>>,
+) -> Vec<&'static [f64]> {
+    let bytes = n * std::mem::size_of::<f64>();
+    let mut cols: Vec<&'static [f64]> = Vec::with_capacity(views.len());
+    let mut copies: Vec<(usize, Vec<f64>)> = Vec::new();
+    for (i, v) in views.iter().enumerate() {
+        let col = std::slice::from_raw_parts(v.addr as *const f64, n);
+        let range = v.addr..v.addr + bytes;
+        if range.start < out.end && out.start < range.end {
+            copies.push((i, col.to_vec()));
+        }
+        cols.push(col);
+    }
+    for (i, copy) in copies {
+        owned.push(copy);
+        let last = owned.last().expect("just pushed");
+        cols[i] = std::slice::from_raw_parts(last.as_ptr(), n);
+    }
+    cols
 }
 
 /// Validate the shape arguments of `call_batch_raw` / `call_batch_raw_par`
@@ -11907,6 +12201,62 @@ fn check_batch_raw_shape(
 
 #[pymethods]
 impl PyCompiledFn {
+    /// Zero-copy batch evaluation over NumPy arrays (internal: used by
+    /// `numpy_eval` / `numpy_eval_par`).
+    ///
+    /// `inputs` holds one C-contiguous float64 array per input variable and
+    /// `output` a writable one; all have the same number of elements. The
+    /// arrays are read and written in place with the GIL released.
+    #[pyo3(signature = (inputs, output, parallel = false))]
+    fn _call_batch_arrays(
+        &self,
+        py: Python<'_>,
+        inputs: &Bound<'_, PyList>,
+        output: &Bound<'_, PyAny>,
+        parallel: bool,
+    ) -> PyResult<()> {
+        let out = array_view(output, true, "output")?;
+        let n = out.len();
+        if inputs.len() != self.inner.n_inputs {
+            return Err(PyValueError::new_err(format!(
+                "expected {} input array(s), got {}",
+                self.inner.n_inputs,
+                inputs.len()
+            )));
+        }
+        let views: Vec<ArrayView> = inputs
+            .iter()
+            .map(|a| array_view(&a, false, "each input"))
+            .collect::<PyResult<_>>()?;
+        if let Some(v) = views.iter().find(|v| v.len() != n) {
+            return Err(PyValueError::new_err(format!(
+                "all input arrays must have {n} elements, got {}",
+                v.len()
+            )));
+        }
+        if n == 0 {
+            return Ok(());
+        }
+        let out_range = out.addr..out.addr + n * std::mem::size_of::<f64>();
+        let mut owned = Vec::new();
+        // SAFETY: `inputs` and `output` stay referenced by this frame for the
+        // whole call, and an array with a live reference cannot be resized;
+        // every view was validated as `n` contiguous f64 values.
+        let cols = unsafe { batch_columns(&views, n, out_range, &mut owned) };
+        let out_slice: &mut [f64] =
+            unsafe { std::slice::from_raw_parts_mut(out.addr as *mut f64, n) };
+        let f = self.batch_fn(py, n);
+        py.allow_threads(|| {
+            #[cfg(feature = "parallel")]
+            if parallel {
+                return f.call_batch_par(&cols, out_slice);
+            }
+            let _ = parallel;
+            f.call_batch(&cols, out_slice)
+        });
+        Ok(())
+    }
+
     /// Evaluate at **one point**, given as a single sequence of floats.
     ///
     /// `f([1.0, 2.0])` — one argument holding every input value, not one
@@ -20975,6 +21325,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_jit_is_available, m)?)?;
     m.add_function(wrap_pyfunction!(py_build_features, m)?)?;
     m.add_class::<PyCompiledFn>()?;
+    m.add_class::<PyCompiledVecFn>()?;
     m.add_class::<PyCompileCache>()?;
     // Phase 22 — Ball arithmetic
     m.add_class::<PyArbBall>()?;

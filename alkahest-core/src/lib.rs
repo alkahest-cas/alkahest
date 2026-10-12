@@ -185,6 +185,10 @@ pub use sum::{
 };
 
 // Phase 21 — JIT
+pub use jit::{
+    check_functions_evaluable, compile_many, compile_many_with, take_unevaluable_functions,
+    CompiledVecFn, UnevaluableFunctionError,
+};
 pub use jit::{check_inputs_bind, take_unbound_symbols, UnboundSymbolsError};
 pub use jit::{
     compile, compile_jit_only, compile_with, eval_interp, eval_interp_checked, expr_subgraph_size,

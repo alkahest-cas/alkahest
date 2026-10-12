@@ -51,13 +51,16 @@ if TYPE_CHECKING:
 def _call_batch(compiled_fn, flat_arrays: Sequence, n_points: int, *, parallel: bool = False):
     """Dispatch a batch evaluation to the fastest available native path.
 
-    Prefers ``call_batch_buffer`` (or ``call_batch_buffer_par``), which reads
-    the input NumPy buffers and writes the output buffer via bulk
-    (``memcpy``-style) copies with the GIL released during evaluation —
-    no per-element Python `float` boxing.  Falls back to the legacy
-    ``call_batch_raw`` (which requires a flat Python list, i.e. ``.tolist()``)
-    only when running against an older/foreign extension build that lacks
-    the buffer-protocol methods.
+    Prefers ``_call_batch_arrays``, which reads the input arrays and writes
+    the output array **in place** (through ``__array_interface__``) with the
+    GIL released — no copy, no per-element Python ``float``. It exists on
+    every build, including the limited-API wheels for Python 3.9/3.10, which
+    have no buffer protocol and used to fall back to ``.tolist()``. Then
+    ``call_batch_buffer`` (one bulk copy per array), and last the legacy
+    ``call_batch_raw`` for an older/foreign extension build.
+
+    For a multi-output :class:`CompiledVecFn` the result has shape
+    ``(n_outputs, n_points)``.
 
     Parameters
     ----------
@@ -75,6 +78,13 @@ def _call_batch(compiled_fn, flat_arrays: Sequence, n_points: int, *, parallel: 
         Flat ``float64`` array of length ``n_points``.
     """
     import numpy as np
+
+    if hasattr(compiled_fn, "_call_batch_arrays"):
+        n_out = getattr(compiled_fn, "n_outputs", None)
+        shape = (n_out, n_points) if isinstance(n_out, int) else (n_points,)
+        result = np.empty(shape, dtype=np.float64)
+        compiled_fn._call_batch_arrays(list(flat_arrays), result, parallel)
+        return result
 
     buffer_method = "call_batch_buffer_par" if parallel else "call_batch_buffer"
     if hasattr(compiled_fn, buffer_method):
@@ -174,9 +184,18 @@ def numpy_eval_dlpack(compiled_fn, *arrays):
         raise ValueError("all input arrays must have the same number of elements")
 
     result = _call_batch(compiled_fn, flat_arrays, n_points)
+    return _shape_result(compiled_fn, result, out_shape)
+
+
+def _shape_result(compiled_fn, result, out_shape):
+    """Give a flat batch result the input's shape (one row per output for a
+    multi-output :class:`CompiledVecFn`)."""
+    n_out = getattr(compiled_fn, "n_outputs", None)
+    if isinstance(n_out, int):
+        return result.reshape((n_out, *out_shape))
     if out_shape:
-        result = result.reshape(out_shape)
+        return result.reshape(out_shape)
     return result
 
 
-__all__ = ["_call_batch", "_to_numpy", "numpy_eval_dlpack"]
+__all__ = ["_call_batch", "_shape_result", "_to_numpy", "numpy_eval_dlpack"]

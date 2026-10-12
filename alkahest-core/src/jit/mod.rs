@@ -81,6 +81,8 @@ pub mod cache;
 
 #[cfg(test)]
 mod agreement_tests;
+#[cfg(test)]
+mod batch_tests;
 pub use cache::CompileCache;
 
 // ---------------------------------------------------------------------------
@@ -92,8 +94,17 @@ pub use cache::CompileCache;
 pub(super) type JitScalarFn = unsafe extern "C" fn(*const f64, u64) -> f64;
 
 /// Bulk JIT entry: column-major `inputs` (`n_vars * n_points` values), `outputs` length `n_points`.
-#[cfg(any(feature = "jit", feature = "cranelift"))]
+#[cfg(feature = "jit")]
 pub(super) type JitBulkFn = unsafe extern "C" fn(*const f64, u64, *mut f64, u64);
+
+/// Column JIT entry: `cols[i]` points at input column `i`, `outs[k]` at output
+/// column `k`; evaluates points `start..end` (indices into every column).
+///
+/// One entry point serves a whole batch, a Rayon chunk of one (a sub-range),
+/// a single point of a multi-output function (`start = 0, end = 1` over
+/// pointers to scalars), and any number of outputs sharing subexpressions.
+#[cfg(feature = "cranelift")]
+pub(super) type JitColsFn = unsafe extern "C" fn(*const *const f64, *const *mut f64, u64, u64);
 
 /// Interpreter closure type for the Rust fallback backend.
 pub(super) type InterpreterFn = Box<dyn Fn(&[f64]) -> f64 + Send + Sync>;
@@ -383,13 +394,149 @@ pub fn check_inputs_bind(
 
 /// Refuse a compile whose expression has an unbound symbol, recording the
 /// refusal for [`take_unbound_symbols`].
+///
+/// Also refuses an expression that applies a function with no numeric
+/// kernel (`E-JIT-006`, see [`UnevaluableFunctionError`]).
 fn refuse_unbound(expr: ExprId, inputs: &[ExprId], pool: &ExprPool) -> Result<(), JitError> {
     LAST_UNBOUND.with(|c| *c.borrow_mut() = None);
+    LAST_UNEVALUABLE.with(|c| *c.borrow_mut() = None);
     check_inputs_bind(expr, inputs, pool).map_err(|e| {
         let err = JitError::UnsupportedNode(e.to_string());
         LAST_UNBOUND.with(|c| *c.borrow_mut() = Some(e));
         err
+    })?;
+    check_functions_evaluable(expr, pool).map_err(|e| {
+        let err = JitError::UnsupportedNode(e.to_string());
+        LAST_UNEVALUABLE.with(|c| *c.borrow_mut() = Some(e));
+        err
     })
+}
+
+// ---------------------------------------------------------------------------
+// Functions with no numeric kernel — refused at compile time (E-JIT-006)
+// ---------------------------------------------------------------------------
+
+/// A compile request whose expression applies a function that has no numeric
+/// kernel (`E-JIT-006`): an undefined function `f(x)`, a `Derivative` of one,
+/// or any other head the primitive registry does not know.
+///
+/// Every evaluator reaches such a node on every evaluation and can only give
+/// up there, so the compiled function would be `NaN` at every point. It used
+/// to be exactly that, silently: `compile_expr(f(x), [x])` compiled, and every
+/// call and every batch returned `NaN`. [`compile`], [`compile_with`],
+/// [`compile_jit_only`] and [`compile_many`] refuse it instead.
+///
+/// Like [`UnboundSymbolsError`], it travels in band as
+/// [`JitError::UnsupportedNode`] (an exhaustive public enum cannot grow a
+/// variant) and out of band through [`take_unevaluable_functions`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnevaluableFunctionError {
+    /// The function names, sorted and de-duplicated.
+    names: Vec<String>,
+}
+
+impl UnevaluableFunctionError {
+    /// Names of the functions that have no numeric kernel, sorted.
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+}
+
+impl fmt::Display for UnevaluableFunctionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let plural = if self.names.len() == 1 { "" } else { "s" };
+        write!(
+            f,
+            "cannot compile: the expression applies function{plural} {} with no numeric \
+             implementation (an undefined function, or a derivative of one), so the compiled \
+             function would be NaN at every point",
+            self.names.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for UnevaluableFunctionError {}
+
+impl crate::errors::AlkahestError for UnevaluableFunctionError {
+    fn code(&self) -> &'static str {
+        "E-JIT-006"
+    }
+
+    fn remediation(&self) -> Option<&'static str> {
+        Some(
+            "substitute a concrete expression for each undefined function (and evaluate its \
+             derivatives) before compiling",
+        )
+    }
+}
+
+thread_local! {
+    static LAST_UNEVALUABLE: std::cell::RefCell<Option<UnevaluableFunctionError>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Take the `E-JIT-006` refusal behind the [`JitError`] that just came back
+/// from a compile on this thread, if that is what it was. Consuming, and
+/// cleared at the start of every compile — see [`take_unbound_symbols`].
+pub fn take_unevaluable_functions() -> Option<UnevaluableFunctionError> {
+    LAST_UNEVALUABLE.with(|c| c.borrow_mut().take())
+}
+
+/// Check that every function `expr` applies has a numeric kernel in the
+/// primitive registry — the table every evaluator dispatches `Func` nodes to.
+pub fn check_functions_evaluable(
+    expr: ExprId,
+    pool: &ExprPool,
+) -> Result<(), UnevaluableFunctionError> {
+    let mut visited = IdSet::default();
+    let mut stack = vec![expr];
+    let mut missing: std::collections::BTreeSet<String> = Default::default();
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        pool.with(id, |data| match data {
+            ExprData::Func { name, args } => {
+                // `RootOf` is a constant every evaluator computes itself (from
+                // its integer arguments), not a registry primitive.
+                if name != crate::poly::root_of::ROOT_OF && registry().get(name).is_none() {
+                    missing.insert(name.clone());
+                }
+                stack.extend_from_slice(args);
+            }
+            ExprData::Add(args) | ExprData::Mul(args) | ExprData::Predicate { args, .. } => {
+                stack.extend_from_slice(args);
+            }
+            ExprData::Pow { base, exp } => {
+                stack.push(*base);
+                stack.push(*exp);
+            }
+            ExprData::Piecewise { branches, default } => {
+                for &(c, v) in branches {
+                    stack.push(c);
+                    stack.push(v);
+                }
+                stack.push(*default);
+            }
+            ExprData::BigO(inner) => stack.push(*inner),
+            ExprData::Forall { body, .. } | ExprData::Exists { body, .. } => stack.push(*body),
+            ExprData::RootSum { poly, body, .. } => {
+                stack.push(*poly);
+                stack.push(*body);
+            }
+            ExprData::Symbol { .. }
+            | ExprData::Integer(_)
+            | ExprData::Rational(_)
+            | ExprData::Float(_) => {}
+        });
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(UnevaluableFunctionError {
+            names: missing.into_iter().collect(),
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -412,8 +559,11 @@ enum CompiledFnInner {
     #[cfg(feature = "cranelift")]
     Cranelift {
         fn_ptr: JitScalarFn,
-        bulk_fn: Option<JitBulkFn>,
-        /// Owns the code pages `fn_ptr` and `bulk_fn` point into, and frees
+        cols_fn: JitColsFn,
+        /// The registry primitives the code calls through its generic
+        /// trampolines; the code embeds the address of each element.
+        _prims: Box<[&'static dyn crate::primitive::Primitive]>,
+        /// Owns the code pages `fn_ptr` and `cols_fn` point into, and frees
         /// them when this variant is dropped (see
         /// [`cranelift_backend::OwnedJitModule`]).
         _module: Box<cranelift_backend::OwnedJitModule>,
@@ -437,7 +587,7 @@ thread_local! {
 
 /// Points per Rayon task in [`CompiledFn::call_batch_par`].
 #[cfg(feature = "parallel")]
-const PAR_CHUNK: usize = 2048;
+const PAR_CHUNK: usize = 8192;
 
 /// A compiled function that evaluates a symbolic expression numerically.
 ///
@@ -517,19 +667,15 @@ impl CompiledFn {
             };
         }
         #[cfg(feature = "cranelift")]
-        if let CompiledFnInner::Cranelift {
-            bulk_fn: Some(bulk_fn),
-            ..
-        } = &self.inner
-        {
-            return unsafe {
-                bulk_fn(
-                    inputs_flat.as_ptr(),
-                    self.n_inputs as u64,
-                    output.as_mut_ptr(),
-                    n_points as u64,
-                )
-            };
+        if let CompiledFnInner::Cranelift { cols_fn, .. } = &self.inner {
+            let cols: Vec<*const f64> = (0..self.n_inputs)
+                .map(|i| inputs_flat[i * n_points..].as_ptr())
+                .collect();
+            let outs = [output.as_mut_ptr()];
+            // SAFETY: every column holds `n_points` values (asserted above)
+            // and the output slice is exclusively borrowed.
+            unsafe { cols_fn(cols.as_ptr(), outs.as_ptr(), 0, n_points as u64) };
+            return;
         }
         if let CompiledFnInner::Program(p) = &self.inner {
             return p.eval_columns(inputs_flat, output);
@@ -573,6 +719,17 @@ impl CompiledFn {
         if let CompiledFnInner::Program(p) = &self.inner {
             return p.eval_slices(inputs, output, 0);
         }
+        // Cranelift reads the columns where they are: no copy, no allocation
+        // beyond one pointer per column.
+        #[cfg(feature = "cranelift")]
+        if let CompiledFnInner::Cranelift { cols_fn, .. } = &self.inner {
+            let cols: Vec<*const f64> = inputs.iter().map(|c| c.as_ptr()).collect();
+            let outs = [output.as_mut_ptr()];
+            // SAFETY: every column has `n` values (asserted above) and the
+            // output slice is exclusively borrowed.
+            unsafe { cols_fn(cols.as_ptr(), outs.as_ptr(), 0, n as u64) };
+            return;
+        }
         // Column-major flat layout matches `call_bulk` / Python `call_batch_raw`.
         let mut flat = Vec::with_capacity(self.n_inputs * n);
         for col in inputs {
@@ -609,6 +766,37 @@ impl CompiledFn {
         );
         for col in inputs {
             assert_eq!(col.len(), n, "all input arrays must have the same length");
+        }
+
+        // Below a couple of chunks, threads cost more than they save.
+        if n < 2 * PAR_CHUNK {
+            return self.call_batch(inputs, output);
+        }
+
+        // Cranelift: each chunk is one call of the column entry over its own
+        // index range — nothing is copied or allocated per chunk.
+        #[cfg(feature = "cranelift")]
+        if let CompiledFnInner::Cranelift { cols_fn, .. } = &self.inner {
+            let cols: Vec<usize> = inputs.iter().map(|c| c.as_ptr() as usize).collect();
+            let out_base = output.as_mut_ptr() as usize;
+            let cols_fn = *cols_fn;
+            (0..n.div_ceil(PAR_CHUNK)).into_par_iter().for_each(|c| {
+                let start = c * PAR_CHUNK;
+                let end = (start + PAR_CHUNK).min(n);
+                let outs = [out_base as *mut f64];
+                // SAFETY: the columns hold `n` values each; the chunks are
+                // disjoint index ranges of `output`, which this call borrows
+                // exclusively, so no two tasks write the same element.
+                unsafe {
+                    cols_fn(
+                        cols.as_ptr() as *const *const f64,
+                        outs.as_ptr(),
+                        start as u64,
+                        end as u64,
+                    )
+                };
+            });
+            return;
         }
 
         // Each point is independent. Work is split into chunks so the
@@ -654,6 +842,254 @@ impl CompiledFn {
 //      keep the code pages alive and are never accessed after construction.
 unsafe impl Send for CompiledFn {}
 unsafe impl Sync for CompiledFn {}
+
+// ---------------------------------------------------------------------------
+// CompiledVecFn — several outputs, one pass
+// ---------------------------------------------------------------------------
+
+enum CompiledVecInner {
+    /// One native loop computing every output per point; subexpressions the
+    /// outputs share (the common factors of a gradient or Jacobian) are
+    /// evaluated once.
+    #[cfg(feature = "cranelift")]
+    Cranelift {
+        cols_fn: JitColsFn,
+        _prims: Box<[&'static dyn crate::primitive::Primitive]>,
+        _module: Box<cranelift_backend::OwnedJitModule>,
+    },
+    /// No native backend (or one that declined): each output compiled on its
+    /// own, through the same tiers as [`compile_with`].
+    PerOutput(Vec<CompiledFn>),
+}
+
+/// A compiled vector-valued function: `n_outputs` expressions of the same
+/// `n_inputs` variables, evaluated together. Built by [`compile_many`].
+///
+/// Every output equals, bit for bit, what [`compile`] of that expression
+/// alone computes at the same point — sharing changes how often a common
+/// subexpression is evaluated, never its value.
+pub struct CompiledVecFn {
+    inner: CompiledVecInner,
+    n_inputs: usize,
+    n_outputs: usize,
+}
+
+// SAFETY: as for `CompiledFn` — immutable code pages, function pointers only
+// read, and owners kept solely to keep the pages alive.
+unsafe impl Send for CompiledVecFn {}
+unsafe impl Sync for CompiledVecFn {}
+
+impl CompiledVecFn {
+    /// Number of input variables.
+    pub fn n_inputs(&self) -> usize {
+        self.n_inputs
+    }
+
+    /// Number of outputs.
+    pub fn n_outputs(&self) -> usize {
+        self.n_outputs
+    }
+
+    /// Backend evaluating the outputs (for diagnostics).
+    pub fn compile_tier(&self) -> CompileTier {
+        match &self.inner {
+            #[cfg(feature = "cranelift")]
+            CompiledVecInner::Cranelift { .. } => CompileTier::Cranelift,
+            CompiledVecInner::PerOutput(fs) => {
+                fs.first().map_or(CompileTier::Interpreter, |f| f.tier)
+            }
+        }
+    }
+
+    /// Evaluate every output at one point. Panics unless
+    /// `inputs.len() == n_inputs` and `out.len() == n_outputs`.
+    pub fn call(&self, inputs: &[f64], out: &mut [f64]) {
+        assert_eq!(
+            inputs.len(),
+            self.n_inputs,
+            "expected {} inputs",
+            self.n_inputs
+        );
+        assert_eq!(
+            out.len(),
+            self.n_outputs,
+            "expected {} outputs",
+            self.n_outputs
+        );
+        match &self.inner {
+            #[cfg(feature = "cranelift")]
+            CompiledVecInner::Cranelift { cols_fn, .. } => {
+                // One point: each "column" is a single value.
+                let cols: Vec<*const f64> = inputs.iter().map(|v| v as *const f64).collect();
+                let outs: Vec<*mut f64> = out.iter_mut().map(|v| v as *mut f64).collect();
+                // SAFETY: every pointer addresses one live element; index 0
+                // is the only one read or written.
+                unsafe { cols_fn(cols.as_ptr(), outs.as_ptr(), 0, 1) };
+            }
+            CompiledVecInner::PerOutput(fs) => {
+                for (o, f) in out.iter_mut().zip(fs) {
+                    *o = f.call(inputs);
+                }
+            }
+        }
+    }
+
+    fn check_batch(&self, inputs: &[&[f64]], outputs: &[&mut [f64]]) -> usize {
+        assert_eq!(
+            inputs.len(),
+            self.n_inputs,
+            "expected {} input arrays, got {}",
+            self.n_inputs,
+            inputs.len()
+        );
+        assert_eq!(
+            outputs.len(),
+            self.n_outputs,
+            "expected {} output arrays, got {}",
+            self.n_outputs,
+            outputs.len()
+        );
+        let n = outputs
+            .first()
+            .map(|o| o.len())
+            .or_else(|| inputs.first().map(|c| c.len()))
+            .unwrap_or(0);
+        for col in inputs {
+            assert_eq!(col.len(), n, "all input arrays must have the same length");
+        }
+        for col in outputs {
+            assert_eq!(col.len(), n, "all output arrays must have the same length");
+        }
+        n
+    }
+
+    /// Evaluate over `N` points: `inputs[i]` holds variable `i` at every
+    /// point, `outputs[k]` receives output `k`. All slices have length `N`.
+    pub fn call_batch(&self, inputs: &[&[f64]], outputs: &mut [&mut [f64]]) {
+        let n = self.check_batch(inputs, outputs);
+        match &self.inner {
+            #[cfg(feature = "cranelift")]
+            CompiledVecInner::Cranelift { cols_fn, .. } => {
+                let cols: Vec<*const f64> = inputs.iter().map(|c| c.as_ptr()).collect();
+                let outs: Vec<*mut f64> = outputs.iter_mut().map(|o| o.as_mut_ptr()).collect();
+                // SAFETY: every column has `n` values (checked) and the output
+                // slices are exclusively borrowed (and so pairwise disjoint).
+                unsafe { cols_fn(cols.as_ptr(), outs.as_ptr(), 0, n as u64) };
+            }
+            CompiledVecInner::PerOutput(fs) => {
+                let _ = n;
+                for (o, f) in outputs.iter_mut().zip(fs) {
+                    f.call_batch(inputs, o);
+                }
+            }
+        }
+    }
+
+    /// [`call_batch`](Self::call_batch) across all cores (Rayon).
+    #[cfg(feature = "parallel")]
+    pub fn call_batch_par(&self, inputs: &[&[f64]], outputs: &mut [&mut [f64]]) {
+        let n = self.check_batch(inputs, outputs);
+        if n < 2 * PAR_CHUNK {
+            return self.call_batch(inputs, outputs);
+        }
+        match &self.inner {
+            #[cfg(feature = "cranelift")]
+            CompiledVecInner::Cranelift { cols_fn, .. } => {
+                use rayon::prelude::*;
+                let cols: Vec<usize> = inputs.iter().map(|c| c.as_ptr() as usize).collect();
+                let outs: Vec<usize> = outputs
+                    .iter_mut()
+                    .map(|o| o.as_mut_ptr() as usize)
+                    .collect();
+                let cols_fn = *cols_fn;
+                (0..n.div_ceil(PAR_CHUNK)).into_par_iter().for_each(|c| {
+                    let start = c * PAR_CHUNK;
+                    let end = (start + PAR_CHUNK).min(n);
+                    // SAFETY: columns hold `n` values; chunks are disjoint
+                    // index ranges of the exclusively borrowed outputs.
+                    unsafe {
+                        cols_fn(
+                            cols.as_ptr() as *const *const f64,
+                            outs.as_ptr() as *const *mut f64,
+                            start as u64,
+                            end as u64,
+                        )
+                    };
+                });
+            }
+            CompiledVecInner::PerOutput(fs) => {
+                for (o, f) in outputs.iter_mut().zip(fs) {
+                    f.call_batch_par(inputs, o);
+                }
+            }
+        }
+    }
+}
+
+/// Compile several expressions of the same inputs into one
+/// [`CompiledVecFn`], evaluated in a single pass per point.
+///
+/// The main consumer is a gradient or Jacobian: its entries share most of
+/// their subexpressions, and evaluating them together computes each shared
+/// node once. Refusals are those of [`compile`] (`E-JIT-005` for an unbound
+/// symbol, `E-JIT-006` for a function with no numeric kernel), checked for
+/// every output. Without a native backend, or for a form the native backend
+/// does not compile, each output is compiled on its own.
+pub fn compile_many(
+    exprs: &[ExprId],
+    inputs: &[ExprId],
+    pool: &ExprPool,
+) -> Result<CompiledVecFn, JitError> {
+    compile_many_with(exprs, inputs, pool, CompileConfig::default())
+}
+
+/// [`compile_many`] with an explicit [`CompileConfig`]. Only
+/// `force_tier` is consulted: a vector of outputs is compiled natively
+/// whenever a native backend can take it.
+pub fn compile_many_with(
+    exprs: &[ExprId],
+    inputs: &[ExprId],
+    pool: &ExprPool,
+    config: CompileConfig,
+) -> Result<CompiledVecFn, JitError> {
+    for &e in exprs {
+        refuse_unbound(e, inputs, pool)?;
+    }
+    let per_output = |tier: Option<CompileTier>| -> Result<CompiledVecFn, JitError> {
+        let fs = exprs
+            .iter()
+            .map(|&e| {
+                let t = tier.unwrap_or_else(|| select_compile_tier(e, pool, &config));
+                compile_with_fallbacks(t, e, inputs, pool)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(CompiledVecFn {
+            inner: CompiledVecInner::PerOutput(fs),
+            n_inputs: inputs.len(),
+            n_outputs: exprs.len(),
+        })
+    };
+    #[cfg(feature = "cranelift")]
+    {
+        let native_ok = !matches!(config.force_tier, Some(CompileTier::Interpreter))
+            && !exprs.is_empty()
+            && !exprs.iter().any(|&e| needs_exact_integer_exponent(e, pool));
+        if native_ok {
+            if let Ok(code) = cranelift_backend::compile_cranelift_many(exprs, inputs, pool) {
+                return Ok(CompiledVecFn {
+                    inner: CompiledVecInner::Cranelift {
+                        cols_fn: code.cols,
+                        _prims: code.prims,
+                        _module: code.module,
+                    },
+                    n_inputs: inputs.len(),
+                    n_outputs: exprs.len(),
+                });
+            }
+        }
+    }
+    per_output(config.force_tier)
+}
 
 // ---------------------------------------------------------------------------
 // compile — main entry point (tiered dispatch)
@@ -1507,6 +1943,13 @@ mod llvm_backend {
     use inkwell::values::IntValue;
     use inkwell::IntPredicate;
 
+    /// External symbol compiled powers call; mapped to [`llvm_pow`].
+    const POW_SYMBOL: &str = "alkahest_pow_narrow";
+
+    extern "C" fn llvm_pow(base: f64, exp: f64) -> f64 {
+        crate::kernel::eval_const::pow_f64_narrow(base, exp)
+    }
+
     fn load_scalar_inputs<'ctx>(
         builder: &Builder<'ctx>,
         f64_type: inkwell::types::FloatType<'ctx>,
@@ -1744,6 +2187,9 @@ mod llvm_backend {
         let ee = module
             .create_jit_execution_engine(OptimizationLevel::Default)
             .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+        if let Some(f) = module.get_function(POW_SYMBOL) {
+            ee.add_global_mapping(&f, llvm_pow as *const () as usize);
+        }
 
         let fn_ptr: super::JitScalarFn = unsafe {
             ee.get_function("alkahest_eval")
@@ -1822,10 +2268,15 @@ mod llvm_backend {
                 let e = *values
                     .get(&exp)
                     .ok_or_else(|| JitError::CompilationFailed("missing exp".to_string()))?;
+                // Not `llvm.pow.f64`: every evaluator computes a power with
+                // the shared kernel (`pow_f64_narrow` — compensated squaring
+                // for small integer exponents, `sqrt` for 1/2), and the LLVM
+                // tier must give the same bits. The symbol is mapped to that
+                // Rust function once the execution engine exists.
                 let pow_fn = get_intrinsic(
                     module,
                     ctx,
-                    "llvm.pow.f64",
+                    POW_SYMBOL,
                     &[f64_type.into(), f64_type.into()],
                     f64_type,
                 );

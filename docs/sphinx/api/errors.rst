@@ -380,6 +380,9 @@ Exception subclasses
    ``E-JIT-005`` is raised by :func:`compile_expr` and
    ``CompileCache.compile`` when the expression has a free symbol the input
    list does not bind; the compiled function would have no value at any point.
+   ``E-JIT-006`` is raised by the same entry points when the expression applies
+   a function with no numeric implementation (an undefined ``f(x)``, a
+   ``Derivative`` of one); it used to compile and return NaN at every point.
 
 .. note::
 

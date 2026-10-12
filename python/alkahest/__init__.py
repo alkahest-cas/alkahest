@@ -51,7 +51,7 @@ from ._context import (
     simplify_enabled,
     symbol,
 )
-from ._dlpack import _call_batch, _to_numpy
+from ._dlpack import _call_batch, _shape_result, _to_numpy
 from ._guess_holonomic import (
     GUESS_STATUS_MEANINGS,
     GUESS_STATUSES,
@@ -113,6 +113,8 @@ from .alkahest import (  # noqa: F401
     CompileCache,
     # Phase 21: JIT compiled evaluation
     CompiledFn,
+    # G7: multi-output compile_expr([e1, e2, ...], vars)
+    CompiledVecFn,
     Component,
     # Core expression types
     DerivedResult,
@@ -686,9 +688,7 @@ def numpy_eval(compiled_fn, *arrays):
         raise ValueError("all input arrays must have the same number of elements")
 
     result = _call_batch(compiled_fn, flat_arrays, n_points)
-    if out_shape:
-        result = result.reshape(out_shape)
-    return result
+    return _shape_result(compiled_fn, result, out_shape)
 
 
 def numpy_eval_par(compiled_fn, *arrays):
@@ -739,8 +739,10 @@ def numpy_eval_par(compiled_fn, *arrays):
     _check_batch_arity(compiled_fn, arrays, "numpy_eval_par")
 
     # Use the parallel path if a parallel native method is available (parallel feature).
-    has_parallel_path = hasattr(compiled_fn, "call_batch_buffer_par") or hasattr(
-        compiled_fn, "call_batch_raw_par"
+    has_parallel_path = (
+        hasattr(compiled_fn, "_call_batch_arrays")
+        or hasattr(compiled_fn, "call_batch_buffer_par")
+        or hasattr(compiled_fn, "call_batch_raw_par")
     )
     if not has_parallel_path:
         return numpy_eval(compiled_fn, *arrays)
@@ -761,9 +763,7 @@ def numpy_eval_par(compiled_fn, *arrays):
         raise ValueError("all input arrays must have the same number of elements")
 
     result = _call_batch(compiled_fn, flat_arrays, n_points, parallel=True)
-    if out_shape:
-        result = result.reshape(out_shape)
-    return result
+    return _shape_result(compiled_fn, result, out_shape)
 
 
 # ---------------------------------------------------------------------------
@@ -2843,6 +2843,7 @@ __all__ = [
     "CompiledFn",
     "CompiledGradTracedFn",
     "CompiledTracedFn",
+    "CompiledVecFn",
     "Component",
     # M6 — modular / p-adic evaluation of holonomic sequences
     "CongruenceSweep",

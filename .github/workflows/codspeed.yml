@@ -59,7 +59,11 @@ jobs:
           echo "VIRTUAL_ENV=$PWD/.venv" >> $GITHUB_ENV
           # Use the venv-local maturin directly — $GITHUB_PATH changes only take
           # effect in the *next* step, so `maturin` is not yet on PATH here.
-          .venv/bin/maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
+          # --release: without it this benchmarked an unoptimised (opt-level 0)
+          # extension, where Rust code is penalised against the optimised C it
+          # calls (libm) — so moving work from libm into Rust read as a
+          # regression although it is faster in every build users run.
+          .venv/bin/maturin develop --release --manifest-path alkahest-py/Cargo.toml --features groebner
 
       # ---------------------------------------------------------------------------
       # Rust: use cargo-codspeed so CODSPEED_CARGO_WORKSPACE_ROOT is set.
@@ -88,4 +92,4 @@ jobs:
         uses: CodSpeedHQ/action@v3
         with:
           token: ${{ secrets.CODSPEED_TOKEN }}
-          run: pytest benchmarks/bench_codspeed.py --codspeed
+          run: pytest benchmarks/bench_codspeed.py benchmarks/bench_codspeed_numeric.py --codspeed
