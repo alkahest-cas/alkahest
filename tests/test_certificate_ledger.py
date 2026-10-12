@@ -95,9 +95,12 @@ def test_certifiable_reports_a_failing_operation_rather_than_raising(pool):
     ``polygamma(n, x)``).  If that ever gains a derivative, move this probe
     again rather than deleting the test: the property under test is that a
     *failing* operation is reported, not raised.
+
+    G11c's ``polygamma(n, x)`` closed the ladder (``ψ₁′ = ψ₂``), so the probe
+    moved again, to ``zeta`` — ``ζ′`` has no closed form.
     """
     x = pool.symbol("x")
-    answer = ak.certifiable("diff", ak.trigamma(x), x)
+    answer = ak.certifiable("diff", ak.zeta(x), x)
 
     assert bool(answer) is False
     assert answer.reason == "operation_failed"

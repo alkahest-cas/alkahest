@@ -366,8 +366,8 @@ impl Emitter {
             // Inputs were handled by the caller; an unbound `pi` is π, as in
             // every evaluator in the crate.
             ExprData::Symbol { name, .. } => {
-                if name == crate::eval::symbols::PI_NAME {
-                    self.emit_const_f64(std::f64::consts::PI)
+                if let Some(v) = crate::eval::symbols::constant_value_f64(&name) {
+                    self.emit_const_f64(v)
                 } else {
                     Err(StableHloError::UnboundSymbol(name))
                 }

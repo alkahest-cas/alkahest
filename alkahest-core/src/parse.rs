@@ -414,6 +414,10 @@ const KNOWN_FUNCS: &[&str] = &[
     "zeta",
     "hurwitz_zeta",
     "polylog",
+    // Polygamma and the generalized hypergeometric function (G11c):
+    // `polygamma(n, x)`, `hyper(p, q, a1..ap, b1..bq, z)`.
+    "polygamma",
+    "hyper",
     // Reciprocal trig / hyperbolic functions.  These are *desugared* in
     // `parse_funcall` to their elementary reciprocal definitions (e.g.
     // `sec(x) → cos(x)^(-1)`); no `sec`/`csc`/… node ever enters the pool.

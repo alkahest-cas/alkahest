@@ -2832,13 +2832,19 @@ impl<'a> TaylorContext<'a> {
                         self.order,
                         self.prec,
                     ))
-                } else if crate::eval::symbols::is_pi(expr, self.pool) {
-                    // `π` is a number, not a coordinate of the box.  A box
-                    // *may* still name it — the `vars` lookup above wins — but
-                    // a caller should not have to invent an interval for a
-                    // constant, and `S′(x) = sin(πx²/2)` is unboundable if
-                    // they do not.  See `crate::eval::symbols`.
-                    Ok(self.konst(crate::ball::pi_ball(self.prec)))
+                } else if let Some(c) = self.pool.with(expr, |d| match d {
+                    ExprData::Symbol { name, .. } => {
+                        crate::ball::named_constant_ball(name, self.prec)
+                    }
+                    _ => None,
+                }) {
+                    // `π` (and `γ`, Catalan, Glaisher) is a number, not a
+                    // coordinate of the box.  A box *may* still name it — the
+                    // `vars` lookup above wins — but a caller should not have
+                    // to invent an interval for a constant, and
+                    // `S′(x) = sin(πx²/2)` is unboundable if they do not.  See
+                    // `crate::eval::symbols`.
+                    Ok(self.konst(c))
                 } else {
                     Err(ValidatedError::UnboundSymbol {
                         name: name.to_string(),

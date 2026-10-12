@@ -132,12 +132,13 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
                                  dimensions, both named, 003 = an affine °C/°F
                                  in arithmetic, 006 = same dimension but
                                  different units inside one sum)
-    E-SPECFN-001 … E-SPECFN-007  SpecialFunctionError (orthogonal polynomials,
+    E-SPECFN-001 … E-SPECFN-008  SpecialFunctionError (orthogonal polynomials,
                                  spherical harmonics, 3j/6j/Clebsch–Gordan,
                                  Bessel/Airy/zeta/polylog; 001 = not an integer
                                  or half-integer, 004 = past the exact-
                                  construction cap, 006 = a pole such as
-                                 zeta(1), 007 = non-integer spherical order)
+                                 zeta(1), 007 = non-integer spherical order,
+                                 008 = polygamma order not an integer >= 0)
     E-NC-001 … E-NC-007          NcError (noncommutative algebra; 001 = rewriting
                                  did not terminate within max_steps, 003 = a rule
                                  whose left side is not one word, 007 = a vacuum

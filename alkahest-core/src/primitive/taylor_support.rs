@@ -296,6 +296,8 @@ mod tests {
             // Fixed-arity multi-argument primitives (the orthogonal
             // polynomials, `[n, params…, x]`) get degree 2, parameters 1/2.
             let lead: Vec<f64> = match crate::kernel::known_func_arity(name) {
+                // `hyper(0, 1, b, z)`: ₀F₁(; 1; z).
+                _ if name == "hyper" => vec![0.0, 1.0, 1.0],
                 Some((lo, hi)) if lo == hi && lo > 1 => std::iter::once(2.0)
                     .chain(std::iter::repeat_n(0.5, lo - 2))
                     .collect(),

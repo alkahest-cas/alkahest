@@ -237,6 +237,10 @@ fn greek_latex(name: &str) -> Option<&'static str> {
         "Psi" => Some(r"\Psi"),
         "Omega" => Some(r"\Omega"),
         "inf" | "oo" => Some(r"\infty"),
+        // Named constants (`crate::eval::symbols`), as SymPy renders them.
+        "EulerGamma" => Some(r"\gamma"),
+        "Catalan" => Some("G"),
+        "Glaisher" => Some("A"),
         _ => None,
     }
 }
@@ -290,6 +294,7 @@ fn greek_unicode(name: &str) -> Option<&'static str> {
         "Psi" => Some("Ψ"),
         "Omega" => Some("Ω"),
         "inf" | "oo" => Some("∞"),
+        "EulerGamma" => Some("γ"),
         _ => None,
     }
 }
@@ -750,6 +755,31 @@ fn latex_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
             let (m, _) = latex_r(args[2], pool);
             format!(r"\Pi\!\left({n};{phi}\,\middle|\,{m}\right)")
         }
+        // G11c: ψ⁽ⁿ⁾(x) and ₚFq(a; b; z).
+        "polygamma" => {
+            let (n, _) = latex_r(args[0], pool);
+            let (x, _) = latex_r(args[1], pool);
+            format!(r"\psi^{{({n})}}\!\left({x}\right)")
+        }
+        "hyper" => match crate::specfun::hyper::parts(args, pool) {
+            Some((a, b, z)) => {
+                let show = |v: &[ExprId]| {
+                    v.iter()
+                        .map(|&e| latex_r(e, pool).0)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                format!(
+                    r"{{}}_{{{}}}F_{{{}}}\!\left({}; {}; {}\right)",
+                    a.len(),
+                    b.len(),
+                    show(&a),
+                    show(&b),
+                    latex_r(z, pool).0
+                )
+            }
+            None => latex_func_generic(name, args, pool),
+        },
         _ => latex_func_generic(name, args, pool),
     }
 }

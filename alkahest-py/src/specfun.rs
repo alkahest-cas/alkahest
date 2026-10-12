@@ -11,6 +11,7 @@ use alkahest_core::specfun::{self as core, AiryKind, BesselKind, SphericalBessel
 
 use crate::orthopoly::{pool_of, specfn_err};
 use crate::{PyExpr, PyExprPool};
+use alkahest_core::kernel::{ExprId, ExprPool};
 
 /// Coerce every argument into the pool of the first `Expr` among them.
 fn ids(
@@ -279,7 +280,139 @@ fn expand_special(py: Python<'_>, expr: PyRef<'_, PyExpr>) -> PyResult<PyExpr> {
     Ok(PyExpr { id, pool: pool_py })
 }
 
+fn constant(pool: &Bound<'_, PyExprPool>, f: fn(&ExprPool) -> ExprId) -> PyExpr {
+    let id = f(&pool.borrow().inner);
+    PyExpr {
+        id,
+        pool: pool.clone().unbind(),
+    }
+}
+
+/// The Euler–Mascheroni constant ``gamma = 0.5772...`` as the exact symbol
+/// ``EulerGamma`` in ``pool`` (SymPy's ``EulerGamma``).
+///
+/// Prints and parses as ``EulerGamma`` (LaTeX ``\gamma``); every numeric
+/// evaluator resolves it (``evaluate``, ``interval_eval`` at any precision,
+/// ``compile_expr``, ``emit_c``), and no symbolic operation folds it into a
+/// float: ``simplify(digamma(1))`` is ``-EulerGamma``.
+///
+/// >>> import alkahest as ak
+/// >>> p = ak.ExprPool()
+/// >>> ak.euler_gamma(p)                      # EulerGamma
+#[pyfunction]
+fn euler_gamma(pool: &Bound<'_, PyExprPool>) -> PyExpr {
+    constant(pool, core::euler_gamma)
+}
+
+/// Catalan's constant ``G = sum (-1)**k/(2k+1)**2 = 0.9159...`` as the exact
+/// symbol ``Catalan`` (LaTeX ``G``); ``trigamma(1/4) = pi**2 + 8*Catalan``.
+#[pyfunction]
+fn catalan(pool: &Bound<'_, PyExprPool>) -> PyExpr {
+    constant(pool, core::catalan)
+}
+
+/// The Glaisher–Kinkelin constant ``A = 1.2824...`` as the exact symbol
+/// ``Glaisher`` (LaTeX ``A``).
+#[pyfunction]
+fn glaisher(pool: &Bound<'_, PyExprPool>) -> PyExpr {
+    constant(pool, core::glaisher)
+}
+
+/// The polygamma function ``polygamma(n, x)`` = ``psi^(n)(x)``, the
+/// ``(n+1)``-th derivative of ``log(gamma(x))`` (DLMF 5.15; SymPy's
+/// ``polygamma``).
+///
+/// ``polygamma(0, x)`` is ``digamma(x)`` and ``polygamma(1, x)`` is
+/// ``trigamma(x)``.  Exact values use ``EulerGamma``, ``pi``, ``log``,
+/// ``zeta`` and ``Catalan`` — never floats: ``polygamma(0, 1) = -EulerGamma``,
+/// ``polygamma(1, 1) = pi**2/6``, ``polygamma(2, 1) = -2*zeta(3)``,
+/// ``polygamma(0, 1/2) = -EulerGamma - 2*log(2)``, at any integer shift.
+/// ``d/dx polygamma(n, x) = polygamma(n+1, x)``; a derivative in ``n`` is
+/// refused (``E-DIFF-001``).  Evaluates in ``f64`` and balls through Arb.
+///
+/// Raises ``SpecialFunctionError``: ``E-SPECFN-007`` for a non-integer order,
+/// ``E-SPECFN-003`` for a negative one, ``E-SPECFN-006`` at a pole
+/// (``x = 0, -1, -2, ...``).
+///
+/// >>> import alkahest as ak
+/// >>> p = ak.ExprPool()
+/// >>> ak.polygamma(2, p.integer(1))          # -2*zeta(3)
+#[pyfunction]
+fn polygamma(py: Python<'_>, n: &Bound<'_, PyAny>, x: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
+    let (pool_py, a) = ids(py, "polygamma", &[x, n])?;
+    let id = {
+        let pool = &pool_py.borrow(py).inner;
+        core::polygamma(a[1], a[0], pool).map_err(specfn_err)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// The generalized hypergeometric function ``pFq(a; b; z)`` (DLMF 16.2;
+/// SymPy's ``hyper(a, b, z)``).
+///
+/// ``a`` and ``b`` are sequences of parameters (Expr, int, Fraction).  The
+/// node prints as ``hyper(p, q, a1, ..., ap, b1, ..., bq, z)`` and parses
+/// back; parameters common to both lists cancel, and an upper ``0`` or
+/// ``z = 0`` gives ``1``.  ``d/dz`` shifts every parameter by one
+/// (``prod(a)/prod(b) * hyper(a+1, b+1, z)``); a derivative in a parameter is
+/// refused.  ``f64`` and ball values come from Arb (real values only, the
+/// principal branch for ``p = q + 1``).  Use ``expand_hyper`` for closed
+/// forms.
+///
+/// Raises ``SpecialFunctionError`` (``E-SPECFN-006``) for a lower parameter
+/// that is a non-positive integer (unless the series terminates first).
+///
+/// >>> import alkahest as ak
+/// >>> p = ak.ExprPool(); z = p.symbol("z")
+/// >>> ak.expand_hyper(ak.hyper([1, 1], [2], z))   # -log(1 - z)/z
+#[pyfunction]
+fn hyper(
+    py: Python<'_>,
+    a: Vec<Bound<'_, PyAny>>,
+    b: Vec<Bound<'_, PyAny>>,
+    z: &Bound<'_, PyAny>,
+) -> PyResult<PyExpr> {
+    let mut all: Vec<&Bound<'_, PyAny>> = vec![z];
+    all.extend(a.iter());
+    all.extend(b.iter());
+    let (pool_py, ids_) = ids(py, "hyper", &all)?;
+    let p = a.len();
+    let id = {
+        let pool = &pool_py.borrow(py).inner;
+        core::hyper(&ids_[1..1 + p], &ids_[1 + p..], ids_[0], pool).map_err(specfn_err)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// Rewrite every ``hyper`` node into a polynomial (a terminating series) or a
+/// closed form where one is known — SymPy's ``hyperexpand``:
+/// ``0F0(;;z) = exp(z)``, ``1F0(a;;z) = (1-z)**(-a)``,
+/// ``2F1(1,1;2;z) = -log(1-z)/z``, ``2F1(1/2,1;3/2;z) = atanh(sqrt(z))/sqrt(z)``,
+/// ``2F1(1/2,1/2;3/2;z) = asin(sqrt(z))/sqrt(z)``, Gauss's
+/// ``2F1(a,b;c;1) = gamma(c)gamma(c-a-b)/(gamma(c-a)gamma(c-b))`` when
+/// ``c-a-b`` is a positive literal, ``1F1(1;2;z) = (exp(z)-1)/z``,
+/// ``1F1(1/2;3/2;-w) = sqrt(pi)*erf(sqrt(w))/(2 sqrt(w))``, and ``0F1`` as
+/// ``cosh``/``sinh`` or Bessel ``J``/``I``.  Other nodes are kept.
+///
+/// Raises ``SpecialFunctionError`` (``E-SPECFN-004``) for a terminating
+/// series of degree above 200.
+#[pyfunction]
+fn expand_hyper(py: Python<'_>, expr: PyRef<'_, PyExpr>) -> PyResult<PyExpr> {
+    let pool_py = expr.pool.clone_ref(py);
+    let id = {
+        let pool = &pool_py.borrow(py).inner;
+        core::expand_hyper(expr.id, pool).map_err(specfn_err)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(euler_gamma, m)?)?;
+    m.add_function(wrap_pyfunction!(catalan, m)?)?;
+    m.add_function(wrap_pyfunction!(glaisher, m)?)?;
+    m.add_function(wrap_pyfunction!(polygamma, m)?)?;
+    m.add_function(wrap_pyfunction!(hyper, m)?)?;
+    m.add_function(wrap_pyfunction!(expand_hyper, m)?)?;
     m.add_function(wrap_pyfunction!(bessel_j, m)?)?;
     m.add_function(wrap_pyfunction!(bessel_y, m)?)?;
     m.add_function(wrap_pyfunction!(bessel_i, m)?)?;

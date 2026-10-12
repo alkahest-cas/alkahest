@@ -1025,7 +1025,9 @@ impl<'p> Normalizer<'p> {
                 }
             }
             ExprData::Symbol { name, domain, .. } => {
-                if *domain == Domain::Positive || name == "pi" {
+                if *domain == Domain::Positive
+                    || crate::eval::symbols::constant_value_f64(name).is_some()
+                {
                     K::Yes
                 } else {
                     K::No
@@ -1420,13 +1422,15 @@ pub(crate) fn zero_sum_pass(root: ExprId, pool: &ExprPool) -> Option<(ExprId, De
             ExprData::Integer(n) => K::Val(Some(n.0.to_f64())),
             ExprData::Rational(r) => K::Val(Some(r.0.to_f64())),
             ExprData::Float(f) => K::Val(Some(f.inner.to_f64())),
-            ExprData::Symbol { name, domain, .. } => K::Val(if name == "pi" {
-                Some(std::f64::consts::PI)
-            } else if pool.is_imaginary_unit(e) {
-                None
-            } else {
-                Some(screen_value(name, *domain))
-            }),
+            ExprData::Symbol { name, domain, .. } => K::Val(
+                if let Some(c) = crate::eval::symbols::constant_value_f64(name) {
+                    Some(c)
+                } else if pool.is_imaginary_unit(e) {
+                    None
+                } else {
+                    Some(screen_value(name, *domain))
+                },
+            ),
             ExprData::Add(a) => {
                 children.extend_from_slice(a);
                 K::Add
@@ -1948,7 +1952,7 @@ fn ball_eval(
             ExprData::Rational(r) => Some(ArbBall::from_rational(&r.0, prec)),
             ExprData::Symbol { .. } => match bind.get(&e) {
                 Some(b) => Some(b.clone()),
-                None if crate::eval::symbols::is_pi(e, pool) => {
+                None if crate::eval::symbols::is_real_constant(e, pool) => {
                     IntervalEval::new(prec).eval(e, pool)
                 }
                 None => None,

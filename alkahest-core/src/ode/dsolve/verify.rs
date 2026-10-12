@@ -112,7 +112,7 @@
 //! parameter values from the same [`parameter_env`].
 
 use super::{contains, ddx, simp, subs1, DsolveError, OdeInput};
-use crate::eval::symbols::{collect_free_symbols, is_pi, walk_symbols};
+use crate::eval::symbols::{collect_free_symbols, constant_value_of, walk_symbols};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use std::collections::HashMap;
 use std::fmt;
@@ -758,7 +758,7 @@ pub(crate) fn eval(expr: ExprId, env: &HashMap<ExprId, f64>, pool: &ExprPool) ->
         ExprData::Symbol { .. } => env
             .get(&expr)
             .copied()
-            .or_else(|| is_pi(expr, pool).then_some(std::f64::consts::PI)),
+            .or_else(|| constant_value_of(expr, pool)),
         ExprData::Add(args) => {
             let mut s = 0.0;
             for a in args {
@@ -1241,8 +1241,8 @@ pub(crate) fn eval_complex(
         }
         ExprData::Float(f) => Some(C64::real(f.inner.to_f64())),
         ExprData::Symbol { .. } => env.get(&expr).copied().or_else(|| {
-            if is_pi(expr, pool) {
-                Some(C64::real(std::f64::consts::PI))
+            if let Some(v) = constant_value_of(expr, pool) {
+                Some(C64::real(v))
             } else if pool.is_imaginary_unit(expr) {
                 Some(I)
             } else {

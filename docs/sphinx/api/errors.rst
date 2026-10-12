@@ -339,7 +339,10 @@ Exception subclasses
    family function (:func:`alkahest.zeta` at ``1``, :func:`alkahest.polylog` at
    ``z = 1`` for ``s <= 1``); ``E-SPECFN-007`` a non-integer order for
    :func:`alkahest.spherical_jn` / :func:`alkahest.spherical_yn`; the Bessel
-   expansion cap (order 200) is ``E-SPECFN-004``.
+   expansion cap (order 200) is ``E-SPECFN-004``. ``E-SPECFN-008`` is a
+   :func:`alkahest.polygamma` order that is not a non-negative integer; a pole of
+   :func:`alkahest.polygamma` or a non-positive-integer lower parameter of
+   :func:`alkahest.hyper` is ``E-SPECFN-006``.
 
 .. exception:: NcError
 

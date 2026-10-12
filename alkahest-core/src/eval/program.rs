@@ -137,8 +137,8 @@ impl NumericProgram {
                     // Not an input (inputs were seeded above): `π` has its
                     // own value, anything else is unbound.
                     ExprData::Symbol { name, .. } => {
-                        if name == super::symbols::PI_NAME {
-                            Visit::Const(std::f64::consts::PI)
+                        if let Some(v) = super::symbols::constant_value_f64(name) {
+                            Visit::Const(v)
                         } else {
                             Visit::Fail
                         }

@@ -106,3 +106,73 @@ Zeta functions and polylogarithms
    spherical nodes with an integer order) into elementary functions and
    re-canonicalise ``zeta``/``hurwitz_zeta``/``polylog`` nodes — SymPy's
    ``expand_func`` for these families, e.g. after :func:`subs`.
+
+Gamma, digamma and polygamma; named constants
+---------------------------------------------
+
+The Euler–Mascheroni constant, Catalan's constant and Glaisher's constant are
+exact symbols (``EulerGamma``, ``Catalan``, ``Glaisher``; LaTeX ``\gamma``,
+``G``, ``A``). They print, parse and substitute like ``pi``; every numeric
+evaluator (:func:`eval_expr`, :func:`interval_eval` at any precision, the
+JITs, :func:`emit_c_expr`) resolves them, and no symbolic operation folds them
+into a float.
+
+.. function:: euler_gamma(pool)
+
+   ``EulerGamma`` (``0.5772…``) in ``pool``.
+
+.. function:: catalan(pool)
+
+   ``Catalan`` (``0.9159…``) in ``pool``; ``trigamma(1/4) = pi**2 + 8*Catalan``.
+
+.. function:: glaisher(pool)
+
+   ``Glaisher`` (``1.2824…``) in ``pool``; its ball needs Arb.
+
+.. function:: polygamma(n, x)
+
+   ``psi^(n)(x)`` (DLMF 5.15). ``polygamma(0, x)`` is :func:`digamma`,
+   ``polygamma(1, x)`` is :func:`trigamma`. Exact values (also applied by
+   :func:`simplify` to ``gamma``/``digamma``/``trigamma`` nodes):
+   ``gamma(n) = (n-1)!``, ``gamma(m + 1/2)`` a rational multiple of
+   ``sqrt(pi)``; ``digamma`` at every integer shift of ``1, 1/2, 1/3, 2/3,
+   1/4, 3/4, 1/6, 5/6`` (``digamma(1) = -EulerGamma``,
+   ``digamma(1/2) = -EulerGamma - 2*log(2)``); ``polygamma(n, ·)`` at integer
+   and half-integer points via ``(-1)^{n+1} n! zeta(n+1, a)``
+   (``trigamma(1) = pi**2/6``, ``polygamma(2, 1) = -2*zeta(3)``).
+   ``d/dx polygamma(n, x) = polygamma(n + 1, x)``; ``d/dn`` is refused
+   (``E-DIFF-001``). ``E-SPECFN-008`` for an order that is not an integer
+   ``>= 0``, ``E-SPECFN-006`` at a pole.
+
+:func:`series` expands ``gamma``, ``digamma``, ``trigamma`` and ``polygamma``
+at their poles ``0, -1, -2, …`` with exact coefficients:
+``series(gamma(eps), eps, 0, 2)`` is
+``1/eps - EulerGamma + (EulerGamma**2/2 + pi**2/12)*eps + O(eps**2)``, and
+products such as ``m**(-2*eps)*gamma(eps)`` (dimensional regularisation)
+expand the same way.
+
+Generalized hypergeometric function
+-----------------------------------
+
+.. function:: hyper(a, b, z)
+
+   ``pFq(a; b; z)`` (DLMF 16.2; SymPy's ``hyper``). The node prints as
+   ``hyper(p, q, a1, …, ap, b1, …, bq, z)`` and parses back; common
+   parameters cancel, an upper ``0`` or ``z = 0`` gives ``1``.
+   ``d/dz = prod(a)/prod(b) * hyper(a + 1, b + 1, z)``; a derivative in a
+   parameter is refused. ``f64`` and ball values from Arb (real values only;
+   principal branch for ``p = q + 1``). ``E-SPECFN-006`` for a lower
+   parameter that is a non-positive integer (unless the series terminates
+   first).
+
+.. function:: expand_hyper(expr)
+
+   SymPy's ``hyperexpand``: terminating series become polynomials (degree
+   ``<= 200``, else ``E-SPECFN-004``), and ``0F0 = exp``,
+   ``1F0(a;;z) = (1 - z)**(-a)``, ``2F1(1, 1; 2; z) = -log(1 - z)/z``,
+   ``2F1(1/2, 1; 3/2; z) = atanh(sqrt(z))/sqrt(z)``,
+   ``2F1(1/2, 1/2; 3/2; z) = asin(sqrt(z))/sqrt(z)``, Gauss's
+   ``2F1(a, b; c; 1)`` when ``c - a - b`` is a positive literal,
+   ``1F1(1; 2; z) = (exp(z) - 1)/z``,
+   ``1F1(1/2; 3/2; -w) = sqrt(pi)*erf(sqrt(w))/(2*sqrt(w))``, and ``0F1`` as
+   ``cosh``/``sinh`` or Bessel ``J``/``I``. Other nodes are kept.

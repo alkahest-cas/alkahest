@@ -52,7 +52,10 @@ def test_unsupported_evaluation_returns_stable_status():
 
 def _probe_call(pool, name, x):
     """``name(x)``, or for a multi-argument primitive ``name(2, 1/2, …, x)``
-    (the orthogonal polynomials take ``[n, params…, x]``)."""
+    (the orthogonal polynomials take ``[n, params…, x]``); ``hyper`` is
+    ``0F1(; 1; x)``, ``hyper(0, 1, 1, x)``."""
+    if name == "hyper":
+        return pool.func(name, [pool.integer(0), pool.integer(1), pool.integer(1), x])
     for arity in range(1, 5):
         args = [pool.integer(2)] + [pool.rational(1, 2)] * (arity - 2) + [x]
         try:

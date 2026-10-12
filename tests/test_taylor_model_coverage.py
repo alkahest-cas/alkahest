@@ -142,6 +142,9 @@ def test_the_flag_is_not_a_restatement_of_numeric_ball():
         "zeta",
         "hurwitz_zeta",
         "polylog",
+        # G11c: polygamma(n, x) and hypergeometric pFq.
+        "polygamma",
+        "hyper",
     }
     assert ball_only - orthopoly - specfun == {"ceil", "floor"}
 

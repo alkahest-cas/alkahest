@@ -393,13 +393,13 @@ fn codegen_node(
         // reached for a `pi` nobody declared.  Without it the compiled function
         // and [`crate::jit::eval_interp`] disagree about `sin(π·x)` — one
         // answers, the other refuses — and the agreement tests exist precisely
-        // to stop that.
-        ExprData::Symbol { name, .. } if name == crate::eval::symbols::PI_NAME => {
-            plain(builder.ins().f64const(std::f64::consts::PI))
-        }
-        ExprData::Symbol { name, .. } => Err(JitError::UnsupportedNode(format!(
-            "unbound symbol '{name}'"
-        ))),
+        // to stop that. `EulerGamma`, `Catalan` and `Glaisher` likewise.
+        ExprData::Symbol { name, .. } => match crate::eval::symbols::constant_value_f64(&name) {
+            Some(v) => plain(builder.ins().f64const(v)),
+            None => Err(JitError::UnsupportedNode(format!(
+                "unbound symbol '{name}'"
+            ))),
+        },
         ExprData::Add(args) => {
             // Seeded with +0.0 like the interpreter, so an all-(-0.0) sum is
             // +0.0 in both.

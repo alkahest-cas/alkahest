@@ -483,6 +483,11 @@ pub(crate) fn local_expansion(
     let mut map = HashMap::new();
     map.insert(var, pool.add(vec![point, xi]));
     let shifted = subs(expr, &map, pool);
+    // `Γ(ξ − k)`, `ψ⁽ⁿ⁾(ξ − k)` at a pole: write the function as its analytic
+    // shift times / plus the principal part (`Γ(ξ) = Γ(ξ+1)/ξ`), which the
+    // quotient route below then expands with exact coefficients in `γ`, `π`,
+    // `ζ(3)`, … (G11c). An identity on the punctured neighbourhood.
+    let shifted = crate::specfun::gamma::shift_off_poles(shifted, xi, pool).unwrap_or(shifted);
 
     let h_expr = expansion_increment(pool, var, point);
 

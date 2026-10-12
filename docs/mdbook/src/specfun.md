@@ -65,8 +65,59 @@ rigorous at the requested precision; complex points go through the `acb_*`
 kernels. A non-real value (`Y_ν`/`K_ν` at `x < 0`, `Li_s(x > 1)`) or a pole is
 declined by the real evaluators rather than replaced by a real part.
 
+## Γ, ψ, polygamma and the named constants
+
+`EulerGamma` (γ), `Catalan` (G) and `Glaisher` (A) are exact symbols
+(`ak.euler_gamma(pool)`, `ak.catalan(pool)`, `ak.glaisher(pool)`): they print,
+parse and render (`\gamma`, `G`, `A`), every numeric evaluator resolves them,
+and no symbolic path folds them into a float.
+
+```python
+ak.simplify(ak.digamma(p.integer(1)))       # -EulerGamma (was the float -0.5772…)
+ak.simplify(ak.digamma(p.rational(1, 2))) # -EulerGamma - 2*log(2)
+ak.simplify(ak.trigamma(p.integer(1)))      # pi^2/6
+ak.simplify(ak.trigamma(p.rational(1, 4)))  # pi^2 + 8*Catalan
+ak.polygamma(2, p.integer(1))               # -2*zeta(3)
+ak.diff(ak.trigamma(x), x)                  # polygamma(2, x)
+eps = p.symbol("eps"); m = p.symbol("m")
+ak.series(ak.gamma(eps), eps, p.integer(0), 2)
+# 1/eps - EulerGamma + (EulerGamma^2/2 + pi^2/12)*eps + O(eps^2)
+ak.series(m**(-2*eps) * ak.gamma(eps), eps, p.integer(0), 1)
+# 1/eps - EulerGamma - 2*log(m) + O(eps)
+```
+
+Exact values: `Γ(n) = (n−1)!`, `Γ(m+½) = r·√π`; `ψ` at every integer shift of
+`1, ½, ⅓, ⅔, ¼, ¾, ⅙, ⅚` (Gauss's digamma theorem); `ψ⁽ⁿ⁾` at integer and
+half-integer points through `(−1)ⁿ⁺¹ n! ζ(n+1, a)`. `series` expands `Γ`, `ψ`
+and `ψ⁽ⁿ⁾` at the poles `0, −1, −2, …` by shifting them off the pole
+(`Γ(u) = Γ(u+k+1)/(u(u+1)⋯(u+k))`), so the coefficients are exact in γ, π and
+`ζ(3)`, `ζ(5)`, …. `polygamma(1/2, x)` is `E-SPECFN-008`.
+
+## Generalized hypergeometric `ₚFq`
+
+```python
+z = p.symbol("z")
+F = ak.hyper([1, 1], [2], z)        # hyper(2, 1, 1, 1, 2, z); LaTeX {}_{2}F_{1}(1, 1; 2; z)
+ak.expand_hyper(F)                  # -log(1 - z)/z
+ak.expand_hyper(ak.hyper([-3, x], [Fraction(1, 2)], z))   # a cubic in z
+ak.expand_hyper(ak.hyper([Fraction(1, 2), Fraction(1, 3)], [2], p.integer(1)))  # Gauss: Γ…/Γ…
+ak.diff(F, z)                       # 1/2*hyper(2, 1, 2, 2, 3, z)
+ak.eval_expr(F, {z: 0.5})           # 1.386294361… (Arb)
+```
+
+The node is `hyper(p, q, a1..ap, b1..bq, z)`; `d/dz` shifts every parameter by
+one, a parameter derivative is refused, values come from Arb
+(`arb_hypgeom_0f1/1f1/2f1/pfq`, real only). `expand_hyper` knows terminating
+series, `₀F₀`, `₁F₀`, the `log`/`atanh`/`asin` cases of `₂F₁`, Gauss's sum at
+`z = 1` (when `c − a − b` is a positive literal), `₁F₁(1; 2; z)`,
+`₁F₁(½; 3/2; −w)` (erf) and `₀F₁` (cosh/sinh, Bessel `J`/`I`); other nodes
+are kept.
+
 ## Not yet
 
 Hankel functions, the large-`x` asymptotic expansion of `J_ν` through
 `asymptotic_expand`, Taylor models (the validated tier is unary), and a
-derivative of `ζ` (no `zeta_prime`).
+derivative of `ζ` (no `zeta_prime`). For G11c: Stirling's series through
+`asymptotic_expand`, `loggamma`, Γ duplication/reflection rewriting, ψ at
+other rationals (needs Clausen values), complex `hyper` values, contiguous
+relations and `₂F₁` transformations (Kummer's 24 solutions), Meijer G.

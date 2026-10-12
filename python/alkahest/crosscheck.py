@@ -245,7 +245,15 @@ FUNCTION_MAP: dict[str, str] = {
     "zeta": "zeta",
     "hurwitz_zeta": "zeta",
     "polylog": "polylog",
+    # G11c: ``polygamma(n, x)`` has SymPy's argument order. ``hyper`` is
+    # translated structurally in ``SymPyTranslator._func`` (its flat
+    # ``p, q, a…, b…, z`` argument list becomes SymPy's two tuples).
+    "polygamma": "polygamma",
+    "hyper": "hyper",
 }
+
+#: Named constants that SymPy has under the same meaning (G11c).
+_NAMED_CONSTANTS: dict[str, str] = {"EulerGamma": "EulerGamma", "Catalan": "Catalan"}
 
 #: Bessel functions of fixed integer order, which SymPy spells with the order as
 #: an argument. Faithful, just not a name-for-name rename.
@@ -534,6 +542,8 @@ class SymPyTranslator(Translator):
             return self.sympy.oo
         if name == "I":
             return self.sympy.I
+        if name in _NAMED_CONSTANTS:
+            return getattr(self.sympy, _NAMED_CONSTANTS[name])
         return self.sympy.Symbol(name, **self._flags.get(name, {}))
 
     def _integer(self, node: Sequence[Any]) -> Any:
@@ -574,6 +584,24 @@ class SymPyTranslator(Translator):
         order = _FIXED_ORDER_BESSEL.get(name)
         if order is not None:
             return self.sympy.besselj(order, *args)
+        if name == "hyper":
+            p = args[0] if args else None
+            q = args[1] if len(args) > 1 else None
+            if (
+                p is not None
+                and q is not None
+                and p.is_Integer
+                and q.is_Integer
+                and p >= 0
+                and q >= 0
+                and len(args) == int(p) + int(q) + 3
+            ):
+                p, q = int(p), int(q)
+                return self.sympy.hyper(args[2 : 2 + p], args[2 + p : 2 + p + q], args[-1])
+            raise _refuse(
+                "malformed hyper node: expected hyper(p, q, a1..ap, b1..bq, z)",
+                remediation="build it with alkahest.hyper([a...], [b...], z)",
+            )
         mapped = FUNCTION_MAP.get(name)
         if mapped is None:
             raise _refuse(

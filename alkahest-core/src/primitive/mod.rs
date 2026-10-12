@@ -489,6 +489,10 @@ impl PrimitiveRegistry {
                 kernel,
             )));
         }
+        // G11c: `polygamma(n, x)` and the generalized hypergeometric
+        // `hyper(p, q, a…, b…, z)` (`crate::specfun::{gamma, hyper}`).
+        reg.register_unprobed(Box::new(crate::specfun::gamma::PolygammaPrimitive));
+        reg.register_unprobed(Box::new(crate::specfun::hyper::HyperPrimitive));
         if probe {
             reg.probe_all();
         }
@@ -536,7 +540,7 @@ fn probe_caps(p: &dyn Primitive) -> Capabilities {
     // capabilities.  We also try a set of small fractional values that lie
     // inside the convergence domain of the elliptic integrals (where larger
     // probe inputs would be rejected as out-of-domain).
-    let probe_f64_sets: [&[f64]; 7] = [
+    let probe_f64_sets: [&[f64]; 8] = [
         &[1.0],
         &[1.0, 2.0],
         &[1.0, 2.0, 3.0],
@@ -545,6 +549,8 @@ fn probe_caps(p: &dyn Primitive) -> Capabilities {
         &[0.2, 0.3, 0.4],
         // Four arguments: `jacobi_p(n, a, b, x)`.
         &[2.0, 0.5, 0.5, 0.3],
+        // `hyper(0, 1, b, z)` = ₀F₁(; 1; 0.5) (G11c).
+        &[0.0, 1.0, 1.0, 0.5],
     ];
     for args in probe_f64_sets {
         if p.numeric_f64(args).is_some() {
@@ -650,7 +656,7 @@ fn ball_supported(name: &str, p: &dyn Primitive) -> bool {
     if let Some(&hit) = memo.read().expect("ball probe memo poisoned").get(name) {
         return hit;
     }
-    let probe_f64_sets: [&[f64]; 7] = [
+    let probe_f64_sets: [&[f64]; 8] = [
         &[1.0],
         &[1.0, 2.0],
         &[1.0, 2.0, 3.0],
@@ -659,6 +665,8 @@ fn ball_supported(name: &str, p: &dyn Primitive) -> bool {
         &[0.2, 0.3, 0.4],
         // Four arguments: `jacobi_p(n, a, b, x)`.
         &[2.0, 0.5, 0.5, 0.3],
+        // `hyper(0, 1, b, z)` = ₀F₁(; 1; 0.5) (G11c).
+        &[0.0, 1.0, 1.0, 0.5],
     ];
     let answer = probe_f64_sets.iter().any(|args| {
         let balls: Vec<ArbBall> = args.iter().map(|&v| ArbBall::from_f64(v, 128)).collect();
@@ -2690,12 +2698,15 @@ pub mod builtins {
             format!("ψ({})", pool.display(args[0]))
         }
 
+        /// Exact values: `ψ(n) = H_{n−1} − γ`, `ψ(½) = −γ − 2 log 2`, and
+        /// Gauss's values at thirds, quarters and sixths, shifted by any
+        /// integer — with `γ` the named constant `EulerGamma`, never a float
+        /// (see `crate::specfun::gamma`).
         fn simplify(&self, args: &[ExprId], pool: &ExprPool) -> Option<ExprId> {
-            let n = positive_integer_literal(args[0], pool)?;
-            if n > 20 {
-                return None;
+            match args {
+                [x] => crate::specfun::gamma::digamma_value(*x, pool),
+                _ => None,
             }
-            Some(harmonic_minus_gamma(n, pool))
         }
 
         /// `d/dx ψ(x) = ψ₁(x)`, the trigamma function.
@@ -2743,29 +2754,11 @@ pub mod builtins {
 
     /// `ψ₁(x) = ψ′(x) = Σ_{k≥0} (x+k)⁻²`.
     ///
-    /// # Why this exists, and why it is where the ladder stops
-    ///
-    /// `digamma` needed a derivative (see [`DigammaPrimitive::diff_forward`]),
-    /// and `ψ′` *is* `ψ₁` — there is no way to express it in the existing
-    /// primitives.  But `ψ₁′ = ψ₂`, `ψ₂′ = ψ₃`, …: the polygamma ladder has no
-    /// closed-form terminator, so **any** finite set of unary primitives leaves
-    /// exactly one of them non-differentiable.  This one declines
-    /// `diff_forward`, honestly (callers get `E-DIFF-001`, never a wrong
-    /// answer).
-    ///
-    /// Moving the boundary from `ψ₀` to `ψ₁` rather than closing it is a
-    /// deliberate trade:
-    ///
-    /// * It is where the demand actually is.  `Γ′ = Γ·ψ` and
-    ///   `Γ″ = Γ·(ψ² + ψ₁)` now both land on functions the gate can *evaluate*
-    ///   and bound, which is what verifying an antiderivative requires.
-    /// * The only construct that would close the ladder is a **binary**
-    ///   `polygamma(n, x)` with `∂/∂x polygamma(n, x) = polygamma(n+1, x)`.
-    ///   That is a real option and is the recommended follow-up — but its
-    ///   `∂/∂n` has no closed form *at all*, so it would ship with a
-    ///   permanently declined partial rather than a movable one, and every
-    ///   `Func` rule in [`crate::validated::taylor`] is unary today, so it
-    ///   would also be invisible to `bound_on_box`.
+    /// The ladder `ψ₁′ = ψ₂`, `ψ₂′ = ψ₃`, … closes on the binary
+    /// `polygamma(n, x)` (G11c, `crate::specfun::gamma`): this primitive
+    /// differentiates to `polygamma(2, x)`, which differentiates to
+    /// `polygamma(3, x)`, and so on. Its `∂/∂n` has no closed form and
+    /// declines.
     pub struct TrigammaPrimitive;
 
     impl Primitive for TrigammaPrimitive {
@@ -2777,9 +2770,33 @@ pub mod builtins {
             format!("ψ₁({})", pool.display(args[0]))
         }
 
-        // No `simplify`: `ψ₁(n) = π²/6 − Σ_{k<n} 1/k²` at a positive integer
-        // `n`, and the pool has no symbolic `π²`, so folding it would replace
-        // an exact value with a float literal behind the caller's back.
+        /// Exact values: `ψ₁(n) = π²/6 − Σ_{k<n} 1/k²`, `ψ₁(½) = π²/2`,
+        /// `ψ₁(¼) = π² + 8·Catalan`, shifted by any integer.
+        fn simplify(&self, args: &[ExprId], pool: &ExprPool) -> Option<ExprId> {
+            match args {
+                [x] => crate::specfun::gamma::polygamma_value(1, *x, pool),
+                _ => None,
+            }
+        }
+
+        /// `d/dx ψ₁(x) = ψ₂(x) = polygamma(2, x)`.
+        fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
+            let [x] = args else { return None };
+            let dx = crate::diff::diff(*x, wrt, pool).ok()?.value;
+            let psi2 = crate::specfun::gamma::polygamma_node(2, *x, pool);
+            Some(pool.mul(vec![psi2, dx]))
+        }
+
+        fn diff_reverse(
+            &self,
+            args: &[ExprId],
+            cotan: ExprId,
+            pool: &ExprPool,
+        ) -> Option<Vec<ExprId>> {
+            let [x] = args else { return None };
+            let psi2 = crate::specfun::gamma::polygamma_node(2, *x, pool);
+            Some(vec![pool.mul(vec![cotan, psi2])])
+        }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
             match args {
@@ -2908,28 +2925,6 @@ pub mod builtins {
         }
     }
 
-    fn positive_integer_literal(arg: ExprId, pool: &ExprPool) -> Option<i64> {
-        if let ExprData::Integer(n) = pool.get(arg) {
-            let v = n.0.to_i64()?;
-            (v >= 1).then_some(v)
-        } else {
-            None
-        }
-    }
-
-    fn harmonic_minus_gamma(n: i64, pool: &ExprPool) -> ExprId {
-        let mut terms = Vec::new();
-        for k in 1..n {
-            terms.push(pool.rational(1, k as i32));
-        }
-        let harmonic = if terms.is_empty() {
-            pool.integer(0_i32)
-        } else {
-            pool.add(terms)
-        };
-        pool.add(vec![harmonic, pool.float(-crate::special::EULER_GAMMA, 53)])
-    }
-
     // ── gamma ────────────────────────────────────────────────────────────────
 
     pub struct GammaPrimitive;
@@ -2943,17 +2938,13 @@ pub mod builtins {
             format!("Γ({})", pool.display(args[0]))
         }
 
+        /// `Γ(n) = (n−1)!` at a positive integer and `Γ(m+½) = r·√π` at a
+        /// half-integer (see `crate::specfun::gamma`).
         fn simplify(&self, args: &[ExprId], pool: &ExprPool) -> Option<ExprId> {
-            // Γ(n) = (n-1)! for positive integers n.
-            let n = positive_integer_literal(args[0], pool)?;
-            if !(1..=21).contains(&n) {
-                return None;
+            match args {
+                [x] => crate::specfun::gamma::gamma_value(*x, pool),
+                _ => None,
             }
-            let mut acc: i64 = 1;
-            for k in 2..n {
-                acc = acc.checked_mul(k)?;
-            }
-            Some(pool.integer(acc))
         }
 
         /// `d/dx Γ(x) = Γ(x)·ψ(x)`.
@@ -3645,16 +3636,15 @@ mod tests {
             .unwrap()
             .simplify(&[pool.integer(3_i32)], &pool)
             .unwrap();
-        // ψ(3) = 1 + 1/2 − γ.  `Add` is flat at construction, so the harmonic
-        // sum's terms and the −γ float are siblings of one three-term node
-        // rather than a nested `Add([Add([1, 1/2]), −γ])`; the value is the
-        // same either way, so assert on it rather than on the arity.
+        // ψ(3) = 3/2 − γ, with γ the exact constant `EulerGamma` — before
+        // G11c it was the float −0.5772…, a float in an exact path.
+        let gamma = crate::eval::symbols::euler_gamma_symbol(&pool);
         let expected = pool.add(vec![
-            pool.rational(1, 1),
-            pool.rational(1, 2),
-            pool.float(-EULER_GAMMA, 53),
+            pool.rational(3, 2),
+            pool.mul(vec![pool.integer(-1_i32), gamma]),
         ]);
         assert_eq!(psi3, expected, "expected the harmonic − γ fold");
+        assert!(!crate::specfun::gamma::contains_float(psi3, &pool));
 
         let x = pool.symbol("x", Domain::Real);
         let j0 = pool.func("bessel_j0", vec![x]);
@@ -3751,18 +3741,23 @@ mod tests {
         }
     }
 
-    /// `ψ₁` is where the polygamma ladder stops.  It must *decline*, loudly:
-    /// a placeholder or a silently wrong rule is the failure this whole change
-    /// exists to remove, and a future `polygamma(n, x)` should flip this test,
-    /// not delete it.
+    /// `ψ₁` used to be where the polygamma ladder stopped (it declined with
+    /// `E-DIFF-001`). G11c's `polygamma(n, x)` closes the ladder, so this test
+    /// is flipped rather than deleted: `ψ₁′ = ψ₂`, and the order-derivative is
+    /// what declines now.
     #[test]
-    fn trigamma_declines_to_differentiate_rather_than_guessing() {
+    fn trigamma_differentiates_into_polygamma() {
         use crate::kernel::Domain;
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
+        let n = pool.symbol("n", Domain::Real);
         use crate::errors::AlkahestError;
-        let err = crate::diff::diff(pool.func("trigamma", vec![x]), x, &pool)
-            .expect_err("trigamma has no derivative rule");
+        let d = crate::diff::diff(pool.func("trigamma", vec![x]), x, &pool)
+            .expect("ψ₁′ = ψ₂")
+            .value;
+        assert_eq!(d, pool.func("polygamma", vec![pool.integer(2_i32), x]));
+        let err = crate::diff::diff(pool.func("polygamma", vec![n, x]), n, &pool)
+            .expect_err("∂/∂n has no closed form");
         assert_eq!(err.code(), "E-DIFF-001");
         // …but it evaluates, which is what `Γ″ = Γ(ψ² + ψ₁)` needs of it.
         let reg = PrimitiveRegistry::default_registry();
@@ -3849,7 +3844,8 @@ mod tests {
             assert!(caps.contains(Capabilities::DIFF_FORWARD), "{name}: fwd");
             assert!(caps.contains(Capabilities::DIFF_REVERSE), "{name}: rev");
         }
-        assert!(!reg
+        // Since G11c `ψ₁′ = polygamma(2, x)`.
+        assert!(reg
             .capabilities("trigamma")
             .contains(Capabilities::DIFF_FORWARD));
     }

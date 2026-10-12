@@ -450,7 +450,7 @@ fn eval_f64_data(
         ExprData::Symbol { name, .. } => bindings
             .get(&expr)
             .copied()
-            .or_else(|| (name == symbols::PI_NAME).then_some(std::f64::consts::PI))
+            .or_else(|| symbols::constant_value_f64(name))
             .ok_or(error(UnsupportedReason::UnboundSymbol { symbol: expr })),
         ExprData::Add(args) => {
             let mut sum = 0.0;

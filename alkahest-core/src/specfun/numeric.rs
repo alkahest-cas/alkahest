@@ -140,7 +140,7 @@ pub(crate) fn eval_c64(kernel: Kernel, args: &[(f64, f64)]) -> Option<(f64, f64)
 }
 
 #[cfg(flint_arb)]
-mod arb_impl {
+pub(super) mod arb_impl {
     use super::Kernel;
     use crate::ball::ArbBall;
     use crate::flint::acb::{Acb, Arb};
@@ -148,7 +148,7 @@ mod arb_impl {
     use rug::float::Round;
     use rug::Float;
 
-    fn available() -> bool {
+    pub(in crate::specfun) fn available() -> bool {
         ffi::abi_self_check().is_ok()
     }
 
@@ -417,6 +417,38 @@ mod arb_impl {
             }
         }
         out.is_finite().then_some(out)
+    }
+
+    /// An [`ArbBall`] as an Arb ball (exactly), or `None` for a non-finite one.
+    pub(in crate::specfun) fn to_arb(b: &ArbBall) -> Option<Arb> {
+        if b.mid.is_nan() || b.rad.is_nan() || b.mid.is_infinite() {
+            return None;
+        }
+        Arb::from_mid_rad(&b.mid, &b.rad)
+    }
+
+    /// An Arb ball as an [`ArbBall`] at `prec` bits, the midpoint rounding
+    /// folded into the radius.
+    pub(in crate::specfun) fn from_arb(v: &Arb, prec: u32) -> Option<ArbBall> {
+        let mid = v.midpoint_rug()?;
+        let rad = v.radius_rug()?;
+        let mid_r = Float::with_val(prec, &mid);
+        let err = Float::with_val(mid.prec().max(prec) + 2, &mid - &mid_r).abs();
+        let rad_r = Float::with_val_round(prec, &rad + &err, Round::Up).0;
+        Some(ArbBall {
+            mid: mid_r,
+            rad: rad_r,
+            prec,
+        })
+    }
+
+    /// The midpoint of `v` when it carries 53 correct bits (or is a tight
+    /// zero).
+    pub(in crate::specfun) fn certified_f64(v: &Arb) -> Option<f64> {
+        if !v.is_finite() {
+            return None;
+        }
+        part_ok(v)
     }
 
     fn part_ok(p: &Arb) -> Option<f64> {
