@@ -539,17 +539,21 @@ pub(super) struct RationalPiece {
     pub(super) quads: Vec<(Rational, ExprId)>,
 }
 
+/// `(linear roots, monic quadratics (p, s, multiplicity), leading coefficient)`.
+type FactorRoots = (
+    Vec<(Rational, u32)>,
+    Vec<(Rational, Rational, u32)>,
+    Rational,
+);
+
+/// Quadratic poles sharing `β²` and `frac(x₀)`: `(β², frac, [(x₀, A)])`.
+type QuadClass = (ExprId, Rational, Vec<(Rational, ExprId)>);
+
 /// Factorisation over ℚ of a polynomial with rational literal coefficients:
 /// `(linear roots with multiplicity, monic irreducible quadratics (p, s,
 /// multiplicity), leading coefficient)`, or `None` when some irreducible
 /// factor has degree > 2.
-fn rational_factor_roots(
-    coeffs: &[Rational],
-) -> Option<(
-    Vec<(Rational, u32)>,
-    Vec<(Rational, Rational, u32)>,
-    Rational,
-)> {
+fn rational_factor_roots(coeffs: &[Rational]) -> Option<FactorRoots> {
     let lc = coeffs.last()?.clone();
     if lc == 0 {
         return None;
@@ -964,7 +968,7 @@ fn quadratic_contribution(
 ) -> Option<ExprId> {
     let mut parts = Vec::new();
     // (β², frac(x₀)) → members (x₀, A)
-    let mut classes: Vec<(ExprId, Rational, Vec<(Rational, ExprId)>)> = Vec::new();
+    let mut classes: Vec<QuadClass> = Vec::new();
     for (p, beta2_raw, a, b) in quads {
         let alpha = -p.clone() / Rational::from(2);
         let beta2 = simp(
@@ -999,7 +1003,7 @@ fn quadratic_contribution(
             parts.push(pool.mul(vec![c, pool.pow(beta, pool.integer(-1_i32)), im]));
         }
         if !provably_zero(pool, *a) {
-            let frac = x0.clone() - Rational::from(x0.clone().floor());
+            let frac = x0.clone() - x0.clone().floor();
             match classes
                 .iter_mut()
                 .find(|(b2, f, _)| *b2 == beta2 && *f == frac)
