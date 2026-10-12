@@ -182,6 +182,36 @@ impl Walker<'_> {
         }
     }
 
+    /// `Derivative(f(u…), k…)`: `unit(f(u…)) / Π unit(uᵢ)^kᵢ`.
+    fn derivative(&mut self, id: ExprId) -> Result<Unit, UnitError> {
+        let Some(v) = crate::diff::undefined::view(id, self.pool) else {
+            return Err(self.unknown(id, "a malformed Derivative node"));
+        };
+        let mut acc = self.unit(v.inner)?;
+        for (&a, &k) in v.args.iter().zip(v.orders.iter()) {
+            if k == 0 {
+                continue;
+            }
+            let au = self.unit(a)?;
+            acc = acc.div(&au.pow(&Rational::from(k))?)?;
+        }
+        Ok(acc)
+    }
+
+    /// `Integral(f, x)` and `Integral(f, x, a, b)`: `unit(f)·unit(x)`, with the
+    /// bounds in the unit of `x`.
+    fn integral(&mut self, id: ExprId, args: &[ExprId]) -> Result<Unit, UnitError> {
+        if args.len() != 2 && args.len() != 4 {
+            return Err(self.unknown(id, "an Integral node needs (f, x) or (f, x, a, b)"));
+        }
+        let fu = self.unit(args[0])?;
+        let xu = self.unit(args[1])?;
+        if args.len() == 4 {
+            self.common(id, &[args[1], args[2], args[3]], "integrate between bounds")?;
+        }
+        fu.mul(&xu)
+    }
+
     fn compute(&mut self, id: ExprId) -> Result<Unit, UnitError> {
         match self.pool.get(id) {
             ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => {
@@ -250,6 +280,10 @@ impl Walker<'_> {
                 } else if matches!(n, "atan2") && args.len() == 2 {
                     self.common(id, &args, "compare")?;
                     Ok(Unit::dimensionless())
+                } else if n == crate::diff::undefined::DERIVATIVE_FUNC {
+                    self.derivative(id)
+                } else if n == "Integral" {
+                    self.integral(id, &args)
                 } else {
                     Err(self.unknown(
                         id,
@@ -293,4 +327,234 @@ pub fn dimension_of(
         memo: HashMap::new(),
     };
     w.unit(expr)
+}
+
+/// Which unit a sum of same-dimension, different-unit terms is converted to by
+/// [`unify_units`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnifyPolicy {
+    /// The unit with the smallest scale among the terms (`h + min` → `min`):
+    /// conversion factors are then the most likely to be integers.
+    Finest,
+    /// The unit with the largest scale among the terms (`h + min` → `h`).
+    Coarsest,
+    /// The unit of the first term in the sum's canonical order.
+    First,
+}
+
+fn scale_value(s: &super::Scale) -> rug::Float {
+    use rug::float::Constant;
+    use rug::ops::Pow;
+    let prec = 256;
+    let mut v = rug::Float::with_val(prec, &s.ratio);
+    if s.pi_power != 0 {
+        let pi = rug::Float::with_val(prec, Constant::Pi);
+        let e = rug::Float::with_val(prec, &s.pi_power);
+        v *= rug::Float::with_val(prec, pi.pow(&e));
+    }
+    v
+}
+
+struct Unifier<'a> {
+    w: Walker<'a>,
+    memo: HashMap<ExprId, ExprId>,
+    policy: UnifyPolicy,
+    /// Every node of the input formula. A converted term `c·t` is in the
+    /// target unit while the node `c·t` read at face value would be in `t`'s
+    /// unit, so converted terms are pinned in the walker's memo; that is only
+    /// sound if the same node does not also occur naturally.
+    originals: std::collections::HashSet<ExprId>,
+}
+
+fn collect_nodes(id: ExprId, pool: &ExprPool, out: &mut std::collections::HashSet<ExprId>) {
+    if !out.insert(id) {
+        return;
+    }
+    match pool.get(id) {
+        ExprData::Add(v) | ExprData::Mul(v) => v.iter().for_each(|&c| collect_nodes(c, pool, out)),
+        ExprData::Pow { base, exp } => {
+            collect_nodes(base, pool, out);
+            collect_nodes(exp, pool, out);
+        }
+        ExprData::Func { args, .. } => args.iter().for_each(|&c| collect_nodes(c, pool, out)),
+        ExprData::Piecewise { branches, default } => {
+            for (c, v) in branches {
+                collect_nodes(c, pool, out);
+                collect_nodes(v, pool, out);
+            }
+            collect_nodes(default, pool, out);
+        }
+        _ => {}
+    }
+}
+
+impl Unifier<'_> {
+    /// Convert each term to the policy's unit of its dimension. `whole` names
+    /// the sum in errors.
+    fn unify_terms(
+        &mut self,
+        whole: ExprId,
+        terms: Vec<ExprId>,
+        op: &str,
+    ) -> Result<Vec<ExprId>, UnitError> {
+        let mut units: Vec<Option<Unit>> = Vec::new();
+        for &t in &terms {
+            if matches!(self.w.pool.get(t), ExprData::Integer(ref n) if n.0 == 0) {
+                units.push(None);
+            } else {
+                units.push(Some(self.w.unit(t)?));
+            }
+        }
+        let present: Vec<Unit> = units.iter().flatten().cloned().collect();
+        let Some(first) = present.first() else {
+            return Ok(terms);
+        };
+        if present.iter().all(|u| u == first) {
+            return Ok(terms);
+        }
+        // Differing dimensions are E-UNIT-001 (reported by the plain checker);
+        // affine units are E-UNIT-003.
+        if present.iter().any(|u| u.dimension() != first.dimension()) {
+            self.w.common(whole, &terms, op)?;
+        }
+        for u in &present {
+            if u.is_affine() {
+                return Err(UnitError::AffineUnit {
+                    unit: u.name(),
+                    context: format!("a sum (in `{}`)", self.w.show(whole)),
+                });
+            }
+        }
+        let mut target: &Unit = first;
+        let mut best = scale_value(target.scale());
+        for u in present.iter().skip(1) {
+            let v = scale_value(u.scale());
+            let better = match self.policy {
+                UnifyPolicy::First => false,
+                UnifyPolicy::Finest => v < best,
+                UnifyPolicy::Coarsest => v > best,
+            };
+            if better {
+                target = u;
+                best = v;
+            }
+        }
+        let target = target.clone();
+        let mut out = Vec::with_capacity(terms.len());
+        for (t, u) in terms.into_iter().zip(units) {
+            match u {
+                Some(u) if u != target => {
+                    let f = u.conversion_factor(&target)?;
+                    let c = self.w.pool.mul(vec![f.to_expr(self.w.pool), t]);
+                    let clash = self.originals.contains(&c)
+                        || self.w.memo.get(&c).is_some_and(|m| *m != target);
+                    if clash {
+                        return Err(UnitError::UnknownUnit {
+                            expr: self.w.show(whole),
+                            reason: format!(
+                                "converting a term to `{}` produced `{}`, which also occurs unconverted in the formula; rename one of the symbols or convert by hand",
+                                target.name(),
+                                self.w.show(c)
+                            ),
+                        });
+                    }
+                    self.w.memo.insert(c, target.clone());
+                    out.push(c);
+                }
+                _ => out.push(t),
+            }
+        }
+        Ok(out)
+    }
+
+    fn rebuild(&mut self, id: ExprId) -> Result<ExprId, UnitError> {
+        if self.w.units.contains_key(&id) {
+            return Ok(id);
+        }
+        if let Some(&r) = self.memo.get(&id) {
+            return Ok(r);
+        }
+        let pool = self.w.pool;
+        let out = match pool.get(id) {
+            ExprData::Add(terms) => {
+                let new = self.rebuild_all(&terms)?;
+                let new = self.unify_terms(id, new, "add")?;
+                pool.add(new)
+            }
+            ExprData::Mul(fs) => {
+                let new = self.rebuild_all(&fs)?;
+                pool.mul(new)
+            }
+            ExprData::Pow { base, exp } => {
+                let b = self.rebuild(base)?;
+                let e = self.rebuild(exp)?;
+                pool.pow(b, e)
+            }
+            ExprData::Func { name, args } => {
+                if name == crate::diff::undefined::DERIVATIVE_FUNC || name == "Integral" {
+                    id
+                } else {
+                    let mut new = self.rebuild_all(&args)?;
+                    if matches!(name.as_str(), "min" | "max" | "Min" | "Max" | "atan2") {
+                        new = self.unify_terms(id, new, "compare")?;
+                    }
+                    pool.func(name, new)
+                }
+            }
+            ExprData::Piecewise { branches, default } => {
+                let mut vals: Vec<ExprId> = Vec::new();
+                for b in &branches {
+                    vals.push(self.rebuild(b.1)?);
+                }
+                vals.push(self.rebuild(default)?);
+                let vals = self.unify_terms(id, vals, "join the branches")?;
+                let nd = vals[vals.len() - 1];
+                let nb = branches
+                    .iter()
+                    .zip(vals.iter())
+                    .map(|(b, &v)| (b.0, v))
+                    .collect();
+                pool.piecewise(nb, nd)
+            }
+            _ => id,
+        };
+        self.memo.insert(id, out);
+        Ok(out)
+    }
+
+    fn rebuild_all(&mut self, ids: &[ExprId]) -> Result<Vec<ExprId>, UnitError> {
+        ids.iter().map(|&i| self.rebuild(i)).collect()
+    }
+}
+
+/// Like [`dimension_of`], but a sum whose terms share a dimension and differ
+/// in unit (`t₁[h] + t₂[min]`) is **converted** instead of refused with
+/// `E-UNIT-006`: every such term is multiplied by the exact ratio of its scale
+/// to the unit chosen by `policy`. Returns the rewritten expression, whose
+/// value is in the returned unit when every symbol is in its listed unit, and
+/// that unit. The same conversion applies to the arguments of `min`/`max`/
+/// `atan2` and to the values of a `Piecewise`. An expression without mixed
+/// sums comes back unchanged. Differing dimensions (`E-UNIT-001`), affine
+/// units in a sum (`E-UNIT-003`) and everything else [`dimension_of`] refuses
+/// stay refused.
+pub fn unify_units(
+    expr: ExprId,
+    units: &HashMap<ExprId, Unit>,
+    pool: &ExprPool,
+    policy: UnifyPolicy,
+) -> Result<(ExprId, Unit), UnitError> {
+    let mut u = Unifier {
+        w: Walker {
+            pool,
+            units,
+            memo: HashMap::new(),
+        },
+        memo: HashMap::new(),
+        policy,
+        originals: std::collections::HashSet::new(),
+    };
+    collect_nodes(expr, pool, &mut u.originals);
+    let e = u.rebuild(expr)?;
+    let unit = u.w.unit(e)?;
+    Ok((e, unit))
 }

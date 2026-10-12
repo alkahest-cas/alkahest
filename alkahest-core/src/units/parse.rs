@@ -23,6 +23,22 @@ fn err(input: &str, message: impl Into<String>) -> UnitError {
     }
 }
 
+/// The message for an unknown unit name; logarithmic scales get a pointer to
+/// the explicit conversion functions, since they are not units one can
+/// multiply (`10 dB + 10 dB` is not `20 dB`).
+fn unknown_msg(name: &str) -> String {
+    if matches!(
+        name,
+        "dB" | "dBm" | "dBW" | "dBi" | "dBV" | "dBu" | "Np" | "neper" | "bel"
+    ) {
+        format!(
+            "`{name}` is a logarithmic scale, not a unit with a scale factor, so it takes no part in unit arithmetic; convert it explicitly with alkahest.units.db_to_ratio / np_to_ratio (and ratio_to_db / ratio_to_np)"
+        )
+    } else {
+        format!("unknown unit `{name}`")
+    }
+}
+
 fn is_name_char(c: char) -> bool {
     c.is_alphabetic() || c == '_' || c == '°' || c == '%'
 }
@@ -72,7 +88,7 @@ pub(super) fn parse_atom(token: &str) -> Result<Unit, UnitError> {
         let v = parse_decimal(token).ok_or_else(|| err(token, "malformed number"))?;
         return Ok(number_unit(token, v));
     }
-    lookup(token).ok_or_else(|| err(token, format!("unknown unit `{token}`")))
+    lookup(token).ok_or_else(|| err(token, unknown_msg(token)))
 }
 
 fn parse_decimal(s: &str) -> Option<Rational> {
@@ -280,7 +296,7 @@ impl<'a> Parser<'a> {
                         format!("`{name}` is followed by a digit; write an exponent as `{name}^2`"),
                     ));
                 }
-                lookup(&name).ok_or_else(|| err(self.input, format!("unknown unit `{name}`")))
+                lookup(&name).ok_or_else(|| err(self.input, unknown_msg(&name)))
             }
             Some(c) => Err(err(self.input, format!("unexpected `{c}`"))),
             None => Err(err(self.input, "expected a unit")),

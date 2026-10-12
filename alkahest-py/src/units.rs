@@ -216,8 +216,25 @@ impl PyUnit {
 
     /// Merge factors of equal dimension (``mg/kg*g → mg``); returns
     /// ``(ratio, pi_power, unit)`` with ``x [self] = ratio·π**pi_power·x [unit]``.
-    fn simplify(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let (f, u) = self.inner.simplify();
+    ///
+    /// With ``derived=True`` the merged unit is also renamed to the named SI
+    /// derived unit it exactly equals (``kg*m/s^2 → N``), see
+    /// :meth:`to_derived`; ``allowed`` restricts the candidate names.
+    #[pyo3(signature = (derived = false, allowed = None))]
+    fn simplify(
+        &self,
+        py: Python<'_>,
+        derived: bool,
+        allowed: Option<Vec<String>>,
+    ) -> PyResult<PyObject> {
+        let (f, u) = if derived {
+            let a: Option<Vec<&str>> = allowed
+                .as_ref()
+                .map(|v| v.iter().map(String::as_str).collect());
+            self.inner.simplify_derived(a.as_deref())
+        } else {
+            self.inner.simplify()
+        };
         Ok(PyTuple::new_bound(
             py,
             [
@@ -227,6 +244,24 @@ impl PyUnit {
             ],
         )
         .into_py(py))
+    }
+
+    /// The named SI derived unit this unit exactly equals, or ``None``.
+    ///
+    /// ``Unit("kg*m/s^2").to_derived()`` is ``N``; ``g*m/s^2`` is ``mN``
+    /// (prefixes in steps of 1000 only); ``kg*cm/s^2`` is not renamed (its
+    /// scale is not a power of 1000 times ``N``). The candidates are ``N, Pa,
+    /// J, W, C, V, ohm, F, H, T, Wb, S, Hz`` (``allowed`` restricts them). A
+    /// unit that is already one named factor, is dimensionless or affine, or
+    /// contains a dimensionless factor (``rad/s`` is not ``Hz``) is left
+    /// alone, and ``Gy``/``Sv``/``Bq`` are never produced (they share a
+    /// dimension with ``m^2/s^2`` and ``Hz``). ``N*m`` is a ``J``.
+    #[pyo3(signature = (allowed = None))]
+    fn to_derived(&self, allowed: Option<Vec<String>>) -> Option<PyUnit> {
+        let a: Option<Vec<&str>> = allowed
+            .as_ref()
+            .map(|v| v.iter().map(String::as_str).collect());
+        self.inner.to_derived(a.as_deref()).map(wrap)
     }
 
     fn __mul__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<PyObject> {
@@ -407,6 +442,69 @@ fn py_dimension_of(
         .map_err(unit_err)
 }
 
+/// Like :func:`dimension_of`, but a sum whose terms share a dimension and
+/// differ in unit (``a`` in ``h`` plus ``b`` in ``min``) is **converted**
+/// instead of refused with ``E-UNIT-006``.
+///
+/// Each such term is multiplied by the exact ratio of its unit to the target
+/// unit chosen by ``prefer``: ``"finest"`` (default; the smallest unit among
+/// the terms, so factors are integers when possible), ``"coarsest"`` or
+/// ``"first"`` (the first term in canonical order). The same applies to
+/// ``min``/``max``/``atan2`` arguments and ``Piecewise`` values.
+///
+/// Returns ``(expr, unit)``: the rewritten formula and the unit its value is in
+/// when every symbol is in its listed unit. A formula without mixed sums comes
+/// back unchanged. Every other refusal of :func:`dimension_of` stands
+/// (``E-UNIT-001`` different dimensions, ``E-UNIT-003`` affine units in a sum,
+/// ``E-UNIT-004``, ``E-UNIT-005``, ``E-UNIT-007``).
+///
+/// Example
+/// -------
+/// >>> p = ExprPool(); a, b = p.symbol("a"), p.symbol("b")
+/// >>> unify_units(a + b, {a: "h", b: "min"})  # 60*a + b, in min
+#[pyfunction]
+#[pyo3(name = "unify_units", signature = (expr, units, prefer = "finest"))]
+fn py_unify_units(
+    py: Python<'_>,
+    expr: PyRef<'_, crate::PyExpr>,
+    units: &Bound<'_, PyDict>,
+    prefer: &str,
+) -> PyResult<(crate::PyExpr, PyUnit)> {
+    let policy = match prefer {
+        "finest" => core_units::UnifyPolicy::Finest,
+        "coarsest" => core_units::UnifyPolicy::Coarsest,
+        "first" => core_units::UnifyPolicy::First,
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "prefer must be 'finest', 'coarsest' or 'first', got {other:?}"
+            )))
+        }
+    };
+    let mut map: HashMap<alkahest_core::ExprId, Unit> = HashMap::new();
+    for (k, v) in units.iter() {
+        let key = k.extract::<PyRef<'_, crate::PyExpr>>().map_err(|_| {
+            PyTypeError::new_err("the keys of `units` must be Expr (symbols or sub-expressions)")
+        })?;
+        if !key.pool.is(&expr.pool) {
+            return Err(PyTypeError::new_err(
+                "a key of `units` belongs to a different ExprPool than `expr`",
+            ));
+        }
+        map.insert(key.id, require_unit(&v, "each value of `units`")?);
+    }
+    let (id, unit) = {
+        let pool = expr.pool.borrow(py);
+        core_units::unify_units(expr.id, &map, &pool.inner, policy).map_err(unit_err)?
+    };
+    Ok((
+        crate::PyExpr {
+            id,
+            pool: expr.pool.clone_ref(py),
+        },
+        wrap(unit),
+    ))
+}
+
 /// ``ratio · π**pi_power · value + shift`` as an ``Expr`` (all three
 /// coefficients exact rationals). Used by ``Quantity.convert``.
 ///
@@ -466,6 +564,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_parse_unit, m)?)?;
     m.add_function(wrap_pyfunction!(py_known_units, m)?)?;
     m.add_function(wrap_pyfunction!(py_dimension_of, m)?)?;
+    m.add_function(wrap_pyfunction!(py_unify_units, m)?)?;
     m.add_function(wrap_pyfunction!(py_unit_affine_map, m)?)?;
     Ok(())
 }
