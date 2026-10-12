@@ -155,7 +155,7 @@ fn bi_div_uni(b: &Bi, u: &RatUniPoly) -> Option<Bi> {
 fn print_order(b: &Bi) -> Vec<((u32, u32), Rational)> {
     let mut terms: Vec<((u32, u32), Rational)> =
         b.iter().map(|(&key, c)| (key, c.clone())).collect();
-    terms.sort_by(|(a, _), (b, _)| (b.0 + b.1, b.0).cmp(&(a.0 + a.1, a.0)));
+    terms.sort_by_key(|&((dn, dk), _)| std::cmp::Reverse((dn + dk, dn)));
     terms
 }
 
