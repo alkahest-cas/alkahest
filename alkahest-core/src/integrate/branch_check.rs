@@ -413,10 +413,8 @@ fn walk_uncached(
         ExprData::Symbol { .. } => {
             if pool.is_imaginary_unit(expr) {
                 Some(I)
-            } else if let Some(v) = crate::eval::symbols::constant_value_of(expr, pool) {
-                Some(C::real(v))
             } else {
-                None
+                crate::eval::symbols::constant_value_of(expr, pool).map(C::real)
             }
         }
         ExprData::Add(args) => {

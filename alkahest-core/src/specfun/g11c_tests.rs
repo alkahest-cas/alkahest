@@ -5,6 +5,9 @@
 //! against the exact closed forms), and mpmath at 40 digits for the Laurent
 //! coefficients (recorded below).
 
+// Reference values are quoted at mpmath's full 30 digits, deliberately.
+#![allow(clippy::excessive_precision)]
+
 use std::collections::HashMap;
 
 use super::gamma::{contains_float, polygamma_node, polygamma_value, shift_off_poles};

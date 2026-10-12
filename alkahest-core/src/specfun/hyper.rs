@@ -199,7 +199,7 @@ fn sqrt(pool: &ExprPool, e: ExprId) -> ExprId {
 /// `w` when `z` is syntactically `−w`.
 fn negated(pool: &ExprPool, z: ExprId) -> Option<ExprId> {
     if let Some(q) = rational_literal(pool, z) {
-        return (q < 0).then(|| rat_node(pool, &Rational::from(-q)));
+        return (q < 0).then(|| rat_node(pool, &(-q)));
     }
     let f = pool.with(z, |d| match d {
         ExprData::Mul(f) => Some(f.clone()),
@@ -296,7 +296,7 @@ fn terminating_sum(
 /// Gauss's sum `₂F₁(a, b; c; 1)` when `c − a − b` is a positive literal.
 fn gauss(a: ExprId, b: ExprId, c: ExprId, pool: &ExprPool) -> Option<ExprId> {
     let d = simplify(mk_add(pool, vec![c, neg(pool, a), neg(pool, b)]), pool).value;
-    if rational_literal(pool, d).is_none_or(|q| q <= 0) {
+    if !rational_literal(pool, d).is_some_and(|q| q > 0) {
         return None;
     }
     if nonpositive_int(pool, c).is_some() {
