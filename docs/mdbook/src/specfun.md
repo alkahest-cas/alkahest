@@ -27,6 +27,8 @@ ak.zeta(p.integer(4))              # 1/90*pi^4
 ak.zeta(p.integer(-1))             # -1/12
 ak.polylog(p.integer(-1), x)       # x*(1 - x)^-2
 ak.sum_definite(k**-3, k, p.integer(1), p.pos_infinity())   # zeta(3)
+ak.sum_definite(x**k/k**2, k, p.integer(1), p.pos_infinity())  # dilog(x), |x| < 1 stated
+ak.sum_definite(x**k/ak.gamma(k + 1), k, p.integer(0), p.pos_infinity())  # exp(x)
 ak.integrate(x*ak.bessel_j0(x), x) # x*bessel_j1(x)
 ak.evaluate(ak.bessel_k(nu, x), {nu: 0.5 + 0j, x: 1 + 2j})  # complex value via Arb
 ```

@@ -30,10 +30,13 @@
 //!   | `₂F₁(1, 1; 2; z)` | `−log(1 − z)/z` |
 //!   | `₂F₁(½, 1; 3/2; z)` | `atanh(√z)/√z` |
 //!   | `₂F₁(½, ½; 3/2; z)` | `asin(√z)/√z` |
+//!   | `₂F₁(½, 1; 3/2; −w)`, `₂F₁(½, ½; 3/2; −w)` | `atan(√w)/√w`, `asinh(√w)/√w` |
+//!   | `ₛ₊₁Fₛ(1, …, 1; 2, …, 2; z)`, `s ≥ 2` | `Li_s(z)/z` |
 //!   | `₂F₁(a, b; c; 1)`, `c − a − b > 0` a literal | `Γ(c)Γ(c−a−b)/(Γ(c−a)Γ(c−b))` (Gauss, DLMF 15.4.20) |
 //!   | `₁F₁(1; 2; z)` | `(eᶻ − 1)/z` |
 //!   | `₁F₁(½; 3/2; −w)` | `√π·erf(√w)/(2√w)` |
 //!   | `₀F₁(; ½; z)`, `₀F₁(; 3/2; z)` | `cosh(2√z)`, `sinh(2√z)/(2√z)` |
+//!   | `₀F₁(; ½; −w)`, `₀F₁(; 3/2; −w)` | `cos(2√w)`, `sin(2√w)/(2√w)` |
 //!   | `₀F₁(; b; −w)` / `₀F₁(; b; z)` | `Γ(b) w^{(1−b)/2} J_{b−1}(2√w)` / `Γ(b) z^{(1−b)/2} I_{b−1}(2√z)` |
 //!
 //!   Anything else is kept as the node.
@@ -343,6 +346,24 @@ fn closed_form(
                 return Ok(None);
             };
             let sz = sqrt(pool, z);
+            // `z = −w`: the real forms atan / asinh instead of atanh / asin
+            // of an imaginary √z (F12).
+            let neg_w = negated(pool, z);
+            if let Some(w) = neg_w.filter(|_| rb == [three_half.clone()]) {
+                let sw = sqrt(pool, w);
+                if ra == [half.clone(), r(1, 1)] {
+                    return Ok(Some(mk_mul(
+                        pool,
+                        vec![pool.func("atan", vec![sw]), inv(pool, sw)],
+                    )));
+                }
+                if ra == [half.clone(), half.clone()] {
+                    return Ok(Some(mk_mul(
+                        pool,
+                        vec![pool.func("asinh", vec![sw]), inv(pool, sw)],
+                    )));
+                }
+            }
             if ra == [r(1, 1), r(1, 1)] && rb == [r(2, 1)] {
                 Some(mk_mul(
                     pool,
@@ -399,7 +420,14 @@ fn closed_form(
         (0, 1) => {
             let bq = rational_literal(pool, b[0]);
             let two_sqrt = |e: ExprId| mk_mul(pool, vec![pool.integer(2), sqrt(pool, e)]);
-            if bq.as_ref() == Some(&half) {
+            let neg_w = negated(pool, z);
+            if let (Some(w), true) = (neg_w, bq.as_ref() == Some(&half)) {
+                // ₀F₁(; ½; −w) = cos(2√w) (F12: no imaginary square root).
+                Some(pool.func("cos", vec![two_sqrt(w)]))
+            } else if let (Some(w), true) = (neg_w, bq.as_ref() == Some(&three_half)) {
+                let t = two_sqrt(w);
+                Some(mk_mul(pool, vec![pool.func("sin", vec![t]), inv(pool, t)]))
+            } else if bq.as_ref() == Some(&half) {
                 Some(pool.func("cosh", vec![two_sqrt(z)]))
             } else if bq.as_ref() == Some(&three_half) {
                 let t = two_sqrt(z);
@@ -427,6 +455,18 @@ fn closed_form(
                     pool,
                     vec![pool.func("gamma", vec![b[0]]), pool.pow(w, expo), bes],
                 ))
+            }
+        }
+        // ₛ₊₁Fₛ(1, …, 1; 2, …, 2; z) = Li_s(z)/z (DLMF 25.12.10), s ≥ 2.
+        (p, q) if q >= 2 && p == q + 1 => {
+            let (Some(ra), Some(rb)) = (ra, rb) else {
+                return Ok(None);
+            };
+            if ra.iter().all(|x| *x == 1) && rb.iter().all(|x| *x == 2) {
+                let li = super::polylog(pool.integer(q as i64), z, pool)?;
+                Some(mk_mul(pool, vec![li, inv(pool, z)]))
+            } else {
+                None
             }
         }
         _ => None,
