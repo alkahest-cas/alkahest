@@ -8,8 +8,8 @@
       "tests/lean_gosper_corpus.py",
       "tests/textbook_gate/"
     ],
-    "observations": 332,
-    "shape_classes": 208
+    "observations": 334,
+    "shape_classes": 210
   },
   "rows": [
     {
@@ -551,6 +551,52 @@
       "blocking_rules": [],
       "examples": [
         "7"
+      ]
+    },
+    {
+      "operation": "diff",
+      "shape": "diff/form=piecewise/funcs=-/fn_arg=none/mul=scalar/pow=nat/pow_base=var/cond=var_cmp",
+      "features": {
+        "form": "piecewise",
+        "funcs": "-",
+        "fn_arg": "none",
+        "mul": "scalar",
+        "pow": "nat",
+        "pow_base": "var",
+        "cond": "var_cmp"
+      },
+      "verdict": "certified",
+      "observations": {
+        "certified": 1,
+        "withheld": 0,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "<piecewise>"
+      ]
+    },
+    {
+      "operation": "diff",
+      "shape": "diff/form=piecewise/funcs=sin/fn_arg=var/mul=none/pow=nat/pow_base=var/cond=var_cmp",
+      "features": {
+        "form": "piecewise",
+        "funcs": "sin",
+        "fn_arg": "var",
+        "mul": "none",
+        "pow": "nat",
+        "pow_base": "var",
+        "cond": "var_cmp"
+      },
+      "verdict": "certified",
+      "observations": {
+        "certified": 1,
+        "withheld": 0,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "<piecewise>"
       ]
     },
     {
