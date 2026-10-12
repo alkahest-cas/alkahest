@@ -4091,7 +4091,7 @@ fn det_proof(
 ///
 /// The proof expands the determinant with a controlled `simp only` lemma set
 /// and closes with `ring`; matrices above 6×6 are first split along row 0 into
-/// explicit minors whose values are computed here (see [`MAX_SYLVESTER_DIM`]).
+/// explicit minors whose values are computed here.
 /// Before anything is printed, the determinant is recomputed exactly and
 /// compared with `result`.
 ///
