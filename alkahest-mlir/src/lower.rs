@@ -9,24 +9,35 @@
 //! * [`LoweringStage::Llvm`] — `llvm.*` dialect suitable for the host JIT /
 //!   NVPTX pipelines.
 
+use alkahest_core::kernel::expr::PredicateKind;
 use alkahest_core::kernel::{ExprData, ExprId, ExprPool};
 use alkahest_core::poly::UniPoly;
-use alkahest_core::stablehlo::emit_stablehlo;
+use alkahest_core::stablehlo::try_emit_stablehlo;
 use std::collections::HashMap;
 
-use crate::LoweringStage;
+use crate::{LoweringError, LoweringStage};
 
 /// Emit MLIR at the requested lowering stage.
+///
+/// # Errors
+///
+/// Never returns a module that computes something other than `expr`: a
+/// symbol that is not in `inputs` ([`LoweringError::UnboundSymbol`], except
+/// the named constant `pi`), a function the stage has no exact lowering for
+/// ([`LoweringError::UnsupportedFunction`]), a node with no numeric value
+/// (`O(x)`, quantifiers, a bare predicate — [`LoweringError::UnsupportedNode`])
+/// and a non-finite constant are all refused.  The StableHLO stage forwards
+/// the `E-STABLEHLO-NNN` error of [`try_emit_stablehlo`] unchanged.
 pub fn lower(
     expr: ExprId,
     inputs: &[ExprId],
     fn_name: &str,
     stage: LoweringStage,
     pool: &ExprPool,
-) -> String {
+) -> Result<String, LoweringError> {
     match stage {
         LoweringStage::ArithMath => lower_arith_math(expr, inputs, fn_name, pool),
-        LoweringStage::StableHlo => emit_stablehlo(expr, inputs, fn_name, pool),
+        LoweringStage::StableHlo => Ok(try_emit_stablehlo(expr, inputs, fn_name, pool)?),
         LoweringStage::Llvm => lower_llvm(expr, inputs, fn_name, pool),
     }
 }
@@ -35,7 +46,14 @@ pub fn lower(
 // Shared walker core
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Dialect {
+    Arith,
+    Llvm,
+}
+
 struct Backend {
+    dialect: Dialect,
     // op name conventions for the target dialect
     add: &'static str,
     mul: &'static str,
@@ -85,8 +103,14 @@ fn const_llvm(val: f64) -> String {
 // arith + math lowering
 // ---------------------------------------------------------------------------
 
-fn lower_arith_math(expr: ExprId, inputs: &[ExprId], fn_name: &str, pool: &ExprPool) -> String {
+fn lower_arith_math(
+    expr: ExprId,
+    inputs: &[ExprId],
+    fn_name: &str,
+    pool: &ExprPool,
+) -> Result<String, LoweringError> {
     let backend = Backend {
+        dialect: Dialect::Arith,
         add: "arith.addf",
         mul: "arith.mulf",
         div: "arith.divf",
@@ -102,8 +126,14 @@ fn lower_arith_math(expr: ExprId, inputs: &[ExprId], fn_name: &str, pool: &ExprP
 // llvm lowering
 // ---------------------------------------------------------------------------
 
-fn lower_llvm(expr: ExprId, inputs: &[ExprId], fn_name: &str, pool: &ExprPool) -> String {
+fn lower_llvm(
+    expr: ExprId,
+    inputs: &[ExprId],
+    fn_name: &str,
+    pool: &ExprPool,
+) -> Result<String, LoweringError> {
     let backend = Backend {
+        dialect: Dialect::Llvm,
         add: "llvm.fadd",
         mul: "llvm.fmul",
         div: "llvm.fdiv",
@@ -151,24 +181,24 @@ impl<'a> Walker<'a> {
         v
     }
 
-    fn emit(&mut self, expr: ExprId, pool: &ExprPool) -> String {
+    fn emit(&mut self, expr: ExprId, pool: &ExprPool) -> Result<String, LoweringError> {
         if let Some(s) = self.arg_map.get(&expr) {
-            return s.clone();
+            return Ok(s.clone());
         }
         if let Some(s) = self.cache.get(&expr) {
-            return s.clone();
+            return Ok(s.clone());
         }
 
         // Polynomial lift: if this node is a univariate polynomial of degree ≥ 2
         // in a known input, emit the Horner fma sequence directly.
         if let Some(ssa) = self.try_emit_horner(expr, pool) {
             self.cache.insert(expr, ssa.clone());
-            return ssa;
+            return Ok(ssa);
         }
 
-        let ssa = self.emit_raw(expr, pool);
+        let ssa = self.emit_raw(expr, pool)?;
         self.cache.insert(expr, ssa.clone());
-        ssa
+        Ok(ssa)
     }
 
     fn try_emit_horner(&mut self, expr: ExprId, pool: &ExprPool) -> Option<String> {
@@ -201,9 +231,9 @@ impl<'a> Walker<'a> {
     fn emit_horner_fma(&mut self, coeffs: &[i64], x: &str) -> String {
         assert!(!coeffs.is_empty());
         let n = coeffs.len();
-        let mut acc = self.emit_const(coeffs[n - 1] as f64);
+        let mut acc = self.emit_const_unchecked(coeffs[n - 1] as f64);
         for k in (0..n - 1).rev() {
-            let ck = self.emit_const(coeffs[k] as f64);
+            let ck = self.emit_const_unchecked(coeffs[k] as f64);
             // fma(x, acc, ck) = x * acc + ck
             let out = self.fresh();
             self.body.push(format!(
@@ -216,11 +246,135 @@ impl<'a> Walker<'a> {
         acc
     }
 
-    fn emit_const(&mut self, val: f64) -> String {
+    fn emit_const(&mut self, val: f64) -> Result<String, LoweringError> {
+        if !val.is_finite() {
+            return Err(LoweringError::NonFiniteConstant(val));
+        }
+        Ok(self.emit_const_unchecked(val))
+    }
+
+    fn emit_const_unchecked(&mut self, val: f64) -> String {
         let out = self.fresh();
         let rhs = (self.backend.const_op)(val);
         self.body.push(format!("{out} = {rhs}"));
         out
+    }
+
+    // -- predicates (i1) -----------------------------------------------------
+
+    fn emit_bool_const(&mut self, val: bool) -> String {
+        let out = self.fresh();
+        let rhs = match self.backend.dialect {
+            Dialect::Arith => format!("arith.constant {val}"),
+            Dialect::Llvm => format!("llvm.mlir.constant({val}) : i1"),
+        };
+        self.body.push(format!("{out} = {rhs}"));
+        out
+    }
+
+    fn emit_cmp(&mut self, pred: &str, a: &str, b: &str) -> String {
+        let out = self.fresh();
+        let rhs = match self.backend.dialect {
+            Dialect::Arith => format!("arith.cmpf {pred}, {a}, {b} : f64"),
+            Dialect::Llvm => format!("llvm.fcmp \"{pred}\" {a}, {b} : f64"),
+        };
+        self.body.push(format!("{out} = {rhs}"));
+        out
+    }
+
+    fn emit_bool_op(&mut self, op: &str, a: &str, b: &str) -> String {
+        let out = self.fresh();
+        let name = match (self.backend.dialect, op) {
+            (Dialect::Arith, "and") => "arith.andi",
+            (Dialect::Arith, "or") => "arith.ori",
+            (Dialect::Arith, _) => "arith.xori",
+            (Dialect::Llvm, "and") => "llvm.and",
+            (Dialect::Llvm, "or") => "llvm.or",
+            (Dialect::Llvm, _) => "llvm.xor",
+        };
+        self.body.push(format!("{out} = {name} {a}, {b} : i1"));
+        out
+    }
+
+    fn emit_select(&mut self, cond: &str, t: &str, f: &str) -> String {
+        let out = self.fresh();
+        let rhs = match self.backend.dialect {
+            Dialect::Arith => format!("arith.select {cond}, {t}, {f} : f64"),
+            Dialect::Llvm => format!("llvm.select {cond}, {t}, {f} : i1, f64"),
+        };
+        self.body.push(format!("{out} = {rhs}"));
+        out
+    }
+
+    /// Lower a predicate node to an `i1` SSA value.
+    fn emit_pred(&mut self, expr: ExprId, pool: &ExprPool) -> Result<String, LoweringError> {
+        let (kind, args) = pool
+            .with(expr, |d| match d {
+                ExprData::Predicate { kind, args } => Some((kind.clone(), args.clone())),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                LoweringError::UnsupportedNode(
+                    "a Piecewise condition that is not a predicate".to_string(),
+                )
+            })?;
+        let arity_ok = match kind {
+            PredicateKind::Lt
+            | PredicateKind::Le
+            | PredicateKind::Gt
+            | PredicateKind::Ge
+            | PredicateKind::Eq
+            | PredicateKind::Ne => args.len() == 2,
+            PredicateKind::Not => args.len() == 1,
+            PredicateKind::And | PredicateKind::Or => true,
+            PredicateKind::True | PredicateKind::False => args.is_empty(),
+        };
+        if !arity_ok {
+            return Err(LoweringError::UnsupportedNode(format!(
+                "a malformed predicate ({} argument(s))",
+                args.len()
+            )));
+        }
+        match kind {
+            PredicateKind::True => Ok(self.emit_bool_const(true)),
+            PredicateKind::False => Ok(self.emit_bool_const(false)),
+            PredicateKind::Not => {
+                let a = self.emit_pred(args[0], pool)?;
+                let t = self.emit_bool_const(true);
+                Ok(self.emit_bool_op("xor", &a, &t))
+            }
+            PredicateKind::And | PredicateKind::Or => {
+                let (op, unit) = if kind == PredicateKind::And {
+                    ("and", true)
+                } else {
+                    ("or", false)
+                };
+                if args.is_empty() {
+                    return Ok(self.emit_bool_const(unit));
+                }
+                let mut acc = self.emit_pred(args[0], pool)?;
+                for &a in &args[1..] {
+                    let rhs = self.emit_pred(a, pool)?;
+                    acc = self.emit_bool_op(op, &acc, &rhs);
+                }
+                Ok(acc)
+            }
+            cmp => {
+                // Ordered comparisons are false when an operand is NaN;
+                // `!=` is true then (`une`).
+                let p = match cmp {
+                    PredicateKind::Lt => "olt",
+                    PredicateKind::Le => "ole",
+                    PredicateKind::Gt => "ogt",
+                    PredicateKind::Ge => "oge",
+                    PredicateKind::Eq => "oeq",
+                    _ => "une",
+                };
+                let a = self.emit(args[0], pool)?;
+                let b = self.emit(args[1], pool)?;
+                Ok(self.emit_cmp(p, &a, &b))
+            }
+        }
     }
 
     fn emit_binop(&mut self, op: &str, a: &str, b: &str) -> String {
@@ -235,14 +389,25 @@ impl<'a> Walker<'a> {
         out
     }
 
-    fn emit_raw(&mut self, expr: ExprId, pool: &ExprPool) -> String {
+    fn emit_raw(&mut self, expr: ExprId, pool: &ExprPool) -> Result<String, LoweringError> {
         enum Node {
             Const(f64),
             Add(Vec<ExprId>),
             Mul(Vec<ExprId>),
-            Pow { base: ExprId, exp: ExprId },
-            Call { name: String, args: Vec<ExprId> },
-            FreeSym,
+            Pow {
+                base: ExprId,
+                exp: ExprId,
+            },
+            Call {
+                name: String,
+                args: Vec<ExprId>,
+            },
+            Piecewise {
+                branches: Vec<(ExprId, ExprId)>,
+                default: ExprId,
+            },
+            Sym(String),
+            Unsupported(&'static str),
         }
         let node = pool.with(expr, |d| match d {
             ExprData::Integer(n) => Node::Const(n.0.to_f64()),
@@ -261,77 +426,114 @@ impl<'a> Walker<'a> {
                 name: name.clone(),
                 args: args.clone(),
             },
-            _ => Node::FreeSym,
+            ExprData::Piecewise { branches, default } => Node::Piecewise {
+                branches: branches.clone(),
+                default: *default,
+            },
+            ExprData::Symbol { name, .. } => Node::Sym(name.clone()),
+            ExprData::Predicate { .. } => Node::Unsupported("a bare predicate"),
+            ExprData::Forall { .. } | ExprData::Exists { .. } => Node::Unsupported("a quantifier"),
+            ExprData::BigO(_) => Node::Unsupported("a big-O remainder"),
+            _ => Node::Unsupported("this expression node"),
         });
 
         match node {
             Node::Const(v) => self.emit_const(v),
+            Node::Sym(name) => {
+                // Same convention as the evaluators: an unbound `pi` is pi.
+                if name == "pi" {
+                    self.emit_const(std::f64::consts::PI)
+                } else {
+                    Err(LoweringError::UnboundSymbol(name))
+                }
+            }
+            Node::Unsupported(what) => Err(LoweringError::UnsupportedNode(what.to_string())),
+            Node::Piecewise { branches, default } => {
+                // Every branch is a pure expression, so all values are computed
+                // and chained with selects, last branch innermost: the first
+                // matching condition wins, `default` otherwise.
+                let mut conds = Vec::with_capacity(branches.len());
+                let mut vals = Vec::with_capacity(branches.len());
+                for &(c, v) in &branches {
+                    conds.push(self.emit_pred(c, pool)?);
+                    vals.push(self.emit(v, pool)?);
+                }
+                let mut acc = self.emit(default, pool)?;
+                for (c, v) in conds.iter().zip(vals.iter()).rev() {
+                    acc = self.emit_select(c, v, &acc);
+                }
+                Ok(acc)
+            }
             Node::Add(args) => {
-                let vs: Vec<String> = args.iter().map(|&a| self.emit(a, pool)).collect();
+                let mut vs = Vec::with_capacity(args.len());
+                for &a in &args {
+                    vs.push(self.emit(a, pool)?);
+                }
+                if vs.is_empty() {
+                    return self.emit_const(0.0);
+                }
                 let mut acc = vs[0].clone();
                 for rhs in &vs[1..] {
                     acc = self.emit_binop(self.backend.add, &acc, rhs);
                 }
-                acc
+                Ok(acc)
             }
             Node::Mul(args) => {
-                let vs: Vec<String> = args.iter().map(|&a| self.emit(a, pool)).collect();
+                let mut vs = Vec::with_capacity(args.len());
+                for &a in &args {
+                    vs.push(self.emit(a, pool)?);
+                }
+                if vs.is_empty() {
+                    return self.emit_const(1.0);
+                }
                 let mut acc = vs[0].clone();
                 for rhs in &vs[1..] {
                     acc = self.emit_binop(self.backend.mul, &acc, rhs);
                 }
-                acc
+                Ok(acc)
             }
             Node::Pow { base, exp } => {
-                // Integer exponent → unrolled mul (stability) up to a small limit.
+                // Integer exponent -> unrolled mul (stability) up to a small limit.
                 let exp_int = pool.with(exp, |d| match d {
                     ExprData::Integer(n) => n.0.to_i64(),
                     _ => None,
                 });
-                let b = self.emit(base, pool);
+                let b = self.emit(base, pool)?;
                 match exp_int {
                     Some(0) => self.emit_const(1.0),
-                    Some(1) => b,
+                    Some(1) => Ok(b),
                     Some(n) if (2..=8).contains(&n) => {
                         let mut acc = b.clone();
                         for _ in 1..n {
                             acc = self.emit_binop(self.backend.mul, &acc, &b);
                         }
-                        acc
+                        Ok(acc)
                     }
                     Some(-1) => {
-                        let one = self.emit_const(1.0);
-                        self.emit_binop(self.backend.div, &one, &b)
+                        let one = self.emit_const(1.0)?;
+                        Ok(self.emit_binop(self.backend.div, &one, &b))
                     }
                     _ => {
-                        let e = self.emit(exp, pool);
-                        self.emit_binop(self.backend.pow, &b, &e)
+                        let e = self.emit(exp, pool)?;
+                        Ok(self.emit_binop(self.backend.pow, &b, &e))
                     }
                 }
             }
             Node::Call { name, args } => {
-                let vs: Vec<String> = args.iter().map(|&a| self.emit(a, pool)).collect();
-                let intr = (self.backend.math_intrinsic)(&name);
-                match intr {
-                    Some(op) if vs.len() == 1 => self.emit_unary_call(&op, &vs[0]),
-                    _ => {
-                        // Generic func.call
-                        let out = self.fresh();
-                        let operands = vs.join(", ");
-                        let sig = vec!["f64"; vs.len()].join(", ");
-                        self.body.push(format!(
-                            "{out} = func.call @{name}({operands}) : ({sig}) -> f64"
-                        ));
-                        out
-                    }
+                let mut vs = Vec::with_capacity(args.len());
+                for &a in &args {
+                    vs.push(self.emit(a, pool)?);
                 }
-            }
-            Node::FreeSym => {
-                // Represent as an unbound argument placeholder.
-                let out = self.fresh();
-                self.body
-                    .push(format!("{out} = arith.constant 0.0 : f64  // unresolved"));
-                out
+                // There is no linked callee for anything else, so a generic
+                // `func.call @name` would be a module that does not verify
+                // (or, worse, binds to an unrelated symbol).
+                match (self.backend.math_intrinsic)(&name) {
+                    Some(op) if vs.len() == 1 => Ok(self.emit_unary_call(&op, &vs[0])),
+                    _ => Err(LoweringError::UnsupportedFunction {
+                        name,
+                        arity: vs.len(),
+                    }),
+                }
             }
         }
     }
@@ -343,18 +545,18 @@ fn emit_func(
     fn_name: &str,
     backend: &Backend,
     pool: &ExprPool,
-) -> String {
+) -> Result<String, LoweringError> {
     let mut w = Walker::new(backend, inputs);
-    let result = w.emit(expr, pool);
+    let result = w.emit(expr, pool)?;
     let args: Vec<String> = (0..inputs.len()).map(|i| format!("%arg{i}: f64")).collect();
     let body = w.body.join("\n    ");
-    format!(
+    Ok(format!(
         "module {{\n  func.func @{fn}({args}) -> f64 {{\n    {body}\n    func.return {result} : f64\n  }}\n}}\n",
         fn = fn_name,
         args = args.join(", "),
         body = body,
         result = result,
-    )
+    ))
 }
 
 fn emit_func_llvm(
@@ -363,18 +565,18 @@ fn emit_func_llvm(
     fn_name: &str,
     backend: &Backend,
     pool: &ExprPool,
-) -> String {
+) -> Result<String, LoweringError> {
     let mut w = Walker::new(backend, inputs);
-    let result = w.emit(expr, pool);
+    let result = w.emit(expr, pool)?;
     let args: Vec<String> = (0..inputs.len()).map(|i| format!("%arg{i}: f64")).collect();
     let body = w.body.join("\n    ");
-    format!(
+    Ok(format!(
         "module {{\n  llvm.func @{fn}({args}) -> f64 {{\n    {body}\n    llvm.return {result} : f64\n  }}\n}}\n",
         fn = fn_name,
         args = args.join(", "),
         body = body,
         result = result,
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -397,7 +599,8 @@ mod tests {
             "f",
             LoweringStage::ArithMath,
             &pool,
-        );
+        )
+        .unwrap();
         assert!(out.contains("arith.addf %arg0, %arg1 : f64"), "{out}");
         assert!(out.contains("func.return"));
     }
@@ -409,7 +612,7 @@ mod tests {
         let x2 = pool.pow(x, pool.integer(2_i32));
         let two_x = pool.mul(vec![pool.integer(2_i32), x]);
         let expr = pool.add(vec![x2, two_x, pool.integer(1_i32)]);
-        let out = lower(expr, &[x], "f", LoweringStage::ArithMath, &pool);
+        let out = lower(expr, &[x], "f", LoweringStage::ArithMath, &pool).unwrap();
         assert!(
             out.contains("math.fma"),
             "Horner should lower to math.fma:\n{out}"
@@ -427,7 +630,8 @@ mod tests {
             "f",
             LoweringStage::Llvm,
             &pool,
-        );
+        )
+        .unwrap();
         assert!(out.contains("llvm.fmul"), "{out}");
         assert!(out.contains("llvm.func @f"), "{out}");
         assert!(out.contains("llvm.return"), "{out}");
@@ -439,7 +643,7 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let x2 = pool.pow(x, pool.integer(2_i32));
         let expr = pool.add(vec![x2, pool.integer(1_i32)]);
-        let out = lower(expr, &[x], "f", LoweringStage::Llvm, &pool);
+        let out = lower(expr, &[x], "f", LoweringStage::Llvm, &pool).unwrap();
         assert!(
             out.contains("llvm.intr.fmuladd"),
             "Horner in LLVM dialect should use llvm.intr.fmuladd:\n{out}"
@@ -456,7 +660,8 @@ mod tests {
             "f",
             LoweringStage::StableHlo,
             &pool,
-        );
+        )
+        .unwrap();
         assert!(out.contains("stablehlo.sine"), "{out}");
     }
 
@@ -470,7 +675,202 @@ mod tests {
             "f",
             LoweringStage::ArithMath,
             &pool,
-        );
+        )
+        .unwrap();
         assert!(out.contains("math.sin"), "{out}");
+    }
+
+    // -- refusals instead of placeholders -----------------------------------
+
+    use alkahest_core::AlkahestError;
+
+    const STAGES: [LoweringStage; 3] = [
+        LoweringStage::ArithMath,
+        LoweringStage::StableHlo,
+        LoweringStage::Llvm,
+    ];
+
+    #[test]
+    fn unbound_symbol_is_an_error_at_every_stage() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let e = pool.add(vec![x, y]);
+        for stage in STAGES {
+            let err = lower(e, &[x], "f", stage, &pool).unwrap_err();
+            let want = if stage == LoweringStage::StableHlo {
+                "E-STABLEHLO-003"
+            } else {
+                "E-MLIR-001"
+            };
+            assert_eq!(err.code(), want, "{stage:?}: {err}");
+            assert!(err.to_string().contains('y'), "{err}");
+        }
+    }
+
+    #[test]
+    fn unknown_function_is_an_error_at_every_stage() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for name in ["erf", "my_user_fn"] {
+            let e = pool.func(name, vec![x]);
+            for stage in STAGES {
+                let err = lower(e, &[x], "f", stage, &pool).unwrap_err();
+                let want = if stage == LoweringStage::StableHlo {
+                    "E-STABLEHLO-001"
+                } else {
+                    "E-MLIR-002"
+                };
+                assert_eq!(err.code(), want, "{name} {stage:?}: {err}");
+            }
+        }
+        // A known intrinsic at the wrong arity is refused too.
+        let e = pool.func("sin", vec![x, x]);
+        assert_eq!(
+            lower(e, &[x], "f", LoweringStage::ArithMath, &pool)
+                .unwrap_err()
+                .code(),
+            "E-MLIR-002"
+        );
+    }
+
+    #[test]
+    fn unbound_pi_is_its_value() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let pi = pool.symbol("pi", Domain::Real);
+        let out = lower(
+            pool.mul(vec![pi, x]),
+            &[x],
+            "f",
+            LoweringStage::ArithMath,
+            &pool,
+        )
+        .unwrap();
+        assert!(out.contains("3.141592653589793"), "{out}");
+    }
+
+    #[test]
+    fn non_finite_constant_is_refused() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let inf = pool.float(f64::INFINITY, 53);
+        let e = pool.add(vec![x, inf]);
+        assert_eq!(
+            lower(e, &[x], "f", LoweringStage::Llvm, &pool)
+                .unwrap_err()
+                .code(),
+            "E-MLIR-004"
+        );
+    }
+
+    #[test]
+    fn big_o_and_bare_predicate_are_refused() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let lt = pool.pred_lt(x, pool.integer(0_i32));
+        for e in [lt, pool.big_o(x)] {
+            assert_eq!(
+                lower(e, &[x], "f", LoweringStage::ArithMath, &pool)
+                    .unwrap_err()
+                    .code(),
+                "E-MLIR-003"
+            );
+        }
+    }
+
+    #[test]
+    fn stablehlo_stage_forwards_its_error_instead_of_empty_text() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let err = lower(
+            pool.func("gamma", vec![x]),
+            &[x],
+            "f",
+            LoweringStage::StableHlo,
+            &pool,
+        )
+        .unwrap_err();
+        assert!(matches!(err, LoweringError::StableHlo(_)), "{err:?}");
+        assert_eq!(err.code(), "E-STABLEHLO-001");
+        let err = lower(x, &[x], "bad name", LoweringStage::StableHlo, &pool).unwrap_err();
+        assert_eq!(err.code(), "E-STABLEHLO-005");
+    }
+
+    // -- Piecewise ------------------------------------------------------------
+
+    fn branchy(pool: &ExprPool, x: ExprId) -> ExprId {
+        // x < 0 -> -x ; x == 3 -> 7 ; otherwise x
+        let neg = pool.mul(vec![pool.integer(-1_i32), x]);
+        pool.piecewise(
+            vec![
+                (pool.pred_lt(x, pool.integer(0_i32)), neg),
+                (pool.pred_eq(x, pool.integer(3_i32)), pool.integer(7_i32)),
+            ],
+            x,
+        )
+    }
+
+    #[test]
+    fn piecewise_lowers_to_cmp_and_select_in_arith() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let out = lower(
+            branchy(&pool, x),
+            &[x],
+            "f",
+            LoweringStage::ArithMath,
+            &pool,
+        )
+        .unwrap();
+        assert!(out.contains("arith.cmpf olt, %arg0"), "{out}");
+        assert!(out.contains("arith.cmpf oeq, %arg0"), "{out}");
+        assert_eq!(out.matches("arith.select").count(), 2, "{out}");
+        assert!(!out.contains("unresolved"), "{out}");
+        // First matching branch wins: the last branch's select is innermost
+        // (its false operand is the default %arg0) and feeds the first one.
+        let sels: Vec<&str> = out.lines().filter(|l| l.contains("arith.select")).collect();
+        assert!(sels[0].ends_with("%arg0 : f64"), "{out}");
+        let inner = sels[0].split_whitespace().next().unwrap();
+        assert!(sels[1].contains(inner), "{out}");
+    }
+
+    #[test]
+    fn piecewise_lowers_to_fcmp_and_select_in_llvm() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let out = lower(branchy(&pool, x), &[x], "f", LoweringStage::Llvm, &pool).unwrap();
+        assert!(out.contains("llvm.fcmp \"olt\" %arg0"), "{out}");
+        assert_eq!(out.matches("llvm.select").count(), 2, "{out}");
+        assert!(out.contains(": i1, f64"), "{out}");
+    }
+
+    #[test]
+    fn compound_predicates_lower() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let zero = pool.integer(0_i32);
+        let one = pool.integer(1_i32);
+        let cond = pool.pred_and(vec![
+            pool.pred_ge(x, zero),
+            pool.pred_not(pool.pred_ge(x, one)),
+        ]);
+        let e = pool.piecewise(vec![(cond, pool.integer(5_i32))], pool.integer(6_i32));
+        let out = lower(e, &[x], "f", LoweringStage::ArithMath, &pool).unwrap();
+        assert!(out.contains("arith.andi"), "{out}");
+        assert!(out.contains("arith.xori"), "{out}");
+        let out = lower(e, &[x], "f", LoweringStage::Llvm, &pool).unwrap();
+        assert!(out.contains("llvm.and"), "{out}");
+        assert!(out.contains("llvm.xor"), "{out}");
+    }
+
+    #[test]
+    fn piecewise_with_unbound_symbol_in_branch_is_refused() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let e = pool.piecewise(vec![(pool.pred_lt(x, pool.integer(0_i32)), y)], x);
+        let err = lower(e, &[x], "f", LoweringStage::ArithMath, &pool).unwrap_err();
+        assert_eq!(err.code(), "E-MLIR-001");
     }
 }

@@ -186,7 +186,7 @@ the branch point). A function with no C lowering is refused with
 
 ## MLIR dialect
 
-The `alkahest-mlir` crate exposes the custom MLIR dialect. The dialect ops are:
+The `alkahest-mlir` crate exposes the custom MLIR dialect. `emit_mlir` / `emit_mlir_with` return `Result<String, LoweringError>`: the `arith + math` and `llvm` stages lower `Piecewise` to `cmpf`/`fcmp` + `select` and refuse an unbound symbol (`E-MLIR-001`), an unsupported function (`E-MLIR-002`), a node with no numeric value (`E-MLIR-003`) or a non-finite constant (`E-MLIR-004`); the StableHLO stage forwards `E-STABLEHLO-NNN`. The dialect ops are:
 
 | Op | Description |
 |---|---|
