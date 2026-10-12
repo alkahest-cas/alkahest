@@ -121,7 +121,6 @@ use alkahest_core::{
     simplify_batch as core_simplify_batch, simplify_egraph as core_simplify_egraph,
     simplify_egraph_with as core_simplify_egraph_with, simplify_log_exp as core_simplify_log_exp,
     simplify_trig_normal_form as core_simplify_trig_normal_form,
-    simplify_with as core_simplify_with,
     verify_antiderivative_status_parametric as core_verify_antiderivative_parametric,
     AlkahestError as AlkahestErrorTrait, AntiderivativeVerification, ApartError,
     AssumptionContext as CoreAssumptionContext, AssumptionError, ComplexF64, DerivedExpr,
