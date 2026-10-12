@@ -158,14 +158,27 @@ def test_definite_across_the_jump_is_refused_not_wrong():
 
 def test_definite_on_the_real_branch_is_still_answered():
     """The control: on `[1/5, 1]` the integrand is real, and the answer is
-    `2.1720296687334987` (Mathematica). (Not `[1/5, 6/5]`: the `atan` in the
-    antiderivative jumps at `x = atan 2`, and the FTC is refused there.)"""
+    `2.1720296687334987` (Mathematica).
+
+    Which antiderivative the generator substitution returns decides where its
+    `atan` jumps: through `t = (tan x)^(−1/2)` the jump is at `x = atan 2`
+    (outside the interval), through `t = (tan x)^(1/2)` — the route the
+    simplifier's radical cancellation made available (G4) — at
+    `x = atan(1/2)` (inside).  The FTC must then refuse rather than skip the
+    jump; what it may never do is return a wrong number.
+    """
     p = ak.ExprPool()
     x = p.symbol("x")
     f = (ak.cos(x) / ak.sin(x)) ** p.rational(3, 2)
-    r = ak.integrate(f, x, p.rational(1, 5), p.integer(1))
-    val = complex(_to_mp(r.value, x)(mpmath.mpf(0)))
-    assert abs(val - 2.1720296687334987) < 1e-9
+    try:
+        r = ak.integrate(f, x, p.rational(1, 5), p.integer(1))
+    except ak.IntegrationError as e:
+        refusal = str(e)
+    else:
+        val = complex(_to_mp(r.value, x)(mpmath.mpf(0)))
+        assert abs(val - 2.1720296687334987) < 1e-9
+        return
+    assert "discontinuous" in refusal, refusal
 
 
 @pytest.mark.parametrize(

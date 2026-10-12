@@ -408,6 +408,7 @@ with _suppress(ImportError):
 # features omit a symbol (``DiophantineError`` is registered only with the groebner
 # feature); that used to downgrade *every* error class to stubs and drop names that
 # have no stub (CadError, …).
+from ._zero import ZeroTest, equals, is_zero  # G4 — zero recognition
 from .exceptions import (
     AlkahestError,
     AnsatzError,
@@ -2957,6 +2958,8 @@ __all__ = [
     "ValidatedError",
     # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     "ZeilbergerCertificate",
+    # G4 — zero recognition
+    "ZeroTest",
     "__version__",
     "abs",
     "acos",
@@ -3033,6 +3036,7 @@ __all__ = [
     "emit_c",
     "emit_c_expr",
     "emit_c_vec",
+    "equals",
     "erf",
     "erfc",
     # Undefined functions f(t) under diff
@@ -3069,6 +3073,7 @@ __all__ = [
     # P1 search plumbing item 4
     "is_budget_active",
     "is_cancelled",
+    "is_zero",
     "jacobian",
     "jit",
     "jit_is_available",

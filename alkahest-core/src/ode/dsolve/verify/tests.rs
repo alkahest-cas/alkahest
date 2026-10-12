@@ -46,15 +46,20 @@ impl Fixture {
         self.pool.func("sqrt", vec![arg])
     }
 
-    /// `eˣ·e⁻ˣ`, which is `1` but which `simplify` does not collapse.
+    /// `e^{log x}·x⁻¹`, which is `1` for every `x ≠ 0` but which `simplify`
+    /// does not collapse for a `Real`-domain `x`: `exp(log x) = x` is applied
+    /// only to a provably positive argument (for `x < 0` the left side is not a
+    /// real number), and the default zero test keeps that discipline.
     ///
     /// Multiplying a term by this is how these tests force the gate past its
-    /// symbolic-zero branch and onto the numeric sampler — the same artefact
-    /// the real corpus residuals carry (`x⁻¹·eˣ·e⁻ˣ − x⁻¹` for `y'' − y = 1/x`).
+    /// symbolic-zero branch and onto the numeric sampler.  (It used to be
+    /// `eˣ·e⁻ˣ`, which `simplify` now collapses to `1`.)
     fn one_that_does_not_simplify(&self) -> ExprId {
-        let ex = self.pool.func("exp", vec![self.x]);
-        let emx = self.pool.func("exp", vec![self.neg(self.x)]);
-        self.pool.mul(vec![ex, emx])
+        let elog = self
+            .pool
+            .func("exp", vec![self.pool.func("log", vec![self.x])]);
+        let inv_x = self.pool.pow(self.x, self.pool.integer(-1_i32));
+        self.pool.mul(vec![elog, inv_x])
     }
 }
 
@@ -111,7 +116,7 @@ fn wrong_candidate_blowing_up_at_a_regular_point_is_rejected() {
 fn plain_finite_disagreement_is_still_rejected() {
     let f = Fixture::new();
     let (input, yp) = OdeInput::first_order(f.x, f.y, &f.pool);
-    // y' − 2·y·(eˣ·e⁻ˣ) = 0, i.e. y' = 2y, spelled so the symbolic branch misses.
+    // y' − 2·y·one = 0, i.e. y' = 2y, spelled so the symbolic branch misses.
     let two_y = f.pool.mul(vec![
         f.pool.integer(-2_i32),
         f.y,
@@ -137,8 +142,8 @@ fn plain_finite_disagreement_is_still_rejected() {
 /// A correct solution of an ODE that is *singular over part of the sample
 /// range* must still verify.
 ///
-/// The equation is `y' − y − √(½ − x)·eˣ·e⁻ˣ + √(½ − x) = 0`.  The last two
-/// terms cancel as functions (`eˣ·e⁻ˣ = 1`), so the equation is `y' = y` and
+/// The equation is `y' − y − √(½ − x)·one + √(½ − x) = 0`.  The last two
+/// terms cancel as functions (`one = e^{log x}/x = 1`), so the equation is `y' = y` and
 /// `y = C1·eˣ` is exactly right — but as *written* the equation does not
 /// evaluate at all for `x > ½`, so the samples `0.61` and `0.79` carry no
 /// information about the candidate and must be skipped, not counted against it.
@@ -180,7 +185,7 @@ fn correct_solution_of_a_singular_ode_still_verifies() {
 /// When the candidate blows up *and* the ODE is singular at the same sample,
 /// the sample is still information-free and must stay a skip.
 ///
-/// `y' = y·eˣ·e⁻ˣ/√(½ − x)` has the correct solution `y = C1·e^{−2√(½ − x)}`.
+/// `y' = y·one/√(½ − x)` has the correct solution `y = C1·e^{−2√(½ − x)}`.
 /// Both the equation and the solution are NaN for `x > ½`, so the ordering in
 /// [`classify_nonfinite`] — singular ODE first — is what keeps this verifying.
 #[test]
@@ -266,10 +271,21 @@ fn pi_is_bound_to_its_value_rather_than_sampled() {
     let f = Fixture::new();
     let (input, yp) = OdeInput::first_order(f.x, f.y, &f.pool);
     let pi = f.pool.symbol("pi", Domain::Real);
-    // y' − cos(π + π)·y·(eˣ·e⁻ˣ) = 0.  `cos(2π) = 1`, so this is `y' = y` and
-    // `y = C1·eˣ` is exactly right — but only at the real π.  At `π = 1.7` the
-    // coefficient is `cos(3.4) = −0.967` and the candidate is wrong.
-    let coeff = f.pool.func("cos", vec![f.pool.add(vec![pi, pi])]);
+    // y' − (4cos²(π/5) − 2cos(π/5))·y·one = 0.  `cos(π/5) = φ/2`, so the
+    // coefficient is `φ² − φ = 1`, this is `y' = y` and `y = C1·eˣ` is exactly
+    // right — but only at the real π.  At `π = 1.7` the coefficient is
+    // `0.37` and the candidate is wrong.  (`cos(2π)` would now fold to `1`.)
+    let c5 = f.pool.func(
+        "cos",
+        vec![f.pool.mul(vec![f.pool.rational(1_i32, 5_i32), pi])],
+    );
+    let coeff = f.pool.add(vec![
+        f.pool.mul(vec![
+            f.pool.integer(4_i32),
+            f.pool.pow(c5, f.pool.integer(2_i32)),
+        ]),
+        f.pool.mul(vec![f.pool.integer(-2_i32), c5]),
+    ]);
     let eq = f.pool.add(vec![
         yp,
         f.neg(f.pool.mul(vec![coeff, f.y, f.one_that_does_not_simplify()])),
@@ -315,8 +331,15 @@ fn the_imaginary_unit_is_not_sampled_either() {
     let (input, yp) = OdeInput::first_order(f.x, f.y, &f.pool);
     let pi = f.pool.symbol("pi", Domain::Real);
     let i = f.pool.imaginary_unit();
-    // y' + e^{iπ}·y·(eˣ·e⁻ˣ) = 0.  `e^{iπ} = −1`, so this is `y' = y`.
-    let coeff = f.pool.func("exp", vec![f.pool.mul(vec![i, pi])]);
+    // y' + (e^{iπ/5})⁵·y·one = 0.  `(e^{iπ/5})⁵ = −1`, so this is `y' = y`.
+    // (`e^{iπ}` itself now folds to `−1`.)
+    let coeff = f.pool.pow(
+        f.pool.func(
+            "exp",
+            vec![f.pool.mul(vec![f.pool.rational(1_i32, 5_i32), i, pi])],
+        ),
+        f.pool.integer(5_i32),
+    );
     let eq = f.pool.add(vec![
         yp,
         f.pool.mul(vec![coeff, f.y, f.one_that_does_not_simplify()]),

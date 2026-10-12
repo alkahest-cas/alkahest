@@ -213,12 +213,25 @@ impl Primitive for DilogPrimitive {
     }
 
     fn simplify(&self, args: &[ExprId], pool: &ExprPool) -> Option<ExprId> {
-        // Only `Li₂(0) = 0` folds to something exact in the pool's number
-        // tower.  `Li₂(1) = π²/6` and `Li₂(−1) = −π²/12` would need a
-        // symbolic `π²`, and rewriting them as `f64` literals would turn an
-        // exact value into an approximate one behind the user's back.
+        // Exact special values only (never an `f64` literal): `π` is the
+        // symbol `pi`, so `Li₂(1) = π²/6`, `Li₂(−1) = −π²/12` and
+        // `Li₂(1/2) = π²/12 − log(2)²/2` (DLMF 25.12.3–4) are symbolic.
+        use crate::kernel::expr::ExprData;
+        let pi2 = || pool.pow(crate::eval::symbols::pi_symbol(pool), pool.integer(2_i32));
         match pool.get(args[0]) {
-            crate::kernel::expr::ExprData::Integer(n) if n.0 == 0 => Some(pool.integer(0_i32)),
+            ExprData::Integer(n) if n.0 == 0 => Some(pool.integer(0_i32)),
+            ExprData::Integer(n) if n.0 == 1 => Some(pool.mul(vec![pool.rational(1, 6), pi2()])),
+            ExprData::Integer(n) if n.0 == -1 => Some(pool.mul(vec![pool.rational(-1, 12), pi2()])),
+            ExprData::Rational(r) if *r.0.numer() == 1 && *r.0.denom() == 2 => {
+                let log2 = pool.func("log", vec![pool.integer(2_i32)]);
+                Some(pool.add(vec![
+                    pool.mul(vec![pool.rational(1, 12), pi2()]),
+                    pool.mul(vec![
+                        pool.rational(-1, 2),
+                        pool.pow(log2, pool.integer(2_i32)),
+                    ]),
+                ]))
+            }
             _ => None,
         }
     }

@@ -553,12 +553,10 @@ fn quadrature_over_the_special_function_basis_closes() {
     // `Ei`/`Si`/`Ci`, so the numeric fallback cannot fire and these must pass
     // on an exact symbolic `residual ≡ 0`.  That is wrong, and measurably so:
     // the special functions cancel *out of the residual* when the candidate is
-    // substituted, leaving an elementary expression the sampler evaluates
-    // perfectly well — `x⁻¹·eˣ·e⁻ˣ − x⁻¹` for the first — which is not the
-    // symbolic zero, because nothing in the default rule set collapses
-    // `eˣ·e⁻ˣ`.  **Both** of these are certified by the numeric fallback, which
-    // is load-bearing rather than unreachable; the same is true of
-    // `y'' − 4y = 1/x` and `y''' − y' = 1/x` in the corpus.
+    // substituted, leaving an elementary expression — `x⁻¹·eˣ·e⁻ˣ − x⁻¹` for
+    // the first.  Until G4 nothing in the default rule set collapsed `eˣ·e⁻ˣ`
+    // and these were certified by the numeric fallback; the exponential
+    // cancellation and the exact zero test now close them symbolically.
     for (src, basis) in [
         ("ypp - y - 1/x", &["Ei"] as &[&str]),
         // `basis_functions_used` returns the names sorted.
@@ -567,8 +565,8 @@ fn quadrature_over_the_special_function_basis_closes() {
         let (pool, input, sol) = solve_src(2, src);
         assert_eq!(sol.constants.len(), 2, "`{src}`: wrong constant count");
         assert!(
-            !super::verify::certifies_symbolically(&input, explicit_of(&sol), &pool),
-            "`{src}`: now certified symbolically — the comment above is stale",
+            super::verify::certifies_symbolically(&input, explicit_of(&sol), &pool),
+            "`{src}`: no longer certified symbolically",
         );
         assert_eq!(
             basis_functions_used(explicit_of(&sol), &pool),
@@ -715,13 +713,19 @@ fn exact_integrating_factor_rescues() {
     for (src, method) in [
         // μ(y) = y⁻⁴
         ("(2*x*y) + (y^2 - 3*x^2)*yp", "exact_integrating_factor_y"),
-        // μ(x) = x
+        // μ(x) = x.  Also Bernoulli (n = −1): `y' + y/x = −(x+1)/y`.
         ("(x^2 + y^2 + x) + x*y*yp", "exact_integrating_factor_x"),
         // μ(y) = y
         ("y + (2*x - y*exp(y))*yp", "exact_integrating_factor_y"),
     ] {
         let (_, _, sol) = solve1(src);
-        assert_eq!(sol.method, method, "`{src}`");
+        // A near-exact equation that is also Bernoulli may be answered by
+        // that earlier class (G4 closes its residual exactly).
+        assert!(
+            sol.method == method || sol.method == "bernoulli",
+            "`{src}`: {}",
+            sol.method
+        );
         assert_eq!(sol.constants.len(), 1, "`{src}`");
     }
     // And a genuinely exact one still goes through the plain route.
@@ -734,14 +738,18 @@ fn homogeneous_quotients_are_recognised() {
     // `(x+y)/(x−y)` is homogeneous of degree zero, but substituting `y = v·x`
     // leaves an `x` that no rule set cancels — the reciprocal wraps a *sum*.
     // The class used to decline two equations out of its own chapter.
-    for src in [
-        "yp - (x^2 + y^2)/(x*y)",
-        "yp - (x + y)/(x - y)",
-        "yp - (x + 3*y)/(x - y)",
-    ] {
+    for src in ["yp - (x + y)/(x - y)", "yp - (x + 3*y)/(x - y)"] {
         let (_, _, sol) = solve1(src);
         assert_eq!(sol.method, "homogeneous", "`{src}`");
     }
+    // `(x² + y²)/(x·y) = x/y + y/x` is also Bernoulli (n = −1), the earlier
+    // class; since G4 closes its residual exactly it is answered there.
+    let (_, _, sol) = solve1("yp - (x^2 + y^2)/(x*y)");
+    assert!(
+        matches!(sol.method, "homogeneous" | "bernoulli"),
+        "{}",
+        sol.method
+    );
     // The same equation with the quotient cleared is solved too — by the exact
     // class, which comes first and also handles it.  What matters is that it
     // is answered and verified, not which of the two overlapping classes wins.

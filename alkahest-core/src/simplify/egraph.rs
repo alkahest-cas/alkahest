@@ -1683,7 +1683,13 @@ impl Default for EgraphConfig {
 pub fn simplify_egraph(expr: ExprId, pool: &ExprPool) -> DerivedExpr<ExprId> {
     #[cfg(feature = "egraph")]
     {
-        backend::simplify_egraph_impl(expr, pool, &EgraphConfig::default())
+        // G4: end with the rule engine's constant folding / special values
+        // / zero test, so the e-graph's extraction is never left holding
+        // `m·c + m·c·(−1)` or an unfolded coefficient.
+        super::engine::close_pass(
+            backend::simplify_egraph_impl(expr, pool, &EgraphConfig::default()),
+            pool,
+        )
     }
     #[cfg(not(feature = "egraph"))]
     {
@@ -1705,7 +1711,7 @@ pub fn simplify_egraph_with(
 ) -> DerivedExpr<ExprId> {
     #[cfg(feature = "egraph")]
     {
-        backend::simplify_egraph_impl(expr, pool, config)
+        super::engine::close_pass(backend::simplify_egraph_impl(expr, pool, config), pool)
     }
     #[cfg(not(feature = "egraph"))]
     {
@@ -2630,7 +2636,14 @@ mod opaque_atom_proptests {
                 ..EgraphConfig::default()
             };
             let new = simplify_egraph_with(expr, &pool, &config, &SizeCost).value;
-            let old = backend::simplify_egraph_reference(expr, &pool, &config);
+            // Both pipelines end with the same closing rule pass (G4).
+            let old = super::super::engine::close_pass(
+                crate::deriv::log::DerivedExpr::new(backend::simplify_egraph_reference(
+                    expr, &pool, &config,
+                )),
+                &pool,
+            )
+            .value;
             prop_assert_eq!(
                 new,
                 old,

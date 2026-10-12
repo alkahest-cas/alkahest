@@ -128,6 +128,21 @@ fn rule_to_tactic(rule_name: &str) -> &'static str {
         "expand_mul" | "expand_polynomial" => "by ring",
         // `tan_eq_sin_div_cos` yields `/`; Alkahest stores the reciprocal product.
         "tan_expand" => "by rw [Real.tan_eq_sin_div_cos, div_eq_mul_inv]",
+        // `−1·(a + b) = −a + −b` is a ring identity; the generic
+        // `ring_nf; simp` fallback fails on it ("no goals" after `ring_nf`).
+        "distribute_neg_over_add" => "by ring",
+        // G4 special values, radical powers and the exact zero-sum test have
+        // no single Lean tactic (the zero test is a rational normal form over
+        // `exp`-atoms and radical relations); withheld rather than emitting
+        // the generic fallback, which does not compile on them.
+        "zero_sum"
+        | "special_value"
+        | "radical_power"
+        | "pow_of_product"
+        | "pow_of_product_cancel"
+        | "sqrt_literal_product"
+        | "exp_product_cancel"
+        | "odd_even_symmetry" => "by sorry",
         _ => "by ring_nf; simp",
     }
 }
@@ -1426,6 +1441,24 @@ fn plain_step_certificate(step: &RewriteStep, pool: &ExprPool) -> Option<(Option
     }
     if let Some((binders, tactic)) = positivity_certificate(step, pool) {
         return Some((Some(binders), tactic));
+    }
+    // `const_fold` also evaluates an elementary function at a literal
+    // (`cos 0 = 1`), which `ring` cannot close; Mathlib's simp set can
+    // (`Real.cos_zero`, `Real.exp_zero`, `Real.log_one`, …).  Any other
+    // function application is withheld.
+    if step.rule_name == "const_fold" {
+        let func = pool.with(step.before, |d| match d {
+            ExprData::Func { name, .. } => Some(name.clone()),
+            _ => None,
+        });
+        if let Some(name) = func {
+            return match name.as_str() {
+                "cos" | "sin" | "tan" | "exp" | "sinh" | "cosh" | "log" => {
+                    Some((None, "by simp".to_string()))
+                }
+                _ => None,
+            };
+        }
     }
     let tactic = rule_to_tactic(step.rule_name);
     if tactic.contains("sorry") {

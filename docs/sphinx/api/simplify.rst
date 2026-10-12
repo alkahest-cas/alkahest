@@ -40,6 +40,9 @@ Rule-based simplification
       r = simplify_trig(sin(x)**2 + cos(x)**2)
       print(r.value)   # 1
 
+   Ends with the default rule set, so the coefficients the identities leave
+   behind fold: ``m*c*sin(t)**2 + m*c*cos(t)**2 - m*c`` simplifies to ``0``.
+
 .. function:: simplify_log_exp(expr: Expr) -> DerivedResult
 
    Apply logarithm and exponential identities. Only includes branch-cut-safe
@@ -50,6 +53,51 @@ Rule-based simplification
 
    Expand products and collect like terms. Useful for canonicalizing
    polynomial expressions before further processing.
+
+Constant folding, special values and zero recognition
+------------------------------------------------------
+
+Every simplifier entry point (:func:`simplify`, :func:`simplify_trig`,
+:func:`simplify_egraph`, :func:`simplify_log_exp`,
+:func:`simplify_trig_normal_form`, :func:`simplify_expanded`) folds exact
+special values — ``sin``/``cos``/``tan`` at rational multiples of ``pi`` with
+denominator 1, 2, 3, 4 or 6, ``sin(n*pi) = 0`` and ``cos(n*pi) = (-1)**n`` for
+an ``Integer``-domain ``n``, ``exp(I*pi*q)``, inverse trig at the standard
+values, ``gamma`` at half-integers, ``erf(0)``, ``dilog(0, 1, -1, 1/2)`` —
+radical powers (``sqrt(2)**2 = 2``, ``sqrt(8) = 2*sqrt(2)``, ``sqrt(x)**2 = x``
+for a provably non-negative ``x``), ``I**2 = -1`` inside products,
+cancelling exponentials (``exp(-x)*exp(x) = 1``), and replaces any sum that is
+identically zero by ``0`` (see :func:`is_zero`; the step records ``d != 0``
+for every denominator ``d`` it cleared).
+
+.. function:: is_zero(expr, *, assumptions=None) -> bool | None
+
+   ``True`` only when *expr* is **proved** identically zero by exact symbolic
+   reasoning: it simplifies to ``0``, or its rational normal form over atoms
+   (``sin``/``cos``/``tan`` and the hyperbolic functions rewritten through
+   ``exp``, radicals and ``I`` reduced by their defining relations, ``log``
+   split where every factor is provably positive) has a zero numerator.
+   ``False`` when proved non-zero — an exact non-zero normal form of
+   independent variables, or a rigorous Arb ball excluding zero at an exact
+   rational point inside every symbol's domain and every assumption.
+   ``None`` otherwise.  Numerical sampling alone never returns ``True``.
+   Floating-point literals in *expr* never produce a proof.
+
+   Example::
+
+      is_zero(sin(x)**2 + cos(x)**2 - 1)   # True
+      is_zero(asin(sin(x)) - x)            # False (disproved at a sample)
+
+.. function:: equals(a, b, *, assumptions=None) -> ZeroTest
+
+   :func:`is_zero` of ``a - b`` with its provenance.  The returned
+   :class:`ZeroTest` has ``value`` (``True``/``False``/``None``), ``status``
+   (``"proved_zero"``, ``"proved_nonzero"``, ``"probably_zero"``,
+   ``"unknown"``), ``method`` (``"simplify"``, ``"rational_normal_form"``,
+   ``"arb_ball"``, ``"arb_sampling"``, ``"complex_f64_sampling"``, ``"none"``)
+   and ``evidence``.  ``"probably_zero"`` means every rigorous ball contained
+   zero with radius below ``1e-30``: evidence, not proof, so ``value`` is
+   ``None``.  ``bool(test)`` raises ``ValueError`` when ``value`` is ``None``.
 
 Parallel simplification
 -----------------------

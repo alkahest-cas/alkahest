@@ -85,10 +85,17 @@ pub fn rules_for_config(config: &SimplifyConfig) -> Vec<Box<dyn RewriteRule>> {
         Box::new(NegateAdd),
         Box::new(SqrtEvenPower),
     ];
+    // G4: special values, radical powers, cancelling exponentials — then,
+    // last of all, the exact zero test for sums (see `super::zero`), which
+    // only runs on a node nothing else rewrites.  The unconditional
+    // `CollectExp` / `ExpPow` merges stay out (Gruntz relies on `ω^c`
+    // surviving); `ExpCancel` merges only exponentials that cancel.
+    rules.extend(super::special_values::special_value_rules());
     if config.expand {
         rules.push(Box::new(ExpandPow));
         rules.push(Box::new(ExpandMul));
     }
+    rules.push(Box::new(super::zero::ZeroSum));
     rules
 }
 
@@ -539,6 +546,16 @@ pub(super) fn simplify_with_carry(
         current = DerivedExpr::with_log(current.value, current.log.merge(expand_limit_log()));
     }
 
+    // G4: an `Add` the exact normal form proves identically zero becomes `0`,
+    // then the rules run again on what that exposed (`x·0`, `sin(0)`, …).
+    // Each round removes at least one `Add`, so this terminates.
+    if super::zero::has_zero_marker(rules) && crate::budget::check().is_ok() {
+        if let Some((v, zlog)) = super::zero::zero_sum_pass(current.value, pool) {
+            let rest = simplify_with_carry(v, pool, rules, config, carry);
+            return DerivedExpr::with_log(rest.value, current.log.merge(zlog).merge(rest.log));
+        }
+    }
+
     let mut assumptions = config.assumptions;
     // Static symbol domains (e.g. Domain::Positive) authorize the same
     // conditional rewrites as explicit AssumptionContext facts.
@@ -620,13 +637,50 @@ pub fn simplify_log_exp(
         assumptions: assumptions.to_vec(),
         ..SimplifyConfig::default()
     };
-    simplify_with(expr, pool, &super::rulesets::log_exp_rules(), config)
+    close_pass(
+        simplify_with(expr, pool, &super::rulesets::log_exp_rules(), config),
+        pool,
+    )
+}
+
+/// Finish a specialised simplifier's result with the default rule set.
+///
+/// The trig, log/exp and e-graph simplifiers each run their own rule set,
+/// which carries no (or only part of the) constant folding: `simplify_trig`
+/// used to stop at `m·c + m·c·(−1)` and `2·2⁻¹`.  Every entry point ends with
+/// this pass so that coefficient arithmetic, special values and the exact
+/// zero test are applied whichever simplifier the caller picked.  On an
+/// already-settled expression it is one linear sweep.
+pub(crate) fn close_pass(result: DerivedExpr<ExprId>, pool: &ExprPool) -> DerivedExpr<ExprId> {
+    let closed = simplify(result.value, pool);
+    if closed.value == result.value && closed.log.is_empty() {
+        return result;
+    }
+    DerivedExpr::with_log(closed.value, result.log.merge(closed.log))
+}
+
+/// Simplify with the trigonometric identity rules
+/// ([`trig_rules`](super::rulesets::trig_rules)), then the default rules.
+///
+/// The second pass is what folds the coefficients the identities leave
+/// behind: `m·c·sin²θ + m·c·cos²θ − m·c` becomes `m·c + m·c·(−1)` under the
+/// trig rules alone, and `0` after it.
+pub fn simplify_trig(expr: ExprId, pool: &ExprPool) -> DerivedExpr<ExprId> {
+    let rules = super::rulesets::trig_rules();
+    close_pass(
+        simplify_with(expr, pool, &rules, SimplifyConfig::default()),
+        pool,
+    )
 }
 
 /// Simplify `expr` with the default rule set.
 pub fn simplify(expr: ExprId, pool: &ExprPool) -> DerivedExpr<ExprId> {
+    // The default rule list is the same on every call; build it once.
+    static DEFAULT_RULES: std::sync::OnceLock<Vec<Box<dyn RewriteRule>>> =
+        std::sync::OnceLock::new();
     let config = SimplifyConfig::default();
-    simplify_with(expr, pool, &rules_for_config(&config), config)
+    let rules = DEFAULT_RULES.get_or_init(|| rules_for_config(&SimplifyConfig::default()));
+    simplify_with(expr, pool, rules, config)
 }
 
 /// Simplify several expressions, sharing the per-pass memo across all of them.
@@ -677,7 +731,16 @@ pub fn simplify_batch(exprs: &[ExprId], pool: &ExprPool) -> Vec<DerivedExpr<Expr
     current
         .into_iter()
         .zip(logs)
-        .map(|(value, log)| DerivedExpr::with_log(value, log))
+        .map(|(value, log)| {
+            // The same finish as `simplify_with` (see there).
+            match super::zero::zero_sum_pass(value, pool) {
+                Some((v, zlog)) => {
+                    let rest = simplify(v, pool);
+                    DerivedExpr::with_log(rest.value, log.merge(zlog).merge(rest.log))
+                }
+                None => DerivedExpr::with_log(value, log),
+            }
+        })
         .collect()
 }
 

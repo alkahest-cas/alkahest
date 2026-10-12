@@ -2868,8 +2868,10 @@ mod tests {
             "expected 1+x², got {}",
             pool.display(got)
         );
+        // `simplify` itself folds this square now (G4: the radicand is
+        // provably non-negative), so compare against the unsimplified input.
         assert!(
-            node_count(got, &pool) < node_count(simplify(s2, &pool).value, &pool),
+            node_count(got, &pool) < node_count(s2, &pool),
             "folding the square must shrink the expression; got {}",
             pool.display(got)
         );
