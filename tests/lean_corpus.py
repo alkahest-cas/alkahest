@@ -120,6 +120,65 @@ def _int_def_arctan_sq_first(_pool):
     return _require_goal(result, "((((x : ℝ)) ^ (2 : ℕ) + (1 : ℝ)))⁻¹", "int_def_arctan_sq_first")
 
 
+def _diff_piecewise_square_neg(pool):
+    x = pool.symbol("x")
+    pw = alkahest.piecewise([(pool.gt(x, pool.integer(0)), x**2)], -x)
+    return _require_goal(alkahest.diff(pw, x), "=ᶠ[nhds x]", "diff_piecewise_square_neg")
+
+
+def _diff_piecewise_two_branches(pool):
+    x, a = pool.symbol("x"), pool.symbol("a")
+    pw = alkahest.piecewise(
+        [(pool.lt(x, a), alkahest.sin(x)), (pool.ge(x, pool.integer(2)), x**3)],
+        pool.integer(3),
+    )
+    return _require_goal(alkahest.diff(pw, x), "=ᶠ[nhds x]", "diff_piecewise_two_branches")
+
+
+def _binomial(pool, a, b):
+    one = pool.integer(1)
+    g = alkahest.gamma
+    return g(a + one) / (g(b + one) * g(a - b + one))
+
+
+def _zeilberger_case(builder):
+    """A Zeilberger / WZ telescoping identity, from ``ZeilbergerCertificate.to_lean()``."""
+
+    def build():
+        pool = alkahest.ExprPool()
+        n, k = pool.symbol("n"), pool.symbol("k")
+        cert = alkahest.zeilberger(builder(pool, n, k), n, k)
+        src = alkahest.to_lean(cert)
+        if "linear_combination" not in src or "F (n + 1) k" not in src:
+            raise ValueError(f"unexpected Zeilberger certificate:\n{src}")
+        return src
+
+    return build
+
+
+# Objects that are not a ``DerivedResult`` but carry their own ``to_lean()``.
+OBJECT_CASES = [
+    # Σ C(n,k)² = C(2n,n): order 1.
+    ("zeilberger_binomial_squared", _zeilberger_case(lambda p, n, k: _binomial(p, n, k) ** 2)),
+    # The WZ pair for Σ C(n,k) = 2ⁿ (F normalised by the sum).
+    (
+        "zeilberger_wz_binomial_over_2n",
+        _zeilberger_case(lambda p, n, k: _binomial(p, n, k) * p.integer(2) ** (p.integer(-1) * n)),
+    ),
+    # Dixon's identity summand: order 1, with a nonvanishing boundary.
+    (
+        "zeilberger_dixon",
+        _zeilberger_case(lambda p, n, k: p.integer(-1) ** k * _binomial(p, 2 * n, n + k) ** 3),
+    ),
+    # Apéry's ζ(3) numbers and the Franel numbers: order 2.
+    (
+        "zeilberger_apery",
+        _zeilberger_case(lambda p, n, k: _binomial(p, n, k) ** 2 * _binomial(p, n + k, k) ** 2),
+    ),
+    ("zeilberger_franel", _zeilberger_case(lambda p, n, k: _binomial(p, n, k) ** 3)),
+]
+
+
 def _resultant_case(builder):
     """Res(p, q) certified as its Sylvester determinant (``Matrix.det !![…]``).
 
@@ -678,6 +737,34 @@ STRICT_CASES = [
         "Resultant",
         _resultant_case(lambda pool, x, y: (x**2 + y * x - 1, x**3 - y, x)),
     ),
+    # A dense 5×5: the old `simp [… Fin.succAbove, Fin.lt_def]` recipe left
+    # `![…] (Fin.castSucc 2)` unreduced on it (F16).
+    (
+        "resultant_dense_5x5",
+        "Resultant",
+        _resultant_case(lambda pool, x, y: (x**3 - 2 * x + 1, x**2 + x + 1, x)),
+    ),
+    # 6×6 and 7×7 Sylvester matrices: one controlled `simp only` expansion, and
+    # a row-0 split into explicit 6×6 minors.
+    (
+        "resultant_6x6",
+        "Resultant",
+        _resultant_case(lambda pool, x, y: (x**3 - 2, x**3 + x + 1, x)),
+    ),
+    (
+        "resultant_parametric_6x6",
+        "Resultant",
+        _resultant_case(lambda pool, x, y: (x**3 + y * x - 1, x**3 - y * x**2 + 2, x)),
+    ),
+    (
+        "resultant_7x7",
+        "Resultant",
+        _resultant_case(lambda pool, x, y: (x**4 - 2 * x + 1, x**3 + x + 1, x)),
+    ),
+    # Derivative of a Piecewise: one statement per branch on the open region
+    # where it is selected (never the false whole-function equation).
+    ("diff_piecewise_square_neg", "diff_piecewise", _diff_piecewise_square_neg),
+    ("diff_piecewise_two_branches", "diff_piecewise", _diff_piecewise_two_branches),
     ("simplify_trig_pythagorean_sin_first", "sin_sq_plus_cos_sq", _pythagorean_sin_first),
     ("simplify_trig_pythagorean_cos_first", "sin_sq_plus_cos_sq", _pythagorean_cos_first),
     # `∫₀¹ (x² + 1)⁻¹` — the flipped intern order of the case above.
@@ -728,8 +815,23 @@ def main():
         except Exception as e:
             print(f"ERROR generating {name}: {e}", file=sys.stderr)
 
-    print(f"\n{success}/{len(STRICT_CASES)} strict proofs generated in {args.output}")
-    return 0 if success == len(STRICT_CASES) else 1
+    for name, builder in OBJECT_CASES:
+        try:
+            lean_src = builder()
+            for token in FORBIDDEN_TOKENS:
+                if token in lean_src:
+                    raise ValueError(f"{name}: generated Lean source contains {token!r}")
+            out_path = os.path.join(args.output, f"{name}.lean")
+            with open(out_path, "w") as f:
+                f.write(lean_src)
+            print(f"Generated: {out_path}")
+            success += 1
+        except Exception as e:
+            print(f"ERROR generating {name}: {e}", file=sys.stderr)
+
+    total = len(STRICT_CASES) + len(OBJECT_CASES)
+    print(f"\n{success}/{total} strict proofs generated in {args.output}")
+    return 0 if success == total else 1
 
 
 if __name__ == "__main__":
