@@ -414,6 +414,20 @@ fn assumed_sign_at(expr: ExprId, pool: &ExprPool, depth: u32) -> Option<Sign> {
     }
 }
 
+/// Non-strict sign facts about `expr` stated by the ambient frames or its
+/// static domain: `(≥ 0 established, ≤ 0 established)`.
+///
+/// [`assumed_sign`] reports only *strict* signs, which is right for its
+/// callers; the real-form rewrite also needs `a ≥ 0` (to write `√(a²) = a`),
+/// and reads it here. Only literal bounds are consulted, exactly as for the
+/// strict case.
+pub(crate) fn assumed_weak_sign(expr: ExprId, pool: &ExprPool) -> (bool, bool) {
+    let (lower, upper) = numeric_bounds(expr, pool, 0);
+    let nonneg = lower.is_some_and(|(l, _)| l >= 0);
+    let nonpos = upper.is_some_and(|(u, _)| u <= 0);
+    (nonneg, nonpos)
+}
+
 /// A literal-valued bound: `(value, strict)`.
 type Bound = (rug::Rational, bool);
 

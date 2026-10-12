@@ -43,6 +43,29 @@ is_zero(sin(x)**2 + cos(x)**2 - 1)            # True
 equals(asin(sin(x)), x).status                # 'proved_nonzero'
 ```
 
+### Real form
+
+`to_real_form(expr, assumptions=None)` rewrites an expression written through
+complex quantities into an equal real one: `exp(±i·θ)` pairs become
+`cos`/`sin`, `√X` with `X ≤ 0` proved becomes `i·√(−X)`, `cosh(i·x)` becomes
+`cos x`, and perfect squares leave square roots (`√(4a²) → 2|a|`, `→ 2a` once
+`a ≥ 0` is known; `√(9m²k² − 4k²m²) → √5·k·m` for positive `k, m`). The real
+part is returned only when the imaginary part is **proved** identically zero;
+otherwise the input comes back unchanged. Signs come from symbol domains, the
+assumptions, and a polynomial certificate (AM–GM absorption, then
+factorisation), which is what proves the two-compartment discriminant
+`(k₁₀+k₁₂+k₂₁)² − 4k₁₀k₂₁` positive. `matrix_exp`, `dsolve` and the inverse
+Laplace transform (hence `TransferFunction.step_response`) apply it to their
+results, so an oscillatory `expm` comes back as `cos(w·t)` and a
+two-compartment inverse as a biexponential — both evaluable by `eval_expr`, the
+JIT and `emit_c_expr`.
+
+```python
+to_real_form(sqrt(4*a**2))                           # 2*abs(a)
+to_real_form((exp(sqrt(-4*w**2*t**2)/2) + exp(-sqrt(-4*w**2*t**2)/2))/2)   # cos(w*t)
+to_real_form(exp(I*x))                               # unchanged: genuinely complex
+```
+
 ### Domain-specific rule sets
 
 ```python

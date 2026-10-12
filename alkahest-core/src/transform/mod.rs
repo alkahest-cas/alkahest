@@ -119,6 +119,23 @@ pub(crate) struct Genericity<'a> {
 }
 
 impl<'a> Genericity<'a> {
+    /// Rewrite a transform's result into real form
+    /// ([`crate::simplify::real_form`]) under this call's assumptions: an
+    /// oscillatory inverse whose frequency is written as `√(negative)`, or
+    /// one whose radicand hides a perfect square, comes back as
+    /// `cos`/`sin`/`cosh`/`sinh` of a real argument. Value-preserving; a
+    /// result that is not proved real is returned unchanged.
+    pub(crate) fn real_form(&self, e: ExprId, pool: &ExprPool) -> ExprId {
+        if !crate::simplify::real_form::looks_complex(e, pool) {
+            return e;
+        }
+        let _scope = self
+            .assumptions
+            .filter(|a| !a.predicates().is_empty())
+            .map(|a| crate::simplify::enter_assumptions(a, pool));
+        crate::simplify::real_form::to_real_form_ambient(e, pool)
+    }
+
     pub(crate) fn new(assumptions: Option<&'a AssumptionContext>) -> Self {
         Genericity {
             assumptions,
@@ -255,6 +272,23 @@ impl<'a> Genericity<'a> {
         crate::simplify::assumptions::collect_static_domain_facts(target, pool, &mut facts);
         if fact_entails(&facts, target, want_positive, pool) {
             return true;
+        }
+
+        // 2b. The real-sign prover: sign algebra over the symbols' domains and
+        //     the stated facts, plus a polynomial certificate. It is what
+        //     settles the two-compartment discriminant
+        //     `(k₁₀+k₁₂+k₂₁)² − 4k₁₀k₂₁ > 0` for positive rates.
+        let set = {
+            let _scope = self
+                .assumptions
+                .filter(|a| !a.predicates().is_empty())
+                .map(|a| crate::simplify::enter_assumptions(a, pool));
+            crate::simplify::real_form::sign_set(target, pool)
+        };
+        if let Some(set) = set {
+            if (want_positive && set.is_pos()) || (!want_positive && set.is_nonzero()) {
+                return true;
+            }
         }
 
         // 3. Ask the solver whether the assumptions rule out the negation.

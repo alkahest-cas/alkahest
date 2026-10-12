@@ -362,6 +362,8 @@ from .alkahest import (  # noqa: F401
     # V5-1: Lean 4 certificate exporter
     to_lean,
     to_nnf,
+    # G9 — real-form rewrite (cos/sin for exp(±iθ), √(negative) → i√)
+    to_real_form,
     # V5-2: StableHLO/XLA bridge
     to_stablehlo,
     together,
@@ -3290,6 +3292,8 @@ __all__ = [
     # V5-1
     "to_lean",
     "to_nnf",
+    # G9
+    "to_real_form",
     "to_smtlib",
     # V5-2
     "to_stablehlo",

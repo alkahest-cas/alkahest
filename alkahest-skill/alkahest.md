@@ -287,6 +287,12 @@ is_zero(sqrt(x**2) - x)                    # False  (x real: disproved at x < 0)
 equals(exp(2*x), exp(x)**2).status         # 'proved_zero'
 ```
 
+**Real form:** `to_real_form(e, assumptions=None)` turns `exp(±iθ)` pairs into `cos`/`sin`, `√(negative)` into `i·√(positive)` and `√(4a²)` into `2|a|` (`2a` under `a >= 0`), returning the real part only when the imaginary part is *proved* zero (else `e` unchanged). `matrix_exp`, `dsolve` and `inverse_laplace_transform` already apply it, so oscillatory/biexponential results evaluate in real mode, the JIT and C.
+
+```python
+to_real_form((exp(sqrt(-4*w**2*t**2)/2) + exp(-sqrt(-4*w**2*t**2)/2))/2)   # cos(w*t)
+```
+
 ### Assumptions gate the conditional rewrites
 
 `simplify_log_exp(log(exp(x)))` → `x` is unconditionally valid, so it always fires.

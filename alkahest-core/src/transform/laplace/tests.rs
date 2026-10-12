@@ -670,6 +670,8 @@ mod symbolic_params {
                     "sinh" => x.sinh(),
                     "cosh" => x.cosh(),
                     "exp" => x.exp(),
+                    "sqrt" => x.sqrt(),
+                    "abs" => x.abs(),
                     "heaviside" => {
                         if x > 0.0 {
                             1.0
@@ -987,13 +989,16 @@ mod symbolic_params {
     /// How far assumption discharge actually reaches — pinned, because the
     /// answer is "not as far as you might hope" and a caller needs to know.
     ///
-    /// `0 < ζ < 1 ∧ ω > 0` entails all three second-order hypotheses. Only
-    /// `ω ≠ 0` is discharged: the other two are nonlinear consequences, and the
-    /// interval solver behind [`crate::logic::satisfiable`] answers `Unknown`
-    /// rather than proving them. `Unknown` is not a proof, so they stay on the
-    /// wire. Over-reporting, never under-reporting.
+    /// `0 < ζ < 1 ∧ ω > 0` entails all three second-order hypotheses.
+    /// `ω ≠ 0` follows from the facts directly; `ζ ≠ ±1` and
+    /// `ω²(1 − ζ²) > 0` are nonlinear consequences, which the interval solver
+    /// behind [`crate::logic::satisfiable`] cannot prove — but the real-sign
+    /// prover ([`crate::simplify::real_form`]) does, by factoring
+    /// `ω²(1 − ζ²) = ω²(1 − ζ)(1 + ζ)` and signing each factor from the
+    /// literal bounds. So nothing is left on the wire, and the result is the
+    /// real oscillatory form.
     #[test]
-    fn assumption_discharge_stops_at_nonlinear_consequences() {
+    fn assumption_discharge_reaches_nonlinear_consequences() {
         let (pool, t, s) = setup();
         let (w, zeta) = (sym(&pool, "w"), sym(&pool, "zeta"));
         let den = pool.add(vec![
@@ -1014,18 +1019,19 @@ mod symbolic_params {
             ctx.refine(p, &pool).unwrap();
         }
 
-        let (_out, cs) =
+        let (out, cs) =
             inverse_laplace_transform_with_assumptions(big_f, s, t, &pool, &ctx).unwrap();
         let rendered = conds(&cs, &pool);
         assert!(
-            !rendered.iter().any(|c| c == "w ≠ 0"),
-            "ω > 0 should discharge ω ≠ 0: {rendered:?}"
+            rendered.is_empty(),
+            "0 < ζ < 1 ∧ ω > 0 settles every hypothesis: {rendered:?}"
         );
-        assert_eq!(
-            rendered.len(),
-            3,
-            "ζ ≠ ±1 and the positivity are nonlinear and stay: {rendered:?}"
-        );
+        let (wv, zv, tv) = (1.5_f64, 0.4_f64, 0.9_f64);
+        let env = HashMap::from([(w, wv), (zeta, zv), (t, tv)]);
+        let got = eval_env(out, &env, &pool).expect("real-valued");
+        let wd = wv * (1.0 - zv * zv).sqrt();
+        let want = (-zv * wv * tv).exp() * (wd * tv).sin() / wd;
+        assert!((got - want).abs() < 1e-12, "{got} vs {want}");
 
         // A `Domain::Positive` symbol carries the same fact without a context.
         let p2 = ExprPool::new();
@@ -1041,16 +1047,16 @@ mod symbolic_params {
         assert!(cs2.is_empty(), "{:?}", conds(&cs2, &p2));
     }
 
-    /// Stating a fact that makes a reported hypothesis **false** must not
-    /// discharge it.
+    /// Stating a fact that makes the oscillatory hypothesis **false** must
+    /// never discharge it.
     ///
     /// `ζ > 1 ∧ ω > 0` is the over-damped régime, where `ω²(1 − ζ²) > 0` is
-    /// false and the true inverse is hyperbolic.  The interval solver cannot
-    /// prove `ω²(1 − ζ²) < 0` either, so the oscillatory branch is still the
-    /// one taken — but the hypothesis that makes it the *real-valued* answer
-    /// stays on the wire, which is what lets a caller notice.  A discharge here
-    /// would be the worst outcome available: the wrong closed form, asserted
-    /// unconditionally, under assumptions that refute it.
+    /// false and the true inverse is hyperbolic. The real-sign prover now
+    /// proves `ω²(1 − ζ²) < 0` (`ω² > 0`, `1 − ζ < 0`, `1 + ζ > 0`), so the
+    /// hyperbolic branch is the one taken, with no positivity hypothesis on the
+    /// wire — and the value is the over-damped response, checked numerically.
+    /// What must never happen is the oscillatory form asserted without its
+    /// hypothesis; the check that no `sin(`/`cos(` survives guards that.
     #[test]
     fn an_assumption_that_refutes_a_hypothesis_does_not_discharge_it() {
         let (pool, t, s) = setup();
@@ -1075,18 +1081,22 @@ mod symbolic_params {
         let (out, cs) =
             inverse_laplace_transform_with_assumptions(big_f, s, t, &pool, &ctx).unwrap();
         let rendered = conds(&cs, &pool);
-        assert!(
-            rendered.iter().any(|c| c.contains('>')),
-            "the positivity that ζ > 1 refutes must still be reported: {rendered:?}"
-        );
-        // And the printed form is the one that positivity would justify, so the
-        // report is not decorative — it is the only thing separating this from
-        // a wrong answer.
-        assert!(
-            pool.display(out).to_string().contains("sin"),
-            "{}",
-            pool.display(out)
-        );
+        let shown = pool.display(out).to_string();
+        if rendered.iter().any(|c| c.contains('>')) {
+            // Oscillatory form: only acceptable with the hypothesis attached.
+            assert!(shown.contains("sin("), "{shown}");
+        } else {
+            assert!(
+                !shown.contains("sin(") && !shown.contains("cos("),
+                "an oscillatory form with no hypothesis under ζ > 1: {shown}"
+            );
+        }
+        let (wv, zv, tv) = (1.5_f64, 1.7_f64, 0.9_f64);
+        let env = HashMap::from([(w, wv), (zeta, zv), (t, tv)]);
+        let got = eval_env(out, &env, &pool).expect("real-valued");
+        let wd = wv * (zv * zv - 1.0).sqrt();
+        let want = (-zv * wv * tv).exp() * (wd * tv).sinh() / wd;
+        assert!((got - want).abs() < 1e-12, "{got} vs {want}: {shown}");
     }
 
     /// `π` is a constant, not a parameter.
