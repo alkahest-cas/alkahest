@@ -189,6 +189,10 @@ fn is_integration_rule(rule_name: &str) -> bool {
                 | "geometric_series_infinite"
                 | "arithmetico_geometric_infinite"
                 | "rational_series_partial_fractions"
+                // F12: polylog / pFq series values, same shape.
+                | "polylog_series"
+                | "hypergeometric_series"
+                | "hypergeometric_series_closed_form"
                 // Discrete products: `k = n!` / `k = Γ(n+1)` is false as a rewrite.
                 | "product_definite"
                 | "product_indefinite"
