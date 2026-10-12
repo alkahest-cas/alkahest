@@ -95,9 +95,12 @@ from ._transform import (
     trace_fn,
 )
 from .alkahest import (  # noqa: F401
+    # G10 — propositional layer: connectives, normal forms, minimisation, BDDs
+    BDD,
     # Phase 17: DAE
     DAE,
     HAS_EGRAPH,
+    ITE,
     # Phase 16: ODE
     ODE,
     # Phase 18: Acausal modelling
@@ -123,6 +126,7 @@ from .alkahest import (  # noqa: F401
     EgraphConfig,
     # P1 item 9 — rigorous global bounds (Taylor models / validated numerics)
     Enclosure,
+    Equivalent,
     # Unified exact / f64 / complex / interval evaluation
     EvaluationResult,
     # Phase 20: Hybrid systems
@@ -132,10 +136,12 @@ from .alkahest import (  # noqa: F401
     ExprPool,
     Forall,
     HybridODE,
+    Implies,
     # Exact linear / integer programming (E-LP-*)
     LinprogError,
     LPResult,
     MILPResult,
+    MinimizedLogic,
     # M6 — modular / p-adic evaluation of holonomic sequences
     ModularEvaluation,
     ModularRecurrence,
@@ -164,6 +170,7 @@ from .alkahest import (  # noqa: F401
     UniPolyFactorization,
     # V2-7: Polynomial factorization
     UniPolyFactorModP,
+    Xor,
     # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     ZeilbergerCertificate,
     _build_features,
@@ -184,6 +191,7 @@ from .alkahest import (  # noqa: F401
     atan,
     atan2,
     atanh,
+    bdd,
     bessel_j0,
     bessel_j1,
     # M6 — binomial(a, b) mod p**k (Lucas / Granville)
@@ -226,6 +234,7 @@ from .alkahest import (  # noqa: F401
     emit_c,
     emit_c_expr,
     emit_c_vec,
+    equivalent,
     erf,
     erfc,
     # Undefined functions f(t): Euler–Lagrange and friends
@@ -279,6 +288,7 @@ from .alkahest import (  # noqa: F401
     max,  # symbolic max(a, b) — shadows Python builtin within this module
     milp,
     min,  # symbolic min(a, b) — shadows Python builtin within this module
+    minimize_logic,
     pantelides,
     # PA-9: Piecewise
     piecewise,
@@ -313,6 +323,7 @@ from .alkahest import (  # noqa: F401
     simplify_egraph_with,
     simplify_expanded,
     simplify_log_exp,
+    simplify_logic,
     simplify_par,
     simplify_pauli,
     simplify_redex,
@@ -338,13 +349,17 @@ from .alkahest import (  # noqa: F401
     # V1-12: expanded primitive registry
     tan,
     tanh,
+    to_cnf,
+    to_dnf,
     # V5-1: Lean 4 certificate exporter
     to_lean,
+    to_nnf,
     # V5-2: StableHLO/XLA bridge
     to_stablehlo,
     together,
     # 3.10.0 — trigamma; this is what `digamma` differentiates to
     trigamma,
+    truth_table,
     verified_integral,
     verified_no_roots,
     verified_sign,
@@ -455,6 +470,7 @@ from .exceptions import (
     LimitError,
     LinearAlgebraError,
     LinearRecurrenceError,
+    LogicError,
     MatrixError,
     ModularError,
     NumberTheoryError,
@@ -513,6 +529,8 @@ _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "LimitError",
     "LinearAlgebraError",
     "LinearRecurrenceError",
+    # G10 — propositional layer (E-LOGIC-*)
+    "LogicError",
     "MatrixError",
     "ModularError",
     "NumberTheoryError",
@@ -2818,6 +2836,7 @@ del _entry_point
 
 
 __all__ = [
+    "BDD",
     # Phase 17
     "DAE",
     # M2 — the vocabulary GuessedRecurrence.status is drawn from
@@ -2825,6 +2844,7 @@ __all__ = [
     "GUESS_STATUS_MEANINGS",
     # Phase 17
     "HAS_EGRAPH",
+    "ITE",
     # Phase 16
     "ODE",
     # P1 search plumbing item 6 — DerivedResult.to_dict/to_json schema
@@ -2880,6 +2900,7 @@ __all__ = [
     "EgraphConfig",
     "EigenError",
     "Enclosure",
+    "Equivalent",
     "EvaluationResult",
     # Phase 20
     "Event",
@@ -2899,6 +2920,7 @@ __all__ = [
     "HolonomicError",
     "HomotopyError",
     "HybridODE",
+    "Implies",
     "IntegrationError",
     # V1-16: IoError
     "IoError",
@@ -2910,10 +2932,12 @@ __all__ = [
     "LinearAlgebraError",
     "LinearRecurrenceError",
     "LinprogError",
+    "LogicError",
     "MILPResult",
     # Phase 15
     "Matrix",
     "MatrixError",
+    "MinimizedLogic",
     "ModularError",
     # M6 — modular / p-adic evaluation of holonomic sequences
     "ModularEvaluation",
@@ -2974,6 +2998,7 @@ __all__ = [
     "Unit",
     "UnitError",
     "ValidatedError",
+    "Xor",
     # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     "ZeilbergerCertificate",
     # G4 — zero recognition
@@ -3000,6 +3025,7 @@ __all__ = [
     # P1 search plumbing item 5 — batch/streaming fan-out
     "batch_map",
     "batch_map_iter",
+    "bdd",
     "bessel_j0",
     "bessel_j1",
     # M6 — binomial(a, b) mod p**k (Lucas / Granville)
@@ -3060,6 +3086,7 @@ __all__ = [
     "emit_c_expr",
     "emit_c_vec",
     "equals",
+    "equivalent",
     "erf",
     "erfc",
     # Undefined functions f(t) under diff
@@ -3133,6 +3160,7 @@ __all__ = [
     # The pivot hypotheses a symbolic `Matrix.rank` (generic rank) assumed
     "matrix_rank_side_conditions",
     "milp",
+    "minimize_logic",
     "number_theory",
     # Phase 25
     "numpy_eval",
@@ -3198,6 +3226,7 @@ __all__ = [
     "simplify_enabled",
     "simplify_expanded",
     "simplify_log_exp",
+    "simplify_logic",
     # P1 search plumbing item 5 — batch/streaming fan-out
     "simplify_many",
     "simplify_par",
@@ -3239,8 +3268,11 @@ __all__ = [
     "tan",
     "tanh",
     "to_base_units",
+    "to_cnf",
+    "to_dnf",
     # V5-1
     "to_lean",
+    "to_nnf",
     "to_smtlib",
     # V5-2
     "to_stablehlo",
@@ -3250,6 +3282,7 @@ __all__ = [
     # V2-11 — Regular chains / triangular decomposition
     "triangularize",
     "trigamma",
+    "truth_table",
     "unflatten_exprs",
     "unicode_str",
     "units",

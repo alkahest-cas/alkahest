@@ -52,6 +52,10 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-LP-001 … E-LP-006        LinprogError (exact LP / MILP; 005 = branch and bound
                                  hit max_nodes, carrying the unproven incumbent;
                                  006 = a certificate failed its check, withheld)
+    E-LOGIC-001 … E-LOGIC-006  LogicError (002-006 = the propositional layer:
+                                 not propositional, size ceiling, exact
+                                 minimum unavailable, bad argument, failed
+                                 self-check)
     E-PROD-001 … E-PROD-004    ProductError (V2-22)
     E-REC-001 … E-REC-002      LinearRecurrenceError
     E-RSOLVE-001 … E-RSOLVE-005 RsolveError (V2-18 difference equations)
@@ -374,6 +378,32 @@ class SumError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code="E-SUM-001", remediation=remediation, span=span)
+
+
+class LogicError(AlkahestError):
+    """A propositional-logic operation refused (``E-LOGIC-*``).
+
+    Raised by :func:`alkahest.simplify_logic`, :func:`alkahest.to_cnf`,
+    :func:`alkahest.bdd`, :func:`alkahest.equivalent` and friends:
+
+    - ``E-LOGIC-002`` — the input is not a propositional formula over the
+      atoms the operation accepts (a quantifier, a non-Boolean term, or a
+      propositional counterexample over relations that may be dependent).
+    - ``E-LOGIC-003`` — a size ceiling was reached (BDD nodes, normal-form
+      terms, SAT decisions, truth-table width); nothing was truncated.
+    - ``E-LOGIC-004`` — ``exact=True`` was demanded and a minimum could not be
+      certified.
+    - ``E-LOGIC-005`` — a malformed argument (``form``, ``method``, ``order``).
+    - ``E-LOGIC-006`` — an internal self-check failed; the result was withheld.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-LOGIC-002", remediation=remediation, span=span)
 
 
 class ValidatedError(AlkahestError):

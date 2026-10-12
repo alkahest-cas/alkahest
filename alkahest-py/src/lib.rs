@@ -251,6 +251,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 mod bigint;
+mod boolean;
 mod character;
 mod coding;
 mod ffield;
@@ -852,6 +853,8 @@ pyo3::create_exception!(alkahest, PyDiophantineError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyParamGroebnerError, PyAlkahestError);
 // P1 search plumbing item 4 — budgets, cancellation, determinism
 pyo3::create_exception!(alkahest, PyBudgetExceededError, PyAlkahestError);
+// G10 — propositional layer (E-LOGIC-002…006): normal forms, minimisation, BDDs.
+pyo3::create_exception!(alkahest, PyLogicError, PyAlkahestError);
 // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
 pyo3::create_exception!(alkahest, PyHolonomicError, PyAlkahestError);
 // Probability distributions and expectations (E-PROB-*).
@@ -14425,11 +14428,15 @@ fn require_same_pool(py: Python<'_>, a: &PyExpr, b: &PyExpr) -> PyResult<()> {
 ///   / ``pool.pred_false()``, combined with ``pred_and`` / ``pred_or`` /
 ///   ``pred_not`` (equivalently :func:`And` / :func:`Or` / :func:`Not`).  This
 ///   fragment is decided **completely** by DPLL: it returns ``None`` only if
-///   the formula exceeds the built-in search budget (64 distinct symbols, 4096
-///   nodes, 2 000 000 branching decisions), never because it gave up thinking.
+///   the search exceeds its budget of 2 000 000 branching decisions, never
+///   because it gave up thinking.  Wide formulas (more than 64 symbols) and
+///   formulas with shared sub-formulas (``Xor`` parity chains, carry chains)
+///   are encoded on their DAG, so their size is what they share, not what
+///   they unfold to.
 ///   ``→`` and ``↔`` are in it once written out: ``a → b`` is
 ///   ``Or(Not(a), b)`` and ``a ↔ b`` is ``And(Or(Not(a), b), Or(Not(b), a))``;
-///   the kernel has no separate implication node.
+///   the kernel has no separate implication node (:func:`Implies`,
+///   :func:`Equivalent`, :func:`Xor` and :func:`ITE` build these forms).
 /// * **One real symbol against rational constants** — ``x < 3``, ``x >= 1/2``
 ///   and Boolean combinations of them, decided by interval intersection.  This
 ///   one is *incomplete*: ``None`` is common, and expected.
@@ -14475,32 +14482,6 @@ fn py_satisfiable(py: Python<'_>, formula: PyRef<PyExpr>) -> PyResult<PyObject> 
         }
     };
     Ok(out)
-}
-
-/// Logical conjunction of two predicate expressions (same pool).
-#[pyfunction(name = "And")]
-fn py_logic_and(py: Python<'_>, a: PyRef<PyExpr>, b: PyRef<PyExpr>) -> PyResult<PyExpr> {
-    require_same_pool(py, &a, &b)?;
-    let pool_py = a.pool.clone_ref(py);
-    let id = pool_py.borrow(py).inner.pred_and(vec![a.id, b.id]);
-    Ok(PyExpr { id, pool: pool_py })
-}
-
-/// Logical disjunction (same pool).
-#[pyfunction(name = "Or")]
-fn py_logic_or(py: Python<'_>, a: PyRef<PyExpr>, b: PyRef<PyExpr>) -> PyResult<PyExpr> {
-    require_same_pool(py, &a, &b)?;
-    let pool_py = a.pool.clone_ref(py);
-    let id = pool_py.borrow(py).inner.pred_or(vec![a.id, b.id]);
-    Ok(PyExpr { id, pool: pool_py })
-}
-
-/// Logical negation.
-#[pyfunction(name = "Not")]
-fn py_logic_not(_py: Python<'_>, a: PyRef<PyExpr>) -> PyExpr {
-    let pool_py = a.pool.clone_ref(_py);
-    let id = pool_py.borrow(_py).inner.pred_not(a.id);
-    PyExpr { id, pool: pool_py }
 }
 
 /// ``∀ var . body`` (same pool).
@@ -21358,9 +21339,6 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // PA-9 — Piecewise
     m.add_function(wrap_pyfunction!(py_piecewise, m)?)?;
     m.add_function(wrap_pyfunction!(py_satisfiable, m)?)?;
-    m.add_function(wrap_pyfunction!(py_logic_and, m)?)?;
-    m.add_function(wrap_pyfunction!(py_logic_or, m)?)?;
-    m.add_function(wrap_pyfunction!(py_logic_not, m)?)?;
     m.add_function(wrap_pyfunction!(py_forall, m)?)?;
     m.add_function(wrap_pyfunction!(py_exists, m)?)?;
     m.add_function(wrap_pyfunction!(py_decide, m)?)?;
@@ -21558,6 +21536,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "BudgetExceededError",
         m.py().get_type_bound::<PyBudgetExceededError>(),
     )?;
+    m.add("LogicError", m.py().get_type_bound::<PyLogicError>())?;
+    // G10 — n-ary And/Or/Not/Xor/Implies/Equivalent/ITE, normal forms,
+    // simplify_logic, BDDs, equivalent, truth_table.
+    boolean::register(m)?;
     m.add_function(wrap_pyfunction!(py_push_assumptions, m)?)?;
     m.add_function(wrap_pyfunction!(py_pop_assumptions, m)?)?;
     m.add_function(wrap_pyfunction!(py_push_budget, m)?)?;

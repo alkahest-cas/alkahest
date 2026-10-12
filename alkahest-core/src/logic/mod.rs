@@ -20,6 +20,8 @@
 //! - [`smtlib`] exports a [`Formula`] as SMT-LIB 2 text for an external solver
 //!   (P2-3).  `alkahest.smt` drives the solver process from Python.
 
+pub mod bdd;
+pub mod boolean;
 pub mod smtlib;
 
 use crate::kernel::expr::PredicateKind;
@@ -936,6 +938,13 @@ fn satisfiable_propositional(expr: ExprId, pool: &ExprPool) -> Option<Satisfiabi
 /// arithmetic relation is [`Satisfiability::Unknown`].
 pub fn satisfiable(expr: ExprId, pool: &ExprPool) -> Satisfiability {
     if let Some(verdict) = satisfiable_propositional(expr, pool) {
+        return verdict;
+    }
+    // Propositional formulas past the tree path's limits (more than
+    // `MAX_PROP_VARS` symbols, or a shared sub-formula such as an n-ary Xor's
+    // parity chain that unfolds past `MAX_PROP_NODES` as a tree) are decided
+    // on their DAG instead, with the same decision budget.
+    if let Some(verdict) = boolean::satisfiable_circuit(expr, pool, PROP_DECISION_BUDGET) {
         return verdict;
     }
     let f = match formula_from_expr(expr, pool) {

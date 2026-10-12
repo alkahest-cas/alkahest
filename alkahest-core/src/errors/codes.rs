@@ -290,6 +290,12 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-LAT-014", class: "LatticeGeometryError", cause: Cause::Internal,    remediation: Some("this is a bug: please report it with the lattice that produced it") },
     // E-LOGIC — first-order formulas (V3-3)
     ErrorSpec { code: "E-LOGIC-001", class: "LogicError", cause: Cause::UserInput, remediation: Some("pass a predicate or quantified Expr; use pool.gt/… or And/Or/Not") },
+    // E-LOGIC-002…006 — BooleanError (propositional layer: normal forms, minimisation, BDDs)
+    ErrorSpec { code: "E-LOGIC-002", class: "LogicError", cause: Cause::UserInput,   remediation: Some("build the formula from symbols with And/Or/Not/Xor/Implies/Equivalent/ITE; quantified or arithmetic formulas go to decide() or alkahest.smt") },
+    ErrorSpec { code: "E-LOGIC-003", class: "LogicError", cause: Cause::Resource,    remediation: Some("raise the limit (max_nodes=…), give a better variable order, or use equivalent(method='sat') for miters whose BDD blows up") },
+    ErrorSpec { code: "E-LOGIC-004", class: "LogicError", cause: Cause::Unsupported, remediation: Some("exact two-level minimisation is limited to 16 variables and a bounded covering search; pass exact=None to accept the heuristic cover") },
+    ErrorSpec { code: "E-LOGIC-005", class: "LogicError", cause: Cause::UserInput,   remediation: Some("check the documented values of form / method / order") },
+    ErrorSpec { code: "E-LOGIC-006", class: "LogicError", cause: Cause::Internal,    remediation: Some("this is a bug: please report the formula that produced it") },
     // E-PSLQ — PslqError (V2-6 augmented-lattice relation heuristic)
     ErrorSpec { code: "E-PSLQ-001", class: "PslqError", cause: Cause::UserInput,   remediation: Some("pass at least two constants that might admit a linear dependence") },
     ErrorSpec { code: "E-PSLQ-002", class: "PslqError", cause: Cause::UserInput,   remediation: Some("literals must not truncate to zero — use higher precision or decimal strings") },

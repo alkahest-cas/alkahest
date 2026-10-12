@@ -329,6 +329,7 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-THETA-*` | `ThetaError` | `alkahest.experimental`'s theta surface — genus-`g` Riemann theta `θ[a;b](z, τ)`, the classical modular functions `η`, `j`, `λ`, `Δ`, the Jacobi theta functions and the Weierstrass family, each returned as a **ball** carrying its own error bound. `E-THETA-010` is the one to branch on: a value was computed and then **withheld** because its enclosure was too wide to read, and its `achieved_bits` field separates "needs more precision" from "is exactly zero, and so has no relative accuracy at any precision" (`j(ρ)`, `θ₁(0, τ)`) — use `Precision.bits(...)` and `ComplexBall.contains_zero()` for those. `E-THETA-007` / `E-THETA-009` mean `Im(τ)` could not be **proved** positive (definite), never that it was disproved. `E-THETA-001` is a FLINT too old to carry Arb (< 3.1) or `acb_theta` (< 3.2) |
 | `E-LIMIT-*` | `LimitError` | `limit` could not be established; `E-LIMIT-006` is a limit that turns on the sign of a free parameter nothing states — assume it, or declare the symbol `Domain.Positive` |
 | `E-SERIES-*` | `SeriesError` | `series` and `experimental.puiseux_series`. `003` a work ceiling, `004` an indeterminate coefficient, `005` no Puiseux expansion exists, `006` one computed and withheld, `007` no expansion in `1/x` at an infinite point |
+| `E-LOGIC-*` | `LogicError` | Logic. `001` is Rust-side only (`formula_from_expr`). The propositional layer (`simplify_logic`, `minimize_logic`, `to_cnf`/`to_dnf`/`to_nnf`, `bdd`, `equivalent`, `truth_table`) raises `002` not a propositional formula (or a propositional counterexample over relations that may be dependent), `003` a size ceiling (BDD nodes, normal-form terms, SAT decisions) — a refusal, never a truncated answer, `004` `exact=True` could not be certified, `005` a malformed argument, `006` a failed internal self-check |
 | `E-SUM-*` | `SumError` | Symbolic summation (`sum_indefinite`, `sum_definite`) — not hypergeometric (`001`), not Gosper-summable / no closed form known (`002`), or the sum has no value: a term undefined inside the range, a divergent infinite series, an unsupported infinite bound (`003`) |
 | `E-PROD-*` | `ProductError` | Symbolic discrete products (`product_indefinite`, `product_definite`) |
 | `E-REC-*` | `LinearRecurrenceError` | `solve_linear_recurrence_homogeneous` |
@@ -346,8 +347,8 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-SIMPLIFY-*` | `AssumptionError` | An explicit simplification assumption contradicted the active context |
 | `E-DEPTH-*` | `DepthLimitError` | The expression nesting ceiling. A refusal rather than letting a recursive walk overflow the native stack, which would be a `SIGSEGV` and not an exception |
 
-Four registry prefixes are **Rust-side only** and have no Python entry point that
-raises them today: `E-LOGIC-*` (`LogicError`), `E-NFM-*` (`NormalFormError`),
+Some registry codes are **Rust-side only** and have no Python entry point that
+raises them today: `E-LOGIC-001` (`LogicError`), `E-NFM-*` (`NormalFormError`),
 `E-DIFFALG-*` (`DiffAlgError`) and `E-HOLO-060…064` (`DiffTelescopingError`).
 `E-EVAL-*` has no class of its own — the bindings surface it as `DomainError`,
 `E-EVAL-009` being "undefined at this point", which is a **verdict**. `E-POLY-008`

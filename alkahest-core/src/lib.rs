@@ -108,6 +108,12 @@ pub use kernel::{
     DepthLimitError, Domain, ExprData, ExprDisplay, ExprId, ExprPool, IoError, PoolPersistError,
     MAX_EXPR_DEPTH,
 };
+pub use logic::bdd::{BddManager, BddRef};
+pub use logic::boolean::{
+    bdd_from_expr, bdd_to_expr, equivalent as logic_equivalent_check, logic_and, logic_equivalent,
+    logic_implies, logic_ite, logic_not, logic_or, logic_xor, simplify_logic, to_cnf, to_dnf,
+    to_nnf, truth_table, BooleanError, EquivMethod, Equivalence, LogicForm, MinimizedLogic,
+};
 pub use logic::{
     dpll_sat, formula_from_expr, satisfiable, BoolClause, BoolLit, Formula, LogicError,
     Satisfiability,
