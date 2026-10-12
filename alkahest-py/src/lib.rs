@@ -121,7 +121,6 @@ use alkahest_core::{
     simplify_batch as core_simplify_batch, simplify_egraph as core_simplify_egraph,
     simplify_egraph_with as core_simplify_egraph_with, simplify_log_exp as core_simplify_log_exp,
     simplify_trig_normal_form as core_simplify_trig_normal_form,
-    simplify_with as core_simplify_with,
     verify_antiderivative_status_parametric as core_verify_antiderivative_parametric,
     AlkahestError as AlkahestErrorTrait, AntiderivativeVerification, ApartError,
     AssumptionContext as CoreAssumptionContext, AssumptionError, ComplexF64, DerivedExpr,
@@ -268,6 +267,7 @@ mod matgroup;
 // Base inherits from ValueError for backward compat with existing `except ValueError` tests.
 mod funcfield;
 mod joint_prob;
+mod noncommutative;
 mod numfield;
 mod orthopoly;
 mod stabilizer;
@@ -9260,7 +9260,14 @@ fn py_simplify_with(
                     Box::new(PatternRule::new(Pattern::from_expr(lhs), rhs)) as Box<dyn RewriteRule>
                 })
                 .collect();
-            core_simplify_with(id, pool, &boxed, SimplifyConfig::default())
+            // Non-commutative input: re-expand and re-apply until the rules
+            // stop firing, so `X*P -> P*X + i*hbar` reaches inside `X*P*P`.
+            alkahest_core::algebra::nc_poly::simplify_with_noncommutative(
+                id,
+                pool,
+                &boxed,
+                SimplifyConfig::default(),
+            )
         })
     };
     Ok(make_derived_result(py, derived, pool_py, None))
@@ -13656,9 +13663,23 @@ fn py_simplify_pauli(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedR
     let derived = {
         let pool = pool_py.borrow(py);
         guard_simplify_depth(&pool.inner, expr.id)?;
-        let mut rules = rules_for_config(&SimplifyConfig::default());
-        rules.extend(pauli_product_rules());
-        simplify_with(expr.id, &pool.inner, &rules, SimplifyConfig::default())
+        if pool.inner.is_mult_commutative(expr.id) {
+            let mut rules = rules_for_config(&SimplifyConfig::default());
+            rules.extend(pauli_product_rules());
+            simplify_with(expr.id, &pool.inner, &rules, SimplifyConfig::default())
+        } else {
+            // Full Pauli algebra over expanded words (G10c): σᵢ² = 1,
+            // σᵢσⱼ = iεᵢⱼₖσₖ, products and powers distributed first.
+            // The word expansion recurses, so this path keeps the plain
+            // depth ceiling rather than the lifted simplify one.
+            alkahest_core::check_expr_depth(&pool.inner, expr.id).map_err(depth_error_to_py)?;
+            let after = noncommutative::pauli_reduce(&pool.inner, expr.id)?;
+            let mut log = alkahest_core::DerivationLog::new();
+            if after != expr.id {
+                log.push(RewriteStep::simple("pauli_algebra", expr.id, after));
+            }
+            alkahest_core::DerivedExpr::with_log(after, log)
+        }
     };
     Ok(make_derived_result(py, derived, pool_py, None))
 }
@@ -21140,6 +21161,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     units::register(m)?;
     joint_prob::register(m)?;
     orthopoly::register(m)?;
+    noncommutative::register(m)?;
     m.add_function(wrap_pyfunction!(py_euler_maclaurin, m)?)?;
     m.add_function(wrap_pyfunction!(py_coefficient_asymptotics, m)?)?;
     // P1 item 7 — creative telescoping / holonomic (D-finite) machinery

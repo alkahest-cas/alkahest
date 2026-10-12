@@ -337,6 +337,17 @@ Exception subclasses
    family parameters (Rust API). A selection-rule violation is not an error: the
    coefficient is an exact ``0``.
 
+.. exception:: NcError
+
+   Code prefix ``E-NC-*``. Noncommutative algebra. ``E-NC-001``: word
+   rewriting did not reach a normal form within ``max_steps`` (the rules may
+   not terminate). ``E-NC-002``: an expansion past the term or power cap.
+   ``E-NC-003``: a rule whose left side is not a single word with coefficient
+   1. ``E-NC-004``: a malformed ladder-mode list. ``E-NC-005``: a γ slot that
+   is not ``0``–``3``, ``5`` or a commutative label. ``E-NC-006``: a γ trace
+   past 14 slots. ``E-NC-007``: a vacuum expectation over a factor that is not
+   a listed ladder operator.
+
 .. exception:: QuaternionError
 
    Code prefix ``E-QUAT-*``. Quaternion algebra and rotations

@@ -1465,6 +1465,25 @@ ak.wigner_6j(1, 1, 1, 1, 1, 1)      # 1/6
 - `diff` in the degree/parameters refuses (`E-DIFF-001`); in `x` uses DLMF 18.9 identities.
 - Selection rules give exact `0`; non-(half-)integer j → `E-SPECFN-001`, negative j → `E-SPECFN-002`.
 
+## Noncommutative algebra
+
+```python
+X, P = (p.symbol(n, commutative=False) for n in ("X", "P")); I = p.imaginary_unit()
+rule = ak.make_rule(X*P, P*X + I*hbar)            # matches inside X*P*P (contiguous run)
+ak.simplify_with(X*P*P - P*P*X, [rule]).value      # 2*I*hbar*P (re-expands to a fixpoint)
+ak.nc_rewrite(expr, [rule])                        # strict normal form; E-NC-001 if rules loop
+ak.commutator(X, P**2, [rule]); ak.nc_expand((sx + sy)**2)   # order-preserving expansion
+ak.simplify_pauli(sx*sy*sx).value                  # -sy  (nc symbols named sx, sy, sz)
+ak.normal_order(a*ad**3, bosons=(a, ad))           # ad^3*a + 3*ad^2 ; fermions=(c, cd) too
+ak.vacuum_expectation(a*a*ad*ad, bosons=(a, ad))   # 2
+ak.gamma_trace([p_, q_, k_, l_])                   # in dot(p,q); [5, p,q,k,l] -> -4*I*levi_civita(p,q,k,l)
+```
+
+- Commutative `make_rule(A*B, C)` now rewrites `A*B*D` to `C*D` (sub-multiset match).
+- Noncommutative symbols are never wildcards, even with lowercase names.
+- `gamma_trace`: slots `0..3`, `5`, or a commutative symbol (slashed vector); metric (+,−,−,−);
+  `levi_civita` has `ε^{0123} = +1`; ≤ 14 slots (`E-NC-006`).
+
 ## Sensitivity and adjoint systems
 
 ```python
@@ -1725,6 +1744,7 @@ All errors inherit `AlkahestError` and carry `.code`, `.remediation`, `.span`.
 | `ProbabilityError` | `E-PROB-*` | The experimental distribution surface. `001` = a **numeric** parameter outside the law's constraint (a symbolic one goes on `constraints()` instead); `002` = outside the modelled class (joint law, PGF for a non-lattice variate, cross-family KL); `003` = the reduction integral was built and **this integrator** declined it, and the message names it; `004` = no closed form inside this library's primitives (`Gamma`/`Beta` CDF, the normal quantile, the log-normal characteristic function); `005` = a closed form **computed and withheld** because quadrature of its own defining integral did not confirm it — **record `unknown`**; `006` = the quantity **does not exist** (a divergent expectation, an MGF outside its convergence strip, an infinite KL divergence) — **a verdict, stop looking** |
 | `VectorError` | `E-VEC-*` | Vector calculus over an orthogonal chart. `004` = a chart `from_embedding` could not **prove** orthogonal — undecided is a refusal, because the formulas still evaluate on a skew chart, to something that looks like a divergence and is not one; `005` = a degenerate scale factor. Reached as `experimental.VectorError`, not `alkahest.VectorError` |
 | `UnitError` | `E-UNIT-*` | Units (`alkahest.units`). `001` = different dimensions in a sum/conversion (both named); `002` = bad unit string; `003` = `degC`/`degF` used in arithmetic (affine — convert to K); `004` = a function argument that is not a pure number; `005` = a symbol with no unit in `dimension_of`; `006` = same dimension, different units in a sum; `007` = irrational scale under a fractional power |
+| `NcError` | `E-NC-*` | Noncommutative algebra. `001` = word rewriting did not reach a normal form within `max_steps` (non-terminating rules); `002` = expansion past the size caps; `003` = rule lhs not one word; `004` = bad ladder modes; `005` = bad γ slot; `006` = γ trace past 14 slots; `007` = vacuum expectation over a non-ladder factor |
 | `QuaternionError` | `E-QUAT-*` | `001` = a zero or undecided norm; `002` = the axis of the identity rotation, which **does not exist** — every unit vector is one, and the conventional `(0,0,1)` is a stated answer to a question with no answer; `003` = a matrix that could not be checked to be a proper rotation, including any symbolic matrix. Reached as `experimental.QuaternionError` |
 
 ```python

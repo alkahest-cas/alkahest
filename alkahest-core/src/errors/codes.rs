@@ -559,6 +559,14 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-SPECFN-003", class: "SpecialFunctionError", cause: Cause::UserInput,   remediation: Some("spherical harmonics are built explicitly for integer l and m only; substitute integers before calling") },
     ErrorSpec { code: "E-SPECFN-004", class: "SpecialFunctionError", cause: Cause::Resource,    remediation: Some("keep the polynomial symbolic (expand=False) and evaluate it numerically, or ask for a smaller degree / angular momentum") },
     ErrorSpec { code: "E-SPECFN-005", class: "SpecialFunctionError", cause: Cause::UserInput,   remediation: Some("check the family's signature, e.g. jacobi_p(n, a, b, x)") },
+    // E-NC — NcError (noncommutative algebra: word rewriting, Pauli, ladder operators, Dirac traces, G10c)
+    ErrorSpec { code: "E-NC-001", class: "NcError", cause: Cause::Resource,    remediation: Some("check that the rules terminate (each rule should move words toward one fixed order), or raise max_steps") },
+    ErrorSpec { code: "E-NC-002", class: "NcError", cause: Cause::Resource,    remediation: Some("expand a smaller expression, or lower the power of the noncommutative factor") },
+    ErrorSpec { code: "E-NC-003", class: "NcError", cause: Cause::UserInput,   remediation: Some("write the left-hand side as a single product of noncommutative symbols, e.g. make_rule(X*P, P*X + I*hbar)") },
+    ErrorSpec { code: "E-NC-004", class: "NcError", cause: Cause::UserInput,   remediation: Some("pass (annihilator, creator) pairs of distinct noncommutative symbols, each used in one mode only") },
+    ErrorSpec { code: "E-NC-005", class: "NcError", cause: Cause::UserInput,   remediation: Some("use 0, 1, 2, 3 for γ^0…γ^3, 5 for γ^5, or a commutative symbol for a slashed vector / Lorentz index") },
+    ErrorSpec { code: "E-NC-006", class: "NcError", cause: Cause::Unsupported, remediation: Some("split the trace (e.g. with Fierz or completeness relations) before calling gamma_trace") },
+    ErrorSpec { code: "E-NC-007", class: "NcError", cause: Cause::UserInput,   remediation: Some("list every ladder operator in the modes, or remove the other noncommutative factors first") },
     // E-QUAT — QuaternionError (Hamilton quaternions and the rotation operator)
     ErrorSpec { code: "E-QUAT-001", class: "QuaternionError", cause: Cause::Domain,    remediation: Some("use a non-zero quaternion; if the components are symbolic, substitute concrete values or declare the parameters so the norm can be decided") },
     // The identity rotation has no axis — *every* unit vector is one.  Returning

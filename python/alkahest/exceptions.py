@@ -136,6 +136,10 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
                                  spherical harmonics, 3j/6j/Clebsch–Gordan;
                                  001 = not an integer or half-integer, 004 =
                                  past the exact-construction cap)
+    E-NC-001 … E-NC-007          NcError (noncommutative algebra; 001 = rewriting
+                                 did not terminate within max_steps, 003 = a rule
+                                 whose left side is not one word, 007 = a vacuum
+                                 expectation over non-ladder operators)
     E-QUAT-001 … E-QUAT-003      QuaternionError (002 = the axis of the identity
                                  rotation, which does not exist; 003 = a matrix that
                                  could not be checked to be a proper rotation)

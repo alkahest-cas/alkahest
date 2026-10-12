@@ -17,6 +17,7 @@
 - [Units and dimensional analysis](./units.md)
 - [Controls: LTI systems, Lyapunov and Riccati](./controls.md)
 - [Orthogonal polynomials and angular momentum](./orthopoly.md)
+- [Noncommutative algebra](./noncommutative.md)
 - [Code generation](./codegen.md)
   - [GPU support (CUDA)](./gpu.md)
 - [Ball arithmetic](./ball-arithmetic.md)

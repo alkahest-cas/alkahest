@@ -100,7 +100,11 @@ fn apply_subst(pat: ExprId, subst: &Substitution, pool: &ExprPool) -> ExprId {
     }
 
     let node = pool.with(pat, |data| match data {
-        ExprData::Symbol { name, .. } if is_wildcard(name) => Node::Wildcard(name.clone()),
+        ExprData::Symbol {
+            name,
+            commutative: true,
+            ..
+        } if is_wildcard(name) => Node::Wildcard(name.clone()),
         ExprData::Add(args) => Node::Add(args.clone()),
         ExprData::Mul(args) => Node::Mul(args.clone()),
         ExprData::Pow { base, exp } => Node::Pow(*base, *exp),
@@ -191,9 +195,12 @@ fn match_one(
     }
 
     let pat_node = pool.with(pat, |data| match data {
-        ExprData::Symbol { name, .. } if is_pattern_wildcard(name, cfg.wildcards) => {
-            PatNode::Wildcard(name.clone())
-        }
+        // A non-commutative symbol is an operator, never a wildcard.
+        ExprData::Symbol {
+            name,
+            commutative: true,
+            ..
+        } if is_pattern_wildcard(name, cfg.wildcards) => PatNode::Wildcard(name.clone()),
         ExprData::Symbol { name, .. } => PatNode::Symbol(name.clone()),
         ExprData::Add(args) => PatNode::Add(args.clone()),
         ExprData::Mul(args) => PatNode::Mul(args.clone()),
@@ -256,6 +263,11 @@ fn match_one(
             let ExprNode::Mul(expr_args) = expr_node else {
                 return None;
             };
+            // A non-commutative product keeps its order: the pattern matches
+            // the whole product positionally or a contiguous run of it.
+            if !pool.is_mult_commutative(expr) {
+                return match_ordered_window(&pat_args, &expr_args, subst, pool, ac_depth, cfg);
+            }
             if ac_depth >= MAX_AC_DEPTH {
                 return match_args_exact(&pat_args, &expr_args, subst, pool, ac_depth + 1, cfg);
             }
@@ -356,13 +368,22 @@ fn match_ac_args(
         let is_last_wildcard = pool.with(last_pat, |data| {
             matches!(
                 data,
-                ExprData::Symbol { name, .. } if is_pattern_wildcard(name, cfg.wildcards)
+                ExprData::Symbol { name, commutative: true, .. }
+                    if is_pattern_wildcard(name, cfg.wildcards)
             )
         });
 
         if !is_last_wildcard {
-            // Can't absorb remainder — no match
-            return None;
+            // No wildcard to absorb the remainder. At the node being searched
+            // (depth 0) a product pattern may match a sub-multiset of the
+            // product's factors (`A·B` in `A·B·D`); nested inside another
+            // pattern it must match the whole node, or the match would stand
+            // for a node with factors silently dropped.
+            if is_add || ac_depth != 0 {
+                return None;
+            }
+            let mut used = vec![false; expr_args.len()];
+            return match_submultiset(pat_args, expr_args, &mut used, subst, pool, ac_depth, cfg);
         }
 
         let prefix_len = pat_args.len() - 1;
@@ -374,6 +395,62 @@ fn match_ac_args(
     }
 
     // Pattern is longer than expr: no match possible
+    None
+}
+
+/// Ordered matching for a non-commutative product: the whole product
+/// positionally, or else the first contiguous run of it.
+fn match_ordered_window(
+    pat_args: &[ExprId],
+    expr_args: &[ExprId],
+    subst: Substitution,
+    pool: &ExprPool,
+    ac_depth: usize,
+    cfg: MatchConfig,
+) -> Option<Substitution> {
+    let k = pat_args.len();
+    // A contiguous run is allowed only at the node being searched (depth 0);
+    // nested inside another pattern the product must match whole.
+    if k == 0 || k > expr_args.len() || (ac_depth != 0 && k != expr_args.len()) {
+        return None;
+    }
+    (0..=expr_args.len() - k).find_map(|start| {
+        match_args_exact(
+            pat_args,
+            &expr_args[start..start + k],
+            subst.clone(),
+            pool,
+            ac_depth + 1,
+            cfg,
+        )
+    })
+}
+
+/// Assign each pattern arg to a distinct unused expression arg (backtracking).
+fn match_submultiset(
+    pat_args: &[ExprId],
+    expr_args: &[ExprId],
+    used: &mut [bool],
+    subst: Substitution,
+    pool: &ExprPool,
+    ac_depth: usize,
+    cfg: MatchConfig,
+) -> Option<Substitution> {
+    let Some((&p, rest)) = pat_args.split_first() else {
+        return Some(subst);
+    };
+    for i in 0..expr_args.len() {
+        if used[i] {
+            continue;
+        }
+        if let Some(s) = match_one(p, expr_args[i], subst.clone(), pool, ac_depth + 1, cfg) {
+            used[i] = true;
+            if let Some(done) = match_submultiset(rest, expr_args, used, s, pool, ac_depth, cfg) {
+                return Some(done);
+            }
+            used[i] = false;
+        }
+    }
     None
 }
 
