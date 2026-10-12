@@ -1720,7 +1720,7 @@ pub fn matrix_exponential(m: &Matrix, pool: &ExprPool) -> Result<Matrix, LinearA
             .map_err(|_| LinearAlgebraError::KernelFailed)?
             .mul(&inv_p, pool)
             .map_err(|_| LinearAlgebraError::KernelFailed)?;
-        return gated(m, candidate, pool);
+        return gated(m, real_form_entries(candidate, pool), pool);
     }
 
     let lambdas = spectrum_with_multiplicity(m, pool)?;
@@ -1741,9 +1741,40 @@ pub fn matrix_exponential(m: &Matrix, pool: &ExprPool) -> Result<Matrix, LinearA
     // every shape a caller can build.
     let candidate = putzer::matrix_exponential(m, &lambdas, one, &mut gaps, pool)
         .ok_or(LinearAlgebraError::NonSquare)?;
-    let out = gated(m, candidate.simplify_entries(pool), pool)?;
+    let out = gated(
+        m,
+        real_form_entries(candidate.simplify_entries(pool), pool),
+        pool,
+    )?;
     exp_gate::record_side_conditions(gaps.assumed_nonzero);
     Ok(out)
+}
+
+/// Rewrite every entry into real form ([`crate::simplify::real_form`]) when
+/// one of them carries an imaginary unit or a fractional power: the
+/// eigenvalues of a real oscillatory matrix are complex, and `P·e^{D}·P⁻¹`
+/// built from them reads `exp(√(−4w²t²)/2)` where `cos(w t)` is meant. The
+/// rewrite returns an entry unchanged unless its imaginary part is proved to
+/// vanish, so a genuinely complex exponential is left alone — and the gate
+/// still checks whatever comes out.
+fn real_form_entries(candidate: Matrix, pool: &ExprPool) -> Matrix {
+    if !candidate
+        .data
+        .iter()
+        .any(|&e| crate::simplify::real_form::looks_complex(e, pool))
+    {
+        return candidate;
+    }
+    let data = candidate
+        .data
+        .iter()
+        .map(|&e| crate::simplify::real_form::to_real_form_ambient(e, pool))
+        .collect();
+    Matrix {
+        data,
+        rows: candidate.rows,
+        cols: candidate.cols,
+    }
 }
 
 /// Return `candidate` only if the standing gate does not refute it.
@@ -2757,10 +2788,26 @@ mod tests {
         let expm = matrix_exponential(&a, &p).expect("symbolic e^A closed form");
         assert_eq!(expm.rows, 2);
         assert_eq!(expm.cols, 2);
-        // Every entry depends on w (via exp(±√(−4w²)/2)) — i.e. genuinely symbolic.
+        // Every entry depends on w, and — since G9 — comes back in real form:
+        // cos(w), sin(w)/w, −w·sin(w), never exp(±√(−4w²)/2).
         let s = expm.display(&p);
-        assert!(s.contains("exp"), "expected exponential entries: {s}");
+        assert!(
+            s.contains("cos") && s.contains("sin"),
+            "expected real form: {s}"
+        );
+        assert!(
+            !s.contains("exp") && !s.contains("sqrt"),
+            "expected real form: {s}"
+        );
         assert!(s.contains('w'), "expected dependence on free symbol w: {s}");
+        let sin_w = p.func("sin", vec![w]);
+        let cos_w = p.func("cos", vec![w]);
+        let expected = Matrix::new(vec![
+            vec![cos_w, p.mul(vec![sin_w, p.pow(w, p.integer(-1_i32))])],
+            vec![p.mul(vec![p.integer(-1_i32), w, sin_w]), cos_w],
+        ])
+        .unwrap();
+        assert!(eigen::matrix_eq_simplified(&expm, &expected, &p), "got {s}");
     }
 
     // -----------------------------------------------------------------------

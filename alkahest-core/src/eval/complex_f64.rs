@@ -140,6 +140,20 @@ impl ComplexF64 {
             -self.re.sin() * self.im.sinh(),
         )
     }
+    /// `sinh(a + ib) = sinh a·cos b + i·cosh a·sin b`.
+    fn sinh(self) -> Self {
+        Self::new(
+            self.re.sinh() * self.im.cos(),
+            self.re.cosh() * self.im.sin(),
+        )
+    }
+    /// `cosh(a + ib) = cosh a·cos b + i·sinh a·sin b`.
+    fn cosh(self) -> Self {
+        Self::new(
+            self.re.cosh() * self.im.cos(),
+            self.re.sinh() * self.im.sin(),
+        )
+    }
     /// `acos z = π/2 + i·Log(iz + √(1 − z²))`, principal branch.
     ///
     /// Present because `matrix::eigen`'s casus-irreducibilis form —
@@ -259,6 +273,11 @@ fn eval_node_uncached(
                 "sin" => Ok(x.sin()),
                 "cos" => Ok(x.cos()),
                 "exp" => Ok(x.exp()),
+                // The hyperbolic pair is what the real form of an over-damped
+                // or two-compartment closed form is written in.
+                "sinh" => Ok(x.sinh()),
+                "cosh" => Ok(x.cosh()),
+                "abs" => Ok(ComplexF64::new(x.re.hypot(x.im), 0.0)),
                 "log" => x.ln(),
                 "sqrt" => x.sqrt(),
                 "acos" => x.acos(),
@@ -294,6 +313,25 @@ mod tests {
                 .reason,
             UnsupportedReason::UnsupportedExpression { kind: "branch_cut" }
         );
+    }
+
+    #[test]
+    fn hyperbolic_functions_and_abs() {
+        let pool = crate::kernel::ExprPool::new();
+        let x = pool.symbol("x", crate::kernel::Domain::Real);
+        let mut b = HashMap::new();
+        b.insert(x, ComplexF64::new(0.7, 0.0));
+        let ch = eval_complex_f64(pool.func("cosh", vec![x]), &pool, &b).unwrap();
+        let sh = eval_complex_f64(pool.func("sinh", vec![x]), &pool, &b).unwrap();
+        assert!((ch.re - 0.7f64.cosh()).abs() < 1e-15 && ch.im == 0.0);
+        assert!((sh.re - 0.7f64.sinh()).abs() < 1e-15 && sh.im == 0.0);
+        // cosh(i·x) = cos x
+        let ix = pool.mul(vec![pool.imaginary_unit(), x]);
+        let c = eval_complex_f64(pool.func("cosh", vec![ix]), &pool, &b).unwrap();
+        assert!((c.re - 0.7f64.cos()).abs() < 1e-15 && c.im.abs() < 1e-15);
+        b.insert(x, ComplexF64::new(-3.0, 4.0));
+        let a = eval_complex_f64(pool.func("abs", vec![x]), &pool, &b).unwrap();
+        assert!((a.re - 5.0).abs() < 1e-15 && a.im == 0.0);
     }
 
     #[test]

@@ -879,6 +879,7 @@ pub fn inverse_laplace_transform_with_conditions(
 ) -> Result<(ExprId, Vec<SideCondition>), LaplaceError> {
     let mut g = Genericity::new(None);
     let out = inverse_laplace_inner(big_f, s, t, pool, &mut g)?;
+    let out = g.real_form(out, pool);
     Ok((out, g.into_conditions()))
 }
 
@@ -913,6 +914,7 @@ pub fn inverse_laplace_transform_with_assumptions(
 ) -> Result<(ExprId, Vec<SideCondition>), LaplaceError> {
     let mut g = Genericity::new(Some(assumptions));
     let out = inverse_laplace_inner(big_f, s, t, pool, &mut g)?;
+    let out = g.real_form(out, pool);
     Ok((out, g.into_conditions()))
 }
 

@@ -99,6 +99,37 @@ for every denominator ``d`` it cleared).
    zero with radius below ``1e-30``: evidence, not proof, so ``value`` is
    ``None``.  ``bool(test)`` raises ``ValueError`` when ``value`` is ``None``.
 
+.. function:: to_real_form(expr, assumptions=None) -> Expr
+
+   Rewrite *expr* into an equal expression with no imaginary unit and no
+   square root of a negative quantity.  ``exp(a ± iθ)`` becomes
+   ``e^a(cos θ ± i sin θ)``; ``cos``/``sin``/``cosh``/``sinh`` of a complex
+   argument go through the addition formulas (``cosh(I*x)`` → ``cos(x)``);
+   ``sqrt(X)`` with ``X <= 0`` proved becomes ``I*sqrt(-X)``; perfect-square
+   factors leave a square root (``sqrt(c**2*k)`` → ``abs(c)*sqrt(k)``, →
+   ``c*sqrt(k)`` once ``c >= 0`` is known); and ``abs(u)`` is replaced by
+   ``u`` wherever the result is an even function of it.  The real part is
+   returned only when the imaginary part is **proved** identically zero by
+   :func:`is_zero`'s exact methods; otherwise *expr* is returned unchanged,
+   so the result is always equal to *expr* on the set the assumptions
+   describe.  Free symbols must be real (any domain but ``Complex``).
+
+   Signs are decided from symbol domains, *assumptions* (and the active
+   ``context(assumptions=...)``), sign algebra, and a polynomial certificate:
+   monomials of uncertain sign are absorbed by AM–GM pairs, and failing that
+   the polynomial is factored over ℤ and signed factor by factor.
+
+   ``Matrix.matrix_exp``, ``experimental.dsolve`` and
+   ``experimental.inverse_laplace_transform`` (and through it
+   ``TransferFunction.step_response`` / ``impulse_response``) apply the
+   rewrite to their results.
+
+   Example::
+
+      to_real_form(sqrt(4*a**2))       # 2*abs(a)
+      to_real_form(cosh(I*x))          # cos(x)
+      to_real_form(exp(I*x))           # exp(I*x), unchanged
+
 Parallel simplification
 -----------------------
 

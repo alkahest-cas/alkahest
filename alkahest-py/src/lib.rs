@@ -9384,6 +9384,54 @@ fn py_zero_test(
     Ok((t.verdict(), t.status.as_str(), t.method, t.evidence))
 }
 
+/// `alkahest.to_real_form(expr, assumptions=None) -> Expr`
+///
+/// Rewrite ``expr`` into an equal expression with no imaginary unit and no
+/// square root of a negative quantity: ``exp(±i·θ)`` pairs become
+/// ``cos``/``sin``, ``exp(a ± √(−b))`` with ``b > 0`` becomes
+/// ``e^a·(cos √b ± i sin √b)``, ``cosh(i·x)`` becomes ``cos x``, and perfect
+/// squares leave square roots (``√(c²·k)`` → ``|c|·√k``, → ``c·√k`` once
+/// ``c ≥ 0`` is known). The real part is returned only when the imaginary
+/// part is *proved* identically zero; otherwise ``expr`` comes back
+/// unchanged. Free symbols must be real (any domain but ``Complex``).
+///
+/// Args:
+///     expr: the expression to rewrite.
+///     assumptions: optional :class:`Assumptions` (``k > 0``, ``a >= 0``…);
+///         the active ``alkahest.context(assumptions=...)`` and symbol
+///         domains always apply.
+///
+/// Returns:
+///     Expr: an equal expression, real-valued where it could be proved so.
+///
+/// Example:
+///     >>> p = ExprPool(); a = p.symbol("a")
+///     >>> to_real_form(sqrt(4*a**2))
+///     (2 * abs(a))
+#[pyfunction]
+#[pyo3(name = "to_real_form", signature = (expr, assumptions=None))]
+fn py_to_real_form(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    assumptions: Option<PyRef<PyAssumptions>>,
+) -> PyResult<PyExpr> {
+    if let Some(ref a) = assumptions {
+        if !a.pool.is(&expr.pool) {
+            return Err(pool_mismatch_err());
+        }
+    }
+    let pool_py = expr.pool.clone_ref(py);
+    let id = {
+        let pool = pool_py.borrow(py);
+        guard_depth(&pool.inner, expr.id)?;
+        let empty = alkahest_core::simplify::AssumptionContext::new();
+        let ctx = assumptions.as_ref().map(|a| &a.inner).unwrap_or(&empty);
+        let (id, pool) = (expr.id, &pool.inner);
+        py.allow_threads(|| alkahest_core::simplify::to_real_form(id, pool, ctx))
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
 // ---------------------------------------------------------------------------
 // V5-1 — Lean 4 certificate exporter
 // ---------------------------------------------------------------------------
@@ -21117,6 +21165,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_simplify_trig_normal_form, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify_log_exp, m)?)?;
     m.add_function(wrap_pyfunction!(py_zero_test, m)?)?;
+    m.add_function(wrap_pyfunction!(py_to_real_form, m)?)?;
     m.add_function(wrap_pyfunction!(py_evaluate, m)?)?;
     m.add_function(wrap_pyfunction!(py_diff, m)?)?;
     m.add_function(wrap_pyfunction!(py_diff_forward, m)?)?;

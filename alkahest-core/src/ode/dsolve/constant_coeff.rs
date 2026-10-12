@@ -340,15 +340,59 @@ fn symbolic_quadratic(
     }
 
     // 2. Decided by the caller (or by the discriminant being a literal).
-    let sign = match try_expr_f64(disc, pool) {
+    let mut sign = match try_expr_f64(disc, pool) {
         Some(v) if v > 0.0 => AssumedSign::Positive,
         Some(v) if v < 0.0 => AssumedSign::Negative,
         _ => ctx.assumed_sign(disc, pool),
     };
+    // 2b. Decided by the real-sign prover: symbol domains plus the stated
+    //     assumptions, through sign algebra and a polynomial certificate —
+    //     `−4k²` under `k > 0`, `4ω²(ζ²−1)` under `0 < ζ < 1`. A discriminant
+    //     proved `≤ 0` but not `< 0` (`−4k²` for a real `k`) is negative
+    //     wherever the `D ≠ 0` side condition below holds, so it selects the
+    //     real oscillatory form under that same condition.
+    let mut nonpositive_only = false;
+    if matches!(sign, AssumedSign::Unknown | AssumedSign::NonZero) {
+        let stated_nonzero = sign == AssumedSign::NonZero;
+        let set = {
+            let _scope = (!ctx.assumptions.predicates().is_empty())
+                .then(|| crate::simplify::enter_assumptions(ctx.assumptions, pool));
+            crate::simplify::real_form::sign_set(disc, pool)
+        };
+        match set {
+            Some(s) if s.is_neg() => sign = AssumedSign::Negative,
+            Some(s) if s.is_pos() => sign = AssumedSign::Positive,
+            Some(s) if s.is_nonpos() && stated_nonzero => sign = AssumedSign::Negative,
+            Some(s) if s.is_nonneg() && stated_nonzero => sign = AssumedSign::Positive,
+            Some(s) if s.is_nonpos() => nonpositive_only = true,
+            _ => {}
+        }
+    }
     let asserted_nonzero = sign != AssumedSign::Unknown || super::is_settled_nonzero(disc, pool);
-    if sign == AssumedSign::Negative {
+    if sign == AssumedSign::Negative || nonpositive_only {
+        if sign != AssumedSign::Negative && !asserted_nonzero {
+            ctx.conds.require_nonzero(disc);
+            ctx.conds.note(format!(
+                "the characteristic discriminant {d} is never positive; where it vanishes the \
+                 roots coincide and the general solution is C1·e^({r}·{v}) + C2·{v}·e^({r}·{v}), \
+                 which this oscillatory family does not span",
+                d = pool.display(disc),
+                r = pool.display(alpha),
+                v = pool.display(x),
+            ));
+        }
         // Negative discriminant: the real oscillatory form.  β = √(−D)/(2a).
         let beta = super::div(pool.func("sqrt", vec![neg_disc]), two_a, pool);
+        // `√(4k²)/2` → `|k|` → `k`: the pair {cos βx, sin βx} spans the same
+        // space for β and −β, so a sign-only factor `|u|` of β may be dropped.
+        let beta = {
+            let _scope = (!ctx.assumptions.predicates().is_empty())
+                .then(|| crate::simplify::enter_assumptions(ctx.assumptions, pool));
+            strip_abs_factors(
+                crate::simplify::real_form::to_real_form_ambient(beta, pool),
+                pool,
+            )
+        };
         let e = exp_of_root(alpha, x, pool);
         let bx = simp(pool.mul(vec![beta, x]), pool);
         let cos = simp(pool.mul(vec![e, pool.func("cos", vec![bx])]), pool);
@@ -360,7 +404,13 @@ fn symbolic_quadratic(
     // that `(√D)² → D` is a power collection the simplifier already performs;
     // spelled `sqrt(D)` it is an opaque `Func` and the residual never closes
     // symbolically.
-    let root_d = simp(pool.pow(disc, pool.rational(1_i64, 2_i64)), pool);
+    let mut root_d = simp(pool.pow(disc, pool.rational(1_i64, 2_i64)), pool);
+    if sign == AssumedSign::Positive {
+        // `√(4k²)` → `2k` once the sign of `k` is known; value-preserving.
+        let _scope = (!ctx.assumptions.predicates().is_empty())
+            .then(|| crate::simplify::enter_assumptions(ctx.assumptions, pool));
+        root_d = crate::simplify::real_form::to_real_form_ambient(root_d, pool);
+    }
     let r_plus = super::div(
         pool.add(vec![pool.mul(vec![neg_one, b]), root_d]),
         two_a,
@@ -388,6 +438,27 @@ fn symbolic_quadratic(
         r = pool.display(alpha),
     ));
     Ok((basis, "constant_coefficient_symbolic"))
+}
+
+/// Replace every `|u|` that is a direct factor of `beta` by `u`. Only sound
+/// where the caller needs `beta` up to sign, as the `{cos βx, sin βx}` basis
+/// does.
+fn strip_abs_factors(beta: ExprId, pool: &ExprPool) -> ExprId {
+    let unabs = |f: ExprId| match pool.get(f) {
+        ExprData::Func { name, args } if name == "abs" && args.len() == 1 => args[0],
+        _ => f,
+    };
+    match pool.get(beta) {
+        ExprData::Mul(fs) => {
+            let new: Vec<ExprId> = fs.iter().map(|&f| unabs(f)).collect();
+            if new == fs {
+                beta
+            } else {
+                simp(pool.mul(new), pool)
+            }
+        }
+        _ => unabs(beta),
+    }
 }
 
 /// `e^{r·x}`, collapsing to `1` when `r` is provably zero.
