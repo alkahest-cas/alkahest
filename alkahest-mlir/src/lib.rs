@@ -42,11 +42,13 @@
 //! ```
 
 pub mod emit;
+pub mod error;
 pub mod lower;
 pub mod ops;
 pub mod parse;
 
 pub use emit::{emit_dialect, EmitOptions};
+pub use error::LoweringError;
 pub use lower::lower;
 pub use ops::AlkahestOp;
 pub use parse::parse_dialect;
@@ -69,20 +71,34 @@ pub enum LoweringStage {
 /// Free symbols in `expr` that aren't ExprPool constants are auto-discovered
 /// and become `%arg0 … %argN`; use [`emit_mlir_with`] for explicit control
 /// of the argument order or function name.
-pub fn emit_mlir(pool: &ExprPool, id: ExprId, stage: LoweringStage) -> String {
+///
+/// # Errors
+///
+/// A [`LoweringError`] (`E-MLIR-NNN`, or the forwarded `E-STABLEHLO-NNN`) for
+/// anything the stage cannot lower exactly; no module is produced then.
+pub fn emit_mlir(
+    pool: &ExprPool,
+    id: ExprId,
+    stage: LoweringStage,
+) -> Result<String, LoweringError> {
     let inputs = free_symbols(id, pool);
     lower::lower(id, &inputs, "alkahest_fn", stage, pool)
 }
 
 /// Like [`emit_mlir`] but lets the caller name the function and pick the
 /// order of `%arg` bindings.
+///
+/// # Errors
+///
+/// See [`emit_mlir`]; a symbol missing from `inputs` is an
+/// [`LoweringError::UnboundSymbol`].
 pub fn emit_mlir_with(
     pool: &ExprPool,
     id: ExprId,
     inputs: &[ExprId],
     fn_name: &str,
     stage: LoweringStage,
-) -> String {
+) -> Result<String, LoweringError> {
     lower::lower(id, inputs, fn_name, stage, pool)
 }
 
@@ -148,7 +164,7 @@ mod tests {
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.add(vec![x, pool.integer(1_i32)]);
-        let out = emit_mlir(&pool, expr, LoweringStage::ArithMath);
+        let out = emit_mlir(&pool, expr, LoweringStage::ArithMath).unwrap();
         assert!(out.starts_with("module {"));
         assert!(out.contains("func.func @alkahest_fn"));
     }
@@ -158,9 +174,9 @@ mod tests {
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.func("sin", vec![x]);
-        let am = emit_mlir(&pool, expr, LoweringStage::ArithMath);
-        let sh = emit_mlir(&pool, expr, LoweringStage::StableHlo);
-        let ll = emit_mlir(&pool, expr, LoweringStage::Llvm);
+        let am = emit_mlir(&pool, expr, LoweringStage::ArithMath).unwrap();
+        let sh = emit_mlir(&pool, expr, LoweringStage::StableHlo).unwrap();
+        let ll = emit_mlir(&pool, expr, LoweringStage::Llvm).unwrap();
         assert!(am.contains("math.sin"), "{am}");
         assert!(sh.contains("stablehlo.sine"), "{sh}");
         assert!(ll.contains("llvm.intr.sin"), "{ll}");
@@ -225,7 +241,7 @@ mod tests {
             pool.mul(vec![pool.integer(4_i32), x]),
             pool.integer(1_i32),
         ]);
-        let out = emit_mlir_with(&pool, expr, &[x], "poly4", LoweringStage::ArithMath);
+        let out = emit_mlir_with(&pool, expr, &[x], "poly4", LoweringStage::ArithMath).unwrap();
         // Expect four fused multiply-add nodes for a degree-4 polynomial.
         let fma_count = out.matches("math.fma").count();
         assert!(
