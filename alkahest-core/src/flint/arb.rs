@@ -483,6 +483,92 @@ extern "C" {
         z: *const ArbStruct,
         prec: slong,
     );
+
+    // -- Bessel, Airy, zeta, polylog (G11b) --------------------------------
+    // Used by `crate::specfun::numeric`. Real kernels return an indeterminate
+    // ball where the value is not real (Y/K at x < 0, Li_s past the cut).
+    pub fn arb_hypgeom_bessel_j(
+        res: *mut ArbStruct,
+        nu: *const ArbStruct,
+        z: *const ArbStruct,
+        prec: slong,
+    );
+    pub fn arb_hypgeom_bessel_y(
+        res: *mut ArbStruct,
+        nu: *const ArbStruct,
+        z: *const ArbStruct,
+        prec: slong,
+    );
+    pub fn arb_hypgeom_bessel_i(
+        res: *mut ArbStruct,
+        nu: *const ArbStruct,
+        z: *const ArbStruct,
+        prec: slong,
+    );
+    pub fn arb_hypgeom_bessel_k(
+        res: *mut ArbStruct,
+        nu: *const ArbStruct,
+        z: *const ArbStruct,
+        prec: slong,
+    );
+    /// Any of the four outputs may be null.
+    pub fn arb_hypgeom_airy(
+        ai: *mut ArbStruct,
+        aip: *mut ArbStruct,
+        bi: *mut ArbStruct,
+        bip: *mut ArbStruct,
+        z: *const ArbStruct,
+        prec: slong,
+    );
+    pub fn arb_zeta(res: *mut ArbStruct, s: *const ArbStruct, prec: slong);
+    pub fn arb_hurwitz_zeta(
+        res: *mut ArbStruct,
+        s: *const ArbStruct,
+        a: *const ArbStruct,
+        prec: slong,
+    );
+    pub fn arb_polylog(res: *mut ArbStruct, s: *const ArbStruct, z: *const ArbStruct, prec: slong);
+    pub fn acb_hypgeom_bessel_j(
+        res: *mut AcbStruct,
+        nu: *const AcbStruct,
+        z: *const AcbStruct,
+        prec: slong,
+    );
+    pub fn acb_hypgeom_bessel_y(
+        res: *mut AcbStruct,
+        nu: *const AcbStruct,
+        z: *const AcbStruct,
+        prec: slong,
+    );
+    pub fn acb_hypgeom_bessel_i(
+        res: *mut AcbStruct,
+        nu: *const AcbStruct,
+        z: *const AcbStruct,
+        prec: slong,
+    );
+    pub fn acb_hypgeom_bessel_k(
+        res: *mut AcbStruct,
+        nu: *const AcbStruct,
+        z: *const AcbStruct,
+        prec: slong,
+    );
+    /// Any of the four outputs may be null.
+    pub fn acb_hypgeom_airy(
+        ai: *mut AcbStruct,
+        aip: *mut AcbStruct,
+        bi: *mut AcbStruct,
+        bip: *mut AcbStruct,
+        z: *const AcbStruct,
+        prec: slong,
+    );
+    pub fn acb_zeta(res: *mut AcbStruct, s: *const AcbStruct, prec: slong);
+    pub fn acb_hurwitz_zeta(
+        res: *mut AcbStruct,
+        s: *const AcbStruct,
+        a: *const AcbStruct,
+        prec: slong,
+    );
+    pub fn acb_polylog(res: *mut AcbStruct, s: *const AcbStruct, z: *const AcbStruct, prec: slong);
 }
 
 // ---------------------------------------------------------------------------

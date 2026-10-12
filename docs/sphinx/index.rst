@@ -51,6 +51,7 @@ For optional Cargo features (``jit``, ``parallel``, ``cuda``, …) and full deve
    api/controls
    api/orthopoly
    api/noncommutative
+   api/specfun
 
 .. toctree::
    :maxdepth: 2

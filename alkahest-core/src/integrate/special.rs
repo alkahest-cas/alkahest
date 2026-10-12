@@ -153,6 +153,14 @@ pub const SPECIAL_BASIS: &[&str] = &[
     "EllipticF",
     "EllipticE",
     "EllipticK",
+    // Bessel functions (G11b): the antiderivatives `x^ν F_{ν−1} → x^ν F_ν`
+    // and `x^{−ν} F_{ν+1} → ∓x^{−ν} F_ν` of `match_bessel`.
+    "bessel_j0",
+    "bessel_j1",
+    "bessel_j",
+    "bessel_y",
+    "bessel_i",
+    "bessel_k",
 ];
 
 /// The basis functions actually named in `expr`, sorted and deduplicated.
@@ -307,6 +315,7 @@ pub fn try_special_antiderivative(
         match_gaussian_moment(work, var, pool),
         match_fresnel(work, var, pool),
         match_dilog(work, var, pool),
+        match_bessel(work, var, pool),
     ];
 
     for candidate in candidates.into_iter().flatten() {
@@ -1277,6 +1286,105 @@ fn match_dilog(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
     let term2 = pool.func("dilog", vec![neg_mx]);
     let inner = pool.add(vec![term1, term2]);
     Some(pool.mul(vec![c, pool.pow(b, pool.integer(-1_i32)), inner]))
+}
+
+// ---------------------------------------------------------------------------
+// Matcher — Bessel recurrences (G11b)
+// ---------------------------------------------------------------------------
+
+/// `c·x^p·F_μ(x)` with `F ∈ {J, Y, I, K}` (`bessel_j0`, `bessel_j1` or a
+/// rational-order node) and `p` rational, when `p` is one of the two powers
+/// DLMF 10.6.6 / 10.29.4 integrate in closed form:
+///
+/// * `p = μ + 1` (`ν = μ + 1`): `∫x^ν F_{ν−1} = s₁·x^ν F_ν`;
+/// * `p = 1 − μ` (`ν = μ − 1`): `∫x^{−ν} F_{ν+1} = s₂·x^{−ν} F_ν`;
+///
+/// with `(s₁, s₂) = (1, −1)` for `J`, `Y`; `(1, 1)` for `I`; `(−1, −1)` for
+/// `K`. So `∫x·J₀(x) dx = x·J₁(x)` and `∫J₁(x) dx = −J₀(x)`. The argument
+/// must be the variable itself; anything else declines.
+fn match_bessel(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    use crate::specfun::BesselKind;
+    use rug::Rational;
+    let (c, rest) = split_constant(expr, var, pool);
+    let mut bessel: Option<(BesselKind, Rational)> = None;
+    let mut p = Rational::new();
+    for &factor in &rest {
+        if let ExprData::Func { name, args } = pool.get(factor) {
+            let hit = match (name.as_str(), args.as_slice()) {
+                ("bessel_j0", [a]) if *a == var => Some((BesselKind::J, Rational::new())),
+                ("bessel_j1", [a]) if *a == var => Some((BesselKind::J, Rational::from(1))),
+                (n, [mu, a]) if *a == var => {
+                    let kind = match n {
+                        "bessel_j" => BesselKind::J,
+                        "bessel_y" => BesselKind::Y,
+                        "bessel_i" => BesselKind::I,
+                        "bessel_k" => BesselKind::K,
+                        _ => return None,
+                    };
+                    match pool.get(*mu) {
+                        ExprData::Integer(k) => Some((kind, Rational::from(k.0.clone()))),
+                        ExprData::Rational(q) => Some((kind, q.0.clone())),
+                        _ => return None,
+                    }
+                }
+                _ => None,
+            };
+            if let Some(h) = hit {
+                if bessel.is_some() {
+                    return None;
+                }
+                bessel = Some(h);
+                continue;
+            }
+            return None;
+        }
+        if factor == var {
+            p += 1;
+            continue;
+        }
+        if let ExprData::Pow { base, exp } = pool.get(factor) {
+            if base == var {
+                match pool.get(exp) {
+                    ExprData::Integer(k) => p += Rational::from(k.0.clone()),
+                    ExprData::Rational(q) => p += q.0.clone(),
+                    _ => return None,
+                }
+                continue;
+            }
+        }
+        return None;
+    }
+    let (kind, mu) = bessel?;
+    let (s1, s2) = match kind {
+        BesselKind::J | BesselKind::Y => (1, -1),
+        BesselKind::I => (1, 1),
+        _ => (-1, -1),
+    };
+    let one = Rational::from(1);
+    let (nu, sign, xpow) = if p == Rational::from(&mu + &one) {
+        let nu = Rational::from(&mu + &one);
+        (nu.clone(), s1, nu)
+    } else if p == Rational::from(&one - &mu) {
+        let nu = Rational::from(&mu - &one);
+        let neg = Rational::from(-&nu);
+        (nu, s2, neg)
+    } else {
+        return None;
+    };
+    let rat = |q: &Rational| {
+        if *q.denom() == 1 {
+            pool.integer(q.numer().clone())
+        } else {
+            pool.rational(q.numer().clone(), q.denom().clone())
+        }
+    };
+    let f = crate::specfun::bessel(kind, rat(&nu), var, false, pool).ok()?;
+    let xp = if xpow == 0 {
+        pool.integer(1_i32)
+    } else {
+        pool.pow(var, rat(&xpow))
+    };
+    Some(pool.mul(vec![pool.integer(sign), c, xp, f]))
 }
 
 #[cfg(test)]

@@ -20,9 +20,9 @@
 //! [`crate::transform::fourier`]'s convention).
 //!
 //! Odd zeta values (`ζ(3)`, `ζ(5)`, …) have no known closed form in
-//! elementary constants and are deliberately **not** attempted: matching only
-//! recognizes even exponents, so odd-power sums correctly fall through to the
-//! honest `NotGosperSummable` error instead of a fabricated value.
+//! elementary constants and are deliberately **not** attempted here: matching
+//! only recognizes even exponents, so odd-power sums fall through to the
+//! rational-series path in `closed_form`, which names them as `zeta(s)`.
 
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 use rug::{Integer, Rational};

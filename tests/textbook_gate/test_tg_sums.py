@@ -137,13 +137,12 @@ def test_basel_sum_carries_a_scalar_coefficient(pool, k):
     assert_infinite_sum_value(term, k, pool.integer(1), pool, 3 * math.pi**2 / 6)
 
 
-def test_sum_reciprocal_cube_to_infinity_refuses(pool, k):
-    """Σ 1/n³ = ζ(3) (Apéry's constant) has no known closed form in π — must
-    raise E-SUM-002, not silently return a wrong or unevaluated value."""
+def test_sum_reciprocal_cube_to_infinity_is_zeta_3(pool, k):
+    """Σ 1/n³ = ζ(3) (Apéry's constant) has no known closed form in π: it is
+    named ``zeta(3)`` (G11b), never approximated or returned wrong."""
     term = ak.simplify(k ** pool.integer(-3)).value
-    with pytest.raises(ak.SumError) as exc_info:
-        ak.sum_definite(term, k, pool.integer(1), pool.pos_infinity())
-    assert exc_info.value.code == "E-SUM-002"
+    v = ak.sum_definite(term, k, pool.integer(1), pool.pos_infinity()).value
+    assert v == ak.zeta(pool.integer(3))
 
 
 def test_sum_k_squared_to_infinity_diverges_and_refuses(pool, k):

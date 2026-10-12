@@ -488,8 +488,8 @@ mod tests {
     fn an_unevaluable_candidate_is_no_information_not_a_refusal() {
         let p = ExprPool::new();
         let a = ints(&[&[1, 0], &[0, 2]], &p);
-        // `zeta` has no entry in the complex evaluator.
-        let opaque = p.func("zeta", vec![p.integer(3_i32)]);
+        // `erfc` has no entry in the complex evaluator.
+        let opaque = p.func("erfc", vec![p.integer(3_i32)]);
         let cand = Matrix::new(vec![vec![opaque, opaque], vec![opaque, opaque]]).unwrap();
         let out = confirm_matrix_exponential(&a, &cand, &p).unwrap();
         assert_eq!(out, ExpCheck::Unevaluated);

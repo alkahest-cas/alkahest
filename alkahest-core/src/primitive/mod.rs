@@ -414,7 +414,7 @@ impl PrimitiveRegistry {
         // re-hashes every name, and this runs on first use of `simplify`,
         // `diff` and interval evaluation.
         let mut reg = PrimitiveRegistry {
-            map: HashMap::with_capacity(96),
+            map: HashMap::with_capacity(112),
         };
         reg.register_unprobed(Box::new(builtins::SinPrimitive));
         reg.register_unprobed(Box::new(builtins::CosPrimitive));
@@ -481,6 +481,12 @@ impl PrimitiveRegistry {
         for family in crate::orthopoly::OrthoFamily::ALL {
             reg.register_unprobed(Box::new(crate::orthopoly::primitives::OrthoPrimitive(
                 family,
+            )));
+        }
+        // G11b: Bessel, Airy, zeta and polylogarithm (`crate::specfun`).
+        for kernel in crate::specfun::numeric::Kernel::ALL {
+            reg.register_unprobed(Box::new(crate::specfun::primitives::SpecFunPrimitive(
+                kernel,
             )));
         }
         if probe {
@@ -2800,6 +2806,14 @@ pub mod builtins {
             format!("J₀({})", pool.display(args[0]))
         }
 
+        /// `J₀(0) = 1`, `J₁(0) = 0` and parity (`J₀` even, `J₁` odd).
+        fn simplify(&self, args: &[ExprId], pool: &ExprPool) -> Option<ExprId> {
+            match args {
+                [x] => crate::specfun::primitives::j01_canonical("bessel_j0", *x, pool),
+                _ => None,
+            }
+        }
+
         fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
             let x = args[0];
             let dx = crate::diff::diff(x, wrt, pool).ok()?.value;
@@ -2840,6 +2854,14 @@ pub mod builtins {
 
         fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
             format!("J₁({})", pool.display(args[0]))
+        }
+
+        /// `J₀(0) = 1`, `J₁(0) = 0` and parity (`J₀` even, `J₁` odd).
+        fn simplify(&self, args: &[ExprId], pool: &ExprPool) -> Option<ExprId> {
+            match args {
+                [x] => crate::specfun::primitives::j01_canonical("bessel_j1", *x, pool),
+                _ => None,
+            }
         }
 
         fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {

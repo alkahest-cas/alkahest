@@ -149,6 +149,20 @@ _FUNC_NAMES = frozenset(
         "chebyshev_u",
         "gegenbauer_c",
         "jacobi_p",
+        # Bessel, Airy, zeta, polylog (G11b), read back as the node.
+        "bessel_j",
+        "bessel_y",
+        "bessel_i",
+        "bessel_k",
+        "spherical_jn",
+        "spherical_yn",
+        "airy_ai",
+        "airy_bi",
+        "airy_ai_prime",
+        "airy_bi_prime",
+        "zeta",
+        "hurwitz_zeta",
+        "polylog",
         # Reciprocal trig / hyperbolic functions (desugared to base(x) ** -1).
         "sec",
         "csc",
@@ -652,6 +666,21 @@ def _apply_func(name: str, args: list, offset: int, pool=None):
         "chebyshev_u": _functools.partial(_ak.chebyshev_u, expand=False),
         "gegenbauer_c": _functools.partial(_ak.gegenbauer_c, expand=False),
         "jacobi_p": _functools.partial(_ak.jacobi_p, expand=False),
+        # Bessel, Airy, zeta, polylog (G11b): the node, not the half-integer
+        # expansion, so that ``parse(str(e))`` reproduces ``e``.
+        "bessel_j": _functools.partial(_ak.bessel_j, expand=False),
+        "bessel_y": _functools.partial(_ak.bessel_y, expand=False),
+        "bessel_i": _functools.partial(_ak.bessel_i, expand=False),
+        "bessel_k": _functools.partial(_ak.bessel_k, expand=False),
+        "spherical_jn": _functools.partial(_ak.spherical_jn, expand=False),
+        "spherical_yn": _functools.partial(_ak.spherical_yn, expand=False),
+        "airy_ai": _ak.airy_ai,
+        "airy_bi": _ak.airy_bi,
+        "airy_ai_prime": _ak.airy_ai_prime,
+        "airy_bi_prime": _ak.airy_bi_prime,
+        "zeta": _ak.zeta,
+        "hurwitz_zeta": _ak.hurwitz_zeta,
+        "polylog": _ak.polylog,
     }
     # Desugar ``cbrt(u)`` to ``u ** (1/3)``.  It is not a registered primitive
     # and is not being made one: the power node already differentiates,
@@ -724,6 +753,14 @@ _ARITY: dict[str, tuple[int, int]] = {
     "assoc_laguerre_l": (3, 3),
     "gegenbauer_c": (3, 3),
     "jacobi_p": (4, 4),
+    "bessel_j": (2, 2),
+    "bessel_y": (2, 2),
+    "bessel_i": (2, 2),
+    "bessel_k": (2, 2),
+    "spherical_jn": (2, 2),
+    "spherical_yn": (2, 2),
+    "hurwitz_zeta": (2, 2),
+    "polylog": (2, 2),
 }
 
 

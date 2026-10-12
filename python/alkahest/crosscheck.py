@@ -230,6 +230,21 @@ FUNCTION_MAP: dict[str, str] = {
     "chebyshev_u": "chebyshevu",
     "gegenbauer_c": "gegenbauer",
     "jacobi_p": "jacobi",
+    # Bessel, Airy, zeta, polylog (G11b): same argument order and DLMF
+    # conventions in both systems; SymPy's two-argument ``zeta`` is Hurwitz's.
+    "bessel_j": "besselj",
+    "bessel_y": "bessely",
+    "bessel_i": "besseli",
+    "bessel_k": "besselk",
+    "spherical_jn": "jn",
+    "spherical_yn": "yn",
+    "airy_ai": "airyai",
+    "airy_bi": "airybi",
+    "airy_ai_prime": "airyaiprime",
+    "airy_bi_prime": "airybiprime",
+    "zeta": "zeta",
+    "hurwitz_zeta": "zeta",
+    "polylog": "polylog",
 }
 
 #: Bessel functions of fixed integer order, which SymPy spells with the order as

@@ -84,6 +84,8 @@ pub mod plot;
 pub mod units;
 // Orthogonal polynomials, spherical harmonics, Wigner/Clebsch–Gordan (G11a)
 pub mod orthopoly;
+// Bessel, Airy, Riemann/Hurwitz zeta and polylogarithm functions (G11b)
+pub mod specfun;
 
 pub use acausal::{capacitor, resistor, voltage_source, Component, Port, System};
 pub use calculus::{limit, series, LimitDirection, LimitError, Series, SeriesError};

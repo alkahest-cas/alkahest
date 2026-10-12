@@ -267,6 +267,18 @@ fn eval_node_uncached(
                 .map(|(re, im)| ComplexF64::new(re, im))
                 .ok_or_else(|| error(UnsupportedReason::UnsupportedFunction { name: name.clone() }))
         }
+        // Bessel, Airy, zeta, polylog (`crate::specfun`): Arb's complex
+        // kernels, principal branches, certified to 53 bits.
+        ExprData::Func { name, args } if crate::specfun::has_complex_kernel(&name) => {
+            let mut vals = Vec::with_capacity(args.len());
+            for &a in &args {
+                let v = eval_node(a, pool, bindings, memo)?;
+                vals.push((v.re, v.im));
+            }
+            crate::specfun::complex_value(&name, &vals)
+                .map(|(re, im)| ComplexF64::new(re, im))
+                .ok_or_else(|| error(UnsupportedReason::NonFiniteResult))
+        }
         ExprData::Func { name, args } if args.len() == 1 => {
             let x = eval_node(args[0], pool, bindings, memo)?;
             match name.as_str() {

@@ -47,6 +47,10 @@ pub fn known_func_arity(name: &str) -> Option<(usize, usize)> {
         | "chebyshev_u" => Some((2, 2)),
         "assoc_legendre_p" | "assoc_laguerre_l" | "gegenbauer_c" => Some((3, 3)),
         "jacobi_p" => Some((4, 4)),
+        // Bessel, Airy, zeta, polylog (`crate::specfun`): `[order, x]` / `[x]`.
+        "bessel_j" | "bessel_y" | "bessel_i" | "bessel_k" | "spherical_jn" | "spherical_yn"
+        | "hurwitz_zeta" | "polylog" => Some((2, 2)),
+        "airy_ai" | "airy_bi" | "airy_ai_prime" | "airy_bi_prime" | "zeta" => one,
         "min" | "max" => Some((2, usize::MAX)),
         _ => None,
     }
@@ -253,6 +257,19 @@ mod wrong_arity_sweep {
         "chebyshev_u",
         "gegenbauer_c",
         "jacobi_p",
+        "bessel_j",
+        "bessel_y",
+        "bessel_i",
+        "bessel_k",
+        "spherical_jn",
+        "spherical_yn",
+        "airy_ai",
+        "airy_bi",
+        "airy_ai_prime",
+        "airy_bi_prime",
+        "zeta",
+        "hurwitz_zeta",
+        "polylog",
     ];
 
     type Op<'a> = (&'static str, Box<dyn Fn() + 'a>);
