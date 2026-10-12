@@ -35,9 +35,9 @@ pub fn known_func_arity(name: &str) -> Option<(usize, usize)> {
         "abs" | "sign" | "floor" | "ceil" | "round" | "heaviside" | "diracdelta" | "conjugate"
         | "re" | "im" | "arg" => one,
         // Special functions.
-        "erf" | "erfc" | "gamma" | "digamma" | "trigamma" | "lambert_w" | "bessel_j0"
-        | "bessel_j1" | "EllipticK" | "Ei" | "li" | "Si" | "Ci" | "Shi" | "Chi" | "fresnels"
-        | "fresnelc" | "dilog" => one,
+        "erf" | "erfc" | "gamma" | "digamma" | "trigamma" | "lambert_w" | "lambert_wm1"
+        | "bessel_j0" | "bessel_j1" | "EllipticK" | "Ei" | "li" | "Si" | "Ci" | "Shi" | "Chi"
+        | "fresnels" | "fresnelc" | "dilog" => one,
         // Complete (1 argument) or incomplete (2 arguments) second kind.
         "EllipticE" => Some((1, 2)),
         "EllipticF" | "atan2" => Some((2, 2)),
@@ -234,6 +234,7 @@ mod wrong_arity_sweep {
         "digamma",
         "trigamma",
         "lambert_w",
+        "lambert_wm1",
         "bessel_j0",
         "bessel_j1",
         "EllipticK",

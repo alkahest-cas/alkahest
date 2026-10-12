@@ -13,8 +13,8 @@
 //!   back-substitute through `ln`/`exp`.  Covers
 //!   `exp(x)² − 3·exp(x) + 2 = 0  →  x ∈ {0, ln 2}`.
 //! * **Lambert W** — recognises `α·u·exp(u) = c` with affine `u = a·x+b` and
-//!   var-free `α, c`, returning the principal branch `u = W(c/α)` (then
-//!   solving the affine for `x`).  Covers `x·e^x = c`, `e^x·x = c`,
+//!   var-free `α, c`, returning `u = W₀(c/α)` — and `W₋₁(c/α)` too when
+//!   `−1/e < c/α < 0` (then solving the affine for `x`).  Covers `x·e^x = c`, `e^x·x = c`,
 //!   `(ax+b)·e^{ax+b} = c`, and `a·x·e^x = c`.
 //! * **Trig principal values** — `sin(f) = c`, `cos(f) = c`, `tan(f) = c` with
 //!   affine `f` and constant `c` in the real range, returning the principal
@@ -102,8 +102,9 @@ enum TrigKind {
 /// The slice reports **real** solutions: `exp(x) = −1` returns no solution and
 /// `log(c)` is only used where `c > 0` is proved or recorded as a hypothesis.
 /// A periodic family is reported whole (`k` ranges over ℤ). A Lambert-W
-/// equation whose real solution set needs the `W₋₁` branch, which this crate
-/// does not have, is refused rather than answered from `W₀` alone.
+/// equation with two real roots returns both, `W₀` (`lambert_w`) and `W₋₁`
+/// (`lambert_wm1`); one whose argument cannot be placed relative to `−1/e`
+/// is refused.
 ///
 /// Every value returned is substituted back into `equation` at generic values
 /// of the parameters (and of `k`); one that fails refuses the call.
@@ -140,8 +141,9 @@ thread_local! {
 
 /// The reason the most recent [`solve_transcendental`] call on this thread
 /// returned [`TranscendentalOutcome::Unsupported`] for an equation whose shape
-/// it recognised but could not answer completely — `x·eˣ = −1/4`, whose second
-/// real root needs the `W₋₁` branch. `None` when the equation was simply
+/// it recognised but could not answer completely — `x·eˣ = c` with `c` within
+/// rounding of `−1/e`, where the number of real roots is undecided. `None`
+/// when the equation was simply
 /// outside the slice. Consuming.
 ///
 /// Out of band because [`TranscendentalOutcome`] is a public exhaustive enum.
@@ -475,43 +477,89 @@ fn require_positive(e: ExprId, pool: &ExprPool) -> Option<bool> {
     }
 }
 
-/// Does the real equation `w·e^w = c` have all its real roots on the principal
-/// branch?  `Some(true)` — yes (`c ≥ 0`, or `c = −1/e` exactly); `Some(false)`
-/// — it has no real root (`c < −1/e`); `None` — it has a second real root on
-/// `W₋₁` (`−1/e < c < 0`).  An undecided sign records `c > 0` and answers
-/// `Some(true)`.
-fn lambert_branch_complete(c: ExprId, pool: &ExprPool) -> Option<bool> {
-    let neg_inv_e = -std::f64::consts::E.recip();
+/// How the real solutions of `w·eʷ = c` split over the two real branches of
+/// Lambert W.
+enum LambertReal {
+    /// One real root, on `W₀` (`c ≥ 0`, or `c = −1/e` exactly, the double
+    /// root `−1`).  An undecided sign has recorded `c > 0`.
+    Principal,
+    /// No real root (`c < −1/e`).
+    NoRoot,
+    /// Two real roots, `W₀(c)` and `W₋₁(c)` (`−1/e < c < 0`).  `conditional`
+    /// when `c < 0` is known but `c > −1/e` is not, in which case the caller
+    /// records `c + e⁻¹ > 0`.
+    Both { conditional: bool },
+    /// `c` is within rounding of `−1/e` but not provably equal to it.
+    Undecided,
+}
+
+/// The sign of `c + 1/e` for a closed constant `c`, proved in 256-bit ball
+/// arithmetic; `None` when `c` has a free symbol or the ball straddles 0.
+fn sign_vs_neg_inv_e(c: ExprId, pool: &ExprPool) -> Option<Sign> {
+    let free = crate::poly::collect_free_vars(c, pool);
+    if free
+        .iter()
+        .any(|&s| !crate::eval::symbols::is_named_constant(s, pool))
+    {
+        return None;
+    }
+    let ev = crate::ball::IntervalEval::new(256);
+    let shifted = pool.add(vec![c, pool.func("exp", vec![pool.integer(-1_i32)])]);
+    let b = ev.eval(shifted, pool)?;
+    if b.lo() > 0 {
+        Some(Sign::Positive)
+    } else if b.hi() < 0 {
+        Some(Sign::Negative)
+    } else {
+        None
+    }
+}
+
+/// Classify the real equation `w·e^w = c` — see [`LambertReal`].
+fn lambert_branches(c: ExprId, pool: &ExprPool) -> LambertReal {
     if let Some(r) = as_rational(c, pool) {
         if r >= 0 {
-            return Some(true);
+            return LambertReal::Principal;
         }
-        // A rational is never exactly −1/e.
-        return if r.to_f64() < neg_inv_e {
-            Some(false)
-        } else {
-            None
+        // A rational is never exactly −1/e; the ball decides which side.
+        return match sign_vs_neg_inv_e(c, pool) {
+            Some(Sign::Positive) => LambertReal::Both { conditional: false },
+            Some(Sign::Negative) => LambertReal::NoRoot,
+            _ => LambertReal::Undecided,
         };
     }
     match sign_of(c, pool) {
-        Some(Sign::Positive) | Some(Sign::Zero) => Some(true),
-        Some(Sign::Negative) => {
-            // Exactly −1/e (a double root, W₀ = W₋₁ = −1) is the only negative
-            // value whose real solution set W₀ covers.
-            let gap = pool.add(vec![c, pool.func("exp", vec![pool.integer(-1_i32)])]);
-            if is_zero_expr(simp(gap, pool), pool) {
-                return Some(true);
-            }
-            match closed_value(c, pool) {
-                Some(v) if v < neg_inv_e - 1e-12 => Some(false),
-                _ => None,
-            }
-        }
+        Some(Sign::Positive) | Some(Sign::Zero) => LambertReal::Principal,
+        Some(Sign::Negative) => negative_branches(c, pool),
         None => {
             super::record_side_condition(crate::deriv::log::SideCondition::Positive(simp(c, pool)));
-            Some(true)
+            LambertReal::Principal
         }
     }
+}
+
+/// [`lambert_branches`] for a `c` already known to be negative.
+fn negative_branches(c: ExprId, pool: &ExprPool) -> LambertReal {
+    // Exactly −1/e: a double root, W₀ = W₋₁ = −1.
+    let gap = pool.add(vec![c, pool.func("exp", vec![pool.integer(-1_i32)])]);
+    if is_zero_expr(simp(gap, pool), pool) {
+        return LambertReal::Principal;
+    }
+    match sign_vs_neg_inv_e(c, pool) {
+        Some(Sign::Positive) => LambertReal::Both { conditional: false },
+        Some(Sign::Negative) => LambertReal::NoRoot,
+        _ if closed_value(c, pool).is_some() => LambertReal::Undecided,
+        _ => LambertReal::Both { conditional: true },
+    }
+}
+
+/// Record `c + e⁻¹ > 0`, the condition for `W₋₁(c)` (and a second real root)
+/// to exist when `c < 0` is known.
+fn record_above_branch_point(c: ExprId, pool: &ExprPool) {
+    let shifted = pool.add(vec![c, pool.func("exp", vec![pool.integer(-1_i32)])]);
+    super::record_side_condition(crate::deriv::log::SideCondition::Positive(simp(
+        shifted, pool,
+    )));
 }
 
 /// Recognise `α · arg · exp(arg) + B = 0` with var-free `α, B` and affine `arg`
@@ -558,23 +606,31 @@ fn try_lambert_solve(
 
     // α · arg · exp(arg) + B = 0  ⟹  arg · exp(arg) = -B/α  ⟹  arg = W(-B/α)
     let c = quotient_neg(coeff_0, alpha, pool);
-    match lambert_branch_complete(c, pool) {
-        Some(true) => {}
-        Some(false) => return Some(TranscendentalOutcome::Solved(vec![])),
-        None => {
+    // −1/e < c < 0 has a second real root on the lower branch W₋₁.
+    let branches: &[&str] = match lambert_branches(c, pool) {
+        LambertReal::Principal => &["lambert_w"],
+        LambertReal::NoRoot => return Some(TranscendentalOutcome::Solved(vec![])),
+        LambertReal::Both { conditional } => {
+            if conditional {
+                record_above_branch_point(c, pool);
+            }
+            &["lambert_w", "lambert_wm1"]
+        }
+        LambertReal::Undecided => {
             return refuse(format!(
-                "u·exp(u) = c with c = {} has two real solutions (as does any -1/e < c < 0), and the second lies \
-                 on the W₋₁ branch of Lambert W, which is not available; returning only the \
-                 principal one would present half the solution set as all of it",
+                "u·exp(u) = c with c = {} too close to -1/e to decide whether it has one real \
+                 solution or two",
                 pool.display(c)
             ))
         }
-    }
+    };
     note_nonzero(alpha, pool);
 
-    let w = pool.func("lambert_w", vec![c]);
-    let var_val = solve_affine(&a, &b, w, pool);
-    Some(TranscendentalOutcome::Solved(vec![var_val]))
+    let values = branches
+        .iter()
+        .map(|&w| solve_affine(&a, &b, pool.func(w, vec![c]), pool))
+        .collect();
+    Some(TranscendentalOutcome::Solved(values))
 }
 
 /// `coeff = α·(a·var + b)` with symbolic coefficients: `coeff = p·var + q`,
@@ -606,7 +662,9 @@ fn symbolic_proportionality(
 /// `C' = C − A·m/k`), whose solution is `y = (B/A')·W((A'/B)·e^{−C'/B})`.
 /// The argument of `W` has the sign of `A'/B`; when that is positive the real
 /// root is unique and principal. When it is negative a second real root may sit
-/// on `W₋₁`, so the call is refused; when it is unknown, `A'/B > 0` is recorded.
+/// on `W₋₁` (`lambert_wm1`): both are returned while `z > −1/e` (none below it;
+/// a symbolic `z` records `z + e⁻¹ > 0`). When the sign is unknown, `A'/B > 0`
+/// is recorded and the principal root returned.
 fn try_lambert_log(
     equation: ExprId,
     var: ExprId,
@@ -645,29 +703,51 @@ fn try_lambert_log(
         pool,
     );
     let ratio = simp(pool.mul(vec![a1, inv(coeff_l)]), pool);
-    if require_positive(ratio, pool) == Some(false) {
-        return refuse(format!(
-            "A·y + B·log(y) + C = 0 with A/B = {} < 0 can have a second real solution on the \
-             W₋₁ branch of Lambert W, which is not available",
-            pool.display(ratio)
-        ));
-    }
-    note_nonzero(k, pool);
     let z = pool.mul(vec![
         ratio,
         pool.func("exp", vec![pool.mul(vec![neg_one, c1, inv(coeff_l)])]),
     ]);
-    let y = pool.mul(vec![coeff_l, inv(a1), pool.func("lambert_w", vec![z])]);
-    let x = simp(solve_affine(&k, &m, y, pool), pool);
-    Some(TranscendentalOutcome::Solved(vec![x]))
+    // A'/B > 0: z > 0, one real root on W₀.  A'/B < 0: z < 0, and the real
+    // roots are W₀(z) and W₋₁(z) when z > −1/e, none below it.
+    let branches: &[&str] = if require_positive(ratio, pool) == Some(false) {
+        match negative_branches(simp(z, pool), pool) {
+            LambertReal::Principal => &["lambert_w"],
+            LambertReal::NoRoot => return Some(TranscendentalOutcome::Solved(vec![])),
+            LambertReal::Both { conditional } => {
+                if conditional {
+                    record_above_branch_point(z, pool);
+                }
+                &["lambert_w", "lambert_wm1"]
+            }
+            LambertReal::Undecided => {
+                return refuse(format!(
+                    "A·y + B·log(y) + C = 0 with A/B = {} < 0: the Lambert argument is too \
+                     close to -1/e to decide whether there are one or two real solutions",
+                    pool.display(ratio)
+                ))
+            }
+        }
+    } else {
+        &["lambert_w"]
+    };
+    note_nonzero(k, pool);
+    let values = branches
+        .iter()
+        .map(|&w| {
+            let y = pool.mul(vec![coeff_l, inv(a1), pool.func(w, vec![z])]);
+            simp(solve_affine(&k, &m, y, pool), pool)
+        })
+        .collect();
+    Some(TranscendentalOutcome::Solved(values))
 }
 
 /// `α·x^x + β = 0`: `x^x = c` with `c = −β/α`. Taking logs, `x·log x = log c`,
 /// i.e. `w·e^w = log c` for `w = log x`, so `x = e^{W(log c)}`.
 ///
 /// Real roots: one for `c ≥ 1`; two for `e^{−1/e} < c < 1` (the second on
-/// `W₋₁`, so refused); one at `c = e^{−1/e}`; none below it.  A symbolic `c`
-/// records `c − 1 > 0`.
+/// `W₋₁`, both returned); one at `c = e^{−1/e}`; none below it.  A symbolic `c`
+/// records `c − 1 > 0`, or — when `c < 1` is known — `log c + e⁻¹ > 0` and
+/// returns both.
 fn try_self_power(equation: ExprId, var: ExprId, pool: &ExprPool) -> Option<TranscendentalOutcome> {
     let node = pool.pow(var, var);
     if !contains_var(equation, node, pool, 0) {
@@ -680,35 +760,45 @@ fn try_self_power(equation: ExprId, var: ExprId, pool: &ExprPool) -> Option<Tran
         return None;
     }
     let c = quotient_neg(c0, cu, pool);
-    let threshold = (-std::f64::consts::E.recip()).exp();
-    match (as_rational(c, pool), closed_value(c, pool)) {
-        (Some(r), _) if r >= 1 => {}
-        (_, Some(v)) if v >= 1.0 => {}
-        (_, Some(v)) if v < threshold - 1e-12 => {
-            return Some(TranscendentalOutcome::Solved(vec![]));
-        }
-        (_, Some(_)) => {
-            return refuse(format!(
-                "x^x = c with c = {} has two real solutions (as does any e^(-1/e) < c < 1), and the second lies on \
-                 the W₋₁ branch of Lambert W, which is not available",
-                pool.display(c)
-            ))
-        }
+    let log_c = pool.func("log", vec![c]);
+    // x = e^w with w·eʷ = log c: one real root for c ≥ 1, two (W₀ and W₋₁ of
+    // log c) for e^{−1/e} < c < 1, the double root 1/e at c = e^{−1/e}, none
+    // below.
+    let branches: &[&str] = match (as_rational(c, pool), closed_value(c, pool)) {
+        (Some(r), _) if r >= 1 => &["lambert_w"],
+        (_, Some(v)) if v > 1.0 + 1e-12 => &["lambert_w"],
+        (_, Some(v)) if v > 0.0 => match sign_of(log_c, pool)
+            .map(|s| (s, negative_branches(simp(log_c, pool), pool)))
+        {
+            Some((Sign::Positive | Sign::Zero, _)) => &["lambert_w"],
+            Some((_, LambertReal::Principal)) => &["lambert_w"],
+            Some((_, LambertReal::NoRoot)) => return Some(TranscendentalOutcome::Solved(vec![])),
+            Some((_, LambertReal::Both { .. })) => &["lambert_w", "lambert_wm1"],
+            Some((_, LambertReal::Undecided)) | None => {
+                return refuse(format!(
+                    "x^x = {}: c is too close to 1 or to e^(-1/e) to decide how many real \
+                     solutions there are",
+                    pool.display(c)
+                ))
+            }
+        },
+        (_, Some(_)) => return Some(TranscendentalOutcome::Solved(vec![])),
         _ => {
             let gap = pool.add(vec![c, pool.integer(-1_i32)]);
             if require_positive(gap, pool) == Some(false) {
-                return refuse(format!(
-                    "x^x = {} with c < 1 may have a second real solution on the W₋₁ branch of \
-                     Lambert W, which is not available",
-                    pool.display(c)
-                ));
+                // c < 1 known, log c + e⁻¹ > 0 recorded: both branches.
+                record_above_branch_point(log_c, pool);
+                &["lambert_w", "lambert_wm1"]
+            } else {
+                &["lambert_w"]
             }
         }
-    }
-    let w = pool.func("lambert_w", vec![pool.func("log", vec![c])]);
-    Some(TranscendentalOutcome::Solved(vec![
-        pool.func("exp", vec![w])
-    ]))
+    };
+    let values = branches
+        .iter()
+        .map(|&w| pool.func("exp", vec![pool.func(w, vec![log_c])]))
+        .collect();
+    Some(TranscendentalOutcome::Solved(values))
 }
 
 /// One additive term as `coeff · exp(Σ la·x + Σ lb)`.
@@ -2003,18 +2093,44 @@ mod tests {
     }
 
     #[test]
-    fn lambert_second_real_branch_is_refused() {
-        // x·eˣ = −1/4: two real roots, W₀ alone is incomplete.
+    fn lambert_second_real_branch_is_returned() {
+        // x·eˣ = −1/4: two real roots, W₀(−1/4) and W₋₁(−1/4).
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
         let eq = pool.add(vec![
             pool.mul(vec![x, pool.func("exp", vec![x])]),
             pool.rational(1, 4),
         ]);
-        assert!(matches!(
-            solve_transcendental(eq, x, &pool),
-            TranscendentalOutcome::Unsupported
-        ));
+        let sols = solved(eq, x, &pool);
+        assert_eq!(sols.len(), 2);
+        let mut vals: Vec<f64> = sols.iter().map(|&s| evalf(s, &pool)).collect();
+        vals.sort_by(f64::total_cmp);
+        // mpmath: lambertw(-1/4, -1), lambertw(-1/4).
+        assert!((vals[0] + 2.153_292_364_110_35).abs() < 1e-12, "{vals:?}");
+        assert!(
+            (vals[1] + 0.357_402_956_181_388_9).abs() < 1e-12,
+            "{vals:?}"
+        );
+        for v in vals {
+            assert!((v * v.exp() + 0.25).abs() < 1e-14);
+        }
+        assert!(crate::solver::take_solve_side_conditions().is_empty());
+
+        // c < −1/e: no real root.
+        let eq = pool.add(vec![
+            pool.mul(vec![x, pool.func("exp", vec![x])]),
+            pool.rational(1, 2),
+        ]);
+        assert!(solved(eq, x, &pool).is_empty());
+
+        // A negative symbolic c: both branches, under c + e⁻¹ > 0.
+        // x·eˣ + p = 0 with p > 0, i.e. c = −p.
+        let p = pool.symbol("p", Domain::Positive);
+        let eq = pool.add(vec![pool.mul(vec![x, pool.func("exp", vec![x])]), p]);
+        let sols = solved(eq, x, &pool);
+        assert_eq!(sols.len(), 2);
+        let conds = crate::solver::take_solve_side_conditions();
+        assert_eq!(conds.len(), 1, "{conds:?}");
     }
 
     #[test]
@@ -2042,12 +2158,16 @@ mod tests {
         assert_eq!(sols.len(), 1);
         let v = evalf(sols[0], &pool);
         assert!((v.powf(v) - 5.0).abs() < 1e-10);
-        // x^x = 4/5 has two real roots → refused.
+        // x^x = 4/5 has two real roots, exp(W₀(log 4/5)) and exp(W₋₁(log 4/5)).
         let eq2 = pool.add(vec![pool.pow(x, x), pool.rational(-4, 5)]);
-        assert!(matches!(
-            solve_transcendental(eq2, x, &pool),
-            TranscendentalOutcome::Unsupported
-        ));
+        let sols = solved(eq2, x, &pool);
+        assert_eq!(sols.len(), 2);
+        let mut vals: Vec<f64> = sols.iter().map(|&s| evalf(s, &pool)).collect();
+        vals.sort_by(f64::total_cmp);
+        assert!(vals[0] < (-1.0_f64).exp() && vals[1] > (-1.0_f64).exp());
+        for v in vals {
+            assert!((v.powf(v) - 0.8).abs() < 1e-13, "{v}");
+        }
         // x^x = 1/10 < e^{-1/e} has none.
         let eq3 = pool.add(vec![pool.pow(x, x), pool.rational(-1, 10)]);
         assert!(solved(eq3, x, &pool).is_empty());

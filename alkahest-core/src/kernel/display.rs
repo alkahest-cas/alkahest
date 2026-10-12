@@ -836,6 +836,7 @@ fn latex_func_name(name: &str) -> String {
         "gamma" => r"\Gamma".into(),
         "digamma" => r"\psi".into(),
         "lambert_w" => r"W".into(),
+        "lambert_wm1" => r"W_{-1}".into(),
         "bessel_j0" => r"J_0".into(),
         "bessel_j1" => r"J_1".into(),
         // Exponential-integral family. `\operatorname` (not `\mathrm`)
@@ -1231,6 +1232,7 @@ fn unicode_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
                 "bessel_j0" => "J₀",
                 "bessel_j1" => "J₁",
                 "lambert_w" => "W",
+                "lambert_wm1" => "W₋₁",
                 // Exponential-integral family: the ASCII spelling *is* the
                 // conventional Unicode one (DLMF renders `Ei`, `li`, `Si`,
                 // `Ci`, `Shi`, `Chi` upright), so these are pinned identities

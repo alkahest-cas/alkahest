@@ -115,9 +115,11 @@ Raised when a mathematical side condition is violated.
 | `E-SOLVE-002` | Back-substitution reached an irreducible factor of degree ≥ 3 whose coefficients involve free parameters or algebraic numbers (rational-coefficient univariates of any degree are solved, with `RootOf` where no radical form is used) | Substitute values for the parameters, or use `numeric=True` / `method="homotopy"` |
 | `E-SOLVE-003` | Gröbner basis did not terminate | Increase node/iteration limits |
 | `E-SOLVE-005` | An equation's denominator is identically zero (`1/(x - x)`), so it denotes no function and has no solution set | Check the equation for a subtraction that cancels |
-| `E-SOLVE-006` | `solve(..., numeric=True)` was asked for numbers, but a solution depends on a free parameter (`solve([x - y], [x], numeric=True)`) | Solve with `numeric=False` for the parametric answer, or substitute a value for the parameter first |
+| `E-SOLVE-006` | `solve(..., numeric=True)` was asked for numbers, but a solution depends on a free parameter and there is no symbolic solution to return instead (the homotopy fallback, `solve([x**3 - y], [x], numeric=True)`); where a symbolic solution exists it is returned as an `Expr` | Solve with `numeric=False` for the parametric answer, or substitute a value for the parameter first |
 | `E-SOLVE-007` | `solve(..., numeric=True)` found a parameter-free solution value that does not evaluate to a finite complex number | Solve with `numeric=False` for the exact solution set |
 | `E-SOLVE-008` | `RootOf(poly, x, k)` was given something that is not a non-constant polynomial in `x` over ℚ, or an index outside `0 ≤ k <` number of distinct roots | Pass a polynomial with rational coefficients and an index in range (real roots ascending, then complex by real then imaginary part) |
+| `E-SOLVE-009` | `nsolve` could not search: a symbol other than the unknown has no value, the bracket has no sign change or is empty/non-finite, or `all_in` was given a non-smooth equation (`abs`, `floor`, `Piecewise` of the unknown) | Substitute values for the other symbols; pass a bracket on which the equation changes sign, or a starting point `x0` |
+| `E-SOLVE-012` | Numeric root-finding failed: Newton/Brent did not converge, the equation has no real value where the search needed one, the budget stopped it, or `solve(..., numeric=True, interval=(a, b))` could not prove its root list complete (a double root, a stretch outside the domain) | Try a tighter bracket or another `x0`; inspect `nsolve(eq, x, all_in=(a, b)).unresolved` |
 
 ### PslqError (E-PSLQ-*)
 

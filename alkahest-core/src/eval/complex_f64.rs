@@ -298,6 +298,22 @@ fn eval_node_uncached(
                 "im" => Ok(ComplexF64::new(x.im, 0.0)),
                 "conjugate" => Ok(ComplexF64::new(x.re, -x.im)),
                 "arg" => Ok(ComplexF64::new(x.principal_arg()?, 0.0)),
+                // Lambert W at a real point of a branch's real domain, where
+                // the complex branch value is that real number (W₀ on
+                // [−1/e, ∞), W₋₁ on [−1/e, 0)).  Anywhere else the value is
+                // non-real, which this evaluator does not compute.
+                "lambert_w" | "lambert_wm1" if x.im == 0.0 => {
+                    let v = if name == "lambert_w" {
+                        crate::special::lambert_w0(x.re)
+                    } else {
+                        crate::special::lambert_wm1(x.re)
+                    };
+                    v.filter(|v| v.is_finite())
+                        .map(|v| ComplexF64::new(v, 0.0))
+                        .ok_or_else(|| {
+                            error(UnsupportedReason::UnsupportedFunction { name: name.clone() })
+                        })
+                }
                 _ => Err(error(UnsupportedReason::UnsupportedFunction {
                     name: name.clone(),
                 })),

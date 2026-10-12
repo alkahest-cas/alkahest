@@ -183,6 +183,9 @@ FUNCTION_MAP: dict[str, str] = {
     "gamma": "gamma",
     "im": "im",
     "lambert_w": "LambertW",
+    # The lower real branch W₋₁ is SymPy's `LambertW(x, -1)` (same branch
+    # numbering); translated with the explicit `k = -1` below.
+    "lambert_wm1": "LambertW",
     "log": "log",
     "max": "Max",
     "min": "Min",
@@ -602,6 +605,8 @@ class SymPyTranslator(Translator):
                 "malformed hyper node: expected hyper(p, q, a1..ap, b1..bq, z)",
                 remediation="build it with alkahest.hyper([a...], [b...], z)",
             )
+        if name == "lambert_wm1" and len(args) == 1:
+            return self.sympy.LambertW(args[0], -1)
         mapped = FUNCTION_MAP.get(name)
         if mapped is None:
             raise _refuse(

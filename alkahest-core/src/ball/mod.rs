@@ -898,6 +898,28 @@ impl ArbBall {
         Some(ArbBall::from_endpoints(&low, &high, prec))
     }
 
+    /// Lower real branch `W₋₁`.  Domain: `−1/e ≤ x < 0`; `None` unless the
+    /// whole ball lies in it.
+    ///
+    /// Certified exactly as [`ArbBall::lambert_w0`] is, by monotonicity:
+    /// `W₋₁` inverts `g(w) = w·eʷ` on `w ≤ −1`, where `g` is strictly
+    /// **decreasing** (`g′(w) = (1+w)eʷ < 0`), so for `v, u ≤ −1`
+    ///
+    /// ```text
+    /// g(v) ≥ x  ⟹  W₋₁(x) ≥ v,      g(u) ≤ x  ⟹  W₋₁(x) ≤ u.
+    /// ```
+    ///
+    /// Both inequalities are checked in outward ball arithmetic; the Newton
+    /// guess that proposes the candidates needs no error analysis.  `W₋₁` is
+    /// itself decreasing, so the enclosure over a ball is
+    /// `[low(hi), high(lo)]`.
+    pub fn lambert_wm1(&self) -> Option<Self> {
+        let prec = self.prec;
+        let (low, _) = lambert_wm1_bracket(&self.hi(), prec)?;
+        let (_, high) = lambert_wm1_bracket(&self.lo(), prec)?;
+        Some(ArbBall::from_endpoints(&low, &high, prec))
+    }
+
     /// `Γ(x)` for a ball lying strictly inside `(0, ∞)`.  `None` otherwise —
     /// `Γ` has poles at every non-positive integer, and the reflection formula
     /// that would cover the gaps between them is not implemented here.
@@ -1377,6 +1399,107 @@ fn lambert_w0_bracket(x: &Float, prec: u32) -> Option<(Float, Float)> {
     ))
 }
 
+/// A certified bracket `(low, high)` with `low ≤ W₋₁(x) ≤ high`, or `None`
+/// when `x` is outside the lower branch's domain `−1/e ≤ x < 0`.
+///
+/// The mirror image of [`lambert_w0_bracket`]: on `w ≤ −1` the map
+/// `g(w) = w·eʷ` is decreasing, so a candidate `v ≤ −1` is a *lower* bound
+/// when `g(v) ≥ x` is proved and `u ≤ −1` an *upper* bound when `g(u) ≤ x`
+/// is.  `−1` is the fallback upper bound, admitted only once
+/// `g(−1) = −1/e ≤ x` is proved — which is the domain condition.  For `x ≥ 0`
+/// no lower bound exists (`g < 0` on the branch), so the search fails and the
+/// answer is `None`.
+fn lambert_wm1_bracket(x: &Float, prec: u32) -> Option<(Float, Float)> {
+    if !x.is_finite() || *x >= 0 {
+        return None;
+    }
+    let work = prec + 64;
+    let minus_one = Float::with_val(work, -1);
+
+    let xf = x.to_f64();
+    let mut w = match crate::special::lambert_wm1(xf) {
+        Some(v) if v.is_finite() => Float::with_val(work, v),
+        _ if *x > -0.25 => {
+            // Beyond f64 range towards 0⁻: the asymptote ln(−x) − ln(−ln(−x)).
+            let l = Float::with_val(work, -x.clone()).ln();
+            let ll = Float::with_val(work, -l.clone()).ln();
+            l - ll
+        }
+        _ => Float::with_val(work, -1),
+    };
+    for _ in 0..48 {
+        let ew = Float::with_val(work, w.clone().exp());
+        let num = Float::with_val(work, Float::with_val(work, &w * &ew) - x);
+        let den = Float::with_val(work, &ew * Float::with_val(work, &w + 1u32));
+        if den == 0 || !den.is_finite() {
+            break;
+        }
+        let step = Float::with_val(work, &num / &den);
+        if !step.is_finite() {
+            break;
+        }
+        let next = Float::with_val(work, &w - &step);
+        w = if next > minus_one {
+            Float::with_val(work, &w + &minus_one) / 2u32
+        } else {
+            next
+        };
+        if step.is_zero() {
+            break;
+        }
+    }
+
+    let g = |v: &Float| -> ArbBall {
+        let vb = ArbBall::from_point(v, work);
+        vb.clone() * vb.exp()
+    };
+    let xb = ArbBall::from_point(x, work);
+    let (x_lo, x_hi) = (xb.lo(), xb.hi());
+
+    let mut unit = Float::with_val(work, w.clone().abs() + 1u32);
+    unit >>= work.saturating_sub(4);
+
+    // Upper bound: u = w + δ ≤ −1 with g(u) ≤ x; −1 itself once g(−1) ≤ x.
+    let mut high: Option<Float> = None;
+    let mut delta = unit.clone();
+    for _ in 0..400 {
+        let mut u = Float::with_val(work, &w + &delta);
+        if u > minus_one {
+            u = minus_one.clone();
+        }
+        if g(&u).hi() <= x_lo {
+            high = Some(u);
+            break;
+        }
+        if u == minus_one {
+            break;
+        }
+        delta *= 2u32;
+    }
+    let high = match high {
+        Some(u) => u,
+        None if g(&minus_one).hi() <= x_lo => minus_one.clone(),
+        None => return None,
+    };
+
+    // Lower bound: v = w − δ with g(v) ≥ x.
+    let mut low: Option<Float> = None;
+    let mut delta = unit;
+    for _ in 0..2000 {
+        let v = Float::with_val(work, &w - &delta);
+        if v <= minus_one && g(&v).lo() >= x_hi {
+            low = Some(v);
+            break;
+        }
+        delta *= 2u32;
+    }
+    let low = low?;
+    Some((
+        Float::with_val(prec, ArbBall::from_point(&low, prec).lo()),
+        Float::with_val(prec, ArbBall::from_point(&high, prec).hi()),
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // AcbBall — complex ball (re ± r_re) + i(im ± r_im)
 // ---------------------------------------------------------------------------
@@ -1829,7 +1952,7 @@ mod tests {
         // reachable if *some* probe evaluates. A domain refusal is a different
         // answer from "I have no rule for this name", and only the second is
         // the coverage gap under test.
-        let probes = [1.5_f64, 0.5];
+        let probes = [1.5_f64, 0.5, -0.2];
         let refused: Vec<String> = reg
             .iter()
             .filter(|(_, caps)| caps.contains(Capabilities::NUMERIC_BALL))
@@ -2458,6 +2581,51 @@ mod special_kernel_tests {
             assert!(
                 b.lo().to_f64() - 1e-12 <= w && w <= b.hi().to_f64() + 1e-12,
                 "W₀({x}) = {w} escaped {b}"
+            );
+        }
+    }
+
+    #[test]
+    fn lambert_wm1_encloses_and_satisfies_its_defining_equation() {
+        for x in [-0.367, -0.3, -0.25, -0.1, -1e-3, -1e-12] {
+            let w = ArbBall::from_f64(x, P)
+                .lambert_wm1()
+                .unwrap_or_else(|| panic!("W₋₁({x}) refused"));
+            assert!(w.hi() <= -1, "W₋₁({x}) = {w} left the lower branch");
+            let back = w.clone() * w.exp();
+            assert!(back.contains(x), "W₋₁({x})·e^W₋₁ = {back} misses {x}");
+            assert!(w.rad_f64() < 1e-25, "W₋₁({x}) = {w} too wide");
+            let f = crate::special::lambert_wm1(x).unwrap();
+            assert!((w.mid_f64() - f).abs() < 1e-12 * f.abs());
+        }
+        // Just above the branch point, W₋₁ is just below −1.
+        let near = ArbBall::from_f64(-0.367_879_441_171_4, P)
+            .lambert_wm1()
+            .unwrap();
+        assert!(near.hi() <= -1 && near.lo() > -1.000_01, "{near}");
+    }
+
+    #[test]
+    fn lambert_wm1_refuses_outside_its_domain_and_brackets_boxes() {
+        for x in [-0.5, -0.37, 0.0, 0.1] {
+            assert!(
+                ArbBall::from_f64(x, P).lambert_wm1().is_none(),
+                "W₋₁({x}) should refuse"
+            );
+        }
+        // A box touching 0 has no finite enclosure.
+        assert!(ArbBall::from_midpoint_radius(-0.1, 0.2, P)
+            .lambert_wm1()
+            .is_none());
+        let b = ArbBall::from_midpoint_radius(-0.2, 0.1, P)
+            .lambert_wm1()
+            .unwrap();
+        for k in 0..=50 {
+            let x = -0.3 + 0.2 * (k as f64) / 50.0;
+            let w = crate::special::lambert_wm1(x).unwrap();
+            assert!(
+                b.lo().to_f64() - 1e-12 <= w && w <= b.hi().to_f64() + 1e-12,
+                "W₋₁({x}) = {w} escaped {b}"
             );
         }
     }
