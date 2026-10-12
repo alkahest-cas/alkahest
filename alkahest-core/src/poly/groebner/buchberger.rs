@@ -68,12 +68,25 @@ pub fn compute_buchberger_basis(generators: Vec<GbPoly>, order: MonomialOrder) -
     let mut heap: BinaryHeap<CriticalPair> = BinaryHeap::from(pair_vec);
 
     while let Some(pair) = heap.pop() {
+        // Budget interrupt point, once per S-pair (see `budget::arm`): when it
+        // fires, the half-built basis goes back to a caller that discards it.
+        if crate::budget::interrupted() {
+            return basis;
+        }
         // A multiple of reduce(s_polynomial(basis[i], basis[j]), basis),
         // computed in place and fraction-free; make_monic below normalises it.
         let r = divisors.reduce_s_pair_scaled(pair.i, pair.j);
+        // The reduction polls too, and stops part-way when it fires. Poll
+        // afresh rather than only reading a recorded trip: `make_monic` on a
+        // remainder with huge coefficients is itself a long stretch.
+        if crate::budget::interrupted() {
+            return basis;
+        }
 
         if !r.is_zero() {
-            let r = r.make_monic(order);
+            let Some(r) = make_monic_polled(&r, order) else {
+                return basis;
+            };
             let sugar = r.sugar();
             let Some(lead) = r.leading_exp(order) else {
                 continue;
@@ -94,6 +107,31 @@ pub fn compute_buchberger_basis(generators: Vec<GbPoly>, order: MonomialOrder) -
     interreduce(basis, order)
 }
 
+/// [`GbPoly::make_monic`], polling the budget between terms (see
+/// [`crate::budget::arm`]); `None` when an armed budget fired part-way.
+///
+/// A fraction-free remainder can carry integers so large that dividing it by
+/// its leading coefficient — one big gcd per term — is itself a stretch of
+/// seconds, measured as the longest unpolled step in primary decomposition.
+fn make_monic_polled(p: &GbPoly, order: MonomialOrder) -> Option<GbPoly> {
+    let Some(lc) = p.leading_coeff(order) else {
+        return Some(p.clone());
+    };
+    let inv_lc = rug::Rational::from(1) / lc;
+    let mut ticks = 0u32;
+    let mut terms = std::collections::BTreeMap::new();
+    for (e, c) in &p.terms {
+        if crate::poly::groebner::reduce::poll_due(&mut ticks) && crate::budget::interrupted() {
+            return None;
+        }
+        terms.insert(e.clone(), rug::Rational::from(c * &inv_lc));
+    }
+    Some(GbPoly {
+        terms,
+        n_vars: p.n_vars,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Interreduction
 // ---------------------------------------------------------------------------
@@ -106,12 +144,21 @@ pub(crate) fn interreduce(mut basis: Vec<GbPoly>, order: MonomialOrder) -> Vec<G
     let mut divisors = Divisors::new_fraction_free(&basis, order);
     let mut i = 0;
     while i < basis.len() {
+        if crate::budget::interrupted() {
+            return basis;
+        }
         let reduced = divisors.reduce_scaled(&basis[i], Some(i));
+        if crate::budget::interrupted() {
+            return basis;
+        }
         if reduced.is_zero() {
             basis.remove(i);
             divisors.remove(i);
         } else {
-            basis[i] = reduced.make_monic(order);
+            let Some(monic) = make_monic_polled(&reduced, order) else {
+                return basis;
+            };
+            basis[i] = monic;
             divisors.set(i, &basis[i]);
             i += 1;
         }

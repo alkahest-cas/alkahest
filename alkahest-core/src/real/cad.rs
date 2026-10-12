@@ -1148,6 +1148,7 @@ fn decide_exists_exists(
 ) -> Result<QeResult, CadError> {
     let cells = project_and_sample_x(pool, x, y, &body)?;
     for x0 in &cells.candidates {
+        budget_checkpoint()?;
         let x_expr = rational_to_expr(pool, x0);
         let subst = subst_body_var(pool, &body, x, x_expr)?;
         let inner = decide_exists_univariate(pool, y, subst)?;
@@ -1185,6 +1186,7 @@ fn decide_exists_forall(
 ) -> Result<QeResult, CadError> {
     let cells = project_and_sample_x(pool, x, y, &body)?;
     for x0 in &cells.candidates {
+        budget_checkpoint()?;
         let x_expr = rational_to_expr(pool, x0);
         let subst = subst_body_var(pool, &body, x, x_expr)?;
         let neg = nnf_formula(Formula::Not(Box::new(subst)));
@@ -1209,8 +1211,26 @@ fn decide_exists_forall(
 
 /// Decide a closed first-order polynomial sentence (`forall` / `exists` prefix,
 /// optionally empty), built from Boolean combinations of polynomial relations.
+///
+/// The active [`crate::budget`] is checked once per sample cell of the
+/// two-variable path; a trip returns `CadError::Unsupported` naming it and
+/// leaves the [`crate::budget::BudgetTrip`] in [`crate::budget::take_trip`]
+/// (`CadError` is exhaustive), never a truth value decided on part of the cells.
 pub fn decide(formula: &Formula, pool: &ExprPool) -> Result<QeResult, CadError> {
+    crate::budget::clear_trip();
     decide_formula_inner(pool, formula.clone())
+}
+
+/// The carrier message for a budget stop in [`decide`].
+const BUDGET_STOP_MSG: &str =
+    "stopped by the active budget before every cell was sampled — no truth value is implied";
+
+/// Cooperative budget checkpoint for the cell loops of [`decide`].
+fn budget_checkpoint() -> Result<(), CadError> {
+    crate::budget::check_all().map_err(|trip| {
+        crate::budget::record_trip(trip);
+        CadError::Unsupported(BUDGET_STOP_MSG)
+    })
 }
 
 /// Decide from a predicate / quantified [`ExprId`], via [`formula_from_expr`].

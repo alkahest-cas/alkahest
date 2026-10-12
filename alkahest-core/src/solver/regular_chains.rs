@@ -281,6 +281,10 @@ pub fn triangularize(
     pool: &ExprPool,
 ) -> Result<Vec<RegularChain>, SolverError> {
     forget_triangularize_refusal();
+    // Budget interrupt points in the Gröbner basis and the containment checks
+    // are armed for this call; a trip is reported like `solve_polynomial_system`
+    // reports one (`NotPolynomial`, with the trip in `budget::take_trip`).
+    let interrupts = crate::budget::arm();
     let n_vars = vars.len();
     if n_vars == 0 {
         return Ok(vec![]);
@@ -293,6 +297,9 @@ pub fn triangularize(
     }
 
     let gb = GroebnerBasis::compute(polys, MonomialOrder::Lex);
+    if let Some(trip) = interrupts.trip() {
+        return Err(super::budget_stopped(trip));
+    }
     let gens = gb.generators();
 
     if is_unit_ideal(gens, n_vars) {
@@ -303,7 +310,11 @@ pub fn triangularize(
     let chains = split_chain_at_bottom_univariate(chain, last_var)?;
 
     for c in &chains {
-        if !chain_contains_ideal(c, gens) {
+        let contained = chain_contains_ideal(c, gens);
+        if let Some(trip) = interrupts.trip() {
+            return Err(super::budget_stopped(trip));
+        }
+        if !contained {
             return Err(refuse_triangularize(gens.len(), c.polys.len()));
         }
     }

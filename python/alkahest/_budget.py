@@ -17,11 +17,17 @@ OS-level kill. This module is the Python front door for that:
 ``alkahest.context(budget=...)``
     Pushes the budget into the Rust-side cooperative checkpoint
     (``alkahest_core::budget``) for the scope of the ``with`` block. Heavy
-    engines — currently :func:`alkahest.integrate` and, best-effort,
-    :func:`alkahest.simplify` — consult it at a handful of strategic points
-    and raise :class:`~alkahest.BudgetExceededError` (or, for ``simplify``,
-    stop early without raising — see the note on that function below) when it
-    trips.
+    engines — :func:`alkahest.integrate`, :func:`alkahest.limit`, Gröbner
+    bases, :func:`alkahest.solve`, primary decomposition, homotopy
+    continuation, Zeilberger and more (the full list is in
+    ``docs/mdbook/src/budgets.md``) and, best-effort, :func:`alkahest.simplify`
+    — consult it in their unbounded loops and raise
+    :class:`~alkahest.BudgetExceededError` (or, for ``simplify``, stop early
+    without raising — see the note on that function below) when it trips.
+
+    **There is no default budget.** With none active every call is unbounded,
+    and some legitimate computations take minutes; an unattended loop should
+    always run inside ``context(budget=...)``.
 
 :func:`run_with_wall_fallback`
     A Python-layer *supplement*, not a replacement, for calls that don't

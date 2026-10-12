@@ -1269,6 +1269,9 @@ fn try_backsolve_generators(
         let mut new_partials = Vec::new();
         let mut high_degree: Option<SolverError> = None;
         for partial in &partials {
+            if crate::budget::interrupted() {
+                return Err(interrupted_error());
+            }
             let step = match find_step(gens, partial, vars, n_solve, pool) {
                 Ok(s) => s,
                 // A degree-blocked branch does not end the level on its own:
@@ -1368,6 +1371,10 @@ fn refine_solutions(
     let mut evaluator = verify::CBallEval::default();
 
     for sol in solutions {
+        if crate::budget::interrupted() {
+            // The armed caller discards the result.
+            break;
+        }
         let mut values: Vec<verify::CBall> = Vec::with_capacity(n_vars);
         let mut gap = None;
         for &v in &sol {
@@ -1723,7 +1730,46 @@ pub fn collect_parameters(equations: &[ExprId], vars: &[ExprId], pool: &ExprPool
 /// parameters.  Those assumptions are not left unsaid — see
 /// [`take_solve_side_conditions`], which must be read before the next call on
 /// this thread.
+///
+/// # Budget
+///
+/// The active [`crate::budget`] is polled in the Gröbner basis computation and
+/// in back-substitution. A trip returns `Err(SolverError::NotPolynomial(..))`
+/// whose message names the trip, never a partial solution set; the
+/// [`crate::budget::BudgetTrip`] itself is left in [`crate::budget::take_trip`]
+/// (`SolverError` is exhaustive, so it cannot carry a budget variant), which
+/// is how the Python binding raises `BudgetExceededError` instead.
 pub fn solve_polynomial_system(
+    equations: Vec<ExprId>,
+    vars: Vec<ExprId>,
+    pool: &ExprPool,
+) -> Result<SolutionSet, SolverError> {
+    let interrupts = crate::budget::arm();
+    let result = solve_polynomial_system_unguarded(equations, vars, pool);
+    match interrupts.trip() {
+        // Whatever came back was computed from a basis that stopped part-way.
+        Some(trip) => Err(budget_stopped(trip)),
+        None => result,
+    }
+}
+
+/// The error [`solve_polynomial_system`] reports for a budget trip.
+pub(crate) fn budget_stopped(trip: crate::budget::BudgetTrip) -> SolverError {
+    crate::budget::record_trip(trip);
+    SolverError::NotPolynomial(format!(
+        "stopped by the active budget before the system was solved — this is not a statement \
+         about the system: {trip} [{}]",
+        trip.code()
+    ))
+}
+
+/// A placeholder error for leaving the solver early once a budget trip is
+/// recorded; [`solve_polynomial_system`] replaces it with [`budget_stopped`].
+fn interrupted_error() -> SolverError {
+    SolverError::NotPolynomial("stopped by the active budget".into())
+}
+
+fn solve_polynomial_system_unguarded(
     equations: Vec<ExprId>,
     vars: Vec<ExprId>,
     pool: &ExprPool,
@@ -1771,6 +1817,9 @@ pub fn solve_polynomial_system(
     }
 
     let gb = GroebnerBasis::compute(polys.clone(), MonomialOrder::Lex);
+    if crate::budget::interrupt_pending() {
+        return Err(interrupted_error());
+    }
     let gens = gb.generators();
 
     // Trivial ideal ⟨1⟩ → no solution.

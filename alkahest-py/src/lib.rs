@@ -1178,6 +1178,16 @@ fn py_pop_budget() -> PyResult<()> {
     Ok(())
 }
 
+/// Cooperative budget checkpoint for loops written in Python (e.g.
+/// `guess_holonomic`'s order/degree search): raise `BudgetExceededError` when
+/// the active budget is spent (wall clock, steps, memory) or cancellation was
+/// requested, otherwise return `None`. Private — `alkahest._check_budget`.
+#[pyfunction]
+#[pyo3(name = "check_budget")]
+fn py_check_budget() -> PyResult<()> {
+    alkahest_core::budget::check_all().map_err(budget_trip_into_py)
+}
+
 /// `True` if a [`alkahest_core::budget::Budget`] is active on this thread.
 #[pyfunction]
 #[pyo3(name = "is_budget_active")]
@@ -1328,6 +1338,10 @@ fn series_error_to_py(e: SeriesError) -> PyErr {
 fn ideal_error_to_py(e: alkahest_core::ideal::PrimaryDecompositionError) -> PyErr {
     use alkahest_core::ideal::PrimaryDecompositionError;
     if matches!(e, PrimaryDecompositionError::Factorization(_)) {
+        // A budget stop is carried the same way (see `ideal::radical`).
+        if let Some(err) = Python::with_gil(budget_trip_to_py) {
+            return err;
+        }
         if let Some(r) = alkahest_core::ideal::take_ideal_refusal() {
             return Python::with_gil(|py| {
                 let exc_type = py.get_type_bound::<PyAlkahestError>();
@@ -1463,6 +1477,13 @@ fn real_root_error_to_py(e: RealRootError) -> PyErr {
 
 fn cad_error_to_py(e: CadError) -> PyErr {
     Python::with_gil(|py| {
+        // `decide` reports a budget stop as `Unsupported` with the trip
+        // recorded out of band (`CadError` is exhaustive).
+        if matches!(e, CadError::Unsupported(m) if m.starts_with("stopped by the active budget")) {
+            if let Some(err) = budget_trip_to_py(py) {
+                return err;
+            }
+        }
         let exc_type = py.get_type_bound::<PyCadError>();
         make_structured_err(py, &exc_type, &e)
     })
@@ -6864,6 +6885,13 @@ fn holonomic_error_to_py(e: CoreHolonomicError) -> PyErr {
 /// resource stop **distinguishable** from a search that genuinely covered its
 /// grid: a loop that read `E-HOLO-041` or `E-SOS-002` as "no certificate
 /// exists" would record a false negative.
+fn budget_trip_into_py(trip: alkahest_core::budget::BudgetTrip) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+        make_structured_err(py, &exc_type, &trip)
+    })
+}
+
 fn budget_trip_to_py(py: Python<'_>) -> Option<PyErr> {
     let trip = alkahest_core::budget::take_trip()?;
     let exc_type = py.get_type_bound::<PyBudgetExceededError>();
@@ -15645,10 +15673,14 @@ impl PyGroebnerBasis {
             .and_then(MonomialOrder::from_str)
             .unwrap_or(MonomialOrder::Lex);
         // GIL released for the core call; see `py_integrate`.
-        let inner = py.allow_threads(move || match parsed_order {
-            MonomialOrder::Lex => GroebnerBasis::compute_lex(gb_polys),
-            other => GroebnerBasis::compute(gb_polys, other),
-        });
+        // Budgeted: a basis stopped part-way is not a basis of anything, so a
+        // trip raises `BudgetExceededError` instead of returning it.
+        let inner = py
+            .allow_threads(move || match parsed_order {
+                MonomialOrder::Lex => GroebnerBasis::try_compute_lex(gb_polys),
+                other => GroebnerBasis::try_compute(gb_polys, other),
+            })
+            .map_err(budget_trip_into_py)?;
         Ok(Py::new(
             py,
             PyGroebnerBasis {
@@ -15696,7 +15728,9 @@ impl PyGroebnerBasis {
         let parsed_order = order
             .and_then(MonomialOrder::from_str)
             .unwrap_or(MonomialOrder::Lex);
-        let inner = py.allow_threads(move || GroebnerBasis::compute_f5(gb_polys, parsed_order));
+        let inner = py
+            .allow_threads(move || GroebnerBasis::try_compute_f5(gb_polys, parsed_order))
+            .map_err(budget_trip_into_py)?;
         Ok(PyGroebnerBasis {
             inner,
             pool: Some(pool_py),
@@ -15738,10 +15772,12 @@ impl PyGroebnerBasis {
         let parsed_order = order
             .and_then(MonomialOrder::from_str)
             .unwrap_or(MonomialOrder::Lex);
-        let inner = py.allow_threads(move || match parsed_order {
-            MonomialOrder::Lex => GroebnerBasis::compute_lex(raw),
-            other => GroebnerBasis::compute(raw, other),
-        });
+        let inner = py
+            .allow_threads(move || match parsed_order {
+                MonomialOrder::Lex => GroebnerBasis::try_compute_lex(raw),
+                other => GroebnerBasis::try_compute(raw, other),
+            })
+            .map_err(budget_trip_into_py)?;
         Ok(PyGroebnerBasis {
             inner,
             pool,
@@ -15929,6 +15965,10 @@ impl PyGroebnerBasis {
 #[cfg(feature = "groebner")]
 fn param_groebner_error_to_py(e: ParamGroebnerError) -> PyErr {
     Python::with_gil(|py| {
+        if let ParamGroebnerError::Budget(trip) = &e {
+            let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+            return make_structured_err(py, &exc_type, trip);
+        }
         let exc_type = py.get_type_bound::<PyParamGroebnerError>();
         make_structured_err(py, &exc_type, &e)
     })
@@ -17098,7 +17138,7 @@ fn py_rosenfeld_groebner(
             },
         )
     };
-    let (r, ranking) = out.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let (r, ranking) = out.map_err(diffalg_error_to_py)?;
 
     // The blow-up from one prolongation too many is silent otherwise: the
     // answer is correct, just enormously more expensive.
@@ -17139,6 +17179,19 @@ fn py_rosenfeld_groebner(
     .into_py(py))
 }
 
+/// A Rosenfeld–Gröbner error as Python sees it: `BudgetExceededError` when the
+/// active budget stopped the elimination (the trip travels out of band, see
+/// `diffalg::budget_guarded`), otherwise the `ValueError` it always was.
+#[cfg(feature = "groebner")]
+fn diffalg_error_to_py(e: alkahest_core::diffalg::DiffAlgError) -> PyErr {
+    if matches!(e, alkahest_core::diffalg::DiffAlgError::NotPolynomial(_)) {
+        if let Some(err) = Python::with_gil(budget_trip_to_py) {
+            return err;
+        }
+    }
+    pyo3::exceptions::PyValueError::new_err(e.to_string())
+}
+
 #[cfg(feature = "groebner")]
 fn py_rosenfeld_groebner_plain(
     py: Python<'_>,
@@ -17156,7 +17209,7 @@ fn py_rosenfeld_groebner_plain(
             max_prolong_rounds.unwrap_or(8),
         )
     };
-    let (r, ranking) = r.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let (r, ranking) = r.map_err(diffalg_error_to_py)?;
     Ok(Py::new(
         py,
         PyRosenfeldGroebnerResult {
@@ -17361,6 +17414,13 @@ use alkahest_core::{
 
 #[cfg(feature = "groebner")]
 fn homotopy_err_to_py(e: HomotopyError) -> PyErr {
+    // A budget stop is carried as `TrackerFailed` with the trip recorded out of
+    // band (see `solve_numerical`'s "Budget" section).
+    if matches!(e, HomotopyError::TrackerFailed(_)) {
+        if let Some(err) = Python::with_gil(budget_trip_to_py) {
+            return err;
+        }
+    }
     Python::with_gil(|py| match &e {
         HomotopyError::Algebraic(se) => {
             let exc = py.get_type_bound::<PySolverError>();
@@ -18070,6 +18130,11 @@ fn finite_solutions_to_py(
             // `E-SOLVE-005` instead of `E-SOLVE-001`, which means something else:
             // a well-defined equation that is merely not rational in the unknowns.
             if matches!(e, alkahest_core::SolverError::NotPolynomial(_)) {
+                // A budget stop travels the same way (see
+                // `solve_polynomial_system`'s "Budget" section).
+                if let Some(err) = budget_trip_to_py(py2) {
+                    return Err(err);
+                }
                 if let Some(r) = alkahest_core::solver::take_undefined_equation() {
                     return Err(make_structured_err(py2, &exc_type, &r));
                 }
@@ -18273,6 +18338,9 @@ fn py_triangularize(
             // `E-SOLVE-004` rather than `E-SOLVE-001`, which means something else
             // entirely — a genuinely non-polynomial equation.
             if matches!(e, alkahest_core::SolverError::NotPolynomial(_)) {
+                if let Some(err) = budget_trip_to_py(py2) {
+                    return Err(err);
+                }
                 if let Some(r) = alkahest_core::solver::regular_chains::take_triangularize_refusal()
                 {
                     return Err(make_structured_err(py2, &exc_type, &r));
@@ -21140,6 +21208,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_push_assumptions, m)?)?;
     m.add_function(wrap_pyfunction!(py_pop_assumptions, m)?)?;
     m.add_function(wrap_pyfunction!(py_push_budget, m)?)?;
+    m.add_function(wrap_pyfunction!(py_check_budget, m)?)?;
     m.add_function(wrap_pyfunction!(py_note_context_push, m)?)?;
     m.add_function(wrap_pyfunction!(py_note_context_pop, m)?)?;
     m.add_function(wrap_pyfunction!(py_pop_budget, m)?)?;
