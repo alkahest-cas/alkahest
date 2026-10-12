@@ -3605,10 +3605,8 @@ fn free_parameters(expr: ExprId, var: ExprId, pool: &ExprPool) -> Vec<ExprId> {
             return;
         }
         match pool.get(e) {
-            ExprData::Symbol { .. } => {
-                if !out.contains(&e) {
-                    out.push(e);
-                }
+            ExprData::Symbol { .. } if !out.contains(&e) => {
+                out.push(e);
             }
             ExprData::Add(xs) | ExprData::Mul(xs) => {
                 for x in xs {
