@@ -458,7 +458,7 @@ impl QPoly {
     fn add(&self, other: &QPoly) -> QPoly {
         let mut terms = self.terms.clone();
         for (k, v) in &other.terms {
-            let entry = terms.entry(k.clone()).or_insert_with(rug::Rational::new);
+            let entry = terms.entry(k.clone()).or_default();
             *entry += v;
             if *entry == 0 {
                 terms.remove(k);
@@ -475,7 +475,7 @@ impl QPoly {
         for (ka, va) in &self.terms {
             for (kb, vb) in &other.terms {
                 let k = add_exps(ka, kb);
-                let entry = terms.entry(k.clone()).or_insert_with(rug::Rational::new);
+                let entry = terms.entry(k.clone()).or_default();
                 *entry += rug::Rational::from(va * vb);
                 if *entry == 0 {
                     terms.remove(&k);
@@ -563,7 +563,7 @@ fn to_qpoly(expr: ExprId, pool: &ExprPool, atoms: &mut Atoms, depth: u32) -> Opt
             Some(n) if n > 0 && n <= MAX_POLY_EXP => {
                 to_qpoly(base, pool, atoms, depth + 1)?.pow(n as u32)
             }
-            Some(n) if n < 0 && n >= -MAX_POLY_EXP => {
+            Some(n) if (-MAX_POLY_EXP..0).contains(&n) => {
                 let inv = if n == -1 {
                     expr
                 } else {
@@ -824,7 +824,7 @@ fn sqrt_extract(x: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
     if coeff_out != 1 {
         outside.push(rational_expr(&coeff_out, pool));
     }
-    let mut inside_const = rug::Integer::from(rest);
+    let mut inside_const = rest;
     if unit < 0 {
         inside_const = -inside_const;
     }
@@ -1039,7 +1039,7 @@ impl<'a> Splitter<'a> {
             if let Some((i, c)) = lit {
                 if c < 0 {
                     let mut rest = xs.clone();
-                    rest[i] = rational_expr(&rug::Rational::from(-c), p);
+                    rest[i] = rational_expr(&(-c), p);
                     let pos = self.simp(p.mul(rest));
                     let inner = p.func(name, vec![pos]);
                     return match name {
@@ -1419,10 +1419,8 @@ fn collect_abs(
     }
     match pool.get(e) {
         ExprData::Func { name, args } => {
-            if name == "abs" && args.len() == 1 {
-                if !out.contains(&e) {
-                    out.push(e);
-                }
+            if name == "abs" && args.len() == 1 && !out.contains(&e) {
+                out.push(e);
             }
             for a in args {
                 collect_abs(a, pool, out, seen);
