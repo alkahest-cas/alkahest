@@ -2484,7 +2484,79 @@ mod tps_differential {
     use super::*;
     use crate::kernel::Domain;
 
-    /// `Ok(id)` / `Err(code)` — the refusal code when there is one.
+    /// Wall clock of the first attempt at one run, in milliseconds
+    /// (`ALKAHEST_TPS_DIFF_WALL_MS` overrides it).
+    fn first_wall() -> std::time::Duration {
+        let ms = std::env::var("ALKAHEST_TPS_DIFF_WALL_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5_000);
+        std::time::Duration::from_millis(ms)
+    }
+
+    /// Wall clock of the retry of a run that tripped the first one.
+    const RETRY_WALL: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// One attempt: `Ok(id)` / `Err(code)` (the refusal code when there is
+    /// one) and whether the wall clock ran out while it was computed.
+    ///
+    /// A trip anywhere in the run makes the result untrustworthy even when
+    /// `series` returned `Ok`: `simplify` hands back what it has when its
+    /// budget trips, so a coefficient can come out half-simplified
+    /// (`0·(1/14!)·x¹⁴`) and read as a difference between the two routes.
+    /// That is how this test flaked under AddressSanitizer, whose slowdown
+    /// plus parallel test threads can push one run past the clock. (The
+    /// cancellation flag is not involved: no unit test in this binary sets
+    /// it, and the budget frame itself is thread-local.)
+    fn attempt(
+        e: ExprId,
+        x: ExprId,
+        point: ExprId,
+        order: u32,
+        p: &ExprPool,
+        wall: std::time::Duration,
+        general: bool,
+    ) -> (Result<ExprId, String>, bool) {
+        use crate::errors::AlkahestError;
+        // The general route has pathological inputs of its own (a random
+        // composition can make one coefficient's `simplify` run for minutes),
+        // so every run gets a wall clock; a trip reads `E-BUDGET`.
+        let _budget = crate::budget::enter(crate::budget::Budget::new().with_wall(wall));
+        let go = || series(e, x, point, order, p);
+        let r = if general { without_tps(go) } else { go() };
+        let r = match r {
+            Ok(s) => Ok(s.expr()),
+            Err(err) => Err(match take_series_refusal() {
+                Some(r) if r.budget().is_some() => "E-BUDGET".to_string(),
+                Some(r) => r.code().to_string(),
+                None => err.code().to_string(),
+            }),
+        };
+        (r, crate::budget::tripped().is_some())
+    }
+
+    /// One run. A run that tripped the first wall clock is repeated once
+    /// under [`RETRY_WALL`]; only one that trips that too reads `E-BUDGET`
+    /// (the inputs that are slow for real; the committed corpora have none).
+    fn run_via(
+        e: ExprId,
+        x: ExprId,
+        point: ExprId,
+        order: u32,
+        p: &ExprPool,
+        general: bool,
+    ) -> Result<ExprId, String> {
+        let (r, tripped) = attempt(e, x, point, order, p, first_wall(), general);
+        if !tripped {
+            return r;
+        }
+        match attempt(e, x, point, order, p, RETRY_WALL, general) {
+            (_, true) => Err("E-BUDGET".to_string()),
+            (r, false) => r,
+        }
+    }
+
+    /// The fast-path-enabled run.
     fn run(
         e: ExprId,
         x: ExprId,
@@ -2492,21 +2564,18 @@ mod tps_differential {
         order: u32,
         p: &ExprPool,
     ) -> Result<ExprId, String> {
-        use crate::errors::AlkahestError;
-        // The general route has pathological inputs of its own (a random
-        // composition can make one coefficient's `simplify` run for minutes),
-        // so every run gets a wall clock; a trip reads `E-BUDGET`.
-        let _budget = crate::budget::enter(
-            crate::budget::Budget::new().with_wall(std::time::Duration::from_secs(5)),
-        );
-        match series(e, x, point, order, p) {
-            Ok(s) => Ok(s.expr()),
-            Err(err) => Err(match take_series_refusal() {
-                Some(r) if r.budget().is_some() => "E-BUDGET".to_string(),
-                Some(r) => r.code().to_string(),
-                None => err.code().to_string(),
-            }),
-        }
+        run_via(e, x, point, order, p, false)
+    }
+
+    /// The same run through the general route (fast path disabled).
+    fn run_general(
+        e: ExprId,
+        x: ExprId,
+        point: ExprId,
+        order: u32,
+        p: &ExprPool,
+    ) -> Result<ExprId, String> {
+        run_via(e, x, point, order, p, true)
     }
 
     /// How the fast path's result relates to the general route's.
@@ -2659,7 +2728,7 @@ mod tps_differential {
     /// [`Outcome::Suspect`] — a disagreement neither check explains, which
     /// fails the corpus unless it is being *surveyed* for an external oracle.
     fn check(e: ExprId, x: ExprId, point: ExprId, order: u32, p: &ExprPool) -> Outcome {
-        let old = without_tps(|| run(e, x, point, order, p));
+        let old = run_general(e, x, point, order, p);
         let new = run(e, x, point, order, p);
         let xi = p.symbol("__sxp", Domain::Real);
         let mut m = HashMap::new();
@@ -2727,7 +2796,7 @@ mod tps_differential {
                 // Every lower order the general route reaches must be a
                 // prefix of the recovered series.
                 for lower in 1..order {
-                    if let Ok(o) = without_tps(|| run(e, x, point, lower, p)) {
+                    if let Ok(o) = run_general(e, x, point, lower, p) {
                         let Some((ot, _, _)) = numeric_terms(o, h, p) else {
                             return suspect();
                         };
