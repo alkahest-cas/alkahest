@@ -192,8 +192,14 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-SOLVE-006", class: "NumericSolveRefusal", cause: Cause::UserInput,   remediation: Some("solve with numeric=False to get the solution in terms of the parameter, or substitute a value for the parameter first") },
     ErrorSpec { code: "E-SOLVE-007", class: "NumericSolveRefusal", cause: Cause::Unsupported, remediation: Some("solve with numeric=False to get the exact solution set") },
     ErrorSpec { code: "E-SOLVE-008", class: "RootOfError", cause: Cause::UserInput,   remediation: Some("pass a non-constant polynomial with rational coefficients and an index 0 <= k < number of distinct roots") },
+    // Numeric root-finding (`solver::nsolve`): unusable input — a free parameter, an
+    // empty or non-finite interval, a bracket without a sign change.
+    ErrorSpec { code: "E-SOLVE-009", class: "NsolveError", cause: Cause::UserInput,   remediation: Some("substitute values for every symbol except the unknown, and pass a finite bracket (a, b) on which the equation changes sign, or a starting point x0") },
     ErrorSpec { code: "E-SOLVE-010", class: "SolverError", cause: Cause::Resource,    remediation: Some("check GPU availability; pass device_id=None to fall back to CPU") },
     ErrorSpec { code: "E-SOLVE-011", class: "SolverError", cause: Cause::Resource,    remediation: Some("CRT reconstruction failed; try adding more equations or use CPU path") },
+    // Numeric root-finding failed: no convergence, not evaluable, a budget stop, or
+    // `solve(numeric=True, interval=…)` could not account for every root.
+    ErrorSpec { code: "E-SOLVE-012", class: "NsolveError", cause: Cause::Unsupported, remediation: Some("try a tighter bracket around the root, a different starting point, or all_in=(a, b) to isolate every root in an interval") },
     // E-IDEAL — PrimaryDecompositionError (ideal/primary.rs) and IdealRefusal
     ErrorSpec { code: "E-IDEAL-001", class: "PrimaryDecompositionError", cause: Cause::UserInput,   remediation: Some("pass at least one generator") },
     ErrorSpec { code: "E-IDEAL-002", class: "PrimaryDecompositionError", cause: Cause::UserInput,   remediation: Some("all generators must be polynomials in the same variable list") },

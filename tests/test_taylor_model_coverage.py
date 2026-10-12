@@ -145,6 +145,9 @@ def test_the_flag_is_not_a_restatement_of_numeric_ball():
         # G11c: polygamma(n, x) and hypergeometric pFq.
         "polygamma",
         "hyper",
+        # F5: the lower Lambert branch W₋₁ has a certified ball kernel but no
+        # Taylor-model rule yet.
+        "lambert_wm1",
     }
     assert ball_only - orthopoly - specfun == {"ceil", "floor"}
 

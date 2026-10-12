@@ -77,7 +77,63 @@ Polynomial system solving via Gröbner bases. The ``groebner`` Cargo feature is 
    (``asin(c) + 2*pi*k``, ``pi - asin(c) + 2*pi*k``); ``numeric=True`` returns
    the ``k = 0`` member of each family. Hypotheses (``k ∈ Integer``,
    ``ke/ka > 0``, ``ke - ka ≠ 0``) are listed by :func:`solve_side_conditions`.
-   A Lambert equation with a second real root on the ``W₋₁`` branch is refused.
+   A Lambert equation with two real roots returns both branches —
+   ``x*exp(x) + 1/4`` gives ``lambert_w(-1/4)`` and ``lambert_wm1(-1/4)``; a
+   symbolic argument known to be negative records ``c + exp(-1) > 0``.
+
+   With ``numeric=True``, a solution that depends on a free parameter is
+   returned as its exact ``Expr`` (``solve([x - y], [x], numeric=True)`` →
+   ``[{x: y}]``) and :func:`solve_side_conditions` says so; ``E-SOLVE-006``
+   remains for the homotopy fallback, where there is no symbolic solution.
+
+   ``interval=(a, b)`` (with ``numeric=True``, one equation in one unknown)
+   returns every real root in ``[a, b]``, isolated numerically and certified
+   (the :func:`nsolve` ``all_in`` route) — for equations with no closed form,
+   such as an implied volatility. A root list that cannot be proved complete
+   (a double root) raises ``E-SOLVE-012``.
+
+.. function:: nsolve(equation: Expr, x: Expr, *, bracket=None, x0=None, all_in=None) -> NumericRoot or RootIsolation
+
+   Certified numeric real root(s) of ``equation = 0`` in ``x``; every other
+   symbol must have a value. Pass exactly one of ``bracket=(a, b)`` (a sign
+   change; Brent's method), ``x0=`` (damped Newton) or ``all_in=(a, b)``
+   (every root in the interval, by subdivision with ball-arithmetic exclusion
+   and an interval-derivative monotonicity test).
+
+   The search runs in ``f64``; each root's enclosure ``[lo, hi]`` is then
+   proved in 128-bit ball arithmetic. ``status`` is ``"verified"`` (a sign
+   change across ``[lo, hi]`` and a derivative enclosure excluding zero —
+   exactly one root inside), ``"exists"`` (sign change only) or
+   ``"heuristic"`` (the bare iterate: a double root, a non-smooth equation).
+   An ``all_in`` result is a :class:`RootIsolation` whose ``roots`` are all
+   verified; it is ``complete`` unless some sub-interval could not be settled,
+   in which case that sub-interval is listed in ``unresolved`` rather than
+   guessed at. Loops honour an active :class:`Budget`.
+
+   Raises ``SolverError`` with ``E-SOLVE-009`` (a free parameter, a bracket
+   without a sign change, an empty interval, ``all_in`` on a non-smooth
+   equation) or ``E-SOLVE-012`` (no convergence, not evaluable).
+
+   Example::
+
+      x = pool.symbol("x")
+      nsolve(cos(x) - x, x, bracket=(0, 1))
+      # → NumericRoot(0.7390851332151607,
+      #               enclosure=[0.7390851332151603, 0.739085133215161],
+      #               status='verified')
+      nsolve(sin(x) - x / 10, x, all_in=(-12, 12))
+      # → RootIsolation(roots=[-8.4232…, -7.0681…, -2.8523…, 0.0, 2.8523…,
+      #                        7.0681…, 8.4232…], unresolved=[], complete=True)
+
+.. class:: NumericRoot
+
+   ``value``, ``lo``, ``hi``, ``enclosure``, ``status``, ``verified``;
+   ``float(root)`` is ``root.value``.
+
+.. class:: RootIsolation
+
+   ``roots`` (list of :class:`NumericRoot`), ``unresolved`` (list of
+   ``(lo, hi)``), ``complete``; ``len``/indexing/iteration go over ``roots``.
 
 .. function:: root_of(poly: Expr, var: Expr, index: int) -> Expr
 

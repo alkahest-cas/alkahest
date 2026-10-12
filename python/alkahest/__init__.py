@@ -290,6 +290,7 @@ from .alkahest import (  # noqa: F401
     jit_is_available,
     laguerre_l,
     lambert_w,
+    lambert_wm1,
     legendre_p,
     limit,
     linprog,
@@ -453,12 +454,15 @@ with _suppress(ImportError):
         DiophantineSolution,
         GbPoly,
         GroebnerBasis,
+        NumericRoot,
         PrimaryComponent,
         RegularChain,
+        RootIsolation,
         RosenfeldGroebnerResult,
         dae_index_reduce,
         diophantine,
         expr_to_gbpoly,
+        nsolve,
         pell_classes,
         primary_decomposition,
         radical,
@@ -2487,7 +2491,16 @@ if "solve" in dir():
             return result
         return [sol for sol in result if _solution_respects_assumptions(sol, assumptions)]
 
-    def solve(equations, vars, *, numeric=False, method="groebner", domain=None, assumptions=None):
+    def solve(
+        equations,
+        vars,
+        *,
+        numeric=False,
+        method="groebner",
+        domain=None,
+        assumptions=None,
+        interval=None,
+    ):
         """Solve a zero-dimensional polynomial or rational system (see native
         ``solve`` for the base behavior of *equations*, *vars*, *numeric*, and
         *method*, including how roots at a cleared denominator's zero are
@@ -2496,6 +2509,12 @@ if "solve" in dir():
 
         Parameters
         ----------
+        interval : (float, float), optional
+            With ``numeric=True`` and one equation in one unknown, return every
+            real root in ``[a, b]``, isolated numerically and certified in ball
+            arithmetic (the :func:`nsolve` ``all_in`` route) — for equations
+            with no closed form such as ``sin(x) - x/10``. Refuses with
+            ``E-SOLVE-012`` when the root list cannot be proved complete.
         domain : {None, "real", "complex"}, optional
             Restrict returned solutions to a domain. ``domain="real"``
             filters out any solution with a nonzero imaginary part — e.g.
@@ -2524,6 +2543,13 @@ if "solve" in dir():
             raise ValueError(f"domain must be 'real', 'complex', or None, got {domain!r}")
         if assumptions is None:
             assumptions = active_assumptions()
+
+        if interval is not None:
+            # Real roots in [a, b] by construction, so `domain` has nothing to drop.
+            result = _native_solve(
+                equations, vars, numeric=numeric, method=method, interval=tuple(interval)
+            )
+            return _filter_by_assumptions(result, assumptions)
 
         if domain != "real" or method == "homotopy":
             result = _native_solve(equations, vars, numeric=numeric, method=method)
@@ -2607,6 +2633,13 @@ if "solve" not in dir():
             "See alkahest.solve.__doc__ for details."
         )
 
+    def nsolve(*_args, **_kwargs):
+        """Numeric root-finder (groebner feature missing from this build)."""
+        raise ImportError(
+            "alkahest.nsolve is unavailable — groebner feature missing. "
+            "See alkahest.solve.__doc__ for details."
+        )
+
     def solve_side_conditions(*_args, **_kwargs):
         """Hypotheses of the last solve (groebner feature missing from this build)."""
         raise ImportError(
@@ -2632,6 +2665,18 @@ if "solve" not in dir():
                 "alkahest.GroebnerBasis is unavailable — groebner feature missing. "
                 "See alkahest.solve.__doc__ for details."
             )
+
+    class NumericRoot:
+        """Root returned by :func:`nsolve` (groebner feature missing from this build)."""
+
+        def __init__(self, *_args, **_kwargs):
+            raise ImportError("alkahest.NumericRoot is unavailable — groebner feature missing.")
+
+    class RootIsolation:
+        """Result of ``nsolve(..., all_in=...)`` (groebner feature missing from this build)."""
+
+        def __init__(self, *_args, **_kwargs):
+            raise ImportError("alkahest.RootIsolation is unavailable — groebner feature missing.")
 
 
 # ---------------------------------------------------------------------------
@@ -2982,6 +3027,7 @@ __all__ = [
     "NcError",
     "Not",
     "NumberTheoryError",
+    "NumericRoot",
     "OdeError",
     "Or",
     # M9 — coefficient fields for elimination
@@ -3006,6 +3052,7 @@ __all__ = [
     # Rules
     "RewriteRule",
     "RootInterval",
+    "RootIsolation",
     "RosenfeldGroebnerResult",
     "RsolveError",
     # Phase 19
@@ -3190,6 +3237,7 @@ __all__ = [
     "kronecker",
     "laguerre_l",
     "lambert_w",
+    "lambert_wm1",
     # V2-20
     "latex",
     "lattice",
@@ -3220,6 +3268,7 @@ __all__ = [
     "nc_rewrite",
     "nc_terms",
     "normal_order",
+    "nsolve",
     "number_theory",
     # Phase 25
     "numpy_eval",

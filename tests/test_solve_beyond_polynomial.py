@@ -350,21 +350,27 @@ def test_self_power():
     assert abs(xv**xv - 5) < 1e-10
 
 
-def test_self_power_two_real_roots_refuses():
-    # x**x = 0.8 has two real roots (on W0 and W-1); W0 alone would be incomplete.
+def test_self_power_two_real_roots_returns_both():
+    # x**x = 0.8 has two real roots, on W0 and W-1; both are returned (F5).
     p = ak.ExprPool()
     x = p.symbol("x")
-    with pytest.raises(ak.SolverError):
-        ak.solve([x**x - p.rational(4, 5)], [x])
+    sols = ak.solve([x**x - p.rational(4, 5)], [x])
+    assert len(sols) == 2
+    assert sum("lambert_wm1" in str(s[x]) for s in sols) == 1
+    for s in sols:
+        v = _ev(s[x], {})
+        assert abs(v**v - 0.8) < 1e-13
 
 
-def test_lambert_second_branch_refuses():
-    # x·eˣ = −1/4 has two real roots; returning only W0 would present half the
-    # solution set as all of it.
+def test_lambert_second_branch_is_returned():
+    # x·eˣ = −1/4 has two real roots; W0 alone would be half the solution set.
     p = ak.ExprPool()
     x = p.symbol("x")
-    with pytest.raises(ak.SolverError):
-        ak.solve([x * ak.exp(x) + p.rational(1, 4)], [x])
+    sols = ak.solve([x * ak.exp(x) + p.rational(1, 4)], [x])
+    assert sorted(str(s[x]) for s in sols) == ["lambert_w(-1/4)", "lambert_wm1(-1/4)"]
+    for s in sols:
+        v = _ev(s[x], {})
+        assert abs(v * math.exp(v) + 0.25) < 1e-15
 
 
 def test_lambert_vs_sympy():

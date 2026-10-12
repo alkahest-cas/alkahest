@@ -449,6 +449,7 @@ impl PrimitiveRegistry {
         reg.register_unprobed(Box::new(builtins::Atan2Primitive));
         reg.register_unprobed(Box::new(builtins::GammaPrimitive));
         reg.register_unprobed(Box::new(builtins::LambertWPrimitive));
+        reg.register_unprobed(Box::new(builtins::LambertWm1Primitive));
         reg.register_unprobed(Box::new(builtins::DigammaPrimitive));
         reg.register_unprobed(Box::new(builtins::BesselJ0Primitive));
         reg.register_unprobed(Box::new(builtins::BesselJ1Primitive));
@@ -540,7 +541,7 @@ fn probe_caps(p: &dyn Primitive) -> Capabilities {
     // capabilities.  We also try a set of small fractional values that lie
     // inside the convergence domain of the elliptic integrals (where larger
     // probe inputs would be rejected as out-of-domain).
-    let probe_f64_sets: [&[f64]; 8] = [
+    let probe_f64_sets: [&[f64]; 9] = [
         &[1.0],
         &[1.0, 2.0],
         &[1.0, 2.0, 3.0],
@@ -551,6 +552,8 @@ fn probe_caps(p: &dyn Primitive) -> Capabilities {
         &[2.0, 0.5, 0.5, 0.3],
         // `hyper(0, 1, b, z)` = ₀F₁(; 1; 0.5) (G11c).
         &[0.0, 1.0, 1.0, 0.5],
+        // A negative point: `lambert_wm1` is real only on [−1/e, 0).
+        &[-0.2],
     ];
     for args in probe_f64_sets {
         if p.numeric_f64(args).is_some() {
@@ -656,7 +659,7 @@ fn ball_supported(name: &str, p: &dyn Primitive) -> bool {
     if let Some(&hit) = memo.read().expect("ball probe memo poisoned").get(name) {
         return hit;
     }
-    let probe_f64_sets: [&[f64]; 8] = [
+    let probe_f64_sets: [&[f64]; 9] = [
         &[1.0],
         &[1.0, 2.0],
         &[1.0, 2.0, 3.0],
@@ -667,6 +670,8 @@ fn ball_supported(name: &str, p: &dyn Primitive) -> bool {
         &[2.0, 0.5, 0.5, 0.3],
         // `hyper(0, 1, b, z)` = ₀F₁(; 1; 0.5) (G11c).
         &[0.0, 1.0, 1.0, 0.5],
+        // A negative point: `lambert_wm1` is real only on [−1/e, 0).
+        &[-0.2],
     ];
     let answer = probe_f64_sets.iter().any(|args| {
         let balls: Vec<ArbBall> = args.iter().map(|&v| ArbBall::from_f64(v, 128)).collect();
@@ -2685,6 +2690,109 @@ pub mod builtins {
         }
     }
 
+    // ── lambert_wm1 ──────────────────────────────────────────────────────────
+
+    /// The lower real branch `W₋₁` of Lambert W, real on `[−1/e, 0)`.
+    ///
+    /// Together with `lambert_w` (`W₀`) it covers every real solution of
+    /// `w·eʷ = x`: two for `−1/e < x < 0`, one (`−1`) at `x = −1/e`.
+    pub struct LambertWm1Primitive;
+
+    impl Primitive for LambertWm1Primitive {
+        fn name(&self) -> &'static str {
+            "lambert_wm1"
+        }
+
+        fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
+            format!("W₋₁({})", pool.display(args[0]))
+        }
+
+        /// `W₋₁(a·eᵃ) = a` for rational `a ≤ −1` (so `W₋₁(−1/e) = −1`,
+        /// `W₋₁(−2e⁻²) = −2`) and `W₋₁(−log(2)/2) = −2·log 2`.
+        fn simplify(&self, args: &[ExprId], pool: &ExprPool) -> Option<ExprId> {
+            let [x] = args else {
+                return None;
+            };
+            if is_neg_inv_e_literal(*x, pool) {
+                return Some(pool.integer(-1_i32));
+            }
+            lambert_wm1_special_value(*x, pool)
+        }
+
+        fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
+            let x = args[0];
+            let dx = crate::diff::diff(x, wrt, pool).ok()?.value;
+            let w = pool.func("lambert_wm1", vec![x]);
+            let denom = pool.mul(vec![x, pool.add(vec![pool.integer(1_i32), w])]);
+            Some(pool.mul(vec![w, pool.pow(denom, pool.integer(-1_i32)), dx]))
+        }
+
+        fn diff_reverse(
+            &self,
+            args: &[ExprId],
+            cotan: ExprId,
+            pool: &ExprPool,
+        ) -> Option<Vec<ExprId>> {
+            let x = args[0];
+            let w = pool.func("lambert_wm1", vec![x]);
+            let denom = pool.mul(vec![x, pool.add(vec![pool.integer(1_i32), w])]);
+            Some(vec![pool.mul(vec![
+                cotan,
+                w,
+                pool.pow(denom, pool.integer(-1_i32)),
+            ])])
+        }
+
+        fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
+            crate::special::lambert_wm1(unary_f64(args)?)
+        }
+
+        fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
+            unary(args)?.lambert_wm1()
+        }
+    }
+
+    /// `a` when `x` is `a·exp(a)` with rational `a ≤ −1`; `−2·log 2` when `x`
+    /// is `−log(2)/2`.
+    fn lambert_wm1_special_value(x: ExprId, pool: &ExprPool) -> Option<ExprId> {
+        let ExprData::Mul(factors) = pool.get(x) else {
+            return None;
+        };
+        let [c, f] = factors.as_slice() else {
+            return None;
+        };
+        let rat = |e: ExprId| -> Option<rug::Rational> {
+            match pool.get(e) {
+                ExprData::Integer(n) => Some(rug::Rational::from(n.0.clone())),
+                ExprData::Rational(r) => Some(r.0.clone()),
+                _ => None,
+            }
+        };
+        let (c, f) = if rat(*c).is_some() {
+            (*c, *f)
+        } else {
+            (*f, *c)
+        };
+        let a = rat(c)?;
+        match pool.get(f) {
+            ExprData::Func { name, args } if name == "exp" && args.len() == 1 => {
+                if rat(args[0])? == a && a <= -1 {
+                    return Some(c);
+                }
+                None
+            }
+            ExprData::Func { name, args }
+                if name == "log"
+                    && args.len() == 1
+                    && a == rug::Rational::from((-1, 2))
+                    && matches!(pool.get(args[0]), ExprData::Integer(n) if n.0 == 2) =>
+            {
+                Some(pool.mul(vec![pool.integer(-2_i32), f]))
+            }
+            _ => None,
+        }
+    }
+
     // ── digamma ──────────────────────────────────────────────────────────────
 
     pub struct DigammaPrimitive;
@@ -3690,6 +3798,56 @@ mod tests {
         env.insert(x, x0);
         let analytic = eval_interp(d, &env, &pool).unwrap();
         assert!((analytic - fd).abs() < 1e-4, "analytic {analytic} fd {fd}");
+    }
+
+    #[test]
+    fn lambert_wm1_registered_numeric_diff_and_special_values() {
+        use crate::jit::eval_interp;
+        use crate::kernel::Domain;
+        use std::collections::HashMap;
+
+        let reg = PrimitiveRegistry::default_registry();
+        assert!(reg.is_registered("lambert_wm1"));
+        let w = reg.numeric_f64("lambert_wm1", &[-0.1]).unwrap();
+        assert!((w + 3.577_152_063_957_297).abs() < 1e-13);
+        assert!(reg.numeric_f64("lambert_wm1", &[0.1]).is_none());
+        assert!(reg.numeric_f64("lambert_wm1", &[-0.5]).is_none());
+        assert!(reg
+            .numeric_ball("lambert_wm1", &[ArbBall::from_f64(-0.2, 128)])
+            .is_some());
+
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let wx = pool.func("lambert_wm1", vec![x]);
+        let d = crate::diff::diff(wx, x, &pool).unwrap().value;
+        let (x0, h) = (-0.2_f64, 1e-6);
+        let fd = (reg.numeric_f64("lambert_wm1", &[x0 + h]).unwrap()
+            - reg.numeric_f64("lambert_wm1", &[x0 - h]).unwrap())
+            / (2.0 * h);
+        let env: HashMap<_, _> = [(x, x0)].into_iter().collect();
+        let analytic = eval_interp(d, &env, &pool).unwrap();
+        assert!((analytic - fd).abs() < 1e-5, "analytic {analytic} fd {fd}");
+
+        // W₋₁(a·eᵃ) = a for a ≤ −1, W₋₁(−log 2/2) = −2 log 2; W₋₁(−e⁻¹/2) stays.
+        let simp = |e| crate::simplify::engine::simplify(e, &pool).value;
+        let two = pool.integer(-2_i32);
+        let arg = pool.mul(vec![two, pool.func("exp", vec![two])]);
+        assert_eq!(simp(pool.func("lambert_wm1", vec![arg])), two);
+        let m1 = pool.integer(-1_i32);
+        let arg = pool.mul(vec![m1, pool.func("exp", vec![m1])]);
+        assert_eq!(simp(pool.func("lambert_wm1", vec![arg])), m1);
+        let arg = pool.mul(vec![
+            pool.rational(-1, 2),
+            pool.func("log", vec![pool.integer(2_i32)]),
+        ]);
+        let v = simp(pool.func("lambert_wm1", vec![arg]));
+        let got = eval_interp(v, &HashMap::new(), &pool).unwrap();
+        assert!((got + 2.0 * std::f64::consts::LN_2).abs() < 1e-15, "{got}");
+        // a = −1/2 > −1 is on the principal branch, not W₋₁.
+        let h = pool.rational(-1, 2);
+        let arg = pool.mul(vec![h, pool.func("exp", vec![h])]);
+        let kept = simp(pool.func("lambert_wm1", vec![arg]));
+        assert!(pool.display(kept).to_string().contains("lambert_wm1"));
     }
 
     // ── 3.10.0: the three derivatives that were missing ──────────────────
