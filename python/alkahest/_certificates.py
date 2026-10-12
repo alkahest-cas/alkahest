@@ -93,7 +93,7 @@ OPERATIONS: dict[str, dict[str, Any]] = {
 }
 
 #: Feature names in the fixed order used to build a shape-class key.
-FEATURES = ("form", "funcs", "fn_arg", "mul", "pow", "pow_base", "definite", "point")
+FEATURES = ("form", "funcs", "fn_arg", "mul", "pow", "pow_base", "definite", "point", "cond")
 
 _NUMERIC_TAGS = ("integer", "rational", "float")
 
@@ -106,6 +106,7 @@ _TOP_FORM = {
     "add": "sum",
     "mul": "product",
     "pow": "power",
+    "piecewise": "piecewise",
 }
 
 # Ordered from "most certifiable" to "least", so a feature can be summarised
@@ -147,6 +148,30 @@ def _walk(expr):
     elif tag == "pow":
         yield from _walk(node[1])
         yield from _walk(node[2])
+    elif tag == "piecewise":
+        for _cond, value in node[1]:
+            yield from _walk(value)
+        yield from _walk(node[2])
+
+
+def _piecewise_cond_kind(expr, var) -> str:
+    """``"var_cmp"`` when every condition is ``var ⋈ c`` with ``c`` free of
+    ``var`` and ``⋈ ∈ {<, ≤, >, ≥}`` — the shape the branch-wise derivative
+    certificate covers — else ``"other"``."""
+    for cond, _value in expr.node()[1]:
+        cn = cond.node()
+        if cn[0] != "predicate" or cn[1] not in ("lt", "le", "gt", "ge") or len(cn[2]) != 2:
+            return "other"
+        a, b = cn[2]
+        if _is_var(a, var):
+            other = b
+        elif _is_var(b, var):
+            other = a
+        else:
+            return "other"
+        if any(_is_var(sub, var) for sub in _walk(other)):
+            return "other"
+    return "var_cmp"
 
 
 def _is_var(expr, var) -> bool:
@@ -353,6 +378,8 @@ def shape_features(expr, var=None, definite: bool | None = None) -> dict[str, st
         features["pow_base"] = pow_base
     if definite is not None:
         features["definite"] = "yes" if definite else "no"
+    if features["form"] == "piecewise":
+        features["cond"] = _piecewise_cond_kind(expr, var)
     return features
 
 

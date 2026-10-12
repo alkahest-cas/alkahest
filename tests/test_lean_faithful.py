@@ -325,10 +325,43 @@ def test_resultant_certificate_is_sylvester_of_inputs(ps, qs, vs):
     assert close(value_of(r.value, pool, env), float(oracle.subs({sx: env["x"], sy: env["y"]})))
 
 
+# F16: Sylvester matrices up to 7×7 (dense 5×5 and 6×6 used to fail or refuse).
+LARGE_RESULTANT_CASES = [
+    ("x**3 - 2*x + 1", "x**2 + x + 1", "x"),  # dense 5×5
+    ("x**3 - 2", "x**3 + x + 1", "x"),  # 6×6 (refused before F16)
+    ("3*x**3 - 2*x**2 + x - 5", "x**3 + 4*x**2 + x + 7", "x"),  # dense 6×6
+    ("x**3 + y*x - 1", "x**3 - y*x**2 + 2", "x"),  # parametric 6×6
+    ("x**4 - 2*x + 1", "x**3 + x + 1", "x"),  # 7×7, split into minors
+]
+
+
+@pytest.mark.parametrize(("ps", "qs", "vs"), LARGE_RESULTANT_CASES)
+def test_large_resultant_certificate_is_sylvester_of_inputs(ps, qs, vs):
+    test_resultant_certificate_is_sylvester_of_inputs(ps, qs, vs)
+
+
+def test_seven_by_seven_resultant_states_its_minors_faithfully():
+    """Each `have h_j : det (minor j) = v_j` names the true minor determinant."""
+    sympy = pytest.importorskip("sympy")
+    from sympy.polys.subresultants_qq_zz import sylvester
+
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+    r = ak.resultant(x**4 - 2 * x + 1, x**3 + x + 1, x)
+    src = ak.to_lean(r)
+    sx = sympy.Symbol("x")
+    mat = sylvester(sympy.Poly(sx**4 - 2 * sx + 1, sx), sympy.Poly(sx**3 + sx + 1, sx), sx, 1)
+    haves = re.findall(r"have h_(\d) : Matrix\.det \(.*?\) = (.*) := by", src)
+    assert [int(j) for j, _ in haves] == [0, 3, 4]
+    for j, value in haves:
+        minor = mat[1:, [c for c in range(7) if c != int(j)]]
+        assert close(py_eval(value, {}), float(minor.det())), (j, value)
+
+
 def test_resultant_too_large_refuses_with_code():
     pool = ak.ExprPool()
     x = pool.symbol("x")
-    r = ak.resultant(x**3 - 2, x**3 + x + 1, x)  # 6×6 Sylvester matrix
+    r = ak.resultant(x**4 + 1, x**4 + x, x)  # 8×8 Sylvester matrix
     assert r.certificate is None
     with pytest.raises(ak.CertificateUnavailableError) as info:
         ak.to_lean(r)
@@ -336,22 +369,13 @@ def test_resultant_too_large_refuses_with_code():
     assert r.certificate_status["reason"] == "withheld_resultant_shape"
 
 
-def test_piecewise_and_zeilberger_refuse_with_code():
+def test_piecewise_with_nothing_derived_still_refuses_with_code():
     pool = ak.ExprPool()
-    x, n, k = pool.symbol("x"), pool.symbol("n"), pool.symbol("k")
+    x = pool.symbol("x")
     pw = ak.simplify(ak.piecewise([(pool.gt(x, pool.integer(0)), x)], -x))
     with pytest.raises(ak.CertificateUnavailableError) as info:
         ak.to_lean(pw)
     assert info.value.code == "E-CERT-001"
-
-    one = pool.integer(1)
-    g = ak.gamma
-    binom = g(n + one) / (g(k + one) * g(n - k + one))
-    z = ak.zeilberger(binom**2, n, k)
-    with pytest.raises(ak.CertificateUnavailableError) as info:
-        ak.to_lean(z)
-    assert info.value.code == "E-CERT-001"
-    assert "ZeilbergerCertificate" in str(info.value)
 
 
 def test_non_alkahest_object_is_still_a_type_error():
@@ -434,6 +458,272 @@ def test_withheld_results_raise_never_empty():
 
 
 # ---------------------------------------------------------------------------
+# F16: Zeilberger / WZ telescoping certificates
+# ---------------------------------------------------------------------------
+
+
+def _binomial(pool, a, b):
+    one = pool.integer(1)
+    g = ak.gamma
+    return g(a + one) / (g(b + one) * g(a - b + one))
+
+
+def _zeilberger_terms():
+    pool = ak.ExprPool()
+    n, k = pool.symbol("n"), pool.symbol("k")
+    two = pool.integer(2)
+    m1 = pool.integer(-1)
+    b = _binomial
+    return (
+        pool,
+        n,
+        k,
+        {
+            "binomial_squared": b(pool, n, k) ** 2,
+            "wz_binomial_over_2n": b(pool, n, k) * two ** (m1 * n),
+            "dixon": m1**k * b(pool, two * n, n + k) ** 3,
+            "apery": b(pool, n, k) ** 2 * b(pool, n + k, k) ** 2,
+            "franel": b(pool, n, k) ** 3,
+        },
+    )
+
+
+_ZPOOL, _ZN, _ZK, _ZTERMS = _zeilberger_terms()
+
+
+def _lean_poly_to_py(term: str) -> str:
+    """A Zeilberger-certificate term (polynomials, `F (n + j) k`) as Python."""
+    s = re.sub(r"F \(n \+ (\d+)\) k", r"F(n + \1, k)", term)
+    s = s.replace("F n (k + 1)", "F(n, k + 1)")
+    s = s.replace("F n k", "F(n, k)")
+    s = re.sub(r"\s*:\s*ℝ\s*\)", ")", s)
+    return s.replace("^", "**")
+
+
+def _zeilberger_parts(src: str):
+    """``(shift relations, nonvanishing factors, lhs, rhs)`` of the example."""
+    header = src.split("example ", 1)[1].split(" := by\n", 1)[0]
+    rels = re.findall(r"\(hF(\w+) : (.*) = (.*)\)\n", header + "\n")
+    nonzero = re.findall(r"\(hN\d+ : (.*) ≠ 0\)", header)
+    goal = header.rsplit(") :\n", 1)[1]
+    lhs, rhs = (g.strip() for g in goal.split(" =\n", 1))
+    return rels, nonzero, lhs, rhs
+
+
+def _summand(label):
+    """The summand as an mpmath function of real ``(n, k)`` (Γ at non-integers)."""
+    mpmath = pytest.importorskip("mpmath")
+
+    def c(a, b):
+        return mpmath.gamma(a + 1) / (mpmath.gamma(b + 1) * mpmath.gamma(a - b + 1))
+
+    return {
+        "binomial_squared": lambda n, k: c(n, k) ** 2,
+        "wz_binomial_over_2n": lambda n, k: c(n, k) * mpmath.power(2, -n),
+        "dixon": lambda n, k: mpmath.power(-1, k) * c(2 * n, n + k) ** 3,
+        "apery": lambda n, k: c(n, k) ** 2 * c(n + k, k) ** 2,
+        "franel": lambda n, k: c(n, k) ** 3,
+    }[label]
+
+
+@pytest.mark.parametrize("label", list(_ZTERMS))
+def test_zeilberger_certificate_is_the_telescoping_identity(label):
+    """Every hypothesis holds for the actual summand and the conclusion is the
+    returned recurrence: checked numerically with Γ at non-integer points."""
+    mpmath = pytest.importorskip("mpmath")
+    mpmath.mp.dps = 40
+    term = _ZTERMS[label]
+    z = ak.zeilberger(term, _ZN, _ZK)
+    src = ak.to_lean(z)
+    assert src == z.to_lean()
+    for token in ("sorry", "admit", "axiom"):
+        assert token not in src
+    rels, nonzero, lhs, rhs = _zeilberger_parts(src)
+    assert {tag for tag, _, _ in rels} == {*(str(j) for j in range(1, z.order + 1)), "k"}
+    # Statement shape: Σ_j a_j F(n+j, k) on the left, G(n,k+1) − G(n,k) on the right.
+    assert lhs.count("F") == z.order + 1
+    assert "F n (k + 1)" in rhs
+    assert rhs.endswith("* F n k")
+
+    summand = _summand(label)
+
+    def coeff_at(e, nv, kv):
+        text = str(e).replace("^", "**")
+        return eval(text, {}, {"n": mpmath.mpf(nv), "k": mpmath.mpf(kv)})
+
+    rng = random.Random(16)
+    for _ in range(4):
+        # Non-integer n, k with every Γ argument positive.
+        nv = mpmath.mpf(rng.uniform(4.2, 6.8))
+        kv = mpmath.mpf(rng.uniform(0.3, 1.7))
+        env = {"n": nv, "k": kv, "F": summand}
+        tol = mpmath.mpf(10) ** -25
+        for tag, left, right in rels:
+            a, b = eval(_lean_poly_to_py(left), {}, env), eval(_lean_poly_to_py(right), {}, env)
+            assert abs(a - b) <= tol * max(1, abs(a)), (label, tag, a, b)
+        for f in nonzero:
+            assert abs(eval(_lean_poly_to_py(f), {}, env)) > 1e-12
+        got_l = eval(_lean_poly_to_py(lhs), {}, env)
+        got_r = eval(_lean_poly_to_py(rhs), {}, env)
+        assert abs(got_l - got_r) <= tol * max(1, abs(got_l)), label
+        # The statement uses the returned coefficients and certificate.
+        want_l = sum(coeff_at(a, nv, kv) * summand(nv + j, kv) for j, a in enumerate(z.coeffs))
+        assert abs(got_l - want_l) <= tol * max(1, abs(want_l)), label
+        r0 = coeff_at(z.certificate, nv, kv)
+        r1 = coeff_at(z.certificate, nv, kv + 1)
+        want_r = r1 * summand(nv, kv + 1) - r0 * summand(nv, kv)
+        assert abs(got_r - want_r) <= tol * max(1, abs(want_r)), label
+
+
+def test_zeilberger_to_lean_is_no_longer_a_refusal():
+    """W9 left `to_lean(ZeilbergerCertificate)` as a coded refusal."""
+    z = ak.zeilberger(_ZTERMS["binomial_squared"], _ZN, _ZK)
+    src = ak.to_lean(z)
+    assert src.startswith("import Mathlib.Tactic")
+    assert "(F : ℝ → ℝ → ℝ)" in src
+    assert "linear_combination" in src
+
+
+# ---------------------------------------------------------------------------
+# F16: derivative of a Piecewise, branch by branch
+# ---------------------------------------------------------------------------
+
+
+def _if_to_py(term: str) -> str:
+    """``if C then A else B`` chains (depth-0) as Python conditional expressions."""
+    term = term.strip()
+    if not term.startswith("if "):
+        return lean_to_py(term)
+    cond, rest = split_top(term[3:], " then ")[0], " then ".join(split_top(term[3:], " then ")[1:])
+    parts = split_top(rest, " else ")
+    then_part, else_part = parts[0], " else ".join(parts[1:])
+    c = lean_to_py(cond).replace("≥", ">=").replace("≤", "<=")
+    return f"(({lean_to_py(then_part)}) if ({c}) else ({_if_to_py(else_part)}))"
+
+
+def _piecewise_examples(src: str):
+    out = []
+    for m in re.finditer(
+        r"^example(.*?): deriv \(fun \((\w+) : ℝ\) => (.*?)\) (\w+) = (.*?) := by$",
+        src,
+        flags=re.M,
+    ):
+        binders, var, body, point, rhs = m.groups()
+        hyps = re.findall(r"\(hc\d+ : (.*?)\)(?= \(|$)", binders.strip())
+        out.append((binders, var, body, point, rhs, hyps))
+    return out
+
+
+def _sample_region(hyps, names, rng):
+    for _ in range(2000):
+        env = {n: rng.uniform(-3.0, 3.0) for n in names}
+        if all(_holds(h, env) for h in hyps):
+            return env
+    raise AssertionError(f"could not sample {hyps}")
+
+
+def _holds(h: str, env) -> bool:
+    lhs, rhs = split_top(h, " < ")
+    return py_eval(lhs, env) < py_eval(rhs, env) - 1e-3
+
+
+PIECEWISE_CASES = [
+    # (branches as (relation, rhs, value), default)
+    "x>0:x**2|-x",
+    "x<1:sin(x);x>=2:x**3|3",
+    "x<=a:exp(x)|a*x",
+]
+
+
+def _piecewise_from_spec(pool, spec):
+    syms = {n: pool.symbol(n) for n in ("x", "a")}
+    head, default = spec.split("|")
+    branches = []
+    for part in head.split(";"):
+        cond, value = part.split(":")
+        m = re.fullmatch(r"(\w+)(<=|>=|<|>)(\w+)", cond)
+        lhs, op, rhs = m.groups()
+
+        def atom(t):
+            return syms[t] if t in syms else pool.integer(int(t))
+
+        ctor = {"<": pool.lt, "<=": pool.le, ">": pool.gt, ">=": pool.ge}[op]
+        branches.append((ctor(atom(lhs), atom(rhs)), ak.parse(value, pool, syms)))
+    return syms, ak.piecewise(branches, ak.parse(default, pool, syms))
+
+
+@pytest.mark.parametrize("spec", PIECEWISE_CASES)
+def test_piecewise_derivative_is_certified_branch_by_branch(spec):
+    pool = ak.ExprPool()
+    syms, pw = _piecewise_from_spec(pool, spec)
+    x = syms["x"]
+    r = ak.diff(pw, x)
+    src = ak.to_lean(r)
+    assert src == r.certificate
+    examples = _piecewise_examples(src)
+    n_branches = spec.split("|")[0].count(":")
+    assert len(examples) == n_branches + 1, src
+    rng = random.Random(5)
+    for binders, var, body, point, rhs, hyps in examples:
+        assert var == point == "x"
+        assert hyps, "every branch statement is restricted to its open region"
+        assert not unbound_variables(binders, body + " = " + rhs) - {"x"}
+        names = list(binder_names(binders)[0])
+        f = _if_to_py(body)
+        for _ in range(3):
+            env = _sample_region(hyps, names, rng)
+            h = 1e-6
+            fp = eval(f, {"math": math}, {**env, "x": env["x"] + h})
+            fm = eval(f, {"math": math}, {**env, "x": env["x"] - h})
+            want = py_eval(rhs, env)
+            assert close((fp - fm) / (2 * h), want, 1e-4), (spec, body, rhs, env)
+
+
+def test_piecewise_derivative_never_states_the_whole_function_equation():
+    """`deriv (fun x => if …) x = if …` is false at a breakpoint (|x| at 0)."""
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+    r = ak.diff(ak.piecewise([(pool.gt(x, pool.integer(0)), x)], -x), x)
+    src = ak.to_lean(r)
+    for _, _, _, _, rhs, hyps in _piecewise_examples(src):
+        assert not rhs.startswith("if ")
+        assert all(" < " in h for h in hyps)
+    # The breakpoint itself is in no branch's region.
+    assert "(hc1 : (0 : ℝ) < x)" in src
+    assert "(hc1 : x < (0 : ℝ))" in src
+
+
+def test_ledger_keeps_piecewise_condition_shapes_apart():
+    """`mode="ledger"` predicts from the shape class alone, so a Piecewise whose
+    conditions the branch-wise certificate cannot handle must not share a class
+    with one it can."""
+    pool = ak.ExprPool()
+    x, a = pool.symbol("x"), pool.symbol("a")
+    # The corpus case `diff_piecewise_two_branches`.
+    ok = ak.piecewise(
+        [(pool.lt(x, a), ak.sin(x)), (pool.ge(x, pool.integer(2)), x**3)], pool.integer(3)
+    )
+    bad = ak.piecewise(
+        [(pool.lt(a, pool.integer(1)), ak.sin(x)), (pool.ge(x, pool.integer(2)), x**3)],
+        pool.integer(3),
+    )
+    assert ak.certifiable("diff", ok, x, mode="ledger")
+    verdict = ak.certifiable("diff", bad, x, mode="ledger")
+    assert not verdict
+    assert "cond=other" in verdict.shape
+    assert not ak.certifiable("diff", bad, x)
+
+
+def test_piecewise_derivative_with_unsupported_condition_refuses():
+    pool = ak.ExprPool()
+    x, a = pool.symbol("x"), pool.symbol("a")
+    # A condition on a parameter only: not a region in x.
+    r = ak.diff(ak.piecewise([(pool.gt(a, pool.integer(0)), x**2)], x), x)
+    with pytest.raises(ak.CertificateUnavailableError):
+        ak.to_lean(r)
+
+
+# ---------------------------------------------------------------------------
 # Optional: compile with Lean when the toolchain + Mathlib project are present
 # ---------------------------------------------------------------------------
 
@@ -458,6 +748,10 @@ def test_emitted_statements_compile_without_auto_implicit(tmp_path):
     pool = ak.ExprPool()
     x = pool.symbol("x")
     srcs.append(ak.to_lean(ak.resultant(x**2 - 2, x**3 - 3, x)))
+    # F16: a 6×6 resultant, a WZ certificate, a Piecewise derivative.
+    srcs.append(ak.to_lean(ak.resultant(x**3 - 2, x**3 + x + 1, x)))
+    srcs.append(ak.to_lean(ak.zeilberger(_ZTERMS["wz_binomial_over_2n"], _ZN, _ZK)))
+    srcs.append(ak.to_lean(ak.diff(ak.piecewise([(pool.gt(x, pool.integer(0)), x**2)], -x), x)))
     imports, bodies = [], []
     for src in srcs:
         body = []
