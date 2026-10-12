@@ -18,6 +18,7 @@ use crate::errors::AlkahestError;
 /// | `E-SPECFN-005` | [`WrongArity`](Self::WrongArity) | the wrong number of parameters for the family |
 /// | `E-SPECFN-006` | [`Pole`](Self::Pole) | the function has a pole at the requested point (`zeta(1)`, `polylog(1, 1)`) |
 /// | `E-SPECFN-007` | [`OrderNotInteger`](Self::OrderNotInteger) | an order that must be an integer literal is not one (`spherical_jn(1/2, x)`) |
+/// | `E-SPECFN-008` | [`InvalidOrder`](Self::InvalidOrder) | an order that must be a non-negative integer is not one (`polygamma(1/2, x)`, `polygamma(-1, x)`) |
 /// | `E-BUDGET-*` | [`Budget`](Self::Budget) | the active `Budget` ran out |
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -45,6 +46,12 @@ pub enum SpecialFunctionError {
     },
     /// The active [`crate::budget::Budget`] ran out mid-computation.
     Budget(BudgetError),
+    /// An order that has to be a non-negative integer is not one
+    /// (`polygamma(1/2, x)`, `polygamma(-1, x)`).
+    InvalidOrder {
+        function: &'static str,
+        value: String,
+    },
 }
 
 impl fmt::Display for SpecialFunctionError {
@@ -79,6 +86,9 @@ impl fmt::Display for SpecialFunctionError {
             SpecialFunctionError::OrderNotInteger { function, value } => {
                 write!(f, "{function}: the order {value} must be an integer")
             }
+            SpecialFunctionError::InvalidOrder { function, value } => {
+                write!(f, "{function}: the order {value} must be a non-negative integer")
+            }
             SpecialFunctionError::Budget(b) => write!(f, "{b}"),
         }
     }
@@ -96,6 +106,7 @@ impl AlkahestError for SpecialFunctionError {
             SpecialFunctionError::WrongArity { .. } => "E-SPECFN-005",
             SpecialFunctionError::Pole { .. } => "E-SPECFN-006",
             SpecialFunctionError::OrderNotInteger { .. } => "E-SPECFN-007",
+            SpecialFunctionError::InvalidOrder { .. } => "E-SPECFN-008",
             SpecialFunctionError::Budget(b) => b.code(),
         }
     }
@@ -127,6 +138,10 @@ impl AlkahestError for SpecialFunctionError {
             SpecialFunctionError::OrderNotInteger { .. } => Some(
                 "spherical Bessel functions are built for integer order n; use \
                  bessel_j(n + 1/2, x) for a general order",
+            ),
+            SpecialFunctionError::InvalidOrder { .. } => Some(
+                "polygamma(n, x) is defined for an integer order n >= 0 (n = 0 is digamma, \
+                 n = 1 trigamma); substitute such an integer",
             ),
             SpecialFunctionError::Budget(b) => b.remediation(),
         }

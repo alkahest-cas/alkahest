@@ -1468,6 +1468,21 @@ ak.evaluate(ak.bessel_j(nu, x), {nu: 2+0j, x: 1+1j})   # complex values via Arb
 - `Σ 1/k³` sums to `zeta(3)`; `∫x·J0 = x·J1`, `∫J1 = −J0`.
 - f64/ball/complex values from Arb; non-real values (Y, K at x<0; Li_s(x>1)) decline in real mode.
 
+## Γ/ψ values, Laurent series at poles, polygamma, hypergeometric pFq
+
+```python
+ak.euler_gamma(p), ak.catalan(p)    # exact symbols EulerGamma, Catalan (never floats)
+ak.simplify(ak.digamma(p.integer(3)))       # 3/2 - EulerGamma; trigamma(1) = pi^2/6
+ak.polygamma(2, p.integer(1))               # -2*zeta(3); polygamma(0, x) is digamma(x)
+ak.series(ak.gamma(eps), eps, p.integer(0), 2)   # 1/eps - EulerGamma + (...)*eps + O(eps^2)
+ak.series(m**(-2*eps)*ak.gamma(eps), eps, p.integer(0), 1)   # dim-reg: 1/eps - EulerGamma - 2 log m
+ak.hyper([a, b], [c], z)            # node hyper(2, 1, a, b, c, z); diff in z shifts params
+ak.expand_hyper(ak.hyper([1, 1], [2], z))   # -log(1 - z)/z; terminating → polynomial; Gauss at z=1
+```
+
+- `polygamma(1/2, x)` → `E-SPECFN-008`; pole literal → `E-SPECFN-006`; `hyper(..., [-2], z)` → `E-SPECFN-006`.
+- `series` handles Γ/ψ/ψ⁽ⁿ⁾ at `0, −1, −2, …` (residue of Γ at −k is (−1)^k/k!).
+
 ## Orthogonal polynomials, Y_lm, 3j/6j/Clebsch–Gordan
 
 ```python

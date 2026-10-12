@@ -68,11 +68,16 @@ def test_digamma_now_differentiates(x):
     assert contains(enclose(d, x, 1.0), PI2 / 6.0, slack=1e-12)
 
 
-def test_trigamma_declines_rather_than_guessing(x):
-    """A future ``polygamma(n, x)`` should flip this assertion, not delete
-    it."""
+def test_trigamma_differentiates_into_polygamma(pool, x):
+    """Flipped by G11c: ``polygamma(n, x)`` closes the ladder, so
+    ``ψ₁′ = ψ₂``; the derivative in the *order* is what declines now."""
+    d = ak.diff(ak.trigamma(x), x).value
+    assert str(d) == "polygamma(2, x)"
+    # ψ₂(1) = −2ζ(3)
+    assert abs(ak.eval_expr(d, {x: 1.0}) + 2.4041138063191885) < 1e-14
+    n = pool.symbol("n")
     with pytest.raises(Exception) as exc:
-        ak.diff(ak.trigamma(x), x)
+        ak.diff(ak.polygamma(n, x), n)
     assert "E-DIFF-001" in str(exc.value)
     # …but it evaluates, which is what Γ″ = Γ(ψ² + ψ₁) needs of it.
     assert contains(enclose(ak.trigamma(x), x, 1.0), PI2 / 6.0)
@@ -143,8 +148,9 @@ def test_trigamma_capabilities(x):
     assert rows["trigamma"]["numeric_f64"]
     assert rows["trigamma"]["numeric_ball"]
     assert rows["trigamma"]["taylor_model"]
-    # Deliberate: the ladder stops here.
-    assert not rows["trigamma"]["diff_forward"]
+    # Since G11c the ladder continues: ψ₁′ = polygamma(2, x).
+    assert rows["trigamma"]["diff_forward"]
+    assert rows["polygamma"]["diff_forward"]
     for name in ("gamma", "digamma"):
         assert rows[name]["diff_forward"], name
         assert rows[name]["diff_reverse"], name

@@ -336,7 +336,9 @@ pub fn check_inputs_bind(
         }
         pool.with(id, |data| match data {
             ExprData::Symbol { name, .. } => {
-                if name != crate::eval::symbols::PI_NAME && !is_bound(&scopes, scope, id) {
+                if crate::eval::symbols::constant_value_f64(name).is_none()
+                    && !is_bound(&scopes, scope, id)
+                {
                     unbound.insert(name.clone());
                 }
             }
@@ -1552,7 +1554,7 @@ fn eval_interp_data(
         ExprData::Symbol { name, .. } => env
             .get(&expr)
             .copied()
-            .or_else(|| (name == crate::eval::symbols::PI_NAME).then_some(std::f64::consts::PI)),
+            .or_else(|| crate::eval::symbols::constant_value_f64(name)),
         ExprData::Add(args) => {
             let mut sum = 0.0f64;
             for &a in args {
@@ -1720,7 +1722,7 @@ fn try_expr_f64_snap(
         ExprData::Symbol { name, .. } => env
             .get(&expr)
             .copied()
-            .or_else(|| (name == crate::eval::symbols::PI_NAME).then_some(std::f64::consts::PI)),
+            .or_else(|| crate::eval::symbols::constant_value_f64(name)),
         ExprData::Add(args) => {
             let mut s = 0.0f64;
             for &a in args {
@@ -1841,7 +1843,7 @@ fn eval_interp_snap(
         ExprData::Symbol { name, .. } => env
             .get(&expr)
             .copied()
-            .or_else(|| (name == crate::eval::symbols::PI_NAME).then_some(std::f64::consts::PI)),
+            .or_else(|| crate::eval::symbols::constant_value_f64(name)),
         ExprData::Add(args) => {
             let args = args.clone();
             let mut s = 0.0f64;
@@ -2230,13 +2232,16 @@ mod llvm_backend {
             ExprData::Float(f) => Ok(f64_type.const_float(f.inner.to_f64())),
             // `π` is a constant, not an input — as in the Cranelift backend
             // and the interpreter. Declared inputs were loaded before codegen,
-            // so an input *named* `pi` still wins.
-            ExprData::Symbol { name, .. } if name == crate::eval::symbols::PI_NAME => {
-                Ok(f64_type.const_float(std::f64::consts::PI))
+            // so an input *named* `pi` still wins. The same holds for the
+            // other named constants (`EulerGamma`, `Catalan`, `Glaisher`).
+            ExprData::Symbol { name, .. } => {
+                match crate::eval::symbols::constant_value_f64(&name) {
+                    Some(v) => Ok(f64_type.const_float(v)),
+                    None => Err(JitError::UnsupportedNode(format!(
+                        "unbound symbol '{name}'"
+                    ))),
+                }
             }
-            ExprData::Symbol { name, .. } => Err(JitError::UnsupportedNode(format!(
-                "unbound symbol '{name}'"
-            ))),
             ExprData::Add(args) => {
                 let mut acc = f64_type.const_float(0.0);
                 for &a in &args {
@@ -2872,6 +2877,8 @@ mod tests {
         &[1.0, 2.0, 3.0],
         // Four arguments: `jacobi_p(n, a, b, x)`.
         &[2.0, 0.5, 0.5, 0.3],
+        // `hyper(0, 1, b, z)`: ₀F₁(; 1; 0.5).
+        &[0.0, 1.0, 1.0, 0.5],
     ];
 
     /// Every primitive in [`PrimitiveRegistry::default_registry`] that has a

@@ -319,7 +319,7 @@ fn factorial(n: u32) -> Integer {
 }
 
 /// `Γ(q)` for a half-integer `q` with `|q| ≤ 60`: a rational multiple of `√π`.
-fn gamma_half_integer(q: &Rational, pool: &ExprPool) -> Option<ExprId> {
+pub(crate) fn gamma_half_integer(q: &Rational, pool: &ExprPool) -> Option<ExprId> {
     if *q.denom() != 2 {
         return None;
     }
@@ -1118,7 +1118,9 @@ pub(super) fn is_nonneg(e: ExprId, pool: &ExprPool, depth: u32) -> bool {
             }
         }
         ExprData::Symbol { name, domain, .. } => {
-            if matches!(domain, Domain::Positive | Domain::NonNegative) || name == "pi" {
+            if matches!(domain, Domain::Positive | Domain::NonNegative)
+                || crate::eval::symbols::constant_value_f64(name).is_some()
+            {
                 K::Yes
             } else {
                 K::No

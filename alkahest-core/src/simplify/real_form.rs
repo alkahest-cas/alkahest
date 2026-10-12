@@ -325,7 +325,7 @@ fn sign_set_uncached(
             if pool.is_imaginary_unit(expr) || domain == Domain::Complex {
                 return None;
             }
-            if crate::eval::symbols::is_pi(expr, pool) {
+            if crate::eval::symbols::is_real_constant(expr, pool) {
                 return Some(SignSet::POS);
             }
             match domain {

@@ -569,6 +569,54 @@ extern "C" {
         prec: slong,
     );
     pub fn acb_polylog(res: *mut AcbStruct, s: *const AcbStruct, z: *const AcbStruct, prec: slong);
+
+    // -- Constants, polygamma, hypergeometric (G11c) -----------------------
+    // Used by `crate::ball` (named constants) and `crate::specfun::gamma` /
+    // `crate::specfun::hyper`.
+    pub fn arb_const_euler(z: *mut ArbStruct, prec: slong);
+    pub fn arb_const_catalan(z: *mut ArbStruct, prec: slong);
+    pub fn arb_const_glaisher(z: *mut ArbStruct, prec: slong);
+    pub fn acb_polygamma(
+        res: *mut AcbStruct,
+        s: *const AcbStruct,
+        z: *const AcbStruct,
+        prec: slong,
+    );
+    /// `a` and `b` point at contiguous arrays of `p` and `q` balls.
+    pub fn arb_hypgeom_pfq(
+        res: *mut ArbStruct,
+        a: *const ArbStruct,
+        p: slong,
+        b: *const ArbStruct,
+        q: slong,
+        z: *const ArbStruct,
+        regularized: c_int,
+        prec: slong,
+    );
+    pub fn arb_hypgeom_0f1(
+        res: *mut ArbStruct,
+        a: *const ArbStruct,
+        z: *const ArbStruct,
+        regularized: c_int,
+        prec: slong,
+    );
+    pub fn arb_hypgeom_1f1(
+        res: *mut ArbStruct,
+        a: *const ArbStruct,
+        b: *const ArbStruct,
+        z: *const ArbStruct,
+        regularized: c_int,
+        prec: slong,
+    );
+    pub fn arb_hypgeom_2f1(
+        res: *mut ArbStruct,
+        a: *const ArbStruct,
+        b: *const ArbStruct,
+        c: *const ArbStruct,
+        z: *const ArbStruct,
+        regularized: c_int,
+        prec: slong,
+    );
 }
 
 // ---------------------------------------------------------------------------

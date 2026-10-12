@@ -1,4 +1,7 @@
-//! Bessel, Airy, Riemann/Hurwitz zeta and polylogarithm functions (G11b).
+//! Bessel, Airy, Riemann/Hurwitz zeta and polylogarithm functions (G11b);
+//! `Γ`/`ψ`/`ψ⁽ⁿ⁾` exact values, their Laurent series at the poles and the
+//! named constants `EulerGamma`, `Catalan`, `Glaisher` (`gamma.rs`, G11c); the
+//! generalized hypergeometric `ₚFq` (`hyper.rs`, G11c).
 //!
 //! # Nodes and conventions
 //!
@@ -56,9 +59,13 @@
 //! [`MAX_EXPAND_ORDER`].
 
 pub(crate) mod closed;
+pub(crate) mod gamma;
+pub(crate) mod hyper;
 pub(crate) mod numeric;
 pub(crate) mod primitives;
 
+#[cfg(test)]
+mod g11c_tests;
 #[cfg(test)]
 mod tests;
 
@@ -69,6 +76,9 @@ pub use crate::orthopoly::SpecialFunctionError;
 use crate::orthopoly::{int_literal, mk_mul, rational_literal};
 
 use numeric::Kernel;
+
+pub use gamma::{catalan, euler_gamma, glaisher, polygamma};
+pub use hyper::{expand_hyper, hyper, MAX_TERMINATING_DEGREE};
 
 /// Largest `|order|` that [`bessel`] / [`spherical_bessel`] expand into
 /// elementary functions; past it they refuse with `E-SPECFN-004` (build the

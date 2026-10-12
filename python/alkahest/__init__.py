@@ -215,6 +215,7 @@ from .alkahest import (  # noqa: F401
     cancel,
     # Phase 18: Acausal modelling (component constructors)
     capacitor,
+    catalan,
     ceil,
     chebyshev_t,
     chebyshev_u,
@@ -248,6 +249,8 @@ from .alkahest import (  # noqa: F401
     equivalent,
     erf,
     erfc,
+    # G11c — named constants, polygamma, hypergeometric pFq
+    euler_gamma,
     # Undefined functions f(t): Euler–Lagrange and friends
     euler_lagrange,
     eval_expr,
@@ -255,6 +258,7 @@ from .alkahest import (  # noqa: F401
     exp,
     # Exponential-integral family (DLMF §6.2)
     exp_integral_ei,
+    expand_hyper,
     expand_orthopoly,
     expand_special,
     factor_univariate_mod_p,
@@ -268,6 +272,7 @@ from .alkahest import (  # noqa: F401
     # V2-3: Sparse interpolation and sparse modular GCD
     gcd_sparse,
     gegenbauer_c,
+    glaisher,
     # V2-6: Approximate integer relations (LLL-backed heuristic — not Ferguson–Bailey PSLQ)
     guess_relation,
     hermite_h,
@@ -275,6 +280,7 @@ from .alkahest import (  # noqa: F401
     # Phase 24: Horner-form code emission
     horner,
     hurwitz_zeta,
+    hyper,
     im,
     integrate,
     interval_eval,
@@ -312,6 +318,7 @@ from .alkahest import (  # noqa: F401
     piecewise,
     # Phase 27: poly_normal
     poly_normal,
+    polygamma,
     polylog,
     product_definite,
     product_indefinite,
@@ -3076,6 +3083,7 @@ __all__ = [
     "capabilities",
     "capacitor",
     "care",
+    "catalan",
     "ceil",
     # V5-12 — certificate ledger
     "certifiable",
@@ -3125,6 +3133,8 @@ __all__ = [
     "equivalent",
     "erf",
     "erfc",
+    # G11c — named constants
+    "euler_gamma",
     # Undefined functions f(t) under diff
     "euler_lagrange",
     "eval_expr",
@@ -3132,6 +3142,7 @@ __all__ = [
     "exp",
     # Exponential-integral family (DLMF §6.2)
     "exp_integral_ei",
+    "expand_hyper",
     "expand_orthopoly",
     "expand_special",
     # V1-16 — Expr ↔ GbPoly round trip
@@ -3148,6 +3159,7 @@ __all__ = [
     "gcd_sparse",
     "gegenbauer_c",
     "get_context_value",
+    "glaisher",
     "grad",
     # M2 — fit a P-recursive recurrence to a sequence, guarded
     "guess_holonomic",
@@ -3158,6 +3170,7 @@ __all__ = [
     # Phase 24
     "horner",
     "hurwitz_zeta",
+    "hyper",
     "im",
     "integrate",
     # P1 search plumbing item 5 — batch/streaming fan-out
@@ -3224,6 +3237,7 @@ __all__ = [
     "plot_svg",
     # Phase 27
     "poly_normal",
+    "polygamma",
     "polylog",
     "primary_decomposition",
     "product_definite",

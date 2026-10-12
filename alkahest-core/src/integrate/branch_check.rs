@@ -413,8 +413,8 @@ fn walk_uncached(
         ExprData::Symbol { .. } => {
             if pool.is_imaginary_unit(expr) {
                 Some(I)
-            } else if crate::eval::symbols::is_pi(expr, pool) {
-                Some(C::real(std::f64::consts::PI))
+            } else if let Some(v) = crate::eval::symbols::constant_value_of(expr, pool) {
+                Some(C::real(v))
             } else {
                 None
             }

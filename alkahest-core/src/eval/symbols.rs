@@ -66,10 +66,58 @@ pub(crate) fn pi_symbol(pool: &ExprPool) -> ExprId {
     pool.symbol(PI_NAME, crate::kernel::Domain::Real)
 }
 
-/// Is `expr` a symbol that already denotes a number — `π` or the imaginary
-/// unit — and so must never be bound to a sampled value?
+/// The name the Euler–Mascheroni constant `γ = 0.5772…` is interned under
+/// (SymPy's and Mathematica's spelling).
+pub(crate) const EULER_GAMMA_NAME: &str = "EulerGamma";
+/// The name Catalan's constant `G = Σ (−1)ᵏ/(2k+1)² = 0.9159…` is interned
+/// under.
+pub(crate) const CATALAN_NAME: &str = "Catalan";
+/// The name the Glaisher–Kinkelin constant `A = 1.2824…` is interned under.
+pub(crate) const GLAISHER_NAME: &str = "Glaisher";
+
+/// The `f64` value of a named real constant — `π`, `γ` (`EulerGamma`),
+/// Catalan's `G` and Glaisher's `A` — or `None` for any other name.
+///
+/// Like `π`, the other three are ordinary [`ExprData::Symbol`] nodes: they
+/// print, parse and substitute as symbols, and every evaluator resolves them
+/// through this one table (an explicit binding still wins). They are **never**
+/// folded into a float literal by a symbolic path — `ψ(1)` is `−EulerGamma`,
+/// not `−0.5772…`.
+pub(crate) fn constant_value_f64(name: &str) -> Option<f64> {
+    match name {
+        PI_NAME => Some(std::f64::consts::PI),
+        EULER_GAMMA_NAME => Some(0.577_215_664_901_532_9),
+        CATALAN_NAME => Some(0.915_965_594_177_219),
+        GLAISHER_NAME => Some(1.282_427_129_100_622_6),
+        _ => None,
+    }
+}
+
+/// The `f64` value of `expr` when it is one of the named real constants of
+/// [`constant_value_f64`] (all of them are positive).
+pub(crate) fn constant_value_of(expr: ExprId, pool: &ExprPool) -> Option<f64> {
+    pool.with(expr, |d| match d {
+        ExprData::Symbol { name, .. } => constant_value_f64(name),
+        _ => None,
+    })
+}
+
+/// Is `expr` one of the named real constants of [`constant_value_f64`]?
+pub(crate) fn is_real_constant(expr: ExprId, pool: &ExprPool) -> bool {
+    constant_value_of(expr, pool).is_some()
+}
+
+/// The Euler–Mascheroni constant `γ`, interned in `pool` (same domain as
+/// [`pi_symbol`], for the same reason).
+pub(crate) fn euler_gamma_symbol(pool: &ExprPool) -> ExprId {
+    pool.symbol(EULER_GAMMA_NAME, crate::kernel::Domain::Real)
+}
+
+/// Is `expr` a symbol that already denotes a number — `π`, `γ`, Catalan's or
+/// Glaisher's constant, or the imaginary unit — and so must never be bound to
+/// a sampled value?
 pub(crate) fn is_named_constant(expr: ExprId, pool: &ExprPool) -> bool {
-    is_pi(expr, pool) || pool.is_imaginary_unit(expr)
+    is_real_constant(expr, pool) || pool.is_imaginary_unit(expr)
 }
 
 /// Visit every [`ExprData::Symbol`] node reachable from `expr`.
@@ -121,6 +169,34 @@ mod tests {
         let mut free = Vec::new();
         collect_free_symbols(e, &p, &mut free);
         assert_eq!(free, vec![k]);
+    }
+
+    #[test]
+    fn named_constants_resolve_in_every_real_evaluator() {
+        use crate::ball::IntervalEval;
+        use std::collections::HashMap;
+
+        let p = ExprPool::new();
+        let empty: HashMap<ExprId, f64> = HashMap::new();
+        for (name, want) in [
+            (EULER_GAMMA_NAME, 0.577_215_664_901_532_9_f64),
+            (CATALAN_NAME, 0.915_965_594_177_219),
+            (GLAISHER_NAME, 1.282_427_129_100_622_6),
+        ] {
+            let c = p.symbol(name, Domain::Real);
+            assert!(is_named_constant(c, &p));
+            let mut free = Vec::new();
+            collect_free_symbols(c, &p, &mut free);
+            assert!(free.is_empty());
+            assert!((crate::eval::eval_f64(c, &p, &empty).unwrap() - want).abs() < 1e-15);
+            assert!((crate::jit::eval_interp(c, &empty, &p).unwrap() - want).abs() < 1e-15);
+            let ball = crate::eval::eval_interval(c, &p, &IntervalEval::new(200)).unwrap();
+            assert!(ball.lo().to_f64() <= want && want <= ball.hi().to_f64());
+            assert!(
+                ball.rad_f64() < 1e-50,
+                "{name} enclosure is not tight: {ball}"
+            );
+        }
     }
 
     /// The evaluators resolve `π` themselves, so no caller has to bind it —

@@ -759,7 +759,12 @@ mod tests {
         for f in [
             pool.func("floor", vec![x]),
             pool.func("zeta", vec![x]),
-            pool.mul(vec![y, pool.func("trigamma", vec![pool.mul(vec![x, x])])]),
+            // `trigamma` differentiates since G11c; an order that depends on
+            // the variable still does not.
+            pool.mul(vec![
+                y,
+                pool.func("polygamma", vec![x, pool.mul(vec![x, x])]),
+            ]),
         ] {
             let err = try_grad(f, &[x, y], &pool).unwrap_err();
             assert!(matches!(err, DiffError::UnknownFunction(_)), "{err:?}");

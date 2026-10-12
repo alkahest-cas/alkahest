@@ -396,8 +396,10 @@ impl<'a> Builder<'a> {
                 // resolves it without a binding (see `eval::symbols`), and so
                 // does the emitted C.  A caller that lists it as an input has
                 // already been answered by the `vars` lookup above.
-                if name == crate::eval::symbols::PI_NAME {
-                    self.lit(c_double_literal(std::f64::consts::PI))
+                // `EulerGamma`, `Catalan` and `Glaisher` are emitted the same
+                // way: a correctly rounded `double` literal.
+                if let Some(v) = crate::eval::symbols::constant_value_f64(&name) {
+                    self.lit(c_double_literal(v))
                 } else {
                     return Err(EmitCError::MissingVariable(name));
                 }

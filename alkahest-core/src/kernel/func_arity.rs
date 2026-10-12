@@ -51,6 +51,11 @@ pub fn known_func_arity(name: &str) -> Option<(usize, usize)> {
         "bessel_j" | "bessel_y" | "bessel_i" | "bessel_k" | "spherical_jn" | "spherical_yn"
         | "hurwitz_zeta" | "polylog" => Some((2, 2)),
         "airy_ai" | "airy_bi" | "airy_ai_prime" | "airy_bi_prime" | "zeta" => one,
+        // G11c: `polygamma(n, x)`; `hyper(p, q, a1..ap, b1..bq, z)` — the
+        // count must also equal `p + q + 3`, which `crate::specfun::hyper`
+        // checks (a malformed node is kept and declined, never indexed).
+        "polygamma" => Some((2, 2)),
+        "hyper" => Some((3, usize::MAX)),
         "min" | "max" => Some((2, usize::MAX)),
         _ => None,
     }
@@ -270,6 +275,8 @@ mod wrong_arity_sweep {
         "zeta",
         "hurwitz_zeta",
         "polylog",
+        "polygamma",
+        "hyper",
     ];
 
     type Op<'a> = (&'static str, Box<dyn Fn() + 'a>);

@@ -598,9 +598,8 @@ fn eval2_inner(
         }
         ExprData::Float(f) => Some(f.inner.to_f64()),
         ExprData::Symbol { name, .. } => match name.as_str() {
-            "pi" => Some(std::f64::consts::PI),
             "e" => Some(std::f64::consts::E),
-            _ => None,
+            other => crate::eval::symbols::constant_value_f64(other),
         },
         ExprData::Add(xs) => {
             let mut s = 0.0;

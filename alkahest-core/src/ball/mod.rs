@@ -1190,6 +1190,58 @@ pub(crate) fn pi_ball(prec: u32) -> ArbBall {
     b
 }
 
+/// An enclosure of a named real constant (`pi`, `EulerGamma`, `Catalan`,
+/// `Glaisher` — see [`crate::eval::symbols::constant_value_f64`]) at `prec`
+/// bits, or `None` for any other symbol.
+///
+/// `π`, `γ` and `G` come from MPFR (correctly rounded, then widened by an ulp
+/// as [`pi_ball`] does); Glaisher's `A` from Arb's `arb_const_glaisher`, so it
+/// declines in a build without Arb rather than guessing.
+pub(crate) fn named_constant_ball(name: &str, prec: u32) -> Option<ArbBall> {
+    use crate::eval::symbols::{CATALAN_NAME, EULER_GAMMA_NAME, GLAISHER_NAME, PI_NAME};
+    let mpfr = |c: rug::float::Constant| {
+        let mut b = ArbBall {
+            mid: Float::with_val(prec, c),
+            rad: Float::new(prec),
+            prec,
+        };
+        b.add_rounding_error();
+        b
+    };
+    match name {
+        PI_NAME => Some(pi_ball(prec)),
+        EULER_GAMMA_NAME => Some(mpfr(rug::float::Constant::Euler)),
+        CATALAN_NAME => Some(mpfr(rug::float::Constant::Catalan)),
+        GLAISHER_NAME => glaisher_ball(prec),
+        _ => None,
+    }
+}
+
+#[cfg(flint_arb)]
+fn glaisher_ball(prec: u32) -> Option<ArbBall> {
+    use crate::flint::acb::Arb;
+    if crate::flint::arb::abi_self_check().is_err() {
+        return None;
+    }
+    let mut a = Arb::new();
+    unsafe { crate::flint::arb::arb_const_glaisher(a.as_mut_ptr(), i64::from(prec) + 16) };
+    let mid = a.midpoint_rug()?;
+    let rad = a.radius_rug()?;
+    let mid_r = Float::with_val(prec, &mid);
+    let err = Float::with_val(mid.prec().max(prec) + 2, &mid - &mid_r).abs();
+    let rad_r = Float::with_val_round(prec, &rad + &err, Round::Up).0;
+    Some(ArbBall {
+        mid: mid_r,
+        rad: rad_r,
+        prec,
+    })
+}
+
+#[cfg(not(flint_arb))]
+fn glaisher_ball(_prec: u32) -> Option<ArbBall> {
+    None
+}
+
 /// `2/√π ≈ 1.1283791…`, the Lipschitz constant of `erf` and `erfc`, rounded
 /// **up**.  `Float::with_val(prec, 2.0/π.sqrt())` rounds to nearest, and a
 /// Lipschitz constant rounded down is not a Lipschitz constant.
@@ -1513,11 +1565,11 @@ impl IntervalEval {
             // evaluator that reports `None` for `π/2` is reporting the
             // spelling rather than the mathematics.  An explicit binding still
             // wins.  The imaginary unit stays unbound: it is not a real ball.
-            ExprData::Symbol { .. } => self
+            ExprData::Symbol { name, .. } => self
                 .bindings
                 .get(&expr)
                 .cloned()
-                .or_else(|| crate::eval::symbols::is_pi(expr, pool).then(|| pi_ball(self.prec))),
+                .or_else(|| named_constant_ball(&name, self.prec)),
             ExprData::Add(args) => {
                 let mut acc = ArbBall::from_f64(0.0, self.prec);
                 for &a in &args {
@@ -1786,7 +1838,10 @@ mod tests {
                 // polynomials take `[n, params…, x]`) gets constant leading
                 // arguments: degree 2, parameters 1/2.
                 let mut args = vec![x];
-                if let Some((lo, hi)) = crate::kernel::known_func_arity(name) {
+                if *name == "hyper" {
+                    // `hyper(0, 1, b, z)`: ₀F₁(; 1; x).
+                    args = vec![pool.integer(0), pool.integer(1), pool.integer(1), x];
+                } else if let Some((lo, hi)) = crate::kernel::known_func_arity(name) {
                     if lo == hi && lo > 1 {
                         args = std::iter::once(pool.integer(2))
                             .chain(std::iter::repeat_n(pool.rational(1, 2), lo - 2))

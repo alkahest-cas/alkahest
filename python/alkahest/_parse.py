@@ -163,6 +163,9 @@ _FUNC_NAMES = frozenset(
         "zeta",
         "hurwitz_zeta",
         "polylog",
+        # Polygamma and hypergeometric pFq (G11c), read back as the node.
+        "polygamma",
+        "hyper",
         # Reciprocal trig / hyperbolic functions (desugared to base(x) ** -1).
         "sec",
         "csc",
@@ -681,7 +684,26 @@ def _apply_func(name: str, args: list, offset: int, pool=None):
         "zeta": _ak.zeta,
         "hurwitz_zeta": _ak.hurwitz_zeta,
         "polylog": _ak.polylog,
+        "polygamma": _ak.polygamma,
     }
+    # ``hyper(p, q, a1..ap, b1..bq, z)`` — the printed form of
+    # ``alkahest.hyper([a…], [b…], z)``; the two leading integers split the
+    # parameter list.  Mirrors ``crate::specfun::hyper::parts``.
+    if name == "hyper":
+        span = (offset, offset + len(name))
+        try:
+            p, q = int(str(args[0])), int(str(args[1]))
+        except (IndexError, ValueError):
+            raise ParseError(
+                "hyper(p, q, a1..ap, b1..bq, z) needs integer literals p and q",
+                span=span,
+            ) from None
+        if p < 0 or q < 0 or len(args) != p + q + 3:
+            raise ParseError(
+                f"hyper({p}, {q}, ...) takes {p + q + 3} arguments, got {len(args)}",
+                span=span,
+            )
+        return _ak.hyper(list(args[2 : 2 + p]), list(args[2 + p : 2 + p + q]), args[-1])
     # Desugar ``cbrt(u)`` to ``u ** (1/3)``.  It is not a registered primitive
     # and is not being made one: the power node already differentiates,
     # evaluates, simplifies and integrates.  The one thing this does not
@@ -761,6 +783,7 @@ _ARITY: dict[str, tuple[int, int]] = {
     "spherical_yn": (2, 2),
     "hurwitz_zeta": (2, 2),
     "polylog": (2, 2),
+    "polygamma": (2, 2),
 }
 
 
