@@ -431,6 +431,58 @@ extern "C" {
         tau: *const AcbStruct,
         prec: slong,
     );
+
+    // -- arb_hypgeom: orthogonal polynomials / functions (G11a) -------------
+    // Used by `crate::orthopoly::numeric`. Each accepts a non-integer degree
+    // (the hypergeometric continuation, DLMF 18.5 / 14.3).
+    pub fn arb_hypgeom_legendre_p(
+        res: *mut ArbStruct,
+        n: *const ArbStruct,
+        m: *const ArbStruct,
+        z: *const ArbStruct,
+        kind: c_int,
+        prec: slong,
+    );
+    pub fn arb_hypgeom_hermite_h(
+        res: *mut ArbStruct,
+        nu: *const ArbStruct,
+        z: *const ArbStruct,
+        prec: slong,
+    );
+    pub fn arb_hypgeom_laguerre_l(
+        res: *mut ArbStruct,
+        n: *const ArbStruct,
+        m: *const ArbStruct,
+        z: *const ArbStruct,
+        prec: slong,
+    );
+    pub fn arb_hypgeom_chebyshev_t(
+        res: *mut ArbStruct,
+        nu: *const ArbStruct,
+        z: *const ArbStruct,
+        prec: slong,
+    );
+    pub fn arb_hypgeom_chebyshev_u(
+        res: *mut ArbStruct,
+        nu: *const ArbStruct,
+        z: *const ArbStruct,
+        prec: slong,
+    );
+    pub fn arb_hypgeom_gegenbauer_c(
+        res: *mut ArbStruct,
+        n: *const ArbStruct,
+        m: *const ArbStruct,
+        z: *const ArbStruct,
+        prec: slong,
+    );
+    pub fn arb_hypgeom_jacobi_p(
+        res: *mut ArbStruct,
+        n: *const ArbStruct,
+        a: *const ArbStruct,
+        b: *const ArbStruct,
+        z: *const ArbStruct,
+        prec: slong,
+    );
 }
 
 // ---------------------------------------------------------------------------

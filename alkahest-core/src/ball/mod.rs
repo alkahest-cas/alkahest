@@ -1782,7 +1782,19 @@ mod tests {
             .iter()
             .filter(|(_, caps)| caps.contains(Capabilities::NUMERIC_BALL))
             .filter(|(name, _)| {
-                let call = pool.func(*name, vec![x]);
+                // A fixed-arity multi-argument primitive (the orthogonal
+                // polynomials take `[n, params…, x]`) gets constant leading
+                // arguments: degree 2, parameters 1/2.
+                let mut args = vec![x];
+                if let Some((lo, hi)) = crate::kernel::known_func_arity(name) {
+                    if lo == hi && lo > 1 {
+                        args = std::iter::once(pool.integer(2))
+                            .chain(std::iter::repeat_n(pool.rational(1, 2), lo - 2))
+                            .chain([x])
+                            .collect();
+                    }
+                }
+                let call = pool.func(*name, args);
                 probes.iter().all(|&probe| {
                     let mut ev = IntervalEval::new(128);
                     ev.bind(x, ArbBall::from_f64(probe, 128));

@@ -546,6 +546,13 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-UNIT-005", class: "UnitError", cause: Cause::UserInput,   remediation: Some("give every symbol (or applied function such as C(t)) a unit in the units mapping") },
     ErrorSpec { code: "E-UNIT-006", class: "UnitError", cause: Cause::UserInput,   remediation: Some("assign the same unit to every symbol of one dimension (e.g. all times in h), or convert the quantities before forming the sum") },
     ErrorSpec { code: "E-UNIT-007", class: "UnitError", cause: Cause::Unsupported, remediation: Some("use the coherent SI unit (e.g. m^(1/2) instead of km^(1/2)) for fractional powers") },
+    // E-SPECFN — SpecialFunctionError (orthogonal polynomials, spherical
+    // harmonics, Wigner 3j/6j and Clebsch–Gordan coefficients, G11a)
+    ErrorSpec { code: "E-SPECFN-001", class: "SpecialFunctionError", cause: Cause::UserInput,   remediation: Some("pass integers or half-integers (ints, Fractions such as Fraction(1, 2), or floats that are exactly k/2)") },
+    ErrorSpec { code: "E-SPECFN-002", class: "SpecialFunctionError", cause: Cause::UserInput,   remediation: Some("angular momenta j and l are non-negative; only the projections m may be negative") },
+    ErrorSpec { code: "E-SPECFN-003", class: "SpecialFunctionError", cause: Cause::UserInput,   remediation: Some("spherical harmonics are built explicitly for integer l and m only; substitute integers before calling") },
+    ErrorSpec { code: "E-SPECFN-004", class: "SpecialFunctionError", cause: Cause::Resource,    remediation: Some("keep the polynomial symbolic (expand=False) and evaluate it numerically, or ask for a smaller degree / angular momentum") },
+    ErrorSpec { code: "E-SPECFN-005", class: "SpecialFunctionError", cause: Cause::UserInput,   remediation: Some("check the family's signature, e.g. jacobi_p(n, a, b, x)") },
     // E-QUAT — QuaternionError (Hamilton quaternions and the rotation operator)
     ErrorSpec { code: "E-QUAT-001", class: "QuaternionError", cause: Cause::Domain,    remediation: Some("use a non-zero quaternion; if the components are symbolic, substitute concrete values or declare the parameters so the norm can be decided") },
     // The identity rotation has no axis — *every* unit vector is one.  Returning

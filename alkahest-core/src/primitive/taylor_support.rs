@@ -293,10 +293,23 @@ mod tests {
             // Two probe points, because no single one is inside every
             // domain. Declining an out-of-domain argument is not the failure
             // under test.
+            // Fixed-arity multi-argument primitives (the orthogonal
+            // polynomials, `[n, params…, x]`) get degree 2, parameters 1/2.
+            let lead: Vec<f64> = match crate::kernel::known_func_arity(name) {
+                Some((lo, hi)) if lo == hi && lo > 1 => std::iter::once(2.0)
+                    .chain(std::iter::repeat_n(0.5, lo - 2))
+                    .collect(),
+                _ => vec![],
+            };
             assert!(
-                [1.0_f64, 0.5].into_iter().any(|v| reg
-                    .numeric_ball(name, &[ArbBall::from_f64(v, 128)])
-                    .is_some()),
+                [1.0_f64, 0.5].into_iter().any(|v| {
+                    let args: Vec<ArbBall> = lead
+                        .iter()
+                        .chain([&v])
+                        .map(|&a| ArbBall::from_f64(a, 128))
+                        .collect();
+                    reg.numeric_ball(name, &args).is_some()
+                }),
                 "`{name}` advertises numeric_ball but has none"
             );
         }

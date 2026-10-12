@@ -49,6 +49,7 @@ For optional Cargo features (``jit``, ``parallel``, ``cuda``, …) and full deve
    api/transform
    api/units
    api/controls
+   api/orthopoly
 
 .. toctree::
    :maxdepth: 2
