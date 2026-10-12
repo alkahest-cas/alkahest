@@ -189,7 +189,7 @@ fn explicit_bessel(
         return Ok(None);
     }
     // ν = m + 1/2
-    let m = Rational::from(&q - Rational::from((1, 2)));
+    let m: Rational = &q - Rational::from((1, 2));
     let m = m.numer().to_i64().filter(|m| m.abs() <= MAX_EXPAND_ORDER);
     let Some(m) = m else {
         return Err(SpecialFunctionError::TooLarge {

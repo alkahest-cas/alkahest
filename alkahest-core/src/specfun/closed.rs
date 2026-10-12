@@ -239,7 +239,7 @@ pub(crate) fn laurent(pool: &ExprPool, c: &TPoly, x: ExprId, offset: &Rational) 
         if *ck == 0 {
             continue;
         }
-        let e = Rational::from(offset - Rational::from(k as u64));
+        let e = offset - Rational::from(k as u64);
         let xp = if e == 0 {
             pool.integer(1)
         } else if e == 1 {
