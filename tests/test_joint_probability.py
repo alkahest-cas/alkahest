@@ -365,8 +365,11 @@ def test_order_statistics_with_symbolic_n():
     pdf = emax.pdf(x)
     env = {"n": 4, "lam": 1.7, "x": 0.9}
     assert num(ak.diff(cdf, x).value, env) == pytest.approx(num(pdf, env), rel=1e-10)
+    # a Normal base is accepted (density and CDF are exact); its symbolic-n
+    # moments are not tabled and refuse
+    normal_max = ex.order_statistic(ex.Normal(0 * n, POOL.integer(1)), n)
     with pytest.raises(ak.AlkahestError) as e:
-        ex.order_statistic(ex.Normal(0 * n, POOL.integer(1)), n)
+        normal_max.mean()
     assert code_of(e) == "E-PROB-002"
     with pytest.raises(ak.AlkahestError) as e:
         ex.order_statistic(ex.Exponential(lam), POOL.rational(3, 2))

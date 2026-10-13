@@ -10,10 +10,11 @@ use pyo3::prelude::*;
 use pyo3::types::{PyList, PyTuple};
 
 use alkahest_core::prob::{
-    covariance as core_covariance, joint_expectation as core_joint_expectation,
-    joint_variance as core_joint_variance, order_statistic as core_order_statistic,
-    sum_independent as core_sum_independent, Distribution as CoreDistribution, JointBlock,
-    MultivariateNormal as CoreMvn, OrderKind, OrderStatistic as CoreOrderStatistic,
+    covariance as core_covariance, entropy_asymptotic as core_entropy_asymptotic,
+    joint_expectation as core_joint_expectation, joint_variance as core_joint_variance,
+    order_statistic as core_order_statistic, sum_independent as core_sum_independent,
+    Distribution as CoreDistribution, JointBlock, MultivariateNormal as CoreMvn, OrderKind,
+    OrderStatistic as CoreOrderStatistic,
 };
 use alkahest_core::{ExprId, ExprPool};
 
@@ -92,6 +93,14 @@ fn matrix(
         .extract()
         .map_err(|_| PyTypeError::new_err("expected a Matrix or a list of rows of expressions"))?;
     rows.iter().map(|r| vector(py, pool, r)).collect()
+}
+
+fn base_id(pool: &Py<PyExprPool>, base: Option<PyRef<PyExpr>>) -> PyResult<Option<ExprId>> {
+    match base {
+        None => Ok(None),
+        Some(b) if b.pool.is(pool) => Ok(Some(b.id)),
+        Some(_) => Err(pool_mismatch_err()),
+    }
 }
 
 fn to_indices(ob: Vec<i64>, what: &str) -> PyResult<Vec<usize>> {
@@ -293,6 +302,53 @@ impl PyMultivariateNormal {
         Ok(PyMultivariateNormal {
             inner,
             pool: self.pool.clone_ref(py),
+        })
+    }
+
+    /// The differential entropy ``h = (1/2) log((2 pi e)^d det Sigma)``
+    /// (nats; ``base=2`` for bits). Independent of the mean; can be negative.
+    #[pyo3(signature = (base=None))]
+    fn entropy(&self, py: Python<'_>, base: Option<PyRef<PyExpr>>) -> PyResult<PyExpr> {
+        let b = base_id(&self.pool, base)?;
+        derived(py, &self.pool, |p| self.inner.entropy(b, p))
+    }
+
+    /// ``KL(self || other) = (1/2)[tr(S1^-1 S0) + (m1-m0)^T S1^-1 (m1-m0) - d +
+    /// log(det S1 / det S0)]`` between two multivariate normals of the same
+    /// dimension. Not symmetric. Raises ``E-PROB-002`` on a dimension mismatch.
+    #[pyo3(signature = (other, base=None))]
+    fn kl_divergence(
+        &self,
+        py: Python<'_>,
+        other: PyRef<PyMultivariateNormal>,
+        base: Option<PyRef<PyExpr>>,
+    ) -> PyResult<PyExpr> {
+        if !other.pool.is(&self.pool) {
+            return Err(pool_mismatch_err());
+        }
+        let b = base_id(&self.pool, base)?;
+        derived(py, &self.pool, |p| {
+            self.inner.kl_divergence(&other.inner, b, p)
+        })
+    }
+
+    /// The mutual information ``I(X_A; X_B)`` between the components
+    /// ``a`` and ``b`` (disjoint lists of 0-based indices):
+    /// ``-(1/2) log det(I - S_AA^-1 S_AB S_BB^-1 S_BA)``. For two scalar
+    /// components with correlation ``rho`` this is ``-(1/2) log(1 - rho^2)``.
+    #[pyo3(signature = (a, b, base=None))]
+    fn mutual_information(
+        &self,
+        py: Python<'_>,
+        a: Vec<i64>,
+        b: Vec<i64>,
+        base: Option<PyRef<PyExpr>>,
+    ) -> PyResult<PyExpr> {
+        let ia = to_indices(a, "mutual_information")?;
+        let ib = to_indices(b, "mutual_information")?;
+        let bs = base_id(&self.pool, base)?;
+        derived(py, &self.pool, |p| {
+            self.inner.mutual_information(&ia, &ib, bs, p)
         })
     }
 
@@ -498,22 +554,39 @@ impl PyOrderStatistic {
             .iter()
             .map(|&p| pool.inner.display(p).to_string())
             .collect();
+        let kind = match self.inner.kind() {
+            OrderKind::Kth(k) => format!("k={}", pool.inner.display(k)),
+            _ => self.kind().to_string(),
+        };
         format!(
             "OrderStatistic({}, {}({}), n={})",
-            self.kind(),
+            kind,
             base.kind().name(),
             args.join(", "),
             pool.inner.display(self.inner.n())
         )
     }
 
-    /// ``"min"`` or ``"max"``.
+    /// ``"min"``, ``"max"`` or ``"kth"`` (the ``k``-th smallest; a literal
+    /// ``k = 1`` or ``k = n`` is normalised to ``"min"`` / ``"max"``).
     #[getter]
     fn kind(&self) -> &'static str {
         match self.inner.kind() {
             OrderKind::Min => "min",
+            OrderKind::Kth(_) => "kth",
             _ => "max",
         }
+    }
+
+    /// The rank ``k`` (1-based, counted from the smallest): ``1`` for
+    /// ``"min"``, ``n`` for ``"max"``.
+    #[getter]
+    fn k(&self, py: Python<'_>) -> PyExpr {
+        let id = {
+            let p = self.pool.borrow(py);
+            self.inner.rank(&p.inner)
+        };
+        wrap(py, &self.pool, id)
     }
 
     /// The sample size ``n``.
@@ -522,9 +595,12 @@ impl PyOrderStatistic {
         wrap(py, &self.pool, self.inner.n())
     }
 
-    /// ``P(M <= x)``: ``F(x)**n`` (max) or ``1 - (1 - F(x))**n`` (min), with
-    /// the base CDF verified and placed exactly as :meth:`Distribution.cdf`
-    /// does.
+    /// ``P(M <= x)``: ``F(x)**n`` (max), ``1 - (1 - F(x))**n`` (min) or, for
+    /// the ``k``-th smallest, the binomial tail
+    /// ``sum_{j=k}^{n} C(n, j) F**j (1 - F)**(n - j)`` (a literal ``n`` only;
+    /// a symbolic ``n`` or ``k`` raises ``E-PROB-004``: it is an incomplete
+    /// beta). The base CDF is verified and placed exactly as
+    /// :meth:`Distribution.cdf` does.
     fn cdf(&self, py: Python<'_>, x: PyRef<PyExpr>) -> PyResult<PyExpr> {
         if !x.pool.is(&self.pool) {
             return Err(pool_mismatch_err());
@@ -533,8 +609,10 @@ impl PyOrderStatistic {
         derived(py, &self.pool, |p| self.inner.cdf(id, p))
     }
 
-    /// The density on the support: ``n F**(n-1) f`` (max) or
-    /// ``n (1 - F)**(n-1) f`` (min).
+    /// The density on the support: ``n F**(n-1) f`` (max),
+    /// ``n (1 - F)**(n-1) f`` (min), and for the ``k``-th smallest
+    /// ``n!/((k-1)!(n-k)!) F**(k-1) (1 - F)**(n-k) f`` (a Gamma ratio when
+    /// ``n`` or ``k`` is symbolic).
     fn pdf(&self, py: Python<'_>, x: PyRef<PyExpr>) -> PyResult<PyExpr> {
         if !x.pool.is(&self.pool) {
             return Err(pool_mismatch_err());
@@ -546,7 +624,14 @@ impl PyOrderStatistic {
     /// ``E[M]``, verified against quadrature. ``Uniform(a, b)``:
     /// ``a + (b-a) n/(n+1)`` (max), ``a + (b-a)/(n+1)`` (min);
     /// ``Exponential(lam)``: ``H_n/lam = (digamma(n+1) - digamma(1))/lam``
-    /// (max), ``1/(n lam)`` (min).
+    /// (max), ``1/(n lam)`` (min) -- for a symbolic ``n``. For every other
+    /// case (the ``k``-th smallest, any other base law) ``n`` must be a
+    /// literal (at most 24) and the mean is the expectation of
+    /// ``x * f_(k)(x) / f(x)`` under the base law, computed by the integrator
+    /// and gated: it closes for ``Uniform``, ``Exponential``, and ``Beta`` /
+    /// ``Gamma`` with integer parameters, and raises ``E-PROB-003`` where the
+    /// integrator declines (the ``erf`` CDF of a ``Normal``), ``E-PROB-002``
+    /// for a symbolic ``n``.
     fn mean(&self, py: Python<'_>) -> PyResult<PyExpr> {
         derived(py, &self.pool, |p| self.inner.mean(p))
     }
@@ -575,29 +660,45 @@ impl PyOrderStatistic {
 /// ``kind="min"``, the minimum) of ``n`` iid copies of ``dist``, for a literal
 /// or **symbolic** ``n``.
 ///
-/// Tabled for ``Uniform`` and ``Exponential`` base laws; anything else raises
-/// ``E-PROB-002``. A numeric ``n`` that is not a positive integer raises
-/// ``E-PROB-001``; a symbolic ``n`` carries ``n > 0`` and ``n`` integer on
-/// :func:`prob_side_conditions`.
+/// With ``k=`` given, the ``k``-th smallest of ``n`` (1-based; ``k=1`` is the
+/// minimum, ``k=n`` the maximum): density
+/// ``n!/((k-1)!(n-k)!) F**(k-1) (1-F)**(n-k) f`` for **any continuous law with
+/// a closed-form CDF** (``Normal``, ``LogNormal``, ``Uniform``,
+/// ``Exponential``, ``Gamma`` with integer shape, ``Beta`` with integer
+/// parameters), and the CDF as a binomial tail for a literal ``n``. Moments:
+/// see :meth:`OrderStatistic.mean`.
+///
+/// A discrete base law raises ``E-PROB-002`` (ties change the density formula).
+/// A numeric ``n`` or ``k`` that is not a positive integer, or ``k > n``,
+/// raises ``E-PROB-001``; a symbolic ``n`` or ``k`` carries ``n > 0``,
+/// integrality and ``n - k + 1 > 0`` on :func:`prob_side_conditions`.
 ///
 /// Example::
 ///
 ///     order_statistic(Uniform(0, 1), n).mean()          # n/(n + 1)
 ///     order_statistic(Exponential(lam), n, "min").distribution()  # Exponential(n*lam)
+///     order_statistic(Normal(0, 1), 5, k=2).pdf(x)      # 20 F (1-F)**3 f
 #[pyfunction]
-#[pyo3(name = "order_statistic", signature = (dist, n, kind="max"))]
+#[pyo3(name = "order_statistic", signature = (dist, n, kind=None, k=None))]
 fn py_order_statistic(
     py: Python<'_>,
     dist: PyRef<PyDistribution>,
     n: Bound<'_, PyAny>,
-    kind: &str,
+    kind: Option<&str>,
+    k: Option<Bound<'_, PyAny>>,
 ) -> PyResult<PyOrderStatistic> {
     let pool = dist.pool.clone_ref(py);
     let n_id = coerce_substituent(&pool, &n, py)?;
-    let k = match kind {
-        "max" => OrderKind::Max,
-        "min" => OrderKind::Min,
-        other => {
+    let k = match (kind, k) {
+        (Some(_), Some(_)) => {
+            return Err(PyValueError::new_err(
+                "order_statistic: pass either kind=\"min\"/\"max\" or k=<rank>, not both",
+            ))
+        }
+        (_, Some(rank)) => OrderKind::Kth(coerce_substituent(&pool, &rank, py)?),
+        (None | Some("max"), None) => OrderKind::Max,
+        (Some("min"), None) => OrderKind::Min,
+        (Some(other), None) => {
             return Err(PyValueError::new_err(format!(
                 "order_statistic: kind must be \"min\" or \"max\", not {other:?}"
             )))
@@ -630,7 +731,38 @@ fn py_dist_negative_binomial(
     })
 }
 
+/// ``entropy_asymptotic(dist, base=None)`` -- the **large-parameter
+/// asymptotic** Shannon entropy of a ``Binomial`` (symbolic ``n`` allowed),
+/// ``NegativeBinomial`` or ``Poisson``, whose exact entropy has no closed form
+/// (:meth:`Distribution.entropy` refuses them):
+/// ``H ~ (1/2) log(2 pi e sigma^2) - gamma1^2/12`` with error ``O(sigma^-4)``,
+/// ``sigma^2`` the variance and ``gamma1`` the skewness.
+///
+/// **This is an approximation**, returned by its own function and recorded in
+/// the derivation under the rule ``prob_entropy_asymptotic_edgeworth`` so it
+/// can never be mistaken for the exact entropy. Use it only where ``n p (1-p)``
+/// (resp. ``r (1-p)/p^2``, ``lam``) is large.
+///
+/// Raises ``E-PROB-002`` for any other law, ``E-PROB-001`` for a numeric
+/// ``base`` that is ``<= 0`` or ``1``.
+///
+/// Example::
+///
+///     entropy_asymptotic(Binomial(n, p))   # 1/2 + log(2 pi n p (1-p))/2 - (1-2p)^2/(12 n p (1-p))
+#[pyfunction]
+#[pyo3(name = "entropy_asymptotic", signature = (dist, base=None))]
+fn py_entropy_asymptotic(
+    py: Python<'_>,
+    dist: PyRef<PyDistribution>,
+    base: Option<PyRef<PyExpr>>,
+) -> PyResult<PyExpr> {
+    let pool = dist.pool.clone_ref(py);
+    let b = base_id(&pool, base)?;
+    derived(py, &pool, |p| core_entropy_asymptotic(&dist.inner, b, p))
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(py_entropy_asymptotic, m)?)?;
     m.add_class::<PyMultivariateNormal>()?;
     m.add_class::<PyOrderStatistic>()?;
     m.add_function(wrap_pyfunction!(py_joint_expectation, m)?)?;

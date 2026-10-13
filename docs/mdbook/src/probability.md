@@ -200,12 +200,34 @@ common `p` (symbolic `n` allowed), negative binomials with a common `p`. A
 "common" parameter is the same expression; anything else is `E-PROB-002`.
 
 `order_statistic(dist, n, kind="max")` is the law of the maximum (or minimum)
-of `n` iid copies, `n` literal or symbolic, for `Uniform` and `Exponential`:
-`cdf`, `pdf`, a verified `mean` and `variance`
-(`E[max]` of exponentials is `(digamma(n+1) − digamma(1))/lam = H_n/lam`), and
+of `n` iid copies, `n` literal or symbolic: `cdf`, `pdf`, a verified `mean` and
+`variance` (tabled in closed form for `Uniform` and `Exponential`:
+`E[max]` of exponentials is `(digamma(n+1) − digamma(1))/lam = H_n/lam`), and
 `distribution()` where it is a named law (`min` of `Exponential(lam)` is
 `Exponential(n·lam)`; the extremes of `Uniform(0, 1)` are `Beta(n, 1)`,
 `Beta(1, n)`).
+
+`order_statistic(dist, n, k=k)` is the **`k`-th smallest** (1-based) for *any*
+continuous law with a closed-form CDF — `Normal`, `LogNormal`, `Uniform`,
+`Exponential`, `Gamma` with an integer shape, `Beta` with integer parameters:
+
+```text
+f_(k)(x) = n!/((k−1)!(n−k)!) · F(x)^{k−1} (1−F(x))^{n−k} · f(x)
+F_(k)(x) = Σ_{j=k}^{n} C(n,j) F(x)^j (1−F(x))^{n−j}        (literal n)
+```
+
+`n` and `k` may be symbolic for the density (a Gamma ratio, with `n > 0`,
+`k`, `n` integer and `n − k + 1 > 0` published on `prob_side_conditions()`);
+the CDF needs a literal `n` (otherwise it is an incomplete beta: `E-PROB-004`).
+`U_(k:n)` of `Uniform(0, 1)` is `Beta(k, n − k + 1)`. The **moments** are the
+expectation of `x · f_(k)(x)/f(x)` under the base law, computed by the
+integrator and checked against quadrature: exact rationals for integer `Beta`
+and `Gamma`, Rényi-type closed forms for `Exponential` (`E[X_(2:3)] = 5/(6λ)`),
+`μ + σ·3/(2√π)` for the maximum of three Normals. Where the integrator declines
+(a `Normal` with `n ≥ 4`, whose mean involves `arctan` constants) the moment is
+`E-PROB-003`, never a guess; a symbolic `n` outside the `Uniform`/`Exponential`
+extremes is `E-PROB-002`. A **discrete** base law is refused (`E-PROB-002`):
+ties change the density formula.
 
 ## Entropy, KL divergence, cross-entropy
 
@@ -236,9 +258,34 @@ tables and then checked against `−E_P[log q]`, which is neither of them — so
 identity is falsifiable rather than definitional.
 
 `mutual_information_independent(p, q)` is `0`, under an independence the caller
-asserts by choosing the name. There is no dependent case: the bivariate-normal
-`−log(1 − rho²)/2` would need a joint-distribution type this library does not
-have.
+asserts by choosing the name. The dependent case lives on the joint law:
+
+* `MultivariateNormal.mutual_information(a, b)` is
+  `−½ log det(I − Σ_AA⁻¹Σ_AB Σ_BB⁻¹Σ_BA)` between two disjoint index groups;
+  for two scalar components with correlation `ρ` it is `−½ log(1 − ρ²)`, and
+  the standard deviations cancel symbolically.
+* `MultivariateNormal.entropy(base=None)` is `½ log((2πe)^d det Σ)` (differential,
+  mean-free), and `MultivariateNormal.kl_divergence(other)` is
+  `½[tr(Σ₁⁻¹Σ₀) + (μ₁−μ₀)ᵀΣ₁⁻¹(μ₁−μ₀) − d + log(det Σ₁/det Σ₀)]`.
+
+These are exact algebra (a `d`-dimensional integral is outside the one-variable
+quadrature gate); the tests check them against numpy/scipy, Monte-Carlo and a
+2-D numerical integral, and against the quadrature-gated univariate
+`kl_divergence` at `d = 1`.
+
+### Entropy with no closed form: `entropy_asymptotic`
+
+`Binomial(n, p).entropy()` with a symbolic `n`, `NegativeBinomial` and `Poisson`
+have no closed form and `entropy` refuses them (`E-PROB-004`). `entropy_asymptotic(dist)`
+returns the **labelled approximation** `½ log(2πe σ²) − γ₁²/12` (variance `σ²`,
+skewness `γ₁`; error `O(σ⁻⁴)`), recorded under the derivation rule
+`prob_entropy_asymptotic_edgeworth`. It is a separate function on purpose, so an
+approximation is never returned in place of an exact value; use it where
+`np(1−p)`, `r(1−p)/p²` or `λ` is large. Any other law is `E-PROB-002`.
+
+`expectation` also closes `E[xᵏ e^{ax} cos(ωx+φ)]` and the `sin` version under a
+`Normal` for `k ≤ 12`: the raw moment polynomial (the Hermite expansion) at the
+complex tilted mean `μ + (a+iω)σ²`, split into real and imaginary parts.
 
 ## See also
 
