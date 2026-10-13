@@ -35,10 +35,17 @@ pub(crate) enum Kernel {
     Zeta,
     HurwitzZeta,
     Polylog,
+    /// `ζ′(s)` — the first derivative of the Riemann zeta function.
+    ZetaPrime,
+    /// `H^{(1)}_ν(x) = J_ν(x) + i Y_ν(x)` — complex-valued, so it has a
+    /// complex kernel only.
+    HankelH1,
+    /// `H^{(2)}_ν(x) = J_ν(x) − i Y_ν(x)`.
+    HankelH2,
 }
 
 impl Kernel {
-    pub(crate) const ALL: [Kernel; 13] = [
+    pub(crate) const ALL: [Kernel; 16] = [
         Kernel::BesselJ,
         Kernel::BesselY,
         Kernel::BesselI,
@@ -52,6 +59,9 @@ impl Kernel {
         Kernel::Zeta,
         Kernel::HurwitzZeta,
         Kernel::Polylog,
+        Kernel::ZetaPrime,
+        Kernel::HankelH1,
+        Kernel::HankelH2,
     ];
 
     pub(crate) fn name(self) -> &'static str {
@@ -69,6 +79,9 @@ impl Kernel {
             Kernel::Zeta => "zeta",
             Kernel::HurwitzZeta => "hurwitz_zeta",
             Kernel::Polylog => "polylog",
+            Kernel::ZetaPrime => "zeta_prime",
+            Kernel::HankelH1 => "hankel1",
+            Kernel::HankelH2 => "hankel2",
         }
     }
 
@@ -82,7 +95,8 @@ impl Kernel {
             | Kernel::AiryBi
             | Kernel::AiryAiPrime
             | Kernel::AiryBiPrime
-            | Kernel::Zeta => 1,
+            | Kernel::Zeta
+            | Kernel::ZetaPrime => 1,
             _ => 2,
         }
     }
@@ -119,6 +133,20 @@ pub(crate) fn eval_ball(kernel: Kernel, args: &[ArbBall]) -> Option<ArbBall> {
     }
 }
 
+/// `ζ⁽ᵏ⁾(s)/k!` for `k < len` at a real ball `s`, valid for every point of the
+/// ball; `None` when the ball contains the pole `s = 1`, or without Arb.
+pub(crate) fn zeta_jet_ball(s: &ArbBall, len: usize) -> Option<Vec<ArbBall>> {
+    #[cfg(flint_arb)]
+    {
+        arb_impl::zeta_jet_ball(s, len)
+    }
+    #[cfg(not(flint_arb))]
+    {
+        let _ = (s, len);
+        None
+    }
+}
+
 /// Complex `f64` value of `kernel(args…)` (principal branches, as Arb and
 /// DLMF define them), certified to 53 bits; `None` otherwise.
 pub(crate) fn eval_c64(kernel: Kernel, args: &[(f64, f64)]) -> Option<(f64, f64)> {
@@ -143,7 +171,7 @@ pub(crate) fn eval_c64(kernel: Kernel, args: &[(f64, f64)]) -> Option<(f64, f64)
 pub(super) mod arb_impl {
     use super::Kernel;
     use crate::ball::ArbBall;
-    use crate::flint::acb::{Acb, Arb};
+    use crate::flint::acb::{Acb, AcbVec, Arb};
     use crate::flint::arb as ffi;
     use rug::float::Round;
     use rug::Float;
@@ -278,9 +306,69 @@ pub(super) mod arb_impl {
                 Kernel::Polylog => {
                     ffi::arb_polylog(out.as_mut_ptr(), args[0].as_ptr(), args[1].as_ptr(), prec)
                 }
+                Kernel::ZetaPrime => {
+                    let s = Acb::from_parts(&args[0], &Arb::from_i64(0));
+                    let jet = zeta_jet_acb(&s, 2, prec)?;
+                    // Real `s` gives a real derivative; the imaginary part is
+                    // an enclosure of 0.
+                    if !jet[1].imag().contains_zero() {
+                        return None;
+                    }
+                    out = jet[1].real();
+                }
+                // Complex-valued: no real kernel.
+                Kernel::HankelH1 | Kernel::HankelH2 => return None,
+            }
+        }
+        if kernel == Kernel::Polylog && !out.is_finite() {
+            // The real `arb_polylog` answers on the positive axis only and is
+            // indeterminate for z < 0; the complex routine has it, and the
+            // value is real exactly when its imaginary part encloses 0 (for
+            // z > 1 it does not, and the result stays declined).
+            let s = Acb::from_parts(&args[0], &Arb::from_i64(0));
+            let z = Acb::from_parts(&args[1], &Arb::from_i64(0));
+            let mut w = Acb::new();
+            unsafe { ffi::acb_polylog(w.as_mut_ptr(), s.as_ptr(), z.as_ptr(), prec) };
+            if w.is_finite() && w.imag().contains_zero() {
+                out = w.real();
             }
         }
         out.is_finite().then_some(out)
+    }
+
+    /// The first `len` Taylor coefficients `ζ⁽ᵏ⁾(s)/k!` at a complex `s`
+    /// (`acb_dirichlet_zeta_jet`, no deflation, so the pole at `s = 1` is an
+    /// indeterminate ball and comes back as `None`).
+    fn zeta_jet_acb(s: &Acb, len: usize, prec: i64) -> Option<Vec<Acb>> {
+        let one = Acb::from_f64(1.0, 0.0);
+        if s.contains(&one) {
+            return None;
+        }
+        let mut v = AcbVec::new(len);
+        unsafe {
+            ffi::acb_dirichlet_zeta_jet(v.as_mut_ptr(), s.as_ptr(), 0, len as i64, prec);
+        }
+        let out: Vec<Acb> = (0..len).map(|i| v.get(i)).collect();
+        out.iter().all(Acb::is_finite).then_some(out)
+    }
+
+    /// `ζ⁽ᵏ⁾(s)/k!`, `k < len`, as rigorous real balls valid for **every**
+    /// point of the real ball `s`.
+    pub(in crate::specfun) fn zeta_jet_ball(s: &ArbBall, len: usize) -> Option<Vec<ArbBall>> {
+        if !available() {
+            return None;
+        }
+        let sb = to_arb(s)?;
+        let sc = Acb::from_parts(&sb, &Arb::from_i64(0));
+        let jet = zeta_jet_acb(&sc, len, i64::from(s.prec) + 16)?;
+        jet.iter()
+            .map(|c| {
+                if !c.imag().contains_zero() {
+                    return None;
+                }
+                from_arb(&c.real(), s.prec)
+            })
+            .collect()
     }
 
     pub(super) fn f64_value(kernel: Kernel, args: &[f64]) -> Option<f64> {
@@ -413,6 +501,31 @@ pub(super) mod arb_impl {
                 ),
                 Kernel::Polylog => {
                     ffi::acb_polylog(out.as_mut_ptr(), args[0].as_ptr(), args[1].as_ptr(), prec)
+                }
+                Kernel::ZetaPrime => {
+                    out = zeta_jet_acb(&args[0], 2, prec)?.swap_remove(1);
+                }
+                Kernel::HankelH1 | Kernel::HankelH2 => {
+                    let mut j = Acb::new();
+                    let mut y = Acb::new();
+                    ffi::acb_hypgeom_bessel_j(
+                        j.as_mut_ptr(),
+                        args[0].as_ptr(),
+                        args[1].as_ptr(),
+                        prec,
+                    );
+                    ffi::acb_hypgeom_bessel_y(
+                        y.as_mut_ptr(),
+                        args[0].as_ptr(),
+                        args[1].as_ptr(),
+                        prec,
+                    );
+                    let iy = y.mul(&Acb::i(), prec);
+                    out = if kernel == Kernel::HankelH1 {
+                        j.add(&iy, prec)
+                    } else {
+                        j.sub(&iy, prec)
+                    };
                 }
             }
         }

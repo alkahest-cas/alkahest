@@ -49,8 +49,8 @@ pub fn known_func_arity(name: &str) -> Option<(usize, usize)> {
         "jacobi_p" => Some((4, 4)),
         // Bessel, Airy, zeta, polylog (`crate::specfun`): `[order, x]` / `[x]`.
         "bessel_j" | "bessel_y" | "bessel_i" | "bessel_k" | "spherical_jn" | "spherical_yn"
-        | "hurwitz_zeta" | "polylog" => Some((2, 2)),
-        "airy_ai" | "airy_bi" | "airy_ai_prime" | "airy_bi_prime" | "zeta" => one,
+        | "hurwitz_zeta" | "polylog" | "hankel1" | "hankel2" => Some((2, 2)),
+        "airy_ai" | "airy_bi" | "airy_ai_prime" | "airy_bi_prime" | "zeta" | "zeta_prime" => one,
         // G11c: `polygamma(n, x)`; `hyper(p, q, a1..ap, b1..bq, z)` — the
         // count must also equal `p + q + 3`, which `crate::specfun::hyper`
         // checks (a malformed node is kept and declined, never indexed).
@@ -278,6 +278,9 @@ mod wrong_arity_sweep {
         "polylog",
         "polygamma",
         "hyper",
+        "zeta_prime",
+        "hankel1",
+        "hankel2",
     ];
 
     type Op<'a> = (&'static str, Box<dyn Fn() + 'a>);

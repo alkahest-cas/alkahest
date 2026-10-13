@@ -253,6 +253,9 @@ FUNCTION_MAP: dict[str, str] = {
     # ``p, q, a…, b…, z`` argument list becomes SymPy's two tuples).
     "polygamma": "polygamma",
     "hyper": "hyper",
+    # F24: SymPy's hankel1/hankel2(nu, z) = J ± iY, same convention.
+    "hankel1": "hankel1",
+    "hankel2": "hankel2",
 }
 
 #: Named constants that SymPy has under the same meaning (G11c).

@@ -60,10 +60,13 @@
 
 pub(crate) mod closed;
 pub(crate) mod gamma;
+pub(crate) mod hankel;
 pub(crate) mod hyper;
 pub(crate) mod numeric;
 pub(crate) mod primitives;
 
+#[cfg(test)]
+mod f24_tests;
 #[cfg(test)]
 mod g11c_tests;
 #[cfg(test)]
@@ -78,6 +81,7 @@ use crate::orthopoly::{int_literal, mk_mul, rational_literal};
 use numeric::Kernel;
 
 pub use gamma::{catalan, euler_gamma, glaisher, polygamma};
+pub use hankel::{hankel, HankelKind};
 pub use hyper::{expand_hyper, hyper, MAX_TERMINATING_DEGREE};
 
 /// Largest `|order|` that [`bessel`] / [`spherical_bessel`] expand into
@@ -374,6 +378,21 @@ pub fn zeta(s: ExprId, pool: &ExprPool) -> Result<ExprId, SpecialFunctionError> 
     Ok(node(Kernel::Zeta, vec![s], pool))
 }
 
+/// The derivative `ζ′(s)` of the Riemann zeta function: exact where a closed
+/// form is known (`ζ′(0) = −½ ln 2π`, `ζ′(−1)`, `ζ′(2)`, `ζ′(−2n)`), the node
+/// `zeta_prime(s)` elsewhere.
+///
+/// # Errors
+///
+/// `E-SPECFN-006` at the pole `s = 1`; `E-BUDGET-*`.
+pub fn zeta_prime(s: ExprId, pool: &ExprPool) -> Result<ExprId, SpecialFunctionError> {
+    if is_literal(pool, s, 1) {
+        return Err(pole("zeta_prime", "s = 1".into()));
+    }
+    crate::budget::check()?;
+    Ok(node(Kernel::ZetaPrime, vec![s], pool))
+}
+
 /// The Hurwitz zeta function `ζ(s, a) = Σ_{k≥0} (k + a)^{−s}` (continued).
 ///
 /// # Errors
@@ -432,6 +451,8 @@ fn rewrite_func(
         Kernel::BesselK => explicit_bessel(BesselKind::K, args[0], args[1], pool)?,
         Kernel::SphericalJ => explicit_spherical(SphericalBesselKind::J, args[0], args[1], pool)?,
         Kernel::SphericalY => explicit_spherical(SphericalBesselKind::Y, args[0], args[1], pool)?,
+        Kernel::HankelH1 => hankel::explicit_hankel(HankelKind::H1, args[0], args[1], pool)?,
+        Kernel::HankelH2 => hankel::explicit_hankel(HankelKind::H2, args[0], args[1], pool)?,
         _ => None,
     };
     Ok(explicit.or_else(|| primitives::canonical(k, args, pool)))

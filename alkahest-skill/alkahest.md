@@ -1522,11 +1522,14 @@ ak.spherical_jn(2, x)               # elementary for integer n; spherical_yn lik
 ak.airy_ai(x), ak.airy_bi_prime(x)  # Ai'' = x*Ai; exact at 0
 ak.zeta(p.integer(4))               # pi^4/90; zeta(-1) = -1/12; zeta(3) stays; zeta(1) → E-SPECFN-006
 ak.hurwitz_zeta(s, a), ak.polylog(s, z)   # polylog(2, z) is dilog(z); Li_{-n} rational
+ak.zeta_prime(s)                    # diff(zeta(s), s); exact at 0, -1, 2, -2n; numeric via Arb
+ak.hankel1(Fraction(1, 2), x)       # J + iY, complex; half-integer → exp(I*x) form; hankel2 = J - iY
 ak.expand_special(ak.subs(e, {nu: Fraction(1, 2)}))   # expand after subs
 ak.evaluate(ak.bessel_j(nu, x), {nu: 2+0j, x: 1+1j})   # complex values via Arb
 ```
 
-- `diff` in the order / `s`, and of `zeta`, refuses (`E-DIFF-001`); in `x` uses DLMF identities.
+- `diff` in the order / `s`, and of `zeta_prime`, refuses (`E-DIFF-001`); `diff(zeta(s), s)` is `zeta_prime(s)`; in `x` uses DLMF identities.
+- `bound_on_box` / validated routines accept integer-order `bessel_j/y/i/k`, the Airy four, `zeta`, `polylog` (literal `s`, `|z|<1`), `polygamma` (literal order) and orthopoly with integer degree; symbolic/non-integer order → `E-VALIDATED-005`/`-001`.
 - `Σ 1/k³` sums to `zeta(3)`; `∫x·J0 = x·J1`, `∫J1 = −J0`.
 - f64/ball/complex values from Arb; non-real values (Y, K at x<0; Li_s(x>1)) decline in real mode.
 
@@ -1554,6 +1557,7 @@ ak.assoc_laguerre_l(n-l-1, 2*l+1, 2*r/n)   # hydrogen radial; alpha may be symbo
 ak.legendre_p(nsym, x)              # symbolic n → node: diff in x, f64/ball eval, P_n(1)=1
 ak.expand_orthopoly(ak.subs(e, {nsym: pool.integer(5)}))   # expand once n is an integer
 ak.spherical_harmonic_y(2, 1, theta, phi)  # explicit, SymPy's Ynm convention, uses I
+ak.real_spherical_harmonic_y(1, 1, theta, phi)   # real tesseral basis (Wikipedia): sqrt(3/4pi)*sin(t)*cos(f); m<0 → sin(|m|f)
 ak.wigner_3j(1, 1, 0, 0, 0, 0)      # -1/3*3^(1/2), exact (Racah)
 ak.clebsch_gordan(F(1,2), F(1,2), 1, F(1,2), F(-1,2), 0)  # SymPy order (j1,j2,J,m1,m2,M)
 ak.wigner_6j(1, 1, 1, 1, 1, 1)      # 1/6

@@ -58,7 +58,7 @@ const PROBE_PREC: u32 = 64;
 /// Arities probed by [`taylor_model_supports`]. Today the evaluator only has
 /// unary function rules, but probing a range means a future binary rule
 /// (`atan2`, `hypot`) is picked up with no edit here.
-const MAX_PROBE_ARITY: usize = 3;
+const MAX_PROBE_ARITY: usize = 4;
 
 /// The evaluator's own description of the first construct in `expr` that it
 /// has no rigorous Taylor-model rule for, or `None` if it has a rule for

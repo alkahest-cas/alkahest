@@ -58,7 +58,11 @@ integer, e.g. after `subs`.
 Capability flags (`capabilities()["primitives"]`): `numeric_f64`,
 `diff_forward`, and `numeric_ball` when the build carries FLINT's Arb layer.
 There is no `diff_reverse` slot (the degree has no cotangent; reverse mode
-still works through `diff_forward`), no Lean theorem and no Taylor model.
+still works through `diff_forward`) and no Lean theorem. For an integer
+literal degree (and Legendre order) every family has a `taylor_model` rule —
+the polynomial is expanded exactly and evaluated in Taylor-model arithmetic —
+so `bound_on_box` accepts them; a symbolic degree is refused with
+`E-VALIDATED-005`.
 
 ## Spherical harmonics
 
@@ -73,6 +77,13 @@ with the Condon–Shortley phase inside `P_l^m` (SymPy's `Ynm`, Mathematica's
 `(1 − cos²θ)^{|m|/2}` is written `sin(θ)^{|m|}`, exact on the polar range
 `0 ≤ θ ≤ π`. The imaginary unit is the pool's `I`. Integer `l`, `m` only
 (`E-SPECFN-003`).
+
+`real_spherical_harmonic_y(l, m, theta, phi)` is the real (tesseral) basis in
+Wikipedia's convention: `√2·N·P_l^{|m|}(cos θ)·cos(mφ)` for `m > 0`,
+`√2·N·P_l^{|m|}(cos θ)·sin(|m|φ)` for `m < 0`, `Y_l^0` for `m = 0`, with
+`P_l^{|m|}` *without* the Condon–Shortley phase (it cancels the `(−1)^m` in
+`Y_{l,m} = √2(−1)^m Re/Im Y_l^{|m|}`); `Y_{1,1} = √(3/4π)·x/r`. Real and
+orthonormal on the sphere.
 
 ## Coupling coefficients
 

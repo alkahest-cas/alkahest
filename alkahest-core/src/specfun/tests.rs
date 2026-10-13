@@ -108,6 +108,21 @@ const REFERENCE: &[(Kernel, &[f64], &str)] = &[
         "-2.162700712002056662292591440719206032550808511302658459",
     ),
     (
+        Kernel::ZetaPrime,
+        &[2.5],
+        "-0.3873419503262099727119923759310510131994822887468830534",
+    ),
+    (
+        Kernel::ZetaPrime,
+        &[0.5],
+        "-3.92264613920915172747153144671459951373032397150650521",
+    ),
+    (
+        Kernel::ZetaPrime,
+        &[-2.5],
+        "-0.006265736372189758403282758729725833176322370751750072669",
+    ),
+    (
         Kernel::SphericalJ,
         &[2.0, 1.5],
         "0.1273492836884082156472409472301944595991345023426743568",
@@ -131,21 +146,53 @@ fn every_kernel_is_registered_with_the_right_arity() {
             k.name()
         );
         let caps = reg.capabilities(k.name());
-        // ζ′ has no closed form: zeta must not claim a derivative.
+        // ζ″ has no node: zeta_prime must not claim a derivative.
         assert_eq!(
             caps.contains(Capabilities::DIFF_FORWARD),
-            k != Kernel::Zeta,
+            k != Kernel::ZetaPrime,
             "{}",
             k.name()
         );
         assert!(!caps.contains(Capabilities::DIFF_REVERSE), "{}", k.name());
         assert!(!caps.contains(Capabilities::LEAN_THEOREM), "{}", k.name());
-        assert!(!caps.contains(Capabilities::TAYLOR_MODEL), "{}", k.name());
+        // F24: Taylor-model rules exist for the cylinder functions of integer
+        // order, Airy, zeta and the polylogarithm (`validated::taylor`).
+        let has_taylor = matches!(
+            k,
+            Kernel::BesselJ
+                | Kernel::BesselY
+                | Kernel::BesselI
+                | Kernel::BesselK
+                | Kernel::AiryAi
+                | Kernel::AiryBi
+                | Kernel::AiryAiPrime
+                | Kernel::AiryBiPrime
+                | Kernel::Zeta
+                | Kernel::Polylog
+        );
+        assert_eq!(
+            caps.contains(Capabilities::TAYLOR_MODEL),
+            has_taylor,
+            "{}",
+            k.name()
+        );
         assert!(!caps.contains(Capabilities::LOWER_LLVM), "{}", k.name());
         #[cfg(flint_arb)]
         {
-            assert!(caps.contains(Capabilities::NUMERIC_F64), "{}", k.name());
-            assert!(caps.contains(Capabilities::NUMERIC_BALL), "{}", k.name());
+            // The Hankel pair is complex-valued: no real f64 / ball slot.
+            let real_valued = !matches!(k, Kernel::HankelH1 | Kernel::HankelH2);
+            assert_eq!(
+                caps.contains(Capabilities::NUMERIC_F64),
+                real_valued,
+                "{}",
+                k.name()
+            );
+            assert_eq!(
+                caps.contains(Capabilities::NUMERIC_BALL),
+                real_valued,
+                "{}",
+                k.name()
+            );
         }
     }
 }
@@ -441,8 +488,13 @@ fn derivatives() {
     // The order derivative is refused, never dropped.
     let jx = pool.func("bessel_j", vec![x, pool.integer(2)]);
     assert!(d(jx).is_err());
-    // ζ has no derivative; a constant ζ(3) differentiates to 0.
-    assert!(d(pool.func("zeta", vec![x])).is_err());
+    // ζ′(s) is the node zeta_prime, which has no derivative of its own;
+    // a constant ζ(3) differentiates to 0.
+    assert_eq!(
+        d(pool.func("zeta", vec![x])).unwrap().value,
+        pool.func("zeta_prime", vec![x])
+    );
+    assert!(d(pool.func("zeta_prime", vec![x])).is_err());
     assert_eq!(
         d(pool.func("zeta", vec![pool.integer(3)])).unwrap().value,
         pool.integer(0)

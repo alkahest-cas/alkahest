@@ -14,7 +14,8 @@ variable, evaluates in ``f64`` (:func:`eval_expr`), in rigorous balls
 (:func:`interval_eval`) and at complex points (``evaluate(e, {x: 1+2j})``) —
 all through FLINT's Arb layer — and simplifies at special values. A
 derivative in an order (``nu``, ``n``, ``s``), and any derivative of
-:func:`zeta`, is refused with ``DiffError`` ``E-DIFF-001`` rather than dropped.
+:func:`zeta_prime`, is refused with ``DiffError`` ``E-DIFF-001`` rather than
+dropped (``diff(zeta(s), s)`` is :func:`zeta_prime`).
 A value that is not real (``Y_nu``, ``K_nu`` at ``x < 0``, ``Li_s(x)`` for
 ``x > 1``) makes ``eval_expr`` / ``interval_eval`` decline; the complex
 evaluator has it.
@@ -62,6 +63,21 @@ raises :exc:`SpecialFunctionError` ``E-SPECFN-004``.
 ``∫x^nu F_{nu-1} = ±x^nu F_nu`` and ``∫x^{-nu} F_{nu+1} = ±x^{-nu} F_nu``
 (``∫x J_0 = x J_1``, ``∫J_1 = -J_0``).
 
+Hankel functions
+----------------
+
+.. function:: hankel1(nu, x, *, expand=True)
+.. function:: hankel2(nu, x, *, expand=True)
+
+   ``H1_nu(x) = J_nu(x) + i Y_nu(x)`` and ``H2_nu(x) = J_nu(x) - i Y_nu(x)``
+   (DLMF 10.4; SymPy's and mpmath's ``hankel1``/``hankel2``). A half-integer
+   order with ``expand=True`` gives the elementary form
+   (``hankel1(1/2, x) = -I sqrt(2) exp(I x)/(sqrt(pi) sqrt(x))``), negative
+   half-integers via ``H_{-nu} = exp(±i pi nu) H_nu``; integer orders stay
+   nodes with ``H_{-n} = (-1)^n H_n``. The value is complex, so there is no
+   real ``f64``/ball slot: ``evaluate(e, {x: 2.0})`` takes the complex path.
+   ``d/dx H_nu = (H_{nu-1} - H_{nu+1})/2``; a derivative in ``nu`` is refused.
+
 Airy functions
 --------------
 
@@ -82,8 +98,19 @@ Zeta functions and polylogarithms
    Riemann ``zeta(s)``. Exact at even positive integers
    (``(-1)^{n+1} B_{2n} (2 pi)^{2n} / (2 (2n)!)``) and at non-positive integers
    (``zeta(-n) = (-1)^n B_{n+1}/(n+1)``, so ``zeta(0) = -1/2``); ``zeta(3)``
-   stays a node. ``E-SPECFN-006`` at the pole ``s = 1``. No derivative rule.
-   :func:`sum_definite` names odd zeta values: ``Σ 1/k³ = zeta(3)``.
+   stays a node. ``E-SPECFN-006`` at the pole ``s = 1``. ``d/ds`` is
+   :func:`zeta_prime`. :func:`sum_definite` names odd zeta values:
+   ``Σ 1/k³ = zeta(3)``.
+
+.. function:: zeta_prime(s)
+
+   ``zeta'(s)``. Exact at ``s = 0`` (``-log(2 pi)/2``), ``s = -1``
+   (``1/12 - log(Glaisher)``), ``s = 2``
+   (``pi**2/6 (EulerGamma + log(2 pi) - 12 log(Glaisher))``) and the negative
+   even integers (``zeta'(-2n) = (-1)^n (2n)! zeta(2n+1)/(2 (2 pi)^{2n})``);
+   a node elsewhere. Evaluates in ``f64``, balls and at complex ``s`` (Arb's
+   ``acb_dirichlet_zeta_jet``). The second derivative has no node and is
+   refused (``E-DIFF-001``). ``E-SPECFN-006`` at ``s = 1``.
 
 .. function:: hurwitz_zeta(s, a)
 
@@ -106,6 +133,20 @@ Zeta functions and polylogarithms
    spherical nodes with an integer order) into elementary functions and
    re-canonicalise ``zeta``/``hurwitz_zeta``/``polylog`` nodes — SymPy's
    ``expand_func`` for these families, e.g. after :func:`subs`.
+
+Validated bounds
+----------------
+
+The integer-order cylinder functions (:func:`bessel_j`, :func:`bessel_y`,
+:func:`bessel_i`, :func:`bessel_k`), the four Airy functions, :func:`zeta`,
+:func:`polylog` (literal ``s``, argument inside ``(-1, 1)``) and
+:func:`polygamma` (literal order) carry a ``taylor_model`` rule, so
+:func:`bound_on_box` and the other validated routines accept them. Derivatives
+are exact identities and the Lagrange remainder is a ball enclosure of the
+``(p+1)``-th derivative over the whole box. A symbolic or non-integer order
+raises ``ValidatedError`` ``E-VALIDATED-005`` / ``E-VALIDATED-001``; ``Y``/``K``
+on a box reaching ``x <= 0``, ``zeta`` over the pole and ``polylog`` past
+``|z| = 1`` raise ``E-VALIDATED-003``.
 
 Gamma, digamma and polygamma; named constants
 ---------------------------------------------

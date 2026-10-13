@@ -755,6 +755,37 @@ fn latex_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
             let (m, _) = latex_r(args[2], pool);
             format!(r"\Pi\!\left({n};{phi}\,\middle|\,{m}\right)")
         }
+        // Orthogonal polynomials, Bessel, Airy, zeta and polylogarithm
+        // (G11a/b, F24): the textbook sub- and superscripted notation.
+        "legendre_p" => latex_indexed("P", &[args[0]], &[], args[1], pool),
+        "assoc_legendre_p" => latex_indexed("P", &[args[0]], &[args[1]], args[2], pool),
+        "hermite_h" => latex_indexed("H", &[args[0]], &[], args[1], pool),
+        "hermite_he" => latex_indexed(r"\mathit{He}", &[args[0]], &[], args[1], pool),
+        "laguerre_l" => latex_indexed("L", &[args[0]], &[], args[1], pool),
+        "assoc_laguerre_l" => latex_indexed("L", &[args[0]], &[args[1]], args[2], pool),
+        "chebyshev_t" => latex_indexed("T", &[args[0]], &[], args[1], pool),
+        "chebyshev_u" => latex_indexed("U", &[args[0]], &[], args[1], pool),
+        "gegenbauer_c" => latex_indexed("C", &[args[0]], &[args[1]], args[2], pool),
+        "jacobi_p" => latex_indexed("P", &[args[0]], &[args[1], args[2]], args[3], pool),
+        "bessel_j" => latex_indexed("J", &[args[0]], &[], args[1], pool),
+        "bessel_y" => latex_indexed("Y", &[args[0]], &[], args[1], pool),
+        "bessel_i" => latex_indexed("I", &[args[0]], &[], args[1], pool),
+        "bessel_k" => latex_indexed("K", &[args[0]], &[], args[1], pool),
+        "spherical_jn" => latex_indexed("j", &[args[0]], &[], args[1], pool),
+        "spherical_yn" => latex_indexed("y", &[args[0]], &[], args[1], pool),
+        "hankel1" => latex_hankel(1, args[0], args[1], pool),
+        "hankel2" => latex_hankel(2, args[0], args[1], pool),
+        "airy_ai" => latex_call(r"\operatorname{Ai}", args, pool),
+        "airy_bi" => latex_call(r"\operatorname{Bi}", args, pool),
+        "airy_ai_prime" => latex_call(r"\operatorname{Ai}'", args, pool),
+        "airy_bi_prime" => latex_call(r"\operatorname{Bi}'", args, pool),
+        "zeta" | "hurwitz_zeta" => latex_call(r"\zeta", args, pool),
+        "zeta_prime" => latex_call(r"\zeta'", args, pool),
+        "polylog" => {
+            let (s, _) = latex_r(args[0], pool);
+            let (z, _) = latex_r(args[1], pool);
+            format!(r"\operatorname{{Li}}_{{{s}}}\!\left({z}\right)")
+        }
         // G11c: ψ⁽ⁿ⁾(x) and ₚFq(a; b; z).
         "polygamma" => {
             let (n, _) = latex_r(args[0], pool);
@@ -782,6 +813,55 @@ fn latex_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
         },
         _ => latex_func_generic(name, args, pool),
     }
+}
+
+/// `symbol_{subs}^{(sups)}(x)`: the subscripted/superscripted family notation
+/// (`P_{n}^{(\alpha,\beta)}\!\left(x\right)`). A single superscript that is
+/// the order `m` of an associated function is parenthesised like the others;
+/// `P_n^{m}` is conventionally written `P_n^{m}` for Legendre, so the caller
+/// passes it through `sups` and this helper brackets only a parameter list.
+fn latex_indexed(
+    symbol: &str,
+    subs: &[ExprId],
+    sups: &[ExprId],
+    x: ExprId,
+    pool: &ExprPool,
+) -> String {
+    let join = |v: &[ExprId]| {
+        v.iter()
+            .map(|&e| latex_r(e, pool).0)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let sub = join(subs);
+    let (x_tex, _) = latex_r(x, pool);
+    if sups.is_empty() {
+        format!(r"{symbol}_{{{sub}}}\!\left({x_tex}\right)")
+    } else if symbol == "P" && sups.len() == 1 {
+        // Associated Legendre `P_n^{m}` — the order is not parenthesised.
+        format!(
+            r"{symbol}_{{{sub}}}^{{{}}}\!\left({x_tex}\right)",
+            join(sups)
+        )
+    } else {
+        format!(
+            r"{symbol}_{{{sub}}}^{{({})}}\!\left({x_tex}\right)",
+            join(sups)
+        )
+    }
+}
+
+/// `H^{(kind)}_{ν}(x)`.
+fn latex_hankel(kind: u8, nu: ExprId, x: ExprId, pool: &ExprPool) -> String {
+    let (nu, _) = latex_r(nu, pool);
+    let (x, _) = latex_r(x, pool);
+    format!(r"H^{{({kind})}}_{{{nu}}}\!\left({x}\right)")
+}
+
+/// `\symbol\!\left(a, b, …\right)` for an already-typeset operator.
+fn latex_call(symbol: &str, args: &[ExprId], pool: &ExprPool) -> String {
+    let rendered: Vec<String> = args.iter().map(|&a| latex_r(a, pool).0).collect();
+    format!(r"{symbol}\!\left({}\right)", rendered.join(", "))
 }
 
 /// `name(a, b, …)` with the operator name typeset, and nothing positional.

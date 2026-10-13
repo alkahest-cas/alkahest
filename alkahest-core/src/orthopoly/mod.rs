@@ -57,7 +57,10 @@ pub(crate) mod primitives;
 #[cfg(test)]
 mod tests;
 
-pub use angular::{clebsch_gordan, spherical_harmonic_y, wigner_3j, wigner_6j, HalfInt, Surd};
+pub use angular::{
+    clebsch_gordan, real_spherical_harmonic_y, spherical_harmonic_y, wigner_3j, wigner_6j, HalfInt,
+    Surd,
+};
 pub use error::SpecialFunctionError;
 
 use rug::{Integer, Rational};
