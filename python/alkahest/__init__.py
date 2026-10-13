@@ -145,6 +145,7 @@ from .alkahest import (  # noqa: F401
     # M6 — modular / p-adic evaluation of holonomic sequences
     ModularEvaluation,
     ModularRecurrence,
+    MultiMinimizedLogic,
     # Polynomial types
     MultiPoly,
     MultiPolyFactorization,
@@ -2974,6 +2975,7 @@ __all__ = [
     # M6 — modular / p-adic evaluation of holonomic sequences
     "ModularEvaluation",
     "ModularRecurrence",
+    "MultiMinimizedLogic",
     "MultiPoly",
     "MultiPolyFactorization",
     "NcError",

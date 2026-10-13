@@ -77,10 +77,36 @@ Normal forms and minimisation
    ``expr``, ``form``, ``exact`` (minimality proven), ``terms`` and
    ``literals``.
 
+   Pass a **list or tuple of formulas** to minimise several outputs jointly:
+   the result is a :class:`MultiMinimizedLogic` whose ``exprs`` are built from
+   product terms (clauses for ``"cnf"``) shared between outputs, with
+   ``terms`` / ``literals`` counting each distinct term once, ``shared_terms``
+   (terms feeding more than one output) and ``per_output_terms``.  Up to 12
+   variables (16 with ``exact=True``) the cover is a proven minimum
+   (multi-output Quine–McCluskey primes tagged with the outputs they lie
+   inside, then a minimum cover of the (output, minterm) pairs); beyond that
+   the espresso-style pass runs per output and the pooled cubes are reduced to
+   an irredundant shared set, flagged ``exact=False``.  ``dontcare`` applies to
+   every output.  The shared cover never has more distinct terms than the sum
+   of the per-output covers, every output is verified against its input, and
+   more than 64 outputs is refused (``E-LOGIC-003``).
+
+   Example::
+
+      p = ExprPool(); a, b = p.symbol("a"), p.symbol("b")
+      r = minimize_logic([Xor(a, b), And(a, b), Or(a, b)])
+      r.terms, r.exact      # (3, True): a·b is used by two outputs
+
+.. class:: MultiMinimizedLogic
+
+   ``exprs`` (one formula per input), ``form``, ``exact``, ``terms``,
+   ``literals``, ``per_output_terms``, ``shared_terms``; ``len()`` is the
+   number of outputs.
+
 Decision diagrams
 -----------------
 
-.. function:: bdd(expr, order=None, max_nodes=None) -> BDD
+.. function:: bdd(expr, order=None, max_nodes=None, auto_reorder=None) -> BDD
 
    The ROBDD of a formula over Boolean symbols.  ``order`` (symbols or names,
    root first) fixes the variable order; unlisted symbols are appended.  The
@@ -90,6 +116,13 @@ Decision diagrams
    middle output bit of an ``n``-bit multiplier is exponential under every
    order, so this is a real limit, not a formality.
 
+   ``auto_reorder`` turns on dynamic variable reordering (Rudell sifting)
+   once the manager holds that many live nodes (``True`` = 50 000, ``False`` =
+   off).  ``None`` (default) means on at 50 000 nodes unless an explicit
+   ``order`` was given.  Reordering never changes what a BDD means — only its
+   order and size — and is checked after every operation that produces a BDD
+   (and between the gates of a formula being built).
+
 .. class:: BDD
 
    ``&``, ``|``, ``^``, ``~``; ``implies``, ``iff``, ``ite(g, h)``;
@@ -97,6 +130,16 @@ Decision diagrams
    ``sat_count(variables=None)`` (exact ``int``; by default over every
    variable of the BDD's manager); ``node_count()``; ``support()``;
    ``order``; ``satisfy_one()``; ``equivalent(other)``; ``to_expr()``.
+   ``reorder(max_growth=1.2, max_swaps=200000)`` sifts on demand and returns
+   ``{"nodes_before", "nodes_after", "swaps", "complete"}``: each variable is
+   moved through the whole order by adjacent swaps (abandoning a direction
+   once the manager exceeds ``max_growth`` times the best size seen) and left
+   at its best position; ``sat_count``, ``equivalent`` and ``to_expr`` are
+   unchanged, ``order`` and ``node_count`` change, and every BDD sharing the
+   manager is kept.  The active ``Budget`` is honoured between swaps.
+   ``set_auto_reorder(threshold)`` / ``auto_reorder`` configure the
+   automatic trigger.  Example: ``x0·y0 + … + x7·y7`` under the order
+   ``x0…x7, y0…y7`` has 510 nodes, 16 after ``reorder()``.
    Operands from separate :func:`bdd` calls (or plain ``Expr`` formulas) are
    merged by variable name.
 
