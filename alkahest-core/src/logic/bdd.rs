@@ -606,7 +606,6 @@ impl BddManager {
         Ok(r)
     }
 
-
     // -----------------------------------------------------------------
     // Dynamic variable reordering
     // -----------------------------------------------------------------
@@ -710,7 +709,6 @@ impl BddManager {
         self.ite_cache.clear();
     }
 }
-
 
 /// Knobs of [`BddManager::reorder`].
 #[derive(Debug, Clone)]
@@ -1160,10 +1158,8 @@ mod tests {
             }
             // Keep three functions, drop the rest (they become garbage).
             let keep: Vec<BddRef> = pool.iter().rev().take(3).copied().collect();
-            let tables: Vec<Vec<bool>> = keep
-                .iter()
-                .map(|&f| table_by_name(&m, f, &names))
-                .collect();
+            let tables: Vec<Vec<bool>> =
+                keep.iter().map(|&f| table_by_name(&m, f, &names)).collect();
             let counts: Vec<_> = keep.iter().map(|&f| m.sat_count(f, nv as u32)).collect();
             let st = m.reorder(&keep, &ReorderOptions::default()).unwrap();
             assert!(st.nodes_after <= st.nodes_before, "{st:?}");
@@ -1244,10 +1240,7 @@ mod tests {
         }
         let outs: Vec<BddRef> = acc;
         let names: Vec<String> = m.var_names().to_vec();
-        let tables: Vec<Vec<bool>> = outs
-            .iter()
-            .map(|&f| table_by_name(&m, f, &names))
-            .collect();
+        let tables: Vec<Vec<bool>> = outs.iter().map(|&f| table_by_name(&m, f, &names)).collect();
         let st = m.reorder(&outs, &ReorderOptions::default()).unwrap();
         assert!(st.nodes_after < st.nodes_before, "{st:?}");
         for (k, &f) in outs.iter().enumerate() {
