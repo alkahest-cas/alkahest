@@ -458,6 +458,7 @@ with _suppress(ImportError):
         dae_index_reduce,
         diophantine,
         expr_to_gbpoly,
+        pell_classes,
         primary_decomposition,
         radical,
         rosenfeld_groebner,
@@ -3225,6 +3226,7 @@ __all__ = [
     # V2-21
     "parse",
     "parse_unit",
+    "pell_classes",
     # PA-9
     "piecewise",
     "plot",

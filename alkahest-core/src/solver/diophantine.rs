@@ -1019,6 +1019,195 @@ fn solve_pell_like(
     })
 }
 
+/// Every solution class of the generalized Pell equation `x² − D·y² = N`, from
+/// [`diophantine_pell_classes`].
+///
+/// The solutions of the equation are the elements `x + y√D` of norm `N` in
+/// `ℤ[√D]`.  The unit group acts on them by multiplication; `classes` lists one
+/// representative per orbit of `{±1} × ⟨u⟩`, `u` the fundamental unit.  Every
+/// solution is `±(x_c + y_c√D)·u^k` for exactly one class `c` and one `k ∈ ℤ`.
+/// Each representative is the one with `√|N| ≤ x + y√D < √|N|·u` (and so
+/// `y ≥ 0`); a class and its conjugate class are listed separately unless they
+/// coincide (an ambiguous class).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PellClasses {
+    /// The coefficient `D`.
+    pub d: Integer,
+    /// The right-hand side `N`.
+    pub n: Integer,
+    /// The fundamental solution `(ux, uy)` of `x² − D·y² = 1` (the generator of
+    /// the unit group of norm `+1`).
+    pub unit: (Integer, Integer),
+    /// The fundamental solution of `x² − D·y² = −1`, when one exists.
+    pub negative_unit: Option<(Integer, Integer)>,
+    /// One `(x, y)` per solution class, sorted by `(y, x)`; empty when the
+    /// equation has no integer solution.
+    pub classes: Vec<(Integer, Integer)>,
+}
+
+/// Sign of `s + t·√d` (`d > 0`), exactly.
+fn sign_surd(s: &Integer, t: &Integer, d: &Integer) -> i32 {
+    use std::cmp::Ordering::*;
+    let ord = match (s.cmp0(), t.cmp0()) {
+        (Equal, Equal) => Equal,
+        (Greater | Equal, Greater | Equal) => Greater,
+        (Less | Equal, Less | Equal) => Less,
+        (Greater, Less) => Integer::from(s * s).cmp(&(Integer::from(t * t) * d)),
+        (Less, Greater) => (Integer::from(t * t) * d).cmp(&Integer::from(s * s)),
+    };
+    ord as i32
+}
+
+/// The representative of the `{±1}·⟨u⟩`-orbit of `x + y√d` (norm `n`) with
+/// `√|n| ≤ α < √|n|·u`, `α > 0`.
+fn pell_canonical(
+    d: &Integer,
+    n: &Integer,
+    u: &(Integer, Integer),
+    x: Integer,
+    y: Integer,
+) -> Result<(Integer, Integer), DiophantineError> {
+    let m = n.clone().abs();
+    let (mut x, mut y) = (x, y);
+    if sign_surd(&x, &y, d) < 0 {
+        x = -x;
+        y = -y;
+    }
+    // u² = a + b√d.
+    let a = Integer::from(&u.0 * &u.0) + Integer::from(&u.1 * &u.1) * d;
+    let b = Integer::from(&u.0 * &u.1) * 2u32;
+    let mut iter = 0u64;
+    loop {
+        checkpoint(iter)?;
+        iter += 1;
+        // α² = aa + bb·√d
+        let aa = Integer::from(&x * &x) + Integer::from(&y * &y) * d;
+        let bb = Integer::from(&x * &y) * 2u32;
+        if sign_surd(&Integer::from(&aa - &m), &bb, d) < 0 {
+            // α < √m: multiply by u.
+            let nx = Integer::from(&x * &u.0) + Integer::from(&y * &u.1) * d;
+            let ny = Integer::from(&x * &u.1) + Integer::from(&y * &u.0);
+            x = nx;
+            y = ny;
+            continue;
+        }
+        let hi_s = aa - Integer::from(&m * &a);
+        let hi_t = bb - Integer::from(&m * &b);
+        if sign_surd(&hi_s, &hi_t, d) >= 0 {
+            // α ≥ √m·u: multiply by u⁻¹ = (ux, −uy).
+            let nx = Integer::from(&x * &u.0) - Integer::from(&y * &u.1) * d;
+            let ny = Integer::from(&y * &u.0) - Integer::from(&x * &u.1);
+            x = nx;
+            y = ny;
+            continue;
+        }
+        return Ok((x, y));
+    }
+}
+
+/// Every fundamental solution (one per class) of `x² − D·y² = N`, together
+/// with the fundamental unit, so the full solution set is
+/// `x + y√D = ±(x_c + y_c√D)·(ux + uy√D)^k` for a class `c` and `k ∈ ℤ`.
+///
+/// `D > 0` must be a non-square and `N ≠ 0` (a square `D` has finitely many
+/// solutions, listed by [`diophantine`]).  [`DiophantineSolution::PellGeneralized`]
+/// reports a single class; this reports all of them.
+///
+/// The search is complete: a sweep over `y ≤` Nagell's bound, or — when that is
+/// too large — the convergents of `√D` over two periods, which is complete for
+/// `|N| < √D`.  Otherwise it refuses ([`DiophantineError::Unsupported`]).
+/// Honours the active [`crate::budget`] (see [`last_budget_trip`]).
+pub fn diophantine_pell_classes(d: &Integer, n: &Integer) -> Result<PellClasses, DiophantineError> {
+    BUDGET_TRIP.with(|c| c.set(None));
+    if d.cmp0().is_le() || is_perfect_square(d) {
+        return Err(DiophantineError::Unsupported(
+            "diophantine_pell_classes needs a positive non-square D".into(),
+        ));
+    }
+    if *n == 0 {
+        return Err(DiophantineError::Unsupported(
+            "diophantine_pell_classes needs N ≠ 0".into(),
+        ));
+    }
+    let units = pell_units(d)?;
+    let unit = units.plus.clone();
+    let finish = |classes: Vec<(Integer, Integer)>| PellClasses {
+        d: d.clone(),
+        n: n.clone(),
+        unit: unit.clone(),
+        negative_unit: units.minus.clone(),
+        classes,
+    };
+    if *n == 1 {
+        return Ok(finish(vec![(Integer::from(1), Integer::from(0))]));
+    }
+    if *n == -1 {
+        let classes = match &units.minus {
+            Some(m) => vec![pell_canonical(d, n, &unit, m.0.clone(), m.1.clone())?],
+            None => vec![],
+        };
+        return Ok(finish(classes));
+    }
+
+    let mut found: std::collections::BTreeSet<(Integer, Integer)> = Default::default();
+    let bound = nagell_y_bound(n, &unit.0, &unit.1);
+    if let Some(b) = bound.to_u64().filter(|b| *b <= MAX_Y_SWEEP) {
+        for yi in 0..=b {
+            checkpoint(yi)?;
+            let y = Integer::from(yi);
+            let rhs: Integer = n.clone() + d.clone() * &y * &y;
+            if rhs.cmp0().is_ge() && is_perfect_square(&rhs) {
+                let x = rhs.sqrt();
+                if x != 0 {
+                    found.insert(pell_canonical(d, n, &unit, -x.clone(), y.clone())?);
+                }
+                found.insert(pell_canonical(d, n, &unit, x, y)?);
+            }
+        }
+    } else if Integer::from(n * n) < *d {
+        // |N| < √D: every primitive solution with x, y > 0 is a convergent
+        // (Lagrange); imprimitive ones are g·(primitive solution of N/g²).
+        let n_abs = n.clone().abs();
+        let mut targets: Vec<(Integer, Integer)> = Vec::new();
+        let mut g = Integer::from(1);
+        let mut iter = 0u64;
+        while Integer::from(&g * &g) <= n_abs {
+            checkpoint(iter)?;
+            iter += 1;
+            let g2 = Integer::from(&g * &g);
+            if n.is_divisible(&g2) {
+                targets.push((g.clone(), Integer::from(n / &g2)));
+            }
+            g += 1u32;
+        }
+        let count = 2 * units.period.len();
+        let mut hits: Vec<(Integer, Integer)> = Vec::new();
+        walk_convergents(&units.a0, &units.period, count, |_, p, q| {
+            let norm = pell_norm(p, q, d);
+            for (g, t) in &targets {
+                if *t == norm {
+                    hits.push((Integer::from(g * p), Integer::from(g * q)));
+                }
+            }
+            None::<()>
+        })?;
+        for (x, y) in hits {
+            found.insert(pell_canonical(d, n, &unit, -x.clone(), y.clone())?);
+            found.insert(pell_canonical(d, n, &unit, x, y)?);
+        }
+    } else {
+        return Err(DiophantineError::Unsupported(format!(
+            "x² − {d}·y² = {n}: the complete search bound y ≤ {bound} is too large to list every class"
+        )));
+    }
+    let mut classes: Vec<(Integer, Integer)> = found.into_iter().collect();
+    classes.sort_by(|a, b| (&a.1, &a.0).cmp(&(&b.1, &b.0)));
+    for (x, y) in &classes {
+        debug_assert_eq!(pell_norm(x, y, d), *n);
+    }
+    Ok(finish(classes))
+}
+
 fn solve_linear_two_var(
     pool: &ExprPool,
     a: &Integer,
@@ -1500,6 +1689,89 @@ mod tests {
                 r => panic!("D={d} N={n}: {r:?}"),
             }
         }
+    }
+
+    #[test]
+    fn pell_classes_match_brute_force() {
+        // Every class of x² − D·y² = N against a direct enumeration of all
+        // solutions with |y| ≤ 4000, reduced to canonical form, for D whose
+        // unit is small enough that the brute force provably covers the
+        // Nagell range.
+        for d in 2u32..=100 {
+            if Integer::from(d).is_perfect_square() {
+                continue;
+            }
+            let dd = Integer::from(d);
+            let units = pell_units(&dd).unwrap();
+            if units.plus.1 > 4000 {
+                continue;
+            }
+            for n in -50i64..=50 {
+                if n == 0 {
+                    continue;
+                }
+                let nn = Integer::from(n);
+                let pc = diophantine_pell_classes(&dd, &nn).unwrap();
+                assert_eq!(pc.unit, units.plus);
+                let mut brute: std::collections::BTreeSet<(Integer, Integer)> = Default::default();
+                for y in 0i64..=4000 {
+                    let rhs = Integer::from(n) + Integer::from(d) * y * y;
+                    if rhs.cmp0().is_ge() && rhs.is_perfect_square() {
+                        let x = rhs.sqrt();
+                        for sx in [1i32, -1] {
+                            brute.insert(
+                                pell_canonical(
+                                    &dd,
+                                    &nn,
+                                    &units.plus,
+                                    x.clone() * sx,
+                                    Integer::from(y),
+                                )
+                                .unwrap(),
+                            );
+                        }
+                    }
+                }
+                let mut want: Vec<_> = brute.into_iter().collect();
+                want.sort_by(|a, b| (&a.1, &a.0).cmp(&(&b.1, &b.0)));
+                assert_eq!(pc.classes, want, "D={d} N={n}");
+            }
+        }
+    }
+
+    #[test]
+    fn pell_classes_known_multi_class() {
+        let c = |d: i64, n: i64| {
+            diophantine_pell_classes(&Integer::from(d), &Integer::from(n))
+                .unwrap()
+                .classes
+                .into_iter()
+                .map(|(x, y)| (x.to_i64().unwrap(), y.to_i64().unwrap()))
+                .collect::<Vec<_>>()
+        };
+        // x² − 2y² = 49: at least the classes of (7,0) and (9,4)
+        for (x, y) in c(2, 49) {
+            assert_eq!(x * x - 2 * y * y, 49);
+        }
+        assert!(c(2, 49).len() >= 2, "{:?}", c(2, 49));
+        // x² − 10y² = 9: (3,0), (7,2) and (13,4) are pairwise inequivalent
+        assert_eq!(c(10, 9), vec![(3, 0), (7, 2), (13, 4)]);
+        // an unsolvable instance and the unit/negative-unit cases
+        assert!(c(3, -1).is_empty());
+        assert_eq!(c(13, -1), vec![(18, 5)]);
+        assert_eq!(c(13, 1), vec![(1, 0)]);
+    }
+
+    #[test]
+    fn pell_classes_refuse_and_budget() {
+        assert!(diophantine_pell_classes(&Integer::from(9), &Integer::from(2)).is_err());
+        assert!(diophantine_pell_classes(&Integer::from(2), &Integer::from(0)).is_err());
+        let r = {
+            let _guard = crate::budget::enter(crate::budget::Budget::new().with_max_steps(0));
+            diophantine_pell_classes(&Integer::from(94), &Integer::from(-7))
+        };
+        assert!(r.is_err());
+        assert!(last_budget_trip().is_some());
     }
 
     #[test]

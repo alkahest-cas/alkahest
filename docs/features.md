@@ -97,7 +97,7 @@ Experimental (`alkahest.experimental`); see the [probability guide](./mdbook/src
 - `alkahest.number_theory`: `isprime`, `factorint`, `nextprime`, `totient`, `jacobi_symbol`
 - `nthroot_mod` (prime modulus), `discrete_log` (moderate primes)
 - Quadratic Dirichlet characters (`DirichletChi`) on odd square-free conductors
-- Diophantine equations: linear families, sum of two squares, unit Pell equation (`diophantine`)
+- Diophantine equations: linear families, sum of two squares, unit Pell equation (`diophantine`), every class of generalized Pell `x² − D·y² = N` (`pell_classes`)
 
 ## Polynomial system solving (default feature: `groebner`)
 
