@@ -1726,6 +1726,7 @@ impl SharedCover {
     }
 }
 
+#[allow(clippy::needless_range_loop)]
 /// Minimise all `roots` jointly to one shared two-level cover.  `cnf = true`
 /// minimises the complements and dualises, as [`minimise_side`] does.
 fn minimise_multi_side(
