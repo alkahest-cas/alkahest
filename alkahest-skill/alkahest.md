@@ -552,8 +552,10 @@ from alkahest import cad_project, cad_lift
 ak.And(a, b, c); ak.Or(...); ak.Xor(...); ak.Implies(a, b); ak.Equivalent(...); ak.ITE(c, t, e)
 ak.simplify_logic(f, form="auto"|"dnf"|"cnf", dontcare=None, exact=None)  # exact ≤ 12 vars
 ak.minimize_logic(f).exact          # False → heuristic cover (>12 vars); exact=True refuses E-LOGIC-004
+ak.minimize_logic([f1, f2, ...])    # multi-output: shared product terms; .exprs/.terms (distinct)/.shared_terms/.exact; ≤64 outputs
 ak.to_cnf(f); ak.to_dnf(f); ak.to_nnf(f)   # distribution; > 100k terms → E-LOGIC-003
-g = ak.bdd(f, order=None, max_nodes=None)  # & | ^ ~, restrict, exists, forall, sat_count, to_expr
+g = ak.bdd(f, order=None, max_nodes=None, auto_reorder=None)  # & | ^ ~, restrict, exists, forall, sat_count, to_expr
+g.reorder()                         # Rudell sifting; meaning unchanged, order/node_count shrink (auto at 50k nodes unless order= given)
 ak.equivalent(f, g, method="auto"|"truth_table"|"bdd"|"sat", counterexample=False)
 ak.truth_table(f)                   # [((False, False), v), ...]
 ```

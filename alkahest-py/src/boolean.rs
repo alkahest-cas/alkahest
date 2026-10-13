@@ -10,11 +10,12 @@ use std::sync::{Arc, Mutex};
 
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyTuple};
+use pyo3::types::{PyDict, PyList, PyTuple};
 
-use alkahest_core::logic::bdd::{BddManager, BddRef, DEFAULT_MAX_BDD_NODES};
+use alkahest_core::logic::bdd::{BddManager, BddRef, ReorderOptions, DEFAULT_MAX_BDD_NODES};
 use alkahest_core::logic::boolean::{
     self as lb, BooleanError, EquivMethod, Equivalence, LogicForm, MinimizedLogic,
+    MultiMinimizedLogic,
 };
 use alkahest_core::{ExprData, ExprId, ExprPool};
 
@@ -347,29 +348,175 @@ fn py_simplify_logic(
     Ok(wrap(pool_py, m.expr))
 }
 
-/// :func:`simplify_logic` returning a :class:`MinimizedLogic` record
-/// (``expr``, ``form``, ``exact``, ``terms``, ``literals``) so a caller can see
-/// whether minimality was proven.  Default ``form`` is ``"dnf"``.
-#[pyfunction(name = "minimize_logic", signature = (expr, form="dnf", dontcare=None, exact=None))]
-fn py_minimize_logic(
+/// Result of :func:`minimize_logic` on a list of formulas: one two-level
+/// formula per output, built from product terms (or clauses) shared between
+/// outputs.
+#[pyclass(name = "MultiMinimizedLogic", module = "alkahest", frozen)]
+struct PyMultiMinimizedLogic {
+    /// One formula per input, in order.
+    #[pyo3(get)]
+    exprs: Vec<PyExpr>,
+    /// ``"dnf"`` or ``"cnf"``.
+    #[pyo3(get)]
+    form: &'static str,
+    /// ``True`` when the shared cover is proven minimum (fewest distinct
+    /// terms, then fewest literals); ``False`` for the heuristic cover.
+    #[pyo3(get)]
+    exact: bool,
+    /// Distinct product terms (DNF) or clauses (CNF) over all outputs; a term
+    /// feeding several outputs counts once.
+    #[pyo3(get)]
+    terms: usize,
+    /// Literal occurrences over the distinct terms.
+    #[pyo3(get)]
+    literals: usize,
+    /// Terms in each output's own formula.
+    #[pyo3(get)]
+    per_output_terms: Vec<usize>,
+    /// Distinct terms used by more than one output.
+    #[pyo3(get)]
+    shared_terms: usize,
+}
+
+#[pymethods]
+impl PyMultiMinimizedLogic {
+    fn __len__(&self) -> usize {
+        self.exprs.len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "MultiMinimizedLogic(outputs={}, form='{}', exact={}, terms={}, literals={}, shared_terms={})",
+            self.exprs.len(),
+            self.form,
+            if self.exact { "True" } else { "False" },
+            self.terms,
+            self.literals,
+            self.shared_terms
+        )
+    }
+}
+
+fn form_name(f: LogicForm) -> &'static str {
+    if f == LogicForm::Cnf {
+        "cnf"
+    } else {
+        "dnf"
+    }
+}
+
+fn run_minimize_multi(
     py: Python<'_>,
-    expr: PyRef<PyExpr>,
+    exprs: &[PyRef<PyExpr>],
     form: &str,
     dontcare: Option<PyRef<PyExpr>>,
     exact: Option<bool>,
-) -> PyResult<PyMinimizedLogic> {
-    let (pool_py, m) = run_minimize(py, &expr, form, dontcare, exact)?;
-    Ok(PyMinimizedLogic {
-        expr: wrap(pool_py, m.expr),
-        form: if m.form == LogicForm::Cnf {
-            "cnf"
-        } else {
-            "dnf"
-        },
+) -> PyResult<PyMultiMinimizedLogic> {
+    let form = LogicForm::parse(form).map_err(bool_err)?;
+    if exprs.is_empty() {
+        return Err(bool_err(BooleanError::InvalidArgument(
+            "minimize_logic needs at least one formula".into(),
+        )));
+    }
+    let pool_py = exprs[0].pool.clone_ref(py);
+    for e in exprs.iter().skip(1) {
+        if !e.pool.is(&pool_py) {
+            return Err(cross_pool_err(
+                "[E-POOL-001] minimize_logic(): formulas belong to different ExprPools".into(),
+            ));
+        }
+    }
+    if let Some(d) = &dontcare {
+        if !d.pool.is(&pool_py) {
+            return Err(cross_pool_err(
+                "[E-POOL-001] minimize_logic(): dontcare belongs to a different ExprPool".into(),
+            ));
+        }
+    }
+    let m: MultiMinimizedLogic = {
+        let pool = pool_py.borrow(py);
+        for e in exprs {
+            guard_depth(&pool.inner, e.id)?;
+        }
+        if let Some(d) = &dontcare {
+            guard_depth(&pool.inner, d.id)?;
+        }
+        let ids: Vec<ExprId> = exprs.iter().map(|e| e.id).collect();
+        lb::simplify_logic_multi(&pool.inner, &ids, form, dontcare.map(|d| d.id), exact)
+            .map_err(bool_err)?
+    };
+    Ok(PyMultiMinimizedLogic {
+        exprs: m
+            .exprs
+            .iter()
+            .map(|&id| PyExpr {
+                pool: pool_py.clone_ref(py),
+                id,
+            })
+            .collect(),
+        form: form_name(m.form),
         exact: m.exact,
         terms: m.terms,
         literals: m.literals,
+        per_output_terms: m.per_output_terms,
+        shared_terms: m.shared_terms,
     })
+}
+
+/// :func:`simplify_logic` returning a :class:`MinimizedLogic` record
+/// (``expr``, ``form``, ``exact``, ``terms``, ``literals``) so a caller can see
+/// whether minimality was proven.  Default ``form`` is ``"dnf"``.
+///
+/// **Multi-output.** Pass a list or tuple of formulas to minimise them
+/// jointly: the result is a :class:`MultiMinimizedLogic` whose ``exprs`` are
+/// two-level forms built from product terms (clauses for ``form="cnf"``)
+/// *shared* between outputs, so ``terms`` counts each distinct term once —
+/// never more than the sum of the separately minimised outputs.  ``dontcare``
+/// applies to every output.  Up to 12 variables (16 with ``exact=True``) the
+/// shared cover is exact (multi-output Quine–McCluskey primes, then a minimum
+/// cover of the (output, minterm) pairs: fewest distinct terms, then fewest
+/// literals); beyond that the espresso-style pass runs per output and the
+/// pooled cubes are cut down to an irredundant shared set, flagged
+/// ``exact=False``.  Every output is verified against its input before the
+/// result is returned.  At most 64 outputs (``LogicError``, ``E-LOGIC-003``).
+///
+/// >>> import alkahest as ak
+/// >>> p = ak.ExprPool(); a, b = p.symbol("a"), p.symbol("b")
+/// >>> r = ak.minimize_logic([ak.Xor(a, b), ak.And(a, b), ak.Or(a, b)])
+/// >>> r.terms, r.exact
+/// (3, True)
+#[pyfunction(name = "minimize_logic", signature = (expr, form="dnf", dontcare=None, exact=None))]
+fn py_minimize_logic(
+    py: Python<'_>,
+    expr: &Bound<'_, PyAny>,
+    form: &str,
+    dontcare: Option<PyRef<PyExpr>>,
+    exact: Option<bool>,
+) -> PyResult<PyObject> {
+    if expr.downcast::<PyList>().is_ok() || expr.downcast::<PyTuple>().is_ok() {
+        let mut es: Vec<PyRef<PyExpr>> = Vec::new();
+        for item in expr.iter()? {
+            es.push(
+                item?
+                    .extract::<PyRef<PyExpr>>()
+                    .map_err(|_| PyTypeError::new_err("minimize_logic: every output is an Expr"))?,
+            );
+        }
+        let r = run_minimize_multi(py, &es, form, dontcare, exact)?;
+        return Ok(Py::new(py, r)?.into_py(py));
+    }
+    let expr = expr
+        .extract::<PyRef<PyExpr>>()
+        .map_err(|_| PyTypeError::new_err("minimize_logic expects an Expr or a list of Exprs"))?;
+    let (pool_py, m) = run_minimize(py, &expr, form, dontcare, exact)?;
+    let r = PyMinimizedLogic {
+        expr: wrap(pool_py, m.expr),
+        form: form_name(m.form),
+        exact: m.exact,
+        terms: m.terms,
+        literals: m.literals,
+    };
+    Ok(Py::new(py, r)?.into_py(py))
 }
 
 /// Decide whether two propositional formulas are equivalent.
@@ -531,13 +678,53 @@ fn level_of(py: Python<'_>, sh: &Shared, ob: &Bound<'_, PyAny>) -> PyResult<Opti
     Ok(sh.mgr.level_of(&name))
 }
 
+impl Drop for PyBdd {
+    fn drop(&mut self) {
+        lock(&self.shared).mgr.unpin(self.root);
+    }
+}
+
+/// Node count past which a ``bdd()`` call starts sifting by default.
+const DEFAULT_AUTO_REORDER: usize = 50_000;
+
+/// Parse an ``auto_reorder`` argument: ``False`` = off, ``True`` = the
+/// default threshold, an ``int`` = that many live nodes.
+fn parse_auto_reorder(ob: &Bound<'_, PyAny>) -> PyResult<Option<usize>> {
+    if ob.is_none() {
+        return Ok(None);
+    }
+    if let Ok(b) = ob.downcast::<pyo3::types::PyBool>() {
+        return Ok(b.is_true().then_some(DEFAULT_AUTO_REORDER));
+    }
+    let n: usize = ob.extract().map_err(|_| {
+        PyTypeError::new_err("auto_reorder is False, True or a node-count threshold")
+    })?;
+    if n == 0 {
+        return Err(PyValueError::new_err(
+            "auto_reorder threshold must be at least 1 node",
+        ));
+    }
+    Ok(Some(n))
+}
+
 impl PyBdd {
+    /// A new handle on `root` of this manager.  The root is pinned for the
+    /// handle's lifetime (reordering keeps pinned functions alive), and
+    /// automatic reordering gets its chance to run.
     fn with_root(&self, py: Python<'_>, root: BddRef) -> PyBdd {
-        PyBdd {
+        let out = PyBdd {
             shared: self.shared.clone(),
             root,
             pool: self.pool.clone_ref(py),
+        };
+        {
+            let mut sh = lock(&self.shared);
+            sh.mgr.pin(root);
+            // Reordering is an optimisation: a refusal (budget) is left for
+            // the next operation to report.
+            let _ = sh.mgr.maybe_reorder(&[]);
         }
+        out
     }
 
     /// Bring `other` (a BDD or an `Expr`) into this manager.
@@ -649,11 +836,16 @@ impl PyBdd {
     /// ``if self then g else h`` (the ITE operator every BDD operation reduces to).
     fn ite(&self, py: Python<'_>, g: &Bound<'_, PyAny>, h: &Bound<'_, PyAny>) -> PyResult<PyBdd> {
         let gr = self.operand(py, g)?;
-        let hr = self.operand(py, h)?;
+        lock(&self.shared).mgr.pin(gr);
+        let hr = self.operand(py, h);
         let r = {
             let mut sh = lock(&self.shared);
-            sh.mgr.ite(self.root, gr, hr).map_err(bool_err)?
-        };
+            sh.mgr.unpin(gr);
+            match hr {
+                Ok(hr) => sh.mgr.ite(self.root, gr, hr).map_err(bool_err),
+                Err(e) => Err(e),
+            }
+        }?;
         Ok(self.with_root(py, r))
     }
 
@@ -754,6 +946,74 @@ impl PyBdd {
         Ok(int.call1((s,))?.into_py(py))
     }
 
+    /// Re-sort the manager's variable order by Rudell sifting to shrink the
+    /// diagrams.
+    ///
+    /// Every function of the manager (this BDD and any combined with it)
+    /// keeps its meaning: ``sat_count``, :meth:`equivalent` and
+    /// :meth:`to_expr` are unchanged; :attr:`order` and :meth:`node_count`
+    /// change.  Unreferenced intermediate nodes are collected.
+    ///
+    /// Args:
+    ///     max_growth: abandon a variable's excursion in one direction once
+    ///         the manager exceeds this multiple of the best size seen for it
+    ///         (default 1.2; at least 1.0).
+    ///     max_swaps: stop after this many adjacent-variable swaps (default
+    ///         200 000); ``complete`` is then ``False``.
+    ///
+    /// Returns:
+    ///     ``dict`` with ``nodes_before`` / ``nodes_after`` (live nodes of the
+    ///     whole manager), ``swaps`` and ``complete``.  An active
+    ///     ``alkahest.Budget`` is honoured between swaps
+    ///     (``BudgetExceededError``; the order reached stays valid).
+    ///
+    /// >>> import alkahest as ak
+    /// >>> p = ak.ExprPool()
+    /// >>> xs = [p.symbol(f"x{i}") for i in range(6)]
+    /// >>> ys = [p.symbol(f"y{i}") for i in range(6)]
+    /// >>> f = ak.bdd(ak.Or(*[ak.And(x, y) for x, y in zip(xs, ys)]),
+    /// ...            order=xs + ys, auto_reorder=False)
+    /// >>> before = f.node_count()
+    /// >>> _ = f.reorder()
+    /// >>> f.node_count() < before
+    /// True
+    #[pyo3(signature = (max_growth=1.2, max_swaps=200_000))]
+    fn reorder(&self, py: Python<'_>, max_growth: f64, max_swaps: usize) -> PyResult<PyObject> {
+        let st = {
+            let mut sh = lock(&self.shared);
+            sh.mgr
+                .reorder(
+                    &[],
+                    &ReorderOptions {
+                        max_growth,
+                        max_swaps,
+                    },
+                )
+                .map_err(bool_err)?
+        };
+        let d = PyDict::new_bound(py);
+        d.set_item("nodes_before", st.nodes_before)?;
+        d.set_item("nodes_after", st.nodes_after)?;
+        d.set_item("swaps", st.swaps)?;
+        d.set_item("complete", st.complete)?;
+        Ok(d.into_py(py))
+    }
+
+    /// Turn automatic reordering of this BDD's manager on or off: ``False``
+    /// (off), ``True`` (sift once the manager holds 50 000 live nodes) or an
+    /// ``int`` threshold.  Checked after every operation that produces a BDD.
+    fn set_auto_reorder(&self, threshold: &Bound<'_, PyAny>) -> PyResult<()> {
+        let t = parse_auto_reorder(threshold)?;
+        lock(&self.shared).mgr.set_auto_reorder(t);
+        Ok(())
+    }
+
+    /// The automatic-reordering threshold in nodes, or ``None`` when off.
+    #[getter]
+    fn auto_reorder(&self) -> Option<usize> {
+        lock(&self.shared).mgr.auto_reorder_threshold()
+    }
+
     /// Non-terminal nodes reachable from this function.
     fn node_count(&self) -> usize {
         lock(&self.shared).mgr.node_count(self.root)
@@ -846,6 +1106,12 @@ impl PyBdd {
 ///     max_nodes: node ceiling (default 2 000 000).  A BDD that would exceed
 ///         it is refused with ``LogicError`` (``E-LOGIC-003``); an active
 ///         ``alkahest.Budget`` is honoured too (``BudgetExceededError``).
+///     auto_reorder: dynamic variable reordering (Rudell sifting) once the
+///         manager holds this many live nodes: ``False`` off, ``True`` or an
+///         ``int`` threshold on.  ``None`` (default) means on at 50 000 nodes
+///         unless an explicit ``order`` was given.  It never changes what a
+///         BDD means, only its order and size; see :meth:`BDD.reorder` to
+///         sift on demand.
 ///
 /// Returns:
 ///     :class:`BDD`.
@@ -855,14 +1121,19 @@ impl PyBdd {
 /// >>> f = ak.bdd(ak.Or(ak.And(a, b), ak.And(b, c), ak.And(a, c)))
 /// >>> f.sat_count(), f.node_count()
 /// (4, 4)
-#[pyfunction(name = "bdd", signature = (expr, order=None, max_nodes=None))]
+#[pyfunction(name = "bdd", signature = (expr, order=None, max_nodes=None, auto_reorder=None))]
 fn py_bdd(
     py: Python<'_>,
     expr: PyRef<PyExpr>,
     order: Option<&Bound<'_, PyAny>>,
     max_nodes: Option<usize>,
+    auto_reorder: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyBdd> {
     let mut mgr = BddManager::with_max_nodes(max_nodes.unwrap_or(DEFAULT_MAX_BDD_NODES));
+    mgr.set_auto_reorder(match auto_reorder {
+        Some(a) => parse_auto_reorder(a)?,
+        None => order.is_none().then_some(DEFAULT_AUTO_REORDER),
+    });
     let pool_py = expr.pool.clone_ref(py);
     let pool = pool_py.borrow(py);
     guard_depth(&pool.inner, expr.id)?;
@@ -895,6 +1166,7 @@ fn py_bdd(
     }
     let (root, atoms) = lb::bdd_from_expr(&pool.inner, expr.id, &mut mgr).map_err(bool_err)?;
     drop(pool);
+    mgr.pin(root);
     Ok(PyBdd {
         shared: Arc::new(Mutex::new(Shared {
             mgr,
@@ -908,6 +1180,7 @@ fn py_bdd(
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBdd>()?;
     m.add_class::<PyMinimizedLogic>()?;
+    m.add_class::<PyMultiMinimizedLogic>()?;
     m.add_function(wrap_pyfunction!(py_and, m)?)?;
     m.add_function(wrap_pyfunction!(py_or, m)?)?;
     m.add_function(wrap_pyfunction!(py_not, m)?)?;

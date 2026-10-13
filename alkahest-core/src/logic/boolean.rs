@@ -598,15 +598,15 @@ impl Circuit {
         Ok(out)
     }
 
-    fn to_bdd(
-        &self,
-        mgr: &mut BddManager,
-        level_of_var: &[u32],
-    ) -> Result<Vec<BddRef>, BooleanError> {
+    /// BDDs of every gate.  Variables are looked up by name, because the
+    /// manager may reorder (see [`BddManager::set_auto_reorder`]) while the
+    /// gates are being built; the gates built so far are protected through
+    /// the reordering.
+    fn to_bdd(&self, mgr: &mut BddManager) -> Result<Vec<BddRef>, BooleanError> {
         let mut b: Vec<BddRef> = Vec::with_capacity(self.gates.len());
         for g in &self.gates {
             let r = match g {
-                Gate::Var(x) => mgr.var_at(level_of_var[*x as usize])?,
+                Gate::Var(x) => mgr.var(&self.names[*x as usize])?,
                 Gate::Const(t) => {
                     if *t {
                         BddRef::TRUE
@@ -631,6 +631,7 @@ impl Circuit {
                 }
             };
             b.push(r);
+            mgr.maybe_reorder(&b)?;
         }
         Ok(b)
     }
@@ -1184,19 +1185,39 @@ fn exact_sop(
     }
     let big = (n as u64) * (on.len() as u64) + 1;
     let cost: Vec<u64> = cols.iter().map(|c| big + c.literals(n) as u64).collect();
+    let (chosen, exact) = solve_cover(on.len(), &col_rows, &cost, demand_exact)?;
+    let mut out: Vec<Cube> = chosen.into_iter().map(|c| cols[c]).collect();
+    if exact {
+        out.sort();
+    }
+    Ok((out, exact))
+}
+
+/// Minimum-cost cover of `n_rows` rows by columns (`col_rows[c]` = rows column
+/// `c` covers, `cost[c]` its cost): dominated columns are dropped, then
+/// Petrick's method runs as branch-and-bound.  Returns the chosen column
+/// indices and whether minimality was proven (`false`: the search hit its step
+/// limit and the best cover found so far is returned, unless `demand_exact`).
+fn solve_cover(
+    n_rows: usize,
+    col_rows: &[Vec<usize>],
+    cost: &[u64],
+    demand_exact: bool,
+) -> Result<(Vec<usize>, bool), BooleanError> {
+    let ncols = col_rows.len();
     // Column dominance: drop a column whose rows are a subset of a column no
     // more expensive (ties keep the lower index).
-    let mut alive = vec![true; cols.len()];
-    if cols.len() <= 4000 {
+    let mut alive = vec![true; ncols];
+    if ncols <= 4000 {
         let sets: Vec<HashSet<usize>> = col_rows
             .iter()
             .map(|r| r.iter().copied().collect())
             .collect();
-        for i in 0..cols.len() {
+        for i in 0..ncols {
             if i % 64 == 0 {
                 budget()?;
             }
-            for j in 0..cols.len() {
+            for j in 0..ncols {
                 if i == j || !alive[j] {
                     continue;
                 }
@@ -1211,17 +1232,16 @@ fn exact_sop(
             }
         }
     }
-    let keep: Vec<usize> = (0..cols.len()).filter(|&i| alive[i]).collect();
-    let cols: Vec<Cube> = keep.iter().map(|&i| cols[i]).collect();
+    let keep: Vec<usize> = (0..ncols).filter(|&i| alive[i]).collect();
     let col_rows: Vec<Vec<usize>> = keep.iter().map(|&i| col_rows[i].clone()).collect();
     let cost: Vec<u64> = keep.iter().map(|&i| cost[i]).collect();
-    let mut row_cols: Vec<Vec<usize>> = vec![Vec::new(); on.len()];
+    let mut row_cols: Vec<Vec<usize>> = vec![Vec::new(); n_rows];
     for (c, rows) in col_rows.iter().enumerate() {
         for &r in rows {
             row_cols[r].push(c);
         }
     }
-    let greedy = greedy_cover(on.len(), &col_rows, &cost);
+    let greedy = greedy_cover(n_rows, &col_rows, &cost);
     let greedy_cost: u64 = greedy.iter().map(|&c| cost[c]).sum();
     let mut s = CoverSearch {
         col_rows: &col_rows,
@@ -1233,26 +1253,22 @@ fn exact_sop(
         limit: COVER_STEP_LIMIT,
         aborted: false,
     };
-    let mut covered = vec![false; on.len()];
-    let mut excluded = vec![false; cols.len()];
+    let mut covered = vec![false; n_rows];
+    let mut excluded = vec![false; col_rows.len()];
     let mut chosen = Vec::new();
     s.search(&mut covered, &mut excluded, &mut chosen, 0);
     if s.aborted {
-        if let Err(e) = budget() {
-            return Err(e);
-        }
+        budget()?;
         if demand_exact {
             return Err(BooleanError::ExactUnavailable(format!(
                 "the covering search exceeded {COVER_STEP_LIMIT} nodes"
             )));
         }
         let best = s.best.unwrap_or(greedy);
-        return Ok((best.into_iter().map(|c| cols[c]).collect(), false));
+        return Ok((best.into_iter().map(|c| keep[c]).collect(), false));
     }
     let best = s.best.unwrap_or(greedy);
-    let mut out: Vec<Cube> = best.into_iter().map(|c| cols[c]).collect();
-    out.sort();
-    Ok((out, true))
+    Ok((best.into_iter().map(|c| keep[c]).collect(), true))
 }
 
 fn minterms_of(words: &[u64], n: usize) -> Vec<u32> {
@@ -1501,8 +1517,7 @@ fn minimise_side(
         let l = mgr.declare(name);
         debug_assert_eq!(l as usize, i);
     }
-    let levels: Vec<u32> = (0..n as u32).collect();
-    let b = circ.to_bdd(&mut mgr, &levels)?;
+    let b = circ.to_bdd(&mut mgr)?;
     let f = if negate {
         mgr.not(b[on_root as usize])?
     } else {
@@ -1582,6 +1597,528 @@ pub fn simplify_logic(
 }
 
 // ---------------------------------------------------------------------------
+// Multi-output two-level minimisation
+// ---------------------------------------------------------------------------
+
+/// Most outputs [`simplify_logic_multi`] accepts (product-term tags are 64-bit
+/// masks).
+pub const MULTI_MAX_OUTPUTS: usize = 64;
+
+/// Result of [`simplify_logic_multi`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct MultiMinimizedLogic {
+    /// One two-level formula per input formula, in order.
+    pub exprs: Vec<ExprId>,
+    /// `Dnf` or `Cnf` — the form actually returned.
+    pub form: LogicForm,
+    /// `true` when the shared cover is proven minimum (fewest distinct terms,
+    /// then fewest literals, over all multi-output two-level forms); `false`
+    /// for the heuristic cover.
+    pub exact: bool,
+    /// Distinct product terms (DNF) or clauses (CNF) across all outputs; a
+    /// term used by several outputs counts once.  Constant outputs have none.
+    pub terms: usize,
+    /// Literal occurrences over the distinct terms.
+    pub literals: usize,
+    /// Terms in each output's own formula.
+    pub per_output_terms: Vec<usize>,
+    /// Distinct terms that feed more than one output.
+    pub shared_terms: usize,
+}
+
+/// Prime implicants of the multi-output function whose minterm `m` carries
+/// the set (bit mask) of outputs that may be 1 there: `(cube, tag)` where
+/// `tag` is the full set of outputs the cube lies inside and no larger cube
+/// has the same tag (multi-output Quine-McCluskey).
+fn multi_prime_implicants(
+    init: &HashMap<u32, u64>,
+    n: usize,
+) -> Result<Vec<(Cube, u64)>, BooleanError> {
+    let mut current: HashMap<Cube, u64> = init
+        .iter()
+        .map(|(&m, &t)| (Cube { bits: m, mask: 0 }, t))
+        .collect();
+    let mut primes: Vec<(Cube, u64)> = Vec::new();
+    let mut total: u64 = current.len() as u64;
+    while !current.is_empty() {
+        budget()?;
+        let mut next: HashMap<Cube, u64> = HashMap::new();
+        let mut used: HashSet<Cube> = HashSet::new();
+        for (&c, &t) in &current {
+            for i in 0..n {
+                let bit = 1u32 << i;
+                if c.mask & bit != 0 || c.bits & bit != 0 {
+                    continue;
+                }
+                let partner = Cube {
+                    bits: c.bits | bit,
+                    mask: c.mask,
+                };
+                if let Some(&tp) = current.get(&partner) {
+                    let both = t & tp;
+                    if both == 0 {
+                        continue;
+                    }
+                    *next
+                        .entry(Cube {
+                            bits: c.bits,
+                            mask: c.mask | bit,
+                        })
+                        .or_insert(0) |= both;
+                    if both == t {
+                        used.insert(c);
+                    }
+                    if both == tp {
+                        used.insert(partner);
+                    }
+                }
+            }
+        }
+        for (&c, &t) in &current {
+            if !used.contains(&c) {
+                primes.push((c, t));
+            }
+        }
+        total += next.len() as u64;
+        crate::budget::check_growth(next.len() as u64).map_err(BooleanError::Budget)?;
+        if total > 20_000_000 {
+            return Err(BooleanError::TooLarge {
+                what: "Quine-McCluskey implicants",
+                limit: 20_000_000,
+            });
+        }
+        current = next;
+    }
+    primes.sort();
+    Ok(primes)
+}
+
+/// A shared cover: distinct terms plus, per output, the indices of the terms
+/// that form that output.
+struct SharedCover {
+    terms: Cover,
+    outputs: Vec<Vec<usize>>,
+}
+
+impl SharedCover {
+    /// Build from per-output lists of cubes (as literal lists): identical
+    /// cubes are merged into one shared term; terms no output uses are dropped.
+    fn from_lists(lists: Vec<Vec<Vec<(usize, bool)>>>) -> Self {
+        let mut index: HashMap<Vec<(usize, bool)>, usize> = HashMap::new();
+        let mut terms: Cover = Vec::new();
+        let mut outputs = Vec::with_capacity(lists.len());
+        for list in lists {
+            let mut mine = Vec::new();
+            for mut t in list {
+                t.sort();
+                let k = *index.entry(t.clone()).or_insert_with(|| {
+                    terms.push(t);
+                    terms.len() - 1
+                });
+                if !mine.contains(&k) {
+                    mine.push(k);
+                }
+            }
+            outputs.push(mine);
+        }
+        SharedCover { terms, outputs }
+    }
+}
+
+#[allow(clippy::needless_range_loop)]
+/// Minimise all `roots` jointly to one shared two-level cover.  `cnf = true`
+/// minimises the complements and dualises, as [`minimise_side`] does.
+fn minimise_multi_side(
+    circ: &Circuit,
+    roots: &[u32],
+    dc_root: Option<u32>,
+    cnf: bool,
+    exact: Option<bool>,
+) -> Result<(SharedCover, bool), BooleanError> {
+    let n = circ.n_vars();
+    let k = roots.len();
+    let use_exact = match exact {
+        Some(true) => {
+            if n > EXACT_MAX_VARS {
+                return Err(BooleanError::ExactUnavailable(format!(
+                    "{n} variables (exact minimisation is limited to {EXACT_MAX_VARS})"
+                )));
+            }
+            true
+        }
+        Some(false) => false,
+        None => n <= EXACT_AUTO_MAX_VARS,
+    };
+    if use_exact {
+        let mut all = roots.to_vec();
+        if let Some(d) = dc_root {
+            all.push(d);
+        }
+        let tts = circ.truth_tables(&all)?;
+        let words = tts[0].len();
+        let valid: u64 = if n >= 6 {
+            u64::MAX
+        } else {
+            (1u64 << (1u32 << n)) - 1
+        };
+        let dcw: Vec<u64> = if dc_root.is_some() {
+            tts[k].clone()
+        } else {
+            vec![0; words]
+        };
+        let onw: Vec<Vec<u64>> = (0..k)
+            .map(|i| {
+                (0..words)
+                    .map(|w| {
+                        let f = if cnf { !tts[i][w] & valid } else { tts[i][w] };
+                        f & !dcw[w]
+                    })
+                    .collect()
+            })
+            .collect();
+        let on: Vec<Vec<u32>> = onw.iter().map(|w| minterms_of(w, n)).collect();
+        let dc = minterms_of(&dcw, n);
+        // Minterm -> outputs that may be 1 there.
+        let mut tag: HashMap<u32, u64> = HashMap::new();
+        for (i, ms) in on.iter().enumerate() {
+            for &m in ms {
+                *tag.entry(m).or_insert(0) |= 1 << i;
+            }
+        }
+        if !dc.is_empty() {
+            let all_outputs = if k == 64 { u64::MAX } else { (1u64 << k) - 1 };
+            for &m in &dc {
+                *tag.entry(m).or_insert(0) |= all_outputs;
+            }
+        }
+        if on.iter().all(|v| v.is_empty()) {
+            return Ok((SharedCover::from_lists(vec![Vec::new(); k]), true));
+        }
+        let primes = multi_prime_implicants(&tag, n)?;
+        // Rows: one per (output, ON minterm).
+        let mut row_of: Vec<HashMap<u32, usize>> = Vec::with_capacity(k);
+        let mut n_rows = 0usize;
+        for ms in &on {
+            let mut h = HashMap::new();
+            for &m in ms {
+                h.insert(m, n_rows);
+                n_rows += 1;
+            }
+            row_of.push(h);
+        }
+        let mut cols: Vec<Cube> = Vec::new();
+        let mut col_tag: Vec<u64> = Vec::new();
+        let mut col_rows: Vec<Vec<usize>> = Vec::new();
+        for (idx, &(p, t)) in primes.iter().enumerate() {
+            if idx % 64 == 0 {
+                budget()?;
+            }
+            let mut rows = Vec::new();
+            for (i, ms) in on.iter().enumerate() {
+                if t >> i & 1 == 0 {
+                    continue;
+                }
+                for &m in ms {
+                    if p.covers(m) {
+                        rows.push(row_of[i][&m]);
+                    }
+                }
+            }
+            if !rows.is_empty() {
+                cols.push(p);
+                col_tag.push(t);
+                col_rows.push(rows);
+            }
+        }
+        let big = (n as u64) * (n_rows as u64) + 1;
+        let cost: Vec<u64> = cols.iter().map(|c| big + c.literals(n) as u64).collect();
+        let (chosen, ok) = solve_cover(n_rows, &col_rows, &cost, exact == Some(true))?;
+        // Assign each chosen cube to the outputs it helps, then drop a
+        // cube from an output when the rest of that output already covers
+        // its ON-set.
+        let mut lists: Vec<Vec<Vec<(usize, bool)>>> = Vec::with_capacity(k);
+        for i in 0..k {
+            let mut mine: Vec<Cube> = chosen
+                .iter()
+                .filter(|&&c| col_tag[c] >> i & 1 == 1)
+                .map(|&c| cols[c])
+                .filter(|p| on[i].iter().any(|&m| p.covers(m)))
+                .collect();
+            let mut count: HashMap<u32, usize> = HashMap::new();
+            for p in &mine {
+                for &m in &on[i] {
+                    if p.covers(m) {
+                        *count.entry(m).or_insert(0) += 1;
+                    }
+                }
+            }
+            mine.sort_by_key(|p| std::cmp::Reverse(p.literals(n)));
+            let mut kept = Vec::new();
+            for p in mine {
+                let redundant = on[i]
+                    .iter()
+                    .filter(|&&m| p.covers(m))
+                    .all(|m| count[m] >= 2);
+                if redundant {
+                    for &m in &on[i] {
+                        if p.covers(m) {
+                            *count.get_mut(&m).unwrap() -= 1;
+                        }
+                    }
+                } else {
+                    kept.push(p);
+                }
+            }
+            kept.sort();
+            lists.push(kept.into_iter().map(|c| cube_lits(c, n)).collect());
+        }
+        let shared = SharedCover::from_lists(lists);
+        // Check every output: on_i ⊆ cover_i ⊆ on_i ∪ dc.
+        let nwords = words;
+        for i in 0..k {
+            let mut cw = vec![0u64; nwords];
+            for &t in &shared.outputs[i] {
+                for m in 0..(1usize << n) {
+                    if shared.terms[t]
+                        .iter()
+                        .all(|&(v, pos)| ((m >> v) & 1 == 1) == pos)
+                    {
+                        cw[m >> 6] |= 1 << (m & 63);
+                    }
+                }
+                budget()?;
+            }
+            for w in 0..nwords {
+                if onw[i][w] & !cw[w] != 0 || cw[w] & !(onw[i][w] | dcw[w]) != 0 {
+                    return Err(BooleanError::Internal(format!(
+                        "multi-output cover disagrees with the truth table of output {i}"
+                    )));
+                }
+            }
+        }
+        return Ok((shared, ok));
+    }
+    // Heuristic: minimise each output with the espresso-style pass, pool the
+    // cubes, record which outputs each cube is allowed to feed, and keep a
+    // smallest irredundant subset.  Never more distinct terms than the sum of
+    // the per-output covers.
+    let mut mgr = BddManager::new();
+    for name in &circ.names {
+        mgr.declare(name);
+    }
+    let b = circ.to_bdd(&mut mgr)?;
+    let d = dc_root.map(|r| b[r as usize]).unwrap_or(BddRef::FALSE);
+    let nd = mgr.not(d)?;
+    let mut ons = Vec::with_capacity(k);
+    let mut uppers = Vec::with_capacity(k);
+    let mut own: Vec<Cover> = Vec::with_capacity(k);
+    for &r in roots {
+        let f = if cnf {
+            mgr.not(b[r as usize])?
+        } else {
+            b[r as usize]
+        };
+        let on = mgr.and(f, nd)?;
+        let upper = mgr.or(f, d)?;
+        own.push(heuristic_sop(&mut mgr, on, upper, n)?);
+        ons.push(on);
+        uppers.push(upper);
+    }
+    let pooled = SharedCover::from_lists(own);
+    let nt = pooled.terms.len();
+    // Which outputs may each pooled cube feed?
+    let mut allowed: Vec<Vec<usize>> = Vec::with_capacity(nt);
+    let mut tbdd: Vec<BddRef> = Vec::with_capacity(nt);
+    for t in &pooled.terms {
+        budget()?;
+        let mut cube: Vec<Option<bool>> = vec![None; n];
+        for &(v, pos) in t {
+            cube[v] = Some(pos);
+        }
+        allowed.push(
+            (0..k)
+                .filter(|&i| mgr.holds_on_cube(uppers[i], &cube))
+                .collect(),
+        );
+        let mut acc = BddRef::TRUE;
+        for &(v, pos) in t {
+            let x = mgr.var_at(v as u32)?;
+            let lit = if pos { x } else { mgr.not(x)? };
+            acc = mgr.and(acc, lit)?;
+        }
+        tbdd.push(acc);
+    }
+    let mut selected = vec![true; nt];
+    if nt <= 4000 {
+        // Try to drop whole terms: fewest outputs served, most literals first.
+        let mut order: Vec<usize> = (0..nt).collect();
+        order.sort_by_key(|&t| (allowed[t].len(), std::cmp::Reverse(pooled.terms[t].len())));
+        for &t in &order {
+            budget()?;
+            selected[t] = false;
+            let mut ok = true;
+            for &i in &allowed[t] {
+                let mut rest = BddRef::FALSE;
+                for (u, &sel) in selected.iter().enumerate() {
+                    if sel && allowed[u].contains(&i) {
+                        rest = mgr.or(rest, tbdd[u])?;
+                    }
+                }
+                let nrest = mgr.not(rest)?;
+                if !mgr.and(ons[i], nrest)?.is_false() {
+                    ok = false;
+                    break;
+                }
+            }
+            if !ok {
+                selected[t] = true;
+            }
+        }
+    }
+    // Per output: the selected terms it may use, minus the redundant ones.
+    let mut lists: Vec<Vec<Vec<(usize, bool)>>> = Vec::with_capacity(k);
+    for i in 0..k {
+        let mut mine: Vec<usize> = (0..nt)
+            .filter(|&t| selected[t] && allowed[t].contains(&i))
+            .collect();
+        mine.sort_by_key(|&t| std::cmp::Reverse(pooled.terms[t].len()));
+        let mut keep = vec![true; mine.len()];
+        if mine.len() <= 4000 {
+            for a in 0..mine.len() {
+                budget()?;
+                keep[a] = false;
+                let mut rest = BddRef::FALSE;
+                for (c, &t) in mine.iter().enumerate() {
+                    if keep[c] {
+                        rest = mgr.or(rest, tbdd[t])?;
+                    }
+                }
+                let nrest = mgr.not(rest)?;
+                if !mgr.and(ons[i], nrest)?.is_false() {
+                    keep[a] = true;
+                }
+            }
+        }
+        lists.push(
+            mine.iter()
+                .zip(&keep)
+                .filter(|(_, &kp)| kp)
+                .map(|(&t, _)| pooled.terms[t].clone())
+                .collect(),
+        );
+    }
+    let shared = SharedCover::from_lists(lists);
+    for i in 0..k {
+        let cb = cover_bdd(
+            &mut mgr,
+            &shared.outputs[i]
+                .iter()
+                .map(|&t| shared.terms[t].clone())
+                .collect(),
+        )?;
+        let ncb = mgr.not(cb)?;
+        let miss = mgr.and(ons[i], ncb)?;
+        let nup = mgr.not(uppers[i])?;
+        let excess = mgr.and(cb, nup)?;
+        if !miss.is_false() || !excess.is_false() {
+            return Err(BooleanError::Internal(format!(
+                "heuristic multi-output cover disagrees with the BDD of output {i}"
+            )));
+        }
+    }
+    Ok((shared, false))
+}
+
+/// Jointly minimise several propositional formulas to two-level forms that
+/// share product terms (the AND plane of a PLA).
+///
+/// Arguments are as for [`simplify_logic`]; `dontcare` applies to every
+/// output.  Up to [`EXACT_AUTO_MAX_VARS`] variables the shared cover is exact:
+/// multi-output Quine-McCluskey primes (a cube is tagged with every output it
+/// lies inside) and a minimum cover of the (output, minterm) pairs — fewest
+/// distinct terms, then fewest literals counted once per distinct term.
+/// Beyond that, or with `exact = Some(false)`, each output is minimised with
+/// the espresso-style pass and the pooled cubes are cut down to an
+/// irredundant shared subset; [`MultiMinimizedLogic::exact`] says which
+/// happened.  The result never has more distinct terms than the per-output
+/// covers it starts from, and every output is checked against its input
+/// before the result is returned.
+///
+/// Refuses at most [`MULTI_MAX_OUTPUTS`] outputs
+/// ([`BooleanError::TooLarge`]) and an empty list
+/// ([`BooleanError::InvalidArgument`]).
+pub fn simplify_logic_multi(
+    pool: &ExprPool,
+    exprs: &[ExprId],
+    form: LogicForm,
+    dontcare: Option<ExprId>,
+    exact: Option<bool>,
+) -> Result<MultiMinimizedLogic, BooleanError> {
+    if exprs.is_empty() {
+        return Err(BooleanError::InvalidArgument(
+            "minimize_logic needs at least one formula".into(),
+        ));
+    }
+    if exprs.len() > MULTI_MAX_OUTPUTS {
+        return Err(BooleanError::TooLarge {
+            what: "multi-output minimisation outputs",
+            limit: MULTI_MAX_OUTPUTS as u64,
+        });
+    }
+    let mut circ = Circuit::new(true);
+    let roots: Vec<u32> = exprs
+        .iter()
+        .map(|&e| circ.lift(pool, e))
+        .collect::<Result<_, _>>()?;
+    let dc_root = match dontcare {
+        Some(d) => Some(circ.lift(pool, d)?),
+        None => None,
+    };
+    let build = |cnf: bool, circ: &Circuit| -> Result<MultiMinimizedLogic, BooleanError> {
+        let (sc, ok) = minimise_multi_side(circ, &roots, dc_root, cnf, exact)?;
+        let constant = |t: &Vec<(usize, bool)>| t.is_empty();
+        let mut out_exprs = Vec::with_capacity(roots.len());
+        let mut per_output = Vec::with_capacity(roots.len());
+        let mut users = vec![0usize; sc.terms.len()];
+        for o in &sc.outputs {
+            let cover: Cover = o.iter().map(|&t| sc.terms[t].clone()).collect();
+            out_exprs.push(cover_to_expr(pool, &circ.atoms, &cover, cnf));
+            let is_const = cover.is_empty() || cover.iter().any(constant);
+            per_output.push(if is_const { 0 } else { cover.len() });
+            if !is_const {
+                for &t in o {
+                    users[t] += 1;
+                }
+            }
+        }
+        let live: Vec<usize> = (0..sc.terms.len()).filter(|&t| users[t] > 0).collect();
+        Ok(MultiMinimizedLogic {
+            exprs: out_exprs,
+            form: if cnf { LogicForm::Cnf } else { LogicForm::Dnf },
+            exact: ok,
+            terms: live.len(),
+            literals: live.iter().map(|&t| sc.terms[t].len()).sum(),
+            per_output_terms: per_output,
+            shared_terms: live.iter().filter(|&&t| users[t] > 1).count(),
+        })
+    };
+    match form {
+        LogicForm::Dnf => build(false, &circ),
+        LogicForm::Cnf => build(true, &circ),
+        LogicForm::Auto => {
+            let d = build(false, &circ)?;
+            let c = build(true, &circ)?;
+            Ok(if (c.literals, c.terms) < (d.literals, d.terms) {
+                c
+            } else {
+                d
+            })
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // BDDs of formulas
 // ---------------------------------------------------------------------------
 
@@ -1600,8 +2137,10 @@ pub fn bdd_from_expr(
     mgr: &mut BddManager,
 ) -> Result<(BddRef, Vec<(String, ExprId)>), BooleanError> {
     let (circ, root) = lift_one(pool, expr, false)?;
-    let levels: Vec<u32> = circ.names.iter().map(|n| mgr.declare(n)).collect();
-    let b = circ.to_bdd(mgr, &levels)?;
+    for n in &circ.names {
+        mgr.declare(n);
+    }
+    let b = circ.to_bdd(mgr)?;
     let atoms = circ
         .names
         .iter()
@@ -1819,8 +2358,10 @@ pub fn equivalent(
                 super::bdd::DEFAULT_MAX_BDD_NODES
             };
             let mut mgr = BddManager::with_max_nodes(cap);
-            let levels: Vec<u32> = circ.names.iter().map(|nm| mgr.declare(nm)).collect();
-            let built = circ.to_bdd(&mut mgr, &levels).and_then(|b| {
+            for nm in &circ.names {
+                mgr.declare(nm);
+            }
+            let built = circ.to_bdd(&mut mgr).and_then(|b| {
                 let d = mgr.xor(b[rf as usize], b[rg as usize])?;
                 Ok(d)
             });
@@ -2125,6 +2666,120 @@ mod tests {
         let r = simplify_logic(&p, f, LogicForm::Dnf, Some(dc), None).unwrap();
         assert!(r.exact);
         assert_eq!((r.terms, r.literals), (3, 5));
+    }
+
+    #[test]
+    fn multi_output_matches_each_output_and_never_costs_more() {
+        let mut rng = Lcg(2024);
+        for trial in 0..60 {
+            let p = ExprPool::new();
+            let n = 3 + trial % 5;
+            let v = syms(&p, n);
+            let k = 2 + trial % 3;
+            let fs: Vec<ExprId> = (0..k)
+                .map(|_| random_formula(&p, &v, &mut rng, 4))
+                .collect();
+            for form in [LogicForm::Dnf, LogicForm::Cnf] {
+                for exact in [None, Some(false)] {
+                    let m = simplify_logic_multi(&p, &fs, form, None, exact).unwrap();
+                    assert_eq!(m.exprs.len(), k);
+                    assert_eq!(m.exact, exact.is_none(), "trial {trial}");
+                    let mut sum = 0;
+                    for (i, &f) in fs.iter().enumerate() {
+                        assert_eq!(
+                            brute(&p, m.exprs[i], &v),
+                            brute(&p, f, &v),
+                            "trial {trial} output {i} {form:?} {exact:?}"
+                        );
+                        sum += simplify_logic(&p, f, form, None, exact).unwrap().terms;
+                    }
+                    assert!(
+                        m.terms <= sum,
+                        "trial {trial} {form:?} {exact:?}: {} shared vs {sum} separate",
+                        m.terms
+                    );
+                    assert!(m.per_output_terms.iter().sum::<usize>() >= m.terms);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn multi_output_shares_terms_on_a_half_adder_pair() {
+        // sum = a⊕b, carry = a∧b, and a∧b ∨ a∧b∧c (= a∧b): the term a·b is
+        // reused, so the shared cover has strictly fewer terms.
+        let p = ExprPool::new();
+        let v = syms(&p, 3);
+        let (a, b, c) = (v[0], v[1], v[2]);
+        let sum = logic_xor(&p, &[a, b]);
+        let carry = logic_and(&p, &[a, b]);
+        let both = logic_and(&p, &[a, b, c]);
+        let carry_or = logic_or(&p, &[carry, both]);
+        let fs = [sum, carry, carry_or];
+        let m = simplify_logic_multi(&p, &fs, LogicForm::Dnf, None, Some(true)).unwrap();
+        assert!(m.exact);
+        let separate: usize = fs
+            .iter()
+            .map(|&f| {
+                simplify_logic(&p, f, LogicForm::Dnf, None, Some(true))
+                    .unwrap()
+                    .terms
+            })
+            .sum();
+        assert_eq!(separate, 4);
+        assert_eq!(m.terms, 3);
+        assert_eq!(m.shared_terms, 1);
+        // Two copies of one function share its single term.
+        let again = simplify_logic_multi(&p, &[carry, carry], LogicForm::Dnf, None, None).unwrap();
+        assert_eq!((again.terms, again.shared_terms), (1, 1));
+    }
+
+    #[test]
+    fn multi_output_dont_cares_and_refusals() {
+        let p = ExprPool::new();
+        let v = syms(&p, 4);
+        let minterm = |m: usize| {
+            let lits: Vec<ExprId> = (0..4)
+                .map(|i| {
+                    if (m >> i) & 1 == 1 {
+                        v[i]
+                    } else {
+                        logic_not(&p, v[i])
+                    }
+                })
+                .collect();
+            logic_and(&p, &lits)
+        };
+        let f1 = logic_or(&p, &(5..10).map(minterm).collect::<Vec<_>>());
+        let f2 = logic_or(&p, &(7..10).map(minterm).collect::<Vec<_>>());
+        let dc = logic_or(&p, &(10..16).map(minterm).collect::<Vec<_>>());
+        let m = simplify_logic_multi(&p, &[f1, f2], LogicForm::Dnf, Some(dc), None).unwrap();
+        assert!(m.exact);
+        for (i, f) in [f1, f2].into_iter().enumerate() {
+            let got = brute(&p, m.exprs[i], &v);
+            let want = brute(&p, f, &v);
+            let dcv = brute(&p, dc, &v);
+            for k in 0..16 {
+                assert!(dcv[k] || got[k] == want[k], "output {i} minterm {k}");
+            }
+        }
+        assert!(matches!(
+            simplify_logic_multi(&p, &[], LogicForm::Dnf, None, None),
+            Err(BooleanError::InvalidArgument(_))
+        ));
+        let many = vec![f1; MULTI_MAX_OUTPUTS + 1];
+        assert!(matches!(
+            simplify_logic_multi(&p, &many, LogicForm::Dnf, None, None),
+            Err(BooleanError::TooLarge { .. })
+        ));
+        let q = ExprPool::new();
+        let big = syms(&q, 17);
+        let x = logic_xor(&q, &big[..3]);
+        let y = logic_and(&q, &big);
+        assert!(matches!(
+            simplify_logic_multi(&q, &[x, y], LogicForm::Dnf, None, Some(true)),
+            Err(BooleanError::ExactUnavailable(_))
+        ));
     }
 
     #[test]
