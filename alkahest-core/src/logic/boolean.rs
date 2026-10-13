@@ -598,15 +598,15 @@ impl Circuit {
         Ok(out)
     }
 
-    fn to_bdd(
-        &self,
-        mgr: &mut BddManager,
-        level_of_var: &[u32],
-    ) -> Result<Vec<BddRef>, BooleanError> {
+    /// BDDs of every gate.  Variables are looked up by name, because the
+    /// manager may reorder (see [`BddManager::set_auto_reorder`]) while the
+    /// gates are being built; the gates built so far are protected through
+    /// the reordering.
+    fn to_bdd(&self, mgr: &mut BddManager) -> Result<Vec<BddRef>, BooleanError> {
         let mut b: Vec<BddRef> = Vec::with_capacity(self.gates.len());
         for g in &self.gates {
             let r = match g {
-                Gate::Var(x) => mgr.var_at(level_of_var[*x as usize])?,
+                Gate::Var(x) => mgr.var(&self.names[*x as usize])?,
                 Gate::Const(t) => {
                     if *t {
                         BddRef::TRUE
@@ -631,6 +631,7 @@ impl Circuit {
                 }
             };
             b.push(r);
+            mgr.maybe_reorder(&b)?;
         }
         Ok(b)
     }
@@ -1501,8 +1502,7 @@ fn minimise_side(
         let l = mgr.declare(name);
         debug_assert_eq!(l as usize, i);
     }
-    let levels: Vec<u32> = (0..n as u32).collect();
-    let b = circ.to_bdd(&mut mgr, &levels)?;
+    let b = circ.to_bdd(&mut mgr)?;
     let f = if negate {
         mgr.not(b[on_root as usize])?
     } else {
@@ -1600,8 +1600,10 @@ pub fn bdd_from_expr(
     mgr: &mut BddManager,
 ) -> Result<(BddRef, Vec<(String, ExprId)>), BooleanError> {
     let (circ, root) = lift_one(pool, expr, false)?;
-    let levels: Vec<u32> = circ.names.iter().map(|n| mgr.declare(n)).collect();
-    let b = circ.to_bdd(mgr, &levels)?;
+    for n in &circ.names {
+        mgr.declare(n);
+    }
+    let b = circ.to_bdd(mgr)?;
     let atoms = circ
         .names
         .iter()
@@ -1819,8 +1821,10 @@ pub fn equivalent(
                 super::bdd::DEFAULT_MAX_BDD_NODES
             };
             let mut mgr = BddManager::with_max_nodes(cap);
-            let levels: Vec<u32> = circ.names.iter().map(|nm| mgr.declare(nm)).collect();
-            let built = circ.to_bdd(&mut mgr, &levels).and_then(|b| {
+            for nm in &circ.names {
+                mgr.declare(nm);
+            }
+            let built = circ.to_bdd(&mut mgr).and_then(|b| {
                 let d = mgr.xor(b[rf as usize], b[rg as usize])?;
                 Ok(d)
             });

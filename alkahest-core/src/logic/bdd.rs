@@ -22,7 +22,7 @@
 //! [`BooleanError::TooLarge`] / [`BooleanError::Budget`]; nothing is truncated.
 
 use super::boolean::BooleanError;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Handle to a node of a [`BddManager`].  Only meaningful with the manager
 /// that issued it.
@@ -58,6 +58,8 @@ impl BddRef {
 
 /// Level of the two terminals: below every variable.
 const TERMINAL_LEVEL: u32 = u32::MAX;
+/// Level marker of a node slot on the free list.
+const DEAD_LEVEL: u32 = u32::MAX - 1;
 
 /// Default node ceiling of [`BddManager::new`].
 pub const DEFAULT_MAX_BDD_NODES: usize = 2_000_000;
@@ -80,6 +82,16 @@ pub struct BddManager {
     names: Vec<String>,
     by_name: HashMap<String, u32>,
     max_nodes: usize,
+    /// Slots of collected nodes, reused by [`BddManager::mk`].
+    free: Vec<u32>,
+    /// Functions the caller holds across a reordering (see [`BddManager::pin`]).
+    pinned: HashMap<BddRef, usize>,
+    /// Live-node count past which [`BddManager::maybe_reorder`] sifts.
+    auto_reorder: Option<usize>,
+    /// Current trigger: `auto_reorder`, raised to twice the size left by the
+    /// last reordering so a stubbornly large diagram is not re-sifted on every
+    /// operation.
+    next_trigger: usize,
 }
 
 impl Default for BddManager {
@@ -109,6 +121,10 @@ impl BddManager {
             names: Vec::new(),
             by_name: HashMap::new(),
             max_nodes: max_nodes.max(2),
+            free: Vec::new(),
+            pinned: HashMap::new(),
+            auto_reorder: None,
+            next_trigger: usize::MAX,
         }
     }
 
@@ -120,7 +136,7 @@ impl BddManager {
     /// Total nodes allocated in the manager (including the two terminals and
     /// nodes no longer reachable from any live function).
     pub fn allocated_nodes(&self) -> usize {
-        self.nodes.len()
+        self.nodes.len() - self.free.len()
     }
 
     /// Variable names in level order.
@@ -192,19 +208,30 @@ impl BddManager {
         if let Some(&r) = self.unique.get(&(level, lo, hi)) {
             return Ok(r);
         }
-        if self.nodes.len() >= self.max_nodes {
+        let live = self.nodes.len() - self.free.len();
+        if live >= self.max_nodes {
             return Err(BooleanError::TooLarge {
                 what: "BDD nodes",
                 limit: self.max_nodes as u64,
             });
         }
-        if self.nodes.len() % 1024 == 0 {
+        if live % 1024 == 0 {
             crate::budget::check().map_err(BooleanError::Budget)?;
         }
-        let r = BddRef(self.nodes.len() as u32);
-        self.nodes.push(Node { level, lo, hi });
+        let r = self.alloc(Node { level, lo, hi });
         self.unique.insert((level, lo, hi), r);
         Ok(r)
+    }
+
+    fn alloc(&mut self, n: Node) -> BddRef {
+        if let Some(i) = self.free.pop() {
+            self.nodes[i as usize] = n;
+            BddRef(i)
+        } else {
+            let r = BddRef(self.nodes.len() as u32);
+            self.nodes.push(n);
+            r
+        }
     }
 
     fn cofactors(&self, f: BddRef, level: u32) -> (BddRef, BddRef) {
@@ -579,9 +606,416 @@ impl BddManager {
         Ok(r)
     }
 
+
+    // -----------------------------------------------------------------
+    // Dynamic variable reordering
+    // -----------------------------------------------------------------
+
+    /// Keep `f` alive (and its node index valid) across reorderings.  Calls
+    /// nest: each `pin` needs a matching [`BddManager::unpin`].  Terminals
+    /// need no pinning.
+    pub fn pin(&mut self, f: BddRef) {
+        if !f.is_const() {
+            *self.pinned.entry(f).or_insert(0) += 1;
+        }
+    }
+
+    /// Release one [`BddManager::pin`] of `f`.
+    pub fn unpin(&mut self, f: BddRef) {
+        if let Some(c) = self.pinned.get_mut(&f) {
+            *c -= 1;
+            if *c == 0 {
+                self.pinned.remove(&f);
+            }
+        }
+    }
+
+    /// Enable (`Some(n)`) or disable (`None`) automatic reordering: once the
+    /// manager holds more than `n` live nodes, [`BddManager::maybe_reorder`]
+    /// runs a sifting pass.  Off by default.
+    pub fn set_auto_reorder(&mut self, threshold: Option<usize>) {
+        self.auto_reorder = threshold;
+        self.next_trigger = threshold.unwrap_or(usize::MAX);
+    }
+
+    /// The automatic-reordering threshold, if enabled.
+    pub fn auto_reorder_threshold(&self) -> Option<usize> {
+        self.auto_reorder
+    }
+
+    /// Sift when automatic reordering is enabled and the node count passed
+    /// the trigger; otherwise do nothing.  `roots` (plus every pinned
+    /// function) are the functions that must survive: **every function the
+    /// caller still intends to use must be pinned or listed**, because nodes
+    /// reachable from neither are collected.
+    pub fn maybe_reorder(
+        &mut self,
+        roots: &[BddRef],
+    ) -> Result<Option<ReorderStats>, BooleanError> {
+        if self.auto_reorder.is_none() || self.allocated_nodes() <= self.next_trigger {
+            return Ok(None);
+        }
+        self.reorder(roots, &ReorderOptions::default()).map(Some)
+    }
+
+    /// Rudell sifting: move each variable (largest level first) through the
+    /// whole order by adjacent swaps and leave it where the diagram of the
+    /// functions in `roots` and the pinned ones was smallest.  Every function
+    /// keeps its node index and its meaning, so `sat_count`, equivalence and
+    /// `to_expr` are unchanged; only [`BddManager::var_names`] (the order)
+    /// and the node counts change.  Nodes reachable from no root are
+    /// collected.
+    ///
+    /// Bounded: a variable's excursion is abandoned in a direction once the
+    /// diagram exceeds `max_growth ×` the best size seen for it, the pass
+    /// stops after [`ReorderOptions::max_swaps`] swaps
+    /// ([`ReorderStats::complete`] is then `false`), and the active
+    /// [`crate::budget::Budget`] is consulted between swaps
+    /// ([`BooleanError::Budget`]; the order reached so far stays valid).
+    pub fn reorder(
+        &mut self,
+        roots: &[BddRef],
+        opts: &ReorderOptions,
+    ) -> Result<ReorderStats, BooleanError> {
+        if !(opts.max_growth >= 1.0) {
+            return Err(BooleanError::InvalidArgument(format!(
+                "max_growth must be at least 1.0, not {}",
+                opts.max_growth
+            )));
+        }
+        self.ite_cache.clear();
+        let mut all: Vec<BddRef> = self.pinned.keys().copied().collect();
+        all.extend(roots.iter().copied().filter(|r| !r.is_const()));
+        all.sort();
+        all.dedup();
+        let mut s = Sifter::new(self, &all);
+        let before = s.live;
+        let result = s.run(opts);
+        let after = s.live;
+        let (swaps, complete) = (s.swaps, s.complete);
+        drop(s);
+        let floor = self.auto_reorder.unwrap_or(usize::MAX);
+        self.next_trigger = floor.max(after.saturating_mul(2));
+        result?;
+        Ok(ReorderStats {
+            nodes_before: before,
+            nodes_after: after,
+            swaps,
+            complete,
+        })
+    }
+
     /// Drop the operation cache (the node table is kept).
     pub fn clear_cache(&mut self) {
         self.ite_cache.clear();
+    }
+}
+
+
+/// Knobs of [`BddManager::reorder`].
+#[derive(Debug, Clone)]
+pub struct ReorderOptions {
+    /// Abandon a sifting direction once the diagram is larger than this
+    /// multiple of the best size seen so far for the variable (Rudell's
+    /// growth bound).  Default 1.2.
+    pub max_growth: f64,
+    /// Stop after this many adjacent-variable swaps.  Default 200 000.
+    pub max_swaps: usize,
+}
+
+impl Default for ReorderOptions {
+    fn default() -> Self {
+        ReorderOptions {
+            max_growth: 1.2,
+            max_swaps: 200_000,
+        }
+    }
+}
+
+/// What a [`BddManager::reorder`] pass did.  Sizes count the live non-terminal
+/// nodes of the whole manager (the union of the live functions).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReorderStats {
+    /// Live nodes before the pass.
+    pub nodes_before: usize,
+    /// Live nodes after the pass.
+    pub nodes_after: usize,
+    /// Adjacent swaps performed.
+    pub swaps: usize,
+    /// `false` when the pass stopped at the swap limit before sifting every
+    /// variable.
+    pub complete: bool,
+}
+
+/// One sifting session: reference counts and per-level node sets are built
+/// from the live roots, kept exact across swaps, and dropped at the end.
+struct Sifter<'a> {
+    m: &'a mut BddManager,
+    rc: Vec<u32>,
+    lv: Vec<HashSet<u32>>,
+    live: usize,
+    swaps: usize,
+    complete: bool,
+}
+
+impl<'a> Sifter<'a> {
+    fn new(m: &'a mut BddManager, roots: &[BddRef]) -> Self {
+        // Mark.
+        let mut reach = vec![false; m.nodes.len()];
+        let mut stack: Vec<BddRef> = roots.to_vec();
+        while let Some(x) = stack.pop() {
+            if x.is_const() || reach[x.0 as usize] {
+                continue;
+            }
+            reach[x.0 as usize] = true;
+            let n = m.nodes[x.0 as usize];
+            stack.push(n.lo);
+            stack.push(n.hi);
+        }
+        // Sweep.
+        m.free.clear();
+        for i in 2..m.nodes.len() {
+            if reach[i] {
+                continue;
+            }
+            let n = m.nodes[i];
+            if n.level != DEAD_LEVEL {
+                m.unique.remove(&(n.level, n.lo, n.hi));
+                m.nodes[i].level = DEAD_LEVEL;
+            }
+            m.free.push(i as u32);
+        }
+        let nlev = m.names.len();
+        let mut rc = vec![0u32; m.nodes.len()];
+        let mut lv: Vec<HashSet<u32>> = vec![HashSet::new(); nlev];
+        let mut live = 0;
+        for i in 2..m.nodes.len() {
+            if !reach[i] {
+                continue;
+            }
+            let n = m.nodes[i];
+            lv[n.level as usize].insert(i as u32);
+            live += 1;
+            if !n.lo.is_const() {
+                rc[n.lo.0 as usize] += 1;
+            }
+            if !n.hi.is_const() {
+                rc[n.hi.0 as usize] += 1;
+            }
+        }
+        for r in roots {
+            if !r.is_const() {
+                rc[r.0 as usize] += 1;
+            }
+        }
+        Sifter {
+            m,
+            rc,
+            lv,
+            live,
+            swaps: 0,
+            complete: true,
+        }
+    }
+
+    fn inc(&mut self, x: BddRef) {
+        if !x.is_const() {
+            self.rc[x.0 as usize] += 1;
+        }
+    }
+
+    fn dec(&mut self, x: BddRef) {
+        let mut stack = vec![x];
+        while let Some(x) = stack.pop() {
+            if x.is_const() {
+                continue;
+            }
+            let i = x.0 as usize;
+            self.rc[i] -= 1;
+            if self.rc[i] > 0 {
+                continue;
+            }
+            let n = self.m.nodes[i];
+            self.m.unique.remove(&(n.level, n.lo, n.hi));
+            self.lv[n.level as usize].remove(&x.0);
+            self.m.nodes[i].level = DEAD_LEVEL;
+            self.m.free.push(x.0);
+            self.live -= 1;
+            stack.push(n.lo);
+            stack.push(n.hi);
+        }
+    }
+
+    /// Find-or-create `(level, lo, hi)` without a ceiling (a swap must not
+    /// fail half-way).  The result is *borrowed*: a new node starts with
+    /// reference count 0 and the caller [`Sifter::inc`]s it when it stores it.
+    fn mk(&mut self, level: u32, lo: BddRef, hi: BddRef) -> BddRef {
+        if lo == hi {
+            return lo;
+        }
+        if let Some(&r) = self.m.unique.get(&(level, lo, hi)) {
+            return r;
+        }
+        let r = self.m.alloc(Node { level, lo, hi });
+        if self.rc.len() < self.m.nodes.len() {
+            self.rc.resize(self.m.nodes.len(), 0);
+        }
+        self.rc[r.0 as usize] = 0;
+        self.inc(lo);
+        self.inc(hi);
+        self.m.unique.insert((level, lo, hi), r);
+        self.lv[level as usize].insert(r.0);
+        self.live += 1;
+        r
+    }
+
+    /// Exchange the variables at levels `i` and `i + 1`, rewriting nodes in
+    /// place so every node index keeps denoting the same function.
+    fn swap(&mut self, i: u32) {
+        let up: Vec<u32> = self.lv[i as usize].iter().copied().collect();
+        let down: Vec<u32> = self.lv[i as usize + 1].iter().copied().collect();
+        // Cofactors of the upper nodes that mention the lower variable.
+        let mut dependent: Vec<(u32, [BddRef; 4])> = Vec::new();
+        let mut shifted: Vec<u32> = Vec::new();
+        for &x in &up {
+            let n = self.m.nodes[x as usize];
+            let split = |c: BddRef, nodes: &[Node]| -> (BddRef, BddRef, bool) {
+                if !c.is_const() && nodes[c.0 as usize].level == i + 1 {
+                    let cn = nodes[c.0 as usize];
+                    (cn.lo, cn.hi, true)
+                } else {
+                    (c, c, false)
+                }
+            };
+            let (f00, f01, d0) = split(n.lo, &self.m.nodes);
+            let (f10, f11, d1) = split(n.hi, &self.m.nodes);
+            if d0 || d1 {
+                dependent.push((x, [f00, f01, f10, f11]));
+            } else {
+                shifted.push(x);
+            }
+        }
+        for &x in up.iter().chain(down.iter()) {
+            let n = self.m.nodes[x as usize];
+            self.m.unique.remove(&(n.level, n.lo, n.hi));
+        }
+        self.lv[i as usize].clear();
+        self.lv[i as usize + 1].clear();
+        // The lower variable's nodes move up a level.
+        for &y in &down {
+            self.m.nodes[y as usize].level = i;
+            let n = self.m.nodes[y as usize];
+            self.m.unique.insert((i, n.lo, n.hi), BddRef(y));
+            self.lv[i as usize].insert(y);
+        }
+        // Upper nodes that do not mention it move down unchanged.
+        for &x in &shifted {
+            self.m.nodes[x as usize].level = i + 1;
+            let n = self.m.nodes[x as usize];
+            self.m.unique.insert((i + 1, n.lo, n.hi), BddRef(x));
+            self.lv[i as usize + 1].insert(x);
+        }
+        // The rest become nodes of the lower variable over new upper nodes.
+        for (x, [f00, f01, f10, f11]) in dependent {
+            let old = self.m.nodes[x as usize];
+            let nl = self.mk(i + 1, f00, f10);
+            let nh = self.mk(i + 1, f01, f11);
+            self.inc(nl);
+            self.inc(nh);
+            self.m.nodes[x as usize].lo = nl;
+            self.m.nodes[x as usize].hi = nh;
+            self.m.nodes[x as usize].level = i;
+            self.m.unique.insert((i, nl, nh), BddRef(x));
+            self.lv[i as usize].insert(x);
+            self.dec(old.lo);
+            self.dec(old.hi);
+        }
+        self.m.names.swap(i as usize, i as usize + 1);
+        let (a, b) = (
+            self.m.names[i as usize].clone(),
+            self.m.names[i as usize + 1].clone(),
+        );
+        self.m.by_name.insert(a, i);
+        self.m.by_name.insert(b, i + 1);
+        self.swaps += 1;
+    }
+
+    fn step(&mut self, i: u32, opts: &ReorderOptions) -> Result<bool, BooleanError> {
+        if self.swaps >= opts.max_swaps {
+            self.complete = false;
+            return Ok(false);
+        }
+        crate::budget::check().map_err(BooleanError::Budget)?;
+        self.swap(i);
+        Ok(true)
+    }
+
+    fn run(&mut self, opts: &ReorderOptions) -> Result<(), BooleanError> {
+        let n = self.m.names.len() as u32;
+        if n < 2 {
+            return Ok(());
+        }
+        let mut order: Vec<(usize, String)> = (0..n as usize)
+            .map(|l| (self.lv[l].len(), self.m.names[l].clone()))
+            .collect();
+        order.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        for (_, name) in order {
+            if !self.complete {
+                break;
+            }
+            self.sift(&name, opts)?;
+        }
+        Ok(())
+    }
+
+    fn sift(&mut self, name: &str, opts: &ReorderOptions) -> Result<(), BooleanError> {
+        let n = self.m.names.len() as u32;
+        let mut pos = self.m.by_name[name];
+        let mut best = (self.live, pos);
+        let bound = |best: usize| (best as f64 * opts.max_growth).ceil() as usize;
+        // Nearer end first.
+        let down_first = pos >= n / 2;
+        for pass in 0..2 {
+            let down = (pass == 0) == down_first;
+            if down {
+                while pos + 1 < n {
+                    if !self.step(pos, opts)? {
+                        break;
+                    }
+                    pos += 1;
+                    if self.live < best.0 {
+                        best = (self.live, pos);
+                    }
+                    if self.live > bound(best.0) {
+                        break;
+                    }
+                }
+            } else {
+                while pos > 0 {
+                    if !self.step(pos - 1, opts)? {
+                        break;
+                    }
+                    pos -= 1;
+                    if self.live < best.0 {
+                        best = (self.live, pos);
+                    }
+                    if self.live > bound(best.0) {
+                        break;
+                    }
+                }
+            }
+        }
+        // Settle at the best position seen (at most 2n swaps, outside the
+        // swap limit so the variable is never stranded mid-excursion).
+        while pos < best.1 {
+            self.swap(pos);
+            pos += 1;
+        }
+        while pos > best.1 {
+            self.swap(pos - 1);
+            pos -= 1;
+        }
+        Ok(())
     }
 }
 
@@ -623,6 +1057,202 @@ mod tests {
         let x = m.xor(maj, a).unwrap();
         let back = m.xor(x, a).unwrap();
         assert_eq!(back, maj);
+    }
+
+    /// Truth table of `f` indexed by an assignment to the variables *by name*
+    /// (`names[k]` is bit `k`), independent of the manager's current order.
+    fn table_by_name(m: &BddManager, f: BddRef, names: &[String]) -> Vec<bool> {
+        (0..1usize << names.len())
+            .map(|a| {
+                let asg: Vec<bool> = m
+                    .var_names()
+                    .iter()
+                    .map(|v| {
+                        let k = names.iter().position(|n| n == v).unwrap();
+                        (a >> k) & 1 == 1
+                    })
+                    .collect();
+                m.eval(f, &asg)
+            })
+            .collect()
+    }
+
+    fn inner_product(m: &mut BddManager, n: usize, interleaved: bool) -> BddRef {
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        if interleaved {
+            for i in 0..n {
+                xs.push(m.var(&format!("x{i}")).unwrap());
+                ys.push(m.var(&format!("y{i}")).unwrap());
+            }
+        } else {
+            for i in 0..n {
+                xs.push(m.var(&format!("x{i}")).unwrap());
+            }
+            for i in 0..n {
+                ys.push(m.var(&format!("y{i}")).unwrap());
+            }
+        }
+        let mut f = BddRef::FALSE;
+        for i in 0..n {
+            let t = m.and(xs[i], ys[i]).unwrap();
+            f = m.or(f, t).unwrap();
+        }
+        f
+    }
+
+    #[test]
+    fn sifting_repairs_a_bad_order() {
+        let n = 8;
+        let mut m = BddManager::new();
+        let f = inner_product(&mut m, n, false);
+        let names: Vec<String> = m.var_names().to_vec();
+        let before = m.node_count(f);
+        let count = m.sat_count(f, 2 * n as u32);
+        let mut good = BddManager::new();
+        let g = inner_product(&mut good, n, true);
+        let optimum = good.node_count(g);
+        assert_eq!(optimum, 2 * n);
+        assert!(before > 20 * optimum, "bad order has {before} nodes");
+        let table = table_by_name(&m, f, &names);
+        let stats = m.reorder(&[f], &ReorderOptions::default()).unwrap();
+        let after = m.node_count(f);
+        assert!(stats.complete);
+        assert_eq!(stats.nodes_after, after);
+        assert!(after <= 2 * optimum, "{after} nodes vs optimum {optimum}");
+        assert_eq!(m.sat_count(f, 2 * n as u32), count);
+        assert_eq!(table_by_name(&m, f, &names), table);
+        // Functions built after reordering canonicalise against the old ones.
+        let x0 = m.var("x0").unwrap();
+        let y0 = m.var("y0").unwrap();
+        let t = m.and(x0, y0).unwrap();
+        let g2 = m.or(f, t).unwrap();
+        assert_eq!(g2, f);
+    }
+
+    #[test]
+    fn reorder_preserves_random_functions() {
+        let mut seed = 0x9e3779b97f4a7c15u64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for round in 0..30 {
+            let nv = 4 + (round % 5);
+            let mut m = BddManager::new();
+            let names: Vec<String> = (0..nv).map(|i| format!("v{i}")).collect();
+            let vars: Vec<BddRef> = names.iter().map(|n| m.var(n).unwrap()).collect();
+            let mut pool = vars.clone();
+            for _ in 0..25 {
+                let a = pool[(rnd() % pool.len() as u64) as usize];
+                let b = pool[(rnd() % pool.len() as u64) as usize];
+                let c = pool[(rnd() % pool.len() as u64) as usize];
+                let r = match rnd() % 4 {
+                    0 => m.and(a, b),
+                    1 => m.or(a, b),
+                    2 => m.xor(a, b),
+                    _ => m.ite(a, b, c),
+                }
+                .unwrap();
+                pool.push(r);
+            }
+            // Keep three functions, drop the rest (they become garbage).
+            let keep: Vec<BddRef> = pool.iter().rev().take(3).copied().collect();
+            let tables: Vec<Vec<bool>> = keep
+                .iter()
+                .map(|&f| table_by_name(&m, f, &names))
+                .collect();
+            let counts: Vec<_> = keep.iter().map(|&f| m.sat_count(f, nv as u32)).collect();
+            let st = m.reorder(&keep, &ReorderOptions::default()).unwrap();
+            assert!(st.nodes_after <= st.nodes_before, "{st:?}");
+            for (k, &f) in keep.iter().enumerate() {
+                assert_eq!(table_by_name(&m, f, &names), tables[k]);
+                assert_eq!(m.sat_count(f, nv as u32), counts[k]);
+            }
+            // Operations after reordering still canonicalise.
+            let nf = m.not(keep[0]).unwrap();
+            let nnf = m.not(nf).unwrap();
+            assert_eq!(nnf, keep[0]);
+            let x = m.xor(keep[1], keep[2]).unwrap();
+            let back = m.xor(x, keep[2]).unwrap();
+            assert_eq!(back, keep[1]);
+            // A second pass never grows the diagram.
+            let again = m.reorder(&keep, &ReorderOptions::default()).unwrap();
+            assert!(again.nodes_after <= again.nodes_before);
+        }
+    }
+
+    #[test]
+    fn auto_reorder_and_swap_limit() {
+        let mut m = BddManager::new();
+        m.set_auto_reorder(Some(100));
+        let f = inner_product(&mut m, 8, false);
+        m.pin(f);
+        let st = m.maybe_reorder(&[]).unwrap().expect("past the threshold");
+        assert!(st.nodes_after < st.nodes_before);
+        // Back under the (raised) trigger: no second pass.
+        assert!(m.maybe_reorder(&[]).unwrap().is_none());
+        m.set_auto_reorder(None);
+        assert!(m.maybe_reorder(&[]).unwrap().is_none());
+        // A swap limit stops the pass early and says so.
+        let mut m2 = BddManager::new();
+        let g = inner_product(&mut m2, 8, false);
+        let st = m2
+            .reorder(
+                &[g],
+                &ReorderOptions {
+                    max_swaps: 5,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(!st.complete);
+        assert!(m2
+            .reorder(
+                &[g],
+                &ReorderOptions {
+                    max_growth: 0.5,
+                    ..Default::default()
+                }
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn multiplier_bits_shrink_under_sifting() {
+        // All product bits of a 4x4 multiplier, operands declared apart.
+        let mut m = BddManager::new();
+        let n = 4;
+        let a: Vec<BddRef> = (0..n).map(|i| m.var(&format!("a{i}")).unwrap()).collect();
+        let b: Vec<BddRef> = (0..n).map(|i| m.var(&format!("b{i}")).unwrap()).collect();
+        let mut acc = vec![BddRef::FALSE; 2 * n];
+        for j in 0..n {
+            let mut carry = BddRef::FALSE;
+            for i in 0..n {
+                let pp = m.and(a[i], b[j]).unwrap();
+                let s0 = acc[i + j];
+                let x = m.xor(s0, pp).unwrap();
+                let sum = m.xor(x, carry).unwrap();
+                let c1 = m.and(s0, pp).unwrap();
+                let c2 = m.and(x, carry).unwrap();
+                carry = m.or(c1, c2).unwrap();
+                acc[i + j] = sum;
+            }
+            acc[n + j] = m.xor(acc[n + j], carry).unwrap();
+        }
+        let outs: Vec<BddRef> = acc;
+        let names: Vec<String> = m.var_names().to_vec();
+        let tables: Vec<Vec<bool>> = outs
+            .iter()
+            .map(|&f| table_by_name(&m, f, &names))
+            .collect();
+        let st = m.reorder(&outs, &ReorderOptions::default()).unwrap();
+        assert!(st.nodes_after < st.nodes_before, "{st:?}");
+        for (k, &f) in outs.iter().enumerate() {
+            assert_eq!(table_by_name(&m, f, &names), tables[k]);
+        }
     }
 
     #[test]
