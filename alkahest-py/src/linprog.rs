@@ -2,8 +2,9 @@
 //! programming with certificates.
 //!
 //! Python surface: `alkahest.linprog`, `alkahest.milp`, `alkahest.linprog_expr`,
-//! the result classes `LPResult` / `MILPResult`, and `alkahest.LinprogError`
-//! (codes `E-LP-001` … `E-LP-006`). A budget trip raises
+//! `alkahest.linprog_parametric`, the result classes `LPResult` /
+//! `MILPResult` / `ParametricLPResult`, and `alkahest.LinprogError` (codes
+//! `E-LP-001` … `E-LP-007`). A budget trip raises
 //! `BudgetExceededError` (`E-BUDGET-*`).
 //!
 //! # Exactness across the boundary
@@ -21,8 +22,10 @@ use rug::Rational;
 
 use alkahest_core::kernel::ExprData;
 use alkahest_core::linprog::{
-    linear_form, linprog as core_linprog, milp as core_milp, program_from_exprs, LinearProgram,
-    LinprogError, LpOutcome, MilpOptions, MilpOutcome, Sense, VarBound,
+    linear_form, linprog_parametric as core_parametric, linprog_with, milp as core_milp,
+    parametric_from_exprs, program_from_exprs, BasisEntry, LinearProgram, LinprogError, LpBasis,
+    LpMethod, LpOptions, LpOutcome, LpSolution, MilpOptions, MilpOutcome, ParametricDelta,
+    ParametricRegion, ParametricSolution, RegionStatus, Sense, VarBound,
 };
 
 use crate::{PyExpr, PyExprPool};
@@ -295,6 +298,89 @@ pub struct PyLpResult {
     lp: LinearProgram,
     outcome: LpOutcome,
     vars: Option<Vec<Py<PyExpr>>>,
+    basis: LpBasis,
+    iterations: usize,
+    method: LpMethod,
+    warm_started: bool,
+}
+
+impl PyLpResult {
+    fn new(lp: LinearProgram, sol: LpSolution, vars: Option<Vec<Py<PyExpr>>>) -> Self {
+        PyLpResult {
+            lp,
+            outcome: sol.outcome,
+            vars,
+            basis: sol.basis,
+            iterations: sol.iterations,
+            method: sol.method,
+            warm_started: sol.warm_started,
+        }
+    }
+}
+
+fn basis_to_py(py: Python<'_>, b: &LpBasis) -> PyObject {
+    let items: Vec<PyObject> = b
+        .entries
+        .iter()
+        .filter_map(|e| {
+            let (tag, k) = match *e {
+                BasisEntry::Var(j) => ("x", j),
+                BasisEntry::VarNeg(j) => ("x-", j),
+                BasisEntry::Slack(i) => ("slack", i),
+                BasisEntry::UpperSlack(j) => ("upper", j),
+                _ => return None,
+            };
+            Some((tag, k).into_py(py))
+        })
+        .collect();
+    PyList::new_bound(py, items).into_py(py)
+}
+
+/// A warm-start basis: a list of ``(kind, index)`` pairs as returned in
+/// ``LPResult.basis``, or an ``LPResult`` itself.
+fn basis_from_py(ob: &Bound<'_, PyAny>) -> PyResult<LpBasis> {
+    if let Ok(r) = ob.extract::<PyRef<PyLpResult>>() {
+        return Ok(r.basis.clone());
+    }
+    let bad = || {
+        shape(
+            "basis must be a list of (kind, index) pairs with kind 'x', 'x-', 'slack' or \
+             'upper', or an LPResult"
+                .into(),
+        )
+    };
+    let items: Vec<Bound<'_, PyAny>> = ob.iter().map_err(|_| bad())?.collect::<PyResult<_>>()?;
+    let mut entries = Vec::with_capacity(items.len());
+    for it in &items {
+        let (tag, k): (String, usize) = it.extract().map_err(|_| bad())?;
+        entries.push(match tag.as_str() {
+            "x" => BasisEntry::Var(k),
+            "x-" => BasisEntry::VarNeg(k),
+            "slack" => BasisEntry::Slack(k),
+            "upper" => BasisEntry::UpperSlack(k),
+            _ => return Err(bad()),
+        });
+    }
+    Ok(LpBasis::new(entries))
+}
+
+fn to_method(method: &str) -> PyResult<LpMethod> {
+    match method {
+        "auto" => Ok(LpMethod::Auto),
+        "dense" => Ok(LpMethod::Dense),
+        "revised" => Ok(LpMethod::Revised),
+        other => Err(shape(format!(
+            "method must be 'auto', 'dense' or 'revised', not {other:?}"
+        ))),
+    }
+}
+
+fn method_str(m: LpMethod) -> &'static str {
+    match m {
+        LpMethod::Dense => "dense",
+        LpMethod::Revised => "revised",
+        _ => "auto",
+    }
 }
 
 #[pymethods]
@@ -414,6 +500,35 @@ impl PyLpResult {
     /// it holds. (It was already checked before this result was returned.)
     fn verify(&self) -> bool {
         self.outcome.verify(&self.lp).is_ok()
+    }
+
+    /// The final simplex basis, a list of ``(kind, index)`` pairs — ``("x", j)``
+    /// variable ``j`` (measured from its finite bound, or the positive part of
+    /// a free variable), ``("x-", j)`` the negative part of free variable
+    /// ``j``, ``("slack", i)`` the slack of ``A_ub`` row ``i``, ``("upper", j)``
+    /// the slack of variable ``j``'s upper bound. Pass it (or this result) as
+    /// ``linprog(..., basis=...)`` to warm-start a related programme.
+    #[getter]
+    fn basis(&self, py: Python<'_>) -> PyObject {
+        basis_to_py(py, &self.basis)
+    }
+
+    /// Simplex pivots performed.
+    #[getter]
+    fn iterations(&self) -> usize {
+        self.iterations
+    }
+
+    /// The method that ran: ``"dense"`` or ``"revised"``.
+    #[getter]
+    fn method(&self) -> &'static str {
+        method_str(self.method)
+    }
+
+    /// ``True`` when the supplied warm-start basis was used.
+    #[getter]
+    fn warm_started(&self) -> bool {
+        self.warm_started
     }
 
     fn __repr__(&self) -> String {
@@ -570,6 +685,24 @@ impl PyMilpResult {
         }
     }
 
+    /// The Gomory mixed-integer cuts added at the root, as ``(row, rhs)``
+    /// pairs meaning ``row @ x <= rhs``; each holds at every integer-feasible
+    /// point (optimal results only; ``[]`` when none were added).
+    #[getter]
+    fn cuts(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let MilpOutcome::Optimal(s) = &self.outcome else {
+            return Ok(PyList::empty_bound(py).into_py(py));
+        };
+        let items = s
+            .cuts
+            .iter()
+            .map(|(row, rhs)| -> PyResult<PyObject> {
+                Ok(PyTuple::new_bound(py, [rat_list(py, row)?, rat(py, rhs)?]).into_py(py))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(PyList::new_bound(py, items).into_py(py))
+    }
+
     /// ``{variable: value}`` for :func:`linprog_expr` results.
     #[getter]
     fn solution(&self, py: Python<'_>) -> PyResult<PyObject> {
@@ -648,12 +781,22 @@ impl PyMilpResult {
 /// variables or one per variable; ``None`` (or ``±inf``) is no bound; the
 /// default is ``(0, None)``.
 ///
-/// The solver is a two-phase simplex with Bland's rule (cannot cycle) that
-/// honours the active ``alkahest.context(budget=...)`` at every pivot.
+/// ``method`` picks the simplex: ``"dense"`` — a two-phase tableau with
+/// Bland's rule; ``"revised"`` — a revised simplex keeping ``A`` sparse with an
+/// exact product-form factorisation of the basis (Dantzig pricing with a
+/// Bland fallback, so it cannot cycle either), much faster on medium sparse
+/// programmes; ``"auto"`` (default) — dense for at most 12 rows, revised
+/// otherwise. ``basis`` warm-starts the revised method from a previous
+/// result's :attr:`LPResult.basis` (or the result itself): a basis still
+/// primal feasible goes straight to phase 2, one still dual feasible (after
+/// a right-hand-side change or added rows) runs the dual simplex, anything
+/// else falls back to a cold start (``warm_started`` says which). Both honour
+/// the active ``alkahest.context(budget=...)`` at every pivot.
 ///
 /// Returns:
 ///     :class:`LPResult` — ``status`` with its certificate (dual multipliers,
-///     Farkas vector, or ray), already verified exactly.
+///     Farkas vector, or ray), already verified exactly, plus ``basis``,
+///     ``iterations``, ``method`` and ``warm_started``.
 ///
 /// Raises:
 ///     LinprogError: ``E-LP-001`` malformed shapes, ``E-LP-002`` a float or
@@ -667,7 +810,7 @@ impl PyMilpResult {
 ///     (Fraction(14, 5), [Fraction(8, 5), Fraction(6, 5)])
 #[pyfunction]
 #[pyo3(name = "linprog")]
-#[pyo3(signature = (c, A_ub=None, b_ub=None, A_eq=None, b_eq=None, bounds=None, sense="min"))]
+#[pyo3(signature = (c, A_ub=None, b_ub=None, A_eq=None, b_eq=None, bounds=None, sense="min", method="auto", basis=None))]
 #[allow(non_snake_case)]
 #[allow(clippy::too_many_arguments)]
 fn py_linprog(
@@ -678,14 +821,16 @@ fn py_linprog(
     b_eq: Option<&Bound<'_, PyAny>>,
     bounds: Option<&Bound<'_, PyAny>>,
     sense: &str,
+    method: &str,
+    basis: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyLpResult> {
     let lp = build(c, A_ub, b_ub, A_eq, b_eq, bounds, sense)?;
-    let outcome = core_linprog(&lp).map_err(lp_err)?;
-    Ok(PyLpResult {
-        lp,
-        outcome,
-        vars: None,
-    })
+    let mut opts = LpOptions::default().with_method(to_method(method)?);
+    if let Some(b) = basis.filter(|o| !o.is_none()) {
+        opts = opts.with_basis(basis_from_py(b)?);
+    }
+    let sol = linprog_with(&lp, &opts).map_err(lp_err)?;
+    Ok(PyLpResult::new(lp, sol, None))
 }
 
 fn to_integrality(ob: Option<&Bound<'_, PyAny>>, n: usize) -> PyResult<Vec<bool>> {
@@ -715,8 +860,14 @@ fn to_integrality(ob: Option<&Bound<'_, PyAny>>, n: usize) -> PyResult<Vec<bool>
 /// convention), or a single bool for all; the default makes every variable an
 /// integer. Binary variables are integers with ``bounds=(0, 1)``.
 ///
-/// The search is depth-first until a first integer point is found, then
-/// best-bound; every node LP is solved exactly and its certificate checked.
+/// Before branching, up to ``cut_rounds`` rounds of Gomory mixed-integer
+/// cuts (at most ``max_cuts`` in all) strengthen the root relaxation
+/// (cut-and-branch). The cuts are read off the exact optimal tableau, so each
+/// one is valid: it never removes an integer-feasible point (they are listed
+/// in :attr:`MILPResult.cuts`). Pass ``cut_rounds=0`` to branch on the plain
+/// relaxation. The search is then depth-first until a first integer point is
+/// found, then best-bound; every node LP is solved exactly, warm-started from
+/// its parent's basis (``warm_start``), and its certificate checked.
 /// ``max_nodes`` caps the number of node LPs, and the active budget is
 /// honoured at every node and pivot.
 ///
@@ -739,7 +890,7 @@ fn to_integrality(ob: Option<&Bound<'_, PyAny>>, n: usize) -> PyResult<Vec<bool>
 ///     (25, [1, 0, 1, 1])
 #[pyfunction]
 #[pyo3(name = "milp")]
-#[pyo3(signature = (c, A_ub=None, b_ub=None, A_eq=None, b_eq=None, bounds=None, integrality=None, sense="min", max_nodes=MilpOptions::DEFAULT_MAX_NODES))]
+#[pyo3(signature = (c, A_ub=None, b_ub=None, A_eq=None, b_eq=None, bounds=None, integrality=None, sense="min", max_nodes=MilpOptions::DEFAULT_MAX_NODES, cut_rounds=MilpOptions::DEFAULT_CUT_ROUNDS, max_cuts=MilpOptions::DEFAULT_MAX_CUTS, warm_start=true))]
 #[allow(non_snake_case)]
 #[allow(clippy::too_many_arguments)]
 fn py_milp(
@@ -752,13 +903,17 @@ fn py_milp(
     integrality: Option<&Bound<'_, PyAny>>,
     sense: &str,
     max_nodes: usize,
+    cut_rounds: usize,
+    max_cuts: usize,
+    warm_start: bool,
 ) -> PyResult<PyMilpResult> {
     let lp = build(c, A_ub, b_ub, A_eq, b_eq, bounds, sense)?;
     let integrality = to_integrality(integrality, lp.nvars())?;
-    let opts = MilpOptions {
-        integrality: integrality.clone(),
-        max_nodes,
-    };
+    let mut opts = MilpOptions::new(integrality.clone());
+    opts.max_nodes = max_nodes;
+    opts.cut_rounds = cut_rounds;
+    opts.max_cuts = max_cuts;
+    opts.warm_start = warm_start;
     let outcome = core_milp(&lp, &opts).map_err(lp_err)?;
     Ok(PyMilpResult {
         lp,
@@ -782,15 +937,25 @@ fn py_milp(
 /// integer; or a list of the variables that must be integers (then the result
 /// is a :class:`MILPResult`, and ``max_nodes`` applies).
 ///
+/// ``parameter`` — a symbol ``θ`` that may appear affinely **either** in the
+/// objective's coefficients (``(2 + θ)*x``) **or** in the constraints'
+/// constant terms (``x + y <= 4 + θ``); the result is then a
+/// :class:`ParametricLPResult` over ``parameter_range`` (a ``(lo, hi)`` pair,
+/// ``None`` for an infinite end), as from :func:`linprog_parametric`.
+///
 /// Returns:
-///     :class:`LPResult` or :class:`MILPResult`; ``result.solution`` maps each
-///     variable to its value.
+///     :class:`LPResult`, :class:`MILPResult` or :class:`ParametricLPResult`;
+///     ``result.solution`` (``solution_at(θ)`` for a parametric result) maps
+///     each variable to its value.
 ///
 /// Raises:
 ///     LinprogError: ``E-LP-003`` non-affine objective/constraint or a symbol
 ///         that is not a decision variable; ``E-LP-002`` a float or irrational
-///         coefficient; ``E-LP-004`` a strict inequality or a non-relation; and
-///         the codes of :func:`linprog` / :func:`milp`.
+///         coefficient; ``E-LP-004`` a strict inequality or a non-relation;
+///         ``E-LP-007`` an unsupported parametric form (the parameter
+///         multiplying a variable inside a constraint, entering non-linearly,
+///         moving the objective and the right-hand side at once, or combined
+///         with ``integer``); and the codes of :func:`linprog` / :func:`milp`.
 ///
 /// Example:
 ///     >>> p = alkahest.ExprPool(); x, y = p.symbol("x"), p.symbol("y")
@@ -802,7 +967,8 @@ fn py_milp(
 ///     11
 #[pyfunction]
 #[pyo3(name = "linprog_expr")]
-#[pyo3(signature = (objective, constraints, vars, sense="min", integer=None, max_nodes=MilpOptions::DEFAULT_MAX_NODES))]
+#[pyo3(signature = (objective, constraints, vars, sense="min", integer=None, max_nodes=MilpOptions::DEFAULT_MAX_NODES, parameter=None, parameter_range=None))]
+#[allow(clippy::too_many_arguments)]
 fn py_linprog_expr(
     py: Python<'_>,
     objective: PyRef<'_, PyExpr>,
@@ -811,6 +977,8 @@ fn py_linprog_expr(
     sense: &str,
     integer: Option<&Bound<'_, PyAny>>,
     max_nodes: usize,
+    parameter: Option<&Bound<'_, PyAny>>,
+    parameter_range: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyObject> {
     let pool_py: Py<PyExprPool> = objective.pool.clone_ref(py);
     let var_objs: Vec<Bound<'_, PyAny>> = vars.iter()?.collect::<PyResult<_>>()?;
@@ -828,18 +996,35 @@ fn py_linprog_expr(
         con_ids.push(e.id);
     }
     let sense = to_sense(sense)?;
+    if let Some(param) = parameter.filter(|o| !o.is_none()) {
+        if integer.is_some_and(|o| !o.is_none()) {
+            return Err(lp_err(LinprogError::UnsupportedParametric {
+                detail: "a parameter cannot be combined with integer variables".into(),
+            }));
+        }
+        let pe = crate::extract_expr_in(param, &pool_py, "linprog_expr", "the parameter")?;
+        let (lp, delta) = {
+            let pool = pool_py.borrow(py);
+            parametric_from_exprs(&pool.inner, objective.id, &con_ids, &var_ids, pe.id, sense)
+                .map_err(lp_err)?
+        };
+        let (lo, hi) = parse_theta_range(parameter_range)?;
+        let sol = core_parametric(&lp, &delta, lo, hi).map_err(lp_err)?;
+        return Ok(PyParametricResult {
+            lp,
+            delta,
+            sol,
+            vars: Some(var_py),
+        }
+        .into_py(py));
+    }
     let lp = {
         let pool = pool_py.borrow(py);
         program_from_exprs(&pool.inner, objective.id, &con_ids, &var_ids, sense).map_err(lp_err)?
     };
     let Some(integer) = integer.filter(|o| !o.is_none()) else {
-        let outcome = core_linprog(&lp).map_err(lp_err)?;
-        return Ok(PyLpResult {
-            lp,
-            outcome,
-            vars: Some(var_py),
-        }
-        .into_py(py));
+        let sol = linprog_with(&lp, &LpOptions::default()).map_err(lp_err)?;
+        return Ok(PyLpResult::new(lp, sol, Some(var_py)).into_py(py));
     };
     let integrality = if let Ok(all) = integer.extract::<bool>() {
         vec![all; var_ids.len()]
@@ -857,10 +1042,8 @@ fn py_linprog_expr(
         }
         flags
     };
-    let opts = MilpOptions {
-        integrality: integrality.clone(),
-        max_nodes,
-    };
+    let mut opts = MilpOptions::new(integrality.clone());
+    opts.max_nodes = max_nodes;
     let outcome = core_milp(&lp, &opts).map_err(lp_err)?;
     Ok(PyMilpResult {
         lp,
@@ -869,6 +1052,292 @@ fn py_linprog_expr(
         vars: Some(var_py),
     }
     .into_py(py))
+}
+
+// ---------------------------------------------------------------------------
+// Parametric LP
+// ---------------------------------------------------------------------------
+
+fn parse_theta_range(
+    ob: Option<&Bound<'_, PyAny>>,
+) -> PyResult<(Option<Rational>, Option<Rational>)> {
+    let Some(ob) = ob.filter(|o| !o.is_none()) else {
+        return Ok((None, None));
+    };
+    let t: Vec<Bound<'_, PyAny>> = ob
+        .extract()
+        .map_err(|_| shape("theta_range must be a (lower, upper) pair".into()))?;
+    if t.len() != 2 {
+        return Err(shape("theta_range must be a (lower, upper) pair".into()));
+    }
+    Ok((
+        bound_side(&t[0], "theta_range.lower", false)?,
+        bound_side(&t[1], "theta_range.upper", true)?,
+    ))
+}
+
+fn status_name(s: RegionStatus) -> &'static str {
+    match s {
+        RegionStatus::Optimal => "optimal",
+        RegionStatus::Infeasible => "infeasible",
+        RegionStatus::Unbounded => "unbounded",
+        _ => "unknown",
+    }
+}
+
+fn opt_rat(py: Python<'_>, v: &Option<Rational>) -> PyResult<PyObject> {
+    match v {
+        None => Ok(py.None()),
+        Some(r) => rat(py, r),
+    }
+}
+
+fn affine_pair(py: Python<'_>, p: &Option<(Vec<Rational>, Vec<Rational>)>) -> PyResult<PyObject> {
+    match p {
+        None => Ok(py.None()),
+        Some((a, b)) => {
+            Ok(PyTuple::new_bound(py, [rat_list(py, a)?, rat_list(py, b)?]).into_py(py))
+        }
+    }
+}
+
+fn region_dict(py: Python<'_>, r: &ParametricRegion) -> PyResult<PyObject> {
+    let d = PyDict::new_bound(py);
+    d.set_item(
+        "theta",
+        PyTuple::new_bound(py, [opt_rat(py, &r.lower)?, opt_rat(py, &r.upper)?]),
+    )?;
+    d.set_item("status", status_name(r.status))?;
+    match &r.value {
+        Some((v0, v1)) => d.set_item(
+            "value",
+            PyTuple::new_bound(py, [rat(py, v0)?, rat(py, v1)?]),
+        )?,
+        None => d.set_item("value", py.None())?,
+    }
+    d.set_item("x", affine_pair(py, &r.x)?)?;
+    d.set_item("ineqlin", affine_pair(py, &r.y_ub)?)?;
+    d.set_item("eqlin", affine_pair(py, &r.y_eq)?)?;
+    d.set_item("lower", affine_pair(py, &r.z_lower)?)?;
+    d.set_item("upper", affine_pair(py, &r.z_upper)?)?;
+    match &r.basis {
+        Some(b) => d.set_item("basis", basis_to_py(py, b))?,
+        None => d.set_item("basis", py.None())?,
+    }
+    Ok(d.into_py(py))
+}
+
+/// Result of :func:`linprog_parametric` (or :func:`linprog_expr` with a
+/// ``parameter``): the critical regions of ``θ``, left to right.
+///
+/// Each region is a dict: ``theta`` — ``(lo, hi)`` (``None`` for an infinite
+/// end); ``status`` — ``"optimal"`` (closed region, one basis optimal
+/// throughout), ``"infeasible"`` or ``"unbounded"`` (open at the end shared
+/// with an optimal region); and, when optimal, ``value``, ``x``,
+/// ``ineqlin``, ``eqlin``, ``lower``, ``upper`` as affine pairs ``(a, b)``
+/// meaning ``a + θ·b`` (``value`` a pair of numbers, the rest pairs of
+/// lists), and the region's ``basis``. Every optimal region's certificate was
+/// verified exactly for **all** ``θ`` in it (at its ends, and through the
+/// certificate's slope for an infinite end).
+#[pyclass(name = "ParametricLPResult", module = "alkahest")]
+pub struct PyParametricResult {
+    lp: LinearProgram,
+    delta: ParametricDelta,
+    sol: ParametricSolution,
+    vars: Option<Vec<Py<PyExpr>>>,
+}
+
+#[pymethods]
+impl PyParametricResult {
+    /// ``"rhs"`` or ``"objective"`` — what moves with ``θ``.
+    #[getter]
+    fn kind(&self) -> &'static str {
+        match self.delta {
+            ParametricDelta::Rhs { .. } => "rhs",
+            _ => "objective",
+        }
+    }
+
+    /// The critical regions (see the class docs).
+    #[getter]
+    fn regions(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let items = self
+            .sol
+            .regions
+            .iter()
+            .map(|r| region_dict(py, r))
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok(PyList::new_bound(py, items).into_py(py))
+    }
+
+    /// The exact ``θ`` where the optimal basis or the status changes.
+    #[getter]
+    fn breakpoints(&self, py: Python<'_>) -> PyResult<PyObject> {
+        rat_list(py, &self.sol.breakpoints)
+    }
+
+    /// The optimal value at ``theta``; ``None`` where the programme is
+    /// infeasible or unbounded (see :meth:`status_at`) or outside the range.
+    fn value_at(&self, py: Python<'_>, theta: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+        let t = to_rational(theta, "theta")?;
+        opt_rat(py, &self.sol.value_at(&t))
+    }
+
+    /// ``"optimal"``, ``"infeasible"`` or ``"unbounded"`` at ``theta``
+    /// (``None`` outside the range).
+    fn status_at(&self, py: Python<'_>, theta: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+        let t = to_rational(theta, "theta")?;
+        Ok(match self.sol.status_at(&t) {
+            Some(s) => status_name(s).into_py(py),
+            None => py.None(),
+        })
+    }
+
+    /// An optimal point at ``theta`` (``None`` where there is none).
+    fn x_at(&self, py: Python<'_>, theta: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+        let t = to_rational(theta, "theta")?;
+        match self.sol.region_at(&t).and_then(|r| r.certificate_at(&t)) {
+            Some(c) => rat_list(py, &c.x),
+            None => Ok(py.None()),
+        }
+    }
+
+    /// ``{variable: value}`` at ``theta`` for :func:`linprog_expr` results.
+    fn solution_at(&self, py: Python<'_>, theta: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+        let t = to_rational(theta, "theta")?;
+        let cert = self.sol.region_at(&t).and_then(|r| r.certificate_at(&t));
+        solution_dict(py, &self.vars, cert.as_ref().map(|c| c.x.as_slice()))
+    }
+
+    /// The programme at ``θ = 0`` in matrix form (see
+    /// :meth:`LPResult.program`), plus its ``θ``-direction under
+    /// ``c_theta`` or ``b_ub_theta`` / ``b_eq_theta``.
+    fn program(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let d = program_dict(py, &self.lp)?;
+        let b = d.bind(py);
+        match &self.delta {
+            ParametricDelta::Rhs { b_ub, b_eq } => {
+                b.set_item("b_ub_theta", rat_list(py, b_ub)?)?;
+                b.set_item("b_eq_theta", rat_list(py, b_eq)?)?;
+            }
+            ParametricDelta::Objective { c } => b.set_item("c_theta", rat_list(py, c)?)?,
+            _ => {}
+        }
+        Ok(d)
+    }
+
+    /// Re-verify every optimal region's certificate exactly, for all ``θ`` in
+    /// it; ``True`` when they all hold.
+    fn verify(&self) -> bool {
+        self.sol.verify(&self.lp, &self.delta).is_ok()
+    }
+
+    fn __repr__(&self) -> String {
+        let parts: Vec<String> = self
+            .sol
+            .regions
+            .iter()
+            .map(|r| {
+                let lo = r.lower.as_ref().map_or("-oo".into(), |v| v.to_string());
+                let hi = r.upper.as_ref().map_or("oo".into(), |v| v.to_string());
+                match &r.value {
+                    Some((a, b)) => format!("[{lo}, {hi}]: {a} + {b}*theta"),
+                    None => format!("({lo}, {hi}): {}", status_name(r.status)),
+                }
+            })
+            .collect();
+        format!("ParametricLPResult({})", parts.join("; "))
+    }
+}
+
+/// Solve a linear programme whose right-hand side **or** objective is
+/// affine in one parameter ``θ``, exactly, for every ``θ`` at once.
+///
+/// Arguments as for :func:`linprog`, plus the ``θ``-direction: either
+/// ``c_theta`` (the objective is ``(c + θ·c_theta) @ x``) or ``b_ub_theta`` /
+/// ``b_eq_theta`` (the right-hand sides are ``b_ub + θ·b_ub_theta`` and
+/// ``b_eq + θ·b_eq_theta``; a missing one is zero) — not both. ``theta_range``
+/// is a ``(lo, hi)`` pair, ``None`` (or ``±inf``) for an infinite end; the
+/// default is the whole line.
+///
+/// The optimal value is piecewise affine in ``θ`` (convex or concave); the
+/// result lists the exact breakpoints and, for each critical region, the
+/// optimal basis, value, point and multipliers as affine functions of ``θ``,
+/// each region's certificate verified exactly for **every** ``θ`` in it.
+/// Regions where the programme is infeasible (RHS case) or unbounded
+/// (objective case) are reported as such.
+///
+/// Returns:
+///     :class:`ParametricLPResult`.
+///
+/// Raises:
+///     LinprogError: ``E-LP-007`` when both ``c_theta`` and a right-hand-side
+///         direction are given (a parameter in the constraint matrix cannot be
+///         stated here; :func:`linprog_expr` refuses it with the same code);
+///         ``E-LP-001`` a direction of the wrong length or an empty
+///         ``theta_range``; and the codes of :func:`linprog`.
+///     BudgetExceededError: the active budget tripped.
+///
+/// Example:
+///     >>> r = alkahest.linprog_parametric([1, 1], A_ub=[[1, 2], [3, 1]], b_ub=[4, 6],
+///     ...                                 b_ub_theta=[1, 0], sense="max")
+///     >>> r.breakpoints
+///     [-4, -2, 8]
+///     >>> r.value_at(0), r.value_at(10)
+///     (Fraction(14, 5), 6)
+#[pyfunction]
+#[pyo3(name = "linprog_parametric")]
+#[pyo3(signature = (c, A_ub=None, b_ub=None, A_eq=None, b_eq=None, bounds=None, sense="min", *, c_theta=None, b_ub_theta=None, b_eq_theta=None, theta_range=None))]
+#[allow(non_snake_case)]
+#[allow(clippy::too_many_arguments)]
+fn py_linprog_parametric(
+    c: &Bound<'_, PyAny>,
+    A_ub: Option<&Bound<'_, PyAny>>,
+    b_ub: Option<&Bound<'_, PyAny>>,
+    A_eq: Option<&Bound<'_, PyAny>>,
+    b_eq: Option<&Bound<'_, PyAny>>,
+    bounds: Option<&Bound<'_, PyAny>>,
+    sense: &str,
+    c_theta: Option<&Bound<'_, PyAny>>,
+    b_ub_theta: Option<&Bound<'_, PyAny>>,
+    b_eq_theta: Option<&Bound<'_, PyAny>>,
+    theta_range: Option<&Bound<'_, PyAny>>,
+) -> PyResult<PyParametricResult> {
+    let lp = build(c, A_ub, b_ub, A_eq, b_eq, bounds, sense)?;
+    let given = |o: Option<&Bound<'_, PyAny>>| o.is_some_and(|o| !o.is_none());
+    let rhs_given = given(b_ub_theta) || given(b_eq_theta);
+    let delta = if let Some(ct) = c_theta.filter(|o| !o.is_none()) {
+        if rhs_given {
+            return Err(lp_err(LinprogError::UnsupportedParametric {
+                detail: "c_theta together with b_ub_theta / b_eq_theta: only one of the \
+                         objective and the right-hand side may move"
+                    .into(),
+            }));
+        }
+        ParametricDelta::Objective {
+            c: to_vector(ct, "c_theta")?,
+        }
+    } else {
+        let or_zero =
+            |o: Option<&Bound<'_, PyAny>>, n: usize, what: &str| -> PyResult<Vec<Rational>> {
+                match o.filter(|o| !o.is_none()) {
+                    Some(v) => to_vector(v, what),
+                    None => Ok(vec![Rational::new(); n]),
+                }
+            };
+        ParametricDelta::Rhs {
+            b_ub: or_zero(b_ub_theta, lp.b_ub.len(), "b_ub_theta")?,
+            b_eq: or_zero(b_eq_theta, lp.b_eq.len(), "b_eq_theta")?,
+        }
+    };
+    let (lo, hi) = parse_theta_range(theta_range)?;
+    let sol = core_parametric(&lp, &delta, lo, hi).map_err(lp_err)?;
+    Ok(PyParametricResult {
+        lp,
+        delta,
+        sol,
+        vars: None,
+    })
 }
 
 /// ``_linear_form(expr, vars)`` — ``(coefficients, constant)`` of an affine
@@ -894,10 +1363,12 @@ fn py_linear_form(
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLpResult>()?;
     m.add_class::<PyMilpResult>()?;
+    m.add_class::<PyParametricResult>()?;
     m.add("LinprogError", m.py().get_type_bound::<PyLinprogError>())?;
     m.add_function(wrap_pyfunction!(py_linprog, m)?)?;
     m.add_function(wrap_pyfunction!(py_milp, m)?)?;
     m.add_function(wrap_pyfunction!(py_linprog_expr, m)?)?;
+    m.add_function(wrap_pyfunction!(py_linprog_parametric, m)?)?;
     m.add_function(wrap_pyfunction!(py_linear_form, m)?)?;
     Ok(())
 }

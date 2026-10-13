@@ -848,6 +848,8 @@ alkahest.linprog_expr(3*x + 2*y, [p.le(x + y, p.integer(4)), p.ge(x, p.integer(0
 
 `milp(..., integrality=None, max_nodes=100000)` (default: all integer) is branch and bound with gap exactly 0 when it returns `optimal`. **`E-LP-005` (node cap) and `BudgetExceededError` are refusals**: they carry `.incumbent` (feasible, *unproven*), `.incumbent_fun` and `.bound`. `linprog_expr` treats variables as **free** unless constrained; non-affine → `E-LP-003`, strict `<` → `E-LP-004`; `integer=True` or a variable list makes it a MILP.
 
+`linprog(..., method="auto"|"dense"|"revised", basis=prev)` — revised simplex (sparse, exact eta-file factorisation; auto above 12 rows) and warm starts from `prev.basis` (dual simplex after an RHS change / added row; `res.warm_started`). `milp` adds root Gomory mixed-integer cuts (`cut_rounds=8`, `max_cuts=200`, listed in `res.cuts`, each valid at every integer point; `cut_rounds=0` disables). `linprog_parametric(c, ..., c_theta=… | b_ub_theta=…/b_eq_theta=…, theta_range=(lo, hi))` → `ParametricLPResult`: exact `breakpoints`, `regions` (affine `value`/`x`/duals as `(a, b)` = a + θ·b, verified for all θ in each region), `value_at(θ)`, `status_at(θ)`; `linprog_expr(..., parameter=t)` does the same from expressions. θ in the constraint matrix / non-linear / in both objective and RHS → `E-LP-007`.
+
 ---
 
 ## JIT compilation and numeric evaluation

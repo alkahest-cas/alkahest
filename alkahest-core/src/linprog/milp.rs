@@ -9,6 +9,17 @@
 //! bound carries a verified dual; when the open list empties, the incumbent is
 //! optimal with a gap of exactly zero.
 //!
+//! Before branching, the root relaxation can be strengthened by rounds of
+//! Gomory mixed-integer cuts (cut-and-branch): integer variables' bounds are
+//! first rounded inward (valid for every integer point), then each round
+//! solves the relaxation with the revised simplex, reads GMI cuts off the
+//! optimal tableau ([`super::revised`] documents why each is valid), appends
+//! them as inequality rows and re-solves from the previous basis (a dual
+//! simplex). Cuts never remove an integer-feasible point, so the search on the
+//! strengthened programme has the same integer optimum; the incumbent is
+//! re-checked against the caller's programme before it is returned. Every node
+//! LP is warm-started from its parent's basis.
+//!
 //! Unboundedness is decided by Meyer's theorem: for rational data, if the
 //! integer hull is non-empty its recession cone equals that of the LP
 //! relaxation. So once some node LP is unbounded along a ray `d` (a ray of the
@@ -20,36 +31,51 @@
 use rug::{Integer, Rational};
 
 use super::{
-    linprog, Incumbent, LinearProgram, LinprogError, LpOutcome, Sense, UnboundedCertificate,
-    VarBound,
+    linprog_with, revised, Incumbent, LinearProgram, LinprogError, LpBasis, LpMethod, LpOptions,
+    LpOutcome, Sense, UnboundedCertificate, VarBound,
 };
 use crate::budget;
 
-/// Options for [`milp`].
+/// Options for [`milp`]; build with [`MilpOptions::new`] and adjust fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MilpOptions {
     /// `true` for each variable constrained to be an integer.
     pub integrality: Vec<bool>,
     /// The maximum number of branch-and-bound nodes whose LP is solved
     /// before refusing with `E-LP-005`.
     pub max_nodes: usize,
+    /// Rounds of Gomory mixed-integer cuts at the root (0 disables cutting).
+    pub cut_rounds: usize,
+    /// The maximum total number of cuts added at the root.
+    pub max_cuts: usize,
+    /// Warm-start each node LP from its parent's basis (revised simplex).
+    pub warm_start: bool,
 }
 
 impl MilpOptions {
     /// The default node cap.
     pub const DEFAULT_MAX_NODES: usize = 100_000;
+    /// The default number of root cut rounds.
+    pub const DEFAULT_CUT_ROUNDS: usize = 8;
+    /// The default cap on the number of root cuts.
+    pub const DEFAULT_MAX_CUTS: usize = 200;
 
-    /// Integrality flags with the default node cap.
+    /// Integrality flags with the default node cap, cut limits and warm starts.
     pub fn new(integrality: Vec<bool>) -> Self {
         MilpOptions {
             integrality,
             max_nodes: Self::DEFAULT_MAX_NODES,
+            cut_rounds: Self::DEFAULT_CUT_ROUNDS,
+            max_cuts: Self::DEFAULT_MAX_CUTS,
+            warm_start: true,
         }
     }
 }
 
 /// A proven-optimal integer solution.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MilpSolution {
     /// The optimal point; integer-valued on every integer variable.
     pub x: Vec<Rational>,
@@ -58,6 +84,9 @@ pub struct MilpSolution {
     /// Number of nodes whose LP was solved. The search tree closed, so the
     /// bound equals `objective` (gap exactly 0).
     pub nodes: usize,
+    /// The Gomory cuts added at the root, as rows `a · x ≤ b` in the caller's
+    /// variables. Each is satisfied by every integer-feasible point.
+    pub cuts: Vec<(Vec<Rational>, Rational)>,
 }
 
 /// Outcome of [`milp`].
@@ -79,6 +108,8 @@ pub enum MilpOutcome {
 
 struct Node {
     bounds: Vec<VarBound>,
+    /// The parent's final basis, for a warm start.
+    basis: Option<LpBasis>,
     /// Parent LP value in minimisation form; `None` when unknown (−∞).
     bound: Option<Rational>,
 }
@@ -114,8 +145,22 @@ pub fn milp(lp: &LinearProgram, opts: &MilpOptions) -> Result<MilpOutcome, Linpr
     };
     let from_min = &to_min;
 
+    // Round integer variables' bounds inward (valid for every integer point),
+    // then strengthen the root with Gomory cuts.
+    let mut work = lp.clone();
+    for (bd, &int) in work.bounds.iter_mut().zip(&opts.integrality) {
+        if int {
+            bd.lower = bd.lower.take().map(|l| l.ceil());
+            bd.upper = bd.upper.take().map(|u| u.floor());
+        }
+    }
+    let (cuts, root_basis) = root_cuts(&mut work, opts)?;
+    let lp_orig = lp;
+    let lp = &work;
+
     let mut open = vec![Node {
         bounds: lp.bounds.clone(),
+        basis: root_basis,
         bound: None,
     }];
     let mut incumbent: Option<Incumbent> = None;
@@ -141,7 +186,7 @@ pub fn milp(lp: &LinearProgram, opts: &MilpOptions) -> Result<MilpOutcome, Linpr
 
     loop {
         if let (Some(d), Some(inc)) = (&ray, &incumbent) {
-            return unbounded_certificate(lp, opts, inc, d);
+            return unbounded_certificate(lp_orig, opts, inc, d);
         }
         // Depth-first until an incumbent exists, then best bound.
         let next = if incumbent.is_none() {
@@ -191,10 +236,16 @@ pub fn milp(lp: &LinearProgram, opts: &MilpOptions) -> Result<MilpOutcome, Linpr
 
         let mut sub = lp.clone();
         sub.bounds = node.bounds.clone();
-        let outcome = match linprog(&sub) {
-            Ok(o) => o,
+        let lp_opts = match (&node.basis, opts.warm_start) {
+            (Some(b), true) => LpOptions::default().with_basis(b.clone()),
+            _ => LpOptions::default(),
+        };
+        let solved = match linprog_with(&sub, &lp_opts) {
+            Ok(s) => s,
             Err(e) => return Err(with_progress(e, &open, &node)),
         };
+        let child_basis = opts.warm_start.then_some(solved.basis);
+        let outcome = solved.outcome;
         let (point, value) = match outcome {
             LpOutcome::Infeasible(_) => continue,
             LpOutcome::Optimal(cert) => {
@@ -239,6 +290,7 @@ pub fn milp(lp: &LinearProgram, opts: &MilpOptions) -> Result<MilpOutcome, Linpr
         {
             open.push(Node {
                 bounds: up,
+                basis: child_basis.clone(),
                 bound: value.clone(),
             });
         }
@@ -253,6 +305,7 @@ pub fn milp(lp: &LinearProgram, opts: &MilpOptions) -> Result<MilpOutcome, Linpr
         {
             open.push(Node {
                 bounds: down,
+                basis: child_basis,
                 bound: value,
             });
         }
@@ -260,7 +313,7 @@ pub fn milp(lp: &LinearProgram, opts: &MilpOptions) -> Result<MilpOutcome, Linpr
 
     match incumbent {
         Some(inc) => {
-            if !lp.is_feasible(&inc.x)
+            if !lp_orig.is_feasible(&inc.x)
                 || (0..n).any(|j| opts.integrality[j] && !is_integer(&inc.x[j]))
             {
                 return Err(LinprogError::Internal {
@@ -271,10 +324,60 @@ pub fn milp(lp: &LinearProgram, opts: &MilpOptions) -> Result<MilpOutcome, Linpr
                 x: inc.x,
                 objective: inc.objective,
                 nodes,
+                cuts,
             }))
         }
         None => Ok(MilpOutcome::Infeasible { nodes }),
     }
+}
+
+/// Rounds of Gomory mixed-integer cuts on the root relaxation of `work`,
+/// appended to `work.a_ub`. Returns the cuts and the last root basis.
+fn root_cuts(
+    work: &mut LinearProgram,
+    opts: &MilpOptions,
+) -> Result<(Vec<(Vec<Rational>, Rational)>, Option<LpBasis>), LinprogError> {
+    let mut cuts: Vec<(Vec<Rational>, Rational)> = Vec::new();
+    let mut basis: Option<LpBasis> = None;
+    let mut last: Option<Rational> = None;
+    for _ in 0..opts.cut_rounds {
+        if cuts.len() >= opts.max_cuts {
+            break;
+        }
+        let (engine, outcome, _) = revised::solve(work, basis.as_ref())?;
+        outcome
+            .verify(work)
+            .map_err(|detail| LinprogError::Internal { detail })?;
+        let LpOutcome::Optimal(cert) = outcome else {
+            break;
+        };
+        basis = Some(engine.basis_labels(work));
+        // Stop when a round no longer moves the bound.
+        if last.as_ref() == Some(&cert.objective) {
+            break;
+        }
+        last = Some(cert.objective.clone());
+        let fractional = cert
+            .x
+            .iter()
+            .zip(&opts.integrality)
+            .any(|(v, &int)| int && !is_integer(v));
+        if !fractional {
+            break;
+        }
+        let room = opts.max_cuts - cuts.len();
+        let new = engine.gomory_cuts(work, &opts.integrality, &cert.x, room.min(50));
+        if new.is_empty() {
+            break;
+        }
+        for (row, rhs) in new {
+            work.a_ub.push(row.clone());
+            work.b_ub.push(rhs.clone());
+            cuts.push((row, rhs));
+        }
+    }
+    let _ = LpMethod::Revised;
+    Ok((cuts, basis))
 }
 
 fn unbounded_certificate(

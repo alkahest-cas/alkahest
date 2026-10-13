@@ -28,25 +28,25 @@ use super::{
 use crate::budget;
 
 /// Standard-form image of a [`LinearProgram`].
-struct StdForm {
+pub(super) struct StdForm {
     /// For each structural column: the caller variable and the sign with
     /// which the column enters it (`x_j = shift_j + Σ sign · x'_col`).
-    structural: Vec<(usize, bool)>,
+    pub(super) structural: Vec<(usize, bool)>,
     /// Total number of columns (structural then slack).
-    ncols: usize,
+    pub(super) ncols: usize,
     /// Rows of `A'`.
-    a: Vec<Vec<Rational>>,
+    pub(super) a: Vec<Vec<Rational>>,
     /// `b'`.
-    b: Vec<Rational>,
+    pub(super) b: Vec<Rational>,
     /// `c'` (always minimised), one per column.
-    cost: Vec<Rational>,
+    pub(super) cost: Vec<Rational>,
     /// The shift of each caller variable.
-    shift: Vec<Rational>,
+    pub(super) shift: Vec<Rational>,
     /// For each bound row (after the `≤` and `=` rows), the variable it bounds.
-    bound_rows: Vec<usize>,
+    pub(super) bound_rows: Vec<usize>,
 }
 
-fn standard_form(lp: &LinearProgram) -> StdForm {
+pub(super) fn standard_form(lp: &LinearProgram) -> StdForm {
     let n = lp.nvars();
     let mut structural: Vec<(usize, bool)> = Vec::new();
     let mut shift = vec![Rational::new(); n];
@@ -154,6 +154,8 @@ struct Tableau {
     /// `+1` / `−1`: the sign each row was multiplied by to make `b' ≥ 0`.
     flip: Vec<bool>,
     ncols: usize,
+    /// Pivots performed so far (both phases).
+    pivots: usize,
 }
 
 impl Tableau {
@@ -240,6 +242,7 @@ impl Tableau {
                 return Ok(Phase::Unbounded(j));
             };
             self.pivot(i, j);
+            self.pivots += 1;
             let f = d[j].clone();
             for (dk, pk) in d.iter_mut().zip(&self.rows[i]) {
                 if *pk != 0 {
@@ -277,6 +280,15 @@ impl Tableau {
         y
     }
 
+    /// The basic columns that are not artificial.
+    fn real_basis(&self) -> Vec<usize> {
+        self.basis
+            .iter()
+            .copied()
+            .filter(|&b| b < self.ncols)
+            .collect()
+    }
+
     /// The basic solution, one entry per column (artificials excluded).
     fn point(&self) -> Vec<Rational> {
         let rhs = self.rhs();
@@ -290,9 +302,13 @@ impl Tableau {
     }
 }
 
-/// Solve `lp` (already validated); the caller verifies the certificate.
-pub(super) fn solve(lp: &LinearProgram) -> Result<LpOutcome, LinprogError> {
-    let sf = standard_form(lp);
+/// Solve `lp` (already validated, with standard form `sf`); the caller
+/// verifies the certificate. Also returns the final basis (standard-form
+/// columns, artificials excluded) and the number of pivots.
+pub(super) fn solve_std(
+    lp: &LinearProgram,
+    sf: &StdForm,
+) -> Result<(LpOutcome, Vec<usize>, usize), LinprogError> {
     let m = sf.a.len();
     let ncols = sf.ncols;
     let width = ncols + m + 1;
@@ -317,6 +333,7 @@ pub(super) fn solve(lp: &LinearProgram) -> Result<LpOutcome, LinprogError> {
         basis: (ncols..ncols + m).collect(),
         flip,
         ncols,
+        pivots: 0,
     };
 
     // Phase 1: minimise the sum of the artificials.
@@ -339,7 +356,11 @@ pub(super) fn solve(lp: &LinearProgram) -> Result<LpOutcome, LinprogError> {
     if infeasibility > 0 {
         // y'' has y''ᵀA' ≤ 0 and y''·b' > 0; the Farkas vector is −y''.
         let f: Vec<Rational> = tab.dual(&cost1).into_iter().map(|v| -v).collect();
-        return Ok(LpOutcome::Infeasible(farkas_from(lp, &sf, &f)));
+        return Ok((
+            LpOutcome::Infeasible(farkas_from(lp, sf, &f)),
+            tab.real_basis(),
+            tab.pivots,
+        ));
     }
 
     // Drive the (zero-level) artificials out of the basis where possible; a
@@ -361,7 +382,11 @@ pub(super) fn solve(lp: &LinearProgram) -> Result<LpOutcome, LinprogError> {
         Phase::Optimal => {
             let xs = tab.point();
             let y = tab.dual(&cost2);
-            Ok(LpOutcome::Optimal(optimal_from(lp, &sf, &xs, &y)))
+            Ok((
+                LpOutcome::Optimal(optimal_from(lp, sf, &xs, &y)),
+                tab.real_basis(),
+                tab.pivots,
+            ))
         }
         Phase::Unbounded(e) => {
             let xs = tab.point();
@@ -372,19 +397,25 @@ pub(super) fn solve(lp: &LinearProgram) -> Result<LpOutcome, LinprogError> {
                     ds[bk] = -tab.rows[k][e].clone();
                 }
             }
-            let point = to_user(lp, &sf, &xs, true);
-            let direction = to_user(lp, &sf, &ds, false);
-            Ok(LpOutcome::Unbounded(UnboundedCertificate {
-                point,
-                direction,
-            }))
+            let point = to_user(lp, sf, &xs, true);
+            let direction = to_user(lp, sf, &ds, false);
+            Ok((
+                LpOutcome::Unbounded(UnboundedCertificate { point, direction }),
+                tab.real_basis(),
+                tab.pivots,
+            ))
         }
     }
 }
 
 /// Map a standard-form vector back to the caller's variables; `shifted`
 /// adds the bound shifts (a point) or not (a direction).
-fn to_user(lp: &LinearProgram, sf: &StdForm, xs: &[Rational], shifted: bool) -> Vec<Rational> {
+pub(super) fn to_user(
+    lp: &LinearProgram,
+    sf: &StdForm,
+    xs: &[Rational],
+    shifted: bool,
+) -> Vec<Rational> {
     let mut x = if shifted {
         sf.shift.clone()
     } else {
@@ -411,7 +442,7 @@ fn combine(lp: &LinearProgram, y_ub: &[Rational], y_eq: &[Rational]) -> Vec<Rati
     g
 }
 
-fn optimal_from(
+pub(super) fn optimal_from(
     lp: &LinearProgram,
     sf: &StdForm,
     xs: &[Rational],
@@ -463,7 +494,7 @@ fn optimal_from(
     }
 }
 
-fn farkas_from(lp: &LinearProgram, sf: &StdForm, f: &[Rational]) -> FarkasCertificate {
+pub(super) fn farkas_from(lp: &LinearProgram, sf: &StdForm, f: &[Rational]) -> FarkasCertificate {
     let n = lp.nvars();
     let m_ub = lp.a_ub.len();
     let m_eq = lp.a_eq.len();

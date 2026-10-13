@@ -413,6 +413,11 @@ Exception subclasses
      ``incumbent_fun``, ``bound`` (best open bound) and ``nodes``
    - ``E-LP-006`` — a certificate failed its own exact check; the result was
      withheld
+   - ``E-LP-007`` — an unsupported parametric programme
+     (:func:`linprog_parametric`, :func:`linprog_expr` with ``parameter``):
+     the parameter multiplies a variable in a constraint, enters
+     non-linearly, moves both the objective and the right-hand side, or is
+     combined with integer variables
 
    A budget trip during either solver raises :exc:`BudgetExceededError` with
    the same ``incumbent`` / ``incumbent_fun`` / ``bound`` attributes.
