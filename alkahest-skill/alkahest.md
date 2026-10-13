@@ -1287,6 +1287,11 @@ ex.covariance(X + Y, X - Y, [([X, Y], mvn)])         # s11 - s22
 ex.joint_variance(X * Z, [([X, Y], mvn), (Z, ex.Exponential(lam))])  # blocks independent
 ex.sum_independent([ex.Normal(m1, s1), ex.Normal(m2, s2)])  # Normal(m1+m2, sqrt(s1²+s2²))
 ex.order_statistic(ex.Exponential(lam), n, "max").mean()    # (digamma(n+1) - digamma(1))/lam
+ex.order_statistic(ex.Beta(2, 3), 5, k=2).mean()            # k-th smallest of 5; any closed-form-CDF continuous law
+ex.order_statistic(ex.Normal(0, 1), 5, k=2).pdf(x)          # n!/((k-1)!(n-k)!) F^(k-1) (1-F)^(n-k) f (moments: E-PROB-003 where the integrator declines)
+mvn.entropy(); mvn.kl_divergence(mvn2); mvn.mutual_information([0], [1])   # bivariate: -log(1 - rho^2)/2
+ex.entropy_asymptotic(ex.Binomial(n, p))   # LABELLED large-n approximation 1/2 log(2 pi e n p q) - gamma1^2/12; entropy() refuses
+ex.expectation(x**3 * ak.cos(2*x), x, ex.Normal(mu, sigma))  # x^k * cos/sin under Normal: closed (Hermite at the complex tilted mean)
 ex.Binomial(n, p).variance()            # symbolic n: n*p*(1-p); n integer on prob_side_conditions()
 ex.NegativeBinomial(r, p)               # failures before r-th success (scipy nbinom)
 ex.expectation(ak.log(x), x, ex.Gamma(k, theta))     # digamma(k) + log(theta)

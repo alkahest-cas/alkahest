@@ -522,10 +522,8 @@ fn order_statistics_with_symbolic_n() {
         "E-PROB-001"
     );
     let normal = Distribution::normal(p.integer(0), p.integer(1), &p).unwrap();
-    assert_eq!(
-        order_statistic(&normal, n, OrderKind::Max, &p)
-            .unwrap_err()
-            .code(),
-        "E-PROB-002"
-    );
+    // A Normal base is accepted (density and CDF are exact); the moments of a
+    // symbolic-n maximum are not tabled and refuse.
+    let nm = order_statistic(&normal, n, OrderKind::Max, &p).unwrap();
+    assert_eq!(nm.mean(&p).unwrap_err().code(), "E-PROB-002");
 }
