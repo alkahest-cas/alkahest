@@ -1632,7 +1632,7 @@ fn try_weierstrass_rational_trig(
     let mut back = HashMap::new();
     back.insert(t, tan_half);
     let continuous = crate::kernel::subs(
-        continuous_half_angle_atans(inner.value, t, var, pool),
+        continuous_half_angle(inner.value, t, var, pool),
         &back,
         pool,
     );
@@ -1660,6 +1660,21 @@ fn try_weierstrass_rational_trig(
     // The result is then an antiderivative on `(−π, π)` only, and its log step
     // says so — side condition `π − |x| > 0` — instead of presenting as global.
     if half_angle_result_jumps(result, expr, var, pool) {
+        // Cancel the jumps exactly where they can be sized (one-sided limits
+        // at the odd multiples of π); only what resists keeps the local label.
+        if super::continuity::step_correction_enabled() {
+            if let Some(fixed) =
+                super::continuity::periodic_step_correction(result, expr, var, pool)
+            {
+                log.push(RewriteStep::simple("int_weierstrass_trig", expr, result));
+                log.push(RewriteStep::simple(
+                    super::continuity::STEP_CORRECTION_RULE,
+                    result,
+                    fixed,
+                ));
+                return Ok(Some(fixed));
+            }
+        }
         let pi = pool.symbol("pi", crate::kernel::Domain::Real);
         let window = pool.add(vec![
             pi,
@@ -1947,6 +1962,525 @@ fn half_angle_result_jumps(f: ExprId, integrand: ExprId, var: ExprId, pool: &Exp
         (Some(l), Some(r)) => (r - l).abs() > 1e-4 * (1.0 + l.abs().max(r.abs())),
         _ => false,
     }
+}
+
+/// [`continuous_half_angle_atans`], plus the *rational* part of a tangent
+/// substitution's antiderivative rewritten without the tangent.
+///
+/// `t = tan θ` with `θ = angle/2`. A term `P(t)/Q(t)` with `deg P ≤ deg Q = n`
+/// equals `P̃(sin θ, cos θ)/Q̃(sin θ, cos θ)` with both sides homogenised by
+/// `cos^n θ`; the denominator is `lc(Q)·sin^n θ ≠ 0` where `cos θ = 0`, so the
+/// rewritten term is finite and continuous across the poles of `tan θ` — where
+/// the `tan` form is a `∞/∞` the endpoint machinery cannot evaluate
+/// (`∫_0^{10} dx/(2 + cos x)²` was refused at `x = π` for exactly that).
+fn continuous_half_angle(f: ExprId, t: ExprId, angle: ExprId, pool: &ExprPool) -> ExprId {
+    let terms = match pool.get(f) {
+        ExprData::Add(xs) => xs,
+        _ => vec![f],
+    };
+    let (rational, rest): (Vec<ExprId>, Vec<ExprId>) = terms
+        .into_iter()
+        .partition(|&e| !is_free_of(e, t, pool) && is_rational_in(e, t, pool));
+    let mut out: Vec<ExprId> = rest
+        .iter()
+        .map(|&e| continuous_half_angle_atans(e, t, angle, pool))
+        .collect();
+    if !rational.is_empty() {
+        let r = pool.add(rational);
+        out.push(half_angle_rational(r, t, angle, pool).unwrap_or(r));
+    }
+    pool.add(out)
+}
+
+/// `e` built from `t`, `t`-free constants, `+`, `·` and integer powers only.
+fn is_rational_in(e: ExprId, t: ExprId, pool: &ExprPool) -> bool {
+    if is_free_of(e, t, pool) || e == t {
+        return true;
+    }
+    match pool.get(e) {
+        ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().all(|&x| is_rational_in(x, t, pool)),
+        ExprData::Pow { base, exp } => {
+            as_integer(exp, pool).is_some() && is_rational_in(base, t, pool)
+        }
+        _ => false,
+    }
+}
+
+/// Degree in `t` of an expanded polynomial expression, `None` if it is not one.
+fn poly_degree_in(e: ExprId, t: ExprId, pool: &ExprPool) -> Option<i64> {
+    if is_free_of(e, t, pool) {
+        return Some(0);
+    }
+    if e == t {
+        return Some(1);
+    }
+    match pool.get(e) {
+        ExprData::Add(xs) => xs
+            .iter()
+            .map(|&x| poly_degree_in(x, t, pool))
+            .try_fold(0_i64, |m, d| d.map(|d| m.max(d))),
+        ExprData::Mul(xs) => xs
+            .iter()
+            .map(|&x| poly_degree_in(x, t, pool))
+            .try_fold(0_i64, |m, d| d.map(|d| m + d)),
+        ExprData::Pow { base, exp } => {
+            let k = as_integer(exp, pool)?;
+            if k < 0 {
+                return None;
+            }
+            Some(poly_degree_in(base, t, pool)? * k)
+        }
+        _ => None,
+    }
+}
+
+/// Does `e` contain `base^k` with `k < 0` (or `base` under a non-integer power)?
+fn has_inverse_power_of(e: ExprId, base: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(e) {
+        ExprData::Pow { base: b, exp } => {
+            (b == base && !matches!(as_integer(exp, pool), Some(k) if k >= 0))
+                || has_inverse_power_of(b, base, pool)
+        }
+        ExprData::Add(xs) | ExprData::Mul(xs) => {
+            xs.iter().any(|&x| has_inverse_power_of(x, base, pool))
+        }
+        ExprData::Func { args, .. } => args.iter().any(|&x| has_inverse_power_of(x, base, pool)),
+        _ => false,
+    }
+}
+
+/// The rewrite of [`continuous_half_angle`] for one rational term; `None` when
+/// the numerator outgrows the denominator (the term is then unbounded at the
+/// pole and the integrand singular there) or the homogenisation does not
+/// clear.
+fn half_angle_rational(r: ExprId, t: ExprId, angle: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let (n, d) = crate::poly::cancel::together_parts(r, vec![t], pool).ok()?;
+    let (dn, dd) = (poly_degree_in(n, t, pool)?, poly_degree_in(d, t, pool)?);
+    if dd == 0 || dn > dd {
+        return None;
+    }
+    let theta = simplify(pool.mul(vec![pool.rational(1_i32, 2_i32), angle]), pool).value;
+    let sin_t = pool.func("sin", vec![theta]);
+    let cos_t = pool.func("cos", vec![theta]);
+    // Σ cₖ·tᵏ ↦ Σ cₖ·sinᵏθ·cos^{n−k}θ, monomial by monomial (`simplify` does
+    // not distribute a power over a product, so substituting `t = sin/cos`
+    // and expanding would leave `(sin·cos⁻¹)ᵏ` behind).
+    let homogenise = |p: ExprId| -> Option<ExprId> {
+        let monomials = match pool.get(p) {
+            ExprData::Add(xs) => xs,
+            _ => vec![p],
+        };
+        let mut out = Vec::with_capacity(monomials.len());
+        for m in monomials {
+            let (coef, k) = monomial_in(m, t, pool)?;
+            if k > dd {
+                return None;
+            }
+            out.push(pool.mul(vec![
+                coef,
+                pool.pow(sin_t, pool.integer(k)),
+                pool.pow(cos_t, pool.integer(dd - k)),
+            ]));
+        }
+        let h = simplify(pool.add(out), pool).value;
+        (!has_inverse_power_of(h, cos_t, pool) && is_free_of(h, t, pool)).then_some(h)
+    };
+    let (nh, dh) = (homogenise(n)?, homogenise(d)?);
+    Some(pool.mul(vec![nh, pool.pow(dh, pool.integer(-1_i32))]))
+}
+
+/// `(c, k)` with `m = c·tᵏ`, `c` free of `t`; `None` if `m` is not a monomial.
+fn monomial_in(m: ExprId, t: ExprId, pool: &ExprPool) -> Option<(ExprId, i64)> {
+    if is_free_of(m, t, pool) {
+        return Some((m, 0));
+    }
+    let power = |f: ExprId| -> Option<i64> {
+        if f == t {
+            return Some(1);
+        }
+        match pool.get(f) {
+            ExprData::Pow { base, exp } if base == t => as_integer(exp, pool).filter(|&k| k >= 0),
+            _ => None,
+        }
+    };
+    if let Some(k) = power(m) {
+        return Some((pool.integer(1_i32), k));
+    }
+    let ExprData::Mul(xs) = pool.get(m) else {
+        return None;
+    };
+    let mut k = 0;
+    let mut coef = Vec::new();
+    for x in xs {
+        if is_free_of(x, t, pool) {
+            coef.push(x);
+        } else {
+            k += power(x)?;
+        }
+    }
+    Some((pool.mul(coef), k))
+}
+
+/// Rewrite `expr`, a rational function of `sin(var)`, `cos(var)`, `tan(var)`,
+/// under `sin ↦ t·c`, `cos ↦ c`, `tan ↦ t` (`t = tan x`, `c = cos x`).
+fn bioche_rewrite(
+    expr: ExprId,
+    var: ExprId,
+    t: ExprId,
+    c: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    if is_free_of(expr, var, pool) {
+        return Some(expr);
+    }
+    match pool.get(expr) {
+        ExprData::Add(args) => Some(
+            pool.add(
+                args.iter()
+                    .map(|&a| bioche_rewrite(a, var, t, c, pool))
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+        ),
+        ExprData::Mul(args) => Some(
+            pool.mul(
+                args.iter()
+                    .map(|&a| bioche_rewrite(a, var, t, c, pool))
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+        ),
+        ExprData::Pow { base, exp } => {
+            as_integer(exp, pool)?;
+            Some(pool.pow(bioche_rewrite(base, var, t, c, pool)?, exp))
+        }
+        ExprData::Func { name, args } if args.len() == 1 && args[0] == var => match name.as_str() {
+            "sin" => Some(pool.mul(vec![t, c])),
+            "cos" => Some(c),
+            "tan" => Some(t),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Parity of the degree in `c` shared by every monomial of the expanded
+/// polynomial `e`; `None` when the monomials disagree.
+fn c_parity(e: ExprId, c: ExprId, pool: &ExprPool) -> Option<i64> {
+    if is_free_of(e, c, pool) {
+        return Some(0);
+    }
+    if e == c {
+        return Some(1);
+    }
+    match pool.get(e) {
+        ExprData::Add(xs) => {
+            let mut parity = None;
+            for x in xs {
+                let p = c_parity(x, c, pool)?;
+                if parity.is_some_and(|q| q != p) {
+                    return None;
+                }
+                parity = Some(p);
+            }
+            parity
+        }
+        ExprData::Mul(xs) => xs
+            .iter()
+            .map(|&x| c_parity(x, c, pool))
+            .try_fold(0_i64, |m, p| p.map(|p| (m + p).rem_euclid(2))),
+        ExprData::Pow { base, exp } => {
+            let k = as_integer(exp, pool)?;
+            Some((c_parity(base, c, pool)? * k).rem_euclid(2))
+        }
+        _ => None,
+    }
+}
+
+/// Replace every even power `c^{2j}` by `w^j`; `None` on an odd power.
+fn even_c_powers(e: ExprId, c: ExprId, w: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    if is_free_of(e, c, pool) {
+        return Some(e);
+    }
+    if e == c {
+        return None;
+    }
+    match pool.get(e) {
+        ExprData::Add(xs) => Some(
+            pool.add(
+                xs.iter()
+                    .map(|&x| even_c_powers(x, c, w, pool))
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+        ),
+        ExprData::Mul(xs) => Some(
+            pool.mul(
+                xs.iter()
+                    .map(|&x| even_c_powers(x, c, w, pool))
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+        ),
+        ExprData::Pow { base, exp } if base == c => {
+            let k = as_integer(exp, pool)?;
+            (k % 2 == 0).then(|| pool.pow(w, pool.integer(k / 2)))
+        }
+        _ => None,
+    }
+}
+
+/// Rule name of the `t = tan x` route (Bioche's rule for integrands invariant
+/// under `x ↦ x + π`).
+const BIOCHE_RULE: &str = "int_bioche_tan_trig";
+
+/// `∫ R(sin x, cos x) dx` with `R(−s, −c) = R(s, c)` — invariant under
+/// `x ↦ x + π` — by `t = tan x` (Bioche's rule): `sin² = t²/(1+t²)`,
+/// `cos² = 1/(1+t²)`, `sin·cos = t/(1+t²)`, `dx = dt/(1+t²)`.
+///
+/// Behind the half-angle route, for the integrands it declines: half-angle
+/// doubles the degree, and `∫ dx/(1 + sin²x)` becomes a quartic in
+/// `tan(x/2)` with no rational roots, while `tan x` makes it `1/(1 + 2t²)`.
+/// The back-substitution uses the same continuous forms as the half-angle
+/// route with `θ = x`, and any jump left at `π/2 + kπ` is cancelled exactly by
+/// [`super::continuity::periodic_step_correction`] (or, failing that, the
+/// result is labelled valid on `(−π/2, π/2)` only).
+fn try_bioche_tan_rational_trig(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Result<Option<ExprId>, IntegrationError> {
+    if !has_rational_trig_denominator(expr, var, pool) {
+        return Ok(None);
+    }
+    let t = pool.symbol("__bioche_t", crate::kernel::Domain::Real);
+    let c = pool.symbol("__bioche_c", crate::kernel::Domain::Real);
+    let Some(body) = bioche_rewrite(expr, var, t, c, pool) else {
+        return Ok(None);
+    };
+    // dx = cos²x dt.
+    let g = pool.mul(vec![body, pool.pow(c, pool.integer(2_i32))]);
+    let Ok((n, d)) = crate::poly::cancel::together_parts(g, vec![t, c], pool) else {
+        return Ok(None);
+    };
+    let (Some(pn), Some(pd)) = (c_parity(n, c, pool), c_parity(d, c, pool)) else {
+        return Ok(None);
+    };
+    if pn != pd {
+        // Not invariant under x ↦ x + π.
+        return Ok(None);
+    }
+    let (n, d) = if pn == 1 {
+        (
+            simplify_expanded(pool.mul(vec![n, c]), pool).value,
+            simplify_expanded(pool.mul(vec![d, c]), pool).value,
+        )
+    } else {
+        (n, d)
+    };
+    let one_plus_t2 = pool.add(vec![pool.integer(1_i32), pool.pow(t, pool.integer(2_i32))]);
+    let w = pool.pow(one_plus_t2, pool.integer(-1_i32));
+    let (Some(n), Some(d)) = (even_c_powers(n, c, w, pool), even_c_powers(d, c, w, pool)) else {
+        return Ok(None);
+    };
+    let quotient = pool.mul(vec![n, pool.pow(d, pool.integer(-1_i32))]);
+    let Ok(g_t) = crate::poly::cancel::cancel(quotient, vec![t], pool) else {
+        return Ok(None);
+    };
+    let g_t = simplify(g_t, pool).value;
+    if !is_free_of(g_t, c, pool) || !is_free_of(g_t, var, pool) {
+        return Ok(None);
+    }
+    let inner = {
+        let _no_root_sum = super::risch::rational_integrate::RootSumSuppressed::enter();
+        match integrate(g_t, t, pool) {
+            Ok(inner) => inner,
+            Err(e) if e.is_budget() => return Err(e),
+            Err(_) => return Ok(None),
+        }
+    };
+    let two_x = pool.mul(vec![pool.integer(2_i32), var]);
+    let mut back = HashMap::new();
+    back.insert(t, pool.func("tan", vec![var]));
+    let continuous = crate::kernel::subs(
+        continuous_half_angle(inner.value, t, two_x, pool),
+        &back,
+        pool,
+    );
+    let mut result = simplify(continuous, pool).value;
+    let pole_log = pool.func(
+        "log",
+        vec![pool.add(vec![pool.integer(1_i32), pool.func("cos", vec![two_x])])],
+    );
+    let pole_log = simplify(pole_log, pool).value;
+    if contains_subexpr(result, pole_log, pool) {
+        let expanded = simplify_expanded(continuous, pool).value;
+        if !contains_subexpr(expanded, pole_log, pool) {
+            result = expanded;
+        }
+    }
+    if !verify_antiderivative(result, expr, var, pool) {
+        return Ok(None);
+    }
+    if super::continuity::step_correction_enabled() {
+        if let Some(fixed) = super::continuity::periodic_step_correction(result, expr, var, pool) {
+            log.push(RewriteStep::simple(BIOCHE_RULE, expr, result));
+            log.push(RewriteStep::simple(
+                super::continuity::STEP_CORRECTION_RULE,
+                result,
+                fixed,
+            ));
+            return Ok(Some(fixed));
+        }
+    }
+    let half_pi = std::f64::consts::FRAC_PI_2;
+    let jumps = {
+        let at = |xv: f64| {
+            let mut env = HashMap::new();
+            env.insert(var, xv);
+            crate::jit::eval_interp(result, &env, pool).filter(|v| v.is_finite())
+        };
+        let mut env = HashMap::new();
+        env.insert(var, half_pi);
+        let regular = crate::jit::eval_interp(expr, &env, pool).is_some_and(|v| v.is_finite());
+        regular
+            && match (at(half_pi - 1e-7), at(half_pi + 1e-7)) {
+                (Some(l), Some(r)) => (r - l).abs() > 1e-4 * (1.0 + l.abs().max(r.abs())),
+                _ => false,
+            }
+    };
+    if jumps {
+        let half_pi_e = pool.mul(vec![
+            pool.rational(1_i32, 2_i32),
+            pool.symbol("pi", crate::kernel::Domain::Real),
+        ]);
+        let window = pool.add(vec![
+            half_pi_e,
+            pool.mul(vec![pool.integer(-1_i32), pool.func("abs", vec![var])]),
+        ]);
+        log.push(RewriteStep::with_conditions(
+            WEIERSTRASS_LOCAL_RULE,
+            expr,
+            result,
+            vec![crate::deriv::log::SideCondition::Positive(window)],
+        ));
+        return Ok(Some(result));
+    }
+    log.push(RewriteStep::simple(BIOCHE_RULE, expr, result));
+    Ok(Some(result))
+}
+
+/// `∫ R(cot u) dx` through a radical, by the reflection `cot u = tan(π/2 − u)`.
+///
+/// `cot` parses as `tan(u)^{-1}`, and the routes that see `(tan(u)^{-1})^{3/2}`
+/// rewrite it with `(1/a)^{1/2} ↦ 1/a^{1/2}`, which is wrong by a sign where
+/// `tan u < 0`; the answer is then refused by the complex-branch check (and
+/// `∫_{1/5}^{1} cot(x)^{3/2} dx = 2.172…` with it). Reflecting first hands the
+/// `tan`-radical routes the integrand they handle exactly: with `y = π/2 − u`,
+/// `tan(u)^{-1} = tan y` *as numbers*, so `R(tan(u)^{-1}) = R(tan y)` on every
+/// branch, and `F(x) = −G(π/2 − u)/u′` for `G = ∫R(tan y)dy`. `G`'s `tan y` is
+/// written back as `tan(u)^{-1}` (the same value).
+fn try_cot_reflection(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Result<Option<DerivedExpr<ExprId>>, IntegrationError> {
+    // Every var-dependent function is the same `tan(u)`, `u` linear.
+    fn tan_args(e: ExprId, var: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>) -> bool {
+        if is_free_of(e, var, pool) {
+            return true;
+        }
+        match pool.get(e) {
+            ExprData::Func { name, args } if name == "tan" && args.len() == 1 => {
+                if !out.contains(&args[0]) {
+                    out.push(args[0]);
+                }
+                true
+            }
+            ExprData::Add(xs) | ExprData::Mul(xs) => {
+                xs.iter().all(|&x| tan_args(x, var, pool, out))
+            }
+            ExprData::Pow { base, exp } => {
+                is_free_of(exp, var, pool) && tan_args(base, var, pool, out)
+            }
+            _ => false,
+        }
+    }
+    // A reciprocal tangent under a fractional power: the shape the radical
+    // routes mishandle.
+    fn reciprocal_under_radical(e: ExprId, tan_u: ExprId, under: bool, pool: &ExprPool) -> bool {
+        match pool.get(e) {
+            ExprData::Pow { base, exp } => {
+                let frac = as_integer(exp, pool).is_none();
+                if under && base == tan_u && as_integer(exp, pool).is_some_and(|k| k < 0) {
+                    return true;
+                }
+                reciprocal_under_radical(base, tan_u, under || frac, pool)
+            }
+            ExprData::Add(xs) | ExprData::Mul(xs) => xs
+                .iter()
+                .any(|&x| reciprocal_under_radical(x, tan_u, under, pool)),
+            _ => false,
+        }
+    }
+    let mut args = Vec::new();
+    if !tan_args(expr, var, pool, &mut args) || args.len() != 1 {
+        return Ok(None);
+    }
+    let u = args[0];
+    let Some((a, _b)) = is_linear_in(u, var, pool) else {
+        return Ok(None);
+    };
+    let tan_u = pool.func("tan", vec![u]);
+    if !reciprocal_under_radical(expr, tan_u, false, pool) {
+        return Ok(None);
+    }
+    let y = pool.symbol("__cot_reflection_y", crate::kernel::Domain::Real);
+    let tan_y = pool.func("tan", vec![y]);
+    let mut to_y = HashMap::new();
+    to_y.insert(tan_u, pool.pow(tan_y, pool.integer(-1_i32)));
+    let g = simplify(crate::kernel::subs(expr, &to_y, pool), pool).value;
+    if !is_free_of(g, var, pool) {
+        return Ok(None);
+    }
+    let big_g = match integrate(g, y, pool) {
+        Ok(r) => r,
+        Err(e) if e.is_budget() => return Err(e),
+        Err(_) => return Ok(None),
+    };
+    let reflected = pool.add(vec![
+        pool.mul(vec![
+            pool.rational(1_i32, 2_i32),
+            pool.symbol("pi", crate::kernel::Domain::Real),
+        ]),
+        pool.mul(vec![pool.integer(-1_i32), u]),
+    ]);
+    let scale = pool.mul(vec![
+        pool.integer(-1_i32),
+        pool.pow(a, pool.integer(-1_i32)),
+    ]);
+    let candidates = {
+        // Preferred: `tan y` written back as `tan(u)^{-1}`.
+        let mut back = HashMap::new();
+        back.insert(tan_y, pool.pow(tan_u, pool.integer(-1_i32)));
+        let first = crate::kernel::subs(big_g.value, &back, pool);
+        let mut back_y = HashMap::new();
+        back_y.insert(y, reflected);
+        let cot_form = crate::kernel::subs(first, &back_y, pool);
+        let tan_form = crate::kernel::subs(big_g.value, &back_y, pool);
+        [cot_form, tan_form]
+    };
+    for cand in candidates {
+        if !is_free_of(cand, y, pool) {
+            continue;
+        }
+        let f = simplify(pool.mul(vec![scale, cand]), pool).value;
+        if verify_antiderivative(f, expr, var, pool)
+            && super::branch_check::complex_branch_mismatch(f, expr, var, pool).is_none()
+        {
+            let mut log = DerivationLog::new();
+            log.push(RewriteStep::simple("int_cot_reflection", expr, f));
+            return Ok(Some(DerivedExpr::with_log(f, big_g.log.merge(log))));
+        }
+    }
+    Ok(None)
 }
 
 /// Small explicit table for `∫ 1/cos²(u) = tan(u)/a`, `∫ 1/sin²(u) = −cot(u)/a`
@@ -2255,6 +2789,11 @@ pub(crate) fn integrate_raw(
     // forms for ∫sin², ∫sec², ∫sin(2x)cos(x) are preserved.  Soundness-gated in
     // the helper.
     if let Some(result) = try_weierstrass_rational_trig(expr, var, pool, log)? {
+        return Ok(result);
+    }
+    // What half-angle declines, `t = tan x` may still close when the integrand
+    // is invariant under `x ↦ x + π` (`1/(1 + sin²x)`).
+    if let Some(result) = try_bioche_tan_rational_trig(expr, var, pool, log)? {
         return Ok(result);
     }
 
@@ -2573,7 +3112,7 @@ pub fn integrate(
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, IntegrationError> {
     let frame = IntegrateFrame::enter();
-    let result = integrate_dispatch(expr, var, pool)?;
+    let mut result = integrate_dispatch(expr, var, pool)?;
     if frame.outermost {
         if let Some(at) =
             super::branch_check::complex_branch_mismatch(result.value, expr, var, pool)
@@ -2586,6 +3125,24 @@ pub fn integrate(
                 pool.display(result.value),
                 pool.display(var),
             )));
+        }
+        // A substitution antiderivative (`t = tan(x/2)`, `t = tan x`, …) can
+        // jump by a constant where the substituted tangent has a pole although
+        // the integrand is regular there. Cancel those jumps exactly, so the
+        // answer is an antiderivative on every interval where the integrand
+        // is continuous rather than only between consecutive poles.
+        if super::continuity::step_correction_enabled() {
+            if let Some(fixed) =
+                super::continuity::periodic_step_correction(result.value, expr, var, pool)
+            {
+                let mut log = DerivationLog::new();
+                log.push(RewriteStep::simple(
+                    super::continuity::STEP_CORRECTION_RULE,
+                    result.value,
+                    fixed,
+                ));
+                result = DerivedExpr::with_log(fixed, result.log.merge(log));
+            }
         }
     }
     Ok(result)
@@ -2643,6 +3200,12 @@ fn integrate_dispatch(
         let mut log = DerivationLog::new();
         log.push(RewriteStep::simple("elliptic_legendre_form", expr, f));
         return Ok(DerivedExpr::with_log(f, log));
+    }
+
+    // `∫ R(cot u)` through a radical: reflect to `tan` before the algebraic
+    // engine sees `(tan(u)^{-1})^{p/q}` and loses its branch.
+    if let Some(r) = try_cot_reflection(expr, var, pool)? {
+        return Ok(r);
     }
 
     // ── Dispatch order ──────────────────────────────────────────────────────
@@ -3222,7 +3785,13 @@ fn definite_via_ftc(
         return Err(IntegrationError::NotImplemented(reason));
     }
 
-    let antideriv = integrate(expr, var, pool)?;
+    // The raw antiderivative: the interval is split at substitution poles
+    // below and each piece is evaluated with one-sided limits, which is the
+    // exact form of the global step correction `integrate` would otherwise add.
+    let antideriv = {
+        let _raw = super::continuity::RawAntiderivative::enter();
+        integrate(expr, var, pool)?
+    };
     let f = antideriv.value;
 
     // An antiderivative carrying `f64`-derived constants (`…/2⁵²` rationals,
@@ -3267,8 +3836,21 @@ fn definite_via_ftc(
         // inside the interval, and then `F(b) - F(a)` is not the integral. The
         // Weierstrass substitution manufactures exactly that: every
         // `∫ dx/(a + b·cos x)` picks up a `tan(x/2)`, which jumps at `x = π`.
+        let mut branch_correction: Option<ExprId> = None;
         if let Some(reason) = antiderivative_jump(f, expr, var, lower, upper, pool) {
-            return Err(IntegrationError::NotImplemented(reason));
+            // Jeffrey's repair: every jump of an `atan` term is a branch
+            // crossing of exactly `±π` times its coefficient, so the integral
+            // is `F(b) − F(a)` minus the crossings — exact, whatever the
+            // crossing points are.
+            let (Some(a), Some(b)) = numeric_bounds else {
+                return Err(IntegrationError::NotImplemented(reason));
+            };
+            let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+            match super::continuity::definite_jump_correction(f, expr, var, lo, hi, pool) {
+                Some(c) if a <= b => branch_correction = Some(c),
+                Some(c) => branch_correction = Some(pool.mul(vec![pool.integer(-1_i32), c])),
+                None => return Err(IntegrationError::NotImplemented(reason)),
+            }
         }
         // `antiderivative_jump` samples `F` where it is real. Where the integrand is
         // *not* real on part of the interval (`cot(x)^{3/2}` past `π/2`) a
@@ -3294,7 +3876,38 @@ fn definite_via_ftc(
         let f_upper = eval_bound(f, var, upper, upper_side, pool)?;
         let f_lower = eval_bound(f, var, lower, lower_side, pool)?;
         let neg_lower = pool.mul(vec![pool.integer(-1_i32), f_lower]);
-        pool.add(vec![f_upper, neg_lower])
+        match branch_correction {
+            None => pool.add(vec![f_upper, neg_lower]),
+            Some(c) => {
+                let value = simplify(
+                    pool.add(vec![
+                        f_upper,
+                        neg_lower,
+                        pool.mul(vec![pool.integer(-1_i32), c]),
+                    ]),
+                    pool,
+                )
+                .value;
+                let (Some(a), Some(b)) = numeric_bounds else {
+                    unreachable!("a correction is only computed for numeric bounds")
+                };
+                let (lo, hi, oriented) = if a <= b {
+                    (a, b, value)
+                } else {
+                    (b, a, pool.mul(vec![pool.integer(-1_i32), value]))
+                };
+                if !super::continuity::quadrature_agrees(expr, var, lo, hi, oriented, pool) {
+                    return Err(IntegrationError::NotImplemented(format!(
+                        "the antiderivative {} jumps inside [{lo}, {hi}], and the value \
+                         corrected for its branch crossings, {}, does not agree with \
+                         quadrature of the integrand; declining",
+                        pool.display(f),
+                        pool.display(value),
+                    )));
+                }
+                value
+            }
+        }
     } else {
         let (Some(a), Some(b)) = numeric_bounds else {
             unreachable!("splits are only computed for numeric bounds")
@@ -3314,17 +3927,40 @@ fn definite_via_ftc(
             // poles of `F`'s substitution, so keep the scans a hair inside them.
             let nudge = (q - p) * 1e-9;
             let (sp, sq) = (p + nudge, q - nudge);
+            let mut piece_correction = None;
             if let Some(reason) = antiderivative_jump_on(f, expr, var, sp, sq, pool) {
-                return Err(IntegrationError::NotImplemented(reason));
+                match super::continuity::definite_jump_correction(f, expr, var, sp, sq, pool) {
+                    Some(c) => piece_correction = Some(c),
+                    None => return Err(IntegrationError::NotImplemented(reason)),
+                }
             }
             if let Some(reason) =
                 super::branch_check::complex_antiderivative_jump(f, expr, var, sp, sq, pool)
             {
                 return Err(IntegrationError::NotImplemented(reason));
             }
-            terms.push(eval_bound(f, var, q_e, Some(Side::Below), pool)?);
+            let at_q = eval_bound(f, var, q_e, Some(Side::Below), pool)?;
             let at_p = eval_bound(f, var, p_e, Some(Side::Above), pool)?;
-            terms.push(pool.mul(vec![pool.integer(-1_i32), at_p]));
+            let neg_p = pool.mul(vec![pool.integer(-1_i32), at_p]);
+            if let Some(c) = piece_correction {
+                let value = simplify(
+                    pool.add(vec![at_q, neg_p, pool.mul(vec![pool.integer(-1_i32), c])]),
+                    pool,
+                )
+                .value;
+                if !super::continuity::quadrature_agrees(expr, var, p, q, value, pool) {
+                    return Err(IntegrationError::NotImplemented(format!(
+                        "the antiderivative {} jumps inside [{p}, {q}], and the value \
+                         corrected for its branch crossings does not agree with quadrature \
+                         of the integrand; declining",
+                        pool.display(f),
+                    )));
+                }
+                terms.push(value);
+            } else {
+                terms.push(at_q);
+                terms.push(neg_p);
+            }
         }
         let total = pool.add(terms);
         if a < b {
@@ -3605,6 +4241,12 @@ fn free_parameters(expr: ExprId, var: ExprId, pool: &ExprPool) -> Vec<ExprId> {
             return;
         }
         match pool.get(e) {
+            // `π`, `EulerGamma`, … are constants every evaluator resolves
+            // without a binding, not parameters. Counting them made every scan
+            // keyed off this function stand down whenever an antiderivative
+            // mentioned `π` — `x/2 + atan2(…)` corrections included.
+            ExprData::Symbol { name, .. }
+                if crate::eval::symbols::constant_value_f64(&name).is_some() => {}
             ExprData::Symbol { .. } if !out.contains(&e) => {
                 out.push(e);
             }
@@ -3836,22 +4478,50 @@ fn antiderivative_jump_on(
     let no_params = HashMap::new();
     let f_sampler = crate::jit::Sampler::new(f, var, &no_params, pool);
     let integrand_sampler = crate::jit::Sampler::new(integrand, var, &no_params, pool);
-    let at = |e: ExprId, t: f64| -> Option<f64> {
-        let v = if e == f {
-            f_sampler.eval(t)
-        } else {
-            debug_assert_eq!(e, integrand);
-            integrand_sampler.eval(t)
-        };
-        v.filter(|v| v.is_finite())
-    };
+    let at_f = |t: f64| f_sampler.eval(t).filter(|v| v.is_finite());
+    let at_g = |t: f64| integrand_sampler.eval(t).filter(|v| v.is_finite());
+    let (at, best) = jump_scan(&at_f, &at_g, lo, hi)?;
+    Some(format!(
+        "improper application of the fundamental theorem: the antiderivative {} is \
+         discontinuous at {} ≈ {}, strictly inside [{}, {}] (its increment there exceeds \
+         the integrand's own bound by a factor of {:.3e}, and grows as the bracket \
+         shrinks). F(b) - F(a) therefore skips the jump and is not the value of this \
+         integral",
+        pool.display(f),
+        pool.display(var),
+        at,
+        lo,
+        hi,
+        best,
+    ))
+}
+
+/// The jump scan of [`antiderivative_jump_on`] over sampled functions: `big_f`
+/// is the antiderivative and `small_f` the integrand, each `None` where it
+/// does not evaluate to a finite real.
+///
+/// Returns the location of a confirmed jump and the ratio that confirmed it,
+/// or `None` when no jump is established. Closure-based so a *corrected*
+/// antiderivative (see [`super::continuity`]) can be scanned without building
+/// an expression for its step terms.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+pub(super) fn jump_scan(
+    big_f: &dyn Fn(f64) -> Option<f64>,
+    small_f: &dyn Fn(f64) -> Option<f64>,
+    lo: f64,
+    hi: f64,
+) -> Option<(f64, f64)> {
+    let width = hi - lo;
+    if !(width > 0.0) || !width.is_finite() {
+        return None;
+    }
     // `sup |integrand|` over `[c0, c1]`, sampled. `None` when nothing on the
     // cell evaluates, which makes the cell undecidable rather than suspicious.
     let sup_f = |c0: f64, c1: f64| -> Option<f64> {
         let mut m: Option<f64> = None;
         for j in 0..JUMP_SCAN_SUBSAMPLES {
             let t = c0 + (c1 - c0) * (j as f64) / ((JUMP_SCAN_SUBSAMPLES - 1) as f64);
-            if let Some(v) = at(integrand, t) {
+            if let Some(v) = small_f(t) {
                 m = Some(m.map_or(v.abs(), |cur: f64| cur.max(v.abs())));
             }
         }
@@ -3859,7 +4529,7 @@ fn antiderivative_jump_on(
     };
     // `|ΔF| / (h · sup|f|)` on `[c0, c1]`, together with `|ΔF|`.
     let ratio = |c0: f64, c1: f64| -> Option<(f64, f64)> {
-        let (f0, f1) = (at(f, c0)?, at(f, c1)?);
+        let (f0, f1) = (big_f(c0)?, big_f(c1)?);
         let jump = (f1 - f0).abs();
         let bound = (c1 - c0).abs() * sup_f(c0, c1)?;
         if !(bound > 0.0) || !bound.is_finite() || !jump.is_finite() {
@@ -3909,21 +4579,7 @@ fn antiderivative_jump_on(
         best = best.max(r);
     }
 
-    (best > JUMP_CONFIRM_RATIO).then(|| {
-        format!(
-            "improper application of the fundamental theorem: the antiderivative {} is \
-             discontinuous at {} ≈ {}, strictly inside [{}, {}] (its increment there exceeds \
-             the integrand's own bound by a factor of {:.3e}, and grows as the bracket \
-             shrinks). F(b) - F(a) therefore skips the jump and is not the value of this \
-             integral",
-            pool.display(f),
-            pool.display(var),
-            0.5 * (c0 + c1),
-            lo,
-            hi,
-            best,
-        )
-    })
+    (best > JUMP_CONFIRM_RATIO).then_some((0.5 * (c0 + c1), best))
 }
 
 /// Consecutive hole samples needed before a hole is declared.
