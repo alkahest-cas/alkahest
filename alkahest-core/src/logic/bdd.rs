@@ -676,7 +676,7 @@ impl BddManager {
         roots: &[BddRef],
         opts: &ReorderOptions,
     ) -> Result<ReorderStats, BooleanError> {
-        if !(opts.max_growth >= 1.0) {
+        if opts.max_growth.is_nan() || opts.max_growth < 1.0 {
             return Err(BooleanError::InvalidArgument(format!(
                 "max_growth must be at least 1.0, not {}",
                 opts.max_growth
@@ -757,6 +757,7 @@ struct Sifter<'a> {
 }
 
 impl<'a> Sifter<'a> {
+    #[allow(clippy::needless_range_loop)]
     fn new(m: &'a mut BddManager, roots: &[BddRef]) -> Self {
         // Mark.
         let mut reach = vec![false; m.nodes.len()];
