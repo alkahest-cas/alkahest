@@ -13,7 +13,7 @@
 //! |---|---|---|
 //! | any | `Xᵏ`, `k ∈ ℕ` | the raw-moment table |
 //! | `Normal(μ, σ)` | `Xᵏ e^{aX}` | `e^{aμ + a²σ²/2} · E[Yᵏ]`, `Y ~ Normal(μ + aσ², σ)` (tilting) |
-//! | `Normal(μ, σ)` | `e^{aX} cos(ωX + φ)`, `sin` | `e^{aμ + (a² - ω²)σ²/2} cos(ω(μ + aσ²) + φ)` |
+//! | `Normal(μ, σ)` | `Xᵏ e^{aX} cos(ωX + φ)`, `sin`, `k ≤ 12` | `e^{aμ + (a² - ω²)σ²/2} (A cos θ - B sin θ)` (`sin`: `A sin θ + B cos θ`), `θ = ω(μ + aσ²) + φ`, `A + iB = E[Yᵏ]` at the complex mean `μ + (a + iω)σ²` (Hermite expansion); `k = 0`: `e^{…} cos θ` |
 //! | `Gamma(k, θ)`, `Exponential` | `X^s e^{aX} (log X)^{0,1}` | `θ^s Γ(k+s)/Γ(k) (1-aθ)^{-(k+s)}`, times `ψ(k+s) + log θ - log(1-aθ)` for the log |
 //! | `Beta(α, β)` | `X^s (log X)^{0,1}` | `Γ(α+s)Γ(α+β)/(Γ(α)Γ(α+β+s))`, times `ψ(α+s) - ψ(α+β+s)` |
 //! | `LogNormal(μ, σ)` | `X^s (log X)^{0,1}` | `e^{sμ + s²σ²/2}`, times `μ + sσ²` |
@@ -220,6 +220,53 @@ fn require(
     }
 }
 
+/// `(Re, Im)` of `E[Y^k]` for `Y ~ Normal(m_r + i m_i, σ)`, i.e. of the
+/// polynomial `Σ_j C(k,2j)(2j-1)!! σ^{2j} (m_r + i m_i)^{k-2j}`, as two real
+/// polynomials in `m_r`, `m_i`, `σ`.
+fn complex_gaussian_moment(
+    k: u32,
+    m_r: ExprId,
+    m_i: ExprId,
+    sigma: ExprId,
+    pool: &ExprPool,
+) -> (ExprId, ExprId) {
+    let mut re: Vec<ExprId> = Vec::new();
+    let mut im: Vec<ExprId> = Vec::new();
+    for j in 0..=(k / 2) {
+        let n = k - 2 * j;
+        // C(k, 2j) (2j-1)!!
+        let mut coeff = rug::Integer::from(k).binomial(2 * j);
+        for odd in (1..2 * j).step_by(2) {
+            coeff *= odd;
+        }
+        let sig = pool.pow(sigma, pool.integer(2 * j));
+        for l in 0..=n {
+            // (m_r + i m_i)^n = Σ_l C(n,l) m_r^{n-l} (i m_i)^l
+            let c = rug::Integer::from(n).binomial(l) * coeff.clone();
+            let sign = if matches!(l % 4, 2 | 3) { -1 } else { 1 };
+            let term = pool.mul(vec![
+                pool.integer(c * sign),
+                sig,
+                pool.pow(m_r, pool.integer(n - l)),
+                pool.pow(m_i, pool.integer(l)),
+            ]);
+            if l % 2 == 0 {
+                re.push(term);
+            } else {
+                im.push(term);
+            }
+        }
+    }
+    let collect = |terms: Vec<ExprId>| {
+        if terms.is_empty() {
+            pool.integer(0)
+        } else {
+            pool.add(terms)
+        }
+    };
+    (collect(re), collect(im))
+}
+
 /// `E[X^s e^{aX}(log X)^logs·trig]` for one recognised term, or `None` when
 /// the term is outside the table for this law.
 fn term_value(
@@ -269,10 +316,18 @@ fn term_value(
                     )
                 }
                 Some((kind, w, phi)) => {
-                    if k != 0 {
-                        return None;
-                    }
-                    // E[e^{(a+iω)X}] = e^{aμ + (a²-ω²)σ²/2} e^{i(ω(μ + aσ²))}.
+                    // E[X^k e^{(a+iω)X}] = M(a+iω) · P_k(μ + (a+iω)σ²), where
+                    // M(c) = e^{cμ + c²σ²/2} and P_k(m) = E[Y^k] for Y ~
+                    // Normal(m, σ) -- the raw-moment polynomial
+                    // Σ_j C(k,2j)(2j-1)!! σ^{2j} m^{k-2j}, which is the
+                    // (probabilists') Hermite expansion He_k and is an
+                    // identity of entire functions, so it holds at the
+                    // complex mean m = m_r + i m_i with m_r = μ + aσ²,
+                    // m_i = ωσ². Splitting P_k(m) = A + iB into real
+                    // polynomials, with θ = ω m_r + φ and |M| = e^{aμ +
+                    // (a²-ω²)σ²/2}:
+                    //   E[X^k e^{aX} cos(ωX+φ)] = |M| (A cos θ - B sin θ)
+                    //   E[X^k e^{aX} sin(ωX+φ)] = |M| (A sin θ + B cos θ)
                     let modulus = exp(
                         pool.add(vec![
                             pool.mul(vec![t.a, mu]),
@@ -284,12 +339,22 @@ fn term_value(
                         ]),
                         pool,
                     );
-                    let phase = pool.add(vec![pool.mul(vec![w, shifted]), phi]);
-                    let f = match kind {
-                        Trig::Cos => "cos",
-                        Trig::Sin => "sin",
+                    let theta = pool.add(vec![pool.mul(vec![w, shifted]), phi]);
+                    let m_i = pool.mul(vec![w, s2]);
+                    let (a_poly, b_poly) =
+                        complex_gaussian_moment(k as u32, shifted, m_i, sigma, pool);
+                    let (c, s) = (pool.func("cos", vec![theta]), pool.func("sin", vec![theta]));
+                    let neg = pool.integer(-1);
+                    let body = match kind {
+                        Trig::Cos => pool.add(vec![
+                            pool.mul(vec![a_poly, c]),
+                            pool.mul(vec![neg, b_poly, s]),
+                        ]),
+                        Trig::Sin => {
+                            pool.add(vec![pool.mul(vec![a_poly, s]), pool.mul(vec![b_poly, c])])
+                        }
                     };
-                    Some(Ok(pool.mul(vec![modulus, pool.func(f, vec![phase])])))
+                    Some(Ok(pool.mul(vec![modulus, body])))
                 }
             }
         }

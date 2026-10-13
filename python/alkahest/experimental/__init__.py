@@ -107,8 +107,14 @@ Probability and statistics:
   :func:`joint_expectation` / :func:`covariance` / :func:`joint_variance` over
   mutually independent blocks ``(var, Distribution)`` or
   ``([vars], MultivariateNormal)``. :func:`sum_independent` gives closed-family
-  convolutions; :func:`order_statistic` the min/max of ``n`` iid variates for a
-  symbolic ``n``. :func:`Binomial` accepts a symbolic ``n``;
+  convolutions; :func:`order_statistic` the min/max (or, with ``k=``, the
+  ``k``-th smallest) of ``n`` iid variates. :meth:`~MultivariateNormal.entropy`,
+  :meth:`~MultivariateNormal.kl_divergence` and
+  :meth:`~MultivariateNormal.mutual_information` give the information measures
+  of a multivariate normal (bivariate: ``-log(1 - rho**2)/2``), and
+  :func:`entropy_asymptotic` the labelled large-parameter entropy of the
+  ``Binomial`` / ``NegativeBinomial`` / ``Poisson`` laws that
+  :meth:`Distribution.entropy` refuses. :func:`Binomial` accepts a symbolic ``n``;
   :func:`NegativeBinomial` is the tenth law
 
 Information theory over those same laws:
@@ -613,6 +619,7 @@ from alkahest.alkahest import (
     dsolve,
     dsolve_system,
     eisenstein_series,
+    entropy_asymptotic,
     euler_maclaurin,
     euler_number,
     expectation,
@@ -991,6 +998,7 @@ __all__ = [
     "dsolve",
     "dsolve_system",
     "eisenstein_series",
+    "entropy_asymptotic",
     "euler_maclaurin",
     "euler_number",
     "evaluate",

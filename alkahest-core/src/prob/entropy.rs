@@ -55,14 +55,20 @@
 //!
 //! # What is not here
 //!
-//! **Mutual information of a dependent pair.** `I(X;Y) = -½log(1-ρ²)` for a
-//! bivariate normal is a one-line formula with nowhere to live: this module has
-//! no joint distribution type (see [`super`]'s note on why), and inventing one
-//! whose only inhabitant is the bivariate normal would be a formula in search
-//! of a representation. [`mutual_information_independent`] covers the case the
-//! marginals *do* determine — independence, where `I = 0` — and says in its
+//! **Mutual information of a dependent pair** of *univariate* laws: the
+//! marginals do not determine it. [`mutual_information_independent`] covers the
+//! case they *do* determine — independence, where `I = 0` — and says in its
 //! name that the assumption is the caller's, exactly as
-//! [`super::variance_affine_independent`] does.
+//! [`super::variance_affine_independent`] does. A dependent pair is declared
+//! as a joint law instead: [`super::MultivariateNormal::mutual_information`]
+//! gives `-½log det(I - Σ_AA⁻¹Σ_AB Σ_BB⁻¹Σ_BA)` (`-½log(1-ρ²)` for a
+//! bivariate normal), with `entropy` and `kl_divergence` beside it.
+//!
+//! **Exact entropy of a symbolic-`n` `Binomial`, a `NegativeBinomial`, a
+//! `Poisson`.** None has a closed form; [`entropy`] refuses, and
+//! [`entropy_asymptotic`] is the separately-named, labelled large-parameter
+//! expansion (`½log(2πeσ²) - γ₁²/12`), so an approximation is never returned
+//! where an exact value was asked for.
 
 use crate::deriv::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
 use crate::kernel::{Domain, ExprId, ExprPool};
@@ -120,7 +126,7 @@ fn digamma(arg: ExprId, pool: &ExprPool) -> ExprId {
 /// any other parameter: a numeric one is decided (`base ≤ 0` or `base = 1` is
 /// [`ProbError::InvalidParameter`] — `log 1 = 0` and the conversion is a
 /// division by zero), a symbolic one is carried.
-fn base_factor(
+pub(super) fn base_factor(
     base: Option<ExprId>,
     pool: &ExprPool,
 ) -> Result<(Option<ExprId>, Vec<SideCondition>), ProbError> {
@@ -155,7 +161,7 @@ fn base_factor(
 /// `x` in the requested unit. Applied to the claim **and** to the integrand the
 /// claim is checked against, so the gate compares what is actually returned
 /// rather than its natural-log ancestor.
-fn rescale(x: ExprId, factor: Option<ExprId>, pool: &ExprPool) -> ExprId {
+pub(super) fn rescale(x: ExprId, factor: Option<ExprId>, pool: &ExprPool) -> ExprId {
     match factor {
         Some(f) => pool.mul(vec![f, x]),
         None => x,
@@ -257,7 +263,7 @@ fn entropy_claim(dist: &Distribution, pool: &ExprPool) -> Result<ExprId, ProbErr
                 return Err(ProbError::NoClosedForm {
                     quantity: "the Binomial entropy with a symbolic number of trials",
                     missing: "a closed form for E[log C(n, K)], K ~ Binomial(n, p) — a sum of \
-                              n - 1 terms with no closed form in n",
+                              n - 1 terms with no closed form in n; `entropy_asymptotic` gives the labelled large-n expansion",
                 });
             };
             if n > MAX_BINOMIAL_ENTROPY_N {
@@ -287,7 +293,7 @@ fn entropy_claim(dist: &Distribution, pool: &ExprPool) -> Result<ExprId, ProbErr
             return Err(ProbError::NoClosedForm {
                 quantity: "the NegativeBinomial entropy",
                 missing: "a closed form for E[log Γ(K + r)/(Γ(r) K!)] — an infinite sum with \
-                          no elementary or standard special-function value",
+                          no elementary or standard special-function value; `entropy_asymptotic` gives the labelled large-r expansion",
             })
         }
         DistKind::Poisson => {
@@ -295,7 +301,7 @@ fn entropy_claim(dist: &Distribution, pool: &ExprPool) -> Result<ExprId, ProbErr
                 quantity: "the Poisson entropy",
                 missing: "a closed form for e^{-λ} Σ_k λ^k log(k!)/k! — the residual sum \
                           after λ(1 - log λ) is not an elementary or standard special \
-                          function, and only has asymptotic expansions",
+                          function, and only has asymptotic expansions (`entropy_asymptotic` gives the labelled Edgeworth one)",
             })
         }
     })
@@ -968,4 +974,110 @@ pub fn mutual_information_independent(
     ));
     super::stash_prob_side_conditions(super::conditions_of(&log_));
     Ok(DerivedExpr::with_log(zero, log_))
+}
+
+// ---------------------------------------------------------------------------
+// Asymptotic entropy of the lattice laws with no closed form
+// ---------------------------------------------------------------------------
+
+/// The **large-parameter asymptotic** Shannon entropy of a `Binomial`,
+/// `NegativeBinomial` or `Poisson`: the laws whose exact entropy has no
+/// closed form ([`entropy`] refuses a symbolic-`n` `Binomial`, a
+/// `NegativeBinomial` and a `Poisson`).
+///
+/// ```text
+/// H ≈ ½ log(2πe σ²) − γ₁²/12      (error O(σ⁻⁴))
+/// ```
+///
+/// with `σ²` the variance and `γ₁` the skewness: `σ² = np(1-p)`,
+/// `γ₁² = (1-2p)²/(np(1-p))` for `Binomial(n, p)`; `σ² = r(1-p)/p²`,
+/// `γ₁² = (2-p)²/(r(1-p))` for `NegativeBinomial(r, p)`; `σ² = λ`, `γ₁² = 1/λ`
+/// for `Poisson(λ)`. It is the Gaussian entropy with the first Edgeworth
+/// correction. At `Binomial(200, 1/3)` it is within `2·10⁻⁴` of the exact
+/// value, and the error shrinks like `σ⁻⁴`.
+///
+/// **This is not the entropy.** It is returned by a separate function, under
+/// the derivation rule `prob_entropy_asymptotic_edgeworth`, so that
+/// [`entropy`] never hands back an approximation as if it were exact. Use it
+/// only where the parameters (`np(1-p)`, `r(1-p)/p²`, `λ`) are large; for small
+/// parameters bind them to numbers, where [`entropy`] sums exactly (a literal
+/// `Binomial` `n`), or evaluate the defining sum numerically.
+///
+/// # Errors
+///
+/// [`ProbError::Unsupported`] for any other law (those have exact closed
+/// forms in [`entropy`], or none and no known expansion);
+/// [`ProbError::InvalidParameter`] for a numeric `base` that is `≤ 0` or `1`.
+pub fn entropy_asymptotic(
+    dist: &Distribution,
+    base: Option<ExprId>,
+    pool: &ExprPool,
+) -> Result<DerivedExpr<ExprId>, ProbError> {
+    super::stash_prob_side_conditions(Vec::new());
+    let p = dist.params();
+    let one = pool.integer(1);
+    let two = pool.integer(2);
+    let (variance, skew_sq) = match dist.kind() {
+        DistKind::Binomial => {
+            let q = sub(one, p[1], pool);
+            let var = pool.mul(vec![p[0], p[1], q]);
+            let g = div(
+                pool.pow(sub(one, pool.mul(vec![two, p[1]]), pool), two),
+                var,
+                pool,
+            );
+            (var, g)
+        }
+        DistKind::NegativeBinomial => {
+            let q = sub(one, p[1], pool);
+            let var = div(pool.mul(vec![p[0], q]), pool.pow(p[1], two), pool);
+            let g = div(
+                pool.pow(sub(two, p[1], pool), two),
+                pool.mul(vec![p[0], q]),
+                pool,
+            );
+            (var, g)
+        }
+        DistKind::Poisson => (p[0], pool.pow(p[0], pool.integer(-1))),
+        other => {
+            return Err(ProbError::Unsupported(format!(
+                "entropy_asymptotic: the Edgeworth expansion is offered for Binomial, \
+                 NegativeBinomial and Poisson; {} has an exact entropy (or none) in `entropy`",
+                other.name()
+            )))
+        }
+    };
+    let (factor, base_conds) = base_factor(base, pool)?;
+    let half = pool.rational(1, 2);
+    let raw = pool.add(vec![
+        half,
+        pool.mul(vec![
+            half,
+            log(pool.mul(vec![two, super::pi(pool), variance]), pool),
+        ]),
+        pool.mul(vec![pool.rational(-1, 12), skew_sq]),
+    ]);
+    let value = simplify(rescale(raw, factor, pool), pool).value;
+    let mut conds = base_conds;
+    for c in dist.constraints(pool) {
+        if let Some(side) = verify::undischarged(c, pool) {
+            if !conds.contains(&side) {
+                conds.push(side);
+            }
+        }
+    }
+    // The logarithm needs the variance positive.
+    let var_c = simplify(variance, pool).value;
+    if matches!(dists::sign_of(var_c, pool), Sign::Unknown) {
+        conds.push(SideCondition::Positive(var_c));
+    }
+    let mut log_ = DerivationLog::new();
+    log_.push(RewriteStep::with_conditions(
+        "prob_entropy_asymptotic_edgeworth",
+        raw,
+        value,
+        conds,
+    ));
+    super::stash_prob_side_conditions(super::conditions_of(&log_));
+    Ok(DerivedExpr::with_log(value, log_))
 }
