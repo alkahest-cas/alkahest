@@ -51,8 +51,10 @@ Pass `numeric=True` to return numbers directly: `solve(eqs, vars, numeric=True)`
 The domain is ℂ, so a real root is a `float` and a non-real one a Python `complex`
 (`solve([s**2 + 1], [s], numeric=True)` gives `±1j`; `domain="real"` drops them). Where
 the symbolic path refuses with `E-SOLVE-002` (see below), the numeric path falls back to
-complex homotopy continuation and returns every finite root or raises `E-HOMOTOPY-004`. A solution that depends on a free parameter has no numeric value
-and raises `E-SOLVE-006`.
+complex homotopy continuation and returns every finite root or raises `E-HOMOTOPY-004`. A solution that depends on a free parameter has no numeric value,
+so it is returned as its exact `Expr` (`solve([x - y], [x], numeric=True)` → `[{x: y}]`)
+and `solve_side_conditions()` says so; where there is no symbolic solution to fall back
+to (the homotopy path) it raises `E-SOLVE-006`.
 
 ### Degree three and above: factor, then `RootOf`
 
@@ -223,10 +225,19 @@ solve_side_conditions()
 Declaring `ka` and `ke` positive (`pool.symbol("ka", "positive")`) discharges the
 sign hypothesis.
 
-Lambert W is available on its principal branch only. Where the real solution set also
-has a root on `W₋₁` — `x·eˣ = c` for `−1/e < c < 0`, `x**x = c` for `e^{−1/e} < c < 1`,
-`A'/B < 0` in the log shape — the call is refused rather than answered with half the
-roots; for a symbolic `c` the condition that makes `W₀` complete (`c > 0`) is recorded.
+Lambert W has both real branches: `lambert_w` (`W₀`, values `≥ −1`) and `lambert_wm1`
+(`W₋₁`, real on `[−1/e, 0)`, values `≤ −1`; also `lambert_w(x, k=-1)`). Where the real
+solution set has a root on each — `x·eˣ = c` for `−1/e < c < 0`, `x**x = c` for
+`e^{−1/e} < c < 1`, `A'/B < 0` in the log shape — both are returned:
+
+```python
+solve([x*exp(x) + rational(1, 4)], [x])
+# → [{x: lambert_w(-1/4)}, {x: lambert_wm1(-1/4)}]      (−0.3574…, −2.1533…)
+```
+
+Below `−1/e` there is no real root (`[]`). A symbolic argument known to be negative
+returns both branches and records `c + exp(-1) > 0`; one of unknown sign records `c > 0`
+and returns the principal root.
 
 **Periodic families.** A trigonometric equation has infinitely many roots; they are
 returned as families in an integer symbol (named `k`, or `n`, `m`, `j`, `k_1`, … when
@@ -246,7 +257,36 @@ solution set.
 
 Anything else — two kernels that do not reduce (`sin(x) + exp(x)`), a kernel with a
 non-affine argument, a system with an unknown inside a function — keeps the coded
-refusal `E-SOLVE-001`. There is no numeric root-finder behind `numeric=True` for those.
+refusal `E-SOLVE-001`; with `numeric=True` the message points at the numeric route below.
+
+### Numeric roots with no closed form: `nsolve` and `interval=`
+
+For a single equation with no closed form — an implied volatility `BS(σ) = price`,
+`cos x = x`, `sin x = x/10` — `nsolve` finds real roots numerically and *proves* what it
+can about them:
+
+```python
+r = nsolve(cos(x) - x, x, bracket=(0, 1))     # Brent on a sign change
+# → NumericRoot(0.7390851332151607, enclosure=[0.7390851332151603, 0.739085133215161],
+#               status='verified')
+nsolve(cos(x) - x, x, x0=1.0)                 # damped Newton from a guess
+iso = nsolve(sin(x) - x/10, x, all_in=(-12, 12))
+# → RootIsolation(roots=[-8.4232…, …, 0.0, …, 8.4232…], unresolved=[], complete=True)
+
+solve([sin(x) - x/10], [x], numeric=True, interval=(-12, 12))   # the same 7 roots
+```
+
+The search runs in `f64`; each enclosure is then checked in 128-bit outward-rounded
+ball arithmetic. `"verified"` means `f` changes sign across `[lo, hi]` and an enclosure
+of `f′` there excludes zero, so exactly one root lies inside; `"exists"` drops the
+uniqueness half; `"heuristic"` is the bare iterate (a double root, a non-smooth
+equation). `all_in` subdivides the interval, discarding a piece only when an enclosure
+of `f` excludes zero and accepting one only by the monotonicity test, so its root list is
+complete exactly when `unresolved` is empty; a double root such as `(x − 1)²` is listed
+there instead of being guessed at. `solve(..., numeric=True, interval=(a, b))` uses the
+same isolation, lists each enclosure in `solve_side_conditions()`, and refuses with
+`E-SOLVE-012` when the list cannot be proved complete. Every symbol but the unknown must
+have a value (`E-SOLVE-009` otherwise), and the loops honour an active `Budget`.
 
 ## GroebnerBasis
 

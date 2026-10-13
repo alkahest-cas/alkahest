@@ -117,7 +117,7 @@ impl AlkahestError for ParseError {
             1 => Some("only ASCII arithmetic expressions are supported"),
             2 => Some("check parentheses and operator placement"),
             4 => Some("flatten the expression — deeply nested parentheses, prefix signs or function calls exceed the parser's recursion budget"),
-            _ => Some("use a known function: sin, cos, tan, sec, csc, cot, sinh, cosh, tanh, sech, csch, coth, asin, acos, atan, asinh, acosh, atanh, atan2, exp, log, sqrt, cbrt, abs, sign, floor, ceil, round, erf, erfc, gamma, lambert_w, digamma, trigamma, Ei, li, Si, Ci, Shi, Chi, fresnels, fresnelc, dilog, legendre_p, assoc_legendre_p, hermite_h, hermite_he, laguerre_l, assoc_laguerre_l, chebyshev_t, chebyshev_u, gegenbauer_c, jacobi_p, bessel_j, bessel_y, bessel_i, bessel_k, spherical_jn, spherical_yn, airy_ai, airy_bi, airy_ai_prime, airy_bi_prime, zeta, hurwitz_zeta, polylog"),
+            _ => Some("use a known function: sin, cos, tan, sec, csc, cot, sinh, cosh, tanh, sech, csch, coth, asin, acos, atan, asinh, acosh, atanh, atan2, exp, log, sqrt, cbrt, abs, sign, floor, ceil, round, erf, erfc, gamma, lambert_w, lambert_wm1, digamma, trigamma, Ei, li, Si, Ci, Shi, Chi, fresnels, fresnelc, dilog, legendre_p, assoc_legendre_p, hermite_h, hermite_he, laguerre_l, assoc_laguerre_l, chebyshev_t, chebyshev_u, gegenbauer_c, jacobi_p, bessel_j, bessel_y, bessel_i, bessel_k, spherical_jn, spherical_yn, airy_ai, airy_bi, airy_ai_prime, airy_bi_prime, zeta, hurwitz_zeta, polylog"),
         }
     }
 
@@ -363,6 +363,7 @@ const KNOWN_FUNCS: &[&str] = &[
     "erfc",
     "gamma",
     "lambert_w",
+    "lambert_wm1",
     "digamma",
     "bessel_j0",
     "bessel_j1",

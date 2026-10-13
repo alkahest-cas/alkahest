@@ -58,6 +58,67 @@ pub fn lambert_w0(x: f64) -> Option<f64> {
     Some(w)
 }
 
+/// Lambert W on the lower real branch, `W₋₁(x)`, defined for `−1/e ≤ x < 0`.
+///
+/// `W₋₁` is the inverse of `w ↦ w·eʷ` on `w ≤ −1`: it decreases from
+/// `W₋₁(−1/e) = −1` to `−∞` as `x → 0⁻`.  `None` outside that domain.
+///
+/// The starting point is the branch-point series
+/// `−1 + p − p²/3 + 11p³/72` in `p = −√(2(1 + e·x))` near `−1/e` and the
+/// asymptote `L₁ − L₂ + L₂/L₁` (`L₁ = ln(−x)`, `L₂ = ln(−L₁)`) towards `0⁻`;
+/// Halley's iteration then converges in a handful of steps.  The iterate is
+/// kept on `w ≤ −1`, so it can never wander onto the principal branch.
+pub fn lambert_wm1(x: f64) -> Option<f64> {
+    if !x.is_finite() || x >= 0.0 {
+        return None;
+    }
+    let em = lambert_w0_domain_min();
+    if x < em - 1e-15 {
+        return None;
+    }
+    if (x - em).abs() < 1e-15 {
+        return Some(-1.0);
+    }
+    let mut w = if x < -0.25 {
+        let p = -(2.0 * (std::f64::consts::E * x + 1.0)).max(0.0).sqrt();
+        -1.0 + p - p * p / 3.0 + 11.0 / 72.0 * p * p * p
+    } else {
+        let l1 = (-x).ln();
+        let l2 = (-l1).ln();
+        l1 - l2 + l2 / l1
+    };
+    if w > -1.0 {
+        w = -1.0 - 1e-8;
+    }
+    for _ in 0..64 {
+        let ew = w.exp();
+        let f = w * ew - x;
+        if f.abs() <= 4.0 * f64::EPSILON * x.abs() {
+            return Some(w);
+        }
+        let fp = ew * (w + 1.0);
+        let fpp = ew * (2.0 + w);
+        let denom = 2.0 * fp * fp - f * fpp;
+        let next = if denom.abs() < 1e-300 {
+            if fp == 0.0 {
+                return Some(w);
+            }
+            w - f / fp
+        } else {
+            w - 2.0 * f * fp / denom
+        };
+        if !next.is_finite() {
+            return None;
+        }
+        let next = if next > -1.0 { (w - 1.0) / 2.0 } else { next };
+        if next == w {
+            return Some(w);
+        }
+        w = next;
+    }
+    Some(w)
+}
+
 /// Digamma ψ(x).  Returns `None` at non-positive integer poles.
 pub fn digamma(x: f64) -> Option<f64> {
     if x.is_nan() {
@@ -214,6 +275,29 @@ mod tests {
     fn lambert_w0_special_values() {
         assert_eq!(lambert_w0(0.0), Some(0.0));
         assert!((lambert_w0(lambert_w0_domain_min()).unwrap() + 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn lambert_wm1_inverts_w_exp_w_on_the_lower_branch() {
+        // Reference values from mpmath.lambertw(x, -1).
+        for (x, want) in [
+            (-0.1, -3.577_152_063_957_297),
+            (-0.25, -2.153_292_364_110_35),
+            (-0.3, -1.781_337_023_421_627_7),
+            (-1e-10, -26.295_238_819_246_926),
+        ] {
+            let w = lambert_wm1(x).unwrap();
+            assert!(
+                (w - want).abs() < 1e-13 * want.abs(),
+                "W₋₁({x}) = {w}, want {want}"
+            );
+            assert!(w <= -1.0);
+        }
+        assert_eq!(lambert_wm1(lambert_w0_domain_min()), Some(-1.0));
+        assert!(lambert_wm1(0.0).is_none());
+        assert!(lambert_wm1(0.5).is_none());
+        assert!(lambert_wm1(-0.4).is_none());
+        assert!(lambert_wm1(f64::NAN).is_none());
     }
 
     #[test]

@@ -10,7 +10,8 @@ homotopy solver, so:
 * ``solve([x - y], [x], numeric=True)`` was ``[{x: nan}]``.
 
 Non-real roots now come back as Python ``complex``; a value that depends on a
-free parameter refuses with ``E-SOLVE-006``.
+free parameter comes back as its exact symbolic value (F5), and refuses with
+``E-SOLVE-006`` only where there is no symbolic solution to return.
 """
 
 import cmath
@@ -77,14 +78,14 @@ def test_s_cubed_plus_one_has_three_roots_and_the_real_one_is_float():
     assert reals == [-1.0]
 
 
-def test_free_parameter_is_a_coded_refusal_not_nan():
+def test_free_parameter_falls_back_to_the_symbolic_value_not_nan():
+    # F5: the exact solution is returned (never NaN), and the side conditions
+    # say why it is not a number.
     p = alkahest.ExprPool()
     x, y = p.symbol("x"), p.symbol("y")
-    with pytest.raises(alkahest.SolverError) as ei:
-        alkahest.solve([x - y], [x], numeric=True)
-    assert ei.value.code == "E-SOLVE-006"
-    assert "y" in str(ei.value)
-    # The symbolic answer is still there.
+    (sol,) = alkahest.solve([x - y], [x], numeric=True)
+    assert sol[x] == y
+    assert any("free parameter" in n and "y" in n for n in alkahest.solve_side_conditions())
     (sol,) = alkahest.solve([x - y], [x])
     assert sol[x] == y
 

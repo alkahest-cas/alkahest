@@ -88,7 +88,7 @@ def test_interval_evaluation_covers_every_primitive_that_advertises_numeric_ball
         call = _probe_call(pool, row["name"], x)
         if all(
             evaluate(call, {x: ak.ArbBall(probe, 0.0)}, mode="interval").status != "ok"
-            for probe in (1.5, 0.5)
+            for probe in (1.5, 0.5, -0.2)
         ):
             refused.append(row["name"])
 

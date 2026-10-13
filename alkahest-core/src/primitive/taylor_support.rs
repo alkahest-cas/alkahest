@@ -304,7 +304,7 @@ mod tests {
                 _ => vec![],
             };
             assert!(
-                [1.0_f64, 0.5].into_iter().any(|v| {
+                [1.0_f64, 0.5, -0.2].into_iter().any(|v| {
                     let args: Vec<ArbBall> = lead
                         .iter()
                         .chain([&v])
