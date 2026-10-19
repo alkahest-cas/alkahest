@@ -135,6 +135,16 @@ Polynomial system solving via Gröbner bases. The ``groebner`` Cargo feature is 
    ``roots`` (list of :class:`NumericRoot`), ``unresolved`` (list of
    ``(lo, hi)``), ``complete``; ``len``/indexing/iteration go over ``roots``.
 
+   Equations polynomial in ``sin``/``cos``/``tan`` of integer multiples of one
+   affine angle (``2*sin(x)**2 - 1``, ``sin(x) - cos(x)``,
+   ``sin(2*x) - cos(x)``) are reduced on the circle ``sin² + cos² = 1`` and
+   return merged periodic families (``pi/4 + pi*k``); an identity is refused.
+   In a system, an unknown that occurs only inside one ``exp``/``log``/
+   ``sin``/``cos``/``tan``/``b**(...)`` is solved for through that function
+   (``exp(x) + y - 3, exp(x) - y - 1`` → ``x = log(2), y = 1``).
+   ``domain="complex"`` (or a complex unknown) asks for complex solutions:
+   ``exp(x) - c`` → ``log(c) + 2*pi*I*k``; a Lambert equation is then refused.
+
 .. function:: root_of(poly: Expr, var: Expr, index: int) -> Expr
 
    The ``index``-th distinct root of ``poly`` (a polynomial in ``var`` over

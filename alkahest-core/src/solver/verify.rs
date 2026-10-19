@@ -60,6 +60,16 @@ fn zero_ball() -> ArbBall {
 }
 
 impl CBall {
+    /// The enclosure of the real part.
+    pub(crate) fn re_ball(&self) -> &ArbBall {
+        &self.re
+    }
+
+    /// The enclosure of the imaginary part.
+    pub(crate) fn im_ball(&self) -> &ArbBall {
+        &self.im
+    }
+
     fn real(re: ArbBall) -> Self {
         CBall {
             re,

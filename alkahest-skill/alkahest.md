@@ -785,7 +785,12 @@ in one unknown also solves when it reduces by logs (`ka*exp(-ka*t) - ke*exp(-ke*
 two real roots both come back, `lambert_w(c)` and `lambert_wm1(c)` — `W₋₁`, also
 `lambert_w(x, k=-1)`), and for `sin`/`cos`/`tan` of an affine argument, as the
 whole periodic family in an integer symbol `k` (`asin(c) + 2πk`, `π − asin(c) + 2πk`;
-`numeric=True` gives the `k = 0` members). Solutions are real; read the hypotheses
+`numeric=True` gives the `k = 0` members). Equations *polynomial* in `sin`/`cos`/`tan`
+of multiples of one angle also solve (`2*sin(x)**2 = 1` → `π/4 + πk`, `-π/4 + πk`;
+`sin(x) = cos(x)` → `π/4 + πk`; `sin(2x) = cos(x)`; `sqrt(3)*sin(x) + cos(x) = 1`),
+as do systems where an unknown occurs only inside one `exp`/`log`/`sin`/`cos`/`tan`/`b**(…)`
+(`exp(x) + y = 3, exp(x) - y = 1`). Solutions are real; pass `domain="complex"` (or use
+a complex unknown) for `exp(x) = c` → `log(c) + 2*pi*I*k`. Read the hypotheses
 (`k ∈ Integer`, `c > 0`, `a ≠ 0`, `c + exp(-1) > 0`) from `solve_side_conditions()`.
 
 **No closed form → `nsolve`.** `nsolve(eq, x, bracket=(a, b))` (Brent), `x0=...`

@@ -255,8 +255,41 @@ With `numeric=True` the `k = 0` member of each family is returned, and
 `solve_side_conditions()` says so; it is one representative per family, not the
 solution set.
 
+**Trigonometric polynomials.** An equation polynomial in `sin`, `cos` and `tan` of
+integer multiples of one affine angle `θ` is rewritten in `S = sin θ`, `C = cos θ`
+(multiple angles by de Moivre, `tan = sin/cos` with its denominator cleared), factored
+over ℚ, and each factor is solved on the circle `S² + C² = 1`: through `sin θ = r` or
+`cos θ = r` when it reduces to one of them, through `tan θ = r` when all its terms
+have degrees of one parity (homogenise with `S² + C²`; `θ = π/2` is checked
+separately), and otherwise through `t = tan(θ/2)` — with `θ = π`, the point that
+substitution cannot reach, checked directly. Families are merged (`π/4 + 2πk` and
+`5π/4 + 2πk` become `π/4 + πk`), offsets that are rational multiples of `π` are
+written as such when substitution proves it, a family on which a `tan` of the
+equation is undefined is dropped, and every family is substituted back:
+
+```python
+solve([2*sin(x)**2 - 1], [x])       # → π/4 + πk, -π/4 + πk
+solve([sin(x) - cos(x)], [x])       # → π/4 + πk
+solve([sin(2*x) - cos(x)], [x])     # → ±π/2 + 2πk, π/6 + 2πk, 5π/6 + 2πk
+solve([sin(x)**2 + cos(x)**2 - 1], [x])   # E-SOLVE-001: an identity
+```
+
+**Unknowns inside invertible functions.** In a system, an unknown that occurs only
+inside one `exp`, `log`, `sin`, `cos`, `tan` of an affine argument, or a power
+`b**(a*x + c)` with a constant base (`exp(2x)` and `exp(x)` count as one kernel), is
+replaced by the function value, the polynomial system is solved, and each value is
+inverted: `exp(f) = u` needs `u > 0` over the reals (a value proved otherwise drops the
+tuple, an undecided one is recorded as `u > 0`), the trigonometric ones give periodic
+families. `solve([exp(x) + y - 3, exp(x) - y - 1], [x, y])` → `x = log 2, y = 1`.
+
+**Complex solutions.** Transcendental equations are solved over the reals. With
+`domain="complex"` — or an unknown declared complex — `exp(f) = c` returns the family
+`log(c) + 2πik` for any `c ≠ 0`, `sin(x) = 2` returns its two complex families, and a
+Lambert-W equation is refused (its complex roots lie on infinitely many branches). From
+Rust, wrap the call in `solver::with_complex_domain`.
+
 Anything else — two kernels that do not reduce (`sin(x) + exp(x)`), a kernel with a
-non-affine argument, a system with an unknown inside a function — keeps the coded
+non-affine argument, an unknown both inside and outside a function — keeps the coded
 refusal `E-SOLVE-001`; with `numeric=True` the message points at the numeric route below.
 
 ### Numeric roots with no closed form: `nsolve` and `interval=`

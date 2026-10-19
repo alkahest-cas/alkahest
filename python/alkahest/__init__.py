@@ -2549,7 +2549,12 @@ if "solve" in dir():
             (equivalent to ``domain="complex"``), preserves alkahest's
             existing behavior of returning every root the solver finds,
             including complex ones written via ``sqrt`` of a negative
-            discriminant. ``method="homotopy"`` already reports only real
+            discriminant. Transcendental equations are solved over the reals
+            unless ``domain="complex"`` is passed explicitly (or the unknown is
+            a complex symbol): then ``exp(x) = c`` returns the family
+            ``log(c) + 2*pi*I*k``, ``sin(x) = 2`` its complex families, and a
+            Lambert-W equation is refused (its complex roots lie on infinitely
+            many branches). ``method="homotopy"`` already reports only real
             roots by construction, so ``domain="real"`` is a no-op there;
             it only changes anything for the symbolic Gröbner path.
         assumptions : Assumptions, optional
@@ -2570,6 +2575,11 @@ if "solve" in dir():
             assumptions = active_assumptions()
 
         if interval is not None:
+            if domain == "complex":
+                raise ValueError(
+                    "solve(..., interval=(a, b)) isolates real roots; it cannot be combined "
+                    "with domain='complex'"
+                )
             # Real roots in [a, b] by construction, so `domain` has nothing to drop.
             result = _native_solve(
                 equations, vars, numeric=numeric, method=method, interval=tuple(interval)
@@ -2577,7 +2587,10 @@ if "solve" in dir():
             return _filter_by_assumptions(result, assumptions)
 
         if domain != "real" or method == "homotopy":
-            result = _native_solve(equations, vars, numeric=numeric, method=method)
+            # ``domain="complex"`` also asks the transcendental paths for their
+            # complex solutions (``exp(x) = c`` → ``log(c) + 2*pi*I*k``).
+            extra = {"domain": "complex"} if domain == "complex" else {}
+            result = _native_solve(equations, vars, numeric=numeric, method=method, **extra)
             return _filter_by_assumptions(result, assumptions)
 
         # Filtering for realness needs the symbolic (sqrt-of-discriminant)

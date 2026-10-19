@@ -42,6 +42,7 @@ pub mod regular_chains;
 pub mod transcendental;
 mod verify;
 
+pub use transcendental::with_complex_domain;
 pub use transcendental::{
     solve_transcendental, take_transcendental_refusal, TranscendentalOutcome,
 };
@@ -1810,6 +1811,15 @@ fn solve_polynomial_system_unguarded(
                 if let Some(out) =
                     opaque::solve_with_opaque_coefficients(&equations, &all_vars[..vars_len], pool)
                 {
+                    return out;
+                }
+                // An unknown that occurs only inside one invertible function
+                // (`exp(x) + y = 3`) is solved for through that function.
+                if let Some(out) = transcendental::solve_with_invertible_kernels(
+                    &equations,
+                    &all_vars[..vars_len],
+                    pool,
+                ) {
                     return out;
                 }
                 return Err(SolverError::NotPolynomial(msg));

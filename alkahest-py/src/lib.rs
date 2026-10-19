@@ -18364,7 +18364,7 @@ fn py_solve_numerical(
 ///     infinite.
 #[cfg(feature = "groebner")]
 #[pyfunction]
-#[pyo3(name = "solve", signature = (equations, vars, *, numeric = false, method = "groebner", interval = None))]
+#[pyo3(name = "solve", signature = (equations, vars, *, numeric = false, method = "groebner", interval = None, domain = None))]
 fn py_solve(
     py: Python<'_>,
     equations: Vec<PyRef<PyExpr>>,
@@ -18372,7 +18372,26 @@ fn py_solve(
     numeric: bool,
     method: &str,
     interval: Option<(f64, f64)>,
+    domain: Option<&str>,
 ) -> PyResult<PyObject> {
+    // `domain="complex"` asks the transcendental paths for complex solutions
+    // (`exp(x) = c` → `log c + 2πik`); the polynomial path is complex anyway.
+    let complex = match domain {
+        None | Some("real") => false,
+        Some("complex") => true,
+        Some(other) => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "domain must be 'real', 'complex', or None, got {other:?}"
+            )))
+        }
+    };
+    let in_domain = |f: &mut dyn FnMut()| {
+        if complex {
+            alkahest_core::solver::with_complex_domain(f)
+        } else {
+            f()
+        }
+    };
     same_pool!("solve"; equations, vars);
     if equations.is_empty() || vars.is_empty() {
         return Err(pyo3::exceptions::PyValueError::new_err(
@@ -18426,6 +18445,12 @@ fn py_solve(
     // certified (see `nsolve_all`) — the route for equations with no closed
     // form. A root list that cannot be proved complete is refused.
     if let Some((a, b)) = interval {
+        if complex {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "solve(..., interval=(a, b)) isolates real roots; it cannot be combined with \
+                 domain='complex'",
+            ));
+        }
         if !numeric {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "solve(..., interval=(a, b)) isolates roots numerically; pass numeric=True",
@@ -18449,7 +18474,11 @@ fn py_solve(
         let trans = {
             let pool = pool_py.borrow(py);
             let (eq, v, pool) = (eq_ids[0], var_ids[0], &pool.inner);
-            py.allow_threads(|| solve_transcendental(eq, v, pool))
+            py.allow_threads(|| {
+                let mut out = None;
+                in_domain(&mut || out = Some(solve_transcendental(eq, v, pool)));
+                out.expect("ran")
+            })
         };
         if let TranscendentalOutcome::Solved(mut values) = trans {
             // What the closed form assumed (`kₑ/kₐ > 0`, `kₑ − kₐ ≠ 0`, the
@@ -18508,12 +18537,50 @@ fn py_solve(
         // conditions it records are thread-local and drained just below, on
         // this same thread.
         let (eqs, vs, pool_ref) = (eq_ids.clone(), var_ids.clone(), &pool.inner);
-        let r = py.allow_threads(move || solve_polynomial_system(eqs, vs, pool_ref));
+        let r = py.allow_threads(move || {
+            let mut out = None;
+            let mut job = Some((eqs, vs));
+            in_domain(&mut || {
+                if let Some((e, v)) = job.take() {
+                    out = Some(solve_polynomial_system(e, v, pool_ref));
+                }
+            });
+            out.expect("ran")
+        });
         // Whatever the back-substitution had to assume about a parametric
         // leading coefficient, rendered while the pool is in hand — see
-        // `py_solve_side_conditions`.
-        capture_solve_side_conditions(&pool.inner);
-        r
+        // `py_solve_side_conditions`. A system solved through invertible
+        // functions may carry periodic families; with `numeric=True` their
+        // `k = 0` members are reported, as for one equation.
+        let indices = capture_solve_side_conditions(&pool.inner);
+        match r {
+            Ok(SolutionSet::Finite(sols)) if numeric && !indices.is_empty() => {
+                let zero = pool.inner.integer(0_i32);
+                let map: std::collections::HashMap<ExprId, ExprId> =
+                    indices.iter().map(|&k| (k, zero)).collect();
+                let sols = sols
+                    .into_iter()
+                    .map(|s| {
+                        s.into_iter()
+                            .map(|v| alkahest_core::subs(v, &map, &pool.inner))
+                            .collect()
+                    })
+                    .collect();
+                let notes: Vec<String> = indices
+                    .iter()
+                    .map(|&k| {
+                        format!(
+                            "numeric=True reports the {} = 0 member of each periodic family; \
+                             solve without numeric=True for the whole set",
+                            pool.inner.display(k)
+                        )
+                    })
+                    .collect();
+                SOLVE_SIDE_CONDITIONS.with(|c| c.borrow_mut().extend(notes));
+                Ok(SolutionSet::Finite(sols))
+            }
+            other => other,
+        }
     };
     // The transcendental slice recognised the equation but declined it for a
     // stated reason (a missing W₋₁ root); that reason, not "exp is not a
@@ -18631,12 +18698,22 @@ fn reset_solve_side_conditions() {
 /// Render the hypotheses the core solver just assumed, for
 /// [`py_solve_side_conditions`].
 #[cfg(feature = "groebner")]
-fn capture_solve_side_conditions(pool: &alkahest_core::ExprPool) {
-    let rendered: Vec<String> = alkahest_core::solver::take_solve_side_conditions()
+///
+/// Returns the integer indices of any periodic families among them.
+fn capture_solve_side_conditions(pool: &alkahest_core::ExprPool) -> Vec<ExprId> {
+    let conds = alkahest_core::solver::take_solve_side_conditions();
+    let rendered: Vec<String> = conds
         .iter()
         .map(|c| c.display_with(pool).to_string())
         .collect();
     SOLVE_SIDE_CONDITIONS.with(|c| *c.borrow_mut() = rendered);
+    conds
+        .iter()
+        .filter_map(|c| match c {
+            alkahest_core::SideCondition::InDomain(k, alkahest_core::Domain::Integer) => Some(*k),
+            _ => None,
+        })
+        .collect()
 }
 
 /// `alkahest.solve_side_conditions() -> list[str]`
