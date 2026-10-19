@@ -4,18 +4,20 @@
 
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyList, PyTuple};
+use pyo3::types::{PyDict, PyList, PyTuple};
 
 use alkahest_core::algebra::nc_poly::{
     self as core_nc, GammaSlot, LadderMode, NcError, DEFAULT_MAX_STEPS,
 };
-use alkahest_core::ExprId;
+use alkahest_core::algebra::{gamma_dim as core_gd, lie as core_lie};
+use alkahest_core::pattern::Pattern;
+use alkahest_core::{ExprId, PatternRule};
 
 use crate::{guard_depth, PyExpr, PyExprPool, PyRewriteRule};
 
 pyo3::create_exception!(alkahest, PyNcError, crate::PyAlkahestError);
 
-fn nc_err(e: NcError) -> PyErr {
+pub(crate) fn nc_err(e: NcError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyNcError>();
         crate::make_structured_err(py, &exc_type, &e)
@@ -26,6 +28,18 @@ fn wrap(py: Python<'_>, id: ExprId, pool: &Py<PyExprPool>) -> PyExpr {
     PyExpr {
         id,
         pool: pool.clone_ref(py),
+    }
+}
+
+/// `nc_rewrite` reads rule sides as literal words; a sequence-wildcard rule
+/// would silently treat its wildcard as a literal symbol, so refuse it.
+fn refuse_sequence_rule(r: &PyRewriteRule) -> PyResult<()> {
+    if r.inner.sequence_wildcards().is_empty() {
+        Ok(())
+    } else {
+        Err(nc_err(NcError::InvalidRule {
+            reason: "rules with sequence wildcards (make_rule(..., sequence=[...])) apply through simplify_with, not as literal word rules".into(),
+        }))
     }
 }
 
@@ -112,6 +126,7 @@ fn py_nc_rewrite(
     let mut pairs = Vec::with_capacity(rules.len());
     for r in &rules {
         same_pool_or_err(&r.pool, &expr.pool, "a rule")?;
+        refuse_sequence_rule(r)?;
         pairs.push((r.inner.lhs.root, r.inner.rhs));
     }
     let pool = expr.pool.borrow(py);
@@ -135,6 +150,7 @@ fn commutator_like(
     let mut pairs = Vec::new();
     for r in rules.iter().flatten() {
         same_pool_or_err(&r.pool, &a.pool, "a rule")?;
+        refuse_sequence_rule(r)?;
         pairs.push((r.inner.lhs.root, r.inner.rhs));
     }
     let pool = a.pool.borrow(py);
@@ -318,12 +334,27 @@ fn py_vacuum_expectation(
 /// Raises ``NcError``: ``E-NC-005`` for an invalid slot, ``E-NC-006`` for
 /// more than 14 slots to expand.
 #[pyfunction]
-#[pyo3(name = "gamma_trace", signature = (slots, pool = None))]
+#[pyo3(name = "gamma_trace", signature = (slots, pool = None, *, dim = None, indices = None))]
 fn py_gamma_trace(
     py: Python<'_>,
     slots: &Bound<'_, PyList>,
     pool: Option<Py<PyExprPool>>,
+    dim: Option<PyRef<'_, PyExpr>>,
+    indices: Option<Vec<PyRef<'_, PyExpr>>>,
 ) -> PyResult<PyExpr> {
+    if let Some(dim) = dim {
+        let (labels, idx) = dim_labels(py, slots, indices, &dim)?;
+        let id = {
+            let pool = dim.pool.borrow(py);
+            core_gd::gamma_trace_dim(&labels, &idx, dim.id, &pool.inner).map_err(nc_err)?
+        };
+        return Ok(wrap(py, id, &dim.pool));
+    }
+    if indices.is_some() {
+        return Err(PyValueError::new_err(
+            "gamma_trace: `indices` needs `dim` (contraction of dummy indices is the d-dimensional mode)",
+        ));
+    }
     let mut pool_py: Option<Py<PyExprPool>> = pool;
     let mut parsed = Vec::with_capacity(slots.len());
     for item in slots.iter() {
@@ -360,6 +391,490 @@ fn py_gamma_trace(
     Ok(PyExpr { id, pool: pool_py })
 }
 
+/// Labels and indices of a d-dimensional gamma call, checked against the
+/// pool of `dim`. Integers (explicit components, γ⁵) are refused.
+fn dim_labels(
+    py: Python<'_>,
+    slots: &Bound<'_, PyList>,
+    indices: Option<Vec<PyRef<'_, PyExpr>>>,
+    dim: &PyRef<'_, PyExpr>,
+) -> PyResult<(Vec<ExprId>, Vec<ExprId>)> {
+    let mut labels = Vec::with_capacity(slots.len());
+    for item in slots.iter() {
+        if let Ok(e) = item.extract::<PyRef<PyExpr>>() {
+            same_pool_or_err(&e.pool, &dim.pool, "a gamma slot")?;
+            guard_depth(&e.pool.borrow(py).inner, e.id)?;
+            labels.push(e.id);
+        } else if item.extract::<i64>().is_ok() {
+            return Err(nc_err(NcError::InvalidGamma {
+                reason: "explicit components 0-3 and γ⁵ exist only in four dimensions: omit `dim` for the 4D trace (γ⁵ has no anticommuting d-dimensional extension; use a symbolic label for γ^μ)".into(),
+            }));
+        } else {
+            return Err(PyTypeError::new_err(
+                "d-dimensional gamma slots must be Expr labels",
+            ));
+        }
+    }
+    let mut idx = Vec::new();
+    for e in indices.iter().flatten() {
+        same_pool_or_err(&e.pool, &dim.pool, "a Lorentz index")?;
+        idx.push(e.id);
+    }
+    guard_depth(&dim.pool.borrow(py).inner, dim.id)?;
+    Ok((labels, idx))
+}
+
+/// ``gamma_contract(slots, indices, dim) -> list[tuple[Expr, list[Expr]]]``
+///
+/// Contract the dummy Lorentz indices of a *product* of gamma matrices in
+/// ``dim`` dimensions using only ``{γ^μ, γ^ν} = 2 g^{μν}``. ``slots`` are
+/// commutative labels; a label listed in ``indices`` that occurs twice is a
+/// summed index. Returns terms ``(coefficient, labels)`` meaning
+/// ``coefficient * γ(labels[0]) γ(labels[1]) ...``, with no index repeated:
+///
+/// * ``γ^μ γ_μ = d`` -> ``[(d, [])]``
+/// * ``γ^μ γ^ν γ_μ = (2 - d) γ^ν``
+/// * ``γ^μ γ^ν γ^ρ γ_μ = 2 γ^ρ γ^ν + (d - 2) γ^ν γ^ρ``  (``= 4 g^{νρ} - (4-d) γ^ν γ^ρ``)
+///
+/// Raises ``NcError`` ``E-NC-005`` for non-commutative labels or an index
+/// repeated more than twice, ``E-NC-006`` past 14 slots.
+#[pyfunction]
+#[pyo3(name = "gamma_contract")]
+fn py_gamma_contract(
+    py: Python<'_>,
+    slots: &Bound<'_, PyList>,
+    indices: Vec<PyRef<'_, PyExpr>>,
+    dim: PyRef<'_, PyExpr>,
+) -> PyResult<PyObject> {
+    let (labels, idx) = dim_labels(py, slots, Some(indices), &dim)?;
+    let terms = {
+        let pool = dim.pool.borrow(py);
+        core_gd::gamma_contract(&labels, &idx, dim.id, &pool.inner).map_err(nc_err)?
+    };
+    let out = PyList::empty_bound(py);
+    for (c, w) in terms {
+        let word = PyList::empty_bound(py);
+        for a in w {
+            word.append(wrap(py, a, &dim.pool).into_py(py))?;
+        }
+        out.append(PyTuple::new_bound(
+            py,
+            [wrap(py, c, &dim.pool).into_py(py), word.into_py(py)],
+        ))?;
+    }
+    Ok(out.into_py(py))
+}
+
+/// ``lorentz_contract(expr, indices, dim) -> Expr``
+///
+/// Contract the dummy Lorentz indices ``indices`` of a polynomial in
+/// ``dot(a, b)`` factors (``dot(μ, μ) -> d``; ``dot(μ, a)*dot(μ, b) ->
+/// dot(a, b)``). An index occurring once is free and kept. Use it on products
+/// of traces, e.g. ``tr(γ^μγ^νγ^ργ^σ) tr(γ_μγ_νγ_ργ_σ) = 16 d (3d - 2)``::
+///
+///     t = gamma_trace([m, n, r, s], dim=d)          # free indices
+///     lorentz_contract(t * t, [m, n, r, s], d)       # 48*d**2 - 32*d  (up to form)
+///
+/// Raises ``NcError`` ``E-NC-005`` for an index occurring more than twice or
+/// inside a factor that is not a ``dot`` (e.g. ``levi_civita``).
+#[pyfunction]
+#[pyo3(name = "lorentz_contract")]
+fn py_lorentz_contract(
+    py: Python<'_>,
+    expr: PyRef<'_, PyExpr>,
+    indices: Vec<PyRef<'_, PyExpr>>,
+    dim: PyRef<'_, PyExpr>,
+) -> PyResult<PyExpr> {
+    same_pool_or_err(&dim.pool, &expr.pool, "`dim`")?;
+    let mut idx = Vec::new();
+    for e in &indices {
+        same_pool_or_err(&e.pool, &expr.pool, "a Lorentz index")?;
+        idx.push(e.id);
+    }
+    let pool = expr.pool.borrow(py);
+    guard_depth(&pool.inner, expr.id)?;
+    guard_depth(&pool.inner, dim.id)?;
+    let id = core_gd::lorentz_contract(expr.id, &idx, dim.id, &pool.inner).map_err(nc_err)?;
+    Ok(wrap(py, id, &expr.pool))
+}
+
+// ---------------------------------------------------------------------------
+// Lie algebras
+// ---------------------------------------------------------------------------
+
+/// A Lie algebra given by ``[T_a, T_b] = i Σ_c f_{abc} T_c`` on noncommutative
+/// generators (see :func:`lie_algebra`).
+#[pyclass(name = "LieAlgebra", module = "alkahest")]
+pub(crate) struct PyLieAlgebra {
+    inner: core_lie::LieAlgebra,
+    pool: Py<PyExprPool>,
+}
+
+impl PyLieAlgebra {
+    fn check(&self, e: &PyExpr, what: &str) -> PyResult<()> {
+        same_pool_or_err(&e.pool, &self.pool, what)
+    }
+}
+
+#[pymethods]
+impl PyLieAlgebra {
+    /// The generators, in table order.
+    #[getter]
+    fn generators(&self, py: Python<'_>) -> Vec<PyExpr> {
+        self.inner
+            .generators()
+            .iter()
+            .map(|&g| wrap(py, g, &self.pool))
+            .collect()
+    }
+
+    /// The ordering rules ``T_a T_b -> T_b T_a + [T_a, T_b]`` (``a > b``) as
+    /// ``RewriteRule`` objects, usable with :func:`nc_rewrite`.
+    #[getter]
+    fn rules(&self, py: Python<'_>) -> Vec<PyRewriteRule> {
+        self.inner
+            .rules()
+            .iter()
+            .map(|&(l, r)| PyRewriteRule {
+                inner: PatternRule::new(Pattern::from_expr(l), r),
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
+    }
+
+    /// ``[a, b]`` reduced with the table: ``commutator(T_a, T_b)`` is
+    /// ``i Σ f_abc T_c``; for polynomials the result is in normal order
+    /// (generators in increasing index order).
+    fn commutator(
+        &self,
+        py: Python<'_>,
+        a: PyRef<'_, PyExpr>,
+        b: PyRef<'_, PyExpr>,
+    ) -> PyResult<PyExpr> {
+        self.check(&a, "`a`")?;
+        self.check(&b, "`b`")?;
+        let pool = self.pool.borrow(py);
+        guard_depth(&pool.inner, a.id)?;
+        guard_depth(&pool.inner, b.id)?;
+        let id = self
+            .inner
+            .commutator(a.id, b.id, &pool.inner)
+            .map_err(nc_err)?;
+        Ok(wrap(py, id, &self.pool))
+    }
+
+    /// ``{a, b} = a b + b a`` reduced with the table.
+    fn anticommutator(
+        &self,
+        py: Python<'_>,
+        a: PyRef<'_, PyExpr>,
+        b: PyRef<'_, PyExpr>,
+    ) -> PyResult<PyExpr> {
+        self.check(&a, "`a`")?;
+        self.check(&b, "`b`")?;
+        let pool = self.pool.borrow(py);
+        guard_depth(&pool.inner, a.id)?;
+        guard_depth(&pool.inner, b.id)?;
+        let id = self
+            .inner
+            .anticommutator(a.id, b.id, &pool.inner)
+            .map_err(nc_err)?;
+        Ok(wrap(py, id, &self.pool))
+    }
+
+    /// Rewrite ``expr`` to normal order: generators in increasing table order
+    /// (Poincaré–Birkhoff–Witt basis), commutator terms added.
+    fn normal_order(&self, py: Python<'_>, expr: PyRef<'_, PyExpr>) -> PyResult<PyExpr> {
+        self.check(&expr, "`expr`")?;
+        let pool = self.pool.borrow(py);
+        guard_depth(&pool.inner, expr.id)?;
+        let id = self.inner.normal_order(expr.id, &pool.inner).map_err(nc_err)?;
+        Ok(wrap(py, id, &self.pool))
+    }
+
+    /// The quadratic Casimir ``Σ g^{ab} T_a T_b``. ``inverse_metric`` is an
+    /// ``n × n`` nested list ``g^{ab}`` (ints or ``Expr``); the default is the
+    /// identity, i.e. ``Σ T_a²``, correct for the su(n) tables of this module
+    /// (basis orthonormal under the Killing form).
+    #[pyo3(signature = (inverse_metric = None))]
+    fn casimir(
+        &self,
+        py: Python<'_>,
+        inverse_metric: Option<Vec<Vec<Bound<'_, PyAny>>>>,
+    ) -> PyResult<PyExpr> {
+        let pool = self.pool.borrow(py);
+        let metric = match inverse_metric {
+            None => None,
+            Some(rows) => {
+                let mut m = Vec::with_capacity(rows.len());
+                for row in rows {
+                    let mut r = Vec::with_capacity(row.len());
+                    for v in row {
+                        r.push(coerce_value(&v, &self.pool, &pool.inner)?);
+                    }
+                    m.push(r);
+                }
+                Some(m)
+            }
+        };
+        let id = self
+            .inner
+            .casimir(metric.as_deref(), &pool.inner)
+            .map_err(nc_err)?;
+        Ok(wrap(py, id, &self.pool))
+    }
+
+    /// Check the Jacobi identity for every triple; raises ``NcError``
+    /// ``E-NC-008`` if it fails or cannot be verified symbolically.
+    fn verify_jacobi(&self, py: Python<'_>) -> PyResult<()> {
+        let pool = self.pool.borrow(py);
+        self.inner.verify_jacobi(&pool.inner).map_err(nc_err)
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> String {
+        let pool = self.pool.borrow(py);
+        let g: Vec<String> = self
+            .inner
+            .generators()
+            .iter()
+            .map(|&g| pool.inner.display(g).to_string())
+            .collect();
+        format!("LieAlgebra(generators=[{}])", g.join(", "))
+    }
+}
+
+/// An `Expr` of `pool`, or an integer, as an expression id.
+fn coerce_value(
+    v: &Bound<'_, PyAny>,
+    pool_py: &Py<PyExprPool>,
+    pool: &alkahest_core::kernel::ExprPool,
+) -> PyResult<ExprId> {
+    if let Ok(e) = v.extract::<PyRef<PyExpr>>() {
+        same_pool_or_err(&e.pool, pool_py, "a structure constant")?;
+        guard_depth(pool, e.id)?;
+        return Ok(e.id);
+    }
+    if let Ok(n) = v.extract::<i64>() {
+        return Ok(pool.integer(n));
+    }
+    Err(PyTypeError::new_err(
+        "structure constants must be Expr or int",
+    ))
+}
+
+fn build_lie(
+    py: Python<'_>,
+    pool_py: Py<PyExprPool>,
+    generators: Vec<ExprId>,
+    entries: Vec<core_lie::StructureEntry>,
+    check: bool,
+) -> PyResult<PyLieAlgebra> {
+    let inner = {
+        let pool = pool_py.borrow(py);
+        core_lie::LieAlgebra::new(generators, &entries, check, &pool.inner).map_err(nc_err)?
+    };
+    Ok(PyLieAlgebra {
+        inner,
+        pool: pool_py,
+    })
+}
+
+fn extract_generators(
+    py: Python<'_>,
+    generators: &[PyRef<'_, PyExpr>],
+) -> PyResult<(Py<PyExprPool>, Vec<ExprId>)> {
+    let first = generators
+        .first()
+        .ok_or_else(|| PyValueError::new_err("give at least one generator"))?;
+    let pool = first.pool.clone_ref(py);
+    let mut ids = Vec::with_capacity(generators.len());
+    for g in generators {
+        same_pool_or_err(&g.pool, &pool, "a generator")?;
+        ids.push(g.id);
+    }
+    Ok((pool, ids))
+}
+
+/// ``lie_algebra(generators, structure_constants, *, check_jacobi=True) -> LieAlgebra``
+///
+/// A Lie algebra on noncommutative ``generators`` with
+/// ``[T_a, T_b] = i Σ_c f_{abc} T_c``. ``structure_constants`` maps 1-based
+/// triples ``(a, b, c)`` to ``f_{abc}`` (``Expr`` or ``int``); an entry with
+/// ``a > b`` means ``f_{abc} = -f_{bac}`` and both orders may be given if
+/// they agree; absent entries are zero. The returned :class:`LieAlgebra`
+/// reduces commutators of arbitrary noncommutative polynomials in the
+/// generators (``commutator``), normal-orders words (``normal_order``) and
+/// builds the Casimir.
+///
+/// The table is checked against the Jacobi identity (``check_jacobi=False``
+/// skips it). Raises ``NcError`` ``E-NC-008`` for generators that are not
+/// distinct noncommutative symbols, bad or inconsistent entries, or a failed
+/// (or symbolically unverifiable) Jacobi identity.
+///
+/// Example::
+///
+///     J = [p.symbol(f"J{i}", commutative=False) for i in (1, 2, 3)]
+///     su2 = lie_algebra(J, {(1, 2, 3): 1, (2, 3, 1): 1, (3, 1, 2): 1})
+///     su2.commutator(J[0], J[1])      # I*J3
+#[pyfunction]
+#[pyo3(name = "lie_algebra", signature = (generators, structure_constants, *, check_jacobi = true))]
+fn py_lie_algebra(
+    py: Python<'_>,
+    generators: Vec<PyRef<'_, PyExpr>>,
+    structure_constants: &Bound<'_, PyDict>,
+    check_jacobi: bool,
+) -> PyResult<PyLieAlgebra> {
+    let (pool_py, ids) = extract_generators(py, &generators)?;
+    let mut entries = Vec::new();
+    {
+        let pool = pool_py.borrow(py);
+        for (k, v) in structure_constants.iter() {
+            let (a, b, c): (usize, usize, usize) = k.extract().map_err(|_| {
+                PyTypeError::new_err("structure_constants keys must be (a, b, c) int triples")
+            })?;
+            if a == 0 || b == 0 || c == 0 {
+                return Err(PyValueError::new_err(
+                    "structure_constants indices are 1-based (f_{123} is the key (1, 2, 3))",
+                ));
+            }
+            entries.push((a - 1, b - 1, c - 1, coerce_value(&v, &pool_py, &pool.inner)?));
+        }
+    }
+    entries.sort_unstable_by_key(|&(a, b, c, _)| (a, b, c));
+    build_lie(py, pool_py, ids, entries, check_jacobi)
+}
+
+fn make_generators(
+    py: Python<'_>,
+    pool: &Bound<'_, PyExprPool>,
+    generators: Option<Vec<PyRef<'_, PyExpr>>>,
+    prefix: &str,
+    n: usize,
+) -> PyResult<Vec<ExprId>> {
+    use alkahest_core::kernel::Domain;
+    let pool_ref = pool.borrow();
+    match generators {
+        Some(g) => {
+            if g.len() != n {
+                return Err(PyValueError::new_err(format!(
+                    "expected {n} generators, got {}",
+                    g.len()
+                )));
+            }
+            for e in &g {
+                same_pool_or_err(&e.pool, &pool.clone().unbind(), "a generator")?;
+            }
+            Ok(g.iter().map(|e| e.id).collect())
+        }
+        None => {
+            let _ = py;
+            Ok((1..=n)
+                .map(|i| {
+                    pool_ref
+                        .inner
+                        .symbol_commutative(format!("{prefix}{i}"), Domain::Complex, false)
+                })
+                .collect())
+        }
+    }
+}
+
+fn table_dict(
+    py: Python<'_>,
+    pool_py: &Py<PyExprPool>,
+    entries: Vec<((usize, usize, usize), ExprId)>,
+) -> PyResult<PyObject> {
+    let d = PyDict::new_bound(py);
+    for ((a, b, c), f) in entries {
+        d.set_item((a, b, c), wrap(py, f, pool_py).into_py(py))?;
+    }
+    Ok(d.into_py(py))
+}
+
+/// ``lie_su2(pool, generators=None, *, prefix="J") -> LieAlgebra``
+///
+/// su(2): ``[J_a, J_b] = i ε_{abc} J_c`` (``J = σ/2``, spin matrices). With
+/// no ``generators`` it creates noncommutative symbols ``J1, J2, J3``. The
+/// Casimir ``J1² + J2² + J3²`` commutes with every generator.
+#[pyfunction]
+#[pyo3(name = "lie_su2", signature = (pool, generators = None, *, prefix = "J"))]
+fn py_lie_su2(
+    py: Python<'_>,
+    pool: &Bound<'_, PyExprPool>,
+    generators: Option<Vec<PyRef<'_, PyExpr>>>,
+    prefix: &str,
+) -> PyResult<PyLieAlgebra> {
+    let ids = make_generators(py, pool, generators, prefix, 3)?;
+    let entries = core_lie::su2_structure_constants(&pool.borrow().inner);
+    build_lie(py, pool.clone().unbind(), ids, entries, false)
+}
+
+/// ``lie_su3(pool, generators=None, *, prefix="T") -> LieAlgebra``
+///
+/// su(3) in the Gell-Mann basis: ``[T_a, T_b] = i f_{abc} T_c`` with
+/// ``T = λ/2`` (``f_{123} = 1``, ``f_{458} = f_{678} = √3/2``, …; see
+/// :func:`su3_f`). With no ``generators`` it creates ``T1 … T8``. The
+/// Casimir ``Σ T_a²`` equals ``4/3`` in the fundamental representation.
+#[pyfunction]
+#[pyo3(name = "lie_su3", signature = (pool, generators = None, *, prefix = "T"))]
+fn py_lie_su3(
+    py: Python<'_>,
+    pool: &Bound<'_, PyExprPool>,
+    generators: Option<Vec<PyRef<'_, PyExpr>>>,
+    prefix: &str,
+) -> PyResult<PyLieAlgebra> {
+    let ids = make_generators(py, pool, generators, prefix, 8)?;
+    let entries = core_lie::su3_structure_constants(&pool.borrow().inner);
+    build_lie(py, pool.clone().unbind(), ids, entries, false)
+}
+
+/// ``su3_f(pool) -> dict[tuple[int, int, int], Expr]``
+///
+/// The Gell-Mann structure constants ``f_{abc}`` (1-based, all nonzero
+/// entries in all six index orders): ``[λ_a/2, λ_b/2] = i f_{abc} λ_c/2``.
+#[pyfunction]
+#[pyo3(name = "su3_f")]
+fn py_su3_f(py: Python<'_>, pool: &Bound<'_, PyExprPool>) -> PyResult<PyObject> {
+    let pool_py = pool.clone().unbind();
+    let mut map: std::collections::BTreeMap<(usize, usize, usize), ExprId> = Default::default();
+    {
+        let p = pool.borrow();
+        let neg = |e: ExprId| p.inner.mul(vec![p.inner.integer(-1_i32), e]);
+        for (a, b, c, f) in core_lie::su3_structure_constants(&p.inner) {
+            map.insert((a + 1, b + 1, c + 1), f);
+            map.insert((b + 1, a + 1, c + 1), neg(f));
+        }
+    }
+    table_dict(py, &pool_py, map.into_iter().collect())
+}
+
+/// ``su3_d(pool) -> dict[tuple[int, int, int], Expr]``
+///
+/// The Gell-Mann symmetric constants ``d_{abc}`` (1-based, all nonzero
+/// entries in every index order): ``{λ_a, λ_b} = (4/3) δ_{ab} + 2 d_{abc} λ_c``.
+#[pyfunction]
+#[pyo3(name = "su3_d")]
+fn py_su3_d(py: Python<'_>, pool: &Bound<'_, PyExprPool>) -> PyResult<PyObject> {
+    let pool_py = pool.clone().unbind();
+    let mut map: std::collections::BTreeMap<(usize, usize, usize), ExprId> = Default::default();
+    {
+        let p = pool.borrow();
+        for ((a, b, c), d) in core_lie::su3_d_symbols(&p.inner) {
+            for t in [
+                (a, b, c),
+                (a, c, b),
+                (b, a, c),
+                (b, c, a),
+                (c, a, b),
+                (c, b, a),
+            ] {
+                map.insert(t, d);
+            }
+        }
+    }
+    table_dict(py, &pool_py, map.into_iter().collect())
+}
+
 /// Pauli reduction used by ``simplify_pauli`` for noncommutative inputs.
 pub(crate) fn pauli_reduce(pool: &alkahest_core::kernel::ExprPool, id: ExprId) -> PyResult<ExprId> {
     core_nc::pauli_reduce(id, pool).map_err(nc_err)
@@ -375,5 +890,13 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_normal_order, m)?)?;
     m.add_function(wrap_pyfunction!(py_vacuum_expectation, m)?)?;
     m.add_function(wrap_pyfunction!(py_gamma_trace, m)?)?;
+    m.add_function(wrap_pyfunction!(py_gamma_contract, m)?)?;
+    m.add_function(wrap_pyfunction!(py_lorentz_contract, m)?)?;
+    m.add_class::<PyLieAlgebra>()?;
+    m.add_function(wrap_pyfunction!(py_lie_algebra, m)?)?;
+    m.add_function(wrap_pyfunction!(py_lie_su2, m)?)?;
+    m.add_function(wrap_pyfunction!(py_lie_su3, m)?)?;
+    m.add_function(wrap_pyfunction!(py_su3_f, m)?)?;
+    m.add_function(wrap_pyfunction!(py_su3_d, m)?)?;
     Ok(())
 }

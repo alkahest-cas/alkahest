@@ -9340,21 +9340,47 @@ impl PoolBound for PyRewriteRule {
     }
 }
 
-/// `alkahest.make_rule(lhs, rhs)` — create a rewrite rule from two expressions.
+/// `alkahest.make_rule(lhs, rhs, sequence=None)` — create a rewrite rule from
+/// two expressions.
 ///
 /// Symbols whose names start with a lower-case letter in `lhs` are wildcards
 /// that bind to any sub-expression; the same names in `rhs` are replaced by
 /// the bound values.
+///
+/// ``sequence`` lists noncommutative symbols of ``lhs`` that are *sequence
+/// wildcards*: in ``make_rule(A*X*B, ..., sequence=[X])`` the symbol ``X``
+/// matches any contiguous run of noncommutative factors between ``A`` and
+/// ``B`` (possibly empty), and ``X`` in ``rhs`` is replaced by that run.
+/// Matching is leftmost, and each sequence wildcard takes the shortest run
+/// that lets the rest match. A sequence rule only fires inside a product of
+/// at least two noncommutative factors, and applies through ``simplify_with``
+/// (not ``nc_rewrite``). Raises ``NcError`` ``E-NC-009`` for a malformed
+/// pattern.
 ///
 /// Example::
 ///
 ///     rule = alkahest.make_rule(a*b + a*c, a*(b + c))  # factoring rule
 ///     result = alkahest.simplify_with(expr, [rule])
 #[pyfunction]
-fn make_rule(py: Python<'_>, lhs: PyRef<PyExpr>, rhs: PyRef<PyExpr>) -> PyResult<PyRewriteRule> {
+#[pyo3(signature = (lhs, rhs, sequence = None))]
+fn make_rule(
+    py: Python<'_>,
+    lhs: PyRef<PyExpr>,
+    rhs: PyRef<PyExpr>,
+    sequence: Option<Vec<PyRef<PyExpr>>>,
+) -> PyResult<PyRewriteRule> {
     same_pool!("make_rule"; lhs, rhs);
+    let mut inner = PatternRule::new(Pattern::from_expr(lhs.id), rhs.id);
+    if let Some(vars) = sequence {
+        same_pool!("make_rule"; lhs, vars);
+        let ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+        let pool = lhs.pool.borrow(py);
+        inner = inner
+            .with_sequence_wildcards(ids, &pool.inner)
+            .map_err(noncommutative::nc_err)?;
+    }
     Ok(PyRewriteRule {
-        inner: PatternRule::new(Pattern::from_expr(lhs.id), rhs.id),
+        inner,
         pool: lhs.pool.clone_ref(py),
     })
 }
@@ -9376,10 +9402,7 @@ fn py_simplify_with(
     // object lifetime constraints from PyO3, so we re-implement the engine loop.
     // Build a list of lhs/rhs pairs and apply PatternRule inline.
     let pool_py = expr.pool.clone_ref(py);
-    let lhs_rhs: Vec<(ExprId, ExprId)> = rules
-        .iter()
-        .map(|r| (r.inner.lhs.root, r.inner.rhs))
-        .collect();
+    let rule_list: Vec<PatternRule> = rules.iter().map(|r| r.inner.clone()).collect();
 
     let derived = {
         let pool = pool_py.borrow(py);
@@ -9392,11 +9415,9 @@ fn py_simplify_with(
         // are built inside the closure: only the `(lhs, rhs)` ids cross.
         let (id, pool) = (expr.id, &pool.inner);
         py.allow_threads(move || {
-            let boxed: Vec<Box<dyn RewriteRule>> = lhs_rhs
+            let boxed: Vec<Box<dyn RewriteRule>> = rule_list
                 .into_iter()
-                .map(|(lhs, rhs)| {
-                    Box::new(PatternRule::new(Pattern::from_expr(lhs), rhs)) as Box<dyn RewriteRule>
-                })
+                .map(|r| Box::new(r) as Box<dyn RewriteRule>)
                 .collect();
             // Non-commutative input: re-expand and re-apply until the rules
             // stop firing, so `X*P -> P*X + i*hbar` reaches inside `X*P*P`.

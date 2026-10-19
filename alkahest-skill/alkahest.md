@@ -1592,6 +1592,17 @@ ak.gamma_trace([p_, q_, k_, l_])                   # in dot(p,q); [5, p,q,k,l] -
 - Noncommutative symbols are never wildcards, even with lowercase names.
 - `gamma_trace`: slots `0..3`, `5`, or a commutative symbol (slashed vector); metric (+,−,−,−);
   `levi_civita` has `ε^{0123} = +1`; ≤ 14 slots (`E-NC-006`).
+- d dimensions (`tr 1 = 4`, γ⁵ and explicit components refused, `E-NC-005`):
+  `ak.gamma_trace([mu, nu, mu, nu], dim=d, indices=[mu, nu])` → `4d(2−d)`;
+  `ak.lorentz_contract(t1*t2, [m, n], d)` contracts a product of traces;
+  `ak.gamma_contract([mu, nu, mu], [mu], d)` → `[((2−d), [nu])]`.
+- Lie algebras: `su2 = ak.lie_su2(pool)`; `su2.commutator(J[0], J[1])` → `I*J3` (`[J_a,J_b] = i ε_abc J_c`);
+  `ak.lie_su3(pool)` (Gell-Mann `f_abc`, `T = λ/2`; `ak.su3_f`, `ak.su3_d`); general
+  `ak.lie_algebra(gens, {(1,2,3): f123, ...})` (1-based, Jacobi-checked, `E-NC-008`);
+  methods `commutator`, `anticommutator`, `normal_order`, `casimir(inverse_metric=None)`, `rules`.
+- Sequence wildcards: `ak.make_rule(A*X*B, C*X*C, sequence=[X])` — `X` (a noncommutative symbol)
+  matches any contiguous run, possibly empty; leftmost start, shortest run; fires only inside a
+  product of ≥ 2 factors; use with `simplify_with` (not `nc_rewrite`); `E-NC-009` for bad patterns.
 
 ## Sensitivity and adjoint systems
 
@@ -1873,7 +1884,7 @@ All errors inherit `AlkahestError` and carry `.code`, `.remediation`, `.span`.
 | `ProbabilityError` | `E-PROB-*` | The experimental distribution surface. `001` = a **numeric** parameter outside the law's constraint (a symbolic one goes on `constraints()` instead); `002` = outside the modelled class (joint law, PGF for a non-lattice variate, cross-family KL); `003` = the reduction integral was built and **this integrator** declined it, and the message names it; `004` = no closed form inside this library's primitives (`Gamma`/`Beta` CDF, the normal quantile, the log-normal characteristic function); `005` = a closed form **computed and withheld** because quadrature of its own defining integral did not confirm it — **record `unknown`**; `006` = the quantity **does not exist** (a divergent expectation, an MGF outside its convergence strip, an infinite KL divergence) — **a verdict, stop looking** |
 | `VectorError` | `E-VEC-*` | Vector calculus over an orthogonal chart. `004` = a chart `from_embedding` could not **prove** orthogonal — undecided is a refusal, because the formulas still evaluate on a skew chart, to something that looks like a divergence and is not one; `005` = a degenerate scale factor. Reached as `experimental.VectorError`, not `alkahest.VectorError` |
 | `UnitError` | `E-UNIT-*` | Units (`alkahest.units`). `001` = different dimensions in a sum/conversion (both named); `002` = bad unit string; `003` = `degC`/`degF` used in arithmetic (affine — convert to K); `004` = a function argument that is not a pure number; `005` = a symbol with no unit in `dimension_of`; `006` = same dimension, different units in a sum; `007` = irrational scale under a fractional power |
-| `NcError` | `E-NC-*` | Noncommutative algebra. `001` = word rewriting did not reach a normal form within `max_steps` (non-terminating rules); `002` = expansion past the size caps; `003` = rule lhs not one word; `004` = bad ladder modes; `005` = bad γ slot; `006` = γ trace past 14 slots; `007` = vacuum expectation over a non-ladder factor |
+| `NcError` | `E-NC-*` | Noncommutative algebra. `001` = word rewriting did not reach a normal form within `max_steps` (non-terminating rules); `002` = expansion past the size caps; `003` = rule lhs not one word; `004` = bad ladder modes; `005` = bad γ slot; `006` = γ trace past 14 slots; `007` = vacuum expectation over a non-ladder factor; `008` = bad Lie-algebra table / failed Jacobi; `009` = bad sequence-wildcard pattern |
 | `QuaternionError` | `E-QUAT-*` | `001` = a zero or undecided norm; `002` = the axis of the identity rotation, which **does not exist** — every unit vector is one, and the conventional `(0,0,1)` is a stated answer to a question with no answer; `003` = a matrix that could not be checked to be a proper rotation, including any symbolic matrix. Reached as `experimental.QuaternionError` |
 
 ```python

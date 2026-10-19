@@ -47,9 +47,45 @@ normal forms. See the *Noncommutative algebra* chapter of the user guide.
    ``levi_civita(a, b, c, d)`` (``ε^{0123} = +1``). Raises ``E-NC-005`` for a
    bad slot and ``E-NC-006`` past 14 slots.
 
+.. function:: gamma_trace(slots, pool=None, *, dim=None, indices=None) -> Expr
+
+   With ``dim`` (an integer or a symbolic ``d``) the trace is taken in ``dim``
+   dimensions: slots are commutative labels, ``indices`` lists the labels that
+   are Lorentz indices, an index occurring twice is summed with
+   ``g^μ_μ = dim``, and ``tr 1 = 4``. ``γ⁵`` and explicit components are
+   refused (``E-NC-005``).
+
+.. function:: lorentz_contract(expr, indices, dim) -> Expr
+
+   Contract dummy indices of a polynomial in ``dot(a, b)`` (``dot(μ, μ) → d``,
+   ``dot(μ, a) dot(μ, b) → dot(a, b)``), e.g. a product of traces.
+
+.. function:: gamma_contract(slots, indices, dim) -> list[tuple[Expr, list[Expr]]]
+
+   Reduce a gamma string with contracted index pairs to terms
+   ``(coefficient, labels)`` (``γ^μγ^νγ_μ = (2 − d)γ^ν``).
+
+.. function:: lie_algebra(generators, structure_constants, *, check_jacobi=True) -> LieAlgebra
+.. function:: lie_su2(pool, generators=None, *, prefix="J") -> LieAlgebra
+.. function:: lie_su3(pool, generators=None, *, prefix="T") -> LieAlgebra
+.. function:: su3_f(pool) -> dict
+.. function:: su3_d(pool) -> dict
+
+   Lie algebras with ``[T_a, T_b] = i f_{abc} T_c`` (1-based tables). The
+   :class:`LieAlgebra` has ``generators``, ``rules``, ``commutator``,
+   ``anticommutator``, ``normal_order``, ``casimir(inverse_metric=None)`` and
+   ``verify_jacobi``. Raises ``E-NC-008`` for a malformed or non-Jacobi table.
+
+.. function:: make_rule(lhs, rhs, sequence=None) -> RewriteRule
+
+   ``sequence=[X, ...]`` declares noncommutative symbols of ``lhs`` to be
+   sequence wildcards matching a contiguous, possibly empty run of factors
+   (leftmost start, shortest run), usable through ``simplify_with``.
+   ``E-NC-009`` for a malformed pattern.
+
 ``simplify_pauli`` reduces any word over ``sx``, ``sy``, ``sz`` with the full
 Pauli algebra; ``make_rule`` / ``simplify_with`` match product patterns inside
 longer products (contiguous runs for noncommutative products, sub-multisets for
 commutative ones).
 
-Refusals raise :exc:`NcError` (``E-NC-001`` … ``E-NC-007``); see :doc:`errors`.
+Refusals raise :exc:`NcError` (``E-NC-001`` … ``E-NC-009``); see :doc:`errors`.

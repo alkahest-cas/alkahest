@@ -353,7 +353,10 @@ Exception subclasses
    1. ``E-NC-004``: a malformed ladder-mode list. ``E-NC-005``: a γ slot that
    is not ``0``–``3``, ``5`` or a commutative label. ``E-NC-006``: a γ trace
    past 14 slots. ``E-NC-007``: a vacuum expectation over a factor that is not
-   a listed ladder operator.
+   a listed ladder operator. ``E-NC-008``: a malformed Lie-algebra table (not
+   distinct noncommutative generators, bad or inconsistent structure
+   constants, failed Jacobi identity). ``E-NC-009``: a malformed
+   sequence-wildcard pattern in ``make_rule(..., sequence=[...])``.
 
 .. exception:: QuaternionError
 
