@@ -71,12 +71,11 @@ fn main() {
         }
     }
 
-    // On Windows with the MinGW64 toolchain (MSYS2), FLINT lives under the
-    // MSYS2 MinGW64 prefix.  Override with MSYS2_PREFIX if your installation
-    // differs from the GitHub Actions default (C:/msys64/mingw64).
+    // On Windows with an MSYS2 GCC toolchain, FLINT lives under the MSYS2
+    // environment prefix (UCRT64 by default, MINGW64 if that is what is
+    // installed).  Override with MSYS2_PREFIX; see `msys2_prefix`.
     if cfg!(target_os = "windows") {
-        let prefix =
-            std::env::var("MSYS2_PREFIX").unwrap_or_else(|_| "C:/msys64/mingw64".to_string());
+        let prefix = msys2_prefix();
         println!("cargo:rustc-link-search=native={prefix}/lib");
     }
 
@@ -140,8 +139,7 @@ fn flint_lib_dirs() -> Vec<String> {
         }
     }
     if cfg!(target_os = "windows") {
-        let msys =
-            std::env::var("MSYS2_PREFIX").unwrap_or_else(|_| "C:/msys64/mingw64".to_string());
+        let msys = msys2_prefix();
         dirs.push(format!("{msys}/lib"));
     }
     for d in [
@@ -245,7 +243,7 @@ fn check_flint_present() {
          \x20 Fedora / RHEL   : sudo dnf install flint-devel\n\
          \x20 Arch            : sudo pacman -S flint\n\
          \x20 macOS           : brew install flint\n\
-         \x20 Windows (MSYS2) : pacman -S mingw-w64-x86_64-flint\n\
+         \x20 Windows (MSYS2) : pacman -S mingw-w64-ucrt-x86_64-flint   (UCRT64 shell)\n\
          \x20 conda / mamba   : conda install -c conda-forge libflint\n\
          \n\
          No root? Build FLINT into a user-local prefix and point this build at it:\n\
@@ -362,6 +360,52 @@ fn pkg_config_modversion(pkg_config_path: Option<&str>) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// The MSYS2 environment prefix (as a Windows path) that holds FLINT.
+///
+/// `MSYS2_PREFIX` wins.  Otherwise, inside an MSYS2 shell `MSYSTEM` names the
+/// active environment (`UCRT64`, `MINGW64`, `CLANG64`, ...), whose prefix is
+/// the lower-cased name under the MSYS2 root (resolved with `cygpath`).  Failing that, the first of
+/// `ucrt64` / `mingw64` under `C:/msys64` that contains `flint/flint.h`, and
+/// `ucrt64` if neither does.  UCRT64 is the default because MSYS2 has been
+/// retiring MINGW64 (msvcrt) packages — `mingw-w64-x86_64-flint` was removed
+/// in October 2026 — while `mingw-w64-ucrt-x86_64-flint` remains.
+fn msys2_prefix() -> String {
+    println!("cargo:rerun-if-env-changed=MSYSTEM");
+    if let Ok(p) = std::env::var("MSYS2_PREFIX") {
+        if !p.trim().is_empty() {
+            return p.trim().to_string();
+        }
+    }
+    let root = "C:/msys64";
+    if let Ok(sys) = std::env::var("MSYSTEM") {
+        let sys = sys.trim().to_ascii_lowercase();
+        if matches!(
+            sys.as_str(),
+            "ucrt64" | "mingw64" | "clang64" | "clangarm64"
+        ) {
+            // The MSYS2 root is not always C:/msys64 (setup-msys2 installs
+            // under the runner's temp dir), so ask the shell's own `cygpath`.
+            if let Ok(out) = std::process::Command::new("cygpath")
+                .args(["-m", &format!("/{sys}")])
+                .output()
+            {
+                let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if out.status.success() && !p.is_empty() {
+                    return p;
+                }
+            }
+            return format!("{root}/{sys}");
+        }
+    }
+    for env in ["ucrt64", "mingw64"] {
+        let prefix = format!("{root}/{env}");
+        if std::path::Path::new(&format!("{prefix}/include/flint/flint.h")).exists() {
+            return prefix;
+        }
+    }
+    format!("{root}/ucrt64")
+}
+
 fn brew_prefix(formula: &str) -> Option<String> {
     let out = std::process::Command::new("brew")
         .args(["--prefix", formula])
@@ -387,8 +431,7 @@ fn flint_include_dirs() -> Vec<String> {
         }
     }
     if cfg!(target_os = "windows") {
-        let msys =
-            std::env::var("MSYS2_PREFIX").unwrap_or_else(|_| "C:/msys64/mingw64".to_string());
+        let msys = msys2_prefix();
         dirs.push(format!("{msys}/include"));
         return dirs;
     }
@@ -444,7 +487,10 @@ fn flint_version_string() -> Option<String> {
         return Some(v);
     }
 
-    let msys = std::env::var("MSYS2_PREFIX").unwrap_or_else(|_| "C:/msys64/mingw64".to_string());
+    if !cfg!(target_os = "windows") {
+        return None;
+    }
+    let msys = msys2_prefix();
     let pcp = format!("{msys}/lib/pkgconfig");
     if let Some(v) = pkg_config_modversion(Some(&pcp)) {
         return Some(v);

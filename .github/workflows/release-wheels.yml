@@ -437,8 +437,11 @@ jobs:
         if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: false
+          # UCRT64, not MINGW64: MSYS2 dropped `mingw-w64-x86_64-flint`
+          # (2026-10-19) — see ci-cross.yml. The wheel's DLLs then use the
+          # UCRT (ucrtbase.dll), the same CRT CPython links against.
           # path-type: inherit lets the MSYS2 shell see Windows PATH so cargo,
           # rustup, and Python (installed by setup-python) are reachable.
           path-type: inherit
@@ -450,9 +453,9 @@ jobs:
           # fallback still works here.
           install: >-
             base-devel
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-flint
-            mingw-w64-x86_64-pkg-config
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-flint
+            mingw-w64-ucrt-x86_64-pkg-config
 
       - name: Add GNU Rust target (Windows)
         if: runner.os == 'Windows'
@@ -475,8 +478,8 @@ jobs:
 
       - name: Build wheel (Windows)
         if: runner.os == 'Windows'
-        # msys2 {0} runs inside the MINGW64 shell where gcc, sh, pkg-config and
-        # /mingw64/bin's DLLs (gmp-mpfr-sys runs its system-GMP probe binary)
+        # msys2 {0} runs inside the UCRT64 shell where gcc, sh, pkg-config and
+        # /ucrt64/bin's DLLs (gmp-mpfr-sys runs its system-GMP probe binary)
         # are all on PATH. The
         # previous Git-bash approach only set PATH in the outer shell, so the
         # build script's `sh -c "configure ..."` couldn't find the compiler.
@@ -494,7 +497,7 @@ jobs:
         shell: msys2 {0}
         run: |
           python -m pip install delvewheel
-          MSYS2_BIN=$(cygpath -w /mingw64/bin)
+          MSYS2_BIN=$(cygpath -w /ucrt64/bin)
           mkdir -p dist-repaired
           for whl in dist/*.whl; do
             python -m delvewheel repair --add-path "$MSYS2_BIN" -w dist-repaired "$whl"

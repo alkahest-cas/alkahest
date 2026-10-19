@@ -20,9 +20,16 @@ name: ci-cross
 # Windows cargo steps use `shell: msys2 {0}` so the MinGW toolchain is on PATH
 # (same rationale as `release.yml`). With the `system-gmp` feature (in the matrix below),
 # gmp-mpfr-sys links MSYS2's own libgmp/libmpfr (the ones FLINT uses): its
-# probe compiles and *runs* a test program with MinGW gcc, so /mingw64/bin must
+# probe compiles and *runs* a test program with MinGW gcc, so /ucrt64/bin must
 # be on PATH, and it locates the import libraries with `pkg-config gmp`, which
-# is why mingw-w64-x86_64-pkg-config is installed. Only the
+# is why mingw-w64-ucrt-x86_64-pkg-config is installed.
+#
+# The MSYS2 environment is UCRT64, not MINGW64: MSYS2 is retiring its MINGW64
+# (msvcrt) packages and dropped `mingw-w64-x86_64-flint` on 2026-10-19, which
+# broke this job and the Windows wheel. Rust's `x86_64-pc-windows-gnu` target
+# links the CRT through the toolchain's `libmsvcrt.a`, which in UCRT64 is the
+# UCRT import library, so Rust, FLINT, GMP and MPFR share one CRT
+# (ucrtbase.dll) — the same one CPython itself uses. Only the
 # no-default-features baseline (bundled GMP) still compiles GMP/MPFR from source.
 
 on:
@@ -115,15 +122,15 @@ jobs:
         if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
+          msystem: UCRT64
           update: true
           path-type: inherit
-          # Match `release.yml`: full POSIX toolchain + flint (+ gmp/mpfr via deps).
+          # Match `release-wheels.yml`: full POSIX toolchain + flint (+ gmp/mpfr via deps).
           install: >-
             base-devel
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-flint
-            mingw-w64-x86_64-pkg-config
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-flint
+            mingw-w64-ucrt-x86_64-pkg-config
 
       # ── Cargo cache ──────────────────────────────────────────────────────────
       - name: Cache Cargo registry
