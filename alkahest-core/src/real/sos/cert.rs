@@ -375,11 +375,23 @@ impl PositivityCertificate {
                  \x20 rw [alkahest_sos_identity]\n  positivity\n"
             ));
         } else {
+            // A hypothesis no summand multiplies (one side of a Putinar
+            // equality pair, a Handelman constraint with zero weight) is
+            // named `_hg…`: Mathlib's `unusedVariables` linter is a hard
+            // error under `-DwarningAsError=true`.
+            let used = |i: usize| {
+                self.terms
+                    .iter()
+                    .any(|m| !m.sos.is_empty() && m.constraints.contains(&i))
+            };
             let hyp_binders: String = self
                 .constraints
                 .iter()
                 .enumerate()
-                .map(|(i, g)| format!("(hg{i} : (0 : ℝ) ≤ {}) ", g.to_lean(names)))
+                .map(|(i, g)| {
+                    let prefix = if used(i) { "" } else { "_" };
+                    format!("({prefix}hg{i} : (0 : ℝ) ≤ {}) ", g.to_lean(names))
+                })
                 .collect::<String>();
             out.push_str(&format!(
                 "theorem alkahest_positivstellensatz_identity {binders}:\n\

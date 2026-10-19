@@ -11,5 +11,6 @@ pub mod sos;
 pub use cad::{cad_lift, cad_project, decide, decide_expr, CadError, QeResult};
 pub use routh::{routh_hurwitz, RouthHurwitz, ROUTH_MAX_DEGREE};
 pub use sos::{
-    prove_nonneg, sos_decompose, CertificateKind, PositivityCertificate, SosError, SosOpts,
+    nonneg_on_witness, prove_nonneg, prove_nonneg_on, sos_decompose, CertificateKind,
+    PositivityCertificate, PutinarOpts, SosError, SosOpts,
 };

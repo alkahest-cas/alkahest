@@ -337,6 +337,7 @@ from .alkahest import (  # noqa: F401
     product_definite,
     product_indefinite,
     prove_nonneg,
+    prove_nonneg_on,
     re,
     real_roots,
     real_spherical_harmonic_y,
@@ -3364,6 +3365,7 @@ __all__ = [
     "product_indefinite",
     # P1 item 8 — positivity certificates (SOS / Positivstellensatz)
     "prove_nonneg",
+    "prove_nonneg_on",
     "radical",
     "re",
     # V2-4

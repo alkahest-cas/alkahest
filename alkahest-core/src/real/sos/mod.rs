@@ -11,6 +11,7 @@
 //! ```text
 //! unconstrained:  p = Σ_j σ_j·q_j²                        (CertificateKind::Sos)
 //! constrained:    p = Σ_α c_α·Π_i g_i^{α_i},  c_α ≥ 0     (CertificateKind::Handelman)
+//! quadratic module: p = σ₀ + Σ σ_i·g_i + Σ λ_j·h_j         (CertificateKind::Putinar)
 //! ```
 //!
 //! Anyone can check it by expanding — no trust in this implementation is
@@ -66,10 +67,12 @@ pub mod gram;
 pub mod linalg;
 pub mod lp;
 pub mod psd;
+pub mod putinar;
 pub mod ratpoly;
 pub mod sdp;
 
 pub use cert::{CertificateKind, Multiplier, PositivityCertificate, SosPoly, SosTerm};
+pub use putinar::{nonneg_on_witness, prove_nonneg_on, PutinarOpts, MAX_PUTINAR_LEVEL};
 pub use ratpoly::RatPoly;
 
 use crate::kernel::{ExprId, ExprPool};
@@ -650,7 +653,8 @@ pub fn prove_nonneg(
                 "undecided, not a refutation — no non-negative combination of constraint \
                  products up to level {} reproduces the target. Raise level, or the claim may \
                  need a Putinar-style certificate with SOS (not merely non-negative constant) \
-                 multipliers. Record this as unknown, not as a closed branch",
+                 multipliers — prove_nonneg_on searches those. Record this as unknown, not as a \
+                 closed branch",
                 opts.level
             )));
         }

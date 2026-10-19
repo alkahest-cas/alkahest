@@ -3,7 +3,7 @@
 Lean SOS corpus generator.
 
 Generates a strict, no-admission Lean proof corpus from real
-``sos_decompose`` / ``prove_nonneg`` certificates. Used by the Lean CI job.
+``sos_decompose`` / ``prove_nonneg`` / ``prove_nonneg_on`` certificates. Used by the Lean CI job.
 
 Empty, ``None``, or admission-bearing ``to_lean()`` output is never written
 (withhold rather than sorry).
@@ -81,6 +81,32 @@ def _motzkin(pool):
     return alkahest.sos_decompose(p, [x, y])
 
 
+def _putinar_disk(pool):
+    """1 − x² ≥ 0 on the unit disk — Putinar: y² + 1·(1 − x² − y²)."""
+    x, y = pool.symbol("x"), pool.symbol("y")
+    return alkahest.prove_nonneg_on(1 - x**2, [x, y], [1 - x**2 - y**2])
+
+
+def _putinar_disk_quartic(pool):
+    """1 − x⁴ − y⁴ ≥ 0 on the unit disk (level 2)."""
+    x, y = pool.symbol("x"), pool.symbol("y")
+    return alkahest.prove_nonneg_on(1 - x**4 - y**4, [x, y], [1 - x**2 - y**2])
+
+
+def _putinar_level_two(pool):
+    """1 − x² ≥ 0 on {1 − x ≥ 0, 1 + x ≥ 0}: SOS multipliers needed (level 2)."""
+    x = pool.symbol("x")
+    return alkahest.prove_nonneg_on(1 - x**2, [x], [1 - x, 1 + x], level=2)
+
+
+def _putinar_circle(pool):
+    """1/2 − x·y ≥ 0 on the circle x² + y² = 1 (an equality multiplier)."""
+    x, y = pool.symbol("x"), pool.symbol("y")
+    return alkahest.prove_nonneg_on(
+        pool.rational(1, 2) - x * y, [x, y], equalities=[x**2 + y**2 - 1]
+    )
+
+
 # (name, certificate builder). Keep this list to identities whose Lean
 # actually typechecks; drop a case rather than emit sorry.
 CASES = [
@@ -90,6 +116,10 @@ CASES = [
     ("square_with_spectator_var", _square_with_spectator_var),
     ("shifted_square_with_spectator_var", _shifted_square_with_spectator_var),
     ("motzkin_multiplier", _motzkin),
+    ("putinar_disk", _putinar_disk),
+    ("putinar_disk_quartic", _putinar_disk_quartic),
+    ("putinar_level_two", _putinar_level_two),
+    ("putinar_circle", _putinar_circle),
 ]
 
 

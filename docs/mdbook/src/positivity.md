@@ -200,6 +200,53 @@ parameter; exceeding it is a refusal (`E-SOS-002`), not a failure. Handelman
 is complete for polytopes given a high enough level, but the level needed is
 not known in advance — so raising it on refusal is a meaningful retry.
 
+## Putinar certificates (quadratic module)
+
+Handelman's constant multipliers cannot express the ordinary certificate for an
+inequality on a curved set: `1 − x² ≥ 0` on the unit disk is
+`y² + 1·(1 − x² − y²)`, and `y²` is a sum of squares, not a constant.
+`prove_nonneg_on` searches the **quadratic module** instead:
+
+```text
+f = σ₀ + Σᵢ σᵢ·gᵢ + Σⱼ λⱼ·hⱼ      σ's sums of squares, λ's arbitrary polynomials
+```
+
+```python
+disk = 1 - x**2 - y**2
+cert = ak.prove_nonneg_on(1 - x**4 - y**4, [x, y], [disk])
+cert.kind          # "putinar"
+cert.identity      # 1 - x^4 - y^4 = ... + (1 - x^2 - y^2)*(...)^2 + ...
+cert.multipliers   # [(weight, [(c, q), ...]), ...] — every σ as explicit squares
+cert.verify()      # True
+
+ak.prove_nonneg_on(pool.rational(1, 2) - x*y, [x, y], equalities=[x**2 + y**2 - 1])
+```
+
+- `constraints` items are `g` (meaning `g ≥ 0`) or a comparison from
+  `pool.ge`/`pool.le`/`pool.gt`/`pool.lt`/`pool.pred_eq`; strict comparisons are
+  relaxed to their closure (sound). `equalities` items are `h` (meaning `h = 0`).
+  An equality appears in the certificate as the pair `h ≥ 0`, `−h ≥ 0`, with
+  `λ = σ⁺ − σ⁻` written as two explicit sums of squares.
+- `level=k` is the relaxation order: every summand has degree `≤ 2k`, `σᵢ` is a
+  Gram form over the monomials of degree `≤ ⌊(2k − deg gᵢ)/2⌋`. `None` tries the
+  smallest level that can represent the target and two more. Some claims need a
+  higher level than their degree suggests: `1 − x²` on `{1 − x ≥ 0, 1 + x ≥ 0}`
+  is refused at level 1 and certified at level 2.
+- Each level is searched by an exact LP over scaled diagonally dominant Gram
+  blocks first, then by the numeric block-diagonal PSD search shared with
+  `sos_decompose` (with facial reduction); every candidate is rounded to
+  rationals, each block is decided PSD by an exact `LDLᵀ`, and the identity is
+  re-expanded in ℚ before anything is returned.
+- **Archimedean check.** Putinar's theorem guarantees a certificate at *some*
+  level for every `f > 0` on the set only when the module contains `N − Σxᵢ²`.
+  When a level fails, the search looks for such an `N` (left free). If found,
+  it retries with `N − Σxᵢ²` as an extra generator and composes the result back
+  into a certificate over your constraints only; either way the `E-SOS-002`
+  message says whether the module was found to be Archimedean — when it is not
+  (e.g. the orthant), raising the level carries no guarantee.
+- A false claim raises `E-SOS-003`; the exception's `witness` attribute maps
+  each variable to an exact rational point of the set where `f < 0`.
+
 ## Verification
 
 Every certificate is re-expanded in exact rational arithmetic and compared

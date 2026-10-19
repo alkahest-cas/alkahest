@@ -610,9 +610,8 @@ fn search_rational_family(
     dirs_rat: &[Vec<Vec<Rational>>],
     log: &mut Vec<String>,
 ) -> (Option<SosPoly>, Vec<Vec<Vec<f64>>>) {
-    let try_point = |t: &[Rational]| -> Option<SosPoly> {
-        let q = rat_family_at(base_rat, dirs_rat, t);
-        let decomp = psd_decompose(&q)?;
+    let decode = |q: &[Vec<Rational>]| -> Option<SosPoly> {
+        let decomp = psd_decompose(q)?;
         let mut sos = SosPoly::default();
         for (d, v) in decomp {
             if d <= 0 {
@@ -636,19 +635,41 @@ fn search_rational_family(
             None
         }
     };
+    search_family_with(base_rat, dirs_rat, &decode, log)
+}
+
+/// The numeric-search-then-round-then-check core of [`search_rational_family`],
+/// generic over what an exact PSD point of the family decodes to.
+///
+/// `decode` receives an exact rational member of the family and returns
+/// `Some` only when it has *itself* established, exactly, everything the
+/// caller needs (PSD-ness and the target identity); nothing here trusts the
+/// floating-point search. [`super::putinar`] reuses this for the
+/// block-diagonal Gram families of a quadratic-module certificate.
+pub(super) fn search_family_with<T>(
+    base_rat: &[Vec<Rational>],
+    dirs_rat: &[Vec<Vec<Rational>>],
+    decode: &dyn Fn(&[Vec<Rational>]) -> Option<T>,
+    log: &mut Vec<String>,
+) -> (Option<T>, Vec<Vec<Vec<f64>>>) {
+    let try_point = |t: &[Rational]| -> Option<T> {
+        let q = rat_family_at(base_rat, dirs_rat, t);
+        decode(&q)
+    };
+    let basis_len = base_rat.len();
 
     // No freedom at all: the unique solution is the only candidate.
     if dirs_rat.is_empty() {
         return (try_point(&[]), Vec::new());
     }
     if dirs_rat.len() > MAX_FREE_PARAMETERS {
-        log.push(ceiling_note(basis.len(), dirs_rat.len(), false));
+        log.push(ceiling_note(basis_len, dirs_rat.len(), false));
         return (None, Vec::new());
     }
     log.push(format!(
         "PSD Gram search: searching a {}-parameter affine family over a {}-monomial basis",
         dirs_rat.len(),
-        basis.len()
+        basis_len
     ));
 
     let base: Vec<Vec<f64>> = base_rat
@@ -684,8 +705,8 @@ fn search_rational_family(
             let t_rat: Option<Vec<Rational>> =
                 t.iter().map(|x| round_to_rational(*x, max_den)).collect();
             let Some(t_rat) = t_rat else { continue };
-            if let Some(sos) = try_point(&t_rat) {
-                return (Some(sos), candidate_matrices);
+            if let Some(found) = try_point(&t_rat) {
+                return (Some(found), candidate_matrices);
             }
         }
     }
@@ -828,6 +849,26 @@ fn facial_reduction_search(
     candidates: &[Vec<Vec<f64>>],
     log: &mut Vec<String>,
 ) -> Option<SosPoly> {
+    let search = |b: &[Vec<Rational>], d: &[Vec<Vec<Rational>>], log: &mut Vec<String>| {
+        search_rational_family(nvars, basis, target, b, d, log).0
+    };
+    facial_reduction_with(base_rat, dirs_rat, candidates, &search, log)
+}
+
+/// The type of the reduced-family search [`facial_reduction_with`] re-runs.
+pub(super) type ReducedSearch<'a, T> =
+    dyn Fn(&[Vec<Rational>], &[Vec<Vec<Rational>>], &mut Vec<String>) -> Option<T> + 'a;
+
+/// The guess-a-face-and-search-again core of [`facial_reduction_search`],
+/// generic over the reduced-family search it re-runs (see
+/// [`search_family_with`]).
+pub(super) fn facial_reduction_with<T>(
+    base_rat: &[Vec<Rational>],
+    dirs_rat: &[Vec<Vec<Rational>>],
+    candidates: &[Vec<Vec<f64>>],
+    search: &ReducedSearch<'_, T>,
+    log: &mut Vec<String>,
+) -> Option<T> {
     let max_corank = *FACIAL_CORANK_GUESSES.iter().max().unwrap_or(&0);
     let mut budget = FACIAL_SEARCH_BUDGET;
     for q_best in candidates.iter().take(FACIAL_CANDIDATES) {
@@ -865,10 +906,8 @@ fn facial_reduction_search(
                     return None;
                 }
                 budget -= 1;
-                let (found, _deeper) =
-                    search_rational_family(nvars, basis, target, &new_base, &new_dirs, log);
-                if found.is_some() {
-                    return found;
+                if let Some(found) = search(&new_base, &new_dirs, log) {
+                    return Some(found);
                 }
             }
         }

@@ -101,7 +101,7 @@ const MAX_LP_COLUMNS: usize = 1200;
 
 /// A generator is a linear form over the monomial basis; the cone searched is
 /// the set of non-negative combinations of their squares.
-fn generators(n: usize) -> Vec<Vec<(usize, Rational)>> {
+pub(super) fn generators(n: usize) -> Vec<Vec<(usize, Rational)>> {
     let mut gens: Vec<Vec<(usize, Rational)>> = Vec::new();
     for i in 0..n {
         gens.push(vec![(i, Rational::from(1))]);
