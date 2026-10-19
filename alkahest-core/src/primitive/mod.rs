@@ -1756,6 +1756,93 @@ pub mod builtins {
         None
     }
 
+    /// Carlson's degenerate `R_C(x, y)` (`y > 0`) by duplication (DLMF 19.36.2).
+    fn carlson_rc(x: f64, y: f64) -> Option<f64> {
+        if !(x >= 0.0 && y > 0.0) {
+            return None;
+        }
+        let (mut x, mut y) = (x, y);
+        for _ in 0..200 {
+            let lam = 2.0 * x.sqrt() * y.sqrt() + y;
+            x = 0.25 * (x + lam);
+            y = 0.25 * (y + lam);
+            let ave = (x + 2.0 * y) / 3.0;
+            let s = (y - ave) / ave;
+            if s.abs() < 1e-4 {
+                let poly = 1.0 + s * s * (0.3 + s * (1.0 / 7.0 + s * (0.375 + s * 9.0 / 22.0)));
+                return Some(poly / ave.sqrt());
+            }
+        }
+        None
+    }
+
+    /// Carlson's `R_J(x, y, z, p)` for `p > 0` by duplication (DLMF 19.36.2;
+    /// Numerical Recipes `rj`).
+    fn carlson_rj(x: f64, y: f64, z: f64, p: f64) -> Option<f64> {
+        if !(x >= 0.0 && y >= 0.0 && z >= 0.0 && p > 0.0) || [x + y, x + z, y + z].contains(&0.0) {
+            return None;
+        }
+        let (mut x, mut y, mut z, mut p) = (x, y, z, p);
+        let (mut sum, mut fac) = (0.0_f64, 1.0_f64);
+        for _ in 0..200 {
+            let (sx, sy, sz) = (x.sqrt(), y.sqrt(), z.sqrt());
+            let lam = sx * (sy + sz) + sy * sz;
+            let alpha = (p * (sx + sy + sz) + sx * sy * sz).powi(2);
+            let beta = p * (p + lam).powi(2);
+            sum += fac * carlson_rc(alpha, beta)?;
+            fac *= 0.25;
+            x = 0.25 * (x + lam);
+            y = 0.25 * (y + lam);
+            z = 0.25 * (z + lam);
+            p = 0.25 * (p + lam);
+            let ave = 0.2 * (x + y + z + p + p);
+            let (dx, dy, dz, dp) = (
+                (ave - x) / ave,
+                (ave - y) / ave,
+                (ave - z) / ave,
+                (ave - p) / ave,
+            );
+            if dx.abs().max(dy.abs()).max(dz.abs()).max(dp.abs()) < 1e-4 {
+                let (c1, c2, c3, c4) = (3.0 / 14.0, 1.0 / 3.0, 3.0 / 22.0, 3.0 / 26.0);
+                let (c5, c6, c7, c8) = (0.75 * c3, 1.5 * c4, 0.5 * c2, c3 + c3);
+                let ea = dx * (dy + dz) + dy * dz;
+                let eb = dx * dy * dz;
+                let ec = dp * dp;
+                let ed = ea - 3.0 * ec;
+                let ee = eb + 2.0 * dp * (ea - ec);
+                let series = 1.0
+                    + ed * (-c1 + c5 * ed - c6 * ee)
+                    + eb * (c7 + dp * (-c8 + dp * c4))
+                    + dp * ea * (c2 - dp * c3)
+                    - c2 * dp * ec;
+                return Some(3.0 * sum + fac * series / (ave * ave.sqrt()));
+            }
+        }
+        None
+    }
+
+    /// Incomplete `Π(n; φ | m)` for `|φ| ≤ π/2` and `1 − n sin²φ > 0`, through
+    /// Carlson's forms (DLMF 19.25.14), to a few ulps.  `None` outside that
+    /// range (the caller falls back to quadrature).
+    fn carlson_pi(n: f64, phi: f64, m: f64) -> Option<f64> {
+        if !(n.is_finite() && phi.is_finite() && m.is_finite())
+            || phi.abs() > std::f64::consts::FRAC_PI_2
+        {
+            return None;
+        }
+        let (s, c) = phi.sin_cos();
+        let s2 = s * s;
+        let delta2 = 1.0 - m * s2;
+        let p = 1.0 - n * s2;
+        if delta2 <= 0.0 || p <= 0.0 {
+            return None;
+        }
+        let c2 = (c * c).max(0.0);
+        let rf = carlson_rf(c2, delta2, 1.0)?;
+        let rj = carlson_rj(c2, delta2, 1.0, p)?;
+        Some(s * rf + n / 3.0 * s * s2 * rj)
+    }
+
     /// Incomplete `F(φ | m)` (`second = false`) or `E(φ | m)` (`second = true`)
     /// through Carlson's forms, reducing `φ` to `[−π/2, π/2]` by the
     /// quasi-periodicity `F(φ + nπ) = F(φ) + 2n·K(m)` (and likewise for `E`).
@@ -2361,6 +2448,9 @@ pub mod builtins {
             let (n, phi, m) = (args[0], args[1], args[2]);
             if !incomplete_domain_ok(phi, m) {
                 return None;
+            }
+            if let Some(v) = carlson_pi(n, phi, m) {
+                return Some(v);
             }
             adaptive_simpson(
                 &|t: f64| {
@@ -3582,6 +3672,28 @@ mod tests {
             assert!(
                 (ge - e).abs() <= 4e-15 * e.abs(),
                 "E({phi}|{m}) = {ge}, want {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn elliptic_pi_numeric_is_full_precision() {
+        // mpmath.ellippi(n, φ, m) at 30 digits: n < 0, 0 < n < 1, n > 1 with
+        // n·sin²φ < 1, and the complete case φ = π/2 (Carlson R_J).
+        let reg = PrimitiveRegistry::default_registry();
+        let hp = std::f64::consts::FRAC_PI_2;
+        let cases = [
+            (0.5, 1.0, 0.3, 1.239_108_021_705_843_3),
+            (-2.0, 1.2, 0.7, 0.886_774_003_384_988_8),
+            (1.5, 0.6, 0.5, 0.773_090_195_281_177_2),
+            (0.25, hp, 0.5, 2.167_619_360_766_556),
+            (-0.75, hp, 0.9, 1.810_173_096_337_450_6),
+        ];
+        for (n, phi, m, want) in cases {
+            let got = reg.numeric_f64("EllipticPi", &[n, phi, m]).unwrap();
+            assert!(
+                (got - want).abs() <= 4e-15 * want.abs(),
+                "Pi({n}; {phi}|{m}) = {got}, want {want}"
             );
         }
     }

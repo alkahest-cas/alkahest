@@ -53,6 +53,7 @@ use super::rational_rde::{
     expr_to_qrational, poly_div_exact, poly_divrem, poly_gcd, poly_gcd_budgeted, poly_monic,
     poly_sub,
 };
+use super::subresultant_lrt::{log_argument_from_prs, multiplicity, subresultant_prs, BPoly};
 
 // ---------------------------------------------------------------------------
 // "A RootSum answer is not worth its cost here" — see `RootSumSuppressed`
@@ -551,6 +552,7 @@ fn alg_log_argument(
     q: &QPoly,
     var: ExprId,
     rvar: ExprId,
+    chain: Option<(&[BPoly], i64)>,
     pool: &ExprPool,
 ) -> Option<ExprId> {
     let k = NumberField::new(q.clone());
@@ -575,7 +577,18 @@ fn alg_log_argument(
         })
         .collect();
 
-    let s = k.kpoly_gcd(&a, &b)?;
+    // Lazard–Rioboo–Trager: read the gcd off the subresultant chain over ℚ[t]
+    // (verified by division); fall back to the Euclidean gcd over `K` only if
+    // that member does not check out.  See `subresultant_lrt`.
+    let from_chain = chain.and_then(|(prs, mult)| {
+        let a_k = NumberField::kpoly_trim(a.clone());
+        let b_k = NumberField::kpoly_trim(b.clone());
+        log_argument_from_prs(&k, prs, mult, &b_k, &a_k)
+    });
+    let s = match from_chain {
+        Some(s) => s,
+        None => k.kpoly_gcd(&a, &b)?,
+    };
     if NumberField::kdeg(&s) < 1 {
         return None; // no nontrivial common factor — not a valid residue
     }
@@ -749,6 +762,9 @@ fn partial_fraction_log_arctan(
                 // Radical of R(t): distinct residues only.
                 let rad = poly_monic(&poly_div_exact(&rt, &poly_gcd(&rt, &poly_deriv(&rt))));
                 let factors_t = factor_monic_q(&rad, rvar, pool)?;
+                // The subresultant chain of `p` and `n − t·p′` over ℚ[t], built
+                // once per factor and only if some residue needs it.
+                let mut chain: Option<Option<Vec<BPoly>>> = None;
                 for qf in &factors_t {
                     match degree(qf) {
                         d if d <= 0 => {}
@@ -773,7 +789,24 @@ fn partial_fraction_log_arctan(
                             if !root_sum_wanted(qf, pool) {
                                 return None;
                             }
-                            let s_expr = alg_log_argument(&n, &pp, p, qf, var, rvar, pool)?;
+                            let prs = chain.get_or_insert_with(|| {
+                                let num_b: BPoly = (0..p.len())
+                                    .map(|i| trim(vec![coeff_at(&n, i), -coeff_at(&pp, i)]))
+                                    .collect();
+                                let d_b: BPoly = p.iter().map(|c| trim(vec![c.clone()])).collect();
+                                subresultant_prs(&d_b, &num_b)
+                            });
+                            let mult = multiplicity(&rt, qf);
+                            let s_expr = alg_log_argument(
+                                &n,
+                                &pp,
+                                p,
+                                qf,
+                                var,
+                                rvar,
+                                prs.as_deref().map(|c| (c, mult)),
+                                pool,
+                            )?;
                             let body = pool.mul(vec![rvar, pool.func("log", vec![s_expr])]);
                             let q_expr = qpoly_to_expr(qf, rvar, pool);
                             terms.push(pool.root_sum(q_expr, rvar, body));

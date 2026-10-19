@@ -2,6 +2,7 @@ pub mod algebraic;
 pub(crate) mod branch_check;
 pub mod by_parts;
 mod continuity;
+mod elliptic_exact;
 mod elliptic_trig;
 pub mod engine;
 pub mod gate;

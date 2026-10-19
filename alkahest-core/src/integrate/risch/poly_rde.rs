@@ -380,6 +380,24 @@ pub fn expr_to_qpoly(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<QPoly
     }
 }
 
+/// [`expr_to_qpoly`], also accepting a polynomial written as a product or
+/// power (`x·(1−x)·(2−x)`, `(x²+1)²`), which that converter leaves to its
+/// callers.  The expansion goes through
+/// [`super::rational_rde::expr_to_qrational`] and is accepted only when the
+/// denominator is a constant.
+pub(crate) fn expr_to_qpoly_expanded(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<QPoly> {
+    if let Some(p) = expr_to_qpoly(expr, var, pool) {
+        return Some(p);
+    }
+    let (n, d) = super::rational_rde::expr_to_qrational(expr, var, pool)?;
+    let d = trim(d);
+    if degree(&d) != 0 {
+        return None;
+    }
+    let inv = Rational::from(1) / d[0].clone();
+    Some(trim(poly_scale(&n, &inv)))
+}
+
 /// Recursive helper: accumulate `factor * expr` into `coeffs`.
 /// Returns `false` on failure (non-polynomial subexpressions).
 fn collect_qpoly(

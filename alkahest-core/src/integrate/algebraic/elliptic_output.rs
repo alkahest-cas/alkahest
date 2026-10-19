@@ -64,7 +64,7 @@
 //! the points `R` cuts out, and the unbounded tails are never inside a box.
 
 use crate::integrate::gate::{self, eval_at as eval};
-use crate::integrate::risch::poly_rde::{expr_to_qpoly, is_free_of_var};
+use crate::integrate::risch::poly_rde::is_free_of_var;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::simplify::engine::simplify;
 
@@ -216,7 +216,7 @@ pub fn try_elliptic_output_with(
     }
 
     // Parse P to rational coefficients (ascending) and get its degree.
-    let p_poly = expr_to_qpoly(p_expr, var, pool)?;
+    let p_poly = crate::integrate::risch::poly_rde::expr_to_qpoly_expanded(p_expr, var, pool)?;
     let coeffs: Vec<f64> = p_poly.iter().map(|r| r.to_f64()).collect();
     let deg = coeffs.len().checked_sub(1)?;
     if deg != 3 && deg != 4 {
@@ -406,7 +406,7 @@ pub fn try_elliptic_output_higher_kind_with(
     }
 
     // Parse P (ascending rational coeffs) and validate degree / leading coeff.
-    let p_poly = expr_to_qpoly(p_expr, var, pool)?;
+    let p_poly = crate::integrate::risch::poly_rde::expr_to_qpoly_expanded(p_expr, var, pool)?;
     let p_coeffs: Vec<f64> = p_poly.iter().map(|r| r.to_f64()).collect();
     let deg = p_coeffs.len().checked_sub(1)?;
     if deg != 3 && deg != 4 {

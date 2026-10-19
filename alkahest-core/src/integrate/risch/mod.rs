@@ -105,6 +105,7 @@ pub mod radical_subst;
 pub mod rational_integrate;
 pub mod rational_rde;
 pub mod simple_radical;
+mod subresultant_lrt;
 pub mod tower;
 pub mod tower_field;
 pub mod tower_integrate;
