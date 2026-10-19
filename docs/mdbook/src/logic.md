@@ -51,17 +51,39 @@ only `And`/`Or`/`Not` nodes, so the derived connectives return their definitions
 - **Don't-cares**: pass a formula; the result agrees with `expr` wherever it is
   false.
 
+- **Multi-output**: `minimize_logic([f1, f2, …])` minimises the formulas jointly
+  and returns a `MultiMinimizedLogic` (`exprs`, `terms`, `literals`,
+  `shared_terms`, `per_output_terms`, `exact`).  Outputs share product terms
+  (clauses for `form="cnf"`), and `terms` counts each distinct term once — never
+  more than the separately minimised outputs.  Exact up to 12 variables
+  (multi-output Quine–McCluskey primes tagged with the outputs they lie inside,
+  then a minimum cover of the (output, minterm) pairs); beyond that the
+  per-output heuristic covers are pooled and cut to an irredundant shared set
+  (`exact=False`).  At most 64 outputs.
+
 Every result is checked against the function (by truth table or BDD) before it
 is returned.  Arithmetic relations are accepted as opaque atoms, so the minimum
 is propositional: `x > 0 ∨ x ≤ 0` is not reduced to `True`.
 
 ## BDDs
 
-`bdd(expr, order=None, max_nodes=None)` builds the ROBDD; the default order is
+`bdd(expr, order=None, max_nodes=None, auto_reorder=None)` builds the ROBDD; the default order is
 depth-first over the canonical formula, which interleaves bit-sliced operands
 (`a0 b0 a1 b1 …`).  BDDs combine with `& | ^ ~`, `implies`, `iff`, `ite`;
 support `restrict`, `exists`, `forall`, `sat_count` (exact integer),
 `satisfy_one`, `support`, `node_count` and `to_expr`.
+
+**Variable reordering.**  The size of a BDD depends on the order:
+`x0·y0 + … + x7·y7` needs 510 nodes with the `x`s above the `y`s and 16 when they
+interleave.  `bdd.reorder()` runs Rudell sifting — every variable is moved through
+the order by adjacent swaps and left where the diagram was smallest, abandoning a
+direction once it grows past `max_growth` (default 1.2) times the best size, with
+a `max_swaps` limit and the active `Budget` honoured between swaps.  Reordering
+never changes what a BDD means (`sat_count`, `equivalent`, `to_expr`), only
+`order` and `node_count`.  `auto_reorder` (default: on at 50 000 nodes unless an
+explicit `order=` is given; `False` turns it off, an int sets the threshold) runs
+the same pass automatically after operations and between the gates of a formula
+being built.
 
 Some functions have no small BDD under any order — the middle bit of an `n`-bit
 multiplier grows exponentially.  The node ceiling (`max_nodes`, default
