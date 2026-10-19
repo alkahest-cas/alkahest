@@ -71,9 +71,9 @@ fn kth_order_statistic_moments_via_the_integrator() {
     let exp = Distribution::exponential(lam, &p).unwrap();
     // (law, k, mean, variance) -- mpmath quadrature
     let beta_cases = [
-        (1, 0.2321678321678321678, 0.01582836743675904515),
-        (2, 0.3928071928071928072, 0.02052768410410768053),
-        (3, 0.5750249750249750250, 0.02479083354208229333),
+        (1, 0.23216783216783216, 0.015828367436759045),
+        (2, 0.3928071928071928, 0.02052768410410768),
+        (3, 0.5750249750249751, 0.024790833542082294),
     ];
     for (k, m, v) in beta_cases {
         let os = kth_order_statistic(&beta, n, p.integer(k), &p).unwrap();
@@ -81,9 +81,9 @@ fn kth_order_statistic_moments_via_the_integrator() {
         close!(at(&p, os.variance(&p).unwrap().value, &[]), v, 1e-11);
     }
     let gamma_cases = [
-        (1, 0.9629629629629629629, 0.3813443072702331962),
-        (2, 1.824074074074074074, 0.8054698216735253772),
-        (3, 3.212962962962962963, 2.235510973936899863),
+        (1, 0.9629629629629629, 0.3813443072702332),
+        (2, 1.8240740740740742, 0.8054698216735254),
+        (3, 3.212962962962963, 2.2355109739368997),
     ];
     for (k, m, v) in gamma_cases {
         let os = kth_order_statistic(&gamma, n, p.integer(k), &p).unwrap();
@@ -272,7 +272,7 @@ fn polynomial_times_trig_under_a_normal_matches_mpmath() {
         p.func("cos", vec![p.mul(vec![p.integer(2), x])]),
     ]);
     let e1 = expectation(f1, x, &normal((3, 10), (7, 10)), &p).unwrap();
-    close!(at(&p, e1.value, &[]), -0.2846814968107431968911, 1e-11);
+    close!(at(&p, e1.value, &[]), -0.2846814968107432, 1e-11);
     // E[x^2 e^{x/2} sin(3x/2 + 1/5)], N(-2/5, 6/5)
     let f2 = p.mul(vec![
         pow(2),
@@ -283,7 +283,7 @@ fn polynomial_times_trig_under_a_normal_matches_mpmath() {
         ),
     ]);
     let e2 = expectation(f2, x, &normal((-2, 5), (6, 5)), &p).unwrap();
-    close!(at(&p, e2.value, &[]), -0.1724346491620721476, 1e-11);
+    close!(at(&p, e2.value, &[]), -0.17243464916207216, 1e-11);
     // E[x^4 cos x], N(0,1) = -2 e^{-1/2}
     let f3 = p.mul(vec![pow(4), p.func("cos", vec![x])]);
     let e3 = expectation(f3, x, &normal((0, 1), (1, 1)), &p).unwrap();
@@ -301,7 +301,7 @@ fn polynomial_times_trig_under_a_normal_matches_mpmath() {
         ),
     ]);
     let e5 = expectation(f5, x, &normal((11, 10), (1, 2)), &p).unwrap();
-    close!(at(&p, e5.value, &[]), 2.676502092736404725, 1e-10);
+    close!(at(&p, e5.value, &[]), 2.676502092736405, 1e-10);
 }
 
 // ---------------------------------------------------------------------------
