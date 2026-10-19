@@ -39,15 +39,13 @@ normal forms. See the *Noncommutative algebra* chapter of the user guide.
    ``⟨0|expr|0⟩``, the scalar part of :func:`normal_order`. Raises
    ``E-NC-007`` for a factor that is not a listed ladder operator.
 
-.. function:: gamma_trace(slots, pool=None) -> Expr
+.. function:: gamma_trace(slots, pool=None, *, dim=None, indices=None) -> Expr
 
    Four-dimensional Dirac trace, metric ``diag(+1,−1,−1,−1)``,
    ``γ⁵ = iγ⁰γ¹γ²γ³``. Slots are ``0``–``3``, ``5`` or a commutative ``Expr``
    (slashed vector). The result is a polynomial in ``dot(p, q)`` and
    ``levi_civita(a, b, c, d)`` (``ε^{0123} = +1``). Raises ``E-NC-005`` for a
    bad slot and ``E-NC-006`` past 14 slots.
-
-.. function:: gamma_trace(slots, pool=None, *, dim=None, indices=None) -> Expr
 
    With ``dim`` (an integer or a symbolic ``d``) the trace is taken in ``dim``
    dimensions: slots are commutative labels, ``indices`` lists the labels that
@@ -76,12 +74,10 @@ normal forms. See the *Noncommutative algebra* chapter of the user guide.
    ``anticommutator``, ``normal_order``, ``casimir(inverse_metric=None)`` and
    ``verify_jacobi``. Raises ``E-NC-008`` for a malformed or non-Jacobi table.
 
-.. function:: make_rule(lhs, rhs, sequence=None) -> RewriteRule
-
-   ``sequence=[X, ...]`` declares noncommutative symbols of ``lhs`` to be
-   sequence wildcards matching a contiguous, possibly empty run of factors
-   (leftmost start, shortest run), usable through ``simplify_with``.
-   ``E-NC-009`` for a malformed pattern.
+``make_rule(lhs, rhs, sequence=[X, ...])`` declares noncommutative symbols of
+``lhs`` to be sequence wildcards matching a contiguous, possibly empty run of
+factors (leftmost start, shortest run), usable through ``simplify_with``;
+``E-NC-009`` for a malformed pattern.
 
 ``simplify_pauli`` reduces any word over ``sx``, ``sy``, ``sz`` with the full
 Pauli algebra; ``make_rule`` / ``simplify_with`` match product patterns inside
