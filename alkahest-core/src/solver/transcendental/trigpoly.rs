@@ -466,7 +466,7 @@ fn tangent_polynomial(f: &GbPoly) -> Option<(GbPoly, u32)> {
             let mut e = exp.clone();
             e[0] = exp[0] + 2 * l;
             e[1] = 0;
-            let c = Rational::from(coeff * Rational::from(binom(m, l)));
+            let c = coeff * Rational::from(binom(m, l));
             h = h.add(&mono(e, c));
         }
     }
