@@ -370,3 +370,34 @@ def test_complex_exp_system():
     for m in ms:
         assert abs(cmath.exp(m) - 2) < 1e-9
     assert any(abs(m.imag) > 1 for m in ms)
+
+
+def test_complex_lambert_refuses_even_with_two_real_branches():
+    # Over the reals x·eˣ = −1/4 has two roots (W₀ and W₋₁); over ℂ it has one
+    # on every branch, which cannot be listed.
+    p = ak.ExprPool()
+    x = p.symbol("x")
+    eq = x * ak.exp(x) + p.rational(1, 4)
+    real = ak.solve([eq], [x], numeric=True)
+    assert len(real) == 2
+    for s in real:
+        assert abs(s[x] * math.exp(s[x]) + 0.25) < 1e-12
+    with pytest.raises(ak.SolverError):
+        ak.solve([eq], [x], domain="complex")
+
+
+def test_interval_and_complex_domain_conflict():
+    p = ak.ExprPool()
+    x = p.symbol("x")
+    with pytest.raises(ValueError):
+        ak.solve([ak.cos(x) - x], [x], numeric=True, interval=(0, 1), domain="complex")
+
+
+def test_complex_numeric_reports_k0_member():
+    p = ak.ExprPool()
+    x = p.symbol("x")
+    sols = ak.solve([ak.exp(x) + 2], [x], numeric=True, domain="complex")
+    assert len(sols) == 1
+    v = complex(sols[0][x])
+    assert abs(cmath.exp(v) + 2) < 1e-12
+    assert any("periodic" in c for c in ak.solve_side_conditions())
