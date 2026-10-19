@@ -14,6 +14,7 @@ from . import (
     lattice,
     modular,  # noqa: F401 — V2-1: expose alkahest.modular submodule
     number_theory,
+    pari,  # F30 — optional PARI/GP interop (GPL binding installed separately)
     research,  # session-level claim graph (provenance objects)
     smt,  # P2 item 3 — SMT/SAT bridge
     units,  # G10 — physical units and dimensional analysis
@@ -3325,6 +3326,7 @@ __all__ = [
     "numpy_eval",
     "numpy_eval_par",
     "pantelides",
+    "pari",
     # V2-21
     "parse",
     "parse_unit",

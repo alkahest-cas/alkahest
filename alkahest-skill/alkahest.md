@@ -1720,6 +1720,26 @@ for item in outs:                 # BatchItem(index, ok, value, error, elapsed_m
 - One item tripping its budget never cancels its siblings. `request_cancel()` does cancel
   everything in the process — that is the point of it being process-wide.
 
+## Optional PARI/GP interop: `alkahest.pari`
+
+Pure Python, GPL boundary: needs a separately installed `cypari` or `cypari2`
+(`pari.available()`); otherwise every call raises `E-PARI-001`. Results are exact
+Alkahest objects and are re-verified in-process (`.verification`); a PARI answer that
+fails a check raises `E-PARI-003`. Read the trust label before quoting a result.
+
+```python
+from alkahest import pari
+d = pari.number_field_invariants([5, 0, 1], primes=[2, 3])   # or a NumberField (monic)
+d.discriminant, d.class_number, d.class_group, d.fundamental_units, d.galois
+d.certification        # 'certified' | 'grh_conditional' (class group/units/regulator)
+e = pari.elliptic_curve_invariants([0, -1, 1, -10, -20], ap_bound=50)   # 11a1
+e.conductor, e.ap, e.torsion, e.analytic_rank
+e.l_value              # ArbBall of L(E,1) (rank 0) or L'(E,1) (rank 1)
+e.mw_rank_status       # 'proven' | 'bounds_only'; mw_points independent, NOT saturated
+m = pari.modular_forms(23, 2, nmax=20)   # S_k(Gamma0(N)); orbits carry NumberField eigenvalues
+pari.ramanujan_tau(10)  # pure-Python oracle, no PARI
+```
+
 ## Autoresearch modules: `ansatz`, `crosscheck`, `smt`
 
 All three are `alkahest.<name>`; they resolve on attribute access, no separate import

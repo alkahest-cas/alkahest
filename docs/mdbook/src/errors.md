@@ -312,6 +312,7 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-ANSATZ-*` | `AnsatzError` | Ansatz family construction and fitting — see [Ansatz families](./ansatz.md) |
 | `E-XCHECK-*` | `CrossCheckError` | Cross-CAS differential testing — see [Cross-CAS testing](./crosscheck.md) |
 | `E-SMT-*` | `SmtError` | SMT-LIB export, solver invocation, model lift — see [SMT bridge](./smt.md) |
+| `E-PARI-*` | `PariError` (`PariUnavailable` for `001`) | Optional PARI/GP interop — `001` no binding, `002` unsupported input, `003` PARI answer failed Alkahest verification, `004` PARI itself raised — see [PARI interop](./pari.md) |
 | `E-RESIDUE-*` | `AlkahestError` | `residue` — not a rational function, zero denominator, pole order out of range, or (`E-RESIDUE-005`) a point that is not an exact constant in ℚ(i) |
 | `E-VEC-*` | `VectorError` | Vector calculus over an orthogonal chart — a non-differentiable component, a repeated or non-symbol coordinate, a chart that could not be *proven* orthogonal (`E-VEC-004`), or a degenerate scale factor (`E-VEC-005`). See [Vector calculus and quaternions](#vector-calculus-and-quaternions) |
 | `E-QUAT-*` | `QuaternionError` | Quaternion algebra and rotations — a zero or undecided norm (`E-QUAT-001`), the axis of the identity rotation, which does not exist (`E-QUAT-002`), or a matrix that could not be checked to be a proper rotation (`E-QUAT-003`) |
