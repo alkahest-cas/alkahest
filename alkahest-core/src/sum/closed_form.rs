@@ -39,15 +39,15 @@ const MAX_DEGREE: usize = 24;
 /// Largest number of explicit terms a telescoped remainder may have.
 const MAX_TELESCOPE_TERMS: i64 = 10_000;
 
-fn simp(pool: &ExprPool, e: ExprId) -> ExprId {
+pub(super) fn simp(pool: &ExprPool, e: ExprId) -> ExprId {
     simplify(e, pool).value
 }
 
-fn neg(pool: &ExprPool, e: ExprId) -> ExprId {
+pub(super) fn neg(pool: &ExprPool, e: ExprId) -> ExprId {
     pool.mul(vec![pool.integer(-1_i32), e])
 }
 
-fn is_zero(pool: &ExprPool, e: ExprId) -> bool {
+pub(super) fn is_zero(pool: &ExprPool, e: ExprId) -> bool {
     match pool.get(e) {
         ExprData::Integer(n) => n.0 == 0,
         ExprData::Rational(r) => r.0 == 0,
@@ -55,7 +55,7 @@ fn is_zero(pool: &ExprPool, e: ExprId) -> bool {
     }
 }
 
-fn literal(pool: &ExprPool, e: ExprId) -> Option<Rational> {
+pub(super) fn literal(pool: &ExprPool, e: ExprId) -> Option<Rational> {
     match pool.get(e) {
         ExprData::Integer(n) => Some(Rational::from(n.0.clone())),
         ExprData::Rational(r) => Some(r.0.clone()),
@@ -63,7 +63,7 @@ fn literal(pool: &ExprPool, e: ExprId) -> Option<Rational> {
     }
 }
 
-fn rational_expr(pool: &ExprPool, q: &Rational) -> ExprId {
+pub(super) fn rational_expr(pool: &ExprPool, q: &Rational) -> ExprId {
     if *q.denom() == 1 {
         pool.integer(q.numer().clone())
     } else {
@@ -91,7 +91,7 @@ pub(super) enum Outcome {
 // ---------------------------------------------------------------------------
 
 /// `e = A·k + B` with `A`, `B` free of `k` (unsimplified).
-fn affine_in_k(e: ExprId, k: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
+pub(super) fn affine_in_k(e: ExprId, k: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
     if e == k {
         return Some((pool.integer(1_i32), pool.integer(0_i32)));
     }
@@ -134,7 +134,7 @@ fn affine_in_k(e: ExprId, k: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)
 
 /// Coefficients `[c_0, …, c_d]` (simplified, trailing zeros trimmed) of `e`
 /// as a polynomial in `k` whose coefficients are free of `k`.
-fn poly_coeffs(e: ExprId, k: ExprId, pool: &ExprPool) -> Option<Vec<ExprId>> {
+pub(super) fn poly_coeffs(e: ExprId, k: ExprId, pool: &ExprPool) -> Option<Vec<ExprId>> {
     let raw = poly_coeffs_raw(e, k, pool, 0)?;
     let mut out: Vec<ExprId> = raw.into_iter().map(|c| simp(pool, c)).collect();
     while out.len() > 1 && is_zero(pool, *out.last()?) {
@@ -143,7 +143,7 @@ fn poly_coeffs(e: ExprId, k: ExprId, pool: &ExprPool) -> Option<Vec<ExprId>> {
     Some(out)
 }
 
-fn poly_mul(a: &[ExprId], b: &[ExprId], pool: &ExprPool) -> Option<Vec<ExprId>> {
+pub(super) fn poly_mul(a: &[ExprId], b: &[ExprId], pool: &ExprPool) -> Option<Vec<ExprId>> {
     if a.len() + b.len() - 1 > MAX_DEGREE + 1 {
         return None;
     }
@@ -211,7 +211,7 @@ fn poly_coeffs_raw(e: ExprId, k: ExprId, pool: &ExprPool, depth: u32) -> Option<
     }
 }
 
-fn eval_poly(coeffs: &[ExprId], x: ExprId, pool: &ExprPool) -> ExprId {
+pub(super) fn eval_poly(coeffs: &[ExprId], x: ExprId, pool: &ExprPool) -> ExprId {
     let mut terms = Vec::new();
     for (i, &c) in coeffs.iter().enumerate() {
         if is_zero(pool, c) {
@@ -330,7 +330,7 @@ fn geo_decompose(term: ExprId, k: ExprId, pool: &ExprPool) -> Option<Vec<GeoGrou
 ///
 /// Matching `k^i`: `(q − 1)·a_i + q·Σ_{j>i} C(j,i)·a_j = p_i`, solved from the
 /// top degree down, dividing only by `q − 1`.
-fn geometric_antidifference(p: &[ExprId], q: ExprId, pool: &ExprPool) -> Vec<ExprId> {
+pub(super) fn geometric_antidifference(p: &[ExprId], q: ExprId, pool: &ExprPool) -> Vec<ExprId> {
     let d = p.len() - 1;
     let inv = pool.pow(
         pool.add(vec![q, pool.integer(-1_i32)]),
@@ -348,13 +348,16 @@ fn geometric_antidifference(p: &[ExprId], q: ExprId, pool: &ExprPool) -> Vec<Exp
 }
 
 /// `Q(x)·q^x`.
-fn antidifference_at(a: &[ExprId], q: ExprId, x: ExprId, pool: &ExprPool) -> ExprId {
+pub(super) fn antidifference_at(a: &[ExprId], q: ExprId, x: ExprId, pool: &ExprPool) -> ExprId {
     pool.mul(vec![eval_poly(a, x, pool), pool.pow(q, x)])
 }
 
 /// Is `|q| < 1`? `Ok(None)` when established, `Ok(Some(cond))` when it has to
 /// be assumed (the condition is what to assume), `Err(why)` when it fails.
-fn geometric_convergence(q: ExprId, pool: &ExprPool) -> Result<Option<SideCondition>, String> {
+pub(super) fn geometric_convergence(
+    q: ExprId,
+    pool: &ExprPool,
+) -> Result<Option<SideCondition>, String> {
     let one = pool.integer(1_i32);
     let fail = |what: &str| {
         Err(format!(
@@ -434,7 +437,7 @@ fn geometric_convergence(q: ExprId, pool: &ExprPool) -> Result<Option<SideCondit
 /// The triangular solve leaves nested `(q − 1)^{−j}` terms; over a common
 /// denominator (`r·(1 + r)/(1 − r)^3` for `Σ k²rᵏ`) is usually far shorter.
 /// Kept only when it is shorter — both forms are the same rational function.
-fn tidy(value: ExprId, pool: &ExprPool) -> ExprId {
+pub(super) fn tidy(value: ExprId, pool: &ExprPool) -> ExprId {
     let Ok(c) = crate::poly::cancel(value, vec![], pool) else {
         return value;
     };
@@ -526,15 +529,31 @@ fn infinite_geometric(term: ExprId, k: ExprId, lo: ExprId, pool: &ExprPool) -> O
 // ---------------------------------------------------------------------------
 
 /// `R(k) = scale · N(k) · Π (k − ρ_j)^{−m_j}` for one additive piece.
-struct RationalPiece {
-    numer: Vec<ExprId>,
-    poles: Vec<(ExprId, u32)>,
+pub(super) struct RationalPiece {
+    pub(super) numer: Vec<ExprId>,
+    pub(super) poles: Vec<(ExprId, u32)>,
+    /// Simple irreducible quadratic factors `k² + p·k + s` of the
+    /// denominator, as `(p, s)` with `p` a rational literal and `s` free of
+    /// `k` (F12). Their poles `α ± iβ` (`α = −p/2`, `β² = s − p²/4`) are
+    /// complex, so they never telescope against a real pole.
+    pub(super) quads: Vec<(Rational, ExprId)>,
 }
 
-/// Linear-factor roots (with multiplicity) and leading coefficient of a
-/// polynomial with rational literal coefficients, or `None` when some
-/// irreducible factor has degree > 1.
-fn rational_linear_roots(coeffs: &[Rational]) -> Option<(Vec<(Rational, u32)>, Rational)> {
+/// `(linear roots, monic quadratics (p, s, multiplicity), leading coefficient)`.
+type FactorRoots = (
+    Vec<(Rational, u32)>,
+    Vec<(Rational, Rational, u32)>,
+    Rational,
+);
+
+/// Quadratic poles sharing `β²` and `frac(x₀)`: `(β², frac, [(x₀, A)])`.
+type QuadClass = (ExprId, Rational, Vec<(Rational, ExprId)>);
+
+/// Factorisation over ℚ of a polynomial with rational literal coefficients:
+/// `(linear roots with multiplicity, monic irreducible quadratics (p, s,
+/// multiplicity), leading coefficient)`, or `None` when some irreducible
+/// factor has degree > 2.
+fn rational_factor_roots(coeffs: &[Rational]) -> Option<FactorRoots> {
     let lc = coeffs.last()?.clone();
     if lc == 0 {
         return None;
@@ -563,18 +582,26 @@ fn rational_linear_roots(coeffs: &[Rational]) -> Option<(Vec<(Rational, u32)>, R
     let p = crate::poly::UniPoly::from_symbolic(pool.add(terms), x, &pool).ok()?;
     let fac = p.factor_z().ok()?;
     let mut roots = Vec::new();
+    let mut quads = Vec::new();
     for (f, m) in &fac.factors {
-        if f.degree() != 1 {
-            return None;
-        }
         let c = f.coefficients();
-        let root = Rational::from((-c[0].clone(), c[1].clone()));
-        roots.push((root, *m));
+        match f.degree() {
+            1 => {
+                let root = Rational::from((-c[0].clone(), c[1].clone()));
+                roots.push((root, *m));
+            }
+            2 => {
+                let p = Rational::from((c[1].clone(), c[2].clone()));
+                let s = Rational::from((c[0].clone(), c[2].clone()));
+                quads.push((p, s, *m));
+            }
+            _ => return None,
+        }
     }
-    Some((roots, lc))
+    Some((roots, quads, lc))
 }
 
-fn rational_piece(piece: ExprId, k: ExprId, pool: &ExprPool) -> Option<RationalPiece> {
+pub(super) fn rational_piece(piece: ExprId, k: ExprId, pool: &ExprPool) -> Option<RationalPiece> {
     let mut work: Vec<ExprId> = match pool.get(piece) {
         ExprData::Mul(xs) => xs.to_vec(),
         _ => vec![piece],
@@ -582,6 +609,7 @@ fn rational_piece(piece: ExprId, k: ExprId, pool: &ExprPool) -> Option<RationalP
     let mut scale = Vec::new();
     let mut numer = Vec::new();
     let mut poles: Vec<(ExprId, u32)> = Vec::new();
+    let mut quads: Vec<(Rational, ExprId)> = Vec::new();
     let mut found_pole = false;
     let mut steps = 0_u32;
     while let Some(f) = work.pop() {
@@ -647,14 +675,34 @@ fn rational_piece(piece: ExprId, k: ExprId, pool: &ExprPool) -> Option<RationalP
             poles.push((rho, m));
             continue;
         }
-        let lits: Vec<Rational> = bc
-            .iter()
-            .map(|&c| literal(pool, c))
-            .collect::<Option<_>>()?;
-        let (roots, lc) = rational_linear_roots(&lits)?;
+        let lits: Option<Vec<Rational>> = bc.iter().map(|&c| literal(pool, c)).collect();
+        let Some(lits) = lits else {
+            // `k² + p·k + s` with literal `p` and a symbolic `s` (`k² + a²`):
+            // an irreducible quadratic when `s − p²/4 > 0`, which the
+            // quadratic path decides or states.
+            if bc.len() != 3 || m != 1 {
+                return None;
+            }
+            let a2 = literal(pool, bc[2])?;
+            let a1 = literal(pool, bc[1])?;
+            if a2 == 0 {
+                return None;
+            }
+            let inv = rational_expr(pool, &(Rational::from(1) / a2.clone()));
+            scale.push(inv);
+            quads.push((a1 / a2, simp(pool, pool.mul(vec![bc[0], inv]))));
+            continue;
+        };
+        let (roots, qs, lc) = rational_factor_roots(&lits)?;
         scale.push(pool.pow(rational_expr(pool, &lc), pool.integer(-(m as i64))));
         for (r, mult) in roots {
             poles.push((rational_expr(pool, &r), mult.checked_mul(m)?));
+        }
+        for (p, s, mult) in qs {
+            if mult.checked_mul(m)? != 1 {
+                return None;
+            }
+            quads.push((p, rational_expr(pool, &s)));
         }
     }
     if !found_pole {
@@ -677,21 +725,28 @@ fn rational_piece(piece: ExprId, k: ExprId, pool: &ExprPool) -> Option<RationalP
     Some(RationalPiece {
         numer: n,
         poles: merged,
+        quads,
     })
 }
 
 /// Partial-fraction coefficients `c_{ρ,s}` (`s = 1..=m`) of one piece, keyed
 /// by pole; `None` when the piece has a polynomial part (`deg N ≥ Σ m`), which
 /// a convergent series cannot have.
-fn partial_fractions(
+pub(super) fn partial_fractions(
     piece: &RationalPiece,
     k: ExprId,
     pool: &ExprPool,
     conditions: &mut Vec<SideCondition>,
 ) -> Option<Vec<(ExprId, Vec<ExprId>)>> {
-    let total: u32 = piece.poles.iter().map(|p| p.1).sum();
+    let total: u32 = piece.poles.iter().map(|p| p.1).sum::<u32>() + 2 * piece.quads.len() as u32;
     if piece.numer.len() as u32 > total {
         return None;
+    }
+    // A repeated quadratic factor would need higher-order complex poles.
+    for (i, qi) in piece.quads.iter().enumerate() {
+        if piece.quads.iter().skip(i + 1).any(|qj| qj == qi) {
+            return None;
+        }
     }
     // Distinct poles must stay distinct: their differences are divisors.
     for (i, &(ri, _)) in piece.poles.iter().enumerate() {
@@ -718,6 +773,9 @@ fn partial_fractions(
                 fs.push(pool.pow(pool.add(vec![k, neg(pool, ri)]), pool.integer(-(mi as i64))));
             }
         }
+        for (p, s) in &piece.quads {
+            fs.push(pool.pow(quad_expr(p, *s, k, pool), pool.integer(-1_i32)));
+        }
         let mut g = pool.mul(fs);
         let mut at = HashMap::new();
         at.insert(k, rho);
@@ -739,6 +797,252 @@ fn partial_fractions(
         out.push((rho, coeffs));
     }
     Some(out)
+}
+
+/// `k² + p·k + s`.
+fn quad_expr(p: &Rational, s: ExprId, k: ExprId, pool: &ExprPool) -> ExprId {
+    pool.add(vec![
+        pool.pow(k, pool.integer(2_i32)),
+        pool.mul(vec![rational_expr(pool, p), k]),
+        s,
+    ])
+}
+
+/// Reduce a coefficient vector modulo the monic `k² + p·k + s`, to `[c₀, c₁]`.
+fn reduce_mod_quad(c: &[ExprId], p: &Rational, s: ExprId, pool: &ExprPool) -> [ExprId; 2] {
+    let mut c: Vec<ExprId> = c.to_vec();
+    let pe = rational_expr(pool, p);
+    for i in (2..c.len()).rev() {
+        let top = c[i];
+        c[i - 1] = simp(
+            pool,
+            pool.add(vec![c[i - 1], neg(pool, pool.mul(vec![pe, top]))]),
+        );
+        c[i - 2] = simp(
+            pool,
+            pool.add(vec![c[i - 2], neg(pool, pool.mul(vec![s, top]))]),
+        );
+    }
+    let zero = pool.integer(0_i32);
+    [
+        c.first().copied().unwrap_or(zero),
+        c.get(1).copied().unwrap_or(zero),
+    ]
+}
+
+/// The numerators `A·k + B` of the quadratic partial fractions of `piece`:
+/// `piece = Σ_ρ … + Σ_Q (A_Q·k + B_Q)/Q(k)`. With `L` the rest of the
+/// denominator, `A·k + B ≡ N·L^{−1} (mod Q)`; the inverse of a linear
+/// `l₁k + l₀` modulo `Q` is `(−l₁k + l₀ − p·l₁)/(l₁²s − p·l₀l₁ + l₀²)`.
+fn quadratic_numerators(
+    piece: &RationalPiece,
+    pool: &ExprPool,
+) -> Option<Vec<(Rational, ExprId, ExprId, ExprId)>> {
+    let one = pool.integer(1_i32);
+    let mut out = Vec::new();
+    for (qi, (p, s)) in piece.quads.iter().enumerate() {
+        let mut l = vec![one];
+        for &(rho, m) in &piece.poles {
+            for _ in 0..m {
+                l = poly_mul(&l, &[neg(pool, rho), one], pool)?;
+            }
+        }
+        for (qj, (p2, s2)) in piece.quads.iter().enumerate() {
+            if qj != qi {
+                l = poly_mul(&l, &[*s2, rational_expr(pool, p2), one], pool)?;
+            }
+        }
+        let [n0, n1] = reduce_mod_quad(&piece.numer, p, *s, pool);
+        let [l0, l1] = reduce_mod_quad(&l, p, *s, pool);
+        let pe = rational_expr(pool, p);
+        let norm = simp(
+            pool,
+            pool.add(vec![
+                pool.mul(vec![l1, l1, *s]),
+                neg(pool, pool.mul(vec![pe, l0, l1])),
+                pool.mul(vec![l0, l0]),
+            ]),
+        );
+        if provably_zero(pool, norm) {
+            return None;
+        }
+        let m0 = pool.add(vec![l0, neg(pool, pool.mul(vec![pe, l1]))]);
+        let inv = pool.pow(norm, pool.integer(-1_i32));
+        let a = pool.add(vec![
+            pool.mul(vec![n1, m0]),
+            neg(pool, pool.mul(vec![n0, l1])),
+            pool.mul(vec![n1, l1, pe]),
+        ]);
+        let b = pool.add(vec![pool.mul(vec![n0, m0]), pool.mul(vec![n1, l1, *s])]);
+        out.push((
+            p.clone(),
+            *s,
+            tidy(simp(pool, pool.mul(vec![a, inv])), pool),
+            tidy(simp(pool, pool.mul(vec![b, inv])), pool),
+        ));
+    }
+    Some(out)
+}
+
+/// `Im ψ(x + iβ)` for a literal `x` that is an integer or a half-integer
+/// (DLMF 5.4.17, 5.4.18 and the recurrence `ψ(z + 1) = ψ(z) + 1/z`):
+/// `Im ψ(iβ) = 1/(2β) + (π/2)·coth(πβ)`, `Im ψ(½ + iβ) = (π/2)·tanh(πβ)`,
+/// and each unit step adds `Im 1/(u + iβ) = −β/(u² + β²)`.
+fn im_digamma(x: &Rational, beta: ExprId, beta2: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let half = Rational::from((1, 2));
+    let f = if *x.denom() == 1 {
+        Rational::new()
+    } else if *x.denom() == 2 {
+        half.clone()
+    } else {
+        return None;
+    };
+    let steps = (x.clone() - f.clone()).numer().to_i64()?;
+    if steps.abs() > MAX_TELESCOPE_TERMS {
+        return None;
+    }
+    let pi = pool.symbol("pi", Domain::Real);
+    let tanh = pool.func("tanh", vec![pool.mul(vec![pi, beta])]);
+    let mut parts = if f == 0 {
+        vec![
+            pool.mul(vec![
+                pool.rational(1, 2),
+                pool.pow(beta, pool.integer(-1_i32)),
+            ]),
+            pool.mul(vec![
+                pool.rational(1, 2),
+                pi,
+                pool.pow(tanh, pool.integer(-1_i32)),
+            ]),
+        ]
+    } else {
+        vec![pool.mul(vec![pool.rational(1, 2), pi, tanh])]
+    };
+    // β/(u² + β²) for u = f + j over the steps between f and x.
+    let (from, to, sign) = if steps >= 0 {
+        (0, steps, -1)
+    } else {
+        (steps, 0, 1)
+    };
+    for j in from..to {
+        if crate::budget::check().is_err() {
+            return None;
+        }
+        let u = f.clone() + Rational::from(j);
+        let u2 = rational_expr(pool, &(u.clone() * u));
+        parts.push(pool.mul(vec![
+            pool.integer(sign),
+            beta,
+            pool.pow(pool.add(vec![u2, beta2]), pool.integer(-1_i32)),
+        ]));
+    }
+    Some(pool.add(parts))
+}
+
+/// `β` with `β² = beta2`: the base of a literal square (`a²` gives `a`; the
+/// closed forms below are even in `β`), else `√beta2`.
+fn sqrt_of_square(beta2: ExprId, pool: &ExprPool) -> ExprId {
+    if let ExprData::Pow { base, exp } = pool.get(beta2) {
+        if matches!(pool.get(exp), ExprData::Integer(n) if n.0 == 2) {
+            return base;
+        }
+    }
+    simp(pool, pool.pow(beta2, pool.rational(1, 2)))
+}
+
+/// The contribution of the irreducible quadratic partial fractions
+/// `Σ_{k≥lo} (A·k + B)/((k − α)² + β²)` (regularised: their `1/k` tails are
+/// accounted for by the caller's convergence check).
+///
+/// Writing the pair of conjugate poles `α ± iβ`, the sum is
+/// `(C/β)·Im ψ(x₀ + iβ) − A·Re ψ(x₀ + iβ)` with `x₀ = lo − α`,
+/// `C = B + A·α`. `Im ψ` is elementary at integer and half-integer `x₀`;
+/// `Re ψ(x₀ + iβ)` is not, so the `A` parts must cancel within each class of
+/// poles sharing `β²` and differing by an integer in `α` — then only finitely
+/// many `Re 1/(u + iβ) = u/(u² + β²)` terms remain. `None` when they do not.
+fn quadratic_contribution(
+    quads: &[(Rational, ExprId, ExprId, ExprId)],
+    lo: &Rational,
+    pool: &ExprPool,
+    conditions: &mut Vec<SideCondition>,
+) -> Option<ExprId> {
+    let mut parts = Vec::new();
+    // (β², frac(x₀)) → members (x₀, A)
+    let mut classes: Vec<QuadClass> = Vec::new();
+    for (p, beta2_raw, a, b) in quads {
+        let alpha = -p.clone() / Rational::from(2);
+        let beta2 = simp(
+            pool,
+            pool.add(vec![
+                *beta2_raw,
+                rational_expr(pool, &(-(alpha.clone() * alpha.clone()))),
+            ]),
+        );
+        match literal(pool, beta2) {
+            Some(v) if v > 0 => {}
+            Some(_) => return None,
+            None => match assumed_sign(beta2, pool) {
+                Some(Sign::Positive) => {}
+                Some(_) => return None,
+                None => {
+                    let c = SideCondition::Positive(beta2);
+                    if !conditions.contains(&c) {
+                        conditions.push(c);
+                    }
+                }
+            },
+        }
+        let beta = sqrt_of_square(beta2, pool);
+        let x0 = lo.clone() - alpha.clone();
+        let c = simp(
+            pool,
+            pool.add(vec![*b, pool.mul(vec![*a, rational_expr(pool, &alpha)])]),
+        );
+        if !provably_zero(pool, c) {
+            let im = im_digamma(&x0, beta, beta2, pool)?;
+            parts.push(pool.mul(vec![c, pool.pow(beta, pool.integer(-1_i32)), im]));
+        }
+        if !provably_zero(pool, *a) {
+            let frac = x0.clone() - x0.clone().floor();
+            match classes
+                .iter_mut()
+                .find(|(b2, f, _)| *b2 == beta2 && *f == frac)
+            {
+                Some(cl) => cl.2.push((x0, *a)),
+                None => classes.push((beta2, frac, vec![(x0, *a)])),
+            }
+        }
+    }
+    for (beta2, _, members) in classes {
+        let total = simp(
+            pool,
+            pool.add(members.iter().map(|m| m.1).collect::<Vec<_>>()),
+        );
+        if !provably_zero(pool, total) {
+            return None;
+        }
+        let xmin = members.iter().map(|m| m.0.clone()).min()?;
+        for (x, a) in &members {
+            let d = (x.clone() - xmin.clone()).numer().to_i64()?;
+            if d > MAX_TELESCOPE_TERMS {
+                return None;
+            }
+            for t in 0..d {
+                if crate::budget::check().is_err() {
+                    return None;
+                }
+                let u = xmin.clone() + Rational::from(t);
+                let u2 = rational_expr(pool, &(u.clone() * u.clone()));
+                // −A·Re 1/(u + iβ) = −A·u/(u² + β²)
+                parts.push(pool.mul(vec![
+                    neg(pool, *a),
+                    rational_expr(pool, &u),
+                    pool.pow(pool.add(vec![u2, beta2]), pool.integer(-1_i32)),
+                ]));
+            }
+        }
+    }
+    Some(pool.add(parts))
 }
 
 /// `ζ(s, x) = Σ_{i≥0} (x + i)^{−s}` for `s ≥ 2`: a closed form at integer and
@@ -821,6 +1125,8 @@ fn infinite_rational(term: ExprId, k: ExprId, lo: ExprId, pool: &ExprPool) -> Ou
     let mut conditions: Vec<SideCondition> = Vec::new();
     // pole → coefficient by order (index s−1)
     let mut poles: Vec<(ExprId, Vec<ExprId>)> = Vec::new();
+    // Irreducible quadratic factors: (p, s, A, B) of (A·k + B)/(k² + p·k + s).
+    let mut quads: Vec<(Rational, ExprId, ExprId, ExprId)> = Vec::new();
     for piece in pieces {
         let Some(rp) = rational_piece(piece, k, pool) else {
             return Outcome::NotApplicable;
@@ -828,6 +1134,20 @@ fn infinite_rational(term: ExprId, k: ExprId, lo: ExprId, pool: &ExprPool) -> Ou
         let Some(pf) = partial_fractions(&rp, k, pool, &mut conditions) else {
             return Outcome::NotApplicable;
         };
+        if !rp.quads.is_empty() {
+            let Some(qn) = quadratic_numerators(&rp, pool) else {
+                return Outcome::NotApplicable;
+            };
+            for (p, s, a, b) in qn {
+                match quads.iter_mut().find(|q| q.0 == p && q.1 == s) {
+                    Some(q) => {
+                        q.2 = simp(pool, pool.add(vec![q.2, a]));
+                        q.3 = simp(pool, pool.add(vec![q.3, b]));
+                    }
+                    None => quads.push((p, s, a, b)),
+                }
+            }
+        }
         for (rho, cs) in pf {
             let slot = match poles.iter().position(|(r, _)| *r == rho) {
                 Some(i) => i,
@@ -845,10 +1165,17 @@ fn infinite_rational(term: ExprId, k: ExprId, lo: ExprId, pool: &ExprPool) -> Ou
             }
         }
     }
-    // Convergence: the 1/k coefficient of the tail, Σ c_{ρ,1}, must vanish.
+    // Convergence: the 1/k coefficient of the tail, Σ c_{ρ,1} (+ Σ A for
+    // the quadratic factors), must vanish.
     let s1 = simp(
         pool,
-        pool.add(poles.iter().map(|(_, cs)| cs[0]).collect::<Vec<_>>()),
+        pool.add(
+            poles
+                .iter()
+                .map(|(_, cs)| cs[0])
+                .chain(quads.iter().map(|q| q.2))
+                .collect::<Vec<_>>(),
+        ),
     );
     if !provably_zero(pool, s1) {
         if literal(pool, s1).is_some() {
@@ -994,10 +1321,28 @@ fn infinite_rational(term: ExprId, k: ExprId, lo: ExprId, pool: &ExprPool) -> Ou
             }
         }
     }
+    if !quads.is_empty() {
+        // Complex poles: closed forms need a literal integer lower bound
+        // (`x₀ = lo − α` an integer or half-integer).
+        let Some(lo_v) = literal(pool, lo).filter(|v| *v.denom() == 1) else {
+            return Outcome::NotApplicable;
+        };
+        let Some(q) = quadratic_contribution(&quads, &lo_v, pool, &mut conditions) else {
+            return Outcome::NotApplicable;
+        };
+        parts.push(q);
+    }
     let value = if parts.is_empty() {
         pool.integer(0_i32)
     } else {
         simp(pool, pool.add(parts))
+    };
+    // The coth/tanh terms of conjugate pole pairs often cancel
+    // (`Σ k/(k⁴ + 4) = 3/8`); over ℚ(generators) that is visible.
+    let value = if quads.is_empty() {
+        value
+    } else {
+        tidy(value, pool)
     };
     if has_float(value, pool) && !has_float(term, pool) {
         // A special-function value folded to a float somewhere: that is not an
@@ -1048,7 +1393,7 @@ fn digamma_without_gamma(x: ExprId, pool: &ExprPool) -> Option<ExprId> {
     None
 }
 
-fn has_float(e: ExprId, pool: &ExprPool) -> bool {
+pub(super) fn has_float(e: ExprId, pool: &ExprPool) -> bool {
     match pool.get(e) {
         ExprData::Float(_) => true,
         ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().any(|&x| has_float(x, pool)),
@@ -1061,7 +1406,7 @@ fn has_float(e: ExprId, pool: &ExprPool) -> bool {
 /// `e = 0`, decided after simplification and, failing that, over ℚ(generators)
 /// by [`crate::poly::cancel`] — so `1/(b−a) + 1/(a−b)` is zero. `false` means
 /// *not established*.
-fn provably_zero(pool: &ExprPool, e: ExprId) -> bool {
+pub(super) fn provably_zero(pool: &ExprPool, e: ExprId) -> bool {
     let e = simp(pool, e);
     if is_zero(pool, e) {
         return true;
@@ -1072,14 +1417,24 @@ fn provably_zero(pool: &ExprPool, e: ExprId) -> bool {
     }
 }
 
-/// `Σ_{k=lo}^{∞} term`: polynomial × geometric first, then rational series.
+/// `Σ_{k=lo}^{∞} term`: polynomial × geometric first, then rational series,
+/// then rational × geometric (polylogarithms) and general hypergeometric
+/// terms (`ₚFq`, see `hyper_series`).
 pub(super) fn infinite_sum(term: ExprId, k: ExprId, lo: ExprId, pool: &ExprPool) -> Outcome {
     let term = simp(pool, term);
     match infinite_geometric(term, k, lo, pool) {
         Outcome::NotApplicable => {}
         other => return other,
     }
-    infinite_rational(term, k, lo, pool)
+    match infinite_rational(term, k, lo, pool) {
+        Outcome::NotApplicable => {}
+        other => return other,
+    }
+    match super::hyper_series::infinite_polylog(term, k, lo, pool) {
+        Outcome::NotApplicable => {}
+        other => return other,
+    }
+    super::hyper_series::infinite_hypergeometric(term, k, lo, pool)
 }
 
 #[cfg(test)]
@@ -1314,9 +1669,12 @@ mod tests {
         let t = pool.pow(pool.mul(vec![k, pool.add(vec![k, i(1)])]), i(-1));
         let e = sum_definite(t, k, i(0), inf, &pool).unwrap_err();
         assert_eq!(e.code(), "E-SUM-003");
-        // Irreducible quadratic denominator: not attempted.
+        // Irreducible quadratic denominator (F12): (1 + π·coth π)/2.
         let t = pool.pow(pool.add(vec![pool.pow(k, i(2)), i(1)]), i(-1));
-        assert!(sum_definite(t, k, i(0), inf, &pool).is_err());
+        let v = sum_definite(t, k, i(0), inf, &pool).unwrap();
+        let pi = std::f64::consts::PI;
+        let got = eval_interp(v.value, &HashMap::new(), &pool).unwrap();
+        assert!(close(got, 0.5 + pi / (2.0 * pi.tanh())), "{got}");
     }
 
     #[test]

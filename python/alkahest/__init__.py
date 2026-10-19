@@ -1519,8 +1519,8 @@ def sum_definite(expr, k, lo, hi):
 
     ``hi`` may also be :attr:`ExprPool.pos_infinity` (or ``parse("oo")``) for
     an infinite sum.  Gosper's algorithm doesn't apply there (its
-    antidifference has no reason to vanish at ``∞``); instead two families are
-    summed exactly, each knowing its own convergence condition:
+    antidifference has no reason to vanish at ``∞``); instead these families
+    are summed exactly, each knowing its own convergence condition:
 
     * **polynomial × geometric** — ``Σ_{k=a}^∞ P(k)·q^k`` for any ``q`` free
       of ``k`` (``r``, ``exp(-ke*tau)``, ``1/2``), e.g. ``Σ k·rᵏ = r/(1-r)²``.
@@ -1539,7 +1539,32 @@ def sum_definite(expr, k, lo, hi):
       ``Σ_{k≥1} 1/k² = π²/6`` (however ``1/k²`` is spelled),
       ``Σ 1/(2k+1)² = π²/8``, ``Σ 1/(k(k+½)) = 4 − 4·log 2``; ``digamma`` /
       ``trigamma`` at non-special points, with the positivity of a symbolic
-      shift stated as a side condition.
+      shift stated as a side condition.  Irreducible quadratic denominators
+      ``k² + p·k + s`` (``p`` rational) are summed through
+      ``Im ψ(x + iβ)``: ``Σ_{k≥1} 1/(k²+a²) = (π·a·coth(π·a) − 1)/(2a²)``
+      (printed with ``tanh``; side condition ``a² > 0`` unless known),
+      ``Σ_{k≥1} k/(k⁴+4) = 3/8``.  When the non-elementary ``Re ψ(x + iβ)``
+      would be needed (``Σ 1/((k+1)(k²+1))``) the sum is refused
+      (``E-SUM-002``), not guessed.
+
+    * **rational × geometric** with integer poles (the polylogarithm
+      family): ``Σ rᵏ/k = −log(1 − r)``, ``Σ rᵏ/k^s = polylog(s, r)``
+      (``dilog`` for ``s = 2``), ``Σ rᵏ/(k(k+1))`` elementary; ``|r| < 1`` as
+      for the geometric series, and ``r = −1`` when the rational factor has no
+      polynomial part (``Σ (−1)ᵏ/k = −log 2``).
+
+    * **hypergeometric terms** — ``t_{k+1}/t_k`` rational in ``k`` (powers
+      of ``k``-polynomials with rational roots, ``gamma``/``factorial``/
+      ``binomial``/``pochhammer`` of integer-slope linear arguments, ``q^k``,
+      ``exp(c·k)``): the sum from the first non-zero term ``t₀`` is
+      ``t₀·hyper(a, b, z)``, rewritten by :func:`expand_hyper` when a closed
+      form is known — ``Σ qᵏ/k! = exp(q)``, ``Σ x^{2k}/(2k)! = cosh x``,
+      ``Σ (−1)ᵏ/(2k+1) = π/4``, ``Σ binomial(2k, k)·xᵏ = (1 − 4x)^{−1/2}`` —
+      and returned as the exact ``hyper`` node otherwise (``Σ (k!)³/(3k)!``).
+      Convergence: always when ``p ≤ q`` or the series terminates; ``|z| < 1``
+      (stated or decided) when ``p = q + 1``, with ``z = 1`` needing
+      ``Σb − Σa > 0`` (Gauss) and ``z = −1`` needing ``Σb − Σa > −1``;
+      ``p > q + 1`` diverges (``Σ k!·xᵏ``, ``E-SUM-003``).
 
     Divergent series (``Σ 1/k``, ``Σ 2ᵏ``, Grandi's ``Σ (−1)ᵏ``, ``Σ rᵏ`` under
     ``r > 1``) raise ``SumError`` (``E-SUM-003``).  Odd zeta values are named,

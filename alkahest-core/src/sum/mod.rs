@@ -8,6 +8,7 @@
 mod closed_form;
 mod expr_ratio;
 pub(crate) mod gosper;
+mod hyper_series;
 mod poly_aux;
 mod product;
 mod ratfunc;
@@ -70,7 +71,7 @@ impl crate::errors::AlkahestError for SumError {
 
     fn remediation(&self) -> Option<&'static str> {
         Some(
-            "supported indefinite sums are hypergeometric terms built from polynomials in k, products, and gamma(linear(k)); Zeilberger automation is partial — use verify_wz_pair for certificates. Sums to infinity (hi = pool.pos_infinity()) are summed for polynomial × geometric terms (under |q| < 1, stated as a side condition when not known) and for rational terms whose poles are linear in k (telescoping, zeta values — exact for even orders, zeta(s) for odd —, digamma/trigamma, hurwitz_zeta); other improper sums and divergent series are refused rather than guessed",
+            "supported indefinite sums are hypergeometric terms built from polynomials in k, products, and gamma(linear(k)); Zeilberger automation is partial — use verify_wz_pair for certificates. Sums to infinity (hi = pool.pos_infinity()) are summed for polynomial × geometric terms (under |q| < 1, stated as a side condition when not known) and for rational terms whose poles are linear in k (telescoping, zeta values — exact for even orders, zeta(s) for odd —, digamma/trigamma, hurwitz_zeta; irreducible quadratic denominators via coth/tanh), for rational × geometric terms with integer poles (polylog) and for hypergeometric terms (t0·hyper(a, b, z), expanded when a closed form is known); other improper sums and divergent series are refused rather than guessed",
         )
     }
 }
@@ -150,8 +151,17 @@ pub fn sum_indefinite(
 ///   Hurwitz-zeta values exactly — `π^{2m}`-multiples for even orders at
 ///   integer and half-integer points (`Σ 1/k² = π²/6`, `Σ 1/(2k+1)² = π²/8`),
 ///   `digamma`/`trigamma`/`hurwitz_zeta` elsewhere; odd zeta values are named
-///   (`Σ 1/k³ = zeta(3)`, never approximated). Divergent series (`Σ 1/k`, `Σ 2^k`) and
-///   a pole inside the range are refused with `E-SUM-003`.
+///   (`Σ 1/k³ = zeta(3)`, never approximated). Irreducible quadratic
+///   denominators `k² + p·k + s` go through `Im ψ(x + iβ)`
+///   (`Σ_{k≥1} 1/(k²+a²) = (π a coth(π a) − 1)/(2a²)`, `a² > 0` stated).
+///   Divergent series (`Σ 1/k`, `Σ 2^k`) and a pole inside the range are
+///   refused with `E-SUM-003`.
+/// * **rational × geometric** with integer poles: polylogarithms
+///   (`Σ r^k/k = −log(1 − r)`, `Σ r^k/k² = dilog(r)`), under `|r| < 1`.
+/// * **hypergeometric terms** (`t_{k+1}/t_k` rational in `k`):
+///   `t_{k₀}·ₚFq(a; b; z)`, then [`crate::specfun::expand_hyper`]
+///   (`Σ q^k/k! = e^q`); the exact `hyper` node when no closed form is known.
+///   Convergence follows `p` vs `q + 1` and `|z|` (Gauss at `z = 1`).
 ///
 /// Infinite bounds anywhere else (a lower bound, `−∞`, `∞ − 1`) are refused
 /// with `E-SUM-003`.

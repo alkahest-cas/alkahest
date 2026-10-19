@@ -175,4 +175,9 @@ Generalized hypergeometric function
    ``2F1(a, b; c; 1)`` when ``c - a - b`` is a positive literal,
    ``1F1(1; 2; z) = (exp(z) - 1)/z``,
    ``1F1(1/2; 3/2; -w) = sqrt(pi)*erf(sqrt(w))/(2*sqrt(w))``, and ``0F1`` as
-   ``cosh``/``sinh`` or Bessel ``J``/``I``. Other nodes are kept.
+   ``cosh``/``sinh`` (``cos``/``sin`` for a negated argument ``-w``) or
+   Bessel ``J``/``I``; for ``z = -w`` also ``2F1(1/2, 1; 3/2; -w) =
+   atan(sqrt(w))/sqrt(w)`` and ``2F1(1/2, 1/2; 3/2; -w) =
+   asinh(sqrt(w))/sqrt(w)``; ``(s+1)Fs(1, …, 1; 2, …, 2; z) = polylog(s, z)/z``.
+   Other nodes are kept. :func:`sum_definite` produces these nodes for
+   infinite sums of hypergeometric terms (``Σ q**k/k! = exp(q)``).
