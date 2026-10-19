@@ -290,6 +290,8 @@ is_zero(sqrt(x**2) - x)                    # False  (x real: disproved at x < 0)
 equals(exp(2*x), exp(x)**2).status         # 'proved_zero'
 ```
 
+**Non-smooth functions:** `diff`/`diff_forward`/`symbolic_grad` of `abs`, `sign`, `floor`, `ceil`, `round`, `min`, `max` give the a.e. derivative (`d|x| = sign(x)`, `floor' = 0`, `min`/`max` -> `Piecewise`) and state the kink set in `result.side_conditions` (e.g. `["x != 0"]`). `rewrite_piecewise(e)` lowers `abs`/`sign`/`min`/`max`/`heaviside` to `Piecewise`. `integrate` of such integrands (or any `Piecewise` with polynomial conditions in the variable, no parameters, factors of degree <= 2) splits at the exact breakpoints and returns a continuous `Piecewise` antiderivative: `integrate(abs(x), x, -1, 2)` is `5/2`.
+
 **Real form:** `to_real_form(e, assumptions=None)` turns `exp(±iθ)` pairs into `cos`/`sin`, `√(negative)` into `i·√(positive)` and `√(4a²)` into `2|a|` (`2a` under `a >= 0`), returning the real part only when the imaginary part is *proved* zero (else `e` unchanged). `matrix_exp`, `dsolve` and `inverse_laplace_transform` already apply it, so oscillatory/biexponential results evaluate in real mode, the JIT and C.
 
 ```python

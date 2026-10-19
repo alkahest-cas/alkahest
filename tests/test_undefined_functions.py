@@ -65,7 +65,7 @@ def test_builtins_and_reserved_names_still_refuse(pool):
             ak.diff(pool.func(name, [x]), x)
         assert exc.value.code == "E-DIFF-001"
     with pytest.raises(ak.DiffError):
-        ak.diff(ak.floor(x), x)
+        ak.diff(pool.func("polygamma", [x, x * x]), x)
 
 
 # ---------------------------------------------------------------------------

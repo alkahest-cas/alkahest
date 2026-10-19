@@ -3299,6 +3299,26 @@ impl PyDerivedResult {
         list
     }
 
+    /// Every side condition recorded by the derivation, flattened and
+    /// de-duplicated (``["x != 0", ...]``).
+    ///
+    /// For :func:`diff` / :func:`diff_forward` of ``abs``, ``sign``,
+    /// ``floor``, ``ceil``, ``round``, ``min`` or ``max`` these are the points
+    /// where the almost-everywhere derivative returned does not hold (the
+    /// kinks and jumps); empty for a smooth expression.
+    #[getter]
+    fn side_conditions(&self, py: Python<'_>) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for (_, _, _, conds) in self.steps_text(py) {
+            for c in conds {
+                if !out.contains(c) {
+                    out.push(c.clone());
+                }
+            }
+        }
+        out
+    }
+
     /// Lean 4 proof certificate (``.lean`` source), when the derivation log is
     /// certifiable without ``sorry`` and without false unwrapped equalities.
     ///
@@ -9546,6 +9566,35 @@ fn py_to_real_form(
         let ctx = assumptions.as_ref().map(|a| &a.inner).unwrap_or(&empty);
         let (id, pool) = (expr.id, &pool.inner);
         py.allow_threads(|| alkahest_core::simplify::to_real_form(id, pool, ctx))
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// `alkahest.rewrite_piecewise(expr) -> Expr`
+///
+/// Lower ``abs``, ``sign``, ``heaviside``, ``min`` and ``max`` to
+/// :func:`piecewise`, everywhere in ``expr``.
+///
+/// ``abs(g)`` becomes ``Piecewise((g >= 0, g); -g)``; ``min(a, b)`` becomes
+/// ``Piecewise((a <= b, a); b)`` and ``max(a, b)`` the ``>=`` form (more than
+/// two arguments fold to the right); ``sign`` and ``heaviside`` use their
+/// registry values at 0 (``0`` and ``1/2``).  The lowered form agrees with the
+/// original at every point.  ``floor``/``ceil``/``round`` have infinitely many
+/// pieces and are left alone.  :func:`integrate` applies this itself.
+///
+/// Example:
+///     >>> p = ExprPool(); x = p.symbol("x")
+///     >>> rewrite_piecewise(abs(x))
+///     Piecewise((x >= 0, x); -x)
+#[pyfunction]
+#[pyo3(name = "rewrite_piecewise")]
+fn py_rewrite_piecewise(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyExpr> {
+    let pool_py = expr.pool.clone_ref(py);
+    let id = {
+        let pool = pool_py.borrow(py);
+        guard_depth(&pool.inner, expr.id)?;
+        let (id, pool) = (expr.id, &pool.inner);
+        py.allow_threads(|| alkahest_core::simplify::rewrite_piecewise(id, pool))
     };
     Ok(PyExpr { id, pool: pool_py })
 }
@@ -21758,6 +21807,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_simplify_log_exp, m)?)?;
     m.add_function(wrap_pyfunction!(py_zero_test, m)?)?;
     m.add_function(wrap_pyfunction!(py_to_real_form, m)?)?;
+    m.add_function(wrap_pyfunction!(py_rewrite_piecewise, m)?)?;
     m.add_function(wrap_pyfunction!(py_evaluate, m)?)?;
     m.add_function(wrap_pyfunction!(py_diff, m)?)?;
     m.add_function(wrap_pyfunction!(py_diff_forward, m)?)?;

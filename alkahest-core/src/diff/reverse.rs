@@ -94,7 +94,7 @@ pub fn grad(expr: ExprId, vars: &[ExprId], pool: &ExprPool) -> Vec<ExprId> {
 /// # Errors
 ///
 /// [`DiffError::UnknownFunction`] (`E-DIFF-001`) when a function that depends
-/// on a requested variable has no derivative rule (e.g. `floor(x)`, or an
+/// on a requested variable has no derivative rule (e.g. `polygamma(x, x^2)`, whose order depends on `x`, or an
 /// undefined `f(x)`).  The forward differentiator's errors propagate
 /// unchanged from the nodes reverse mode delegates to it.
 ///
@@ -110,8 +110,8 @@ pub fn grad(expr: ExprId, vars: &[ExprId], pool: &ExprPool) -> Vec<ExprId> {
 /// assert_ne!(gs[0], pool.integer(0_i32));
 /// assert_ne!(gs[1], pool.integer(0_i32));
 ///
-/// let floor_x = pool.func("floor", vec![x]);
-/// assert!(try_grad(floor_x, &[x], &pool).is_err());
+/// let order_dep = pool.func("polygamma", vec![x, pool.mul(vec![x, x])]);
+/// assert!(try_grad(order_dep, &[x], &pool).is_err());
 /// ```
 pub fn try_grad(expr: ExprId, vars: &[ExprId], pool: &ExprPool) -> Result<Vec<ExprId>, DiffError> {
     if vars.is_empty() {
@@ -757,8 +757,6 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let y = pool.symbol("y", Domain::Real);
         for f in [
-            pool.func("floor", vec![x]),
-            pool.func("zeta", vec![x]),
             // `trigamma` differentiates since G11c; an order that depends on
             // the variable still does not.
             pool.mul(vec![
