@@ -3388,7 +3388,7 @@ impl PyDerivedResult {
     ///   ``"withheld_gosper_shape"`` (the sum falls outside the Finset
     ///   telescope fragment), ``"withheld_product_shape"`` (the product is
     ///   not the `∏ k = n!` identity), ``"withheld_resultant_shape"`` (the
-    ///   Sylvester matrix is larger than 5×5 or a coefficient is too large), or
+    ///   Sylvester matrix is larger than 7×7 or a coefficient is too large), or
     ///   ``"withheld_uncertifiable_step"``.
     /// * ``blocking_steps`` — for ``withheld_uncertifiable_step``, the list of
     ///   ``{"index", "rule", "before", "after"}`` records whose rewrite rule has
@@ -7327,6 +7327,38 @@ impl PyZeilbergerCertificate {
         self.derivation.clone()
     }
 
+    /// Lean 4 certificate for the telescoping identity, or ``None``.
+    ///
+    /// The emitted ``example`` binds ``F : ℝ → ℝ → ℝ`` and reals ``n k``,
+    /// assumes ``F``'s hypergeometric shift relations with denominators
+    /// cleared (``D(n,k)·F(n+1,k) = N(n,k)·F(n,k)``, one per shift in ``n``
+    /// and one in ``k`` — they hold for the summand wherever it is defined)
+    /// and that every denominator it divides by is nonzero, and proves
+    ///
+    /// ``Σ_j a_j(n)·F(n+j,k) = R(n,k+1)·F(n,k+1) − R(n,k)·F(n,k)``
+    ///
+    /// with ``field_simp; ring``. A WZ pair is the order-1 case. The
+    /// recurrence for the *sum* is not part of the statement (see
+    /// :attr:`boundary`).
+    ///
+    /// Returns ``None`` when no sound statement can be printed (order above 6,
+    /// a polynomial of total degree above 24, a variable name that is not a
+    /// Lean identifier); :func:`alkahest.to_lean` turns that into
+    /// ``CertificateUnavailableError`` (``E-CERT-001``).
+    ///
+    /// Example::
+    ///
+    ///     z = alkahest.zeilberger(binomial(n, k)**2, n, k)
+    ///     print(alkahest.to_lean(z))   # same as z.to_lean()
+    fn to_lean(&self, py: Python<'_>) -> Option<String> {
+        let pool = self.pool.borrow(py);
+        let (term, n, k, pool) = (self.term_id, self.n_id, self.k_id, &pool.inner);
+        let result = &self.result;
+        let src = py
+            .allow_threads(|| alkahest_core::lean::emit_zeilberger_cert(term, n, k, result, pool));
+        (!src.is_empty()).then_some(src)
+    }
+
     fn __repr__(&self, py: Python<'_>) -> String {
         let pool = self.pool.borrow(py);
         let coeffs: Vec<String> = self
@@ -9503,9 +9535,11 @@ fn py_to_real_form(
 ///   :attr:`~DerivedResult.certificate`: a rewrite log as one ``example`` per
 ///   step, an integral via the FTC derivative relation, a limit via
 ///   ``Filter.Tendsto``, a Gosper sum via a ``Finset`` telescope, a resultant
-///   as its Sylvester determinant.
+///   as its Sylvester determinant (up to 7×7), the derivative of a
+///   ``Piecewise`` branch by branch on each branch's open region.
 /// - Any object with its own ``to_lean()`` method (e.g. a
-///   :class:`PositivityCertificate`).
+///   :class:`PositivityCertificate`, or a :class:`ZeilbergerCertificate`,
+///   whose certificate is the telescoping identity).
 ///
 /// Every free variable of the statement is universally bound by an explicit
 /// ``(x : ℝ)`` binder, and the statement is the computed result itself — never
@@ -9514,7 +9548,7 @@ fn py_to_real_form(
 /// Returns a string containing the complete ``.lean`` source file. It never
 /// returns an empty string: when no sound certificate exists (the shape is
 /// outside the certifiable fragment, nothing was derived, or the object has
-/// no Lean encoding at all, e.g. a ``ZeilbergerCertificate``), it raises
+/// no Lean encoding at all), it raises
 /// :class:`CertificateUnavailableError` (``E-CERT-001``).
 ///
 /// Example::

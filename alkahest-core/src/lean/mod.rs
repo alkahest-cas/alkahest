@@ -28,6 +28,10 @@
 use crate::deriv::log::{DerivedExpr, RewriteStep, SideCondition};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 
+mod piecewise;
+mod zeilberger;
+pub use zeilberger::emit_zeilberger_cert;
+
 // ---------------------------------------------------------------------------
 // Admissions
 // ---------------------------------------------------------------------------
@@ -2127,7 +2131,23 @@ pub fn emit_lean_expr_wrt(
     }
 
     // Withhold the whole certificate if any step is unsound or unfinished.
-    if steps.iter().any(|s| !step_is_certifiable(s, wrt, pool)) {
+    // A `diff_piecewise` step is certified branch-wise, from the branches'
+    // own derivative steps elsewhere in the log (see `piecewise`).
+    let piecewise_examples = |s: &RewriteStep| -> Option<String> {
+        match wrt {
+            Some(var) if s.rule_name == "diff_piecewise" => {
+                piecewise::piecewise_diff_examples(s, var, steps, pool)
+            }
+            _ => None,
+        }
+    };
+    if steps.iter().any(|s| {
+        if s.rule_name == "diff_piecewise" && wrt.is_some() {
+            piecewise_examples(s).is_none()
+        } else {
+            !step_is_certifiable(s, wrt, pool)
+        }
+    }) {
         return String::new();
     }
 
@@ -2140,7 +2160,10 @@ pub fn emit_lean_expr_wrt(
 
     for (i, step) in steps.iter().enumerate() {
         out.push_str(&format!("-- Step {}: {}\n", i + 1, step.rule_name));
-        out.push_str(&emit_step_wrt(step, pool, wrt));
+        match piecewise_examples(step) {
+            Some(examples) => out.push_str(&examples),
+            None => out.push_str(&emit_step_wrt(step, pool, wrt)),
+        }
         out.push_str("\n\n");
     }
 
@@ -3858,10 +3881,39 @@ fn numerically_consistent(before: ExprId, after: ExprId, pool: &ExprPool) -> boo
 // Resultant certificates (Sylvester determinant)
 // ---------------------------------------------------------------------------
 
-/// Largest Sylvester matrix the emitter states. `simp`'s Laplace expansion
-/// grows factorially: 5×5 checks in seconds, while 6×6 exhausts `simp`'s
-/// recursion depth and leaves `Fin.castSucc` vector accesses unreduced.
-const MAX_SYLVESTER_DIM: usize = 5;
+/// Largest Sylvester matrix the emitter states.
+///
+/// The determinant is expanded by a *controlled* `simp only` set (see
+/// [`DET_SIMP_SET`]) whose cost grows with the number of Leibniz terms: a
+/// dense 6×6 checks in about 15 s. Above [`DET_LEAF_DIM`] the proof first
+/// splits along row 0 into explicit minors (`have h_j : det (minor j) = v_j`),
+/// each checked the same way, so a dense 7×7 checks in under two minutes. An
+/// 8×8 would need 8·7 leaf expansions — beyond the CI budget — and refuses
+/// with `withheld_resultant_shape`.
+const MAX_SYLVESTER_DIM: usize = 7;
+
+/// Largest matrix whose determinant is expanded in one `simp only` call.
+const DET_LEAF_DIM: usize = 6;
+
+/// The determinant expansion lemmas. Deliberately `simp only`: the full simp
+/// set rewrites `Fin.succ (Fin.succ 0)` to the numeral `2`, after which
+/// `![…] (Fin.castSucc 2)` and `Fin.succAbove 2 2` no longer reduce — that is
+/// what left the old `simp [Matrix.det_succ_row_zero, Fin.sum_univ_succ,
+/// Fin.succAbove, Fin.lt_def]` recipe stuck on dense 5×5 matrices (e.g. the
+/// Sylvester matrix of `x³ − 2x + 1` and `x² + x + 1`) and on every 6×6. With
+/// only these lemmas every index stays a `Fin.succ` tower over `0`, which
+/// `Matrix.cons_val_succ` / `Matrix.cons_val_zero` evaluate.
+const DET_SIMP_SET: &str = "Matrix.det_succ_row_zero, Fin.sum_univ_succ, Fin.sum_univ_zero, \
+     Matrix.submatrix_apply, Matrix.of_apply, Matrix.cons_val_zero, Matrix.cons_val_succ, \
+     Fin.succ_succAbove_zero, Fin.succ_succAbove_succ, Fin.zero_succAbove, Fin.succAbove_zero, \
+     Fin.val_zero, Fin.val_succ, Matrix.det_isEmpty";
+
+/// [`DET_SIMP_SET`] without the expansion lemma: evaluates the entries and
+/// signs of one Laplace row while leaving the minors' determinants as atoms
+/// for the `have`s to rewrite.
+const DET_ROW_SIMP_SET: &str = "Fin.sum_univ_succ, Fin.sum_univ_zero, Matrix.submatrix_apply, \
+     Matrix.of_apply, Matrix.cons_val_zero, Matrix.cons_val_succ, Fin.succ_succAbove_zero, \
+     Fin.succ_succAbove_succ, Fin.zero_succAbove, Fin.succAbove_zero, Fin.val_zero, Fin.val_succ";
 
 /// Lean term for the coefficient of `var^d` in `poly` (a sum of monomials in
 /// the other variables), or `(0 : ℝ)`.
@@ -3893,6 +3945,141 @@ fn coeff_lean(
     })
 }
 
+/// The coefficient of `var^d` in `poly`, as a polynomial in the other
+/// variables (same variable list, `var`'s exponent zeroed).
+fn coeff_poly(
+    terms: &[(Vec<u32>, rug::Integer)],
+    var_idx: usize,
+    d: u32,
+    vars: &[ExprId],
+) -> crate::poly::MultiPoly {
+    crate::poly::MultiPoly {
+        vars: vars.to_vec(),
+        terms: terms
+            .iter()
+            .filter(|(e, _)| e.get(var_idx).copied().unwrap_or(0) == d)
+            .map(|(e, c)| {
+                let mut e = e.clone();
+                if let Some(slot) = e.get_mut(var_idx) {
+                    *slot = 0;
+                }
+                // `MultiPoly` keys never end in a zero exponent.
+                while e.last() == Some(&0) {
+                    e.pop();
+                }
+                (e, c.clone())
+            })
+            .collect(),
+    }
+}
+
+/// One Sylvester-matrix entry: its Lean text and its value.
+#[derive(Clone)]
+struct DetEntry {
+    lean: String,
+    poly: crate::poly::MultiPoly,
+}
+
+fn minor(m: &[Vec<DetEntry>], j: usize) -> Vec<Vec<DetEntry>> {
+    m[1..]
+        .iter()
+        .map(|row| {
+            row.iter()
+                .enumerate()
+                .filter(|&(c, _)| c != j)
+                .map(|(_, e)| e.clone())
+                .collect()
+        })
+        .collect()
+}
+
+/// Determinant by cofactor expansion along row 0 (zero entries skipped).
+/// At most 7×7 here, i.e. at most 5040 products.
+fn det_poly(m: &[Vec<DetEntry>], vars: &[ExprId]) -> crate::poly::MultiPoly {
+    if m.is_empty() {
+        return crate::poly::MultiPoly::constant(vars.to_vec(), 1);
+    }
+    if m.len() == 1 {
+        return m[0][0].poly.clone();
+    }
+    let mut acc = crate::poly::MultiPoly::zero(vars.to_vec());
+    for (j, e) in m[0].iter().enumerate() {
+        if e.poly.is_zero() {
+            continue;
+        }
+        let term = e.poly.clone() * det_poly(&minor(m, j), vars);
+        acc = if j % 2 == 0 { acc + term } else { acc - term };
+    }
+    acc
+}
+
+/// `(Fin.succ (Fin.succ 0))` for `j = 2`: the index form `Fin.sum_univ_succ`
+/// produces, which the `have`s must match syntactically.
+fn fin_index(j: usize) -> String {
+    let mut t = "0".to_string();
+    for _ in 0..j {
+        t = format!("(Fin.succ {t})");
+    }
+    t
+}
+
+/// Tactic lines proving `Matrix.det {term} = <det of m>` at indentation
+/// `ind`. Matrices up to [`DET_LEAF_DIM`] are expanded directly; larger ones
+/// are split along row 0 into one `have` per nonzero entry's minor.
+fn det_proof(
+    term: &str,
+    m: &[Vec<DetEntry>],
+    vars: &[ExprId],
+    ind: usize,
+    tag: &str,
+    pool: &ExprPool,
+    out: &mut Vec<String>,
+) {
+    let pad = " ".repeat(ind);
+    if m.len() <= DET_LEAF_DIM {
+        out.push(format!("{pad}simp only [{DET_SIMP_SET}]"));
+        out.push(format!("{pad}try ring"));
+        return;
+    }
+    out.push(format!("{pad}rw [Matrix.det_succ_row_zero]"));
+    let mut hs = Vec::new();
+    for (j, e) in m[0].iter().enumerate() {
+        if e.poly.is_zero() {
+            continue;
+        }
+        let sub_m = minor(m, j);
+        let value = det_poly(&sub_m, vars).to_expr(pool);
+        let sub = if j == 0 {
+            format!("(Matrix.submatrix {term} Fin.succ Fin.succ)")
+        } else {
+            format!(
+                "(Matrix.submatrix {term} Fin.succ (Fin.succAbove {}))",
+                fin_index(j)
+            )
+        };
+        let h = format!("h{tag}_{j}");
+        out.push(format!(
+            "{pad}have {h} : Matrix.det {sub} = {} := by",
+            expr_to_lean(value, pool)
+        ));
+        det_proof(
+            &sub,
+            &sub_m,
+            vars,
+            ind + 2,
+            &format!("{tag}_{j}"),
+            pool,
+            out,
+        );
+        hs.push(h);
+    }
+    out.push(format!(
+        "{pad}simp only [{DET_ROW_SIMP_SET}, {}]",
+        hs.join(", ")
+    ));
+    out.push(format!("{pad}try ring"));
+}
+
 /// Generate a Lean 4 certificate for `Res_var(p, q) = result`.
 ///
 /// Mathlib (at the pinned `v4.9.0`) has no `Polynomial.resultant`, so the
@@ -3902,9 +4089,16 @@ fn coeff_lean(
 /// coefficient first, shifted one column per row); rows `deg q + 1 ..` hold
 /// those of `q`. The remaining variables are universally bound.
 ///
+/// The proof expands the determinant with a controlled `simp only` lemma set
+/// and closes with `ring`; matrices above 6×6 are first split along row 0 into
+/// explicit minors whose values are computed here.
+/// Before anything is printed, the determinant is recomputed exactly and
+/// compared with `result`.
+///
 /// Returns `""` (no certificate) when the inputs are not integer polynomials,
-/// a coefficient does not fit in `i64`, both inputs are constant in `var`, or
-/// the Sylvester matrix is larger than 5×5.
+/// a coefficient does not fit in `i64`, both inputs are constant in `var`, the
+/// Sylvester matrix is larger than 7×7, or the recomputed determinant differs
+/// from `result`.
 pub fn emit_resultant_cert(
     p: ExprId,
     q: ExprId,
@@ -3955,22 +4149,24 @@ pub fn emit_resultant_cert(
     if dim == 0 || dim > MAX_SYLVESTER_DIM {
         return String::new();
     }
-    let mut pc = Vec::new();
-    for d in 0..=m {
-        let Some(c) = coeff_lean(&tp, var_idx, d, &names) else {
-            return String::new();
-        };
-        pc.push(c);
-    }
-    let mut qc = Vec::new();
-    for d in 0..=n {
-        let Some(c) = coeff_lean(&tq, var_idx, d, &names) else {
-            return String::new();
-        };
-        qc.push(c);
-    }
-    let zero = "(0 : ℝ)".to_string();
-    let mut rows: Vec<String> = Vec::with_capacity(dim);
+    let entries = |t: &[(Vec<u32>, rug::Integer)], deg: u32| -> Option<Vec<DetEntry>> {
+        (0..=deg)
+            .map(|d| {
+                Some(DetEntry {
+                    lean: coeff_lean(t, var_idx, d, &names)?,
+                    poly: coeff_poly(t, var_idx, d, &vars),
+                })
+            })
+            .collect()
+    };
+    let (Some(pc), Some(qc)) = (entries(&tp, m), entries(&tq, n)) else {
+        return String::new();
+    };
+    let zero = DetEntry {
+        lean: "(0 : ℝ)".to_string(),
+        poly: crate::poly::MultiPoly::zero(vars.clone()),
+    };
+    let mut mat: Vec<Vec<DetEntry>> = Vec::with_capacity(dim);
     for (coeffs, deg, shifts) in [(&pc, m, n), (&qc, n, m)] {
         for i in 0..shifts as usize {
             let mut row = vec![zero.clone(); dim];
@@ -3978,14 +4174,30 @@ pub fn emit_resultant_cert(
                 // Leading coefficient first: column `i + (deg - d)` holds c_d.
                 row[i + (deg - d) as usize] = coeffs[d as usize].clone();
             }
-            rows.push(row.join(", "));
+            mat.push(row);
         }
+    }
+    // Defence in depth: the statement's right-hand side must be the
+    // determinant of the matrix it prints.
+    match crate::poly::MultiPoly::from_symbolic(result, vars.clone(), pool) {
+        Ok(r) if r == det_poly(&mat, &vars) => {}
+        _ => return String::new(),
     }
     let Some(free) = real_binders(&[p, q, result], &[var], "", pool) else {
         return String::new();
     };
     let var_name = &names[var_idx];
     let result_lean = expr_to_lean(result, pool);
+    let rows: Vec<String> = mat
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|e| e.lean.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .collect();
+    let literal = format!("!![{}]", rows.join("; "));
     let mut out = String::from(
         "import Mathlib.Tactic\n\
          import Mathlib.LinearAlgebra.Matrix.Determinant.Basic\n\n",
@@ -4001,12 +4213,15 @@ pub fn emit_resultant_cert(
         pool.display(q),
     ));
     out.push_str(&format!(
-        "example{}: Matrix.det !![{}] = {result_lean} := by\n  \
-         simp [Matrix.det_succ_row_zero, Fin.sum_univ_succ, Fin.succAbove, Fin.lt_def]\n  \
-         try ring\n",
+        "set_option maxRecDepth 100000 in\n\
+         set_option maxHeartbeats 20000000 in\n\
+         example{}: Matrix.det {literal} = {result_lean} := by\n",
         join_binders(&free, None),
-        rows.join("; "),
     ));
+    let mut lines = Vec::new();
+    det_proof(&literal, &mat, &vars, 2, "", pool, &mut lines);
+    out.push_str(&lines.join("\n"));
+    out.push('\n');
     if contains_admission(&out) {
         return String::new();
     }
@@ -7288,7 +7503,7 @@ mod tests {
         let lean = emit_resultant_cert(pp, q, x, derived.value, &pool);
         // Univariate: no free variable remains, so no binder either.
         assert!(lean.contains("example : Matrix.det !![("), "{lean}");
-        assert!(lean.contains("] = (1 : ℝ) := by\n  simp ["), "{lean}");
+        assert!(lean.contains("] = (1 : ℝ) := by\n  simp only ["), "{lean}");
         assert!(lean.ends_with("\n  try ring\n"), "{lean}");
         // 5 rows: three shifts of p = x² − 2, two of q = x³ − 3.
         let matrix = lean
@@ -7321,14 +7536,76 @@ mod tests {
 
     #[test]
     fn w9_resultant_certificate_refuses_large_matrices() {
+        // 8×8 is past `MAX_SYLVESTER_DIM`.
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
-        let three = pool.integer(3_i32);
+        let four = pool.integer(4_i32);
         let one = pool.integer(1_i32);
-        let pp = pool.add(vec![pool.pow(x, three), one]);
-        let q = pool.add(vec![pool.pow(x, three), x]);
+        let pp = pool.add(vec![pool.pow(x, four), one]);
+        let q = pool.add(vec![pool.pow(x, four), x]);
         let derived = crate::poly::resultant(pp, q, x, &pool).unwrap();
         assert_eq!(emit_resultant_cert(pp, q, x, derived.value, &pool), "");
+    }
+
+    fn f16_poly(pool: &ExprPool, x: ExprId, coeffs: &[i64]) -> ExprId {
+        // coeffs[d] is the coefficient of x^d.
+        let terms: Vec<ExprId> = coeffs
+            .iter()
+            .enumerate()
+            .filter(|(_, &c)| c != 0)
+            .map(|(d, &c)| pool.mul(vec![pool.integer(c), pool.pow(x, pool.integer(d as i64))]))
+            .collect();
+        pool.add(terms)
+    }
+
+    #[test]
+    fn f16_resultant_six_by_six_is_emitted_with_the_controlled_simp_set() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let pp = f16_poly(&pool, x, &[-2, 0, 0, 1]);
+        let q = f16_poly(&pool, x, &[1, 1, 0, 1]);
+        let derived = crate::poly::resultant(pp, q, x, &pool).unwrap();
+        let lean = emit_resultant_cert(pp, q, x, derived.value, &pool);
+        assert!(lean.contains("6×6 Sylvester matrix"), "{lean}");
+        assert!(
+            lean.contains("] = (29 : ℝ) := by\n  simp only [Matrix.det_succ_row_zero"),
+            "{lean}"
+        );
+        // The full simp set is what left `Fin.castSucc` accesses stuck.
+        assert!(!lean.contains("Fin.lt_def"), "{lean}");
+        assert!(!lean.contains("have h"), "{lean}");
+    }
+
+    #[test]
+    fn f16_resultant_seven_by_seven_splits_into_minors() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let pp = f16_poly(&pool, x, &[1, -2, 0, 0, 1]);
+        let q = f16_poly(&pool, x, &[1, 1, 0, 1]);
+        let derived = crate::poly::resultant(pp, q, x, &pool).unwrap();
+        let lean = emit_resultant_cert(pp, q, x, derived.value, &pool);
+        assert!(lean.contains("7×7 Sylvester matrix"), "{lean}");
+        // Row 0 is (1, 0, 0, −2, 1, 0, 0): one minor per nonzero entry.
+        assert!(
+            lean.contains("have h_0 : Matrix.det (Matrix.submatrix !!["),
+            "{lean}"
+        );
+        assert!(lean.contains("Fin.succ Fin.succ) = "), "{lean}");
+        assert!(lean.contains("have h_3 : "), "{lean}");
+        assert!(lean.contains("have h_4 : "), "{lean}");
+        assert!(!lean.contains("have h_1 : "), "{lean}");
+        assert!(
+            lean.contains("(Fin.succAbove (Fin.succ (Fin.succ (Fin.succ 0)))))"),
+            "{lean}"
+        );
+    }
+
+    #[test]
+    fn f16_resultant_certificate_refuses_a_value_that_is_not_the_determinant() {
+        let pool = p();
+        let (pp, q, x) = w9_inputs(&pool);
+        let wrong = pool.integer(2_i32);
+        assert_eq!(emit_resultant_cert(pp, q, x, wrong, &pool), "");
     }
 
     #[test]

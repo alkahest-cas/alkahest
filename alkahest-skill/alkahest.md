@@ -241,6 +241,9 @@ yourself if you need the proof checked.
 | `integrate` (indefinite) | Yes |
 | `integrate` (definite) | Yes, **since 3.8.0** (Mathlib FTC / interval-integral lemmas) |
 | exp/log identities | Yes, assumption-gated |
+| `diff` of a `Piecewise` | Yes, one `deriv` statement per branch on its open region (conditions `x ⋈ c`) |
+| `resultant` | Yes, `Matrix.det` of the Sylvester matrix, up to 7×7 |
+| `zeilberger` | Yes, `to_lean(cert)` / `cert.to_lean()`: the telescoping identity for any `F` with the summand's shift relations |
 
 Certificates that do not typecheck are **withheld** rather than emitted broken, so
 `.certificate is None` means "no proof available", not "proof failed silently".

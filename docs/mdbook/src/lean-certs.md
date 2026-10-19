@@ -177,6 +177,34 @@ The strict CI corpus currently covers:
   rewrite `F = G`. Infinite Basel sums and `gamma` encodings stay withheld.
 - The discrete product `∏_{k=1}^{n} k = n!`, via Mathlib
   `Finset.prod_Ico_id_eq_factorial` (v4.9.0 has no `prod_Icc_id`).
+- Resultants, stated as `Matrix.det` of the Sylvester matrix of `p` and `q`
+  equal to the result, for Sylvester matrices up to 7×7. The determinant is
+  expanded by a controlled `simp only` lemma set (the full simp set rewrites
+  `Fin.succ (Fin.succ 0)` to `2` and then cannot evaluate the vector
+  literals); above 6×6 the proof first splits along row 0 into explicit
+  minors, `have h_j : Matrix.det (minor j) = v_j`, with the values computed by
+  Alkahest. 8×8 and larger refuse with `withheld_resultant_shape`.
+- Zeilberger / WZ certificates (`to_lean(zeilberger(F, n, k))`, or
+  `ZeilbergerCertificate.to_lean()`): for every `F : ℝ → ℝ → ℝ` satisfying the
+  summand's hypergeometric shift relations with denominators cleared
+  (`(n - k + 1) ^ 2 * F (n + 1) k = (n + 1) ^ 2 * F n k`, …), and away from the
+  zeros of the factors divided by (`hN : n - k + 1 ≠ 0`, …), the telescoping
+  identity `Σ_j a_j(n)·F(n+j, k) = R(n,k+1)·F(n,k+1) − R(n,k)·F(n,k)`. The proof
+  clears denominators with an explicit `linear_combination` of the shift
+  relations (cofactors computed from the factorisations) and divides back out
+  with `div_sub_div` / `eq_div_iff`. The corpus covers `C(n,k)²`, the WZ pair
+  for `Σ C(n,k) = 2ⁿ`, Dixon, Apéry and Franel. The recurrence for the *sum*
+  additionally needs the boundary terms (`ZeilbergerCertificate.boundary`) and
+  is not part of the statement.
+- Derivatives of a `Piecewise` in `x` whose conditions compare `x` with an
+  `x`-free term (`<`, `≤`, `>`, `≥`): one statement per branch, on the open
+  region where that branch is selected —
+  `example (x : ℝ) (hc1 : (0 : ℝ) < x) : deriv (fun x => if x > 0 then x ^ 2 else x * -1) x = x * 2`
+  — and one for the default under the strict negation of every condition,
+  proved by `Filter.EventuallyEq.deriv_eq` and the branch's own derivative
+  certificate. The single equation `deriv (if …) = if …` is never stated (it
+  is false at a breakpoint), and the certificate is withheld when a condition
+  has another shape or a branch's derivative is not certifiable.
 
 Other exports are generated source, not CI-qualified Lean proofs. In
 particular, nested two-deep composites (`sin(cos(x²))`), `log`/`tan`/`sqrt`
