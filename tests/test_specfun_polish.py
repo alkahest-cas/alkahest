@@ -16,8 +16,9 @@ import random
 from fractions import Fraction
 
 import alkahest as ak
-import mpmath as mp
 import pytest
+
+mp = pytest.importorskip("mpmath")
 
 mp.mp.dps = 40
 
@@ -267,7 +268,7 @@ def test_taylor_model_refusals_are_coded(x, pool):
 
 
 def _gauss_sphere(n_theta=14, n_phi=40):
-    import numpy as np
+    np = pytest.importorskip("numpy")
 
     xs, ws = np.polynomial.legendre.leggauss(n_theta)
     thetas = np.arccos(xs)
@@ -276,7 +277,7 @@ def _gauss_sphere(n_theta=14, n_phi=40):
 
 
 def test_real_spherical_harmonics_are_orthonormal(pool):
-    import numpy as np
+    np = pytest.importorskip("numpy")
 
     t = ak.symbol("t", pool=pool)
     f = ak.symbol("f", pool=pool)
