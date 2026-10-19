@@ -91,17 +91,84 @@ impl Node {
     }
 }
 
-/// Self-contained C helpers the emitter can call.  Each is guarded by a macro
-/// so several emitted functions can be pasted into one translation unit.
+/// Self-contained C helpers the emitter can call.  Each is a `static`
+/// function in its own file under `c_helpers/` (so it can be compiled and
+/// tested on its own), guarded by a macro so several emitted functions can be
+/// pasted into one translation unit.  A helper is emitted only when something
+/// calls it, together with the helpers it is built from, so a translation unit
+/// never carries an unused `static` function (`-Wall -Werror` stays quiet).
+///
+/// The variants are listed in dependency order: a helper's dependencies have
+/// smaller discriminants, which is the order the prelude is written in.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Helper {
     LambertW0,
+    Digamma,
+    Trigamma,
+    Dilog,
+    EllipK,
+    EllipE,
+    FresnelCore,
+    FresnelS,
+    FresnelC,
+    ExpIntE1,
+    ExpIntEi,
+    ExpIntLi,
+    ExpIntCisi,
+    ExpIntSi,
+    ExpIntCi,
+    ExpIntShi,
+    ExpIntChi,
+    BesselJSeries,
+    BesselAsym,
+    BesselMiller,
+    BesselJ,
+    BesselY,
+    BesselI,
+    BesselK,
 }
 
 impl Helper {
     fn source(self) -> &'static str {
         match self {
             Helper::LambertW0 => LAMBERT_W0_C,
+            Helper::Digamma => include_str!("c_helpers/digamma.c"),
+            Helper::Trigamma => include_str!("c_helpers/trigamma.c"),
+            Helper::Dilog => include_str!("c_helpers/dilog.c"),
+            Helper::EllipK => include_str!("c_helpers/ellipk.c"),
+            Helper::EllipE => include_str!("c_helpers/ellipe.c"),
+            Helper::FresnelCore => include_str!("c_helpers/fresnel_core.c"),
+            Helper::FresnelS => include_str!("c_helpers/fresnel_s.c"),
+            Helper::FresnelC => include_str!("c_helpers/fresnel_c.c"),
+            Helper::ExpIntE1 => include_str!("c_helpers/expint_e1.c"),
+            Helper::ExpIntEi => include_str!("c_helpers/expint_ei.c"),
+            Helper::ExpIntLi => include_str!("c_helpers/expint_li.c"),
+            Helper::ExpIntCisi => include_str!("c_helpers/expint_cisi.c"),
+            Helper::ExpIntSi => include_str!("c_helpers/expint_si.c"),
+            Helper::ExpIntCi => include_str!("c_helpers/expint_ci.c"),
+            Helper::ExpIntShi => include_str!("c_helpers/expint_shi.c"),
+            Helper::ExpIntChi => include_str!("c_helpers/expint_chi.c"),
+            Helper::BesselJSeries => include_str!("c_helpers/bessel_jseries.c"),
+            Helper::BesselAsym => include_str!("c_helpers/bessel_asym.c"),
+            Helper::BesselMiller => include_str!("c_helpers/bessel_miller.c"),
+            Helper::BesselJ => include_str!("c_helpers/bessel_j.c"),
+            Helper::BesselY => include_str!("c_helpers/bessel_y.c"),
+            Helper::BesselI => include_str!("c_helpers/bessel_i.c"),
+            Helper::BesselK => include_str!("c_helpers/bessel_k.c"),
+        }
+    }
+
+    /// The helpers this one calls.
+    fn deps(self) -> &'static [Helper] {
+        use Helper::*;
+        match self {
+            FresnelS | FresnelC => &[FresnelCore],
+            ExpIntEi => &[ExpIntE1],
+            ExpIntLi => &[ExpIntEi, ExpIntE1],
+            ExpIntSi | ExpIntCi => &[ExpIntCisi],
+            ExpIntShi | ExpIntChi => &[ExpIntEi, ExpIntE1],
+            BesselJ | BesselY => &[BesselJSeries, BesselAsym, BesselMiller],
+            _ => &[],
         }
     }
 }
@@ -506,6 +573,80 @@ impl<'a> Builder<'a> {
         })
     }
 
+    /// Record that the emitted code calls `h` (and so needs its source and
+    /// that of everything it is built from).
+    fn need(&mut self, h: Helper) {
+        if self.helpers.contains(&h) {
+            return;
+        }
+        self.helpers.push(h);
+        for &d in h.deps() {
+            self.need(d);
+        }
+    }
+
+    /// The special functions that lower to an emitted helper rather than a
+    /// `<math.h>` call: the C name and the helper that defines it, or `None`
+    /// for any other function.  Refuses (`E-CODEGEN-001`) a Bessel function of
+    /// a literal non-integer order, and `polygamma` of any order but 0 or 1 —
+    /// the helpers take an integer order.
+    fn special_helper(
+        &self,
+        name: &str,
+        args: &[ExprId],
+    ) -> Result<Option<(&'static str, Helper)>, EmitCError> {
+        use Helper::*;
+        let r = match (name, args.len()) {
+            ("digamma", 1) => ("alkahest_digamma", Digamma),
+            ("trigamma", 1) => ("alkahest_trigamma", Trigamma),
+            ("dilog", 1) => ("alkahest_dilog", Dilog),
+            ("EllipticK", 1) => ("alkahest_ellipk", EllipK),
+            ("EllipticE", 1) => ("alkahest_ellipe", EllipE),
+            ("fresnels", 1) => ("alkahest_fresnel_s", FresnelS),
+            ("fresnelc", 1) => ("alkahest_fresnel_c", FresnelC),
+            ("Ei", 1) => ("alkahest_ei", ExpIntEi),
+            ("li", 1) => ("alkahest_li", ExpIntLi),
+            ("Si", 1) => ("alkahest_si", ExpIntSi),
+            ("Ci", 1) => ("alkahest_ci", ExpIntCi),
+            ("Shi", 1) => ("alkahest_shi", ExpIntShi),
+            ("Chi", 1) => ("alkahest_chi", ExpIntChi),
+            ("bessel_j0", 1) | ("bessel_j1", 1) => ("alkahest_bessel_j", BesselJ),
+            ("bessel_j", 2) => ("alkahest_bessel_j", BesselJ),
+            ("bessel_y", 2) => ("alkahest_bessel_y", BesselY),
+            ("bessel_i", 2) => ("alkahest_bessel_i", BesselI),
+            ("bessel_k", 2) => ("alkahest_bessel_k", BesselK),
+            ("polygamma", 2) => match self.pool.get(args[0]) {
+                ExprData::Integer(n) if n.0 == 0 => ("alkahest_digamma", Digamma),
+                ExprData::Integer(n) if n.0 == 1 => ("alkahest_trigamma", Trigamma),
+                _ => {
+                    return Err(EmitCError::UnsupportedFunction(
+                        "polygamma (order other than 0 or 1)".to_string(),
+                    ))
+                }
+            },
+            _ => return Ok(None),
+        };
+        if name.starts_with("bessel_") && args.len() == 2 {
+            let integral = match self.pool.get(args[0]) {
+                ExprData::Integer(_) => true,
+                ExprData::Rational(_) => false,
+                ExprData::Float(f) => {
+                    let v = f.inner.to_f64();
+                    v.is_finite() && v == v.trunc()
+                }
+                // A symbol or expression: checked when the C runs (a
+                // non-integer order gives NAN).
+                _ => true,
+            };
+            if !integral {
+                return Err(EmitCError::UnsupportedFunction(format!(
+                    "{name} (non-integer order)"
+                )));
+            }
+        }
+        Ok(Some(r))
+    }
+
     /// Lower a function call.
     ///
     /// # Where the emitted C and the interpreter differ
@@ -518,6 +659,20 @@ impl<'a> Builder<'a> {
     /// * **`lambert_w`.** The emitted helper is accurate to ~1e-15 relative;
     ///   the interpreter's `W₀` stops at a residual of `1e-15·max(|x|, 1)`, so
     ///   for `|x| ≪ 1` the C is the more accurate of the two.
+    /// * **Special functions** (`digamma`, `trigamma`, `polygamma` of order 0
+    ///   or 1, `dilog`, `EllipticK`, `EllipticE` (complete), `fresnels`,
+    ///   `fresnelc`, `Ei`, `li`, `Si`, `Ci`, `Shi`, `Chi`, `bessel_j0`,
+    ///   `bessel_j1`, and `bessel_j` / `bessel_y` / `bessel_i` / `bessel_k` of
+    ///   integer order) call a `static` helper emitted ahead of the function,
+    ///   written in ISO C99 (no POSIX `jn`/`yn`).  Accuracy and domain are in
+    ///   the comment above each helper (`c_helpers/*.c`): about 1e-15 relative
+    ///   (or absolute where the function is near a zero), measured against
+    ///   mpmath.  Outside its real domain a helper returns `NAN` (or the
+    ///   infinity the function has there), where the interpreter reports an
+    ///   error; an order that is a *literal* non-integer is refused here.
+    ///   Everything else — Airy, spherical Bessel, `zeta`, `polylog`, `hyper`,
+    ///   incomplete elliptic integrals, `erf`-family complements — stays a coded
+    ///   refusal.
     /// * **Integer powers** `x^2 … x^4` are repeated multiplication, which
     ///   rounds two or three times where `pow` rounds once (≤ 2 ulp).
     fn lower_func(&mut self, name: &str, args: &[ExprId]) -> Result<usize, EmitCError> {
@@ -541,6 +696,23 @@ impl<'a> Builder<'a> {
                 acc = self.call(c, vec![acc, next]);
             }
             return Ok(acc);
+        }
+        if let Some((c, helper)) = self.special_helper(name, args)? {
+            let (call_args, skip) = match name {
+                "bessel_j0" | "bessel_j1" => (Some(if name == "bessel_j0" { 0 } else { 1 }), 0),
+                // `polygamma(0|1, x)` is `digamma(x)` / `trigamma(x)`.
+                "polygamma" => (None, 1),
+                _ => (None, 0),
+            };
+            self.need(helper);
+            let mut lowered = Vec::with_capacity(args.len() + 1);
+            if let Some(order) = call_args {
+                lowered.push(self.lit(format!("{order}.0")));
+            }
+            for &a in &args[skip..] {
+                lowered.push(self.lower(a)?);
+            }
+            return Ok(self.call(c, lowered));
         }
         let c_name: Option<&'static str> = match (name, args.len()) {
             ("sin", 1) => Some("sin"),
@@ -591,8 +763,8 @@ impl<'a> Builder<'a> {
                     return Ok(self.lit(c_double_literal(v.sqrt())));
                 }
             }
-            if c == "alkahest_lambert_w0" && !self.helpers.contains(&Helper::LambertW0) {
-                self.helpers.push(Helper::LambertW0);
+            if c == "alkahest_lambert_w0" {
+                self.need(Helper::LambertW0);
             }
             return Ok(self.call(c, lowered));
         }
@@ -935,6 +1107,46 @@ mod tests {
             "{code}"
         );
         assert_eq!(code.matches("static double alkahest_lambert_w0").count(), 1);
+    }
+
+    #[test]
+    fn special_functions_emit_only_the_helpers_they_call() {
+        let p = ExprPool::new();
+        let x = p.symbol("x");
+        // Shi pulls Ei and E1 with it, once, and nothing else.
+        let code = emit_expr_c(p.func("Shi", vec![x]), &[x], &["x"], "f", &p).unwrap();
+        for def in ["alkahest_shi(", "alkahest_ei(", "alkahest_e1_pos("] {
+            assert_eq!(code.matches(&format!("static double {def}")).count(), 1, "{def}");
+        }
+        assert!(!code.contains("alkahest_bessel"), "{code}");
+        assert!(!code.contains("alkahest_si("), "{code}");
+        // Two functions sharing a helper define it once.
+        let e = p.add(vec![p.func("Ei", vec![x]), p.func("li", vec![x])]);
+        let code = emit_expr_c(e, &[x], &["x"], "f", &p).unwrap();
+        assert_eq!(code.matches("static double alkahest_ei(").count(), 1, "{code}");
+        // Bessel J(3, x) calls the helper with the order as a double.
+        let j = p.func("bessel_j", vec![p.integer(3), x]);
+        let code = emit_expr_c(j, &[x], &["x"], "f", &p).unwrap();
+        assert!(code.contains("alkahest_bessel_j(3.0, x)"), "{code}");
+        // bessel_j0 is the same helper at order 0.
+        let code = emit_expr_c(p.func("bessel_j0", vec![x]), &[x], &["x"], "f", &p).unwrap();
+        assert!(code.contains("alkahest_bessel_j(0.0, x)"), "{code}");
+    }
+
+    #[test]
+    fn special_function_refusals_are_coded() {
+        let p = ExprPool::new();
+        let x = p.symbol("x");
+        let half = p.rational(1, 2);
+        for e in [
+            p.func("bessel_j", vec![half, x]),
+            p.func("polygamma", vec![p.integer(2), x]),
+            p.func("EllipticE", vec![x, p.integer(2)]),
+            p.func("airy_ai", vec![x]),
+        ] {
+            let err = emit_expr_c(e, &[x], &["x"], "f", &p).unwrap_err();
+            assert_eq!(err.code(), "E-CODEGEN-001", "{e:?}");
+        }
     }
 
     #[test]

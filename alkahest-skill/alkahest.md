@@ -983,7 +983,10 @@ stablehlo = to_stablehlo(sin(x)+exp(y), [x,y], fn_name="my_fn")  # StableHLO tex
 src = emit_c_expr(sin(pi*x) + x**2, x)                 # pi -> 3.141592653589793 literal
 src = emit_c_vec([C] + grad + hess, [S, K, r, s, T])   # void eval_vec(..., double *out)
 # heaviside/sign/min/max/Piecewise -> ternaries; lambert_w -> emitted static helper.
-# Refusals: AlkahestError E-CODEGEN-001 (no C lowering: diracdelta, bessel, …),
+# Integer-order bessel_j/y/i/k, digamma, trigamma, polygamma(0|1), dilog, EllipticK/E (complete),
+# fresnels/fresnelc, Ei/li/Si/Ci/Shi/Chi -> emitted static C99 helpers (~1e-15 vs mpmath).
+# a+b shared by a+b+c and a+b+d is computed once (re-associated: a few ulps vs eval_expr).
+# Refusals: AlkahestError E-CODEGEN-001 (no C lowering: diracdelta, airy, zeta, polylog, non-integer bessel order, …),
 #           -002 (O(x), quantifiers), -003 (free symbol not in vars).
 ```
 
