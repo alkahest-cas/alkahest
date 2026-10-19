@@ -3,7 +3,7 @@
 //!
 //! # The `k`-th smallest
 //!
-//! [`OrderKind::Kth`] is the `k`-th smallest of `n` (`k = 1` the minimum,
+//! [`kth_order_statistic`] is the `k`-th smallest of `n` (`k = 1` the minimum,
 //! `k = n` the maximum). For **any** continuous law with a closed-form CDF its
 //! density is
 //!
@@ -72,37 +72,102 @@ pub enum OrderKind {
     Min,
     /// `max(X₁, …, X_n)`.
     Max,
-    /// The `k`-th smallest of `X₁, …, X_n` (1-based). Built by
-    /// [`order_statistic`], which normalises a literal `k = 1` to
-    /// [`OrderKind::Min`] and `k = n` to [`OrderKind::Max`].
+}
+
+/// Which order statistic, internally: the two extremes, or the `k`-th smallest
+/// for a rank strictly inside `1..n` (or not decidable). Private so that the
+/// public [`OrderKind`] stays a fieldless enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Rank {
+    Min,
+    Max,
     Kth(ExprId),
 }
 
-/// The law of the minimum or maximum of `n` iid copies of a base law.
+/// The law of the minimum, maximum or `k`-th smallest of `n` iid copies of a
+/// base law.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OrderStatistic {
     base: Distribution,
     n: ExprId,
-    kind: OrderKind,
+    kind: Rank,
 }
 
-/// The minimum, maximum or `k`-th smallest of `n` iid copies of `dist`.
+/// The minimum or maximum of `n` iid copies of `dist`.
 ///
 /// `n` is a positive integer literal or a symbolic expression; a symbolic `n`
 /// carries `n > 0` and `n ∈ ℤ` as side conditions on everything derived. For
-/// [`OrderKind::Kth`], `k` is likewise a positive integer literal (at most `n`
-/// when `n` is a literal) or a symbolic expression carrying `k > 0`, `k ∈ ℤ`
-/// and `n - k + 1 > 0`.
+/// the `k`-th smallest see [`kth_order_statistic`].
+///
+/// # Errors
+///
+/// [`ProbError::InvalidParameter`] for a numeric `n` that is not a positive
+/// integer; [`ProbError::Unsupported`] for a discrete base law (ties break the
+/// density formula).
+pub fn order_statistic(
+    dist: &Distribution,
+    n: ExprId,
+    kind: OrderKind,
+    pool: &ExprPool,
+) -> Result<OrderStatistic, ProbError> {
+    let rank = match kind {
+        OrderKind::Min => Rank::Min,
+        OrderKind::Max => Rank::Max,
+    };
+    build(dist, n, rank, pool)
+}
+
+/// The `k`-th smallest (1-based) of `n` iid copies of `dist`; `k = 1` is the
+/// minimum and `k = n` the maximum, and a literal `k` equal to either is
+/// normalised to it.
+///
+/// `n` and `k` are positive integer literals (`k <= n`) or symbolic
+/// expressions; a symbolic `k` carries `k > 0`, `k ∈ ℤ` and `n - k + 1 > 0`.
 ///
 /// # Errors
 ///
 /// [`ProbError::InvalidParameter`] for a numeric `n` or `k` that is not a
 /// positive integer, or a literal `k > n`; [`ProbError::Unsupported`] for a
-/// discrete base law (ties break the density formula).
-pub fn order_statistic(
+/// discrete base law.
+pub fn kth_order_statistic(
     dist: &Distribution,
     n: ExprId,
-    kind: OrderKind,
+    k: ExprId,
+    pool: &ExprPool,
+) -> Result<OrderStatistic, ProbError> {
+    match pool.get(k) {
+        ExprData::Integer(v) if v.0 >= 1 => {}
+        _ if super::numeric_ball(k, pool).is_some() => {
+            return Err(ProbError::InvalidParameter {
+                parameter: "k",
+                requirement: "a positive integer (a literal, or a symbolic expression)",
+            })
+        }
+        _ => {}
+    }
+    let (nl, kl) = (literal(n, pool), literal(k, pool));
+    if let (Some(nn), Some(kk)) = (&nl, &kl) {
+        if kk > nn {
+            return Err(ProbError::InvalidParameter {
+                parameter: "k",
+                requirement: "at most n",
+            });
+        }
+    }
+    let rank = if kl.as_ref().is_some_and(|v| *v == 1) {
+        Rank::Min
+    } else if k == n || (nl.is_some() && nl == kl) {
+        Rank::Max
+    } else {
+        Rank::Kth(k)
+    };
+    build(dist, n, rank, pool)
+}
+
+fn build(
+    dist: &Distribution,
+    n: ExprId,
+    kind: Rank,
     pool: &ExprPool,
 ) -> Result<OrderStatistic, ProbError> {
     match pool.get(n) {
@@ -122,37 +187,6 @@ pub fn order_statistic(
             dist.kind().name()
         )));
     }
-    let kind = match kind {
-        OrderKind::Kth(k) => {
-            match pool.get(k) {
-                ExprData::Integer(v) if v.0 >= 1 => {}
-                _ if super::numeric_ball(k, pool).is_some() => {
-                    return Err(ProbError::InvalidParameter {
-                        parameter: "k",
-                        requirement: "a positive integer (a literal, or a symbolic expression)",
-                    })
-                }
-                _ => {}
-            }
-            let (nl, kl) = (literal(n, pool), literal(k, pool));
-            if let (Some(nn), Some(kk)) = (&nl, &kl) {
-                if kk > nn {
-                    return Err(ProbError::InvalidParameter {
-                        parameter: "k",
-                        requirement: "at most n",
-                    });
-                }
-            }
-            if kl.as_ref().is_some_and(|v| *v == 1) {
-                OrderKind::Min
-            } else if k == n || (nl.is_some() && nl == kl) {
-                OrderKind::Max
-            } else {
-                OrderKind::Kth(k)
-            }
-        }
-        other => other,
-    };
     Ok(OrderStatistic {
         base: dist.clone(),
         n,
@@ -178,9 +212,20 @@ impl OrderStatistic {
         self.n
     }
 
-    /// Minimum or maximum.
+    /// Minimum or maximum. For a `k`-th order statistic strictly between the
+    /// extremes (see [`kth_order_statistic`]) there is no such kind and this
+    /// returns [`OrderKind::Max`]; check [`OrderStatistic::is_extreme`] first.
     pub fn kind(&self) -> OrderKind {
-        self.kind
+        match self.kind {
+            Rank::Min => OrderKind::Min,
+            Rank::Max | Rank::Kth(_) => OrderKind::Max,
+        }
+    }
+
+    /// Is this the minimum or the maximum (as opposed to an interior `k`-th
+    /// smallest)?
+    pub fn is_extreme(&self) -> bool {
+        !matches!(self.kind, Rank::Kth(_))
     }
 
     /// `n > 0`, `n ∈ ℤ` for a symbolic `n`, plus the base law's own
@@ -193,7 +238,7 @@ impl OrderStatistic {
             }
             out.push(SideCondition::InDomain(self.n, Domain::Integer));
         }
-        if let OrderKind::Kth(k) = self.kind {
+        if let Rank::Kth(k) = self.kind {
             if !matches!(pool.get(k), ExprData::Integer(_)) {
                 if matches!(dists::sign_of(k, pool), Sign::Unknown) {
                     out.push(SideCondition::Positive(k));
@@ -219,9 +264,9 @@ impl OrderStatistic {
     fn literal_nk(&self, pool: &ExprPool) -> Option<(u32, u32)> {
         let n = dists::literal_count(self.n, pool)?;
         let k = match self.kind {
-            OrderKind::Min => 1,
-            OrderKind::Max => n,
-            OrderKind::Kth(k) => dists::literal_count(k, pool)?,
+            Rank::Min => 1,
+            Rank::Max => n,
+            Rank::Kth(k) => dists::literal_count(k, pool)?,
         };
         (1..=MAX_ORDER_SAMPLE).contains(&n).then_some((n, k))
     }
@@ -229,9 +274,9 @@ impl OrderStatistic {
     /// The rank `k` as an expression.
     pub fn rank(&self, pool: &ExprPool) -> ExprId {
         match self.kind {
-            OrderKind::Min => pool.integer(1),
-            OrderKind::Max => self.n,
-            OrderKind::Kth(k) => k,
+            Rank::Min => pool.integer(1),
+            Rank::Max => self.n,
+            Rank::Kth(k) => k,
         }
     }
 
@@ -260,9 +305,9 @@ impl OrderStatistic {
     fn cdf_from(&self, base_cdf: ExprId, pool: &ExprPool) -> Result<ExprId, ProbError> {
         let one = pool.integer(1);
         Ok(match self.kind {
-            OrderKind::Max => pool.pow(base_cdf, self.n),
-            OrderKind::Min => sub(one, pool.pow(sub(one, base_cdf, pool), self.n), pool),
-            OrderKind::Kth(_) => {
+            Rank::Max => pool.pow(base_cdf, self.n),
+            Rank::Min => sub(one, pool.pow(sub(one, base_cdf, pool), self.n), pool),
+            Rank::Kth(_) => {
                 // sum_{j=k}^{n} C(n,j) F^j (1-F)^{n-j}: the number of sample
                 // points at or below x is Binomial(n, F(x)), and X_(k) <= x
                 // exactly when at least k of them are.
@@ -328,9 +373,9 @@ impl OrderStatistic {
         let big_f = super::moments::cdf_claim(&self.base, x, pool)?;
         let n_minus_1 = simplify(sub(self.n, one, pool), pool).value;
         Ok(match self.kind {
-            OrderKind::Max => pool.mul(vec![self.n, pool.pow(big_f, n_minus_1)]),
-            OrderKind::Min => pool.mul(vec![self.n, pool.pow(sub(one, big_f, pool), n_minus_1)]),
-            OrderKind::Kth(k) => {
+            Rank::Max => pool.mul(vec![self.n, pool.pow(big_f, n_minus_1)]),
+            Rank::Min => pool.mul(vec![self.n, pool.pow(sub(one, big_f, pool), n_minus_1)]),
+            Rank::Kth(k) => {
                 // n!/((k-1)!(n-k)!) -- an integer for literals, a Gamma ratio
                 // otherwise.
                 let coeff = match self.literal_nk(pool) {
@@ -383,15 +428,15 @@ impl OrderStatistic {
 
     fn describe(&self) -> &'static str {
         match self.kind {
-            OrderKind::Min => "the minimum",
-            OrderKind::Max => "the maximum",
-            OrderKind::Kth(_) => "a k-th order statistic",
+            Rank::Min => "the minimum",
+            Rank::Max => "the maximum",
+            Rank::Kth(_) => "a k-th order statistic",
         }
     }
 
     /// Is `E[M]`/`Var[M]` tabled in closed form for any `n`?
     fn tabled(&self, pool: &ExprPool) -> bool {
-        (matches!(self.kind, OrderKind::Min | OrderKind::Max)
+        (matches!(self.kind, Rank::Min | Rank::Max)
             && matches!(self.base.kind(), DistKind::Uniform | DistKind::Exponential))
             || self.normal_entry(pool).is_some()
     }
@@ -459,15 +504,15 @@ impl OrderStatistic {
             return pool.add(vec![p[0], pool.mul(vec![p[1], e])]);
         }
         match (self.base.kind(), self.kind) {
-            (DistKind::Uniform, OrderKind::Max) => pool.add(vec![
+            (DistKind::Uniform, Rank::Max) => pool.add(vec![
                 p[0],
                 div(pool.mul(vec![sub(p[1], p[0], pool), n]), n1, pool),
             ]),
-            (DistKind::Uniform, OrderKind::Min) => {
+            (DistKind::Uniform, Rank::Min) => {
                 pool.add(vec![p[0], div(sub(p[1], p[0], pool), n1, pool)])
             }
             // H_n / λ, H_n = ψ(n+1) - ψ(1).
-            (DistKind::Exponential, OrderKind::Max) => div(
+            (DistKind::Exponential, Rank::Max) => div(
                 sub(
                     pool.func("digamma", vec![n1]),
                     pool.func("digamma", vec![one]),
@@ -476,7 +521,7 @@ impl OrderStatistic {
                 p[0],
                 pool,
             ),
-            (DistKind::Exponential, OrderKind::Min) => {
+            (DistKind::Exponential, Rank::Min) => {
                 pool.pow(pool.mul(vec![n, p[0]]), pool.integer(-1))
             }
             _ => unreachable!("only the tabled extremes reach the closed-form claims"),
@@ -501,7 +546,7 @@ impl OrderStatistic {
                 pool,
             ),
             // Σ_{k≤n} 1/(kλ)² = (ψ₁(1) - ψ₁(n+1))/λ², ψ₁(1) = π²/6.
-            (DistKind::Exponential, OrderKind::Max) => div(
+            (DistKind::Exponential, Rank::Max) => div(
                 sub(
                     div(pool.pow(pi(pool), two), pool.integer(6), pool),
                     pool.func("trigamma", vec![pool.add(vec![n, one])]),
@@ -510,7 +555,7 @@ impl OrderStatistic {
                 pool.pow(p[0], two),
                 pool,
             ),
-            (DistKind::Exponential, OrderKind::Min) => {
+            (DistKind::Exponential, Rank::Min) => {
                 pool.pow(pool.mul(vec![n, p[0]]), pool.integer(-2))
             }
             _ => unreachable!("only the tabled extremes reach the closed-form claims"),
@@ -589,16 +634,16 @@ impl OrderStatistic {
         let p = self.base.params();
         let is = |e: ExprId, v: i64| matches!(pool.get(e), ExprData::Integer(z) if z.0 == v);
         match (self.base.kind(), self.kind) {
-            (DistKind::Exponential, OrderKind::Min) => {
+            (DistKind::Exponential, Rank::Min) => {
                 let rate = simplify(pool.mul(vec![self.n, p[0]]), pool).value;
                 Distribution::exponential(rate, pool).ok()
             }
             (DistKind::Uniform, kind) if is(p[0], 0) && is(p[1], 1) => {
                 let one = pool.integer(1);
                 match kind {
-                    OrderKind::Max => Distribution::beta(self.n, one, pool).ok(),
-                    OrderKind::Min => Distribution::beta(one, self.n, pool).ok(),
-                    OrderKind::Kth(k) => {
+                    Rank::Max => Distribution::beta(self.n, one, pool).ok(),
+                    Rank::Min => Distribution::beta(one, self.n, pool).ok(),
+                    Rank::Kth(k) => {
                         // U_(k:n) ~ Beta(k, n - k + 1).
                         let b = simplify(pool.add(vec![sub(self.n, k, pool), one]), pool).value;
                         Distribution::beta(k, b, pool).ok()

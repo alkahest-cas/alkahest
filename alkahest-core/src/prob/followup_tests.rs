@@ -47,7 +47,7 @@ fn kth_order_statistic_density_and_cdf_for_a_normal_base() {
     let p = ExprPool::new();
     let x = sym(&p, "x");
     let normal = Distribution::normal(p.integer(0), p.integer(1), &p).unwrap();
-    let os = order_statistic(&normal, p.integer(5), OrderKind::Kth(p.integer(2)), &p).unwrap();
+    let os = kth_order_statistic(&normal, p.integer(5), p.integer(2), &p).unwrap();
     // scipy: 20 F (1-F)^3 f at 0.3, and the binomial tail
     close!(
         at(&p, os.pdf(x, &p).unwrap().value, &[("x", 0.3)]),
@@ -76,7 +76,7 @@ fn kth_order_statistic_moments_via_the_integrator() {
         (3, 0.5750249750249750250, 0.02479083354208229333),
     ];
     for (k, m, v) in beta_cases {
-        let os = order_statistic(&beta, n, OrderKind::Kth(p.integer(k)), &p).unwrap();
+        let os = kth_order_statistic(&beta, n, p.integer(k), &p).unwrap();
         close!(at(&p, os.mean(&p).unwrap().value, &[]), m, 1e-12);
         close!(at(&p, os.variance(&p).unwrap().value, &[]), v, 1e-11);
     }
@@ -86,13 +86,13 @@ fn kth_order_statistic_moments_via_the_integrator() {
         (3, 3.212962962962962963, 2.235510973936899863),
     ];
     for (k, m, v) in gamma_cases {
-        let os = order_statistic(&gamma, n, OrderKind::Kth(p.integer(k)), &p).unwrap();
+        let os = kth_order_statistic(&gamma, n, p.integer(k), &p).unwrap();
         close!(at(&p, os.mean(&p).unwrap().value, &[]), m, 1e-12);
         close!(at(&p, os.variance(&p).unwrap().value, &[]), v, 1e-11);
     }
     // Exponential: Rényi representation, symbolic rate. k = 2 of 3:
     // mean 5/(6λ), variance 13/(36λ²).
-    let os = order_statistic(&exp, n, OrderKind::Kth(p.integer(2)), &p).unwrap();
+    let os = kth_order_statistic(&exp, n, p.integer(2), &p).unwrap();
     close!(
         at(&p, os.mean(&p).unwrap().value, &[("lam", 2.0)]),
         5.0 / 12.0,
@@ -123,7 +123,7 @@ fn normal_order_statistics_close_for_n_two_and_three_and_refuse_beyond() {
         1e-12
     );
     // median of 3: mean μ, variance σ²(1 - √3/π)
-    let med = order_statistic(&normal, p.integer(3), OrderKind::Kth(p.integer(2)), &p).unwrap();
+    let med = kth_order_statistic(&normal, p.integer(3), p.integer(2), &p).unwrap();
     close!(at(&p, med.mean(&p).unwrap().value, &[]), 1.0, 1e-12);
     close!(
         at(&p, med.variance(&p).unwrap().value, &[]),
@@ -154,40 +154,31 @@ fn kth_order_statistic_validation_and_refusals() {
     let normal = Distribution::normal(p.integer(0), p.integer(1), &p).unwrap();
     let err = |r: Result<OrderStatistic, ProbError>| r.unwrap_err().code();
     assert_eq!(
-        err(order_statistic(
-            &normal,
-            p.integer(3),
-            OrderKind::Kth(p.integer(4)),
-            &p
-        )),
+        err(kth_order_statistic(&normal, p.integer(3), p.integer(4), &p)),
         "E-PROB-001"
     );
     assert_eq!(
-        err(order_statistic(
-            &normal,
-            p.integer(3),
-            OrderKind::Kth(p.integer(0)),
-            &p
-        )),
+        err(kth_order_statistic(&normal, p.integer(3), p.integer(0), &p)),
         "E-PROB-001"
     );
     let poisson = Distribution::poisson(p.integer(2), &p).unwrap();
     assert_eq!(
-        err(order_statistic(
+        err(kth_order_statistic(
             &poisson,
             p.integer(3),
-            OrderKind::Kth(p.integer(2)),
+            p.integer(2),
             &p
         )),
         "E-PROB-002"
     );
     // extremes are normalised
-    let one = order_statistic(&normal, p.integer(5), OrderKind::Kth(p.integer(1)), &p).unwrap();
+    let one = kth_order_statistic(&normal, p.integer(5), p.integer(1), &p).unwrap();
     assert_eq!(one.kind(), OrderKind::Min);
-    let top = order_statistic(&normal, p.integer(5), OrderKind::Kth(p.integer(5)), &p).unwrap();
+    assert!(one.is_extreme());
+    let top = kth_order_statistic(&normal, p.integer(5), p.integer(5), &p).unwrap();
     assert_eq!(top.kind(), OrderKind::Max);
     // symbolic n, k: density is a Gamma ratio, evaluates like the literal one
-    let sym_os = order_statistic(&normal, n, OrderKind::Kth(k), &p).unwrap();
+    let sym_os = kth_order_statistic(&normal, n, k, &p).unwrap();
     let pdf = sym_os.pdf(x, &p).unwrap().value;
     close!(
         at(&p, pdf, &[("n", 5.0), ("k", 2.0), ("x", 0.3)]),
@@ -198,11 +189,11 @@ fn kth_order_statistic_validation_and_refusals() {
     assert_eq!(sym_os.mean(&p).unwrap_err().code(), "E-PROB-002");
     // a Gamma with a non-integer shape has no closed-form CDF
     let g = Distribution::gamma(p.rational(5, 2), p.integer(1), &p).unwrap();
-    let gos = order_statistic(&g, p.integer(3), OrderKind::Kth(p.integer(2)), &p).unwrap();
+    let gos = kth_order_statistic(&g, p.integer(3), p.integer(2), &p).unwrap();
     assert_eq!(gos.cdf(x, &p).unwrap_err().code(), "E-PROB-004");
     // Uniform(0,1) k-th is Beta(k, n-k+1)
     let u = Distribution::uniform(p.integer(0), p.integer(1), &p).unwrap();
-    let uk = order_statistic(&u, p.integer(5), OrderKind::Kth(p.integer(2)), &p).unwrap();
+    let uk = kth_order_statistic(&u, p.integer(5), p.integer(2), &p).unwrap();
     assert_eq!(uk.distribution(&p).unwrap().kind(), DistKind::Beta);
 }
 

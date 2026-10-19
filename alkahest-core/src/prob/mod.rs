@@ -104,7 +104,7 @@ pub use joint::{
     covariance, joint_expectation, joint_variance, sum_independent, JointBlock, MultivariateNormal,
     MAX_MVN_DIM,
 };
-pub use order::{order_statistic, OrderKind, OrderStatistic};
+pub use order::{kth_order_statistic, order_statistic, OrderKind, OrderStatistic};
 pub use verify::Evidence;
 
 pub(crate) use quad::numeric_ball;

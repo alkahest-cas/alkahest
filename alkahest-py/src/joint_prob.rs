@@ -12,9 +12,9 @@ use pyo3::types::{PyList, PyTuple};
 use alkahest_core::prob::{
     covariance as core_covariance, entropy_asymptotic as core_entropy_asymptotic,
     joint_expectation as core_joint_expectation, joint_variance as core_joint_variance,
-    order_statistic as core_order_statistic, sum_independent as core_sum_independent,
-    Distribution as CoreDistribution, JointBlock, MultivariateNormal as CoreMvn, OrderKind,
-    OrderStatistic as CoreOrderStatistic,
+    kth_order_statistic as core_kth_order_statistic, order_statistic as core_order_statistic,
+    sum_independent as core_sum_independent, Distribution as CoreDistribution, JointBlock,
+    MultivariateNormal as CoreMvn, OrderKind, OrderStatistic as CoreOrderStatistic,
 };
 use alkahest_core::{ExprId, ExprPool};
 
@@ -554,9 +554,10 @@ impl PyOrderStatistic {
             .iter()
             .map(|&p| pool.inner.display(p).to_string())
             .collect();
-        let kind = match self.inner.kind() {
-            OrderKind::Kth(k) => format!("k={}", pool.inner.display(k)),
-            _ => self.kind().to_string(),
+        let kind = if self.inner.is_extreme() {
+            self.kind().to_string()
+        } else {
+            format!("k={}", pool.inner.display(self.inner.rank(&pool.inner)))
         };
         format!(
             "OrderStatistic({}, {}({}), n={})",
@@ -571,9 +572,11 @@ impl PyOrderStatistic {
     /// ``k = 1`` or ``k = n`` is normalised to ``"min"`` / ``"max"``).
     #[getter]
     fn kind(&self) -> &'static str {
+        if !self.inner.is_extreme() {
+            return "kth";
+        }
         match self.inner.kind() {
             OrderKind::Min => "min",
-            OrderKind::Kth(_) => "kth",
             _ => "max",
         }
     }
@@ -695,7 +698,15 @@ fn py_order_statistic(
                 "order_statistic: pass either kind=\"min\"/\"max\" or k=<rank>, not both",
             ))
         }
-        (_, Some(rank)) => OrderKind::Kth(coerce_substituent(&pool, &rank, py)?),
+        (_, Some(rank)) => {
+            let rank_id = coerce_substituent(&pool, &rank, py)?;
+            let inner = {
+                let p = pool.borrow(py);
+                core_kth_order_statistic(&dist.inner, n_id, rank_id, &p.inner)
+                    .map_err(prob_error_to_py)?
+            };
+            return Ok(PyOrderStatistic { inner, pool });
+        }
         (None | Some("max"), None) => OrderKind::Max,
         (Some("min"), None) => OrderKind::Min,
         (Some(other), None) => {
