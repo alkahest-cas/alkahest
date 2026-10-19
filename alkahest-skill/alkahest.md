@@ -425,6 +425,16 @@ listed in `r.verification["side_conditions"]`. `integrate(f, x, 0, oo)` of
 `Σ c·x^p·exp(-α·x)` gives `Σ c·Γ(p+1)/α^(p+1)` when `α > 0` is known (Positive symbol
 or `assumptions`), e.g. `exp(-y/2)/sqrt(y)` → `√(2π)`; unknown sign → `E-INT-001`.
 
+**Trig substitutions are continuous on ℝ** (after 3.12.0): antiderivatives from
+`t = tan(x/2)` / `t = tan x` (used for `R(sin x, cos x)`, including `1/(1+sin²x)`-type
+integrands invariant under `x ↦ x+π`) are corrected so they are valid on every interval
+where the integrand is continuous — remaining jumps at the tangent's poles are cancelled
+exactly by a `J·x/T − (J/2π)·atan2(sin φ, cos φ)` term (log step
+`int_continuous_step_correction`). Definite integrals across such points (or across a
+zero of an `atan(N/D)` denominator) are corrected by counting branch crossings
+(exact `±π` each) and cross-checked against quadrature; `∫ cot(x)**(p/q)` goes through
+`cot u = tan(π/2 − u)`.
+
 **The non-elementary output basis carries *exact* constants** (since 3.11). `erf`,
 the Fresnel pair and their coefficients used to be interned as `f64` nodes, so
 `∫exp(−x²)dx` came back as `0.8862269254527579·erf(x)` and nothing downstream could
