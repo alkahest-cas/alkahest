@@ -32,12 +32,13 @@
 //!
 //! let report = reg.coverage_report();
 //! // Every built-in *function* has at least NUMERIC_F64 coverage; the only
-//! // exceptions are the Dirac delta `δ` and symbolic complex constructors,
-//! // which deliberately have no pointwise real `f64` value.
+//! // exceptions are the Dirac delta `δ`, symbolic complex constructors and
+//! // the complex-valued Hankel functions, which deliberately have no
+//! // pointwise real `f64` value.
 //! for row in &report.rows {
 //!     if matches!(
 //!         row.name.as_str(),
-//!         "diracdelta" | "conjugate" | "re" | "im" | "arg"
+//!         "diracdelta" | "conjugate" | "re" | "im" | "arg" | "hankel1" | "hankel2"
 //!     ) {
 //!         continue;
 //!     }

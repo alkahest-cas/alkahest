@@ -97,7 +97,8 @@ class TestExpandedPrimitives:
         # DiracDelta is a distribution; conjugate/re/im are symbolic-only
         # complex constructors with no pointwise real f64 kernel
         # (mirrors the Rust-side primitive coverage doctest).
-        assert missing == ["arg", "conjugate", "diracdelta", "im", "re"], (
+        # (hankel1/hankel2 are complex-valued: complex evaluator only.)
+        assert missing == ["arg", "conjugate", "diracdelta", "hankel1", "hankel2", "im", "re"], (
             f"primitives missing numeric_f64 (unexpected set): {missing}"
         )
 

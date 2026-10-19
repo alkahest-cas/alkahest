@@ -269,6 +269,10 @@ _FIXED_ORDER_BESSEL: dict[str, int] = {"bessel_j0": 0, "bessel_j1": 1}
 #: out. Each of these would translate "successfully" and then manufacture
 #: divergences that say nothing about either system's correctness.
 REFUSED_FUNCTIONS: dict[str, str] = {
+    "zeta_prime": (
+        "SymPy has no `zeta_prime` function: it spells the derivative "
+        "`Derivative(zeta(s), s)`, an unevaluated form a name-for-name table cannot express"
+    ),
     "heaviside": (
         "SymPy's Heaviside(0) defaults to 1/2 while Alkahest fixes no value there, "
         "so the two agree everywhere except on a point the comparison would sample"

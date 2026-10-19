@@ -167,10 +167,11 @@ def test_capability_flags_are_truthful(pool, x):
         assert row["numeric_f64"], name
         assert row["diff_forward"], name
         # No reverse slot (the degree has no cotangent), no Lean certificate,
-        # no Taylor model, no LLVM lowering: none may be claimed.
+        # no LLVM lowering: none may be claimed. (F24 gave every family a
+        # Taylor-model rule for an integer literal degree.)
         assert not row["diff_reverse"], name
         assert not row["lean_theorem"], name
-        assert not row["taylor_model"], name
+        assert row["taylor_model"], name
         assert not row["lower_llvm"], name
         # numeric_ball is claimed exactly when interval evaluation works.
         n = pool.symbol("n")

@@ -37,6 +37,18 @@ NEW = [
     "hurwitz_zeta",
     "polylog",
 ]
+TAYLOR_MODEL_NAMES = {
+    "bessel_j",
+    "bessel_y",
+    "bessel_i",
+    "bessel_k",
+    "airy_ai",
+    "airy_bi",
+    "airy_ai_prime",
+    "airy_bi_prime",
+    "zeta",
+    "polylog",
+}
 BINARY = {"bessel_j", "bessel_y", "bessel_i", "bessel_k", "spherical_jn", "spherical_yn"}
 BINARY |= {"hurwitz_zeta", "polylog"}
 
@@ -148,10 +160,13 @@ def test_capability_flags_are_truthful(pool, x):
     n = pool.symbol("n")
     for name in NEW:
         row = rows[name]
-        # ζ′ has no closed form: zeta must not claim a derivative.
-        assert row["diff_forward"] == (name != "zeta"), name
-        for flag in ("diff_reverse", "lean_theorem", "taylor_model", "lower_llvm"):
+        # ζ′ is the node zeta_prime, which has no derivative of its own.
+        assert row["diff_forward"] == (name != "zeta_prime"), name
+        for flag in ("diff_reverse", "lean_theorem", "lower_llvm"):
             assert not row[flag], (name, flag)
+        # F24: Taylor-model rules for integer-order J/Y/I/K, Airy, zeta, polylog.
+        has_tm = name in TAYLOR_MODEL_NAMES
+        assert row["taylor_model"] is has_tm, name
         e = node(name, pool, n, x)
         env_f = {n: 2.0, x: 0.75} if name in BINARY else {x: 0.75}
         try:
@@ -427,11 +442,13 @@ def test_derivative_in_the_order_is_refused_not_dropped(pool, x):
         ak.bessel_k(x, pool.integer(2), expand=False),
         ak.polylog(x, pool.rational(1, 2)),
         ak.hurwitz_zeta(x, pool.integer(3)),
-        ak.zeta(x),
+        ak.zeta_prime(x),  # zeta'' has no node
     ):
         with pytest.raises(ak.DiffError) as ei:
             ak.diff(e, x)
         assert ei.value.code == "E-DIFF-001"
+    # d/ds zeta(s) is the node zeta_prime (F24).
+    assert ak.diff(ak.zeta(x), x).value == ak.zeta_prime(x)
     # A constant zeta value differentiates to 0.
     assert ak.diff(ak.zeta(pool.integer(3)), x).value == pool.integer(0)
 

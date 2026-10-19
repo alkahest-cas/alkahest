@@ -29,10 +29,11 @@ fn every_family_is_registered_with_the_right_arity() {
         let caps = reg.capabilities(f.name());
         assert!(caps.contains(Capabilities::NUMERIC_F64), "{}", f.name());
         assert!(caps.contains(Capabilities::DIFF_FORWARD), "{}", f.name());
-        // No reverse slot, no Lean theorem, no Taylor model: none claimed.
+        // No reverse slot, no Lean theorem: none claimed. (F24: every family
+        // has a Taylor-model rule for an integer literal degree.)
         assert!(!caps.contains(Capabilities::DIFF_REVERSE), "{}", f.name());
         assert!(!caps.contains(Capabilities::LEAN_THEOREM), "{}", f.name());
-        assert!(!caps.contains(Capabilities::TAYLOR_MODEL), "{}", f.name());
+        assert!(caps.contains(Capabilities::TAYLOR_MODEL), "{}", f.name());
         assert!(!caps.contains(Capabilities::LOWER_LLVM), "{}", f.name());
         #[cfg(flint_arb)]
         assert!(caps.contains(Capabilities::NUMERIC_BALL), "{}", f.name());

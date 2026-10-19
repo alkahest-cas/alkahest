@@ -251,7 +251,6 @@ mod tests {
     fn flag_matches_bound_on_box_for_every_primitive() {
         let reg = crate::primitive::PrimitiveRegistry::default_registry();
         let pool = ExprPool::new();
-        let x = pool.symbol("x", Domain::Real);
         let opts = BoundOptions {
             order: 2,
             prec: 64,
@@ -260,11 +259,19 @@ mod tests {
         };
         for (name, caps) in reg.iter() {
             let flag = caps.contains(crate::primitive::Capabilities::TAYLOR_MODEL);
-            let call = pool.func(name, vec![x]);
-            let refused_as_unsupported = matches!(
-                bound_on_box(call, &pool, &[(x, 0.25, 0.5)], &opts),
-                Err(ValidatedError::Unsupported { .. })
-            );
+            // The flag is "some arity has a rule": probe every arity, with
+            // each argument a box variable (F24: multi-argument rules exist).
+            let refused_as_unsupported = (1..=MAX_PROBE_ARITY).all(|arity| {
+                let vars: Vec<ExprId> = (0..arity)
+                    .map(|i| pool.symbol(format!("v{i}"), Domain::Real))
+                    .collect();
+                let boxes: Vec<(ExprId, f64, f64)> = vars.iter().map(|&v| (v, 0.25, 0.5)).collect();
+                let call = pool.func(name, vars);
+                matches!(
+                    bound_on_box(call, &pool, &boxes, &opts),
+                    Err(ValidatedError::Unsupported { .. })
+                )
+            });
             assert_eq!(
                 flag, !refused_as_unsupported,
                 "`{name}`: taylor_model flag = {flag} but bound_on_box \
