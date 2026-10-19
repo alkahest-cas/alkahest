@@ -964,7 +964,7 @@ def elliptic_curve_invariants(
                 o = -1  # undecided; do not claim
             if o is not None and o != -1:
                 raise _mismatch("a Mordell-Weil point has finite order")
-            mw_pts.append(pt)
+            mw_pts.append((pt[0], pt[1]))
         ver["mw_points_on_curve"] = True
         ver["mw_points_infinite_order_pic0"] = True
         mw_status = "proven" if lo == hi else "bounds_only"
@@ -1155,7 +1155,7 @@ def modular_forms(N: int, k: int, *, nmax: int = 20) -> ModularFormsData:
                 for j, v in enumerate(a_list):
                     if any(Fraction(c).denominator != 1 for c in v.minimal_polynomial()):
                         raise _mismatch(f"a_{j} is not an algebraic integer")
-            one = a_list[1].is_one() if K is not None else a_list[1] == 1
+            one = a_list[1].is_one() if K is not None else a_list[1] == 1  # ty: ignore[unresolved-attribute]
             if not one:
                 raise _mismatch("eigenform is not normalised (a_1 != 1)")
             if nmax >= 2:
