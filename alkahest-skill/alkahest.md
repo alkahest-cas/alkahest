@@ -714,7 +714,10 @@ from alkahest import solve, solve_numerical, GroebnerBasis, GbPoly
 # solve(equations, vars, *, numeric=False, method="groebner")
 # - method="groebner" (default): Lex/triangular path. Each finite solution is a dict
 #   mapping variable Expr → Expr (symbolic), or float/complex if numeric=True
-#   (complex roots are kept; a free parameter raises E-SOLVE-006).
+#   (complex roots are kept; a value with a free parameter stays a symbolic Expr and
+#   solve_side_conditions() says so — E-SOLVE-006 only on the homotopy fallback).
+# - interval=(a, b) with numeric=True: every real root of ONE equation in [a, b],
+#   certified (see nsolve all_in); E-SOLVE-012 if the list can't be proved complete.
 # - Free symbols omitted from vars are parameters (e.g. solve([x**2 - y], [x]) → ±√y).
 # - method="homotopy": numerical continuation in ℂⁿ; dict values are float.
 # - If the ideal is underdetermined / not zero-dimensional finite, Groebner mode may
@@ -778,11 +781,22 @@ multibody equations of motion for the accelerations (every answer is substituted
 one that relies on a hidden identity such as `sin² + cos² = 1` is refused). One equation
 in one unknown also solves when it reduces by logs (`ka*exp(-ka*t) - ke*exp(-ke*t)` →
 `log(ke/ka)/(ke - ka)` under `ke/ka > 0`; `2**x = 5`), in Lambert-W form
-(`x*exp(a*x) = b`, `a*x + b*log(x) = c`, Michaelis–Menten, `x**x = c`; refused when a
-second real root needs `W₋₁`), and for `sin`/`cos`/`tan` of an affine argument, as the
+(`x*exp(a*x) = b`, `a*x + b*log(x) = c`, Michaelis–Menten, `x**x = c`; when there are
+two real roots both come back, `lambert_w(c)` and `lambert_wm1(c)` — `W₋₁`, also
+`lambert_w(x, k=-1)`), and for `sin`/`cos`/`tan` of an affine argument, as the
 whole periodic family in an integer symbol `k` (`asin(c) + 2πk`, `π − asin(c) + 2πk`;
 `numeric=True` gives the `k = 0` members). Solutions are real; read the hypotheses
-(`k ∈ Integer`, `c > 0`, `a ≠ 0`) from `solve_side_conditions()`.
+(`k ∈ Integer`, `c > 0`, `a ≠ 0`, `c + exp(-1) > 0`) from `solve_side_conditions()`.
+
+**No closed form → `nsolve`.** `nsolve(eq, x, bracket=(a, b))` (Brent), `x0=...`
+(Newton) or `all_in=(a, b)` (every real root in the interval) — e.g. implied volatility
+`nsolve(bs_price(sigma) - p, sigma, bracket=(1e-3, 5))`. Each `NumericRoot` has
+`value`, `enclosure` and `status`: `"verified"` = exactly one root in `[lo, hi]`, proved
+in ball arithmetic; `"exists"`; `"heuristic"` (bare iterate). `all_in` returns a
+`RootIsolation` (`roots`, `unresolved`, `complete`) — trust the list only when
+`complete`. `solve([eq], [x], numeric=True, interval=(a, b))` is the same isolation as
+dicts. Errors: `E-SOLVE-009` (free parameter, no sign change), `E-SOLVE-012` (no
+convergence / incomplete).
 
 ### Coefficient fields for elimination: `Q(params)` (M9, experimental)
 

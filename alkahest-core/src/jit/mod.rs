@@ -2879,6 +2879,8 @@ mod tests {
         &[2.0, 0.5, 0.5, 0.3],
         // `hyper(0, 1, b, z)`: ₀F₁(; 1; 0.5).
         &[0.0, 1.0, 1.0, 0.5],
+        // `lambert_wm1` is real only on [−1/e, 0).
+        &[-0.2],
     ];
 
     /// Every primitive in [`PrimitiveRegistry::default_registry`] that has a

@@ -33,6 +33,7 @@
 
 pub mod diophantine;
 pub mod homotopy;
+pub mod nsolve;
 pub mod numeric;
 mod opaque;
 pub mod polyhedral;
@@ -51,6 +52,9 @@ pub use regular_chains::{
 
 pub use homotopy::{
     solve_numerical, solve_numerical_complex, CertifiedPoint, HomotopyError, HomotopyOpts,
+};
+pub use nsolve::{
+    nsolve, nsolve_all, NsolveError, NsolveStart, NumericRoot, RootIsolation, RootStatus,
 };
 pub use numeric::{numeric_solution_values, numeric_value, NumericSolveRefusal};
 

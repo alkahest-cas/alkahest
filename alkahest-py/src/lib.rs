@@ -4129,12 +4129,44 @@ fn gamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "gamma", expr)
 }
 
-/// Principal-branch Lambert W₀(x), with W(x)·e^W(x) = x.
+/// Lambert W, the inverse of ``w*exp(w)``: ``W(x)*exp(W(x)) == x``.
+///
+/// ``k = 0`` (default) is the principal branch ``W₀``, real on
+/// ``[-1/e, ∞)`` with values ``≥ -1``. ``k = -1`` is the lower real branch
+/// ``W₋₁`` (the same node as :func:`lambert_wm1`), real on ``[-1/e, 0)`` with
+/// values ``≤ -1``. Together they give every real solution of ``w*exp(w) = x``:
+/// two for ``-1/e < x < 0``. Any other ``k`` raises ``ValueError``.
 ///
 /// Stable top-level export (also re-exported from ``alkahest.experimental``).
 #[pyfunction]
-fn lambert_w(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
-    make_func(py, "lambert_w", expr)
+#[pyo3(signature = (expr, k = 0))]
+fn lambert_w(py: Python<'_>, expr: PyRef<PyExpr>, k: i64) -> PyResult<PyExpr> {
+    match k {
+        0 => Ok(make_func(py, "lambert_w", expr)),
+        -1 => Ok(make_func(py, "lambert_wm1", expr)),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "lambert_w: only the real branches k = 0 and k = -1 are available, got k = {k}"
+        ))),
+    }
+}
+
+/// Lower real branch of Lambert W, ``W₋₁(x)``.
+///
+/// Defined for ``-1/e <= x < 0``, where it decreases from ``W₋₁(-1/e) = -1``
+/// to ``-∞`` as ``x → 0⁻``; it solves ``w*exp(w) = x`` with ``w <= -1``
+/// (``lambert_w`` gives the other root, ``w >= -1``). Evaluates in ``f64`` and
+/// in certified ball arithmetic; outside the domain it has no real value.
+/// ``d/dx W₋₁(x) = W₋₁(x)/(x*(1 + W₋₁(x)))``. Simplifies ``W₋₁(a*exp(a)) = a``
+/// for rational ``a <= -1`` and ``W₋₁(-log(2)/2) = -2*log(2)``.
+///
+/// Example::
+///
+///     >>> w = alkahest.lambert_wm1(pool.rational(-1, 4))
+///     >>> alkahest.eval_expr(w, {})   # mpmath.lambertw(-0.25, -1)
+///     -2.15329236411035
+#[pyfunction]
+fn lambert_wm1(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "lambert_wm1", expr)
 }
 
 /// Digamma ψ(x) = Γ′(x)/Γ(x).
@@ -18260,9 +18292,12 @@ fn py_solve_numerical(
 /// ``k ∈ Integer`` by :func:`alkahest.solve_side_conditions`; with
 /// ``numeric=True`` the ``k = 0`` member of each family is returned and the
 /// side conditions say so. Hypotheses such as ``ke/ka > 0`` are listed there
-/// too. A Lambert equation whose second real root lies on the ``W₋₁`` branch is
-/// refused rather than answered from ``W₀`` alone. Anything else keeps
-/// refusing with ``E-SOLVE-001``.
+/// too. A Lambert equation with two real roots returns both — ``lambert_w``
+/// (``W₀``) and ``lambert_wm1`` (``W₋₁``): ``x*exp(x) + 1/4`` gives
+/// ``W₀(-1/4)`` and ``W₋₁(-1/4)``; a symbolic argument known to be negative
+/// records ``c + exp(-1) > 0``. Anything else keeps refusing with
+/// ``E-SOLVE-001`` — with ``numeric=True`` the message points at
+/// ``interval=(a, b)`` and :func:`alkahest.nsolve`.
 ///
 /// Parameters
 /// ----------
@@ -18282,12 +18317,25 @@ fn py_solve_numerical(
 ///     ``numeric=True`` falls back to *complex* homotopy continuation, which
 ///     returns every finite root or raises ``HomotopyError`` (E-HOMOTOPY-004)
 ///     if a path is lost. A solution that depends on a free parameter has no
-///     numeric value and raises ``SolverError`` with ``.code == "E-SOLVE-006"``;
-///     a parameter-free value that cannot be evaluated raises ``E-SOLVE-007``.
+///     numeric value, so it is returned as its exact symbolic ``Expr``
+///     (``solve([x - y], [x], numeric=True)`` → ``[{x: y}]``) and
+///     :func:`alkahest.solve_side_conditions` says so; where no symbolic
+///     solution exists (the homotopy fallback) a free parameter still raises
+///     ``SolverError`` with ``.code == "E-SOLVE-006"``. A parameter-free value
+///     that cannot be evaluated raises ``E-SOLVE-007``.
 /// method : str, default ``"groebner"``
 ///     ``"groebner"`` — Lex basis + triangular back-substitution.
 ///     ``"homotopy"`` — total-degree homotopy continuation in ``ℂⁿ`` followed
 ///     by Newton projection to real tuples (always ``float`` dict values).
+/// interval : (float, float), optional
+///     With ``numeric=True`` and one equation in one unknown: return every
+///     **real** root in ``[a, b]``, found numerically and certified (see
+///     :func:`alkahest.nsolve` with ``all_in``) — the route for equations
+///     with no closed form, e.g. ``solve([sin(x) - x/10], [x], numeric=True,
+///     interval=(-12, 12))`` → seven roots. Each root's enclosure is listed in
+///     :func:`alkahest.solve_side_conditions`. When the root list cannot be
+///     proved complete (a double root, a stretch outside the equation's
+///     domain) the call raises ``E-SOLVE-012`` instead.
 ///
 /// Returns
 /// -------
@@ -18316,13 +18364,14 @@ fn py_solve_numerical(
 ///     infinite.
 #[cfg(feature = "groebner")]
 #[pyfunction]
-#[pyo3(name = "solve", signature = (equations, vars, *, numeric = false, method = "groebner"))]
+#[pyo3(name = "solve", signature = (equations, vars, *, numeric = false, method = "groebner", interval = None))]
 fn py_solve(
     py: Python<'_>,
     equations: Vec<PyRef<PyExpr>>,
     vars: Vec<PyRef<PyExpr>>,
     numeric: bool,
     method: &str,
+    interval: Option<(f64, f64)>,
 ) -> PyResult<PyObject> {
     same_pool!("solve"; equations, vars);
     if equations.is_empty() || vars.is_empty() {
@@ -18371,6 +18420,24 @@ fn py_solve(
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "unknown solve method: {method:?} (expected 'groebner' or 'homotopy')"
         )));
+    }
+
+    // `interval=(a, b)`: every real root in [a, b], isolated numerically and
+    // certified (see `nsolve_all`) — the route for equations with no closed
+    // form. A root list that cannot be proved complete is refused.
+    if let Some((a, b)) = interval {
+        if !numeric {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "solve(..., interval=(a, b)) isolates roots numerically; pass numeric=True",
+            ));
+        }
+        if eq_ids.len() != 1 || var_ids.len() != 1 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "solve(..., interval=(a, b)) isolates the real roots of one equation in one \
+                 unknown",
+            ));
+        }
+        return solve_in_interval(py, &pool_py, eq_ids[0], var_ids[0], a, b);
     }
 
     // Transcendental pre-processing: for a single equation in a single unknown
@@ -18456,6 +18523,29 @@ fn py_solve(
             Err(alkahest_core::SolverError::NotPolynomial(why))
         }
         (r, _) => r,
+    };
+    // A single equation with no closed form: with numeric=True, point at the
+    // certified numeric route rather than leaving the refusal bare.
+    let result = match result {
+        Err(alkahest_core::SolverError::NotPolynomial(why))
+            if numeric && eq_ids.len() == 1 && var_ids.len() == 1 =>
+        {
+            // The out-of-band reasons `finite_solutions_to_py` would recover
+            // (a budget stop, an identically-undefined equation) win.
+            if let Some(err) = budget_trip_to_py(py) {
+                return Err(err);
+            }
+            if let Some(r) = alkahest_core::solver::take_undefined_equation() {
+                let exc = py.get_type_bound::<PySolverError>();
+                return Err(make_structured_err(py, &exc, &r));
+            }
+            Err(alkahest_core::SolverError::NotPolynomial(format!(
+                "{why}; numeric=True has no closed form to evaluate here — pass \
+                 interval=(a, b) to isolate the real roots in [a, b] numerically (certified), \
+                 or use alkahest.nsolve"
+            )))
+        }
+        r => r,
     };
 
     // B5: `numeric=True` means the caller accepts numbers — when Lex
@@ -18587,6 +18677,292 @@ fn py_solve_side_conditions() -> Vec<String> {
     SOLVE_SIDE_CONDITIONS.with(|c| c.borrow().clone())
 }
 
+/// A numeric root returned by :func:`alkahest.nsolve`, with an enclosure and
+/// a statement of what the enclosure proves.
+///
+/// ``status`` is ``"verified"`` (exactly one root lies in ``[lo, hi]``: a sign
+/// change proved in 128-bit ball arithmetic and an interval enclosure of the
+/// derivative that excludes zero), ``"exists"`` (a root lies in ``[lo, hi]``,
+/// uniqueness not proved) or ``"heuristic"`` (the ``f64`` iterate only —
+/// ``lo == hi == value``). ``float(root)`` is ``root.value``.
+#[cfg(feature = "groebner")]
+#[pyclass(name = "NumericRoot", frozen)]
+struct PyNumericRoot {
+    inner: alkahest_core::solver::NumericRoot,
+}
+
+#[cfg(feature = "groebner")]
+#[pymethods]
+impl PyNumericRoot {
+    /// The ``f64`` approximation (inside the enclosure).
+    #[getter]
+    fn value(&self) -> f64 {
+        self.inner.value
+    }
+
+    /// Lower end of the enclosure.
+    #[getter]
+    fn lo(&self) -> f64 {
+        self.inner.lo
+    }
+
+    /// Upper end of the enclosure.
+    #[getter]
+    fn hi(&self) -> f64 {
+        self.inner.hi
+    }
+
+    /// ``(lo, hi)``.
+    #[getter]
+    fn enclosure(&self) -> (f64, f64) {
+        (self.inner.lo, self.inner.hi)
+    }
+
+    /// ``"verified"``, ``"exists"`` or ``"heuristic"``.
+    #[getter]
+    fn status(&self) -> &'static str {
+        self.inner.status.as_str()
+    }
+
+    /// ``True`` when ``status == "verified"``.
+    #[getter]
+    fn verified(&self) -> bool {
+        self.inner.status == alkahest_core::solver::RootStatus::Verified
+    }
+
+    fn __float__(&self) -> f64 {
+        self.inner.value
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "NumericRoot({:?}, enclosure=[{:?}, {:?}], status='{}')",
+            self.inner.value,
+            self.inner.lo,
+            self.inner.hi,
+            self.inner.status.as_str()
+        )
+    }
+}
+
+/// Every real root of an equation in an interval, from
+/// ``alkahest.nsolve(eq, x, all_in=(a, b))``.
+///
+/// ``roots`` lists :class:`NumericRoot` values in increasing order, each
+/// ``"verified"`` with a disjoint enclosure. ``unresolved`` lists the
+/// sub-intervals ``(lo, hi)`` that could neither be excluded nor shown to hold
+/// exactly one root — a multiple root (``(x - 1)**2``), a tangency, a stretch
+/// outside the equation's domain. ``complete`` is ``True`` exactly when
+/// ``unresolved`` is empty, i.e. when ``roots`` is provably the whole list.
+/// Indexing, ``len`` and iteration go over ``roots``.
+#[cfg(feature = "groebner")]
+#[pyclass(name = "RootIsolation", frozen)]
+struct PyRootIsolation {
+    inner: alkahest_core::solver::RootIsolation,
+}
+
+#[cfg(feature = "groebner")]
+#[pymethods]
+impl PyRootIsolation {
+    #[getter]
+    fn roots(&self) -> Vec<PyNumericRoot> {
+        self.inner
+            .roots
+            .iter()
+            .map(|r| PyNumericRoot { inner: r.clone() })
+            .collect()
+    }
+
+    #[getter]
+    fn unresolved(&self) -> Vec<(f64, f64)> {
+        self.inner.unresolved.clone()
+    }
+
+    #[getter]
+    fn complete(&self) -> bool {
+        self.inner.is_complete()
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.roots.len()
+    }
+
+    fn __getitem__(&self, i: isize) -> PyResult<PyNumericRoot> {
+        let n = self.inner.roots.len() as isize;
+        let j = if i < 0 { i + n } else { i };
+        if j < 0 || j >= n {
+            return Err(pyo3::exceptions::PyIndexError::new_err(
+                "RootIsolation index out of range",
+            ));
+        }
+        Ok(PyNumericRoot {
+            inner: self.inner.roots[j as usize].clone(),
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        let vals: Vec<String> = self
+            .inner
+            .roots
+            .iter()
+            .map(|r| format!("{:?}", r.value))
+            .collect();
+        format!(
+            "RootIsolation(roots=[{}], unresolved={:?}, complete={})",
+            vals.join(", "),
+            self.inner.unresolved,
+            if self.inner.is_complete() {
+                "True"
+            } else {
+                "False"
+            }
+        )
+    }
+}
+
+/// An `NsolveError` (or the budget stop behind it) as a Python exception.
+#[cfg(feature = "groebner")]
+fn nsolve_err_to_py(py: Python<'_>, e: alkahest_core::solver::NsolveError) -> PyErr {
+    if let Some(err) = budget_trip_to_py(py) {
+        return err;
+    }
+    let exc = py.get_type_bound::<PySolverError>();
+    make_structured_err(py, &exc, &e)
+}
+
+/// `solve([eq], [x], numeric=True, interval=(a, b))`: the certified real roots
+/// in `[a, b]` as `[{x: value}, …]`, with each enclosure reported through
+/// `solve_side_conditions()`. Refuses (`E-SOLVE-012`) unless the list is
+/// provably complete.
+#[cfg(feature = "groebner")]
+fn solve_in_interval(
+    py: Python<'_>,
+    pool_py: &Py<PyExprPool>,
+    eq: ExprId,
+    var: ExprId,
+    a: f64,
+    b: f64,
+) -> PyResult<PyObject> {
+    let pool = pool_py.borrow(py);
+    let pool_ref = &pool.inner;
+    let iso = py
+        .allow_threads(|| alkahest_core::solver::nsolve_all(eq, var, a, b, pool_ref))
+        .map_err(|e| nsolve_err_to_py(py, e))?;
+    if !iso.is_complete() {
+        return Err(nsolve_err_to_py(
+            py,
+            alkahest_core::solver::NsolveError::incomplete(&iso),
+        ));
+    }
+    let name = pool.inner.display(var).to_string();
+    let mut notes = vec![format!(
+        "numeric=True with interval=({a}, {b}): the real roots in [{a}, {b}] only, each \
+         proved unique in its enclosure (sign change and a derivative enclosure excluding 0, \
+         in ball arithmetic); the list is complete"
+    )];
+    let list = pyo3::types::PyList::empty_bound(py);
+    for r in &iso.roots {
+        notes.push(format!("{name} = {:?} ∈ [{:?}, {:?}]", r.value, r.lo, r.hi));
+        let d = pyo3::types::PyDict::new_bound(py);
+        let key = PyExpr {
+            id: var,
+            pool: pool_py.clone_ref(py),
+        };
+        d.set_item(key.into_py(py), r.value)?;
+        list.append(d)?;
+    }
+    SOLVE_SIDE_CONDITIONS.with(|c| *c.borrow_mut() = notes);
+    Ok(list.into())
+}
+
+/// `alkahest.nsolve(equation, x, *, bracket=None, x0=None, all_in=None)`
+///
+/// Numeric real root(s) of ``equation = 0`` in the symbol ``x``, for
+/// equations with no closed form — implied volatility ``BS(sigma) - price``,
+/// ``cos(x) - x``, ``sin(x) - x/10``. Every other symbol must already have a
+/// value (substitute it first). Pass exactly one of:
+///
+/// bracket : (float, float)
+///     ``(a, b)`` with ``f(a)``, ``f(b)`` of opposite sign. Brent's method;
+///     always converges, to a root in ``[a, b]``. Returns a :class:`NumericRoot`.
+/// x0 : float
+///     A starting point. Damped Newton; which root it reaches depends on
+///     ``x0``. Returns a :class:`NumericRoot`.
+/// all_in : (float, float)
+///     Every real root in ``[a, b]``, by subdivision with ball-arithmetic
+///     exclusion and an interval-derivative (monotonicity) test. Returns a
+///     :class:`RootIsolation`; its ``roots`` are all ``"verified"``, and it is
+///     ``complete`` unless some sub-interval (a double root, a stretch outside
+///     the domain) could not be settled — those are listed in ``unresolved``,
+///     never guessed at. Needs an equation built from smooth functions (no
+///     ``abs``/``floor``/``Piecewise`` of ``x``).
+///
+/// Each root carries an enclosure ``[lo, hi]`` and a ``status``: the search
+/// runs in ``f64``, then the enclosure is *proved* in 128-bit outward-rounded
+/// ball arithmetic — ``"verified"`` means ``f`` changes sign across
+/// ``[lo, hi]`` and its derivative's enclosure excludes zero there, so exactly
+/// one root lies inside; ``"exists"`` drops uniqueness; ``"heuristic"`` is the
+/// bare iterate (a double root, a non-smooth equation). Loops honour an active
+/// :class:`Budget`.
+///
+/// Raises
+/// ------
+/// SolverError
+///     ``E-SOLVE-009`` — a free parameter, an empty/non-finite interval, a
+///     bracket without a sign change, ``all_in`` on a non-smooth equation;
+///     ``E-SOLVE-012`` — Newton/Brent did not converge or the equation has no
+///     real value where the search needed one.
+/// BudgetExceededError
+///     The active budget stopped the search.
+///
+/// Example::
+///
+///     >>> r = alkahest.nsolve(alkahest.cos(x) - x, x, bracket=(0, 1))
+///     >>> r.value, r.status
+///     (0.7390851332151607, 'verified')
+///     >>> len(alkahest.nsolve(alkahest.sin(x) - x / 10, x, all_in=(-12, 12)))
+///     7
+#[cfg(feature = "groebner")]
+#[pyfunction]
+#[pyo3(name = "nsolve", signature = (equation, x, *, bracket = None, x0 = None, all_in = None))]
+fn py_nsolve(
+    py: Python<'_>,
+    equation: PyRef<PyExpr>,
+    x: PyRef<PyExpr>,
+    bracket: Option<(f64, f64)>,
+    x0: Option<f64>,
+    all_in: Option<(f64, f64)>,
+) -> PyResult<PyObject> {
+    same_pool!("nsolve"; equation, x);
+    let given = bracket.is_some() as u8 + x0.is_some() as u8 + all_in.is_some() as u8;
+    if given != 1 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "nsolve needs exactly one of bracket=(a, b), x0=..., all_in=(a, b)",
+        ));
+    }
+    let pool_py = equation.pool.clone_ref(py);
+    let (eq, var) = (equation.id, x.id);
+    let pool = pool_py.borrow(py);
+    let pool_ref = &pool.inner;
+    if let Some((a, b)) = all_in {
+        let r = py.allow_threads(|| alkahest_core::solver::nsolve_all(eq, var, a, b, pool_ref));
+        return match r {
+            Ok(iso) => Ok(PyRootIsolation { inner: iso }.into_py(py)),
+            Err(e) => Err(nsolve_err_to_py(py, e)),
+        };
+    }
+    let start = match (bracket, x0) {
+        (Some((a, b)), _) => alkahest_core::solver::NsolveStart::Bracket(a, b),
+        (_, Some(x0)) => alkahest_core::solver::NsolveStart::Guess(x0),
+        _ => unreachable!("exactly one start was checked above"),
+    };
+    let r = py.allow_threads(|| alkahest_core::solver::nsolve(eq, var, start, pool_ref));
+    match r {
+        Ok(root) => Ok(PyNumericRoot { inner: root }.into_py(py)),
+        Err(e) => Err(nsolve_err_to_py(py, e)),
+    }
+}
+
 /// Shared formatting for a [`SolutionSet`] result into the Python return shape
 /// (list of dicts, a `GroebnerBasis`, or a structured error).
 /// A numeric solution component as Python sees it: `float` when it is real,
@@ -18661,17 +19037,60 @@ fn finite_solutions_to_py(
             // back as `[nan, nan]` and a parametric `x = y` as `x = nan`. Now a
             // non-real root is a Python `complex`, and a value that is not a
             // number at all refuses the call (E-SOLVE-006 / E-SOLVE-007).
-            let numeric_values = if numeric {
-                match alkahest_core::solver::numeric_solution_values(&solutions, &pool.inner) {
-                    Ok(v) => v,
-                    Err(refusal) => {
-                        let exc = py.get_type_bound::<PySolverError>();
-                        return Err(make_structured_err(py, &exc, &refusal));
+            //
+            // A value that depends on a free parameter (`solve([x - y], [x])`
+            // → `x = y`) has no numeric value but *is* the exact solution, so
+            // numeric=True returns it symbolically and says so in
+            // `solve_side_conditions()` rather than refusing (E-SOLVE-006 is
+            // kept for the paths with no symbolic solution to fall back to).
+            let mut symbolic_fallback: Vec<(usize, usize, ExprId)> = Vec::new();
+            let mut fallback_params: std::collections::BTreeSet<String> = Default::default();
+            let numeric_values: Vec<Vec<Option<alkahest_core::ComplexF64>>> = if numeric {
+                let mut rows = Vec::with_capacity(solutions.len());
+                for (s, sol) in solutions.iter().enumerate() {
+                    let mut row = Vec::with_capacity(sol.len());
+                    for (i, &v) in sol.iter().enumerate() {
+                        match alkahest_core::solver::numeric_value(v, &pool.inner) {
+                            Ok(c) => row.push(Some(c)),
+                            Err(refusal) if refusal.code() == "E-SOLVE-006" => {
+                                for p in alkahest_core::poly::collect_free_vars(v, &pool.inner) {
+                                    if !var_ids.contains(&p) {
+                                        fallback_params.insert(pool.inner.display(p).to_string());
+                                    }
+                                }
+                                symbolic_fallback.push((s, i, v));
+                                row.push(None);
+                            }
+                            Err(refusal) => {
+                                let exc = py.get_type_bound::<PySolverError>();
+                                return Err(make_structured_err(py, &exc, &refusal));
+                            }
+                        }
                     }
+                    rows.push(row);
                 }
+                rows
             } else {
                 Vec::new()
             };
+            let fallback_values: std::collections::HashMap<(usize, usize), ExprId> = {
+                let flat: Vec<ExprId> = symbolic_fallback.iter().map(|&(_, _, v)| v).collect();
+                symbolic_fallback
+                    .iter()
+                    .zip(core_simplify_batch(&flat, &pool.inner))
+                    .map(|(&(s, i, _), d)| ((s, i), d.value))
+                    .collect()
+            };
+            if !fallback_values.is_empty() {
+                let names: Vec<String> = fallback_params.into_iter().collect();
+                SOLVE_SIDE_CONDITIONS.with(|c| {
+                    c.borrow_mut().push(format!(
+                        "numeric=True: the solution depends on the free parameter(s) {} and is \
+                         returned symbolically (exact); substitute values for them to get numbers",
+                        names.join(", ")
+                    ))
+                });
+            }
             for (s, sol) in solutions.iter().enumerate() {
                 let d = pyo3::types::PyDict::new_bound(py);
                 for (i, _) in sol.iter().enumerate() {
@@ -18680,10 +19099,18 @@ fn finite_solutions_to_py(
                         pool: pool_py.clone_ref(py),
                     };
                     if numeric {
-                        d.set_item(
-                            var_expr.into_py(py),
-                            complex_value_to_py(py, numeric_values[s][i]),
-                        )?;
+                        match numeric_values[s][i] {
+                            Some(c) => {
+                                d.set_item(var_expr.into_py(py), complex_value_to_py(py, c))?
+                            }
+                            None => {
+                                let val_expr = PyExpr {
+                                    id: fallback_values[&(s, i)],
+                                    pool: pool_py.clone_ref(py),
+                                };
+                                d.set_item(var_expr.into_py(py), val_expr.into_py(py))?;
+                            }
+                        }
                     } else {
                         let val_expr = PyExpr {
                             id: simplified[s][i],
@@ -21362,6 +21789,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(round_expr, m)?)?;
     m.add_function(wrap_pyfunction!(gamma, m)?)?;
     m.add_function(wrap_pyfunction!(lambert_w, m)?)?;
+    m.add_function(wrap_pyfunction!(lambert_wm1, m)?)?;
     m.add_function(wrap_pyfunction!(digamma, m)?)?;
     m.add_function(wrap_pyfunction!(bessel_j0, m)?)?;
     m.add_function(wrap_pyfunction!(bessel_j1, m)?)?;
@@ -21549,6 +21977,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add_function(wrap_pyfunction!(py_pell_classes, m)?)?;
         m.add_function(wrap_pyfunction!(py_solve, m)?)?;
         m.add_function(wrap_pyfunction!(py_solve_side_conditions, m)?)?;
+        m.add_function(wrap_pyfunction!(py_nsolve, m)?)?;
+        m.add_class::<PyNumericRoot>()?;
+        m.add_class::<PyRootIsolation>()?;
         m.add_function(wrap_pyfunction!(py_triangularize, m)?)?;
         m.add_function(wrap_pyfunction!(py_primary_decomposition, m)?)?;
         m.add_function(wrap_pyfunction!(py_ideal_radical, m)?)?;
