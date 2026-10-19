@@ -138,6 +138,7 @@ from .alkahest import (  # noqa: F401
     Forall,
     HybridODE,
     Implies,
+    LieAlgebra,
     # Exact linear / integer programming (E-LP-*)
     LinprogError,
     LPResult,
@@ -152,7 +153,6 @@ from .alkahest import (  # noqa: F401
     MultiPolyFactorization,
     # V2-1: Modular / CRT framework
     MultiPolyFp,
-    LieAlgebra,
     NcError,
     Not,
     Or,
@@ -3063,6 +3063,7 @@ __all__ = [
     # Exact linear / integer programming (E-LP-*)
     "LPResult",
     "LatticeError",
+    "LieAlgebra",
     "LimitError",
     "LinearAlgebraError",
     "LinearRecurrenceError",
@@ -3080,7 +3081,6 @@ __all__ = [
     "MultiMinimizedLogic",
     "MultiPoly",
     "MultiPolyFactorization",
-    "LieAlgebra",
     "NcError",
     "Not",
     "NumberTheoryError",

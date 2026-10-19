@@ -331,8 +331,21 @@ fn py_vacuum_expectation(
 /// >>> gamma_trace([p, q, k, l])   # 4*dot(p,q)*dot(k,l) - 4*dot(k,p)*dot(l,q) + ...
 /// >>> gamma_trace([5, 0, 1, 2, 3], pool=pool)   # -4*I
 ///
-/// Raises ``NcError``: ``E-NC-005`` for an invalid slot, ``E-NC-006`` for
-/// more than 14 slots to expand.
+/// With ``dim`` (an integer or a symbolic ``d``) the trace is taken in
+/// ``dim`` dimensions (``tr 1 = 4``, as in FORM / FeynCalc): every slot is a
+/// commutative ``Expr`` label, ``indices`` lists the labels that are Lorentz
+/// indices, and an index occurring twice is summed with ``g^μ_μ = dim``::
+///
+///     gamma_trace([mu, mu], dim=d, indices=[mu])             # 4*d
+///     gamma_trace([mu, nu, mu, nu], dim=d, indices=[mu, nu]) # 4*d*(2 - d)
+///
+/// An index occurring once stays free (``dot(μ, ν) = g^{μν}``); contract
+/// products of traces with :func:`lorentz_contract`. ``γ^5`` and explicit
+/// components ``0``-``3`` are four-dimensional and are refused here.
+///
+/// Raises ``NcError``: ``E-NC-005`` for an invalid slot (or ``γ^5`` /
+/// an explicit component with ``dim``), ``E-NC-006`` for more than 14 slots
+/// to expand.
 #[pyfunction]
 #[pyo3(name = "gamma_trace", signature = (slots, pool = None, *, dim = None, indices = None))]
 fn py_gamma_trace(
@@ -588,7 +601,10 @@ impl PyLieAlgebra {
         self.check(&expr, "`expr`")?;
         let pool = self.pool.borrow(py);
         guard_depth(&pool.inner, expr.id)?;
-        let id = self.inner.normal_order(expr.id, &pool.inner).map_err(nc_err)?;
+        let id = self
+            .inner
+            .normal_order(expr.id, &pool.inner)
+            .map_err(nc_err)?;
         Ok(wrap(py, id, &self.pool))
     }
 
@@ -737,7 +753,12 @@ fn py_lie_algebra(
                     "structure_constants indices are 1-based (f_{123} is the key (1, 2, 3))",
                 ));
             }
-            entries.push((a - 1, b - 1, c - 1, coerce_value(&v, &pool_py, &pool.inner)?));
+            entries.push((
+                a - 1,
+                b - 1,
+                c - 1,
+                coerce_value(&v, &pool_py, &pool.inner)?,
+            ));
         }
     }
     entries.sort_unstable_by_key(|&(a, b, c, _)| (a, b, c));
@@ -770,9 +791,11 @@ fn make_generators(
             let _ = py;
             Ok((1..=n)
                 .map(|i| {
-                    pool_ref
-                        .inner
-                        .symbol_commutative(format!("{prefix}{i}"), Domain::Complex, false)
+                    pool_ref.inner.symbol_commutative(
+                        format!("{prefix}{i}"),
+                        Domain::Complex,
+                        false,
+                    )
                 })
                 .collect())
         }

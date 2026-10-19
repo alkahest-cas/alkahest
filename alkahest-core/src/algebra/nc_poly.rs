@@ -158,7 +158,7 @@ impl crate::errors::AlkahestError for NcError {
                 "give distinct noncommutative generators and structure constants f_abc with [T_a, T_b] = i f_abc T_c satisfying the Jacobi identity (check_jacobi=False skips the check)",
             ),
             NcError::InvalidSequencePattern { .. } => Some(
-                "the left side must be a product of noncommutative factors with at least one fixed factor; sequence variables are plain noncommutative symbols that occur once as a direct factor",
+                "the left side must be a product of noncommutative factors with at least one fixed factor; sequence variables are plain noncommutative symbols that occur as direct factors",
             ),
             NcError::Budget(e) => e.remediation(),
         }

@@ -1091,9 +1091,11 @@ impl PatternRule {
     /// factor, so it needs a product of at least two noncommutative factors.
     ///
     /// The left side must be a product of noncommutative factors in which
-    /// every sequence variable is a direct factor occurring once, and at
+    /// every sequence variable is a direct factor (a variable occurring more than once must match equal runs), and at
     /// least one other factor must be present (a pattern of wildcards alone
-    /// would match the empty word everywhere).
+    /// would match the empty word everywhere). The rule does not fire on a
+    /// product of more than 2048 noncommutative factors, which bounds a rule
+    /// that regrows its own redex.
     ///
     /// # Errors
     /// `E-NC-009` when these conditions fail.
@@ -1139,9 +1141,9 @@ impl PatternRule {
                     pool.display(v)
                 )));
             }
-            if args.iter().filter(|&&a| a == v).count() != 1 {
+            if !args.contains(&v) {
                 return Err(bad(format!(
-                    "sequence variable `{}` must occur exactly once as a direct factor of the left side",
+                    "sequence variable `{}` must occur as a direct factor of the left side",
                     pool.display(v)
                 )));
             }
@@ -1350,7 +1352,7 @@ fn rewrite_inside_product(
             if let Some(s) = match_args_exact(&pargs, &eargs[start..start + k], empty(), pool) {
                 let mut out = Vec::with_capacity(eargs.len() - k + 1);
                 out.extend_from_slice(&eargs[..start]);
-                out.push(s.apply(rhs, pool));
+                push_spliced(&mut out, s.apply(rhs, pool), pool);
                 out.extend_from_slice(&eargs[start + k..]);
                 return Some(pool.mul(out));
             }
@@ -1373,9 +1375,34 @@ fn rewrite_inside_product(
     Some(pool.mul(out))
 }
 
+/// Push `e` onto a product's factor list, splicing in its factors when it is
+/// itself a (noncommutative) product. Without this a replacement that
+/// contains its own redex (`A·B → A·A·B`) nests one more `Mul` per pass and
+/// the engine, which rewrites bottom-up at every level, doubles the work.
+fn push_spliced(out: &mut Vec<ExprId>, e: ExprId, pool: &ExprPool) {
+    let args = pool.with(e, |d| match d {
+        ExprData::Mul(v) => Some(v.clone()),
+        _ => None,
+    });
+    match args {
+        Some(v) => {
+            for a in v {
+                push_spliced(out, a, pool);
+            }
+        }
+        None => out.push(e),
+    }
+}
+
 /// Matching steps one sequence-wildcard match may take before it gives up
 /// (the rule then simply does not fire; the value is never wrong).
 const MAX_SEQ_MATCH_STEPS: usize = 1_000_000;
+
+/// A sequence-wildcard rule does not fire on a product of more than this many
+/// noncommutative factors. A rule that regrows its own redex
+/// (`A·X·B → A·A·X·B`) never reaches a fixpoint; this bounds how far it can
+/// run when no budget is set (the active budget stops it earlier).
+const MAX_SEQ_WORD: usize = 2048;
 
 #[derive(Clone, Copy)]
 enum PItem {
@@ -1462,6 +1489,9 @@ fn rewrite_with_sequences(
         return None;
     }
     let word = unroll_nc_powers(&nc, pool);
+    if word.len() > MAX_SEQ_WORD {
+        return None;
+    }
     let mut items: Vec<PItem> = Vec::new();
     for a in pargs {
         if seq_vars.contains(&a) {
@@ -1495,7 +1525,7 @@ fn rewrite_with_sequences(
             let replaced = crate::kernel::subs::subs(replaced, &mapping, pool);
             let mut out = coeffs;
             out.extend_from_slice(&word[..start]);
-            out.push(replaced);
+            push_spliced(&mut out, replaced, pool);
             out.extend_from_slice(&word[end..]);
             return Some(pool.mul(out));
         }

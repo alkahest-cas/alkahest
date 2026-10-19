@@ -270,7 +270,11 @@ fn sqrt3(pool: &ExprPool) -> ExprId {
 /// as 0-based entries with `a < b`.
 pub fn su2_structure_constants(pool: &ExprPool) -> Vec<StructureEntry> {
     let one = pool.integer(1_i32);
-    vec![(0, 1, 2, one), (1, 2, 0, one), (0, 2, 1, pool.integer(-1_i32))]
+    vec![
+        (0, 1, 2, one),
+        (1, 2, 0, one),
+        (0, 2, 1, pool.integer(-1_i32)),
+    ]
 }
 
 /// Gell-Mann `f_{abc}` for su(3) (`[T_a, T_b] = i f_{abc} T_c`, `T = λ/2`),

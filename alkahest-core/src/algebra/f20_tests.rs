@@ -2,12 +2,12 @@
 
 use super::gamma_dim::{gamma_contract, gamma_trace_dim, lorentz_contract};
 use super::lie::{su2_structure_constants, su3_structure_constants, LieAlgebra};
+use super::nc_poly::simplify_with_noncommutative;
 use super::nc_poly::{nc_terms, NcError};
 use crate::kernel::{Domain, ExprId, ExprPool};
 use crate::pattern::Pattern;
 use crate::simplify::engine::simplify_expanded;
 use crate::simplify::rulesets::PatternRule;
-use super::nc_poly::simplify_with_noncommutative;
 use crate::simplify::SimplifyConfig;
 
 fn sym(p: &ExprPool, n: &str) -> ExprId {
@@ -23,6 +23,10 @@ fn dot(p: &ExprPool, a: ExprId, b: ExprId) -> ExprId {
 fn equal(p: &ExprPool, a: ExprId, b: ExprId) -> bool {
     let d = p.add(vec![a, p.mul(vec![p.integer(-1_i32), b])]);
     simplify_expanded(d, p).value == p.integer(0_i32)
+}
+fn same_nc(p: &ExprPool, a: ExprId, b: ExprId) -> bool {
+    let d = p.add(vec![a, p.mul(vec![p.integer(-1_i32), b])]);
+    nc_terms(d, p).unwrap().is_empty()
 }
 fn at_dim(p: &ExprPool, e: ExprId, d: ExprId, n: i64) -> ExprId {
     let m: std::collections::HashMap<_, _> = [(d, p.integer(n))].into_iter().collect();
@@ -140,9 +144,13 @@ fn su2_commutators_and_casimir() {
     let g = gens(&p, 3, "J");
     let alg = LieAlgebra::new(g.clone(), &su2_structure_constants(&p), true, &p).unwrap();
     let c = alg.commutator(g[0], g[1], &p).unwrap();
-    assert!(equal(&p, c, p.mul(vec![p.imaginary_unit(), g[2]])));
+    assert!(same_nc(&p, c, p.mul(vec![p.imaginary_unit(), g[2]])));
     let c = alg.commutator(g[1], g[0], &p).unwrap();
-    assert!(equal(&p, c, p.mul(vec![p.integer(-1_i32), p.imaginary_unit(), g[2]])));
+    assert!(same_nc(
+        &p,
+        c,
+        p.mul(vec![p.integer(-1_i32), p.imaginary_unit(), g[2]])
+    ));
     let cas = alg.casimir(None, &p).unwrap();
     for &t in &g {
         let z = alg.commutator(cas, t, &p).unwrap();
@@ -200,28 +208,35 @@ fn sequence_wildcard_leftmost_shortest() {
         nc(&p, "D"),
     );
     // A X B -> [X]  (here C stands in for a marker)
-    let rule = seq_rule(
-        &p,
-        p.mul(vec![a, x, b]),
-        p.mul(vec![c, x, c]),
-        vec![x],
-    );
+    let rule = seq_rule(&p, p.mul(vec![a, x, b]), p.mul(vec![c, x, c]), vec![x]);
     // A D D B -> C D D C
     let e = p.mul(vec![a, d, d, b]);
     let r = run(&p, rule.clone(), e);
-    assert!(nc_terms(p.add(vec![r, p.mul(vec![p.integer(-1_i32), p.mul(vec![c, d, d, c])])]), &p)
-        .unwrap()
-        .is_empty());
+    assert!(nc_terms(
+        p.add(vec![
+            r,
+            p.mul(vec![p.integer(-1_i32), p.mul(vec![c, d, d, c])])
+        ]),
+        &p
+    )
+    .unwrap()
+    .is_empty());
     // empty run: A B -> C C
     let r = run(&p, rule.clone(), p.mul(vec![a, b]));
-    assert!(nc_terms(p.add(vec![r, p.mul(vec![p.integer(-1_i32), p.mul(vec![c, c])])]), &p)
-        .unwrap()
-        .is_empty());
+    assert!(nc_terms(
+        p.add(vec![r, p.mul(vec![p.integer(-1_i32), p.mul(vec![c, c])])]),
+        &p
+    )
+    .unwrap()
+    .is_empty());
     // shortest: A D B D B -> C D C D B (first B closes)
     let e = p.mul(vec![a, d, b, d, b]);
     let r = run(&p, rule, e);
     assert!(nc_terms(
-        p.add(vec![r, p.mul(vec![p.integer(-1_i32), p.mul(vec![c, d, c, d, b])])]),
+        p.add(vec![
+            r,
+            p.mul(vec![p.integer(-1_i32), p.mul(vec![c, d, c, d, b])])
+        ]),
         &p
     )
     .unwrap()

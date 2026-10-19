@@ -577,7 +577,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-NC-006", class: "NcError", cause: Cause::Unsupported, remediation: Some("split the trace (e.g. with Fierz or completeness relations) before calling gamma_trace") },
     ErrorSpec { code: "E-NC-007", class: "NcError", cause: Cause::UserInput,   remediation: Some("list every ladder operator in the modes, or remove the other noncommutative factors first") },
     ErrorSpec { code: "E-NC-008", class: "NcError", cause: Cause::UserInput,   remediation: Some("give distinct noncommutative generators and structure constants f_abc with [T_a, T_b] = i f_abc T_c satisfying the Jacobi identity (check_jacobi=False skips the check)") },
-    ErrorSpec { code: "E-NC-009", class: "NcError", cause: Cause::UserInput,   remediation: Some("the left side must be a product of noncommutative factors with at least one fixed factor; sequence variables are plain noncommutative symbols that occur once as a direct factor") },
+    ErrorSpec { code: "E-NC-009", class: "NcError", cause: Cause::UserInput,   remediation: Some("the left side must be a product of noncommutative factors with at least one fixed factor; sequence variables are plain noncommutative symbols that occur as direct factors") },
     // E-QUAT — QuaternionError (Hamilton quaternions and the rotation operator)
     ErrorSpec { code: "E-QUAT-001", class: "QuaternionError", cause: Cause::Domain,    remediation: Some("use a non-zero quaternion; if the components are symbolic, substitute concrete values or declare the parameters so the norm can be decided") },
     // The identity rotation has no axis — *every* unit vector is one.  Returning

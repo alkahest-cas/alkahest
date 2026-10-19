@@ -318,7 +318,8 @@ def test_gamma_contract_textbook_identities(pool):
 
     assert terms([mu, mu], [mu]) == [("d", [])]
     r = ak.gamma_contract([mu, nu, mu], [mu], d)
-    assert len(r) == 1 and str(r[0][1][0]) == "nu"
+    assert len(r) == 1
+    assert str(r[0][1][0]) == "nu"
     for dv in (2, 3, 4, 9):
         assert float(evaluate(r[0][0], {"d": dv})) == 2 - dv
     # g^mu g^nu g^rho g^sig g_mu = -2 g^sig g^rho g^nu + (4-d) g^nu g^rho g^sig
@@ -344,7 +345,7 @@ def test_gamma_contract_textbook_identities(pool):
                 lhs = 0
                 for assign in itertools.product(range(dv), repeat=len(idx_names)):
                     amap = {**fassign, **dict(zip(idx_names, assign))}
-                    seen = {n: 0 for n in idx_names}
+                    seen = dict.fromkeys(idx_names, 0)
                     m = np.eye(len(g[0]), dtype=complex)
                     coef = 1.0
                     for s in slots:
@@ -375,7 +376,8 @@ def test_gamma_contract_refusals(pool):
     assert e.value.code == "E-NC-005"
     # a free index is left alone
     r = ak.gamma_contract([mu, nu], [mu], d)
-    assert len(r) == 1 and [str(x) for x in r[0][1]] == ["mu", "nu"]
+    assert len(r) == 1
+    assert [str(x) for x in r[0][1]] == ["mu", "nu"]
 
 
 # ---------------------------------------------------------------------------
@@ -484,7 +486,8 @@ def test_su3_tables_vs_matrices(pool):
         assert str(f[(b, a, c)]) == str(-v) or float(evaluate(f[(b, a, c)], num)) == pytest.approx(
             -float(evaluate(v, num))
         )
-    assert len(f) == 54 and len(d) > 50
+    assert len(f) == 54
+    assert len(d) > 50
 
 
 def test_su3_normal_order_and_casimir(pool):
@@ -508,7 +511,7 @@ def test_su3_normal_order_and_casimir(pool):
         assert np.allclose(evaluate(no, env), m), word
     # normal-ordered words are increasing
     no = su3.normal_order(T[7] * T[0] * T[3])
-    for coeff, w in ak.nc_terms(no):
+    for _coeff, w in ak.nc_terms(no):
         idx = [int(str(g)[1:]) for g in w]
         assert idx == sorted(idx)
 
@@ -557,8 +560,8 @@ def test_affine_algebra_nonsemisimple(pool):
     assert np.allclose(t1 @ t2 - t2 @ t1, 1j * t2)
     env = {"A1": t1, "A2": t2, "I": 1j}
     assert np.allclose(
-        evaluate(alg.commutator(T[0], T[1] ** 3), env), t1 @ np.linalg.matrix_power(t2, 3)
-        - np.linalg.matrix_power(t2, 3) @ t1,
+        evaluate(alg.commutator(T[0], T[1] ** 3), env),
+        t1 @ np.linalg.matrix_power(t2, 3) - np.linalg.matrix_power(t2, 3) @ t1,
     )
 
 
@@ -636,9 +639,13 @@ def test_sequence_wildcard_repeated_variable(pool):
     rule = ak.make_rule(X * A * X, D, sequence=[X])
     r = ak.simplify_with(B * C * A * B * C * E, [rule]).value
     assert nc_equal(r, D * E)
-    # unequal runs do not match
+    # the run need not start at the front: C A C inside B C A C B
     r = ak.simplify_with(B * C * A * C * B, [rule]).value
-    assert nc_equal(r, B * C * A * C * B)
+    assert nc_equal(r, B * D * B)
+    # unequal runs do not match
+    rule2 = ak.make_rule(X * A * X * B, E, sequence=[X])
+    assert nc_equal(ak.simplify_with(C * A * D * B, [rule2]).value, C * A * D * B)
+    assert nc_equal(ak.simplify_with(C * A * C * B, [rule2]).value, E)
 
 
 def test_sequence_wildcard_two_variables_and_commutative_wildcard(pool):
@@ -646,7 +653,7 @@ def test_sequence_wildcard_two_variables_and_commutative_wildcard(pool):
     # A X B Y -> Y B X A  (swap the two runs, between A..B and after B)
     rule = ak.make_rule(A * X * B * C * Y, Y * C * B * X * A, sequence=[X, Y])
     r = ak.simplify_with(A * D * B * C * E, [rule]).value
-    assert nc_equal(r, E * C * B * D * A)
+    assert nc_equal(r, C * B * D * A * E)
     # trailing variable takes the shortest (empty) run
     rule2 = ak.make_rule(A * X, B * X, sequence=[X])
     assert nc_equal(ak.simplify_with(A * D * E, [rule2]).value, B * D * E)
@@ -671,7 +678,6 @@ def test_sequence_rule_validation(pool):
     for lhs, seq in (
         (A * B, [X]),  # X not in lhs
         (X * Y, [X, Y]),  # no fixed factor
-        (X * X * A, [X]),  # twice
         (A, [X]),  # not a product
         (A * X**2, [X]),  # hidden in a power
     ):
@@ -694,6 +700,15 @@ def test_sequence_rule_termination_and_cost(pool):
     rule = ak.make_rule(A * X * B, A * A * X * B, sequence=[X])
     r = ak.simplify_with(A * C * B, [rule]).value  # terminates
     assert "B" in str(r)
+    # the same without sequence wildcards never reaches a fixpoint; the
+    # active budget stops it
+    import time
+
+    t = time.time()
+    with ak.context(pool=pool, budget=ak.Budget(wall_ms=300)):
+        r = ak.simplify_with(A * B, [ak.make_rule(A * B, A * A * B)]).value
+    assert "B" in str(r)
+    assert time.time() - t < 30
     # an adversarial long word: the match budget gives up quickly instead of hanging
     rule = ak.make_rule(A * X * A * X * A * X * B, C, sequence=[X])
     word = pool.integer(1)
