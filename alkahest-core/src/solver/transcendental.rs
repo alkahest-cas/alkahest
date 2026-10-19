@@ -41,6 +41,12 @@ use crate::simplify::assumptions::Sign;
 use rug::Rational;
 use std::collections::{BTreeMap, HashMap};
 
+mod invertible;
+mod trigpoly;
+
+pub(crate) use invertible::solve_with_invertible_kernels;
+pub use invertible::with_complex_domain;
+
 /// Maximum recursion depth while walking an expression tree (cycle / runaway
 /// guard — the pool is a DAG but defence-in-depth is cheap).
 const MAX_DEPTH: usize = 256;
@@ -162,16 +168,25 @@ fn solve_transcendental_inner(
     var: ExprId,
     pool: &ExprPool,
 ) -> TranscendentalOutcome {
+    let complex = invertible::complex_mode(var, pool);
     if let Some(out) = try_trig_solve(equation, var, pool) {
         return out;
     }
-    if let Some(out) = try_lambert_solve(equation, var, pool) {
-        return out;
-    }
-    if let Some(out) = try_lambert_log(equation, var, pool) {
-        return out;
-    }
-    if let Some(out) = try_self_power(equation, var, pool) {
+    // Over ℂ a Lambert-W equation has a root on every branch Wₖ; only W₀ (and
+    // the real W₋₁) exist here, so the complex solution set cannot be listed.
+    let lambert = try_lambert_solve(equation, var, pool)
+        .or_else(|| try_lambert_log(equation, var, pool))
+        .or_else(|| try_self_power(equation, var, pool));
+    if let Some(out) = lambert {
+        if complex {
+            let _ = super::take_solve_side_conditions();
+            return refuse(
+                "its complex solutions lie on infinitely many branches of Lambert W, which \
+                 cannot be listed; solve over the reals instead"
+                    .into(),
+            )
+            .unwrap_or(TranscendentalOutcome::Unsupported);
+        }
         return out;
     }
     match solve_exp_log(equation, var, pool) {
@@ -180,6 +195,9 @@ fn solve_transcendental_inner(
     }
     let _ = super::take_solve_side_conditions();
     if let Some(out) = try_log_reducible(equation, var, pool) {
+        return out;
+    }
+    if let Some(out) = trigpoly::try_trig_polynomial(equation, var, complex, pool) {
         return out;
     }
     TranscendentalOutcome::Unsupported
@@ -234,6 +252,26 @@ fn solve_exp_log(equation: ExprId, var: ExprId, pool: &ExprPool) -> Transcendent
         Some(r) => r,
         None => return TranscendentalOutcome::Unsupported,
     };
+    let complex = invertible::complex_mode(var, pool);
+    if complex && coeffs.len() == 3 && u_roots.is_empty() && coeffs[2] != 0 {
+        // A negative discriminant: no real kernel value, but complex ones that
+        // the rational root finder does not produce.
+        return TranscendentalOutcome::Unsupported;
+    }
+    // Over ℂ, `exp(arg) = r` holds on the whole family `log r + 2πik`.
+    let shift = (complex && kernel.kind == KernelKind::Exp).then(|| {
+        let k = family_index(equation, pool);
+        super::record_side_condition(crate::deriv::log::SideCondition::InDomain(
+            k,
+            crate::kernel::Domain::Integer,
+        ));
+        pool.mul(vec![
+            pool.integer(2_i32),
+            crate::eval::symbols::pi_symbol(pool),
+            pool.imaginary_unit(),
+            k,
+        ])
+    });
 
     // Back-substitute: kernel = u_root.
     //   exp(arg) = r  ⟹  arg = ln(r)   (only for r > 0)
@@ -244,11 +282,21 @@ fn solve_exp_log(equation: ExprId, var: ExprId, pool: &ExprPool) -> Transcendent
     for r in u_roots {
         let rhs = match kernel.kind {
             KernelKind::Exp => {
-                // exp(arg) = r requires r > 0 for a real solution.
-                if r <= 0 {
-                    continue; // no real solution from this root
+                if let Some(shift) = shift {
+                    if r == 0 {
+                        continue; // exp never vanishes
+                    }
+                    pool.add(vec![
+                        pool.func("log", vec![rational_to_expr(&r, pool)]),
+                        shift,
+                    ])
+                } else {
+                    // exp(arg) = r requires r > 0 for a real solution.
+                    if r <= 0 {
+                        continue; // no real solution from this root
+                    }
+                    pool.func("log", vec![rational_to_expr(&r, pool)])
                 }
-                pool.func("log", vec![rational_to_expr(&r, pool)])
             }
             KernelKind::Log => {
                 // log(arg) = r  ⟹  arg = exp(r), always real.
@@ -307,8 +355,10 @@ fn try_trig_solve(equation: ExprId, var: ExprId, pool: &ExprPool) -> Option<Tran
     // u = -B/A — prefer a rational when both coeffs are numeric.
     let c = quotient_neg(coeff_0, coeff_u, pool);
 
-    if let Some(false) = trig_rhs_real_ok(kind, c, pool) {
-        return Some(TranscendentalOutcome::Solved(vec![]));
+    if !invertible::complex_mode(var, pool) {
+        if let Some(false) = trig_rhs_real_ok(kind, c, pool) {
+            return Some(TranscendentalOutcome::Solved(vec![]));
+        }
     }
     note_nonzero(coeff_u, pool);
 
@@ -908,6 +958,27 @@ fn try_log_reducible(
     }
     let db = diff(&t1.lb, &t2.lb);
     let ratio = simp(quotient_neg(t2.coeff, t1.coeff, pool), pool);
+    if invertible::complex_mode(var, pool) {
+        // Over ℂ: `e^{Δa·x + Δb} = ratio` for any `ratio ≠ 0`, on the whole
+        // family `log(ratio) + 2πik`.
+        note_nonzero(t1.coeff, pool);
+        note_nonzero(t2.coeff, pool);
+        let k = family_index(equation, pool);
+        super::record_side_condition(crate::deriv::log::SideCondition::InDomain(
+            k,
+            crate::kernel::Domain::Integer,
+        ));
+        let shift = pool.mul(vec![
+            pool.integer(2_i32),
+            crate::eval::symbols::pi_symbol(pool),
+            pool.imaginary_unit(),
+            k,
+        ]);
+        let rhs = pool.add(vec![pool.func("log", vec![ratio]), shift]);
+        return Some(TranscendentalOutcome::Solved(vec![solve_affine(
+            &da, &db, rhs, pool,
+        )]));
+    }
     if require_positive(ratio, pool) == Some(false) {
         return Some(TranscendentalOutcome::Solved(vec![]));
     }

@@ -169,6 +169,47 @@ impl ComplexF64 {
         Ok(Self::new(std::f64::consts::FRAC_PI_2, 0.0).add(i.mul(ln)))
     }
 
+    /// `tan z = sin z / cos z` (exact `f64::tan` on the real axis).
+    fn tan(self) -> Result<Self, EvalError> {
+        if self.im == 0.0 {
+            return Ok(Self::new(self.re.tan(), 0.0));
+        }
+        let (s, c) = (self.sin(), self.cos());
+        let d = c.re * c.re + c.im * c.im;
+        if d == 0.0 {
+            return Err(error(UnsupportedReason::NonFiniteResult));
+        }
+        Ok(Self::new(
+            (s.re * c.re + s.im * c.im) / d,
+            (s.im * c.re - s.re * c.im) / d,
+        ))
+    }
+
+    /// `asin z = −i·Log(iz + √(1 − z²))`, principal branch.
+    fn asin(self) -> Result<Self, EvalError> {
+        if self.im == 0.0 && self.re.abs() <= 1.0 {
+            return Ok(Self::new(self.re.asin(), 0.0));
+        }
+        let one = Self::new(1.0, 0.0);
+        let i = Self::new(0.0, 1.0);
+        let root = one.add(Self::new(-1.0, 0.0).mul(self.mul(self))).sqrt()?;
+        let ln = i.mul(self).add(root).ln()?;
+        Ok(Self::new(0.0, -1.0).mul(ln))
+    }
+
+    /// `atan z = (i/2)·(Log(1 − iz) − Log(1 + iz))`, principal branch.
+    fn atan(self) -> Result<Self, EvalError> {
+        if self.im == 0.0 {
+            return Ok(Self::new(self.re.atan(), 0.0));
+        }
+        let one = Self::new(1.0, 0.0);
+        let iz = Self::new(0.0, 1.0).mul(self);
+        let a = one.add(Self::new(-iz.re, -iz.im)).ln()?;
+        let b = one.add(iz).ln()?;
+        let diff = a.add(Self::new(-b.re, -b.im));
+        Ok(Self::new(0.0, 0.5).mul(diff))
+    }
+
     fn principal_arg(self) -> Result<f64, EvalError> {
         // Principal arg is undefined at 0 and discontinuous on the negative real axis.
         if self.im == 0.0 && self.re <= 0.0 {
@@ -294,6 +335,9 @@ fn eval_node_uncached(
                 "log" => x.ln(),
                 "sqrt" => x.sqrt(),
                 "acos" => x.acos(),
+                "asin" => x.asin(),
+                "atan" => x.atan(),
+                "tan" => x.tan(),
                 "re" => Ok(ComplexF64::new(x.re, 0.0)),
                 "im" => Ok(ComplexF64::new(x.im, 0.0)),
                 "conjugate" => Ok(ComplexF64::new(x.re, -x.im)),
@@ -331,6 +375,23 @@ fn eval_node_uncached(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tan_asin_atan_match_their_definitions() {
+        let z = ComplexF64::new(0.3, -0.7);
+        let t = z.tan().unwrap();
+        let st = z.sin();
+        let ct = z.cos();
+        let back = t.mul(ct);
+        assert!((back.re - st.re).abs() < 1e-14 && (back.im - st.im).abs() < 1e-14);
+        let s = z.sin().asin().unwrap();
+        assert!((s.re - z.re).abs() < 1e-13 && (s.im - z.im).abs() < 1e-13);
+        let a = z.tan().unwrap().atan().unwrap();
+        assert!((a.re - z.re).abs() < 1e-13 && (a.im - z.im).abs() < 1e-13);
+        assert_eq!(ComplexF64::new(0.5, 0.0).asin().unwrap().re, 0.5f64.asin());
+        let big = ComplexF64::new(2.0, 0.0).asin().unwrap();
+        assert!((big.sin().re - 2.0).abs() < 1e-12 && big.sin().im.abs() < 1e-12);
+    }
 
     #[test]
     fn arg_declines_on_branch_cut() {

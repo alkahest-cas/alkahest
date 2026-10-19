@@ -141,6 +141,26 @@ impl Freezer<'_> {
     }
 }
 
+/// Replace every maximal sub-expression of `exprs` that is free of `vars` and
+/// not polynomial (a function application, a non-integer power) by a fresh
+/// opaque parameter. Returns the frozen expressions and the
+/// `(fresh symbol, original)` pairs to thaw them with.
+pub(super) fn freeze_free_atoms(
+    exprs: &[ExprId],
+    vars: &[ExprId],
+    pool: &ExprPool,
+) -> (Vec<ExprId>, Vec<(ExprId, ExprId)>) {
+    let mut fz = Freezer {
+        pool,
+        vars,
+        memo: HashMap::new(),
+        frozen: Vec::new(),
+        by_orig: HashMap::new(),
+    };
+    let out = exprs.iter().map(|&e| fz.walk(e, 0)).collect();
+    (out, fz.frozen)
+}
+
 /// Does `e` mention any of `vars`?
 fn mentions_any(e: ExprId, vars: &[ExprId], pool: &ExprPool, depth: usize) -> bool {
     if vars.contains(&e) {
