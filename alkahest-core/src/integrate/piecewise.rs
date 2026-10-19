@@ -250,11 +250,7 @@ fn free_symbols_other_than(e: ExprId, var: ExprId, pool: &ExprPool) -> bool {
             continue;
         }
         match pool.get(n) {
-            ExprData::Symbol { .. } => {
-                if n != var {
-                    return true;
-                }
-            }
+            ExprData::Symbol { .. } if n != var => return true,
             ExprData::Add(a) | ExprData::Mul(a) => stack.extend(a),
             ExprData::Pow { base, exp } => {
                 stack.push(base);
@@ -438,7 +434,6 @@ fn decide(
 /// `expr` with every `Piecewise` replaced by the branch selected at `sample`.
 fn resolve(
     e: ExprId,
-    var: ExprId,
     bind: &HashMap<ExprId, Rational>,
     pool: &ExprPool,
     memo: &mut IdMap<ExprId>,
@@ -463,7 +458,7 @@ fn resolve(
                 }
             }
             match chosen {
-                Some(b) => resolve(b, var, bind, pool, memo)?,
+                Some(b) => resolve(b, bind, pool, memo)?,
                 // Undecidable here (nested condition): keep the node, resolve
                 // inside its values, and let the recursion on the interval
                 // finish the job.
@@ -471,13 +466,10 @@ fn resolve(
                     let nb = branches
                         .iter()
                         .map(|&(c, v)| {
-                            Ok((
-                                resolve(c, var, bind, pool, memo)?,
-                                resolve(v, var, bind, pool, memo)?,
-                            ))
+                            Ok((resolve(c, bind, pool, memo)?, resolve(v, bind, pool, memo)?))
                         })
                         .collect::<Result<Vec<_>, IntegrationError>>()?;
-                    let nd = resolve(default, var, bind, pool, memo)?;
+                    let nd = resolve(default, bind, pool, memo)?;
                     pool.piecewise(nb, nd)
                 }
             }
@@ -485,32 +477,32 @@ fn resolve(
         ExprData::Predicate { kind, args } => {
             let v = args
                 .iter()
-                .map(|&x| resolve(x, var, bind, pool, memo))
+                .map(|&x| resolve(x, bind, pool, memo))
                 .collect::<Result<Vec<_>, _>>()?;
             pool.predicate(kind, v)
         }
         ExprData::Add(a) => {
             let v = a
                 .iter()
-                .map(|&x| resolve(x, var, bind, pool, memo))
+                .map(|&x| resolve(x, bind, pool, memo))
                 .collect::<Result<Vec<_>, _>>()?;
             pool.add(v)
         }
         ExprData::Mul(a) => {
             let v = a
                 .iter()
-                .map(|&x| resolve(x, var, bind, pool, memo))
+                .map(|&x| resolve(x, bind, pool, memo))
                 .collect::<Result<Vec<_>, _>>()?;
             pool.mul(v)
         }
         ExprData::Pow { base, exp } => pool.pow(
-            resolve(base, var, bind, pool, memo)?,
-            resolve(exp, var, bind, pool, memo)?,
+            resolve(base, bind, pool, memo)?,
+            resolve(exp, bind, pool, memo)?,
         ),
         ExprData::Func { name, args } => {
             let v = args
                 .iter()
-                .map(|&x| resolve(x, var, bind, pool, memo))
+                .map(|&x| resolve(x, bind, pool, memo))
                 .collect::<Result<Vec<_>, _>>()?;
             pool.func(name, v)
         }
@@ -549,11 +541,11 @@ fn split(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<Split, Integratio
         let mut bind = HashMap::new();
         bind.insert(var, s.clone());
         let mut memo = IdMap::default();
-        pieces.push(resolve(lowered, var, &bind, pool, &mut memo)?);
+        pieces.push(resolve(lowered, &bind, pool, &mut memo)?);
     }
     // No progress (a nested condition that never becomes polynomial): refuse
     // rather than recurse forever.
-    if pieces.iter().any(|&q| q == lowered) {
+    if pieces.contains(&lowered) {
         return refuse(
             "integrate: a Piecewise condition compares a nested Piecewise that does not reduce              to a polynomial inequality, so its breakpoints cannot be solved exactly",
         );

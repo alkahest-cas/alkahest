@@ -17,8 +17,9 @@ import shutil
 import subprocess
 
 import alkahest as ak
-import mpmath
 import pytest
+
+mpmath = pytest.importorskip("mpmath")
 
 
 @pytest.fixture
