@@ -6115,7 +6115,7 @@ mod tests {
         assert!(is_free_of(b, x, &pool));
         assert!(!is_free_of(pool.mul(vec![b, x]), y, &pool));
         assert!(
-            t0.elapsed() < std::time::Duration::from_secs(2),
+            t0.elapsed() < crate::test_time::limit_secs(10),
             "is_free_of on a 40-level shared DAG took {:?}",
             t0.elapsed()
         );

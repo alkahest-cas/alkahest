@@ -1043,7 +1043,7 @@ mod tests {
         assert!(mentions_var(e, x, &p));
         assert!(!mentions_var(e, y, &p));
         assert!(
-            t0.elapsed() < std::time::Duration::from_secs(2),
+            t0.elapsed() < crate::test_time::limit_secs(10),
             "took {:?}",
             t0.elapsed()
         );

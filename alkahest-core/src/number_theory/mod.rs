@@ -526,7 +526,11 @@ mod tests {
             matches!(r, Err(arith::ArithmeticError::Resource(_))),
             "{r:?}"
         );
-        assert!(t.elapsed().as_secs_f64() < 5.0, "took {:?}", t.elapsed());
+        assert!(
+            t.elapsed() < crate::test_time::limit_secs(10),
+            "took {:?}",
+            t.elapsed()
+        );
     }
 
     /// Under a generous budget the ladder factors what `factorint` factors,

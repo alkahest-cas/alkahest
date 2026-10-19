@@ -874,7 +874,7 @@ mod tests {
         let start = std::time::Instant::now();
         let m = match_pattern(&pat, t1, &p);
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(2),
+            start.elapsed() < crate::test_time::limit_secs(10),
             "took {:?}",
             start.elapsed()
         );

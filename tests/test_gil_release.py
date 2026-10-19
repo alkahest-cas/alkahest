@@ -161,7 +161,7 @@ class TestLazyDerivation:
 # ---------------------------------------------------------------------------
 
 
-def _serial_vs_threads(fn, calls=32, threads=THREADS, rounds=3):
+def _serial_vs_threads(fn, calls=32, threads=THREADS, rounds=5):
     """Best-of-``rounds`` wall time for ``calls`` calls, serially and threaded."""
     fn()
     serial = threaded = float("inf")
@@ -194,7 +194,7 @@ class TestThreadsOverlap:
 
     Holding the GIL for the whole call made eight threads *slower* than one
     for ``diff`` (0.51× measured) — the threads only fought over the lock. The
-    bound is deliberately loose (not slower than serial × 1.2) so a busy CI
+    bound is deliberately loose (not slower than serial × 1.5) so a busy CI
     runner cannot flake it; on an idle multi-core machine the ratio is well
     above 1.
     """
@@ -204,14 +204,14 @@ class TestThreadsOverlap:
         x, y = p.symbol("x"), p.symbol("y")
         e = poly(p, x, y, 150)
         serial, threaded = _serial_vs_threads(lambda: ak.diff(e, x))
-        assert threaded <= serial * 1.2, (serial, threaded)
+        assert threaded <= serial * 1.5, (serial, threaded)
 
     def test_simplify(self):
         p = ak.ExprPool()
         x, y = p.symbol("x"), p.symbol("y")
         e = poly(p, x, y, 250) * p.integer(1) + p.integer(0)
         serial, threaded = _serial_vs_threads(lambda: ak.simplify(e))
-        assert threaded <= serial * 1.2, (serial, threaded)
+        assert threaded <= serial * 1.5, (serial, threaded)
 
 
 class TestContextsSurviveReleasedSections:

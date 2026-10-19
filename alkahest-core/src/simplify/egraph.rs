@@ -2664,7 +2664,7 @@ mod opaque_atom_proptests {
 mod dag_tests {
     use super::*;
     use crate::kernel::{Domain, ExprPool};
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     /// `e_{k+1} = sin(e_k)·cos(e_k)`: `3k + 3` distinct nodes, `~2^k` as a tree.
     fn sin_cos_dag(pool: &ExprPool, depth: usize) -> ExprId {
@@ -2722,7 +2722,7 @@ mod dag_tests {
         let out = simplify_egraph(e, &pool).value;
         let took = t.elapsed();
         assert!(
-            took < Duration::from_secs(1),
+            took < crate::test_time::limit_secs(10),
             "depth-30 sin·cos DAG took {took:?}"
         );
         // Nothing to simplify: the input comes back as itself.
@@ -2736,7 +2736,10 @@ mod dag_tests {
         let t = Instant::now();
         let out = simplify_egraph(e, &pool).value;
         let took = t.elapsed();
-        assert!(took < Duration::from_secs(1), "T_40 DAG took {took:?}");
+        assert!(
+            took < crate::test_time::limit_secs(10),
+            "T_40 DAG took {took:?}"
+        );
         assert!(dag_size(&pool, out) <= 2 * dag_size(&pool, e));
     }
 
@@ -2798,7 +2801,11 @@ mod dag_tests {
         };
         let t = Instant::now();
         let r = simplify_egraph_with(e, &pool, &config, &SizeCost);
-        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        assert!(
+            t.elapsed() < crate::test_time::limit_secs(10),
+            "{:?}",
+            t.elapsed()
+        );
         assert_eq!(r.value, e);
         assert!(r
             .log

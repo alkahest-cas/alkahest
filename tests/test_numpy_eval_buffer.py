@@ -11,8 +11,6 @@ NumPy is an optional runtime dependency (not guaranteed present in the lean
 dev venv), so every test below imports it lazily via `pytest.importorskip`.
 """
 
-import time
-
 import pytest
 from alkahest import (
     ExprPool,
@@ -21,6 +19,7 @@ from alkahest import (
     numpy_eval,
     numpy_eval_par,
 )
+from timing_util import best_of
 
 #: The absolute-speed check below only means anything when an actual JIT
 #: backend compiled the expression. Without one, `compile_expr` falls back to
@@ -142,13 +141,9 @@ class TestPerfSanity:
         n_points = 200_000
         xs = np.linspace(-3.0, 3.0, n_points)
 
-        t0 = time.perf_counter()
-        ys = numpy_eval(f, xs)
-        native_elapsed = time.perf_counter() - t0
-
-        t0 = time.perf_counter()
-        py_ref = np.array([v**2 + 1.0 for v in xs.tolist()])
-        python_loop_elapsed = time.perf_counter() - t0
+        # Best of three each: a single descheduled run must not decide a ratio.
+        ys, native_elapsed = best_of(lambda: numpy_eval(f, xs))
+        py_ref, python_loop_elapsed = best_of(lambda: np.array([v**2 + 1.0 for v in xs.tolist()]))
 
         assert np.allclose(ys, py_ref, atol=1e-9)
         # Generous margin: native path should not be dramatically slower
@@ -167,15 +162,18 @@ class TestPerfSanity:
         n_points = 300_000
         xs = np.linspace(-3.0, 3.0, n_points)
 
-        t0 = time.perf_counter()
         out = np.empty(n_points, dtype=np.float64)
-        f.call_batch_buffer([xs], out)
-        fast_elapsed = time.perf_counter() - t0
 
-        t0 = time.perf_counter()
-        inputs_flat = xs.tolist()
-        legacy = np.array(f.call_batch_raw(inputs_flat, 1, n_points), dtype=np.float64)
-        legacy_elapsed = time.perf_counter() - t0
+        def fast():
+            f.call_batch_buffer([xs], out)
+
+        def legacy_path():
+            inputs_flat = xs.tolist()
+            return np.array(f.call_batch_raw(inputs_flat, 1, n_points), dtype=np.float64)
+
+        # Best of three each: a single descheduled run must not decide a ratio.
+        _, fast_elapsed = best_of(fast)
+        legacy, legacy_elapsed = best_of(legacy_path)
 
         assert np.allclose(out, legacy)
         # 20% slack for noise; the fast path does strictly less work

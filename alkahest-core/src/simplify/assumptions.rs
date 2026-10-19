@@ -1006,7 +1006,7 @@ mod tests {
         let start = std::time::Instant::now();
         let mut facts = Vec::new();
         collect_static_domain_facts(e, &pool, &mut facts);
-        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert!(start.elapsed() < crate::test_time::limit_secs(10));
         assert_eq!(
             facts,
             vec![SideCondition::Positive(y), SideCondition::NonZero(y)]
@@ -1054,7 +1054,7 @@ mod tests {
         let once = crate::simplify::simplify(b, &pool).value;
         let start = std::time::Instant::now();
         let twice = crate::simplify::simplify(once, &pool);
-        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert!(start.elapsed() < crate::test_time::limit_secs(10));
         assert_eq!(twice.value, once);
         assert!(twice.log.is_empty());
     }

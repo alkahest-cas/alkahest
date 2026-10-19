@@ -730,7 +730,10 @@ mod tests {
             .expect_err("no SOS certificate exists for the Motzkin form");
         // Loose by two orders of magnitude against the 418.5 s that a 3 s
         // budget used to buy: this asserts the budget is consulted at all.
-        assert!(start.elapsed().as_secs() < 60, "budget was not consulted");
+        assert!(
+            start.elapsed() < crate::test_time::limit_secs(60),
+            "budget was not consulted"
+        );
         assert!(matches!(err, SosError::NoCertificate(_)), "{err:?}");
         let trip = crate::budget::take_trip().expect("the budget trip must be recorded");
         assert_eq!(trip.code(), "E-BUDGET-001");

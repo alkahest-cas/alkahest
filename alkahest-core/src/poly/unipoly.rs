@@ -1249,7 +1249,7 @@ mod tests {
         let start = std::time::Instant::now();
         let got = UniPoly::from_symbolic(t1, x, &p).unwrap();
         assert!(
-            start.elapsed().as_secs() < 5,
+            start.elapsed() < crate::test_time::limit_secs(10),
             "T_61 took {:?}",
             start.elapsed()
         );

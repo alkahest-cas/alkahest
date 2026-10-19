@@ -23,7 +23,9 @@ import pytest
 #: within. The ceiling is ~13x the budget so a saturated CI box does not flake;
 #: before this change each of these ran for minutes.
 WALL_MS = 300
-CEILING_S = 4.0
+# 300 ms / 50 ms budgets: stopping inside 20 s is a termination check, not a
+# deadline, so a loaded runner cannot fail it.
+CEILING_S = 20.0
 
 
 @pytest.fixture

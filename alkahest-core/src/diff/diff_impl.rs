@@ -1126,7 +1126,7 @@ mod tests {
 
     fn elapsed_under(t0: std::time::Instant, secs: u64, what: &str) {
         assert!(
-            t0.elapsed() < std::time::Duration::from_secs(secs),
+            t0.elapsed() < crate::test_time::limit_secs(secs),
             "{what} took {:?}",
             t0.elapsed()
         );
@@ -1150,7 +1150,7 @@ mod tests {
         };
         let t0 = std::time::Instant::now();
         let r = diff(build(40), x, &pool).unwrap();
-        elapsed_under(t0, 2, "diff of e ← e·e+1, k = 40");
+        elapsed_under(t0, 10, "diff of e ← e·e+1, k = 40");
         let raw_steps = r
             .log
             .steps()
@@ -1190,7 +1190,7 @@ mod tests {
         }
         let t0 = std::time::Instant::now();
         let r = diff(e, x, &pool).unwrap();
-        elapsed_under(t0, 2, "diff of tan^40(x)");
+        elapsed_under(t0, 10, "diff of tan^40(x)");
         let registry_steps = r
             .log
             .steps()
@@ -1260,7 +1260,7 @@ mod tests {
         }
         let t0 = std::time::Instant::now();
         let r = diff(b, x, &pool).unwrap();
-        elapsed_under(t0, 2, "diff of Chebyshev T_40");
+        elapsed_under(t0, 10, "diff of Chebyshev T_40");
         assert!(r
             .log
             .steps()

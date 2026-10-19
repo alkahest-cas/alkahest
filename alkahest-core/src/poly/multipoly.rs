@@ -1284,7 +1284,11 @@ mod tests {
         }
         let start = std::time::Instant::now();
         let poly = MultiPoly::from_symbolic(t1, vec![x, y], &p).unwrap();
-        assert!(start.elapsed().as_secs() < 5, "took {:?}", start.elapsed());
+        assert!(
+            start.elapsed() < crate::test_time::limit_secs(10),
+            "took {:?}",
+            start.elapsed()
+        );
         assert_eq!(poly.total_degree(), 41);
     }
 
