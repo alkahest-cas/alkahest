@@ -15560,7 +15560,13 @@ fn py_prove_nonneg(
 ///
 /// Returns a :class:`PositivityCertificate` with ``kind == "putinar"``,
 /// already re-verified exactly; equalities appear in it as the pair
-/// ``h ≥ 0``, ``-h ≥ 0`` with ``λ = σ⁺ − σ⁻``.
+/// ``h ≥ 0``, ``-h ≥ 0`` with ``λ = σ⁺ − σ⁻``. With no constraints and no
+/// equalities at all this is :func:`sos_decompose` (``kind == "sos"``,
+/// ``level`` read as its ``basis_degree``).
+///
+/// An inequality predicate passed in ``equalities`` is refused
+/// (``E-SOS-004``). A witness always satisfies strict comparisons strictly:
+/// a point of the closure only is not a refutation.
 ///
 /// Raises :exc:`SosError` ``E-SOS-003`` when a rational point of the set has
 /// ``expr < 0`` (the exception's ``witness`` attribute maps each variable to
@@ -15594,6 +15600,10 @@ fn py_prove_nonneg_on(
     let opts = CorePutinarOpts::with_level(level);
     let result = {
         let pool = pool_py.borrow(py);
+        // RatPoly::from_expr recurses over every constraint, not only `expr`.
+        for &id in cons.iter().chain(&eqs) {
+            guard_depth(&pool.inner, id)?;
+        }
         core_prove_nonneg_on(expr.id, &cons, &eqs, &var_ids, &pool.inner, &opts)
     };
     match result {

@@ -68,6 +68,8 @@ Parametric families with named unknown coefficients, plus the fitting step.
    relaxation order (summands of degree ``≤ 2·level``; ``None`` escalates from
    the smallest workable level). The certificate has ``kind == "putinar"``,
    is re-verified exactly, and lists its sums of squares in ``multipliers``.
+   With no constraints and no equalities it is :func:`sos_decompose`
+   (``kind == "sos"``).
 
    Raises :exc:`SosError`: ``E-SOS-003`` with an exact ``witness`` point of the
    set where ``expr < 0``; ``E-SOS-002`` when undecided at the level(s)

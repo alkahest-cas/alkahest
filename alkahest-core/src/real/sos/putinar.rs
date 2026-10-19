@@ -745,10 +745,17 @@ fn grid_values(nvars: usize) -> Vec<Rational> {
     vals
 }
 
-/// An exact rational point satisfying every `g ≥ 0` and `h = 0` at which
-/// `target < 0`, found on a bounded grid; `None` when the grid has none
-/// (which proves nothing).
-fn violation_point(target: &RatPoly, gs: &[RatPoly], hs: &[RatPoly]) -> Option<Vec<Rational>> {
+/// An exact rational point satisfying every `g ≥ 0` (`g > 0` where
+/// `strict[i]`) and `h = 0` at which `target < 0`, found on a bounded grid;
+/// `None` when the grid has none (which proves nothing). Strictness is kept
+/// here even though the certificate search relaxes to the closure: a point
+/// of the closure only is not a point of the set, so it refutes nothing.
+fn violation_point(
+    target: &RatPoly,
+    gs: &[RatPoly],
+    strict: &[bool],
+    hs: &[RatPoly],
+) -> Option<Vec<Rational>> {
     let nvars = target.nvars();
     if nvars == 0 || nvars > 9 {
         return None;
@@ -767,7 +774,12 @@ fn violation_point(target: &RatPoly, gs: &[RatPoly], hs: &[RatPoly]) -> Option<V
             point.push(vals[rest % per].clone());
             rest /= per;
         }
-        if hs.iter().any(|h| h.eval(&point) != 0) || gs.iter().any(|g| g.eval(&point) < 0) {
+        if hs.iter().any(|h| h.eval(&point) != 0)
+            || gs.iter().zip(strict).any(|(g, &st)| {
+                let v = g.eval(&point);
+                v < 0 || (st && v == 0)
+            })
+        {
             continue;
         }
         let v = target.eval(&point);
@@ -784,7 +796,8 @@ fn violation_point(target: &RatPoly, gs: &[RatPoly], hs: &[RatPoly]) -> Option<V
 
 /// A parsed constraint: `g ≥ 0`, or `h = 0`.
 enum Parsed {
-    Ineq(RatPoly, bool),
+    /// `(g, strict, written as a comparison predicate)`
+    Ineq(RatPoly, bool, bool),
     Eq(RatPoly),
 }
 
@@ -795,7 +808,7 @@ fn parse_constraint(c: ExprId, vars: &[ExprId], pool: &ExprPool) -> Result<Parse
     });
     let poly = |e: ExprId| RatPoly::from_expr(e, vars, pool).map_err(SosError::NotPolynomial);
     match pred {
-        None => Ok(Parsed::Ineq(poly(c)?, false)),
+        None => Ok(Parsed::Ineq(poly(c)?, false, false)),
         Some((kind, args)) => {
             if args.len() != 2 {
                 return Err(SosError::InvalidInput(format!(
@@ -806,10 +819,10 @@ fn parse_constraint(c: ExprId, vars: &[ExprId], pool: &ExprPool) -> Result<Parse
             }
             let (a, b) = (poly(args[0])?, poly(args[1])?);
             match kind {
-                PredicateKind::Ge => Ok(Parsed::Ineq(a.sub(&b), false)),
-                PredicateKind::Le => Ok(Parsed::Ineq(b.sub(&a), false)),
-                PredicateKind::Gt => Ok(Parsed::Ineq(a.sub(&b), true)),
-                PredicateKind::Lt => Ok(Parsed::Ineq(b.sub(&a), true)),
+                PredicateKind::Ge => Ok(Parsed::Ineq(a.sub(&b), false, true)),
+                PredicateKind::Le => Ok(Parsed::Ineq(b.sub(&a), false, true)),
+                PredicateKind::Gt => Ok(Parsed::Ineq(a.sub(&b), true, true)),
+                PredicateKind::Lt => Ok(Parsed::Ineq(b.sub(&a), true, true)),
                 PredicateKind::Eq => Ok(Parsed::Eq(a.sub(&b))),
                 _ => Err(SosError::InvalidInput(format!(
                     "constraint `{}` is not ≥, ≤, >, < or =",
@@ -824,7 +837,8 @@ struct Parsed3 {
     target: RatPoly,
     gs: Vec<RatPoly>,
     hs: Vec<RatPoly>,
-    strict: usize,
+    /// Parallel to `gs`: was the comparison strict?
+    strict: Vec<bool>,
 }
 
 fn parse_all(
@@ -842,11 +856,11 @@ fn parse_all(
     let target = RatPoly::from_expr(expr, vars, pool).map_err(SosError::NotPolynomial)?;
     let mut gs = Vec::new();
     let mut hs = Vec::new();
-    let mut strict = 0;
+    let mut strict = Vec::new();
     for &c in constraints {
         match parse_constraint(c, vars, pool)? {
-            Parsed::Ineq(g, s) => {
-                strict += usize::from(s);
+            Parsed::Ineq(g, s, _) => {
+                strict.push(s);
                 gs.push(g);
             }
             Parsed::Eq(h) => hs.push(h),
@@ -854,17 +868,28 @@ fn parse_all(
     }
     for &e in equalities {
         match parse_constraint(e, vars, pool)? {
-            Parsed::Ineq(h, false) | Parsed::Eq(h) => hs.push(h),
-            Parsed::Ineq(_, true) => {
+            Parsed::Ineq(h, _, false) | Parsed::Eq(h) => hs.push(h),
+            Parsed::Ineq(_, _, true) => {
                 return Err(SosError::InvalidInput(format!(
-                    "`{}` was passed as an equality but is a strict inequality",
+                    "`{}` was passed as an equality but is an inequality; pass it in \
+                     constraints, or pass h (meaning h = 0) or a = b as an equality",
                     pool.display(e)
                 )))
             }
         }
     }
-    // A zero equality is vacuous and a zero inequality is `0 ≥ 0`.
-    gs.retain(|g| !g.is_zero());
+    // A zero equality is vacuous and a zero non-strict inequality is
+    // `0 ≥ 0`; a strict `0 > 0` is kept (it makes the set empty, and the
+    // witness search must see it).
+    let keep: Vec<bool> = gs
+        .iter()
+        .zip(&strict)
+        .map(|(g, &st)| st || !g.is_zero())
+        .collect();
+    let mut it = keep.iter();
+    gs.retain(|_| *it.next().unwrap_or(&true));
+    let mut it = keep.iter();
+    strict.retain(|_| *it.next().unwrap_or(&true));
     hs.retain(|h| !h.is_zero());
     Ok(Parsed3 {
         target,
@@ -887,7 +912,7 @@ pub fn nonneg_on_witness(
     pool: &ExprPool,
 ) -> Result<Option<Vec<ExprId>>, SosError> {
     let p = parse_all(expr, constraints, equalities, vars, pool)?;
-    Ok(violation_point(&p.target, &p.gs, &p.hs)
+    Ok(violation_point(&p.target, &p.gs, &p.strict, &p.hs)
         .map(|pt| pt.iter().map(|c| rational_expr(c, pool)).collect()))
 }
 
@@ -943,7 +968,7 @@ pub fn prove_nonneg_on(
     let names = var_names(vars, pool);
     let nvars = vars.len();
 
-    if let Some(point) = violation_point(&target, &gs, &hs) {
+    if let Some(point) = violation_point(&target, &gs, &strict, &hs) {
         return Err(SosError::Negative(format!(
             "p({}) = {} < 0 at a point satisfying every constraint",
             format_point(&names, &point),
@@ -952,11 +977,12 @@ pub fn prove_nonneg_on(
     }
 
     let mut log: Vec<String> = Vec::new();
-    if strict > 0 {
+    let n_strict = strict.iter().filter(|&&s| s).count();
+    if n_strict > 0 {
         log.push(format!(
-            "{strict} strict inequalit{} relaxed to non-strict (a certificate on the closure \
+            "{n_strict} strict inequalit{} relaxed to non-strict (a certificate on the closure \
              holds on the set)",
-            if strict == 1 { "y" } else { "ies" }
+            if n_strict == 1 { "y" } else { "ies" }
         ));
     }
     let target_min = target.total_degree().div_ceil(2).max(1);
@@ -1096,13 +1122,18 @@ pub fn prove_nonneg_on(
         )
     };
     let next = levels.last().copied().unwrap_or(1) + 1;
+    let hint = if next <= MAX_PUTINAR_LEVEL {
+        format!("Raise the level (try level={next});")
+    } else {
+        format!("The maximum level {MAX_PUTINAR_LEVEL} was searched; fall back to alkahest.decide;")
+    };
     let trace = log
         .iter()
         .map(|line| format!("\n  - {line}"))
         .collect::<String>();
     Err(SosError::NoCertificate(format!(
         "undecided, not a refutation — no Putinar certificate f = σ₀ + Σσᵢgᵢ + Σλⱼhⱼ was found \
-         at {tried}. {} Raise the level (try level={next}); this is not a proof that f is \
+         at {tried}. {} {hint} this is not a proof that f is \
          negative anywhere on the set.\n{SEARCH_TRACE_MARKER}{trace}",
         arch_note.unwrap_or_default()
     )))
@@ -1397,6 +1428,55 @@ mod tests {
         let err = prove_nonneg_on(f, &[ne], &[], &[c.x, c.y], &c.pool, &PutinarOpts::default())
             .expect_err("≠ is not a constraint");
         assert_eq!(err.code(), "E-SOS-004");
+    }
+
+    #[test]
+    fn inequality_predicates_are_refused_as_equalities() {
+        let c = ctx();
+        let f = c.pool.add(vec![c.int(1), c.neg(c.pw(c.x, 2))]);
+        let ge = c.pool.pred_ge(c.x, c.int(0));
+        let err = prove_nonneg_on(f, &[], &[ge], &[c.x], &c.pool, &PutinarOpts::default())
+            .expect_err("x ≥ 0 is not an equality");
+        assert_eq!(err.code(), "E-SOS-004");
+    }
+
+    #[test]
+    fn a_point_of_the_closure_only_is_not_a_refutation() {
+        // {x > 0, x = 0} is empty, so -1 ≥ 0 holds on it vacuously; x = 0 is
+        // in the closure but not in the set and must not be a witness.
+        let c = ctx();
+        let gt = c.pool.pred_gt(c.x, c.int(0));
+        let err = prove_nonneg_on(
+            c.int(-1),
+            &[gt],
+            &[c.x],
+            &[c.x],
+            &c.pool,
+            &PutinarOpts::with_level(Some(1)),
+        );
+        assert!(
+            !matches!(err, Err(SosError::Negative(_))),
+            "a closure-only point was reported as a witness: {err:?}"
+        );
+        assert!(nonneg_on_witness(c.int(-1), &[gt], &[c.x], &[c.x], &c.pool)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn the_retry_hint_never_exceeds_the_maximum_level() {
+        let c = ctx();
+        let f = c.pool.mul(vec![c.x, c.y]);
+        let err = prove_nonneg_on(
+            f,
+            &[c.x, c.y],
+            &[],
+            &[c.x, c.y],
+            &c.pool,
+            &PutinarOpts::with_level(Some(1)),
+        )
+        .expect_err("undecided");
+        assert!(err.to_string().contains("try level=2"), "{err}");
     }
 
     #[test]
