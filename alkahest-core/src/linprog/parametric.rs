@@ -720,6 +720,7 @@ impl Walker<'_> {
 
     /// Pivot until the basis is optimal for θ + ε. Returns `false` when the
     /// perturbed programme is infeasible (RHS) or unbounded (objective).
+    #[allow(clippy::needless_range_loop)]
     fn repivot(&self, e: &mut Engine, dir: &[Rational]) -> Result<bool, LinprogError> {
         let cap = 100_000usize.saturating_add(e.m.saturating_mul(e.ncols + 1));
         for _ in 0..cap {

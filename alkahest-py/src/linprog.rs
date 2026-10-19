@@ -22,9 +22,9 @@ use rug::Rational;
 
 use alkahest_core::kernel::ExprData;
 use alkahest_core::linprog::{
-    linear_form, linprog_parametric as core_parametric, linprog_with, milp as core_milp,
-    parametric_from_exprs, program_from_exprs, BasisEntry, LinearProgram, LinprogError, LpBasis,
-    LpMethod, LpOptions, LpOutcome, LpSolution, MilpOptions, MilpOutcome, ParametricDelta,
+    linear_form, linprog_parametric as core_parametric, linprog_with, milp_with,
+    parametric_from_exprs, program_from_exprs, BasisEntry, CutOptions, LinearProgram, LinprogError,
+    LpBasis, LpMethod, LpOptions, LpOutcome, LpSolution, MilpOptions, MilpOutcome, ParametricDelta,
     ParametricRegion, ParametricSolution, RegionStatus, Sense, VarBound,
 };
 
@@ -612,6 +612,7 @@ pub struct PyMilpResult {
     integrality: Vec<bool>,
     outcome: MilpOutcome,
     vars: Option<Vec<Py<PyExpr>>>,
+    cuts: Vec<(Vec<Rational>, Rational)>,
 }
 
 #[pymethods]
@@ -690,10 +691,10 @@ impl PyMilpResult {
     /// point (optimal results only; ``[]`` when none were added).
     #[getter]
     fn cuts(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let MilpOutcome::Optimal(s) = &self.outcome else {
+        if !matches!(self.outcome, MilpOutcome::Optimal(_)) {
             return Ok(PyList::empty_bound(py).into_py(py));
-        };
-        let items = s
+        }
+        let items = self
             .cuts
             .iter()
             .map(|(row, rhs)| -> PyResult<PyObject> {
@@ -890,7 +891,7 @@ fn to_integrality(ob: Option<&Bound<'_, PyAny>>, n: usize) -> PyResult<Vec<bool>
 ///     (25, [1, 0, 1, 1])
 #[pyfunction]
 #[pyo3(name = "milp")]
-#[pyo3(signature = (c, A_ub=None, b_ub=None, A_eq=None, b_eq=None, bounds=None, integrality=None, sense="min", max_nodes=MilpOptions::DEFAULT_MAX_NODES, cut_rounds=MilpOptions::DEFAULT_CUT_ROUNDS, max_cuts=MilpOptions::DEFAULT_MAX_CUTS, warm_start=true))]
+#[pyo3(signature = (c, A_ub=None, b_ub=None, A_eq=None, b_eq=None, bounds=None, integrality=None, sense="min", max_nodes=MilpOptions::DEFAULT_MAX_NODES, cut_rounds=CutOptions::DEFAULT_CUT_ROUNDS, max_cuts=CutOptions::DEFAULT_MAX_CUTS, warm_start=true))]
 #[allow(non_snake_case)]
 #[allow(clippy::too_many_arguments)]
 fn py_milp(
@@ -911,15 +912,17 @@ fn py_milp(
     let integrality = to_integrality(integrality, lp.nvars())?;
     let mut opts = MilpOptions::new(integrality.clone());
     opts.max_nodes = max_nodes;
-    opts.cut_rounds = cut_rounds;
-    opts.max_cuts = max_cuts;
-    opts.warm_start = warm_start;
-    let outcome = core_milp(&lp, &opts).map_err(lp_err)?;
+    let mut cut_opts = CutOptions::default();
+    cut_opts.cut_rounds = cut_rounds;
+    cut_opts.max_cuts = max_cuts;
+    cut_opts.warm_start = warm_start;
+    let report = milp_with(&lp, &opts, &cut_opts).map_err(lp_err)?;
     Ok(PyMilpResult {
         lp,
         integrality,
-        outcome,
+        outcome: report.outcome,
         vars: None,
+        cuts: report.cuts,
     })
 }
 
@@ -1044,12 +1047,13 @@ fn py_linprog_expr(
     };
     let mut opts = MilpOptions::new(integrality.clone());
     opts.max_nodes = max_nodes;
-    let outcome = core_milp(&lp, &opts).map_err(lp_err)?;
+    let report = milp_with(&lp, &opts, &CutOptions::default()).map_err(lp_err)?;
     Ok(PyMilpResult {
         lp,
         integrality,
-        outcome,
+        outcome: report.outcome,
         vars: Some(var_py),
+        cuts: report.cuts,
     }
     .into_py(py))
 }

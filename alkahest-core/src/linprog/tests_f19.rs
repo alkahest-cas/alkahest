@@ -374,11 +374,17 @@ fn gomory_cut_closes_a_simple_gap() {
     lp.sense = Sense::Maximize;
     lp.a_ub = vec![qv(&[2, 2])];
     lp.b_ub = qv(&[3]);
-    let MilpOutcome::Optimal(s) = milp(&lp, &MilpOptions::new(vec![true; 2])).unwrap() else {
+    let rep = milp_with(
+        &lp,
+        &MilpOptions::new(vec![true; 2]),
+        &CutOptions::default(),
+    )
+    .unwrap();
+    let MilpOutcome::Optimal(s) = rep.outcome else {
         panic!()
     };
     assert_eq!(s.objective, q(1));
-    assert!(!s.cuts.is_empty());
+    assert!(!rep.cuts.is_empty());
     // The cut closes the root gap, so no branching is needed.
     assert_eq!(s.nodes, 1);
 }
@@ -410,15 +416,18 @@ fn gomory_cuts_never_remove_integer_points() {
             lp.sense = Sense::Maximize;
         }
         let pts = integer_points(&lp, -4, 4);
-        let mut opts = MilpOptions::new(vec![true; n]);
-        opts.cut_rounds = 10;
-        match milp(&lp, &opts).unwrap() {
+        let cut_opts = CutOptions {
+            cut_rounds: 10,
+            ..CutOptions::default()
+        };
+        let rep = milp_with(&lp, &MilpOptions::new(vec![true; n]), &cut_opts).unwrap();
+        match rep.outcome {
             MilpOutcome::Optimal(s) => {
                 assert_eq!(Some(s.objective.clone()), best(&lp, &pts), "{lp:?}");
-                if !s.cuts.is_empty() {
+                if !rep.cuts.is_empty() {
                     with_cuts += 1;
                 }
-                for (row, rhs) in &s.cuts {
+                for (row, rhs) in &rep.cuts {
                     for x in &pts {
                         assert!(dot(row, x) <= *rhs, "cut {row:?} <= {rhs} removes {x:?}");
                     }
@@ -453,19 +462,17 @@ fn mixed_integer_cuts_keep_the_optimum() {
             lp.sense = Sense::Maximize;
         }
         let integrality: Vec<bool> = (0..n).map(|_| g.int(0, 2) > 0).collect();
-        let mut plain = MilpOptions::new(integrality.clone());
-        plain.cut_rounds = 0;
-        plain.warm_start = false;
-        plain.max_nodes = 5000;
-        let mut cut = MilpOptions::new(integrality.clone());
-        cut.max_nodes = 5000;
-        let a = milp(&lp, &plain);
-        let b = milp(&lp, &cut);
+        let mut opts = MilpOptions::new(integrality.clone());
+        opts.max_nodes = 5000;
+        let a = milp_with(&lp, &opts, &CutOptions::none()).map(|r| r.outcome);
+        let rep = milp_with(&lp, &opts, &CutOptions::default());
+        let cuts = rep.as_ref().map(|r| r.cuts.clone()).unwrap_or_default();
+        let b = rep.map(|r| r.outcome);
         match (a, b) {
             (Ok(MilpOutcome::Optimal(a)), Ok(MilpOutcome::Optimal(b))) => {
                 assert_eq!(a.objective, b.objective, "{lp:?} {integrality:?}");
                 // Every cut keeps the plain search's optimum.
-                for (row, rhs) in &b.cuts {
+                for (row, rhs) in &cuts {
                     assert!(dot(row, &a.x) <= *rhs);
                 }
             }
@@ -483,18 +490,23 @@ fn cut_limits_are_honoured() {
     lp.sense = Sense::Maximize;
     lp.a_ub = vec![qv(&[2, 2, 0]), qv(&[0, 2, 2]), qv(&[2, 0, 2])];
     lp.b_ub = qv(&[3, 3, 3]);
-    let mut opts = MilpOptions::new(vec![true; 3]);
-    opts.max_cuts = 1;
-    let MilpOutcome::Optimal(s) = milp(&lp, &opts).unwrap() else {
+    let opts = MilpOptions::new(vec![true; 3]);
+    let mut cut_opts = CutOptions {
+        max_cuts: 1,
+        ..CutOptions::default()
+    };
+    let rep = milp_with(&lp, &opts, &cut_opts).unwrap();
+    let MilpOutcome::Optimal(s) = rep.outcome else {
         panic!()
     };
-    assert!(s.cuts.len() <= 1);
+    assert!(rep.cuts.len() <= 1);
     assert_eq!(s.objective, q(1));
-    opts.cut_rounds = 0;
-    let MilpOutcome::Optimal(s) = milp(&lp, &opts).unwrap() else {
+    cut_opts.cut_rounds = 0;
+    let rep = milp_with(&lp, &opts, &cut_opts).unwrap();
+    let MilpOutcome::Optimal(s) = rep.outcome else {
         panic!()
     };
-    assert!(s.cuts.is_empty());
+    assert!(rep.cuts.is_empty());
     assert_eq!(s.objective, q(1));
 }
 

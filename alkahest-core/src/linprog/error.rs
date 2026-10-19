@@ -85,15 +85,6 @@ pub enum LinprogError {
         /// The best open bound before the trip (MILP only).
         bound: Option<Rational>,
     },
-    /// A parametric programme of a form the parametric solver does not
-    /// handle: the parameter multiplies a decision variable inside a
-    /// constraint (it moves the constraint matrix), enters non-linearly
-    /// (`θ²`, `1/θ`), or moves the objective and the right-hand side at once;
-    /// or a parameter was combined with integrality.
-    UnsupportedParametric {
-        /// The offending expression or combination.
-        detail: String,
-    },
     /// A certificate computed by the simplex failed its own exact check.
     ///
     /// This is a bug, and the result is withheld rather than returned: an
@@ -101,6 +92,15 @@ pub enum LinprogError {
     /// answer.
     Internal {
         /// Which check failed.
+        detail: String,
+    },
+    /// A parametric programme of a form the parametric solver does not
+    /// handle: the parameter multiplies a decision variable inside a
+    /// constraint (it moves the constraint matrix), enters non-linearly
+    /// (`θ²`, `1/θ`), or moves the objective and the right-hand side at once;
+    /// or a parameter was combined with integrality.
+    UnsupportedParametric {
+        /// The offending expression or combination.
         detail: String,
     },
 }

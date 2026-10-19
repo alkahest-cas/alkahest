@@ -435,10 +435,11 @@ fn milp_node_limit_reports_incumbent() {
     lp.a_ub = vec![qv(&[4, 6, 3, 5, 4, 5])];
     lp.b_ub = qv(&[13]);
     lp.bounds = vec![VarBound::new(Some(q(0)), Some(q(1))); 6];
-    let mut opts = MilpOptions::new(vec![true; 6]);
-    opts.max_nodes = 3;
-    opts.cut_rounds = 0;
-    match milp(&lp, &opts).unwrap_err() {
+    let opts = MilpOptions {
+        integrality: vec![true; 6],
+        max_nodes: 3,
+    };
+    match milp_with(&lp, &opts, &CutOptions::none()).unwrap_err() {
         e @ LinprogError::NodeLimit { .. } => {
             assert_eq!(e.code(), "E-LP-005");
             if let LinprogError::NodeLimit {

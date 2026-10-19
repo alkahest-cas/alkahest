@@ -218,7 +218,9 @@ LpOutcome` (`Optimal(OptimalCertificate)`, `Infeasible(FarkasCertificate)`,
 `Unbounded(UnboundedCertificate)`, each with an exact `verify`),
 `linprog_with(&LinearProgram, &LpOptions) -> LpSolution` (method choice,
 warm-start `LpBasis`, final basis), `milp(&LinearProgram, &MilpOptions) ->
-MilpOutcome` (`cut_rounds`, `max_cuts`, `warm_start`),
+MilpOutcome` (default cuts and warm starts), `milp_with(&lp, &MilpOptions,
+&CutOptions) -> MilpReport` (`cut_rounds`, `max_cuts`, `warm_start`; returns
+the outcome and the root cuts),
 `linprog_parametric(&lp, &ParametricDelta, lower, upper) ->
 ParametricSolution`, and `program_from_exprs` / `parametric_from_exprs` /
 `linear_form` for the expression front end.

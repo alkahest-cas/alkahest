@@ -420,6 +420,7 @@ impl Engine {
     // -- the simplex methods -------------------------------------------------
 
     /// Primal simplex on `cost`; artificials never enter.
+    #[allow(clippy::needless_range_loop)]
     pub(super) fn primal(&mut self, cost: &[Rational]) -> Result<PrimalEnd, LinprogError> {
         let mut bland = false;
         let mut streak = 0usize;
@@ -484,6 +485,7 @@ impl Engine {
     }
 
     /// Dual simplex on `cost` from a dual-feasible basis.
+    #[allow(clippy::needless_range_loop)]
     fn dual(&mut self, cost: &[Rational]) -> Result<DualEnd, LinprogError> {
         let mut bland = false;
         let mut streak = 0usize;
@@ -724,6 +726,7 @@ impl Engine {
     /// variables only); everything else is treated as continuous, which only
     /// weakens the cut. A cut that would need the split parts of a free
     /// variable separately is skipped.
+    #[allow(clippy::needless_range_loop)]
     pub(super) fn gomory_cuts(
         &self,
         lp: &LinearProgram,

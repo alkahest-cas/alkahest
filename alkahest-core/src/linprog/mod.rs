@@ -83,7 +83,7 @@ mod tests_f19;
 
 pub use error::{Incumbent, LinprogError};
 pub use expr::{linear_form, parametric_from_exprs, program_from_exprs};
-pub use milp::{milp, MilpOptions, MilpOutcome, MilpSolution};
+pub use milp::{milp, milp_with, CutOptions, MilpOptions, MilpOutcome, MilpReport, MilpSolution};
 pub use parametric::{
     linprog_parametric, ParametricDelta, ParametricRegion, ParametricSolution, RegionStatus,
 };
