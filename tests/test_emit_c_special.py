@@ -17,13 +17,10 @@ from __future__ import annotations
 import math
 import os
 import random
-import shutil
 import subprocess
-import tempfile
 
 import alkahest as ak
 import pytest
-
 from test_emit_c_cse import CC, _Lib, requires_cc
 
 mpmath = pytest.importorskip("mpmath")
@@ -64,8 +61,18 @@ def _rng_points(rng, lo, hi, k, log=False):
 # crosses zero: there the helpers promise an *absolute* error (see the comment
 # above each helper in ``alkahest-core/src/horner/c_helpers``).
 UNARY = {
-    "digamma": (mpmath.digamma, [(0.01, 60, False), (-30, -0.01, False), (10, 1e12, True)], 1e-13, 0.05),
-    "trigamma": (lambda x: mpmath.polygamma(1, x), [(0.01, 60, False), (-30, -0.01, False), (10, 1e12, True)], 2e-15, 0.0),
+    "digamma": (
+        mpmath.digamma,
+        [(0.01, 60, False), (-30, -0.01, False), (10, 1e12, True)],
+        1e-13,
+        0.05,
+    ),
+    "trigamma": (
+        lambda x: mpmath.polygamma(1, x),
+        [(0.01, 60, False), (-30, -0.01, False), (10, 1e12, True)],
+        2e-15,
+        0.0,
+    ),
     "dilog": (lambda x: mpmath.polylog(2, x), [(-1000, 1, False), (-1e6, -1, False)], 2e-15, 0.0),
     "EllipticK": (mpmath.ellipk, [(-100, 0.999999, False), (-1e6, -1, False)], 2e-15, 0.0),
     "EllipticE": (mpmath.ellipe, [(-100, 1, False), (-1e6, -1, False)], 4e-15, 0.0),
@@ -106,39 +113,55 @@ def test_special_helpers_domain_edges(tmp_path):
     inf, nan = math.inf, math.nan
     f = lambda name: lib.scalar(f"f_{name}", 1)  # noqa: E731
     for pole in (0.0, -1.0, -7.0):
-        assert math.isnan(f("digamma")(pole)) and math.isnan(f("trigamma")(pole))
-    assert math.isnan(f("digamma")(nan)) and math.isnan(f("digamma")(-inf))
-    assert f("digamma")(inf) == inf and f("trigamma")(inf) == 0.0
-    assert math.isnan(f("dilog")(1.5)) and f("dilog")(-inf) == -inf
+        assert math.isnan(f("digamma")(pole))
+        assert math.isnan(f("trigamma")(pole))
+    assert math.isnan(f("digamma")(nan))
+    assert math.isnan(f("digamma")(-inf))
+    assert f("digamma")(inf) == inf
+    assert f("trigamma")(inf) == 0.0
+    assert math.isnan(f("dilog")(1.5))
+    assert f("dilog")(-inf) == -inf
     assert f("dilog")(1.0) == pytest.approx(math.pi**2 / 6, rel=1e-15)
     assert f("dilog")(0.0) == 0.0
-    assert f("EllipticK")(1.0) == inf and math.isnan(f("EllipticK")(1.5))
-    assert f("EllipticE")(1.0) == 1.0 and math.isnan(f("EllipticE")(2.0))
+    assert f("EllipticK")(1.0) == inf
+    assert math.isnan(f("EllipticK")(1.5))
+    assert f("EllipticE")(1.0) == 1.0
+    assert math.isnan(f("EllipticE")(2.0))
     assert f("EllipticK")(0.0) == pytest.approx(math.pi / 2, rel=1e-15)
-    assert f("fresnels")(inf) == 0.5 and f("fresnelc")(-inf) == -0.5
+    assert f("fresnels")(inf) == 0.5
+    assert f("fresnelc")(-inf) == -0.5
     assert f("fresnels")(0.0) == 0.0
-    assert f("Ei")(0.0) == -inf and f("Ei")(inf) == inf and f("Ei")(-inf) == 0.0
+    assert f("Ei")(0.0) == -inf
+    assert f("Ei")(inf) == inf
+    assert f("Ei")(-inf) == 0.0
     assert f("Ei")(800.0) == inf
-    assert f("li")(0.0) == 0.0 and f("li")(1.0) == -inf and math.isnan(f("li")(-1.0))
-    assert f("Si")(inf) == pytest.approx(math.pi / 2) and f("Si")(-inf) == pytest.approx(-math.pi / 2)
+    assert f("li")(0.0) == 0.0
+    assert f("li")(1.0) == -inf
+    assert math.isnan(f("li")(-1.0))
+    assert f("Si")(inf) == pytest.approx(math.pi / 2)
+    assert f("Si")(-inf) == pytest.approx(-math.pi / 2)
     assert f("Si")(0.0) == 0.0
-    assert f("Ci")(0.0) == -inf and f("Ci")(inf) == 0.0 and math.isnan(f("Ci")(-1.0))
-    assert f("Chi")(0.0) == -inf and math.isnan(f("Chi")(-1.0))
-    assert f("Shi")(0.0) == 0.0 and f("Shi")(800.0) == inf and f("Shi")(-800.0) == -inf
+    assert f("Ci")(0.0) == -inf
+    assert f("Ci")(inf) == 0.0
+    assert math.isnan(f("Ci")(-1.0))
+    assert f("Chi")(0.0) == -inf
+    assert math.isnan(f("Chi")(-1.0))
+    assert f("Shi")(0.0) == 0.0
+    assert f("Shi")(800.0) == inf
+    assert f("Shi")(-800.0) == -inf
 
 
 # kind -> (mpmath reference, extra domain)
 BESSEL = {
-    "bessel_j": lambda n, x: mpmath.besselj(n, x),
+    "bessel_j": lambda n, x: mpmath.re(mpmath.besselj(n, x)),
     "bessel_y": lambda n, x: mpmath.bessely(n, x),
-    "bessel_i": lambda n, x: mpmath.besseli(n, x),
+    "bessel_i": lambda n, x: mpmath.re(mpmath.besseli(n, x)),
     "bessel_k": lambda n, x: mpmath.besselk(n, x),
 }
 
 
 @requires_cc
 def test_bessel_integer_order_against_mpmath(tmp_path):
-    p, x, n = _env()
     lib = _lib(
         tmp_path,
         {f"b_{k}": (lambda p, x, k=k: p.func(k, [p.symbol("n"), x])) for k in BESSEL},
@@ -182,7 +205,6 @@ def test_bessel_integer_order_against_mpmath(tmp_path):
 
 @requires_cc
 def test_bessel_edges_and_non_integer_runtime_order(tmp_path):
-    p, x, n = _env()
     lib = _lib(
         tmp_path,
         {f"b_{k}": (lambda p, x, k=k: p.func(k, [p.symbol("n"), x])) for k in BESSEL},
@@ -193,18 +215,31 @@ def test_bessel_edges_and_non_integer_runtime_order(tmp_path):
     # A symbolic order that is not an integer at run time gives NAN, never a
     # value for a different order.
     for f in (j, y, i, k):
-        assert math.isnan(f(0.5, 1.0)) and math.isnan(f(math.nan, 1.0))
+        assert math.isnan(f(0.5, 1.0))
+        assert math.isnan(f(math.nan, 1.0))
         assert math.isnan(f(20000.0, 1.0))
-    assert j(0.0, 0.0) == 1.0 and j(3.0, 0.0) == 0.0 and j(2.0, inf) == 0.0
-    assert y(0.0, 0.0) == -inf and math.isnan(y(1.0, -1.0)) and y(1.0, inf) == 0.0
-    assert i(0.0, 0.0) == 1.0 and i(2.0, -inf) == inf and i(1.0, -inf) == -inf
+    assert j(0.0, 0.0) == 1.0
+    assert j(3.0, 0.0) == 0.0
+    assert j(2.0, inf) == 0.0
+    assert y(0.0, 0.0) == -inf
+    assert math.isnan(y(1.0, -1.0))
+    assert y(1.0, inf) == 0.0
+    assert i(0.0, 0.0) == 1.0
+    assert i(2.0, -inf) == inf
+    assert i(1.0, -inf) == -inf
     assert i(0.0, 720.0) == inf
-    assert k(1.0, 0.0) == inf and math.isnan(k(1.0, -1.0)) and k(0.0, inf) == 0.0
+    assert k(1.0, 0.0) == inf
+    assert math.isnan(k(1.0, -1.0))
+    assert k(0.0, inf) == 0.0
     # Overflow/underflow stay IEEE values rather than NaN.
-    assert y(5.0, 1e-100) == -inf and k(5.0, 1e-100) == inf
+    assert y(5.0, 1e-100) == -inf
+    assert k(5.0, 1e-100) == inf
     assert k(0.0, 800.0) == 0.0
     # bessel_j0 / bessel_j1 lower to the same helper.
-    lib2 = _lib(tmp_path, {"j0": lambda p, x: p.func("bessel_j0", [x]), "j1": lambda p, x: p.func("bessel_j1", [x])})
+    lib2 = _lib(
+        tmp_path,
+        {"j0": lambda p, x: p.func("bessel_j0", [x]), "j1": lambda p, x: p.func("bessel_j1", [x])},
+    )
     for v in (0.3, 2.5, 17.0, 40.0, 123.4):
         assert _err(lib2.scalar("j0", 1)(v), float(mpmath.besselj(0, v)), 0.05) < 1e-14
         assert _err(lib2.scalar("j1", 1)(v), float(mpmath.besselj(1, v)), 0.05) < 1e-14
@@ -215,7 +250,8 @@ def test_polygamma_order_0_and_1_lower_to_digamma_trigamma(tmp_path):
     p, x, _ = _env()
     pg0 = ak.emit_c_expr(p.func("polygamma", [p.integer(0), x]), x, fn_name="pg0")
     pg1 = ak.emit_c_expr(p.func("polygamma", [p.integer(1), x]), x, fn_name="pg1")
-    assert "alkahest_digamma" in pg0 and "alkahest_trigamma" in pg1
+    assert "alkahest_digamma" in pg0
+    assert "alkahest_trigamma" in pg1
     lib = _Lib(pg0 + pg1, tmp_path)
     for v in (0.4, 1.3, 7.7, 25.0):
         assert _err(lib.scalar("pg0", 1)(v), float(mpmath.digamma(v)), 0.05) < 1e-13
@@ -246,16 +282,26 @@ def test_remaining_refusals_stay_coded():
 def test_helpers_compile_warning_free_on_their_own(tmp_path):
     """Each emitted function compiles alone with ``-Wall -Wextra -Werror``: no
     unused ``static`` helper rides along."""
-    p, x, n = _env()
-    cases = [p.func(k, [x]) for k in UNARY] + [
-        p.func(k, [p.integer(3), x]) for k in BESSEL
-    ]
+    p, x, _n = _env()
+    cases = [p.func(k, [x]) for k in UNARY] + [p.func(k, [p.integer(3), x]) for k in BESSEL]
     for e in cases:
         src = "#include <math.h>\n" + ak.emit_c_expr(e, x, fn_name="f")
         path = tmp_path / "w.c"
         path.write_text(src)
         r = subprocess.run(
-            [CC, "-std=c99", "-pedantic", "-Wall", "-Wextra", "-Werror", "-O2", "-c", "-o", os.devnull, str(path)],
+            [
+                CC,
+                "-std=c99",
+                "-pedantic",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-O2",
+                "-c",
+                "-o",
+                os.devnull,
+                str(path),
+            ],
             capture_output=True,
             text=True,
         )

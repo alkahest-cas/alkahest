@@ -29,6 +29,15 @@
 //! remaining differences are the ones listed on `Builder::lower_func` and the
 //! division/strength-reduction rewrites above, each within an ulp or two.
 //!
+//! # Sharing inside sums and products
+//!
+//! The one pass that *does* reassociate is [`share_pairs`], run after lowering:
+//! when two operands occur together in two or more n-ary sums (or products) —
+//! `a + b` inside both `a + b + c` and `a + b + d` — they become one node.
+//! That costs a few ulps of `Σ|operands|` against the interpreter's
+//! left-to-right order and saves `count − 1` operations per shared pair; the
+//! test suite compares against `eval_expr` at `1e-12`.
+//!
 //! # Constants
 //!
 //! `π` (the symbol `pi`, unless the caller binds it as an input) and `e`
@@ -953,6 +962,166 @@ impl Printer<'_> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Sharing inside n-ary sums and products
+// ---------------------------------------------------------------------------
+
+/// Most operands of one sum/product that take part in pair sharing.  The pair
+/// table is quadratic in the operand count, so a very wide node is left alone.
+const PAIR_MAX_WIDTH: usize = 40;
+/// Cap on the entries of the pair table in one round (each entry is one
+/// occurrence of one pair), which bounds both time and memory.
+const PAIR_TABLE_BUDGET: usize = 1_500_000;
+/// Rounds of pair extraction.  A round can only share pairs of the operands
+/// that exist at its start, so deeper shared sub-sums (`a+b+c` inside `a+b+c+d`)
+/// appear over successive rounds.
+const PAIR_ROUNDS: usize = 12;
+
+/// One operand slot of a sum (with its subtraction flag) or product.
+type Slot = (bool, usize);
+
+/// A pair of operands `(a, b)`, `a < b`, with the relative sign of `b` to `a`
+/// (always `false` for a product).
+type PairKey = (bool, usize, usize, bool);
+
+/// Where a pair occurs: the node and the two slot positions.
+type Occurrence = (usize, usize, usize);
+
+/// Share common *pairs* of operands between n-ary sums (and between n-ary
+/// products): when `a + b` appears inside both `a + b + c` and `a + b + d`
+/// (in any order and with any sign pattern — `-a - b` is the negation of
+/// `a + b`, and `b - a` of `a - b`), it becomes one node the two sums refer
+/// to, which the printer then gives a temporary.
+///
+/// Pairs are extracted most-frequent first and repeated, so a shared run of
+/// three or more operands is shared too.  Only pairs that occur at least twice
+/// are extracted, so this never adds an operation: each extraction removes
+/// `count - 1` additions or multiplications.
+///
+/// **Rounding.**  Extracting a pair re-associates the sum or product, so the
+/// result can differ from the left-to-right evaluation the interpreter does
+/// by the usual reassociation error — a few ulps of `Σ|terms|`.  Sums and
+/// products of two operands are unaffected.
+fn share_pairs(nodes: &mut Vec<Node>, roots: &[usize]) {
+    // Reachable sums and products wide enough to share and narrow enough to
+    // enumerate.
+    let mut seen = vec![false; nodes.len()];
+    let mut stack: Vec<usize> = roots.to_vec();
+    let mut cands: Vec<usize> = Vec::new();
+    while let Some(i) = stack.pop() {
+        if seen[i] {
+            continue;
+        }
+        seen[i] = true;
+        match &nodes[i] {
+            Node::Sum(t) if t.len() >= 2 && t.len() <= PAIR_MAX_WIDTH => cands.push(i),
+            Node::Prod(t) if t.len() >= 2 && t.len() <= PAIR_MAX_WIDTH => cands.push(i),
+            _ => {}
+        }
+        stack.extend(nodes[i].children());
+    }
+    cands.sort_unstable();
+
+    for _ in 0..PAIR_ROUNDS {
+        // Operand slots of each candidate, as `(is_sum, slots)`.
+        let slots: Vec<(bool, Vec<Slot>)> = cands
+            .iter()
+            .map(|&i| match &nodes[i] {
+                Node::Sum(t) => (true, t.clone()),
+                Node::Prod(t) => (false, t.iter().map(|&x| (false, x)).collect()),
+                _ => unreachable!("candidates are sums and products"),
+            })
+            .collect();
+
+        let mut table: HashMap<PairKey, Vec<Occurrence>> = HashMap::new();
+        let mut entries = 0usize;
+        for (ci, (is_sum, ts)) in slots.iter().enumerate() {
+            let w = ts.len();
+            if entries + w * (w - 1) / 2 > PAIR_TABLE_BUDGET {
+                continue;
+            }
+            entries += w * (w - 1) / 2;
+            for x in 0..w {
+                for y in (x + 1)..w {
+                    let ((sa, a), (sb, b)) = (ts[x], ts[y]);
+                    if a == b {
+                        continue;
+                    }
+                    let (p, q, ps, qs) = if a < b {
+                        (x, y, sa, sb)
+                    } else {
+                        (y, x, sb, sa)
+                    };
+                    let key = (*is_sum, ts[p].1, ts[q].1, ps ^ qs);
+                    table.entry(key).or_default().push((ci, p, q));
+                }
+            }
+        }
+        let mut shared: Vec<(PairKey, Vec<Occurrence>)> =
+            table.into_iter().filter(|(_, v)| v.len() >= 2).collect();
+        if shared.is_empty() {
+            break;
+        }
+        // Most frequent first; the key breaks ties so the output is
+        // deterministic.
+        shared.sort_unstable_by(|l, r| r.1.len().cmp(&l.1.len()).then(l.0.cmp(&r.0)));
+
+        let mut live: Vec<Vec<Option<Slot>>> = slots
+            .iter()
+            .map(|(_, t)| t.iter().map(|&s| Some(s)).collect())
+            .collect();
+        let mut changed = false;
+        for ((is_sum, a, b, rel), occ) in shared {
+            let alive: Vec<&Occurrence> = occ
+                .iter()
+                .filter(|&&(ci, p, q)| {
+                    // Both slots still hold the operands this pair was
+                    // counted from (an earlier extraction this round may have
+                    // consumed or replaced one).
+                    live[ci][p].map(|s| s.1) == Some(a) && live[ci][q].map(|s| s.1) == Some(b)
+                })
+                .collect();
+            if alive.len() < 2 {
+                continue;
+            }
+            let pair = if is_sum {
+                Node::Sum(vec![(false, a), (rel, b)])
+            } else {
+                Node::Prod(vec![a, b])
+            };
+            let pi = nodes.len();
+            nodes.push(pair);
+            for &&(ci, p, q) in &alive {
+                // The pair stands at `p`'s place; its sign is `p`'s own (a
+                // negated first operand makes the pair a negated sum).
+                let flip = live[ci][p].map(|s| s.0).unwrap_or(false);
+                live[ci][p] = Some((flip, pi));
+                live[ci][q] = None;
+            }
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+        // Write the rewritten operand lists back.
+        for (ci, &ni) in cands.iter().enumerate() {
+            let rest: Vec<Slot> = live[ci].iter().flatten().copied().collect();
+            if rest.len() == slots[ci].1.len() {
+                continue;
+            }
+            nodes[ni] = match (slots[ci].0, rest.as_slice()) {
+                (true, [(true, p)]) => Node::Neg(*p),
+                (true, _) => Node::Sum(rest),
+                (false, _) => Node::Prod(rest.iter().map(|&(_, x)| x).collect()),
+            };
+        }
+        // The new pair nodes are candidates for the next round (they hold
+        // two operands, so they only matter as operands of other nodes), and
+        // so are the rewritten nodes, which now hold fewer slots.
+        cands.retain(|&i| matches!(nodes[i], Node::Sum(_) | Node::Prod(_)));
+    }
+}
+
 /// Lower `exprs` jointly: shared sub-expressions of different outputs become
 /// one temporary.
 pub(super) fn lower_outputs(
@@ -966,6 +1135,8 @@ pub(super) fn lower_outputs(
     for &e in exprs {
         roots.push(b.lower(e)?);
     }
+
+    share_pairs(&mut b.nodes, &roots);
 
     // Reference counts over the reachable IR.  Each reachable node is printed
     // exactly once (as a temporary or inline in its single consumer), so a
@@ -1112,18 +1283,26 @@ mod tests {
     #[test]
     fn special_functions_emit_only_the_helpers_they_call() {
         let p = ExprPool::new();
-        let x = p.symbol("x");
+        let x = p.symbol("x", Domain::Real);
         // Shi pulls Ei and E1 with it, once, and nothing else.
         let code = emit_expr_c(p.func("Shi", vec![x]), &[x], &["x"], "f", &p).unwrap();
         for def in ["alkahest_shi(", "alkahest_ei(", "alkahest_e1_pos("] {
-            assert_eq!(code.matches(&format!("static double {def}")).count(), 1, "{def}");
+            assert_eq!(
+                code.matches(&format!("static double {def}")).count(),
+                1,
+                "{def}"
+            );
         }
         assert!(!code.contains("alkahest_bessel"), "{code}");
         assert!(!code.contains("alkahest_si("), "{code}");
         // Two functions sharing a helper define it once.
         let e = p.add(vec![p.func("Ei", vec![x]), p.func("li", vec![x])]);
         let code = emit_expr_c(e, &[x], &["x"], "f", &p).unwrap();
-        assert_eq!(code.matches("static double alkahest_ei(").count(), 1, "{code}");
+        assert_eq!(
+            code.matches("static double alkahest_ei(").count(),
+            1,
+            "{code}"
+        );
         // Bessel J(3, x) calls the helper with the order as a double.
         let j = p.func("bessel_j", vec![p.integer(3), x]);
         let code = emit_expr_c(j, &[x], &["x"], "f", &p).unwrap();
@@ -1134,9 +1313,24 @@ mod tests {
     }
 
     #[test]
+    fn a_shared_operand_pair_is_computed_once() {
+        let p = ExprPool::new();
+        let [a, b, c, d] = ["a", "b", "c", "d"].map(|n| p.symbol(n, Domain::Real));
+        let vars = [a, b, c, d];
+        let names = ["a", "b", "c", "d"];
+        let outs = [p.add(vec![a, b, c]), p.add(vec![a, b, d])];
+        let code = emit_expr_c_vec(&outs, &vars, &names, "f", &p).unwrap();
+        // Three additions, not four: `a + b` is one temporary.
+        assert_eq!(code.matches(" + ").count(), 3, "{code}");
+        let outs = [p.mul(vec![a, b, c]), p.mul(vec![a, b, d])];
+        let code = emit_expr_c_vec(&outs, &vars, &names, "f", &p).unwrap();
+        assert_eq!(code.matches(" * ").count(), 3, "{code}");
+    }
+
+    #[test]
     fn special_function_refusals_are_coded() {
         let p = ExprPool::new();
-        let x = p.symbol("x");
+        let x = p.symbol("x", Domain::Real);
         let half = p.rational(1, 2);
         for e in [
             p.func("bessel_j", vec![half, x]),

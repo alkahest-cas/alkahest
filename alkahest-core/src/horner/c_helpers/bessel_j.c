@@ -20,7 +20,7 @@ static double alkahest_bessel_j(double order, double x) {
     if (x <= 2.0) {
         r = alkahest_bessel_jseries(n, x);
     } else if (x >= 25.0 && (double)n <= x) {
-        double j0, j1, y0, y1, a, b;
+        double j0 = 0.0, j1 = 0.0, y0 = 0.0, y1 = 0.0, a, b;
         alkahest_bessel_asym01(x, &j0, &j1, &y0, &y1);
         if (n == 0) r = j0;
         else {

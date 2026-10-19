@@ -11,7 +11,7 @@
 static double alkahest_bessel_y(double order, double x) {
     const double g = 0.5772156649015329, tp = 0.6366197723675814;
     int n, neg = 0, k;
-    double y0, y1, r;
+    double y0 = 0.0, y1 = 0.0, r;
     if (isnan(order) || isnan(x) || order != floor(order) || fabs(order) > 10000.0)
         return NAN;
     n = (int)order;
@@ -39,7 +39,7 @@ static double alkahest_bessel_y(double order, double x) {
         /* -2/(pi x) = -tp / x */
         y1 = -tp / x + tp * lg * j1 - tp * 0.5 * h * s1;
     } else if (x >= 25.0) {
-        double j0, j1;
+        double j0 = 0.0, j1 = 0.0;
         alkahest_bessel_asym01(x, &j0, &j1, &y0, &y1);
     } else {
         double m[5], lg = log(0.5 * x) + g;
