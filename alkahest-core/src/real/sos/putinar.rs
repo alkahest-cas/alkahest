@@ -23,7 +23,7 @@
 //! *proposes*. Each level is searched first by an exact rational LP over
 //! scaled diagonally dominant Gram blocks (no floating point at all), then by
 //! the numeric block-diagonal Gram search shared with [`super::psd`]
-//! ([`super::psd::search_family_with`]), whose every candidate is rounded to
+//! (`psd::search_family_with`), whose every candidate is rounded to
 //! rationals, split into its blocks, decided PSD *exactly* by
 //! [`super::linalg::psd_decompose`] (an exact `LDLᵀ`), and only accepted
 //! when the full identity re-expands to `f` exactly in ℚ. The returned
@@ -32,7 +32,7 @@
 //!
 //! An equality `h = 0` is recorded in the certificate as the two constraints
 //! `h ≥ 0` and `−h ≥ 0`, with `λ = σ⁺ − σ⁻` split into two explicit sums of
-//! squares (every polynomial is such a difference — see [`split_free`]). That
+//! squares (every polynomial is such a difference — see `split_free`). That
 //! keeps the certificate's shape — every multiplier a weighted sum of squares
 //! of rational polynomials — uniform with the other kinds, so the existing
 //! verifier and Lean export apply unchanged.
@@ -43,7 +43,7 @@
 //! strictly positive on the set when the quadratic module is **Archimedean**,
 //! i.e. contains `N − Σxᵢ²` for some `N`. When the plain search at a level
 //! fails, this module looks for exactly that (with `N` left free, see
-//! [`archimedean_bound`]), records the outcome in the trace, and — when a
+//! `archimedean_bound`), records the outcome in the trace, and — when a
 //! bound is found — retries with `N − Σxᵢ²` as an additional generator. A
 //! certificate found that way is composed back into one over the caller's
 //! constraints only (products of sums of squares are sums of squares), so
@@ -69,7 +69,7 @@ use std::collections::BTreeMap;
 pub struct PutinarOpts {
     /// Relaxation order `k`: every summand of the certificate has degree at
     /// most `2k`. `None` starts at the smallest level that can represent
-    /// the target and the constraints and tries [`AUTO_LEVEL_STEPS`] more.
+    /// the target and the constraints and tries two more.
     pub level: Option<u32>,
 }
 
@@ -694,7 +694,7 @@ fn split_free(lambda: &RatPoly) -> (SosPoly, SosPoly) {
         let xd = RatPoly::monomial(nvars, d, Rational::from(1));
         let plus = xb.add(&xd);
         let minus = xb.sub(&xd);
-        let w = Rational::from(c.clone().abs() * &quarter);
+        let w: Rational = c.clone().abs() * &quarter;
         if *c > 0 {
             pos.push(w.clone(), plus);
             neg.push(w, minus);
