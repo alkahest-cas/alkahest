@@ -390,7 +390,7 @@ fn hankel_canonical(k: Kernel, nu: ExprId, x: ExprId, pool: &ExprPool) -> Option
     if *q.denom() != 1 || q >= 0 {
         return None;
     }
-    let n = Rational::from(-q);
+    let n = -q;
     let odd = n.numer().is_odd();
     let base = node(k, vec![rat_node(pool, &n), x], pool);
     Some(if odd { neg(pool, base) } else { base })
@@ -434,7 +434,7 @@ fn zeta_prime_canonical(s: ExprId, pool: &ExprPool) -> Option<ExprId> {
         )),
         n if n < 0 && n % 2 == 0 && -n <= MAX_EXACT_ZETA => {
             let m = (-n / 2) as u32; // ζ′(−2m)
-            let fact = Integer::from(Integer::factorial(2 * m).complete());
+            let fact = Integer::factorial(2 * m).complete();
             let sign = if m % 2 == 0 { 1 } else { -1 };
             Some(mk_mul(
                 pool,

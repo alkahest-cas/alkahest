@@ -119,7 +119,7 @@ pub(super) fn stirling_first(n: usize) -> Vec<Integer> {
         for (j, c) in row.iter().enumerate() {
             // s(m+1, j+1) += s(m, j);  s(m+1, j) -= m·s(m, j)
             next[j + 1] += c;
-            next[j] -= Integer::from(c * Integer::from(m));
+            next[j] -= c * Integer::from(m);
         }
         row = next;
     }
@@ -138,16 +138,13 @@ pub(super) fn airy_polys(n: usize) -> (Vec<Integer>, Vec<Integer>) {
         v.iter()
             .enumerate()
             .skip(1)
-            .map(|(k, c)| Integer::from(c * Integer::from(k)))
+            .map(|(k, c)| c * Integer::from(k))
             .collect()
     };
     let add = |a: &[Integer], b: &[Integer]| -> Vec<Integer> {
         let len = a.len().max(b.len());
         (0..len)
-            .map(|i| {
-                Integer::from(a.get(i).cloned().unwrap_or_default())
-                    + b.get(i).cloned().unwrap_or_default()
-            })
+            .map(|i| a.get(i).cloned().unwrap_or_default() + b.get(i).cloned().unwrap_or_default())
             .collect()
     };
     let times_x = |v: &[Integer]| -> Vec<Integer> {
@@ -464,7 +461,7 @@ impl TaylorModel {
                 let li: Vec<ArbBall> = (0..=p)
                     .map(|j| {
                         value(ArbBall::from_rational(
-                            &Rational::from(s - Rational::from(j as u32)),
+                            &(s - Rational::from(j as u32)),
                             prec,
                         ))
                     })
