@@ -545,6 +545,7 @@ fn resultant_param_poly(
 /// computed over the number field `K = ℚ[t]/Q` (see [`super::number_field`]),
 /// returned as a symbolic polynomial in `x` whose coefficients are expressions
 /// in the root symbol `rvar`.
+#[allow(clippy::too_many_arguments)]
 fn alg_log_argument(
     num: &QPoly,
     dprime: &QPoly,

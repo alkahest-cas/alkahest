@@ -325,12 +325,12 @@ fn solve_q(mut rows: Vec<Vec<Rational>>, cols: usize) -> Option<Vec<Rational>> {
         for v in rows[r].iter_mut() {
             *v *= &inv;
         }
-        for i in 0..rows.len() {
-            if i != r && rows[i][c] != 0 {
-                let f = rows[i][c].clone();
-                for j in 0..=cols {
-                    let t = Rational::from(&f * &rows[r][j]);
-                    rows[i][j] -= t;
+        let pivot_row = rows[r].clone();
+        for (i, row) in rows.iter_mut().enumerate() {
+            if i != r && row[c] != 0 {
+                let f = row[c].clone();
+                for (v, pv) in row.iter_mut().zip(pivot_row.iter()) {
+                    *v -= Rational::from(&f * pv);
                 }
             }
         }
@@ -550,7 +550,7 @@ fn g_at(red: &Reduction, y: &Rational, m: &Rational, pool: &ExprPool) -> Option<
         }
     }
     if !complete && red.t_num.iter().any(|c| *c != 0) {
-        let wv = Rational::from(y * (one.clone() - y)) * (one.clone() - Rational::from(m * y));
+        let wv = (y * (one.clone() - y)) * (one.clone() - Rational::from(m * y));
         let tv = eval_q(&red.t_num, y) / eval_q(&red.t_den, y);
         if tv != 0 {
             terms.push(pool.mul(vec![rational_to_expr(&tv, pool), sqrt_q(&wv, pool)]));
@@ -768,7 +768,7 @@ fn definite(
         Some(eval_q(&sp.p, x) * d.clone() * d / den)
     };
     let c2 = c2_at(&x0).ok_or("c2")?;
-    let x1 = Rational::from(&x0 + Rational::from((1, 7)));
+    let x1 = &x0 + Rational::from((1, 7));
     if c2 <= 0 || c2_at(&x1).is_some_and(|c| c != c2) {
         return Err("reduction constant not constant");
     }
