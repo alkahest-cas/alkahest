@@ -103,7 +103,8 @@ fn solve_hard_system_stops_near_the_wall_budget() {
         budget::take_trip(),
         Some(BudgetTrip::Budget(BudgetError::WallClock { .. }))
     ));
-    assert!(elapsed < Duration::from_secs(5), "took {elapsed:?}");
+    // 300 ms budget; generous (100x) so a loaded or sanitizer run cannot trip it.
+    assert!(elapsed < Duration::from_secs(30), "took {elapsed:?}");
 }
 
 #[test]

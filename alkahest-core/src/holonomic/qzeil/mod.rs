@@ -626,7 +626,10 @@ mod tests {
             .expect_err("a 300 ms budget cannot cover this search");
         // Loose by two orders of magnitude: the point is that the call
         // *returns*, where before it consulted no budget at all.
-        assert!(start.elapsed().as_secs() < 60, "budget was not consulted");
+        assert!(
+            start.elapsed() < crate::test_time::limit_secs(60),
+            "budget was not consulted"
+        );
         assert!(
             matches!(err, QHolonomicError::SearchExhausted(_)),
             "{err:?}"
@@ -668,7 +671,7 @@ mod tests {
                 .map_err(|e| (e.code(), crate::budget::take_trip().map(|t| t.code())))
         };
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(30),
+            start.elapsed() < crate::test_time::limit_secs(30),
             "q_zeilberger must return promptly under an exhausted budget, took {:?}",
             start.elapsed()
         );

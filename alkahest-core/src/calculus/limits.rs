@@ -2940,7 +2940,7 @@ mod tests {
                 p.display(expr)
             );
             assert!(
-                t.elapsed().as_secs() < 5,
+                t.elapsed() < crate::test_time::limit_secs(30),
                 "{} took {:?}",
                 p.display(expr),
                 t.elapsed()

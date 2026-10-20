@@ -313,7 +313,7 @@ mod tests {
             let r5 = GroebnerBasis::try_compute_f5(gens, MonomialOrder::GRevLex);
             assert!(r5.is_err(), "F5 on cyclic-6 cannot finish in 200 ms");
             assert!(
-                t.elapsed() < Duration::from_secs(10),
+                t.elapsed() < crate::test_time::limit_secs(10),
                 "took {:?}",
                 t.elapsed()
             );

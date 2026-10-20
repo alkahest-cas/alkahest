@@ -15,11 +15,11 @@ self-consistent.
 from __future__ import annotations
 
 import random
-import time
 from math import comb
 
 import alkahest as ak
 import pytest
+from timing_util import best_of
 
 MAX_MODULUS = 1 << 62
 
@@ -291,17 +291,13 @@ def test_sweep_is_much_faster_than_exact_then_reduce(k):
     primes = [p for p in range(5, 1500) if all(p % q for q in range(2, int(p**0.5) + 1))]
     rec = ak.ModularRecurrence(*SEQUENCES[0][1:3])
 
-    t0 = time.perf_counter()
-    modular = [rec.value_mod(p - 1, p, k) for p in primes]
-    t_modular = time.perf_counter() - t0
-
-    t0 = time.perf_counter()
-    by_recurrence = [_apery_exact_residue(p - 1, p**k) for p in primes]
-    t_recurrence = time.perf_counter() - t0
-
-    t0 = time.perf_counter()
-    by_sum = [_apery_binomial_sum_residue(p - 1, p**k) for p in primes]
-    t_sum = time.perf_counter() - t0
+    # Best of three: the claims below are ratios of two wall-clock runs, and
+    # one descheduled run on a loaded runner must not decide them.
+    modular, t_modular = best_of(lambda: [rec.value_mod(p - 1, p, k) for p in primes])
+    by_recurrence, t_recurrence = best_of(
+        lambda: [_apery_exact_residue(p - 1, p**k) for p in primes]
+    )
+    by_sum, t_sum = best_of(lambda: [_apery_binomial_sum_residue(p - 1, p**k) for p in primes])
 
     assert modular == by_recurrence == by_sum
     print(

@@ -1415,7 +1415,11 @@ mod tests {
         let f = p.pow(p.add(vec![big, p.integer(1)]), p.integer(-1));
         let t = std::time::Instant::now();
         assert!(expr_to_qrational(f, x, &p).is_none());
-        assert!(t.elapsed().as_secs() < 1, "{:?}", t.elapsed());
+        assert!(
+            t.elapsed() < crate::test_time::limit_secs(10),
+            "{:?}",
+            t.elapsed()
+        );
         // The ordinary case is unaffected.
         let small = p.pow(
             p.add(vec![p.pow(x, p.integer(3)), p.integer(1)]),

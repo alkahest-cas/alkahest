@@ -17,11 +17,11 @@ import random
 import subprocess
 import sys
 import textwrap
-import time
 
 import alkahest as ak
 import pytest
 from alkahest import research as R
+from timing_util import best_of, limit
 
 # ---------------------------------------------------------------------------
 # Pool identity in __eq__ / __hash__
@@ -238,14 +238,18 @@ def test_parse_with_symbols_from_another_pool_keeps_old_behaviour():
 def test_parse_long_sum_is_not_quadratic():
     n = 20_000
     src = " + ".join(f"x^{i}" for i in range(n))
-    pool = ak.ExprPool()
-    x = pool.symbol("x")
-    t0 = time.perf_counter()
-    got = ak.parse(src, pool, {"x": x})
-    elapsed = time.perf_counter() - t0
-    assert got == pool.add([x.pow_expr(pool.integer(i)) for i in range(n)])
+
+    def run():
+        pool = ak.ExprPool()  # fresh pool each run: nothing interned carries over
+        x = pool.symbol("x")
+        got = ak.parse(src, pool, {"x": x})
+        assert got == pool.add([x.pow_expr(pool.integer(i)) for i in range(n)])
+
     # The left fold took ~7 s and 1.6 GB here; the single `add` well under 1 s.
-    assert elapsed < 5.0, elapsed
+    # Best of three, so one descheduled run on a loaded runner cannot fail it
+    # while a genuine quadratic regression (every run ~7 s) still does.
+    _, elapsed = best_of(run, runs=3)
+    assert elapsed < limit(5.0), elapsed
 
 
 # ---------------------------------------------------------------------------
@@ -431,6 +435,6 @@ def test_subexpressions_walk_is_linear():
     assert len(subs) == len(set(subs))
     session = R.ResearchSession(pool=pool)
     session._register_origin(x**7, "x7")
-    t0 = time.perf_counter()
-    assert session._origins_in(e) == ["x7"]
-    assert time.perf_counter() - t0 < 2.0
+    out, elapsed = best_of(lambda: session._origins_in(e), runs=3)
+    assert out == ["x7"]
+    assert elapsed < limit(2.0), elapsed

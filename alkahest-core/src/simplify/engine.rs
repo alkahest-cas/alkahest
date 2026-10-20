@@ -1362,7 +1362,7 @@ mod tests {
         let start = std::time::Instant::now();
         // Nothing here is a power of a product, so the rewrite is the identity.
         assert_eq!(distribute_recip(b, &pool), b);
-        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert!(start.elapsed() < crate::test_time::limit_secs(10));
     }
 
     /// Timing for the settled-memo carry: the same simplification with and

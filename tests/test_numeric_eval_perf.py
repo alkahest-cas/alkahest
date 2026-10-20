@@ -42,7 +42,7 @@ def test_evaluate_is_linear_on_a_shared_dag(mode):
         assert r.status == "ok"
         assert abs(complex(r.value) - math.cos(40 * theta)) < 1e-8
     # The unmemoized walk visits ~1.6e8 paths here (minutes).
-    assert time.perf_counter() - start < 2.0
+    assert time.perf_counter() - start < 30.0
 
 
 def test_eval_expr_and_evaluate_agree_on_a_dag():

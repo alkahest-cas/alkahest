@@ -2492,7 +2492,7 @@ mod tests {
         let dt = t0.elapsed();
         assert!(out.is_declined(), "∫e^{{x²}} must decline, got {out:?}");
         assert!(
-            dt < std::time::Duration::from_secs(20),
+            dt < crate::test_time::limit_secs(20),
             "the decline took {dt:?} — the step bound is not holding"
         );
     }

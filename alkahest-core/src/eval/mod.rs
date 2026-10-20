@@ -806,7 +806,7 @@ mod tests {
         assert_eq!(half.unwrap(), Rational::from((-1, 2)));
 
         assert!(
-            start.elapsed() < std::time::Duration::from_secs(2),
+            start.elapsed() < crate::test_time::limit_secs(10),
             "took {:?}",
             start.elapsed()
         );

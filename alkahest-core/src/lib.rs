@@ -71,6 +71,8 @@ pub mod stabilizer;
 // V2-10 — Gosper / creative telescoping (WZ certificates)
 pub mod stablehlo;
 pub mod sum;
+#[cfg(test)]
+pub(crate) mod test_time;
 pub mod theta;
 // §3.3 — symbolic integral transforms (Laplace and inverse Laplace)
 pub mod transform;
