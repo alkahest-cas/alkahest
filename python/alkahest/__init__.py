@@ -2684,6 +2684,8 @@ if "solve" in dir():
         rule of :func:`to_real_form`); anything else, numeric values and
         non-list results (a Groebner basis) are returned untouched.
         """
+        import contextlib
+
         if not isinstance(result, list):
             return result
         out = []
@@ -2695,10 +2697,8 @@ if "solve" in dir():
             for var, val in sol.items():
                 if isinstance(val, Expr):
                     # best effort: keep the solver's own form on any failure
-                    try:
+                    with contextlib.suppress(Exception):
                         val = to_real_form(val, assumptions)
-                    except Exception:  # noqa: SIM105, S110
-                        pass
                 new[var] = val
             out.append(new)
         return out
