@@ -9,12 +9,16 @@ and every exact answer is exact.
 
 * :class:`TransferFunction` — SISO ``G(s) = num(s)/den(s)``: poles, zeros,
   DC gain, series / parallel / feedback, minimal realisation, step and
-  impulse responses, Tustin / ZOH discretisation, controllable canonical form.
+  impulse responses (exact sums over ``RootOf`` for high-order denominators),
+  Tustin / ZOH discretisation and its inverse ``d2c``, controllable canonical form.
 * :class:`StateSpace` — MIMO ``(A, B, C, D)``: transfer matrix, poles,
   controllability / observability matrices and their (generic) rank, series /
-  parallel / feedback interconnection, ZOH / Tustin discretisation.
+  parallel / feedback interconnection, ZOH / Tustin discretisation and ``d2c``,
+  MIMO minimal realisation (exact Kalman decomposition).
 * :func:`kronecker`, :func:`lyapunov`, :func:`care`, :func:`lqr` — exact for
-  small symbolic or rational data, numeric (numpy) otherwise.
+  small symbolic data and rational data of any size (structured Sylvester
+  solve; Hamiltonian stable subspace over ℚ), numeric (numpy) otherwise;
+  :func:`dlyap`, :func:`dare`, :func:`dlqr` — their discrete-time analogues.
 * :func:`bode`, :func:`margins` — numeric frequency response, gain and phase
   margins and their crossover frequencies.
 
@@ -59,6 +63,7 @@ import math
 import threading
 from fractions import Fraction
 
+from . import _controls_exact as _ex
 from .exceptions import AlkahestError
 
 __all__ = [
@@ -69,6 +74,9 @@ __all__ = [
     "bode",
     "care",
     "controls_side_conditions",
+    "dare",
+    "dlqr",
+    "dlyap",
     "kronecker",
     "lqr",
     "lyapunov",
@@ -742,6 +750,97 @@ def _to_numpy(M, name="matrix"):
     return arr
 
 
+# --- exact (Fraction / symbolic-field) bridges ------------------------------
+
+
+def _frac_matrix(M):
+    """Rows of ``Fraction`` for a matrix whose entries are all rational, else ``None``."""
+    rows = []
+    for r in M.to_list():
+        row = []
+        for x in r:
+            f = _as_fraction(x)
+            if f is None:
+                f = _as_fraction(_simp(x))
+            if f is None:
+                return None
+            row.append(f)
+        rows.append(row)
+    return rows
+
+
+def _from_frac_matrix(F, like):
+    ak = _ak()
+    return ak.Matrix([[_lift(like, x) for x in r] for r in F])
+
+
+def _factor_q(coeffs, var):
+    """Irreducible factorisation over ℚ: ``[(monic Fraction coeffs, multiplicity)]``.
+
+    ``coeffs`` is a lowest-first list of ``Fraction``; the factors are returned
+    in the kernel's canonical (ascending degree) order.
+    """
+    ak = _ak()
+    from math import gcd, lcm
+
+    fr = [Fraction(c) for c in coeffs]
+    while len(fr) > 1 and fr[-1] == 0:
+        fr.pop()
+    if len(fr) <= 1:
+        return []
+    den = 1
+    for c in fr:
+        den = lcm(den, c.denominator)
+    ints = [int(c * den) for c in fr]
+    g = 0
+    for c in ints:
+        g = gcd(g, abs(c))
+    ints = [c // g for c in ints]
+    pool = var._pool
+    expr = _from_coeffs([pool.integer(c) for c in ints], var)
+    u = ak.UniPoly.from_symbolic(expr, var)
+    out = []
+    for f, m in u.factor_z().factor_list():
+        cf = [Fraction(int(c)) for c in f.coefficients()]
+        if len(cf) <= 1:
+            continue
+        lc = cf[-1]
+        out.append(([c / lc for c in cf], int(m)))
+    return out
+
+
+class _SymField:
+    """Field protocol over kernel expressions: ``cancel`` + ``simplify`` normal form.
+
+    Every pivot that is not a non-zero constant is recorded as a side
+    condition (``"x ≠ 0"``): the rank decisions hold for generic parameters.
+    """
+
+    def __init__(self, like):
+        pool = like._pool
+        self.zero = pool.integer(0)
+        self.one = pool.integer(1)
+
+    @staticmethod
+    def canon(x):
+        return _canon(x)
+
+    @staticmethod
+    def iszero(x):
+        return _is_zero(x)
+
+    @staticmethod
+    def pivot(x):
+        _note_nonzero(x)
+
+
+def _field_matrix(M, K):
+    """Entries of ``M`` as elements of the field ``K`` (``Fraction`` or expressions)."""
+    if K is _ex.QQ:
+        return _frac_matrix(M)
+    return [[_canon(x) for x in r] for r in M.to_list()]
+
+
 def kronecker(A, B):
     """Kronecker product ``A ⊗ B``.
 
@@ -1196,10 +1295,82 @@ class TransferFunction:
             )
         if not self.is_proper():
             raise ControlsError(f"{self.expr} is improper", code="E-CTRL-002")
-        y = ex.inverse_laplace_transform(ak.cancel(F), self.var, t)
+        try:
+            y = ex.inverse_laplace_transform(ak.cancel(F), self.var, t)
+        except (ControlsError, ak.BudgetExceededError):
+            raise
+        except Exception as exc:  # the transform engine's refusal (E-TRANSFORM-*)
+            y = self._ilt_partial_fractions(what, t)
+            if y is None:
+                raise exc from None
+            return y
         for c in ex.transform_side_conditions():
             _note(str(c))
         return y
+
+    def _ilt_partial_fractions(self, what, t):
+        """``L⁻¹`` by partial fractions over ``RootOf`` (rational coefficients only).
+
+        The denominator is factored over ℚ; each irreducible factor power
+        ``f^m`` of degree ≤ 2 is sent to the transform engine, every other one
+        is expanded in the ``f``-adic partial fractions ``Σ v_j/f^j`` and
+        inverted by residues at the roots of ``f``: the answer is the finite
+        sum ``Σ_{k} e^{rₖ t} Σ_i cᵢ(rₖ) tⁱ`` over ``rₖ = RootOf(f, k)`` with
+        ``cᵢ`` rational polynomials in ``rₖ`` — exact, and evaluable
+        numerically (the imaginary parts of conjugate roots cancel).
+        Returns ``None`` when the coefficients are not rational.
+        """
+        ak = _ak()
+        from . import experimental as ex
+
+        num = _fraction_coeffs(self._num_c)
+        den = _fraction_coeffs(self._den_c)
+        if num is None or den is None:
+            return None
+        if what == "step":
+            den = [Fraction(0), *den]
+        lc = den[-1]
+        num = [c / lc for c in num]
+        den = [c / lc for c in den]
+        var = self.var
+        pool = var._pool
+        factors = _factor_q(den, var)
+        total = None
+        parts = []
+        for f, m, nu in _ex.partial_fraction_numerators(_ex.ptrim(num), factors):
+            if len(_ex.ptrim(nu)) == 1 and nu[0] == 0:
+                continue
+            piece = None
+            if len(f) - 1 <= 2:
+                try:
+                    expr = _from_coeffs([_lift(var, c) for c in nu], var) / (
+                        _from_coeffs([_lift(var, c) for c in f], var) ** m
+                    )
+                    piece = ex.inverse_laplace_transform(ak.cancel(expr), var, t)
+                    for c in ex.transform_side_conditions():
+                        _note(str(c))
+                except ak.BudgetExceededError:
+                    raise
+                except Exception:
+                    piece = None
+            if piece is None:
+                coeffs = _ex.residue_coefficients(nu, f, m)
+                f_expr = _from_coeffs([_lift(var, c) for c in f], var)
+                terms = []
+                for idx in range(len(f) - 1):
+                    r = ak.root_of(f_expr, var, idx)
+                    poly_t = []
+                    for i, ci in enumerate(coeffs):
+                        if len(_ex.ptrim(ci)) == 1 and ci[0] == 0:
+                            continue
+                        cexpr = _from_coeffs([_lift(var, c) for c in ci], r)
+                        poly_t.append(cexpr * t**i if i else cexpr)
+                    if poly_t:
+                        terms.append(ak.exp(r * t) * pool.add(poly_t))
+                piece = pool.add(terms) if terms else pool.integer(0)
+            parts.append(piece)
+        total = pool.add(parts) if parts else pool.integer(0)
+        return total
 
     # -- discretisation ----------------------------------------------------
 
@@ -1225,6 +1396,33 @@ class TransferFunction:
         if method == "zoh":
             sysd = self._to_ss()._discretize(T, "zoh")
             return sysd._to_tf(z)
+        raise ControlsError(f"unknown discretisation method {method!r}", code="E-CTRL-001")
+
+    def d2c(self, method="tustin", var=None):
+        """Continuous-time equivalent of a discrete system (inverse of :meth:`discretize`).
+
+        ``method="tustin"`` (alias ``"bilinear"``) substitutes
+        ``z = (1 + sT/2)/(1 − sT/2)`` — exactly the inverse of the Tustin
+        discretisation, so ``G.discretize(T, "tustin").d2c("tustin")`` equals
+        ``G``. ``"zoh"`` goes through :meth:`StateSpace.d2c` (matrix
+        logarithm: exact when ``Ad − I`` is nilpotent, numeric otherwise). The
+        new variable ``var`` defaults to a symbol ``s`` in the same pool.
+        """
+        _reset_conditions()
+        if self.dt is None:
+            raise ControlsError("the system is already continuous-time", code="E-CTRL-001")
+        s = var if var is not None else self.var._pool.symbol("s")
+        T = _lift(self.var, self.dt)
+        if method in ("tustin", "bilinear"):
+            ak = _ak()
+            half = self.var._pool.rational(1, 2)
+            z_sub = (1 + half * T * s) / (1 - half * T * s)
+            Gs = ak.subs(self.expr, {self.var: z_sub})
+            n, d = _num_den(Gs)
+            return TransferFunction(n, d, s)
+        if method == "zoh":
+            sysc = self._to_ss()._d2c("zoh")
+            return sysc._to_tf(s)
         raise ControlsError(f"unknown discretisation method {method!r}", code="E-CTRL-001")
 
     # -- frequency domain (numeric) -----------------------------------------
@@ -1352,9 +1550,37 @@ class StateSpace:
         _reset_conditions()
         return self._to_tf(var)
 
+    def _to_tf_float(self, var):
+        """Transfer matrix of floating-point data via numpy (``numpy.poly`` per entry)."""
+        np = _numpy()
+        An, Bn, Cn, Dn = (
+            _to_numpy(M, nm)
+            for M, nm in ((self.A, "A"), (self.B, "B"), (self.C, "C"), (self.D, "D"))
+        )
+        pool = var._pool
+        chi = np.poly(An)  # highest first, monic
+
+        def lift(coeffs_high_first):
+            return [pool.float(float(np.real(c))) for c in reversed(list(coeffs_high_first))]
+
+        rows = []
+        for i in range(self.noutputs):
+            row = []
+            for j in range(self.ninputs):
+                # det(sI − A + b c) = det(sI − A)(1 + c(sI−A)⁻¹b)
+                num = np.poly(An - np.outer(Bn[:, j], Cn[i, :])) + (Dn[i, j] - 1.0) * chi
+                num = np.real(np.trim_zeros(np.real_if_close(num, tol=1e6), "f"))
+                row.append(
+                    TransferFunction._raw(lift(num) or [pool.float(0.0)], lift(chi), var, self.dt)
+                )
+            rows.append(row)
+        return rows[0][0] if self.is_siso() else rows
+
     def _to_tf(self, var):
         ak = _ak()
         n = self.nstates
+        if any(_matrix_has_float(M) for M in (self.A, self.B, self.C, self.D)):
+            return self._to_tf_float(var)
         sI_A = _mscale(_eye(self._like, n), var) - self.A
         chi = _simp(ak.simplify_expanded(sI_A.det()).value)
         inv = sI_A.inverse()
@@ -1615,13 +1841,198 @@ class StateSpace:
             return StateSpace(Ad, Bd, Cd, Dd, dt=T)
         raise ControlsError(f"unknown discretisation method {method!r}", code="E-CTRL-001")
 
-    def minreal(self, var=None):
-        """Minimal realisation of a SISO system (via :meth:`TransferFunction.minreal`)."""
-        self._require_siso("minreal")
+    def d2c(self, method="zoh"):
+        """Continuous-time equivalent of a discrete system (inverse of :meth:`discretize`).
+
+        ``"tustin"`` / ``"bilinear"``: ``A = (2/T)(Ad − I)(Ad + I)⁻¹``,
+        ``B = (2/T)(Ad + I)⁻¹Bd``, ``C = 2 Cd (Ad + I)⁻¹``,
+        ``D = Dd − C Bd/2`` — exact, symbolic data allowed (``det(Ad + I) ≠ 0``
+        is a side condition). ``"zoh"``: ``A = log(Ad)/T`` and
+        ``B = (Σₖ Aᵏ Tᵏ⁺¹/(k+1)!)⁻¹ Bd``; **exact** when ``Ad − I`` is
+        nilpotent (integrator chains: a finite logarithm series), otherwise
+        numeric (scipy ``logm`` or eigendecomposition) with floating-point
+        entries and no free parameters (``E-CTRL-003``); a matrix with no real
+        logarithm (negative real eigenvalue) refuses with ``E-CTRL-004``.
+        """
         _reset_conditions()
-        v = var if var is not None else self._like._pool.symbol("s")
-        g = self._to_tf(v)._minreal_quiet()
-        return g._to_ss()
+        return self._d2c(method)
+
+    def _d2c(self, method):
+        ak = _ak()
+        if self.dt is None:
+            raise ControlsError("the system is already continuous-time", code="E-CTRL-001")
+        L = self._like
+        T = _lift(L, self.dt)
+        n = self.nstates
+        Id = _eye(L, n)
+        if method in ("tustin", "bilinear"):
+            try:
+                Minv = (self.A + Id).inverse()
+            except Exception as exc:
+                raise ControlsError(
+                    "Ad has the eigenvalue −1: the bilinear map is singular", code="E-CTRL-004"
+                ) from exc
+            for c in ak.matrix_inverse_side_conditions():
+                _note(str(c))
+            two = L._pool.integer(2)
+            half = L._pool.rational(1, 2)
+            Ac = _mcancel(_mscale((self.A - Id) @ Minv, _simp(two / T)))
+            Bc = _mcancel(_mscale(Minv @ self.B, _simp(two / T)))
+            Cc = _mcancel(_mscale(self.C @ Minv, two))
+            Dc = _mcancel(self.D - _mscale(Cc @ self.B, half))
+            return StateSpace(Ac, Bc, Cc, Dc)
+        if method == "zoh":
+            return self._d2c_zoh(T)
+        raise ControlsError(f"unknown discretisation method {method!r}", code="E-CTRL-001")
+
+    def _d2c_zoh(self, T):
+        L = self._like
+        n = self.nstates
+        FA = _frac_matrix(self.A)
+        if FA is not None and _frac_is_scalar(T):
+            QQ = _ex.QQ
+            N = _ex.msub(QQ, FA, _ex.eye(QQ, n))
+            P = _ex.eye(QQ, n)
+            for _ in range(n):
+                P = _ex.mmul(QQ, P, N)
+            if all(x == 0 for r in P for x in r):  # N^n = 0: Ad is unipotent
+                Tq = _as_fraction(T)
+                logA = _ex.zeros(QQ, n, n)
+                Pk = _ex.eye(QQ, n)
+                for k in range(1, n + 1):
+                    Pk = _ex.mmul(QQ, Pk, N)
+                    logA = _ex.madd(QQ, logA, _ex.mscale(QQ, Fraction((-1) ** (k + 1), k), Pk))
+                Ac = _ex.mscale(QQ, 1 / Tq, logA)
+                # Φ = Σ Aᵏ T^{k+1}/(k+1)!   (A nilpotent)
+                Phi = _ex.zeros(QQ, n, n)
+                Ak = _ex.eye(QQ, n)
+                for k in range(n):
+                    Phi = _ex.madd(
+                        QQ, Phi, _ex.mscale(QQ, Tq ** (k + 1) / math.factorial(k + 1), Ak)
+                    )
+                    Ak = _ex.mmul(QQ, Ak, Ac)
+                Phii = _ex.inverse(QQ, Phi)
+                FB = _frac_matrix(self.B)
+                if Phii is not None and FB is not None:
+                    Bc = _ex.mmul(QQ, Phii, FB)
+                    return StateSpace(
+                        _from_frac_matrix(Ac, L), _from_frac_matrix(Bc, L), self.C, self.D
+                    )
+        return self._d2c_zoh_numeric(T)
+
+    def _d2c_zoh_numeric(self, T):
+        np = _numpy()
+        An = _to_numpy(self.A, "Ad")
+        Bn = _to_numpy(self.B, "Bd")
+        Tn = float(_complex_value(_lift(self._like, self.dt)).real)
+        n = An.shape[0]
+        try:
+            import scipy.linalg as sl
+
+            logA = sl.logm(An)
+        except ImportError:
+            w, V = np.linalg.eig(An)
+            if np.linalg.cond(V) > 1e10:
+                raise ControlsError(
+                    "numeric matrix logarithm needs scipy (Ad is not diagonalisable)",
+                    code="E-CTRL-006",
+                    remediation="pip install scipy",
+                ) from None
+            logA = V @ np.diag(np.log(w.astype(complex))) @ np.linalg.inv(V)
+        scale = max(1.0, float(np.max(np.abs(logA))))
+        if np.max(np.abs(np.imag(logA))) > 1e-9 * scale:
+            raise ControlsError(
+                "Ad has no real logarithm (a negative real eigenvalue): no ZOH-equivalent "
+                "continuous-time system",
+                code="E-CTRL-004",
+            )
+        Ac = np.real(logA) / Tn
+        # Φ = ∫₀ᵀ e^{Aτ}dτ = A⁻¹(Ad − I) when A is invertible, else the series
+        Phi = np.zeros((n, n))
+        term = np.eye(n) * Tn
+        for k in range(1, 80):
+            Phi = Phi + term
+            term = term @ (Ac * Tn) / (k + 1)
+        Bc = np.linalg.solve(Phi, Bn)
+        L = self._like
+        pool = L._pool
+        ak = _ak()
+
+        def to_m(M):
+            return ak.Matrix([[pool.float(float(x)) for x in row] for row in M])
+
+        return StateSpace(to_m(Ac), to_m(Bc), self.C, self.D)
+
+    def minreal(self, var=None, method="auto"):
+        """Minimal realisation (controllable *and* observable), transfer matrix unchanged.
+
+        ``method="kalman"`` (the default for MIMO systems) is the Kalman
+        decomposition computed exactly: the controllable subspace
+        ``range[B, AB, …, Aⁿ⁻¹B]`` is split off by an exact change of basis,
+        then the unobservable subspace ``ker[C; CA; …; CAⁿ⁻¹]`` of the
+        controllable part; what remains is the minimal ``(Aₘ, Bₘ, Cₘ, D)``.
+        Rational data use ``Fraction`` elimination; symbolic data eliminate
+        over ℚ(parameters) and every pivot is a side condition (the
+        realisation is minimal for **generic** parameters). The result is
+        **verified**: ``D`` and the Markov parameters ``C Aᵏ B`` of the
+        original and the reduction agree for ``k < n + nₘ``, which proves the
+        two transfer matrices equal. The state basis is a basis of the
+        original state space (not a canonical form); ``method="tf"`` (the
+        default for SISO) goes through :meth:`TransferFunction.minreal` and
+        returns the controllable canonical form instead.
+
+        Floating-point data refuses with ``E-CTRL-005`` (rank decisions need a
+        tolerance); a system with no controllable-and-observable part is the
+        static gain ``D`` and refuses with ``E-CTRL-001``.
+        """
+        if method not in ("auto", "kalman", "tf"):
+            raise ControlsError(f"unknown minreal method {method!r}", code="E-CTRL-001")
+        if method == "auto":
+            method = "tf" if self.is_siso() else "kalman"
+        _reset_conditions()
+        if method == "tf":
+            self._require_siso("minreal(method='tf')")
+            v = var if var is not None else self._like._pool.symbol("s")
+            g = self._to_tf(v)._minreal_quiet()
+            return g._to_ss()
+        return self._kalman_minreal()
+
+    def _kalman_minreal(self):
+        if any(_matrix_has_float(M) for M in (self.A, self.B, self.C, self.D)):
+            raise ControlsError(
+                "minreal on floating-point data needs a rank tolerance",
+                code="E-CTRL-005",
+                remediation="rationalise the entries first (exact data), or use numeric tools",
+            )
+        free = _matrix_free(self.A) or _matrix_free(self.B) or _matrix_free(self.C)
+        K = _ex.QQ
+        mats = [_frac_matrix(M) for M in (self.A, self.B, self.C, self.D)]
+        if any(m is None for m in mats) or free:
+            K = _SymField(self._like)
+            mats = [_field_matrix(M, K) for M in (self.A, self.B, self.C, self.D)]
+        A, B, C, D = mats
+        n0 = len(A)
+        A1, B1, C1 = _ex_kalman(K, A, B, C)
+        n1 = len(A1)
+        if n1 == 0:
+            raise ControlsError(
+                "the system has no controllable and observable states: its transfer "
+                "matrix is the static gain D",
+                code="E-CTRL-001",
+            )
+        if not _markov_equal(K, (A, B, C, D), (A1, B1, C1, D), n0 + n1):
+            raise ControlsError(
+                "internal check failed: the reduced realisation changed the transfer matrix",
+                code="E-CTRL-005",
+            )
+        L = self._like
+
+        def conv(F):
+            if K is _ex.QQ:
+                return _from_frac_matrix(F, L)
+            return _ak().Matrix(F)
+
+        return StateSpace(conv(A1), conv(B1), conv(C1), self.D, dt=self.dt)
 
     def subs(self, mapping):
         """Substitute parameter values in all four matrices."""
@@ -1637,6 +2048,82 @@ class StateSpace:
     def __repr__(self):
         tag = "" if self.dt is None else f", dt={self.dt}"
         return f"StateSpace(A={self.A}, B={self.B}, C={self.C}, D={self.D}{tag})"
+
+
+def _ex_kalman(K, A, B, C):
+    """Exact Kalman reduction on list-matrices over the field ``K`` → ``(Aₘ, Bₘ, Cₘ)``."""
+    n = len(A)
+    # controllable part
+    cols = []
+    Bk = B
+    for _ in range(n):
+        cols.extend(_ex.transpose(Bk))
+        Bk = _ex.mmul(K, A, Bk)
+    V = _ex.column_basis(K, _ex.hstack_cols(cols, n)) if cols else []
+    r = len(V)
+    if r == 0:
+        return [], [], []
+    if r < n:
+        W = _ex.complete_basis(K, V, n)
+        T = _ex.hstack_cols(V + W, n)
+        Ti = _ex.inverse(K, T)
+        A2 = _ex.mmul(K, _ex.mmul(K, Ti, A), T)
+        B2 = _ex.mmul(K, Ti, B)
+        C2 = _ex.mmul(K, C, T)
+        A = [row[:r] for row in A2[:r]]
+        B = B2[:r]
+        C = [row[:r] for row in C2]
+        n = r
+    # observable part of the controllable subsystem
+    rows = []
+    Ck = C
+    for _ in range(n):
+        rows.extend(Ck)
+        Ck = _ex.mmul(K, Ck, A)
+    N = _ex.nullspace(K, rows, n)
+    k = len(N)
+    if k == n:
+        return [], [], []
+    if k > 0:
+        W = _ex.complete_basis(K, N, n)
+        T = _ex.hstack_cols(N + W, n)
+        Ti = _ex.inverse(K, T)
+        A2 = _ex.mmul(K, _ex.mmul(K, Ti, A), T)
+        B2 = _ex.mmul(K, Ti, B)
+        C2 = _ex.mmul(K, C, T)
+        A = [row[k:] for row in A2[k:]]
+        B = B2[k:]
+        C = [row[k:] for row in C2]
+    return A, B, C
+
+
+def _markov_equal(K, s1, s2, count):
+    """Whether two realisations share ``D`` and the first ``count`` Markov parameters.
+
+    ``G₁ − G₂`` is realised with ``n₁ + n₂`` states, so it vanishes identically
+    iff ``D₁ = D₂`` and ``C₁A₁ᵏB₁ = C₂A₂ᵏB₂`` for ``k < n₁ + n₂`` (Cayley–Hamilton).
+    """
+    A1, B1, C1, D1 = s1
+    A2, B2, C2, D2 = s2
+    for r1, r2 in zip(D1, D2):
+        for a, b in zip(r1, r2):
+            if not K.iszero(a - b):
+                return False
+    P1, P2 = B1, B2
+    for _ in range(count):
+        M1 = _ex.mmul(K, C1, P1)
+        M2 = _ex.mmul(K, C2, P2)
+        for r1, r2 in zip(M1, M2):
+            for a, b in zip(r1, r2):
+                if not K.iszero(a - b):
+                    return False
+        P1 = _ex.mmul(K, A1, P1)
+        P2 = _ex.mmul(K, A2, P2)
+    return True
+
+
+def _frac_is_scalar(T):
+    return _as_fraction(T) is not None
 
 
 class _StaticGain:
@@ -1666,13 +2153,16 @@ def lyapunov(A, Q, method="auto"):
     (python-control's ``lyap(A, Q)`` convention; :func:`scipy.linalg.solve_continuous_lyapunov`
     solves ``A X + X Aᴴ = Q``, i.e. pass ``-Q`` there.)
 
-    ``method="exact"`` vectorises: ``(I ⊗ A + A ⊗ I) vec X = −vec Q`` and
-    solves the linear system with an exact inverse, then **verifies** the
-    residual cancels to zero. The operator is invertible iff no two
-    eigenvalues of ``A`` satisfy ``λᵢ + λⱼ = 0``; a symbolic determinant is a
-    side condition (``controls_side_conditions``), a proven singular one
-    refuses with ``E-CTRL-004``. Exact for rational ``A`` up to 8×8 and
-    symbolic ``A`` up to 3×3 (``E-CTRL-005`` beyond).
+    ``method="exact"``: the operator ``X ↦ A X + X Aᵀ`` is invertible iff no
+    two eigenvalues of ``A`` satisfy ``λᵢ + λⱼ = 0``; a proven singular one
+    refuses with ``E-CTRL-004``, a symbolic determinant is a side condition
+    (``controls_side_conditions``). For **rational** ``A`` and ``Q`` of any
+    size the solve is structured: Cayley–Hamilton turns the Sylvester operator
+    into a polynomial in ``A`` and ``Aᵀ`` (``O(n)`` matrix products over ℚ, no
+    ``n²×n²`` system), and the result is **verified** — the residual is exactly
+    zero. Symbolic ``A`` (up to 3×3) vectorises: ``(I ⊗ A + A ⊗ I) vec X =
+    −vec Q`` with an exact inverse, then verifies the residual cancels. Other
+    non-rational data (radicals, ``RootOf``) up to 8×8; ``E-CTRL-005`` beyond.
 
     ``method="numeric"`` solves the same system with numpy and returns a
     ``numpy.ndarray``. ``"auto"`` picks exact unless an entry is a float.
@@ -1704,6 +2194,9 @@ def lyapunov(A, Q, method="auto"):
             )
         x = np.linalg.solve(K, -Qn.reshape(-1, order="F"))
         return x.reshape((n, n), order="F")
+    FA, FQ = _frac_matrix(A), _frac_matrix(Q)
+    if FA is not None and FQ is not None:
+        return _lyap_rational(A, FA, FQ)
     symbolic = bool(_matrix_free(A) or _matrix_free(Q))
     limit = _EXACT_SYMBOLIC_LYAP_MAX if symbolic else _EXACT_RATIONAL_LYAP_MAX
     if n > limit:
@@ -1722,6 +2215,30 @@ def _pick_method(method, *Ms):
     if method == "auto":
         return "numeric" if any(_matrix_has_float(M) for M in Ms) else "exact"
     return method
+
+
+def _lyap_rational(A, FA, FQ):
+    """``A X + X Aᵀ + Q = 0`` over ℚ by the structured Sylvester solve (verified exactly)."""
+    n = len(FA)
+    try:
+        X = _ex.sylvester_solve(FA, _ex.transpose(FA), [[-x for x in r] for r in FQ])
+    except _ex.Refusal as exc:
+        raise ControlsError(
+            "the Lyapunov operator is singular: A has eigenvalues with λᵢ + λⱼ = 0, "
+            "so A X + X Aᵀ + Q = 0 has no unique solution",
+            code="E-CTRL-004",
+        ) from exc
+    res = _ex.madd(
+        _ex.QQ,
+        _ex.madd(_ex.QQ, _ex.mmul(_ex.QQ, FA, X), _ex.mmul(_ex.QQ, X, _ex.transpose(FA))),
+        FQ,
+    )
+    if any(x != 0 for r in res for x in r):  # pragma: no cover - exact arithmetic
+        raise ControlsError(
+            "internal check failed: the computed X does not satisfy A X + X Aᵀ + Q = 0",
+            code="E-CTRL-005",
+        )
+    return _from_frac_matrix(X, _any_entry(A)) if n else A
 
 
 def _lyap_exact(A, Q):
@@ -1760,6 +2277,130 @@ def _lyap_exact(A, Q):
     return X
 
 
+def dlyap(A, Q, method="auto"):
+    """Solve the discrete Lyapunov (Stein) equation ``A X Aᵀ − X + Q = 0``.
+
+    (python-control's ``dlyap(A, Q)`` and :func:`scipy.linalg.solve_discrete_lyapunov`
+    convention.) The operator is invertible iff no two eigenvalues satisfy
+    ``λᵢ λⱼ = 1``; a proven singular one refuses with ``E-CTRL-004`` (in
+    particular an eigenvalue ``−1`` or a reciprocal pair).
+
+    ``method="exact"``: for rational data of any size the equation is mapped
+    by the Cayley transform ``F = (A − I)(A + I)⁻¹`` to the continuous
+    Lyapunov equation ``F X + X Fᵀ + ½(I − F) Q (I − F)ᵀ = 0``, which
+    :func:`lyapunov` solves with its structured exact solver, and the result
+    is verified against the Stein equation (residual exactly zero). Symbolic
+    data (up to 3×3) vectorises ``(I − A ⊗ A) vec X = vec Q`` with an exact
+    inverse; its determinant is a side condition. ``E-CTRL-005`` beyond.
+    ``"numeric"`` solves the vectorised system with numpy; ``"auto"`` is
+    exact unless an entry is a float.
+
+    Example
+    -------
+    >>> dlyap(Matrix([[1, 0], [0, 1]]) / 2, Matrix([[1, 0], [0, 1]]))   # (4/3)·I
+    """
+    _reset_conditions()
+    A = _as_matrix(A, name="A")
+    Q = _as_matrix(Q, like=_any_entry(A), name="Q")
+    n = A.rows
+    if A.cols != n or Q.rows != n or Q.cols != n:
+        raise ControlsError("dlyap: A and Q must be square of the same size", code="E-CTRL-001")
+    method = _pick_method(method, A, Q)
+    if method == "numeric":
+        np = _numpy()
+        An, Qn = _to_numpy(A, "A"), _to_numpy(Q, "Q")
+        K = np.eye(n * n) - np.kron(An, An)
+        if np.linalg.matrix_rank(K) < n * n:
+            raise ControlsError(
+                "the Stein operator is singular: A has eigenvalues with λᵢ·λⱼ = 1",
+                code="E-CTRL-004",
+            )
+        x = np.linalg.solve(K, Qn.reshape(-1, order="F"))
+        return x.reshape((n, n), order="F")
+    FA, FQ = _frac_matrix(A), _frac_matrix(Q)
+    if FA is not None and FQ is not None:
+        return _dlyap_rational(A, FA, FQ)
+    if bool(_matrix_free(A) or _matrix_free(Q)) and n > _EXACT_SYMBOLIC_LYAP_MAX:
+        raise ControlsError(
+            f"exact discrete Lyapunov solve limited to {_EXACT_SYMBOLIC_LYAP_MAX}×"
+            f"{_EXACT_SYMBOLIC_LYAP_MAX} for symbolic data",
+            code="E-CTRL-005",
+            remediation="substitute numbers and use method='numeric'",
+        )
+    if n > _EXACT_RATIONAL_LYAP_MAX:
+        raise ControlsError(
+            f"exact discrete Lyapunov solve limited to {_EXACT_RATIONAL_LYAP_MAX}×"
+            f"{_EXACT_RATIONAL_LYAP_MAX} for non-rational data",
+            code="E-CTRL-005",
+            remediation="substitute numbers and use method='numeric'",
+        )
+    return _dlyap_kron(A, Q)
+
+
+def _dlyap_rational(A, FA, FQ):
+    n = len(FA)
+    QQ = _ex.QQ
+    I = _ex.eye(QQ, n)  # noqa: E741
+    inv = _ex.inverse(QQ, _ex.madd(QQ, FA, I))
+    if inv is None:
+        raise ControlsError(
+            "the Stein operator is singular: A has the eigenvalue −1 (λ·λ = 1)",
+            code="E-CTRL-004",
+        )
+    F = _ex.mmul(QQ, _ex.msub(QQ, FA, I), inv)
+    IF = _ex.msub(QQ, I, F)
+    Qp = _ex.mscale(QQ, Fraction(1, 2), _ex.mmul(QQ, _ex.mmul(QQ, IF, FQ), _ex.transpose(IF)))
+    try:
+        X = _ex.sylvester_solve(F, _ex.transpose(F), [[-x for x in r] for r in Qp])
+    except _ex.Refusal as exc:
+        raise ControlsError(
+            "the Stein operator is singular: A has eigenvalues with λᵢ·λⱼ = 1",
+            code="E-CTRL-004",
+        ) from exc
+    res = _ex.madd(
+        QQ,
+        _ex.msub(QQ, _ex.mmul(QQ, _ex.mmul(QQ, FA, X), _ex.transpose(FA)), X),
+        FQ,
+    )
+    if any(x != 0 for r in res for x in r):  # pragma: no cover - exact arithmetic
+        raise ControlsError(
+            "internal check failed: the computed X does not satisfy A X Aᵀ − X + Q = 0",
+            code="E-CTRL-005",
+        )
+    return _from_frac_matrix(X, _any_entry(A))
+
+
+def _dlyap_kron(A, Q):
+    ak = _ak()
+    n = A.rows
+    K = _msimp(kronecker(A, A) - _eye(_any_entry(A), n * n))
+    try:
+        Kinv = K.inverse()
+    except Exception as exc:
+        if getattr(exc, "code", "") == "E-MAT-004":
+            raise ControlsError(
+                "could not decide whether the Stein operator A ⊗ A − I is singular",
+                code="E-CTRL-005",
+                remediation="substitute values for the parameters",
+            ) from exc
+        raise ControlsError(
+            "the Stein operator is singular: A has eigenvalues with λᵢ·λⱼ = 1",
+            code="E-CTRL-004",
+        ) from exc
+    for c in ak.matrix_inverse_side_conditions():
+        _note(str(c))
+    q = ak.Matrix([[_simp(-x)] for x in _vec(Q)])
+    x = Kinv @ q
+    X = _unvec([_canon(x.get(i, 0)) for i in range(n * n)], n, n)
+    R = A @ X @ A.transpose() - X + Q
+    if not _is_zero_matrix(_mcancel(R)):
+        raise ControlsError(
+            "internal check failed: the computed X does not satisfy A X Aᵀ − X + Q = 0",
+            code="E-CTRL-005",
+        )
+    return X
+
+
 # ---------------------------------------------------------------------------
 # Riccati / LQR
 # ---------------------------------------------------------------------------
@@ -1783,13 +2424,30 @@ def care(A, B, Q, R, method="auto", sample=None):
     the stabilising solution exactly where they hold, whichever sample was
     used. No stabilising candidate refuses with ``E-CTRL-004``.
 
+    ``method="exact"`` for rational data of **any** size (and as the fallback
+    when the parametric system above does not solve): the stable invariant
+    subspace of the Hamiltonian ``H = [[A, −BR⁻¹Bᵀ], [−Q, −Aᵀ]]`` is computed
+    exactly. The characteristic polynomial of ``H`` is factored over ℚ; every
+    irreducible factor is classified by an exact Routh test as having all its
+    roots in the open left half plane, all in the right one, or neither. The
+    kernels of ``f(H)^m`` for the stable factors span the subspace
+    ``[U₁; U₂]`` and ``X = U₂U₁⁻¹`` is rational. ``X`` is **verified**:
+    symmetric with an exactly zero Riccati residual. When an irreducible
+    factor has roots on both sides (the typical generic case: eigenvalues
+    ``±√c``) the stable subspace is not defined over ℚ; ``"exact"`` refuses
+    with ``E-CTRL-005`` and ``"auto"`` falls back to the numeric route and
+    states that in :func:`controls_side_conditions`. Roots on the imaginary
+    axis, or a singular ``U₁``, mean no stabilising solution (``E-CTRL-004``).
+
     ``method="numeric"``: the Hamiltonian ``[[A, −BR⁻¹Bᵀ], [−Q, −Aᵀ]]``'s
     stable invariant subspace (ordered Schur via scipy when available, else
     eigenvectors), ``X = U₂U₁⁻¹``; returns a ``numpy.ndarray``. Eigenvalues on
     the imaginary axis (no stabilising solution) refuse with ``E-CTRL-004``.
 
-    ``"auto"``: exact when every entry is exact and ``n ≤ 2``, otherwise
-    numeric (which needs numeric data — ``E-CTRL-003`` if parameters remain).
+    ``"auto"``: exact when every entry is exact and ``n ≤ 2``; for ``n > 2``
+    exact data the exact Hamiltonian route, falling back to numeric (which
+    needs numeric data — ``E-CTRL-003`` if parameters remain) when the stable
+    subspace is not rational. Floating-point data is always numeric.
 
     Example
     -------
@@ -1809,16 +2467,78 @@ def care(A, B, Q, R, method="auto", sample=None):
         raise ControlsError(f"unknown method {method!r}", code="E-CTRL-001")
     floats = any(_matrix_has_float(M) for M in (A, B, Q, R))
     if method == "auto":
-        method = "exact" if (not floats and n <= 2) else "numeric"
+        if floats:
+            method = "numeric"
+        elif n <= 2:
+            method = "exact"
+        else:
+            return _care_large(A, B, Q, R, fallback=True)
     if method == "numeric":
         return _care_numeric(A, B, Q, R)
     if n > 2:
+        return _care_large(A, B, Q, R, fallback=False)
+    try:
+        return _care_exact(A, B, Q, R, sample)
+    except ControlsError as exc:
+        if exc.code != "E-CTRL-005" or floats:
+            raise
+        # the parametric system did not solve / select: try the Hamiltonian subspace
+        try:
+            return _care_large(A, B, Q, R, fallback=False)
+        except ControlsError:
+            raise exc from None
+
+
+def _care_large(A, B, Q, R, fallback):
+    """Exact CARE through the Hamiltonian's stable subspace over ℚ (rational data).
+
+    With ``fallback`` the numeric route answers when the subspace is not
+    rational (the fact is stated as a side condition).
+    """
+    mats = [_frac_matrix(M) for M in (A, B, Q, R)]
+    if any(m is None for m in mats):
+        free = _matrix_free(A) or _matrix_free(B) or _matrix_free(Q) or _matrix_free(R)
+        if fallback and not free:
+            return _care_numeric(A, B, Q, R)
         raise ControlsError(
-            "exact CARE is limited to n ≤ 2",
+            "exact CARE for n > 2 needs rational data"
+            + (" (symbolic parameters are not supported)" if free else ""),
             code="E-CTRL-005",
-            remediation="substitute numbers and use method='numeric'",
+            remediation="substitute rational numbers, or use method='numeric'",
         )
-    return _care_exact(A, B, Q, R, sample)
+    FA, FB, FQ, FR = mats
+    var = A.to_list()[0][0]._pool.symbol("_care_lam")
+    try:
+        X = _ex.care_hamiltonian(FA, FB, FQ, FR, lambda c: _factor_q(c, var))
+    except _ex.Refusal as exc:
+        if exc.kind == "R":
+            raise ControlsError("R is singular", code="E-CTRL-001") from exc
+        if exc.kind in ("axis", "singular"):
+            raise ControlsError(
+                "no stabilising solution: the Hamiltonian has eigenvalues on the imaginary "
+                "axis, or the stable subspace is not a graph over the state space "
+                "((A, B) not stabilisable, or (Q, A) has unobservable modes on the axis)",
+                code="E-CTRL-004",
+            ) from exc
+        if exc.kind == "mixed":
+            if fallback:
+                _note(
+                    "exact stable subspace is not defined over ℚ (an irreducible factor of the "
+                    "Hamiltonian's characteristic polynomial has roots on both sides of the "
+                    "imaginary axis): numeric (Schur) solution returned"
+                )
+                return _care_numeric(A, B, Q, R)
+            raise ControlsError(
+                "the Hamiltonian's stable invariant subspace is not defined over ℚ: an "
+                "irreducible factor of its characteristic polynomial has roots on both sides "
+                "of the imaginary axis",
+                code="E-CTRL-005",
+                remediation="use method='numeric' (Schur) for a floating-point solution",
+            ) from exc
+        raise ControlsError(
+            f"exact Hamiltonian solve failed its own check: {exc}", code="E-CTRL-005"
+        ) from exc
+    return _from_frac_matrix(X, _any_entry(A))
 
 
 def _care_numeric(A, B, Q, R):
@@ -2011,6 +2731,118 @@ def lqr(A, B, Q, R, method="auto", sample=None):
     return np.linalg.solve(Rn, Bn.T @ X), X
 
 
+def dare(A, B, Q, R, method="auto"):
+    """Stabilising solution of the discrete algebraic Riccati equation (numeric).
+
+    ``Aᵀ X A − X − (Aᵀ X B)(R + Bᵀ X B)⁻¹(Bᵀ X A) + Q = 0``
+    (:func:`scipy.linalg.solve_discrete_are`'s convention); the stabilising
+    solution makes ``A − B (R + BᵀXB)⁻¹ BᵀXA`` Schur (all eigenvalues inside
+    the unit disc). Returns a ``numpy.ndarray``.
+
+    The solution is the stable invariant subspace of the symplectic matrix
+    ``M = [[A + G A⁻ᵀ Q, −G A⁻ᵀ], [−A⁻ᵀ Q, A⁻ᵀ]]`` (``G = B R⁻¹ Bᵀ``,
+    ``A`` invertible): ordered Schur via scipy when available, else
+    eigenvectors; ``X = U₂U₁⁻¹``. A singular ``A`` uses scipy's
+    generalised-pencil solver (``E-CTRL-006`` when scipy is missing). The
+    residual of the returned ``X`` is checked; eigenvalues of ``M`` on the unit
+    circle mean no stabilising solution (``E-CTRL-004``). The data must be
+    numeric (``E-CTRL-003`` if parameters remain); ``method="exact"`` is
+    refused with ``E-CTRL-005`` — the exact engine covers the continuous
+    equation (:func:`care`).
+    """
+    _reset_conditions()
+    A = _as_matrix(A, name="A")
+    L = _any_entry(A)
+    B = _as_matrix(B, like=L, name="B")
+    Q = _as_matrix(Q, like=L, name="Q")
+    R = _as_matrix(R, like=L, name="R")
+    n, m = A.rows, B.cols
+    if A.cols != n or B.rows != n or Q.rows != n or Q.cols != n or R.rows != m or R.cols != m:
+        raise ControlsError("dare: shapes do not conform", code="E-CTRL-001")
+    if method not in ("auto", "numeric", "exact"):
+        raise ControlsError(f"unknown method {method!r}", code="E-CTRL-001")
+    if method == "exact":
+        raise ControlsError(
+            "exact discrete Riccati solutions are not implemented",
+            code="E-CTRL-005",
+            remediation="use method='numeric'; the continuous equation (care) has an exact engine",
+        )
+    return _dare_numeric(A, B, Q, R)
+
+
+def _dare_numeric(A, B, Q, R):
+    np = _numpy()
+    An, Bn, Qn, Rn = (_to_numpy(M, nm) for M, nm in ((A, "A"), (B, "B"), (Q, "Q"), (R, "R")))
+    n = An.shape[0]
+    try:
+        import scipy.linalg as sl
+    except ImportError:
+        sl = None
+    G = Bn @ np.linalg.solve(Rn, Bn.T)
+    X = None
+    if np.linalg.cond(An) < 1e10:
+        Ait = np.linalg.inv(An).T
+        M = np.block([[An + G @ Ait @ Qn, -G @ Ait], [-Ait @ Qn, Ait]])
+        ev = np.linalg.eigvals(M)
+        if np.any(np.abs(np.abs(ev) - 1) <= 1e-9 * max(1.0, float(np.max(np.abs(ev))))):
+            raise ControlsError(
+                "no stabilising solution: the symplectic matrix has eigenvalues on the unit circle",
+                code="E-CTRL-004",
+            )
+        if sl is not None:
+            _, Z, k = sl.schur(M, sort="iuc")
+            U = Z[:, :n]
+            ok = k == n
+        else:
+            w, V = np.linalg.eig(M)
+            U = V[:, np.abs(w) < 1]
+            ok = U.shape[1] == n
+        if not ok:
+            raise ControlsError(
+                "no stabilising solution (stable subspace has wrong dimension)", code="E-CTRL-004"
+            )
+        U1, U2 = U[:n], U[n:]
+        if np.linalg.cond(U1) > 1e12:
+            raise ControlsError("no stabilising solution (U₁ is singular)", code="E-CTRL-004")
+        X = np.real(U2 @ np.linalg.inv(U1))
+        X = (X + X.T) / 2
+    elif sl is not None:
+        try:
+            X = sl.solve_discrete_are(An, Bn, Qn, Rn)
+        except Exception as exc:
+            raise ControlsError(f"no stabilising solution: {exc}", code="E-CTRL-004") from exc
+    else:
+        raise ControlsError(
+            "A is (nearly) singular; the generalised-pencil DARE solver needs scipy",
+            code="E-CTRL-006",
+            remediation="pip install scipy",
+        )
+    res = (
+        An.T @ X @ An - X - An.T @ X @ Bn @ np.linalg.solve(Rn + Bn.T @ X @ Bn, Bn.T @ X @ An) + Qn
+    )
+    if np.max(np.abs(res)) > 1e-8 * max(1.0, np.max(np.abs(X))):
+        raise ControlsError(
+            "numeric Riccati residual too large; the problem is ill-conditioned", code="E-CTRL-005"
+        )
+    return X
+
+
+def dlqr(A, B, Q, R, method="auto"):
+    """Discrete LQR: ``(K, X)`` with ``K = (R + BᵀXB)⁻¹ BᵀXA`` and ``X`` from :func:`dare`.
+
+    ``u[k] = −K x[k]`` minimises ``Σ xᵀQx + uᵀRu``. Numeric (``numpy.ndarray``).
+    """
+    X = dare(A, B, Q, R, method=method)
+    np = _numpy()
+    A = _as_matrix(A, name="A")
+    L = _any_entry(A)
+    An = _to_numpy(A, "A")
+    Bn = _to_numpy(_as_matrix(B, like=L, name="B"), "B")
+    Rn = _to_numpy(_as_matrix(R, like=L, name="R"), "R")
+    K = np.linalg.solve(Rn + Bn.T @ X @ Bn, Bn.T @ X @ An)
+    return K, X
+
+
 # ---------------------------------------------------------------------------
 # Frequency response (numeric)
 # ---------------------------------------------------------------------------
@@ -2103,13 +2935,20 @@ def margins(sys) -> Margins:
     The reported margin is the one ``control.margin`` reports: the gain margin
     closest to 1 in log scale and the smallest-magnitude phase margin.
 
-    Refuses discrete-time systems and systems with free parameters
-    (``E-CTRL-003``).
+    **Discrete time** (``dt`` set): the loop is evaluated on the unit circle
+    ``z = e^{jθ}``, ``θ = ωT ∈ [0, π]`` (frequencies up to the Nyquist
+    frequency ``π/T``). With ``c = cos θ`` both crossover conditions are real
+    polynomials in ``c`` over ℚ — the phase condition
+    ``Im[N(z)·D(z̄)] / sin θ = Σ eₖ Uₖ₋₁(c)`` (Chebyshev ``U``; ``θ = 0, π``
+    are always on the real axis) and the gain condition
+    ``|N|² − |D|² = Σ ... Tₖ(c)`` — and their roots in ``[−1, 1]`` are isolated
+    exactly like the continuous ones. ``phase_crossover`` / ``gain_crossover``
+    are reported in rad per time unit (``θ / T``).
+
+    Refuses systems with free parameters (``E-CTRL-003``).
     """
     _reset_conditions()
     G = _siso_tf(sys)
-    if G.dt is not None:
-        raise ControlsError("margins: continuous-time systems only", code="E-CTRL-001")
     for c in G._num_c + G._den_c:
         if _free_symbols(c):
             raise ControlsError(
@@ -2143,18 +2982,21 @@ def margins(sys) -> Margins:
                 im[k] = -c
         return re, im
 
-    nr, ni = iw(num)
-    dr, di = iw(den)
-    # Im(N/D) ∝ Im(N · conj D) = ni·dr − nr·di
-    im_poly = _ptrim(_psub(_pmul(ni, dr), _pmul(nr, di)))
-    mag_poly = _ptrim(
-        _psub(
-            [a + b for a, b in _zip_pad(_pmul(nr, nr), _pmul(ni, ni))],
-            [a + b for a, b in _zip_pad(_pmul(dr, dr), _pmul(di, di))],
+    if G.dt is not None:
+        w180, wc = _discrete_crossovers(G, num, den, exact)
+    else:
+        nr, ni = iw(num)
+        dr, di = iw(den)
+        # Im(N/D) ∝ Im(N · conj D) = ni·dr − nr·di
+        im_poly = _ptrim(_psub(_pmul(ni, dr), _pmul(nr, di)))
+        mag_poly = _ptrim(
+            _psub(
+                [a + b for a, b in _zip_pad(_pmul(nr, nr), _pmul(ni, ni))],
+                [a + b for a, b in _zip_pad(_pmul(dr, dr), _pmul(di, di))],
+            )
         )
-    )
-    w180 = [w for w in _real_nonneg_roots(im_poly, exact) if w >= 0]
-    wc = [w for w in _real_nonneg_roots(mag_poly, exact) if w > 0]
+        w180 = [w for w in _real_nonneg_roots(im_poly, exact) if w >= 0]
+        wc = [w for w in _real_nonneg_roots(mag_poly, exact) if w > 0]
     resp180 = G.freqresp(w180) if w180 else []
     keep = [(w, r) for w, r in zip(w180, resp180) if r.real <= 0 and abs(r) != math.inf]
     keep.sort()
@@ -2173,6 +3015,70 @@ def margins(sys) -> Margins:
     else:
         pm, wgc = math.inf, math.nan
     return Margins(gm, pm, wpc, wgc)
+
+
+def _cheb(kind, k):
+    """Chebyshev ``T_k`` (kind ``"T"``) or ``U_k`` (``"U"``) in ``c``, ℚ-coefficients, low first."""
+    p0 = [Fraction(1)]
+    p1 = [Fraction(0), Fraction(1 if kind == "T" else 2)]
+    if k == 0:
+        return p0
+    for _ in range(k - 1):
+        p0, p1 = p1, _psub(_pmul([Fraction(0), Fraction(2)], p1), p0)
+    return p1
+
+
+def _poly_shift(p, a):
+    """``p(t + a)`` for a ℚ-polynomial (low first)."""
+    out = []
+    for i in range(len(p)):
+        acc = Fraction(0)
+        for k in range(i, len(p)):
+            acc += p[k] * math.comb(k, i) * Fraction(a) ** (k - i)
+        out.append(acc)
+    return out
+
+
+def _discrete_crossovers(G, num, den, exact):
+    """Phase / gain crossover frequencies of a discrete loop on the unit circle (rad/time)."""
+    T = float(_complex_value(_lift(G.var, G.dt)).real)
+    num = [Fraction(c) for c in num]
+    den = [Fraction(c) for c in den]
+
+    def corr(p, q, k):  # Σ_b p[b+k] q[b]
+        return sum((p[b + k] * q[b] for b in range(len(q)) if b + k < len(p)), Fraction(0))
+
+    m = max(len(num), len(den))
+    # phase: Σ_k e_k U_{k-1}(c),  e_k = Σ n_{b+k} d_b − Σ n_a d_{a+k}
+    im = [Fraction(0)]
+    for k in range(1, m):
+        e = corr(num, den, k) - corr(den, num, k)
+        if e != 0:
+            im = _padd_frac(im, [e * x for x in _cheb("U", k - 1)])
+    # gain: (A0_N − A0_D) + 2 Σ (A_k^N − A_k^D) T_k(c)
+    mag = [corr(num, num, 0) - corr(den, den, 0)]
+    for k in range(1, m):
+        a = corr(num, num, k) - corr(den, den, k)
+        if a != 0:
+            mag = _padd_frac(mag, [2 * a * x for x in _cheb("T", k)])
+
+    def theta_roots(poly):
+        poly = _ptrim(poly)
+        if len(poly) <= 1:
+            return []
+        # roots c ∈ [−1, 1]  ↔  t = c + 1 ∈ [0, 2]
+        shifted = _poly_shift(poly, -1)
+        ts = _real_nonneg_roots(shifted, exact)
+        return sorted(math.acos(max(-1.0, min(1.0, t - 1.0))) for t in ts if t <= 2.0 + 1e-12)
+
+    th180 = sorted({0.0, math.pi, *theta_roots(im)})
+    thc = [t for t in theta_roots(mag) if t > 0]
+    return [t / T for t in th180], [t / T for t in thc]
+
+
+def _padd_frac(a, b):
+    n = max(len(a), len(b))
+    return [(a[i] if i < len(a) else 0) + (b[i] if i < len(b) else 0) for i in range(n)]
 
 
 def _zip_pad(a, b):
