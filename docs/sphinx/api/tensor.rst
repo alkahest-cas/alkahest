@@ -90,6 +90,5 @@ Abstract indices
       R = Ric[a, -a]                         # Ricci scalar (rank 0)
       G = Ric[-a, -b] - g[-a, -b] * R / 2    # == m.einstein()
 
-.. exception:: TensorError
-
-   ``E-TENSOR-001`` … ``E-TENSOR-010``; see :doc:`errors`.
+Refusals are :class:`TensorError` (``E-TENSOR-001`` … ``E-TENSOR-010``); see
+:doc:`errors`.

@@ -39,6 +39,9 @@
 //! the rest are filled in by symmetry.  Each stage is cached on the
 //! [`Metric`], and [`Metric::timings`] reports the wall time of each.
 
+// Slot arithmetic reads clearest as explicit index loops.
+#![allow(clippy::needless_range_loop)]
+
 mod field;
 #[cfg(test)]
 mod tests;
