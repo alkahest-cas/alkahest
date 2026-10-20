@@ -183,6 +183,7 @@ from .alkahest import (  # noqa: F401
     _build_features,
     _derived_result_context_simplify,
     _is_undefined_function_name,
+    _may_need_real_form,
     abs,  # symbolic abs — use alkahest.abs(expr); shadows Python builtin within this module
     acos,
     acosh,
@@ -2677,17 +2678,20 @@ if "solve" in dir():
 
     _solve_dispatch = solve
 
-    def _realify_solutions(result, assumptions):
+    def _realify_solutions(result, kwargs):
         """``to_real_form`` on every symbolic value of a solution list.
 
         Only a value whose imaginary part is *proved* zero is rewritten (the
         rule of :func:`to_real_form`); anything else, numeric values and
-        non-list results (a Groebner basis) are returned untouched.
+        non-list results (a Groebner basis) are returned untouched. A cheap
+        native gate skips values that cannot need it (no imaginary unit, no
+        root of anything but a positive numeric constant).
         """
         import contextlib
 
         if not isinstance(result, list):
             return result
+        assumptions = _UNSET = object()
         out = []
         for sol in result:
             if not isinstance(sol, dict):
@@ -2695,7 +2699,9 @@ if "solve" in dir():
                 continue
             new = {}
             for var, val in sol.items():
-                if isinstance(val, Expr):
+                if isinstance(val, Expr) and _may_need_real_form(val):
+                    if assumptions is _UNSET:
+                        assumptions = kwargs.get("assumptions") or active_assumptions()
                     # best effort: keep the solver's own form on any failure
                     with contextlib.suppress(Exception):
                         val = to_real_form(val, assumptions)
@@ -2708,7 +2714,7 @@ if "solve" in dir():
         result = _solve_dispatch(equations, vars, **kwargs)
         if not real_form:
             return result
-        return _realify_solutions(result, kwargs.get("assumptions") or active_assumptions())
+        return _realify_solutions(result, kwargs)
 
     solve.__doc__ = (
         (_solve_dispatch.__doc__ or "").rstrip()

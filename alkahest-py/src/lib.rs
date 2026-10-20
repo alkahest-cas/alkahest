@@ -9682,6 +9682,16 @@ fn py_to_real_form(
     Ok(PyExpr { id, pool: pool_py })
 }
 
+/// Private: the cheap gate in front of an unconditional `to_real_form` (see
+/// `simplify::real_form::may_need_real_form`). `False` for an expression that
+/// has no imaginary unit and no root of anything but a positive numeric
+/// constant (`5*sqrt(2)/2`), which is already real.
+#[pyfunction]
+#[pyo3(name = "_may_need_real_form")]
+fn py_may_need_real_form(py: Python<'_>, expr: PyRef<PyExpr>) -> bool {
+    alkahest_core::simplify::real_form::may_need_real_form(expr.id, &expr.pool.borrow(py).inner)
+}
+
 /// `alkahest.rewrite_piecewise(expr) -> Expr`
 ///
 /// Lower ``abs``, ``sign``, ``heaviside``, ``min`` and ``max`` to
@@ -10568,11 +10578,15 @@ impl PyMatrix {
         if real_form {
             let mut merged: Vec<(ExprId, usize)> = Vec::with_capacity(pairs.len());
             for (e, mult) in pairs {
-                let e = alkahest_core::simplify::to_real_form(
-                    e,
-                    pool_ref,
-                    &alkahest_core::simplify::AssumptionContext::new(),
-                );
+                let e = if alkahest_core::simplify::real_form::may_need_real_form(e, pool_ref) {
+                    alkahest_core::simplify::to_real_form(
+                        e,
+                        pool_ref,
+                        &alkahest_core::simplify::AssumptionContext::new(),
+                    )
+                } else {
+                    e
+                };
                 match merged.iter_mut().find(|(k, _)| *k == e) {
                     Some(slot) => slot.1 += mult,
                     None => merged.push((e, mult)),
@@ -22352,6 +22366,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_functions_to_symbols, m)?)?;
     m.add_function(wrap_pyfunction!(py_replace_function, m)?)?;
     m.add_function(wrap_pyfunction!(_is_undefined_function_name, m)?)?;
+    m.add_function(wrap_pyfunction!(py_may_need_real_form, m)?)?;
     // Phase 15
     m.add_function(wrap_pyfunction!(py_jacobian, m)?)?;
     m.add_class::<PyMatrix>()?;
