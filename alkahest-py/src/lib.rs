@@ -13631,6 +13631,20 @@ fn emit_c_error_to_py(e: alkahest_core::EmitCError) -> PyErr {
 /// ``x ≥ -1/e + 1e-3``; guarded by ``#ifndef`` so several emitted functions can
 /// share a file).
 ///
+/// Special functions lower to ``static`` ISO C99 helpers emitted ahead of the
+/// function (only the ones the expression calls; no POSIX ``jn``/``yn``, no
+/// complex type): ``bessel_j``/``bessel_y``/``bessel_i``/``bessel_k`` of
+/// **integer** order ``|n| ≤ 10000`` (``bessel_j0``/``bessel_j1`` too),
+/// ``digamma``, ``trigamma``, ``polygamma`` of order 0 or 1, ``dilog`` (real,
+/// ``x ≤ 1``), complete ``EllipticK``/``EllipticE`` (parameter ``m = k²``),
+/// ``fresnels``/``fresnelc`` (``π/2`` normalisation), and ``Ei``, ``li``,
+/// ``Si``, ``Ci``, ``Shi``, ``Chi``.  Each helper is tested against mpmath to
+/// about 1e-15 relative error (absolute near a zero of the function) over its
+/// documented domain, listed in the comment above it in the emitted source;
+/// outside the real domain it returns ``NAN`` or the function's infinity.
+/// A Bessel order that is a symbol (not a literal) must be an integer when the
+/// C runs, else the result is ``NAN``.
+///
 /// Parameters
 /// ----------
 /// expr : Expr
@@ -13653,8 +13667,10 @@ fn emit_c_error_to_py(e: alkahest_core::EmitCError) -> PyErr {
 /// ------
 /// AlkahestError
 ///     A ``ValueError`` subclass.  ``E-CODEGEN-001``: a function with no C
-///     lowering (``diracdelta``, elliptic integrals, Bessel, digamma, …; the
-///     message names it).  ``E-CODEGEN-002``: a node with no straight-line C
+///     lowering (``diracdelta``, Airy, ``zeta``, ``polylog``, ``hyper``,
+///     spherical Bessel, incomplete elliptic integrals, a Bessel function of a
+///     literal non-integer order, ``polygamma`` of order > 1, a user function;
+///     the message names it).  ``E-CODEGEN-002``: a node with no straight-line C
 ///     form (``O(x)``, quantifiers, root sums).  ``E-CODEGEN-003``: a free
 ///     symbol not listed in *vars*.
 ///

@@ -71,9 +71,27 @@ C code emission
      and ``Piecewise`` as ternaries; ``lambert_w`` through an emitted
      ``static double alkahest_lambert_w0`` helper (Halley iteration, relative
      error ≤ 1e-15 for ``x ≥ −1/e + 10⁻³``, ``#ifndef``-guarded).
+   * **Special functions** lower to ``static`` ISO C99 helpers (one source
+     file each, emitted only when called, no POSIX ``jn``/``yn``): integer-order
+     ``bessel_j``/``bessel_y``/``bessel_i``/``bessel_k`` (``|n| ≤ 10000``;
+     ``bessel_j0``/``bessel_j1`` too), ``digamma``, ``trigamma``,
+     ``polygamma`` of order 0/1, ``dilog`` (``x ≤ 1``), complete
+     ``EllipticK``/``EllipticE`` (parameter ``m``), ``fresnels``/``fresnelc``
+     (``π/2`` normalisation), ``Ei``, ``li``, ``Si``, ``Ci``, ``Shi``,
+     ``Chi``.  Measured against mpmath: ≈ 1e-15 relative error (absolute near
+     a zero of the function) on each helper's documented domain, which is
+     stated in the comment above the helper.  Outside the real domain the
+     helper returns ``NAN`` or the function's infinity; a symbolic Bessel
+     order that is not an integer at run time gives ``NAN``.
+   * **Sums and products** that share operand pairs (``a+b`` inside both
+     ``a+b+c`` and ``a+b+d``, in any order, ``-a-b`` and ``b-a`` included)
+     compute the shared pair once.  This re-associates the sum, so the result
+     can differ from the interpreter's left-to-right value by a few ulps.
 
    :raises AlkahestError: ``E-CODEGEN-001`` a function with no C lowering
-      (``diracdelta``, Bessel, elliptic, digamma, …), ``E-CODEGEN-002`` a node
+      (``diracdelta``, Airy, ``zeta``, ``polylog``, ``hyper``, spherical
+      Bessel, incomplete elliptic integrals, Bessel of a literal non-integer
+      order, ``polygamma`` of order > 1), ``E-CODEGEN-002`` a node
       with no straight-line C form (``O(x)``, quantifiers, root sums),
       ``E-CODEGEN-003`` a free symbol not listed in *vars*.  ``AlkahestError``
       subclasses ``ValueError``.

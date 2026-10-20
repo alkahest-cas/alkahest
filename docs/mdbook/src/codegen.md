@@ -180,7 +180,15 @@ print(emit_c_vec([sin(x) * cos(y), sin(x) + cos(y)], [x, y]))
 `pi` and `exp(1)` are emitted as the nearest `double`; `sign`, `heaviside`,
 `min`/`max` and `Piecewise` as ternaries / `fmin`/`fmax`; `lambert_w` through
 an emitted, `#ifndef`-guarded `static` helper (relative error ≤ 1e-15 away from
-the branch point). A function with no C lowering is refused with
+the branch point). Special functions — integer-order `bessel_j`/`bessel_y`/
+`bessel_i`/`bessel_k`, `digamma`, `trigamma`, `polygamma` of order 0/1,
+`dilog`, complete `EllipticK`/`EllipticE`, `fresnels`/`fresnelc`, `Ei`, `li`,
+`Si`, `Ci`, `Shi`, `Chi` — lower to `static` ISO C99 helpers emitted only when
+called (no POSIX `jn`/`yn`, no complex type), each checked against mpmath to
+about 1e-15 relative error on the domain stated in the comment above it.
+Operand pairs shared between sums (or products) — `a+b` in both `a+b+c` and
+`a+b+d` — are computed once. A function with no C lowering (Airy, `zeta`,
+`polylog`, `hyper`, a Bessel function of non-integer order) is refused with
 `E-CODEGEN-001`, a node with no straight-line form (`O(x)`) with
 `E-CODEGEN-002`, and a free symbol not in `vars` with `E-CODEGEN-003`.
 

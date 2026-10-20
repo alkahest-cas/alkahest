@@ -144,6 +144,9 @@ def test_black_scholes_greeks_share_their_transcendentals():
     # pi is a literal, not a parameter.
     assert "3.141592653589793" in code or "1.7724538509055159" in code
     assert len(code) < 12_000, len(code)  # was ~35 kB
+    # 383 `*` and 115 `+`/`-` before operand-pair sharing, 172 and 104 after.
+    assert code.count(" * ") < 200, code.count(" * ")
+    assert _ops(code) < 110, _ops(code)
 
 
 @requires_cc
@@ -223,6 +226,10 @@ def test_pendulum_eom_c_is_compact(pendulum4):
     code = ak.emit_c_vec(acc, inputs, fn_name="npend")
     # 320 kB before CSE; aim for at least 5x smaller.  Measured ~25 kB.
     assert len(code) < 64_000, len(code)
+    # Operand-pair sharing in the n-ary products and sums: 2882 `*` and 461
+    # `+`/`-` before it, 953 and 455 after.
+    assert code.count(" * ") < 1100, code.count(" * ")
+    assert _ops(code) < 470, _ops(code)
     # Each sin(q_i) / cos(q_i) / sin(q_i - q_j) is computed once.
     for i in range(4):
         assert code.count(f"sin(q{i})") <= 1, code
@@ -400,3 +407,60 @@ def test_refusals_carry_codegen_codes():
     with pytest.raises(ak.AlkahestError) as ei:
         ak.emit_c_expr(x + p.big_o(x**2), x)
     assert ei.value.code == "E-CODEGEN-002"
+
+
+# ---------------------------------------------------------------------------
+# Sharing operand pairs inside n-ary sums and products (F13)
+# ---------------------------------------------------------------------------
+
+
+def _ops(code):
+    return code.count(" + ") + code.count(" - ")
+
+
+def test_shared_pair_inside_two_sums_is_computed_once():
+    p = ak.ExprPool()
+    a, b, c, d = (p.symbol(n) for n in "abcd")
+    code = ak.emit_c_vec([a + b + c, a + b + d], [a, b, c, d])
+    # Four additions without sharing; a + b once and two more make three.
+    assert _ops(code) == 3, code
+    assert code.count("(a + b)") + code.count("(b + a)") == 1, code
+
+
+def test_shared_pair_in_products_and_negated_sums():
+    p = ak.ExprPool()
+    a, b, c, d = (p.symbol(n) for n in "abcd")
+    code = ak.emit_c_vec([a * b * c, a * b * d], [a, b, c, d])
+    assert code.count(" * ") == 3, code
+    # -a - b is the negation of a + b, and b - a of a - b: one shared node each.
+    outs = [a + b + c, -a - b + d, a - b + c, b - a + d]
+    code = ak.emit_c_vec(outs, [a, b, c, d])
+    assert _ops(code) <= 6, code  # eight without sharing
+
+
+@requires_cc
+def test_pair_sharing_matches_the_interpreter(tmp_path):
+    p = ak.ExprPool()
+    xs = [p.symbol(f"x{i}") for i in range(9)]
+    rng = random.Random(5)
+    outs = []
+    for _ in range(40):
+        picks = rng.sample(xs, rng.randint(3, 8))
+        e = None
+        for t in picks:
+            term = -t if rng.random() < 0.3 else t
+            e = term if e is None else e + term
+        outs.append(e)
+        picks = rng.sample(xs, rng.randint(3, 6))
+        m = picks[0]
+        for t in picks[1:]:
+            m = m * t
+        outs.append(m)
+    code = ak.emit_c_vec(outs, xs, fn_name="f")
+    f = _Lib(code, tmp_path).vector("f", len(xs), len(outs))
+    for _ in range(20):
+        pt = [rng.uniform(-2, 2) for _ in xs]
+        got = f(*pt)
+        for o, g in zip(outs, got):
+            want = ak.eval_expr(o, dict(zip(xs, pt)))
+            assert abs(g - want) <= 1e-12 * max(1.0, abs(want)), (o, g, want)

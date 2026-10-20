@@ -29,6 +29,15 @@
 //! remaining differences are the ones listed on `Builder::lower_func` and the
 //! division/strength-reduction rewrites above, each within an ulp or two.
 //!
+//! # Sharing inside sums and products
+//!
+//! The one pass that *does* reassociate is [`share_pairs`], run after lowering:
+//! when two operands occur together in two or more n-ary sums (or products) —
+//! `a + b` inside both `a + b + c` and `a + b + d` — they become one node.
+//! That costs a few ulps of `Σ|operands|` against the interpreter's
+//! left-to-right order and saves `count − 1` operations per shared pair; the
+//! test suite compares against `eval_expr` at `1e-12`.
+//!
 //! # Constants
 //!
 //! `π` (the symbol `pi`, unless the caller binds it as an input) and `e`
@@ -91,17 +100,84 @@ impl Node {
     }
 }
 
-/// Self-contained C helpers the emitter can call.  Each is guarded by a macro
-/// so several emitted functions can be pasted into one translation unit.
+/// Self-contained C helpers the emitter can call.  Each is a `static`
+/// function in its own file under `c_helpers/` (so it can be compiled and
+/// tested on its own), guarded by a macro so several emitted functions can be
+/// pasted into one translation unit.  A helper is emitted only when something
+/// calls it, together with the helpers it is built from, so a translation unit
+/// never carries an unused `static` function (`-Wall -Werror` stays quiet).
+///
+/// The variants are listed in dependency order: a helper's dependencies have
+/// smaller discriminants, which is the order the prelude is written in.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Helper {
     LambertW0,
+    Digamma,
+    Trigamma,
+    Dilog,
+    EllipK,
+    EllipE,
+    FresnelCore,
+    FresnelS,
+    FresnelC,
+    ExpIntE1,
+    ExpIntEi,
+    ExpIntLi,
+    ExpIntCisi,
+    ExpIntSi,
+    ExpIntCi,
+    ExpIntShi,
+    ExpIntChi,
+    BesselJSeries,
+    BesselAsym,
+    BesselMiller,
+    BesselJ,
+    BesselY,
+    BesselI,
+    BesselK,
 }
 
 impl Helper {
     fn source(self) -> &'static str {
         match self {
             Helper::LambertW0 => LAMBERT_W0_C,
+            Helper::Digamma => include_str!("c_helpers/digamma.c"),
+            Helper::Trigamma => include_str!("c_helpers/trigamma.c"),
+            Helper::Dilog => include_str!("c_helpers/dilog.c"),
+            Helper::EllipK => include_str!("c_helpers/ellipk.c"),
+            Helper::EllipE => include_str!("c_helpers/ellipe.c"),
+            Helper::FresnelCore => include_str!("c_helpers/fresnel_core.c"),
+            Helper::FresnelS => include_str!("c_helpers/fresnel_s.c"),
+            Helper::FresnelC => include_str!("c_helpers/fresnel_c.c"),
+            Helper::ExpIntE1 => include_str!("c_helpers/expint_e1.c"),
+            Helper::ExpIntEi => include_str!("c_helpers/expint_ei.c"),
+            Helper::ExpIntLi => include_str!("c_helpers/expint_li.c"),
+            Helper::ExpIntCisi => include_str!("c_helpers/expint_cisi.c"),
+            Helper::ExpIntSi => include_str!("c_helpers/expint_si.c"),
+            Helper::ExpIntCi => include_str!("c_helpers/expint_ci.c"),
+            Helper::ExpIntShi => include_str!("c_helpers/expint_shi.c"),
+            Helper::ExpIntChi => include_str!("c_helpers/expint_chi.c"),
+            Helper::BesselJSeries => include_str!("c_helpers/bessel_jseries.c"),
+            Helper::BesselAsym => include_str!("c_helpers/bessel_asym.c"),
+            Helper::BesselMiller => include_str!("c_helpers/bessel_miller.c"),
+            Helper::BesselJ => include_str!("c_helpers/bessel_j.c"),
+            Helper::BesselY => include_str!("c_helpers/bessel_y.c"),
+            Helper::BesselI => include_str!("c_helpers/bessel_i.c"),
+            Helper::BesselK => include_str!("c_helpers/bessel_k.c"),
+        }
+    }
+
+    /// The helpers this one calls.
+    fn deps(self) -> &'static [Helper] {
+        use Helper::*;
+        match self {
+            FresnelS | FresnelC => &[FresnelCore],
+            ExpIntEi => &[ExpIntE1],
+            ExpIntLi => &[ExpIntEi, ExpIntE1],
+            ExpIntSi | ExpIntCi => &[ExpIntCisi],
+            ExpIntShi | ExpIntChi => &[ExpIntEi, ExpIntE1],
+            BesselJ | BesselY => &[BesselJSeries, BesselAsym, BesselMiller],
+            _ => &[],
         }
     }
 }
@@ -506,6 +582,80 @@ impl<'a> Builder<'a> {
         })
     }
 
+    /// Record that the emitted code calls `h` (and so needs its source and
+    /// that of everything it is built from).
+    fn need(&mut self, h: Helper) {
+        if self.helpers.contains(&h) {
+            return;
+        }
+        self.helpers.push(h);
+        for &d in h.deps() {
+            self.need(d);
+        }
+    }
+
+    /// The special functions that lower to an emitted helper rather than a
+    /// `<math.h>` call: the C name and the helper that defines it, or `None`
+    /// for any other function.  Refuses (`E-CODEGEN-001`) a Bessel function of
+    /// a literal non-integer order, and `polygamma` of any order but 0 or 1 —
+    /// the helpers take an integer order.
+    fn special_helper(
+        &self,
+        name: &str,
+        args: &[ExprId],
+    ) -> Result<Option<(&'static str, Helper)>, EmitCError> {
+        use Helper::*;
+        let r = match (name, args.len()) {
+            ("digamma", 1) => ("alkahest_digamma", Digamma),
+            ("trigamma", 1) => ("alkahest_trigamma", Trigamma),
+            ("dilog", 1) => ("alkahest_dilog", Dilog),
+            ("EllipticK", 1) => ("alkahest_ellipk", EllipK),
+            ("EllipticE", 1) => ("alkahest_ellipe", EllipE),
+            ("fresnels", 1) => ("alkahest_fresnel_s", FresnelS),
+            ("fresnelc", 1) => ("alkahest_fresnel_c", FresnelC),
+            ("Ei", 1) => ("alkahest_ei", ExpIntEi),
+            ("li", 1) => ("alkahest_li", ExpIntLi),
+            ("Si", 1) => ("alkahest_si", ExpIntSi),
+            ("Ci", 1) => ("alkahest_ci", ExpIntCi),
+            ("Shi", 1) => ("alkahest_shi", ExpIntShi),
+            ("Chi", 1) => ("alkahest_chi", ExpIntChi),
+            ("bessel_j0", 1) | ("bessel_j1", 1) => ("alkahest_bessel_j", BesselJ),
+            ("bessel_j", 2) => ("alkahest_bessel_j", BesselJ),
+            ("bessel_y", 2) => ("alkahest_bessel_y", BesselY),
+            ("bessel_i", 2) => ("alkahest_bessel_i", BesselI),
+            ("bessel_k", 2) => ("alkahest_bessel_k", BesselK),
+            ("polygamma", 2) => match self.pool.get(args[0]) {
+                ExprData::Integer(n) if n.0 == 0 => ("alkahest_digamma", Digamma),
+                ExprData::Integer(n) if n.0 == 1 => ("alkahest_trigamma", Trigamma),
+                _ => {
+                    return Err(EmitCError::UnsupportedFunction(
+                        "polygamma (order other than 0 or 1)".to_string(),
+                    ))
+                }
+            },
+            _ => return Ok(None),
+        };
+        if name.starts_with("bessel_") && args.len() == 2 {
+            let integral = match self.pool.get(args[0]) {
+                ExprData::Integer(_) => true,
+                ExprData::Rational(_) => false,
+                ExprData::Float(f) => {
+                    let v = f.inner.to_f64();
+                    v.is_finite() && v == v.trunc()
+                }
+                // A symbol or expression: checked when the C runs (a
+                // non-integer order gives NAN).
+                _ => true,
+            };
+            if !integral {
+                return Err(EmitCError::UnsupportedFunction(format!(
+                    "{name} (non-integer order)"
+                )));
+            }
+        }
+        Ok(Some(r))
+    }
+
     /// Lower a function call.
     ///
     /// # Where the emitted C and the interpreter differ
@@ -518,6 +668,20 @@ impl<'a> Builder<'a> {
     /// * **`lambert_w`.** The emitted helper is accurate to ~1e-15 relative;
     ///   the interpreter's `W₀` stops at a residual of `1e-15·max(|x|, 1)`, so
     ///   for `|x| ≪ 1` the C is the more accurate of the two.
+    /// * **Special functions** (`digamma`, `trigamma`, `polygamma` of order 0
+    ///   or 1, `dilog`, `EllipticK`, `EllipticE` (complete), `fresnels`,
+    ///   `fresnelc`, `Ei`, `li`, `Si`, `Ci`, `Shi`, `Chi`, `bessel_j0`,
+    ///   `bessel_j1`, and `bessel_j` / `bessel_y` / `bessel_i` / `bessel_k` of
+    ///   integer order) call a `static` helper emitted ahead of the function,
+    ///   written in ISO C99 (no POSIX `jn`/`yn`).  Accuracy and domain are in
+    ///   the comment above each helper (`c_helpers/*.c`): about 1e-15 relative
+    ///   (or absolute where the function is near a zero), measured against
+    ///   mpmath.  Outside its real domain a helper returns `NAN` (or the
+    ///   infinity the function has there), where the interpreter reports an
+    ///   error; an order that is a *literal* non-integer is refused here.
+    ///   Everything else — Airy, spherical Bessel, `zeta`, `polylog`, `hyper`,
+    ///   incomplete elliptic integrals, `erf`-family complements — stays a coded
+    ///   refusal.
     /// * **Integer powers** `x^2 … x^4` are repeated multiplication, which
     ///   rounds two or three times where `pow` rounds once (≤ 2 ulp).
     fn lower_func(&mut self, name: &str, args: &[ExprId]) -> Result<usize, EmitCError> {
@@ -541,6 +705,23 @@ impl<'a> Builder<'a> {
                 acc = self.call(c, vec![acc, next]);
             }
             return Ok(acc);
+        }
+        if let Some((c, helper)) = self.special_helper(name, args)? {
+            let (call_args, skip) = match name {
+                "bessel_j0" | "bessel_j1" => (Some(if name == "bessel_j0" { 0 } else { 1 }), 0),
+                // `polygamma(0|1, x)` is `digamma(x)` / `trigamma(x)`.
+                "polygamma" => (None, 1),
+                _ => (None, 0),
+            };
+            self.need(helper);
+            let mut lowered = Vec::with_capacity(args.len() + 1);
+            if let Some(order) = call_args {
+                lowered.push(self.lit(format!("{order}.0")));
+            }
+            for &a in &args[skip..] {
+                lowered.push(self.lower(a)?);
+            }
+            return Ok(self.call(c, lowered));
         }
         let c_name: Option<&'static str> = match (name, args.len()) {
             ("sin", 1) => Some("sin"),
@@ -591,8 +772,8 @@ impl<'a> Builder<'a> {
                     return Ok(self.lit(c_double_literal(v.sqrt())));
                 }
             }
-            if c == "alkahest_lambert_w0" && !self.helpers.contains(&Helper::LambertW0) {
-                self.helpers.push(Helper::LambertW0);
+            if c == "alkahest_lambert_w0" {
+                self.need(Helper::LambertW0);
             }
             return Ok(self.call(c, lowered));
         }
@@ -781,6 +962,166 @@ impl Printer<'_> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Sharing inside n-ary sums and products
+// ---------------------------------------------------------------------------
+
+/// Most operands of one sum/product that take part in pair sharing.  The pair
+/// table is quadratic in the operand count, so a very wide node is left alone.
+const PAIR_MAX_WIDTH: usize = 40;
+/// Cap on the entries of the pair table in one round (each entry is one
+/// occurrence of one pair), which bounds both time and memory.
+const PAIR_TABLE_BUDGET: usize = 1_500_000;
+/// Rounds of pair extraction.  A round can only share pairs of the operands
+/// that exist at its start, so deeper shared sub-sums (`a+b+c` inside `a+b+c+d`)
+/// appear over successive rounds.
+const PAIR_ROUNDS: usize = 12;
+
+/// One operand slot of a sum (with its subtraction flag) or product.
+type Slot = (bool, usize);
+
+/// A pair of operands `(a, b)`, `a < b`, with the relative sign of `b` to `a`
+/// (always `false` for a product).
+type PairKey = (bool, usize, usize, bool);
+
+/// Where a pair occurs: the node and the two slot positions.
+type Occurrence = (usize, usize, usize);
+
+/// Share common *pairs* of operands between n-ary sums (and between n-ary
+/// products): when `a + b` appears inside both `a + b + c` and `a + b + d`
+/// (in any order and with any sign pattern — `-a - b` is the negation of
+/// `a + b`, and `b - a` of `a - b`), it becomes one node the two sums refer
+/// to, which the printer then gives a temporary.
+///
+/// Pairs are extracted most-frequent first and repeated, so a shared run of
+/// three or more operands is shared too.  Only pairs that occur at least twice
+/// are extracted, so this never adds an operation: each extraction removes
+/// `count - 1` additions or multiplications.
+///
+/// **Rounding.**  Extracting a pair re-associates the sum or product, so the
+/// result can differ from the left-to-right evaluation the interpreter does
+/// by the usual reassociation error — a few ulps of `Σ|terms|`.  Sums and
+/// products of two operands are unaffected.
+fn share_pairs(nodes: &mut Vec<Node>, roots: &[usize]) {
+    // Reachable sums and products wide enough to share and narrow enough to
+    // enumerate.
+    let mut seen = vec![false; nodes.len()];
+    let mut stack: Vec<usize> = roots.to_vec();
+    let mut cands: Vec<usize> = Vec::new();
+    while let Some(i) = stack.pop() {
+        if seen[i] {
+            continue;
+        }
+        seen[i] = true;
+        match &nodes[i] {
+            Node::Sum(t) if t.len() >= 2 && t.len() <= PAIR_MAX_WIDTH => cands.push(i),
+            Node::Prod(t) if t.len() >= 2 && t.len() <= PAIR_MAX_WIDTH => cands.push(i),
+            _ => {}
+        }
+        stack.extend(nodes[i].children());
+    }
+    cands.sort_unstable();
+
+    for _ in 0..PAIR_ROUNDS {
+        // Operand slots of each candidate, as `(is_sum, slots)`.
+        let slots: Vec<(bool, Vec<Slot>)> = cands
+            .iter()
+            .map(|&i| match &nodes[i] {
+                Node::Sum(t) => (true, t.clone()),
+                Node::Prod(t) => (false, t.iter().map(|&x| (false, x)).collect()),
+                _ => unreachable!("candidates are sums and products"),
+            })
+            .collect();
+
+        let mut table: HashMap<PairKey, Vec<Occurrence>> = HashMap::new();
+        let mut entries = 0usize;
+        for (ci, (is_sum, ts)) in slots.iter().enumerate() {
+            let w = ts.len();
+            if entries + w * (w - 1) / 2 > PAIR_TABLE_BUDGET {
+                continue;
+            }
+            entries += w * (w - 1) / 2;
+            for x in 0..w {
+                for y in (x + 1)..w {
+                    let ((sa, a), (sb, b)) = (ts[x], ts[y]);
+                    if a == b {
+                        continue;
+                    }
+                    let (p, q, ps, qs) = if a < b {
+                        (x, y, sa, sb)
+                    } else {
+                        (y, x, sb, sa)
+                    };
+                    let key = (*is_sum, ts[p].1, ts[q].1, ps ^ qs);
+                    table.entry(key).or_default().push((ci, p, q));
+                }
+            }
+        }
+        let mut shared: Vec<(PairKey, Vec<Occurrence>)> =
+            table.into_iter().filter(|(_, v)| v.len() >= 2).collect();
+        if shared.is_empty() {
+            break;
+        }
+        // Most frequent first; the key breaks ties so the output is
+        // deterministic.
+        shared.sort_unstable_by(|l, r| r.1.len().cmp(&l.1.len()).then(l.0.cmp(&r.0)));
+
+        let mut live: Vec<Vec<Option<Slot>>> = slots
+            .iter()
+            .map(|(_, t)| t.iter().map(|&s| Some(s)).collect())
+            .collect();
+        let mut changed = false;
+        for ((is_sum, a, b, rel), occ) in shared {
+            let alive: Vec<&Occurrence> = occ
+                .iter()
+                .filter(|&&(ci, p, q)| {
+                    // Both slots still hold the operands this pair was
+                    // counted from (an earlier extraction this round may have
+                    // consumed or replaced one).
+                    live[ci][p].map(|s| s.1) == Some(a) && live[ci][q].map(|s| s.1) == Some(b)
+                })
+                .collect();
+            if alive.len() < 2 {
+                continue;
+            }
+            let pair = if is_sum {
+                Node::Sum(vec![(false, a), (rel, b)])
+            } else {
+                Node::Prod(vec![a, b])
+            };
+            let pi = nodes.len();
+            nodes.push(pair);
+            for &&(ci, p, q) in &alive {
+                // The pair stands at `p`'s place; its sign is `p`'s own (a
+                // negated first operand makes the pair a negated sum).
+                let flip = live[ci][p].map(|s| s.0).unwrap_or(false);
+                live[ci][p] = Some((flip, pi));
+                live[ci][q] = None;
+            }
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+        // Write the rewritten operand lists back.
+        for (ci, &ni) in cands.iter().enumerate() {
+            let rest: Vec<Slot> = live[ci].iter().flatten().copied().collect();
+            if rest.len() == slots[ci].1.len() {
+                continue;
+            }
+            nodes[ni] = match (slots[ci].0, rest.as_slice()) {
+                (true, [(true, p)]) => Node::Neg(*p),
+                (true, _) => Node::Sum(rest),
+                (false, _) => Node::Prod(rest.iter().map(|&(_, x)| x).collect()),
+            };
+        }
+        // The new pair nodes are candidates for the next round (they hold
+        // two operands, so they only matter as operands of other nodes), and
+        // so are the rewritten nodes, which now hold fewer slots.
+        cands.retain(|&i| matches!(nodes[i], Node::Sum(_) | Node::Prod(_)));
+    }
+}
+
 /// Lower `exprs` jointly: shared sub-expressions of different outputs become
 /// one temporary.
 pub(super) fn lower_outputs(
@@ -794,6 +1135,8 @@ pub(super) fn lower_outputs(
     for &e in exprs {
         roots.push(b.lower(e)?);
     }
+
+    share_pairs(&mut b.nodes, &roots);
 
     // Reference counts over the reachable IR.  Each reachable node is printed
     // exactly once (as a temporary or inline in its single consumer), so a
@@ -935,6 +1278,69 @@ mod tests {
             "{code}"
         );
         assert_eq!(code.matches("static double alkahest_lambert_w0").count(), 1);
+    }
+
+    #[test]
+    fn special_functions_emit_only_the_helpers_they_call() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        // Shi pulls Ei and E1 with it, once, and nothing else.
+        let code = emit_expr_c(p.func("Shi", vec![x]), &[x], &["x"], "f", &p).unwrap();
+        for def in ["alkahest_shi(", "alkahest_ei(", "alkahest_e1_pos("] {
+            assert_eq!(
+                code.matches(&format!("static double {def}")).count(),
+                1,
+                "{def}"
+            );
+        }
+        assert!(!code.contains("alkahest_bessel"), "{code}");
+        assert!(!code.contains("alkahest_si("), "{code}");
+        // Two functions sharing a helper define it once.
+        let e = p.add(vec![p.func("Ei", vec![x]), p.func("li", vec![x])]);
+        let code = emit_expr_c(e, &[x], &["x"], "f", &p).unwrap();
+        assert_eq!(
+            code.matches("static double alkahest_ei(").count(),
+            1,
+            "{code}"
+        );
+        // Bessel J(3, x) calls the helper with the order as a double.
+        let j = p.func("bessel_j", vec![p.integer(3), x]);
+        let code = emit_expr_c(j, &[x], &["x"], "f", &p).unwrap();
+        assert!(code.contains("alkahest_bessel_j(3.0, x)"), "{code}");
+        // bessel_j0 is the same helper at order 0.
+        let code = emit_expr_c(p.func("bessel_j0", vec![x]), &[x], &["x"], "f", &p).unwrap();
+        assert!(code.contains("alkahest_bessel_j(0.0, x)"), "{code}");
+    }
+
+    #[test]
+    fn a_shared_operand_pair_is_computed_once() {
+        let p = ExprPool::new();
+        let [a, b, c, d] = ["a", "b", "c", "d"].map(|n| p.symbol(n, Domain::Real));
+        let vars = [a, b, c, d];
+        let names = ["a", "b", "c", "d"];
+        let outs = [p.add(vec![a, b, c]), p.add(vec![a, b, d])];
+        let code = emit_expr_c_vec(&outs, &vars, &names, "f", &p).unwrap();
+        // Three additions, not four: `a + b` is one temporary.
+        assert_eq!(code.matches(" + ").count(), 3, "{code}");
+        let outs = [p.mul(vec![a, b, c]), p.mul(vec![a, b, d])];
+        let code = emit_expr_c_vec(&outs, &vars, &names, "f", &p).unwrap();
+        assert_eq!(code.matches(" * ").count(), 3, "{code}");
+    }
+
+    #[test]
+    fn special_function_refusals_are_coded() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let half = p.rational(1, 2);
+        for e in [
+            p.func("bessel_j", vec![half, x]),
+            p.func("polygamma", vec![p.integer(2), x]),
+            p.func("EllipticE", vec![x, p.integer(2)]),
+            p.func("airy_ai", vec![x]),
+        ] {
+            let err = emit_expr_c(e, &[x], &["x"], "f", &p).unwrap_err();
+            assert_eq!(err.code(), "E-CODEGEN-001", "{e:?}");
+        }
     }
 
     #[test]
