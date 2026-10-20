@@ -127,7 +127,7 @@ Experimental (`alkahest.experimental`); see the [probability guide](./mdbook/src
 
 - Three-tier CPU evaluation: interpreter → Cranelift JIT (`--features cranelift`) → LLVM JIT (`--features jit`), selected by `CompileConfig` (DAG size + `expected_evals`)
 - `CompileCache` — memoize compiled functions keyed by `(ExprId, input variables)`; Python `CompileCache` class
-- Bulk column-major batch evaluation (`CompiledFn::call_bulk` / `call_batch`; native `alkahest_eval_bulk` when JIT backends are enabled)
+- Bulk column-major batch evaluation (`CompiledFn::call_bulk` / `call_batch`; one native column loop per batch, or per Rayon chunk, when a JIT backend is enabled; blocks of points on the interpreter tier)
 - LLVM JIT for native CPU code (`--features jit`; `+jit` / `+full` release wheels)
 - NVPTX (CUDA GPU) codegen for `sm_86` via `compile_cuda` (`--features cuda`, 16.2× over CPU on RTX 3090; source build only — no published wheel carries it)
 - Custom `alkahest` MLIR dialect with three lowering targets: ArithMath, StableHLO, LLVM

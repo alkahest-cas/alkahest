@@ -47,7 +47,9 @@ CPU compilation uses a **three-tier dispatch** chosen by `CompileConfig` (expres
 
 Default PyPI wheels use the interpreter only. `+jit` / `+full` release wheels enable LLVM. Add `cranelift` to a from-source build for the fast-compile tier without LLVM.
 
-Native JIT backends also emit a **bulk** entry point (`alkahest_eval_bulk`) for column-major batch evaluation; `CompiledFn.call_batch` / `call_bulk` use the same layout as `numpy_eval`.
+Both native JIT backends also emit a **column** entry point (`fn(cols, outs, start, end)`) that loads the input column pointers once and evaluates a range of points in one native loop; `CompiledFn.call_batch` / `call_bulk` and `numpy_eval` call it once per batch, and `numpy_eval_par` once per Rayon chunk (a sub-range, nothing copied).
+
+The **interpreter** tier (no JIT in the build, or an expression a JIT declines — `Piecewise` in particular) evaluates a batch a **block** of up to 256 points at a time: the expression is flattened once into a list of operations over numbered slots, and each operation runs over the whole block before the next one, so there is one dispatch per operation per block and sums, products and integer powers vectorise. `Piecewise` is a masked select: every branch is computed on the block, and per-point failure flags ensure a branch a point does not select (say `lambert_w(x)` guarded by `x > 0`) cannot fail that point; `And`/`Or` short-circuit per point. Each value is bit for bit what a single-point call (and `eval_expr`) gives.
 
 ## CompileCache
 

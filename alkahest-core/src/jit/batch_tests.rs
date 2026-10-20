@@ -154,7 +154,7 @@ fn square_root_power_is_sqrt_with_pow_edge_values() {
 /// (compensated), `^(1/2)`, a run-time exponent, libm trampolines, generic
 /// one- and two-argument primitives, and a primitive that fails at some
 /// points (`lambert_w` below `-1/e`).
-fn corpus(pool: &ExprPool, x: ExprId, y: ExprId) -> Vec<(&'static str, ExprId)> {
+pub(super) fn corpus(pool: &ExprPool, x: ExprId, y: ExprId) -> Vec<(&'static str, ExprId)> {
     let int = |n: i32| pool.integer(n);
     let r2 = pool.add(vec![pool.pow(x, int(2)), pool.pow(y, int(2))]);
     vec![

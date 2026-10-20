@@ -83,6 +83,8 @@ pub mod cache;
 mod agreement_tests;
 #[cfg(test)]
 mod batch_tests;
+#[cfg(test)]
+mod block_tests;
 pub use cache::CompileCache;
 
 // ---------------------------------------------------------------------------
@@ -93,17 +95,14 @@ pub use cache::CompileCache;
 #[cfg(any(feature = "jit", feature = "cranelift"))]
 pub(super) type JitScalarFn = unsafe extern "C" fn(*const f64, u64) -> f64;
 
-/// Bulk JIT entry: column-major `inputs` (`n_vars * n_points` values), `outputs` length `n_points`.
-#[cfg(feature = "jit")]
-pub(super) type JitBulkFn = unsafe extern "C" fn(*const f64, u64, *mut f64, u64);
-
 /// Column JIT entry: `cols[i]` points at input column `i`, `outs[k]` at output
 /// column `k`; evaluates points `start..end` (indices into every column).
 ///
 /// One entry point serves a whole batch, a Rayon chunk of one (a sub-range),
 /// a single point of a multi-output function (`start = 0, end = 1` over
 /// pointers to scalars), and any number of outputs sharing subexpressions.
-#[cfg(feature = "cranelift")]
+/// Both native backends emit it (LLVM for one output).
+#[cfg(any(feature = "jit", feature = "cranelift"))]
 pub(super) type JitColsFn = unsafe extern "C" fn(*const *const f64, *const *mut f64, u64, u64);
 
 /// Interpreter closure type for the Rust fallback backend.
@@ -550,7 +549,9 @@ enum CompiledFnInner {
     #[cfg(feature = "jit")]
     Llvm {
         fn_ptr: JitScalarFn,
-        bulk_fn: Option<JitBulkFn>,
+        /// The column entry point, as Cranelift's: a batch, a Rayon chunk
+        /// (a sub-range) or a flat bulk call are all one call of it.
+        cols_fn: JitColsFn,
         // execution_engine must be declared before _context so it drops first;
         // the context must outlive the execution engine.
         #[allow(dead_code)]
@@ -573,9 +574,10 @@ enum CompiledFnInner {
 
     Interpreter(InterpreterFn),
 
-    /// The interpreter tier for an expression [`NumericProgram`] can model:
-    /// the DAG flattened once at compile time, so a call is a loop over
-    /// operations with no hashing and no allocation.
+    /// The interpreter tier for an expression [`NumericProgram`] can model
+    /// (`Piecewise` included): the DAG flattened once at compile time, so a
+    /// call is a loop over operations with no hashing, and a batch runs each
+    /// operation over a block of points at a time.
     Program(Box<NumericProgram>),
 }
 
@@ -653,23 +655,8 @@ impl CompiledFn {
             self.n_inputs,
             n_points
         );
-        #[cfg(feature = "jit")]
-        if let CompiledFnInner::Llvm {
-            bulk_fn: Some(bulk_fn),
-            ..
-        } = &self.inner
-        {
-            return unsafe {
-                bulk_fn(
-                    inputs_flat.as_ptr(),
-                    self.n_inputs as u64,
-                    output.as_mut_ptr(),
-                    n_points as u64,
-                )
-            };
-        }
-        #[cfg(feature = "cranelift")]
-        if let CompiledFnInner::Cranelift { cols_fn, .. } = &self.inner {
+        #[cfg(any(feature = "jit", feature = "cranelift"))]
+        if let Some(cols_fn) = self.native_cols_fn() {
             let cols: Vec<*const f64> = (0..self.n_inputs)
                 .map(|i| inputs_flat[i * n_points..].as_ptr())
                 .collect();
@@ -721,10 +708,10 @@ impl CompiledFn {
         if let CompiledFnInner::Program(p) = &self.inner {
             return p.eval_slices(inputs, output, 0);
         }
-        // Cranelift reads the columns where they are: no copy, no allocation
-        // beyond one pointer per column.
-        #[cfg(feature = "cranelift")]
-        if let CompiledFnInner::Cranelift { cols_fn, .. } = &self.inner {
+        // A native backend reads the columns where they are: no copy, no
+        // allocation beyond one pointer per column.
+        #[cfg(any(feature = "jit", feature = "cranelift"))]
+        if let Some(cols_fn) = self.native_cols_fn() {
             let cols: Vec<*const f64> = inputs.iter().map(|c| c.as_ptr()).collect();
             let outs = [output.as_mut_ptr()];
             // SAFETY: every column has `n` values (asserted above) and the
@@ -775,13 +762,13 @@ impl CompiledFn {
             return self.call_batch(inputs, output);
         }
 
-        // Cranelift: each chunk is one call of the column entry over its own
-        // index range — nothing is copied or allocated per chunk.
-        #[cfg(feature = "cranelift")]
-        if let CompiledFnInner::Cranelift { cols_fn, .. } = &self.inner {
+        // A native backend (Cranelift or LLVM): each chunk is one call of the
+        // column entry over its own index range — nothing is copied or
+        // allocated per chunk.
+        #[cfg(any(feature = "jit", feature = "cranelift"))]
+        if let Some(cols_fn) = self.native_cols_fn() {
             let cols: Vec<usize> = inputs.iter().map(|c| c.as_ptr() as usize).collect();
             let out_base = output.as_mut_ptr() as usize;
-            let cols_fn = *cols_fn;
             (0..n.div_ceil(PAR_CHUNK)).into_par_iter().for_each(|c| {
                 let start = c * PAR_CHUNK;
                 let end = (start + PAR_CHUNK).min(n);
@@ -802,8 +789,9 @@ impl CompiledFn {
         }
 
         // Each point is independent. Work is split into chunks so the
-        // per-task state (a point buffer, or the program's scratch slots) is
-        // allocated once per chunk rather than once per point.
+        // per-task state (a point buffer, or the program's block storage) is
+        // allocated once per chunk rather than once per point; the program
+        // tier then runs each chunk a block of points at a time.
         output
             .par_chunks_mut(PAR_CHUNK)
             .enumerate()
@@ -825,6 +813,19 @@ impl CompiledFn {
     /// Backend tier used to implement this function.
     pub fn compile_tier(&self) -> CompileTier {
         self.tier
+    }
+
+    /// The native column entry point ([`JitColsFn`]), when a JIT backend
+    /// compiled this function.
+    #[cfg(any(feature = "jit", feature = "cranelift"))]
+    fn native_cols_fn(&self) -> Option<JitColsFn> {
+        match &self.inner {
+            #[cfg(feature = "jit")]
+            CompiledFnInner::Llvm { cols_fn, .. } => Some(*cols_fn),
+            #[cfg(feature = "cranelift")]
+            CompiledFnInner::Cranelift { cols_fn, .. } => Some(*cols_fn),
+            _ => None,
+        }
     }
 }
 
@@ -1630,15 +1631,21 @@ fn compile_interpreter(
 ) -> Result<CompiledFn, JitError> {
     let inputs_vec = inputs.to_vec();
     let n = inputs_vec.len();
-    if let Some(program) = NumericProgram::compile(expr, inputs, pool) {
+    // `Piecewise` compiles to a lazy program: every branch computed over a
+    // block of points, then a masked select, with failures tracked per point
+    // so that a branch a point does not select cannot fail it.
+    if let Some(program) = NumericProgram::compile(expr, inputs, pool)
+        .or_else(|| NumericProgram::compile_lazy(expr, inputs, pool))
+    {
         return Ok(CompiledFn {
             inner: CompiledFnInner::Program(Box::new(program)),
             n_inputs: n,
             tier: CompileTier::Interpreter,
         });
     }
-    // Lazy forms (`Piecewise`) keep the snapshot walker, which evaluates only
-    // the branch a point selects.
+    // The rest (`RootSum`, a `Predicate` used as a value, a condition that is
+    // not a predicate, …) keep the snapshot walker, which evaluates only the
+    // branch a point selects.
     let snapshot = snapshot_expr(expr, pool);
 
     let interp = move |vals: &[f64]| -> f64 {
@@ -1976,35 +1983,23 @@ mod llvm_backend {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn load_batch_inputs<'ctx>(
+    /// Load input `k` of point `idx` from column base pointer `cols[k]`.
+    fn load_col_inputs<'ctx>(
         builder: &Builder<'ctx>,
         f64_type: inkwell::types::FloatType<'ctx>,
-        i64_type: inkwell::types::IntType<'ctx>,
-        inputs_ptr: inkwell::values::PointerValue<'ctx>,
+        col_ptrs: &[inkwell::values::PointerValue<'ctx>],
         inputs: &[ExprId],
-        point_idx: IntValue<'ctx>,
-        n_points: IntValue<'ctx>,
+        idx: IntValue<'ctx>,
         values: &mut HashMap<ExprId, FloatValue<'ctx>>,
     ) -> Result<(), JitError> {
-        for (i, &var) in inputs.iter().enumerate() {
-            let var_i = i64_type.const_int(i as u64, false);
-            let elem_idx = builder
-                .build_int_add(
-                    builder
-                        .build_int_mul(var_i, n_points, "var_stride")
-                        .map_err(|e| JitError::CompilationFailed(e.to_string()))?,
-                    point_idx,
-                    "elem_idx",
-                )
-                .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+        for (i, (&var, &col)) in inputs.iter().zip(col_ptrs).enumerate() {
             let gep = unsafe {
                 builder
-                    .build_gep(f64_type, inputs_ptr, &[elem_idx], &format!("bulk_in_{i}"))
+                    .build_gep(f64_type, col, &[idx], &format!("col_in_{i}"))
                     .map_err(|e| JitError::CompilationFailed(e.to_string()))?
             };
             let val = builder
-                .build_load(f64_type, gep, &format!("bulk_x_{i}"))
+                .build_load(f64_type, gep, &format!("col_x_{i}"))
                 .map_err(|e| JitError::CompilationFailed(e.to_string()))?
                 .into_float_value();
             values.insert(var, val);
@@ -2012,37 +2007,17 @@ mod llvm_backend {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Emit the nodes of `expr` (inputs already in `values`) and return the
+    /// root's value.
     fn emit_expr_values<'ctx>(
         expr: ExprId,
         pool: &ExprPool,
-        inputs: &[ExprId],
         builder: &Builder<'ctx>,
         module: &Module<'ctx>,
         ctx: &'ctx Context,
         function: FunctionValue<'ctx>,
-        f64_type: inkwell::types::FloatType<'ctx>,
-        i64_type: inkwell::types::IntType<'ctx>,
-        inputs_ptr: inkwell::values::PointerValue<'ctx>,
-        batch_point: Option<IntValue<'ctx>>,
-        n_points: Option<IntValue<'ctx>>,
+        mut values: HashMap<ExprId, FloatValue<'ctx>>,
     ) -> Result<FloatValue<'ctx>, JitError> {
-        let mut values: HashMap<ExprId, FloatValue<'ctx>> = HashMap::new();
-        match batch_point {
-            None => {
-                load_scalar_inputs(builder, f64_type, i64_type, inputs_ptr, inputs, &mut values)?
-            }
-            Some(idx) => load_batch_inputs(
-                builder,
-                f64_type,
-                i64_type,
-                inputs_ptr,
-                inputs,
-                idx,
-                n_points.expect("n_points required for batch load"),
-                &mut values,
-            )?,
-        }
         let topo = topo_sort(expr, pool);
         for &node in &topo {
             if values.contains_key(&node) {
@@ -2086,99 +2061,113 @@ mod llvm_backend {
                 JitError::CompilationFailed("failed to get JIT inputs parameter".to_string())
             })?
             .into_pointer_value();
-        let scalar_result = emit_expr_values(
-            expr,
-            pool,
-            inputs,
+        let mut scalar_values = HashMap::new();
+        load_scalar_inputs(
             &builder,
-            &module,
-            ctx,
-            scalar_fn,
             f64_type,
             i64_type,
             scalar_inputs_ptr,
-            None,
-            None,
+            inputs,
+            &mut scalar_values,
         )?;
+        let scalar_result =
+            emit_expr_values(expr, pool, &builder, &module, ctx, scalar_fn, scalar_values)?;
         builder
             .build_return(Some(&scalar_result))
             .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
 
-        // Bulk: void alkahest_eval_bulk(f64* inputs, u64 n_vars, f64* outputs, u64 n_points)
+        // Columns: void alkahest_eval_cols(f64** cols, f64** outs, u64 start, u64 end)
+        // — the same entry Cranelift emits ([`super::JitColsFn`]): the column
+        // base pointers are loaded once, then points `start..end` run in one
+        // loop, so a Rayon chunk is just a sub-range.
+        let err = |e: inkwell::builder::BuilderError| JitError::CompilationFailed(e.to_string());
         let void_type = ctx.void_type();
-        let bulk_fn_type = void_type.fn_type(
+        let cols_fn_type = void_type.fn_type(
             &[
                 ptr_type.into(),
-                i64_type.into(),
                 ptr_type.into(),
+                i64_type.into(),
                 i64_type.into(),
             ],
             false,
         );
-        let bulk_fn = module.add_function("alkahest_eval_bulk", bulk_fn_type, None);
-        let bulk_entry = ctx.append_basic_block(bulk_fn, "entry");
-        let bulk_loop_hdr = ctx.append_basic_block(bulk_fn, "loop_hdr");
-        let bulk_loop_body = ctx.append_basic_block(bulk_fn, "loop_body");
-        let bulk_exit = ctx.append_basic_block(bulk_fn, "loop_exit");
+        let cols_fn = module.add_function("alkahest_eval_cols", cols_fn_type, None);
+        let cols_entry = ctx.append_basic_block(cols_fn, "entry");
+        let loop_hdr = ctx.append_basic_block(cols_fn, "loop_hdr");
+        let loop_body = ctx.append_basic_block(cols_fn, "loop_body");
+        let loop_exit = ctx.append_basic_block(cols_fn, "loop_exit");
 
-        builder.position_at_end(bulk_entry);
-        let bulk_inputs_ptr = bulk_fn.get_nth_param(0).unwrap().into_pointer_value();
-        let bulk_n_points = bulk_fn.get_nth_param(3).unwrap().into_int_value();
-        let bulk_outputs_ptr = bulk_fn.get_nth_param(2).unwrap().into_pointer_value();
-        let zero = i64_type.const_int(0, false);
-        builder
-            .build_unconditional_branch(bulk_loop_hdr)
-            .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+        builder.position_at_end(cols_entry);
+        let param = |i: u32| {
+            cols_fn.get_nth_param(i).ok_or_else(|| {
+                JitError::CompilationFailed("missing column entry parameter".to_string())
+            })
+        };
+        let cols_arg = param(0)?.into_pointer_value();
+        let outs_arg = param(1)?.into_pointer_value();
+        let start_idx = param(2)?.into_int_value();
+        let end_idx = param(3)?.into_int_value();
+        let load_ptr = |base: inkwell::values::PointerValue<'static>, k: usize, name: &str| {
+            let slot = unsafe {
+                builder
+                    .build_gep(ptr_type, base, &[i64_type.const_int(k as u64, false)], name)
+                    .map_err(err)?
+            };
+            Ok::<_, JitError>(
+                builder
+                    .build_load(ptr_type, slot, name)
+                    .map_err(err)?
+                    .into_pointer_value(),
+            )
+        };
+        let col_ptrs = (0..inputs.len())
+            .map(|k| load_ptr(cols_arg, k, &format!("col_{k}")))
+            .collect::<Result<Vec<_>, _>>()?;
+        let out_ptr = load_ptr(outs_arg, 0, "out_0")?;
+        builder.build_unconditional_branch(loop_hdr).map_err(err)?;
 
-        builder.position_at_end(bulk_loop_hdr);
-        let loop_idx = builder
-            .build_phi(i64_type, "i")
-            .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
-        loop_idx.add_incoming(&[(&zero, bulk_entry)]);
+        builder.position_at_end(loop_hdr);
+        let loop_idx = builder.build_phi(i64_type, "i").map_err(err)?;
+        loop_idx.add_incoming(&[(&start_idx, cols_entry)]);
         let cur_idx = loop_idx.as_basic_value().into_int_value();
         let done = builder
-            .build_int_compare(IntPredicate::UGE, cur_idx, bulk_n_points, "done")
-            .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+            .build_int_compare(IntPredicate::UGE, cur_idx, end_idx, "done")
+            .map_err(err)?;
         builder
-            .build_conditional_branch(done, bulk_exit, bulk_loop_body)
-            .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+            .build_conditional_branch(done, loop_exit, loop_body)
+            .map_err(err)?;
 
-        builder.position_at_end(bulk_loop_body);
-        let body_result = emit_expr_values(
-            expr,
-            pool,
-            inputs,
+        builder.position_at_end(loop_body);
+        let mut point_values = HashMap::new();
+        load_col_inputs(
             &builder,
-            &module,
-            ctx,
-            bulk_fn,
             f64_type,
-            i64_type,
-            bulk_inputs_ptr,
-            Some(cur_idx),
-            Some(bulk_n_points),
+            &col_ptrs,
+            inputs,
+            cur_idx,
+            &mut point_values,
         )?;
+        let body_result =
+            emit_expr_values(expr, pool, &builder, &module, ctx, cols_fn, point_values)?;
         let out_gep = unsafe {
             builder
-                .build_gep(f64_type, bulk_outputs_ptr, &[cur_idx], "out_gep")
-                .map_err(|e| JitError::CompilationFailed(e.to_string()))?
+                .build_gep(f64_type, out_ptr, &[cur_idx], "out_gep")
+                .map_err(err)?
         };
-        builder
-            .build_store(out_gep, body_result)
-            .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
-        let one = i64_type.const_int(1, false);
+        builder.build_store(out_gep, body_result).map_err(err)?;
+        // The body may have added blocks (none today); the back edge comes
+        // from wherever the builder ended up.
+        let body_end = builder
+            .get_insert_block()
+            .ok_or_else(|| JitError::CompilationFailed("no insert block".to_string()))?;
         let next_idx = builder
-            .build_int_add(cur_idx, one, "next_i")
-            .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
-        loop_idx.add_incoming(&[(&next_idx, bulk_loop_body)]);
-        builder
-            .build_unconditional_branch(bulk_loop_hdr)
-            .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+            .build_int_add(cur_idx, i64_type.const_int(1, false), "next_i")
+            .map_err(err)?;
+        loop_idx.add_incoming(&[(&next_idx, body_end)]);
+        builder.build_unconditional_branch(loop_hdr).map_err(err)?;
 
-        builder.position_at_end(bulk_exit);
-        builder
-            .build_return(None)
-            .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+        builder.position_at_end(loop_exit);
+        builder.build_return(None).map_err(err)?;
 
         if module.verify().is_err() {
             return Err(JitError::CompilationFailed(
@@ -2198,8 +2187,8 @@ mod llvm_backend {
                 .map_err(|e| JitError::CompilationFailed(e.to_string()))?
                 .as_raw()
         };
-        let bulk_fn_ptr: super::JitBulkFn = unsafe {
-            ee.get_function("alkahest_eval_bulk")
+        let cols_fn_ptr: super::JitColsFn = unsafe {
+            ee.get_function("alkahest_eval_cols")
                 .map_err(|e| JitError::CompilationFailed(e.to_string()))?
                 .as_raw()
         };
@@ -2207,7 +2196,7 @@ mod llvm_backend {
         Ok(CompiledFn {
             inner: CompiledFnInner::Llvm {
                 fn_ptr,
-                bulk_fn: Some(bulk_fn_ptr),
+                cols_fn: cols_fn_ptr,
                 execution_engine: ee,
                 _context: unsafe { Box::from_raw(ctx as *const Context as *mut Context) },
             },
@@ -3105,15 +3094,32 @@ mod constant_and_unbound_tests {
         for f in every_tier(pi, &[], &pool) {
             assert_batches_to(&f, std::f64::consts::PI);
         }
-        // A Piecewise takes the interpreter's closure path rather than the
-        // flattened program.
+        // A Piecewise takes the lazy block program ...
         let constant_piecewise = pool.piecewise(
             vec![(pool.pred_gt(pool.integer(2_i32), pool.integer(1_i32)), five)],
             pool.integer(-1_i32),
         );
         let f = compile(constant_piecewise, &[], &pool).unwrap();
-        assert!(matches!(f.inner, CompiledFnInner::Interpreter(_)));
+        assert!(matches!(f.inner, CompiledFnInner::Program(_)));
         assert_batches_to(&f, 5.0);
+        // ... including one compared inside a condition, which the closure
+        // path's walk had no value for (`NaN`) and `eval_interp` does.
+        let nested = pool.piecewise(
+            vec![(pool.pred_lt(constant_piecewise, pool.integer(7_i32)), five)],
+            pool.integer(-1_i32),
+        );
+        let f = compile(nested, &[], &pool).unwrap();
+        assert!(matches!(f.inner, CompiledFnInner::Program(_)));
+        assert_batches_to(&f, 5.0);
+        // A condition that is not a predicate keeps the closure path, where
+        // it has no value — at a point and in a batch alike.
+        let bare = pool.piecewise(vec![(five, five)], pool.integer(-1_i32));
+        let f = compile(bare, &[], &pool).unwrap();
+        assert!(matches!(f.inner, CompiledFnInner::Interpreter(_)));
+        assert!(f.call(&[]).is_nan());
+        let mut out = vec![0.0; 3];
+        f.call_batch(&[], &mut out);
+        assert!(out.iter().all(|v| v.is_nan()));
     }
 
     /// `compile(x + y, [x])` used to succeed and return `NaN` at every point.

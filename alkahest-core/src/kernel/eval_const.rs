@@ -169,6 +169,203 @@ pub(crate) fn pow_f64_narrow(base: f64, exp: f64) -> f64 {
     base.powf(exp)
 }
 
+/// [`pow_f64`] of every element of `base` for one exponent `exp` whose node
+/// (when it is an exact number) is `exp_node`. Element `i` of `out` is, bit
+/// for bit, `pow_f64(base[i], exp, || exp_node.cloned())`.
+pub(crate) fn pow_f64_slice(base: &[f64], exp: f64, exp_node: Option<&ExprData>, out: &mut [f64]) {
+    if exp.abs() < EXACT_INTEGER_F64_LIMIT {
+        return pow_f64_narrow_slice(base, exp, out);
+    }
+    for (o, &b) in out.iter_mut().zip(base) {
+        *o = pow_f64_wide_exponent(b, exp, exp_node.cloned());
+    }
+}
+
+/// [`pow_f64_narrow`] of every element of `base` for one exponent, into
+/// `out`: which case the exponent falls in (small integer, `1/2`, general) is
+/// decided once for the slice instead of once per element, and the FMA check
+/// once rather than per element. Element `i` of `out` is, bit for bit,
+/// `pow_f64_narrow(base[i], exp)` — the block interpreter relies on that.
+pub(crate) fn pow_f64_narrow_slice(base: &[f64], exp: f64, out: &mut [f64]) {
+    debug_assert_eq!(base.len(), out.len());
+    if let Some(n) = small_integer_exponent(exp) {
+        if (-1..=2).contains(&n) {
+            for (o, &b) in out.iter_mut().zip(base) {
+                *o = powi_with(&mut F64Ops, b, n);
+            }
+        } else {
+            powi_compensated_slice(base, n, out);
+        }
+        return;
+    }
+    if exp == 0.5 {
+        for (o, &b) in out.iter_mut().zip(base) {
+            *o = sqrt_pow_with(&mut F64Ops, b);
+        }
+        return;
+    }
+    for (o, &b) in out.iter_mut().zip(base) {
+        *o = b.powf(exp);
+    }
+}
+
+#[cfg(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "fma")
+))]
+fn powi_compensated_slice(base: &[f64], n: i32, out: &mut [f64]) {
+    powi_lanes(base, n, out);
+}
+
+/// Points a [`LaneOps`] value holds.
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+const LANES: usize = 8;
+
+/// [`FloatOps`] on [`LANES`] values at once, each lane exactly the [`F64Ops`]
+/// operation (`fma` fused): [`powi_with`] over it runs the same operation
+/// sequence on every lane — so the same bits as one value at a time — in a
+/// shape the compiler turns into vector instructions. Only instantiated where
+/// a hardware FMA is known to be present.
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+struct LaneOps;
+
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+impl LaneOps {
+    #[inline(always)]
+    fn map2(a: [f64; LANES], b: [f64; LANES], f: impl Fn(f64, f64) -> f64) -> [f64; LANES] {
+        std::array::from_fn(|i| f(a[i], b[i]))
+    }
+    #[inline(always)]
+    fn select(
+        t: [f64; LANES],
+        a: [f64; LANES],
+        b: [f64; LANES],
+        pick_a: impl Fn(f64) -> bool,
+    ) -> [f64; LANES] {
+        std::array::from_fn(|i| if pick_a(t[i]) { a[i] } else { b[i] })
+    }
+}
+
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+impl FloatOps for LaneOps {
+    type V = [f64; LANES];
+    #[inline(always)]
+    fn konst(&mut self, v: f64) -> Self::V {
+        [v; LANES]
+    }
+    #[inline(always)]
+    fn add(&mut self, a: Self::V, b: Self::V) -> Self::V {
+        Self::map2(a, b, |x, y| x + y)
+    }
+    #[inline(always)]
+    fn mul(&mut self, a: Self::V, b: Self::V) -> Self::V {
+        Self::map2(a, b, |x, y| x * y)
+    }
+    #[inline(always)]
+    fn div(&mut self, a: Self::V, b: Self::V) -> Self::V {
+        Self::map2(a, b, |x, y| x / y)
+    }
+    #[inline(always)]
+    fn neg(&mut self, a: Self::V) -> Self::V {
+        a.map(|x| -x)
+    }
+    #[inline(always)]
+    fn fma(&mut self, a: Self::V, b: Self::V, c: Self::V) -> Self::V {
+        // The instruction, never the C library's `fma` (see `fma_exact`).
+        #[cfg(all(target_arch = "x86_64", not(target_feature = "fma")))]
+        {
+            use std::arch::x86_64::{_mm256_fmadd_pd, _mm256_loadu_pd, _mm256_storeu_pd};
+            let mut r = [0.0f64; LANES];
+            // SAFETY: `LaneOps` is only used from `powi_slice_fma`, after FMA
+            // and AVX were detected; each pointer addresses 4 in-bounds
+            // lanes of an 8-lane array.
+            unsafe {
+                for h in [0, 4] {
+                    let v = _mm256_fmadd_pd(
+                        _mm256_loadu_pd(a.as_ptr().add(h)),
+                        _mm256_loadu_pd(b.as_ptr().add(h)),
+                        _mm256_loadu_pd(c.as_ptr().add(h)),
+                    );
+                    _mm256_storeu_pd(r.as_mut_ptr().add(h), v);
+                }
+            }
+            r
+        }
+        #[cfg(not(all(target_arch = "x86_64", not(target_feature = "fma"))))]
+        {
+            std::array::from_fn(|i| fma_exact(a[i], b[i], c[i]))
+        }
+    }
+    #[inline(always)]
+    fn sqrt(&mut self, a: Self::V) -> Self::V {
+        a.map(f64::sqrt)
+    }
+    #[inline(always)]
+    fn select_finite(&mut self, t: Self::V, a: Self::V, b: Self::V) -> Self::V {
+        Self::select(t, a, b, |t| t.abs() < f64::INFINITY)
+    }
+    #[inline(always)]
+    fn select_finite_nonzero(&mut self, t: Self::V, a: Self::V, b: Self::V) -> Self::V {
+        Self::select(t, a, b, |t| t.abs() < f64::INFINITY && t != 0.0)
+    }
+    #[inline(always)]
+    fn select_neg_inf(&mut self, t: Self::V, a: Self::V, b: Self::V) -> Self::V {
+        Self::select(t, a, b, |t| t == f64::NEG_INFINITY)
+    }
+}
+
+/// [`powi_with`] over a slice, [`LANES`] elements at a time; the tail one at
+/// a time. Callers guarantee a hardware FMA (see [`LaneOps`]).
+#[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+#[inline(always)]
+fn powi_lanes(base: &[f64], n: i32, out: &mut [f64]) {
+    let mut bs = base.chunks_exact(LANES);
+    let mut os = out.chunks_exact_mut(LANES);
+    for (b, o) in (&mut bs).zip(&mut os) {
+        let v: [f64; LANES] = std::array::from_fn(|i| b[i]);
+        o.copy_from_slice(&powi_with(&mut LaneOps, v, n));
+    }
+    for (o, &b) in os.into_remainder().iter_mut().zip(bs.remainder()) {
+        *o = powi_with(&mut LaneOps, [b; LANES], n)[0];
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", not(target_feature = "fma")))]
+fn powi_compensated_slice(base: &[f64], n: i32, out: &mut [f64]) {
+    if has_hw_fma() && std::is_x86_feature_detected!("avx") {
+        // SAFETY: the CPU supports FMA and AVX (checked just above).
+        unsafe { powi_slice_fma(base, n, out) }
+    } else if has_hw_fma() {
+        // SAFETY: the CPU supports FMA (checked just above).
+        unsafe { powi_slice_fma_scalar(base, n, out) }
+    } else {
+        for (o, &b) in out.iter_mut().zip(base) {
+            *o = b.powf(n as f64);
+        }
+    }
+}
+
+#[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+fn powi_compensated_slice(base: &[f64], n: i32, out: &mut [f64]) {
+    for (o, &b) in out.iter_mut().zip(base) {
+        *o = b.powf(n as f64);
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", not(target_feature = "fma")))]
+#[target_feature(enable = "avx,fma")]
+unsafe fn powi_slice_fma(base: &[f64], n: i32, out: &mut [f64]) {
+    powi_lanes(base, n, out);
+}
+
+#[cfg(all(target_arch = "x86_64", not(target_feature = "fma")))]
+#[target_feature(enable = "fma")]
+unsafe fn powi_slice_fma_scalar(base: &[f64], n: i32, out: &mut [f64]) {
+    for (o, &b) in out.iter_mut().zip(base) {
+        *o = powi_with(&mut FmaInsnOps, b, n);
+    }
+}
+
 /// `x ^ n` as [`pow_f64_narrow`] defines it: [`powi_with`] where it is a
 /// single operation or the CPU has a hardware FMA, `powf` otherwise.
 #[inline]
