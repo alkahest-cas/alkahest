@@ -75,11 +75,14 @@ mod cplx;
 mod dists;
 mod entropy;
 mod expect;
+#[cfg(test)]
+mod followup_tests;
 mod genfun;
 mod joint;
 #[cfg(test)]
 mod joint_tests;
 mod moments;
+mod mvn_info;
 mod order;
 mod quad;
 mod table;
@@ -89,7 +92,8 @@ mod verify;
 
 pub use charfun::characteristic_function;
 pub use entropy::{
-    cross_entropy, entropy, kl_divergence, mutual_information_independent, MAX_BINOMIAL_ENTROPY_N,
+    cross_entropy, entropy, entropy_asymptotic, kl_divergence, mutual_information_independent,
+    MAX_BINOMIAL_ENTROPY_N,
 };
 pub use expect::{expectation, expectation_affine, variance_affine_independent};
 pub use genfun::{
@@ -100,7 +104,7 @@ pub use joint::{
     covariance, joint_expectation, joint_variance, sum_independent, JointBlock, MultivariateNormal,
     MAX_MVN_DIM,
 };
-pub use order::{order_statistic, OrderKind, OrderStatistic};
+pub use order::{kth_order_statistic, order_statistic, OrderKind, OrderStatistic};
 pub use verify::Evidence;
 
 pub(crate) use quad::numeric_ball;
