@@ -106,6 +106,58 @@ symbol may also stand for a free Lorentz index (`dot(μ, ν) = g^{μν}`). Up to
 slots are expanded (`E-NC-006` beyond); with `γ⁵` and more than four other
 slots, `γ⁵` is expanded as `iγ⁰γ¹γ²γ³`, so the answer uses components.
 
+### d dimensions
+
+`gamma_trace(slots, dim=d, indices=[...])` works with a symbolic dimension.
+Slots are commutative labels; a label in `indices` is a Lorentz index, and an
+index occurring twice is summed with `g^μ_μ = d` (`tr 1 = 4`, as in FORM and
+FeynCalc; `tr(γ^μγ^ν) = 4 g^{μν}`). γ⁵ and explicit components `0`–`3` are
+four-dimensional objects and are refused (`E-NC-005`).
+
+```python
+d = p.symbol("d"); mu, nu = p.symbol("mu"), p.symbol("nu")
+ak.gamma_trace([mu, mu], dim=d, indices=[mu])                # 4*d
+ak.gamma_trace([mu, nu, mu, nu], dim=d, indices=[mu, nu])    # 4*d*(2 - d)
+ak.gamma_contract([mu, nu, mu], [mu], d)                     # [(2 - d, [nu])]
+t = ak.gamma_trace([m, n, r, s], dim=d)                      # free indices
+ak.lorentz_contract(t*t, [m, n, r, s], d)                    # 16*d*(3*d - 2)
+```
+
+`lorentz_contract` turns any polynomial in `dot(a, b)` (a product of traces)
+into its contraction: `dot(μ, μ) → d`, `dot(μ, a) dot(μ, b) → dot(a, b)`.
+`gamma_contract` reduces a gamma *string* with contracted pairs using only the
+Clifford relation, so the identities hold for every `d`.
+
+## Lie algebras
+
+`lie_algebra(generators, {(a, b, c): f_abc})` (1-based) defines
+`[T_a, T_b] = i Σ f_abc T_c`, checks the Jacobi identity and compiles
+Poincaré–Birkhoff–Witt ordering rules. `lie_su2` (`f = ε`, `J = σ/2`) and
+`lie_su3` (Gell-Mann `f_abc`, `T = λ/2`; the tables `su3_f` and `su3_d` are
+exported) are built in.
+
+```python
+su2 = ak.lie_su2(p); J = su2.generators
+su2.commutator(J[0], J[1])        # I*J3
+su2.casimir()                      # J1**2 + J2**2 + J3**2, commutes with every J
+su3 = ak.lie_su3(p); su3.normal_order(su3.generators[7]*su3.generators[0])
+```
+
+`commutator` reduces the commutator of any noncommutative polynomial in the
+generators; `casimir(inverse_metric=None)` is `Σ g^{ab} T_a T_b` (default
+`Σ T_a²`, right for the orthonormal su(n) bases).
+
+## Sequence wildcards
+
+`make_rule(A*X*B, rhs, sequence=[X])` declares the noncommutative symbol `X` a
+sequence wildcard: it matches any contiguous run of factors, possibly empty,
+between `A` and `B`, and `X` in `rhs` is replaced by that run. Matching is
+leftmost, and each wildcard takes the *shortest* run that lets the rest match;
+a repeated wildcard must match equal runs. Such a rule fires only inside a
+product of two or more noncommutative factors, applies through `simplify_with`
+(`nc_rewrite` refuses it, `E-NC-003`), and gives up (does not fire) rather than
+run unboundedly: the match is capped and honours the active budget.
+
 ## Refusals
 
 | Code | Meaning |
@@ -117,7 +169,9 @@ slots, `γ⁵` is expanded as `iγ⁰γ¹γ²γ³`, so the answer uses component
 | `E-NC-005` | a γ slot that is not `0`–`3`, `5` or a commutative label |
 | `E-NC-006` | a γ trace with more than 14 slots to expand |
 | `E-NC-007` | a vacuum expectation over a factor that is not a listed ladder operator |
+| `E-NC-008` | a malformed Lie-algebra table (generators, indices, inconsistent entries, failed Jacobi identity) |
+| `E-NC-009` | a malformed sequence-wildcard pattern |
 
-Not yet covered: γ-matrix algebra beyond traces (contraction identities such as
-`γ^μ γ_μ = 4`, `d`-dimensional traces), general Lie-algebra commutator tables,
-and pattern wildcards that bind sub-words.
+Not yet covered: γ⁵ in `d` dimensions (no scheme is implemented),
+Lie-algebra Casimirs beyond the quadratic one, and sequence wildcards inside
+commutative products.

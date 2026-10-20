@@ -74,6 +74,11 @@ pub enum NcError {
     /// A vacuum expectation was asked of an expression containing
     /// non-commutative atoms that are not ladder operators (`E-NC-007`).
     UnknownOperator { atom: String },
+    /// A Lie-algebra table is malformed or violates the Jacobi identity
+    /// (`E-NC-008`).
+    InvalidLieAlgebra { reason: String },
+    /// A sequence-wildcard pattern is malformed (`E-NC-009`).
+    InvalidSequencePattern { reason: String },
     /// The active budget tripped or cancellation was requested.
     Budget(BudgetError),
 }
@@ -99,6 +104,10 @@ impl fmt::Display for NcError {
                 f,
                 "vacuum expectation: `{atom}` is a noncommutative atom that is not a ladder operator of the given modes"
             ),
+            NcError::InvalidLieAlgebra { reason } => write!(f, "invalid Lie algebra: {reason}"),
+            NcError::InvalidSequencePattern { reason } => {
+                write!(f, "invalid sequence-wildcard pattern: {reason}")
+            }
             NcError::Budget(e) => write!(f, "{e}"),
         }
     }
@@ -116,6 +125,8 @@ impl crate::errors::AlkahestError for NcError {
             NcError::InvalidGamma { .. } => "E-NC-005",
             NcError::GammaTraceTooLong { .. } => "E-NC-006",
             NcError::UnknownOperator { .. } => "E-NC-007",
+            NcError::InvalidLieAlgebra { .. } => "E-NC-008",
+            NcError::InvalidSequencePattern { .. } => "E-NC-009",
             NcError::Budget(e) => e.code(),
         }
     }
@@ -142,6 +153,12 @@ impl crate::errors::AlkahestError for NcError {
             }
             NcError::UnknownOperator { .. } => Some(
                 "list every ladder operator in the modes, or remove the other noncommutative factors first",
+            ),
+            NcError::InvalidLieAlgebra { .. } => Some(
+                "give distinct noncommutative generators and structure constants f_abc with [T_a, T_b] = i f_abc T_c satisfying the Jacobi identity (check_jacobi=False skips the check)",
+            ),
+            NcError::InvalidSequencePattern { .. } => Some(
+                "the left side must be a product of noncommutative factors with at least one fixed factor; sequence variables are plain noncommutative symbols that occur as direct factors",
             ),
             NcError::Budget(e) => e.remediation(),
         }

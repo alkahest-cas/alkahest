@@ -1028,6 +1028,9 @@ pub struct PatternRule {
     pub lhs: Pattern,
     pub rhs: ExprId,
     name: &'static str,
+    /// Noncommutative *sequence wildcards* of `lhs` (F20): each matches a
+    /// contiguous, possibly empty, run of factors of a noncommutative product.
+    seq_vars: Vec<ExprId>,
 }
 
 /// Pattern rules plus a discrimination-net index for O(1) head lookup.
@@ -1065,11 +1068,110 @@ impl PatternRule {
             lhs,
             rhs,
             name: "pattern_rule",
+            seq_vars: Vec::new(),
         }
     }
 
     pub fn named(lhs: Pattern, rhs: ExprId, name: &'static str) -> Self {
-        PatternRule { lhs, rhs, name }
+        PatternRule {
+            lhs,
+            rhs,
+            name,
+            seq_vars: Vec::new(),
+        }
+    }
+
+    /// Declare noncommutative symbols of the left-hand side to be *sequence
+    /// wildcards*: `A·X·B` with `X` a sequence wildcard matches `A`, then any
+    /// contiguous run of noncommutative factors (possibly none), then `B`,
+    /// inside a noncommutative product, and `X` in the right-hand side is
+    /// replaced by that run. Matching is leftmost, and within it each
+    /// sequence wildcard takes the **shortest** run that lets the rest match
+    /// (backtracking in left-to-right order). A rule never fires on a lone
+    /// factor, so it needs a product of at least two noncommutative factors.
+    ///
+    /// The left side must be a product of noncommutative factors in which
+    /// every sequence variable is a direct factor (a variable occurring more than once must match equal runs), and at
+    /// least one other factor must be present (a pattern of wildcards alone
+    /// would match the empty word everywhere). The rule does not fire on a
+    /// product of more than 2048 noncommutative factors, which bounds a rule
+    /// that regrows its own redex.
+    ///
+    /// # Errors
+    /// `E-NC-009` when these conditions fail.
+    pub fn with_sequence_wildcards(
+        mut self,
+        vars: Vec<ExprId>,
+        pool: &ExprPool,
+    ) -> Result<Self, crate::algebra::NcError> {
+        use crate::algebra::NcError;
+        let bad = |reason: String| NcError::InvalidSequencePattern { reason };
+        let args = pool
+            .with(self.lhs.root, |d| match d {
+                ExprData::Mul(v) => Some(v.clone()),
+                _ => None,
+            })
+            .filter(|_| !pool.is_mult_commutative(self.lhs.root))
+            .ok_or_else(|| {
+                bad(format!(
+                    "`{}` is not a product of noncommutative factors",
+                    pool.display(self.lhs.root)
+                ))
+            })?;
+        let probe = pool.symbol("__seq_probe__", crate::kernel::Domain::Real);
+        for (i, &v) in vars.iter().enumerate() {
+            let nc_sym = pool.with(v, |d| {
+                matches!(
+                    d,
+                    ExprData::Symbol {
+                        commutative: false,
+                        ..
+                    }
+                )
+            });
+            if !nc_sym {
+                return Err(bad(format!(
+                    "sequence variable `{}` must be a noncommutative symbol",
+                    pool.display(v)
+                )));
+            }
+            if vars[..i].contains(&v) {
+                return Err(bad(format!(
+                    "sequence variable `{}` listed twice",
+                    pool.display(v)
+                )));
+            }
+            if !args.contains(&v) {
+                return Err(bad(format!(
+                    "sequence variable `{}` must occur as a direct factor of the left side",
+                    pool.display(v)
+                )));
+            }
+            // not hidden inside another factor (a power, a function, …)
+            let m: std::collections::HashMap<ExprId, ExprId> = [(v, probe)].into_iter().collect();
+            for &a in args.iter().filter(|&&a| a != v) {
+                if crate::kernel::subs::subs(a, &m, pool) != a {
+                    return Err(bad(format!(
+                        "sequence variable `{}` occurs inside the factor `{}`",
+                        pool.display(v),
+                        pool.display(a)
+                    )));
+                }
+            }
+        }
+        if args.iter().all(|a| vars.contains(a)) {
+            return Err(bad(
+                "the left side needs at least one factor that is not a sequence variable".into(),
+            ));
+        }
+        self.seq_vars = vars;
+        Ok(self)
+    }
+
+    /// The sequence wildcards declared with
+    /// [`with_sequence_wildcards`](Self::with_sequence_wildcards).
+    pub fn sequence_wildcards(&self) -> &[ExprId] {
+        &self.seq_vars
     }
 }
 
@@ -1081,9 +1183,13 @@ impl RewriteRule for PatternRule {
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
         // Try to match the pattern at the root (engine does bottom-up
         // traversal); failing that, inside a longer product (G10c).
-        let after = match match_at_root(&self.lhs, expr, pool) {
-            Some(subst) => subst.apply(self.rhs, pool),
-            None => rewrite_inside_product(self.lhs.root, self.rhs, expr, pool)?,
+        let after = if !self.seq_vars.is_empty() {
+            rewrite_with_sequences(self.lhs.root, &self.seq_vars, self.rhs, expr, pool)?
+        } else {
+            match match_at_root(&self.lhs, expr, pool) {
+                Some(subst) => subst.apply(self.rhs, pool),
+                None => rewrite_inside_product(self.lhs.root, self.rhs, expr, pool)?,
+            }
         };
         if after == expr {
             return None;
@@ -1246,7 +1352,7 @@ fn rewrite_inside_product(
             if let Some(s) = match_args_exact(&pargs, &eargs[start..start + k], empty(), pool) {
                 let mut out = Vec::with_capacity(eargs.len() - k + 1);
                 out.extend_from_slice(&eargs[..start]);
-                out.push(s.apply(rhs, pool));
+                push_spliced(&mut out, s.apply(rhs, pool), pool);
                 out.extend_from_slice(&eargs[start + k..]);
                 return Some(pool.mul(out));
             }
@@ -1267,6 +1373,167 @@ fn rewrite_inside_product(
             .map(|(&e, _)| e),
     );
     Some(pool.mul(out))
+}
+
+/// Push `e` onto a product's factor list, splicing in its factors when it is
+/// itself a (noncommutative) product. Without this a replacement that
+/// contains its own redex (`A·B → A·A·B`) nests one more `Mul` per pass and
+/// the engine, which rewrites bottom-up at every level, doubles the work.
+fn push_spliced(out: &mut Vec<ExprId>, e: ExprId, pool: &ExprPool) {
+    let args = pool.with(e, |d| match d {
+        ExprData::Mul(v) => Some(v.clone()),
+        _ => None,
+    });
+    match args {
+        Some(v) => {
+            for a in v {
+                push_spliced(out, a, pool);
+            }
+        }
+        None => out.push(e),
+    }
+}
+
+/// Matching steps one sequence-wildcard match may take before it gives up
+/// (the rule then simply does not fire; the value is never wrong).
+const MAX_SEQ_MATCH_STEPS: usize = 1_000_000;
+
+/// A sequence-wildcard rule does not fire on a product of more than this many
+/// noncommutative factors. A rule that regrows its own redex
+/// (`A·X·B → A·A·X·B`) never reaches a fixpoint; this bounds how far it can
+/// run when no budget is set (the active budget stops it earlier).
+const MAX_SEQ_WORD: usize = 2048;
+
+#[derive(Clone, Copy)]
+enum PItem {
+    Seq(ExprId),
+    Fix(ExprId),
+}
+
+type SeqBinding = (ExprId, usize, usize);
+
+fn match_seq(
+    items: &[PItem],
+    word: &[ExprId],
+    pos: usize,
+    subst: Substitution,
+    seqb: &mut Vec<SeqBinding>,
+    steps: &mut usize,
+    pool: &ExprPool,
+) -> Option<(usize, Substitution)> {
+    *steps += 1;
+    if *steps > MAX_SEQ_MATCH_STEPS {
+        return None;
+    }
+    if *steps % 1024 == 0 && crate::budget::check().is_err() {
+        *steps = MAX_SEQ_MATCH_STEPS + 1;
+        return None;
+    }
+    let Some((&first, rest)) = items.split_first() else {
+        return Some((pos, subst));
+    };
+    match first {
+        PItem::Fix(p) => {
+            if pos >= word.len() {
+                return None;
+            }
+            let s = match_root_node(p, word[pos], subst, pool)?;
+            match_seq(rest, word, pos + 1, s, seqb, steps, pool)
+        }
+        PItem::Seq(v) => {
+            if let Some(&(_, b0, b1)) = seqb.iter().find(|(x, _, _)| *x == v) {
+                let len = b1 - b0;
+                if pos + len > word.len() || word[pos..pos + len] != word[b0..b1] {
+                    return None;
+                }
+                return match_seq(rest, word, pos + len, subst, seqb, steps, pool);
+            }
+            for len in 0..=word.len() - pos {
+                seqb.push((v, pos, pos + len));
+                if let Some(r) = match_seq(rest, word, pos + len, subst.clone(), seqb, steps, pool)
+                {
+                    return Some(r);
+                }
+                seqb.pop();
+                if *steps > MAX_SEQ_MATCH_STEPS {
+                    return None;
+                }
+            }
+            None
+        }
+    }
+}
+
+/// Rewrite the leftmost match of a pattern with sequence wildcards inside a
+/// noncommutative product (see [`PatternRule::with_sequence_wildcards`]).
+/// Commutative factors of the product (coefficients) are set aside and kept.
+fn rewrite_with_sequences(
+    pat: ExprId,
+    seq_vars: &[ExprId],
+    rhs: ExprId,
+    expr: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    let pargs = pool.with(pat, |d| match d {
+        ExprData::Mul(v) => Some(v.clone()),
+        _ => None,
+    })?;
+    let eargs = pool.with(expr, |d| match d {
+        ExprData::Mul(v) => Some(v.clone()),
+        _ => None,
+    })?;
+    let (coeffs, nc): (Vec<ExprId>, Vec<ExprId>) = eargs
+        .into_iter()
+        .partition(|&a| pool.is_mult_commutative(a));
+    if nc.len() < 2 {
+        return None;
+    }
+    let word = unroll_nc_powers(&nc, pool);
+    if word.len() > MAX_SEQ_WORD {
+        return None;
+    }
+    let mut items: Vec<PItem> = Vec::new();
+    for a in pargs {
+        if seq_vars.contains(&a) {
+            items.push(PItem::Seq(a));
+        } else {
+            for f in unroll_nc_powers(&[a], pool) {
+                items.push(PItem::Fix(f));
+            }
+        }
+    }
+    let mut steps = 0usize;
+    for start in 0..=word.len() {
+        let mut seqb = Vec::new();
+        let empty = Substitution {
+            bindings: std::collections::HashMap::new(),
+        };
+        if let Some((end, subst)) =
+            match_seq(&items, &word, start, empty, &mut seqb, &mut steps, pool)
+        {
+            let mut mapping = std::collections::HashMap::new();
+            for &(v, b0, b1) in &seqb {
+                let run = &word[b0..b1];
+                let val = match run.len() {
+                    0 => pool.integer(1_i32),
+                    1 => run[0],
+                    _ => pool.mul(run.to_vec()),
+                };
+                mapping.insert(v, val);
+            }
+            let replaced = subst.apply(rhs, pool);
+            let replaced = crate::kernel::subs::subs(replaced, &mapping, pool);
+            let mut out = coeffs;
+            out.extend_from_slice(&word[..start]);
+            push_spliced(&mut out, replaced, pool);
+            out.extend_from_slice(&word[end..]);
+            return Some(pool.mul(out));
+        }
+        if steps > MAX_SEQ_MATCH_STEPS {
+            return None;
+        }
+    }
+    None
 }
 
 /// Unroll `b^n` (a non-commutative base, small positive integer `n`) into

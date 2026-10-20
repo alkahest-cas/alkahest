@@ -122,7 +122,15 @@ pub(crate) fn apply_rules(
 ) -> (ExprId, DerivationLog) {
     let mut current = expr;
     let mut log = DerivationLog::new();
+    let mut firings = 0usize;
     loop {
+        // A user rule that regrows its own redex (`A·B → A·A·B`) never
+        // reaches a fixpoint here; honour the active budget so it can be
+        // stopped (the value reached is equal to `expr` under the rules).
+        firings += 1;
+        if firings % 64 == 0 && crate::budget::check().is_err() {
+            break;
+        }
         let kind = crate::simplify::rules::node_kind(current, pool);
         let mut fired = false;
         for rule in rules {
@@ -297,7 +305,12 @@ fn simplify_node_indexed(
 
         let mut current = rebuilt;
         let mut rule_log = DerivationLog::new();
+        let mut firings = 0usize;
         loop {
+            firings += 1;
+            if firings % 64 == 0 && crate::budget::check().is_err() {
+                break;
+            }
             let mut fired = false;
             for idx in rule_set.index().candidates(current, pool) {
                 if let Some((new_expr, step_log)) = rule_set.rules()[idx].apply(current, pool) {
