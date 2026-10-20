@@ -609,7 +609,7 @@ fn numerically_consistent(
                 let x = a + (b - a) * i as f64 / 64.0;
                 let mut e2 = env.clone();
                 e2.insert(var, x);
-                ev(quad.q_at(var, pool), &e2).is_none_or(|q| q <= 0.0)
+                !matches!(ev(quad.q_at(var, pool), &e2), Some(q) if q > 0.0)
             });
             if dips {
                 continue;

@@ -39,6 +39,9 @@ use crate::simplify::Sign;
 
 type Outcome = Option<Result<DerivedExpr<ExprId>, IntegrationError>>;
 
+/// A product split as `(var-free coefficient factors, [(base, exponent)])`.
+pub(super) type Factors = (Vec<ExprId>, Vec<(ExprId, ExprId)>);
+
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
@@ -137,11 +140,7 @@ pub(super) fn linear(e: ExprId, var: ExprId, pool: &ExprPool) -> Option<(ExprId,
 /// The factors of a product, `sqrt(u)` read as `u^{1/2}` and `u` as `u^1`:
 /// `(var-free coefficient, [(base, exponent)])`. `None` when an exponent
 /// depends on `var`.
-pub(super) fn power_factors(
-    e: ExprId,
-    var: ExprId,
-    pool: &ExprPool,
-) -> Option<(Vec<ExprId>, Vec<(ExprId, ExprId)>)> {
+pub(super) fn power_factors(e: ExprId, var: ExprId, pool: &ExprPool) -> Option<Factors> {
     let factors = match pool.get(e) {
         ExprData::Mul(a) => a,
         _ => vec![e],
