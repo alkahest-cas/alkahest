@@ -632,6 +632,12 @@ Rules for agents:
   `True` (it is false at `x = −2/3`), and existential witnesses were interval midpoints
   that did not satisfy the sentence. If you have `decide` results from 3.7, re-run them.
 
+On a curved set (disk, sphere, `h = 0`), use `prove_nonneg_on(f, vars, [g, ...],
+equalities=[h, ...], level=k)`: a Putinar certificate `f = σ₀ + Σσᵢgᵢ + Σλⱼhⱼ`
+(`kind == "putinar"`, `cert.multipliers` lists each σ as rational squares). `E-SOS-002`
+means raise `level` (the message says whether the set is provably bounded);
+`E-SOS-003` carries `exc.witness`, an exact point of the set with `f < 0`.
+
 Escalation when `decide` refuses: `sos_decompose` / `prove_nonneg` for a positivity
 certificate, `alkahest.smt` (z3's `nlsat` is complete over the reals), or
 `bound_on_box` / `verified_sign` if a rigorous statement over a box is enough.

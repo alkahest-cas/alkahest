@@ -187,9 +187,10 @@ use alkahest_core::validated::bounds::{
 use alkahest_core::validated::ValidatedError as CoreValidatedError;
 // P1 item 8 — positivity certificates (SOS / Positivstellensatz)
 use alkahest_core::real::sos::{
-    prove_nonneg as core_prove_nonneg, sos_decompose as core_sos_decompose,
-    PositivityCertificate as CorePositivityCertificate, SosError as CoreSosError,
-    SosOpts as CoreSosOpts,
+    nonneg_on_witness as core_nonneg_on_witness, prove_nonneg as core_prove_nonneg,
+    prove_nonneg_on as core_prove_nonneg_on, sos_decompose as core_sos_decompose,
+    PositivityCertificate as CorePositivityCertificate, PutinarOpts as CorePutinarOpts,
+    SosError as CoreSosError, SosOpts as CoreSosOpts,
 };
 // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
 use alkahest_core::holonomic::{
@@ -14951,6 +14952,53 @@ impl PyPositivityCertificate {
         }
     }
 
+    /// The certificate's summands, as ``[(weight, [(c, q), ...]), ...]``.
+    ///
+    /// Each entry is one multiplier term ``weight · Σ c·q²``: ``weight`` is the
+    /// product of the constraints it multiplies (the integer ``1`` for the
+    /// unconstrained ``σ₀``), and every ``(c, q)`` is a positive rational
+    /// ``c`` and a rational polynomial ``q``. Summing ``weight·c·q**2`` over
+    /// everything re-expands exactly to the target (or to ``target·σ`` for a
+    /// Reznick multiplier certificate).
+    #[getter]
+    fn multipliers(&self, py: Python<'_>) -> Vec<(PyExpr, Vec<(PyExpr, PyExpr)>)> {
+        let pool_ref = self.pool.borrow(py);
+        let pool = &pool_ref.inner;
+        let vars = &self.inner.vars;
+        let mk = |id: ExprId| PyExpr {
+            id,
+            pool: self.pool.clone_ref(py),
+        };
+        let mut out = Vec::new();
+        for m in &self.inner.terms {
+            let weight = match m.constraints.len() {
+                0 => pool.integer(1),
+                1 => self.inner.constraints[m.constraints[0]].to_expr(vars, pool),
+                _ => pool.mul(
+                    m.constraints
+                        .iter()
+                        .map(|&i| self.inner.constraints[i].to_expr(vars, pool))
+                        .collect(),
+                ),
+            };
+            let squares = m
+                .sos
+                .terms
+                .iter()
+                .map(|t| {
+                    let c = if *t.coeff.denom() == 1 {
+                        pool.integer(t.coeff.numer().clone())
+                    } else {
+                        pool.rational(t.coeff.numer().clone(), t.coeff.denom().clone())
+                    };
+                    (mk(c), mk(t.square.to_expr(vars, pool)))
+                })
+                .collect();
+            out.push((mk(weight), squares));
+        }
+        out
+    }
+
     /// Re-run the exact verification. Always ``True`` for a certificate that
     /// was returned (the search refuses rather than returning an unverified
     /// one); exposed so a caller can check independently.
@@ -15493,6 +15541,103 @@ fn py_prove_nonneg(
         inner,
         pool: pool_py,
     })
+}
+
+/// `alkahest.prove_nonneg_on(expr, vars, constraints=(), *, equalities=(), level=None)`
+///
+/// Prove ``expr ≥ 0`` on the semialgebraic set ``{g_i ≥ 0, h_j = 0}`` with a
+/// **Putinar** (quadratic-module) certificate
+/// ``expr = σ₀ + Σ σ_i·g_i + Σ λ_j·h_j``, every ``σ`` an explicit sum of
+/// squares of rational polynomials and every ``λ`` a rational polynomial.
+///
+/// ``constraints`` items are a polynomial ``g`` (meaning ``g ≥ 0``) or a
+/// comparison built with ``pool.ge``/``pool.le``/``pool.gt``/``pool.lt``
+/// (strict ones are relaxed to their closure, which is sound) or
+/// ``pool.pred_eq`` (an equality). ``equalities`` items are ``h`` (meaning
+/// ``h = 0``) or ``pool.pred_eq(a, b)``. ``level`` is the relaxation order
+/// ``k``: every summand has degree ``≤ 2k``; ``None`` tries the smallest
+/// level that can work and two more.
+///
+/// Returns a :class:`PositivityCertificate` with ``kind == "putinar"``,
+/// already re-verified exactly; equalities appear in it as the pair
+/// ``h ≥ 0``, ``-h ≥ 0`` with ``λ = σ⁺ − σ⁻``. With no constraints and no
+/// equalities at all this is :func:`sos_decompose` (``kind == "sos"``,
+/// ``level`` read as its ``basis_degree``).
+///
+/// An inequality predicate passed in ``equalities`` is refused
+/// (``E-SOS-004``). A witness always satisfies strict comparisons strictly:
+/// a point of the closure only is not a refutation.
+///
+/// Raises :exc:`SosError` ``E-SOS-003`` when a rational point of the set has
+/// ``expr < 0`` (the exception's ``witness`` attribute maps each variable to
+/// its exact value), ``E-SOS-002`` when no certificate was found at the
+/// level(s) searched (undecided — raise ``level``; the message says whether
+/// the module was found to be Archimedean), ``E-SOS-001``/``E-SOS-004`` on
+/// malformed input.
+///
+/// Example: ``prove_nonneg_on(1 - x**2, [x, y], [1 - x**2 - y**2])`` returns
+/// the certificate ``1 - x² = y² + 1·(1 - x² - y²)``.
+#[pyfunction]
+#[pyo3(name = "prove_nonneg_on", signature = (expr, vars, constraints = None, *, equalities = None, level = None))]
+fn py_prove_nonneg_on(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    vars: Vec<PyRef<PyExpr>>,
+    constraints: Option<Vec<PyRef<PyExpr>>>,
+    equalities: Option<Vec<PyRef<PyExpr>>>,
+    level: Option<u32>,
+) -> PyResult<PyPositivityCertificate> {
+    same_pool!("prove_nonneg_on"; expr, vars, constraints, equalities);
+    let pool_py = expr.pool.clone_ref(py);
+    guard_expr_depth(py, &expr)?;
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+    let cons: Vec<ExprId> = constraints
+        .map(|cs| cs.iter().map(|c| c.id).collect())
+        .unwrap_or_default();
+    let eqs: Vec<ExprId> = equalities
+        .map(|cs| cs.iter().map(|c| c.id).collect())
+        .unwrap_or_default();
+    let opts = CorePutinarOpts::with_level(level);
+    let result = {
+        let pool = pool_py.borrow(py);
+        // RatPoly::from_expr recurses over every constraint, not only `expr`.
+        for &id in cons.iter().chain(&eqs) {
+            guard_depth(&pool.inner, id)?;
+        }
+        core_prove_nonneg_on(expr.id, &cons, &eqs, &var_ids, &pool.inner, &opts)
+    };
+    match result {
+        Ok(inner) => Ok(PyPositivityCertificate {
+            inner,
+            pool: pool_py,
+        }),
+        Err(e) => {
+            let negative = matches!(e, CoreSosError::Negative(_));
+            let err = sos_error_to_py(e);
+            if negative {
+                let point = {
+                    let pool = pool_py.borrow(py);
+                    core_nonneg_on_witness(expr.id, &cons, &eqs, &var_ids, &pool.inner)
+                };
+                if let Ok(Some(point)) = point {
+                    let d = PyDict::new_bound(py);
+                    for (v, id) in vars.iter().zip(point) {
+                        let key = PyExpr {
+                            id: v.id,
+                            pool: pool_py.clone_ref(py),
+                        };
+                        let val = PyExpr {
+                            id,
+                            pool: pool_py.clone_ref(py),
+                        };
+                        d.set_item(key.into_py(py), val.into_py(py))?;
+                    }
+                    err.value_bound(py).setattr("witness", d)?;
+                }
+            }
+            Err(err)
+        }
+    }
 }
 
 /// Brown-style CAD projection polynomials after eliminating ``elim_var``.
@@ -22107,6 +22252,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPositivityCertificate>()?;
     m.add_function(wrap_pyfunction!(py_sos_decompose, m)?)?;
     m.add_function(wrap_pyfunction!(py_prove_nonneg, m)?)?;
+    m.add_function(wrap_pyfunction!(py_prove_nonneg_on, m)?)?;
     m.add_function(wrap_pyfunction!(py_cad_lift, m)?)?;
     m.add_function(wrap_pyfunction!(py_routh_hurwitz, m)?)?;
     // V5-1 — Lean 4 certificate exporter

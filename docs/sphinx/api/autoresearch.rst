@@ -59,6 +59,23 @@ Parametric families with named unknown coefficients, plus the fitting step.
 
    Hand a fitted candidate to :func:`sos_decompose` / :func:`prove_nonneg`.
 
+.. function:: prove_nonneg_on(expr, vars, constraints=None, *, equalities=None, level=None) -> PositivityCertificate
+
+   Putinar (quadratic-module) certificate ``expr = σ₀ + Σ σᵢ·gᵢ + Σ λⱼ·hⱼ``
+   proving ``expr ≥ 0`` on ``{gᵢ ≥ 0, hⱼ = 0}``. ``constraints`` items are
+   ``g`` (``g ≥ 0``) or ``pool.ge``/``le``/``gt``/``lt``/``pred_eq``
+   comparisons; ``equalities`` items are ``h`` (``h = 0``). ``level`` is the
+   relaxation order (summands of degree ``≤ 2·level``; ``None`` escalates from
+   the smallest workable level). The certificate has ``kind == "putinar"``,
+   is re-verified exactly, and lists its sums of squares in ``multipliers``.
+   With no constraints and no equalities it is :func:`sos_decompose`
+   (``kind == "sos"``).
+
+   Raises :exc:`SosError`: ``E-SOS-003`` with an exact ``witness`` point of the
+   set where ``expr < 0``; ``E-SOS-002`` when undecided at the level(s)
+   searched (the message says whether the module is Archimedean and which
+   level to try next); ``E-SOS-001``/``E-SOS-004`` on malformed input.
+
 alkahest.crosscheck
 -------------------
 
