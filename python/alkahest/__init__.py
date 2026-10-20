@@ -175,6 +175,8 @@ from .alkahest import (  # noqa: F401
     UniPolyFactorization,
     # V2-7: Polynomial factorization
     UniPolyFactorModP,
+    # F28 — validated ODE integration
+    VerifiedOdeSolution,
     Xor,
     # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     ZeilbergerCertificate,
@@ -413,6 +415,7 @@ from .alkahest import (  # noqa: F401
     vacuum_expectation,
     verified_integral,
     verified_no_roots,
+    verified_ode,
     verified_sign,
     verify_wz_pair,
     version,
@@ -3140,6 +3143,8 @@ __all__ = [
     "Unit",
     "UnitError",
     "ValidatedError",
+    # F28 — validated ODE integration
+    "VerifiedOdeSolution",
     "Xor",
     # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     "ZeilbergerCertificate",
@@ -3478,6 +3483,7 @@ __all__ = [
     "vacuum_expectation",
     "verified_integral",
     "verified_no_roots",
+    "verified_ode",
     "verified_sign",
     "verify_wz_pair",
     "version",
