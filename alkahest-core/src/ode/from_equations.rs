@@ -183,10 +183,10 @@ pub fn ode_from_equations(
     // h_i = − Σ_j inv[i][j]·resid[j]
     let mut state_vars = Vec::new();
     let mut rhs = Vec::new();
-    for i in 0..n {
-        for k in 0..top[i] {
+    for (i, &top_i) in top.iter().enumerate() {
+        for k in 0..top_i {
             state_vars.push(sym(i, k));
-            if k + 1 < top[i] {
+            if k + 1 < top_i {
                 rhs.push(sym(i, k + 1));
             } else {
                 let mut terms = Vec::with_capacity(n);
