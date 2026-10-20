@@ -22,8 +22,8 @@ Transfer functions and state space
    ``from_coeffs(num, den, var)`` (classmethod), ``poles()``, ``zeros()``,
    ``dc_gain()``, ``series``, ``parallel``, ``feedback(other=1, sign=-1)``,
    ``minreal()``, ``to_ss()``, ``step_response(t)``, ``impulse_response(t)``,
-   ``discretize(T, method="tustin"|"zoh")``, ``subs(mapping)``,
-   ``equals(other)``, ``freqresp(w)``, ``bode(w)``, ``margins()``; operators
+   ``discretize(T, method="tustin"|"zoh")``, ``d2c(method="tustin"|"zoh")``,
+   ``subs(mapping)``, ``equals(other)``, ``freqresp(w)``, ``bode(w)``, ``margins()``; operators
    ``* + - /`` and integer ``**``.
 
 .. class:: StateSpace(A, B, C, D=None, *, dt=None)
@@ -35,8 +35,9 @@ Transfer functions and state space
    ``is_controllable()``, ``is_observable()`` (generic ranks, pivot hypotheses
    stated), ``series``, ``parallel``, ``feedback(other=None, sign=-1)``,
    ``step_response(t)``, ``impulse_response(t)``,
-   ``discretize(T, method="zoh"|"tustin")``, ``minreal()`` (SISO),
-   ``subs(mapping)``.
+   ``discretize(T, method="zoh"|"tustin")``, ``d2c(method="zoh"|"tustin")``,
+   ``minreal(method="auto"|"kalman"|"tf")`` (MIMO by the exact Kalman
+   decomposition; the transfer matrix is verified unchanged), ``subs(mapping)``.
 
 Matrix equations
 ----------------
@@ -47,21 +48,43 @@ Matrix equations
 
 .. function:: lyapunov(A, Q, method="auto")
 
-   Solve ``A X + X Aᵀ + Q = 0``. Exact by vectorisation (residual verified)
-   for rational data up to 8×8 and symbolic up to 3×3; ``method="numeric"``
-   (or float entries) returns a ``numpy.ndarray``. ``E-CTRL-004`` when the
-   operator is singular (``λᵢ + λⱼ = 0``).
+   Solve ``A X + X Aᵀ + Q = 0``. Rational data of any size: a structured
+   Cayley–Hamilton/Sylvester solve over ℚ (no ``n²×n²`` system), residual
+   verified exactly zero. Symbolic data up to 3×3 by vectorisation;
+   ``method="numeric"`` (or float entries) returns a ``numpy.ndarray``.
+   ``E-CTRL-004`` when the operator is singular (``λᵢ + λⱼ = 0``).
+
+.. function:: dlyap(A, Q, method="auto")
+
+   Solve the discrete Lyapunov (Stein) equation ``A X Aᵀ − X + Q = 0``.
+   Rational data of any size via the Cayley transform and the structured
+   solver above (residual verified); symbolic up to 3×3; numeric on request.
+   ``E-CTRL-004`` when ``λᵢλⱼ = 1`` for two eigenvalues.
 
 .. function:: care(A, B, Q, R, method="auto", sample=None)
 
    Stabilising solution of ``AᵀX + XA − XBR⁻¹BᵀX + Q = 0``. Exact for
-   ``n ≤ 2`` (the returned branch's Hurwitz conditions are stated), numeric
-   via the Hamiltonian otherwise. ``E-CTRL-004`` when no stabilising solution
-   exists.
+   ``n ≤ 2`` (the returned branch's Hurwitz conditions are stated). Rational
+   data of any size: the Hamiltonian's stable invariant subspace is computed
+   exactly when its characteristic polynomial's ℚ-irreducible factors each lie
+   on one side of the imaginary axis (``X = U₂U₁⁻¹``, verified exactly);
+   otherwise ``method="exact"`` refuses (``E-CTRL-005``) and ``"auto"`` falls
+   back to numeric Schur and says so in :func:`controls_side_conditions`.
+   ``E-CTRL-004`` when no stabilising solution exists.
 
 .. function:: lqr(A, B, Q, R, method="auto", sample=None)
 
    ``(K, X)`` with ``K = R⁻¹BᵀX`` and ``X`` from :func:`care`.
+
+.. function:: dare(A, B, Q, R, method="auto")
+
+   Stabilising solution of the discrete algebraic Riccati equation
+   ``AᵀXA − X − AᵀXB(R + BᵀXB)⁻¹BᵀXA + Q = 0`` (numeric, ``numpy.ndarray``;
+   symplectic stable subspace). ``method="exact"`` refuses with ``E-CTRL-005``.
+
+.. function:: dlqr(A, B, Q, R, method="auto")
+
+   ``(K, X)`` with ``K = (R + BᵀXB)⁻¹BᵀXA`` and ``X`` from :func:`dare`.
 
 Frequency response
 ------------------
@@ -75,7 +98,9 @@ Frequency response
 
    ``Margins(gain_margin, phase_margin, phase_crossover, gain_crossover)``, the
    conventions of ``control.margin``. Crossovers are isolated exactly for
-   rational coefficients.
+   rational coefficients. Discrete-time loops are evaluated on the unit
+   circle (frequencies up to ``π/T``); unlike python-control the real-axis
+   points ``z = ±1`` count as phase crossovers.
 
 Side conditions and errors
 --------------------------

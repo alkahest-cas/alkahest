@@ -1537,11 +1537,15 @@ G.poles(); G.zeros(); G.dc_gain()                  # exact (radicals / RootOf), 
 G.to_ss()                                          # controllable canonical form == scipy tf2ss; 'm ≠ 0'
 StateSpace(A, B, C, D).to_tf(s)                    # C(sI-A)^-1 B + D over det(sI-A); MIMO -> rows of TFs
 (C_pid * G).feedback(); G.minreal()                # minreal states the cancelled factor
-G.step_response(t); G.impulse_response(t)          # inverse Laplace (E-TRANSFORM-002 propagates)
+G.step_response(t); G.impulse_response(t)          # inverse Laplace; degree>2 factors -> exact sum over RootOf
 G.discretize(T, "tustin"); sys.discretize(T, "zoh")# ZOH exact via matrix_exp of [[A,B],[0,0]]T
 sys.controllability_rank(); controls_side_conditions()   # generic rank + pivot hypotheses
-lyapunov(A, Q)            # A X + X A^T + Q = 0 (python-control lyap); scipy's solve_continuous_lyapunov(A, -Q)
-K, X = lqr(A, B, Q, [[r]])  # exact n<=2: stabilising branch's Hurwitz conditions stated; numeric otherwise
+lyapunov(A, Q)            # A X + X A^T + Q = 0 (python-control lyap); exact for rational A of any size
+dlyap(A, Q)               # Stein: A X A^T - X + Q = 0, exact (Cayley transform); dare(A,B,Q,R)/dlqr numeric
+K, X = lqr(A, B, Q, [[r]])  # exact n<=2: stabilising branch's Hurwitz conditions stated; rational n>2 exact when
+                            # the Hamiltonian's charpoly factors by half-plane (else numeric + stated fallback)
+sys.minreal()             # MIMO: exact Kalman decomposition, transfer matrix verified unchanged
+G.d2c("tustin"); margins(Gz)   # discrete: unit-circle margins, exact Tustin / nilpotent-ZOH inverse
 bode(G, w); margins(G)    # numeric; margins = (gm, pm, w_phase_crossover, w_gain_crossover) like control.margin
 ```
 

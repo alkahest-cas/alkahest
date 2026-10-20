@@ -5,7 +5,7 @@
 inverse Laplace transform — so a plant may carry symbolic parameters (`m`, `b`, `k`,
 a gain `K`) and every exact answer is exact. The main names are re-exported at the
 top level: `TransferFunction`, `StateSpace`, `kronecker`, `lyapunov`, `care`, `lqr`,
-`bode`, `margins`, `controls_side_conditions`, `ControlsError`.
+`bode`, `margins`, `dlyap`, `dare`, `dlqr`, `controls_side_conditions`, `ControlsError`.
 
 ```python
 import alkahest as ak
@@ -37,8 +37,9 @@ behind the caller's back, because a pole–zero cancellation can hide an unstabl
 | `series`, `parallel`, `feedback(H=1, sign=-1)`, `*`, `+`, `-`, `/` | Interconnection without cancellation: `feedback` is `n₁d₂ / (d₁d₂ − sign·n₁n₂)` |
 | `minreal()` | Cancels common factors over ℚ(parameters); the cancelled factor is stated (`"(s + 1) ≠ 0"`) |
 | `to_ss()` | Controllable canonical form, entry-for-entry `scipy.signal.tf2ss`; `E-CTRL-002` if improper |
-| `step_response(t)`, `impulse_response(t)` | Inverse Laplace transform; its refusals (e.g. `E-TRANSFORM-002`, an irreducible cubic denominator) propagate |
+| `step_response(t)`, `impulse_response(t)` | Inverse Laplace transform. A denominator with an irreducible factor of degree > 2 (rational coefficients) is expanded in partial fractions over ℚ and inverted by residues: an exact finite sum `Σₖ e^{rₖt}·Σᵢ cᵢ(rₖ)tⁱ` over `rₖ = RootOf(f, k)` (repeated factors included), evaluable numerically. Parametric high-order denominators still refuse (`E-TRANSFORM-002`) |
 | `discretize(T, "tustin" \| "zoh")` | Tustin substitutes `s = (2/T)(z−1)/(z+1)`; ZOH goes through `StateSpace.discretize` |
+| `d2c("tustin" \| "zoh")` | Inverse of `discretize`: Tustin is exact (`discretize(...).d2c(...)` equals the original); ZOH is exact when `Ad − I` is nilpotent (integrator chains) and numeric (float coefficients) otherwise |
 | `subs({K: 2})`, `equals(other)`, `freqresp(w)` | Parameter substitution; proven equality of rational functions; numeric `G(jω)` |
 
 ## State space
@@ -57,7 +58,13 @@ behind the caller's back, because a pole–zero cancellation can hide an unstabl
   `I − sign·D₁D₂` must be invertible).
 - `discretize(T, "zoh")` is exact: `Ad = e^{AT}` and `Bd = ∫₀ᵀ e^{Aτ}dτ B` are read off
   `exp([[A, B], [0, 0]]·T)`, so no integral is needed. `"tustin"`/`"bilinear"` follows
-  `scipy.signal.cont2discrete`'s bilinear formulas.
+  `scipy.signal.cont2discrete`'s bilinear formulas. `d2c("zoh" | "tustin")` inverts it.
+- `minreal()` is the controllable-and-observable realisation. SISO goes through the transfer
+  function (canonical form); MIMO (`method="kalman"`) is the exact Kalman decomposition:
+  `range[B, AB, …]` is split off by an exact change of basis, then `ker[C; CA; …]` of what
+  is left. Symbolic data eliminate over ℚ(parameters) with every pivot stated as a side
+  condition. The result is verified — `D` and the Markov parameters `C Aᵏ B` agree with
+  the original — so the transfer matrix is unchanged.
 
 The same channel as `Matrix.inverse` applies to ranks generally:
 `ak.Matrix([[a]]).rank()` is `1` and `ak.matrix_rank_side_conditions()` is `['a ≠ 0']`.
@@ -67,11 +74,16 @@ The same channel as `Matrix.inverse` applies to ranks generally:
 - `kronecker(A, B)` — the Kronecker product, symbolic entries allowed.
 - `lyapunov(A, Q)` solves `A X + X Aᵀ + Q = 0` (python-control's `lyap` convention;
   `scipy.linalg.solve_continuous_lyapunov(A, -Q)` is the same `X`). Exact: the system
-  `(I ⊗ A + A ⊗ I) vec X = −vec Q` is solved with an exact inverse and the residual is
-  **verified** to cancel. The operator is singular iff two eigenvalues satisfy
+  rational data of any size use a structured solve (Cayley–Hamilton turns the Sylvester
+  operator into a polynomial in `A` and `Aᵀ`: `O(n)` matrix products over ℚ, no `n²×n²`
+  system); symbolic data vectorise `(I ⊗ A + A ⊗ I) vec X = −vec Q`; either way the
+  residual is **verified** to cancel. The operator is singular iff two eigenvalues satisfy
   `λᵢ + λⱼ = 0` — a symbolic determinant is a side condition (`"(4·k·b²) ≠ 0"` for
-  `A = [[0, 1], [−k, −b]]`), a proven singular one is `E-CTRL-004`. Exact up to 8×8 for
-  rational data and 3×3 symbolic; numeric (numpy) with `method="numeric"` or float data.
+  `A = [[0, 1], [−k, −b]]`), a proven singular one is `E-CTRL-004`. Symbolic data are exact
+  up to 3×3; numeric (numpy) with `method="numeric"` or float data.
+- `dlyap(A, Q)` solves the Stein equation `A X Aᵀ − X + Q = 0` (python-control's `dlyap`):
+  rational data go through the Cayley transform `F = (A − I)(A + I)⁻¹` to the continuous
+  equation, residual verified; `E-CTRL-004` when two eigenvalues multiply to 1.
 - `care(A, B, Q, R)` returns the stabilising solution of
   `Aᵀ X + X A − X B R⁻¹ Bᵀ X + Q = 0`; `lqr` returns `(K, X)` with `K = R⁻¹ Bᵀ X`.
   For `n ≤ 2` with exact data the polynomial system is solved with `solve`, each
@@ -80,6 +92,15 @@ The same channel as `Matrix.inverse` applies to ranks generally:
   every parameter in `(1, 2)`) is returned with those conditions **stated** — the result
   is the stabilising solution exactly where they hold. Otherwise the Hamiltonian's stable
   invariant subspace is computed numerically (ordered Schur through scipy when installed).
+  For rational data of **any** size the subspace is computed exactly when the Hamiltonian's
+  characteristic polynomial factors over ℚ into pieces that each lie on one side of the
+  imaginary axis (an exact Routh test per irreducible factor): the kernels of `f(H)^m` for
+  the stable factors give `[U₁; U₂]` and `X = U₂U₁⁻¹` is rational and verified. A factor
+  with roots on both sides (the generic case, eigenvalues `±√c`) has no rational stable
+  subspace: `method="exact"` refuses (`E-CTRL-005`) and `"auto"` returns the numeric Schur
+  solution, stating the fallback in `controls_side_conditions()`.
+- `dare(A, B, Q, R)` / `dlqr` solve the discrete Riccati equation numerically (symplectic
+  stable subspace; scipy for a singular `A`).
 
 ```python
 A = ak.Matrix([[0, 1], [0, 0]]) ...               # double integrator, R = r
@@ -97,6 +118,11 @@ margin, `inf`/`nan` when there is no crossing). The crossovers are the real root
 `Im[N(jω) D(−jω)]` and `|N(jω)|² − |D(jω)|²`; for rational coefficients they are isolated
 exactly (Sturm sequences, exact bisection) — `K/(s(s+1)(s+5))` has its phase crossover at
 `√5` and gain margin `30/K`. Both need numeric coefficients (`E-CTRL-003`).
+
+Discrete-time systems (`dt` set) are evaluated on the unit circle `z = e^{jωT}`, `ω ≤ π/T`:
+with `c = cos θ` both crossover conditions are real polynomials in `c` (Chebyshev `U`/`T`
+expansions of `Im[N(z)D(z̄)]` and `|N|² − |D|²`) isolated exactly on `[−1, 1]`. `z = ±1` are
+always on the real axis and count as phase crossovers, which python-control ignores.
 
 ## Refusals
 

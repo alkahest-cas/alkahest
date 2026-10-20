@@ -446,6 +446,9 @@ from .controls import (  # G10 — controls layer
     bode,
     care,
     controls_side_conditions,
+    dare,
+    dlqr,
+    dlyap,
     kronecker,
     lqr,
     lyapunov,
@@ -3298,6 +3301,7 @@ __all__ = [
     "cosh_integral",
     "crosscheck",
     "dae_index_reduce",
+    "dare",
     # V3-3 — FOFormula / V2-9 CAD
     "decide",
     # Calculus
@@ -3309,6 +3313,8 @@ __all__ = [
     "dilog",
     "dimension_of",
     "diophantine",
+    "dlqr",
+    "dlyap",
     # Elliptic special functions (parameter convention m = k²)
     "elliptic_e",
     "elliptic_f",
