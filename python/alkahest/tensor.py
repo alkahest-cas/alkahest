@@ -222,9 +222,11 @@ class Tensor:
         self.variance = _variance(variance)
         self.rank = len(self.variance)
         self.metric = metric
+        self._data: dict[tuple[int, ...], Any] = {}
         if self.rank == 0:
             self.dim = metric.dim if metric is not None else 0
-            self._data = {} if _is_zero(components) else {(): components}
+            if not _is_zero(components):
+                self._data[()] = components
         else:
             self.dim = len(components)
             self._data = _from_nested(components, self.rank)
@@ -292,7 +294,7 @@ class IndexedTensor:
         dim: int,
         metric: Metric | None,
     ):
-        self._data = data
+        self._data: dict[tuple[int, ...], Any] = data
         self.free = tuple(free)
         self.dim = dim
         self.metric = metric
