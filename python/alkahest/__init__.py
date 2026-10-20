@@ -154,6 +154,7 @@ from .alkahest import (  # noqa: F401
     NcError,
     Not,
     Or,
+    ParametricLPResult,
     Port,
     # P1 item 8 — positivity certificates (SOS / Positivstellensatz)
     PositivityCertificate,
@@ -298,6 +299,7 @@ from .alkahest import (  # noqa: F401
     limit,
     linprog,
     linprog_expr,
+    linprog_parametric,
     log,
     # Exponential-integral family (DLMF §6.2)
     log_integral,
@@ -3077,6 +3079,7 @@ __all__ = [
     "Or",
     # M9 — coefficient fields for elimination
     "ParamGroebnerError",
+    "ParametricLPResult",
     "ParseError",
     "PoolError",
     "Port",
@@ -3292,6 +3295,7 @@ __all__ = [
     "limit",
     "linprog",
     "linprog_expr",
+    "linprog_parametric",
     "log",
     # Exponential-integral family (DLMF §6.2)
     "log_integral",

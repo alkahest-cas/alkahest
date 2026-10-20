@@ -24,7 +24,7 @@ pub struct Incumbent {
 
 /// Why a linear or mixed-integer programme refused.
 ///
-/// Codes are `E-LP-001` … `E-LP-006`, plus the `E-BUDGET-*` code of the
+/// Codes are `E-LP-001` … `E-LP-007`, plus the `E-BUDGET-*` code of the
 /// budget trip carried by [`LinprogError::Budget`]; see
 /// [`crate::errors::codes::REGISTRY`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,6 +94,15 @@ pub enum LinprogError {
         /// Which check failed.
         detail: String,
     },
+    /// A parametric programme of a form the parametric solver does not
+    /// handle: the parameter multiplies a decision variable inside a
+    /// constraint (it moves the constraint matrix), enters non-linearly
+    /// (`θ²`, `1/θ`), or moves the objective and the right-hand side at once;
+    /// or a parameter was combined with integrality.
+    UnsupportedParametric {
+        /// The offending expression or combination.
+        detail: String,
+    },
 }
 
 impl fmt::Display for LinprogError {
@@ -144,6 +153,11 @@ impl fmt::Display for LinprogError {
                 }
                 Ok(())
             }
+            LinprogError::UnsupportedParametric { detail } => write!(
+                f,
+                "unsupported parametric programme (only the right-hand side or the objective \
+                 may be affine in the parameter): {detail}"
+            ),
             LinprogError::Internal { detail } => write!(
                 f,
                 "internal error: a simplex certificate failed its exact check ({detail}); \
@@ -164,6 +178,7 @@ impl crate::errors::AlkahestError for LinprogError {
             LinprogError::UnsupportedConstraint { .. } => "E-LP-004",
             LinprogError::NodeLimit { .. } => "E-LP-005",
             LinprogError::Internal { .. } => "E-LP-006",
+            LinprogError::UnsupportedParametric { .. } => "E-LP-007",
             LinprogError::Budget { source, .. } => crate::errors::AlkahestError::code(source),
         }
     }

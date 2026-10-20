@@ -700,6 +700,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-LP-004", class: "LinprogError", cause: Cause::UserInput,   remediation: Some("write constraints as <=, >= or == relations (pool.le / pool.ge / pool.pred_eq); a strict inequality has no optimum in general") },
     ErrorSpec { code: "E-LP-005", class: "LinprogError", cause: Cause::Resource,    remediation: Some("raise max_nodes or tighten the variable bounds; the incumbent and open bound carried by the error bracket the optimum but do not prove it") },
     ErrorSpec { code: "E-LP-006", class: "LinprogError", cause: Cause::Internal,    remediation: Some("report the programme as a bug; the certificate failed its exact check and the result was withheld rather than returned") },
+    ErrorSpec { code: "E-LP-007", class: "LinprogError", cause: Cause::UserInput,   remediation: Some("let the parameter enter only the right-hand side or only the objective, affinely; for a parameter in the constraint matrix (or in both), solve at fixed parameter values instead") },
     // E-NUMF — NumberFieldError (algebraic number fields Q[x]/(f) on FLINT's
     // `nf`/`nf_elem`, and the cyclotomic fields Q(zeta_n))
     //

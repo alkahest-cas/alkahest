@@ -439,7 +439,7 @@ fn milp_node_limit_reports_incumbent() {
         integrality: vec![true; 6],
         max_nodes: 3,
     };
-    match milp(&lp, &opts).unwrap_err() {
+    match milp_with(&lp, &opts, &CutOptions::none()).unwrap_err() {
         e @ LinprogError::NodeLimit { .. } => {
             assert_eq!(e.code(), "E-LP-005");
             if let LinprogError::NodeLimit {

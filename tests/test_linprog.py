@@ -427,7 +427,7 @@ def test_milp_infeasible_and_unbounded():
 def test_milp_node_limit_reports_incumbent():
     c, w = [10, 13, 7, 8, 9, 11], [[4, 6, 3, 5, 4, 5]]
     with pytest.raises(ak.LinprogError) as e:
-        ak.milp(c, A_ub=w, b_ub=[13], bounds=(0, 1), sense="max", max_nodes=3)
+        ak.milp(c, A_ub=w, b_ub=[13], bounds=(0, 1), sense="max", max_nodes=3, cut_rounds=0)
     err = e.value
     assert err.code == "E-LP-005"
     assert err.nodes == 3

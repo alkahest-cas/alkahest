@@ -44,6 +44,28 @@
 //! [`program_from_exprs`] builds a programme from alkahest expressions:
 //! an affine objective and `≤ / ≥ / =` predicates, with rational coefficients.
 //!
+//! [`linprog_with`] chooses the method: the dense tableau above, or a
+//! **revised simplex** ([`LpMethod::Revised`]) that keeps the constraint
+//! matrix sparse and represents `B⁻¹` by an exact product-form (eta-file)
+//! factorisation over ℚ, refactorised periodically. It prices by Dantzig's
+//! rule and switches to Bland's rule after a run of degenerate pivots (until
+//! the objective strictly improves), so it cannot cycle either. It starts from
+//! a slack crash basis, or from a caller's [`LpBasis`] (*warm start*): a
+//! primal-feasible basis goes straight to phase 2, a dual-feasible one runs
+//! the dual simplex, anything else falls back to a cold start. The final
+//! basis is returned for the next warm start. Certificates are the same and
+//! verified the same way.
+//!
+//! [`milp`] can strengthen the root relaxation with **Gomory mixed-integer
+//! cuts** read off the optimal tableau (exact rationals make every cut valid;
+//! no cut removes an integer-feasible point) before branching
+//! (cut-and-branch), and warm-starts each node LP from its parent's basis.
+//!
+//! [`linprog_parametric`] solves a programme whose right-hand side *or*
+//! objective is affine in one parameter `θ`, returning the exact breakpoints,
+//! the critical regions with their optimal bases, and the piecewise-affine
+//! optimal value, each region's certificate verified for every `θ` in it.
+//!
 //! This module is independent of [`crate::real::sos::lp`], whose solver is
 //! frozen for the positivity certificates reproduced against it and returns
 //! neither duals, Farkas vectors nor rays.
@@ -51,13 +73,20 @@
 mod error;
 mod expr;
 mod milp;
+mod parametric;
+mod revised;
 mod simplex;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_f19;
 
 pub use error::{Incumbent, LinprogError};
-pub use expr::{linear_form, program_from_exprs};
-pub use milp::{milp, MilpOptions, MilpOutcome, MilpSolution};
+pub use expr::{linear_form, parametric_from_exprs, program_from_exprs};
+pub use milp::{milp, milp_with, CutOptions, MilpOptions, MilpOutcome, MilpReport, MilpSolution};
+pub use parametric::{
+    linprog_parametric, ParametricDelta, ParametricRegion, ParametricSolution, RegionStatus,
+};
 
 use rug::Rational;
 
@@ -479,12 +508,168 @@ impl UnboundedCertificate {
 /// }
 /// ```
 pub fn linprog(lp: &LinearProgram) -> Result<LpOutcome, LinprogError> {
+    linprog_with(lp, &LpOptions::default()).map(|s| s.outcome)
+}
+
+/// One basic column of a simplex basis, named in the caller's terms so that a
+/// basis carries over to a programme with changed data (a new right-hand
+/// side, objective, bounds, or extra rows appended).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum BasisEntry {
+    /// Variable `j` (its column measured from its finite bound, or the
+    /// positive part of a free variable).
+    Var(usize),
+    /// The negative part of the free variable `j`.
+    VarNeg(usize),
+    /// The slack of inequality row `i`.
+    Slack(usize),
+    /// The slack of the upper bound of variable `j` (a variable with both
+    /// bounds finite).
+    UpperSlack(usize),
+}
+
+/// A simplex basis, as returned by [`linprog_with`] and accepted back as a
+/// warm start. Rows whose basic column is artificial (a redundant equality)
+/// have no entry, so the list may be shorter than the number of rows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LpBasis {
+    /// The basic columns.
+    pub entries: Vec<BasisEntry>,
+}
+
+impl LpBasis {
+    /// A basis from its entries.
+    pub fn new(entries: Vec<BasisEntry>) -> Self {
+        LpBasis { entries }
+    }
+}
+
+/// Which simplex [`linprog_with`] runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LpMethod {
+    /// Dense for small programmes, revised otherwise (and whenever a warm
+    /// start basis is given).
+    #[default]
+    Auto,
+    /// The dense two-phase tableau with Bland's rule.
+    Dense,
+    /// The revised simplex with an exact product-form basis factorisation.
+    Revised,
+}
+
+/// Options for [`linprog_with`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LpOptions {
+    /// The method.
+    pub method: LpMethod,
+    /// A warm-start basis (implies the revised method).
+    pub basis: Option<LpBasis>,
+}
+
+impl LpOptions {
+    /// These options with `method`.
+    pub fn with_method(mut self, method: LpMethod) -> Self {
+        self.method = method;
+        self
+    }
+
+    /// These options with a warm-start basis.
+    pub fn with_basis(mut self, basis: LpBasis) -> Self {
+        self.basis = Some(basis);
+        self
+    }
+}
+
+/// A certified outcome together with the basis that produced it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct LpSolution {
+    /// The verified outcome.
+    pub outcome: LpOutcome,
+    /// The final basis (for a later warm start).
+    pub basis: LpBasis,
+    /// Simplex pivots performed.
+    pub iterations: usize,
+    /// The method that ran ([`LpMethod::Dense`] or [`LpMethod::Revised`]).
+    pub method: LpMethod,
+    /// `true` when a supplied basis was usable and the solve started from it.
+    pub warm_started: bool,
+}
+
+/// Programmes whose standard form has at most this many rows go to the dense
+/// tableau under [`LpMethod::Auto`].
+const AUTO_DENSE_MAX_ROWS: usize = 12;
+
+/// Solve a linear programme with explicit [`LpOptions`]: the method, and an
+/// optional warm-start basis. The outcome is verified exactly, as by
+/// [`linprog`].
+///
+/// # Errors
+/// As [`linprog`].
+///
+/// # Example
+/// ```
+/// use alkahest_cas::linprog::{linprog_with, LinearProgram, LpMethod, LpOptions, LpOutcome};
+/// use rug::Rational;
+/// let q = |n: i64| Rational::from(n);
+/// let mut lp = LinearProgram::new(vec![q(-1), q(-1)]);
+/// lp.a_ub = vec![vec![q(1), q(2)], vec![q(3), q(1)]];
+/// lp.b_ub = vec![q(4), q(6)];
+/// let first = linprog_with(&lp, &LpOptions::default().with_method(LpMethod::Revised)).unwrap();
+/// // Re-solve after changing the right-hand side, starting from the old basis.
+/// lp.b_ub = vec![q(5), q(6)];
+/// let again = linprog_with(&lp, &LpOptions::default().with_basis(first.basis)).unwrap();
+/// assert!(again.warm_started);
+/// assert!(matches!(again.outcome, LpOutcome::Optimal(_)));
+/// ```
+pub fn linprog_with(lp: &LinearProgram, opts: &LpOptions) -> Result<LpSolution, LinprogError> {
     lp.validate()?;
-    let outcome = simplex::solve(lp)?;
-    outcome
+    let method = match (opts.method, &opts.basis) {
+        (LpMethod::Dense, _) => LpMethod::Dense,
+        (LpMethod::Revised, _) | (_, Some(_)) => LpMethod::Revised,
+        _ => {
+            let rows = lp.a_ub.len()
+                + lp.a_eq.len()
+                + lp.bounds
+                    .iter()
+                    .filter(|b| b.lower.is_some() && b.upper.is_some())
+                    .count();
+            if rows <= AUTO_DENSE_MAX_ROWS {
+                LpMethod::Dense
+            } else {
+                LpMethod::Revised
+            }
+        }
+    };
+    let solution = if method == LpMethod::Dense {
+        let sf = simplex::standard_form(lp);
+        let (outcome, cols, iterations) = simplex::solve_std(lp, &sf)?;
+        LpSolution {
+            outcome,
+            basis: revised::labels(lp, &sf, &cols),
+            iterations,
+            method,
+            warm_started: false,
+        }
+    } else {
+        let (engine, outcome, warm_started) = revised::solve(lp, opts.basis.as_ref())?;
+        LpSolution {
+            outcome,
+            basis: engine.basis_labels(lp),
+            iterations: engine.iterations,
+            method,
+            warm_started,
+        }
+    };
+    solution
+        .outcome
         .verify(lp)
         .map_err(|detail| LinprogError::Internal { detail })?;
-    Ok(outcome)
+    Ok(solution)
 }
 
 pub(crate) fn dot(a: &[Rational], b: &[Rational]) -> Rational {
