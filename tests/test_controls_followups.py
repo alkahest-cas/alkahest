@@ -509,6 +509,7 @@ def test_zoh_round_trip_exact_for_integrator_chain(P):
 
 
 def test_zoh_round_trip_numeric(P):
+    pytest.importorskip("numpy")
     pool, s = P["pool"], P["s"]
     G = TransferFunction(s + 2, s**2 + 3 * s + 5, s)
     Gz = G.discretize(pool.rational(1, 10), "zoh")
