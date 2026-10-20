@@ -556,7 +556,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-UNIT-003", class: "UnitError", cause: Cause::UserInput,   remediation: Some("°C and °F are affine scales; convert to K (or use delta_degC / delta_degF for temperature differences) before doing arithmetic") },
     ErrorSpec { code: "E-UNIT-004", class: "UnitError", cause: Cause::UserInput,   remediation: Some("exp, log, trigonometric and other transcendental functions need a pure-number argument; divide by a reference quantity, or convert angles to rad") },
     ErrorSpec { code: "E-UNIT-005", class: "UnitError", cause: Cause::UserInput,   remediation: Some("give every symbol (or applied function such as C(t)) a unit in the units mapping") },
-    ErrorSpec { code: "E-UNIT-006", class: "UnitError", cause: Cause::UserInput,   remediation: Some("assign the same unit to every symbol of one dimension (e.g. all times in h), or convert the quantities before forming the sum") },
+    ErrorSpec { code: "E-UNIT-006", class: "UnitError", cause: Cause::UserInput,   remediation: Some("assign the same unit to every symbol of one dimension (e.g. all times in h), or let alkahest.units.unify_units convert the mixed sum exactly to a common unit") },
     ErrorSpec { code: "E-UNIT-007", class: "UnitError", cause: Cause::Unsupported, remediation: Some("use the coherent SI unit (e.g. m^(1/2) instead of km^(1/2)) for fractional powers") },
     // E-SPECFN — SpecialFunctionError (orthogonal polynomials, spherical
     // harmonics, Wigner 3j/6j and Clebsch–Gordan coefficients, G11a)

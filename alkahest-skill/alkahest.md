@@ -1466,6 +1466,12 @@ U.sin(Quantity(90, "deg"))                          # deg converted to rad first
 - `dimension_of` needs a unit for every symbol (`E-UNIT-005`); sums need equal *units*, not only
   dimensions (`E-UNIT-006`: `t_h + t_min`); transcendental arguments must be pure numbers (`E-UNIT-004`).
 - Integration bounds for a dimensional variable must be `Quantity`s (or `0`/`±oo`).
+- `U.unify_units(expr, units, prefer="finest")` converts a mixed-unit sum (`t_h + t_min` → `60*t_h + t_min`
+  in min) instead of refusing it; returns a `Quantity` (rewritten formula, unit). `dimension_of` still refuses.
+- `dimension_of` handles `Derivative(f(t), t)` nodes (`unit(f)/unit(t)`) when `f(t)` has a unit.
+- `simplify_units(q)` renames exact matches to derived units (`kg*m/s^2 → N`); `derived=False` opts out.
+- dB/Np/pH are not units: `U.db_to_ratio`, `ratio_to_db`, `np_to_ratio`, `ratio_to_np`,
+  `ph_to_concentration`, `concentration_to_ph` convert explicitly (exact for powers of ten).
 
 ## Controls: transfer functions, state space, Lyapunov / Riccati
 
