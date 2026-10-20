@@ -1767,6 +1767,216 @@ impl RewriteRule for NegateAdd {
 }
 
 // ---------------------------------------------------------------------------
+// CollectThroughSum: c·F·(s₁+…+sₖ) + … → distribute only when terms cancel
+// ---------------------------------------------------------------------------
+
+/// Like-term collection *through* a product with a sum factor, without
+/// expanding: `−a²(b−1) + a²b → a²`.
+///
+/// `simplify` does not expand, so `collect_add_terms` sees the bases
+/// `a²·(b−1)` and `a²·b` and finds nothing to merge; only `simplify_expanded`
+/// used to reach `a²`.  This distributes one term `c·F·S` of the sum `expr`
+/// (`F` a product of non-sum factors, `S` a sum) over `S`, collects like
+/// terms across the whole sum, and returns the result **only when the sum
+/// ends up with strictly fewer terms than it started with** — so it never
+/// grows an expression, never undoes a factorisation that does not cancel
+/// (`x(y+1) + x` is left alone), and cannot cycle with a rule that factors.
+///
+/// It runs in the zero-sum sweep at the end of `simplify` (see
+/// `simplify::zero::zero_sum_pass`), not as a rewrite rule: the sweep visits
+/// each candidate sum once per pool, where a rule would be offered every
+/// `Add` on every pass.  A term qualifies only if it carries a sum factor and
+/// another term contains every other non-literal factor `F` of it plus those
+/// of one summand (compared by `ExprId`) before anything is built.  Declines
+/// on sums that may be non-finite (distributivity fails for `∞`) and on
+/// non-commutative products.
+pub(crate) fn collect_through_sum(expr: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    /// Most terms of one sum tried as the distributed term.
+    const MAX_CANDIDATES: usize = 4;
+    if pool.has_non_finite(expr) || !pool.is_mult_commutative(expr) {
+        return None;
+    }
+    let n_terms = pool.with(expr, |d| match d {
+        ExprData::Add(a) if a.len() >= 2 => a.len(),
+        _ => 0,
+    });
+    if n_terms == 0 {
+        return None;
+    }
+    let mut tried = 0usize;
+    for k in 0..n_terms {
+        let term = pool.with(expr, |d| match d {
+            ExprData::Add(a) => a[k],
+            _ => unreachable!(),
+        });
+        let Some(sum) = sum_factor_of(term, pool) else {
+            continue;
+        };
+        let screened = pool.with(expr, |d| match d {
+            ExprData::Add(a) => a
+                .iter()
+                .enumerate()
+                .any(|(j, &u)| j != k && may_merge_after_distributing(term, sum, u, pool)),
+            _ => false,
+        });
+        if !screened {
+            continue;
+        }
+        tried += 1;
+        if let Some(after) = distribute_and_collect(expr, k, term, sum, n_terms, pool) {
+            return Some(after);
+        }
+        if tried >= MAX_CANDIDATES {
+            break;
+        }
+    }
+    None
+}
+
+/// Split a `Mul` term into (non-literal factors other than the sum, the sum)
+/// when it has exactly one `Add` factor; borrowed, no allocation on decline.
+fn sum_factor_of(term: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    pool.with(term, |d| match d {
+        ExprData::Mul(fs) => {
+            let mut sum = None;
+            for &f in fs {
+                if pool.with(f, |x| matches!(x, ExprData::Add(a) if a.len() >= 2)) {
+                    if sum.is_some() {
+                        return None;
+                    }
+                    sum = Some(f);
+                }
+            }
+            sum
+        }
+        _ => None,
+    })
+}
+
+fn is_numeric_literal(f: ExprId, pool: &ExprPool) -> bool {
+    pool.with(f, |x| {
+        matches!(x, ExprData::Integer(_) | ExprData::Rational(_))
+    })
+}
+
+/// Call `each` on every non-literal factor of `e` (`e` itself when it is not
+/// a product and not a literal).  Borrowed; stops early on `false`.
+fn all_nonliteral_factors(
+    e: ExprId,
+    pool: &ExprPool,
+    mut each: impl FnMut(ExprId) -> bool,
+) -> bool {
+    pool.with(e, |d| match d {
+        ExprData::Mul(fs) => fs.iter().all(|&f| is_numeric_literal(f, pool) || each(f)),
+        ExprData::Integer(_) | ExprData::Rational(_) => true,
+        _ => each(e),
+    })
+}
+
+fn nonliteral_count(e: ExprId, pool: &ExprPool) -> usize {
+    let mut n = 0usize;
+    all_nonliteral_factors(e, pool, |_| {
+        n += 1;
+        true
+    });
+    n
+}
+
+/// Whether `other` may be a like term of one summand of `term = c·F·sum`
+/// once distributed: its non-literal factors are exactly those of `F` plus
+/// those of some summand `s` (compared as `ExprId`s).  A screen only — it
+/// may let through a pair that does not merge, never the reverse for
+/// canonical (sorted, flattened) products.
+fn may_merge_after_distributing(term: ExprId, sum: ExprId, other: ExprId, pool: &ExprPool) -> bool {
+    let contains = |e: ExprId, f: ExprId| -> bool {
+        pool.with(e, |d| match d {
+            ExprData::Mul(os) => os.contains(&f),
+            _ => e == f,
+        })
+    };
+    // F ⊆ other, counting F's size.
+    let mut f_len = 0usize;
+    let f_divides = all_nonliteral_factors(term, pool, |f| {
+        if f == sum {
+            return true;
+        }
+        f_len += 1;
+        contains(other, f)
+    });
+    if !f_divides {
+        return false;
+    }
+    let other_len = nonliteral_count(other, pool);
+    pool.with(sum, |d| match d {
+        ExprData::Add(ss) => ss.iter().any(|&s| {
+            nonliteral_count(s, pool) + f_len == other_len
+                && all_nonliteral_factors(s, pool, |g| contains(other, g))
+        }),
+        _ => false,
+    })
+}
+
+/// Distribute term `k` (= `c·F·sum`) of the sum `expr` over `sum`, collect
+/// like terms, and return the result when it has fewer than `n_terms` terms.
+fn distribute_and_collect(
+    expr: ExprId,
+    k: usize,
+    term: ExprId,
+    sum: ExprId,
+    n_terms: usize,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    // c·F: the term without its sum factor.
+    let rest: Vec<ExprId> = pool.with(term, |d| match d {
+        ExprData::Mul(fs) => fs.iter().copied().filter(|&f| f != sum).collect(),
+        _ => Vec::new(),
+    });
+    let (c, f_base) = extract_rational_coeff(pool.mul(rest), pool);
+    let c = c.unwrap_or_else(Coeff::one);
+    let summands = pool.with(sum, |d| match d {
+        ExprData::Add(a) => a.clone(),
+        _ => Vec::new(),
+    });
+    let others = pool.with(expr, |d| match d {
+        ExprData::Add(a) => a
+            .iter()
+            .enumerate()
+            .filter(|&(j, _)| j != k)
+            .map(|(_, &u)| u)
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    });
+    let mut pairs: Vec<(Option<Coeff>, ExprId)> = others
+        .iter()
+        .map(|&u| extract_rational_coeff(u, pool))
+        .collect();
+    for s in summands {
+        let (cs, bs) = extract_rational_coeff(s, pool);
+        let mut coeff = c.clone();
+        if let Some(cs) = cs {
+            coeff.mul_assign(cs);
+        }
+        let base = if is_one(f_base, pool) {
+            bs
+        } else if is_one(bs, pool) {
+            f_base
+        } else {
+            pool.mul(vec![f_base, bs])
+        };
+        pairs.push((Some(coeff), base));
+    }
+    let new_args = collect_like_terms(&pairs, pool)?;
+    if new_args.len() >= n_terms {
+        return None;
+    }
+    Some(match new_args.len() {
+        0 => pool.integer(0_i32),
+        1 => new_args[0],
+        _ => pool.add(new_args),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // SqrtEvenPower: √(u^(2k)) → u^k, only where that is not |u|^k
 // ---------------------------------------------------------------------------
 
@@ -2382,6 +2592,89 @@ mod tests {
 
     fn p() -> ExprPool {
         ExprPool::new()
+    }
+
+    // --- CollectThroughSum (F15) ---
+
+    /// `−a²(b−1) + a²b = a²` under plain `simplify`, which does not expand.
+    #[test]
+    fn collect_through_sum_cancels_without_expanding() {
+        let pool = p();
+        let a = pool.symbol("a", Domain::Real);
+        let b = pool.symbol("b", Domain::Real);
+        let a2 = pool.pow(a, pool.integer(2_i32));
+        let b_minus_1 = pool.add(vec![b, pool.integer(-1_i32)]);
+        let e = pool.add(vec![
+            pool.mul(vec![pool.integer(-1_i32), a2, b_minus_1]),
+            pool.mul(vec![a2, b]),
+        ]);
+        let r = simplify(e, &pool);
+        assert_eq!(r.value, a2, "got {}", pool.display(r.value));
+        assert!(r
+            .log
+            .steps()
+            .iter()
+            .any(|s| s.rule_name == "collect_through_sum"));
+    }
+
+    /// A coefficient-only factor: `2(b+1) − 2b = 2`; a rational one:
+    /// `½·x·(y+2) − ½·x·y = x`.
+    #[test]
+    fn collect_through_sum_with_literal_coefficients() {
+        let pool = p();
+        let b = pool.symbol("b", Domain::Real);
+        let two = pool.integer(2_i32);
+        let e = pool.add(vec![
+            pool.mul(vec![two, pool.add(vec![b, pool.integer(1_i32)])]),
+            pool.mul(vec![pool.integer(-2_i32), b]),
+        ]);
+        assert_eq!(simplify(e, &pool).value, two);
+
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let half = pool.rational(1, 2);
+        let e = pool.add(vec![
+            pool.mul(vec![half, x, pool.add(vec![y, two])]),
+            pool.mul(vec![pool.rational(-1, 2), x, y]),
+        ]);
+        assert_eq!(simplify(e, &pool).value, x);
+    }
+
+    /// Distribution that does not shrink the sum is not kept: `x(y+1) + x`
+    /// stays factored, and `x(y+1) + z` is untouched.
+    #[test]
+    fn collect_through_sum_never_grows_a_sum() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let z = pool.symbol("z", Domain::Real);
+        let y1 = pool.add(vec![y, pool.integer(1_i32)]);
+        let xy1 = pool.mul(vec![x, y1]);
+        for e in [pool.add(vec![xy1, x]), pool.add(vec![xy1, z])] {
+            let r = simplify(e, &pool);
+            assert!(
+                !r.log
+                    .steps()
+                    .iter()
+                    .any(|s| s.rule_name == "collect_through_sum"),
+                "{} was distributed",
+                pool.display(e)
+            );
+        }
+    }
+
+    /// Non-commuting factors are never distributed.
+    #[test]
+    fn collect_through_sum_declines_noncommutative_products() {
+        let pool = p();
+        let a = pool.symbol_commutative("A", Domain::Real, false);
+        let b = pool.symbol_commutative("B", Domain::Real, false);
+        let sum = pool.add(vec![b, pool.integer(-1_i32)]);
+        let e = pool.add(vec![
+            pool.mul(vec![pool.integer(-1_i32), a, sum]),
+            pool.mul(vec![a, b]),
+        ]);
+        assert!(collect_through_sum(e, &pool).is_none());
     }
 
     // --- ExpandPow bound ---

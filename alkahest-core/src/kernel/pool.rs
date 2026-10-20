@@ -36,6 +36,7 @@ pub const POS_INFINITY_SYMBOL: &str = "\u{221e}";
 
 use hashbrown::HashTable;
 use std::hash::BuildHasher;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{PoisonError, RwLock};
 
 /// One index entry: the id of an interned node and the low 32 bits of its hash.
@@ -205,7 +206,35 @@ struct Node {
     /// the flags above, so the simplifier can ask "may this term be infinite
     /// or NaN?" in O(1) before cancelling it.
     non_finite: bool,
+    /// Zero-sum screening flags (`ZF_*`).  The structural bits are fixed at
+    /// intern time; [`ZF_CLEAN`] is set later, once a complete zero-sum sweep
+    /// has left the subtree unchanged (interned nodes are immutable, so a
+    /// subtree found clean stays clean).  See `simplify::zero::zero_sum_pass`.
+    zero_flags: std::sync::atomic::AtomicU8,
+    /// The zero-sum screen's `f64` pseudo-value of this subtree, memoised:
+    /// [`SCREEN_UNKNOWN`] until first asked, [`SCREEN_NONE`] when the subtree
+    /// has no finite screening value, otherwise the value's bits.  A pure
+    /// function of the node, so racing writers store the same bits.
+    zero_screen: std::sync::atomic::AtomicU64,
 }
+
+/// A literal, a plain (commutative, non-`i`) symbol, or an integer power of
+/// one.
+const ZF_PLAIN_FACTOR: u8 = 1;
+/// A plain factor or a product of plain factors.
+const ZF_PLAIN_MONOMIAL: u8 = 2;
+/// Some `Add` in the subtree (reachable through `Add`/`Mul`/`Pow`/`Func`
+/// nodes, the ones the zero-sum sweep descends into) has a term that is not a
+/// plain monomial.  A sum of plain monomials is an expanded polynomial over
+/// symbols, which like-term collection already leaves canonical — it hides no
+/// zero — so a subtree without this bit has nothing for the sweep to find.
+const ZF_CANDIDATE: u8 = 4;
+/// Set by a complete zero-sum sweep that left the subtree unchanged.
+const ZF_CLEAN: u8 = 8;
+/// NaN payloads: never the bits of a finite value, which is all the screen
+/// stores.
+const SCREEN_UNKNOWN: u64 = 0x7ff8_dead_0000_0001;
+const SCREEN_NONE: u64 = 0x7ff8_dead_0000_0002;
 
 pub struct ExprPool {
     /// Lock-free, append-only, reference-stable node array.
@@ -213,10 +242,6 @@ pub struct ExprPool {
     /// Deduplication index: ExprData → ExprId.  Holds ids, not data; see
     /// [`PoolIndex`].
     index: PoolIndex,
-    /// Process-unique identity, so per-pool side tables keyed by `ExprId`
-    /// (the simplifier's zero-sum memo) cannot be confused by a later pool
-    /// allocated at the same address.
-    uid: u64,
 }
 
 // `ExprPool` is `Send + Sync` *by inference*, not by assertion.
@@ -251,17 +276,10 @@ pub(crate) const MAX_FLAT_ARITY: usize = 131_072;
 
 impl ExprPool {
     pub fn new() -> Self {
-        static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         ExprPool {
             nodes: boxcar::Vec::new(),
             index: PoolIndex::new(),
-            uid: NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         }
-    }
-
-    /// Process-unique identity of this pool (never reused).
-    pub(crate) fn uid(&self) -> u64 {
-        self.uid
     }
 
     /// Intern `data`, returning a shared [`ExprId`]. Identical structures
@@ -328,13 +346,106 @@ impl ExprPool {
         let depth = self.compute_depth(&data);
         let static_domain_fact = self.compute_static_domain_fact(&data);
         let non_finite = self.compute_non_finite(&data);
+        let zero_flags = std::sync::atomic::AtomicU8::new(self.compute_zero_flags(&data));
         Node {
             data,
             mult_commutative,
             depth,
             static_domain_fact,
             non_finite,
+            zero_flags,
+            zero_screen: std::sync::atomic::AtomicU64::new(SCREEN_UNKNOWN),
         }
+    }
+
+    /// The structural `ZF_*` bits of a new node, from its children's cached
+    /// bits — O(arity).
+    fn compute_zero_flags(&self, data: &ExprData) -> u8 {
+        let bits = |c: ExprId| self.node(c).zero_flags.load(Relaxed);
+        let cand = |c: ExprId| bits(c) & ZF_CANDIDATE != 0;
+        let plain = ZF_PLAIN_FACTOR | ZF_PLAIN_MONOMIAL;
+        match data {
+            ExprData::Integer(_) | ExprData::Rational(_) => plain,
+            ExprData::Symbol {
+                name,
+                domain,
+                commutative: true,
+            } if !(name == Self::IMAGINARY_UNIT_NAME && *domain == Domain::Complex) => plain,
+            ExprData::Pow { base, exp } => {
+                let base_plain_symbol = self.with(*base, |b| matches!(b, ExprData::Symbol { .. }))
+                    && bits(*base) & ZF_PLAIN_FACTOR != 0;
+                let int_exp = self.with(*exp, |x| matches!(x, ExprData::Integer(_)));
+                let mut f = if base_plain_symbol && int_exp {
+                    plain
+                } else {
+                    0
+                };
+                if cand(*base) || cand(*exp) {
+                    f |= ZF_CANDIDATE;
+                }
+                f
+            }
+            ExprData::Mul(args) => {
+                let mut f = 0;
+                if args.iter().all(|&a| bits(a) & ZF_PLAIN_FACTOR != 0) {
+                    f |= ZF_PLAIN_MONOMIAL;
+                }
+                if args.iter().any(|&a| cand(a)) {
+                    f |= ZF_CANDIDATE;
+                }
+                f
+            }
+            ExprData::Add(args) => {
+                let non_plain_term =
+                    args.len() >= 2 && args.iter().any(|&a| bits(a) & ZF_PLAIN_MONOMIAL == 0);
+                if non_plain_term || args.iter().any(|&a| cand(a)) {
+                    ZF_CANDIDATE
+                } else {
+                    0
+                }
+            }
+            ExprData::Func { args, .. } => {
+                if args.iter().any(|&a| cand(a)) {
+                    ZF_CANDIDATE
+                } else {
+                    0
+                }
+            }
+            // Leaves of the zero-sum sweep: it never descends into them.
+            _ => 0,
+        }
+    }
+
+    /// Whether the zero-sum sweep has anything to look at under `id`: some
+    /// `Add` there has a term that is not a plain monomial, and no complete
+    /// sweep has found the subtree clean yet.  O(1).
+    pub(crate) fn zero_candidate(&self, id: ExprId) -> bool {
+        self.node(id).zero_flags.load(Relaxed) & (ZF_CANDIDATE | ZF_CLEAN) == ZF_CANDIDATE
+    }
+
+    /// Record that a complete zero-sum sweep left `id` unchanged.
+    pub(crate) fn mark_zero_clean(&self, id: ExprId) {
+        self.node(id).zero_flags.fetch_or(ZF_CLEAN, Relaxed);
+    }
+
+    /// The memoised zero-sum screening value of `id`: `None` when not yet
+    /// computed, `Some(v)` otherwise (`v` itself `None` for "no finite value").
+    pub(crate) fn zero_screen(&self, id: ExprId) -> Option<Option<f64>> {
+        match self.node(id).zero_screen.load(Relaxed) {
+            SCREEN_UNKNOWN => None,
+            SCREEN_NONE => Some(None),
+            bits => Some(Some(f64::from_bits(bits))),
+        }
+    }
+
+    /// Memoise the zero-sum screening value of `id` (non-finite values are
+    /// stored as "none").
+    pub(crate) fn set_zero_screen(&self, id: ExprId, v: Option<f64>) {
+        let bits = match v {
+            Some(v) if v.is_finite() => v.to_bits(),
+            _ => SCREEN_NONE,
+        };
+        self.node(id).zero_screen.store(bits, Relaxed);
     }
 
     /// One level of the depth recurrence: `1 + max(child depths)`, reading each
