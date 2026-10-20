@@ -13,14 +13,20 @@ form evaluated by mpmath at 40 digits, mpmath's own Taylor-series ODE solver
 import math
 
 import alkahest as ak
-import mpmath as mp
 import pytest
-
-mp.mp.dps = 40
 
 
 def _inside(lo, hi, v, slack=0.0):
-    return mp.mpf(lo) - slack <= v <= mp.mpf(hi) + slack
+    # `lo`/`hi` are floats and `v` an mpmath mpf: the comparison is exact.
+    return lo - slack <= v <= hi + slack
+
+
+@pytest.fixture
+def mp():
+    mpmath = pytest.importorskip("mpmath")
+    mpmath.mp.dps = 40
+    yield mpmath
+    mpmath.mp.dps = 15
 
 
 @pytest.fixture
@@ -33,7 +39,26 @@ def pool():
 # ---------------------------------------------------------------------------
 
 
-def test_exponential_decay_contains_exp_everywhere(pool):
+def test_closed_forms_without_mpmath(pool):
+    # Runs even where mpmath is absent: float oracles, so a 1e-15 slack covers
+    # their own rounding; the enclosures themselves are far tighter.
+    y = pool.symbol("y")
+    sol = ak.verified_ode([-y], [y], None, [1.0], (0.0, 3.0))
+    for k in range(31):
+        t = 0.1 * k
+        lo, hi = sol.enclosure(t)[0]
+        assert _inside(lo, hi, math.exp(-t), slack=1e-15), t
+    x = pool.symbol("x")
+    rot = ak.verified_ode([-y, x], [x, y], None, [1.0, 0.0], (0.0, 10.0))
+    for k in range(101):
+        t = 0.1 * k
+        bx, by = rot.enclosure(t)
+        assert _inside(*bx, math.cos(t), slack=1e-14), t
+        assert _inside(*by, math.sin(t), slack=1e-14), t
+    assert rot.max_width < 1e-12
+
+
+def test_exponential_decay_contains_exp_everywhere(pool, mp):
     y = pool.symbol("y")
     sol = ak.verified_ode([-y], [y], None, [1.0], (0.0, 5.0))
     assert sol.dim == 1
@@ -50,7 +75,7 @@ def test_exponential_decay_contains_exp_everywhere(pool):
     assert sol.max_width < 1e-14
 
 
-def test_rotation_contains_cos_sin_and_stays_tight(pool):
+def test_rotation_contains_cos_sin_and_stays_tight(pool, mp):
     # x' = -y, y' = x.  A naive interval method wraps the rotating box at
     # every step and the width grows like 2^(steps); the QR frame does not.
     x, y = pool.symbol("x"), pool.symbol("y")
@@ -67,7 +92,7 @@ def test_rotation_contains_cos_sin_and_stays_tight(pool):
     assert sol.max_width < 1e-12
 
 
-def test_damped_oscillator_matches_matrix_exponential(pool):
+def test_damped_oscillator_matches_matrix_exponential(pool, mp):
     # x' = v, v' = -x - 0.25 v  ⇒  [x, v](t) = expm(t A) [1, 0].
     x, v = pool.symbol("x"), pool.symbol("v")
     sol = ak.verified_ode([v, -x - pool.rational(1, 4) * v], [x, v], None, [1.0, 0.0], (0.0, 10.0))
@@ -81,7 +106,7 @@ def test_damped_oscillator_matches_matrix_exponential(pool):
     assert sol.max_width < 1e-12
 
 
-def test_logistic_matches_closed_form(pool):
+def test_logistic_matches_closed_form(pool, mp):
     # y' = y (1 - y), y(0) = 1/2  ⇒  y = 1 / (1 + e^{-t}).
     y = pool.symbol("y")
     sol = ak.verified_ode([y * (1 - y)], [y], None, [0.5], (0.0, 10.0))
@@ -92,7 +117,7 @@ def test_logistic_matches_closed_form(pool):
         assert hi - lo < 1e-13
 
 
-def test_time_dependent_rhs(pool):
+def test_time_dependent_rhs(pool, mp):
     # y' = cos(t) y  ⇒  y = exp(sin t).
     y, t = pool.symbol("y"), pool.symbol("t")
     sol = ak.verified_ode([ak.cos(t) * y], [y], t, [1.0], (0.0, 6.0))
@@ -108,7 +133,7 @@ def test_time_dependent_rhs(pool):
 # ---------------------------------------------------------------------------
 
 
-def test_nonlinear_against_mpmath_odefun(pool):
+def test_nonlinear_against_mpmath_odefun(pool, mp):
     y, t = pool.symbol("y"), pool.symbol("t")
     rhs = ak.sin(t) * y - y**3 / 10 + ak.exp(-y) / 5
     sol = ak.verified_ode([rhs], [y], t, [1.0], (0.0, 3.0))
@@ -121,7 +146,7 @@ def test_nonlinear_against_mpmath_odefun(pool):
     mp.mp.dps = 40
 
 
-def test_interval_initial_condition_encloses_every_solution(pool):
+def test_interval_initial_condition_encloses_every_solution(pool, mp):
     y, t = pool.symbol("y"), pool.symbol("t")
     sol = ak.verified_ode([ak.sin(t) * y - y**3 / 10], [y], t, [(0.9, 1.1)], (0.0, 3.0))
     mp.mp.dps = 25
@@ -171,7 +196,7 @@ def test_lorenz_contains_scipy_high_accuracy_solution(pool):
     assert sol.max_width < 1e-10
 
 
-def test_lorenz_contains_mpmath_solution(pool):
+def test_lorenz_contains_mpmath_solution(pool, mp):
     rhs, xs = _lorenz(pool)
     sol = ak.verified_ode(rhs, xs, None, [1.0, 1.0, 1.0], (0.0, 0.5))
     mp.mp.dps = 30
@@ -197,7 +222,7 @@ def test_lorenz_contains_mpmath_solution(pool):
 # ---------------------------------------------------------------------------
 
 
-def test_blow_up_is_refused_not_enclosed(pool):
+def test_blow_up_is_refused_not_enclosed(pool, mp):
     # y' = y², y(0) = 1: y = 1/(1-t) blows up at t = 1.
     y = pool.symbol("y")
     with pytest.raises(ak.ValidatedError) as info:

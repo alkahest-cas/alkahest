@@ -72,7 +72,6 @@ pub mod bounds;
 /// Directed-rounding interval arithmetic over the extended reals — the
 /// last-resort range bound for one panel of `bounds::verified_integral`.
 mod interval;
-/// Validated ODE integration (interval Taylor series + Lohner QR).
 pub mod ode;
 pub mod taylor;
 
