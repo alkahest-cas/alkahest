@@ -2711,7 +2711,7 @@ if "solve" in dir():
         return _realify_solutions(result, kwargs.get("assumptions") or active_assumptions())
 
     solve.__doc__ = (
-        _solve_dispatch.__doc__.rstrip()
+        (_solve_dispatch.__doc__ or "").rstrip()
         + """
 
         real_form : bool, default True
