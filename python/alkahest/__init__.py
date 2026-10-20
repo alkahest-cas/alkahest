@@ -2695,8 +2695,10 @@ if "solve" in dir():
             for var, val in sol.items():
                 if isinstance(val, Expr):
                     # best effort: keep the solver's own form on any failure
-                    with _suppress(Exception):
+                    try:
                         val = to_real_form(val, assumptions)
+                    except Exception:  # noqa: SIM105, S110
+                        pass
                 new[var] = val
             out.append(new)
         return out
