@@ -37,10 +37,12 @@
 //! * Every loop honours the active [`crate::budget`]: a trip is a refusal, not
 //!   a partial answer.
 
+#![allow(clippy::needless_range_loop)]
+
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 use crate::matrix::Matrix;
 use crate::numfield::{NumberField, NumberFieldElement};
-use crate::poly::root_of::{make_root_of, rational_expr, root_of_parts};
+use crate::poly::root_of::{rational_expr, root_of_parts};
 use crate::simplify::engine::simplify;
 use rug::{Integer, Rational};
 use std::collections::HashMap;
@@ -877,6 +879,7 @@ fn primitive_positive(c: &[Integer]) -> Vec<Integer> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::poly::root_of::make_root_of;
 
     fn companion(c: &[i64], pool: &ExprPool) -> Matrix {
         // monic x^n + c_{n-1} x^{n-1} + … + c_0, c ascending without the 1.
