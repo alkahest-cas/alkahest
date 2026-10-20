@@ -42,10 +42,14 @@ pub(crate) enum Kernel {
     HankelH1,
     /// `H^{(2)}_ν(x) = J_ν(x) − i Y_ν(x)`.
     HankelH2,
+    /// `log Γ(x)` (`loggamma`): real for `x > 0`; the principal branch (the
+    /// analytic continuation from the positive axis, Arb's `acb_lgamma`)
+    /// for complex arguments.
+    LogGamma,
 }
 
 impl Kernel {
-    pub(crate) const ALL: [Kernel; 16] = [
+    pub(crate) const ALL: [Kernel; 17] = [
         Kernel::BesselJ,
         Kernel::BesselY,
         Kernel::BesselI,
@@ -62,6 +66,7 @@ impl Kernel {
         Kernel::ZetaPrime,
         Kernel::HankelH1,
         Kernel::HankelH2,
+        Kernel::LogGamma,
     ];
 
     pub(crate) fn name(self) -> &'static str {
@@ -82,6 +87,7 @@ impl Kernel {
             Kernel::ZetaPrime => "zeta_prime",
             Kernel::HankelH1 => "hankel1",
             Kernel::HankelH2 => "hankel2",
+            Kernel::LogGamma => "loggamma",
         }
     }
 
@@ -96,7 +102,8 @@ impl Kernel {
             | Kernel::AiryAiPrime
             | Kernel::AiryBiPrime
             | Kernel::Zeta
-            | Kernel::ZetaPrime => 1,
+            | Kernel::ZetaPrime
+            | Kernel::LogGamma => 1,
             _ => 2,
         }
     }
@@ -318,6 +325,15 @@ pub(super) mod arb_impl {
                 }
                 // Complex-valued: no real kernel.
                 Kernel::HankelH1 | Kernel::HankelH2 => return None,
+                // Real only on the positive axis: for x < 0 the principal
+                // branch is complex (Im = −kπ between the poles), so the real
+                // evaluator declines instead of returning log|Γ(x)|.
+                Kernel::LogGamma => {
+                    if !args[0].is_positive() {
+                        return None;
+                    }
+                    ffi::arb_lgamma(out.as_mut_ptr(), args[0].as_ptr(), prec)
+                }
             }
         }
         if kernel == Kernel::Polylog && !out.is_finite() {
@@ -505,6 +521,7 @@ pub(super) mod arb_impl {
                 Kernel::ZetaPrime => {
                     out = zeta_jet_acb(&args[0], 2, prec)?.swap_remove(1);
                 }
+                Kernel::LogGamma => ffi::acb_lgamma(out.as_mut_ptr(), args[0].as_ptr(), prec),
                 Kernel::HankelH1 | Kernel::HankelH2 => {
                     let mut j = Acb::new();
                     let mut y = Acb::new();

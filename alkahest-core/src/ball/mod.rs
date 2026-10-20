@@ -807,7 +807,7 @@ impl ArbBall {
         let prec = self.prec;
         // Use midpoint + Lipschitz: |erf'(x)| = 2/sqrt(π) * exp(-x²) ≤ 2/sqrt(π) ≈ 1.13
         let mid = Float::with_val(prec, self.mid.clone().erf());
-        let rad = Float::with_val(prec, &self.rad * &erf_lipschitz(prec));
+        let rad = Float::with_val_round(prec, &self.rad * &self.erf_local_lipschitz(), Round::Up).0;
         let mut b = ArbBall { mid, rad, prec };
         b.add_rounding_error();
         b
@@ -816,7 +816,7 @@ impl ArbBall {
     pub fn erfc(&self) -> Self {
         let prec = self.prec;
         let mid = Float::with_val(prec, self.mid.clone().erfc());
-        let rad = Float::with_val(prec, &self.rad * &erf_lipschitz(prec));
+        let rad = Float::with_val_round(prec, &self.rad * &self.erf_local_lipschitz(), Round::Up).0;
         let mut b = ArbBall { mid, rad, prec };
         b.add_rounding_error();
         b
@@ -1267,6 +1267,30 @@ fn glaisher_ball(_prec: u32) -> Option<ArbBall> {
 /// `2/√π ≈ 1.1283791…`, the Lipschitz constant of `erf` and `erfc`, rounded
 /// **up**.  `Float::with_val(prec, 2.0/π.sqrt())` rounds to nearest, and a
 /// Lipschitz constant rounded down is not a Lipschitz constant.
+impl ArbBall {
+    /// `sup |erf′|` over the ball, rounded up: `2/√π · e^{−m²}` with `m` the
+    /// distance of the ball from `0` (`erf′ = 2/√π · e^{−t²}` decreases in
+    /// `|t|`), and the global `2/√π` when the ball contains `0`. The global
+    /// bound alone made `erfc(3x)` at `x = 100` a ball of radius `10⁻³⁵`
+    /// around a value of `10⁻³⁹⁰⁹⁰` (F25).
+    fn erf_local_lipschitz(&self) -> Float {
+        let prec = self.prec;
+        let (lo, hi) = (self.lo(), self.hi());
+        let m = if lo > 0 {
+            lo
+        } else if hi < 0 {
+            -hi
+        } else {
+            return erf_lipschitz(prec);
+        };
+        let work = prec + 64;
+        // m² rounded down, so e^{−m²} (rounded up) is an upper bound.
+        let m2 = Float::with_val_round(work, &m * &m, Round::Down).0;
+        let decay = Float::with_val_round(work, (-m2).exp_ref(), Round::Up).0;
+        Float::with_val_round(prec, &decay * &erf_lipschitz(work), Round::Up).0
+    }
+}
+
 fn erf_lipschitz(prec: u32) -> Float {
     let work = prec + 32;
     let two_over_sqrt_pi = Float::with_val(

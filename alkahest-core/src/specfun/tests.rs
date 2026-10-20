@@ -123,6 +123,21 @@ const REFERENCE: &[(Kernel, &[f64], &str)] = &[
         "-0.006265736372189758403282758729725833176322370751750072669",
     ),
     (
+        Kernel::LogGamma,
+        &[7.25],
+        "7.052185450738539444925749253133010245418207107270901606",
+    ),
+    (
+        Kernel::LogGamma,
+        &[0.375],
+        "0.863073982270647462405089094134015495332470629348427135",
+    ),
+    (
+        Kernel::LogGamma,
+        &[150.5],
+        "602.5139548705854119507378778307831007899261142754249016",
+    ),
+    (
         Kernel::SphericalJ,
         &[2.0, 1.5],
         "0.1273492836884082156472409472301944595991345023426743568",
@@ -169,6 +184,7 @@ fn every_kernel_is_registered_with_the_right_arity() {
                 | Kernel::AiryBiPrime
                 | Kernel::Zeta
                 | Kernel::Polylog
+                | Kernel::LogGamma
         );
         assert_eq!(
             caps.contains(Capabilities::TAYLOR_MODEL),

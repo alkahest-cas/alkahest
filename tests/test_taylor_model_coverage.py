@@ -135,8 +135,9 @@ def test_the_flag_is_not_a_restatement_of_numeric_ball():
 def test_supported_set_is_the_elementary_plus_special_fragment():
     """A pin on the boundary as it stands, so a change to it is deliberate.
 
-    Fifty-four names (F24 added the orthogonal polynomials, integer-order
-    Bessel J/Y/I/K, Airy, `zeta`, `polylog` and `polygamma`): the elementary
+    Fifty-five names (F24 added the orthogonal polynomials, integer-order
+    Bessel J/Y/I/K, Airy, `zeta`, `polylog` and `polygamma`; F25 `loggamma`):
+    the elementary
     fragment, plus the special functions
     M7 called for — the Bessel pair, `digamma`, `gamma` and `lambert_w` — plus
     the exponential-integral family `Ei`, `li`, `Si`, `Ci`, `Shi`, `Chi`
@@ -194,6 +195,8 @@ def test_supported_set_is_the_elementary_plus_special_fragment():
         "legendre_p",
         "li",
         "log",
+        # F25: log-gamma (derivatives are polygamma).
+        "loggamma",
         "polygamma",
         "polylog",
         "sin",

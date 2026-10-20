@@ -279,6 +279,8 @@ from .alkahest import (  # noqa: F401
     gamma,
     gamma_contract,
     gamma_trace,
+    # F25 — Gamma-product rewriting (reflection, duplication, recurrence)
+    gammasimp,
     # V2-3: Sparse interpolation and sparse modular GCD
     gcd_sparse,
     gegenbauer_c,
@@ -315,6 +317,8 @@ from .alkahest import (  # noqa: F401
     log,
     # Exponential-integral family (DLMF §6.2)
     log_integral,
+    # F25 — log-gamma (principal branch)
+    loggamma,
     lorentz_contract,
     lower_to_first_order,
     lowergamma,
@@ -3369,6 +3373,8 @@ __all__ = [
     "functions_to_symbols",
     "gamma_contract",
     "gamma_trace",
+    # F25
+    "gammasimp",
     # V2-3
     "gcd_sparse",
     "gegenbauer_c",
@@ -3419,6 +3425,8 @@ __all__ = [
     "log",
     # Exponential-integral family (DLMF §6.2)
     "log_integral",
+    # F25
+    "loggamma",
     "lorentz_contract",
     "lower_to_first_order",
     "lowergamma",

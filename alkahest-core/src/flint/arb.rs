@@ -585,6 +585,10 @@ extern "C" {
     pub fn arb_const_euler(z: *mut ArbStruct, prec: slong);
     pub fn arb_const_catalan(z: *mut ArbStruct, prec: slong);
     pub fn arb_const_glaisher(z: *mut ArbStruct, prec: slong);
+    // -- log-gamma (F25) ---------------------------------------------------
+    // Used by `crate::specfun::numeric` for `loggamma`.
+    pub fn arb_lgamma(res: *mut ArbStruct, x: *const ArbStruct, prec: slong);
+    pub fn acb_lgamma(res: *mut AcbStruct, z: *const AcbStruct, prec: slong);
     pub fn acb_polygamma(
         res: *mut AcbStruct,
         s: *const AcbStruct,

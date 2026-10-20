@@ -104,6 +104,63 @@ and `ψ⁽ⁿ⁾` at the poles `0, −1, −2, …` by shifting them off the pol
 (`Γ(u) = Γ(u+k+1)/(u(u+1)⋯(u+k))`), so the coefficients are exact in γ, π and
 `ζ(3)`, `ζ(5)`, …. `polygamma(1/2, x)` is `E-SPECFN-008`.
 
+## `loggamma`, `gammasimp` and asymptotics at infinity (F25)
+
+`loggamma(x)` is `log Γ(x)`: real for `x > 0`, and for complex `x` the
+principal branch (the continuation from the positive axis, Arb's
+`acb_lgamma`; at `x = −1/2` it is `log(2√π) − 2πi`, not `log(Γ(−1/2))`).
+It is exact at integers up to 100 and at positive half-integers,
+differentiates to `digamma`, and has f64, ball, complex and Taylor-model
+values. A literal pole raises `E-SPECFN-006`.
+
+`gammasimp` rewrites products of `Γ` with three identities (DLMF 5.5.1, 5.5.3
+and 5.5.5). The recurrence turns `Γ(x+n)/Γ(x)` into a rising factorial for an
+integer `|n| ≤ 64`, but only when the two exponents have opposite signs.
+Reflection turns `Γ(a)Γ(m−a)` into `π/sin(πa)` times a rising factorial.
+Duplication turns `Γ(a)Γ(a+½+k)` into `2^{1−2a}√π Γ(2a)` times a rising
+factorial. Each rewrite is an identity of meromorphic functions. When the
+`Γ` factors cancel completely (`Γ(x+3)/Γ(x) → x(x+1)(x+2)`), the result is the
+continuous extension across `x ∈ {0, −1, …}`, where the quotient itself is
+undefined. `is_zero` tries `gammasimp`, so `Γ(x)Γ(1−x) − π/sin(πx)` is proved
+zero.
+
+```python
+ak.loggamma(p.integer(5))                       # log(24)
+ak.diff(ak.loggamma(x), x).value                # digamma(x)
+ak.gammasimp(ak.gamma(x) * ak.gamma(1 - x))     # pi/sin(pi*x)
+ak.gammasimp(ak.gamma(x) * ak.gamma(x + p.rational(1, 2)))  # 2^(1-2x)*sqrt(pi)*gamma(2x)
+ak.gammasimp(ak.gamma(x + 3) / ak.gamma(x))     # x*(x+1)*(x+2)
+
+from alkahest.experimental import asymptotic_expand
+asymptotic_expand(ak.loggamma(x), x, 6)
+# [x*log(x), -x, -log(x)/2, log(2*pi)/2, 1/(12*x), -1/(360*x^3)]
+asymptotic_expand(ak.gamma(x), x, 3)
+# [sqrt(2*pi)*x^(x-1/2)*exp(-x), …/(12*x), …/(288*x^2)]
+asymptotic_expand(ak.bessel_j(0, x), x, 2)
+# [sqrt(2)*cos(x - pi/4)/(sqrt(pi)*sqrt(x)), sqrt(2)*sin(x - pi/4)/(8*sqrt(pi)*x^(3/2))]
+asymptotic_expand(ak.erfc(x), x, 2)      # [exp(-x^2)/(sqrt(pi)*x), -exp(-x^2)/(2*sqrt(pi)*x^3)]
+```
+
+`asymptotic_expand` builds these expansions at `+∞` from exact coefficients:
+
+| function (argument `a·x + b`, rational `a > 0`) | expansion | DLMF |
+|---|---|---|
+| `loggamma`, `gamma^e`, `factorial`, `binomial`, products of `Γ` | Stirling, `B_{k+1}(b)` | 5.11.3, 5.11.8 |
+| `digamma`, `trigamma`, `polygamma(n, ·)` | `log x + Σ (−1)^{m+1} B_m(b)/(m x^m)`, differentiated | 5.15.8 |
+| `bessel_j/y(ν, a·x)`, rational `ν` | Hankel, `cos ω`/`sin ω` with `ω = ax − νπ/2 − π/4` | 10.17.3–4 |
+| `bessel_i/k(ν, a·x)` | `e^{±ax}` times Hankel's `a_k(ν)` | 10.40.1–2 |
+| `erfc(a·x)`, `Ei(a·x)` | `e^{−a²x²}`, `e^{ax}` times the classical series | 7.12.1, 6.12.2 |
+| Airy `Ai`, `Bi`, `Ai′`, `Bi′` of `a·x` | `e^{∓ζ}`, `ζ = (2/3)(ax)^{3/2}` | 9.7.5–8 |
+
+These also combine. Products with constants, with `log(x)^k`, with `x^q` and
+with power-scale cofactors are expanded, and so are sums whose summands share
+one exponential scale (for example `loggamma(x) − x·log(x)` or
+`√x·J₀(x)`). Every expansion is checked numerically before it is returned:
+at four large points, using 640-bit balls, the residual must be within 8
+times the first omitted term. A symbolic order, a nonlinear or negative-slope
+argument, a reciprocal such as `1/erfc(x)`, or a sum of two different scales
+is refused with `E-ASYMPT-005`.
+
 ## Generalized hypergeometric `ₚFq`
 
 ```python
@@ -172,11 +229,9 @@ integrals (see *Calculus*).
 
 ## Not yet
 
-The large-`x` asymptotic expansion of `J_ν` through `asymptotic_expand`,
-and Taylor models for non-integer Bessel orders, `hurwitz_zeta`, `hyper` and
+Taylor models for non-integer Bessel orders, `hurwitz_zeta`, `hyper` and
 the spherical Bessel functions (integer-order `J/Y/I/K`, Airy, `zeta`,
-`polylog`, `polygamma` and the orthogonal polynomials have them). For G11c: Stirling's series through
-`asymptotic_expand`, `loggamma`, Γ duplication/reflection rewriting,
+`polylog`, `polygamma` and the orthogonal polynomials have them). For G11c:
 contiguous relations, the logarithmic cases of the `₂F₁` connection
 formulas, `U(a, b, z)` ↔ upper incomplete gamma (no `U` primitive yet),
 Meijer G.

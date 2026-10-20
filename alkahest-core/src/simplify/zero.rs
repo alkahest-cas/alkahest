@@ -1817,7 +1817,7 @@ impl ZeroStatus {
 pub struct ZeroTest {
     /// The verdict's provenance.
     pub status: ZeroStatus,
-    /// `"simplify"`, `"rational_normal_form"`, `"arb_ball"`,
+    /// `"simplify"`, `"rational_normal_form"`, `"gammasimp"`, `"arb_ball"`,
     /// `"arb_sampling"`, `"complex_f64_sampling"` or `"none"`.
     pub method: &'static str,
     /// Human-readable evidence lines (sample points and enclosures).
@@ -1890,7 +1890,20 @@ pub fn zero_test(
                 }
             }
         }
-        for candidate in [simplified, expr] {
+        // F25: products of Γ that the reflection / duplication / recurrence
+        // identities collapse (`Γ(x)Γ(1−x) − π/sin(πx)`) are invisible to the
+        // normal form, which treats each `gamma(…)` as an independent atom.
+        // `gammasimp` rewrites only by identities of meromorphic functions.
+        let mut candidates = vec![simplified, expr];
+        if let Ok(g) = crate::specfun::gammasimp(simplified, pool) {
+            if g != simplified {
+                if rational_literal(g, pool).is_some_and(|r| r == 0) {
+                    return ZeroTest::new(ZeroStatus::ProvedZero, "gammasimp", vec![]);
+                }
+                candidates.insert(0, g);
+            }
+        }
+        for candidate in candidates {
             let mut nz = Normalizer::new(pool, Limits::ZERO_TEST).with_positive(positive.clone());
             match nz.decide(candidate) {
                 Some(true) => {

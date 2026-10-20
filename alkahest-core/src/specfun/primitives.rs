@@ -380,7 +380,42 @@ pub(crate) fn canonical(kernel: Kernel, args: &[ExprId], pool: &ExprPool) -> Opt
         Kernel::Polylog => polylog_canonical(args[0], args[1], pool),
         Kernel::ZetaPrime => zeta_prime_canonical(args[0], pool),
         Kernel::HankelH1 | Kernel::HankelH2 => hankel_canonical(kernel, args[0], args[1], pool),
+        Kernel::LogGamma => loggamma_canonical(args[0], pool),
     }
+}
+
+/// Largest positive integer `n` at which `loggamma(n)` becomes `log((n−1)!)`.
+const MAX_EXACT_LOGGAMMA: i64 = 100;
+
+/// Exact values of `log Γ(x)` (F25) where `Γ(x) > 0` is known exactly:
+/// `loggamma(1) = loggamma(2) = 0`, `loggamma(n) = log((n−1)!)` for an integer
+/// `3 ≤ n ≤ 100`, and `loggamma(m + ½) = log(Γ(m + ½))` for `m ≥ 0`
+/// (`loggamma(1/2) = log(π)/2`). On the positive axis the principal branch
+/// *is* the real logarithm of `Γ`, so these are exact; at a negative
+/// half-integer `Γ < 0` and the principal branch carries an imaginary part,
+/// so the node is kept. The poles (`x ∈ {0, −1, …}`) are kept too — the
+/// constructor refuses them.
+fn loggamma_canonical(x: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let q = rational_literal(pool, x)?;
+    if q <= 0 {
+        return None;
+    }
+    if *q.denom() == 1 {
+        let n = q.numer().to_i64()?;
+        if n <= 2 {
+            return Some(pool.integer(0));
+        }
+        if n > MAX_EXACT_LOGGAMMA {
+            return None;
+        }
+        let f = Integer::factorial((n - 1) as u32).complete();
+        return Some(pool.func("log", vec![pool.integer(f)]));
+    }
+    if *q.denom() == 2 {
+        let g = super::gamma::gamma_value(x, pool)?;
+        return Some(pool.func("log", vec![g]));
+    }
+    None
 }
 
 /// `H^{(1,2)}_{−n} = (−1)ⁿ H^{(1,2)}_n` for an integer `n` (DLMF 10.4.6).
@@ -517,6 +552,8 @@ pub(crate) fn local_derivative(kernel: Kernel, args: &[ExprId], pool: &ExprPool)
         Kernel::Zeta => pool.func(Kernel::ZetaPrime.name(), vec![args[0]]),
         // ζ″ has no node (a higher derivative is refused, not dropped).
         Kernel::ZetaPrime => return None,
+        // d/dx log Γ(x) = ψ(x) (DLMF 5.2.2), on every branch.
+        Kernel::LogGamma => pool.func("digamma", vec![args[0]]),
     })
 }
 
