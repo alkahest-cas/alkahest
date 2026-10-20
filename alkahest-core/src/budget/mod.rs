@@ -1236,11 +1236,28 @@ mod tests {
     #[test]
     fn memory_budget_trips_when_gmp_memory_passes_max_bytes() {
         let _serial = serial();
-        let _guard = enter_with_memory(Budget::new(), Some(1 << 20));
+        // The live-byte total is process-wide (GMP's hooks are), and `serial()`
+        // only excludes the other tests in this module: any unrelated lib test
+        // allocating more than 1 MiB of GMP memory while this frame is open
+        // lands in its delta. So "an empty frame does not trip" is checked by
+        // re-entering a fresh frame until a quiet window is seen; a frame that
+        // trips every time (a real accounting bug) still fails after the retries.
+        let mut quiet = false;
+        for _ in 0..200 {
+            let probe = enter_with_memory(Budget::new(), Some(1 << 20));
+            let ok = check_all().is_ok();
+            drop(probe);
+            if ok {
+                quiet = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
         assert!(
-            check_all().is_ok(),
+            quiet,
             "an empty frame must not trip before anything is allocated"
         );
+        let _guard = enter_with_memory(Budget::new(), Some(1 << 20));
         let z = big_gmp_integer();
         let err = check_all().unwrap_err();
         assert_eq!(err.code(), "E-BUDGET-004");
