@@ -84,7 +84,9 @@ it. It evaluates through `eval_expr` (real roots), `evaluate(..., mode="complex"
 any precision through `interval_eval` / `evaluate(..., precision_bits=...)` (real roots),
 using FLINT's certified root isolation. Build one directly with
 `root_of(poly, var, index)`, which reduces to the irreducible factor the root belongs to
-and raises `E-SOLVE-008` on a non-polynomial input or an out-of-range index.
+and raises `E-SOLVE-008` on a non-polynomial input or an out-of-range index. A printed
+`RootOf(x^5 - x - 1, 2)` parses back to the same node (`parse`; the polynomial's variable
+is local to the call).
 
 With **symbolic parameters** the univariate is factored over ℚ[params]:
 `s**3 - a*s**2 - s + a` gives `a, ±1`. A factor of degree ≥ 3 in the unknown that still

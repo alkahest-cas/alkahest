@@ -12,6 +12,7 @@ use crate::kernel::{ExprId, ExprPool};
 use crate::simplify::engine::simplify;
 use std::fmt;
 
+pub(crate) mod algebraic;
 pub mod eigen;
 pub mod exp_gate;
 pub mod linear_algebra;

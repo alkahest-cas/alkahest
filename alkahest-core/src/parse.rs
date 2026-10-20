@@ -700,6 +700,9 @@ impl<'a> Parser<'a> {
         if let Some(r) = self.parse_undefined_call(name, offset)? {
             return Ok(r);
         }
+        if name == crate::poly::root_of::ROOT_OF {
+            return self.parse_root_of(offset);
+        }
         if !is_known_func(name) {
             return Err(ParseError::unknown_func(
                 format!("unknown function '{name}'"),
@@ -829,6 +832,93 @@ impl Parser<'_> {
         }
         let map = HashMap::from([(args[1], args[2])]);
         Ok(Some(crate::kernel::subs::subs(args[0], &map, pool)))
+    }
+}
+
+impl Parser<'_> {
+    /// `RootOf(p, k)` and `RootOf(p, v, k)`: the `k`-th root of the
+    /// polynomial `p` in the order documented in [`crate::poly::root_of`],
+    /// which is the order the printer's `RootOf(x^3 - x - 1, 0)` refers to.
+    ///
+    /// The polynomial's variable is **bound** by the call, like a lambda's
+    /// parameter: the arguments are read against an empty symbol table, so the
+    /// placeholder `x` the printer writes is never resolved to whatever the
+    /// caller has bound `x` to, and it is not added to the caller's table.
+    /// With two arguments the polynomial must have exactly one free symbol;
+    /// with three, every free symbol must be `v`. The result is
+    /// [`crate::poly::root_of::root_of`], so a printed `RootOf` reads back as
+    /// the identical node, and a reducible `p` reads back as the root it names
+    /// (rational, or the `RootOf` of its irreducible factor).
+    fn parse_root_of(&mut self, offset: usize) -> Result<ExprId, ParseError> {
+        let span = (offset, offset + crate::poly::root_of::ROOT_OF.len());
+        self.advance(); // consume "("
+        let outer = std::mem::take(self.symbols);
+        let parsed = self.parse_call_args();
+        *self.symbols = outer;
+        let args = parsed?;
+        let pool = self.pool;
+        let usage = "RootOf(poly, index) or RootOf(poly, var, index) takes a polynomial \
+                     with rational coefficients, optionally its variable, and a \
+                     non-negative integer index";
+        if !(2..=3).contains(&args.len()) {
+            return Err(ParseError::syntax(usage, span));
+        }
+        let index = match pool.get(args[args.len() - 1]) {
+            ExprData::Integer(n) => n.0.to_usize(),
+            _ => None,
+        }
+        .ok_or_else(|| ParseError::syntax(usage, span))?;
+        let poly = args[0];
+        let free = crate::poly::collect_free_vars(poly, pool);
+        let var = if args.len() == 3 {
+            let v = args[1];
+            if !pool.with(v, |d| matches!(d, ExprData::Symbol { .. })) {
+                return Err(ParseError::syntax(usage, span));
+            }
+            if free.iter().any(|&s| s != v) {
+                return Err(ParseError::syntax(
+                    "RootOf: the polynomial has a free symbol other than its variable; \
+                     a RootOf with symbolic coefficients is not supported",
+                    span,
+                ));
+            }
+            v
+        } else {
+            match free.as_slice() {
+                [v] => *v,
+                [] => {
+                    return Err(ParseError::syntax(
+                        "RootOf: the polynomial has no variable",
+                        span,
+                    ))
+                }
+                _ => {
+                    return Err(ParseError::syntax(
+                        "RootOf(poly, index): the polynomial has several free symbols; \
+                         name its variable with RootOf(poly, var, index) (symbolic \
+                         coefficients are not supported)",
+                        span,
+                    ))
+                }
+            }
+        };
+        crate::poly::root_of::root_of(poly, var, index, pool)
+            .map_err(|e| ParseError::syntax(format!("RootOf: {e} [{}]", e.code()), span))
+    }
+
+    /// Comma-separated arguments up to and including the closing `)`; the
+    /// opening `(` has already been consumed.
+    fn parse_call_args(&mut self) -> Result<Vec<ExprId>, ParseError> {
+        let mut args = Vec::new();
+        if self.peek().tok != Tok::RParen {
+            args.push(self.parse_expr(0)?);
+            while self.peek().tok == Tok::Comma {
+                self.advance();
+                args.push(self.parse_expr(0)?);
+            }
+        }
+        self.expect(&Tok::RParen)?;
+        Ok(args)
     }
 }
 
@@ -1807,5 +1897,79 @@ mod canonical_input_tests {
         assert_eq!(p(&pool.display(z).to_string(), &pool).unwrap(), z);
         // `super::float_literal` — the test fn above shadows it here.
         assert!(super::float_literal(&pool, "abc").is_none());
+    }
+
+    /// `parse(str(RootOf(p, k)))` is the same node, for every index, and the
+    /// placeholder `x` is bound by the call rather than read from (or added
+    /// to) the caller's symbol table.
+    #[test]
+    fn root_of_round_trips_through_the_parser() {
+        if !crate::poly::root_of::root_isolation_available() {
+            return;
+        }
+        let pool = ExprPool::new();
+        let t = pool.symbol("t", Domain::Real);
+        // The caller's `x` is something else entirely: it must not leak in.
+        let mut syms = HashMap::from([
+            ("x".to_owned(), pool.mul(vec![pool.integer(2), t])),
+            ("t".to_owned(), t),
+        ]);
+        let x = pool.symbol("x", Domain::Real);
+        let polys = [
+            // x³ − x − 1, x⁴ + x + 1, 2x⁵ − 3x + 3, x³ − 2 (ascending coefficients)
+            vec![-1, -1, 0, 1],
+            vec![1, 1, 0, 0, 1],
+            vec![3, -3, 0, 0, 0, 2],
+            vec![-2, 0, 0, 1],
+        ];
+        for c in polys {
+            let terms: Vec<ExprId> = c
+                .iter()
+                .enumerate()
+                .filter(|(_, &a)| a != 0)
+                .map(|(k, &a)| pool.mul(vec![pool.integer(a), pool.pow(x, pool.integer(k as i64))]))
+                .collect();
+            let poly = pool.add(terms);
+            for k in 0..c.len() - 1 {
+                let r = crate::poly::root_of::root_of(poly, x, k, &pool).unwrap();
+                let s = pool.display(r).to_string();
+                assert!(s.starts_with("RootOf("), "{s}");
+                let back = parse(&s, &pool, &mut syms).unwrap_or_else(|e| panic!("{s}: {e}"));
+                assert_eq!(back, r, "{s} did not read back as itself");
+                // Embedded in a larger expression too.
+                let e = pool.add(vec![t, pool.pow(r, pool.integer(2))]);
+                let es = pool.display(e).to_string();
+                assert_eq!(parse(&es, &pool, &mut syms).unwrap(), e, "{es}");
+            }
+        }
+        assert_eq!(syms.len(), 2, "RootOf's bound variable leaked: {syms:?}");
+        // The three-argument form names the variable.
+        let r = parse("RootOf(y^3 - y - 1, y, 0)", &pool, &mut syms).unwrap();
+        assert_eq!(pool.display(r).to_string(), "RootOf(x^3 - x - 1, 0)");
+        // A reducible polynomial names the root it means.
+        let r = parse("RootOf((x - 2)*(x^2 - 2), 2)", &pool, &mut syms).unwrap();
+        assert_eq!(r, pool.integer(2));
+    }
+
+    #[test]
+    fn malformed_root_of_is_a_parse_error() {
+        if !crate::poly::root_of::root_isolation_available() {
+            return;
+        }
+        let pool = ExprPool::new();
+        for src in [
+            "RootOf(x^3 - x - 1)",
+            "RootOf(x^3 - x - 1, 3)",
+            "RootOf(x^3 - x - 1, -1)",
+            "RootOf(x^3 - x - 1, 1/2)",
+            "RootOf(x^3 - a*x - 1, 0)",
+            "RootOf(x^3 - a*x - 1, x, 0)",
+            "RootOf(7, 0)",
+            "RootOf(sin(x), 0)",
+            "RootOf(x^3 - x - 1, x + 1, 0)",
+        ] {
+            let err = p(src, &pool).expect_err(src);
+            assert_eq!(err.code(), "E-PARSE-002", "{src}: {err}");
+        }
     }
 }

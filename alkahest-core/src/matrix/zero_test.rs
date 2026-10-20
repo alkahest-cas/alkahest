@@ -329,6 +329,17 @@ fn status_of(pool: &ExprPool, e: ExprId, depth: u32) -> ZeroStatus {
     if probe_nonzero(pool, e) {
         return ZeroStatus::NonZero;
     }
+    // A rational function of one `RootOf(p, k)` with `p` irreducible is an
+    // element of the number field ℚ[x]/(p), where zero is decided exactly —
+    // no normaliser here knows `p(α) = 0`, so without this the entries of an
+    // eigenvector over a `RootOf` could never be proven to satisfy `A v = λ v`.
+    if let Some(zero) = crate::matrix::algebraic::root_of_rational_is_zero(e, pool) {
+        return if zero {
+            ZeroStatus::Zero
+        } else {
+            ZeroStatus::NonZero
+        };
+    }
     if normalises_to_zero(pool, e) {
         return ZeroStatus::Zero;
     }

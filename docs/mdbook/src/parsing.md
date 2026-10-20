@@ -52,6 +52,15 @@ So `-x^2` parses as `-(x^2)`, not `(-x)^2`, and `x^2^3` parses as
 `erfc`, `exp`, `floor`, `gamma`, `log`, `round`, `sign`, `sin`, `sinh`,
 `sqrt`, `tan`, `tanh`
 
+`RootOf(poly, index)` and `RootOf(poly, var, index)` read an exact algebraic root back,
+in the order `root_of` uses (real roots ascending, then non-real by real part, then
+imaginary part). Its arguments are parsed against an empty symbol table, so the
+polynomial's variable is local to the call. The printer's placeholder `x` is never
+looked up in, or added to, your `symbols` map. With two arguments the polynomial must
+have exactly one free symbol; with three, every free symbol must be `var`. Symbolic
+coefficients are not supported and raise `E-PARSE-002`. `parse(str(r)) == r` for every
+`RootOf` the library prints.
+
 ## The `symbols` map
 
 By default, every new identifier is interned as a fresh `pool.symbol(name)`.

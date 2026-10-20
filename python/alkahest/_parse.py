@@ -537,17 +537,77 @@ class _Parser:
 
     def _funcall(self, name: str, offset: int):
         self._advance()  # consume "("
-        args = []
-        if self._peek()[0] != ")":
-            args.append((yield 0))
-            while self._peek()[0] == ",":
-                self._advance()  # consume ","
+        # ``RootOf`` binds its polynomial's variable: its arguments are read
+        # against an empty table, so the printer's placeholder ``x`` is neither
+        # resolved to the caller's ``x`` nor added to the caller's table.
+        outer = self._symbols
+        if name == "RootOf":
+            self._symbols = {}
+        try:
+            args = []
+            if self._peek()[0] != ")":
                 args.append((yield 0))
-        self._expect(")")
+                while self._peek()[0] == ",":
+                    self._advance()  # consume ","
+                    args.append((yield 0))
+            self._expect(")")
+            bound = self._symbols
+        finally:
+            self._symbols = outer
+        if name == "RootOf":
+            return _apply_root_of(args, bound, offset)
         special = _apply_undefined(name, args, offset, self._pool, self._symbols)
         if special is not None:
             return special
         return _apply_func(name, args, offset, self._pool)
+
+
+def _apply_root_of(args: list, bound: dict, offset: int):
+    """``RootOf(p, k)`` / ``RootOf(p, v, k)`` → :func:`alkahest.root_of`.
+
+    *bound* is the table the arguments were read against, so its symbols are
+    exactly the polynomial's free names.  Mirrors ``Parser::parse_root_of`` in
+    ``alkahest-core/src/parse.rs``: a printed ``RootOf(x^3 - x - 1, 0)`` reads
+    back as the identical node.
+    """
+    import alkahest as _ak
+
+    span = (offset, offset + len("RootOf"))
+    usage = (
+        "RootOf(poly, index) or RootOf(poly, var, index) takes a polynomial with "
+        "rational coefficients, optionally its variable, and a non-negative integer index"
+    )
+    if len(args) not in (2, 3):
+        raise ParseError(usage, span=span)
+    node = args[-1]._node_exact()
+    if node[0] != "integer" or node[1] < 0:
+        raise ParseError(usage, span=span)
+    index = node[1]
+    free = [s for s in bound.values() if isinstance(s, _Expr) and s.node()[0] == "symbol"]
+    if len(args) == 3:
+        var = args[1]
+        if var.node()[0] != "symbol":
+            raise ParseError(usage, span=span)
+        if any(s != var for s in free):
+            raise ParseError(
+                "RootOf: the polynomial has a free symbol other than its variable; "
+                "a RootOf with symbolic coefficients is not supported",
+                span=span,
+            )
+    elif len(free) == 1:
+        var = free[0]
+    elif not free:
+        raise ParseError("RootOf: the polynomial has no variable", span=span)
+    else:
+        raise ParseError(
+            "RootOf(poly, index): the polynomial has several free symbols; name its "
+            "variable with RootOf(poly, var, index) (symbolic coefficients are not supported)",
+            span=span,
+        )
+    try:
+        return _ak.root_of(args[0], var, index)
+    except _ak.SolverError as exc:
+        raise ParseError(f"RootOf: {exc}", span=span) from exc
 
 
 def _declared_function(name: str, symbols) -> bool:

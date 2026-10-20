@@ -641,22 +641,53 @@ pub fn eigenvectors(
     m: &Matrix,
     pool: &ExprPool,
 ) -> Result<Vec<(ExprId, usize, Vec<Matrix>)>, EigenError> {
+    eigenvectors_inner(m, pool, true)
+}
+
+/// [`eigenvectors`]; with `root_of = false` a `RootOf` eigenvalue is refused
+/// (`E-EIGEN-004`) instead of being handled in its number field.
+fn eigenvectors_inner(
+    m: &Matrix,
+    pool: &ExprPool,
+    root_of: bool,
+) -> Result<Vec<(ExprId, usize, Vec<Matrix>)>, EigenError> {
     let vals = eigenvalues(m, pool)?;
-    // An eigenvalue given as a `RootOf` is exact, but the elimination below
-    // decides its pivots with a zero test that has no algebraic-number
-    // arithmetic for it; refuse rather than risk a wrong kernel.
-    for &(lambda, _) in &vals {
-        if let Some(degree) = crate::poly::root_of::max_root_of_degree(lambda, pool) {
-            return Err(EigenError::UnsupportedIrreducibleDegree { degree });
-        }
-    }
     let mut out = Vec::with_capacity(vals.len());
     for (lambda, mult) in vals {
+        // An eigenvalue given as a `RootOf` is exact, but the elimination
+        // below decides its pivots with a zero test that has no
+        // algebraic-number arithmetic for it. The kernel is computed in the
+        // number field ℚ(λ) instead (`matrix::algebraic`), where pivots are
+        // decided exactly; outside that module's scope (symbolic entries,
+        // a `RootOf` inside a larger expression) it is still a refusal.
+        if let Some(degree) = crate::poly::root_of::max_root_of_degree(lambda, pool) {
+            let vecs = root_of
+                .then(|| crate::matrix::algebraic::field_eigenvectors(m, lambda, pool))
+                .flatten()
+                .ok_or(EigenError::UnsupportedIrreducibleDegree { degree })?;
+            out.push((lambda, mult, vecs));
+            continue;
+        }
         let b = m_minus_lambda_scaled(m, lambda, pool);
         // `lambda` came out of `eigenvalues`, i.e. it is a root of the
         // characteristic polynomial, so `det(A − λI) = 0` holds by construction.
-        let vecs = kernel_column_basis(&b, pool, KnownSingular::Yes)
-            .map_err(|f| kernel_failure_to_eigen(f, pool))?;
+        let vecs = match kernel_column_basis(&b, pool, KnownSingular::Yes) {
+            Ok(v) => v,
+            // Symbolic elimination over a closed form (a Cardano radical,
+            // `cos(2π/9)`) can stall on a pivot it cannot decide. For a
+            // rational matrix the same kernel is exact in the number field of
+            // λ's irreducible factor (`matrix::algebraic`).
+            Err(f) => match root_of
+                .then(|| crate::matrix::algebraic::field_eigenvectors(m, lambda, pool))
+                .flatten()
+            {
+                Some(v) => {
+                    zero_test::forget_refusal();
+                    v
+                }
+                None => return Err(kernel_failure_to_eigen(f, pool)),
+            },
+        };
         out.push((lambda, mult, vecs));
     }
     Ok(out)
@@ -682,7 +713,18 @@ fn kernel_failure_to_eigen(f: KernelFailure, pool: &ExprPool) -> EigenError {
 
 /// Returns `(P, D)` with `M·P == P·D` (same convention as SymPy: columns of `P` are eigenvectors).
 pub fn diagonalize(m: &Matrix, pool: &ExprPool) -> Result<(Matrix, Matrix), EigenError> {
-    let evecs = eigenvectors(m, pool)?;
+    diagonalize_inner(m, pool, true)
+}
+
+/// [`diagonalize`]; `root_of` as in [`eigenvectors_inner`]. `matrix_exp`
+/// passes `false`: a `P` over several conjugate `RootOf`s has no usable
+/// symbolic inverse, and it has its own exact route for that spectrum.
+pub(crate) fn diagonalize_inner(
+    m: &Matrix,
+    pool: &ExprPool,
+    root_of: bool,
+) -> Result<(Matrix, Matrix), EigenError> {
+    let evecs = eigenvectors_inner(m, pool, root_of)?;
     for (_lambda, alg_m, vecs) in &evecs {
         if vecs.len() != *alg_m {
             return Err(EigenError::NonDiagonalizable);
@@ -829,7 +871,10 @@ fn linear_root(p: &UniPoly, pool: &ExprPool) -> Option<ExprId> {
     }
 }
 
-fn quadratic_roots(p: &UniPoly, pool: &ExprPool) -> Result<(ExprId, ExprId), EigenError> {
+pub(crate) fn quadratic_roots(
+    p: &UniPoly,
+    pool: &ExprPool,
+) -> Result<(ExprId, ExprId), EigenError> {
     let c = p.coefficients();
     if c.len() != 3 {
         return Err(EigenError::UnsupportedIrreducibleDegree {
@@ -2590,7 +2635,7 @@ mod tests {
     }
 
     #[test]
-    fn a_quartic_with_no_radical_shortcut_is_root_of_and_eigenvects_refuses() {
+    fn a_quartic_with_no_radical_shortcut_is_root_of_with_exact_eigenvectors() {
         // λ⁴ − λ − 1: irreducible, neither even nor palindromic.
         let p = pool();
         let m = companion(&[-1, -1, 0, 0], &p);
@@ -2601,12 +2646,26 @@ mod tests {
                 assert!(vals
                     .iter()
                     .all(|&(l, _)| crate::poly::root_of::is_root_of(l, &p)));
-                // Eigenvectors over a RootOf need algebraic-number pivots:
-                // still a coded refusal, never a guessed kernel.
-                assert!(matches!(
-                    eigenvectors(&m, &p),
-                    Err(EigenError::UnsupportedIrreducibleDegree { degree: 4 })
-                ));
+                // Eigenvectors over a RootOf are computed in ℚ(λ); A·v = λ·v
+                // is then *proven* entrywise by the zero test's number-field
+                // rung, not sampled.
+                let vecs = eigenvectors(&m, &p).unwrap();
+                assert_eq!(vecs.len(), 4);
+                for (lam, mult, vs) in &vecs {
+                    assert_eq!((*mult, vs.len()), (1, 1));
+                    let v = &vs[0];
+                    for r in 0..4 {
+                        let mut terms = Vec::new();
+                        for c in 0..4 {
+                            terms.push(p.mul(vec![m.get(r, c), v.get(c, 0)]));
+                        }
+                        terms.push(p.mul(vec![p.integer(-1), *lam, v.get(r, 0)]));
+                        let diff = p.add(terms);
+                        assert!(zero_test::zero_status(&p, diff).is_proven_zero());
+                    }
+                }
+                let (pm, d) = diagonalize(&m, &p).unwrap();
+                assert_eq!((pm.rows, pm.cols, d.rows), (4, 4, 4));
             }
             Err(e) => {
                 assert!(!crate::poly::root_of::root_isolation_available(), "{e:?}");

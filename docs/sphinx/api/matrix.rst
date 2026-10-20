@@ -72,6 +72,21 @@ Matrix
       ``E-EVAL-009``. Do not export it to a principal-branch evaluator — see
       `Interoperability <../interop.html>`_.
 
+      **``RootOf`` spectra.** An irreducible factor of degree ≥ 4 with no
+      radical form gives eigenvalues ``RootOf(f, k)``. For a matrix with
+      rational entries, ``eigenvects``, ``diagonalize`` and ``jordan_form``
+      handle them exactly: elimination runs in the number field
+      ``ℚ(α) = ℚ[x]/(f)``, so every pivot decision is exact. Each eigenvector
+      entry is a polynomial of degree ``< deg f`` in the ``RootOf`` node, and
+      the same coordinates are valid for every conjugate ``k``. A repeated
+      irreducible factor ``f^m`` gives one Jordan chain per block per root.
+      ``matrix_exp`` of a rational ``A`` or of ``A·t`` (one symbol ``t``) uses
+      spectral projectors computed in each factor's field. Its entries contain
+      ``RootSum(f(r), r, e^{t r}·q(r))`` over each degree-≥3 factor. These
+      sums are real for real ``t`` and ``eval_expr`` reads them. With symbolic
+      entries there is no number field to compute in, so the refusal stays
+      (``E-EIGEN-004`` / ``E-LINALG``).
+
    .. method:: transpose() -> Matrix
 
       Return the transpose.
