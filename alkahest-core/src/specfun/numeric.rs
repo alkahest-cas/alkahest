@@ -578,20 +578,31 @@ pub(super) mod arb_impl {
         }
         let balls: Vec<Acb> = args.iter().map(|&(r, i)| Acb::from_f64(r, i)).collect();
         for prec in [128_i64, 256, 512] {
-            if let Some(v) = call_c(kernel, &balls, prec) {
-                // Each component to 53 bits, or a component that is tightly
-                // zero (a real value has an exactly-zero imaginary part).
-                if let (Some(re), Some(im)) = (part_ok(&v.real()), part_ok(&v.imag())) {
-                    return Some((re, im));
-                }
-                // A tiny component next to a large one: accept when the
-                // whole value carries 53 bits relative to its modulus.
-                if v.rel_accuracy_bits() >= 53 {
-                    let (re, im) = (v.real().midpoint_f64(), v.imag().midpoint_f64());
-                    if re.is_finite() && im.is_finite() {
-                        return Some((re, im));
-                    }
-                }
+            if let Some(v) = call_c(kernel, &balls, prec)
+                .as_ref()
+                .and_then(certified_c64)
+            {
+                return Some(v);
+            }
+        }
+        None
+    }
+
+    /// The midpoint of a complex ball when it carries 53 correct bits: each
+    /// component to 53 bits (or tightly zero — a real value has an exactly
+    /// zero imaginary part), or the whole value to 53 bits relative to its
+    /// modulus (a tiny component next to a large one).
+    pub(in crate::specfun) fn certified_c64(v: &Acb) -> Option<(f64, f64)> {
+        if !v.is_finite() {
+            return None;
+        }
+        if let (Some(re), Some(im)) = (part_ok(&v.real()), part_ok(&v.imag())) {
+            return Some((re, im));
+        }
+        if v.rel_accuracy_bits() >= 53 {
+            let (re, im) = (v.real().midpoint_f64(), v.imag().midpoint_f64());
+            if re.is_finite() && im.is_finite() {
+                return Some((re, im));
             }
         }
         None

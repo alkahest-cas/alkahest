@@ -62,12 +62,15 @@ pub(crate) mod closed;
 pub(crate) mod gamma;
 pub(crate) mod hankel;
 pub(crate) mod hyper;
+pub(crate) mod hyper_transform;
 pub(crate) mod incgamma;
 pub(crate) mod numeric;
 pub(crate) mod primitives;
 
 #[cfg(test)]
 mod f24_tests;
+#[cfg(test)]
+mod f26_tests;
 #[cfg(test)]
 mod g11c_tests;
 #[cfg(test)]
@@ -84,6 +87,7 @@ use numeric::Kernel;
 pub use gamma::{catalan, euler_gamma, glaisher, polygamma};
 pub use hankel::{hankel, HankelKind};
 pub use hyper::{expand_hyper, hyper, MAX_TERMINATING_DEGREE};
+pub use hyper_transform::{hyper_transform, HyperTransformation};
 pub use incgamma::{beta, lowergamma, uppergamma};
 
 /// Largest `|order|` that [`bessel`] / [`spherical_bessel`] expand into
@@ -542,6 +546,8 @@ pub(crate) fn complex_value(name: &str, args: &[(f64, f64)]) -> Option<(f64, f64
             let nu = if name == "bessel_j0" { 0.0 } else { 1.0 };
             numeric::eval_c64(Kernel::BesselJ, &[(nu, 0.0), args[0]])
         }
+        hyper::HYPER => hyper::complex_value(args),
+        "gamma" | "digamma" | "trigamma" | "polygamma" => gamma::gamma_family_c64(name, args),
         _ => numeric::eval_c64(Kernel::from_name(name)?, args),
     }
 }
@@ -549,5 +555,8 @@ pub(crate) fn complex_value(name: &str, args: &[(f64, f64)]) -> Option<(f64, f64
 /// Whether `name` is one of this module's primitives (or `bessel_j0/j1`),
 /// i.e. whether [`complex_value`] can evaluate it.
 pub(crate) fn has_complex_kernel(name: &str) -> bool {
-    matches!(name, "bessel_j0" | "bessel_j1") || Kernel::from_name(name).is_some()
+    matches!(
+        name,
+        "bessel_j0" | "bessel_j1" | "gamma" | "digamma" | "trigamma" | "polygamma" | hyper::HYPER
+    ) || Kernel::from_name(name).is_some()
 }

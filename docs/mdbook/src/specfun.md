@@ -92,8 +92,14 @@ ak.series(m**(-2*eps) * ak.gamma(eps), eps, p.integer(0), 1)
 ```
 
 Exact values: `Γ(n) = (n−1)!`, `Γ(m+½) = r·√π`; `ψ` at every integer shift of
-`1, ½, ⅓, ⅔, ¼, ¾, ⅙, ⅚` (Gauss's digamma theorem); `ψ⁽ⁿ⁾` at integer and
-half-integer points through `(−1)ⁿ⁺¹ n! ζ(n+1, a)`. `series` expands `Γ`, `ψ`
+`1, ½, ⅓, ⅔, ¼, ¾, ⅙, ⅚` in classical form, and at every other rational `p/q`
+with `q ≤ 100` by Gauss's digamma theorem
+(`−γ − log(2q) − (π/2)cot(πp/q) + 2Σ cos(2πkp/q) log sin(πk/q)`, with exact
+trigonometric nodes); `ψ⁽ⁿ⁾` at every rational through
+`(−1)ⁿ⁺¹ n! ζ(n+1, a)` — in `πˢ`/`ζ(s)`/Catalan/`√3` form at integers,
+half-integers, quarters (`ψ″(¼) = −2π³ − 56ζ(3)`) and, for even `n`, thirds
+and sixths; otherwise the exact `hurwitz_zeta(n+1, f)` value (odd `n` at
+thirds needs a Clausen value, at quarters `β(n+1)`). `series` expands `Γ`, `ψ`
 and `ψ⁽ⁿ⁾` at the poles `0, −1, −2, …` by shifting them off the pole
 (`Γ(u) = Γ(u+k+1)/(u(u+1)⋯(u+k))`), so the coefficients are exact in γ, π and
 `ζ(3)`, `ζ(5)`, …. `polygamma(1/2, x)` is `E-SPECFN-008`.
@@ -115,8 +121,35 @@ one, a parameter derivative is refused, values come from Arb
 (`arb_hypgeom_0f1/1f1/2f1/pfq`, real only). `expand_hyper` knows terminating
 series, `₀F₀`, `₁F₀`, the `log`/`atanh`/`asin` cases of `₂F₁`, Gauss's sum at
 `z = 1` (when `c − a − b` is a positive literal), `₁F₁(1; 2; z)`,
-`₁F₁(½; 3/2; −w)` (erf) and `₀F₁` (cosh/sinh, Bessel `J`/`I`); other nodes
-are kept.
+`₁F₁(½; 3/2; −w)` (erf) and `₀F₁` (cosh/sinh, Bessel `J`/`I`), the
+`₂F₁(a, a + ½; c; z)` families for `c = ½, 3/2, 2a, 2a + 1` (A&S 15.1.9–14),
+`₁F₁(a; 2a; z)` as Bessel `I`, and any node one Euler, Pfaff or Kummer
+transformation away from one of these (`₂F₁(1, 1; 3/2; z)`,
+`₁F₁(1; 3/2; z) = eᶻ√π erf(√z)/(2√z)`); other nodes are kept.
+
+Complex values (F26): `evaluate(F, {z: 3+2j}, mode="complex")` evaluates
+every `ₚFq` through Arb's `acb_hypgeom_*`. `₂F₁` is continued analytically to
+the whole cut plane; on the cut `[1, ∞)` itself the value is the limit from
+below (`z − i0`, mpmath's convention: `₂F₁(1, 1; 2; 2) = −iπ/2`). Other
+`p = q + 1` families (`₃F₂`, …) are summed as series only, so `|z| ≥ 1`
+declines rather than guessing a continuation.
+
+```python
+ak.hyper_transform(ak.hyper([a, b], [c], z), "euler")   # (1-z)^(c-a-b) * 2F1(c-a, c-b; c; z)
+ak.hyper_transform(F, "1/z")        # Γ-coefficient connection formula (A&S 15.3.7)
+ak.hyper_transform(ak.hyper([a], [b], z), "kummer")     # exp(z) * 1F1(b-a; b; -z)
+```
+
+`hyper_transform(expr, kind)` returns the exact right-hand side of `"euler"`,
+`"pfaff"` (`"z/(z-1)"`), `"pfaff_b"`, the two-term connection formulas
+`"1-z"`, `"1/z"`, `"1/(1-z)"`, `"1-1/z"` (A&S 15.3.6–9, Gamma prefactors),
+`"quadratic"` (DLMF 15.8.13, 15.8.15, 15.8.18 — whichever family `c = 2b`,
+`c = a − b + 1`, `2c = a + b + 1` the parameters are in) and `"kummer"`
+(`₁F₁`). Each holds on a stated region — `z ∉ [1, ∞)` for Euler/Pfaff,
+`z ∉ (−∞, 0] ∪ [1, ∞)` for `1−z` / `1−1/z`, `z ∉ [0, ∞)` for `1/z` /
+`1/(1−z)`, `|z| < 1` / `Re z < ½` for two of the quadratic ones; a literal
+`z` outside it, the logarithmic case (`a − b` or `c − a − b` an integer),
+and parameters in no quadratic family are `E-SPECFN-009`.
 
 ## Beta and incomplete gamma functions
 
@@ -142,6 +175,7 @@ The large-`x` asymptotic expansion of `J_ν` through `asymptotic_expand`,
 and Taylor models for non-integer Bessel orders, `hurwitz_zeta`, `hyper` and
 the spherical Bessel functions (integer-order `J/Y/I/K`, Airy, `zeta`,
 `polylog`, `polygamma` and the orthogonal polynomials have them). For G11c: Stirling's series through
-`asymptotic_expand`, `loggamma`, Γ duplication/reflection rewriting, ψ at
-other rationals (needs Clausen values), complex `hyper` values, contiguous
-relations and `₂F₁` transformations (Kummer's 24 solutions), Meijer G.
+`asymptotic_expand`, `loggamma`, Γ duplication/reflection rewriting,
+contiguous relations, the logarithmic cases of the `₂F₁` connection
+formulas, `₁F₁ ↔` incomplete gamma and `U(a, b, z)` (no incomplete-gamma
+primitive yet), Meijer G.

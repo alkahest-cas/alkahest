@@ -1610,6 +1610,7 @@ ak.expand_hyper(ak.hyper([1, 1], [2], z))   # -log(1 - z)/z; terminating → pol
 ```
 
 - `polygamma(1/2, x)` → `E-SPECFN-008`; pole literal → `E-SPECFN-006`; `hyper(..., [-2], z)` → `E-SPECFN-006`.
+- F26: `evaluate(hyper(...), {z: 3+2j}, mode="complex")` — 2F1 continued past |z|=1 (cut [1,∞): limit from below, as mpmath); 3F2… with |z|≥1 declines. `hyper_transform(F, kind)`, kind ∈ `euler`, `pfaff`, `pfaff_b`, `1-z`, `1/z`, `1/(1-z)`, `1-1/z`, `quadratic`, `kummer` — exact RHS valid on a stated z-region; integer `a−b`/`c−a−b` (log case), literal z outside region, no quadratic family → `E-SPECFN-009`. `digamma(p/q)` exact for q ≤ 100 (Gauss); `polygamma(n, p/q)` exact for any rational (classical or `hurwitz_zeta(n+1, f)`).
 - `series` handles Γ/ψ/ψ⁽ⁿ⁾ at `0, −1, −2, …` (residue of Γ at −k is (−1)^k/k!).
 
 ## Beta, incomplete gamma; Beta-family / Feynman-parameter definite integrals

@@ -19,7 +19,9 @@
 //! * **`d/dz`**: `(Πaᵢ / Πbⱼ) · ₚFq(a + 1; b + 1; z)` (DLMF 16.3.1); a
 //!   derivative in a parameter has no closed form and declines (`E-DIFF-001`).
 //! * **Numbers**: `f64` (certified to 53 bits) and balls from Arb
-//!   (`arb_hypgeom_0f1` / `_1f1` / `_2f1` / `_pfq`), real values only.
+//!   (`arb_hypgeom_0f1` / `_1f1` / `_2f1` / `_pfq`), real values; complex
+//!   `f64` values from `acb_hypgeom_*` (F26, [`complex_value`]) with ₂F₁
+//!   continued past `|z| = 1` (on the cut `[1, ∞)` the limit from below).
 //! * **[`expand_hyper`]** (SymPy's `hyperexpand`): terminating series (an
 //!   upper parameter `−N`) become polynomials, and the closed forms
 //!
@@ -38,8 +40,14 @@
 //!   | `₀F₁(; ½; z)`, `₀F₁(; 3/2; z)` | `cosh(2√z)`, `sinh(2√z)/(2√z)` |
 //!   | `₀F₁(; ½; −w)`, `₀F₁(; 3/2; −w)` | `cos(2√w)`, `sin(2√w)/(2√w)` |
 //!   | `₀F₁(; b; −w)` / `₀F₁(; b; z)` | `Γ(b) w^{(1−b)/2} J_{b−1}(2√w)` / `Γ(b) z^{(1−b)/2} I_{b−1}(2√z)` |
+//!   | `₂F₁(x, x+½; c; z)`, `c ∈ {½, 3/2, 2x, 2x+1}` | A&S 15.1.9, 15.1.10, 15.1.14, 15.1.13 (F26) |
+//!   | `₁F₁(a; 2a; z)`, `a > 0` rational | `Γ(a+½) e^{z/2} (z/4)^{½−a} I_{a−½}(z/2)` (DLMF 13.6.9, F26) |
 //!
-//!   Anything else is kept as the node.
+//!   A node with none of these forms is retried after one Euler or Pfaff
+//!   transformation (`₂F₁`) or Kummer's (`₁F₁`) — identities on the whole cut
+//!   plane, [`super::hyper_transform`] — so e.g. `₂F₁(1, 1; 3/2; z)` and
+//!   `₁F₁(1; 3/2; z) = eᶻ √π erf(√z)/(2√z)` expand too. Anything else is kept
+//!   as the node.
 
 use rug::{Integer, Rational};
 
@@ -321,6 +329,98 @@ fn gauss(a: ExprId, b: ExprId, c: ExprId, pool: &ExprPool) -> Option<ExprId> {
     )
 }
 
+/// `₂F₁(x, x + ½; c; z)` for the four classical lower parameters
+/// (A&S 15.1.9, 15.1.10, 15.1.13, 15.1.14 — consequences of the quadratic
+/// transformations), each analytic on the cut plane `z ∉ [1, ∞)` and even in
+/// `√z`:
+///
+/// | `c` | value |
+/// |---|---|
+/// | `½` | `((1 + √z)^{−2x} + (1 − √z)^{−2x})/2` |
+/// | `3/2` (`x ≠ ½` a literal) | `((1 + √z)^{1−2x} − (1 − √z)^{1−2x})/(2(1 − 2x)√z)` |
+/// | `2x + 1` | `(½ + ½√(1 − z))^{−2x}` |
+/// | `2x` | `(1 − z)^{−½} (½ + ½√(1 − z))^{1−2x}` |
+fn half_shift_family(
+    p: ExprId,
+    q: ExprId,
+    c: ExprId,
+    z: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    let diff = |u: ExprId, v: ExprId| -> Option<Rational> {
+        rational_literal(
+            pool,
+            simplify(mk_add(pool, vec![u, neg(pool, v)]), pool).value,
+        )
+    };
+    let half = r(1, 2);
+    let x = if diff(q, p) == Some(half.clone()) {
+        p
+    } else if diff(p, q) == Some(half.clone()) {
+        q
+    } else {
+        return None;
+    };
+    let one = pool.integer(1);
+    let two_x = simplify(mk_mul(pool, vec![pool.integer(2), x]), pool).value;
+    let one_m_2x = simplify(mk_add(pool, vec![one, neg(pool, two_x)]), pool).value;
+    let sz = sqrt(pool, z);
+    let s1mz = sqrt(pool, mk_add(pool, vec![one, neg(pool, z)]));
+    let mid = mk_add(
+        pool,
+        vec![
+            pool.rational(1, 2),
+            mk_mul(pool, vec![pool.rational(1, 2), s1mz]),
+        ],
+    );
+    let cq = rational_literal(pool, c);
+    if cq.as_ref() == Some(&half) {
+        let t = |sgn: i64| {
+            pool.pow(
+                mk_add(pool, vec![one, mk_mul(pool, vec![pool.integer(sgn), sz])]),
+                neg(pool, two_x),
+            )
+        };
+        return Some(mk_mul(
+            pool,
+            vec![pool.rational(1, 2), mk_add(pool, vec![t(1), t(-1)])],
+        ));
+    }
+    if cq.as_ref() == Some(&r(3, 2)) {
+        // x = ½ is the atanh row of the table; a symbolic x could be ½.
+        let xq = rational_literal(pool, x)?;
+        if xq == half {
+            return None;
+        }
+        let t = |sgn: i64| {
+            pool.pow(
+                mk_add(pool, vec![one, mk_mul(pool, vec![pool.integer(sgn), sz])]),
+                one_m_2x,
+            )
+        };
+        return Some(mk_mul(
+            pool,
+            vec![
+                mk_add(pool, vec![t(1), neg(pool, t(-1))]),
+                inv(pool, mk_mul(pool, vec![pool.integer(2), one_m_2x, sz])),
+            ],
+        ));
+    }
+    if diff(c, two_x) == Some(Rational::from(1)) {
+        return Some(pool.pow(mid, neg(pool, two_x)));
+    }
+    if diff(c, two_x) == Some(Rational::new()) {
+        return Some(mk_mul(
+            pool,
+            vec![
+                pool.pow(mk_add(pool, vec![one, neg(pool, z)]), pool.rational(-1, 2)),
+                pool.pow(mid, one_m_2x),
+            ],
+        ));
+    }
+    None
+}
+
 /// One closed form from the table in the module docs, or `None`.
 fn closed_form(
     a: &[ExprId],
@@ -341,6 +441,9 @@ fn closed_form(
         (2, 1) => {
             if is_lit(pool, z, 1) {
                 return Ok(gauss(a[0], a[1], b[0], pool));
+            }
+            if let Some(e) = half_shift_family(a[0], a[1], b[0], z, pool) {
+                return Ok(Some(e));
             }
             let (Some(ra), Some(rb)) = (ra, rb) else {
                 return Ok(None);
@@ -397,6 +500,27 @@ fn closed_form(
                     vec![
                         mk_add(pool, vec![pool.func("exp", vec![z]), pool.integer(-1)]),
                         inv(pool, z),
+                    ],
+                ))
+            } else if rb.len() == 1 && rb[0] == ra[0].clone() * 2u32 && ra[0] > 0 {
+                // ₁F₁(a; 2a; z) = Γ(a+½) e^{z/2} (z/4)^{½−a} I_{a−½}(z/2)
+                // (DLMF 13.6.9 with z → z/2), a > 0 rational.
+                let z2 = mk_mul(pool, vec![pool.rational(1, 2), z]);
+                let nu = rat_node(pool, &(ra[0].clone() - half.clone()));
+                let bes = super::bessel(super::BesselKind::I, nu, z2, true, pool)?;
+                Some(mk_mul(
+                    pool,
+                    vec![
+                        pool.func(
+                            "gamma",
+                            vec![rat_node(pool, &(ra[0].clone() + half.clone()))],
+                        ),
+                        pool.func("exp", vec![z2]),
+                        pool.pow(
+                            mk_mul(pool, vec![pool.rational(1, 4), z]),
+                            rat_node(pool, &(half.clone() - ra[0].clone())),
+                        ),
+                        bes,
                     ],
                 ))
             } else if ra == [half.clone()] && rb == [three_half.clone()] {
@@ -473,12 +597,52 @@ fn closed_form(
     })
 }
 
-/// `ₚFq(a; b; z)` in closed form, or `None` to keep the node.
+/// `ₚFq(a; b; z)` in closed form, or `None` to keep the node: directly, or
+/// after one of the one-term transformations that hold on the whole cut
+/// plane — Euler and both Pfaff transformations of `₂F₁`, Kummer's of `₁F₁`
+/// (F26; [`super::hyper_transform`]) — when the transformed node has a
+/// closed form or terminates.
 fn reduce(
     a: &[ExprId],
     b: &[ExprId],
     z: ExprId,
     pool: &ExprPool,
+) -> Result<Option<ExprId>, SpecialFunctionError> {
+    if let Some(e) = reduce_direct(a, b, z, pool, true)? {
+        return Ok(Some(e));
+    }
+    use super::hyper_transform::{one_term, HyperTransformation as T};
+    if a.len() == 2 && rational_literal(pool, z).is_some_and(|q| q >= 1) {
+        // On the cut (or at its end point z = 1, where Gauss's sum is the
+        // only route): (1 − z)^{−a} and z/(z − 1) are not finite there.
+        return Ok(None);
+    }
+    let kinds: &[T] = match (a.len(), b.len()) {
+        (2, 1) => &[T::Euler, T::PfaffA, T::PfaffB],
+        (1, 1) => &[T::Kummer],
+        _ => &[],
+    };
+    for &t in kinds {
+        crate::budget::check()?;
+        let Some(term) = one_term(t, a, b, z, pool) else {
+            continue;
+        };
+        if let Some(e) = reduce_direct(&term.a, &term.b, term.z, pool, false)? {
+            return Ok(Some(mk_mul(pool, vec![term.prefactor, e])));
+        }
+    }
+    Ok(None)
+}
+
+/// The closed form of the node itself (no transformation). With `strict`
+/// off, a terminating series past [`MAX_TERMINATING_DEGREE`] declines rather
+/// than refusing (it came from a transformation, not from the caller).
+fn reduce_direct(
+    a: &[ExprId],
+    b: &[ExprId],
+    z: ExprId,
+    pool: &ExprPool,
+    strict: bool,
 ) -> Result<Option<ExprId>, SpecialFunctionError> {
     let (a, b) = cancelled(a, b, pool).unwrap_or_else(|| (a.to_vec(), b.to_vec()));
     if lower_pole(&a, &b, pool).is_some() {
@@ -489,6 +653,9 @@ fn reduce(
     }
     if let Some(n) = termination(&a, pool) {
         let Some(n) = n.to_i64().filter(|&n| n <= MAX_TERMINATING_DEGREE) else {
+            if !strict {
+                return Ok(None);
+            }
             return Err(SpecialFunctionError::TooLarge {
                 what: "terminating hypergeometric degree".into(),
                 value: n.to_i64().unwrap_or(i64::MAX),
@@ -679,6 +846,45 @@ impl Primitive for HyperPrimitive {
     }
 }
 
+/// Complex `f64` value of `hyper(p, q, a…, b…, z)` (the argument list of the
+/// node, each entry a complex number), used by
+/// [`crate::eval::eval_complex_f64`].
+///
+/// Principal branch: for `p = q + 1` the cut is `[1, ∞)`. `₂F₁` is continued
+/// analytically to the whole cut plane (Arb's `acb_hypgeom_2f1`); on the cut
+/// itself the value is the limit from below, `z − i0` (the convention of
+/// mpmath and of `log(1 − z)` with the principal `log`:
+/// `₂F₁(1, 1; 2; 2) = −log(−1)/2 = −iπ/2`). Every other `p = q + 1` family
+/// (`₃F₂`, …) is summed as a series only, so `|z| ≥ 1` declines, as does a
+/// divergent `p > q + 1` series. `None` for a pole, a non-integer `p`/`q`
+/// or a value Arb cannot certify to 53 bits.
+pub(crate) fn complex_value(args: &[(f64, f64)]) -> Option<(f64, f64)> {
+    if args.len() < 3
+        || args[0].1 != 0.0
+        || args[1].1 != 0.0
+        || args.iter().any(|(r, i)| !r.is_finite() || !i.is_finite())
+    {
+        return None;
+    }
+    let p = exact_count(args[0].0)?;
+    let q = exact_count(args[1].0)?;
+    if args.len() != p + q + 3 {
+        return None;
+    }
+    #[cfg(flint_arb)]
+    {
+        arb_hyp::c64_value(
+            &args[2..2 + p],
+            &args[2 + p..2 + p + q],
+            args[args.len() - 1],
+        )
+    }
+    #[cfg(not(flint_arb))]
+    {
+        None
+    }
+}
+
 fn exact_count(v: f64) -> Option<usize> {
     (v.is_finite() && v >= 0.0 && v == v.trunc() && v < 1e6).then_some(v as usize)
 }
@@ -702,9 +908,11 @@ fn numeric_parts(args: &[f64]) -> Option<(&[f64], &[f64], f64)> {
 
 #[cfg(flint_arb)]
 mod arb_hyp {
-    use super::super::numeric::arb_impl::{available, certified_f64, from_arb, to_arb};
+    use super::super::numeric::arb_impl::{
+        available, certified_c64, certified_f64, from_arb, to_arb,
+    };
     use crate::ball::ArbBall;
-    use crate::flint::acb::Arb;
+    use crate::flint::acb::{Acb, Arb};
     use crate::flint::arb as ffi;
 
     /// `ₚFq(a; b; z)` over Arb balls at `prec` bits; `None` when Arb cannot
@@ -772,6 +980,79 @@ mod arb_hyp {
         let zb = Arb::from_f64(z);
         for prec in [128_i64, 256, 512] {
             if let Some(v) = call(&ab, &bb, &zb, prec).as_ref().and_then(certified_f64) {
+                return Some(v);
+            }
+        }
+        None
+    }
+
+    /// `ₚFq(a; b; z)` over complex balls at `prec` bits (principal branch;
+    /// ₂F₁ continued to the cut plane by Arb); `None` when not finite.
+    fn call_c(a: &[Acb], b: &[Acb], z: &Acb, prec: i64) -> Option<Acb> {
+        let mut out = Acb::new();
+        unsafe {
+            match (a.len(), b.len()) {
+                (0, 1) => {
+                    ffi::acb_hypgeom_0f1(out.as_mut_ptr(), b[0].as_ptr(), z.as_ptr(), 0, prec)
+                }
+                (1, 1) => ffi::acb_hypgeom_m(
+                    out.as_mut_ptr(),
+                    a[0].as_ptr(),
+                    b[0].as_ptr(),
+                    z.as_ptr(),
+                    0,
+                    prec,
+                ),
+                (2, 1) => ffi::acb_hypgeom_2f1(
+                    out.as_mut_ptr(),
+                    a[0].as_ptr(),
+                    a[1].as_ptr(),
+                    b[0].as_ptr(),
+                    z.as_ptr(),
+                    0,
+                    prec,
+                ),
+                _ => {
+                    // Shallow struct copies, as in `call`.
+                    let av: Vec<ffi::AcbStruct> = a.iter().map(|x| *x.as_ptr()).collect();
+                    let bv: Vec<ffi::AcbStruct> = b.iter().map(|x| *x.as_ptr()).collect();
+                    ffi::acb_hypgeom_pfq(
+                        out.as_mut_ptr(),
+                        if av.is_empty() {
+                            std::ptr::null()
+                        } else {
+                            av.as_ptr()
+                        },
+                        a.len() as i64,
+                        if bv.is_empty() {
+                            std::ptr::null()
+                        } else {
+                            bv.as_ptr()
+                        },
+                        b.len() as i64,
+                        z.as_ptr(),
+                        0,
+                        prec,
+                    );
+                }
+            }
+        }
+        out.is_finite().then_some(out)
+    }
+
+    pub(super) fn c64_value(
+        a: &[(f64, f64)],
+        b: &[(f64, f64)],
+        z: (f64, f64),
+    ) -> Option<(f64, f64)> {
+        if !available() {
+            return None;
+        }
+        let ab: Vec<Acb> = a.iter().map(|&(r, i)| Acb::from_f64(r, i)).collect();
+        let bb: Vec<Acb> = b.iter().map(|&(r, i)| Acb::from_f64(r, i)).collect();
+        let zb = Acb::from_f64(z.0, z.1);
+        for prec in [128_i64, 256, 512] {
+            if let Some(v) = call_c(&ab, &bb, &zb, prec).as_ref().and_then(certified_c64) {
                 return Some(v);
             }
         }

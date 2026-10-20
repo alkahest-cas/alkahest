@@ -355,7 +355,10 @@ Exception subclasses
    expansion cap (order 200) is ``E-SPECFN-004``. ``E-SPECFN-008`` is a
    :func:`alkahest.polygamma` order that is not a non-negative integer; a pole of
    :func:`alkahest.polygamma` or a non-positive-integer lower parameter of
-   :func:`alkahest.hyper` is ``E-SPECFN-006``.
+   :func:`alkahest.hyper` is ``E-SPECFN-006``. ``E-SPECFN-009`` is a
+   :func:`alkahest.hyper_transform` that does not apply (the logarithmic case
+   of a connection formula, a literal ``z`` outside the identity's region,
+   parameters in no quadratic family, or a node of the wrong ``p, q``).
 
 .. exception:: NcError
 

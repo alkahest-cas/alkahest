@@ -10,9 +10,9 @@
 //! | node | values |
 //! |---|---|
 //! | `gamma(x)` | `(n−1)!` at a positive integer; `Γ(m+½) = r·√π` |
-//! | `digamma(x)` | `ψ(f+m)` for `f ∈ {1, ½, ⅓, ⅔, ¼, ¾, ⅙, ⅚}` and any integer `m` (Gauss's digamma theorem, DLMF 5.4.13–5.4.19, then `ψ(x+1) = ψ(x) + 1/x`) |
-//! | `trigamma(x)` | `ψ₁(f+m)` for `f ∈ {1, ½, ¼, ¾}` (`ψ₁(¼) = π² + 8G`) |
-//! | `polygamma(n, x)`, `n ≥ 2` | `ψ⁽ⁿ⁾(f+m)` for `f ∈ {1, ½}`: `(−1)ⁿ⁺¹ n! ζ(n+1, a)` with `ζ(s, ½) = (2ˢ − 1) ζ(s)` |
+//! | `digamma(x)` | `ψ(f+m)` for `f ∈ {1, ½, ⅓, ⅔, ¼, ¾, ⅙, ⅚}` in classical form (DLMF 5.4.13–5.4.19), every other `f = p/q` with `q ≤` [`MAX_GAUSS_DENOMINATOR`] by Gauss's digamma theorem (F26), then `ψ(x+1) = ψ(x) + 1/x` |
+//! | `trigamma(x)` | `ψ₁(f+m)` for `f ∈ {1, ½, ¼, ¾}` (`ψ₁(¼) = π² + 8G`); any other rational as `ζ(2, f)` (`hurwitz_zeta`) |
+//! | `polygamma(n, x)`, `n ≥ 2` | `(−1)ⁿ⁺¹ n! ζ(n+1, f+m)` at every rational: `ζ(s, ½) = (2ˢ − 1) ζ(s)`; for odd `s` at `f ∈ {⅓, ⅔, ¼, ¾, ⅙, ⅚}` in `ζ(s)`, `πˢ`, `√3` (multiplication + reflection, F26); otherwise the exact `hurwitz_zeta(s, f)` |
 //!
 //! `ζ(n+1)` is the [`crate::specfun`] node, so an even argument becomes its
 //! power of `π` (`ψ₁(1) = π²/6`) and an odd one stays `zeta(3)`.
@@ -193,8 +193,56 @@ fn digamma_base(f: &Rational, pool: &ExprPool) -> Option<ExprId> {
     Some(mk_add(pool, terms))
 }
 
-/// The exact value of `ψ(x)` for a literal `x` whose fractional part is
-/// tabulated (module docs); `None` at a pole or elsewhere.
+/// Largest denominator `q` for which `ψ(p/q)` is written out by Gauss's
+/// digamma theorem (`⌊(q−1)/2⌋` cosine–log terms).
+pub(crate) const MAX_GAUSS_DENOMINATOR: i64 = 100;
+
+/// `ψ(p/q)` for `0 < p < q`, `gcd(p, q) = 1`, by Gauss's digamma theorem
+/// (DLMF 5.4.19 with `ln(2 − 2cos 2θ) = 2 ln 2 + 2 ln sin θ` and
+/// `Σ_{k=1}^{q−1} cos(2πkp/q) = −1`):
+///
+/// `ψ(p/q) = −γ − log(2q) − (π/2) cot(πp/q) + 2 Σ_{k=1}^{⌊(q−1)/2⌋} cos(2πkp/q) log sin(πk/q)`.
+///
+/// Every trigonometric value is an exact node at a rational multiple of `π`
+/// (folded to radicals where `simplify` knows them); `None` past
+/// [`MAX_GAUSS_DENOMINATOR`] or when the active budget runs out.
+fn gauss_digamma(f: &Rational, pool: &ExprPool) -> Option<ExprId> {
+    let (p, q) = (f.numer().to_i64()?, f.denom().to_i64()?);
+    if !(2..=MAX_GAUSS_DENOMINATOR).contains(&q) || !(1..q).contains(&p) {
+        return None;
+    }
+    let at = |num: i64, den: i64| mk_mul(pool, vec![pool.rational(num, den), pi(pool)]);
+    let mut terms = vec![
+        neg(pool, crate::eval::symbols::euler_gamma_symbol(pool)),
+        neg(pool, log_of(pool, 2 * q)),
+        // −(π/2)·cot(πp/q) = −(π/2)/tan(πp/q); q ≥ 3 here, so no pole.
+        mk_mul(
+            pool,
+            vec![
+                pool.rational(-1, 2),
+                pi(pool),
+                pool.pow(pool.func("tan", vec![at(p, q)]), pool.integer(-1)),
+            ],
+        ),
+    ];
+    for k in 1..=(q - 1) / 2 {
+        crate::budget::check().ok()?;
+        terms.push(mk_mul(
+            pool,
+            vec![
+                pool.integer(2),
+                pool.func("cos", vec![at(2 * k * p, q)]),
+                pool.func("log", vec![pool.func("sin", vec![at(k, q)])]),
+            ],
+        ));
+    }
+    Some(simplify(mk_add(pool, terms), pool).value)
+}
+
+/// The exact value of `ψ(x)` for a rational literal `x`: the tabulated
+/// fractional parts in their classical forms, every other denominator up to
+/// [`MAX_GAUSS_DENOMINATOR`] by Gauss's digamma theorem; `None` at a pole or
+/// elsewhere.
 pub(crate) fn digamma_value(x: ExprId, pool: &ExprPool) -> Option<ExprId> {
     let q = rational_literal(pool, x)?;
     if nonpositive_integer(&q).is_some() {
@@ -204,7 +252,7 @@ pub(crate) fn digamma_value(x: ExprId, pool: &ExprPool) -> Option<ExprId> {
     if m.abs() > MAX_SHIFT {
         return None;
     }
-    let base = digamma_base(&f, pool)?;
+    let base = digamma_base(&f, pool).or_else(|| gauss_digamma(&f, pool))?;
     // ψ(f + m) = ψ(f) + Σ_{j=0}^{m−1} 1/(f+j);  ψ(f − m) = ψ(f) − Σ_{j=1}^{m} 1/(f−j).
     let mut corr = Rational::new();
     if m > 0 {
@@ -262,8 +310,105 @@ fn hurwitz_base(s: u32, f: &Rational, pool: &ExprPool) -> Option<ExprId> {
     })
 }
 
-/// The exact value of `ψ⁽ⁿ⁾(x)` for `n ≥ 1` and a literal `x` with a
-/// tabulated fractional part; `None` at a pole or elsewhere.
+/// `a + b√3` with rational `a`, `b` — enough for `cot(πf)` at `f` with
+/// denominator 3, 4 or 6.
+#[derive(Clone)]
+struct QSqrt3(Rational, Rational);
+
+impl QSqrt3 {
+    fn mul(&self, o: &QSqrt3) -> QSqrt3 {
+        QSqrt3(
+            Rational::from(&self.0 * &o.0) + Rational::from(&self.1 * &o.1) * 3,
+            Rational::from(&self.0 * &o.1) + Rational::from(&self.1 * &o.0),
+        )
+    }
+}
+
+/// `Pₙ` with `dⁿ/dθⁿ cot θ = Pₙ(cot θ)`: `P₀ = c`, `Pₖ₊₁ = −(1 + c²) Pₖ′`
+/// (coefficients, constant term first).
+fn cot_derivative_poly(n: u32) -> Vec<Integer> {
+    let mut p = vec![Integer::from(0), Integer::from(1)];
+    for _ in 0..n {
+        // p′
+        let d: Vec<Integer> = p
+            .iter()
+            .enumerate()
+            .skip(1)
+            .map(|(k, c)| Integer::from(c * k as u32))
+            .collect();
+        // −(1 + c²)·p′
+        let mut out = vec![Integer::from(0); d.len() + 2];
+        for (k, c) in d.iter().enumerate() {
+            out[k] -= c;
+            out[k + 2] -= c;
+        }
+        p = out;
+    }
+    p
+}
+
+/// `ζ(s, f)` for odd `s ≥ 3` and `f ∈ {⅓, ⅔, ¼, ¾, ⅙, ⅚}` in terms of
+/// `ζ(s)`, `πˢ` and `√3`:
+///
+/// * the multiplication theorem `Σ_{j=1}^{q} ζ(s, j/q) = qˢ ζ(s)` with the
+///   values at ½ and 1 gives `ζ(s, f) + ζ(s, 1−f) = c_q ζ(s)` (`c₃ = 3ˢ − 1`,
+///   `c₄ = 4ˢ − 2ˢ`, `c₆ = 6ˢ − 3ˢ − 2ˢ + 1`);
+/// * the reflection formula for `ψ⁽ⁿ⁾`, `n = s − 1` even, gives
+///   `ζ(s, f) − ζ(s, 1−f) = πˢ Pₙ(cot πf) / n!` (DLMF 25.11.12, 5.15.6).
+///
+/// Even `s` (odd `n`) would need a Dirichlet `L`-value (`β(4)`, …) that has no
+/// classical form; those keep the Hurwitz node (`ζ(2, ¼)` is in
+/// [`hurwitz_base`] through Catalan's constant).
+fn hurwitz_odd_classical(s: u32, f: &Rational, pool: &ExprPool) -> Option<ExprId> {
+    if s < 3 || s % 2 == 0 {
+        return None;
+    }
+    let (p, q) = (f.numer().to_i64()?, f.denom().to_i64()?);
+    let pw = |b: u32| Integer::from(b).pow(s);
+    let c_q = match q {
+        3 => pw(3) - 1u32,
+        4 => pw(4) - pw(2),
+        6 => pw(6) - pw(3) - pw(2) + 1u32,
+        _ => return None,
+    };
+    let sign = |v: i64| if 2 * p < q { v } else { -v };
+    // cot(πp/q)
+    let cot = match q {
+        4 => QSqrt3(Rational::from(sign(1)), Rational::new()),
+        3 => QSqrt3(Rational::new(), Rational::from((sign(1), 3))),
+        _ => QSqrt3(Rational::new(), Rational::from(sign(1))),
+    };
+    let n = s - 1;
+    let poly = cot_derivative_poly(n);
+    let mut acc = QSqrt3(Rational::new(), Rational::new());
+    for c in poly.iter().rev() {
+        acc = acc.mul(&cot);
+        acc.0 += c;
+    }
+    let scale = Rational::from((Integer::from(1), factorial(n) * 2u32));
+    let a = acc.0 * &scale;
+    let b = acc.1 * &scale;
+    let pis = pool.pow(pi(pool), pool.integer(s));
+    let mut terms = vec![mk_mul(
+        pool,
+        vec![
+            rat_node(pool, &Rational::from((c_q, Integer::from(2)))),
+            super::node(Kernel::Zeta, vec![pool.integer(s)], pool),
+        ],
+    )];
+    if a != 0 {
+        terms.push(mk_mul(pool, vec![rat_node(pool, &a), pis]));
+    }
+    if b != 0 {
+        terms.push(mk_mul(pool, vec![rat_node(pool, &b), sqrt3(pool), pis]));
+    }
+    Some(mk_add(pool, terms))
+}
+
+/// The exact value of `ψ⁽ⁿ⁾(x)` for `n ≥ 1` and a rational literal `x`:
+/// `(−1)ⁿ⁺¹ n! ζ(n+1, x)` with `ζ` in its classical form (`πˢ`, `ζ(s)`,
+/// Catalan, `√3`) where one exists and the exact Hurwitz node
+/// `hurwitz_zeta(n+1, f)` otherwise; `None` at a pole.
 pub(crate) fn polygamma_value(n: u32, x: ExprId, pool: &ExprPool) -> Option<ExprId> {
     if n == 0 {
         return digamma_value(x, pool);
@@ -280,7 +425,17 @@ pub(crate) fn polygamma_value(n: u32, x: ExprId, pool: &ExprPool) -> Option<Expr
         return None;
     }
     let s = n + 1;
-    let base = hurwitz_base(s, &f, pool)?;
+    // ψ⁽ⁿ⁾ at any rational: the classical forms where they exist, else the
+    // exact Hurwitz value ζ(n+1, f) itself (F26).
+    let base = hurwitz_base(s, &f, pool)
+        .or_else(|| hurwitz_odd_classical(s, &f, pool))
+        .unwrap_or_else(|| {
+            super::node(
+                Kernel::HurwitzZeta,
+                vec![pool.integer(s), rat_node(pool, &f)],
+                pool,
+            )
+        });
     // ζ(s, f+m) = ζ(s, f) − Σ_{j=0}^{m−1} (f+j)^{−s};  ζ(s, f−m) = ζ(s, f) + Σ_{j=1}^{m} (f−j)^{−s}
     let pw = |r: Rational| -> Rational {
         let (a, b) = r.into_numer_denom();
@@ -462,9 +617,38 @@ pub(crate) fn polygamma_ball(n: &ArbBall, x: &ArbBall) -> Option<ArbBall> {
     }
 }
 
+/// Complex `f64` values of `gamma(z)`, `digamma(z)`, `trigamma(z)` and
+/// `polygamma(n, z)` (integer `n ≥ 0`) from Arb's `acb_gamma` /
+/// `acb_polygamma`, certified to 53 bits; `None` at a pole, for another name
+/// or without Arb. Used by [`crate::eval::eval_complex_f64`] (F26: the Gamma
+/// coefficients of the ₂F₁ connection formulas are evaluated there).
+pub(crate) fn gamma_family_c64(name: &str, args: &[(f64, f64)]) -> Option<(f64, f64)> {
+    let (k, z) = match (name, args) {
+        ("gamma", [z]) => (None, *z),
+        ("digamma", [z]) => (Some(0), *z),
+        ("trigamma", [z]) => (Some(1), *z),
+        ("polygamma", [(n, 0.0), z]) => (Some(order_of(*n)?), *z),
+        _ => return None,
+    };
+    if !z.0.is_finite() || !z.1.is_finite() || (z.1 == 0.0 && z.0 <= 0.0 && z.0 == z.0.trunc()) {
+        return None;
+    }
+    #[cfg(flint_arb)]
+    {
+        arb_poly::c64_value(k, z)
+    }
+    #[cfg(not(flint_arb))]
+    {
+        let _ = (k, z);
+        None
+    }
+}
+
 #[cfg(flint_arb)]
 mod arb_poly {
-    use super::super::numeric::arb_impl::{available, certified_f64, from_arb, to_arb};
+    use super::super::numeric::arb_impl::{
+        available, certified_c64, certified_f64, from_arb, to_arb,
+    };
     use crate::ball::ArbBall;
     use crate::flint::acb::{Acb, Arb};
     use crate::flint::arb as ffi;
@@ -506,6 +690,30 @@ mod arb_poly {
         let xb = to_arb(x)?;
         let v = call(k, &xb, i64::from(x.prec) + 16)?;
         from_arb(&v, x.prec)
+    }
+
+    /// `Γ(z)` (`k = None`) or `ψ⁽ᵏ⁾(z)` at a complex point.
+    pub(super) fn c64_value(k: Option<u32>, z: (f64, f64)) -> Option<(f64, f64)> {
+        if !available() {
+            return None;
+        }
+        let zb = Acb::from_f64(z.0, z.1);
+        for prec in [128_i64, 256, 512] {
+            let mut out = Acb::new();
+            unsafe {
+                match k {
+                    None => ffi::acb_gamma(out.as_mut_ptr(), zb.as_ptr(), prec),
+                    Some(k) => {
+                        let s = Acb::from_f64(f64::from(k), 0.0);
+                        ffi::acb_polygamma(out.as_mut_ptr(), s.as_ptr(), zb.as_ptr(), prec)
+                    }
+                }
+            }
+            if let Some(v) = certified_c64(&out) {
+                return Some(v);
+            }
+        }
+        None
     }
 }
 
