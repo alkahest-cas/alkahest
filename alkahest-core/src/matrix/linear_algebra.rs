@@ -995,49 +995,44 @@ pub fn jordan_form(m: &Matrix, pool: &ExprPool) -> Result<(Matrix, Matrix), Line
     }
     let n = m.rows;
     let vals = eigen::eigenvalues(m, pool).map_err(map_eigen_err)?;
-    refuse_root_of_spectrum(vals.iter().map(|v| v.0), pool)?;
     let mut j_blocks: Vec<Matrix> = Vec::new();
     let mut p_cols: Vec<Matrix> = Vec::new();
+    // Columns built by symbolic elimination (as opposed to exactly in a number
+    // field): only these need the rank check below.
+    let mut symbolic_cols: Vec<Matrix> = Vec::new();
     for (lambda, alg_m) in vals {
-        let shifted = m_minus_lambda_scaled(m, lambda, pool);
-        let mut ker_dims = vec![0usize];
-        let mut pow = Matrix::identity(n, pool);
-        for _k in 1..=alg_m {
-            pow = pow
-                .mul(&shifted, pool)
-                .map_err(|_| LinearAlgebraError::KernelFailed)?;
-            // `pow` is a power of `A − λI` for an eigenvalue λ, hence singular.
-            ker_dims.push(
-                kernel_column_basis(&pow, pool, KnownSingular::Yes)
-                    .map_err(|f| kernel_failure_to_error(f, pool))?
-                    .len(),
-            );
-        }
-        let mut nu = vec![0usize; alg_m + 2];
-        for s in 1..=alg_m {
-            nu[s] = ker_dims[s] - ker_dims[s - 1];
-        }
-        let mut block_sizes = Vec::new();
-        for s in 1..=alg_m {
-            let nb = nu[s] - nu[s + 1];
-            for _ in 0..nb {
-                block_sizes.push(s);
+        // A `RootOf` eigenvalue: its chains are built exactly in ℚ(λ)
+        // (`matrix::algebraic`), where the textbook construction needs no
+        // search and no rank check after the fact. Outside that scope it is
+        // refused, as before. Any other eigenvalue goes through symbolic
+        // elimination first; if that stalls on an undecidable pivot (a
+        // Cardano radical), a rational matrix gets the exact chains of λ's
+        // irreducible factor instead.
+        let (blocks, symbolic) = if let Some(degree) =
+            crate::poly::root_of::max_root_of_degree(lambda, pool)
+        {
+            let b = crate::matrix::algebraic::field_jordan_blocks(m, lambda, alg_m, pool)
+                .ok_or(LinearAlgebraError::UnsupportedIrreducibleDegree { degree })?;
+            (b, false)
+        } else {
+            match symbolic_jordan_blocks(m, lambda, alg_m, &symbolic_cols, pool) {
+                Ok(b) => (b, true),
+                Err(e) => {
+                    match crate::matrix::algebraic::field_jordan_blocks(m, lambda, alg_m, pool) {
+                        Some(b) => {
+                            zero_test::forget_refusal();
+                            (b, false)
+                        }
+                        None => return Err(e),
+                    }
+                }
             }
-        }
-        block_sizes.sort_by(|a, b| b.cmp(a));
-        for &sz in &block_sizes {
-            let mut nk = Matrix::identity(n, pool);
-            for _ in 0..sz {
-                nk = nk
-                    .mul(&shifted, pool)
-                    .map_err(|_| LinearAlgebraError::KernelFailed)?;
+        };
+        for (sz, chain) in blocks {
+            if symbolic {
+                symbolic_cols.extend(chain.iter().cloned());
             }
-            let bas = kernel_column_basis(&nk, pool, KnownSingular::Yes)
-                .map_err(|f| kernel_failure_to_error(f, pool))?;
-            let chain = chain_generator(&bas, &shifted, sz, &p_cols, pool)?;
-            for col in chain {
-                p_cols.push(col);
-            }
+            p_cols.extend(chain);
             j_blocks.push(jordan_block_matrix(lambda, sz, pool));
         }
     }
@@ -1049,11 +1044,83 @@ pub fn jordan_form(m: &Matrix, pool: &ExprPool) -> Result<(Matrix, Matrix), Line
     // identity false and `P⁻¹` non-existent, and neither `J` nor `P` looks
     // wrong on inspection. Refuse on proof of deficiency; an undecidable rank
     // is no evidence and is left alone.
-    if matches!(rank(&p, pool), Ok(r) if r < n) {
-        return Err(LinearAlgebraError::SingularTransform);
+    //
+    // Only the symbolically built columns are checked: chains for distinct
+    // eigenvalues are independent (a theorem), and the chains of a `RootOf`
+    // eigenvalue were built with exact rank in ℚ(λ). Without a `RootOf` in
+    // the spectrum the two sets coincide.
+    let checked = if symbolic_cols.len() == p_cols.len() {
+        Some(p.clone())
+    } else if symbolic_cols.is_empty() {
+        None
+    } else {
+        Some(
+            concatenate_columns(&symbolic_cols, pool)
+                .map_err(|_| LinearAlgebraError::KernelFailed)?,
+        )
+    };
+    if let Some(c) = checked {
+        if matches!(rank(&c, pool), Ok(r) if r < c.cols) {
+            return Err(LinearAlgebraError::SingularTransform);
+        }
     }
     let j = block_diagonal(&j_blocks, pool)?;
     Ok((p, j))
+}
+
+/// The Jordan blocks of `m` at `lambda` by symbolic elimination: `(size,
+/// chain)` per block, largest first. `built` are the columns already chosen
+/// (for other eigenvalues); each chain is generated independently of them.
+fn symbolic_jordan_blocks(
+    m: &Matrix,
+    lambda: ExprId,
+    alg_m: usize,
+    built: &[Matrix],
+    pool: &ExprPool,
+) -> Result<Vec<(usize, Vec<Matrix>)>, LinearAlgebraError> {
+    let n = m.rows;
+    let mut built = built.to_vec();
+    let mut out = Vec::new();
+    let shifted = m_minus_lambda_scaled(m, lambda, pool);
+    let mut ker_dims = vec![0usize];
+    let mut pow = Matrix::identity(n, pool);
+    for _k in 1..=alg_m {
+        pow = pow
+            .mul(&shifted, pool)
+            .map_err(|_| LinearAlgebraError::KernelFailed)?;
+        // `pow` is a power of `A − λI` for an eigenvalue λ, hence singular.
+        ker_dims.push(
+            kernel_column_basis(&pow, pool, KnownSingular::Yes)
+                .map_err(|f| kernel_failure_to_error(f, pool))?
+                .len(),
+        );
+    }
+    let mut nu = vec![0usize; alg_m + 2];
+    for s in 1..=alg_m {
+        nu[s] = ker_dims[s] - ker_dims[s - 1];
+    }
+    let mut block_sizes = Vec::new();
+    for s in 1..=alg_m {
+        let nb = nu[s] - nu[s + 1];
+        for _ in 0..nb {
+            block_sizes.push(s);
+        }
+    }
+    block_sizes.sort_by(|a, b| b.cmp(a));
+    for &sz in &block_sizes {
+        let mut nk = Matrix::identity(n, pool);
+        for _ in 0..sz {
+            nk = nk
+                .mul(&shifted, pool)
+                .map_err(|_| LinearAlgebraError::KernelFailed)?;
+        }
+        let bas = kernel_column_basis(&nk, pool, KnownSingular::Yes)
+            .map_err(|f| kernel_failure_to_error(f, pool))?;
+        let chain = chain_generator(&bas, &shifted, sz, &built, pool)?;
+        built.extend(chain.iter().cloned());
+        out.push((sz, chain));
+    }
+    Ok(out)
 }
 
 /// The Jordan chain `[N^{sz−1}v, …, Nv, v]` for a generator `v` drawn from
@@ -1712,7 +1779,7 @@ pub fn matrix_exponential(m: &Matrix, pool: &ExprPool) -> Result<Matrix, LinearA
     // and it settles the `λ_i − λ_j` question by construction — a matrix with a
     // full eigenbasis needs no gap decision at all. It is checked by the same
     // gate as the Putzer route.
-    if let Ok((p, d)) = eigen::diagonalize(m, pool) {
+    if let Ok((p, d)) = eigen::diagonalize_inner(m, pool, false) {
         let exp_d = diagonal_matrix_exp(&d, pool)?;
         let inv_p = matrix_inverse(&p, pool).map_err(|_| LinearAlgebraError::SingularTransform)?;
         let candidate = p
@@ -1723,7 +1790,22 @@ pub fn matrix_exponential(m: &Matrix, pool: &ExprPool) -> Result<Matrix, LinearA
         return gated(m, real_form_entries(candidate, pool), pool);
     }
 
-    let lambdas = spectrum_with_multiplicity(m, pool)?;
+    let lambdas = match spectrum_with_multiplicity(m, pool) {
+        Ok(l) => l,
+        // A spectrum with an irreducible factor of degree ≥ 3 — `RootOf`
+        // eigenvalues, or `A·t` whose parametric characteristic polynomial
+        // has no closed-form roots — has no symbolic Putzer expansion. For a
+        // rational `A` (or `A·t`) it has an exact one through the spectral
+        // projectors, computed in each factor's number field.
+        Err(e @ LinearAlgebraError::UnsupportedIrreducibleDegree { .. }) => {
+            if let Some(candidate) = crate::matrix::algebraic::matrix_exp_by_projectors(m, pool) {
+                spectrum::forget_refusal();
+                return gated(m, real_form_entries(candidate, pool), pool);
+            }
+            return Err(e);
+        }
+        Err(e) => return Err(e),
+    };
     // Putzer turns a wrong eigenvalue list into a plausible matrix rather than
     // into an error, so the list is confirmed *before* anything is built on it.
     match spectrum::confirm_spectrum(m, &lambdas, pool) {

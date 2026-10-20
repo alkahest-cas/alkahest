@@ -781,8 +781,12 @@ evaluate(root_of(x**3 - x - 1, x, 1), {}, mode="complex")  # non-real roots
 imaginary part. A `RootOf` has no free symbols (it stores its polynomial's
 coefficients), so `diff` gives 0 and `subs` leaves it alone. `eigenvals` uses the same
 machinery for degree-≥4 factors, and factors a symbolic characteristic polynomial
-over ℚ[params] first (SEIR Jacobians, Hückel chains); `eigenvects` / `jordan_form` /
-`matrix_exp` still refuse a `RootOf` eigenvalue.
+over ℚ[params] first (SEIR Jacobians, Hückel chains). For a **rational** matrix,
+`eigenvects` / `diagonalize` / `jordan_form` handle `RootOf` eigenvalues exactly (elimination
+in the number field ℚ(α); entries are polynomials in the `RootOf`), and `matrix_exp` of `A`
+or `A*t` returns `RootSum` terms over degree-≥3 factors (real, `eval_expr` reads them).
+Symbolic entries with a `RootOf` spectrum still refuse. `parse(str(r)) == r`:
+`parse("RootOf(x^3 - x - 1, 0)", pool)` (or `RootOf(p, var, k)`; the variable is local).
 
 **Rational equations** (`method="groebner"` only). Equations may be ratios of
 polynomials in the unknowns, which is the form nodal analysis produces — no need to

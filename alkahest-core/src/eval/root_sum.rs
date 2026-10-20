@@ -191,7 +191,7 @@ pub(crate) fn eval_root_sum_f64(
 /// The complex roots of `poly` (a univariate polynomial in `rvar` over ℚ),
 /// or `None` when it is not such a polynomial, is too large, or the iteration
 /// does not produce a root set that passes a relative backward-error check.
-fn minimal_polynomial_roots(
+pub(crate) fn minimal_polynomial_roots(
     poly: ExprId,
     rvar: ExprId,
     pool: &ExprPool,

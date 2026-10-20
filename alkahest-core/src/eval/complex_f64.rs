@@ -366,6 +366,22 @@ fn eval_node_uncached(
         ExprData::Func { name, .. } => Err(error(UnsupportedReason::UnsupportedFunction {
             name: name.clone(),
         })),
+        // `Σ_{poly(r)=0} body(r)`: the body at every complex root, with the
+        // bound variable rebound per root. Each term is a fresh evaluation —
+        // the shared memo would otherwise hand one root's subterms to the next.
+        ExprData::RootSum { poly, var, body } => {
+            let roots =
+                super::root_sum::minimal_polynomial_roots(poly, var, pool).ok_or_else(|| {
+                    error(UnsupportedReason::UnsupportedExpression { kind: "RootSum" })
+                })?;
+            let mut b = bindings.clone();
+            let mut acc = ComplexF64::ZERO;
+            for root in roots {
+                b.insert(var, root);
+                acc = acc.add(eval_complex_f64(body, pool, &b)?);
+            }
+            Ok(acc)
+        }
         other => Err(error(UnsupportedReason::UnsupportedExpression {
             kind: super::expr_kind(&other),
         })),
