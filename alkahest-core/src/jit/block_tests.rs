@@ -30,7 +30,16 @@ fn power_slices_equal_the_scalar_kernel_bit_for_bit() {
         2.5e-160,
     ]);
     let mut exps: Vec<f64> = (-70..=70).map(f64::from).collect();
-    exps.extend([0.5, -0.5, 1.5, -2.25, 1e300, -1e300, f64::NAN, f64::INFINITY]);
+    exps.extend([
+        0.5,
+        -0.5,
+        1.5,
+        -2.25,
+        1e300,
+        -1e300,
+        f64::NAN,
+        f64::INFINITY,
+    ]);
     for len in [xs.len(), 7, 8, 9, 1] {
         let base = &xs[..len];
         let mut out = vec![0.0; len];
