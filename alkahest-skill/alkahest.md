@@ -1267,6 +1267,20 @@ two-parameter family does not span. Pass an `Assumptions` context as the fifth
 argument to settle it (`D ≠ 0` removes the condition; `−D > 0` switches the
 output to the real `e^{a·x}(C1·cos + C2·sin)` form).
 
+`dsolve_system(equations, functions=[y(t), ...], t=t)` (or `ODE.from_equations(...)`)
+accepts linear first/higher-order systems written with `y(t)` and `diff(y(t), t)`
+and adds `result["functions"] = {y(t): ..., y'(t): ...}`; a singular leading matrix
+(DAE) refuses with `E-ODE-030`, a symbolic one reports `det != 0`. Real data give
+real closed forms (`cos`/`sin`/`cosh`/`sinh`, via `to_real_form`); `real_form=False`
+returns the raw complex-exponential form. `Matrix.eigenvals()` and `solve(...)` take
+the same `real_form` flag.
+
+`integrate` of undefined-function derivatives reverses the chain rule: `f' -> f`,
+`f*f' -> f**2/2`, `f'/f -> log f`, `2*t*f'(t**2) -> f(t**2)`, `t*f'' -> t*f' - f`
+(polynomial of degree < k times `f^(k)`); `integrate(f, t)` refuses. `limit` of an
+expression with `f(t)` refuses (`E-LIMIT-007`) unless `continuous=[f(t)]` is passed,
+and then substitutes only where the expression is jointly continuous.
+
 `dsolve_system` takes an `alkahest.ODE` (`d(state_vars)/dt = rhs`) and returns a
 dict with `y_of_t`, `constants`, `fundamental_matrix` (`e^{At}`), `method`,
 `side_conditions` and `notes`. Coefficients may be symbolic — the two-compartment

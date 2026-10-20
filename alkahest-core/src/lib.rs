@@ -144,7 +144,10 @@ pub use numeric::{guess_integer_relation, PslqError};
 pub use ode::{
     dsolve::{
         dsolve, dsolve_with,
-        system::{dsolve_system, dsolve_system_with, DsolveSystemError, SystemSolution},
+        system::{
+            dsolve_system, dsolve_system_opts, dsolve_system_with, DsolveSystemError,
+            SystemSolution,
+        },
         DsolveBranch, DsolveError, DsolveReport, DsolveResult, DsolveSolution, OdeInput,
         SolutionForm,
     },
@@ -587,12 +590,13 @@ pub mod experimental {
         cyclotomic_polynomial, NumberField, NumberFieldElement, NumberFieldError, MAX_FIELD_DEGREE,
     };
     pub use crate::ode::dsolve::system::{
-        dsolve_system, dsolve_system_with, DsolveSystemError, SystemSolution,
+        dsolve_system, dsolve_system_opts, dsolve_system_with, DsolveSystemError, SystemSolution,
     };
     pub use crate::ode::dsolve::{
         dsolve, dsolve_with, DsolveBranch, DsolveError, DsolveReport, DsolveResult, DsolveSolution,
         OdeInput, SolutionForm,
     };
+    pub use crate::ode::from_equations::{ode_from_equations, EquationSystem, EquationSystemError};
     pub use crate::ode::sensitivity::{
         adjoint_system, sensitivity_system, AdjointSystem, SensitivitySystem,
     };

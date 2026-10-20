@@ -83,9 +83,11 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
                                  007 = series/puiseux_series at an infinite
                                  point with no expansion in 1/x, or a point
                                  that mentions oo without being +-oo)
-    E-LIMIT-001 … E-LIMIT-006 LimitError  (006 = the limit turns on the sign of
+    E-LIMIT-001 … E-LIMIT-007 LimitError  (006 = the limit turns on the sign of
                                  a free parameter that nothing states; assume
-                                 it, or declare the symbol Domain.Positive)
+                                 it, or declare the symbol Domain.Positive;
+                                 007 = a limit of an undefined function f(t)
+                                 not declared continuous=[f(t)])
     E-STABLEHLO-001 … E-STABLEHLO-005 AlkahestError (to_stablehlo refusals:
                                  001 = a function with no exact lowering,
                                  named in the message; 003 = a free symbol

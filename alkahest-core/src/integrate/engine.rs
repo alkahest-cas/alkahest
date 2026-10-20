@@ -3195,6 +3195,12 @@ fn integrate_dispatch(
         return r;
     }
 
+    // Undefined functions and their `Derivative` nodes: only exact
+    // derivatives (chain-rule reversal, polynomial-by-parts) integrate.
+    if let Some(r) = super::derivative::try_integrate(expr, var, pool) {
+        return r;
+    }
+
     // Exact Legendre forms `∫ (A + B·sin²u)^{∓1/2} dx = A^{∓1/2}·F/E(u | −B/A)/u′`
     // (and the `cos²`, `cos u`, `sin u` variants). Ahead of the algebraic
     // engine, whose `t = tan x` generator substitution reaches the same
@@ -3694,6 +3700,10 @@ pub fn integrate_definite(
     // `Piecewise` / `abs` / `min` / `max` integrand: cut `[lower, upper]` at the
     // breakpoints and integrate each smooth piece.
     if let Some(r) = super::piecewise::try_definite(expr, var, lower, upper, pool) {
+        return r;
+    }
+
+    if let Some(r) = super::derivative::try_definite(expr, var, lower, upper, pool) {
         return r;
     }
 

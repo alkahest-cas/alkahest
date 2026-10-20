@@ -58,7 +58,9 @@ factorisation), which is what proves the two-compartment discriminant
 Laplace transform (hence `TransferFunction.step_response`) apply it to their
 results, so an oscillatory `expm` comes back as `cos(w·t)` and a
 two-compartment inverse as a biexponential — both evaluable by `eval_expr`, the
-JIT and `emit_c_expr`.
+JIT and `emit_c_expr`. `experimental.dsolve_system`, `Matrix.eigenvals()` and
+`solve` apply it too (all three take `real_form=False` to return the raw
+closed form); a value is rewritten only where its imaginary part is proved zero.
 
 ```python
 to_real_form(sqrt(4*a**2))                           # 2*abs(a)

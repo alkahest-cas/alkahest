@@ -419,6 +419,13 @@ pub fn limit(
     // at order 32 is one uninterruptible call from here.
     let _ceiling = enter_coeff_ceiling(coeff_ceiling(pool));
 
+    // An undefined function of `var` (`f(t)`, `Derivative(f(t), t)`) is opaque:
+    // no rule here may treat it as continuous or differentiable. Use
+    // `calculus::limit_with_continuous` to state the one fact that makes it
+    // meaningful.
+    if frame.outermost && !crate::diff::undefined::var_dependent_nodes(expr, var, pool).is_empty() {
+        return Err(LimitError::Unsupported);
+    }
     let expr = substitute_assumed_equalities(expr, var, pool);
     // An expression with an undefined *constant* in it — `0⁻¹`, `log 0`,
     // `1/(1−1)` — is undefined at every `x`, so there is no limit to take.
