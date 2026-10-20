@@ -28,6 +28,10 @@ use rug::{Complete, Float, Integer, Rational};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
 
+mod specfun_rules;
+#[cfg(test)]
+mod specfun_rules_tests;
+
 type Result<T> = std::result::Result<T, ValidatedError>;
 
 /// Exponent vector of a monomial, one entry per box variable.
@@ -2889,6 +2893,11 @@ impl<'a> TaylorContext<'a> {
                         l.mul(&e).exp()
                     }
                 }
+            }
+            ExprData::Func { name, args } if specfun_rules::is_specfun_call(&name, args.len()) => {
+                // Orthogonal polynomials, Bessel Y/I/K, Airy, zeta, polylog, polygamma
+                // (F24): see `specfun_rules`.
+                self.eval_specfun(&name, &args)
             }
             ExprData::Func { name, args } if args.len() == 1 => {
                 let x = self.eval(args[0])?;

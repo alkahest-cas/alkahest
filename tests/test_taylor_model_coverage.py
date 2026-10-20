@@ -34,7 +34,7 @@ import pytest
 # Small budget: these tests ask *which error* comes back, never how tight the
 # bound is, so there is no reason to pay for convergence.
 _OPTS = {"order": 2, "prec": 64, "tol": 1e-3, "max_subdivisions": 4}
-_MAX_ARITY = 3
+_MAX_ARITY = 4
 _UNSUPPORTED = "E-VALIDATED-001"
 
 
@@ -109,85 +109,68 @@ def test_the_flag_is_not_a_restatement_of_numeric_ball():
     ball_only = {
         name for name, row in rows.items() if row["numeric_ball"] and not row["taylor_model"]
     }
-    # The orthogonal-polynomial families (G11a) have Arb ball kernels but are
-    # multi-argument (degree, parameters, x); every Taylor rule in the
-    # validated tier is unary, so they are honestly ball-only. Without Arb in
-    # the build they carry no ball kernel either.
-    orthopoly = {
-        "legendre_p",
-        "assoc_legendre_p",
-        "hermite_h",
-        "hermite_he",
-        "laguerre_l",
-        "assoc_laguerre_l",
-        "chebyshev_t",
-        "chebyshev_u",
-        "gegenbauer_c",
-        "jacobi_p",
-    }
-    # The Bessel / Airy / zeta / polylog primitives (G11b) likewise have Arb
-    # ball kernels and no validated Taylor rule yet (the unary Airy and zeta
-    # functions included): ball-only, honestly.
+    # F24 gave the orthogonal polynomials (integer literal degree), the
+    # integer-order Bessel J/Y/I/K, the Airy functions, `zeta`, `polylog` and
+    # `polygamma` Taylor-model rules. What is left with an Arb ball kernel and
+    # no rule: the spherical Bessel functions and Hurwitz zeta (not wired),
+    # `hyper` (variable arity) and `zeta_prime` (its own derivative has no
+    # node, so there is no Lagrange remainder to bound).
     specfun = {
-        "bessel_j",
-        "bessel_y",
-        "bessel_i",
-        "bessel_k",
         "spherical_jn",
         "spherical_yn",
-        "airy_ai",
-        "airy_bi",
-        "airy_ai_prime",
-        "airy_bi_prime",
-        "zeta",
         "hurwitz_zeta",
-        "polylog",
-        # G11c: polygamma(n, x) and hypergeometric pFq.
-        "polygamma",
         "hyper",
         # F5: the lower Lambert branch W₋₁ has a certified ball kernel but no
         # Taylor-model rule yet.
         "lambert_wm1",
+        "zeta_prime",
     }
-    assert ball_only - orthopoly - specfun == {"ceil", "floor"}
+    assert ball_only - specfun == {"ceil", "floor"}
 
 
 def test_supported_set_is_the_elementary_plus_special_fragment():
     """A pin on the boundary as it stands, so a change to it is deliberate.
 
-    Thirty-three names: the elementary fragment, plus the special functions
+    Fifty-four names (F24 added the orthogonal polynomials, integer-order
+    Bessel J/Y/I/K, Airy, `zeta`, `polylog` and `polygamma`): the elementary
+    fragment, plus the special functions
     M7 called for — the Bessel pair, `digamma`, `gamma` and `lambert_w` — plus
     the exponential-integral family `Ei`, `li`, `Si`, `Ci`, `Shi`, `Chi`
     (`primitive::expint`), the Fresnel pair and `dilog` (`primitive::fresnel`,
     `primitive::polylog`), and `trigamma`, which is what makes `digamma`
     differentiable.
-    Twenty-six names: the elementary fragment, plus the special functions
-    Twenty-seven names: the elementary fragment, plus the special functions
-    M7 called for — the Bessel pair, `digamma`, `gamma` and `lambert_w` — plus
-    the 3.10.0 additions `trigamma`, the Fresnel pair `fresnels`/`fresnelc`
-    and `dilog`.
 
     Widening this set is a feature (add the rule, then add the name here);
     narrowing it silently would be a regression an agent's plan depends on.
     """
     supported = {row["name"] for row in _primitive_rows() if row["taylor_model"]}
     assert supported == {
-        # Exponential-integral family (alkahest-core/src/primitive/expint.rs)
         "Chi",
         "Ci",
         "Ei",
         "Shi",
         "Si",
-        "li",
         "abs",
         "acos",
         "acosh",
+        "airy_ai",
+        "airy_ai_prime",
+        "airy_bi",
+        "airy_bi_prime",
         "asin",
         "asinh",
+        "assoc_laguerre_l",
+        "assoc_legendre_p",
         "atan",
         "atanh",
+        "bessel_i",
+        "bessel_j",
         "bessel_j0",
         "bessel_j1",
+        "bessel_k",
+        "bessel_y",
+        "chebyshev_t",
+        "chebyshev_u",
         "cos",
         "cosh",
         "digamma",
@@ -198,14 +181,24 @@ def test_supported_set_is_the_elementary_plus_special_fragment():
         "fresnelc",
         "fresnels",
         "gamma",
+        "gegenbauer_c",
+        "hermite_h",
+        "hermite_he",
+        "jacobi_p",
+        "laguerre_l",
         "lambert_w",
+        "legendre_p",
+        "li",
         "log",
+        "polygamma",
+        "polylog",
         "sin",
         "sinh",
         "sqrt",
         "tan",
         "tanh",
         "trigamma",
+        "zeta",
     }
 
 

@@ -55,9 +55,12 @@ ak.evaluate(ak.bessel_k(nu, x), {nu: 0.5 + 0j, x: 1 + 2j})  # complex value via 
 `d/dx` only: `J′_ν = (J_{ν−1} − J_{ν+1})/2` (same for `Y`),
 `I′_ν = (I_{ν−1} + I_{ν+1})/2`, `K′_ν = −(K_{ν−1} + K_{ν+1})/2`,
 `j′_n = −j_{n+1} + (n/x)j_n`, `Ai″ = x·Ai`, `∂_a ζ(s, a) = −s·ζ(s+1, a)`,
-`Li′_s(z) = Li_{s−1}(z)/z`. A derivative in the order or in `s`, and any
-derivative of `zeta`, raises `E-DIFF-001` — it has no closed form, and is
-never silently dropped.
+`Li′_s(z) = Li_{s−1}(z)/z`, `ζ′(s) = zeta_prime(s)` (exact at `0, −1, 2` and
+the negative even integers; numeric through Arb's `acb_dirichlet_zeta_jet`),
+`H′_ν = (H_{ν−1} − H_{ν+1})/2` for `hankel1`/`hankel2` (`J ± iY`, complex-valued;
+half-integer orders expand to `exp(±ix)` forms). A derivative in the order or
+in `s`, and the second derivative of `zeta`, raises `E-DIFF-001` — it has no
+closed form, and is never silently dropped.
 
 ## Numerics
 
@@ -117,9 +120,10 @@ are kept.
 
 ## Not yet
 
-Hankel functions, the large-`x` asymptotic expansion of `J_ν` through
-`asymptotic_expand`, Taylor models (the validated tier is unary), and a
-derivative of `ζ` (no `zeta_prime`). For G11c: Stirling's series through
+The large-`x` asymptotic expansion of `J_ν` through `asymptotic_expand`,
+and Taylor models for non-integer Bessel orders, `hurwitz_zeta`, `hyper` and
+the spherical Bessel functions (integer-order `J/Y/I/K`, Airy, `zeta`,
+`polylog`, `polygamma` and the orthogonal polynomials have them). For G11c: Stirling's series through
 `asymptotic_expand`, `loggamma`, Γ duplication/reflection rewriting, ψ at
 other rationals (needs Clausen values), complex `hyper` values, contiguous
 relations and `₂F₁` transformations (Kummer's 24 solutions), Meijer G.

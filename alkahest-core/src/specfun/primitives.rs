@@ -20,11 +20,14 @@
 //!   An order, `s`, or the argument of `zeta` that depends on the variable
 //!   makes the rule decline, so `diff` refuses (`E-DIFF-001`).
 //! * `numeric_f64` / `numeric_ball` — [`super::numeric`] (Arb).
+//! * `zeta_prime` (`ζ′`) and the Hankel functions `hankel1`/`hankel2` follow the
+//!   same bundle; the Hankel pair is complex-valued, so it carries no real
+//!   `numeric_f64` / `numeric_ball` slot (the complex evaluator handles it).
 //! * No reverse rule (an order has no cotangent; the generic fallback asks
 //!   `diff_forward`), no Lean theorem, no Taylor model, no LLVM lowering.
 
 use rug::ops::Pow;
-use rug::{Integer, Rational};
+use rug::{Complete, Integer, Rational};
 
 use crate::ball::ArbBall;
 use crate::kernel::{ExprData, ExprId, ExprPool};
@@ -375,6 +378,74 @@ pub(crate) fn canonical(kernel: Kernel, args: &[ExprId], pool: &ExprPool) -> Opt
         Kernel::Zeta => zeta_at_integer(pool, &int_literal(pool, args[0])?),
         Kernel::HurwitzZeta => hurwitz_canonical(args[0], args[1], pool),
         Kernel::Polylog => polylog_canonical(args[0], args[1], pool),
+        Kernel::ZetaPrime => zeta_prime_canonical(args[0], pool),
+        Kernel::HankelH1 | Kernel::HankelH2 => hankel_canonical(kernel, args[0], args[1], pool),
+    }
+}
+
+/// `H^{(1,2)}_{−n} = (−1)ⁿ H^{(1,2)}_n` for an integer `n` (DLMF 10.4.6).
+/// (Half-integer orders are rewritten by [`super::hankel`], not here.)
+fn hankel_canonical(k: Kernel, nu: ExprId, x: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let q = rational_literal(pool, nu)?;
+    if *q.denom() != 1 || q >= 0 {
+        return None;
+    }
+    let n = -q;
+    let odd = n.numer().is_odd();
+    let base = node(k, vec![rat_node(pool, &n), x], pool);
+    Some(if odd { neg(pool, base) } else { base })
+}
+
+/// Exact values of `ζ′(s)` (DLMF 25.6.9–25.6.12 and the functional equation):
+///
+/// * `ζ′(0) = −½ ln(2π)`,
+/// * `ζ′(−1) = 1/12 − ln A` (`A` the Glaisher–Kinkelin constant),
+/// * `ζ′(2) = (π²/6)(γ + ln(2π) − 12 ln A)`,
+/// * `ζ′(−2n) = (−1)ⁿ (2n)! ζ(2n+1) / (2 (2π)^{2n})` for `n ≥ 1`.
+fn zeta_prime_canonical(s: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let n = int_literal(pool, s)?.to_i64()?;
+    let two_pi = || {
+        mk_mul(
+            pool,
+            vec![pool.integer(2), crate::eval::symbols::pi_symbol(pool)],
+        )
+    };
+    let ln = |e: ExprId| pool.func("log", vec![e]);
+    match n {
+        0 => Some(mk_mul(pool, vec![pool.rational(-1, 2), ln(two_pi())])),
+        -1 => Some(mk_add(
+            pool,
+            vec![pool.rational(1, 12), neg(pool, ln(super::glaisher(pool)))],
+        )),
+        2 => Some(mk_mul(
+            pool,
+            vec![
+                pool.rational(1, 6),
+                pi_pow(pool, 2),
+                mk_add(
+                    pool,
+                    vec![
+                        super::euler_gamma(pool),
+                        ln(two_pi()),
+                        mk_mul(pool, vec![pool.integer(-12), ln(super::glaisher(pool))]),
+                    ],
+                ),
+            ],
+        )),
+        n if n < 0 && n % 2 == 0 && -n <= MAX_EXACT_ZETA => {
+            let m = (-n / 2) as u32; // ζ′(−2m)
+            let fact = Integer::factorial(2 * m).complete();
+            let sign = if m % 2 == 0 { 1 } else { -1 };
+            Some(mk_mul(
+                pool,
+                vec![
+                    rat_node(pool, &Rational::from((fact * sign, Integer::from(2)))),
+                    node(Kernel::Zeta, vec![pool.integer(2 * i64::from(m) + 1)], pool),
+                    pool.pow(two_pi(), pool.integer(-2 * i64::from(m))),
+                ],
+            ))
+        }
+        _ => None,
     }
 }
 
@@ -382,12 +453,18 @@ pub(crate) fn canonical(kernel: Kernel, args: &[ExprId], pool: &ExprPool) -> Opt
 pub(crate) fn local_derivative(kernel: Kernel, args: &[ExprId], pool: &ExprPool) -> Option<ExprId> {
     let half = pool.rational(1, 2);
     Some(match kernel {
-        Kernel::BesselJ | Kernel::BesselY | Kernel::BesselI | Kernel::BesselK => {
+        Kernel::BesselJ
+        | Kernel::BesselY
+        | Kernel::BesselI
+        | Kernel::BesselK
+        | Kernel::HankelH1
+        | Kernel::HankelH2 => {
             let (nu, x) = (args[0], args[1]);
             let lo = node(kernel, vec![shift(pool, nu, -1), x], pool);
             let hi = node(kernel, vec![shift(pool, nu, 1), x], pool);
             match kernel {
-                Kernel::BesselJ | Kernel::BesselY => {
+                // H = J ± iY obeys the same recurrence (DLMF 10.6.1).
+                Kernel::BesselJ | Kernel::BesselY | Kernel::HankelH1 | Kernel::HankelH2 => {
                     mk_mul(pool, vec![half, mk_add(pool, vec![lo, neg(pool, hi)])])
                 }
                 Kernel::BesselI => mk_mul(pool, vec![half, mk_add(pool, vec![lo, hi])]),
@@ -436,7 +513,10 @@ pub(crate) fn local_derivative(kernel: Kernel, args: &[ExprId], pool: &ExprPool)
                 ],
             )
         }
-        Kernel::Zeta => return None,
+        // ζ′(s): the derivative in s of ζ is the node ζ′.
+        Kernel::Zeta => pool.func(Kernel::ZetaPrime.name(), vec![args[0]]),
+        // ζ″ has no node (a higher derivative is refused, not dropped).
+        Kernel::ZetaPrime => return None,
     })
 }
 

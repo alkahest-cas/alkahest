@@ -7,7 +7,7 @@
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 
-use alkahest_core::specfun::{self as core, AiryKind, BesselKind, SphericalBesselKind};
+use alkahest_core::specfun::{self as core, AiryKind, BesselKind, HankelKind, SphericalBesselKind};
 
 use crate::orthopoly::{pool_of, specfn_err};
 use crate::{PyExpr, PyExprPool};
@@ -214,8 +214,8 @@ fn airy_bi_prime(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
 /// ``zeta(4) = pi**4/90``, via Bernoulli numbers) and at non-positive
 /// integers (``zeta(0) = -1/2``, ``zeta(-1) = -1/12``, ``zeta(-2n) = 0``);
 /// ``zeta(3)`` stays ``zeta(3)`` (no closed form is known).  Evaluates in
-/// ``f64``, balls and at complex ``s`` through Arb.  There is no derivative
-/// rule: ``diff(zeta(s), s)`` raises ``DiffError`` (``E-DIFF-001``).
+/// ``f64``, balls and at complex ``s`` through Arb.  ``diff(zeta(s), s)`` is
+/// ``zeta_prime(s)``; higher derivatives raise ``DiffError`` (``E-DIFF-001``).
 ///
 /// Raises ``SpecialFunctionError`` (``E-SPECFN-006``) at the pole ``s = 1``.
 #[pyfunction]
@@ -226,6 +226,91 @@ fn zeta(py: Python<'_>, s: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
         core::zeta(a[0], pool).map_err(specfn_err)?
     };
     Ok(PyExpr { id, pool: pool_py })
+}
+
+/// Derivative of the Riemann zeta function, ``zeta'(s)``.
+///
+/// Exact at ``s = 0`` (``-log(2*pi)/2``), ``s = -1`` (``1/12 - log(Glaisher)``),
+/// ``s = 2`` (``pi**2/6 (EulerGamma + log(2 pi) - 12 log(Glaisher))``) and the
+/// negative even integers (``zeta'(-2) = -zeta(3)/(4 pi**2)``); the node
+/// ``zeta_prime(s)`` elsewhere.  This is what ``diff(zeta(s), s)`` returns;
+/// the second derivative has no node and is refused (``E-DIFF-001``).
+/// Evaluates in ``f64``, balls (``interval_eval``) and at complex ``s``
+/// through Arb (``acb_dirichlet_zeta_jet``).
+///
+/// Raises ``SpecialFunctionError`` (``E-SPECFN-006``) at the pole ``s = 1``.
+///
+/// >>> import alkahest as ak
+/// >>> p = ak.ExprPool(); s = p.symbol("s")
+/// >>> ak.diff(ak.zeta(s), s).value           # zeta_prime(s)
+#[pyfunction]
+fn zeta_prime(py: Python<'_>, s: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
+    let (pool_py, a) = ids(py, "zeta_prime", &[s])?;
+    let id = {
+        let pool = &pool_py.borrow(py).inner;
+        core::zeta_prime(a[0], pool).map_err(specfn_err)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+fn hankel_fn(
+    py: Python<'_>,
+    kind: HankelKind,
+    nu: &Bound<'_, PyAny>,
+    x: &Bound<'_, PyAny>,
+    expand: bool,
+) -> PyResult<PyExpr> {
+    let (pool_py, a) = ids(py, kind.name(), &[nu, x])?;
+    let id = {
+        let pool = &pool_py.borrow(py).inner;
+        core::hankel(kind, a[0], a[1], expand, pool).map_err(specfn_err)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// Hankel function of the first kind ``H1_nu(x) = J_nu(x) + i*Y_nu(x)``
+/// (DLMF 10.4; SymPy's ``hankel1``, mpmath's ``hankel1``).
+///
+/// Complex-valued.  A half-integer order with ``expand=True`` (the default)
+/// gives the elementary form —
+/// ``hankel1(1/2, x) = -I*sqrt(2)*exp(I*x)/(sqrt(pi)*sqrt(x))`` — and the
+/// reflection ``H1_{-nu} = exp(I*pi*nu)*H1_nu`` is applied exactly;
+/// ``H1_{-n} = (-1)**n H1_n`` for an integer order.  The node differentiates
+/// in ``x`` (``(H1_{nu-1} - H1_{nu+1})/2``); a derivative in ``nu`` is refused
+/// (``E-DIFF-001``).  There is no real ``f64`` / ball value (the value is
+/// complex): ``evaluate(e, {x: 2.0})`` returns the complex number, through
+/// Arb's principal branch.
+///
+/// Raises ``SpecialFunctionError`` (``E-SPECFN-004``) for an expansion past
+/// order 200 (use ``expand=False``).
+///
+/// >>> import alkahest as ak
+/// >>> from fractions import Fraction
+/// >>> p = ak.ExprPool(); x = p.symbol("x")
+/// >>> ak.hankel1(Fraction(1, 2), x)      # -I*sqrt(2)*pi^(-1/2)*x^(-1/2)*exp(I*x)
+#[pyfunction]
+#[pyo3(signature = (nu, x, *, expand = true))]
+fn hankel1(
+    py: Python<'_>,
+    nu: &Bound<'_, PyAny>,
+    x: &Bound<'_, PyAny>,
+    expand: bool,
+) -> PyResult<PyExpr> {
+    hankel_fn(py, HankelKind::H1, nu, x, expand)
+}
+
+/// Hankel function of the second kind ``H2_nu(x) = J_nu(x) - i*Y_nu(x)``
+/// (DLMF 10.4); see ``hankel1``.  For real ``x`` it is the complex conjugate
+/// of ``hankel1`` at the same real order.
+#[pyfunction]
+#[pyo3(signature = (nu, x, *, expand = true))]
+fn hankel2(
+    py: Python<'_>,
+    nu: &Bound<'_, PyAny>,
+    x: &Bound<'_, PyAny>,
+    expand: bool,
+) -> PyResult<PyExpr> {
+    hankel_fn(py, HankelKind::H2, nu, x, expand)
 }
 
 /// Hurwitz zeta function ``zeta(s, a) = sum_{k>=0} (k + a)**(-s)``
@@ -424,6 +509,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(airy_ai_prime, m)?)?;
     m.add_function(wrap_pyfunction!(airy_bi_prime, m)?)?;
     m.add_function(wrap_pyfunction!(zeta, m)?)?;
+    m.add_function(wrap_pyfunction!(zeta_prime, m)?)?;
+    m.add_function(wrap_pyfunction!(hankel1, m)?)?;
+    m.add_function(wrap_pyfunction!(hankel2, m)?)?;
     m.add_function(wrap_pyfunction!(hurwitz_zeta, m)?)?;
     m.add_function(wrap_pyfunction!(polylog, m)?)?;
     m.add_function(wrap_pyfunction!(expand_special, m)?)?;

@@ -77,6 +77,16 @@ Spherical harmonics
    ``(1-cos^2 theta)^{|m|/2}`` is written ``sin(theta)^|m|`` (exact for
    ``0 <= theta <= pi``).
 
+.. function:: real_spherical_harmonic_y(l, m, theta, phi)
+
+   The real (tesseral) harmonic ``Y_{l,m}``: ``sqrt(2) N P_l^{|m|}(cos theta)
+   cos(m phi)`` for ``m > 0``, ``sqrt(2) N P_l^{|m|}(cos theta) sin(|m| phi)``
+   for ``m < 0`` and ``Y_l^0`` for ``m = 0``, with ``N = sqrt((2l+1)/(4 pi)
+   (l-|m|)!/(l+|m|)!)`` and ``P_l^{|m|}`` *without* the Condon–Shortley phase
+   (Wikipedia's convention, ``Y_{l,m} = sqrt(2) (-1)^m Re/Im Y_l^{|m|}``), so
+   ``Y_{1,1} = sqrt(3/(4 pi)) x/r``. Real and orthonormal on the sphere.
+   Same error codes as :func:`spherical_harmonic_y`.
+
 Coupling coefficients
 ---------------------
 

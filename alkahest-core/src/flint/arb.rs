@@ -569,6 +569,15 @@ extern "C" {
         prec: slong,
     );
     pub fn acb_polylog(res: *mut AcbStruct, s: *const AcbStruct, z: *const AcbStruct, prec: slong);
+    /// First `len` Taylor coefficients `ζ⁽ᵏ⁾(s)/k!` of the Riemann zeta
+    /// function at `s` (`res` points at `len` contiguous balls).
+    pub fn acb_dirichlet_zeta_jet(
+        res: *mut AcbStruct,
+        s: *const AcbStruct,
+        deflate: c_int,
+        len: slong,
+        prec: slong,
+    );
 
     // -- Constants, polygamma, hypergeometric (G11c) -----------------------
     // Used by `crate::ball` (named constants) and `crate::specfun::gamma` /

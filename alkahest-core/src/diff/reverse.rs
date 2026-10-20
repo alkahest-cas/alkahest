@@ -757,6 +757,7 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let y = pool.symbol("y", Domain::Real);
         for f in [
+            pool.func("zeta_prime", vec![x]),
             // `trigamma` differentiates since G11c; an order that depends on
             // the variable still does not.
             pool.mul(vec![

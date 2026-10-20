@@ -596,6 +596,115 @@ pub fn spherical_harmonic_y(
     Ok(mk_mul(pool, factors))
 }
 
+/// The **real** spherical harmonic `Y_{l,m}(θ, φ)` (the tesseral basis of
+/// quantum chemistry and geophysics) as an explicit expression.
+///
+/// Convention (Wikipedia, "Spherical harmonics § Real form"; the Condon–Shortley
+/// phase of the complex `Y_l^m` cancels against the sign of the definition):
+///
+/// ```text
+/// Y_{l,m} = √2 (−1)^m Im[Y_l^{|m|}]    (m < 0)    =  √2·N·P_l^{|m|}(cos θ)·sin(|m|φ)
+/// Y_{l,0} = Y_l^0
+/// Y_{l,m} = √2 (−1)^m Re[Y_l^m]        (m > 0)    =  √2·N·P_l^{m}(cos θ)·cos(mφ)
+/// ```
+///
+/// with `N = √((2l+1)/(4π)·(l−|m|)!/(l+|m|)!)` and `P_l^{|m|}` the Legendre
+/// function **without** the Condon–Shortley phase (so `Y_{1,1} = √(3/4π)·x/r`,
+/// `Y_{1,−1} = √(3/4π)·y/r`).  The set `{Y_{l,m}}` is orthonormal on the unit
+/// sphere and real.  `(1 − cos²θ)^{|m|/2}` is written `sin(θ)^{|m|}`, exact
+/// for `0 ≤ θ ≤ π`; `|m| > l` gives `0`.
+///
+/// # Errors
+///
+/// As [`spherical_harmonic_y`].
+pub fn real_spherical_harmonic_y(
+    l: &Rational,
+    m: &Rational,
+    theta: ExprId,
+    phi: ExprId,
+    pool: &ExprPool,
+) -> Result<ExprId, SpecialFunctionError> {
+    for (v, w) in [(l, "l"), (m, "m")] {
+        if *v.denom() != 1 {
+            return Err(SpecialFunctionError::NotAnInteger {
+                what: w.to_string(),
+                value: v.to_string(),
+            });
+        }
+    }
+    let l = l.numer().clone();
+    if l < 0 {
+        return Err(SpecialFunctionError::NegativeAngularMomentum {
+            what: "l".into(),
+            value: l.to_string(),
+        });
+    }
+    if l > MAX_SPHERICAL_L {
+        return Err(SpecialFunctionError::TooLarge {
+            what: "l".into(),
+            value: l.to_i64().unwrap_or(i64::MAX),
+            max: MAX_SPHERICAL_L,
+        });
+    }
+    let l = l.to_i64().expect("bounded");
+    let m_int = m.numer().clone();
+    if m_int.clone().abs() > l {
+        return Ok(pool.integer(0));
+    }
+    let m = m_int.to_i64().expect("|m| ≤ l");
+    if m == 0 {
+        return spherical_harmonic_y(&Rational::from(l), &Rational::from(0), theta, phi, pool);
+    }
+    let am = m.unsigned_abs() as i64;
+    // (√2 N)² = (2l+1)(l−|m|)! / (2π (l+|m|)!)  (the π goes in separately).
+    let mut pp = PrimePower::new((l + am + 2).max(2 * l + 1) as u64);
+    pp.small((2 * l + 1) as u64, 1);
+    pp.factorial((l - am) as u64, 1);
+    pp.factorial((l + am) as u64, -1);
+    pp.small(2, -1);
+    let (c, r) = pp.sqrt();
+    // P_l^{|m|} without the Condon–Shortley phase: the plain derivative.
+    let d = super::coeffs::derivative(&super::coeffs::legendre(l as u32)?, am as u32);
+    let cos_t = pool.func("cos", vec![theta]);
+    let nonzero: Vec<(usize, Rational)> = d
+        .iter()
+        .enumerate()
+        .filter(|(_, ck)| **ck != 0)
+        .map(|(k, ck)| (k, Rational::from(ck)))
+        .collect();
+    let (c, q) = if let [(k, ck)] = nonzero.as_slice() {
+        (c * ck, pow_int(pool, cos_t, *k as u32))
+    } else {
+        let terms = nonzero
+            .iter()
+            .map(|(k, ck)| {
+                mk_mul(
+                    pool,
+                    vec![rat_node(pool, ck), pow_int(pool, cos_t, *k as u32)],
+                )
+            })
+            .collect();
+        (c, mk_add(pool, terms))
+    };
+    let norm = Surd {
+        coeff: c,
+        radicand: r,
+    }
+    .to_expr(pool);
+    let pi = pool.symbol("pi", Domain::Real);
+    let trig = if m > 0 { "cos" } else { "sin" };
+    Ok(mk_mul(
+        pool,
+        vec![
+            norm,
+            pool.pow(pi, pool.rational(-1, 2)),
+            pow_int(pool, pool.func("sin", vec![theta]), am as u32),
+            q,
+            pool.func(trig, vec![mk_mul(pool, vec![pool.integer(am), phi])]),
+        ],
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

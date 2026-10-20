@@ -485,6 +485,58 @@ fn spherical_harmonic_y(
     Ok(PyExpr { id, pool: pool_py })
 }
 
+/// Real spherical harmonic ``Y_{l,m}(theta, phi)`` as an explicit expression.
+///
+/// The tesseral (real) basis, Wikipedia's convention: for ``m > 0``
+/// ``sqrt(2)*N*P_l^m(cos theta)*cos(m phi)``, for ``m < 0``
+/// ``sqrt(2)*N*P_l^{|m|}(cos theta)*sin(|m| phi)``, and ``Y_l^0`` for
+/// ``m = 0``, where ``N = sqrt((2l+1)/(4 pi) (l-|m|)!/(l+|m|)!)`` and ``P_l^m``
+/// is the Legendre function *without* the Condon-Shortley phase (the phase of
+/// the complex ``Y_l^m`` cancels the ``(-1)^m`` in the definition
+/// ``sqrt(2) (-1)^m Re/Im Y_l^{|m|}``).  So ``Y_{1,1} = sqrt(3/(4 pi)) x/r``,
+/// ``Y_{1,-1} = sqrt(3/(4 pi)) y/r``, ``Y_{1,0} = sqrt(3/(4 pi)) z/r``.  The
+/// functions are real and orthonormal on the unit sphere.
+/// ``sin(theta)**|m|`` stands for ``(1 - cos(theta)**2)**(|m|/2)`` (exact for
+/// ``0 <= theta <= pi``).  ``|m| > l`` gives ``0``.
+///
+/// Raises ``SpecialFunctionError``: ``E-SPECFN-003`` for non-integer ``l`` or
+/// ``m``, ``E-SPECFN-002`` for ``l < 0``, ``E-SPECFN-004`` for ``l > 1000``.
+///
+/// >>> import alkahest as ak
+/// >>> p = ak.ExprPool(); t = p.symbol("t"); f = p.symbol("f")
+/// >>> ak.real_spherical_harmonic_y(1, 1, t, f)   # sqrt(3/(4 pi)) sin(t) cos(f)
+#[pyfunction]
+fn real_spherical_harmonic_y(
+    py: Python<'_>,
+    l: &Bound<'_, PyAny>,
+    m: &Bound<'_, PyAny>,
+    theta: &Bound<'_, PyAny>,
+    phi: &Bound<'_, PyAny>,
+) -> PyResult<PyExpr> {
+    let pool_py = pool_of(py, &[theta, phi, l, m]).ok_or_else(|| {
+        PyTypeError::new_err("real_spherical_harmonic_y: theta or phi must be an Expr")
+    })?;
+    let lq = exact_number(l, "l").map_err(|_| {
+        specfn_err(SpecialFunctionError::NotAnInteger {
+            what: "l".into(),
+            value: l.str().map(|s| s.to_string()).unwrap_or_default(),
+        })
+    })?;
+    let mq = exact_number(m, "m").map_err(|_| {
+        specfn_err(SpecialFunctionError::NotAnInteger {
+            what: "m".into(),
+            value: m.str().map(|s| s.to_string()).unwrap_or_default(),
+        })
+    })?;
+    let t = crate::coerce_substituent(&pool_py, theta, py)?;
+    let p = crate::coerce_substituent(&pool_py, phi, py)?;
+    let id = {
+        let pool = &pool_py.borrow(py).inner;
+        core::real_spherical_harmonic_y(&lq, &mq, t, p, pool).map_err(specfn_err)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "SpecialFunctionError",
@@ -505,5 +557,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(wigner_6j, m)?)?;
     m.add_function(wrap_pyfunction!(clebsch_gordan, m)?)?;
     m.add_function(wrap_pyfunction!(spherical_harmonic_y, m)?)?;
+    m.add_function(wrap_pyfunction!(real_spherical_harmonic_y, m)?)?;
     Ok(())
 }

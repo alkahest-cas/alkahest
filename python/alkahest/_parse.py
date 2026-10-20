@@ -167,6 +167,10 @@ _FUNC_NAMES = frozenset(
         # Polygamma and hypergeometric pFq (G11c), read back as the node.
         "polygamma",
         "hyper",
+        # F24: zeta'(s) and the Hankel pair, read back as the node.
+        "zeta_prime",
+        "hankel1",
+        "hankel2",
         # Reciprocal trig / hyperbolic functions (desugared to base(x) ** -1).
         "sec",
         "csc",
@@ -687,6 +691,9 @@ def _apply_func(name: str, args: list, offset: int, pool=None):
         "hurwitz_zeta": _ak.hurwitz_zeta,
         "polylog": _ak.polylog,
         "polygamma": _ak.polygamma,
+        "zeta_prime": _ak.zeta_prime,
+        "hankel1": _functools.partial(_ak.hankel1, expand=False),
+        "hankel2": _functools.partial(_ak.hankel2, expand=False),
     }
     # ``hyper(p, q, a1..ap, b1..bq, z)`` — the printed form of
     # ``alkahest.hyper([a…], [b…], z)``; the two leading integers split the
@@ -786,6 +793,8 @@ _ARITY: dict[str, tuple[int, int]] = {
     "hurwitz_zeta": (2, 2),
     "polylog": (2, 2),
     "polygamma": (2, 2),
+    "hankel1": (2, 2),
+    "hankel2": (2, 2),
 }
 
 

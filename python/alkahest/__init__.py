@@ -276,6 +276,9 @@ from .alkahest import (  # noqa: F401
     glaisher,
     # V2-6: Approximate integer relations (LLL-backed heuristic — not Ferguson–Bailey PSLQ)
     guess_relation,
+    # F24 — Hankel functions (complex-valued), zeta'(s), real spherical harmonics
+    hankel1,
+    hankel2,
     hermite_h,
     hermite_he,
     # Phase 24: Horner-form code emission
@@ -327,6 +330,7 @@ from .alkahest import (  # noqa: F401
     prove_nonneg,
     re,
     real_roots,
+    real_spherical_harmonic_y,
     refine_root,
     replace_function,
     # Rational meromorphic residues at points in ℚ(i)
@@ -406,6 +410,7 @@ from .alkahest import (  # noqa: F401
     # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     zeilberger,
     zeta,
+    zeta_prime,
 )
 from .alkahest import (
     # Phase 15: Symbolic matrices
@@ -3255,6 +3260,8 @@ __all__ = [
     "guess_holonomic",
     # V2-6
     "guess_relation",
+    "hankel1",
+    "hankel2",
     "hermite_h",
     "hermite_he",
     # Phase 24
@@ -3341,6 +3348,7 @@ __all__ = [
     "re",
     # V2-4
     "real_roots",
+    "real_spherical_harmonic_y",
     "refine_root",
     # Integer-relation input-precision guard
     "relation_confidence",
@@ -3455,6 +3463,7 @@ __all__ = [
     # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     "zeilberger",
     "zeta",
+    "zeta_prime",
 ]
 
 # Drop import-machinery leaks from ``dir(alkahest)`` / autocomplete. Lazy

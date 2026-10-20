@@ -60,7 +60,7 @@ def test_mixed_partials_are_canonical(pool):
 
 def test_builtins_and_reserved_names_still_refuse(pool):
     x = pool.symbol("x")
-    for name in ("zeta", "binomial", "factorial"):
+    for name in ("zeta_prime", "binomial", "factorial"):
         with pytest.raises(ak.DiffError) as exc:
             ak.diff(pool.func(name, [x]), x)
         assert exc.value.code == "E-DIFF-001"

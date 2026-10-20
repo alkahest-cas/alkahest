@@ -253,6 +253,9 @@ FUNCTION_MAP: dict[str, str] = {
     # ``p, q, a…, b…, z`` argument list becomes SymPy's two tuples).
     "polygamma": "polygamma",
     "hyper": "hyper",
+    # F24: SymPy's hankel1/hankel2(nu, z) = J ± iY, same convention.
+    "hankel1": "hankel1",
+    "hankel2": "hankel2",
 }
 
 #: Named constants that SymPy has under the same meaning (G11c).
@@ -266,6 +269,10 @@ _FIXED_ORDER_BESSEL: dict[str, int] = {"bessel_j0": 0, "bessel_j1": 1}
 #: out. Each of these would translate "successfully" and then manufacture
 #: divergences that say nothing about either system's correctness.
 REFUSED_FUNCTIONS: dict[str, str] = {
+    "zeta_prime": (
+        "SymPy has no `zeta_prime` function: it spells the derivative "
+        "`Derivative(zeta(s), s)`, an unevaluated form a name-for-name table cannot express"
+    ),
     "heaviside": (
         "SymPy's Heaviside(0) defaults to 1/2 while Alkahest fixes no value there, "
         "so the two agree everywhere except on a point the comparison would sample"
