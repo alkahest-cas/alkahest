@@ -135,6 +135,8 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
                                  dimensions, both named, 003 = an affine °C/°F
                                  in arithmetic, 006 = same dimension but
                                  different units inside one sum)
+    E-TENSOR-001 … E-TENSOR-010  TensorError (alkahest.tensor; 009 = an abstract-index
+                                 error, raised from Python)
     E-SPECFN-001 … E-SPECFN-008  SpecialFunctionError (orthogonal polynomials,
                                  spherical harmonics, 3j/6j/Clebsch–Gordan,
                                  Bessel/Airy/zeta/polylog; 001 = not an integer

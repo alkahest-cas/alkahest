@@ -458,6 +458,14 @@ from .controls import (  # G10 — controls layer
     lyapunov,
     margins,
 )
+from .tensor import (  # F27 — tensor calculus on a coordinate chart
+    IndexedTensor,
+    Metric,
+    Tensor,
+    TensorError,
+    TensorIndex,
+    tensor_indices,
+)
 from .units import (  # G10 — physical units and dimensional analysis
     Quantity,
     Unit,
@@ -3141,6 +3149,7 @@ __all__ = [
     "HomotopyError",
     "HybridODE",
     "Implies",
+    "IndexedTensor",
     "IntegrationError",
     # V1-16: IoError
     "IoError",
@@ -3158,6 +3167,7 @@ __all__ = [
     # Phase 15
     "Matrix",
     "MatrixError",
+    "Metric",
     "MinimizedLogic",
     "ModularError",
     # M6 — modular / p-adic evaluation of holonomic sequences
@@ -3211,6 +3221,9 @@ __all__ = [
     "SpecialFunctionError",
     "StateSpace",
     "SumError",
+    "Tensor",
+    "TensorError",
+    "TensorIndex",
     # PA-7
     "TracedFn",
     "TransferFunction",
@@ -3545,6 +3558,7 @@ __all__ = [
     # V1-12: expanded primitives
     "tan",
     "tanh",
+    "tensor_indices",
     "to_base_units",
     "to_cnf",
     "to_dnf",

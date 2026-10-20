@@ -311,6 +311,19 @@ Exception subclasses
    unit (its value depends on which number is in which unit); ``E-UNIT-007``
    a fractional power whose scale has no exact rational root.
 
+.. exception:: TensorError
+
+   Code prefix ``E-TENSOR-*``. Tensor calculus on a coordinate chart
+   (:mod:`alkahest.tensor`). ``E-TENSOR-001`` a metric that is not ``n x n`` for
+   ``n`` distinct coordinate symbols; ``002`` a metric that is not symmetric;
+   ``003`` a determinant that is identically zero; ``004`` a floating-point
+   entry (the layer is exact); ``005`` a node the component field cannot hold
+   (``Piecewise``, a predicate); ``006`` a partial derivative that is not
+   available; ``007`` a denominator that vanishes identically; ``008`` the Weyl
+   tensor below dimension 3; ``009`` an abstract-index error (an index three
+   times, twice up or twice down, mismatched free indices); ``010`` an internal
+   invariant, refused rather than answered.
+
 .. exception:: ControlsError
 
    Code prefix ``E-CTRL-*``. The controls layer (:mod:`alkahest.controls`),
