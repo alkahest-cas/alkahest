@@ -259,6 +259,31 @@ fn eval_dual(
         return Ok(r);
     }
 
+    // Non-smooth `min`/`max` (n-ary): the dual of each argument, then the
+    // almost-everywhere rule of `diff::nonsmooth`.
+    if let Node::Func { name, arg } = &node {
+        if (name == "min" || name == "max") && *arg == expr {
+            let args = pool.with(expr, |d| match d {
+                ExprData::Func { args, .. } => args.clone(),
+                _ => vec![],
+            });
+            if args.len() >= 2 {
+                let mut vals = Vec::with_capacity(args.len());
+                let mut tans = Vec::with_capacity(args.len());
+                for &a in &args {
+                    let d = eval_dual(a, var, pool, memo)?;
+                    vals.push(d.value);
+                    tans.push(d.tangent);
+                }
+                let value = pool.func(name.clone(), vals.clone());
+                let tangent = super::nonsmooth::minmax_tangent(name == "min", &vals, &tans, pool);
+                let r = DualValue::new(value, tangent);
+                memo.insert(expr, r.clone());
+                return Ok(r);
+            }
+        }
+    }
+
     let result = match node {
         Node::IsVar => Ok(DualValue::seed(expr, pool)),
         Node::IsConst => Ok(DualValue::constant(expr, pool)),
@@ -313,6 +338,21 @@ fn eval_dual(
                 "log" => Ok(inner.log(pool)),
                 "sqrt" => Ok(inner.sqrt(pool)),
                 "atan" => Ok(inner.atan(pool)),
+                "abs" => Ok(DualValue::new(
+                    pool.func("abs", vec![inner.value]),
+                    super::nonsmooth::abs_tangent(inner.value, inner.tangent, pool),
+                )),
+                "sign" | "floor" | "ceil" | "round" => Ok(DualValue::new(
+                    pool.func(name.clone(), vec![inner.value]),
+                    pool.integer(0_i32),
+                )),
+                "heaviside" => Ok(DualValue::new(
+                    pool.func("heaviside", vec![inner.value]),
+                    pool.mul(vec![
+                        pool.func("diracdelta", vec![inner.value]),
+                        inner.tangent,
+                    ]),
+                )),
                 other => Err(DiffError::ForwardUnknownFunction(other.to_string())),
             }
         }
@@ -378,6 +418,15 @@ pub fn diff_forward(
     // Wrap in a derivation log
     let mut log = DerivationLog::new();
     log.push(RewriteStep::simple("diff_forward", expr, simplified.value));
+    let conds = super::nonsmooth::nonsmooth_side_conditions(expr, var, pool);
+    if !conds.is_empty() {
+        log.push(RewriteStep::with_conditions(
+            "nonsmooth_a_e",
+            expr,
+            simplified.value,
+            conds,
+        ));
+    }
     let full_log = log.merge(simplified.log);
     Ok(DerivedExpr::with_log(simplified.value, full_log))
 }

@@ -334,6 +334,8 @@ from .alkahest import (  # noqa: F401
     resistor,
     # V2-2: Resultants and subresultant PRS
     resultant,
+    # F8 — lower abs/sign/min/max to Piecewise
+    rewrite_piecewise,
     # G1 — exact indexed roots (RootOf)
     root_of,
     round,  # symbolic round — use alkahest.round(expr)
@@ -3353,6 +3355,8 @@ __all__ = [
     "resistor",
     # V2-2
     "resultant",
+    # F8
+    "rewrite_piecewise",
     # G1 — exact indexed roots (RootOf)
     "root_of",
     # V2-13 — Differential algebra / Rosenfeld–Gröbner (groebner default feature)

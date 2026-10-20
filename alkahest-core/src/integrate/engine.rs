@@ -3189,6 +3189,12 @@ fn integrate_dispatch(
     // caller entered a `budget::Budget` — see `crate::budget`.
     crate::budget::check()?;
 
+    // `Piecewise` / `abs` / `min` / `max` integrands: split at the roots of the
+    // conditions, integrate each smooth piece, glue continuously.
+    if let Some(r) = super::piecewise::try_integrate(expr, var, pool) {
+        return r;
+    }
+
     // Exact Legendre forms `∫ (A + B·sin²u)^{∓1/2} dx = A^{∓1/2}·F/E(u | −B/A)/u′`
     // (and the `cos²`, `cos u`, `sin u` variants). Ahead of the algebraic
     // engine, whose `t = tan x` generator substitution reaches the same
@@ -3684,6 +3690,12 @@ pub fn integrate_definite(
     // check below reasons about the bound's *value*.
     let lower = simplify(lower, pool).value;
     let upper = simplify(upper, pool).value;
+
+    // `Piecewise` / `abs` / `min` / `max` integrand: cut `[lower, upper]` at the
+    // breakpoints and integrate each smooth piece.
+    if let Some(r) = super::piecewise::try_definite(expr, var, lower, upper, pool) {
+        return r;
+    }
 
     // `∫₀^∞ Σ cᵢ·x^{pᵢ}·e^{−aᵢx} dx = Σ cᵢ·Γ(pᵢ+1)/aᵢ^{pᵢ+1}` — the Gamma
     // family, termwise, when every `aᵢ > 0` and `pᵢ > −1` is established.

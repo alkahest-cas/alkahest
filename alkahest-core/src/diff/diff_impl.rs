@@ -83,6 +83,9 @@ impl crate::errors::AlkahestError for DiffError {
     }
 }
 
+/// Rule name of the non-smooth derivative steps (see `diff::nonsmooth`).
+pub(crate) const NONSMOOTH_RULE: &str = "diff_nonsmooth";
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -116,6 +119,19 @@ pub fn diff(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DerivedExpr<Ex
     let _scope = memo.enter_scope();
     let mut log = DerivationLog::new();
     let value = diff_raw(expr, var, pool, &memo, &mut log)?;
+    // The non-smooth rules give the almost-everywhere derivative; say where it
+    // holds (see `diff::nonsmooth`).
+    if log.steps().iter().any(|s| s.rule_name == NONSMOOTH_RULE) {
+        let conds = super::nonsmooth::nonsmooth_side_conditions(expr, var, pool);
+        if !conds.is_empty() {
+            log.push(RewriteStep::with_conditions(
+                "nonsmooth_a_e",
+                expr,
+                value,
+                conds,
+            ));
+        }
+    }
     Ok(DerivedExpr::with_log(value, log).and_then(|v| simplify(v, pool)))
 }
 
@@ -669,6 +685,18 @@ fn diff_raw(
                     log.push(RewriteStep::simple("diff_sqrt", expr, r));
                     r
                 }
+                "abs" => {
+                    let r = super::nonsmooth::abs_tangent(f, df, pool);
+                    log.push(RewriteStep::simple(NONSMOOTH_RULE, expr, r));
+                    r
+                }
+                // Piecewise constant: the derivative is 0 away from the jumps
+                // (stated as a side condition by `diff`).
+                "sign" | "floor" | "ceil" | "round" => {
+                    let r = pool.integer(0_i32);
+                    log.push(RewriteStep::simple(NONSMOOTH_RULE, expr, r));
+                    r
+                }
                 other => {
                     // Fall back to PrimitiveRegistry for V1-12 primitives.  The
                     // primitive differentiates `f` itself via a nested `diff`,
@@ -690,6 +718,15 @@ fn diff_raw(
         // here, which avoids double-counting.  We still touch each argument via
         // `diff_raw` so the shared-subexpression memo stays consistent (and so
         // the nested `diff` calls find them memoised).
+        Node::Func { name, args } if (name == "min" || name == "max") && args.len() >= 2 => {
+            let dargs: Vec<ExprId> = args
+                .iter()
+                .map(|&a| diff_raw(a, var, pool, memo, log))
+                .collect::<Result<_, _>>()?;
+            let r = super::nonsmooth::minmax_tangent(name == "min", &args, &dargs, pool);
+            log.push(RewriteStep::simple(NONSMOOTH_RULE, expr, r));
+            r
+        }
         Node::Func { name, args } => {
             for &a in &args {
                 diff_raw(a, var, pool, memo, log)?;

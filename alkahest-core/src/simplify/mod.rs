@@ -9,6 +9,7 @@ pub mod engine;
 pub(crate) mod idmap;
 #[cfg(feature = "parallel")]
 pub mod parallel;
+pub mod piecewise_lower;
 pub(crate) mod poly_expand;
 pub mod real_form;
 #[cfg(feature = "parallel")]
@@ -39,6 +40,7 @@ pub use engine::{
     rules_for_config, simplify, simplify_batch, simplify_expanded, simplify_log_exp, simplify_trig,
     simplify_trig_normal_form, simplify_with, simplify_with_pattern_rules, SimplifyConfig,
 };
+pub use piecewise_lower::rewrite_piecewise;
 pub use real_form::{real_sign, to_real_form};
 pub use rules::{node_kind, NodeKinds, RewriteRule};
 pub use rulesets::{PatternRule, PatternRuleSet};

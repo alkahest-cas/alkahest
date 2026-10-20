@@ -166,10 +166,10 @@ def test_undifferentiable_function_raises_instead_of_zero():
     x = p.symbol("x")
     y = p.symbol("y")
     with pytest.raises(ak.DiffError) as info:
-        ak.symbolic_grad(ak.floor(x), [x])
+        ak.symbolic_grad(p.func("polygamma", [x, x * x]), [x])
     assert info.value.code == "E-DIFF-001"
     with pytest.raises(ak.DiffError):
-        ak.symbolic_grad(y * ak.zeta(x), [x, y])
+        ak.symbolic_grad(y * p.func("polygamma", [x, x * x]), [x, y])
     # A non-differentiable factor that does not depend on the variable is fine.
     (g,) = ak.symbolic_grad(x * ak.floor(y), [x])
     assert g == ak.floor(y)

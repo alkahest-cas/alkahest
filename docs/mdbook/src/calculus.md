@@ -35,6 +35,31 @@ Every primitive in the registry has a differentiation rule. The 23 currently reg
 
 `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `exp`, `log`, `sqrt`, `abs`, `sign`, `erf`, `erfc`, `gamma`, `floor`, `ceil`, `round`, `min`, `max`
 
+### Non-smooth functions
+
+`abs`, `sign`, `floor`, `ceil`, `round`, `min` and `max` are not differentiable
+everywhere. `diff`, `diff_forward` and `symbolic_grad` return the
+**almost-everywhere derivative** and state where it holds, as side conditions on
+the derivation (`result.side_conditions`, also on each step in `result.steps`):
+
+| expression | derivative | holds where |
+|---|---|---|
+| `abs(g)` | `sign(g)·g'` | `g ≠ 0` |
+| `sign(g)` | `0` | `g ≠ 0` |
+| `floor(g)`, `ceil(g)` | `0` | `g − floor(g) ≠ 0` (g not an integer) |
+| `round(g)` | `0` | `g + 1/2 − floor(g + 1/2) ≠ 0` |
+| `min(a, b)` | `Piecewise((a < b, a'), (a > b, b'); (a'+b')/2)` | `a − b ≠ 0` |
+| `max(a, b)` | `Piecewise((a > b, a'), (a < b, b'); (a'+b')/2)` | `a − b ≠ 0` |
+
+At a kink the value is the midpoint of the one-sided slopes, so the result is
+never an unstated zero. `heaviside` keeps its distributional derivative,
+`diracdelta`. `rewrite_piecewise` lowers `abs`/`sign`/`min`/`max` to `Piecewise`,
+and `integrate` splits `Piecewise` integrands at the exact roots of their
+conditions (rational or quadratic-surd breakpoints; a condition that is
+non-polynomial, parametric or has an irreducible factor of degree ≥ 3 is refused
+with `E-INT-001`) and returns an antiderivative that is continuous at every
+breakpoint.
+
 ### Derivation log
 
 The `DerivedResult` returned by `diff` records every rule application:

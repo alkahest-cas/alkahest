@@ -530,6 +530,18 @@ impl<'a> Builder<'a> {
                 }
             }
         }
+        // `min`/`max` of three or more arguments: a left fold of `fmin`/`fmax`
+        // (both are associative, and ignore a single NaN the way the
+        // interpreter's fold does).
+        if (name == "min" || name == "max") && args.len() > 2 {
+            let c = if name == "min" { "fmin" } else { "fmax" };
+            let mut acc = self.lower(args[0])?;
+            for &a in &args[1..] {
+                let next = self.lower(a)?;
+                acc = self.call(c, vec![acc, next]);
+            }
+            return Ok(acc);
+        }
         let c_name: Option<&'static str> = match (name, args.len()) {
             ("sin", 1) => Some("sin"),
             ("cos", 1) => Some("cos"),

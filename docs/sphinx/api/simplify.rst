@@ -130,6 +130,23 @@ for every denominator ``d`` it cleared).
       to_real_form(cosh(I*x))          # cos(x)
       to_real_form(exp(I*x))           # exp(I*x), unchanged
 
+.. function:: rewrite_piecewise(expr) -> Expr
+
+   Lower ``abs``, ``sign``, ``heaviside``, ``min`` and ``max`` to
+   :func:`piecewise`, everywhere in *expr*.  ``abs(g)`` becomes
+   ``Piecewise((g >= 0, g); -g)``, ``min(a, b)`` ``Piecewise((a <= b, a); b)``
+   and ``max(a, b)`` the ``>=`` form (three or more arguments fold to the
+   right); ``sign`` and ``heaviside`` keep their value at 0 (``0``, ``1/2``).
+   The result equals the input at every point.  ``floor``, ``ceil`` and
+   ``round`` have infinitely many pieces and are left alone.  ``integrate``
+   applies this itself.  No refusals; an expression with none of those
+   functions is returned unchanged.
+
+   Example::
+
+      rewrite_piecewise(abs(x))        # Piecewise((x >= 0, x); -x)
+      rewrite_piecewise(max(x, x**2))  # Piecewise((x >= x**2, x); x**2)
+
 Parallel simplification
 -----------------------
 
