@@ -97,11 +97,13 @@
 //!   check its own answer" — and the caller declines rather than shipping it.
 //!
 //! Raising that ceiling means high-precision *roots*, not merely a
-//! high-precision body: about six extra digits buys degree 21, so a 128-bit
-//! complex evaluator would cover everything the rational route can produce
-//! before its own number-field GCD becomes the binding cost. That is a
-//! self-contained follow-up; `crate::ball` has the MPFR machinery but no
-//! complex layer.
+//! high-precision body.  That is what the `hp` path does from degree 8 up: the
+//! `f64` roots are Newton-refined on the exact integer minimal polynomial at 256
+//! bits and the body is evaluated in an MPFR complex arithmetic, so the sum is
+//! accurate to far below the gate's tolerance at every degree up to
+//! [`MAX_DEGREE`].  It covers bodies built from constants, symbols, `+`, `×`,
+//! integer powers and `log` — what the rational route and its derivative
+//! produce — and anything else falls back to the `f64` evaluator.
 
 use std::collections::HashMap;
 
@@ -151,6 +153,13 @@ pub(crate) fn eval_root_sum_f64(
     env: &HashMap<ExprId, f64>,
     pool: &ExprPool,
 ) -> Option<f64> {
+    // The sum is ill-conditioned in the roots (see "The precision ceiling" in
+    // the module docs), so above a modest degree evaluate it with the roots
+    // refined to `HP_PREC` bits and the body in that precision too.  A body
+    // outside the high-precision evaluator's subset falls through to `f64`.
+    if let Some(v) = hp::eval_root_sum(poly, rvar, body, env, pool) {
+        return Some(v);
+    }
     let roots = minimal_polynomial_roots(poly, rvar, pool)?;
 
     let mut bindings: HashMap<ExprId, ComplexF64> = env
@@ -353,6 +362,238 @@ pub(crate) fn horner_with_magnitude(coeffs: &[f64], z: ComplexF64) -> (ComplexF6
     (acc, magnitude)
 }
 
+/// High-precision evaluation of a `RootSum` (the measured `f64` ceiling in the
+/// module docs is degree ≈ 15; this lifts it).
+///
+/// The roots found in `f64` by [`polynomial_roots`] are refined by Newton's
+/// method on the exact integer minimal polynomial at [`HP_PREC`] bits, each
+/// must then pass a backward-error test at that precision and the set must be
+/// pairwise distinct, and the body is evaluated in a small MPFR complex
+/// arithmetic.  Every failure (a body outside the subset — integer and
+/// rational constants, symbols, `+`, `×`, integer powers, `log` — a root that
+/// does not refine, a non-real sum) returns `None`, and the caller falls back
+/// to the `f64` evaluator above.
+mod hp {
+    use std::collections::HashMap;
+
+    use rug::Float;
+
+    use crate::kernel::{ExprData, ExprId, ExprPool};
+
+    /// Working precision in bits.
+    pub(super) const HP_PREC: u32 = 256;
+
+    /// Below this degree the `f64` evaluator is accurate (module docs), so the
+    /// high-precision path is not tried.
+    const MIN_DEGREE: usize = 8;
+
+    #[derive(Clone, Debug)]
+    struct C {
+        re: Float,
+        im: Float,
+    }
+
+    fn f(v: f64) -> Float {
+        Float::with_val(HP_PREC, v)
+    }
+
+    impl C {
+        fn real(re: Float) -> Self {
+            C { re, im: f(0.0) }
+        }
+        fn add(&self, o: &C) -> C {
+            C {
+                re: Float::with_val(HP_PREC, &self.re + &o.re),
+                im: Float::with_val(HP_PREC, &self.im + &o.im),
+            }
+        }
+        fn sub(&self, o: &C) -> C {
+            C {
+                re: Float::with_val(HP_PREC, &self.re - &o.re),
+                im: Float::with_val(HP_PREC, &self.im - &o.im),
+            }
+        }
+        fn mul(&self, o: &C) -> C {
+            let re = Float::with_val(HP_PREC, &self.re * &o.re)
+                - Float::with_val(HP_PREC, &self.im * &o.im);
+            let im = Float::with_val(HP_PREC, &self.re * &o.im)
+                + Float::with_val(HP_PREC, &self.im * &o.re);
+            C { re, im }
+        }
+        fn abs2(&self) -> Float {
+            Float::with_val(HP_PREC, self.re.clone().square() + self.im.clone().square())
+        }
+        fn inv(&self) -> Option<C> {
+            let d = self.abs2();
+            if d.is_zero() || !d.is_finite() {
+                return None;
+            }
+            Some(C {
+                re: Float::with_val(HP_PREC, &self.re / &d),
+                im: -Float::with_val(HP_PREC, &self.im / &d),
+            })
+        }
+        fn powi(&self, n: i64) -> Option<C> {
+            let mut base = if n < 0 { self.inv()? } else { self.clone() };
+            let mut e = n.unsigned_abs();
+            let mut acc = C::real(f(1.0));
+            while e > 0 {
+                if e & 1 == 1 {
+                    acc = acc.mul(&base);
+                }
+                base = base.mul(&base);
+                e >>= 1;
+            }
+            Some(acc)
+        }
+        /// Principal branch, matching `eval_complex_f64`.
+        fn ln(&self) -> Option<C> {
+            let m = self.abs2();
+            if m.is_zero() {
+                return None;
+            }
+            let re = Float::with_val(HP_PREC, m.ln()) / 2u32;
+            let im = Float::with_val(HP_PREC, self.im.atan2_ref(&self.re));
+            Some(C { re, im })
+        }
+        fn mag(&self) -> Float {
+            self.abs2().sqrt()
+        }
+        fn finite(&self) -> bool {
+            self.re.is_finite() && self.im.is_finite()
+        }
+    }
+
+    fn eval(
+        e: ExprId,
+        rvar: ExprId,
+        root: &C,
+        env: &HashMap<ExprId, f64>,
+        pool: &ExprPool,
+    ) -> Option<C> {
+        if e == rvar {
+            return Some(root.clone());
+        }
+        match pool.get(e) {
+            ExprData::Integer(n) => Some(C::real(Float::with_val(HP_PREC, &n.0))),
+            ExprData::Rational(r) => Some(C::real(Float::with_val(HP_PREC, &r.0))),
+            ExprData::Symbol { .. } => env.get(&e).map(|&v| C::real(f(v))),
+            ExprData::Add(xs) => {
+                let mut acc = C::real(f(0.0));
+                for x in xs {
+                    acc = acc.add(&eval(x, rvar, root, env, pool)?);
+                }
+                Some(acc)
+            }
+            ExprData::Mul(xs) => {
+                let mut acc = C::real(f(1.0));
+                for x in xs {
+                    acc = acc.mul(&eval(x, rvar, root, env, pool)?);
+                }
+                Some(acc)
+            }
+            ExprData::Pow { base, exp } => match pool.get(exp) {
+                ExprData::Integer(n) => eval(base, rvar, root, env, pool)?.powi(n.0.to_i64()?),
+                _ => None,
+            },
+            ExprData::Func { name, args } if name == "log" && args.len() == 1 => {
+                eval(args[0], rvar, root, env, pool)?.ln()
+            }
+            _ => None,
+        }
+    }
+
+    /// `p(z)` and `p′(z)` by Horner, with `Σ|cₖ||z|ᵏ` for the backward error.
+    fn horner(coeffs: &[Float], z: &C) -> (C, C, Float) {
+        let mut p = C::real(f(0.0));
+        let mut dp = C::real(f(0.0));
+        let mut mag = f(0.0);
+        let az = z.mag();
+        for c in coeffs.iter().rev() {
+            dp = dp.mul(z).add(&p);
+            p = p.mul(z).add(&C::real(c.clone()));
+            mag = Float::with_val(HP_PREC, &mag * &az) + Float::with_val(HP_PREC, c.abs_ref());
+        }
+        (p, dp, mag)
+    }
+
+    fn roots(poly: ExprId, rvar: ExprId, pool: &ExprPool) -> Option<Vec<C>> {
+        let up = crate::poly::UniPoly::from_symbolic_clear_denoms(poly, rvar, pool).ok()?;
+        let degree = usize::try_from(up.degree()).ok()?;
+        if !(MIN_DEGREE..=super::MAX_DEGREE).contains(&degree) {
+            return None;
+        }
+        let ints = up.coefficients();
+        let coeffs: Vec<Float> = ints.iter().map(|c| Float::with_val(HP_PREC, c)).collect();
+        let seeds =
+            super::polynomial_roots(&ints.iter().map(rug::Integer::to_f64).collect::<Vec<_>>())?;
+        if seeds.len() != degree {
+            return None;
+        }
+        let tol = Float::with_val(HP_PREC, 1u32) >> (HP_PREC - 24);
+        let mut out: Vec<C> = Vec::with_capacity(degree);
+        for s in seeds {
+            let mut z = C {
+                re: f(s.re),
+                im: f(s.im),
+            };
+            let mut ok = false;
+            for _ in 0..60 {
+                let (p, dp, mag) = horner(&coeffs, &z);
+                if p.mag() <= Float::with_val(HP_PREC, &tol * &mag) {
+                    ok = true;
+                    break;
+                }
+                z = z.sub(&p.mul(&dp.inv()?));
+                if !z.finite() {
+                    return None;
+                }
+            }
+            if !ok {
+                return None;
+            }
+            out.push(z);
+        }
+        // Distinct: two seeds refined onto one root would leave another out.
+        for i in 0..out.len() {
+            for j in 0..i {
+                let d = out[i].sub(&out[j]).mag();
+                let scale = Float::with_val(HP_PREC, out[i].mag() + out[j].mag()) + 1u32;
+                if d <= Float::with_val(HP_PREC, &scale * 1e-30) {
+                    return None;
+                }
+            }
+        }
+        Some(out)
+    }
+
+    pub(super) fn eval_root_sum(
+        poly: ExprId,
+        rvar: ExprId,
+        body: ExprId,
+        env: &HashMap<ExprId, f64>,
+        pool: &ExprPool,
+    ) -> Option<f64> {
+        let rs = roots(poly, rvar, pool)?;
+        let mut sum = C::real(f(0.0));
+        let mut scale = f(0.0);
+        for r in &rs {
+            let t = eval(body, rvar, r, env, pool)?;
+            if !t.finite() {
+                return None;
+            }
+            scale += t.mag();
+            sum = sum.add(&t);
+        }
+        let lim = Float::with_val(HP_PREC, &scale * 1e-40) + 1e-300;
+        if Float::with_val(HP_PREC, sum.im.abs_ref()) > lim {
+            return None;
+        }
+        let v = sum.re.to_f64();
+        v.is_finite().then_some(v)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,6 +631,34 @@ mod tests {
         )
         .unwrap();
         assert!((got + 2.0).abs() < 1e-10, "Σc² over ±i = {got}");
+    }
+
+    /// Degree 15, where the `f64` sum has lost all its digits (module docs):
+    /// `Σ_{p(c)=0} 1/(x − c) = p′(x)/p(x)` must still come out right.
+    #[test]
+    fn degree_fifteen_sum_is_accurate() {
+        let pool = ExprPool::new();
+        let r = pool.symbol("r", Domain::Real);
+        let x = pool.symbol("x", Domain::Real);
+        // p = r¹⁵ − r − 1
+        let m = pool.add(vec![
+            pool.pow(r, pool.integer(15_i32)),
+            pool.mul(vec![pool.integer(-1_i32), r]),
+            pool.integer(-1_i32),
+        ]);
+        let body = pool.pow(
+            pool.add(vec![x, pool.mul(vec![pool.integer(-1_i32), r])]),
+            pool.integer(-1_i32),
+        );
+        let env = HashMap::from([(x, 2.0)]);
+        let got = eval_root_sum_f64(m, r, body, &env, &pool).unwrap();
+        let p = 2f64.powi(15) - 3.0;
+        let dp = 15.0 * 2f64.powi(14) - 1.0;
+        assert!(
+            (got - dp / p).abs() < 1e-14 * (dp / p),
+            "{got} vs {}",
+            dp / p
+        );
     }
 
     /// A body whose sum is genuinely non-real must be refused, not rounded.

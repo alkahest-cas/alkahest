@@ -3710,6 +3710,16 @@ pub fn integrate_definite(
         }
     }
 
+    // `∫_a^b R(x)/√P(x) dx` with `P` a cubic/quartic that splits over ℚ: an
+    // exact Legendre reduction.  Ahead of the FTC, whose antiderivative for
+    // these comes from the numeric elliptic reduction and is refused as
+    // float-lifted.  See [`super::elliptic_exact`].
+    if let Some(v) = super::elliptic_exact::try_definite(expr, var, lower, upper, pool) {
+        let mut log = DerivationLog::new();
+        log.push(RewriteStep::simple("elliptic_legendre_reduction", expr, v));
+        return Ok(DerivedExpr::with_log(v, log));
+    }
+
     // `∫_{-∞}^{∞}` of a rational function is not an FTC problem: the
     // antiderivative is a `RootSum` or a sum of logs and arctangents whose
     // limits at `±∞` the limit engine cannot establish. Take the residue
@@ -6328,6 +6338,34 @@ mod tests {
                 pool.display(f)
             );
         }
+    }
+
+    /// `∫ (x⁷+3x²−1)/(x¹⁵+x⁴+2x+1)² dx` (report 10-9 §4.5): the log part is a
+    /// `RootSum` over a degree-15 residue field.  Its log argument used to be a
+    /// Euclidean gcd over that field (minutes); it is now read off the
+    /// subresultant chain over `ℚ[t]` (Lazard–Rioboo–Trager).
+    #[test]
+    fn degree_fifteen_log_part_uses_the_subresultant_chain() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let den = pool.add(vec![
+            pool.pow(x, pool.integer(15_i32)),
+            pool.pow(x, pool.integer(4_i32)),
+            pool.mul(vec![pool.integer(2_i32), x]),
+            pool.integer(1_i32),
+        ]);
+        let num = pool.add(vec![
+            pool.pow(x, pool.integer(7_i32)),
+            pool.mul(vec![pool.integer(3_i32), pool.pow(x, pool.integer(2_i32))]),
+            pool.integer(-1_i32),
+        ]);
+        let f = pool.mul(vec![num, pool.pow(den, pool.integer(-2_i32))]);
+        let got = integrate(f, x, &pool).expect("degree-15 rational integral is solved");
+        assert!(contains_root_sum(got.value, &pool));
+        assert_eq!(
+            verify_antiderivative_status(got.value, f, x, &pool),
+            Some(AntiderivativeVerification::Numeric),
+        );
     }
 
     /// The class this change does **not** cover, stated as a test rather than

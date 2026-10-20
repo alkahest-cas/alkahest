@@ -16,8 +16,8 @@ use crate::integrate::engine::IntegrationError;
 use crate::integrate::risch::alg_field::{AlgElem, RatFn};
 use crate::integrate::risch::number_field::KElem;
 use crate::integrate::risch::poly_rde::{
-    degree, expr_to_qpoly, poly_add, poly_deriv, poly_mul, poly_scale, qpoly_to_expr,
-    rational_to_expr, trim, QPoly,
+    degree, poly_add, poly_deriv, poly_mul, poly_scale, qpoly_to_expr, rational_to_expr, trim,
+    QPoly,
 };
 use crate::integrate::risch::rational_rde::{
     expr_to_qrational, poly_divrem, poly_gcd, solve_rational_rde_generalized,
@@ -805,7 +805,7 @@ fn integrate_b_sqrt_high_degree(
     // variant — honest "cannot decide", never a wrong answer.
     let notdecided = |msg: &str| IntegrationError::NotImplemented(format!("NotDecided: {msg}"));
 
-    let p_poly = expr_to_qpoly(p, var, pool)
+    let p_poly = crate::integrate::risch::poly_rde::expr_to_qpoly_expanded(p, var, pool)
         .ok_or_else(|| notimpl("radicand P is not a polynomial in the variable"))?;
     let (b_num, b_den) = expr_to_qrational(b, var, pool)
         .ok_or_else(|| notimpl("weight B is not a rational function"))?;

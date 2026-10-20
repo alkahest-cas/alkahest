@@ -440,6 +440,18 @@ zero of an `atan(N/D)` denominator) are corrected by counting branch crossings
 (exact `±π` each) and cross-checked against quadrature; `∫ cot(x)**(p/q)` goes through
 `cot u = tan(π/2 − u)`.
 
+**Exact definite elliptic integrals** (after 3.12.0): `integrate(R(x)/sqrt(P), x, a, b)`
+with `P` a cubic/quartic whose roots are all rational (written factored or expanded),
+`R` rational with rational poles off `[a, b]`, and `[a, b]` (bounds rational or `±oo`)
+inside one interval where `P > 0`, returns an exact combination of
+`EllipticF/E(asin(√y), m)`, `EllipticK/E(m)` and `EllipticPi(n, φ, m)` with rational
+`m, n, y` (log step `elliptic_legendre_reduction`), e.g.
+`∫_0^1 dx/√(x(1−x)(2−x)) = √2·K(1/2)`. Divergent ends, poles on the interval and
+non-split radicands decline to the other routes. Large `RootSum` log parts
+(degree ≥ 8) are now checked with 256-bit roots, and the Lazard–Rioboo–Trager log
+argument comes from the subresultant chain, so
+`∫ (x⁷+3x²−1)/(x¹⁵+x⁴+2x+1)² dx` returns a verified `RootSum` in about a second.
+
 **The non-elementary output basis carries *exact* constants** (since 3.11). `erf`,
 the Fresnel pair and their coefficients used to be interned as `f64` nodes, so
 `∫exp(−x²)dx` came back as `0.8862269254527579·erf(x)` and nothing downstream could

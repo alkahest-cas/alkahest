@@ -479,10 +479,9 @@ fn try_genus1_log(
     pool: &ExprPool,
 ) -> Option<ExprId> {
     use crate::integrate::risch::alg_field::RatFn;
-    use crate::integrate::risch::poly_rde::expr_to_qpoly;
     use crate::integrate::risch::rational_rde::expr_to_qrational;
 
-    let p_poly = expr_to_qpoly(p_expr, var, pool)?;
+    let p_poly = crate::integrate::risch::poly_rde::expr_to_qpoly_expanded(p_expr, var, pool)?;
     let a_rat = if is_zero_expr(a_part, pool) {
         RatFn::int(0)
     } else {

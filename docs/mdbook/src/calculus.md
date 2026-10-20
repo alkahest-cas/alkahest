@@ -191,13 +191,23 @@ r = integrate(pool.integer(1) / (x**3 - pool.integer(3)*x + pool.integer(1)), x)
 A `RootSum` answer is **verified before it is returned**, like every other
 answer `integrate` gives: it is differentiated and compared numerically to the
 integrand, with the `RootSum` evaluated by finding its minimal polynomial's
-roots and summing the body over them in complex arithmetic. That check is an
-`f64` one and the sum is ill-conditioned in the roots, so for a denominator of
-degree above roughly 14 — where a *perfect* double-precision root set would
-still miss the comparison tolerance — `integrate` declines with `E-INT-001`
-rather than return an answer it cannot check. Such an answer is not claimed to
-be non-elementary: every rational function is elementary, and `E-INT-004` is
-never raised here.
+roots and summing the body over them in complex arithmetic. The sum is
+ill-conditioned in the roots — a *perfect* double-precision root set misses the
+comparison tolerance from degree ≈ 15 — so from degree 8 up the roots are
+Newton-refined to 256 bits on the exact minimal polynomial and the body is
+summed in that precision. Above degree 24 `integrate` declines with
+`E-INT-001` rather than return an answer it cannot check. Such an answer is not
+claimed to be non-elementary: every rational function is elementary, and
+`E-INT-004` is never raised here.
+
+The log argument of each `RootSum` is the Lazard–Rioboo–Trager one,
+`gcd_x(D, A − α·D′)`, read off the **subresultant chain** of `D` and `A − t·D′`
+over `ℚ[t]` (computed once) and reduced modulo the residue's minimal polynomial.
+Each such argument is checked by dividing `D` and `A − α·D′` by it in `ℚ(α)[x]`
+— a divisor of the right degree is the gcd — and the Euclidean gcd over the
+number field is used only if that check fails. On
+`∫ (x⁷+3x²−1)/(x¹⁵+x⁴+2x+1)² dx` this takes the log part from minutes to about
+a second.
 
 **Non-elementary certification**: when the integrand is provably non-elementary (Liouville's theorem — e.g. `sin(x)/x`, `exp(x)/x`, `exp(x²)`), `integrate` raises `IntegrationError` with code `E-INT-004` (NonElementary) rather than a generic "not implemented":
 
@@ -282,6 +292,34 @@ bug and declined. The route covers denominators whose Hurwitz spectral factor
 is rational and, in radicals, every denominator of degree ≤ 4 after
 even-normalisation. Outside that it declines explicitly — `1/(x⁸+1)` is the
 smallest such case.
+
+### Definite elliptic integrals with rational branch points
+
+`integrate(R(x)/sqrt(P(x)), x, a, b)` with `P` a cubic or quartic whose roots
+are all **rational** (the radicand may be written factored or expanded), `R` a
+rational function whose poles are rational and off `[a, b]`, and `[a, b]` —
+rational bounds or `±oo` — inside one interval where `P > 0`, is evaluated
+exactly:
+
+```python
+integrate(1/sqrt(x*(1 - x)*(2 - x)), x, 0, 1).value   # √2·EllipticK(1/2)
+integrate(x/sqrt(x*(1 - x)*(2 - x)), x, 0, 1).value   # √2·(2K(1/2) − 2E(1/2))
+integrate(1/sqrt((x-1)*(x-2)*(x-3)*(x-4)), x, 2, 3).value   # EllipticK(3/4)
+```
+
+The roots (with `∞` for a cubic) are four points of the projective line; the
+cross-ratio Möbius map sending the ends of the interval's arc to `0` and `1`
+gives `sin²φ = h(x)`, a rational parameter `m`, and a constant `c` with
+`c² ∈ ℚ`. The `φ`-integral is then solved by an exact ansatz
+`α·F + β·E + Σ γᵢ·Π(nᵢ) + sinφ·cosφ·Δ·T(sin²φ)` over `ℚ` (a linear system), and
+the endpoints give `EllipticF/E(asin(√y), m)` with `y` rational, or the
+complete `EllipticK/E(m)` and `EllipticPi(n, π/2, m)` at a root of `P`. Nothing
+is lifted from a float, and every finite-interval value is cross-checked
+against a tanh–sinh quadrature whose polynomials are Taylor-shifted to the
+nearer endpoint. A divergent end, a pole on `[a, b]`, a `Π` whose path would
+cross its own pole, or a radicand that does not split over `ℚ` declines to the
+other routes (whose float-derived elliptic antiderivatives the definite path
+refuses).
 
 ### Continuity across substitution poles
 
