@@ -305,6 +305,15 @@ pub(crate) fn try_definite(
     if lo == pool.pos_infinity() || hi == pool.pos_infinity() {
         return None;
     }
+    // With no free parameter the fundamental-theorem route already integrates
+    // these exactly (and certifies the step); this route is for symbolic `Q`.
+    let mut params = Vec::new();
+    for e in [expr, lo, hi] {
+        collect_gate_parameters(e, var, pool, &mut params);
+    }
+    if params.is_empty() {
+        return None;
+    }
     let h = simp(sub(hi, lo, pool), pool);
     if sign_of(h, pool) != Some(Sign::Positive) {
         return None;
@@ -681,8 +690,8 @@ mod tests {
         for pv in [-3.0, 0.0, 2.0] {
             let env: HashMap<ExprId, f64> = [(m, 1.0), (p2, pv)].into_iter().collect();
             let got = crate::jit::eval_interp(r.value, &env, &p).unwrap();
-            let want = quadrature(&|u| Some((1.0 - u * (1.0 - u) * pv).ln()), 0.0, 1.0, 64)
-                .unwrap();
+            let want =
+                quadrature(&|u| Some((1.0 - u * (1.0 - u) * pv).ln()), 0.0, 1.0, 64).unwrap();
             assert!((got - want).abs() < 1e-10, "p2 = {pv}: {got} vs {want}");
         }
     }
