@@ -404,13 +404,7 @@ impl ExprPool {
                     0
                 }
             }
-            ExprData::Func { args, .. } => {
-                if args.iter().any(|&a| cand(a)) {
-                    ZF_CANDIDATE
-                } else {
-                    0
-                }
-            }
+            ExprData::Func { args, .. } if args.iter().any(|&a| cand(a)) => ZF_CANDIDATE,
             // Leaves of the zero-sum sweep: it never descends into them.
             _ => 0,
         }

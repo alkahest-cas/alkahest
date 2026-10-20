@@ -135,6 +135,9 @@ fn rule_to_tactic(rule_name: &str) -> &'static str {
         // `−1·(a + b) = −a + −b` is a ring identity; the generic
         // `ring_nf; simp` fallback fails on it ("no goals" after `ring_nf`).
         "distribute_neg_over_add" => "by ring",
+        // `c·F·(s₁+…) + … = Σ` collected: distributivity plus like-term
+        // collection, a commutative-ring identity (F15).
+        "collect_through_sum" => "by ring",
         // G4 special values, radical powers and the exact zero-sum test have
         // no single Lean tactic (the zero test is a rational normal form over
         // `exp`-atoms and radical relations); withheld rather than emitting
@@ -4380,6 +4383,13 @@ mod tests {
 
     fn p() -> ExprPool {
         ExprPool::new()
+    }
+
+    /// `collect_through_sum` (F15) is a ring identity: `ring` closes it, and
+    /// the generic `ring_nf; simp` fallback fails with "no goals".
+    #[test]
+    fn collect_through_sum_certifies_with_ring() {
+        assert_eq!(rule_to_tactic("collect_through_sum"), "by ring");
     }
 
     #[test]
