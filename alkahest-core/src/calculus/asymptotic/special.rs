@@ -457,7 +457,7 @@ fn gamma_product(
     let mut x_min: f64 = 1.0;
     for (a, b, e) in factors {
         alpha += Rational::from(e * a);
-        beta += Rational::from(e * Rational::from(b - &half));
+        beta += e * Rational::from(b - &half);
         esum += e;
         for (k, r) in stirling_tail(a, b, k_max)?.into_iter().enumerate() {
             tail[k + 1] += r * e;
@@ -468,7 +468,7 @@ fn gamma_product(
                 pool,
                 vec![
                     mk_mul(pool, vec![rat_node(pool, &Rational::from(e * a)), var]),
-                    rat_node(pool, &Rational::from(e * Rational::from(b - &half))),
+                    rat_node(pool, &(e * Rational::from(b - &half))),
                 ],
             );
             scale.push(pool.pow(rat_node(pool, a), ex));
@@ -543,7 +543,7 @@ fn hankel_a(nu: &Rational, m_max: usize) -> Vec<Rational> {
     let mut out = vec![Rational::from(1)];
     for m in 1..=m_max {
         let odd = Rational::from((2 * m as i64 - 1) * (2 * m as i64 - 1));
-        let next = Rational::from(&out[m - 1] * Rational::from(&mu - odd)) / (8 * m as i64);
+        let next = (&out[m - 1] * (&mu - odd)) / (8 * m as i64);
         out.push(next);
     }
     out
@@ -615,7 +615,7 @@ fn bessel_series(
             exact = true;
             break;
         }
-        let q = Rational::from(amv / rpow(a, m as i64));
+        let q = amv / rpow(a, m as i64);
         let (q, trig) = match kind {
             Cyl::J | Cyl::Y => {
                 let sign = if (m / 2) % 2 == 0 { 1 } else { -1 };
@@ -658,7 +658,7 @@ fn erfc_series(a: &Rational, var: ExprId, k_max: usize, pool: &ExprPool) -> Seri
         if k > 0 {
             c *= Rational::from(-(2 * k as i64 - 1)) / 2;
         }
-        let q = Rational::from(&c / rpow(a, 2 * k as i64 + 1));
+        let q = &c / rpow(a, 2 * k as i64 + 1);
         terms.push(Term {
             pow: Rational::from(-(2 * k as i64) - 1),
             logp: 0,
@@ -747,7 +747,7 @@ fn airy_series(kind: Airy, a: &Rational, var: ExprId, k_max: usize, pool: &ExprP
             uk.clone()
         };
         // (∓1)^k from e^{∓ζ}, (3/2)^k from ζ^{−k}, 1/2 for Ai, −1 for Ai′.
-        let mut q = Rational::from(&ck * rpow(&rq(3, 2), k as i64));
+        let mut q = &ck * rpow(&rq(3, 2), k as i64);
         if decaying && k % 2 == 1 {
             q = -q;
         }
@@ -757,7 +757,7 @@ fn airy_series(kind: Airy, a: &Rational, var: ExprId, k_max: usize, pool: &ExprP
         if kind == Airy::AiPrime {
             q = -q;
         }
-        let ap = Rational::from(&base_pow - Rational::from((3 * k as i64, 2)));
+        let ap = &base_pow - Rational::from((3 * k as i64, 2));
         let a_pow = if *a == 1 {
             pool.integer(1)
         } else {
@@ -781,9 +781,7 @@ fn airy_series(kind: Airy, a: &Rational, var: ExprId, k_max: usize, pool: &ExprP
     Series {
         scale: Some(pool.func("exp", vec![mk_mul(pool, zeta)])),
         terms,
-        cut: Some(Rational::from(
-            &base_pow - Rational::from((3 * k_max as i64, 2)),
-        )),
+        cut: Some(&base_pow - Rational::from((3 * k_max as i64, 2))),
         x_min: (1.0 / af).max(1.0),
     }
 }
@@ -872,7 +870,7 @@ fn linear(arg: ExprId, var: ExprId, pool: &ExprPool) -> Option<(Rational, Ration
         rational_literal(pool, simplify(subs(arg, &m, pool), pool).value)
     };
     let b = at(0)?;
-    let a = Rational::from(at(1)? - &b);
+    let a = at(1)? - &b;
     let rebuilt = mk_add(
         pool,
         vec![
@@ -922,7 +920,7 @@ fn atom_series(
         }
         ("polygamma", [n, u]) => {
             let n = order(*n)?;
-            if *n.denom() != 1 || n < 0 || n > 50 {
+            if *n.denom() != 1 || !(0..=50).contains(&n) {
                 return None;
             }
             let (a, b) = linear(*u, var, pool)?;
@@ -1270,7 +1268,7 @@ fn gate(
                 }
             };
             let rad = residual.rad_f64();
-            if !(env.is_finite() && env > 0.0) || !rad.is_finite() || rad > env {
+            if !(env.is_finite() && env > 0.0 && rad.is_finite() && rad <= env) {
                 continue; // not resolvable here
             }
             resolved[k] = true;

@@ -362,7 +362,7 @@ fn step(gammas: &[(ExprId, i64)], pool: &ExprPool) -> Option<Step> {
                 if *d.denom() != 2 {
                     continue;
                 }
-                let k = Rational::from(&d - Rational::from((1, 2)));
+                let k = &d - Rational::from((1, 2));
                 let Some(k) = k.numer().to_i64().filter(|k| k.abs() <= MAX_SHIFT) else {
                     continue;
                 };
