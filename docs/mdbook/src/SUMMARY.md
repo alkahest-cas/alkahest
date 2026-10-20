@@ -44,5 +44,6 @@
   - [Ansatz families and conjecture generation](./ansatz.md)
   - [Cross-CAS differential testing](./crosscheck.md)
   - [SMT/SAT bridge](./smt.md)
+  - [PARI/GP interop (optional)](./pari.md)
   - [Propositional logic, minimisation and BDDs](./logic.md)
 - [Stability policy](./stability.md)
