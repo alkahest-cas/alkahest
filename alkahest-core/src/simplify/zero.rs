@@ -1301,7 +1301,9 @@ impl RewriteRule for ZeroSum {
 
 /// Does `rules` ask for the zero-sum pass?
 pub(crate) fn has_zero_marker(rules: &[Box<dyn RewriteRule>]) -> bool {
-    rules.iter().any(|r| r.name() == ZeroSum::NAME)
+    // `rules_for_config` puts the marker last; check there before scanning.
+    rules.last().is_some_and(|r| r.name() == ZeroSum::NAME)
+        || rules.iter().any(|r| r.name() == ZeroSum::NAME)
 }
 
 /// Whether the DAG under `e` has at most `cap` nodes, all of kinds the
@@ -1365,43 +1367,201 @@ fn screen_value(name: &str, domain: Domain) -> f64 {
     }
 }
 
+/// The derivation-log name of [`super::rules::collect_through_sum`].
+const COLLECT_THROUGH_SUM: &str = "collect_through_sum";
+
 /// At most this many exact attempts per pass: the screen lets through every
 /// sum it cannot evaluate (complex, unsupported functions), and each attempt
 /// may cost up to `Limits::SIMPLIFY`.
 const MAX_EXACT_ATTEMPTS: usize = 32;
 
-/// One bottom-up sweep: every `Add` the exact normal form proves zero becomes
-/// `0`.  Linear in the DAG (each node is screened once).  `None` when nothing
-/// changed.
-pub(crate) fn zero_sum_pass(root: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-    let pool_key = pool.uid();
-    let cached = |e: ExprId| -> Option<Option<f64>> {
-        CLEAN.with(|c| c.borrow().get(&(pool_key, e)).copied())
+/// How the sweep combines a node's children: the node kinds it descends into.
+#[derive(Clone, Copy)]
+enum SweepKind {
+    Add,
+    Mul,
+    Pow,
+    Func(FuncCode),
+}
+
+/// The screening value of a leaf of the sweep, or the kind of an inner node
+/// with its children pushed onto `children`.
+fn sweep_node(
+    e: ExprId,
+    pool: &ExprPool,
+    children: &mut Vec<ExprId>,
+) -> Result<SweepKind, Option<f64>> {
+    pool.with(e, |d| match d {
+        ExprData::Integer(n) => Err(Some(n.0.to_f64())),
+        ExprData::Rational(r) => Err(Some(r.0.to_f64())),
+        ExprData::Float(f) => Err(Some(f.inner.to_f64())),
+        ExprData::Symbol { name, domain, .. } => Err(
+            if let Some(c) = crate::eval::symbols::constant_value_f64(name) {
+                Some(c)
+            } else if pool.is_imaginary_unit(e) {
+                None
+            } else {
+                Some(screen_value(name, *domain))
+            },
+        ),
+        ExprData::Add(a) => {
+            children.extend_from_slice(a);
+            Ok(SweepKind::Add)
+        }
+        ExprData::Mul(a) => {
+            children.extend_from_slice(a);
+            Ok(SweepKind::Mul)
+        }
+        ExprData::Pow { base, exp } => {
+            children.push(*base);
+            children.push(*exp);
+            Ok(SweepKind::Pow)
+        }
+        ExprData::Func { name, args } => {
+            children.extend_from_slice(args);
+            Ok(SweepKind::Func(FuncCode::of(name)))
+        }
+        _ => Err(None),
+    })
+}
+
+/// Whether `Σ vals` is visibly non-zero next to the size of its terms (an
+/// unknown value makes it unknown, so not visibly non-zero).
+fn screened_nonzero_sum(vals: &[Option<f64>]) -> bool {
+    let mut sum = 0.0f64;
+    let mut scale = 0.0f64;
+    for v in vals {
+        let Some(v) = *v else {
+            return false;
+        };
+        sum += v;
+        scale += v.abs();
+    }
+    sum.abs() > 1e-9 * (1.0 + scale)
+}
+
+/// The screening value of an inner node from its children's values.  `exp`
+/// is the node's exponent child for a `Pow` (its kind decides whether a NaN
+/// power is screened as an opaque atom).
+fn screen_combine(
+    kind: SweepKind,
+    vals: &[Option<f64>],
+    exp: Option<ExprId>,
+    pool: &ExprPool,
+) -> Option<f64> {
+    let v = match kind {
+        SweepKind::Add => {
+            let mut sum = 0.0f64;
+            for v in vals {
+                sum += (*v)?;
+            }
+            Some(sum)
+        }
+        SweepKind::Mul => vals.iter().try_fold(1.0f64, |acc, v| v.map(|v| acc * v)),
+        SweepKind::Pow => match (vals[0], vals[1]) {
+            (Some(b), Some(x)) => {
+                let r = if x.fract() == 0.0 && x.abs() < 1e6 {
+                    b.powi(x as i32)
+                } else {
+                    b.powf(x)
+                };
+                // `b^y` with `b < 0` and a symbolic `y` is an opaque atom to
+                // the exact test (real-domain discipline), so an opaque
+                // pseudo-value screens it honestly.  A rational exponent
+                // keeps `None`: its radical relation is something the exact
+                // test does use.
+                let symbolic_exp =
+                    exp.is_some_and(|x| !pool.with(x, |d| matches!(d, ExprData::Rational(_))));
+                if r.is_nan() && symbolic_exp {
+                    FuncCode::Opaque {
+                        name_hash: 0x9e37_79b9_7f4a_7c15,
+                        parity: None,
+                    }
+                    .screen(vals)
+                } else {
+                    Some(r)
+                }
+            }
+            _ => None,
+        },
+        SweepKind::Func(code) => code.screen(vals),
     };
+    v.filter(|v| v.is_finite())
+}
 
-    // An expanded polynomial over plain symbols is already canonical after
-    // `collect_add_terms` / `collect_mul_factors`: no hidden zero sum.
-    if is_plain_polynomial(root, pool) {
+/// The screening value of the subtree under `root`, memoised per node in the
+/// pool (a pure function of the node, so it is computed once per pool).
+/// Iterative post-order; `stack` and `vals` are scratch space.
+fn screen_of(root: ExprId, pool: &ExprPool, scratch: &mut ScreenScratch) -> Option<f64> {
+    if let Some(v) = pool.zero_screen(root) {
+        return v;
+    }
+    let ScreenScratch {
+        stack,
+        children,
+        vals,
+    } = scratch;
+    stack.clear();
+    stack.push((root, false));
+    while let Some((e, expanded)) = stack.pop() {
+        if pool.zero_screen(e).is_some() {
+            continue;
+        }
+        children.clear();
+        let kind = match sweep_node(e, pool, children) {
+            Err(v) => {
+                pool.set_zero_screen(e, v);
+                continue;
+            }
+            Ok(k) => k,
+        };
+        if !expanded {
+            stack.push((e, true));
+            for &c in children.iter().rev() {
+                if pool.zero_screen(c).is_none() {
+                    stack.push((c, false));
+                }
+            }
+            continue;
+        }
+        vals.clear();
+        vals.extend(children.iter().map(|&c| pool.zero_screen(c).flatten()));
+        let exp = matches!(kind, SweepKind::Pow).then(|| children[1]);
+        pool.set_zero_screen(e, screen_combine(kind, vals, exp, pool));
+    }
+    pool.zero_screen(root).flatten()
+}
+
+/// Reusable buffers for [`screen_of`].
+#[derive(Default)]
+struct ScreenScratch {
+    stack: Vec<(ExprId, bool)>,
+    children: Vec<ExprId>,
+    vals: Vec<Option<f64>>,
+}
+
+/// One bottom-up sweep: every `Add` the exact normal form proves zero becomes
+/// `0`, and one whose like terms meet only through a sum factor is collected
+/// ([`super::rules::collect_through_sum`]).  `None` when nothing changed.
+///
+/// Only subtrees that can hide a zero sum are walked: the pool records, per
+/// node at intern time, whether some `Add` below has a term that is not a
+/// plain monomial (a sum of plain monomials is an expanded polynomial that
+/// like-term collection has already made canonical), and marks a subtree
+/// clean once a complete sweep has left it unchanged.  Everything else — the
+/// root of `2·x·cos(x²)`, the `x + 1` of `(x+1)¹⁴`, the 2×2 minors of a
+/// determinant — is not walked; where a parent sum needs its screening value,
+/// that value is memoised in the pool too.  So a repeated sweep over a
+/// settled expression is O(1), and a first one is linear in the candidate
+/// part of the DAG.
+#[inline(never)]
+pub(crate) fn zero_sum_pass(root: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
+    if !pool.zero_candidate(root) {
         return None;
     }
-    // An atom has no `Add` under it.
-    if !pool.with(root, |d| {
-        matches!(
-            d,
-            ExprData::Add(_) | ExprData::Mul(_) | ExprData::Pow { .. } | ExprData::Func { .. }
-        )
-    }) {
-        return None;
-    }
 
-    // Post-order over Add / Mul / Pow / Func; other nodes are leaves.
-    enum K {
-        Val(Option<f64>),
-        Add,
-        Mul,
-        Pow,
-        Func(FuncCode),
-    }
+    // Post-order over the candidate nodes (always `Add`/`Mul`/`Pow`/`Func`);
+    // every other child is unchanged and contributes its memoised value.
     let mut out: IdMap<(ExprId, Option<f64>)> = IdMap::default();
     let mut log = DerivationLog::new();
     let mut attempts = 0usize;
@@ -1409,51 +1569,24 @@ pub(crate) fn zero_sum_pass(root: ExprId, pool: &ExprPool) -> Option<(ExprId, De
     let mut children: Vec<ExprId> = Vec::new();
     let mut new_ids: Vec<ExprId> = Vec::new();
     let mut vals: Vec<Option<f64>> = Vec::new();
+    let mut scratch = ScreenScratch::default();
     while let Some((e, expanded)) = stack.pop() {
         if out.contains_key(&e) {
             continue;
         }
-        if let Some(v) = cached(e) {
-            out.insert(e, (e, v));
-            continue;
-        }
         children.clear();
-        let kind = pool.with(e, |d| match d {
-            ExprData::Integer(n) => K::Val(Some(n.0.to_f64())),
-            ExprData::Rational(r) => K::Val(Some(r.0.to_f64())),
-            ExprData::Float(f) => K::Val(Some(f.inner.to_f64())),
-            ExprData::Symbol { name, domain, .. } => K::Val(
-                if let Some(c) = crate::eval::symbols::constant_value_f64(name) {
-                    Some(c)
-                } else if pool.is_imaginary_unit(e) {
-                    None
-                } else {
-                    Some(screen_value(name, *domain))
-                },
-            ),
-            ExprData::Add(a) => {
-                children.extend_from_slice(a);
-                K::Add
+        let kind = match sweep_node(e, pool, &mut children) {
+            Ok(k) => k,
+            // A candidate is never a leaf; treat one defensively as clean.
+            Err(v) => {
+                out.insert(e, (e, v));
+                continue;
             }
-            ExprData::Mul(a) => {
-                children.extend_from_slice(a);
-                K::Mul
-            }
-            ExprData::Pow { base, exp } => {
-                children.push(*base);
-                children.push(*exp);
-                K::Pow
-            }
-            ExprData::Func { name, args } => {
-                children.extend_from_slice(args);
-                K::Func(FuncCode::of(name))
-            }
-            _ => K::Val(None),
-        });
-        if !expanded && !children.is_empty() {
+        };
+        if !expanded {
             stack.push((e, true));
             for &c in children.iter().rev() {
-                if !out.contains_key(&c) {
+                if pool.zero_candidate(c) && !out.contains_key(&c) {
                     stack.push((c, false));
                 }
             }
@@ -1462,190 +1595,90 @@ pub(crate) fn zero_sum_pass(root: ExprId, pool: &ExprPool) -> Option<(ExprId, De
         let mut changed = false;
         new_ids.clear();
         vals.clear();
-        for c in &children {
-            let (n, v) = out[c];
-            changed |= n != *c;
+        for &c in &children {
+            let (n, v) = match out.get(&c) {
+                Some(&nv) => nv,
+                None => (c, screen_of(c, pool, &mut scratch)),
+            };
+            changed |= n != c;
             new_ids.push(n);
             vals.push(v);
         }
-        let (node, value) = match kind {
-            K::Val(v) => (e, v),
-            K::Add => {
-                let node = if changed {
-                    pool.add(new_ids.clone())
-                } else {
-                    e
-                };
-                let mut sum = 0.0f64;
-                let mut scale = 0.0f64;
-                let mut known = true;
-                for v in &vals {
-                    match v {
-                        Some(v) => {
-                            sum += v;
-                            scale += v.abs();
-                        }
-                        None => known = false,
-                    }
-                }
-                let screened_nonzero = known && sum.abs() > 1e-9 * (1.0 + scale);
-                let is_add = pool.with(node, |d| matches!(d, ExprData::Add(a) if a.len() >= 2));
-                if !screened_nonzero
-                    && is_add
-                    && attempts < MAX_EXACT_ATTEMPTS
-                    && small_dag(node, pool, Limits::SIMPLIFY.max_nodes)
-                {
-                    attempts += 1;
-                    let mut nz = Normalizer::new(pool, Limits::SIMPLIFY);
-                    if nz.decide(node) == Some(true) {
-                        let zero = pool.integer(0_i32);
-                        let mut conds: Vec<SideCondition> = Vec::new();
-                        for d in nz.divisors {
-                            let c = SideCondition::NonZero(d);
-                            if !conds.contains(&c) {
-                                conds.push(c);
-                            }
-                        }
-                        log.push(RewriteStep::with_conditions(
-                            ZeroSum::NAME,
-                            node,
-                            zero,
-                            conds,
-                        ));
-                        out.insert(e, (zero, Some(0.0)));
-                        continue;
-                    }
-                }
-                (node, known.then_some(sum))
-            }
-            K::Mul => {
-                let node = if changed {
-                    pool.mul(new_ids.clone())
-                } else {
-                    e
-                };
-                let v = vals.iter().try_fold(1.0f64, |acc, v| v.map(|v| acc * v));
-                (node, v)
-            }
-            K::Pow => {
-                let node = if changed {
-                    pool.pow(new_ids[0], new_ids[1])
-                } else {
-                    e
-                };
-                let v = match (vals[0], vals[1]) {
-                    (Some(b), Some(x)) => {
-                        let r = if x.fract() == 0.0 && x.abs() < 1e6 {
-                            b.powi(x as i32)
-                        } else {
-                            b.powf(x)
-                        };
-                        // `b^y` with `b < 0` and a symbolic `y` is an opaque
-                        // atom to the exact test (real-domain discipline), so
-                        // an opaque pseudo-value screens it honestly.  A
-                        // rational exponent keeps `None`: its radical
-                        // relation is something the exact test does use.
-                        let symbolic_exp =
-                            !pool.with(new_ids[1], |d| matches!(d, ExprData::Rational(_)));
-                        if r.is_nan() && symbolic_exp {
-                            FuncCode::Opaque {
-                                name_hash: 0x9e37_79b9_7f4a_7c15,
-                                parity: None,
-                            }
-                            .screen(&vals)
-                        } else {
-                            Some(r)
-                        }
-                    }
-                    _ => None,
-                };
-                (node, v)
-            }
-            K::Func(code) => {
-                let v = code.screen(&vals);
-                let node = if changed {
+        let node = if !changed {
+            e
+        } else {
+            match kind {
+                SweepKind::Add => pool.add(new_ids.clone()),
+                SweepKind::Mul => pool.mul(new_ids.clone()),
+                SweepKind::Pow => pool.pow(new_ids[0], new_ids[1]),
+                SweepKind::Func(_) => {
                     let name = pool.with(e, |d| match d {
                         ExprData::Func { name, .. } => name.clone(),
                         _ => String::new(),
                     });
                     pool.func(name, new_ids.clone())
-                } else {
-                    e
-                };
-                (node, v)
+                }
             }
         };
-        let value = value.filter(|v| v.is_finite());
+        if let SweepKind::Add = kind {
+            let screened_nonzero = screened_nonzero_sum(&vals);
+            let is_add = pool.with(node, |d| matches!(d, ExprData::Add(a) if a.len() >= 2));
+            if !screened_nonzero
+                && is_add
+                && attempts < MAX_EXACT_ATTEMPTS
+                && small_dag(node, pool, Limits::SIMPLIFY.max_nodes)
+            {
+                attempts += 1;
+                let mut nz = Normalizer::new(pool, Limits::SIMPLIFY);
+                if nz.decide(node) == Some(true) {
+                    let zero = pool.integer(0_i32);
+                    let mut conds: Vec<SideCondition> = Vec::new();
+                    for d in nz.divisors {
+                        let c = SideCondition::NonZero(d);
+                        if !conds.contains(&c) {
+                            conds.push(c);
+                        }
+                    }
+                    log.push(RewriteStep::with_conditions(
+                        ZeroSum::NAME,
+                        node,
+                        zero,
+                        conds,
+                    ));
+                    out.insert(e, (zero, Some(0.0)));
+                    continue;
+                }
+            }
+            // Not zero: like terms may still meet through a sum factor
+            // (`−a²(b−1) + a²b → a²`) without expanding anything.
+            if let Some(c) = super::rules::collect_through_sum(node, pool) {
+                log.push(RewriteStep::simple(COLLECT_THROUGH_SUM, node, c));
+                out.insert(e, (c, screen_of(c, pool, &mut scratch)));
+                continue;
+            }
+        }
+        let exp = matches!(kind, SweepKind::Pow).then(|| new_ids[1]);
+        let value = screen_combine(kind, &vals, exp, pool);
+        // The value is `node`'s own screening value (same children, same
+        // formula), so it is memoised for `node`.
+        pool.set_zero_screen(node, value);
         out.insert(e, (node, value));
     }
     let new_root = out[&root].0;
-    // Remember the subexpressions the sweep left alone — interned nodes are
+    // Remember the subtrees the sweep left alone — interned nodes are
     // immutable, so they need not be swept again on this pool.  Only after a
     // complete sweep: a capped or budget-limited one may have skipped a zero.
     if attempts < MAX_EXACT_ATTEMPTS && crate::budget::check().is_ok() {
-        CLEAN.with(|c| {
-            let mut c = c.borrow_mut();
-            if c.len() > CLEAN_CAPACITY {
-                c.clear();
+        for (k, (n, _)) in &out {
+            if k == n {
+                pool.mark_zero_clean(*k);
             }
-            for (k, (n, v)) in &out {
-                if k == n {
-                    c.insert((pool_key, *k), *v);
-                }
-            }
-        });
+        }
     }
     if new_root == root {
         return None;
     }
     Some((new_root, log))
-}
-
-/// A literal, a plain (commutative, non-`i`) symbol, or an integer power of
-/// one.
-fn is_plain_factor(e: ExprId, pool: &ExprPool) -> bool {
-    pool.with(e, |d| match d {
-        ExprData::Integer(_) | ExprData::Rational(_) => true,
-        ExprData::Symbol {
-            commutative: true, ..
-        } => !pool.is_imaginary_unit(e),
-        ExprData::Pow { base, exp } => {
-            pool.with(*exp, |x| matches!(x, ExprData::Integer(_)))
-                && pool.with(*base, |b| {
-                    matches!(
-                        b,
-                        ExprData::Symbol {
-                            commutative: true,
-                            ..
-                        }
-                    )
-                })
-                && !pool.is_imaginary_unit(*base)
-        }
-        _ => false,
-    })
-}
-
-/// A product of plain factors.
-fn is_plain_monomial(e: ExprId, pool: &ExprPool) -> bool {
-    if is_plain_factor(e, pool) {
-        return true;
-    }
-    pool.with(e, |d| match d {
-        ExprData::Mul(a) => a.iter().all(|&f| is_plain_factor(f, pool)),
-        _ => false,
-    })
-}
-
-/// A sum of plain monomials (or one): an expanded polynomial over symbols.
-fn is_plain_polynomial(e: ExprId, pool: &ExprPool) -> bool {
-    if is_plain_monomial(e, pool) {
-        return true;
-    }
-    pool.with(e, |d| match d {
-        ExprData::Add(a) => a.iter().all(|&t| is_plain_monomial(t, pool)),
-        _ => false,
-    })
 }
 
 /// How the zero-sum screen values a function application.
@@ -1735,18 +1768,6 @@ impl FuncCode {
             }
         }
     }
-}
-
-/// Largest number of remembered clean nodes before the memo is dropped.
-const CLEAN_CAPACITY: usize = 1 << 18;
-
-thread_local! {
-    /// Nodes of one pool (keyed by its process-unique id) that a complete
-    /// zero-sum sweep left unchanged, with their screening value.  Interned
-    /// nodes never change, so a node found clean stays clean.
-    static CLEAN: std::cell::RefCell<
-        HashMap<(u64, ExprId), Option<f64>, super::idmap::IdBuildHasher>,
-    > = std::cell::RefCell::new(HashMap::default());
 }
 
 // ---------------------------------------------------------------------------
@@ -2302,6 +2323,61 @@ mod tests {
         let r = crate::simplify::simplify(e, &pool);
         assert_eq!(r.value, pool.integer(0_i32));
         assert!(r.log.steps().iter().any(|s| s.rule_name == "zero_sum"));
+    }
+
+    /// The sweep skips what cannot hide a zero sum: no `Add` at all, or only
+    /// sums of plain monomials (`(x+1)¹⁴`); and a subtree a complete sweep
+    /// found clean is not walked again.  A zero sum nested under plain
+    /// structure is still found.
+    #[test]
+    fn zero_sweep_candidates_and_clean_memo() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let one = pool.integer(1_i32);
+        let x1 = pool.add(vec![x, one]);
+        // No `Add` / only plain sums: not candidates.
+        let d = pool.mul(vec![
+            pool.integer(2_i32),
+            x,
+            pool.func("cos", vec![pool.pow(x, pool.integer(2_i32))]),
+        ]);
+        assert!(!pool.zero_candidate(d));
+        assert!(!pool.zero_candidate(pool.pow(x1, pool.integer(14_i32))));
+        let poly = pool.add(vec![
+            pool.mul(vec![x, y]),
+            pool.mul(vec![pool.integer(-3_i32), x]),
+        ]);
+        assert!(!pool.zero_candidate(poly));
+        // `i` and a symbolic exponent are not plain.
+        let i_sum = pool.add(vec![pool.imaginary_unit(), x]);
+        assert!(pool.zero_candidate(i_sum));
+        assert!(pool.zero_candidate(pool.add(vec![pool.pow(x, y), one])));
+        // A sum with a non-plain term is, and a clean sweep retires it.
+        let s = pool.add(vec![pool.func("sin", vec![x]), x1]);
+        let e = pool.mul(vec![y, s]);
+        assert!(pool.zero_candidate(e));
+        assert!(zero_sum_pass(e, &pool).is_none());
+        assert!(!pool.zero_candidate(e) && !pool.zero_candidate(s));
+        // The memoised screen value is the subtree's value.
+        let v = pool.zero_screen(e).flatten().unwrap();
+        let sx = screen_value("x", Domain::Real);
+        let sy = screen_value("y", Domain::Real);
+        assert!((v - sy * (sx.sin() + sx + 1.0)).abs() < 1e-12);
+        // `sin(x)·(x+1) − sin(x)·x − sin(x)` is zero, below a plain product.
+        let sinx = pool.func("sin", vec![x]);
+        let z = pool.add(vec![
+            pool.mul(vec![sinx, x1]),
+            pool.mul(vec![pool.integer(-1_i32), sinx, x]),
+            pool.mul(vec![pool.integer(-1_i32), sinx]),
+        ]);
+        let outer = pool.mul(vec![y, pool.func("exp", vec![z])]);
+        let (r, log) = zero_sum_pass(outer, &pool).expect("nested zero found");
+        assert_eq!(
+            r,
+            pool.mul(vec![y, pool.func("exp", vec![pool.integer(0_i32)])])
+        );
+        assert!(log.steps().iter().any(|s| s.rule_name == ZeroSum::NAME));
     }
 
     /// `(x+y)²/(x+y) − x − y` is zero where defined.

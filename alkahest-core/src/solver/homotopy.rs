@@ -238,6 +238,119 @@ fn gbpoly_eval_c(p: &GbPoly, z: &[C64]) -> C64 {
     acc
 }
 
+/// A polynomial compiled for repeated evaluation at complex points.
+///
+/// [`gbpoly_eval_c`] converts every `rug::Rational` coefficient to `f64` and
+/// walks a `BTreeMap` on each call, and the Jacobian helpers used to
+/// differentiate the `GbPoly` again on every evaluation — the tracker evaluates
+/// the same few polynomials thousands of times per path.  This holds the
+/// converted coefficients and the non-zero exponents once.  Terms keep the
+/// `BTreeMap` order and each monomial is formed with the same `pow_int`
+/// products, so [`CPoly::eval`] returns bit-for-bit what [`gbpoly_eval_c`]
+/// returns on the source polynomial.
+struct CPoly {
+    /// `(coefficient, start, end)` into `vars` / `pows`.
+    terms: Vec<(f64, u32, u32)>,
+    vars: Vec<u32>,
+    pows: Vec<u32>,
+}
+
+impl CPoly {
+    fn new(p: &GbPoly) -> Self {
+        let mut terms = Vec::with_capacity(p.terms.len());
+        let mut vars = Vec::new();
+        let mut pows = Vec::new();
+        for (exp, coeff) in &p.terms {
+            let start = vars.len() as u32;
+            for (i, &e) in exp.iter().enumerate() {
+                if e != 0 {
+                    vars.push(i as u32);
+                    pows.push(e);
+                }
+            }
+            terms.push((rat_to_f64(coeff), start, vars.len() as u32));
+        }
+        CPoly { terms, vars, pows }
+    }
+
+    fn eval(&self, z: &[C64]) -> C64 {
+        let mut acc = C64::ZERO;
+        for &(c, a, b) in &self.terms {
+            let mut mono = C64::new(c, 0.0);
+            for k in a as usize..b as usize {
+                mono = C64::mul(mono, C64::pow_int(z[self.vars[k] as usize], self.pows[k]));
+            }
+            acc = C64::add(acc, mono);
+        }
+        acc
+    }
+
+    /// `Σ |cₜ|·|z^αₜ|`: the size of the terms an evaluation at `z` sums, which
+    /// bounds the rounding error of that evaluation.
+    fn term_scale(&self, z: &[C64]) -> f64 {
+        let mut scale = 0.0_f64;
+        for &(c, a, b) in &self.terms {
+            let mut m = c.abs();
+            for k in a as usize..b as usize {
+                m *= z[self.vars[k] as usize].norm2().powi(self.pows[k] as i32);
+            }
+            scale += m;
+        }
+        scale
+    }
+}
+
+/// A square system with its Jacobian, compiled once ([`CPoly`]).
+struct CSys {
+    f: Vec<CPoly>,
+    /// `df[i][k] = ∂fᵢ/∂x_k`.
+    df: Vec<Vec<CPoly>>,
+}
+
+impl CSys {
+    fn new(sys: &[GbPoly]) -> Self {
+        let n = sys.len();
+        CSys {
+            f: sys.iter().map(CPoly::new).collect(),
+            df: sys
+                .iter()
+                .map(|p| {
+                    (0..n)
+                        .map(|k| CPoly::new(&gbpoly_derive_var(p, k)))
+                        .collect()
+                })
+                .collect(),
+        }
+    }
+
+    fn eval(&self, z: &[C64]) -> Vec<C64> {
+        self.f.iter().map(|p| p.eval(z)).collect()
+    }
+
+    /// [`jacobian_c`] of the source system.
+    fn jacobian(&self, z: &[C64]) -> Vec<Vec<C64>> {
+        self.df
+            .iter()
+            .map(|row| row.iter().map(|p| p.eval(z)).collect())
+            .collect()
+    }
+
+    /// [`fv_real`] of the source system.
+    fn eval_real(&self, x: &[f64]) -> Vec<f64> {
+        let z: Vec<C64> = x.iter().map(|&r| C64::from_f64(r)).collect();
+        self.f.iter().map(|p| p.eval(&z).re).collect()
+    }
+
+    /// [`jacobian_real`] of the source system.
+    fn jacobian_real(&self, x: &[f64]) -> Vec<Vec<f64>> {
+        let z: Vec<C64> = x.iter().map(|&r| C64::from_f64(r)).collect();
+        self.df
+            .iter()
+            .map(|row| row.iter().map(|p| p.eval(&z).re).collect())
+            .collect()
+    }
+}
+
 fn gbpoly_derive_var(p: &GbPoly, var: usize) -> GbPoly {
     let nv = p.n_vars;
     let mut out = GbPoly::zero(nv);
@@ -264,11 +377,6 @@ fn jacobian_c(sys: &[GbPoly], z: &[C64]) -> Vec<Vec<C64>> {
         }
     }
     j
-}
-
-fn hessian_ij_c(poly: &GbPoly, row_var: usize, col_var: usize, z: &[C64]) -> C64 {
-    let d_row = gbpoly_derive_var(poly, row_var);
-    gbpoly_eval_c(&gbpoly_derive_var(&d_row, col_var), z)
 }
 
 fn start_system_roots(degrees: &[u32]) -> Vec<Vec<C64>> {
@@ -301,67 +409,69 @@ fn start_system_roots(degrees: &[u32]) -> Vec<Vec<C64>> {
     out
 }
 
-fn complex_linsolve(mut a: Vec<Vec<C64>>, mut b: Vec<C64>) -> Option<Vec<C64>> {
+fn complex_linsolve(a: Vec<Vec<C64>>, mut b: Vec<C64>) -> Option<Vec<C64>> {
     let n = b.len();
+    let mut flat: Vec<C64> = Vec::with_capacity(n * n);
+    for row in a {
+        flat.extend_from_slice(&row[..n]);
+    }
+    linsolve_flat(&mut flat, &mut b, n).then_some(b)
+}
+
+/// Solve `a·x = b` in place (`a` row-major `n × n`, `x` left in `b`) by
+/// Gauss–Jordan elimination with partial pivoting; `false` on a (numerically)
+/// singular pivot.  Allocation-free — the tracker calls this a few times per
+/// step.
+fn linsolve_flat(a: &mut [C64], b: &mut [C64], n: usize) -> bool {
     for col in 0..n {
         let mut piv = None;
         let mut best = -1.0_f64;
         for row in col..n {
-            let nm = C64::norm2(a[row][col]);
+            let nm = C64::norm2(a[row * n + col]);
             if nm > best {
                 best = nm;
                 piv = Some(row);
             }
         }
-        let prow = piv?;
+        let Some(prow) = piv else {
+            return false;
+        };
         if best < 1e-18 {
-            return None;
+            return false;
         }
         if prow != col {
-            a.swap(prow, col);
+            for j in 0..n {
+                a.swap(prow * n + j, col * n + j);
+            }
             b.swap(prow, col);
         }
-        let div = a[col][col];
+        let div = a[col * n + col];
         for j in col..n {
-            a[col][j] = C64::div(a[col][j], div)?;
+            let Some(v) = C64::div(a[col * n + j], div) else {
+                return false;
+            };
+            a[col * n + j] = v;
         }
-        b[col] = C64::div(b[col], div)?;
+        let Some(v) = C64::div(b[col], div) else {
+            return false;
+        };
+        b[col] = v;
         for row in (0..n).filter(|&r| r != col) {
-            let fac = a[row][col];
+            let fac = a[row * n + col];
             if fac.re.abs() < 1e-30 && fac.im.abs() < 1e-30 {
                 continue;
             }
             for j in col..n {
-                a[row][j] = C64::sub(a[row][j], C64::mul(fac, a[col][j]));
+                a[row * n + j] = C64::sub(a[row * n + j], C64::mul(fac, a[col * n + j]));
             }
             b[row] = C64::sub(b[row], C64::mul(fac, b[col]));
         }
     }
-    Some(b)
+    true
 }
 
 fn fv_linf(vals: &[C64]) -> f64 {
     vals.iter().map(|v| v.norm2()).fold(0.0_f64, f64::max)
-}
-
-fn jacobian_real(sys: &[GbPoly], x: &[f64]) -> Vec<Vec<f64>> {
-    let z: Vec<C64> = x.iter().map(|&r| C64::from_f64(r)).collect();
-    let jc = jacobian_c(sys, &z);
-    let n = x.len();
-    let mut jr = vec![vec![0.0_f64; n]; n];
-    for i in 0..n {
-        for j in 0..n {
-            jr[i][j] = jc[i][j].re;
-        }
-    }
-    jr
-}
-
-fn fv_real(sys: &[GbPoly], x: &[f64]) -> Vec<f64> {
-    let z: Vec<C64> = x.iter().map(|&r| C64::from_f64(r)).collect();
-    (0..sys.len())
-        .map(|i| gbpoly_eval_c(&sys[i], &z).re)
-        .collect()
 }
 
 fn real_gaussian_solve(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
@@ -548,14 +658,14 @@ fn track_path_sys(
     Ok(z)
 }
 
-fn newton_terminal(target: &[GbPoly], mut x: Vec<f64>, opts: &HomotopyOpts) -> Option<Vec<f64>> {
+fn newton_terminal(target: &CSys, mut x: Vec<f64>, opts: &HomotopyOpts) -> Option<Vec<f64>> {
     for _ in 0..opts.newton_cap {
-        let f = fv_real(target, &x);
+        let f = target.eval_real(&x);
         let res = f.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
         if res < opts.newton_tol {
             return Some(x);
         }
-        let j = jacobian_real(target, &x);
+        let j = target.jacobian_real(&x);
         let neg_f = f.iter().map(|v| -*v).collect();
         let step = real_gaussian_solve(j.clone(), neg_f)?;
         let mut lm = 1.0_f64;
@@ -565,7 +675,8 @@ fn newton_terminal(target: &[GbPoly], mut x: Vec<f64>, opts: &HomotopyOpts) -> O
                 .zip(step.iter())
                 .map(|(&xi, &s)| xi + lm * s)
                 .collect();
-            let tres = fv_real(target, &trial)
+            let tres = target
+                .eval_real(&trial)
                 .iter()
                 .map(|v| v.abs())
                 .fold(0.0_f64, f64::max);
@@ -582,10 +693,28 @@ fn newton_terminal(target: &[GbPoly], mut x: Vec<f64>, opts: &HomotopyOpts) -> O
     Some(x)
 }
 
-fn smale_estimate(target: &[GbPoly], x: &[f64]) -> Option<(f64, f64)> {
+/// `hess[i][j][k] = ∂²fᵢ/∂x_j∂x_k`, compiled once per system for
+/// [`smale_estimate`].
+fn compiled_hessians(sys: &[GbPoly]) -> Vec<Vec<Vec<CPoly>>> {
+    let n = sys.len();
+    sys.iter()
+        .map(|p| {
+            (0..n)
+                .map(|j| {
+                    let d_row = gbpoly_derive_var(p, j);
+                    (0..n)
+                        .map(|k| CPoly::new(&gbpoly_derive_var(&d_row, k)))
+                        .collect()
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn smale_estimate(target: &CSys, hess: &[Vec<Vec<CPoly>>], x: &[f64]) -> Option<(f64, f64)> {
     let n = x.len();
-    let f = fv_real(target, x);
-    let jac = jacobian_real(target, x);
+    let f = target.eval_real(x);
+    let jac = target.jacobian_real(x);
     let step = real_gaussian_solve(jac.clone(), f.iter().map(|v| -*v).collect())?;
     let beta = step.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
     let mut j_inv_inf = 0.0_f64;
@@ -598,10 +727,10 @@ fn smale_estimate(target: &[GbPoly], x: &[f64]) -> Option<(f64, f64)> {
     }
     let z: Vec<C64> = x.iter().map(|&r| C64::from_f64(r)).collect();
     let mut hmax = 0.0_f64;
-    for poly in target {
+    for poly_hess in hess {
         for j in 0..n {
             for k in 0..n {
-                let h = hessian_ij_c(poly, j, k, &z);
+                let h = poly_hess[j][k].eval(&z);
                 hmax = hmax.max(h.re.abs().max(h.im.abs()));
             }
         }
@@ -721,6 +850,7 @@ fn solve_numerical_unguarded(
             .ok_or(HomotopyError::BezoutTooLarge(usize::MAX))?;
     }
 
+    let csys = CSys::new(&sys);
     let prec = opts.certify_prec_bits;
     const SMALE_THRESH: f64 = 0.125;
     let mut raw: Vec<Vec<f64>> = Vec::new();
@@ -762,7 +892,7 @@ fn solve_numerical_unguarded(
                     paths_completed += 1;
                     if z_end.iter().all(|c| c.im.abs() < 1e-6) {
                         let xr: Vec<f64> = z_end.iter().map(|c| c.re).collect();
-                        if let Some(xp) = newton_terminal(&sys, xr, opts) {
+                        if let Some(xp) = newton_terminal(&csys, xr, opts) {
                             raw.push(xp);
                         }
                     }
@@ -788,11 +918,16 @@ fn solve_numerical_unguarded(
         ));
     }
     let uniq = dedup(&raw, opts.dedup_tol);
+    let hess = if uniq.is_empty() {
+        Vec::new()
+    } else {
+        compiled_hessians(&sys)
+    };
     let mut out = Vec::new();
     for x in uniq {
-        let resv = fv_real(&sys, &x);
+        let resv = csys.eval_real(&x);
         let max_r = resv.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
-        let (smale_alpha, smale_certified, rad) = match smale_estimate(&sys, &x) {
+        let (smale_alpha, smale_certified, rad) = match smale_estimate(&csys, &hess, &x) {
             Some((beta, alpha)) => {
                 let cert = alpha < SMALE_THRESH;
                 let r = if cert {
@@ -853,14 +988,41 @@ fn homogenize(p: &GbPoly, degree: u32) -> GbPoly {
 }
 
 struct ProjectiveHomotopy {
-    /// Homogenised target, one per affine equation (n of them, n + 1 vars).
-    target: Vec<GbPoly>,
-    /// ∂F̂ᵢ/∂Zⱼ, precomputed.
-    target_jac: Vec<Vec<GbPoly>>,
+    /// Homogenised target, one per affine equation (n of them, n + 1 vars),
+    /// compiled.
+    target: Vec<CPoly>,
+    /// ∂F̂ᵢ/∂Zⱼ, precomputed and compiled.
+    target_jac: Vec<Vec<CPoly>>,
     degs: Vec<u32>,
     gamma: C64,
     /// The chart `a·Z = 1`.
     chart: Vec<C64>,
+}
+
+/// Per-path scratch for [`ProjectiveHomotopy::track`]: the point, the
+/// predicted and corrected points, and the linear system, all of size `n + 1`.
+struct TrackWork {
+    z: Vec<C64>,
+    zp: Vec<C64>,
+    zc: Vec<C64>,
+    pred: Vec<C64>,
+    rhs: Vec<C64>,
+    /// Row-major `(n + 1) × (n + 1)`.
+    jac: Vec<C64>,
+}
+
+impl TrackWork {
+    fn new(z: Vec<C64>) -> Self {
+        let n1 = z.len();
+        TrackWork {
+            zp: vec![C64::ZERO; n1],
+            zc: vec![C64::ZERO; n1],
+            pred: vec![C64::ZERO; n1],
+            rhs: vec![C64::ZERO; n1],
+            jac: vec![C64::ZERO; n1 * n1],
+            z,
+        }
+    }
 }
 
 impl ProjectiveHomotopy {
@@ -873,10 +1035,14 @@ impl ProjectiveHomotopy {
         let nv = sys.len() + 1;
         let target_jac = target
             .iter()
-            .map(|p| (0..nv).map(|j| gbpoly_derive_var(p, j)).collect())
+            .map(|p| {
+                (0..nv)
+                    .map(|j| CPoly::new(&gbpoly_derive_var(p, j)))
+                    .collect()
+            })
             .collect();
         ProjectiveHomotopy {
-            target,
+            target: target.iter().map(CPoly::new).collect(),
             target_jac,
             degs: degs.to_vec(),
             gamma,
@@ -901,135 +1067,145 @@ impl ProjectiveHomotopy {
         acc
     }
 
-    fn h(&self, z: &[C64], t: f64) -> Vec<C64> {
-        let mut out: Vec<C64> = (0..self.target.len())
-            .map(|i| {
-                C64::add(
-                    C64::scale(1.0 - t, self.start_value(i, z)),
-                    C64::scale(t, gbpoly_eval_c(&self.target[i], z)),
-                )
-            })
-            .collect();
-        out.push(self.chart_value(z));
-        out
-    }
-
-    fn dh_dt(&self, z: &[C64]) -> Vec<C64> {
-        let mut out: Vec<C64> = (0..self.target.len())
-            .map(|i| C64::sub(gbpoly_eval_c(&self.target[i], z), self.start_value(i, z)))
-            .collect();
-        out.push(C64::ZERO);
-        out
-    }
-
-    fn jac(&self, z: &[C64], t: f64) -> Vec<Vec<C64>> {
+    /// `−H(z, t)` into `out` (length `n + 1`).
+    fn neg_h_into(&self, z: &[C64], t: f64, out: &mut [C64]) {
         let n = self.target.len();
-        let mut j = vec![vec![C64::ZERO; n + 1]; n + 1];
+        for i in 0..n {
+            out[i] = C64::neg(C64::add(
+                C64::scale(1.0 - t, self.start_value(i, z)),
+                C64::scale(t, self.target[i].eval(z)),
+            ));
+        }
+        out[n] = C64::neg(self.chart_value(z));
+    }
+
+    /// `−(t_next − t)·∂H/∂t(z)` into `out` (length `n + 1`).
+    fn predictor_rhs_into(&self, z: &[C64], dt: f64, out: &mut [C64]) {
+        let n = self.target.len();
+        for i in 0..n {
+            let d = C64::sub(self.target[i].eval(z), self.start_value(i, z));
+            out[i] = C64::scale(-dt, d);
+        }
+        out[n] = C64::scale(-dt, C64::ZERO);
+    }
+
+    /// `∂H/∂Z (z, t)` into `j`, row-major `(n + 1) × (n + 1)`.
+    fn jac_into(&self, z: &[C64], t: f64, j: &mut [C64]) {
+        let n = self.target.len();
+        let w = n + 1;
         for i in 0..n {
             for k in 0..=n {
-                j[i][k] = C64::scale(t, gbpoly_eval_c(&self.target_jac[i][k], z));
+                j[i * w + k] = C64::scale(t, self.target_jac[i][k].eval(z));
             }
             let d = self.degs[i];
             let dg = |w: C64| C64::scale(d as f64, C64::pow_int(w, d - 1));
             let g_i = C64::scale(1.0 - t, C64::mul(self.gamma, dg(z[i + 1])));
             let g_0 = C64::scale(1.0 - t, C64::mul(self.gamma, dg(z[0])));
-            j[i][i + 1] = C64::add(j[i][i + 1], g_i);
-            j[i][0] = C64::sub(j[i][0], g_0);
+            j[i * w + i + 1] = C64::add(j[i * w + i + 1], g_i);
+            j[i * w] = C64::sub(j[i * w], g_0);
         }
-        j[n] = self.chart.clone();
-        j
+        j[n * w..n * w + w].copy_from_slice(&self.chart);
     }
 
-    /// Newton on `H(·, t)`: at most a few plain steps, each required to
-    /// contract.  No line search — a corrector that has to be coaxed is a
-    /// corrector that may be converging onto a neighbouring path.
-    fn correct(&self, z0: &[C64], t: f64, tol: f64) -> Option<Vec<C64>> {
-        let mut z = z0.to_vec();
+    /// Newton on `H(·, t)` from `ws.zp` into `ws.zc`: at most a few plain
+    /// steps, each required to contract.  No line search — a corrector that
+    /// has to be coaxed is a corrector that may be converging onto a
+    /// neighbouring path.
+    fn correct(&self, t: f64, tol: f64, ws: &mut TrackWork) -> bool {
+        let TrackWork {
+            zp, zc, jac, rhs, ..
+        } = ws;
+        zc.copy_from_slice(zp);
+        let n1 = zc.len();
         let mut last_step = f64::INFINITY;
         for _ in 0..4 {
-            let hv = self.h(&z, t);
-            let neg: Vec<C64> = hv.iter().map(|c| C64::neg(*c)).collect();
-            let step = complex_linsolve(self.jac(&z, t), neg)?;
-            let size = step.iter().map(|c| c.norm2()).fold(0.0_f64, f64::max);
+            self.neg_h_into(zc, t, rhs);
+            self.jac_into(zc, t, jac);
+            if !linsolve_flat(jac, rhs, n1) {
+                return false;
+            }
+            let size = rhs.iter().map(|c| c.norm2()).fold(0.0_f64, f64::max);
             if size > 0.5 * last_step {
-                return None;
+                return false;
             }
             last_step = size;
-            for (zi, s) in z.iter_mut().zip(step.iter()) {
+            for (zi, s) in zc.iter_mut().zip(rhs.iter()) {
                 *zi = C64::add(*zi, *s);
             }
-            let scale = z.iter().map(|c| c.norm2()).fold(1.0_f64, f64::max);
+            let scale = zc.iter().map(|c| c.norm2()).fold(1.0_f64, f64::max);
             if size <= tol * scale {
-                return Some(z);
+                return true;
             }
         }
-        None
+        false
     }
 
     /// Track from `z` at `t = 0` to `t = 1`; `Err` carries the last point.
-    fn track(&self, mut z: Vec<C64>, opts: &HomotopyOpts) -> Result<Vec<C64>, Vec<C64>> {
+    ///
+    /// All per-step vectors and matrices live in one [`TrackWork`], so a step
+    /// allocates nothing; the arithmetic is that of the allocating version it
+    /// replaced, operation for operation.
+    fn track(&self, z: Vec<C64>, opts: &HomotopyOpts) -> Result<Vec<C64>, Vec<C64>> {
+        let mut ws = TrackWork::new(z);
+        let n1 = ws.z.len();
         let mut t = 0.0_f64;
         let mut dt = opts.dt_initial;
         let mut steps = 0usize;
         while t < 1.0 {
             steps += 1;
             if steps > opts.max_tracker_steps {
-                return Err(z);
+                return Err(ws.z);
             }
             // Budget interrupt point; the armed caller discards the result.
             if steps % crate::budget::INTERRUPT_POLL_INTERVAL as usize == 0
                 && crate::budget::interrupted()
             {
-                return Err(z);
+                return Err(ws.z);
             }
             let t_next = (t + dt).min(1.0);
-            let rhs: Vec<C64> = self
-                .dh_dt(&z)
-                .into_iter()
-                .map(|c| C64::scale(-(t_next - t), c))
-                .collect();
-            let Some(pred) = complex_linsolve(self.jac(&z, t), rhs) else {
+            self.predictor_rhs_into(&ws.z, t_next - t, &mut ws.rhs);
+            self.jac_into(&ws.z, t, &mut ws.jac);
+            if !linsolve_flat(&mut ws.jac, &mut ws.rhs, n1) {
                 dt *= 0.5;
                 if dt < opts.dt_min {
-                    return Err(z);
+                    return Err(ws.z);
                 }
                 continue;
-            };
-            let zp: Vec<C64> = z
-                .iter()
-                .zip(pred.iter())
-                .map(|(a, b)| C64::add(*a, *b))
-                .collect();
-            match self.correct(&zp, t_next, 1e-11) {
-                Some(zn) => {
-                    // Reject a corrector that moved further than the predictor
-                    // step itself — the signature of switching paths.
-                    let pred_size = pred.iter().map(|c| c.norm2()).fold(0.0_f64, f64::max);
-                    let corr = zn
-                        .iter()
-                        .zip(zp.iter())
-                        .map(|(a, b)| C64::sub(*a, *b).norm2())
-                        .fold(0.0_f64, f64::max);
-                    if corr > 0.5 * pred_size.max(1e-12) {
-                        dt *= 0.5;
-                        if dt < opts.dt_min {
-                            return Err(z);
-                        }
-                        continue;
-                    }
-                    z = zn;
-                    t = t_next;
-                    dt = (dt * 1.5).min(opts.dt_initial);
-                }
-                None => {
+            }
+            // The predictor step is kept in `pred` (the corrector reuses
+            // `rhs`).
+            ws.pred.copy_from_slice(&ws.rhs);
+            for k in 0..n1 {
+                ws.zp[k] = C64::add(ws.z[k], ws.pred[k]);
+            }
+            if self.correct(t_next, 1e-11, &mut ws) {
+                // Reject a corrector that moved further than the predictor
+                // step itself — the signature of switching paths.
+                let pred_size = ws.pred.iter().map(|c| c.norm2()).fold(0.0_f64, f64::max);
+                let corr = ws
+                    .zc
+                    .iter()
+                    .zip(ws.zp.iter())
+                    .map(|(a, b)| C64::sub(*a, *b).norm2())
+                    .fold(0.0_f64, f64::max);
+                if corr > 0.5 * pred_size.max(1e-12) {
                     dt *= 0.5;
                     if dt < opts.dt_min {
-                        return Err(z);
+                        return Err(ws.z);
                     }
+                    continue;
+                }
+                std::mem::swap(&mut ws.z, &mut ws.zc);
+                t = t_next;
+                dt = (dt * 1.5).min(opts.dt_initial);
+            } else {
+                dt *= 0.5;
+                if dt < opts.dt_min {
+                    return Err(ws.z);
                 }
             }
         }
-        Ok(z)
+        Ok(ws.z)
     }
 
     /// Start point on the chart for the affine start root `w`.
@@ -1067,8 +1243,8 @@ fn unit_from(seed: u64, k: u64) -> C64 {
 /// never discards the point: at a multiple root Newton stalls or the Jacobian
 /// goes singular, and the best iterate so far is still the root — whether it
 /// is good enough is decided by [`accept_root`], not here.
-fn newton_terminal_c(target: &[GbPoly], mut z: Vec<C64>, opts: &HomotopyOpts) -> Vec<C64> {
-    let eval = |z: &[C64]| -> Vec<C64> { target.iter().map(|p| gbpoly_eval_c(p, z)).collect() };
+fn newton_terminal_c(target: &CSys, mut z: Vec<C64>, opts: &HomotopyOpts) -> Vec<C64> {
+    let eval = |z: &[C64]| -> Vec<C64> { target.eval(z) };
     for _ in 0..opts.newton_cap {
         let f = eval(&z);
         let res = fv_linf(&f);
@@ -1076,7 +1252,7 @@ fn newton_terminal_c(target: &[GbPoly], mut z: Vec<C64>, opts: &HomotopyOpts) ->
             break;
         }
         let neg_f: Vec<C64> = f.iter().map(|c| C64::neg(*c)).collect();
-        let Some(step) = complex_linsolve(jacobian_c(target, &z), neg_f) else {
+        let Some(step) = complex_linsolve(target.jacobian(&z), neg_f) else {
             break;
         };
         let mut lm = 1.0_f64;
@@ -1104,19 +1280,10 @@ fn newton_terminal_c(target: &[GbPoly], mut z: Vec<C64>, opts: &HomotopyOpts) ->
 /// Whether `z` is a root of `target` to double precision: every residual is
 /// small next to the size of the terms that produced it (the rounding that
 /// evaluating the polynomial in `f64` cannot avoid).
-fn accept_root(target: &[GbPoly], z: &[C64]) -> bool {
-    target.iter().all(|p| {
-        let mut scale = 0.0_f64;
-        for (exp, coeff) in &p.terms {
-            let mut m = rat_to_f64(coeff).abs();
-            for (i, &e) in exp.iter().enumerate() {
-                if e != 0 {
-                    m *= z[i].norm2().powi(e as i32);
-                }
-            }
-            scale += m;
-        }
-        let r = gbpoly_eval_c(p, z).norm2();
+fn accept_root(target: &CSys, z: &[C64]) -> bool {
+    target.f.iter().all(|p| {
+        let scale = p.term_scale(z);
+        let r = p.eval(z).norm2();
         r.is_finite() && r <= 1e-7 * scale.max(1e-300)
     })
 }
@@ -1230,6 +1397,7 @@ fn solve_numerical_complex_unguarded(
              set can be reported",
         ));
     };
+    let csys = CSys::new(&sys);
 
     let mut out: Vec<Vec<ComplexF64>> = chosen
         .into_iter()
@@ -1237,9 +1405,9 @@ fn solve_numerical_complex_unguarded(
             let nearly_real = z.iter().all(|c| c.im.abs() <= 1e-8 * (1.0 + c.re.abs()));
             if nearly_real {
                 let xr: Vec<f64> = z.iter().map(|c| c.re).collect();
-                if let Some(x) = newton_terminal(&sys, xr, opts) {
+                if let Some(x) = newton_terminal(&csys, xr, opts) {
                     let zr: Vec<C64> = x.iter().map(|&r| C64::from_f64(r)).collect();
-                    if accept_root(&sys, &zr) {
+                    if accept_root(&csys, &zr) {
                         return x.into_iter().map(|r| ComplexF64::new(r, 0.0)).collect();
                     }
                 }
@@ -1284,6 +1452,7 @@ fn track_all_complex(
     let seed = seed.unwrap_or(31415926535897);
     let chart: Vec<C64> = (0..=n).map(|k| unit_from(seed, k as u64)).collect();
     let hom = ProjectiveHomotopy::new(sys, degs, random_gamma(Some(seed)), chart);
+    let csys = CSys::new(sys);
     // |Z₀| relative to the largest |Zᵢ|: how close to the hyperplane at infinity.
     let rel_z0 = |z: &[C64]| {
         let big = z[1..].iter().map(|c| c.norm2()).fold(0.0_f64, f64::max);
@@ -1315,8 +1484,8 @@ fn track_all_complex(
             .iter()
             .map(|c| C64::div(*c, z_end[0]).unwrap_or(C64::new(f64::NAN, f64::NAN)))
             .collect();
-        let z = newton_terminal_c(sys, affine, opts);
-        if !accept_root(sys, &z) {
+        let z = newton_terminal_c(&csys, affine, opts);
+        if !accept_root(&csys, &z) {
             if can_be_at_infinity && rel_z0(&z_end) < 1e-4 {
                 continue;
             }
@@ -1324,7 +1493,7 @@ fn track_all_complex(
         }
         // A root of multiplicity m is reached by m paths; a simple one by one.
         if uniq.iter().any(|u| close_points(u, &z, opts.dedup_tol)) {
-            if jacobian_is_regular(sys, &z) {
+            if jacobian_is_regular(&csys, &z) {
                 return Ok(None);
             }
         } else {
@@ -1350,8 +1519,8 @@ fn track_all_complex(
 /// entry.  At a multiple root the computed point is only `√ε`-accurate and
 /// the Jacobian is (numerically) singular, so this separates "two paths met at
 /// a multiple root" from "a path jumped onto a simple root".
-fn jacobian_is_regular(sys: &[GbPoly], z: &[C64]) -> bool {
-    let mut a = jacobian_c(sys, z);
+fn jacobian_is_regular(sys: &CSys, z: &[C64]) -> bool {
+    let mut a = sys.jacobian(z);
     let n = a.len();
     let scale = a
         .iter()
@@ -1507,6 +1676,48 @@ fn univariate_complex_roots(eq: ExprId, var: ExprId, pool: &ExprPool) -> Option<
 mod tests {
     use super::*;
     use crate::kernel::{Domain, ExprPool};
+
+    /// The compiled evaluator is the `GbPoly` evaluator, bit for bit — so
+    /// compiling the tracker's polynomials changes no path.
+    #[test]
+    fn compiled_polynomials_evaluate_bit_identically() {
+        let mut seed = 0x1234_5678_9abc_def0_u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..40 {
+            let nv = 2 + (next() % 3) as usize;
+            let mut p = GbPoly::zero(nv);
+            for _ in 0..(1 + next() % 8) {
+                let exp: Vec<u32> = (0..nv).map(|_| (next() % 5) as u32).collect();
+                let c = Rational::from(((next() % 41) as i64 - 20, 1 + (next() % 7) as i64));
+                p = p.add(&GbPoly::monomial(exp, c));
+            }
+            let sys: Vec<GbPoly> = vec![p; nv];
+            let csys = CSys::new(&sys);
+            for _ in 0..5 {
+                let z: Vec<C64> = (0..nv)
+                    .map(|_| {
+                        C64::new(
+                            (next() % 2000) as f64 / 700.0 - 1.4,
+                            (next() % 2000) as f64 / 900.0 - 1.1,
+                        )
+                    })
+                    .collect();
+                let bits = |c: C64| (c.re.to_bits(), c.im.to_bits());
+                assert_eq!(bits(csys.f[0].eval(&z)), bits(gbpoly_eval_c(&sys[0], &z)));
+                let (jc, jg) = (csys.jacobian(&z), jacobian_c(&sys, &z));
+                for i in 0..nv {
+                    for k in 0..nv {
+                        assert_eq!(bits(jc[i][k]), bits(jg[i][k]));
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn product_quadratics_four_real_roots() {

@@ -134,6 +134,16 @@ pub fn simplify_redex_with_config(
         full_log = full_log.merge(crate::simplify::engine::expand_limit_log());
     }
 
+    // The closing zero-sum sweep, mirroring `simplify_with`: without it the
+    // scheduler and the sequential engine disagree whenever the sweep proves
+    // a sum zero or collects like terms through a sum factor.
+    if super::zero::has_zero_marker(&rules) && crate::budget::check().is_ok() {
+        if let Some((v, zlog)) = super::zero::zero_sum_pass(current, pool) {
+            let rest = simplify_redex_with_config(v, pool, config);
+            return DerivedExpr::with_log(rest.value, full_log.merge(zlog).merge(rest.log));
+        }
+    }
+
     // Assumption-driven (colored e-graph) pass, mirroring `simplify_with`.
     let mut assumptions = config.assumptions.clone();
     super::assumptions::collect_static_domain_facts(current, pool, &mut assumptions);

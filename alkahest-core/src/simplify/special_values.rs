@@ -614,6 +614,41 @@ fn extract_perfect_power(n: &Integer, q: u32) -> (Integer, Integer) {
     (k, m)
 }
 
+/// [`extract_perfect_power`] for a machine-word `n`, without allocating —
+/// the same trial bound and the same final perfect-power test, so the same
+/// `(k, n / k^q)`.
+fn extract_perfect_power_u64(n: u64, q: u32) -> (u64, u64) {
+    let mut k: u64 = 1;
+    let mut m = n;
+    let mut p: u64 = 2;
+    while p < 1000 {
+        let Some(pq) = p.checked_pow(q) else {
+            break;
+        };
+        if pq > m {
+            break;
+        }
+        while m % pq == 0 {
+            m /= pq;
+            k *= p;
+        }
+        p += if p == 2 { 1 } else { 2 };
+    }
+    if m > 1 {
+        // Exact integer q-th root, if any: the float estimate is within one
+        // of it for every u64, and the candidates are checked exactly.
+        let est = (m as f64).powf(1.0 / f64::from(q)).round() as u64;
+        for r in est.saturating_sub(1)..=est.saturating_add(1) {
+            if r > 1 && r.checked_pow(q) == Some(m) {
+                k *= r;
+                m = 1;
+                break;
+            }
+        }
+    }
+    (k, m)
+}
+
 impl RadicalPower {
     /// `(base, p/q)` for `sqrt(base)` or `base^(p/q)` (non-integer `p/q`).
     fn radical(e: ExprId, pool: &ExprPool) -> Option<(ExprId, Rational, bool)> {
@@ -631,6 +666,17 @@ impl RadicalPower {
 
     /// `sqrt(r)` / `r^(1/q)` for a positive literal `r` → `k · m^(1/q)`.
     fn literal_root(base: ExprId, q: u32, spelled_sqrt: bool, pool: &ExprPool) -> Option<ExprId> {
+        // Allocation-free decline for a machine-word integer radicand with no
+        // q-th power factor (`√5`, met on every visit of every pass): the
+        // bignum path below would reach the same `k == 1 && den == 1`.
+        if let Some(n) = pool.with(base, |d| match d {
+            ExprData::Integer(n) => n.0.to_u64(),
+            _ => None,
+        }) {
+            if n == 0 || q > 12 || extract_perfect_power_u64(n, q).0 == 1 {
+                return None;
+            }
+        }
         let r = as_rational(base, pool)?;
         if r <= 0 || q > 12 {
             return None;
@@ -1349,6 +1395,32 @@ mod tests {
 
     fn s(e: ExprId, pool: &ExprPool) -> ExprId {
         simplify(e, pool).value
+    }
+
+    /// The allocation-free word path agrees with the bignum one it screens
+    /// for, on small radicands, perfect powers, and large words.
+    #[test]
+    fn perfect_power_word_path_matches_bignum() {
+        let mut cases: Vec<u64> = (1..4000).collect();
+        for b in [2u64, 3, 7, 997, 1009, 65_537, 4_294_967_291] {
+            for q in 2..=5u32 {
+                if let Some(v) = b.checked_pow(q) {
+                    cases.extend([v, v.saturating_sub(1), v + 1, v.saturating_mul(6)]);
+                }
+            }
+        }
+        cases.extend([u64::MAX, u64::MAX - 1, 1 << 63, 999_983 * 999_983]);
+        for &n in &cases {
+            for q in 2..=12u32 {
+                let (k, m) = extract_perfect_power_u64(n, q);
+                let (kb, mb) = extract_perfect_power(&Integer::from(n), q);
+                assert_eq!(
+                    (Integer::from(k), Integer::from(m)),
+                    (kb, mb),
+                    "n={n} q={q}"
+                );
+            }
+        }
     }
 
     #[test]
