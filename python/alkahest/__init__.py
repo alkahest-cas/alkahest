@@ -183,6 +183,7 @@ from .alkahest import (  # noqa: F401
     _build_features,
     _derived_result_context_simplify,
     _is_undefined_function_name,
+    _may_need_real_form,
     abs,  # symbolic abs — use alkahest.abs(expr); shadows Python builtin within this module
     acos,
     acosh,
@@ -1470,7 +1471,7 @@ def series(expr, var, point, order):
 _native_limit = limit
 
 
-def limit(expr, var, point, dir=None):
+def limit(expr, var, point, dir=None, *, continuous=None):
     """Compute the limit of *expr* as *var* → *point*.
 
     Parameters
@@ -1506,12 +1507,29 @@ def limit(expr, var, point, dir=None):
     ``alkahest.context(assumptions=...)`` or by declaring the symbol with
     ``Domain.Positive``.
 
+    **Undefined functions.**  ``f(t)`` and ``Derivative(f(t), t)`` are opaque:
+    a limit that contains one is refused (``E-LIMIT-007``) unless every such
+    node is listed in ``continuous=[f(t), ...]``, the caller's statement that it
+    is continuous at *point* (a finite point).  The value is then the
+    substitution ``f(t) -> f(point)``, and only for expressions that are jointly
+    continuous there (sums, products, non-negative integer powers, ``exp``,
+    ``sin``, ``cos``, ``sinh``, ``cosh``, ``atan``, ``tanh`` and negative powers
+    of a factor that is a non-zero constant at the point).  A ``0/0`` form such
+    as ``(f(t) - f(a))/(t - a)`` is a derivative quotient; continuity does not
+    give it, so it is refused rather than guessed.
+
     Nested calls that expect an :class:`Expr` still work: :func:`_coerce_expr`
     unwraps a :class:`DerivedResult` automatically. Use ``.value`` when
     comparing against an :class:`Expr` directly.
     """
     return _maybe_context_simplify(
-        _native_limit(_coerce_expr(expr), _coerce_expr(var), _coerce_expr(point), dir)
+        _native_limit(
+            _coerce_expr(expr),
+            _coerce_expr(var),
+            _coerce_expr(point),
+            dir,
+            continuous=None if continuous is None else [_coerce_expr(c) for c in continuous],
+        )
     )
 
 
@@ -2657,6 +2675,62 @@ if "solve" in dir():
                 ]
             return _filter_by_assumptions(result, assumptions)
         return _filter_by_assumptions(numeric_solutions, assumptions)
+
+    _solve_dispatch = solve
+
+    def _realify_solutions(result, kwargs):
+        """``to_real_form`` on every symbolic value of a solution list.
+
+        Only a value whose imaginary part is *proved* zero is rewritten (the
+        rule of :func:`to_real_form`); anything else, numeric values and
+        non-list results (a Groebner basis) are returned untouched. A cheap
+        native gate skips values that cannot need it (no imaginary unit, no
+        root of anything but a positive numeric constant).
+        """
+        import contextlib
+
+        if not isinstance(result, list):
+            return result
+        assumptions = _UNSET = object()
+        out = []
+        for sol in result:
+            if not isinstance(sol, dict):
+                out.append(sol)
+                continue
+            new = {}
+            for var, val in sol.items():
+                if isinstance(val, Expr) and _may_need_real_form(val):
+                    if assumptions is _UNSET:
+                        assumptions = kwargs.get("assumptions") or active_assumptions()
+                    # best effort: keep the solver's own form on any failure
+                    with contextlib.suppress(Exception):
+                        val = to_real_form(val, assumptions)
+                new[var] = val
+            out.append(new)
+        return out
+
+    @_functools.wraps(_solve_dispatch)
+    def solve(equations, vars, *, real_form=True, **kwargs):
+        result = _solve_dispatch(equations, vars, **kwargs)
+        if not real_form:
+            return result
+        return _realify_solutions(result, kwargs)
+
+    solve.__doc__ = (
+        (_solve_dispatch.__doc__ or "").rstrip()
+        + """
+
+        real_form : bool, default True
+            Rewrite each symbolic solution value with :func:`to_real_form`:
+            ``sqrt(4*a**2)`` becomes ``2*abs(a)`` (``2*a`` under ``a >= 0``),
+            ``exp(I*x)`` pairs become ``cos``/``sin``, ``sqrt`` of a provably
+            non-negative quantity keeps its radical. A value is rewritten
+            **only** when its imaginary part is proved identically zero and
+            every free symbol is real; a genuinely complex root (``-I``,
+            ``1 + I*sqrt(3)``) is returned exactly as the solver produced it.
+            Pass ``real_form=False`` for the raw solver output.
+        """
+    )
 
 
 # ---------------------------------------------------------------------------

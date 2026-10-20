@@ -770,6 +770,39 @@ pub fn euler_lagrange(
     Ok(eoms)
 }
 
+/// Undefined-function (or `Derivative`) nodes of `expr` whose arguments
+/// mention `var`, outermost first and de-duplicated.
+pub(crate) fn var_dependent_nodes(expr: ExprId, var: ExprId, pool: &ExprPool) -> Vec<ExprId> {
+    let mut out = Vec::new();
+    let mut seen = crate::kernel::IdSet::default();
+    let mut stack = vec![expr];
+    while let Some(e) = stack.pop() {
+        if !seen.insert(e) {
+            continue;
+        }
+        if let Some(v) = view(e, pool) {
+            if v.args
+                .iter()
+                .any(|&a| crate::kernel::subs::mentions_var(a, var, pool))
+            {
+                out.push(e);
+            }
+            stack.extend(v.args);
+            continue;
+        }
+        match pool.get(e) {
+            ExprData::Add(a) | ExprData::Mul(a) => stack.extend(a),
+            ExprData::Pow { base, exp } => {
+                stack.push(base);
+                stack.push(exp);
+            }
+            ExprData::Func { args, .. } => stack.extend(args),
+            _ => {}
+        }
+    }
+    out
+}
+
 /// `true` when `expr` mentions an undefined function or a derivative of one.
 pub fn has_undefined_function(expr: ExprId, pool: &ExprPool) -> bool {
     let mut stack = vec![expr];

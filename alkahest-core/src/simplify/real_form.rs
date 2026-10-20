@@ -943,6 +943,50 @@ fn looks_complex_at(
     }
 }
 
+/// Cheaper, stricter gate than [`looks_complex`] for callers that rewrite
+/// *every* result (solve, eigenvals): `true` only when `expr` contains the
+/// imaginary unit or a root (`sqrt`, a fractional power) of something that is
+/// not a positive numeric constant — `5·√2/2` is already real and is skipped,
+/// `√(4a²)` and `√(−4)` are not.
+pub fn may_need_real_form(expr: ExprId, pool: &ExprPool) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![expr];
+    let positive_literal = |e: ExprId| match pool.get(e) {
+        ExprData::Integer(n) => n.0 > 0,
+        ExprData::Rational(r) => r.0 > 0,
+        ExprData::Float(_) => false,
+        _ => false,
+    };
+    while let Some(e) = stack.pop() {
+        if !seen.insert(e) {
+            continue;
+        }
+        match pool.get(e) {
+            ExprData::Symbol { .. } => {
+                if pool.is_imaginary_unit(e) {
+                    return true;
+                }
+            }
+            ExprData::Add(args) | ExprData::Mul(args) => stack.extend(args),
+            ExprData::Pow { base, exp } => {
+                if matches!(pool.get(exp), ExprData::Rational(_)) && !positive_literal(base) {
+                    return true;
+                }
+                stack.push(base);
+                stack.push(exp);
+            }
+            ExprData::Func { name, args } => {
+                if name == "sqrt" && !args.iter().all(|&a| positive_literal(a)) {
+                    return true;
+                }
+                stack.extend(args);
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// `true` when every free symbol except the imaginary unit is real.
 fn all_symbols_real(expr: ExprId, pool: &ExprPool) -> bool {
     let mut stack = vec![expr];

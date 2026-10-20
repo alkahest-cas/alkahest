@@ -217,11 +217,34 @@ pub fn dsolve_system_with(
     assumptions: &AssumptionContext,
     pool: &ExprPool,
 ) -> Result<SystemSolution, DsolveSystemError> {
+    dsolve_system_opts(ode, assumptions, true, pool)
+}
+
+/// [`dsolve_system_with`] with the real-form exit controllable.
+///
+/// With `real_form` the solution and the fundamental matrix are passed through
+/// [`crate::simplify::to_real_form`] semantics before the substitution gate:
+/// a complex-conjugate spectrum is written with `cos`/`sin` (and `cosh`/`sinh`
+/// where the discriminant sign is proved) instead of `exp(I·…)` / square roots
+/// of negatives.  An entry is rewritten only when its imaginary part is proved
+/// to vanish, so a system whose answer is genuinely complex (a complex symbol
+/// in the data) is untouched.  `real_form = false` returns the unrewritten
+/// closed form.
+///
+/// # Errors
+///
+/// See [`DsolveSystemError`].
+pub fn dsolve_system_opts(
+    ode: &ODE,
+    assumptions: &AssumptionContext,
+    real_form: bool,
+    pool: &ExprPool,
+) -> Result<SystemSolution, DsolveSystemError> {
     let mut ctx = SolveCtx {
         assumptions,
         conds: super::Conditions::default(),
     };
-    solve_inner(ode, &mut ctx, pool)
+    solve_inner(ode, &mut ctx, real_form, pool)
 }
 
 // ---------------------------------------------------------------------------
@@ -437,6 +460,7 @@ fn matrix_exponential(
 fn solve_inner(
     ode: &ODE,
     ctx: &mut SolveCtx<'_>,
+    real_form: bool,
     pool: &ExprPool,
 ) -> Result<SystemSolution, DsolveSystemError> {
     let n = ode.state_vars.len();
@@ -454,7 +478,20 @@ fn solve_inner(
     let (a, forcing) = extract_linear_system(ode, pool)?;
     let lambdas = spectrum(&a, pool)?;
     confirm_spectrum(&a, &lambdas, pool)?;
-    let phi = matrix_exponential(&a, &lambdas, t, ctx, pool);
+    let mut phi = matrix_exponential(&a, &lambdas, t, ctx, pool);
+    // Φ(t) = e^{At} of a real matrix is real, however complex its spectrum:
+    // rewrite each entry to cos/sin/cosh/sinh form when its imaginary part is
+    // proved to vanish (then y = Φ·C, the variation-of-parameters integrand
+    // Φ(−t)·f and the verification gate all work on the real entries).
+    if real_form {
+        let _scope = (!ctx.assumptions.predicates().is_empty())
+            .then(|| crate::simplify::enter_assumptions(ctx.assumptions, pool));
+        for row in phi.iter_mut() {
+            for e in row.iter_mut() {
+                *e = crate::simplify::real_form::to_real_form_ambient(*e, pool);
+            }
+        }
+    }
 
     // Homogeneous part: y = Φ(t)·C.
     let mut used: HashSet<String> = HashSet::new();

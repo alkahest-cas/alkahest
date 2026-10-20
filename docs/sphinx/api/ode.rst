@@ -27,6 +27,27 @@ ODE
           independent=t,
       )
 
+   .. staticmethod:: from_equations(equations, functions, time_var) -> ODE
+
+      Reduce linear equations written with applied functions (``y(t)`` and
+      ``diff(y(t), t)``, each read as ``= 0``) to the equivalent first-order
+      system. The state of a function with highest derivative of order ``m``
+      is ``[y, y_dot, ...]`` (``m`` symbols). A singular leading coefficient
+      matrix (a DAE) or an unknown that is never differentiated raises
+      ``OdeError`` (``E-ODE-030``); a leading coefficient that needs ``!= 0``
+      is refused here and reported by ``dsolve_system``. ::
+
+         y = pool.func("y", [t])
+         ode = ODE.from_equations([diff(diff(y, t).value, t).value + y], [y], t)
+
+``experimental.dsolve_system(ode_or_equations, assumptions=None, *, functions=None, t=None, real_form=True)``
+   Closed-form solution of ``y' = A y + f(t)``. Accepts an :class:`ODE` or a
+   list of equations in ``y(t)`` form (then ``functions`` and ``t`` are
+   required, and the result carries ``"functions": {y(t): expr}``). With
+   ``real_form`` the closed form of a real system is written with
+   ``cos``/``sin``/``cosh``/``sinh`` wherever the imaginary part is proved
+   zero (see :func:`to_real_form`).
+
 .. function:: lower_to_first_order(ode: ODE) -> ODE
 
    Convert a higher-order ODE to first-order form by introducing new

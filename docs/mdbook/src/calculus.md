@@ -94,6 +94,35 @@ argument, derivatives included. The printed form reads back with
 `parse(text, pool, {"q": q, "t": t})`; numeric evaluation refuses an undefined
 function with `E-EVAL-005`.
 
+### Calculus with undefined functions
+
+`integrate` reverses the chain rule for undefined functions and their
+derivative nodes, and refuses everything that is not an exact derivative (an
+undefined function has no antiderivative of its own):
+
+```python
+f = pool.func("f", [t]); fp = ak.diff(f, t).value
+ak.integrate(fp, t).value                  # f(t)
+ak.integrate(f * fp, t).value              # f(t)^2 / 2
+ak.integrate(fp / f, t).value              # log(f(t))
+ak.integrate(t * ak.diff(fp, t).value, t).value   # t*f'(t) - f(t)
+ak.integrate(f, t)                         # IntegrationError: no closed form
+```
+
+Each candidate is differentiated back and compared with the integrand before
+it is returned; definite integrals are `F(b) - F(a)` (infinite bounds are
+refused). `series(f, t, a, n)` expands in `f(a)`, `f'(a)`, ... . `limit` treats
+`f(t)` as opaque: it is refused (`E-LIMIT-007`) unless every undefined node is
+declared continuous at the point, `limit(f*cos(t), t, 2, continuous=[f])`, and
+then only an expression that is jointly continuous there is evaluated by
+substitution (a `(f(t) - f(a))/(t - a)` quotient needs differentiability, which
+is never assumed).
+
+`experimental.dsolve_system(equations, functions=[y(t), ...], t=t)` and
+`ODE.from_equations(equations, functions, t)` accept linear systems written in
+`y(t)` and `diff(y(t), t)` of any order, reduce them to first order, and
+return the closed form also as `result["functions"] == {y(t): ...}`.
+
 ## Forward-mode automatic differentiation
 
 `diff_forward` computes the derivative using forward-mode AD (dual numbers). It produces the same result as `diff` but through a different computational path:

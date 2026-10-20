@@ -116,10 +116,10 @@ use alkahest_core::{
     apart as core_apart, diff as core_diff, diff_forward as core_diff_forward,
     eval_complex_f64 as core_eval_complex_f64, eval_exact_rational as core_eval_exact_rational,
     eval_f64 as core_eval_f64, eval_interval as core_eval_interval, integrate as core_integrate,
-    integrate_definite as core_integrate_definite, limit as core_limit, load_from,
-    rsolve as core_rsolve, series as core_series, simplify as core_simplify,
-    simplify_batch as core_simplify_batch, simplify_egraph as core_simplify_egraph,
-    simplify_egraph_with as core_simplify_egraph_with, simplify_log_exp as core_simplify_log_exp,
+    integrate_definite as core_integrate_definite, load_from, rsolve as core_rsolve,
+    series as core_series, simplify as core_simplify, simplify_batch as core_simplify_batch,
+    simplify_egraph as core_simplify_egraph, simplify_egraph_with as core_simplify_egraph_with,
+    simplify_log_exp as core_simplify_log_exp,
     simplify_trig_normal_form as core_simplify_trig_normal_form,
     verify_antiderivative_status_parametric as core_verify_antiderivative_parametric,
     AlkahestError as AlkahestErrorTrait, AntiderivativeVerification, ApartError,
@@ -142,9 +142,7 @@ use alkahest_core::calculus::multilimit::{
 use alkahest_core::calculus::puiseux::{
     puiseux_series as core_puiseux_series, PuiseuxError as CorePuiseuxError,
 };
-use alkahest_core::ode::dsolve::system::{
-    dsolve_system_with as core_dsolve_system_with, DsolveSystemError as CoreDsolveSystemError,
-};
+use alkahest_core::ode::dsolve::system::DsolveSystemError as CoreDsolveSystemError;
 use alkahest_core::ode::dsolve::{
     dsolve_with as core_dsolve_with, DsolveError as CoreDsolveError, OdeInput as CoreOdeInput,
 };
@@ -5582,25 +5580,45 @@ fn py_series(
 /// no `Python` token, and the budget/work-ceiling state it uses is thread-local
 /// to *this* thread, which `allow_threads` does not change).
 #[pyfunction]
-#[pyo3(name = "limit", signature = (expr, var, point, dir=None))]
+#[pyo3(name = "limit", signature = (expr, var, point, dir=None, *, continuous=None))]
 fn py_limit(
     py: Python<'_>,
     expr: PyRef<PyExpr>,
     var: PyRef<PyExpr>,
     point: PyRef<PyExpr>,
     dir: Option<&str>,
+    continuous: Option<Vec<PyRef<PyExpr>>>,
 ) -> PyResult<PyDerivedResult> {
     same_pool!("limit"; expr, var, point);
     let pool_py = expr.pool.clone_ref(py);
     let d = parse_limit_direction(dir);
+    let declared: Vec<ExprId> = continuous
+        .as_ref()
+        .map(|v| v.iter().map(|e| e.id).collect())
+        .unwrap_or_default();
+    if let Some(v) = &continuous {
+        for e in v {
+            if !e.pool.is(&pool_py) {
+                return Err(pool_mismatch_err());
+            }
+        }
+    }
     let id = {
         let pool_ref = pool_py.borrow(py);
         guard_depth_all(&pool_ref.inner, &[expr.id, var.id, point.id])?;
         // Bind out of the `PyRef` first: it carries a `Python` marker and so is
         // not `Sync`, but the pool and ids themselves are safe to send.
         let (id, var_id, point_id, pool) = (expr.id, var.id, point.id, &pool_ref.inner);
-        py.allow_threads(|| core_limit(id, var_id, point_id, d, pool))
-            .map_err(limit_error_to_py)?
+        py.allow_threads(|| {
+            alkahest_core::calculus::limit_with_continuous(id, var_id, point_id, d, &declared, pool)
+        })
+        .map_err(|e| match e {
+            alkahest_core::calculus::OpaqueLimitError::Limit(e) => limit_error_to_py(e),
+            alkahest_core::calculus::OpaqueLimitError::Refused(r) => Python::with_gil(|py| {
+                let exc_type = py.get_type_bound::<PyLimitError>();
+                make_structured_err(py, &exc_type, &r)
+            }),
+        })?
     };
     // Limits have no rewrite log today; the Tendsto emitter looks at the
     // original expression, variable, and computed value instead.
@@ -5886,12 +5904,30 @@ fn dsolve_system_error_to_py(e: CoreDsolveSystemError) -> PyErr {
     })
 }
 
-/// `experimental.dsolve_system(ode, assumptions=None)` — solve a linear
-/// constant-coefficient system `y' = A·y + f(t)` in closed form.
+/// `experimental.dsolve_system(ode, assumptions=None, *, functions=None, t=None,
+/// real_form=True)` — solve a linear constant-coefficient system
+/// `y' = A·y + f(t)` in closed form.
 ///
-/// `ode` is an :class:`alkahest.ODE`, i.e. `d(state_vars)/dt = rhs`. Each
-/// right-hand side must be affine in the state variables with coefficients
-/// free of the time variable; the coefficients themselves may be symbolic.
+/// `ode` is an :class:`alkahest.ODE`, i.e. `d(state_vars)/dt = rhs`, **or** a
+/// list of equations written with applied functions — `y(t)` and
+/// `diff(y(t), t)` (each read as `= 0`) — together with `functions=[y(t), …]`
+/// and the independent variable `t`.  A first/second/higher-order *system* of
+/// linear equations is reduced to first order by solving for the highest
+/// derivatives (:meth:`ODE.from_equations`); a singular leading coefficient
+/// matrix (a DAE) is refused (`E-ODE-030`) and a symbolic one reports
+/// `det ≠ 0` in `side_conditions`.  The result then also carries
+/// `"functions"`: `{y(t): closed form, y'(t): closed form, …}` for every
+/// function and derivative below the highest order, in terms of `t` and the
+/// constants (the highest derivative is `diff` of the last entry).
+///
+/// Each right-hand side must be affine in the state variables with
+/// coefficients free of the time variable; the coefficients themselves may be
+/// symbolic.
+///
+/// `real_form` (default `True`) writes the closed form for a real system with
+/// `cos`/`sin`/`cosh`/`sinh` instead of `exp(I·…)` or `√(negative)`, but only
+/// where the imaginary part is *proved* zero (:func:`to_real_form`'s rule);
+/// `real_form=False` returns the raw complex-exponential form.
 ///
 /// Returns a dict with keys `state_vars` (list of `Expr`), `y_of_t` (list of
 /// `Expr`, aligned with `state_vars`), `constants` (list of `Expr`),
@@ -5911,29 +5947,73 @@ fn dsolve_system_error_to_py(e: CoreDsolveSystemError) -> PyErr {
 /// `ka = ke` makes the returned expression divide by zero, that case appears in
 /// `side_conditions` rather than being assumed away.
 #[pyfunction]
-#[pyo3(name = "dsolve_system", signature = (ode, assumptions=None))]
+#[pyo3(name = "dsolve_system", signature = (ode, assumptions=None, *, functions=None, t=None, real_form=true))]
 fn py_dsolve_system(
     py: Python<'_>,
-    ode: PyRef<PyODE>,
+    ode: &Bound<'_, PyAny>,
     assumptions: Option<PyRef<PyAssumptions>>,
+    functions: Option<Vec<PyRef<PyExpr>>>,
+    t: Option<PyRef<PyExpr>>,
+    real_form: bool,
 ) -> PyResult<PyObject> {
+    // Either an `ODE`, or equations in `y(t)` form plus `functions` and `t`.
+    let (core_ode, pool_py, eq_system) = if let Ok(o) = ode.extract::<PyRef<PyODE>>() {
+        (o.inner.clone(), o.pool.clone_ref(py), None)
+    } else {
+        let eqs: Vec<PyRef<PyExpr>> = match ode.extract::<Vec<PyRef<PyExpr>>>() {
+            Ok(v) => v,
+            Err(_) => vec![ode.extract::<PyRef<PyExpr>>().map_err(|_| {
+                PyValueError::new_err(
+                    "dsolve_system: expected an ODE or a list of equations written with y(t)",
+                )
+            })?],
+        };
+        let (Some(functions), Some(t)) = (functions.as_ref(), t.as_ref()) else {
+            return Err(PyValueError::new_err(
+                "dsolve_system: equations need `functions=[y(t), …]` and `t=` (the independent \
+                 variable)",
+            ));
+        };
+        for e in eqs.iter().chain(functions.iter()) {
+            if !e.pool.is(&t.pool) {
+                return Err(pool_mismatch_err());
+            }
+        }
+        let pool_py = t.pool.clone_ref(py);
+        let sys = {
+            let pool = pool_py.borrow(py);
+            let eq_ids: Vec<ExprId> = eqs.iter().map(|e| e.id).collect();
+            let fn_ids: Vec<ExprId> = functions.iter().map(|e| e.id).collect();
+            guard_depth_all(&pool.inner, &eq_ids)?;
+            alkahest_core::experimental::ode_from_equations(&eq_ids, &fn_ids, t.id, &pool.inner)
+                .map_err(|e| {
+                    let exc_type = py.get_type_bound::<PyOdeError>();
+                    make_structured_err(py, &exc_type, &e)
+                })?
+        };
+        (sys.ode.clone(), pool_py, Some(sys))
+    };
     if let Some(ref a) = assumptions {
-        if !a.pool.is(&ode.pool) {
+        if !a.pool.is(&pool_py) {
             return Err(pool_mismatch_err());
         }
     }
-    let pool_py = ode.pool.clone_ref(py);
     let empty = CoreAssumptionContext::new();
     let (sol, conditions) = {
         let pool = pool_py.borrow(py);
         let ctx = assumptions.as_ref().map_or(&empty, |a| &a.inner);
-        let sol = core_dsolve_system_with(&ode.inner, ctx, &pool.inner)
-            .map_err(dsolve_system_error_to_py)?;
-        let conditions: Vec<String> = sol
-            .side_conditions
-            .iter()
-            .map(|c| render_side_condition_or_depth(&pool.inner, c))
-            .collect();
+        let sol =
+            alkahest_core::experimental::dsolve_system_opts(&core_ode, ctx, real_form, &pool.inner)
+                .map_err(dsolve_system_error_to_py)?;
+        let mut conditions: Vec<String> = Vec::new();
+        if let Some(sys) = &eq_system {
+            for c in &sys.side_conditions {
+                conditions.push(render_side_condition_or_depth(&pool.inner, c));
+            }
+        }
+        for c in &sol.side_conditions {
+            conditions.push(render_side_condition_or_depth(&pool.inner, c));
+        }
         (sol, conditions)
     };
     let wrap = |id: ExprId| {
@@ -5968,6 +6048,15 @@ fn py_dsolve_system(
         phi.append(r)?;
     }
     d.set_item("fundamental_matrix", phi)?;
+    if let Some(sys) = &eq_system {
+        let fm = PyDict::new_bound(py);
+        for entry in &sys.table {
+            if let Some(pos) = sol.state_vars.iter().position(|&v| v == entry.symbol) {
+                fm.set_item(wrap(entry.node), wrap(sol.y_of_t[pos]))?;
+            }
+        }
+        d.set_item("functions", fm)?;
+    }
     d.set_item("method", sol.method)?;
     d.set_item("side_conditions", conditions)?;
     d.set_item("notes", sol.notes)?;
@@ -9593,6 +9682,16 @@ fn py_to_real_form(
     Ok(PyExpr { id, pool: pool_py })
 }
 
+/// Private: the cheap gate in front of an unconditional `to_real_form` (see
+/// `simplify::real_form::may_need_real_form`). `False` for an expression that
+/// has no imaginary unit and no root of anything but a positive numeric
+/// constant (`5*sqrt(2)/2`), which is already real.
+#[pyfunction]
+#[pyo3(name = "_may_need_real_form")]
+fn py_may_need_real_form(py: Python<'_>, expr: PyRef<PyExpr>) -> bool {
+    alkahest_core::simplify::real_form::may_need_real_form(expr.id, &expr.pool.borrow(py).inner)
+}
+
 /// `alkahest.rewrite_piecewise(expr) -> Expr`
 ///
 /// Lower ``abs``, ``sign``, ``heaviside``, ``min`` and ``max`` to
@@ -10459,14 +10558,42 @@ impl PyMatrix {
     }
 
     /// Dictionary mapping each eigenvalue expression to its algebraic multiplicity.
-    fn eigenvals(&self, py: Python<'_>) -> PyResult<PyObject> {
+    ///
+    /// With ``real_form=True`` (the default) each eigenvalue is rewritten by
+    /// :func:`to_real_form` — ``sqrt(4*a**2)`` becomes ``2*abs(a)``, a root
+    /// written through ``sqrt`` of a provably non-negative square loses its
+    /// radical — but only where the imaginary part is *proved* zero; a
+    /// genuinely complex eigenvalue (``±I`` of a rotation) is returned as is.
+    /// Eigenvalues that coincide after the rewrite have their multiplicities
+    /// added.  ``real_form=False`` returns the raw spectrum.
+    #[pyo3(signature = (real_form=true))]
+    fn eigenvals(&self, py: Python<'_>, real_form: bool) -> PyResult<PyObject> {
         let pool = self.pool.borrow(py);
         guard_depth_all(&pool.inner, self.inner.entries())?;
         // GIL released for the core call; see `py_integrate`.
         let (inner, pool_ref) = (&self.inner, &pool.inner);
-        let pairs = py
+        let mut pairs = py
             .allow_threads(|| inner.eigenvalues(pool_ref))
             .map_err(eigen_error_to_py)?;
+        if real_form {
+            let mut merged: Vec<(ExprId, usize)> = Vec::with_capacity(pairs.len());
+            for (e, mult) in pairs {
+                let e = if alkahest_core::simplify::real_form::may_need_real_form(e, pool_ref) {
+                    alkahest_core::simplify::to_real_form(
+                        e,
+                        pool_ref,
+                        &alkahest_core::simplify::AssumptionContext::new(),
+                    )
+                } else {
+                    e
+                };
+                match merged.iter_mut().find(|(k, _)| *k == e) {
+                    Some(slot) => slot.1 += mult,
+                    None => merged.push((e, mult)),
+                }
+            }
+            pairs = merged;
+        }
         drop(pool);
         let out = PyDict::new_bound(py);
         for (e, mult) in pairs {
@@ -10991,6 +11118,74 @@ impl PyODE {
         };
         Ok(PyODE {
             inner: ode,
+            pool: pool_py,
+        })
+    }
+
+    /// Build the first-order system equivalent to equations written with
+    /// applied functions.
+    ///
+    /// Parameters
+    /// ----------
+    /// equations : list[Expr]
+    ///     One expression per unknown, each read as ``= 0``, written with
+    ///     ``y(t)`` and ``diff(y(t), t)`` (any order).  They must be affine in
+    ///     the highest derivative of each unknown, with an invertible
+    ///     coefficient matrix.
+    /// functions : list[Expr]
+    ///     The unknowns, ``[y(t), z(t), ...]`` (undefined functions of ``t``).
+    /// time_var : Expr
+    ///     The independent variable ``t``.
+    ///
+    /// The state of a function with highest derivative of order ``m`` is
+    /// ``[y, y_dot, ...]`` (``m`` symbols named like
+    /// :func:`functions_to_symbols` names them).  Refusals: ``E-DIFF-005/007``
+    /// for an unknown that is not an undefined function of ``t``; ``E-ODE-030``
+    /// when the system does not reduce (wrong equation count, an unknown that
+    /// is never differentiated, a nonlinear or singular leading part, i.e. a
+    /// DAE).  A leading coefficient that needs ``!= 0`` is refused here; pass
+    /// those equations to :func:`dsolve_system`, which reports the condition.
+    #[staticmethod]
+    fn from_equations(
+        py: Python<'_>,
+        equations: Vec<PyRef<PyExpr>>,
+        functions: Vec<PyRef<PyExpr>>,
+        time_var: PyRef<PyExpr>,
+    ) -> PyResult<PyODE> {
+        same_pool!("ODE.from_equations"; equations, functions, time_var);
+        let pool_py = time_var.pool.clone_ref(py);
+        let sys = {
+            let pool = pool_py.borrow(py);
+            let eq_ids: Vec<ExprId> = equations.iter().map(|e| e.id).collect();
+            let fn_ids: Vec<ExprId> = functions.iter().map(|e| e.id).collect();
+            guard_depth_all(&pool.inner, &eq_ids)?;
+            let sys = alkahest_core::experimental::ode_from_equations(
+                &eq_ids,
+                &fn_ids,
+                time_var.id,
+                &pool.inner,
+            )
+            .map_err(|e| {
+                let exc_type = py.get_type_bound::<PyOdeError>();
+                make_structured_err(py, &exc_type, &e)
+            })?;
+            if !sys.side_conditions.is_empty() {
+                let conds: Vec<String> = sys
+                    .side_conditions
+                    .iter()
+                    .map(|c| render_side_condition_or_depth(&pool.inner, c))
+                    .collect();
+                return Err(PyValueError::new_err(format!(
+                    "ODE.from_equations: the reduction to first order divides by {}; \
+                     use dsolve_system(equations, functions=..., t=...), which reports \
+                     the condition",
+                    conds.join(", ")
+                )));
+            }
+            sys
+        };
+        Ok(PyODE {
+            inner: sys.ode,
             pool: pool_py,
         })
     }
@@ -22171,6 +22366,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_functions_to_symbols, m)?)?;
     m.add_function(wrap_pyfunction!(py_replace_function, m)?)?;
     m.add_function(wrap_pyfunction!(_is_undefined_function_name, m)?)?;
+    m.add_function(wrap_pyfunction!(py_may_need_real_form, m)?)?;
     // Phase 15
     m.add_function(wrap_pyfunction!(py_jacobian, m)?)?;
     m.add_class::<PyMatrix>()?;
