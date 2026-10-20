@@ -664,6 +664,14 @@ bool(answer), answer.functions   # (False, ['floor'])
 A `True` means "not `E-VALIDATED-001`"; a bad box can still refuse with
 `E-VALIDATED-003` (domain violation) or `-004` (non-finite enclosure).
 
+**Rigorous ODE enclosures: `ak.verified_ode(rhs, vars, t, y0, t_span)`** (interval
+Taylor series + Picard–Lindelöf a-priori enclosure + Lohner QR). `y0` entries are floats
+or `(lo, hi)` boxes; the result's `.enclosures` / `.enclosure(t)` provably contain the
+solution. `rhs` may use `+ * /`, powers, `exp log sqrt sin cos tan sinh cosh tanh atan`.
+It refuses instead of guessing: `E-VALIDATED-006` near a blow-up (`y' = y**2` at `t → 1`)
+or non-Lipschitz point, `-007` enclosure too wide, `-008` step limit (stiff problems).
+Use `experimental.ode_integrate_rk45` for a fast estimate, this for a statement.
+
 **`E-SOS-002` from that escalation is `unknown`, not "not SOS".** The SOS search covers
 an LP-representable subcone of the PSD cone at one `basis_degree` (one `level` for
 Handelman), so a refusal is compatible with `p` being SOS outside that subcone, SOS at a

@@ -249,6 +249,9 @@ and not of the expression.
 | `E-VALIDATED-003` | A singularity or branch cut inside the box (e.g. `1/x` over a box containing 0) |
 | `E-VALIDATED-004` | An enclosure overflowed to infinity |
 | `E-VALIDATED-005` | Malformed request (empty box, inverted interval, bad order) |
+| `E-VALIDATED-006` | `verified_ode`: step size underflow — no a-priori enclosure could be validated (finite-time blow-up, singularity ahead, non-Lipschitz point) |
+| `E-VALIDATED-007` | `verified_ode`: the enclosure grew wider than `max_rel_width · max(1, |y|)` |
+| `E-VALIDATED-008` | `verified_ode`: more than `max_steps` steps would be needed (typically a stiff problem) |
 
 For `E-VALIDATED-003` the search first tries bisecting *away* from the trouble,
 since a domain violation on a wide box is often a boundary effect rather than a
@@ -374,6 +377,64 @@ the elementary functions with rigorous remainders), range enclosure by
 branch-and-bound, verified 1-D definite integrals including removable
 singularities, root absence, root existence and sign predicates.
 
+Also shipped: validated ODE integration (`verified_ode`, below).
+
 Not shipped: multivariate verified quadrature (`verified_integral` is 1-D),
-improper integrals, integrable-but-not-removable singularities, and
-Taylor-model-based ODE enclosures.
+improper integrals, integrable-but-not-removable singularities, backward-in-time
+and implicit (stiff) validated ODE methods.
+
+## Validated ODE integration — `verified_ode`
+
+```python
+import alkahest as ak
+pool = ak.ExprPool()
+x, y, z = pool.symbol("x"), pool.symbol("y"), pool.symbol("z")
+lorenz = [10 * (y - x), x * (28 - z) - y, x * y - pool.rational(8, 3) * z]
+sol = ak.verified_ode(lorenz, [x, y, z], None, [1.0, 1.0, 1.0], (0.0, 2.0))
+sol.enclosure(2.0)   # three (lo, hi) pairs, each ~4e-13 wide, guaranteed to
+                     # contain the true solution
+sol.times, sol.enclosures, sol.max_width
+
+# Interval initial values enclose *every* solution starting in the box.
+t = pool.symbol("t")
+ak.verified_ode([ak.sin(t) * y - y**3 / 10], [y], t, [(0.9, 1.1)], (0.0, 3.0))
+
+ak.verified_ode([y**2], [y], None, [1.0], (0.0, 2.0))
+# ValidatedError [E-VALIDATED-006] step size underflow at t = 0.99999999998…
+```
+
+`verified_ode(rhs, vars, t, y0, t_span, *, order=20, prec=128, tol=1e-16,
+max_steps=20000, h_min=None, max_rel_width=1.0)` encloses the solution of
+`y' = f(t, y)`, `y(t0) ∈ y0`, on `[t0, t1]`. Each step from `t_j` to
+`t_j + h`:
+
+1. **Existence (Picard–Lindelöf).** A box `B` is found with
+   `Y_j + [0,h]·f([t_j, t_j+h], B) ⊂ int B`, with `∂f/∂y` enclosed by a finite
+   ball on `B` (so `f` is Lipschitz there). Every solution from `Y_j` then
+   exists on the whole step and stays in `B`. If no `B` validates, `h` is
+   halved; below `h_min` the call refuses with `E-VALIDATED-006`.
+2. **Taylor series.** The Taylor coefficients `F_k` of the solution come from
+   automatic differentiation of `f` (recurrences for `exp`, `log`, `sin`/`cos`,
+   powers, …) in ball arithmetic; the remainder is
+   `h^(p+1) · F_(p+1)` evaluated over `B`.
+3. **Wrapping effect (Lohner).** The set is carried as `ŷ + A·r` with `A` the
+   orthogonal factor of a QR of `mid(S·A)`, `S = I + Σ h^k ∂F_k/∂y`. `A⁻¹` is
+   enclosed by a Neumann-series bound, so the floating-point QR never costs
+   soundness. On a pure rotation this keeps the width flat where a plain
+   interval method would double it every few steps.
+
+The grid times are exact binary64 numbers, bounds are rounded outward, and
+`enclosure(t)` evaluates the step's Taylor polynomial in mean-value form plus
+its remainder, intersected with the step's a-priori box — so it is rigorous at
+any `t`, not only on the grid. `tol` and `order` steer the step size and hence
+the width, never soundness. The active `Budget` is checked once per step.
+
+Supported in `rhs`: `+`, `*`, `/`, integer / rational / real-constant powers,
+symbolic powers (via `exp(b·log a)`, needing `a > 0`), `exp`, `log`, `sqrt`,
+`sin`, `cos`, `tan`, `sinh`, `cosh`, `tanh`, `atan`, and the constants `pi`,
+`EulerGamma`, `Catalan`; anything else is `E-VALIDATED-001`.
+
+Limits: forward integration only (`t0 < t1`; substitute `t → −t` to go
+backwards); an explicit Taylor method needs `h ≈ 1/‖∂f/∂y‖`, so stiff systems
+hit `max_steps` (`E-VALIDATED-008`) rather than produce a result; on chaotic
+systems the width grows like `e^(λt)` and eventually trips `E-VALIDATED-007`.

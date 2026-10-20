@@ -99,7 +99,8 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
                                  001 wall clock, 002 max_steps, 003 cancelled,
                                  004 memory, 005 address-space ceiling,
                                  006 result larger than the machine / GMP)
-    E-VALIDATED-001 … E-VALIDATED-005  ValidatedError (P1 item 9 — validated numerics)
+    E-VALIDATED-001 … E-VALIDATED-008  ValidatedError (P1 item 9 — validated numerics;
+                                 006-008 verified_ode)
     E-SOS-001 … E-SOS-005      SosError (P1 item 8 — positivity certificates)
     E-HOLO-001 … E-HOLO-064    HolonomicError.  One prefix, five engines:
                                  001-008 single-index Zeilberger (P1 item 7) plus
@@ -420,7 +421,10 @@ class ValidatedError(AlkahestError):
     (``E-VALIDATED-001``), a free symbol with no interval (``E-VALIDATED-002``),
     a singularity or branch cut inside the box (``E-VALIDATED-003``), an
     enclosure that overflowed to infinity (``E-VALIDATED-004``), or a malformed
-    request (``E-VALIDATED-005``).
+    request (``E-VALIDATED-005``).  :func:`verified_ode` adds a step-size
+    underflow near a blow-up or non-Lipschitz point (``E-VALIDATED-006``), an
+    enclosure grown too wide to say anything (``E-VALIDATED-007``) and a step
+    limit, typically on a stiff problem (``E-VALIDATED-008``).
 
     Note that running out of *budget* is not an error — that returns a wide but
     still rigorous enclosure with ``budget_exhausted=True``, because a loose

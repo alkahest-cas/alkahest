@@ -540,6 +540,9 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-VALIDATED-003", class: "ValidatedError", cause: Cause::Domain, remediation: None },
     ErrorSpec { code: "E-VALIDATED-004", class: "ValidatedError", cause: Cause::Domain, remediation: None },
     ErrorSpec { code: "E-VALIDATED-005", class: "ValidatedError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-VALIDATED-006", class: "ValidatedError", cause: Cause::Domain, remediation: Some("integrate over a shorter span that stops before the blow-up or singularity, or start from a point where the right-hand side is smooth") },
+    ErrorSpec { code: "E-VALIDATED-007", class: "ValidatedError", cause: Cause::Resource, remediation: Some("shorten the time span, shrink the initial box, raise the Taylor order or the precision") },
+    ErrorSpec { code: "E-VALIDATED-008", class: "ValidatedError", cause: Cause::Resource, remediation: Some("raise max_steps or shorten the span; stiff problems need tiny steps with an explicit validated method") },
     // E-VEC — VectorError (vector calculus over orthogonal curvilinear charts)
     ErrorSpec { code: "E-VEC-001", class: "VectorError", cause: Cause::Unsupported, remediation: Some("the field contains a function with no differentiation rule; register it in PrimitiveRegistry or rewrite the component") },
     ErrorSpec { code: "E-VEC-002", class: "VectorError", cause: Cause::UserInput,   remediation: Some("pass three distinct coordinate symbols, e.g. Coordinates::cylindrical(rho, phi, z)") },
