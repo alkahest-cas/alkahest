@@ -118,6 +118,24 @@ series, `₀F₀`, `₁F₀`, the `log`/`atanh`/`asin` cases of `₂F₁`, Gauss
 `₁F₁(½; 3/2; −w)` (erf) and `₀F₁` (cosh/sinh, Bessel `J`/`I`); other nodes
 are kept.
 
+## Beta and incomplete gamma functions
+
+```python
+s, z, a = p.symbol("s"), p.symbol("z"), p.symbol("a")
+ak.beta(p.integer(2), p.integer(3))     # 1/12; beta(a, 2) = 1/(a*(a + 1)); node otherwise
+ak.uppergamma(s, z)                     # Γ(s, z) = ∫_z^∞ t^{s−1}e^{−t} dt; LaTeX \Gamma(s, z)
+ak.uppergamma(p.rational(1, 2), z)      # sqrt(pi)*erfc(sqrt(z))
+ak.lowergamma(p.integer(2), z)          # 1 - (z + 1)*exp(-z)
+ak.diff(ak.uppergamma(s, z), z)         # -z^(s - 1)*exp(-z); d/ds refused (E-DIFF-001)
+ak.eval_expr(ak.uppergamma(s, z), {s: 2.5, z: 1.5})   # 0.9305194427… (Arb)
+```
+
+`Γ(s, z) + γ(s, z) = Γ(s)`; integer orders are elementary, half-integer orders
+reduce to `erfc`/`erf` by `Γ(s+1, z) = sΓ(s, z) + z^s e^{−z}`. Values come from
+Arb (`arb_hypgeom_gamma_upper/_lower`, `arb_gamma`·`arb_rgamma` for `B`), real
+only. The integrator uses them for Beta-family and incomplete-gamma definite
+integrals (see *Calculus*).
+
 ## Not yet
 
 The large-`x` asymptotic expansion of `J_ν` through `asymptotic_expand`,

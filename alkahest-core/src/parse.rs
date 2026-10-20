@@ -423,6 +423,10 @@ const KNOWN_FUNCS: &[&str] = &[
     "zeta_prime",
     "hankel1",
     "hankel2",
+    // Beta and the incomplete gamma functions (F11).
+    "beta",
+    "uppergamma",
+    "lowergamma",
     // Reciprocal trig / hyperbolic functions.  These are *desugared* in
     // `parse_funcall` to their elementary reciprocal definitions (e.g.
     // `sec(x) → cos(x)^(-1)`); no `sec`/`csc`/… node ever enters the pool.

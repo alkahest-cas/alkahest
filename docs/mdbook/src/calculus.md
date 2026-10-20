@@ -293,6 +293,46 @@ With the sign of `α` unknown it declines (`E-INT-001`, naming the parameter).
 At other infinite bounds, the limit of an antiderivative that is a sum is taken
 term by term when every term's limit exists and is finite.
 
+### Beta, incomplete-gamma and Feynman-parameter integrals
+
+Definite integrals whose antiderivative is not elementary — or not elementary
+with a symbolic exponent — but whose value is a classical function:
+
+| integrand, interval | value |
+|---|---|
+| `(x−a)^p (b−x)^q` on `[a, b]` | `(b−a)^{p+q+1} Γ(p+1)Γ(q+1)/Γ(p+q+2)` |
+| `x^p/(c+dx)^r` on `[0, ∞)`, `c, d > 0` | `c^{p+1−r} d^{−p−1} B(p+1, r−p−1)` |
+| `sin^p x cos^q x` on `[0, π/2]` | `½ B((p+1)/2, (q+1)/2)` |
+| `x^p e^{−r x^k}` on `[lo, hi] ⊂ [0, ∞]`, `k = 1, 2`, `r > 0` | `r^{−s}/k · (Γ(s, r·loᵏ) − Γ(s, r·hiᵏ))`, `s = (p+1)/k` |
+| `log Q`, `Q^{−n}` for quadratic `Q`, `Q > 0` at the ends | `atan` / `log` closed forms by the sign of `κ = (4AC−B²)/(4A²)` |
+
+```python
+x, a, b = pool.symbol("x"), pool.symbol("a"), pool.symbol("b")
+r = integrate(x**a * (1 - x)**b, x, pool.integer(0), pool.integer(1))
+r.value                               # gamma(1 + a)*gamma(1 + b)/gamma(2 + a + b)
+r.verification["side_conditions"]     # ['(1 + a) > 0', '(1 + b) > 0']
+s, c = pool.symbol("s"), pool.symbol("c", ak.Domain.Positive)
+integrate(x**(s - 1) * exp(-x), x, c, pool.pos_infinity()).value   # uppergamma(s, c)
+m, p = pool.symbol("m", ak.Domain.Positive), pool.symbol("p", ak.Domain.Positive)
+integrate(log(m**2 - x*(1 - x)*p**2), x, pool.integer(0), pool.integer(1)).value
+# Piecewise((κ > 0, 2 log m − 2 + 4√κ·atan(1/(2√κ))), (κ = 0, 2 log m − 2);
+#           default = 2 log m − 2 + 2√λ·log((½+√λ)/(½−√λ)) + 2πi√λ),  κ = m²/p² − ¼ = −λ
+```
+
+Signs the formula needs (a rate `r > 0`, a linear factor's slope, `Q > 0` at the
+endpoints) must be established, or the route declines; a leading coefficient of
+unknown sign is allowed when it is `c·sᵏ` for one parameter `s` (the report's
+`log(m² − x(1−x)·p2)` with `p2` of either sign), and the `Piecewise` then also
+branches on its sign, with `Q|_{s=0}` at `s = 0`. A convergence condition on an exponent (`a + 1 > 0`) is stated
+as a side condition when unknown, and refused as divergent when established
+false; `∫₀¹ dx/(m² − x(1−x)p²)ⁿ` states `κ > 0` (`p² < 4m²`), since above
+threshold `Q` vanishes inside the interval. Above threshold `∫ log Q` is the
+principal-branch value (`log|Q| + iπ` where `Q < 0`); the Feynman `−i0`
+prescription gives its complex conjugate. The quadratic forms are cross-checked
+against Gauss–Legendre quadrature at sampled parameter values before they are
+returned. Definite results also have their exponents re-collected for display,
+so the convolution `∫₀ᵗ e^{−aτ}e^{−b(t−τ)} dτ` reads `(e^{−at} − e^{−bt})/(b − a)`.
+
 ### Improper integrals over the whole real line
 
 `integrate(f, x, -oo, oo)` for a **rational** `f` does not go through the

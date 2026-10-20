@@ -626,6 +626,24 @@ extern "C" {
         regularized: c_int,
         prec: slong,
     );
+
+    // -- Beta and incomplete gamma (F11) ------------------------------------
+    // Used by `crate::specfun::incgamma`.
+    pub fn arb_rgamma(z: *mut ArbStruct, x: *const ArbStruct, prec: slong);
+    pub fn arb_hypgeom_gamma_upper(
+        res: *mut ArbStruct,
+        s: *const ArbStruct,
+        z: *const ArbStruct,
+        regularized: c_int,
+        prec: slong,
+    );
+    pub fn arb_hypgeom_gamma_lower(
+        res: *mut ArbStruct,
+        s: *const ArbStruct,
+        z: *const ArbStruct,
+        regularized: c_int,
+        prec: slong,
+    );
 }
 
 // ---------------------------------------------------------------------------

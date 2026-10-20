@@ -222,3 +222,44 @@ Generalized hypergeometric function
    asinh(sqrt(w))/sqrt(w)``; ``(s+1)Fs(1, …, 1; 2, …, 2; z) = polylog(s, z)/z``.
    Other nodes are kept. :func:`sum_definite` produces these nodes for
    infinite sums of hypergeometric terms (``Σ q**k/k! = exp(q)``).
+
+Beta and incomplete gamma functions
+-----------------------------------
+
+.. function:: beta(a, b)
+
+   The Euler Beta function ``B(a, b) = gamma(a)*gamma(b)/gamma(a + b)``
+   (DLMF 5.12.1; SymPy's ``beta``). Exact where the gamma ratio is exact
+   (``beta(2, 3) = 1/12``, ``beta(1/2, 1/2) = pi``) and the rational function
+   ``(n-1)!/(a*(a+1)*…*(a+n-1))`` when one argument is a positive integer
+   ``n``; otherwise the node. ``d/da beta(a, b) = beta(a, b)*(digamma(a) -
+   digamma(a + b))``. ``E-SPECFN-006`` when an argument is a non-positive
+   integer.
+
+.. function:: uppergamma(s, z)
+
+   ``Gamma(s, z) = integral(t**(s-1)*exp(-t), (t, z, oo))`` (DLMF 8.2.2;
+   SymPy's ``uppergamma``, mpmath's ``gammainc(s, z)``). Elementary for a
+   positive integer ``s``, ``sqrt(pi)*erfc(sqrt(z))`` plus elementary terms
+   for a half-integer ``s > 0``, ``gamma(s)`` at ``z = 0`` (literal
+   ``s > 0``), ``0`` at ``z = oo``. ``d/dz = -z**(s-1)*exp(-z)``; ``d/ds``
+   is refused (``E-DIFF-001``). Real values via Arb
+   (``arb_hypgeom_gamma_upper``). ``E-SPECFN-006`` for ``z = 0`` with a
+   literal ``s <= 0``.
+
+.. function:: lowergamma(s, z)
+
+   ``gamma(s, z) = integral(t**(s-1)*exp(-t), (t, 0, z))`` (DLMF 8.2.1;
+   SymPy's ``lowergamma``, mpmath's ``gammainc(s, 0, z)``);
+   ``uppergamma(s, z) + lowergamma(s, z) = gamma(s)``. Elementary for a
+   positive integer ``s``, ``erf`` form for a half-integer ``s > 0``,
+   ``0`` at ``z = 0``. ``d/dz = z**(s-1)*exp(-z)``. ``E-SPECFN-006`` for a
+   non-positive integer ``s``.
+
+:func:`integrate` returns these for definite integrals with no elementary
+antiderivative: ``∫₀¹ x**a*(1-x)**b`` (and any ``[lo, hi]`` with linear
+factors vanishing at the ends), ``∫₀^∞ x**p/(c + d*x)**r``,
+``∫₀^{π/2} sin(x)**p*cos(x)**q`` as gamma ratios, and
+``∫_lo^hi x**p*exp(-r*x**k)`` (``k = 1, 2``, ``0 <= lo``) as incomplete
+gamma functions; convergence conditions such as ``a + 1 > 0`` that are not
+established are stated in ``result.verification["side_conditions"]``.

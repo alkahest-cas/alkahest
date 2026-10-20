@@ -49,6 +49,8 @@ const PURE_FUNCTIONS: &[&str] = &[
     "digamma",
     "polygamma",
     "beta",
+    "uppergamma",
+    "lowergamma",
     "zeta",
     "lambertw",
     "LambertW",

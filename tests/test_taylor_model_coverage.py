@@ -124,6 +124,10 @@ def test_the_flag_is_not_a_restatement_of_numeric_ball():
         # Taylor-model rule yet.
         "lambert_wm1",
         "zeta_prime",
+        # F11: the Beta and incomplete gamma functions (binary, Arb balls).
+        "beta",
+        "uppergamma",
+        "lowergamma",
     }
     assert ball_only - specfun == {"ceil", "floor"}
 

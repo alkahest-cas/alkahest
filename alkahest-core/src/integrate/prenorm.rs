@@ -154,7 +154,7 @@ fn is_int(e: ExprId, pool: &ExprPool, v: i64) -> bool {
 
 /// The sign of a `var`-free quantity: numeric value first, then the ambient
 /// assumptions and declared symbol domains.
-fn sign_of(e: ExprId, pool: &ExprPool) -> Option<Sign> {
+pub(super) fn sign_of(e: ExprId, pool: &ExprPool) -> Option<Sign> {
     let s = simplify(e, pool).value;
     if let Some(r) = as_rational(s, pool) {
         return Some(match r.cmp0() {
@@ -533,7 +533,7 @@ fn monomial(t: ExprId, var: ExprId, pool: &ExprPool) -> Option<(i64, ExprId)> {
 
 /// The coefficients `[c₀, c₁, …]` of a polynomial in `var` with `var`-free
 /// coefficients (already normalised), or `None`.
-fn poly_coeffs(e: ExprId, var: ExprId, pool: &ExprPool) -> Option<Vec<ExprId>> {
+pub(super) fn poly_coeffs(e: ExprId, var: ExprId, pool: &ExprPool) -> Option<Vec<ExprId>> {
     let e = normalise(e, var, pool);
     let terms = match pool.get(e) {
         ExprData::Add(a) => a,

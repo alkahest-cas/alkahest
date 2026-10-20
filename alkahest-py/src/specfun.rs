@@ -432,6 +432,86 @@ fn polygamma(py: Python<'_>, n: &Bound<'_, PyAny>, x: &Bound<'_, PyAny>) -> PyRe
     Ok(PyExpr { id, pool: pool_py })
 }
 
+fn binary(
+    py: Python<'_>,
+    what: &str,
+    a: &Bound<'_, PyAny>,
+    b: &Bound<'_, PyAny>,
+    f: fn(ExprId, ExprId, &ExprPool) -> Result<ExprId, core::SpecialFunctionError>,
+) -> PyResult<PyExpr> {
+    let (pool_py, ids) = ids(py, what, &[a, b])?;
+    let id = {
+        let pool = &pool_py.borrow(py).inner;
+        f(ids[0], ids[1], pool).map_err(specfn_err)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// The Euler Beta function ``beta(a, b) = gamma(a)*gamma(b)/gamma(a + b)``
+/// (DLMF 5.12.1; SymPy's ``beta``, mpmath's ``beta``).
+///
+/// Args: ``a``, ``b`` (Expr, int or Fraction; at least one an Expr).
+/// Returns the exact value when the gamma ratio is exact (``beta(2, 3) =
+/// 1/12``, ``beta(1/2, 1/2) = pi``), the rational function
+/// ``(n-1)!/(a*(a+1)*...*(a+n-1))`` when one argument is a positive integer
+/// ``n`` (``beta(a, 1) = 1/a``), and the node ``beta(a, b)`` otherwise.
+/// Differentiates through ``digamma``; evaluates in ``f64`` and balls via Arb.
+///
+/// Raises ``SpecialFunctionError`` (``E-SPECFN-006``) when ``a`` or ``b`` is
+/// a non-positive integer (a pole).
+///
+/// >>> import alkahest as ak
+/// >>> p = ak.ExprPool(); a = p.symbol("a")
+/// >>> ak.beta(a, p.integer(2))      # 1/(a*(a + 1))
+#[pyfunction]
+fn beta(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
+    binary(py, "beta", a, b, core::beta)
+}
+
+/// The upper incomplete gamma function ``uppergamma(s, z)`` =
+/// ``integral(t**(s-1)*exp(-t), (t, z, oo))`` (DLMF 8.2.2; SymPy's
+/// ``uppergamma``, mpmath's ``gammainc(s, z)``).
+///
+/// Args: ``s`` (order), ``z`` (lower limit of the integral).  Returns the
+/// elementary form for a positive integer ``s``
+/// (``uppergamma(1, z) = exp(-z)``), the ``erfc`` form for a half-integer
+/// ``s > 0`` (``uppergamma(1/2, z) = sqrt(pi)*erfc(sqrt(z))``),
+/// ``gamma(s)`` at ``z = 0`` for a literal ``s > 0``, else the node.
+/// ``d/dz uppergamma(s, z) = -z**(s-1)*exp(-z)``; a derivative in ``s`` is
+/// refused (``E-DIFF-001``).  Real values via Arb.
+///
+/// Raises ``SpecialFunctionError`` (``E-SPECFN-006``) for ``z = 0`` with a
+/// literal ``s <= 0``.
+///
+/// >>> import alkahest as ak
+/// >>> p = ak.ExprPool(); z = p.symbol("z")
+/// >>> ak.uppergamma(p.integer(2), z)     # (z + 1)*exp(-z)
+#[pyfunction]
+fn uppergamma(py: Python<'_>, s: &Bound<'_, PyAny>, z: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
+    binary(py, "uppergamma", s, z, core::uppergamma)
+}
+
+/// The lower incomplete gamma function ``lowergamma(s, z)`` =
+/// ``integral(t**(s-1)*exp(-t), (t, 0, z))`` (DLMF 8.2.1; SymPy's
+/// ``lowergamma``, mpmath's ``gammainc(s, 0, z)``).
+///
+/// Args: ``s`` (order), ``z`` (upper limit).  Elementary for a positive
+/// integer ``s``, ``erf`` form for a half-integer ``s > 0``
+/// (``lowergamma(1/2, z) = sqrt(pi)*erf(sqrt(z))``), ``0`` at ``z = 0`` for a
+/// literal ``s > 0``; else the node.  ``uppergamma(s, z) + lowergamma(s, z) =
+/// gamma(s)``.  ``d/dz lowergamma(s, z) = z**(s-1)*exp(-z)``.
+///
+/// Raises ``SpecialFunctionError`` (``E-SPECFN-006``) for a non-positive
+/// integer ``s``.
+///
+/// >>> import alkahest as ak
+/// >>> p = ak.ExprPool(); z = p.symbol("z")
+/// >>> ak.lowergamma(p.integer(1), z)     # 1 - exp(-z)
+#[pyfunction]
+fn lowergamma(py: Python<'_>, s: &Bound<'_, PyAny>, z: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
+    binary(py, "lowergamma", s, z, core::lowergamma)
+}
+
 /// The generalized hypergeometric function ``pFq(a; b; z)`` (DLMF 16.2;
 /// SymPy's ``hyper(a, b, z)``).
 ///
@@ -497,6 +577,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(glaisher, m)?)?;
     m.add_function(wrap_pyfunction!(polygamma, m)?)?;
     m.add_function(wrap_pyfunction!(hyper, m)?)?;
+    m.add_function(wrap_pyfunction!(beta, m)?)?;
+    m.add_function(wrap_pyfunction!(uppergamma, m)?)?;
+    m.add_function(wrap_pyfunction!(lowergamma, m)?)?;
     m.add_function(wrap_pyfunction!(expand_hyper, m)?)?;
     m.add_function(wrap_pyfunction!(bessel_j, m)?)?;
     m.add_function(wrap_pyfunction!(bessel_y, m)?)?;

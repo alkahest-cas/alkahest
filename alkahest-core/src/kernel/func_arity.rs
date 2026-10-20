@@ -55,6 +55,8 @@ pub fn known_func_arity(name: &str) -> Option<(usize, usize)> {
         // count must also equal `p + q + 3`, which `crate::specfun::hyper`
         // checks (a malformed node is kept and declined, never indexed).
         "polygamma" => Some((2, 2)),
+        // F11: `beta(a, b)`, `uppergamma(s, z)`, `lowergamma(s, z)`.
+        "beta" | "uppergamma" | "lowergamma" => Some((2, 2)),
         "hyper" => Some((3, usize::MAX)),
         "min" | "max" => Some((2, usize::MAX)),
         _ => None,
@@ -281,6 +283,9 @@ mod wrong_arity_sweep {
         "zeta_prime",
         "hankel1",
         "hankel2",
+        "beta",
+        "uppergamma",
+        "lowergamma",
     ];
 
     type Op<'a> = (&'static str, Box<dyn Fn() + 'a>);

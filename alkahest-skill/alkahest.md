@@ -1589,6 +1589,19 @@ ak.expand_hyper(ak.hyper([1, 1], [2], z))   # -log(1 - z)/z; terminating → pol
 - `polygamma(1/2, x)` → `E-SPECFN-008`; pole literal → `E-SPECFN-006`; `hyper(..., [-2], z)` → `E-SPECFN-006`.
 - `series` handles Γ/ψ/ψ⁽ⁿ⁾ at `0, −1, −2, …` (residue of Γ at −k is (−1)^k/k!).
 
+## Beta, incomplete gamma; Beta-family / Feynman-parameter definite integrals
+
+```python
+ak.beta(a, b); ak.uppergamma(s, z); ak.lowergamma(s, z)   # SymPy names/orders; Arb values
+ak.uppergamma(p.rational(1, 2), z)  # sqrt(pi)*erfc(sqrt(z)); integer s → elementary
+ak.integrate(x**a*(1-x)**b, x, p.integer(0), p.integer(1))  # Γ(a+1)Γ(b+1)/Γ(a+b+2), states a+1>0, b+1>0
+ak.integrate(x**(s-1)*ak.exp(-x), x, c, p.pos_infinity())  # uppergamma(s, c) (c > 0 established)
+ak.integrate(ak.log(m**2 - x*(1-x)*k**2), x, p.integer(0), p.integer(1))  # Piecewise on κ = m²/k² − 1/4
+```
+
+- Also `∫₀^∞ x^p/(c+dx)^r`, `∫₀^{π/2} sin^p cos^q`, `∫ x^p e^{−r x²}` (erfc tails), `∫₀¹ Q^{−n}` (states κ > 0).
+- Rates/slopes/`Q(ends) > 0` must be established; unknown convergence → side condition; known divergence → E-INT-001.
+
 ## Orthogonal polynomials, Y_lm, 3j/6j/Clebsch–Gordan
 
 ```python

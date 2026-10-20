@@ -211,6 +211,8 @@ from .alkahest import (  # noqa: F401
     bessel_j1,
     bessel_k,
     bessel_y,
+    # F11 — Beta and incomplete gamma functions
+    beta,
     # M6 — binomial(a, b) mod p**k (Lucas / Granville)
     binomial_mod,
     bound_on_box,
@@ -314,6 +316,7 @@ from .alkahest import (  # noqa: F401
     log_integral,
     lorentz_contract,
     lower_to_first_order,
+    lowergamma,
     make_rule,
     match_pattern,
     # The eigenvalue gaps `Matrix.matrix_exp` divided by without settling them
@@ -413,6 +416,7 @@ from .alkahest import (  # noqa: F401
     # 3.10.0 — trigamma; this is what `digamma` differentiates to
     trigamma,
     truth_table,
+    uppergamma,
     vacuum_expectation,
     verified_integral,
     verified_no_roots,
@@ -3261,6 +3265,7 @@ __all__ = [
     "bessel_j1",
     "bessel_k",
     "bessel_y",
+    "beta",
     # M6 — binomial(a, b) mod p**k (Lucas / Granville)
     "binomial_mod",
     "bode",
@@ -3401,6 +3406,7 @@ __all__ = [
     "log_integral",
     "lorentz_contract",
     "lower_to_first_order",
+    "lowergamma",
     "lqr",
     "lyapunov",
     "make_rule",
@@ -3560,6 +3566,7 @@ __all__ = [
     "unflatten_exprs",
     "unicode_str",
     "units",
+    "uppergamma",
     "vacuum_expectation",
     "verified_integral",
     "verified_no_roots",
