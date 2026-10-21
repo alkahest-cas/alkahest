@@ -294,6 +294,7 @@ from .alkahest import (  # noqa: F401
     horner,
     hurwitz_zeta,
     hyper,
+    hyper_transform,
     im,
     integrate,
     interval_eval,
@@ -3386,6 +3387,7 @@ __all__ = [
     "horner",
     "hurwitz_zeta",
     "hyper",
+    "hyper_transform",
     "im",
     "integrate",
     # P1 search plumbing item 5 — batch/streaming fan-out

@@ -178,9 +178,14 @@ into a float.
    ``gamma(n) = (n-1)!``, ``gamma(m + 1/2)`` a rational multiple of
    ``sqrt(pi)``; ``digamma`` at every integer shift of ``1, 1/2, 1/3, 2/3,
    1/4, 3/4, 1/6, 5/6`` (``digamma(1) = -EulerGamma``,
-   ``digamma(1/2) = -EulerGamma - 2*log(2)``); ``polygamma(n, ·)`` at integer
-   and half-integer points via ``(-1)^{n+1} n! zeta(n+1, a)``
-   (``trigamma(1) = pi**2/6``, ``polygamma(2, 1) = -2*zeta(3)``).
+   ``digamma(1/2) = -EulerGamma - 2*log(2)``) and at every other rational
+   ``p/q`` with ``q <= 100`` by Gauss's digamma theorem
+   (``-EulerGamma - log(2q) - (pi/2)*cot(pi p/q) + 2*sum cos(2 pi k p/q)*log(sin(pi k/q))``);
+   ``polygamma(n, ·)`` at every rational via ``(-1)^{n+1} n! zeta(n+1, a)``
+   (``trigamma(1) = pi**2/6``, ``polygamma(2, 1) = -2*zeta(3)``,
+   ``polygamma(2, 1/4) = -2*pi**3 - 56*zeta(3)``) — classical at integers,
+   half-integers, quarters and, for even ``n``, thirds and sixths, else the
+   exact ``hurwitz_zeta(n + 1, f)``.
    ``d/dx polygamma(n, x) = polygamma(n + 1, x)``; ``d/dn`` is refused
    (``E-DIFF-001``). ``E-SPECFN-008`` for an order that is not an integer
    ``>= 0``, ``E-SPECFN-006`` at a pole.
@@ -201,8 +206,12 @@ Generalized hypergeometric function
    ``hyper(p, q, a1, …, ap, b1, …, bq, z)`` and parses back; common
    parameters cancel, an upper ``0`` or ``z = 0`` gives ``1``.
    ``d/dz = prod(a)/prod(b) * hyper(a + 1, b + 1, z)``; a derivative in a
-   parameter is refused. ``f64`` and ball values from Arb (real values only;
-   principal branch for ``p = q + 1``). ``E-SPECFN-006`` for a lower
+   parameter is refused. ``f64`` and ball values from Arb (real values;
+   principal branch for ``p = q + 1``); complex values through
+   ``evaluate(..., mode="complex")`` (``acb_hypgeom_*``): ``2F1`` is
+   continued analytically to the cut plane, and on the cut ``[1, oo)`` is the
+   limit from below (mpmath's convention); other ``p = q + 1`` series
+   decline for ``|z| >= 1``. ``E-SPECFN-006`` for a lower
    parameter that is a non-positive integer (unless the series terminates
    first).
 
@@ -220,8 +229,30 @@ Generalized hypergeometric function
    Bessel ``J``/``I``; for ``z = -w`` also ``2F1(1/2, 1; 3/2; -w) =
    atan(sqrt(w))/sqrt(w)`` and ``2F1(1/2, 1/2; 3/2; -w) =
    asinh(sqrt(w))/sqrt(w)``; ``(s+1)Fs(1, …, 1; 2, …, 2; z) = polylog(s, z)/z``.
+   Also the ``2F1(a, a + 1/2; c; z)`` families for ``c = 1/2, 3/2, 2a,
+   2a + 1`` (A&S 15.1.9-14), ``1F1(a; 2a; z)`` as Bessel ``I``,
+   ``1F1(a; a+1; -w) = a*w**(-a)*lowergamma(a, w)``, and any node
+   one Euler, Pfaff or Kummer transformation away from a known form
+   (``1F1(1; 3/2; z) = exp(z)*sqrt(pi)*erf(sqrt(z))/(2*sqrt(z))``).
    Other nodes are kept. :func:`sum_definite` produces these nodes for
    infinite sums of hypergeometric terms (``Σ q**k/k! = exp(q)``).
+
+.. function:: hyper_transform(expr, kind)
+
+   Rewrite one ``2F1`` node (``1F1`` for ``"kummer"``) by a classical
+   transformation and return the exact right-hand side: ``"euler"``,
+   ``"pfaff"`` (alias ``"z/(z-1)"``), ``"pfaff_b"``, the two-term connection
+   formulas ``"1-z"``, ``"1/z"``, ``"1/(1-z)"``, ``"1-1/z"`` with Gamma
+   prefactors (A&S 15.3.6-15.3.9), ``"quadratic"`` (DLMF 15.8.13 / 15.8.15 /
+   15.8.18 for ``c = 2b``, ``c = a - b + 1``, ``2c = a + b + 1``) and
+   ``"kummer"``. Each identity holds on a stated region of ``z`` (``z`` off
+   ``[1, oo)`` for Euler/Pfaff, off ``(-oo, 0] U [1, oo)`` for ``1-z`` and
+   ``1-1/z``, off ``[0, oo)`` for ``1/z`` and ``1/(1-z)``, ``|z| < 1`` and
+   ``Re z < 1/2`` for two quadratic ones); a symbolic ``a - b`` /
+   ``c - a - b`` is taken to be a non-integer. ``E-SPECFN-009`` for the
+   logarithmic case (an integer difference), a literal ``z`` outside the
+   region, parameters in no quadratic family, or a node of the wrong
+   ``p, q``; ``ValueError`` for an unknown ``kind``.
 
 Beta and incomplete gamma functions
 -----------------------------------

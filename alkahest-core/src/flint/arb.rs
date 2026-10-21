@@ -591,6 +591,48 @@ extern "C" {
         z: *const AcbStruct,
         prec: slong,
     );
+    /// Γ(z) on a complex ball (F26: the Gamma coefficients of the ₂F₁
+    /// connection formulas in the complex evaluator).
+    pub fn acb_gamma(res: *mut AcbStruct, z: *const AcbStruct, prec: slong);
+    // Complex hypergeometric functions (F26), used by
+    // `crate::specfun::hyper::complex_value`. `acb_hypgeom_2f1` continues
+    // ₂F₁ analytically to the whole cut plane; `acb_hypgeom_pfq` sums the
+    // series only (|z| < 1 for p = q + 1).
+    pub fn acb_hypgeom_0f1(
+        res: *mut AcbStruct,
+        a: *const AcbStruct,
+        z: *const AcbStruct,
+        regularized: c_int,
+        prec: slong,
+    );
+    pub fn acb_hypgeom_m(
+        res: *mut AcbStruct,
+        a: *const AcbStruct,
+        b: *const AcbStruct,
+        z: *const AcbStruct,
+        regularized: c_int,
+        prec: slong,
+    );
+    pub fn acb_hypgeom_2f1(
+        res: *mut AcbStruct,
+        a: *const AcbStruct,
+        b: *const AcbStruct,
+        c: *const AcbStruct,
+        z: *const AcbStruct,
+        flags: c_int,
+        prec: slong,
+    );
+    /// `a` and `b` point at contiguous arrays of `p` and `q` complex balls.
+    pub fn acb_hypgeom_pfq(
+        res: *mut AcbStruct,
+        a: *const AcbStruct,
+        p: slong,
+        b: *const AcbStruct,
+        q: slong,
+        z: *const AcbStruct,
+        regularized: c_int,
+        prec: slong,
+    );
     /// `a` and `b` point at contiguous arrays of `p` and `q` balls.
     pub fn arb_hypgeom_pfq(
         res: *mut ArbStruct,

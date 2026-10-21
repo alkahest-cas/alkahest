@@ -520,9 +520,13 @@ fn lowergamma(py: Python<'_>, s: &Bound<'_, PyAny>, z: &Bound<'_, PyAny>) -> PyR
 /// back; parameters common to both lists cancel, and an upper ``0`` or
 /// ``z = 0`` gives ``1``.  ``d/dz`` shifts every parameter by one
 /// (``prod(a)/prod(b) * hyper(a+1, b+1, z)``); a derivative in a parameter is
-/// refused.  ``f64`` and ball values come from Arb (real values only, the
-/// principal branch for ``p = q + 1``).  Use ``expand_hyper`` for closed
-/// forms.
+/// refused.  ``f64`` and ball values come from Arb (real values, the
+/// principal branch for ``p = q + 1``); ``evaluate(..., mode="complex")``
+/// gives complex values, with ``2F1`` continued analytically past
+/// ``|z| = 1`` (on the cut ``[1, oo)`` the limit from below, as in mpmath;
+/// other ``p = q + 1`` series decline for ``|z| >= 1``).  Use
+/// ``expand_hyper`` for closed forms and ``hyper_transform`` for the
+/// Euler/Pfaff/connection/quadratic/Kummer transformations.
 ///
 /// Raises ``SpecialFunctionError`` (``E-SPECFN-006``) for a lower parameter
 /// that is a non-positive integer (unless the series terminates first).
@@ -557,7 +561,11 @@ fn hyper(
 /// ``2F1(a,b;c;1) = gamma(c)gamma(c-a-b)/(gamma(c-a)gamma(c-b))`` when
 /// ``c-a-b`` is a positive literal, ``1F1(1;2;z) = (exp(z)-1)/z``,
 /// ``1F1(1/2;3/2;-w) = sqrt(pi)*erf(sqrt(w))/(2 sqrt(w))``, and ``0F1`` as
-/// ``cosh``/``sinh`` or Bessel ``J``/``I``.  Other nodes are kept.
+/// ``cosh``/``sinh`` or Bessel ``J``/``I``; the ``2F1(a, a+1/2; c; z)``
+/// families for ``c = 1/2, 3/2, 2a, 2a+1``, ``1F1(a; a+1; -w) = a*w**(-a)*lowergamma(a, w)``, ``1F1(a; 2a; z)`` as Bessel
+/// ``I``, and any node one Euler, Pfaff or Kummer transformation away from
+/// one of these (``1F1(1; 3/2; z)`` becomes an ``erf``).  Other nodes are
+/// kept.
 ///
 /// Raises ``SpecialFunctionError`` (``E-SPECFN-004``) for a terminating
 /// series of degree above 200.
@@ -571,7 +579,59 @@ fn expand_hyper(py: Python<'_>, expr: PyRef<'_, PyExpr>) -> PyResult<PyExpr> {
     Ok(PyExpr { id, pool: pool_py })
 }
 
+/// Rewrite one hypergeometric node by a classical transformation and return
+/// the exact right-hand side (Gamma prefactors as ``gamma`` nodes, the
+/// transformed series as new ``hyper`` nodes).
+///
+/// ``kind`` is one of (non-regularized A&S 15.3 / DLMF 15.8, principal
+/// branches; each identity holds on the region given, which is part of the
+/// result's contract):
+///
+/// * ``"euler"`` — ``(1-z)**(c-a-b) * 2F1(c-a, c-b; c; z)``, ``z`` off ``[1, oo)``;
+/// * ``"pfaff"`` (alias ``"z/(z-1)"``) — ``(1-z)**(-a) * 2F1(a, c-b; c; z/(z-1))``;
+///   ``"pfaff_b"`` the same in ``b``;
+/// * ``"1-z"``, ``"1/z"``, ``"1/(1-z)"``, ``"1-1/z"`` — the two-term connection
+///   formulas with Gamma coefficients (A&S 15.3.6-15.3.9); ``1-z`` and
+///   ``1-1/z`` hold for ``z`` off ``(-oo, 0] U [1, oo)``, ``1/z`` and
+///   ``1/(1-z)`` for ``z`` off ``[0, oo)``; a symbolic ``c-a-b`` / ``a-b`` is
+///   taken to be a non-integer;
+/// * ``"quadratic"`` — the quadratic transformation of the family the
+///   parameters are in: ``c = 2b`` (DLMF 15.8.13, ``z`` off ``[1, oo)``),
+///   ``c = a-b+1`` (15.8.15, ``|z| < 1``), ``2c = a+b+1`` (15.8.18,
+///   ``Re z < 1/2``);
+/// * ``"kummer"`` (``1F1``) — ``exp(z) * 1F1(b-a; b; -z)``, every ``z``.
+///
+/// Raises ``SpecialFunctionError`` (``E-SPECFN-009``) when ``expr`` is not a
+/// ``2F1`` (``1F1`` for ``"kummer"``) node, for the logarithmic case of a
+/// two-term formula (``c-a-b`` or ``a-b`` an integer), for ``c`` a
+/// non-positive integer, and for parameters in no quadratic family;
+/// ``ValueError`` for an unknown ``kind``.
+///
+/// >>> import alkahest as ak
+/// >>> p = ak.ExprPool(); z = p.symbol("z")
+/// >>> ak.hyper_transform(ak.hyper([1, 1], [3], z), "euler")   # (1-z) * 2F1(2, 2; 3; z)
+#[pyfunction]
+fn hyper_transform(py: Python<'_>, expr: PyRef<'_, PyExpr>, kind: &str) -> PyResult<PyExpr> {
+    let Some(t) = core::HyperTransformation::from_name(kind) else {
+        let names: Vec<&str> = core::HyperTransformation::ALL
+            .iter()
+            .map(|t| t.name())
+            .collect();
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "hyper_transform: unknown kind {kind:?}; expected one of {}",
+            names.join(", ")
+        )));
+    };
+    let pool_py = expr.pool.clone_ref(py);
+    let id = {
+        let pool = &pool_py.borrow(py).inner;
+        core::hyper_transform(expr.id, t, pool).map_err(specfn_err)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(hyper_transform, m)?)?;
     m.add_function(wrap_pyfunction!(euler_gamma, m)?)?;
     m.add_function(wrap_pyfunction!(catalan, m)?)?;
     m.add_function(wrap_pyfunction!(glaisher, m)?)?;

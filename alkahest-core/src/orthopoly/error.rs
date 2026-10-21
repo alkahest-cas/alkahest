@@ -19,6 +19,7 @@ use crate::errors::AlkahestError;
 /// | `E-SPECFN-006` | [`Pole`](Self::Pole) | the function has a pole at the requested point (`zeta(1)`, `polylog(1, 1)`) |
 /// | `E-SPECFN-007` | [`OrderNotInteger`](Self::OrderNotInteger) | an order that must be an integer literal is not one (`spherical_jn(1/2, x)`) |
 /// | `E-SPECFN-008` | [`InvalidOrder`](Self::InvalidOrder) | an order that must be a non-negative integer is not one (`polygamma(1/2, x)`, `polygamma(-1, x)`) |
+/// | `E-SPECFN-009` | [`TransformationNotApplicable`](Self::TransformationNotApplicable) | a hypergeometric transformation that does not apply to the node: the logarithmic case of a two-term ₂F₁ connection formula (`a − b` or `c − a − b` an integer), parameters outside every quadratic family, or a node of the wrong `p, q` |
 /// | `E-BUDGET-*` | [`Budget`](Self::Budget) | the active `Budget` ran out |
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -51,6 +52,14 @@ pub enum SpecialFunctionError {
     InvalidOrder {
         function: &'static str,
         value: String,
+    },
+    /// A hypergeometric transformation that does not apply to the node
+    /// (F26): a degenerate (logarithmic) parameter case of a connection
+    /// formula, parameters outside the transformation's family, or a node
+    /// that is not the `ₚFq` the transformation is for.
+    TransformationNotApplicable {
+        transformation: &'static str,
+        reason: String,
     },
 }
 
@@ -89,6 +98,10 @@ impl fmt::Display for SpecialFunctionError {
             SpecialFunctionError::InvalidOrder { function, value } => {
                 write!(f, "{function}: the order {value} must be a non-negative integer")
             }
+            SpecialFunctionError::TransformationNotApplicable {
+                transformation,
+                reason,
+            } => write!(f, "the {transformation} transformation does not apply: {reason}"),
             SpecialFunctionError::Budget(b) => write!(f, "{b}"),
         }
     }
@@ -107,6 +120,7 @@ impl AlkahestError for SpecialFunctionError {
             SpecialFunctionError::Pole { .. } => "E-SPECFN-006",
             SpecialFunctionError::OrderNotInteger { .. } => "E-SPECFN-007",
             SpecialFunctionError::InvalidOrder { .. } => "E-SPECFN-008",
+            SpecialFunctionError::TransformationNotApplicable { .. } => "E-SPECFN-009",
             SpecialFunctionError::Budget(b) => b.code(),
         }
     }
@@ -142,6 +156,11 @@ impl AlkahestError for SpecialFunctionError {
             SpecialFunctionError::InvalidOrder { .. } => Some(
                 "polygamma(n, x) is defined for an integer order n >= 0 (n = 0 is digamma, \
                  n = 1 trigamma); substitute such an integer",
+            ),
+            SpecialFunctionError::TransformationNotApplicable { .. } => Some(
+                "evaluate the node numerically (evaluate / interval_eval continue 2F1 to the \
+                 whole cut plane), or pick a transformation whose family the parameters \
+                 belong to",
             ),
             SpecialFunctionError::Budget(b) => b.remediation(),
         }

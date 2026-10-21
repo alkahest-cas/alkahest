@@ -137,13 +137,14 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
                                  different units inside one sum)
     E-TENSOR-001 … E-TENSOR-010  TensorError (alkahest.tensor; 009 = an abstract-index
                                  error, raised from Python)
-    E-SPECFN-001 … E-SPECFN-008  SpecialFunctionError (orthogonal polynomials,
+    E-SPECFN-001 … E-SPECFN-009  SpecialFunctionError (orthogonal polynomials,
                                  spherical harmonics, 3j/6j/Clebsch–Gordan,
                                  Bessel/Airy/zeta/polylog; 001 = not an integer
                                  or half-integer, 004 = past the exact-
                                  construction cap, 006 = a pole such as
                                  zeta(1), 007 = non-integer spherical order,
-                                 008 = polygamma order not an integer >= 0)
+                                 008 = polygamma order not an integer >= 0,
+                                 009 = hyper_transform does not apply)
     E-NC-001 … E-NC-007          NcError (noncommutative algebra; 001 = rewriting
                                  did not terminate within max_steps, 003 = a rule
                                  whose left side is not one word, 007 = a vacuum
