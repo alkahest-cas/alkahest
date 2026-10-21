@@ -215,6 +215,7 @@ expand the same way.
    ``|n| <= 64``, when the two exponents have opposite signs), reflection
    (``gamma(a) gamma(m - a) = pi/sin(pi a)`` times a rising factorial) and
    duplication (``gamma(a) gamma(a + 1/2) = 2**(1 - 2a) sqrt(pi) gamma(2a)``).
+   ``beta(a, b)`` is first written ``gamma(a) gamma(b)/gamma(a + b)``.
    Every rewrite is an identity of meromorphic functions. When the ``gamma``
    factors cancel, the result is the continuous extension across the poles
    ``x = 0, -1, ...``, where the input is undefined. :func:`is_zero` uses it,
@@ -224,7 +225,8 @@ expand the same way.
 ``loggamma``, ``gamma``, ``factorial``, ``binomial`` and ``Gamma`` products
 with linear arguments ``a*x + b`` (rational ``a > 0``), ``digamma`` /
 ``polygamma``, Hankel's expansions of ``bessel_j/y/i/k`` of rational order,
-``erfc``, ``Ei`` and the Airy functions at ``+oo``. The coefficients are exact,
+``erfc``, ``Ei``, ``uppergamma(s, a*x)`` (rational ``s``) and the Airy
+functions at ``+oo``. The coefficients are exact,
 and every expansion is checked numerically against the function. See the
 user-guide chapter for the table.
 

@@ -220,6 +220,34 @@ def test_modified_bessel_coefficients_are_dlmf(px):
         assert sp.simplify(_sym(i1[k]) / lead * X**k) == w, k
 
 
+def test_upper_incomplete_gamma(px):
+    p, x = px
+    # Γ(s, x) ~ x^{s-1} e^{-x} (1 + (s-1)/x + (s-1)(s-2)/x² + …)  (DLMF 8.11.2)
+    _check_numeric(ak.uppergamma(p.rational(1, 3), x), x, 4)
+    _check_numeric(ak.uppergamma(p.rational(7, 3), 2 * x), x, 3)
+    # Half-integer s simplifies to e^{-x}·(…) + sqrt(pi)·erfc(sqrt(x)) pieces.
+    _check_numeric(ak.uppergamma(p.rational(5, 2), x), x, 3)
+    _check_numeric(ak.erfc(ak.sqrt(4 * x)), x, 3)
+    # uppergamma(1/2, x) simplifies to sqrt(pi)*erfc(sqrt(x)): argument x^(1/2).
+    _check_numeric(ak.uppergamma(p.rational(1, 2), x), x, 3)
+    _check_numeric(ak.bessel_j(0, ak.sqrt(x)), x, 2)
+    # A positive integer s terminates: Γ(3, x) = e^{-x}(x² + 2x + 2).
+    terms = asymptotic_expand(ak.uppergamma(3, x), x, 6)
+    assert len(terms) == 3
+    total = sum(_sym(t) for t in terms)
+    assert sp.simplify(total - sp.exp(-X) * (X**2 + 2 * X + 2)) == 0
+
+
+def test_gammasimp_beta():
+    p = ak.ExprPool()
+    x, y = p.symbol("x", "positive"), p.symbol("y", "positive")
+    assert ak.is_zero(ak.gammasimp(ak.beta(x, 1)) - 1 / x) is True
+    lhs = ak.beta(x, y)
+    rhs = ak.gamma(x) * ak.gamma(y) / ak.gamma(x + y)
+    assert ak.is_zero(lhs - rhs) is True
+    assert ak.gammasimp(ak.uppergamma(x, y)) == ak.uppergamma(x, y)
+
+
 def test_factorial_and_central_binomial(px):
     p = ak.ExprPool()
     n = p.symbol("n", "positive")

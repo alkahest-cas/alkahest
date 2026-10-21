@@ -650,7 +650,7 @@ fn bessel_series(
 
 /// `erfc(ax) ~ e^{−a²x²}/(√π) Σ (−1)^k (2k−1)!!/2^k (ax)^{−2k−1}`.
 fn erfc_series(a: &Rational, var: ExprId, k_max: usize, pool: &ExprPool) -> Series {
-    let inv_sqrt_pi = pool.pow(pi(pool), pool.rational(-1, 2));
+    let inv_sqrt_pi = pool.pow(pool.func("sqrt", vec![pi(pool)]), pool.integer(-1));
     let isp = 1.0 / std::f64::consts::PI.sqrt();
     let mut terms = Vec::new();
     let mut c = Rational::from(1); // (−1)^k (2k−1)!!/2^k
@@ -701,6 +701,52 @@ fn ei_series(a: &Rational, var: ExprId, k_max: usize, pool: &ExprPool) -> Series
     }
 }
 
+/// `Γ(s, ax) ~ e^{−ax} (ax)^{s−1} Σ_k (s−1)(s−2)⋯(s−k) / (ax)^k` (DLMF 8.11.2)
+/// for a rational `s`; finite (and exact) at a positive integer `s`.
+fn uppergamma_series(
+    s: &Rational,
+    a: &Rational,
+    var: ExprId,
+    k_max: usize,
+    pool: &ExprPool,
+) -> Series {
+    let af = q_f64(a);
+    let mut terms = Vec::new();
+    let mut c = Rational::from(1); // (s−1)(s−2)⋯(s−k)
+    let mut exact = false;
+    for k in 0..k_max {
+        if k > 0 {
+            c *= Rational::from(s - k as i64);
+        }
+        if c == 0 {
+            exact = true;
+            break;
+        }
+        // coefficient of x^{s−1−k}: c · a^{s−1−k}
+        let p = Rational::from(s - 1) - Rational::from(k as i64);
+        let a_pow = if *a == 1 {
+            pool.integer(1)
+        } else {
+            pool.pow(rat_node(pool, a), rat_node(pool, &p))
+        };
+        terms.push(Term {
+            pow: p.clone(),
+            logp: 0,
+            coeff: simplify(mk_mul(pool, vec![rat_node(pool, &c), a_pow]), pool).value,
+            amp: q_f64(&c).abs() * af.powf(q_f64(&p)),
+        });
+    }
+    Series {
+        scale: Some(pool.func(
+            "exp",
+            vec![mk_mul(pool, vec![rat_node(pool, &-a.clone()), var])],
+        )),
+        terms,
+        cut: (!exact).then(|| Rational::from(s - 1) - Rational::from(k_max as i64)),
+        x_min: ((q_f64(s).abs() + 1.0) / af).max(1.0),
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Airy {
     Ai,
@@ -731,7 +777,7 @@ fn airy_u(k_max: usize) -> Vec<Rational> {
 fn airy_series(kind: Airy, a: &Rational, var: ExprId, k_max: usize, pool: &ExprPool) -> Series {
     let u = airy_u(k_max);
     let af = q_f64(a);
-    let sp = pool.pow(pi(pool), pool.rational(-1, 2));
+    let sp = pool.pow(pool.func("sqrt", vec![pi(pool)]), pool.integer(-1));
     let (base_pow, half, decaying, prime) = match kind {
         Airy::Ai => (rq(-1, 4), true, true, false),
         Airy::Bi => (rq(-1, 4), false, false, false),
@@ -806,6 +852,7 @@ const SPECIAL_HEADS: &[&str] = &[
     "bessel_j1",
     "erfc",
     "Ei",
+    "uppergamma",
     "airy_ai",
     "airy_bi",
     "airy_ai_prime",
@@ -895,6 +942,113 @@ fn slope(arg: ExprId, var: ExprId, pool: &ExprPool) -> Option<Rational> {
     (a > 0 && b == 0).then_some(a)
 }
 
+/// `arg = a·x^r` with rational `a > 0`, `r > 0`.
+fn monomial(arg: ExprId, var: ExprId, pool: &ExprPool) -> Option<(Rational, Rational)> {
+    let power = |e: ExprId| -> Option<Rational> {
+        if e == var {
+            return Some(Rational::from(1));
+        }
+        match pool.get(e) {
+            ExprData::Pow { base, exp } if base == var => rational_literal(pool, exp),
+            ExprData::Func { name, args }
+                if name == "sqrt" && args.len() == 1 && args[0] == var =>
+            {
+                Some(rq(1, 2))
+            }
+            _ => None,
+        }
+    };
+    // √(c·x^r) = √c·x^{r/2} when √c is rational.
+    if let ExprData::Func { name, args } = pool.get(arg) {
+        if name == "sqrt" && args.len() == 1 && args[0] != var {
+            let (c, r) = monomial(args[0], var, pool)?;
+            let (n, d) = (c.numer().clone(), c.denom().clone());
+            if !n.is_perfect_square() || !d.is_perfect_square() {
+                return None;
+            }
+            return Some((Rational::from((n.sqrt(), d.sqrt())), r / 2));
+        }
+    }
+    let (a, r) = match pool.get(arg) {
+        ExprData::Mul(xs) if xs.len() == 2 => {
+            let (c, m) = if rational_literal(pool, xs[0]).is_some() {
+                (xs[0], xs[1])
+            } else {
+                (xs[1], xs[0])
+            };
+            (rational_literal(pool, c)?, power(m)?)
+        }
+        _ => match power(arg) {
+            Some(r) => (Rational::from(1), r),
+            None => (slope(arg, var, pool)?, Rational::from(1)),
+        },
+    };
+    (a > 0 && r > 0).then_some((a, r))
+}
+
+/// `base^k` for `base = a·x^r` (or `√(a·x^r)`): `(a^k, r·k)`, the constant as
+/// an exact node. `None` for anything else.
+fn monomial_power(
+    base: ExprId,
+    k: &Rational,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<(ExprId, Rational)> {
+    let (inner, k) = match pool.get(base) {
+        ExprData::Func { name, args } if name == "sqrt" && args.len() == 1 => {
+            (args[0], Rational::from(k / 2))
+        }
+        _ => (base, k.clone()),
+    };
+    if inner == var {
+        return None;
+    }
+    let (a, r) = monomial(inner, var, pool)?;
+    let c = if a == 1 {
+        pool.integer(1)
+    } else {
+        pool.pow(rat_node(pool, &a), rat_node(pool, &k))
+    };
+    Some((simplify(c, pool).value, r * k))
+}
+
+/// Build a series in `z = a·t` with the builder, then put `t = x^r`: powers
+/// and the truncation scale by `r`, and `t` inside the scale and the
+/// oscillatory coefficients becomes `x^r`. `erfc(√x)` — what `uppergamma(½, x)`
+/// simplifies to — is the case that needs it.
+fn via_monomial(
+    u: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    build: impl FnOnce(&Rational, ExprId) -> Series,
+) -> Option<Series> {
+    let (a, r) = monomial(u, var, pool)?;
+    if r == 1 {
+        return Some(build(&a, var));
+    }
+    let t = pool.symbol("__asy_mono", crate::kernel::Domain::Positive);
+    let s = build(&a, t);
+    let mut m = HashMap::new();
+    m.insert(t, pool.pow(var, rat_node(pool, &r)));
+    let put = |e: ExprId| simplify(subs(e, &m, pool), pool).value;
+    let terms = s
+        .terms
+        .into_iter()
+        .map(|tm| Term {
+            pow: Rational::from(&tm.pow * &r),
+            logp: tm.logp,
+            coeff: put(tm.coeff),
+            amp: tm.amp,
+        })
+        .collect();
+    Some(Series {
+        scale: s.scale.map(put),
+        terms,
+        cut: s.cut.map(|c| c * &r),
+        x_min: s.x_min.powf(1.0 / q_f64(&r)).max(1.0),
+    })
+}
+
 /// The series of one special-function factor `head(args)` (power 1), or
 /// `None` when it is not one this module knows.
 fn atom_series(
@@ -929,14 +1083,9 @@ fn atom_series(
         }
         ("bessel_j0" | "bessel_j1", [u]) => {
             let nu = Rational::from(i64::from(name == "bessel_j1"));
-            Some(bessel_series(
-                Cyl::J,
-                &nu,
-                &slope(*u, var, pool)?,
-                var,
-                k_max,
-                pool,
-            ))
+            via_monomial(*u, var, pool, |a, t| {
+                bessel_series(Cyl::J, &nu, a, t, k_max, pool)
+            })
         }
         ("bessel_j" | "bessel_y" | "bessel_i" | "bessel_k", [nu, u]) => {
             let kind = match name {
@@ -949,17 +1098,21 @@ fn atom_series(
             if q_f64(&nu).abs() > 1000.0 {
                 return None;
             }
-            Some(bessel_series(
-                kind,
-                &nu,
-                &slope(*u, var, pool)?,
-                var,
-                k_max,
-                pool,
-            ))
+            via_monomial(*u, var, pool, |a, t| {
+                bessel_series(kind, &nu, a, t, k_max, pool)
+            })
         }
-        ("erfc", [u]) => Some(erfc_series(&slope(*u, var, pool)?, var, k_max, pool)),
-        ("Ei", [u]) => Some(ei_series(&slope(*u, var, pool)?, var, k_max, pool)),
+        ("erfc", [u]) => via_monomial(*u, var, pool, |a, t| erfc_series(a, t, k_max, pool)),
+        ("Ei", [u]) => via_monomial(*u, var, pool, |a, t| ei_series(a, t, k_max, pool)),
+        ("uppergamma", [s, u]) => {
+            let s = order(*s)?;
+            if q_f64(&s).abs() > 1000.0 {
+                return None;
+            }
+            via_monomial(*u, var, pool, |a, t| {
+                uppergamma_series(&s, a, t, k_max, pool)
+            })
+        }
         ("airy_ai" | "airy_bi" | "airy_ai_prime" | "airy_bi_prime", [u]) => {
             let kind = match name {
                 "airy_ai" => Airy::Ai,
@@ -967,10 +1120,18 @@ fn atom_series(
                 "airy_ai_prime" => Airy::AiPrime,
                 _ => Airy::BiPrime,
             };
-            Some(airy_series(kind, &slope(*u, var, pool)?, var, k_max, pool))
+            via_monomial(*u, var, pool, |a, t| airy_series(kind, a, t, k_max, pool))
         }
         _ => None,
     }
+}
+
+/// `g(x) → ±∞` polynomially (its leading power-scale exponent is positive).
+fn grows(g: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    power_scale_coeffs(g, var, 4, pool)
+        .ok()
+        .and_then(|(c, _)| c.iter().map(|(p, _)| *p).max())
+        .is_some_and(|p| p > 0)
 }
 
 /// The series of one summand (a product), or `None`.
@@ -1007,6 +1168,11 @@ fn product_series(e: ExprId, var: ExprId, k_max: usize, pool: &ExprPool) -> Opti
                     amp: 1.0,
                 }]));
             }
+            // (a·x^r)^q and √(a·x^r): the monomial a^q·x^{rq}.
+            _ if base != var && monomial_power(base, &k, var, pool).is_some() => {
+                let (c, p) = monomial_power(base, &k, var, pool)?;
+                series.push(Series::exact(vec![term(p, 0, c, pool)]));
+            }
             // √x^q = x^{q/2}.
             ExprData::Func { name, args }
                 if name == "sqrt" && args.len() == 1 && args[0] == var =>
@@ -1017,6 +1183,26 @@ fn product_series(e: ExprId, var: ExprId, k_max: usize, pool: &ExprPool) -> Opti
                     coeff: pool.integer(1),
                     amp: 1.0,
                 }]));
+            }
+            // exp(g(x)): a pure exponential scale (closed forms such as
+            // uppergamma(5/2, x) = e^{−x}(…) + √π erfc(√x)·(…) mix one with
+            // the special-function terms of the same scale).
+            ExprData::Func { name, args }
+                if name == "exp" && args.len() == 1 && grows(args[0], var, pool) =>
+            {
+                let mut sc = Series::exact(vec![Term {
+                    pow: Rational::new(),
+                    logp: 0,
+                    coeff: pool.integer(1),
+                    amp: 1.0,
+                }]);
+                let arg = if k == 1 {
+                    args[0]
+                } else {
+                    simplify(mk_mul(pool, vec![rat_node(pool, &k), args[0]]), pool).value
+                };
+                sc.scale = Some(simplify(pool.func("exp", vec![arg]), pool).value);
+                series.push(sc);
             }
             ExprData::Func { name, args } if name == "gamma" && args.len() == 1 => {
                 let (a, b) = linear(args[0], var, pool)?;
@@ -1087,11 +1273,49 @@ fn product_series(e: ExprId, var: ExprId, k_max: usize, pool: &ExprPool) -> Opti
     Some(acc)
 }
 
+/// The summands of `e` after distributing every product over a sum factor
+/// that mentions a special function (closed forms such as
+/// `uppergamma(5/2, x) = e^{−x}x^{3/2} + 3/2·(e^{−x}x^{1/2} + √π/2·erfc(√x))`
+/// nest them). Polynomial cofactors are left alone.
+fn summands(e: ExprId, var: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>, budget: &mut usize) {
+    if *budget == 0 {
+        out.push(e);
+        return;
+    }
+    *budget -= 1;
+    match pool.get(e) {
+        ExprData::Add(xs) => {
+            for x in xs {
+                summands(x, var, pool, out, budget);
+            }
+        }
+        ExprData::Mul(xs) => {
+            let pos = xs.iter().position(|&f| {
+                matches!(pool.get(f), ExprData::Add(_)) && mentions_special(f, var, pool)
+            });
+            match pos {
+                Some(i) => {
+                    let ExprData::Add(parts) = pool.get(xs[i]) else {
+                        unreachable!()
+                    };
+                    for part in parts {
+                        let mut fs = xs.clone();
+                        fs[i] = part;
+                        summands(simplify(pool.mul(fs), pool).value, var, pool, out, budget);
+                    }
+                }
+                None => out.push(e),
+            }
+        }
+        _ => out.push(e),
+    }
+}
+
 fn total_series(f: ExprId, var: ExprId, k_max: usize, pool: &ExprPool) -> Option<Series> {
-    let summands = match pool.get(f) {
-        ExprData::Add(xs) => xs,
-        _ => vec![f],
-    };
+    let mut parts = Vec::new();
+    let mut budget = 64usize;
+    summands(f, var, pool, &mut parts, &mut budget);
+    let summands = parts;
     let mut acc: Option<Series> = None;
     for s in summands {
         crate::budget::check().ok()?;
@@ -1117,7 +1341,8 @@ pub(super) fn special_expand(
     n_terms: usize,
     pool: &ExprPool,
 ) -> Option<Result<AsymptoticExpansion, AsymptoticError>> {
-    if !mentions_special(f, var, pool) {
+    let special = mentions_special(f, var, pool);
+    if !special && !has_growing_exp(f, var, pool) {
         return None;
     }
     let f = simplify(rewrite_combinatorial(f, pool), pool).value;
@@ -1143,7 +1368,8 @@ pub(super) fn special_expand(
     let next = series.terms.get(take);
     let accepted = gate(gate_form(f, pool), var, &series, &unscaled, next, pool);
     if accepted == 0 {
-        return Some(Err(AsymptoticError::GateFailed));
+        // Without a special function the older exp/log peel gets its turn.
+        return special.then_some(Err(AsymptoticError::GateFailed));
     }
     let terms = unscaled[..accepted]
         .iter()
@@ -1175,6 +1401,27 @@ fn gate_form(e: ExprId, pool: &ExprPool) -> ExprId {
         ExprData::Mul(xs) => pool.mul(xs.iter().map(|&x| gate_form(x, pool)).collect()),
         ExprData::Pow { base, exp } => pool.pow(gate_form(base, pool), gate_form(exp, pool)),
         _ => e,
+    }
+}
+
+/// Some factor of some summand is `exp(g)` with `g → ±∞` polynomially
+/// (`Γ(3, x) = 2e^{−x}(x²/2 + x + 1)` once simplified). Such products are
+/// expanded here too, with the ball gate; the f64 gate of the older peel
+/// underflows at `e^{−10⁴}`.
+fn has_growing_exp(f: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    let is_exp = |e: ExprId| match pool.get(e) {
+        ExprData::Func { name, args } => {
+            name == "exp" && args.len() == 1 && grows(args[0], var, pool)
+        }
+        _ => false,
+    };
+    let in_product = |e: ExprId| match pool.get(e) {
+        ExprData::Mul(xs) => xs.iter().any(|&x| is_exp(x)),
+        _ => is_exp(e),
+    };
+    match pool.get(f) {
+        ExprData::Add(xs) => xs.iter().any(|&x| in_product(x)),
+        _ => in_product(f),
     }
 }
 
@@ -1264,7 +1511,12 @@ fn gate(
                     Some(t) => envelope(t, xv),
                     // Exact: what remains is beyond all orders.
                     None if series.cut.is_none() => 1e-30 * gmag,
-                    None => 0.0,
+                    // Every term the series has was asked for: the rest
+                    // is O(x^cut), sized by the leading amplitude.
+                    None => match &series.cut {
+                        Some(c) => series.terms[0].amp * xv.powf(q_f64(c)),
+                        None => 0.0,
+                    },
                 }
             };
             let rad = residual.rad_f64();

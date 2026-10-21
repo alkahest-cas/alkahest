@@ -33,9 +33,12 @@
 //! `FunctionExpand`); a caller that needs the poles excluded must state
 //! `b ∉ ℤ_{≤0}` itself.
 //!
-//! Nothing that is not one of these products is touched: no numeric
-//! evaluation, no float, no change to `Γ` factors with a non-integer
-//! exponent.
+//! `beta(a, b)` is first written `Γ(a)Γ(b)/Γ(a+b)` (DLMF 5.12.1), as
+//! SymPy's `gammasimp` does, so `beta(x, 1)` becomes `1/x`.
+//!
+//! Nothing else is touched: no numeric evaluation, no float, no change to
+//! `Γ` factors with a non-integer exponent (`uppergamma`/`lowergamma` are
+//! left alone).
 
 use rug::Rational;
 
@@ -90,10 +93,16 @@ fn walk(
             }
         }
         ExprData::Mul(args) => {
-            let a = args
-                .iter()
-                .map(|&x| walk(x, pool, memo))
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut a = Vec::with_capacity(args.len());
+            for &x in &args {
+                let w = walk(x, pool, memo)?;
+                // A rewritten `beta` is itself a product: flatten it so its
+                // Γ factors meet the others.
+                match pool.get(w) {
+                    ExprData::Mul(inner) if w != x => a.extend(inner),
+                    _ => a.push(w),
+                }
+            }
             match combine_product(&a, pool)? {
                 Some(e) => e,
                 None if a == args => expr,
@@ -113,6 +122,23 @@ fn walk(
                 .iter()
                 .map(|&x| walk(x, pool, memo))
                 .collect::<Result<Vec<_>, _>>()?;
+            if name == "beta" && a.len() == 2 {
+                // B(a, b) = Γ(a)Γ(b)/Γ(a+b) (DLMF 5.12.1), an identity of
+                // meromorphic functions; the product rules then see it.
+                let sum = pool.add(vec![a[0], a[1]]);
+                let ratio = pool.mul(vec![
+                    pool.func("gamma", vec![a[0]]),
+                    pool.func("gamma", vec![a[1]]),
+                    pool.pow(pool.func("gamma", vec![sum]), pool.integer(-1)),
+                ]);
+                let r = crate::simplify::simplify(ratio, pool).value;
+                let out = match pool.get(r) {
+                    ExprData::Mul(fs) => combine_product(&fs, pool)?.unwrap_or(r),
+                    _ => r,
+                };
+                memo.insert(expr, out);
+                return Ok(out);
+            }
             if a == args {
                 expr
             } else {
@@ -491,6 +517,27 @@ mod tests {
             let b = crate::jit::eval_interp(out, &env, &p).unwrap();
             assert!((a - b).abs() <= 1e-12 * a.abs(), "{v}: {a} vs {b}");
         }
+    }
+
+    #[test]
+    fn beta_is_written_through_gamma() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Positive);
+        let y = p.symbol("y", Domain::Positive);
+        // B(x, 1) = 1/x
+        let out = gammasimp(p.func("beta", vec![x, p.integer(1)]), &p).unwrap();
+        let diff = p.add(vec![
+            out,
+            p.mul(vec![p.integer(-1), p.pow(x, p.integer(-1))]),
+        ]);
+        assert!(proved_zero(diff, &p), "{}", p.display(out));
+        // B(x, y)·Γ(x+y) − Γ(x)Γ(y) = 0, and the zero test sees it.
+        let lhs = p.mul(vec![p.func("beta", vec![x, y]), g(&p, p.add(vec![x, y]))]);
+        let raw = p.add(vec![lhs, p.mul(vec![p.integer(-1), g(&p, x), g(&p, y)])]);
+        assert!(proved_zero(raw, &p));
+        // uppergamma is not a Γ product: untouched.
+        let ug = p.func("uppergamma", vec![x, y]);
+        assert_eq!(gammasimp(ug, &p).unwrap(), ug);
     }
 
     #[test]

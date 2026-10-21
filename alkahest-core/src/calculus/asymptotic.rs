@@ -33,7 +33,7 @@
 //! built from exact coefficients: Stirling's series for `loggamma`, `gamma`
 //! (and `factorial`, `binomial`, products and quotients of `Γ` with linear
 //! arguments), `digamma`/`polygamma`; Hankel's expansions of
-//! `J_ν`, `Y_ν`, `I_ν`, `K_ν`; `erfc`, `Ei` and the Airy functions. A term
+//! `J_ν`, `Y_ν`, `I_ν`, `K_ν`; `erfc`, `Ei`, `uppergamma` and the Airy functions. A term
 //! may carry an exponential scale (`√(2π) x^{x−½} e^{−x}/(12x)`) or an
 //! oscillatory factor (`√(2/(πx)) cos(x − π/4)`).
 //! Genuinely scale-iterated expansions (nested exp-log hierarchies) are
@@ -172,7 +172,7 @@ impl crate::errors::AlkahestError for AsymptoticError {
             AsymptoticError::UnsupportedScale => {
                 "exp/log scale hierarchies are out of scope for asymptotic_expand; power-scale \
                  (rational/algebraic) terms, single log/exp peels and the special functions \
-                 gamma/loggamma/digamma/polygamma/factorial/binomial, Bessel J/Y/I/K, erfc, Ei \
+                 gamma/loggamma/digamma/polygamma/factorial/binomial, Bessel J/Y/I/K, erfc, Ei, uppergamma \
                  and Airy (rational order, argument a*x + b with a > 0) are supported. For the \
                  asymptotics of a *sum* use experimental.euler_maclaurin"
             }

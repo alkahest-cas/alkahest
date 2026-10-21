@@ -121,7 +121,8 @@ Duplication turns `Γ(a)Γ(a+½+k)` into `2^{1−2a}√π Γ(2a)` times a rising
 factorial. Each rewrite is an identity of meromorphic functions. When the
 `Γ` factors cancel completely (`Γ(x+3)/Γ(x) → x(x+1)(x+2)`), the result is the
 continuous extension across `x ∈ {0, −1, …}`, where the quotient itself is
-undefined. `is_zero` tries `gammasimp`, so `Γ(x)Γ(1−x) − π/sin(πx)` is proved
+undefined. `beta(a, b)` is first written `Γ(a)Γ(b)/Γ(a+b)` (so `beta(x, 1)`
+becomes `1/x`); `uppergamma`/`lowergamma` are left alone. `is_zero` tries `gammasimp`, so `Γ(x)Γ(1−x) − π/sin(πx)` is proved
 zero.
 
 ```python
@@ -150,6 +151,7 @@ asymptotic_expand(ak.erfc(x), x, 2)      # [exp(-x^2)/(sqrt(pi)*x), -exp(-x^2)/(
 | `bessel_j/y(ν, a·x)`, rational `ν` | Hankel, `cos ω`/`sin ω` with `ω = ax − νπ/2 − π/4` | 10.17.3–4 |
 | `bessel_i/k(ν, a·x)` | `e^{±ax}` times Hankel's `a_k(ν)` | 10.40.1–2 |
 | `erfc(a·x)`, `Ei(a·x)` | `e^{−a²x²}`, `e^{ax}` times the classical series | 7.12.1, 6.12.2 |
+| `uppergamma(s, a·x)`, rational `s` | `e^{−ax}(ax)^{s−1} Σ (s−1)⋯(s−k)/(ax)^k`; finite at integer `s > 0` | 8.11.2 |
 | Airy `Ai`, `Bi`, `Ai′`, `Bi′` of `a·x` | `e^{∓ζ}`, `ζ = (2/3)(ax)^{3/2}` | 9.7.5–8 |
 
 These also combine. Products with constants, with `log(x)^k`, with `x^q` and

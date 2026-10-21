@@ -111,6 +111,29 @@ fn j0_leading_term_and_residual() {
 }
 
 #[test]
+fn upper_incomplete_gamma() {
+    let p = ExprPool::new();
+    let x = p.symbol("x", Domain::Positive);
+    // Γ(1/2, x) = √π erfc(√x) ~ e^{−x} x^{−1/2} (1 − 1/(2x) + 3/(4x²) …)
+    let f = p.func("uppergamma", vec![p.rational(1, 2), x]);
+    let terms = asymptotic_expand(f, x, 3, &p).unwrap().term_exprs();
+    assert_eq!(terms.len(), 3);
+    for (k, c) in [1.0, -0.5, 0.75].into_iter().enumerate() {
+        let xv = 20.0f64;
+        let want = c * (-xv).exp() * xv.powf(-0.5 - k as f64);
+        let got = at(terms[k], x, xv, &p);
+        assert!(
+            (got - want).abs() <= 1e-12 * want.abs(),
+            "{k}: {got} vs {want}"
+        );
+    }
+    // Γ(3, x) = e^{−x}(x² + 2x + 2): finite and exact.
+    let f = p.func("uppergamma", vec![p.integer(3), x]);
+    let terms = asymptotic_expand(f, x, 6, &p).unwrap().term_exprs();
+    assert_eq!(terms.len(), 3);
+}
+
+#[test]
 fn central_binomial() {
     let p = ExprPool::new();
     let n = p.symbol("n", Domain::Positive);
