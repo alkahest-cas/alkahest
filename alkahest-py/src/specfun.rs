@@ -562,7 +562,7 @@ fn hyper(
 /// ``c-a-b`` is a positive literal, ``1F1(1;2;z) = (exp(z)-1)/z``,
 /// ``1F1(1/2;3/2;-w) = sqrt(pi)*erf(sqrt(w))/(2 sqrt(w))``, and ``0F1`` as
 /// ``cosh``/``sinh`` or Bessel ``J``/``I``; the ``2F1(a, a+1/2; c; z)``
-/// families for ``c = 1/2, 3/2, 2a, 2a+1``, ``1F1(a; 2a; z)`` as Bessel
+/// families for ``c = 1/2, 3/2, 2a, 2a+1``, ``1F1(a; a+1; -w) = a*w**(-a)*lowergamma(a, w)``, ``1F1(a; 2a; z)`` as Bessel
 /// ``I``, and any node one Euler, Pfaff or Kummer transformation away from
 /// one of these (``1F1(1; 3/2; z)`` becomes an ``erf``).  Other nodes are
 /// kept.

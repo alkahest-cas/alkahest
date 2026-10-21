@@ -123,7 +123,8 @@ series, `₀F₀`, `₁F₀`, the `log`/`atanh`/`asin` cases of `₂F₁`, Gauss
 `z = 1` (when `c − a − b` is a positive literal), `₁F₁(1; 2; z)`,
 `₁F₁(½; 3/2; −w)` (erf) and `₀F₁` (cosh/sinh, Bessel `J`/`I`), the
 `₂F₁(a, a + ½; c; z)` families for `c = ½, 3/2, 2a, 2a + 1` (A&S 15.1.9–14),
-`₁F₁(a; 2a; z)` as Bessel `I`, and any node one Euler, Pfaff or Kummer
+`₁F₁(a; 2a; z)` as Bessel `I`, `₁F₁(a; a+1; −w) = a w^{−a} lowergamma(a, w)`,
+and any node one Euler, Pfaff or Kummer
 transformation away from one of these (`₂F₁(1, 1; 3/2; z)`,
 `₁F₁(1; 3/2; z) = eᶻ√π erf(√z)/(2√z)`); other nodes are kept.
 
@@ -177,5 +178,5 @@ the spherical Bessel functions (integer-order `J/Y/I/K`, Airy, `zeta`,
 `polylog`, `polygamma` and the orthogonal polynomials have them). For G11c: Stirling's series through
 `asymptotic_expand`, `loggamma`, Γ duplication/reflection rewriting,
 contiguous relations, the logarithmic cases of the `₂F₁` connection
-formulas, `₁F₁ ↔` incomplete gamma and `U(a, b, z)` (no incomplete-gamma
-primitive yet), Meijer G.
+formulas, `U(a, b, z)` ↔ upper incomplete gamma (no `U` primitive yet),
+Meijer G.

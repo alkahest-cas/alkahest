@@ -230,7 +230,8 @@ Generalized hypergeometric function
    atan(sqrt(w))/sqrt(w)`` and ``2F1(1/2, 1/2; 3/2; -w) =
    asinh(sqrt(w))/sqrt(w)``; ``(s+1)Fs(1, …, 1; 2, …, 2; z) = polylog(s, z)/z``.
    Also the ``2F1(a, a + 1/2; c; z)`` families for ``c = 1/2, 3/2, 2a,
-   2a + 1`` (A&S 15.1.9-14), ``1F1(a; 2a; z)`` as Bessel ``I``, and any node
+   2a + 1`` (A&S 15.1.9-14), ``1F1(a; 2a; z)`` as Bessel ``I``,
+   ``1F1(a; a+1; -w) = a*w**(-a)*lowergamma(a, w)``, and any node
    one Euler, Pfaff or Kummer transformation away from a known form
    (``1F1(1; 3/2; z) = exp(z)*sqrt(pi)*erf(sqrt(z))/(2*sqrt(z))``).
    Other nodes are kept. :func:`sum_definite` produces these nodes for

@@ -455,3 +455,39 @@ fn polygamma_at_rationals_classical_or_hurwitz() {
         }
     }
 }
+
+#[test]
+fn expand_hyper_reaches_lowergamma() {
+    // ₁F₁(a; a+1; −w) = a w^{−a} γ(a, w), and through Kummer
+    // ₁F₁(1; a+1; w) = eʷ ₁F₁(a; a+1; −w).
+    let pool = ExprPool::new();
+    let w = pool.symbol("w", Domain::Real);
+    let reg = PrimitiveRegistry::default_registry();
+    let neg_w = pool.mul(vec![pool.integer(-1), w]);
+    for (a, b, z, sign) in [
+        (pool.rational(1, 3), pool.rational(4, 3), neg_w, -1.0),
+        (pool.rational(5, 2), pool.rational(7, 2), neg_w, -1.0),
+        (pool.integer(1), pool.rational(4, 3), w, 1.0),
+    ] {
+        let node = hyper(&[a], &[b], z, &pool).unwrap();
+        let e = expand_hyper(node, &pool).unwrap();
+        let s = pool.display(e).to_string();
+        assert!(!s.contains("hyper"), "{s}");
+        let av = crate::orthopoly::rational_literal(&pool, a)
+            .unwrap()
+            .to_f64();
+        let bv = crate::orthopoly::rational_literal(&pool, b)
+            .unwrap()
+            .to_f64();
+        for wv in [0.3_f64, 1.7, 4.0] {
+            let got = crate::jit::eval_interp(e, &HashMap::from([(w, wv)]), &pool).unwrap();
+            let want = reg
+                .numeric_f64("hyper", &[1.0, 1.0, av, bv, sign * wv])
+                .unwrap();
+            assert!(
+                (got - want).abs() < 1e-12 * want.abs(),
+                "{s} at {wv}: {got} vs {want}"
+            );
+        }
+    }
+}

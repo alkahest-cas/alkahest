@@ -41,6 +41,7 @@
 //!   | `₀F₁(; ½; −w)`, `₀F₁(; 3/2; −w)` | `cos(2√w)`, `sin(2√w)/(2√w)` |
 //!   | `₀F₁(; b; −w)` / `₀F₁(; b; z)` | `Γ(b) w^{(1−b)/2} J_{b−1}(2√w)` / `Γ(b) z^{(1−b)/2} I_{b−1}(2√z)` |
 //!   | `₂F₁(x, x+½; c; z)`, `c ∈ {½, 3/2, 2x, 2x+1}` | A&S 15.1.9, 15.1.10, 15.1.14, 15.1.13 (F26) |
+//!   | `₁F₁(a; a+1; −w)`, `a > 0` rational | `a w^{−a} γ(a, w)` (`lowergamma`, DLMF 8.5.1, F26) |
 //!   | `₁F₁(a; 2a; z)`, `a > 0` rational | `Γ(a+½) e^{z/2} (z/4)^{½−a} I_{a−½}(z/2)` (DLMF 13.6.9, F26) |
 //!
 //!   A node with none of these forms is retried after one Euler or Pfaff
@@ -535,6 +536,22 @@ fn closed_form(
                         sqrt(pool, pi),
                         pool.func("erf", vec![sw]),
                         inv(pool, sw),
+                    ],
+                ))
+            } else if rb.len() == 1 && rb[0] == ra[0].clone() + 1u32 && ra[0] > 0 {
+                // ₁F₁(a; a+1; −w) = a w^{−a} γ(a, w) (DLMF 8.5.1), a > 0
+                // rational; only for a negated argument, so the principal
+                // w^{−a} and γ(a, w) are the series' own branch.
+                let Some(w) = negated(pool, z) else {
+                    return Ok(None);
+                };
+                let a0 = rat_node(pool, &ra[0]);
+                Some(mk_mul(
+                    pool,
+                    vec![
+                        a0,
+                        pool.pow(w, rat_node(pool, &(-ra[0].clone()))),
+                        super::lowergamma(a0, w, pool)?,
                     ],
                 ))
             } else {

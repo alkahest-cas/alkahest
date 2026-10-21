@@ -214,6 +214,19 @@ EXPAND_CASES = [
 ]
 
 
+def test_expand_hyper_lowergamma(pool):
+    """1F1(a; a+1; -w) = a w^-a lowergamma(a, w); 1F1(1; a+1; w) via Kummer."""
+    mp.mp.dps = 30
+    w = pool.symbol("w")
+    for a, b, sign in [(F(1, 3), F(4, 3), -1), (F(5, 2), F(7, 2), -1), (1, F(4, 3), 1)]:
+        got = ak.expand_hyper(ak.hyper([a], [b], sign * w))
+        assert "hyper" not in str(got), str(got)
+        assert "lowergamma" in str(got) or "erf" in str(got), str(got)
+        for wv in (0.3, 1.7, 4.0):
+            want = float(mp.hyp1f1(mpf(a), mpf(b), sign * wv))
+            assert abs(ak.eval_expr(got, {w: wv}) - want) < 1e-12 * abs(want), (a, b, wv)
+
+
 @pytest.mark.parametrize(("a", "b"), EXPAND_CASES)
 def test_expand_hyper_new_closed_forms(pool, a, b):
     mp.mp.dps = 30
