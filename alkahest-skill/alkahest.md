@@ -1527,6 +1527,27 @@ U.sin(Quantity(90, "deg"))                          # deg converted to rad first
 - dB/Np/pH are not units: `U.db_to_ratio`, `ratio_to_db`, `np_to_ratio`, `ratio_to_np`,
   `ph_to_concentration`, `concentration_to_ph` convert explicitly (exact for powers of ten).
 
+## Tensor calculus (metric → curvature, abstract indices)
+
+```python
+m = ak.Metric(g, [t, r, th, ph])        # g: n x n symmetric list (or Matrix); entries may use a(t)
+m.christoffel()[a][b][c]                # Γ^a_bc (nested list); christoffel_first_kind() = Γ_abc
+m.riemann(); m.riemann_lower()          # Tensor R^a_bcd ("uddd") / R_abcd ("dddd")
+m.ricci(); m.ricci_scalar(); m.einstein(); m.weyl(); m.kretschmann()
+m.is_ricci_flat()                       # exact proof (Kerr: True in < 1 s)
+m.geodesic_equations([td, rd, thd, phd])   # accelerations -Γ^a_bc v^b v^c
+m.simplify(e); m.is_zero(e); m.diff(e, r)  # the exact field (sin²=1-cos², rationalised dens)
+a, b = ak.tensor_indices("a b")
+G = m.ricci()[-a, -b] - m.as_tensor()[-a, -b] * m.ricci()[a, -a] / 2   # == m.einstein()
+```
+
+- Components are canonical: an identically-zero component is the literal `0`, never sampled.
+- `T[0, 1]` is a component, `T[-a, b]` an `IndexedTensor`; `-a` = lower, `+a`/`a` = upper; a slot in the
+  other variance is raised/lowered with the metric; repeated index (up+down) is summed.
+- `symmetrize(a, b)`, `antisymmetrize(b, c, d)`, `.is_zero()`, `.components`.
+- Refusals `TensorError E-TENSOR-*`: 001 shape, 002 not symmetric, 003 degenerate, 004 float entry,
+  005 Piecewise, 008 Weyl for n < 3, 009 index misuse. `m.timings()` gives per-stage seconds.
+
 ## Controls: transfer functions, state space, Lyapunov / Riccati
 
 ```python
@@ -1934,6 +1955,7 @@ All errors inherit `AlkahestError` and carry `.code`, `.remediation`, `.span`.
 | `VectorError` | `E-VEC-*` | Vector calculus over an orthogonal chart. `004` = a chart `from_embedding` could not **prove** orthogonal — undecided is a refusal, because the formulas still evaluate on a skew chart, to something that looks like a divergence and is not one; `005` = a degenerate scale factor. Reached as `experimental.VectorError`, not `alkahest.VectorError` |
 | `UnitError` | `E-UNIT-*` | Units (`alkahest.units`). `001` = different dimensions in a sum/conversion (both named); `002` = bad unit string; `003` = `degC`/`degF` used in arithmetic (affine — convert to K); `004` = a function argument that is not a pure number; `005` = a symbol with no unit in `dimension_of`; `006` = same dimension, different units in a sum; `007` = irrational scale under a fractional power |
 | `NcError` | `E-NC-*` | Noncommutative algebra. `001` = word rewriting did not reach a normal form within `max_steps` (non-terminating rules); `002` = expansion past the size caps; `003` = rule lhs not one word; `004` = bad ladder modes; `005` = bad γ slot; `006` = γ trace past 14 slots; `007` = vacuum expectation over a non-ladder factor; `008` = bad Lie-algebra table / failed Jacobi; `009` = bad sequence-wildcard pattern |
+| `TensorError` | `E-TENSOR-*` | Tensor calculus (`alkahest.tensor`). `001` = shape / coordinates; `002` = metric not symmetric; `003` = determinant identically zero; `004` = float entry; `005` = Piecewise or other unrepresentable node; `006` = missing derivative; `007` = denominator vanishes identically; `008` = Weyl for n < 3; `009` = abstract-index misuse |
 | `QuaternionError` | `E-QUAT-*` | `001` = a zero or undecided norm; `002` = the axis of the identity rotation, which **does not exist** — every unit vector is one, and the conventional `(0,0,1)` is a stated answer to a question with no answer; `003` = a matrix that could not be checked to be a proper rotation, including any symbolic matrix. Reached as `experimental.QuaternionError` |
 
 ```python

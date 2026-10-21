@@ -562,6 +562,17 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-UNIT-005", class: "UnitError", cause: Cause::UserInput,   remediation: Some("give every symbol (or applied function such as C(t)) a unit in the units mapping") },
     ErrorSpec { code: "E-UNIT-006", class: "UnitError", cause: Cause::UserInput,   remediation: Some("assign the same unit to every symbol of one dimension (e.g. all times in h), or let alkahest.units.unify_units convert the mixed sum exactly to a common unit") },
     ErrorSpec { code: "E-UNIT-007", class: "UnitError", cause: Cause::Unsupported, remediation: Some("use the coherent SI unit (e.g. m^(1/2) instead of km^(1/2)) for fractional powers") },
+    // E-TENSOR — TensorError (metric → curvature on a coordinate chart, F27)
+    ErrorSpec { code: "E-TENSOR-001", class: "TensorError", cause: Cause::UserInput,   remediation: Some("pass an n x n metric and n distinct coordinate symbols") },
+    ErrorSpec { code: "E-TENSOR-002", class: "TensorError", cause: Cause::UserInput,   remediation: Some("a metric is symmetric: make g[i][j] and g[j][i] the same expression") },
+    ErrorSpec { code: "E-TENSOR-003", class: "TensorError", cause: Cause::Domain,      remediation: Some("the metric is degenerate everywhere on the chart; check the components") },
+    ErrorSpec { code: "E-TENSOR-004", class: "TensorError", cause: Cause::UserInput,   remediation: Some("write numeric coefficients as integers or Fractions; tensor components are computed exactly") },
+    ErrorSpec { code: "E-TENSOR-005", class: "TensorError", cause: Cause::Unsupported, remediation: Some("rewrite the component without Piecewise / predicates, or substitute the branch that applies on the chart") },
+    ErrorSpec { code: "E-TENSOR-006", class: "TensorError", cause: Cause::Unsupported, remediation: Some("the component contains a function with no derivative rule; define it, or replace it with an undefined function f(x...)") },
+    ErrorSpec { code: "E-TENSOR-007", class: "TensorError", cause: Cause::Domain,      remediation: Some("a denominator is identically zero on the chart; check the metric components") },
+    ErrorSpec { code: "E-TENSOR-008", class: "TensorError", cause: Cause::UserInput,   remediation: Some("the Weyl tensor is defined for dimension n >= 3 (it vanishes identically for n = 3)") },
+    ErrorSpec { code: "E-TENSOR-009", class: "TensorError", cause: Cause::UserInput,   remediation: Some("each index may appear at most twice in a term, once up (+a) and once down (-a); the free indices of every summand must agree") },
+    ErrorSpec { code: "E-TENSOR-010", class: "TensorError", cause: Cause::Internal,    remediation: None },
     // E-SPECFN — SpecialFunctionError (orthogonal polynomials, spherical
     // harmonics, Wigner 3j/6j and Clebsch–Gordan coefficients, G11a)
     ErrorSpec { code: "E-SPECFN-001", class: "SpecialFunctionError", cause: Cause::UserInput,   remediation: Some("pass integers or half-integers (ints, Fractions such as Fraction(1, 2), or floats that are exactly k/2)") },

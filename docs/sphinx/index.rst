@@ -49,6 +49,7 @@ For optional Cargo features (``jit``, ``parallel``, ``cuda``, …) and full deve
    api/transform
    api/pari
    api/units
+   api/tensor
    api/controls
    api/orthopoly
    api/noncommutative

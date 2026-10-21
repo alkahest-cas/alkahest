@@ -531,6 +531,28 @@ extern "C" {
         ctx: *const FmpzMPolyCtxBuf,
     ) -> c_int;
 
+    /// `A = ∂B/∂x_var` (F27 tensor calculus).
+    pub fn fmpz_mpoly_derivative(
+        A: *mut FmpzMPolyBuf,
+        B: *const FmpzMPolyBuf,
+        var: slong,
+        ctx: *const FmpzMPolyCtxBuf,
+    );
+
+    /// Degree of `A` in variable `var` (`-1` for the zero polynomial) (F27).
+    pub fn fmpz_mpoly_degree_si(
+        A: *const FmpzMPolyBuf,
+        var: slong,
+        ctx: *const FmpzMPolyCtxBuf,
+    ) -> slong;
+
+    /// `1` if `A == B`, else `0` (F27 tensor calculus).
+    pub fn fmpz_mpoly_equal(
+        A: *const FmpzMPolyBuf,
+        B: *const FmpzMPolyBuf,
+        ctx: *const FmpzMPolyCtxBuf,
+    ) -> c_int;
+
     // -----------------------------------------------------------------------
     // fmpz_mpoly — resultant
     // -----------------------------------------------------------------------

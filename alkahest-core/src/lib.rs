@@ -88,6 +88,8 @@ pub mod units;
 pub mod orthopoly;
 // Bessel, Airy, Riemann/Hurwitz zeta and polylogarithm functions (G11b)
 pub mod specfun;
+// Tensor calculus: metric → Christoffel → Riemann/Ricci/Einstein/Weyl (F27)
+pub mod tensor;
 
 pub use acausal::{capacitor, resistor, voltage_source, Component, Port, System};
 pub use calculus::{limit, series, LimitDirection, LimitError, Series, SeriesError};

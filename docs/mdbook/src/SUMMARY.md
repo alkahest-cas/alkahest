@@ -15,6 +15,7 @@
 - [Probability and information theory](./probability.md)
 - [Vector calculus and quaternions](./vector-quaternion.md)
 - [Units and dimensional analysis](./units.md)
+- [Tensor calculus](./tensor.md)
 - [Controls: LTI systems, Lyapunov and Riccati](./controls.md)
 - [Orthogonal polynomials and angular momentum](./orthopoly.md)
 - [Noncommutative algebra](./noncommutative.md)

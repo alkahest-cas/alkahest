@@ -336,6 +336,56 @@ impl FlintMPoly {
         }
     }
 
+    /// Partial derivative `∂self/∂x_var`.
+    pub(crate) fn derivative(&self, var: usize) -> FlintMPoly {
+        let mut r = FlintMPoly::new(Arc::clone(&self.ctx));
+        // SAFETY: as in `mul`; `var < nvars` is the caller's invariant.
+        debug_assert!(var < self.ctx.nvars());
+        unsafe {
+            super::ffi::fmpz_mpoly_derivative(
+                r.as_mut_ptr(),
+                self.as_ptr(),
+                var as i64,
+                self.ctx.as_ptr(),
+            );
+        }
+        r
+    }
+
+    /// Degree in variable `var` (`-1` for the zero polynomial).
+    pub(crate) fn degree_in(&self, var: usize) -> i64 {
+        // SAFETY: `var < nvars` is the caller's invariant; the polynomial is initialised.
+        debug_assert!(var < self.ctx.nvars());
+        unsafe { super::ffi::fmpz_mpoly_degree_si(self.as_ptr(), var as i64, self.ctx.as_ptr()) }
+    }
+
+    /// Structural equality (same context assumed).
+    pub(crate) fn equal(&self, other: &FlintMPoly) -> bool {
+        // SAFETY: both polynomials are initialised in compatible contexts.
+        unsafe {
+            super::ffi::fmpz_mpoly_equal(self.as_ptr(), other.as_ptr(), self.ctx.as_ptr()) != 0
+        }
+    }
+
+    /// The coefficient of the leading term (term 0 in FLINT's descending
+    /// order), or `0` for the zero polynomial.
+    pub(crate) fn leading_coeff(&self) -> rug::Integer {
+        if self.is_zero() {
+            return rug::Integer::new();
+        }
+        let mut c = FlintInteger::new();
+        // SAFETY: the polynomial is non-zero, so term 0 exists.
+        unsafe {
+            super::ffi::fmpz_mpoly_get_term_coeff_fmpz(
+                c.inner_mut_ptr(),
+                self.as_ptr(),
+                0,
+                self.ctx.as_ptr(),
+            );
+        }
+        c.to_rug()
+    }
+
     /// A shared reference to this polynomial's context.
     pub fn ctx(&self) -> &Arc<FlintMPolyCtx> {
         &self.ctx

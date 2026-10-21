@@ -271,6 +271,7 @@ mod numfield;
 mod orthopoly;
 mod specfun;
 mod stabilizer;
+mod tensor;
 mod theta;
 mod units;
 mod verified_ode;
@@ -22228,6 +22229,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     numfield::register(m)?;
     theta::register(m)?;
     units::register(m)?;
+    tensor::register(m)?;
     joint_prob::register(m)?;
     orthopoly::register(m)?;
     noncommutative::register(m)?;
