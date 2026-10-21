@@ -256,6 +256,10 @@ FUNCTION_MAP: dict[str, str] = {
     # F24: SymPy's hankel1/hankel2(nu, z) = J ± iY, same convention.
     "hankel1": "hankel1",
     "hankel2": "hankel2",
+    # F11: SymPy's names and argument orders.
+    "beta": "beta",
+    "uppergamma": "uppergamma",
+    "lowergamma": "lowergamma",
 }
 
 #: Named constants that SymPy has under the same meaning (G11c).

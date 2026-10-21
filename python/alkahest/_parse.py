@@ -171,6 +171,10 @@ _FUNC_NAMES = frozenset(
         "zeta_prime",
         "hankel1",
         "hankel2",
+        # Beta and incomplete gamma (F11), read back as the node.
+        "beta",
+        "uppergamma",
+        "lowergamma",
         # Reciprocal trig / hyperbolic functions (desugared to base(x) ** -1).
         "sec",
         "csc",
@@ -754,6 +758,9 @@ def _apply_func(name: str, args: list, offset: int, pool=None):
         "zeta_prime": _ak.zeta_prime,
         "hankel1": _functools.partial(_ak.hankel1, expand=False),
         "hankel2": _functools.partial(_ak.hankel2, expand=False),
+        "beta": _ak.beta,
+        "uppergamma": _ak.uppergamma,
+        "lowergamma": _ak.lowergamma,
     }
     # ``hyper(p, q, a1..ap, b1..bq, z)`` — the printed form of
     # ``alkahest.hyper([a…], [b…], z)``; the two leading integers split the
@@ -855,6 +862,9 @@ _ARITY: dict[str, tuple[int, int]] = {
     "polygamma": (2, 2),
     "hankel1": (2, 2),
     "hankel2": (2, 2),
+    "beta": (2, 2),
+    "uppergamma": (2, 2),
+    "lowergamma": (2, 2),
 }
 
 

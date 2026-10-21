@@ -3720,6 +3720,14 @@ pub fn integrate_definite(
         }
     }
 
+    // F11: Beta-family integrals (`∫₀¹ xᵃ(1−x)ᵇ`, `∫₀^∞ xᵖ/(c+dx)ʳ`,
+    // `∫₀^{π/2} sinᵖ cosᑫ`), incomplete-gamma integrals from a nonzero bound
+    // and Feynman-parameter integrals of `log Q` / `Q^{−n}` for a quadratic
+    // `Q`. See [`super::beta_family`] and [`super::feynman`].
+    if let Some(r) = super::beta_family::try_definite(expr, var, lower, upper, pool) {
+        return r;
+    }
+
     // `∫_a^b R(x)/√P(x) dx` with `P` a cubic/quartic that splits over ℚ: an
     // exact Legendre reduction.  Ahead of the FTC, whose antiderivative for
     // these comes from the numeric elliptic reduction and is refused as
@@ -4054,14 +4062,16 @@ fn definite_via_ftc(
         }
     }
 
+    // F11: re-collect exponents for display (`e^{−bt + t(b−a)}` → `e^{−at}`).
+    let value = super::beta_family::tidy_exponents(simplified.value, pool);
     let mut log = DerivationLog::new();
     log.push(RewriteStep::simple(
         "fundamental_theorem_of_calculus",
         expr,
-        simplified.value,
+        value,
     ));
     let final_log = antideriv.log.merge(log).merge(simplified.log);
-    Ok(DerivedExpr::with_log(simplified.value, final_log))
+    Ok(DerivedExpr::with_log(value, final_log))
 }
 
 /// Describe why a *closed* (symbol-free) numeric expression does not denote a

@@ -495,6 +495,11 @@ impl PrimitiveRegistry {
         // `hyper(p, q, a…, b…, z)` (`crate::specfun::{gamma, hyper}`).
         reg.register_unprobed(Box::new(crate::specfun::gamma::PolygammaPrimitive));
         reg.register_unprobed(Box::new(crate::specfun::hyper::HyperPrimitive));
+        // F11: the Beta function and the incomplete gamma functions
+        // (`crate::specfun::incgamma`).
+        reg.register_unprobed(Box::new(crate::specfun::incgamma::BetaPrimitive));
+        reg.register_unprobed(Box::new(crate::specfun::incgamma::UpperGammaPrimitive));
+        reg.register_unprobed(Box::new(crate::specfun::incgamma::LowerGammaPrimitive));
         if probe {
             reg.probe_all();
         }

@@ -1,4 +1,5 @@
 pub mod algebraic;
+mod beta_family;
 pub(crate) mod branch_check;
 pub mod by_parts;
 mod continuity;
@@ -6,6 +7,7 @@ mod derivative;
 mod elliptic_exact;
 mod elliptic_trig;
 pub mod engine;
+mod feynman;
 pub mod gate;
 pub mod norman;
 mod piecewise;

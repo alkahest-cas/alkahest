@@ -62,6 +62,7 @@ pub(crate) mod closed;
 pub(crate) mod gamma;
 pub(crate) mod hankel;
 pub(crate) mod hyper;
+pub(crate) mod incgamma;
 pub(crate) mod numeric;
 pub(crate) mod primitives;
 
@@ -83,6 +84,7 @@ use numeric::Kernel;
 pub use gamma::{catalan, euler_gamma, glaisher, polygamma};
 pub use hankel::{hankel, HankelKind};
 pub use hyper::{expand_hyper, hyper, MAX_TERMINATING_DEGREE};
+pub use incgamma::{beta, lowergamma, uppergamma};
 
 /// Largest `|order|` that [`bessel`] / [`spherical_bessel`] expand into
 /// elementary functions; past it they refuse with `E-SPECFN-004` (build the

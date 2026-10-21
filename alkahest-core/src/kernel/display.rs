@@ -937,6 +937,10 @@ fn latex_func_name(name: &str) -> String {
         "fresnelc" => r"C".into(),
         "trigamma" => r"\psi_1".into(),
         "dilog" => r"\operatorname{Li}_2".into(),
+        // F11: DLMF 5.12 / 8.2 notation.
+        "beta" => r"\mathrm{B}".into(),
+        "uppergamma" => r"\Gamma".into(),
+        "lowergamma" => r"\gamma".into(),
         // `\operatorname{}` typesets its argument in math mode, where a bare
         // `_` is a subscript: `\operatorname{my_func}` renders as `my_func`
         // with a subscripted `f`, and a second underscore is the hard error
@@ -1329,6 +1333,9 @@ fn unicode_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
                 "fresnels" => "S",
                 "fresnelc" => "C",
                 "dilog" => "Li₂",
+                "beta" => "B",
+                "uppergamma" => "Γ",
+                "lowergamma" => "γ",
                 "asin" => "arcsin",
                 "acos" => "arccos",
                 "atan" => "arctan",
