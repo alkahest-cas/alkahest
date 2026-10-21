@@ -253,6 +253,64 @@ fn zeta_prime(py: Python<'_>, s: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     Ok(PyExpr { id, pool: pool_py })
 }
 
+/// Log-gamma function ``loggamma(x) = log(Gamma(x))`` (DLMF 5.4; SymPy's and
+/// mpmath's ``loggamma``).
+///
+/// Real for ``x > 0``; for complex ``x`` the principal branch (the analytic
+/// continuation from the positive axis, Arb's ``acb_lgamma``), which is *not*
+/// ``log(gamma(x))`` off the positive axis.  Exact at ``1`` and ``2`` (``0``),
+/// at integers ``n <= 100`` (``log((n-1)!)``) and positive half-integers
+/// (``loggamma(1/2) = log(pi)/2``); the node elsewhere.
+/// ``diff(loggamma(x), x)`` is ``digamma(x)``.  Evaluates in ``f64``, balls
+/// and Taylor models (``x > 0``) and at complex ``x`` through Arb.  Its
+/// Stirling series comes from ``experimental.asymptotic_expand``.
+///
+/// Raises ``SpecialFunctionError`` (``E-SPECFN-006``) at a pole (a
+/// non-positive integer literal).
+///
+/// >>> import alkahest as ak
+/// >>> p = ak.ExprPool(); x = p.symbol("x")
+/// >>> ak.loggamma(p.integer(5))              # log(24)
+/// >>> ak.diff(ak.loggamma(x), x).value        # digamma(x)
+#[pyfunction]
+fn loggamma(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
+    let (pool_py, a) = ids(py, "loggamma", &[x])?;
+    let id = {
+        let pool = &pool_py.borrow(py).inner;
+        core::loggamma(a[0], pool).map_err(specfn_err)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// Rewrite products and quotients of ``gamma`` with exact identities (SymPy's
+/// ``gammasimp``):
+///
+/// * recurrence: ``gamma(x + n)/gamma(x)`` becomes the rising factorial
+///   ``x (x+1) ... (x+n-1)`` for an integer ``n`` (``|n| <= 64``);
+/// * reflection: ``gamma(x) gamma(1 - x) = pi/sin(pi x)`` (and
+///   ``gamma(x) gamma(m - x)`` for an integer ``m`` through the recurrence);
+/// * duplication: ``gamma(x) gamma(x + 1/2) = 2**(1 - 2x) sqrt(pi) gamma(2x)``.
+///
+/// Each rewrite is an identity of meromorphic functions. The recurrence
+/// result is the continuous extension at the poles ``x = 0, -1, ...`` where
+/// ``gamma(x + n)/gamma(x)`` itself is undefined, so add ``x`` not a
+/// non-positive integer as a side condition when that matters. Nothing else
+/// is changed.
+///
+/// >>> import alkahest as ak
+/// >>> p = ak.ExprPool(); x = p.symbol("x")
+/// >>> ak.gammasimp(ak.gamma(x) * ak.gamma(1 - x))      # pi/sin(pi*x)
+/// >>> ak.gammasimp(ak.gamma(x + 3) / ak.gamma(x))      # x*(x+1)*(x+2)
+#[pyfunction]
+fn gammasimp(py: Python<'_>, expr: PyRef<'_, PyExpr>) -> PyResult<PyExpr> {
+    let pool_py = expr.pool.clone_ref(py);
+    let id = {
+        let pool = &pool_py.borrow(py).inner;
+        core::gammasimp(expr.id, pool).map_err(specfn_err)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
 fn hankel_fn(
     py: Python<'_>,
     kind: HankelKind,
@@ -653,6 +711,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(airy_bi_prime, m)?)?;
     m.add_function(wrap_pyfunction!(zeta, m)?)?;
     m.add_function(wrap_pyfunction!(zeta_prime, m)?)?;
+    m.add_function(wrap_pyfunction!(loggamma, m)?)?;
+    m.add_function(wrap_pyfunction!(gammasimp, m)?)?;
     m.add_function(wrap_pyfunction!(hankel1, m)?)?;
     m.add_function(wrap_pyfunction!(hankel2, m)?)?;
     m.add_function(wrap_pyfunction!(hurwitz_zeta, m)?)?;

@@ -45,7 +45,9 @@ pub(super) fn is_specfun_call(name: &str, arity: usize) -> bool {
     }
     match name {
         "bessel_j" | "bessel_y" | "bessel_i" | "bessel_k" | "polylog" | "polygamma" => arity == 2,
-        "airy_ai" | "airy_bi" | "airy_ai_prime" | "airy_bi_prime" | "zeta" => arity == 1,
+        "airy_ai" | "airy_bi" | "airy_ai_prime" | "airy_bi_prime" | "zeta" | "loggamma" => {
+            arity == 1
+        }
         _ => false,
     }
 }
@@ -407,6 +409,40 @@ impl TaylorModel {
         )
     }
 
+    /// `log Γ(self)` (F25): `f⁽ⁿ⁾ = ψ⁽ⁿ⁻¹⁾` for `n ≥ 1` (DLMF 5.2.2), the
+    /// value itself from Arb's `arb_lgamma`. Real only on `(0, ∞)`, so the
+    /// argument enclosure must lie strictly there.
+    fn loggamma_function(&self) -> Result<Self> {
+        self.compose_by_derivatives(
+            "loggamma",
+            |arg| {
+                if !strictly_positive(&lb(arg)) {
+                    return Err(domain(
+                        "loggamma of an argument whose enclosure reaches 0 or below (real only on x > 0)",
+                    ));
+                }
+                Ok(())
+            },
+            |k, x| {
+                let prec = x.prec;
+                let v = if k == 0 {
+                    split_hull(x, SPLIT_DEPTH, &|xs| {
+                        eval_ball(Kernel::LogGamma, std::slice::from_ref(xs))
+                    })
+                } else {
+                    let order = int_ball(k as i64 - 1, prec);
+                    split_hull(x, SPLIT_DEPTH, &|xs| {
+                        crate::specfun::gamma::polygamma_ball(&order, xs)
+                    })
+                }
+                .ok_or_else(|| ValidatedError::NotFinite {
+                    what: "loggamma value".into(),
+                })?;
+                Self::div_ball(&v, &factorial_ball(k, prec))
+            },
+        )
+    }
+
     /// `Li_s(self)` for a literal order `s` and an argument enclosure inside
     /// the open unit interval `(-1, 1)`.
     ///
@@ -548,6 +584,7 @@ impl TaylorContext<'_> {
                 self.eval(args[0])?.airy_function(name)
             }
             "zeta" => self.eval(args[0])?.zeta_function(),
+            "loggamma" => self.eval(args[0])?.loggamma_function(),
             "polygamma" => {
                 let Some(m) = int_literal(self.pool, args[0]).and_then(|v| v.to_u32()) else {
                     return Err(invalid(

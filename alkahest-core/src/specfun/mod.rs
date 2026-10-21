@@ -17,6 +17,7 @@
 //! | `zeta(s)` | 25.2 | Riemann; pole at `s = 1` |
 //! | `hurwitz_zeta(s, a)` | 25.11 | `ζ(s, 1) = ζ(s)` |
 //! | `polylog(s, z)` | 25.12 | `Li_s`; principal branch, cut `[1, ∞)` |
+//! | `loggamma(x)` | 5.4 | `log Γ`; principal branch, cut `(−∞, 0]` (F25) |
 //!
 //! `bessel_j(0, x)` and `bessel_j(1, x)` are spelled `bessel_j0(x)` and
 //! `bessel_j1(x)` — the older unary primitives, which carry Taylor models for
@@ -60,6 +61,7 @@
 
 pub(crate) mod closed;
 pub(crate) mod gamma;
+pub(crate) mod gammasimp;
 pub(crate) mod hankel;
 pub(crate) mod hyper;
 pub(crate) mod hyper_transform;
@@ -85,6 +87,7 @@ use crate::orthopoly::{int_literal, mk_mul, rational_literal};
 use numeric::Kernel;
 
 pub use gamma::{catalan, euler_gamma, glaisher, polygamma};
+pub use gammasimp::gammasimp;
 pub use hankel::{hankel, HankelKind};
 pub use hyper::{expand_hyper, hyper, MAX_TERMINATING_DEGREE};
 pub use hyper_transform::{hyper_transform, HyperTransformation};
@@ -397,6 +400,28 @@ pub fn zeta_prime(s: ExprId, pool: &ExprPool) -> Result<ExprId, SpecialFunctionE
     }
     crate::budget::check()?;
     Ok(node(Kernel::ZetaPrime, vec![s], pool))
+}
+
+/// The log-gamma function `log Γ(x)` (`loggamma`, F25).
+///
+/// Real and equal to `ln Γ(x)` for `x > 0`; for complex `x` the principal
+/// branch — the analytic continuation of the real function from the positive
+/// axis, cut along `(−∞, 0]` (DLMF 5.4, SymPy's and mpmath's `loggamma`,
+/// Arb's `acb_lgamma`). It is *not* `log(gamma(x))` off the positive axis:
+/// at `x = −1/2` it is `log(2√π) − 2πi`. `d/dx loggamma(x) = digamma(x)`.
+/// Exact at `1`, `2` (`0`), at integers `n ≤ 100` (`log((n−1)!)`) and at
+/// positive half-integers; the node elsewhere. Its Stirling series is
+/// available through [`crate::calculus::asymptotic_expand`].
+///
+/// # Errors
+///
+/// `E-SPECFN-006` at a pole (a literal non-positive integer); `E-BUDGET-*`.
+pub fn loggamma(x: ExprId, pool: &ExprPool) -> Result<ExprId, SpecialFunctionError> {
+    if rational_literal(pool, x).is_some_and(|q| *q.denom() == 1 && q <= 0) {
+        return Err(pole("loggamma", format!("x = {}", pool.display(x))));
+    }
+    crate::budget::check()?;
+    Ok(node(Kernel::LogGamma, vec![x], pool))
 }
 
 /// The Hurwitz zeta function `ζ(s, a) = Σ_{k≥0} (k + a)^{−s}` (continued).

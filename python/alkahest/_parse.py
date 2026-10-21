@@ -175,6 +175,8 @@ _FUNC_NAMES = frozenset(
         "beta",
         "uppergamma",
         "lowergamma",
+        # F25: the log-gamma function.
+        "loggamma",
         # Reciprocal trig / hyperbolic functions (desugared to base(x) ** -1).
         "sec",
         "csc",
@@ -756,6 +758,7 @@ def _apply_func(name: str, args: list, offset: int, pool=None):
         "polylog": _ak.polylog,
         "polygamma": _ak.polygamma,
         "zeta_prime": _ak.zeta_prime,
+        "loggamma": _ak.loggamma,
         "hankel1": _functools.partial(_ak.hankel1, expand=False),
         "hankel2": _functools.partial(_ak.hankel2, expand=False),
         "beta": _ak.beta,

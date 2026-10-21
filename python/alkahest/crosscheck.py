@@ -260,6 +260,8 @@ FUNCTION_MAP: dict[str, str] = {
     "beta": "beta",
     "uppergamma": "uppergamma",
     "lowergamma": "lowergamma",
+    # F25: SymPy's loggamma is the same principal branch.
+    "loggamma": "loggamma",
 }
 
 #: Named constants that SymPy has under the same meaning (G11c).

@@ -197,6 +197,39 @@ at their poles ``0, -1, -2, …`` with exact coefficients:
 products such as ``m**(-2*eps)*gamma(eps)`` (dimensional regularisation)
 expand the same way.
 
+.. function:: loggamma(x)
+
+   ``log Gamma(x)`` (DLMF 5.4; SymPy's and mpmath's ``loggamma``). Real for
+   ``x > 0``. For complex ``x`` it is the principal branch, the analytic
+   continuation from the positive axis (Arb's ``acb_lgamma``), and not
+   ``log(gamma(x))`` off that axis. It is exact at ``1`` and ``2`` (``0``), at
+   integers ``n <= 100`` (``log((n-1)!)``) and at positive half-integers
+   (``loggamma(1/2) = log(pi)/2``). ``d/dx loggamma(x) = digamma(x)``. Values
+   are available in ``f64``, as balls, at complex points and as Taylor models
+   (``x > 0``). A pole literal raises ``E-SPECFN-006``.
+
+.. function:: gammasimp(expr)
+
+   Rewrite products of ``gamma`` by the recurrence
+   (``gamma(x + n)/gamma(x)`` becomes the rising factorial for an integer
+   ``|n| <= 64``, when the two exponents have opposite signs), reflection
+   (``gamma(a) gamma(m - a) = pi/sin(pi a)`` times a rising factorial) and
+   duplication (``gamma(a) gamma(a + 1/2) = 2**(1 - 2a) sqrt(pi) gamma(2a)``).
+   ``beta(a, b)`` is first written ``gamma(a) gamma(b)/gamma(a + b)``.
+   Every rewrite is an identity of meromorphic functions. When the ``gamma``
+   factors cancel, the result is the continuous extension across the poles
+   ``x = 0, -1, ...``, where the input is undefined. :func:`is_zero` uses it,
+   so ``gamma(x)*gamma(1 - x) - pi/sin(pi*x)`` is proved zero.
+
+``experimental.asymptotic_expand(f, x, n)`` expands Stirling's series for
+``loggamma``, ``gamma``, ``factorial``, ``binomial`` and ``Gamma`` products
+with linear arguments ``a*x + b`` (rational ``a > 0``), ``digamma`` /
+``polygamma``, Hankel's expansions of ``bessel_j/y/i/k`` of rational order,
+``erfc``, ``Ei``, ``uppergamma(s, a*x)`` (rational ``s``) and the Airy
+functions at ``+oo``. The coefficients are exact,
+and every expansion is checked numerically against the function. See the
+user-guide chapter for the table.
+
 Generalized hypergeometric function
 -----------------------------------
 

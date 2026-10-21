@@ -28,8 +28,16 @@
 //! multiplicatively** for a restricted but common shape: `log(P(x))` arguments
 //! (e.g. `log(x+1) ~ log x + 1/x − 1/(2x²) + …`) and a single dominant
 //! `log(x)` / `exp(g(x))` factor whose power-scale cofactor is then expanded.
-//! Genuinely scale-iterated expansions (nested exp-log hierarchies,
-//! Γ / Stirling asymptotics) are **out of scope** and decline honestly.
+//!
+//! **Special functions** (F25, `asymptotic/special.rs`) have their classical expansions
+//! built from exact coefficients: Stirling's series for `loggamma`, `gamma`
+//! (and `factorial`, `binomial`, products and quotients of `Γ` with linear
+//! arguments), `digamma`/`polygamma`; Hankel's expansions of
+//! `J_ν`, `Y_ν`, `I_ν`, `K_ν`; `erfc`, `Ei`, `uppergamma` and the Airy functions. A term
+//! may carry an exponential scale (`√(2π) x^{x−½} e^{−x}/(12x)`) or an
+//! oscillatory factor (`√(2/(πx)) cos(x − π/4)`).
+//! Genuinely scale-iterated expansions (nested exp-log hierarchies) are
+//! **out of scope** and decline honestly.
 //!
 //! # Correctness gate
 //!
@@ -46,6 +54,8 @@ use crate::kernel::{subs, Domain, ExprData, ExprId, ExprPool};
 use crate::simplify::simplify;
 use std::collections::HashMap;
 use std::fmt;
+
+mod special;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -160,10 +170,11 @@ impl crate::errors::AlkahestError for AsymptoticError {
                  the function may have an oscillatory or non-power-scale tail"
             }
             AsymptoticError::UnsupportedScale => {
-                "exp/log scale hierarchies and Gamma/Stirling asymptotics are out of scope for \
-                 asymptotic_expand; power-scale (rational/algebraic) and single log/exp peels \
-                 are supported. For the asymptotics of a *sum* use \
-                 experimental.euler_maclaurin, which also reaches Stirling via the sum of log k"
+                "exp/log scale hierarchies are out of scope for asymptotic_expand; power-scale \
+                 (rational/algebraic) terms, single log/exp peels and the special functions \
+                 gamma/loggamma/digamma/polygamma/factorial/binomial, Bessel J/Y/I/K, erfc, Ei, uppergamma \
+                 and Airy (rational order, argument a*x + b with a > 0) are supported. For the \
+                 asymptotics of a *sum* use experimental.euler_maclaurin"
             }
         })
     }
@@ -203,7 +214,15 @@ pub fn asymptotic_expand(
         }
     }
 
-    // 2. Log-scale peel: f = log(P(x)) + rest, or a single log(x)/exp(g) factor.
+    // 2. Known expansions of special functions (F25): Stirling's series for
+    //    Γ / log Γ / ψ / ψ⁽ⁿ⁾ / factorial / binomial, Hankel's expansions of
+    //    the Bessel functions, erfc, Ei and the Airy functions — with exact
+    //    coefficients, gated numerically like everything else.
+    if let Some(exp) = special::special_expand(f, var, n_terms, pool) {
+        return exp;
+    }
+
+    // 3. Log-scale peel: f = log(P(x)) + rest, or a single log(x)/exp(g) factor.
     if let Some(exp) = try_log_peel(f, var, n_terms, pool)? {
         if !exp.terms.is_empty() {
             return Ok(exp);
@@ -228,6 +247,25 @@ fn power_scale_terms_raw(
     order: u32,
     pool: &ExprPool,
 ) -> Result<Vec<(i64, ExprId)>, AsymptoticError> {
+    let (coeffs, _) = power_scale_coeffs(f, var, order, pool)?;
+    let mut out: Vec<(i64, ExprId)> = coeffs
+        .into_iter()
+        .map(|(x_pow, c)| (x_pow, make_power_term(c, var, x_pow, pool)))
+        .collect();
+    // Most significant (largest x-power) first.
+    out.sort_by_key(|p| std::cmp::Reverse(p.0));
+    Ok(out)
+}
+
+/// The nonzero coefficients `(e, cₑ)` of `f ~ Σ cₑ·xᵉ` (unsorted) and the
+/// truncation: every power above the returned `cut` is present, and the
+/// remainder is `O(x^cut)`.
+pub(super) fn power_scale_coeffs(
+    f: ExprId,
+    var: ExprId,
+    order: u32,
+    pool: &ExprPool,
+) -> Result<(Vec<(i64, ExprId)>, i64), AsymptoticError> {
     let t = pool.symbol("__asy_t", Domain::Positive);
     let inv_t = pool.pow(t, pool.integer(-1_i32));
     let mut m = HashMap::new();
@@ -261,13 +299,10 @@ fn power_scale_terms_raw(
             continue;
         }
         let t_pow = val + tay_val as i64 + i as i64;
-        let x_pow = -t_pow;
-        let term = make_power_term(c, var, x_pow, pool);
-        out.push((x_pow, term));
+        out.push((-t_pow, c));
     }
-    // Most significant (largest x-power) first.
-    out.sort_by_key(|p| std::cmp::Reverse(p.0));
-    Ok(out)
+    let cut = -(val + tay_val as i64 + coeffs.len() as i64);
+    Ok((out, cut))
 }
 
 /// Decompose `g(t) = t^val · u(t)` with `u` analytic at `t = 0`, returning
