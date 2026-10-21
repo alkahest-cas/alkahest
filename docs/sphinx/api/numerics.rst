@@ -17,6 +17,10 @@ Compiled evaluation
    API and the values are the same either way: every backend computes,
    bit for bit, what :func:`eval_expr` computes.
 
+   The interpreter (also used for ``Piecewise``, which the JITs decline)
+   evaluates a batch a block of points at a time; a ``Piecewise`` branch a
+   point does not select is computed but can never make that point fail.
+
    Given a **list** of expressions, returns a :class:`CompiledVecFn` that
    evaluates all of them in one pass per point, computing the
    subexpressions they share once — the shape of a gradient or Jacobian.

@@ -9,6 +9,11 @@ once, outside the timed call — at a size small enough for instruction-count
 mode; ``benchmarks/python_bench.py``-style wall-clock comparisons at 10^6
 points are in the G7 pull request.
 
+The CodSpeed job builds the extension without a JIT feature, so there every
+benchmark here measures the interpreter tier — the block-vectorised program
+(F14) — which is also what ``Piecewise`` runs on in every build (the JITs
+decline it): ``test_numpy_eval_piecewise`` and ``test_numpy_eval_smoothstep``.
+
 Run locally (wall-clock):
     pytest benchmarks/bench_codspeed_numeric.py -v
 
@@ -106,4 +111,39 @@ def test_numpy_eval_bateman(benchmark):
 
 def test_numpy_eval_black_scholes(benchmark):
     f, cols = _black_scholes()
+    benchmark(ak.numpy_eval, f, *cols)
+
+
+def _piecewise():
+    p = ak.ExprPool()
+    x, y = p.symbol("x"), p.symbol("y")
+    pw = ak.piecewise(
+        [
+            (p.lt(x, p.integer(0)), x**2 * y),
+            (p.lt(x, p.integer(1)), ak.sin(x) + y**3),
+        ],
+        ak.exp(-x) * y,
+    )
+    rng = _rng()
+    cols = [rng.uniform(-2, 3, N), rng.uniform(-1, 1, N)]
+    return ak.compile_expr(pw, [x, y], expected_evals=N), cols
+
+
+def _smoothstep():
+    p = ak.ExprPool()
+    x = p.symbol("x")
+    step = ak.piecewise(
+        [(p.lt(x, p.integer(0)), p.integer(0)), (p.gt(x, p.integer(1)), p.integer(1))],
+        x * x * (3 - 2 * x),
+    )
+    return ak.compile_expr(step, [x], expected_evals=N), [_rng().uniform(-1, 2, N)]
+
+
+def test_numpy_eval_piecewise(benchmark):
+    f, cols = _piecewise()
+    benchmark(ak.numpy_eval, f, *cols)
+
+
+def test_numpy_eval_smoothstep(benchmark):
+    f, cols = _smoothstep()
     benchmark(ak.numpy_eval, f, *cols)

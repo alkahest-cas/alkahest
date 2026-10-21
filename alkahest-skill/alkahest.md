@@ -914,6 +914,8 @@ from alkahest import numpy_eval, numpy_eval_par
 xs = np.linspace(0, 1, 1_000_000)
 ys = numpy_eval(f, xs)        # ndarray; much faster than a Python loop
 ys = numpy_eval_par(f, xs)    # multi-core; requires the parallel feature (on in every wheel)
+# Piecewise (and every expression in a build without a JIT) runs on the block
+# interpreter: blocks of points, branches as a masked select, same bits as f([x]).
 
 # Several outputs in one pass (gradients, Jacobians): shared subexpressions once
 g = compile_expr(ak.symbolic_grad(U, [x, y]), [x, y])   # CompiledVecFn
