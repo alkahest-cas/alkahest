@@ -170,11 +170,32 @@ Ball arithmetic
 
    .. attribute:: mid
 
-      Midpoint of the interval.
+      Midpoint rounded to the nearest ``float``.  Lossy past ~16 digits:
+      ``mid ± rad`` read through the ``float`` accessors is *not* an
+      enclosure at high precision.  Use ``mid_str()``, ``mid_exact()`` or
+      ``to_mpf()`` instead.
 
    .. attribute:: rad
 
-      Radius of the interval.
+      Radius rounded **up** to ``float`` (may be a subnormal or ``0``-ish
+      value for very small radii; use ``rad_str()`` / ``rad_exact()``).
+
+   .. attribute:: prec
+
+      Working precision in bits.
+
+   .. method:: mid_str() / rad_str()
+
+      Full-precision decimal strings of the stored midpoint / radius.
+
+   .. method:: mid_exact() / rad_exact()
+
+      Exact ``fractions.Fraction`` values of the stored midpoint / radius.
+      ``|true - mid_exact()| <= rad_exact()`` always holds.
+
+   .. method:: to_mpf()
+
+      ``(mid, rad)`` as ``mpmath.mpf`` (exact conversions; needs mpmath).
 
    .. attribute:: lo
 
