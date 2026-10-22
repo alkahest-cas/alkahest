@@ -6,12 +6,13 @@ discovered, concatenated and checked.
 
 from __future__ import annotations
 
-from typing import Callable
+import math
+from typing import Any, Callable
 
 import alkahest as ak
 from contracts import Case, Raises, RefusesOr, Returns
 
-from ._shared import CALCULUS, X, _int, _num
+from ._shared import CALCULUS, POOL, X, _int, _num, _rat
 
 
 def limit_value(expr: ak.Expr, point: ak.Expr, direction: str | None = None) -> Callable[[], float]:
@@ -28,7 +29,82 @@ def limit_value(expr: ak.Expr, point: ak.Expr, direction: str | None = None) -> 
     return op
 
 
+def _black_scholes_expiry_value() -> Any:
+    """lim_{T→0⁺} of the Black–Scholes call price with symbolic S, K, σ,
+    evaluated at S = 100, K = 95, σ = 1/4. A returned expression that cannot be
+    evaluated there is handed back as text, so the gate scores it as the
+    confident non-answer it is rather than as a weak refusal."""
+    S, K, s, T = (POOL.symbol(n, "positive") for n in ("S_bs", "K_bs", "sigma_bs", "T_bs"))
+
+    def nc(z: ak.Expr) -> ak.Expr:
+        return _rat(1, 2) * (1 + ak.erf(z / ak.sqrt(_int(2))))
+
+    d1 = (ak.log(S / K) + (s**2 / 2) * T) / (s * ak.sqrt(T))
+    price = S * nc(d1) - K * nc(d1 - s * ak.sqrt(T))
+    got = ak.limit(price, T, _int(0)).value
+    at = ak.subs(got, {S: _int(100), K: _int(95), s: _rat(1, 4)})
+    try:
+        return _num(at)
+    except ValueError:
+        return f"unevaluable value {got}"
+
+
 CASES: list[Case] = [
+    # Gruntz through log/exp (report10-21 N3, C1, N12).
+    # -----------------------------------------------------------------------
+    Case(
+        id="limit_log_of_exp_over_x_at_infinity",
+        subsystem="limits",
+        statement="lim_{x→∞} log(e^{-2x})/x = -2 (the terminal-slope λz of a decay curve)",
+        op=limit_value(ak.log(ak.exp(-2 * X)) / X, POOL.pos_infinity()),
+        contract=Returns(-2.0),
+        verified_by="log(e^{-2x}) = -2x for real x, so the quotient is -2 identically. "
+        "Alkahest returned 0: Gruntz Taylor-expanded log ω at ω = 0.",
+    ),
+    Case(
+        id="limit_log_of_exponential_sum_over_x_at_infinity",
+        subsystem="limits",
+        statement="lim_{x→∞} log(e^{-2x} + e^{-3x})/x = -2",
+        op=limit_value(ak.log(ak.exp(-2 * X) + ak.exp(-3 * X)) / X, POOL.pos_infinity()),
+        contract=Returns(-2.0),
+        verified_by="log(e^{-2x}(1 + e^{-x}))/x = -2 + log(1 + e^{-x})/x → -2.",
+    ),
+    Case(
+        id="limit_log_of_growing_exp_over_x_at_infinity",
+        subsystem="limits",
+        statement="lim_{x→∞} log(e^x + 1)/x = 1",
+        op=limit_value(ak.log(ak.exp(X) + 1) / X, POOL.pos_infinity()),
+        contract=Returns(1.0),
+        verified_by="log(e^x(1 + e^{-x}))/x = 1 + log(1 + e^{-x})/x → 1. Alkahest ran for minutes "
+        "and aborted the process on a 14 GB allocation (report10-21 C1).",
+    ),
+    Case(
+        id="limit_exponential_sum_to_the_one_over_x",
+        subsystem="limits",
+        statement="lim_{x→∞} (e^{-2x} + e^{-3x})^{1/x} = e^{-2}",
+        op=limit_value((ak.exp(-2 * X) + ak.exp(-3 * X)) ** (1 / X), POOL.pos_infinity()),
+        contract=Returns(math.exp(-2)),
+        verified_by="exp of the previous case's limit. Alkahest returned 1.",
+    ),
+    Case(
+        id="limit_mrv_lower_class_factor_kept",
+        subsystem="limits",
+        statement="lim_{x→∞} e^{1-3x}/(e^{-3x} + e^{-4x}) = e",
+        op=limit_value(ak.exp(1 - 3 * X) / (ak.exp(-3 * X) + ak.exp(-4 * X)), POOL.pos_infinity()),
+        contract=Returns(math.e),
+        verified_by="Divide through by e^{-3x}: e/(1 + e^{-x}) → e. Alkahest returned 0 — the "
+        "MRV rewrite dropped the factor e^{1}.",
+    ),
+    Case(
+        id="limit_black_scholes_expiry_symbolic",
+        subsystem="limits",
+        statement="lim_{T→0⁺} C_BS(S, K, σ, T) = max(S - K, 0); at S = 100, K = 95 that is 5",
+        op=_black_scholes_expiry_value,
+        contract=RefusesOr(5.0),
+        verified_by="d₁, d₂ → +∞ when S > K, so N(d₁), N(d₂) → 1 and C → S - K = 5 (mpmath agrees "
+        "at T = 1e-12). Alkahest returned an expression containing (σ·√0)⁻¹ as a value "
+        "(report10-21 N12).",
+    ),
     # Limits that do not exist, versus one-sided limits that do.
     # -----------------------------------------------------------------------
     Case(
