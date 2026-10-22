@@ -15,9 +15,15 @@ import random
 import time
 
 import alkahest as ak
-import numpy as np
 import pytest
-import sympy as sp
+
+try:
+    import numpy as np
+    import sympy as sp
+except ImportError:  # the budget tests below need neither; the oracle ones skip
+    np = sp = None
+
+needs_oracle = pytest.mark.skipif(sp is None, reason="numpy and sympy are the oracles")
 
 
 def _poly(pool, x, coeffs):
@@ -127,6 +133,7 @@ def _check_against_oracle(coeffs, counter="sympy"):
         prev_hi = hi
 
 
+@needs_oracle
 def test_wilkinson_15():
     p = sp.Poly(sp.prod([sp.Symbol("x") - k for k in range(1, 16)]), sp.Symbol("x"))
     coeffs = [int(c) for c in reversed(p.all_coeffs())]
@@ -136,6 +143,7 @@ def test_wilkinson_15():
     assert [(iv.lo, iv.hi) for iv in ivs] == [(float(k), float(k)) for k in range(1, 16)]
 
 
+@needs_oracle
 @pytest.mark.parametrize(("n", "a"), [(8, 20), (12, 50), (20, 100)])
 def test_mignotte_close_roots(n, a):
     # x^n - 2 (a x - 1)^2 : two roots within ~1/(a^(n/2)) of 1/a.
@@ -145,6 +153,7 @@ def test_mignotte_close_roots(n, a):
     _check_against_oracle(coeffs)
 
 
+@needs_oracle
 def test_sparse_high_degree():
     # x^600 - 3 x^301 + x^7 - 5  (sparse, degree 600)
     coeffs = [0] * 601
@@ -152,17 +161,20 @@ def test_sparse_high_degree():
     _check_against_oracle(coeffs)
 
 
+@needs_oracle
 def test_repeated_roots_collapse():
     sx = sp.Symbol("x")
     p = sp.Poly((sx - 1) ** 3 * (sx + 2) ** 2 * (sx**2 - 3), sx)
     _check_against_oracle([int(c) for c in reversed(p.all_coeffs())])
 
 
+@needs_oracle
 @pytest.mark.parametrize(("deg", "seed"), [(30, 1), (60, 2), (120, 3), (200, 4)])
 def test_random_polynomials_match_sympy(deg, seed):
     _check_against_oracle(_random_coeffs(deg, seed), "sympy" if deg <= 60 else "numpy")
 
 
+@needs_oracle
 def test_default_budget_degree_1500_repro_returns():
     """The report's exact repro now finishes instead of aborting (and well inside 5 s)."""
     pool = ak.ExprPool()
