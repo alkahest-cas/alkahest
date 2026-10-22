@@ -13232,26 +13232,26 @@ impl PyArbBall {
     }
 
     /// Midpoint as an exact `fractions.Fraction`.
-    fn mid_exact<'py>(&self, py: Python<'py>) -> PyResult<&'py PyAny> {
+    fn mid_exact<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         float_to_fraction(py, &self.inner.mid)
     }
 
     /// Radius as an exact `fractions.Fraction`.
-    fn rad_exact<'py>(&self, py: Python<'py>) -> PyResult<&'py PyAny> {
+    fn rad_exact<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         float_to_fraction(py, &self.inner.rad)
     }
 
     /// `(mid, rad)` as `mpmath.mpf` values, exact conversions of the stored
     /// binary floats (requires `mpmath`).
-    fn to_mpf<'py>(&self, py: Python<'py>) -> PyResult<(&'py PyAny, &'py PyAny)> {
-        let mpmath = py.import("mpmath")?;
+    fn to_mpf<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
+        let mpmath = py.import_bound("mpmath")?;
         let ctx = mpmath.getattr("mp")?;
         let mpf = mpmath.getattr("mpf")?;
         let prec = self.inner.mid.prec().max(self.inner.rad.prec());
         let old = ctx.getattr("prec")?;
         ctx.setattr("prec", prec)?;
         let r = (|| -> PyResult<_> {
-            let conv = |f: &rug::Float| -> PyResult<&'py PyAny> {
+            let conv = |f: &rug::Float| -> PyResult<Bound<'py, PyAny>> {
                 // Exact: build from (sign, mantissa, exp, bitcount) via Fraction.
                 let q = float_to_fraction(py, f)?;
                 let n = q.getattr("numerator")?;
@@ -13398,14 +13398,16 @@ fn float_to_dec_string(f: &rug::Float) -> String {
     f.to_string_radix(10, None)
 }
 
-fn float_to_fraction<'py>(py: Python<'py>, f: &rug::Float) -> PyResult<&'py PyAny> {
+fn float_to_fraction<'py>(py: Python<'py>, f: &rug::Float) -> PyResult<Bound<'py, PyAny>> {
     let q = f
         .to_rational()
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("ball endpoint is not finite"))?;
-    let int = py.get_type::<pyo3::types::PyInt>();
+    let int = py.get_type_bound::<pyo3::types::PyInt>();
     let n = int.call1((q.numer().to_string(),))?;
     let d = int.call1((q.denom().to_string(),))?;
-    py.import("fractions")?.getattr("Fraction")?.call1((n, d))
+    py.import_bound("fractions")?
+        .getattr("Fraction")?
+        .call1((n, d))
 }
 
 /// Evaluate a symbolic expression using rigorous interval (ball) arithmetic.
