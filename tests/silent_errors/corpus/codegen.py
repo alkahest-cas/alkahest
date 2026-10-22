@@ -243,4 +243,46 @@ CASES: list[Case] = [
             "channel) and is the reason this case exists rather than a Raises() one."
         ),
     ),
+    Case(
+        id="codegen_compiled_fn_real_value_through_complex_intermediates",
+        subsystem="codegen",
+        statement=(
+            "compile_expr of the two-compartment inverse Laplace (undeclared rates) at "
+            "k10=0.3, k12=0.5, k21=0.2, t=1.7, D/V1=10 is 3.117450651919716, not NaN"
+        ),
+        op=lambda: _two_compartment_compiled(),
+        contract=Returns(3.117450651919716, tol=1e-12),
+        verified_by=(
+            "scipy.linalg.expm([[-0.8, 0.2], [0.5, -0.2]]*1.7) @ [10, 0] gives "
+            "3.117450651919716 for the central compartment; complex-mode evaluation of the "
+            "returned closed form gives the same with imaginary part ~1e-16."
+        ),
+        note=(
+            "report10-21 N11: the closed form is cos/sin(t·√ω²) with ω² < 0 at these rates, "
+            "real only through complex intermediates; the JIT returned NaN with no error. "
+            "A NaN point is now re-evaluated in complex arithmetic and its real part returned "
+            "when the imaginary part is zero within the rounding-error bound."
+        ),
+    ),
+    Case(
+        id="codegen_control_compiled_fn_keeps_nan_where_the_value_is_not_real",
+        subsystem="codegen",
+        statement="compile_expr(cos(√x) + √x)([-1.0]) has no real value: cosh 1 + i",
+        op=lambda: float(ak.compile_expr(ak.cos(ak.sqrt(X)) + ak.sqrt(X), [X])([-1.0])),
+        contract=RefusesOr(),
+        verified_by="√−1 = i, cos(i) = cosh 1, so the value is cosh 1 + i — not a real number.",
+        note="Control for codegen_compiled_fn_real_value_through_complex_intermediates.",
+    ),
 ]
+
+
+def _two_compartment_compiled() -> float:
+    import alkahest.experimental as ex
+
+    k10, k12, k21, t, s = (
+        POOL.symbol(n) for n in ("n11_k10", "n11_k12", "n11_k21", "n11_t", "n11_s")
+    )
+    g = ex.inverse_laplace_transform(
+        (s + k21) * _int(10) / (s * s + (k10 + k12 + k21) * s + k10 * k21), s, t
+    )
+    return float(ak.compile_expr(g, [k10, k12, k21, t])([0.3, 0.5, 0.2, 1.7]))

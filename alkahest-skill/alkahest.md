@@ -934,7 +934,11 @@ numpy_eval(g, xs, ys)         # ndarray of shape (2, len(xs))
 
 `compile_expr` refuses, rather than returning NaN everywhere: a free symbol missing from
 the input list (`E-JIT-005`) and a function with no numeric implementation — an undefined
-`f(x)` or a `Derivative` of one (`E-JIT-006`). Batch evaluation runs one native loop
+`f(x)` or a `Derivative` of one (`E-JIT-006`). A real value reached through complex
+intermediates (`cos(t·√ω²)` at `ω² < 0`, Cardano with three real roots, ZOH) is returned,
+not NaN: a NaN point is re-evaluated in complex arithmetic and its real part returned when
+the imaginary part is zero within the rounding bound (also `eval_expr`, `numpy_eval`, emitted
+C). NaN / `E-EVAL-009` means "not real here" (`log(-1)`, `sqrt(-2)`). Batch evaluation runs one native loop
 over the arrays in place; expect roughly NumPy/`lambdify` speed single-threaded.
 
 **`parallel` is `True` in the default PyPI wheel** (Linux, macOS and Windows), so `*_par`

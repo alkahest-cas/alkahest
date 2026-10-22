@@ -1230,6 +1230,9 @@ mod tests {
             p.add(vec![half(1), half(-1), half(3)]),
         ];
         let code = emit_expr_c_vec(&outs, &[x], &["x"], "f", &p).unwrap();
+        // `x^{1/2} + x^{-1/2}` is real at x = −1 through complex values, so a
+        // complex fallback is emitted ahead of `f`; this test is about `f`.
+        let code = &code[code.find("void f(").unwrap()..];
         assert!(!code.contains("pow("), "{code}");
         assert_eq!(code.matches("(x * x)").count(), 1, "{code}");
         assert_eq!(code.matches("sqrt(").count(), 1, "{code}");

@@ -78,6 +78,8 @@ pub use nvptx::{compile_cuda, cuda_device_count, CudaCompiledFn, CudaError};
 mod cranelift_backend;
 
 pub mod cache;
+pub(crate) mod complex_fallback;
+use complex_fallback::ComplexFallback;
 
 #[cfg(test)]
 mod agreement_tests;
@@ -604,11 +606,58 @@ pub struct CompiledFn {
     pub n_inputs: usize,
     /// Backend used for this function (for diagnostics).
     pub tier: CompileTier,
+    /// The expression over complex `f64`, for a point whose real evaluation
+    /// is NaN; `None` when it cannot have complex intermediates. See
+    /// the private `complex_fallback` module.
+    complex: Option<Box<ComplexFallback>>,
 }
 
 impl CompiledFn {
     /// Evaluate with the given inputs.  Panics if `inputs.len() != n_inputs`.
+    ///
+    /// A point where the real arithmetic produces NaN although the value is a
+    /// real number reached through complex intermediates (`cos(t·√ω²)` with
+    /// `ω² < 0`, Cardano's formula with three real roots) is re-evaluated in
+    /// complex arithmetic, and the real part is returned when the imaginary
+    /// part is zero within the evaluation's rounding-error bound. NaN is
+    /// returned only where the value is not a real number (`log(−1)`, `√−2`)
+    /// or cannot be decided in double precision.
     pub fn call(&self, inputs: &[f64]) -> f64 {
+        let v = self.call_real(inputs);
+        if v.is_nan() {
+            if let Some(c) = &self.complex {
+                return c.eval_real(inputs).unwrap_or(v);
+            }
+        }
+        v
+    }
+
+    /// Replace each NaN in `output` (point `offset + j`) by its complex
+    /// fallback value where there is one. `point(j, buf)` fills the inputs
+    /// of point `j` of `output`.
+    fn repair(&self, output: &mut [f64], mut point: impl FnMut(usize, &mut [f64])) {
+        let Some(c) = &self.complex else { return };
+        let mut buf = vec![0.0f64; self.n_inputs];
+        for (j, out) in output.iter_mut().enumerate() {
+            if out.is_nan() {
+                point(j, &mut buf);
+                if let Some(v) = c.eval_real(&buf) {
+                    *out = v;
+                }
+            }
+        }
+    }
+
+    fn repair_slices(&self, inputs: &[&[f64]], output: &mut [f64], offset: usize) {
+        self.repair(output, |j, buf| {
+            for (slot, col) in buf.iter_mut().zip(inputs) {
+                *slot = col[offset + j];
+            }
+        });
+    }
+
+    /// The real evaluation alone (no complex fallback).
+    fn call_real(&self, inputs: &[f64]) -> f64 {
         assert_eq!(
             inputs.len(),
             self.n_inputs,
@@ -646,6 +695,16 @@ impl CompiledFn {
     /// variable `i` occupies `inputs_flat[i * n_points .. (i + 1) * n_points]`.
     /// `output` has length `n_points`.
     pub fn call_bulk(&self, inputs_flat: &[f64], output: &mut [f64]) {
+        self.call_bulk_real(inputs_flat, output);
+        let n_points = output.len();
+        self.repair(output, |j, buf| {
+            for (i, slot) in buf.iter_mut().enumerate() {
+                *slot = inputs_flat[i * n_points + j];
+            }
+        });
+    }
+
+    fn call_bulk_real(&self, inputs_flat: &[f64], output: &mut [f64]) {
         let n_points = output.len();
         assert_eq!(
             inputs_flat.len(),
@@ -674,7 +733,7 @@ impl CompiledFn {
             for (i, slot) in point.iter_mut().enumerate() {
                 *slot = inputs_flat[i * n_points + j];
             }
-            output[j] = self.call(&point);
+            output[j] = self.call_real(&point);
         }
     }
 
@@ -686,6 +745,11 @@ impl CompiledFn {
     /// This is the hot path for NumPy/JAX array evaluation.
     /// For multi-core throughput see `call_batch_par` (requires the `parallel` feature).
     pub fn call_batch(&self, inputs: &[&[f64]], output: &mut [f64]) {
+        self.call_batch_real(inputs, output);
+        self.repair_slices(inputs, output, 0);
+    }
+
+    fn call_batch_real(&self, inputs: &[&[f64]], output: &mut [f64]) {
         let n = output.len();
         assert_eq!(
             inputs.len(),
@@ -724,7 +788,7 @@ impl CompiledFn {
         for col in inputs {
             flat.extend_from_slice(col);
         }
-        self.call_bulk(&flat, output);
+        self.call_bulk_real(&flat, output);
     }
 
     /// Batch-evaluate over N points **in parallel** using Rayon.
@@ -744,6 +808,18 @@ impl CompiledFn {
     #[cfg(feature = "parallel")]
     pub fn call_batch_par(&self, inputs: &[&[f64]], output: &mut [f64]) {
         use rayon::prelude::*;
+        self.call_batch_par_real(inputs, output);
+        if self.complex.is_some() {
+            output
+                .par_chunks_mut(PAR_CHUNK)
+                .enumerate()
+                .for_each(|(c, chunk)| self.repair_slices(inputs, chunk, c * PAR_CHUNK));
+        }
+    }
+
+    #[cfg(feature = "parallel")]
+    fn call_batch_par_real(&self, inputs: &[&[f64]], output: &mut [f64]) {
+        use rayon::prelude::*;
 
         let n = output.len();
         assert_eq!(
@@ -759,7 +835,7 @@ impl CompiledFn {
 
         // Below a couple of chunks, threads cost more than they save.
         if n < 2 * PAR_CHUNK {
-            return self.call_batch(inputs, output);
+            return self.call_batch_real(inputs, output);
         }
 
         // A native backend (Cranelift or LLVM): each chunk is one call of the
@@ -805,7 +881,7 @@ impl CompiledFn {
                     for (slot, col) in point.iter_mut().zip(inputs) {
                         *slot = col[offset + j];
                     }
-                    *out = self.call(&point);
+                    *out = self.call_real(&point);
                 }
             });
     }
@@ -875,6 +951,11 @@ pub struct CompiledVecFn {
     inner: CompiledVecInner,
     n_inputs: usize,
     n_outputs: usize,
+    /// Per-output complex fallbacks for the shared native loop (the
+    /// per-output tier carries them in each [`CompiledFn`]); empty when no
+    /// output needs one.
+    #[cfg_attr(not(feature = "cranelift"), allow(dead_code))]
+    complex: Vec<Option<ComplexFallback>>,
 }
 
 // SAFETY: as for `CompiledFn` — immutable code pages, function pointers only
@@ -928,10 +1009,37 @@ impl CompiledVecFn {
                 // SAFETY: every pointer addresses one live element; index 0
                 // is the only one read or written.
                 unsafe { cols_fn(cols.as_ptr(), outs.as_ptr(), 0, 1) };
+                for (o, c) in out.iter_mut().zip(&self.complex) {
+                    if let (true, Some(c)) = (o.is_nan(), c) {
+                        if let Some(v) = c.eval_real(inputs) {
+                            *o = v;
+                        }
+                    }
+                }
             }
             CompiledVecInner::PerOutput(fs) => {
                 for (o, f) in out.iter_mut().zip(fs) {
                     *o = f.call(inputs);
+                }
+            }
+        }
+    }
+
+    /// The complex fallback (see the private `complex_fallback` module) over every NaN of a
+    /// native batch.
+    #[cfg(feature = "cranelift")]
+    fn repair_outputs(&self, inputs: &[&[f64]], outputs: &mut [&mut [f64]]) {
+        let mut buf = vec![0.0f64; self.n_inputs];
+        for (o, c) in outputs.iter_mut().zip(&self.complex) {
+            let Some(c) = c else { continue };
+            for (j, v) in o.iter_mut().enumerate() {
+                if v.is_nan() {
+                    for (slot, col) in buf.iter_mut().zip(inputs) {
+                        *slot = col[j];
+                    }
+                    if let Some(r) = c.eval_real(&buf) {
+                        *v = r;
+                    }
                 }
             }
         }
@@ -978,6 +1086,7 @@ impl CompiledVecFn {
                 // SAFETY: every column has `n` values (checked) and the output
                 // slices are exclusively borrowed (and so pairwise disjoint).
                 unsafe { cols_fn(cols.as_ptr(), outs.as_ptr(), 0, n as u64) };
+                self.repair_outputs(inputs, outputs);
             }
             CompiledVecInner::PerOutput(fs) => {
                 let _ = n;
@@ -1019,6 +1128,7 @@ impl CompiledVecFn {
                         )
                     };
                 });
+                self.repair_outputs(inputs, outputs);
             }
             CompiledVecInner::PerOutput(fs) => {
                 for (o, f) in outputs.iter_mut().zip(fs) {
@@ -1070,6 +1180,7 @@ pub fn compile_many_with(
             inner: CompiledVecInner::PerOutput(fs),
             n_inputs: inputs.len(),
             n_outputs: exprs.len(),
+            complex: Vec::new(),
         })
     };
     #[cfg(feature = "cranelift")]
@@ -1079,6 +1190,11 @@ pub fn compile_many_with(
             && !exprs.iter().any(|&e| needs_exact_integer_exponent(e, pool));
         if native_ok {
             if let Ok(code) = cranelift_backend::compile_cranelift_many(exprs, inputs, pool) {
+                let complex: Vec<Option<ComplexFallback>> = exprs
+                    .iter()
+                    .map(|&e| ComplexFallback::build(e, inputs, pool))
+                    .collect();
+                let any = complex.iter().any(Option::is_some);
                 return Ok(CompiledVecFn {
                     inner: CompiledVecInner::Cranelift {
                         cols_fn: code.cols,
@@ -1087,6 +1203,7 @@ pub fn compile_many_with(
                     },
                     n_inputs: inputs.len(),
                     n_outputs: exprs.len(),
+                    complex: if any { complex } else { Vec::new() },
                 });
             }
         }
@@ -1211,7 +1328,29 @@ fn needs_exact_integer_exponent(expr: ExprId, pool: &ExprPool) -> bool {
     false
 }
 
+/// Attach the complex fallback (see the private `complex_fallback` module) to a compiled
+/// function, when the expression can need one.
+fn with_complex_fallback(
+    mut f: CompiledFn,
+    expr: ExprId,
+    inputs: &[ExprId],
+    pool: &ExprPool,
+) -> CompiledFn {
+    f.complex = ComplexFallback::build(expr, inputs, pool).map(Box::new);
+    f
+}
+
 fn compile_with_fallbacks(
+    tier: CompileTier,
+    expr: ExprId,
+    inputs: &[ExprId],
+    pool: &ExprPool,
+) -> Result<CompiledFn, JitError> {
+    compile_with_fallbacks_real(tier, expr, inputs, pool)
+        .map(|f| with_complex_fallback(f, expr, inputs, pool))
+}
+
+fn compile_with_fallbacks_real(
     tier: CompileTier,
     expr: ExprId,
     inputs: &[ExprId],
@@ -1297,10 +1436,11 @@ pub fn compile_jit_only(
 ) -> Result<CompiledFn, JitError> {
     refuse_unbound(expr, inputs, pool)?;
     #[cfg(feature = "cranelift")]
-    return cranelift_backend::compile_cranelift(expr, inputs, pool);
+    return cranelift_backend::compile_cranelift(expr, inputs, pool)
+        .map(|f| with_complex_fallback(f, expr, inputs, pool));
 
     #[cfg(all(feature = "jit", not(feature = "cranelift")))]
-    return compile_llvm(expr, inputs, pool);
+    return compile_llvm(expr, inputs, pool).map(|f| with_complex_fallback(f, expr, inputs, pool));
 
     #[cfg(not(any(feature = "jit", feature = "cranelift")))]
     {
@@ -1325,6 +1465,34 @@ pub fn compile_jit_only(
 pub fn eval_interp(expr: ExprId, env: &HashMap<ExprId, f64>, pool: &ExprPool) -> Option<f64> {
     let mut memo: IdMap<f64> = IdMap::default();
     eval_interp_inner(expr, env, pool, &mut memo)
+}
+
+/// [`eval_interp_checked`], with a NaN result re-evaluated through the
+/// complex fallback (see the private `complex_fallback` module) as [`CompiledFn::call`] does:
+/// a real value reached through complex intermediates — `cos(t·√ω²)` at
+/// `ω² < 0`, Cardano's formula with three real roots — is returned rather
+/// than refused. [`InterpEvalError::NonFinite`] then means the value is not a
+/// real number at this point (`log(−1)`, `√−2`), not that real arithmetic
+/// could not reach it. This is what Python's `eval_expr` calls.
+///
+/// [`eval_interp`] and [`eval_interp_checked`] keep plain real `f64`
+/// semantics (a NaN is a NaN); the many internal callers that sample an
+/// expression rely on that.
+pub fn eval_interp_real(
+    expr: ExprId,
+    env: &HashMap<ExprId, f64>,
+    pool: &ExprPool,
+) -> Result<f64, InterpEvalError> {
+    match eval_interp(expr, env, pool) {
+        Some(v) if v.is_nan() => {
+            let (vars, vals): (Vec<ExprId>, Vec<f64>) = env.iter().map(|(&k, &v)| (k, v)).unzip();
+            ComplexFallback::build(expr, &vars, pool)
+                .and_then(|c| c.eval_real(&vals))
+                .filter(|v| v.is_finite())
+                .ok_or(InterpEvalError::NonFinite)
+        }
+        _ => eval_interp_checked(expr, env, pool),
+    }
 }
 
 /// One expression sampled at many values of one variable, every other binding
@@ -1641,6 +1809,7 @@ fn compile_interpreter(
             inner: CompiledFnInner::Program(Box::new(program)),
             n_inputs: n,
             tier: CompileTier::Interpreter,
+            complex: None,
         });
     }
     // The rest (`RootSum`, a `Predicate` used as a value, a condition that is
@@ -1661,6 +1830,7 @@ fn compile_interpreter(
         inner: CompiledFnInner::Interpreter(Box::new(interp)),
         n_inputs: n,
         tier: CompileTier::Interpreter,
+        complex: None,
     })
 }
 
@@ -2202,6 +2372,7 @@ mod llvm_backend {
             },
             n_inputs: inputs.len(),
             tier: super::CompileTier::Llvm,
+            complex: None,
         })
     }
 

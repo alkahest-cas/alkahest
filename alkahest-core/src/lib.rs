@@ -209,10 +209,10 @@ pub use jit::{
 };
 pub use jit::{check_inputs_bind, take_unbound_symbols, UnboundSymbolsError};
 pub use jit::{
-    compile, compile_jit_only, compile_with, eval_interp, eval_interp_checked, expr_subgraph_size,
-    jit_available, select_compile_tier, CompileCache, CompileConfig, CompileTier, CompiledFn,
-    InterpEvalError, JitError, INTERP_MAX_EXPECTED_EVALS, INTERP_MAX_NODES,
-    LLVM_MIN_EXPECTED_EVALS,
+    compile, compile_jit_only, compile_with, eval_interp, eval_interp_checked, eval_interp_real,
+    expr_subgraph_size, jit_available, select_compile_tier, CompileCache, CompileConfig,
+    CompileTier, CompiledFn, InterpEvalError, JitError, INTERP_MAX_EXPECTED_EVALS,
+    INTERP_MAX_NODES, LLVM_MIN_EXPECTED_EVALS,
 };
 
 // Plot — SVG polyline and Graphviz DOT renderers (dependency-free)
