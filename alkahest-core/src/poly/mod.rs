@@ -52,7 +52,10 @@ pub use residue::{residue, ResidueError};
 // V2-2 — Resultants and subresultant PRS
 pub use resultant::{collect_free_vars, resultant, subresultant_prs, ResultantError};
 // V2-4 — Real root isolation (VAS)
-pub use real_roots::{real_roots, real_roots_symbolic, refine_root, RealRootError, RootInterval};
+pub use real_roots::{
+    real_roots, real_roots_symbolic, refine_root, try_real_roots, try_real_roots_symbolic,
+    RealRootError, RootInterval, TryRealRootsError,
+};
 pub use unipoly::UniPoly;
 
 use crate::kernel::{ExprId, ExprPool};
