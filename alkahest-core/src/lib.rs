@@ -198,8 +198,8 @@ pub use simplify::{
 pub use sum::{
     gosper_certificate, gosper_normal_form, hypergeom_ratio, product_definite, product_indefinite,
     rsolve, solve_linear_recurrence_homogeneous, sum_definite, sum_indefinite, verify_wz_pair,
-    LinearRecurrenceError, ProductError, RatFunc, RecurrenceSolution, RsolveError, SumError,
-    WzPair,
+    verify_wz_pair_verdict, LinearRecurrenceError, ProductError, RatFunc, RecurrenceSolution,
+    RsolveError, SumError, WzPair, WzVerdict,
 };
 
 // Phase 21 — JIT
@@ -396,8 +396,8 @@ pub mod stable {
     pub use crate::sum::{
         gosper_certificate, gosper_normal_form, hypergeom_ratio, product_definite,
         product_indefinite, rsolve, solve_linear_recurrence_homogeneous, sum_definite,
-        sum_indefinite, verify_wz_pair, LinearRecurrenceError, ProductError, RatFunc,
-        RecurrenceSolution, RsolveError, SumError, WzPair,
+        sum_indefinite, verify_wz_pair, verify_wz_pair_verdict, LinearRecurrenceError,
+        ProductError, RatFunc, RecurrenceSolution, RsolveError, SumError, WzPair, WzVerdict,
     };
     pub use crate::version;
 }

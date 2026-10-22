@@ -51,7 +51,7 @@ use alkahest_core::{
     together as core_together,
     try_emit_stablehlo as core_try_emit_stablehlo,
     try_grad as core_try_grad,
-    verify_wz_pair as core_verify_wz_pair,
+    verify_wz_pair_verdict as core_verify_wz_pair_verdict,
     voltage_source as core_voltage_source,
     // Phase 22 — Ball arithmetic
     ArbBall as CoreArbBall,
@@ -90,6 +90,7 @@ use alkahest_core::{
     UniPolyFactorModP,
     UniPolyFactorization,
     WzPair,
+    WzVerdict,
     DAE,
     ODE,
 };
@@ -7083,6 +7084,17 @@ fn py_rsolve(
     Ok(PyExpr { id, pool: pool_py })
 }
 
+/// Check the WZ identity ``F(n+1,k) - F(n,k) = G(n,k+1) - G(n,k)``.
+///
+/// Returns ``True`` only when the identity is *proved* and ``False`` only when
+/// it is *refuted*.  The test is exact: both sides are normalised in
+/// ``Q(n)(k)`` (for proper hypergeometric ``F``, ``G`` -- gamma, factorial,
+/// binomial, pochhammer -- the identity is divided by ``F`` and the ratios of
+/// factorials reduced to rational functions), and a counterexample search at
+/// small integers can also refute.
+///
+/// Raises ``SumError`` (``E-SUM-001``) when neither a proof nor a refutation
+/// is available, instead of answering ``False``.
 #[pyfunction]
 #[pyo3(name = "verify_wz_pair")]
 fn py_verify_wz_pair(
@@ -7093,11 +7105,18 @@ fn py_verify_wz_pair(
     k: PyRef<PyExpr>,
 ) -> PyResult<bool> {
     same_pool!("verify_wz_pair"; f, g, n, k);
-    let _ = py;
     let pool = f.pool.borrow(py);
     guard_depth_all(&pool.inner, &[f.id, g.id, n.id, k.id])?;
     let pair = WzPair { f: f.id, g: g.id };
-    Ok(core_verify_wz_pair(&pair, n.id, k.id, &pool.inner))
+    match core_verify_wz_pair_verdict(&pair, n.id, k.id, &pool.inner) {
+        WzVerdict::Proved => Ok(true),
+        WzVerdict::Refuted => Ok(false),
+        WzVerdict::Undecided => Err(sum_error_to_py(SumError::NotHypergeometric(
+            "verify_wz_pair: undecided; the pair is neither proved nor refuted \
+             (F and G are not proper hypergeometric terms with a rational quotient)"
+                .into(),
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------------------
