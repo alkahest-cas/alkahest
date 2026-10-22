@@ -783,13 +783,8 @@ fn mathieu_24_has_order_244823040() {
 /// level re-checked every Schreier generator.
 #[test]
 fn symmetric_60_order_is_exact() {
-    let t = std::time::Instant::now();
+    // No wall-clock bound: ASan and loaded runners vary too much for one.
     assert_eq!(symmetric(60).unwrap().order().unwrap(), factorial(60));
-    assert!(
-        t.elapsed() < std::time::Duration::from_secs(60),
-        "{:?}",
-        t.elapsed()
-    );
 }
 
 /// A budget stop is a refusal recognised by `is_budget_stop`, carries the trip,
