@@ -194,7 +194,8 @@ class TestNegativeLiteralFolding:
             # The Unicode column used to read `-2/3¹`: the reciprocal factor was
             # moved into the denominator *and* kept its exponent.  `x^-1` is
             # `1/x`, not `1/x¹` — the division is what spends the exponent.
-            ("-2/3", None, r"-\frac{2}{3}", "-2/3"),  # \frac{-2}{3}
+            # `2/3` between literals is the exact rational, so Unicode prints `-⅔`.
+            ("-2/3", None, r"-\frac{2}{3}", "-⅔"),  # \frac{-2}{3}
             ("2 - -3", None, "2 + 3", "2 + 3"),  # "--3 + 2"
             # Unchanged, because none of these is `-<literal>`.
             ("-x", None, "-x", "-x"),

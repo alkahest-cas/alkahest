@@ -241,6 +241,7 @@ fn greek_latex(name: &str) -> Option<&'static str> {
         "EulerGamma" => Some(r"\gamma"),
         "Catalan" => Some("G"),
         "Glaisher" => Some("A"),
+        "GoldenRatio" => Some(r"\varphi"),
         // Stieltjes constants `γₙ` (`MAX_STIELTJES` of them).
         "StieltjesGamma1" => Some(r"\gamma_{1}"),
         "StieltjesGamma2" => Some(r"\gamma_{2}"),

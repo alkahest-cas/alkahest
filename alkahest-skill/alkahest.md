@@ -2071,6 +2071,8 @@ latex(e)
 unicode_str(e)
 ```
 
+Reserved names in `parse` (when not bound in the `symbols` dict): `I` = imaginary unit, `E` = `exp(1)`, `oo`/`∞` = +∞, and `pi`, `EulerGamma`, `Catalan`, `Glaisher`, `GoldenRatio` are named real constants. Bind the name in `symbols` to use it as a variable. `3/4` between integer literals is the exact rational.
+
 **Round-trip fidelity is a correctness property here** (since 3.11): every printed
 form is required to re-read as the expression that was printed. A printer that
 emits something re-parsing to different mathematics is a silent wrong answer with
