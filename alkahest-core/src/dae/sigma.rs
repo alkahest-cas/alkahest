@@ -383,14 +383,15 @@ fn exact_det(mut m: Vec<Vec<Rational>>) -> Rational {
         }
         let p = m[col][col].clone();
         det *= &p;
-        for r in col + 1..n {
-            if m[r][col] == 0 {
+        let (top, rest) = m.split_at_mut(col + 1);
+        let pivot_row = &top[col];
+        for row in rest {
+            if row[col] == 0 {
                 continue;
             }
-            let f = Rational::from(&m[r][col] / &p);
-            for k in col..n {
-                let sub = Rational::from(&f * &m[col][k]);
-                m[r][k] -= sub;
+            let f = Rational::from(&row[col] / &p);
+            for (dst, src) in row[col..].iter_mut().zip(&pivot_row[col..]) {
+                *dst -= Rational::from(&f * src);
             }
         }
     }
@@ -413,10 +414,12 @@ fn float_nonsingular(mut m: Vec<Vec<f64>>) -> bool {
             return false;
         }
         m.swap(piv, col);
-        for r in col + 1..n {
-            let f = m[r][col] / m[col][col];
-            for k in col..n {
-                m[r][k] -= f * m[col][k];
+        let (top, rest) = m.split_at_mut(col + 1);
+        let pivot_row = &top[col];
+        for row in rest {
+            let f = row[col] / pivot_row[col];
+            for (dst, src) in row[col..].iter_mut().zip(&pivot_row[col..]) {
+                *dst -= f * src;
             }
         }
     }
@@ -553,12 +556,12 @@ pub(super) fn sigma_reduce(
 
     // System Jacobian J_ij = ∂f_i^{(c_i)} / ∂x_j^{(d_j)}.
     let mut entries = Vec::with_capacity(n_eq);
-    for i in 0..n_eq {
+    for &fi in &current {
         let mut row = Vec::with_capacity(n_eq);
         for (j, ch) in chains.iter_mut().enumerate() {
             let top = ch.jet(d[j], pool);
-            let e = if structurally_depends(current[i], top, pool) {
-                crate::diff::diff(current[i], top, pool)
+            let e = if structurally_depends(fi, top, pool) {
+                crate::diff::diff(fi, top, pool)
                     .map_err(|e| DaeStructureError::Dae(DaeError::DiffError(e.to_string())))?
                     .value
             } else {
@@ -583,7 +586,7 @@ pub(super) fn sigma_reduce(
         )));
     }
 
-    let index = max_c + usize::from(d.iter().any(|&dj| dj == 0));
+    let index = max_c + usize::from(d.contains(&0));
     let mut reduced = DAE::new(equations, w_vars, w_derivs, dae.time_var);
     reduced.index = Some(index);
     Ok(super::PantelidesResult {
