@@ -138,6 +138,71 @@ impl ProperTerm {
         Ok(acc)
     }
 
+    /// `num / den` as an exact element of `Q(n, k)`, when the two proper
+    /// hypergeometric terms differ by a rational function.
+    ///
+    /// Gamma factors whose arguments differ by integers (`Γ(n+k+1)/Γ(n+k)`)
+    /// are brought to a common base and cancelled; if any gamma survives, or a
+    /// `z^k`/`w^n` factor does, the quotient is not rational and the call is
+    /// refused rather than approximated.
+    pub fn quotient_ratk(
+        num: ExprId,
+        den: ExprId,
+        n: ExprId,
+        k: ExprId,
+        pool: &ExprPool,
+    ) -> Result<RatK, HolonomicError> {
+        let g = ProperTerm::parse(num, n, k, pool)?;
+        let f = ProperTerm::parse(den, n, k, pool)?;
+        let finv = f
+            .pow(-1)
+            .ok_or_else(|| HolonomicError::NotProperHypergeometric("exponent too large".into()))?;
+        let q = g.mul(&finv);
+        let not_rat = |m: &str| HolonomicError::NotProperHypergeometric(m.into());
+        if q.z != 1 || q.w != 1 {
+            return Err(not_rat("quotient carries a z^k or w^n factor"));
+        }
+        // (a, b, base c, total exponent)
+        let mut groups: Vec<(i64, i64, Rational, i32)> = Vec::new();
+        let mut acc = q.rat.clone();
+        for gf in &q.gammas {
+            let slot = groups.iter().position(|(a, b, c0, _)| {
+                *a == gf.a && *b == gf.b && Rational::from(&gf.c - c0).denom() == &1
+            });
+            let idx = match slot {
+                Some(i) => i,
+                None => {
+                    groups.push((gf.a, gf.b, gf.c.clone(), 0));
+                    groups.len() - 1
+                }
+            };
+            let c0 = groups[idx].2.clone();
+            let diff = Rational::from(&gf.c - &c0);
+            let s = diff
+                .numer()
+                .to_i64()
+                .ok_or_else(|| not_rat("gamma shift overflow"))?;
+            let base = GammaFactor {
+                a: gf.a,
+                b: gf.b,
+                c: c0,
+                e: 1,
+            };
+            let step = gamma_shift_ratio(&gamma_arg_poly(&base), s)?
+                .pow_i32(gf.e)
+                .ok_or_else(|| not_rat("gamma factor is identically zero"))?;
+            acc = acc.mul(&step);
+            groups[idx].3 = groups[idx]
+                .3
+                .checked_add(gf.e)
+                .ok_or_else(|| not_rat("exponent overflow"))?;
+        }
+        if groups.iter().any(|g| g.3 != 0) {
+            return Err(not_rat("gamma factors do not cancel"));
+        }
+        Ok(acc)
+    }
+
     /// Parse an expression into the proper hypergeometric class.
     pub fn parse(
         expr: ExprId,

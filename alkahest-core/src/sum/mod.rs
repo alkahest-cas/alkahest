@@ -449,27 +449,33 @@ pub struct WzPair {
     pub g: ExprId,
 }
 
-/// `true` only when `F(n+1,k) − F(n,k) = G(n,k+1) − G(n,k)` was *established*.
+/// Outcome of the WZ identity check: [`verify_wz_pair_verdict`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WzVerdict {
+    /// `F(n+1,k) − F(n,k) = G(n,k+1) − G(n,k)` was proved.
+    Proved,
+    /// The identity fails (a rational-function difference that is non-zero,
+    /// or an exact counterexample at concrete integers).
+    Refuted,
+    /// No decision procedure here settles it — *not* the same as refuted.
+    Undecided,
+}
+
+/// Decide `F(n+1,k) − F(n,k) = G(n,k+1) − G(n,k)` with an honest tri-state.
 ///
-/// Two decision procedures, tried in that order, and a `true` from either is a
-/// proof rather than a match:
+/// 1. **Structural**, after [`simplify`]: equal sides prove the identity.
+/// 2. **`Q(n)(k)`**: when both sides read as rational functions, their
+///    difference is compared with zero — decides in both directions.
+/// 3. **Hypergeometric normalisation**: when `F` and `G` are proper
+///    hypergeometric terms (gamma / factorial / binomial / pochhammer) whose
+///    quotient `R = G/F` is rational, the identity is divided by `F(n,k)`:
+///    `F(n+1,k)/F(n,k) − 1 = R(n,k+1)·F(n,k+1)/F(n,k) − R(n,k)`, an identity
+///    in `Q(n)(k)` decided exactly in both directions.
+/// 4. **Counterexample search**: exact evaluation at small integer points; a
+///    non-zero rational residual refutes. Agreement never proves.
 ///
-/// 1. **Exact, in `Q(n)(k)`.** When both sides read as rational functions of
-///    `n` and `k`, their difference is put in the canonical form the Zeilberger
-///    engine uses and compared with zero. This decides the rational class in
-///    both directions.
-/// 2. **Structural, after [`simplify`].** The fallback for everything else —
-///    a pair built from `gamma` / `binom`, say, where no canonical form is
-///    available here.
-///
-/// The second is *one-sided*: `simplify` does not expand products, so it says
-/// `false` for pairs it cannot put in a common shape. `F = n·k`,
-/// `G = k(k−1)/2` is a true WZ pair — both sides are `k` — and used to fail
-/// exactly there, because `k·(n+1) − n·k` and `k(k+1)/2 − k(k−1)/2` are both
-/// left unexpanded and are not structurally equal. Step 1 now decides it.
-/// A `false` from step 2 alone therefore still means *not verified* rather than
-/// *refuted*; a `false` from step 1 means refuted.
-pub fn verify_wz_pair(pair: &WzPair, n: ExprId, k: ExprId, pool: &ExprPool) -> bool {
+/// Anything else is [`WzVerdict::Undecided`].
+pub fn verify_wz_pair_verdict(pair: &WzPair, n: ExprId, k: ExprId, pool: &ExprPool) -> WzVerdict {
     let k1 = simp(pool, pool.add(vec![k, pool.integer(1_i32)]));
     let n1 = simp(pool, pool.add(vec![n, pool.integer(1_i32)]));
 
@@ -492,18 +498,69 @@ pub fn verify_wz_pair(pair: &WzPair, n: ExprId, k: ExprId, pool: &ExprPool) -> b
     );
 
     if lhs == rhs {
-        return true;
+        return WzVerdict::Proved;
     }
-    // `Q(n)(k)` decides the rational class outright — and decides it *against*
-    // a non-pair too, so this can only turn a spurious `false` into `true`,
-    // never the other way round.
     if let (Some(l), Some(r)) = (
         crate::holonomic::hyperterm::as_ratk(lhs, n, k, pool, 0),
         crate::holonomic::hyperterm::as_ratk(rhs, n, k, pool, 0),
     ) {
-        return l.sub(&r).is_zero();
+        return if l.sub(&r).is_zero() {
+            WzVerdict::Proved
+        } else {
+            WzVerdict::Refuted
+        };
+    }
+    if let Some(v) = wz_hypergeometric(pair, n, k, pool) {
+        return v;
+    }
+    if wz_counterexample(lhs, rhs, n, k, pool) {
+        return WzVerdict::Refuted;
+    }
+    WzVerdict::Undecided
+}
+
+/// Step 3 of [`verify_wz_pair_verdict`]; `None` when `F`, `G` are outside the class.
+fn wz_hypergeometric(pair: &WzPair, n: ExprId, k: ExprId, pool: &ExprPool) -> Option<WzVerdict> {
+    use crate::holonomic::hyperterm::ProperTerm;
+    use crate::holonomic::qfield::RatK;
+    let f = ProperTerm::parse(pair.f, n, k, pool).ok()?;
+    let rho_n = f.ratio_n(1).ok()?;
+    let rho_k = f.ratio_k().ok()?;
+    let r = ProperTerm::quotient_ratk(pair.g, pair.f, n, k, pool).ok()?;
+    let lhs = rho_n.sub(&RatK::one());
+    let rhs = r.shift_k(1).mul(&rho_k).sub(&r);
+    Some(if lhs.sub(&rhs).is_zero() {
+        WzVerdict::Proved
+    } else {
+        WzVerdict::Refuted
+    })
+}
+
+/// Exact evaluation of `lhs − rhs` at small integer points; true on a
+/// non-zero rational residual (a genuine counterexample).
+fn wz_counterexample(lhs: ExprId, rhs: ExprId, n: ExprId, k: ExprId, pool: &ExprPool) -> bool {
+    use crate::kernel::ExprData;
+    let diff = pool.add(vec![lhs, pool.mul(vec![rhs, pool.integer(-1_i32)])]);
+    for (nv, kv) in [(3, 1), (4, 2), (5, 2), (7, 3), (9, 4), (6, 5)] {
+        let mut m = HashMap::new();
+        m.insert(n, pool.integer(nv));
+        m.insert(k, pool.integer(kv));
+        let v = simp(pool, subs(diff, &m, pool));
+        match pool.get(v) {
+            ExprData::Integer(i) if i.0 != 0 => return true,
+            ExprData::Rational(_) => return true,
+            _ => {}
+        }
     }
     false
+}
+
+/// `true` only when `F(n+1,k) − F(n,k) = G(n,k+1) − G(n,k)` was *established*.
+///
+/// `false` conflates *refuted* with *undecided*; use
+/// [`verify_wz_pair_verdict`] to tell them apart.
+pub fn verify_wz_pair(pair: &WzPair, n: ExprId, k: ExprId, pool: &ExprPool) -> bool {
+    verify_wz_pair_verdict(pair, n, k, pool) == WzVerdict::Proved
 }
 
 #[cfg(test)]
@@ -717,6 +774,69 @@ mod tests {
         let g_bad = pool.mul(vec![i(2), g]);
         assert!(!verify_wz_pair(&WzPair { f, g: g_bad }, n, k, &pool));
         assert!(!verify_wz_pair(&WzPair { f, g: i(0) }, n, k, &pool));
+    }
+
+    /// N7: the classic `Σ C(n,k)² = C(2n,n)` WZ pair is *proved*, a corrupted
+    /// `G` is *refuted*, and a pair outside the hypergeometric class is
+    /// *undecided* rather than `false`.
+    #[test]
+    fn wz_verdict_is_a_tri_state() {
+        let pool = ExprPool::new();
+        let n = pool.symbol("n", Domain::Real);
+        let k = pool.symbol("k", Domain::Real);
+        let i = |v: i32| pool.integer(v);
+        let gam = |e: ExprId| pool.func("gamma", vec![simp(&pool, pool.add(vec![e, i(1)]))]);
+        let binom = |a: ExprId, b: ExprId| {
+            let amb = pool.add(vec![a, pool.mul(vec![i(-1), b])]);
+            pool.mul(vec![
+                gam(a),
+                pool.pow(gam(b), i(-1)),
+                pool.pow(gam(amb), i(-1)),
+            ])
+        };
+        let two_n = pool.mul(vec![i(2), n]);
+        let f = pool.mul(vec![
+            pool.pow(binom(n, k), i(2)),
+            pool.pow(binom(two_n, n), i(-1)),
+        ]);
+        // R = k²(2k − 3n − 3) / (2 (n+1−k)² (2n+1))
+        let r_num = pool.mul(vec![
+            pool.pow(k, i(2)),
+            pool.add(vec![
+                pool.mul(vec![i(2), k]),
+                pool.mul(vec![i(-3), n]),
+                i(-3),
+            ]),
+        ]);
+        let r_den = pool.mul(vec![
+            i(2),
+            pool.pow(pool.add(vec![n, i(1), pool.mul(vec![i(-1), k])]), i(2)),
+            pool.add(vec![two_n, i(1)]),
+        ]);
+        let g = pool.mul(vec![r_num, pool.pow(r_den, i(-1)), f]);
+        let pair = WzPair { f, g };
+        assert_eq!(
+            verify_wz_pair_verdict(&pair, n, k, &pool),
+            WzVerdict::Proved
+        );
+        assert!(verify_wz_pair(&pair, n, k, &pool));
+
+        let bad = WzPair {
+            f,
+            g: pool.mul(vec![i(2), g]),
+        };
+        assert_eq!(
+            verify_wz_pair_verdict(&bad, n, k, &pool),
+            WzVerdict::Refuted
+        );
+
+        // Not hypergeometric in (n, k): cannot be decided, must not be `Refuted`.
+        let sk = pool.func("sin", vec![k]);
+        let und = WzPair { f: sk, g: sk };
+        assert_eq!(
+            verify_wz_pair_verdict(&und, n, k, &pool),
+            WzVerdict::Undecided
+        );
     }
 
     /// A geometric series with a *symbolic* ratio is elementary, and the

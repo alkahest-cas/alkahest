@@ -810,4 +810,7 @@ for D-finite functions (sums and products of holonomic objects) and the
 differential half of the guessing front-end (fitting a linear ODE to a power
 series).
 `sum_indefinite` (Gosper) and `verify_wz_pair` remain the neighbouring tools for
-the indefinite and WZ-pair cases respectively.
+the indefinite and WZ-pair cases respectively. `verify_wz_pair` is exact for
+proper hypergeometric `F`, `G` (it divides by `F` and decides the identity in
+`Q(n)(k)`): `True` means proved, `False` refuted, and an undecidable pair raises
+`SumError` (`E-SUM-001`).
