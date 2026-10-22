@@ -1235,7 +1235,10 @@ pub(crate) fn named_constant_ball(name: &str, prec: u32) -> Option<ArbBall> {
         EULER_GAMMA_NAME => Some(mpfr(rug::float::Constant::Euler)),
         CATALAN_NAME => Some(mpfr(rug::float::Constant::Catalan)),
         GLAISHER_NAME => glaisher_ball(prec),
-        _ => None,
+        other => {
+            let n = crate::eval::symbols::stieltjes_index(other)?;
+            crate::specfun::numeric::stieltjes_ball(n, prec)
+        }
     }
 }
 

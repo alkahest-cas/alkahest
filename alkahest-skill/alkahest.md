@@ -1613,6 +1613,7 @@ ak.evaluate(ak.bessel_j(nu, x), {nu: 2+0j, x: 1+1j})   # complex values via Arb
 
 ```python
 ak.euler_gamma(p), ak.catalan(p)    # exact symbols EulerGamma, Catalan (never floats)
+ak.stieltjes_constant(p, 1)         # StieltjesGamma1; series(zeta(s), s, 1, n) is a Laurent series in these
 ak.simplify(ak.digamma(p.integer(3)))       # 3/2 - EulerGamma; trigamma(1) = pi^2/6
 ak.polygamma(2, p.integer(1))               # -2*zeta(3); polygamma(0, x) is digamma(x)
 ak.series(ak.gamma(eps), eps, p.integer(0), 2)   # 1/eps - EulerGamma + (...)*eps + O(eps^2)

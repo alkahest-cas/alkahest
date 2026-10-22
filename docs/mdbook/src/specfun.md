@@ -77,6 +77,13 @@ declined by the real evaluators rather than replaced by a real part.
 parse and render (`\gamma`, `G`, `A`), every numeric evaluator resolves them,
 and no symbolic path folds them into a float.
 
+The Stieltjes constants `γₙ` (`ak.stieltjes_constant(pool, n)`, `n ≤ 30`;
+`γ₀` is `EulerGamma`) are the same kind of symbol (`StieltjesGamma1`, …), and
+`series(ak.zeta(s), s, p.integer(1), n)` is the Laurent series
+`1/(s−1) + γ − γ₁(s−1) + γ₂/2 (s−1)² − …` in them. A series coefficient that
+would contain a special function *at its pole* (`ζ(1)`, `Γ(0)`, `Y₀(0)`, …) is
+refused, never returned.
+
 ```python
 ak.simplify(ak.digamma(p.integer(1)))       # -EulerGamma (was the float -0.5772…)
 ak.simplify(ak.digamma(p.rational(1, 2))) # -EulerGamma - 2*log(2)

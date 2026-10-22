@@ -86,7 +86,7 @@ use crate::orthopoly::{int_literal, mk_mul, rational_literal};
 
 use numeric::Kernel;
 
-pub use gamma::{catalan, euler_gamma, glaisher, polygamma};
+pub use gamma::{catalan, euler_gamma, glaisher, polygamma, stieltjes_gamma};
 pub use gammasimp::gammasimp;
 pub use hankel::{hankel, HankelKind};
 pub use hyper::{expand_hyper, hyper, MAX_TERMINATING_DEGREE};

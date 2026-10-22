@@ -461,6 +461,33 @@ fn glaisher(pool: &Bound<'_, PyExprPool>) -> PyExpr {
     constant(pool, core::glaisher)
 }
 
+/// The Stieltjes constant ``gamma_n`` (``n >= 0``) as an exact symbol.
+///
+/// ``gamma_0`` is ``EulerGamma``; ``gamma_n`` for ``1 <= n <= 30`` is the
+/// symbol ``StieltjesGamma{n}`` (LaTeX ``\\gamma_{n}``). They are the
+/// coefficients of the Laurent series of the Riemann zeta function,
+/// ``zeta(s) = 1/(s-1) + sum_n (-1)**n * gamma_n * (s-1)**n / n!``, and appear in
+/// ``series(zeta(s), s, 1, order)``. No closed form exists, so they are never
+/// folded into floats; ``evaluate`` and ``interval_eval`` resolve them.
+///
+/// Raises ``ValueError`` (``E-SPECFN-004``) for ``n > 30``.
+///
+/// >>> import alkahest as ak
+/// >>> p = ak.ExprPool()
+/// >>> ak.stieltjes_constant(p, 1)            # StieltjesGamma1  (-0.0728...)
+#[pyfunction]
+fn stieltjes_constant(pool: &Bound<'_, PyExprPool>, n: u32) -> PyResult<PyExpr> {
+    let id = core::stieltjes_gamma(n, &pool.borrow().inner).ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(
+            "E-SPECFN-004: stieltjes_constant is available for n <= 30",
+        )
+    })?;
+    Ok(PyExpr {
+        id,
+        pool: pool.clone().unbind(),
+    })
+}
+
 /// The polygamma function ``polygamma(n, x)`` = ``psi^(n)(x)``, the
 /// ``(n+1)``-th derivative of ``log(gamma(x))`` (DLMF 5.15; SymPy's
 /// ``polygamma``).
@@ -693,6 +720,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(euler_gamma, m)?)?;
     m.add_function(wrap_pyfunction!(catalan, m)?)?;
     m.add_function(wrap_pyfunction!(glaisher, m)?)?;
+    m.add_function(wrap_pyfunction!(stieltjes_constant, m)?)?;
     m.add_function(wrap_pyfunction!(polygamma, m)?)?;
     m.add_function(wrap_pyfunction!(hyper, m)?)?;
     m.add_function(wrap_pyfunction!(beta, m)?)?;

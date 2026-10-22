@@ -617,3 +617,65 @@ fn a_terminating_series_past_the_cap_is_refused() {
     let e = hyp(&[pool.integer(-500)], &[pool.integer(3)], z, &pool);
     assert_eq!(expand_hyper(e, &pool).unwrap_err().code(), "E-SPECFN-004");
 }
+
+// ---------------------------------------------------------------------------
+// ζ at its pole (X7 / N5)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stieltjes_constants_match_mpmath() {
+    let pool = ExprPool::new();
+    // mpmath.stieltjes(n), 30 digits.
+    let want = [
+        (1_u32, -0.072_815_845_483_676_724_860_586_375_874_9_f64),
+        (2, -0.009_690_363_192_872_318_484_530_386_035_2),
+        (5, 0.000_793_323_817_301_062_701_753_334_474_7),
+        (10, 0.000_205_332_814_909_064_794_683_722_289_2),
+    ];
+    for (n, v) in want {
+        let g = stieltjes_gamma(n, &pool).unwrap();
+        assert_eq!(pool.display(g).to_string(), format!("StieltjesGamma{n}"));
+        let b = ball(g, &pool);
+        assert!((b.mid_f64() - v).abs() < 1e-15, "gamma_{n}: {b} vs {v}");
+        assert!(b.rad_f64() < 1e-50, "gamma_{n} enclosure not tight: {b}");
+    }
+    assert!(stieltjes_gamma(31, &pool).is_none());
+    assert_eq!(stieltjes_gamma(0, &pool), Some(euler_gamma(&pool)));
+}
+
+#[test]
+fn zeta_at_its_pole_has_a_laurent_series_not_a_pole_value() {
+    use crate::calculus::series;
+    let pool = ExprPool::new();
+    let s = sym(&pool, "s");
+    let r = series(pool.func("zeta", vec![s]), s, pool.integer(1), 3, &pool)
+        .expect("Laurent series of zeta at 1");
+    let shown = pool.display(r.expr()).to_string();
+    assert!(!shown.contains("zeta"), "{shown}");
+    assert!(
+        shown.contains("EulerGamma") && shown.contains("StieltjesGamma1"),
+        "{shown}"
+    );
+}
+
+#[test]
+fn series_never_returns_a_pole_value() {
+    use crate::calculus::series;
+    let pool = ExprPool::new();
+    let s = sym(&pool, "s");
+    // Li_s(1) at s = 1, zeta'(s) at 1 (a double pole) and zeta(s, 1/3) have no
+    // Taylor expansion there.
+    for f in [
+        pool.func("polylog", vec![s, pool.integer(1)]),
+        pool.func("zeta_prime", vec![s]),
+        pool.func("hurwitz_zeta", vec![s, pool.rational(1, 3)]),
+    ] {
+        if let Ok(r) = series(f, s, pool.integer(1), 2, &pool) {
+            let shown = pool.display(r.expr()).to_string();
+            assert!(
+                !shown.contains("(1)") && !shown.contains("(1, "),
+                "pole value in {shown}"
+            );
+        }
+    }
+}

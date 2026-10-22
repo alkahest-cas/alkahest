@@ -170,6 +170,14 @@ into a float.
 
    ``Glaisher`` (``1.2824…``) in ``pool``; its ball needs Arb.
 
+.. function:: stieltjes_constant(pool, n)
+
+   The Stieltjes constant ``gamma_n``: ``EulerGamma`` for ``n = 0``, the exact
+   symbol ``StieltjesGamma{n}`` (LaTeX ``\gamma_{n}``) for ``1 <= n <= 30``;
+   ``ValueError`` (``E-SPECFN-004``) beyond. They are the coefficients of
+   ``zeta(s) = 1/(s-1) + sum (-1)**n gamma_n (s-1)**n / n!``, so
+   ``series(zeta(s), s, 1, n)`` is a Laurent series in them. Balls need Arb.
+
 .. function:: polygamma(n, x)
 
    ``psi^(n)(x)`` (DLMF 5.15). ``polygamma(0, x)`` is :func:`digamma`,

@@ -75,6 +75,53 @@ pub(crate) const CATALAN_NAME: &str = "Catalan";
 /// The name the Glaisher–Kinkelin constant `A = 1.2824…` is interned under.
 pub(crate) const GLAISHER_NAME: &str = "Glaisher";
 
+/// Prefix of the Stieltjes constants `γₙ` (`n ≥ 1`), interned as
+/// `StieltjesGamma1`, `StieltjesGamma2`, … (`γ₀` is `EulerGamma`).
+pub(crate) const STIELTJES_PREFIX: &str = "StieltjesGamma";
+/// Largest `n` for which `γₙ` is a named constant (the `f64` table's length).
+pub(crate) const MAX_STIELTJES: u32 = 30;
+
+/// `n` when `name` is `StieltjesGamma{n}` with `1 <= n <=` [`MAX_STIELTJES`].
+pub(crate) fn stieltjes_index(name: &str) -> Option<u32> {
+    let n: u32 = name.strip_prefix(STIELTJES_PREFIX)?.parse().ok()?;
+    ((1..=MAX_STIELTJES).contains(&n) && name == format!("{STIELTJES_PREFIX}{n}")).then_some(n)
+}
+
+/// `γₙ` for `1 <= n <= 30` (mpmath `stieltjes`).
+#[allow(clippy::excessive_precision)]
+const STIELTJES_F64: [f64; MAX_STIELTJES as usize] = [
+    -0.07281584548367673,
+    -0.00969036319287232,
+    0.002053834420303346,
+    0.0023253700654673,
+    0.0007933238173010627,
+    -0.0002387693454301996,
+    -0.000527289567057751,
+    -0.0003521233538030395,
+    -3.439477441808805e-05,
+    0.0002053328149090648,
+    0.0002701844395439035,
+    0.0001672729121051402,
+    -2.7463806603760158e-05,
+    -0.00020920926205929996,
+    -0.0002834686553202414,
+    -0.00019969685830896976,
+    2.6277037109918338e-05,
+    0.0003073684081492528,
+    0.0005036054530473557,
+    0.00046634356151155945,
+    0.00010443776975600011,
+    -0.0005415995822039977,
+    -0.0012439620904082457,
+    -0.0015885112789035616,
+    -0.0010745919527384888,
+    0.0006568035186371545,
+    0.0034778369136185382,
+    0.00640006853170063,
+    0.007371151770472239,
+    0.003557728855573161,
+];
+
 /// The `f64` value of a named real constant — `π`, `γ` (`EulerGamma`),
 /// Catalan's `G` and Glaisher's `A` — or `None` for any other name.
 ///
@@ -89,7 +136,7 @@ pub(crate) fn constant_value_f64(name: &str) -> Option<f64> {
         EULER_GAMMA_NAME => Some(0.577_215_664_901_532_9),
         CATALAN_NAME => Some(0.915_965_594_177_219),
         GLAISHER_NAME => Some(1.282_427_129_100_622_6),
-        _ => None,
+        other => stieltjes_index(other).map(|n| STIELTJES_F64[n as usize - 1]),
     }
 }
 
