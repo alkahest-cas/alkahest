@@ -608,7 +608,7 @@ pub struct CompiledFn {
     pub tier: CompileTier,
     /// The expression over complex `f64`, for a point whose real evaluation
     /// is NaN; `None` when it cannot have complex intermediates. See
-    /// [`complex_fallback`].
+    /// the private `complex_fallback` module.
     complex: Option<Box<ComplexFallback>>,
 }
 
@@ -1025,7 +1025,7 @@ impl CompiledVecFn {
         }
     }
 
-    /// The complex fallback (see [`complex_fallback`]) over every NaN of a
+    /// The complex fallback (see the private `complex_fallback` module) over every NaN of a
     /// native batch.
     #[cfg(feature = "cranelift")]
     fn repair_outputs(&self, inputs: &[&[f64]], outputs: &mut [&mut [f64]]) {
@@ -1328,7 +1328,7 @@ fn needs_exact_integer_exponent(expr: ExprId, pool: &ExprPool) -> bool {
     false
 }
 
-/// Attach the complex fallback (see [`complex_fallback`]) to a compiled
+/// Attach the complex fallback (see the private `complex_fallback` module) to a compiled
 /// function, when the expression can need one.
 fn with_complex_fallback(
     mut f: CompiledFn,
@@ -1468,7 +1468,7 @@ pub fn eval_interp(expr: ExprId, env: &HashMap<ExprId, f64>, pool: &ExprPool) ->
 }
 
 /// [`eval_interp_checked`], with a NaN result re-evaluated through the
-/// complex fallback (see [`complex_fallback`]) as [`CompiledFn::call`] does:
+/// complex fallback (see the private `complex_fallback` module) as [`CompiledFn::call`] does:
 /// a real value reached through complex intermediates — `cos(t·√ω²)` at
 /// `ω² < 0`, Cardano's formula with three real roots — is returned rather
 /// than refused. [`InterpEvalError::NonFinite`] then means the value is not a
