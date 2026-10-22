@@ -63,14 +63,20 @@ DAE
 
 .. function:: pantelides(dae: DAE) -> DAE
 
-   Apply the Pantelides algorithm for structural index reduction.
+   Index reduction (Pryce's Σ-method, equivalent to Pantelides' algorithm).
 
-   Identifies which equations must be differentiated to make the system
-   structurally regular (index 1). Returns the reduced DAE with the
-   differentiated equations added as symbolic expressions.
+   Matches equations to unknowns on their highest derivatives, differentiates
+   each equation as often as that matching requires, and checks that the
+   Jacobian of the result with respect to the highest derivatives is
+   non-singular. Returns the reduced DAE: the original equations followed by
+   their derivatives.
 
-   :returns: A reduced :class:`DAE` with ``.index`` and
-      ``.differentiated`` attributes.
+   :returns: A reduced :class:`DAE` whose ``.index`` is the differentiation
+      index (0 for an ODE, 3 for the Cartesian pendulum).
+   :raises DaeError: ``E-DAE-002`` (more than 10 differentiations),
+      ``E-DAE-003`` (not square, or structurally singular), ``E-DAE-004``
+      (malformed DAE, also raised by ``DAE.new``), ``E-DAE-005`` (singular
+      reduced Jacobian).
 
 Sensitivity analysis
 --------------------

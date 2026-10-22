@@ -87,24 +87,35 @@ dae.time_var      # t
 
 ## Pantelides algorithm
 
-The Pantelides algorithm performs *structural* index reduction: it repeatedly differentiates the equations that a maximum bipartite matching leaves unmatched, until every equation is matched to a variable. It returns the **reduced `DAE`** — not a separate report object:
+`pantelides` performs index reduction. It matches equations to unknowns on their **highest** derivatives (Pryce's Σ-method, equivalent to Pantelides' algorithm), differentiates each equation as often as that matching requires, and checks that the result determines the highest derivative of every unknown. It returns the **reduced `DAE`** — the original equations followed by their derivatives — not a separate report object:
 
 ```python
 from alkahest import pantelides
 
 reduced = pantelides(dae)
 
-reduced.index        # 1 — differentiation rounds used
-reduced.n_equations  # 6 — one more than the input
+reduced.index        # 3 — the differentiation index of the pendulum
+reduced.n_equations  # 9 — x' = u and y' = w differentiated once, the constraint twice
 reduced.equations()[-1]
-# ((x * dx/dt * 2) + (y * dy/dt * 2)) — the differentiated constraint
+# the constraint differentiated twice — it involves ddx/dt/dt and ddy/dt/dt
 ```
 
-`reduced.index` is the number of rounds, so `0` means the input already had a perfect structural matching and nothing was differentiated. The equations appended by differentiation are visible in `reduced.equations()`, and the higher jets they introduce (`ddx/dt/dt`, …) in `reduced.derivatives()`.
+`reduced.index` is the differentiation index: `0` for an explicit ODE, `1` for a semi-explicit index-1 system (algebraic variables determined by the constraints directly), `2` for `x' = y, x = sin t`, `3` for the pendulum above. The equations appended by differentiation are visible in `reduced.equations()`, and the higher jets they introduce (`ddx/dt/dt`, …) in `reduced.derivatives()`.
 
-`pantelides` raises `ValueError` (`E-DAE-002`) above index 10. `dae_index_reduce(dae)` runs Pantelides first and falls back to `rosenfeld_groebner` when it hits that cap.
+A variable listed as another's derivative is a jet of that unknown, not a new unknown: `DAE.new([dv + x], [x, v], [v, dv], t)` is the single unknown `x` with `x'' + x = 0`.
 
-Because the algorithm looks only at *which* variables occur in *which* equations, it can reduce a system whose coefficients make it unsolvable; structural regularity is not numerical regularity.
+Refusals are `DaeError` (a `ValueError` subclass) with a code:
+
+| Code | Meaning |
+|---|---|
+| `E-DAE-002` | an equation would need more than 10 differentiations |
+| `E-DAE-003` | not one equation per unknown function, or no matching of equations to unknowns (structurally singular) |
+| `E-DAE-004` | malformed DAE, raised by `DAE.new`: more derivatives than variables, a non-symbol, a duplicate, or `time_var` among the unknowns |
+| `E-DAE-005` | the structural analysis succeeded, but the Jacobian of the reduced system with respect to the highest derivatives is singular at generic points — e.g. `x' + y' = 1, x + y = t` — so the structural index would be wrong |
+
+`dae_index_reduce(dae)` runs `pantelides` first and falls back to `rosenfeld_groebner` on `E-DAE-002`, `E-DAE-003` and `E-DAE-005`.
+
+The `E-DAE-005` check evaluates the Jacobian exactly at deterministic rational sample points. It refuses only when every point gives a zero determinant. A Jacobian that is non-singular generically but singular on part of the solution manifold is not detected.
 
 ## Differential elimination
 

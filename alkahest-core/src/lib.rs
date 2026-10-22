@@ -93,7 +93,7 @@ pub mod tensor;
 
 pub use acausal::{capacitor, resistor, voltage_source, Component, Port, System};
 pub use calculus::{limit, series, LimitDirection, LimitError, Series, SeriesError};
-pub use dae::{pantelides, DaeError, PantelidesResult, DAE};
+pub use dae::{pantelides, pantelides_checked, DaeError, DaeStructureError, PantelidesResult, DAE};
 pub use deriv::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
 #[allow(deprecated)]
 pub use diff::{diff, diff_forward, grad, try_grad, DiffError, DualValue, ForwardDiffError};

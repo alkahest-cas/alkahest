@@ -17,8 +17,8 @@
 //! - Hubert, *Differential algebra for comptroller generation*.
 
 use crate::dae::{
-    differentiate_equation, extend_dae_for_derivative_symbols, pantelides, DaeError,
-    PantelidesResult, DAE,
+    differentiate_equation, extend_dae_for_derivative_symbols, normalized_jets, pantelides_checked,
+    DaeError, DaeStructureError, PantelidesResult, DAE,
 };
 use crate::errors::AlkahestError;
 use crate::kernel::{ExprData, ExprId, ExprPool};
@@ -209,6 +209,31 @@ fn collect_symbols(
     }
 }
 
+/// `dae` with one derivative symbol per variable.
+///
+/// `DAE::new` accepts fewer derivatives than variables — the trailing
+/// variables are algebraic — but every routine here indexes the two vectors in
+/// parallel, and `derivatives[i]` past the end used to panic.  The algebraic
+/// variables get the synthesised `d{name}/dt`, which prolongation would have
+/// introduced anyway.  More derivatives than variables is malformed and
+/// refused.
+fn normalized_dae(dae: &DAE, pool: &ExprPool) -> Result<DAE, DiffAlgError> {
+    if dae.derivatives.len() > dae.variables.len() {
+        return Err(DiffAlgError::DiffError(format!(
+            "[E-DAE-004] {} derivative symbols for {} variables: derivatives[i] names the \
+             derivative of variables[i]",
+            dae.derivatives.len(),
+            dae.variables.len()
+        )));
+    }
+    let (variables, derivatives) = normalized_jets(dae, pool);
+    Ok(DAE {
+        variables,
+        derivatives,
+        ..dae.clone()
+    })
+}
+
 fn vars_for_dae(dae: &DAE, scratch: &[ExprId], pool: &ExprPool) -> Vec<ExprId> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -319,7 +344,7 @@ fn rosenfeld_groebner_ranked_unguarded(
     }
 
     let source_eqs = dae.equations.clone();
-    let mut work = dae.clone();
+    let mut work = normalized_dae(dae, pool)?;
     let mut scratch: Vec<ExprId> = source_eqs.clone();
     let mut vars = vars_for_dae(&work, &scratch, pool);
     let mut active = polys_from_equations(&work.equations, &vars, pool)?;
@@ -697,7 +722,7 @@ fn rosenfeld_groebner_parametric_unguarded(
     }
 
     let source_eqs = dae.equations.clone();
-    let mut work = dae.clone();
+    let mut work = normalized_dae(dae, pool)?;
     let mut scratch: Vec<ExprId> = source_eqs.clone();
     let mut vars = if opts.eliminate.is_empty() {
         param_vars_for_dae(&work, &scratch, params, pool)
@@ -845,7 +870,9 @@ pub fn rosenfeld_groebner(
     rosenfeld_groebner_with_options(dae, pool, order, DEFAULT_MAX_PROLONG_ROUNDS)
 }
 
-/// Try Pantelides; on [`DaeError::IndexTooHigh`], run [`rosenfeld_groebner`].
+/// Try Pantelides; when it cannot reduce the system — index above its cap,
+/// structurally singular or non-square, or a singular reduced Jacobian — run
+/// [`rosenfeld_groebner`] instead.
 pub fn dae_index_reduce(
     dae: &DAE,
     pool: &ExprPool,
@@ -861,9 +888,12 @@ pub fn dae_index_reduce_ranked(
     pool: &ExprPool,
     order: MonomialOrder,
 ) -> Result<(DaeIndexReduction, Option<DifferentialRanking>), DaeError> {
-    match pantelides(dae, pool) {
+    match pantelides_checked(dae, pool) {
         Ok(p) => Ok((DaeIndexReduction::Pantelides(p), None)),
-        Err(DaeError::IndexTooHigh) => {
+        Err(
+            DaeStructureError::Dae(DaeError::IndexTooHigh | DaeError::StructurallyInconsistent)
+            | DaeStructureError::SingularJacobian(_),
+        ) => {
             let (r, ranking) =
                 rosenfeld_groebner_ranked(dae, pool, order, DEFAULT_MAX_PROLONG_ROUNDS).map_err(
                     |e| match e {
@@ -875,7 +905,8 @@ pub fn dae_index_reduce_ranked(
                 )?;
             Ok((DaeIndexReduction::Rosenfeld(r), Some(ranking)))
         }
-        Err(e) => Err(e),
+        Err(DaeStructureError::Dae(e)) => Err(e),
+        Err(_) => Err(DaeError::StructurallyInconsistent),
     }
 }
 
@@ -1118,5 +1149,43 @@ mod tests {
             n_ok += 1;
         }
         assert_eq!(n_ok, 10);
+    }
+
+    /// The Cartesian pendulum with λ algebraic — five variables, four
+    /// derivatives, as `DAE.new` documents — used to index `derivatives[4]`
+    /// and panic.  Its hidden constraints must now be in the prolonged ideal.
+    #[test]
+    fn algebraic_variable_without_derivative_does_not_panic() {
+        let p = pool();
+        let t = p.symbol("t", Domain::Real);
+        let [x, y, u, w, lam] = ["x", "y", "u", "w", "lam"].map(|n| p.symbol(n, Domain::Real));
+        let [dx, dy, du, dw] =
+            ["dx/dt", "dy/dt", "du/dt", "dw/dt"].map(|n| p.symbol(n, Domain::Real));
+        let m1 = p.integer(-1_i32);
+        let two = p.integer(2_i32);
+        let eqs = vec![
+            p.add(vec![dx, p.mul(vec![m1, u])]),
+            p.add(vec![dy, p.mul(vec![m1, w])]),
+            p.add(vec![du, p.mul(vec![lam, x])]),
+            p.add(vec![dw, p.mul(vec![lam, y]), p.integer(1_i32)]),
+            p.add(vec![p.pow(x, two), p.pow(y, two), m1]),
+        ];
+        let dae = DAE::new(eqs, vec![x, y, u, w, lam], vec![dx, dy, du, dw], t);
+        let (r, ranking) =
+            rosenfeld_groebner_ranked(&dae, &p, MonomialOrder::GRevLex, 1).expect("no refusal");
+        assert!(r.consistent);
+        assert_eq!(
+            r.working_dae.variables.len(),
+            r.working_dae.derivatives.len()
+        );
+        // x·u + y·w (the velocity constraint, half the first derivative of the
+        // position constraint) lies in the ideal.
+        let vel = p.add(vec![p.mul(vec![x, u]), p.mul(vec![y, w])]);
+        let g = expr_to_gbpoly(vel, &ranking.vars, &p).unwrap();
+        assert!(r.final_basis.unwrap().contains(&g));
+
+        // More derivatives than variables is refused, not indexed past the end.
+        let bad = DAE::new(vec![dx], vec![x], vec![dx, dy], t);
+        assert!(rosenfeld_groebner_ranked(&bad, &p, MonomialOrder::GRevLex, 1).is_err());
     }
 }
