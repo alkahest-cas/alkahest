@@ -18780,10 +18780,14 @@ fn py_solve_numerical(
 ///     Solutions are a *set*: a double root is one entry, not two. Every
 ///     parameter-free tuple has been substituted back into the equations you
 ///     passed and could not be shown to violate them. A tuple containing a free
-///     parameter is **not** a number and is returned unverified, under the
-///     non-vanishing hypotheses reported by
+///     parameter is the *generic* solution: it has been substituted back and its
+///     residual is identically zero in the parameters (equations that factor
+///     are solved factor by factor, so equilibrium systems are complete). It
+///     holds under the non-vanishing hypotheses reported by
 ///     :func:`alkahest.solve_side_conditions` — ``solve([a*x - b], [x])`` is
-///     ``b/a`` *for* ``a ≠ 0``, and that condition is listed there.
+///     ``b/a`` *for* ``a ≠ 0``, and that condition is listed there. An unknown
+///     declared ``Positive``, ``NonNegative``, ``NonZero`` or ``Integer`` gets no
+///     value provably outside its domain.
 /// GroebnerBasis
 ///     When ``method="groebner"`` and no finite solution list could be
 ///     produced — usually a positive-dimensional ideal, but also when the
@@ -19162,10 +19166,11 @@ fn capture_solve_side_conditions(pool: &alkahest_core::ExprPool) -> Vec<ExprId> 
 /// ``solve([a*x - b], [x])`` returns ``b/a``, which is the solution *for
 /// ``a ≠ 0``*: at ``a = 0`` the equation reads ``-b = 0``, so there is either no
 /// solution (``b ≠ 0``) or every ``x`` (``b = 0``), and neither of those is
-/// ``b/a``. That generic-parameter reading is deliberate and useful, but a
-/// parametric tuple is not a number, so it is returned **unverified** — nothing
-/// substitutes it back — and the hypothesis is the only signal a caller can
-/// audit.
+/// ``b/a``. That generic-parameter reading is deliberate and useful: the tuple
+/// is checked to be a solution for generic parameter values, and the
+/// hypotheses listed here — those of the branches that were kept, factored —
+/// say where it stops being one. A value of an unknown declared ``Positive``
+/// (etc.) whose membership depends on a parameter is listed too (``a > 0``).
 ///
 /// This mirrors ``DerivedResult.verification["side_conditions"]`` and
 /// :attr:`alkahest.ZeilbergerCertificate.side_conditions`; ``solve`` returns

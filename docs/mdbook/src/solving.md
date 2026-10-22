@@ -56,6 +56,42 @@ so it is returned as its exact `Expr` (`solve([x - y], [x], numeric=True)` → `
 and `solve_side_conditions()` says so; where there is no symbolic solution to fall back
 to (the homotopy path) it raises `E-SOLVE-006`.
 
+### Symbolic parameters: generic solutions, checked
+
+A solution in the parameters is the answer for *generic* parameter values, and every
+tuple is checked as a function of them: substituted back into the equations, it must
+leave a residual that is identically zero (exactly, for rational functions of the
+parameters; in ball arithmetic at sample points otherwise), or it is dropped. An
+equation that factors is solved as the union of its factors, so equilibrium systems come
+out complete:
+
+```python
+solve([a*x - b*x*y, -c*y + d*x*y], [x, y])
+# → [{x: 0, y: 0}, {x: c/d, y: a/b}]
+solve_side_conditions()     # → ['b ≠ 0', 'd ≠ 0']   (empty when b, d are Positive)
+solve([x - a, x - b], [x])  # → []   with 'a - b ≠ 0' stated
+solve([x*(y - a), x*(y - b)], [x, y])   # → GroebnerBasis: the line x = 0
+```
+
+The side conditions are exactly the non-vanishing hypotheses of the branches that were
+kept, factored; a coefficient that is identically zero on a branch is never divided by.
+
+### The unknown's declared domain
+
+`solve` honours a `Positive`, `NonNegative`, `NonZero` or `Integer` unknown: values
+provably outside the domain are dropped, and a membership that depends on a parameter is
+stated rather than assumed.
+
+```python
+xp = pool.symbol("xp", Domain.Positive)
+solve([xp + 3], [xp])        # → []
+solve([xp**2 - 4], [xp])     # → [{xp: 2}]
+solve([xp - a], [xp])        # → [{xp: a}];  solve_side_conditions() → ['a > 0']
+```
+
+`Domain.Real` is the default for every symbol, so it is not treated as a declaration:
+use `domain="real"` to drop complex roots.
+
 ### Degree three and above: factor, then `RootOf`
 
 A univariate of degree ≥ 3 — a single equation, or the Lex tail of a system — is

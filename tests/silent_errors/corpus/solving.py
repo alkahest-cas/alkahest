@@ -235,6 +235,48 @@ def _shortest_chain_length(equations: list[ak.Expr], unknowns: list[ak.Expr]) ->
     return op
 
 
+_C = POOL.symbol("c")
+_D = POOL.symbol("d")
+_XP = POOL.symbol("xp", ak.Domain.Positive)
+_NI = POOL.symbol("ni", ak.Domain.Integer)
+
+
+def _parametric_set_mismatch(
+    equations: list[ak.Expr],
+    unknowns: list[ak.Expr],
+    env: dict[ak.Expr, float],
+    expected: list[tuple[float, ...]],
+) -> Callable[[], float]:
+    """Answer = missing + extra points of a parametric solution set at *env*.
+
+    The returned tuples are expressions in the parameters; evaluated at a
+    generic parameter point they must be exactly the solutions of the
+    specialised system — no tuple that fails it (a residual), none missing, and
+    none that is not a number (``0·0⁻¹``, which is scored as an extra point).
+    """
+
+    def op() -> float:
+        sols = ak.solve(equations, unknowns)
+        if not isinstance(sols, list):
+            raise ak.SolverError("solve returned a parametric ideal, not a solution list")
+        got = []
+        for sol in sols:
+            point = []
+            for v in unknowns:
+                r = ak.evaluate(sol[v], env, mode="complex")
+                point.append(complex(r.value) if r.status == "ok" else complex("nan"))
+            got.append(point)
+
+        def close(p: list[complex], q: tuple[float, ...]) -> bool:
+            return all(abs(a - b) < 1e-9 * (1 + abs(b)) for a, b in zip(p, q))
+
+        extra = sum(1 for p in got if not any(close(p, q) for q in expected))
+        missing = sum(1 for q in expected if not any(close(p, q) for p in got))
+        return float(extra + missing)
+
+    return op
+
+
 def _undisclosed_solve_hypotheses(
     equations: list[ak.Expr],
     unknowns: list[ak.Expr],
@@ -1024,5 +1066,83 @@ CASES: list[Case] = [
             "a library that refuses every rational equation, or drops every root it cannot "
             "prove non-singular, passes those and fails this."
         ),
+    ),
+    # -----------------------------------------------------------------------
+    # Solving: parametric systems (N2) and the unknown's declared domain (N4).
+    # -----------------------------------------------------------------------
+    Case(
+        id="solve_lotka_volterra_equilibria_with_symbolic_rates",
+        subsystem="solving",
+        statement="a·x − b·x·y = −c·y + d·x·y = 0 has exactly (0, 0) and (c/d, a/b)",
+        op=_parametric_set_mismatch(
+            [_A * X - _B * X * Y, -_C * Y + _D * X * Y],
+            [X, Y],
+            {_A: 2.0, _B: 1.0, _C: 3.0, _D: 1.5},
+            [(0.0, 0.0), (2.0, 2.0)],
+        ),
+        contract=RefusesOr(0.0),
+        verified_by=(
+            "By hand: x·(a − b·y) = 0 and y·(d·x − c) = 0. x = 0 forces c·y = 0, so y = 0; "
+            "otherwise y = a/b and then x = c/d. SymPy's solve returns "
+            "[{x: 0, y: 0}, {x: c/d, y: a/b}]. At a=2, b=1, c=3, d=1.5 these are (0,0) and "
+            "(2,2). alkahest used to return (0, (ac+|a||c|)/(2bc)) — equation 2 gives −6 there."
+        ),
+    ),
+    Case(
+        id="solve_two_hyperbolas_with_symbolic_offsets",
+        subsystem="solving",
+        statement="(x−a)(y−b) = (x−c)(y−d) = 0 has exactly (a, d) and (c, b)",
+        op=_parametric_set_mismatch(
+            [(X - _A) * (Y - _B), (X - _C) * (Y - _D)],
+            [X, Y],
+            {_A: 1.0, _B: 2.0, _C: 3.0, _D: 5.0},
+            [(1.0, 5.0), (3.0, 2.0)],
+        ),
+        contract=RefusesOr(0.0),
+        verified_by=(
+            "By hand: x = a forces (a−c)(y−d) = 0, so y = d for a ≠ c; y = b forces x = c for "
+            "b ≠ d. SymPy agrees at a=1, b=2, c=3, d=5: {(1, 5), (3, 2)}."
+        ),
+    ),
+    Case(
+        id="solve_competition_model_finds_all_four_equilibria",
+        subsystem="solving",
+        statement="x(a − x − b·y) = y(c − y − d·x) = 0 has four equilibria",
+        op=_parametric_set_mismatch(
+            [X * (_A - X - _B * Y), Y * (_C - Y - _D * X)],
+            [X, Y],
+            {_A: 1.0, _B: 2.0, _C: 3.0, _D: 5.0},
+            [(0.0, 0.0), (1.0, 0.0), (0.0, 3.0), (5.0 / 9.0, 2.0 / 9.0)],
+        ),
+        contract=RefusesOr(0.0),
+        verified_by=(
+            "By hand: the four choices of one factor per equation give (0,0), (a,0), (0,c) "
+            "and the coexistence point ((a−bc)/(1−bd), (c−ad)/(1−bd)). SymPy's solve returns "
+            "the same four; at a=1, b=2, c=3, d=5 the last is (5/9, 2/9)."
+        ),
+    ),
+    Case(
+        id="solve_positive_unknown_has_no_negative_root",
+        subsystem="solving",
+        statement="xp + 3 = 0 with xp declared Positive has no solution",
+        op=solution_count([_XP + 3], [_XP]),
+        contract=RefusesOr(0),
+        verified_by="The only root is −3, which is not positive.",
+    ),
+    Case(
+        id="solve_integer_unknown_has_no_fractional_root",
+        subsystem="solving",
+        statement="2n − 3 = 0 with n declared Integer has no solution",
+        op=solution_count([2 * _NI - 3], [_NI]),
+        contract=RefusesOr(0),
+        verified_by="The only root is 3/2, which is not an integer.",
+    ),
+    Case(
+        id="solve_control_positive_unknown_keeps_its_positive_root",
+        subsystem="solving",
+        statement="xp² − 4 = 0 with xp declared Positive has the one solution 2",
+        op=solution_count([_XP**2 - 4], [_XP]),
+        contract=Returns(1),
+        verified_by="Roots ±2; only 2 is positive. The control for the two cases above.",
     ),
 ]

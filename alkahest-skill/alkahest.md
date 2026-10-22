@@ -788,6 +788,15 @@ or `A*t` returns `RootSum` terms over degree-≥3 factors (real, `eval_expr` rea
 Symbolic entries with a `RootOf` spectrum still refuse. `parse(str(r)) == r`:
 `parse("RootOf(x^3 - x - 1, 0)", pool)` (or `RootOf(p, var, k)`; the variable is local).
 
+**Symbolic parameters and declared domains.** Parametric solutions are generic and
+checked: each tuple is substituted back (residual must be identically zero), factored
+equations are solved factor by factor, so `solve([a*x - b*x*y, -c*y + d*x*y], [x, y])`
+→ `(0, 0)`, `(c/d, a/b)` with `solve_side_conditions()` → `['b ≠ 0', 'd ≠ 0']`; a
+positive-dimensional answer (`x*(y-a) = x*(y-b) = 0`) is a `GroebnerBasis`. An unknown
+declared `Positive`/`NonNegative`/`NonZero`/`Integer` gets no value outside it
+(`xp + 3` → `[]`, `xp**2 - 4` → `2`); undecided membership is listed (`'a > 0'`).
+`Domain.Real` is the default, so complex roots still need `domain="real"` to drop.
+
 **Rational equations** (`method="groebner"` only). Equations may be ratios of
 polynomials in the unknowns, which is the form nodal analysis produces — no need to
 clear `1/R` by hand:

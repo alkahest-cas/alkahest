@@ -32,6 +32,7 @@
 //! symbols (e.g. `solve([x² − y], [x])` → `±√y`).
 
 pub mod diophantine;
+mod generic;
 pub mod homotopy;
 pub mod nsolve;
 pub mod numeric;
@@ -973,9 +974,10 @@ fn assume_nonzero(lead: ExprId) {
 /// at `a = 0` the equation is `−b = 0`, so there is either no solution (`b ≠ 0`)
 /// or every `x` (`b = 0`), and neither is `b/a`. The generic-parameter reading
 /// is a deliberate and useful one, but a caller cannot audit an assumption that
-/// is never stated — and a parametric tuple is returned *unverified* by design
-/// (it is not a number, so the post-condition filter has nothing to substitute), so
-/// this is the only honest signal available on that path.
+/// is never stated. A parametric tuple is checked as a function of the
+/// parameters (its residual must be identically zero), which says it is a
+/// solution *generically*; where it stops being one is exactly what is listed
+/// here — the hypotheses of the branches that were kept, and only those.
 ///
 /// # Why out of band
 ///
@@ -1024,7 +1026,12 @@ pub fn take_solve_side_conditions() -> Vec<crate::deriv::log::SideCondition> {
 /// reported by [`take_solve_side_conditions`]. The reading is only defensible
 /// while the caller can see what was assumed: `b/a` is the solution for `a ≠ 0`
 /// and is wrong at `a = 0`, where the system has no solution, or every `x`.
-fn leading_is_reliable(lead: ExprId, pool: &ExprPool) -> LeadStatus {
+fn leading_is_reliable(
+    lead: ExprId,
+    vars: &[ExprId],
+    n_solve: usize,
+    pool: &ExprPool,
+) -> LeadStatus {
     if let Some(v) = rational_value(lead, pool) {
         return if v != 0 {
             LeadStatus::Nonzero
@@ -1040,21 +1047,40 @@ fn leading_is_reliable(lead: ExprId, pool: &ExprPool) -> LeadStatus {
                 LeadStatus::Unusable
             }
         }
-        // `Unsupported` is the parametric case; `Undefined` is not a usable
-        // coefficient under any reading.
-        Err(verify::VerifyGap::Unsupported) => LeadStatus::AssumedNonzero,
+        // `Unsupported` is the parametric case, decided as a function of the
+        // parameters: a coefficient that is identically zero at this partial
+        // assignment (`b·y − a` at `y = a/b`, `d·0`) divides nothing, and
+        // treating it as an assumption is what produced `x = 0·0⁻¹`.
+        Err(verify::VerifyGap::Unsupported) if n_solve < vars.len() => {
+            match generic::status(lead, vars, n_solve, pool) {
+                generic::Generic::Nonzero(Some(numer)) => {
+                    let hyps = generic::nonzero_hypotheses(&numer, vars, pool);
+                    if hyps.is_empty() {
+                        LeadStatus::Nonzero
+                    } else {
+                        LeadStatus::AssumedNonzero(hyps)
+                    }
+                }
+                generic::Generic::Nonzero(None) => LeadStatus::AssumedNonzero(vec![lead]),
+                generic::Generic::Zero
+                | generic::Generic::Undefined
+                | generic::Generic::Unknown => LeadStatus::Unusable,
+            }
+        }
+        Err(verify::VerifyGap::Unsupported) => LeadStatus::AssumedNonzero(vec![lead]),
         Err(verify::VerifyGap::Undefined) => LeadStatus::Unusable,
     }
 }
 
 /// What [`leading_is_reliable`] could establish about a leading coefficient.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 enum LeadStatus {
     /// Proved non-zero — the step is unconditional.
     Nonzero,
-    /// Not decidable here (it mentions a free parameter): usable only under the
-    /// hypothesis that it does not vanish, which the caller must be told about.
-    AssumedNonzero,
+    /// Not the zero function of the parameters, but zero for some of their
+    /// values: usable only under the hypothesis that these factors do not
+    /// vanish, which the caller must be told about.
+    AssumedNonzero(Vec<ExprId>),
     /// Zero, or not a usable coefficient under any reading.
     Unusable,
 }
@@ -1079,7 +1105,7 @@ fn find_step(
     n_solve: usize,
     pool: &ExprPool,
 ) -> Result<Option<Step>, SolverError> {
-    let mut best: Option<(Step, u32, Option<ExprId>)> = None;
+    let mut best: Option<(Step, u32)> = None;
     let mut blocked_by_degree: Option<u32> = None;
 
     for (gi, g) in gens.iter().enumerate() {
@@ -1096,7 +1122,7 @@ fn find_step(
         if deg == 0 {
             continue;
         }
-        if best.as_ref().is_some_and(|(_, bd, _)| *bd <= deg) {
+        if best.as_ref().is_some_and(|(_, bd)| *bd <= deg) {
             continue;
         }
         let coeffs: Vec<ExprId> = (0..=deg)
@@ -1117,31 +1143,27 @@ fn find_step(
             continue;
         };
         let lead = coeffs[deg as usize];
-        let assumed = match leading_is_reliable(lead, pool) {
+        let hyps = match leading_is_reliable(lead, vars, n_solve, pool) {
             LeadStatus::Unusable => continue,
-            LeadStatus::Nonzero => None,
-            LeadStatus::AssumedNonzero => Some(lead),
+            LeadStatus::Nonzero => Vec::new(),
+            LeadStatus::AssumedNonzero(h) => h,
         };
         best = Some((
             Step {
                 var_idx,
                 coeffs,
                 kind,
+                hyps,
             },
             deg,
-            assumed,
         ));
     }
 
     match best {
-        // Only the step actually taken contributes a hypothesis: generators
-        // that were examined and passed over divide nothing.
-        Some((step, _, assumed)) => {
-            if let Some(lead) = assumed {
-                assume_nonzero(lead);
-            }
-            Ok(Some(step))
-        }
+        // Only the step actually taken contributes a hypothesis (generators
+        // that were examined and passed over divide nothing), and only to the
+        // branch it was taken on: see [`try_backsolve_generators`].
+        Some((step, _)) => Ok(Some(step)),
         None => match blocked_by_degree {
             Some(d) => Err(SolverError::HighDegree(d as usize)),
             None => Ok(None),
@@ -1156,6 +1178,8 @@ struct Step {
     var_idx: usize,
     coeffs: Vec<ExprId>,
     kind: StepKind,
+    /// What dividing by the leading coefficient assumed (`≠ 0`) on this branch.
+    hyps: Vec<ExprId>,
 }
 
 /// How a [`Step`]'s univariate is solved.
@@ -1177,10 +1201,18 @@ fn solve_step(
     step: &Step,
     gens: &[GbPoly],
     vars: &[ExprId],
+    n_solve: usize,
     pool: &ExprPool,
 ) -> Result<Vec<ExprId>, SolverError> {
     match step.kind {
-        StepKind::Formula => solve_univariate_symbolic(&step.coeffs, pool),
+        StepKind::Formula => {
+            if n_solve < vars.len() {
+                if let Some(roots) = parametric_formula_roots(step, vars, pool) {
+                    return Ok(roots);
+                }
+            }
+            solve_univariate_symbolic(&step.coeffs, pool)
+        }
         StepKind::Rational => {
             let rats: Vec<Rational> = step
                 .coeffs
@@ -1199,6 +1231,45 @@ fn solve_step(
                 .map_err(SolverError::HighDegree)
         }
     }
+}
+
+/// The roots of a degree-≤ 2 step whose coefficients are rational functions of
+/// the parameters, found by **factoring** rather than by formula.
+///
+/// The quadratic formula applied to `b·c·y² − a·c·y` (a perfect-square
+/// discriminant) returns `(a·c + √(a²c²))/(2bc)`: correct as a set, but a
+/// branch-dependent radical that every later step has to carry — and that
+/// [`leading_is_reliable`] cannot recognise as `a/b`, so the coefficient
+/// `b·y − a` it makes vanish was being treated as non-zero.  Clearing
+/// denominators and factoring over ℚ[x, params] returns `0` and `a/b` instead.
+///
+/// `None` when a coefficient is not a rational function of the parameters (a
+/// radical from an earlier step); the caller then uses the formula.
+fn parametric_formula_roots(step: &Step, vars: &[ExprId], pool: &ExprPool) -> Option<Vec<ExprId>> {
+    let x = vars[step.var_idx];
+    let terms: Vec<ExprId> = step
+        .coeffs
+        .iter()
+        .enumerate()
+        .map(|(k, &c)| match k {
+            0 => c,
+            1 => pool.mul(vec![c, x]),
+            _ => pool.mul(vec![c, pool.pow(x, pool.integer(k as u32))]),
+        })
+        .collect();
+    let p = if terms.len() == 1 {
+        terms[0]
+    } else {
+        pool.add(terms)
+    };
+    let cleared = rational::clear_denominators(p, vars, pool).ok()?;
+    if cleared.numer.is_zero() {
+        return None;
+    }
+    let mp = gbpoly_to_multipoly(&cleared.numer, vars);
+    crate::poly::univariate_roots::roots_with_parameters(&mp, step.var_idx, pool)
+        .ok()
+        .map(|v| v.into_iter().map(|(r, _)| r).collect())
 }
 
 /// Integer coefficients with the same roots: multiply through by the lcm of
@@ -1237,10 +1308,18 @@ fn gbpoly_to_multipoly(g: &GbPoly, vars: &[ExprId]) -> crate::poly::MultiPoly {
     }
 }
 
+/// A candidate solution and the hypotheses (`≠ 0`) its branch divided by.
+///
+/// The hypotheses travel with the branch, not with the call: a branch that is
+/// later refuted or found undefined must not leave its assumptions behind in
+/// [`take_solve_side_conditions`] — which is how `solve_side_conditions()`
+/// came to list `(d·0) ≠ 0`.
+type Candidate = (Solution, Vec<ExprId>);
+
 /// Backsolve over a fixed generator list (full Gröbner basis or a triangular
 /// subset).
 enum BacksolveOutcome {
-    Finite(Vec<Solution>),
+    Finite(Vec<Candidate>),
     /// Some branch reached a point where no generator determines a remaining
     /// unknown — caller may retry a smaller set.
     Stuck,
@@ -1270,12 +1349,12 @@ fn try_backsolve_generators(
     for i in n_solve..n_vars {
         initial[i] = Some(vars[i]);
     }
-    let mut partials: Vec<Vec<Option<ExprId>>> = vec![initial];
+    let mut partials: Vec<(Vec<Option<ExprId>>, Vec<ExprId>)> = vec![(initial, Vec::new())];
 
     for _ in 0..n_solve {
         let mut new_partials = Vec::new();
         let mut high_degree: Option<SolverError> = None;
-        for partial in &partials {
+        for (partial, hyps) in &partials {
             if crate::budget::interrupted() {
                 return Err(interrupted_error());
             }
@@ -1293,16 +1372,22 @@ fn try_backsolve_generators(
                 }
             };
             let Some(step) = step else {
-                if partial_is_refuted(gens, partial, n_solve, n_vars, pool) {
+                if partial_is_refuted(gens, partial, vars, n_solve, pool) {
                     // A dead branch, not an under-determined one: drop it.
                     continue;
                 }
                 return Ok(BacksolveOutcome::Stuck);
             };
-            for root in solve_step(&step, gens, vars, pool)? {
+            for root in solve_step(&step, gens, vars, n_solve, pool)? {
                 let mut np = partial.clone();
                 np[step.var_idx] = Some(root);
-                new_partials.push(np);
+                let mut nh = hyps.clone();
+                for &h in &step.hyps {
+                    if !nh.contains(&h) {
+                        nh.push(h);
+                    }
+                }
+                new_partials.push((np, nh));
             }
         }
         if let Some(e) = high_degree {
@@ -1314,13 +1399,15 @@ fn try_backsolve_generators(
         }
     }
 
-    let solutions: Vec<Solution> = partials
+    let solutions: Vec<Candidate> = partials
         .into_iter()
-        .map(|p| {
-            p.into_iter()
+        .map(|(p, h)| {
+            let sol = p
+                .into_iter()
                 .take(n_solve)
                 .map(|o| o.expect("all solve vars assigned"))
-                .collect()
+                .collect();
+            (sol, h)
         })
         .collect();
 
@@ -1336,12 +1423,35 @@ fn try_backsolve_generators(
 fn partial_is_refuted(
     gens: &[GbPoly],
     partial: &[Option<ExprId>],
+    vars: &[ExprId],
     n_solve: usize,
-    n_vars: usize,
     pool: &ExprPool,
 ) -> bool {
+    let n_vars = vars.len();
     if n_solve != n_vars {
-        return false; // parameters: no numeric residual to test
+        // Parameters: a generator whose unknowns are all bound and which is not
+        // the zero function of the parameters at this branch refutes it
+        // generically (`x = 0` in `c·y − d·x·y + …` leaves `c·y`, …).
+        let named: Vec<ExprId> = partial
+            .iter()
+            .zip(vars)
+            .map(|(p, &v)| p.unwrap_or(v))
+            .collect();
+        return gens.iter().any(|g| {
+            let bound = g.terms.keys().all(|e| {
+                e.iter()
+                    .take(n_solve)
+                    .enumerate()
+                    .all(|(i, &k)| k == 0 || partial[i].is_some())
+            });
+            bound
+                && gbpoly_to_expr(g, &named, pool).is_some_and(|e| {
+                    matches!(
+                        generic::status(e, vars, n_solve, pool),
+                        generic::Generic::Nonzero(_)
+                    )
+                })
+        });
     }
     let mut evaluator = verify::CBallEval::default();
     let mut values: Vec<Option<verify::CBall>> = Vec::with_capacity(n_vars);
@@ -1365,19 +1475,25 @@ fn partial_is_refuted(
 /// when its residual ball is *separated* from zero, so a genuine solution can
 /// never be filtered out.
 ///
-/// Tuples containing a free parameter are not numbers and are returned
-/// unexamined; parametric solving keeps its generic-value semantics.
+/// Tuples containing a free parameter are not numbers, and are checked as
+/// functions of the parameters instead (see [`generic`]): a tuple that is
+/// undefined (`0·0⁻¹`) or whose residual is provably not the zero function is
+/// not a solution for generic parameter values and is dropped; one whose
+/// residual cannot be decided either way is kept.
 fn refine_solutions(
-    solutions: Vec<Solution>,
+    solutions: Vec<Candidate>,
     orig_polys: &[GbPoly],
-    n_vars: usize,
+    all_vars: &[ExprId],
+    n_solve: usize,
     pool: &ExprPool,
-) -> Vec<Solution> {
-    let mut kept: Vec<Solution> = Vec::new();
+) -> Vec<Candidate> {
+    let n_vars = all_vars.len();
+    let mut kept: Vec<Candidate> = Vec::new();
     let mut kept_values: Vec<Vec<verify::CBall>> = Vec::new();
+    let mut kept_parametric: Vec<Solution> = Vec::new();
     let mut evaluator = verify::CBallEval::default();
 
-    for sol in solutions {
+    for (sol, hyps) in solutions {
         if crate::budget::interrupted() {
             // The armed caller discards the result.
             break;
@@ -1394,10 +1510,25 @@ fn refine_solutions(
             }
         }
         match gap {
-            // A parameter (or any node the checker does not model): nothing can
-            // be proved, so nothing is claimed — keep it as it was produced.
+            // A free parameter: decide the tuple as a function of them.
+            Some(verify::VerifyGap::Unsupported) if n_solve < n_vars => {
+                if !parametric_tuple_survives(&sol, orig_polys, all_vars, n_solve, pool) {
+                    continue;
+                }
+                if kept_parametric
+                    .iter()
+                    .any(|prev| same_generic_point(prev, &sol, all_vars, n_solve, pool))
+                {
+                    continue;
+                }
+                kept_parametric.push(sol.clone());
+                kept.push((sol, hyps));
+                continue;
+            }
+            // A node the checker does not model: nothing can be proved, so
+            // nothing is claimed — keep it as it was produced.
             Some(verify::VerifyGap::Unsupported) => {
-                kept.push(sol);
+                kept.push((sol, hyps));
                 continue;
             }
             // `0/0`, `0^-1`: the tuple denotes no point of ℂⁿ.
@@ -1408,7 +1539,7 @@ fn refine_solutions(
         // that evaluated fully cannot have any, so `values` covers every
         // indeterminate the polynomials mention.
         if values.len() < n_vars {
-            kept.push(sol);
+            kept.push((sol, hyps));
             continue;
         }
         if verify::is_refuted(orig_polys, &values) {
@@ -1421,9 +1552,75 @@ fn refine_solutions(
             continue;
         }
         kept_values.push(values);
-        kept.push(sol);
+        kept.push((sol, hyps));
     }
     kept
+}
+
+/// Substitute a parametric candidate into the system: `false` when a
+/// coordinate is undefined for every parameter value tried, or when a residual
+/// is provably not the zero function of the parameters.
+///
+/// Sound in the dropping direction: a genuine solution of the ideal makes every
+/// residual the zero function (each radical the back-substitution introduced
+/// squares to its radicand identically), so a residual separated from zero at
+/// even one parameter point, or with a non-zero cleared numerator, proves the
+/// tuple is not a solution for generic parameters.
+fn parametric_tuple_survives(
+    sol: &Solution,
+    orig_polys: &[GbPoly],
+    all_vars: &[ExprId],
+    n_solve: usize,
+    pool: &ExprPool,
+) -> bool {
+    if sol
+        .iter()
+        .any(|&v| generic::is_undefined(v, all_vars, n_solve, pool))
+    {
+        return false;
+    }
+    let mut named: Vec<ExprId> = sol.clone();
+    named.extend_from_slice(&all_vars[n_solve..]);
+    for p in orig_polys {
+        if crate::budget::interrupted() {
+            return true;
+        }
+        let Some(r) = gbpoly_to_expr(p, &named, pool) else {
+            continue;
+        };
+        if matches!(
+            generic::status(r, all_vars, n_solve, pool),
+            generic::Generic::Nonzero(_)
+        ) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Are two parametric tuples provably the same point for every parameter
+/// value?  Structural identity, or a coordinate-wise difference that is the
+/// zero function.  `false` when undecided, so distinct solutions are never
+/// merged.
+fn same_generic_point(
+    a: &Solution,
+    b: &Solution,
+    all_vars: &[ExprId],
+    n_solve: usize,
+    pool: &ExprPool,
+) -> bool {
+    a.iter().zip(b).all(|(&u, &v)| {
+        u == v
+            || matches!(
+                generic::status(
+                    pool.add(vec![u, neg_expr(v, pool)]),
+                    all_vars,
+                    n_solve,
+                    pool
+                ),
+                generic::Generic::Zero
+            )
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1606,13 +1803,13 @@ fn check_against_original(
 /// [`PoleStatus::Indeterminate`] rather than proved; the caller must not
 /// report "no solutions" on the strength of one of those.
 fn exclude_pole_roots(
-    solutions: Vec<Solution>,
+    solutions: Vec<Candidate>,
     domains: &[GbPoly],
     equations: &[ExprId],
     all_vars: &[ExprId],
     n_solve: usize,
     pool: &ExprPool,
-) -> (Vec<Solution>, bool) {
+) -> (Vec<Candidate>, bool) {
     if domains.is_empty() {
         return (solutions, false);
     }
@@ -1620,7 +1817,7 @@ fn exclude_pole_roots(
     let mut kept = Vec::with_capacity(solutions.len());
     let mut unproved_drop = false;
 
-    for sol in solutions {
+    for (sol, mut branch_hyps) in solutions {
         // Name exponent slot `i` by the solved value for an unknown, and by
         // the parameter itself for everything past them.
         let mut at_root: Vec<ExprId> = sol.clone();
@@ -1665,9 +1862,11 @@ fn exclude_pole_roots(
             }
         }
         for h in hypotheses {
-            assume_nonzero(h);
+            if !branch_hyps.contains(&h) {
+                branch_hyps.push(h);
+            }
         }
-        kept.push(sol);
+        kept.push((sol, branch_hyps));
     }
     (kept, unproved_drop)
 }
@@ -1690,6 +1889,115 @@ pub fn collect_parameters(equations: &[ExprId], vars: &[ExprId], pool: &ExprPool
         }
     }
     params.into_iter().collect()
+}
+
+/// Is the basis `⟨1⟩`?
+fn is_unit_ideal(gens: &[GbPoly], n_vars: usize) -> bool {
+    gens.len() == 1
+        && gens[0].terms.len() == 1
+        && gens[0].leading_exp(MonomialOrder::Lex) == Some(vec![0u32; n_vars])
+}
+
+/// A non-zero basis element in the parameters alone, if there is one.  Under a
+/// Lex order with the parameters last this is exactly the elimination ideal
+/// `I ∩ ℚ[params]` being non-trivial.
+fn parameter_condition(gens: &[GbPoly], n_solve: usize) -> Option<&GbPoly> {
+    gens.iter().find(|g| {
+        !g.is_zero()
+            && g.terms
+                .keys()
+                .all(|e| e.iter().take(n_solve).all(|&k| k == 0))
+    })
+}
+
+/// Most factor-choice subsystems [`solve_by_factor_branches`] will enumerate.
+const MAX_FACTOR_BRANCHES: usize = 64;
+
+/// Solve a parametric system as the union over every choice of one irreducible
+/// factor per equation.
+///
+/// `Ok(None)` means "not applicable or not conclusive" — nothing factors, the
+/// product of choices is too large, or some subsystem has no complete
+/// triangular elimination (a positive-dimensional component) — and the caller
+/// solves the whole system instead.  A subsystem that needs a univariate of
+/// degree > 2 refuses for the whole system (`E-SOLVE-002`).  A subsystem whose basis
+/// contains a non-zero polynomial in the parameters alone is generically empty
+/// and contributes nothing.  The candidates returned are the union, unfiltered:
+/// the caller substitutes them into the original equations.
+fn solve_by_factor_branches(
+    polys: &[GbPoly],
+    all_vars: &[ExprId],
+    n_solve: usize,
+    pool: &ExprPool,
+) -> Result<Option<Vec<Candidate>>, SolverError> {
+    let n_vars = all_vars.len();
+    let mut choices: Vec<Vec<GbPoly>> = Vec::with_capacity(polys.len());
+    let mut product = 1usize;
+    // A factor in the parameters alone (`a` in `a·x·(1 − y)`) is dropped from
+    // every branch, which assumes it does not vanish; that is stated.
+    let mut dropped: Vec<ExprId> = Vec::new();
+    for p in polys {
+        let Some((factors, params_only)) = generic::split_factors(p, all_vars, n_solve) else {
+            return Ok(None);
+        };
+        if factors.is_empty() {
+            return Ok(None);
+        }
+        for f in &params_only {
+            for h in generic::nonzero_hypotheses(f, all_vars, pool) {
+                if !dropped.contains(&h) {
+                    dropped.push(h);
+                }
+            }
+        }
+        product = product.saturating_mul(factors.len());
+        choices.push(factors);
+    }
+    if product <= 1 || product > MAX_FACTOR_BRANCHES {
+        return Ok(None);
+    }
+    let mut candidates = Vec::new();
+    for combo in 0..product {
+        if crate::budget::interrupted() {
+            return Err(interrupted_error());
+        }
+        let mut idx = combo;
+        let mut sub = Vec::with_capacity(choices.len());
+        for fs in &choices {
+            sub.push(fs[idx % fs.len()].clone());
+            idx /= fs.len();
+        }
+        let gb = GroebnerBasis::compute(sub, MonomialOrder::Lex);
+        if crate::budget::interrupt_pending() {
+            return Err(interrupted_error());
+        }
+        let gens = gb.generators();
+        if is_unit_ideal(gens, n_vars) || parameter_condition(gens, n_solve).is_some() {
+            continue;
+        }
+        match try_backsolve_generators(gens, all_vars, n_solve, pool) {
+            Ok(BacksolveOutcome::Finite(c)) => {
+                candidates.extend(c.into_iter().map(|(sol, mut hyps)| {
+                    for &h in &dropped {
+                        if !hyps.contains(&h) {
+                            hyps.push(h);
+                        }
+                    }
+                    (sol, hyps)
+                }))
+            }
+            Ok(BacksolveOutcome::NoSolution) => {}
+            Ok(BacksolveOutcome::Stuck) => return Ok(None),
+            // A component of the variety needs an irreducible univariate of
+            // degree > 2; so does the whole system, whose basis is far costlier
+            // to compute only to refuse the same way.
+            Err(e) => return Err(e),
+        }
+    }
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(candidates))
 }
 
 /// Solve a polynomial — or **rational** — system in the declared unknowns.
@@ -1731,12 +2039,23 @@ pub fn collect_parameters(equations: &[ExprId], vars: &[ExprId], pool: &ExprPool
 ///
 /// # Hypotheses
 ///
-/// A *parametric* tuple is not a number and so cannot be checked at all: it is
-/// returned unverified, under whatever non-vanishing assumptions the
-/// back-substitution made about leading coefficients that mention free
-/// parameters.  Those assumptions are not left unsaid — see
-/// [`take_solve_side_conditions`], which must be read before the next call on
-/// this thread.
+/// A *parametric* tuple is not a number, so it is checked as a function of the
+/// parameters instead: substituted into the input equations, every residual
+/// must be the zero function (decided exactly for rational functions of the
+/// parameters, by ball arithmetic at sample parameter points otherwise), and a
+/// tuple that is undefined or provably not a solution is dropped.  It holds
+/// under the non-vanishing assumptions its branch made about leading
+/// coefficients that mention free parameters, and those are not left unsaid —
+/// see [`take_solve_side_conditions`], which must be read before the next call
+/// on this thread.  A non-zero polynomial in the parameters alone in the ideal
+/// gives [`SolutionSet::NoSolution`] (no solution for generic parameters, the
+/// polynomial's factors stated non-zero).
+///
+/// # Declared domains
+///
+/// An unknown declared `Positive`, `NonNegative`, `NonZero` or `Integer` gets
+/// no value provably outside that domain; an undecided membership is kept and
+/// reported as a side condition.
 ///
 /// # Budget
 ///
@@ -1752,12 +2071,149 @@ pub fn solve_polynomial_system(
     pool: &ExprPool,
 ) -> Result<SolutionSet, SolverError> {
     let interrupts = crate::budget::arm();
-    let result = solve_polynomial_system_unguarded(equations, vars, pool);
+    let result = solve_polynomial_system_unguarded(equations, vars.clone(), pool);
     match interrupts.trip() {
         // Whatever came back was computed from a basis that stopped part-way.
         Some(trip) => Err(budget_stopped(trip)),
-        None => result,
+        None => match result {
+            Ok(SolutionSet::Finite(sols)) => Ok(SolutionSet::Finite(filter_by_declared_domain(
+                sols, &vars, pool,
+            ))),
+            other => other,
+        },
     }
+}
+
+/// Is a solved value a member of the domain its unknown was declared with?
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Membership {
+    Yes,
+    No,
+    Unknown,
+}
+
+/// Decide `value ∈ domain` for the domains [`filter_by_declared_domain`]
+/// enforces: exactly for a rational, by a rigorous enclosure for a constant,
+/// and through the ambient sign assumptions for a parametric value.
+fn domain_membership(value: ExprId, domain: crate::kernel::Domain, pool: &ExprPool) -> Membership {
+    use crate::kernel::Domain;
+    use crate::simplify::assumptions::{assumed_sign, Sign};
+    let yes_if = |b: bool| if b { Membership::Yes } else { Membership::No };
+    // The back-substitution leaves `(0 + √16)/2` unfolded; the exact value
+    // decides membership outright where an enclosure can only bracket it.
+    let exact =
+        rational_value(value, pool).or_else(|| rational_value(simplified(value, pool), pool));
+    if let Some(q) = exact {
+        return match domain {
+            Domain::Positive => yes_if(q > 0),
+            Domain::NonNegative => yes_if(q >= 0),
+            Domain::NonZero => yes_if(q != 0),
+            Domain::Integer => yes_if(*q.denom() == 1),
+            Domain::Real | Domain::Complex => Membership::Yes,
+        };
+    }
+    match verify::CBallEval::default().eval(value, pool) {
+        Ok(b) => {
+            let re = b.re_ball();
+            let im = b.im_ball();
+            let real = im.is_exact() && im.mid_f64() == 0.0;
+            let non_real = !im.contains(0.0);
+            match domain {
+                Domain::NonZero if b.excludes_zero() => Membership::Yes,
+                Domain::NonZero => Membership::Unknown,
+                // Each of these implies a real value.
+                _ if non_real => Membership::No,
+                Domain::Positive if re.hi() <= 0 => Membership::No,
+                Domain::Positive if re.lo() > 0 && real => Membership::Yes,
+                Domain::NonNegative if re.hi() < 0 => Membership::No,
+                Domain::NonNegative if re.lo() >= 0 && real => Membership::Yes,
+                Domain::Integer => {
+                    let (lo, hi) = (re.lo(), re.hi());
+                    let floor_lo = lo.clone().floor();
+                    if lo.is_finite() && floor_lo == hi.clone().floor() && lo > floor_lo {
+                        Membership::No
+                    } else {
+                        Membership::Unknown
+                    }
+                }
+                _ => Membership::Unknown,
+            }
+        }
+        Err(_) => match (domain, assumed_sign(value, pool)) {
+            (Domain::Positive, Some(Sign::Positive)) => Membership::Yes,
+            (Domain::Positive, Some(_)) => Membership::No,
+            (Domain::NonNegative, Some(Sign::Positive | Sign::Zero)) => Membership::Yes,
+            (Domain::NonNegative, Some(Sign::Negative)) => Membership::No,
+            (Domain::NonZero, Some(Sign::Positive | Sign::Negative)) => Membership::Yes,
+            (Domain::NonZero, Some(Sign::Zero)) => Membership::No,
+            _ => Membership::Unknown,
+        },
+    }
+}
+
+/// `value` through the simplifier, for an exact reading and a legible side
+/// condition.
+fn simplified(value: ExprId, pool: &ExprPool) -> ExprId {
+    crate::simplify::engine::simplify(value, pool).value
+}
+
+/// Honour the domain each unknown was **declared** with.
+///
+/// `pool.symbol("x", Domain::Positive)` says `x > 0`; `solve([x + 3], [x])`
+/// returning `x = −3` contradicts the caller's own declaration, the same way
+/// `simplify` would be wrong to ignore it.  A value provably outside the
+/// declared domain is dropped; one that cannot be decided (it depends on a
+/// parameter of unknown sign) is kept and the membership is stated as a side
+/// condition rather than assumed.
+///
+/// `Positive`, `NonNegative`, `NonZero` and `Integer` are enforced.  `Real` is
+/// not: it is the default domain of every symbol, so it does not distinguish a
+/// declaration from an omission, and `solve` documents its complex roots as the
+/// default (`domain="real"` is the explicit filter).
+fn filter_by_declared_domain(
+    sols: Vec<Solution>,
+    vars: &[ExprId],
+    pool: &ExprPool,
+) -> Vec<Solution> {
+    use crate::kernel::Domain;
+    let declared: Vec<Option<Domain>> = vars
+        .iter()
+        .map(|&v| match pool.get(v) {
+            ExprData::Symbol { domain, .. } => match domain {
+                Domain::Positive | Domain::NonNegative | Domain::NonZero | Domain::Integer => {
+                    Some(domain)
+                }
+                Domain::Real | Domain::Complex => None,
+            },
+            _ => None,
+        })
+        .collect();
+    if declared.iter().all(Option::is_none) {
+        return sols;
+    }
+    let mut out = Vec::with_capacity(sols.len());
+    'sol: for sol in sols {
+        let mut conds = Vec::new();
+        for (&value, d) in sol.iter().zip(&declared) {
+            let Some(d) = *d else { continue };
+            match domain_membership(value, d, pool) {
+                Membership::Yes => {}
+                Membership::No => continue 'sol,
+                Membership::Unknown => {
+                    let shown = simplified(value, pool);
+                    conds.push(match d {
+                        Domain::Positive => crate::deriv::log::SideCondition::Positive(shown),
+                        _ => crate::deriv::log::SideCondition::InDomain(shown, d),
+                    })
+                }
+            }
+        }
+        for c in conds {
+            record_side_condition(c);
+        }
+        out.push(sol);
+    }
+    out
 }
 
 /// The error [`solve_polynomial_system`] reports for a budget trip.
@@ -1832,26 +2288,14 @@ fn solve_polynomial_system_unguarded(
         polys.push(cleared.numer);
     }
 
-    let gb = GroebnerBasis::compute(polys.clone(), MonomialOrder::Lex);
-    if crate::budget::interrupt_pending() {
-        return Err(interrupted_error());
-    }
-    let gens = gb.generators();
-
-    // Trivial ideal ⟨1⟩ → no solution.
-    if gens.len() == 1
-        && gens[0].terms.len() == 1
-        && gens[0].leading_exp(MonomialOrder::Lex) == Some(vec![0u32; n_vars])
-    {
-        return Ok(SolutionSet::NoSolution);
-    }
+    let has_params = n_solve < n_vars;
 
     // Candidates are checked against the *input* equations rather than the
     // basis: that is the contract the caller stated, and it does not inherit
     // any mistake the basis computation might have made.
-    let finish = |solutions: Vec<Solution>| -> Option<SolutionSet> {
-        let had_candidates = !solutions.is_empty();
-        let refined = refine_solutions(solutions, &polys, n_vars, pool);
+    let finish = |candidates: Vec<Candidate>| -> Option<SolutionSet> {
+        let had_candidates = !candidates.is_empty();
+        let refined = refine_solutions(candidates, &polys, &all_vars, n_solve, pool);
         if had_candidates && refined.is_empty() {
             // Over ℂ a proper ideal always has a zero, so a candidate set that
             // is entirely refuted means the enumeration itself was unsound.
@@ -1868,8 +2312,56 @@ fn solve_polynomial_system_unguarded(
         if kept.is_empty() && unproved_drop {
             return None;
         }
-        Some(SolutionSet::Finite(kept))
+        // Only the branches that survived contribute their hypotheses.
+        let mut out = Vec::with_capacity(kept.len());
+        for (sol, hyps) in kept {
+            for h in hyps {
+                assume_nonzero(h);
+            }
+            out.push(sol);
+        }
+        Some(SolutionSet::Finite(out))
     };
+
+    // A parametric equation that factors is the union of its factors' zero
+    // sets, and each choice of one factor per equation is a smaller system
+    // whose leading coefficients are far less likely to vanish on a branch.
+    // This is how equilibrium systems are written (`x·(a − b·y)`), and it is
+    // what keeps `x = 0` and `y = a/b` from being produced by the same
+    // division.  It runs before the basis of the whole system, whose Lex
+    // basis over ℚ[unknowns, params] is far larger than its factors' are.
+    if has_params {
+        if let Some(candidates) = solve_by_factor_branches(&polys, &all_vars, n_solve, pool)? {
+            if let Some(set) = finish(candidates) {
+                return Ok(set);
+            }
+        }
+    }
+
+    let gb = GroebnerBasis::compute(polys.clone(), MonomialOrder::Lex);
+    if crate::budget::interrupt_pending() {
+        return Err(interrupted_error());
+    }
+    let gens = gb.generators();
+
+    // Trivial ideal ⟨1⟩ → no solution.
+    if is_unit_ideal(gens, n_vars) {
+        return Ok(SolutionSet::NoSolution);
+    }
+
+    // A non-zero polynomial in the parameters alone lies in the ideal: the
+    // system has a solution only where it vanishes, i.e. for no generic
+    // parameter value (`[x − a, x − b]` needs `a = b`).  Back-substitution
+    // never looks at such a generator — it mentions no unknown — so before this
+    // check it returned the branch as though the condition held.
+    if has_params {
+        if let Some(cond) = parameter_condition(gens, n_solve) {
+            for h in generic::nonzero_hypotheses(cond, &all_vars, pool) {
+                assume_nonzero(h);
+            }
+            return Ok(SolutionSet::NoSolution);
+        }
+    }
 
     match try_backsolve_generators(gens, &all_vars, n_solve, pool)? {
         BacksolveOutcome::Finite(solutions) => {
@@ -2957,5 +3449,236 @@ mod tests {
             let (y3r, y3i) = (y2r * yv.re - y2i * yv.im, y2r * yv.im + y2i * yv.re);
             assert!((y3r - yv.re - 1.0).hypot(y3i - yv.im) < 1e-12);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Parametric systems: branches decided as functions of the parameters
+    // -----------------------------------------------------------------------
+
+    fn sub(a: ExprId, b: ExprId, pool: &ExprPool) -> ExprId {
+        pool.add(vec![a, pool.mul(vec![pool.integer(-1_i32), b])])
+    }
+
+    /// Every tuple, at the parameter values in `env`, as `(x, y)` floats.
+    fn points(sols: &[Solution], env: &HashMap<ExprId, f64>, pool: &ExprPool) -> Vec<(f64, f64)> {
+        sols.iter()
+            .map(|s| {
+                (
+                    eval_interp(s[0], env, pool).expect("x evaluates"),
+                    eval_interp(s[1], env, pool).expect("y evaluates"),
+                )
+            })
+            .collect()
+    }
+
+    fn same_set(got: &[(f64, f64)], want: &[(f64, f64)]) -> bool {
+        let close = |p: &(f64, f64), q: &(f64, f64)| (p.0 - q.0).abs() + (p.1 - q.1).abs() < 1e-9;
+        got.len() == want.len()
+            && got.iter().all(|p| want.iter().any(|q| close(p, q)))
+            && want.iter().all(|q| got.iter().any(|p| close(p, q)))
+    }
+
+    fn lotka_volterra(pool: &ExprPool, domain: Domain) -> (Vec<ExprId>, [ExprId; 6]) {
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let [a, b, c, d] = ["a", "b", "c", "d"].map(|n| pool.symbol(n, domain));
+        // a·x − b·x·y,  −c·y + d·x·y
+        let e1 = sub(pool.mul(vec![a, x]), pool.mul(vec![b, x, y]), pool);
+        let e2 = sub(pool.mul(vec![d, x, y]), pool.mul(vec![c, y]), pool);
+        (vec![e1, e2], [x, y, a, b, c, d])
+    }
+
+    /// N2: the Lotka–Volterra equilibria are `(0, 0)` and `(c/d, a/b)`.  The
+    /// back-substitution used to divide by `b·y − a` at `y = a/b` and return
+    /// `(0, (ac + √(a²c²))/(2bc))` — not a solution — and lose `(c/d, a/b)`.
+    #[test]
+    fn lotka_volterra_equilibria_are_both_found_and_both_solutions() {
+        let pool = ExprPool::new();
+        let (eqs, [x, y, a, b, c, d]) = lotka_volterra(&pool, Domain::Real);
+        let sols = finite(eqs, vec![x, y], &pool);
+        let env: HashMap<ExprId, f64> = [(a, 2.0), (b, 1.0), (c, 3.0), (d, 1.5)].into();
+        let got = points(&sols, &env, &pool);
+        assert!(same_set(&got, &[(0.0, 0.0), (2.0, 2.0)]), "{got:?}");
+        // The hypotheses are the divisors of the kept solution, `b` and `d`,
+        // and nothing from a discarded branch (it used to list `(d·0) ≠ 0`).
+        let conds = take_solve_side_conditions();
+        use crate::deriv::log::SideCondition::NonZero;
+        assert_eq!(conds.len(), 2, "{conds:?}");
+        assert!(
+            conds.contains(&NonZero(b)) && conds.contains(&NonZero(d)),
+            "{conds:?}"
+        );
+    }
+
+    /// With positive parameters the same system used to return `x = −1·0·0⁻¹`.
+    #[test]
+    fn lotka_volterra_with_positive_parameters_has_no_zero_division() {
+        let pool = ExprPool::new();
+        let (eqs, [x, y, a, b, c, d]) = lotka_volterra(&pool, Domain::Positive);
+        let sols = finite(eqs, vec![x, y], &pool);
+        let env: HashMap<ExprId, f64> = [(a, 2.0), (b, 1.0), (c, 3.0), (d, 1.5)].into();
+        let got = points(&sols, &env, &pool);
+        assert!(same_set(&got, &[(0.0, 0.0), (2.0, 2.0)]), "{got:?}");
+        // `b > 0` and `d > 0` discharge both divisions.
+        assert!(take_solve_side_conditions().is_empty());
+    }
+
+    /// `(x − a)(y − b) = (x − c)(y − d) = 0` has exactly `(a, d)` and `(c, b)`
+    /// for generic parameters; it used to return a `0/0` point with residual 1.
+    #[test]
+    fn two_hyperbolas_meet_in_two_points() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let [a, b, c, d] = ["a", "b", "c", "d"].map(|n| pool.symbol(n, Domain::Real));
+        let e1 = pool.mul(vec![sub(x, a, &pool), sub(y, b, &pool)]);
+        let e2 = pool.mul(vec![sub(x, c, &pool), sub(y, d, &pool)]);
+        let sols = finite(vec![e1, e2], vec![x, y], &pool);
+        let env: HashMap<ExprId, f64> = [(a, 1.0), (b, 2.0), (c, 3.0), (d, 5.0)].into();
+        let got = points(&sols, &env, &pool);
+        assert!(same_set(&got, &[(1.0, 5.0), (3.0, 2.0)]), "{got:?}");
+    }
+
+    /// `x(y − a) = x(y − b) = 0` is the line `x = 0` for `a ≠ b`.  It used to
+    /// collapse to a single `0/0` point; a positive-dimensional component is
+    /// returned as the ideal instead.
+    #[test]
+    fn a_parametric_line_is_not_collapsed_to_a_point() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let a = pool.symbol("a", Domain::Real);
+        let b = pool.symbol("b", Domain::Real);
+        let e1 = pool.mul(vec![x, sub(y, a, &pool)]);
+        let e2 = pool.mul(vec![x, sub(y, b, &pool)]);
+        let out = solve_polynomial_system(vec![e1, e2], vec![x, y], &pool).unwrap();
+        assert!(matches!(out, SolutionSet::Parametric(_)));
+    }
+
+    /// `a·x·(1 − y) = 0, y = 2` is `x = 0` — for `a ≠ 0`; at `a = 0` every `x`
+    /// solves it.  Dropping the factor `a` from the branches is an assumption,
+    /// and it is stated.
+    #[test]
+    fn a_dropped_parameter_factor_is_a_stated_hypothesis() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let a = pool.symbol("a", Domain::Real);
+        let one_minus_y = sub(pool.integer(1_i32), y, &pool);
+        let e1 = pool.mul(vec![a, x, one_minus_y]);
+        let e2 = sub(y, pool.integer(2_i32), &pool);
+        let sols = finite(vec![e1, e2], vec![x, y], &pool);
+        assert_eq!(sols.len(), 1);
+        assert!(eval_no_env(sols[0][0], &pool).abs() < 1e-12);
+        assert!((eval_no_env(sols[0][1], &pool) - 2.0).abs() < 1e-12);
+        let conds = take_solve_side_conditions();
+        assert_eq!(conds, vec![crate::deriv::log::SideCondition::NonZero(a)]);
+    }
+
+    /// `x = a ∧ x = b` has no solution unless `a = b`; it used to return one.
+    #[test]
+    fn a_condition_on_the_parameters_alone_is_generic_inconsistency() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let a = pool.symbol("a", Domain::Real);
+        let b = pool.symbol("b", Domain::Real);
+        let out = solve_polynomial_system(vec![sub(x, a, &pool), sub(x, b, &pool)], vec![x], &pool)
+            .unwrap();
+        assert!(matches!(out, SolutionSet::NoSolution));
+        assert_eq!(take_solve_side_conditions().len(), 1);
+    }
+
+    /// The SEIR disease-free equilibrium is `S = N, E = I = 0`.  It used to be
+    /// reported with the endemic `S*` because the coefficient of `S` that
+    /// vanishes at `I = 0` was assumed non-zero.
+    #[test]
+    fn seir_disease_free_equilibrium_is_s_equals_n() {
+        let pool = ExprPool::new();
+        let [beta, gamma, sigma, mu, n] =
+            ["beta", "gamma", "sigma", "mu", "N"].map(|s| pool.symbol(s, Domain::Positive));
+        let [s, e, i] = ["S", "E", "I"].map(|v| pool.symbol(v, Domain::Real));
+        let neg = |t: ExprId| pool.mul(vec![pool.integer(-1_i32), t]);
+        let inv_n = pool.pow(n, pool.integer(-1_i32));
+        let infect = pool.mul(vec![beta, s, i, inv_n]);
+        let f_s = pool.add(vec![
+            pool.mul(vec![mu, n]),
+            neg(infect),
+            neg(pool.mul(vec![mu, s])),
+        ]);
+        let f_e = pool.add(vec![
+            infect,
+            neg(pool.mul(vec![pool.add(vec![sigma, mu]), e])),
+        ]);
+        let f_i = pool.add(vec![
+            pool.mul(vec![sigma, e]),
+            neg(pool.mul(vec![pool.add(vec![gamma, mu]), i])),
+        ]);
+        let sols = finite(vec![f_s, f_e, f_i], vec![s, e, i], &pool);
+        let env: HashMap<ExprId, f64> = [
+            (beta, 0.5),
+            (sigma, 0.2),
+            (gamma, 0.1),
+            (mu, 0.01),
+            (n, 1000.0),
+        ]
+        .into();
+        let got: Vec<[f64; 3]> = sols
+            .iter()
+            .map(|t| [0, 1, 2].map(|k| eval_interp(t[k], &env, &pool).expect("value")))
+            .collect();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(
+            got.iter()
+                .any(|v| (v[0] - 1000.0).abs() < 1e-9 && v[1].abs() < 1e-12 && v[2].abs() < 1e-12),
+            "{got:?}"
+        );
+        assert!(got.iter().any(|v| (v[0] - 231.0).abs() < 1e-9), "{got:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // N4: the unknown's declared domain
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn a_positive_unknown_excludes_negative_roots() {
+        let pool = ExprPool::new();
+        let xp = pool.symbol("xp", Domain::Positive);
+        let three = pool.integer(3_i32);
+        assert!(finite(vec![pool.add(vec![xp, three])], vec![xp], &pool).is_empty());
+        let four = pool.integer(4_i32);
+        let sols = finite(vec![sub(powk(&pool, xp, 2), four, &pool)], vec![xp], &pool);
+        assert_eq!(sols.len(), 1);
+        assert!((eval_no_env(sols[0][0], &pool) - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn an_integer_unknown_excludes_fractions() {
+        let pool = ExprPool::new();
+        let n = pool.symbol("n", Domain::Integer);
+        let two_n = pool.mul(vec![pool.integer(2_i32), n]);
+        let three = pool.integer(3_i32);
+        assert!(finite(vec![sub(two_n, three, &pool)], vec![n], &pool).is_empty());
+        // ±2 from (0 ± √16)/2 are integers, proved through the exact value.
+        let four = pool.integer(4_i32);
+        let sols = finite(vec![sub(powk(&pool, n, 2), four, &pool)], vec![n], &pool);
+        assert_eq!(sols.len(), 2);
+        assert!(take_solve_side_conditions().is_empty());
+    }
+
+    /// Undecided membership is stated, not assumed and not silently dropped.
+    #[test]
+    fn an_undecided_domain_membership_is_a_side_condition() {
+        let pool = ExprPool::new();
+        let xp = pool.symbol("xp", Domain::Positive);
+        let a = pool.symbol("a", Domain::Real);
+        let sols = finite(vec![sub(xp, a, &pool)], vec![xp], &pool);
+        assert_eq!(sols.len(), 1);
+        let conds = take_solve_side_conditions();
+        assert!(
+            conds
+                .iter()
+                .any(|c| matches!(c, crate::deriv::log::SideCondition::Positive(_))),
+            "{conds:?}"
+        );
     }
 }
