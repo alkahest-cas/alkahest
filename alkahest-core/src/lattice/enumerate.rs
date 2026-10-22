@@ -36,6 +36,11 @@ use super::error::LatticeGeometryError;
 use rug::ops::DivRounding;
 use rug::{Integer, Rational};
 
+/// Nodes visited between two polls of the active [`crate::budget::Budget`].
+/// A node is a handful of exact rational operations (microseconds), so the
+/// poll is negligible and the overshoot of a wall budget is a few ms.
+const BUDGET_POLL_NODES: u64 = 256;
+
 /// What the enumerator reports for one lattice point it found.
 pub(crate) struct Found<'a> {
     /// Coefficients with respect to the basis the Gram–Schmidt data came from.
@@ -136,6 +141,12 @@ impl Enumerator {
             return Err(LatticeGeometryError::EnumerationBudget {
                 budget: self.budget,
             });
+        }
+        // The node cap bounds the work but not the wall clock: the Leech
+        // lattice's default-cap kissing number is eight seconds of exact
+        // rational arithmetic, and it used to ignore `Budget(wall_ms=...)`.
+        if self.nodes % BUDGET_POLL_NODES == 0 {
+            crate::budget::check_all().map_err(LatticeGeometryError::Budget)?;
         }
 
         let (lo, hi) = coordinate_range(&self.b_split[level], &u[level], &rem);

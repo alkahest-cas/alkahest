@@ -72,6 +72,11 @@ pub enum LatticeGeometryError {
     /// a panic arrives as `pyo3_runtime.PanicException` — a `BaseException`
     /// that a caller's `except Exception` does not catch.
     Internal { detail: &'static str },
+    /// An active [`crate::budget::Budget`] (wall clock, steps, memory) or a
+    /// cancellation stopped the enumeration. Carries the trip and its
+    /// `E-BUDGET-*` code; distinct from [`Self::EnumerationBudget`], which is
+    /// this module's own node cap.
+    Budget(crate::budget::BudgetTrip),
 }
 
 impl fmt::Display for LatticeGeometryError {
@@ -114,6 +119,7 @@ impl fmt::Display for LatticeGeometryError {
             LatticeGeometryError::Internal { detail } => {
                 write!(f, "internal lattice invariant violated: {detail}")
             }
+            LatticeGeometryError::Budget(t) => write!(f, "lattice enumeration stopped: {t}"),
         }
     }
 }
@@ -140,6 +146,7 @@ impl AlkahestError for LatticeGeometryError {
             LatticeGeometryError::InvalidParameter { .. } => "E-LAT-012",
             LatticeGeometryError::NoBasis => "E-LAT-013",
             LatticeGeometryError::Internal { .. } => "E-LAT-014",
+            LatticeGeometryError::Budget(t) => t.code(),
         }
     }
 
@@ -176,6 +183,7 @@ impl AlkahestError for LatticeGeometryError {
             LatticeGeometryError::Internal { .. } => Some(
                 "this is a bug: please report it with the lattice that produced it",
             ),
+            LatticeGeometryError::Budget(t) => t.remediation(),
         }
     }
 }

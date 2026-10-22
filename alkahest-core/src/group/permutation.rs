@@ -220,6 +220,13 @@ impl Permutation {
         }
     }
 
+    /// A permutation from an images array the caller already knows to be a
+    /// bijection of `{0, …, n−1}` (no validation).
+    pub(crate) fn from_images_unchecked(images: Vec<usize>) -> Permutation {
+        debug_assert!(Permutation::from_images(images.clone()).is_ok());
+        Permutation { images }
+    }
+
     /// The inverse permutation. `p.compose(&p.inverse())` is the identity.
     pub fn inverse(&self) -> Permutation {
         let mut images = vec![0usize; self.degree()];

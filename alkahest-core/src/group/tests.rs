@@ -774,3 +774,36 @@ fn mathieu_24_has_order_244823040() {
         assert!(g.contains(&g.random_element(seed).unwrap()).unwrap());
     }
 }
+
+// ---------------------------------------------------------------------------
+// Budget (report 10-21 H2)
+// ---------------------------------------------------------------------------
+
+/// The incremental Schreier–Sims: `S_100` took 74 s when every revisit of a
+/// level re-checked every Schreier generator.
+#[test]
+fn symmetric_60_order_is_exact() {
+    // No wall-clock bound: ASan and loaded runners vary too much for one.
+    assert_eq!(symmetric(60).unwrap().order().unwrap(), factorial(60));
+}
+
+/// A budget stop is a refusal recognised by `is_budget_stop`, carries the trip,
+/// and is not cached: the same group answers once the budget is gone.
+#[test]
+fn order_honours_budget_and_does_not_cache_the_stop() {
+    let g = symmetric(40).unwrap();
+    let out = {
+        let _b = crate::budget::enter(crate::budget::Budget::new().with_max_steps(3));
+        g.order()
+    };
+    let err = out.unwrap_err();
+    assert!(err.is_budget_stop(), "{err:?}");
+    assert!(crate::budget::take_trip().is_some());
+    assert_eq!(g.order().unwrap(), factorial(40));
+    // Genuine refusals are not budget stops.
+    assert!(!GroupError::PointOutOfRange {
+        point: 1,
+        degree: 1
+    }
+    .is_budget_stop());
+}

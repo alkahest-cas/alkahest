@@ -759,3 +759,25 @@ mod props {
         }
     }
 }
+
+/// `Lattice::leech().kissing_number()` ignored a wall budget (8 s); the
+/// enumeration now polls it and reports the trip as `Budget`, not a count.
+#[test]
+fn leech_enumeration_honours_a_wall_budget() {
+    let l = leech().unwrap();
+    let wall = std::time::Duration::from_millis(100);
+    let t = std::time::Instant::now();
+    let out = {
+        let _b = crate::budget::enter(crate::budget::Budget::new().with_wall(wall));
+        l.kissing_number()
+    };
+    assert!(
+        matches!(out, Err(LatticeGeometryError::Budget(_))),
+        "{out:?}"
+    );
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        t.elapsed()
+    );
+}

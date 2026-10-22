@@ -83,5 +83,27 @@ def nthroot_mod(a: int, k: int, m: int) -> int:
 
 
 def discrete_log(residue: int, base: int, modulus: int) -> int:
-    """Exponent ``e`` with ``pow(base, e, modulus) == residue % modulus`` (prime ``modulus``)."""
+    """Smallest ``e >= 0`` with ``pow(base, e, modulus) == residue % modulus`` (prime ``modulus``).
+
+    Pohlig–Hellman over the factorisation of the order of ``base``, with
+    baby-step giant-step (Pollard's rho for prime factors above ``2**42``) in
+    each prime-order subgroup: the cost follows the largest prime factor of
+    ``ord(base)``, so ``2**127 - 1`` (whose ``p - 1`` is smooth) is fast, while
+    a 64-bit prime factor is genuinely hard. The result is verified by
+    ``pow`` before it is returned.
+
+    Raises
+    ------
+    NumberTheoryError
+        ``E-NT-003`` when ``residue`` is not a power of ``base``;
+        ``E-NT-004`` for a composite modulus (no CRT lifting is attempted).
+    BudgetExceededError
+        ``E-BUDGET-*`` when an active ``ak.context(budget=...)`` runs out —
+        never a partial exponent.
+
+    Example
+    -------
+    >>> discrete_log(13, 3, 17)
+    4
+    """
     return _decimal_to_int(nt_discrete_log(int(residue), int(base), int(modulus)))

@@ -232,6 +232,34 @@ pub fn enter_with_memory(budget: Budget, max_bytes: Option<u64>) -> BudgetGuard 
     }
 }
 
+/// What is left of the innermost active budget on this thread, as a
+/// [`Budget`] (plus its `max_bytes` ceiling) that a **worker thread** can
+/// [`enter_with_memory`] to run under the same limits.
+///
+/// The budget stack is thread-local, so work moved to another thread — the
+/// interruptible validated-bounds entry points run on a scoped worker — would
+/// otherwise run unbudgeted. The wall limit becomes the time remaining
+/// (zero if already spent), the step limit the steps remaining; the seed is
+/// copied. Steps the worker spends are not charged back to this frame.
+///
+/// `None` when no budget is active.
+pub fn remaining() -> Option<(Budget, Option<u64>)> {
+    STACK.with(|s| {
+        let stack = s.borrow();
+        let frame = stack.last()?;
+        let wall = frame.wall.map(|w| w.saturating_sub(frame.start.elapsed()));
+        let max_steps = frame.max_steps.map(|m| m.saturating_sub(frame.steps.get()));
+        Some((
+            Budget {
+                wall,
+                max_steps,
+                seed: frame.seed,
+            },
+            frame.max_bytes,
+        ))
+    })
+}
+
 /// Returns `true` if a [`Budget`] is currently active on this thread.
 pub fn is_active() -> bool {
     STACK.with(|s| !s.borrow().is_empty())

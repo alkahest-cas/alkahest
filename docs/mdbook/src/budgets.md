@@ -145,6 +145,25 @@ a handful of strategic points — not blanket-inserted into every loop:
 - **`alkahest.guess_holonomic`** — once per `(order, degree)` probe.
 - **`alkahest.decide`** — once per sample cell of the two-variable CAD.
 - **`sos_decompose` / `prove_nonneg`** — between SDP solves (already the case before).
+- **`alkahest.number_theory.discrete_log`** — Pohlig–Hellman over the (budgeted)
+  factorisation of `p − 1`, polling every 4096 group operations of each baby-step
+  giant-step / Pollard-rho subgroup solve. It used to be a linear sweep with no
+  checkpoint (`p = 2³¹−1` ran 55 s against a 2 s budget); smooth orders such as
+  `2¹²⁷−1`'s are now instant, and a 61-bit prime order stops at the budget.
+- **`PermutationGroup.order()`** (and everything built on the stabilizer chain:
+  `contains`, `sift`, `base`, …) — every 8 Schreier generators. A budget stop is not
+  cached on the group, so the next call starts afresh. Schreier–Sims also re-checks
+  only the new Schreier generators when a level is revisited, which brought
+  `symmetric(100).order()` from 74 s down to well under a second.
+- **`bound_on_box`, `verified_integral`, `verified_no_roots`, `verified_sign`** — these
+  run on a worker thread (so Ctrl-C works), and the worker now re-enters what is left
+  of the caller's budget; before, it never saw it (`verified_sign` on a 2-D
+  Black–Scholes box ran 115 s under a wall budget). `verified_sign` /
+  `verified_no_roots` keep a certified `"true"`/`"false"` reached before the trip and
+  raise `BudgetExceededError` instead of an `"undecided"` caused by the budget.
+- **Lattice enumeration** (`Lattice.minimum`, `kissing_number`, `theta_series`,
+  `closest_vector`, …) — every 256 Fincke–Pohst nodes, on top of the node cap.
+  `Lattice.leech().kissing_number()` (8 s) now stops at the wall budget.
 
 Every one of these raises `BudgetExceededError` on a trip and **never returns what it
 had computed so far**: a basis that stopped part-way is not a Gröbner basis of anything,

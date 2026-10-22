@@ -195,6 +195,37 @@ pub enum GroupError {
     },
 }
 
+/// The `family` tag of the [`GroupError::UnsupportedDegree`] that reports a
+/// budget stop. `GroupError` is exhaustive, so a budget stop cannot have a
+/// variant of its own without a major version bump; the trip itself is
+/// recorded for [`crate::budget::take_trip`], the way #472 established for
+/// other exhaustive error enums.
+const BUDGET_STOP_FAMILY: &str = "stabilizer chain (budget)";
+
+impl GroupError {
+    /// The refusal a stabilizer-chain computation returns when an active
+    /// [`crate::budget::Budget`] stops it.
+    pub(crate) fn budget_stop(degree: usize) -> GroupError {
+        GroupError::UnsupportedDegree {
+            family: BUDGET_STOP_FAMILY,
+            requested: degree,
+            reason: "Schreier–Sims was stopped by the active budget before the chain was \
+                     complete; this is not a statement about the group. The budget trip is \
+                     recorded (budget::take_trip) and raised as BudgetExceededError in Python",
+        }
+    }
+
+    /// `true` when this refusal is a budget stop rather than a property of the
+    /// input: the matching [`crate::budget::BudgetTrip`] is then available from
+    /// [`crate::budget::take_trip`] on the same thread.
+    pub fn is_budget_stop(&self) -> bool {
+        matches!(
+            self,
+            GroupError::UnsupportedDegree { family, .. } if *family == BUDGET_STOP_FAMILY
+        )
+    }
+}
+
 impl fmt::Display for GroupError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
