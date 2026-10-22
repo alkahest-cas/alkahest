@@ -4,22 +4,14 @@
 Demonstrates factorial via ∏ k from 1 to n and the Wallis-style partial identity
 ∏_{k=2}^n (1 - 1/k²) simplifying to (n+1)/(2n).
 
-Run from the repository root (see :file:`pytest.ini` pythonpath)::
+Requires an installed alkahest (e.g. ``maturin develop --release`` in a venv)::
 
-    PYTHONPATH=python python examples/products.py
+    python examples/products.py
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-# Dev layout: full `alkahest` package lives under `python/` (see CONTRIBUTING.md).
-_root = Path(__file__).resolve().parents[1]
-_pp = str(_root / "python")
-sys.path.insert(0, _pp)
-
-import alkahest as ah  # noqa: E402
+import alkahest as ah
 
 
 def main() -> None:
@@ -31,7 +23,7 @@ def main() -> None:
     print(ah.simplify(factorial_expr).value)
 
     two = pool.integer(2)
-    kp2 = k ** 2
+    kp2 = k**2
     term = ah.simplify(((k + pool.integer(-1)) * (k + pool.integer(1))) / kp2).value
     wallis_partial = ah.simplify(ah.product_definite(term, k, two, n).value).value
     print("\nWallis-style ∏_{k=2}^n (1 - 1/k²) →")

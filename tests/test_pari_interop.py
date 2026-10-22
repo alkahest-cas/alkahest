@@ -80,6 +80,21 @@ def test_lattice_index():
     assert pari._lattice_index([[1, 0]], 2) == 0
 
 
+def test_divisor_chain_accepts_pari_descending_order():
+    # PARI lists invariants descending: Cl(Q(sqrt -65)) = [4, 2]
+    pari._check_divisor_chain([4, 2])
+    pari._check_divisor_chain([4, 2, 2, 2])
+    pari._check_divisor_chain([7])
+    pari._check_divisor_chain([])
+
+
+@pytest.mark.parametrize("cyc", [[2, 4], [4, 2, 3], [6, 4]])
+def test_divisor_chain_rejects_malformed_answers(cyc):
+    with pytest.raises(pari.PariError) as ei:
+        pari._check_divisor_chain(cyc)
+    assert ei.value.code == "E-PARI-003"
+
+
 # ---------------------------------------------------------------------------
 # Number fields
 # ---------------------------------------------------------------------------
@@ -100,6 +115,15 @@ def test_class_groups_match_tables(poly, disc, h, cyc):
     assert d.discriminant == disc
     assert d.class_number == h
     assert d.class_group == cyc
+    assert d.certification == "certified"
+
+
+@needs_pari
+def test_class_group_descending_order_accepted():
+    # Q(sqrt -65): h = 8, Cl = Z/4 x Z/2, listed by PARI as [4, 2]
+    d = pari.number_field_invariants([65, 0, 1])
+    assert d.class_number == 8
+    assert d.class_group == [4, 2]
     assert d.certification == "certified"
 
 
