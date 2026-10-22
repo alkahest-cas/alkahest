@@ -227,15 +227,18 @@ fn bsgs(g: &Integer, h: &Integer, q: u64, p: &Integer) -> Result<Option<Integer>
     let mut cur = Integer::from(1);
     for j in 0..m {
         let k = key(&cur);
-        if table.contains_key(&k) {
+        match table.entry(k) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(j as u32);
+            }
             // With exact keys a repeat would mean g^j = g^i for i < j < q,
             // impossible in a group of order q; with truncated keys it is a
             // collision of distinct residues and both must be kept.
-            if !exact_keys {
-                overflow.push((k, j as u32));
+            std::collections::hash_map::Entry::Occupied(_) => {
+                if !exact_keys {
+                    overflow.push((k, j as u32));
+                }
             }
-        } else {
-            table.insert(k, j as u32);
         }
         mulm(&mut cur, g, p);
         poll(&mut polls)?;
@@ -261,7 +264,7 @@ fn bsgs(g: &Integer, h: &Integer, q: u64, p: &Integer) -> Result<Option<Integer>
         for j in candidates {
             let e = Integer::from(i) * Integer::from(m) + Integer::from(j);
             if exact_keys || powm(g, &e, p) == *h {
-                return Ok(Some(Integer::from(&e % Integer::from(q))));
+                return Ok(Some(e % Integer::from(q)));
             }
         }
         mulm(&mut gamma, &giant, p);
