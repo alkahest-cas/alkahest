@@ -167,7 +167,7 @@ impl ProperTerm {
         let mut acc = q.rat.clone();
         for gf in &q.gammas {
             let slot = groups.iter().position(|(a, b, c0, _)| {
-                *a == gf.a && *b == gf.b && Rational::from(&gf.c - c0.clone()).denom() == &1
+                *a == gf.a && *b == gf.b && Rational::from(&gf.c - c0).denom() == &1
             });
             let idx = match slot {
                 Some(i) => i,
@@ -177,7 +177,7 @@ impl ProperTerm {
                 }
             };
             let c0 = groups[idx].2.clone();
-            let diff = Rational::from(&gf.c - c0.clone());
+            let diff = Rational::from(&gf.c - &c0);
             let s = diff
                 .numer()
                 .to_i64()
