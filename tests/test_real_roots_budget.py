@@ -64,9 +64,9 @@ def test_max_bytes_budget_stops_degree_3000():
     x = pool.symbol("x")
     p = _poly(pool, x, _random_coeffs(3000, 2))
     t = time.perf_counter()
-    with pytest.raises(ak.BudgetExceededError) as ei:
-        with ak.context(budget=ak.Budget(wall_ms=60_000, max_bytes=1 << 18)):
-            ak.real_roots(p, x)
+    budget = ak.Budget(wall_ms=60_000, max_bytes=1 << 18)
+    with pytest.raises(ak.BudgetExceededError) as ei, ak.context(budget=budget):
+        ak.real_roots(p, x)
     assert getattr(ei.value, "code", "").startswith("E-BUDGET-")
     assert time.perf_counter() - t < 30
 
