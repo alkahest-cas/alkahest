@@ -232,8 +232,8 @@ use alkahest_core::calculus::euler_maclaurin::euler_maclaurin as core_euler_macl
 use alkahest_core::calculus::singularity::coefficient_asymptotics as core_coefficient_asymptotics;
 // V3-1 — Integer number theory
 use alkahest_core::number_theory::{
-    discrete_log as nt_discrete_log, isprime as nt_isprime, jacobi_symbol as nt_jacobi_symbol,
-    nextprime as nt_nextprime, nthroot_mod as nt_nthroot_mod, totient as nt_totient,
+    isprime as nt_isprime, jacobi_symbol as nt_jacobi_symbol, nextprime as nt_nextprime,
+    nthroot_mod as nt_nthroot_mod, totient as nt_totient,
     NumberTheoryError as CoreNumberTheoryError, QuadraticDirichlet as CoreQuadraticDirichlet,
 };
 // The buffer protocol is not in the stable ABI before 3.11, and PyO3 gates
@@ -15560,10 +15560,35 @@ const INTERRUPT_POLL: std::time::Duration = std::time::Duration::from_millis(25)
 /// * `std::thread::scope` joins the worker before returning, so the borrow of
 ///   the `ExprPool` cannot outlive the call and no work is left running behind
 ///   the caller's back.
-/// * The work runs on another thread, so a thread-local
-///   `alkahest_core::budget::Budget` frame pushed by `ak.context(...)` is not
-///   visible to it. Cancellation is a process-wide atomic and does cross.
+/// * The work runs on another thread, and the budget stack pushed by
+///   `ak.context(budget=...)` is thread-local, so the worker **re-enters what
+///   is left of the caller's budget** (`budget::remaining`) before it starts.
+///   This used to be missing: a `verified_sign` on a 2-D Black–Scholes box ran
+///   for 115 s under `Budget(wall_ms=...)` because the worker never saw it.
+///   Cancellation is a process-wide atomic and crosses on its own.
+///
+/// A budget stop inside the worker makes the searches return a wider-but-sound
+/// answer; [`run_interruptible`] turns that into `BudgetExceededError`, while
+/// [`run_interruptible_budgeted`] hands the trip back so a caller whose answer
+/// is still certified (a `"true"`/`"false"` verdict) can keep it.
 fn run_interruptible<T, F>(py: Python<'_>, f: F) -> PyResult<T>
+where
+    F: FnOnce() -> T + Send,
+    T: Send,
+{
+    let (value, trip) = run_interruptible_budgeted(py, f)?;
+    match trip {
+        Some(t) => Err(budget_trip_into_py(t)),
+        None => Ok(value),
+    }
+}
+
+/// [`run_interruptible`], returning the budget trip (if any) recorded on the
+/// worker instead of raising it.
+fn run_interruptible_budgeted<T, F>(
+    py: Python<'_>,
+    f: F,
+) -> PyResult<(T, Option<alkahest_core::budget::BudgetTrip>)>
 where
     F: FnOnce() -> T + Send,
     T: Send,
@@ -15571,10 +15596,17 @@ where
     // Preserve a cancellation the caller had already requested: clearing one we
     // did not set would silently resurrect somebody else's abandoned search.
     let preset = alkahest_core::budget::is_cancelled();
+    let inherited = alkahest_core::budget::remaining();
     let mut interrupt: Option<PyErr> = None;
     let value = py.allow_threads(|| {
         std::thread::scope(|scope| {
-            let handle = scope.spawn(f);
+            let handle = scope.spawn(move || {
+                let _guard =
+                    inherited.map(|(b, mb)| alkahest_core::budget::enter_with_memory(b, mb));
+                alkahest_core::budget::clear_trip();
+                let v = f();
+                (v, alkahest_core::budget::take_trip())
+            });
             while !handle.is_finished() {
                 std::thread::sleep(INTERRUPT_POLL);
                 if interrupt.is_some() {
@@ -15765,9 +15797,26 @@ fn py_verified_no_roots(
     };
     let pool = pool_py.borrow(py);
     let (id, inner) = (expr.id, &pool.inner);
-    let v = run_interruptible(py, || core_verified_no_roots(id, inner, &boxes, &opts))?
-        .map_err(validated_error_to_py)?;
-    Ok(verdict_str(v).to_string())
+    let (v, trip) =
+        run_interruptible_budgeted(py, || core_verified_no_roots(id, inner, &boxes, &opts))?;
+    let v = v.map_err(validated_error_to_py)?;
+    undecided_or_trip(v, trip)
+}
+
+/// A verdict from a validated search that may have been stopped by a budget.
+///
+/// `"true"` and `"false"` are certified whatever stopped the search — a stop
+/// only ever widens the enclosures they were read from — so they are kept. An
+/// `"undecided"` reached after a budget trip says nothing about the input, so
+/// it becomes `BudgetExceededError` (`E-BUDGET-*`) rather than a verdict.
+fn undecided_or_trip(
+    v: CoreVerdict,
+    trip: Option<alkahest_core::budget::BudgetTrip>,
+) -> PyResult<String> {
+    match (v, trip) {
+        (CoreVerdict::Undecided, Some(t)) => Err(budget_trip_into_py(t)),
+        (v, _) => Ok(verdict_str(v).to_string()),
+    }
 }
 
 /// `alkahest.verified_sign(expr, box, predicate, ...) -> "true" | "false" | "undecided"`
@@ -15843,9 +15892,10 @@ fn py_verified_sign(
     };
     let pool = pool_py.borrow(py);
     let (id, inner) = (expr.id, &pool.inner);
-    let v = run_interruptible(py, || core_verified_sign(id, inner, &boxes, pred, &opts))?
-        .map_err(validated_error_to_py)?;
-    Ok(verdict_str(v).to_string())
+    let (v, trip) =
+        run_interruptible_budgeted(py, || core_verified_sign(id, inner, &boxes, pred, &opts))?;
+    let v = v.map_err(validated_error_to_py)?;
+    undecided_or_trip(v, trip)
 }
 
 /// `alkahest.sos_decompose(expr, vars, *, basis_degree=None) -> PositivityCertificate`
@@ -20129,6 +20179,7 @@ fn py_nt_nthroot_mod(a: &Bound<'_, PyAny>, k: u64, p: &Bound<'_, PyAny>) -> PyRe
 #[pyfunction]
 #[pyo3(name = "nt_discrete_log", signature = (residue, base, modulus))]
 fn py_nt_discrete_log(
+    py: Python<'_>,
     residue: &Bound<'_, PyAny>,
     base: &Bound<'_, PyAny>,
     modulus: &Bound<'_, PyAny>,
@@ -20136,7 +20187,10 @@ fn py_nt_discrete_log(
     let sr = py_int_decimal(residue)?;
     let sb = py_int_decimal(base)?;
     let sm = py_int_decimal(modulus)?;
-    nt_discrete_log(&sr, &sb, &sm).map_err(number_theory_error_to_py)
+    // Budget-aware (`E-BUDGET-*` under an active budget), with the GIL
+    // released so `request_cancel()` from another thread reaches it.
+    py.allow_threads(|| alkahest_core::number_theory::discrete_log_bounded(&sr, &sb, &sm))
+        .map_err(numfield::arithmetic_error_to_py)
 }
 
 /// Reduce a polynomial over ℤ to F_p = ℤ/pℤ.

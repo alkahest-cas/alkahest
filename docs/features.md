@@ -96,7 +96,7 @@ Experimental (`alkahest.experimental`); see the [probability guide](./mdbook/src
 ## Number theory
 
 - `alkahest.number_theory`: `isprime`, `factorint`, `nextprime`, `totient`, `jacobi_symbol`
-- `nthroot_mod` (prime modulus), `discrete_log` (moderate primes)
+- `nthroot_mod` (prime modulus), `discrete_log` (Pohlig–Hellman + BSGS/rho, prime modulus; budget-aware)
 - Quadratic Dirichlet characters (`DirichletChi`) on odd square-free conductors
 - Diophantine equations: linear families, sum of two squares, unit Pell equation (`diophantine`), every class of generalized Pell `x² − D·y² = N` (`pell_classes`)
 

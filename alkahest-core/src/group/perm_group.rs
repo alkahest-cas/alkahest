@@ -353,7 +353,27 @@ struct ChainBuilder {
     base: Vec<usize>,
     generators: Vec<Vec<Permutation>>,
     orbits: Vec<Orbit>,
+    /// How many of `generators[i]` the orbit at level `i` has absorbed.
+    orbit_generators: Vec<usize>,
+    /// `(points, generators)` at level `i` whose Schreier generators have all
+    /// been checked: every pair `(β, x)` with `β` among the first `points`
+    /// orbit points and `x` among the first `generators` generators.
+    checked: Vec<(usize, usize)>,
+    /// Schreier generators examined since the last budget poll.
+    since_poll: u32,
 }
+
+/// Why [`schreier_sims_inner`] stopped short of a chain.
+enum ChainStop {
+    Group(GroupError),
+    Budget(crate::budget::BudgetTrip),
+}
+
+/// Schreier generators examined between two budget polls. One generator is
+/// three compositions and a strip — `O(n·depth)` — so this keeps the poll
+/// (an `Instant::now()`) negligible while bounding the overshoot to well
+/// under a millisecond at the largest admissible degree.
+const BUDGET_POLL_EVERY: u32 = 8;
 
 impl ChainBuilder {
     fn strip(&self, g: &Permutation, from_level: usize) -> (Permutation, usize) {
@@ -362,10 +382,19 @@ impl ChainBuilder {
             let image = h.img(self.base[index]);
             match self.orbits[index].transversal_element(image) {
                 None => return (h, index),
-                Some(u) => h = h.compose_unchecked(&u.inverse()),
+                Some(u) => h = compose_with_inverse(&h, u),
             }
         }
         (h, self.base.len())
+    }
+
+    fn poll_budget(&mut self) -> Result<(), crate::budget::BudgetTrip> {
+        self.since_poll += 1;
+        if self.since_poll >= BUDGET_POLL_EVERY {
+            self.since_poll = 0;
+            crate::budget::check_all()?;
+        }
+        Ok(())
     }
 
     /// Make level `i` satisfy the BSGS condition
@@ -386,27 +415,54 @@ impl ChainBuilder {
     /// `i` itself: a Schreier generator already checked stripped to the
     /// identity through a *smaller* `⟨S_{i+1}⟩`, and it still does through the
     /// larger one.
-    fn complete_level(&mut self, i: usize) {
-        self.orbits[i] = build_orbit(self.degree, &self.generators[i], self.base[i]);
-        let points = self.orbits[i].points().to_vec();
+    ///
+    /// # Incremental
+    ///
+    /// The same argument is what lets a *re*-verification skip work. When a
+    /// shallower level adjoins generators here, the orbit is **extended** in
+    /// place (existing points keep their transversal elements, new points are
+    /// appended) rather than rebuilt, so every Schreier generator `(β, x)`
+    /// checked on an earlier visit is literally the same permutation now, and
+    /// it still strips to the identity through a chain that has only grown.
+    /// Only the pairs involving a new point or a new generator are checked.
+    /// Rebuilding the orbit and re-checking every pair on every visit — the
+    /// previous behaviour — is what made `S_n`'s order cost roughly `n⁶`
+    /// (`symmetric(100).order()` took 74 s).
+    fn complete_level(&mut self, i: usize) -> Result<(), crate::budget::BudgetTrip> {
+        extend_orbit(
+            &mut self.orbits[i],
+            &self.generators[i],
+            self.orbit_generators[i],
+        );
+        self.orbit_generators[i] = self.generators[i].len();
+        let point_count = self.orbits[i].len();
         let generator_count = self.generators[i].len();
+        let (checked_points, checked_generators) = self.checked[i];
 
-        for beta in points {
+        for point_index in 0..point_count {
+            let beta = self.orbits[i].points()[point_index];
+            let first_generator = if point_index < checked_points {
+                checked_generators
+            } else {
+                0
+            };
+            if first_generator >= generator_count {
+                continue;
+            }
             let u_beta = self.orbits[i]
                 .transversal_element(beta)
                 .expect("orbit point has a transversal element")
                 .clone();
-            for xi in 0..generator_count {
-                let x = self.generators[i][xi].clone();
+            for xi in first_generator..generator_count {
+                self.poll_budget()?;
+                let x = &self.generators[i][xi];
                 let image = x.img(beta);
                 let u_image = self.orbits[i]
                     .transversal_element(image)
-                    .expect("the image of an orbit point is in the orbit")
-                    .clone();
+                    .expect("the image of an orbit point is in the orbit");
                 // Schreier generator u_β · x · u_{β^x}^{-1}; it fixes b_i.
-                let schreier_generator = u_beta
-                    .compose_unchecked(&x)
-                    .compose_unchecked(&u_image.inverse());
+                let schreier_generator =
+                    compose_with_inverse(&u_beta.compose_unchecked(x), u_image);
                 debug_assert_eq!(schreier_generator.img(self.base[i]), self.base[i]);
                 if schreier_generator.is_identity() {
                     continue;
@@ -424,15 +480,74 @@ impl ChainBuilder {
                     self.base.push(new_point);
                     self.generators.push(Vec::new());
                     self.orbits.push(build_orbit(self.degree, &[], new_point));
+                    self.orbit_generators.push(0);
+                    self.checked.push((0, 0));
                     stop = self.base.len() - 1;
                 }
                 for level in (i + 1)..=stop {
                     self.generators[level].push(residue.clone());
                 }
                 for level in ((i + 1)..=stop).rev() {
-                    self.complete_level(level);
+                    self.complete_level(level)?;
                 }
             }
+        }
+        self.checked[i] = (point_count, generator_count);
+        Ok(())
+    }
+}
+
+/// `h · u⁻¹` (left to right: apply `h`, then `u⁻¹`) without materialising
+/// `u⁻¹` as a separate permutation.
+fn compose_with_inverse(h: &Permutation, u: &Permutation) -> Permutation {
+    let images = u.images();
+    let mut inverse = vec![0usize; images.len()];
+    for (point, &image) in images.iter().enumerate() {
+        inverse[image] = point;
+    }
+    let composed: Vec<usize> = h.images().iter().map(|&i| inverse[i]).collect();
+    Permutation::from_images_unchecked(composed)
+}
+
+/// Grow `orbit` to the orbit under all of `generators`, given that it is
+/// already closed under the first `absorbed` of them.
+///
+/// Append-only: existing points keep their position, Schreier entry and
+/// transversal element, which is what makes the incremental check in
+/// [`ChainBuilder::complete_level`] sound. New points are discovered breadth-
+/// first exactly as [`build_orbit`] would, starting from the existing points
+/// under the new generators.
+fn extend_orbit(orbit: &mut Orbit, generators: &[Permutation], absorbed: usize) {
+    if absorbed >= generators.len() {
+        return;
+    }
+    let existing = orbit.points.len();
+    let add = |orbit: &mut Orbit, alpha: usize, index: usize, g: &Permutation| {
+        let beta = g.img(alpha);
+        if orbit.transversal[beta].is_none() {
+            let u_alpha = orbit.transversal[alpha]
+                .as_ref()
+                .expect("a discovered point has a transversal element");
+            orbit.transversal[beta] = Some(u_alpha.compose_unchecked(g));
+            orbit.schreier[beta] = Some(SchreierEntry {
+                generator: index,
+                from: alpha,
+            });
+            orbit.points.push(beta);
+        }
+    };
+    for p in 0..existing {
+        let alpha = orbit.points[p];
+        for (index, g) in generators.iter().enumerate().skip(absorbed) {
+            add(orbit, alpha, index, g);
+        }
+    }
+    let mut head = existing;
+    while head < orbit.points.len() {
+        let alpha = orbit.points[head];
+        head += 1;
+        for (index, g) in generators.iter().enumerate() {
+            add(orbit, alpha, index, g);
         }
     }
 }
@@ -442,22 +557,22 @@ impl ChainBuilder {
 ///
 /// Refuses degrees above [`MAX_BSGS_DEGREE`] — see that constant for the memory
 /// argument.
-pub(super) fn schreier_sims(
+fn schreier_sims_inner(
     degree: usize,
     generators: &[Permutation],
-) -> Result<StabilizerChain, GroupError> {
+) -> Result<StabilizerChain, ChainStop> {
     if degree > MAX_BSGS_DEGREE {
-        return Err(GroupError::DegreeTooLargeForBsgs {
+        return Err(ChainStop::Group(GroupError::DegreeTooLargeForBsgs {
             degree,
             max: MAX_BSGS_DEGREE,
-        });
+        }));
     }
     for g in generators {
         if g.degree() != degree {
-            return Err(GroupError::DegreeMismatch {
+            return Err(ChainStop::Group(GroupError::DegreeMismatch {
                 left: degree,
                 right: g.degree(),
-            });
+            }));
         }
     }
 
@@ -496,11 +611,15 @@ pub(super) fn schreier_sims(
         .map(|(i, &b)| build_orbit(degree, &level_generators[i], b))
         .collect();
 
+    let levels0 = base.len();
     let mut builder = ChainBuilder {
         degree,
         base,
+        orbit_generators: level_generators.iter().map(Vec::len).collect(),
         generators: level_generators,
         orbits,
+        checked: vec![(0, 0); levels0],
+        since_poll: 0,
     };
 
     // Deepest level first: complete_level(i) assumes levels > i are already
@@ -508,7 +627,7 @@ pub(super) fn schreier_sims(
     let mut i = builder.base.len();
     while i > 0 {
         i -= 1;
-        builder.complete_level(i);
+        builder.complete_level(i).map_err(ChainStop::Budget)?;
     }
 
     let levels = builder
@@ -642,11 +761,30 @@ impl PermutationGroup {
     }
 
     /// The stabilizer chain, computed on first call and cached.
+    ///
+    /// Honours an active [`crate::budget::Budget`]. A budget stop is **not**
+    /// cached — the next call starts afresh — and is reported as the refusal
+    /// [`GroupError::is_budget_stop`] recognises, with the
+    /// [`crate::budget::BudgetTrip`] recorded for [`crate::budget::take_trip`].
     pub fn stabilizer_chain(&self) -> Result<&StabilizerChain, GroupError> {
-        self.chain
-            .get_or_init(|| schreier_sims(self.degree, &self.generators))
-            .as_ref()
-            .map_err(|e| e.clone())
+        if self.chain.get().is_none() {
+            match schreier_sims_inner(self.degree, &self.generators) {
+                Ok(chain) => {
+                    let _ = self.chain.set(Ok(chain));
+                }
+                Err(ChainStop::Group(e)) => {
+                    let _ = self.chain.set(Err(e));
+                }
+                Err(ChainStop::Budget(trip)) => {
+                    crate::budget::record_trip(trip);
+                    return Err(GroupError::budget_stop(self.degree));
+                }
+            }
+        }
+        match self.chain.get() {
+            Some(r) => r.as_ref().map_err(|e| e.clone()),
+            None => Err(GroupError::budget_stop(self.degree)),
+        }
     }
 
     /// `|G|`, exactly, as an arbitrary-precision integer.

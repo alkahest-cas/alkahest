@@ -56,6 +56,9 @@ pyo3::create_exception!(alkahest, PyLatticeGeometryError, crate::PyLatticeError)
 /// Mirrors `lib.rs`'s `make_structured_err`; kept local so that adding this
 /// module touches `lib.rs` in exactly two lines.
 fn lat(e: LatticeGeometryError) -> PyErr {
+    if let LatticeGeometryError::Budget(trip) = e {
+        return crate::budget_trip_into_py(trip);
+    }
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyLatticeGeometryError>();
         let msg = e.to_string();

@@ -2,7 +2,7 @@
 //!
 //! Wraps proven primality, integer factorisation, totients, Jacobi symbols,
 //! modular square roots (`fmpz_sqrtmod`), nth roots modulo primes when Coprime holds,
-//! brute-force discrete logs, and quadratic Dirichlet characters (odd square-free conductor).
+//! Pohlig–Hellman discrete logs, and quadratic Dirichlet characters (odd square-free conductor).
 
 /// The classical arithmetic functions — the partition function, Bernoulli,
 /// Euler, Stirling and harmonic numbers, Möbius μ, σ_k and sums of squares.
@@ -12,13 +12,13 @@
 /// exhaustive and in the stable surface, so a new variant on it would force a
 /// major version bump. See [`arith::ArithmeticError`].
 pub mod arith;
+mod dlog;
 
 use crate::errors::AlkahestError;
 use crate::flint::ffi;
 use crate::flint::integer::FlintIntFactor;
 use crate::flint::FlintInteger;
 use rug::ops::RemRounding;
-use rug::Complete;
 use rug::Integer;
 use std::cmp::Ordering;
 use std::fmt;
@@ -374,24 +374,57 @@ pub fn nthroot_mod(a: &str, k: u64, p: &str) -> Result<String, NumberTheoryError
 
 /// Smallest exponent \(e \geq 0\) with \(\mathit{base}^e \equiv \mathit{residue}\pmod{p}\) (`p` prime).
 ///
-/// This uses a deterministic linear sweep over exponents bounded by \(p{-}1\); it is tuned for API
-/// parity and moderate primes, not large-field cryptography.
+/// Pohlig–Hellman over the factorisation of \(\operatorname{ord}(\mathit{base})\), with
+/// baby-step giant-step (or Pollard's rho above \(2^{42}\)) in each prime-order subgroup, so
+/// the cost is governed by the largest prime factor of the order, not by `p`. The answer is
+/// checked by modular exponentiation before it is returned.
+///
+/// Refusals: [`NumberTheoryError::NoSolution`] when `residue ∉ ⟨base⟩`;
+/// [`NumberTheoryError::CompositeModulus`] for a composite modulus (no CRT lifting is
+/// attempted). An active [`crate::budget::Budget`] is honoured: on a trip this records the
+/// [`crate::budget::BudgetTrip`] (see [`crate::budget::take_trip`]) and returns
+/// [`NumberTheoryError::Domain`] — never a partial exponent. Use
+/// [`discrete_log_bounded`] to receive the trip as a typed error instead.
 pub fn discrete_log(residue: &str, base: &str, p: &str) -> Result<String, NumberTheoryError> {
+    crate::budget::clear_trip();
+    match discrete_log_bounded(residue, base, p) {
+        Ok(v) => Ok(v),
+        Err(arith::ArithmeticError::Input(e)) => Err(e),
+        Err(arith::ArithmeticError::Resource(trip)) => {
+            crate::budget::record_trip(trip);
+            Err(NumberTheoryError::Domain {
+                msg: "discrete_log stopped by the active budget; this is not a statement about \
+                      the input (see budget::take_trip)",
+            })
+        }
+        Err(_) => Err(NumberTheoryError::Domain {
+            msg: "discrete_log refused",
+        }),
+    }
+}
+
+/// [`discrete_log`] that reports a budget trip as
+/// [`arith::ArithmeticError::Resource`] (`E-BUDGET-*`) and input refusals as
+/// [`arith::ArithmeticError::Input`] (`E-NT-*`).
+pub fn discrete_log_bounded(
+    residue: &str,
+    base: &str,
+    p: &str,
+) -> Result<String, arith::ArithmeticError> {
     let pm = parse_positive(p)?;
     if pm < 2 {
         return Err(NumberTheoryError::Domain {
             msg: "modulus must be at least 2",
-        });
+        }
+        .into());
     }
     let fp = FlintInteger::from_rug(&pm);
     if unsafe { ffi::fmpz_is_prime(fp.inner_ptr()) } == 0 {
-        return Err(NumberTheoryError::CompositeModulus);
+        return Err(NumberTheoryError::CompositeModulus.into());
     }
 
-    let ord = pm.clone() - Integer::from(1);
     // Least non-negative residues. rug's `%` truncates toward zero, so
-    // `-1 % 5` is `-1`, which no power of the base ever equals: the sweep
-    // below used to report NoSolution for `discrete_log(-1, 2, 5)` = 2.
+    // `-1 % 5` is `-1`, which no power of the base ever equals.
     let b = parse_int(base)?.rem_euc(&pm);
     let r = parse_int(residue)?.rem_euc(&pm);
 
@@ -402,21 +435,10 @@ pub fn discrete_log(residue: &str, base: &str, p: &str) -> Result<String, Number
         } else if r.is_zero() {
             Ok("1".into())
         } else {
-            Err(NumberTheoryError::NoSolution)
+            Err(NumberTheoryError::NoSolution.into())
         };
     }
-
-    let mut cur = Integer::from(1);
-    let mut exp = Integer::from(0);
-    while exp < ord {
-        if cur == r {
-            return Ok(exp.to_string());
-        }
-        cur = (&cur * &b).complete();
-        cur %= &pm;
-        exp += 1;
-    }
-    Err(NumberTheoryError::NoSolution)
+    Ok(dlog::discrete_log_prime(&r, &b, &pm)?.to_string())
 }
 
 /// Quadratic Dirichlet character: Jacobi symbol \((· | q)\) for odd square-free \(q≥3\).

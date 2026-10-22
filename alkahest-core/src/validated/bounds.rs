@@ -178,8 +178,18 @@ fn split_widest(boxes: &[FBox], prec: u32) -> (Vec<FBox>, Vec<FBox>) {
 /// never invents a tighter bound, never upgrades a verdict, and never drops a
 /// piece of the domain from an integral — it only gives back a wider answer,
 /// sooner.
+///
+/// The stop is recorded ([`crate::budget::record_trip`]) so a caller can tell a
+/// budget-shortened `Undecided` from one the search reached on its own: the
+/// Python bindings raise `BudgetExceededError` for the former.
 fn stop_requested() -> bool {
-    crate::budget::check().is_err()
+    match crate::budget::check() {
+        Ok(()) => false,
+        Err(e) => {
+            crate::budget::record_trip(e.into());
+            true
+        }
+    }
 }
 
 fn is_recoverable_domain_issue(e: &ValidatedError) -> bool {

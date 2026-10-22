@@ -18,6 +18,13 @@ pyo3::create_exception!(alkahest, PyGroupError, crate::PyAlkahestError);
 
 fn group_error_to_py(e: GroupError) -> PyErr {
     Python::with_gil(|py| {
+        // A Schreier–Sims run stopped by `ak.context(budget=...)`: raise the
+        // recorded trip as `BudgetExceededError` (`E-BUDGET-*`).
+        if e.is_budget_stop() {
+            if let Some(err) = crate::budget_trip_to_py(py) {
+                return err;
+            }
+        }
         let exc_type = py.get_type_bound::<PyGroupError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
