@@ -154,6 +154,21 @@ pub(crate) fn zeta_jet_ball(s: &ArbBall, len: usize) -> Option<Vec<ArbBall>> {
     }
 }
 
+/// A rigorous enclosure of the Stieltjes constant `γₙ` (`n ≥ 1`) at `prec`
+/// bits, from the deflated zeta jet at `s = 1` (`ζ(1+x) − 1/x = Σ (−1)ⁿ γₙ xⁿ/n!`);
+/// `None` without Arb.
+pub(crate) fn stieltjes_ball(n: u32, prec: u32) -> Option<ArbBall> {
+    #[cfg(flint_arb)]
+    {
+        arb_impl::stieltjes_ball(n, prec)
+    }
+    #[cfg(not(flint_arb))]
+    {
+        let _ = (n, prec);
+        None
+    }
+}
+
 /// Complex `f64` value of `kernel(args…)` (principal branches, as Arb and
 /// DLMF define them), certified to 53 bits; `None` otherwise.
 pub(crate) fn eval_c64(kernel: Kernel, args: &[(f64, f64)]) -> Option<(f64, f64)> {
@@ -366,6 +381,37 @@ pub(super) mod arb_impl {
         }
         let out: Vec<Acb> = (0..len).map(|i| v.get(i)).collect();
         out.iter().all(Acb::is_finite).then_some(out)
+    }
+
+    /// `γₙ = (−1)ⁿ n! · [xⁿ](ζ(1+x) − 1/x)`.
+    pub(in crate::specfun) fn stieltjes_ball(n: u32, prec: u32) -> Option<ArbBall> {
+        if !available() || n > 200 {
+            return None;
+        }
+        let wp = i64::from(prec) + 32 + 4 * i64::from(n);
+        let one = Acb::from_f64(1.0, 0.0);
+        let len = n as usize + 1;
+        let mut v = AcbVec::new(len);
+        unsafe {
+            ffi::acb_dirichlet_zeta_jet(v.as_mut_ptr(), one.as_ptr(), 1, len as i64, wp);
+        }
+        let c = v.get(n as usize);
+        if !c.is_finite() || !c.imag().contains_zero() {
+            return None;
+        }
+        let t = from_arb(&c.real(), prec + 32)?;
+        let mut f = rug::Integer::from(1);
+        for k in 2..=n {
+            f *= k;
+        }
+        if n % 2 == 1 {
+            f = -f;
+        }
+        let scaled = t.mul_ref(&ArbBall::from_integer(&f, prec + 32));
+        let mid = Float::with_val(prec, &scaled.mid);
+        let err = Float::with_val(scaled.mid.prec() + 2, &scaled.mid - &mid).abs();
+        let rad = Float::with_val_round(prec, &scaled.rad + &err, Round::Up).0;
+        Some(ArbBall { mid, rad, prec })
     }
 
     /// `ζ⁽ᵏ⁾(s)/k!`, `k < len`, as rigorous real balls valid for **every**

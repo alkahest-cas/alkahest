@@ -487,7 +487,8 @@ pub(crate) fn local_expansion(
     // shift times / plus the principal part (`Γ(ξ) = Γ(ξ+1)/ξ`), which the
     // quotient route below then expands with exact coefficients in `γ`, `π`,
     // `ζ(3)`, … (G11c). An identity on the punctured neighbourhood.
-    let shifted = crate::specfun::gamma::shift_off_poles(shifted, xi, pool).unwrap_or(shifted);
+    let shifted =
+        crate::specfun::gamma::shift_off_poles_ord(shifted, xi, order, pool).unwrap_or(shifted);
 
     let h_expr = expansion_increment(pool, var, point);
 
@@ -912,7 +913,53 @@ fn contains_zero_to_negative_power(expr: ExprId, pool: &ExprPool) -> bool {
 /// predicate gates a refusal, so a false positive turns a working expansion
 /// into an error.
 fn coefficient_is_indeterminate(expr: ExprId, pool: &ExprPool) -> bool {
-    has_singular_node(expr, pool) || has_non_finite_constant(expr, pool)
+    has_singular_node(expr, pool)
+        || has_non_finite_constant(expr, pool)
+        || has_pole_value(expr, pool)
+}
+
+/// True when some subtree is a special function **at one of its poles** —
+/// `ζ(1)`, `ζ′(1)`, `ζ(1, a)`, `Γ(−2)`, `ψ(0)`, `ψ⁽ⁿ⁾(−1)`, `log Γ(0)`,
+/// `Li_s(1)` for `s ≤ 1`, `Y_ν(0)`, `K_ν(0)`, `H_ν(0)`. The specfun constructors refuse these (`E-SPECFN-006`),
+/// but the Taylor route builds the node directly: substituting the expansion
+/// point `s = 1` into the derivatives of `ζ(s)` gave
+/// `ζ(1) + (s−1)·ζ′(1) + O((s−1)²)`, a Taylor formula about a point that has no
+/// Taylor expansion, presented as the answer. A pole value is not a number, so
+/// a coefficient carrying one is indeterminate and the series refuses.
+fn has_pole_value(expr: ExprId, pool: &ExprPool) -> bool {
+    use crate::orthopoly::rational_literal;
+    let lit = |e: ExprId| rational_literal(pool, e);
+    let nonpos_int = |e: ExprId| lit(e).is_some_and(|q| *q.denom() == 1 && q <= 0);
+    match pool.get(expr) {
+        ExprData::Func { name, args } => {
+            let here = match (name.as_str(), args.as_slice()) {
+                ("zeta" | "zeta_prime", [s]) => lit(*s).is_some_and(|q| q == 1),
+                ("hurwitz_zeta", [s, a]) => {
+                    lit(*s).is_some_and(|q| q == 1) || (nonpos_int(*a) && lit(*s).is_none())
+                }
+                ("gamma" | "digamma" | "trigamma" | "loggamma", [x]) => nonpos_int(*x),
+                ("polygamma", [_, x]) => nonpos_int(*x),
+                // Y, K, H and spherical y are singular at the origin (a pole,
+                // or a logarithm for order 0); J, I at a negative non-integer
+                // order.
+                ("bessel_y" | "bessel_k" | "hankel1" | "hankel2" | "spherical_yn", [_, x]) => {
+                    lit(*x).is_some_and(|q| q == 0)
+                }
+                ("bessel_j" | "bessel_i", [nu, x]) => {
+                    lit(*x).is_some_and(|q| q == 0)
+                        && lit(*nu).is_some_and(|q| q < 0 && *q.denom() != 1)
+                }
+                ("polylog", [s, z]) => {
+                    lit(*z).is_some_and(|q| q == 1) && lit(*s).is_some_and(|q| q <= 1)
+                }
+                _ => false,
+            };
+            here || args.iter().any(|&a| has_pole_value(a, pool))
+        }
+        ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().any(|&x| has_pole_value(x, pool)),
+        ExprData::Pow { base, exp } => has_pole_value(base, pool) || has_pole_value(exp, pool),
+        _ => false,
+    }
 }
 
 /// True when some subtree is closed arithmetic that evaluates to `NaN` or `±∞`.

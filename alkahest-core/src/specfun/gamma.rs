@@ -67,6 +67,23 @@ pub fn euler_gamma(pool: &ExprPool) -> ExprId {
     crate::eval::symbols::euler_gamma_symbol(pool)
 }
 
+/// The Stieltjes constant `γₙ`, the coefficients of the Laurent expansion
+/// `ζ(s) = 1/(s−1) + Σₙ (−1)ⁿ γₙ (s−1)ⁿ / n!`: `γ₀` is `EulerGamma`, and
+/// `γₙ` (`1 ≤ n ≤ 30`) the exact symbol `StieltjesGamma{n}` (LaTeX `\gamma_{n}`).
+/// They have no closed form, so — like `Glaisher` — they are never folded into a
+/// float; every numeric evaluator resolves them (balls from Arb's
+/// `acb_dirichlet_zeta_jet`). `None` past `n = 30`.
+pub fn stieltjes_gamma(n: u32, pool: &ExprPool) -> Option<ExprId> {
+    match n {
+        0 => Some(euler_gamma(pool)),
+        1..=crate::eval::symbols::MAX_STIELTJES => Some(pool.symbol(
+            &format!("{}{n}", crate::eval::symbols::STIELTJES_PREFIX),
+            crate::kernel::Domain::Real,
+        )),
+        _ => None,
+    }
+}
+
 /// Catalan's constant `G = Σ_{k≥0} (−1)ᵏ/(2k+1)² = 0.9159…` as the symbol
 /// `Catalan` (LaTeX `G`).
 pub fn catalan(pool: &ExprPool) -> ExprId {
@@ -809,10 +826,54 @@ fn shifted_node(order: Option<u32>, u: ExprId, k: i64, pool: &ExprPool) -> ExprI
 ///
 /// Both sides agree on a punctured neighbourhood of `var = 0`, which is all a
 /// Laurent expansion there looks at.
+#[cfg(test)]
 pub(crate) fn shift_off_poles(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    shift_off_poles_ord(expr, var, 8, pool)
+}
+
+/// `u − 1` when `u` tends to `1` as `var → 0` (and depends on `var`).
+fn tends_to_one(u: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    if !crate::kernel::subs::mentions_var(u, var, pool) {
+        return None;
+    }
+    let mut map = std::collections::HashMap::new();
+    map.insert(var, pool.integer(0));
+    let at = simplify(subs(u, &map, pool), pool).value;
+    (rational_literal(pool, at)? == 1).then(|| pool.add(vec![u, pool.integer(-1)]))
+}
+
+/// `ζ(u)` for `u = 1 + d`, `d → 0`: the pole and the entire part truncated
+/// after `d^terms` (`ζ(1+d) = 1/d + Σ (−1)ⁿ γₙ dⁿ/n!`, DLMF 25.2.4). The
+/// truncation error is `O(d^{terms+1})`, past every coefficient the caller
+/// asks for. `None` when `γ_terms` is not a named constant.
+fn zeta_laurent(d: ExprId, terms: u32, pool: &ExprPool) -> Option<ExprId> {
+    let mut t = vec![pool.pow(d, pool.integer(-1))];
+    for n in 0..=terms {
+        let g = stieltjes_gamma(n, pool)?;
+        let mut c = Rational::from((Integer::from(1), factorial(n)));
+        if n % 2 == 1 {
+            c = -c;
+        }
+        t.push(mk_mul(
+            pool,
+            vec![rat_node(pool, &c), g, pool.pow(d, pool.integer(n))],
+        ));
+    }
+    Some(pool.add(t))
+}
+
+/// [`shift_off_poles`] for an expansion that needs `order` coefficients: the
+/// Laurent series of `ζ` at `s = 1` is truncated `order + 8` terms in.
+pub(crate) fn shift_off_poles_ord(
+    expr: ExprId,
+    var: ExprId,
+    order: u32,
+    pool: &ExprPool,
+) -> Option<ExprId> {
     fn rec(
         e: ExprId,
         var: ExprId,
+        order: u32,
         pool: &ExprPool,
         memo: &mut std::collections::HashMap<ExprId, ExprId>,
     ) -> ExprId {
@@ -821,7 +882,7 @@ pub(crate) fn shift_off_poles(expr: ExprId, var: ExprId, pool: &ExprPool) -> Opt
         }
         let out = match pool.get(e) {
             ExprData::Add(a) => {
-                let b: Vec<ExprId> = a.iter().map(|&x| rec(x, var, pool, memo)).collect();
+                let b: Vec<ExprId> = a.iter().map(|&x| rec(x, var, order, pool, memo)).collect();
                 if b == a {
                     e
                 } else {
@@ -829,7 +890,7 @@ pub(crate) fn shift_off_poles(expr: ExprId, var: ExprId, pool: &ExprPool) -> Opt
                 }
             }
             ExprData::Mul(a) => {
-                let b: Vec<ExprId> = a.iter().map(|&x| rec(x, var, pool, memo)).collect();
+                let b: Vec<ExprId> = a.iter().map(|&x| rec(x, var, order, pool, memo)).collect();
                 if b == a {
                     e
                 } else {
@@ -837,7 +898,10 @@ pub(crate) fn shift_off_poles(expr: ExprId, var: ExprId, pool: &ExprPool) -> Opt
                 }
             }
             ExprData::Pow { base, exp } => {
-                let (b, x) = (rec(base, var, pool, memo), rec(exp, var, pool, memo));
+                let (b, x) = (
+                    rec(base, var, order, pool, memo),
+                    rec(exp, var, order, pool, memo),
+                );
                 if (b, x) == (base, exp) {
                     e
                 } else {
@@ -845,14 +909,17 @@ pub(crate) fn shift_off_poles(expr: ExprId, var: ExprId, pool: &ExprPool) -> Opt
                 }
             }
             ExprData::Func { name, args } => {
-                let b: Vec<ExprId> = args.iter().map(|&x| rec(x, var, pool, memo)).collect();
+                let b: Vec<ExprId> = args
+                    .iter()
+                    .map(|&x| rec(x, var, order, pool, memo))
+                    .collect();
                 let f = if b == args { e } else { pool.func(name, b) };
                 match gamma_family(f, pool) {
                     Some((order, u)) => match pole_index(u, var, pool) {
                         Some(k) => shifted_node(order, u, k, pool),
                         None => f,
                     },
-                    None => f,
+                    None => zeta_shift(f, var, order, pool).unwrap_or(f),
                 }
             }
             _ => e,
@@ -860,7 +927,39 @@ pub(crate) fn shift_off_poles(expr: ExprId, var: ExprId, pool: &ExprPool) -> Opt
         memo.insert(e, out);
         out
     }
+
+    /// `ζ(1+d)` and `ζ(1+d, m)` (integer `m ≥ 1`) as `1/d` plus a polynomial in
+    /// `d` with `EulerGamma` / `StieltjesGamma{n}` coefficients.
+    fn zeta_shift(f: ExprId, var: ExprId, order: u32, pool: &ExprPool) -> Option<ExprId> {
+        let (name, args) = pool.with(f, |d| match d {
+            ExprData::Func { name, args } => Some((name.clone(), args.clone())),
+            _ => None,
+        })?;
+        let terms = order.saturating_add(8);
+        match (name.as_str(), args.as_slice()) {
+            ("zeta", [u]) => zeta_laurent(tends_to_one(*u, var, pool)?, terms, pool),
+            ("hurwitz_zeta", [u, a]) => {
+                let m = int_literal(pool, *a)?
+                    .to_u32()
+                    .filter(|&m| (1..=64).contains(&m))?;
+                let d = tends_to_one(*u, var, pool)?;
+                // ζ(u, m) = ζ(u) − Σ_{k=1}^{m−1} k^{−u}
+                let mut t = vec![zeta_laurent(d, terms, pool)?];
+                for k in 1..m {
+                    t.push(mk_mul(
+                        pool,
+                        vec![
+                            pool.integer(-1),
+                            pool.pow(pool.integer(k), pool.mul(vec![pool.integer(-1), *u])),
+                        ],
+                    ));
+                }
+                Some(pool.add(t))
+            }
+            _ => None,
+        }
+    }
     let mut memo = std::collections::HashMap::new();
-    let out = rec(expr, var, pool, &mut memo);
+    let out = rec(expr, var, order, pool, &mut memo);
     (out != expr).then_some(out)
 }
