@@ -133,10 +133,12 @@ def test_generalized_pell_against_sweep():
 
 def test_negated_and_square_d_forms():
     _p, x, y = _pool()
-    # −x² − y² + 5 = 0
+    # −x² − y² + 5 = 0: all 8 signed/ordered points
     sol = ak.diophantine(-(x**2) - y**2 + 5, [x, y])
     assert sol.kind == "finite"
-    assert {_ints(pt) for pt in sol.points} == {(1, 2), (2, 1)}
+    assert {_ints(pt) for pt in sol.points} == {
+        (sx * a, sy * b) for a, b in ((1, 2), (2, 1)) for sx in (1, -1) for sy in (1, -1)
+    }
     # −x² + 2y² + 1 = 0  ⇔  x² − 2y² = 1, reported in (x, y) order
     sol = ak.diophantine(-(x**2) + 2 * y**2 + 1, [x, y])
     assert sol.kind == "pell_fundamental"
