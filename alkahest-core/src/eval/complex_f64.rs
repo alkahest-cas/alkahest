@@ -20,10 +20,10 @@ impl ComplexF64 {
     pub fn new(re: f64, im: f64) -> Self {
         Self { re, im }
     }
-    fn add(self, o: Self) -> Self {
+    pub(crate) fn add(self, o: Self) -> Self {
         Self::new(self.re + o.re, self.im + o.im)
     }
-    fn mul(self, o: Self) -> Self {
+    pub(crate) fn mul(self, o: Self) -> Self {
         Self::new(
             self.re * o.re - self.im * o.im,
             self.re * o.im + self.im * o.re,
@@ -57,7 +57,7 @@ impl ComplexF64 {
         }))
     }
 
-    fn powi(self, n: i64) -> Result<Self, EvalError> {
+    pub(crate) fn powi(self, n: i64) -> Result<Self, EvalError> {
         if n == 0 {
             return Ok(Self::ONE);
         }
@@ -88,7 +88,7 @@ impl ComplexF64 {
     }
 
     /// Principal-branch power `z^w = exp(w · Log z)` for `z ≠ 0`.
-    fn powc(self, exp: Self) -> Result<Self, EvalError> {
+    pub(crate) fn powc(self, exp: Self) -> Result<Self, EvalError> {
         if self.re == 0.0 && self.im == 0.0 {
             // 0^w: only non-negative real exponents are defined in the
             // principal sense we support here.
@@ -106,7 +106,7 @@ impl ComplexF64 {
         Ok(exp.mul(ln).exp())
     }
 
-    fn sqrt(self) -> Result<Self, EvalError> {
+    pub(crate) fn sqrt(self) -> Result<Self, EvalError> {
         // Use the principal logarithm rather than the textbook geometric
         // formula: `((r±re)/2)^½` suffers catastrophic cancellation for
         // arguments near the negative-real cut (e.g. -100 + 1e-6·i).
@@ -115,11 +115,11 @@ impl ComplexF64 {
         }
         self.powc(Self::new(0.5, 0.0))
     }
-    fn exp(self) -> Self {
+    pub(crate) fn exp(self) -> Self {
         let s = self.re.exp();
         Self::new(s * self.im.cos(), s * self.im.sin())
     }
-    fn ln(self) -> Result<Self, EvalError> {
+    pub(crate) fn ln(self) -> Result<Self, EvalError> {
         if self.re == 0.0 && self.im == 0.0 {
             return Err(error(UnsupportedReason::UnsupportedExpression {
                 kind: "branch_cut",
@@ -128,27 +128,27 @@ impl ComplexF64 {
         let r = (self.re * self.re + self.im * self.im).sqrt();
         Ok(Self::new(r.ln(), self.im.atan2(self.re)))
     }
-    fn sin(self) -> Self {
+    pub(crate) fn sin(self) -> Self {
         Self::new(
             self.re.sin() * self.im.cosh(),
             self.re.cos() * self.im.sinh(),
         )
     }
-    fn cos(self) -> Self {
+    pub(crate) fn cos(self) -> Self {
         Self::new(
             self.re.cos() * self.im.cosh(),
             -self.re.sin() * self.im.sinh(),
         )
     }
     /// `sinh(a + ib) = sinh a·cos b + i·cosh a·sin b`.
-    fn sinh(self) -> Self {
+    pub(crate) fn sinh(self) -> Self {
         Self::new(
             self.re.sinh() * self.im.cos(),
             self.re.cosh() * self.im.sin(),
         )
     }
     /// `cosh(a + ib) = cosh a·cos b + i·sinh a·sin b`.
-    fn cosh(self) -> Self {
+    pub(crate) fn cosh(self) -> Self {
         Self::new(
             self.re.cosh() * self.im.cos(),
             self.re.sinh() * self.im.sin(),
@@ -161,7 +161,7 @@ impl ComplexF64 {
     /// with three real roots — is otherwise a spectrum
     /// [`crate::matrix::spectrum`]'s check cannot evaluate, and an unevaluable
     /// spectrum is no information rather than a confirmation.
-    fn acos(self) -> Result<Self, EvalError> {
+    pub(crate) fn acos(self) -> Result<Self, EvalError> {
         let one = Self::new(1.0, 0.0);
         let i = Self::new(0.0, 1.0);
         let root = one.add(Self::new(-1.0, 0.0).mul(self.mul(self))).sqrt()?;
@@ -170,7 +170,7 @@ impl ComplexF64 {
     }
 
     /// `tan z = sin z / cos z` (exact `f64::tan` on the real axis).
-    fn tan(self) -> Result<Self, EvalError> {
+    pub(crate) fn tan(self) -> Result<Self, EvalError> {
         if self.im == 0.0 {
             return Ok(Self::new(self.re.tan(), 0.0));
         }
@@ -186,7 +186,7 @@ impl ComplexF64 {
     }
 
     /// `asin z = −i·Log(iz + √(1 − z²))`, principal branch.
-    fn asin(self) -> Result<Self, EvalError> {
+    pub(crate) fn asin(self) -> Result<Self, EvalError> {
         if self.im == 0.0 && self.re.abs() <= 1.0 {
             return Ok(Self::new(self.re.asin(), 0.0));
         }
@@ -198,7 +198,7 @@ impl ComplexF64 {
     }
 
     /// `atan z = (i/2)·(Log(1 − iz) − Log(1 + iz))`, principal branch.
-    fn atan(self) -> Result<Self, EvalError> {
+    pub(crate) fn atan(self) -> Result<Self, EvalError> {
         if self.im == 0.0 {
             return Ok(Self::new(self.re.atan(), 0.0));
         }

@@ -12,7 +12,7 @@ use alkahest_core::{
     emit_expr_c as core_emit_expr_c,
     emit_expr_c_vec as core_emit_expr_c_vec,
     emit_horner_c as core_emit_horner_c,
-    eval_interp_checked as core_eval_interp_checked,
+    eval_interp_real as core_eval_interp_real,
     factor_univariate_mod_p_with_unit as core_factor_univariate_mod_p_with_unit,
     // V2-3 — Sparse interpolation and sparse modular GCD
     gcd_sparse_modular as core_gcd_sparse_modular,
@@ -12320,7 +12320,7 @@ fn py_eval_expr(
         let val: f64 = value.extract()?;
         env.insert(var.id, val);
     }
-    core_eval_interp_checked(expr_id, &env, &pool.inner).map_err(|e| match e {
+    core_eval_interp_real(expr_id, &env, &pool.inner).map_err(|e| match e {
         alkahest_core::InterpEvalError::Unevaluable => pyo3::exceptions::PyValueError::new_err(
             "expression could not be evaluated (unbound variable or unsupported node)",
         ),
@@ -12328,7 +12328,9 @@ fn py_eval_expr(
             py,
             "E-EVAL-009",
             "expression is undefined at this point: substituting the bindings produced a \
-             non-finite result (e.g. division by zero). This is not the same as a removable- \
+             non-finite result (e.g. division by zero) or a value that is not a real number \
+             (e.g. log(-1); a real value reached through complex intermediates is returned). \
+             This is not the same as a removable- \
              singularity limit — if you want the limiting value, call cancel() first and \
              evaluate the simplified expression."
                 .to_string(),

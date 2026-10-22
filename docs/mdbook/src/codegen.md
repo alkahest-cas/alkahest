@@ -51,6 +51,35 @@ Both native JIT backends also emit a **column** entry point (`fn(cols, outs, sta
 
 The **interpreter** tier (no JIT in the build, or an expression a JIT declines — `Piecewise` in particular) evaluates a batch a **block** of up to 256 points at a time: the expression is flattened once into a list of operations over numbered slots, and each operation runs over the whole block before the next one, so there is one dispatch per operation per block and sums, products and integer powers vectorise. `Piecewise` is a masked select: every branch is computed on the block, and per-point failure flags ensure a branch a point does not select (say `lambert_w(x)` guarded by `x > 0`) cannot fail that point; `And`/`Or` short-circuit per point. Each value is bit for bit what a single-point call (and `eval_expr`) gives.
 
+### Real values through complex intermediates
+
+A real-valued closed form can pass through complex numbers on the way:
+`cos(t·√ω²)` at a point where `ω² < 0` is `cosh(t·√−ω²)`; Cardano's formula for
+a cubic with three real roots, and a ZOH matrix built from such eigenvalues,
+are real while their radicals are not. Real `double` arithmetic takes
+`√(negative)` to NaN. `compile_expr`, `numpy_eval`/`numpy_eval_par`,
+`eval_expr` and the C from `emit_c_expr`/`emit_c_vec` therefore re-evaluate a
+point whose real result is NaN in complex arithmetic (principal branches, as
+`evaluate(..., mode="complex")`), carrying a running bound on the rounding
+error, and return the **real part when the imaginary part is zero within that
+bound**:
+
+```python
+f = compile_expr(cos(t * sqrt(w2)), [t, w2])
+f([0.7, -4.0])           # 2.1508984653931407 == cosh(1.4), not nan
+```
+
+NaN (and `E-EVAL-009` from `eval_expr`) now means the value **is not a real
+number** at that point — `log(−1)`, `√−2`, `asin(2)`, `(−8)^(1/3)` on the
+principal branch — or cannot be decided in double precision (an argument whose
+error disk straddles a branch cut). It never means "real, but the real
+arithmetic could not reach it". Only points whose real result is NaN pay for
+the complex pass; expressions with no square root, logarithm,
+`acos`/`asin`, non-integer power or imaginary unit, or with a node the complex
+evaluator has no kernel for (`Piecewise`, special functions), are compiled
+exactly as before. An expression written with the imaginary unit `I` is
+emitted to C as its complex evaluation alone.
+
 ## CompileCache
 
 Repeated compilation of the same expression is expensive. `CompileCache` memoizes by `(ExprId, input variables)` — hash-consing makes `ExprId` a stable content key:

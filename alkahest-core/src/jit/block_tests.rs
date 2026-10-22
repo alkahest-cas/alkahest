@@ -511,7 +511,13 @@ fn check_all_evaluators(
     f.call_batch(&[xs, ys], &mut block);
     for i in 0..n {
         let env = HashMap::from([(x, xs[i]), (y, ys[i])]);
-        let reference = eval_interp(expr, &env, pool).unwrap_or(f64::NAN);
+        // The compiled function re-reads a NaN through the complex fallback
+        // (`(-1)^x` at a subnormal `x` is `1` to double precision); so does
+        // `eval_interp_real`, while `eval_interp` keeps plain `f64` NaN.
+        let reference = match eval_interp(expr, &env, pool) {
+            Some(v) if v.is_nan() => eval_interp_real(expr, &env, pool).unwrap_or(v),
+            other => other.unwrap_or(f64::NAN),
+        };
         let point = f.call(&[xs[i], ys[i]]);
         prop_assert!(
             same(block[i], reference) && same(point, reference),

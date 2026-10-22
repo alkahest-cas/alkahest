@@ -273,6 +273,16 @@ fn c_double_literal(v: f64) -> String {
 /// `tan`, `atan2`, `erf`, …) — not just polynomials.  The emitted code
 /// `#include <math.h>` is required at the call site.
 ///
+/// The arithmetic is real `double`. When the expression can have complex
+/// intermediates (a square root, logarithm, `acos`/`asin` or non-integer
+/// power, or the imaginary unit), a complex re-evaluation is emitted with it
+/// and used at a point where the real code gives NaN: it returns the real
+/// part when the imaginary part is zero within its rounding-error bound, so
+/// `cos(t·√ω²)` at `ω² < 0` or Cardano's formula with three real roots give
+/// their real value, and NaN only where the value is not real (`log(−1)`,
+/// `√−2`) — the same rule `compile_expr` applies. An expression written with
+/// the imaginary unit is emitted as the complex evaluation alone.
+///
 /// # Parameters
 ///
 /// - `expr`: The symbolic expression to compile.
@@ -318,27 +328,51 @@ pub fn emit_expr_c(
         "vars and var_names must have the same length"
     );
 
+    let fallback = crate::jit::complex_fallback::emit_c_fallbacks(
+        &[expr],
+        vars,
+        var_names,
+        &format!("{fn_name}__cfb"),
+        pool,
+    );
+    let params: Vec<String> = var_names.iter().map(|n| format!("double {n}")).collect();
+    let params_str = params.join(", ");
+    let args = var_names.join(", ");
+    let comma = if var_names.is_empty() { "" } else { ", " };
+
+    if fallback.outputs[0] == Some(true) {
+        // Written with the imaginary unit: the complex evaluation is the
+        // function (the real lowering has no spelling for `I`).
+        return Ok(format!(
+            "{}double {fn_name}({params_str}) {{\n    return {fn_name}__cfb(0{comma}{args});\n}}\n",
+            fallback.code
+        ));
+    }
+
     let low = cemit::lower_outputs(&[expr], vars, var_names, pool)?;
     let result = &low.outputs[0];
     let stmts = low.stmts;
 
-    // Build the parameter list.
-    let params: Vec<String> = var_names.iter().map(|n| format!("double {n}")).collect();
-    let params_str = params.join(", ");
-
+    let ret = if fallback.outputs[0].is_some() {
+        format!(
+            "    double ak_r = {result};\n    if (isnan(ak_r)) ak_r = {fn_name}__cfb(0{comma}{args});\n    return ak_r;\n"
+        )
+    } else {
+        format!("    return {result};\n")
+    };
     // Build function body.
     let body = if stmts.is_empty() {
-        format!("    return {result};\n")
+        ret
     } else {
         let mut body = stmts.join("\n");
         body.push('\n');
-        body.push_str(&format!("    return {result};\n"));
+        body.push_str(&ret);
         body
     };
 
     Ok(format!(
-        "{}double {fn_name}({params_str}) {{\n{body}}}\n",
-        low.prelude
+        "{}{}double {fn_name}({params_str}) {{\n{body}}}\n",
+        low.prelude, fallback.code
     ))
 }
 
@@ -398,9 +432,35 @@ pub fn emit_expr_c_vec(
         "vars and var_names must have the same length"
     );
 
-    let low = cemit::lower_outputs(exprs, vars, var_names, pool)?;
+    let fallback = crate::jit::complex_fallback::emit_c_fallbacks(
+        exprs,
+        vars,
+        var_names,
+        &format!("{fn_name}__cfb"),
+        pool,
+    );
+    let args = var_names.join(", ");
+    let comma = if var_names.is_empty() { "" } else { ", " };
+    // Outputs written with the imaginary unit are the complex evaluation
+    // alone; the rest go through the real lowering together.
+    let real_ix: Vec<usize> = (0..exprs.len())
+        .filter(|&k| fallback.outputs[k] != Some(true))
+        .collect();
+    let real_exprs: Vec<ExprId> = real_ix.iter().map(|&k| exprs[k]).collect();
+    let low = if real_exprs.is_empty() {
+        cemit::Lowered {
+            stmts: Vec::new(),
+            outputs: Vec::new(),
+            prelude: String::new(),
+        }
+    } else {
+        cemit::lower_outputs(&real_exprs, vars, var_names, pool)?
+    };
     let stmts = low.stmts;
-    let result_exprs = low.outputs;
+    let mut result_exprs: Vec<Option<&String>> = vec![None; exprs.len()];
+    for (&k, r) in real_ix.iter().zip(&low.outputs) {
+        result_exprs[k] = Some(r);
+    }
 
     // Build the parameter list: inputs then output pointer.
     let mut params: Vec<String> = var_names.iter().map(|n| format!("double {n}")).collect();
@@ -411,7 +471,13 @@ pub fn emit_expr_c_vec(
     let assignments: Vec<String> = result_exprs
         .iter()
         .enumerate()
-        .map(|(i, r)| format!("    out[{i}] = {r};"))
+        .map(|(i, r)| match (r, &fallback.outputs[i]) {
+            (Some(r), None) => format!("    out[{i}] = {r};"),
+            (Some(r), Some(_)) => format!(
+                "    out[{i}] = {r};\n    if (isnan(out[{i}])) out[{i}] = {fn_name}__cfb({i}{comma}{args});"
+            ),
+            (None, _) => format!("    out[{i}] = {fn_name}__cfb({i}{comma}{args});"),
+        })
         .collect();
 
     // Build function body.
@@ -422,8 +488,8 @@ pub fn emit_expr_c_vec(
     };
 
     Ok(format!(
-        "{}void {fn_name}({params_str}) {{\n{body}}}\n",
-        low.prelude
+        "{}{}void {fn_name}({params_str}) {{\n{body}}}\n",
+        low.prelude, fallback.code
     ))
 }
 
@@ -826,5 +892,45 @@ mod exact_coefficient_tests {
         let expr = pool.mul(vec![pool.integer(rug::Integer::from(10).pow(30)), x]);
         let c = emit_expr_c(expr, &[x], &["x"], "f", &pool).unwrap();
         assert!(c.contains("1e30"), "expected the rounded double: {c}");
+    }
+
+    /// N11: `cos(t·√w)` is `cosh(t·√−w)` at `w < 0`; the emitted C falls back
+    /// to its complex evaluation where the real code gives NaN. An output
+    /// written with `I` is the complex evaluation alone, and an expression
+    /// whose NaN cannot hide a real value (`√x + 1`) gets no fallback.
+    #[test]
+    fn emitted_c_carries_the_complex_fallback_where_it_can_matter() {
+        let pool = ExprPool::new();
+        let t = pool.symbol("t", Domain::Real);
+        let w = pool.symbol("w", Domain::Real);
+        let osc = pool.func(
+            "cos",
+            vec![pool.mul(vec![t, pool.pow(w, pool.rational(1, 2))])],
+        );
+        let c = emit_expr_c(osc, &[t, w], &["t", "w"], "f", &pool).unwrap();
+        assert!(c.contains("static double f__cfb(int ak_out, double t, double w)"));
+        assert!(
+            c.contains("if (isnan(ak_r)) ak_r = f__cfb(0, t, w);"),
+            "{c}"
+        );
+
+        let i = pool.imaginary_unit();
+        let with_i = pool.mul(vec![i, pool.func("exp", vec![pool.mul(vec![i, t])])]);
+        let c = emit_expr_c(with_i, &[t], &["t"], "g", &pool).unwrap();
+        assert!(c.contains("return g__cfb(0, t);"), "{c}");
+
+        let plain = pool.add(vec![pool.func("sqrt", vec![w]), pool.integer(1)]);
+        let c = emit_expr_c(plain, &[w], &["w"], "h", &pool).unwrap();
+        assert!(!c.contains("__cfb"), "{c}");
+
+        let c = emit_expr_c_vec(&[plain, osc, with_i], &[t, w], &["t", "w"], "v", &pool).unwrap();
+        assert!(c.contains("out[0] = ") && !c.contains("v__cfb(0,"), "{c}");
+        assert!(
+            c.contains("if (isnan(out[1])) out[1] = v__cfb(1, t, w);"),
+            "{c}"
+        );
+        assert!(c.contains("out[2] = v__cfb(2, t, w);"), "{c}");
+        // One runtime, one fallback function, shared by the outputs.
+        assert_eq!(c.matches("static double v__cfb(").count(), 1, "{c}");
     }
 }

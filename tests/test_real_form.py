@@ -110,7 +110,8 @@ def test_two_compartment_iv_is_biexponential():
         assert abs(_real_and_complex_agree(g, env) - ref) < 1e-10
         assert abs(f([a, b, c, tv]) - ref) < 1e-10
     code = ak.emit_c_expr(g, [k10, k12, k21, t])
-    assert "cos(" not in code
+    # The function itself; a complex-fallback runtime (N11) may precede it.
+    assert "cos(" not in code.split("double f(")[-1]
 
 
 def test_two_compartment_oral_is_real():

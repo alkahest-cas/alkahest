@@ -628,6 +628,7 @@ pub fn compile_cranelift(
         },
         n_inputs: inputs.len(),
         tier: CompileTier::Cranelift,
+        complex: None,
     })
 }
 

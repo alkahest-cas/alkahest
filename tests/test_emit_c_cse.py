@@ -105,8 +105,14 @@ def _rel(a, b):
     return abs(a - b) / max(abs(a), abs(b), 1e-300)
 
 
+def _main(code):
+    """The emitted function itself, without the complex-fallback runtime that
+    precedes it when an output can be real through complex values (N11)."""
+    return code.split("roots[ak_out], v, ok, sc);\n}\n")[-1]
+
+
 def _count(code, call):
-    return code.count(call + "(")
+    return _main(code).count(call + "(")
 
 
 # ---------------------------------------------------------------------------
@@ -143,9 +149,9 @@ def test_black_scholes_greeks_share_their_transcendentals():
     assert _count(code, "exp") <= 3, code
     # pi is a literal, not a parameter.
     assert "3.141592653589793" in code or "1.7724538509055159" in code
-    assert len(code) < 12_000, len(code)  # was ~35 kB
+    assert len(_main(code)) < 12_000, len(_main(code))  # was ~35 kB
     # 383 `*` and 115 `+`/`-` before operand-pair sharing, 172 and 104 after.
-    assert code.count(" * ") < 200, code.count(" * ")
+    assert _main(code).count(" * ") < 200, _main(code).count(" * ")
     assert _ops(code) < 110, _ops(code)
 
 
@@ -225,15 +231,15 @@ def test_pendulum_eom_c_is_compact(pendulum4):
     acc, inputs = pendulum4
     code = ak.emit_c_vec(acc, inputs, fn_name="npend")
     # 320 kB before CSE; aim for at least 5x smaller.  Measured ~25 kB.
-    assert len(code) < 64_000, len(code)
+    assert len(_main(code)) < 64_000, len(_main(code))
     # Operand-pair sharing in the n-ary products and sums: 2882 `*` and 461
     # `+`/`-` before it, 953 and 455 after.
-    assert code.count(" * ") < 1100, code.count(" * ")
+    assert _main(code).count(" * ") < 1100, _main(code).count(" * ")
     assert _ops(code) < 470, _ops(code)
     # Each sin(q_i) / cos(q_i) / sin(q_i - q_j) is computed once.
     for i in range(4):
-        assert code.count(f"sin(q{i})") <= 1, code
-        assert code.count(f"cos(q{i})") <= 1, code
+        assert _main(code).count(f"sin(q{i})") <= 1, code
+        assert _main(code).count(f"cos(q{i})") <= 1, code
 
 
 @requires_cc
@@ -274,10 +280,10 @@ def test_integer_and_half_integer_powers_avoid_pow():
         x ** p.rational(1, 2) + x ** p.rational(-1, 2) + x ** p.rational(3, 2),
     ]
     code = ak.emit_c_vec(exprs, x)
-    assert "pow(" not in code, code
+    assert "pow(" not in _main(code), code
     assert _count(code, "sqrt") == 1, code
     # x*x is shared by x^2, x^3, x^4 and x^-2.
-    assert code.count("(x * x)") == 1, code
+    assert _main(code).count("(x * x)") == 1, code
 
 
 @requires_cc
@@ -415,7 +421,7 @@ def test_refusals_carry_codegen_codes():
 
 
 def _ops(code):
-    return code.count(" + ") + code.count(" - ")
+    return _main(code).count(" + ") + _main(code).count(" - ")
 
 
 def test_shared_pair_inside_two_sums_is_computed_once():
@@ -424,14 +430,14 @@ def test_shared_pair_inside_two_sums_is_computed_once():
     code = ak.emit_c_vec([a + b + c, a + b + d], [a, b, c, d])
     # Four additions without sharing; a + b once and two more make three.
     assert _ops(code) == 3, code
-    assert code.count("(a + b)") + code.count("(b + a)") == 1, code
+    assert _main(code).count("(a + b)") + _main(code).count("(b + a)") == 1, code
 
 
 def test_shared_pair_in_products_and_negated_sums():
     p = ak.ExprPool()
     a, b, c, d = (p.symbol(n) for n in "abcd")
     code = ak.emit_c_vec([a * b * c, a * b * d], [a, b, c, d])
-    assert code.count(" * ") == 3, code
+    assert _main(code).count(" * ") == 3, code
     # -a - b is the negation of a + b, and b - a of a - b: one shared node each.
     outs = [a + b + c, -a - b + d, a - b + c, b - a + d]
     code = ak.emit_c_vec(outs, [a, b, c, d])
