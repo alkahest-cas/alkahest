@@ -1072,15 +1072,25 @@ fn share_pairs(nodes: &mut Vec<Node>, roots: &[usize]) {
             .collect();
         let mut changed = false;
         for ((is_sum, a, b, rel), occ) in shared {
-            let alive: Vec<&Occurrence> = occ
-                .iter()
-                .filter(|&&(ci, p, q)| {
-                    // Both slots still hold the operands this pair was
-                    // counted from (an earlier extraction this round may have
-                    // consumed or replaced one).
-                    live[ci][p].map(|s| s.1) == Some(a) && live[ci][q].map(|s| s.1) == Some(b)
-                })
-                .collect();
+            // The occurrences this extraction replaces.  Each must find both
+            // of its slots still holding the operands it was counted from (an
+            // earlier extraction this round may have consumed or replaced
+            // one), and no two may share a slot: an operand list is a
+            // multiset, so in `x + y + y` the pair `x + y` is counted twice —
+            // from slots (0, 1) and (0, 2) — but the single `x` can be paired
+            // with only one of the `y`s.  Replacing both would rewrite the sum
+            // to `x + y`, silently dropping a `y`.
+            let mut taken: Vec<(usize, usize)> = Vec::new();
+            let mut alive: Vec<&Occurrence> = Vec::new();
+            for o @ &(ci, p, q) in &occ {
+                let holds =
+                    live[ci][p].map(|s| s.1) == Some(a) && live[ci][q].map(|s| s.1) == Some(b);
+                if holds && !taken.contains(&(ci, p)) && !taken.contains(&(ci, q)) {
+                    taken.push((ci, p));
+                    taken.push((ci, q));
+                    alive.push(o);
+                }
+            }
             if alive.len() < 2 {
                 continue;
             }
@@ -1356,5 +1366,133 @@ mod tests {
         let err = emit_expr_c(p.big_o(x), &[x], &["x"], "f", &p).unwrap_err();
         assert_eq!(err.code(), "E-CODEGEN-002");
         assert!(err.remediation().is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // `share_pairs` must preserve operand multiplicities (report10-21 N1)
+    // -----------------------------------------------------------------------
+
+    use super::{share_pairs, Node};
+
+    /// Evaluate the IR at `vals` (sums, products, negations and divisions
+    /// only — what these tests build).
+    fn eval_ir(nodes: &[Node], i: usize, vals: &[f64]) -> f64 {
+        match &nodes[i] {
+            Node::Var(k) => vals[*k],
+            Node::Lit(s) => s.parse().unwrap(),
+            Node::Sum(ts) => ts
+                .iter()
+                .map(|&(neg, t)| {
+                    let v = eval_ir(nodes, t, vals);
+                    if neg {
+                        -v
+                    } else {
+                        v
+                    }
+                })
+                .sum(),
+            Node::Prod(xs) => xs.iter().map(|&x| eval_ir(nodes, x, vals)).product(),
+            Node::Neg(a) => -eval_ir(nodes, *a, vals),
+            Node::Div(a, b) => eval_ir(nodes, *a, vals) / eval_ir(nodes, *b, vals),
+            other => panic!("eval_ir: unexpected node {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repeated_operands_survive_pair_sharing() {
+        // x + y + y, x * x * y, x + x + 1, m * v * v * 0.5, ...: each operand
+        // list holds one pair twice *through a shared slot*, which used to be
+        // extracted as two occurrences and silently drop an operand.
+        let cases: Vec<Node> = vec![
+            Node::Sum(vec![(false, 0), (false, 1), (false, 1)]),
+            Node::Prod(vec![0, 0, 1]),
+            Node::Sum(vec![(false, 0), (false, 0), (false, 2)]),
+            Node::Prod(vec![0, 1, 1, 3]),
+            Node::Sum(vec![(false, 0), (true, 1), (true, 1)]),
+            Node::Sum(vec![(true, 0), (false, 1), (false, 0), (false, 1)]),
+            Node::Prod(vec![0, 1, 0, 1, 1]),
+        ];
+        let vals = [2.0, 3.0];
+        for root in cases {
+            let mut nodes = vec![
+                Node::Var(0),
+                Node::Var(1),
+                Node::Lit("1.0".into()),
+                Node::Lit("0.5".into()),
+            ];
+            nodes.push(root.clone());
+            let r = nodes.len() - 1;
+            let before = eval_ir(&nodes, r, &vals);
+            share_pairs(&mut nodes, &[r]);
+            let after = eval_ir(&nodes, r, &vals);
+            assert_eq!(before, after, "{root:?} became {:?}", nodes[r]);
+        }
+    }
+
+    #[test]
+    fn emitted_c_keeps_repeated_operands() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let y = p.symbol("y", Domain::Real);
+        let code = emit_expr_c(p.add(vec![x, y, y]), &[x, y], &["x", "y"], "f", &p).unwrap();
+        assert_eq!(code.matches(" + ").count(), 2, "{code}");
+        let code = emit_expr_c(p.mul(vec![x, x, y]), &[x, y], &["x", "y"], "f", &p).unwrap();
+        assert_eq!(code.matches(" * ").count(), 2, "{code}");
+        let outs = [p.add(vec![x, y, y]), p.mul(vec![x, y, y])];
+        let code = emit_expr_c_vec(&outs, &[x, y], &["x", "y"], "f", &p).unwrap();
+        assert_eq!(code.matches(" + ").count(), 2, "{code}");
+        assert_eq!(code.matches(" * ").count(), 2, "{code}");
+    }
+
+    /// Randomised: `share_pairs` over random DAGs of wide sums and products
+    /// with repeated operands (and pairs repeated across nodes and roots)
+    /// must not change any root's value.  Variables are small integers and
+    /// the DAGs shallow, so every value is an exact `f64` and reassociation
+    /// cannot round: the comparison is exact.
+    #[test]
+    fn pair_sharing_preserves_values_on_random_dags() {
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move |n: usize| -> usize {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % n as u64) as usize
+        };
+        for case in 0..2000 {
+            let nvars = 1 + next(4);
+            let mut nodes: Vec<Node> = (0..nvars).map(Node::Var).collect();
+            nodes.push(Node::Lit("2.0".into()));
+            let leaves = nodes.len();
+            // Two layers of n-ary nodes over a small operand pool, so
+            // operands repeat inside one node and pairs repeat across nodes.
+            let mut layer: Vec<usize> = (0..leaves).collect();
+            for _ in 0..2 {
+                let mut next_layer = Vec::new();
+                for _ in 0..(2 + next(5)) {
+                    let w = 2 + next(5);
+                    let ops: Vec<usize> = (0..w).map(|_| layer[next(layer.len())]).collect();
+                    let n = if next(2) == 0 {
+                        Node::Sum(ops.iter().map(|&o| (next(3) == 0, o)).collect())
+                    } else {
+                        Node::Prod(ops)
+                    };
+                    nodes.push(n);
+                    next_layer.push(nodes.len() - 1);
+                }
+                layer = next_layer;
+            }
+            let roots: Vec<usize> = (0..(1 + next(3)))
+                .map(|_| layer[next(layer.len())])
+                .collect();
+            let vals: Vec<f64> = (0..nvars).map(|_| next(5) as f64 - 2.0).collect();
+            let before: Vec<f64> = roots.iter().map(|&r| eval_ir(&nodes, r, &vals)).collect();
+            let snapshot = nodes.clone();
+            share_pairs(&mut nodes, &roots);
+            let after: Vec<f64> = roots.iter().map(|&r| eval_ir(&nodes, r, &vals)).collect();
+            assert_eq!(
+                before, after,
+                "case {case}: share_pairs changed a value\nbefore: {snapshot:?}\nafter: {nodes:?}\nroots {roots:?} at {vals:?}"
+            );
+        }
     }
 }
