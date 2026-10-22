@@ -109,6 +109,15 @@ def test_binary_operators_reject_foreign_expr(op):
 # ---------------------------------------------------------------------------
 
 
+def _divide(a, b, pool):
+    """``a / b`` as the parser reads it: ``3/4`` between integer literals that do
+    not divide evenly is the exact rational (what ``str`` prints a rational as)."""
+    na, nb = a._node_exact(), b._node_exact()
+    if na[0] == "integer" and nb[0] == "integer" and nb[1] != 0 and na[1] % nb[1] != 0:
+        return pool.rational(na[1], nb[1])
+    return a / b
+
+
 def _random_ast(rng: random.Random, depth: int):
     """A random expression as ``(source, build)``; ``build(env)`` folds with
     the operators, left to right — the parser's old construction."""
@@ -151,7 +160,7 @@ def _random_ast(rng: random.Random, depth: int):
             else:
                 if str(rhs) == "0":
                     raise ZeroDivisionError
-                acc = acc / rhs
+                acc = _divide(acc, rhs, env["pool"])
         return acc
 
     return src, build

@@ -1287,17 +1287,14 @@ mod tests {
     }
 
     /// `-1/2` is `(-1)/2`, not `-(1/2)`: prefix `-` binds tighter than `/`, so
-    /// the fold sees the literal `1` and the division is applied afterwards.
-    /// The exponent is still var-free and negative, which is all the detectors
-    /// downstream ask of it.
+    /// the fold sees the literal `-1` and the division of two integer literals
+    /// is then the exact rational `-1/2` — the node `ExprDisplay` prints as
+    /// `-1/2`, so the exponent reads back as itself.
     #[test]
     fn a_negative_rational_exponent_keeps_its_value() {
         let (pool, x, mut syms) = pool_and_x();
         let e = parse("x^(-1/2)", &pool, &mut syms).unwrap();
-        let expected_exp = pool.mul(vec![
-            pool.integer(-1i64),
-            pool.pow(pool.integer(2i64), pool.integer(-1i64)),
-        ]);
+        let expected_exp = pool.rational(-1, 2);
         assert_eq!(e, pool.pow(x, expected_exp));
         // `1/sqrt(x)` is *not* the same tree: `sqrt` is a `Func`, not a `Pow`.
         // Pinned so nobody reads the test above as claiming more than it does.
@@ -2060,7 +2057,7 @@ mod canonical_input_tests {
         }
     }
 
-    mod prop {
+    mod roundtrip_prop {
         use super::*;
         use proptest::prelude::*;
 
@@ -2104,7 +2101,8 @@ mod canonical_input_tests {
                     inner.clone().prop_map(|t| T::Neg(Box::new(t))),
                     prop::collection::vec(inner.clone(), 2..4).prop_map(T::Add),
                     prop::collection::vec(inner.clone(), 2..4).prop_map(T::Mul),
-                    (inner.clone(), inner.clone()).prop_map(|(a, b)| T::Pow(Box::new(a), Box::new(b))),
+                    (inner.clone(), inner.clone())
+                        .prop_map(|(a, b)| T::Pow(Box::new(a), Box::new(b))),
                     ((0u8..FUNCS.len() as u8), inner).prop_map(|(f, a)| T::F(f, Box::new(a))),
                 ]
             })
@@ -2115,9 +2113,7 @@ mod canonical_input_tests {
                 T::Int(n) => pool.integer(*n),
                 T::Rat(a, b) => pool.rational(*a, *b),
                 T::Sym(i) => pool.symbol(["x", "y", "z"][*i as usize], Domain::Real),
-                T::Const(i) => {
-                    parse(CONSTS[*i as usize], pool, &mut HashMap::new()).unwrap()
-                }
+                T::Const(i) => parse(CONSTS[*i as usize], pool, &mut HashMap::new()).unwrap(),
                 T::Neg(a) => {
                     let a = build(a, pool);
                     pool.mul(vec![pool.integer(-1_i32), a])
