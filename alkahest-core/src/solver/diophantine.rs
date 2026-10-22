@@ -326,14 +326,17 @@ fn pollard_step(g: &Integer, c: &Integer, x: &Integer) -> Integer {
 }
 
 /// One nontrivial factor of composite `n` (not necessarily prime).
-fn pollard_rho_factor(n: &Integer) -> Option<Integer> {
+fn pollard_rho_factor(n: &Integer, c: u32) -> Option<Integer> {
     if n <= &Integer::from(3) || is_probable_prime(n) {
         return None;
+    }
+    if is_perfect_square(n) {
+        return Some(n.clone().sqrt());
     }
     let mut x = Integer::from(2);
     let mut y = Integer::from(2);
     let mut d = Integer::from(1);
-    let c = Integer::from(1);
+    let c = Integer::from(c);
     while d == 1 {
         x = pollard_step(n, &c, &x);
         y = pollard_step(n, &c, &pollard_step(n, &c, &y));
@@ -406,8 +409,8 @@ fn factor_positive(mut n: Integer) -> Vec<(Integer, u32)> {
             continue;
         }
         let mut split = None;
-        for _ in 0..16 {
-            if let Some(d) = pollard_rho_factor(&m) {
+        for c in 1..=64u32 {
+            if let Some(d) = pollard_rho_factor(&m, c) {
                 let other = m.clone() / &d;
                 split = Some((d, other));
                 break;
@@ -436,198 +439,121 @@ fn factor_positive(mut n: Integer) -> Vec<(Integer, u32)> {
     fac
 }
 
-fn scan_sum_two_squares_pairs(n: &Integer) -> Vec<(Integer, Integer)> {
-    let mut pts: Vec<(Integer, Integer)> = Vec::new();
-    let mut x = Integer::from(0);
-    let max_x = n.clone().sqrt();
-    while x <= max_x {
-        let r = n.clone() - &x * &x;
-        if is_perfect_square(&r) {
-            let y = r.sqrt();
-            if x <= y {
-                pts.push((x.clone(), y.clone()));
-                if x < y {
-                    pts.push((y.clone(), x.clone()));
-                }
-            }
-        }
-        x += 1;
-    }
-    pts
-}
+/// Largest number of lattice points `x² + y² = n` the solver will materialise.
+const MAX_SUM_TWO_SQUARES_POINTS: u64 = 1_000_000;
 
-fn merge_distinct_pairs(acc: &mut Vec<(Integer, Integer)>, more: Vec<(Integer, Integer)>) {
-    use std::collections::BTreeSet;
-    let mut seen: BTreeSet<String> = acc.iter().map(|(a, b)| format!("{a},{b}")).collect();
-    for (x, y) in more {
-        let k = format!("{x},{y}");
-        if seen.insert(k) {
-            acc.push((x, y));
-        }
-    }
-}
-
-/// Ordered pairs `(x,y)` with `x,y ≥ 0` and `x² + y² = n`: one orbit from Cornacchia composition,
-/// plus any further orbits found by a bounded scan when `n` is moderate (bit size ≤ 256).
-fn sum_two_squares_representatives(n: &Integer) -> Vec<(Integer, Integer)> {
+/// **All** integer points `(x, y)` with `x² + y² = n` (every sign and order), via Gaussian-integer
+/// factorisation: `n = 2^a ∏ p_i^{e_i} ∏ q_j^{2 f_j}` (`p ≡ 1`, `q ≡ 3 mod 4`) has exactly
+/// `4 ∏ (e_i + 1)` representations, namely the unit multiples of
+/// `(1+i)^a ∏ q_j^{f_j} ∏ π_i^{k_i} conj(π_i)^{e_i − k_i}`, `0 ≤ k_i ≤ e_i`.
+/// Returns `Ok(vec![])` when there is none, and `Err` (a refusal) when completeness cannot be
+/// guaranteed within the size caps — never a partial list.
+fn sum_two_squares_all_points(n: &Integer) -> Result<Vec<(Integer, Integer)>, String> {
     if n.cmp0().is_lt() {
-        return vec![];
+        return Ok(vec![]);
     }
     if *n == 0 {
-        return vec![(Integer::from(0), Integer::from(0))];
+        return Ok(vec![(Integer::from(0), Integer::from(0))]);
     }
-
     if n.significant_bits() > 4000 {
-        return vec![];
+        return Err("n is too large to factor for the sum-of-two-squares solver".into());
     }
 
     let mut rest = n.clone();
     let mut e2 = 0u32;
-    while rest.clone() % 2u32 == 0 {
+    while rest.is_even() {
         rest /= 2u32;
         e2 += 1;
     }
-
-    if rest == 1 {
-        // n = 2^e2
-        let mut x = Integer::from(1);
-        let mut y = Integer::from(0);
-        for _ in 0..e2 {
-            let c = compose_sum_sq(&x, &y, &Integer::from(1), &Integer::from(1));
-            x = c.0;
-            y = c.1;
-        }
-        return canonical_pairs(x, y);
-    }
-
-    let facs = factor_positive(rest);
-    for (p, e) in &facs {
-        let m4 = p.clone() % 4;
-        if m4 == 3 && e % 2 == 1 {
-            return vec![];
-        }
-    }
-
-    let mut xr = Integer::from(1);
-    let mut yr = Integer::from(0);
-    for (p, e) in facs {
-        let m4 = p.clone() % 4;
-        if m4 == 3 {
-            debug_assert!(e % 2 == 0);
-            let half = e / 2;
-            let pk = p.clone().pow(half);
-            xr *= &pk;
-            yr *= &pk;
-            continue;
-        }
-        if p == 2 {
-            for _ in 0..e {
-                let c = compose_sum_sq(&xr, &yr, &Integer::from(1), &Integer::from(1));
-                xr = c.0;
-                yr = c.1;
-            }
-            continue;
-        }
-        // p ≡ 1 (mod 4)
-        let (up, vp) = match prime_as_sum_two_squares(&p) {
-            Some(t) => t,
-            None => return vec![],
-        };
-        let mut xq = Integer::from(1);
-        let mut yq = Integer::from(0);
-        for _ in 0..e {
-            let c = compose_sum_sq(&xq, &yq, &up, &vp);
-            xq = c.0;
-            yq = c.1;
-        }
-        let c = compose_sum_sq(&xr, &yr, &xq, &yq);
-        xr = c.0;
-        yr = c.1;
-    }
-
+    // Gaussian integer accumulating the 2-part and the p ≡ 3 (mod 4) part.
+    let mut base = (Integer::from(1), Integer::from(0));
     for _ in 0..e2 {
-        let c = compose_sum_sq(&xr, &yr, &Integer::from(1), &Integer::from(1));
-        xr = c.0;
-        yr = c.1;
+        base = compose_sum_sq(&base.0, &base.1, &Integer::from(1), &Integer::from(1));
     }
-
-    let mut out = canonical_pairs(xr, yr);
-    if n.significant_bits() <= 256 {
-        merge_distinct_pairs(&mut out, scan_sum_two_squares_pairs(n));
-    }
-    out
-}
-
-fn canonical_pairs(x: Integer, y: Integer) -> Vec<(Integer, Integer)> {
-    let x = x.abs();
-    let y = y.abs();
-    let mut pts = Vec::new();
-    if x <= y {
-        pts.push((x.clone(), y.clone()));
-        if x < y {
-            pts.push((y, x));
-        }
-    } else {
-        pts.push((y.clone(), x.clone()));
-        if y < x {
-            pts.push((x, y));
-        }
-    }
-    pts
-}
-
-fn solve_sum_two_squares_scan(pool: &ExprPool, n: &Integer) -> DiophantineSolution {
-    let n = n.clone();
-    if n < 0 {
-        return DiophantineSolution::NoSolution;
-    }
-    if n == 0 {
-        let z = pool.integer(0);
-        return DiophantineSolution::Finite(vec![vec![z, z]]);
-    }
-    let mut pts: Vec<(Integer, Integer)> = Vec::new();
-    let mut x = Integer::from(0);
-    let max_x = n.clone().sqrt();
-    while x <= max_x {
-        let r = n.clone() - &x * &x;
-        if is_perfect_square(&r) {
-            let y = r.sqrt();
-            if x <= y {
-                pts.push((x.clone(), y.clone()));
-                if x < y {
-                    pts.push((y.clone(), x.clone()));
+    // (prime pi, exponent) for p ≡ 1 (mod 4)
+    let mut split: Vec<((Integer, Integer), u32)> = Vec::new();
+    if rest != 1 {
+        for (p, e) in factor_positive(rest) {
+            if !is_probable_prime(&p) {
+                return Err("could not completely factor n".into());
+            }
+            let m4 = p.clone() % 4u32;
+            if m4 == 3 {
+                if e % 2 == 1 {
+                    return Ok(vec![]);
                 }
+                let pk = p.pow(e / 2);
+                base = (base.0 * &pk, base.1 * &pk);
+            } else if p == 2 {
+                for _ in 0..e {
+                    base = compose_sum_sq(&base.0, &base.1, &Integer::from(1), &Integer::from(1));
+                }
+            } else {
+                let pi = prime_as_sum_two_squares(&p)
+                    .ok_or_else(|| "failed to split a prime ≡ 1 (mod 4)".to_string())?;
+                split.push((pi, e));
             }
         }
-        x += 1;
     }
+    let mut count: u64 = 4;
+    for (_, e) in &split {
+        count = count.saturating_mul(u64::from(*e) + 1);
+        if count > MAX_SUM_TWO_SQUARES_POINTS {
+            return Err(format!(
+                "more than {MAX_SUM_TWO_SQUARES_POINTS} integer points x²+y²=n; refusing to enumerate"
+            ));
+        }
+    }
+
+    let mut gaussians = vec![base];
+    for ((u, v), e) in &split {
+        let mut next = Vec::with_capacity(gaussians.len() * (*e as usize + 1));
+        // factor_k = π^k · conj(π)^(e−k)
+        for k in 0..=*e {
+            let mut f = (Integer::from(1), Integer::from(0));
+            for _ in 0..k {
+                f = compose_sum_sq(&f.0, &f.1, u, v);
+            }
+            let neg_v = Integer::from(-v);
+            for _ in 0..(*e - k) {
+                f = compose_sum_sq(&f.0, &f.1, u, &neg_v);
+            }
+            for g in &gaussians {
+                next.push(compose_sum_sq(&g.0, &g.1, &f.0, &f.1));
+            }
+        }
+        gaussians = next;
+    }
+
+    let mut out: std::collections::BTreeSet<(Integer, Integer)> = std::collections::BTreeSet::new();
+    for (x, y) in gaussians {
+        // the four unit multiples: (x,y), (−y,x), (−x,−y), (y,−x)
+        let (nx, ny) = (Integer::from(-&x), Integer::from(-&y));
+        out.insert((x.clone(), y.clone()));
+        out.insert((ny.clone(), x.clone()));
+        out.insert((nx.clone(), ny.clone()));
+        out.insert((y.clone(), nx.clone()));
+    }
+    debug_assert!(out
+        .iter()
+        .all(|(x, y)| Integer::from(x * x) + Integer::from(y * y) == *n));
+    Ok(out.into_iter().collect())
+}
+
+fn solve_sum_two_squares(
+    pool: &ExprPool,
+    n: &Integer,
+) -> Result<DiophantineSolution, DiophantineError> {
+    checkpoint(0)?;
+    let pts = sum_two_squares_all_points(n).map_err(DiophantineError::Unsupported)?;
     if pts.is_empty() {
-        return DiophantineSolution::NoSolution;
+        return Ok(DiophantineSolution::NoSolution);
     }
     let sols: Vec<Vec<ExprId>> = pts
         .into_iter()
         .map(|(xi, yi)| vec![pool.integer(xi), pool.integer(yi)])
         .collect();
-    DiophantineSolution::Finite(sols)
-}
-
-fn solve_sum_two_squares(
-    pool: &ExprPool,
-    _a: &Integer,
-    n: &Integer,
-    _vx: ExprId,
-    _vy: ExprId,
-) -> DiophantineSolution {
-    let rep = sum_two_squares_representatives(n);
-    if !rep.is_empty() {
-        let sols: Vec<Vec<ExprId>> = rep
-            .into_iter()
-            .map(|(xi, yi)| vec![pool.integer(xi), pool.integer(yi)])
-            .collect();
-        return DiophantineSolution::Finite(sols);
-    }
-    // Fallback when factorization failed or n has no two-square representation.
-    solve_sum_two_squares_scan(pool, n)
+    Ok(DiophantineSolution::Finite(sols))
 }
 
 // ---------------------------------------------------------------------------
@@ -1365,7 +1291,7 @@ fn classify_and_solve(
         if n < 0 {
             return Ok(DiophantineSolution::NoSolution);
         }
-        return Ok(solve_sum_two_squares(pool, &a2, &n, vx, vy));
+        return solve_sum_two_squares(pool, &n);
     }
 
     if a2 > 0 && b2 < 0 {
@@ -1488,7 +1414,8 @@ mod tests {
         let r = diophantine(&pool, eq, &[x, y]).unwrap();
         match r {
             DiophantineSolution::Finite(v) => {
-                assert_eq!(v.len(), 2);
+                // (±1, ±2) and (±2, ±1)
+                assert_eq!(v.len(), 8);
             }
             _ => panic!("expected finite set"),
         }
@@ -1781,7 +1708,7 @@ mod tests {
         let (eq, v) = quad(&pool, -1, -1, 5);
         assert!(matches!(
             diophantine(&pool, eq, &v).unwrap(),
-            DiophantineSolution::Finite(ref s) if s.len() == 2
+            DiophantineSolution::Finite(ref s) if s.len() == 8
         ));
         // −x² + 2y² + 1 = 0  ⇔  x² − 2y² = 1  (x0 = 3, y0 = 2 in vars order)
         let (eq, v) = quad(&pool, -1, 2, 1);
@@ -1844,5 +1771,58 @@ mod tests {
         let p = Integer::from(13);
         let r = prime_as_sum_two_squares(&p).unwrap();
         assert_eq!(r.0.clone() * &r.0 + r.1.clone() * &r.1, p);
+    }
+
+    fn brute_two_squares(n: i64) -> Vec<(i64, i64)> {
+        let r = (n as f64).sqrt() as i64 + 1;
+        let mut v = Vec::new();
+        for x in -r..=r {
+            for y in -r..=r {
+                if x * x + y * y == n {
+                    v.push((x, y));
+                }
+            }
+        }
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn sum_two_squares_all_signs_match_brute_force() {
+        for n in (0..=2000i64).chain([4225, 5525, 10000, 32045, 406250, 1105 * 13]) {
+            let got = sum_two_squares_all_points(&Integer::from(n))
+                .unwrap_or_else(|e| panic!("n={n}: {e}"));
+            let mut got: Vec<(i64, i64)> = got
+                .into_iter()
+                .map(|(x, y)| (x.to_i64().unwrap(), y.to_i64().unwrap()))
+                .collect();
+            got.sort();
+            assert_eq!(got, brute_two_squares(n), "n = {n}");
+        }
+        // r2(25) = 12, r2(65) = 16, r2(406250) = 56
+        assert_eq!(
+            sum_two_squares_all_points(&Integer::from(25))
+                .unwrap()
+                .len(),
+            12
+        );
+        assert_eq!(
+            sum_two_squares_all_points(&Integer::from(65))
+                .unwrap()
+                .len(),
+            16
+        );
+        assert_eq!(
+            sum_two_squares_all_points(&Integer::from(406250))
+                .unwrap()
+                .len(),
+            56
+        );
+    }
+
+    #[test]
+    fn sum_two_squares_refuses_rather_than_truncates() {
+        let huge = Integer::from(1) << 5000u32;
+        assert!(sum_two_squares_all_points(&huge).is_err());
     }
 }

@@ -39,7 +39,10 @@ def test_diophantine_sum_two_squares():
     sol = alkahest.diophantine(eq, [x, y])
     assert sol.kind == "finite"
     pairs = {(int(str(a)), int(str(b))) for a, b in sol.points}
-    assert pairs == {(1, 2), (2, 1)}
+    # every sign and order: r2(5) = 8
+    assert pairs == {
+        (sx * a, sy * b) for a, b in ((1, 2), (2, 1)) for sx in (1, -1) for sy in (1, -1)
+    }
 
 
 def test_diophantine_sum_two_squares_65_two_orbits():
@@ -94,6 +97,7 @@ def test_diophantine_sympy_finite_subset():
     p = alkahest.ExprPool()
     x, y = p.symbol("x"), p.symbol("y")
     sol = alkahest.diophantine(x**2 + y**2 - p.integer(5), [x, y])
-    ap = {tuple(sorted((int(str(a)), int(str(b))))) for a, b in sol.points}
+    ap = {tuple(sorted((abs(int(str(a))), abs(int(str(b)))))) for a, b in sol.points}
     assert ap == {(1, 2)}
     assert ap <= sp_abs
+    assert len(sol.points) == 8
