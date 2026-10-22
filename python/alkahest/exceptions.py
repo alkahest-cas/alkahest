@@ -25,7 +25,7 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
                                  030-034 dsolve_system, 040-045 series_solve — the
                                  last block moved off 020-025 in 3.10, where it
                                  collided with the numeric one)
-    E-DAE-001  … E-DAE-003     DaeError
+    E-DAE-001  … E-DAE-005     DaeError (004/005 from the checked Σ-method path)
     E-HOMOTOPY-002 … E-HOMOTOPY-004 HomotopyError (numerical continuation — V2-14)
     E-SOLVE-010 … E-SOLVE-011  SolverError  (GPU Gröbner)
     E-JIT-001   … E-JIT-006    JitError  (005 = the expression has a free symbol

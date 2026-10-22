@@ -1233,9 +1233,12 @@ ode_with_ic = ode.with_ic(y, pool.integer(1))
 # Second-order → first-order
 ode_1st = lower_to_first_order(x, pool.integer(-1)*x, 2, t)
 
-# DAE Pantelides index reduction
-# dae = DAE.new(...)
-# reduced = pantelides(dae)
+# DAE index reduction (Σ-method / Pantelides). derivatives may be shorter than
+# variables: the trailing ones are algebraic (e.g. a Lagrange multiplier).
+# dae = DAE.new(eqs, [x, y, u, w, lam], [dx, dy, du, dw], t)
+# reduced = pantelides(dae)   # reduced.index == 3 for the Cartesian pendulum
+# Refusals: DaeError E-DAE-003 (not square / singular structure), E-DAE-004
+# (malformed DAE.new), E-DAE-005 (reduced Jacobian singular).
 ```
 
 Numeric integration and closed-form `dsolve` live in `alkahest.experimental`

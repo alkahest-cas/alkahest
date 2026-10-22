@@ -24,7 +24,7 @@ use alkahest_core::{
     lattice_reduce_rows as core_lattice_reduce_rows,
     lattice_reduce_rows_with_delta as core_lattice_reduce_rows_with_delta,
     lower_to_first_order as core_lower_to_first_order,
-    pantelides as core_pantelides,
+    pantelides_checked as core_pantelides_checked,
     // Phase 27 — poly_normal
     poly_normal as core_poly_normal,
     product_definite as core_product_definite,
@@ -1430,6 +1430,43 @@ where
     exc.setattr("remediation", remediation).ok();
     exc.setattr("span", py.None()).ok();
     PyErr::from_value_bound(exc)
+}
+
+/// Run `f`, turning a Rust panic inside it into a coded `AlkahestError`
+/// (`E-INTERNAL-001`) instead of `pyo3_runtime.PanicException`.
+///
+/// PyO3 0.21 has no global panic hook, and a `PanicException` derives from
+/// `BaseException`, so `except Exception` (and `except ak.AlkahestError`) in a
+/// caller's loop does not catch it.  A panic is always a bug in alkahest, never
+/// a property of the input; this boundary keeps it catchable and says so.
+fn catch_internal_panic<T>(what: &str, f: impl FnOnce() -> PyResult<T>) -> PyResult<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(r) => r,
+        Err(payload) => {
+            let detail = payload
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "non-string panic payload".to_string());
+            Err(Python::with_gil(|py| {
+                coded_error::<PyAlkahestError>(
+                    py,
+                    "E-INTERNAL-001",
+                    format!("internal error in {what}: {detail}"),
+                    "this is a bug in alkahest, not a property of the input; please report it \
+                     with a minimal example",
+                )
+            }))
+        }
+    }
+}
+
+/// A DAE refusal as the coded `DaeError` (still a `ValueError` subclass).
+fn dae_error_to_py(e: alkahest_core::DaeStructureError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyDaeError>();
+        make_structured_err(py, &exc_type, &e)
+    })
 }
 
 fn conv_error_to_py(e: alkahest_core::ConversionError) -> PyErr {
@@ -11458,18 +11495,29 @@ impl PyDAE {
     /// derivatives : list[Expr]
     ///     Symbol standing for the time derivative of ``variables[i]``, e.g.
     ///     ``pool.symbol("dx/dt")``.  Alkahest does not parse the name; the
-    ///     positional pairing is what makes it a derivative.
+    ///     positional pairing is what makes it a derivative.  It may be
+    ///     *shorter* than ``variables``: the trailing variables are then
+    ///     algebraic (their derivative, if ever needed, is named
+    ///     ``d{name}/dt``).  A variable listed as another's derivative is a jet
+    ///     of that unknown, not a new one.
     /// time_var : Expr
     ///     The independent variable.
     ///
+    /// Raises
+    /// ------
+    /// DaeError
+    ///     ``E-DAE-004`` when ``derivatives`` is longer than ``variables``, an
+    ///     entry is not a symbol, a symbol is repeated, or ``time_var`` is
+    ///     listed among the unknowns.
+    ///
     /// Example::
     ///
-    ///     # Pendulum in Cartesian coordinates (index 3):
-    ///     #   x' = u,  u' = -lam*x,  x**2 + y**2 - 1 = 0
+    ///     # Pendulum in Cartesian coordinates (index 3); lam is algebraic:
+    ///     #   x' = u, y' = w, u' = -lam*x, w' = -lam*y - 1, x**2 + y**2 = 1
     ///     dae = alkahest.DAE.new(
-    ///         [dx - u, du + lam * x, x**2 + y**2 - one],
-    ///         [x, u, lam],
-    ///         [dx, du, dlam],
+    ///         [dx - u, dy - w, du + lam * x, dw + lam * y + one, x**2 + y**2 - one],
+    ///         [x, y, u, w, lam],
+    ///         [dx, dy, du, dw],
     ///         t,
     ///     )
     #[staticmethod]
@@ -11494,7 +11542,11 @@ impl PyDAE {
             guard_depth_all(&pool.inner, &deriv_ids)?;
             guard_depth(&pool.inner, time_var.id)?;
         }
-        let dae = DAE::new(eq_ids, var_ids, deriv_ids, time_var.id);
+        let dae = {
+            let pool = pool_py.borrow(py);
+            DAE::try_new(eq_ids, var_ids, deriv_ids, time_var.id, &pool.inner)
+                .map_err(dae_error_to_py)?
+        };
         Ok(PyDAE {
             inner: dae,
             pool: pool_py,
@@ -11524,9 +11576,10 @@ impl PyDAE {
 
     /// Differentiation index, or ``None`` if it has not been computed.
     ///
-    /// :func:`pantelides` sets it on the DAE it returns: `0` means the input
-    /// already had a perfect structural matching, `k` means `k` rounds of
-    /// differentiation were needed.
+    /// :func:`pantelides` sets it on the DAE it returns: ``0`` for an explicit
+    /// ODE, ``1`` for a semi-explicit index-1 system, ``3`` for the Cartesian
+    /// pendulum — the number of differentiations needed to determine every
+    /// derivative, including one for the algebraic variables.
     #[getter]
     fn index(&self) -> Option<usize> {
         self.inner.index
@@ -11582,39 +11635,62 @@ impl PyDAE {
 
 /// `alkahest.pantelides(dae)` — structural index reduction of a DAE.
 ///
-/// Repeatedly differentiates the equations that a maximum bipartite matching
-/// leaves unmatched, until every equation is matched to a variable, and
-/// returns the **reduced** :class:`DAE` — not a report object.
+/// Matches equations to unknowns on their **highest** derivatives (Pryce's
+/// Σ-method, equivalent to Pantelides' algorithm), differentiates each
+/// equation as often as that matching requires, and returns the **reduced**
+/// :class:`DAE` — the original equations followed by their derivatives — not a
+/// report object.  Read them with :meth:`DAE.equations` and the new jets with
+/// :meth:`DAE.derivatives`.
 ///
-/// The reduced system has more equations and more derivative jets than the
-/// input; read them with :meth:`DAE.equations` and :meth:`DAE.derivatives`.
-/// :attr:`DAE.index` on the result is the number of differentiation rounds it
-/// took (``0`` = the input already matched).
+/// :attr:`DAE.index` on the result is the differentiation index: ``0`` for an
+/// explicit ODE, ``1`` for a semi-explicit index-1 system, ``2`` for
+/// ``x' = y, x = sin t``, ``3`` for the Cartesian pendulum.
 ///
-/// Raises `ValueError` (`E-DAE-002`) if the index exceeds 10 — try
-/// :func:`dae_index_reduce`, which falls back to :func:`rosenfeld_groebner`.
+/// Before returning, the Jacobian of the reduced system with respect to the
+/// highest derivatives is checked to be non-singular at generic sample points
+/// (exact rational arithmetic); a structural answer the coefficients
+/// contradict is refused, never returned.
 ///
-/// This is a *structural* algorithm: it looks at which variables occur in
-/// which equations, not at whether the coefficients actually make the system
-/// solvable.
+/// Raises
+/// ------
+/// DaeError
+///     (a ``ValueError`` subclass) ``E-DAE-002`` when an equation would need
+///     more than 10 differentiations — try :func:`dae_index_reduce`, which
+///     falls back to :func:`rosenfeld_groebner`; ``E-DAE-003`` when there is
+///     not one equation per unknown function or no matching exists;
+///     ``E-DAE-004`` for a malformed DAE; ``E-DAE-005`` when the reduced
+///     Jacobian is singular.
 ///
 /// Example::
 ///
 ///     reduced = alkahest.pantelides(dae)
-///     reduced.index            # differentiation rounds used
+///     reduced.index            # 3 for the Cartesian pendulum
 ///     reduced.equations()      # original equations plus the differentiated ones
 #[pyfunction]
 #[pyo3(name = "pantelides")]
 fn py_pantelides(py: Python<'_>, dae: PyRef<PyDAE>) -> PyResult<PyDAE> {
     let pool_py = dae.pool.clone_ref(py);
-    let result = {
+    let result = catch_internal_panic("pantelides", || {
         let pool = pool_py.borrow(py);
-        core_pantelides(&dae.inner, &pool.inner)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
-    };
+        core_pantelides_checked(&dae.inner, &pool.inner).map_err(dae_error_to_py)
+    })?;
     Ok(PyDAE {
         inner: result.reduced_dae,
         pool: pool_py,
+    })
+}
+
+/// Test hook for the panic boundary: panics inside `catch_internal_panic`.
+///
+/// Private (not exported from ``alkahest``); it exists so the test suite can
+/// check that a panic reaches Python as ``AlkahestError`` ``E-INTERNAL-001``
+/// rather than ``PanicException`` without depending on some input that still
+/// happens to panic.
+#[pyfunction]
+#[pyo3(name = "_panic_boundary_selftest")]
+fn py_panic_boundary_selftest() -> PyResult<()> {
+    catch_internal_panic("_panic_boundary_selftest", || -> PyResult<()> {
+        panic!("deliberate panic for the boundary self-test")
     })
 }
 
@@ -18062,7 +18138,9 @@ fn py_rosenfeld_groebner(
                  pass params=[...] as well",
             ));
         }
-        return py_rosenfeld_groebner_plain(py, dae, order, max_prolong_rounds);
+        return catch_internal_panic("rosenfeld_groebner", || {
+            py_rosenfeld_groebner_plain(py, dae, order, max_prolong_rounds)
+        });
     }
     if minimal && eliminate_ids.is_empty() {
         return Err(pyo3::exceptions::PyValueError::new_err(
@@ -18073,9 +18151,9 @@ fn py_rosenfeld_groebner(
 
     let pool_py = dae.pool.clone_ref(py);
     let requested_rounds = max_prolong_rounds.unwrap_or(8);
-    let out = {
+    let out = catch_internal_panic("rosenfeld_groebner", || {
         let pool = pool_py.borrow(py);
-        rosenfeld_groebner_parametric(
+        Ok(rosenfeld_groebner_parametric(
             &dae.inner,
             &pool.inner,
             &param_ids,
@@ -18085,8 +18163,8 @@ fn py_rosenfeld_groebner(
                 eliminate: &eliminate_ids,
                 minimal,
             },
-        )
-    };
+        ))
+    })?;
     let (r, ranking) = out.map_err(diffalg_error_to_py)?;
 
     // The blow-up from one prolongation too many is silent otherwise: the
@@ -18183,12 +18261,16 @@ fn py_dae_index_reduce(
     order: Option<&str>,
 ) -> PyResult<PyDaeIndexReduction> {
     let pool_py = dae.pool.clone_ref(py);
-    let out = {
+    let out = catch_internal_panic("dae_index_reduce", || {
         let pool = pool_py.borrow(py);
-        dae_index_reduce_ranked(&dae.inner, &pool.inner, py_monomial_order_for_dae(order))
-    };
+        Ok(dae_index_reduce_ranked(
+            &dae.inner,
+            &pool.inner,
+            py_monomial_order_for_dae(order),
+        ))
+    })?;
     let (inner, ranking) =
-        out.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        out.map_err(|e| dae_error_to_py(alkahest_core::DaeStructureError::Dae(e)))?;
     Ok(PyDaeIndexReduction {
         inner,
         pool: pool_py,
@@ -22390,6 +22472,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Phase 17
     m.add_class::<PyDAE>()?;
     m.add_function(wrap_pyfunction!(py_pantelides, m)?)?;
+    m.add_function(wrap_pyfunction!(py_panic_boundary_selftest, m)?)?;
     // Phase 18
     m.add_class::<PyPort>()?;
     m.add_class::<PyComponent>()?;

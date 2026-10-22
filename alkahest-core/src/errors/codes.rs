@@ -169,6 +169,14 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-DAE-001", class: "DaeError", cause: Cause::Unsupported, remediation: Some("ensure all functions are differentiable before calling pantelides()") },
     ErrorSpec { code: "E-DAE-002", class: "DaeError", cause: Cause::UserInput,   remediation: Some("DAE index exceeds depth-10 limit; reformulate the model") },
     ErrorSpec { code: "E-DAE-003", class: "DaeError", cause: Cause::UserInput,   remediation: Some("check constraint count against variable count") },
+    // E-DAE-004/005 — `dae::DaeStructureError` (the Σ-method refusals; `DaeError`
+    // is exhaustive and could not take them).
+    ErrorSpec { code: "E-DAE-004", class: "DaeStructureError", cause: Cause::UserInput, remediation: Some("pass distinct symbols; derivatives[i] is the derivative of variables[i], and variables after the last derivative are algebraic") },
+    ErrorSpec { code: "E-DAE-005", class: "DaeStructureError", cause: Cause::Domain,    remediation: Some("the reduced Jacobian is singular, so the structural index under-estimates the true one; reformulate the model or use rosenfeld_groebner") },
+    // E-INTERNAL-001 — a Rust panic caught at the Python boundary
+    // (`catch_internal_panic` in alkahest-py) and raised as `AlkahestError`
+    // instead of `PanicException`, which `except Exception` cannot catch.
+    ErrorSpec { code: "E-INTERNAL-001", class: "AlkahestError", cause: Cause::Internal, remediation: Some("this is a bug in alkahest, not a property of the input; please report it with a minimal example") },
     // E-DIFFALG — DiffAlgError (V2-13 differential algebra / Rosenfeld–Gröbner)
     ErrorSpec { code: "E-DIFFALG-001", class: "DiffAlgError", cause: Cause::Unsupported, remediation: Some("ensure the DAE is polynomial in its state and derivative symbols") },
     ErrorSpec { code: "E-DIFFALG-002", class: "DiffAlgError", cause: Cause::UserInput,   remediation: Some("declare all jet variables; remove transcendental functions") },

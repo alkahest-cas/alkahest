@@ -108,10 +108,18 @@ def test_pantelides_returns_a_reduced_dae():
     reduced = pantelides(dae)
 
     assert isinstance(reduced, DAE)
-    assert reduced.index == 1
-    assert reduced.n_equations == 6
-    # The appended equation is the differentiated constraint 2x·x' + 2y·y' = 0.
-    assert str(reduced.equations()[-1]) == "((x * dx/dt * 2) + (y * dy/dt * 2))"
+    # The textbook index of the Cartesian pendulum.  This used to pin 1: the old
+    # matching counted an equation as covering a variable when it mentioned any
+    # derivative of it, so the constraint "matched" after one differentiation
+    # and lam was left undetermined.
+    assert reduced.index == 3
+    # Five originals, x' = u and y' = w differentiated once, the constraint twice.
+    assert reduced.n_equations == 9
+    # The last equation is the constraint differentiated twice: it involves the
+    # second derivatives of x and y.
+    last = str(reduced.equations()[-1])
+    assert "ddx/dt/dt" in last
+    assert "ddy/dt/dt" in last
     # Prolongation introduced second-order jets.
     assert "ddx/dt/dt" in [str(d) for d in reduced.derivatives()]
 
