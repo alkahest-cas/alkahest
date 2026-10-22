@@ -77,7 +77,7 @@ pub fn stieltjes_gamma(n: u32, pool: &ExprPool) -> Option<ExprId> {
     match n {
         0 => Some(euler_gamma(pool)),
         1..=crate::eval::symbols::MAX_STIELTJES => Some(pool.symbol(
-            &format!("{}{n}", crate::eval::symbols::STIELTJES_PREFIX),
+            format!("{}{n}", crate::eval::symbols::STIELTJES_PREFIX),
             crate::kernel::Domain::Real,
         )),
         _ => None,
