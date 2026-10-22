@@ -15,7 +15,14 @@ Polynomial system solving via Gröbner bases. The ``groebner`` Cargo feature is 
 
    :param equations: List of polynomial expressions (each equal to zero).
    :param variables: Variables to solve for. Free symbols that appear in
-      *equations* but are omitted here are treated as parameters.
+      *equations* but are omitted here are treated as parameters. A
+      parametric solution is the generic one: every tuple is substituted
+      back and dropped when its residual is provably not identically zero,
+      equations that factor are solved as the union of their factors, and
+      the non-vanishing hypotheses of the kept branches are listed by
+      :func:`solve_side_conditions`. An unknown declared ``Positive``,
+      ``NonNegative``, ``NonZero`` or ``Integer`` gets no value provably
+      outside that domain (an undecided membership is listed there too).
    :returns:
 
       - ``list[dict[Expr, Expr]]`` — one dict per solution, mapping
