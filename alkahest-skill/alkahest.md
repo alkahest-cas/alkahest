@@ -1032,6 +1032,7 @@ from alkahest import ArbBall, interval_eval
 
 ball = ArbBall(1.0, 1e-10)         # centre ± radius
 result = interval_eval(sin(x), {x: ball})  # rigorous enclosure
+result.mid_exact(), result.rad_exact()  # full-precision Fractions (.mid/.rad are rounded f64); also mid_str(), to_mpf()
 ```
 
 The mapping values must be `ArbBall` objects — a `(centre, radius)` tuple raises

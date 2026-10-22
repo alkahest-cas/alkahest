@@ -13203,9 +13203,66 @@ impl PyArbBall {
         })
     }
 
+    /// Midpoint rounded to the nearest `f64`.
+    ///
+    /// This is a **lossy** readout: past ~16 digits `mid ± rad` read through
+    /// the `f64` accessors is *not* an enclosure.  Use `mid_str`,
+    /// `mid_exact` or `to_mpf` for the full-precision midpoint, and
+    /// `lo` / `hi` for outward-rounded `f64` bounds.
     #[getter]
     fn mid(&self) -> f64 {
         self.inner.mid_f64()
+    }
+
+    /// Working precision of the ball, in bits.
+    #[getter]
+    fn prec(&self) -> u32 {
+        self.inner.prec
+    }
+
+    /// Midpoint as a decimal string carrying every digit of the stored
+    /// binary value (round-trips exactly), e.g. `"1.2020569...e0"`.
+    fn mid_str(&self) -> String {
+        float_to_dec_string(&self.inner.mid)
+    }
+
+    /// Radius as a decimal string (full precision, no `f64` underflow).
+    fn rad_str(&self) -> String {
+        float_to_dec_string(&self.inner.rad)
+    }
+
+    /// Midpoint as an exact `fractions.Fraction`.
+    fn mid_exact<'py>(&self, py: Python<'py>) -> PyResult<&'py PyAny> {
+        float_to_fraction(py, &self.inner.mid)
+    }
+
+    /// Radius as an exact `fractions.Fraction`.
+    fn rad_exact<'py>(&self, py: Python<'py>) -> PyResult<&'py PyAny> {
+        float_to_fraction(py, &self.inner.rad)
+    }
+
+    /// `(mid, rad)` as `mpmath.mpf` values, exact conversions of the stored
+    /// binary floats (requires `mpmath`).
+    fn to_mpf<'py>(&self, py: Python<'py>) -> PyResult<(&'py PyAny, &'py PyAny)> {
+        let mpmath = py.import("mpmath")?;
+        let ctx = mpmath.getattr("mp")?;
+        let mpf = mpmath.getattr("mpf")?;
+        let prec = self.inner.mid.prec().max(self.inner.rad.prec());
+        let old = ctx.getattr("prec")?;
+        ctx.setattr("prec", prec)?;
+        let r = (|| -> PyResult<_> {
+            let conv = |f: &rug::Float| -> PyResult<&'py PyAny> {
+                // Exact: build from (sign, mantissa, exp, bitcount) via Fraction.
+                let q = float_to_fraction(py, f)?;
+                let n = q.getattr("numerator")?;
+                let d = q.getattr("denominator")?;
+                mpf.call1((n,))?
+                    .call_method1("__truediv__", (mpf.call1((d,))?,))
+            };
+            Ok((conv(&self.inner.mid)?, conv(&self.inner.rad)?))
+        })();
+        ctx.setattr("prec", old)?;
+        r
     }
 
     /// Radius, rounded **up** to `f64`.
@@ -13317,16 +13374,38 @@ impl PyArbBall {
     }
 
     fn __repr__(&self) -> String {
-        format!(
-            "ArbBall({:.6} ± {:.2e})",
-            self.inner.mid_f64(),
-            self.inner.rad_f64()
-        )
+        // Show enough digits of the midpoint to match the radius, and the
+        // radius from the MPFR value (the f64 radius underflows to 0).
+        let rad = &self.inner.rad;
+        let mid = &self.inner.mid;
+        let digits = if rad.is_zero() || !rad.is_finite() || !mid.is_finite() || mid.is_zero() {
+            6
+        } else {
+            let d = mid.get_exp().unwrap_or(0) as f64 - rad.get_exp().unwrap_or(0) as f64;
+            ((d * std::f64::consts::LOG10_2).ceil() as i64 + 2).clamp(6, 100_000) as usize
+        };
+        let m = mid.to_string_radix(10, Some(digits));
+        let r = rad.to_string_radix(10, Some(3));
+        format!("ArbBall({m} ± {r})")
     }
 
     fn __str__(&self) -> String {
         self.__repr__()
     }
+}
+
+fn float_to_dec_string(f: &rug::Float) -> String {
+    f.to_string_radix(10, None)
+}
+
+fn float_to_fraction<'py>(py: Python<'py>, f: &rug::Float) -> PyResult<&'py PyAny> {
+    let q = f
+        .to_rational()
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("ball endpoint is not finite"))?;
+    let int = py.get_type::<pyo3::types::PyInt>();
+    let n = int.call1((q.numer().to_string(),))?;
+    let d = int.call1((q.denom().to_string(),))?;
+    py.import("fractions")?.getattr("Fraction")?.call1((n, d))
 }
 
 /// Evaluate a symbolic expression using rigorous interval (ball) arithmetic.
