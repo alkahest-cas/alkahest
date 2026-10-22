@@ -11,7 +11,8 @@ import random
 
 import alkahest as ak
 import pytest
-import sympy as sp
+
+sp = pytest.importorskip("sympy")
 
 
 @pytest.fixture
