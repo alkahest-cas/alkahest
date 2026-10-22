@@ -374,6 +374,18 @@ def _lattice_index(vectors: list[list[int]], n: int) -> int:
     return det
 
 
+def _check_divisor_chain(cyc: Sequence[int]) -> None:
+    """Reject a class-group answer whose invariants are not a divisor chain.
+
+    PARI lists the invariants in *descending* order (``Q(sqrt(-65))`` has
+    ``[4, 2]``), so each invariant must be divisible by the next one.  Raises
+    ``E-PARI-003`` (via :func:`_mismatch`) otherwise.
+    """
+    for a_, b_ in zip(cyc, cyc[1:]):
+        if a_ % b_:
+            raise _mismatch("class group invariants do not form a divisor chain")
+
+
 def _imag_quadratic_class_number(D: int) -> int:
     """Number of reduced primitive forms of discriminant ``D < 0`` (exact)."""
     h = 0
@@ -526,9 +538,7 @@ def number_field_invariants(
         h = int(_py(_gp("(b)->b.no", bnf)))
         if math.prod(cyc) != h:
             raise _mismatch("class number is not the product of the invariants")
-        for a_, b_ in zip(cyc, cyc[1:]):
-            if b_ % a_:
-                raise _mismatch("class group invariants do not form a divisor chain")
+        _check_divisor_chain(cyc)
         reg = str(_gp("(b)->b.reg", bnf))
         fu_g = _gp("(b)->b.fu", bnf)
         fus = [_elt(K, fu_g[i]) for i in range(len(fu_g))]
