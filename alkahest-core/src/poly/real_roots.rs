@@ -187,6 +187,13 @@ fn taylor_shift_by_1(coeffs: &[Integer]) -> Vec<Integer> {
 fn taylor_shift_by_1_in_place(c: &mut [Integer]) {
     let n = c.len();
     for i in 0..n.saturating_sub(1) {
+        // One outer pass is O(n) bignum additions on integers that grow with
+        // every pass; poll between passes so a budget trip is honoured before
+        // the coefficients get large enough to exhaust memory.
+        if i % crate::budget::INTERRUPT_POLL_INTERVAL as usize == 0 && crate::budget::interrupted()
+        {
+            return;
+        }
         for j in (i..n - 1).rev() {
             let (left, right) = c.split_at_mut(j + 1);
             left[j] += &right[0];
@@ -203,6 +210,10 @@ fn taylor_shift_by(coeffs: &[Integer], k: u64) -> Vec<Integer> {
     let n = c.len();
     let ki = Integer::from(k);
     for i in 0..n.saturating_sub(1) {
+        if i % crate::budget::INTERRUPT_POLL_INTERVAL as usize == 0 && crate::budget::interrupted()
+        {
+            return c;
+        }
         for j in (i..n - 1).rev() {
             let (left, right) = c.split_at_mut(j + 1);
             // Fused multiply-add (`mpz_addmul`); the previous form built and
@@ -301,6 +312,9 @@ fn poly_pseudo_rem(a: &[Integer], b: &[Integer]) -> Vec<Integer> {
     let mut r = a.to_vec();
 
     while r.len().saturating_sub(1) >= db {
+        if crate::budget::interrupted() {
+            return vec![];
+        }
         let dr = r.len() - 1;
         let shift = dr - db;
         let lc_r = r.last().unwrap().clone();
@@ -337,6 +351,9 @@ fn poly_gcd(a: &[Integer], b: &[Integer]) -> Vec<Integer> {
         return g;
     }
 
+    if crate::budget::interrupted() {
+        return vec![Integer::from(1)];
+    }
     let prem = poly_pseudo_rem(a, b);
     let prem_zero = prem.iter().all(|c| *c == 0);
     if prem_zero {
@@ -360,6 +377,9 @@ fn poly_exact_div(a: &[Integer], b: &[Integer]) -> Vec<Integer> {
     let lc_b = b.last().unwrap().clone();
 
     for i in (0..=deg_q).rev() {
+        if crate::budget::interrupted() {
+            return q;
+        }
         let lc_r = r[i + b.len() - 1].clone();
         let qi = lc_r / lc_b.clone();
         q[i] = qi.clone();
@@ -375,9 +395,85 @@ fn poly_exact_div(a: &[Integer], b: &[Integer]) -> Vec<Integer> {
 // Squarefree decomposition
 // ---------------------------------------------------------------------------
 
+/// Primes (below 2³¹, so a product fits a `u64`) for the squarefree certificate.
+const CERTIFICATE_PRIMES: [u64; 4] = [2_147_483_629, 2_147_483_587, 2_147_483_579, 2_147_483_563];
+
+fn mod_pow(mut b: u64, mut e: u64, q: u64) -> u64 {
+    let mut r = 1u64;
+    b %= q;
+    while e > 0 {
+        if e & 1 == 1 {
+            r = r * b % q;
+        }
+        b = b * b % q;
+        e >>= 1;
+    }
+    r
+}
+
+/// Degree of `gcd(f, g)` over `GF(q)` (`f`, `g` ascending, `q` a prime < 2³¹).
+fn gcd_degree_mod_q(mut f: Vec<u64>, mut g: Vec<u64>, q: u64) -> usize {
+    let trim = |v: &mut Vec<u64>| {
+        while v.last() == Some(&0) {
+            v.pop();
+        }
+    };
+    trim(&mut f);
+    trim(&mut g);
+    while !g.is_empty() {
+        // f ← f mod g
+        let inv = mod_pow(*g.last().unwrap(), q - 2, q);
+        while f.len() >= g.len() {
+            let shift = f.len() - g.len();
+            let factor = f.last().unwrap() * inv % q;
+            for (i, gi) in g.iter().enumerate() {
+                f[i + shift] = (f[i + shift] + q - factor * gi % q) % q;
+            }
+            trim(&mut f);
+        }
+        std::mem::swap(&mut f, &mut g);
+    }
+    f.len().saturating_sub(1)
+}
+
+/// Cheap, sound proof that `coeffs` is squarefree over ℚ.
+///
+/// If `g = gcd(p, p')` over ℤ has positive degree, its reduction mod a prime
+/// `q ∤ lc(p)` still has that degree and divides `gcd(p mod q, p' mod q)`. So a
+/// *constant* gcd mod one such prime proves `p` squarefree. `false` proves
+/// nothing (the caller falls back to the exact computation). This avoids the
+/// primitive pseudo-remainder sequence — the dominant cost for a random
+/// high-degree polynomial — in the common squarefree case.
+fn certified_squarefree(coeffs: &[Integer]) -> bool {
+    let lc = match coeffs.last() {
+        Some(l) => l,
+        None => return false,
+    };
+    for &q in CERTIFICATE_PRIMES.iter() {
+        if lc.is_divisible_u(q as u32) {
+            continue;
+        }
+        let red = |c: &Integer| -> u64 { c.mod_u(q as u32) as u64 };
+        let f: Vec<u64> = coeffs.iter().map(red).collect();
+        let g: Vec<u64> = coeffs
+            .iter()
+            .enumerate()
+            .skip(1)
+            .map(|(i, c)| red(c) * (i as u64 % q) % q)
+            .collect();
+        if gcd_degree_mod_q(f, g, q) == 0 {
+            return true;
+        }
+    }
+    false
+}
+
 /// Extract the squarefree part `p / gcd(p, p')`.
 fn squarefree_part(coeffs: &[Integer]) -> Vec<Integer> {
     if coeffs.len() <= 1 {
+        return coeffs.to_vec();
+    }
+    if certified_squarefree(coeffs) {
         return coeffs.to_vec();
     }
     let dp = derivative_coeffs(coeffs);
@@ -636,6 +732,9 @@ fn isolate_positive_roots(coeffs: Vec<Integer>) -> Vec<RootInterval> {
     let mut iters = 0usize;
 
     while let Some(mut frame) = stack.pop() {
+        if crate::budget::interrupted() {
+            break;
+        }
         iters += 1;
         if iters > max_iters {
             break;
@@ -880,6 +979,9 @@ fn exact_rational_root(coeffs: &[Integer], iv: &RootInterval) -> Option<rug::Rat
     // Narrow until at most one multiple of 1/lc can remain inside.
     let target = rug::Rational::from((Integer::from(1), lc.clone()));
     for _ in 0..RATIONAL_RECOVERY_BISECTIONS {
+        if crate::budget::interrupted() {
+            return None;
+        }
         if hi.clone() - lo.clone() < target {
             break;
         }
@@ -1010,6 +1112,9 @@ pub fn real_roots(poly: &UniPoly) -> Result<Vec<RootInterval>, RealRootError> {
         if iv.lo == iv.hi {
             continue;
         }
+        if crate::budget::interrupted() {
+            break;
+        }
         if let Some(r) = exact_rational_root(&working, iv) {
             *iv = RootInterval::new(r.clone(), r);
         }
@@ -1017,6 +1122,59 @@ pub fn real_roots(poly: &UniPoly) -> Result<Vec<RootInterval>, RealRootError> {
 
     result.sort_by(|a, b| a.lo.partial_cmp(&b.lo).unwrap_or(std::cmp::Ordering::Equal));
     Ok(result)
+}
+
+/// Error from [`try_real_roots`] / [`try_real_roots_symbolic`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TryRealRootsError {
+    /// The same errors [`real_roots`] reports.
+    Root(RealRootError),
+    /// The active [`crate::budget::Budget`] stopped the isolation (wall clock,
+    /// step count, cancellation, or `max_bytes` / address-space headroom) before
+    /// it finished. The result would have been partial, so none is returned.
+    /// The binding raises the trip's own `E-BUDGET-*` code.
+    Budget(crate::budget::BudgetTrip),
+}
+
+impl fmt::Display for TryRealRootsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TryRealRootsError::Root(e) => e.fmt(f),
+            TryRealRootsError::Budget(t) => {
+                write!(f, "real root isolation stopped by budget: {t:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for TryRealRootsError {}
+
+/// [`real_roots`] that honours the active [`crate::budget::Budget`].
+///
+/// Every unbounded loop (pseudo-remainder sequence, Taylor shifts, the
+/// Möbius/Descartes frame stack, rational-root recovery) polls the budget, so
+/// a `wall_ms`, `max_steps` or `max_bytes` limit stops the run with
+/// [`TryRealRootsError::Budget`] *before* GMP is asked for an allocation it
+/// cannot satisfy — rather than aborting the process. With no budget active
+/// this is exactly [`real_roots`].
+pub fn try_real_roots(poly: &UniPoly) -> Result<Vec<RootInterval>, TryRealRootsError> {
+    let guard = crate::budget::arm();
+    let out = real_roots(poly);
+    if let Some(trip) = guard.trip() {
+        return Err(TryRealRootsError::Budget(trip));
+    }
+    out.map_err(TryRealRootsError::Root)
+}
+
+/// Symbolic-input form of [`try_real_roots`]; see [`real_roots_symbolic`].
+pub fn try_real_roots_symbolic(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Result<Vec<RootInterval>, TryRealRootsError> {
+    let poly = UniPoly::from_symbolic_clear_denoms(expr, var, pool)
+        .map_err(|e| TryRealRootsError::Root(RealRootError::NotAPolynomial(e)))?;
+    try_real_roots(&poly)
 }
 
 /// Isolate all real roots of a symbolic expression in `var`.
@@ -1626,5 +1784,90 @@ mod tests {
         assert_eq!(roots.len(), 1);
         let ball = refine_root(&poly, &roots[0], 53);
         assert!(ball.contains(3.0), "refined ball must contain x=3");
+    }
+
+    // ---- X12: budget honouring + squarefree certificate ----
+
+    fn lcg_poly(deg: usize, seed: u64) -> UniPoly {
+        let mut st = seed;
+        let c: Vec<i64> = (0..=deg)
+            .map(|_| {
+                st = st
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                ((st >> 33) % 19) as i64 - 9
+            })
+            .collect();
+        let mut c = c;
+        if c[deg] == 0 {
+            c[deg] = 1;
+        }
+        make_poly(&c)
+    }
+
+    #[test]
+    fn certificate_accepts_squarefree_rejects_repeated() {
+        let sq: Vec<Integer> = [-1i64, -1, 0, 0, 0, 1]
+            .iter()
+            .map(|&v| Integer::from(v))
+            .collect();
+        assert!(certified_squarefree(&sq));
+        // (x-1)^2 (x+2) = x^3 - 3x + 2
+        let rep: Vec<Integer> = [2i64, -3, 0, 1].iter().map(|&v| Integer::from(v)).collect();
+        assert!(!certified_squarefree(&rep));
+    }
+
+    #[test]
+    fn try_real_roots_stops_on_wall_budget() {
+        let poly = lcg_poly(1500, 2);
+        let _g = crate::budget::enter(
+            crate::budget::Budget::new().with_wall(std::time::Duration::from_millis(100)),
+        );
+        let t = std::time::Instant::now();
+        let r = try_real_roots(&poly);
+        assert!(matches!(r, Err(TryRealRootsError::Budget(_))), "{r:?}");
+        assert!(t.elapsed().as_secs() < 20);
+    }
+
+    #[test]
+    fn try_real_roots_stops_on_step_budget() {
+        let poly = lcg_poly(300, 7);
+        let _g = crate::budget::enter(crate::budget::Budget::new().with_max_steps(5));
+        assert!(matches!(
+            try_real_roots(&poly),
+            Err(TryRealRootsError::Budget(_))
+        ));
+    }
+
+    #[test]
+    fn try_real_roots_without_budget_matches_real_roots() {
+        let poly = lcg_poly(40, 11);
+        let a = real_roots(&poly).unwrap();
+        let b = try_real_roots(&poly).unwrap();
+        assert_eq!(a.len(), b.len());
+        for (x, y) in a.iter().zip(b.iter()) {
+            assert_eq!(x.lo, y.lo);
+            assert_eq!(x.hi, y.hi);
+        }
+    }
+
+    #[test]
+    fn wilkinson_15_all_integer_roots() {
+        // prod_{k=1}^{15} (x - k); every coefficient fits an i64.
+        let mut c: Vec<i64> = vec![1];
+        for k in 1..=15i64 {
+            let mut n = vec![0i64; c.len() + 1];
+            for (i, ci) in c.iter().enumerate() {
+                n[i + 1] += ci;
+                n[i] -= k * ci;
+            }
+            c = n;
+        }
+        let r = real_roots(&make_poly(&c)).unwrap();
+        assert_eq!(r.len(), 15);
+        for (i, iv) in r.iter().enumerate() {
+            assert_eq!(iv.lo, rug::Rational::from(i as i64 + 1));
+            assert_eq!(iv.hi, iv.lo);
+        }
     }
 }

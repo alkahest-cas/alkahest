@@ -29,8 +29,6 @@ use alkahest_core::{
     poly_normal as core_poly_normal,
     product_definite as core_product_definite,
     product_indefinite as core_product_indefinite,
-    // V2-4 — Real root isolation
-    real_roots_symbolic as core_real_roots_symbolic,
     refine_root as core_refine_root,
     residue as core_residue,
     resistor as core_resistor,
@@ -51,6 +49,8 @@ use alkahest_core::{
     together as core_together,
     try_emit_stablehlo as core_try_emit_stablehlo,
     try_grad as core_try_grad,
+    // V2-4 — Real root isolation
+    try_real_roots_symbolic as core_real_roots_symbolic,
     verify_wz_pair_verdict as core_verify_wz_pair_verdict,
     voltage_source as core_voltage_source,
     // Phase 22 — Ball arithmetic
@@ -86,6 +86,7 @@ use alkahest_core::{
     Satisfiability as CoreSatisfiability,
     ScalarODE,
     System as AcausalSystem,
+    TryRealRootsError,
     UniPoly,
     UniPolyFactorModP,
     UniPolyFactorization,
@@ -14646,7 +14647,13 @@ fn py_real_roots(
     let pool = poly.pool.borrow(py);
     guard_depth(&pool.inner, poly.id)?;
     let intervals =
-        core_real_roots_symbolic(poly.id, var.id, &pool.inner).map_err(real_root_error_to_py)?;
+        core_real_roots_symbolic(poly.id, var.id, &pool.inner).map_err(|e| match e {
+            TryRealRootsError::Root(e) => real_root_error_to_py(e),
+            TryRealRootsError::Budget(trip) => Python::with_gil(|py| {
+                let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+                make_structured_err(py, &exc_type, &trip)
+            }),
+        })?;
     Ok(intervals.into_iter().map(core_interval_to_py).collect())
 }
 

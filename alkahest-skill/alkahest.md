@@ -1059,6 +1059,7 @@ routh_hurwitz(x**3 + a*x**2 + pool.integer(3)*x + pool.integer(1), x)
 
 `real_roots` returns isolating intervals, **not** floats — refine them to the
 precision you need instead of assuming a numeric answer.
+Under `context(budget=Budget(wall_ms=..., max_bytes=...))` it stops with `BudgetExceededError` (`E-BUDGET-*`) instead of exhausting memory on very high-degree input.
 
 ### Sparse polynomial algorithms
 
