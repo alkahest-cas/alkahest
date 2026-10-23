@@ -1040,7 +1040,15 @@ fn fmt_data(data: &ExprData, pool: &ExprPool, f: &mut fmt::Formatter<'_>) -> fmt
                 if i > 0 {
                     write!(f, " * ")?;
                 }
-                write!(f, "{}", pool.display(arg))?;
+                // `a * 1/2` reads back as `(a * 1) / 2` — a different tree
+                // (left-associative `*` and `/`).  A rational that is not the
+                // leading factor is parenthesised so the text re-reads as the
+                // same product.
+                if i > 0 && pool.with(arg, |d| matches!(d, ExprData::Rational(_))) {
+                    write!(f, "({})", pool.display(arg))?;
+                } else {
+                    write!(f, "{}", pool.display(arg))?;
+                }
             }
             write!(f, ")")
         }

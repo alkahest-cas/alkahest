@@ -239,6 +239,18 @@ fn tokenize(src: &str) -> Result<Vec<Token>, ParseError> {
             continue;
         }
 
+        // `∞` is how `ExprDisplay` prints the pool's `+∞` atom, so that text
+        // reads back as the same node as the ASCII spelling `oo`.
+        if src[pos..].starts_with('\u{221e}') {
+            let len = '\u{221e}'.len_utf8();
+            tokens.push(Token {
+                tok: Tok::Ident(src[pos..pos + len].to_owned()),
+                offset: pos,
+            });
+            pos += len;
+            continue;
+        }
+
         // `**` must come before `*`
         if b == b'*' && pos + 1 < n && bytes[pos + 1] == b'*' {
             tokens.push(Token {
@@ -617,11 +629,27 @@ impl<'a> Parser<'a> {
                     // Look up in caller-supplied map, or intern a new Real symbol.
                     let id = if let Some(&id) = self.symbols.get(&name) {
                         id
-                    } else if name == "oo" {
+                    } else if name == "oo" || name == "\u{221e}" {
                         // SymPy's spelling of +∞. As a plain symbol it slipped
                         // through every `hi == pos_infinity()` check and came
                         // back substituted into closed forms (`r^(1 + oo)`).
                         pool.pos_infinity()
+                    } else if name == "I" {
+                        // The imaginary unit is a `Domain::Complex` atom, and
+                        // that is what `ExprDisplay` prints as `I`.  Read as an
+                        // ordinary real symbol it silently changed meaning
+                        // (`is_zero(I**2 + 1)` is True, but of the re-parsed
+                        // text False).  A caller who wants a *variable* called
+                        // `I` binds it in `symbols`, which wins above.
+                        let id = pool.imaginary_unit();
+                        self.symbols.insert(name, id);
+                        id
+                    } else if name == "E" {
+                        // Euler's number, SymPy's spelling of `exp(1)`; the
+                        // pool has no atom for it.  Same override rule as `I`.
+                        let id = pool.func("exp", vec![pool.integer(1_i32)]);
+                        self.symbols.insert(name, id);
+                        id
                     } else {
                         let id = pool.symbol(name.clone(), Domain::Real);
                         self.symbols.insert(name, id);
@@ -683,6 +711,18 @@ impl<'a> Parser<'a> {
             }
             Tok::Slash => {
                 let right = self.parse_expr(BP_MUL)?;
+                // `3/4` between two integer literals is the exact rational
+                // `3/4` — what `ExprDisplay` prints a `Rational` as, so the
+                // text reads back as the node it came from.  (A quotient that
+                // is a whole number, or a zero divisor, takes the general
+                // path below.)
+                if let (ExprData::Integer(n), ExprData::Integer(d)) =
+                    (pool.get(left), pool.get(right))
+                {
+                    if d.0 != 0 && !n.0.is_divisible(&d.0) {
+                        return Ok(pool.rational(n.0, d.0));
+                    }
+                }
                 // left / right  →  left * right^(-1)
                 let neg1 = pool.integer(-1i64);
                 let inv = pool.pow(right, neg1);
@@ -1247,17 +1287,14 @@ mod tests {
     }
 
     /// `-1/2` is `(-1)/2`, not `-(1/2)`: prefix `-` binds tighter than `/`, so
-    /// the fold sees the literal `1` and the division is applied afterwards.
-    /// The exponent is still var-free and negative, which is all the detectors
-    /// downstream ask of it.
+    /// the fold sees the literal `-1` and the division of two integer literals
+    /// is then the exact rational `-1/2` — the node `ExprDisplay` prints as
+    /// `-1/2`, so the exponent reads back as itself.
     #[test]
     fn a_negative_rational_exponent_keeps_its_value() {
         let (pool, x, mut syms) = pool_and_x();
         let e = parse("x^(-1/2)", &pool, &mut syms).unwrap();
-        let expected_exp = pool.mul(vec![
-            pool.integer(-1i64),
-            pool.pow(pool.integer(2i64), pool.integer(-1i64)),
-        ]);
+        let expected_exp = pool.rational(-1, 2);
         assert_eq!(e, pool.pow(x, expected_exp));
         // `1/sqrt(x)` is *not* the same tree: `sqrt` is a `Func`, not a `Pow`.
         // Pinned so nobody reads the test above as claiming more than it does.
@@ -1976,6 +2013,129 @@ mod canonical_input_tests {
         ] {
             let err = p(src, &pool).expect_err(src);
             assert_eq!(err.code(), "E-PARSE-002", "{src}: {err}");
+        }
+    }
+    // -----------------------------------------------------------------------
+    // Named constants round-trip (report N10)
+    // -----------------------------------------------------------------------
+
+    /// Every constant the printer can emit reads back as the same node.
+    #[test]
+    fn named_constants_round_trip() {
+        let pool = ExprPool::new();
+        for name in [
+            "pi",
+            "EulerGamma",
+            "Catalan",
+            "Glaisher",
+            "GoldenRatio",
+            "I",
+            "E",
+            "oo",
+        ] {
+            let first = parse(name, &pool, &mut HashMap::new()).unwrap();
+            let text = pool.display(first).to_string();
+            let again = parse(&text, &pool, &mut HashMap::new()).unwrap();
+            assert_eq!(first, again, "{name} printed as {text} re-read differently");
+        }
+        let i = parse("I", &pool, &mut HashMap::new()).unwrap();
+        assert!(pool.is_imaginary_unit(i));
+        let inf = parse("\u{221e}", &pool, &mut HashMap::new()).unwrap();
+        assert_eq!(inf, pool.pos_infinity());
+        let e = parse("E", &pool, &mut HashMap::new()).unwrap();
+        assert_eq!(e, pool.func("exp", vec![pool.integer(1_i32)]));
+    }
+
+    /// A symbol the caller binds wins over a reserved name.
+    #[test]
+    fn a_bound_symbol_overrides_a_reserved_name() {
+        let pool = ExprPool::new();
+        for name in ["I", "E", "oo"] {
+            let v = pool.symbol(format!("v_{name}"), Domain::Real);
+            let mut syms = HashMap::from([(name.to_owned(), v)]);
+            assert_eq!(parse(name, &pool, &mut syms).unwrap(), v);
+        }
+    }
+
+    mod roundtrip_prop {
+        use super::*;
+        use proptest::prelude::*;
+
+        #[derive(Debug, Clone)]
+        enum T {
+            Int(i64),
+            Rat(i64, i64),
+            Sym(u8),
+            Const(u8),
+            Neg(Box<T>),
+            Add(Vec<T>),
+            Mul(Vec<T>),
+            Pow(Box<T>, Box<T>),
+            F(u8, Box<T>),
+        }
+
+        const CONSTS: [&str; 8] = [
+            "pi",
+            "EulerGamma",
+            "Catalan",
+            "Glaisher",
+            "GoldenRatio",
+            "I",
+            "E",
+            "oo",
+        ];
+        const FUNCS: [&str; 14] = [
+            "sin", "cos", "tan", "exp", "log", "sqrt", "sinh", "cosh", "tanh", "atan", "erf",
+            "gamma", "abs", "digamma",
+        ];
+
+        fn tree() -> impl Strategy<Value = T> {
+            let leaf = prop_oneof![
+                (-9i64..10).prop_map(T::Int),
+                ((-9i64..10), (2i64..10)).prop_map(|(a, b)| T::Rat(a, b)),
+                (0u8..3).prop_map(T::Sym),
+                (0u8..CONSTS.len() as u8).prop_map(T::Const),
+            ];
+            leaf.prop_recursive(4, 24, 3, |inner| {
+                prop_oneof![
+                    inner.clone().prop_map(|t| T::Neg(Box::new(t))),
+                    prop::collection::vec(inner.clone(), 2..4).prop_map(T::Add),
+                    prop::collection::vec(inner.clone(), 2..4).prop_map(T::Mul),
+                    (inner.clone(), inner.clone())
+                        .prop_map(|(a, b)| T::Pow(Box::new(a), Box::new(b))),
+                    ((0u8..FUNCS.len() as u8), inner).prop_map(|(f, a)| T::F(f, Box::new(a))),
+                ]
+            })
+        }
+
+        fn build(t: &T, pool: &ExprPool) -> ExprId {
+            match t {
+                T::Int(n) => pool.integer(*n),
+                T::Rat(a, b) => pool.rational(*a, *b),
+                T::Sym(i) => pool.symbol(["x", "y", "z"][*i as usize], Domain::Real),
+                T::Const(i) => parse(CONSTS[*i as usize], pool, &mut HashMap::new()).unwrap(),
+                T::Neg(a) => {
+                    let a = build(a, pool);
+                    pool.mul(vec![pool.integer(-1_i32), a])
+                }
+                T::Add(xs) => pool.add(xs.iter().map(|x| build(x, pool)).collect()),
+                T::Mul(xs) => pool.mul(xs.iter().map(|x| build(x, pool)).collect()),
+                T::Pow(a, b) => pool.pow(build(a, pool), build(b, pool)),
+                T::F(f, a) => pool.func(FUNCS[*f as usize], vec![build(a, pool)]),
+            }
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig::with_cases(2000))]
+            #[test]
+            fn print_then_parse_is_identity(t in tree()) {
+                let pool = ExprPool::new();
+                let e = build(&t, &pool);
+                let text = pool.display(e).to_string();
+                let back = parse(&text, &pool, &mut HashMap::new())
+                    .unwrap_or_else(|err| panic!("{text} must parse: {err}"));
+                prop_assert_eq!(back, e, "{} re-read as {}", text, pool.display(back));
+            }
         }
     }
 }

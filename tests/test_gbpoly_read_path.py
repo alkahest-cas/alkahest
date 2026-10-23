@@ -158,7 +158,7 @@ def test_reduce_accepts_expr_and_gbpoly(circle_line):
 
     assert from_expr.terms() == from_poly.terms()
     # x**3 = y*y**2 = y/2 on the intersection.
-    assert str(from_expr.to_expr()) == "(y * 1/2)"
+    assert str(from_expr.to_expr()) == "(y * (1/2))"
 
 
 def test_compute_raw_keeps_the_variable_context(circle_line):

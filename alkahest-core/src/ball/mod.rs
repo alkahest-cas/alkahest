@@ -1220,7 +1220,9 @@ pub(crate) fn pi_ball(prec: u32) -> ArbBall {
 /// as [`pi_ball`] does); Glaisher's `A` from Arb's `arb_const_glaisher`, so it
 /// declines in a build without Arb rather than guessing.
 pub(crate) fn named_constant_ball(name: &str, prec: u32) -> Option<ArbBall> {
-    use crate::eval::symbols::{CATALAN_NAME, EULER_GAMMA_NAME, GLAISHER_NAME, PI_NAME};
+    use crate::eval::symbols::{
+        CATALAN_NAME, EULER_GAMMA_NAME, GLAISHER_NAME, GOLDEN_RATIO_NAME, PI_NAME,
+    };
     let mpfr = |c: rug::float::Constant| {
         let mut b = ArbBall {
             mid: Float::with_val(prec, c),
@@ -1235,6 +1237,20 @@ pub(crate) fn named_constant_ball(name: &str, prec: u32) -> Option<ArbBall> {
         EULER_GAMMA_NAME => Some(mpfr(rug::float::Constant::Euler)),
         CATALAN_NAME => Some(mpfr(rug::float::Constant::Catalan)),
         GLAISHER_NAME => glaisher_ball(prec),
+        GOLDEN_RATIO_NAME => {
+            // (1 + √5)/2 at working precision + 8 guard bits, then widened.
+            let wp = prec + 8;
+            let mut v = Float::with_val(wp, 5u32).sqrt();
+            v += 1u32;
+            v /= 2u32;
+            let mut b = ArbBall {
+                mid: Float::with_val(prec, &v),
+                rad: Float::new(prec),
+                prec,
+            };
+            b.add_rounding_error();
+            Some(b)
+        }
         other => {
             let n = crate::eval::symbols::stieltjes_index(other)?;
             crate::specfun::numeric::stieltjes_ball(n, prec)

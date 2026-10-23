@@ -212,7 +212,7 @@ _TOKEN_RE = re.compile(
       (?P<num>   \d+(?:\.\d*)?(?:[eE][+\-]?\d+)?   # int or float: 3  3.14  1e5  1.5e-3
                | \.\d+(?:[eE][+\-]?\d+)?            # .5  .5e3
       )
-    | (?P<ident> [A-Za-z_][A-Za-z0-9_]*)            # identifier
+    | (?P<ident> [A-Za-z_][A-Za-z0-9_]*|∞)     # identifier, or the printed +oo
     | (?P<pow2>  \*\*)                               # ** (must come before *)
     | (?P<op>    [+\-*/^(),])                        # single-char ops and delimiters
     | (?P<ws>    [ \t\r\n]+)                         # whitespace (skip)
@@ -414,7 +414,21 @@ class _Parser:
                 # Division goes through `Expr.__truediv__`, which owns the
                 # literal-zero check; the quotient then heads the next run.
                 try:
-                    factors = [self._product(factors) / right]
+                    num = self._product(factors)
+                    # ``3/4`` between two integer literals is the exact
+                    # rational ``3/4`` (what ``str`` prints a rational as).
+                    # Mirrors the Rust parser's ``Tok::Slash`` arm.
+                    folded = None
+                    if type(num) is _Expr and type(right) is _Expr:
+                        n_node, d_node = num._node_exact(), right._node_exact()
+                        if (
+                            n_node[0] == "integer"
+                            and d_node[0] == "integer"
+                            and d_node[1] != 0
+                            and n_node[1] % d_node[1] != 0
+                        ):
+                            folded = self._pool.rational(n_node[1], d_node[1])
+                    factors = [folded if folded is not None else num / right]
                 except ZeroDivisionError:
                     raise _DivisionByZeroParseError(
                         "division by zero",
@@ -481,12 +495,22 @@ class _Parser:
             # Symbol: look up in the caller-supplied map first, then intern.
             sym = self._symbols.get(text)
             if sym is None:
-                if text == "oo":
+                if text == "oo" or text == "∞":
                     # SymPy's spelling of +∞.  As a plain symbol it slipped past
                     # every ``hi == pool.pos_infinity()`` check and came back
                     # substituted into closed forms (``r^(1 + oo)``).
                     return pool.pos_infinity()
-                sym = pool.symbol(text)
+                elif text == "I":
+                    # The imaginary unit (``Domain.Complex``), which is what
+                    # ``str`` prints as ``I``.  A real symbol here silently
+                    # changed the meaning of re-parsed text.  A caller who
+                    # wants a variable named ``I`` binds it in ``symbols``.
+                    sym = pool.imaginary_unit()
+                elif text == "E":
+                    # Euler's number (SymPy's spelling of ``exp(1)``).
+                    sym = _apply_func("exp", [pool.integer(1)], offset, pool)
+                else:
+                    sym = pool.symbol(text)
                 self._symbols[text] = sym
             return sym
 
@@ -890,8 +914,16 @@ def parse(source: str, pool, symbols: dict[str, object] | None = None):
     symbols : dict[str, Expr] | None
         Optional pre-bound symbol map.  Identifiers not in the map are
         created via ``pool.symbol(name)`` and added to the map so they are
-        reused within the same call.  ``oo`` (when not in the map) is
-        :meth:`ExprPool.pos_infinity`, as in SymPy.
+        reused within the same call.
+
+        Reserved names, read as constants when *not* in the map (so that
+        ``parse(str(e)) == e``): ``I`` is :meth:`ExprPool.imaginary_unit`,
+        ``E`` is ``exp(1)``, ``oo`` and ``\u221e`` are
+        :meth:`ExprPool.pos_infinity`; ``pi``, ``EulerGamma``, ``Catalan``,
+        ``Glaisher`` and ``GoldenRatio`` are ordinary real symbols that every
+        evaluator knows the value of.  To use one of these names as a
+        *variable*, bind it: ``parse("E*x", pool, {"E": pool.symbol("E")})``.
+        ``3/4`` between integer literals is the exact rational ``3/4``.
 
     Returns
     -------

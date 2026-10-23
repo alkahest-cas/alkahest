@@ -74,6 +74,9 @@ pub(crate) const EULER_GAMMA_NAME: &str = "EulerGamma";
 pub(crate) const CATALAN_NAME: &str = "Catalan";
 /// The name the Glaisher–Kinkelin constant `A = 1.2824…` is interned under.
 pub(crate) const GLAISHER_NAME: &str = "Glaisher";
+/// The name the golden ratio `φ = (1 + √5)/2 = 1.6180…` is interned under
+/// (SymPy's spelling).
+pub(crate) const GOLDEN_RATIO_NAME: &str = "GoldenRatio";
 
 /// Prefix of the Stieltjes constants `γₙ` (`n ≥ 1`), interned as
 /// `StieltjesGamma1`, `StieltjesGamma2`, … (`γ₀` is `EulerGamma`).
@@ -123,7 +126,7 @@ const STIELTJES_F64: [f64; MAX_STIELTJES as usize] = [
 ];
 
 /// The `f64` value of a named real constant — `π`, `γ` (`EulerGamma`),
-/// Catalan's `G` and Glaisher's `A` — or `None` for any other name.
+/// Catalan's `G`, Glaisher's `A` and the golden ratio `φ` (`GoldenRatio`) — or `None` for any other name.
 ///
 /// Like `π`, the other three are ordinary [`ExprData::Symbol`] nodes: they
 /// print, parse and substitute as symbols, and every evaluator resolves them
@@ -136,6 +139,7 @@ pub(crate) fn constant_value_f64(name: &str) -> Option<f64> {
         EULER_GAMMA_NAME => Some(0.577_215_664_901_532_9),
         CATALAN_NAME => Some(0.915_965_594_177_219),
         GLAISHER_NAME => Some(1.282_427_129_100_622_6),
+        GOLDEN_RATIO_NAME => Some(1.618_033_988_749_895),
         other => stieltjes_index(other).map(|n| STIELTJES_F64[n as usize - 1]),
     }
 }

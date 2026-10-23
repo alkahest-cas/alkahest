@@ -414,7 +414,8 @@ def surd(e) -> tuple[F, int]:
         if part.endswith("^(1/2)"):
             r *= int(part[: -len("^(1/2)")])
         else:
-            q *= F(part)
+            # A rational that is not the leading factor prints parenthesised.
+            q *= F(part.strip("()"))
     return q, r
 
 
