@@ -668,16 +668,23 @@ fn sign_from_predicate(predicate: ExprId, subject: ExprId, pool: &ExprPool) -> O
     }
     let (lhs, rhs) = (args[0], args[1]);
     // Orient the comparison so `subject` is on the left, mirroring the operator.
+    let mirrored = |kind| match kind {
+        PredicateKind::Lt => PredicateKind::Gt,
+        PredicateKind::Le => PredicateKind::Ge,
+        PredicateKind::Gt => PredicateKind::Lt,
+        PredicateKind::Ge => PredicateKind::Le,
+        other => other,
+    };
     let kind = if lhs == subject && is_zero(rhs, pool) {
         kind
     } else if rhs == subject && is_zero(lhs, pool) {
-        match kind {
-            PredicateKind::Lt => PredicateKind::Gt,
-            PredicateKind::Le => PredicateKind::Ge,
-            PredicateKind::Gt => PredicateKind::Lt,
-            PredicateKind::Ge => PredicateKind::Le,
-            other => other,
-        }
+        mirrored(kind)
+    } else if is_difference_of(subject, lhs, rhs, pool) {
+        // `a > b` says `a − b > 0`: the form a comparison of two rates takes
+        // once it reaches the sign algebra (`k₂ − k₁` for `k₂ > k₁`).
+        kind
+    } else if is_difference_of(subject, rhs, lhs, pool) {
+        mirrored(kind)
     } else {
         return None;
     };
@@ -722,6 +729,29 @@ fn is_zero(expr: ExprId, pool: &ExprPool) -> bool {
         ExprData::Rational(value) => value.0 == 0,
         _ => false,
     }
+}
+
+/// `true` when `subject` is literally `a − b`: a two-term sum of `a` and
+/// `−1·b`, in either order. Structural only — no `simplify` here, because
+/// this runs inside the sign algebra that `simplify` itself consults.
+fn is_difference_of(subject: ExprId, a: ExprId, b: ExprId, pool: &ExprPool) -> bool {
+    if is_zero(a, pool) || is_zero(b, pool) {
+        return false;
+    }
+    let ExprData::Add(xs) = pool.get(subject) else {
+        return false;
+    };
+    if xs.len() != 2 {
+        return false;
+    }
+    let is_neg_b = |e: ExprId| match pool.get(e) {
+        ExprData::Mul(fs) if fs.len() == 2 => {
+            let m1 = |f: ExprId| matches!(pool.get(f), ExprData::Integer(n) if n.0 == -1);
+            (m1(fs[0]) && fs[1] == b) || (m1(fs[1]) && fs[0] == b)
+        }
+        _ => false,
+    };
+    (xs[0] == a && is_neg_b(xs[1])) || (xs[1] == a && is_neg_b(xs[0]))
 }
 
 fn push_unique(facts: &mut Vec<SideCondition>, fact: SideCondition) {
@@ -1158,5 +1188,22 @@ mod literal_bound_tests {
         assert_eq!(assumed_sign(r, &pool), Some(Sign::Positive));
         // log r with r > 1/2 is undecided: it straddles r = 1.
         assert_eq!(assumed_sign(pool.func("log", vec![r]), &pool), None);
+    }
+
+    /// `a > b` decides the sign of `a − b` (and of `b − a`): the comparison of
+    /// two rates the Gruntz leading-term analysis needs for `e^{-at} − e^{-bt}`.
+    #[test]
+    fn a_comparison_of_two_symbols_signs_their_difference() {
+        let pool = ExprPool::new();
+        let a = pool.symbol("a", Domain::Positive);
+        let b = pool.symbol("b", Domain::Positive);
+        let neg = |e| pool.mul(vec![pool.integer(-1_i32), e]);
+        let a_minus_b = pool.add(vec![a, neg(b)]);
+        let b_minus_a = pool.add(vec![b, neg(a)]);
+        assert_eq!(assumed_sign(a_minus_b, &pool), None);
+        let ctx = ctx_with(&pool, vec![pool.predicate(PredicateKind::Gt, vec![a, b])]);
+        let _g = enter_assumptions(&ctx, &pool);
+        assert_eq!(assumed_sign(a_minus_b, &pool), Some(Sign::Positive));
+        assert_eq!(assumed_sign(b_minus_a, &pool), Some(Sign::Negative));
     }
 }

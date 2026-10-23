@@ -1478,6 +1478,47 @@ pub(crate) fn enter_coeff_ceiling(ceiling: usize) -> CoeffCeiling {
     })
 }
 
+thread_local! {
+    /// Set when [`taylor_coefficients`] stopped on [`next_step_would_overrun`].
+    static COEFF_OVERRUN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether a coefficient loop on this thread stopped because its next step
+/// would have crossed the ceiling, since the last [`clear_coeff_overrun`].
+/// `limit` reports a failure after such a stop as running out of room
+/// (`E-LIMIT-004`) rather than as "no rule applies".
+pub(crate) fn coeff_overrun_predicted() -> bool {
+    COEFF_OVERRUN.with(|c| c.get())
+}
+
+/// Reset [`coeff_overrun_predicted`]; called at the start of every outermost
+/// `limit`.
+pub(crate) fn clear_coeff_overrun() {
+    COEFF_OVERRUN.with(|c| c.set(false));
+}
+
+/// `true` when a coefficient step growing the pool `GROWTH_FACTOR` times as
+/// much as the last one did (`grown` nodes) would cross the installed
+/// ceiling. Never true without a ceiling.
+///
+/// Stopping there, rather than on the ceiling itself, keeps one runaway
+/// expansion from spending the whole work allowance of the `limit` call it
+/// belongs to — and keeps a single derivative step from overshooting the
+/// ceiling by gigabytes before the next check (`log(e^t)/t` at ∞ aborted the
+/// process on a 14 GB allocation). The expansion route declines with the
+/// prefix it has, and the remaining routes still get their turn.
+fn next_step_would_overrun(pool: &ExprPool, grown: usize) -> bool {
+    const GROWTH_FACTOR: usize = 8;
+    match COEFF_POOL_CEILING.with(|c| c.get()) {
+        Some(ceiling) => {
+            pool.len()
+                .saturating_add(grown.saturating_mul(GROWTH_FACTOR))
+                > ceiling
+        }
+        None => false,
+    }
+}
+
 /// `true` when the installed ceiling has been reached, or the ambient
 /// [`crate::budget`] has been exhausted / cancelled.
 fn coeff_loop_should_stop(pool: &ExprPool) -> bool {
@@ -1511,6 +1552,7 @@ fn taylor_coefficients(
             LAST_REFUSAL.with(|c| c.set(Some(refusal)));
         }
     };
+    let mut step_start = pool.len();
     for k in 0..num {
         if k > 0 && coeff_loop_should_stop(pool) {
             exhausted_at(k);
@@ -1548,6 +1590,19 @@ fn taylor_coefficients(
             out.push(coeff);
         }
         if k + 1 < num {
+            // The ceiling is checked between coefficients, but one derivative
+            // of an expression whose derivatives do not close is a constant
+            // factor larger than the last, and a single step can overshoot the
+            // ceiling by gigabytes before the next check (`log(e^t)/t` at ∞
+            // aborted the process on a 14 GB allocation). Stop when the step
+            // just taken, repeated with that growth, would cross the ceiling.
+            let grown = pool.len().saturating_sub(step_start);
+            if k > 0 && next_step_would_overrun(pool, grown) {
+                COEFF_OVERRUN.with(|c| c.set(true));
+                exhausted_at(k + 1);
+                break;
+            }
+            step_start = pool.len();
             cur = diff(cur, xi, pool)?.value;
         }
     }

@@ -371,6 +371,12 @@ pub(crate) fn coefficient_sign(coeff: ExprId, pool: &ExprPool) -> Option<Sign> {
     None
 }
 
+/// [`factor_sign`] for the Gruntz leading-term analysis, which compares
+/// symbolic powers of ω (`k₂/k₁ − 1`) against zero.
+pub(crate) fn quantity_sign(value: ExprId, pool: &ExprPool) -> Option<Sign> {
+    factor_sign(value, pool)
+}
+
 /// The sign of an arbitrary quantity: structure, the ambient assumptions, or —
 /// when it is a closed constant — its own numeric value.
 ///
@@ -412,6 +418,7 @@ pub fn limit(
     let frame = enter_work_frame(pool);
     if frame.outermost {
         BUDGET_TRIP.with(|c| c.set(None));
+        crate::calculus::series::clear_coeff_overrun();
         MISSING_ASSUMPTION.with(|c| *c.borrow_mut() = None);
     }
     // Bound the Taylor-coefficient loop in `series` for the whole call, not
@@ -534,7 +541,10 @@ fn substitute_assumed_equalities(expr: ExprId, var: ExprId, pool: &ExprPool) -> 
 /// [`LimitError::DepthExceeded`], with [`last_budget_trip`] carrying the
 /// `E-BUDGET-*` cause when there was one.
 fn attribute_failure(e: LimitError, pool: &ExprPool) -> LimitError {
-    if BUDGET_TRIP.with(|c| c.get()).is_some() || work_exhausted(pool) {
+    if BUDGET_TRIP.with(|c| c.get()).is_some()
+        || work_exhausted(pool)
+        || crate::calculus::series::coeff_overrun_predicted()
+    {
         return LimitError::DepthExceeded;
     }
     if let Err(b) = crate::budget::check() {
@@ -967,6 +977,188 @@ fn contains_zero_to_negative_power(expr: ExprId, pool: &ExprPool) -> bool {
     }
 }
 
+/// True when `value` contains a node that denotes no number, however its free
+/// parameters are later chosen: a negative power of something that is exactly
+/// zero, or the `log` of one.
+///
+/// [`contains_zero_to_negative_power`] sees only a literal `0` base. A rule
+/// that substitutes the point into an expression with a parameter in it leaves
+/// the zero *inside* a product instead — the Black–Scholes price at `T → 0`
+/// came back as `erf(log(S/K)·(σ·√0)⁻¹)`, and the numeric half of
+/// [`is_usable_limit_value`] cannot evaluate that (it has `σ` in it) to find
+/// out. "Exactly zero" is a literal zero, a closed subterm the interpreter
+/// evaluates to exactly `0.0` (`√0`, `sin 0`, `1 − 1`), a product with such a
+/// factor, or a positive power of one — positive evidence, never a guess.
+pub(crate) fn has_unusable_node(value: ExprId, pool: &ExprPool) -> bool {
+    fn is_exact_zero(e: ExprId, pool: &ExprPool) -> bool {
+        match pool.get(e) {
+            ExprData::Integer(n) => n.0 == 0,
+            ExprData::Rational(r) => r.0 == 0,
+            ExprData::Mul(xs) => xs.iter().any(|&x| is_exact_zero(x, pool)),
+            ExprData::Pow { base, exp } => {
+                is_negative_or_positive(exp, pool) == Some(true) && is_exact_zero(base, pool)
+            }
+            _ => {
+                is_closed_arithmetic(e, pool)
+                    && crate::jit::eval_interp(e, &HashMap::new(), pool) == Some(0.0)
+            }
+        }
+    }
+    /// `Some(true)` for a positive constant exponent, `Some(false)` for a
+    /// negative one, `None` otherwise.
+    fn is_negative_or_positive(e: ExprId, pool: &ExprPool) -> Option<bool> {
+        match pool.get(e) {
+            ExprData::Integer(n) if n.0 != 0 => Some(n.0 > 0),
+            ExprData::Rational(r) if r.0 != 0 => Some(r.0 > 0),
+            _ if is_closed_arithmetic(e, pool) => {
+                let v = crate::jit::eval_interp(e, &HashMap::new(), pool)?;
+                if v > 0.0 {
+                    Some(true)
+                } else if v < 0.0 {
+                    Some(false)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+    fn walk(e: ExprId, pool: &ExprPool, seen: &mut std::collections::HashSet<ExprId>) -> bool {
+        if !seen.insert(e) {
+            return false;
+        }
+        match pool.get(e) {
+            ExprData::Pow { base, exp } => {
+                (is_negative_or_positive(exp, pool) == Some(false) && is_exact_zero(base, pool))
+                    || walk(base, pool, seen)
+                    || walk(exp, pool, seen)
+            }
+            ExprData::Func { name, args } => {
+                (matches!(name.as_str(), "log" | "ln")
+                    && args.len() == 1
+                    && is_exact_zero(args[0], pool))
+                    || args.iter().any(|&a| walk(a, pool, seen))
+            }
+            ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().any(|&x| walk(x, pool, seen)),
+            _ => false,
+        }
+    }
+    walk(value, pool, &mut std::collections::HashSet::new())
+}
+
+/// `true` when `expr` contains `log(…var…)`.
+fn mentions_log_of(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(expr) {
+        ExprData::Func { name, args } => {
+            (matches!(name.as_str(), "log" | "ln")
+                && args.iter().any(|&a| depends_on(a, var, pool)))
+                || args.iter().any(|&a| mentions_log_of(a, var, pool))
+        }
+        ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().any(|&x| mentions_log_of(x, var, pool)),
+        ExprData::Pow { base, exp } => {
+            mentions_log_of(base, var, pool) || mentions_log_of(exp, var, pool)
+        }
+        _ => false,
+    }
+}
+
+/// `lim_{x→∞} f(x) = lim_{s→∞} f(eˢ)` — Gruntz's "move up a level".
+///
+/// Every scale in an exp-log expression rises one step under `x ↦ eˢ`: `log x`
+/// becomes `s`, `x` becomes the exponential `eˢ` the Gruntz step understands.
+/// Taken only after the plain `x ↦ 1/t` route failed and only for expressions
+/// with a `log` of the variable, which that route's Taylor expansion cannot
+/// see through: `(x − log x)/x` becomes `(eˢ − s)/eˢ → 1`. Bounded by the
+/// recursion depth like every other rewrite here.
+fn try_log_scale_up(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    depth: u32,
+) -> Result<Option<ExprId>, LimitError> {
+    const MAX_SCALE_UPS: usize = 2;
+    let level = SCALE_UPS.with(|c| c.get());
+    if level >= MAX_SCALE_UPS || depth > 24 {
+        return Ok(None);
+    }
+    let s = pool.symbol(format!("__lt_up{level}"), crate::kernel::Domain::Real);
+    let mut m = HashMap::new();
+    m.insert(var, pool.func("exp".to_string(), vec![s]));
+    let lifted = simplify(subs(expr, &m, pool), pool).value;
+    SCALE_UPS.with(|c| c.set(level + 1));
+    let r = limit_inner(
+        lifted,
+        s,
+        pool.pos_infinity(),
+        LimitDirection::Bidirectional,
+        pool,
+        depth + 1,
+    );
+    SCALE_UPS.with(|c| c.set(level));
+    match r {
+        Ok(v) if !depends_on(v, s, pool) => Ok(Some(v)),
+        Ok(_) => Ok(None),
+        Err(LimitError::DepthExceeded) => Err(LimitError::DepthExceeded),
+        Err(_) => Ok(None),
+    }
+}
+
+thread_local! {
+    /// Nesting of [`try_log_scale_up`] on this thread.
+    static SCALE_UPS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// True when `expr` holds a negative power of a literal `0` (a pole left by
+/// substituting the expansion point) outside every head that tames it: a
+/// bounded function (`sin`, `cos`, `tanh`, `atan`, `erf`) or `log`, which grows
+/// slower than every power. Such a pole times a vanishing factor is
+/// indeterminate, whatever `simplify` makes of `0·0⁻¹`.
+pub(crate) fn has_untamed_pole(expr: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(expr) {
+        ExprData::Pow { base, exp } => {
+            let negative = match pool.get(exp) {
+                ExprData::Integer(n) => n.0 < 0,
+                ExprData::Rational(r) => r.0 < 0,
+                _ => false,
+            };
+            // The substituted point need not be a literal: `ξ ↦ 0` in `0 + ξ`
+            // leaves `0 + 0`, which only the interpreter calls zero.
+            let zero_base = matches!(pool.get(base), ExprData::Integer(n) if n.0 == 0)
+                || (is_closed_arithmetic(base, pool)
+                    && crate::jit::eval_interp(base, &HashMap::new(), pool) == Some(0.0));
+            (negative && zero_base) || has_untamed_pole(base, pool) || has_untamed_pole(exp, pool)
+        }
+        ExprData::Func { name, args } => {
+            if matches!(name.as_str(), "sin" | "cos" | "tanh" | "atan" | "erf") {
+                return false;
+            }
+            // `log` of a power-like pole grows slower than the pole, but `log`
+            // of an exponential one (`log(2^{0⁻¹} + 3^{0⁻¹})`) is a pole itself.
+            if matches!(name.as_str(), "log" | "ln") {
+                return args.iter().any(|&a| has_exponential_pole(a, pool));
+            }
+            args.iter().any(|&a| has_untamed_pole(a, pool))
+        }
+        ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().any(|&x| has_untamed_pole(x, pool)),
+        _ => false,
+    }
+}
+
+/// `true` when a pole sits in an exponent: `a^{(…0⁻¹…)}` or `exp(…0⁻¹…)`.
+fn has_exponential_pole(expr: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(expr) {
+        ExprData::Pow { base, exp } => {
+            has_untamed_pole(exp, pool) || has_exponential_pole(base, pool)
+        }
+        ExprData::Func { name, args } => {
+            (name == "exp" && args.iter().any(|&a| has_untamed_pole(a, pool)))
+                || args.iter().any(|&a| has_exponential_pole(a, pool))
+        }
+        ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().any(|&x| has_exponential_pole(x, pool)),
+        _ => false,
+    }
+}
+
 /// `(g^m)^n ↦ g^{m n}` when `m,n ∈ ℤ`, so substitutions like `(1/t)^k` become `t^{-k}` Laurent heads.
 fn flatten_nested_integer_pow(expr: ExprId, pool: &ExprPool) -> ExprId {
     match pool.get(expr) {
@@ -1096,6 +1288,13 @@ fn limit_inner(
         return Ok(r);
     }
 
+    // `Σ cᵢ·x^{rᵢ}` with radicals: read off the top-degree term.
+    if is_pos_infinity(point, pool) {
+        if let Some(r) = crate::calculus::gruntz::generalized_polynomial_limit(expr, var, pool) {
+            return Ok(r);
+        }
+    }
+
     // Gruntz algorithm — best for exp/log expressions at +∞ (runs before the 1/t substitution
     // so the exp structure is still visible in the original variable).
     if is_pos_infinity(point, pool) {
@@ -1124,7 +1323,7 @@ fn limit_inner(
         let after_flatten = flatten_nested_integer_pow(after_subs, pool);
         let after_canon = canonical_polynomial_quotient_in_var(after_flatten, t, pool)?;
         let e2 = simplify(after_canon, pool).value;
-        return limit_inner(
+        let substituted = limit_inner(
             e2,
             t,
             pool.integer(0_i32),
@@ -1132,6 +1331,14 @@ fn limit_inner(
             pool,
             depth + 1,
         );
+        if let Err(e) = &substituted {
+            if !matches!(e, LimitError::DepthExceeded) && mentions_log_of(expr, var, pool) {
+                if let Some(v) = try_log_scale_up(expr, var, pool, depth)? {
+                    return Ok(v);
+                }
+            }
+        }
+        return substituted;
     }
 
     if is_neg_infinity(point, pool) {
@@ -1855,7 +2062,8 @@ fn structurally_positive(e: ExprId, pool: &ExprPool) -> bool {
             }
             structurally_positive(base, pool)
         }
-        ExprData::Mul(xs) => xs.iter().all(|x| structurally_positive(*x, pool)),
+        // A sum of positive terms: `e^{-2t} + e^{-3t}` in `(e^{-2t} + e^{-3t})^{1/t}`.
+        ExprData::Mul(xs) | ExprData::Add(xs) => xs.iter().all(|x| structurally_positive(*x, pool)),
         _ => false,
     }
 }
@@ -2357,6 +2565,13 @@ fn try_direct_substitution(
     if is_zero_times_pole_indeterminate(raw, pool) {
         return None;
     }
+    // A pole in the substituted form is not removed by `simplify` folding it
+    // away: `(e^{-1/u} − e^{-2/u})^u` at `u = 0` is `(e^{-1·0⁻¹} − …)⁰`, which
+    // the power rule `a⁰ = 1` turned into a confident `1` for
+    // `lim_{t→∞} (e^{-t} − e^{-2t})^{1/t}` (true `e^{-1}`).
+    if substitution_is_singular(raw, pool) || has_unusable_node(raw, pool) {
+        return None;
+    }
     let sub = fold_known_reals(simplify(raw, pool).value, pool);
     let dep = depends_on(sub, var, pool);
     let sing = substitution_is_singular(sub, pool);
@@ -2440,7 +2655,7 @@ fn is_usable_limit_value(value: ExprId, pool: &ExprPool) -> bool {
     // The syntactic half, kept because it is the only one that can see through
     // a free parameter: `k·0⁻¹` is unusable however unknown `k` is, and the
     // numeric test below cannot evaluate it to find out.
-    if contains_zero_to_negative_power(value, pool) {
+    if contains_zero_to_negative_power(value, pool) || has_unusable_node(value, pool) {
         return false;
     }
     if is_pos_infinity(value, pool) || is_neg_infinity(value, pool) {
@@ -2792,7 +3007,15 @@ fn has_essential_singularity(expr: ExprId, var: ExprId, point: ExprId, pool: &Ex
             .iter()
             .any(|&x| has_essential_singularity(x, var, point, pool)),
         ExprData::Pow { base, exp } => {
-            has_essential_singularity(base, var, point, pool)
+            // `a^{g}` with a singular exponent is `exp(g·log a)` in disguise:
+            // `2^{1/t}` at `t = 0` is as essential as `e^{1/t}`.
+            let singular_exponent = depends_on(exp, var, pool) && {
+                let mut m = HashMap::with_capacity(1);
+                m.insert(var, point);
+                substitution_is_singular(subs(exp, &m, pool), pool)
+            };
+            singular_exponent
+                || has_essential_singularity(base, var, point, pool)
                 || has_essential_singularity(exp, var, point, pool)
         }
         _ => false,
@@ -2813,6 +3036,16 @@ fn expansion_to_limit(
 
     let mut idx = 0usize;
     while idx < coeffs.len() && is_zero_like(coeffs[idx], pool) {
+        // A coefficient that is "zero" only because `simplify` folded
+        // `0·(pole)` to `0` is not zero: `t·(√(1/t) − 1/t)` at `t = 0` has
+        // the constant term `0·(√(0⁻¹) − 0⁻¹)`, and skipping it as zero made
+        // `lim_{x→∞} (√x − x)/x` come back `0` (true −1), and with it
+        // `(x − log x)/x`. Only a pole inside a bounded or slower-than-every-
+        // power head (`x·sin(1/x)`, `s·log(1/s)`) is genuinely beaten by the
+        // vanishing factor.
+        if has_untamed_pole(coeffs[idx], pool) {
+            return Ok(None);
+        }
         idx += 1;
     }
     if idx >= coeffs.len() {
@@ -2915,6 +3148,27 @@ mod lcm_small_tests {
 mod tests {
     use super::*;
     use crate::kernel::Domain;
+
+    /// report10-21 N12: `(σ·√0)⁻¹` is not a value however `σ` is chosen, and
+    /// the numeric half of the usability check cannot see it (it has `σ` in
+    /// it). Neither can `log(σ·0)`. A nonzero product is still fine.
+    #[test]
+    fn a_zero_inside_a_product_is_not_a_value() {
+        let p = ExprPool::new();
+        let s = p.symbol("sigma", Domain::Positive);
+        let sqrt0 = p.func("sqrt".to_string(), vec![p.integer(0)]);
+        let bad = p.pow(p.mul(vec![s, sqrt0]), p.integer(-1));
+        assert!(has_unusable_node(bad, &p));
+        assert!(!is_usable_limit_value(
+            p.func("erf".to_string(), vec![bad]),
+            &p
+        ));
+        let bad_log = p.func("log".to_string(), vec![p.mul(vec![s, p.integer(0)])]);
+        assert!(has_unusable_node(bad_log, &p));
+        let fine = p.pow(p.mul(vec![s, p.integer(2)]), p.integer(-1));
+        assert!(!has_unusable_node(fine, &p));
+        assert!(is_usable_limit_value(fine, &p));
+    }
 
     /// Audit C4: an undefined constant makes the expression undefined at every
     /// point, and differentiating the unevaluated `0⁻¹` for Taylor
