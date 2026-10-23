@@ -49,9 +49,9 @@ use alkahest_core::{
     together as core_together,
     try_emit_stablehlo as core_try_emit_stablehlo,
     try_grad as core_try_grad,
-    verify_wz_pair_verdict as core_verify_wz_pair_verdict,
     // V2-4 — Real root isolation
     try_real_roots_symbolic as core_real_roots_symbolic,
+    verify_wz_pair_verdict as core_verify_wz_pair_verdict,
     voltage_source as core_voltage_source,
     // Phase 22 — Ball arithmetic
     ArbBall as CoreArbBall,
