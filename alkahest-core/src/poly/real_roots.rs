@@ -1052,6 +1052,12 @@ pub fn real_roots(poly: &UniPoly) -> Result<Vec<RootInterval>, RealRootError> {
 
     // Squarefree part.
     let sq = squarefree_part(&coeffs);
+    // A budget armed by the caller tripped inside the gcd: `sq` is a partial
+    // value (possibly empty) that the caller will discard, so stop before
+    // indexing it. Unarmed, `sq` of a nonzero polynomial is never empty.
+    if crate::budget::interrupt_pending() || sq.is_empty() {
+        return Ok(Vec::new());
+    }
 
     // Check for root at x = 0 (constant term = 0).
     let mut result = Vec::new();
@@ -1827,6 +1833,50 @@ mod tests {
         let r = try_real_roots(&poly);
         assert!(matches!(r, Err(TryRealRootsError::Budget(_))), "{r:?}");
         assert!(t.elapsed().as_secs() < 20);
+    }
+
+    #[test]
+    fn try_real_roots_never_panics_when_the_budget_trips_mid_gcd() {
+        // Not squarefree, so the certificate fails and the gcd path runs; sweep
+        // the step budget so it trips at every stage, including inside the
+        // pseudo-remainder sequence and the exact division.
+        let mut st = 3u64;
+        let c: Vec<i64> = (0..=40)
+            .map(|k| {
+                st = st
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                if k == 40 {
+                    1
+                } else {
+                    ((st >> 33) % 19) as i64 - 9
+                }
+            })
+            .collect();
+        let mut sqc = vec![0i64; 2 * c.len() - 1];
+        for (i, a) in c.iter().enumerate() {
+            for (j, b) in c.iter().enumerate() {
+                sqc[i + j] += a * b;
+            }
+        }
+        let sq = make_poly(&sqc);
+        let full = real_roots(&sq).unwrap();
+        for steps in 1..400 {
+            let _g = crate::budget::enter(crate::budget::Budget::new().with_max_steps(steps));
+            match try_real_roots(&sq) {
+                Ok(r) => assert_eq!(
+                    r.iter()
+                        .map(|iv| (iv.lo.clone(), iv.hi.clone()))
+                        .collect::<Vec<_>>(),
+                    full.iter()
+                        .map(|iv| (iv.lo.clone(), iv.hi.clone()))
+                        .collect::<Vec<_>>(),
+                    "steps={steps}"
+                ),
+                Err(TryRealRootsError::Budget(_)) => {}
+                Err(e) => panic!("steps={steps}: {e:?}"),
+            }
+        }
     }
 
     #[test]
