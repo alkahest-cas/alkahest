@@ -116,8 +116,10 @@ def test_bateman_and_black_scholes_match_numpy():
     )
     # Absolute: deep out-of-the-money prices are differences of near-equal terms.
     assert float(np.max(np.abs(out - ref))) < 1e-9
-    # `erf` used to push the whole expression off the JIT.
-    assert f._batch_tier in (None, "cranelift", "llvm") or f.tier in ("cranelift", "llvm")
+    # `erf` used to push the whole expression off the JIT. Only checkable in a
+    # build that has a JIT: the nightly hypothesis shard builds without one.
+    if getattr(ak, "jit_is_available", lambda: False)():
+        assert f._batch_tier in (None, "cranelift", "llvm") or f.tier in ("cranelift", "llvm")
 
 
 # ---------------------------------------------------------------------------
