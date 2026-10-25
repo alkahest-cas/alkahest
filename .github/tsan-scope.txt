@@ -79,3 +79,11 @@ numfield::tests
 # alive on another thread keeps its block, which FLINT counts with an atomic.
 # Its test spawns a thread that makes a big integer and exits.
 flint::thread_cleanup::
+
+# ── Multimodular Gröbner bases: primes and verification on a Rayon pool ────
+# `poly::groebner::multimodular::run_jobs` computes several primes at once on
+# clones of the monomial table, and checks verification S-pairs in parallel
+# against a shared `&Divisors`; each worker enters the caller's remaining
+# budget. Its tests (cyclic/katsura, random ideals) exercise both paths when
+# the `parallel` feature is on.
+poly::groebner::multimodular::

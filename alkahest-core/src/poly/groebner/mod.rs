@@ -1,7 +1,8 @@
-//! Gröbner basis computation over ℚ — Buchberger algorithm
-//! ([`buchberger::compute_buchberger_basis`]), Faugère F5
-//! ([`compute_groebner_basis_f5`]), and the grevlex-then-FGLM strategy
-//! ([`GroebnerBasis::compute_lex`]).
+//! Gröbner basis computation over ℚ — a multimodular engine (F4 modulo
+//! word-size primes, lifted and verified over ℚ; the default under grevlex),
+//! Buchberger's algorithm ([`buchberger::compute_buchberger_basis`]), a
+//! signature-based F5-family algorithm ([`compute_groebner_basis_f5`]), and the
+//! grevlex-then-FGLM strategy for lex ([`GroebnerBasis::compute_lex`]).
 //!
 //! # Quick start
 //!
@@ -28,7 +29,9 @@ pub mod cuda;
 pub mod f5;
 pub mod fglm;
 pub mod ideal;
+mod modp;
 pub mod monomial_order;
+mod multimodular;
 mod pairs;
 pub mod parametric;
 pub mod paramfield;
@@ -76,7 +79,28 @@ pub struct GroebnerBasis {
 
 impl GroebnerBasis {
     /// Compute a Gröbner basis for the given generators under the given order.
+    ///
+    /// Under [`MonomialOrder::GRevLex`] the basis is computed multimodularly
+    /// (F4 modulo word-size primes, Chinese remaindering, rational
+    /// reconstruction) and the lift is verified over ℚ before it is returned —
+    /// see the `multimodular` module; when that path is not applicable or not
+    /// conclusive, and under the other orders, it is Buchberger's algorithm
+    /// over ℚ ([`compute_buchberger_basis`]).  Either way the result is the
+    /// reduced (monic, interreduced) basis.
     pub fn compute(gens: Vec<GbPoly>, order: MonomialOrder) -> Self {
+        if order == MonomialOrder::GRevLex {
+            match multimodular::groebner_basis(&gens, order) {
+                Ok(generators) => return GroebnerBasis { generators, order },
+                // Stopped by an armed budget: the caller discards this.
+                Err(multimodular::Unavailable::Interrupted) => {
+                    return GroebnerBasis {
+                        generators: Vec::new(),
+                        order,
+                    }
+                }
+                Err(multimodular::Unavailable::Fallback) => {}
+            }
+        }
         let generators = compute_buchberger_basis(gens, order);
         GroebnerBasis { generators, order }
     }
@@ -106,7 +130,7 @@ impl GroebnerBasis {
         }
 
         // Step 1: GRevLex basis (fast).
-        let grb = compute_buchberger_basis(gens.clone(), MonomialOrder::GRevLex);
+        let grb = Self::compute(gens.clone(), MonomialOrder::GRevLex).generators;
         if crate::budget::interrupt_pending() {
             // Stopped by an armed budget: the caller discards this.
             return GroebnerBasis {
@@ -129,11 +153,31 @@ impl GroebnerBasis {
         Self::compute(gens, MonomialOrder::Lex)
     }
 
-    /// Compute a Gröbner basis using Faugère's F5 signature-based algorithm (V2-8).
+    /// Compute a Gröbner basis with the signature-based (F5-family) engine in
+    /// [`f5`]: incremental, position-over-term signatures under `order`, with
+    /// the syzygy and rewrite criteria.  Exact rational arithmetic throughout;
+    /// [`Self::compute`] (multimodular under grevlex) is the faster default.
     ///
-    /// Signatures use **lexicographic** order on the monomial part and then
-    /// original-generator index; polynomial leading terms still use `order`.
+    /// Under [`MonomialOrder::Lex`] a zero-dimensional ideal is computed under
+    /// grevlex and converted by FGLM, as [`Self::compute_lex`] does: direct
+    /// lex is the hardest order for any completion algorithm.  The result is
+    /// the same reduced basis either way.
     pub fn compute_f5(gens: Vec<GbPoly>, order: MonomialOrder) -> Self {
+        let n_vars = gens.first().map(|g| g.n_vars).unwrap_or(0);
+        if order == MonomialOrder::Lex && n_vars > 1 {
+            let grb = compute_groebner_basis_f5(gens.clone(), MonomialOrder::GRevLex);
+            if crate::budget::interrupt_pending() {
+                return GroebnerBasis {
+                    generators: grb,
+                    order: MonomialOrder::GRevLex,
+                };
+            }
+            if is_zero_dimensional(&grb, n_vars) {
+                if let Some(generators) = fglm(&grb, n_vars) {
+                    return GroebnerBasis { generators, order };
+                }
+            }
+        }
         let generators = compute_groebner_basis_f5(gens, order);
         GroebnerBasis { generators, order }
     }
@@ -298,20 +342,28 @@ mod tests {
         }
 
         /// The report's repro: cyclic-6 under grevlex ran for minutes with any
-        /// budget. Under a 200 ms wall budget it now stops within a small
-        /// multiple of the limit (generous tolerance for loaded CI machines).
+        /// budget. Under a 200 ms wall budget every engine now stops within a
+        /// small multiple of the limit (generous tolerance for loaded CI
+        /// machines).  Grevlex is multimodular and finishes cyclic-6 in well
+        /// under the budget, so it gets cyclic-7; the ℚ Buchberger engine
+        /// (grlex) still gets cyclic-6.
         #[test]
         fn cyclic6_stops_within_the_wall_budget() {
-            let gens = cyclic_system(6);
             let _g = budget::enter(Budget::new().with_wall(Duration::from_millis(200)));
             let t = Instant::now();
-            let r = GroebnerBasis::try_compute(gens.clone(), MonomialOrder::GRevLex);
-            assert!(matches!(
-                r,
-                Err(BudgetTrip::Budget(BudgetError::WallClock { .. }))
-            ));
-            let r5 = GroebnerBasis::try_compute_f5(gens, MonomialOrder::GRevLex);
-            assert!(r5.is_err(), "F5 on cyclic-6 cannot finish in 200 ms");
+            let wall = |r: Result<GroebnerBasis, BudgetTrip>| {
+                matches!(r, Err(BudgetTrip::Budget(BudgetError::WallClock { .. })))
+            };
+            assert!(wall(GroebnerBasis::try_compute(
+                cyclic_system(6),
+                MonomialOrder::GrLex
+            )));
+            assert!(wall(GroebnerBasis::try_compute(
+                cyclic_system(7),
+                MonomialOrder::GRevLex
+            )));
+            let r5 = GroebnerBasis::try_compute_f5(cyclic_system(7), MonomialOrder::GRevLex);
+            assert!(r5.is_err(), "F5 on cyclic-7 cannot finish in 200 ms");
             assert!(
                 t.elapsed() < crate::test_time::limit_secs(10),
                 "took {:?}",

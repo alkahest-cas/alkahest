@@ -123,12 +123,15 @@ a handful of strategic points — not blanket-inserted into every loop:
   already does, silently. If you need a hard raise on a `simplify` call specifically,
   wrap it in `alkahest.run_with_wall_fallback` (below).
 
-- **Gröbner bases** — `GroebnerBasis.compute` (Buchberger, and grevlex-then-FGLM for
-  `"lex"`), `GroebnerBasis.compute_f5`, `compute_raw` and the parametric engine
-  (`compute(..., params=...)`): once per S-pair, every 16 steps of every division
-  loop, while normalising each new basis element, and once per FGLM step. Cyclic-6
-  under grevlex, which ran for more than two minutes whatever the budget, stops 0.6 s
-  into a 500 ms budget; `compute_f5` on cyclic-5 (> 100 s) stops at 0.5 s.
+- **Gröbner bases** — `GroebnerBasis.compute` (multimodular under `"grevlex"`,
+  Buchberger otherwise, grevlex-then-FGLM for `"lex"`), `GroebnerBasis.compute_f5`,
+  `compute_raw` and the parametric engine (`compute(..., params=...)`): once per S-pair
+  or F4 step, every 16 steps of every division loop, while normalising each new basis
+  element, once per prime and per FGLM step, and inside every verification
+  reduction. Work spread over threads by the `parallel` feature runs under what is
+  left of the caller's budget on every worker. Cyclic-7 under grevlex (3 s across
+  cores) and under `compute_f5` (about a minute) both stop 0.3 s into a 300 ms
+  budget.
 - **`alkahest.solve`** (`method="groebner"`, and the homotopy fallback of
   `numeric=True`), **`solve_numerical`** / `method="homotopy"` — the Gröbner basis,
   once per back-substitution branch and per candidate verified against the input, once

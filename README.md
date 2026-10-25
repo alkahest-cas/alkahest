@@ -27,7 +27,7 @@ The main stack is: Rust kernel → FLINT/Arb (polynomials, ball arithmetic) → 
 
 - **Verifiable by construction.** Every computation produces a derivation log; a meaningful subset can export Lean 4 proofs for independent verification.
 - **520× faster than SymPy** on trig-identity simplification — and 77× faster than Mathematica on the same task ([cross-CAS report](benchmarks/results/report.md)).
-- **~40× faster than SymPy** on 2-variable quadratic systems, via FLINT-backed polynomial arithmetic and a compiled F4 core ([solving guide](docs/mdbook/src/solving.md)).
+- **Multimodular Gröbner bases**: F4 modulo word-size primes, lifted and verified over ℚ, then FGLM for lex — cyclic-6 in 0.04 s and katsura-7 in 0.2 s under grevlex, katsura-6 lex in 0.4 s, where SymPy 1.14 takes 48 s, > 120 s and > 120 s ([measured table](docs/mdbook/src/solving.md#performance)).
 - **GPU codegen is a routine operation, not a research project** — 16.2× over the CPU JIT on a 1M-point polynomial evaluation (NVPTX `sm_86`, RTX 3090). Requires a source build with `--features cuda`; the PyPI wheel has no GPU support ([GPU guide](docs/mdbook/src/gpu.md)).
 - **A trained RL environment.** GRPO against the CAS verifier moved `Qwen2.5-1.5B-Instruct` from 11.7% → 15.1% on elementary integrals (+29% relative) with no stored reference answers — the CAS grades every rollout, including honest refusal on non-elementary integrands.
 - **Built for agent loops.** String entry point (`ak.parse`), per-candidate `Budget`s, batched `*_many` fan-out, and compact JSON envelopes for cheap logging.
@@ -46,7 +46,7 @@ pip install "alkahest[rl]"   # RL environments; Python >= 3.10
 
 Rust users: `alkahest-cas = "2"` — see [Rust crate](#rust-crate).
 
-Default wheels are batteries-included: e-graph simplification, the Gröbner solver (so `alkahest.solve`, Diophantine, and homotopy work out of the box), the pure-Rust **Cranelift** CPU JIT with no system LLVM required, and **`parallel`** — the Rayon-backed multi-core paths (`numpy_eval_par`, `simplify_par`, parallel F4 reduction, sharded `ExprPool`). They do **not** include the **LLVM** JIT; for that, use a **PyTorch-style** opt-in **`+jit`** / **`+full`** Linux wheel from [GitHub Releases](#opt-in-linux-wheels-jit-and-full-pytorch-style), not the default PyPI resolver path.
+Default wheels are batteries-included: e-graph simplification, the Gröbner solver (so `alkahest.solve`, Diophantine, and homotopy work out of the box), the pure-Rust **Cranelift** CPU JIT with no system LLVM required, and **`parallel`** — the Rayon-backed multi-core paths (`numpy_eval_par`, `simplify_par`, multimodular Gröbner primes in parallel, sharded `ExprPool`). They do **not** include the **LLVM** JIT; for that, use a **PyTorch-style** opt-in **`+jit`** / **`+full`** Linux wheel from [GitHub Releases](#opt-in-linux-wheels-jit-and-full-pytorch-style), not the default PyPI resolver path.
 
 ### Install matrix (default vs opt-in wheels)
 
@@ -149,7 +149,7 @@ pip install maturin
 maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph jit groebner"
 ```
 
-Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_par`), `egraph` (vendored egglog backend; **default** in PyPI wheels), `groebner` (Gröbner solver + Diophantine + homotopy; **default** in both the Rust crate and PyPI wheels), `system-gmp` (rug links the system GMP/MPFR that FLINT uses; **default** in PyPI wheels, opt-in for source builds — needs GMP ≥ 6.3 / MPFR ≥ 4.2, see the GMP prerequisite above), `cranelift` (pure-Rust Tier-1 JIT), `jit` (LLVM JIT), `cuda` (NVPTX codegen — needs LLVM 21 with the NVPTX target; adds `compile_cuda`), `groebner-cuda` (CUDA Macaulay-matrix kernel — needs only `cudarc`, and is a Rust-crate entry point that no Python call reaches). Neither GPU feature is in any published wheel: see the [GPU guide](docs/mdbook/src/gpu.md).
+Optional Cargo features: `parallel` (sharded pool + parallel multimodular Gröbner + `numpy_eval_par`), `egraph` (vendored egglog backend; **default** in PyPI wheels), `groebner` (Gröbner solver + Diophantine + homotopy; **default** in both the Rust crate and PyPI wheels), `system-gmp` (rug links the system GMP/MPFR that FLINT uses; **default** in PyPI wheels, opt-in for source builds — needs GMP ≥ 6.3 / MPFR ≥ 4.2, see the GMP prerequisite above), `cranelift` (pure-Rust Tier-1 JIT), `jit` (LLVM JIT), `cuda` (NVPTX codegen — needs LLVM 21 with the NVPTX target; adds `compile_cuda`), `groebner-cuda` (CUDA Macaulay-matrix kernel — needs only `cudarc`, and is a Rust-crate entry point that no Python call reaches). Neither GPU feature is in any published wheel: see the [GPU guide](docs/mdbook/src/gpu.md).
 
 ### Rust crate
 
@@ -241,7 +241,7 @@ More runnable examples live in [`examples/`](examples/) — polynomials, Risch i
 | [Calculus](docs/mdbook/src/calculus.md) | Differentiation, Risch integration (definite and indefinite), limits, series expansion, residues | `diff` · `integrate` · `limit` · `series` · `residue` |
 | [Simplification](docs/mdbook/src/simplification.md) | Rule engine plus [e-graph saturation](docs/mdbook/src/egraph.md), with domain-specific passes instead of one catch-all | `simplify` · `simplify_trig` · `simplify_log_exp` · `simplify_egraph` |
 | Polynomials | FLINT-backed univariate and multivariate arithmetic, factorization over ℤ and 𝔽ₚ, sparse GCD and interpolation, resultants, partial fractions | `UniPoly.factor_z` · `factor_univariate_mod_p` · `gcd_sparse` · `resultant` · `apart` · `cancel` |
-| [Solving](docs/mdbook/src/solving.md) | Gröbner bases (F4), triangular decomposition, primary decomposition, real root isolation via CAD, numerical fallback | `solve` · `real_roots` · `triangularize` · `cad_project` · `primary_decomposition` · `solve_numerical` |
+| [Solving](docs/mdbook/src/solving.md) | Gröbner bases (multimodular F4, FGLM, F5), triangular decomposition, primary decomposition, real root isolation via CAD, numerical fallback | `solve` · `real_roots` · `triangularize` · `cad_project` · `primary_decomposition` · `solve_numerical` |
 | Sums and products | Gosper and [Zeilberger creative telescoping](docs/mdbook/src/telescoping.md), WZ pair verification, linear recurrence solving | `sum_indefinite` · `sum_definite` · `zeilberger` · `verify_wz_pair` · `rsolve` |
 | Linear algebra | Symbolic matrices, eigenvalues and eigenvectors, Jacobians, Routh–Hurwitz stability | `Matrix.eigenvals` · `jacobian` · `routh_hurwitz` |
 | [ODEs and DAEs](docs/mdbook/src/ode-dae.md) | Symbolic ODE/DAE systems, Pantelides index reduction, sensitivity and adjoint systems, acausal component modeling | `ODE` · `DAE` · `pantelides` · `dae_index_reduce` · `sensitivity_system` |
