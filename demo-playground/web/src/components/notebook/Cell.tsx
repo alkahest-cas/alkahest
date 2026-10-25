@@ -8,6 +8,7 @@ import { Prec } from '@codemirror/state';
 import MarkdownRender from '@/lib/markdown-render';
 import type { OutputItem } from '@/lib/execution';
 import { ADD_CODE_CELL_SHORTCUT_HINT } from '@/lib/notebook-commands';
+import { useIsDark } from '@/lib/theme';
 import CellActionsMenu from './CellActionsMenu';
 import Output from './Output';
 
@@ -44,17 +45,25 @@ interface CellProps {
   showLineNumbers?: boolean;
 }
 
-const warmLightTheme = EditorView.theme({
-  '&': { backgroundColor: '#eeede7', color: '#111' },
-  '.cm-content': { padding: '8px 0' },
-  '.cm-line': { padding: '0 12px' },
-  '.cm-gutters': { backgroundColor: '#e5e4de', borderRight: '1px solid #e0ded6', color: '#888' },
-  '.cm-activeLineGutter': { backgroundColor: '#dddcd6' },
-  '.cm-activeLine': { backgroundColor: 'rgba(0,0,0,0.03)' },
-  '.cm-selectionBackground': { backgroundColor: '#c41e3a22' },
-  '&.cm-focused .cm-selectionBackground': { backgroundColor: '#c41e3a33' },
-  '.cm-cursor': { borderLeftColor: '#c41e3a' },
-});
+/** Editor chrome from the design tokens, so it follows light/dark mode. */
+const tokenTheme = Prec.highest(
+  EditorView.theme({
+    '&': { backgroundColor: 'var(--bg-elev)', color: 'var(--fg)' },
+    '.cm-content': { padding: '8px 0', caretColor: 'var(--brand)' },
+    '.cm-line': { padding: '0 12px' },
+    '.cm-gutters': {
+      backgroundColor: 'var(--bg-sunk)',
+      borderRight: '1px solid var(--border)',
+      color: 'var(--muted)',
+    },
+    '.cm-activeLineGutter': { backgroundColor: 'var(--border)' },
+    '.cm-activeLine': { backgroundColor: 'rgb(var(--fg-rgb) / 0.03)' },
+    '.cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection': {
+      backgroundColor: 'rgb(var(--brand-rgb) / 0.2) !important',
+    },
+    '.cm-cursor': { borderLeftColor: 'var(--brand)' },
+  }),
+);
 
 function useElapsedTimer(status: CellData['status']) {
   const [elapsed, setElapsed] = useState<number | null>(null);
@@ -116,6 +125,8 @@ export default function Cell({
   const cellBodyRef = useRef<HTMLDivElement>(null);
   const [gutterWidth, setGutterWidth] = useState(0);
   const elapsed = useElapsedTimer(cell.status);
+  // Syntax colours: @uiw's light/dark highlight styles; backgrounds come from tokenTheme.
+  const isDark = useIsDark();
   const onRunRef = useRef(onRun);
   const onFocusRef = useRef(onFocus);
   const zenModeRef = useRef(zenMode);
@@ -128,7 +139,7 @@ export default function Cell({
   const editorExtensions = useMemo(
     () => [
       python(),
-      warmLightTheme,
+      tokenTheme,
       Prec.highest(
         keymap.of([
           {
@@ -224,12 +235,12 @@ export default function Cell({
             : isRunning
               ? 'border-ak-run shadow-sm'
               : hasError
-                ? 'border-red-200'
+                ? 'border-ak-brand/30'
                 : idleBorder
         }`}
       >
         {/* Cell header */}
-        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-ak-border bg-ak-bg">
+        <div className="flex items-center gap-2 px-3 py-1.5 border-b border-ak-border bg-ak-elev">
           <span className="font-mono text-xs text-ak-muted w-8 shrink-0">{gutter}</span>
 
           {!isMarkdown && cell.backend && (
@@ -237,7 +248,7 @@ export default function Cell({
               className={`text-xs px-1.5 py-0.5 rounded font-mono ${
                 cell.backend === 'server'
                   ? 'bg-ak-run/10 text-ak-run'
-                  : 'bg-green-100 text-green-700'
+                  : 'bg-ak-ok/10 text-ak-ok'
               }`}
             >
               {cell.backend}
@@ -300,7 +311,7 @@ export default function Cell({
                     type="button"
                     onClick={() => onRun(cell.id)}
                     title="Run cell (Ctrl+Enter)"
-                    className="flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium bg-ak-brand text-white hover:bg-ak-brand-dark transition-colors"
+                    className="flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium bg-ak-brand text-ak-brand-fg hover:bg-ak-brand-dark transition-colors"
                   >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                     Run
@@ -329,6 +340,7 @@ export default function Cell({
               value={cell.code}
               onChange={(code) => onCodeChange(cell.id, code)}
               extensions={editorExtensions}
+              theme={isDark ? 'dark' : 'light'}
               basicSetup={{
                 lineNumbers: showLineNumbers,
                 highlightActiveLine: showLineNumbers,
@@ -488,7 +500,7 @@ function CellBtn({
       onClick={onClick}
       className={`rounded p-1 transition-colors ${
         danger
-          ? 'text-ak-muted hover:text-red-500 hover:bg-red-50'
+          ? 'text-ak-muted hover:text-ak-brand hover:bg-ak-brand/[0.06]'
           : 'text-ak-muted hover:text-ak-fg hover:bg-ak-code-bg'
       }`}
     >

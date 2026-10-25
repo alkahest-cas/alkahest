@@ -61,7 +61,7 @@ export default function CellActionsMenu({
       {open && (
         <div
           role="menu"
-          className="absolute right-0 top-full z-30 mt-1 min-w-[168px] rounded-lg border border-ak-border bg-ak-bg py-1 shadow-lg"
+          className="absolute right-0 top-full z-30 mt-1 min-w-[168px] rounded-lg border border-ak-border bg-ak-elev py-1 shadow-lg"
         >
           <button
             type="button"

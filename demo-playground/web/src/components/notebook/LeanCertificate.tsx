@@ -9,10 +9,12 @@ import { connectionFromConfig } from '@/lib/server-connection';
 interface LeanCertificateProps {
   item: Extract<OutputItem, { type: 'lean' }>;
   onUpdate?: (item: OutputItem) => void;
+  /** Show the Lean source open (default) or collapsed behind the title. */
+  defaultExpanded?: boolean;
 }
 
-export default function LeanCertificate({ item, onUpdate }: LeanCertificateProps) {
-  const [expanded, setExpanded] = useState(true);
+export default function LeanCertificate({ item, onUpdate, defaultExpanded = true }: LeanCertificateProps) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [verifying, setVerifying] = useState(false);
   const [localItem, setLocalItem] = useState(item);
   const [leanAvailable, setLeanAvailable] = useState<boolean | null>(null);
@@ -72,25 +74,25 @@ export default function LeanCertificate({ item, onUpdate }: LeanCertificateProps
       : 'Lean 4 certificate';
 
   return (
-    <div className="rounded-lg border border-emerald-200/80 bg-emerald-50/40 overflow-hidden">
-      <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-emerald-200/60 bg-emerald-50/80">
+    <div className="overflow-hidden rounded-lg border border-ak-ok/30 bg-ak-elev">
+      <div className="flex flex-wrap items-center gap-2 border-b border-ak-ok/20 bg-ak-ok/[0.06] px-3 py-2">
         <button
           type="button"
           onClick={() => setExpanded((e) => !e)}
-          className="text-xs font-semibold text-emerald-900 hover:text-emerald-700"
+          className="text-xs font-semibold text-ak-ok hover:opacity-80"
         >
           {expanded ? '▼' : '▶'} {title}
           {localItem.steps != null && (
-            <span className="ml-1.5 font-normal text-emerald-700">· {localItem.steps} steps</span>
+            <span className="ml-1.5 font-normal text-ak-muted">· {localItem.steps} steps</span>
           )}
         </button>
         {localItem.verified === 'ok' && (
-          <span className="text-xs font-mono px-1.5 py-0.5 rounded bg-green-100 text-green-800">
+          <span className="rounded-full bg-ak-ok/10 px-2 py-0.5 font-mono text-[12px] text-ak-ok">
             verified
           </span>
         )}
         {localItem.verified === 'fail' && (
-          <span className="text-xs font-mono px-1.5 py-0.5 rounded bg-red-100 text-red-800">
+          <span className="rounded-full bg-ak-brand/10 px-2 py-0.5 font-mono text-[12px] text-ak-brand">
             check failed
           </span>
         )}
@@ -98,14 +100,14 @@ export default function LeanCertificate({ item, onUpdate }: LeanCertificateProps
           <button
             type="button"
             onClick={handleCopy}
-            className="text-xs px-2 py-0.5 rounded border border-emerald-300/80 hover:bg-white/60"
+            className="rounded border border-ak-border px-2 py-0.5 text-xs text-ak-fg2 hover:border-ak-border-strong hover:text-ak-fg"
           >
             {copied ? 'Copied' : 'Copy'}
           </button>
           <button
             type="button"
             onClick={handleDownload}
-            className="text-xs px-2 py-0.5 rounded border border-emerald-300/80 hover:bg-white/60"
+            className="rounded border border-ak-border px-2 py-0.5 text-xs text-ak-fg2 hover:border-ak-border-strong hover:text-ak-fg"
           >
             Download .lean
           </button>
@@ -118,28 +120,28 @@ export default function LeanCertificate({ item, onUpdate }: LeanCertificateProps
                 ? 'Install Lean 4 + Mathlib (see demo-playground README)'
                 : 'Typecheck with lake env lean'
             }
-            className="text-xs px-2 py-0.5 rounded bg-emerald-700 text-white hover:bg-emerald-800 disabled:opacity-40"
+            className="rounded bg-ak-ok px-2 py-0.5 text-xs text-ak-elev hover:opacity-90 disabled:opacity-40"
           >
             {verifying ? 'Checking…' : 'Verify in Lean'}
           </button>
         </div>
       </div>
       {expanded && (
-        <pre className="max-h-80 overflow-auto px-3 py-2 text-xs font-mono text-emerald-950 whitespace-pre bg-white/50">
+        <pre className="max-h-80 overflow-auto whitespace-pre bg-ak-sunk/60 px-3 py-2 font-mono text-xs text-ak-fg">
           {localItem.source}
         </pre>
       )}
       {localItem.verifyLog && (
         <pre
-          className={`px-3 py-2 text-xs font-mono border-t border-emerald-200/60 whitespace-pre-wrap ${
-            localItem.verified === 'ok' ? 'text-green-800 bg-green-50/80' : 'text-red-800 bg-red-50/80'
+          className={`whitespace-pre-wrap border-t border-ak-ok/20 px-3 py-2 font-mono text-xs ${
+            localItem.verified === 'ok' ? 'bg-ak-ok/5 text-ak-ok' : 'bg-ak-brand/5 text-ak-brand'
           }`}
         >
           {localItem.verifyLog}
         </pre>
       )}
       {leanAvailable === false && (
-        <p className="px-3 py-1.5 text-xs text-ak-muted border-t border-emerald-200/40">
+        <p className="border-t border-ak-ok/20 px-3 py-1.5 text-xs text-ak-muted">
           Lean verifier not available on this server. Run locally:{' '}
           <code className="font-mono">cd lean && lake env lean proof.lean</code>
         </p>
