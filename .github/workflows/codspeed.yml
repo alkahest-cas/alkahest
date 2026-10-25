@@ -26,7 +26,9 @@ jobs:
 
   benchmarks:
     name: Performance benchmarks
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest became 26.04, which the CodSpeed runner rejects
+    # ("Error: Unsupported system"), failing this job on every PR.
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     needs: changes
     if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
