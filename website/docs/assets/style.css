@@ -430,6 +430,9 @@ a > code { color: inherit; }
   font: 400 16px var(--font-sans); color: var(--fg);
 }
 .search-field input::-webkit-search-cancel-button { display: none; }
+.search-close { border: 0; background: none; padding: 4px; cursor: pointer; color: var(--muted); font-size: 14px; }
+.search-close:hover { color: var(--fg); }
+.show-sm { display: none; }
 .search-results { list-style: none; margin: 0; padding: 6px; overflow-y: auto; flex: 1; }
 .search-results li a {
   display: block; padding: 9px 12px; border-radius: 8px; text-decoration: none; color: var(--fg-2);
@@ -508,6 +511,8 @@ body.search-open { overflow: hidden; }
   .search { padding: 0; }
   .search-panel { max-width: none; max-height: none; height: 100%; border-radius: 0; border: 0; }
   .search-foot { display: none; }
+  .hide-sm { display: none; }
+  .show-sm { display: inline; color: var(--brand); font-weight: 500; }
   .sr-page { display: none; }
   .member { padding-left: 12px; }
 }

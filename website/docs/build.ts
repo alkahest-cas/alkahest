@@ -397,7 +397,7 @@ function indexGuide(md: string, title: string, href: string) {
       const n = used.get(id) ?? 0;
       used.set(id, n + 1);
       if (n) id = `${id}-${n}`;
-      cur = { h: raw.replace(/[*_]/g, ""), id, text: [] };
+      cur = { h: raw.replace(/\*\*/g, ""), id, text: [] };
     } else if (!/^#\s/.test(l)) cur.text.push(l);
   }
   flush();
