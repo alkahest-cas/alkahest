@@ -1165,7 +1165,7 @@ pub(super) fn is_nonneg(e: ExprId, pool: &ExprPool, depth: u32) -> bool {
         }
         ExprData::Symbol { name, domain, .. } => {
             if matches!(domain, Domain::Positive | Domain::NonNegative)
-                || crate::eval::symbols::constant_value_f64(name).is_some()
+                || crate::eval::symbols::constant_value_f64(name).is_some_and(|v| v > 0.0)
             {
                 K::Yes
             } else {

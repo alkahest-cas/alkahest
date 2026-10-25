@@ -658,6 +658,90 @@ fn cf_lower_bound_floor(coeffs: &[Integer], sign_var: usize) -> u64 {
     lo
 }
 
+/// `log₂|n|` for a non-zero integer, to about 50 significant bits.
+fn log2_abs(n: &Integer) -> f64 {
+    let bits = n.significant_bits();
+    if bits <= 53 {
+        return n.to_f64().abs().log2();
+    }
+    let shift = bits - 53;
+    let top = Integer::from(n.abs_ref()) >> shift;
+    top.to_f64().log2() + f64::from(shift)
+}
+
+/// An exponent `e` with every positive root of `coeffs` **strictly below**
+/// `2^e`, by the local-max-quadratic bound (Akritas–Strzeboński–Vigklas,
+/// "Improving the performance of the continued fractions method using new
+/// bounds of positive roots", 2008).
+///
+/// For a polynomial with positive leading coefficient, each coefficient `aᵢ < 0`
+/// is paired with the higher positive coefficients `aⱼ`, each of which carries
+/// a use counter `tⱼ` starting at 1: the bound is
+/// `max_i min_{j>i} (2^{tⱼ}·|aᵢ|/aⱼ)^{1/(j−i)}`, the minimising `tⱼ` being
+/// incremented. The quantities are compared in `log₂`, in `f64`; the result is
+/// rounded up to an integer exponent and padded by one, which more than
+/// covers the rounding of ~50-bit logarithms.
+///
+/// `None` when no coefficient has the sign opposite to the leading one (no
+/// positive root at all).
+fn lmq_upper_bound_log2(coeffs: &[Integer]) -> Option<i64> {
+    let n = coeffs.len().checked_sub(1)?;
+    let lc_pos = coeffs[n] > 0;
+    let logs: Vec<Option<f64>> = coeffs
+        .iter()
+        .map(|c| if *c == 0 { None } else { Some(log2_abs(c)) })
+        .collect();
+    let same_sign = |c: &Integer| *c != 0 && (*c > 0) == lc_pos;
+    let mut uses = vec![1u32; n + 1];
+    let mut best: Option<f64> = None;
+    for i in (0..n).rev() {
+        if coeffs[i] == 0 || same_sign(&coeffs[i]) {
+            continue;
+        }
+        let li = logs[i]?;
+        let mut min_val = f64::INFINITY;
+        let mut arg = n;
+        for j in i + 1..=n {
+            if !same_sign(&coeffs[j]) {
+                continue;
+            }
+            let lj = logs[j]?;
+            let v = (f64::from(uses[j]) + li - lj) / (j - i) as f64;
+            if v < min_val {
+                min_val = v;
+                arg = j;
+            }
+        }
+        uses[arg] += 1;
+        best = Some(best.map_or(min_val, |b: f64| b.max(min_val)));
+    }
+    let b = best?;
+    if !b.is_finite() {
+        return None;
+    }
+    Some(b.ceil() as i64 + 1)
+}
+
+/// A power-of-two lower bound `2^s` (`s ≥ 0`) on the positive roots of
+/// `coeffs`, or `None` when none at least `1` can be certified.
+///
+/// The positive roots of `p` are the reciprocals of those of the reversed
+/// polynomial `xⁿ·p(1/x)`, so `1 / (upper bound of the reversal)` is a lower
+/// bound for `p` — the bound VAS uses to take a whole continued-fraction
+/// partial quotient in one step.
+///
+/// This is what makes clustered roots tractable. [`cf_lower_bound_floor`]
+/// searches integer points up to `10⁶` only, so a frame whose roots sit near
+/// `t ≈ 10⁵⁴` (the two roots of `x²⁰ − 2(10⁶x − 1)²`, a Mignotte polynomial,
+/// agree to 60 digits) got no shift at all and fell back to bisection at
+/// `t = 1`, which moves the frame by one unit per step.
+fn lmq_lower_bound_log2(coeffs: &[Integer]) -> Option<u64> {
+    let rev = reverse_coeffs(coeffs);
+    let e = lmq_upper_bound_log2(&rev)?;
+    // Positive roots of `p` are `> 2^(−e)`. Useful (an integer ≥ 1) when e ≤ 0.
+    (e <= 0).then(|| e.unsigned_abs())
+}
+
 // ---------------------------------------------------------------------------
 // Main VAS bisection algorithm
 // ---------------------------------------------------------------------------
@@ -728,15 +812,15 @@ fn isolate_positive_roots(coeffs: Vec<Integer>) -> Vec<RootInterval> {
         just_deflated: false,
     }];
 
-    let max_iters: usize = 500_000;
-    let mut iters = 0usize;
-
+    // No frame cap. A cap used to end the loop with a bare `break`, and the
+    // roots of every frame still on the stack were dropped with no error:
+    // `x²⁰ − 2(10⁶x − 1)²` came back with one of its four roots. Vincent's
+    // theorem guarantees termination on a squarefree input, and the VAS
+    // lower bound below keeps the frame count polynomial; the only way out
+    // early is the caller's `Budget`, which `try_real_roots` reports as an
+    // error rather than a result.
     while let Some(mut frame) = stack.pop() {
         if crate::budget::interrupted() {
-            break;
-        }
-        iters += 1;
-        if iters > max_iters {
             break;
         }
 
@@ -810,6 +894,35 @@ fn isolate_positive_roots(coeffs: Vec<Integer>) -> Vec<RootInterval> {
         frame.just_deflated = false; // reset flag before bisection
 
         let k = cf_lower_bound_floor(&frame.poly, v);
+        if k == 0 {
+            if let Some(s) = lmq_lower_bound_log2(&frame.poly) {
+                // Every positive root of the frame exceeds `L = 2^s`, so
+                // `t ↦ L·(t + 1)` loses none of them: scale by `L` (exact,
+                // a shift of each coefficient by `s·i` bits) and Taylor-shift
+                // by 1. The Möbius map follows the same substitution.
+                let mut scaled: Vec<Integer> = frame
+                    .poly
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| Integer::from(c << (s as u32 * i as u32)))
+                    .collect();
+                taylor_shift_by_1_in_place(&mut scaled);
+                let l = Integer::from(1) << s as u32;
+                let a_l = Integer::from(&frame.a * &l);
+                let c_l = Integer::from(&frame.c * &l);
+                frame.b = Integer::from(&a_l + &frame.b);
+                frame.d = Integer::from(&c_l + &frame.d);
+                frame.a = a_l;
+                frame.c = c_l;
+                frame.poly = remove_content(&scaled);
+                trim_trailing_zeros(&mut frame.poly);
+                if frame.poly.is_empty() {
+                    continue;
+                }
+                stack.push(frame);
+                continue;
+            }
+        }
         if k >= 1 {
             let new_p = taylor_shift_by(&frame.poly, k);
             let ki = Integer::from(k);
@@ -1919,5 +2032,183 @@ mod tests {
             assert_eq!(iv.lo, rug::Rational::from(i as i64 + 1));
             assert_eq!(iv.hi, iv.lo);
         }
+    }
+
+    fn poly_from_integers(c: &[Integer]) -> UniPoly {
+        let p = ExprPool::new();
+        UniPoly {
+            var: p.symbol("x", Domain::Real),
+            coeffs: FlintPoly::from_rug_coefficients(c),
+        }
+    }
+
+    /// `xⁿ − 2(a·x − 1)²`: two roots within ~`a^(−n/2)` of `1/a` (Mignotte).
+    fn mignotte(n: usize, a: &Integer) -> UniPoly {
+        let mut c = vec![Integer::new(); n + 1];
+        c[n] = Integer::from(1);
+        c[2] = Integer::from(-2) * Integer::from(a * a);
+        c[1] = Integer::from(4) * a.clone();
+        c[0] = Integer::from(-2);
+        poly_from_integers(&c)
+    }
+
+    /// Number of distinct real roots of `c` in `(lo, hi]`, by a Sturm sequence
+    /// over ℚ — an oracle independent of the Descartes/VAS search.
+    fn sturm_count(c: &[Integer], lo: &rug::Rational, hi: &rug::Rational) -> usize {
+        type Q = Vec<rug::Rational>;
+        fn trim(v: &mut Q) {
+            while v.last().is_some_and(|x| *x == 0) {
+                v.pop();
+            }
+        }
+        fn rem(a: &Q, b: &Q) -> Q {
+            let mut r = a.clone();
+            let db = b.len() - 1;
+            while r.len() > db && !r.is_empty() {
+                let q = rug::Rational::from(r.last().unwrap() / b.last().unwrap());
+                let shift = r.len() - 1 - db;
+                for (i, bi) in b.iter().enumerate() {
+                    r[i + shift] -= rug::Rational::from(&q * bi);
+                }
+                r.pop();
+                trim(&mut r);
+            }
+            r
+        }
+        let p0: Q = c.iter().map(|v| rug::Rational::from(v.clone())).collect();
+        let p1: Q = (1..c.len())
+            .map(|i| rug::Rational::from(Integer::from(&c[i] * i as u64)))
+            .collect();
+        let mut seq = vec![p0, p1];
+        loop {
+            let n = seq.len();
+            let mut r = rem(&seq[n - 2], &seq[n - 1]);
+            if r.is_empty() {
+                break;
+            }
+            for x in r.iter_mut() {
+                *x = -x.clone();
+            }
+            seq.push(r);
+        }
+        let changes = |x: &rug::Rational| -> usize {
+            let signs: Vec<std::cmp::Ordering> = seq
+                .iter()
+                .map(|q| {
+                    q.iter()
+                        .rev()
+                        .fold(rug::Rational::new(), |acc, ci| acc * x.clone() + ci.clone())
+                        .cmp0()
+                })
+                .filter(|s| *s != std::cmp::Ordering::Equal)
+                .collect();
+            signs.windows(2).filter(|w| w[0] != w[1]).count()
+        };
+        changes(lo) - changes(hi)
+    }
+
+    /// Every real root of `c` lies in `(−B, B)` (Cauchy).
+    fn cauchy_bound(c: &[Integer]) -> rug::Rational {
+        let lc = c.last().unwrap().clone().abs();
+        let m = c[..c.len() - 1]
+            .iter()
+            .map(|v| v.clone().abs())
+            .max()
+            .unwrap_or_default();
+        rug::Rational::from((m, lc)) + 2
+    }
+
+    #[test]
+    fn mignotte_cluster_is_isolated_completely() {
+        // Launch report row 2: `x^20 − 2(10^6 x − 1)^2` came back with one root
+        // of four after ~10 s, the 500 000-frame cap having silently dropped the
+        // rest. SymPy and Wolfram count 4.
+        let a = Integer::from(1_000_000);
+        for n in [20usize, 40, 60] {
+            let poly = mignotte(n, &a);
+            let t = std::time::Instant::now();
+            let r = real_roots(&poly).unwrap();
+            assert!(
+                t.elapsed().as_secs() < 5,
+                "degree {n} took {:?}",
+                t.elapsed()
+            );
+            let c = poly.coefficients();
+            let b = cauchy_bound(&c);
+            let expect = sturm_count(&c, &-b.clone(), &b);
+            assert_eq!(expect, 4, "degree {n}: Sturm count");
+            assert_eq!(r.len(), expect, "degree {n}: {r:?}");
+            for iv in &r {
+                assert_brackets_root(&poly, iv);
+            }
+            for w in r.windows(2) {
+                assert!(w[0].hi <= w[1].lo, "overlapping brackets {r:?}");
+            }
+        }
+        // A much tighter cluster: the two roots agree to ~200 digits.
+        let a = Integer::from(Integer::u_pow_u(10, 20));
+        let poly = mignotte(20, &a);
+        let r = real_roots(&poly).unwrap();
+        let c = poly.coefficients();
+        let b = cauchy_bound(&c);
+        assert_eq!(r.len(), sturm_count(&c, &-b.clone(), &b));
+        for iv in &r {
+            assert_brackets_root(&poly, iv);
+        }
+    }
+
+    #[test]
+    fn random_and_clustered_root_counts_match_sturm() {
+        let mut st = 0x1234_5678_9abc_def0u64;
+        let mut next = || {
+            st = st
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            st >> 33
+        };
+        for trial in 0..60 {
+            let deg = 3 + (next() % 14) as usize;
+            let mut c: Vec<Integer> = (0..=deg)
+                .map(|_| Integer::from((next() % 41) as i64 - 20))
+                .collect();
+            if c[deg] == 0 {
+                c[deg] = Integer::from(1);
+            }
+            if trial % 3 == 0 {
+                // Plant a Mignotte-style cluster near 1/a: add −2(a·x − 1)².
+                let a = Integer::from(Integer::u_pow_u(10, 2 + (next() % 6) as u32));
+                c[2] -= Integer::from(2) * Integer::from(&a * &a);
+                c[1] += Integer::from(4) * a.clone();
+                c[0] -= 2;
+            }
+            let poly = poly_from_integers(&c);
+            let r = real_roots(&poly).unwrap();
+            // Sturm counts distinct roots of the squarefree part.
+            let mut sq = squarefree_part(&c);
+            trim_trailing_zeros(&mut sq);
+            let b = cauchy_bound(&sq);
+            assert_eq!(
+                r.len(),
+                sturm_count(&sq, &-b.clone(), &b),
+                "trial {trial}: {c:?} gave {r:?}"
+            );
+            for iv in &r {
+                assert_brackets_root(&poly_from_integers(&sq), iv);
+            }
+        }
+    }
+
+    #[test]
+    fn lmq_bound_is_an_upper_bound() {
+        // (x − 3)(x − 1000)(x + 5): largest positive root 1000 < 2^e.
+        let c: Vec<Integer> = [15000i64, -2015, -998, 1]
+            .iter()
+            .map(|&v| Integer::from(v))
+            .collect();
+        let e = lmq_upper_bound_log2(&c).unwrap();
+        assert!(e >= 10, "{e}");
+        // No sign change: no positive root, no bound.
+        let c: Vec<Integer> = [1i64, 2, 3].iter().map(|&v| Integer::from(v)).collect();
+        assert_eq!(lmq_upper_bound_log2(&c), None);
     }
 }
