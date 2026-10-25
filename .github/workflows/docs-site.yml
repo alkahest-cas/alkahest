@@ -1,0 +1,71 @@
+name: Docs site
+
+# Builds the documentation site (website/docs/) and deploys it to
+# alkahest-cas.github.io/docs/. The Python API reference is extracted
+# statically (ast + PyO3 doc comments), so no compiled build is needed.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/docs/**'
+      - 'docs/mdbook/src/**'
+      - 'docs/sphinx/api/**'
+      - 'python/alkahest/**'
+      - 'alkahest-py/src/**'
+      - '.github/workflows/docs-site.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'website/docs/**'
+      - 'docs/mdbook/src/**'
+      - 'docs/sphinx/api/**'
+      - 'python/alkahest/**'
+      - 'alkahest-py/src/**'
+      - '.github/workflows/docs-site.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-site-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (and deploy on main)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: website/docs
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        working-directory: website/docs
+        run: bun run build
+
+      - name: Check internal links
+        working-directory: website/docs
+        run: bun run check
+
+      - uses: peaceiris/actions-gh-pages@v4
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        with:
+          deploy_key: ${{ secrets.WEBSITE_DEPLOY_KEY }}
+          external_repository: alkahest-cas/alkahest-cas.github.io
+          publish_branch: main
+          publish_dir: ./website/docs/dist
+          destination_dir: docs
+          keep_files: true
+          user_name: 'github-actions[bot]'
+          user_email: 'github-actions[bot]@users.noreply.github.com'
+          commit_message: 'deploy docs: ${{ github.sha }}'
