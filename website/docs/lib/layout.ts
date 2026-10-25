@@ -187,7 +187,7 @@ ${p.wide ? "" : toc(p.headings, p.editUrl)}
 <div class="search" id="search" hidden role="dialog" aria-modal="true" aria-label="Search">
   <div class="search-backdrop" data-search-close></div>
   <div class="search-panel">
-    <div class="search-field">${SEARCH_ICON}<input id="search-input" type="search" placeholder="Search guides and API" autocomplete="off" spellcheck="false" aria-label="Search"><kbd>Esc</kbd></div>
+    <div class="search-field">${SEARCH_ICON}<input id="search-input" type="search" placeholder="Search guides and API" autocomplete="off" spellcheck="false" aria-label="Search"><button type="button" class="search-close" data-search-close aria-label="Close search"><kbd class="hide-sm">Esc</kbd><span class="show-sm">Cancel</span></button></div>
     <ul class="search-results" id="search-results" role="listbox"></ul>
     <div class="search-foot"><span><kbd>↑</kbd><kbd>↓</kbd> to navigate</span><span><kbd>↵</kbd> to open</span></div>
   </div>
