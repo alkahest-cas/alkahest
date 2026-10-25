@@ -190,6 +190,17 @@ pub(super) fn corpus(pool: &ExprPool, x: ExprId, y: ExprId) -> Vec<(&'static str
             "lambert_w_fails_below_minus_inv_e",
             pool.add(vec![pool.func("lambert_w", vec![x]), int(1)]),
         ),
+        // The SymPy `lambdify` comparison of benchmark B2: the interpreter
+        // took ~3 µs a point on it before the block program.
+        ("lambdify_benchmark", {
+            let mut syms = HashMap::from([("x".to_owned(), x)]);
+            crate::parse::parse(
+                "sin(x)*exp(-x**2/3) + log(1 + x**2)*cos(3*x) + sqrt(1 + x**4) - x**5/(1 + x**2)",
+                pool,
+                &mut syms,
+            )
+            .unwrap()
+        }),
     ]
 }
 
