@@ -537,6 +537,19 @@ fn default_pool(py: Python<'_>) -> PyResult<Py<PyExprPool>> {
     Ok(default_pool_ref(py)?.clone_ref(py))
 }
 
+/// Private: `expr` in `pool` — itself if it already lives there, a copy if it
+/// is a closed default-pool value (`alkahest.pi`, `alkahest.oo`), else `None`.
+/// The Python wrappers use it for bounds and points (`integrate(f, x, 0, oo)`).
+#[pyfunction]
+#[pyo3(name = "_into_pool")]
+fn py_into_pool(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    pool: Py<PyExprPool>,
+) -> PyResult<Option<PyExpr>> {
+    Ok(expr_into_pool(py, &expr, &pool)?.map(|id| PyExpr { id, pool }))
+}
+
 /// The pool a pool-free call uses: the innermost `alkahest.context(pool=...)`
 /// pool, else [`DEFAULT_POOL`].
 fn ambient_pool(py: Python<'_>) -> PyResult<Py<PyExprPool>> {
@@ -23296,6 +23309,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_cancel, m)?)?;
     m.add_function(wrap_pyfunction!(py_factor_expr, m)?)?;
     m.add_function(wrap_pyfunction!(default_pool, m)?)?;
+    m.add_function(wrap_pyfunction!(py_into_pool, m)?)?;
     m.add_function(wrap_pyfunction!(py_together, m)?)?;
     // PA-5 — Primitive registry
     m.add_class::<PyPrimitiveRegistry>()?;

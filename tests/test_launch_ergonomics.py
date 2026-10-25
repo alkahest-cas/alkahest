@@ -141,6 +141,18 @@ class TestPythonNumberOperands:
         r = ak.subs(x + 1, {x: ak.pi})
         assert _num(getattr(r, "value", r)) == pytest.approx(1 + math.pi)
 
+    def test_module_constants_as_bounds_and_points(self, pool):
+        x = pool.symbol("x")
+        assert _num(ak.integrate(ak.exp(-x), x, 0, ak.oo).value) == pytest.approx(1.0)
+        assert _num(ak.integrate(ak.sin(x), x, 0, ak.pi).value) == pytest.approx(2.0)
+        assert _num(ak.limit(1 / x, x, ak.oo).value) == 0.0
+        assert _num(ak.limit(ak.atan(x), x, ak.pi).value) == pytest.approx(math.atan(math.pi))
+        # Python numbers as points and bounds, too.
+        assert _num(ak.limit(ak.sin(x) / x, x, 0).value) == 1.0
+        k = pool.symbol("k")
+        assert _num(ak.sum_definite(k, k, 1, 10).value) == 55.0
+        assert _num(ak.integrate(x, x, 0, Fraction(1, 2)).value) == 0.125
+
     def test_cross_pool_variables_still_refused(self, pool):
         other = ak.ExprPool()
         with pytest.raises(ak.PoolError):

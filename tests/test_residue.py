@@ -26,7 +26,7 @@ def test_residue_at_i_for_reciprocal_quadratic():
     expr = (z**2 + 1) ** -1
 
     r = ak.simplify(residue(expr, z, 1j)).value
-    i = pool.symbol("I", ak.Domain.Complex)
+    i = pool.imaginary_unit()
     expected = ak.simplify(pool.rational(-1, 2) * i).value
     assert str(r) == str(expected)
 
