@@ -183,6 +183,7 @@ from .alkahest import (  # noqa: F401
     _build_features,
     _derived_result_context_simplify,
     _factor_expr,
+    _into_pool,
     _is_undefined_function_name,
     _may_need_real_form,
     abs,  # symbolic abs — use alkahest.abs(expr); shadows Python builtin within this module
@@ -952,10 +953,33 @@ def _coerce_bound(value, like):
     into the same :class:`ExprPool` as *like* via ``like * 0 + value`` (the
     arithmetic operators coerce the scalar and the ``like * 0`` term vanishes).
     """
-    value = _coerce_expr(value)
+    value = _coerce_to(value, like)
     if isinstance(value, Expr):
         return value
     return like * 0 + value
+
+
+def _coerce_to(value, like):
+    """*value* (a ``DerivedResult`` unwrapped) moved into *like*'s pool when it
+    is a closed value from :func:`default_pool` — ``alkahest.pi``,
+    ``alkahest.oo``, ``alkahest.pi / 2`` — so ``integrate(f, x, 0, oo)`` and
+    ``limit(f, x, oo)`` work with ``x`` from any pool.  Anything else is
+    returned unchanged (a genuine cross-pool mix is then refused by the native
+    call with ``E-POOL-001``).  A Python ``int`` / ``Fraction`` / ``float`` is
+    lifted into *like*'s pool exactly, so ``limit(sin(x)/x, x, 0)`` works."""
+    value = _coerce_expr(value)
+    like = _coerce_expr(like)
+    if not isinstance(like, Expr):
+        return value
+    if isinstance(value, Expr):
+        if value._pool is not like._pool:
+            moved = _into_pool(value, like._pool)
+            if moved is not None:
+                return moved
+        return value
+    if isinstance(value, (_numbers.Rational, float)):
+        return _as_expr_in(value, like._pool)
+    return value
 
 
 def _maybe_context_simplify(result):
@@ -1666,7 +1690,7 @@ def series(expr, var, point, order):
     the ``O(.)`` term dropped, which is what :func:`eval_expr` and
     :func:`simplify` accept.
     """
-    return _native_series(_coerce_expr(expr), _coerce_expr(var), _coerce_expr(point), order)
+    return _native_series(_coerce_expr(expr), _coerce_expr(var), _coerce_to(point, var), order)
 
 
 _native_limit = limit
@@ -1727,7 +1751,7 @@ def limit(expr, var, point, dir=None, *, continuous=None):
         _native_limit(
             _coerce_expr(expr),
             _coerce_expr(var),
-            _coerce_expr(point),
+            _coerce_to(point, var),
             dir,
             continuous=None if continuous is None else [_coerce_expr(c) for c in continuous],
         )
@@ -1847,8 +1871,8 @@ def sum_definite(expr, k, lo, hi):
         _native_sum_definite(
             _coerce_expr(expr),
             _coerce_expr(k),
-            _coerce_expr(lo),
-            _coerce_expr(hi),
+            _coerce_to(lo, k),
+            _coerce_to(hi, k),
         )
     )
 
@@ -1881,8 +1905,8 @@ def product_definite(expr, k, lo, hi):
         _native_product_definite(
             _coerce_expr(expr),
             _coerce_expr(k),
-            _coerce_expr(lo),
-            _coerce_expr(hi),
+            _coerce_to(lo, k),
+            _coerce_to(hi, k),
         )
     )
 
