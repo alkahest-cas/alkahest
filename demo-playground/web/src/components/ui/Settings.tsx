@@ -1,11 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import {
-  AI_PROVIDERS,
-  defaultModelForProvider,
-  type ProviderId,
-} from '@/lib/ai-providers';
 import { alkahestAuthHeaders, healthPath, type ServerBackend } from '@/lib/server-connection';
 import { isStaticHosting } from '@/lib/hosting';
 
@@ -19,10 +14,6 @@ export interface PlaygroundConfig {
   serverWsUrl: string;
   serverToken: string;
   executionMode: ExecutionMode;
-  aiProvider: ProviderId;
-  aiModel: string;
-  aiCustomBaseUrl: string;
-  aiCustomApiKey: string;
   /** When true, code cells hide CodeMirror gutter line numbers. */
   hideLineNumbers: boolean;
 }
@@ -34,10 +25,6 @@ const DEFAULT_CONFIG: PlaygroundConfig = isStaticHosting
       serverWsUrl: '',
       serverToken: '',
       executionMode: 'auto',
-      aiProvider: 'anthropic',
-      aiModel: 'claude-sonnet-4-6',
-      aiCustomBaseUrl: '',
-      aiCustomApiKey: '',
       hideLineNumbers: false,
     }
   : {
@@ -46,10 +33,6 @@ const DEFAULT_CONFIG: PlaygroundConfig = isStaticHosting
       serverWsUrl: 'ws://localhost:8000',
       serverToken: '',
       executionMode: 'auto',
-      aiProvider: 'anthropic',
-      aiModel: 'claude-sonnet-4-6',
-      aiCustomBaseUrl: '',
-      aiCustomApiKey: '',
       hideLineNumbers: false,
     };
 
@@ -60,7 +43,9 @@ export function loadConfig(): PlaygroundConfig {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_CONFIG;
-    const parsed = JSON.parse(raw) as Partial<PlaygroundConfig>;
+    const parsed = JSON.parse(raw) as Partial<PlaygroundConfig> & Record<string, unknown>;
+    // Older builds stored agent/AI-provider settings (and keys) here; drop them.
+    for (const k of Object.keys(parsed)) if (k.startsWith('ai')) delete parsed[k];
     return { ...DEFAULT_CONFIG, ...parsed };
   } catch {
     return DEFAULT_CONFIG;
@@ -68,7 +53,11 @@ export function loadConfig(): PlaygroundConfig {
 }
 
 export function saveConfig(cfg: PlaygroundConfig) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+  } catch {
+    /* storage unavailable (private window) — settings last for this page only */
+  }
 }
 
 interface SettingsProps {
@@ -88,7 +77,6 @@ export default function Settings({
   const [cfg, setCfg] = useState<PlaygroundConfig>(DEFAULT_CONFIG);
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle');
   const [leanStatus, setLeanStatus] = useState<string | null>(null);
-  const isCustomEndpoint = cfg.aiProvider === 'openai-compatible';
 
   useEffect(() => {
     setCfg(loadConfig());
@@ -99,12 +87,6 @@ export default function Settings({
       const next = { ...prev, [key]: value };
       if (key === 'serverHttpUrl') {
         next.serverWsUrl = (value as string).replace(/^https?/, (p) => (p === 'https' ? 'wss' : 'ws'));
-      }
-      if (key === 'aiProvider') {
-        const defaultModel = defaultModelForProvider(value as string);
-        if (defaultModel && (!prev.aiModel || prev.aiModel === defaultModelForProvider(prev.aiProvider))) {
-          next.aiModel = defaultModel;
-        }
       }
       return next;
     });
@@ -174,12 +156,12 @@ export default function Settings({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm" onClick={onClose}>
       <div
-        className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-lg border border-ak-border bg-ak-bg p-6 shadow-xl"
+        className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-lg border border-ak-border bg-ak-elev p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-5 flex items-center justify-between">
           <div>
-            <h2 className="text-base font-semibold">Settings</h2>
+            <h2 className="text-base font-semibold">Backend settings</h2>
             <p className="text-xs text-ak-muted">Ctrl+/ to toggle</p>
           </div>
           <button onClick={onClose} className="text-ak-muted hover:text-ak-fg" aria-label="Close settings">
@@ -196,15 +178,18 @@ export default function Settings({
               Execution backend
             </h3>
             <p className="mb-3 text-xs text-ak-muted">
-              Alkahest server or remote Jupyter (URL + token from jupyter server list). Token stays in this browser.
+              The Math tab and alkahest cells in the Python tab run on an Alkahest server
+              (<code className="rounded bg-ak-sunk px-1">pnpm start</code> runs one on
+              localhost:8000). The Python tab can also use a remote Jupyter server. The token
+              stays in this browser.
             </p>
             {isStaticHosting &&
               cfg.serverBackend === 'alkahest' &&
               /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/?$/i.test(cfg.serverHttpUrl.trim()) && (
-                <p className="mb-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
-                  This hosted playground is HTTPS and cannot call <code className="rounded bg-white/80 px-1">http://localhost</code>{' '}
+                <p className="mb-3 rounded border border-ak-warn/30 bg-ak-warn/10 px-3 py-2 text-xs text-ak-fg">
+                  This hosted playground is HTTPS and cannot call <code className="rounded bg-ak-elev/80 px-1">http://localhost</code>{' '}
                   (mixed content), even with an SSH tunnel. Use an <strong>https://</strong> backend URL, or run the playground
-                  locally at <code className="rounded bg-white/80 px-1">http://localhost:3000</code> with the tunnel.
+                  locally at <code className="rounded bg-ak-elev/80 px-1">http://localhost:3000</code> with the tunnel.
                 </p>
               )}
             <label className="block text-sm mb-1">Backend type</label>
@@ -258,66 +243,6 @@ export default function Settings({
               <option value="wasm">WASM only (Pyodide)</option>
               <option value="server">Server only</option>
             </select>
-          </section>
-
-          {/* AI */}
-          <section>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ak-muted">
-              Agent AI
-            </h3>
-            <p className="mb-3 text-xs text-ak-muted">
-              API keys are read from server environment variables unless you override them below
-              (OpenAI-compatible only). Keys saved in settings stay in this browser only.
-            </p>
-            <label className="block text-sm mb-1">Provider</label>
-            <select
-              value={cfg.aiProvider}
-              onChange={(e) => update('aiProvider', e.target.value as ProviderId)}
-              className="mb-3 w-full rounded border border-ak-border bg-ak-code-bg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ak-brand"
-            >
-              {AI_PROVIDERS.map((p) => (
-                <option key={p.id} value={p.id}>{p.label}</option>
-              ))}
-            </select>
-            {isCustomEndpoint && (
-              <div className="mb-3 space-y-3 rounded border border-ak-border bg-ak-code-bg/50 p-3">
-                <div>
-                  <label className="block text-sm mb-1">API base URL</label>
-                  <input
-                    type="url"
-                    value={cfg.aiCustomBaseUrl}
-                    onChange={(e) => update('aiCustomBaseUrl', e.target.value)}
-                    placeholder="https://api.example.com/v1"
-                    className="w-full rounded border border-ak-border bg-ak-bg px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-ak-brand"
-                  />
-                  <p className="mt-1 text-xs text-ak-muted">
-                    Or set OPENAI_COMPATIBLE_BASE_URL in web/.env.local
-                  </p>
-                </div>
-                <div>
-                  <label className="block text-sm mb-1">API key (optional)</label>
-                  <input
-                    type="password"
-                    value={cfg.aiCustomApiKey}
-                    onChange={(e) => update('aiCustomApiKey', e.target.value)}
-                    placeholder="sk-..."
-                    autoComplete="off"
-                    className="w-full rounded border border-ak-border bg-ak-bg px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-ak-brand"
-                  />
-                  <p className="mt-1 text-xs text-ak-muted">
-                    Or set OPENAI_COMPATIBLE_API_KEY in web/.env.local
-                  </p>
-                </div>
-              </div>
-            )}
-            <label className="block text-sm mb-1">Model</label>
-            <input
-              type="text"
-              value={cfg.aiModel}
-              onChange={(e) => update('aiModel', e.target.value)}
-              className="w-full rounded border border-ak-border bg-ak-code-bg px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-ak-brand"
-              placeholder={isCustomEndpoint ? 'e.g. gpt-4o or your-model-id' : 'e.g. claude-sonnet-4-6'}
-            />
           </section>
 
           {showNotebookOptions && (
@@ -393,7 +318,7 @@ export default function Settings({
           </button>
           <button
             onClick={handleSave}
-            className="rounded bg-ak-brand px-4 py-1.5 text-sm font-medium text-white hover:bg-ak-brand-dark"
+            className="rounded bg-ak-brand px-4 py-1.5 text-sm font-medium text-ak-brand-fg hover:bg-ak-brand-dark"
           >
             Save & reload
           </button>

@@ -52,7 +52,7 @@ export default function OutputActionsMenu({ onCopy, onClear }: OutputActionsMenu
       {open && (
         <div
           role="menu"
-          className="absolute left-0 top-full z-30 mt-1 min-w-[148px] rounded-lg border border-ak-border bg-ak-bg py-1 shadow-lg"
+          className="absolute left-0 top-full z-30 mt-1 min-w-[148px] rounded-lg border border-ak-border bg-ak-elev py-1 shadow-lg"
         >
           <button
             type="button"
