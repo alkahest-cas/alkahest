@@ -85,7 +85,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // Carried out of band on `SeriesError::InvalidOrder` like 003/004.
     ErrorSpec { code: "E-SERIES-007", class: "SeriesRefusal", cause: Cause::Domain,    remediation: Some("pass exactly +oo or -oo; for exp/log scales at infinity use `experimental.asymptotic_expand`, for fractional powers substitute x = 1/t and use `experimental.puiseux_series` at 0, and for a single value use `limit`") },
     // E-INT — IntegrationError
-    ErrorSpec { code: "E-INT-001", class: "IntegrationError", cause: Cause::Unsupported, remediation: Some("use a numeric integrator for arbitrary functions") },
+    ErrorSpec { code: "E-INT-001", class: "IntegrationError", cause: Cause::Unsupported, remediation: Some("no method could decide this integrand; this is a refusal, not a proof that no closed form exists — try an equivalent form, or integrate numerically") },
     ErrorSpec { code: "E-INT-002", class: "IntegrationError", cause: Cause::Domain,      remediation: None },
     ErrorSpec { code: "E-INT-003", class: "IntegrationError", cause: Cause::Unsupported, remediation: Some("v1.1 supports sqrt(P(x)) only; higher-degree radicals planned for v2.0") },
     ErrorSpec { code: "E-INT-004", class: "IntegrationError", cause: Cause::Domain,      remediation: Some("no elementary antiderivative exists; use a numeric integrator or elliptic-integral library") },
