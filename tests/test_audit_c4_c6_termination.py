@@ -69,19 +69,22 @@ def _run(body, wall=60):
 
 
 @pytest.mark.parametrize(
-    "call",
+    ("call", "code"),
     [
-        "ak.limit(z**-1 + x, x, one)",
-        "ak.limit(x * z**-1, x, one)",
-        "ak.limit(1 / (one - one) + x, x, p.pos_infinity())",
-        "ak.limit(ak.log(z) + x, x, one)",
-        "ak.limit(x * ak.log(z), x, p.pos_infinity())",
+        # A division by an exact zero is the coded `DivisionByZeroError`
+        # (`E-DOMAIN-001`), raised by `limit` — or, for `1/(1 - 1)`, already
+        # by the `/` that builds it — rather than "no limit rule applies".
+        ("ak.limit(z**-1 + x, x, one)", "E-DOMAIN-001"),
+        ("ak.limit(x * z**-1, x, one)", "E-DOMAIN-001"),
+        ("ak.limit(1 / (one - one) + x, x, p.pos_infinity())", "E-DOMAIN-001"),
+        ("ak.limit(ak.log(z) + x, x, one)", "E-LIMIT"),
+        ("ak.limit(x * ak.log(z), x, p.pos_infinity())", "E-LIMIT"),
     ],
 )
-def test_c4_limit_of_an_undefined_constant_is_refused_promptly(call):
+def test_c4_limit_of_an_undefined_constant_is_refused_promptly(call, code):
     verdict, elapsed, _ = _run(f"report(lambda: {call})")
     assert verdict.startswith("ERR"), verdict
-    assert "E-LIMIT" in verdict
+    assert code in verdict
     assert elapsed < 60.0
 
 

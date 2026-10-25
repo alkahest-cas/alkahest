@@ -96,7 +96,7 @@ Raised when a mathematical side condition is violated.
 
 | Code | Cause | Remediation |
 |---|---|---|
-| `E-DOMAIN-001` | Division by zero | Check denominator before dividing |
+| `E-DOMAIN-001` | Division by zero: `Expr / 0`, or a denominator that `simplify` reduces to `0` (`1/(x + 2*x - 3*x)`). Raised as `DivisionByZeroError`, which is both a `DomainError` and a `ZeroDivisionError` | Check the denominator before dividing — it is identically zero |
 | `E-DOMAIN-002` | `log(0)` or `log(negative)` | Ensure argument is positive; use complex domain if needed |
 | `E-DOMAIN-003` | `sqrt(negative)` | Use `AcbBall` or declare complex domain |
 

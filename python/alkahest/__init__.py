@@ -658,6 +658,17 @@ else:
         if _native_cls is not None:
             _globals[_overlay_name] = _native_cls
 
+
+class DivisionByZeroError(DomainError, ZeroDivisionError):
+    """Division by an exact zero (``E-DOMAIN-001``).
+
+    Raised by :func:`simplify` when a denominator simplifies to ``0`` — e.g.
+    ``simplify(1/(x + (-1)*x))`` — and by ``Expr`` division by a literal zero.
+    It is a :class:`DomainError` *and* a :class:`ZeroDivisionError`, so both
+    ``except ak.DomainError`` and ``except ZeroDivisionError`` catch it.
+    """
+
+
 try:
     __version__ = _meta_version("alkahest")
 except _PackageNotFoundError:
@@ -1584,8 +1595,30 @@ def simplify_expanded(expr):
     Returns
     -------
     DerivedResult
+
+    Warns
+    -----
+    UserWarning
+        When a power of a sum was left unexpanded because its expansion is too
+        large (the derivation then carries an ``expand_pow_limit_reached``
+        step naming it). Powers whose *expansion* is small are always expanded:
+        ``simplify_expanded((x+1)**13)`` is the 14-term polynomial.
     """
-    return _native_simplify_expanded(_coerce_expr(expr))
+    result = _native_simplify_expanded(_coerce_expr(expr))
+    declined = [s for s in result.steps if s.get("rule") == "expand_pow_limit_reached"]
+    if declined:
+        import warnings
+
+        shown = ", ".join(str(s.get("before")) for s in declined[:3])
+        more = "" if len(declined) <= 3 else f" (and {len(declined) - 3} more)"
+        warnings.warn(
+            f"simplify_expanded left {shown}{more} unexpanded: the expansion is too large "
+            "for the bounded expander. Use UniPoly/MultiPoly (or cancel) to expand it "
+            "as a polynomial.",
+            UserWarning,
+            stacklevel=2,
+        )
+    return result
 
 
 _native_collect_like_terms = collect_like_terms
@@ -3333,6 +3366,7 @@ __all__ = [
     "DiffError",
     "DiophantineError",
     "DiophantineSolution",
+    "DivisionByZeroError",
     "Domain",
     "DomainError",
     "E",
