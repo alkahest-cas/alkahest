@@ -150,6 +150,26 @@ fn rule_to_tactic(rule_name: &str) -> &'static str {
         | "sqrt_literal_product"
         | "exp_product_cancel"
         | "odd_even_symmetry" => "by sorry",
+        // Identities `simplify_trig`, `simplify_log_exp` and the
+        // `simplify_full` domain passes apply, for which the generic
+        // `ring_nf; simp` fallback was checked against Lean 4 / Mathlib and
+        // does *not* close the goal as the pool prints it in general
+        // (`sin x·cos y − cos x·sin y = sin(x + y·(−1))`, `2cosh²x − 2sinh²x =
+        // 2`, `cos²x − sin²x = cos(x·2)`, `exp(x)³ = exp(3x)`). The instances
+        // that do close are emitted by `plain_step_certificate`. Withheld
+        // otherwise. `rational_cancel` and `exp_of_log_nonzero` additionally
+        // hold only under their recorded `≠ 0` side conditions (and the latter
+        // not at all over Mathlib's `Real.log`, which is `log |u|` for `u < 0`).
+        "cosh_sq_minus_sinh_sq"
+        | "cos_double_angle"
+        | "sin_angle_sub"
+        | "cos_angle_sub"
+        | "pow_of_exp"
+        | "rational_cancel"
+        | "exp_of_log_nonzero"
+        | "sqrt_denest"
+        | "pythagorean_rational"
+        | "zero_radical" => "by sorry",
         _ => "by ring_nf; simp",
     }
 }
@@ -1436,6 +1456,31 @@ fn plain_step_certificate(step: &RewriteStep, pool: &ExprPool) -> Option<(Option
     // so it never reaches — and wrongly trusts — that fallback.
     if step.rule_name == "sin_double_angle" {
         return sin_double_angle_certificate(step.before, pool).map(|t| (None, t));
+    }
+    // The two instances of the withheld trig rules that `ring_nf; simp` was
+    // checked to close: `cosh²u − sinh²u = 1` exactly (the coefficient-free
+    // form; `2cosh² − 2sinh² = 2` is not closed), and `cos a·cos a +
+    // sin a·sin a = cos(a − a)`, where `ring_nf` turns the angle into `0`.
+    if step.rule_name == "cosh_sq_minus_sinh_sq" {
+        let unit = pool.with(
+            step.after,
+            |d| matches!(d, ExprData::Integer(n) if n.0 == 1),
+        );
+        return unit.then(|| (None, "by ring_nf; simp".to_string()));
+    }
+    if step.rule_name == "cos_angle_sub" {
+        let zero_angle = pool
+            .with(step.after, |d| match d {
+                ExprData::Func { name, args } if name == "cos" && args.len() == 1 => Some(args[0]),
+                _ => None,
+            })
+            .is_some_and(|a| {
+                pool.with(
+                    crate::simplify::simplify(a, pool).value,
+                    |d| matches!(d, ExprData::Integer(n) if n.0 == 0),
+                )
+            });
+        return zero_angle.then(|| (None, "by ring_nf; simp".to_string()));
     }
     if inv_cancel_base(step.before, step.after, pool).is_some() {
         return inv_cancel_certificate(step.before, step.after, pool).map(|(b, t)| (Some(b), t));

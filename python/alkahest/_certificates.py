@@ -93,7 +93,18 @@ OPERATIONS: dict[str, dict[str, Any]] = {
 }
 
 #: Feature names in the fixed order used to build a shape-class key.
-FEATURES = ("form", "funcs", "fn_arg", "mul", "pow", "pow_base", "definite", "point", "cond")
+FEATURES = (
+    "form",
+    "head",
+    "funcs",
+    "fn_arg",
+    "mul",
+    "pow",
+    "pow_base",
+    "definite",
+    "point",
+    "cond",
+)
 
 _NUMERIC_TAGS = ("integer", "rational", "float")
 
@@ -380,6 +391,13 @@ def shape_features(expr, var=None, definite: bool | None = None) -> dict[str, st
         features["definite"] = "yes" if definite else "no"
     if features["form"] == "piecewise":
         features["cond"] = _piecewise_cond_kind(expr, var)
+    # For a variable-free rewrite of a function application the outermost
+    # function decides which rule fires: `simplify(exp(log x))` and
+    # `simplify(log(exp x))` share every other feature, but one is the
+    # side-conditioned `exp ∘ log` (withheld) and the other `Real.log_exp`
+    # (certified). Without `head` the class would be `partial`.
+    if var is None and features["form"] == "apply":
+        features["head"] = expr.node()[1]
     return features
 
 

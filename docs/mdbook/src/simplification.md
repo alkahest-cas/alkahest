@@ -20,6 +20,32 @@ The default rule set covers:
 - Basic polynomial simplification (`x + x → 2*x`, `x² * x → x³`)
 - Commutativity and associativity (normalized at construction)
 
+### Domain passes: the simplest form
+
+After the rule engine, Python `simplify` (and `simplify_auto`) try the domain
+passes the core rule set leaves out, each only when its trigger occurs in the
+expression, and keep a candidate **only if it is strictly smaller** (node count,
+then radical nesting) — so `simplify` never returns something larger than the
+rule engine gave:
+
+| Pass | Example | Side condition recorded |
+|---|---|---|
+| Pythagorean / hyperbolic | `y + sin(x)**2 + cos(x)**2 → y + 1`, `cosh²−sinh² → 1` | — |
+| trig identities (`simplify_trig`) | `tan(x)*cos(x) → sin(x)` | — |
+| log / exp | `exp(log(u)) → u`, `exp(a)*exp(b) → exp(a+b)` | `u ≠ 0` |
+| radical denesting | `sqrt(3 + 2*sqrt(2)) → 1 + sqrt(2)` | — |
+| rational cancellation | `(x**2-1)/(x-1) → x + 1` | `x − 1 ≠ 0` |
+| bounded expansion | `(x+y)**2-(x-y)**2 → 4*x*y`, `(sqrt(2)+1)*(sqrt(2)-1) → 1` | — |
+
+Side conditions appear on the step in `.steps`. The rewrites without a Lean
+tactic withhold `.certificate` rather than emit one that does not check. The
+Rust `alkahest_cas::simplify` that subsystems call on intermediate results is
+the rule engine alone; `simplify_full` is the Rust spelling of the above.
+
+A denominator that simplifies to `0` is an error, not a value:
+`simplify(1/(x + 2*x - 3*x))` raises `DivisionByZeroError` (`E-DOMAIN-001`),
+which is both a `DomainError` and a `ZeroDivisionError`, as `x / 0` does.
+
 ### Special values and zero recognition
 
 Every entry point also folds exact special values (`cos(pi) → -1`,
@@ -82,6 +108,11 @@ r = simplify_log_exp(exp(log(x)))
 # Expand products and collect like terms
 r = simplify_expanded((x + pool.integer(1))**3)
 ```
+
+`simplify_expanded` expands every power of a sum whose expansion has at most
+4096 monomials (`(x+1)**13`, `(x+y+z)**8`). A larger one is left as written,
+with an `expand_pow_limit_reached` step naming it and a `UserWarning`; expand
+such polynomials with `UniPoly` / `MultiPoly`.
 
 ### Customizing the rule set
 

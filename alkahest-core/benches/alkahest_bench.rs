@@ -197,6 +197,25 @@ fn bench_simplify(c: &mut Criterion) {
         b.iter(|| simplify(simplified, &p));
     });
 
+    // `simplify_full` (what Python `simplify` calls): the trigger scan on an
+    // expression no domain pass applies to, and the Pythagorean pass.
+    g.bench_function("full_no_trigger_poly_deg4", |b| {
+        let p = fresh_pool();
+        let x = p.symbol("x", Domain::Real);
+        let expr = poly_expr(&p, x, &[0, 1, 2, 3, 4]);
+        b.iter(|| alkahest_cas::simplify_full(expr, &p));
+    });
+    g.bench_function("full_pythagorean", |b| {
+        let p = fresh_pool();
+        let x = p.symbol("x", Domain::Real);
+        let two = p.integer(2_i32);
+        let expr = p.add(vec![
+            p.pow(p.func("sin", vec![x]), two),
+            p.pow(p.func("cos", vec![x]), two),
+        ]);
+        b.iter(|| alkahest_cas::simplify_full(expr, &p));
+    });
+
     g.finish();
 }
 
