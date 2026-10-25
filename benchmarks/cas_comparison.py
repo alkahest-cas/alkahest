@@ -90,15 +90,42 @@ def _run_once(task: BenchTask, system: str, size: int) -> dict[str, Any]:
             "error": "not_implemented",
         }
 
+    if size in getattr(task, "skip_sizes", {}).get(system, ()):
+        return {
+            "task": task.name,
+            "system": system,
+            "size": size,
+            "depth": _DEPTH_KEY,
+            "timeit_repeat": _TIMING_REPEAT,
+            "timeit_number": _TIMING_NUMBER,
+            "wall_ms": None,
+            "ok": False,
+            "error": "skipped_known_slow",
+        }
+
     try:
         # Warm-up
         run_fn(size)
         # Time
-        times = timeit.repeat(
-            lambda: run_fn(size),
-            repeat=_TIMING_REPEAT,
-            number=_TIMING_NUMBER,
-        )
+        if system == "sympy":
+            # SymPy memoises (``sympy.core.cache``): after the warm-up every
+            # timed call would be a cache hit.  Clear it before each call and
+            # time calls one at a time, so no call sees another's cache.
+            from sympy.core.cache import clear_cache  # type: ignore[import]
+
+            times = timeit.repeat(
+                lambda: run_fn(size),
+                setup=clear_cache,
+                repeat=_TIMING_REPEAT * _TIMING_NUMBER,
+                number=1,
+            )
+            times = [t * _TIMING_NUMBER for t in times]
+        else:
+            times = timeit.repeat(
+                lambda: run_fn(size),
+                repeat=_TIMING_REPEAT,
+                number=_TIMING_NUMBER,
+            )
         wall_ms = min(times) * 1000.0
         return {
             "task": task.name,

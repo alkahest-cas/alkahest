@@ -35,6 +35,9 @@ class BenchTask(abc.ABC):
     size_params: list[int] = [5, 10, 20]
     # Optional larger inputs appended when ``depth=stress`` (see ``bench_depth.py``).
     stress_size_params: tuple[int, ...] = ()
+    # Sizes a system is known not to finish in reasonable time, per system
+    # name; the driver reports them as skipped instead of running them.
+    skip_sizes: dict[str, tuple[int, ...]] = {}
 
     @abc.abstractmethod
     def run_alkahest(self, size: int) -> Any:
@@ -141,22 +144,25 @@ class RationalSimplification(BenchTask):
     name = "rational_simplify"
     size_params = [5, 10, 20]
 
+    # Both sides start from expressions and cancel the polynomial gcd:
+    # ``RationalFunction.from_symbolic`` against ``sympy.cancel``.  (This used
+    # to build the alkahest side from a coefficient list and time it against
+    # ``sympy.simplify``, which runs a dozen heuristics beyond cancellation.)
+
     def run_alkahest(self, size: int) -> Any:
         import alkahest
 
         p = alkahest.ExprPool()
         x = p.symbol("x")
-        numer_uni = alkahest.UniPoly.from_coefficients([p.integer(-1)] + [p.integer(0)] * (size - 1) + [p.integer(1)], x)
-        denom_uni = alkahest.UniPoly.from_coefficients([p.integer(-1), p.integer(1)], x)
-        rf = alkahest.RationalFunction(numer_uni, denom_uni)
-        return rf
+        one = p.integer(1)
+        return alkahest.RationalFunction.from_symbolic(x**size - one, x - one, [x])
 
     def run_sympy(self, size: int) -> Any:
         import sympy as sp  # type: ignore[import]
 
         x = sp.Symbol("x")
         expr = (x**size - 1) / (x - 1)
-        return sp.simplify(expr)
+        return sp.cancel(expr)
 
 
 # ---------------------------------------------------------------------------
@@ -910,13 +916,14 @@ class SubresultantChain(BenchTask):
         return len(seq)
 
     def run_sympy(self, size: int) -> Any:
+        # ``sympy.subresultants`` (the Poly-domain PRS), not the educational
+        # ``sympy.polys.subresultants_qq_zz`` module this used to time.
         import sympy as sp  # type: ignore[import]
-        from sympy.polys.subresultants_qq_zz import subresultants_rem  # type: ignore[import]
 
         x = sp.Symbol("x")
         f = x**size + x + 1
         g = x**size - x - 1
-        return len(subresultants_rem(f, g, x))
+        return len(sp.subresultants(f, g, x))
 
 
 class FactorUniModP(BenchTask):
@@ -966,6 +973,105 @@ class ExpandPowerSimplify(BenchTask):
 
 
 # ---------------------------------------------------------------------------
+# Gröbner bases — the cyclic-n and katsura-n benchmark families
+# ---------------------------------------------------------------------------
+
+
+def _cyclic_strings(n: int) -> tuple[list[str], list[str]]:
+    v = [f"x{i}" for i in range(n)]
+    eqs = []
+    for k in range(1, n):
+        eqs.append(" + ".join("*".join(v[(i + j) % n] for j in range(k)) for i in range(n)))
+    eqs.append("*".join(v) + " - 1")
+    return eqs, v
+
+
+def _katsura_strings(n: int) -> tuple[list[str], list[str]]:
+    v = [f"u{i}" for i in range(n + 1)]
+
+    def u(i: int) -> str | None:
+        i = abs(i)
+        return v[i] if i <= n else None
+
+    eqs = []
+    for m in range(n):
+        terms = []
+        for i in range(-n, n + 1):
+            a, b = u(i), u(m - i)
+            if a is not None and b is not None:
+                terms.append(f"{a}*{b}")
+        eqs.append(" + ".join(terms) + f" - {v[m]}")
+    eqs.append(" + ".join(x for i in range(-n, n + 1) if (x := u(i)) is not None) + " - 1")
+    return eqs, v
+
+
+class _GroebnerTask(BenchTask):
+    """Reduced Gröbner basis of a benchmark system; returns its size.
+
+    ``size`` is ``n`` in cyclic-n / katsura-n.  SymPy runs ``groebner`` with its
+    default Buchberger method.  Sizes where SymPy 1.14 needs more than 120 s
+    (measured 2026-10-25) are listed in ``skip_sizes`` so a standard run does
+    not stall on them; the report shows them as skipped, not as wins.
+    """
+
+    family = ""
+    order = ""
+    size_params = [5, 6]
+
+    def _system(self, size: int) -> tuple[list[str], list[str]]:
+        return (_cyclic_strings if self.family == "cyclic" else _katsura_strings)(size)
+
+    def run_alkahest(self, size: int) -> Any:
+        import alkahest
+
+        eqs, names = self._system(size)
+        p = alkahest.ExprPool()
+        xs = [p.symbol(s) for s in names]
+        polys = [alkahest.parse(e, p) for e in eqs]
+        return len(alkahest.GroebnerBasis.compute(polys, xs, order=self.order))
+
+    def run_sympy(self, size: int) -> Any:
+        import sympy as sp  # type: ignore[import]
+
+        eqs, names = self._system(size)
+        xs = sp.symbols(names)
+        return len(sp.groebner([sp.sympify(e) for e in eqs], *xs, order=self.order).exprs)
+
+    def expected_result(self, size: int) -> Any:
+        return self.expected.get(size)
+
+
+class GroebnerCyclicGrevlex(_GroebnerTask):
+    name = "gb_cyclic_grevlex"
+    family, order = "cyclic", "grevlex"
+    stress_size_params = (7,)
+    expected = {5: 20, 6: 45, 7: 209}
+    skip_sizes = {"sympy": (7,)}
+
+
+class GroebnerCyclicLex(_GroebnerTask):
+    name = "gb_cyclic_lex"
+    family, order = "cyclic", "lex"
+    expected = {5: 11, 6: 17}
+    skip_sizes = {"sympy": (6,)}
+
+
+class GroebnerKatsuraGrevlex(_GroebnerTask):
+    name = "gb_katsura_grevlex"
+    family, order = "katsura", "grevlex"
+    stress_size_params = (7, 8)
+    expected = {5: 22, 6: 41, 7: 74, 8: 143}
+    skip_sizes = {"sympy": (7, 8)}
+
+
+class GroebnerKatsuraLex(_GroebnerTask):
+    name = "gb_katsura_lex"
+    family, order = "katsura", "lex"
+    expected = {5: 6, 6: 7}
+    skip_sizes = {"sympy": (5, 6)}
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -993,6 +1099,10 @@ ALL_TASKS: list[BenchTask] = [
     LogExpSimplify(),
     CollectLikeTermsMixed(),
     # Solvers & decomposition
+    GroebnerCyclicGrevlex(),
+    GroebnerCyclicLex(),
+    GroebnerKatsuraGrevlex(),
+    GroebnerKatsuraLex(),
     SolveCircleLine(),
     Solve6rIk(),
     HomotopySeparateQuadratics(),
