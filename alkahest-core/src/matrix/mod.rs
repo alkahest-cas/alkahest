@@ -121,6 +121,65 @@ impl crate::errors::AlkahestError for MatrixError {
     }
 }
 
+/// An exact integer / rational literal's value.
+fn literal_value(e: ExprId, pool: &ExprPool) -> Option<rug::Rational> {
+    pool.with(e, |d| match d {
+        crate::kernel::ExprData::Integer(n) => Some(rug::Rational::from(&n.0)),
+        crate::kernel::ExprData::Rational(r) => Some(r.0.clone()),
+        _ => None,
+    })
+}
+
+fn intern_literal(q: rug::Rational, pool: &ExprPool) -> ExprId {
+    if *q.denom() == 1 {
+        pool.integer(q.numer().clone())
+    } else {
+        let (n, d) = q.into_numer_denom();
+        pool.rational(n, d)
+    }
+}
+
+/// `a·b` for a matrix-product term, with the literal arithmetic done:
+/// `1·b = b`, `a·1 = a`, `0·b = 0` (for a finite `b`), and two literals
+/// multiplied out. `Matrix([[1,2],[3,4]]) @ eye(2)` used to print every entry
+/// as `((1 * 1) + (2 * 0))`.
+fn literal_product(a: ExprId, b: ExprId, pool: &ExprPool) -> ExprId {
+    match (literal_value(a, pool), literal_value(b, pool)) {
+        (Some(p), Some(q)) => intern_literal(p * q, pool),
+        (Some(p), None) if p == 1 => b,
+        (None, Some(q)) if q == 1 => a,
+        (Some(p), None) if p == 0 && absorbs_zero(b, pool) => pool.integer(0_i32),
+        (None, Some(q)) if q == 0 && absorbs_zero(a, pool) => pool.integer(0_i32),
+        _ => pool.mul(vec![a, b]),
+    }
+}
+
+/// `0·e = 0` is an identity for this `e`: nothing infinite and no `0⁻¹` in it.
+fn absorbs_zero(e: ExprId, pool: &ExprPool) -> bool {
+    !pool.has_non_finite(e) && crate::simplify::find_division_by_zero(e, pool).is_none()
+}
+
+/// `Σ terms` for a matrix-product entry: literal terms summed exactly, a zero
+/// sum dropped, a single remaining term returned bare.
+fn literal_sum(terms: Vec<ExprId>, pool: &ExprPool) -> ExprId {
+    let mut acc = rug::Rational::new();
+    let mut rest = Vec::with_capacity(terms.len());
+    for t in terms {
+        match literal_value(t, pool) {
+            Some(q) => acc += q,
+            None => rest.push(t),
+        }
+    }
+    if acc != 0 || rest.is_empty() {
+        rest.push(intern_literal(acc, pool));
+    }
+    if rest.len() == 1 {
+        rest[0]
+    } else {
+        pool.add(rest)
+    }
+}
+
 impl Matrix {
     /// Create a matrix from row-major nested vectors.
     pub fn new(rows: Vec<Vec<ExprId>>) -> Result<Self, MatrixError> {
@@ -261,16 +320,9 @@ impl Matrix {
         for r in 0..m {
             for c in 0..n {
                 let terms: Vec<ExprId> = (0..k)
-                    .map(|i| pool.mul(vec![self.get(r, i), other.get(i, c)]))
+                    .map(|i| literal_product(self.get(r, i), other.get(i, c), pool))
                     .collect();
-                let entry = if terms.is_empty() {
-                    pool.integer(0_i32)
-                } else if terms.len() == 1 {
-                    terms[0]
-                } else {
-                    pool.add(terms)
-                };
-                data.push(entry);
+                data.push(literal_sum(terms, pool));
             }
         }
         Ok(Matrix {
