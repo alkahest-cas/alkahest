@@ -3451,6 +3451,74 @@ mod tests {
         }
     }
 
+    /// B4 (benchmark 2026-10-25): the 3.11.0 wheel refused
+    /// `⟨x² + y² + z² − 4, xy − z − 1, x + y + z³ − 2⟩` with `E-SOLVE-002`
+    /// because its eliminant in `z` has degree 6. All 12 complex solutions
+    /// (Bézout 2·2·3, confirmed by `NSolve`) come back exactly, `z` as a
+    /// `RootOf` of the irreducible sextic, and each one satisfies the system.
+    #[cfg(flint_arb)]
+    #[test]
+    fn a_sextic_eliminant_gives_every_solution_exactly() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let z = pool.symbol("z", Domain::Real);
+        let n = |v: i64| pool.integer(v);
+        let sq = |e: ExprId| pool.pow(e, pool.integer(2));
+        let e1 = pool.add(vec![sq(x), sq(y), sq(z), n(-4)]);
+        let e2 = pool.add(vec![pool.mul(vec![x, y]), pool.mul(vec![n(-1), z]), n(-1)]);
+        let e3 = pool.add(vec![x, y, pool.pow(z, pool.integer(3)), n(-2)]);
+        let sols = finite(vec![e1, e2, e3], vec![x, y, z], &pool);
+        assert_eq!(sols.len(), 12);
+        let env = HashMap::new();
+        let c = |e: ExprId| {
+            let v = crate::eval::eval_complex_f64(e, &pool, &env)
+                .unwrap_or_else(|err| panic!("{}: {err:?}", pool.display(e)));
+            (v.re, v.im)
+        };
+        let mul = |a: (f64, f64), b: (f64, f64)| (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0);
+        let mut points: Vec<[(f64, f64); 3]> = Vec::new();
+        for s in &sols {
+            assert!(
+                pool.display(s[2]).to_string().contains("RootOf"),
+                "z = {}",
+                pool.display(s[2])
+            );
+            let (xv, yv, zv) = (c(s[0]), c(s[1]), c(s[2]));
+            let (x2, y2, z2) = (mul(xv, xv), mul(yv, yv), mul(zv, zv));
+            let xy = mul(xv, yv);
+            let z3 = mul(z2, zv);
+            let r1 = (x2.0 + y2.0 + z2.0 - 4.0, x2.1 + y2.1 + z2.1);
+            let r2 = (xy.0 - zv.0 - 1.0, xy.1 - zv.1);
+            let r3 = (xv.0 + yv.0 + z3.0 - 2.0, xv.1 + yv.1 + z3.1);
+            for r in [r1, r2, r3] {
+                assert!(r.0.hypot(r.1) < 1e-9, "residual {r:?}");
+            }
+            assert!(
+                points.iter().all(|p| {
+                    p.iter()
+                        .zip([xv, yv, zv])
+                        .map(|(a, b)| (a.0 - b.0).hypot(a.1 - b.1))
+                        .sum::<f64>()
+                        > 1e-6
+                }),
+                "duplicate solution"
+            );
+            points.push([xv, yv, zv]);
+        }
+        // The two real solutions the benchmark's numeric solve reported.
+        let real = points
+            .iter()
+            .filter(|p| p.iter().all(|v| v.1.abs() < 1e-12))
+            .count();
+        assert_eq!(real, 2);
+        assert!(points.iter().any(|p| {
+            (p[0].0 - 0.242_67).abs() < 1e-5
+                && (p[1].0 - 1.911_45).abs() < 1e-5
+                && (p[2].0 + 0.536_15).abs() < 1e-5
+        }));
+    }
+
     // -----------------------------------------------------------------------
     // Parametric systems: branches decided as functions of the parameters
     // -----------------------------------------------------------------------
