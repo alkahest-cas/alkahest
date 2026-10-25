@@ -265,9 +265,9 @@ class ODEJITCompile(BenchTask):
         import numpy as np
         import alkahest
 
-        # compile_expr falls back to a tree-walking interpreter when LLVM is
-        # unavailable — results are correct but ~300× slower than native JIT.
-        # The benchmark annotates this in the Notes column via jit_is_available().
+        # Without a native JIT (Cranelift or LLVM) compile_expr uses the block
+        # interpreter, which evaluates a batch an operation at a time over
+        # blocks of points; the Notes column says which via jit_is_available().
         p = alkahest.ExprPool()
         x = p.symbol("x")
         terms = [x**k for k in range(size + 1)]
