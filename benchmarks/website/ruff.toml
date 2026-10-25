@@ -1,0 +1,4 @@
+# Benchmark scripts embed long expression strings and table templates;
+# otherwise the repository's ruff configuration applies unchanged.
+extend = "../../pyproject.toml"
+line-length = 120
