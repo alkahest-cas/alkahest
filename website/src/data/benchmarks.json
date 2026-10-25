@@ -1,0 +1,19 @@
+{
+  "generated": "PLACEHOLDER — replaced by benchmarks/website/run_all.py",
+  "alkahest_version": "dev",
+  "machine": "placeholder",
+  "suites": [
+    { "id": "core", "label": "Core CAS", "blurb": "Placeholder rows for layout testing only.",
+      "cases": [
+        { "id": "a", "task": "Trig identity simplification", "detail": "placeholder", "unit": "ms", "timeout_s": 120,
+          "results": [ {"system": "alkahest", "value": 0.02}, {"system": "sympy", "version": "1.14", "value": 8.22}, {"system": "mathematica", "version": "14.3", "value": 1.22} ] },
+        { "id": "b", "task": "Gröbner basis, cyclic-6", "detail": "placeholder", "unit": "ms", "timeout_s": 120,
+          "results": [ {"system": "alkahest", "value": null}, {"system": "mathematica", "version": "14.3", "value": 190} ] },
+        { "id": "c", "task": "Polynomial diff", "detail": "placeholder", "unit": "ms",
+          "results": [ {"system": "alkahest", "value": 0.10}, {"system": "sympy", "value": 0.13}, {"system": "symengine", "value": 0.05} ] }
+      ] },
+    { "id": "pharma", "label": "Pharma / PK-PD", "cases": [
+        { "id": "d", "task": "1e6 virtual subjects", "unit": "ms",
+          "results": [ {"system": "alkahest", "value": 15}, {"system": "numpy", "value": 38} ] } ] }
+  ]
+}
