@@ -1007,14 +1007,14 @@ fn try_exp_trig_ibp(
 /// Maximum combined trig degree (number of `sin`/`cos` factors) the Fourier
 /// linearizer will expand.  The term count grows as `2^degree`, so this bounds
 /// the work; beyond it the fast-path declines and the integrand falls through.
-const MAX_TRIG_LINEARIZE_DEGREE: usize = 8;
+pub(super) const MAX_TRIG_LINEARIZE_DEGREE: usize = 8;
 
 /// A single term of a finite Fourier expansion: `coeff · f(arg)` with
 /// `f ∈ {sin, cos}` and `arg` linear in the integration variable.
-struct FourierTerm {
-    coeff: ExprId,
-    is_sin: bool,
-    arg: ExprId,
+pub(super) struct FourierTerm {
+    pub(super) coeff: ExprId,
+    pub(super) is_sin: bool,
+    pub(super) arg: ExprId,
 }
 
 /// Fast-path for `∫ sin^m(a·x+b)·cos^n(c·x+d) dx` (nonnegative integer powers,
@@ -1270,7 +1270,7 @@ fn collect_trig_product(
 /// Push one `var`-dependent factor onto `trig` when it is `sin`/`cos` of a
 /// linear argument raised to a nonnegative integer power; return `false`
 /// otherwise (so the caller declines the whole integrand).
-fn push_trig_factor(
+pub(super) fn push_trig_factor(
     f: ExprId,
     var: ExprId,
     pool: &ExprPool,
@@ -1316,7 +1316,11 @@ fn push_trig_factor(
 /// finite Fourier sum `Σ c_j · g_j(θ_j)` via product-to-sum identities.  Every
 /// output argument stays linear in the integration variable, so each term
 /// integrates in closed form.
-fn fourier_expand(coeff: ExprId, factors: &[(bool, ExprId)], pool: &ExprPool) -> Vec<FourierTerm> {
+pub(super) fn fourier_expand(
+    coeff: ExprId,
+    factors: &[(bool, ExprId)],
+    pool: &ExprPool,
+) -> Vec<FourierTerm> {
     let neg_one = pool.integer(-1_i32);
     let half = pool.rational(1_i32, 2_i32);
     // Seed with `coeff · cos(0)` (= coeff), the multiplicative identity.

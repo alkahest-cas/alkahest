@@ -25,7 +25,9 @@
 //!    into one exponential whose argument is collected by powers of the
 //!    variable, and powers of a common base are combined. Every rewrite is an
 //!    identity of functions (`b^p·b^q = b^{p+q}` and `(uv)^n = u^n v^n` for
-//!    integer `n` hold on the principal branch).
+//!    integer `n` hold on the principal branch). A product or power of
+//!    `sin`/`cos` of linear arguments is then split by product-to-sum into
+//!    single-trig summands (`eˣ·sin²x = ½eˣ − ½eˣ·cos 2x`).
 //! 2. **Integrates termwise**, with closed forms that accept symbolic
 //!    parameters: `x^n·e^{αx+β}·{1, sin, cos}(ωx+φ)` by the tabular
 //!    (repeated by-parts) formula, `x^s` for a symbolic `s`, and
@@ -476,6 +478,83 @@ fn normalise_product(factors: Term, var: ExprId, pool: &ExprPool) -> ExprId {
         }
     }
     mk_mul(out, pool)
+}
+
+/// Product-to-sum for one flat product carrying **two or more** `sin`/`cos`
+/// factors of linear arguments (counted with multiplicity, so `sin²` counts
+/// twice): `x²·eˣ·sin(x)·cos(2x)` becomes `½x²eˣ·sin(3x) − ½x²eˣ·sin(x)`.
+///
+/// Every summand then carries at most one trig factor, which is the shape the
+/// tabular formula integrates (`xⁿ·e^{αx+β}·{sin,cos}(ωx+φ)`). The identities
+/// are exact, and equal `(sin|cos, argument)` pairs are merged so `sin(x)⁸`
+/// yields 5 summands, not 256. `None` when the product has fewer than two
+/// trig factors or more than the linearizer's degree cap.
+fn linearize_trig_product(t: ExprId, var: ExprId, pool: &ExprPool) -> Option<Vec<ExprId>> {
+    use super::engine::{fourier_expand, push_trig_factor, MAX_TRIG_LINEARIZE_DEGREE};
+    let factors = match pool.get(t) {
+        ExprData::Mul(a) => a,
+        _ => vec![t],
+    };
+    let mut rest = Vec::new();
+    let mut trig = Vec::new();
+    for f in factors {
+        if is_free_of(f, var, pool) || !push_trig_factor(f, var, pool, &mut trig) {
+            rest.push(f);
+        }
+        if trig.len() > MAX_TRIG_LINEARIZE_DEGREE {
+            return None;
+        }
+    }
+    if trig.len() < 2 {
+        return None;
+    }
+    // Merge equal (kind, argument) pairs: coefficients are rationals here.
+    let mut merged: Vec<(bool, ExprId, ExprId)> = Vec::new();
+    for ft in fourier_expand(pool.integer(1_i32), &trig, pool) {
+        let mut arg = simplify(ft.arg, pool).value;
+        let mut coeff = ft.coeff;
+        // sin(−u) = −sin u, cos(−u) = cos u: keep the leading coefficient of
+        // the argument positive, so `sin(x)·cos(2x)` gives `−½sin(x)`, not
+        // `½sin(−x)`, and the two halves of `sin²` merge.
+        let lead = match linear_coeffs(arg, var, pool) {
+            Some((w, _)) => as_rational(w, pool),
+            None => as_rational(arg, pool),
+        };
+        if lead.is_some_and(|r| r < 0) {
+            arg = simplify(neg(arg, pool), pool).value;
+            if ft.is_sin {
+                coeff = neg(coeff, pool);
+            }
+        }
+        match merged
+            .iter_mut()
+            .find(|(s, a, _)| *s == ft.is_sin && *a == arg)
+        {
+            Some(slot) => slot.2 = pool.add(vec![slot.2, coeff]),
+            None => merged.push((ft.is_sin, arg, coeff)),
+        }
+    }
+    let mut out = Vec::with_capacity(merged.len());
+    for (is_sin, arg, c) in merged {
+        let c = simplify(c, pool).value;
+        if is_int(c, pool, 0) {
+            continue;
+        }
+        let trig_factor = match (is_sin, as_rational(arg, pool)) {
+            // sin(0) = 0, cos(0) = 1.
+            (true, Some(r)) if r == 0 => continue,
+            (false, Some(r)) if r == 0 => None,
+            _ => Some(pool.func(if is_sin { "sin" } else { "cos" }, vec![arg])),
+        };
+        let mut fs = rest.clone();
+        fs.push(c);
+        fs.extend(trig_factor);
+        let term = normalise_product(fs, var, pool);
+        if !is_int(term, pool, 0) {
+            out.push(term);
+        }
+    }
+    Some(out)
 }
 
 fn sum_exponents(es: &[ExprId], pool: &ExprPool) -> ExprId {
@@ -1104,11 +1183,24 @@ pub(crate) fn try_prenormalised(
     let Some(terms) = expand_terms(expr, var, pool, 0) else {
         return Ok(None);
     };
-    let terms: Vec<ExprId> = terms
+    let mut terms: Vec<ExprId> = terms
         .into_iter()
         .map(|t| normalise_product(t, var, pool))
         .filter(|&t| !is_int(t, pool, 0))
         .collect();
+    // Products and powers of sin/cos → sums of single trig factors, so
+    // `P(x)·e^{ax}·sin(x)·cos(2x)` and `eˣ·sin²x` reach the tabular formula.
+    let mut lin = Vec::with_capacity(terms.len());
+    for &t in &terms {
+        match linearize_trig_product(t, var, pool) {
+            Some(ts) => lin.extend(ts),
+            None => lin.push(t),
+        }
+        if lin.len() > MAX_TERMS {
+            return Ok(None);
+        }
+    }
+    terms = lin;
 
     let mut conds: Vec<SideCondition> = Vec::new();
     let mut pieces = Vec::with_capacity(terms.len());
@@ -1503,6 +1595,65 @@ mod tests {
             "the arctangent form needs 4ab > 0 stated: {conds:?}"
         );
         assert_antiderivative(r.value, f, x, &[(a, 1.1), (b, 2.3)], &pool);
+    }
+
+    /// `P(x)·e^{ax+b}·Π trig(cx+d)`: products and powers of the trig factor are
+    /// linearized before the tabular formula (B3). These were E-INT-001.
+    #[test]
+    fn poly_exp_trig_products_are_linearized() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let two = pool.integer(2_i32);
+        let ex = pool.func("exp", vec![x]);
+        let sin_x = pool.func("sin", vec![x]);
+        let cos_2x = pool.func("cos", vec![pool.mul(vec![two, x])]);
+        let sin_x1 = pool.func("sin", vec![pool.add(vec![x, pool.integer(1_i32)])]);
+        let cases = [
+            // eˣ·sin²x
+            pool.mul(vec![ex, pool.pow(sin_x, two)]),
+            // x²·eˣ·sin(x)·cos(2x)
+            pool.mul(vec![pool.pow(x, two), ex, sin_x, cos_2x]),
+            // x·eˣ·sin(x)·sin(x+1): a constant cos(1) half
+            pool.mul(vec![x, ex, sin_x, sin_x1]),
+            // x³·e^{−x}·sin³x
+            pool.mul(vec![
+                pool.pow(x, pool.integer(3_i32)),
+                pool.func("exp", vec![neg(x, &pool)]),
+                pool.pow(sin_x, pool.integer(3_i32)),
+            ]),
+        ];
+        for f in cases {
+            let r =
+                integrate(f, x, &pool).unwrap_or_else(|e| panic!("∫ {} dx: {e}", pool.display(f)));
+            assert!(
+                verify_antiderivative_exact(r.value, f, x, &pool),
+                "∫ {} dx = {} is not exactly verified",
+                pool.display(f),
+                pool.display(r.value)
+            );
+            assert_antiderivative(r.value, f, x, &[], &pool);
+        }
+    }
+
+    #[test]
+    fn linearize_merges_equal_harmonics() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let s = pool.func("sin", vec![x]);
+        // sin⁸x = (35 − 56cos2x + 28cos4x − 8cos6x + cos8x)/128: five harmonics.
+        let t = pool.mul(vec![x, pool.pow(s, pool.integer(8_i32))]);
+        let terms = linearize_trig_product(t, x, &pool).expect("degree 8 linearizes");
+        assert_eq!(
+            terms.len(),
+            5,
+            "{:?}",
+            terms
+                .iter()
+                .map(|&t| pool.display(t).to_string())
+                .collect::<Vec<_>>()
+        );
+        // A single trig factor is left alone.
+        assert!(linearize_trig_product(pool.mul(vec![x, s]), x, &pool).is_none());
     }
 
     #[test]
