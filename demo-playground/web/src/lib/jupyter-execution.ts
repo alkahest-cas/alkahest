@@ -1,6 +1,6 @@
 import { v4 as uuid } from 'uuid';
 import type { OutputItem } from '@/lib/execution';
-import { classifyRichMime, postprocessOutputItems } from '@/lib/lean';
+import { classifyRichMime } from '@/lib/lean';
 import type { ServerConnection } from '@/lib/server-connection';
 import { jupyterUrlWithToken } from '@/lib/server-connection';
 
@@ -184,29 +184,4 @@ export function executeOnJupyter(
     closed = true;
     ws.close();
   };
-}
-
-/** Best-effort sync execute via WebSocket (used by agent tool). */
-export function runOnJupyterSync(
-  conn: ServerConnection,
-  kernelId: string,
-  code: string,
-): Promise<OutputItem[]> {
-  return new Promise((resolve, reject) => {
-    const outputs: OutputItem[] = [];
-    const cancel = executeOnJupyter(
-      conn,
-      kernelId,
-      code,
-      (item) => outputs.push(item),
-      () => {
-        cancel();
-        resolve(postprocessOutputItems(outputs));
-      },
-      (err) => {
-        cancel();
-        reject(new Error(err));
-      },
-    );
-  });
 }

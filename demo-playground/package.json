@@ -7,8 +7,7 @@
     "start": "pnpm --filter cli run start",
     "dev": "concurrently \"pnpm --filter web dev\" \"pnpm --filter server start\"",
     "build": "pnpm --filter web build",
-    "record": "pnpm --filter cli run record",
-    "demo": "pnpm --filter cli run demo"
+    "record": "pnpm --filter cli run record"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
