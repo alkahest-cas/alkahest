@@ -2766,11 +2766,15 @@ fn try_lhopital(
     if simplify(nume, pool).value == simplify(deno, pool).value {
         return Ok(None);
     }
-    let n0 = substitute_fully(nume, var, point, pool);
-    let d0 = substitute_fully(deno, var, point, pool);
-
-    if !is_zero_like(n0, pool) || !is_zero_like(d0, pool) {
+    // No quotient, no L'Hôpital — and the sub-limit below would be the
+    // problem itself.
+    if deno == pool.integer(1_i32) || nume == expr || deno == expr {
         return Ok(None);
+    }
+    for part in [deno, nume] {
+        if !tends_to_zero(part, var, point, direction, pool, depth)? {
+            return Ok(None);
+        }
     }
 
     let dn = diff(nume, var, pool)?.value;
@@ -2787,6 +2791,40 @@ fn try_lhopital(
         pool,
         depth + 1,
     )?))
+}
+
+/// `true` when `expr → 0` as `var → point`, as L'Hôpital needs of both parts.
+///
+/// Plain substitution decides it when the substituted form is a value. When
+/// it is not — `log 0`, `0⁻¹` — `simplify` can still fold it to `0`:
+/// `log(2t) − log t` at `t = 0` is `log 0 − log 0`, which cancels as `a − a`.
+/// L'Hôpital then read `(log(2t) − log t)/t` as `0/0`, differentiated the
+/// numerator to `1/t − 1/t = 0` and answered `lim_{t→0⁺} = 0` — and, through
+/// `x ↦ 1/t`, `lim_{x→∞} x·(log(2/x) − log(1/x)) = 0` — where the numerator
+/// tends to `log 2` and the true limit is `+∞`. Such a part is decided by its
+/// own limit instead (`t·log t → 0` still qualifies).
+fn tends_to_zero(
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    direction: LimitDirection,
+    pool: &ExprPool,
+    depth: u32,
+) -> Result<bool, LimitError> {
+    let mut m = HashMap::new();
+    m.insert(var, point);
+    let raw = subs(expr, &m, pool);
+    if !(substitution_is_singular(raw, pool) || has_unusable_node(raw, pool)) {
+        return Ok(is_zero_like(
+            fold_known_reals(simplify(raw, pool).value, pool),
+            pool,
+        ));
+    }
+    match limit_inner(expr, var, point, direction, pool, depth + 1) {
+        Ok(l) => Ok(is_zero_like(l, pool)),
+        Err(LimitError::DepthExceeded) => Err(LimitError::DepthExceeded),
+        Err(_) => Ok(false),
+    }
 }
 
 fn substitute_fully(expr: ExprId, var: ExprId, point: ExprId, pool: &ExprPool) -> ExprId {
@@ -3278,6 +3316,55 @@ mod tests {
         let x = p.symbol("x", Domain::Real);
         let ex = simplify(p.mul(vec![x, p.func("log", vec![x])]), &p).value;
         let r = limit(ex, x, p.integer(0_i32), LimitDirection::Plus, &p).unwrap();
+        assert_eq!(r, p.integer(0_i32));
+    }
+
+    /// `log 0 − log 0` is not a zero numerator. L'Hôpital used to read
+    /// `(log(2t) − log t)/t` at `t = 0` as `0/0` (the substituted numerator
+    /// cancels as `a − a`), differentiate the numerator to `1/t − 1/t = 0` and
+    /// answer `0`; the numerator tends to `log 2` and the limit is `+∞`.
+    #[test]
+    fn log_difference_over_t_is_not_lhopital_zero() {
+        let p = ExprPool::new();
+        let t = p.symbol("t", Domain::Real);
+        let inv_t = p.pow(t, p.integer(-1_i32));
+        let num = p.add(vec![
+            p.func("log", vec![p.mul(vec![p.integer(2_i32), t])]),
+            p.mul(vec![p.integer(-1_i32), p.func("log", vec![t])]),
+        ]);
+        let ex = simplify(p.mul(vec![num, inv_t]), &p).value;
+        if let Ok(r) = limit(ex, t, p.integer(0_i32), LimitDirection::Plus, &p) {
+            assert_eq!(r, p.pos_infinity(), "got {}", p.display(r));
+        }
+        // …and its image at +∞ under t ↦ 1/x: x·(log(2/x) − log(1/x)) = x·log 2.
+        let x = p.symbol("x", Domain::Real);
+        let inv_x = p.pow(x, p.integer(-1_i32));
+        let num = p.add(vec![
+            p.func("log", vec![p.mul(vec![p.integer(2_i32), inv_x])]),
+            p.mul(vec![p.integer(-1_i32), p.func("log", vec![inv_x])]),
+        ]);
+        let ex = simplify(p.mul(vec![x, num]), &p).value;
+        if let Ok(r) = limit(ex, x, p.pos_infinity(), LimitDirection::Bidirectional, &p) {
+            assert_eq!(r, p.pos_infinity(), "got {}", p.display(r));
+        }
+        // The control: a genuine 0/0 still goes through L'Hôpital.
+        let ex = simplify(
+            p.mul(vec![
+                p.func("log", vec![p.add(vec![p.integer(1_i32), t])]),
+                inv_t,
+            ]),
+            &p,
+        )
+        .value;
+        let r = limit(ex, t, p.integer(0_i32), LimitDirection::Bidirectional, &p).unwrap();
+        assert_eq!(r, p.integer(1_i32));
+        // …including one whose numerator only vanishes as a limit (`0·log 0`).
+        let ex = p.mul(vec![
+            p.pow(t, p.integer(2_i32)),
+            p.func("log", vec![t]),
+            inv_t,
+        ]);
+        let r = limit(ex, t, p.integer(0_i32), LimitDirection::Plus, &p).unwrap();
         assert_eq!(r, p.integer(0_i32));
     }
 
