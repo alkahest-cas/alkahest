@@ -43,6 +43,18 @@ pub fn together_parts(
     Ok((numer, denom))
 }
 
+/// *expr* as one normalized [`RationalFunction`] over ℤ in *vars* plus any
+/// opaque generators (`sin(x)`, a foreign symbol, `x**n`) it mentions — the
+/// conversion [`cancel`] performs, with the numerator and denominator kept as
+/// polynomials so a caller can factor them.
+pub fn rational_function_of(
+    expr: ExprId,
+    vars: Vec<ExprId>,
+    pool: &ExprPool,
+) -> Result<RationalFunction, ConversionError> {
+    rational_over_generators(expr, vars, pool).map(|(rf, _)| rf)
+}
+
 /// Convert *expr* to a normalized [`RationalFunction`] **and** report the
 /// generator list it is expressed over.
 ///

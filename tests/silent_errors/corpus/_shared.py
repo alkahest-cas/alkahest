@@ -41,7 +41,7 @@ def _num(value: Any) -> float:
     return float(ak.eval_expr(value, {}))
 
 
-PI = POOL.symbol("pi")
+PI = POOL.pi()
 
 # --- Transcendental rank traps -------------------------------------------
 # ``exp(a)²`` and ``exp(2a)`` are the same function written two ways.  Any

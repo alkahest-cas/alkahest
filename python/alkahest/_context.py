@@ -329,20 +329,21 @@ def symbol(name: str, *, pool: Any = None, domain: Any = None, commutative: bool
     Expr
         The interned symbol expression.
 
-    Raises
-    ------
-    RuntimeError
-        If no pool is supplied and no pool is set in the active context.
+    Notes
+    -----
+    With no *pool* and no ``alkahest.context(pool=...)`` block open, the
+    symbol is created in :func:`alkahest.default_pool` — the same pool
+    ``alkahest.parse(text)`` and ``alkahest.sin(2)`` use — so
+    ``x = alkahest.symbol("x")`` works on its own.
     """
     ctx = _get()
-    resolved_pool = pool or ctx.get("pool")
+    resolved_pool = pool if pool is not None else ctx.get("pool")
     resolved_domain = domain or ctx.get("domain")
 
     if resolved_pool is None:
-        raise RuntimeError(
-            "alkahest.symbol() requires a pool.  Either pass pool= or enter a "
-            "alkahest.context(pool=...) block."
-        )
+        from .alkahest import default_pool
+
+        resolved_pool = default_pool()
     return resolved_pool.symbol(name, resolved_domain, commutative=commutative)
 
 

@@ -326,9 +326,28 @@ fn eval_dual(
             })
         }
         Node::Func { name, arg } => {
-            // Protect against the dummy self-referential node from multi-arg fns
+            // A multi-argument function (`Node::Func` carries the node itself
+            // as `arg`): no hand-written dual rule, so the derivative comes from
+            // the primitive registry — the same rule symbolic `diff` falls back
+            // to, and the one `capabilities()` probes when it reports
+            // `diff_forward` — or the function is refused.
             if arg == expr {
-                return Err(DiffError::ForwardUnknownFunction(name));
+                let args = pool.with(expr, |d| match d {
+                    ExprData::Func { args, .. } => args.clone(),
+                    _ => vec![],
+                });
+                for &a in &args {
+                    eval_dual(a, var, pool, memo)?;
+                }
+                return match super::diff_impl::diff_registry().diff_forward(&name, &args, var, pool)
+                {
+                    Some(t) => {
+                        let r = DualValue::new(expr, t);
+                        memo.insert(expr, r.clone());
+                        Ok(r)
+                    }
+                    None => Err(DiffError::ForwardUnknownFunction(name)),
+                };
             }
             let inner = eval_dual(arg, var, pool, memo)?;
             match name.as_str() {
@@ -353,7 +372,24 @@ fn eval_dual(
                         inner.tangent,
                     ]),
                 )),
-                other => Err(DiffError::ForwardUnknownFunction(other.to_string())),
+                // Every other unary function: the registry primitive's
+                // derivative rule (what `capabilities()` advertises as
+                // `diff_forward`).  It applies the chain rule itself, so it is
+                // handed the argument rather than the tangent.
+                other => {
+                    match super::diff_impl::diff_registry().diff_forward(
+                        other,
+                        &[inner.value],
+                        var,
+                        pool,
+                    ) {
+                        Some(t) => Ok(DualValue::new(
+                            pool.func(other.to_string(), vec![inner.value]),
+                            t,
+                        )),
+                        None => Err(DiffError::ForwardUnknownFunction(other.to_string())),
+                    }
+                }
             }
         }
         Node::RootSum { poly, rvar, body } => {
@@ -594,6 +630,52 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let r = diff_forward(pool.func("log", vec![x]), x, &pool).unwrap();
         assert_eq!(r.value, pool.pow(x, pool.integer(-1_i32)));
+    }
+
+    /// Every unary function the primitive registry differentiates goes through
+    /// forward mode too (it used to refuse `tan`, `erf`, `gamma`, … with
+    /// E-DIFF-003 while `capabilities()` advertised `diff_forward`), and the
+    /// result agrees with symbolic `diff` through the chain rule.
+    #[test]
+    fn forward_diff_registry_functions_agree_with_symbolic() {
+        use crate::jit::eval_interp_real;
+        use std::collections::HashMap;
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let arg = pool.mul(vec![x, x]);
+        // Not differentiable before: refused with E-DIFF-003.
+        for name in ["erf", "gamma", "zeta", "Ei", "Si", "lambert_w", "bessel_j0"] {
+            let e = pool.func(name, vec![arg]);
+            assert!(
+                diff_forward(e, x, &pool).is_ok(),
+                "diff_forward refused {name}"
+            );
+        }
+        // And numerically against symbolic `diff` through the chain rule
+        // (every claimed function is checked against `diff` in
+        // `tests/test_launch_ergonomics.py`).
+        for name in [
+            "tan", "asin", "acos", "sinh", "cosh", "tanh", "asinh", "atanh", "erf", "gamma",
+        ] {
+            let e = pool.func(name, vec![arg]);
+            let fwd = diff_forward(e, x, &pool)
+                .unwrap_or_else(|err| panic!("diff_forward refused {name}: {err:?}"))
+                .value;
+            let sym = sym_diff(e, x, &pool).unwrap().value;
+            for v in [0.2_f64, 0.5, 0.7] {
+                let b: HashMap<_, _> = [(x, v)].into_iter().collect();
+                let ev = |id| {
+                    eval_interp_real(id, &b, &pool).unwrap_or_else(|err| {
+                        panic!("{name}: cannot evaluate {} ({err:?})", pool.display(id))
+                    })
+                };
+                let (a, s) = (ev(fwd), ev(sym));
+                assert!(
+                    (a - s).abs() <= 1e-12 * s.abs().max(1.0),
+                    "{name} at {v}: {a} vs {s}"
+                );
+            }
+        }
     }
 
     #[test]

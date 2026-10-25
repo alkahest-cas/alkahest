@@ -115,7 +115,7 @@ def test_fourier_gaussian_self_dual():
     p = A.ExprPool()
     x = p.symbol("x")
     xi = p.symbol("xi")
-    pi = p.symbol("pi")
+    pi = p.pi()
     f = A.exp(p.integer(-1) * pi * x**2)
     got = ex.fourier_transform(f, x, xi)
     text = str(got)

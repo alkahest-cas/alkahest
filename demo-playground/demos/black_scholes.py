@@ -17,7 +17,7 @@ from alkahest import latex
 pool = ak.ExprPool()
 S, K, mu, Sigma = (pool.symbol(n) for n in ("S", "K", "mu", "Sigma"))
 S0, r, sigma, T = (pool.symbol(n) for n in ("S0", "r", "sigma", "T"))
-PI, half = pool.symbol("pi"), pool.rational(1, 2)
+PI, half = pool.pi(), pool.rational(1, 2)
 
 
 def value(expr, **at):

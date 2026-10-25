@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from fractions import Fraction
+
 class Expr:
     """A symbolic expression node (Phase 1)."""
 
@@ -70,3 +72,50 @@ def certifiable(
 def certificate_coverage(operation: str | None = ...) -> list[dict[str, object]]: ...
 def require_certificate(result: DerivedResult) -> DerivedResult: ...
 def version() -> str: ...
+
+# ---------------------------------------------------------------------------
+# First-reach conveniences (Python numbers are coerced exactly: ``int`` and
+# ``Fraction`` to integer / rational nodes, ``float`` to a float node).
+# ---------------------------------------------------------------------------
+
+Number = int | Fraction | float
+
+pi: Expr
+"""The constant π, in the active ``context(pool=...)`` pool or :func:`default_pool`."""
+E: Expr
+"""Euler's number ``exp(1)``."""
+I: Expr
+"""The imaginary unit."""
+oo: Expr
+"""Positive infinity (SymPy's spelling)."""
+
+def default_pool() -> Pool:
+    """The process-wide pool used when no ``Expr`` argument names one."""
+    ...
+
+def factor(expr: Expr | DerivedResult | Number, vars: list[Expr] | None = ...) -> Expr:
+    """Factor over ℤ (numerator and denominator), as an ``Expr`` product."""
+    ...
+
+def expand(expr: Expr | DerivedResult | Number) -> Expr:
+    """Distribute products and positive integer powers over sums."""
+    ...
+
+def factorial(n: Expr | Number) -> Expr:
+    """``n!``: an exact integer for integer ``n >= 0``, else ``gamma(n + 1)``."""
+    ...
+
+def binomial(n: Expr | Number, k: Expr | Number) -> Expr:
+    """``C(n, k)``: exact for integer arguments, else a ratio of gammas."""
+    ...
+
+def sin(x: Expr | DerivedResult | Number) -> Expr:
+    """``sin(x)``; a Python number argument is coerced exactly (``sin(2)``)."""
+    ...
+
+def cos(x: Expr | DerivedResult | Number) -> Expr: ...
+def tan(x: Expr | DerivedResult | Number) -> Expr: ...
+def exp(x: Expr | DerivedResult | Number) -> Expr: ...
+def log(x: Expr | DerivedResult | Number) -> Expr: ...
+def sqrt(x: Expr | DerivedResult | Number) -> Expr: ...
+def gamma(x: Expr | DerivedResult | Number) -> Expr: ...
