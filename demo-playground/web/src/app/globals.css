@@ -2,34 +2,133 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Design tokens (shared with the landing page and docs; copied verbatim) ── */
 :root {
-  --bg: #f6f5f2;
-  --fg: #111111;
-  --muted: #525252;
-  --border: #e0ded6;
-  --code-bg: #eeede7;
-  --brand: #c41e3a;
+  --bg: #f7f6f3;          /* warm paper */
+  --bg-elev: #ffffff;     /* cards, code panels */
+  --bg-sunk: #efeee9;     /* inline code, table header */
+  --fg: #141413;
+  --fg-2: #3d3d3a;        /* body copy */
+  --muted: #6b6a65;
+  --border: #e3e1da;
+  --border-strong: #cfccc3;
+  --brand: #c41e3a;       /* alkahest red — logo, links on hover, active tab underline */
+  --brand-fg: #ffffff;
+  --brand-soft: #c41e3a14;
+  --ok: #1f7a4d;          /* "certified / verified" */
+  --warn: #9a6700;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --maxw: 1200px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111110; --bg-elev: #191918; --bg-sunk: #1f1f1d;
+    --fg: #eeeeec; --fg-2: #c9c8c3; --muted: #8f8e88;
+    --border: #2a2a27; --border-strong: #3a3a36;
+    --brand: #ef4a5f; --brand-soft: #ef4a5f1f; --ok: #4cc38a; --warn: #e2b340;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111110; --bg-elev: #191918; --bg-sunk: #1f1f1d;
+  --fg: #eeeeec; --fg-2: #c9c8c3; --muted: #8f8e88;
+  --border: #2a2a27; --border-strong: #3a3a36;
+  --brand: #ef4a5f; --brand-soft: #ef4a5f1f; --ok: #4cc38a; --warn: #e2b340;
+}
+
+/* ── The same tokens as RGB channels, for Tailwind's opacity modifiers ──────
+   (bg-ak-ok/10 etc.). Keep in sync with the block above. Two playground-only
+   extras: --brand-dark (button hover) and --run (a running cell). */
+:root {
+  color-scheme: light;
+  --bg-rgb: 247 246 243;
+  --bg-elev-rgb: 255 255 255;
+  --bg-sunk-rgb: 239 238 233;
+  --fg-rgb: 20 20 19;
+  --fg-2-rgb: 61 61 58;
+  --muted-rgb: 107 106 101;
+  --border-rgb: 227 225 218;
+  --border-strong-rgb: 207 204 195;
+  --brand-rgb: 196 30 58;
+  --brand-dark-rgb: 163 24 47;
+  --brand-fg-rgb: 255 255 255;
+  --ok-rgb: 31 122 77;
+  --warn-rgb: 154 103 0;
+  --run-rgb: 37 99 235;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg-rgb: 17 17 16;
+    --bg-elev-rgb: 25 25 24;
+    --bg-sunk-rgb: 31 31 29;
+    --fg-rgb: 238 238 236;
+    --fg-2-rgb: 201 200 195;
+    --muted-rgb: 143 142 136;
+    --border-rgb: 42 42 39;
+    --border-strong-rgb: 58 58 54;
+    --brand-rgb: 239 74 95;
+    --brand-dark-rgb: 242 109 126;
+    --ok-rgb: 76 195 138;
+    --warn-rgb: 226 179 64;
+    --run-rgb: 107 155 255;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-rgb: 17 17 16;
+  --bg-elev-rgb: 25 25 24;
+  --bg-sunk-rgb: 31 31 29;
+  --fg-rgb: 238 238 236;
+  --fg-2-rgb: 201 200 195;
+  --muted-rgb: 143 142 136;
+  --border-rgb: 42 42 39;
+  --border-strong-rgb: 58 58 54;
+  --brand-rgb: 239 74 95;
+  --brand-dark-rgb: 242 109 126;
+  --ok-rgb: 76 195 138;
+  --warn-rgb: 226 179 64;
+  --run-rgb: 107 155 255;
 }
 
 html,
 body {
   background-color: var(--bg);
   color: var(--fg);
-  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  font-family: var(--font-sans);
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Site wordmark (identical on landing, docs and playground) ── */
+.ak-wordmark {
+  color: var(--brand);
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 20px;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  text-decoration: none;
 }
 
 /* KaTeX overrides */
+.katex {
+  font-size: 1.12em;
+}
 .katex-display {
-  margin: 0.5rem 0;
+  margin: 0.25rem 0;
   overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.15rem 0;
 }
 
-/* CodeMirror overrides — blend with alkahest palette */
+/* CodeMirror overrides — blend with the token palette */
 .cm-editor {
-  border-radius: 6px;
-  font-size: 0.875rem;
+  border-radius: var(--radius-sm);
+  font-size: 13.5px;
   line-height: 1.6;
 }
 
@@ -38,53 +137,59 @@ body {
 }
 
 .cm-scroller {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 /* Cell output — align with CodeMirror code column (not line-number gutter) */
 .cell-output-gutter {
-  background-color: #e5e4de;
-  border-right: 1px solid #e0ded6;
+  background-color: var(--bg-sunk);
+  border-right: 1px solid var(--border);
 }
 
 .cell-output-content {
   padding-left: 12px;
 }
 
-/* Custom scrollbar */
+/* Thin, quiet scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--bg);
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: var(--border-strong);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--muted);
 }
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
 
-/* Markdown prose in agent chat */
+/* Markdown cells */
 .prose {
   max-width: none;
-  color: var(--fg);
+  color: var(--fg-2);
   line-height: 1.7;
 }
 .prose code {
-  background: var(--code-bg);
+  background: var(--bg-sunk);
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 0.08em 0.35em;
   font-size: 0.875em;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--font-mono);
 }
 .prose pre {
-  background: var(--code-bg);
+  background: var(--bg-sunk);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius);
   padding: 0.85rem 1rem;
   overflow-x: auto;
 }
@@ -115,4 +220,11 @@ body {
 }
 .cell-run-pulse {
   animation: cell-run-ring 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rec-indicator,
+  .cell-run-pulse {
+    animation: none;
+  }
 }

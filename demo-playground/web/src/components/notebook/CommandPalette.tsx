@@ -91,7 +91,7 @@ export default function CommandPalette({ open, onClose, commands }: CommandPalet
       <div
         role="dialog"
         aria-label="Command palette"
-        className="w-full max-w-lg overflow-hidden rounded-lg border border-ak-border bg-ak-bg shadow-xl"
+        className="w-full max-w-lg overflow-hidden rounded-lg border border-ak-border bg-ak-elev shadow-xl"
       >
         <input
           ref={inputRef}
