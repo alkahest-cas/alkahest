@@ -25,7 +25,7 @@ pub use expr_props::{
     mult_tree_is_commutative,
 };
 pub use func_arity::{func_arity_ok, known_func_arity, FuncArityError};
-pub use pool::{ExprDisplay, ExprPool};
+pub use pool::{symbol_display_name, ExprDisplay, ExprPool, USER_SYMBOL_MARKER};
 #[allow(deprecated)]
 pub use pool_persist::PoolPersistError;
 pub use pool_persist::{load_from, open_persistent, save_to, IoError};

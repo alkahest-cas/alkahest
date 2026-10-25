@@ -126,7 +126,7 @@ class TestLatexAtoms:
         assert latex(pool.symbol("alpha")) == r"\alpha"
 
     def test_greek_pi(self, pool):
-        assert latex(pool.symbol("pi")) == r"\pi"
+        assert latex(pool.pi()) == r"\pi"
 
     def test_greek_Gamma(self, pool):
         assert latex(pool.symbol("Gamma")) == r"\Gamma"
@@ -300,7 +300,7 @@ class TestUnicodeAtoms:
         assert unicode_str(pool.symbol("alpha")) == "α"
 
     def test_greek_pi(self, pool):
-        assert unicode_str(pool.symbol("pi")) == "π"
+        assert unicode_str(pool.pi()) == "π"
 
 
 # ---------------------------------------------------------------------------

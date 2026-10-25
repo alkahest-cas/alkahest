@@ -502,6 +502,274 @@ fn number_into_pool(pool: &ExprPool, ob: &Bound<'_, PyAny>) -> PyResult<Option<E
     Ok(None)
 }
 
+// ---------------------------------------------------------------------------
+// Default pool, and Python numbers / pool-free constants as operands
+// ---------------------------------------------------------------------------
+
+/// The process-wide default `ExprPool` (`alkahest.default_pool()`).
+///
+/// Used only when nothing else names a pool: `alkahest.sin(2)`,
+/// `alkahest.Matrix([[1, 2], [3, 4]])`, `alkahest.pi` — calls whose arguments
+/// are all Python numbers — outside any `alkahest.context(pool=...)` block.
+/// An argument that *is* an `Expr` always decides the pool.
+static DEFAULT_POOL: pyo3::sync::GILOnceCell<Py<PyExprPool>> = pyo3::sync::GILOnceCell::new();
+
+fn default_pool_ref(py: Python<'_>) -> PyResult<&Py<PyExprPool>> {
+    DEFAULT_POOL.get_or_try_init(py, || Py::new(py, PyExprPool::new()))
+}
+
+/// `alkahest.default_pool()` — the process-wide pool that pool-free calls use.
+///
+/// ``alkahest.sin(2)``, ``alkahest.Matrix([[1, 2], [3, 4]])`` and the module
+/// constants ``alkahest.pi`` / ``E`` / ``I`` / ``oo`` have no ``Expr`` argument
+/// to take a pool from. They use the pool of the innermost
+/// ``alkahest.context(pool=...)`` block if one is open, and this pool
+/// otherwise. It is created on first use and lives for the whole process.
+///
+/// A *closed* expression from this pool — one with no free symbols, such as
+/// ``alkahest.pi / 2`` or ``alkahest.sqrt(2)`` — is a value rather than a
+/// variable, so the arithmetic operators, the function constructors,
+/// ``subs`` and ``Matrix`` copy it into the pool of the other operand:
+/// ``x + alkahest.pi`` works for ``x`` from any pool. Expressions with free
+/// symbols are never moved between pools (``E-POOL-001``).
+#[pyfunction]
+fn default_pool(py: Python<'_>) -> PyResult<Py<PyExprPool>> {
+    Ok(default_pool_ref(py)?.clone_ref(py))
+}
+
+/// The pool a pool-free call uses: the innermost `alkahest.context(pool=...)`
+/// pool, else [`DEFAULT_POOL`].
+fn ambient_pool(py: Python<'_>) -> PyResult<Py<PyExprPool>> {
+    if let Ok(ctx) = py.import_bound("alkahest._context") {
+        if let Ok(p) = ctx.getattr("active_pool").and_then(|f| f.call0()) {
+            if let Ok(p) = p.extract::<Py<PyExprPool>>() {
+                return Ok(p);
+            }
+        }
+    }
+    default_pool(py)
+}
+
+fn is_default_pool(py: Python<'_>, pool: &Py<PyExprPool>) -> bool {
+    DEFAULT_POOL.get(py).is_some_and(|d| d.is(pool))
+}
+
+/// Symbol names the kernel reads as constants rather than variables.
+/// `I` is one only in `Domain::Complex` (see `ExprPool::is_imaginary_unit`).
+const RESERVED_CONSTANT_NAMES: [&str; 6] = [
+    "pi",
+    "EulerGamma",
+    "Catalan",
+    "Glaisher",
+    "GoldenRatio",
+    alkahest_core::kernel::pool::POS_INFINITY_SYMBOL,
+];
+
+fn is_reserved_constant_symbol(name: &str, domain: Domain) -> bool {
+    RESERVED_CONSTANT_NAMES.contains(&name)
+        || (name == ExprPool::IMAGINARY_UNIT_NAME && domain == Domain::Complex)
+}
+
+/// True when `id` has no free symbols: every symbol it reaches is a kernel
+/// constant (`π`, `I`, `∞`, …). Binders (`RootSum`, quantifiers) count as
+/// not closed — conservatively, since they carry a symbol of their own.
+fn expr_is_closed(pool: &ExprPool, id: ExprId) -> bool {
+    let mut stack = vec![id];
+    let mut seen: std::collections::HashSet<ExprId> = std::collections::HashSet::new();
+    while let Some(e) = stack.pop() {
+        if !seen.insert(e) {
+            continue;
+        }
+        let ok = pool.with(e, |d| match d {
+            ExprData::Symbol { name, domain, .. } => is_reserved_constant_symbol(name, *domain),
+            ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => true,
+            ExprData::Add(a) | ExprData::Mul(a) => {
+                stack.extend(a.iter().copied());
+                true
+            }
+            ExprData::Func { args, .. } | ExprData::Predicate { args, .. } => {
+                stack.extend(args.iter().copied());
+                true
+            }
+            ExprData::Pow { base, exp } => {
+                stack.push(*base);
+                stack.push(*exp);
+                true
+            }
+            ExprData::Piecewise { branches, default } => {
+                for (c, v) in branches {
+                    stack.push(*c);
+                    stack.push(*v);
+                }
+                stack.push(*default);
+                true
+            }
+            ExprData::BigO(a) => {
+                stack.push(*a);
+                true
+            }
+            _ => false,
+        });
+        if !ok {
+            return false;
+        }
+    }
+    true
+}
+
+/// `e` re-interned into `dst` when that is meaningful: `e` already lives
+/// there, or it is a closed expression from the default pool (a value such as
+/// `alkahest.pi`, which no pool owns). `None` otherwise — a genuine
+/// cross-pool mix, which callers refuse with `E-POOL-001`.
+fn expr_into_pool(py: Python<'_>, e: &PyExpr, dst: &Py<PyExprPool>) -> PyResult<Option<ExprId>> {
+    if e.pool.is(dst) {
+        return Ok(Some(e.id));
+    }
+    if !is_default_pool(py, &e.pool) {
+        return Ok(None);
+    }
+    let bytes = {
+        let src = e.pool.borrow(py);
+        if !expr_is_closed(&src.inner, e.id) {
+            return Ok(None);
+        }
+        alkahest_core::kernel::pool_persist::dag_to_bytes(&src.inner, &[e.id])
+    };
+    let dst = dst.borrow(py);
+    let roots = alkahest_core::kernel::pool_persist::dag_from_bytes(&dst.inner, &bytes)
+        .map_err(io_error_to_py)?;
+    Ok(roots.first().copied())
+}
+
+/// True when `ob` is a Python number `number_into_pool` can coerce — tested
+/// on the type, so a non-number never reaches the coercion ladder.
+fn is_python_number(ob: &Bound<'_, PyAny>) -> bool {
+    if ob.is_instance_of::<PyInt>() || ob.is_instance_of::<PyFloat>() {
+        return true;
+    }
+    if ob.is_instance_of::<pyo3::types::PyString>() {
+        return false;
+    }
+    let ty = ob.get_type();
+    ty.hasattr("__index__").unwrap_or(false)
+        || (ty.hasattr("numerator").unwrap_or(false) && ty.hasattr("denominator").unwrap_or(false))
+        || is_decimal(ob).unwrap_or(false)
+        || ty.hasattr("__float__").unwrap_or(false)
+}
+
+/// One operand of an operator or function constructor: an `Expr` (or the
+/// `.value` of a `DerivedResult`), or a Python number not yet in any pool.
+enum Operand<'py> {
+    Expr(PyExpr),
+    Number(Bound<'py, PyAny>),
+}
+
+/// Classify `ob`; `None` when it is neither an expression nor a number.
+fn operand<'py>(ob: &Bound<'py, PyAny>) -> Option<Operand<'py>> {
+    if let Ok(e) = ob.extract::<PyRef<PyExpr>>() {
+        return Some(Operand::Expr(e.clone()));
+    }
+    if let Ok(dr) = ob.downcast::<PyDerivedResult>() {
+        return Some(Operand::Expr(dr.borrow().value.clone()));
+    }
+    if is_python_number(ob) {
+        Some(Operand::Number(ob.clone()))
+    } else {
+        None
+    }
+}
+
+/// Put `args` into one pool.
+///
+/// The pool is that of the first `Expr` that is not a default-pool constant,
+/// else of the first `Expr`, else the ambient pool (context, then default).
+/// Numbers are coerced exactly (`number_into_pool`), default-pool constants
+/// are copied in, and an `Expr` from any other pool is `E-POOL-001`.
+/// `Ok(None)` when some argument is not an expression or number at all.
+fn unify_operands(
+    py: Python<'_>,
+    args: &[&Bound<'_, PyAny>],
+) -> PyResult<Option<(Py<PyExprPool>, Vec<ExprId>)>> {
+    let mut ops = Vec::with_capacity(args.len());
+    for a in args {
+        match operand(a) {
+            Some(o) => ops.push(o),
+            None => return Ok(None),
+        }
+    }
+    unify_ops(py, &ops)
+}
+
+/// [`unify_operands`] on already-classified operands.
+fn unify_ops(
+    py: Python<'_>,
+    ops: &[Operand<'_>],
+) -> PyResult<Option<(Py<PyExprPool>, Vec<ExprId>)>> {
+    // Common case first: every expression already shares one pool. Nothing
+    // is moved, so no operand's closedness (a DAG walk) needs deciding.
+    let mut pools = ops.iter().filter_map(|o| match o {
+        Operand::Expr(e) => Some(&e.pool),
+        Operand::Number(_) => None,
+    });
+    let target = match pools.next() {
+        // Numbers only: the ambient pool.
+        None => ambient_pool(py)?,
+        Some(first) if pools.all(|p| p.is(first)) => first.clone_ref(py),
+        // Mixed pools: the first expression that cannot move (anything but a
+        // closed default-pool value) decides; the others must move into it.
+        Some(first) => {
+            let mut target = first.clone_ref(py);
+            for o in ops {
+                if let Operand::Expr(e) = o {
+                    let movable = is_default_pool(py, &e.pool) && {
+                        let p = e.pool.borrow(py);
+                        expr_is_closed(&p.inner, e.id)
+                    };
+                    if !movable {
+                        target = e.pool.clone_ref(py);
+                        break;
+                    }
+                }
+            }
+            target
+        }
+    };
+    let mut ids = Vec::with_capacity(ops.len());
+    for o in ops {
+        let id = match o {
+            Operand::Expr(e) => expr_into_pool(py, e, &target)?.ok_or_else(pool_mismatch_err)?,
+            Operand::Number(n) => {
+                let pool = target.borrow(py);
+                match number_into_pool(&pool.inner, n)? {
+                    Some(id) => id,
+                    None => return Ok(None),
+                }
+            }
+        };
+        ids.push(id);
+    }
+    Ok(Some((target, ids)))
+}
+
+/// [`unify_operands`] for a function constructor: an unrecognised argument is
+/// a `TypeError` naming the function.
+fn func_operands(
+    py: Python<'_>,
+    name: &str,
+    args: &[&Bound<'_, PyAny>],
+) -> PyResult<(Py<PyExprPool>, Vec<ExprId>)> {
+    unify_operands(py, args)?.ok_or_else(|| {
+        let bad = args
+            .iter()
+            .find(|a| operand(a).is_none())
+            .and_then(|a| a.get_type().name().ok().map(|n| n.to_string()))
+            .unwrap_or_else(|| "an unsupported value".to_string());
+        PyTypeError::new_err(format!(
+            "{name}() takes an Expr or a Python number (int, Fraction, float), got {bad}"
+        ))
+    })
+}
+
 /// True when *ob* is a `decimal.Decimal` (or a subclass of one).
 fn is_decimal(ob: &Bound<'_, PyAny>) -> PyResult<bool> {
     // Cached: this runs on every `x + Fraction` / `x + Decimal` coercion, and
@@ -785,18 +1053,14 @@ fn coerce_substituent(
     ob: &Bound<'_, PyAny>,
     py: Python<'_>,
 ) -> PyResult<ExprId> {
+    // A closed default-pool value (`alkahest.pi`) is copied in; anything else
+    // from another pool is `E-POOL-001`.
     if let Ok(e) = ob.extract::<PyRef<PyExpr>>() {
-        if !e.pool.is(pool_py) {
-            return Err(pool_mismatch_err());
-        }
-        return Ok(e.id);
+        return expr_into_pool(py, &e, pool_py)?.ok_or_else(pool_mismatch_err);
     }
     if let Ok(dr) = ob.downcast::<PyDerivedResult>() {
-        let dr = dr.borrow();
-        if !dr.value.pool.is(pool_py) {
-            return Err(pool_mismatch_err());
-        }
-        return Ok(dr.value.id);
+        let value = dr.borrow().value.clone();
+        return expr_into_pool(py, &value, pool_py)?.ok_or_else(pool_mismatch_err);
     }
     let pool = pool_py.borrow(py);
     if let Some(id) = number_into_pool(&pool.inner, ob)? {
@@ -1887,7 +2151,7 @@ fn ode_error_to_py(e: OdeError) -> PyErr {
 /// `pool.add` / `pool.mul` / `pool.func` used to read each argument's raw id
 /// without looking at which pool it came from, so a foreign expression was
 /// silently reinterpreted as whatever node sits at that index here.  The
-/// operators already refuse that through `coerce_scalar`; the bulk
+/// operators already refuse that through `binary_operands`; the bulk
 /// constructors now do too, with a stable code (`E-POOL-001`).
 fn own_pool_ids(pool: &PyRef<'_, PyExprPool>, args: &[PyExpr], op: &str) -> PyResult<Vec<ExprId>> {
     let pool_ptr = pool.as_ptr();
@@ -1956,9 +2220,66 @@ impl PyExprPool {
     ) -> PyResult<PyExpr> {
         let commutative = commutative.unwrap_or(true);
         let dom = resolve_domain_arg(slf.py(), domain)?;
-        let id = slf.inner.symbol_commutative(name, dom, commutative);
+        // `pi`, `EulerGamma`, `Catalan`, `Glaisher`, `GoldenRatio` (and `I`
+        // in the complex domain) are how the kernel spells those constants,
+        // so a variable with that name used to *be* the constant —
+        // `simplify(sin(pool.symbol("pi")))` was `0`. A variable is a
+        // variable: it is interned under a marked name that prints the same.
+        // The constants are `pool.pi()`, `pool.euler_gamma()`, … and
+        // `parse("pi")`.
+        let id = if is_reserved_constant_symbol(name, dom) {
+            let marked = format!("{name}{}", alkahest_core::kernel::USER_SYMBOL_MARKER);
+            slf.inner.symbol_commutative(marked, dom, commutative)
+        } else {
+            slf.inner.symbol_commutative(name, dom, commutative)
+        };
         let pool: Py<PyExprPool> = slf.into();
         Ok(PyExpr { id, pool })
+    }
+
+    /// The constant ``π`` (``parse("pi")``). ``pool.symbol("pi")`` is an
+    /// ordinary variable that merely prints as ``pi``.
+    fn pi(slf: PyRef<'_, Self>) -> PyExpr {
+        let id = slf.inner.symbol("pi", Domain::Real);
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
+    }
+
+    /// Euler's number ``e = exp(1)`` (``parse("E")``).
+    #[pyo3(name = "E")]
+    fn e_const(slf: PyRef<'_, Self>) -> PyExpr {
+        let one = slf.inner.integer(1i32);
+        let id = slf.inner.func("exp", vec![one]);
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
+    }
+
+    /// The Euler–Mascheroni constant ``γ ≈ 0.5772`` (``parse("EulerGamma")``).
+    fn euler_gamma(slf: PyRef<'_, Self>) -> PyExpr {
+        let id = slf.inner.symbol("EulerGamma", Domain::Real);
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
+    }
+
+    /// Catalan's constant ``G ≈ 0.9160`` (``parse("Catalan")``).
+    fn catalan(slf: PyRef<'_, Self>) -> PyExpr {
+        let id = slf.inner.symbol("Catalan", Domain::Real);
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
+    }
+
+    /// The golden ratio ``φ = (1 + √5)/2`` (``parse("GoldenRatio")``).
+    fn golden_ratio(slf: PyRef<'_, Self>) -> PyExpr {
+        let id = slf.inner.symbol("GoldenRatio", Domain::Real);
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
+    }
+
+    /// The Glaisher–Kinkelin constant ``A ≈ 1.2824`` (``parse("Glaisher")``).
+    fn glaisher(slf: PyRef<'_, Self>) -> PyExpr {
+        let id = slf.inner.symbol("Glaisher", Domain::Real);
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
     }
 
     /// Canonical imaginary unit `I` (`Domain.Complex` symbol named ``"I"``).
@@ -2485,143 +2806,59 @@ impl PyExpr {
     // ------------------------------------------------------------------
 
     fn __add__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
-        match self.coerce_scalar(other, py)? {
-            Some(rhs) => {
-                let id = self.pool.borrow(py).inner.add(vec![self.id, rhs]);
-                Ok(PyExpr {
-                    id,
-                    pool: self.pool.clone_ref(py),
-                }
-                .into_py(py))
-            }
-            None => Ok(py.NotImplemented()),
-        }
+        self.binary_op(other, py, |p, a, b| Ok(p.add(vec![a, b])))
     }
 
     fn __radd__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
-        match self.coerce_scalar(other, py)? {
-            Some(lhs) => {
-                let id = self.pool.borrow(py).inner.add(vec![lhs, self.id]);
-                Ok(PyExpr {
-                    id,
-                    pool: self.pool.clone_ref(py),
-                }
-                .into_py(py))
-            }
-            None => Ok(py.NotImplemented()),
-        }
+        self.binary_op(other, py, |p, a, b| Ok(p.add(vec![b, a])))
     }
 
     fn __sub__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
-        match self.coerce_scalar(other, py)? {
-            Some(rhs) => {
-                let pool = self.pool.borrow(py);
-                let neg_one = pool.inner.integer(-1i32);
-                let neg_rhs = pool.inner.mul(vec![neg_one, rhs]);
-                let id = pool.inner.add(vec![self.id, neg_rhs]);
-                drop(pool);
-                Ok(PyExpr {
-                    id,
-                    pool: self.pool.clone_ref(py),
-                }
-                .into_py(py))
-            }
-            None => Ok(py.NotImplemented()),
-        }
+        self.binary_op(other, py, |p, a, b| {
+            let neg_b = p.mul(vec![p.integer(-1i32), b]);
+            Ok(p.add(vec![a, neg_b]))
+        })
     }
 
     fn __rsub__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
         // other - self
-        match self.coerce_scalar(other, py)? {
-            Some(lhs) => {
-                let pool = self.pool.borrow(py);
-                let neg_one = pool.inner.integer(-1i32);
-                let neg_self = pool.inner.mul(vec![neg_one, self.id]);
-                let id = pool.inner.add(vec![lhs, neg_self]);
-                drop(pool);
-                Ok(PyExpr {
-                    id,
-                    pool: self.pool.clone_ref(py),
-                }
-                .into_py(py))
-            }
-            None => Ok(py.NotImplemented()),
-        }
+        self.binary_op(other, py, |p, a, b| {
+            let neg_a = p.mul(vec![p.integer(-1i32), a]);
+            Ok(p.add(vec![b, neg_a]))
+        })
     }
 
     fn __mul__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
-        match self.coerce_scalar(other, py)? {
-            Some(rhs) => {
-                let id = self.pool.borrow(py).inner.mul(vec![self.id, rhs]);
-                Ok(PyExpr {
-                    id,
-                    pool: self.pool.clone_ref(py),
-                }
-                .into_py(py))
-            }
-            None => Ok(py.NotImplemented()),
-        }
+        self.binary_op(other, py, |p, a, b| Ok(p.mul(vec![a, b])))
     }
 
     fn __rmul__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
-        match self.coerce_scalar(other, py)? {
-            Some(lhs) => {
-                let id = self.pool.borrow(py).inner.mul(vec![lhs, self.id]);
-                Ok(PyExpr {
-                    id,
-                    pool: self.pool.clone_ref(py),
-                }
-                .into_py(py))
-            }
-            None => Ok(py.NotImplemented()),
-        }
+        self.binary_op(other, py, |p, a, b| Ok(p.mul(vec![b, a])))
     }
 
     fn __truediv__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
-        match self.coerce_scalar(other, py)? {
-            Some(rhs) => {
-                let pool = self.pool.borrow(py);
-                if expr_is_literal_zero(&pool.inner, rhs) {
-                    return Err(pyo3::exceptions::PyZeroDivisionError::new_err(
-                        "division by zero",
-                    ));
-                }
-                let neg_one = pool.inner.integer(-1i32);
-                let inv = pool.inner.pow(rhs, neg_one);
-                let id = pool.inner.mul(vec![self.id, inv]);
-                drop(pool);
-                Ok(PyExpr {
-                    id,
-                    pool: self.pool.clone_ref(py),
-                }
-                .into_py(py))
+        self.binary_op(other, py, |p, a, b| {
+            if expr_is_literal_zero(p, b) {
+                return Err(pyo3::exceptions::PyZeroDivisionError::new_err(
+                    "division by zero",
+                ));
             }
-            None => Ok(py.NotImplemented()),
-        }
+            let inv = p.pow(b, p.integer(-1i32));
+            Ok(p.mul(vec![a, inv]))
+        })
     }
 
     fn __rtruediv__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
         // other / self  =  other * self^-1
-        match self.coerce_scalar(other, py)? {
-            Some(lhs) => {
-                let pool = self.pool.borrow(py);
-                if expr_is_literal_zero(&pool.inner, self.id) {
-                    return Err(pyo3::exceptions::PyZeroDivisionError::new_err(
-                        "division by zero",
-                    ));
-                }
-                let neg_one = pool.inner.integer(-1i32);
-                let inv_self = pool.inner.pow(self.id, neg_one);
-                let id = pool.inner.mul(vec![lhs, inv_self]);
-                drop(pool);
-                Ok(PyExpr {
-                    id,
-                    pool: self.pool.clone_ref(py),
-                }
-                .into_py(py))
+        self.binary_op(other, py, |p, a, b| {
+            if expr_is_literal_zero(p, a) {
+                return Err(pyo3::exceptions::PyZeroDivisionError::new_err(
+                    "division by zero",
+                ));
             }
-            None => Ok(py.NotImplemented()),
-        }
+            let inv_a = p.pow(a, p.integer(-1i32));
+            Ok(p.mul(vec![b, inv_a]))
+        })
     }
 
     fn __neg__(&self, py: Python<'_>) -> PyExpr {
@@ -2651,8 +2888,8 @@ impl PyExpr {
     ///   `x^x` instead of raising the pool-mismatch error every other operator
     ///   raises.
     ///
-    /// Routing through `coerce_scalar` — the same helper `__mul__` and friends
-    /// already use — settles all three.
+    /// Routing through `binary_op` — the same helper `__mul__` and friends
+    /// use — settles all three.
     fn __pow__(
         &self,
         exp: &Bound<'_, PyAny>,
@@ -2668,17 +2905,26 @@ impl PyExpr {
                  with a modular primitive instead of passing a third argument",
             ));
         }
-        match self.coerce_scalar(exp, py)? {
-            Some(exp_id) => {
-                let id = self.pool.borrow(py).inner.pow(self.id, exp_id);
-                Ok(PyExpr {
-                    id,
-                    pool: self.pool.clone_ref(py),
-                }
-                .into_py(py))
-            }
-            None => Ok(py.NotImplemented()),
+        self.binary_op(exp, py, |p, a, b| Ok(p.pow(a, b)))
+    }
+
+    /// ``base ** self`` for a Python number ``base`` — ``2**x``, ``(-1)**k``.
+    ///
+    /// The base is coerced exactly, as every other reflected operator does:
+    /// ``2**x`` is the integer ``2`` raised to ``x``, and ``0.5**x`` keeps
+    /// its float base.
+    fn __rpow__(
+        &self,
+        base: &Bound<'_, PyAny>,
+        modulo: Option<PyObject>,
+        py: Python<'_>,
+    ) -> PyResult<PyObject> {
+        if modulo.map(|m| !m.is_none(py)).unwrap_or(false) {
+            return Err(PyTypeError::new_err(
+                "pow() with a modulus is not supported for Expr",
+            ));
         }
+        self.binary_op(base, py, |p, a, b| Ok(p.pow(b, a)))
     }
 
     fn pow_expr(&self, exp: &PyExpr, py: Python<'_>) -> PyResult<PyExpr> {
@@ -2742,17 +2988,45 @@ impl PyExpr {
 
 // Non-pymethod helpers for PyExpr.
 impl PyExpr {
-    // Coerce a Python scalar (Expr | int | float) to an interned ExprId.
-    // Returns None for unrecognised types so callers can return NotImplemented.
-    fn coerce_scalar(&self, ob: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<Option<ExprId>> {
-        if let Ok(e) = ob.extract::<PyRef<PyExpr>>() {
-            if !e.pool.is(&self.pool) {
-                return Err(pool_mismatch_err());
+    /// `(pool, self, other)` in one pool, or `None` for an operand that is not
+    /// an expression or a number (so the dunder can return `NotImplemented`).
+    ///
+    /// A number goes into `self`'s pool. An `Expr` from another pool is
+    /// refused (`E-POOL-001`) unless one side is a closed default-pool value
+    /// (`alkahest.pi`), which is copied into the other side's pool.
+    fn binary_operands(
+        &self,
+        other: &Bound<'_, PyAny>,
+        py: Python<'_>,
+    ) -> PyResult<Option<(Py<PyExprPool>, ExprId, ExprId)>> {
+        if let Ok(e) = other.extract::<PyRef<PyExpr>>() {
+            if e.pool.is(&self.pool) {
+                return Ok(Some((self.pool.clone_ref(py), self.id, e.id)));
             }
-            return Ok(Some(e.id));
+            let ops = [Operand::Expr(self.clone()), Operand::Expr(e.clone())];
+            return Ok(unify_ops(py, &ops)?.map(|(p, ids)| (p, ids[0], ids[1])));
         }
         let pool = self.pool.borrow(py);
-        number_into_pool(&pool.inner, ob)
+        Ok(number_into_pool(&pool.inner, other)?.map(|id| (self.pool.clone_ref(py), self.id, id)))
+    }
+
+    /// Apply `f(pool, self, other)` after [`Self::binary_operands`].
+    fn binary_op(
+        &self,
+        other: &Bound<'_, PyAny>,
+        py: Python<'_>,
+        f: impl FnOnce(&ExprPool, ExprId, ExprId) -> PyResult<ExprId>,
+    ) -> PyResult<PyObject> {
+        match self.binary_operands(other, py)? {
+            Some((pool_py, a, b)) => {
+                let id = {
+                    let pool = pool_py.borrow(py);
+                    f(&pool.inner, a, b)?
+                };
+                Ok(PyExpr { id, pool: pool_py }.into_py(py))
+            }
+            None => Ok(py.NotImplemented()),
+        }
     }
 }
 
@@ -3253,6 +3527,75 @@ const STEPS_SCHEMA_VERSION: u32 = 1;
 /// One rendered derivation step: `(rule, before, after, side_conditions)`.
 type StepText = (String, String, String, Vec<String>);
 
+/// One pickled derivation step: `(rule, before, after, side_conditions)`,
+/// where the expressions are indices into the pickled DAG's roots and each
+/// side condition is `(kind, expr, domain)` (see `PyDerivedResult::__reduce__`).
+type PickledStep = (String, usize, usize, Vec<(u8, usize, u8)>);
+type PickledQuad = (usize, usize, usize, usize);
+/// `(value, raw_value, steps, wrt, integration_verification_input,
+/// definite_integration_input, tendsto_input, gosper_input, product_input,
+/// resultant_input)`, every expression an index into the pickled roots.
+type PickledDerivedMeta = (
+    usize,
+    usize,
+    Vec<PickledStep>,
+    Option<usize>,
+    Option<(usize, usize)>,
+    Option<PickledQuad>,
+    Option<(usize, usize, usize)>,
+    Option<(usize, usize, Option<(usize, usize)>)>,
+    Option<PickledQuad>,
+    Option<PickledQuad>,
+);
+
+fn domain_code(d: Domain) -> u8 {
+    match d {
+        Domain::Real => 0,
+        Domain::Complex => 1,
+        Domain::Integer => 2,
+        Domain::Positive => 3,
+        Domain::NonNegative => 4,
+        Domain::NonZero => 5,
+    }
+}
+
+fn domain_from_code(c: u8) -> PyResult<Domain> {
+    Ok(match c {
+        0 => Domain::Real,
+        1 => Domain::Complex,
+        2 => Domain::Integer,
+        3 => Domain::Positive,
+        4 => Domain::NonNegative,
+        5 => Domain::NonZero,
+        _ => {
+            return Err(PyValueError::new_err(format!(
+                "pickled DerivedResult has unknown domain code {c}"
+            )))
+        }
+    })
+}
+
+/// A `&'static str` for a rule name read back from a pickle.
+///
+/// `RewriteStep::rule_name` is `&'static str` because every rule names
+/// itself with a literal. An unpickled log needs the same type, so each
+/// distinct name is leaked once and reused: the set of rule names is fixed
+/// by the code that wrote the pickle, so this is bounded.
+fn intern_rule_name(name: &str) -> &'static str {
+    static NAMES: OnceLock<std::sync::Mutex<std::collections::HashMap<String, &'static str>>> =
+        OnceLock::new();
+    let mut names = NAMES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(&s) = names.get(name) {
+        return s;
+    }
+    let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
+    names.insert(name.to_owned(), leaked);
+    leaked
+}
+
 /// Inclusive `(lo, hi)` bounds on a definite Gosper sum; `None` is indefinite.
 type GosperBounds = Option<(ExprId, ExprId)>;
 /// `(term, k, bounds)` for a Gosper sum. See [`GosperBounds`].
@@ -3315,6 +3658,156 @@ impl PyDerivedResult {
     #[getter]
     fn value(&self) -> PyExpr {
         self.value.clone()
+    }
+
+    /// Pickle support: the value, the whole derivation log and the
+    /// certificate inputs, as one expression DAG (see `Expr.__reduce__`)
+    /// plus the index structure that points into it.
+    ///
+    /// Everything a `DerivedResult` can report — ``.value``, ``.steps``,
+    /// ``.derivation``, its verification status and certificates — is a
+    /// function of what is pickled here, so an unpickled result answers the
+    /// same questions the same way (in the pool its expressions land in; see
+    /// :mod:`alkahest._pickle`).
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let mut roots: Vec<ExprId> = Vec::new();
+        let mut ix = |id: ExprId| -> usize {
+            roots.push(id);
+            roots.len() - 1
+        };
+        let value = ix(self.value.id);
+        let raw_value = ix(self.raw.value);
+        let mut steps: Vec<PickledStep> = Vec::with_capacity(self.raw.log.steps().len());
+        for step in self.raw.log.steps() {
+            let before = ix(step.before);
+            let after = ix(step.after);
+            let conds = step
+                .side_conditions
+                .iter()
+                .map(|c| match c {
+                    SideCondition::NonZero(id) => (0u8, ix(*id), 0u8),
+                    SideCondition::Positive(id) => (1u8, ix(*id), 0u8),
+                    SideCondition::InDomain(id, d) => (2u8, ix(*id), domain_code(*d)),
+                })
+                .collect();
+            steps.push((step.rule_name.to_string(), before, after, conds));
+        }
+        let wrt = self.wrt.map(&mut ix);
+        let integ = self
+            .integration_verification_input
+            .map(|(a, b)| (ix(a), ix(b)));
+        let definite = self
+            .definite_integration_input
+            .map(|(a, b, c, d)| (ix(a), ix(b), ix(c), ix(d)));
+        let tendsto = self.tendsto_input.map(|(a, b, c)| (ix(a), ix(b), ix(c)));
+        let gosper = self
+            .gosper_input
+            .map(|(a, b, bounds)| (ix(a), ix(b), bounds.map(|(c, d)| (ix(c), ix(d)))));
+        let product = self
+            .product_input
+            .map(|(a, b, c, d)| (ix(a), ix(b), ix(c), ix(d)));
+        let resultant = self
+            .resultant_input
+            .map(|(a, b, c, d)| (ix(a), ix(b), ix(c), ix(d)));
+        let bytes = {
+            let pool = self.value.pool.borrow(py);
+            alkahest_core::kernel::pool_persist::dag_to_bytes(&pool.inner, &roots)
+        };
+        let meta: PickledDerivedMeta = (
+            value, raw_value, steps, wrt, integ, definite, tendsto, gosper, product, resultant,
+        );
+        let helper = py
+            .import_bound("alkahest._pickle")?
+            .getattr("_reduce_derived")?;
+        Ok(helper
+            .call1((
+                self.value.pool.clone_ref(py),
+                pyo3::types::PyBytes::new_bound(py, &bytes),
+                IntoPy::<PyObject>::into_py(meta, py),
+            ))?
+            .unbind())
+    }
+
+    /// Rebuild a result pickled by `__reduce__` into `pool`. Private: the
+    /// unpickler's entry point. Malformed input raises `IoError` /
+    /// `ValueError`, never a panic.
+    #[staticmethod]
+    fn _from_pickle(
+        py: Python<'_>,
+        pool: Py<PyExprPool>,
+        data: &[u8],
+        meta: PickledDerivedMeta,
+    ) -> PyResult<Self> {
+        let ids = {
+            let p = pool.borrow(py);
+            alkahest_core::kernel::pool_persist::dag_from_bytes(&p.inner, data)
+                .map_err(io_error_to_py)?
+        };
+        let at = |i: usize| -> PyResult<ExprId> {
+            ids.get(i).copied().ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "pickled DerivedResult refers to expression {i} of {}",
+                    ids.len()
+                ))
+            })
+        };
+        let (value, raw_value, steps, wrt, integ, definite, tendsto, gosper, product, resultant) =
+            meta;
+        let mut log = alkahest_core::DerivationLog::new();
+        for (rule, before, after, conds) in steps {
+            let side_conditions = conds
+                .into_iter()
+                .map(|(kind, i, d)| {
+                    let id = at(i)?;
+                    Ok(match kind {
+                        0 => SideCondition::NonZero(id),
+                        1 => SideCondition::Positive(id),
+                        2 => SideCondition::InDomain(id, domain_from_code(d)?),
+                        k => {
+                            return Err(PyValueError::new_err(format!(
+                                "pickled DerivedResult has unknown side-condition kind {k}"
+                            )))
+                        }
+                    })
+                })
+                .collect::<PyResult<Vec<_>>>()?;
+            log.push(RewriteStep::with_conditions(
+                intern_rule_name(&rule),
+                at(before)?,
+                at(after)?,
+                side_conditions,
+            ));
+        }
+        let raw = DerivedExpr {
+            value: at(raw_value)?,
+            log,
+        };
+        let mut r = PyDerivedResult::new(raw, pool, wrt.map(at).transpose()?);
+        r.value.id = at(value)?;
+        r.integration_verification_input = integ
+            .map(|(a, b)| Ok::<_, PyErr>((at(a)?, at(b)?)))
+            .transpose()?;
+        r.definite_integration_input = definite
+            .map(|(a, b, c, d)| Ok::<_, PyErr>((at(a)?, at(b)?, at(c)?, at(d)?)))
+            .transpose()?;
+        r.tendsto_input = tendsto
+            .map(|(a, b, c)| Ok::<_, PyErr>((at(a)?, at(b)?, at(c)?)))
+            .transpose()?;
+        r.gosper_input = gosper
+            .map(|(a, b, bounds)| {
+                let bounds = bounds
+                    .map(|(c, d)| Ok::<_, PyErr>((at(c)?, at(d)?)))
+                    .transpose()?;
+                Ok::<_, PyErr>((at(a)?, at(b)?, bounds))
+            })
+            .transpose()?;
+        r.product_input = product
+            .map(|(a, b, c, d)| Ok::<_, PyErr>((at(a)?, at(b)?, at(c)?, at(d)?)))
+            .transpose()?;
+        r.resultant_input = resultant
+            .map(|(a, b, c, d)| Ok::<_, PyErr>((at(a)?, at(b)?, at(c)?, at(d)?)))
+            .transpose()?;
+        Ok(r)
     }
 
     #[getter]
@@ -3992,52 +4485,54 @@ fn py_derived_result_context_simplify(
 // Module-level functions: named math functions
 // ---------------------------------------------------------------------------
 
-fn make_func(py: Python<'_>, name: &str, expr: PyRef<PyExpr>) -> PyExpr {
-    let id = expr.pool.borrow(py).inner.func(name, vec![expr.id]);
-    let pool = expr.pool.clone_ref(py);
-    PyExpr { id, pool }
+/// `name(expr)` for an `Expr` or a Python number (`sin(2)` is `sin` of the
+/// exact integer `2`, in the ambient pool — see [`default_pool`]).
+fn make_func(py: Python<'_>, name: &str, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
+    let (pool, ids) = func_operands(py, name, &[expr])?;
+    let id = pool.borrow(py).inner.func(name, ids);
+    Ok(PyExpr { id, pool })
 }
 
 #[pyfunction]
-fn sin(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn sin(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "sin", expr)
 }
 
 #[pyfunction]
-fn cos(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn cos(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "cos", expr)
 }
 
 #[pyfunction]
-fn exp(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn exp(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "exp", expr)
 }
 
 #[pyfunction]
-fn log(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn log(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "log", expr)
 }
 
 #[pyfunction]
-fn sqrt(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn sqrt(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "sqrt", expr)
 }
 
 /// Symbolic complex conjugation (stable top-level export).
 #[pyfunction]
-fn conjugate(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn conjugate(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "conjugate", expr)
 }
 
 /// Symbolic real-part constructor (stable top-level export).
 #[pyfunction]
-fn re(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn re(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "re", expr)
 }
 
 /// Symbolic imaginary-part constructor (stable top-level export).
 #[pyfunction]
-fn im(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn im(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "im", expr)
 }
 
@@ -4046,68 +4541,68 @@ fn im(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 /// Only domain-safe literal simplifications are applied; branch-cut cases
 /// remain symbolic.
 #[pyfunction]
-fn arg(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn arg(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "arg", expr)
 }
 
 // V1-12: expanded primitive registry
 #[pyfunction]
-fn tan(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn tan(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "tan", expr)
 }
 
 #[pyfunction]
-fn sinh(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn sinh(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "sinh", expr)
 }
 
 #[pyfunction]
-fn cosh(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn cosh(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "cosh", expr)
 }
 
 #[pyfunction]
-fn tanh(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn tanh(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "tanh", expr)
 }
 
 #[pyfunction]
-fn asin(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn asin(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "asin", expr)
 }
 
 #[pyfunction]
-fn acos(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn acos(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "acos", expr)
 }
 
 #[pyfunction]
-fn atan(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn atan(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "atan", expr)
 }
 
 #[pyfunction]
-fn asinh(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn asinh(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "asinh", expr)
 }
 
 #[pyfunction]
-fn acosh(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn acosh(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "acosh", expr)
 }
 
 #[pyfunction]
-fn atanh(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn atanh(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "atanh", expr)
 }
 
 #[pyfunction]
-fn erf(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn erf(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "erf", expr)
 }
 
 #[pyfunction]
-fn erfc(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn erfc(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "erfc", expr)
 }
 
@@ -4120,72 +4615,72 @@ fn erfc(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 
 /// ``Ei(x)``, the exponential integral (DLMF 6.2.5). ``d/dx Ei(x) = exp(x)/x``.
 #[pyfunction]
-fn exp_integral_ei(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn exp_integral_ei(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "Ei", expr)
 }
 
 /// ``li(x)``, the logarithmic integral (DLMF 6.2.8), a Cauchy principal value
 /// for ``x > 1``. ``d/dx li(x) = 1/log(x)``.
 #[pyfunction]
-fn log_integral(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn log_integral(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "li", expr)
 }
 
 /// ``Si(x)``, the sine integral (DLMF 6.2.9). ``d/dx Si(x) = sin(x)/x``.
 #[pyfunction]
-fn sin_integral(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn sin_integral(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "Si", expr)
 }
 
 /// ``Ci(x)``, the cosine integral (DLMF 6.2.11). ``d/dx Ci(x) = cos(x)/x``.
 #[pyfunction]
-fn cos_integral(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn cos_integral(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "Ci", expr)
 }
 
 /// ``Shi(x)``, the hyperbolic sine integral (DLMF 6.2.15).
 /// ``d/dx Shi(x) = sinh(x)/x``.
 #[pyfunction]
-fn sinh_integral(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn sinh_integral(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "Shi", expr)
 }
 
 /// ``Chi(x)``, the hyperbolic cosine integral (DLMF 6.2.16).
 /// ``d/dx Chi(x) = cosh(x)/x``.
 #[pyfunction]
-fn cosh_integral(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn cosh_integral(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "Chi", expr)
 }
 
 #[pyfunction]
 #[pyo3(name = "abs")]
-fn abs_expr(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn abs_expr(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "abs", expr)
 }
 
 #[pyfunction]
-fn sign(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn sign(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "sign", expr)
 }
 
 #[pyfunction]
-fn floor(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn floor(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "floor", expr)
 }
 
 #[pyfunction]
-fn ceil(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn ceil(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "ceil", expr)
 }
 
 #[pyfunction]
 #[pyo3(name = "round")]
-fn round_expr(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn round_expr(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "round", expr)
 }
 
 #[pyfunction]
-fn gamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn gamma(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "gamma", expr)
 }
 
@@ -4200,10 +4695,10 @@ fn gamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 /// Stable top-level export (also re-exported from ``alkahest.experimental``).
 #[pyfunction]
 #[pyo3(signature = (expr, k = 0))]
-fn lambert_w(py: Python<'_>, expr: PyRef<PyExpr>, k: i64) -> PyResult<PyExpr> {
+fn lambert_w(py: Python<'_>, expr: &Bound<'_, PyAny>, k: i64) -> PyResult<PyExpr> {
     match k {
-        0 => Ok(make_func(py, "lambert_w", expr)),
-        -1 => Ok(make_func(py, "lambert_wm1", expr)),
+        0 => make_func(py, "lambert_w", expr),
+        -1 => make_func(py, "lambert_wm1", expr),
         _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
             "lambert_w: only the real branches k = 0 and k = -1 are available, got k = {k}"
         ))),
@@ -4225,7 +4720,7 @@ fn lambert_w(py: Python<'_>, expr: PyRef<PyExpr>, k: i64) -> PyResult<PyExpr> {
 ///     >>> alkahest.eval_expr(w, {})   # mpmath.lambertw(-0.25, -1)
 ///     -2.15329236411035
 #[pyfunction]
-fn lambert_wm1(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn lambert_wm1(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "lambert_wm1", expr)
 }
 
@@ -4233,7 +4728,7 @@ fn lambert_wm1(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 ///
 /// Stable top-level export (also re-exported from ``alkahest.experimental``).
 #[pyfunction]
-fn digamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn digamma(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "digamma", expr)
 }
 
@@ -4241,7 +4736,7 @@ fn digamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 ///
 /// Stable top-level export (also re-exported from ``alkahest.experimental``).
 #[pyfunction]
-fn bessel_j0(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn bessel_j0(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "bessel_j0", expr)
 }
 
@@ -4249,7 +4744,7 @@ fn bessel_j0(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 ///
 /// Stable top-level export (also re-exported from ``alkahest.experimental``).
 #[pyfunction]
-fn bessel_j1(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn bessel_j1(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "bessel_j1", expr)
 }
 
@@ -4262,7 +4757,7 @@ fn bessel_j1(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 ///
 /// Stable top-level export.
 #[pyfunction]
-fn trigamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn trigamma(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "trigamma", expr)
 }
 
@@ -4278,7 +4773,7 @@ fn trigamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 ///
 /// Stable top-level export.
 #[pyfunction]
-fn fresnels(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn fresnels(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "fresnels", expr)
 }
 
@@ -4289,7 +4784,7 @@ fn fresnels(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 ///
 /// Stable top-level export.
 #[pyfunction]
-fn fresnelc(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn fresnelc(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "fresnelc", expr)
 }
 
@@ -4309,7 +4804,7 @@ fn fresnelc(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 ///
 /// Stable top-level export.
 #[pyfunction]
-fn dilog(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn dilog(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "dilog", expr)
 }
 
@@ -4319,7 +4814,7 @@ fn dilog(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 /// top-level `__all__` (the constructor pairs with the experimental Laplace
 /// transform — PR #152).
 #[pyfunction]
-fn heaviside(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn heaviside(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "heaviside", expr)
 }
 
@@ -4327,49 +4822,47 @@ fn heaviside(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 ///
 /// Surfaced under `alkahest.experimental` (see [`heaviside`]).
 #[pyfunction]
-fn dirac_delta(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+fn dirac_delta(py: Python<'_>, expr: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "diracdelta", expr)
 }
 
 fn make_binary_func(
     py: Python<'_>,
     name: &str,
-    a: PyRef<PyExpr>,
-    b: PyRef<PyExpr>,
+    a: &Bound<'_, PyAny>,
+    b: &Bound<'_, PyAny>,
 ) -> PyResult<PyExpr> {
-    same_pool!(name; a, b);
-    let id = a.pool.borrow(py).inner.func(name, vec![a.id, b.id]);
-    let pool = a.pool.clone_ref(py);
+    let (pool, ids) = func_operands(py, name, &[a, b])?;
+    let id = pool.borrow(py).inner.func(name, ids);
     Ok(PyExpr { id, pool })
 }
 
 #[pyfunction]
-fn atan2(py: Python<'_>, y: PyRef<PyExpr>, x: PyRef<PyExpr>) -> PyResult<PyExpr> {
+fn atan2(py: Python<'_>, y: &Bound<'_, PyAny>, x: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_binary_func(py, "atan2", y, x)
 }
 
 #[pyfunction]
 #[pyo3(name = "min")]
-fn min_expr(py: Python<'_>, a: PyRef<PyExpr>, b: PyRef<PyExpr>) -> PyResult<PyExpr> {
+fn min_expr(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_binary_func(py, "min", a, b)
 }
 
 #[pyfunction]
 #[pyo3(name = "max")]
-fn max_expr(py: Python<'_>, a: PyRef<PyExpr>, b: PyRef<PyExpr>) -> PyResult<PyExpr> {
+fn max_expr(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_binary_func(py, "max", a, b)
 }
 
 fn make_ternary_func(
     py: Python<'_>,
     name: &str,
-    a: PyRef<PyExpr>,
-    b: PyRef<PyExpr>,
-    c: PyRef<PyExpr>,
+    a: &Bound<'_, PyAny>,
+    b: &Bound<'_, PyAny>,
+    c: &Bound<'_, PyAny>,
 ) -> PyResult<PyExpr> {
-    same_pool!(name; a, b, c);
-    let id = a.pool.borrow(py).inner.func(name, vec![a.id, b.id, c.id]);
-    let pool = a.pool.clone_ref(py);
+    let (pool, ids) = func_operands(py, name, &[a, b, c])?;
+    let id = pool.borrow(py).inner.func(name, ids);
     Ok(PyExpr { id, pool })
 }
 
@@ -4377,7 +4870,7 @@ fn make_ternary_func(
 
 /// Complete elliptic integral of the first kind, `EllipticK(m)`.
 #[pyfunction]
-fn elliptic_k(py: Python<'_>, m: PyRef<PyExpr>) -> PyExpr {
+fn elliptic_k(py: Python<'_>, m: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_func(py, "EllipticK", m)
 }
 
@@ -4389,18 +4882,18 @@ fn elliptic_k(py: Python<'_>, m: PyRef<PyExpr>) -> PyExpr {
 #[pyo3(signature = (arg1, arg2=None))]
 fn elliptic_e(
     py: Python<'_>,
-    arg1: PyRef<PyExpr>,
-    arg2: Option<PyRef<PyExpr>>,
+    arg1: &Bound<'_, PyAny>,
+    arg2: Option<Bound<'_, PyAny>>,
 ) -> PyResult<PyExpr> {
     match arg2 {
-        None => Ok(make_func(py, "EllipticE", arg1)),
-        Some(m) => make_binary_func(py, "EllipticE", arg1, m),
+        None => make_func(py, "EllipticE", arg1),
+        Some(m) => make_binary_func(py, "EllipticE", arg1, &m),
     }
 }
 
 /// Incomplete elliptic integral of the first kind, `EllipticF(phi, m)`.
 #[pyfunction]
-fn elliptic_f(py: Python<'_>, phi: PyRef<PyExpr>, m: PyRef<PyExpr>) -> PyResult<PyExpr> {
+fn elliptic_f(py: Python<'_>, phi: &Bound<'_, PyAny>, m: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     make_binary_func(py, "EllipticF", phi, m)
 }
 
@@ -4408,9 +4901,9 @@ fn elliptic_f(py: Python<'_>, phi: PyRef<PyExpr>, m: PyRef<PyExpr>) -> PyResult<
 #[pyfunction]
 fn elliptic_pi(
     py: Python<'_>,
-    n: PyRef<PyExpr>,
-    phi: PyRef<PyExpr>,
-    m: PyRef<PyExpr>,
+    n: &Bound<'_, PyAny>,
+    phi: &Bound<'_, PyAny>,
+    m: &Bound<'_, PyAny>,
 ) -> PyResult<PyExpr> {
     make_ternary_func(py, "EllipticPi", n, phi, m)
 }
@@ -10275,15 +10768,14 @@ impl PyMatrix {
 
     /// Build a matrix from a 2D list of entries.
     ///
-    /// Each entry may be an :class:`Expr`, :class:`DerivedResult`, Python
-    /// ``int``, or Python ``float``. Bare numeric literals are coerced into
-    /// the same :class:`ExprPool` as the first :class:`Expr`/``DerivedResult``
+    /// Each entry may be an :class:`Expr`, :class:`DerivedResult`, or a
+    /// Python number (``int``, ``fractions.Fraction``, ``float``). Numbers are
+    /// coerced exactly — ``Fraction(1, 3)`` is the rational ``1/3`` — into the
+    /// same :class:`ExprPool` as the first :class:`Expr`/``DerivedResult``
     /// found anywhere in `rows` (consistent with how arithmetic operators
-    /// coerce scalars). If `rows` contains no `Expr`/`DerivedResult` at all
-    /// (e.g. an all-integer matrix), the pool cannot be inferred and a
-    /// `TypeError` is raised — pass at least one `Expr`/`DerivedResult`
-    /// entry (or use `ExprPool.integer`/`pool.matrix_of(...)`-style helpers)
-    /// so the pool can be determined.
+    /// coerce scalars). An all-number matrix such as ``[[1, 2], [3, 4]]``
+    /// uses the pool of the active ``alkahest.context(pool=...)``, or
+    /// :func:`alkahest.default_pool` outside one.
     #[staticmethod]
     fn from_rows(py: Python<'_>, rows: Vec<Vec<Bound<'_, PyAny>>>) -> PyResult<PyMatrix> {
         if rows.is_empty() {
@@ -10299,30 +10791,40 @@ impl PyMatrix {
                 "Matrix must have at least one column (a row is empty)",
             ));
         }
-        // Find the pool from the first Expr/DerivedResult entry anywhere in `rows`.
+        // The pool is that of the first entry that is an `Expr` (or
+        // `DerivedResult`) other than a closed default-pool value; else of the
+        // first `Expr` entry at all; else — an all-number matrix such as
+        // `[[1, 2], [3, 4]]` — the ambient pool (`alkahest.context(pool=...)`,
+        // then `alkahest.default_pool()`). Closed default-pool values
+        // (`alkahest.pi`) are copied into whichever pool that is.
         let mut pool_py: Option<Py<PyExprPool>> = None;
-        for row in &rows {
-            for entry in row {
-                if let Ok(e) = entry.extract::<PyRef<PyExpr>>() {
-                    pool_py = Some(e.pool.clone_ref(py));
-                    break;
-                }
-                if let Ok(dr) = entry.downcast::<PyDerivedResult>() {
-                    pool_py = Some(dr.borrow().value.pool.clone_ref(py));
-                    break;
-                }
+        let mut settled = false;
+        for entry in rows.iter().flatten() {
+            let e = if let Ok(e) = entry.extract::<PyRef<PyExpr>>() {
+                e.clone()
+            } else if let Ok(dr) = entry.downcast::<PyDerivedResult>() {
+                dr.borrow().value.clone()
+            } else {
+                continue;
+            };
+            let movable = is_default_pool(py, &e.pool) && {
+                let p = e.pool.borrow(py);
+                expr_is_closed(&p.inner, e.id)
+            };
+            if !movable {
+                pool_py = Some(e.pool.clone_ref(py));
+                settled = true;
+            } else if pool_py.is_none() {
+                pool_py = Some(e.pool.clone_ref(py));
             }
-            if pool_py.is_some() {
+            if settled {
                 break;
             }
         }
-        let pool_py = pool_py.ok_or_else(|| {
-            PyTypeError::new_err(
-                "Matrix.from_rows could not determine an ExprPool: at least one entry must \
-                 be an Expr or DerivedResult (bare int/float entries are coerced into that \
-                 pool, but the pool cannot be inferred from numbers alone)",
-            )
-        })?;
+        let pool_py = match pool_py {
+            Some(p) => p,
+            None => ambient_pool(py)?,
+        };
         let data: Vec<Vec<ExprId>> = rows
             .iter()
             .map(|row| {
@@ -10351,6 +10853,51 @@ impl PyMatrix {
     /// Shape of the matrix as a ``(rows, cols)`` tuple.
     fn shape(&self) -> (usize, usize) {
         (self.inner.rows, self.inner.cols)
+    }
+
+    /// Pickle support: the entries as one expression DAG (see
+    /// `Expr.__reduce__`) plus the shape.
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let bytes = {
+            let pool = self.pool.borrow(py);
+            alkahest_core::kernel::pool_persist::dag_to_bytes(&pool.inner, self.inner.entries())
+        };
+        let helper = py
+            .import_bound("alkahest._pickle")?
+            .getattr("_reduce_matrix")?;
+        Ok(helper
+            .call1((
+                self.pool.clone_ref(py),
+                pyo3::types::PyBytes::new_bound(py, &bytes),
+                self.inner.rows,
+                self.inner.cols,
+            ))?
+            .unbind())
+    }
+
+    /// Rebuild a matrix pickled by `__reduce__` into `pool`. Private.
+    #[staticmethod]
+    fn _from_pickle(
+        py: Python<'_>,
+        pool: Py<PyExprPool>,
+        data: &[u8],
+        rows: usize,
+        cols: usize,
+    ) -> PyResult<PyMatrix> {
+        let ids = {
+            let p = pool.borrow(py);
+            alkahest_core::kernel::pool_persist::dag_from_bytes(&p.inner, data)
+                .map_err(io_error_to_py)?
+        };
+        if rows == 0 || cols == 0 || rows.checked_mul(cols) != Some(ids.len()) {
+            return Err(PyValueError::new_err(format!(
+                "pickled Matrix has shape {rows}x{cols} but {} entries",
+                ids.len()
+            )));
+        }
+        let nested: Vec<Vec<ExprId>> = ids.chunks(cols).map(|r| r.to_vec()).collect();
+        let m = Matrix::new(nested).map_err(matrix_error_to_py)?;
+        Ok(PyMatrix { inner: m, pool })
     }
 
     /// Sum of diagonal entries (trace).
@@ -14369,6 +14916,72 @@ fn py_poly_normal(
         id: result,
         pool: pool_py,
     })
+}
+
+/// Private backend of :func:`alkahest.factor`: *expr* over a common
+/// denominator, numerator and denominator each factored over ℤ, returned as
+/// one product ``c · Π pᵢ^eᵢ · Π qⱼ^(−fⱼ)``.
+///
+/// Sub-expressions that are not polynomial in *vars* (``sin(x)``, a symbol
+/// not listed, ``x**n``) are opaque generators, exactly as in :func:`cancel`.
+/// A float coefficient is refused (``E-POLY-*``) rather than factored as if it
+/// were exact.
+#[pyfunction]
+#[pyo3(name = "_factor_expr", signature = (expr, vars=None))]
+fn py_factor_expr(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    vars: Option<Vec<PyRef<PyExpr>>>,
+) -> PyResult<PyExpr> {
+    same_pool!("factor"; expr, vars);
+    let pool_py = expr.pool.clone_ref(py);
+    let id = {
+        let pool = pool_py.borrow(py);
+        guard_depth(&pool.inner, expr.id)?;
+        let var_ids: Vec<ExprId> = match vars {
+            Some(v) => v.iter().map(|v| v.id).collect(),
+            None => alkahest_core::collect_free_vars(expr.id, &pool.inner),
+        };
+        let (e, p) = (expr.id, &pool.inner);
+        let rf = py
+            .allow_threads(move || alkahest_core::poly::rational_function_of(e, var_ids, p))
+            .map_err(conv_error_to_py)?;
+        if rf.numer.is_zero() {
+            p.integer(0i32)
+        } else {
+            let (numer, denom) = (&rf.numer, &rf.denom);
+            let nf = py
+                .allow_threads(|| numer.factor_z())
+                .map_err(factor_error_to_py)?;
+            let df = py
+                .allow_threads(|| denom.factor_z())
+                .map_err(factor_error_to_py)?;
+            let unit = rug::Rational::from((nf.unit.clone(), df.unit.clone()));
+            let mut parts: Vec<ExprId> = Vec::new();
+            if unit != 1 {
+                let (n, d) = unit.into_numer_denom();
+                parts.push(if d == 1 {
+                    p.integer(n)
+                } else {
+                    p.rational(n, d)
+                });
+            }
+            for (f, k) in &nf.factors {
+                let b = f.to_expr(p);
+                parts.push(if *k == 1 { b } else { p.pow(b, p.integer(*k)) });
+            }
+            for (f, k) in &df.factors {
+                let b = f.to_expr(p);
+                parts.push(p.pow(b, p.integer(-i64::from(*k))));
+            }
+            match parts.len() {
+                0 => p.integer(1i32),
+                1 => parts[0],
+                _ => p.mul(parts),
+            }
+        }
+    };
+    Ok(PyExpr { id, pool: pool_py })
 }
 
 /// Cancel common polynomial factors in a rational expression.
@@ -22681,6 +23294,8 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_poly_normal, m)?)?;
     // Rational-function cancel/together
     m.add_function(wrap_pyfunction!(py_cancel, m)?)?;
+    m.add_function(wrap_pyfunction!(py_factor_expr, m)?)?;
+    m.add_function(wrap_pyfunction!(default_pool, m)?)?;
     m.add_function(wrap_pyfunction!(py_together, m)?)?;
     // PA-5 — Primitive registry
     m.add_class::<PyPrimitiveRegistry>()?;
