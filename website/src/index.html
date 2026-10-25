@@ -1,223 +1,300 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Alkahest</title>
-    <meta
-      name="description"
-      content="Computer algebra for Python 3.9–3.13 and Rust. pip install alkahest or alkahest-cas = &quot;3&quot; in Cargo.toml."
-    />
-    <link rel="stylesheet" href="styles.css" />
-    <style>
-      .lang-tabs {
-        display: flex;
-        gap: 0;
-        margin-bottom: 0.625rem;
-        border-bottom: 1px solid var(--border);
-      }
-      .lang-tab {
-        padding: 0.35rem 0.85rem;
-        font: inherit;
-        font-size: 0.875rem;
-        font-weight: 500;
-        color: var(--muted);
-        background: none;
-        border: none;
-        border-bottom: 2px solid transparent;
-        margin-bottom: -1px;
-        cursor: pointer;
-      }
-      .lang-tab[aria-selected="true"] {
-        color: var(--fg);
-        border-bottom-color: var(--brand);
-      }
-      .lang-panel[hidden] { display: none; }
-    </style>
-  </head>
-  <body>
-    <main class="shell">
-      <p class="kicker">alkahest</p>
-      <h1 class="tagline">
-        A high-performance computer algebra system for Python and Rust
-      </h1>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Alkahest — computer algebra for agents and humans</title>
+  <meta name="description" content="Alkahest is a high-performance computer algebra system for Python and Rust: exact symbolic math, JIT and GPU code generation, Lean 4 certificates, and coded refusals instead of silent wrong answers." />
+  <meta property="og:title" content="Alkahest — computer algebra for agents and humans" />
+  <meta property="og:description" content="Exact symbolic math for Python and Rust, with Lean 4 certificates, budgets, coded refusals, and native code generation." />
+  <meta property="og:url" content="https://alkahest-cas.github.io/" />
+  <meta name="twitter:card" content="summary" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23c41e3a'/%3E%3Ctext x='16' y='23' text-anchor='middle' font-family='Inter,Arial,sans-serif' font-weight='700' font-size='21' fill='white'%3Ea%3C/text%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap">
+      <a class="wordmark" href="/">alkahest</a>
+      <button class="menu-btn" aria-label="Menu" aria-expanded="false" aria-controls="nav">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+      <nav class="nav" id="nav" aria-label="Primary">
+        <a href="/docs/">Docs</a>
+        <a href="/playground/">Playground</a>
+        <a href="/agent/">Agent</a>
+        <a class="gh" href="https://github.com/alkahest-cas/alkahest" aria-label="Alkahest on GitHub">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        </a>
+      </nav>
+    </div>
+  </header>
 
-      <section class="install" aria-label="Install">
-        <div class="lang-tabs" role="tablist" aria-label="Language">
-          <button class="lang-tab" role="tab" id="tab-py" aria-selected="true" aria-controls="panel-py">Python</button>
-          <button class="lang-tab" role="tab" id="tab-rs" aria-selected="false" aria-controls="panel-rs">Rust</button>
-        </div>
+  <main>
+    <!-- ── Hero ───────────────────────────────────────────────────────── -->
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div>
+          <h1>High-performance computer algebra for <em>agents</em> and humans.</h1>
+          <p class="lede">
+            Exact symbolic mathematics in Python and Rust, built on FLINT and Arb.
+            Results carry derivation logs and Lean&nbsp;4 certificates; when Alkahest
+            can’t answer correctly, it refuses with a coded error rather than guessing.
+          </p>
 
-        <div id="panel-py" role="tabpanel" aria-labelledby="tab-py">
-          <div class="install-row">
-            <code id="pip-cmd">pip install alkahest</code>
-            <button type="button" class="copy" id="copy-pip-btn" aria-label="Copy pip install command">Copy</button>
+          <div class="install">
+            <div class="tabs" role="tablist" aria-label="Install language">
+              <button class="tab" role="tab" aria-selected="true" aria-controls="inst-py" id="inst-tab-py">Python</button>
+              <button class="tab" role="tab" aria-selected="false" aria-controls="inst-rs" id="inst-tab-rs" tabindex="-1">Rust</button>
+            </div>
+            <div id="inst-py" role="tabpanel" aria-labelledby="inst-tab-py">
+              <div class="install-row">
+                <code>pip install alkahest</code>
+                <button class="copy" data-copy="pip install alkahest">Copy</button>
+              </div>
+              <p class="install-meta">Python 3.9–3.13 · Linux x86_64, macOS arm64, Windows x86_64 · <a href="https://pypi.org/project/alkahest/">PyPI</a></p>
+            </div>
+            <div id="inst-rs" role="tabpanel" aria-labelledby="inst-tab-rs" hidden>
+              <div class="install-row">
+                <code>cargo add alkahest-cas</code>
+                <button class="copy" data-copy="cargo add alkahest-cas">Copy</button>
+              </div>
+              <p class="install-meta">Needs FLINT ≥ 3.3, GMP and MPFR at build time · <a href="https://crates.io/crates/alkahest-cas">crates.io</a> · <a href="https://docs.rs/alkahest-cas">docs.rs</a></p>
+            </div>
           </div>
-          <p id="copy-pip-hint" class="hint" role="status" aria-live="polite" hidden></p>
-          <p class="install-meta">
-            Python 3.9–3.13 ·
-            <a href="https://pypi.org/project/alkahest/">PyPI</a>
-          </p>
-          <p class="install-detail">
-            Default wheels include <code>egraph</code> and <code>groebner</code>;
-            LLVM JIT and <code>parallel</code> are opt-in. On Linux x86_64, optional
-            <code>+jit</code> / <code>+full</code> wheels are on
-            <a href="https://github.com/alkahest-cas/alkahest/releases">GitHub Releases</a>.
-            See <a href="https://alkahest-cas.github.io/alkahest/getting-started.html">Getting started</a>
-            for URLs, <code>LD_LIBRARY_PATH</code>, and building from source.
-          </p>
-        </div>
 
-        <div id="panel-rs" role="tabpanel" aria-labelledby="tab-rs" hidden>
-          <div class="install-row">
-            <code id="cargo-cmd">alkahest-cas = "3"</code>
-            <button type="button" class="copy" id="copy-cargo-btn" aria-label="Copy Cargo dependency">Copy</button>
+          <div class="hero-ctas">
+            <a class="btn primary" href="/docs/#quickstart">Quickstart →</a>
+            <a class="btn" href="/playground/">Try it in the browser</a>
           </div>
-          <p id="copy-cargo-hint" class="hint" role="status" aria-live="polite" hidden></p>
-          <p class="install-meta">
-            Rust (stable ≥ 1.76) ·
-            <a href="https://crates.io/crates/alkahest-cas">crates.io</a> ·
-            <a href="https://docs.rs/alkahest-cas">docs.rs</a>
-          </p>
-          <p class="install-detail">
-            Requires <code>libflint-dev</code> / <code>libgmp-dev</code> / <code>libmpfr-dev</code>
-            (system packages) at build time. <code>groebner</code> is included by default;
-            <code>egraph</code>, <code>parallel</code>, and <code>jit</code> (LLVM 15) are opt-in.
-            See the <a href="https://alkahest-cas.github.io/alkahest/getting-started.html">Getting started</a>
-            guide for full details.
-          </p>
         </div>
 
-        <nav class="links" aria-label="Project links" style="margin-top:0.875rem">
-          <a href="https://alkahest-cas.github.io/alkahest/">Documentation</a>
-          <span class="dot" aria-hidden="true"></span>
-          <a href="https://alkahest-cas.github.io/playground/">Playground</a>
-          <span class="dot" aria-hidden="true"></span>
-          <a href="https://github.com/alkahest-cas/alkahest">GitHub</a>
-          <span class="dot" aria-hidden="true"></span>
-          <a href="https://app.primeintellect.ai/dashboard/environments/alkahest/alkahest-symbolic-integration">RL environment</a>
-        </nav>
-      </section>
+        <div class="card bench-card" id="hero-bench" aria-label="Benchmarks">
+          <div class="tabs" role="tablist" aria-label="Benchmark suite"></div>
+          <div class="bench-body"><div class="bench-empty">Loading benchmarks…</div></div>
+          <div class="bench-foot"><span class="bench-meta"></span><a href="#performance">All benchmarks ↓</a></div>
+        </div>
+      </div>
+    </section>
 
-      <section class="examples" aria-label="Code examples">
-        <article class="example">
-          <h3 class="example-title">Simplification you can audit</h3>
-          <p class="example-desc">
-            Every rewrite records the rule applied — not just the final expression.
-          </p>
-          <pre class="code-block" tabindex="0"><code>from alkahest import ExprPool, simplify
+    <!-- ── Features ──────────────────────────────────────────────────── -->
+    <section class="block" id="features">
+      <div class="wrap">
+        <p class="eyebrow">Capabilities</p>
+        <h2 class="h2">A full CAS, and the machinery to run it fast.</h2>
+        <p class="lede">From Risch integration to Gröbner bases to curvature tensors — with native code generation for when you need numbers out the other end.</p>
 
-pool = ExprPool()
-x = pool.symbol("x")
-r = simplify(x + pool.integer(0))
-print(r.value)   # x
-print(r.steps)   # e.g. [RewriteStep(rule='add_zero', ...)]</code></pre>
-        </article>
+        <div class="feature-groups">
+          <div>
+            <h3 class="group-title">Mathematics <span>exact, symbolic, rigorous</span></h3>
+            <div class="grid-3">
+              <article class="card feat">
+                <h3>Calculus</h3>
+                <p>Differentiation, Risch integration (definite and indefinite), Gruntz limits, series and Laurent expansions, residues.</p>
+                <div class="api"><code>diff</code><code>integrate</code><code>limit</code><code>series</code></div>
+                <a class="more" href="/docs/guide/calculus/">Calculus guide →</a>
+              </article>
+              <article class="card feat">
+                <h3>Solving</h3>
+                <p>Polynomial systems through an F4 Gröbner core, triangular and primary decomposition, real root isolation, CAD, numerical fallback.</p>
+                <div class="api"><code>solve</code><code>real_roots</code><code>GroebnerBasis</code><code>cad_project</code></div>
+                <a class="more" href="/docs/guide/solving/">Solving guide →</a>
+              </article>
+              <article class="card feat">
+                <h3>Polynomials &amp; number theory</h3>
+                <p>FLINT-backed factorisation over ℤ and 𝔽ₚ, sparse GCD, resultants, Diophantine equations, LLL, PSLQ, and an optional PARI bridge.</p>
+                <div class="api"><code>UniPoly.factor_z</code><code>resultant</code><code>diophantine</code><code>guess_relation</code></div>
+                <a class="more" href="/docs/guide/pari/">Number theory →</a>
+              </article>
+              <article class="card feat">
+                <h3>Sums &amp; recurrences</h3>
+                <p>Gosper and Zeilberger creative telescoping, WZ pair verification, closed-form definite sums, linear recurrence solving.</p>
+                <div class="api"><code>sum_definite</code><code>zeilberger</code><code>rsolve</code></div>
+                <a class="more" href="/docs/guide/telescoping/">Telescoping →</a>
+              </article>
+              <article class="card feat">
+                <h3>ODEs, DAEs &amp; controls</h3>
+                <p>Symbolic ODE solving, Σ-method index reduction for DAEs, sensitivities, exact Riccati/Lyapunov, transfer functions and state space.</p>
+                <div class="api"><code>ODE</code><code>pantelides</code><code>rosenfeld_groebner</code><code>lqr</code></div>
+                <a class="more" href="/docs/guide/ode-dae/">ODEs and DAEs →</a>
+              </article>
+              <article class="card feat">
+                <h3>Special functions &amp; tensors</h3>
+                <p>Gamma, zeta, Bessel, hypergeometric and elliptic families with asymptotics; metric → Ricci/Riemann curvature in exact arithmetic.</p>
+                <div class="api"><code>zeta</code><code>bessel_j</code><code>hyper</code><code>tensor</code></div>
+                <a class="more" href="/docs/guide/specfun/">Special functions →</a>
+              </article>
+            </div>
+          </div>
 
-        <article class="example">
-          <h3 class="example-title">Dense univariate polynomials (FLINT)</h3>
-          <p class="example-desc">
-            GCD and exact division stay in a FLINT-backed representation for heavy
-            polynomial work.
-          </p>
-          <pre class="code-block" tabindex="0"><code>from alkahest import ExprPool, UniPoly
+          <div>
+            <h3 class="group-title">Infrastructure <span>from expression to machine code</span></h3>
+            <div class="grid-3">
+              <article class="card feat">
+                <h3>JIT compilation</h3>
+                <p>Compile any expression to native code with Cranelift (in every wheel) or LLVM, and evaluate it over NumPy arrays at array speed.</p>
+                <div class="api"><code>compile_expr</code><code>numpy_eval</code><code>numpy_eval_par</code></div>
+                <a class="more" href="/docs/guide/codegen/">Code generation →</a>
+              </article>
+              <article class="card feat">
+                <h3>GPU &amp; export</h3>
+                <p>NVPTX kernels for CUDA, C99 with common-subexpression elimination, StableHLO/MLIR for XLA-style pipelines, JAX interop.</p>
+                <div class="api"><code>emit_c_vec</code><code>to_jax</code><code>to_stablehlo</code></div>
+                <a class="more" href="/docs/guide/gpu/">GPU guide →</a>
+              </article>
+              <article class="card feat">
+                <h3>E-graph simplification</h3>
+                <p>Equality saturation via egglog alongside a domain-aware rule engine, so rewriting explores alternatives instead of committing early.</p>
+                <div class="api"><code>simplify_egraph</code><code>simplify_trig</code><code>make_rule</code></div>
+                <a class="more" href="/docs/guide/egraph/">E-graphs →</a>
+              </article>
+              <article class="card feat">
+                <h3>Rigorous numerics</h3>
+                <p>Arb ball arithmetic: every float carries a proven error bound. Validated ODE enclosures and certified signs over boxes.</p>
+                <div class="api"><code>ArbBall</code><code>interval_eval</code><code>verified_ode</code></div>
+                <a class="more" href="/docs/guide/ball-arithmetic/">Ball arithmetic →</a>
+              </article>
+              <article class="card feat">
+                <h3>Budgets &amp; cancellation</h3>
+                <p>Wall-clock, step and memory budgets on expensive paths, so a single bad candidate can’t stall an unattended search loop.</p>
+                <div class="api"><code>Budget</code><code>context</code><code>batch_map</code></div>
+                <a class="more" href="/docs/guide/budgets/">Budgets →</a>
+              </article>
+              <article class="card feat">
+                <h3>Rust core, Python surface</h3>
+                <p>A hash-consed Rust kernel with explicit representations (<code>Expr</code>, <code>UniPoly</code>, <code>MultiPoly</code>, <code>ArbBall</code>) and multi-core paths via Rayon.</p>
+                <div class="api"><code>ExprPool</code><code>UniPoly</code><code>MultiPoly</code></div>
+                <a class="more" href="/docs/guide/representations/">Representations →</a>
+              </article>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
 
-pool = ExprPool()
-x = pool.symbol("x")
-p = UniPoly.from_symbolic(x**3 + pool.integer(-1), x)
-q = UniPoly.from_symbolic(x + pool.integer(-1), x)
-print(p.gcd(q))   # x - 1
-print(p // q)     # x^2 + x + 1</code></pre>
-        </article>
+    <!-- ── Verification ──────────────────────────────────────────────── -->
+    <section class="block" id="verification">
+      <div class="wrap">
+        <p class="eyebrow">Built for agents</p>
+        <h2 class="h2">Answers an agent can check — or an honest refusal.</h2>
+        <p class="lede">An LLM can’t tell a plausible wrong answer from a right one. Alkahest is designed so it doesn’t have to take the result on trust.</p>
 
-        <article class="example">
-          <h3 class="example-title">Plotting — no bundled dependency</h3>
-          <p class="example-desc">
-            alkahest detects what you have installed (Matplotlib or Plotly) and
-            calls into it. A dependency-free SVG renderer is built into the
-            Rust kernel for zero-install use.
-          </p>
-          <pre class="code-block" tabindex="0"><code>import alkahest as ak
+        <div class="verify-grid">
+          <article class="card vcard">
+            <h3>Lean 4 certificates <span class="pill ok">certified</span></h3>
+            <p>Supported results export a Lean&nbsp;4 + Mathlib proof that typechecks independently of Alkahest. The boundary is generated, not hand-maintained: <code>certifiable()</code> tells you up front whether a shape will certify.</p>
+            <div class="code"><div class="label">r = ak.integrate(x**2, x, 0, 1); print(r.certificate)</div><pre><code><span class="tok-k">example</span> : ∫ x in (0:ℝ)..(1:ℝ), x ^ 2 = 1 ^ 3 / 3 - 0 ^ 3 / 3 := <span class="tok-k">by</span>
+  <span class="tok-k">have</span> hderiv : ∀ x ∈ Set.uIcc 0 1,
+      HasDerivAt (<span class="tok-k">fun</span> x =&gt; x ^ 3 / 3) (x ^ 2) x := <span class="tok-k">by</span>
+    intro x _
+    simpa using (hasDerivAt_pow 3 x).div_const 3
+  <span class="tok-k">have</span> hint := (continuous_pow 2).intervalIntegrable _ _
+  exact intervalIntegral.integral_eq_sub_of_hasDerivAt hderiv hint</code></pre></div>
+            <p class="stat"><strong>119</strong> certified shape classes in the <a href="/docs/guide/certificate-coverage/">coverage ledger</a>; every corpus certificate is typechecked against Mathlib in CI.</p>
+          </article>
 
-pool = ak.ExprPool()
-x = pool.symbol("x")
+          <article class="card vcard">
+            <h3>Refuses instead of guessing <span class="pill warn">E-INT-004</span></h3>
+            <p>Every error has a stable code, a message that says why, and a remediation hint. A non-elementary integral is a proof of non-existence, not a timeout.</p>
+            <div class="code"><div class="label">ak.integrate(ak.exp(x**2), x)</div><pre><code>IntegrationError: [E-INT-004] integrate: no elementary
+antiderivative exists: the Risch DE v' + 2x·v = 1 has no
+rational solution; ∫ exp(x²) dx is not an elementary function
+<span class="tok-c">Remediation: use a numeric integrator …</span></code></pre></div>
+            <p class="stat">Wall-clock, step and memory <strong>budgets</strong> raise <code>E-BUDGET-*</code> instead of hanging an agent loop.</p>
+          </article>
 
-# Curve — uses matplotlib by default, or plotly if specified
-ak.plot(ak.sin(x), x, (-6.28, 6.28))
-ak.plot(ak.sin(x), x, (-6.28, 6.28), backend="plotly")
+          <article class="card vcard">
+            <h3>Kani-verified kernels <span class="pill ok">model-checked</span></h3>
+            <p>The integer and modular-arithmetic kernels underneath — <code>mul_mod</code>, <code>pow_mod</code>, CRT steps, modular inverses, integer square roots, bytecode bounds in the evaluator — carry Kani proof harnesses checked over their full input width.</p>
+            <div class="code"><div class="label">alkahest-core/src/modular/mod.rs</div><pre><code>#[kani::proof]
+<span class="tok-k">fn</span> mul_mod_in_range_full_width() {
+    <span class="tok-k">let</span> (a, b, m): (u64, u64, u64) = kani::any();
+    kani::assume(m &gt; 0);
+    <span class="tok-k">assert!</span>(mul_mod(a, b, m) &lt; m);
+}</code></pre></div>
+            <p class="stat"><strong>50</strong> proof harnesses across 16 modules, run in CI.</p>
+          </article>
 
-# 2-D surface
-y = pool.symbol("y")
-ak.plot3d(ak.sin(x) * ak.cos(y), x, y, (-5, 5), (-5, 5))
+          <article class="card vcard">
+            <h3>Debuggable by construction</h3>
+            <p>Every transforming call returns a derivation log of the rewrite rules it applied, plus a versioned JSON envelope with a verification status — cheap to log, easy to diff when a run goes wrong.</p>
+            <div class="code"><div class="label">ak.integrate(x * ak.cos(x), x).to_dict(mode="compact")</div><pre><code>{ <span class="tok-s">"value"</span>: <span class="tok-s">"cos(x) + x*sin(x)"</span>,
+  <span class="tok-s">"verification"</span>: { <span class="tok-s">"status"</span>: <span class="tok-s">"exactly_verified"</span> },
+  <span class="tok-s">"certificate_status"</span>: { <span class="tok-s">"certifiable"</span>: true },
+  <span class="tok-s">"steps"</span>: [ { <span class="tok-s">"r"</span>: <span class="tok-s">"int_poly_trig_ibp"</span> }, … ] }</code></pre></div>
+            <p class="stat">Plus <code>crosscheck</code> for differential testing against another CAS, and claim graphs for session provenance.</p>
+          </article>
+        </div>
+      </div>
+    </section>
 
-# Standalone SVG — no plotting library needed
-svg = ak.plot_svg(ak.sin(x), x, (-6, 6))</code></pre>
-        </article>
+    <!-- ── Performance ───────────────────────────────────────────────── -->
+    <section class="block" id="performance">
+      <div class="wrap">
+        <div class="perf-head">
+          <div>
+            <p class="eyebrow">Performance</p>
+            <h2 class="h2">Measured against the systems people actually use.</h2>
+            <p class="lede">Median wall time on realistic workloads, same machine, every answer checked for correctness. Losses are included.</p>
+          </div>
+        </div>
+        <div class="perf-tables" id="perf-tables"></div>
+        <p class="method" id="perf-method"></p>
+      </div>
+    </section>
+  </main>
 
-        <article class="example">
-          <h3 class="example-title">Use the Rust kernel directly</h3>
-          <p class="example-desc">
-            <code>alkahest-cas</code> is a native Rust crate — embed the CAS in
-            your own library or CLI without a Python runtime.
-          </p>
-          <pre class="code-block" tabindex="0"><code>// Cargo.toml: alkahest-cas = "3"
-use alkahest_cas::{ExprPool, diff, simplify, render_latex, parse};
-use alkahest_cas::kernel::Domain;
-use std::collections::HashMap;
+  <footer>
+    <div class="wrap">
+      <div class="foot-top">
+        <p>Built by <a href="https://areggevorgyan.github.io/">Areg</a>.</p>
+        <p>Contact: <a href="mailto:areg@umd.edu">areg@umd.edu</a></p>
+      </div>
+      <div class="foot-links">
+        <div>
+          <h4>Product</h4>
+          <ul>
+            <li><a href="/docs/">Docs</a></li>
+            <li><a href="/docs/#quickstart">Quickstart</a></li>
+            <li><a href="/playground/">Playground</a></li>
+            <li><a href="/agent/">Agent</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Install</h4>
+          <ul>
+            <li><a href="https://pypi.org/project/alkahest/">PyPI</a></li>
+            <li><a href="https://crates.io/crates/alkahest-cas">crates.io</a></li>
+            <li><a href="https://docs.rs/alkahest-cas">docs.rs</a></li>
+            <li><a href="https://github.com/alkahest-cas/alkahest/releases">Releases</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>Project</h4>
+          <ul>
+            <li><a href="https://github.com/alkahest-cas/alkahest">GitHub</a></li>
+            <li><a href="https://github.com/alkahest-cas/alkahest/blob/main/CHANGELOG.md">Changelog</a></li>
+            <li><a href="https://github.com/alkahest-cas/alkahest/issues">Report a bug</a></li>
+            <li><a href="https://github.com/alkahest-cas/alkahest/blob/main/CONTRIBUTING.md">Contributing</a></li>
+          </ul>
+        </div>
+        <div>
+          <h4>More</h4>
+          <ul>
+            <li><a href="#features">Capabilities</a></li>
+            <li><a href="#verification">Verification</a></li>
+            <li><a href="#performance">Benchmarks</a></li>
+            <li><a href="https://app.primeintellect.ai/dashboard/environments/alkahest/alkahest-symbolic-integration">RL environment</a></li>
+          </ul>
+        </div>
+      </div>
+      <div class="bigword" aria-hidden="true">alkahest</div>
+    </div>
+  </footer>
 
-fn main() {
-    let pool = ExprPool::new();
-    let x = pool.symbol("x", Domain::Real);
-    let mut syms = HashMap::from([("x".to_owned(), x)]);
-
-    // parse from a string
-    let expr = parse("sin(x)^2 + cos(x)^2", &pool, &mut syms).unwrap();
-
-    // differentiate
-    let d = diff(expr, x, &pool).unwrap();
-    println!("{}", render_latex(d.value, &pool));
-}</code></pre>
-        </article>
-      </section>
-    </main>
-    <footer class="site-footer shell">
-      <p>
-        built by
-        <a href="https://areggevorgyan.github.io/">Areg</a>
-      </p>
-    </footer>
-    <script>
-      // Copy buttons
-      function makeCopy(btnId, hintId, textFn) {
-        const btn = document.getElementById(btnId);
-        const hint = document.getElementById(hintId);
-        if (!btn) return;
-        btn.addEventListener("click", async () => {
-          try {
-            await navigator.clipboard.writeText(textFn());
-            hint.hidden = false;
-            hint.textContent = "Copied to clipboard.";
-          } catch {
-            hint.hidden = false;
-            hint.textContent = "Copy failed — select and copy manually.";
-          }
-        });
-      }
-      makeCopy("copy-pip-btn", "copy-pip-hint", () => document.getElementById("pip-cmd").textContent);
-      makeCopy("copy-cargo-btn", "copy-cargo-hint", () => document.getElementById("cargo-cmd").textContent);
-
-      // Language tabs
-      const tabs = document.querySelectorAll(".lang-tab");
-      tabs.forEach(tab => {
-        tab.addEventListener("click", () => {
-          tabs.forEach(t => {
-            t.setAttribute("aria-selected", "false");
-            document.getElementById(t.getAttribute("aria-controls")).hidden = true;
-          });
-          tab.setAttribute("aria-selected", "true");
-          document.getElementById(tab.getAttribute("aria-controls")).hidden = false;
-        });
-      });
-    </script>
-  </body>
+  <script src="/app.js" defer></script>
+</body>
 </html>
