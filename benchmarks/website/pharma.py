@@ -216,8 +216,8 @@ AUC = Case(
     },
     reference=_auc_ref,
     tol=1e-9,
-    note="A small problem: every system answers in well under a second; the gap is per-call "
-    "overhead of the integrator.",
+    note="A small problem (two closed-form integrals); the differences are integrator overhead, "
+    "not algorithmic scaling. Mathematica is timed with Integrate[..., Assumptions -> ...].",
 )
 
 # ---------------------------------------------------------------------------
