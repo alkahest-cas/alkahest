@@ -248,6 +248,39 @@ them.
 
 ---
 
+## Landing-page benchmarks (`benchmarks/website/`)
+
+The numbers on the project landing page come from `benchmarks/website/`, a
+separate suite built for publication rather than regression tracking. It
+compares Alkahest with SymPy, SymEngine, NumPy, mpmath and Mathematica on
+practitioner workloads in six areas: core CAS, pharma/PK-PD,
+engineering/robotics, physics, finance, and JIT/numeric.
+
+Each (case, system) pair runs in its own process with a per-run timeout.
+Inputs are rebuilt and caches cleared before every run, and one warm-up run is
+discarded. The reported value is the median of the timed runs. Every answer is
+checked against an independent reference (exact values, mpmath quadrature or
+differentiation, closed forms). An answer that is wrong or incomplete is marked
+as such and never counts as a win. Losses are kept.
+
+```bash
+python benchmarks/website/run_all.py                    # run everything, then render
+python benchmarks/website/run_all.py --cases bs_grid_1e6 --systems sympy   # re-measure + merge
+python benchmarks/website/run_all.py --render-only      # rebuild outputs from raw_results.json
+```
+
+Outputs:
+
+- `website/src/data/benchmarks.json`: the data the landing page renders.
+- `benchmarks/website/RESULTS.md`: every number, the runs, input sizes,
+  versions, the machine, and caveats.
+- `benchmarks/website/raw_results.json`: raw timings and fingerprints.
+
+See [`benchmarks/website/RESULTS.md`](benchmarks/website/RESULTS.md) for the
+current results and for how to reproduce them.
+
+---
+
 ## Profiling beyond benchmarks
 
 ### Flame graph (Linux)
