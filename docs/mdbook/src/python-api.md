@@ -1,10 +1,10 @@
 # Python API reference
 
-The Sphinx-generated Python API is published alongside this guide:
+The generated Python API reference is published alongside this guide:
 
-**[Open the Python API documentation](https://alkahest-cas.github.io/alkahest/api/)**
+**[Open the Python API documentation](https://alkahest-cas.github.io/docs/api/)**
 
-It includes `ExprPool`, simplification, calculus, polynomials, numerics, transforms, matrices, ODE/DAE, solvers, codegen, error types, and the [search / workload](https://alkahest-cas.github.io/alkahest/api/api/workload.html) surface (`Budget`, `batch_map`, `DerivedResult.to_dict`, …).
+It includes `ExprPool`, simplification, calculus, polynomials, numerics, transforms, matrices, ODE/DAE, solvers, codegen, error types, and the [search / workload](https://alkahest-cas.github.io/docs/api/) surface (`Budget`, `batch_map`, `DerivedResult.to_dict`, …).
 
 Conceptual chapters for agent-facing plumbing:
 

@@ -1,7 +1,7 @@
 # Alkahest Documentation
 
 Published guides (including **install**: PyPI default wheel vs optional ``+jit`` / ``+full`` Linux
-releases, and building from source) live at https://alkahest-cas.github.io/alkahest/ — start at
+releases, and building from source) live at https://alkahest-cas.github.io/docs/ — start at
 *Getting started*.
 
 ## Design RFCs

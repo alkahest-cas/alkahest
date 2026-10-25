@@ -8,7 +8,7 @@ AI agents must follow [`AGENTS.md`](AGENTS.md) instructions.
 
 ## Setup
 
-End-user install commands (PyPI vs optional `+jit` / `+full` wheels, from source) are in [`README.md`](README.md) and the [**Getting started**](https://alkahest-cas.github.io/alkahest/getting-started.html) chapter of the docs.
+End-user install commands (PyPI vs optional `+jit` / `+full` wheels, from source) are in [`README.md`](README.md) and the [**Getting started**](https://alkahest-cas.github.io/docs/guide/getting-started/) chapter of the docs.
 
 ```bash
 # Prerequisites: Rust (stable + nightly), Python 3.9–3.13, uv, LLVM 21, FLINT (see README § Install).

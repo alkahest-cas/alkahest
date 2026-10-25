@@ -3,7 +3,7 @@
 <h3 align="center">
   <a href="https://pypi.org/project/alkahest/">PyPI</a> •
   <a href="https://crates.io/crates/alkahest-cas">crates.io</a> •
-  <a href="https://alkahest-cas.github.io/alkahest/">Docs</a> •
+  <a href="https://alkahest-cas.github.io/docs/">Docs</a> •
   <a href="https://alkahest-cas.github.io/">Website</a> •
   <a href="https://app.primeintellect.ai/dashboard/environments/alkahest/alkahest-symbolic-integration">RL environment</a> •
   <a href="https://alkahest-cas.github.io/playground/">Demo</a>
@@ -44,7 +44,7 @@ pip install alkahest
 pip install "alkahest[rl]"   # RL environments; Python >= 3.10
 ```
 
-Rust users: `alkahest-cas = "2"` — see [Rust crate](#rust-crate).
+Rust users: `cargo add alkahest-cas` — see [Rust crate](#rust-crate).
 
 Default wheels are batteries-included: e-graph simplification, the Gröbner solver (so `alkahest.solve`, Diophantine, and homotopy work out of the box), the pure-Rust **Cranelift** CPU JIT with no system LLVM required, and **`parallel`** — the Rayon-backed multi-core paths (`numpy_eval_par`, `simplify_par`, parallel F4 reduction, sharded `ExprPool`). They do **not** include the **LLVM** JIT; for that, use a **PyTorch-style** opt-in **`+jit`** / **`+full`** Linux wheel from [GitHub Releases](#opt-in-linux-wheels-jit-and-full-pytorch-style), not the default PyPI resolver path.
 
@@ -255,7 +255,7 @@ More runnable examples live in [`examples/`](examples/) — polynomials, Risch i
 | Assumptions | Domain-aware reasoning (`x > 0`, ℤ vs ℝ) with a decision procedure over quantified statements | `Assumptions` · `Domain` · `Forall` · `decide` · `satisfiable` |
 | Output | LaTeX, Unicode pretty-printing, plots (2D/3D, implicit, parametric, DAG structure) | `latex` · `unicode_str` · `plot` · `plot3d` · `plot_dag` |
 
-Full listing in the [Python API reference](https://alkahest-cas.github.io/alkahest/python-api.html).
+Full listing in the [Python API reference](https://alkahest-cas.github.io/docs/api/).
 
 ---
 
@@ -283,7 +283,7 @@ Most transforming operations (`diff`, `simplify`, `integrate`, `sum_*`, …) ret
 - `.certificate` — Lean 4 proof term, when available
 - `.to_dict()` / `.to_json()` — versioned machine-parseable envelope; use `mode="compact"` in agent loops
 
-Exceptions: `limit` returns a bare `Expr`, and `series` returns a `Series` (with its own `.polynomial` / `.order` fields). Use `.value` only on `DerivedResult`.
+Exception: `series` returns a `Series` (with its own `.polynomial` / `.order` fields). Use `.value` only on `DerivedResult`.
 
 ### Search plumbing (agent loops)
 
@@ -297,14 +297,14 @@ Exceptions: `limit` returns a bare `Expr`, and `series` returns a `Series` (with
 | Differential-test against another CAS | `alkahest.crosscheck` |
 | Hand off a discrete / mixed int-real subproblem | `alkahest.smt` |
 
-Docs: [Autoresearch / agent loops](https://alkahest-cas.github.io/alkahest/search-plumbing.html).
+Docs: [Autoresearch / agent loops](https://alkahest-cas.github.io/docs/guide/search-plumbing/).
 
 ---
 
 ## Modules for autoresearch loops
 
 Three submodules new in 3.8, aimed at unattended search. Each has its own chapter in the
-[documentation site](https://alkahest-cas.github.io/alkahest/).
+[documentation site](https://alkahest-cas.github.io/docs/).
 
 | Module | What it does |
 |---|---|
@@ -346,7 +346,7 @@ them.
   forever (~2–3.5 KB per `integrate` call) while per-call **latency stays flat** — so a
   long-running loop on one pool dies by OOM with no slowdown to warn you first. Use **one
   pool per problem** and carry `to_dict()` envelopes, not live `Expr` handles.
-  [Details](https://alkahest-cas.github.io/alkahest/budgets.html#exprpool-never-reclaims).
+  [Details](https://alkahest-cas.github.io/docs/guide/budgets/#exprpool-never-reclaims).
 - **`wall_ms` is cooperative and its granularity is one primitive operation.** A call
   stops at the first checkpoint after the deadline. Past a certain degree that operation
   is a FLINT call, which no cooperative mechanism can interrupt — a 300 ms budget on a
@@ -372,7 +372,7 @@ them.
   `interval_eval` returns an unbounded ball — but a principal-branch evaluator (SymPy,
   NumPy) returns a confident number that is *not* an eigenvalue. Evaluate inside Alkahest
   before exporting a radical expression to another tool.
-  [Details](https://alkahest-cas.github.io/alkahest/interop.html#the-interop-trap-casus-irreducibilis-cube-roots).
+  [Details](https://alkahest-cas.github.io/docs/guide/interop/#the-interop-trap-casus-irreducibilis-cube-roots).
 
 ---
 
@@ -407,7 +407,7 @@ env = load_environment(difficulty_tier=0, n_train=1000, n_eval=100, adaptive=Tru
 
 ## Documentation and further reading
 
-- [**Documentation site**](https://alkahest-cas.github.io/alkahest/) — full API reference and user guide
+- [**Documentation site**](https://alkahest-cas.github.io/docs/) — full API reference and user guide
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — crates, directory layout, and key files
 - [`ROADMAP.md`](ROADMAP.md) — planned milestones
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — Rust vs Python layer guide
