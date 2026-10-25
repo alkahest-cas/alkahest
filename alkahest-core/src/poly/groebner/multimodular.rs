@@ -279,6 +279,9 @@ pub(crate) struct Lifter {
     groups: Vec<Group>,
     /// A lift of `groups[.0]` waiting for one more agreeing prime.
     candidate: Option<(usize, Vec<Rational>)>,
+    /// The group of the lift last returned by [`Self::add`], pending
+    /// verification.
+    proposed: Option<usize>,
     /// The coefficient that stopped the last reconstruction.
     last_fail: usize,
 }
@@ -288,6 +291,7 @@ impl Lifter {
         Lifter {
             groups: Vec::new(),
             candidate: None,
+            proposed: None,
             last_fail: 0,
         }
     }
@@ -295,7 +299,7 @@ impl Lifter {
     /// Discard the pending candidate (it failed verification): it will only
     /// be proposed again with more primes behind it.
     pub(crate) fn reject_candidate(&mut self) {
-        if let Some((g, _)) = self.candidate.take() {
+        if let Some(g) = self.proposed.take() {
             let grp = &mut self.groups[g];
             grp.next_try = grp.n_primes * 2;
         }
@@ -328,6 +332,7 @@ impl Lifter {
                     .all(|(x, &c)| rational_mod_p(x, pr) == Some(c));
                 if agrees {
                     let (_, lift) = self.candidate.take().expect("candidate");
+                    self.proposed = Some(gi);
                     let shape = self.groups[gi].shape.clone();
                     // Keep the image too, in case the lift is rejected.
                     self.crt(gi, &img, pr);
@@ -1221,6 +1226,26 @@ pub(crate) mod tests {
             let r = (Integer::from(n) * dinv).modulo(&m);
             assert_eq!(rational_reconstruction(&r, &m, &bound), Some(x));
         }
+    }
+
+    /// A lift that fails verification is not proposed again until the
+    /// group has twice the primes.
+    #[test]
+    fn rejected_lift_waits_for_more_primes() {
+        let third = Rational::from((1, 3));
+        let img = |pr: Prime| Image {
+            shape: vec![vec![0]],
+            coefs: vec![rational_mod_p(&third, pr).unwrap()],
+        };
+        let mut lifter = Lifter::new();
+        let mut ps = RandomPrimes::new();
+        let (p1, p2) = (ps.next().unwrap(), ps.next().unwrap());
+        assert!(lifter.add(img(p1), p1).is_none());
+        let (_, lift) = lifter.add(img(p2), p2).expect("second prime agrees");
+        assert_eq!(lift, vec![third]);
+        lifter.reject_candidate();
+        assert_eq!(lifter.groups[0].next_try, 2 * lifter.groups[0].n_primes);
+        assert!(lifter.proposed.is_none());
     }
 
     #[test]
