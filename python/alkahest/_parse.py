@@ -394,10 +394,11 @@ class _Parser:
             terms = [left]
             terms.extend(r if k == "+" else -r for k, r in ops)
             try:
-                # Not `add`: the operators fold `a - a` to `0` and add two
-                # exact literals, and `_sum_left_fold` builds exactly the
-                # node their left fold does (see its docstring).
-                return self._pool._sum_left_fold(terms)
+                # Structural, on purpose: the operators also fold `a - a` to
+                # `0` and add two exact literals, but the parser reads what
+                # the text says, so `parse(str(e)) == e` holds for an
+                # expression built without those folds (`(0 + 0 + x)`).
+                return self._pool.add(terms)
             except _PoolError:
                 # Operands from a caller-supplied symbol map that live in a
                 # different pool: the fold below reproduces the operators'

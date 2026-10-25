@@ -201,6 +201,10 @@ def test_x_minus_x_folds_at_construction():
     assert (x + 1) - (x + 1) == I(0)
     oo = P.pos_infinity()
     assert oo - oo != I(0), "oo - oo is indeterminate, not 0"
+    # The parser reads structure (so `parse(str(e)) == e`); `simplify` folds.
+    parsed = ak.parse("x - x", P)
+    assert parsed != I(0)
+    assert S(parsed) == I(0)
 
 
 def test_division_by_a_zero_that_appears_on_simplification():

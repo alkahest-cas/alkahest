@@ -151,10 +151,14 @@ def _random_ast(rng: random.Random, depth: int):
         acc = parts[0][1](env)
         for o, (_s, b) in zip(chosen, parts[1:]):
             rhs = b(env)
+            # The structural fold (`pool.add`), which is what the parser
+            # reads text as. The `+`/`-` operators additionally fold `a - a`
+            # and two exact literals as they are written; the parser does not,
+            # so that `parse(str(e)) == e` (`tests/test_constant_roundtrip.py`).
             if o == "+":
-                acc = acc + rhs
+                acc = env["pool"].add([acc, rhs])
             elif o == "-":
-                acc = acc - rhs
+                acc = env["pool"].add([acc, -rhs])
             elif o == "*":
                 acc = acc * rhs
             else:
