@@ -826,47 +826,6 @@ fn negated_term(pool: &ExprPool, e: ExprId) -> Option<ExprId> {
     })
 }
 
-/// `build_sum` folded left over `ids`, interning only what the fold would
-/// keep: while the running sum is one term each step is a real `build_sum`;
-/// once it is an `Add` of several terms it can only fold again by a later
-/// term being its exact negation, so the terms are collected and the `Add`
-/// interned once (`pool.add` flattens and sorts, so this is the fold's node).
-fn sum_left_fold(pool: &ExprPool, ids: &[ExprId]) -> ExprId {
-    let Some((&first, rest)) = ids.split_first() else {
-        return pool.integer(0_i32);
-    };
-    let mut single: Option<ExprId> = Some(first);
-    let mut terms: Vec<ExprId> = Vec::new();
-    for &r in rest {
-        match single {
-            Some(a) => {
-                let v = build_sum(pool, a, r);
-                if pool.with(v, |d| matches!(d, ExprData::Add(_))) && v == pool.add(vec![a, r]) {
-                    single = None;
-                    terms = vec![a, r];
-                } else {
-                    single = Some(v);
-                }
-            }
-            None => {
-                let cancels_acc = negated_term(pool, r)
-                    .filter(|&t| pool.with(t, |d| matches!(d, ExprData::Add(_))))
-                    .is_some_and(|t| {
-                        t == pool.add(terms.clone())
-                            && alkahest_core::self_difference_is_zero(t, pool)
-                    });
-                if cancels_acc {
-                    single = Some(pool.integer(0_i32));
-                    terms.clear();
-                } else {
-                    terms.push(r);
-                }
-            }
-        }
-    }
-    single.unwrap_or_else(|| pool.add(terms))
-}
-
 fn expr_is_literal_zero(pool: &ExprPool, id: ExprId) -> bool {
     match pool.get(id) {
         ExprData::Integer(n) => n.0.is_zero(),
@@ -2188,18 +2147,6 @@ impl PyExprPool {
     /// The fold is therefore ``mul([mul(args[..k]), args[k..]...])``, which is
     /// what this builds; the inner product is the one intermediate the fold
     /// would also have interned.
-    /// The node ``((t0 + t1) + t2) + ...`` — exactly what folding the terms
-    /// with ``+`` (see `build_sum`) interns — without the ``n - 1``
-    /// intermediate sums. Private: the parser's bulk path for a ``+``/``-``
-    /// run, so ``parse("1/3 + 1/6")`` and ``parse("x - x")`` land on the node
-    /// the operators build.
-    fn _sum_left_fold(slf: PyRef<'_, Self>, args: Vec<PyExpr>) -> PyResult<PyExpr> {
-        let ids = own_pool_ids(&slf, &args, "_sum_left_fold")?;
-        let id = sum_left_fold(&slf.inner, &ids);
-        let pool: Py<PyExprPool> = slf.into();
-        Ok(PyExpr { id, pool })
-    }
-
     fn _mul_left_fold(slf: PyRef<'_, Self>, args: Vec<PyExpr>) -> PyResult<PyExpr> {
         let mut ids = own_pool_ids(&slf, &args, "_mul_left_fold")?;
         let pool_inner = &slf.inner;
@@ -4539,6 +4486,24 @@ fn py_simplify(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedResult>
         py.allow_threads(|| alkahest_core::simplify_full(id, pool))
     };
     reject_division_by_zero(py, &expr, derived.value)?;
+    let pool_py = expr.pool.clone_ref(py);
+    Ok(make_derived_result(py, derived, pool_py, None))
+}
+
+/// `alkahest.alkahest._simplify_core(expr)` — the rule engine alone, without
+/// the domain passes `simplify` adds (and without its division-by-zero
+/// refusal). Private: for library code that uses `simplify` as a *normaliser*
+/// and relies on its spelling (e.g. `controls` after `cancel`), where a
+/// smaller but differently factored form is not wanted.
+#[pyfunction]
+#[pyo3(name = "_simplify_core")]
+fn py_simplify_core(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedResult> {
+    let derived = {
+        let pool = expr.pool.borrow(py);
+        guard_depth(&pool.inner, expr.id)?;
+        let (id, pool) = (expr.id, &pool.inner);
+        py.allow_threads(|| core_simplify(id, pool))
+    };
     let pool_py = expr.pool.clone_ref(py);
     Ok(make_derived_result(py, derived, pool_py, None))
 }
@@ -22605,6 +22570,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     matgroup::register(m)?;
     m.add_function(wrap_pyfunction!(py_derived_result_context_simplify, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify, m)?)?;
+    m.add_function(wrap_pyfunction!(py_simplify_core, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify_egraph, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify_egraph_with, m)?)?;
     m.add_class::<PyEgraphConfig>()?;

@@ -200,22 +200,18 @@ fn scan(expr: ExprId, pool: &ExprPool) -> Triggers {
                 ExprData::Func { name, args } => {
                     match name.as_str() {
                         "tan" | "tanh" => t.trig_other = true,
-                        "exp" if args.len() == 1 => {
-                            if unary_arg(args[0], "log", pool).is_some() {
-                                t.exp_of_log = true;
-                            }
+                        "exp" if args.len() == 1 && unary_arg(args[0], "log", pool).is_some() => {
+                            t.exp_of_log = true;
                         }
-                        "log" if args.len() == 1 => {
-                            if unary_arg(args[0], "exp", pool).is_some() {
-                                t.exp_log = true;
-                            }
+                        "log" if args.len() == 1 && unary_arg(args[0], "exp", pool).is_some() => {
+                            t.exp_log = true;
                         }
-                        "sqrt" if args.len() == 1 => {
-                            if pool.with(args[0], |a| matches!(a, ExprData::Add(_)))
-                                && !symbolic(args[0], pool, &mut has_sym)
-                            {
-                                t.nested_sqrt = true;
-                            }
+                        "sqrt"
+                            if args.len() == 1
+                                && pool.with(args[0], |a| matches!(a, ExprData::Add(_)))
+                                && !symbolic(args[0], pool, &mut has_sym) =>
+                        {
+                            t.nested_sqrt = true;
                         }
                         _ => {}
                     }
@@ -996,37 +992,52 @@ pub fn simplify_full(expr: ExprId, pool: &ExprPool) -> DerivedExpr<ExprId> {
 /// exact zero, which denotes no number — searching through sums, products,
 /// powers and function arguments.
 pub fn find_division_by_zero(expr: ExprId, pool: &ExprPool) -> Option<ExprId> {
-    let mut seen = HashSet::new();
+    // A plain polynomial has no power of a literal base at all (O(1), from
+    // the pool's screening bits) — the common case on every `simplify`.
+    if pool.is_plain_polynomial(expr) {
+        return None;
+    }
+    let is_zero_literal = |e: ExprId| {
+        pool.with(e, |b| match b {
+            ExprData::Integer(n) => n.0 == 0,
+            ExprData::Rational(r) => r.0 == 0,
+            _ => false,
+        })
+    };
+    let is_negative_literal = |e: ExprId| {
+        pool.with(e, |x| match x {
+            ExprData::Integer(n) => n.0 < 0,
+            ExprData::Rational(r) => r.0 < 0,
+            _ => false,
+        })
+    };
+    let mut seen: IdMap<()> = IdMap::default();
     let mut stack = vec![expr];
     while let Some(e) = stack.pop() {
-        if !seen.insert(e) {
+        if seen.insert(e, ()).is_some() {
             continue;
         }
-        let kids = pool.with(e, |d| match d {
+        let hit = pool.with(e, |d| match d {
             ExprData::Pow { base, exp } => {
-                let zero_base = pool.with(*base, |b| match b {
-                    ExprData::Integer(n) => n.0 == 0,
-                    ExprData::Rational(r) => r.0 == 0,
-                    _ => false,
-                });
-                let neg_exp = pool.with(*exp, |x| match x {
-                    ExprData::Integer(n) => n.0 < 0,
-                    ExprData::Rational(r) => r.0 < 0,
-                    _ => false,
-                });
-                if zero_base && neg_exp {
-                    None
-                } else {
-                    Some(vec![*base, *exp])
+                if is_zero_literal(*base) && is_negative_literal(*exp) {
+                    return true;
                 }
+                stack.push(*base);
+                stack.push(*exp);
+                false
             }
-            ExprData::Add(a) | ExprData::Mul(a) => Some(a.clone()),
-            ExprData::Func { args, .. } => Some(args.clone()),
-            _ => Some(vec![]),
+            ExprData::Add(a) | ExprData::Mul(a) => {
+                stack.extend_from_slice(a);
+                false
+            }
+            ExprData::Func { args, .. } => {
+                stack.extend_from_slice(args);
+                false
+            }
+            _ => false,
         });
-        match kids {
-            None => return Some(e),
-            Some(k) => stack.extend(k),
+        if hit {
+            return Some(e);
         }
     }
     None
