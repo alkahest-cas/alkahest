@@ -63,6 +63,11 @@
     scipy: "SciPy",
   };
   const label = (r) => SYSTEM_LABEL[r.system] || r.label || r.system;
+  // A result counts only if it finished with a checked-correct answer.
+  const done = (r) => r.value != null && (r.status == null || r.status === "ok");
+  const FAIL = { timeout: "timeout", wrong: "wrong answer", incomplete: "incomplete", error: "error" };
+  const failText = (r, c) =>
+    r.status && r.status !== "timeout" ? FAIL[r.status] || r.status : `timeout${c.timeout_s ? ` > ${c.timeout_s} s` : ""}`;
   const esc = (s) =>
     String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
@@ -82,11 +87,11 @@
 
   function headline(c) {
     const me = c.results.find((r) => r.system === "alkahest");
-    if (!me || me.value == null) return null;
+    if (!me || !done(me)) return null;
     const others = c.results.filter((r) => r.system !== "alkahest");
     if (!others.length) return null;
     // Compare against the fastest competitor that finished; a timeout counts as a win.
-    const finished = others.filter((r) => r.value != null);
+    const finished = others.filter(done);
     if (!finished.length) return { text: `others time out`, loss: false };
     const best = finished.reduce((a, b) => (better(c, a.value, b.value) ? a : b));
     const ratio = c.higher_is_better ? me.value / best.value : best.value / me.value;
@@ -98,9 +103,9 @@
 
   function caseBars(c) {
     // Log scale: these span several orders of magnitude.
-    const vals = c.results.filter((r) => r.value != null && r.value > 0).map((r) => r.value);
+    const vals = c.results.filter((r) => done(r) && r.value > 0).map((r) => r.value);
     if (!vals.length) return "";
-    const hasTimeout = c.results.some((r) => r.value == null);
+    const hasTimeout = c.results.some((r) => !done(r));
     const max = Math.max(...vals, hasTimeout && c.timeout_s ? toUnit(c.timeout_s, c.unit) : 0);
     const min = Math.min(...vals);
     const lo = Math.log10(min) - 0.6;
@@ -110,17 +115,16 @@
     const rows = c.results
       .map((r) => {
         const me = r.system === "alkahest";
-        const timeout = r.value == null;
+        const timeout = !done(r);
         const width = timeout ? 100 : pct(r.value);
-        const val = timeout ? `timeout${c.timeout_s ? ` > ${c.timeout_s} s` : ""}` : fmt(r.value, c.unit);
+        const val = timeout ? failText(r, c) : fmt(r.value, c.unit);
         return `<div class="sys${me ? " me" : ""}" title="${esc(label(r))}${r.version ? " " + esc(r.version) : ""}">${esc(label(r))}</div>
           <div class="bar-track"><div class="bar${me ? " me" : ""}${timeout ? " timeout" : ""}" style="width:calc(${width}% - 84px)"></div><span class="bar-val">${esc(val)}</span></div>`;
       })
       .join("");
     return `<div class="bench-case">
-      <h4><span>${esc(c.task)}</span>${h ? `<span class="speed${h.loss ? " loss" : ""}">${esc(h.text)}</span>` : ""}</h4>
-      <div class="bars" role="img" aria-label="${esc(c.task)}: ${esc(c.results.map((r) => `${label(r)} ${r.value == null ? "timeout" : fmt(r.value, c.unit)}`).join(", "))}">${rows}</div>
-      ${c.detail ? `<p class="bench-detail">${esc(c.detail)}</p>` : ""}
+      <h4><span title="${esc(c.detail || "")}">${esc(c.task)}</span>${h ? `<span class="speed${h.loss ? " loss" : ""}">${esc(h.text)}</span>` : ""}</h4>
+      <div class="bars" role="img" aria-label="${esc(c.task)}: ${esc(c.results.map((r) => `${label(r)} ${done(r) ? fmt(r.value, c.unit) : failText(r, c)}`).join(", "))}">${rows}</div>
     </div>`;
   }
   const toUnit = (s, unit) => (unit === "s" ? s : unit === "us" || unit === "µs" ? s * 1e6 : s * 1000);
@@ -162,19 +166,19 @@
         const head = systems.map((x) => `<th>${esc(SYSTEM_LABEL[x] || x)}${versions[x] ? ` <span style="font-weight:400">${esc(versions[x])}</span>` : ""}</th>`).join("");
         const rows = s.cases
           .map((c) => {
-            const done = c.results.filter((r) => r.value != null);
-            const best = done.length ? done.reduce((a, b) => (better(c, a.value, b.value) ? a : b)).system : null;
+            const ok = c.results.filter(done);
+            const best = ok.length ? ok.reduce((a, b) => (better(c, a.value, b.value) ? a : b)).system : null;
             const cells = systems
               .map((x) => {
                 const r = c.results.find((y) => y.system === x);
                 if (!r) return `<td class="num">—</td>`;
-                const txt = r.value == null ? `timeout${c.timeout_s ? ` > ${c.timeout_s} s` : ""}` : fmt(r.value, c.unit);
+                const txt = done(r) ? fmt(r.value, c.unit) : failText(r, c);
                 const cls = ["num", x === "alkahest" ? "me" : "", x === best ? "best" : ""].join(" ");
                 return `<td class="${cls}"${r.note ? ` title="${esc(r.note)}"` : ""}>${esc(txt)}</td>`;
               })
               .join("");
             const h = headline(c);
-            return `<tr><td><span class="task">${esc(c.task)}</span>${c.detail ? `<span class="det">${esc(c.detail)}</span>` : ""}${c.note ? `<span class="det">${esc(c.note)}</span>` : ""}</td>${cells}<td class="num">${h ? esc(h.text) : ""}</td></tr>`;
+            return `<tr><td><span class="task">${esc(c.task)}</span>${c.detail ? `<span class="det">${esc(c.detail)}</span>` : ""}${c.note ? `<details class="note"><summary>Note</summary>${esc(c.note)}</details>` : ""}</td>${cells}<td class="num">${h ? esc(h.text) : ""}</td></tr>`;
           })
           .join("");
         return `<div class="perf-suite"><h3>${esc(s.label)}</h3>${s.blurb ? `<p>${esc(s.blurb)}</p>` : ""}
@@ -183,9 +187,8 @@
       .join("");
     const m = document.getElementById("perf-method");
     if (m) {
-      m.innerHTML = `Generated ${esc(data.generated || "")} on ${esc(data.machine || "one machine")}. ` +
-        `Each number is the median of repeated runs after warm-up, in a separate process per system with a timeout; ` +
-        `Mathematica is timed inside the kernel. A result only counts if it is mathematically correct. ` +
+      m.innerHTML = `Alkahest ${esc(data.alkahest_version || "")}${data.alkahest_commit ? ` (${esc(data.alkahest_commit)})` : ""}, generated ${esc(data.generated || "")} on ${esc(data.machine || "one machine")}. ` +
+        `${esc(data.methodology || "")} ` +
         `Reproduce with <code>python benchmarks/website/run_all.py</code> — ` +
         `<a href="https://github.com/alkahest-cas/alkahest/blob/main/benchmarks/website/RESULTS.md">full results and caveats</a>.`;
     }

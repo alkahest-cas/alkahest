@@ -270,6 +270,9 @@ table.perf td.num { font-family: var(--font-mono); color: var(--fg-2); }
 table.perf td.me { color: var(--fg); font-weight: 600; }
 table.perf td.best { color: var(--brand); }
 table.perf .task { color: var(--fg); font-weight: 500; }
+table.perf td:first-child { min-width: 280px; max-width: 460px; }
+table.perf details.note { font-size: 12px; color: var(--muted); margin-top: 4px; }
+table.perf details.note summary { cursor: pointer; color: var(--fg-2); }
 table.perf .det { display: block; font-size: 12px; color: var(--muted); font-weight: 400; margin-top: 2px; }
 .method { margin-top: 24px; font-size: 13px; color: var(--muted); max-width: 820px; }
 .method a { color: var(--fg-2); }
