@@ -26,7 +26,7 @@ The main stack is: Rust kernel → FLINT/Arb (polynomials, ball arithmetic) → 
 ## Highlights
 
 - **Verifiable by construction.** Every computation produces a derivation log; a meaningful subset can export Lean 4 proofs for independent verification.
-- **520× faster than SymPy** on trig-identity simplification — and 77× faster than Mathematica on the same task ([cross-CAS report](benchmarks/results/report.md)).
+- **Small symbolic tasks in microseconds**: `sin²x + cos²x` simplification takes 0.02–0.11 ms where SymPy 1.14 takes 21–29 ms (1 to 20 copies, SymPy's cache cleared per call). At these sizes this measures call overhead as much as algorithms, so see the per-size tables from `benchmarks/cas_comparison.py` ([benchmarks guide](BENCHMARKS.md)).
 - **Multimodular Gröbner bases**: F4 modulo word-size primes, lifted and verified over ℚ, then FGLM for lex — cyclic-6 in 0.04 s and katsura-7 in 0.2 s under grevlex, katsura-6 lex in 0.4 s, where SymPy 1.14 takes 48 s, > 120 s and > 120 s ([measured table](docs/mdbook/src/solving.md#performance)).
 - **GPU codegen is a routine operation, not a research project** — 16.2× over the CPU JIT on a 1M-point polynomial evaluation (NVPTX `sm_86`, RTX 3090). Requires a source build with `--features cuda`; the PyPI wheel has no GPU support ([GPU guide](docs/mdbook/src/gpu.md)).
 - **A trained RL environment.** GRPO against the CAS verifier moved `Qwen2.5-1.5B-Instruct` from 11.7% → 15.1% on elementary integrals (+29% relative) with no stored reference answers — the CAS grades every rollout, including honest refusal on non-elementary integrands.
