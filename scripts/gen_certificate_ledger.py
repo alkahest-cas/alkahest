@@ -176,7 +176,8 @@ def render_markdown(ledger: dict) -> str:
         "which primitive functions occur (`funcs`), whether they are applied to the bare "
         "variable, to an integer power of it, or to something else (`fn_arg`), what kinds "
         "of exponents appear (`pow`, `pow_base`), how factors combine (`mul`), and the "
-        "top-level form of the expression (`form`)."
+        "top-level form of the expression (`form`, plus the outermost function, `head`, "
+        "for a variable-free operation on a function application)."
     )
     out.append("")
     out.append("| Verdict | Meaning | `certifiable()` |")

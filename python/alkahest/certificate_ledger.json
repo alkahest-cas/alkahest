@@ -9,7 +9,7 @@
       "tests/textbook_gate/"
     ],
     "observations": 334,
-    "shape_classes": 210
+    "shape_classes": 213
   },
   "rows": [
     {
@@ -3623,35 +3623,38 @@
     },
     {
       "operation": "simplify",
-      "shape": "simplify/form=apply/funcs=exp,log/fn_arg=other/mul=none/pow=none",
+      "shape": "simplify/form=apply/head=exp/funcs=exp,log/fn_arg=other/mul=none/pow=none",
       "features": {
         "form": "apply",
         "funcs": "exp,log",
         "fn_arg": "other",
         "mul": "none",
-        "pow": "none"
+        "pow": "none",
+        "head": "exp"
       },
       "verdict": "withheld",
       "observations": {
         "certified": 0,
-        "withheld": 0,
-        "no_derivation": 2
+        "withheld": 1,
+        "no_derivation": 0
       },
-      "blocking_rules": [],
+      "blocking_rules": [
+        "exp_of_log_nonzero"
+      ],
       "examples": [
-        "exp(log(x))",
-        "log(exp(x))"
+        "exp(log(x))"
       ]
     },
     {
       "operation": "simplify",
-      "shape": "simplify/form=apply/funcs=exp/fn_arg=other/mul=none/pow=none",
+      "shape": "simplify/form=apply/head=exp/funcs=exp/fn_arg=other/mul=none/pow=none",
       "features": {
         "form": "apply",
         "funcs": "exp",
         "fn_arg": "other",
         "mul": "none",
-        "pow": "none"
+        "pow": "none",
+        "head": "exp"
       },
       "verdict": "withheld",
       "observations": {
@@ -3666,13 +3669,36 @@
     },
     {
       "operation": "simplify",
-      "shape": "simplify/form=apply/funcs=log/fn_arg=other/mul=general/pow=none",
+      "shape": "simplify/form=apply/head=log/funcs=exp,log/fn_arg=other/mul=none/pow=none",
+      "features": {
+        "form": "apply",
+        "funcs": "exp,log",
+        "fn_arg": "other",
+        "mul": "none",
+        "pow": "none",
+        "head": "log"
+      },
+      "verdict": "certified",
+      "observations": {
+        "certified": 1,
+        "withheld": 0,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "log(exp(x))"
+      ]
+    },
+    {
+      "operation": "simplify",
+      "shape": "simplify/form=apply/head=log/funcs=log/fn_arg=other/mul=general/pow=none",
       "features": {
         "form": "apply",
         "funcs": "log",
         "fn_arg": "other",
         "mul": "general",
-        "pow": "none"
+        "pow": "none",
+        "head": "log"
       },
       "verdict": "withheld",
       "observations": {
@@ -3683,6 +3709,27 @@
       "blocking_rules": [],
       "examples": [
         "log((x * y))"
+      ]
+    },
+    {
+      "operation": "simplify",
+      "shape": "simplify/form=atom/funcs=-/fn_arg=none/mul=none/pow=none",
+      "features": {
+        "form": "atom",
+        "funcs": "-",
+        "fn_arg": "none",
+        "mul": "none",
+        "pow": "none"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 0,
+        "no_derivation": 1
+      },
+      "blocking_rules": [],
+      "examples": [
+        "5"
       ]
     },
     {
@@ -3957,15 +4004,15 @@
       },
       "verdict": "conditional",
       "observations": {
-        "certified": 2,
+        "certified": 1,
         "withheld": 0,
         "no_derivation": 2
       },
       "blocking_rules": [],
       "examples": [
         "(0 + x)",
-        "(2 + 3)",
-        "(2 + x)"
+        "(2 + x)",
+        "(x + y)"
       ]
     },
     {
@@ -4012,35 +4059,58 @@
     },
     {
       "operation": "simplify_log_exp",
-      "shape": "simplify_log_exp/form=apply/funcs=exp,log/fn_arg=other/mul=none/pow=none",
+      "shape": "simplify_log_exp/form=apply/head=exp/funcs=exp,log/fn_arg=other/mul=none/pow=none",
       "features": {
         "form": "apply",
         "funcs": "exp,log",
         "fn_arg": "other",
         "mul": "none",
-        "pow": "none"
+        "pow": "none",
+        "head": "exp"
       },
       "verdict": "certified",
       "observations": {
-        "certified": 3,
+        "certified": 1,
         "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
       "examples": [
-        "exp(log(x))",
+        "exp(log(x))"
+      ]
+    },
+    {
+      "operation": "simplify_log_exp",
+      "shape": "simplify_log_exp/form=apply/head=log/funcs=exp,log/fn_arg=other/mul=none/pow=none",
+      "features": {
+        "form": "apply",
+        "funcs": "exp,log",
+        "fn_arg": "other",
+        "mul": "none",
+        "pow": "none",
+        "head": "log"
+      },
+      "verdict": "certified",
+      "observations": {
+        "certified": 2,
+        "withheld": 0,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
         "log(exp(x))"
       ]
     },
     {
       "operation": "simplify_log_exp",
-      "shape": "simplify_log_exp/form=apply/funcs=log/fn_arg=other/mul=general/pow=neg_one",
+      "shape": "simplify_log_exp/form=apply/head=log/funcs=log/fn_arg=other/mul=general/pow=neg_one",
       "features": {
         "form": "apply",
         "funcs": "log",
         "fn_arg": "other",
         "mul": "general",
-        "pow": "neg_one"
+        "pow": "neg_one",
+        "head": "log"
       },
       "verdict": "certified",
       "observations": {
@@ -4055,13 +4125,14 @@
     },
     {
       "operation": "simplify_log_exp",
-      "shape": "simplify_log_exp/form=apply/funcs=log/fn_arg=other/mul=none/pow=nat",
+      "shape": "simplify_log_exp/form=apply/head=log/funcs=log/fn_arg=other/mul=none/pow=nat",
       "features": {
         "form": "apply",
         "funcs": "log",
         "fn_arg": "other",
         "mul": "none",
-        "pow": "nat"
+        "pow": "nat",
+        "head": "log"
       },
       "verdict": "certified",
       "observations": {
@@ -4139,13 +4210,14 @@
     },
     {
       "operation": "simplify_trig",
-      "shape": "simplify_trig/form=apply/funcs=cos/fn_arg=other/mul=scalar/pow=none",
+      "shape": "simplify_trig/form=apply/head=cos/funcs=cos/fn_arg=other/mul=scalar/pow=none",
       "features": {
         "form": "apply",
         "funcs": "cos",
         "fn_arg": "other",
         "mul": "scalar",
-        "pow": "none"
+        "pow": "none",
+        "head": "cos"
       },
       "verdict": "certified",
       "observations": {
@@ -4160,13 +4232,14 @@
     },
     {
       "operation": "simplify_trig",
-      "shape": "simplify_trig/form=apply/funcs=sin/fn_arg=other/mul=scalar/pow=none",
+      "shape": "simplify_trig/form=apply/head=sin/funcs=sin/fn_arg=other/mul=scalar/pow=none",
       "features": {
         "form": "apply",
         "funcs": "sin",
         "fn_arg": "other",
         "mul": "scalar",
-        "pow": "none"
+        "pow": "none",
+        "head": "sin"
       },
       "verdict": "certified",
       "observations": {
@@ -4181,13 +4254,14 @@
     },
     {
       "operation": "simplify_trig",
-      "shape": "simplify_trig/form=apply/funcs=sinh/fn_arg=other/mul=scalar/pow=none",
+      "shape": "simplify_trig/form=apply/head=sinh/funcs=sinh/fn_arg=other/mul=scalar/pow=none",
       "features": {
         "form": "apply",
         "funcs": "sinh",
         "fn_arg": "other",
         "mul": "scalar",
-        "pow": "none"
+        "pow": "none",
+        "head": "sinh"
       },
       "verdict": "withheld",
       "observations": {
@@ -4202,13 +4276,14 @@
     },
     {
       "operation": "simplify_trig",
-      "shape": "simplify_trig/form=apply/funcs=tan/fn_arg=other/mul=none/pow=none",
+      "shape": "simplify_trig/form=apply/head=tan/funcs=tan/fn_arg=other/mul=none/pow=none",
       "features": {
         "form": "apply",
         "funcs": "tan",
         "fn_arg": "other",
         "mul": "none",
-        "pow": "none"
+        "pow": "none",
+        "head": "tan"
       },
       "verdict": "certified",
       "observations": {
