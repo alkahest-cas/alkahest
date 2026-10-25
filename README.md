@@ -26,8 +26,7 @@ The main stack is: Rust kernel → FLINT/Arb (polynomials, ball arithmetic) → 
 ## Highlights
 
 - **Verifiable by construction.** Every computation produces a derivation log; a meaningful subset can export Lean 4 proofs for independent verification.
-- **520× faster than SymPy** on trig-identity simplification — and 77× faster than Mathematica on the same task ([cross-CAS report](benchmarks/results/report.md)).
-- **~40× faster than SymPy** on 2-variable quadratic systems, via FLINT-backed polynomial arithmetic and a compiled F4 core ([solving guide](docs/mdbook/src/solving.md)).
+- **Fast on real workloads, with the losses published.** On 28 benchmark cases across core CAS, PK/PD, robotics, physics, finance and JIT evaluation, it wins 21 against SymPy 1.14, SymEngine 0.14 and Mathematica 14.3. Examples: Fateman's 135,751-term expansion in 0.33 s (Mathematica 0.87 s, SymPy did not finish in 300 s), and the Kerr Kretschmann scalar in 34 ms. Gröbner cyclic-6 still times out, and SymEngine differentiates faster. Every answer is checked; see [benchmarks/website/RESULTS.md](benchmarks/website/RESULTS.md).
 - **GPU codegen is a routine operation, not a research project** — 16.2× over the CPU JIT on a 1M-point polynomial evaluation (NVPTX `sm_86`, RTX 3090). Requires a source build with `--features cuda`; the PyPI wheel has no GPU support ([GPU guide](docs/mdbook/src/gpu.md)).
 - **A trained RL environment.** GRPO against the CAS verifier moved `Qwen2.5-1.5B-Instruct` from 11.7% → 15.1% on elementary integrals (+29% relative) with no stored reference answers — the CAS grades every rollout, including honest refusal on non-elementary integrands.
 - **Built for agent loops.** String entry point (`ak.parse`), per-candidate `Budget`s, batched `*_many` fan-out, and compact JSON envelopes for cheap logging.
