@@ -15,6 +15,10 @@ from __future__ import annotations
 def latex(expr) -> str:
     """Return a LaTeX string for the given :class:`~alkahest.Expr`.
 
+    A :class:`~alkahest.Series` (from :func:`~alkahest.series`) renders its
+    expansion with the ``O(·)`` term, and a :class:`~alkahest.DerivedResult`
+    renders its ``.value``.
+
     The result is suitable for ``$...$`` in a LaTeX document or
     ``IPython.display.Math(alkahest.latex(expr))`` in a Jupyter notebook.
 
@@ -26,7 +30,19 @@ def latex(expr) -> str:
         >>> alkahest.latex(alkahest.sin(x)**2 + alkahest.cos(x)**2)
         '\\\\sin\\\\!\\\\left(x\\\\right)^2 + \\\\cos\\\\!\\\\left(x\\\\right)^2'
     """
-    return expr.display_latex()
+    return _renderable(expr).display_latex()
+
+
+def _renderable(expr):
+    """The :class:`~alkahest.Expr` behind *expr*: a ``DerivedResult``'s value or
+    a ``Series``' expansion (``O(·)`` term included)."""
+    from .alkahest import DerivedResult, Series
+
+    if isinstance(expr, DerivedResult):
+        return expr.value
+    if isinstance(expr, Series):
+        return expr.expr
+    return expr
 
 
 def unicode_str(expr) -> str:
@@ -43,4 +59,4 @@ def unicode_str(expr) -> str:
         >>> alkahest.unicode_str(x**2 + p.integer(1))
         'x² + 1'
     """
-    return expr.display_unicode()
+    return _renderable(expr).display_unicode()

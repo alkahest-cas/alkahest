@@ -7,6 +7,43 @@ use std::fmt;
 /// Canonical ∞ symbol name for [`ExprPool::pos_infinity`] / limits (V2-16).
 pub const POS_INFINITY_SYMBOL: &str = "\u{221e}";
 
+/// Suffix that marks a *user* symbol whose name collides with a reserved
+/// constant name (`pi`, `EulerGamma`, `Catalan`, `Glaisher`, `GoldenRatio`,
+/// `∞`, and `I` in [`Domain::Complex`]).
+///
+/// The kernel recognises those constants by symbol name, so a user variable
+/// spelled `pi` would otherwise *be* `π` (`simplify(sin(pi))` → `0`). The
+/// Python `ExprPool.symbol` appends this zero-width marker to such names; the
+/// printers strip it (see [`symbol_display_name`]), so the variable still
+/// prints as `pi` — never as the constant's glyph `π` — while being a
+/// different node from the constant.
+pub const USER_SYMBOL_MARKER: &str = "\u{200b}";
+
+/// The name a symbol prints as: its interned name minus a trailing
+/// [`USER_SYMBOL_MARKER`].
+pub fn symbol_display_name(name: &str) -> &str {
+    name.strip_suffix(USER_SYMBOL_MARKER).unwrap_or(name)
+}
+
+#[cfg(test)]
+mod user_symbol_marker_tests {
+    use super::*;
+
+    #[test]
+    fn marked_symbol_prints_unmarked_and_is_not_pi() {
+        let pool = ExprPool::new();
+        let pi = pool.symbol("pi", Domain::Real);
+        let user = pool.symbol(format!("pi{USER_SYMBOL_MARKER}"), Domain::Real);
+        assert_ne!(pi, user);
+        assert_eq!(pool.display(user).to_string(), "pi");
+        // The constant's glyph is reserved for the constant.
+        assert_eq!(crate::kernel::render_unicode(pi, &pool), "π");
+        assert_eq!(crate::kernel::render_unicode(user, &pool), "pi");
+        assert_eq!(crate::kernel::render_latex(user, &pool), "pi");
+        assert_eq!(symbol_display_name("x"), "x");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Lock-free arena for ExprPool nodes, and a single-storage index over it.
 //
@@ -1020,7 +1057,7 @@ fn fmt_func_generic(
 
 fn fmt_data(data: &ExprData, pool: &ExprPool, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match data {
-        ExprData::Symbol { name, .. } => write!(f, "{}", name),
+        ExprData::Symbol { name, .. } => write!(f, "{}", symbol_display_name(name)),
         ExprData::Integer(n) => write!(f, "{}", n),
         ExprData::Rational(r) => write!(f, "{}", r),
         ExprData::Float(fl) => write!(f, "{}", fl),

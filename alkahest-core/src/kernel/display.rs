@@ -573,6 +573,16 @@ fn latex_join_factors(parts: &[String]) -> String {
     out
 }
 
+/// A user symbol whose name collides with a kernel constant (`pi`, …; see
+/// [`crate::kernel::USER_SYMBOL_MARKER`]) prints its plain name — *not* the
+/// constant's glyph, so `π` and a variable called `pi` stay distinguishable.
+fn marked_or(name: &str, render: fn(&str) -> String) -> String {
+    match name.strip_suffix(crate::kernel::USER_SYMBOL_MARKER) {
+        Some(plain) => plain.to_string(),
+        None => render(name),
+    }
+}
+
 fn latex_symbol(name: &str) -> String {
     // Exact Greek name: "alpha" -> "\alpha"
     if let Some(g) = greek_latex(name) {
@@ -1072,7 +1082,7 @@ fn latex_r(id: ExprId, pool: &ExprPool) -> (String, i32) {
         return latex_derivative(&v, pool);
     }
     pool.with(id, |data| match data {
-        ExprData::Symbol { name, .. } => (latex_symbol(name), PREC_ATOM),
+        ExprData::Symbol { name, .. } => (marked_or(name, latex_symbol), PREC_ATOM),
         ExprData::Integer(n) => (n.0.to_string(), literal_prec(&n.0.to_string())),
         ExprData::Rational(r) => {
             let num = r.0.numer();
@@ -1461,7 +1471,7 @@ fn unicode_r(id: ExprId, pool: &ExprPool) -> (String, i32) {
         return unicode_derivative(&v, pool);
     }
     pool.with(id, |data| match data {
-        ExprData::Symbol { name, .. } => (unicode_symbol(name), PREC_ATOM),
+        ExprData::Symbol { name, .. } => (marked_or(name, unicode_symbol), PREC_ATOM),
         ExprData::Integer(n) => (n.0.to_string(), literal_prec(&n.0.to_string())),
         ExprData::Rational(r) => {
             let (num, den) = (r.0.numer(), r.0.denom());

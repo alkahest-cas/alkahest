@@ -33,7 +33,7 @@ pub mod groebner;
 #[cfg(test)]
 mod proptests;
 
-pub use cancel::{cancel, together, together_parts};
+pub use cancel::{cancel, rational_function_of, together, together_parts};
 pub use error::{ConversionError, FactorError};
 pub use factor::{
     factor_multivariate_z, factor_univariate_mod_p, factor_univariate_mod_p_with_unit,

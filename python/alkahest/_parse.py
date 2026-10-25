@@ -509,6 +509,10 @@ class _Parser:
                 elif text == "E":
                     # Euler's number (SymPy's spelling of ``exp(1)``).
                     sym = _apply_func("exp", [pool.integer(1)], offset, pool)
+                elif text in _CONSTANT_CONSTRUCTORS:
+                    # ``pool.symbol("pi")`` is an ordinary variable that only
+                    # prints as ``pi``; the constant has its own constructor.
+                    sym = getattr(pool, _CONSTANT_CONSTRUCTORS[text])()
                 else:
                     sym = pool.symbol(text)
                 self._symbols[text] = sym
@@ -900,7 +904,18 @@ _ARITY: dict[str, tuple[int, int]] = {
 # ---------------------------------------------------------------------------
 
 
-def parse(source: str, pool, symbols: dict[str, object] | None = None):
+# Identifiers read as kernel constants, and the ``ExprPool`` method that builds
+# each one.
+_CONSTANT_CONSTRUCTORS = {
+    "pi": "pi",
+    "EulerGamma": "euler_gamma",
+    "Catalan": "catalan",
+    "Glaisher": "glaisher",
+    "GoldenRatio": "golden_ratio",
+}
+
+
+def parse(source: str, pool=None, symbols: dict[str, object] | None = None):
     """Parse a mathematical expression string into an :class:`~alkahest.Expr`.
 
     Uses a Pratt (top-down operator precedence) recursive-descent parser.
@@ -909,8 +924,10 @@ def parse(source: str, pool, symbols: dict[str, object] | None = None):
     ----------
     source : str
         Expression string, e.g. ``"sin(x)^2 + cos(x)^2"``.
-    pool : ExprPool
-        Expression pool used to intern new symbols and constants.
+    pool : ExprPool, optional
+        Expression pool used to intern new symbols and constants.  Defaults to
+        the pool of the active ``alkahest.context(pool=...)`` block, else
+        :func:`alkahest.default_pool`.
     symbols : dict[str, Expr] | None
         Optional pre-bound symbol map.  Identifiers not in the map are
         created via ``pool.symbol(name)`` and added to the map so they are
@@ -920,9 +937,12 @@ def parse(source: str, pool, symbols: dict[str, object] | None = None):
         ``parse(str(e)) == e``): ``I`` is :meth:`ExprPool.imaginary_unit`,
         ``E`` is ``exp(1)``, ``oo`` and ``\u221e`` are
         :meth:`ExprPool.pos_infinity`; ``pi``, ``EulerGamma``, ``Catalan``,
-        ``Glaisher`` and ``GoldenRatio`` are ordinary real symbols that every
+        ``Glaisher`` and ``GoldenRatio`` are the constants
+        :meth:`ExprPool.pi`, :meth:`ExprPool.euler_gamma`, … that every
         evaluator knows the value of.  To use one of these names as a
-        *variable*, bind it: ``parse("E*x", pool, {"E": pool.symbol("E")})``.
+        *variable*, bind it: ``parse("E*x", pool, {"E": pool.symbol("E")})``
+        (``pool.symbol("pi")`` is such a variable — it prints as ``pi`` but is
+        not ``π``).
         ``3/4`` between integer literals is the exact rational ``3/4``.
 
     Returns
@@ -945,6 +965,13 @@ def parse(source: str, pool, symbols: dict[str, object] | None = None):
     >>> alkahest.parse("sin(x)^2 + cos(x)^2", pool, {"x": x})
     sin(x)^2 + cos(x)^2
     """
+    if pool is None:
+        from ._context import active_pool
+        from .alkahest import default_pool
+
+        pool = active_pool()
+        if pool is None:
+            pool = default_pool()
     if symbols is None:
         symbols = {}
     return _Parser(source, pool, symbols).parse()
