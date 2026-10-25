@@ -1,0 +1,15 @@
+{
+  "name": "alkahest-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build.ts",
+    "serve": "bun scripts/serve.ts",
+    "check": "bun scripts/check-links.ts"
+  },
+  "dependencies": {
+    "katex": "0.16.11",
+    "marked": "12.0.2",
+    "shiki": "1.24.0"
+  }
+}
