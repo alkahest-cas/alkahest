@@ -243,7 +243,7 @@ impl DiffMemo {
 /// kernel for `gamma` in 3.9.0 made that probe measurably more expensive and
 /// surfaced as a ~14% regression on `test_series_sin_order12`, which
 /// differentiates.
-fn diff_registry() -> &'static crate::primitive::PrimitiveRegistry {
+pub(super) fn diff_registry() -> &'static crate::primitive::PrimitiveRegistry {
     static REGISTRY: std::sync::OnceLock<crate::primitive::PrimitiveRegistry> =
         std::sync::OnceLock::new();
     REGISTRY.get_or_init(crate::primitive::PrimitiveRegistry::dispatch_registry)
