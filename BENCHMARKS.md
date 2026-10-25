@@ -227,6 +227,27 @@ python benchmarks/cas_comparison.py --depth deep --competitors --systems alkahes
 JSONL rows include `depth`, `timeit_repeat`, and `timeit_number` so archived
 results stay self-describing.
 
+### Fairness rules
+
+- **SymPy's cache is cleared before every timed SymPy call.** SymPy memoises
+  through `sympy.core.cache`, so after the warm-up run a plain `timeit.repeat`
+  measures cache hits. The driver calls `sympy.core.cache.clear_cache()` as the
+  `timeit` setup and times SymPy calls one at a time (`repeat × number` single
+  calls, scaled back to the same per-repeat unit as the other systems).
+  Alkahest builds a fresh `ExprPool` inside every task, so it has no cache to
+  carry over.
+- **Like for like.** Each task times the same operation on both sides, starting
+  from the same kind of input: `rational_simplify` is gcd cancellation
+  (`RationalFunction.from_symbolic` vs `sympy.cancel`, not `sympy.simplify`),
+  and `subresultant_chain` uses SymPy's `subresultants`, not the educational
+  `sympy.polys.subresultants_qq_zz` module.
+- **Known-slow cells are skipped, not timed out.** A task can list sizes a system
+  is known not to finish (`skip_sizes`, e.g. SymPy on katsura-5 lex, > 120 s
+  measured); they appear in the report as `skipped_known_slow`, never as a
+  ratio.
+- **Single numbers are not headlines.** A sub-millisecond case (size 1 of
+  `trig_identity` is 0.02 ms) measures call overhead; quote the per-size table.
+
 ### Task catalogue (`ALL_TASKS`)
 
 Rough coverage (see `benchmarks/tasks.py` for exact `size_params`):
@@ -238,6 +259,7 @@ Rough coverage (see `benchmarks/tasks.py` for exact `size_params`):
 | Linear algebra | `jacobian_nxn`, `matrix_det_nxn` |
 | Simplification | `trig_identity`, `log_exp_simplify`, `collect_like_terms_mixed` |
 | Solvers / decomposition | `solve_circle_line`, `solve_6r_ik`, `numerical_homotopy` |
+| Gröbner bases | `gb_cyclic_grevlex`, `gb_cyclic_lex`, `gb_katsura_grevlex`, `gb_katsura_lex` (cyclic-n / katsura-n, n = 5, 6; stress adds cyclic-7, katsura-7/8) |
 | Rigorous / fast eval | `ball_sin_cos`, `poly_jit_eval` |
 | Interpolation | `sparse_interp_univariate`, `sparse_interp_multivar` |
 | Recurrences | `recurrence_solve` |
