@@ -76,13 +76,24 @@ def _stops_within_budget(pool, fn, wall_ms=WALL_MS):
 # ---------------------------------------------------------------------------
 
 
-def test_groebner_cyclic6_grevlex_stops_within_budget(pool):
-    eqs, xs = _cyclic(pool, 6)
+# Since the multimodular grevlex engine and the signature-based F5 rewrite,
+# cyclic-6 and cyclic-5 finish in well under the budget; cyclic-7 (seconds for
+# the multimodular engine across cores, about a minute for F5) still cannot.
+
+
+def test_groebner_cyclic7_grevlex_stops_within_budget(pool):
+    eqs, xs = _cyclic(pool, 7)
     _stops_within_budget(pool, lambda: ak.GroebnerBasis.compute(eqs, xs, order="grevlex"))
 
 
-def test_groebner_f5_cyclic5_stops_within_budget(pool):
-    eqs, xs = _cyclic(pool, 5)
+def test_groebner_cyclic6_grlex_stops_within_budget(pool):
+    """GrLex still runs Buchberger over ℚ, which cannot do cyclic-6 quickly."""
+    eqs, xs = _cyclic(pool, 6)
+    _stops_within_budget(pool, lambda: ak.GroebnerBasis.compute(eqs, xs, order="grlex"))
+
+
+def test_groebner_f5_cyclic7_stops_within_budget(pool):
+    eqs, xs = _cyclic(pool, 7)
     _stops_within_budget(pool, lambda: ak.GroebnerBasis.compute_f5(eqs, xs, order="grevlex"))
 
 

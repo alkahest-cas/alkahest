@@ -16802,9 +16802,13 @@ impl PyGroebnerBasis {
     ///     Symbolic variables (must be ``Symbol``).
     /// order : str, optional
     ///     Monomial order: ``"lex"`` (default), ``"grevlex"``, or ``"grlex"``.
-    ///     When ``"lex"`` is requested and the ideal is 0-dimensional, the
-    ///     grevlex-then-FGLM strategy is used automatically (much faster than
-    ///     direct lex Buchberger for 3+ variable systems).
+    ///     ``"grevlex"`` is computed multimodularly: F4 modulo word-size
+    ///     primes, lifted by Chinese remaindering and rational reconstruction,
+    ///     and verified over ℚ before it is returned (Buchberger over ℚ is the
+    ///     fallback, and the engine for ``"grlex"``). When ``"lex"`` is
+    ///     requested and the ideal is 0-dimensional, the grevlex basis is
+    ///     converted by FGLM (modular, verified exactly) — much faster than
+    ///     direct lex Buchberger for 3+ variable systems.
     /// params : list[Expr], optional
     ///     Symbols to put in the **coefficient field** rather than the ring
     ///     (M9).  With ``params`` the computation runs in ``Q(params)[vars]``
@@ -16876,7 +16880,15 @@ impl PyGroebnerBasis {
         .into_py(py))
     }
 
-    /// Gröbner basis via Faugère's F5 (signature-based reduction, V2-8).
+    /// Gröbner basis via a signature-based (F5-family) algorithm.
+    ///
+    /// Same reduced basis as :meth:`compute`, by a different engine: the
+    /// inputs are processed incrementally with module signatures, and the
+    /// syzygy and rewrite criteria discard most S-pairs that would reduce to
+    /// zero. It runs in exact rational arithmetic; :meth:`compute` (which is
+    /// multimodular under ``"grevlex"``) is the faster default on larger
+    /// systems. Under ``"lex"`` a zero-dimensional ideal goes through grevlex
+    /// and FGLM.
     ///
     /// Parameters
     /// ----------

@@ -416,15 +416,22 @@ A `GbPoly` stores exponent vectors, not names, so converting one back needs the 
 
 Supported orders: `Lex` (lexicographic), `GrLex` (graded lexicographic), `GRevLex` (graded reverse lexicographic). `GRevLex` is generally fastest for basis computation; `Lex` is required for elimination.
 
-### Parallel F4
+### Engines
 
-With `--features "groebner parallel"`, Gröbner basis computation uses Rayon for parallel S-polynomial reduction via the F4 algorithm.
+`GroebnerBasis.compute` picks the engine by order; every engine returns the same reduced (monic, interreduced) basis, which is unique.
+
+- **`"grevlex"` — multimodular.** The basis is computed modulo random word-size primes (below 2³¹) by a matrix F4 (all critical pairs of minimal sugar degree at once, symbolic preprocessing, row reduction of a sparse matrix in machine words), the images are combined by Chinese remaindering and lifted by rational reconstruction, and a lift is accepted only after one more prime agrees with it **and** it passes verification over ℚ: every input reduces to zero and every critical pair surviving the Gebauer–Möller criteria reduces to zero, i.e. the result is a Gröbner basis of an ideal containing the input. For homogeneous input that proves it is *the* basis; for inhomogeneous input a strictly larger ideal would require every prime used to be unlucky in the same way, which random primes make negligible. A prime whose image has a different shape (an unlucky prime) is outvoted. If the path is not conclusive, Buchberger over ℚ is the fallback.
+- **`"lex"`** — for a zero-dimensional ideal, the grevlex basis above is converted by **FGLM**, itself run modulo primes, lifted, and then verified exactly: each lifted polynomial is shown to lie in the ideal through exact normal forms, and its staircase has exactly `dim ℚ[x]/I` monomials. Positive-dimensional ideals use Buchberger over ℚ directly.
+- **`"grlex"`** — Buchberger over ℚ (sugar selection, Gebauer–Möller criteria, fraction-free reduction).
+- **`GroebnerBasis.compute_f5`** — a signature-based algorithm of the F5 family (incremental, position-over-term signatures, syzygy and rewrite criteria) in exact rational arithmetic. Under `"lex"` it goes through grevlex and FGLM like `compute`.
+
+With the `parallel` feature (in the default wheels) the multimodular engines compute several primes at once and spread the verification over the cores. Set `RAYON_NUM_THREADS=1` for a single-threaded run; an active `Budget` is honoured on every worker.
 
 ### GPU-accelerated Macaulay matrix (groebner-cuda) — Rust only, not wired into the solver
 
 `--features "groebner-cuda"` compiles a CUDA kernel for the mod-p row reduction of the Macaulay matrix, with multi-prime CRT lifts reconstructing rational coefficients, and falls back to pure-Rust row reduction when no CUDA device is present.
 
-**It does not accelerate anything on this page.** `GroebnerBasis.compute`, `solve` and `triangularize` run Buchberger/F4 on the CPU regardless; the GPU routine is reachable only as the Rust function `alkahest_cas::poly::groebner::compute_groebner_basis_gpu`, and production dispatch deliberately does not prefer it until the [benchmark harness](https://github.com/alkahest-cas/alkahest/blob/main/docs/symbolic-gpu-benchmarks.md) says it wins. There is correspondingly **no `capabilities()["features"]["groebner_cuda"]` bit** — it used to exist and report that the kernel had been compiled in, which no Python observation could confirm or refute, so 3.8 removed it. See [GPU support](./gpu.md#groebner-cuda-is-not-reachable-from-python).
+**It does not accelerate anything on this page.** `GroebnerBasis.compute`, `solve` and `triangularize` run on the CPU engines above regardless; the GPU routine is reachable only as the Rust function `alkahest_cas::poly::groebner::compute_groebner_basis_gpu`, and production dispatch deliberately does not prefer it until the [benchmark harness](https://github.com/alkahest-cas/alkahest/blob/main/docs/symbolic-gpu-benchmarks.md) says it wins. There is correspondingly **no `capabilities()["features"]["groebner_cuda"]` bit** — it used to exist and report that the kernel had been compiled in, which no Python observation could confirm or refute, so 3.8 removed it. See [GPU support](./gpu.md#groebner-cuda-is-not-reachable-from-python).
 
 Because the Rust entry point falls back to CPU row reduction when no device is present, it returns a `GpuBackendReport` alongside the basis: `let (basis, backend) = compute_groebner_basis_gpu(gens, order, Some(0))?;` and `backend.ran_on_gpu()` is the only way to tell a real GPU run from a fallback, since the basis is identical either way.
 
@@ -544,9 +551,24 @@ This surface is experimental (`alkahest.experimental.ParametricGroebnerBasis` / 
 
 ## Performance
 
-On the `solve_circle_line` benchmark (2-variable quadratic system), Alkahest is approximately **40× faster** than SymPy due to the FLINT-backed polynomial arithmetic and the compiled F4 core.
+Wall time in seconds for the standard Gröbner benchmarks, measured 2026-10-25 on an AMD Ryzen Threadripper PRO 3955WX (shared machine, 8-core CPU quota), one process per run, 120 s cap. "default" is `GroebnerBasis.compute` with the `parallel` feature; "1 thread" is the same with `RAYON_NUM_THREADS=1`. SymPy is 1.14 `groebner(..., method="buchberger")` / `method="f5b"`, its cache cleared before each run. Basis sizes agree with SymPy's wherever SymPy finishes.
 
-**Upcoming (v2.0):** F5 / signature-based Gröbner basis, real root isolation, primary decomposition, and other advanced algorithms.
+| system | order | default | 1 thread | `compute_f5` | SymPy buchberger | SymPy f5b |
+|---|---|---|---|---|---|---|
+| cyclic-5 | grevlex | 0.007 | 0.003 | 0.003 | 0.42 | 1.77 |
+| cyclic-5 | lex | 0.017 | 0.008 | 0.011 | 15.4 | 2.53 |
+| cyclic-6 | grevlex | 0.043 | 0.069 | 0.092 | 47.9 | > 120 |
+| cyclic-6 | lex | 0.096 | 0.118 | 0.140 | > 120 | > 120 |
+| cyclic-7 | grevlex | 3.4 | 25.1 | 58.3 | > 120 | > 120 |
+| katsura-5 | grevlex | 0.011 | 0.015 | 0.013 | 0.96 | 1.19 |
+| katsura-5 | lex | 0.049 | 0.089 | 0.054 | > 120 | > 120 |
+| katsura-6 | grevlex | 0.038 | 0.133 | 0.097 | 14.2 | 41.0 |
+| katsura-6 | lex | 0.42 | 1.28 | 0.48 | > 120 | > 120 |
+| katsura-7 | grevlex | 0.19 | 1.18 | 0.85 | > 120 | > 120 |
+| katsura-7 | lex | 8.0 | 44.0 | 14.5 | > 120 | > 120 |
+| katsura-8 | grevlex | 1.6 | 12.9 | 7.7 | > 120 | > 120 |
+
+Lex bases of these systems are large — the katsura-6 lex basis has coefficients of about 6 500 bits over 6 500-bit denominators, so lifting it takes several hundred primes; that, not the modular arithmetic, is what the lex rows measure. In 3.11.0 on the same machine, cyclic-6 grevlex, katsura-5 lex and every `compute_f5` run in this table took > 120 s. Dedicated systems (msolve, Magma, Singular) remain faster on the largest of these.
 
 ## Generalized Pell equations: every solution class
 
