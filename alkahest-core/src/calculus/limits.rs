@@ -459,7 +459,18 @@ pub fn limit(
 fn has_undefined_constant(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
     fn is_exact_zero_constant(e: ExprId, var: ExprId, pool: &ExprPool) -> bool {
         if depends_on(e, var, pool) {
-            return false;
+            // A `var`-dependent subterm that is *identically* zero — `x − x`,
+            // `x·0`, `sin²x + cos²x − 1` once spelled so the rule engine sees
+            // it — is just as undefined under a negative power: `1/(x − x)`
+            // has no value at any `x`. Without this the engine took it for an
+            // ordinary pole and `lim sin(x)/(x − x)` ran L'Hôpital on a
+            // vanishing denominator for minutes (16 s past a 5 s budget).
+            // Only the exact rule-engine result counts: `simplify` returning
+            // the literal `0` is a proof, not a numerical guess.
+            return pool.with(
+                simplify(e, pool).value,
+                |d| matches!(d, ExprData::Integer(n) if n.0 == 0),
+            );
         }
         crate::jit::eval_interp(e, &HashMap::new(), pool) == Some(0.0)
     }
@@ -541,6 +552,10 @@ fn substitute_assumed_equalities(expr: ExprId, var: ExprId, pool: &ExprPool) -> 
 /// [`LimitError::DepthExceeded`], with [`last_budget_trip`] carrying the
 /// `E-BUDGET-*` cause when there was one.
 fn attribute_failure(e: LimitError, pool: &ExprPool) -> LimitError {
+    if let Some(b) = crate::calculus::series::take_predicted_wall_trip() {
+        BUDGET_TRIP.with(|c| c.set(Some(b)));
+        return LimitError::DepthExceeded;
+    }
     if BUDGET_TRIP.with(|c| c.get()).is_some()
         || work_exhausted(pool)
         || crate::calculus::series::coeff_overrun_predicted()

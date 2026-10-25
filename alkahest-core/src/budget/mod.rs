@@ -382,6 +382,25 @@ pub(crate) fn is_exhausted() -> bool {
     tripped().is_some()
 }
 
+/// The wall-clock error the innermost budget *will* report once `ahead` more
+/// time has passed, if its wall limit falls inside that window; `None` when
+/// it does not (or there is no wall limit). For a loop that can predict its
+/// next uninterruptible step's duration and should stop *before* starting a
+/// step that would finish past the limit, reporting the same error [`check`]
+/// would have once the step ended.
+pub(crate) fn wall_trip_within(ahead: Duration) -> Option<BudgetError> {
+    STACK.with(|s| {
+        let stack = s.borrow();
+        let frame = stack.last()?;
+        let wall = frame.wall?;
+        let projected = frame.start.elapsed().saturating_add(ahead);
+        (projected > wall).then_some(BudgetError::WallClock {
+            limit: wall,
+            elapsed: projected,
+        })
+    })
+}
+
 /// The error [`check`] would report for a budget that has already run out,
 /// without charging a step; `None` while there is budget left.
 pub(crate) fn tripped() -> Option<BudgetError> {

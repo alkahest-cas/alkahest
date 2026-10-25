@@ -770,6 +770,103 @@ fn extract_expr_in<'py>(
 }
 
 /// True when *id* is a literal integer/rational/float zero.
+/// `a + b` as the operators build it, folding the two cases a reader expects
+/// to see folded the moment they are written:
+///
+/// * `a - a` (and `a + (-1)·a`) is `0` — not `(x + (x * -1))`, which every
+///   consumer then had to rediscover. That unfolded zero is what made
+///   `limit(sin(x)/(x - x), x, 0)` run past its budget instead of failing at
+///   once, and `1/(x - x)` construct without complaint. Folded only when
+///   `a − a = 0` really is an identity (see
+///   [`alkahest_core::self_difference_is_zero`]: not for `∞`, `O(·)` or an
+///   undefined `0⁻¹`).
+/// * two exact rational literals add exactly: `R(1,3) + R(1,6)` is `1/2`,
+///   not `(1/3 + 1/6)`.
+///
+/// Anything else is the plain `Add` node it always was.
+fn build_sum(pool: &ExprPool, a: ExprId, b: ExprId) -> ExprId {
+    let rat = |e: ExprId| {
+        pool.with(e, |d| match d {
+            ExprData::Integer(n) => Some(rug::Rational::from(&n.0)),
+            ExprData::Rational(r) => Some(r.0.clone()),
+            _ => None,
+        })
+    };
+    if let (Some(p), Some(q)) = (rat(a), rat(b)) {
+        let sum = p + q;
+        return if *sum.denom() == 1 {
+            pool.integer(sum.numer().clone())
+        } else {
+            let (n, d) = sum.into_numer_denom();
+            pool.rational(n, d)
+        };
+    }
+    let cancels = negated_term(pool, b) == Some(a) || negated_term(pool, a) == Some(b);
+    if cancels && alkahest_core::self_difference_is_zero(a, pool) {
+        return pool.integer(0_i32);
+    }
+    pool.add(vec![a, b])
+}
+
+/// `Some(t)` when `e` is `-1·t` (either factor order).
+fn negated_term(pool: &ExprPool, e: ExprId) -> Option<ExprId> {
+    pool.with(e, |d| match d {
+        ExprData::Mul(f) if f.len() == 2 => {
+            let is_m1 =
+                |x: ExprId| pool.with(x, |d| matches!(d, ExprData::Integer(n) if n.0 == -1));
+            if is_m1(f[0]) {
+                Some(f[1])
+            } else if is_m1(f[1]) {
+                Some(f[0])
+            } else {
+                None
+            }
+        }
+        _ => None,
+    })
+}
+
+/// `build_sum` folded left over `ids`, interning only what the fold would
+/// keep: while the running sum is one term each step is a real `build_sum`;
+/// once it is an `Add` of several terms it can only fold again by a later
+/// term being its exact negation, so the terms are collected and the `Add`
+/// interned once (`pool.add` flattens and sorts, so this is the fold's node).
+fn sum_left_fold(pool: &ExprPool, ids: &[ExprId]) -> ExprId {
+    let Some((&first, rest)) = ids.split_first() else {
+        return pool.integer(0_i32);
+    };
+    let mut single: Option<ExprId> = Some(first);
+    let mut terms: Vec<ExprId> = Vec::new();
+    for &r in rest {
+        match single {
+            Some(a) => {
+                let v = build_sum(pool, a, r);
+                if pool.with(v, |d| matches!(d, ExprData::Add(_))) && v == pool.add(vec![a, r]) {
+                    single = None;
+                    terms = vec![a, r];
+                } else {
+                    single = Some(v);
+                }
+            }
+            None => {
+                let cancels_acc = negated_term(pool, r)
+                    .filter(|&t| pool.with(t, |d| matches!(d, ExprData::Add(_))))
+                    .is_some_and(|t| {
+                        t == pool.add(terms.clone())
+                            && alkahest_core::self_difference_is_zero(t, pool)
+                    });
+                if cancels_acc {
+                    single = Some(pool.integer(0_i32));
+                    terms.clear();
+                } else {
+                    terms.push(r);
+                }
+            }
+        }
+    }
+    single.unwrap_or_else(|| pool.add(terms))
+}
+
 fn expr_is_literal_zero(pool: &ExprPool, id: ExprId) -> bool {
     match pool.get(id) {
         ExprData::Integer(n) => n.0.is_zero(),
@@ -2091,6 +2188,18 @@ impl PyExprPool {
     /// The fold is therefore ``mul([mul(args[..k]), args[k..]...])``, which is
     /// what this builds; the inner product is the one intermediate the fold
     /// would also have interned.
+    /// The node ``((t0 + t1) + t2) + ...`` — exactly what folding the terms
+    /// with ``+`` (see `build_sum`) interns — without the ``n - 1``
+    /// intermediate sums. Private: the parser's bulk path for a ``+``/``-``
+    /// run, so ``parse("1/3 + 1/6")`` and ``parse("x - x")`` land on the node
+    /// the operators build.
+    fn _sum_left_fold(slf: PyRef<'_, Self>, args: Vec<PyExpr>) -> PyResult<PyExpr> {
+        let ids = own_pool_ids(&slf, &args, "_sum_left_fold")?;
+        let id = sum_left_fold(&slf.inner, &ids);
+        let pool: Py<PyExprPool> = slf.into();
+        Ok(PyExpr { id, pool })
+    }
+
     fn _mul_left_fold(slf: PyRef<'_, Self>, args: Vec<PyExpr>) -> PyResult<PyExpr> {
         let mut ids = own_pool_ids(&slf, &args, "_mul_left_fold")?;
         let pool_inner = &slf.inner;
@@ -2487,7 +2596,7 @@ impl PyExpr {
     fn __add__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
         match self.coerce_scalar(other, py)? {
             Some(rhs) => {
-                let id = self.pool.borrow(py).inner.add(vec![self.id, rhs]);
+                let id = build_sum(&self.pool.borrow(py).inner, self.id, rhs);
                 Ok(PyExpr {
                     id,
                     pool: self.pool.clone_ref(py),
@@ -2501,7 +2610,7 @@ impl PyExpr {
     fn __radd__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
         match self.coerce_scalar(other, py)? {
             Some(lhs) => {
-                let id = self.pool.borrow(py).inner.add(vec![lhs, self.id]);
+                let id = build_sum(&self.pool.borrow(py).inner, lhs, self.id);
                 Ok(PyExpr {
                     id,
                     pool: self.pool.clone_ref(py),
@@ -2518,7 +2627,7 @@ impl PyExpr {
                 let pool = self.pool.borrow(py);
                 let neg_one = pool.inner.integer(-1i32);
                 let neg_rhs = pool.inner.mul(vec![neg_one, rhs]);
-                let id = pool.inner.add(vec![self.id, neg_rhs]);
+                let id = build_sum(&pool.inner, self.id, neg_rhs);
                 drop(pool);
                 Ok(PyExpr {
                     id,
@@ -2537,7 +2646,7 @@ impl PyExpr {
                 let pool = self.pool.borrow(py);
                 let neg_one = pool.inner.integer(-1i32);
                 let neg_self = pool.inner.mul(vec![neg_one, self.id]);
-                let id = pool.inner.add(vec![lhs, neg_self]);
+                let id = build_sum(&pool.inner, lhs, neg_self);
                 drop(pool);
                 Ok(PyExpr {
                     id,
@@ -2582,9 +2691,8 @@ impl PyExpr {
             Some(rhs) => {
                 let pool = self.pool.borrow(py);
                 if expr_is_literal_zero(&pool.inner, rhs) {
-                    return Err(pyo3::exceptions::PyZeroDivisionError::new_err(
-                        "division by zero",
-                    ));
+                    drop(pool);
+                    return Err(division_by_zero_error(py, "division by zero".to_string()));
                 }
                 let neg_one = pool.inner.integer(-1i32);
                 let inv = pool.inner.pow(rhs, neg_one);
@@ -2606,9 +2714,8 @@ impl PyExpr {
             Some(lhs) => {
                 let pool = self.pool.borrow(py);
                 if expr_is_literal_zero(&pool.inner, self.id) {
-                    return Err(pyo3::exceptions::PyZeroDivisionError::new_err(
-                        "division by zero",
-                    ));
+                    drop(pool);
+                    return Err(division_by_zero_error(py, "division by zero".to_string()));
                 }
                 let neg_one = pool.inner.integer(-1i32);
                 let inv_self = pool.inner.pow(self.id, neg_one);
@@ -4429,10 +4536,60 @@ fn py_simplify(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedResult>
         // sound (and why budgets / assumption scopes / cancellation still
         // apply: the work stays on this thread).
         let (id, pool) = (expr.id, &pool.inner);
-        py.allow_threads(|| core_simplify(id, pool))
+        py.allow_threads(|| alkahest_core::simplify_full(id, pool))
     };
+    reject_division_by_zero(py, &expr, derived.value)?;
     let pool_py = expr.pool.clone_ref(py);
     Ok(make_derived_result(py, derived, pool_py, None))
+}
+
+/// Refuse a simplification result that divides by an exact zero.
+///
+/// `simplify(1/(x - x))` used to return `0^-1` as a success: the denominator
+/// collapses to `0`, and the rule engine (rightly) declines to give `0^-1` a
+/// value, so the undefined power came back looking like an answer. Writing
+/// `1/0` with literals raises `ZeroDivisionError` at construction; this is the
+/// same error for a zero that only appears once the expression is simplified,
+/// as the coded `DomainError` `E-DOMAIN-001` (also a `ZeroDivisionError`).
+fn reject_division_by_zero(py: Python<'_>, expr: &PyExpr, value: ExprId) -> PyResult<()> {
+    let pool = expr.pool.borrow(py);
+    if alkahest_core::find_division_by_zero(value, &pool.inner).is_none() {
+        return Ok(());
+    }
+    let shown = pool.inner.display(expr.id).to_string();
+    drop(pool);
+    Err(division_by_zero_error(
+        py,
+        format!("division by zero: a denominator of {shown} simplifies to 0"),
+    ))
+}
+
+/// `E-DOMAIN-001` as `alkahest.DivisionByZeroError` — a `DomainError` that is
+/// also a `ZeroDivisionError`, so it matches both the coded hierarchy and the
+/// exception `1/0` raises. Falls back to a plain `DomainError` if the Python
+/// package has not defined the subclass (the bare extension module).
+fn division_by_zero_error(py: Python<'_>, message: String) -> PyErr {
+    let code = "E-DOMAIN-001";
+    let remediation = "the expression is undefined everywhere: check the denominator before \
+                       dividing (it is identically zero)";
+    let class = py
+        .import_bound("alkahest")
+        .and_then(|m| m.getattr("DivisionByZeroError"));
+    match class {
+        Ok(cls) => {
+            let full_msg = format!("[{code}] {message}\nRemediation: {remediation}");
+            match cls.call1((full_msg,)) {
+                Ok(exc) => {
+                    exc.setattr("code", code).ok();
+                    exc.setattr("remediation", remediation).ok();
+                    exc.setattr("span", py.None()).ok();
+                    PyErr::from_value_bound(exc)
+                }
+                Err(_) => domain_error(py, code, message, remediation),
+            }
+        }
+        Err(_) => domain_error(py, code, message, remediation),
+    }
 }
 
 /// Python-visible configuration for the e-graph simplifier.
@@ -4569,6 +4726,9 @@ fn py_diff(py: Python<'_>, expr: PyRef<PyExpr>, var: PyRef<PyExpr>) -> PyResult<
         py.allow_threads(|| core_diff(id, var_id, pool))
             .map_err(diff_error_to_py)?
     };
+    // `diff(1/(x + 2x - 3x), x)` came back as `0·0⁻¹ + …`, a success: the
+    // input is undefined everywhere, which is the same error `simplify` gives.
+    reject_division_by_zero(py, &expr, derived.value)?;
     let pool_py = expr.pool.clone_ref(py);
     Ok(make_derived_result(py, derived, pool_py, Some(var.id)))
 }
@@ -5649,10 +5809,26 @@ fn py_limit(
         // Bind out of the `PyRef` first: it carries a `Python` marker and so is
         // not `Sync`, but the pool and ids themselves are safe to send.
         let (id, var_id, point_id, pool) = (expr.id, var.id, point.id, &pool_ref.inner);
-        py.allow_threads(|| {
+        let r = py.allow_threads(|| {
             alkahest_core::calculus::limit_with_continuous(id, var_id, point_id, d, &declared, pool)
-        })
-        .map_err(|e| match e {
+        });
+        // An expression with a denominator that is identically zero —
+        // `sin(x)/(x + 2x - 3x)` — is undefined at every point, so the core
+        // refuses it before any rule runs. Say *why*, with the same error
+        // `simplify` raises for it, rather than "no rule applies".
+        if r.is_err() {
+            let undefined = py.allow_threads(|| {
+                alkahest_core::find_division_by_zero(core_simplify(id, pool).value, pool).is_some()
+            });
+            if undefined {
+                let shown = pool.display(id).to_string();
+                return Err(division_by_zero_error(
+                    py,
+                    format!("division by zero: a denominator of {shown} simplifies to 0, so it has no limit"),
+                ));
+            }
+        }
+        r.map_err(|e| match e {
             alkahest_core::calculus::OpaqueLimitError::Limit(e) => limit_error_to_py(e),
             alkahest_core::calculus::OpaqueLimitError::Refused(r) => Python::with_gil(|py| {
                 let exc_type = py.get_type_bound::<PyLimitError>();
@@ -13864,11 +14040,14 @@ fn py_simplify_auto(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedRe
     #[cfg(feature = "parallel")]
     let result = {
         let (id, pool) = (expr.id, &pool_ref.inner);
-        py.allow_threads(|| alkahest_core::simplify_auto(id, pool))
+        py.allow_threads(|| {
+            alkahest_core::simplify_domain_passes(alkahest_core::simplify_auto(id, pool), pool)
+        })
     };
     #[cfg(not(feature = "parallel"))]
-    let result = alkahest_core::simplify(expr.id, &pool_ref.inner);
+    let result = alkahest_core::simplify_full(expr.id, &pool_ref.inner);
     drop(pool_ref);
+    reject_division_by_zero(py, &expr, result.value)?;
     Ok(make_derived_result(
         py,
         result,

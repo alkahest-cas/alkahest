@@ -394,7 +394,10 @@ class _Parser:
             terms = [left]
             terms.extend(r if k == "+" else -r for k, r in ops)
             try:
-                return self._pool.add(terms)
+                # Not `add`: the operators fold `a - a` to `0` and add two
+                # exact literals, and `_sum_left_fold` builds exactly the
+                # node their left fold does (see its docstring).
+                return self._pool._sum_left_fold(terms)
             except _PoolError:
                 # Operands from a caller-supplied symbol map that live in a
                 # different pool: the fold below reproduces the operators'

@@ -1495,6 +1495,7 @@ pub(crate) fn coeff_overrun_predicted() -> bool {
 /// `limit`.
 pub(crate) fn clear_coeff_overrun() {
     COEFF_OVERRUN.with(|c| c.set(false));
+    PREDICTED_WALL_TRIP.with(|c| c.set(None));
 }
 
 /// `true` when a coefficient step growing the pool `GROWTH_FACTOR` times as
@@ -1524,8 +1525,45 @@ fn next_step_would_overrun(pool: &ExprPool, grown: usize) -> bool {
 fn coeff_loop_should_stop(pool: &ExprPool) -> bool {
     match COEFF_POOL_CEILING.with(|c| c.get()) {
         Some(ceiling) => pool.len() > ceiling || crate::budget::check().is_err(),
+        None => crate::budget::check().is_err(),
+    }
+}
+
+/// `true` when the ambient wall-clock budget has less time left than the next
+/// coefficient step is predicted to take.
+///
+/// Each derivative of an expression whose derivatives do not close is a
+/// constant factor larger, *and slower*, than the last, and one step is a
+/// single uninterruptible `diff` + `simplify`. Checking the budget between
+/// steps therefore let a step that started with a second to spare run on for
+/// many more: `lim_{x→0} sin(x)/(x − x)` under `Budget(wall_ms=5000)` stopped
+/// after 16 s. Predicting the next step from the last one (with the same
+/// growth factor [`next_step_would_overrun`] uses for memory) stops before
+/// starting a step that cannot finish in time, and records the wall-clock
+/// error the budget would have reported (see [`take_predicted_wall_trip`]).
+fn next_step_would_exceed_wall(last_step: std::time::Duration) -> bool {
+    const GROWTH_FACTOR: u32 = 4;
+    match crate::budget::wall_trip_within(last_step.saturating_mul(GROWTH_FACTOR)) {
+        Some(trip) => {
+            PREDICTED_WALL_TRIP.with(|c| c.set(Some(trip)));
+            true
+        }
         None => false,
     }
+}
+
+thread_local! {
+    /// The wall-clock trip [`next_step_would_exceed_wall`] predicted.
+    static PREDICTED_WALL_TRIP: Cell<Option<crate::budget::BudgetError>> =
+        const { Cell::new(None) };
+}
+
+/// The wall-clock budget error a coefficient loop on this thread stopped
+/// short of, since the last call (cleared by taking it, and by
+/// [`clear_coeff_overrun`]). `limit` reports it as the budget error it is —
+/// the step that would have crossed the limit was simply not started.
+pub(crate) fn take_predicted_wall_trip() -> Option<crate::budget::BudgetError> {
+    PREDICTED_WALL_TRIP.with(|c| c.take())
 }
 
 fn taylor_coefficients(
@@ -1546,13 +1584,16 @@ fn taylor_coefficients(
             let refusal = SeriesRefusal {
                 requested: num,
                 computed: k,
-                budget: crate::budget::check().err(),
+                budget: crate::budget::check()
+                    .err()
+                    .or_else(|| PREDICTED_WALL_TRIP.with(|c| c.get())),
                 cause: SeriesRefusalCause::Exhausted,
             };
             LAST_REFUSAL.with(|c| c.set(Some(refusal)));
         }
     };
     let mut step_start = pool.len();
+    let mut step_clock = std::time::Instant::now();
     for k in 0..num {
         if k > 0 && coeff_loop_should_stop(pool) {
             exhausted_at(k);
@@ -1597,12 +1638,16 @@ fn taylor_coefficients(
             // aborted the process on a 14 GB allocation). Stop when the step
             // just taken, repeated with that growth, would cross the ceiling.
             let grown = pool.len().saturating_sub(step_start);
-            if k > 0 && next_step_would_overrun(pool, grown) {
+            if k > 0
+                && (next_step_would_overrun(pool, grown)
+                    || next_step_would_exceed_wall(step_clock.elapsed()))
+            {
                 COEFF_OVERRUN.with(|c| c.set(true));
                 exhausted_at(k + 1);
                 break;
             }
             step_start = pool.len();
+            step_clock = std::time::Instant::now();
             cur = diff(cur, xi, pool)?.value;
         }
     }
@@ -1634,7 +1679,18 @@ fn assemble_series(
         } else {
             pool.pow(h_expr, pool.integer(exp as i64))
         };
-        terms.push(pool.mul(vec![*coeff, pow_term]));
+        // `c·1` and `1·hᵏ` are written as `c` and `hᵏ`: the series is the
+        // printed answer, and `(1 * 1) + (x * 1) + …` is what `str(series(exp
+        // x))` used to show.
+        let is_one = |e: ExprId| pool.with(e, |d| matches!(d, ExprData::Integer(n) if n.0 == 1));
+        let term = if is_one(pow_term) {
+            *coeff
+        } else if is_one(*coeff) {
+            pow_term
+        } else {
+            pool.mul(vec![*coeff, pow_term])
+        };
+        terms.push(term);
     }
     // Every term with exponent `< order` is present (see `series`), so the
     // remainder is `O(h^order)` for Taylor and Laurent series alike. It used
