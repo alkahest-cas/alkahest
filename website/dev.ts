@@ -6,7 +6,7 @@ Bun.serve({
   port: Number(process.env.PORT) || 3000,
   async fetch(req) {
     const url = new URL(req.url);
-    const path = url.pathname === "/" ? "/index.html" : url.pathname;
+    const path = url.pathname.endsWith("/") ? url.pathname + "index.html" : url.pathname;
     const filePath = ROOT + path;
     const file = Bun.file(filePath);
     if (await file.exists()) {
