@@ -218,18 +218,51 @@ y = pool.symbol("y")
 
 ### Building expressions
 
-Python operators build expression trees:
+Python operators build expression trees. Python numbers work on either side
+of an operator and are coerced exactly — `int` to an integer, `fractions.Fraction`
+to a rational; a `float` stays a float:
 
 ```python
-expr = x**2 + pool.integer(2) * x + pool.integer(1)
+from fractions import Fraction
+
+expr = x**2 + 2 * x + 1
 print(expr)  # x^2 + 2*x + 1
+alt = (-1)**x * 2**x + Fraction(1, 3)
 ```
 
-Math functions accept expressions:
+Math functions accept expressions and Python numbers:
 
 ```python
 f = sin(x**2) + exp(x * y)
+alkahest.sin(2), alkahest.sqrt(2), alkahest.exp(1)   # exact arguments, no TypeError
 ```
+
+### Constants, factoring and expanding
+
+The SymPy spellings exist at the top level:
+
+```python
+from alkahest import pi, E, I, oo, factor, expand, binomial, factorial
+
+alkahest.simplify(sin(pi)).value          # 0
+factor(x**2 - y**2)                       # (x - y)*(x + y), an Expr product over ℤ
+expand((x + 1)**3)                        # x^3 + 3*x^2 + 3*x + 1
+binomial(10, 3), factorial(5)             # 120, 120 (exact); symbolic n gives gamma ratios
+alkahest.Matrix([[1, 2], [3, 4]]).det()   # -2
+```
+
+`pi`, `E` (Euler's number, `exp(1)`), `I` and `oo` are expressions in the pool of
+the active `alkahest.context(pool=...)`, or else in the process-wide
+`alkahest.default_pool()` — the same pool `sin(2)`, `parse("x + 1")` and
+`alkahest.symbol("x")` use when no `Expr` argument names one. Because they have no
+free symbols they mix into any pool: `x + pi` works for `x` from your own pool.
+
+`pool.symbol("pi")` is an ordinary **variable** that prints as `pi`; it is not π
+(`simplify(sin(pool.symbol("pi")))` stays as it is). The constant is `pi`,
+`pool.pi()` or `parse("pi", pool)`.
+
+Results pickle — `DerivedResult`, `Expr` and `Matrix` — so they can be sent through
+`multiprocessing.Pool.map` and come back into the pool they were sent from.
 
 ### Parsing expressions from strings
 
