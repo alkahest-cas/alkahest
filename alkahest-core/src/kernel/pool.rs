@@ -370,7 +370,13 @@ impl ExprPool {
                 name,
                 domain,
                 commutative: true,
-            } if !(name == Self::IMAGINARY_UNIT_NAME && *domain == Domain::Complex) => plain,
+            } if !(name == Self::IMAGINARY_UNIT_NAME && *domain == Domain::Complex)
+                // `φ` is algebraic (`φ² = φ + 1`), so a polynomial in it is not
+                // canonical the way one in a free symbol is: `φ² − φ − 1` is 0.
+                && name != crate::eval::symbols::GOLDEN_RATIO_NAME =>
+            {
+                plain
+            }
             ExprData::Pow { base, exp } => {
                 let base_plain_symbol = self.with(*base, |b| matches!(b, ExprData::Symbol { .. }))
                     && bits(*base) & ZF_PLAIN_FACTOR != 0;
