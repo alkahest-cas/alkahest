@@ -104,9 +104,10 @@ Raised when a mathematical side condition is violated.
 
 | Code | Cause | Remediation |
 |---|---|---|
-| `E-INT-001` | No integration rule matches | Result may not have an elementary antiderivative |
-| `E-INT-002` | Algebraic extension required | Planned for v1.1 (algebraic Risch) |
-| `E-INT-003` | Risch gave up (transcendental tower too deep) | Try numerical integration |
+| `E-INT-001` | No method could decide the integrand (or a definite integral's hypotheses could not be established). A refusal, not a proof that no closed form exists | Try an equivalent form of the integrand, or integrate numerically |
+| `E-INT-002` | Division by zero inside an integration rule | Report the integrand |
+| `E-INT-003` | Algebraic extension of unsupported degree | Rewrite the radical, or integrate numerically |
+| `E-INT-004` | **Proven** non-elementary: no elementary antiderivative exists. The message names the integrand (and, labelled, the sub-integrand or coefficient that carries the obstruction) | Use the special-function answer if one is offered, or integrate numerically |
 
 ### SolverError (E-SOLVE-*)
 

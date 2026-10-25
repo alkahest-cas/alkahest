@@ -462,11 +462,44 @@ fn integrate_base_unchecked(
     let _dispatch_guard = LowerTowerDispatchGuard::enter(expr, excluded_gen, var)?;
     match crate::integrate::engine::integrate(expr, var, pool) {
         Ok(d) => Ok(crate::simplify::engine::simplify(d.value, pool).value),
-        Err(IE::NonElementary(msg)) => Err(IE::NonElementary(msg)),
+        Err(IE::NonElementary(msg)) => Err(coefficient_verdict(expr, excluded_gen, var, msg, pool)),
         Err(_) => Err(IE::NotImplemented(format!(
             "integrate_base: {} is not integrable in the base field",
             pool.display(expr)
         ))),
+    }
+}
+
+/// What a coefficient's `NonElementary` may say about the whole integrand.
+///
+/// The structure theorem behind the IBP recursion — "if `∫ c_n` is not
+/// elementary over the base field, neither is `∫ Σ c_k θ^k`" — holds only when
+/// the coefficient really lives in the base field *below* `θ`. A coefficient
+/// that mentions `θ` itself, or a generator built on top of `θ` (`log(θ)`), is
+/// a sign the tower level was chosen wrong; its sub-integral can be
+/// non-elementary while the whole integrand is elementary
+/// (`∫ d/dx[log x·log(log x)/x] dx` integrated at the `log x` level). In that
+/// case the sub-verdict is not a proof about the caller's integrand, and it is
+/// downgraded to a decline.
+fn coefficient_verdict(
+    coeff: ExprId,
+    excluded_gen: ExprId,
+    var: ExprId,
+    msg: String,
+    pool: &ExprPool,
+) -> IntegrationError {
+    let above = super::tower::find_generators(coeff, var, pool)
+        .iter()
+        .any(|g| g.generator == excluded_gen || contains_subexpr(g.argument(), excluded_gen, pool));
+    if above {
+        IntegrationError::NotImplemented(format!(
+            "integrate_base: the coefficient {} is not in the base field below {}, so the \
+             non-elementarity of its integral ({msg}) says nothing about the whole integrand",
+            pool.display(coeff),
+            pool.display(excluded_gen),
+        ))
+    } else {
+        IntegrationError::NonElementary(msg)
     }
 }
 
@@ -555,7 +588,7 @@ fn integrate_base(
                 pool.display(expr)
             )))
         }
-        Err(IE::NonElementary(msg)) => Err(IE::NonElementary(msg)),
+        Err(IE::NonElementary(msg)) => Err(coefficient_verdict(expr, excluded_gen, var, msg, pool)),
         Err(_) => Err(IE::NotImplemented(format!(
             "integrate_base: {} is not integrable in the base field",
             pool.display(expr)
