@@ -80,7 +80,7 @@ def _k_alkahest(which):
 
 
 def _k_sympy(which):
-    """Textbook component computation; Christoffels and the scalar simplified."""
+    """Textbook component computation; Christoffel symbols, Riemann components and the scalar simplified."""
 
     def impl():
         import sympy as sp
@@ -116,6 +116,7 @@ def _k_sympy(which):
                         for d in range(c + 1, n):
                             e = sp.diff(Gam[a][b][d], xs[c]) - sp.diff(Gam[a][b][c], xs[d])
                             e += sum(Gam[a][c][k] * Gam[k][b][d] - Gam[a][d][k] * Gam[k][b][c] for k in range(n))
+                            e = sp.simplify(e)
                             if e != 0:
                                 R[(a, b, c, d)] = e
             # lower the first index, raise the last three: K = sum R_abcd R^abcd
@@ -162,16 +163,17 @@ def _k_wl(which: str) -> WL:
     g = "{" + ", ".join(rows) + "}"
     rules = "{" + ", ".join(f"{k} -> {v}" for k, v in KPT.items()) + "}"
     run = (
+        # iterator names i1..i7 must not clash with the metric's symbols (Table localises them)
         "Module[{n = 4, gi, Gam, R, Rl, Ru},"
         " gi = Simplify[Inverse[g]];"
-        " Gam = Table[Simplify[Sum[gi[[a, d]] (D[g[[d, b]], xs[[c]]] + D[g[[d, c]], xs[[b]]] - "
-        "D[g[[b, c]], xs[[d]]]), {d, n}]/2], {a, n}, {b, n}, {c, n}];"
-        " R = Table[D[Gam[[a, b, d]], xs[[c]]] - D[Gam[[a, b, c]], xs[[d]]] + "
-        "Sum[Gam[[a, c, k]] Gam[[k, b, d]] - Gam[[a, d, k]] Gam[[k, b, c]], {k, n}], "
-        "{a, n}, {b, n}, {c, n}, {d, n}];"
-        " Rl = Table[Sum[g[[a, k]] R[[k, b, c, d]], {k, n}], {a, n}, {b, n}, {c, n}, {d, n}];"
-        " Ru = Table[Sum[gi[[b, f]] gi[[c, h]] gi[[d, k]] R[[a, f, h, k]], {f, n}, {h, n}, {k, n}], "
-        "{a, n}, {b, n}, {c, n}, {d, n}];"
+        " Gam = Table[Simplify[Sum[gi[[i1, i4]] (D[g[[i4, i2]], xs[[i3]]] + D[g[[i4, i3]], xs[[i2]]] - "
+        "D[g[[i2, i3]], xs[[i4]]]), {i4, n}]/2], {i1, n}, {i2, n}, {i3, n}];"
+        " R = Table[Simplify[D[Gam[[i1, i2, i4]], xs[[i3]]] - D[Gam[[i1, i2, i3]], xs[[i4]]] + "
+        "Sum[Gam[[i1, i3, i5]] Gam[[i5, i2, i4]] - Gam[[i1, i4, i5]] Gam[[i5, i2, i3]], {i5, n}]], "
+        "{i1, n}, {i2, n}, {i3, n}, {i4, n}];"
+        " Rl = Table[Sum[g[[i1, i5]] R[[i5, i2, i3, i4]], {i5, n}], {i1, n}, {i2, n}, {i3, n}, {i4, n}];"
+        " Ru = Table[Sum[gi[[i2, i5]] gi[[i3, i6]] gi[[i4, i7]] R[[i1, i5, i6, i7]], {i5, n}, {i6, n}, "
+        "{i7, n}], {i1, n}, {i2, n}, {i3, n}, {i4, n}];"
         " Simplify[Total[Flatten[Rl Ru]]]]"
     )
     return WL(setup=f"g = {g}; xs = {{t, r, theta, phi}}", run=run, fp=f"{{N[res /. {rules}]}}")
@@ -185,15 +187,21 @@ def _k_case(which: str, label: str) -> Case:
         "coordinates with symbolic M"
         + (", a" if which == "kerr" else "")
         + ": inverse metric, Christoffel symbols, Riemann tensor, full contraction, simplified "
-        "result. SymPy and Mathematica run the textbook component algorithm (Christoffels and the "
-        "scalar simplified); Alkahest calls Metric.kretschmann(). Checked against the closed form "
-        + ("48M²/r⁶." if which == "schwarzschild" else "of Henry (2000)."),
+        "result. SymPy and Mathematica run the textbook component algorithm (Christoffel symbols, Riemann "
+        "components and the scalar each simplified); Alkahest calls Metric.kretschmann(). "
+        "Checked against the closed form " + ("48M²/r⁶." if which == "schwarzschild" else "of Henry (2000)."),
         systems={
             "alkahest": _k_alkahest(which),
             "sympy": _k_sympy(which),
             "mathematica": _k_wl(which),
         },
         reference=_k_ref(which),
+        note=(
+            "In a separate run with a 900 s limit, Mathematica took 316 s for this case (one Simplify "
+            "call hit its internal 300 s TimeConstraint; the value was still correct)."
+            if which == "kerr"
+            else None
+        ),
         tol=1e-9,
         repeats=5 if which == "schwarzschild" else 3,
     )
