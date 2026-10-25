@@ -6,7 +6,6 @@ import {
   createJupyterKernel,
   destroyJupyterKernel,
   executeOnJupyter,
-  runOnJupyterSync,
 } from '@/lib/jupyter-execution';
 
 export type OutputItem =
@@ -135,28 +134,6 @@ export function executeOnServer(
   };
 
   return () => ws.close();
-}
-
-export async function runOnServerSync(
-  conn: ServerConnection,
-  sessionId: string,
-  code: string,
-): Promise<OutputItem[]> {
-  if (conn.backend === 'jupyter') {
-    return runOnJupyterSync(conn, sessionId, code);
-  }
-
-  const res = await fetch(`${conn.httpUrl}/sessions/${sessionId}/run`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...alkahestAuthHeaders(conn.token),
-    },
-    body: JSON.stringify({ code }),
-  });
-  if (!res.ok) throw new Error(`Execution failed: ${res.statusText}`);
-  const data = await res.json();
-  return postprocessOutputItems(data.outputs as OutputItem[]);
 }
 
 export { verifyLeanCertificate, fetchLeanStatus, applyVerifyResult } from '@/lib/lean';

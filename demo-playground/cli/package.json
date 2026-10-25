@@ -10,8 +10,7 @@
     "build": "tsc",
     "dev": "tsx src/index.ts",
     "start": "tsx src/index.ts start",
-    "record": "tsx src/index.ts record",
-    "demo": "tsx src/index.ts demo"
+    "record": "tsx src/index.ts record"
   },
   "dependencies": {
     "chalk": "^5.3.0",

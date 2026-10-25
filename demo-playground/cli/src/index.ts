@@ -5,7 +5,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { startCommand } from './commands/start.js';
 import { recordCommand } from './commands/record.js';
-import { demoCommand } from './commands/demo.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Resolve demo-videos/ relative to the repo's demo-playground root, not cwd
@@ -45,17 +44,5 @@ program
   .option('--hide-line-numbers', 'Hide code cell line numbers in the recording (?hideLineNumbers=1)')
   .option('--pace <multiplier>', 'Scale every pause and scroll step; >1 is slower and more readable', '1')
   .action(recordCommand);
-
-program
-  .command('demo <prompt>')
-  .description('Tell an AI agent to demonstrate something and capture the result as a video')
-  .option('-o, --output <file>', 'Output video file', path.join(VIDEOS_DIR, `alkahest-agent-demo-${Date.now()}.webm`))
-  .option('--url <url>', 'Playground URL', 'http://localhost:3000')
-  .option('--server <url>', 'Python server URL', 'http://localhost:8000')
-  .option('--width <px>', 'Viewport width', '1280')
-  .option('--height <px>', 'Viewport height', '720')
-  .option('--wait <ms>', 'Max time to wait for agent response (ms)', '120000')
-  .option('--no-start', 'Do not auto-start servers (assume they are already running)')
-  .action(demoCommand);
 
 program.parse();
