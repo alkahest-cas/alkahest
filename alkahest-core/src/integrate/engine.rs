@@ -4062,6 +4062,15 @@ fn definite_via_ftc(
         }
     }
 
+    // The gates above have passed, so this is a final closed value: fold the
+    // `0^(1/2)` / `sqrt(0)` an endpoint substitution leaves behind
+    // (`∫₀¹ x^(-1/2) dx` printed as `2 + (−2·0^(1/2))`, `∫₀¹ √(1−x²) dx` as
+    // `π/4 + ½·sqrt(0)`). The default `simplify` keeps them on purpose; see
+    // `simplify::full::fold_zero_radicals`.
+    let simplified = match crate::simplify::full::fold_zero_radicals(simplified.value, pool) {
+        Some(folded) => DerivedExpr::with_log(folded.value, simplified.log.merge(folded.log)),
+        None => simplified,
+    };
     // F11: re-collect exponents for display (`e^{−bt + t(b−a)}` → `e^{−at}`).
     let value = super::beta_family::tidy_exponents(simplified.value, pool);
     let mut log = DerivationLog::new();
