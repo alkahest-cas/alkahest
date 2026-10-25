@@ -147,6 +147,21 @@ fn outermost_exp_generator<'a>(exp_gens: &[&'a TowerLevel], pool: &ExprPool) -> 
     exp_gens[0]
 }
 
+/// The log generator not contained in the argument of any other log generator
+/// (the top of the log tower). Same rule as [`outermost_exp_generator`].
+fn outermost_log_generator<'a>(log_gens: &[&'a TowerLevel], pool: &ExprPool) -> &'a TowerLevel {
+    use poly_rde::contains_subexpr;
+    for &g in log_gens.iter() {
+        let is_inner = log_gens.iter().any(|&other| {
+            other.generator != g.generator && contains_subexpr(other.argument(), g.generator, pool)
+        });
+        if !is_inner {
+            return g;
+        }
+    }
+    log_gens[0]
+}
+
 // ---------------------------------------------------------------------------
 // Public detection predicate
 // ---------------------------------------------------------------------------
@@ -269,7 +284,18 @@ pub fn integrate_risch(
     // branch subsumes both the single- and multi-log cases.
     // -----------------------------------------------------------------------
     if !log_gens.is_empty() && exp_gens.is_empty() {
-        let level = log_gens[0]; // outermost log generator
+        // The *outermost* log generator — the one no other generator's argument
+        // contains. This used to be `log_gens[0]` on the strength of a comment
+        // saying the depth-first walk visits the outermost generator first. It
+        // does not: it visits in operand order, so for
+        // `x⁻² + log(x)·log(log x)·(−x⁻²) + log(log x)·x⁻²` (= d/dx[log x·log(log x)/x])
+        // `log(x)` came first. Integrating at the `log(x)` level makes
+        // `log(log x)` part of a "coefficient", and the base-field integral of
+        // that coefficient, `∫ −log(log x)/x² dx`, is genuinely non-elementary —
+        // so a non-elementary *sub-integral* was reported as E-INT-004 for an
+        // integrand whose antiderivative is elementary, and the verdict
+        // depended on term order.
+        let level = outermost_log_generator(&log_gens, pool);
         let result = integrate_log_tower(expr, level, var, pool, &mut log)?;
         return finish(result, log);
     }
@@ -1660,5 +1686,47 @@ mod tests {
             result.is_ok(),
             "∫ exp(√x)·(1/(2√x)+1/2) dx must be elementary (algebraic hook); got {result:?}"
         );
+    }
+
+    /// `d/dx[log x·log(log x)/x] = x⁻² + log(log x)·x⁻² − log x·log(log x)·x⁻²` is
+    /// elementary, in every summand order. The log tower used to be entered at
+    /// whichever log the operand walk met first; with `log x` first,
+    /// `log(log x)` became part of a coefficient whose own integral is
+    /// non-elementary, and that sub-verdict was reported as E-INT-004.
+    #[test]
+    fn log_loglog_derivative_is_elementary_in_every_order() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let l = pool.func("log", vec![x]);
+        let ll = pool.func("log", vec![l]);
+        let inv_x2 = pool.pow(x, pool.integer(-2_i32));
+        let terms = [
+            inv_x2,
+            pool.mul(vec![l, ll, pool.integer(-1_i32), inv_x2]),
+            pool.mul(vec![ll, inv_x2]),
+        ];
+        for perm in [
+            [0, 1, 2],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 1, 0],
+            [0, 2, 1],
+            [2, 0, 1],
+        ] {
+            let f = pool.add(perm.iter().map(|&i| terms[i]).collect());
+            let r = crate::integrate::engine::integrate(f, x, &pool);
+            let antideriv = match r {
+                Ok(d) => d.value,
+                Err(e) => panic!("∫ {} dx is elementary; got {e}", pool.display(f)),
+            };
+            let d = crate::diff::diff(antideriv, x, &pool).unwrap();
+            for &xv in &[1.7_f64, 2.5, 4.0] {
+                let mut env = std::collections::HashMap::new();
+                env.insert(x, xv);
+                let lhs = crate::jit::eval_interp(d.value, &env, &pool).unwrap();
+                let rhs = crate::jit::eval_interp(f, &env, &pool).unwrap();
+                assert!((lhs - rhs).abs() < 1e-9, "{perm:?} at {xv}: {lhs} vs {rhs}");
+            }
+        }
     }
 }
