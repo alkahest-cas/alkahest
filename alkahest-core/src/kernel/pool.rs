@@ -460,6 +460,18 @@ impl ExprPool {
         self.node(id).zero_flags.load(Relaxed) & (ZF_CANDIDATE | ZF_CLEAN) == ZF_CANDIDATE
     }
 
+    /// Whether `id` is a literal, a plain symbol, an integer power of one, a
+    /// product of those, or a sum of such products — a polynomial (Laurent in
+    /// its symbols) with no function, no sum under a product or power, and
+    /// nothing hidden below. O(1), from the zero-sum screening bits.
+    pub(crate) fn is_plain_polynomial(&self, id: ExprId) -> bool {
+        let bits = self.node(id).zero_flags.load(Relaxed);
+        if bits & ZF_PLAIN_MONOMIAL != 0 {
+            return true;
+        }
+        bits & ZF_CANDIDATE == 0 && self.with(id, |d| matches!(d, ExprData::Add(_)))
+    }
+
     /// Record that a complete zero-sum sweep left `id` unchanged.
     pub(crate) fn mark_zero_clean(&self, id: ExprId) {
         self.node(id).zero_flags.fetch_or(ZF_CLEAN, Relaxed);
@@ -604,7 +616,7 @@ impl ExprPool {
 
     /// Whether some node of the subtree rooted at `id` is `∞` or a
     /// non-finite `Float`.  O(1): computed when `id` was interned.
-    pub(crate) fn has_non_finite(&self, id: ExprId) -> bool {
+    pub fn has_non_finite(&self, id: ExprId) -> bool {
         self.node(id).non_finite
     }
 

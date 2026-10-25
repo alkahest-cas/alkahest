@@ -160,8 +160,13 @@ def _ak():
 
 
 def _simp(e):
-    ak = _ak()
-    return ak.simplify(e).value
+    # The rule engine alone: this is a normaliser (after `cancel`, inside the
+    # exact field protocol), and the textbook domain passes public `simplify`
+    # adds may re-factor a polynomial into a smaller product, which the
+    # polynomial conversions downstream do not accept.
+    from .alkahest import _simplify_core
+
+    return _simplify_core(_ak()._coerce_expr(e)).value
 
 
 def _radsimp(e):

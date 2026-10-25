@@ -1170,8 +1170,18 @@ fn pow_term(h: ExprId, e: &Rational, pool: &ExprPool) -> ExprId {
 
 fn assemble(terms: &[(Rational, ExprId)], order: &Rational, h: ExprId, pool: &ExprPool) -> ExprId {
     let mut out = Vec::with_capacity(terms.len() + 1);
+    // Spelled as `series` spells its terms (`c` for `c·1`, `hᵏ` for `1·hᵏ`),
+    // so the two print identically where both apply.
+    let is_one = |e: ExprId| pool.with(e, |d| matches!(d, ExprData::Integer(n) if n.0 == 1));
     for (e, c) in terms {
-        out.push(pool.mul(vec![*c, pow_term(h, e, pool)]));
+        let p = pow_term(h, e, pool);
+        out.push(if is_one(p) {
+            *c
+        } else if is_one(*c) {
+            p
+        } else {
+            pool.mul(vec![*c, p])
+        });
     }
     out.push(pool.big_o(pow_term(h, order, pool)));
     pool.add(out)
