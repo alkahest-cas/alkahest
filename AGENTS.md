@@ -36,12 +36,12 @@ time, rebasing each onto the new `main` before it merges.
 
 ## Demo playground
 
-[`demo-playground/`](demo-playground/) contains an interactive web app for demoing and recording Alkahest. It has a notebook interface, an AI agent chat mode, and a CLI for orchestrating and recording demos as video.
+[`demo-playground/`](demo-playground/) contains an interactive web app for demoing and recording Alkahest. It has a Math tab (plain-language maths input, computed by a restricted `/math` server endpoint), a Python notebook, and a CLI for recording demos as video.
 
 Quick start (requires Node ≥ 18 with pnpm, and Python ≥ 3.9):
 ```bash
 cd demo-playground
-cp .env.example web/.env.local   # add API key
+cp .env.example web/.env.local
 pnpm install
 pnpm start                        # starts web (port 3000) + Python server (port 8000)
 ```
