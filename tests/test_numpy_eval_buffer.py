@@ -21,10 +21,9 @@ from alkahest import (
 )
 from timing_util import best_of
 
-#: The absolute-speed check below only means anything when an actual JIT
-#: backend compiled the expression. Without one, `compile_expr` falls back to
-#: the tree-walking interpreter, which costs microseconds per point by design
-#: — a build-configuration fact, not the boxing regression this guards against.
+#: The absolute-speed check below is calibrated for a JIT backend. Without one,
+#: `compile_expr` uses the block interpreter, whose speed relative to NumPy is
+#: pinned separately (`test_numpy_eval_interpreter.py`) in every build.
 #: The nightly shards build without `cranelift`, so gating here keeps the check
 #: meaningful in Tier 1a (which does build it) instead of failing every night.
 requires_jit = pytest.mark.skipif(
