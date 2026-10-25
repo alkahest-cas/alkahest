@@ -168,6 +168,8 @@ def run(args) -> None:
             RAW.write_text(json.dumps(raw, indent=1))
     raw["machine"] = machine_info()
     raw["commit"] = git_commit()
+    # commit the alkahest wheel under test was built from (may differ from this checkout)
+    raw["alkahest_build_commit"] = os.environ.get("ALKAHEST_BUILD_COMMIT", raw.get("alkahest_build_commit"))
     RAW.write_text(json.dumps(raw, indent=1))
 
 
@@ -203,7 +205,7 @@ def render(args) -> None:
 
     raw = json.loads(RAW.read_text())
     suites = load_suites(SUITE_MODULES)
-    commit = raw.get("commit") or git_commit() or ""
+    commit = raw.get("alkahest_build_commit") or raw.get("commit") or git_commit() or ""
     alk_version = alkahest.__version__
     today = datetime.date.today().isoformat()
     site = {
@@ -294,7 +296,8 @@ def render_md(site: dict, raw: dict, suites) -> str:
     L.append("# Landing-page benchmarks: full results\n")
     L.append(
         f"Generated {site['generated']} by `benchmarks/website/run_all.py` against Alkahest "
-        f"{site['alkahest_version']} (commit `{raw.get('commit', '')}`).\n"
+        f"{site['alkahest_version']} built from commit `{site['alkahest_commit']}`; benchmark scripts at commit "
+        f"`{raw.get('commit', '')}`.\n"
     )
     L.append(
         "These are the numbers shown on the landing page (`website/src/data/benchmarks.json`), "
