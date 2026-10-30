@@ -125,11 +125,29 @@ def test_cancellation_stops_groebner(pool):
 
 
 def test_solve_report_repro_stops_within_budget(pool):
-    """Report §4.5: 9.1 s against a 300 ms budget on 3.12.0."""
+    """Report §4.5: 9.1 s against a 300 ms budget on 3.12.0.
+
+    Since the solver takes its lex basis through grevlex + FGLM this system
+    solves in ~0.1 s (it took ~8 s), so under the 300 ms budget it either
+    finishes — with all 49 roots, each checked — or trips promptly. The
+    budget-trip half of the old claim is carried by the cyclic-6 test below.
+    """
     x, y = pool.symbol("x"), pool.symbol("y")
     eqs = [x**7 + y**5 - 3 * x * y - 1, y**7 - x**3 * y + 2]
-    _stops_within_budget(pool, lambda: ak.solve(eqs, [x, y]))
-    _stops_within_budget(pool, lambda: ak.solve(eqs, [x, y], numeric=True))
+    t = time.monotonic()
+    sols, code = None, None
+    try:
+        with ak.context(pool=pool, budget=ak.Budget(wall_ms=WALL_MS)):
+            sols = ak.solve(eqs, [x, y], numeric=True)
+    except ak.BudgetExceededError as exc:
+        code = exc.code
+    assert time.monotonic() - t < CEILING_S
+    assert code in (None, "E-BUDGET-001")
+    if sols is not None:
+        assert len(sols) == 49
+        for s in sols:
+            assert abs(s[x] ** 7 + s[y] ** 5 - 3 * s[x] * s[y] - 1) < 1e-8
+            assert abs(s[y] ** 7 - s[x] ** 3 * s[y] + 2) < 1e-8
 
 
 def test_solve_under_generous_budget_is_unchanged(pool):
@@ -140,6 +158,74 @@ def test_solve_under_generous_budget_is_unchanged(pool):
     for s in sols:
         assert abs(s[x] ** 2 + s[y] ** 2 - 1) < 1e-12
         assert abs(s[x] - s[y]) < 1e-12
+
+
+def _residuals(eqs, xs, sol):
+    """The cyclic-n equations evaluated in plain Python complex arithmetic at
+    ``sol`` — an oracle independent of alkahest's own evaluator."""
+    vals = [complex(sol[v]) for v in xs]
+    n = len(vals)
+    out = []
+    for d in range(1, n):
+        s = 0j
+        for i in range(n):
+            t = 1 + 0j
+            for j in range(d):
+                t *= vals[(i + j) % n]
+            s += t
+        out.append(abs(s))
+    prod = 1 + 0j
+    for v in vals:
+        prod *= v
+    out.append(abs(prod - 1))
+    assert len(out) == len(eqs)
+    return out
+
+
+@pytest.mark.parametrize("numeric", [False, True])
+def test_solve_cyclic5_answers_or_refuses_promptly(pool, numeric):
+    """Launch report 2026-10-24 row 8: ``solve(cyclic-5)`` ran > 14 min.
+
+    The time went into a *direct* lex Buchberger run in the solver; the same
+    reduced lex basis via grevlex + FGLM takes milliseconds. Cyclic-5 has 70
+    isolated solutions. Either they come back (and each one satisfies the
+    system numerically) or the call refuses with a coded error — quickly,
+    with no budget set at all.
+    """
+    eqs, xs = _cyclic(pool, 5)
+    t = time.monotonic()
+    sols, code = None, None
+    try:
+        sols = ak.solve(eqs, xs, numeric=numeric)
+    except (ak.SolverError, ak.HomotopyError) as exc:
+        code = exc.code
+    elapsed = time.monotonic() - t
+    assert elapsed < CEILING_S, f"cyclic-5 solve took {elapsed:.1f}s"
+    # A refusal is coded; it is never a budget trip (no budget is set).
+    assert code is None or code.startswith(("E-SOLVE-", "E-HOMOTOPY-")), code
+    if sols is not None:
+        assert len(sols) == 70
+        for s in sols:
+            if not numeric:
+                s = {v: complex(ak.evaluate(s[v], {}, mode="complex").value) for v in xs}
+            assert max(_residuals(eqs, xs, s)) < 1e-8
+
+
+def test_solve_cyclic6_stops_within_budget(pool):
+    """With the cheap basis, cyclic-6's grevlex pass is the long loop; it polls."""
+    eqs, xs = _cyclic(pool, 6)
+    _stops_within_budget(pool, lambda: ak.solve(eqs, xs))
+    _stops_within_budget(pool, lambda: ak.solve(eqs, xs, numeric=True))
+
+
+def test_solve_zero_dimensional_via_fglm_is_verified(pool):
+    """Cyclic-3 goes through the grevlex + FGLM basis; all six roots check out."""
+    eqs, xs = _cyclic(pool, 3)
+    sols = ak.solve(eqs, xs, numeric=True)
+    assert len(sols) == 6
+    for s in sols:
+        assert max(_residuals(eqs, xs, s)) < 1e-10
+    assert len({tuple(round(complex(s[v]).real, 8) for v in xs) for s in sols}) >= 2
 
 
 def test_homotopy_honours_a_step_budget(pool):

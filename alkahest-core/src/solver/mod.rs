@@ -2338,7 +2338,18 @@ fn solve_polynomial_system_unguarded(
         }
     }
 
-    let gb = GroebnerBasis::compute(polys.clone(), MonomialOrder::Lex);
+    // Without parameters the ideal is usually zero-dimensional, and a lex basis
+    // is far cheaper as grevlex-then-FGLM than as a direct lex Buchberger run:
+    // cyclic-5 took over 14 minutes the direct way and 5 ms this way. Both give
+    // the reduced lex basis, which is unique, so nothing downstream changes;
+    // `compute_lex` falls back to direct lex when the ideal is not
+    // zero-dimensional. With parameters the ideal over ℚ[unknowns, params] is
+    // never zero-dimensional, so the grevlex pass would be wasted work.
+    let gb = if has_params {
+        GroebnerBasis::compute(polys.clone(), MonomialOrder::Lex)
+    } else {
+        GroebnerBasis::compute_lex(polys.clone())
+    };
     if crate::budget::interrupt_pending() {
         return Err(interrupted_error());
     }
@@ -3680,5 +3691,67 @@ mod tests {
                 .any(|c| matches!(c, crate::deriv::log::SideCondition::Positive(_))),
             "{conds:?}"
         );
+    }
+
+    fn cyclic_system(pool: &ExprPool, n: usize) -> (Vec<ExprId>, Vec<ExprId>) {
+        let xs: Vec<ExprId> = (0..n)
+            .map(|i| pool.symbol(format!("c{i}"), Domain::Real))
+            .collect();
+        let mut eqs = Vec::new();
+        for d in 1..n {
+            let terms = (0..n)
+                .map(|i| pool.mul((0..d).map(|j| xs[(i + j) % n]).collect()))
+                .collect();
+            eqs.push(pool.add(terms));
+        }
+        eqs.push(pool.add(vec![pool.mul(xs.clone()), pool.integer(-1_i32)]));
+        (eqs, xs)
+    }
+
+    /// Launch report 2026-10-24 row 8: cyclic-5 ran for over 14 minutes in a
+    /// direct lex Buchberger run. Through grevlex + FGLM it answers (or
+    /// refuses with a coded error) at once; it must never come back as a
+    /// partial solution set.
+    #[test]
+    fn cyclic5_solve_is_prompt() {
+        let pool = ExprPool::new();
+        let (eqs, xs) = cyclic_system(&pool, 5);
+        let t = std::time::Instant::now();
+        let out = solve_polynomial_system(eqs, xs, &pool);
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(30),
+            "cyclic-5 took {:?}",
+            t.elapsed()
+        );
+        match out {
+            Ok(SolutionSet::Finite(sols)) if sols.len() == 70 => {}
+            Err(SolverError::HighDegree(_)) => {}
+            Ok(SolutionSet::Finite(sols)) => panic!("cyclic-5: {} solutions, not 70", sols.len()),
+            Ok(_) => panic!("cyclic-5 is zero-dimensional and consistent"),
+            Err(e) => panic!("unexpected cyclic-5 error: {e}"),
+        }
+    }
+
+    /// The same basis, stopped by a wall budget, is reported as a trip.
+    #[test]
+    fn cyclic6_solve_honours_a_wall_budget() {
+        let pool = ExprPool::new();
+        let (eqs, xs) = cyclic_system(&pool, 6);
+        let budget = crate::budget::Budget {
+            wall: Some(std::time::Duration::from_millis(200)),
+            ..Default::default()
+        };
+        let t = std::time::Instant::now();
+        let out = {
+            let _guard = crate::budget::enter(budget);
+            solve_polynomial_system(eqs, xs, &pool)
+        };
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(10),
+            "{:?}",
+            t.elapsed()
+        );
+        assert!(out.is_err(), "a 200 ms budget cannot finish cyclic-6");
+        assert!(crate::budget::take_trip().is_some());
     }
 }
