@@ -245,7 +245,10 @@ def render_markdown(ledger: dict) -> str:
     out.append("")
     out.append("# Fail loudly instead of degrading silently.")
     out.append("with ak.context(require_certificate=True):")
-    out.append("    ak.diff(ak.log(ak.sin(x)), x)   # raises E-CERT-001")
+    out.append("    try:")
+    out.append("        ak.diff(ak.log(ak.sin(x)), x)")
+    out.append("    except ak.CertificateUnavailableError as e:")
+    out.append("        print(e.code)             # E-CERT-001")
     out.append("```")
     out.append("")
     return "\n".join(out) + "\n"

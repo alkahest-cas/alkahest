@@ -14,6 +14,7 @@ checked against [OEIS](https://oeis.org).
 everything that is presentation rather than content:
 
 ```python
+import alkahest as ak
 from alkahest.experimental.novelty import RecurrenceClaim
 
 # (n+1)·u(n+1) − (4n+2)·u(n) = 0 — central binomial coefficients
@@ -42,8 +43,15 @@ Build a claim straight from what [`zeilberger`](./telescoping.md) or
 [`guess_holonomic`](./guessing.md) already produced:
 
 ```python
+from math import comb
+
+# the first 30 Motzkin numbers, from their definition
+terms = [sum(comb(n, 2*k) * comb(2*k, k) // (k + 1) for k in range(n // 2 + 1))
+         for n in range(30)]
+
 guess = ak.guess_holonomic(terms, max_order=3, max_degree=4)
 claim = RecurrenceClaim.from_recurrence(guess)
+claim.normal_form   # 'recurrence/1 (3*n + 3)*u(n+0) + (2*n + 5)*u(n+1) + (-n - 4)*u(n+2)'
 ```
 
 `RecurrenceClaim.from_text` reads OEIS's own formula lines by recursive
@@ -87,10 +95,17 @@ tagged `q-recurrence/1` where the ordinary one is tagged `recurrence/1`, so
 the two hash spaces cannot collide.
 
 ```python
+from alkahest.experimental import q_zeilberger, qbinomial
 from alkahest.experimental.novelty import QRecurrenceClaim
 
-claim = QRecurrenceClaim.from_recurrence(certificate, var=n, q=q)
-claim.normal_form   # 'q-recurrence/1 (q^n - 1)*u(n+0) + (1)*u(n+1)'
+pool = ak.ExprPool()
+q, n, k = pool.symbol("q"), pool.symbol("n"), pool.symbol("k")
+b = qbinomial(pool, n, k)
+certificate = q_zeilberger(b * b * q ** (k * k), q, n, k)   # Σ_k [n;k]_q² q^{k²}
+
+q_claim = QRecurrenceClaim.from_recurrence(certificate, var=n, q=q)
+q_claim.normal_form
+# 'q-recurrence/1 (q^2*q^(3*n) + q*q^(2*n) - q*q^n - 1)*u(n+0) + (-q*q^n + 1)*u(n+1)'
 ```
 
 **No source in this module can state a `q`-recurrence** — OEIS indexes integer
@@ -123,8 +138,13 @@ same amount — `[junk, *real]` needs `start=-1`, not the default `0`, because
 ```python
 from alkahest.experimental.novelty import OeisCache, OeisEntry, check_novelty
 
-cache = OeisCache("my_oeis_cache.json")
+cache = OeisCache("my_oeis_cache.json")   # loaded if the file exists
+# For a self-contained example, hand it the one entry it needs:
+cache.add(OeisEntry("A001006", "Motzkin numbers", terms=terms, statements=[
+    "D-finite with recurrence: (n+2)*a(n) = (2*n+1)*a(n-1) + (3*n-3)*a(n-2).",
+]))
 verdict = check_novelty(claim, [cache], terms=terms[:12])
+verdict.status    # 'recorded'
 ```
 
 `sources` has **no default** — a check with an empty list, or no source able
@@ -152,7 +172,10 @@ query is *not* recorded, and `check_novelty` reports `unavailable` rather than
 `not_found`). An `id:A…` query asks for named entries and gets exactly them,
 so it is exhaustive after one request.
 
+<!-- doc-check: skip — queries oeis.org over the network -->
 ```python
+from alkahest.experimental.novelty import OeisWeb
+
 web = OeisWeb(cache=OeisCache())
 web.lookup(ids=["A005259"])
 web.cache.save("tests/data/oeis_novelty_fixture.json")
@@ -178,8 +201,11 @@ There is deliberately no `novel` attribute anywhere on `NoveltyVerdict`, and
 `if check_novelty(...):` is the exact sentence this module exists to prevent:
 
 ```python
-bool(verdict)
-# TypeError: a NoveltyVerdict has no truth value: `if verdict:` would read as
+try:
+    bool(verdict)
+except TypeError as e:
+    print(e)
+# a NoveltyVerdict: a NoveltyVerdict has no truth value: `if verdict:` would read as
 # 'is this novel?' and there is no such answer here. Test verdict.status (...)
 # or verdict.found, which is True/False/None and whose False means 'not in
 # the sources searched', not 'new'
@@ -190,7 +216,19 @@ formula `Conjecture` or `Empirical` when it was fitted rather than proved —
 restating a hedged recurrence is not a result, *proving* it is:
 
 ```python
-verdict = check_novelty(recorded_claim, [cache], terms=terms[:12])
+# A359643, Σ_k C(n,k)·C(4k,k): OEIS states its recurrence only as a conjecture
+a359643 = [sum(comb(n, k) * comb(4*k, k) for k in range(n + 1)) for n in range(22)]
+line = ("Conjecture D-finite with recurrence +81*n*(3*n-1)*(3*n-2)*a(n) "
+        "+3*(243*n^3-8433*n^2+14984*n-7064)*a(n-1) "
+        "+2*(-58607*n^3+297306*n^2-491401*n+269124)*a(n-2) "
+        "+6*(n-2)*(56663*n^2-237722*n+252221)*a(n-3) "
+        "-3*(n-2)*(n-3)*(111625*n-286402)*a(n-4) "
+        "+110653*(n-2)*(n-3)*(n-4)*a(n-5)=0. - _R. J. Mathar_, Jan 09 2023")
+cache.add(OeisEntry("A359643", "a(n) = Sum_{k=0..n} binomial(n,k) * binomial(4*k,k).",
+                    terms=a359643, statements=[line]))
+recorded_claim = RecurrenceClaim.from_text(line)
+
+verdict = check_novelty(recorded_claim, [cache], terms=a359643[:12])
 verdict.status    # "recorded_conjecturally"
 verdict.hedged    # True — OEIS has this, but never proved it
 ```

@@ -74,6 +74,8 @@ to a modified programme. Pass it back with `basis=` (or pass the result
 itself):
 
 ```python
+c, A, b = [3, 5], [[1, 0], [0, 2], [3, 2]], [4, 12, 18]   # the example above
+cut, rhs = [1, 1], 7                                     # add a + b ≤ 7
 r1 = ak.linprog(c, A_ub=A, b_ub=b, sense="max")
 r2 = ak.linprog(c, A_ub=A + [cut], b_ub=b + [rhs], sense="max", basis=r1)
 r2.warm_started   # True — the old basis was dual feasible, so a dual simplex ran

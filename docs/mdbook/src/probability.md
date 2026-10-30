@@ -165,6 +165,9 @@ multivariate-normal block, through its covariance matrix.
 
 ```python
 X, Y, Z = (pool.symbol(n) for n in "XYZ")
+m1, m2, s11, s12, s22, x1, x2, t1, t2, a = (
+    pool.symbol(n) for n in ("m1", "m2", "s11", "s12", "s22", "x1", "x2", "t1", "t2", "a"))
+A, b = [[1, 1], [1, -1]], [0, 1]
 mvn = ex.MultivariateNormal([m1, m2], [[s11, s12], [s12, s22]])
 
 mvn.pdf([x1, x2])                       # (2π)^{-1} det(Σ)^{-1/2} exp(-½ qᵀΣ⁻¹q)

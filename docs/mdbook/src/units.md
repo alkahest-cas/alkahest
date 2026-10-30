@@ -12,7 +12,10 @@ from alkahest import units as U
 U.convert(Quantity(1, "inch"), "m").value        # Fraction(127, 5000)
 U.convert(Quantity(100, "degC"), "degF").value   # 212
 (Quantity(2, "kg") * Quantity(3, "m/s^2")).unit == Unit("N")   # True
-Quantity(1, "mg") + Quantity(1, "L")             # UnitError E-UNIT-001
+try:
+    Quantity(1, "mg") + Quantity(1, "L")
+except alkahest.UnitError as e:
+    print(e.code)                                # E-UNIT-001
 ```
 
 ## Units
@@ -116,13 +119,16 @@ whole formula and returns the unit its value is in:
 
 ```python
 p = ExprPool()
-F, D, ka, ke, V, t = (p.symbol(n) for n in ("F", "D", "ka", "ke", "V", "t"))
+F, D, V, t = (p.symbol(n) for n in ("F", "D", "V", "t"))
+ka, ke = p.symbol("ka", "positive"), p.symbol("ke", "positive")   # rate constants
 C = F*D*ka/(V*(ka - ke)) * (alkahest.exp(-ke*t) - alkahest.exp(-ka*t))
 units = {F: "1", D: "mg", ka: "1/h", ke: "1/h", V: "L", t: "h"}
 dimension_of(C, units)          # Unit('mg/L')
 
-units[t] = "min"
-dimension_of(C, units)          # UnitError E-UNIT-004: ke·t is in min/h
+try:
+    dimension_of(C, {**units, t: "min"})
+except alkahest.UnitError as e:
+    print(e.code)               # E-UNIT-004: ke·t is in min/h
 ```
 
 Rules: the terms of a sum must have the same dimension (`E-UNIT-001`) **and**

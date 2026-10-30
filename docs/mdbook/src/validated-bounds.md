@@ -301,7 +301,10 @@ Three guards keep this from swallowing a genuine pole:
 ```python
 ak.verified_integral(ak.log(pool.integer(1) + x) / x, x, 0.0, 1.0)  # ≈ π²/12
 ak.verified_integral(ak.sin(x) / x, x, -1.0, 1.0)                   # ≈ 1.8921661
-ak.verified_integral(pool.integer(1) / x, x, -1.0, 1.0)             # refuses: N(0) ≠ 0
+try:
+    ak.verified_integral(pool.integer(1) / x, x, -1.0, 1.0)         # refuses: N(0) ≠ 0
+except ak.ValidatedError as e:
+    print(e.code)                                                   # E-VALIDATED-003
 ```
 
 ## Bounded integrands whose Taylor model runs out of domain
@@ -399,8 +402,10 @@ sol.times, sol.enclosures, sol.max_width
 t = pool.symbol("t")
 ak.verified_ode([ak.sin(t) * y - y**3 / 10], [y], t, [(0.9, 1.1)], (0.0, 3.0))
 
-ak.verified_ode([y**2], [y], None, [1.0], (0.0, 2.0))
-# ValidatedError [E-VALIDATED-006] step size underflow at t = 0.99999999998…
+try:
+    ak.verified_ode([y**2], [y], None, [1.0], (0.0, 2.0))   # y = 1/(1 − t) blows up at t = 1
+except ak.ValidatedError as e:
+    print(e.code)   # E-VALIDATED-006: step size underflow at t = 0.99999999998…
 ```
 
 `verified_ode(rhs, vars, t, y0, t_span, *, order=20, prec=128, tol=1e-16,

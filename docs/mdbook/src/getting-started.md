@@ -29,8 +29,9 @@ Diophantine and homotopy work out of the box), the pure-Rust **Cranelift JIT** (
 >
 > `capabilities()["features"]["parallel"]` is `True` on every wheel published to PyPI, on
 > Linux, macOS and Windows alike. The `parallel` Cargo feature is what powers the sharded
-> `ExprPool`, the parallel F4 reduction, and every `*_par` entry point (`numpy_eval_par`,
-> `simplify_par`), so those are genuinely multi-core out of the box.
+> `ExprPool` and every `*_par` entry point (`numpy_eval_par`, `simplify_par`), so those are
+> genuinely multi-core out of the box. (It does not parallelise Gröbner bases: those are
+> computed by sequential Buchberger over ℚ in every build.)
 >
 > It is still the one feature worth probing rather than assuming, because its absence is
 > **silent**. `parallel` is not a Cargo *default*: a source build that does not pass
@@ -167,7 +168,7 @@ maturin develop --manifest-path alkahest-py/Cargo.toml --release --features jit
 # Pure-Rust Cranelift JIT (fast compile, no system LLVM required)
 maturin develop --manifest-path alkahest-py/Cargo.toml --release --features cranelift
 
-# Parallel simplification and parallel F4 (sharded ExprPool + numpy_eval_par)
+# Parallel simplification (sharded ExprPool + simplify_par + numpy_eval_par)
 maturin develop --manifest-path alkahest-py/Cargo.toml --release --features parallel
 
 # CUDA / NVPTX codegen (requires CUDA toolkit and LLVM with NVPTX target)

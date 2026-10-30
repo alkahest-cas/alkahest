@@ -11,10 +11,15 @@ This eliminates the phase-ordering problem: rules can fire in any order without 
 ## Using the e-graph
 
 ```python
-from alkahest import simplify_egraph, simplify_egraph_with
+from alkahest import ExprPool, cos, sin, simplify_egraph
+
+pool = ExprPool()
+x = pool.symbol("x")
+expr = sin(x)**2 + cos(x)**2
 
 # Default configuration
 r = simplify_egraph(expr)
+print(r.value)   # 1
 
 # With explicit config
 from alkahest import EgraphConfig, simplify_egraph_with

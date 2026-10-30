@@ -12,6 +12,8 @@ import alkahest as ak
 
 p = ak.ExprPool()
 x = p.symbol("x", "real")
+# ∫ cos x·sin¹²x/(sin⁹x + sin x + 1) dx — Weierstrass, then Rothstein–Trager
+hard_expr = ak.cos(x) * ak.sin(x)**12 / (ak.sin(x)**9 + ak.sin(x) + 1)
 
 with ak.context(pool=p, budget=ak.Budget(wall_ms=50, max_steps=10_000, seed=7)):
     try:
@@ -32,6 +34,7 @@ unattended loop — an agent, a fan-out search, a notebook cell that must come b
 should therefore always run its candidates inside a budget:
 
 ```python
+f = x * ak.exp(x)
 with ak.context(budget=ak.Budget(wall_ms=10_000)):
     result = ak.integrate(f, x)    # BudgetExceededError after ~10 s, never a hang
 ```
@@ -250,6 +253,7 @@ every subsequent call trips `E-BUDGET-003` immediately.
 
 ```python
 import threading
+import time
 
 def watchdog():
     time.sleep(0.05)
@@ -333,6 +337,7 @@ thread) and raises `BudgetExceededError` (`E-BUDGET-001`) when the call overruns
 `wall_ms`.
 
 ```python
+big_expr = sum((x + i) ** 2 - x**2 for i in range(200))
 result = ak.run_with_wall_fallback(ak.simplify, big_expr, budget=ak.Budget(wall_ms=200))
 ```
 
@@ -414,16 +419,19 @@ order 6. At one `integrate` per second on one pool that is gigabytes within a da
 ```python
 import alkahest as ak
 
+problems = ["x*exp(x)", "1/(1 + x^2)", "x^3*log(x)"]   # integrands, as text
+answers = []
+
 for problem in problems:
     pool = ak.ExprPool()             # fresh pool per iteration
     x = pool.symbol("x")
     with ak.context(pool=pool, budget=ak.Budget(wall_ms=500)):
-        result = ak.integrate(build(pool, problem), x)
-        record(str(result.value))    # keep a *string* / dict, not the Expr
+        result = ak.integrate(ak.parse(problem, pool, {"x": x}), x)
+        answers.append(str(result.value))    # keep a *string* / dict, not the Expr
     del pool, x, result              # dropping the pool reclaims everything
 ```
 
-The critical line is `record(str(result.value))`. Holding the `Expr` (or the
+The critical line is `answers.append(str(result.value))`. Holding the `Expr` (or the
 `DerivedResult`, or a `Matrix` derived from it) pins the pool and defeats the whole
 scheme. `DerivedResult.to_dict()` / `.to_json()` exist partly for this: they give you a
 plain-Python envelope that outlives the pool. Do not carry live `Expr` handles between
@@ -469,7 +477,22 @@ that delegates to GMP's own functions and does nothing else) and **refuses at it
 cooperative checkpoints**, before the allocation that would have died:
 
 ```python
-with ak.context(budget=ak.Budget(max_bytes=512 * 1024 * 1024)):
+from alkahest.experimental import telescope_md
+
+pool = ak.ExprPool()
+n = pool.symbol("n")
+xs = [pool.symbol(f"x{i}") for i in range(1, 5)]
+
+def factorial(e):
+    return ak.gamma(e + 1)
+
+# the m = 4 multinomial n! / (x1! x2! x3! x4! (n - x1 - x2 - x3 - x4)!)
+den = factorial(n - sum(xs[1:], xs[0]))
+for v in xs:
+    den = den * factorial(v)
+term = factorial(n) / den
+
+with ak.context(pool=pool, budget=ak.Budget(max_bytes=32 * 1024 * 1024)):
     try:
         telescope_md(term, n, xs)
     except ak.BudgetExceededError as e:
@@ -522,6 +545,7 @@ proof that no elementary antiderivative exists). `alkahest.integrate` and
 engine tripped it:
 
 ```python
+x = p.symbol("x", "real")          # hard_expr from the first example
 try:
     ak.integrate(hard_expr, x)
 except ak.BudgetExceededError as e:
@@ -534,7 +558,7 @@ except ak.IntegrationError as e:
 
 | Name | Kind | Description |
 |---|---|---|
-| `Budget(wall_ms=None, max_steps=None, seed=None)` | class | Immutable budget triple |
+| `Budget(wall_ms=None, max_steps=None, seed=None, max_bytes=None)` | class | Immutable budget tuple |
 | `context(budget=...)` | context manager | Push/pop the budget for a `with` block |
 | `active_budget()` | function | The `Budget` from the innermost active context, or `None` |
 | `budget_seed()` | function | The seed of the innermost active budget, or `None` |
@@ -543,7 +567,7 @@ except ak.IntegrationError as e:
 | `clear_cancel()` | function | Clear it |
 | `is_cancelled()` | function | Read it |
 | `run_with_wall_fallback(fn, *args, budget, **kwargs)` | function | Raises `E-BUDGET-001` when `fn` overruns `wall_ms` — after joining its worker, so it does **not** bound wall time for an uncooperative callee ([above](#it-does-not-bound-wall-time-for-an-uncooperative-callee)) |
-| `BudgetExceededError` | exception | `E-BUDGET-001..003`, subclass of `AlkahestError` |
+| `BudgetExceededError` | exception | `E-BUDGET-001..006`, subclass of `AlkahestError` |
 
 On the Rust side (`alkahest_cas::budget`): `Budget`, `enter`, `BudgetGuard`, `check`,
 `seed`, `is_active`, `request_cancel`, `clear_cancel`, `is_cancelled`, `BudgetError`.

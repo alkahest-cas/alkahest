@@ -7,7 +7,7 @@ Most transformations in Alkahest return a `DerivedResult` that records the exact
 `DerivedResult` is the return type of `diff`, `simplify`, `integrate`, `limit`, `sum_*`, and most other transforming operations. Notable exception: `series` returns a `Series`.
 
 ```python
-from alkahest import diff, sin
+from alkahest import ExprPool, diff, simplify, sin
 
 pool = ExprPool()
 x = pool.symbol("x")
@@ -99,6 +99,7 @@ For production workloads where you only need `.value`, the steps list is still p
 When you chain operations, the logs are separate:
 
 ```python
+expr = sin(x)**2 + sin(x)**2
 simplified = simplify(expr)
 derived = diff(simplified.value, x)
 
@@ -190,10 +191,10 @@ dr.to_dict(mode="compact")
 #   "kind": "alkahest.derived_result",
 #   "schema_version": 1,
 #   "steps_schema_version": 1,
-#   "value": "...",
+#   "value": "(x * 2 * cos(x^2))",
 #   "verification": {"status": "certificate_available", "externally_verified": false},
 #   "certificate_status": {"certifiable": true, "reason": "emitted"},
-#   "steps": [{"r": "diff_sin"}, {"r": "sqrt_of_square_positive", "s": ["x > 0"]}],
+#   "steps": [{"r": "diff_identity"}, {"r": "power_rule"}, {"r": "diff_sin"}],
 #   "has_certificate": true
 # }
 ```

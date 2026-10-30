@@ -202,8 +202,10 @@ below (`z − i0`, mpmath's convention: `₂F₁(1, 1; 2; 2) = −iπ/2`). Other
 declines rather than guessing a continuation.
 
 ```python
+a, b, c = p.symbol("a"), p.symbol("b"), p.symbol("c")
 ak.hyper_transform(ak.hyper([a, b], [c], z), "euler")   # (1-z)^(c-a-b) * 2F1(c-a, c-b; c; z)
-ak.hyper_transform(F, "1/z")        # Γ-coefficient connection formula (A&S 15.3.7)
+G = ak.hyper([Fraction(1, 2), Fraction(1, 3)], [2], z)
+ak.hyper_transform(G, "1/z")        # Γ-coefficient connection formula (A&S 15.3.7)
 ak.hyper_transform(ak.hyper([a], [b], z), "kummer")     # exp(z) * 1F1(b-a; b; -z)
 ```
 

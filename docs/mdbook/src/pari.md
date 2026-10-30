@@ -17,6 +17,7 @@ whatever *you* distribute that includes PARI; Alkahest itself is unaffected.
 
 ## Number fields
 
+<!-- doc-check: needs cypari2|cypari -->
 ```python
 from alkahest import pari
 d = pari.number_field_invariants([5, 0, 1], primes=[2, 3, 5])   # Q(sqrt -5)
@@ -37,6 +38,7 @@ group structure (beyond quadratic imaginary).
 
 ## Elliptic curves
 
+<!-- doc-check: needs cypari2|cypari -->
 ```python
 e = pari.elliptic_curve_invariants([0, -1, 1, -10, -20])   # 11a1
 e.conductor, e.torsion, e.ap[7], e.analytic_rank, e.l_value
@@ -51,6 +53,7 @@ infinite order (checked in `Pic⁰`), **not** a saturated basis.
 
 ## Modular forms
 
+<!-- doc-check: needs cypari2|cypari -->
 ```python
 m = pari.modular_forms(23, 2, nmax=20)
 m.dimension, m.basis, m.orbits[0].field, m.orbits[0].coefficients

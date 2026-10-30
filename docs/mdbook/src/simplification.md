@@ -7,7 +7,12 @@ Alkahest provides two complementary simplification engines that operate on the s
 `simplify` applies a fixed set of algebraic rewrite rules until no more apply (fixpoint). It is fast, predictable, and always terminates.
 
 ```python
-from alkahest import simplify
+import alkahest as ak
+from alkahest import simplify, sin, cos, asin, exp, sqrt, is_zero, equals, to_real_form
+
+pool = ak.ExprPool()
+x, y, a, w, t = (pool.symbol(n) for n in ("x", "y", "a", "w", "t"))
+I = ak.I
 
 r = simplify(x + pool.integer(0))   # → x
 r = simplify(x * pool.integer(1))   # → x
@@ -97,7 +102,7 @@ to_real_form(exp(I*x))                               # unchanged: genuinely comp
 ### Domain-specific rule sets
 
 ```python
-from alkahest import simplify_trig, simplify_log_exp, simplify_expanded
+from alkahest import simplify_trig, simplify_log_exp, simplify_expanded, log
 
 # Pythagorean identity and double-angle formulas
 r = simplify_trig(sin(x)**2 + cos(x)**2)  # → 1
@@ -119,10 +124,14 @@ such polynomials with `UniPoly` / `MultiPoly`.
 ```python
 from alkahest import simplify_with, make_rule
 
-# Add a custom rule: sin²(x) → 1 - cos²(x)
-my_rule = make_rule("sin_sq_to_cos", lhs=sin(x)**2, rhs=pool.integer(1) - cos(x)**2)
-r = simplify_with(expr, rules=[my_rule])
+# Add a custom rule: sin²(u) → 1 - cos²(u). Lower-case symbols in the
+# left-hand side (here `a`) are wildcards that bind to any sub-expression.
+my_rule = make_rule(sin(a)**2, pool.integer(1) - cos(a)**2)
+r = simplify_with(sin(x)**2 + y, [my_rule])   # → y + 1 - cos(x)²
 ```
+
+`simplify_with` applies only the rules it is given; add `alkahest.default_rules()`
+to the list to keep the default arithmetic rules.
 
 ### Conditional simplification (colored e-graphs)
 
@@ -157,24 +166,25 @@ convention anybody holds when the base is the literal integer `0`: `0⁻¹` is d
 by zero, so `0 · 0⁻¹` is the indeterminate form `0 · ∞` and has no value. Through 3.7
 `simplify` returned `1` for it, `simplify_egraph` returned `0`, and
 `simplify(5 · 0⁻¹ · 0)` returned `0` — three answers that were their own proof that at
-least two were wrong. As of 3.8 all of them decline:
+least two were wrong. As of 3.8 none of them returns a value: `simplify` raises
+`DivisionByZeroError` (`E-DOMAIN-001`) and `simplify_egraph` leaves the product alone:
 
 ```python
-import alkahest as ak
-
-pool = ak.ExprPool()
 Z = pool.integer(0)
 undefined = Z * Z ** pool.integer(-1)
 
-ak.simplify(undefined).value          # (0 * 0^-1) — left alone
-ak.simplify_egraph(undefined).value   # (0 * 0^-1) — same
-ak.simplify(pool.integer(5) * Z ** pool.integer(-1) * Z).value   # (0 * 0^-1 * 5)
+ak.simplify_egraph(undefined).value   # (0 * 0^-1) — left alone
+for e in (undefined, pool.integer(5) * Z ** pool.integer(-1) * Z):
+    try:
+        ak.simplify(e)
+    except ak.DivisionByZeroError as err:
+        print(err.code)               # E-DOMAIN-001
 ```
 
 The guard tests for a **literal** zero base. Because the rule engine normalises
 strictly bottom-up, that also covers every base the simplifier can itself reduce to
-zero — `x - x` included, so `diff(2/(x - x), x)` no longer reports `1` for a function
-whose domain is empty. A base that *is* zero but not provably so keeps the
+zero — `x - x` included, so `diff(2/(x - x), x)` now raises `DivisionByZeroError`
+instead of reporting `1` for a function whose domain is empty. A base that *is* zero but not provably so keeps the
 `b · b⁻¹ → 1` convention: deciding it would need a three-valued zero test on the `Mul`
 rewrite path, which costs several 128-bit ball evaluations per node.
 
@@ -186,14 +196,17 @@ Unaffected controls, so you can see the boundary: `x · x⁻¹ → 1`, `0 · x �
 ```python
 from alkahest import simplify_auto, simplify_par, simplify_redex, simplify_strategy
 
+expr = (x + pool.integer(0)) * pool.integer(1) + x * y + x * y + (x + 1)**2
+
 simplify_par(expr)      # fork-join: best on wide expressions
 simplify_redex(expr)    # level-scheduled: best on deep ones, deterministic log
 simplify_auto(expr)     # picks one of the two from the expression's shape
 simplify_strategy(expr) # "fork_join" | "level_scheduled" | "sequential"
 ```
 
-Each takes a single expression and returns the same result as `simplify`; only
-the schedule differs. Published wheels are built with `--features parallel`, so
+Each takes a single expression and returns the same result as the rule engine;
+only the schedule differs (`simplify_par` and `simplify_redex` run the rule engine
+alone, while `simplify_auto` also tries the domain passes above, as `simplify` does). Published wheels are built with `--features parallel`, so
 all three schedulers are real there. `parallel` is not a Cargo *default*,
 though: a source build that omits it falls back to the sequential path, so all
 four remain callable and `simplify_strategy` then reports `"sequential"` — which
@@ -234,7 +247,7 @@ Both are `experimental`: `alkahest_cas::experimental::{simplify_par, simplify_re
 from alkahest import simplify_egraph
 
 # The e-graph can discover non-obvious equivalences
-r = simplify_egraph(x * x - pool.integer(1))  # may factor or simplify
+r = simplify_egraph(x * x - pool.integer(1))  # may factor or simplify; here → -1 + x²
 ```
 
 E-graph saturation is more powerful than rule-based simplification for some inputs but slower and has non-deterministic performance for complex expressions. See [E-graph saturation](./egraph.md) for configuration options (`EgraphConfig`, including `disjoint_schedule` for match-disjoint rule groups).

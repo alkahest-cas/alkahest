@@ -90,6 +90,7 @@ more complete.
 The three-way branch a loop should write:
 
 ```python
+p = x**4*y**2 + x**2*y**4 - 3*x**2*y**2 + 1    # Motzkin: lands in "nonneg"
 try:
     cert = ak.sos_decompose(p, [x, y])
     verdict, evidence = "nonneg", cert    # proved, with a checkable identity

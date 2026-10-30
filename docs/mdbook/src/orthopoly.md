@@ -26,11 +26,11 @@ integer Legendre order) the call returns the polynomial with exact rational
 coefficients, generated from the closed-form sums of DLMF §18.5:
 
 ```python
->>> import alkahest as ak
->>> p = ak.ExprPool(); x = p.symbol("x"); a = p.symbol("a")
->>> ak.legendre_p(3, x)          # 5/2·x³ − 3/2·x
->>> ak.assoc_laguerre_l(2, a, x) # coefficients polynomial in a
->>> ak.assoc_legendre_p(2, 1, x) # (1 − x²)^(1/2) · (−3x)
+import alkahest as ak
+p = ak.ExprPool(); x = p.symbol("x"); a = p.symbol("a")
+print(ak.legendre_p(3, x))           # 5/2·x³ − 3/2·x
+print(ak.assoc_laguerre_l(2, a, x))  # coefficients polynomial in a
+print(ak.assoc_legendre_p(2, 1, x))  # (1 − x²)^(1/2) · (−3x)
 ```
 
 Family parameters may be symbolic. Negative degrees use the reflections that
@@ -93,10 +93,10 @@ orthonormal on the sphere.
 result an `Expr` `q` or `q·r^(1/2)` with `q` rational and `r` square-free.
 
 ```python
->>> from fractions import Fraction as F
->>> ak.wigner_3j(1, 1, 0, 0, 0, 0)                          # −1/3·3^(1/2)
->>> ak.clebsch_gordan(F(1, 2), F(1, 2), 1, F(1, 2), F(-1, 2), 0)   # 1/2·2^(1/2)
->>> ak.wigner_6j(1, 1, 1, 1, 1, 1)                          # 1/6
+from fractions import Fraction as F
+print(ak.wigner_3j(1, 1, 0, 0, 0, 0))                                 # −1/3·3^(1/2)
+print(ak.clebsch_gordan(F(1, 2), F(1, 2), 1, F(1, 2), F(-1, 2), 0))   # 1/2·2^(1/2)
+print(ak.wigner_6j(1, 1, 1, 1, 1, 1))                                 # 1/6
 ```
 
 Arguments are ints, `Fraction`s, floats that are exactly `k/2`, or numeric
