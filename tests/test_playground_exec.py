@@ -6,8 +6,8 @@ import pytest
 
 ak = pytest.importorskip("alkahest")
 
-import math_exec  # noqa: E402
-import mathlang as ml  # noqa: E402
+from alkahest.playground import math_exec  # noqa: E402
+from alkahest.playground import mathlang as ml  # noqa: E402
 
 
 def run(text, definitions=None):

@@ -3,11 +3,11 @@
 This module is deliberately free of any Alkahest import and of ``eval``: it turns
 one line of ordinary maths ("integrate sin(x)^2 dx", "d/dx x^3 sin(x)",
 "solve x^2 - 5x + 6 = 0") into a small, fully-inspected syntax tree.  The tree
-is then executed by :mod:`math_exec`, which maps every node onto an explicit
-whitelist of Alkahest calls.  Nothing a user types is ever handed to a Python
-interpreter, so there is no ``__import__``, attribute access, string, or
-subscript to smuggle through: anything outside the grammar below is a
-:class:`MathInputError` before Alkahest is even imported.
+is then executed by :mod:`alkahest.playground.math_exec`, which maps every
+node onto an explicit whitelist of Alkahest calls.  Nothing a user types is
+ever handed to a Python interpreter, so there is no ``__import__``, attribute
+access, string, or subscript to smuggle through: anything outside the grammar
+below is a :class:`MathInputError` before any Alkahest function is called.
 
 Grammar (informal)
 ------------------

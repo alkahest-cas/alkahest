@@ -73,11 +73,38 @@ Open [http://localhost:3000](http://localhost:3000).
 
 A static build runs in the browser at **[alkahest-cas.github.io/playground](https://alkahest-cas.github.io/playground/)**:
 
-- **Math tab** — needs an Alkahest server. With none configured it says so and shows how to start one; it does not compute anything in the browser. An HTTPS page can only reach an `https://` server (mixed content), so for a local server use the locally served playground.
+- **Math tab** — computes on the visitor's own machine through `python -m alkahest.playground` (see [Run the Math playground locally](#run-the-math-playground-locally)). With no server it shows the two setup commands and the starter cells' results precomputed at build time (labelled *precomputed*); it does not compute anything in the browser.
 - **Python tab, WASM** — SymPy and pure Python cells work with no server.
 - **Bring your own backend** — open settings (`Ctrl+/`) and set an Alkahest server URL + token (Math and Python tabs), or a remote Jupyter URL + token (Python tab only).
 
 Pushes to `main` under `demo-playground/` deploy automatically via `.github/workflows/playground.yml`.
+
+---
+
+## Run the Math playground locally
+
+The hosted page has no backend. Alkahest is native code (Rust + FLINT) and does not run in the browser yet, so the Math tab sends each line to a small server **on your own machine**:
+
+```bash
+pip install -U alkahest          # Python 3.9+
+python -m alkahest.playground    # http://127.0.0.1:8765, Ctrl+C to stop
+```
+
+Then open [alkahest-cas.github.io/playground](https://alkahest-cas.github.io/playground/) and click **Check again** (or just switch back to the tab). Nothing you type leaves your computer. Options: `--port N` (then set `http://127.0.0.1:N` as the backend URL in settings), `--allow-origin URL` (repeatable) to accept another page, `--quiet`, `--open`.
+
+How the page finds it: with no backend URL in settings, the Math tab looks at `http://127.0.0.1:8765/health`. From a public HTTPS page, browsers gate this behind a permission (*Local Network Access*), so the page only looks without a click when that cannot pop up a prompt — the permission is already granted, this browser has connected before, or the page itself is served from localhost — and re-checks when the window regains focus. Browser support, checked with Playwright on 2026-10-30:
+
+| Browser | https page → `http://127.0.0.1:8765` |
+|---------|---------------------------------------|
+| Chrome / Edge 142+ | Works after the user allows "apps on this device" (Local Network Access prompt); blocked until then. Tested: Chromium 148 blocks without the permission and succeeds (GET and POST) with it. |
+| Firefox | Works. Loopback is not mixed content (since Firefox 55/84); Firefox 153+ asks for Local Network Access permission first. Tested: Firefox 150 succeeded (it logged the LNA check, no prompt). |
+| Safari (macOS, and every browser on iOS/iPadOS) | **Blocked** as mixed content ([WebKit bug 171934](https://bugs.webkit.org/show_bug.cgi?id=171934), open). Tested: WebKit 26.4 blocks with "requested insecure content from http://127.0.0.1:8765". Use Chrome/Edge/Firefox, or run the whole playground locally (below). |
+
+Security model of the local server: it binds 127.0.0.1 only; it never executes Python from a request (the restricted grammar below, mapped onto a whitelist of Alkahest calls); each calculation runs in a fresh resource-limited child process; requests whose `Origin` is not on the allowlist (`https://alkahest-cas.github.io`, `http://localhost:3000`, `http://127.0.0.1:3000`, plus `--allow-origin`) get `403` and no CORS headers; requests whose `Host` is not a loopback name get `403` (DNS-rebinding protection); CORS preflights, including Chrome's `Access-Control-Request-Private-Network`, are answered for allowed origins only. No token is used: anything that can already run programs on your machine could run Alkahest directly. Resource limits use `resource.setrlimit` where the OS has it (Linux; macOS ignores the address-space cap); on Windows only the wall-clock kill and Alkahest's own `Budget` apply.
+
+The translator, executor and sandbox live in the Alkahest package (`python/alkahest/playground/`); the FastAPI server in `server/` imports them (falling back to this checkout's copy when the installed wheel predates them). The precomputed starter results come from `web/scripts/precompute-math.py`, which runs the real executor and writes `web/src/lib/math-precomputed.json`; rerun it when the starter cells or Alkahest's output change.
+
+A WebAssembly (Pyodide) build of Alkahest would let the tab compute in the browser with no install; that is future work.
 
 ---
 
@@ -138,9 +165,9 @@ POST /math/interpret  same body; parses only (live preview)
 
 The endpoint is designed so it can be hosted publicly:
 
-- **No Python execution.** `server/mathlang.py` is a hand-written tokenizer and parser (no `eval`, no `ast`, no imports of user text); `server/math_exec.py` maps each syntax-tree node onto an explicit whitelist of Alkahest calls. Strings, quotes, `.`, `;`, `_`-prefixed names and anything outside the grammar are refused before Alkahest is imported.
+- **No Python execution.** `alkahest/playground/mathlang.py` is a hand-written tokenizer and parser (no `eval`, no `ast`, no imports of user text); `alkahest/playground/math_exec.py` maps each syntax-tree node onto an explicit whitelist of Alkahest calls. Strings, quotes, `.`, `;`, `_`-prefixed names and anything outside the grammar are refused before any Alkahest function is called.
 - **Size caps before computing:** 500 characters, 2,000 syntax nodes, nesting depth 60, 100-digit literals, integer powers up to 100,000 bits, symbolic exponents up to 1,000, `n!` up to 1000, derivative order 20, series order 30, 1,000 digits, 32 definitions of up to 20,000 characters, 256 KiB request bodies.
-- **Each computation runs in a fresh `python -I` worker process** (`server/math_worker.py`) under `RLIMIT_AS` (`ALKAHEST_MATH_MEMORY_MB`, default 2048), `RLIMIT_CPU`, `RLIMIT_FSIZE=0`, `RLIMIT_NOFILE`, no core dumps, a minimal environment, inside `ak.context(budget=ak.Budget(wall_ms=..., max_bytes=...))`, and is SIGKILLed with its process group at a hard deadline (`ALKAHEST_MATH_TIMEOUT_S`, default 15 s). The cooperative budget alone cannot interrupt one FLINT call; the process kill can.
+- **Each computation runs in a fresh `python -I` worker process** (`alkahest/playground/_worker.py`) under `RLIMIT_AS` (`ALKAHEST_MATH_MEMORY_MB`, default 2048), `RLIMIT_CPU`, `RLIMIT_FSIZE=0`, `RLIMIT_NOFILE`, no core dumps, a minimal environment, inside `ak.context(budget=ak.Budget(wall_ms=..., max_bytes=...))`, and is SIGKILLed with its process group at a hard deadline (`ALKAHEST_MATH_TIMEOUT_S`, default 15 s). The cooperative budget alone cannot interrupt one FLINT call; the process kill can.
 - **Concurrency cap** (`ALKAHEST_MATH_CONCURRENCY`, default 2), with `E-PLAYGROUND-010` when the queue does not clear.
 - **Token:** if `ALKAHEST_SERVER_TOKEN` is set the Math endpoints require it, unless `ALKAHEST_MATH_PUBLIC=1` opens just them (the kernel, wheel-install and Lean endpoints stay protected).
 
@@ -148,7 +175,7 @@ These `ALKAHEST_MATH_*` variables are read by the server; put them in `server/.e
 
 Remaining risks before putting it on the open internet: there is no per-client rate limiting (put it behind a proxy that has one); each request spawns a process (about 0.15 s and up to the memory cap, times the concurrency); CORS is `*`; `/math/interpret` parses in the server process itself (bounded by the size caps, but not sandboxed); and the rest of the app (`/sessions`, `/ws`, wheel install, `/verify-lean`) runs arbitrary code by design and must not be exposed without the token.
 
-Tests: `cd server && pytest` (parser tests need nothing; executor and HTTP tests need an Alkahest build, `fastapi` and `httpx`).
+Tests: the parser, executor, sandbox and local server are tested at the repository level (`pytest tests/test_playground_*.py`, run in CI); `cd server && pytest` tests the FastAPI wrapper (needs an Alkahest build, `fastapi` and `httpx`).
 
 ---
 

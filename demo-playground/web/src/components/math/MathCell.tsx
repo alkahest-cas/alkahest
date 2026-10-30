@@ -15,12 +15,16 @@ export interface MathCellData {
   /** The input the result belongs to (a result goes stale when the input is edited). */
   ranInput?: string;
   preview?: MathResult | null;
+  /** The result was computed when the page was built (static site, no backend). */
+  precomputed?: boolean;
 }
 
 interface MathCellProps {
   cell: MathCellData;
   index: number;
   canRun: boolean;
+  /** Alkahest version the precomputed results were made with. */
+  precomputedVersion?: string;
   inputRef: (el: HTMLInputElement | null) => void;
   onChange: (value: string) => void;
   onRun: () => void;
@@ -34,6 +38,7 @@ export default function MathCell({
   cell,
   index,
   canRun,
+  precomputedVersion,
   inputRef,
   onChange,
   onRun,
@@ -110,7 +115,7 @@ export default function MathCell({
           type="button"
           onClick={onRun}
           disabled={!canRun || cell.status === 'running' || !cell.input.trim()}
-          title={canRun ? 'Run (Enter)' : 'Computation needs an Alkahest backend'}
+          title={canRun ? 'Run (Enter)' : 'Start the local server (see above) to run this'}
           aria-label={`Run cell ${index + 1}`}
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-ak-border text-ak-fg2 transition-colors hover:border-ak-border-strong hover:text-ak-fg disabled:opacity-40"
         >
@@ -136,8 +141,25 @@ export default function MathCell({
       )}
 
       {result && (
-        <div className={clsx('border-t border-ak-border px-3 py-2.5 sm:pl-12 sm:pr-4', stale && 'opacity-50')}>
-          {result.ok ? <ResultView result={result} /> : <RefusalView result={result} />}
+        <div
+          className={clsx(
+            'border-t border-ak-border px-3 py-2.5 sm:pl-12 sm:pr-4',
+            stale && 'opacity-50',
+            cell.precomputed && 'flex items-start gap-2',
+          )}
+        >
+          <div className={clsx(cell.precomputed && 'min-w-0 flex-1')}>
+            {result.ok ? <ResultView result={result} /> : <RefusalView result={result} />}
+          </div>
+          {cell.precomputed && (
+            <span
+              className="mt-0.5 shrink-0 rounded-full border border-ak-border px-2 py-px text-[11px] text-ak-muted"
+              data-testid="precomputed-badge"
+              title={`Computed in advance with Alkahest ${precomputedVersion ?? ''} when this page was built. Start the local server to run it yourself.`}
+            >
+              precomputed
+            </span>
+          )}
         </div>
       )}
     </div>

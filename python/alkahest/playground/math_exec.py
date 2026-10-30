@@ -5,7 +5,7 @@ mapped onto an explicit whitelist of Alkahest calls (``_AK_FUNCS`` and the
 ``_run_*`` methods below).  There is no ``eval``/``exec`` and no attribute
 lookup driven by user text.  Each request runs inside
 ``ak.context(budget=ak.Budget(wall_ms=..., max_bytes=...))``; the caller
-(:mod:`math_service`) additionally runs this in a separate, resource-limited
+(:mod:`alkahest.playground.service`) additionally runs this in a separate, resource-limited
 process with a hard timeout, because a single FLINT call is not interruptible
 by the cooperative budget.
 """
@@ -20,8 +20,9 @@ from fractions import Fraction
 from typing import Any
 
 import alkahest as ak
-import mathlang as ml
-from mathlang import Command, MathInputError, Node, Session
+
+from . import mathlang as ml
+from .mathlang import Command, MathInputError, Node, Session
 
 DEFAULT_WALL_MS = 8_000
 DEFAULT_MAX_BYTES = 512 * 1024 * 1024
