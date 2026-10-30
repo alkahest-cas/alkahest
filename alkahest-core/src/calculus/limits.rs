@@ -1178,6 +1178,22 @@ fn flatten_nested_integer_pow(expr: ExprId, pool: &ExprPool) -> ExprId {
                     return pool.pow(flatten_nested_integer_pow(b2, pool), pool.integer(prod));
                 }
             }
+            // `(a·b)^n ↦ a^n·b^n` for an integer `n`: the `x ↦ −1/t`
+            // substitution at `−∞` turns every `x⁻¹` into `(−1·t⁻¹)⁻¹`, which
+            // `simplify` leaves as it is, so `sin(x)/x` at `−∞` reached the
+            // `t → 0⁺` rules as `sin(−t⁻¹)·(−1·t⁻¹)⁻¹` and none of them
+            // matched — `lim_{x→−∞} sin(x)/x` was refused while the `+∞` side
+            // returned `0`.
+            if let (ExprData::Mul(factors), ExprData::Integer(_)) =
+                (pool.get(base), pool.get(exp_fl))
+            {
+                return pool.mul(
+                    factors
+                        .iter()
+                        .map(|&f| flatten_nested_integer_pow(pool.pow(f, exp_fl), pool))
+                        .collect(),
+                );
+            }
             pool.pow(base, exp_fl)
         }
         ExprData::Mul(xs) => pool.mul(
@@ -2245,7 +2261,17 @@ fn try_special_basis_limit(
     }
     if !matches!(
         name.as_str(),
-        "erf" | "erfc" | "Si" | "Ci" | "Shi" | "Chi" | "Ei" | "li" | "fresnels" | "fresnelc"
+        "erf"
+            | "erfc"
+            | "Si"
+            | "Ci"
+            | "Shi"
+            | "Chi"
+            | "Ei"
+            | "li"
+            | "fresnels"
+            | "fresnelc"
+            | "atan"
     ) {
         return Ok(None);
     }
@@ -2269,6 +2295,12 @@ fn try_special_basis_limit(
         // Si is odd with Si(∞) = π/2 (DLMF 6.2.9); Ci(∞) = 0 (DLMF 6.2.11).
         ("Si", true) => half_pi(),
         ("Si", false) => pool.mul(vec![pool.integer(-1_i32), half_pi()]),
+        // atan is odd, increasing, with atan(±∞) = ±π/2 (DLMF 4.24.2 with the
+        // principal branch). `lim_{x→∞} atan(x)` used to be refused outright
+        // (E-LIMIT-005), and with it every `∫₀^∞` whose antiderivative is an
+        // arctangent — `∫₀^∞ dx/(1+x²)` among them.
+        ("atan", true) => half_pi(),
+        ("atan", false) => pool.mul(vec![pool.integer(-1_i32), half_pi()]),
         ("Ci", true) => pool.integer(0_i32),
         // Shi is odd and grows like eˣ/x; Chi and Ei diverge at +∞ and Ei
         // decays to 0 at −∞ (DLMF 6.2.5: Ei(x) = ⨍_{-∞}^{x} eᵗ/t dt).
@@ -2379,8 +2411,8 @@ fn linear_coefficient_f64(arg: ExprId, var: ExprId, pool: &ExprPool) -> Option<f
 const LIMIT_SUBSTITUTION_PREFIX: &str = "__lt_";
 
 /// The heads [`try_special_basis_limit`] has a table for.
-const SPECIAL_BASIS_HEADS: [&str; 10] = [
-    "erf", "erfc", "Si", "Ci", "Shi", "Chi", "Ei", "li", "fresnels", "fresnelc",
+const SPECIAL_BASIS_HEADS: [&str; 11] = [
+    "erf", "erfc", "Si", "Ci", "Shi", "Chi", "Ei", "li", "fresnels", "fresnelc", "atan",
 ];
 
 /// `true` when `expr` mentions one of [`SPECIAL_BASIS_HEADS`].
@@ -4171,5 +4203,41 @@ mod parameter_base_power_tests {
         env.insert(r, 0.25);
         let got = crate::jit::eval_interp(l, &env, &pool).unwrap();
         assert!((got - 1.0 / 0.75).abs() < 1e-12, "{}", pool.display(l));
+    }
+
+    #[test]
+    fn atan_at_infinity_is_half_pi() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", crate::kernel::Domain::Real);
+        let inf = pool.pos_infinity();
+        let ninf = pool.mul(vec![pool.integer(-1_i32), inf]);
+        let env = std::collections::HashMap::new();
+        for (arg, point, want) in [
+            (x, inf, std::f64::consts::FRAC_PI_2),
+            (x, ninf, -std::f64::consts::FRAC_PI_2),
+            (
+                pool.add(vec![
+                    pool.mul(vec![pool.integer(2_i32), x]),
+                    pool.integer(1_i32),
+                ]),
+                inf,
+                std::f64::consts::FRAC_PI_2,
+            ),
+            (
+                pool.mul(vec![pool.integer(-3_i32), x]),
+                inf,
+                -std::f64::consts::FRAC_PI_2,
+            ),
+        ] {
+            let e = pool.func("atan", vec![arg]);
+            let l = limit(e, x, point, LimitDirection::Bidirectional, &pool).unwrap();
+            let v = crate::eval::eval_f64(l, &pool, &env).unwrap();
+            assert!(
+                (v - want).abs() < 1e-15,
+                "{} → {}",
+                pool.display(e),
+                pool.display(l)
+            );
+        }
     }
 }

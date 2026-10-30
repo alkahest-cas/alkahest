@@ -129,8 +129,10 @@ impl IntegrationError {
         }
         match self {
             IntegrationError::NotImplemented(_) => Some(
-                "only power, linearity, sin/cos/exp rules and algebraic (sqrt) rules \
-                 are implemented; use a numeric integrator for arbitrary functions",
+                "no integration method here could decide this integrand (rule engine, Risch \
+                 transcendental and algebraic cases, Risch–Norman, special functions, \
+                 integration by parts); this is a refusal, not a proof that no closed form \
+                 exists — try an equivalent form of the integrand, or integrate numerically",
             ),
             IntegrationError::DivisionByZero => None,
             IntegrationError::UnsupportedExtensionDegree(_) => Some(
@@ -2627,7 +2629,7 @@ fn known_nonelementary(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<Str
                 if special.is_some() {
                     return None; // two interacting specials — out of scope
                 }
-                special = Some(pool.display(a).to_string());
+                special = Some(crate::kernel::render_unicode(a, pool));
                 continue;
             }
         }
@@ -2705,9 +2707,9 @@ fn match_log_denominator(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<(
     if name == "log" && args.len() == 1 && is_linear_in(args[0], var, pool).is_some() {
         Some((
             format!(
-                "1/{} is the logarithmic integral li, which is not elementary \
-                 (Liouville's theorem)",
-                pool.display(base)
+                "the reason is the factor 1/{}: this is an integral of logarithmic-integral \
+                 (li) type, which is not elementary (Liouville's theorem)",
+                crate::kernel::render_unicode(base, pool)
             ),
             args[0],
         ))
@@ -3112,7 +3114,23 @@ pub fn integrate(
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, IntegrationError> {
     let frame = IntegrateFrame::enter();
-    let mut result = integrate_dispatch(expr, var, pool)?;
+    let mut result = match integrate_dispatch(expr, var, pool) {
+        Ok(r) => r,
+        // A certificate is a claim about the *caller's* integrand, so it names
+        // that integrand. The engines that prove non-elementarity describe the
+        // obstruction they found — often on a sub-integrand or coefficient
+        // (`1/log(x)` for `∫ sin(x)/log(x) dx`) — and that text used to be the
+        // whole message, which read as though the caller had asked about
+        // `1/log(x)`.
+        Err(IntegrationError::NonElementary(msg)) if frame.outermost => {
+            return Err(IntegrationError::NonElementary(format!(
+                "∫ {} d{} — {msg}",
+                crate::kernel::render_unicode(expr, pool),
+                crate::kernel::render_unicode(var, pool),
+            )));
+        }
+        Err(e) => return Err(e),
+    };
     if frame.outermost {
         if let Some(at) =
             super::branch_check::complex_branch_mismatch(result.value, expr, var, pool)
@@ -3720,6 +3738,21 @@ pub fn integrate_definite(
         }
     }
 
+    // An even rational integrand over a half-line: half the residue value.
+    if (is_zero(lower, pool) && upper == pool.pos_infinity())
+        || (is_negative_infinity(lower, pool) && is_zero(upper, pool))
+    {
+        if let Some(value) = even_rational_half_line(expr, var, pool) {
+            let mut log = DerivationLog::new();
+            log.push(RewriteStep::simple(
+                "residue_theorem_even_half_line",
+                expr,
+                value,
+            ));
+            return Ok(DerivedExpr::with_log(value, log));
+        }
+    }
+
     // F11: Beta-family integrals (`∫₀¹ xᵃ(1−x)ᵇ`, `∫₀^∞ xᵖ/(c+dx)ʳ`,
     // `∫₀^{π/2} sinᵖ cosᑫ`), incomplete-gamma integrals from a nonzero bound
     // and Feynman-parameter integrals of `log Q` / `Q^{−n}` for a quadratic
@@ -3772,6 +3805,19 @@ pub fn integrate_definite(
             // is how a caller ends up unable to tell an unsupported shape from
             // an unsupported antiderivative.
             LineIntegral::OutOfScope(reason) => {
+                // `∫ R(x)·cos(ax) dx`, `∫ R(x)·sin(ax) dx`: Jordan's lemma.
+                // Ahead of the FTC, whose antiderivative for these is
+                // non-elementary (`∫ cos x/(1+x²) dx` involves `Ci`/`Si` of
+                // complex arguments) and was reported as E-INT-004 for an
+                // integral whose value is `π/e`.
+                use crate::integrate::residue_theorem::integrate_rational_trig_over_real_line;
+                if let LineIntegral::Value { value, .. } =
+                    integrate_rational_trig_over_real_line(expr, var, pool)
+                {
+                    let mut log = DerivationLog::new();
+                    log.push(RewriteStep::simple("residue_theorem_jordan", expr, value));
+                    return Ok(DerivedExpr::with_log(value, log));
+                }
                 return definite_via_ftc(expr, var, lower, upper, pool).map_err(|e| match e {
                     IntegrationError::NotImplemented(msg) => IntegrationError::NotImplemented(
                         format!("{msg} (the residue-theorem route did not apply: {reason})"),
@@ -4926,8 +4972,9 @@ fn interior_singularity(
     // removable and must not be reported.
     // The pseudo-quotient has the same roots as the exact quotient (they differ
     // only by a constant factor), which is all this check needs.
-    let reduced = crate::poly::UniPoly::from_symbolic(numer, var, pool)
-        .ok()
+    let numer_poly = crate::poly::UniPoly::from_symbolic(numer, var, pool).ok();
+    let numer_is_poly = numer_poly.is_some();
+    let reduced = numer_poly
         .and_then(|numer_poly| denom_poly.gcd(&numer_poly))
         .filter(|common| common.degree() > 0)
         .and_then(|common| denom_poly.pseudo_divrem(&common))
@@ -4949,6 +4996,33 @@ fn interior_singularity(
             } else {
                 format!("in [{}, {}]", interval.lo_f64(), interval.hi_f64())
             };
+            // A root of the denominator is a *pole* only when the numerator
+            // does not vanish there. With a polynomial numerator the gcd above
+            // has already divided every shared root out, so what is left is a
+            // genuine pole of a rational function and the integral diverges.
+            // With any other numerator nothing was divided out: `sin(x)/x` at
+            // 0, `log(1+x)/x` at 0 and `sin(x)²/x²` at 0 are removable, and
+            // `√x/x` at 0 is an integrable `x^{-1/2}` — all of which were
+            // refused with "the integral does not converge".
+            if !numer_is_poly {
+                match classify_denominator_root(simplified, numer, var, &interval, lo, hi, pool) {
+                    DenominatorRoot::Removable => continue,
+                    DenominatorRoot::Pole => {}
+                    DenominatorRoot::Undecided => {
+                        return Some(format!(
+                            "improper integral: the denominator of the integrand vanishes at \
+                             {} = {}, inside the interval of integration [{}, {}], and whether \
+                             the integrand is integrable there (a removable or integrable \
+                             singularity) or not could not be established; declining rather \
+                             than applying the fundamental theorem across it",
+                            pool.display(var),
+                            location,
+                            lo,
+                            hi,
+                        ));
+                    }
+                }
+            }
             return Some(format!(
                 "improper integral: the integrand has a pole at {} = {}, inside the \
                  interval of integration [{}, {}]. The integral does not converge \
@@ -4962,6 +5036,279 @@ fn interior_singularity(
         }
     }
     None
+}
+
+/// `lim_{x→±∞}` of `Σ cᵢ·log(pᵢ(x)) + rest` with rational `cᵢ`, polynomial
+/// `pᵢ ∈ ℚ[x]` and every term of `rest` having a finite limit.
+///
+/// This is the shape of every Lazard–Rioboo–Trager antiderivative of a rational
+/// function: `∫ dx/(1+x³) = ⅓log(x+1) − ⅙log(x²−x+1) + atan((2x−1)/√3)/√3`.
+/// Each log runs to `∞` on its own, so the general engine has to cancel
+/// infinities and gave up ("limit refinement depth exceeded"). Read off
+/// directly instead: `log pᵢ(x) = log|lcᵢ| + dᵢ·log|x| + o(1)` once `pᵢ` has
+/// the sign of its leading term, so the sum of the logs tends to
+/// `Σ cᵢ·log|lcᵢ|` exactly when `Σ cᵢ·dᵢ = 0` (and to `±∞` otherwise, which is
+/// left to the caller's refusal). Every `pᵢ` must be eventually *positive* —
+/// a log of an eventually negative polynomial is not real there — or the
+/// rule declines.
+fn log_polynomial_limit(f: ExprId, var: ExprId, bound: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    use super::risch::poly_rde::{expr_to_qpoly_expanded, rational_to_expr, trim};
+    let toward_pos = if bound == pool.pos_infinity() {
+        true
+    } else if is_negative_infinity(bound, pool) {
+        false
+    } else {
+        return None;
+    };
+    let terms = match pool.get(f) {
+        ExprData::Add(args) => args,
+        _ => vec![f],
+    };
+    let mut degree_sum = rug::Rational::from(0);
+    let mut log_values: Vec<ExprId> = Vec::new();
+    let mut rest: Vec<ExprId> = Vec::new();
+    for t in terms {
+        if is_free_of(t, var, pool) {
+            rest.push(t);
+            continue;
+        }
+        // c·log(p): constant factors times exactly one var-dependent log.
+        let factors = match pool.get(t) {
+            ExprData::Mul(xs) => xs,
+            _ => vec![t],
+        };
+        let (consts, dep): (Vec<ExprId>, Vec<ExprId>) =
+            factors.iter().partition(|&&a| is_free_of(a, var, pool));
+        let log_arg = match dep.as_slice() {
+            [single] => match pool.get(*single) {
+                ExprData::Func { name, args } if name == "log" && args.len() == 1 => Some(args[0]),
+                _ => None,
+            },
+            _ => None,
+        };
+        let coeff = match consts.len() {
+            0 => Some(rug::Rational::from(1)),
+            _ => {
+                let c = simplify(pool.mul(consts.clone()), pool).value;
+                match pool.get(c) {
+                    ExprData::Integer(n) => Some(rug::Rational::from(n.0.clone())),
+                    ExprData::Rational(r) => Some(r.0.clone()),
+                    _ => None,
+                }
+            }
+        };
+        let poly = log_arg.and_then(|a| expr_to_qpoly_expanded(a, var, pool).map(trim));
+        match (coeff, poly) {
+            (Some(c), Some(p)) if p.len() >= 2 => {
+                let d = p.len() - 1;
+                let lc = p[d].clone();
+                // Sign of p(x) as x → ±∞.
+                let eventual_sign_positive = if toward_pos || d % 2 == 0 {
+                    lc > 0
+                } else {
+                    lc < 0
+                };
+                if !eventual_sign_positive {
+                    return None;
+                }
+                degree_sum += c.clone() * rug::Rational::from(d as u64);
+                let abs_lc = rug::Rational::from(lc.abs_ref());
+                log_values.push(pool.mul(vec![
+                    rational_to_expr(&c, pool),
+                    pool.func("log", vec![rational_to_expr(&abs_lc, pool)]),
+                ]));
+            }
+            _ => rest.push(t),
+        }
+    }
+    if log_values.is_empty() || degree_sum != 0 {
+        return None;
+    }
+    let mut out = log_values;
+    for t in rest {
+        if is_free_of(t, var, pool) {
+            out.push(t);
+            continue;
+        }
+        let l = crate::calculus::limit(
+            t,
+            var,
+            bound,
+            crate::calculus::LimitDirection::Bidirectional,
+            pool,
+        )
+        .ok()?;
+        if mentions_var(l, var, pool) || expr_is_non_finite(l, pool) {
+            return None;
+        }
+        out.push(l);
+    }
+    Some(simplify(pool.add(out), pool).value)
+}
+
+/// `∫₀^∞ R(x) dx` (or `∫_{-∞}^0`) for an **even** rational `R`, as half of the
+/// residue-theorem value over the whole line.
+///
+/// The antiderivative of `1/(x⁴+1)` is a `RootSum` over a quartic irreducible
+/// over ℚ, whose limit at `∞` the limit engine cannot take, so the FTC route
+/// refused `∫₀^∞ dx/(x⁴+1)`. For an even integrand the half-line integral is
+/// exactly half the line integral, which the residue route computes exactly
+/// and cross-checks against a rigorous enclosure. Anything else (not rational,
+/// not even, divergent, out of the residue route's scope) declines and the
+/// FTC path runs as before.
+fn even_rational_half_line(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    use super::risch::poly_rde::trim;
+    use super::risch::rational_rde::expr_to_qrational;
+    use crate::integrate::residue_theorem::{integrate_rational_over_real_line, LineIntegral};
+    let (num, den) = expr_to_qrational(expr, var, pool).or_else(|| {
+        let normalised = simplify(expr, pool).value;
+        expr_to_qrational(normalised, var, pool)
+    })?;
+    let (num, den) = (trim(num), trim(den));
+    if den.is_empty() || num.is_empty() {
+        return None;
+    }
+    // Parity of a polynomial: Some(true) even, Some(false) odd, None neither.
+    let parity = |p: &[rug::Rational]| -> Option<bool> {
+        let even = p.iter().enumerate().all(|(i, c)| i % 2 == 0 || *c == 0);
+        let odd = p.iter().enumerate().all(|(i, c)| i % 2 == 1 || *c == 0);
+        match (even, odd) {
+            (true, _) => Some(true),
+            (_, true) => Some(false),
+            _ => None,
+        }
+    };
+    if parity(&num)? != parity(&den)? {
+        return None;
+    }
+    match integrate_rational_over_real_line(expr, var, pool) {
+        LineIntegral::Value { value, .. } => {
+            Some(simplify(pool.mul(vec![pool.rational(1, 2), value]), pool).value)
+        }
+        _ => None,
+    }
+}
+
+/// `Si(0)`, `Shi(0)`, `S(0)`, `C(0)` ↦ `0` (odd functions finite at 0) after
+/// substituting a bound. `simplify` leaves them alone, so `∫₀^∞ sin(x)/x dx`
+/// came back as `π/2 − Si(0)`.
+fn fold_odd_special_at_zero(expr: ExprId, pool: &ExprPool) -> ExprId {
+    match pool.get(expr) {
+        ExprData::Func { name, args }
+            if args.len() == 1
+                && matches!(name.as_str(), "Si" | "Shi" | "fresnels" | "fresnelc")
+                && is_zero(simplify(args[0], pool).value, pool) =>
+        {
+            pool.integer(0_i32)
+        }
+        ExprData::Func { name, args } => pool.func(
+            name,
+            args.iter()
+                .map(|&a| fold_odd_special_at_zero(a, pool))
+                .collect(),
+        ),
+        ExprData::Add(xs) => pool.add(
+            xs.iter()
+                .map(|&a| fold_odd_special_at_zero(a, pool))
+                .collect(),
+        ),
+        ExprData::Mul(xs) => pool.mul(
+            xs.iter()
+                .map(|&a| fold_odd_special_at_zero(a, pool))
+                .collect(),
+        ),
+        ExprData::Pow { base, exp } => pool.pow(
+            fold_odd_special_at_zero(base, pool),
+            fold_odd_special_at_zero(exp, pool),
+        ),
+        _ => expr,
+    }
+}
+
+/// What a root of the integrand's denominator is, for a non-polynomial
+/// numerator. See [`interior_singularity`].
+enum DenominatorRoot {
+    /// The integrand has a finite limit there, or is bounded by `C·|x − r|^{−β}`
+    /// with `β < 1` (an integrable singularity); either way `F` is continuous at
+    /// `r` and the FTC applies.
+    Removable,
+    /// The numerator has a finite non-zero limit there, so the integrand
+    /// behaves like `c/(x−a)^k` with `k ≥ 1` and the integral diverges.
+    Pole,
+    /// Neither could be established.
+    Undecided,
+}
+
+/// Classify the denominator root isolated by `interval` (only exact rational
+/// roots are decided; an irrational root is `Undecided`).
+#[allow(clippy::too_many_arguments)]
+fn classify_denominator_root(
+    integrand: ExprId,
+    numer: ExprId,
+    var: ExprId,
+    interval: &crate::poly::RootInterval,
+    lo: f64,
+    hi: f64,
+    pool: &ExprPool,
+) -> DenominatorRoot {
+    use crate::calculus::LimitDirection;
+    if interval.lo != interval.hi {
+        return DenominatorRoot::Undecided;
+    }
+    let r = interval.lo.to_f64();
+    let point = super::risch::poly_rde::rational_to_expr(&interval.lo, pool);
+    // Approach from inside the interval at an endpoint.
+    let direction = if r <= lo {
+        LimitDirection::Plus
+    } else if r >= hi {
+        LimitDirection::Minus
+    } else {
+        LimitDirection::Bidirectional
+    };
+    let finite_value = |e: ExprId| -> Option<f64> {
+        let l = crate::calculus::limit(e, var, point, direction, pool).ok()?;
+        if mentions_var(l, var, pool) || expr_is_non_finite(l, pool) {
+            return None;
+        }
+        crate::eval::eval_f64(l, pool, &HashMap::new())
+            .ok()
+            .filter(|v| v.is_finite())
+    };
+    if finite_value(integrand).is_some() {
+        return DenominatorRoot::Removable;
+    }
+    // Integrable: `|x − r|^β·f` stays bounded for some `β < 1` on every side
+    // the interval approaches `r` from, so `|f| ≤ C·|x − r|^{−β}` there
+    // (`√x/x = x^{−1/2}` at 0). The FTC then applies: `F` is continuous at `r`.
+    let one_side = |dir: LimitDirection| -> bool {
+        let dist = match dir {
+            LimitDirection::Minus => {
+                pool.add(vec![point, pool.mul(vec![pool.integer(-1_i32), var])])
+            }
+            _ => pool.add(vec![var, pool.mul(vec![pool.integer(-1_i32), point])]),
+        };
+        [(1, 2), (2, 3), (3, 4)].iter().any(|&(p, q)| {
+            let weighted = pool.mul(vec![pool.pow(dist, pool.rational(p, q)), integrand]);
+            crate::calculus::limit(weighted, var, point, dir, pool)
+                .ok()
+                .filter(|l| !mentions_var(*l, var, pool) && !expr_is_non_finite(*l, pool))
+                .and_then(|l| crate::eval::eval_f64(l, pool, &HashMap::new()).ok())
+                .is_some_and(|v| v.is_finite())
+        })
+    };
+    let integrable = match direction {
+        LimitDirection::Bidirectional => {
+            one_side(LimitDirection::Plus) && one_side(LimitDirection::Minus)
+        }
+        d => one_side(d),
+    };
+    if integrable {
+        return DenominatorRoot::Removable;
+    }
+    match finite_value(numer) {
+        Some(v) if v != 0.0 => DenominatorRoot::Pole,
+        _ => DenominatorRoot::Undecided,
+    }
 }
 
 /// Evaluate the antiderivative `f` at `bound` for the FTC difference.
@@ -5009,6 +5356,7 @@ fn eval_bound(
         // AUC) failed as a whole with E-LIMIT-005 while each decay alone is
         // routine; `termwise_limit` accepts only the all-finite case.
         .or_else(|e| super::prenorm::termwise_limit(f, var, bound, pool).ok_or(e))
+        .or_else(|e| log_polynomial_limit(f, var, bound, pool).ok_or(e))
         .map(|l| super::prenorm::resolve_zero_powers(l, pool))
         .map_err(|e| {
             // When the limit failed for want of a stated fact about a free
@@ -5060,7 +5408,10 @@ fn eval_bound(
     }
     // `0^{n+1}` at a bound of `x^{n+1}/(n+1)` is `0` once `n + 1 > 0` is
     // established; left alone it reads as an unresolved pole downstream.
-    let substituted = super::prenorm::resolve_zero_powers(subs_var(f, var, bound, pool), pool);
+    let substituted = fold_odd_special_at_zero(
+        super::prenorm::resolve_zero_powers(subs_var(f, var, bound, pool), pool),
+        pool,
+    );
     // What is left is a `0^e` whose exponent's sign is not established: `0` for
     // `e > 0`, a pole for `e < 0`. `∫₀¹ xⁿ dx` with nothing known about `n`
     // used to come back carrying `0^{n+1}` as though it were a value.
@@ -9966,5 +10317,72 @@ mod half_angle_continuity_tests {
         let half = pool.rational(1_i32, 2_i32);
         assert!(half_angle_result_jumps(sawtooth, half, x, &pool));
         assert!(!half_angle_result_jumps(half_x, half, x, &pool));
+    }
+}
+
+/// Definite integrals across a removable singularity, over a half-line, and of
+/// Fourier type — each value checked against an independent `f64` reference.
+#[cfg(test)]
+mod launch_definite_tests {
+    use super::*;
+    use crate::kernel::Domain;
+
+    fn value(f: ExprId, x: ExprId, a: ExprId, b: ExprId, pool: &ExprPool) -> f64 {
+        let r = integrate_definite(f, x, a, b, pool)
+            .unwrap_or_else(|e| panic!("∫ {} refused: {e}", pool.display(f)));
+        crate::jit::eval_interp(r.value, &HashMap::new(), pool)
+            .unwrap_or_else(|| panic!("{} does not evaluate", pool.display(r.value)))
+    }
+
+    #[test]
+    fn removable_and_half_line_and_fourier() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let (zero, one) = (pool.integer(0_i32), pool.integer(1_i32));
+        let inf = pool.pos_infinity();
+        let ninf = pool.mul(vec![pool.integer(-1_i32), inf]);
+        let inv = |e: ExprId| pool.pow(e, pool.integer(-1_i32));
+        let x2p1 = pool.add(vec![pool.pow(x, pool.integer(2_i32)), one]);
+        let pi = std::f64::consts::PI;
+        // ∫₀^∞ sin(x)/x dx = π/2 (removable singularity at 0).
+        let sinc = pool.mul(vec![pool.func("sin", vec![x]), inv(x)]);
+        assert!((value(sinc, x, zero, inf, &pool) - pi / 2.0).abs() < 1e-12);
+        // ∫₀¹ log(1+x)/x dx = π²/12.
+        let f = pool.mul(vec![pool.func("log", vec![pool.add(vec![one, x])]), inv(x)]);
+        assert!((value(f, x, zero, one, &pool) - pi * pi / 12.0).abs() < 1e-12);
+        // ∫₀^∞ dx/(1+x²) = π/2 (atan limit).
+        assert!((value(inv(x2p1), x, zero, inf, &pool) - pi / 2.0).abs() < 1e-12);
+        // ∫₀^∞ dx/(x⁴+1) = π/(2√2) (even: half the residue value).
+        let q4 = pool.add(vec![pool.pow(x, pool.integer(4_i32)), one]);
+        assert!((value(inv(q4), x, zero, inf, &pool) - pi / (2.0 * 2f64.sqrt())).abs() < 1e-12);
+        // ∫₀^∞ dx/(1+x³) = 2π/(3√3) (log/atan limit at ∞).
+        let q3 = pool.add(vec![pool.pow(x, pool.integer(3_i32)), one]);
+        let want = 2.0 * pi / (3.0 * 3f64.sqrt());
+        assert!((value(inv(q3), x, zero, inf, &pool) - want).abs() < 1e-12);
+        // ∫ℝ cos(x)/(1+x²) dx = π/e (Jordan's lemma).
+        let f = pool.mul(vec![pool.func("cos", vec![x]), inv(x2p1)]);
+        assert!((value(f, x, ninf, inf, &pool) - pi / 1f64.exp()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn genuine_poles_are_still_refused() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let (zero, one) = (pool.integer(0_i32), pool.integer(1_i32));
+        let inv_x = pool.pow(x, pool.integer(-1_i32));
+        for f in [
+            pool.mul(vec![pool.func("cos", vec![x]), inv_x]),
+            pool.mul(vec![pool.func("exp", vec![x]), inv_x]),
+            pool.mul(vec![
+                pool.func("sin", vec![x]),
+                pool.pow(x, pool.integer(-2_i32)),
+            ]),
+        ] {
+            assert!(
+                integrate_definite(f, x, zero, one, &pool).is_err(),
+                "∫₀¹ {} dx diverges",
+                pool.display(f)
+            );
+        }
     }
 }

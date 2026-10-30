@@ -862,16 +862,26 @@ fn integrate_single_exp_term(
 
     // Non-elementary error shared by the polynomial and rational paths.
     let non_elementary = || {
+        // Rendered with the Unicode printer and with `k` folded into the
+        // coefficient: the old text spliced raw `Display` output into a
+        // function-call template and read `v'(x) + 1·((x * 2)(x))·v(x) = 1(x)`
+        // for `∫ exp(x²) dx`.
+        let f = simplify(pool.mul(vec![pool.integer(k), deta_expr]), pool).value;
+        let exp_term = simplify(
+            pool.func("exp", vec![pool.mul(vec![pool.integer(k), eta])]),
+            pool,
+        )
+        .value;
+        let term = simplify(pool.mul(vec![c_expr, exp_term]), pool).value;
         IntegrationError::NonElementary(format!(
-            "the Risch DE v'(x) + {}·({}(x))·v(x) = {}(x) has no rational solution;\n\
-             the integrand ∫ {} · exp(η)^{} dx is not an elementary function\n\
-             (η = {})",
-            k,
-            pool.display(deta_expr),
-            pool.display(c_expr),
-            pool.display(c_expr),
-            k,
-            pool.display(eta),
+            "the Risch differential equation v′ + ({})·v = {} has no rational solution v(x), \
+             so no v(x)·{} is an antiderivative of {} (Risch structure theorem for the \
+             exponential extension {})",
+            crate::kernel::render_unicode(f, pool),
+            crate::kernel::render_unicode(c_expr, pool),
+            crate::kernel::render_unicode(exp_term, pool),
+            crate::kernel::render_unicode(term, pool),
+            crate::kernel::render_unicode(exp_gen, pool),
         ))
     };
 
