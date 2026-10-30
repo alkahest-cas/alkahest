@@ -17,6 +17,8 @@ This gives three properties:
 `ExprPool` is the intern table. It owns all expressions in a session.
 
 ```python
+from alkahest import ExprPool
+
 pool = ExprPool()
 x = pool.symbol("x")       # intern a Symbol node
 n = pool.integer(42)       # intern an Integer node
@@ -33,7 +35,7 @@ Accumulating with an operator is not. `Add` is flat, so `s = s + t` interns a ne
 ```python
 terms = [x**i for i in range(10_000)]
 
-s = pool.add(terms)      # ~30 ms, one node
+s = pool.add(terms)      # ~1 ms, one node
 s = sum(terms[1:], terms[0])   # ~2 s and ~400 MB of dead intermediate sums
 ```
 
@@ -55,6 +57,7 @@ pool2 = ExprPool.load_from("session.alkp")
 
 ```python
 import concurrent.futures, operator
+y = pool.symbol("y")
 with concurrent.futures.ProcessPoolExecutor() as ex:
     products = list(ex.map(operator.mul, [x, y], [y, y]))
 products[0] + x          # fine: the result is back in x's pool

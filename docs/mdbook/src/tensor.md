@@ -75,7 +75,7 @@ by symmetry. Each stage is cached.
 ## Abstract indices
 
 ```python
-a, b, c = ak.tensor_indices("a b c")
+a, b, c, d = ak.tensor_indices("a b c d")
 Ric, g = m.ricci(), m.as_tensor()
 R = Ric[a, -a]                         # raise one slot with g^ab, contract: the Ricci scalar
 G = Ric[-a, -b] - g[-a, -b] * R / 2    # same components as m.einstein()

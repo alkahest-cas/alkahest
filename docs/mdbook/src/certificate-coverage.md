@@ -314,6 +314,9 @@ ak.certifiable("diff", ak.sin(x), x, mode="ledger")
 
 # Fail loudly instead of degrading silently.
 with ak.context(require_certificate=True):
-    ak.diff(ak.log(ak.sin(x)), x)   # raises E-CERT-001
+    try:
+        ak.diff(ak.log(ak.sin(x)), x)
+    except ak.CertificateUnavailableError as e:
+        print(e.code)             # E-CERT-001
 ```
 

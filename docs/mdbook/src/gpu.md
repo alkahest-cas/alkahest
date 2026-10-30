@@ -74,6 +74,7 @@ compile step must keep working when moved between wheels. `compile_cuda` and
 
 ## `compile_cuda`
 
+<!-- doc-check: skip — needs CUDA -->
 ```python
 import alkahest as ak
 
@@ -100,6 +101,7 @@ DCE → PTX for `sm_86` (Ampere) → loaded through the CUDA driver by `cudarc`.
 
 ### Discovering the valid device ordinals
 
+<!-- doc-check: skip — needs CUDA -->
 ```python
 n = ak.cuda_device_count()          # 0 when there is no GPU here
 for dev in range(n):

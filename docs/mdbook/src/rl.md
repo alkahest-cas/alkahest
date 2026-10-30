@@ -37,7 +37,12 @@ when it is unavailable.
 ## Quick start — symbolic integration
 
 ```python
+import alkahest as ak
 from alkahest.rl.envs.integration import IntegrationVerifier, load_environment
+
+pool = ak.ExprPool()
+x = pool.symbol("x")
+pool_expr = pool.integer(2) * x          # the integrand f(x) = 2x
 
 # Standalone verifier (any trainer)
 verifier = IntegrationVerifier()
@@ -45,7 +50,11 @@ reward = verifier.verify(
     "x^2",
     {"f_expr": pool_expr, "is_elementary": True, "pool": pool},
 )
+reward    # 1.0
+```
 
+<!-- doc-check: needs verifiers -->
+```python
 # Prime Intellect verifiers environment (after pip install "alkahest[rl]")
 env = load_environment(
     difficulty_tier=0,
@@ -118,6 +127,7 @@ Intellect's `vf.Rubric` is used inside `load_environment()` for Hub compatibilit
 
 ## veRL adapter
 
+<!-- doc-check: skip — `recipes/` is a source-tree directory, not part of the wheel -->
 ```python
 from recipes.verl_integration_reward import compute_score
 

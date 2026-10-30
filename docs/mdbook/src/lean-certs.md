@@ -45,7 +45,7 @@ The full mapping lives in `alkahest-core/src/lean/`.
 ## Exporting a certificate
 
 ```python
-from alkahest import diff, sin
+from alkahest import ExprPool, diff, sin
 
 pool = ExprPool()
 x = pool.symbol("x", "real")
@@ -131,7 +131,10 @@ bool(answer)        # False
 
 # 3. Refuse to degrade silently.
 with ak.context(require_certificate=True):
-    ak.diff(ak.log(ak.sin(x)), x)   # raises CertificateUnavailableError (E-CERT-001)
+    try:
+        ak.diff(ak.log(ak.sin(x)), x)
+    except ak.CertificateUnavailableError as e:
+        print(e.code)               # E-CERT-001
 ```
 
 `capabilities()["verification"]["coverage"]` summarises the same ledger, and

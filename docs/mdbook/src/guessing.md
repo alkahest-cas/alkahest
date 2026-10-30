@@ -92,6 +92,11 @@ This is the failure `surplus_terms` and `dimension` do not catch. A single
 wrong term in an otherwise clean sequence does not stop a fit — it is absorbed:
 
 ```python
+motzkin_71_terms = [1, 1]                  # M(0..70), from Motzkin's recurrence
+for n in range(69):
+    motzkin_71_terms.append(((2*n + 5) * motzkin_71_terms[-1]
+                             + (3*n + 3) * motzkin_71_terms[-2]) // (n + 4))
+
 spoiled = motzkin_71_terms.copy()
 spoiled[30] += 1                       # one typo
 
@@ -124,9 +129,11 @@ on the data — it is only untrue that it is the sequence's recurrence.
 Two different negative answers, kept apart on purpose:
 
 ```python
-ak.guess_holonomic(motzkin[:7])
-# HolonomicError: E-HOLO-005 — 7 terms are not enough to test every recurrence
-# in bounds …
+try:
+    ak.guess_holonomic(motzkin[:7])
+except ak.HolonomicError as e:
+    print(e.code, e)
+# E-HOLO-005 7 terms are not enough to test every recurrence in bounds …
 ```
 
 Seven Motzkin terms give exactly the five equations needed to pin down the six
@@ -134,6 +141,9 @@ unknowns of an order-2, degree-1 ansatz. The fit would be exact, and the same
 fit exists for *any* seven numbers. That is refused.
 
 ```python
+import sympy
+first_sixty_primes = list(sympy.primerange(2, 282))   # 2, 3, 5, …, 281
+
 ak.guess_holonomic(first_sixty_primes) is None   # True
 ```
 
@@ -151,7 +161,8 @@ later.
 ## Knobs
 
 ```python
-ak.guess_holonomic(terms, max_order=4, max_degree=4, *,
+# the defaults, spelled out
+ak.guess_holonomic(motzkin, max_order=4, max_degree=4,
                    start=0, min_surplus=None, check_evidence=True)
 ```
 
@@ -182,12 +193,20 @@ exact and would happily certify a recurrence for the sequence you rounded to.
 ## Guess, then prove
 
 ```python
+from math import comb
+
+terms = [comb(2*m, m) for m in range(20)]        # C(2n, n) = Σ_k C(n, k)²
+more_terms = [comb(2*m, m) for m in range(40)]
+pool = ak.ExprPool()
+n, k = pool.symbol("n"), pool.symbol("k")
+F = ak.binomial(n, k) ** 2
+
 guess = ak.guess_holonomic(terms)
 if guess is not None and guess.confirmed is True:
     assert guess.holds_for(more_terms)          # exact, on data it never saw
     cert = ak.zeilberger(F, n, k, minimal=True) # …and now prove it
-    cert.order == guess.order
-    cert.order_is_minimal
+    print(cert.order == guess.order)            # True
+    print(cert.order_is_minimal)                # True
 ```
 
 `holds_for` re-checks the recurrence exactly against a longer list, and

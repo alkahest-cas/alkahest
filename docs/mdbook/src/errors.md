@@ -250,7 +250,7 @@ try:
     m.inverse()
 except ak.MatrixError as e:
     print(e.code)          # E-MAT-004
-    print(e.remediation)   # substitute concrete values for the parameters
+    print(e.remediation)   # rewrite the entries into a form ... or substitute concrete values
 
 try:
     ak.Matrix([[opaque, zero], [zero, zero]]).nullspace()
@@ -269,6 +269,12 @@ wrapper it surfaced through.
 For programmatic error handling:
 
 ```python
+import alkahest
+
+pool = alkahest.ExprPool()
+x = pool.symbol("x")
+expr = alkahest.exp(x**2)
+
 try:
     result = alkahest.integrate(expr, x)
 except alkahest.AlkahestError as e:
@@ -529,7 +535,10 @@ x = p.symbol("x")
 
 with ak.context(require_certificate=True):
     ak.diff(ak.sin(x), x)              # fine — certifies
-    ak.diff(ak.log(ak.sin(x)), x)      # raises E-CERT-001
+    try:
+        ak.diff(ak.log(ak.sin(x)), x)
+    except ak.CertificateUnavailableError as e:
+        print(e.code)                  # E-CERT-001
 ```
 
 ### Cause axis

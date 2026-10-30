@@ -103,7 +103,10 @@ The same channel as `Matrix.inverse` applies to ranks generally:
   stable subspace; scipy for a singular `A`).
 
 ```python
-A = ak.Matrix([[0, 1], [0, 0]]) ...               # double integrator, R = r
+r, N = p.symbol("r"), p.integer                   # double integrator, R = r
+A = ak.Matrix([[N(0), N(1)], [N(0), N(0)]])
+B = ak.Matrix([[N(0)], [N(1)]])
+Q = ak.Matrix([[N(1), N(0)], [N(0), N(1)]])
 K, X = ak.lqr(A, B, Q, [[r]])
 # X12 = √r, X22 = √(r(1 + 2√r)), K = [1/√r, √((1 + 2√r)/r)]
 ak.controls_side_conditions()                     # ['r ≠ 0', '… r … > 0', …]

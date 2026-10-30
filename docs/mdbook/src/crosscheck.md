@@ -110,6 +110,7 @@ how a harness starts reporting two normal forms as a divergence.
 ## A divergence names two suspects
 
 ```python
+integrand = ak.sin(x) ** 2
 out = check("integrate", integrand, x)
 if out.outcome == "diverge":
     d = out.divergence
@@ -170,9 +171,15 @@ ignore the alarm, and a best-effort translator manufactures them by construction
 ```python
 from alkahest.crosscheck import to_sympy
 
+positive = ak.Assumptions(pool)
+positive.refine(pool.gt(x, pool.integer(0)))                # x > 0
+
 to_sympy(ak.sqrt(x**pool.integer(2)))                       # sqrt(x**2)
 to_sympy(ak.sqrt(x**pool.integer(2)), assumptions=positive) # x
-to_sympy(pool.func("heaviside", [x]))                       # raises E-XCHECK-001
+try:
+    to_sympy(pool.func("heaviside", [x]))
+except ak.CrossCheckError as e:
+    print(e.code)                                           # E-XCHECK-001
 ```
 
 `to_sympy` is the one translator this package ships. The four hand-rolled `_expr_to_sympy`

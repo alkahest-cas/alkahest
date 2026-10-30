@@ -148,6 +148,7 @@ existing recipe is never overwritten.
 ## Querying
 
 ```python
+cid = graph.roots()[0].id   # the definite integral from the worked example
 graph.by_status("unverified")
 graph.machine_checkable()
 graph.dependencies(cid)     # direct
@@ -214,7 +215,7 @@ residual passed — evidence, not a proof), `failed`, `inconclusive`, or `skippe
 ```python
 report = graph.verify()
 report.ok            # False if anything was refuted
-report.summary()     # {'ok': 2, 'numeric_ok': 1, 'skipped': 1}
+report.summary()     # {'ok': 2} — both worked-example claims re-check exactly
 print(report.to_markdown())
 ```
 

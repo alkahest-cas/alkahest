@@ -16,14 +16,14 @@ import alkahest as ak
 from alkahest.ansatz import polynomial, fit
 
 pool = ak.ExprPool()
-x = pool.symbol("x")
+x, y = pool.symbol("x"), pool.symbol("y")
 
 A = polynomial(pool, [x], degree=2)      # c_0 + c_1*x + c_2*x^2
 target = x**2 - pool.integer(3) * x + pool.integer(2)
 
 sol = fit(A, A.expr - target)
 sol.expr          # (2 + x^2 + (x * -3))
-sol.rank, sol.free
+sol.rank, sol.free  # (3, ())
 sol.status        # 'exactly_verified'
 ```
 
@@ -101,7 +101,10 @@ If a generated name collides with a symbol already in play, the constructor rais
 
 ```python
 c0 = pool.symbol("c_0")
-polynomial(pool, [x], degree=1, reserved=[c0])   # AnsatzError E-ANSATZ-001
+try:
+    polynomial(pool, [x], degree=1, reserved=[c0])
+except ak.AnsatzError as e:
+    print(e.code)                                          # E-ANSATZ-001
 polynomial(pool, [x], degree=1, name="k", reserved=[c0])   # fine: k_0, k_1
 ```
 
@@ -116,8 +119,11 @@ symbol listing, so a symbol that appears in *none* of those is not detected at c
 is checked from the *count* before anything is materialised:
 
 ```python
-polynomial(pool, [x, y], degree=40, max_terms=32)
-# AnsatzError E-ANSATZ-002: … needs 861 unknown coefficients, which exceeds max_terms=32
+try:
+    polynomial(pool, [x, y], degree=40, max_terms=32)
+except ak.AnsatzError as e:
+    print(e)
+# [E-ANSATZ-002] … needs 861 unknown coefficients, which exceeds max_terms=32
 ```
 
 ### `rational` keeps the Padé case linear
@@ -127,6 +133,8 @@ in them jointly. `rational()` records the numerator/denominator split so that tr
 be applied, and `fit` applies it automatically when it sees an unknown-bearing denominator:
 
 ```python
+from alkahest.ansatz import rational
+
 A = rational(pool, [x], num_degree=1, den_degree=1)
 A.expr                       # ((a_0 + (x * a_1)) * (1 + (x * b_1))^-1)
 A.residual(target)           # a_0 + a_1*x - target*(1 + b_1*x)   — affine in the unknowns
@@ -156,6 +164,7 @@ certify) is correctly answered with `E-ANSATZ-003`: no rational function equals 
 
 ## `fit`
 
+<!-- doc-check: skip — a signature, not code to run (it would shadow `fit`) -->
 ```python
 def fit(ansatz, residual, *, certify="residual", seed=None, oversample=None,
         max_points=None, degree_bound=None, tolerance=1e-8, samples=5) -> AnsatzSolution: ...
@@ -256,8 +265,11 @@ adapter onto [`prove_nonneg` / `sos_decompose`](./positivity.md), and every outc
 ```python
 from alkahest.ansatz import quadratic_form, certify_nonneg
 
-V = quadratic_form(pool, [x, y], name="q")
-sol = fit(V, V.expr - lyapunov_residual)
+V = quadratic_form(pool, [x, y], name="q")     # q_0_0*x^2 + q_0_1*x*y + q_1_1*y^2
+# Lyapunov equation for x' = -x + y, y' = -y:  dV/dt = -(x^2 + y^2)
+Vdot = ak.diff(V.expr, x).value * (-x + y) + ak.diff(V.expr, y).value * (-y)
+lyapunov_residual = Vdot + x**2 + y**2
+sol = fit(V, lyapunov_residual)     # V = x^2/2 + x*y/2 + 3*y^2/4
 cert = certify_nonneg(sol)          # PositivityCertificate, or the SosError as raised
 ```
 

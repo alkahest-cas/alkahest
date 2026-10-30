@@ -79,13 +79,14 @@ Transformations stack:
 ```python
 # Compiled gradient
 fast_df = alkahest.jit(alkahest.grad(f))
-grads = fast_df(xs, ys)   # compiled, vectorised gradient
+grads = fast_df(xs, ys)   # compiled, vectorised gradient: [∂f/∂x array, ∂f/∂y array]
 
-# Second derivative: grad of grad
-d2f = alkahest.grad(alkahest.grad(f))
+# Second derivative: differentiate the traced expression again
+x, y = f.symbols
+d2f_dx2 = alkahest.diff(alkahest.diff(f.expr, x).value, x).value   # 2
 ```
 
-Note that `grad` returns a `GradTracedFn`, not a `TracedFn`. `jit` can be applied to `GradTracedFn` when it wraps a single scalar output. For multi-output cases, compile each gradient expression individually with `compile_expr`.
+Note that `grad` returns a `GradTracedFn`, not a `TracedFn`. `jit` accepts a `GradTracedFn` (one compiled function per partial), but `grad` does not: `grad(grad(f))` is refused with a `TypeError`, so higher derivatives go through `diff` on `f.expr` as above.
 
 ## trace_fn
 
@@ -102,13 +103,13 @@ fn = trace_fn(lambda x, y: x * alkahest.exp(y), pool)
 Transformations work over nested data structures (lists, dicts, tuples, dataclasses). The Python layer flattens and unflattens them automatically:
 
 ```python
-from alkahest import flatten_exprs, unflatten_exprs, map_exprs
+from alkahest import flatten_exprs, unflatten_exprs, map_exprs, simplify
 
 # A system of equations as a list
 eqs = [x**2 + y - pool.integer(1), x - y**2 + pool.integer(1)]
 
 # Map simplification over the list
-simplified = map_exprs(simplify, eqs)
+simplified = map_exprs(lambda e: simplify(e).value, eqs)
 
 # Flatten to a list of ExprIds and the structure descriptor
 flat, treedef = flatten_exprs(eqs)

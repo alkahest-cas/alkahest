@@ -8,7 +8,9 @@ Gröbner bases.
 `solve` finds the solutions of a system of polynomial equations in a list of variables. It uses the `groebner` Cargo feature, which is **included in all PyPI wheels** (default feature since 2.3.1) and in all source builds.
 
 ```python
-from alkahest import ExprPool, solve, sqrt
+import alkahest as ak
+from alkahest import ExprPool, Domain, solve, solve_side_conditions, nsolve
+from alkahest import sqrt, exp, sin, cos, tan
 
 pool = ExprPool()
 x = pool.symbol("x")
@@ -37,7 +39,8 @@ Solutions are symbolic: irrational roots are returned as `Expr` trees (e.g. `sqr
 The return value is a list of dicts mapping `Expr` variable → `Expr` solution:
 
 ```python
-for sol in solutions:
+circle = solve([x**2 + y**2 - pool.integer(1), y - x], [x, y])
+for sol in circle:
     for var, val in sol.items():
         print(f"{var} = {val}")
         # Evaluate numerically if needed
@@ -66,6 +69,8 @@ equation that factors is solved as the union of its factors, so equilibrium syst
 out complete:
 
 ```python
+a, b, c, d = (pool.symbol(n) for n in "abcd")
+
 solve([a*x - b*x*y, -c*y + d*x*y], [x, y])
 # → [{x: 0, y: 0}, {x: c/d, y: a/b}]
 solve_side_conditions()     # → ['b ≠ 0', 'd ≠ 0']   (empty when b, d are Positive)
@@ -107,6 +112,7 @@ irreducible factor is solved by the first rule that applies:
 | anything else | `RootOf(f, 0)`, …, `RootOf(f, deg f − 1)` |
 
 ```python
+s = pool.symbol("s")
 solve([s**3 + 6*s**2 + 11*s + 6], [s])   # → s = -1, -2, -3
 solve([x*(x**2 - 5)], [x])               # → 0, ±√5
 solve([x**5 - x - 1], [x])               # → RootOf(x^5 - x - 1, k), k = 0..4
@@ -140,10 +146,10 @@ circuit equation directly is the point:
 Vo, Vin, R1, C, s = (pool.symbol(n) for n in ("Vo", "Vin", "R1", "C", "s"))
 
 solve([(Vo - Vin) / R1 + Vo * s * C], [Vo])
-# → [{Vo: Vin * (1 + R1*C*s)**-1}]
+# → [{Vo: Vin * (1 + s*R1*C)**-1}]
 
 solve_side_conditions()
-# → ['(1 + (R1 * C * s)) ≠ 0', 'R1 ≠ 0']
+# → ['(1 + (s * R1 * C)) ≠ 0', 'R1 ≠ 0']
 ```
 
 Each equation is put over a common denominator and the numerator system is solved.
@@ -162,10 +168,14 @@ near-miss — it is the one point where the equation has no value at all. `x/(x-
 both sides read `1/0`:
 
 ```python
-solve([x / (x - 1) - 1 / (x - 1)], [x])   # → []   (not x = 1)
-solve([1 / x], [x])                       # → []   (a reciprocal is never zero)
-solve([x * x / x], [x])                   # → []   (0/0 at x = 0)
-solve([1 / (1 / x - 1)], [x])             # → []   (1/x has no value at x = 0)
+# not x = 1
+solve([x / (x - 1) - 1 / (x - 1)], [x])   # → []
+# a reciprocal is never zero
+solve([1 / x], [x])                       # → []
+# 0/0 at x = 0
+solve([x * x / x], [x])                   # → []
+# 1/x has no value at x = 0
+solve([1 / (1 / x - 1)], [x])             # → []
 ```
 
 So every candidate root is re-tested against the condition that says where the equation
@@ -198,7 +208,7 @@ symbol positive discharges the condition rather than reporting it:
 ```python
 R1 = pool.symbol("R1", "positive")
 solve([(Vo - Vin) / R1 + Vo * s * C], [Vo])
-solve_side_conditions()          # → ['(1 + (C * s * R1)) ≠ 0']   — no 'R1 ≠ 0'
+solve_side_conditions()          # ['(1 + (s * C * R1)) ≠ 0']   — no 'R1 ≠ 0'
 ```
 
 An empty list means every divisor was *proved* non-zero, not that none was looked at.
@@ -209,7 +219,10 @@ denominators — and the cleared denominators are reported as side conditions so
 distinction is visible.
 
 An equation whose denominator is identically zero (`1/(x - x)`) denotes no function at
-all and raises `SolverError` with `.code == "E-SOLVE-005"` rather than being cleared.
+all and is refused rather than cleared. From Python the refusal comes even earlier:
+building `1/(x - x)` already raises `DivisionByZeroError` (`E-DOMAIN-001`). An equation
+that reaches the solver with such a denominator (from Rust, say) raises `SolverError`
+with `.code == "E-SOLVE-005"`.
 
 `method="homotopy"` and `solve_numerical` are **not** covered by this: they take
 polynomial systems only, and a rational equation still raises `E-SOLVE-001` there.
@@ -223,9 +236,15 @@ Only the *unknowns* have to appear polynomially. A sub-expression free of them �
 That is the shape of every multibody equation of motion solved for the accelerations:
 
 ```python
-eom = [...]                      # Euler–Lagrange equations of a double pendulum
-solve(eom, [qdd1, qdd2])         # → [{qdd1: ..., qdd2: ...}], with sin/cos coefficients
-solve_side_conditions()          # → the mass-matrix determinant ≠ 0
+q1, q2, qd1, qd2, qdd1, qdd2, g = (
+    pool.symbol(n) for n in ("q1", "q2", "qd1", "qd2", "qdd1", "qdd2", "g"))
+# Euler–Lagrange equations of a double pendulum (unit masses and lengths)
+eom = [
+    2*qdd1 + cos(q1 - q2)*qdd2 + sin(q1 - q2)*qd2**2 + 2*g*sin(q1),
+    cos(q1 - q2)*qdd1 + qdd2 - sin(q1 - q2)*qd1**2 + g*sin(q2),
+]
+solve(eom, [qdd1, qdd2])         # [{qdd1: ..., qdd2: ...}], with sin/cos coefficients
+solve_side_conditions()          # the mass-matrix determinant: ['(2 + (-1 * cos((q1 + (q2 * -1)))^2)) ≠ 0']
 ```
 
 Each such sub-expression is replaced by an opaque parameter, the system is solved, and
@@ -255,9 +274,10 @@ reports **real** solutions (`exp(x) = -1` has none), and its hypotheses are list
 | `sin f = c`, `cos f = c`, `tan f = c`, `f` affine | the whole family, below |
 
 ```python
-solve([ka*exp(-ka*t) - ke*exp(-ke*t)], [t])   # → [{t: log(ke*ka^-1) * (ke - ka)^-1}]
+ka, ke, t = pool.symbol("ka"), pool.symbol("ke"), pool.symbol("t")
+solve([ka*exp(-ka*t) - ke*exp(-ke*t)], [t])   # → [{t: (log((ke * ka^-1)) * (ke + (-1 * ka))^-1)}]
 solve_side_conditions()
-# → ['ka ≠ 0', '(ke + (ka * -1)) ≠ 0', '(ke * ka^-1) > 0']
+# → ['ka ≠ 0', '(ke + (-1 * ka)) ≠ 0', '(ke * ka^-1) > 0']
 ```
 
 Declaring `ka` and `ke` positive (`pool.symbol("ka", "positive")`) discharges the
@@ -269,7 +289,7 @@ solution set has a root on each — `x·eˣ = c` for `−1/e < c < 0`, `x**x = c
 `e^{−1/e} < c < 1`, `A'/B < 0` in the log shape — both are returned:
 
 ```python
-solve([x*exp(x) + rational(1, 4)], [x])
+solve([x*exp(x) + pool.rational(1, 4)], [x])
 # → [{x: lambert_w(-1/4)}, {x: lambert_wm1(-1/4)}]      (−0.3574…, −2.1533…)
 ```
 
@@ -282,11 +302,12 @@ returned as families in an integer symbol (named `k`, or `n`, `m`, `j`, `k_1`, �
 `k` is taken), which `solve_side_conditions()` lists as `k ∈ Integer`:
 
 ```python
+half = pool.rational(1, 2)
 solve([sin(x) - half], [x])
-# → [{x: ((k * pi * 2) + asin(1/2))}, {x: (pi + (k * pi * 2) + (-1 * asin(1/2)))}]
+# → [{x: ((k * pi * 2) + (pi * (1/6)))}, {x: ((k * pi * 2) + (pi * (5/6)))}]
 solve_side_conditions()       # → ['k ∈ Integer']
 solve([tan(x) - 2], [x])      # → [{x: ((k * pi) + atan(2))}]
-solve([sin(x) - half], [x], numeric=True)   # → [{x: 0.5236}, {x: 2.618}]  (k = 0)
+solve([sin(x) - half], [x], numeric=True)   # → [{x: 0.5235987755982989}, {x: 2.617993877991494}]
 ```
 
 With `numeric=True` the `k = 0` member of each family is returned, and
@@ -308,8 +329,11 @@ equation is undefined is dropped, and every family is substituted back:
 ```python
 solve([2*sin(x)**2 - 1], [x])       # → π/4 + πk, -π/4 + πk
 solve([sin(x) - cos(x)], [x])       # → π/4 + πk
-solve([sin(2*x) - cos(x)], [x])     # → ±π/2 + 2πk, π/6 + 2πk, 5π/6 + 2πk
-solve([sin(x)**2 + cos(x)**2 - 1], [x])   # E-SOLVE-001: an identity
+solve([sin(2*x) - cos(x)], [x])     # → π/2 + πk, π/6 + 2πk, 5π/6 + 2πk
+try:
+    solve([sin(x)**2 + cos(x)**2 - 1], [x])
+except ak.SolverError as e:
+    print(e.code)                   # E-SOLVE-001: an identity
 ```
 
 **Unknowns inside invertible functions.** In a system, an unknown that occurs only
@@ -416,15 +440,15 @@ A `GbPoly` stores exponent vectors, not names, so converting one back needs the 
 
 Supported orders: `Lex` (lexicographic), `GrLex` (graded lexicographic), `GRevLex` (graded reverse lexicographic). `GRevLex` is generally fastest for basis computation; `Lex` is required for elimination.
 
-### Parallel F4
+### Algorithm
 
-With `--features "groebner parallel"`, Gröbner basis computation uses Rayon for parallel S-polynomial reduction via the F4 algorithm.
+`GroebnerBasis.compute` runs sequential Buchberger over ℚ, with pair-pruning criteria and a final interreduction. A `Lex` basis of a zero-dimensional ideal is computed as a `GRevLex` basis first and converted with FGLM; `GroebnerBasis.compute_f5` is the signature-based alternative. The `parallel` feature does **not** parallelise Gröbner computation — it affects the sharded `ExprPool` and the `*_par` entry points (`simplify_par`, `numpy_eval_par`).
 
 ### GPU-accelerated Macaulay matrix (groebner-cuda) — Rust only, not wired into the solver
 
 `--features "groebner-cuda"` compiles a CUDA kernel for the mod-p row reduction of the Macaulay matrix, with multi-prime CRT lifts reconstructing rational coefficients, and falls back to pure-Rust row reduction when no CUDA device is present.
 
-**It does not accelerate anything on this page.** `GroebnerBasis.compute`, `solve` and `triangularize` run Buchberger/F4 on the CPU regardless; the GPU routine is reachable only as the Rust function `alkahest_cas::poly::groebner::compute_groebner_basis_gpu`, and production dispatch deliberately does not prefer it until the [benchmark harness](https://github.com/alkahest-cas/alkahest/blob/main/docs/symbolic-gpu-benchmarks.md) says it wins. There is correspondingly **no `capabilities()["features"]["groebner_cuda"]` bit** — it used to exist and report that the kernel had been compiled in, which no Python observation could confirm or refute, so 3.8 removed it. See [GPU support](./gpu.md#groebner-cuda-is-not-reachable-from-python).
+**It does not accelerate anything on this page.** `GroebnerBasis.compute`, `solve` and `triangularize` run Buchberger on the CPU regardless; the GPU routine is reachable only as the Rust function `alkahest_cas::poly::groebner::compute_groebner_basis_gpu`, and production dispatch deliberately does not prefer it until the [benchmark harness](https://github.com/alkahest-cas/alkahest/blob/main/docs/symbolic-gpu-benchmarks.md) says it wins. There is correspondingly **no `capabilities()["features"]["groebner_cuda"]` bit** — it used to exist and report that the kernel had been compiled in, which no Python observation could confirm or refute, so 3.8 removed it. See [GPU support](./gpu.md#groebner-cuda-is-not-reachable-from-python).
 
 Because the Rust entry point falls back to CPU row reduction when no device is present, it returns a `GpuBackendReport` alongside the basis: `let (basis, backend) = compute_groebner_basis_gpu(gens, order, Some(0))?;` and `backend.ran_on_gpu()` is the only way to tell a real GPU run from a fallback, since the basis is identical either way.
 
@@ -450,6 +474,8 @@ Note the variable order passed to `compute`: `t` comes first, so `lex` eliminate
 ```python
 from alkahest import GroebnerBasis
 
+one = pool.integer(1)
+
 # a lives in the coefficient field Q(a), not the ring Q[x, y, a]
 gb = GroebnerBasis.compute([a*x - y, x + y - one], [x, y], params=[a])
 type(gb)                      # ParametricGroebnerBasis
@@ -461,12 +487,15 @@ Measured on a catenary compartmental ODE model (a linear chain of `n` states, ou
 **The result is generic.** A leading coefficient in `Q(params)` can be a non-zero rational function of the parameters and still vanish at a specific parameter point, and there the basis this computation built is not the one the same algorithm would build over ℚ at that point:
 
 ```python
-gb.conditions()               # [a + 1] — the basis says nothing at a = -1
+gb.conditions()               # [a + 1, a] — the basis says nothing at a = -1
 gb.is_regular_at([3])         # True
 gb.is_regular_at([-1])        # False
 
 gb.specialize([3])            # an ordinary GroebnerBasis over Q
-gb.specialize([-1])           # raises ParamGroebnerError, code "E-PARAMGB-004"
+try:
+    gb.specialize([-1])
+except ak.ParamGroebnerError as e:
+    print(e.code)             # E-PARAMGB-004
 ```
 
 `conditions()` lists the hypersurfaces the computation assumed non-vanishing — every leading-coefficient inversion contributes its numerator and denominator, every input coefficient contributes its denominator — factored into irreducible, primitive pieces so the report is a list of conditions rather than one opaque polynomial in many parameters. The list is **sufficient, not necessary**: it can flag a point that turns out fine (a removable coincidence the bookkeeping cannot see), but it never misses a point where the generic basis is genuinely wrong. `specialize` refuses on the flagged locus with `ParamGroebnerError` (`E-PARAMGB-004`) rather than returning something that is not a basis; check `is_regular_at` first if a degenerate point is a normal outcome for your caller.
@@ -480,9 +509,15 @@ gb = GroebnerBasis.compute([a*x + b*y - one, c*x + d*y - one], [x, y],
                            params=[a, b, c, d])
 gb.conditions()                          # [c, a*d - b*c, a]
 
-gb.specialize([0, 1, 1, 1])              # E-PARAMGB-004: a = 0 is on the locus
-gb.specialize([0, 1, 1, 1], verify=True) # [x, y - 1] — the refusal was unnecessary
-gb.specialize([1, 1, 2, 2], verify=True) # still E-PARAMGB-004: a*d - b*c = 0
+try:
+    gb.specialize([0, 1, 1, 1])
+except ak.ParamGroebnerError as e:
+    print(e.code)                        # E-PARAMGB-004: a = 0 is on the locus
+gb.specialize([0, 1, 1, 1], verify=True).to_exprs()   # [x, y - 1] — the refusal was unnecessary
+try:
+    gb.specialize([1, 1, 2, 2], verify=True)
+except ak.ParamGroebnerError as e:
+    print(e.code)                        # still E-PARAMGB-004: a*d - b*c = 0
 ```
 
 `verify=True` re-solves the specialised system over ℚ and compares it with the specialised generic basis, instead of deciding on the recorded conditions alone. It is strictly more complete and never less sound: the refusals were separately checked to be *sound* (1,930 regular points across three sweeps, zero disagreements between `specialize` and the basis computed directly at the point), so this closes a completeness gap, not a correctness one. It is off by default because on the locus it pays for a second Gröbner basis over ℚ.
@@ -515,6 +550,12 @@ The read path matches `GroebnerBasis`: the object is a sequence of `ParametricGb
 `rosenfeld_groebner(dae, params=[...])` runs the prolongation loop of [Rosenfeld–Gröbner](./ode-dae.md) over `Q(params)` instead of putting the model parameters in the ring, and returns a `ParametricRosenfeldGroebnerResult` whose `final_basis()` is a `ParametricGroebnerBasis`. That is the input–output relation of an ODE model computed end to end, rather than prolonged by hand:
 
 ```python
+from alkahest import DAE, rosenfeld_groebner
+
+S, I, R, y0 = (pool.symbol(n) for n in ("S", "I", "R", "y0"))
+b, g = pool.symbol("b"), pool.symbol("g")
+dS, dI, dR, dy0 = (pool.symbol(n) for n in ("dS", "dI", "dR", "dy0"))
+
 # SIR:  S' = -b*S*I,  I' = b*S*I - g*I,  R' = g*I,  y0 = I
 dae = DAE.new([dS + b*S*I, dI - b*S*I + g*I, dR - g*I, y0 - I],
               [S, I, R, y0], [dS, dI, dR, dy0], t)
@@ -525,7 +566,7 @@ r.minimal_prolongation_rounds            # 2
 states = ("S", "I", "R")
 io = r.final_basis().eliminate([v for v in r.variables()
                                 if str(v).lstrip("d").split("/")[0] in states])
-io.to_exprs()                            # y0*y0'' - y0'^2 + b*y0^2*y0' + b*g*y0^3, over Q(b,g)
+io.to_exprs()                            # y0*y0'' - y0'^2 + b*y0^2*y0' + b*g*y0^3, over Q(b,g) (printed monic)
 ```
 
 `eliminate=[...]` names the variables the caller intends to eliminate — typically the unobserved states. Their whole jet chain goes with them (`x` also names `dx/dt`, `d2x/dt2`, …), and the ranking is built with those jets first so the `Lex` elimination contract holds.
@@ -544,9 +585,7 @@ This surface is experimental (`alkahest.experimental.ParametricGroebnerBasis` / 
 
 ## Performance
 
-On the `solve_circle_line` benchmark (2-variable quadratic system), Alkahest is approximately **40× faster** than SymPy due to the FLINT-backed polynomial arithmetic and the compiled F4 core.
-
-**Upcoming (v2.0):** F5 / signature-based Gröbner basis, real root isolation, primary decomposition, and other advanced algorithms.
+`solve_circle_line` (a 2-variable quadratic system) is one of the solver tasks in the SymPy head-to-head suite (`benchmarks/`, see `BENCHMARKS.md`). Where Alkahest is faster there, the speed comes from compiled Rust and exact GMP/FLINT-backed arithmetic around a sequential Buchberger core over ℚ, not from a parallel or F4-style reduction.
 
 ## Generalized Pell equations: every solution class
 

@@ -110,10 +110,13 @@ The last is a real limit, not a formality. Reaching `A(199)` at `p = 5` crosses
 not fit a 64-bit word, so that call refuses rather than answering:
 
 ```python
-apery.value_mod(199, 5, 1)
-# HolonomicError: E-HOLO-008 — the 39 singular step(s) cost 141 digits of
-# p-adic precision, so answering to p^1 needs a working modulus of 5^142,
-# which is past the machine-word backend's ceiling of 2^62
+try:
+    apery.value_mod(199, 5, 1)
+except ak.HolonomicError as e:
+    print(e.code)   # E-HOLO-008
+# the 39 singular step(s) cost 141 digits of p-adic precision, so answering
+# to p^1 needs a working modulus of 5^142, which is past the machine-word
+# backend's ceiling of 2^62
 ```
 
 The loss is intrinsic to running the recurrence over residues, not an artefact:

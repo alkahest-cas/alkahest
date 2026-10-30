@@ -86,6 +86,7 @@ singularity of smallest modulus:
 ```python
 from alkahest.experimental import coefficient_asymptotics
 
+z = pool.symbol("z")
 gf = pool.integer(1) / (pool.integer(1) - z - z*z)   # Fibonacci
 r = coefficient_asymptotics(gf, z, n)
 r.terms[0]      # ~ C·φⁿ
@@ -143,6 +144,14 @@ from `rec` when `rec` has one, and from a pool made here when the coefficients
 are plain integers, as they are for a `GuessedRecurrence`:
 
 ```python
+import alkahest as ak
+
+k = pool.symbol("k")
+cert = ak.zeilberger(ak.binomial(n, k) ** 2, n, k)        # Σ C(n,k)² = C(2n,n)
+motzkin = [1, 1, 2, 4, 9, 21, 51, 127, 323, 835, 2188, 5798, 15511,
+           41835, 113634, 310572, 853467, 2356779, 6536382, 18199284, 50852019]
+guess = ak.guess_holonomic(motzkin)
+
 asymptotics_from_recurrence(cert, terms=[1, 2])            # uses cert.n
 asymptotics_from_recurrence(guess, terms=motzkin[:2])      # fresh pool
 ```
