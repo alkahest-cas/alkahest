@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - 'demo-playground/**'
+      - 'python/alkahest/playground/**'
       - '.github/workflows/playground.yml'
   pull_request:
     paths:
       - 'demo-playground/**'
+      - 'python/alkahest/playground/**'
       - '.github/workflows/playground.yml'
   workflow_dispatch:
 
@@ -34,8 +36,8 @@ jobs:
       - name: Lint
         working-directory: demo-playground/server
         run: |
-          ruff format --check mathlang.py math_exec.py math_service.py math_worker.py main.py tests
-          ruff check mathlang.py math_exec.py math_service.py math_worker.py main.py tests
+          ruff format --check playground_math.py main.py tests ../web/scripts/precompute-math.py
+          ruff check playground_math.py main.py tests ../web/scripts/precompute-math.py
 
       - name: Tests
         working-directory: demo-playground/server

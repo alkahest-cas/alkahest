@@ -10,6 +10,8 @@ interface PlaygroundBarProps {
   tab: PlaygroundTab;
   onTabChange: (tab: PlaygroundTab) => void;
   serverStatus?: ServerStatus;
+  /** Overrides the "Backend connected" text (e.g. "Computing on this machine"). */
+  serverLabel?: string;
   isRecording?: boolean;
   onToggleRecording?: () => void;
 }
@@ -24,13 +26,14 @@ export default function PlaygroundBar({
   tab,
   onTabChange,
   serverStatus = 'unknown',
+  serverLabel,
   isRecording,
   onToggleRecording,
 }: PlaygroundBarProps) {
   const { toggleSettings } = useSettings();
 
   const statusText =
-    serverStatus === 'online' ? 'Backend connected' : serverStatus === 'offline' ? 'No backend' : 'Checking backend…';
+    serverStatus === 'online' ? (serverLabel ?? 'Backend connected') : serverStatus === 'offline' ? 'No backend' : 'Checking backend…';
 
   return (
     <div className="border-b border-ak-border bg-ak-bg">

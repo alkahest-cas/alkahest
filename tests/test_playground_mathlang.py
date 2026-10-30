@@ -1,10 +1,10 @@
-"""Parser tests for the Math tab's input language (no Alkahest needed)."""
+"""Parser tests for the Math playground's input language (alkahest.playground.mathlang)."""
 
 from __future__ import annotations
 
-import mathlang as ml
 import pytest
-from mathlang import MathInputError
+from alkahest.playground import mathlang as ml
+from alkahest.playground.mathlang import MathInputError
 
 
 def parse(text, session=None):

@@ -30,6 +30,11 @@ export default function PlaygroundPage() {
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
   const [pythonStatus, setPythonStatus] = useState<ServerStatus>('unknown');
   const [mathStatus, setMathStatus] = useState<ServerStatus>('unknown');
+  const [mathLabel, setMathLabel] = useState<string | undefined>(undefined);
+  const onMathStatus = useCallback((status: ServerStatus, label?: string) => {
+    setMathStatus(status);
+    setMathLabel(label);
+  }, []);
   const [isDirty, setIsDirty] = useState(false);
   const [zenMode] = useState(readZenFromUrl);
 
@@ -101,6 +106,7 @@ export default function PlaygroundPage() {
             tab={tab ?? 'math'}
             onTabChange={changeTab}
             serverStatus={tab === 'math' ? mathStatus : pythonStatus}
+            serverLabel={tab === 'math' ? mathLabel : undefined}
             isRecording={isRecording}
             onToggleRecording={toggleRecording}
           />
@@ -108,7 +114,7 @@ export default function PlaygroundPage() {
       )}
       <main>
         <section id="panel-math" role="tabpanel" aria-labelledby="tab-math" hidden={tab !== 'math'}>
-          {mounted.math && <MathNotebook onServerStatusChange={setMathStatus} onReady={markReady} />}
+          {mounted.math && <MathNotebook onServerStatusChange={onMathStatus} onReady={markReady} />}
         </section>
         <section id="panel-python" role="tabpanel" aria-labelledby="tab-python" hidden={tab !== 'python'}>
           {mounted.python && (

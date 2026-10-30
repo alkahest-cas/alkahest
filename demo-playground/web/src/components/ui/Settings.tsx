@@ -187,9 +187,13 @@ export default function Settings({
               cfg.serverBackend === 'alkahest' &&
               /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/?$/i.test(cfg.serverHttpUrl.trim()) && (
                 <p className="mb-3 rounded border border-ak-warn/30 bg-ak-warn/10 px-3 py-2 text-xs text-ak-fg">
-                  This hosted playground is HTTPS and cannot call <code className="rounded bg-ak-elev/80 px-1">http://localhost</code>{' '}
-                  (mixed content), even with an SSH tunnel. Use an <strong>https://</strong> backend URL, or run the playground
-                  locally at <code className="rounded bg-ak-elev/80 px-1">http://localhost:3000</code> with the tunnel.
+                  From this HTTPS page, Chrome, Edge and Firefox can reach a server on{' '}
+                  <code className="rounded bg-ak-elev/80 px-1">http://127.0.0.1</code> or{' '}
+                  <code className="rounded bg-ak-elev/80 px-1">localhost</code> once you allow the site to connect to apps on
+                  this device; Safari blocks it as mixed content. The Math tab finds{' '}
+                  <code className="rounded bg-ak-elev/80 px-1">python -m alkahest.playground</code> without a URL (leave it
+                  empty). In Safari, run the playground locally at{' '}
+                  <code className="rounded bg-ak-elev/80 px-1">http://localhost:3000</code> instead.
                 </p>
               )}
             <label className="block text-sm mb-1">Backend type</label>

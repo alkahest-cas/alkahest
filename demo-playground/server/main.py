@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import os
@@ -11,7 +12,6 @@ import tempfile
 from pathlib import Path
 from typing import Annotated
 
-import math_service
 from fastapi import (
     FastAPI,
     File,
@@ -24,6 +24,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from kernel_manager import KernelSession
 from lean_verify import lean_status, verify_lean_source
+from playground_math import math_service
 from pydantic import BaseModel
 
 app = FastAPI(title="alkahest-demo-server")
@@ -89,6 +90,9 @@ async def verify_lean(req: VerifyLeanRequest, request: Request):
 
 
 # ── Math tab (restricted maths language; never executes Python) ────────────
+# The translator and sandboxed executor live in the Alkahest package
+# (``alkahest.playground``) so ``python -m alkahest.playground`` can serve the
+# same endpoints on a visitor's own machine; this app only wraps them.
 
 
 async def _math_payload(request: Request) -> object:
@@ -106,7 +110,9 @@ async def _math_payload(request: Request) -> object:
 @app.post("/math")
 async def math_run(request: Request):
     """Compute one Math-tab cell: ``{input, definitions}`` → result or coded refusal."""
-    return await math_service.run_math(await _math_payload(request))
+    payload = await _math_payload(request)
+    # The sandboxed child is run synchronously; keep the event loop free.
+    return await asyncio.to_thread(math_service.run_math, payload)
 
 
 @app.post("/math/interpret")

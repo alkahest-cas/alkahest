@@ -1,8 +1,11 @@
-"""HTTP tests for POST /math and /math/interpret (sandboxed subprocess path)."""
+"""HTTP tests for the FastAPI wrapper's POST /math and /math/interpret.
+
+The translator, executor and sandbox themselves live in ``alkahest.playground``
+and are tested at the repository level (tests/test_playground_*.py); these
+tests check that the demo server exposes them with the same contract.
+"""
 
 from __future__ import annotations
-
-import asyncio
 
 import pytest
 
@@ -11,9 +14,8 @@ pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 
 import main
-import math_service
-import mathlang as ml
 from fastapi.testclient import TestClient
+from playground_math import math_service, ml
 
 
 @pytest.fixture
@@ -132,41 +134,10 @@ def test_token_required_unless_public(client, monkeypatch):
     assert r.json()["ok"] is True
 
 
-def test_hard_timeout_kills_worker(client, monkeypatch):
-    # A deadline shorter than interpreter start-up: the worker is killed and the
-    # response is a coded timeout, never a hang.
-    monkeypatch.setattr(math_service, "HARD_TIMEOUT_S", 0.01)
-    res = post(client, "integrate sin(x)^2 dx")
-    assert res["ok"] is False
-    assert res["error_code"] == ml.E_TIMEOUT
-    assert res["interpreted_latex"]
-
-
-def test_memory_cap_is_applied(monkeypatch):
-    # With an address-space cap too small to even import Alkahest, the child
-    # must fail closed with a coded error, not take the server down.
-    monkeypatch.setattr(math_service, "MEMORY_MB", 64)
-    monkeypatch.setattr(math_service, "_semaphore", None)
-    res = asyncio.run(math_service.run_math({"input": "1+1", "definitions": []}))
-    assert res["ok"] is False
-    assert res["error_code"] in (ml.E_MEMORY, ml.E_INTERNAL)
-
-
-def test_busy_when_queue_full(monkeypatch):
-    monkeypatch.setattr(math_service, "QUEUE_WAIT_S", 0.05)
-
-    async def scenario():
-        math_service._semaphore = asyncio.Semaphore(1)
-        await math_service._semaphore.acquire()
-        try:
-            return await math_service.run_math({"input": "1+1"})
-        finally:
-            math_service._semaphore.release()
-            math_service._semaphore = None
-
-    res = asyncio.run(scenario())
-    assert res["error_code"] == ml.E_BUSY
-
-
 def test_health_reports_math(client):
     assert client.get("/health").json()["math"] is True
+
+
+def test_reuses_the_package_module():
+    # One implementation: the server must not carry its own copy any more.
+    assert math_service.__name__ == "alkahest.playground.service"
