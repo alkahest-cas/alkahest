@@ -20,8 +20,10 @@
 //! * `log` of a product / power / positive rational splits into a sum only
 //!   when every factor is provably positive (domain `Positive`, an assumption,
 //!   `π`, a positive literal, or `exp` of a real argument);
-//! * every other function application, `π`, and every symbol is an
-//!   independent atom.
+//! * the golden ratio `φ` is rewritten as `(1 + 5^(1/2))/2`, so `φ² = φ + 1`
+//!   is seen;
+//! * every other function application, `π`, every other named constant and
+//!   every symbol is an atom.
 //!
 //! If the numerator reduces to the zero polynomial, the expression is zero
 //! wherever it is defined: the reduction is substitution of identities, and a
@@ -370,6 +372,11 @@ impl<'p> Normalizer<'p> {
                 ExprData::Func { args, .. } | ExprData::Add(args) | ExprData::Mul(args) => {
                     stack.extend(args.iter().copied());
                 }
+                // `convert_node` rewrites `φ` in radicals; scan that form so
+                // its `5^(1/2)` shares one root atom with any other `√5`.
+                ExprData::Symbol { .. } if crate::eval::symbols::is_golden_ratio(e, self.pool) => {
+                    stack.push(crate::eval::symbols::golden_ratio_radical(self.pool));
+                }
                 _ => {}
             }
         }
@@ -664,7 +671,28 @@ impl<'p> Normalizer<'p> {
                     }
                     return self.atom_pow(i, 1);
                 }
-                let i = self.atom(AtomKey::Opaque(e), AtomClass::Free);
+                // `φ` is algebraic: `φ² = φ + 1`. As an independent atom
+                // `φ² − φ − 1` was a non-zero polynomial and was "proved"
+                // non-zero; in radicals it reduces to `0`.
+                if crate::eval::symbols::is_golden_ratio(e, pool) {
+                    return self.convert(crate::eval::symbols::golden_ratio_radical(pool));
+                }
+                // The other named constants (`γ`, Catalan's `G`, Glaisher's
+                // `A`, the Stieltjes `γₙ`) are numbers, not indeterminates, and
+                // no theorem makes them algebraically independent of each
+                // other or of `π` — whether `γ` is even irrational is open. So
+                // they are opaque atoms of class `Other`: an exact zero
+                // numerator still proves zero, but a non-zero one proves
+                // nothing and the verdict falls to the Arb ball. Only `π`
+                // (transcendental, Lindemann) is safe as a `Free` atom.
+                let class = if crate::eval::symbols::is_real_constant(e, pool)
+                    && !crate::eval::symbols::is_pi(e, pool)
+                {
+                    AtomClass::Other
+                } else {
+                    AtomClass::Free
+                };
+                let i = self.atom(AtomKey::Opaque(e), class);
                 self.atom_pow(i, 1)
             }
             ExprData::Add(args) => {
@@ -901,6 +929,11 @@ impl<'p> Normalizer<'p> {
                 } => {
                     if pool.is_imaginary_unit(f) || name == "pi" {
                         true
+                    } else if crate::eval::symbols::constant_value_f64(name).is_some() {
+                        // `exp(γ)`, `exp(γ·x)`: a named constant is a number,
+                        // not a variable, and `γ·x` vs `x` are ℚ-linearly
+                        // independent only if `γ` is irrational — unknown.
+                        false
                     } else if *domain == Domain::Integer {
                         false
                     } else {
@@ -1026,7 +1059,7 @@ impl<'p> Normalizer<'p> {
             }
             ExprData::Symbol { name, domain, .. } => {
                 if *domain == Domain::Positive
-                    || crate::eval::symbols::constant_value_f64(name).is_some()
+                    || crate::eval::symbols::constant_value_f64(name).is_some_and(|v| v > 0.0)
                 {
                     K::Yes
                 } else {
@@ -2512,5 +2545,51 @@ mod tests {
             pool.mul(vec![pool.integer(-1_i32), x]),
         ]);
         assert_ne!(zt(e, &pool), ZeroStatus::ProvedNonzero);
+    }
+
+    /// Launch report row 3: `φ² − φ − 1` was "proved" non-zero by the normal
+    /// form, which treated `GoldenRatio` as an indeterminate.
+    #[test]
+    fn golden_ratio_is_algebraic() {
+        let pool = ExprPool::new();
+        let phi = pool.symbol("GoldenRatio", Domain::Real);
+        let e = pool.add(vec![
+            pool.pow(phi, pool.integer(2_i32)),
+            pool.mul(vec![pool.integer(-1_i32), phi]),
+            pool.integer(-1_i32),
+        ]);
+        assert_eq!(zt(e, &pool), ZeroStatus::ProvedZero);
+        // φ³ = 2φ + 1, next to an explicit √5.
+        let sqrt5 = pool.func("sqrt", vec![pool.integer(5_i32)]);
+        let e = pool.add(vec![
+            pool.pow(phi, pool.integer(3_i32)),
+            pool.mul(vec![pool.integer(-1_i32), sqrt5]),
+            pool.integer(-2_i32),
+        ]);
+        assert_eq!(zt(e, &pool), ZeroStatus::ProvedZero);
+    }
+
+    /// No independence theorem is known for γ, G, A or γₙ: a non-zero verdict
+    /// may come only from a ball, never from the normal form.
+    #[test]
+    fn other_named_constants_are_not_indeterminates() {
+        let pool = ExprPool::new();
+        for name in ["EulerGamma", "Catalan", "Glaisher", "StieltjesGamma1"] {
+            let c = pool.symbol(name, Domain::Real);
+            let e = pool.add(vec![
+                pool.pow(c, pool.integer(2_i32)),
+                pool.mul(vec![pool.integer(-1_i32), c]),
+                pool.integer(-1_i32),
+            ]);
+            let t = zero_test(e, &pool, None);
+            assert_eq!(t.status, ZeroStatus::ProvedNonzero, "{name}");
+            assert_ne!(t.method, "rational_normal_form", "{name}");
+            let mut nz = Normalizer::new(&pool, Limits::ZERO_TEST);
+            assert_eq!(nz.decide(e), None, "{name}");
+            let ex = pool.func("exp", vec![c]);
+            let e = pool.add(vec![ex, pool.integer(-2_i32)]);
+            let mut nz = Normalizer::new(&pool, Limits::ZERO_TEST);
+            assert_eq!(nz.decide(e), None, "exp({name})");
+        }
     }
 }

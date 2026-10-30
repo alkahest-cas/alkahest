@@ -78,6 +78,29 @@ pub(crate) const GLAISHER_NAME: &str = "Glaisher";
 /// (SymPy's spelling).
 pub(crate) const GOLDEN_RATIO_NAME: &str = "GoldenRatio";
 
+/// Is `expr` the golden ratio `φ` (`GoldenRatio`)?
+pub(crate) fn is_golden_ratio(expr: ExprId, pool: &ExprPool) -> bool {
+    pool.with(
+        expr,
+        |d| matches!(d, ExprData::Symbol { name, .. } if name == GOLDEN_RATIO_NAME),
+    )
+}
+
+/// `φ` written in radicals, `(1 + 5^(1/2))/2`.
+///
+/// `φ` is *algebraic* — a root of `t² − t − 1` — so an exact zero test must
+/// see that relation rather than treat `GoldenRatio` as an indeterminate: as
+/// an independent symbol, `φ² − φ − 1` is a non-zero polynomial and was
+/// reported `proved_nonzero`. Rewriting it in radicals hands the relation to
+/// the machinery that already reduces `(5^(1/2))² = 5`.
+pub(crate) fn golden_ratio_radical(pool: &ExprPool) -> ExprId {
+    let sqrt5 = pool.pow(pool.integer(5_i32), pool.rational(1_i32, 2_i32));
+    pool.mul(vec![
+        pool.rational(1_i32, 2_i32),
+        pool.add(vec![pool.integer(1_i32), sqrt5]),
+    ])
+}
+
 /// Prefix of the Stieltjes constants `γₙ` (`n ≥ 1`), interned as
 /// `StieltjesGamma1`, `StieltjesGamma2`, … (`γ₀` is `EulerGamma`).
 pub(crate) const STIELTJES_PREFIX: &str = "StieltjesGamma";
@@ -145,7 +168,8 @@ pub(crate) fn constant_value_f64(name: &str) -> Option<f64> {
 }
 
 /// The `f64` value of `expr` when it is one of the named real constants of
-/// [`constant_value_f64`] (all of them are positive).
+/// [`constant_value_f64`]. Not all are positive: several Stieltjes constants
+/// (`γ₁ = −0.0728…`) are negative.
 pub(crate) fn constant_value_of(expr: ExprId, pool: &ExprPool) -> Option<f64> {
     pool.with(expr, |d| match d {
         ExprData::Symbol { name, .. } => constant_value_f64(name),
