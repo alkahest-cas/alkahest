@@ -20,9 +20,10 @@ import math
 import random
 
 import alkahest as ak
-import mpmath as mp
 import pytest
 from alkahest import ExprPool, eval_expr
+
+mp = pytest.importorskip("mpmath")
 
 mp.mp.dps = 40
 

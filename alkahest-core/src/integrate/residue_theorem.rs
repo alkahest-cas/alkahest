@@ -827,7 +827,7 @@ impl QuadElem {
     fn mul(&self, o: &QuadElem, r: &Rational) -> QuadElem {
         // (u + v w)(u' + v' w) = uu' − r vv' + (uv' + vu') w
         QuadElem {
-            u: Rational::from(&self.u * &o.u) - Rational::from(r * Rational::from(&self.v * &o.v)),
+            u: Rational::from(&self.u * &o.u) - r * Rational::from(&self.v * &o.v),
             v: Rational::from(&self.u * &o.v) + Rational::from(&self.v * &o.u),
         }
     }
@@ -839,14 +839,13 @@ impl QuadElem {
     }
     fn inv(&self, r: &Rational) -> Option<QuadElem> {
         // 1/(u + v w) = (u − v w)/(u² + r v²)
-        let n = Rational::from(&self.u * &self.u)
-            + Rational::from(r * Rational::from(&self.v * &self.v));
+        let n = Rational::from(&self.u * &self.u) + r * Rational::from(&self.v * &self.v);
         if n == 0 {
             return None;
         }
         Some(QuadElem {
             u: Rational::from(&self.u / &n),
-            v: Rational::from(-Rational::from(&self.v / &n)),
+            v: -Rational::from(&self.v / &n),
         })
     }
 }
@@ -986,9 +985,9 @@ pub(crate) fn integrate_rational_trig_over_real_line(
             Rational::from(&c[2]),
         );
         // Roots p ± i·√r, p = −c1/(2c2), r = (4c2c0 − c1²)/(4c2²) > 0.
-        let p = Rational::from(-Rational::from(&c1 / Rational::from(2 * &c2)));
-        let disc = Rational::from(4 * Rational::from(&c2 * &c0)) - Rational::from(&c1 * &c1);
-        let r = Rational::from(&disc / Rational::from(4 * Rational::from(&c2 * &c2)));
+        let p = -(&c1 / Rational::from(2 * &c2));
+        let disc = 4 * Rational::from(&c2 * &c0) - Rational::from(&c1 * &c1);
+        let r = &disc / (4 * Rational::from(&c2 * &c2));
         if r <= 0 {
             return out("internal: a real quadratic factor without real roots has r ≤ 0");
         }
@@ -1077,7 +1076,12 @@ pub(crate) fn integrate_rational_trig_over_real_line(
         }
     }
     let tail = 2.0 * 2.0 * k_bound * L.powf(1.0 - excess) / (excess - 1.0);
-    if !((quad - v).abs() <= tail + 1e-6 * (1.0 + v.abs())) {
+    if !matches!(
+        (quad - v)
+            .abs()
+            .partial_cmp(&(tail + 1e-6 * (1.0 + v.abs()))),
+        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+    ) {
         return out("the residue value disagrees with quadrature; declining");
     }
     LineIntegral::Value {
