@@ -41,7 +41,7 @@ env:
 
 jobs:
   # Linux: one job builds all Python versions at once. maturin-action runs
-  # inside a manylinux_2_28 Docker container that ships Python 3.9–3.13; the
+  # inside a manylinux_2_28 Docker container that ships Python 3.9–3.14; the
   # matrix python on the host runner is NOT visible inside Docker, so a
   # per-version matrix all produces the same wheel. We pass each interpreter
   # explicitly because --find-interpreter also matches PyPy and Python 3.14,
@@ -53,7 +53,7 @@ jobs:
     permissions:
       contents: read
     env:
-      # PyO3 0.21 supports up to 3.12; this allows 3.13 via the stable ABI.
+      # PyO3 0.21 supports up to 3.12; this allows 3.13 and 3.14 via the stable ABI.
       PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
     steps:
       - uses: actions/checkout@v6
@@ -83,9 +83,10 @@ jobs:
           LIBRARY_PATH: "/usr/local/lib"
         with:
           command: build
-          # Explicit CPython list — --find-interpreter also picks up PyPy and
-          # Python 3.14, which PyO3 0.21 cannot target.
-          args: --release --strip --out dist --features egraph,groebner,cranelift,parallel,system-gmp --interpreter ${{ inputs.pr_smoke && 'python3.12' || 'python3.9 python3.10 python3.11 python3.12 python3.13' }}
+          # Explicit CPython list — --find-interpreter also picks up PyPy.
+          # 3.13 and 3.14 build through PYO3_USE_ABI3_FORWARD_COMPATIBILITY
+          # (PyO3 0.21 natively supports up to 3.12).
+          args: --release --strip --out dist --features egraph,groebner,cranelift,parallel,system-gmp --interpreter ${{ inputs.pr_smoke && 'python3.12' || 'python3.9 python3.10 python3.11 python3.12 python3.13 python3.14' }}
           manylinux: "2_28"
           before-script-linux: |
             # FLINT is built from a pinned source release rather than taken from
@@ -221,7 +222,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
     env:
       # No LLVM_SYS_211_PREFIX here on purpose: `setup-llvm` writes the real
       # prefix (/usr/lib/llvm-21) to $GITHUB_ENV, and a workflow-file `env:`
@@ -314,7 +315,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
     env:
       # No LLVM_SYS_211_PREFIX here on purpose: `setup-llvm` writes the real
       # prefix (/usr/lib/llvm-21) to $GITHUB_ENV, and a workflow-file `env:`
@@ -400,15 +401,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-14 = arm64 (Apple Silicon). Intel (x86_64) wheels are no longer
+        # macos-15 = arm64 (Apple Silicon); macos-14 images are retired on
+        # 2026-11-02 (actions/runner-images#13518). Intel (x86_64) wheels are no longer
         # produced: macos-13 Intel runners were deprecated by GitHub, and the
         # macos-15 arm64 runner does not ship x86_64 Homebrew, making
         # cross-compilation of libflint impractical. Intel Mac users can install
         # from the sdist or run the arm64 wheel under Rosetta on ARM hardware.
         # A pr_smoke call builds Windows/py3.12 only: its link step is where a
         # missing symbol fails loudest (Linux defers it to import time).
-        os: ${{ fromJSON(inputs.pr_smoke && '["windows-2022"]' || '["macos-14", "windows-2022"]') }}
-        python: ${{ fromJSON(inputs.pr_smoke && '["3.12"]' || '["3.9", "3.10", "3.11", "3.12", "3.13"]') }}
+        os: ${{ fromJSON(inputs.pr_smoke && '["windows-2022"]' || '["macos-15", "windows-2022"]') }}
+        python: ${{ fromJSON(inputs.pr_smoke && '["3.12"]' || '["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]') }}
     env:
       PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
     steps:
@@ -470,7 +472,7 @@ jobs:
       # platform or `capabilities()["features"]["parallel"]` means something
       # different depending on where the user installed from. rayon + dashmap
       # are pure Rust with no system dependency, and ci-cross.yml already builds
-      # `parallel` on both macos-14 and windows-2022 (MinGW), so this adds no
+      # `parallel` on both macos-15 and windows-2022 (MinGW), so this adds no
       # new toolchain requirement to either runner.
       - name: Build wheel (macOS)
         if: runner.os == 'macOS'

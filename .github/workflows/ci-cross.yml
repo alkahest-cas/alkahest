@@ -55,7 +55,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             rust_toolchain: stable
             features: "parallel egraph cranelift jit system-gmp"
             python: true

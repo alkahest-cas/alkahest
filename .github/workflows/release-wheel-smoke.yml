@@ -31,12 +31,15 @@ on:
       - ".github/workflows/release-wheel-smoke.yml"
       - ".github/actions/**"
       - "tests/smoke_readme.py"
+  # Manual run of the FULL release matrix (every OS and Python version) on any
+  # branch, without publishing — use it before tagging.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-wheel-smoke-${{ github.event.pull_request.number }}
+  group: release-wheel-smoke-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -46,4 +49,4 @@ jobs:
       contents: read
     uses: ./.github/workflows/release-wheels.yml
     with:
-      pr_smoke: true
+      pr_smoke: ${{ github.event_name == 'pull_request' }}
