@@ -266,7 +266,9 @@ def _to_sympy(e, sympy):
     n = e.node()
     tag = n[0]
     if tag == "symbol":
-        return sympy.oo if n[1] == "∞" else sympy.Symbol(n[1], positive=True)
+        # `pi` appears now that `atan(±∞) = ±π/2` is a limit rule.
+        named = {"∞": sympy.oo, "pi": sympy.pi}
+        return named.get(n[1]) or sympy.Symbol(n[1], positive=True)
     if tag == "integer":
         return sympy.Integer(int(n[1]))
     if tag == "rational":
