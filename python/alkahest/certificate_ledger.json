@@ -9,7 +9,7 @@
       "tests/textbook_gate/"
     ],
     "observations": 334,
-    "shape_classes": 213
+    "shape_classes": 212
   },
   "rows": [
     {
@@ -3713,27 +3713,6 @@
     },
     {
       "operation": "simplify",
-      "shape": "simplify/form=atom/funcs=-/fn_arg=none/mul=none/pow=none",
-      "features": {
-        "form": "atom",
-        "funcs": "-",
-        "fn_arg": "none",
-        "mul": "none",
-        "pow": "none"
-      },
-      "verdict": "withheld",
-      "observations": {
-        "certified": 0,
-        "withheld": 0,
-        "no_derivation": 1
-      },
-      "blocking_rules": [],
-      "examples": [
-        "5"
-      ]
-    },
-    {
-      "operation": "simplify",
       "shape": "simplify/form=power/funcs=-/fn_arg=none/mul=none/pow=frac",
       "features": {
         "form": "power",
@@ -4004,15 +3983,15 @@
       },
       "verdict": "conditional",
       "observations": {
-        "certified": 1,
+        "certified": 2,
         "withheld": 0,
         "no_derivation": 2
       },
       "blocking_rules": [],
       "examples": [
         "(0 + x)",
-        "(2 + x)",
-        "(x + y)"
+        "(2 + 3)",
+        "(2 + x)"
       ]
     },
     {
