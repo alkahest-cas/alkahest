@@ -89,20 +89,29 @@ fn solve_still_solves_under_a_generous_budget() {
 
 #[test]
 fn solve_hard_system_stops_near_the_wall_budget() {
+    // Since `solve` builds its lex basis through grevlex + FGLM this system
+    // solves in ~0.1 s on a fast machine, so under a 300 ms budget it may
+    // either finish or trip. Either is correct; what must not happen is
+    // running far past the budget, or a trip that is not the wall clock.
     let pool = ExprPool::new();
     let (eqs, vars) = hard_system(&pool);
     let _g = budget::enter(Budget::new().with_wall(Duration::from_millis(300)));
     let t = Instant::now();
     let r = solve_polynomial_system(eqs, vars, &pool);
     let elapsed = t.elapsed();
-    assert!(
-        r.is_err(),
-        "the degree-49 system cannot be solved in 300 ms"
-    );
-    assert!(matches!(
-        budget::take_trip(),
-        Some(BudgetTrip::Budget(BudgetError::WallClock { .. }))
-    ));
+    match budget::take_trip() {
+        None => assert!(r.is_ok(), "no budget trip, yet solve failed: {:?}", r.err()),
+        Some(trip) => {
+            assert!(
+                r.is_err(),
+                "a budget trip was recorded but solve returned Ok"
+            );
+            assert!(
+                matches!(trip, BudgetTrip::Budget(BudgetError::WallClock { .. })),
+                "{trip:?}"
+            );
+        }
+    }
     // 300 ms budget; generous (100x) so a loaded or sanitizer run cannot trip it.
     assert!(elapsed < Duration::from_secs(30), "took {elapsed:?}");
 }

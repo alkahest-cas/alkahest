@@ -557,6 +557,8 @@ jobs:
       # explicit `<!-- doc-check: skip -->` marker; everything else must run.
       - name: Docs code blocks run
         run: |
+          # smt.md drives an external solver binary (alkahest.smt finds z3 on PATH).
+          sudo apt-get install -y -qq z3
           .venv-smoke/bin/pip install -q numpy scipy sympy mpmath
           .venv-smoke/bin/python scripts/check_doc_blocks.py --timeout 300 -j 4
 
