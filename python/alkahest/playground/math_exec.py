@@ -711,7 +711,13 @@ def _unipoly_expr(poly, var, pool):
 
 def _ball_digits(ball, digits: int) -> str:
     """Round an ArbBall's midpoint to ``digits`` significant digits."""
-    mid = ball.mid_exact()
+    if hasattr(ball, "mid_exact"):
+        mid = ball.mid_exact()
+    else:
+        # Alkahest < 3.13 reads the midpoint out as a double only, so no more
+        # than ~15 significant digits are trustworthy.
+        mid = Fraction(ball.mid)
+        digits = min(digits, 15)
     if not isinstance(mid, Fraction):
         mid = Fraction(mid)
     with localcontext() as ctx:

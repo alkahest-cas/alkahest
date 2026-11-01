@@ -207,6 +207,11 @@ class PlaygroundHandler(BaseHTTPRequestHandler):
             return
         if length > service.MAX_BODY_BYTES:
             self.close_connection = True
+            # Drain a moderately oversized body before answering: replying while
+            # the client is still sending makes some TCP stacks (macOS) reset the
+            # connection, so the client never sees the 413.
+            if length <= 16 * service.MAX_BODY_BYTES:
+                self.rfile.read(length)
             self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"detail": "Request too large"})
             return
         body = self.rfile.read(length) if length else b""
