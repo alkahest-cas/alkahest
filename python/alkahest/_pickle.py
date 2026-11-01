@@ -36,6 +36,17 @@ Symbols keep their name, domain and commutativity; an expression that
 reaches a node its new pool already holds reuses it (hash-consing), exactly
 as if it had been built there.
 
+A :class:`~alkahest.DerivedResult` pickles as its value, its whole
+derivation log and the inputs its certificates are built from, as one DAG in
+the same pool scheme, so ``.value``, ``.steps``, ``.derivation`` and
+``verification`` are the same after a round trip.  A :class:`~alkahest.Matrix`
+pickles as its entries and shape.  Both therefore go through
+``multiprocessing.Pool.map``.
+
+The process-wide :func:`~alkahest.default_pool` (where ``alkahest.pi`` and
+``alkahest.sin(2)`` live) is not given a token: it unpickles as the receiving
+process's own default pool.
+
 Loading untrusted pickles is unsafe in general (that is ``pickle``, not
 alkahest); the expression bytes themselves are validated like a pool file
 and a malformed payload raises :class:`~alkahest.IoError`.
@@ -82,9 +93,42 @@ def _unpickle_expr(pool, data: bytes):
     return pool._expr_from_dag(data)
 
 
+def _unpickle_default_pool():
+    from .alkahest import default_pool
+
+    return default_pool()
+
+
 def _reduce_pool(pool):
+    from .alkahest import default_pool
+
+    if pool is default_pool():
+        # The default pool is a per-process singleton, and it unpickles as the
+        # receiving process's own: ``alkahest.pi`` sent to a worker is that
+        # worker's ``alkahest.pi``, and comes home as the parent's.
+        return (_unpickle_default_pool, ())
     return (_unpickle_pool, (_token(pool),))
 
 
 def _reduce_expr(pool, data: bytes):
     return (_unpickle_expr, (pool, data))
+
+
+def _unpickle_derived(pool, data: bytes, meta):
+    from .alkahest import DerivedResult
+
+    return DerivedResult._from_pickle(pool, data, meta)
+
+
+def _reduce_derived(pool, data: bytes, meta):
+    return (_unpickle_derived, (pool, data, meta))
+
+
+def _unpickle_matrix(pool, data: bytes, rows: int, cols: int):
+    from .alkahest import Matrix
+
+    return Matrix._from_pickle(pool, data, rows, cols)
+
+
+def _reduce_matrix(pool, data: bytes, rows: int, cols: int):
+    return (_unpickle_matrix, (pool, data, rows, cols))

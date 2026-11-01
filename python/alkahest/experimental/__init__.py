@@ -1101,3 +1101,10 @@ __all__ = [
     "weierstrass_zeta",
     "z_transform",
 ]
+
+# Names that exist only on some builds — `CudaCompiledFn` / `compile_cuda`
+# (``cuda`` feature) and the ``groebner``-gated classes imported under
+# ``contextlib.suppress(ImportError)`` above — are listed unconditionally, so on
+# a build without them ``from alkahest.experimental import *`` raised
+# ``AttributeError``.  Keep ``__all__`` to what this build actually defines.
+__all__ = [_name for _name in __all__ if _name in globals()]

@@ -78,7 +78,7 @@ def test_random_golden_ratio_identities_are_never_proved_nonzero(coeffs, tweak):
 
 @pytest.mark.parametrize("name", ["EulerGamma", "Catalan", "Glaisher", "StieltjesGamma1"])
 def test_other_constants_are_not_independent_indeterminates(pool, name):
-    c = pool.symbol(name)
+    c = parse(name, pool)
     # Non-zero, but the proof has to be numeric.
     t = ak.equals(c**2 - c - 1, pool.integer(0))
     assert t.status == "proved_nonzero"
@@ -92,7 +92,7 @@ def test_other_constants_are_not_independent_indeterminates(pool, name):
 
 def test_negative_stieltjes_constant_is_not_positive(pool):
     # γ₁ = −0.0728…: log(γ₁²) = 2·log|γ₁| but 2·log(γ₁) = 2·log|γ₁| + 2πi.
-    g1 = pool.symbol("StieltjesGamma1")
+    g1 = parse("StieltjesGamma1", pool)
     assert mpmath.stieltjes(1) < 0
     t = ak.equals(ak.log(g1 * g1), 2 * ak.log(g1))
     assert t.status != "proved_zero", t

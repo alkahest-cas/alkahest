@@ -353,7 +353,7 @@ def test_chebyshev_t_orthogonality_in_theta(pool):
         for n in range(1, 4):
             f = ak.chebyshev_t(m, c) * ak.chebyshev_t(n, c)
             v = ak.eval_expr(
-                ak.integrate(f, t, pool.integer(0), pool.symbol("pi")).value,
+                ak.integrate(f, t, pool.integer(0), pool.pi()).value,
                 {},
             )
             want = math.pi / 2 if m == n else 0.0

@@ -353,7 +353,7 @@ def _num_equal(a, b, x, pts=(0.3, 1.7, 2.45, 4.1)):
 def test_gammasimp_reflection_duplication_recurrence():
     p = ak.ExprPool()
     x = p.symbol("x")
-    pi = p.symbol("pi")
+    pi = p.pi()
     one = p.integer(1)
     refl = ak.gammasimp(ak.gamma(x) * ak.gamma(one - x))
     assert ak.is_zero(refl - pi / ak.sin(pi * x)) is True
@@ -375,7 +375,7 @@ def test_gammasimp_reflection_duplication_recurrence():
 def test_is_zero_proves_gamma_identities():
     p = ak.ExprPool()
     x = p.symbol("x")
-    pi = p.symbol("pi")
+    pi = p.pi()
     half = p.rational(1, 2)
     assert ak.is_zero(ak.gamma(x) * ak.gamma(1 - x) - pi / ak.sin(pi * x)) is True
     lhs = ak.gamma(x) * ak.gamma(x + half)

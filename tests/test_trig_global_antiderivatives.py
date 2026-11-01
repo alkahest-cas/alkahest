@@ -229,7 +229,7 @@ def test_definite_over_full_period_exact_bounds():
     """∫₀^{2π} dx/(2 + cos x) = 2π/√3 (it was refused: the antiderivative jumped at π)."""
     pool = ak.ExprPool()
     x = pool.symbol("x")
-    pi = pool.symbol("pi")
+    pi = pool.pi()
     r = ak.integrate(1 / (2 + ak.cos(x)), x, pool.integer(0), 2 * pi)
     assert abs(ak.eval_expr(r.value, {}) - 2 * math.pi / math.sqrt(3)) < 1e-12
 

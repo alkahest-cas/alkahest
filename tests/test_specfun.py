@@ -315,7 +315,7 @@ def test_polylog_closed_forms_match_sympy(pool, x):
         want = sp.expand_func(sp.polylog(s, z))
         assert sp.simplify(got - want) == 0, s
     assert ak.polylog(pool.integer(2), x) == ak.dilog(x)
-    pi = pool.symbol("pi")
+    pi = pool.pi()
     assert ak.polylog(pool.integer(4), pool.integer(1)) == pool.rational(1, 90) * pi**4
     li3m1 = to_sympy(ak.polylog(pool.integer(3), pool.integer(-1)))
     assert sp.simplify(li3m1 - sp.polylog(3, -1).rewrite(sp.zeta)) == 0

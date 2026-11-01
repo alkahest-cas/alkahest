@@ -182,6 +182,8 @@ from .alkahest import (  # noqa: F401
     ZeilbergerCertificate,
     _build_features,
     _derived_result_context_simplify,
+    _factor_expr,
+    _into_pool,
     _is_undefined_function_name,
     _may_need_real_form,
     abs,  # symbolic abs — use alkahest.abs(expr); shadows Python builtin within this module
@@ -241,6 +243,7 @@ from .alkahest import (  # noqa: F401
     cosh,
     cosh_integral,
     decide,
+    default_pool,
     # Core operations
     diff,
     diff_forward,
@@ -950,10 +953,33 @@ def _coerce_bound(value, like):
     into the same :class:`ExprPool` as *like* via ``like * 0 + value`` (the
     arithmetic operators coerce the scalar and the ``like * 0`` term vanishes).
     """
-    value = _coerce_expr(value)
+    value = _coerce_to(value, like)
     if isinstance(value, Expr):
         return value
     return like * 0 + value
+
+
+def _coerce_to(value, like):
+    """*value* (a ``DerivedResult`` unwrapped) moved into *like*'s pool when it
+    is a closed value from :func:`default_pool` — ``alkahest.pi``,
+    ``alkahest.oo``, ``alkahest.pi / 2`` — so ``integrate(f, x, 0, oo)`` and
+    ``limit(f, x, oo)`` work with ``x`` from any pool.  Anything else is
+    returned unchanged (a genuine cross-pool mix is then refused by the native
+    call with ``E-POOL-001``).  A Python ``int`` / ``Fraction`` / ``float`` is
+    lifted into *like*'s pool exactly, so ``limit(sin(x)/x, x, 0)`` works."""
+    value = _coerce_expr(value)
+    like = _coerce_expr(like)
+    if not isinstance(like, Expr):
+        return value
+    if isinstance(value, Expr):
+        if value._pool is not like._pool:
+            moved = _into_pool(value, like._pool)
+            if moved is not None:
+                return moved
+        return value
+    if isinstance(value, (_numbers.Rational, float)):
+        return _as_expr_in(value, like._pool)
+    return value
 
 
 def _maybe_context_simplify(result):
@@ -969,58 +995,236 @@ def _maybe_context_simplify(result):
 
 
 # ---------------------------------------------------------------------------
-# Matrix — accept bare int/float entries in `Matrix(...)` / `Matrix.from_rows(...)`
+# Matrix — one type
+# ---------------------------------------------------------------------------
+#
+# This used to be a Python subclass of the native class, added so that an
+# all-number ``Matrix([[0, 1], [-1, 0]])`` could find a pool.  It split the
+# type in two: ``Matrix.from_rows``, ``A @ B``, ``A.transpose()`` and every
+# other native operation return the *native* class, which is not an instance
+# of the subclass, so ``isinstance(Matrix.from_rows(...), alkahest.Matrix)`` was
+# False and the controls entry points (``StateSpace``, ``lyapunov``) rejected
+# such matrices with ``TypeError: 'Matrix' object is not iterable``.  The
+# native constructor now takes Python numbers itself (the context pool, else
+# :func:`default_pool`), so ``alkahest.Matrix`` *is* the native class.
+Matrix = _NativeMatrix
+
+
+# ---------------------------------------------------------------------------
+# First-reach conveniences: pi / E / I / oo, factor, expand, binomial, factorial
 # ---------------------------------------------------------------------------
 
 
-def _coerce_matrix_rows(rows):
-    """Return *rows* unchanged unless every entry is a plain ``int``/``float``.
-
-    The native ``Matrix.from_rows`` can infer an :class:`ExprPool` and coerce
-    bare numbers as long as *some* entry in `rows` is already an
-    :class:`Expr`/:class:`DerivedResult`.  If `rows` is entirely numeric
-    (e.g. ``[[0, 1], [-1, 0]]``), there is no pool to infer it from, so we
-    fall back to :func:`active_pool` (set via ``with alkahest.context(pool=...)``)
-    and lift each entry into that pool with ``pool.integer``/``pool.float``.
-    """
-    has_expr = any(isinstance(entry, (Expr, DerivedResult)) for row in rows for entry in row)
-    if has_expr:
-        return rows
+def _ambient_pool():
+    """The pool a call with no ``Expr`` argument uses: the innermost
+    ``context(pool=...)``, else :func:`default_pool`."""
     pool = active_pool()
-    if pool is None:
-        # No pool anywhere — let the native constructor raise its clear error.
-        return rows
-
-    def lift(entry):
-        if isinstance(entry, bool):
-            # bool is a subclass of int; treat as int (0/1).
-            return pool.integer(int(entry))
-        if isinstance(entry, int):
-            return pool.integer(entry)
-        if isinstance(entry, float):
-            return pool.float(entry)
-        return entry
-
-    return [[lift(entry) for entry in row] for row in rows]
+    return default_pool() if pool is None else pool
 
 
-class Matrix(_NativeMatrix):
-    """Symbolic matrix.  See :class:`alkahest.alkahest.Matrix` for full docs.
+def _as_expr(x):
+    """*x* as an :class:`Expr`: a ``DerivedResult``'s value, or a Python
+    ``int`` / ``Fraction`` (exact) / ``float`` in :func:`_ambient_pool`."""
+    x = _coerce_expr(x)
+    if isinstance(x, Expr):
+        return x
+    return _as_expr_in(x, _ambient_pool())
 
-    This thin wrapper additionally accepts a fully-numeric ``rows`` (every
-    entry a Python ``int``/``float``, e.g. ``Matrix([[0, 1], [-1, 0]])``) by
-    coercing entries into :func:`active_pool` (the pool set via
-    ``with alkahest.context(pool=...)``).  Mixed int/``Expr`` rows already
-    work without this wrapper, since the native constructor infers the pool
-    from any :class:`Expr`/:class:`DerivedResult` entry.
+
+# Module constants, resolved on access (see ``__getattr__`` at the end of this
+# module) so that inside ``with alkahest.context(pool=p):`` ``alkahest.pi`` is
+# ``p``'s π.  Outside a context they live in :func:`default_pool`, and because
+# they are closed values the operators copy them into the other operand's pool:
+# ``x + alkahest.pi`` works for ``x`` from any pool.
+_MODULE_CONSTANTS = {
+    "pi": lambda p: p.pi(),
+    "E": lambda p: p.E(),
+    "I": lambda p: p.imaginary_unit(),
+    "oo": lambda p: p.pos_infinity(),
+}
+
+
+def factor(expr, vars=None):
+    """Factor *expr* over the integers, returning an :class:`Expr` product.
+
+    *expr* is put over a common denominator (as :func:`cancel` does) and the
+    numerator and denominator are each factored over ℤ — multivariate FLINT,
+    so ``x**2 - y**2`` gives ``(x - y)*(x + y)``. The result is
+    ``c · Π pᵢ^eᵢ · Π qⱼ^(−fⱼ)`` with a rational content ``c`` and irreducible
+    primitive factors.
+
+    Sub-expressions that are not polynomial in *vars* (``sin(x)``, a symbol
+    not in *vars*, ``x**n``) are treated as opaque generators, exactly as in
+    :func:`cancel`; *vars* defaults to the free symbols of *expr*. Float
+    coefficients are refused (``ConversionError``) rather than factored as if
+    they were exact. Accepts a :class:`DerivedResult` or a Python number.
+
+    Example
+    -------
+    >>> p = ExprPool(); x, y = p.symbol("x"), p.symbol("y")
+    >>> factor(x**2 - 1)                 # (x - 1)*(x + 1)
+    >>> factor((x**2 - 1) / (2*x + 2))   # (x - 1)/2
     """
+    e = _as_expr(expr)
+    if vars is None:
+        return _factor_expr(e)
+    return _factor_expr(e, [_coerce_expr(v) for v in vars])
 
-    def __new__(cls, rows):
-        return _NativeMatrix.__new__(cls, _coerce_matrix_rows(rows))
 
-    @staticmethod
-    def from_rows(rows):
-        return _NativeMatrix.from_rows(_coerce_matrix_rows(rows))
+def _is_negative_number_node(e):
+    node = e._node_exact()
+    if node[0] == "integer":
+        return node[1] < 0
+    if node[0] == "rational":
+        return node[1] < 0
+    if node[0] == "float":
+        return float(node[1]) < 0
+    return False
+
+
+def expand(expr):
+    """Distribute products and positive integer powers over sums.
+
+    ``expand((x + 1)**3)`` is ``x**3 + 3*x**2 + 3*x + 1`` and
+    ``expand((x + 1)**2 / x)`` is ``x + 2 + 1/x``: each term is split into its
+    numerator factors and its negative-power (denominator) factors, the
+    numerators over a common denominator are multiplied out and like terms
+    collected (the polynomial arithmetic behind :func:`cancel`), and each
+    resulting monomial is multiplied by the denominator. Denominators are not
+    expanded, and neither are the arguments of functions (``sin((x+1)**2)``
+    is returned as is) — sub-expressions that are not polynomial are opaque
+    generators, as in :func:`cancel`.
+
+    Returns an :class:`Expr` equal to *expr*. Unlike
+    :func:`simplify_expanded`, which applies the distributive rewrite inside
+    the general simplifier and stops at a product-size cap, this always
+    multiplies out completely. Accepts a :class:`DerivedResult` or a Python
+    number.
+    """
+    e = _as_expr(expr)
+    pool = e._pool
+    node = e.node()
+    terms = node[1] if node[0] == "add" else [e]
+    # Group the terms by their denominator so like terms collect: the
+    # numerators sharing one denominator are summed and multiplied out in one
+    # polynomial normalisation.
+    groups: dict = {}
+    order = []
+    for t in terms:
+        tn = t.node()
+        factors = tn[1] if tn[0] == "mul" else [t]
+        num, den = [], []
+        for f in factors:
+            fn_ = f.node()
+            if fn_[0] == "pow" and _is_negative_number_node(fn_[2]):
+                den.append(f)
+            else:
+                num.append(f)
+        d = pool.mul(den) if len(den) > 1 else (den[0] if den else None)
+        key = None if d is None else d
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(pool.mul(num) if len(num) > 1 else (num[0] if num else pool.integer(1)))
+    out = []
+    for key in order:
+        nums = groups[key]
+        n = pool.add(nums) if len(nums) > 1 else nums[0]
+        expanded = _native_cancel(n)
+        en = expanded.node()
+        monomials = en[1] if en[0] == "add" else [expanded]
+        for m in monomials:
+            if key is None:
+                out.append(m)
+            elif m.node()[0] == "integer" and m._node_exact()[1] == 1:
+                out.append(key)
+            else:
+                out.append(m * key)
+    out = [m for m in out if not (m.node()[0] == "integer" and m._node_exact()[1] == 0)]
+    if not out:
+        return pool.integer(0)
+    return pool.add(out) if len(out) > 1 else out[0]
+
+
+def factorial(n):
+    """``n!`` — an exact integer for a Python ``int`` or integer literal
+    ``n >= 0``, otherwise ``gamma(n + 1)``.
+
+    A negative integer has no factorial (``Γ`` has a pole there) and raises
+    :class:`DomainError` (``E-DOMAIN-001``) rather than returning a value.
+    """
+    k = _integer_value(n)
+    if k is not None:
+        if k < 0:
+            # The native exception class takes no ``code=`` keyword; Rust sets
+            # these as attributes after construction, and so does this.
+            err = DomainError(
+                f"factorial({k}) is undefined: Γ(n + 1) has a pole at every negative integer n"
+            )
+            err.code = "E-DOMAIN-001"
+            err.remediation = "factorial is defined for n >= 0 (and non-integer n via gamma)"
+            err.span = None
+            raise err
+        return _pool_of(n).integer(math.factorial(k))
+    return gamma(_as_expr(n) + 1)
+
+
+def _integer_value(x):
+    """The Python ``int`` *x* denotes, if it is an ``int`` or an integer
+    literal ``Expr``; else ``None``."""
+    x = _coerce_expr(x)
+    if isinstance(x, _numbers.Integral):
+        return int(x)
+    if isinstance(x, Expr):
+        node = x._node_exact()
+        if node[0] == "integer":
+            return node[1]
+    return None
+
+
+def binomial(n, k):
+    """The binomial coefficient ``C(n, k)``.
+
+    For integer ``k`` and integer ``n`` (Python ``int`` or integer literals)
+    this is the exact integer ``n·(n−1)···(n−k+1)/k!`` — ``0`` for ``k < 0``,
+    and the generalised value for negative ``n`` (``binomial(-1, k) =
+    (−1)^k``). Otherwise it is the symbolic
+    ``gamma(n + 1) / (gamma(k + 1) * gamma(n - k + 1))``.
+    """
+    ni, ki = _integer_value(n), _integer_value(k)
+    pool = _pool_of(n, k)
+    if ni is not None and ki is not None:
+        if ki < 0:
+            return pool.integer(0)
+        num = 1
+        for i in range(ki):
+            num *= ni - i
+        return pool.integer(num // math.factorial(ki))
+    n_e, k_e = _as_expr_in(n, pool), _as_expr_in(k, pool)
+    return gamma(n_e + 1) / (gamma(k_e + 1) * gamma(n_e - k_e + 1))
+
+
+def _pool_of(*args):
+    """The pool of the first ``Expr`` among *args*, else :func:`_ambient_pool`."""
+    for a in args:
+        a = _coerce_expr(a)
+        if isinstance(a, Expr):
+            return a._pool
+    return _ambient_pool()
+
+
+def _as_expr_in(x, pool):
+    """*x* as an :class:`Expr`, a Python number going into *pool*."""
+    x = _coerce_expr(x)
+    if isinstance(x, Expr):
+        return x
+    if isinstance(x, _numbers.Integral):
+        return pool.integer(int(x))
+    if isinstance(x, _numbers.Rational):
+        return pool.rational(int(x.numerator), int(x.denominator))
+    if isinstance(x, float):
+        return pool.float(x)
+    raise TypeError(f"expected an Expr or a Python number, got {type(x).__name__}")
 
 
 # Wrap key calculus/simplification functions so they accept DerivedResult or
@@ -1486,7 +1690,7 @@ def series(expr, var, point, order):
     the ``O(.)`` term dropped, which is what :func:`eval_expr` and
     :func:`simplify` accept.
     """
-    return _native_series(_coerce_expr(expr), _coerce_expr(var), _coerce_expr(point), order)
+    return _native_series(_coerce_expr(expr), _coerce_expr(var), _coerce_to(point, var), order)
 
 
 _native_limit = limit
@@ -1547,7 +1751,7 @@ def limit(expr, var, point, dir=None, *, continuous=None):
         _native_limit(
             _coerce_expr(expr),
             _coerce_expr(var),
-            _coerce_expr(point),
+            _coerce_to(point, var),
             dir,
             continuous=None if continuous is None else [_coerce_expr(c) for c in continuous],
         )
@@ -1667,8 +1871,8 @@ def sum_definite(expr, k, lo, hi):
         _native_sum_definite(
             _coerce_expr(expr),
             _coerce_expr(k),
-            _coerce_expr(lo),
-            _coerce_expr(hi),
+            _coerce_to(lo, k),
+            _coerce_to(hi, k),
         )
     )
 
@@ -1701,8 +1905,8 @@ def product_definite(expr, k, lo, hi):
         _native_product_definite(
             _coerce_expr(expr),
             _coerce_expr(k),
-            _coerce_expr(lo),
-            _coerce_expr(hi),
+            _coerce_to(lo, k),
+            _coerce_to(hi, k),
         )
     )
 
@@ -3131,6 +3335,7 @@ __all__ = [
     "DiophantineSolution",
     "Domain",
     "DomainError",
+    "E",
     "EgraphConfig",
     "EigenError",
     "Enclosure",
@@ -3154,6 +3359,7 @@ __all__ = [
     "HolonomicError",
     "HomotopyError",
     "HybridODE",
+    "I",
     "Implies",
     "IndexedTensor",
     "IntegrationError",
@@ -3286,6 +3492,7 @@ __all__ = [
     "bessel_y",
     "beta",
     # M6 — binomial(a, b) mod p**k (Lucas / Granville)
+    "binomial",
     "binomial_mod",
     "bode",
     "bound_on_box",
@@ -3329,6 +3536,7 @@ __all__ = [
     # V3-3 — FOFormula / V2-9 CAD
     "decide",
     # Calculus
+    "default_pool",
     "diff",
     "diff_forward",
     # P1 search plumbing item 5 — batch/streaming fan-out
@@ -3360,12 +3568,15 @@ __all__ = [
     "exp",
     # Exponential-integral family (DLMF §6.2)
     "exp_integral_ei",
+    "expand",
     "expand_hyper",
     "expand_orthopoly",
     "expand_special",
     # V1-16 — Expr ↔ GbPoly round trip
     "expr_to_gbpoly",
+    "factor",
     "factor_univariate_mod_p",
+    "factorial",
     "flatten_exprs",
     "floor",
     # 3.10.0 — Fresnel integrals, normalised (pi/2) convention
@@ -3455,6 +3666,7 @@ __all__ = [
     # Phase 25
     "numpy_eval",
     "numpy_eval_par",
+    "oo",
     "pantelides",
     "pari",
     # V2-21
@@ -3462,6 +3674,7 @@ __all__ = [
     "parse_unit",
     "pell_classes",
     # PA-9
+    "pi",
     "piecewise",
     "plot",
     "plot3d",
@@ -3618,6 +3831,8 @@ del _leak
 
 
 def __getattr__(name: str):
+    if name in _MODULE_CONSTANTS:
+        return _MODULE_CONSTANTS[name](_ambient_pool())
     if name in ("exceptions", "alkahest"):
         import importlib
 
@@ -3640,7 +3855,7 @@ def __dir__():
     # `to_jax` is lazy (see `__getattr__`).  The eager import made it exist
     # exactly when numpy was importable (jax itself is checked at call time),
     # so list it under the same condition — without importing numpy here.
-    names = set(globals())
+    names = set(globals()) | set(_MODULE_CONSTANTS)
     import importlib.util
 
     if importlib.util.find_spec("numpy") is not None:

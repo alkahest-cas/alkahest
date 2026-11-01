@@ -61,5 +61,5 @@ def test_binding_every_symbol_still_compiles():
     x, y = p.symbol("x"), p.symbol("y")
     assert compile_expr(x + y, [x, y])([1.0, 2.0]) == 3.0
     # pi is a constant, not a free symbol.
-    f = compile_expr(alkahest.sin(p.symbol("pi") * x), [x])
+    f = compile_expr(alkahest.sin(p.pi() * x), [x])
     assert math.isclose(f([0.5]), 1.0)

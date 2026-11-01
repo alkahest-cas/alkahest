@@ -164,10 +164,17 @@ x = pool.symbol("x", ak.Domain.Real)   # or domain="real"
 y = pool.symbol("y")   # ambient context(domain=…) if one is open, else Domain.Real
 
 expr = x**2 + 1          # int literals in +, -, *, **, / are fine
-half = pool.rational(1, 2)  # exact rationals need pool.rational
+half = pool.rational(1, 2)  # exact rationals: pool.rational, or fractions.Fraction(1, 2)
+alt = (-1)**x * 2**x     # Python numbers on either side, including as the base
 ```
 
-Arithmetic operators (`+`, `-`, `*`, `**`, `/`) are all overloaded on `Expr` — use them freely.
+Arithmetic operators (`+`, `-`, `*`, `**`, `/`) are all overloaded on `Expr` — use them freely. Python `int`s and `Fraction`s are coerced **exactly** (to integer / rational nodes) on either side of an operator, as function arguments (`ak.sin(2)`, `ak.sqrt(2)`, `ak.exp(1)`) and as `Matrix` entries (`ak.Matrix([[1, 2], [3, 4]])`); a `float` stays a float node (no false exactness).
+
+**SymPy-style first reach.** `ak.pi`, `ak.E` (`exp(1)`), `ak.I` and `ak.oo` are the constants; `ak.factor(e)` factors over ℤ (numerator and denominator, multivariate) and returns an `Expr` product; `ak.expand(e)` multiplies out completely (no size cap, unlike `simplify_expanded`); `ak.binomial(n, k)` / `ak.factorial(n)` are exact for integers and gamma ratios otherwise. A call with **no** `Expr` argument (`ak.sin(2)`, `ak.pi`, `ak.parse("x + 1")`, `ak.symbol("x")`, an all-number `Matrix`) uses the active `ak.context(pool=...)` pool, else the process-wide `ak.default_pool()`. Closed default-pool values (`ak.pi / 2`, `ak.sqrt(2)`) mix into any pool — `x + ak.pi` works for `x` from your own pool — while expressions with free symbols never cross pools (`E-POOL-001`).
+
+**`pool.symbol("pi")` is a variable, not π.** It prints as `pi` but `simplify(sin(pool.symbol("pi")))` stays `sin(pi)`. The constants are `pool.pi()`, `pool.E()`, `pool.euler_gamma()`, `pool.catalan()`, `pool.golden_ratio()`, `pool.glaisher()` (or `ak.parse("pi", pool)`).
+
+`DerivedResult`, `Expr` and `Matrix` pickle (and so go through `multiprocessing.Pool.map`); results come home to the pool they were sent from.
 
 ### Expression representations
 

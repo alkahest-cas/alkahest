@@ -316,7 +316,7 @@ def test_strength_reduced_powers_match_the_interpreter(tmp_path):
 def test_pi_and_e_are_literals():
     p = ak.ExprPool()
     x = p.symbol("x")
-    pi = p.symbol("pi")
+    pi = p.pi()
     code = ak.emit_c_expr(ak.sin(pi * x) + ak.exp(p.integer(1)) * x, x)
     assert "3.141592653589793" in code, code
     assert "2.718281828459045" in code, code
@@ -331,7 +331,7 @@ def test_pi_and_e_are_literals():
 def test_pi_compiled_value(tmp_path):
     p = ak.ExprPool()
     x = p.symbol("x")
-    pi = p.symbol("pi")
+    pi = p.pi()
     e = ak.sin(pi * x) / ak.sqrt(pi) + p.rational(1, 3) * x
     f = _Lib(ak.emit_c_expr(e, x), tmp_path).scalar("f", 1)
     for v in (-2.5, -0.1, 0.3, 1.7, 9.0):
