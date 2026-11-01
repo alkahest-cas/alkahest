@@ -4,7 +4,7 @@
 
 ### PyPI (default)
 
-Alkahest is on the [Python Package Index](https://pypi.org/project/alkahest/). Supported interpreters are **Python 3.9 through 3.13** (`requires-python` on PyPI).
+Alkahest is on the [Python Package Index](https://pypi.org/project/alkahest/). Supported interpreters are **Python 3.9 through 3.14** (`requires-python` on PyPI).
 
 ```bash
 python -m pip install -U pip

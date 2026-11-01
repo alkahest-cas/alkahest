@@ -172,6 +172,25 @@ jobs:
         if: env.RUST_CHANGED == 'true'
         run: cargo clippy --all-targets --features groebner-cuda -- -D warnings
 
+      # Every PR build targets 3.11/3.12, but the release wheels go back to 3.9,
+      # whose limited API lacks some PyO3 0.21 methods (`PyString::to_str` was
+      # one: from #462 on, every 3.9 wheel failed to compile and nothing before
+      # the release matrix noticed). Type-check the extension against 3.9.
+      - name: Install Python 3.9 (oldest supported)
+        if: env.RUST_CHANGED == 'true'
+        id: py39
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.9"
+          update-environment: false
+
+      - name: cargo check alkahest-py against Python 3.9
+        if: env.RUST_CHANGED == 'true'
+        env:
+          PYO3_PYTHON: ${{ steps.py39.outputs.python-path }}
+          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+        run: cargo check -p alkahest-py --features "egraph groebner cranelift parallel"
+
       - name: ruff check
         run: ruff check python/ tests/
 

@@ -54,7 +54,8 @@ pub(crate) fn unit_from_py(ob: &Bound<'_, PyAny>) -> PyResult<Option<Unit>> {
         return Ok(Some(u.get().inner.clone()));
     }
     if let Ok(s) = ob.downcast::<PyString>() {
-        return core_units::parse_unit(s.to_str()?)
+        // `to_cow`, not `to_str`: PyO3 0.21 has no `to_str` under the 3.9 limited API.
+        return core_units::parse_unit(&s.to_cow()?)
             .map(Some)
             .map_err(unit_err);
     }

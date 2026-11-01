@@ -14,7 +14,7 @@ Use this skill whenever you are writing Python code that uses the `alkahest` lib
 
 ## Install
 
-**Requirements:** Python **3.9–3.13** ([PyPI](https://pypi.org/project/alkahest/) `requires-python`).
+**Requirements:** Python **3.9–3.14** ([PyPI](https://pypi.org/project/alkahest/) `requires-python`).
 
 ```bash
 pip install alkahest
