@@ -328,8 +328,15 @@ For the same reason `solve` takes **quantifier-free formulas only** (`E-SMT-002`
 *write* it, so this is the refusal you are most likely to hit first:
 
 ```python
-f = ak.Exists(x, ak.Exists(y, ak.Exists(z, body)))
-ak.smt.solve(f)
+# x, y integers and z real, from the block above:  3x + 5y = 2z,  x > 0,  y > 1
+body = ak.And(pool.pred_eq(3 * x + 5 * y, 2 * z),
+              ak.And(pool.gt(x, pool.integer(0)), pool.gt(y, pool.integer(1))))
+
+quantified = ak.Exists(x, ak.Exists(y, ak.Exists(z, body)))
+try:
+    ak.smt.solve(quantified)
+except ak.SmtError as e:
+    print(e)
 # [E-SMT-002] solve() takes quantifier-free formulas only; this one is quantified
 ```
 
@@ -340,7 +347,7 @@ and `body` ask `solve` the same question, and the `sat` model is the witness for
 
 ```python
 result = ak.smt.solve(body)     # same question, and now it answers
-result.model                    # {'x': Fraction(...), 'y': …, 'z': …} — the witness
+result.model                    # {'y': Fraction(2, 1), 'x': Fraction(1, 1), 'z': Fraction(13, 2)} — the witness
 ```
 
 This works only for a **prefix of `Exists` over a quantifier-free body**. Under a `Forall`
@@ -364,6 +371,10 @@ at irrational boundary points — see
 "hard, not hung" distinction [budgets](./budgets.md) were built for:
 
 ```python
+import logging
+log = logging.getLogger("search")
+
+candidate = body
 try:
     result = ak.smt.solve(candidate, budget=ak.Budget(wall_ms=250))
 except ak.BudgetExceededError:

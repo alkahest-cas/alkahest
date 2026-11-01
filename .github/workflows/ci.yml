@@ -550,6 +550,18 @@ jobs:
       - name: README quickstart + fresh-interpreter parse smoke
         run: .venv-smoke/bin/python tests/smoke_readme.py
 
+      # Every ```python block in docs/mdbook/src/*.md (the docs site) and
+      # README.md, one fresh interpreter per page, against the same installed
+      # wheel. Runs after the parse smoke so that one still sees a pristine
+      # venv. Blocks that need a GPU, torch/jax or the network carry an
+      # explicit `<!-- doc-check: skip -->` marker; everything else must run.
+      - name: Docs code blocks run
+        run: |
+          # smt.md drives an external solver binary (alkahest.smt finds z3 on PATH).
+          sudo apt-get install -y -qq z3
+          .venv-smoke/bin/pip install -q numpy scipy sympy mpmath
+          .venv-smoke/bin/python scripts/check_doc_blocks.py --timeout 300 -j 4
+
   # ── Tier 1b: slow Python integration (roadmap-level sparse_interp)
   # Runs on the nightly schedule only so push/PR CI stays fast; run locally with:
   #   pytest tests/test_sparse_interp.py -m slow --timeout=0 -v --override-ini="addopts=-v"
@@ -653,8 +665,14 @@ jobs:
           targets: x86_64-unknown-linux-gnu
           components: rust-src
 
+      # Every shard, not only the Python ones: the sanitizer and valgrind
+      # shards build the whole workspace, and alkahest-py's pyo3-ffi build
+      # script probes whatever `python3` is on PATH. Left to the runner image
+      # that became 3.14, which PyO3 0.21 rejects ("newer than PyO3's maximum
+      # supported version (3.12)") — asan, tsan, lsan, valgrind and
+      # valgrind-validated all failed at that build step. 3.11 matches every
+      # other job in this file.
       - uses: actions/setup-python@v6
-        if: matrix.shard == 'hypothesis' || matrix.shard == 'extras'
         with:
           python-version: "3.11"
 

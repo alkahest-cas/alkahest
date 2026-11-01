@@ -16,6 +16,11 @@ Alkahest exposes multiple representation types rather than hiding everything beh
 Conversion to a specialized type is always an explicit opt-in:
 
 ```python
+from alkahest import ExprPool, UniPoly
+
+pool = ExprPool()
+x, y = pool.symbol("x"), pool.symbol("y")
+
 expr = x**3 + pool.integer(-2) * x + pool.integer(1)
 p = UniPoly.from_symbolic(expr, x)   # explicit conversion
 ```
@@ -154,8 +159,8 @@ a = ArbBall(2.0, 0.5)    # [1.5, 2.5]
 b = ArbBall(3.0, 0.0)    # exactly 3
 
 # A ball prints as midpoint ± radius, not as an interval
-print(a + b)   # ArbBall(5.000000 ± 5.00e-1)   i.e. [4.5, 5.5]
-print(a * b)   # ArbBall(6.000000 ± 1.50e0)    i.e. [4.5, 7.5]
+print(a + b)   # ArbBall(5.00000 ± 5.00e-1)   i.e. [4.5, 5.5]
+print(a * b)   # ArbBall(6.00000 ± 1.50)      i.e. [4.5, 7.5]
 
 # Evaluate a symbolic expression rigorously
 pool = ExprPool()

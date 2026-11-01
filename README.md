@@ -45,7 +45,7 @@ pip install "alkahest[rl]"   # RL environments; Python >= 3.10
 
 Rust users: `cargo add alkahest-cas` — see [Rust crate](#rust-crate).
 
-Default wheels are batteries-included: e-graph simplification, the Gröbner solver (so `alkahest.solve`, Diophantine, and homotopy work out of the box), the pure-Rust **Cranelift** CPU JIT with no system LLVM required, and **`parallel`** — the Rayon-backed multi-core paths (`numpy_eval_par`, `simplify_par`, parallel F4 reduction, sharded `ExprPool`). They do **not** include the **LLVM** JIT; for that, use a **PyTorch-style** opt-in **`+jit`** / **`+full`** Linux wheel from [GitHub Releases](#opt-in-linux-wheels-jit-and-full-pytorch-style), not the default PyPI resolver path.
+Default wheels are batteries-included: e-graph simplification, the Gröbner solver (so `alkahest.solve`, Diophantine, and homotopy work out of the box), the pure-Rust **Cranelift** CPU JIT with no system LLVM required, and **`parallel`** — the Rayon-backed multi-core paths (`numpy_eval_par`, `simplify_par`, sharded `ExprPool`; Gröbner bases stay sequential). They do **not** include the **LLVM** JIT; for that, use a **PyTorch-style** opt-in **`+jit`** / **`+full`** Linux wheel from [GitHub Releases](#opt-in-linux-wheels-jit-and-full-pytorch-style), not the default PyPI resolver path.
 
 ### Install matrix (default vs opt-in wheels)
 
@@ -148,7 +148,7 @@ pip install maturin
 maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph jit groebner"
 ```
 
-Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_par`), `egraph` (vendored egglog backend; **default** in PyPI wheels), `groebner` (Gröbner solver + Diophantine + homotopy; **default** in both the Rust crate and PyPI wheels), `system-gmp` (rug links the system GMP/MPFR that FLINT uses; **default** in PyPI wheels, opt-in for source builds — needs GMP ≥ 6.3 / MPFR ≥ 4.2, see the GMP prerequisite above), `cranelift` (pure-Rust Tier-1 JIT), `jit` (LLVM JIT), `cuda` (NVPTX codegen — needs LLVM 21 with the NVPTX target; adds `compile_cuda`), `groebner-cuda` (CUDA Macaulay-matrix kernel — needs only `cudarc`, and is a Rust-crate entry point that no Python call reaches). Neither GPU feature is in any published wheel: see the [GPU guide](docs/mdbook/src/gpu.md).
+Optional Cargo features: `parallel` (sharded pool + `simplify_par` + `numpy_eval_par`; Gröbner computation is not parallelised), `egraph` (vendored egglog backend; **default** in PyPI wheels), `groebner` (Gröbner solver + Diophantine + homotopy; **default** in both the Rust crate and PyPI wheels), `system-gmp` (rug links the system GMP/MPFR that FLINT uses; **default** in PyPI wheels, opt-in for source builds — needs GMP ≥ 6.3 / MPFR ≥ 4.2, see the GMP prerequisite above), `cranelift` (pure-Rust Tier-1 JIT), `jit` (LLVM JIT), `cuda` (NVPTX codegen — needs LLVM 21 with the NVPTX target; adds `compile_cuda`), `groebner-cuda` (CUDA Macaulay-matrix kernel — needs only `cudarc`, and is a Rust-crate entry point that no Python call reaches). Neither GPU feature is in any published wheel: see the [GPU guide](docs/mdbook/src/gpu.md).
 
 ### Rust crate
 
@@ -240,7 +240,7 @@ More runnable examples live in [`examples/`](examples/) — polynomials, Risch i
 | [Calculus](docs/mdbook/src/calculus.md) | Differentiation, Risch integration (definite and indefinite), limits, series expansion, residues | `diff` · `integrate` · `limit` · `series` · `residue` |
 | [Simplification](docs/mdbook/src/simplification.md) | Rule engine plus [e-graph saturation](docs/mdbook/src/egraph.md), with domain-specific passes instead of one catch-all | `simplify` · `simplify_trig` · `simplify_log_exp` · `simplify_egraph` |
 | Polynomials | FLINT-backed univariate and multivariate arithmetic, factorization over ℤ and 𝔽ₚ, sparse GCD and interpolation, resultants, partial fractions | `UniPoly.factor_z` · `factor_univariate_mod_p` · `gcd_sparse` · `resultant` · `apart` · `cancel` |
-| [Solving](docs/mdbook/src/solving.md) | Gröbner bases (F4), triangular decomposition, primary decomposition, real root isolation via CAD, numerical fallback | `solve` · `real_roots` · `triangularize` · `cad_project` · `primary_decomposition` · `solve_numerical` |
+| [Solving](docs/mdbook/src/solving.md) | Gröbner bases (Buchberger over ℚ, FGLM for `lex`, F5), triangular decomposition, primary decomposition, real root isolation via CAD, numerical fallback | `solve` · `real_roots` · `triangularize` · `cad_project` · `primary_decomposition` · `solve_numerical` |
 | Sums and products | Gosper and [Zeilberger creative telescoping](docs/mdbook/src/telescoping.md), WZ pair verification, linear recurrence solving | `sum_indefinite` · `sum_definite` · `zeilberger` · `verify_wz_pair` · `rsolve` |
 | Linear algebra | Symbolic matrices, eigenvalues and eigenvectors, Jacobians, Routh–Hurwitz stability | `Matrix.eigenvals` · `jacobian` · `routh_hurwitz` |
 | [ODEs and DAEs](docs/mdbook/src/ode-dae.md) | Symbolic ODE/DAE systems, Pantelides index reduction, sensitivity and adjoint systems, acausal component modeling | `ODE` · `DAE` · `pantelides` · `dae_index_reduce` · `sensitivity_system` |
@@ -366,10 +366,12 @@ them.
   determinant whose vanishing is undecidable gives `E-LINALG-010` / `E-MAT-004` instead of
   a guessed branch. **A refusal means undecided, not false** — a search loop that records
   it as a negative result closes a branch it never explored.
-- **`Matrix.eigenvals()` can emit casus-irreducibilis cube roots.** These are correct
-  under Alkahest's real cube-root convention — `eval_expr` refuses them honestly and
-  `interval_eval` returns an unbounded ball — but a principal-branch evaluator (SymPy,
-  NumPy) returns a confident number that is *not* an eigenvalue. Evaluate inside Alkahest
+- **A `(negative)^(1/3)` means the real cube root in Alkahest, not the principal one.**
+  `Matrix.eigenvals()` no longer produces such radicals (three real roots come back in
+  trigonometric form, and Cardano radicands are kept positive), but one you build, parse
+  or import is still branch-sensitive: `eval_expr` refuses it honestly (`E-EVAL-009`) and
+  `interval_eval` returns an unbounded ball, while a principal-branch evaluator (SymPy,
+  NumPy) returns a confident number that is a different root. Evaluate inside Alkahest
   before exporting a radical expression to another tool.
   [Details](https://alkahest-cas.github.io/docs/guide/interop/#the-interop-trap-casus-irreducibilis-cube-roots).
 
@@ -385,6 +387,7 @@ them.
 pip install "alkahest[rl]"   # Python ≥ 3.10; adds verifiers + datasets
 ```
 
+<!-- doc-check: needs verifiers -->
 ```python
 from alkahest.rl.envs.integration import IntegrationVerifier, load_environment
 

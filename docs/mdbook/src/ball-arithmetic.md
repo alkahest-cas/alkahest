@@ -60,10 +60,13 @@ All arithmetic on `ArbBall` values produces a guaranteed enclosure. The radius g
 a = ArbBall(2.0, 0.1)
 b = ArbBall(3.0, 0.1)
 
-print(a + b)    # [4.8, 5.2]  — radius grows by sum of input radii
-print(a * b)    # guaranteed enclosure of [1.9, 2.1] * [2.9, 3.1]
-print(a ** 2)   # [3.24, 4.41]  (squares the interval)
+print(a + b)    # ArbBall(5.00000 ± 2.00e-1) — radius grows by sum of input radii
+print(a * b)    # ArbBall(6.00000 ± 5.10e-1) ⊇ [1.9, 2.1] * [2.9, 3.1]
+print(a * a)    # ArbBall(4.00000 ± 4.10e-1) ⊇ [3.61, 4.41]
 ```
+
+`ArbBall` has no `**` operator; raise to a power through `interval_eval` (below)
+on `x**n`, or multiply.
 
 ## interval_eval
 
@@ -126,12 +129,14 @@ hull of the values at the two ends:
 
 ```python
 import math
+from alkahest import tan
+
 # [0.1, 0.1 + pi] contains pi/2, where tan has a pole
 b = ArbBall((0.1 + 0.1 + math.pi) / 2, math.pi / 2)
-interval_eval(tan(x), {x: b})                    # ArbBall(0.000000 ± inf)
+interval_eval(tan(x), {x: b})                    # ArbBall(0 ± inf)
 
 # x**-2 over a box containing 0
-interval_eval(x**-2.0, {x: ArbBall(1.0, 2.0)})   # ArbBall(0.000000 ± inf)
+interval_eval(x**-2.0, {x: ArbBall(1.0, 2.0)})   # ArbBall(0 ± inf)
 ```
 
 A box on which the function is bounded but not monotone still gets a finite
@@ -139,14 +144,14 @@ enclosure — `x**2.0` over `[-1, 3]` covers `x = 0`, and `bessel_j0` over
 `[-1, 1]` covers the peak at `x = 0` — it is only the unbounded case that
 degenerates.
 
-## AcbBall
+## Complex values
 
-Complex ball arithmetic for expressions over ℂ:
+The Python API has no complex ball type — `ArbBall` is real. Complex values are
+evaluated in floating point with `evaluate(..., mode="complex")`:
 
 ```python
-from alkahest import AcbBall
-
-z = AcbBall(1.0, 0.0, 1.0, 0.0)  # 1 + i, exact
+r = evaluate(ak.sqrt(x), {x: complex(1, 1)}, mode="complex")
+print(r.value)   # (1.0986841134678098+0.45508986056222733j)
 ```
 
 ## Use cases
@@ -162,10 +167,12 @@ assert r.lo > 0.841 and r.hi < 0.842
 **Numerical verification of symbolic results.** After deriving a symbolic simplification, verify it numerically with rigorous bounds:
 
 ```python
+from alkahest import cos
+
 # Verify sin²(x) + cos²(x) = 1 at x = 1
 lhs = sin(x)**pool.integer(2) + cos(x)**pool.integer(2)
 r = interval_eval(lhs, {x: ArbBall(1.0, 0.0)})
-assert 1.0 in r  # ball contains 1
+assert r.contains(1.0)  # ball contains 1
 ```
 
 **Sensitivity analysis.** Pass an input ball representing parameter uncertainty and observe how the output uncertainty grows:
@@ -173,7 +180,7 @@ assert 1.0 in r  # ball contains 1
 ```python
 # x = 1 ± 0.1 (10% uncertainty)
 r = interval_eval(x**pool.integer(3), {x: ArbBall(1.0, 0.1)})
-print(r)  # output uncertainty
+print(r)  # ArbBall(1.03000 ± 3.01e-1): output uncertainty ~30%
 ```
 
 ## Relationship to Lean certificates

@@ -65,6 +65,9 @@ error, and return the **real part when the imaginary part is zero within that
 bound**:
 
 ```python
+from alkahest import sqrt
+
+t, w2 = pool.symbol("t"), pool.symbol("w2")
 f = compile_expr(cos(t * sqrt(w2)), [t, w2])
 f([0.7, -4.0])           # 2.1508984653931407 == cosh(1.4), not nan
 ```
@@ -85,14 +88,12 @@ emitted to C as its complex evaluation alone.
 Repeated compilation of the same expression is expensive. `CompileCache` memoizes by `(ExprId, input variables)` — hash-consing makes `ExprId` a stable content key:
 
 ```python
-from alkahest import ExprPool, compile_expr, CompileCache
+from alkahest import CompileCache
 
-pool = ExprPool()
-x = pool.symbol("x")
 cache = CompileCache()
 f = cache.compile(x**2, [x])         # JIT compiles on first call — (expr, inputs)
 g = cache.compile(x**2, [x])         # cache hit — O(1)
-print(cache.stats())                 # keys: len, compiles, hits, hit_rate
+print(cache.stats())                 # {'compiles': 1.0, 'hits': 1.0, 'len': 1.0, 'hit_rate': 0.5}
 ```
 
 ## eval_expr
@@ -156,10 +157,19 @@ returned by `compile_expr` owns JIT code pages and a backend handle, and is
 pinned to its creating thread. Touching it from another one is refused:
 
 ```python
-f = compile_expr(expr, [x])          # thread A
-threading.Thread(target=lambda: numpy_eval(f, xs)).start()
-# pyo3_runtime.PanicException: alkahest::PyCompiledFn is unsendable,
-#                              but sent to another thread
+import threading
+
+f = compile_expr(sin(x) * cos(x), [x])   # thread A
+
+def worker():
+    try:
+        numpy_eval(f, xs)
+    except BaseException as e:            # PanicException is not an Exception
+        print(type(e).__name__)           # PanicException: ... alkahest::PyCompiledFn
+                                          # is unsendable, but sent to another thread
+
+th = threading.Thread(target=worker)
+th.start(); th.join()
 ```
 
 Two things to know about that refusal. It has nothing to do with `parallel` —
@@ -177,17 +187,21 @@ expressions anywhere, and call `compile_expr` per thread.
 ```python
 from alkahest import horner
 
-# x^3 + 2x^2 + 3x + 4 → x*(x*(x + 2) + 3) + 4
+# x^3 + 2x^2 + 3x + 4 → 4 + x*(3 + x*(2 + x))
 h = horner(x**3 + pool.integer(2)*x**2 + pool.integer(3)*x + pool.integer(4), x)
 ```
 
-`emit_c` emits a C function string for embedding in other projects:
+`emit_c` emits the Horner form of a univariate polynomial as a C function string for
+embedding in other projects:
 
 ```python
 from alkahest import emit_c
 
-c_code = emit_c(expr, [x, y], fn_name="f")
-# → "double f(double x, double y) { return ...; }"
+c_code = emit_c(x**3 + 2*x**2 + 3*x + 4, x, fn_name="f")
+print(c_code)
+# double f(double x) {
+#     return 4.0 + x * (3.0 + x * (2.0 + x * (1.0)));
+# }
 ```
 
 `emit_c_expr` (one output) and `emit_c_vec` (many outputs into `double *out`)
@@ -249,6 +263,7 @@ Three lowering targets are available:
 from alkahest import to_stablehlo
 
 # Emit textual MLIR in the StableHLO dialect
+expr = x**2 + sin(y)
 mlir_text = to_stablehlo(expr, [x, y], fn_name="my_fn")
 print(mlir_text)  # valid input to mlir-opt / XLA
 ```
@@ -260,6 +275,7 @@ published wheel, so `pip install alkahest` never has this. Full detail, includin
 build prerequisites, the supported node set, error codes and the state of testing, is
 in [GPU support (CUDA)](./gpu.md).
 
+<!-- doc-check: skip — needs CUDA -->
 ```python
 from alkahest import compile_cuda
 
@@ -271,6 +287,8 @@ Guard on the capability bit before reaching for it, since the name does not exis
 all without the feature:
 
 ```python
+import alkahest
+
 if alkahest.capabilities()["features"]["cuda"]:
     ...
 ```

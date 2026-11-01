@@ -64,6 +64,7 @@ ak.anticommutator(sx, sy)           # sx*sy + sy*sx
 pool's imaginary unit `I`):
 
 ```python
+sz = p.symbol("sz", commutative=False)
 ak.simplify_pauli(sz**2).value          # 1
 ak.simplify_pauli(sx*sy*sx).value       # -sy
 ak.simplify_pauli((sx + sy)**2).value   # 2
@@ -119,6 +120,7 @@ d = p.symbol("d"); mu, nu = p.symbol("mu"), p.symbol("nu")
 ak.gamma_trace([mu, mu], dim=d, indices=[mu])                # 4*d
 ak.gamma_trace([mu, nu, mu, nu], dim=d, indices=[mu, nu])    # 4*d*(2 - d)
 ak.gamma_contract([mu, nu, mu], [mu], d)                     # [(2 - d, [nu])]
+m, n, r, s = (p.symbol(i) for i in "mnrs")
 t = ak.gamma_trace([m, n, r, s], dim=d)                      # free indices
 ak.lorentz_contract(t*t, [m, n, r, s], d)                    # 16*d*(3*d - 2)
 ```

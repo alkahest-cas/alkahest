@@ -91,6 +91,11 @@ against the sequence at the very first term. The engine now returns the
 inhomogeneous recurrence, which does hold:
 
 ```python
+def C(a, b):  # binomial coefficient as a ratio of gammas
+    return ak.gamma(a + one) / (ak.gamma(b + one) * ak.gamma(a - b + one))
+
+cert = ak.zeilberger(C(2*k, k) / (k + one) * C(2*n - one, n - k), n, k)
+cert.order          # 2
 cert.boundary       # "nonzero"
 cert.boundary_rhs   # b(n), an explicit hypergeometric term in n
 # Σ_i a_i(n)·S(n+i) = b(n) — checked exactly against 2, 8, 35, 161, 768, 3773
@@ -148,8 +153,9 @@ see it. `cert.certificate_poles` reports those points, as expressions in `n`:
 cert = ak.zeilberger(C(n, k) / (n - 2*k + one), n, k)   # k = 0..n
 cert.boundary            # "unknown"
 [str(p) for p in cert.certificate_poles]
+# ['(1/2 + (n * (1/2)))', '(2 + (n * (1/2)))', '((n * (1/2)) + 3/2)']
 # k = (n+1)/2 — a pole of the summand, so S(n) is undefined for odd n — and
-# k = (n+3)/2, a pole of the certificate strictly inside the range
+# k = (n+4)/2, (n+3)/2, poles of the certificate strictly inside the range
 ```
 
 A non-empty `certificate_poles` always means `"unknown"`. An empty one is not a
@@ -696,7 +702,7 @@ rest = n - x - y - z
 f = factorial(n) / (factorial(x) * factorial(y) * factorial(z) * factorial(rest))
 cert = telescope_md(f, n, [x, y, z])
 cert.order          # 1
-cert.coeffs()        # [-4, 1]  ->  S(n+1) = 4*S(n)
+cert.coeffs()        # [4, -1]  ->  4*S(n) - S(n+1) = 0
 cert.certs()          # [c_1, c_2, c_3]
 ```
 

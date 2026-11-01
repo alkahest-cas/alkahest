@@ -7,7 +7,8 @@ Alkahest supports symbolic differentiation and integration with full derivation 
 `diff(expr, var)` computes the symbolic derivative of `expr` with respect to `var`.
 
 ```python
-from alkahest import diff, sin, cos, exp, log
+import alkahest as ak
+from alkahest import ExprPool, diff, sin, cos, exp, log, sqrt
 
 pool = ExprPool()
 x = pool.symbol("x")
@@ -77,8 +78,6 @@ smooth) function. `diff` returns a canonical derivative node for it, with the
 chain rule applied per argument slot:
 
 ```python
-import alkahest as ak
-pool = ak.ExprPool()
 t = pool.symbol("t")
 q = pool.func("q", [t])
 ak.diff(q, t).value                          # Derivative(q(t), t)
@@ -106,7 +105,10 @@ ak.integrate(fp, t).value                  # f(t)
 ak.integrate(f * fp, t).value              # f(t)^2 / 2
 ak.integrate(fp / f, t).value              # log(f(t))
 ak.integrate(t * ak.diff(fp, t).value, t).value   # t*f'(t) - f(t)
-ak.integrate(f, t)                         # IntegrationError: no closed form
+try:
+    ak.integrate(f, t)
+except ak.IntegrationError as e:
+    print(e.code)                          # E-INT-001: no closed form
 ```
 
 Each candidate is differentiated back and compared with the integrand before
@@ -151,8 +153,6 @@ variable. It does not use `@trace` and is not composable with `jit` directly.
 ```python
 from alkahest import symbolic_grad
 
-pool = ExprPool()
-x = pool.symbol("x")
 y = pool.symbol("y")
 
 expr = x**2 * y + sin(x * y)
@@ -205,7 +205,7 @@ The integration engine applies a rule table for common forms, then escalates to 
 
 ```python
 # Rational functions
-r = integrate(pool.integer(1) / (x**2 - pool.integer(1)), x)  # → ½·log((x-1)/(x+1))
+r = integrate(pool.integer(1) / (x**2 - pool.integer(1)), x)  # → ½·log(x-1) − ½·log(x+1)
 
 r = integrate(pool.integer(1) / (x**2 + pool.integer(1)), x)  # → arctan(x)
 
@@ -238,16 +238,16 @@ number field is used only if that check fails. On
 `∫ (x⁷+3x²−1)/(x¹⁵+x⁴+2x+1)² dx` this takes the log part from minutes to about
 a second.
 
-**Non-elementary certification**: when the integrand is provably non-elementary (Liouville's theorem — e.g. `sin(x)/x`, `exp(x)/x`, `exp(x²)`), `integrate` raises `IntegrationError` with code `E-INT-004` (NonElementary) rather than a generic "not implemented":
+**Non-elementary certification**: when the integrand is provably non-elementary (Liouville's theorem — e.g. `exp(x²)`, `exp(exp(x))`, `exp(x)/(x²+1)`), `integrate` raises `IntegrationError` with code `E-INT-004` (NonElementary) rather than a generic "not implemented". (Integrands with a named special-function antiderivative get it instead: `sin(x)/x` → `Si(x)`, `exp(x)/x` → `Ei(x)`, `1/log(x)` → `li(x)`.)
 
 ```python
 from alkahest import IntegrationError
 
 try:
-    integrate(exp(x) / x, x)
+    integrate(exp(x**2), x)
 except IntegrationError as e:
     print(e.code)         # E-INT-004
-    print(e.remediation)  # "no elementary antiderivative (NonElementary)"
+    print(e.remediation)  # "this integrand has no closed-form antiderivative in terms of elementary functions; ..."
 ```
 
 For integrands outside the supported classes (e.g. `sqrt(P(x))`, mixed algebraic+transcendental), `integrate` raises `IntegrationError` with code `E-INT-001` (NotImplemented).
@@ -424,6 +424,9 @@ reflection `cot u = tan(π/2 − u)`, so `integrate(cot(x)**(3/2), x, 1/5, 1)` i
 A common pattern is to verify an antiderivative by differentiating it back:
 
 ```python
+from alkahest import simplify
+
+expr = x * cos(x)
 antideriv = integrate(expr, x).value
 check = simplify(diff(antideriv, x).value)
 # check.value should equal expr
@@ -517,7 +520,7 @@ was done:
 ```python
 px.evidence
 # {'rungs': 4, 'conclusive_rungs': 4,
-#  'worst_margin': -0.0023616615508199, 'power_check_passed': True}
+#  'worst_margin': -0.00236166155081996, 'power_check_passed': True}
 ```
 
 * **The prefix ladder.** Each truncation of the series — starting from the empty one, whose
@@ -556,6 +559,8 @@ An exponent with an exact value now reaches the pool exactly — a `Fraction`, a
 Python `float` is still a float node, because a float is what it is.
 
 ```python
+from fractions import Fraction
+
 cube_root = sin(x) ** Fraction(1, 3)             # or sin(x).pow_expr(pool.rational(1, 3))
 px = puiseux_series(cube_root, x, pool.integer(0), 5)
 px.ramification                                  # 3

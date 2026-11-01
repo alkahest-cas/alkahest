@@ -19,7 +19,7 @@ import alkahest as ak
 pool = ak.ExprPool()
 x = pool.symbol("x")
 
-outs = ak.integrate_many([x**2, ak.log(ak.log(x)), ak.sin(x)], x)
+outs = ak.integrate_many([x**2, ak.exp(x) / ak.log(x), ak.sin(x)], x)
 for item in outs:
     if item.ok:
         print(item.index, "=>", item.value.value)
@@ -28,8 +28,8 @@ for item in outs:
 ```
 
 ```text
-0 => (x^3 * 1/3)
-1 FAILED E-INT-001 [E-INT-001] integrate: not implemented: ...
+0 => (x^3 * (1/3))
+1 FAILED E-INT-004 [E-INT-004] integrate: no elementary antiderivative exists: ∫ e^(x)/ln(x) dx ...
 2 => (-1 * cos(x))
 ```
 
@@ -61,6 +61,9 @@ raised by caller code passed to `batch_map`).
 ## `batch_map` and `batch_map_iter`
 
 ```python
+from typing import Iterator
+from alkahest import BatchItem
+
 def batch_map(fn, items, *, parallel=False, max_workers=None, **kwargs) -> list[BatchItem]: ...
 def batch_map_iter(fn, items, *, parallel=False, max_workers=None, **kwargs) -> Iterator[BatchItem]: ...
 ```
@@ -90,6 +93,10 @@ anything *incorrect*, only sometimes not faster.
     can sort by it, or just use `batch_map`.
 
 ```python
+import logging
+log = logging.getLogger(__name__)
+candidates = [(x + 1)**2 - x**2, ak.sin(x)**2 + ak.cos(x)**2, ak.exp(x) / ak.log(x)]
+
 # Streaming: react to failures as they arrive, without waiting for the slowest item.
 for item in ak.batch_map_iter(ak.simplify, candidates, parallel=True):
     if not item.ok:
@@ -163,13 +170,14 @@ merely ran out of the time it was given. `E-BUDGET-00x` is `Cause::Resource`; ke
 the two apart when you interpret a `BatchItem`:
 
 ```python
+accepted, requeue, closed = [], [], []
 for item in outs:
     if item.ok:
-        accept(item.value)
+        accepted.append(item.value)
     elif item.error["code"].startswith("E-BUDGET-"):
-        requeue(item.index)          # ran out of budget — undecided, try again with more
+        requeue.append(item.index)                # ran out of budget — undecided, try again with more
     else:
-        close(item.index, item.error)  # a real verdict about the mathematics
+        closed.append((item.index, item.error))  # a real verdict about the mathematics
 ```
 
 ### Cancellation across a batch

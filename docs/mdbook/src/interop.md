@@ -24,12 +24,20 @@ Two argument conventions meet here, and mixing them up is the most common way
 this call fails:
 
 ```python
+y = pool.symbol("y")
+ys = np.linspace(0, 1, 1_000_000)
 f = compile_expr(x ** 2 + y, [x, y])   # a CompiledFn — numpy_eval takes this, not the Expr
 
 numpy_eval(f, xs, ys)                  # ✓ one positional argument per input variable
-numpy_eval(f, [xs, ys])                # ✗ ValueError — that is one argument, not two
 f([1.0, 2.0])                          # ✓ CompiledFn evaluates ONE point, given as one sequence
-f(1.0, 2.0)                            # ✗ TypeError
+try:
+    numpy_eval(f, [xs, ys])            # ✗ ValueError — that is one argument, not two
+except ValueError as e:
+    print(type(e).__name__)
+try:
+    f(1.0, 2.0)                        # ✗ TypeError
+except TypeError as e:
+    print(type(e).__name__)
 ```
 
 Both wrong spellings raise an error naming the right one. `numpy_eval(expr, xs)`
@@ -43,13 +51,14 @@ Inputs are converted to `f64` arrays via DLPack or `__array__`. The call is vect
 `CompiledFn` objects implement `__array__` for direct NumPy coercion:
 
 ```python
-result = np.asarray(f([1.0]))  # scalar result as a 0-d array
+result = np.asarray(f([1.0, 2.0]))  # scalar result as a 0-d array
 ```
 
 ## PyTorch
 
 PyTorch CPU tensors are accepted wherever NumPy arrays are (via `__dlpack__`):
 
+<!-- doc-check: needs torch -->
 ```python
 import torch
 xs = torch.linspace(0, 1, 10_000)
@@ -64,6 +73,7 @@ For GPU tensors, use the `compile_cuda` path (requires `--features cuda`; see [G
 
 JAX arrays implement `__dlpack__` and are accepted by `numpy_eval`:
 
+<!-- doc-check: needs jax -->
 ```python
 import jax.numpy as jnp
 xs = jnp.linspace(0, 1, 10_000)
@@ -74,6 +84,7 @@ ys = numpy_eval(f, xs)
 
 `to_jax` registers a symbolic expression as a JAX primitive, making it callable inside JAX computations including `jax.jit`, `jax.grad`, and `jax.vmap`:
 
+<!-- doc-check: needs jax -->
 ```python
 from alkahest import to_jax, ExprPool, sin
 
@@ -103,6 +114,7 @@ The primitive registers:
 ```python
 from alkahest import to_stablehlo
 
+expr = x ** 2 + y
 mlir_text = to_stablehlo(expr, [x, y], fn_name="my_kernel")
 # Pass to xla_client.compile() or save to .mlir file
 ```
@@ -121,32 +133,42 @@ Read this before round-tripping a symbolic result into another CAS. **An express
 be correct in Alkahest and evaluate to a wrong number somewhere else**, because the two
 systems do not agree on which branch a cube root denotes.
 
-`Matrix.eigenvals()` on a 3×3 with an irreducible cubic characteristic polynomial and
-three real roots returns the Cardano form, and in the *casus irreducibilis* one of the
-cube-root radicands is negative:
+`Matrix.eigenvals()` itself no longer produces such radicals: in the *casus
+irreducibilis* (an irreducible cubic characteristic polynomial with three real roots) it
+returns the trigonometric form, and for one real root the Cardano radicands are kept
+positive, so every evaluator reads its results the same way:
 
 ```python
 import alkahest as ak
 
 pool = ak.ExprPool()
 I = pool.integer
-M = ak.Matrix.from_rows([[I(2), I(0), I(-2)], [I(2), I(0), I(-1)], [I(1), I(1), I(2)]])
+M = ak.Matrix.from_rows([[I(0), I(0), I(-1)], [I(1), I(0), I(4)], [I(0), I(1), I(0)]])
 
-for value in M.eigenvals():
+for value in M.eigenvals():       # roots of λ³ − 4λ + 1, all real
     print(value)
-# two conjugate-looking siblings, then:
-# (4/3 + (sqrt(298/27) + -89/27)^(1/3) + (-89/27 + (-1 * sqrt(298/27)))^(1/3))
+# (2 * sqrt(4/3) * cos((1/3 * (acos((-1/2 * (4/3 * sqrt(4/3))^-1)) + (2 * pi)))))
+# ...
 ```
 
-That expression denotes the eigenvalue **under the real cube-root convention**. Alkahest
-is consistent about this and honest at the boundary: `eval_expr` on it refuses with
-`E-EVAL-009`, and `interval_eval` returns `ArbBall(1.629231 ± inf)` — an enclosure that
-is true and useless, rather than a number that is neither.
+The hazard is still there for any `(negative)^(1/3)` you build, parse or import — the
+shape older Cardano output had:
 
-Hand the *same* expression to a principal-branch evaluator — SymPy, NumPy, most
-calculators — and `(negative)^(1/3)` takes the principal complex root instead. You get a
-confident number back, and it is not an eigenvalue. In one sweep of 720 random integer
-matrices, 14 produced eigenvalues of this shape.
+```python
+r = ak.parse("(-89/27 - sqrt(298/27))^(1/3)", pool)
+try:
+    ak.eval_expr(r, {})
+except ak.AlkahestError as e:
+    print(e.code)                 # E-EVAL-009
+print(ak.interval_eval(r, {}))    # ArbBall(0 ± inf)
+```
+
+Alkahest is honest at the boundary: `eval_expr` refuses with `E-EVAL-009`, and
+`interval_eval` returns an enclosure that is true and useless, rather than a number
+that may be the wrong one. Hand the *same* expression to a principal-branch evaluator
+— SymPy, NumPy, most calculators — and `(negative)^(1/3)` takes the principal complex
+root, `0.9388 + 1.6260i`, where the real-cube-root reading is `−1.8775`. You get a
+confident number back, and it is not the one the author meant.
 
 So, when a loop exports symbolic results to another tool:
 
@@ -170,19 +192,17 @@ All DLPack-compatible arrays (NumPy, PyTorch, JAX, CuPy) are accepted at the `nu
 
 ## Exporting C code
 
-`emit_c` generates a standalone C function for embedding in other projects:
+`emit_c_expr` generates a standalone C function for embedding in other projects
+(`emit_c` is the univariate-polynomial, Horner-form variant):
 
 ```python
-from alkahest import emit_c
+from alkahest import emit_c_expr, exp
 
-c_code = emit_c(
-    sin(x) * exp(pool.integer(-1) * x),
-    [x],
-    var_name="x",
-    fn_name="damped_sin",
-)
+c_code = emit_c_expr(sin(x) * exp(-x), [x], fn_name="damped_sin")
 print(c_code)
-# double damped_sin(double x) { return sin(x) * exp(-x); }
+# double damped_sin(double x) {
+#     return (sin(x) * exp((-x)));
+# }
 ```
 
 The emitted code uses only standard `<math.h>` functions and has no Alkahest dependency.
