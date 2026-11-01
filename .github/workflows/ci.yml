@@ -1,5 +1,35 @@
 name: CI
 
+# ── Which job runs for which change ─────────────────────────────────────────
+#
+# The first job, `changes`, calls .github/workflows/changes.yml (the filters
+# are defined there, once, for every workflow that uses them). On pushes to
+# main / release/**, on the schedule and on workflow_dispatch every output is
+# true, so everything below runs. On a pull request or a merge group:
+#
+#   output   true when the change touches                    gates
+#   ───────  ──────────────────────────────────────────────  ─────────────────────────────
+#   code     anything except website/, demo-playground/,      lint (ruff, _site guard)
+#            docs/, *.md, temp-alkahest/, *.log, LICENSE and
+#            the deploy-only website/playground/docs workflows
+#   rust     `code` minus python/, tests/, scripts/,          lint (fmt, clippy), rust-test,
+#            benchmarks/, lean/, pyproject.toml, uv.lock, …   rust-test-egraph
+#   python   `code`, or docs/mdbook/src/** or README.md —     python, wheel-smoke,
+#            pytest, the certificate-ledger check, the        tier1-python-slow
+#            README smoke and the docs code-block checker
+#            read those Markdown files
+#   asan     the unsafe / FFI surface (list in changes.yml);  asan
+#            always true in a merge group; the `run-asan`
+#            label forces the job on a pull request
+#
+# So a website-, playground- or Markdown-only pull request runs `changes` and
+# the `Tier 1a — Rust + fast Python` aggregate, and every other job reports
+# "skipped" — which branch protection and the merge queue treat as passing, the
+# reason for gating with job-level `if:` instead of trigger-level `paths:`.
+#
+# Every gated job is written `needs.changes.result != 'success' || <output>`:
+# if the filter itself breaks, the job runs rather than silently passing.
+
 on:
     # `release/**` is included because a release branch accumulates merges that
     # would otherwise reach a tag with no CI at all: `pull_request` runs did not
@@ -8,6 +38,8 @@ on:
   push:
     branches: [main, 'release/**']
   pull_request:
+  # The merge queue's runs. See CONTRIBUTING.md § "Merge queue".
+  merge_group:
   schedule:
     - cron: "0 2 * * *"   # 02:00 UTC daily — triggers the nightly job
   workflow_dispatch:        # allow re-running nightly shards after CI fixes
@@ -15,7 +47,8 @@ on:
 # No job here reads or writes repository state through the API — these are
 # build-and-test jobs only. They do run build scripts and test code from the
 # head of a pull request, so the checkout token is dropped to read-only rather
-# than left at whatever the repository default happens to be.
+# than left at whatever the repository default happens to be. (The `changes`
+# job additionally reads the pull request's file list.)
 permissions:
   contents: read
 
@@ -23,13 +56,37 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
+# Compiled-dependency caching: every Rust-building job restores
+# Swatinem/rust-cache under its own key (feature sets and toolchains differ per
+# job, so a shared key would thrash). Only pushes to main *save* — pull
+# requests and merge groups read main's cache and write nothing, which is what
+# keeps the repository inside its Actions cache quota.
+
 jobs:
-  # ── Tier 1a: PR checks (Rust + fast Python; stays well under the 6 h runner cap)
-  tier1:
-    name: Tier 1a — Rust + fast Python
+  changes:
+    name: changes
+    uses: ./.github/workflows/changes.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
+  # ── Tier 1a: PR checks (Rust + fast Python), split into parallel jobs.
+  #
+  # It was one serial job of ~50-56 min: clippy x6 (~7 min), `cargo test --all`
+  # (14.8 min), the egraph re-run of the whole suite (14.6 min), maturin (1.4),
+  # the silent-error gate (1.2) and pytest (10.8). CI wall-clock is the slowest
+  # *job*, so the four jobs below run side by side, and the `tier1` job at the
+  # end keeps the old check name `Tier 1a — Rust + fast Python` as a single
+  # pass/fail for all of them.
+  lint:
+    name: Tier 1a — lint
+    needs: changes
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
-    timeout-minutes: 360
+    if: ${{ !cancelled() && github.event_name != 'schedule' && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
+    timeout-minutes: 60
+    env:
+      # The Rust half of this job is skipped for Python-only changes.
+      RUST_CHANGED: ${{ needs.changes.result != 'success' || needs.changes.outputs.rust == 'true' }}
 
     steps:
       - uses: actions/checkout@v6
@@ -45,6 +102,7 @@ jobs:
           fi
 
       - name: Install Rust stable
+        if: env.RUST_CHANGED == 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -56,47 +114,52 @@ jobs:
 
       - uses: astral-sh/setup-uv@v6
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
+      - name: Cache compiled dependencies
+        if: env.RUST_CHANGED == 'true'
+        uses: Swatinem/rust-cache@v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: lint
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Set up FLINT
+        if: env.RUST_CHANGED == 'true'
         uses: ./.github/actions/setup-flint
 
       - name: Set up LLVM 21 (for the jit feature)
+        if: env.RUST_CHANGED == 'true'
         uses: ./.github/actions/setup-llvm
 
       - name: Create venv and install Python tooling
         run: |
           uv sync --no-install-project --group dev
-          echo "$PWD/.venv/bin" >> $GITHUB_PATH
-          echo "VIRTUAL_ENV=$PWD/.venv" >> $GITHUB_ENV
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
 
       - name: cargo fmt --check
+        if: env.RUST_CHANGED == 'true'
         run: cargo fmt --all -- --check
 
       - name: cargo clippy (default features)
+        if: env.RUST_CHANGED == 'true'
         run: cargo clippy --all-targets -- -D warnings
 
       - name: cargo clippy (egraph feature)
+        if: env.RUST_CHANGED == 'true'
         run: cargo clippy --all-targets --features egraph -- -D warnings
 
       - name: cargo clippy (parallel feature)
+        if: env.RUST_CHANGED == 'true'
         run: cargo clippy --all-targets --features parallel -- -D warnings
 
       # `cranelift` ships in the default PyPI wheel (PR #299) but had no clippy
       # step, so three lints accumulated in code every wheel user runs. It needs
       # no system LLVM — the backend is pure Rust — so it lints anywhere.
       - name: cargo clippy (cranelift feature)
+        if: env.RUST_CHANGED == 'true'
         run: cargo clippy --all-targets --features cranelift -- -D warnings
 
       - name: cargo clippy (jit feature)
+        if: env.RUST_CHANGED == 'true'
         run: cargo clippy --all-targets --features jit -- -D warnings
 
       # The CUDA-adjacent features were never linted, so lints accumulated
@@ -106,7 +169,44 @@ jobs:
       # never runs anything. The `cuda` feature additionally needs LLVM and is
       # linted in the GPU nightly instead.
       - name: cargo clippy (groebner-cuda feature)
+        if: env.RUST_CHANGED == 'true'
         run: cargo clippy --all-targets --features groebner-cuda -- -D warnings
+
+      - name: ruff check
+        run: ruff check python/ tests/
+
+      - name: ruff format --check
+        run: ruff format --check python/ tests/
+
+  rust-test:
+    name: Tier 1a — Rust tests
+    needs: changes
+    runs-on: ubuntu-latest
+    if: ${{ !cancelled() && github.event_name != 'schedule' && (needs.changes.result != 'success' || needs.changes.outputs.rust == 'true') }}
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      # `cargo test --all` builds alkahest-py too, and pyo3's build script
+      # probes `python3`: left to the runner image that is a version PyO3 0.21
+      # rejects.
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Cache compiled dependencies
+        uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Set up FLINT
+        uses: ./.github/actions/setup-flint
 
       # Linting the feature is not the same as running it. These tests need no
       # GPU: the ones that do skip themselves, and what remains is the part that
@@ -126,19 +226,125 @@ jobs:
       - name: cargo test
         run: cargo test --all
 
-      # `cargo test --all` builds without `egraph`, where `simplify_egraph` is a
-      # no-op passthrough. The egraph proptests are `#[cfg(feature = "egraph")]`
-      # and so never ran here at all, and the preservation tests passed
-      # vacuously against the fallback. Without this step the egraph rewrite
-      # engine has no effective test coverage in CI.
-      - name: cargo test (egraph feature)
-        run: cargo test -p alkahest-cas --features egraph
+  # The egraph rewrite engine's tests, and only those.
+  #
+  # This step used to be `cargo test -p alkahest-cas --features egraph` — the
+  # whole crate suite a second time (14.6 min) — on the premise that
+  # `cargo test --all` builds without `egraph`, where `simplify_egraph` is a
+  # no-op passthrough, so the `#[cfg(feature = "egraph")]` proptests never ran
+  # and the preservation tests passed vacuously against the fallback. That
+  # premise no longer holds as stated: `--all` builds alkahest-py too, whose
+  # default features include `egraph`, and Cargo unifies features across one
+  # invocation, so `cargo test --all` compiles alkahest-cas *with* egraph (and
+  # groebner). What this job adds is the e-graph engine in the configuration a
+  # plain `cargo add alkahest-cas --features egraph` user builds — without
+  # groebner — and it stays an explicit gate rather than an accident of
+  # alkahest-py's defaults.
+  #
+  # Every `cfg(feature = "egraph")` in the crate sits behind `simplify_egraph` /
+  # `simplify_egraph_with`, so the tests whose result the feature can change
+  # are the ones in files that use those, listed in .github/egraph-scope.txt.
+  # The step below refuses to run if a file that uses them is missing from the
+  # scope, or if a scope filter matches no test — the same guard the tsan shard
+  # puts on .github/tsan-scope.txt.
+  rust-test-egraph:
+    name: Tier 1a — Rust tests (egraph feature)
+    needs: changes
+    runs-on: ubuntu-latest
+    if: ${{ !cancelled() && github.event_name != 'schedule' && (needs.changes.result != 'success' || needs.changes.outputs.rust == 'true') }}
+    timeout-minutes: 60
 
-      - name: ruff check
-        run: ruff check python/ tests/
+    steps:
+      - uses: actions/checkout@v6
 
-      - name: ruff format --check
-        run: ruff format --check python/ tests/
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache compiled dependencies
+        uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: test-egraph
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Set up FLINT
+        uses: ./.github/actions/setup-flint
+
+      - name: cargo test (egraph feature, e-graph-dependent tests)
+        run: |
+          set -euo pipefail
+          scope=.github/egraph-scope.txt
+          declare -A listed=()
+          filters=()
+          while read -r file filter _; do
+            if [ ! -f "$file" ]; then
+              echo "::error title=Stale egraph scope::$scope lists $file, which does not exist" >&2
+              exit 1
+            fi
+            listed["$file"]=1
+            if [ "$filter" != "-" ]; then filters+=("$filter"); fi
+          done < <(grep -vE '^[[:space:]]*(#|$)' "$scope")
+
+          # Code lines (not comments) that can behave differently with the
+          # feature on. `^[^/]*` skips `//` and `///` lines.
+          missing=0
+          while read -r file; do
+            if [ -z "${listed[$file]:-}" ]; then
+              echo "::error title=egraph scope incomplete::$file uses the egraph feature but is not in $scope" >&2
+              missing=1
+            fi
+          done < <(grep -rlE '^[^/]*(feature = "egraph"|simplify_egraph)' alkahest-core/src alkahest-core/tests | sort)
+          [ "$missing" -eq 0 ] || exit 1
+
+          COMMON=(-p alkahest-cas --features egraph --lib)
+          cargo test "${COMMON[@]}" --no-run
+
+          # A filter that matches nothing would make this job green without
+          # running anything. Refuse before, not after.
+          for f in "${filters[@]}"; do
+            n=$(cargo test "${COMMON[@]}" -- --list "$f" 2>/dev/null | grep -c ': test$' || true)
+            echo "  $f -> $n tests"
+            if [ "$n" -eq 0 ]; then
+              echo "::error title=Vacuous egraph filter::'$f' in $scope matches no test" >&2
+              exit 1
+            fi
+          done
+
+          cargo test "${COMMON[@]}" -- "${filters[@]}"
+
+  python:
+    name: Tier 1a — Python
+    needs: changes
+    runs-on: ubuntu-latest
+    if: ${{ !cancelled() && github.event_name != 'schedule' && (needs.changes.result != 'success' || needs.changes.outputs.python == 'true') }}
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Cache compiled dependencies
+        uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: python
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Set up FLINT
+        uses: ./.github/actions/setup-flint
+
+      - name: Create venv and install Python tooling
+        run: |
+          uv sync --no-install-project --group dev
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
 
       # These are the exact features release-build.yml gives the default PyPI
       # wheel (including `system-gmp`, which is what makes
@@ -194,6 +400,33 @@ jobs:
           PYTHONUNBUFFERED: "1"
         run: pytest --timeout=900 --ignore=tests/silent_errors
 
+  # The old Tier 1a check name, kept so branch protection, the merge queue and
+  # anyone's habit of looking for it still have one check to key on. Passes
+  # when every split job passed or was skipped by the path filter; fails if any
+  # failed or was cancelled.
+  tier1:
+    name: Tier 1a — Rust + fast Python
+    needs: [changes, lint, rust-test, rust-test-egraph, python]
+    runs-on: ubuntu-latest
+    if: ${{ always() && github.event_name != 'schedule' }}
+    timeout-minutes: 5
+    steps:
+      - name: Every Tier 1a job passed or was skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS" | jq -r 'to_entries[] | "  \(.key): \(.value.result)"'
+          # `changes` failing is not itself a Tier 1a failure: the jobs it
+          # gates then run unconditionally, and their results are what count.
+          bad=$(echo "$NEEDS" | jq -r '[to_entries[]
+                | select(.key != "changes")
+                | select(.value.result != "success" and .value.result != "skipped")
+                | "\(.key) (\(.value.result))"] | join(", ")')
+          if [ -n "$bad" ]; then
+            echo "::error title=Tier 1a failed::$bad"
+            exit 1
+          fi
 
   # ── AddressSanitizer, as its own job rather than a step inside Tier 1a.
   #
@@ -202,10 +435,22 @@ jobs:
   # parallel it costs nothing on the critical path, so the coverage comes back
   # at PR time and Tier 1a still finishes first. Scoped to `-p alkahest-cas`
   # here for speed; the nightly `asan` shard runs the whole workspace.
+  #
+  # That stopped being true as the suite grew: at 51-66 min it became the
+  # slowest check on every PR. It now runs on pushes to main / release/**, on
+  # workflow_dispatch, in every merge group (the last gate before main), and on
+  # a pull request only when the unsafe / FFI surface changes — the `asan` list
+  # in changes.yml — or when the PR carries the `run-asan` label (add the label,
+  # then push or re-open: re-running a job reuses the original event's labels).
   asan:
     name: AddressSanitizer — alkahest-cas
+    needs: changes
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
+    if: >-
+      ${{ !cancelled() && github.event_name != 'schedule' && (
+        needs.changes.result != 'success' ||
+        needs.changes.outputs.asan == 'true' ||
+        contains(github.event.pull_request.labels.*.name, 'run-asan')) }}
     # 90, not 60: with M10's Douglas-Rachford SOS certificate tests
     # (real::sos::psd, ~8.5 min under ASan) alongside M4's own suite, the full
     # `-p alkahest-cas --lib --tests` run measured ~48 min under ASan
@@ -230,15 +475,14 @@ jobs:
       - name: Set up LLVM 21 (for the jit feature)
         uses: ./.github/actions/setup-llvm
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
+      # Its own key: nightly toolchain, -Zsanitizer=address and -Z build-std
+      # produce artifacts no other job can use. (The nightly's version is part
+      # of rust-cache's key, so a new nightly starts a new cache.)
+      - name: Cache compiled dependencies
+        uses: Swatinem/rust-cache@v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-asan-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-asan-
+          key: asan
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # --lib --tests: doc-test binaries link separately and do not receive the
       # ASan runtime under -Z build-std ("undefined symbol: __asan_init").
@@ -265,8 +509,9 @@ jobs:
   # bug are caught at PR time, not just on release.
   wheel-smoke:
     name: Wheel smoke — README quickstart + fresh-interpreter parse
+    needs: changes
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
+    if: ${{ !cancelled() && github.event_name != 'schedule' && (needs.changes.result != 'success' || needs.changes.outputs.python == 'true') }}
     timeout-minutes: 30
 
     steps:
@@ -280,15 +525,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
+      - name: Cache compiled dependencies
+        uses: Swatinem/rust-cache@v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-wheel-smoke-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-wheel-smoke-
+          key: wheel-smoke
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Set up FLINT
         uses: ./.github/actions/setup-flint
@@ -320,7 +561,9 @@ jobs:
   # call-count property — the thing a regression there would silently undo.
   tier1-python-slow:
     name: Tier 1b — Python slow tests
+    needs: changes
     runs-on: ubuntu-latest
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.python == 'true') }}
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v6
@@ -335,15 +578,11 @@ jobs:
 
       - uses: astral-sh/setup-uv@v6
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
+      - name: Cache compiled dependencies
+        uses: Swatinem/rust-cache@v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: tier1b
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Set up FLINT
         uses: ./.github/actions/setup-flint
@@ -354,7 +593,7 @@ jobs:
       - name: Create venv and install Python tooling
         run: |
           uv sync --no-install-project --group dev
-          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: maturin develop
         run: maturin develop --manifest-path alkahest-py/Cargo.toml --features "groebner egraph"
@@ -426,8 +665,8 @@ jobs:
         if: matrix.shard == 'hypothesis' || matrix.shard == 'extras'
         run: |
           uv sync --no-install-project --group dev --group ci-extras
-          echo "$PWD/.venv/bin" >> $GITHUB_PATH
-          echo "VIRTUAL_ENV=$PWD/.venv" >> $GITHUB_ENV
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
 
       - name: Set up FLINT
         uses: ./.github/actions/setup-flint
@@ -435,14 +674,17 @@ jobs:
       - name: Set up LLVM 21 (for the jit feature)
         uses: ./.github/actions/setup-llvm
 
+      # Registry and git checkouts only, one cache for all shards. Ten shards
+      # of sanitizer / build-std / release targets would be several GB each —
+      # more than the repository's whole cache quota, evicting the Tier 1a
+      # caches that pull requests actually wait on — to shave minutes off jobs
+      # that run for hours.
       - name: Cache Cargo registry
-        uses: actions/cache@v5
+        uses: Swatinem/rust-cache@v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-nightly-${{ matrix.shard }}-${{ hashFiles('**/Cargo.lock') }}
+          shared-key: nightly-registry
+          cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Deep proptest
         if: matrix.shard == 'proptest'

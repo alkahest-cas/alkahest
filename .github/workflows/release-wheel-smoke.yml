@@ -17,20 +17,16 @@ name: Release wheel smoke
 # and asks for nothing beyond `contents: read`. That makes this safe for PRs
 # from forks, whose token is read-only anyway.
 
+#
+# Which changes build wheels is the `wheels` filter in changes.yml (it was a
+# trigger-level `paths:` list; moved so the check reports "skipped" rather
+# than never appearing, which is what lets it be a required check).
+
 on:
   pull_request:
     branches:
       - main
-    paths:
-      - "alkahest-py/**"
-      - "alkahest-core/**"
-      - "Cargo.*"
-      - "pyproject.toml"
-      - ".github/workflows/release-build.yml"
-      - ".github/workflows/release-wheels.yml"
-      - ".github/workflows/release-wheel-smoke.yml"
-      - ".github/actions/**"
-      - "tests/smoke_readme.py"
+  merge_group:
   # Manual run of the FULL release matrix (every OS and Python version) on any
   # branch, without publishing — use it before tagging.
   workflow_dispatch:
@@ -43,10 +39,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Path filter; see the table at the top of ci.yml. Skipped (not pending) for
+  # changes this workflow cannot be affected by.
+  changes:
+    name: changes
+    uses: ./.github/workflows/changes.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
   release-wheels:
     name: release wheels
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.wheels == 'true') }}
     permissions:
       contents: read
     uses: ./.github/workflows/release-wheels.yml
     with:
-      pr_smoke: ${{ github.event_name == 'pull_request' }}
+      # A merge group gets the same reduced matrix as a pull request; the full
+      # matrix is for workflow_dispatch before tagging.
+      pr_smoke: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}
+
+  # One stable check name to require. The reusable workflow's own checks are
+  # named `release wheels / <inner job>`, and when it is skipped by the filter
+  # none of them appear at all — a required check on one would wait forever.
+  smoke-result:
+    name: Release wheel smoke
+    needs: [changes, release-wheels]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Wheels built and smoke-tested, or not affected
+        env:
+          RESULT: ${{ needs.release-wheels.result }}
+        run: |
+          echo "release wheels: $RESULT"
+          if [ "$RESULT" != success ] && [ "$RESULT" != skipped ]; then
+            echo "::error title=Release wheel smoke failed::release wheels: $RESULT"
+            exit 1
+          fi

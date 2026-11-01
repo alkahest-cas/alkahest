@@ -1,0 +1,28 @@
+# egraph-feature test scope — what the "Tier 1a — Rust tests (egraph feature)"
+# job in .github/workflows/ci.yml runs, instead of the whole alkahest-cas suite.
+#
+# Format, one entry per line:   <source file>   <libtest filter, or ->
+#
+# Every source file under alkahest-core/src or alkahest-core/tests whose code
+# (not comments) names `feature = "egraph"` or calls `simplify_egraph*` must be
+# listed — those are the only places the feature changes behaviour, because all
+# of its `cfg` gates sit in `simplify/egraph.rs` behind `simplify_egraph` /
+# `simplify_egraph_with`. The CI step greps for such files and fails if one is
+# missing here, fails if a listed file no longer exists, and fails if a filter
+# matches zero tests, so this list cannot rot into a vacuous pass. `-` means the
+# file has no tests of its own to run (a re-export).
+#
+# Filters are libtest substring filters over `cargo test -p alkahest-cas
+# --features egraph --lib`. Over-inclusion is safe; under-inclusion is a defect.
+# A new *integration* test (alkahest-core/tests/*.rs) that calls the e-graph
+# would be caught by the grep too — run it here by adding the file and widening
+# the step to `--test <name>`.
+
+alkahest-core/src/simplify/egraph.rs     simplify::egraph::
+alkahest-core/src/simplify/zero.rs       simplify::zero::tests::every_simplifier_reaches_zero_on_the_pythagorean_residue
+alkahest-core/src/simplify/rules.rs      simplify::rules::non_finite_tests::
+alkahest-core/src/kernel/func_arity.rs   kernel::func_arity::wrong_arity_sweep::
+# `opts.egraph` (default false) adds an e-graph pass to the integration gate.
+alkahest-core/src/integrate/gate.rs      integrate::gate::
+alkahest-core/src/simplify/mod.rs        -
+alkahest-core/src/lib.rs                 -

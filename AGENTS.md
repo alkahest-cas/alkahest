@@ -1,5 +1,6 @@
 * If any significant changes are made to code run CI and tests
 * Before pushing Rust code, run `cargo fmt` to ensure formatting passes CI
+* Run `scripts/precheck.sh` before pushing Rust or Python changes.
 * Follow instructions in [`CONTRIBUTING.md`](CONTRIBUTING.md)
 * If asked to fix CI: check CI status using `gh` CLI if available, otherwise check https://github.com/alkahest-cas/alkahest/
 * If asked to generate a report: write it to `temp-alkahest/testing/` or `temp-alkahest/planning/` depending on what label describes the report better, include at the top — the date, the agent and model writing it (e.g. "Claude Code claude-sonnet-4-6"), and the full git commit hash being reviewed
@@ -33,6 +34,14 @@ see an arity. Three rules follow:
 
 When several pull requests are in flight over the same files, land them one at a
 time, rebasing each onto the new `main` before it merges.
+
+**With the merge queue enabled** (CONTRIBUTING.md § "Merge queue"), that last
+step is the queue's job: put a PR in the queue ("Merge when ready") instead of
+rebasing it by hand before merging. The queue tests each PR as `main` plus the
+PRs ahead of it and merges only what passed in that exact combination — which
+is the arity failure above, caught mechanically. The rules still apply to
+conflicts you resolve yourself, and a PR the queue ejects for a conflict or a
+failure is rebased onto `origin/main` and re-queued, not merged around.
 
 ## Demo playground
 

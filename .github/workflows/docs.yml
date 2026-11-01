@@ -13,13 +13,12 @@ on:
       - 'python/alkahest/**'
       - 'alkahest-core/src/**'
       - 'alkahest-py/src/**'
+  # Pull requests and merge groups are filtered by the `docs` output of
+  # changes.yml (the path list above), so the check reports "skipped" rather
+  # than never appearing.
   pull_request:
     branches: [main]
-    paths:
-      - 'docs/**'
-      - 'python/alkahest/**'
-      - 'alkahest-core/src/**'
-      - 'alkahest-py/src/**'
+  merge_group:
 
 permissions:
   contents: read
@@ -34,8 +33,19 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Path filter; see the table at the top of ci.yml. Skipped (not pending) for
+  # changes this workflow cannot be affected by.
+  changes:
+    name: changes
+    uses: ./.github/workflows/changes.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
   build:
     name: Build docs
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.docs == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -58,6 +68,12 @@ jobs:
           sphinx-build -W --keep-going docs/sphinx _site/api
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache compiled dependencies
+        uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: docs
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Set up FLINT
         uses: ./.github/actions/setup-flint

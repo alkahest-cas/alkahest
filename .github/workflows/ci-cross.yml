@@ -41,13 +41,28 @@ on:
     # everything merged there was verified by local gates alone.
   push:
     branches: [main, 'release/**']
+  merge_group:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Path filter; see the table at the top of ci.yml. Skipped (not pending) for
+  # website-, playground- and Markdown-only changes.
+  changes:
+    name: changes
+    uses: ./.github/workflows/changes.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
   cross:
     name: cross / ${{ matrix.os }}
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     continue-on-error: ${{ matrix.continue-on-error || false }}
@@ -59,6 +74,7 @@ jobs:
             rust_toolchain: stable
             features: "parallel egraph cranelift jit system-gmp"
             python: true
+            continue-on-error: false
           # MSVC host Rust + gnu target matches `release.yml` wheel builds.
           # Native `*-windows-gnu` rustc makes HOST==TARGET so gmp-mpfr-sys runs
           # GMP's `make check`, which flakes on GitHub's MinGW; cross-building
@@ -71,6 +87,7 @@ jobs:
             rust_toolchain: stable
             features: "parallel egraph cranelift system-gmp"
             python: false
+            continue-on-error: false
 
     steps:
       - uses: actions/checkout@v6
@@ -105,7 +122,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew install llvm@21
-          echo "LLVM_SYS_211_PREFIX=$(brew --prefix llvm@21)" >> $GITHUB_ENV
+          echo "LLVM_SYS_211_PREFIX=$(brew --prefix llvm@21)" >> "$GITHUB_ENV"
           # DYLD_FALLBACK_LIBRARY_PATH, not DYLD_LIBRARY_PATH: the latter is
           # searched *before* a binary's own install paths and applies to every
           # later process in the job, so pointing it at the pinned LLVM made dyld
@@ -116,7 +133,7 @@ jobs:
           # when the normal search fails, so inkwell still finds llvm@21 while
           # rustc keeps its own. (Kept from main across the LLVM 15 -> 21 rebase:
           # the hazard is the pin, not the version.)
-          echo "DYLD_FALLBACK_LIBRARY_PATH=$(brew --prefix llvm@21)/lib${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}" >> $GITHUB_ENV
+          echo "DYLD_FALLBACK_LIBRARY_PATH=$(brew --prefix llvm@21)/lib${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}" >> "$GITHUB_ENV"
 
       - name: Set up MSYS2 + FLINT (Windows)
         if: runner.os == 'Windows'
@@ -133,15 +150,12 @@ jobs:
             mingw-w64-ucrt-x86_64-pkg-config
 
       # ── Cargo cache ──────────────────────────────────────────────────────────
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
+      # Compiled dependencies, one cache per OS; written only by pushes to main.
+      - name: Cache compiled dependencies
+        uses: Swatinem/rust-cache@v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-cross-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-cross-
+          key: cross-${{ matrix.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # ── Rust build + test (macOS) ────────────────────────────────────────────
       - name: cargo build (no-default-features baseline)

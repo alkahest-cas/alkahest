@@ -63,6 +63,18 @@ CI enforces all of the above on every PR. Ruff and `ty` are scoped to `python/`
 and `tests/` — `examples/`, `benchmarks/` and `scripts/` are not linted or run
 by CI, so changes to a public API have to be swept through them by hand.
 
+### Before you push: `scripts/precheck.sh`
+
+`scripts/precheck.sh` runs the cheap half of CI's `Tier 1a — lint` job locally,
+in CI's order, and stops at the first failure: the `_site/` guard, `cargo fmt
+--check`, every clippy feature set above (`jit` only when `LLVM_SYS_211_PREFIX`
+is set), `cargo check -p alkahest-py` with warnings denied, `ruff check` /
+`ruff format --check` over `python/ tests/`, and the `alkahest.__all__` freeze
+check against `origin/main`. It lints with `stable` and warns when your stable
+is older than the current release — an older clippy misses lints CI will find.
+It does not run the test suites. `PRECHECK_SKIP_CLIPPY=1` skips the clippy
+passes.
+
 ## The parser exists twice
 
 `alkahest.parse` is **not** a binding to the Rust parser. It is a separate, hand-maintained
@@ -143,10 +155,56 @@ Changing an existing accessor's form is a **breaking change**: record it in `CHA
 ## Pull requests
 
 - Keep PRs focused on one item from `ROADMAP.md` or one issue.
-- Tier-1 CI (< 10 min) must be green before review: unit tests, lightweight proptest/hypothesis, clippy, ruff, the silent-error gate (`pytest tests/silent_errors/`), and ASan scoped to the `alkahest-cas` package. Note what that last one is *not*: it runs `cargo +nightly test -p alkahest-cas`, i.e. the crate **below** the FFI boundary, with `LSAN_OPTIONS=detect_leaks=0`. No sanitizer runs `pytest`, so a leak, UAF or data race that only appears through PyO3 is not caught by CI — see [`TESTING.md` §3](TESTING.md#3-memory-safety--sanitizers). For the concurrency half of that gap the substitute is `tests/test_parallel_threadsafety.py` (invariant checks across real Python threads on a shared `ExprPool`) plus the nightly `tsan` shard, which since 3.8.0 actually builds `--features parallel` and runs `alkahest-core/tests/parallel_stress.rs`.
+- Tier-1 CI must be green before review: unit tests, lightweight proptest/hypothesis, clippy, ruff, the silent-error gate (`pytest tests/silent_errors/`), and ASan scoped to the `alkahest-cas` package. ASan runs on a pull request only when the change touches the unsafe/FFI surface (the `asan` list in `.github/workflows/changes.yml`); add the `run-asan` label and push to force it. It always runs in the merge queue and on `main`. Note what that job is *not*: it runs `cargo +nightly test -p alkahest-cas`, i.e. the crate **below** the FFI boundary, with `LSAN_OPTIONS=detect_leaks=0`. No sanitizer runs `pytest`, so a leak, UAF or data race that only appears through PyO3 is not caught by CI — see [`TESTING.md` §3](TESTING.md#3-memory-safety--sanitizers). For the concurrency half of that gap the substitute is `tests/test_parallel_threadsafety.py` (invariant checks across real Python threads on a shared `ExprPool`) plus the nightly `tsan` shard, which since 3.8.0 actually builds `--features parallel` and runs `alkahest-core/tests/parallel_stress.rs`.
 - Semver is enforced automatically — `cargo semver-checks` runs on every PR and will fail if a stable API breaks.
 - New stable API additions go into `alkahest_cas::stable` and `alkahest.__all__`; experimental additions go into `alkahest_cas::experimental` and `alkahest.experimental`.
 - Add `[skip ci]` at the end of commit messages if changes cannot possibly effect CI.
+  (Rarely needed now: website-, playground- and Markdown-only changes already
+  skip the Rust/Python jobs — see the table at the top of `.github/workflows/ci.yml`.)
+
+## Merge queue
+
+`main` is meant to be merged through GitHub's merge queue: a queued pull request
+is tested as `main` + the PRs ahead of it, so it lands on the `main` it was
+tested against, without a manual rebase (AGENTS.md § "Keeping a branch current"
+explains why that matters). The workflows already listen for `merge_group`.
+To turn it on (repository admin):
+
+1. **Settings → Rules → Rulesets → New branch ruleset** (or **Settings →
+   Branches → Add branch protection rule**), target `main`.
+2. Enable **Require a pull request before merging** and **Require merge queue**.
+   Suggested queue settings: the repository's usual merge method, *build concurrency* 5,
+   *minimum group size* 1, *maximum group size* 3–5, *only merge non-failing
+   pull requests*, status-check timeout 120 min (ASan takes ~60 min).
+3. Enable **Require status checks to pass** and add exactly these check names
+   (each reports "skipped" — which counts as passing — when the path filter
+   rules it out, so none of them can leave a pull request waiting forever):
+   - `Tier 1a — Rust + fast Python` (aggregates `Tier 1a — lint`,
+     `Tier 1a — Rust tests`, `Tier 1a — Rust tests (egraph feature)` and
+     `Tier 1a — Python`; require it rather than them)
+   - `AddressSanitizer — alkahest-cas`
+   - `Wheel smoke — README quickstart + fresh-interpreter parse`
+   - `Tier 1b — Python slow tests`
+   - `cross / macos-15`
+   - `cross / windows-2022`
+   - `Kani — full-width harnesses (alkahest-cas)`
+   - `cargo semver-checks (alkahest-cas::stable)`
+   - `python alkahest.__all__ freeze check`
+   - `Verify Lean 4 proofs`
+   - `Release wheel smoke` (the aggregate in release-wheel-smoke.yml)
+   - `Build docs`
+
+   Do **not** require `Performance benchmarks` (CodSpeed; advisory,
+   `continue-on-error`), the `changes / Detect changed paths` jobs, or the
+   `Nightly (...)` shards (schedule only). Choose **GitHub Actions** as the
+   source of each check so a same-named status from elsewhere cannot satisfy it.
+4. With the queue on, use **Merge when ready** instead of the merge button; a
+   PR that fails in the queue is removed from it and the PRs behind it are
+   re-tested without it.
+
+The ASan job only runs on a pull request when the unsafe/FFI surface changes,
+but always runs in the queue, so a memory-safety regression is still caught
+before it reaches `main` — just later than on the PR.
 
 ## Rust vs Python
 
