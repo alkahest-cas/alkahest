@@ -1,7 +1,7 @@
 //! The user-facing "simplest form" simplifier: the default rule engine, then
 //! the domain passes that the default engine deliberately leaves out.
 //!
-//! [`simplify`](super::engine::simplify) is the algebraic core every subsystem
+//! [`simplify`] is the algebraic core every subsystem
 //! calls on its own intermediate results (integration, limits, Gröbner
 //! back-substitution, …). It must stay cheap and it must not change spellings
 //! those subsystems rely on, so it carries no trigonometric, hyperbolic,
