@@ -678,6 +678,81 @@ fn walk(
     r
 }
 
+/// Most monomials a declined power may expand to on the retry in
+/// [`expand_declined_powers`].
+///
+/// `ExpandPow`'s bound counts the `mⁿ` products term rewriting forms *before*
+/// collecting like terms, which is the right measure of the engine's work but
+/// a poor measure of the answer: `(x+1)¹³` is 8192 products and 14 terms, and
+/// `simplify_expanded` used to hand it back unexpanded. The polynomial
+/// product has no such intermediate blow-up, so the retry is bounded by the
+/// size of the result instead.
+const MAX_RETRY_TERMS: u64 = 4096;
+
+/// Upper bound on the monomials of `(m summands)ⁿ`: `C(m + n − 1, n)`,
+/// saturating.
+fn multinomial_terms(m: usize, n: u32) -> u64 {
+    // C(m+n-1, n) = Π_{i=1..n} (m - 1 + i) / i, exact at every step.
+    let mut acc: u128 = 1;
+    for i in 1..=u128::from(n) {
+        acc = acc * (m as u128 - 1 + i) / i;
+        if acc > u128::from(u64::MAX) {
+            return u64::MAX;
+        }
+    }
+    acc as u64
+}
+
+/// Expand, by one polynomial power each, the powers the rule engine declined
+/// (`nodes`, from its `expand_pow_limit_reached` steps) whose result has at
+/// most [`MAX_RETRY_TERMS`] monomials. Returns the rewritten expression and one
+/// [`EXPAND_POLYNOMIAL_RULE`] step per expanded power, or `None` when none
+/// qualifies.
+pub(crate) fn expand_declined_powers(
+    expr: ExprId,
+    nodes: &[ExprId],
+    pool: &ExprPool,
+) -> Option<(ExprId, DerivationLog)> {
+    let mut map: HashMap<ExprId, ExprId> = HashMap::new();
+    let mut log = DerivationLog::new();
+    for &node in nodes {
+        if map.contains_key(&node) || crate::budget::check().is_err() {
+            continue;
+        }
+        let Some((base, n)) = pool.with(node, |d| match d {
+            ExprData::Pow { base, exp } => pool.with(*exp, |x| match x {
+                ExprData::Integer(k) => k.0.to_u32().map(|k| (*base, k)),
+                _ => None,
+            }),
+            _ => None,
+        }) else {
+            continue;
+        };
+        let summands = pool.with(base, |d| match d {
+            ExprData::Add(a) => a.len(),
+            _ => 0,
+        });
+        if summands < 2 || multinomial_terms(summands, n) > MAX_RETRY_TERMS {
+            continue;
+        }
+        let mut ex = Expander::new(pool);
+        ex.min_work = 0;
+        let Some(p) = ex.nf(base) else {
+            continue;
+        };
+        let Some(pn) = p.pow(n) else {
+            continue;
+        };
+        let expanded = build(&pn, &ex.var_ids, pool);
+        log.push(RewriteStep::simple(EXPAND_POLYNOMIAL_RULE, node, expanded));
+        map.insert(node, expanded);
+    }
+    if map.is_empty() {
+        return None;
+    }
+    Some((crate::kernel::subs(expr, &map, pool), log))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

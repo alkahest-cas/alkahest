@@ -156,11 +156,15 @@ def test_a_positive_denominator_discharges_its_own_hypothesis(pool):
 
 
 def test_an_everywhere_undefined_equation_is_refused(pool):
-    """``1/(x - x)`` denotes no function, so it has no solution set to report."""
+    """``1/(x + 2x - 3x)`` denotes no function, so it has no solution set to
+    report. (``1/(x - x)`` no longer gets that far: ``x - x`` is ``0`` when
+    written, so the ``/`` itself raises ``ZeroDivisionError``.)"""
     x = pool.symbol("x")
     with pytest.raises(ak.SolverError) as exc:
-        ak.solve([1 / (x - x)], [x])
+        ak.solve([1 / (x + 2 * x - 3 * x)], [x])
     assert exc.value.code == "E-SOLVE-005"
+    with pytest.raises(ZeroDivisionError):
+        1 / (x - x)
 
 
 def test_a_transcendental_outside_the_closed_form_slice_still_refuses(pool):

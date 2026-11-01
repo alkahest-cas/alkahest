@@ -225,7 +225,7 @@ STRICT_CASES = [
     (
         "const_fold_2_plus_3",
         "const_fold",
-        lambda pool: alkahest.simplify(pool.integer(2) + pool.integer(3)),
+        lambda pool: alkahest.simplify(pool.add([pool.integer(2), pool.integer(3)])),
     ),
     (
         "const_fold_3_times_4",

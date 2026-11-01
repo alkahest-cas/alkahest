@@ -769,11 +769,54 @@ pub fn simplify_batch(exprs: &[ExprId], pool: &ExprPool) -> Vec<DerivedExpr<Expr
 pub fn simplify_expanded(expr: ExprId, pool: &ExprPool) -> DerivedExpr<ExprId> {
     let (pre, pre_log) = super::poly_expand::expand_polynomials(expr, pool);
     let result = simplify_expanded_by_rules(pre, pool);
-    if pre_log.is_empty() {
+    let result = if pre_log.is_empty() {
         result
     } else {
         DerivedExpr::with_log(result.value, pre_log.merge(result.log))
+    };
+    retry_declined_expansions(result, pool)
+}
+
+/// Expand what `ExpandPow` declined, when the *answer* is small.
+///
+/// The rule's bound counts distributed products (`(x+1)¹³` is 8192 of them), so
+/// `simplify_expanded((x+1)**13)` returned its input with only a log step to
+/// say why — while the expansion itself is 14 terms. Each declined power whose
+/// expansion has a bounded number of monomials is expanded as one polynomial
+/// power (see `poly_expand::expand_declined_powers`) and the engine runs again
+/// on the result; its `expand_pow_limit_reached` steps are replaced by
+/// `expand_polynomial` steps. A power whose expansion really is too large
+/// keeps its limit step, which the Python layer turns into a warning.
+fn retry_declined_expansions(result: DerivedExpr<ExprId>, pool: &ExprPool) -> DerivedExpr<ExprId> {
+    let declined: Vec<ExprId> = result
+        .log
+        .steps()
+        .iter()
+        .filter(|s| s.rule_name == crate::simplify::rules::EXPAND_POW_LIMIT_RULE)
+        .map(|s| s.before)
+        .collect();
+    if declined.is_empty() {
+        return result;
     }
+    let Some((rewritten, retry_log)) =
+        super::poly_expand::expand_declined_powers(result.value, &declined, pool)
+    else {
+        return result;
+    };
+    let expanded: Vec<ExprId> = retry_log.steps().iter().map(|s| s.before).collect();
+    let kept = DerivationLog(
+        result
+            .log
+            .0
+            .into_iter()
+            .filter(|s| {
+                !(s.rule_name == crate::simplify::rules::EXPAND_POW_LIMIT_RULE
+                    && expanded.contains(&s.before))
+            })
+            .collect(),
+    );
+    let rest = simplify_expanded_by_rules(rewritten, pool);
+    DerivedExpr::with_log(rest.value, kept.merge(retry_log).merge(rest.log))
 }
 
 /// [`simplify_expanded`] by term rewriting alone, with no polynomial fast
@@ -1010,11 +1053,13 @@ mod tests {
     #[test]
     fn declined_expansion_is_recorded_in_the_derivation_log() {
         let pool = p();
-        let x = pool.symbol("x", Domain::Real);
-        let y = pool.symbol("y", Domain::Real);
-        let z = pool.symbol("z", Domain::Real);
-        let base = pool.add(vec![x, y, z]);
-        let expr = pool.pow(base, pool.integer(9_i32)); // 3^9 products, over budget
+        // Ten summands to the 9th: 10^9 products for the rule, and 48 620
+        // monomials — too many for the polynomial retry as well.
+        let vars: Vec<_> = (0..10)
+            .map(|i| pool.symbol(format!("v{i}"), Domain::Real))
+            .collect();
+        let base = pool.add(vars);
+        let expr = pool.pow(base, pool.integer(9_i32));
 
         let r = simplify_expanded(expr, &pool);
         assert_eq!(r.value, expr, "the expansion really was declined");
@@ -1046,6 +1091,31 @@ mod tests {
             .steps()
             .iter()
             .any(|s| s.rule_name == crate::simplify::rules::EXPAND_POW_LIMIT_RULE));
+    }
+
+    /// A power over the rule's *product* bound whose expansion is small is
+    /// expanded anyway, by the polynomial retry: `(x+1)^13` is 8192 products
+    /// but 14 terms, and used to come back unexpanded.
+    #[test]
+    fn a_declined_power_with_a_small_expansion_is_expanded() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.pow(pool.add(vec![x, pool.integer(1_i32)]), pool.integer(13_i32));
+        let r = simplify_expanded(expr, &pool);
+        let ExprData::Add(terms) = pool.get(r.value) else {
+            panic!("not expanded: {}", pool.display(r.value));
+        };
+        assert_eq!(terms.len(), 14);
+        assert!(!r
+            .log
+            .steps()
+            .iter()
+            .any(|s| s.rule_name == crate::simplify::rules::EXPAND_POW_LIMIT_RULE));
+        let mut env = std::collections::HashMap::new();
+        env.insert(x, 0.37);
+        let got = crate::jit::eval_interp(r.value, &env, &pool).unwrap();
+        let want = 1.37f64.powi(13);
+        assert!((got - want).abs() < 1e-9 * want);
     }
 
     #[test]
@@ -1256,13 +1326,14 @@ mod tests {
             .stack_size(1024 * 1024)
             .spawn(|| {
                 let pool = p();
-                let vars: Vec<_> = (0..4)
+                let vars: Vec<_> = (0..10)
                     .map(|i| pool.symbol(format!("v{i}"), Domain::Complex))
                     .collect();
                 let sum = pool.add(vars);
                 // Over the bounded-expansion product budget, so `ExpandPow`
-                // declines and records instead of firing.
-                let big = pool.pow(sum, pool.integer(12));
+                // declines and records instead of firing — and over the
+                // polynomial retry's monomial bound, so it stays declined.
+                let big = pool.pow(sum, pool.integer(9));
                 // Bury it under enough levels to force at least one segment.
                 let one = pool.integer(1_i32);
                 let zero = pool.integer(0_i32);
