@@ -3,7 +3,7 @@
 <h3 align="center">
   <a href="https://pypi.org/project/alkahest/">PyPI</a> •
   <a href="https://crates.io/crates/alkahest-cas">crates.io</a> •
-  <a href="https://alkahest-cas.github.io/alkahest/">Docs</a> •
+  <a href="https://alkahest-cas.github.io/docs/">Docs</a> •
   <a href="https://alkahest-cas.github.io/">Website</a> •
   <a href="https://app.primeintellect.ai/dashboard/environments/alkahest/alkahest-symbolic-integration">RL environment</a> •
   <a href="https://alkahest-cas.github.io/playground/">Demo</a>
@@ -26,8 +26,7 @@ The main stack is: Rust kernel → FLINT/Arb (polynomials, ball arithmetic) → 
 ## Highlights
 
 - **Verifiable by construction.** Every computation produces a derivation log; a meaningful subset can export Lean 4 proofs for independent verification.
-- **520× faster than SymPy** on trig-identity simplification — and 77× faster than Mathematica on the same task ([cross-CAS report](benchmarks/results/report.md)).
-- **~40× faster than SymPy** on 2-variable quadratic systems, via FLINT-backed polynomial arithmetic and a compiled F4 core ([solving guide](docs/mdbook/src/solving.md)).
+- **Fast on real workloads, with the losses published.** On 28 benchmark cases across core CAS, PK/PD, robotics, physics, finance and JIT evaluation, it wins 21 against SymPy 1.14, SymEngine 0.14 and Mathematica 14.3. Examples: Fateman's 135,751-term expansion in 0.33 s (Mathematica 0.87 s, SymPy did not finish in 300 s), and the Kerr Kretschmann scalar in 34 ms. Gröbner cyclic-6 still times out, and SymEngine differentiates faster. Every answer is checked; see [benchmarks/website/RESULTS.md](benchmarks/website/RESULTS.md).
 - **GPU codegen is a routine operation, not a research project** — 16.2× over the CPU JIT on a 1M-point polynomial evaluation (NVPTX `sm_86`, RTX 3090). Requires a source build with `--features cuda`; the PyPI wheel has no GPU support ([GPU guide](docs/mdbook/src/gpu.md)).
 - **A trained RL environment.** GRPO against the CAS verifier moved `Qwen2.5-1.5B-Instruct` from 11.7% → 15.1% on elementary integrals (+29% relative) with no stored reference answers — the CAS grades every rollout, including honest refusal on non-elementary integrands.
 - **Built for agent loops.** String entry point (`ak.parse`), per-candidate `Budget`s, batched `*_many` fan-out, and compact JSON envelopes for cheap logging.
@@ -44,7 +43,7 @@ pip install alkahest
 pip install "alkahest[rl]"   # RL environments; Python >= 3.10
 ```
 
-Rust users: `alkahest-cas = "2"` — see [Rust crate](#rust-crate).
+Rust users: `cargo add alkahest-cas` — see [Rust crate](#rust-crate).
 
 Default wheels are batteries-included: e-graph simplification, the Gröbner solver (so `alkahest.solve`, Diophantine, and homotopy work out of the box), the pure-Rust **Cranelift** CPU JIT with no system LLVM required, and **`parallel`** — the Rayon-backed multi-core paths (`numpy_eval_par`, `simplify_par`, parallel F4 reduction, sharded `ExprPool`). They do **not** include the **LLVM** JIT; for that, use a **PyTorch-style** opt-in **`+jit`** / **`+full`** Linux wheel from [GitHub Releases](#opt-in-linux-wheels-jit-and-full-pytorch-style), not the default PyPI resolver path.
 
@@ -255,7 +254,7 @@ More runnable examples live in [`examples/`](examples/) — polynomials, Risch i
 | Assumptions | Domain-aware reasoning (`x > 0`, ℤ vs ℝ) with a decision procedure over quantified statements | `Assumptions` · `Domain` · `Forall` · `decide` · `satisfiable` |
 | Output | LaTeX, Unicode pretty-printing, plots (2D/3D, implicit, parametric, DAG structure) | `latex` · `unicode_str` · `plot` · `plot3d` · `plot_dag` |
 
-Full listing in the [Python API reference](https://alkahest-cas.github.io/alkahest/python-api.html).
+Full listing in the [Python API reference](https://alkahest-cas.github.io/docs/api/).
 
 ---
 
@@ -283,7 +282,7 @@ Most transforming operations (`diff`, `simplify`, `integrate`, `sum_*`, …) ret
 - `.certificate` — Lean 4 proof term, when available
 - `.to_dict()` / `.to_json()` — versioned machine-parseable envelope; use `mode="compact"` in agent loops
 
-Exceptions: `limit` returns a bare `Expr`, and `series` returns a `Series` (with its own `.polynomial` / `.order` fields). Use `.value` only on `DerivedResult`.
+Exception: `series` returns a `Series` (with its own `.polynomial` / `.order` fields). Use `.value` only on `DerivedResult`.
 
 ### Search plumbing (agent loops)
 
@@ -297,14 +296,14 @@ Exceptions: `limit` returns a bare `Expr`, and `series` returns a `Series` (with
 | Differential-test against another CAS | `alkahest.crosscheck` |
 | Hand off a discrete / mixed int-real subproblem | `alkahest.smt` |
 
-Docs: [Autoresearch / agent loops](https://alkahest-cas.github.io/alkahest/search-plumbing.html).
+Docs: [Autoresearch / agent loops](https://alkahest-cas.github.io/docs/guide/search-plumbing/).
 
 ---
 
 ## Modules for autoresearch loops
 
 Three submodules new in 3.8, aimed at unattended search. Each has its own chapter in the
-[documentation site](https://alkahest-cas.github.io/alkahest/).
+[documentation site](https://alkahest-cas.github.io/docs/).
 
 | Module | What it does |
 |---|---|
@@ -346,7 +345,7 @@ them.
   forever (~2–3.5 KB per `integrate` call) while per-call **latency stays flat** — so a
   long-running loop on one pool dies by OOM with no slowdown to warn you first. Use **one
   pool per problem** and carry `to_dict()` envelopes, not live `Expr` handles.
-  [Details](https://alkahest-cas.github.io/alkahest/budgets.html#exprpool-never-reclaims).
+  [Details](https://alkahest-cas.github.io/docs/guide/budgets/#exprpool-never-reclaims).
 - **`wall_ms` is cooperative and its granularity is one primitive operation.** A call
   stops at the first checkpoint after the deadline. Past a certain degree that operation
   is a FLINT call, which no cooperative mechanism can interrupt — a 300 ms budget on a
@@ -372,7 +371,7 @@ them.
   `interval_eval` returns an unbounded ball — but a principal-branch evaluator (SymPy,
   NumPy) returns a confident number that is *not* an eigenvalue. Evaluate inside Alkahest
   before exporting a radical expression to another tool.
-  [Details](https://alkahest-cas.github.io/alkahest/interop.html#the-interop-trap-casus-irreducibilis-cube-roots).
+  [Details](https://alkahest-cas.github.io/docs/guide/interop/#the-interop-trap-casus-irreducibilis-cube-roots).
 
 ---
 
@@ -407,7 +406,7 @@ env = load_environment(difficulty_tier=0, n_train=1000, n_eval=100, adaptive=Tru
 
 ## Documentation and further reading
 
-- [**Documentation site**](https://alkahest-cas.github.io/alkahest/) — full API reference and user guide
+- [**Documentation site**](https://alkahest-cas.github.io/docs/) — full API reference and user guide
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — crates, directory layout, and key files
 - [`ROADMAP.md`](ROADMAP.md) — planned milestones
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — Rust vs Python layer guide

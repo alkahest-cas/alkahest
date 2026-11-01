@@ -3015,7 +3015,7 @@ if "solve" not in dir():
             "alkahest.solve is unavailable — the native extension was built "
             "without the groebner feature (--no-default-features). "
             "Standard PyPI wheels include groebner by default. "
-            "See https://alkahest-cas.github.io/alkahest/ for details."
+            "See https://alkahest-cas.github.io/docs/ for details."
         )
 
     def solve_numerical(*_args, **_kwargs):

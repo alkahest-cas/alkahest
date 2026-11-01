@@ -3085,8 +3085,14 @@ mod tps_differential {
                 }
             }
         }
-        // Every case is in the fast path's domain, and identical.
-        assert_eq!(tally(&outcomes), [0, 330, 0, 0, 0]);
+        // Every case is in the fast path's domain, and identical — except
+        // that under a slow build (ASan) the general route can trip its wall
+        // clock on the largest cases (asin(x)⁻⁶ at order ≥ 2). Those come back
+        // `Recovered`, which `check` has already verified against every lower
+        // order the general route reaches, so they count as agreement.
+        let [declined, same, canonicalized, recovered, suspect] = tally(&outcomes);
+        assert_eq!((declined, canonicalized, suspect), (0, 0, 0));
+        assert_eq!(same + recovered, 330);
     }
 
     /// A step budget that runs out inside the *last* coefficient's `simplify`

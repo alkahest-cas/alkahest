@@ -6,8 +6,8 @@ Use this skill whenever you are writing Python code that uses the `alkahest` lib
 
 - **Repository:** [github.com/alkahest-cas/alkahest](https://github.com/alkahest-cas/alkahest)
 - **Website:** [alkahest-cas.github.io/](https://alkahest-cas.github.io/)
-- **Documentation:** [alkahest-cas.github.io/alkahest/](https://alkahest-cas.github.io/alkahest/)
-- **API reference:** [alkahest-cas.github.io/alkahest/api/](https://alkahest-cas.github.io/alkahest/api/)
+- **Documentation:** [alkahest-cas.github.io/docs/](https://alkahest-cas.github.io/docs/)
+- **API reference:** [alkahest-cas.github.io/docs/api/)
 - **Playground:** [alkahest-cas.github.io/playground/](https://alkahest-cas.github.io/playground/)
 - **RL environment:** [Prime Intellect Environments Hub](https://app.primeintellect.ai/dashboard/environments/alkahest/alkahest-symbolic-integration) (`alkahest/alkahest-symbolic-integration`)
 - **Further reading:** [`ARCHITECTURE.md`](https://github.com/alkahest-cas/alkahest/blob/main/ARCHITECTURE.md), [`CONTRIBUTING.md`](https://github.com/alkahest-cas/alkahest/blob/main/CONTRIBUTING.md), [`TESTING.md`](https://github.com/alkahest-cas/alkahest/blob/main/TESTING.md), [`examples/`](https://github.com/alkahest-cas/alkahest/tree/main/examples/)
@@ -199,7 +199,7 @@ you reach for `.value`:
 | Operation | Returns |
 |---|---|
 | `diff`, `integrate`, `simplify*`, `sum_*`, `product_*`, `resultant`, … | `DerivedResult` |
-| `limit` | plain `Expr` — **no `.value`** |
+| `limit` | `DerivedResult` — read `.value` |
 | `series` | `Series` object — **no `.value`**; `.expr` keeps the `O(...)`, `.truncated()` drops it |
 | `solve` | `list[dict[Expr, Expr]]` (or `GroebnerBasis`) |
 | `evaluate` | `EvaluationResult` |
@@ -415,13 +415,11 @@ r = integrate(pool.integer(1) / (x**3 - pool.integer(3)*x + pool.integer(1)), x)
 r = integrate((x - pool.integer(1)) / x**2 * exp(x), x)
 # → exp(x)/x
 
-# Non-elementary integrals raise IntegrationError with code E-INT-004
-try:
-    integrate(exp(x) / x, x)          # Ei function — non-elementary
-except IntegrationError as e:
-    print(e.code)         # E-INT-004
-    print(e.remediation)  # "no elementary antiderivative (NonElementary)"
+# Integrands whose antiderivative is a named special function return it
+integrate(exp(x) / x, x).value        # → Ei(x)
+integrate(sin(x) / x, x).value        # → Si(x)
 
+# Proven non-elementary integrals with no special-function form raise E-INT-004
 try:
     integrate(exp(x**2), x)            # Gaussian — non-elementary
 except IntegrationError as e:
@@ -478,13 +476,13 @@ re-read it.
 
 ## Limits and series
 
-Both take `point` as an **`Expr`** (a Python `0` raises `TypeError`), and **neither
-returns a `DerivedResult`** — there is no `.value` to read.
+Both take `point` as an **`Expr`** (a Python `0` raises `TypeError`). `limit` returns a
+`DerivedResult` (read `.value`); `series` returns a `Series`, which has no `.value`.
 
 ```python
 from alkahest import limit, series
 
-limit(sin(x) / x, x, pool.integer(0))              # → Expr: 1
+limit(sin(x) / x, x, pool.integer(0)).value        # → 1
 limit(pool.integer(1) / x, x, pool.integer(0), dir="+")   # one-sided
 
 s = series(exp(x), x, pool.integer(0), 4)          # → Series
@@ -2043,8 +2041,8 @@ The exponential-integral family follows DLMF §6.2. `cos_integral`, `cosh_integr
 `log_integral` is a Cauchy principal value for `x > 1` with a singularity at `x = 1`;
 numeric evaluation refuses there rather than returning a real part. Each has a
 derivative rule (`exp(x)/x`, `1/log x`, `sin(x)/x`, `cos(x)/x`, `sinh(x)/x`,
-`cosh(x)/x`) and a validated-bounds Taylor rule. They are not yet accepted by
-`parse()` — build them with the callables above.
+`cosh(x)/x`) and a validated-bounds Taylor rule. `parse()` accepts them as `Ei`, `li`,
+`Si`, `Ci`, … .
 
 For `piecewise`, branches are `(condition, value)` pairs (SymPy's `(value, condition)` is also
 accepted) and conditions must be symbolic predicates from the pool (not Python `>`):
@@ -2180,7 +2178,7 @@ env = load_environment(difficulty_tier=0, n_train=1000, n_eval=100, adaptive=Tru
 | `load_environment()` | Returns a `verifiers.SingleTurnEnv` with Risch-tier curriculum |
 | `recipes/verl_integration_reward.py` | Drop-in reward for [veRL](https://github.com/volcengine/verl) |
 
-**Environments Hub:** [`alkahest/alkahest-symbolic-integration`](https://app.primeintellect.ai/dashboard/environments/alkahest/alkahest-symbolic-integration) — install with `prime env install alkahest/alkahest-symbolic-integration`. Full checklist in the [RL guide](https://alkahest-cas.github.io/alkahest/rl.html).
+**Environments Hub:** [`alkahest/alkahest-symbolic-integration`](https://app.primeintellect.ai/dashboard/environments/alkahest/alkahest-symbolic-integration) — install with `prime env install alkahest/alkahest-symbolic-integration`. Full checklist in the [RL guide](https://alkahest-cas.github.io/docs/guide/rl/).
 
 ---
 
@@ -2223,7 +2221,7 @@ reg.coverage_report_markdown()  # same, rendered as a Markdown table
 
 1. **Always create a pool first.** `ExprPool()` before any symbol or expression. Optional: `with ak.context(pool=pool): x = ak.symbol("x")` to avoid repeating `pool=`.
 2. **Pool first; literals in arithmetic are OK.** Use `x + 1`, not only `x + pool.integer(1)`. Use `pool.rational(p, q)` for exact rationals; `subs` accepts Python `int`/`float` in the mapping.
-3. **Read `.value` for the expression** — for the operations that return `DerivedResult`. `limit` returns a bare `Expr`, `series` returns a `Series`, `solve` returns a list of dicts, and `evaluate` returns an `EvaluationResult`; none of those have `.value`. See the table in [Return type](#return-type-derivedresult).
+3. **Read `.value` for the expression** — for the operations that return `DerivedResult`. `series` returns a `Series`, `solve` returns a list of dicts, and `evaluate` returns an `EvaluationResult`; none of those have `.value`. See the table in [Return type](#return-type-derivedresult).
 4. **Use specific simplifiers.** Prefer `simplify_trig`, `simplify_log_exp`, `collect_like_terms` over the catch-all `simplify` when the structure is known — it is faster.
 5. **Polynomial conversions raise.** `UniPoly.from_symbolic` and `poly_normal` raise `ConversionError` for non-polynomial input — catch it.
 6. **`solve` / Gröbner-side APIs are available in all PyPI wheels.** The `groebner` Cargo feature is a default since 2.3.1 — no feature flag or `ImportError` guard needed. Default PyPI wheels also include egglog (`HAS_EGRAPH` is typically `True`); use `simplify_egraph` when rule-based simplification is insufficient.
