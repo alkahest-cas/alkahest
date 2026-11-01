@@ -5,16 +5,47 @@ on:
     branches: [main]
     paths:
       - 'demo-playground/**'
+      - 'python/alkahest/playground/**'
+      - '.github/workflows/playground.yml'
+  pull_request:
+    paths:
+      - 'demo-playground/**'
+      - 'python/alkahest/playground/**'
       - '.github/workflows/playground.yml'
   workflow_dispatch:
 
 concurrency:
-  group: playground-deploy
+  group: playground-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  test-server:
+    name: Math endpoint tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install server dependencies and Alkahest
+        working-directory: demo-playground/server
+        run: pip install -r requirements.txt alkahest httpx pytest ruff
+
+      - name: Lint
+        working-directory: demo-playground/server
+        run: |
+          ruff format --check playground_math.py main.py tests ../web/scripts/precompute-math.py
+          ruff check playground_math.py main.py tests ../web/scripts/precompute-math.py
+
+      - name: Tests
+        working-directory: demo-playground/server
+        run: pytest
+
   deploy:
     name: Deploy to alkahest-cas.github.io/playground
+    needs: test-server
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +71,7 @@ jobs:
           NODE_OPTIONS: '--max-old-space-size=4096'
 
       - name: Deploy to GitHub Pages site
+        if: github.event_name != 'pull_request'
         uses: peaceiris/actions-gh-pages@v4
         with:
           deploy_key: ${{ secrets.WEBSITE_DEPLOY_KEY }}

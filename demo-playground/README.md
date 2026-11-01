@@ -1,19 +1,19 @@
 # Alkahest Demo Playground
 
-An interactive web application for demoing, testing, and recording the [Alkahest](https://alkahest-cas.github.io/) CAS Python library. Designed to match the alkahest visual identity and be controllable entirely from the CLI.
+An interactive web application for trying, demoing, testing, and recording the [Alkahest](https://alkahest-cas.github.io/) computer algebra system. It has two tabs: **Math** (the default), where you type ordinary mathematics, and **Python**, a notebook for the Python API. It shares its look and top bar with the landing page and the docs, and can be driven from the CLI for recordings.
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| **Notebook mode** | Jupyter-style code cells with CodeMirror editor |
+| **Math tab** | One line of ordinary maths per cell (`integrate sin(x)^2 dx`, `d/dx x^3 sin(x)`, `solve …`), live "Interpreted as" preview, LaTeX results, coded refusals, verification badges |
+| **Python tab** | Jupyter-style code cells with CodeMirror editor |
 | **Dual execution** | WASM (Pyodide) for SymPy/pure Python; server kernel for alkahest |
 | **Rich outputs** | LaTeX (KaTeX), matplotlib figures, HTML, JSON, **Lean 4 certificates** |
 | **Lean verification** | Export `.lean` proofs from alkahest; typecheck via server (`lake env lean`) |
 | **Local wheel** | Upload a `.whl` to test a dev build of alkahest |
-| **Agent chat** | Provider-agnostic AI agent (Vercel AI SDK) with `run_python` tool |
 | **Recording** | In-browser `MediaRecorder` or headless Playwright from the CLI |
-| **CLI orchestration** | `start`, `record`, `demo <prompt>` commands |
+| **CLI orchestration** | `start`, `record` commands |
 
 ## Architecture
 
@@ -26,13 +26,14 @@ demo-playground/
 
 **Execution routing** — the browser detects `import alkahest` / `from alkahest` in cell code and sends those cells to the Python server automatically. Pure-Python cells run in Pyodide (browser WASM). This decision is configurable in Settings.
 
-**Agent** — uses [Vercel AI SDK](https://ai-sdk.dev/) which is provider-agnostic. Supported providers include Anthropic, OpenAI, Google, Mistral, Groq, xAI, DeepSeek, Together.ai, Fireworks, Cerebras, and any **OpenAI-compatible** endpoint (Ollama, vLLM, LiteLLM, etc.). Configure via Settings (gear icon) or `AI_PROVIDER` / `AI_MODEL` in `web/.env.local`. The agent has a `run_python` tool wired to the same Jupyter kernel and is primed with the full alkahest skill document.
+**Math tab** — the browser sends each line to `POST /math` on the Alkahest server. The server parses a small maths language and calls Alkahest functions directly; it never executes Python from the request (see [Math tab](#math-tab)). Nothing in the Math tab runs in the browser, and there is no SymPy fallback.
+
+**No AI agent here.** The AI agent chat that used to live in this app has been removed; the site's Agent link goes to the separate agent page.
 
 ## Prerequisites
 
 - **Node.js** ≥ 18 with **pnpm** (`npm i -g pnpm`)
 - **Python** ≥ 3.9
-- An API key for at least one AI provider (for agent chat)
 
 ## Quick start
 
@@ -40,8 +41,7 @@ demo-playground/
 
 ```bash
 cd demo-playground
-cp .env.example web/.env.local
-# Edit web/.env.local — at minimum set ANTHROPIC_API_KEY (or whichever provider you use)
+cp .env.example web/.env.local   # optional: server URL / token overrides
 ```
 
 ### 2. Install dependencies
@@ -73,17 +73,115 @@ Open [http://localhost:3000](http://localhost:3000).
 
 A static build runs in the browser at **[alkahest-cas.github.io/playground](https://alkahest-cas.github.io/playground/)**:
 
-- **WASM** — SymPy and pure Python cells work with no server.
-- **Bring your own backend** — open settings (`Ctrl+/`) and set an Alkahest server URL + token, or a remote Jupyter URL + token, to run `import alkahest` and use a private kernel.
-- **Agent chat** — requires self-hosting (`pnpm start`); the hosted site is notebook-only for the agent.
+- **Math tab** — computes on the visitor's own machine through `python -m alkahest.playground` (see [Run the Math playground locally](#run-the-math-playground-locally)). With no server it shows the two setup commands and the starter cells' results precomputed at build time (labelled *precomputed*); it does not compute anything in the browser.
+- **Python tab, WASM** — SymPy and pure Python cells work with no server.
+- **Bring your own backend** — open settings (`Ctrl+/`) and set an Alkahest server URL + token (Math and Python tabs), or a remote Jupyter URL + token (Python tab only).
 
 Pushes to `main` under `demo-playground/` deploy automatically via `.github/workflows/playground.yml`.
 
 ---
 
-## Notebook mode
+## Run the Math playground locally
 
-The default view is a starter notebook with markdown sections and code cells covering simplification, differentiation, integration, and trigonometric identities (`demos/default_notebook.py`). Use **Clear notebook** in the toolbar to reset to a single empty code cell.
+The hosted page has no backend. Alkahest is native code (Rust + FLINT) and does not run in the browser yet, so the Math tab sends each line to a small server **on your own machine**:
+
+```bash
+pip install -U alkahest          # Python 3.9+
+python -m alkahest.playground    # http://127.0.0.1:8765, Ctrl+C to stop
+```
+
+Then open [alkahest-cas.github.io/playground](https://alkahest-cas.github.io/playground/) and click **Check again** (or just switch back to the tab). Nothing you type leaves your computer. Options: `--port N` (then set `http://127.0.0.1:N` as the backend URL in settings), `--allow-origin URL` (repeatable) to accept another page, `--quiet`, `--open`.
+
+How the page finds it: with no backend URL in settings, the Math tab looks at `http://127.0.0.1:8765/health`. From a public HTTPS page, browsers gate this behind a permission (*Local Network Access*), so the page only looks without a click when that cannot pop up a prompt — the permission is already granted, this browser has connected before, or the page itself is served from localhost — and re-checks when the window regains focus. Browser support, checked with Playwright on 2026-10-30:
+
+| Browser | https page → `http://127.0.0.1:8765` |
+|---------|---------------------------------------|
+| Chrome / Edge 142+ | Works after the user allows "apps on this device" (Local Network Access prompt); blocked until then. Tested: Chromium 148 blocks without the permission and succeeds (GET and POST) with it. |
+| Firefox | Works. Loopback is not mixed content (since Firefox 55/84); Firefox 153+ asks for Local Network Access permission first. Tested: Firefox 150 succeeded (it logged the LNA check, no prompt). |
+| Safari (macOS, and every browser on iOS/iPadOS) | **Blocked** as mixed content ([WebKit bug 171934](https://bugs.webkit.org/show_bug.cgi?id=171934), open). Tested: WebKit 26.4 blocks with "requested insecure content from http://127.0.0.1:8765". Use Chrome/Edge/Firefox, or run the whole playground locally (below). |
+
+Security model of the local server: it binds 127.0.0.1 only; it never executes Python from a request (the restricted grammar below, mapped onto a whitelist of Alkahest calls); each calculation runs in a fresh resource-limited child process; requests whose `Origin` is not on the allowlist (`https://alkahest-cas.github.io`, `http://localhost:3000`, `http://127.0.0.1:3000`, plus `--allow-origin`) get `403` and no CORS headers; requests whose `Host` is not a loopback name get `403` (DNS-rebinding protection); CORS preflights, including Chrome's `Access-Control-Request-Private-Network`, are answered for allowed origins only. No token is used: anything that can already run programs on your machine could run Alkahest directly. Resource limits use `resource.setrlimit` where the OS has it (Linux; macOS ignores the address-space cap); on Windows only the wall-clock kill and Alkahest's own `Budget` apply.
+
+The translator, executor and sandbox live in the Alkahest package (`python/alkahest/playground/`); the FastAPI server in `server/` imports them (falling back to this checkout's copy when the installed wheel predates them). The precomputed starter results come from `web/scripts/precompute-math.py`, which runs the real executor and writes `web/src/lib/math-precomputed.json`; rerun it when the starter cells or Alkahest's output change.
+
+A WebAssembly (Pyodide) build of Alkahest would let the tab compute in the browser with no install; that is future work.
+
+---
+
+## Math tab
+
+The default tab. Each cell is one line of maths; **Enter** runs it and moves to the next line, **↑/↓** move between lines, and the symbol palette (π, e, i, ∞, √, powers, fractions, ∫, d/dx, ∑, lim, sin/cos/log, Greek letters) inserts text at the cursor. While you type, the line is parsed on the server and shown back as *Interpreted as …* in KaTeX, so `1/2x`, `sin x^2` or `xy` show exactly how they were read.
+
+What it understands (case-insensitive command words; unicode such as `π ∞ √ ² · × ÷ − ∫ ∑ ∂ →` and Greek letters is accepted):
+
+| Form | Examples | Alkahest call |
+|------|----------|---------------|
+| integrate | `integrate sin(x)^2 dx`, `∫ x e^x dx`, `integrate 1/(1+x^2) from 0 to oo`, `integral of t^2 dt`, `integrate(f, x, 0, 1)` | `ak.integrate` |
+| derivative | `d/dx x^3 sin(x)`, `d²/dx² f`, `d^3/dx^3 …`, `derivative of tan(x)`, `differentiate … with respect to t`, `diff(f, x, 2)`, `∂/∂y …` | `ak.diff` (repeated) |
+| solve | `solve x^2 - 5x + 6 = 0`, `solve x^2 + y^2 = 1, x - y = 0 for x, y`, `solve(eq1, eq2, x, y)`; a bare equation also solves | `ak.solve` |
+| simplify | `simplify (x^2-1)/(x-1)`; a bare expression (`sin(pi/6) + sqrt(8)`) is simplified and, if constant, approximated | `ak.simplify`, `simplify_trig`, `simplify_log_exp`, `cancel` |
+| factor / expand | `factor x^4 - 1`, `factor x^2 - y^2`, `factor 360`, `expand (x+1)^5` | `UniPoly`/`MultiPoly.factor_z`, `number_theory.factorint`, `simplify_expanded` |
+| limit | `limit sin(x)/x as x -> 0`, `… as x -> 0+`, `… from the left`, `lim x->0 …`, `lim_{x->0} …`, `limit(f, x, 0)` | `ak.limit` |
+| series | `series exp(x) at x = 0 to order 6`, `taylor sin(x) around x = pi up to order 4`, `series(f, x, 0, 8)` | `ak.series` |
+| sum / product | `sum 1/k^2 for k = 1 to oo`, `product … for k = 1 to n`, `sum(f, k, 1, oo)` | `ak.sum_definite`, `ak.product_definite` |
+| numeric | `numeric pi to 50 digits`, `N[sqrt(2)]`, `N[pi, 50]`, `approx e` | `ak.evaluate(…, precision_bits=…)` (rigorous ball) |
+| define | `f = x^2 sin(x)`, `g(t) = t^2 + 1`, `F = integrate x^2 dx`, then `d/dx f`, `g(3)` in later lines | — |
+
+Expressions use the usual precedence with implicit multiplication (`2x`, `x sin(x)`, `(x+1)(x-1)`), `^` or `**`, `!`, `|x|`, `e`, `i`, `pi`, `oo`. Functions: sin, cos, tan, sec, csc, cot, asin/arcsin, acos, atan, sinh, cosh, tanh and inverses, exp, log/ln, log10, log2, `log(x, b)`, sqrt, cbrt, abs, sign, floor, ceil, gamma, erf, erfc, zeta, atan2, min, max, factorial. Decimals are read as exact rationals (`0.5` is `1/2`).
+
+**Results** render as LaTeX. Badges never overstate: `verified` means Alkahest checked the result exactly (e.g. the derivative of the antiderivative is the integrand); `Lean certificate` means Alkahest generated a Lean 4 proof, which you can open and check with **Verify in Lean** (unchecked until you do); `certified digits` marks a rigorous ball enclosure.
+
+**Refusals** show the code and Alkahest's own message, framed as *Alkahest declined because …* (for example `integrate e^(x^2) dx` → `E-INT-004`). Input the playground cannot read, or input over its limits, gets an `E-PLAYGROUND-NNN` code instead:
+
+| Code | Meaning |
+|------|---------|
+| `E-PLAYGROUND-001` | Could not parse the line |
+| `E-PLAYGROUND-002` | Input or result too large (500 characters, nesting depth, result size) |
+| `E-PLAYGROUND-003` | Unknown or disallowed name (e.g. anything starting with `_`) |
+| `E-PLAYGROUND-004` | A number, power, factorial, order or digit count over the cap (`2^2^2^2^2^2`) |
+| `E-PLAYGROUND-005` | Ambiguous variable (say `dx`, `for x`, `as t -> 0`) |
+| `E-PLAYGROUND-006` | Hard time limit hit (the worker process was killed) |
+| `E-PLAYGROUND-007` | Memory limit hit |
+| `E-PLAYGROUND-008` | Not applicable (e.g. `numeric` of an expression with free symbols) |
+| `E-PLAYGROUND-009` | Playground bug (not a verdict about the maths) |
+| `E-PLAYGROUND-010` | Server busy |
+
+### Endpoint contract
+
+```
+POST /math            {"input": "d/dx f", "definitions": [{"name": "f", "params": [], "value": "(x^2 * sin(x))"}]}
+POST /math/interpret  same body; parses only (live preview)
+
+→ {"ok": true, "kind": "diff", "latex": "...", "text": "...", "interpreted_latex": "...",
+   "verification": "certificate_available", "verified": false, "certificate": "import Mathlib...",
+   "approx": "...", "notes": [...], "side_conditions": [...], "definition": {...}, "elapsed_ms": 0.4}
+→ {"ok": false, "interpreted_latex": "...", "error_code": "E-INT-004", "error_message": "...",
+   "error_detail": "...", "error_hint": "...", "error_source": "alkahest" | "input" | "playground"}
+```
+
+`definitions` is how earlier lines' names reach later ones: the browser sends back the `definition` objects earlier responses returned, and the server re-parses their `value` with the same restricted grammar (so editing them gains nothing).
+
+### Safety model
+
+The endpoint is designed so it can be hosted publicly:
+
+- **No Python execution.** `alkahest/playground/mathlang.py` is a hand-written tokenizer and parser (no `eval`, no `ast`, no imports of user text); `alkahest/playground/math_exec.py` maps each syntax-tree node onto an explicit whitelist of Alkahest calls. Strings, quotes, `.`, `;`, `_`-prefixed names and anything outside the grammar are refused before any Alkahest function is called.
+- **Size caps before computing:** 500 characters, 2,000 syntax nodes, nesting depth 60, 100-digit literals, integer powers up to 100,000 bits, symbolic exponents up to 1,000, `n!` up to 1000, derivative order 20, series order 30, 1,000 digits, 32 definitions of up to 20,000 characters, 256 KiB request bodies.
+- **Each computation runs in a fresh `python -I` worker process** (`alkahest/playground/_worker.py`) under `RLIMIT_AS` (`ALKAHEST_MATH_MEMORY_MB`, default 2048), `RLIMIT_CPU`, `RLIMIT_FSIZE=0`, `RLIMIT_NOFILE`, no core dumps, a minimal environment, inside `ak.context(budget=ak.Budget(wall_ms=..., max_bytes=...))`, and is SIGKILLed with its process group at a hard deadline (`ALKAHEST_MATH_TIMEOUT_S`, default 15 s). The cooperative budget alone cannot interrupt one FLINT call; the process kill can.
+- **Concurrency cap** (`ALKAHEST_MATH_CONCURRENCY`, default 2), with `E-PLAYGROUND-010` when the queue does not clear.
+- **Token:** if `ALKAHEST_SERVER_TOKEN` is set the Math endpoints require it, unless `ALKAHEST_MATH_PUBLIC=1` opens just them (the kernel, wheel-install and Lean endpoints stay protected).
+
+These `ALKAHEST_MATH_*` variables are read by the server; put them in `server/.env.local`, which `start.sh` loads.
+
+Remaining risks before putting it on the open internet: there is no per-client rate limiting (put it behind a proxy that has one); each request spawns a process (about 0.15 s and up to the memory cap, times the concurrency); CORS is `*`; `/math/interpret` parses in the server process itself (bounded by the size caps, but not sandboxed); and the rest of the app (`/sessions`, `/ws`, wheel install, `/verify-lean`) runs arbitrary code by design and must not be exposed without the token.
+
+Tests: the parser, executor, sandbox and local server are tested at the repository level (`pytest tests/test_playground_*.py`, run in CI); `cd server && pytest` tests the FastAPI wrapper (needs an Alkahest build, `fastapi` and `httpx`).
+
+---
+
+## Python tab (notebook)
+
+Open it with the **Python** tab (or `?tab=python`). It starts from a starter notebook with markdown sections and code cells covering simplification, differentiation, integration, and trigonometric identities (`demos/default_notebook.py`). Use **Clear notebook** in the toolbar to reset to a single empty code cell.
 
 - **⌘ Enter** — run focused cell
 - **Run all** — execute all cells top-to-bottom
@@ -136,34 +234,15 @@ Set `ALKAHEST_LEAN_PROJECT` if the repo is not at the default path relative to t
 
 ---
 
-## Agent chat mode
-
-Navigate to **Agent** in the navbar (or `/agent`).
-
-The agent:
-1. Receives your natural-language request
-2. Writes Python code using alkahest (and/or SymPy for comparison)
-3. Runs it via the `run_python` tool on the shared Jupyter kernel
-4. Can emit Lean certificates (`display_lean_cert`) and typecheck them with `verify_lean`
-5. Shows reasoning text, code, and outputs inline
-6. Accepts follow-up messages (stateful kernel — variables persist)
-
-The agent is primed with the full `alkahest-skill/alkahest.md` document from the repo.
-
----
-
 ## Settings
 
 Click the gear icon (⚙) in the navbar to configure:
 
-- **Server URL** — Python server address (default `http://localhost:8000`)
-- **Backend type** — Alkahest server or remote **Jupyter Server** (URL + token)
+- **Server URL** — Alkahest server address (default `http://localhost:8000`); used by the Math tab and by alkahest cells in the Python tab
+- **Backend type** — Alkahest server or remote **Jupyter Server** (URL + token; Python tab only)
 - **Access token** — Jupyter token or Alkahest `ALKAHEST_SERVER_TOKEN` (stored in browser)
 - **Execution mode** — Auto / WASM only / Server only
 - **Ctrl+/** — toggle settings from anywhere (except while typing in a cell)
-- **AI provider** — Anthropic, OpenAI, Google, Mistral, Groq, xAI, DeepSeek, Together.ai, Fireworks, Cerebras, or OpenAI-compatible (custom base URL)
-- **AI model** — any model string supported by your provider
-- **OpenAI-compatible** — optional base URL and API key (browser-local or via `OPENAI_COMPATIBLE_*` env vars)
 
 Settings are persisted in `localStorage`.
 
@@ -217,22 +296,9 @@ Or use `bash groebner-comparison/record.sh`. See [`groebner-comparison/README.md
 
 Use `?zen=1` automatically in CLI mode; the recorder waits until cells are rendered before capturing.
 
-### CLI — agent demo recording
+### CLI — removed: agent demo recording
 
-Give the agent a prompt and capture the full interaction:
-
-```bash
-npx tsx cli/src/index.ts demo \
-  "Demonstrate how alkahest differentiates a product of trig functions and show the steps" \
-  --output recordings/agent-demo.webm
-```
-
-This command:
-1. Starts servers (if not already running)
-2. Opens a headless browser with Playwright
-3. Navigates to the Agent page and sends your prompt
-4. Waits for the agent to complete
-5. Saves the video to the output file
+The `demo <prompt>` command (which drove the old AI agent chat and recorded it) was removed together with the agent chat. `record` covers scripted notebook recordings; `?demo=` payloads open the Python tab automatically.
 
 ---
 
@@ -326,23 +392,29 @@ demo-playground/
 ├── web/                    Next.js 14 frontend
 │   ├── src/
 │   │   ├── app/
-│   │   │   ├── page.tsx             Notebook page
-│   │   │   ├── agent/page.tsx       Agent chat page
-│   │   │   ├── api/agent/route.ts   AI SDK streaming endpoint
-│   │   │   └── globals.css
+│   │   │   ├── page.tsx             Math | Python tabs
+│   │   │   ├── compare/page.tsx     Side-by-side recording view
+│   │   │   ├── api/jupyter-proxy/   CORS proxy for remote Jupyter (dev server only)
+│   │   │   └── globals.css          Design tokens (shared with the site), light + dark
 │   │   ├── components/
-│   │   │   ├── notebook/            Cell, Notebook, Output
-│   │   │   ├── agent/               AgentChat
-│   │   │   └── ui/                  Nav, Settings
+│   │   │   ├── math/                MathNotebook, MathCell, Tex
+│   │   │   ├── notebook/            Cell, Notebook, Output, LeanCertificate
+│   │   │   └── ui/                  SiteHeader, PlaygroundBar, Settings
 │   │   └── lib/
-│   │       ├── alkahest-skill.ts    Agent system prompt
-│   │       └── execution.ts         WASM/server routing
+│   │       ├── math-api.ts          /math client
+│   │       ├── math-starter.ts      Starter lines, examples, palette
+│   │       └── execution.ts         WASM/server routing (Python tab)
 │   └── public/
 │       └── pyodide-worker.js        Web Worker for Pyodide
 │
 ├── server/                 Python execution backend
 │   ├── main.py             FastAPI app
-│   ├── kernel_manager.py   Jupyter kernel wrapper
+│   ├── mathlang.py         Math tab language: tokenizer, parser, LaTeX (no Alkahest, no eval)
+│   ├── math_exec.py        Syntax tree → whitelisted Alkahest calls
+│   ├── math_service.py     Sandboxed worker processes, limits, timeouts
+│   ├── math_worker.py      One request per `python -I` process
+│   ├── kernel_manager.py   Jupyter kernel wrapper (Python tab)
+│   ├── tests/              pytest suite for the Math tab
 │   ├── requirements.txt
 │   └── start.sh            Bootstraps venv and starts uvicorn
 │
@@ -351,6 +423,5 @@ demo-playground/
         ├── index.ts
         └── commands/
             ├── start.ts    Start web + server
-            ├── record.ts   Scripted notebook recording
-            └── demo.ts     Agent demo + recording
+            └── record.ts   Scripted notebook recording
 ```

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
 import subprocess
@@ -10,12 +12,20 @@ import tempfile
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
 from kernel_manager import KernelSession
 from lean_verify import lean_status, verify_lean_source
+from playground_math import math_service
+from pydantic import BaseModel
 
 app = FastAPI(title="alkahest-demo-server")
 
@@ -32,6 +42,9 @@ app.add_middleware(
 sessions: dict[str, KernelSession] = {}
 
 SERVER_TOKEN = os.environ.get("ALKAHEST_SERVER_TOKEN", "").strip()
+# The Math endpoints never run user-supplied Python (see math_service), so they
+# can be opened to the public while the kernel endpoints stay token-protected.
+MATH_PUBLIC = os.environ.get("ALKAHEST_MATH_PUBLIC", "").strip() == "1"
 
 
 def _extract_token(request: Request) -> str | None:
@@ -51,9 +64,10 @@ def _require_token(request: Request) -> None:
 
 # ── Health ─────────────────────────────────────────────────────────────────
 
+
 @app.get("/health")
 async def health():
-    return {"status": "ok", "sessions": len(sessions), "lean": lean_status()}
+    return {"status": "ok", "sessions": len(sessions), "lean": lean_status(), "math": True}
 
 
 @app.get("/lean/status")
@@ -75,7 +89,40 @@ async def verify_lean(req: VerifyLeanRequest, request: Request):
     return verify_lean_source(req.source, timeout_sec=req.timeout_sec)
 
 
+# ── Math tab (restricted maths language; never executes Python) ────────────
+# The translator and sandboxed executor live in the Alkahest package
+# (``alkahest.playground``) so ``python -m alkahest.playground`` can serve the
+# same endpoints on a visitor's own machine; this app only wraps them.
+
+
+async def _math_payload(request: Request) -> object:
+    if not MATH_PUBLIC:
+        _require_token(request)
+    body = await request.body()
+    if len(body) > math_service.MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="Request too large")
+    try:
+        return json.loads(body or b"{}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Body must be JSON") from exc
+
+
+@app.post("/math")
+async def math_run(request: Request):
+    """Compute one Math-tab cell: ``{input, definitions}`` → result or coded refusal."""
+    payload = await _math_payload(request)
+    # The sandboxed child is run synchronously; keep the event loop free.
+    return await asyncio.to_thread(math_service.run_math, payload)
+
+
+@app.post("/math/interpret")
+async def math_interpret(request: Request):
+    """Parse only (live preview): ``{input, definitions}`` → ``interpreted_latex``."""
+    return math_service.interpret_payload(await _math_payload(request))
+
+
 # ── Sessions ───────────────────────────────────────────────────────────────
+
 
 @app.post("/sessions")
 async def create_session(request: Request):
@@ -96,6 +143,7 @@ async def delete_session(session_id: str, request: Request):
 
 # ── WebSocket streaming execution ──────────────────────────────────────────
 
+
 @app.websocket("/ws/{session_id}")
 async def ws_execute(websocket: WebSocket, session_id: str):
     if SERVER_TOKEN:
@@ -106,7 +154,16 @@ async def ws_execute(websocket: WebSocket, session_id: str):
     await websocket.accept()
     session = sessions.get(session_id)
     if not session:
-        await websocket.send_text(json.dumps({"type": "error", "ename": "NoSession", "evalue": "Session not found", "traceback": []}))
+        await websocket.send_text(
+            json.dumps(
+                {
+                    "type": "error",
+                    "ename": "NoSession",
+                    "evalue": "Session not found",
+                    "traceback": [],
+                }
+            )
+        )
         await websocket.close()
         return
 
@@ -121,31 +178,16 @@ async def ws_execute(websocket: WebSocket, session_id: str):
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        await websocket.send_text(json.dumps({"type": "error", "ename": "ServerError", "evalue": str(e), "traceback": []}))
+        await websocket.send_text(
+            json.dumps({"type": "error", "ename": "ServerError", "evalue": str(e), "traceback": []})
+        )
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await websocket.close()
-        except Exception:
-            pass
-
-
-# ── Synchronous execution (for agent tool calls) ───────────────────────────
-
-class RunRequest(BaseModel):
-    code: str
-
-
-@app.post("/sessions/{session_id}/run")
-async def run_sync(session_id: str, req: RunRequest, request: Request):
-    _require_token(request)
-    session = sessions.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    outputs = await session.execute(req.code)
-    return {"outputs": outputs}
 
 
 # ── Wheel install ──────────────────────────────────────────────────────────
+
 
 @app.post("/sessions/{session_id}/install-wheel")
 async def install_wheel(session_id: str, request: Request, wheel: Annotated[UploadFile, File()]):
@@ -180,6 +222,7 @@ async def install_wheel(session_id: str, request: Request, wheel: Annotated[Uplo
 
 # ── CLI control endpoint (used by the demo CLI) ────────────────────────────
 
+
 class ControlRequest(BaseModel):
     action: str
     payload: dict = {}
@@ -197,4 +240,5 @@ async def control(req: ControlRequest):
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

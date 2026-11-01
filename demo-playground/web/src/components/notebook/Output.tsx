@@ -110,7 +110,7 @@ function OutputItemView({
   if (item.type === 'text') {
     if (item.stream === 'stderr') {
       return (
-        <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-red-600">
+        <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-ak-brand">
           {item.text}
         </pre>
       );
@@ -161,12 +161,12 @@ function OutputItemView({
 
   if (item.type === 'error') {
     return (
-      <div className="rounded border border-red-200 bg-red-50 p-3">
-        <p className="font-mono text-sm font-semibold text-red-700">
+      <div className="rounded border border-ak-brand/30 bg-ak-brand/[0.06] p-3">
+        <p className="font-mono text-sm font-semibold text-ak-brand">
           {item.ename}: {item.evalue}
         </p>
         {item.traceback.length > 0 && (
-          <pre className="mt-2 whitespace-pre-wrap font-mono text-xs text-red-600">
+          <pre className="mt-2 whitespace-pre-wrap font-mono text-xs text-ak-brand">
             {item.traceback.join('\n').replace(/\x1b\[[0-9;]*m/g, '')}
           </pre>
         )}

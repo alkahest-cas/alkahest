@@ -373,6 +373,17 @@ with ak.context(pool=pool, budget=ak.Budget(wall_ms=100, seed=1)):
 Full picture: [Autoresearch / agent loops](./search-plumbing.md),
 [Budgets](./budgets.md), [Batch](./batch.md), [Claim graphs](./claim-graphs.md).
 
+## Run the Math playground locally
+
+The [playground](https://alkahest-cas.github.io/playground/)'s **Math** tab reads plain-language maths (`integrate sin(x)^2 dx`, `solve x^2 - 5x + 6 = 0`) and computes it with Alkahest. The site itself is static, so the calculations run on your machine:
+
+```bash
+pip install -U alkahest
+python -m alkahest.playground    # serves http://127.0.0.1:8765 to this computer only
+```
+
+Then open the playground; it finds the server by itself (your browser may ask whether the site can connect to apps on your device: choose Allow). Nothing you type is sent anywhere else. It works in Chrome, Edge and Firefox; Safari blocks HTTPS pages from reaching `http://127.0.0.1`, so there run the playground itself locally (`demo-playground/README.md`). The server only answers the playground's origin, never runs Python from a request, and runs each calculation in a resource-limited child process; `--port`, `--allow-origin` and `--quiet` are the options. A WebAssembly build that needs no install is future work.
+
 ## Running the examples
 
 The `examples/` directory in the Git repository has runnable end-to-end scripts. With `alkahest` installed (`pip install alkahest` or `maturin develop` as above), from the repository root run:

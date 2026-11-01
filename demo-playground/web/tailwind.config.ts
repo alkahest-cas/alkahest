@@ -1,6 +1,9 @@
 import type { Config } from 'tailwindcss';
 import typography from '@tailwindcss/typography';
 
+/** A design token from globals.css, usable with Tailwind's /<alpha> modifier. */
+const token = (name: string) => `rgb(var(--${name}-rgb) / <alpha-value>)`;
+
 const config: Config = {
   content: ['./src/**/*.{ts,tsx,js,jsx}'],
   theme: {
@@ -8,44 +11,55 @@ const config: Config = {
       typography: {
         DEFAULT: {
           css: {
-            '--tw-prose-body': '#111111',
-            '--tw-prose-headings': '#111111',
-            '--tw-prose-code': '#c41e3a',
-            '--tw-prose-pre-bg': '#eeede7',
-            '--tw-prose-links': '#c41e3a',
-            '--tw-prose-bold': '#111111',
-            '--tw-prose-counters': '#525252',
-            '--tw-prose-bullets': '#525252',
-            '--tw-prose-hr': '#e0ded6',
-            '--tw-prose-quotes': '#525252',
-            '--tw-prose-quote-borders': '#e0ded6',
-            '--tw-prose-captions': '#525252',
-            '--tw-prose-th-borders': '#e0ded6',
-            '--tw-prose-td-borders': '#e0ded6',
+            '--tw-prose-body': 'var(--fg-2)',
+            '--tw-prose-headings': 'var(--fg)',
+            '--tw-prose-code': 'var(--brand)',
+            '--tw-prose-pre-bg': 'var(--bg-sunk)',
+            '--tw-prose-pre-code': 'var(--fg)',
+            '--tw-prose-links': 'var(--brand)',
+            '--tw-prose-bold': 'var(--fg)',
+            '--tw-prose-counters': 'var(--muted)',
+            '--tw-prose-bullets': 'var(--muted)',
+            '--tw-prose-hr': 'var(--border)',
+            '--tw-prose-quotes': 'var(--muted)',
+            '--tw-prose-quote-borders': 'var(--border)',
+            '--tw-prose-captions': 'var(--muted)',
+            '--tw-prose-th-borders': 'var(--border)',
+            '--tw-prose-td-borders': 'var(--border)',
           },
         },
       },
       colors: {
         ak: {
-          bg: '#f6f5f2',
-          fg: '#111111',
-          muted: '#525252',
-          border: '#e0ded6',
-          'code-bg': '#eeede7',
-          brand: '#c41e3a',
-          'brand-dark': '#9e1830',
-          /** Execution / running state (distinct from brand red). */
-          run: '#2563eb',
-          'run-dark': '#1d4ed8',
+          bg: token('bg'),
+          elev: token('bg-elev'),
+          'code-bg': token('bg-sunk'),
+          sunk: token('bg-sunk'),
+          fg: token('fg'),
+          fg2: token('fg-2'),
+          muted: token('muted'),
+          border: token('border'),
+          'border-strong': token('border-strong'),
+          brand: token('brand'),
+          'brand-dark': token('brand-dark'),
+          'brand-fg': token('brand-fg'),
+          ok: token('ok'),
+          warn: token('warn'),
+          /** Execution / running state (kept distinct from brand red). */
+          run: token('run'),
+          'run-dark': token('run'),
         },
       },
       fontFamily: {
-        sans: ['ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'],
-        mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
+        sans: ['var(--font-sans)'],
+        mono: ['var(--font-mono)'],
       },
       borderRadius: {
         DEFAULT: '6px',
         lg: '10px',
+      },
+      maxWidth: {
+        site: '1200px',
       },
     },
   },
