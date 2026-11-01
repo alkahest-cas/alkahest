@@ -177,15 +177,14 @@ jobs:
       # one: from #462 on, every 3.9 wheel failed to compile and nothing before
       # the release matrix noticed). Type-check the extension against 3.9.
       # setup-python has no 3.9 for the ubuntu-latest (26.04) image, so take a
-      # standalone CPython 3.9 from uv.
+      # standalone CPython 3.9 from uv (installed by setup-uv above).
       - name: cargo check alkahest-py against Python 3.9
         if: env.RUST_CHANGED == 'true'
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
         run: |
-          python -m pip install -q uv
-          python -m uv python install 3.9
-          PYO3_PYTHON="$(python -m uv python find 3.9)" \
+          uv python install 3.9
+          PYO3_PYTHON="$(uv python find 3.9)" \
             cargo check -p alkahest-py --features "egraph groebner cranelift parallel"
 
       - name: ruff check
