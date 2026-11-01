@@ -15,10 +15,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Path filter; see the table at the top of ci.yml. Skipped (not pending) for
+  # changes this workflow cannot be affected by.
+  changes:
+    name: changes
+    uses: ./.github/workflows/changes.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
   benchmarks:
     name: Performance benchmarks
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code == 'true') }}
+    # Advisory, not a merge gate: a red benchmark job is an infrastructure
+    # problem far more often than a regression. CodSpeed's runner rejects
+    # ubuntu-latest now that it is 26.04 ("Error: Unsupported system"), which
+    # failed this job on every PR; #528 pins the runner to ubuntu-24.04.
+    # Regressions are reported by CodSpeed's own PR comment, not this status.
+    continue-on-error: true
 
     steps:
       - uses: actions/checkout@v6
@@ -31,15 +48,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
+      - name: Cache compiled dependencies
+        uses: Swatinem/rust-cache@v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-codspeed-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: codspeed
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Set up FLINT
         uses: ./.github/actions/setup-flint
@@ -55,8 +68,8 @@ jobs:
           # maturin ≥1.13 uses `pip install --group` (PEP 735) which requires pip ≥25.
           .venv/bin/pip install --upgrade pip
           .venv/bin/pip install maturin pytest-codspeed sympy numpy
-          echo "$PWD/.venv/bin" >> $GITHUB_PATH
-          echo "VIRTUAL_ENV=$PWD/.venv" >> $GITHUB_ENV
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
           # Use the venv-local maturin directly — $GITHUB_PATH changes only take
           # effect in the *next* step, so `maturin` is not yet on PATH here.
           # --release: without it this benchmarked an unoptimised (opt-level 0)

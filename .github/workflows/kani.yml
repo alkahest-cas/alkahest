@@ -32,6 +32,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
   schedule:
     - cron: "30 3 * * *"   # 03:30 UTC, after ci.yml's 02:00 nightly
   workflow_dispatch:
@@ -47,23 +48,31 @@ env:
   ALKAHEST_SKIP_FLINT_CHECK: "1"
 
 jobs:
+  # Path filter; see the table at the top of ci.yml. Skipped (not pending) for
+  # changes this workflow cannot be affected by.
+  changes:
+    name: changes
+    uses: ./.github/workflows/changes.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
   full-width:
     name: Kani — full-width harnesses (alkahest-cas)
+    needs: changes
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
+    if: ${{ !cancelled() && github.event_name != 'schedule' && (needs.changes.result != 'success' || needs.changes.outputs.rust == 'true') }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
+      # Kani builds with its own pinned nightly into target/kani; the job-id
+      # part of rust-cache's key keeps the two jobs' caches apart.
+      - name: Cache compiled dependencies
+        uses: Swatinem/rust-cache@v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-kani-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-kani-
+          key: kani
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run Kani (full-width harnesses)
         uses: model-checking/kani-github-action@v1
@@ -99,15 +108,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Cache Cargo registry
-        uses: actions/cache@v5
+      # Kani builds with its own pinned nightly into target/kani; the job-id
+      # part of rust-cache's key keeps the two jobs' caches apart.
+      - name: Cache compiled dependencies
+        uses: Swatinem/rust-cache@v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-kani-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-kani-
+          key: kani
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run Kani (all harnesses)
         uses: model-checking/kani-github-action@v1

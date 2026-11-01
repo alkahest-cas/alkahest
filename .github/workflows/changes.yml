@@ -1,0 +1,247 @@
+name: changes
+
+# Reusable workflow: which parts of CI a change can affect.
+#
+# Called as the first job of ci.yml, ci-cross.yml, kani.yml, codspeed.yml,
+# lean.yml, docs.yml, alkahest-semver-check.yml and release-wheel-smoke.yml.
+# The filters live here, once, rather than as `paths:` / `paths-ignore:` on each
+# workflow's trigger, for one reason: a workflow skipped *by its trigger*
+# reports no check at all, so a required check it would have produced stays
+# "Expected — waiting for status" forever and the pull request can never merge
+# (or enter the merge queue). A job skipped by its own `if:` reports
+# "skipped", which branch protection and the merge queue count as passing.
+#
+# Which job reads which output is documented at the top of ci.yml.
+#
+# Every output is "true" for anything that is not a pull request or a merge
+# group — pushes to main / release/**, the nightly schedule, workflow_dispatch —
+# so those always run everything. On a merge group the filters apply to the
+# queue's diff against its base exactly as they do to a pull request's diff,
+# except `asan`, which is forced on: the merge group is the last gate before
+# main.
+#
+# Callers must check `needs.changes.result` before trusting an output: when this
+# workflow fails its outputs are empty, and every gated job is written as
+# `needs.changes.result != 'success' || <output> == 'true'`, so a broken filter
+# runs too much rather than silently skipping a gate.
+
+on:
+  workflow_call:
+    outputs:
+      code:
+        description: Anything the Rust/Python CI can see (everything but the website, the demo playground, Markdown, and deploy-only workflows).
+        value: ${{ jobs.paths.outputs.code }}
+      rust:
+        description: Anything that can change a Rust build or a Rust test result.
+        value: ${{ jobs.paths.outputs.rust }}
+      python:
+        description: "`code`, or the Markdown that pytest / the docs code-block checker / the README smoke test read."
+        value: ${{ jobs.paths.outputs.python }}
+      asan:
+        description: The unsafe / FFI surface that the PR-time AddressSanitizer job exists for.
+        value: ${{ jobs.paths.outputs.asan }}
+      lean:
+        description: The certificate emitters and corpora lean.yml verifies.
+        value: ${{ jobs.paths.outputs.lean }}
+      wheels:
+        description: Anything that can change a release wheel.
+        value: ${{ jobs.paths.outputs.wheels }}
+      docs:
+        description: Sources of the docs site (mdBook, Sphinx, rustdoc).
+        value: ${{ jobs.paths.outputs.docs }}
+
+permissions:
+  contents: read
+
+jobs:
+  paths:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # dorny/paths-filter lists a pull request's files through the REST API.
+      pull-requests: read
+    outputs:
+      code: ${{ steps.out.outputs.code }}
+      rust: ${{ steps.out.outputs.rust }}
+      python: ${{ steps.out.outputs.python }}
+      asan: ${{ steps.out.outputs.asan }}
+      lean: ${{ steps.out.outputs.lean }}
+      wheels: ${{ steps.out.outputs.wheels }}
+      docs: ${{ steps.out.outputs.docs }}
+    steps:
+      # Needed on merge_group, where the filter diffs with git rather than the API.
+      - uses: actions/checkout@v6
+        if: github.event_name == 'merge_group'
+
+      - name: Filter changed paths
+        id: filter
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        uses: dorny/paths-filter@v4.0.3
+        with:
+          # A file counts for a filter when it matches at least one positive
+          # pattern and none of the `!` ones.
+          predicate-quantifier: some-with-excludes
+          filters: |
+            code:
+              - '**'
+              - '!website/**'
+              # Python that the playground serves lives in python/alkahest/playground/,
+              # which this does not exclude.
+              - '!demo-playground/**'
+              # All of docs/: the parts tests read (docs/mdbook/src/*.md) come
+              # back in through `mdbook` below, the rest only feed docs.yml.
+              - '!docs/**'
+              - '!**/*.md'
+              - '!temp-alkahest/**'
+              - '!*.log'
+              - '!LICENSE'
+              - '!.github/workflows/website.yml'
+              - '!.github/workflows/playground.yml'
+              - '!.github/workflows/docs.yml'
+            # `code` minus what only Python, Lean or the benchmarks read. No
+            # Rust target reads anything under these (checked: no include_str!
+            # or runtime read reaches outside the crates and .github/).
+            rust:
+              - '**'
+              - '!website/**'
+              - '!demo-playground/**'
+              - '!docs/**'
+              - '!**/*.md'
+              - '!temp-alkahest/**'
+              - '!*.log'
+              - '!LICENSE'
+              - '!.github/workflows/website.yml'
+              - '!.github/workflows/playground.yml'
+              - '!.github/workflows/docs.yml'
+              - '!python/**'
+              - '!tests/**'
+              - '!scripts/**'
+              - '!benchmarks/**'
+              - '!lean/**'
+              - '!agent-benchmark/**'
+              - '!alkahest-skill/**'
+              - '!recipes/**'
+              - '!*.py'
+              - '!pyproject.toml'
+              - '!uv.lock'
+              - '!pytest.ini'
+            # Read by pytest (crosscheck.md, certificate-coverage.md, ...), by
+            # scripts/gen_certificate_ledger.py --check, by tests/smoke_readme.py
+            # and by scripts/check_doc_blocks.py in the wheel-smoke job.
+            mdbook:
+              - 'docs/mdbook/src/**'
+              - 'README.md'
+            # Derived from `grep -rlE '\bunsafe\b|extern "C"'` over the crates:
+            # every directory or file with an unsafe block or an FFI
+            # declaration, plus what decides how they are built and linked.
+            # alkahest-py/src is deliberately absent: this job runs
+            # `-p alkahest-cas` only, so nothing there is ever instrumented.
+            asan:
+              - 'alkahest-core/src/flint/**'
+              - 'alkahest-core/src/ball/**'
+              - 'alkahest-core/src/budget/**'
+              - 'alkahest-core/src/ffield/**'
+              - 'alkahest-core/src/numfield/**'
+              - 'alkahest-core/src/number_theory/**'
+              - 'alkahest-core/src/lattice/**'
+              - 'alkahest-core/src/theta/**'
+              - 'alkahest-core/src/specfun/**'
+              - 'alkahest-core/src/orthopoly/**'
+              - 'alkahest-core/src/jit/**'
+              - 'alkahest-core/src/holonomic/boundary.rs'
+              - 'alkahest-core/src/poly/root_of.rs'
+              - 'alkahest-core/src/poly/factor/**'
+              - 'alkahest-core/src/poly/groebner/cuda.rs'
+              - 'alkahest-core/src/kernel/pool.rs'
+              - 'alkahest-core/src/kernel/eval_const.rs'
+              - 'alkahest-core/src/integrate/risch/alg_rde.rs'
+              - 'alkahest-core/src/integrate/risch/rational_rde.rs'
+              - 'alkahest-core/tests/parallel_stress.rs'
+              - 'alkahest-core/build.rs'
+              - 'alkahest-core/Cargo.toml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'vendor/**'
+              - '*.supp'
+              - '.github/actions/setup-flint/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/changes.yml'
+            # lean.yml's former trigger `paths:`, verbatim.
+            lean:
+              - 'alkahest-core/src/lean/**'
+              - 'alkahest-core/src/deriv/**'
+              - 'alkahest-core/src/diff/**'
+              - 'alkahest-core/src/simplify/**'
+              - 'alkahest-core/src/kernel/**'
+              - 'alkahest-core/src/calculus/**'
+              - 'alkahest-core/src/sum/**'
+              - 'alkahest-py/src/lib.rs'
+              - 'tests/lean_corpus.py'
+              - 'tests/lean_corpus_sample.py'
+              - 'tests/lean_tendsto_corpus.py'
+              - 'tests/lean_sos_corpus.py'
+              - 'tests/lean_gosper_corpus.py'
+              - 'alkahest-core/src/poly/resultant.rs'
+              - 'alkahest-core/src/holonomic/**'
+              - 'alkahest-core/src/real/sos/**'
+              - 'tests/_tg_helpers.py'
+              - 'tests/textbook_gate/**'
+              - 'tests/test_smoke.py'
+              - 'lean/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'alkahest-py/Cargo.toml'
+              - '.github/workflows/lean.yml'
+              - '.github/workflows/changes.yml'
+            # release-wheel-smoke.yml's former trigger `paths:`, verbatim.
+            wheels:
+              - 'alkahest-py/**'
+              - 'alkahest-core/**'
+              - 'Cargo.*'
+              - 'pyproject.toml'
+              - '.github/workflows/release-build.yml'
+              - '.github/workflows/release-wheels.yml'
+              - '.github/workflows/release-wheel-smoke.yml'
+              - '.github/workflows/changes.yml'
+              - '.github/actions/**'
+              - 'tests/smoke_readme.py'
+            # docs.yml's trigger `paths:`, plus the workflow itself.
+            docs:
+              - 'docs/**'
+              - 'python/alkahest/**'
+              - 'alkahest-core/src/**'
+              - 'alkahest-py/src/**'
+              - '.github/workflows/docs.yml'
+              - '.github/workflows/changes.yml'
+
+      - name: Resolve outputs
+        id: out
+        env:
+          EVENT: ${{ github.event_name }}
+          CODE: ${{ steps.filter.outputs.code }}
+          RUST: ${{ steps.filter.outputs.rust }}
+          MDBOOK: ${{ steps.filter.outputs.mdbook }}
+          ASAN: ${{ steps.filter.outputs.asan }}
+          LEAN: ${{ steps.filter.outputs.lean }}
+          WHEELS: ${{ steps.filter.outputs.wheels }}
+          DOCS: ${{ steps.filter.outputs.docs }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != pull_request ] && [ "$EVENT" != merge_group ]; then
+            CODE=true RUST=true MDBOOK=true ASAN=true LEAN=true WHEELS=true DOCS=true
+          fi
+          # The last gate before main: AddressSanitizer always runs in the queue.
+          if [ "$EVENT" = merge_group ]; then ASAN=true; fi
+          PYTHON=false
+          if [ "$CODE" = true ] || [ "$MDBOOK" = true ]; then PYTHON=true; fi
+          {
+            echo "code=$CODE"
+            echo "rust=$RUST"
+            echo "python=$PYTHON"
+            echo "asan=$ASAN"
+            echo "lean=$LEAN"
+            echo "wheels=$WHEELS"
+            echo "docs=$DOCS"
+          } | tee -a "$GITHUB_OUTPUT"

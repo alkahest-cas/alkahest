@@ -9,13 +9,28 @@ on:
     # everything merged there was verified by local gates alone.
   push:
     branches: [main, 'release/**']
+  merge_group:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Path filter; see the table at the top of ci.yml. Skipped (not pending) for
+  # changes this workflow cannot be affected by.
+  changes:
+    name: changes
+    uses: ./.github/workflows/changes.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
   cargo-semver-checks:
     name: cargo semver-checks (alkahest-cas::stable)
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.rust == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -23,6 +38,12 @@ jobs:
           fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache compiled dependencies
+        uses: Swatinem/rust-cache@v2.9.3
+        with:
+          key: semver
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Set up FLINT
         uses: ./.github/actions/setup-flint
