@@ -209,7 +209,8 @@ Given the computational expense of fuzzing and PBT, our GitHub Actions / CI pipe
 
 ### Tier 1: Push / PR Checks (fast path)
 * **Triggers**: Push or PR to `main` (not the scheduled cron).
-* **Typical contents**: `cargo fmt`, `clippy`, `cargo test --workspace`, `ruff`, `pytest` (defaults in `pytest.ini` exclude `@pytest.mark.slow`), ASan on the `alkahest-cas` package (**below** the FFI boundary — the PyO3 layer is not instrumented, and `detect_leaks` is off), the deterministic silent-error gate (`tests/silent_errors/`), CodSpeed micro-benchmarks (`.github/workflows/codspeed.yml`), etc. (see `.github/workflows/ci.yml`).
+* **Typical contents**: `cargo fmt`, `clippy`, `cargo test --workspace`, `ruff`, `pytest` (defaults in `pytest.ini` exclude `@pytest.mark.slow`), ASan on the `alkahest-cas` package (**below** the FFI boundary — the PyO3 layer is not instrumented, and `detect_leaks` is off), the deterministic silent-error gate (`tests/silent_errors/`), CodSpeed micro-benchmarks (`.github/workflows/codspeed.yml`, advisory), etc. (see `.github/workflows/ci.yml`).
+* **Path-filtered**: the table at the top of `ci.yml` says which job runs for which change. Website-, playground- and Markdown-only PRs skip the Rust/Python jobs; ASan runs on a PR only when the unsafe/FFI surface changes (or with the `run-asan` label), and always on `main`, in the merge queue and on `workflow_dispatch`.
 
 ### Tier 1b: Slow Python (sparse interpolation roadmap)
 * **Triggers**: Same nightly **schedule** as Tier 2 (not on every push — keeps default CI fast).
