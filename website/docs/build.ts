@@ -304,7 +304,7 @@ ${cards}`;
   </div>
   <div class="tab-panel" id="install-py" role="tabpanel">
     ${highlight("pip install alkahest", "bash")}
-    <p class="muted">Python 3.9 to 3.13. The default wheel includes the e-graph simplifier, the Gröbner solver, the Cranelift JIT and the multi-core paths. LLVM JIT builds are on <a href="https://github.com/alkahest-cas/alkahest/releases" rel="noopener">GitHub Releases</a>; see <a href="${guideHref("getting-started")}">Getting started</a>.</p>
+    <p class="muted">Python 3.9 to 3.14. The default wheel includes the e-graph simplifier, the Gröbner solver, the Cranelift JIT and the multi-core paths. LLVM JIT builds are on <a href="https://github.com/alkahest-cas/alkahest/releases" rel="noopener">GitHub Releases</a>; see <a href="${guideHref("getting-started")}">Getting started</a>.</p>
   </div>
   <div class="tab-panel" id="install-rs" role="tabpanel" hidden>
     ${highlight("cargo add alkahest-cas", "bash")}

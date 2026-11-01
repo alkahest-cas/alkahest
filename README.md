@@ -36,7 +36,7 @@ The main stack is: Rust kernel → FLINT/Arb (polynomials, ball arithmetic) → 
 
 ## Install
 
-Python **3.9–3.13**:
+Python **3.9–3.14**:
 
 ```bash
 pip install alkahest
@@ -53,9 +53,9 @@ Probe your environment after install: `alkahest.capabilities()["features"]` and 
 
 | Artifact | Where | OS / arch (CI) | Python | Cranelift JIT | LLVM JIT | `parallel` |
 |----------|-------|----------------|--------|---------------|----------|------------|
-| **Default** (`pip install alkahest`) | [PyPI](https://pypi.org/project/alkahest/) | Linux manylinux x86_64; macOS arm64; Windows x86_64 | 3.9–3.13 | yes | no | yes |
-| **`+jit`** (`X.Y.Z+jit`) | GitHub Releases only | Linux x86_64 | 3.9–3.13 | no | yes | yes |
-| **`+full`** (`X.Y.Z+full`) | GitHub Releases only | Linux x86_64 | 3.9–3.13 | yes | yes | yes |
+| **Default** (`pip install alkahest`) | [PyPI](https://pypi.org/project/alkahest/) | Linux manylinux x86_64; macOS arm64; Windows x86_64 | 3.9–3.14 | yes | no | yes |
+| **`+jit`** (`X.Y.Z+jit`) | GitHub Releases only | Linux x86_64 | 3.9–3.14 | no | yes | yes |
+| **`+full`** (`X.Y.Z+full`) | GitHub Releases only | Linux x86_64 | 3.9–3.14 | yes | yes | yes |
 
 > **`parallel` ships in the default PyPI wheel** on all three platforms, so `numpy_eval_par` and `simplify_par` really do use multiple cores out of the box. Its state is still worth *checking* rather than assuming, because it is the one feature whose absence is silent: those entry points exist in every build and fall back to `numpy_eval` / `simplify` — same correct answer, no speedup, no warning — if you are on a source build that did not enable it.
 >
