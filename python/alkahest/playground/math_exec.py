@@ -506,7 +506,12 @@ class Executor:
             rows.append(pairs)
             texts.append(", ".join(f"{n} = {t}" for n, _, t in pairs))
         if not rows:
-            return {"latex": r"\text{No solutions}", "text": "no solutions", "notes": []}
+            notes = (
+                ["Probabilistic: the Gröbner basis behind this is not proved complete."]
+                if ak.solve_proof_status() == "probabilistic"
+                else []
+            )
+            return {"latex": r"\text{No solutions}", "text": "no solutions", "notes": notes}
         order = sorted(range(len(rows)), key=lambda i: texts[i])
         rows = [rows[i] for i in order]
         texts = [texts[i] for i in order]

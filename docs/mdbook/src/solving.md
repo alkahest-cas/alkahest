@@ -9,7 +9,7 @@ Gröbner bases.
 
 ```python
 import alkahest as ak
-from alkahest import ExprPool, Domain, solve, solve_side_conditions, nsolve
+from alkahest import ExprPool, Domain, solve, solve_proof_status, solve_side_conditions, nsolve
 from alkahest import sqrt, exp, sin, cos, tan
 
 pool = ExprPool()
@@ -440,15 +440,57 @@ A `GbPoly` stores exponent vectors, not names, so converting one back needs the 
 
 Supported orders: `Lex` (lexicographic), `GrLex` (graded lexicographic), `GRevLex` (graded reverse lexicographic). `GRevLex` is generally fastest for basis computation; `Lex` is required for elimination.
 
-### Algorithm
+### Engines
 
-`GroebnerBasis.compute` runs sequential Buchberger over ℚ, with pair-pruning criteria and a final interreduction. A `Lex` basis of a zero-dimensional ideal is computed as a `GRevLex` basis first and converted with FGLM; `GroebnerBasis.compute_f5` is the signature-based alternative. The `parallel` feature does **not** parallelise Gröbner computation — it affects the sharded `ExprPool` and the `*_par` entry points (`simplify_par`, `numpy_eval_par`).
+`GroebnerBasis.compute` picks the engine by order; every engine returns the same reduced (monic, interreduced) basis, which is unique.
+
+- **`"grevlex"` — multimodular.** The basis is computed modulo random word-size primes (below 2³¹) by a matrix F4 (all critical pairs of minimal sugar degree at once, symbolic preprocessing, row reduction of a sparse matrix in machine words), the images are combined by Chinese remaindering and lifted by rational reconstruction, and a lift is accepted only after one more prime agrees with it **and** it passes verification over ℚ: every input reduces to zero and every critical pair surviving the Gebauer–Möller criteria reduces to zero, i.e. the result is a Gröbner basis of an ideal containing the input. For homogeneous input that proves it is *the* basis; for inhomogeneous input it does not, and [`proof_status`](#how-sure-is-this-answer) says so. A prime whose image has a different shape (an unlucky prime) is outvoted. If the path is not conclusive, Buchberger over ℚ is the fallback. A single generator, a constant among the generators, or a system of degree at most one goes straight to Buchberger, which is just as fast there and is a proof.
+- **`"lex"`** — for a zero-dimensional ideal, the grevlex basis above is converted by **FGLM**, itself run modulo primes, lifted, and then verified exactly: each lifted polynomial is shown to lie in the ideal of the grevlex basis through exact normal forms, and its staircase has exactly as many monomials as that ideal's quotient has dimensions, so the lex basis is as sure as the grevlex basis it came from. Positive-dimensional ideals use Buchberger over ℚ directly.
+- **`"grlex"`** — Buchberger over ℚ (sugar selection, Gebauer–Möller criteria, fraction-free reduction).
+- **`GroebnerBasis.compute_f5`** — a signature-based algorithm of the F5 family (incremental, position-over-term signatures, syzygy and rewrite criteria) in exact rational arithmetic. Under `"lex"` it goes through grevlex and FGLM like `compute`.
+
+With the `parallel` feature (in the default wheels) the multimodular engines compute several primes at once and spread the verification over the cores. Set `RAYON_NUM_THREADS=1` for a single-threaded run; an active `Budget` is honoured on every worker.
+
+### How sure is this answer?
+
+`GroebnerBasis.proof_status` is `"proved"` or `"probabilistic"`, set from the path the computation actually took.
+
+```python
+gb = GroebnerBasis.compute([x**2 - y**2, x*y], [x, y], order="grevlex")  # homogeneous
+gb.proof_status                                  # 'proved'
+
+gb = GroebnerBasis.compute([x**2 + y**2 - pool.integer(1), x*y - pool.integer(1)], [x, y], order="grevlex")
+gb.proof_status                                  # 'probabilistic'
+```
+
+| `proof_status` | when | what it means |
+|---|---|---|
+| `"proved"` | Buchberger (`"grlex"`, positive-dimensional `"lex"`, any fallback), `compute_f5`, the multimodular engine on homogeneous input, and the basis `{1}` once its separate proof succeeds | The generators are the reduced Gröbner basis of exactly the input ideal *I*. |
+| `"probabilistic"` | The multimodular engine on inhomogeneous input, and a `"lex"` basis converted from it by FGLM | Proved over ℚ: the generators *B* are a reduced Gröbner basis and *I* ⊆ ⟨*B*⟩. Not proved: ⟨*B*⟩ ⊆ *I*. |
+
+**The failure model.** Since *I* ⊆ ⟨*B*⟩, equal leading terms would give equal ideals, so a wrong answer needs a majority of the primes used, at least two and each drawn independently from the roughly 5·10⁷ primes in [2³⁰, 2³¹), to give leading terms that *I* does not have. Such primes divide a fixed non-zero integer that depends only on the input, so if *k* primes in that range are unlucky for your input, the chance is of order (*k* / 5·10⁷)². The primes are drawn after the input is fixed, so no input can arrange it in advance, though enormous coefficients do raise *k*.
+
+**What a probabilistic basis still proves.** `gb.contains(p) == False` is a proof that *p* is not in *I*. `gb.contains(p) == True` is only as sure as the basis. Every zero of *B* is a zero of *I*, but *I* could have more.
+
+**`solve`.** A returned tuple has been substituted back into your equations whichever status applies, so it is a solution. The status is about whether the list is complete:
+
+```python
+sols = solve([x**2 + y**2 - pool.integer(1), x - y], [x, y])
+solve_proof_status()                             # 'probabilistic'
+
+solve([x**2 + y**2 - pool.integer(1), x**2 + y**2 - pool.integer(2)], [x, y])  # []
+solve_proof_status()                             # 'proved'
+```
+
+An empty answer from an inconsistent system is proved. `{1}` passes the verification over ℚ without testing anything, so it gets its own proof: the system is homogenised with a new variable and run through the same engine, where homogeneous input is proved, and `1` is in the ideal exactly when the result contains a pure power of that variable. On cyclic-5 and 6 and katsura-5 to 7 plus a generic quadric this took 0.02 s to 2.4 s, where Buchberger over ℚ took over 180 s. If that run is inconclusive, `solve` falls back to Buchberger, and an active `Budget` can stop it with `BudgetExceededError`. `GroebnerBasis.compute(..., order="grevlex")` does not fall back: it reports `"probabilistic"` for `{1}` in that rare case.
+
+**Needing a proof.** `compute_f5` and `order="grlex"` are proved, at their cost. From Rust, `GroebnerBasis::compute_exact` runs Buchberger under any order. Primary decomposition, `triangularize` and `rosenfeld_groebner` compute their bases exactly and are not affected by any of this.
 
 ### GPU-accelerated Macaulay matrix (groebner-cuda) — Rust only, not wired into the solver
 
 `--features "groebner-cuda"` compiles a CUDA kernel for the mod-p row reduction of the Macaulay matrix, with multi-prime CRT lifts reconstructing rational coefficients, and falls back to pure-Rust row reduction when no CUDA device is present.
 
-**It does not accelerate anything on this page.** `GroebnerBasis.compute`, `solve` and `triangularize` run Buchberger on the CPU regardless; the GPU routine is reachable only as the Rust function `alkahest_cas::poly::groebner::compute_groebner_basis_gpu`, and production dispatch deliberately does not prefer it until the [benchmark harness](https://github.com/alkahest-cas/alkahest/blob/main/docs/symbolic-gpu-benchmarks.md) says it wins. There is correspondingly **no `capabilities()["features"]["groebner_cuda"]` bit** — it used to exist and report that the kernel had been compiled in, which no Python observation could confirm or refute, so 3.8 removed it. See [GPU support](./gpu.md#groebner-cuda-is-not-reachable-from-python).
+**It does not accelerate anything on this page.** `GroebnerBasis.compute`, `solve` and `triangularize` run on the CPU engines above regardless; the GPU routine is reachable only as the Rust function `alkahest_cas::poly::groebner::compute_groebner_basis_gpu`, and production dispatch deliberately does not prefer it until the [benchmark harness](https://github.com/alkahest-cas/alkahest/blob/main/docs/symbolic-gpu-benchmarks.md) says it wins. There is correspondingly **no `capabilities()["features"]["groebner_cuda"]` bit** — it used to exist and report that the kernel had been compiled in, which no Python observation could confirm or refute, so 3.8 removed it. See [GPU support](./gpu.md#groebner-cuda-is-not-reachable-from-python).
 
 Because the Rust entry point falls back to CPU row reduction when no device is present, it returns a `GpuBackendReport` alongside the basis: `let (basis, backend) = compute_groebner_basis_gpu(gens, order, Some(0))?;` and `backend.ran_on_gpu()` is the only way to tell a real GPU run from a fallback, since the basis is identical either way.
 
@@ -585,7 +627,24 @@ This surface is experimental (`alkahest.experimental.ParametricGroebnerBasis` / 
 
 ## Performance
 
-`solve_circle_line` (a 2-variable quadratic system) is one of the solver tasks in the SymPy head-to-head suite (`benchmarks/`, see `BENCHMARKS.md`). Where Alkahest is faster there, the speed comes from compiled Rust and exact GMP/FLINT-backed arithmetic around a sequential Buchberger core over ℚ, not from a parallel or F4-style reduction.
+Wall time in seconds for the standard Gröbner benchmarks, one process per run, on an AMD Ryzen Threadripper PRO 3955WX (shared machine, 8-core CPU quota). "default" is `GroebnerBasis.compute` with the `parallel` feature; "1 thread" is the same with `RAYON_NUM_THREADS=1`; both measured 2026-11-04 with a 120 s cap, as is `compute_f5`. SymPy is 1.14 `groebner(..., method="buchberger")` / `method="f5b"` with its cache cleared before each run, measured 2026-10-25 on the same machine. Basis sizes agree with SymPy's wherever SymPy finishes.
+
+| system | order | default | 1 thread | `compute_f5` | SymPy buchberger | SymPy f5b |
+|---|---|---|---|---|---|---|
+| cyclic-5 | grevlex | 0.009 | 0.003 | 0.003 | 0.42 | 1.77 |
+| cyclic-5 | lex | 0.016 | 0.009 | 0.013 | 15.4 | 2.53 |
+| cyclic-6 | grevlex | 0.046 | 0.067 | 0.071 | 47.9 | > 120 |
+| cyclic-6 | lex | 0.115 | 0.133 | 0.137 | > 120 | > 120 |
+| cyclic-7 | grevlex | 3.4 | 26.4 | 51.9 | > 120 | > 120 |
+| katsura-5 | grevlex | 0.010 | 0.016 | 0.012 | 0.96 | 1.19 |
+| katsura-5 | lex | 0.049 | 0.089 | 0.058 | > 120 | > 120 |
+| katsura-6 | grevlex | 0.046 | 0.130 | 0.087 | 14.2 | 41.0 |
+| katsura-6 | lex | 0.48 | 1.32 | 0.49 | > 120 | > 120 |
+| katsura-7 | grevlex | 0.21 | 1.24 | 0.79 | > 120 | > 120 |
+| katsura-7 | lex | 14.4 | 48.5 | 14.3 | > 120 | > 120 |
+| katsura-8 | grevlex | 1.7 | 13.9 | 8.0 | > 120 | > 120 |
+
+The "default" and "1 thread" columns on these systems are `"probabilistic"` and `compute_f5` is `"proved"`; see [How sure is this answer?](#how-sure-is-this-answer). Lex bases of these systems are large: the katsura-6 lex basis has coefficients of about 6 500 bits over 6 500-bit denominators, so lifting it takes several hundred primes, and that, not the modular arithmetic, is what the lex rows measure.
 
 ## Generalized Pell equations: every solution class
 

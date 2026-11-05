@@ -24,6 +24,16 @@ class Domain:
     NonNegative: Domain
     NonZero: Domain
 
+class GroebnerBasis:
+    """A Gröbner basis; ``proof_status`` says how sure it is of being the input's."""
+
+    @property
+    def order(self) -> str: ...
+    @property
+    def proof_status(self) -> str:
+        """``"proved"`` or ``"probabilistic"``."""
+        ...
+
 class DerivedResult:
     """Result of a symbolic transformation with a derivation log (Phase 4+)."""
 

@@ -17570,9 +17570,13 @@ impl PyGroebnerBasis {
     ///     Symbolic variables (must be ``Symbol``).
     /// order : str, optional
     ///     Monomial order: ``"lex"`` (default), ``"grevlex"``, or ``"grlex"``.
-    ///     When ``"lex"`` is requested and the ideal is 0-dimensional, the
-    ///     grevlex-then-FGLM strategy is used automatically (much faster than
-    ///     direct lex Buchberger for 3+ variable systems).
+    ///     ``"grevlex"`` is computed multimodularly: F4 modulo word-size
+    ///     primes, lifted by Chinese remaindering and rational reconstruction,
+    ///     and verified over ℚ before it is returned (Buchberger over ℚ is the
+    ///     fallback, and the engine for ``"grlex"``). When ``"lex"`` is
+    ///     requested and the ideal is 0-dimensional, the grevlex basis is
+    ///     converted by FGLM (modular, verified exactly) — much faster than
+    ///     direct lex Buchberger for 3+ variable systems.
     /// params : list[Expr], optional
     ///     Symbols to put in the **coefficient field** rather than the ring
     ///     (M9).  With ``params`` the computation runs in ``Q(params)[vars]``
@@ -17644,7 +17648,15 @@ impl PyGroebnerBasis {
         .into_py(py))
     }
 
-    /// Gröbner basis via Faugère's F5 (signature-based reduction, V2-8).
+    /// Gröbner basis via a signature-based (F5-family) algorithm.
+    ///
+    /// Same reduced basis as :meth:`compute`, by a different engine: the
+    /// inputs are processed incrementally with module signatures, and the
+    /// syzygy and rewrite criteria discard most S-pairs that would reduce to
+    /// zero. It runs in exact rational arithmetic; :meth:`compute` (which is
+    /// multimodular under ``"grevlex"``) is the faster default on larger
+    /// systems. Under ``"lex"`` a zero-dimensional ideal goes through grevlex
+    /// and FGLM.
     ///
     /// Parameters
     /// ----------
@@ -17741,6 +17753,46 @@ impl PyGroebnerBasis {
     #[getter]
     fn order(&self) -> &'static str {
         self.inner.order().as_str()
+    }
+
+    /// How sure this basis is of being the basis of the ideal you asked about:
+    /// ``"proved"`` or ``"probabilistic"``. Read-only.
+    ///
+    /// ``"proved"``
+    ///     The generators are the reduced Gröbner basis of exactly the input
+    ///     ideal *I*. Every exact route gives this: Buchberger (``"grlex"``,
+    ///     positive-dimensional ``"lex"``, the fallback), :meth:`compute_f5`, and
+    ///     the multimodular engine on **homogeneous** input, where the check over
+    ///     ℚ and the Hilbert function force equality (Arnold 2003, Thm 7.1).
+    ///
+    /// ``"probabilistic"``
+    ///     The multimodular engine on **inhomogeneous** input, and a ``"lex"``
+    ///     basis converted from it by FGLM (the conversion is itself checked
+    ///     exactly, so it is as sure as the grevlex basis it started from).
+    ///     Proved over ℚ: the generators *B* are a reduced Gröbner basis and
+    ///     *I* ⊆ ⟨B⟩. Not proved: ⟨B⟩ ⊆ *I*.
+    ///
+    /// Failure model for ``"probabilistic"``: since *I* ⊆ ⟨B⟩, equal leading terms
+    /// would give equal ideals, so ⟨B⟩ ≠ *I* needs a majority of the primes used
+    /// (at least two, each drawn independently from the ≈5·10⁷ primes in
+    /// [2³⁰, 2³¹)) to be unlucky in the same way. Unlucky primes divide a fixed
+    /// non-zero integer depending only on the input, so with *k* of them the
+    /// chance is of order (k / 5·10⁷)². No input can arrange it in advance, since
+    /// the primes are drawn after the input is fixed.
+    ///
+    /// What that means in use: ``contains(p) == False`` is proved, because
+    /// *p* ∉ ⟨B⟩ implies *p* ∉ *I*; ``contains(p) == True`` is as sure as the
+    /// basis. Every zero of *B* is a zero of *I*, but *I* could have more.
+    ///
+    /// The basis ``{1}`` is ``"proved"`` by a separate homogenised run, because
+    /// the check over ℚ tells it nothing. In the rare case that run is
+    /// inconclusive a ``"grevlex"`` ``{1}`` stays ``"probabilistic"``.
+    ///
+    /// :meth:`compute_f5` and ``order="grlex"`` are proved at the cost of speed.
+    /// See also :func:`alkahest.solve_proof_status`.
+    #[getter]
+    fn proof_status(&self) -> &'static str {
+        self.inner.proof_status().as_str()
     }
 
     /// The elimination ideal `I ∩ k[remaining vars]`, as a `GroebnerBasis`.
@@ -20129,11 +20181,19 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
+#[cfg(feature = "groebner")]
+thread_local! {
+    /// The most recent `solve` on this thread saw a probabilistic basis.
+    static SOLVE_PROBABILISTIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Reset both ends of the side-condition channel at the start of a `solve`.
 #[cfg(feature = "groebner")]
 fn reset_solve_side_conditions() {
     let _ = alkahest_core::solver::take_solve_side_conditions();
+    let _ = alkahest_core::solver::take_solve_proof_status();
     SOLVE_SIDE_CONDITIONS.with(|c| c.borrow_mut().clear());
+    SOLVE_PROBABILISTIC.with(|c| c.set(false));
 }
 
 /// Render the hypotheses the core solver just assumed, for
@@ -20194,6 +20254,40 @@ fn capture_solve_side_conditions(pool: &alkahest_core::ExprPool) -> Vec<ExprId> 
 #[pyo3(name = "solve_side_conditions")]
 fn py_solve_side_conditions() -> Vec<String> {
     SOLVE_SIDE_CONDITIONS.with(|c| c.borrow().clone())
+}
+
+/// `alkahest.solve_proof_status() -> str`
+///
+/// How sure the most recent :func:`alkahest.solve` on this thread is that its
+/// answer is **complete**: ``"proved"`` or ``"probabilistic"``.
+///
+/// Every tuple ``solve`` returns has been substituted back into your equations,
+/// so the tuples are solutions whichever this says. ``"probabilistic"`` means the
+/// list came from a Gröbner basis with that
+/// :attr:`~GroebnerBasis.proof_status`: in principle a solution could be missing,
+/// with the chance described there. ``"proved"`` means no such basis was used,
+/// or that the basis was proved. An inconsistent system's ``[]`` is ``"proved"``:
+/// the ``{1}`` basis behind it has its own proof, by a homogenised run of the
+/// engine (Buchberger if that is inconclusive), which an active ``Budget`` can
+/// stop with ``BudgetExceededError``.
+///
+/// Reset by each ``solve`` call, like :func:`alkahest.solve_side_conditions`.
+#[cfg(feature = "groebner")]
+#[pyfunction]
+#[pyo3(name = "solve_proof_status")]
+fn py_solve_proof_status() -> &'static str {
+    use alkahest_core::poly::groebner::GroebnerProofStatus as Status;
+    // Read lazily, so every return path of `solve` is covered (the transcendental
+    // ones reach the polynomial solver too); the start of each `solve` drains the
+    // core's flag, so what is set here belongs to the latest call.
+    if alkahest_core::solver::take_solve_proof_status() == Status::Probabilistic {
+        SOLVE_PROBABILISTIC.with(|c| c.set(true));
+    }
+    if SOLVE_PROBABILISTIC.with(|c| c.get()) {
+        Status::Probabilistic.as_str()
+    } else {
+        Status::Proved.as_str()
+    }
 }
 
 /// A numeric root returned by :func:`alkahest.nsolve`, with an enclosure and
@@ -23510,6 +23604,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add_function(wrap_pyfunction!(py_pell_classes, m)?)?;
         m.add_function(wrap_pyfunction!(py_solve, m)?)?;
         m.add_function(wrap_pyfunction!(py_solve_side_conditions, m)?)?;
+        m.add_function(wrap_pyfunction!(py_solve_proof_status, m)?)?;
         m.add_function(wrap_pyfunction!(py_nsolve, m)?)?;
         m.add_class::<PyNumericRoot>()?;
         m.add_class::<PyRootIsolation>()?;
