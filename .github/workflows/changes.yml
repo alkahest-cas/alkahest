@@ -232,8 +232,9 @@ jobs:
           if [ "$EVENT" != pull_request ] && [ "$EVENT" != merge_group ]; then
             CODE=true RUST=true MDBOOK=true ASAN=true LEAN=true WHEELS=true DOCS=true
           fi
-          # The last gate before main: AddressSanitizer always runs in the queue.
-          if [ "$EVENT" = merge_group ]; then ASAN=true; fi
+          # The queue is the last gate before main, so any Rust change gets ASan
+          # there; a website-, docs- or Python-only group has nothing to instrument.
+          if [ "$EVENT" = merge_group ]; then ASAN="$RUST"; fi
           PYTHON=false
           if [ "$CODE" = true ] || [ "$MDBOOK" = true ]; then PYTHON=true; fi
           {

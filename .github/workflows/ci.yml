@@ -19,8 +19,8 @@ name: CI
 #            README smoke and the docs code-block checker
 #            read those Markdown files
 #   asan     the unsafe / FFI surface (list in changes.yml);  asan
-#            always true in a merge group; the `run-asan`
-#            label forces the job on a pull request
+#            in a merge group, any `rust` change; the
+#            `run-asan` label forces the job on a pull request
 #
 # So a website-, playground- or Markdown-only pull request runs `changes` and
 # the `Tier 1a — Rust + fast Python` aggregate, and every other job reports
