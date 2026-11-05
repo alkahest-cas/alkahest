@@ -155,7 +155,7 @@ Changing an existing accessor's form is a **breaking change**: record it in `CHA
 ## Pull requests
 
 - Keep PRs focused on one item from `ROADMAP.md` or one issue.
-- Tier-1 CI must be green before review: unit tests, lightweight proptest/hypothesis, clippy, ruff, the silent-error gate (`pytest tests/silent_errors/`), and ASan scoped to the `alkahest-cas` package. ASan runs on a pull request only when the change touches the unsafe/FFI surface (the `asan` list in `.github/workflows/changes.yml`); add the `run-asan` label and push to force it. It always runs in the merge queue and on `main`. Note what that job is *not*: it runs `cargo +nightly test -p alkahest-cas`, i.e. the crate **below** the FFI boundary, with `LSAN_OPTIONS=detect_leaks=0`. No sanitizer runs `pytest`, so a leak, UAF or data race that only appears through PyO3 is not caught by CI — see [`TESTING.md` §3](TESTING.md#3-memory-safety--sanitizers). For the concurrency half of that gap the substitute is `tests/test_parallel_threadsafety.py` (invariant checks across real Python threads on a shared `ExprPool`) plus the nightly `tsan` shard, which since 3.8.0 actually builds `--features parallel` and runs `alkahest-core/tests/parallel_stress.rs`.
+- Tier-1 CI must be green before review: unit tests, lightweight proptest/hypothesis, clippy, ruff, the silent-error gate (`pytest tests/silent_errors/`), and ASan scoped to the `alkahest-cas` package. ASan runs on a pull request only when the change touches the unsafe/FFI surface (the `asan` list in `.github/workflows/changes.yml`); add the `run-asan` label and push to force it. In the merge queue it runs for any Rust change, and it always runs on `main`. Note what that job is *not*: it runs `cargo +nightly test -p alkahest-cas`, i.e. the crate **below** the FFI boundary, with `LSAN_OPTIONS=detect_leaks=0`. No sanitizer runs `pytest`, so a leak, UAF or data race that only appears through PyO3 is not caught by CI — see [`TESTING.md` §3](TESTING.md#3-memory-safety--sanitizers). For the concurrency half of that gap the substitute is `tests/test_parallel_threadsafety.py` (invariant checks across real Python threads on a shared `ExprPool`) plus the nightly `tsan` shard, which since 3.8.0 actually builds `--features parallel` and runs `alkahest-core/tests/parallel_stress.rs`.
 - Semver is enforced automatically — `cargo semver-checks` runs on every PR and will fail if a stable API breaks.
 - New stable API additions go into `alkahest_cas::stable` and `alkahest.__all__`; experimental additions go into `alkahest_cas::experimental` and `alkahest.experimental`.
 - Add `[skip ci]` at the end of commit messages if changes cannot possibly effect CI.
@@ -185,8 +185,9 @@ To turn it on (repository admin):
    - `AddressSanitizer — alkahest-cas`
    - `Wheel smoke — README quickstart + fresh-interpreter parse`
    - `Tier 1b — Python slow tests`
-   - `cross / macos-15`
-   - `cross / windows-2022`
+   - `Cross-platform tests` (aggregates the macOS and Windows jobs; do not require
+     `cross / macos-15` directly, because a skipped matrix job never reports under
+     that name and the pull request would wait forever)
    - `Kani — full-width harnesses (alkahest-cas)`
    - `cargo semver-checks (alkahest-cas::stable)`
    - `python alkahest.__all__ freeze check`
@@ -203,8 +204,8 @@ To turn it on (repository admin):
    re-tested without it.
 
 The ASan job only runs on a pull request when the unsafe/FFI surface changes,
-but always runs in the queue, so a memory-safety regression is still caught
-before it reaches `main` — just later than on the PR.
+but runs in the queue for any Rust change, so a memory-safety regression is still
+caught before it reaches `main` — just later than on the PR.
 
 ## Rust vs Python
 

@@ -211,3 +211,21 @@ jobs:
         env:
           PYTHONUNBUFFERED: "1"
         run: .venv/bin/pytest tests/ -x -q --timeout=600
+
+  # One stable name for branch protection and the merge queue. A skipped matrix
+  # job reports under its unexpanded name (`cross / ${{ matrix.os }}`), so
+  # requiring `cross / macos-15` would leave every PR that skips this workflow
+  # waiting forever on a check that never reports.
+  cross-summary:
+    name: Cross-platform tests
+    needs: [changes, cross]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every platform passed, or the path filter skipped them
+        env:
+          RESULT: ${{ needs.cross.result }}
+        run: |
+          echo "cross: $RESULT"
+          [ "$RESULT" = success ] || [ "$RESULT" = skipped ]
