@@ -164,44 +164,19 @@ Changing an existing accessor's form is a **breaking change**: record it in `CHA
 
 ## Merge queue
 
-`main` is meant to be merged through GitHub's merge queue: a queued pull request
-is tested as `main` + the PRs ahead of it, so it lands on the `main` it was
-tested against, without a manual rebase (AGENTS.md § "Keeping a branch current"
-explains why that matters). The workflows already listen for `merge_group`.
-To turn it on (repository admin):
+`main` merges through GitHub's merge queue: a queued pull request is tested as
+`main` + the PRs ahead of it, so it lands on the `main` it was tested against,
+without a manual rebase (AGENTS.md § "Keeping a branch current" explains why that
+matters). Use **Merge when ready** instead of the merge button; a PR that fails in
+the queue is removed from it and the PRs behind it are re-tested without it.
 
-1. **Settings → Rules → Rulesets → New branch ruleset** (or **Settings →
-   Branches → Add branch protection rule**), target `main`.
-2. Enable **Require a pull request before merging** and **Require merge queue**.
-   Suggested queue settings: the repository's usual merge method, *build concurrency* 5,
-   *minimum group size* 1, *maximum group size* 3–5, *only merge non-failing
-   pull requests*, status-check timeout 120 min (ASan takes ~60 min).
-3. Enable **Require status checks to pass** and add exactly these check names
-   (each reports "skipped" — which counts as passing — when the path filter
-   rules it out, so none of them can leave a pull request waiting forever):
-   - `Tier 1a — Rust + fast Python` (aggregates `Tier 1a — lint`,
-     `Tier 1a — Rust tests`, `Tier 1a — Rust tests (egraph feature)` and
-     `Tier 1a — Python`; require it rather than them)
-   - `AddressSanitizer — alkahest-cas`
-   - `Wheel smoke — README quickstart + fresh-interpreter parse`
-   - `Tier 1b — Python slow tests`
-   - `Cross-platform tests` (aggregates the macOS and Windows jobs; do not require
-     `cross / macos-15` directly, because a skipped matrix job never reports under
-     that name and the pull request would wait forever)
-   - `Kani — full-width harnesses (alkahest-cas)`
-   - `cargo semver-checks (alkahest-cas::stable)`
-   - `python alkahest.__all__ freeze check`
-   - `Verify Lean 4 proofs`
-   - `Release wheel smoke` (the aggregate in release-wheel-smoke.yml)
-   - `Build docs`
+Auto-merge is off for this repository, so `gh pr merge` fails. To queue a PR from
+the command line once its required checks are green:
 
-   Do **not** require `Performance benchmarks` (CodSpeed; advisory,
-   `continue-on-error`), the `changes / Detect changed paths` jobs, or the
-   `Nightly (...)` shards (schedule only). Choose **GitHub Actions** as the
-   source of each check so a same-named status from elsewhere cannot satisfy it.
-4. With the queue on, use **Merge when ready** instead of the merge button; a
-   PR that fails in the queue is removed from it and the PRs behind it are
-   re-tested without it.
+```bash
+id=$(gh pr view <n> --json id -q .id)
+gh api graphql -f query='mutation($id:ID!){enqueuePullRequest(input:{pullRequestId:$id}){mergeQueueEntry{position state}}}' -F id=$id
+```
 
 The ASan job only runs on a pull request when the unsafe/FFI surface changes,
 but runs in the queue for any Rust change, so a memory-safety regression is still
