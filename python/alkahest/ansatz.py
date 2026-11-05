@@ -2336,9 +2336,16 @@ def _fit_nonlinear(
     )
     solutions = ak.solve(equations, list(ansatz.unknowns))
     if not solutions:
+        # A proper basis whose zeros are all non-real: empty over the reals, and
+        # only as sure as that basis. An inconsistent system is always proved.
+        caveat = (
+            "; the basis behind this is probabilistic, see alkahest.solve_proof_status"
+            if ak.solve_proof_status() == "probabilistic"
+            else ""
+        )
         raise AnsatzError(
             "[E-ANSATZ-003] the constraints are inconsistent: no member of this "
-            f"{ansatz.family} family satisfies them (nonlinear system, no solutions)",
+            f"{ansatz.family} family satisfies them (nonlinear system, no solutions{caveat})",
             code="E-ANSATZ-003",
             remediation=(
                 "this is a result, not a malfunction — record the closed branch, or "

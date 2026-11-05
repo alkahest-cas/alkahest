@@ -2621,7 +2621,12 @@ def _care_exact(A, B, Q, R, sample):
             remediation="substitute numbers and use method='numeric'",
         ) from exc
     if not isinstance(sols, list) or not sols:
-        raise ControlsError("the Riccati equation has no solution", code="E-CTRL-004")
+        caveat = (
+            " (the basis behind this is probabilistic, see alkahest.solve_proof_status)"
+            if ak.solve_proof_status() == "probabilistic"
+            else ""
+        )
+        raise ControlsError(f"the Riccati equation has no solution{caveat}", code="E-CTRL-004")
     for c in ak.solve_side_conditions():
         _note(str(c))
     params = []

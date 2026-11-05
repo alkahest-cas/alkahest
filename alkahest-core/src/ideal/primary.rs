@@ -313,7 +313,7 @@ pub fn radical(
     validate_gens(&gens)?;
     forget_ideal_refusal();
     budget_guarded(|| {
-        let gb = GroebnerBasis::compute(gens, order);
+        let gb = GroebnerBasis::compute_exact(gens, order);
         if crate::budget::interrupt_pending() {
             return Err(BUDGET_STOP);
         }
@@ -356,7 +356,7 @@ pub fn primary_decomposition(
     validate_gens(&gens)?;
     forget_ideal_refusal();
     budget_guarded(|| {
-        let gb = GroebnerBasis::compute(gens, order);
+        let gb = GroebnerBasis::compute_exact(gens, order);
         if crate::budget::interrupt_pending() {
             return Err(BUDGET_STOP);
         }
@@ -446,10 +446,10 @@ fn saturate_ideal(generators: &[GbPoly], f: &GbPoly, order: MonomialOrder) -> Gr
         ext.push(embed_add_t_front(g));
     }
     ext.push(one_minus_t_times_f(f));
-    let gb_ext = GroebnerBasis::compute(ext, order);
+    let gb_ext = GroebnerBasis::compute_exact(ext, order);
     let elim = gb_ext.eliminate(&[0]);
     let stripped: Vec<GbPoly> = elim.generators().iter().map(strip_first_var).collect();
-    GroebnerBasis::compute(stripped, order)
+    GroebnerBasis::compute_exact(stripped, order)
 }
 
 fn strip_first_var(p: &GbPoly) -> GbPoly {
@@ -484,10 +484,10 @@ fn ideal_intersection(i: &[GbPoly], j: &[GbPoly], order: MonomialOrder) -> Groeb
         let th = mul_t(&he);
         ext.push(th.sub(&he));
     }
-    let gb_ext = GroebnerBasis::compute(ext, order);
+    let gb_ext = GroebnerBasis::compute_exact(ext, order);
     let elim = gb_ext.eliminate(&[0]);
     let stripped: Vec<GbPoly> = elim.generators().iter().map(strip_first_var).collect();
-    GroebnerBasis::compute(stripped, order)
+    GroebnerBasis::compute_exact(stripped, order)
 }
 
 fn mul_t(p: &GbPoly) -> GbPoly {
@@ -562,7 +562,7 @@ fn decompose_recursive(
         let sat_gb = saturate_ideal(gb.generators(), &f, order);
         let mut sum_gens = gb.generators().to_vec();
         sum_gens.push(var_monomial(n_vars, i));
-        let sum_gb = GroebnerBasis::compute(sum_gens, order);
+        let sum_gb = GroebnerBasis::compute_exact(sum_gens, order);
         if crate::budget::interrupt_pending() {
             return Err(BUDGET_STOP);
         }
@@ -591,7 +591,7 @@ fn decompose_recursive(
     if let Some(pieces) = try_univariate_factor_split(gb.generators(), n_vars)? {
         let mut acc = Vec::new();
         for piece_gens in pieces {
-            let piece = GroebnerBasis::compute(piece_gens, order);
+            let piece = GroebnerBasis::compute_exact(piece_gens, order);
             acc.extend(decompose_recursive(piece, order, depth + 1)?);
         }
         return Ok(acc);
@@ -791,7 +791,7 @@ fn radical_direct(gb: &GroebnerBasis, order: MonomialOrder) -> Option<GroebnerBa
             .iter()
             .map(|m| monomial_poly(&squarefree_exp(m)))
             .collect();
-        return Some(GroebnerBasis::compute(sq, order));
+        return Some(GroebnerBasis::compute_exact(sq, order));
     }
 
     // √⟨f⟩ = ⟨∏ pᵢ⟩ over the distinct irreducible factors of f: ℚ[x₁,…,xₙ] is a
@@ -802,7 +802,7 @@ fn radical_direct(gb: &GroebnerBasis, order: MonomialOrder) -> Option<GroebnerBa
         for (p, _) in &facs {
             prod = prod.mul(p);
         }
-        return Some(GroebnerBasis::compute(vec![prod], order));
+        return Some(GroebnerBasis::compute_exact(vec![prod], order));
     }
 
     radical_zero_dimensional(gb, n, order)
@@ -829,7 +829,7 @@ fn radical_zero_dimensional(
     // `is_zero_dimensional` reads GRevLex leading monomials, so it needs a
     // GRevLex basis — cheaper than discovering the answer through n failed
     // eliminations.
-    let grevlex = GroebnerBasis::compute(gb.generators().to_vec(), MonomialOrder::GRevLex);
+    let grevlex = GroebnerBasis::compute_exact(gb.generators().to_vec(), MonomialOrder::GRevLex);
     if !is_zero_dimensional(grevlex.generators(), n) {
         return None;
     }
@@ -838,7 +838,7 @@ fn radical_zero_dimensional(
         let u = eliminant_in_var(gb.generators(), n, i)?;
         gens.push(univariate_squarefree_part(&u, i, order));
     }
-    Some(GroebnerBasis::compute(gens, order))
+    Some(GroebnerBasis::compute_exact(gens, order))
 }
 
 /// A non-zero element of `I ∩ ℚ[x_i]`, or `None` when there is none.
@@ -852,7 +852,7 @@ fn eliminant_in_var(gens: &[GbPoly], n: usize, i: usize) -> Option<GbPoly> {
     let mut perm: Vec<usize> = (0..n).filter(|&j| j != i).collect();
     perm.push(i);
     let permuted: Vec<GbPoly> = gens.iter().map(|g| permute_vars(g, &perm)).collect();
-    let pgb = GroebnerBasis::compute(permuted, MonomialOrder::Lex);
+    let pgb = GroebnerBasis::compute_exact(permuted, MonomialOrder::Lex);
     let u = find_any_univariate(pgb.generators(), n - 1)?;
     let mut terms = BTreeMap::new();
     for (e, c) in &u.terms {
@@ -986,9 +986,11 @@ fn decompose_monomial_ideal(
         pieces
             .into_iter()
             .map(|pure| {
-                let primary =
-                    GroebnerBasis::compute(pure.iter().map(|m| monomial_poly(m)).collect(), order);
-                let associated_prime = GroebnerBasis::compute(
+                let primary = GroebnerBasis::compute_exact(
+                    pure.iter().map(|m| monomial_poly(m)).collect(),
+                    order,
+                );
+                let associated_prime = GroebnerBasis::compute_exact(
                     pure.iter()
                         .map(|m| monomial_poly(&squarefree_exp(m)))
                         .collect(),
@@ -1020,8 +1022,8 @@ fn principal_components(f: &GbPoly, order: MonomialOrder) -> Option<Vec<PrimaryC
     Some(
         facs.into_iter()
             .map(|(p, e)| PrimaryComponent {
-                primary: GroebnerBasis::compute(vec![gbpoly_pow(&p, e)], order),
-                associated_prime: GroebnerBasis::compute(vec![p], order),
+                primary: GroebnerBasis::compute_exact(vec![gbpoly_pow(&p, e)], order),
+                associated_prime: GroebnerBasis::compute_exact(vec![p], order),
             })
             .collect(),
     )
@@ -1157,8 +1159,8 @@ fn certify_shape_position(
     let mut prime_gens: Vec<GbPoly> = solved.into_iter().map(|(_, g)| g).collect();
     prime_gens.push(p);
     Ok(Some(PrimaryComponent {
-        primary: GroebnerBasis::compute(gens.to_vec(), order),
-        associated_prime: GroebnerBasis::compute(prime_gens, order),
+        primary: GroebnerBasis::compute_exact(gens.to_vec(), order),
+        associated_prime: GroebnerBasis::compute_exact(prime_gens, order),
     }))
 }
 
@@ -1296,12 +1298,12 @@ mod tests {
             terms: [(vec![1, 0, 1], rat(1, 1))].into_iter().collect(),
             n_vars: n,
         };
-        let gb_i = GroebnerBasis::compute(vec![xy, xz], MonomialOrder::Lex);
+        let gb_i = GroebnerBasis::compute_exact(vec![xy, xz], MonomialOrder::Lex);
         let f = var_monomial(n, 0);
         let a = saturate_ideal(gb_i.generators(), &f, MonomialOrder::Lex);
         let mut sg = gb_i.generators().to_vec();
         sg.push(f);
-        let b = GroebnerBasis::compute(sg, MonomialOrder::Lex);
+        let b = GroebnerBasis::compute_exact(sg, MonomialOrder::Lex);
         let inter = ideal_intersection(a.generators(), b.generators(), MonomialOrder::Lex);
         assert!(ideals_equal(&inter, &gb_i));
     }
@@ -1412,11 +1414,11 @@ mod tests {
         let plus = poly2(&[(1, 0, 1), (0, 1, 1)]);
         assert!(dec.iter().any(|c| ideals_equal(
             &c.primary,
-            &GroebnerBasis::compute(vec![minus.clone()], MonomialOrder::Lex)
+            &GroebnerBasis::compute_exact(vec![minus.clone()], MonomialOrder::Lex)
         )));
         assert!(dec.iter().any(|c| ideals_equal(
             &c.primary,
-            &GroebnerBasis::compute(vec![plus.clone()], MonomialOrder::Lex)
+            &GroebnerBasis::compute_exact(vec![plus.clone()], MonomialOrder::Lex)
         )));
         for c in &dec {
             assert!(
@@ -1436,8 +1438,8 @@ mod tests {
         let yz = poly3(&[(0, 1, 1, 1)]);
         let dec = primary_decomposition(vec![xz, yz], MonomialOrder::Lex).unwrap();
         assert_eq!(dec.len(), 2);
-        let z_only = GroebnerBasis::compute(vec![poly3(&[(0, 0, 1, 1)])], MonomialOrder::Lex);
-        let x_and_y = GroebnerBasis::compute(
+        let z_only = GroebnerBasis::compute_exact(vec![poly3(&[(0, 0, 1, 1)])], MonomialOrder::Lex);
+        let x_and_y = GroebnerBasis::compute_exact(
             vec![poly3(&[(1, 0, 0, 1)]), poly3(&[(0, 1, 0, 1)])],
             MonomialOrder::Lex,
         );

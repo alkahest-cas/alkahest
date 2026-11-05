@@ -67,7 +67,7 @@ pub use diophantine::{
 use crate::errors::AlkahestError;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::poly::collect_free_vars;
-use crate::poly::groebner::{GbPoly, GroebnerBasis, MonomialOrder};
+use crate::poly::groebner::{GbPoly, GroebnerBasis, GroebnerProofStatus, MonomialOrder};
 use crate::poly::groebner::{ParamGbPoly, ParamPoly, QParam};
 use rug::ops::Pow;
 use rug::Rational;
@@ -955,6 +955,32 @@ pub(crate) fn record_side_condition(cond: crate::deriv::log::SideCondition) {
             v.push(cond);
         }
     });
+}
+
+thread_local! {
+    /// Did the current `solve` rest on a basis that is only probabilistic?
+    static SOLVE_PROBABILISTIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether any [`solve_polynomial_system`] on this thread since the last call
+/// to this function rested on a [`GroebnerProofStatus::Probabilistic`] basis.
+///
+/// [`SolutionSet::Finite`] tuples are checked by substitution either way, so they
+/// are solutions; what this is about is the **list**.  `Proved` means no solution
+/// was lost to the basis.  `Probabilistic` means the basis could in principle
+/// generate a larger ideal than the input, in which case solutions could be
+/// missing (see [`GroebnerBasis::proof_status`] for the failure model).
+/// [`SolutionSet::NoSolution`] from an inconsistent system is always `Proved`:
+/// [`GroebnerBasis::compute_lex`] only returns `{1}` with a proof.
+///
+/// Out of band for the reason [`take_solve_side_conditions`] is, and consuming
+/// in the same way.
+pub fn take_solve_proof_status() -> GroebnerProofStatus {
+    if SOLVE_PROBABILISTIC.with(|c| c.replace(false)) {
+        GroebnerProofStatus::Probabilistic
+    } else {
+        GroebnerProofStatus::Proved
+    }
 }
 
 /// Record that the solver divided by `lead` without deciding it is non-zero.
@@ -2352,6 +2378,9 @@ fn solve_polynomial_system_unguarded(
     };
     if crate::budget::interrupt_pending() {
         return Err(interrupted_error());
+    }
+    if gb.proof_status() == GroebnerProofStatus::Probabilistic {
+        SOLVE_PROBABILISTIC.with(|c| c.set(true));
     }
     let gens = gb.generators();
 

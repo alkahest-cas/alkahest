@@ -291,7 +291,7 @@ pub fn rosenfeld_groebner_algebraic(
         return Err(DiffAlgError::EmptySystem);
     }
     budget_guarded(|| {
-        let gb = GroebnerBasis::compute(gens, order);
+        let gb = GroebnerBasis::compute_exact(gens, order);
         if is_unit_ideal_gb(&gb) {
             return Ok(vec![]);
         }
@@ -358,7 +358,7 @@ fn rosenfeld_groebner_ranked_unguarded(
                 "stopped by the active budget".into(),
             ));
         }
-        let gb = GroebnerBasis::compute(active.clone(), order);
+        let gb = GroebnerBasis::compute_exact(active.clone(), order);
         if is_unit_ideal_gb(&gb) {
             return Ok((
                 RosenfeldGroebnerResult {
@@ -393,7 +393,7 @@ fn rosenfeld_groebner_ranked_unguarded(
             *p = pad_gbpoly(p, n);
         }
 
-        let gb_check = GroebnerBasis::compute(active.clone(), order);
+        let gb_check = GroebnerBasis::compute_exact(active.clone(), order);
         let mut to_add: Vec<GbPoly> = Vec::new();
         for &d_eq in &prolong_exprs {
             let p = expr_to_gbpoly(d_eq, &vars, pool).map_err(solver_err_to_diffalg)?;
@@ -403,7 +403,7 @@ fn rosenfeld_groebner_ranked_unguarded(
         }
 
         if to_add.is_empty() {
-            let final_basis = GroebnerBasis::compute(active, order);
+            let final_basis = GroebnerBasis::compute_exact(active, order);
             let consistent = !is_unit_ideal_gb(&final_basis);
             let chains = if consistent {
                 vec![RegularDifferentialChain {
@@ -429,7 +429,7 @@ fn rosenfeld_groebner_ranked_unguarded(
         prolongation_rounds += 1;
 
         if round + 1 == max_prolong_rounds {
-            let final_basis = GroebnerBasis::compute(active, order);
+            let final_basis = GroebnerBasis::compute_exact(active, order);
             let consistent = !is_unit_ideal_gb(&final_basis);
             let chains = if consistent {
                 vec![RegularDifferentialChain {
@@ -452,7 +452,7 @@ fn rosenfeld_groebner_ranked_unguarded(
         }
     }
 
-    let final_basis = GroebnerBasis::compute(active, order);
+    let final_basis = GroebnerBasis::compute_exact(active, order);
     let consistent = !is_unit_ideal_gb(&final_basis);
     Ok((
         RosenfeldGroebnerResult {

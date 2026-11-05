@@ -516,6 +516,7 @@ with _suppress(ImportError):
         rosenfeld_groebner,
         solve,
         solve_numerical,
+        solve_proof_status,
         solve_side_conditions,
         triangularize,
     )
@@ -3032,6 +3033,13 @@ if "solve" not in dir():
             "See alkahest.solve.__doc__ for details."
         )
 
+    def solve_proof_status(*_args, **_kwargs):
+        """Proof status of the last solve (groebner feature missing from this build)."""
+        raise ImportError(
+            "alkahest.solve_proof_status is unavailable — groebner feature missing. "
+            "See alkahest.solve.__doc__ for details."
+        )
+
     def solve_side_conditions(*_args, **_kwargs):
         """Hypotheses of the last solve (groebner feature missing from this build)."""
         raise ImportError(
@@ -3793,6 +3801,8 @@ __all__ = [
     "solve",
     "solve_linear_recurrence_homogeneous",
     "solve_numerical",
+    # Whether the last `solve`'s list rests on a probabilistic Gröbner basis
+    "solve_proof_status",
     # The non-vanishing hypotheses `solve` assumed for a parametric answer
     "solve_side_conditions",
     # P1 item 8 — positivity certificates (SOS / Positivstellensatz)

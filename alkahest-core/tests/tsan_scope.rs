@@ -183,9 +183,9 @@ fn child_module_names(src: &str) -> Vec<String> {
 /// its module path.
 ///
 /// Walking the declarations rather than the directory is what keeps a stray
-/// source file out of the result: `poly/groebner/f4.rs` still sits on disk and
-/// still contains `par_iter`, but `poly/groebner/mod.rs` replaced it with an
-/// inline re-export shim years ago and never compiles it. Demanding TSan
+/// source file out of the result: a file nothing declares can sit on disk and
+/// still contain `par_iter` (as `poly/groebner/f4.rs` once did, long after
+/// `poly/groebner/mod.rs` replaced it with a re-export), and it is never compiled. Demanding TSan
 /// coverage for a file the build ignores would be noise.
 fn module_files() -> Vec<(String, PathBuf)> {
     let src = repo_root().join("alkahest-core").join("src");

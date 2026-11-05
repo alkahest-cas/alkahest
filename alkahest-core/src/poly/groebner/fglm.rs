@@ -81,6 +81,28 @@ pub fn fglm(grevlex_basis: &[GbPoly], n_vars: usize) -> Option<Vec<GbPoly>> {
         return Some(vec![GbPoly { terms, n_vars }]);
     }
 
+    // Modular FGLM, lifted and verified exactly; the exact rational
+    // algorithm is the fallback.
+    match super::multimodular::fglm_lex(grevlex_basis, n_vars, &staircase) {
+        Ok(lex) => Some(lex),
+        Err(super::multimodular::Unavailable::Interrupted) => None,
+        Err(super::multimodular::Unavailable::Fallback) => {
+            fglm_exact(grevlex_basis, n_vars, staircase)
+        }
+    }
+}
+
+/// FGLM over ℚ directly: normal forms by division, Gaussian elimination in
+/// rational arithmetic.  Correct, but the coefficients of the lex basis grow
+/// fast enough to make this minutes where the modular path takes
+/// milliseconds; it is kept as the fallback for when that path is
+/// inconclusive.
+pub(crate) fn fglm_exact(
+    grevlex_basis: &[GbPoly],
+    n_vars: usize,
+    staircase: Vec<Vec<u32>>,
+) -> Option<Vec<GbPoly>> {
+    let d = staircase.len();
     // Build a fast index map: exponent vector → position in staircase.
     let staircase_idx: HashMap<Vec<u32>, usize> = staircase
         .iter()

@@ -855,7 +855,7 @@ impl ParamGroebnerBasis {
             // against anything, so keep the refusal.
             return Err(degenerate());
         }
-        let mut oracle = GroebnerBasis::compute(direct, self.order);
+        let mut oracle = GroebnerBasis::compute_exact(direct, self.order);
         if !self.eliminated.is_empty() {
             oracle = GroebnerBasis::from_generators(
                 oracle
@@ -879,7 +879,7 @@ impl ParamGroebnerBasis {
         if !spec.iter().all(|g| oracle.contains(g)) {
             return Err(degenerate());
         }
-        let spec_gb = GroebnerBasis::compute(
+        let spec_gb = GroebnerBasis::compute_exact(
             spec.iter()
                 .filter(|g| !g.terms.is_empty())
                 .cloned()
