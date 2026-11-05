@@ -35,7 +35,7 @@ see an arity. Three rules follow:
 When several pull requests are in flight over the same files, land them one at a
 time, rebasing each onto the new `main` before it merges.
 
-**With the merge queue enabled** (CONTRIBUTING.md § "Merge queue"), that last
+**With the merge queue** (CONTRIBUTING.md § "Merge queue"), that last
 step is the queue's job: put a PR in the queue ("Merge when ready") instead of
 rebasing it by hand before merging. The queue tests each PR as `main` plus the
 PRs ahead of it and merges only what passed in that exact combination — which
