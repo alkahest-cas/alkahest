@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 3.13.0 — 2026-11-01
+## 3.13.0 — 2026-11-05
 
 A launch release. It fixes every silent wrong answer, crash and hang found by the two blind
 usage evaluations since 3.12.0 (W1–W10, N1–N12, C1–C5, H1–H3) and by the pre-launch review:
@@ -12,6 +12,9 @@ claims for convergent improper integrals, `GoldenRatio` identities proved non-ze
 SymPy habits (`2**x`, `ak.sin(2)`, `ak.pi`, `ak.factor`, `ak.expand`, picklable results),
 Python 3.14 wheels, a docs site whose every code block is run in CI, and
 `python -m alkahest.playground`, which serves the playground's Math tab from your machine.
+Gröbner bases over ℚ are now multimodular for grevlex with modular FGLM for lex (cyclic-6 in
+about 40 ms, where it used to time out); each `GroebnerBasis` reports `proof_status`
+(`"proved"` or `"probabilistic"`), and a "no solutions" answer is always proved.
 
 ### Added
 
