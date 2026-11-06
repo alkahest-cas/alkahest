@@ -186,23 +186,22 @@
           <article class="card vcard">
             <h3>Lean 4 certificates <span class="pill ok">certified</span></h3>
             <p>Supported results export a Lean&nbsp;4 + Mathlib proof that typechecks independently of Alkahest. The boundary is generated, not hand-maintained: <code>certifiable()</code> tells you up front whether a shape will certify.</p>
-            <div class="code"><div class="label">r = ak.integrate(x**2, x, 0, 1); print(r.certificate)</div><pre><code><span class="tok-k">example</span> : ∫ x in (0:ℝ)..(1:ℝ), x ^ 2 = 1 ^ 3 / 3 - 0 ^ 3 / 3 := <span class="tok-k">by</span>
-  <span class="tok-k">have</span> hderiv : ∀ x ∈ Set.uIcc 0 1,
-      HasDerivAt (<span class="tok-k">fun</span> x =&gt; x ^ 3 / 3) (x ^ 2) x := <span class="tok-k">by</span>
+            <div class="code"><div class="label">r = ak.integrate(x**2, x, 0, 1); r.certificate  # tail of the Lean file</div><pre><code>example : ∫ x in ((0 : ℝ))..((1 : ℝ)), ((x : ℝ)) ^ (2 : ℕ) = (((1 : ℝ)) ^ (3 : ℕ) / (3)) - (((0 : ℝ)) ^ (3 : ℕ) / (3)) := by
+  have hderiv : ∀ x ∈ Set.uIcc ((0 : ℝ)) ((1 : ℝ)),
+      HasDerivAt (fun (x : ℝ) =&gt; (x) ^ (3 : ℕ) / (3)) (((x : ℝ)) ^ (2 : ℕ)) x := by
     intro x _
     simpa using (hasDerivAt_pow 3 x).div_const 3
-  <span class="tok-k">have</span> hint := (continuous_pow 2).intervalIntegrable _ _
+  have hint : IntervalIntegrable (fun (x : ℝ) =&gt; ((x : ℝ)) ^ (2 : ℕ)) MeasureTheory.volume ((0 : ℝ)) ((1 : ℝ)) :=
+    (continuous_pow 2).intervalIntegrable _ _
   exact intervalIntegral.integral_eq_sub_of_hasDerivAt hderiv hint</code></pre></div>
-            <p class="stat"><strong>119</strong> certified shape classes in the <a href="/docs/guide/certificate-coverage/">coverage ledger</a>; every corpus certificate is typechecked against Mathlib in CI.</p>
+            <p class="stat"><strong>121</strong> certified shape classes in the <a href="/docs/guide/certificate-coverage/">coverage ledger</a>; every corpus certificate is typechecked against Mathlib in CI.</p>
           </article>
 
           <article class="card vcard">
             <h3>Refuses instead of guessing <span class="pill warn">E-INT-004</span></h3>
             <p>Every error has a stable code, a message that says why, and a remediation hint. A non-elementary integral is a proof of non-existence, not a timeout.</p>
-            <div class="code"><div class="label">ak.integrate(ak.exp(x**2), x)</div><pre><code>IntegrationError: [E-INT-004] integrate: no elementary
-antiderivative exists: the Risch DE v' + 2x·v = 1 has no
-rational solution; ∫ exp(x²) dx is not an elementary function
-<span class="tok-c">Remediation: use a numeric integrator …</span></code></pre></div>
+            <div class="code"><div class="label">ak.integrate(ak.exp(x**2), x)  # raises IntegrationError</div><pre class="wrap"><code>[E-INT-004] integrate: no elementary antiderivative exists: ∫ e^(x²) dx — the Risch differential equation v′ + (2·x)·v = 1 has no rational solution v(x), so no v(x)·e^(x²) is an antiderivative of e^(x²) (Risch structure theorem for the exponential extension e^(x²))
+Remediation: this integrand has no closed-form antiderivative in terms of elementary functions; use a numeric integrator or elliptic-integral library</code></pre></div>
             <p class="stat">Wall-clock, step and memory <strong>budgets</strong> raise <code>E-BUDGET-*</code> instead of hanging an agent loop.</p>
           </article>
 
@@ -211,20 +210,49 @@ rational solution; ∫ exp(x²) dx is not an elementary function
             <p>The integer and modular-arithmetic kernels underneath — <code>mul_mod</code>, <code>pow_mod</code>, CRT steps, modular inverses, integer square roots, bytecode bounds in the evaluator — carry Kani proof harnesses checked over their full input width.</p>
             <div class="code"><div class="label">alkahest-core/src/modular/mod.rs</div><pre><code>#[kani::proof]
 <span class="tok-k">fn</span> mul_mod_in_range_full_width() {
-    <span class="tok-k">let</span> (a, b, m): (u64, u64, u64) = kani::any();
-    kani::assume(m &gt; 0);
+    <span class="tok-k">let</span> a: u64 = kani::any();
+    <span class="tok-k">let</span> b: u64 = kani::any();
+    <span class="tok-k">let</span> m: u64 = kani::any_where(|m: &amp;u64| *m &gt; 0);
     <span class="tok-k">assert!</span>(mul_mod(a, b, m) &lt; m);
 }</code></pre></div>
-            <p class="stat"><strong>50</strong> proof harnesses across 16 modules, run in CI.</p>
+            <p class="stat"><strong>50</strong> proof harnesses across 16 modules; the full-width ones run on every pull request, the rest nightly.</p>
           </article>
 
           <article class="card vcard">
             <h3>Debuggable by construction</h3>
             <p>Every transforming call returns a derivation log of the rewrite rules it applied, plus a versioned JSON envelope with a verification status — cheap to log, easy to diff when a run goes wrong.</p>
-            <div class="code"><div class="label">ak.integrate(x * ak.cos(x), x).to_dict(mode="compact")</div><pre><code>{ <span class="tok-s">"value"</span>: <span class="tok-s">"cos(x) + x*sin(x)"</span>,
-  <span class="tok-s">"verification"</span>: { <span class="tok-s">"status"</span>: <span class="tok-s">"exactly_verified"</span> },
-  <span class="tok-s">"certificate_status"</span>: { <span class="tok-s">"certifiable"</span>: true },
-  <span class="tok-s">"steps"</span>: [ { <span class="tok-s">"r"</span>: <span class="tok-s">"int_poly_trig_ibp"</span> }, … ] }</code></pre></div>
+            <div class="code"><div class="label">ak.integrate(x * ak.cos(x), x).to_dict(mode="compact")</div><pre><code>{
+  "kind": "alkahest.derived_result",
+  "schema_version": 1,
+  "steps_schema_version": 1,
+  "value": "(cos(x) + (x * sin(x)))",
+  "verification": {
+    "status": "exactly_verified",
+    "externally_verified": false
+  },
+  "certificate_status": {
+    "certifiable": true,
+    "reason": "emitted"
+  },
+  "steps": [
+    {
+      "r": "int_poly_trig_ibp"
+    },
+    {
+      "r": "const_fold"
+    },
+    {
+      "r": "mul_one"
+    },
+    {
+      "r": "mul_one"
+    },
+    {
+      "r": "const_fold"
+    }
+  ],
+  "has_certificate": true
+}</code></pre></div>
             <p class="stat">Plus <code>crosscheck</code> for differential testing against another CAS, and claim graphs for session provenance.</p>
           </article>
         </div>

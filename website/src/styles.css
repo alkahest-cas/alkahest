@@ -252,6 +252,7 @@ section.block { padding: 112px 0 0; }
 .vcard h3 { margin: 0; font-size: 18px; font-weight: 600; color: var(--fg); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .vcard p { margin: 0; font-size: 14.5px; color: var(--muted); }
 .vcard .code pre { font-size: 12.5px; max-height: 260px; }
+.vcard .code pre.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
 .vcard .stat { font-size: 13px; color: var(--fg-2); }
 .vcard .stat strong { color: var(--fg); }
 
