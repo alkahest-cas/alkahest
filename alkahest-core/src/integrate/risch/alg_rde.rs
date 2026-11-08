@@ -312,12 +312,24 @@ pub(crate) fn solve_alg_rde_general_checked(
     // Phase 1 — heuristic search (unchanged positive direction).
     let cap = alg_x_degree_bound(e, f, g).clamp(DEG_CAP, X_DEG_SANITY_CAP);
     let dens = candidate_denominators(e, f, g, d);
+    // Up to `dens × X_DEG_SANITY_CAP` exact linear solves over ℚ(x)(α): poll
+    // the budget between them, and decline (never conclude) when it is spent.
     for den in &dens {
         for ncap in 0..=cap {
-            if let DenSolve::Solved(y) = solve_with_denominator_outcome(e, f, g, den, ncap, d) {
-                return AlgRdeOutcome::Solved(y);
+            if crate::budget::tripped().is_some() {
+                return AlgRdeOutcome::Declined(RdeDecline::AnsatzTooLarge);
+            }
+            match solve_with_denominator_outcome(e, f, g, den, ncap, d) {
+                DenSolve::Solved(y) => return AlgRdeOutcome::Solved(y),
+                DenSolve::Interrupted => {
+                    return AlgRdeOutcome::Declined(RdeDecline::AnsatzTooLarge)
+                }
+                DenSolve::Inconsistent | DenSolve::VerificationFailed => {}
             }
         }
+    }
+    if crate::budget::tripped().is_some() {
+        return AlgRdeOutcome::Declined(RdeDecline::AnsatzTooLarge);
     }
 
     // Phase 2 — try to prove there is none.
@@ -381,12 +393,23 @@ fn prove_no_solution(
         .map(|k| g.get(k).cloned().unwrap_or_else(|| RatFn::int(0)))
         .collect();
 
+    // Each premise below is exact polynomial algebra over ℚ(x)(α); a spent
+    // budget declines between them rather than paying for a proof nobody will
+    // receive.
+    let spent = || crate::budget::tripped().is_some();
+    if spent() {
+        return AlgRdeOutcome::Declined(RdeDecline::AnsatzTooLarge);
+    }
+
     // Premise 2: a complete denominator bound.
     let den_star = match system_denominator_bound(&m, &c, d) {
         Ok(q) => q,
         Err(reason) => return AlgRdeOutcome::Declined(reason),
     };
 
+    if spent() {
+        return AlgRdeOutcome::Declined(RdeDecline::AnsatzTooLarge);
+    }
     // Premise 3: a complete degree bound.  Two independent arguments; take the
     // tighter when both apply, and decline only when neither does.
     let via_matrix = system_infinity_bound(&m, &c, d);
@@ -403,6 +426,9 @@ fn prove_no_solution(
     if ncap.saturating_add(1).saturating_mul(d) > MAX_ALG_RDE_UNKNOWNS {
         return AlgRdeOutcome::Declined(RdeDecline::AnsatzTooLarge);
     }
+    if spent() {
+        return AlgRdeOutcome::Declined(RdeDecline::AnsatzTooLarge);
+    }
 
     match solve_with_denominator_outcome(e, f, g, &den_star, ncap, d) {
         DenSolve::Solved(y) => AlgRdeOutcome::Solved(y),
@@ -412,6 +438,7 @@ fn prove_no_solution(
         // Unreachable barring a bug: a consistent faithful system must yield a
         // solution.  Surfaced as a decline so it can never become a certificate.
         DenSolve::VerificationFailed => AlgRdeOutcome::Declined(RdeDecline::VerificationFailed),
+        DenSolve::Interrupted => AlgRdeOutcome::Declined(RdeDecline::AnsatzTooLarge),
     }
 }
 
@@ -495,6 +522,11 @@ fn system_denominator_bound(m: &[Vec<RatFn>], c: &[RatFn], d: usize) -> Result<Q
 
     let mut q = poly_one();
     for k in 1..=k_max.max(0) {
+        // One polynomial determinant per k, up to MAX_ALG_RESONANCE_SEARCH of
+        // them: a spent budget declines (it never shortens the bound).
+        if crate::budget::tripped().is_some() {
+            return Err(RdeDecline::AnsatzTooLarge);
+        }
         // k is an eigenvalue of R at a root of Dm iff Dm shares a root with
         // det(Mnum − k·Dm′·I).
         let kd = poly_scale(&dmp, &Rational::from(k));
@@ -1070,6 +1102,10 @@ enum DenSolve {
     /// check.  Never a mathematical statement; see
     /// [`RdeDecline::VerificationFailed`].
     VerificationFailed,
+    /// The active budget ran out before the system was decided.  Never a
+    /// statement about the equation — in particular never `Inconsistent`, which
+    /// [`prove_no_solution`] turns into a non-existence proof.
+    Interrupted,
 }
 
 /// Solve seeking `y = Σⱼ (pⱼ(x)/Den) αʲ` with `deg pⱼ ≤ ncap`, for the fixed `Den`.
@@ -1097,12 +1133,18 @@ fn solve_with_denominator_outcome(
 
     // L(·) = D(·) + f·(·) applied to each basis element.  `f` is a general
     // extension element, so `e.mul(f, m)` mixes the power basis (the coupling).
-    let cols: Vec<AlgElem> = elems
-        .iter()
-        .map(|m| e.add(&e.derivation(m), &e.mul(f, m)))
-        .collect();
+    let mut cols: Vec<AlgElem> = Vec::with_capacity(elems.len());
+    for m in &elems {
+        if crate::budget::tripped().is_some() {
+            return DenSolve::Interrupted;
+        }
+        cols.push(e.add(&e.derivation(m), &e.mul(f, m)));
+    }
 
     let (matrix, rhs) = extract_linear_system(&cols, g, d);
+    if crate::budget::tripped().is_some() {
+        return DenSolve::Interrupted;
+    }
     let Some(sol) = gauss_solve(matrix, rhs, basis.len()) else {
         return DenSolve::Inconsistent;
     };
