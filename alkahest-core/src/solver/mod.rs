@@ -3829,11 +3829,19 @@ mod tests {
         }
     }
 
-    /// The same basis, stopped by a wall budget, is reported as a trip.
+    /// A basis that cannot finish inside a wall budget is reported as a trip.
+    ///
+    /// This was cyclic-6 until the multimodular grevlex engine (#529): in a
+    /// release build cyclic-6 `solve` now gets through its basis in well under
+    /// 200 ms and stops with a coded refusal instead, so the trip assertion
+    /// failed in the nightly's `cargo test --release` while still passing in
+    /// the debug build PR CI runs. Cyclic-7 (924 solutions; its grevlex basis
+    /// alone takes seconds) cannot finish in 200 ms in either profile — the
+    /// same switch the Python budget tests made in #529.
     #[test]
-    fn cyclic6_solve_honours_a_wall_budget() {
+    fn cyclic7_solve_honours_a_wall_budget() {
         let pool = ExprPool::new();
-        let (eqs, xs) = cyclic_system(&pool, 6);
+        let (eqs, xs) = cyclic_system(&pool, 7);
         let budget = crate::budget::Budget {
             wall: Some(std::time::Duration::from_millis(200)),
             ..Default::default()
@@ -3848,7 +3856,16 @@ mod tests {
             "{:?}",
             t.elapsed()
         );
-        assert!(out.is_err(), "a 200 ms budget cannot finish cyclic-6");
-        assert!(crate::budget::take_trip().is_some());
+        assert!(out.is_err(), "a 200 ms budget cannot finish cyclic-7");
+        let trip = crate::budget::take_trip();
+        assert!(
+            matches!(
+                trip,
+                Some(crate::budget::BudgetTrip::Budget(
+                    crate::budget::BudgetError::WallClock { .. }
+                ))
+            ),
+            "{trip:?}"
+        );
     }
 }

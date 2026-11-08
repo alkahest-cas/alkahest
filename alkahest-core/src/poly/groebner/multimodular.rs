@@ -1488,6 +1488,42 @@ pub(crate) mod tests {
         );
     }
 
+    /// Every exponent vector in `n` variables of total degree at most 3.
+    fn monomials_up_to_degree_3(n: usize) -> Vec<Vec<u32>> {
+        let mut out = vec![vec![0u32; n]];
+        for _ in 0..3 {
+            let mut next = out.clone();
+            for e in &out {
+                for i in 0..n {
+                    let mut f = e.clone();
+                    f[i] += 1;
+                    if !next.contains(&f) {
+                        next.push(f);
+                    }
+                }
+            }
+            out = next;
+        }
+        out
+    }
+
+    /// Random ideals: 2–4 generators in 2–3 variables, total degree at most
+    /// 3, each the sum of up to five terms `c/d · x^e` (`|c| <= 9`,
+    /// `1 <= d <= 4`, exponents drawn per variable from `0..=3` and the term
+    /// dropped when its total degree exceeds 3).
+    ///
+    /// That generator makes many zero polynomials, and now and then a whole
+    /// ideal of them. The zero ideal used to be rejected with `prop_assume!`;
+    /// under the nightly's `PROPTEST_CASES=50000` it turned up more often than
+    /// proptest's 1024 global rejects allow ("Too many global rejects"). It is
+    /// now repaired instead of rejected: an all-zero draw has one generator
+    /// (chosen by the draw) replaced with a non-zero monomial of degree at
+    /// most 3. Every ideal the old strategy accepted is still drawn with the
+    /// same probability and nothing is filtered, so the property is exactly
+    /// as strong as before — and also covers the one-monomial ideals the
+    /// repair adds. 50 000 cases take about 4 s in a release build. (Drawing
+    /// non-zero generators directly, on distinct monomials, was tried: the
+    /// denser ideals made 2 000 cases take over 8 minutes.)
     fn small_system() -> impl Strategy<Value = Vec<GbPoly>> {
         (2usize..=3, 2usize..=4).prop_flat_map(|(n, m)| {
             let term = (proptest::collection::vec(0u32..=3, n), -9i64..=9, 1i64..=4);
@@ -1500,7 +1536,18 @@ pub(crate) mod tests {
                 }
                 p
             });
-            proptest::collection::vec(gen, m)
+            let witness = (
+                0..m,
+                proptest::sample::select(monomials_up_to_degree_3(n)),
+                prop_oneof![-9i64..=-1, 1i64..=9],
+                1i64..=4,
+            );
+            (proptest::collection::vec(gen, m), witness).prop_map(|(mut gens, (i, e, c, d))| {
+                if gens.iter().all(|g| g.is_zero()) {
+                    gens[i] = GbPoly::monomial(e, Rational::from((c, d)));
+                }
+                gens
+            })
         })
     }
 
@@ -1509,7 +1556,8 @@ pub(crate) mod tests {
 
         #[test]
         fn random_ideals_match_buchberger(gens in small_system()) {
-            prop_assume!(gens.iter().any(|g| !g.is_zero()));
+            // Repaired, not rejected: see `small_system`.
+            prop_assert!(gens.iter().any(|g| !g.is_zero()));
             agrees_with_buchberger(gens);
         }
     }
