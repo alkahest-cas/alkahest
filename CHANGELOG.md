@@ -24,30 +24,6 @@
 - `series(sqrt(x), x, 0, 3)` (and `sqrt(x)*exp(x)`, `x**(1/3)*sin(x)`) was refused as "an indeterminate form (0/0, 1/0, log(0) or similar)", which nothing was. It is still `E-SERIES-004` — a `Series` cannot hold fractional exponents — but the message now says the point is a branch point, names `puiseux_series`, and (in Python) ends with the verified Puiseux expansion, e.g. `x^(1/2) + O(x^(3))`. New `SeriesRefusalCause::BranchPoint`.
 - `diff(diff(zeta(x), x), x)` raised `E-DIFF-001` ("cannot differentiate unknown function 'zeta_prime'"). New node `zeta_deriv(n, s)` (`ζ⁽ⁿ⁾(s)`, `ak.zeta_deriv`): `d/ds zeta_prime(s) = zeta_deriv(2, s)`, `d/ds zeta_deriv(n, s) = zeta_deriv(n+1, s)`, `zeta_deriv(0, s) = zeta(s)`, `zeta_deriv(1, s) = zeta_prime(s)`; it evaluates in `f64`, balls and at complex `s` from Arb's zeta jet for a literal order up to 200 (checked against mpmath's `zeta(s, 1, n)`). It was the only derivative-generated special function without a derivative rule (`diracdelta`, the derivative of `heaviside`, still has none: its derivative is a distribution with no node).
 - `number_theory.discrete_log` refused every composite modulus with `E-NT-004`. It now factors the modulus, solves each prime power (Pohlig–Hellman in `(ℤ/pᵏ)^×`, including the non-cyclic `(ℤ/2ᵏ)^×`; saturation to 0 for primes dividing the base), and merges the exponent classes by the CRT for non-coprime moduli, returning the smallest exponent; neither the base nor the residue needs to be a unit (`discrete_log(2, 2, 12) == 1`). No solution is `E-NT-003`, and the budget is honoured as in the prime case. The reported `discrete_log(3, 13, 100)` has no solution (13 generates an index-2 subgroup of `(ℤ/100)^×` that does not contain 3), so it is now `E-NT-003`. Checked against brute force for every modulus up to 2000 and against SymPy.
-
-## 3.13.1 — 2026-11-08
-
-A hotfix for the Linux x86_64 wheels of 3.13.0. If you installed 3.13.0 on Linux, upgrade.
-
-### Fixed
-
-- The 3.13.0 Linux x86_64 wheels on PyPI crashed with `SIGILL` (illegal instruction) in `factor`, multivariate GCD, `limit` and anything else that reaches FLINT's multivariate polynomial code, on every CPU without AVX-512 (all AMD Zen 2/3, most Intel desktop/laptop parts). FLINT's `configure` picks `-march` from the CPU it is built on, and the release runner that built 3.13.0 had AVX-512, so the bundled `libflint` contained ~22,700 AVX-512 instructions. (3.12.0 used the same build and was unaffected only because its runner lacked AVX-512.) FLINT is now configured with a generic `x86_64-pc-linux-gnu` triple for every wheel, the `+jit`/`+full` wheels' GMP is built `--enable-fat` like the default wheel's, and a new release step, `scripts/check_wheel_isa.py`, fails the build if the bundled FLINT or MPFR contains any AVX/AVX2/AVX-512 instruction. macOS and Windows wheels use Homebrew's and MSYS2's portable FLINT and were not affected.
-### Added
-
-- **`ArbBall` pickles, bit-for-bit at any precision**, and so do `EvaluationResult`,
-  `RootInterval`, `Series`, `Domain`, `GroebnerBasis` (a `"probabilistic"` basis stays
-  probabilistic), `NumberField` and `NumberFieldElement`, which makes PARI's `NumberFieldData` and
-  `EllipticCurveData` picklable too. `pickle.dumps(ak.ArbBall(1.0, 0.0, 300))` raised
-  `TypeError: cannot pickle 'builtins.ArbBall' object`, so a ball could not go through
-  `multiprocessing.Pool.map`. The midpoint and radius are serialised as their exact binary
-  values (`mantissa · 2**exp` at each float's own precision), never as decimals; tested at 53,
-  300 and 3400 bits, through `multiprocessing`, and for ±0, ±∞ and NaN. A malformed payload
-  (negative radius, mantissa wider than its precision) raises `ValueError`.
-- `alkahest_cas::horner::c_param_names(vars, fn_name, pool)`: the default C parameter names
-  `emit_c_expr` / `emit_c_vec` now use. `GroebnerBasis::from_parts`, for deserialisation.
-
-### Fixed
-
 - **A user symbol named `pi` leaked an invisible character into emitted code.**
   `emit_c_expr(pi*x + sin(pi), [pi, x])` for `pi = pool.symbol("pi")` declared
   `double pi​` (the kernel's zero-width marker that keeps the variable distinct from π),
@@ -74,6 +50,28 @@ A hotfix for the Linux x86_64 wheels of 3.13.0. If you installed 3.13.0 on Linux
   a float the caller wrote (`0.5 ** x`) stays a float. Python 3.12+ already passed the
   `Fraction` itself. The spelling that is exact everywhere, `pool.rational(1, 2) ** x`, is
   documented.
+
+### Added
+
+- **`ArbBall` pickles, bit-for-bit at any precision**, and so do `EvaluationResult`,
+  `RootInterval`, `Series`, `Domain`, `GroebnerBasis` (a `"probabilistic"` basis stays
+  probabilistic), `NumberField` and `NumberFieldElement`, which makes PARI's `NumberFieldData` and
+  `EllipticCurveData` picklable too. `pickle.dumps(ak.ArbBall(1.0, 0.0, 300))` raised
+  `TypeError: cannot pickle 'builtins.ArbBall' object`, so a ball could not go through
+  `multiprocessing.Pool.map`. The midpoint and radius are serialised as their exact binary
+  values (`mantissa · 2**exp` at each float's own precision), never as decimals; tested at 53,
+  300 and 3400 bits, through `multiprocessing`, and for ±0, ±∞ and NaN. A malformed payload
+  (negative radius, mantissa wider than its precision) raises `ValueError`.
+- `alkahest_cas::horner::c_param_names(vars, fn_name, pool)`: the default C parameter names
+  `emit_c_expr` / `emit_c_vec` now use. `GroebnerBasis::from_parts`, for deserialisation.
+
+## 3.13.1 — 2026-11-08
+
+A hotfix for the Linux x86_64 wheels of 3.13.0. If you installed 3.13.0 on Linux, upgrade.
+
+### Fixed
+
+- The 3.13.0 Linux x86_64 wheels on PyPI crashed with `SIGILL` (illegal instruction) in `factor`, multivariate GCD, `limit` and anything else that reaches FLINT's multivariate polynomial code, on every CPU without AVX-512 (all AMD Zen 2/3, most Intel desktop/laptop parts). FLINT's `configure` picks `-march` from the CPU it is built on, and the release runner that built 3.13.0 had AVX-512, so the bundled `libflint` contained ~22,700 AVX-512 instructions. (3.12.0 used the same build and was unaffected only because its runner lacked AVX-512.) FLINT is now configured with a generic `x86_64-pc-linux-gnu` triple for every wheel, the `+jit`/`+full` wheels' GMP is built `--enable-fat` like the default wheel's, and a new release step, `scripts/check_wheel_isa.py`, fails the build if the bundled FLINT or MPFR contains any AVX/AVX2/AVX-512 instruction. macOS and Windows wheels use Homebrew's and MSYS2's portable FLINT and were not affected.
 
 ## 3.13.0 — 2026-11-05
 
