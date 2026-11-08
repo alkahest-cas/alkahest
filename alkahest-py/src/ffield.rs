@@ -13,6 +13,7 @@
 //! prime subfield); outputs always use the form that matches the field, so a
 //! caller never has to branch on what came back.
 
+use crate::ToPyAny;
 use pyo3::prelude::*;
 use pyo3::types::{PyInt, PyList, PyType};
 
@@ -63,7 +64,7 @@ fn elem_from_py(field: &FiniteField, obj: &Bound<'_, PyAny>) -> PyResult<FieldEl
 /// of exactly `k` coordinates over GF(p^k).
 fn elem_to_py(py: Python<'_>, field: &FiniteField, e: &FieldElement) -> PyObject {
     if field.is_prime_field() {
-        e.as_u64().unwrap_or(0).into_py(py)
+        e.as_u64().unwrap_or(0).to_py_any(py)
     } else {
         crate::pylist(py, e.coefficients_padded(field.degree())).into()
     }

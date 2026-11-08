@@ -23,6 +23,7 @@
 
 use pyo3::prelude::*;
 use pyo3::types::{PyModule, PyType};
+use pyo3::IntoPyObjectExt;
 
 use alkahest_core::budget::BudgetTrip;
 use alkahest_core::experimental::{NumberField, NumberFieldElement, NumberFieldError};
@@ -164,7 +165,7 @@ impl PyNumberField {
             self.inner.variable().to_string(),
             self.inner.cyclotomic_order(),
         );
-        Ok((helper, args).into_py(py))
+        Ok((helper, args).into_py_any(py)?)
     }
 
     /// The degree ``[K : Q]``.
@@ -302,7 +303,7 @@ impl PyNumberFieldElement {
             .iter()
             .map(|c| py_fraction(py, c))
             .collect::<PyResult<_>>()?;
-        Ok((helper, (field.into_py(py), coeffs)).into_py(py))
+        Ok((helper, (field.into_py_any(py)?, coeffs)).into_py_any(py)?)
     }
 
     /// The field this element lives in.

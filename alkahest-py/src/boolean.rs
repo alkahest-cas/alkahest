@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::IntoPyObjectExt;
 
 use alkahest_core::logic::bdd::{BddManager, BddRef, ReorderOptions, DEFAULT_MAX_BDD_NODES};
 use alkahest_core::logic::boolean::{
@@ -503,7 +504,7 @@ fn py_minimize_logic(
             );
         }
         let r = run_minimize_multi(py, &es, form, dontcare, exact)?;
-        return Ok(Py::new(py, r)?.into_py(py));
+        return Ok(Py::new(py, r)?.into_py_any(py)?);
     }
     let expr = expr
         .extract::<PyRef<PyExpr>>()
@@ -516,7 +517,7 @@ fn py_minimize_logic(
         terms: m.terms,
         literals: m.literals,
     };
-    Ok(Py::new(py, r)?.into_py(py))
+    Ok(Py::new(py, r)?.into_py_any(py)?)
 }
 
 /// Decide whether two propositional formulas are equivalent.
@@ -568,14 +569,14 @@ fn py_equivalent(
             for (k, v) in m {
                 d.set_item(k, v)?;
             }
-            (false, d.into_py(py))
+            (false, d.into_py_any(py)?)
         }
         _ => unreachable!("Equivalence has two variants"),
     };
     if counterexample {
-        Ok((ok, cex).into_py(py))
+        Ok((ok, cex).into_py_any(py)?)
     } else {
-        Ok(ok.into_py(py))
+        Ok(ok.into_py_any(py)?)
     }
 }
 
@@ -943,7 +944,7 @@ impl PyBdd {
         };
         let s = count.to_string();
         let int = py.get_type::<pyo3::types::PyInt>();
-        Ok(int.call1((s,))?.into_py(py))
+        Ok(int.call1((s,))?.into_py_any(py)?)
     }
 
     /// Re-sort the manager's variable order by Rudell sifting to shrink the
@@ -996,7 +997,7 @@ impl PyBdd {
         d.set_item("nodes_after", st.nodes_after)?;
         d.set_item("swaps", st.swaps)?;
         d.set_item("complete", st.complete)?;
-        Ok(d.into_py(py))
+        Ok(d.into_py_any(py)?)
     }
 
     /// Turn automatic reordering of this BDD's manager on or off: ``False``
@@ -1046,7 +1047,7 @@ impl PyBdd {
                 for (l, v) in lits {
                     d.set_item(&sh.mgr.var_names()[l as usize], v)?;
                 }
-                Ok(d.into_py(py))
+                Ok(d.into_py_any(py)?)
             }
         }
     }

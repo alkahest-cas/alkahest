@@ -35,6 +35,7 @@ use alkahest_core::fpgroup::{
 };
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
+use pyo3::IntoPyObjectExt;
 use rug::Integer;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -333,7 +334,7 @@ impl PyCosetTable {
         let cls = py.get_type::<crate::group::PyPermutation>();
         let mut out = Vec::new();
         for p in self.inner.permutations().map_err(fp_err)? {
-            out.push(cls.call1((p.images().to_vec(),))?.into_py(py));
+            out.push(cls.call1((p.images().to_vec(),))?.into_py_any(py)?);
         }
         Ok(out)
     }

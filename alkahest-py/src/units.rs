@@ -14,6 +14,7 @@ use pyo3::basic::CompareOp;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyString, PyTuple};
+use pyo3::IntoPyObjectExt;
 
 use alkahest_core::units::{self as core_units, Unit, UnitError};
 use rug::Rational;
@@ -86,7 +87,7 @@ fn scale_tuple(py: Python<'_>, s: &core_units::Scale) -> PyResult<PyObject> {
             rational_to_py(py, &s.pi_power)?,
         ],
     )?
-    .into_py(py))
+    .into_py_any(py)?)
 }
 
 #[pymethods]
@@ -124,7 +125,7 @@ impl PyUnit {
                 d.set_item(*name, rational_to_py(py, e)?)?;
             }
         }
-        Ok(d.into_py(py))
+        Ok(d.into_py_any(py)?)
     }
 
     /// ``[(name, Fraction exponent), …]`` as written.
@@ -206,7 +207,7 @@ impl PyUnit {
                 rational_to_py(py, &shift)?,
             ],
         )?
-        .into_py(py))
+        .into_py_any(py)?)
     }
 
     /// The coherent SI unit of the same dimension in base units
@@ -241,10 +242,10 @@ impl PyUnit {
             [
                 rational_to_py(py, &f.ratio)?,
                 rational_to_py(py, &f.pi_power)?,
-                Py::new(py, wrap(u))?.into_py(py),
+                Py::new(py, wrap(u))?.into_py_any(py)?,
             ],
         )?
-        .into_py(py))
+        .into_py_any(py)?)
     }
 
     /// The named SI derived unit this unit exactly equals, or ``None``.
@@ -267,21 +268,27 @@ impl PyUnit {
 
     fn __mul__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<PyObject> {
         match unit_from_py(other)? {
-            Some(o) => Ok(Py::new(py, wrap(self.inner.mul(&o).map_err(unit_err)?))?.into_py(py)),
+            Some(o) => {
+                Ok(Py::new(py, wrap(self.inner.mul(&o).map_err(unit_err)?))?.into_py_any(py)?)
+            }
             None => Ok(py.NotImplemented()),
         }
     }
 
     fn __rmul__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<PyObject> {
         match unit_from_py(other)? {
-            Some(o) => Ok(Py::new(py, wrap(o.mul(&self.inner).map_err(unit_err)?))?.into_py(py)),
+            Some(o) => {
+                Ok(Py::new(py, wrap(o.mul(&self.inner).map_err(unit_err)?))?.into_py_any(py)?)
+            }
             None => Ok(py.NotImplemented()),
         }
     }
 
     fn __truediv__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<PyObject> {
         match unit_from_py(other)? {
-            Some(o) => Ok(Py::new(py, wrap(self.inner.div(&o).map_err(unit_err)?))?.into_py(py)),
+            Some(o) => {
+                Ok(Py::new(py, wrap(self.inner.div(&o).map_err(unit_err)?))?.into_py_any(py)?)
+            }
             None => Ok(py.NotImplemented()),
         }
     }
@@ -293,7 +300,9 @@ impl PyUnit {
             unit_from_py(other)?
         };
         match lhs {
-            Some(o) => Ok(Py::new(py, wrap(o.div(&self.inner).map_err(unit_err)?))?.into_py(py)),
+            Some(o) => {
+                Ok(Py::new(py, wrap(o.div(&self.inner).map_err(unit_err)?))?.into_py_any(py)?)
+            }
             None => Ok(py.NotImplemented()),
         }
     }
@@ -308,7 +317,9 @@ impl PyUnit {
             return Ok(py.NotImplemented());
         }
         match rational_from_py(exp)? {
-            Some(q) => Ok(Py::new(py, wrap(self.inner.pow(&q).map_err(unit_err)?))?.into_py(py)),
+            Some(q) => {
+                Ok(Py::new(py, wrap(self.inner.pow(&q).map_err(unit_err)?))?.into_py_any(py)?)
+            }
             None => Err(PyTypeError::new_err(
                 "a unit exponent must be an int or a fractions.Fraction (exact rational)",
             )),
@@ -328,8 +339,8 @@ impl PyUnit {
             return Ok(py.NotImplemented());
         };
         match op {
-            CompareOp::Eq => Ok((self.inner == o).into_py(py)),
-            CompareOp::Ne => Ok((self.inner != o).into_py(py)),
+            CompareOp::Eq => Ok((self.inner == o).into_py_any(py)?),
+            CompareOp::Ne => Ok((self.inner != o).into_py_any(py)?),
             _ => Ok(py.NotImplemented()),
         }
     }
@@ -352,7 +363,7 @@ impl PyUnit {
 
     fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
         let cls = py.get_type::<PyUnit>();
-        Ok((cls, (self.inner.name(),)).into_py(py))
+        Ok((cls, (self.inner.name(),)).into_py_any(py)?)
     }
 }
 

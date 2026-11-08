@@ -7,6 +7,7 @@
 //! `alkahest.TensorError` with a stable `E-TENSOR-NNN` `.code`; budget trips
 //! as `BudgetExceededError`.
 
+use crate::ToPyAny;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyTuple};
@@ -37,7 +38,7 @@ fn wrap(py: Python<'_>, pool: &Py<PyExprPool>, id: ExprId) -> PyObject {
         id,
         pool: pool.clone_ref(py),
     }
-    .into_py(py)
+    .to_py_any(py)
 }
 
 /// The pool of the first `Expr` found anywhere in `ob` (recursing into lists/tuples).
@@ -71,20 +72,20 @@ fn nest2(py: Python<'_>, pool: &Py<PyExprPool>, t: Vec<Vec<ExprId>>) -> PyObject
         .into_iter()
         .map(|r| {
             let v: Vec<PyObject> = r.into_iter().map(|e| wrap(py, pool, e)).collect();
-            crate::pylist(py, v).into_py(py)
+            crate::pylist(py, v).to_py_any(py)
         })
         .collect();
-    crate::pylist(py, rows).into_py(py)
+    crate::pylist(py, rows).to_py_any(py)
 }
 
 fn nest3(py: Python<'_>, pool: &Py<PyExprPool>, t: Vec<Vec<Vec<ExprId>>>) -> PyObject {
     let v: Vec<PyObject> = t.into_iter().map(|m| nest2(py, pool, m)).collect();
-    crate::pylist(py, v).into_py(py)
+    crate::pylist(py, v).to_py_any(py)
 }
 
 fn nest4(py: Python<'_>, pool: &Py<PyExprPool>, t: Vec<Vec<Vec<Vec<ExprId>>>>) -> PyObject {
     let v: Vec<PyObject> = t.into_iter().map(|m| nest3(py, pool, m)).collect();
-    crate::pylist(py, v).into_py(py)
+    crate::pylist(py, v).to_py_any(py)
 }
 
 /// Native metric (private; use :class:`alkahest.Metric`).

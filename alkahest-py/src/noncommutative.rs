@@ -5,6 +5,7 @@
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::IntoPyObjectExt;
 
 use alkahest_core::algebra::nc_poly::{
     self as core_nc, GammaSlot, LadderMode, NcError, DEFAULT_MAX_STEPS,
@@ -93,12 +94,18 @@ fn py_nc_terms(py: Python<'_>, expr: PyRef<'_, PyExpr>) -> PyResult<PyObject> {
     for (c, w) in terms {
         let word = PyList::empty(py);
         for a in w {
-            word.append(wrap(py, a, &expr.pool).into_py(py))?;
+            word.append(wrap(py, a, &expr.pool).into_py_any(py)?)?;
         }
-        let t = PyTuple::new(py, [wrap(py, c, &expr.pool).into_py(py), word.into_py(py)])?;
+        let t = PyTuple::new(
+            py,
+            [
+                wrap(py, c, &expr.pool).into_py_any(py)?,
+                word.into_py_any(py)?,
+            ],
+        )?;
         out.append(t)?;
     }
-    Ok(out.into_py(py))
+    Ok(out.into_py_any(py)?)
 }
 
 /// ``nc_rewrite(expr, rules, *, max_steps=200000) -> Expr``
@@ -468,14 +475,17 @@ fn py_gamma_contract(
     for (c, w) in terms {
         let word = PyList::empty(py);
         for a in w {
-            word.append(wrap(py, a, &dim.pool).into_py(py))?;
+            word.append(wrap(py, a, &dim.pool).into_py_any(py)?)?;
         }
         out.append(PyTuple::new(
             py,
-            [wrap(py, c, &dim.pool).into_py(py), word.into_py(py)],
+            [
+                wrap(py, c, &dim.pool).into_py_any(py)?,
+                word.into_py_any(py)?,
+            ],
         )?)?;
     }
-    Ok(out.into_py(py))
+    Ok(out.into_py_any(py)?)
 }
 
 /// ``lorentz_contract(expr, indices, dim) -> Expr``
@@ -809,9 +819,9 @@ fn table_dict(
 ) -> PyResult<PyObject> {
     let d = PyDict::new(py);
     for ((a, b, c), f) in entries {
-        d.set_item((a, b, c), wrap(py, f, pool_py).into_py(py))?;
+        d.set_item((a, b, c), wrap(py, f, pool_py).into_py_any(py)?)?;
     }
-    Ok(d.into_py(py))
+    Ok(d.into_py_any(py)?)
 }
 
 /// ``lie_su2(pool, generators=None, *, prefix="J") -> LieAlgebra``

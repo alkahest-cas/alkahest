@@ -24,6 +24,7 @@
 
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
+use pyo3::IntoPyObjectExt;
 
 use alkahest_core::character::{
     CharacterError, CharacterTable, ConjugacyClass, ConjugacyClasses, DEFAULT_CHARACTER_TABLE_CAP,
@@ -180,7 +181,7 @@ impl PyConjugacyClasses {
         for c in self.inner.classes() {
             list.append(Py::new(py, PyConjugacyClass { inner: c.clone() })?)?;
         }
-        Ok(list.as_any().try_iter()?.into_py(py))
+        Ok(list.as_any().try_iter()?.into_py_any(py)?)
     }
 
     /// The degree of the underlying permutation group.
