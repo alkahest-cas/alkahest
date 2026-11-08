@@ -1211,7 +1211,7 @@ _RATIONALS = st.fractions(min_value=-1000, max_value=1000, max_denominator=1000)
 
 
 def _as_mpf(number):
-    import mpmath as mp
+    mp = pytest.importorskip("mpmath")
 
     if isinstance(number, Fraction):
         return mp.mpf(number.numerator) / number.denominator
@@ -1220,7 +1220,7 @@ def _as_mpf(number):
 
 @given(a=_RATIONALS, b=_RATIONALS, c=_RATIONALS, d=_RATIONALS)
 def test_golden_arithmetic_matches_mpmath(a, b, c, d):
-    import mpmath as mp
+    mp = pytest.importorskip("mpmath")
 
     mp.mp.dps = 60
     left, right = smt._GoldenNumber(a, b), smt._GoldenNumber(c, d)
@@ -1322,7 +1322,7 @@ def test_golden_ratio_decides_identities(pool, build, expected):
 
 @requires_solver
 def test_golden_ratio_with_a_variable_returns_a_checked_rational_witness(pool):
-    import mpmath as mp
+    mp = pytest.importorskip("mpmath")
 
     mp.mp.dps = 40
     x = pool.symbol("x")
