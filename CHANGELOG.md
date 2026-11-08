@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- The 3.13.0 Linux x86_64 wheels on PyPI crashed with `SIGILL` (illegal instruction) in `factor`, multivariate GCD, `limit` and anything else that reaches FLINT's multivariate polynomial code, on every CPU without AVX-512 (all AMD Zen 2/3, most Intel desktop/laptop parts). FLINT's `configure` picks `-march` from the CPU it is built on, and the release runner that built 3.13.0 had AVX-512, so the bundled `libflint` contained ~22,700 AVX-512 instructions. (3.12.0 used the same build and was unaffected only because its runner lacked AVX-512.) FLINT is now configured with a generic `x86_64-pc-linux-gnu` triple for every wheel, the `+jit`/`+full` wheels' GMP is built `--enable-fat` like the default wheel's, and a new release step, `scripts/check_wheel_isa.py`, fails the build if the bundled FLINT or MPFR contains any AVX/AVX2/AVX-512 instruction. macOS and Windows wheels use Homebrew's and MSYS2's portable FLINT and were not affected.
+
 ## 3.13.0 — 2026-11-05
 
 A launch release. It fixes every silent wrong answer, crash and hang found by the two blind

@@ -138,7 +138,11 @@ jobs:
             echo 'b95e2c7792f5eea4a1c8d2d42c4098434756832e57a094b295eb5dfdc9b4c36b  /tmp/flint-3.6.0.tar.gz' \
               | sha256sum -c -
             tar xzf /tmp/flint-3.6.0.tar.gz -C /tmp
-            ( cd /tmp/flint-3.6.0 && ./configure --prefix=/usr/local --with-gmp=/usr/local --with-mpfr=/usr/local --disable-static && make -j"$(nproc)" && make install )
+            # --host/--build: FLINT's configure otherwise reads the runner's CPU and
+            # adds e.g. -march=znver4, so the wheel's libflint needed AVX-512 and
+            # crashed (SIGILL) in factor/gcd on any CPU without it (3.13.0). A
+            # generic x86_64 triple selects no -march and no AVX code paths.
+            ( cd /tmp/flint-3.6.0 && ./configure --prefix=/usr/local --with-gmp=/usr/local --with-mpfr=/usr/local --disable-static --host=x86_64-pc-linux-gnu --build=x86_64-pc-linux-gnu && make -j"$(nproc)" && make install )
             ldconfig
             # One GMP: FLINT must resolve the libgmp just built, not the 6.1 runtime.
             ldd /usr/local/lib/libflint.so | grep -E 'libgmp|libmpfr'
@@ -152,6 +156,10 @@ jobs:
             nm -D --defined-only /usr/local/lib/libflint.so > /tmp/libflint.syms
             grep -q ' T acb_theta_ql_exact$' /tmp/libflint.syms \
               || { echo 'FLINT lacks acb_theta_ql_exact; theta would ship stubbed'; exit 1; }
+
+      # The default wheel must run on any x86-64 CPU (see the FLINT --host note).
+      - name: Bundled FLINT/MPFR use no AVX/AVX2/AVX-512
+        run: python scripts/check_wheel_isa.py dist/*.whl
 
       - name: Smoke test
         run: |
@@ -283,6 +291,9 @@ jobs:
       # Maturin/auditwheel vendors deps under site-packages/alkahest.libs/. Transitive
       # loads (e.g. libLLVM → libffi with hashed soname) need that dir on LD_LIBRARY_PATH
       # on some glibc setups until every .so in the wheel has a consistent $ORIGIN RPATH.
+      - name: Bundled FLINT/MPFR use no AVX/AVX2/AVX-512
+        run: python scripts/check_wheel_isa.py dist/*.whl
+
       - name: Smoke test (JIT available)
         run: |
           pip install --no-index --find-links dist alkahest
@@ -377,6 +388,9 @@ jobs:
           maturin build --release --strip
           --features "jit cranelift groebner parallel egraph system-gmp"
           --out dist
+
+      - name: Bundled FLINT/MPFR use no AVX/AVX2/AVX-512
+        run: python scripts/check_wheel_isa.py dist/*.whl
 
       - name: Smoke test (+full)
         run: |

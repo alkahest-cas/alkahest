@@ -63,7 +63,9 @@ runs:
       uses: actions/cache@v4
       with:
         path: ~/.local/flint
-        key: flint-${{ inputs.version }}-gmp${{ steps.gmp.outputs.build == 'true' && '-6.3.0-mpfr-4.2.2' || '-apt' }}-${{ steps.gmp.outputs.os }}-${{ runner.arch }}
+        # -portable: built for generic x86-64 (no runner -march; fat GMP). Bump to
+        # invalidate caches built with host-specific flags.
+        key: flint-${{ inputs.version }}-portable-gmp${{ steps.gmp.outputs.build == 'true' && '-6.3.0-mpfr-4.2.2' || '-apt' }}-${{ steps.gmp.outputs.os }}-${{ runner.arch }}
 
     - name: Build GMP 6.3.0 + MPFR 4.2.2 (apt's are too old)
       if: steps.cache.outputs.cache-hit != 'true' && steps.gmp.outputs.build == 'true'
@@ -79,7 +81,9 @@ runs:
         b67ba0383ef7e8a8563734e2e889ef5ec3c3b898a01d00fa0a6869ad81c6ce01  mpfr-4.2.2.tar.xz
         SUMS
         tar xf gmp-6.3.0.tar.xz && tar xf mpfr-4.2.2.tar.xz
-        ( cd gmp-6.3.0 && ./configure --prefix="$prefix" --enable-shared --disable-static && make -j"$(nproc)" && make install )
+        # --enable-fat: the +jit/+full wheels bundle this libgmp, so it must pick
+        # its kernels at run time rather than for this runner's CPU.
+        ( cd gmp-6.3.0 && ./configure --prefix="$prefix" --enable-shared --disable-static --enable-fat && make -j"$(nproc)" && make install )
         ( cd mpfr-4.2.2 && ./configure --prefix="$prefix" --with-gmp="$prefix" --enable-shared --disable-static && make -j"$(nproc)" && make install )
 
     - name: Build FLINT ${{ inputs.version }}
@@ -103,7 +107,13 @@ runs:
         if [ "${{ steps.gmp.outputs.build }}" = true ]; then
           with_gmp=(--with-gmp="$prefix" --with-mpfr="$prefix")
         fi
-        ./configure --prefix="$prefix" --disable-static "${with_gmp[@]}"
+        # Generic x86_64 triple: no -march from this runner's CPU (the +jit/+full
+        # wheels bundle this libflint; see release-wheels.yml).
+        generic=()
+        if [ "$(uname -m)" = x86_64 ]; then
+          generic=(--host=x86_64-pc-linux-gnu --build=x86_64-pc-linux-gnu)
+        fi
+        ./configure --prefix="$prefix" --disable-static "${with_gmp[@]}" "${generic[@]}"
         make -j"$(nproc)"
         make install
 
