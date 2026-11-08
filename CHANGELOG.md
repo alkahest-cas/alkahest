@@ -35,14 +35,16 @@ A hotfix for the Linux x86_64 wheels of 3.13.0. If you installed 3.13.0 on Linux
 ### Added
 
 - **`ArbBall` pickles, bit-for-bit at any precision**, and so do `EvaluationResult`,
-  `RootInterval`, `Series` and `Domain`. `pickle.dumps(ak.ArbBall(1.0, 0.0, 300))` raised
+  `RootInterval`, `Series`, `Domain`, `GroebnerBasis` (a `"probabilistic"` basis stays
+  probabilistic), `NumberField` and `NumberFieldElement`, which makes PARI's `NumberFieldData` and
+  `EllipticCurveData` picklable too. `pickle.dumps(ak.ArbBall(1.0, 0.0, 300))` raised
   `TypeError: cannot pickle 'builtins.ArbBall' object`, so a ball could not go through
   `multiprocessing.Pool.map`. The midpoint and radius are serialised as their exact binary
   values (`mantissa · 2**exp` at each float's own precision), never as decimals; tested at 53,
   300 and 3400 bits, through `multiprocessing`, and for ±0, ±∞ and NaN. A malformed payload
   (negative radius, mantissa wider than its precision) raises `ValueError`.
 - `alkahest_cas::horner::c_param_names(vars, fn_name, pool)`: the default C parameter names
-  `emit_c_expr` / `emit_c_vec` now use.
+  `emit_c_expr` / `emit_c_vec` now use. `GroebnerBasis::from_parts`, for deserialisation.
 
 ### Fixed
 
@@ -56,12 +58,15 @@ A hotfix for the Linux x86_64 wheels of 3.13.0. If you installed 3.13.0 on Linux
   temporary. `to_sympy` maps the variable to `Symbol("pi")` and the "missing variable"
   errors of `emit_c_expr` / `to_stablehlo` name it without the marker. Each backend (C
   scalar and vector, StableHLO, JAX, LaTeX, `to_sympy`) is tested with the variable bound to
-  2.0.
+  2.0. `to_smtlib` declared `|pi​|` and now declares `pi`; a formula holding both the
+  variable and the constant π is refused (`E-SMT-002`) rather than merged.
+  `plot_dot` labels drop the marker too.
 - **`to_sympy` translated π as a free variable.** `to_sympy(pool.pi())` was
   `Symbol("pi")`, so a cross-check compared `sin(π) = 0` against an unknown; `GoldenRatio`
   likewise. They are now `sympy.pi` / `sympy.GoldenRatio`, SymPy's `pi`, `E`, `EulerGamma`,
   `Catalan` and `GoldenRatio` lift back to the kernel constants, and `Glaisher` (which SymPy
-  lacks) is refused with `E-XCHECK-001` instead of becoming a symbol.
+  lacks) is refused with `E-XCHECK-001` instead of becoming a symbol. The numeric rung no
+  longer samples kernel constants as if they were free variables.
 - **`Fraction(1, 2) ** x` had a float base on Python 3.9–3.11.** `Fraction.__pow__`
   converts itself with `float(a) ** b` there before Alkahest sees it, so the result was
   `5.0e-1^x`. `Expr.__rpow__` now recovers the exact `Fraction` when the running frame is

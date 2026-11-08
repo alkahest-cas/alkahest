@@ -61,6 +61,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+from .crosscheck import _display_name
 from .exceptions import SmtError
 
 __all__ = [
@@ -424,12 +425,16 @@ def _walk_exprs(obj: Any):
 
 
 def _formula_symbols(formula: Any) -> dict[str, Any]:
-    """Symbol name → the :class:`~alkahest.Expr` for it, for back-substitution."""
+    """Symbol name → the :class:`~alkahest.Expr` for it, for back-substitution.
+
+    Keyed by the name the script declares, which for a user variable ``pi`` is
+    the printed name, without the kernel's marker.
+    """
     out: dict[str, Any] = {}
     for expr in _walk_exprs(formula):
         node = expr.node()
         if node[0] == "symbol":
-            out.setdefault(node[1], expr)
+            out.setdefault(_display_name(node[1]), expr)
     return out
 
 
@@ -448,7 +453,7 @@ def _existential_prefix(formula: Any) -> list[str]:
     node = formula.node() if hasattr(formula, "node") else None
     while node is not None and node[0] == "exists":
         bound = node[1].node()
-        names.append(bound[1] if bound[0] == "symbol" else str(node[1]))
+        names.append(_display_name(bound[1]) if bound[0] == "symbol" else str(node[1]))
         formula = node[2]
         node = formula.node()
     if not names or _is_quantified(formula):

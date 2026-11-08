@@ -411,6 +411,22 @@ impl GroebnerBasis {
         armed(|| Self::compute_f5(gens, order))
     }
 
+    /// Reassemble a basis from what [`Self::generators`], [`Self::order`] and
+    /// [`Self::proof_status`] reported, for deserialisation. Nothing is
+    /// recomputed or checked, so the caller answers for `proof_status`; unlike
+    /// [`Self::from_generators`] it keeps a `Probabilistic` status.
+    pub fn from_parts(
+        generators: Vec<GbPoly>,
+        order: MonomialOrder,
+        proof_status: GroebnerProofStatus,
+    ) -> Self {
+        GroebnerBasis {
+            generators,
+            order,
+            proof_status,
+        }
+    }
+
     /// Return the basis generators (interreduced, monic).
     pub fn generators(&self) -> &[GbPoly] {
         &self.generators

@@ -18044,6 +18044,96 @@ impl PyGroebnerBasis {
         self.inner.proof_status().as_str()
     }
 
+    /// Pickle support: exact generators, order, proof status, and the
+    /// variables (as `Expr`s, in the pool scheme of `alkahest._pickle`).
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let mut gens = Vec::with_capacity(self.inner.generators().len());
+        for g in self.inner.generators() {
+            let mut terms = Vec::with_capacity(g.terms.len());
+            for (exps, c) in &g.terms {
+                let coeff = bigint::fraction_to_py(py, c.numer(), c.denom())?;
+                terms.push((exps.clone(), coeff));
+            }
+            gens.push((g.n_vars, terms));
+        }
+        let vars: Vec<PyExpr> = match &self.pool {
+            Some(pool) => self
+                .var_ids
+                .iter()
+                .map(|&id| PyExpr {
+                    id,
+                    pool: pool.clone_ref(py),
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        let helper = py
+            .import_bound("alkahest._pickle")?
+            .getattr("_unpickle_groebner")?;
+        let args = (
+            gens,
+            self.inner.order().as_str(),
+            self.inner.proof_status().as_str(),
+            self.pool.as_ref().map(|p| p.clone_ref(py)),
+            vars,
+        );
+        Ok((helper, args).into_py(py))
+    }
+
+    /// Rebuild a basis pickled by `__reduce__`. Private.
+    #[staticmethod]
+    #[pyo3(signature = (gens, order, proof_status, pool, vars))]
+    #[allow(clippy::type_complexity)]
+    fn _from_pickle(
+        gens: Vec<(usize, Vec<(Vec<u32>, Bound<'_, PyAny>)>)>,
+        order: &str,
+        proof_status: &str,
+        pool: Option<Py<PyExprPool>>,
+        vars: Vec<PyExpr>,
+    ) -> PyResult<PyGroebnerBasis> {
+        let order = MonomialOrder::from_str(order)
+            .ok_or_else(|| PyValueError::new_err("pickled GroebnerBasis has an unknown order"))?;
+        let status = match proof_status {
+            "proved" => alkahest_core::GroebnerProofStatus::Proved,
+            "probabilistic" => alkahest_core::GroebnerProofStatus::Probabilistic,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "pickled GroebnerBasis has an unknown proof status {other:?}"
+                )))
+            }
+        };
+        let same_pool = match &pool {
+            Some(p) => vars.iter().all(|v| v.pool.is(p)),
+            None => vars.is_empty(),
+        };
+        if !same_pool {
+            return Err(PyValueError::new_err(
+                "pickled GroebnerBasis variables are not in its pool",
+            ));
+        }
+        let mut generators = Vec::with_capacity(gens.len());
+        for (n_vars, terms) in gens {
+            let mut map = std::collections::BTreeMap::new();
+            for (exps, coeff) in terms {
+                let c = bigint::rational_from_py(&coeff)?.ok_or_else(|| {
+                    PyValueError::new_err("pickled GroebnerBasis coefficient is not exact")
+                })?;
+                if exps.len() != n_vars || c == 0 {
+                    return Err(PyValueError::new_err(
+                        "pickled GroebnerBasis has a malformed term",
+                    ));
+                }
+                map.insert(exps, c);
+            }
+            generators.push(GbPoly { terms: map, n_vars });
+        }
+        Ok(PyGroebnerBasis {
+            inner: GroebnerBasis::from_parts(generators, order, status),
+            pool,
+            var_ids: vars.iter().map(|v| v.id).collect(),
+        })
+    }
+
     /// The elimination ideal `I ∩ k[remaining vars]`, as a `GroebnerBasis`.
     ///
     /// Drops every generator whose support mentions one of *vars*.  Under a

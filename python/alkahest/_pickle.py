@@ -49,7 +49,9 @@ as decimal text, so the ball that comes back is bit-for-bit the one sent at
 any precision.  An :class:`~alkahest.EvaluationResult` pickles every field
 (its enclosure as such a ball), a :class:`~alkahest.RootInterval` its two
 exact rational endpoints, a :class:`~alkahest.Series` its expansion as an
-expression, and a :class:`~alkahest.Domain` its member name.
+expression, a :class:`~alkahest.Domain` its member name, a
+:class:`~alkahest.GroebnerBasis` its exact generators, order, proof status and
+variables, and a :class:`~alkahest.NumberField` its defining polynomial.
 
 The process-wide :func:`~alkahest.default_pool` (where ``alkahest.pi`` and
 ``alkahest.sin(2)`` live) is not given a token: it unpickles as the receiving
@@ -170,3 +172,23 @@ def _unpickle_domain(name: str):
     from .alkahest import Domain
 
     return getattr(Domain, name)
+
+
+def _unpickle_groebner(gens, order: str, proof_status: str, pool, variables):
+    from .alkahest import GroebnerBasis
+
+    return GroebnerBasis._from_pickle(gens, order, proof_status, pool, variables)
+
+
+def _unpickle_number_field(coeffs, variable: str, cyclotomic_order):
+    from .alkahest import NumberField
+
+    if cyclotomic_order is not None:
+        field = NumberField.cyclotomic(cyclotomic_order)
+    else:
+        field = NumberField(coeffs)
+    return field.with_variable(variable)
+
+
+def _unpickle_number_field_element(field, coeffs):
+    return field.element(coeffs)

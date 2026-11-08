@@ -1566,14 +1566,20 @@ def _walk_expr(expr: Any) -> Iterator[Any]:
 
 
 def _free_symbols(expr: Any) -> dict[str, Any]:
-    """Free symbols of *expr*, excluding the reserved ``∞`` / ``I`` names."""
+    """Free symbols of *expr* by printed name, excluding the kernel's constants.
+
+    The key is the name the oracle's term uses (``subs_by_name``), so a user
+    variable ``pi`` is ``"pi"``. Constants are not sampled: the oracle holds
+    them at their true value, and binding one to a random point would report a
+    divergence that is not there.
+    """
     out: dict[str, Any] = {}
     for sub in _walk_expr(expr):
         node = sub.node()
         if node[0] == "symbol":
             name = str(node[1])
-            if name not in RESERVED_SYMBOLS:
-                out[name] = sub
+            if name not in (*RESERVED_SYMBOLS, *_NAMED_CONSTANTS, *_UNMAPPED_CONSTANTS):
+                out[_display_name(name)] = sub
     return out
 
 

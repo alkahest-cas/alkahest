@@ -430,6 +430,9 @@ const RESERVED: &[&str] = &[
 const SIMPLE_EXTRA: &str = "~!@$%^&*_-+=<>.?/";
 
 fn smt_symbol(name: &str) -> Result<String, SmtLibError> {
+    // A user variable called `pi` is declared as `pi`; `collect_symbols_expr`
+    // refuses a formula where that would merge it with the constant.
+    let name = crate::kernel::symbol_display_name(name);
     if name.contains('|') || name.contains('\\') {
         return Err(SmtLibError::SymbolConflict(format!(
             "symbol name {name:?} contains '|' or '\\', which SMT-LIB 2 cannot quote"
@@ -475,6 +478,19 @@ fn collect_symbols_expr(
     match pool.get(id) {
         ExprData::Symbol { name, domain, .. } => {
             let sort = sort_of_domain(&name, domain)?;
+            let marker = crate::kernel::USER_SYMBOL_MARKER;
+            let display = crate::kernel::symbol_display_name(&name);
+            let twin = if display == name {
+                format!("{name}{marker}")
+            } else {
+                display.to_string()
+            };
+            if out.contains_key(&twin) {
+                return Err(SmtLibError::SymbolConflict(format!(
+                    "the variable {display:?} and the constant of the same name both occur; \
+                     they would be one SMT-LIB symbol, so rename the variable"
+                )));
+            }
             if let Some(&(prev_sort, prev_domain)) = out.get(&name) {
                 if prev_sort != sort || prev_domain != domain {
                     return Err(SmtLibError::SymbolConflict(format!(

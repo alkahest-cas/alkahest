@@ -26,7 +26,10 @@ fn node_id(id: ExprId) -> String {
 
 fn node_label(pool: &ExprPool, id: ExprId) -> String {
     match pool.get(id) {
-        ExprData::Symbol { name, .. } => format!("sym\\n{}", escape_dot(&name)),
+        ExprData::Symbol { name, .. } => {
+            let name = crate::kernel::symbol_display_name(&name);
+            format!("sym\\n{}", escape_dot(name))
+        }
         ExprData::Integer(n) => format!("int\\n{}", n),
         ExprData::Rational(r) => format!("rat\\n{}", r),
         ExprData::Float(f) => format!("float\\n{}", f),
