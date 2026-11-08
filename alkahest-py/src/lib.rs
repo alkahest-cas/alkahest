@@ -502,6 +502,20 @@ fn number_into_pool(pool: &ExprPool, ob: &Bound<'_, PyAny>) -> PyResult<Option<E
     Ok(None)
 }
 
+/// Clone a `Py<T>` wherever this runs.
+///
+/// `Py<T>: Clone` has been behind PyO3's `py-clone` feature since 0.22, where it
+/// panics on a thread that does not hold the GIL. Taking the GIL here instead
+/// makes the `Clone` impls below safe to call from anywhere.
+fn clone_py<T>(p: &Py<T>) -> Py<T> {
+    Python::with_gil(|py| p.clone_ref(py))
+}
+
+/// [`clone_py`] through an `Option`.
+fn clone_opt_py<T>(p: &Option<Py<T>>) -> Option<Py<T>> {
+    p.as_ref().map(clone_py)
+}
+
 // ---------------------------------------------------------------------------
 // Default pool, and Python numbers / pool-free constants as operands
 // ---------------------------------------------------------------------------
@@ -1244,7 +1258,7 @@ fn parse_domain(s: &str) -> Domain {
 }
 
 /// Python-visible symbol domain (matches :class:`alkahest_core::kernel::Domain`).
-#[pyclass(name = "Domain")]
+#[pyclass(name = "Domain", eq, eq_int)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PyDomain {
     #[pyo3(name = "Real")]
@@ -2484,6 +2498,7 @@ impl PyExprPool {
         Ok(PyExpr { id, pool })
     }
 
+    #[pyo3(signature = (value, prec=None))]
     fn float(slf: PyRef<'_, Self>, value: f64, prec: Option<u32>) -> PyResult<PyExpr> {
         let prec = checked_prec(prec.unwrap_or(53))?;
         let id = slf.inner.float(value, prec);
@@ -2684,10 +2699,18 @@ impl PyExprPool {
 // ---------------------------------------------------------------------------
 
 #[pyclass(name = "Expr")]
-#[derive(Clone)]
 struct PyExpr {
     id: alkahest_core::ExprId,
     pool: Py<PyExprPool>,
+}
+
+impl Clone for PyExpr {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            pool: clone_py(&self.pool),
+        }
+    }
 }
 
 /// The exact `Fraction` behind a float base of `Fraction ** Expr`, if that is
@@ -5321,7 +5344,7 @@ struct PyMultiPoly {
 }
 
 fn merge_mp_pool(a: &Option<Py<PyExprPool>>, b: &Option<Py<PyExprPool>>) -> Option<Py<PyExprPool>> {
-    a.clone().or_else(|| b.clone())
+    clone_opt_py(a).or_else(|| clone_opt_py(b))
 }
 
 // ---------------------------------------------------------------------------
@@ -5727,7 +5750,7 @@ impl PyMultiPoly {
     fn primitive_part(&self) -> PyMultiPoly {
         PyMultiPoly {
             inner: self.inner.primitive_part(),
-            pool: self.pool.clone(),
+            pool: clone_opt_py(&self.pool),
         }
     }
 
@@ -5859,14 +5882,14 @@ impl PyRationalFunction {
     fn numer(&self) -> PyMultiPoly {
         PyMultiPoly {
             inner: self.inner.numer.clone(),
-            pool: self.pool.clone(),
+            pool: clone_opt_py(&self.pool),
         }
     }
 
     fn denom(&self) -> PyMultiPoly {
         PyMultiPoly {
             inner: self.inner.denom.clone(),
-            pool: self.pool.clone(),
+            pool: clone_opt_py(&self.pool),
         }
     }
 
@@ -5913,7 +5936,7 @@ impl PyRationalFunction {
     fn __neg__(&self) -> PyRationalFunction {
         PyRationalFunction {
             inner: -self.inner.clone(),
-            pool: self.pool.clone(),
+            pool: clone_opt_py(&self.pool),
         }
     }
 
@@ -12627,10 +12650,18 @@ impl PyHybridODE {
 // ---------------------------------------------------------------------------
 
 #[pyclass(name = "Port")]
-#[derive(Clone)]
 struct PyPort {
     inner: Port,
     pool: Py<PyExprPool>,
+}
+
+impl Clone for PyPort {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            pool: clone_py(&self.pool),
+        }
+    }
 }
 
 #[pymethods]
@@ -12665,10 +12696,18 @@ impl PyPort {
 /// with :meth:`AcausalSystem.add_component` and wire them together with
 /// :meth:`AcausalSystem.connect`.
 #[pyclass(name = "Component")]
-#[derive(Clone)]
 struct PyComponent {
     inner: Component,
     pool: Py<PyExprPool>,
+}
+
+impl Clone for PyComponent {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            pool: clone_py(&self.pool),
+        }
+    }
 }
 
 #[pymethods]
@@ -14314,7 +14353,7 @@ fn float_to_fraction<'py>(py: Python<'py>, f: &rug::Float) -> PyResult<Bound<'py
 ///
 /// `bindings` is a dict mapping Expr → ArbBall.
 #[pyfunction]
-#[pyo3(name = "interval_eval")]
+#[pyo3(name = "interval_eval", signature = (expr, bindings, prec=None))]
 fn py_interval_eval(
     py: Python<'_>,
     expr: PyRef<PyExpr>,
@@ -14417,6 +14456,7 @@ impl PyEvaluationResult {
     /// Rebuild a result pickled by `__reduce__`. Private.
     #[staticmethod]
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (value, status, backend, requested_mode, requested_precision_bits=None, achieved_precision_bits=None, enclosure=None, reason=None))]
     fn _from_pickle(
         value: PyObject,
         status: String,
@@ -21411,7 +21451,7 @@ fn py_modular_reduce(poly: PyRef<PyMultiPoly>, p: u64) -> PyResult<PyMultiPolyFp
     core_reduce_mod(&poly.inner, p)
         .map(|fp| PyMultiPolyFp {
             inner: fp,
-            pool: poly.pool.clone(),
+            pool: clone_opt_py(&poly.pool),
         })
         .map_err(modular_error_to_py)
 }
@@ -21438,7 +21478,7 @@ fn py_modular_lift_crt(
         .collect();
     // Preserve variable names from the first image's originating pool so the
     // reconstructed polynomial round-trips to the same string representation.
-    let pool = polys.first().and_then(|p| p.pool.clone());
+    let pool = polys.first().and_then(|p| clone_opt_py(&p.pool));
     core_lift_crt(&images)
         .map(|mp| PyMultiPoly { inner: mp, pool })
         .map_err(modular_error_to_py)
@@ -22808,10 +22848,18 @@ fn vec3_to_py(v: [ExprId; 3], pool_py: &Py<PyExprPool>, py: Python<'_>) -> PyObj
 /// frame — which is the convention ``sympy.vector`` uses and the one an
 /// engineer means by "the ρ component".
 #[pyclass(name = "Coordinates", module = "alkahest.experimental")]
-#[derive(Clone)]
 struct PyCoordinates {
     inner: alkahest_core::vector::Coordinates,
     pool: Py<PyExprPool>,
+}
+
+impl Clone for PyCoordinates {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            pool: clone_py(&self.pool),
+        }
+    }
 }
 
 #[pymethods]
@@ -23140,10 +23188,18 @@ fn py_vector_norm(py: Python<'_>, a: Vec<Bound<'_, PyAny>>) -> PyResult<PyExpr> 
 /// ``(q1 * q2).to_rotation_matrix() == q1.to_rotation_matrix() @
 /// q2.to_rotation_matrix()``.
 #[pyclass(name = "Quaternion", module = "alkahest.experimental")]
-#[derive(Clone)]
 struct PyQuaternion {
     inner: alkahest_core::algebra::quaternion::Quaternion,
     pool: Py<PyExprPool>,
+}
+
+impl Clone for PyQuaternion {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            pool: clone_py(&self.pool),
+        }
+    }
 }
 
 impl PyQuaternion {
