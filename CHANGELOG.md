@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Fixed
+
+- `integrate` no longer runs past its wall budget, or out of memory, in the by-parts route's
+  clean-up `cancel`. `∫ d/dx[atan x + atan x·log x·√(x+1)] dx` under `Budget(wall_ms=4000)` was
+  still running when killed at 60 s; given 40 s it grew past 8 GB. One `cancel` on a 25 kB
+  intermediate over 30 opaque generators was the whole of it, and nothing in the rational-function
+  arithmetic looked at the clock. It now raises `E-BUDGET-001` at 4.00 s and uses 45 MB; with a
+  budget long enough to finish it refuses with `E-INT-001` after about 12 s. `cancel` / `together`
+  poll the budget between arithmetic steps and raise `BudgetExceededError` from Python, and the
+  by-parts route skips its optional `cancel` above 12 polynomial variables.
+- The algebraic Risch-DE solver (ansatz search and non-existence proof) polls the budget and
+  declines when it is spent, never reporting an interrupted system as inconsistent: its overrun
+  on `∫eˣ·√(x²+3)·√x dx` under `wall_ms=300` was 2.3× and is now 1.0×.
+- Rational roots with large coefficients no longer cost `√|a₀|` trial divisions in the integrator's
+  Puiseux, integral-basis, residue and order-finding routines (never finishing at 80 bits, with no
+  budget poll inside). Above 20 bits the roots come from FLINT's factorisation over ℤ; smaller
+  inputs keep the classical search and its order.
+
 ## 3.13.1 — 2026-11-08
 
 A hotfix for the Linux x86_64 wheels of 3.13.0. If you installed 3.13.0 on Linux, upgrade.

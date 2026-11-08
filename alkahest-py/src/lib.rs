@@ -1811,6 +1811,20 @@ fn conv_error_to_py(e: alkahest_core::ConversionError) -> PyErr {
     })
 }
 
+/// `cancel` / `together` errors: a budget trip inside the rational-function
+/// arithmetic is reported as `ExponentTooLarge` (the Rust enum is exhaustive)
+/// with the real cause in the budget's trip slot — raise that as
+/// `BudgetExceededError`. Both bindings clear the slot before the call, so a trip
+/// found here belongs to this call.
+fn cancel_error_to_py(e: alkahest_core::ConversionError) -> PyErr {
+    if matches!(e, alkahest_core::ConversionError::ExponentTooLarge) {
+        if let Some(err) = Python::with_gil(budget_trip_to_py) {
+            return err;
+        }
+    }
+    conv_error_to_py(e)
+}
+
 fn factor_error_to_py(e: FactorError) -> PyErr {
     Python::with_gil(|py| {
         // A size refusal is reported as `FlintFailure` with its cause left in
@@ -15178,8 +15192,11 @@ fn py_cancel(
         };
         // GIL released for the core call; see `py_integrate`.
         let (id, pool) = (expr.id, &pool.inner);
-        py.allow_threads(move || core_cancel(id, var_ids, pool))
-            .map_err(conv_error_to_py)?
+        py.allow_threads(move || {
+            alkahest_core::budget::clear_trip();
+            core_cancel(id, var_ids, pool)
+        })
+        .map_err(cancel_error_to_py)?
     };
     Ok(PyExpr {
         id: result,
@@ -15216,8 +15233,11 @@ fn py_together(
         };
         // GIL released for the core call; see `py_integrate`.
         let (id, pool) = (expr.id, &pool.inner);
-        py.allow_threads(move || core_together(id, var_ids, pool))
-            .map_err(conv_error_to_py)?
+        py.allow_threads(move || {
+            alkahest_core::budget::clear_trip();
+            core_together(id, var_ids, pool)
+        })
+        .map_err(cancel_error_to_py)?
     };
     Ok(PyExpr {
         id: result,

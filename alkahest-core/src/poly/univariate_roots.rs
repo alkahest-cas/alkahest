@@ -376,6 +376,121 @@ pub(crate) fn symbolic_radical_roots(coeffs: &[ExprId], pool: &ExprPool) -> Opti
     }
 }
 
+/// Bit size up to which [`rational_roots_divisor_order`] enumerates divisors.
+///
+/// Trial division to `√n` is 2¹⁰ steps here, and a number below 2²⁰ has at
+/// most 240 divisors, so the candidate loop stays in the milliseconds.
+const DIVISOR_SEARCH_MAX_BITS: u32 = 20;
+
+/// Distinct non-zero rational roots of `Σ ints[k]·x^k` (integer coefficients,
+/// ascending), in the order of the classical rational-root search: numerator
+/// divisors of `|ints[0]|` in `1, n, 2, n/2, …` order, then denominator
+/// divisors of `|ints[last]|`, then `+` before `−`.
+///
+/// That search enumerates divisors by trial division up to `√|a₀|`, which is
+/// exponential in the size of the coefficients: the integrator's Puiseux,
+/// integral-basis, residue and order-finding routines each carried a copy,
+/// and one was seen spending a `wall_ms=300` budget's whole overrun counting
+/// to the square root of a large constant, with nothing polling the budget —
+/// at 80 bits it would never finish. Small coefficients keep the classical
+/// search exactly (so every answer and its order are unchanged); past
+/// [`DIVISOR_SEARCH_MAX_BITS`] the roots are read off the linear factors of
+/// FLINT's factorisation over ℤ instead, which is complete and polynomial
+/// time, and sorted by the same key. A zero `ints[0]` keeps the classical
+/// behaviour (it only ever searched `±1/q`).
+pub(crate) fn rational_roots_divisor_order(ints: &[Integer]) -> Vec<Rational> {
+    if ints.len() < 2 {
+        return Vec::new();
+    }
+    let a0 = ints[0].clone().abs();
+    let an = ints[ints.len() - 1].clone().abs();
+    if a0 == 0
+        || an == 0
+        || (a0.significant_bits() <= DIVISOR_SEARCH_MAX_BITS
+            && an.significant_bits() <= DIVISOR_SEARCH_MAX_BITS)
+    {
+        return classical_rational_roots(ints, &a0, &an);
+    }
+    let p = crate::flint::FlintPoly::from_rug_coefficients(ints);
+    let Ok((_, facs)) = p.factor_over_z() else {
+        return Vec::new();
+    };
+    let mut roots: Vec<Rational> = facs
+        .iter()
+        .filter(|(f, _)| f.degree() == 1)
+        .map(|(f, _)| {
+            let c0 = f.get_coeff_flint(0).to_rug();
+            let c1 = f.get_coeff_flint(1).to_rug();
+            Rational::from((-c0, c1))
+        })
+        .filter(|r| *r != 0)
+        .collect();
+    // The classical search's order: the rank of a divisor `d` of `n` in the
+    // list `1, n, 2, n/2, …` is `(min(d, n/d), d > n/d)`; a root `±a/b` is met
+    // at its numerator's rank, then its denominator's, `+` first. (A root whose
+    // unreduced form `a·k / b·k` ranks earlier is met sooner by the classical
+    // search, so only the order of such roots can differ, never the set.)
+    let rank = |d: &Integer, n: &Integer| {
+        let co = Integer::from(n / d);
+        let lo = if *d <= co { d.clone() } else { co.clone() };
+        (lo, *d > co)
+    };
+    let key = |r: &Rational| {
+        (
+            rank(&r.numer().clone().abs(), &a0),
+            rank(r.denom(), &an),
+            *r < 0,
+        )
+    };
+    roots.sort_by_key(key);
+    roots
+}
+
+fn classical_rational_roots(ints: &[Integer], a0: &Integer, an: &Integer) -> Vec<Rational> {
+    let pdiv = small_divisors(a0);
+    let qdiv = small_divisors(an);
+    let mut seen: Vec<Rational> = Vec::new();
+    for pn in &pdiv {
+        for qn in &qdiv {
+            for sign in [1i32, -1] {
+                let cand = Rational::from((Integer::from(sign) * pn.clone(), qn.clone()));
+                if seen.contains(&cand) {
+                    continue;
+                }
+                let mut acc = Rational::from(0);
+                for a in ints.iter().rev() {
+                    acc = acc * &cand + Rational::from(a.clone());
+                }
+                if acc == 0 {
+                    seen.push(cand);
+                }
+            }
+        }
+    }
+    seen
+}
+
+/// Positive divisors of `|n|` in `1, n, 2, n/2, …` order; `{1}` for `n = 0`.
+fn small_divisors(n: &Integer) -> Vec<Integer> {
+    let n = n.clone().abs();
+    if n == 0 {
+        return vec![Integer::from(1)];
+    }
+    let mut ds = Vec::new();
+    let mut d = Integer::from(1);
+    while Integer::from(&d * &d) <= n {
+        if n.is_divisible(&d) {
+            ds.push(d.clone());
+            let other = Integer::from(&n / &d);
+            if other != d {
+                ds.push(other);
+            }
+        }
+        d += 1;
+    }
+    ds
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,5 +580,71 @@ mod tests {
             );
         }
         assert_all_roots(&c, &r, &pool);
+    }
+
+    /// Past the divisor-search size the roots come from FLINT's factorisation:
+    /// the same set the classical search would find, without the `√n` loop.
+    #[test]
+    fn rational_roots_of_large_coefficients_come_from_factoring() {
+        let z = |v: i64| Integer::from(v);
+        // (2x − 3)(x + 5)(x² + 1), small: the classical path and its order.
+        let small = [z(-15), z(7), z(-13), z(7), z(2)];
+        assert_eq!(
+            rational_roots_divisor_order(&small),
+            vec![Rational::from((3, 2)), Rational::from(-5)]
+        );
+        // (p·x − q)(x + r)(x² + 1) with ~60-bit p, q, r: trial division to
+        // √(q·r) is ~2⁶⁰ steps, so only the factoring path can answer.
+        let pp = Integer::from(2305843009213693951_i64); // 2^61 − 1
+        let qq = Integer::from(2305843009213693921_i64);
+        let rr = Integer::from(1152921504606846883_i64);
+        let c2 = pp.clone();
+        let c1 = Integer::from(&pp * &rr) - &qq;
+        let c0 = -Integer::from(&qq * &rr);
+        let ints = [
+            c0.clone(),
+            c1.clone(),
+            Integer::from(&c2 + &c0),
+            c1.clone(),
+            c2.clone(),
+        ];
+        let got = rational_roots_divisor_order(&ints);
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(
+            got.contains(&Rational::from((qq.clone(), pp.clone()))),
+            "{got:?}"
+        );
+        assert!(got.contains(&Rational::from(-rr.clone())), "{got:?}");
+        for r in &got {
+            let mut acc = Rational::from(0);
+            for a in ints.iter().rev() {
+                acc = acc * r + Rational::from(a.clone());
+            }
+            assert_eq!(acc, 0);
+        }
+        // The two paths agree on the set wherever both run.
+        for poly in [
+            vec![z(-15), z(7), z(-13), z(7), z(2)],
+            vec![z(6), z(-5), z(1)],
+            vec![z(-12), z(0), z(3)],
+            vec![z(7), z(0), z(0), z(1)],
+        ] {
+            let p = crate::flint::FlintPoly::from_rug_coefficients(&poly);
+            let (_, facs) = p.factor_over_z().unwrap();
+            let mut via_factor: Vec<Rational> = facs
+                .iter()
+                .filter(|(f, _)| f.degree() == 1)
+                .map(|(f, _)| {
+                    Rational::from((
+                        -f.get_coeff_flint(0).to_rug(),
+                        f.get_coeff_flint(1).to_rug(),
+                    ))
+                })
+                .collect();
+            let mut classical = rational_roots_divisor_order(&poly);
+            via_factor.sort();
+            classical.sort();
+            assert_eq!(via_factor, classical, "{poly:?}");
+        }
     }
 }

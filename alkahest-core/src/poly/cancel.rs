@@ -80,6 +80,18 @@ pub(crate) fn rational_over_generators(
     Ok((rf, gens))
 }
 
+/// How many polynomial variables [`cancel`] would work over for `expr`: the
+/// `vars` plus every opaque generator (`sin(x)`, `√(x+1)`, a foreign symbol).
+///
+/// The cost of the multivariate GCDs behind `cancel` grows steeply with this
+/// number, so a caller for whom `cancel` is an optional clean-up can consult
+/// it first. One structural walk; no arithmetic.
+pub(crate) fn generator_count(expr: ExprId, vars: &[ExprId], pool: &ExprPool) -> usize {
+    let mut gens: Vec<ExprId> = vars.to_vec();
+    collect_generators(expr, vars, pool, &mut gens);
+    gens.len()
+}
+
 /// Combine *expr* over a common denominator and cancel common polynomial
 /// factors, returning a single symbolic expression.
 ///
@@ -103,6 +115,52 @@ pub fn together(
     pool: &ExprPool,
 ) -> Result<ExprId, ConversionError> {
     cancel(expr, vars, pool)
+}
+
+/// Budget checkpoint for the rational-function arithmetic below.
+///
+/// Every `+`/`*` here ends in a multivariate GCD, and on an expression with a
+/// few opaque generators (`atan(x)`, `log(x)`, `√(x+1)`) those GCDs grow with
+/// every summand folded in: `∫ d/dx[atan x + atan x·log x·√(x+1)] dx` spent
+/// over a minute in one `cancel` called from the by-parts route under a 4 s wall
+/// budget, because nothing in this module ever looked at the clock.
+///
+/// [`ConversionError`] is a public exhaustive enum and cannot grow a budget
+/// variant, so a trip is reported as `ExponentTooLarge` (the variant a memory
+/// budget already uses here) with the real cause left in
+/// [`crate::budget::take_trip`] for the bindings. Uses
+/// [`crate::budget::tripped`], which charges no step: polling here must not
+/// shift a `max_steps` caller's accounting.
+pub(crate) fn poll_budget() -> Result<(), ConversionError> {
+    match crate::budget::tripped() {
+        None => Ok(()),
+        Some(e) => {
+            crate::budget::record_trip(crate::budget::BudgetTrip::Budget(e));
+            Err(ConversionError::ExponentTooLarge)
+        }
+    }
+}
+
+/// `a + b`, exactly as `RationalFunction`'s `Add`, with a budget checkpoint
+/// between its three products and the GCD reduction: on large operands each
+/// is a FLINT call of tens of milliseconds, and the reduction more.
+fn rf_add(a: RationalFunction, b: RationalFunction) -> Result<RationalFunction, ConversionError> {
+    let ad = a.numer.checked_mul(&b.denom)?;
+    poll_budget()?;
+    let cb = b.numer.checked_mul(&a.denom)?;
+    poll_budget()?;
+    let denom = a.denom.checked_mul(&b.denom)?;
+    poll_budget()?;
+    RationalFunction::new(ad + cb, denom)
+}
+
+/// `a · b`, exactly as `RationalFunction`'s `Mul`, polling like [`rf_add`].
+fn rf_mul(a: RationalFunction, b: RationalFunction) -> Result<RationalFunction, ConversionError> {
+    let numer = a.numer.checked_mul(&b.numer)?;
+    poll_budget()?;
+    let denom = a.denom.checked_mul(&b.denom)?;
+    poll_budget()?;
+    RationalFunction::new(numer, denom)
 }
 
 /// Build `numer / denom` as a symbolic expression, simplifying `denom == 1`.
@@ -186,6 +244,7 @@ fn expr_to_rational(
     if gens.contains(&expr) {
         return generator_rf(expr, gens, pool);
     }
+    poll_budget()?;
 
     enum Node {
         Poly,
@@ -244,7 +303,8 @@ fn expr_to_rational(
             let mut acc = const_rf(0, gens);
             for a in args {
                 let r = expr_to_rational(a, gens, pool)?;
-                acc = (acc + r)?;
+                poll_budget()?;
+                acc = rf_add(acc, r)?;
             }
             Ok(acc)
         }
@@ -252,7 +312,8 @@ fn expr_to_rational(
             let mut acc = const_rf(1, gens);
             for a in args {
                 let r = expr_to_rational(a, gens, pool)?;
-                acc = (acc * r)?;
+                poll_budget()?;
+                acc = rf_mul(acc, r)?;
             }
             Ok(acc)
         }
@@ -348,13 +409,14 @@ fn pow_rf(
     let mut cur = b;
     let mut rem = exp;
     while rem > 0 {
+        poll_budget()?;
         if rem & 1 == 1 {
-            acc = (acc * cur.clone())?;
+            acc = rf_mul(acc, cur.clone())?;
         }
         rem >>= 1;
         // No square past the top bit: it can overflow when the power does not.
         if rem > 0 {
-            cur = (cur.clone() * cur)?;
+            cur = rf_mul(cur.clone(), cur)?;
         }
     }
     Ok(acc)
@@ -528,5 +590,47 @@ mod tests {
             "expected 5x/6, got {}",
             p.display(ratio)
         );
+    }
+
+    /// A spent wall budget stops `cancel` at its next checkpoint, as an
+    /// `ExponentTooLarge` whose real cause — the wall-clock trip — is left in
+    /// `budget::take_trip` for the bindings. Before, nothing in this module
+    /// polled the budget, and one `cancel` inside `integrate` ran for minutes
+    /// under a 4 s budget.
+    #[test]
+    fn spent_budget_stops_cancel_and_records_the_trip() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let a = p.func("atan", vec![x]);
+        let l = p.func("log", vec![x]);
+        let expr = p.add(vec![
+            p.mul(vec![a, p.pow(x, p.integer(-1_i32))]),
+            p.mul(vec![
+                l,
+                p.pow(p.add(vec![x, p.integer(1_i32)]), p.integer(-1_i32)),
+            ]),
+        ]);
+        crate::budget::clear_trip();
+        {
+            let _g = crate::budget::enter(
+                crate::budget::Budget::new().with_wall(std::time::Duration::ZERO),
+            );
+            assert_eq!(
+                cancel(expr, vec![x], &p).err(),
+                Some(ConversionError::ExponentTooLarge)
+            );
+            assert!(matches!(
+                crate::budget::take_trip(),
+                Some(crate::budget::BudgetTrip::Budget(
+                    crate::budget::BudgetError::WallClock { .. }
+                ))
+            ));
+        }
+        // No budget: the same expression cancels, and no trip is left behind.
+        assert!(cancel(expr, vec![x], &p).is_ok());
+        assert_eq!(crate::budget::take_trip(), None);
+        // A step-only budget is not charged by these polls.
+        let _g = crate::budget::enter(crate::budget::Budget::new().with_max_steps(1));
+        assert!(cancel(expr, vec![x], &p).is_ok());
     }
 }

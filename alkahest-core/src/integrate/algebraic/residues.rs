@@ -871,46 +871,12 @@ fn rational_roots(p: &QPoly) -> Vec<Rational> {
                 .clone()
         })
         .collect();
-    let a0 = ints[0].clone().abs();
-    let an = ints[ints.len() - 1].clone().abs();
-    for pn in divisors(&a0) {
-        for qn in &divisors(&an) {
-            for sign in [1i32, -1] {
-                let cand = Rational::from((Integer::from(sign) * pn.clone(), qn.clone()));
-                if roots.contains(&cand) {
-                    continue;
-                }
-                let mut acc = Rational::from(0);
-                for c in ints.iter().rev() {
-                    acc = acc * &cand + Rational::from(c.clone());
-                }
-                if acc == 0 {
-                    roots.push(cand);
-                }
-            }
-        }
-    }
+    // Shared, and not a `√|a₀|` trial division (exponential in the
+    // coefficient size) once the coefficients are large.
+    roots.extend(crate::poly::univariate_roots::rational_roots_divisor_order(
+        &ints,
+    ));
     roots
-}
-
-fn divisors(n: &Integer) -> Vec<Integer> {
-    let n = n.clone().abs();
-    if n == 0 {
-        return vec![Integer::from(1)];
-    }
-    let mut ds = Vec::new();
-    let mut d = Integer::from(1);
-    while Integer::from(&d * &d) <= n {
-        if n.is_divisible(&d) {
-            ds.push(d.clone());
-            let o = n.clone() / &d;
-            if o != d {
-                ds.push(o);
-            }
-        }
-        d += 1;
-    }
-    ds
 }
 
 #[cfg(test)]

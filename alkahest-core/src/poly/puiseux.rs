@@ -358,55 +358,10 @@ fn rational_roots(p: &[Rational]) -> Vec<Rational> {
                 .clone()
         })
         .collect();
-    let a0 = ints[0].clone().abs();
-    let an = ints[ints.len() - 1].clone().abs();
-    let pdiv = divisors(&a0);
-    let qdiv = divisors(&an);
-    let mut seen: Vec<Rational> = Vec::new();
-    for pn in &pdiv {
-        for qn in &qdiv {
-            for sign in [1i32, -1] {
-                let cand = Rational::from((Integer::from(sign) * pn.clone(), qn.clone()));
-                if seen.contains(&cand) {
-                    continue;
-                }
-                if eval_int_poly(&ints, &cand) == 0 {
-                    seen.push(cand);
-                }
-            }
-        }
-    }
-    roots.extend(seen);
+    // Not a `√|a₀|` trial division: that is exponential in the coefficient
+    // size, and the integrator reaches this with large constants.
+    roots.extend(super::univariate_roots::rational_roots_divisor_order(&ints));
     roots
-}
-
-fn eval_int_poly(coeffs: &[Integer], c: &Rational) -> Rational {
-    let mut acc = rzero();
-    for a in coeffs.iter().rev() {
-        acc = acc * c + Rational::from(a.clone());
-    }
-    acc
-}
-
-/// Positive divisors of `|n|` (with `n ≠ 0`); `{1}` for `n = 0`.
-fn divisors(n: &Integer) -> Vec<Integer> {
-    let n = n.clone().abs();
-    if n == 0 {
-        return vec![Integer::from(1)];
-    }
-    let mut ds = Vec::new();
-    let mut d = Integer::from(1);
-    while Integer::from(&d * &d) <= n {
-        if n.is_divisible(&d) {
-            ds.push(d.clone());
-            let other = n.clone() / &d;
-            if other != d {
-                ds.push(other);
-            }
-        }
-        d += 1;
-    }
-    ds
 }
 
 fn binomial(n: u32, k: u32) -> Integer {

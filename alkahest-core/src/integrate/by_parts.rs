@@ -967,6 +967,37 @@ fn rationalize_reciprocal(base: ExprId, pool: &ExprPool) -> Option<ExprId> {
     Some(pool.mul(vec![numer, pool.pow(denom, pool.integer(-1_i32))]))
 }
 
+/// Most polynomial variables (`var` plus opaque generators) this module lets a
+/// clean-up `cancel` work over.
+///
+/// Every `cancel` here is optional — a respelling offered to the engine — and
+/// its multivariate GCDs grow steeply with the variable count. Measured over
+/// six of the Python integration test files (768 calls): none works over more
+/// than 7, and the slowest takes 9 ms; the `atan x·log x·√(x+1)` by-parts chain of the budget
+/// report handed one a 25 kB intermediate over 30 generators, and a single
+/// GCD inside it ran for seconds, and with a longer budget for tens of seconds,
+/// until the process passed 8 GB — no budget poll can interrupt one FLINT call.
+const CLEANUP_CANCEL_MAX_GENERATORS: usize = 12;
+
+/// [`crate::poly::cancel::cancel`] over `var` as an optional clean-up: `None`
+/// when it fails, or when the input has more than
+/// [`CLEANUP_CANCEL_MAX_GENERATORS`] variables and would not be worth it.
+fn cleanup_cancel(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    if crate::poly::cancel::generator_count(expr, &[var], pool) > CLEANUP_CANCEL_MAX_GENERATORS {
+        return None;
+    }
+    crate::poly::cancel::cancel(expr, vec![var], pool).ok()
+}
+
+/// [`crate::poly::cancel::together_parts`] under the same rule as
+/// [`cleanup_cancel`].
+fn cleanup_together_parts(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
+    if crate::poly::cancel::generator_count(expr, &[var], pool) > CLEANUP_CANCEL_MAX_GENERATORS {
+        return None;
+    }
+    crate::poly::cancel::together_parts(expr, vec![var], pool).ok()
+}
+
 /// Try to replace `v` — an antiderivative of `dv` produced by the engine — with
 /// a smaller expression that is still an antiderivative of `dv`.
 ///
@@ -984,6 +1015,12 @@ fn normalize_v(v: ExprId, dv: ExprId, var: ExprId, pool: &ExprPool) -> ExprId {
     // Three passes is enough for every shape the algebraic engine emits;
     // the loop stops early as soon as a pass stops shrinking the expression.
     for _ in 0..3 {
+        // Every step below is unbounded work on a possibly large `v` (a
+        // multivariate-GCD `cancel` per candidate, a gate call per shrink), and
+        // this function cannot report a trip: on one, keep what is verified.
+        if crate::budget::tripped().is_some() {
+            return best;
+        }
         let expanded = reduce_sqrt_squares(simplify_expanded(cur, pool).value, pool);
         let folded = simplify(expanded, pool).value;
         let rationalised = reduce_sqrt_squares(rationalize_radicals(folded, pool), pool);
@@ -1005,7 +1042,10 @@ fn normalize_v(v: ExprId, dv: ExprId, var: ExprId, pool: &ExprPool) -> ExprId {
         // combine like terms across a rational coefficient (the same gap that
         // forces the numeric fallback in `constant_ratio`).
         for i in 0..candidates.len() {
-            if let Ok(k) = crate::poly::cancel::cancel(candidates[i], vec![var], pool) {
+            if crate::budget::tripped().is_some() {
+                return best;
+            }
+            if let Some(k) = cleanup_cancel(candidates[i], var, pool) {
                 candidates.push(simplify(k, pool).value);
             }
         }
@@ -1023,6 +1063,9 @@ fn normalize_v(v: ExprId, dv: ExprId, var: ExprId, pool: &ExprPool) -> ExprId {
         for c in candidates {
             if c == best || node_count(c, pool) >= node_count(best, pool) {
                 continue;
+            }
+            if crate::budget::tripped().is_some() {
+                return best;
             }
             // Re-verify against `dv`.  A rewrite that is wrong on some branch
             // is rejected here rather than being carried into the chain.
@@ -1083,7 +1126,7 @@ fn combine_radicals(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId
         .map(|&(r, k)| pool.pow(r, pool.integer(k)))
         .collect();
     let product = pool.mul(factors);
-    let reduced = crate::poly::cancel::cancel(product, vec![var], pool).ok()?;
+    let reduced = cleanup_cancel(product, var, pool)?;
     let reduced = simplify(reduced, pool).value;
 
     // Pull a square monomial out of the radicand if there is one: `√(x⁴+x²)`
@@ -1160,7 +1203,7 @@ fn split_sqrt_quotients(expr: ExprId, var: ExprId, pool: &ExprPool) -> ExprId {
         ExprData::Func { name, args } if name == "sqrt" && args.len() == 1 => {
             let r = split_sqrt_quotients(args[0], var, pool);
             let r = simplify(reduce_sqrt_squares(r, pool), pool).value;
-            if let Ok((n, d)) = crate::poly::cancel::together_parts(r, vec![var], pool) {
+            if let Some((n, d)) = cleanup_together_parts(r, var, pool) {
                 let d = simplify(d, pool).value;
                 if !is_one(d, pool) && !is_zero(d, pool) {
                     let n = simplify(n, pool).value;
@@ -1486,7 +1529,13 @@ fn radical_normal_forms(expr: ExprId, var: ExprId, pool: &ExprPool) -> Vec<ExprI
             return out;
         }
         let expanded = reduce_sqrt_squares(simplify_expanded(cur, pool).value, pool);
+        if crate::budget::tripped().is_some() {
+            return out;
+        }
         let merged = combine_radicals_deep(expanded, var, pool);
+        if crate::budget::tripped().is_some() {
+            return out;
+        }
         let pulled = extract_square_factors(merged, var, pool);
         let split = simplify(
             reduce_sqrt_squares(split_sqrt_quotients(pulled, var, pool), pool),
@@ -1501,7 +1550,10 @@ fn radical_normal_forms(expr: ExprId, var: ExprId, pool: &ExprPool) -> Vec<ExprI
 
         let mut produced = vec![split, rationalised];
         for form in [split, rationalised] {
-            if let Ok(k) = crate::poly::cancel::cancel(form, vec![var], pool) {
+            if crate::budget::tripped().is_some() {
+                return out;
+            }
+            if let Some(k) = cleanup_cancel(form, var, pool) {
                 produced.push(simplify(reduce_sqrt_squares(k, pool), pool).value);
             }
         }
@@ -1622,6 +1674,7 @@ fn extract_square_monomial(r: ExprId, var: ExprId, pool: &ExprPool) -> (ExprId, 
 /// Returns the antiderivative of `w`, or `None`.  Every form is tried through
 /// the same public engine; nothing here is a new integration rule.
 fn close_integral(w_raw: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    crate::budget::tripped().is_none().then_some(())?;
     let combined = simplify(w_raw, pool).value;
     let expanded = simplify_expanded(w_raw, pool).value;
 
@@ -1629,7 +1682,7 @@ fn close_integral(w_raw: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId>
     if expanded != combined {
         forms.push(expanded);
     }
-    if let Ok(t) = crate::poly::cancel::together(combined, vec![var], pool) {
+    if let Some(t) = cleanup_cancel(combined, var, pool) {
         let t = simplify(t, pool).value;
         if !forms.contains(&t) {
             forms.push(t);
@@ -1639,6 +1692,7 @@ fn close_integral(w_raw: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId>
     // terms uncombined, and an uncancelled `x/2 − x/2` in a residual is enough
     // to make it unrecognisable to every downstream route.
     for i in 0..forms.len() {
+        crate::budget::tripped().is_none().then_some(())?;
         let collected = simplify(collect_like_terms_deep(forms[i], pool), pool).value;
         if !forms.contains(&collected) {
             forms.push(collected);
@@ -1649,6 +1703,7 @@ fn close_integral(w_raw: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId>
     // radicals cancel term by term.
     let mut merged: Vec<ExprId> = Vec::new();
     for &form in &forms {
+        crate::budget::tripped().is_none().then_some(())?;
         if let Some(m) = combine_radicals(form, var, pool) {
             merged.push(m);
         }
@@ -1794,6 +1849,10 @@ fn run_chain(integrand: ExprId, first: Split, var: ExprId, pool: &ExprPool) -> O
             let raw = simplify(integrate(split.dv, var, pool).ok()?.value, pool).value;
             normalize_v(raw, split.dv, var, pool)
         };
+        // `normalize_v` hands back what it has when the budget runs out, and
+        // every step below is more unbounded work on a large `v`: stop here
+        // rather than at the top of the next iteration.
+        crate::budget::tripped().is_none().then_some(())?;
 
         // du = u′ dx.
         let du = simplify(crate::diff::diff(split.u, var, pool).ok()?.value, pool).value;
@@ -1806,6 +1865,7 @@ fn run_chain(integrand: ExprId, first: Split, var: ExprId, pool: &ExprPool) -> O
         // count for reasons that have nothing to do with the split being wrong.
         // `close_integral` re-derives the expanded form when it needs it.
         let next_w = simplify(raw_w, pool).value;
+        crate::budget::tripped().is_none().then_some(())?;
 
         // ---- growth check -------------------------------------------------
         // `∫v·du` bigger than `∫u·dv` means the split was wrong.  Abandon this
@@ -1832,6 +1892,8 @@ fn run_chain(integrand: ExprId, first: Split, var: ExprId, pool: &ExprPool) -> O
             let tail = pool.mul(vec![mult.to_expr(pool), res]);
             return Some(simplify(pool.add(vec![acc, tail]), pool).value);
         }
+
+        crate::budget::tripped().is_none().then_some(())?;
 
         // ---- 2. cycle: is `w = c·f`?  Then solve the linear equation. -----
         //

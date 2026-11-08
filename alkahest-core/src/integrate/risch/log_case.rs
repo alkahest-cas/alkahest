@@ -463,6 +463,8 @@ fn integrate_base_unchecked(
     match crate::integrate::engine::integrate(expr, var, pool) {
         Ok(d) => Ok(crate::simplify::engine::simplify(d.value, pool).value),
         Err(IE::NonElementary(msg)) => Err(coefficient_verdict(expr, excluded_gen, var, msg, pool)),
+        // A budget trip is not "not integrable in the base field": keep it.
+        Err(e) if e.is_budget() => Err(e),
         Err(_) => Err(IE::NotImplemented(format!(
             "integrate_base: {} is not integrable in the base field",
             pool.display(expr)
@@ -589,6 +591,8 @@ fn integrate_base(
             )))
         }
         Err(IE::NonElementary(msg)) => Err(coefficient_verdict(expr, excluded_gen, var, msg, pool)),
+        // A budget trip is not "not integrable in the base field": keep it.
+        Err(e) if e.is_budget() => Err(e),
         Err(_) => Err(IE::NotImplemented(format!(
             "integrate_base: {} is not integrable in the base field",
             pool.display(expr)
