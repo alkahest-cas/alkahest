@@ -206,6 +206,9 @@ jobs:
               - '.github/workflows/release-wheel-smoke.yml'
               - '.github/workflows/changes.yml'
               - '.github/actions/**'
+              - '.github/scripts/**'
+              - 'scripts/check_wheel_isa.py'
+              - 'vendor/**'
               - 'tests/smoke_readme.py'
             # docs.yml's trigger `paths:`, plus the workflow itself.
             docs:

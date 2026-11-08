@@ -18,7 +18,8 @@ permissions:
   contents: read
 
 jobs:
-  # Default wheels: manylinux (py3.9-3.13), macOS arm64 and Windows.
+  # Default wheels (manylinux x86_64 and aarch64, macOS arm64, Windows; py3.9-3.14)
+  # and the sdist.
   wheels:
     name: wheels
     if: github.event_name != 'pull_request' || github.event.pull_request.merged
@@ -63,11 +64,11 @@ jobs:
         run: |
           mkdir -p dist-pypi
           shopt -s nullglob
-          for whl in dist/*.whl; do
-            b=$(basename "$whl")
+          for f in dist/*.whl dist/*.tar.gz; do
+            b=$(basename "$f")
             case "$b" in
               *+jit*|*+full*) ;;
-              *) cp "$whl" dist-pypi/ ;;
+              *) cp "$f" dist-pypi/ ;;
             esac
           done
           rm -rf dist
@@ -95,11 +96,11 @@ jobs:
         run: |
           mkdir -p dist-pypi
           shopt -s nullglob
-          for whl in dist/*.whl; do
-            b=$(basename "$whl")
+          for f in dist/*.whl dist/*.tar.gz; do
+            b=$(basename "$f")
             case "$b" in
               *+jit*|*+full*) ;;
-              *) cp "$whl" dist-pypi/ ;;
+              *) cp "$f" dist-pypi/ ;;
             esac
           done
           rm -rf dist
