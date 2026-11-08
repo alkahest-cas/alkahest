@@ -21,6 +21,7 @@ function, and against NumPy within a forward-error bound.
 from __future__ import annotations
 
 import math
+import os
 import warnings
 
 import alkahest as ak
@@ -87,13 +88,32 @@ def test_repro_values_match_single_calls_and_numpy():
     assert np.all(np.abs(out - _repro_numpy(xs)) <= 1e-14 * mag)
 
 
+#: True for an unoptimised extension (``maturin develop`` without ``--release``).
+#: Wheels built before the flag existed are release builds.
+_DEBUG_BUILD = getattr(ak.alkahest, "_DEBUG_BUILD", False)
+
+
 def test_interpreter_batches_keep_pace_with_numpy():
     """Throughput of the interpreter tier, measured against NumPy doing the
     same work in the same chunks (so per-call overhead is charged to both).
 
-    Before the block interpreter the ratio was about 40; now it is below 1.
-    The bound leaves an order of magnitude for noisy runners.
+    Measured in an optimised no-JIT build: the 3.11.0 interpreter is about 30x
+    NumPy, the one just before #509 is 1.6x, and #509 and 3.13.0 are 0.75x. The
+    bound separates the 3.11.0 tree-walk from the current interpreter with an
+    order of magnitude to spare for noisy runners.
+
+    An unoptimised build says nothing about this, so the timing is asserted
+    only on an optimised one. In the nightly ``hypothesis`` shard's debug build
+    (``--features "groebner egraph"``) the same three-way comparison reads 14x
+    just before #509 and 18x from #509 on (19-28x on GitHub's runners): #509
+    halved the optimised cost and made the unoptimised cost a quarter worse, so
+    what a debug timing measures is ``-O0`` code, not the interpreter. The
+    values are still checked in every build; the nightly runs the timing
+    against a ``--release`` build in a step of its own, with
+    ``ALKAHEST_REQUIRE_OPTIMISED_BUILD=1`` so it cannot pass by skipping.
     """
+    if _DEBUG_BUILD and os.environ.get("ALKAHEST_REQUIRE_OPTIMISED_BUILD") == "1":
+        pytest.fail("ALKAHEST_REQUIRE_OPTIMISED_BUILD=1 but the extension is a debug build")
     p = ExprPool()
     x = p.symbol("x")
     f = _compile(ak.parse(REPRO, p), [x])
@@ -113,6 +133,11 @@ def test_interpreter_batches_keep_pace_with_numpy():
         mag = 2 + np.log(1 + c**2) + np.sqrt(1 + c**4) + c**5 / (1 + c**2)
         assert np.all(np.abs(g - w) <= 1e-14 * mag)
     ratio = t_alkahest / t_numpy
+    if _DEBUG_BUILD:
+        pytest.skip(
+            f"unoptimised build ({ratio:.1f}x NumPy): the throughput bound holds for "
+            "optimised builds only; the values above were checked"
+        )
     assert ratio < 8 * scale(), (
         f"interpreter numpy_eval took {t_alkahest:.4f}s for {50 * CHUNK} points, "
         f"{ratio:.1f}x NumPy's {t_numpy:.4f}s"
@@ -199,7 +224,23 @@ def _trees(draw, pool, x, y, xs, ys, depth):
             return a - b, va - vb, ma + mb
         if kind == "mul":
             return a * b, va * vb, ma * mb + np.abs(va) * mb + ma * np.abs(vb)
-        return a / b, va / vb, (ma + np.abs(va / vb) * mb) / np.abs(vb)
+        refused = None
+        try:
+            quotient = a / b
+        except ak.DivisionByZeroError as exc:
+            refused = exc.code
+        if refused is not None:
+            # Construction folds `x - x` and its kin to 0 (#535), and dividing
+            # by an identically-zero expression is refused up front. The
+            # refusal must be right: the denominator vanishes wherever NumPy
+            # gives it a finite value (up to rounding of its own terms). The
+            # node then stands as its numerator, so the tree keeps its shape
+            # and every other draw is unchanged.
+            assert refused == "E-DOMAIN-001"
+            fin = np.isfinite(vb) & np.isfinite(mb)
+            assert np.all(np.abs(vb[fin]) <= 1e-12 * mb[fin]), (str(a), str(b))
+            return a, va, ma
+        return quotient, va / vb, (ma + np.abs(va / vb) * mb) / np.abs(vb)
 
 
 _RNG = np.random.default_rng(20261025)

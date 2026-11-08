@@ -1,0 +1,60 @@
+# Valgrind shard scope — which `alkahest-cas` unit tests the nightly
+# `valgrind` and `valgrind-validated` shards run under memcheck.
+#
+# Read by `.github/workflows/ci.yml`, step "Valgrind — Rust/C FFI boundary".
+#
+# Format, one entry per line:   <shard>   filter|skip   <libtest substring>
+#
+#   filter  — passed to the test binary as a positional filter (substring
+#             match, not a regex; several filters are OR-ed).
+#   skip    — passed as `--skip` (substring match), and removes the tests it
+#             matches from whatever the filters selected.
+#
+# Before valgrind starts, the step lists the binary's tests (no valgrind, so
+# instantly) and fails if any filter *or* skip matches zero tests: a renamed
+# test cannot turn a filter into a vacuous pass or a skip into dead text. It
+# then prints how many tests the shard will run, and after the run fails if
+# memcheck executed none.
+#
+# Every skip says why, and what does check that code instead. TESTING.md §3
+# ("Valgrind") lists the same coverage for readers who do not open this file.
+#
+# Wall-clock bounds: the step sets ALKAHEST_TEST_TIME_SCALE=50 (memcheck is a
+# 20–50× slowdown), which `test_time::limit` multiplies every scaled test
+# deadline and budget by. A test with a fixed `Duration` bound fails under
+# valgrind for no memory reason — use `crate::test_time::limit*` instead of
+# adding a skip here.
+
+# ── valgrind: the GMP / MPFR / FLINT boundary ──────────────────────────────
+# The tests whose code crosses into C: ball arithmetic (Arb), anything named
+# for FLINT or rug, number theory and lattices (all bignum), and the binomial
+# factoriser's FLINT comparisons on small inputs.
+valgrind            filter  ball::
+valgrind            filter  flint
+valgrind            filter  rug
+valgrind            filter  number_theory::
+valgrind            filter  lattice::
+valgrind            filter  poly::factor::binomial::
+
+# These three run FLINT's Zassenhaus / van Hoeij factoriser on dense
+# polynomials of degree up to 300 (`x^n ± 1` for every n ≤ 300; degree-240
+# `x^n − 1` products), which is seconds natively and did not finish in five
+# hours under memcheck: from the nightly of 2026-11-01 to 2026-11-07 they were
+# the only tests still running when the job hit GitHub's 6 h cap, every
+# night, and the shard was cancelled with its result unreported. The same
+# FFI entry points (`fmpz_poly_factor`, the coefficient round trip) are
+# exercised here on small inputs by the rest of `poly::factor::binomial::`
+# and by the `flint` filter (`flint_builder_matches_coeffmap`,
+# `flint_mul_matches_schoolbook`, …); the three tests in full run under ASan
+# (memory errors) and LSan (leaks) in the `asan` and `lsan` shards.
+valgrind            skip    poly::factor::binomial::tests::x_n_pm_1_matches_flint
+valgrind            skip    poly::factor::binomial::tests::scaled_and_shifted_binomials_match_flint
+valgrind            skip    poly::factor::tests::canonical_order_is_independent_of_flint
+
+# ── valgrind-validated: rigorous enclosures over Arb ───────────────────────
+valgrind-validated  filter  validated::
+# `validated::bounds::` does not finish under memcheck at all: the nightly of
+# 2026-10-05 spent 4 h inside it and was cancelled at the 6 h cap with most of
+# its 55 tests unrun. They are enclosure searches over the same Arb calls the
+# rest of `validated::` makes; ASan and LSan run them in full.
+valgrind-validated  skip    validated::bounds::

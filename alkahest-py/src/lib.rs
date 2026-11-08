@@ -24119,6 +24119,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // `Budget(max_bytes=...)` also see FLINT's bignum allocations. Lets the
     // test that pins this skip on a bundled-GMP (opt-out) build.
     m.add("GMP_SHARED_WITH_FLINT", cfg!(feature = "system-gmp"))?;
+    // Whether this extension is an unoptimised (debug-assertions) build, as
+    // `maturin develop` without `--release` makes. Lets a throughput test
+    // tell "slow because unoptimised" from "slow because regressed".
+    m.add("_DEBUG_BUILD", cfg!(debug_assertions))?;
     // P1 search-plumbing item 6: versioned DerivedResult.to_dict/to_json envelope.
     m.add("RESULT_SCHEMA_VERSION", RESULT_SCHEMA_VERSION)?;
     m.add("STEPS_SCHEMA_VERSION", STEPS_SCHEMA_VERSION)?;

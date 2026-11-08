@@ -733,6 +733,25 @@ jobs:
           maturin develop --manifest-path alkahest-py/Cargo.toml --features "groebner egraph"
           pytest tests/
 
+      # The suite above runs on a debug build, which keeps overflow checks and
+      # debug assertions on under 5000 examples. Throughput claims cannot be
+      # checked there: #509 halved the optimised cost of the no-JIT interpreter
+      # (1.6x NumPy to 0.75x) and made the unoptimised cost a quarter worse
+      # (14x to 18x; 19-28x on these runners), so a debug timing measures -O0
+      # code, not the interpreter, and
+      # `test_interpreter_batches_keep_pace_with_numpy` skips its bound there.
+      # This step rebuilds optimised and runs the timing for real;
+      # ALKAHEST_REQUIRE_OPTIMISED_BUILD makes the test fail rather than skip
+      # if the rebuild did not take. (NumPy reaches this shard only through
+      # the ci-extras group, so Tier 1a skips this test file altogether.)
+      - name: Interpreter throughput (optimised build)
+        if: matrix.shard == 'hypothesis'
+        env:
+          ALKAHEST_REQUIRE_OPTIMISED_BUILD: "1"
+        run: |
+          maturin develop --release --manifest-path alkahest-py/Cargo.toml --features "groebner egraph"
+          pytest tests/test_numpy_eval_interpreter.py -rs
+
       # `--features parallel` is the whole point of this shard and was missing.
       # Without it `rayon` and `dashmap` are not even compiled in: `ExprPool`'s
       # index is a plain `Mutex<HashMap>`, `simplify_par` / `simplify_redex` /
@@ -939,6 +958,10 @@ jobs:
         if: matrix.shard == 'valgrind' || matrix.shard == 'valgrind-validated'
         env:
           RUSTFLAGS: "-C debuginfo=2 -Z dwarf-version=4"
+          # memcheck is a 20-50x slowdown; `test_time::limit` stretches every
+          # scaled test deadline and budget by this factor, so a wall-clock
+          # bound fails for being slow only when it is slow beyond that.
+          ALKAHEST_TEST_TIME_SCALE: "50"
         run: |
           # Ask cargo which executables it produced instead of globbing a path.
           # The previous version globbed `target/<triple>/debug/deps/alkahest_cas-*`
@@ -962,36 +985,46 @@ jobs:
           # that actually cross into GMP/MPFR/FLINT are the ones worth the 20-50x
           # slowdown.
           #
-          # libtest takes filters as separate positional arguments and matches
-          # them as substrings, not as one regex — a single "a|b" argument would
-          # match nothing, run zero tests, and report clean. Set
-          # ALKAHEST_VALGRIND_FILTER (space separated) to override, or empty for
-          # a full sweep.
-          #
-          # `validated::` is its own shard because the FFI filters take ~2 h and
-          # `validated::bounds::` does not finish under valgrind at all: the
-          # nightly of 2026-10-05 spent 4 h inside it and was cancelled at the
-          # 6 h cap with most of its 55 tests unrun. Those tests are rigorous
-          # enclosure searches that the ASan shard already memory-checks, so they are
-          # skipped here rather than left to time out.
+          # What each shard runs is `.github/valgrind-scope.txt` (filters and
+          # skips, each skip with its reason); TESTING.md §3 lists the same
+          # coverage. libtest takes filters as separate positional arguments
+          # and matches them as substrings, not as one regex — a single "a|b"
+          # argument would match nothing, run zero tests, and report clean. Set
+          # ALKAHEST_VALGRIND_FILTER (space separated) to override the filters
+          # (the skips still apply), or empty for a full sweep.
+          scope=.github/valgrind-scope.txt
+          shard="${{ matrix.shard }}"
+          mapfile -t scope_filters < <(awk -v s="$shard" '$1 == s && $2 == "filter" {print $3}' "$scope")
+          mapfile -t scope_skips < <(awk -v s="$shard" '$1 == s && $2 == "skip" {print $3}' "$scope")
+          if [ "${#scope_filters[@]}" -eq 0 ]; then
+            echo "::error title=Empty valgrind scope::$scope declares no filters for $shard" >&2
+            exit 1
+          fi
+          if [ -n "${ALKAHEST_VALGRIND_FILTER+set}" ]; then
+            read -r -a filters <<< "$ALKAHEST_VALGRIND_FILTER"
+          else
+            filters=("${scope_filters[@]}")
+          fi
           skips=()
-          case "${{ matrix.shard }}" in
-            valgrind-validated)
-              default_filter="validated::"
-              skips=(--skip validated::bounds::)
-              ;;
-            *)
-              default_filter="ball:: flint rug number_theory:: lattice::"
-              ;;
-          esac
-          read -r -a filters <<< "${ALKAHEST_VALGRIND_FILTER-$default_filter}"
+          for s in "${scope_skips[@]}"; do skips+=(--skip "$s"); done
           if [ "${#bins[@]}" -eq 0 ]; then
             echo "::error title=Valgrind ran nothing::cargo reported no alkahest_cas test executables" >&2
             jq -r 'select(.executable != null) | .executable' /tmp/cargo-test.json >&2 || true
             exit 1
           fi
           for bin in "${bins[@]}"; do
-            echo "== valgrind $bin"
+            # A filter or a skip that matches no test is a stale scope entry:
+            # refuse before spending hours, not after. `--list` runs nothing.
+            for f in "${filters[@]}" "${scope_skips[@]}"; do
+              n=$("$bin" --list "$f" 2>/dev/null | grep -c ': test$' || true)
+              echo "  scope entry '$f' -> $n tests"
+              if [ "$n" -eq 0 ]; then
+                echo "::error title=Stale valgrind scope::'$f' in $scope matches no test in $bin" >&2
+                exit 1
+              fi
+            done
+            selected=$("$bin" --list "${filters[@]}" "${skips[@]}" 2>/dev/null | grep -c ': test$' || true)
+            echo "== valgrind $bin ($selected tests selected by $scope for $shard)"
             # --errors-for-leak-kinds=definite,indirect: fail on real leaks and
             # on any memory-safety error, but not on "possibly lost". The first
             # real run of this gate reported 0 definite and 0 indirect bytes and
