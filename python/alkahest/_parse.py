@@ -169,6 +169,7 @@ _FUNC_NAMES = frozenset(
         "hyper",
         # F24: zeta'(s) and the Hankel pair, read back as the node.
         "zeta_prime",
+        "zeta_deriv",
         "hankel1",
         "hankel2",
         # Beta and incomplete gamma (F11), read back as the node.
@@ -790,6 +791,7 @@ def _apply_func(name: str, args: list, offset: int, pool=None):
         "polylog": _ak.polylog,
         "polygamma": _ak.polygamma,
         "zeta_prime": _ak.zeta_prime,
+        "zeta_deriv": _ak.zeta_deriv,
         "loggamma": _ak.loggamma,
         "hankel1": _functools.partial(_ak.hankel1, expand=False),
         "hankel2": _functools.partial(_ak.hankel2, expand=False),

@@ -569,6 +569,15 @@ extern "C" {
         prec: slong,
     );
     pub fn acb_polylog(res: *mut AcbStruct, s: *const AcbStruct, z: *const AcbStruct, prec: slong);
+    /// `Γ(h(t))` of the power series `h` (`hlen` coefficients), truncated to
+    /// `len` coefficients.
+    pub fn _acb_poly_gamma_series(
+        res: *mut AcbStruct,
+        h: *const AcbStruct,
+        hlen: slong,
+        len: slong,
+        prec: slong,
+    );
     /// First `len` Taylor coefficients `ζ⁽ᵏ⁾(s)/k!` of the Riemann zeta
     /// function at `s` (`res` points at `len` contiguous balls).
     pub fn acb_dirichlet_zeta_jet(

@@ -402,6 +402,33 @@ pub fn zeta_prime(s: ExprId, pool: &ExprPool) -> Result<ExprId, SpecialFunctionE
     Ok(node(Kernel::ZetaPrime, vec![s], pool))
 }
 
+/// The `n`-th derivative `ζ⁽ⁿ⁾(s)` of the Riemann zeta function, the node
+/// `zeta_deriv(n, s)`; `zeta_deriv(0, s)` is `zeta(s)` and `zeta_deriv(1, s)`
+/// is `zeta_prime(s)` (with their exact values). This is what `diff`
+/// produces for a second or higher derivative of `zeta`; it evaluates
+/// numerically for a literal order `0 ≤ n ≤ 200` (Arb's zeta jet).
+///
+/// # Errors
+///
+/// `E-SPECFN-*` ([`SpecialFunctionError::InvalidOrder`]) for a literal order
+/// that is not a non-negative integer; `E-SPECFN-006` at the pole `s = 1`;
+/// `E-BUDGET-*`.
+pub fn zeta_deriv(n: ExprId, s: ExprId, pool: &ExprPool) -> Result<ExprId, SpecialFunctionError> {
+    if let Some(q) = rational_literal(pool, n) {
+        if *q.denom() != 1 || q < 0 {
+            return Err(SpecialFunctionError::InvalidOrder {
+                function: "zeta_deriv",
+                value: pool.display(n).to_string(),
+            });
+        }
+    }
+    if is_literal(pool, s, 1) {
+        return Err(pole("zeta_deriv", "s = 1".into()));
+    }
+    crate::budget::check()?;
+    Ok(node(Kernel::ZetaDeriv, vec![n, s], pool))
+}
+
 /// The log-gamma function `log Γ(x)` (`loggamma`, F25).
 ///
 /// Real and equal to `ln Γ(x)` for `x > 0`; for complex `x` the principal

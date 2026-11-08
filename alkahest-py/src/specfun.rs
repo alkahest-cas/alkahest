@@ -215,7 +215,7 @@ fn airy_bi_prime(py: Python<'_>, x: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
 /// integers (``zeta(0) = -1/2``, ``zeta(-1) = -1/12``, ``zeta(-2n) = 0``);
 /// ``zeta(3)`` stays ``zeta(3)`` (no closed form is known).  Evaluates in
 /// ``f64``, balls and at complex ``s`` through Arb.  ``diff(zeta(s), s)`` is
-/// ``zeta_prime(s)``; higher derivatives raise ``DiffError`` (``E-DIFF-001``).
+/// ``zeta_prime(s)``; higher derivatives are ``zeta_deriv(n, s)``.
 ///
 /// Raises ``SpecialFunctionError`` (``E-SPECFN-006``) at the pole ``s = 1``.
 #[pyfunction]
@@ -234,7 +234,7 @@ fn zeta(py: Python<'_>, s: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
 /// ``s = 2`` (``pi**2/6 (EulerGamma + log(2 pi) - 12 log(Glaisher))``) and the
 /// negative even integers (``zeta'(-2) = -zeta(3)/(4 pi**2)``); the node
 /// ``zeta_prime(s)`` elsewhere.  This is what ``diff(zeta(s), s)`` returns;
-/// the second derivative has no node and is refused (``E-DIFF-001``).
+/// its derivative is ``zeta_deriv(2, s)``.
 /// Evaluates in ``f64``, balls (``interval_eval``) and at complex ``s``
 /// through Arb (``acb_dirichlet_zeta_jet``).
 ///
@@ -249,6 +249,32 @@ fn zeta_prime(py: Python<'_>, s: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
     let id = {
         let pool = &pool_py.borrow(py).inner;
         core::zeta_prime(a[0], pool).map_err(specfn_err)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// The ``n``-th derivative ``zeta^(n)(s)`` of the Riemann zeta function, the
+/// node ``zeta_deriv(n, s)`` (mpmath's ``zeta(s, 1, n)``).
+///
+/// ``zeta_deriv(0, s)`` is ``zeta(s)`` and ``zeta_deriv(1, s)`` is
+/// ``zeta_prime(s)`` (with their exact values).  ``diff`` produces it for the
+/// second and higher derivatives of ``zeta``, and
+/// ``d/ds zeta_deriv(n, s) = zeta_deriv(n + 1, s)``.  Evaluates in ``f64``,
+/// balls and at complex ``s`` through Arb's zeta jet for a literal order
+/// ``0 <= n <= 200``.
+///
+/// Raises ``SpecialFunctionError``: ``E-SPECFN-*`` for a literal order that is
+/// not a non-negative integer, ``E-SPECFN-006`` at the pole ``s = 1``.
+///
+/// >>> import alkahest as ak
+/// >>> p = ak.ExprPool(); s = p.symbol("s")
+/// >>> ak.diff(ak.diff(ak.zeta(s), s).value, s).value   # zeta_deriv(2, s)
+#[pyfunction]
+fn zeta_deriv(py: Python<'_>, n: &Bound<'_, PyAny>, s: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
+    let (pool_py, a) = ids(py, "zeta_deriv", &[s, n])?;
+    let id = {
+        let pool = &pool_py.borrow(py).inner;
+        core::zeta_deriv(a[1], a[0], pool).map_err(specfn_err)?
     };
     Ok(PyExpr { id, pool: pool_py })
 }
@@ -739,6 +765,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(airy_bi_prime, m)?)?;
     m.add_function(wrap_pyfunction!(zeta, m)?)?;
     m.add_function(wrap_pyfunction!(zeta_prime, m)?)?;
+    m.add_function(wrap_pyfunction!(zeta_deriv, m)?)?;
     m.add_function(wrap_pyfunction!(loggamma, m)?)?;
     m.add_function(wrap_pyfunction!(gammasimp, m)?)?;
     m.add_function(wrap_pyfunction!(hankel1, m)?)?;

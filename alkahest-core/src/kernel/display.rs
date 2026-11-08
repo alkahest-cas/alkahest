@@ -853,6 +853,11 @@ fn latex_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
         "airy_bi_prime" => latex_call(r"\operatorname{Bi}'", args, pool),
         "zeta" | "hurwitz_zeta" => latex_call(r"\zeta", args, pool),
         "zeta_prime" => latex_call(r"\zeta'", args, pool),
+        "zeta_deriv" => {
+            let (n, _) = latex_r(args[0], pool);
+            let (s, _) = latex_r(args[1], pool);
+            format!(r"\zeta^{{({n})}}\!\left({s}\right)")
+        }
         "loggamma" => latex_call(r"\log\Gamma", args, pool),
         "polylog" => {
             let (s, _) = latex_r(args[0], pool);

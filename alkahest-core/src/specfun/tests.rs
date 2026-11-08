@@ -161,13 +161,8 @@ fn every_kernel_is_registered_with_the_right_arity() {
             k.name()
         );
         let caps = reg.capabilities(k.name());
-        // ζ″ has no node: zeta_prime must not claim a derivative.
-        assert_eq!(
-            caps.contains(Capabilities::DIFF_FORWARD),
-            k != Kernel::ZetaPrime,
-            "{}",
-            k.name()
-        );
+        // Every kernel differentiates in its variable (ζ′ to zeta_deriv(2, s)).
+        assert!(caps.contains(Capabilities::DIFF_FORWARD), "{}", k.name());
         assert!(!caps.contains(Capabilities::DIFF_REVERSE), "{}", k.name());
         assert!(!caps.contains(Capabilities::LEAN_THEOREM), "{}", k.name());
         // F24: Taylor-model rules exist for the cylinder functions of integer
@@ -504,13 +499,22 @@ fn derivatives() {
     // The order derivative is refused, never dropped.
     let jx = pool.func("bessel_j", vec![x, pool.integer(2)]);
     assert!(d(jx).is_err());
-    // ζ′(s) is the node zeta_prime, which has no derivative of its own;
+    // ζ′(s) is the node zeta_prime, ζ″ is zeta_deriv(2, s), and so on;
     // a constant ζ(3) differentiates to 0.
     assert_eq!(
         d(pool.func("zeta", vec![x])).unwrap().value,
         pool.func("zeta_prime", vec![x])
     );
-    assert!(d(pool.func("zeta_prime", vec![x])).is_err());
+    assert_eq!(
+        d(pool.func("zeta_prime", vec![x])).unwrap().value,
+        pool.func("zeta_deriv", vec![pool.integer(2), x])
+    );
+    assert_eq!(
+        d(pool.func("zeta_deriv", vec![pool.integer(2), x]))
+            .unwrap()
+            .value,
+        pool.func("zeta_deriv", vec![pool.integer(3), x])
+    );
     assert_eq!(
         d(pool.func("zeta", vec![pool.integer(3)])).unwrap().value,
         pool.integer(0)

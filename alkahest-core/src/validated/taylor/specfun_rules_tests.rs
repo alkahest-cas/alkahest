@@ -281,6 +281,7 @@ fn capability_flags_follow_the_evaluator() {
         "hurwitz_zeta",
         "hyper",
         "zeta_prime",
+        "zeta_deriv",
         "hankel1",
         "hankel2",
     ] {

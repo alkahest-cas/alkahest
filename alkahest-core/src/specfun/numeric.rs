@@ -46,10 +46,13 @@ pub(crate) enum Kernel {
     /// analytic continuation from the positive axis, Arb's `acb_lgamma`)
     /// for complex arguments.
     LogGamma,
+    /// `ζ⁽ⁿ⁾(s)` (`zeta_deriv(n, s)`), the `n`-th derivative of the Riemann
+    /// zeta function for an exact integer `n ≥ 0`, from Arb's zeta jet.
+    ZetaDeriv,
 }
 
 impl Kernel {
-    pub(crate) const ALL: [Kernel; 17] = [
+    pub(crate) const ALL: [Kernel; 18] = [
         Kernel::BesselJ,
         Kernel::BesselY,
         Kernel::BesselI,
@@ -67,6 +70,7 @@ impl Kernel {
         Kernel::HankelH1,
         Kernel::HankelH2,
         Kernel::LogGamma,
+        Kernel::ZetaDeriv,
     ];
 
     pub(crate) fn name(self) -> &'static str {
@@ -88,6 +92,7 @@ impl Kernel {
             Kernel::HankelH1 => "hankel1",
             Kernel::HankelH2 => "hankel2",
             Kernel::LogGamma => "loggamma",
+            Kernel::ZetaDeriv => "zeta_deriv",
         }
     }
 
@@ -338,6 +343,15 @@ pub(super) mod arb_impl {
                     }
                     out = jet[1].real();
                 }
+                Kernel::ZetaDeriv => {
+                    let n = zeta_deriv_order(&args[0])?;
+                    let s = Acb::from_parts(&args[1], &Arb::from_i64(0));
+                    let v = zeta_deriv_acb(n, &s, prec)?;
+                    if !v.imag().contains_zero() {
+                        return None;
+                    }
+                    out = v.real();
+                }
                 // Complex-valued: no real kernel.
                 Kernel::HankelH1 | Kernel::HankelH2 => return None,
                 // Real only on the positive axis: for x < 0 the principal
@@ -381,6 +395,103 @@ pub(super) mod arb_impl {
         }
         let out: Vec<Acb> = (0..len).map(|i| v.get(i)).collect();
         out.iter().all(Acb::is_finite).then_some(out)
+    }
+
+    /// Largest derivative order `zeta_deriv` evaluates (the jet is `O(n²)`).
+    const MAX_ZETA_DERIV: i64 = 200;
+
+    /// The order of `zeta_deriv(n, s)`: an exact integer in `[0, 200]`.
+    fn zeta_deriv_order(b: &Arb) -> Option<usize> {
+        let n = exact_int(b)?;
+        (0..=MAX_ZETA_DERIV).contains(&n).then_some(n as usize)
+    }
+
+    /// `ζ⁽ᵏ⁾(s)/k!` for `k < len` and `Re s < 0`, from the functional equation
+    /// `ζ(u) = 2^u π^{u−1} sin(πu/2) Γ(1−u) ζ(1−u)` expanded at `u = s + t`.
+    ///
+    /// Arb's own jet reflects too, but past the second coefficient its radius
+    /// stops improving near `10⁻¹⁷` whatever the working precision, so it can
+    /// never certify 53 bits there. `ζ(1−s−t)` is in the half-plane where the
+    /// jet converges at full precision.
+    fn zeta_jet_reflected(s: &Acb, len: usize, prec: i64) -> Option<Vec<Acb>> {
+        let one = Acb::from_f64(1.0, 0.0);
+        let two = Acb::from_f64(2.0, 0.0);
+        let pi = Acb::pi(prec);
+        let s1 = one.sub(s, prec);
+        // (−1)^k e_k: the coefficients of ζ(1−s−t) in t.
+        let zeta: Vec<Acb> = zeta_jet_acb(&s1, len, prec)?
+            .into_iter()
+            .enumerate()
+            .map(|(k, c)| if k % 2 == 1 { c.neg() } else { c })
+            .collect();
+        let mut h = AcbVec::new(2);
+        h.set(0, &s1);
+        h.set(1, &one.neg());
+        let mut g = AcbVec::new(len);
+        unsafe {
+            ffi::_acb_poly_gamma_series(g.as_mut_ptr(), h.as_ptr(), 2, len as i64, prec);
+        }
+        let gamma: Vec<Acb> = (0..len).map(|i| g.get(i)).collect();
+        // (2π)^t: L^k/k!; sin(θ + (π/2)t): (π/2)^k/k! · sin(θ + kπ/2).
+        let l = two.mul(&pi, prec).log(prec);
+        let half_pi = pi.mul_2exp(-1);
+        let theta = half_pi.mul(s, prec);
+        let i = Acb::i();
+        let (e_p, e_m) = (i.mul(&theta, prec).exp(prec), i.neg().mul(&theta, prec).exp(prec));
+        let sin = e_p.sub(&e_m, prec).div(&two.mul(&i, prec), prec);
+        let cos = e_p.add(&e_m, prec).mul_2exp(-1);
+        let (neg_sin, neg_cos) = (sin.neg(), cos.neg());
+        let (mut pow_l, mut pow_p) = (one.clone(), one.clone());
+        let mut power = Vec::with_capacity(len);
+        let mut sine = Vec::with_capacity(len);
+        for k in 0..len {
+            power.push(pow_l.clone());
+            sine.push(pow_p.mul(
+                match k % 4 {
+                    0 => &sin,
+                    1 => &cos,
+                    2 => &neg_sin,
+                    _ => &neg_cos,
+                },
+                prec,
+            ));
+            let kp1 = Acb::from_f64((k + 1) as f64, 0.0);
+            pow_l = pow_l.mul(&l, prec).div(&kp1, prec);
+            pow_p = pow_p.mul(&half_pi, prec).div(&kp1, prec);
+        }
+        let mul = |a: &[Acb], b: &[Acb]| -> Vec<Acb> {
+            (0..len)
+                .map(|m| {
+                    let mut t = Acb::new();
+                    for j in 0..=m {
+                        t = t.add(&a[j].mul(&b[m - j], prec), prec);
+                    }
+                    t
+                })
+                .collect()
+        };
+        let prefactor = two
+            .pow(s, prec)
+            .mul(&pi.pow(&s.sub(&one, prec), prec), prec);
+        let product = mul(&mul(&mul(&power, &sine), &gamma), &zeta);
+        let out: Vec<Acb> = product.iter().map(|c| c.mul(&prefactor, prec)).collect();
+        out.iter().all(Acb::is_finite).then_some(out)
+    }
+
+    /// `ζ⁽ⁿ⁾(s) = n! · [tⁿ] ζ(s + t)` from the zeta jet.
+    fn zeta_deriv_acb(n: usize, s: &Acb, prec: i64) -> Option<Acb> {
+        let wp = prec + 2 * n as i64;
+        let c = if s.real().neg().is_positive() {
+            zeta_jet_reflected(s, n + 1, wp)?.swap_remove(n)
+        } else {
+            zeta_jet_acb(s, n + 1, wp)?.swap_remove(n)
+        };
+        let mut fact = Arb::from_i64(1);
+        for k in 2..=n as i64 {
+            fact = fact.mul(&Arb::from_i64(k), wp);
+        }
+        let v = c.mul(&Acb::from_parts(&fact, &Arb::from_i64(0)), wp);
+        v.is_finite().then_some(v)
     }
 
     /// `γₙ = (−1)ⁿ n! · [xⁿ](ζ(1+x) − 1/x)`.
@@ -566,6 +677,14 @@ pub(super) mod arb_impl {
                 }
                 Kernel::ZetaPrime => {
                     out = zeta_jet_acb(&args[0], 2, prec)?.swap_remove(1);
+                }
+                Kernel::ZetaDeriv => {
+                    // The order must be a real exact integer.
+                    if !args[0].imag().is_exact() || !args[0].imag().contains_zero() {
+                        return None;
+                    }
+                    let n = zeta_deriv_order(&args[0].real())?;
+                    out = zeta_deriv_acb(n, &args[1], prec)?;
                 }
                 Kernel::LogGamma => ffi::acb_lgamma(out.as_mut_ptr(), args[0].as_ptr(), prec),
                 Kernel::HankelH1 | Kernel::HankelH2 => {

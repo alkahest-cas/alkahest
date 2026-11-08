@@ -435,6 +435,8 @@ const KNOWN_FUNCS: &[&str] = &[
     "zeta_prime",
     "hankel1",
     "hankel2",
+    // `zeta_deriv(n, s)`, the n-th derivative of zeta.
+    "zeta_deriv",
     // Beta and the incomplete gamma functions (F11).
     "beta",
     "uppergamma",

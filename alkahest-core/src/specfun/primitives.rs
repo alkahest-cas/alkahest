@@ -16,6 +16,7 @@
 //!   | `Ai`, `Bi` | `Ai′`, `Bi′`; and `Ai″ = x·Ai` (9.2.1) |
 //!   | `ζ(s, a)` | `∂/∂a = −s·ζ(s+1, a)` (25.11.17) |
 //!   | `Li_s(z)` | `Li_{s−1}(z)/z` |
+//!   | `ζ(s)`, `ζ′(s)`, `ζ⁽ⁿ⁾(s)` | `ζ′(s)`, `zeta_deriv(2, s)`, `zeta_deriv(n + 1, s)` |
 //!
 //!   An order, `s`, or the argument of `zeta` that depends on the variable
 //!   makes the rule decline, so `diff` refuses (`E-DIFF-001`).
@@ -381,6 +382,17 @@ pub(crate) fn canonical(kernel: Kernel, args: &[ExprId], pool: &ExprPool) -> Opt
         Kernel::ZetaPrime => zeta_prime_canonical(args[0], pool),
         Kernel::HankelH1 | Kernel::HankelH2 => hankel_canonical(kernel, args[0], args[1], pool),
         Kernel::LogGamma => loggamma_canonical(args[0], pool),
+        Kernel::ZetaDeriv => zeta_deriv_canonical(args[0], args[1], pool),
+    }
+}
+
+/// `zeta_deriv(0, s) = zeta(s)` and `zeta_deriv(1, s) = zeta_prime(s)` (with
+/// their own exact values); higher literal orders stay the node.
+fn zeta_deriv_canonical(n: ExprId, s: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    match int_literal(pool, n)?.to_i64()? {
+        0 => Some(node(Kernel::Zeta, vec![s], pool)),
+        1 => Some(node(Kernel::ZetaPrime, vec![s], pool)),
+        _ => None,
     }
 }
 
@@ -550,8 +562,9 @@ pub(crate) fn local_derivative(kernel: Kernel, args: &[ExprId], pool: &ExprPool)
         }
         // ζ′(s): the derivative in s of ζ is the node ζ′.
         Kernel::Zeta => pool.func(Kernel::ZetaPrime.name(), vec![args[0]]),
-        // ζ″ has no node (a higher derivative is refused, not dropped).
-        Kernel::ZetaPrime => return None,
+        // ζ″ = zeta_deriv(2, s), and ζ⁽ⁿ⁾′ = ζ⁽ⁿ⁺¹⁾.
+        Kernel::ZetaPrime => pool.func(Kernel::ZetaDeriv.name(), vec![pool.integer(2), args[0]]),
+        Kernel::ZetaDeriv => node(Kernel::ZetaDeriv, vec![shift(pool, args[0], 1), args[1]], pool),
         // d/dx log Γ(x) = ψ(x) (DLMF 5.2.2), on every branch.
         Kernel::LogGamma => pool.func("digamma", vec![args[0]]),
     })
@@ -589,7 +602,6 @@ impl Primitive for SpecFunPrimitive {
         if is_zero_lit(pool, dx) {
             return Some(pool.integer(0));
         }
-        // `zeta` has no derivative rule (ζ′ has no closed form): `None` here.
         let local = local_derivative(k, args, pool)?;
         Some(mk_mul(pool, vec![local, dx]))
     }

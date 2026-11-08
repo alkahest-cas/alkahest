@@ -58,9 +58,12 @@ ak.evaluate(ak.bessel_k(nu, x), {nu: 0.5 + 0j, x: 1 + 2j})  # complex value via 
 `Li′_s(z) = Li_{s−1}(z)/z`, `ζ′(s) = zeta_prime(s)` (exact at `0, −1, 2` and
 the negative even integers; numeric through Arb's `acb_dirichlet_zeta_jet`),
 `H′_ν = (H_{ν−1} − H_{ν+1})/2` for `hankel1`/`hankel2` (`J ± iY`, complex-valued;
-half-integer orders expand to `exp(±ix)` forms). A derivative in the order or
-in `s`, and the second derivative of `zeta`, raises `E-DIFF-001` — it has no
-closed form, and is never silently dropped.
+half-integer orders expand to `exp(±ix)` forms). Higher derivatives of `zeta`
+are the node `zeta_deriv(n, s)` (`ζ⁽ⁿ⁾(s)`, `d/ds zeta_deriv(n, s) = zeta_deriv(n+1, s)`;
+`zeta_deriv(0, s) = zeta(s)`, `zeta_deriv(1, s) = zeta_prime(s)`), which evaluates in
+`f64`, balls and at complex `s` from Arb's zeta jet for a literal order up to 200.
+A derivative in the order or in `s` (of `bessel_j(s, x)` etc.) raises
+`E-DIFF-001` — it has no closed form, and is never silently dropped.
 
 ## Numerics
 

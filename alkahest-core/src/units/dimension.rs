@@ -70,6 +70,7 @@ const PURE_FUNCTIONS: &[&str] = &[
     "dilog",
     "polylog",
     "zeta_prime",
+    "zeta_deriv",
     "hankel1",
     "hankel2",
     "bessel_j",
