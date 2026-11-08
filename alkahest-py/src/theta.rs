@@ -72,7 +72,7 @@ fn precision(prec: u32, accurate_to: Option<u32>) -> Precision {
 /// The midpoint of ``[0 +/- 1e9]`` is ``0`` and means nothing. Use ``value()``,
 /// which refuses unless the enclosure is good enough, or read
 /// ``accuracy_bits``.
-#[pyclass(name = "ComplexBall", module = "alkahest")]
+#[pyclass(from_py_object, name = "ComplexBall", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyComplexBall {
     inner: ComplexBall,
@@ -348,7 +348,7 @@ impl PyComplexBall {
 /// of one number are two different inputs and are refused (``E-THETA-006``).
 /// ``SiegelMatrix.from_upper_triangle(genus, entries)`` fills the lower half by
 /// copying and cannot trip that check.
-#[pyclass(name = "SiegelMatrix", module = "alkahest")]
+#[pyclass(from_py_object, name = "SiegelMatrix", module = "alkahest")]
 #[derive(Clone)]
 pub struct PySiegelMatrix {
     inner: SiegelMatrix,
@@ -446,7 +446,7 @@ impl PySiegelMatrix {
 /// The index is the ``2g``-bit integer ``(a << g) | b``, most significant bit
 /// first within each half; ``theta_characteristic_index`` builds it from bit
 /// lists so the ordering never has to be rediscovered at a call site.
-#[pyclass(name = "ThetaValues", module = "alkahest")]
+#[pyclass(from_py_object, name = "ThetaValues", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyThetaValues {
     inner: ThetaValues,
@@ -529,7 +529,7 @@ impl PyThetaValues {
 
 /// The result of ``siegel_reduce``: a symplectic matrix and the point it moves
 /// ``tau`` to.
-#[pyclass(name = "SiegelReduction", module = "alkahest")]
+#[pyclass(from_py_object, name = "SiegelReduction", module = "alkahest")]
 #[derive(Clone)]
 pub struct PySiegelReduction {
     inner: SiegelReduction,

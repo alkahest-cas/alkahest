@@ -78,7 +78,7 @@ fn int_list(py: Python<'_>, values: &[Integer]) -> PyResult<Vec<Py<PyAny>>> {
 /// codewords. That is capped, and past the cap they raise ``E-CODE-004`` rather
 /// than truncating the search: the minimum weight of *some* of the codewords is
 /// an upper bound on ``d`` wearing ``d``'s name.
-#[pyclass(name = "LinearCode", module = "alkahest")]
+#[pyclass(from_py_object, name = "LinearCode", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyLinearCode {
     inner: LinearCode,
@@ -257,7 +257,7 @@ impl PyLinearCode {
 ///
 /// ``WeightEnumerator(q, coeffs)`` builds one from a weight distribution, which
 /// is validated: a linear code has ``A_0 == 1`` and no negative multiplicity.
-#[pyclass(name = "WeightEnumerator", module = "alkahest")]
+#[pyclass(from_py_object, name = "WeightEnumerator", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyWeightEnumerator {
     inner: WeightEnumerator,
@@ -353,7 +353,7 @@ impl PyWeightEnumerator {
 /// that proves it. ``verify_certificate()`` re-checks them from scratch in
 /// exact rational arithmetic; :func:`delsarte_lp_bound` already refuses rather
 /// than return a bound whose certificate did not pass.
-#[pyclass(name = "DelsarteBound", module = "alkahest")]
+#[pyclass(from_py_object, name = "DelsarteBound", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyDelsarteBound {
     inner: DelsarteBound,

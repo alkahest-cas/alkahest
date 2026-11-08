@@ -52,7 +52,7 @@ fn big_int(py: Python<'_>, value: &rug::Integer) -> PyResult<Py<PyAny>> {
 /// the opposite of the ``f ∘ g = f(g(x))`` convention used for functions in
 /// analysis. Mixing the two yields a group of the right *order* whose elements
 /// are the inverses of the ones you wanted.
-#[pyclass(name = "Permutation", module = "alkahest")]
+#[pyclass(from_py_object, name = "Permutation", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyPermutation {
     pub(crate) inner: Permutation,

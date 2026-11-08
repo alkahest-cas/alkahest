@@ -43,7 +43,7 @@ fn unit_err(e: UnitError) -> PyErr {
 /// may only stand alone and be converted (``E-UNIT-003`` otherwise).
 ///
 /// Raises ``UnitError`` (``E-UNIT-002``) on an unknown or malformed unit.
-#[pyclass(name = "Unit", module = "alkahest", frozen)]
+#[pyclass(from_py_object, name = "Unit", module = "alkahest", frozen)]
 #[derive(Clone)]
 pub(crate) struct PyUnit {
     pub(crate) inner: Unit,

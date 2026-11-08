@@ -84,7 +84,7 @@ fn bit_rows_to_py(v: &[Vec<u8>]) -> Vec<Vec<u32>> {
 /// ``exact`` is ``True`` only when the whole centralizer was searched. An
 /// upper bound says a logical operator of that weight *exists*; it says
 /// nothing at all about whether a lighter one does.
-#[pyclass(name = "Distance", module = "alkahest")]
+#[pyclass(from_py_object, name = "Distance", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyDistance {
     inner: Distance,
@@ -135,7 +135,7 @@ impl PyDistance {
 /// ``e`` in ``P = i**e · X**x · Z**z``, which for ``"Y"`` is ``1`` — the
 /// printed sign and the stored phase differ by one factor of ``i`` per ``Y``
 /// position.
-#[pyclass(name = "PauliOperator", module = "alkahest")]
+#[pyclass(from_py_object, name = "PauliOperator", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyPauliOperator {
     inner: PauliOperator,
@@ -306,7 +306,7 @@ impl PyPauliOperator {
 /// ``qubits`` may be given explicitly; it is required when the generator list
 /// is empty, because the trivial group on ``n`` qubits is a real object and
 /// ``n`` is not recoverable from an empty list.
-#[pyclass(name = "StabilizerGroup", module = "alkahest")]
+#[pyclass(from_py_object, name = "StabilizerGroup", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyStabilizerGroup {
     inner: StabilizerGroup,
@@ -395,7 +395,7 @@ impl PyStabilizerGroup {
 // ---------------------------------------------------------------------------
 
 /// An ``[[n, k]]`` stabilizer code.
-#[pyclass(name = "StabilizerCode", module = "alkahest")]
+#[pyclass(from_py_object, name = "StabilizerCode", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyStabilizerCode {
     inner: StabilizerCode,
@@ -511,7 +511,7 @@ impl PyStabilizerCode {
 /// ``hx @ hz.T == 0`` — the CSS condition, checked rather than assumed. The
 /// error names the row of ``H_X`` and the row of ``H_Z`` whose stabilizers
 /// anticommute.
-#[pyclass(name = "CssCode", module = "alkahest")]
+#[pyclass(from_py_object, name = "CssCode", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyCssCode {
     inner: CssCode,
@@ -652,7 +652,7 @@ impl PyCssCode {
 /// over all ``q**(d*d)`` matrices and is capped at
 /// ``STABILIZER_MAX_MATRIX_ENUMERATION`` candidates; the order is still exact
 /// above the cap, because it never came from the list.
-#[pyclass(name = "MatrixGroup", module = "alkahest")]
+#[pyclass(from_py_object, name = "MatrixGroup", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyMatrixGroup {
     inner: MatrixGroup,

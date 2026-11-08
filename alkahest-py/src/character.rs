@@ -62,7 +62,7 @@ fn py_fraction(py: Python<'_>, r: &rug::Rational) -> PyResult<Py<PyAny>> {
 /// ``representative`` is the **lexicographically smallest** element of the
 /// class, so it does not depend on the order the generators were given in and
 /// the class ordering is reproducible run to run.
-#[pyclass(name = "ConjugacyClass", module = "alkahest")]
+#[pyclass(from_py_object, name = "ConjugacyClass", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyConjugacyClass {
     inner: ConjugacyClass,
@@ -127,7 +127,7 @@ impl PyConjugacyClass {
 ///
 /// Classes are ordered by ``(element_order, size, representative)``, so class
 /// ``0`` is always ``{1}``.
-#[pyclass(name = "ConjugacyClasses", module = "alkahest")]
+#[pyclass(from_py_object, name = "ConjugacyClasses", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyConjugacyClasses {
     inner: ConjugacyClasses,

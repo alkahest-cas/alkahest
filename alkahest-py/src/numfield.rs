@@ -124,7 +124,7 @@ fn coeff_strings(obj: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
 /// which ``inverse`` would have no answer for some non-zero elements.
 ///
 /// ``NumberField.cyclotomic(n)`` is ``Q(zeta_n)``, of degree ``phi(n)``.
-#[pyclass(name = "NumberField", module = "alkahest")]
+#[pyclass(from_py_object, name = "NumberField", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyNumberField {
     pub(crate) inner: NumberField,
@@ -281,7 +281,7 @@ impl PyNumberField {
 /// with different canonical defining polynomials are not interchangeable even
 /// when they are isomorphic, because an element's coordinates mean different
 /// things in each.
-#[pyclass(name = "NumberFieldElement", module = "alkahest")]
+#[pyclass(from_py_object, name = "NumberFieldElement", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyNumberFieldElement {
     pub(crate) inner: NumberFieldElement,

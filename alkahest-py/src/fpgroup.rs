@@ -65,7 +65,7 @@ fn big_int(py: Python<'_>, value: &Integer) -> PyResult<Py<PyAny>> {
 /// letter and the identity is the empty word. Every ``Word`` is freely reduced
 /// on construction, so ``==`` is equality in the *free* group — it says nothing
 /// about equality in a quotient, which is undecidable.
-#[pyclass(name = "Word", module = "alkahest")]
+#[pyclass(from_py_object, name = "Word", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyWord {
     inner: Word,
@@ -194,7 +194,7 @@ fn words_from(group: &FpGroup, items: Option<&Bound<'_, PyAny>>) -> PyResult<Vec
 /// Returned by :meth:`FpGroup.abelian_invariants` and
 /// :meth:`FpGroup.cohomology`. ``order()`` is ``None`` exactly when the group is
 /// **infinite** — that is a proof, not a failure to decide.
-#[pyclass(name = "AbelianInvariants", module = "alkahest")]
+#[pyclass(from_py_object, name = "AbelianInvariants", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyAbelianInvariants {
     inner: AbelianInvariants,
@@ -258,7 +258,7 @@ impl PyAbelianInvariants {
 ///
 /// **Cosets are 0-based and coset 0 is** ``H``. ``rows()[c][2*k]`` is the coset
 /// ``c`` maps to under generator ``k``, and ``[2*k+1]`` under its inverse.
-#[pyclass(name = "CosetTable", module = "alkahest")]
+#[pyclass(from_py_object, name = "CosetTable", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyCosetTable {
     inner: CosetTable,
@@ -372,7 +372,7 @@ impl PyCosetTable {
 ///
 /// Not simplified: there is no Tietze pass, so a cyclic subgroup of index 30 in
 /// a two-generator group arrives with 31 generators.
-#[pyclass(name = "SubgroupPresentation", module = "alkahest")]
+#[pyclass(from_py_object, name = "SubgroupPresentation", module = "alkahest")]
 #[derive(Clone)]
 pub struct PySubgroupPresentation {
     inner: SubgroupPresentation,
@@ -429,7 +429,7 @@ impl PySubgroupPresentation {
 /// products of powers of generator names and parenthesised sub-words; ``1`` is
 /// the identity, and juxtaposition means multiplication, so ``"ab"`` and
 /// ``"a*b"`` are the same word.
-#[pyclass(name = "FpGroup", module = "alkahest")]
+#[pyclass(from_py_object, name = "FpGroup", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyFpGroup {
     inner: FpGroup,

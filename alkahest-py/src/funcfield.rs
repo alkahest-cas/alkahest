@@ -132,7 +132,7 @@ fn coeffs_to_py(py: Python<'_>, cs: &[Rational]) -> PyResult<Vec<Py<PyAny>>> {
 /// Construct from the `y`-coefficients of `f` (lowest power of `y` first, each
 /// a list of `x`-coefficients lowest degree first), or with
 /// :meth:`FunctionField.hyperelliptic` from `a(x)` alone.
-#[pyclass(name = "FunctionField")]
+#[pyclass(from_py_object, name = "FunctionField")]
 #[derive(Clone)]
 pub struct PyFunctionField {
     pub(crate) inner: FunctionField,
@@ -243,7 +243,7 @@ impl PyFunctionField {
 // ---------------------------------------------------------------------------
 
 /// A degree-one place: a rational point `(x, y)`, or the place at infinity.
-#[pyclass(name = "Place")]
+#[pyclass(from_py_object, name = "Place")]
 #[derive(Clone)]
 pub struct PyPlace {
     pub(crate) inner: Place,
@@ -338,7 +338,7 @@ impl PyPlace {
 /// `E - D` is effective.  Two divisors at different places are incomparable,
 /// and then every one of `<`, `<=`, `>`, `>=` is `False` — which is what a
 /// partial order means, not a bug.
-#[pyclass(name = "Divisor")]
+#[pyclass(from_py_object, name = "Divisor")]
 #[derive(Clone)]
 pub struct PyDivisor {
     pub(crate) inner: Divisor,
@@ -521,7 +521,7 @@ impl PyDivisor {
 // ---------------------------------------------------------------------------
 
 /// A class in `Pic⁰`, held as a reduced Mumford pair.
-#[pyclass(name = "DivisorClass")]
+#[pyclass(from_py_object, name = "DivisorClass")]
 #[derive(Clone)]
 pub struct PyDivisorClass {
     pub(crate) inner: DivisorClass,
@@ -642,7 +642,7 @@ impl PyDivisorClass {
 // ---------------------------------------------------------------------------
 
 /// `(p(x) + q(x)·y) / d(x)` — an element of the function field.
-#[pyclass(name = "FunctionFieldElement")]
+#[pyclass(from_py_object, name = "FunctionFieldElement")]
 #[derive(Clone)]
 pub struct PyFunctionFieldElement {
     pub(crate) inner: FunctionFieldElement,
@@ -771,7 +771,7 @@ impl PyFunctionFieldElement {
 // ---------------------------------------------------------------------------
 
 /// The space `L(D)`: its dimension and an explicit basis.
-#[pyclass(name = "RiemannRochSpace")]
+#[pyclass(from_py_object, name = "RiemannRochSpace")]
 #[derive(Clone)]
 pub struct PyRiemannRochSpace {
     pub(crate) inner: RiemannRochSpace,

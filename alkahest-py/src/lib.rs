@@ -1307,7 +1307,7 @@ fn parse_domain(s: &str) -> Domain {
 }
 
 /// Python-visible symbol domain (matches :class:`alkahest_core::kernel::Domain`).
-#[pyclass(name = "Domain", eq, eq_int)]
+#[pyclass(from_py_object, name = "Domain", eq, eq_int)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PyDomain {
     #[pyo3(name = "Real")]
@@ -2743,7 +2743,7 @@ impl PyExprPool {
 // PyExpr
 // ---------------------------------------------------------------------------
 
-#[pyclass(name = "Expr")]
+#[pyclass(from_py_object, name = "Expr")]
 struct PyExpr {
     id: alkahest_core::ExprId,
     pool: Py<PyExprPool>,
@@ -3247,7 +3247,7 @@ impl PyExpr {
 // V2-15 — Truncated series / Laurent + BigO
 // ---------------------------------------------------------------------------
 
-#[pyclass(name = "Series")]
+#[pyclass(from_py_object, name = "Series")]
 #[derive(Clone)]
 struct PySeries {
     expr: PyExpr,
@@ -3382,7 +3382,7 @@ fn py_seq_to_rationals(seq: &Bound<'_, PyAny>) -> PyResult<Vec<Rational>> {
 /// Python boundary), so coefficients past that order read as `0`; pass a larger
 /// `order` for deeper work. All other constructors and operations are fully lazy
 /// over `Fps<'static>`.
-#[pyclass(name = "Fps", unsendable)]
+#[pyclass(from_py_object, name = "Fps", unsendable)]
 #[derive(Clone)]
 struct PyFps {
     inner: CoreFps<'static>,
@@ -5223,7 +5223,7 @@ fn division_by_zero_error(py: Python<'_>, message: String) -> PyErr {
 /// Python-visible configuration for the e-graph simplifier.
 ///
 /// All arguments are keyword-only with the same defaults as the Rust `EgraphConfig`.
-#[pyclass(name = "EgraphConfig")]
+#[pyclass(from_py_object, name = "EgraphConfig")]
 #[derive(Clone)]
 struct PyEgraphConfig {
     inner: EgraphConfig,
@@ -12699,7 +12699,7 @@ impl PyHybridODE {
 // Phase 18: Acausal components
 // ---------------------------------------------------------------------------
 
-#[pyclass(name = "Port")]
+#[pyclass(from_py_object, name = "Port")]
 struct PyPort {
     inner: Port,
     pool: Py<PyExprPool>,
@@ -12745,7 +12745,7 @@ impl PyPort {
 /// :func:`voltage_source`, then register them on an :class:`AcausalSystem`
 /// with :meth:`AcausalSystem.add_component` and wire them together with
 /// :meth:`AcausalSystem.connect`.
-#[pyclass(name = "Component")]
+#[pyclass(from_py_object, name = "Component")]
 struct PyComponent {
     inner: Component,
     pool: Py<PyExprPool>,
@@ -14077,7 +14077,7 @@ impl PyCompileCache {
 // Phase 22 — Ball arithmetic
 // ---------------------------------------------------------------------------
 
-#[pyclass(name = "ArbBall")]
+#[pyclass(from_py_object, name = "ArbBall")]
 #[derive(Clone)]
 struct PyArbBall {
     inner: CoreArbBall,
@@ -22896,7 +22896,7 @@ fn vec3_to_py(v: [ExprId; 3], pool_py: &Py<PyExprPool>, py: Python<'_>) -> Py<Py
 /// Vector fields are given in **physical** components — the local orthonormal
 /// frame — which is the convention ``sympy.vector`` uses and the one an
 /// engineer means by "the ρ component".
-#[pyclass(name = "Coordinates", module = "alkahest.experimental")]
+#[pyclass(from_py_object, name = "Coordinates", module = "alkahest.experimental")]
 struct PyCoordinates {
     inner: alkahest_core::vector::Coordinates,
     pool: Py<PyExprPool>,
@@ -23236,7 +23236,7 @@ fn py_vector_norm(py: Python<'_>, a: Vec<Bound<'_, PyAny>>) -> PyResult<PyExpr> 
 /// ``(q1 * q2)`` applies ``q2`` first, and
 /// ``(q1 * q2).to_rotation_matrix() == q1.to_rotation_matrix() @
 /// q2.to_rotation_matrix()``.
-#[pyclass(name = "Quaternion", module = "alkahest.experimental")]
+#[pyclass(from_py_object, name = "Quaternion", module = "alkahest.experimental")]
 struct PyQuaternion {
     inner: alkahest_core::algebra::quaternion::Quaternion,
     pool: Py<PyExprPool>,
@@ -23711,7 +23711,7 @@ fn py_mutual_information_independent(
     })
 }
 
-#[pymodule]
+#[pymodule(gil_used = true)]
 fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Before anything in this module can reach GMP: install the allocation
     // accounting that `Budget(max_bytes=...)` and the address-space guard are

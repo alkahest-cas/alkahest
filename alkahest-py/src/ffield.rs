@@ -85,7 +85,7 @@ fn elem_to_py(py: Python<'_>, field: &FiniteField, e: &FieldElement) -> Py<PyAny
 /// Two fields of the same order but different defining polynomials are
 /// isomorphic and are **not** interchangeable here: an element's coordinates
 /// mean different things in each, so mixing them raises ``E-GFQ-006``.
-#[pyclass(name = "FiniteField", module = "alkahest")]
+#[pyclass(from_py_object, name = "FiniteField", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyFiniteField {
     pub(crate) inner: FiniteField,
