@@ -334,7 +334,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-NT-001", class: "NumberTheoryError", cause: Cause::UserInput, remediation: Some("pass decimal strings parsable into fmpz") },
     ErrorSpec { code: "E-NT-002", class: "NumberTheoryError", cause: Cause::Domain, remediation: Some("check positivity / parity constraints on arguments") },
     ErrorSpec { code: "E-NT-003", class: "NumberTheoryError", cause: Cause::Domain, remediation: Some("adjust residue, base, or root degree until a modular solution exists") },
-    ErrorSpec { code: "E-NT-004", class: "NumberTheoryError", cause: Cause::Domain, remediation: Some("use prime moduli for discrete_log/nthroot_mod as documented") },
+    ErrorSpec { code: "E-NT-004", class: "NumberTheoryError", cause: Cause::Domain, remediation: Some("use a prime modulus for nthroot_mod as documented (discrete_log accepts any modulus)") },
     ErrorSpec { code: "E-NT-005", class: "NumberTheoryError", cause: Cause::Unsupported, remediation: Some("use quadratic roots or gcd(k,p−1)=1; general radicals require more machinery") },
     ErrorSpec { code: "E-NT-006", class: "ArithmeticError", cause: Cause::Resource, remediation: Some("the arithmetic-function argument is past this crate's work cap; p(n), B_n, E_n and H_n all grow superpolynomially in the number of digits, so the cap is a refusal to sit in FLINT for an unbounded time rather than a statement that the value does not exist") },
     // E-PARSE — expression parser (V2-21)

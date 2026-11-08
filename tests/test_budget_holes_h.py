@@ -92,9 +92,11 @@ def test_discrete_log_refusals() -> None:
     with pytest.raises(nt.NumberTheoryError) as ei:
         nt.discrete_log(3, 4, 17)
     assert ei.value.code == "E-NT-003"
+    # Composite moduli are solved now (3^e mod 15 cycles 1, 3, 9, 12, 6, 3,
+    # …, never 2), so this is a proof of no solution, not a refusal.
     with pytest.raises(nt.NumberTheoryError) as ei:
         nt.discrete_log(2, 3, 15)
-    assert ei.value.code == "E-NT-004"
+    assert ei.value.code == "E-NT-003"
     # Unchanged small answers (negative inputs are reduced first).
     assert nt.discrete_log(13, 3, 17) == 4
     assert nt.discrete_log(-1, 2, 5) == 2
