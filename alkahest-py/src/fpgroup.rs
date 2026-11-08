@@ -43,7 +43,7 @@ pyo3::create_exception!(alkahest, PyFpGroupError, crate::PyAlkahestError);
 
 fn fp_err(e: FpGroupError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyFpGroupError>();
+        let exc_type = py.get_type::<PyFpGroupError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
@@ -169,7 +169,7 @@ fn words_from(group: &FpGroup, items: Option<&Bound<'_, PyAny>>) -> PyResult<Vec
         ));
     }
     let mut out = Vec::new();
-    for item in items.iter()? {
+    for item in items.try_iter()? {
         let item = item?;
         if let Ok(w) = item.extract::<PyWord>() {
             out.push(w.inner);
@@ -330,7 +330,7 @@ impl PyCosetTable {
 
     /// One :class:`alkahest.Permutation` per generator, of degree ``index``.
     fn permutations(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
-        let cls = py.get_type_bound::<crate::group::PyPermutation>();
+        let cls = py.get_type::<crate::group::PyPermutation>();
         let mut out = Vec::new();
         for p in self.inner.permutations().map_err(fp_err)? {
             out.push(cls.call1((p.images().to_vec(),))?.into_py(py));
@@ -650,7 +650,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCosetTable>()?;
     m.add_class::<PySubgroupPresentation>()?;
     m.add_class::<PyAbelianInvariants>()?;
-    m.add("FpGroupError", m.py().get_type_bound::<PyFpGroupError>())?;
+    m.add("FpGroupError", m.py().get_type::<PyFpGroupError>())?;
     m.add("FPGROUP_DEFAULT_MAX_COSETS", DEFAULT_MAX_COSETS)?;
     m.add("FPGROUP_MAX_FREE_RANK", MAX_FREE_RANK)?;
     m.add("FPGROUP_MAX_MODULE_RANK", MAX_MODULE_RANK)?;

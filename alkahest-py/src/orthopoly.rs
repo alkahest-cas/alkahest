@@ -21,10 +21,10 @@ pyo3::create_exception!(alkahest, PySpecialFunctionError, crate::PyAlkahestError
 pub(crate) fn specfn_err(e: SpecialFunctionError) -> PyErr {
     Python::with_gil(|py| {
         if let SpecialFunctionError::Budget(b) = &e {
-            let exc_type = py.get_type_bound::<crate::PyBudgetExceededError>();
+            let exc_type = py.get_type::<crate::PyBudgetExceededError>();
             return crate::make_structured_err(py, &exc_type, b);
         }
-        let exc_type = py.get_type_bound::<PySpecialFunctionError>();
+        let exc_type = py.get_type::<PySpecialFunctionError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
@@ -540,7 +540,7 @@ fn real_spherical_harmonic_y(
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "SpecialFunctionError",
-        m.py().get_type_bound::<PySpecialFunctionError>(),
+        m.py().get_type::<PySpecialFunctionError>(),
     )?;
     m.add_function(wrap_pyfunction!(legendre_p, m)?)?;
     m.add_function(wrap_pyfunction!(assoc_legendre_p, m)?)?;

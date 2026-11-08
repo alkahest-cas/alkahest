@@ -30,7 +30,7 @@ fn ff_err(e: FiniteFieldError) -> PyErr {
                 return err;
             }
         }
-        let exc_type = py.get_type_bound::<PyFiniteFieldError>();
+        let exc_type = py.get_type::<PyFiniteFieldError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
@@ -65,7 +65,7 @@ fn elem_to_py(py: Python<'_>, field: &FiniteField, e: &FieldElement) -> PyObject
     if field.is_prime_field() {
         e.as_u64().unwrap_or(0).into_py(py)
     } else {
-        PyList::new_bound(py, e.coefficients_padded(field.degree())).into()
+        crate::pylist(py, e.coefficients_padded(field.degree())).into()
     }
 }
 
@@ -349,10 +349,10 @@ impl PyGfMatrix {
                         )
                     })
                     .collect();
-                PyList::new_bound(py, cells).into()
+                crate::pylist(py, cells).into()
             })
             .collect();
-        PyList::new_bound(py, rows).into()
+        crate::pylist(py, rows).into()
     }
 
     /// ``True`` when every entry is zero. O(rows * cols), hence a method.
@@ -446,7 +446,7 @@ impl PyGfMatrix {
         let cp = self.inner.charpoly().map_err(ff_err)?;
         let f = self.inner.field();
         let cells: Vec<PyObject> = cp.iter().map(|c| elem_to_py(py, f, c)).collect();
-        Ok(PyList::new_bound(py, cells).into())
+        Ok(PyList::new(py, cells)?.into())
     }
 
     fn __add__(&self, other: &Self) -> PyResult<Self> {
@@ -538,9 +538,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFiniteField>()?;
     m.add_class::<PyGfMatrix>()?;
     m.add_class::<PyGfRref>()?;
-    m.add(
-        "FiniteFieldError",
-        m.py().get_type_bound::<PyFiniteFieldError>(),
-    )?;
+    m.add("FiniteFieldError", m.py().get_type::<PyFiniteFieldError>())?;
     Ok(())
 }

@@ -77,9 +77,9 @@ pub(crate) fn int_to_py(py: Python<'_>, z: &Integer) -> PyResult<PyObject> {
     }
     // `to_digits` ignores the sign: these are the magnitude's bytes.
     let digits = z.to_digits::<u8>(Order::Lsf);
-    let bytes = PyBytes::new_bound(py, &digits);
+    let bytes = PyBytes::new(py, &digits);
     let magnitude = py
-        .get_type_bound::<PyInt>()
+        .get_type::<PyInt>()
         .call_method1("from_bytes", (bytes, "little"))?;
     Ok(if z.is_negative() {
         magnitude.call_method0("__neg__")?.unbind()
@@ -97,7 +97,7 @@ pub(crate) fn fraction_to_py(
     let n = int_to_py(py, numer)?;
     let d = int_to_py(py, denom)?;
     Ok(py
-        .import_bound("fractions")?
+        .import("fractions")?
         .getattr("Fraction")?
         .call1((n, d))?
         .unbind())

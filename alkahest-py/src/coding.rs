@@ -43,7 +43,7 @@ fn coding_err(e: CodingError) -> PyErr {
                 return err;
             }
         }
-        let exc_type = py.get_type_bound::<PyCodingError>();
+        let exc_type = py.get_type::<PyCodingError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
@@ -511,7 +511,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLinearCode>()?;
     m.add_class::<PyWeightEnumerator>()?;
     m.add_class::<PyDelsarteBound>()?;
-    m.add("CodingError", m.py().get_type_bound::<PyCodingError>())?;
+    m.add("CodingError", m.py().get_type::<PyCodingError>())?;
     m.add_function(wrap_pyfunction!(py_krawtchouk, m)?)?;
     m.add_function(wrap_pyfunction!(py_krawtchouk_poly, m)?)?;
     m.add_function(wrap_pyfunction!(py_delsarte_lp_bound, m)?)?;

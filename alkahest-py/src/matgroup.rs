@@ -36,7 +36,7 @@ pyo3::create_exception!(alkahest, PyMatGroupError, crate::PyAlkahestError);
 
 fn mg_err(e: MatGroupError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyMatGroupError>();
+        let exc_type = py.get_type::<PyMatGroupError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
@@ -461,7 +461,7 @@ fn matgroup_sp_order(py: Python<'_>, q: u64, n: usize) -> PyResult<PyObject> {
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMatGroup>()?;
     m.add_class::<PyMatSiftResult>()?;
-    m.add("MatGroupError", m.py().get_type_bound::<PyMatGroupError>())?;
+    m.add("MatGroupError", m.py().get_type::<PyMatGroupError>())?;
     m.add_function(wrap_pyfunction!(matgroup_gl_order, m)?)?;
     m.add_function(wrap_pyfunction!(matgroup_sl_order, m)?)?;
     m.add_function(wrap_pyfunction!(matgroup_sp_order, m)?)?;

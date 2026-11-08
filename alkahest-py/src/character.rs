@@ -37,7 +37,7 @@ pyo3::create_exception!(alkahest, PyCharacterError, crate::PyAlkahestError);
 
 fn char_err(e: CharacterError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyCharacterError>();
+        let exc_type = py.get_type::<PyCharacterError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
@@ -176,11 +176,11 @@ impl PyConjugacyClasses {
 
     /// Iterate over the classes as :class:`ConjugacyClass`.
     fn __iter__(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let list = pyo3::types::PyList::empty_bound(py);
+        let list = pyo3::types::PyList::empty(py);
         for c in self.inner.classes() {
             list.append(Py::new(py, PyConjugacyClass { inner: c.clone() })?)?;
         }
-        Ok(list.as_any().iter()?.into_py(py))
+        Ok(list.as_any().try_iter()?.into_py(py))
     }
 
     /// The degree of the underlying permutation group.
@@ -449,10 +449,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyConjugacyClass>()?;
     m.add_class::<PyConjugacyClasses>()?;
     m.add_class::<PyCharacterTable>()?;
-    m.add(
-        "CharacterError",
-        m.py().get_type_bound::<PyCharacterError>(),
-    )?;
+    m.add("CharacterError", m.py().get_type::<PyCharacterError>())?;
     m.add("CHARACTER_DEFAULT_CLASS_CAP", DEFAULT_CLASS_ENUMERATION_CAP)?;
     m.add("CHARACTER_MAX_CLASS_CAP", MAX_CLASS_ENUMERATION_CAP)?;
     m.add("CHARACTER_DEFAULT_TABLE_CAP", DEFAULT_CHARACTER_TABLE_CAP)?;

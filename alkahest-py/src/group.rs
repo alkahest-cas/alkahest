@@ -25,7 +25,7 @@ fn group_error_to_py(e: GroupError) -> PyErr {
                 return err;
             }
         }
-        let exc_type = py.get_type_bound::<PyGroupError>();
+        let exc_type = py.get_type::<PyGroupError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
@@ -534,7 +534,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPermutation>()?;
     m.add_class::<PyPermutationGroup>()?;
     m.add_class::<PySiftResult>()?;
-    m.add("GroupError", m.py().get_type_bound::<PyGroupError>())?;
+    m.add("GroupError", m.py().get_type::<PyGroupError>())?;
     m.add("GROUP_DEFAULT_ELEMENT_CAP", DEFAULT_ELEMENT_CAP)?;
     m.add("GROUP_MAX_ELEMENT_CAP", MAX_ELEMENT_CAP)?;
     m.add("GROUP_MAX_BSGS_DEGREE", MAX_BSGS_DEGREE)?;

@@ -16,10 +16,10 @@ use crate::{PyExpr, PyExprPool};
 fn ode_err(e: VerifiedOdeError) -> PyErr {
     Python::with_gil(|py| {
         if let VerifiedOdeError::Budget(b) = &e {
-            let exc_type = py.get_type_bound::<crate::PyBudgetExceededError>();
+            let exc_type = py.get_type::<crate::PyBudgetExceededError>();
             return crate::make_structured_err(py, &exc_type, b);
         }
-        let exc_type = py.get_type_bound::<crate::PyValidatedError>();
+        let exc_type = py.get_type::<crate::PyValidatedError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }

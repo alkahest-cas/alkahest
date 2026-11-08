@@ -27,11 +27,11 @@ use crate::{
 fn bool_err(e: BooleanError) -> PyErr {
     Python::with_gil(|py| match &e {
         BooleanError::Budget(b) => {
-            let t = py.get_type_bound::<PyBudgetExceededError>();
+            let t = py.get_type::<PyBudgetExceededError>();
             make_structured_err(py, &t, b)
         }
         _ => {
-            let t = py.get_type_bound::<PyLogicError>();
+            let t = py.get_type::<PyLogicError>();
             make_structured_err(py, &t, &e)
         }
     })
@@ -151,7 +151,7 @@ fn py_xor(py: Python<'_>, args: &Bound<'_, PyTuple>) -> PyResult<PyExpr> {
 /// Material implication ``a → b``, built as ``Or(Not(a), b)``.
 #[pyfunction(name = "Implies")]
 fn py_implies(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
-    let t = PyTuple::new_bound(py, [a, b]);
+    let t = PyTuple::new(py, [a, b])?;
     let (pool_py, ids) = collect_args(py, "Implies", &t)?;
     let id = lb::logic_implies(&pool_py.borrow(py).inner, ids[0], ids[1]);
     Ok(wrap(pool_py, id))
@@ -174,7 +174,7 @@ fn py_ite(
     t: &Bound<'_, PyAny>,
     e: &Bound<'_, PyAny>,
 ) -> PyResult<PyExpr> {
-    let tup = PyTuple::new_bound(py, [c, t, e]);
+    let tup = PyTuple::new(py, [c, t, e])?;
     let (pool_py, ids) = collect_args(py, "ITE", &tup)?;
     let id = lb::logic_ite(&pool_py.borrow(py).inner, ids[0], ids[1], ids[2]);
     Ok(wrap(pool_py, id))
@@ -495,7 +495,7 @@ fn py_minimize_logic(
 ) -> PyResult<PyObject> {
     if expr.downcast::<PyList>().is_ok() || expr.downcast::<PyTuple>().is_ok() {
         let mut es: Vec<PyRef<PyExpr>> = Vec::new();
-        for item in expr.iter()? {
+        for item in expr.try_iter()? {
             es.push(
                 item?
                     .extract::<PyRef<PyExpr>>()
@@ -564,7 +564,7 @@ fn py_equivalent(
     let (ok, cex) = match verdict {
         Equivalence::Equivalent => (true, py.None()),
         Equivalence::Counterexample(m) => {
-            let d = PyDict::new_bound(py);
+            let d = PyDict::new(py);
             for (k, v) in m {
                 d.set_item(k, v)?;
             }
@@ -620,7 +620,7 @@ fn py_truth_table(
         .enumerate()
         .map(|(r, v)| {
             let bits: Vec<bool> = (0..n).map(|i| (r >> (n - 1 - i)) & 1 == 1).collect();
-            (PyTuple::new_bound(py, bits).unbind(), v)
+            (crate::pytuple(py, bits).unbind(), v)
         })
         .collect())
 }
@@ -786,7 +786,7 @@ impl PyBdd {
     fn levels(&self, py: Python<'_>, vars: &Bound<'_, PyAny>) -> PyResult<Vec<u32>> {
         let sh = lock(&self.shared);
         let mut out = Vec::new();
-        for v in vars.iter()? {
+        for v in vars.try_iter()? {
             if let Some(l) = level_of(py, &sh, &v?)? {
                 out.push(l);
             }
@@ -910,7 +910,7 @@ impl PyBdd {
             None => total,
             Some(vs) => {
                 let mut names: Vec<String> = Vec::new();
-                for v in vs.iter()? {
+                for v in vs.try_iter()? {
                     let v = v?;
                     let name = if let Ok(e) = v.extract::<PyRef<PyExpr>>() {
                         let pool = e.pool.borrow(py);
@@ -942,7 +942,7 @@ impl PyBdd {
             }
         };
         let s = count.to_string();
-        let int = py.get_type_bound::<pyo3::types::PyLong>();
+        let int = py.get_type::<pyo3::types::PyInt>();
         Ok(int.call1((s,))?.into_py(py))
     }
 
@@ -991,7 +991,7 @@ impl PyBdd {
                 )
                 .map_err(bool_err)?
         };
-        let d = PyDict::new_bound(py);
+        let d = PyDict::new(py);
         d.set_item("nodes_before", st.nodes_before)?;
         d.set_item("nodes_after", st.nodes_after)?;
         d.set_item("swaps", st.swaps)?;
@@ -1042,7 +1042,7 @@ impl PyBdd {
         match sh.mgr.any_sat(self.root) {
             None => Ok(py.None()),
             Some(lits) => {
-                let d = PyDict::new_bound(py);
+                let d = PyDict::new(py);
                 for (l, v) in lits {
                     d.set_item(&sh.mgr.var_names()[l as usize], v)?;
                 }
@@ -1138,7 +1138,7 @@ fn py_bdd(
     let pool = pool_py.borrow(py);
     guard_depth(&pool.inner, expr.id)?;
     if let Some(order) = order {
-        for v in order.iter()? {
+        for v in order.try_iter()? {
             let v = v?;
             let name = if let Ok(e) = v.extract::<PyRef<PyExpr>>() {
                 if !e.pool.is(&pool_py) {

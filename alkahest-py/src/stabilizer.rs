@@ -43,7 +43,7 @@ pyo3::create_exception!(alkahest, PyStabilizerError, crate::PyAlkahestError);
 
 fn stab_err(e: StabilizerError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyStabilizerError>();
+        let exc_type = py.get_type::<PyStabilizerError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
@@ -65,8 +65,14 @@ fn bits_from_py(v: &[i64]) -> PyResult<Vec<u8>> {
         .collect()
 }
 
-fn bits_to_py(v: &[u8]) -> Vec<u8> {
-    v.to_vec()
+/// Bits as `u32`, not `u8`: PyO3 converts a returned `Vec<u8>` to `bytes`, and
+/// these are lists of ints in the Python API.
+fn bits_to_py(v: &[u8]) -> Vec<u32> {
+    v.iter().map(|&b| u32::from(b)).collect()
+}
+
+fn bit_rows_to_py(v: &[Vec<u8>]) -> Vec<Vec<u32>> {
+    v.iter().map(|r| bits_to_py(r)).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -196,13 +202,13 @@ impl PyPauliOperator {
 
     /// The ``X`` exponents.
     #[getter]
-    fn x_bits(&self) -> Vec<u8> {
+    fn x_bits(&self) -> Vec<u32> {
         bits_to_py(self.inner.x_bits())
     }
 
     /// The ``Z`` exponents.
     #[getter]
-    fn z_bits(&self) -> Vec<u8> {
+    fn z_bits(&self) -> Vec<u32> {
         bits_to_py(self.inner.z_bits())
     }
 
@@ -213,8 +219,8 @@ impl PyPauliOperator {
     }
 
     /// The ``(x | z)`` vector, length ``2n``.
-    fn symplectic(&self) -> Vec<u8> {
-        self.inner.symplectic()
+    fn symplectic(&self) -> Vec<u32> {
+        bits_to_py(&self.inner.symplectic())
     }
 
     /// The number of qubits acted on non-trivially. The phase is irrelevant.
@@ -358,8 +364,9 @@ impl PyStabilizerGroup {
     }
 
     /// One bit per generator: ``1`` where ``error`` anticommutes with it.
-    fn syndrome(&self, error: &PyPauliOperator) -> PyResult<Vec<u8>> {
-        self.inner.syndrome(&error.inner).map_err(stab_err)
+    fn syndrome(&self, error: &PyPauliOperator) -> PyResult<Vec<u32>> {
+        let bits = self.inner.syndrome(&error.inner).map_err(stab_err)?;
+        Ok(bits_to_py(&bits))
     }
 
     /// Does ``p`` commute with every generator — is it in ``N(S)``?
@@ -457,8 +464,9 @@ impl PyStabilizerCode {
     }
 
     /// One bit per stabilizer generator.
-    fn syndrome(&self, error: &PyPauliOperator) -> PyResult<Vec<u8>> {
-        self.inner.syndrome(&error.inner).map_err(stab_err)
+    fn syndrome(&self, error: &PyPauliOperator) -> PyResult<Vec<u32>> {
+        let bits = self.inner.syndrome(&error.inner).map_err(stab_err)?;
+        Ok(bits_to_py(&bits))
     }
 
     /// Is ``error`` in ``N(S) \\ S`` — an error the syndrome cannot see?
@@ -556,14 +564,14 @@ impl PyCssCode {
 
     /// The ``X``-type logical operators, as ``n``-bit supports.
     #[getter]
-    fn logical_x_bits(&self) -> Vec<Vec<u8>> {
-        self.inner.logical_x_bits().to_vec()
+    fn logical_x_bits(&self) -> Vec<Vec<u32>> {
+        bit_rows_to_py(self.inner.logical_x_bits())
     }
 
     /// The ``Z``-type logical operators, as ``n``-bit supports.
     #[getter]
-    fn logical_z_bits(&self) -> Vec<Vec<u8>> {
-        self.inner.logical_z_bits().to_vec()
+    fn logical_z_bits(&self) -> Vec<Vec<u32>> {
+        bit_rows_to_py(self.inner.logical_z_bits())
     }
 
     /// The ``X``-type logical operators as Pauli operators.
@@ -768,12 +776,13 @@ fn is_symplectic(m: &PyGfMatrix) -> PyResult<bool> {
 
 /// A basis of the symplectic complement of the span of ``vectors``.
 #[pyfunction]
-fn symplectic_complement(vectors: Vec<Vec<i64>>, n: usize) -> PyResult<Vec<Vec<u8>>> {
+fn symplectic_complement(vectors: Vec<Vec<i64>>, n: usize) -> PyResult<Vec<Vec<u32>>> {
     let vs: Vec<Vec<u8>> = vectors
         .iter()
         .map(|v| bits_from_py(v))
         .collect::<PyResult<_>>()?;
-    core_complement(&vs, n).map_err(stab_err)
+    let basis = core_complement(&vs, n).map_err(stab_err)?;
+    Ok(bit_rows_to_py(&basis))
 }
 
 /// Symplectic Gram–Schmidt: ``(pairs, radical)``.
@@ -786,13 +795,18 @@ fn symplectic_complement(vectors: Vec<Vec<i64>>, n: usize) -> PyResult<Vec<Vec<u
 fn symplectic_gram_schmidt(
     vectors: Vec<Vec<i64>>,
     n: usize,
-) -> PyResult<(Vec<(Vec<u8>, Vec<u8>)>, Vec<Vec<u8>>)> {
+) -> PyResult<(Vec<(Vec<u32>, Vec<u32>)>, Vec<Vec<u32>>)> {
     let vs: Vec<Vec<u8>> = vectors
         .iter()
         .map(|v| bits_from_py(v))
         .collect::<PyResult<_>>()?;
     let hb = core_gram_schmidt(&vs, n).map_err(stab_err)?;
-    Ok((hb.pairs().to_vec(), hb.radical().to_vec()))
+    let pairs = hb
+        .pairs()
+        .iter()
+        .map(|(u, v)| (bits_to_py(u), bits_to_py(v)))
+        .collect();
+    Ok((pairs, bit_rows_to_py(hb.radical())))
 }
 
 /// Register the stabilizer surface on the extension module.
@@ -803,10 +817,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyStabilizerCode>()?;
     m.add_class::<PyCssCode>()?;
     m.add_class::<PyMatrixGroup>()?;
-    m.add(
-        "StabilizerError",
-        m.py().get_type_bound::<PyStabilizerError>(),
-    )?;
+    m.add("StabilizerError", m.py().get_type::<PyStabilizerError>())?;
     m.add_function(wrap_pyfunction!(symplectic_form, m)?)?;
     m.add_function(wrap_pyfunction!(symplectic_gram_matrix, m)?)?;
     m.add_function(wrap_pyfunction!(is_symplectic, m)?)?;

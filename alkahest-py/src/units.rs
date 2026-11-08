@@ -24,7 +24,7 @@ pyo3::create_exception!(alkahest, PyUnitError, crate::PyAlkahestError);
 
 fn unit_err(e: UnitError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyUnitError>();
+        let exc_type = py.get_type::<PyUnitError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
@@ -79,13 +79,13 @@ fn wrap(u: Unit) -> PyUnit {
 }
 
 fn scale_tuple(py: Python<'_>, s: &core_units::Scale) -> PyResult<PyObject> {
-    Ok(PyTuple::new_bound(
+    Ok(PyTuple::new(
         py,
         [
             rational_to_py(py, &s.ratio)?,
             rational_to_py(py, &s.pi_power)?,
         ],
-    )
+    )?
     .into_py(py))
 }
 
@@ -117,7 +117,7 @@ impl PyUnit {
     /// ``{base_dimension: Fraction}`` for the non-zero exponents.
     #[getter]
     fn dimension_exponents(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let d = PyDict::new_bound(py);
+        let d = PyDict::new(py);
         for (i, name) in core_units::BASE_DIMENSIONS.iter().enumerate() {
             let e = self.inner.dimension().exponent(i);
             if *e != 0 {
@@ -198,14 +198,14 @@ impl PyUnit {
     fn conversion(&self, py: Python<'_>, target: &Bound<'_, PyAny>) -> PyResult<PyObject> {
         let t = require_unit(target, "target")?;
         let (f, shift) = self.inner.conversion(&t).map_err(unit_err)?;
-        Ok(PyTuple::new_bound(
+        Ok(PyTuple::new(
             py,
             [
                 rational_to_py(py, &f.ratio)?,
                 rational_to_py(py, &f.pi_power)?,
                 rational_to_py(py, &shift)?,
             ],
-        )
+        )?
         .into_py(py))
     }
 
@@ -236,14 +236,14 @@ impl PyUnit {
         } else {
             self.inner.simplify()
         };
-        Ok(PyTuple::new_bound(
+        Ok(PyTuple::new(
             py,
             [
                 rational_to_py(py, &f.ratio)?,
                 rational_to_py(py, &f.pi_power)?,
                 Py::new(py, wrap(u))?.into_py(py),
             ],
-        )
+        )?
         .into_py(py))
     }
 
@@ -351,7 +351,7 @@ impl PyUnit {
     }
 
     fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let cls = py.get_type_bound::<PyUnit>();
+        let cls = py.get_type::<PyUnit>();
         Ok((cls, (self.inner.name(),)).into_py(py))
     }
 }
@@ -561,7 +561,7 @@ fn py_unit_affine_map(
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyUnit>()?;
-    m.add("UnitError", m.py().get_type_bound::<PyUnitError>())?;
+    m.add("UnitError", m.py().get_type::<PyUnitError>())?;
     m.add_function(wrap_pyfunction!(py_parse_unit, m)?)?;
     m.add_function(wrap_pyfunction!(py_known_units, m)?)?;
     m.add_function(wrap_pyfunction!(py_dimension_of, m)?)?;

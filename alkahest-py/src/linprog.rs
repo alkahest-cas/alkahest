@@ -38,7 +38,7 @@ fn rat(py: Python<'_>, r: &Rational) -> PyResult<PyObject> {
 
 fn rat_list(py: Python<'_>, v: &[Rational]) -> PyResult<PyObject> {
     let items = v.iter().map(|r| rat(py, r)).collect::<PyResult<Vec<_>>>()?;
-    Ok(PyList::new_bound(py, items).into_py(py))
+    Ok(PyList::new(py, items)?.into_py(py))
 }
 
 fn lp_err(e: LinprogError) -> PyErr {
@@ -53,15 +53,15 @@ fn lp_err(e: LinprogError) -> PyErr {
             _ => (None, None),
         };
         let err = if matches!(e, LinprogError::Budget { .. }) {
-            let exc = py.get_type_bound::<crate::PyBudgetExceededError>();
+            let exc = py.get_type::<crate::PyBudgetExceededError>();
             crate::make_structured_err(py, &exc, &e)
         } else {
-            let exc = py.get_type_bound::<PyLinprogError>();
+            let exc = py.get_type::<PyLinprogError>();
             crate::make_structured_err(py, &exc, &e)
         };
         // Attach what a stopped branch-and-bound had, so a caller can use the
         // incumbent knowing it is unproven.
-        let value = err.value_bound(py);
+        let value = err.value(py);
         let set = |name: &str, v: PyObject| {
             let _ = value.setattr(name, v);
         };
@@ -129,7 +129,7 @@ fn shape(detail: String) -> PyErr {
 
 fn to_vector(ob: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<Rational>> {
     let items: Vec<Bound<'_, PyAny>> = ob
-        .iter()
+        .try_iter()
         .map_err(|_| shape(format!("{what} must be a sequence")))?
         .collect::<PyResult<_>>()?;
     items
@@ -144,7 +144,7 @@ fn to_matrix(ob: Option<&Bound<'_, PyAny>>, what: &str) -> PyResult<Vec<Vec<Rati
         return Ok(Vec::new());
     };
     let rows: Vec<Bound<'_, PyAny>> = ob
-        .iter()
+        .try_iter()
         .map_err(|_| shape(format!("{what} must be a sequence of rows")))?
         .collect::<PyResult<_>>()?;
     rows.iter()
@@ -181,7 +181,7 @@ fn is_pair_of_scalars(ob: &Bound<'_, PyAny>) -> bool {
     };
     t.len() == 2
         && t.iter()
-            .all(|x| x.is_none() || x.iter().is_err() || x.downcast::<PyString>().is_ok())
+            .all(|x| x.is_none() || x.try_iter().is_err() || x.downcast::<PyString>().is_ok())
 }
 
 fn to_bounds(ob: Option<&Bound<'_, PyAny>>, n: usize) -> PyResult<Vec<VarBound>> {
@@ -209,7 +209,7 @@ fn to_bounds(ob: Option<&Bound<'_, PyAny>>, n: usize) -> PyResult<Vec<VarBound>>
         return Ok(vec![pair(ob, None)?; n]);
     }
     let items: Vec<Bound<'_, PyAny>> = ob
-        .iter()
+        .try_iter()
         .map_err(|_| shape("bounds must be a pair or a sequence of pairs".into()))?
         .collect::<PyResult<_>>()?;
     items
@@ -268,7 +268,7 @@ fn solution_dict(
     let (Some(vars), Some(x)) = (vars, x) else {
         return Ok(py.None());
     };
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     for (v, xi) in vars.iter().zip(x) {
         d.set_item(v.clone_ref(py), rat(py, xi)?)?;
     }
@@ -333,7 +333,7 @@ fn basis_to_py(py: Python<'_>, b: &LpBasis) -> PyObject {
             Some((tag, k).into_py(py))
         })
         .collect();
-    PyList::new_bound(py, items).into_py(py)
+    crate::pylist(py, items).into_py(py)
 }
 
 /// A warm-start basis: a list of ``(kind, index)`` pairs as returned in
@@ -349,7 +349,8 @@ fn basis_from_py(ob: &Bound<'_, PyAny>) -> PyResult<LpBasis> {
                 .into(),
         )
     };
-    let items: Vec<Bound<'_, PyAny>> = ob.iter().map_err(|_| bad())?.collect::<PyResult<_>>()?;
+    let items: Vec<Bound<'_, PyAny>> =
+        ob.try_iter().map_err(|_| bad())?.collect::<PyResult<_>>()?;
     let mut entries = Vec::with_capacity(items.len());
     for it in &items {
         let (tag, k): (String, usize) = it.extract().map_err(|_| bad())?;
@@ -460,7 +461,7 @@ impl PyLpResult {
         let LpOutcome::Infeasible(f) = &self.outcome else {
             return Ok(py.None());
         };
-        let d = PyDict::new_bound(py);
+        let d = PyDict::new(py);
         d.set_item("ineqlin", rat_list(py, &f.y_ub)?)?;
         d.set_item("eqlin", rat_list(py, &f.y_eq)?)?;
         d.set_item("lower", rat_list(py, &f.w_lower)?)?;
@@ -556,13 +557,13 @@ fn join(v: &[Rational]) -> String {
 }
 
 fn program_dict(py: Python<'_>, lp: &LinearProgram) -> PyResult<PyObject> {
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     let mat = |m: &[Vec<Rational>]| -> PyResult<PyObject> {
         let rows = m
             .iter()
             .map(|r| rat_list(py, r))
             .collect::<PyResult<Vec<_>>>()?;
-        Ok(PyList::new_bound(py, rows).into_py(py))
+        Ok(PyList::new(py, rows)?.into_py(py))
     };
     d.set_item("c", rat_list(py, &lp.c)?)?;
     d.set_item("A_ub", mat(&lp.a_ub)?)?;
@@ -579,10 +580,10 @@ fn program_dict(py: Python<'_>, lp: &LinearProgram) -> PyResult<PyObject> {
         .bounds
         .iter()
         .map(|b| -> PyResult<PyObject> {
-            Ok(PyTuple::new_bound(py, [side(&b.lower)?, side(&b.upper)?]).into_py(py))
+            Ok(PyTuple::new(py, [side(&b.lower)?, side(&b.upper)?])?.into_py(py))
         })
         .collect::<PyResult<Vec<_>>>()?;
-    d.set_item("bounds", PyList::new_bound(py, bounds))?;
+    d.set_item("bounds", PyList::new(py, bounds)?)?;
     d.set_item(
         "sense",
         match lp.sense {
@@ -692,16 +693,16 @@ impl PyMilpResult {
     #[getter]
     fn cuts(&self, py: Python<'_>) -> PyResult<PyObject> {
         if !matches!(self.outcome, MilpOutcome::Optimal(_)) {
-            return Ok(PyList::empty_bound(py).into_py(py));
+            return Ok(PyList::empty(py).into_py(py));
         }
         let items = self
             .cuts
             .iter()
             .map(|(row, rhs)| -> PyResult<PyObject> {
-                Ok(PyTuple::new_bound(py, [rat_list(py, row)?, rat(py, rhs)?]).into_py(py))
+                Ok(PyTuple::new(py, [rat_list(py, row)?, rat(py, rhs)?])?.into_py(py))
             })
             .collect::<PyResult<Vec<_>>>()?;
-        Ok(PyList::new_bound(py, items).into_py(py))
+        Ok(PyList::new(py, items)?.into_py(py))
     }
 
     /// ``{variable: value}`` for :func:`linprog_expr` results.
@@ -842,7 +843,7 @@ fn to_integrality(ob: Option<&Bound<'_, PyAny>>, n: usize) -> PyResult<Vec<bool>
         return Ok(vec![b; n]);
     }
     let items: Vec<Bound<'_, PyAny>> = ob
-        .iter()
+        .try_iter()
         .map_err(|_| shape("integrality must be a bool or a sequence".into()))?
         .collect::<PyResult<_>>()?;
     items
@@ -984,7 +985,7 @@ fn py_linprog_expr(
     parameter_range: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyObject> {
     let pool_py: Py<PyExprPool> = objective.pool.clone_ref(py);
-    let var_objs: Vec<Bound<'_, PyAny>> = vars.iter()?.collect::<PyResult<_>>()?;
+    let var_objs: Vec<Bound<'_, PyAny>> = vars.try_iter()?.collect::<PyResult<_>>()?;
     let mut var_ids = Vec::new();
     let mut var_py = Vec::new();
     for v in &var_objs {
@@ -993,7 +994,7 @@ fn py_linprog_expr(
         var_py.push(Py::new(py, (*e).clone())?);
     }
     let mut con_ids = Vec::new();
-    for c in constraints.iter()? {
+    for c in constraints.try_iter()? {
         let c = c?;
         let e = crate::extract_expr_in(&c, &pool_py, "linprog_expr", "a constraint")?;
         con_ids.push(e.id);
@@ -1033,7 +1034,7 @@ fn py_linprog_expr(
         vec![all; var_ids.len()]
     } else {
         let mut flags = vec![false; var_ids.len()];
-        for v in integer.iter()? {
+        for v in integer.try_iter()? {
             let v = v?;
             let e = crate::extract_expr_in(&v, &pool_py, "linprog_expr", "an integer variable")?;
             let Some(i) = var_ids.iter().position(|&id| id == e.id) else {
@@ -1099,24 +1100,19 @@ fn opt_rat(py: Python<'_>, v: &Option<Rational>) -> PyResult<PyObject> {
 fn affine_pair(py: Python<'_>, p: &Option<(Vec<Rational>, Vec<Rational>)>) -> PyResult<PyObject> {
     match p {
         None => Ok(py.None()),
-        Some((a, b)) => {
-            Ok(PyTuple::new_bound(py, [rat_list(py, a)?, rat_list(py, b)?]).into_py(py))
-        }
+        Some((a, b)) => Ok(PyTuple::new(py, [rat_list(py, a)?, rat_list(py, b)?])?.into_py(py)),
     }
 }
 
 fn region_dict(py: Python<'_>, r: &ParametricRegion) -> PyResult<PyObject> {
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     d.set_item(
         "theta",
-        PyTuple::new_bound(py, [opt_rat(py, &r.lower)?, opt_rat(py, &r.upper)?]),
+        PyTuple::new(py, [opt_rat(py, &r.lower)?, opt_rat(py, &r.upper)?])?,
     )?;
     d.set_item("status", status_name(r.status))?;
     match &r.value {
-        Some((v0, v1)) => d.set_item(
-            "value",
-            PyTuple::new_bound(py, [rat(py, v0)?, rat(py, v1)?]),
-        )?,
+        Some((v0, v1)) => d.set_item("value", PyTuple::new(py, [rat(py, v0)?, rat(py, v1)?])?)?,
         None => d.set_item("value", py.None())?,
     }
     d.set_item("x", affine_pair(py, &r.x)?)?;
@@ -1171,7 +1167,7 @@ impl PyParametricResult {
             .iter()
             .map(|r| region_dict(py, r))
             .collect::<PyResult<Vec<_>>>()?;
-        Ok(PyList::new_bound(py, items).into_py(py))
+        Ok(PyList::new(py, items)?.into_py(py))
     }
 
     /// The exact ``θ`` where the optimal basis or the status changes.
@@ -1355,7 +1351,7 @@ fn py_linear_form(
 ) -> PyResult<(PyObject, PyObject)> {
     let pool_py: Py<PyExprPool> = expr.pool.clone_ref(py);
     let mut ids = Vec::new();
-    for v in vars.iter()? {
+    for v in vars.try_iter()? {
         let v = v?;
         ids.push(crate::extract_expr_in(&v, &pool_py, "_linear_form", "a variable")?.id);
     }
@@ -1368,7 +1364,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLpResult>()?;
     m.add_class::<PyMilpResult>()?;
     m.add_class::<PyParametricResult>()?;
-    m.add("LinprogError", m.py().get_type_bound::<PyLinprogError>())?;
+    m.add("LinprogError", m.py().get_type::<PyLinprogError>())?;
     m.add_function(wrap_pyfunction!(py_linprog, m)?)?;
     m.add_function(wrap_pyfunction!(py_milp, m)?)?;
     m.add_function(wrap_pyfunction!(py_linprog_expr, m)?)?;

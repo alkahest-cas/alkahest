@@ -47,7 +47,7 @@ pyo3::create_exception!(alkahest, PyArithmeticError, crate::PyNumberTheoryError)
 
 fn nf_err(e: NumberFieldError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyNumberFieldError>();
+        let exc_type = py.get_type::<PyNumberFieldError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
@@ -56,7 +56,7 @@ fn nf_err(e: NumberFieldError) -> PyErr {
 /// (`E-BUDGET-*`) every other engine raises.
 fn trip_err(t: BudgetTrip) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<crate::PyBudgetExceededError>();
+        let exc_type = py.get_type::<crate::PyBudgetExceededError>();
         crate::make_structured_err(py, &exc_type, &t)
     })
 }
@@ -76,7 +76,7 @@ fn nt_err(e: ArithmeticError) -> PyErr {
         return trip_err(t);
     }
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyArithmeticError>();
+        let exc_type = py.get_type::<PyArithmeticError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
@@ -101,7 +101,7 @@ fn py_fraction(py: Python<'_>, r: &rug::Rational) -> PyResult<PyObject> {
 /// binary-to-rational conversion.
 fn coeff_strings(obj: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
     let mut out = Vec::new();
-    for item in obj.iter()? {
+    for item in obj.try_iter()? {
         out.push(crate::bigint::rational_text_of(&item?)?);
     }
     Ok(out)
@@ -157,7 +157,7 @@ impl PyNumberField {
     /// order. The field is rebuilt through its public constructors.
     fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
         let helper = py
-            .import_bound("alkahest._pickle")?
+            .import("alkahest._pickle")?
             .getattr("_unpickle_number_field")?;
         let args = (
             self.defining_polynomial(py)?,
@@ -291,7 +291,7 @@ impl PyNumberFieldElement {
     /// Pickle support: the field and the exact power-basis coordinates.
     fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
         let helper = py
-            .import_bound("alkahest._pickle")?
+            .import("alkahest._pickle")?
             .getattr("_unpickle_number_field_element")?;
         let field = PyNumberField {
             inner: self.inner.field().clone(),
@@ -546,14 +546,8 @@ fn py_sum_of_squares(py: Python<'_>, k: u64, n: &Bound<'_, PyAny>) -> PyResult<P
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyNumberField>()?;
     m.add_class::<PyNumberFieldElement>()?;
-    m.add(
-        "NumberFieldError",
-        m.py().get_type_bound::<PyNumberFieldError>(),
-    )?;
-    m.add(
-        "ArithmeticError",
-        m.py().get_type_bound::<PyArithmeticError>(),
-    )?;
+    m.add("NumberFieldError", m.py().get_type::<PyNumberFieldError>())?;
+    m.add("ArithmeticError", m.py().get_type::<PyArithmeticError>())?;
     m.add_function(wrap_pyfunction!(py_cyclotomic_polynomial_coeffs, m)?)?;
     m.add_function(wrap_pyfunction!(py_partition_number, m)?)?;
     m.add_function(wrap_pyfunction!(py_bernoulli_number, m)?)?;

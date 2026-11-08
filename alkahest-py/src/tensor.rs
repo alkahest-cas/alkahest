@@ -24,10 +24,10 @@ pyo3::create_exception!(alkahest, PyTensorError, crate::PyAlkahestError);
 fn tensor_err(e: TensorError) -> PyErr {
     Python::with_gil(|py| {
         if let Some(trip) = e.budget_trip() {
-            let exc_type = py.get_type_bound::<crate::PyBudgetExceededError>();
+            let exc_type = py.get_type::<crate::PyBudgetExceededError>();
             return crate::make_structured_err(py, &exc_type, &trip);
         }
-        let exc_type = py.get_type_bound::<PyTensorError>();
+        let exc_type = py.get_type::<PyTensorError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
@@ -71,20 +71,20 @@ fn nest2(py: Python<'_>, pool: &Py<PyExprPool>, t: Vec<Vec<ExprId>>) -> PyObject
         .into_iter()
         .map(|r| {
             let v: Vec<PyObject> = r.into_iter().map(|e| wrap(py, pool, e)).collect();
-            PyList::new_bound(py, v).into_py(py)
+            crate::pylist(py, v).into_py(py)
         })
         .collect();
-    PyList::new_bound(py, rows).into_py(py)
+    crate::pylist(py, rows).into_py(py)
 }
 
 fn nest3(py: Python<'_>, pool: &Py<PyExprPool>, t: Vec<Vec<Vec<ExprId>>>) -> PyObject {
     let v: Vec<PyObject> = t.into_iter().map(|m| nest2(py, pool, m)).collect();
-    PyList::new_bound(py, v).into_py(py)
+    crate::pylist(py, v).into_py(py)
 }
 
 fn nest4(py: Python<'_>, pool: &Py<PyExprPool>, t: Vec<Vec<Vec<Vec<ExprId>>>>) -> PyObject {
     let v: Vec<PyObject> = t.into_iter().map(|m| nest3(py, pool, m)).collect();
-    PyList::new_bound(py, v).into_py(py)
+    crate::pylist(py, v).into_py(py)
 }
 
 /// Native metric (private; use :class:`alkahest.Metric`).
@@ -273,7 +273,7 @@ fn py_tensor_derivative(
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add("TensorError", m.py().get_type_bound::<PyTensorError>())?;
+    m.add("TensorError", m.py().get_type::<PyTensorError>())?;
     m.add_class::<PyTensorMetric>()?;
     m.add_function(wrap_pyfunction!(py_tensor_canonical, m)?)?;
     m.add_function(wrap_pyfunction!(py_tensor_derivative, m)?)?;

@@ -60,7 +60,7 @@ fn lat(e: LatticeGeometryError) -> PyErr {
         return crate::budget_trip_into_py(trip);
     }
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyLatticeGeometryError>();
+        let exc_type = py.get_type::<PyLatticeGeometryError>();
         let msg = e.to_string();
         let code = e.code();
         let remediation = e.remediation().unwrap_or("");
@@ -74,7 +74,7 @@ fn lat(e: LatticeGeometryError) -> PyErr {
                 exc.setattr("code", code).ok();
                 exc.setattr("remediation", e.remediation()).ok();
                 exc.setattr("span", e.span()).ok();
-                PyErr::from_value_bound(exc)
+                PyErr::from_value(exc)
             }
             Err(err) => err,
         }
@@ -107,10 +107,10 @@ fn to_rational(obj: &Bound<'_, PyAny>) -> PyResult<Rational> {
 
 fn rows_from_py(obj: &Bound<'_, PyAny>) -> PyResult<Vec<Vec<Rational>>> {
     let mut out = Vec::new();
-    for row in obj.iter()? {
+    for row in obj.try_iter()? {
         let row = row?;
         let mut r = Vec::new();
-        for item in row.iter()? {
+        for item in row.try_iter()? {
             r.push(to_rational(&item?)?);
         }
         out.push(r);
@@ -406,7 +406,7 @@ impl PyLattice {
         budget: Option<u64>,
     ) -> PyResult<PyLatticeVector> {
         let mut t = Vec::new();
-        for item in target.iter()? {
+        for item in target.try_iter()? {
             t.push(to_rational(&item?)?);
         }
         Ok(vec_to_py(
@@ -455,7 +455,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLatticeVector>()?;
     m.add(
         "LatticeGeometryError",
-        m.py().get_type_bound::<PyLatticeGeometryError>(),
+        m.py().get_type::<PyLatticeGeometryError>(),
     )?;
     m.add("LATTICE_MAX_ENUM_RANK", MAX_ENUM_RANK)?;
     m.add("LATTICE_DEFAULT_ENUM_NODE_BUDGET", DEFAULT_ENUM_NODE_BUDGET)?;

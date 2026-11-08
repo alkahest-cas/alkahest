@@ -36,7 +36,7 @@ pyo3::create_exception!(alkahest, PyFunctionFieldError, crate::PyAlkahestError);
 /// module touches `lib.rs` in exactly two lines.
 fn structured(e: &FunctionFieldError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyFunctionFieldError>();
+        let exc_type = py.get_type::<PyFunctionFieldError>();
         let msg = e.to_string();
         let code = e.code();
         let remediation = e.remediation().unwrap_or("");
@@ -50,7 +50,7 @@ fn structured(e: &FunctionFieldError) -> PyErr {
                 exc.setattr("code", code).ok();
                 exc.setattr("remediation", e.remediation()).ok();
                 exc.setattr("span", e.span()).ok();
-                PyErr::from_value_bound(exc)
+                PyErr::from_value(exc)
             }
             Err(err) => err,
         }
@@ -113,7 +113,7 @@ fn integer_to_py(py: Python<'_>, i: &Integer) -> PyResult<PyObject> {
 
 fn coeffs_from_py(obj: &Bound<'_, PyAny>) -> PyResult<Vec<Rational>> {
     let mut out = Vec::new();
-    for item in obj.iter()? {
+    for item in obj.try_iter()? {
         out.push(to_rational(&item?)?);
     }
     Ok(out)
@@ -143,7 +143,7 @@ impl PyFunctionField {
     #[new]
     fn new(coeffs: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut cs = Vec::new();
-        for item in coeffs.iter()? {
+        for item in coeffs.try_iter()? {
             cs.push(coeffs_from_py(&item?)?);
         }
         Ok(PyFunctionField {
@@ -352,7 +352,7 @@ impl PyDivisor {
     fn new(field: &PyFunctionField, terms: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
         let mut parsed: Vec<(Place, Integer)> = Vec::new();
         if let Some(terms) = terms {
-            for item in terms.iter()? {
+            for item in terms.try_iter()? {
                 let item = item?;
                 let place: PyRef<PyPlace> = item.get_item(0)?.extract()?;
                 let mult = to_integer(&item.get_item(1)?)?;
@@ -834,7 +834,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_riemann_roch, m)?)?;
     m.add(
         "FunctionFieldError",
-        m.py().get_type_bound::<PyFunctionFieldError>(),
+        m.py().get_type::<PyFunctionFieldError>(),
     )?;
     Ok(())
 }

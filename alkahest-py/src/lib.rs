@@ -287,7 +287,7 @@ pyo3::create_exception!(alkahest, PyDepthLimitError, PyAlkahestError);
 
 fn depth_error_to_py(e: alkahest_core::DepthLimitError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyDepthLimitError>();
+        let exc_type = py.get_type::<PyDepthLimitError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -516,6 +516,31 @@ fn clone_opt_py<T>(p: &Option<Py<T>>) -> Option<Py<T>> {
     p.as_ref().map(clone_py)
 }
 
+/// `PyList::new` for elements whose conversion to Python cannot fail (numbers and
+/// existing Python objects), for the call sites with no `PyResult` to return.
+pub(crate) fn pylist<'py, T, U>(
+    py: Python<'py>,
+    elements: impl IntoIterator<Item = T, IntoIter = U>,
+) -> Bound<'py, PyList>
+where
+    T: IntoPyObject<'py>,
+    U: ExactSizeIterator<Item = T>,
+{
+    PyList::new(py, elements).expect("element conversion to Python is infallible here")
+}
+
+/// [`pylist`], for tuples.
+pub(crate) fn pytuple<'py, T, U>(
+    py: Python<'py>,
+    elements: impl IntoIterator<Item = T, IntoIter = U>,
+) -> Bound<'py, PyTuple>
+where
+    T: IntoPyObject<'py>,
+    U: ExactSizeIterator<Item = T>,
+{
+    PyTuple::new(py, elements).expect("element conversion to Python is infallible here")
+}
+
 // ---------------------------------------------------------------------------
 // Default pool, and Python numbers / pool-free constants as operands
 // ---------------------------------------------------------------------------
@@ -567,7 +592,7 @@ fn py_into_pool(
 /// The pool a pool-free call uses: the innermost `alkahest.context(pool=...)`
 /// pool, else [`DEFAULT_POOL`].
 fn ambient_pool(py: Python<'_>) -> PyResult<Py<PyExprPool>> {
-    if let Ok(ctx) = py.import_bound("alkahest._context") {
+    if let Ok(ctx) = py.import("alkahest._context") {
         if let Ok(p) = ctx.getattr("active_pool").and_then(|f| f.call0()) {
             if let Ok(p) = p.extract::<Py<PyExprPool>>() {
                 return Ok(p);
@@ -804,7 +829,7 @@ fn is_decimal(ob: &Bound<'_, PyAny>) -> PyResult<bool> {
     static DECIMAL: pyo3::sync::GILOnceCell<PyObject> = pyo3::sync::GILOnceCell::new();
     let py = ob.py();
     let cls = DECIMAL.get_or_try_init(py, || -> PyResult<PyObject> {
-        Ok(py.import_bound("decimal")?.getattr("Decimal")?.unbind())
+        Ok(py.import("decimal")?.getattr("Decimal")?.unbind())
     })?;
     ob.is_instance(cls.bind(py))
 }
@@ -886,7 +911,7 @@ fn pool_mismatch_err() -> PyErr {
 fn cross_pool_err(message: String) -> PyErr {
     let err = PyPoolError::new_err(message);
     Python::with_gil(|py| {
-        let v = err.value_bound(py);
+        let v = err.value(py);
         v.setattr("code", "E-POOL-001").ok();
         v.setattr(
             "remediation",
@@ -1239,7 +1264,7 @@ fn make_structured_err<E: AlkahestErrorTrait>(
     exc.setattr("code", code).ok();
     exc.setattr("remediation", e.remediation()).ok();
     exc.setattr("span", e.span()).ok();
-    PyErr::from_value_bound(exc)
+    PyErr::from_value(exc)
 }
 
 // ---------------------------------------------------------------------------
@@ -1287,9 +1312,7 @@ impl PyDomain {
 
     /// Pickle support: a domain unpickles as the same member, by name.
     fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let helper = py
-            .import_bound("alkahest._pickle")?
-            .getattr("_unpickle_domain")?;
+        let helper = py.import("alkahest._pickle")?.getattr("_unpickle_domain")?;
         Ok((helper, (format!("{self:?}"),)).into_py(py))
     }
 }
@@ -1377,7 +1400,7 @@ fn ambient_domain(py: Python<'_>) -> Option<Domain> {
     if ACTIVE_CONTEXT_FRAMES.load(Ordering::Acquire) == 0 {
         return None;
     }
-    let module = py.import_bound("alkahest._context").ok()?;
+    let module = py.import("alkahest._context").ok()?;
     let value = module.call_method0("active_domain").ok()?;
     if value.is_none() {
         return None;
@@ -1434,14 +1457,14 @@ fn py_int_decimal(v: &Bound<'_, PyAny>) -> PyResult<String> {
 
 fn diff_error_to_py(e: DiffError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyDiffError>();
+        let exc_type = py.get_type::<PyDiffError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn assumption_error_to_py(e: AssumptionError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyAssumptionError>();
+        let exc_type = py.get_type::<PyAssumptionError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -1449,7 +1472,7 @@ fn assumption_error_to_py(e: AssumptionError) -> PyErr {
 #[allow(dead_code)]
 fn io_error_to_py(e: IoError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyIoError>();
+        let exc_type = py.get_type::<PyIoError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -1462,12 +1485,12 @@ fn integrate_error_to_py(e: IntegrationError) -> PyErr {
     // `IntegrationError::is_budget`.)
     if e.is_budget() {
         return Python::with_gil(|py| {
-            let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+            let exc_type = py.get_type::<PyBudgetExceededError>();
             make_structured_err(py, &exc_type, &e)
         });
     }
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyIntegrationError>();
+        let exc_type = py.get_type::<PyIntegrationError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -1669,18 +1692,18 @@ fn series_error_to_py(e: SeriesError) -> PyErr {
         if let Some(r) = alkahest_core::calculus::series::take_series_refusal() {
             return Python::with_gil(|py| match r.budget() {
                 Some(b) => {
-                    let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+                    let exc_type = py.get_type::<PyBudgetExceededError>();
                     make_structured_err(py, &exc_type, &b)
                 }
                 None => {
-                    let exc_type = py.get_type_bound::<PySeriesError>();
+                    let exc_type = py.get_type::<PySeriesError>();
                     make_structured_err(py, &exc_type, &r)
                 }
             });
         }
     }
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PySeriesError>();
+        let exc_type = py.get_type::<PySeriesError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -1707,13 +1730,13 @@ fn ideal_error_to_py(e: alkahest_core::ideal::PrimaryDecompositionError) -> PyEr
         }
         if let Some(r) = alkahest_core::ideal::take_ideal_refusal() {
             return Python::with_gil(|py| {
-                let exc_type = py.get_type_bound::<PyAlkahestError>();
+                let exc_type = py.get_type::<PyAlkahestError>();
                 make_structured_err(py, &exc_type, &r)
             });
         }
     }
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyAlkahestError>();
+        let exc_type = py.get_type::<PyAlkahestError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -1728,7 +1751,7 @@ fn limit_error_to_py(e: LimitError) -> PyErr {
     if matches!(e, LimitError::DepthExceeded) {
         if let Some(b) = alkahest_core::calculus::limits::last_budget_trip() {
             return Python::with_gil(|py| {
-                let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+                let exc_type = py.get_type::<PyBudgetExceededError>();
                 make_structured_err(py, &exc_type, &b)
             });
         }
@@ -1739,13 +1762,13 @@ fn limit_error_to_py(e: LimitError) -> PyErr {
     if matches!(e, LimitError::Unsupported) {
         if let Some(missing) = alkahest_core::calculus::limits::last_missing_assumption() {
             return Python::with_gil(|py| {
-                let exc_type = py.get_type_bound::<PyLimitError>();
+                let exc_type = py.get_type::<PyLimitError>();
                 make_structured_err(py, &exc_type, &missing)
             });
         }
     }
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyLimitError>();
+        let exc_type = py.get_type::<PyLimitError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -1780,13 +1803,13 @@ fn coded_error<E>(py: Python<'_>, code: &str, message: String, remediation: &str
 where
     E: pyo3::type_object::PyTypeInfo,
 {
-    let exc_type = py.get_type_bound::<E>();
+    let exc_type = py.get_type::<E>();
     let full_msg = format!("[{code}] {message}\nRemediation: {remediation}");
     let exc = exc_type.call1((full_msg,)).unwrap();
     exc.setattr("code", code).ok();
     exc.setattr("remediation", remediation).ok();
     exc.setattr("span", py.None()).ok();
-    PyErr::from_value_bound(exc)
+    PyErr::from_value(exc)
 }
 
 /// Run `f`, turning a Rust panic inside it into a coded `AlkahestError`
@@ -1821,14 +1844,14 @@ fn catch_internal_panic<T>(what: &str, f: impl FnOnce() -> PyResult<T>) -> PyRes
 /// A DAE refusal as the coded `DaeError` (still a `ValueError` subclass).
 fn dae_error_to_py(e: alkahest_core::DaeStructureError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyDaeError>();
+        let exc_type = py.get_type::<PyDaeError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn conv_error_to_py(e: alkahest_core::ConversionError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyConversionError>();
+        let exc_type = py.get_type::<PyConversionError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -1856,35 +1879,35 @@ fn factor_error_to_py(e: FactorError) -> PyErr {
                 return err;
             }
         }
-        let exc_type = py.get_type_bound::<PyFactorError>();
+        let exc_type = py.get_type::<PyFactorError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn resultant_error_to_py(e: ResultantError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyResultantError>();
+        let exc_type = py.get_type::<PyResultantError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn sparse_interp_error_to_py(e: SparseInterpError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PySparseInterpError>();
+        let exc_type = py.get_type::<PySparseInterpError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn sparse_gcd_error_to_py(e: SparseGcdError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PySparseGcdError>();
+        let exc_type = py.get_type::<PySparseGcdError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn real_root_error_to_py(e: RealRootError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyRealRootError>();
+        let exc_type = py.get_type::<PyRealRootError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -1898,42 +1921,42 @@ fn cad_error_to_py(e: CadError) -> PyErr {
                 return err;
             }
         }
-        let exc_type = py.get_type_bound::<PyCadError>();
+        let exc_type = py.get_type::<PyCadError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn sum_error_to_py(e: SumError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PySumError>();
+        let exc_type = py.get_type::<PySumError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn product_error_to_py(e: ProductError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyProductError>();
+        let exc_type = py.get_type::<PyProductError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn number_theory_error_to_py(e: CoreNumberTheoryError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyNumberTheoryError>();
+        let exc_type = py.get_type::<PyNumberTheoryError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn linear_recurrence_error_to_py(e: LinearRecurrenceError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyLinearRecurrenceError>();
+        let exc_type = py.get_type::<PyLinearRecurrenceError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn rsolve_error_to_py(e: RsolveError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyRsolveError>();
+        let exc_type = py.get_type::<PyRsolveError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -1978,7 +2001,7 @@ fn py_pell_classes(
     let pair = |p: &(Integer, Integer)| -> PyResult<PyObject> {
         Ok((bigint::int_to_py(py, &p.0)?, bigint::int_to_py(py, &p.1)?).into_py(py))
     };
-    let out = pyo3::types::PyDict::new_bound(py);
+    let out = pyo3::types::PyDict::new(py);
     out.set_item("d", bigint::int_to_py(py, &pc.d)?)?;
     out.set_item("n", bigint::int_to_py(py, &pc.n)?)?;
     out.set_item("unit", pair(&pc.unit)?)?;
@@ -1999,34 +2022,34 @@ fn diophantine_error_to_py(e: DiophantineError) -> PyErr {
     if matches!(e, DiophantineError::Unsupported(_)) {
         if let Some(b) = alkahest_core::solver::diophantine::last_budget_trip() {
             return Python::with_gil(|py| {
-                let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+                let exc_type = py.get_type::<PyBudgetExceededError>();
                 make_structured_err(py, &exc_type, &b)
             });
         }
     }
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyDiophantineError>();
+        let exc_type = py.get_type::<PyDiophantineError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn modular_error_to_py(e: ModularError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyModularError>();
+        let exc_type = py.get_type::<PyModularError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn lattice_error_to_py(e: LatticeError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyLatticeError>();
+        let exc_type = py.get_type::<PyLatticeError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn pslq_error_to_py(e: PslqError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyPslqError>();
+        let exc_type = py.get_type::<PyPslqError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -2040,13 +2063,13 @@ fn matrix_error_to_py(e: MatrixError) -> PyErr {
     if matches!(e, MatrixError::SingularMatrix) {
         if let Some(r) = alkahest_core::matrix::take_zero_test_refusal() {
             return Python::with_gil(|py| {
-                let exc_type = py.get_type_bound::<PyMatrixError>();
+                let exc_type = py.get_type::<PyMatrixError>();
                 make_structured_err(py, &exc_type, &r)
             });
         }
     }
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyMatrixError>();
+        let exc_type = py.get_type::<PyMatrixError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -2062,7 +2085,7 @@ fn eigen_error_to_py(e: EigenError) -> PyErr {
     if matches!(e, EigenError::KernelComputationFailed) {
         if let Some(r) = alkahest_core::matrix::take_zero_test_refusal() {
             return Python::with_gil(|py| {
-                let exc_type = py.get_type_bound::<PyEigenError>();
+                let exc_type = py.get_type::<PyEigenError>();
                 make_structured_err(py, &exc_type, &r)
             });
         }
@@ -2074,13 +2097,13 @@ fn eigen_error_to_py(e: EigenError) -> PyErr {
     if matches!(e, EigenError::UnsupportedIrreducibleDegree { .. }) {
         if let Some(r) = alkahest_core::matrix::take_spectrum_refusal() {
             return Python::with_gil(|py| {
-                let exc_type = py.get_type_bound::<PyEigenError>();
+                let exc_type = py.get_type::<PyEigenError>();
                 make_structured_err(py, &exc_type, &r)
             });
         }
     }
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyEigenError>();
+        let exc_type = py.get_type::<PyEigenError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -2211,13 +2234,13 @@ fn linear_algebra_error_to_py(e: LinearAlgebraError) -> PyErr {
     if matches!(e, LinearAlgebraError::UnsupportedField) {
         if let Some(r) = alkahest_core::matrix::take_matrix_exp_refusal() {
             return Python::with_gil(|py| {
-                let exc_type = py.get_type_bound::<PyLinearAlgebraError>();
+                let exc_type = py.get_type::<PyLinearAlgebraError>();
                 make_structured_err(py, &exc_type, &r)
             });
         }
         if let Some(r) = alkahest_core::matrix::take_zero_test_refusal() {
             return Python::with_gil(|py| {
-                let exc_type = py.get_type_bound::<PyLinearAlgebraError>();
+                let exc_type = py.get_type::<PyLinearAlgebraError>();
                 make_structured_err(py, &exc_type, &r)
             });
         }
@@ -2229,20 +2252,20 @@ fn linear_algebra_error_to_py(e: LinearAlgebraError) -> PyErr {
     if matches!(e, LinearAlgebraError::UnsupportedIrreducibleDegree { .. }) {
         if let Some(r) = alkahest_core::matrix::take_spectrum_refusal() {
             return Python::with_gil(|py| {
-                let exc_type = py.get_type_bound::<PyLinearAlgebraError>();
+                let exc_type = py.get_type::<PyLinearAlgebraError>();
                 make_structured_err(py, &exc_type, &r)
             });
         }
     }
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyLinearAlgebraError>();
+        let exc_type = py.get_type::<PyLinearAlgebraError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn ode_error_to_py(e: OdeError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyOdeError>();
+        let exc_type = py.get_type::<PyOdeError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -2267,7 +2290,7 @@ fn own_pool_ids(pool: &PyRef<'_, PyExprPool>, args: &[PyExpr], op: &str) -> PyRe
             let err = PyPoolError::new_err(format!(
                 "[E-POOL-001] pool.{op}(): argument {i} belongs to a different ExprPool"
             ));
-            let v = err.value_bound(py);
+            let v = err.value(py);
             v.setattr("code", "E-POOL-001").ok();
             v.setattr(
                 "remediation",
@@ -2432,7 +2455,7 @@ impl PyExprPool {
         let id = slf.inner.try_func(name, ids).map_err(|e| {
             let py = slf.py();
             let err = PyPoolError::new_err(format!("[E-POOL-002] pool.func(): {e}"));
-            let v = err.value_bound(py);
+            let v = err.value(py);
             v.setattr("code", "E-POOL-002").ok();
             v.setattr(
                 "remediation",
@@ -2657,9 +2680,7 @@ impl PyExprPool {
     /// that the expressions pickled with it are re-interned into.
     fn __reduce__(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
         let py = slf.py();
-        let helper = py
-            .import_bound("alkahest._pickle")?
-            .getattr("_reduce_pool")?;
+        let helper = py.import("alkahest._pickle")?.getattr("_reduce_pool")?;
         Ok(helper.call1((slf,))?.unbind())
     }
 
@@ -2735,9 +2756,9 @@ fn fraction_pow_base<'py>(
         return None;
     }
     let found = (|| -> PyResult<Option<Bound<'py, PyAny>>> {
-        let fraction = py.import_bound("fractions")?.getattr("Fraction")?;
+        let fraction = py.import("fractions")?.getattr("Fraction")?;
         let pow_code = fraction.getattr("__pow__")?.getattr("__code__")?;
-        let frame = py.import_bound("sys")?.getattr("_getframe")?.call1((0,))?;
+        let frame = py.import("sys")?.getattr("_getframe")?.call1((0,))?;
         if !frame.getattr("f_code")?.is(&pow_code) {
             return Ok(None);
         }
@@ -2776,13 +2797,13 @@ fn expr_node_impl(this: &PyExpr, py: Python<'_>, exact: bool) -> PyResult<PyObje
     macro_rules! ids_to_pylist {
         ($ids:expr) => {{
             let items: Vec<PyObject> = $ids.iter().map(|&id| wrap!(id)).collect();
-            PyList::new_bound(py, items).into_py(py)
+            PyList::new(py, items)?.into_py(py)
         }};
     }
 
     Ok(match data {
         alkahest_core::ExprData::Symbol { name, .. } => {
-            PyList::new_bound(py, vec!["symbol".into_py(py), name.into_py(py)]).into_py(py)
+            PyList::new(py, vec!["symbol".into_py(py), name.into_py(py)])?.into_py(py)
         }
         alkahest_core::ExprData::Integer(n) => {
             let value = if exact {
@@ -2790,7 +2811,7 @@ fn expr_node_impl(this: &PyExpr, py: Python<'_>, exact: bool) -> PyResult<PyObje
             } else {
                 n.0.to_string().into_py(py)
             };
-            PyList::new_bound(py, vec!["integer".into_py(py), value]).into_py(py)
+            PyList::new(py, vec!["integer".into_py(py), value])?.into_py(py)
         }
         alkahest_core::ExprData::Rational(r) => {
             let (numer, denom) = if exact {
@@ -2804,42 +2825,40 @@ fn expr_node_impl(this: &PyExpr, py: Python<'_>, exact: bool) -> PyResult<PyObje
                     r.0.denom().to_string().into_py(py),
                 )
             };
-            PyList::new_bound(py, vec!["rational".into_py(py), numer, denom]).into_py(py)
+            PyList::new(py, vec!["rational".into_py(py), numer, denom])?.into_py(py)
         }
-        alkahest_core::ExprData::Float(f) => PyList::new_bound(
+        alkahest_core::ExprData::Float(f) => PyList::new(
             py,
             vec!["float".into_py(py), f.inner.to_string().into_py(py)],
-        )
+        )?
         .into_py(py),
         alkahest_core::ExprData::Add(args) => {
-            PyList::new_bound(py, vec!["add".into_py(py), ids_to_pylist!(args)]).into_py(py)
+            PyList::new(py, vec!["add".into_py(py), ids_to_pylist!(args)])?.into_py(py)
         }
         alkahest_core::ExprData::Mul(args) => {
-            PyList::new_bound(py, vec!["mul".into_py(py), ids_to_pylist!(args)]).into_py(py)
+            PyList::new(py, vec!["mul".into_py(py), ids_to_pylist!(args)])?.into_py(py)
         }
         alkahest_core::ExprData::Pow { base, exp } => {
-            PyList::new_bound(py, vec!["pow".into_py(py), wrap!(base), wrap!(exp)]).into_py(py)
+            PyList::new(py, vec!["pow".into_py(py), wrap!(base), wrap!(exp)])?.into_py(py)
         }
-        alkahest_core::ExprData::Func { name, args } => PyList::new_bound(
+        alkahest_core::ExprData::Func { name, args } => PyList::new(
             py,
             vec!["func".into_py(py), name.into_py(py), ids_to_pylist!(args)],
-        )
+        )?
         .into_py(py),
         alkahest_core::ExprData::Piecewise { branches, default } => {
             let br_items: Vec<PyObject> = branches
                 .iter()
-                .map(|&(cond, val)| {
-                    PyTuple::new_bound(py, vec![wrap!(cond), wrap!(val)]).into_py(py)
-                })
+                .map(|&(cond, val)| crate::pytuple(py, vec![wrap!(cond), wrap!(val)]).into_py(py))
                 .collect();
-            PyList::new_bound(
+            PyList::new(
                 py,
                 vec![
                     "piecewise".into_py(py),
-                    PyList::new_bound(py, br_items).into_py(py),
+                    crate::pylist(py, br_items).into_py(py),
                     wrap!(default),
                 ],
-            )
+            )?
             .into_py(py)
         }
         alkahest_core::ExprData::Predicate { kind, args } => {
@@ -2856,29 +2875,29 @@ fn expr_node_impl(this: &PyExpr, py: Python<'_>, exact: bool) -> PyResult<PyObje
                 PredicateKind::True => "true",
                 PredicateKind::False => "false",
             };
-            PyList::new_bound(
+            PyList::new(
                 py,
                 vec![
                     "predicate".into_py(py),
                     kind_str.into_py(py),
                     ids_to_pylist!(args),
                 ],
-            )
+            )?
             .into_py(py)
         }
         alkahest_core::ExprData::Forall { var, body } => {
-            PyList::new_bound(py, vec!["forall".into_py(py), wrap!(var), wrap!(body)]).into_py(py)
+            PyList::new(py, vec!["forall".into_py(py), wrap!(var), wrap!(body)])?.into_py(py)
         }
         alkahest_core::ExprData::Exists { var, body } => {
-            PyList::new_bound(py, vec!["exists".into_py(py), wrap!(var), wrap!(body)]).into_py(py)
+            PyList::new(py, vec!["exists".into_py(py), wrap!(var), wrap!(body)])?.into_py(py)
         }
         alkahest_core::ExprData::BigO(inner) => {
-            PyList::new_bound(py, vec!["big_o".into_py(py), wrap!(inner)]).into_py(py)
+            PyList::new(py, vec!["big_o".into_py(py), wrap!(inner)])?.into_py(py)
         }
-        alkahest_core::ExprData::RootSum { poly, var, body } => PyList::new_bound(
+        alkahest_core::ExprData::RootSum { poly, var, body } => PyList::new(
             py,
             vec!["root_sum".into_py(py), wrap!(poly), wrap!(var), wrap!(body)],
-        )
+        )?
         .into_py(py),
     })
 }
@@ -2918,13 +2937,11 @@ impl PyExpr {
             let pool = self.pool.borrow(py);
             alkahest_core::kernel::pool_persist::dag_to_bytes(&pool.inner, &[self.id])
         };
-        let helper = py
-            .import_bound("alkahest._pickle")?
-            .getattr("_reduce_expr")?;
+        let helper = py.import("alkahest._pickle")?.getattr("_reduce_expr")?;
         Ok(helper
             .call1((
                 self.pool.clone_ref(py),
-                pyo3::types::PyBytes::new_bound(py, &bytes),
+                pyo3::types::PyBytes::new(py, &bytes),
             ))?
             .unbind())
     }
@@ -3206,9 +3223,7 @@ impl PySeries {
     /// Pickle support: the expansion (with its `O(·)` term) as an `Expr`,
     /// which pickles in the pool scheme of `alkahest._pickle`.
     fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let helper = py
-            .import_bound("alkahest._pickle")?
-            .getattr("_unpickle_series")?;
+        let helper = py.import("alkahest._pickle")?.getattr("_unpickle_series")?;
         Ok((helper, (self.expr.clone().into_py(py),)).into_py(py))
     }
 
@@ -3312,7 +3327,7 @@ fn py_to_rational(ob: &Bound<'_, PyAny>) -> PyResult<Rational> {
 
 fn py_seq_to_rationals(seq: &Bound<'_, PyAny>) -> PyResult<Vec<Rational>> {
     let mut out = Vec::new();
-    for item in seq.iter()? {
+    for item in seq.try_iter()? {
         out.push(py_to_rational(&item?)?);
     }
     Ok(out)
@@ -3460,7 +3475,7 @@ impl PyFps {
     /// The first `n` coefficients `[a₀, …, a_{n-1}]`.
     fn coeffs(&self, py: Python<'_>, n: usize) -> PyResult<PyObject> {
         let n = checked_order("Fps coefficient count", n)?;
-        let out = PyList::empty_bound(py);
+        let out = PyList::empty(py);
         for c in self.inner.coeffs(n) {
             out.append(rational_to_py(py, &c)?)?;
         }
@@ -3656,7 +3671,7 @@ impl PyAssumptions {
     /// Predicates explicitly asserted in this context.
     #[getter]
     fn predicates<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
-        let predicates = PyList::empty_bound(py);
+        let predicates = PyList::empty(py);
         for &id in self.inner.predicates() {
             predicates
                 .append(
@@ -3887,13 +3902,11 @@ impl PyDerivedResult {
         let meta: PickledDerivedMeta = (
             value, raw_value, steps, wrt, integ, definite, tendsto, gosper, product, resultant,
         );
-        let helper = py
-            .import_bound("alkahest._pickle")?
-            .getattr("_reduce_derived")?;
+        let helper = py.import("alkahest._pickle")?.getattr("_reduce_derived")?;
         Ok(helper
             .call1((
                 self.value.pool.clone_ref(py),
-                pyo3::types::PyBytes::new_bound(py, &bytes),
+                pyo3::types::PyBytes::new(py, &bytes),
                 IntoPy::<PyObject>::into_py(meta, py),
             ))?
             .unbind())
@@ -3991,9 +4004,9 @@ impl PyDerivedResult {
 
     #[getter]
     fn steps<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
-        let list = PyList::empty_bound(py);
+        let list = PyList::empty(py);
         for (rule, before, after, conds) in self.steps_text(py) {
-            let d = PyDict::new_bound(py);
+            let d = PyDict::new(py);
             d.set_item("rule", rule).unwrap();
             d.set_item("before", before).unwrap();
             d.set_item("after", after).unwrap();
@@ -4124,9 +4137,9 @@ impl PyDerivedResult {
     /// :func:`alkahest.certificate_coverage`.
     #[getter]
     fn certificate_status<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
-        let status = PyDict::new_bound(py);
+        let status = PyDict::new(py);
         let certifiable = self.certificate(py).is_some();
-        let blocking = PyList::empty_bound(py);
+        let blocking = PyList::empty(py);
 
         let reason = if certifiable {
             "emitted"
@@ -4151,7 +4164,7 @@ impl PyDerivedResult {
                 if alkahest_core::step_is_certifiable(step, self.wrt, &pool.inner) {
                     continue;
                 }
-                let record = PyDict::new_bound(py);
+                let record = PyDict::new(py);
                 record.set_item("index", index).unwrap();
                 record.set_item("rule", step.rule_name).unwrap();
                 record
@@ -4178,7 +4191,7 @@ impl PyDerivedResult {
     /// only when its symbolic derivative residual simplifies to zero.
     #[getter]
     fn verification<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
-        let metadata = PyDict::new_bound(py);
+        let metadata = PyDict::new(py);
         // One dispatch for every certificate surface (`.certificate`,
         // `.certificate_status`, `.verification`, `to_lean`).
         let lean_certificate = self.certificate(py);
@@ -4238,7 +4251,7 @@ impl PyDerivedResult {
             )
             .unwrap();
 
-        let side_conditions = PyList::empty_bound(py);
+        let side_conditions = PyList::empty(py);
         if let Some(steps) = self.steps_text.get() {
             for (_, _, _, conditions) in steps {
                 for condition in conditions {
@@ -4331,14 +4344,14 @@ impl PyDerivedResult {
         let verification_full = self.verification(py);
         let certificate_status_full = self.certificate_status(py);
 
-        let out = PyDict::new_bound(py);
+        let out = PyDict::new(py);
         out.set_item("kind", "alkahest.derived_result")?;
         out.set_item("schema_version", RESULT_SCHEMA_VERSION)?;
         out.set_item("steps_schema_version", STEPS_SCHEMA_VERSION)?;
         out.set_item("value", self.value.__str__(py)?)?;
 
         if compact {
-            let verification = PyDict::new_bound(py);
+            let verification = PyDict::new(py);
             verification.set_item(
                 "status",
                 verification_full
@@ -4353,7 +4366,7 @@ impl PyDerivedResult {
             )?;
             out.set_item("verification", verification)?;
 
-            let certificate_status = PyDict::new_bound(py);
+            let certificate_status = PyDict::new(py);
             certificate_status.set_item(
                 "certifiable",
                 certificate_status_full
@@ -4384,7 +4397,7 @@ impl PyDerivedResult {
     fn to_json(&self, py: Python<'_>, mode: &str) -> PyResult<String> {
         derived_result_mode_is_compact(mode)?;
         let dict = self.to_dict(py, mode)?;
-        let json = PyModule::import_bound(py, "json")?;
+        let json = PyModule::import(py, "json")?;
         json.getattr("dumps")?.call1((dict,))?.extract()
     }
 }
@@ -4476,9 +4489,9 @@ impl PyDerivedResult {
     /// compact mode uses short keys and drops `before`/`after`, omitting
     /// `s` entirely when `side_conditions` is empty.
     fn steps_dict_list<'py>(&self, py: Python<'py>, compact: bool) -> Bound<'py, PyList> {
-        let list = PyList::empty_bound(py);
+        let list = PyList::empty(py);
         for (rule, before, after, conds) in self.steps_text(py) {
-            let d = PyDict::new_bound(py);
+            let d = PyDict::new(py);
             if compact {
                 d.set_item("r", rule).unwrap();
                 if !conds.is_empty() {
@@ -5148,7 +5161,7 @@ fn division_by_zero_error(py: Python<'_>, message: String) -> PyErr {
     let remediation = "the expression is undefined everywhere: check the denominator before \
                        dividing (it is identically zero)";
     let class = py
-        .import_bound("alkahest")
+        .import("alkahest")
         .and_then(|m| m.getattr("DivisionByZeroError"));
     match class {
         Ok(cls) => {
@@ -5158,7 +5171,7 @@ fn division_by_zero_error(py: Python<'_>, message: String) -> PyErr {
                     exc.setattr("code", code).ok();
                     exc.setattr("remediation", remediation).ok();
                     exc.setattr("span", py.None()).ok();
-                    PyErr::from_value_bound(exc)
+                    PyErr::from_value(exc)
                 }
                 Err(_) => domain_error(py, code, message, remediation),
             }
@@ -5416,7 +5429,7 @@ impl PyMultiPolyFactorization {
 }
 
 fn factor_verification_dict<'py>(py: Python<'py>, verified: bool) -> Bound<'py, PyDict> {
-    let result = PyDict::new_bound(py);
+    let result = PyDict::new(py);
     result
         .set_item(
             "status",
@@ -6406,7 +6419,7 @@ fn py_limit(
         r.map_err(|e| match e {
             alkahest_core::calculus::OpaqueLimitError::Limit(e) => limit_error_to_py(e),
             alkahest_core::calculus::OpaqueLimitError::Refused(r) => Python::with_gil(|py| {
-                let exc_type = py.get_type_bound::<PyLimitError>();
+                let exc_type = py.get_type::<PyLimitError>();
                 make_structured_err(py, &exc_type, &r)
             }),
         })?
@@ -6446,35 +6459,35 @@ fn rational_to_py(py: Python<'_>, r: &Rational) -> PyResult<PyObject> {
 fn dsolve_error_to_py(e: CoreDsolveError) -> PyErr {
     // E-ODE-010..014: the same prefix, and so the same class, as `OdeError`.
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyOdeError>();
+        let exc_type = py.get_type::<PyOdeError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn laplace_error_to_py(e: CoreLaplaceError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyTransformError>();
+        let exc_type = py.get_type::<PyTransformError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn fourier_error_to_py(e: CoreFourierError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyTransformError>();
+        let exc_type = py.get_type::<PyTransformError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn ztransform_error_to_py(e: CoreZTransformError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyTransformError>();
+        let exc_type = py.get_type::<PyTransformError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn asymptotic_error_to_py(e: CoreAsymptoticError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyAsymptoticError>();
+        let exc_type = py.get_type::<PyAsymptoticError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -6483,14 +6496,14 @@ fn series_solve_error_to_py(e: CoreSeriesSolveError) -> PyErr {
     // E-ODE-040..045 — see the note on `SeriesError::code` for why this block
     // moved off 020..025, which `NumericOdeError` already owned.
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyOdeError>();
+        let exc_type = py.get_type::<PyOdeError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn fps_error_to_py(e: CoreFpsError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyFpsError>();
+        let exc_type = py.get_type::<PyFpsError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -6570,9 +6583,9 @@ fn py_dsolve(
         .map(|c| render_side_condition_or_depth(&pool.inner, c))
         .collect();
     drop(pool);
-    let out = PyList::empty_bound(py);
+    let out = PyList::empty(py);
     for sol in report.branches {
-        let d = PyDict::new_bound(py);
+        let d = PyDict::new(py);
         let wrap = |id| {
             PyExpr {
                 id,
@@ -6600,7 +6613,7 @@ fn py_dsolve(
                 "implicit"
             },
         )?;
-        let consts = PyList::empty_bound(py);
+        let consts = PyList::empty(py);
         for c in sol.constants {
             consts.append(
                 PyExpr {
@@ -6690,7 +6703,7 @@ fn dsolve_input_from_applied(
 fn dsolve_system_error_to_py(e: CoreDsolveSystemError) -> PyErr {
     // E-ODE-030..034, alongside `dsolve_error_to_py` — same prefix, same class.
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyOdeError>();
+        let exc_type = py.get_type::<PyOdeError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -6778,7 +6791,7 @@ fn py_dsolve_system(
             guard_depth_all(&pool.inner, &eq_ids)?;
             alkahest_core::experimental::ode_from_equations(&eq_ids, &fn_ids, t.id, &pool.inner)
                 .map_err(|e| {
-                    let exc_type = py.get_type_bound::<PyOdeError>();
+                    let exc_type = py.get_type::<PyOdeError>();
                     make_structured_err(py, &exc_type, &e)
                 })?
         };
@@ -6814,25 +6827,25 @@ fn py_dsolve_system(
         }
         .into_py(py)
     };
-    let d = PyDict::new_bound(py);
-    let states = PyList::empty_bound(py);
+    let d = PyDict::new(py);
+    let states = PyList::empty(py);
     for v in &sol.state_vars {
         states.append(wrap(*v))?;
     }
     d.set_item("state_vars", states)?;
-    let ys = PyList::empty_bound(py);
+    let ys = PyList::empty(py);
     for e in &sol.y_of_t {
         ys.append(wrap(*e))?;
     }
     d.set_item("y_of_t", ys)?;
-    let consts = PyList::empty_bound(py);
+    let consts = PyList::empty(py);
     for c in &sol.constants {
         consts.append(wrap(*c))?;
     }
     d.set_item("constants", consts)?;
-    let phi = PyList::empty_bound(py);
+    let phi = PyList::empty(py);
     for row in &sol.fundamental_matrix {
-        let r = PyList::empty_bound(py);
+        let r = PyList::empty(py);
         for e in row {
             r.append(wrap(*e))?;
         }
@@ -6840,7 +6853,7 @@ fn py_dsolve_system(
     }
     d.set_item("fundamental_matrix", phi)?;
     if let Some(sys) = &eq_system {
-        let fm = PyDict::new_bound(py);
+        let fm = PyDict::new(py);
         for entry in &sys.table {
             if let Some(pos) = sol.state_vars.iter().position(|&v| v == entry.symbol) {
                 fm.set_item(wrap(entry.node), wrap(sol.y_of_t[pos]))?;
@@ -6861,7 +6874,7 @@ fn py_dsolve_system(
 /// Convert a [`CoreNumericOdeError`] to a Python exception.
 fn numeric_ode_error_to_py(e: CoreNumericOdeError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyOdeError>();
+        let exc_type = py.get_type::<PyOdeError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -6892,7 +6905,7 @@ struct PyOdeTrajectory {
 impl PyOdeTrajectory {
     #[getter]
     fn t(&self, py: Python<'_>) -> PyObject {
-        PyList::new_bound(py, &self.inner.t).into_py(py)
+        crate::pylist(py, &self.inner.t).into_py(py)
     }
 
     #[getter]
@@ -6901,9 +6914,9 @@ impl PyOdeTrajectory {
             .inner
             .y
             .iter()
-            .map(|row| PyList::new_bound(py, row).into_py(py))
+            .map(|row| crate::pylist(py, row).into_py(py))
             .collect();
-        PyList::new_bound(py, rows).into_py(py)
+        crate::pylist(py, rows).into_py(py)
     }
 
     /// The final time point, or ``None`` for an empty trajectory.
@@ -6915,7 +6928,7 @@ impl PyOdeTrajectory {
     fn y_final(&self, py: Python<'_>) -> Option<PyObject> {
         self.inner
             .y_final()
-            .map(|v| PyList::new_bound(py, v).into_py(py))
+            .map(|v| crate::pylist(py, v).into_py(py))
     }
 
     fn __len__(&self) -> usize {
@@ -7301,7 +7314,7 @@ fn py_multilimit(
         guard_depth_all(&pool.inner, &[f.id, x.id, y.id, a.id, b.id])?;
         core_multilimit(f.id, x.id, y.id, a.id, b.id, &pool.inner)
     };
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     match result {
         CoreMultiLimit::Value(v) => {
             d.set_item("status", "value")?;
@@ -7318,7 +7331,7 @@ fn py_multilimit(
             d.set_item("status", "dne")?;
             let mk =
                 |w: &alkahest_core::calculus::multilimit::PathWitness| -> PyResult<Py<PyDict>> {
-                    let pw = PyDict::new_bound(py);
+                    let pw = PyDict::new(py);
                     pw.set_item("description", w.description.clone())?;
                     pw.set_item(
                         "value",
@@ -7360,7 +7373,7 @@ fn py_asymptotic_expand(
             .map_err(asymptotic_error_to_py)?
             .term_exprs()
     };
-    let out = PyList::empty_bound(py);
+    let out = PyList::empty(py);
     for id in terms {
         out.append(
             PyExpr {
@@ -7384,10 +7397,10 @@ fn py_asymptotic_expand(
 fn puiseux_error_to_py(e: CorePuiseuxError) -> PyErr {
     Python::with_gil(|py| {
         if let CorePuiseuxError::Exhausted(Some(b)) = &e {
-            let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+            let exc_type = py.get_type::<PyBudgetExceededError>();
             return make_structured_err(py, &exc_type, b);
         }
-        let exc_type = py.get_type_bound::<PySeriesError>();
+        let exc_type = py.get_type::<PySeriesError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -7439,9 +7452,9 @@ impl PyPuiseuxExpansion {
     /// :class:`~alkahest.Expr`.
     #[getter]
     fn terms(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let out = PyList::empty_bound(py);
+        let out = PyList::empty(py);
         for (e, c) in self.term_exponents.iter().zip(self.term_coeffs.iter()) {
-            let pair = PyTuple::new_bound(
+            let pair = PyTuple::new(
                 py,
                 [
                     rational_to_py(py, e)?,
@@ -7451,7 +7464,7 @@ impl PyPuiseuxExpansion {
                     }
                     .into_py(py),
                 ],
-            );
+            )?;
             out.append(pair)?;
         }
         Ok(out.into_py(py))
@@ -7489,7 +7502,7 @@ impl PyPuiseuxExpansion {
     ///   that it disagreed: a disagreement is a refusal.
     #[getter]
     fn evidence(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let d = PyDict::new_bound(py);
+        let d = PyDict::new(py);
         d.set_item("rungs", self.rungs)?;
         d.set_item("conclusive_rungs", self.conclusive_rungs)?;
         d.set_item("worst_margin", self.worst_margin)?;
@@ -7625,7 +7638,7 @@ fn py_series_solve(
     let ode = CoreSeriesOde::new(x.id, p.id, q.id, r.id);
     let result =
         core_series_solve(&ode, x0.id, order, &pool.inner).map_err(series_solve_error_to_py)?;
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     d.set_item(
         "kind",
         match result.kind {
@@ -7642,11 +7655,11 @@ fn py_series_solve(
         }
         .into_py(py),
     )?;
-    let sols = PyList::empty_bound(py);
+    let sols = PyList::empty(py);
     for s in &result.solutions {
-        let sd = PyDict::new_bound(py);
+        let sd = PyDict::new(py);
         sd.set_item("exponent", rational_to_py(py, &s.exponent)?)?;
-        let coeffs = PyList::empty_bound(py);
+        let coeffs = PyList::empty(py);
         for c in &s.coeffs {
             coeffs.append(rational_to_py(py, c)?)?;
         }
@@ -7880,7 +7893,7 @@ fn holonomic_error_to_py(e: CoreHolonomicError) -> PyErr {
         if let Some(err) = budget_trip_to_py(py) {
             return err;
         }
-        let exc_type = py.get_type_bound::<PyHolonomicError>();
+        let exc_type = py.get_type::<PyHolonomicError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -7897,14 +7910,14 @@ fn holonomic_error_to_py(e: CoreHolonomicError) -> PyErr {
 /// exists" would record a false negative.
 fn budget_trip_into_py(trip: alkahest_core::budget::BudgetTrip) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+        let exc_type = py.get_type::<PyBudgetExceededError>();
         make_structured_err(py, &exc_type, &trip)
     })
 }
 
 fn budget_trip_to_py(py: Python<'_>) -> Option<PyErr> {
     let trip = alkahest_core::budget::take_trip()?;
-    let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+    let exc_type = py.get_type::<PyBudgetExceededError>();
     Some(make_structured_err(py, &exc_type, &trip))
 }
 
@@ -7917,7 +7930,7 @@ fn budget_trip_to_py(py: Python<'_>) -> Option<PyErr> {
 /// catches, and both are unchanged.
 fn holonomic_modular_error_to_py(e: CoreHolonomicModularError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyHolonomicError>();
+        let exc_type = py.get_type::<PyHolonomicError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -8214,7 +8227,7 @@ impl PyZeilbergerCertificate {
             let conditions = verdict.side_conditions(&range, &pool.inner);
             (verdict, conditions)
         };
-        let out = PyDict::new_bound(py);
+        let out = PyDict::new(py);
         out.set_item("boundary", verdict.tag())?;
         let rhs = match &verdict.status {
             CoreBoundaryStatus::Nonzero { rhs, .. } => Some(Py::new(
@@ -8995,7 +9008,7 @@ fn q_holonomic_error_to_py(e: CoreQHolonomicError) -> PyErr {
         if let Some(err) = budget_trip_to_py(py) {
             return err;
         }
-        let exc_type = py.get_type_bound::<PyHolonomicError>();
+        let exc_type = py.get_type::<PyHolonomicError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -9090,7 +9103,7 @@ fn telescoping2d_error_to_py(e: CoreTelescoping2dError) -> PyErr {
         if let Some(err) = budget_trip_to_py(py) {
             return err;
         }
-        let exc_type = py.get_type_bound::<PyHolonomicError>();
+        let exc_type = py.get_type::<PyHolonomicError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -9219,7 +9232,7 @@ impl PyTelescoping2dCertificate {
                 format_rect_range(&pool.inner, klo, khi, "k"),
             )
         };
-        let out = PyDict::new_bound(py);
+        let out = PyDict::new(py);
         out.set_item("status", status.tag())?;
         out.set_item("implies_sum_recurrence", status.implies_sum_recurrence())?;
         out.set_item(
@@ -9436,7 +9449,7 @@ impl PyTelescopingMdCertificate {
                 .collect();
             (status, ranges)
         };
-        let out = PyDict::new_bound(py);
+        let out = PyDict::new(py);
         out.set_item("status", status.tag())?;
         out.set_item("implies_sum_recurrence", status.implies_sum_recurrence())?;
         out.set_item("side_conditions", status.side_conditions(&ranges))?;
@@ -9938,9 +9951,9 @@ impl PyRecurrenceAsymptotics {
     /// constant and how well it converged; a loop that records this cannot
     /// later mistake one for the other.
     fn evidence(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
-        let out = PyDict::new_bound(py);
+        let out = PyDict::new(py);
 
-        let derived = PyDict::new_bound(py);
+        let derived = PyDict::new(py);
         derived.set_item("order", self.inner.characteristic.order)?;
         derived.set_item("verdict", self.inner.characteristic.verdict.tag())?;
         derived.set_item("growth_rate", self.inner.characteristic.growth_rate)?;
@@ -9952,7 +9965,7 @@ impl PyRecurrenceAsymptotics {
         derived.set_item("singular_indices", self.singular_indices())?;
         out.set_item("derived", derived)?;
 
-        let fitted = PyDict::new_bound(py);
+        let fitted = PyDict::new(py);
         fitted.set_item("connection_constant", self.connection_constant())?;
         fitted.set_item("converged", self.connection_constant_converged())?;
         fitted.set_item("relative_drift", self.connection_constant_drift())?;
@@ -10207,9 +10220,9 @@ fn match_pattern(
         let pat = Pattern::from_expr(pattern_expr.id);
         core_match_pattern_with_config(&pat, expr.id, &pool.inner, MatchConfig { wildcards })
     };
-    let out = PyList::empty_bound(py);
+    let out = PyList::empty(py);
     for subst in matches {
-        let d = PyDict::new_bound(py);
+        let d = PyDict::new(py);
         for (name, id) in subst.bindings {
             let expr_py = PyExpr {
                 id,
@@ -10686,7 +10699,7 @@ fn py_to_lean(py: Python<'_>, arg: &Bound<'_, PyAny>) -> PyResult<String> {
         .and_then(|m| m.extract())
         .unwrap_or_default();
     let exported = py
-        .import_bound("alkahest")
+        .import("alkahest")
         .and_then(|m| m.getattr(type_name.as_str()))
         .map(|t| t.is(&arg.get_type()))
         .unwrap_or(false);
@@ -10711,12 +10724,12 @@ fn py_to_lean(py: Python<'_>, arg: &Bound<'_, PyAny>) -> PyResult<String> {
 fn certificate_unavailable(py: Python<'_>, message: &str, remediation: &str) -> PyErr {
     let build = || -> PyResult<PyErr> {
         let cls = py
-            .import_bound("alkahest.exceptions")?
+            .import("alkahest.exceptions")?
             .getattr("CertificateUnavailableError")?;
-        let kwargs = PyDict::new_bound(py);
+        let kwargs = PyDict::new(py);
         kwargs.set_item("remediation", remediation)?;
         let exc = cls.call((format!("[E-CERT-001] {message}"),), Some(&kwargs))?;
-        Ok(PyErr::from_value_bound(exc))
+        Ok(PyErr::from_value(exc))
     };
     build().unwrap_or_else(|e| e)
 }
@@ -10732,7 +10745,7 @@ fn smtlib_error_to_py(e: alkahest_core::logic::smtlib::SmtLibError) -> PyErr {
         // `_NATIVE_EXCEPTION_OVERLAY`, so a native `PySmtError` would be a
         // *different* class from the `ak.SmtError` callers write `except` for.
         // `alkahest/smt.py` re-raises this as `SmtError`, preserving `.code`.
-        let exc_type = py.get_type_bound::<PyAlkahestError>();
+        let exc_type = py.get_type::<PyAlkahestError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -10859,7 +10872,7 @@ fn py_grad(py: Python<'_>, expr: PyRef<PyExpr>, vars: Vec<PyRef<PyExpr>>) -> PyR
 
 fn undefined_error_to_py(e: alkahest_core::diff::UndefinedFunctionError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyDiffError>();
+        let exc_type = py.get_type::<PyDiffError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -10964,14 +10977,14 @@ fn py_functions_to_symbols(
         }
         .into_py(py)
     };
-    let mapping = PyDict::new_bound(py);
+    let mapping = PyDict::new(py);
     for entry in table {
         mapping.set_item(wrap(entry.node), wrap(entry.symbol))?;
     }
     let out_obj = if single {
         wrap(out[0])
     } else {
-        PyList::new_bound(py, out.into_iter().map(wrap)).into_py(py)
+        PyList::new(py, out.into_iter().map(wrap))?.into_py(py)
     };
     Ok((out_obj, mapping.into_py(py)))
 }
@@ -11120,13 +11133,11 @@ impl PyMatrix {
             let pool = self.pool.borrow(py);
             alkahest_core::kernel::pool_persist::dag_to_bytes(&pool.inner, self.inner.entries())
         };
-        let helper = py
-            .import_bound("alkahest._pickle")?
-            .getattr("_reduce_matrix")?;
+        let helper = py.import("alkahest._pickle")?.getattr("_reduce_matrix")?;
         Ok(helper
             .call1((
                 self.pool.clone_ref(py),
-                pyo3::types::PyBytes::new_bound(py, &bytes),
+                pyo3::types::PyBytes::new(py, &bytes),
                 self.inner.rows,
                 self.inner.cols,
             ))?
@@ -11458,7 +11469,7 @@ impl PyMatrix {
             pairs = merged;
         }
         drop(pool);
-        let out = PyDict::new_bound(py);
+        let out = PyDict::new(py);
         for (e, mult) in pairs {
             let key = PyExpr {
                 id: e,
@@ -12029,7 +12040,7 @@ impl PyODE {
                 &pool.inner,
             )
             .map_err(|e| {
-                let exc_type = py.get_type_bound::<PyOdeError>();
+                let exc_type = py.get_type::<PyOdeError>();
                 make_structured_err(py, &exc_type, &e)
             })?;
             if !sys.side_conditions.is_empty() {
@@ -12841,7 +12852,7 @@ fn component_to_pydict(
     comp: Component,
     pool: Py<PyExprPool>,
 ) -> PyResult<PyObject> {
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     d.set_item("name", comp.name.clone())?;
     d.set_item("n_equations", comp.equations.len())?;
     d.set_item("n_ports", comp.ports.len())?;
@@ -12910,13 +12921,13 @@ fn py_voltage_source(py: Python<'_>, name: &str, voltage: PyRef<PyExpr>) -> PyRe
 fn jit_compile_error_to_py(e: alkahest_core::JitError) -> PyErr {
     if let Some(refusal) = alkahest_core::take_unbound_symbols() {
         return Python::with_gil(|py| {
-            let exc_type = py.get_type_bound::<PyJitError>();
+            let exc_type = py.get_type::<PyJitError>();
             make_structured_err(py, &exc_type, &refusal)
         });
     }
     if let Some(refusal) = alkahest_core::take_unevaluable_functions() {
         return Python::with_gil(|py| {
-            let exc_type = py.get_type_bound::<PyJitError>();
+            let exc_type = py.get_type::<PyJitError>();
             make_structured_err(py, &exc_type, &refusal)
         });
     }
@@ -12954,7 +12965,7 @@ fn py_compile_expr(
 
 fn warn_no_native_jit(py: Python<'_>) -> PyResult<()> {
     if !core_jit_available() {
-        let warnings = py.import_bound("warnings")?;
+        let warnings = py.import("warnings")?;
         warnings.call_method1(
             "warn",
             (
@@ -12963,7 +12974,7 @@ fn warn_no_native_jit(py: Python<'_>) -> PyResult<()> {
                  wheel built with the `cranelift` feature (no system dependencies) or \
                  rebuild with maturin develop --manifest-path alkahest-py/Cargo.toml \
                  --features cranelift (or `jit` for LLVM 21).",
-                py.get_type_bound::<pyo3::exceptions::PyRuntimeWarning>(),
+                py.get_type::<pyo3::exceptions::PyRuntimeWarning>(),
                 // stack level 2 so the warning points at the caller's site
                 2i32,
             ),
@@ -12978,7 +12989,7 @@ fn py_compile_many(
     exprs: &Bound<'_, PyAny>,
     inputs: &Bound<'_, PyList>,
 ) -> PyResult<PyCompiledVecFn> {
-    let items: Vec<Bound<'_, PyAny>> = exprs.iter()?.collect::<PyResult<_>>()?;
+    let items: Vec<Bound<'_, PyAny>> = exprs.try_iter()?.collect::<PyResult<_>>()?;
     let Some(first) = items.first() else {
         return Err(PyValueError::new_err(
             "compile_expr() was given an empty list of expressions; pass at least one",
@@ -13557,7 +13568,7 @@ fn check_batch_raw_shape(
         };
         checked.map_err(|trip| {
             Python::with_gil(|py| {
-                let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+                let exc_type = py.get_type::<PyBudgetExceededError>();
                 make_structured_err(py, &exc_type, &trip)
             })
         })?;
@@ -14085,7 +14096,7 @@ impl PyArbBall {
     /// `(mid, rad)` as `mpmath.mpf` values, exact conversions of the stored
     /// binary floats (requires `mpmath`).
     fn to_mpf<'py>(&self, py: Python<'py>) -> PyResult<(Bound<'py, PyAny>, Bound<'py, PyAny>)> {
-        let mpmath = py.import_bound("mpmath")?;
+        let mpmath = py.import("mpmath")?;
         let ctx = mpmath.getattr("mp")?;
         let mpf = mpmath.getattr("mpf")?;
         let prec = self.inner.mid.prec().max(self.inner.rad.prec());
@@ -14239,7 +14250,7 @@ impl PyArbBall {
     /// a round trip is bit-for-bit at any precision.
     fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
         let helper = py
-            .import_bound("alkahest._pickle")?
+            .import("alkahest._pickle")?
             .getattr("_unpickle_arb_ball")?;
         let args = (
             self.inner.prec,
@@ -14341,12 +14352,10 @@ fn float_to_fraction<'py>(py: Python<'py>, f: &rug::Float) -> PyResult<Bound<'py
     let q = f
         .to_rational()
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("ball endpoint is not finite"))?;
-    let int = py.get_type_bound::<pyo3::types::PyInt>();
+    let int = py.get_type::<pyo3::types::PyInt>();
     let n = int.call1((q.numer().to_string(),))?;
     let d = int.call1((q.denom().to_string(),))?;
-    py.import_bound("fractions")?
-        .getattr("Fraction")?
-        .call1((n, d))
+    py.import("fractions")?.getattr("Fraction")?.call1((n, d))
 }
 
 /// Evaluate a symbolic expression using rigorous interval (ball) arithmetic.
@@ -14438,7 +14447,7 @@ impl PyEvaluationResult {
     /// Pickle support: every field, the enclosure as an exact `ArbBall`.
     fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
         let helper = py
-            .import_bound("alkahest._pickle")?
+            .import("alkahest._pickle")?
             .getattr("_unpickle_evaluation_result")?;
         let args = (
             self.value.clone_ref(py),
@@ -14616,7 +14625,7 @@ fn py_evaluate(
         let result = py.allow_threads(|| core_eval_complex_f64(id, pool_ref, env));
         return Ok(match result {
             Ok(value) => {
-                let pc = PyComplex::from_doubles_bound(py, value.re, value.im);
+                let pc = PyComplex::from_doubles(py, value.re, value.im);
                 PyEvaluationResult {
                     value: pc.into_py(py),
                     status: "ok".into(),
@@ -14967,7 +14976,7 @@ fn extract_univariate_var(expr: &PyExpr, var: &Bound<'_, PyAny>) -> PyResult<Exp
 /// subclass, so existing `except ValueError` callers keep working).
 fn emit_c_error_to_py(e: alkahest_core::EmitCError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyAlkahestError>();
+        let exc_type = py.get_type::<PyAlkahestError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -15636,7 +15645,7 @@ impl PyRootInterval {
     /// Pickle support: the two endpoints as exact rationals.
     fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
         let helper = py
-            .import_bound("alkahest._pickle")?
+            .import("alkahest._pickle")?
             .getattr("_unpickle_root_interval")?;
         let lo = bigint::fraction_to_py(py, self.inner.lo.numer(), self.inner.lo.denom())?;
         let hi = bigint::fraction_to_py(py, self.inner.hi.numer(), self.inner.hi.denom())?;
@@ -15707,7 +15716,7 @@ fn py_real_roots(
         core_real_roots_symbolic(poly.id, var.id, &pool.inner).map_err(|e| match e {
             TryRealRootsError::Root(e) => real_root_error_to_py(e),
             TryRealRootsError::Budget(trip) => Python::with_gil(|py| {
-                let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+                let exc_type = py.get_type::<PyBudgetExceededError>();
                 make_structured_err(py, &exc_type, &trip)
             }),
         })?;
@@ -15773,7 +15782,7 @@ fn py_root_of(
     let id = py
         .allow_threads(|| alkahest_core::poly::root_of::root_of(p, v, index, pool_ref))
         .map_err(|e| {
-            let exc = py.get_type_bound::<PySolverError>();
+            let exc = py.get_type::<PySolverError>();
             make_structured_err(py, &exc, &e)
         })?;
     Ok(PyExpr {
@@ -15980,7 +15989,7 @@ fn py_sparse_interp(
         if oracle_err.borrow().is_some() {
             return 0;
         }
-        let py_list = pyo3::types::PyList::new_bound(py, pt.iter().copied());
+        let py_list = crate::pylist(py, pt.iter().copied());
         match eval.call1((py_list,)).and_then(|r| r.extract::<u64>()) {
             Ok(v) => v,
             Err(e) => {
@@ -16188,7 +16197,7 @@ fn py_satisfiable(py: Python<'_>, formula: PyRef<PyExpr>) -> PyResult<PyObject> 
             if m.is_empty() {
                 true.to_object(py)
             } else {
-                let d = PyDict::new_bound(py);
+                let d = PyDict::new(py);
                 for (k, v) in m {
                     d.set_item(k, v)?;
                 }
@@ -16241,7 +16250,7 @@ fn py_decide(py: Python<'_>, formula: PyRef<PyExpr>) -> PyResult<(bool, PyObject
     let wit: PyObject = match r.witness {
         None => py.None(),
         Some(m) => {
-            let d = PyDict::new_bound(py);
+            let d = PyDict::new(py);
             for (sym, rat) in m {
                 let name = cad_witness_symbol_name(inner, sym)?;
                 d.set_item(name, rat.to_string())?;
@@ -16258,7 +16267,7 @@ fn py_decide(py: Python<'_>, formula: PyRef<PyExpr>) -> PyResult<(bool, PyObject
 
 fn validated_error_to_py(e: CoreValidatedError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyValidatedError>();
+        let exc_type = py.get_type::<PyValidatedError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -16275,7 +16284,7 @@ fn sos_error_to_py(e: CoreSosError) -> PyErr {
         if let Some(err) = budget_trip_to_py(py) {
             return err;
         }
-        let exc_type = py.get_type_bound::<PySosError>();
+        let exc_type = py.get_type::<PySosError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -16512,7 +16521,7 @@ impl PyBoundsSupport {
 
     /// The verdict as a plain dict, for logging and JSON.
     fn as_dict(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let d = PyDict::new_bound(py);
+        let d = PyDict::new(py);
         d.set_item("supported", self.supported)?;
         d.set_item("blocker", self.blocker.clone())?;
         d.set_item("functions", self.functions.clone())?;
@@ -17109,7 +17118,7 @@ fn py_prove_nonneg_on(
                     core_nonneg_on_witness(expr.id, &cons, &eqs, &var_ids, &pool.inner)
                 };
                 if let Ok(Some(point)) = point {
-                    let d = PyDict::new_bound(py);
+                    let d = PyDict::new(py);
                     for (v, id) in vars.iter().zip(point) {
                         let key = PyExpr {
                             id: v.id,
@@ -17121,7 +17130,7 @@ fn py_prove_nonneg_on(
                         };
                         d.set_item(key.into_py(py), val.into_py(py))?;
                     }
-                    err.value_bound(py).setattr("witness", d)?;
+                    err.value(py).setattr("witness", d)?;
                 }
             }
             Err(err)
@@ -17228,7 +17237,7 @@ fn py_routh_hurwitz(py: Python<'_>, poly: PyRef<PyExpr>, var: PyRef<PyExpr>) -> 
         pool: pool_py.clone_ref(py),
     }
     .into_py(py);
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     d.set_item("degree", rh.degree)?;
     d.set_item("first_column", first_column)?;
     d.set_item("condition", condition)?;
@@ -17404,7 +17413,7 @@ fn py_to_stablehlo(
     // handed back as if it were a module: `to_stablehlo(erf(t), [t])` gave ''
     // with no error. Raise the coded refusal instead.
     core_try_emit_stablehlo(expr.id, &input_ids, fn_name, &pool.inner).map_err(|e| {
-        let exc_type = py.get_type_bound::<PyAlkahestError>();
+        let exc_type = py.get_type::<PyAlkahestError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -17688,7 +17697,7 @@ impl PyGbPoly {
     fn terms(&self, py: Python<'_>) -> PyResult<Vec<(PyObject, PyObject)>> {
         let mut out = Vec::with_capacity(self.inner.terms.len());
         for (exp, coeff) in &self.inner.terms {
-            let exps = pyo3::types::PyTuple::new_bound(py, exp.iter().map(|&e| e as u64));
+            let exps = pyo3::types::PyTuple::new(py, exp.iter().map(|&e| e as u64))?;
             out.push((exps.into_py(py), rational_to_py(py, coeff)?));
         }
         Ok(out)
@@ -18108,7 +18117,7 @@ impl PyGroebnerBasis {
             None => Vec::new(),
         };
         let helper = py
-            .import_bound("alkahest._pickle")?
+            .import("alkahest._pickle")?
             .getattr("_unpickle_groebner")?;
         let args = (
             gens,
@@ -18329,11 +18338,11 @@ impl PyGroebnerBasis {
 
     /// Iterate over the generators as :class:`GbPoly`.
     fn __iter__(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let list = pyo3::types::PyList::empty_bound(py);
+        let list = pyo3::types::PyList::empty(py);
         for p in self.inner.generators() {
             list.append(Py::new(py, self.wrap(py, p.clone()))?)?;
         }
-        Ok(list.as_any().iter()?.into_py(py))
+        Ok(list.as_any().try_iter()?.into_py(py))
     }
 
     fn __repr__(&self) -> String {
@@ -18349,10 +18358,10 @@ impl PyGroebnerBasis {
 fn param_groebner_error_to_py(e: ParamGroebnerError) -> PyErr {
     Python::with_gil(|py| {
         if let ParamGroebnerError::Budget(trip) = &e {
-            let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+            let exc_type = py.get_type::<PyBudgetExceededError>();
             return make_structured_err(py, &exc_type, trip);
         }
-        let exc_type = py.get_type_bound::<PyParamGroebnerError>();
+        let exc_type = py.get_type::<PyParamGroebnerError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -18560,7 +18569,7 @@ impl PyParamGbPoly {
         {
             let pool = pool_py.borrow(py);
             for (exp, coeff) in &self.inner.terms {
-                let exps = pyo3::types::PyTuple::new_bound(py, exp.iter().map(|&e| e as u64));
+                let exps = pyo3::types::PyTuple::new(py, exp.iter().map(|&e| e as u64))?;
                 let id = qparam_to_expr(coeff, &self.param_ids, &pool.inner).ok_or_else(|| {
                     pyo3::exceptions::PyValueError::new_err(
                         "coefficient mentions more parameters than were named",
@@ -19062,11 +19071,11 @@ impl PyParamGroebnerBasis {
 
     /// Iterate over the generators.
     fn __iter__(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let list = pyo3::types::PyList::empty_bound(py);
+        let list = pyo3::types::PyList::empty(py);
         for p in self.inner.generators() {
             list.append(Py::new(py, self.wrap(py, p.clone()))?)?;
         }
-        Ok(list.as_any().iter()?.into_py(py))
+        Ok(list.as_any().try_iter()?.into_py(py))
     }
 
     fn __repr__(&self) -> String {
@@ -19537,10 +19546,10 @@ fn py_rosenfeld_groebner(
                      round (see minimal_prolongation_rounds for its scope).",
                     r.prolongation_rounds
                 );
-                pyo3::PyErr::warn_bound(
+                pyo3::PyErr::warn(
                     py,
-                    &py.get_type_bound::<pyo3::exceptions::PyUserWarning>(),
-                    &msg,
+                    &py.get_type::<pyo3::exceptions::PyUserWarning>(),
+                    &std::ffi::CString::new(msg)?,
                     1,
                 )?;
             }
@@ -19812,11 +19821,11 @@ fn homotopy_err_to_py(e: HomotopyError) -> PyErr {
     }
     Python::with_gil(|py| match &e {
         HomotopyError::Algebraic(se) => {
-            let exc = py.get_type_bound::<PySolverError>();
+            let exc = py.get_type::<PySolverError>();
             make_structured_err(py, &exc, se)
         }
         _ => {
-            let exc = py.get_type_bound::<PyHomotopyError>();
+            let exc = py.get_type::<PyHomotopyError>();
             make_structured_err(py, &exc, &e)
         }
     })
@@ -19856,7 +19865,7 @@ impl PyCertifiedSolution {
 
     /// Map each variable ``Expr`` to its coordinate ``float`` (same ``vars`` order as ``solve``).
     fn to_dict(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let d = pyo3::types::PyDict::new_bound(py);
+        let d = pyo3::types::PyDict::new(py);
         for (i, &c) in self.inner.coordinates.iter().enumerate() {
             let vx = PyExpr {
                 id: self.var_ids[i],
@@ -20290,9 +20299,9 @@ fn py_solve(
         return match pts {
             Err(e) => Err(homotopy_err_to_py(e)),
             Ok(points) => {
-                let list = pyo3::types::PyList::empty_bound(py);
+                let list = pyo3::types::PyList::empty(py);
                 for p in points {
-                    let d = pyo3::types::PyDict::new_bound(py);
+                    let d = pyo3::types::PyDict::new(py);
                     for (i, &val) in p.coordinates.iter().enumerate() {
                         let var_expr = PyExpr {
                             id: var_ids[i],
@@ -20475,7 +20484,7 @@ fn py_solve(
                 return Err(err);
             }
             if let Some(r) = alkahest_core::solver::take_undefined_equation() {
-                let exc = py.get_type_bound::<PySolverError>();
+                let exc = py.get_type::<PySolverError>();
                 return Err(make_structured_err(py, &exc, &r));
             }
             Err(alkahest_core::SolverError::NotPolynomial(format!(
@@ -20504,7 +20513,7 @@ fn py_solve(
             if !params.is_empty() {
                 let refusal =
                     alkahest_core::solver::NumericSolveRefusal::free_parameter(&params.join(", "));
-                let exc = py.get_type_bound::<PySolverError>();
+                let exc = py.get_type::<PySolverError>();
                 return Err(make_structured_err(py, &exc, &refusal));
             }
             let opts = HomotopyOpts::default();
@@ -20518,9 +20527,9 @@ fn py_solve(
             return match pts {
                 Err(e) => Err(homotopy_err_to_py(e)),
                 Ok(points) => {
-                    let list = pyo3::types::PyList::empty_bound(py);
+                    let list = pyo3::types::PyList::empty(py);
                     for p in points {
-                        let d = pyo3::types::PyDict::new_bound(py);
+                        let d = pyo3::types::PyDict::new(py);
                         for (i, &val) in p.iter().enumerate() {
                             let var_expr = PyExpr {
                                 id: var_ids[i],
@@ -20818,7 +20827,7 @@ fn nsolve_err_to_py(py: Python<'_>, e: alkahest_core::solver::NsolveError) -> Py
     if let Some(err) = budget_trip_to_py(py) {
         return err;
     }
-    let exc = py.get_type_bound::<PySolverError>();
+    let exc = py.get_type::<PySolverError>();
     make_structured_err(py, &exc, &e)
 }
 
@@ -20852,10 +20861,10 @@ fn solve_in_interval(
          proved unique in its enclosure (sign change and a derivative enclosure excluding 0, \
          in ball arithmetic); the list is complete"
     )];
-    let list = pyo3::types::PyList::empty_bound(py);
+    let list = pyo3::types::PyList::empty(py);
     for r in &iso.roots {
         notes.push(format!("{name} = {:?} ∈ [{:?}, {:?}]", r.value, r.lo, r.hi));
-        let d = pyo3::types::PyDict::new_bound(py);
+        let d = pyo3::types::PyDict::new(py);
         let key = PyExpr {
             id: var,
             pool: pool_py.clone_ref(py),
@@ -20964,7 +20973,7 @@ fn complex_value_to_py(py: Python<'_>, v: alkahest_core::ComplexF64) -> PyObject
     if v.im == 0.0 {
         v.re.into_py(py)
     } else {
-        pyo3::types::PyComplex::from_doubles_bound(py, v.re, v.im).into_py(py)
+        pyo3::types::PyComplex::from_doubles(py, v.re, v.im).into_py(py)
     }
 }
 
@@ -20979,7 +20988,7 @@ fn finite_solutions_to_py(
 ) -> PyResult<PyObject> {
     match result {
         Err(e) => Python::with_gil(|py2| {
-            let exc_type = py2.get_type_bound::<PySolverError>();
+            let exc_type = py2.get_type::<PySolverError>();
             // An equation whose denominator is identically zero is reported as
             // `NotPolynomial` (the enum is public and exhaustive) with the real
             // reason recorded out of band — the same arrangement `triangularize`
@@ -20998,7 +21007,7 @@ fn finite_solutions_to_py(
             }
             Err(make_structured_err(py2, &exc_type, &e))
         }),
-        Ok(SolutionSet::NoSolution) => Ok(pyo3::types::PyList::empty_bound(py).into()),
+        Ok(SolutionSet::NoSolution) => Ok(pyo3::types::PyList::empty(py).into()),
         Ok(SolutionSet::Parametric(gb)) => Ok(PyGroebnerBasis {
             inner: gb,
             pool: Some(pool_py.clone_ref(py)),
@@ -21006,7 +21015,7 @@ fn finite_solutions_to_py(
         }
         .into_py(py)),
         Ok(SolutionSet::Finite(solutions)) => {
-            let list = pyo3::types::PyList::empty_bound(py);
+            let list = pyo3::types::PyList::empty(py);
             let pool = pool_py.borrow(py);
             // Symbolic solutions are simplified before hand-off. Sibling roots
             // (±√disc) and per-variable back-substitutions share large
@@ -21054,7 +21063,7 @@ fn finite_solutions_to_py(
                                 row.push(None);
                             }
                             Err(refusal) => {
-                                let exc = py.get_type_bound::<PySolverError>();
+                                let exc = py.get_type::<PySolverError>();
                                 return Err(make_structured_err(py, &exc, &refusal));
                             }
                         }
@@ -21084,7 +21093,7 @@ fn finite_solutions_to_py(
                 });
             }
             for (s, sol) in solutions.iter().enumerate() {
-                let d = pyo3::types::PyDict::new_bound(py);
+                let d = pyo3::types::PyDict::new(py);
                 for (i, _) in sol.iter().enumerate() {
                     let var_expr = PyExpr {
                         id: var_ids[i],
@@ -21239,7 +21248,7 @@ fn py_triangularize(
 
     match result {
         Err(e) => Python::with_gil(|py2| {
-            let exc_type = py2.get_type_bound::<PySolverError>();
+            let exc_type = py2.get_type::<PySolverError>();
             // `triangularize` reports "this needs a splitting decomposition" as
             // `NotPolynomial` (the enum is public and exhaustive) and records the
             // real reason out of band. Recover it so the refusal raises its own
@@ -21257,7 +21266,7 @@ fn py_triangularize(
             Err(make_structured_err(py2, &exc_type, &e))
         }),
         Ok(chains) => {
-            let list = pyo3::types::PyList::empty_bound(py);
+            let list = pyo3::types::PyList::empty(py);
             for chain in chains {
                 list.append(
                     PyRegularChain {
@@ -21314,9 +21323,9 @@ impl PyMultiPolyFp {
     ///         print(exp_tuple, coeff)
     #[getter]
     fn terms<'py>(&self, py: Python<'py>) -> pyo3::Bound<'py, pyo3::types::PyDict> {
-        let dict = pyo3::types::PyDict::new_bound(py);
+        let dict = pyo3::types::PyDict::new(py);
         for (exp, &coeff) in &self.inner.terms {
-            let key = pyo3::types::PyTuple::new_bound(py, exp.iter().copied());
+            let key = crate::pytuple(py, exp.iter().copied());
             dict.set_item(key, coeff).unwrap();
         }
         dict
@@ -21797,7 +21806,7 @@ fn exact_rational_from_py(value: &Bound<'_, PyAny>, where_: &str) -> PyResult<(I
 
 fn integer_poly_from_py(value: &Bound<'_, PyAny>, where_: &str) -> PyResult<Vec<Integer>> {
     let mut out = Vec::new();
-    for (i, item) in value.iter()?.enumerate() {
+    for (i, item) in value.try_iter()?.enumerate() {
         let item = item?;
         out.push(big_integer_from_py(&item).map_err(|_| {
             PyTypeError::new_err(format!(
@@ -21857,7 +21866,7 @@ impl PyModularRecurrence {
         start: i64,
     ) -> PyResult<Self> {
         let mut polys = Vec::new();
-        for (i, item) in coeffs.iter()?.enumerate() {
+        for (i, item) in coeffs.try_iter()?.enumerate() {
             polys.push(integer_poly_from_py(&item?, &format!("coeffs[{i}]"))?);
         }
         let rhs = match rhs {
@@ -21865,7 +21874,7 @@ impl PyModularRecurrence {
             None => Vec::new(),
         };
         let mut inits = Vec::new();
-        for (j, item) in initial.iter()?.enumerate() {
+        for (j, item) in initial.try_iter()?.enumerate() {
             inits.push(exact_rational_from_py(&item?, &format!("initial[{j}]"))?);
         }
         let inner = CoreModularRecurrence::new(polys, rhs, inits, start)
@@ -22060,7 +22069,7 @@ fn py_binomial_mod(
 
 fn prob_error_to_py(e: CoreProbError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyProbabilityError>();
+        let exc_type = py.get_type::<PyProbabilityError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -22768,14 +22777,14 @@ pyo3::create_exception!(alkahest, PyQuaternionError, PyAlkahestError);
 
 fn vector_error_to_py(e: alkahest_core::vector::VectorError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyVectorError>();
+        let exc_type = py.get_type::<PyVectorError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
 
 fn quaternion_error_to_py(e: alkahest_core::algebra::quaternion::QuaternionError) -> PyErr {
     Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyQuaternionError>();
+        let exc_type = py.get_type::<PyQuaternionError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -22822,7 +22831,7 @@ fn coerce_vec3(
 }
 
 fn vec3_to_py(v: [ExprId; 3], pool_py: &Py<PyExprPool>, py: Python<'_>) -> PyObject {
-    PyTuple::new_bound(
+    crate::pytuple(
         py,
         v.iter().map(|&id| {
             PyExpr {
@@ -23297,7 +23306,7 @@ impl PyQuaternion {
     /// ``(w, x, y, z)``, scalar first.
     fn components(&self, py: Python<'_>) -> PyObject {
         let c = self.inner.components();
-        PyTuple::new_bound(py, c.iter().map(|&id| self.expr(id, py).into_py(py))).into_py(py)
+        crate::pytuple(py, c.iter().map(|&id| self.expr(id, py).into_py(py))).into_py(py)
     }
 
     /// ``(x, y, z)`` — the vector part.
@@ -23447,13 +23456,13 @@ impl PyQuaternion {
                 .to_axis_angle(&p.inner)
                 .map_err(quaternion_error_to_py)?
         };
-        Ok(PyTuple::new_bound(
+        Ok(PyTuple::new(
             py,
             [
                 vec3_to_py(axis, &self.pool, py),
                 self.expr(angle, py).into_py(py),
             ],
-        )
+        )?
         .into_py(py))
     }
 
@@ -23719,11 +23728,8 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Vector calculus and quaternions (experimental surface)
     m.add_class::<PyCoordinates>()?;
     m.add_class::<PyQuaternion>()?;
-    m.add("VectorError", m.py().get_type_bound::<PyVectorError>())?;
-    m.add(
-        "QuaternionError",
-        m.py().get_type_bound::<PyQuaternionError>(),
-    )?;
+    m.add("VectorError", m.py().get_type::<PyVectorError>())?;
+    m.add("QuaternionError", m.py().get_type::<PyQuaternionError>())?;
     m.add_function(wrap_pyfunction!(py_vector_gradient, m)?)?;
     m.add_function(wrap_pyfunction!(py_vector_divergence, m)?)?;
     m.add_function(wrap_pyfunction!(py_vector_curl, m)?)?;
@@ -24046,112 +24052,76 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_plot_svg, m)?)?;
     m.add_function(wrap_pyfunction!(py_plot_dot, m)?)?;
     // V1-3 — Structured exception hierarchy
-    m.add("AlkahestError", m.py().get_type_bound::<PyAlkahestError>())?;
-    m.add(
-        "ConversionError",
-        m.py().get_type_bound::<PyConversionError>(),
-    )?;
-    m.add("DomainError", m.py().get_type_bound::<PyDomainError>())?;
-    m.add("DiffError", m.py().get_type_bound::<PyDiffError>())?;
-    m.add("PoolError", m.py().get_type_bound::<PyPoolError>())?;
-    m.add(
-        "AssumptionError",
-        m.py().get_type_bound::<PyAssumptionError>(),
-    )?;
-    m.add(
-        "DepthLimitError",
-        m.py().get_type_bound::<PyDepthLimitError>(),
-    )?;
-    m.add(
-        "IntegrationError",
-        m.py().get_type_bound::<PyIntegrationError>(),
-    )?;
-    m.add("SeriesError", m.py().get_type_bound::<PySeriesError>())?;
-    m.add("LimitError", m.py().get_type_bound::<PyLimitError>())?;
-    m.add("MatrixError", m.py().get_type_bound::<PyMatrixError>())?;
-    m.add("EigenError", m.py().get_type_bound::<PyEigenError>())?;
+    m.add("AlkahestError", m.py().get_type::<PyAlkahestError>())?;
+    m.add("ConversionError", m.py().get_type::<PyConversionError>())?;
+    m.add("DomainError", m.py().get_type::<PyDomainError>())?;
+    m.add("DiffError", m.py().get_type::<PyDiffError>())?;
+    m.add("PoolError", m.py().get_type::<PyPoolError>())?;
+    m.add("AssumptionError", m.py().get_type::<PyAssumptionError>())?;
+    m.add("DepthLimitError", m.py().get_type::<PyDepthLimitError>())?;
+    m.add("IntegrationError", m.py().get_type::<PyIntegrationError>())?;
+    m.add("SeriesError", m.py().get_type::<PySeriesError>())?;
+    m.add("LimitError", m.py().get_type::<PyLimitError>())?;
+    m.add("MatrixError", m.py().get_type::<PyMatrixError>())?;
+    m.add("EigenError", m.py().get_type::<PyEigenError>())?;
     m.add(
         "LinearAlgebraError",
-        m.py().get_type_bound::<PyLinearAlgebraError>(),
+        m.py().get_type::<PyLinearAlgebraError>(),
     )?;
-    m.add("ModularError", m.py().get_type_bound::<PyModularError>())?;
-    m.add("OdeError", m.py().get_type_bound::<PyOdeError>())?;
-    m.add("DaeError", m.py().get_type_bound::<PyDaeError>())?;
-    m.add("JitError", m.py().get_type_bound::<PyJitError>())?;
-    m.add("SolverError", m.py().get_type_bound::<PySolverError>())?;
-    m.add("HomotopyError", m.py().get_type_bound::<PyHomotopyError>())?;
-    m.add("CudaError", m.py().get_type_bound::<PyCudaError>())?;
-    m.add("IoError", m.py().get_type_bound::<PyIoError>())?;
-    m.add("ParseError", m.py().get_type_bound::<PyParseError>())?;
-    m.add(
-        "TransformError",
-        m.py().get_type_bound::<PyTransformError>(),
-    )?;
-    m.add(
-        "AsymptoticError",
-        m.py().get_type_bound::<PyAsymptoticError>(),
-    )?;
-    m.add("FpsError", m.py().get_type_bound::<PyFpsError>())?;
-    m.add("FactorError", m.py().get_type_bound::<PyFactorError>())?;
-    m.add(
-        "ResultantError",
-        m.py().get_type_bound::<PyResultantError>(),
-    )?;
+    m.add("ModularError", m.py().get_type::<PyModularError>())?;
+    m.add("OdeError", m.py().get_type::<PyOdeError>())?;
+    m.add("DaeError", m.py().get_type::<PyDaeError>())?;
+    m.add("JitError", m.py().get_type::<PyJitError>())?;
+    m.add("SolverError", m.py().get_type::<PySolverError>())?;
+    m.add("HomotopyError", m.py().get_type::<PyHomotopyError>())?;
+    m.add("CudaError", m.py().get_type::<PyCudaError>())?;
+    m.add("IoError", m.py().get_type::<PyIoError>())?;
+    m.add("ParseError", m.py().get_type::<PyParseError>())?;
+    m.add("TransformError", m.py().get_type::<PyTransformError>())?;
+    m.add("AsymptoticError", m.py().get_type::<PyAsymptoticError>())?;
+    m.add("FpsError", m.py().get_type::<PyFpsError>())?;
+    m.add("FactorError", m.py().get_type::<PyFactorError>())?;
+    m.add("ResultantError", m.py().get_type::<PyResultantError>())?;
     m.add(
         "SparseInterpError",
-        m.py().get_type_bound::<PySparseInterpError>(),
+        m.py().get_type::<PySparseInterpError>(),
     )?;
-    m.add(
-        "SparseGcdError",
-        m.py().get_type_bound::<PySparseGcdError>(),
-    )?;
-    m.add("RealRootError", m.py().get_type_bound::<PyRealRootError>())?;
-    m.add("LatticeError", m.py().get_type_bound::<PyLatticeError>())?;
-    m.add("PslqError", m.py().get_type_bound::<PyPslqError>())?;
-    m.add("CadError", m.py().get_type_bound::<PyCadError>())?;
+    m.add("SparseGcdError", m.py().get_type::<PySparseGcdError>())?;
+    m.add("RealRootError", m.py().get_type::<PyRealRootError>())?;
+    m.add("LatticeError", m.py().get_type::<PyLatticeError>())?;
+    m.add("PslqError", m.py().get_type::<PyPslqError>())?;
+    m.add("CadError", m.py().get_type::<PyCadError>())?;
     // P1 item 9 — rigorous global bounds (Taylor models / validated numerics)
-    m.add(
-        "ValidatedError",
-        m.py().get_type_bound::<PyValidatedError>(),
-    )?;
+    m.add("ValidatedError", m.py().get_type::<PyValidatedError>())?;
     // P1 item 8 — positivity certificates (SOS / Positivstellensatz)
-    m.add("SosError", m.py().get_type_bound::<PySosError>())?;
-    m.add("SumError", m.py().get_type_bound::<PySumError>())?;
-    m.add("ProductError", m.py().get_type_bound::<PyProductError>())?;
+    m.add("SosError", m.py().get_type::<PySosError>())?;
+    m.add("SumError", m.py().get_type::<PySumError>())?;
+    m.add("ProductError", m.py().get_type::<PyProductError>())?;
     // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
-    m.add(
-        "HolonomicError",
-        m.py().get_type_bound::<PyHolonomicError>(),
-    )?;
-    m.add(
-        "ProbabilityError",
-        m.py().get_type_bound::<PyProbabilityError>(),
-    )?;
+    m.add("HolonomicError", m.py().get_type::<PyHolonomicError>())?;
+    m.add("ProbabilityError", m.py().get_type::<PyProbabilityError>())?;
     m.add(
         "NumberTheoryError",
-        m.py().get_type_bound::<PyNumberTheoryError>(),
+        m.py().get_type::<PyNumberTheoryError>(),
     )?;
     m.add(
         "LinearRecurrenceError",
-        m.py().get_type_bound::<PyLinearRecurrenceError>(),
+        m.py().get_type::<PyLinearRecurrenceError>(),
     )?;
-    m.add("RsolveError", m.py().get_type_bound::<PyRsolveError>())?;
+    m.add("RsolveError", m.py().get_type::<PyRsolveError>())?;
     #[cfg(feature = "groebner")]
-    m.add(
-        "DiophantineError",
-        m.py().get_type_bound::<PyDiophantineError>(),
-    )?;
+    m.add("DiophantineError", m.py().get_type::<PyDiophantineError>())?;
     #[cfg(feature = "groebner")]
     m.add(
         "ParamGroebnerError",
-        m.py().get_type_bound::<PyParamGroebnerError>(),
+        m.py().get_type::<PyParamGroebnerError>(),
     )?;
     // P1 search plumbing item 4 — budgets, cancellation, determinism
     m.add(
         "BudgetExceededError",
-        m.py().get_type_bound::<PyBudgetExceededError>(),
+        m.py().get_type::<PyBudgetExceededError>(),
     )?;
-    m.add("LogicError", m.py().get_type_bound::<PyLogicError>())?;
+    m.add("LogicError", m.py().get_type::<PyLogicError>())?;
     // G10 — n-ary And/Or/Not/Xor/Implies/Equivalent/ITE, normal forms,
     // simplify_logic, BDDs, equivalent, truth_table.
     boolean::register(m)?;
