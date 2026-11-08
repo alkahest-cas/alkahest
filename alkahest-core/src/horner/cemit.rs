@@ -477,7 +477,9 @@ impl<'a> Builder<'a> {
                 if let Some(v) = crate::eval::symbols::constant_value_f64(&name) {
                     self.lit(c_double_literal(v))
                 } else {
-                    return Err(EmitCError::MissingVariable(name));
+                    return Err(EmitCError::MissingVariable(
+                        crate::kernel::symbol_display_name(&name).to_string(),
+                    ));
                 }
             }
             ExprData::Add(args) => {

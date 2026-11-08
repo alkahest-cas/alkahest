@@ -32,6 +32,43 @@ A hotfix for the Linux x86_64 wheels of 3.13.0. If you installed 3.13.0 on Linux
 ### Fixed
 
 - The 3.13.0 Linux x86_64 wheels on PyPI crashed with `SIGILL` (illegal instruction) in `factor`, multivariate GCD, `limit` and anything else that reaches FLINT's multivariate polynomial code, on every CPU without AVX-512 (all AMD Zen 2/3, most Intel desktop/laptop parts). FLINT's `configure` picks `-march` from the CPU it is built on, and the release runner that built 3.13.0 had AVX-512, so the bundled `libflint` contained ~22,700 AVX-512 instructions. (3.12.0 used the same build and was unaffected only because its runner lacked AVX-512.) FLINT is now configured with a generic `x86_64-pc-linux-gnu` triple for every wheel, the `+jit`/`+full` wheels' GMP is built `--enable-fat` like the default wheel's, and a new release step, `scripts/check_wheel_isa.py`, fails the build if the bundled FLINT or MPFR contains any AVX/AVX2/AVX-512 instruction. macOS and Windows wheels use Homebrew's and MSYS2's portable FLINT and were not affected.
+### Added
+
+- **`ArbBall` pickles, bit-for-bit at any precision**, and so do `EvaluationResult`,
+  `RootInterval`, `Series` and `Domain`. `pickle.dumps(ak.ArbBall(1.0, 0.0, 300))` raised
+  `TypeError: cannot pickle 'builtins.ArbBall' object`, so a ball could not go through
+  `multiprocessing.Pool.map`. The midpoint and radius are serialised as their exact binary
+  values (`mantissa · 2**exp` at each float's own precision), never as decimals; tested at 53,
+  300 and 3400 bits, through `multiprocessing`, and for ±0, ±∞ and NaN. A malformed payload
+  (negative radius, mantissa wider than its precision) raises `ValueError`.
+- `alkahest_cas::horner::c_param_names(vars, fn_name, pool)`: the default C parameter names
+  `emit_c_expr` / `emit_c_vec` now use.
+
+### Fixed
+
+- **A user symbol named `pi` leaked an invisible character into emitted code.**
+  `emit_c_expr(pi*x + sin(pi), [pi, x])` for `pi = pool.symbol("pi")` declared
+  `double pi​` (the kernel's zero-width marker that keeps the variable distinct from π),
+  which is not valid C; `to_sympy` gave `Symbol("pi​")`. Default C parameter names are
+  now the symbol's printed name made a valid, collision-free C identifier — `pi` is `pi`, and
+  a variable called `out`, `sin`, `M_PI`, `v`, `_t0` or the function's own name is renamed
+  (`out_1`, …) instead of shadowing the output pointer, a `<math.h>` function or a generated
+  temporary. `to_sympy` maps the variable to `Symbol("pi")` and the "missing variable"
+  errors of `emit_c_expr` / `to_stablehlo` name it without the marker. Each backend (C
+  scalar and vector, StableHLO, JAX, LaTeX, `to_sympy`) is tested with the variable bound to
+  2.0.
+- **`to_sympy` translated π as a free variable.** `to_sympy(pool.pi())` was
+  `Symbol("pi")`, so a cross-check compared `sin(π) = 0` against an unknown; `GoldenRatio`
+  likewise. They are now `sympy.pi` / `sympy.GoldenRatio`, SymPy's `pi`, `E`, `EulerGamma`,
+  `Catalan` and `GoldenRatio` lift back to the kernel constants, and `Glaisher` (which SymPy
+  lacks) is refused with `E-XCHECK-001` instead of becoming a symbol.
+- **`Fraction(1, 2) ** x` had a float base on Python 3.9–3.11.** `Fraction.__pow__`
+  converts itself with `float(a) ** b` there before Alkahest sees it, so the result was
+  `5.0e-1^x`. `Expr.__rpow__` now recovers the exact `Fraction` when the running frame is
+  `Fraction.__pow__` with this expression as `b` and `float(a)` equal to the float received;
+  a float the caller wrote (`0.5 ** x`) stays a float. Python 3.12+ already passed the
+  `Fraction` itself. The spelling that is exact everywhere, `pool.rational(1, 2) ** x`, is
+  documented.
 
 ## 3.13.0 — 2026-11-05
 

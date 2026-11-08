@@ -369,7 +369,9 @@ impl Emitter {
                 if let Some(v) = crate::eval::symbols::constant_value_f64(&name) {
                     self.emit_const_f64(v)
                 } else {
-                    Err(StableHloError::UnboundSymbol(name))
+                    Err(StableHloError::UnboundSymbol(
+                        crate::kernel::symbol_display_name(&name).to_string(),
+                    ))
                 }
             }
             ExprData::Add(args) => self.fold(&args, "add", pool),

@@ -264,8 +264,32 @@ FUNCTION_MAP: dict[str, str] = {
     "loggamma": "loggamma",
 }
 
-#: Named constants that SymPy has under the same meaning (G11c).
-_NAMED_CONSTANTS: dict[str, str] = {"EulerGamma": "EulerGamma", "Catalan": "Catalan"}
+#: Named constants that SymPy has under the same meaning (G11c). ``pi`` is
+#: the kernel's spelling of π (``ExprPool.pi()``): it used to reach SymPy as a
+#: free ``Symbol("pi")``, so ``sin(pi)`` was compared against an unknown.
+_NAMED_CONSTANTS: dict[str, str] = {
+    "pi": "pi",
+    "EulerGamma": "EulerGamma",
+    "Catalan": "Catalan",
+    "GoldenRatio": "GoldenRatio",
+}
+
+#: Kernel constants SymPy has no symbol for; translating one as a free
+#: ``Symbol`` would ask the oracle a different question.
+_UNMAPPED_CONSTANTS = ("Glaisher",)
+
+#: Suffix the kernel appends to a *user* symbol whose name collides with a
+#: constant (``pool.symbol("pi")``; ``alkahest_core::kernel::USER_SYMBOL_MARKER``).
+#: Such a symbol is a variable that prints as ``pi`` and must translate as one.
+_USER_SYMBOL_MARKER = "​"
+
+
+def _display_name(name: str) -> str:
+    """A symbol's printed name: its interned name minus the user marker."""
+    if name.endswith(_USER_SYMBOL_MARKER):
+        return name[: -len(_USER_SYMBOL_MARKER)]
+    return name
+
 
 #: Bessel functions of fixed integer order, which SymPy spells with the order as
 #: an argument. Faithful, just not a name-for-name rename.
@@ -564,7 +588,14 @@ class SymPyTranslator(Translator):
             return self.sympy.I
         if name in _NAMED_CONSTANTS:
             return getattr(self.sympy, _NAMED_CONSTANTS[name])
-        return self.sympy.Symbol(name, **self._flags.get(name, {}))
+        if name in _UNMAPPED_CONSTANTS:
+            raise _refuse(
+                f"SymPy has no constant {name}",
+                remediation="Cross-check an expression without this constant.",
+            )
+        # A user variable named `pi` is SymPy's `Symbol("pi")` (a variable,
+        # distinct from `sympy.pi`), not a name with an invisible character.
+        return self.sympy.Symbol(_display_name(name), **self._flags.get(name, {}))
 
     def _integer(self, node: Sequence[Any]) -> Any:
         return self.sympy.Integer(node[1])
@@ -903,6 +934,16 @@ class SymPyOracle(Oracle):
                 return pool.pos_infinity()
             if o is sp.I:
                 return pool.imaginary_unit()
+            if o is sp.pi:
+                return pool.pi()
+            if o is sp.E:
+                return pool.E()
+            if o is sp.EulerGamma:
+                return pool.euler_gamma()
+            if o is sp.Catalan:
+                return pool.catalan()
+            if o is sp.GoldenRatio:
+                return pool.golden_ratio()
             if o.is_Integer:
                 return pool.integer(int(o))
             if o.is_Rational:
