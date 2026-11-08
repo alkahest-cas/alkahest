@@ -16,7 +16,8 @@ runs:
         # upstream LLVM repository is required. Keyed by codename so this keeps
         # working when the runner image moves off noble.
         codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
-        wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+        curl --fail --location --silent --show-error --retry 5 --retry-all-errors \
+          --retry-delay 15 --connect-timeout 30 https://apt.llvm.org/llvm-snapshot.gpg.key \
           | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc > /dev/null
         # apt.llvm.org retires older branches as new ones land, so this pin will
         # eventually 404 and this step will fail loudly at `apt-get update` rather
@@ -26,8 +27,8 @@ runs:
         # must move as one.
         echo "deb http://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-21 main" \
           | sudo tee /etc/apt/sources.list.d/llvm-21.list > /dev/null
-        sudo apt-get update
-        sudo apt-get install -y llvm-21-dev llvm-21
+        sudo apt-get -o Acquire::Retries=5 update
+        sudo apt-get -o Acquire::Retries=5 install -y llvm-21-dev llvm-21
 
     - name: Export LLVM_SYS_211_PREFIX
       shell: bash

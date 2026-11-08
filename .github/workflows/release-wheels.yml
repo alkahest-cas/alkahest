@@ -11,8 +11,9 @@ name: Release wheels
 #     stay in release-build.yml itself, because PyPI's trusted publisher is
 #     bound to that workflow filename and the `release` environment.
 #   * release-wheel-smoke.yml. On an open PR it calls with `pr_smoke: true`,
-#     which builds one manylinux py3.12 wheel and one Windows py3.12 wheel
-#     exactly as a release does, and smoke-tests them. release-build.yml's
+#     which builds one manylinux x86_64 py3.12 wheel and one Windows py3.12 wheel
+#     exactly as a release does, and smoke-tests them. (aarch64 and the sdist
+#     are on the full matrix: a release, or workflow_dispatch of that workflow.) release-build.yml's
 #     `pull_request` trigger fires only after a merge, so without this a
 #     wheel-only break (#395's PyIndex_Check, fixed in #419) stayed
 #     invisible to PR CI for 13 merges.
@@ -21,7 +22,7 @@ on:
   workflow_call:
     inputs:
       pr_smoke:
-        description: Build and smoke-test a reduced matrix (Linux + Windows, py3.12) only.
+        description: Build and smoke-test a reduced matrix (Linux x86_64 + Windows, py3.12) only.
         type: boolean
         default: false
       optional_variants:
@@ -38,20 +39,30 @@ env:
   # the post-merge build would see if the PR merged now. (`github` here is the
   # caller's context.)
   RELEASE_REF: ${{ inputs.pr_smoke && github.sha || github.event.pull_request.merge_commit_sha || github.sha }}
+  # One maturin for every wheel and the sdist. The container gets it from PyPI.
+  MATURIN_VERSION: "1.16.0"
 
 jobs:
-  # Linux: one job builds all Python versions at once. maturin-action runs
-  # inside a manylinux_2_28 Docker container that ships Python 3.9–3.14; the
-  # matrix python on the host runner is NOT visible inside Docker, so a
-  # per-version matrix all produces the same wheel. We pass each interpreter
-  # explicitly because --find-interpreter also matches PyPy and Python 3.14,
-  # which PyO3 0.21 cannot target.
+  # Linux: per architecture, one job builds all Python versions at once, inside a
+  # manylinux_2_28 Docker image that ships Python 3.9–3.14. The matrix python on
+  # the host runner is NOT visible inside Docker, so a per-version matrix would
+  # all produce the same wheel. Each interpreter is passed explicitly because
+  # --find-interpreter also matches PyPy.
+  #
+  # aarch64 runs on a native ARM runner (GitHub-hosted, free for public
+  # repositories) rather than under QEMU: the wheel's smoke test needs real
+  # aarch64 anyway, and FLINT plus the crate take far longer emulated.
   build-linux:
-    name: wheels / ubuntu-22.04
-    runs-on: ubuntu-22.04
+    name: wheels / ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
     if: ${{ !inputs.optional_variants }}
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # aarch64 is on the full matrix only; a pr_smoke call stays x86_64.
+        include: ${{ fromJSON(inputs.pr_smoke && '[{"runner":"ubuntu-22.04","image":"quay.io/pypa/manylinux_2_28_x86_64:latest"}]' || '[{"runner":"ubuntu-22.04","image":"quay.io/pypa/manylinux_2_28_x86_64:latest"},{"runner":"ubuntu-24.04-arm","image":"quay.io/pypa/manylinux_2_28_aarch64:latest"}]') }}
     env:
       # PyO3 0.21 supports up to 3.12; this allows 3.13 and 3.14 via the stable ABI.
       PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
@@ -60,105 +71,36 @@ jobs:
         with:
           ref: ${{ env.RELEASE_REF }}
 
-      # The smoke steps below install the wheel into *this* interpreter, so a
-      # pr_smoke build (python3.12 only) needs a 3.12 host.
+      # The smoke steps below install the wheel into *this* interpreter, and
+      # every build includes python3.12.
       - uses: actions/setup-python@v6
         with:
-          python-version: ${{ inputs.pr_smoke && '3.12' || '3.11' }}
+          python-version: "3.12"
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Build wheels (manylinux, all Python versions)
-        uses: PyO3/maturin-action@v1
+      # Rust, maturin, GMP, MPFR and FLINT all come from inside the container;
+      # see .github/scripts/build-manylinux-wheels.sh for why this is not
+      # PyO3/maturin-action.
+      - name: Build wheels (manylinux_2_28, all Python versions)
         env:
-          # maturin-action passes runner env vars into the Docker container.
-          # Covers both the dnf-installed path (/usr/lib64) and the source-built
-          # path (/usr/local/lib) so rust-lld can always resolve -lflint.
-          RUSTFLAGS: "-L/usr/local/lib -L/usr/lib -L/usr/lib64"
-          PKG_CONFIG_PATH: "/usr/local/lib/pkgconfig:/usr/lib64/pkgconfig"
-          # gmp-mpfr-sys (the `system-gmp` feature every wheel is built with) probes GMP/MPFR
-          # with a bare `gcc probe.c -lgmp`; gcc searches /usr/local/include
-          # by default but not /usr/local/lib. Also exported in the
-          # before-script, in case the container does not inherit it.
-          LIBRARY_PATH: "/usr/local/lib"
-        with:
-          command: build
-          # Explicit CPython list — --find-interpreter also picks up PyPy.
+          IMAGE: ${{ matrix.image }}
           # 3.13 and 3.14 build through PYO3_USE_ABI3_FORWARD_COMPATIBILITY
           # (PyO3 0.21 natively supports up to 3.12).
-          args: --release --strip --out dist --features egraph,groebner,cranelift,parallel,system-gmp --interpreter ${{ inputs.pr_smoke && 'python3.12' || 'python3.9 python3.10 python3.11 python3.12 python3.13 python3.14' }}
-          manylinux: "2_28"
-          before-script-linux: |
-            # FLINT is built from a pinned source release rather than taken from
-            # dnf. The distro package is whatever the manylinux base happens to
-            # carry, and the previous fallback pinned 2.9.0 — both predate or
-            # undershoot what this crate needs. FLINT absorbed Arb in 3.0 and
-            # rewrote the acb_theta API in 3.2, and `alkahest-core/build.rs`
-            # probes for those symbols and silently stubs the `theta` module
-            # when they are missing. A wheel built against an older FLINT would
-            # therefore ship with theta quietly absent rather than failing to
-            # build, so the version is pinned here and not negotiated.
-            #
-            # GMP and MPFR are source-built for the same reason, and *before*
-            # FLINT so FLINT links them: the `system-gmp` feature (passed below) makes
-            # rug use the system libgmp/libmpfr (one GMP shared with FLINT),
-            # and gmp-mpfr-sys requires GMP >= 6.3 / MPFR >= 4.2, while
-            # AlmaLinux 8's gmp-devel / mpfr-devel are 6.1 / 3.1. The dnf
-            # -devel packages are deliberately NOT installed, so no older
-            # gmp.h or libgmp.so can shadow these. (The 6.1 *runtime* stays —
-            # the compiler itself needs it — hence the ld.so.conf entry below,
-            # which puts /usr/local/lib ahead of it for the loader and for
-            # maturin's auditwheel pass.)
-            set -euo pipefail
-            dnf install -y make gcc m4 xz
-            export LIBRARY_PATH=/usr/local/lib
-            # No bare `cd`: the maturin command runs after this script in the
-            # same shell, from the checkout.
-            curl -fsSL -o /tmp/gmp-6.3.0.tar.xz https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz
-            curl -fsSL -o /tmp/mpfr-4.2.2.tar.xz https://ftp.gnu.org/gnu/mpfr/mpfr-4.2.2.tar.xz
-            printf '%s  %s\n' \
-              a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898 /tmp/gmp-6.3.0.tar.xz \
-              b67ba0383ef7e8a8563734e2e889ef5ec3c3b898a01d00fa0a6869ad81c6ce01 /tmp/mpfr-4.2.2.tar.xz \
-              | sha256sum -c -
-            tar xf /tmp/gmp-6.3.0.tar.xz -C /tmp && tar xf /tmp/mpfr-4.2.2.tar.xz -C /tmp
-            # --enable-fat: without it GMP's configure tunes its assembly to the
-            # build runner's CPU, and the wheel ships that libgmp (auditwheel
-            # bundles it) to every user; on an older CPU that is SIGILL on the
-            # first bignum multiply. A fat build carries every x86_64 kernel and
-            # picks one at load time via CPUID.
-            ( cd /tmp/gmp-6.3.0 && ./configure --prefix=/usr/local --enable-shared --disable-static --enable-fat && make -j"$(nproc)" && make install )
-            ( cd /tmp/mpfr-4.2.2 && ./configure --prefix=/usr/local --with-gmp=/usr/local --enable-shared --disable-static && make -j"$(nproc)" && make install )
-            echo /usr/local/lib > /etc/ld.so.conf.d/00-usr-local.conf
-            ldconfig
-            export LD_LIBRARY_PATH=/usr/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
-            # FLINT >= 3.3 is the floor build.rs enforces (>= 3.4 for theta);
-            # keep this pin in step with the default in .github/actions/setup-flint.
-            curl -fsSL -o /tmp/flint-3.6.0.tar.gz \
-              https://github.com/flintlib/flint/releases/download/v3.6.0/flint-3.6.0.tar.gz
-            echo 'b95e2c7792f5eea4a1c8d2d42c4098434756832e57a094b295eb5dfdc9b4c36b  /tmp/flint-3.6.0.tar.gz' \
-              | sha256sum -c -
-            tar xzf /tmp/flint-3.6.0.tar.gz -C /tmp
-            # --host/--build: FLINT's configure otherwise reads the runner's CPU and
-            # adds e.g. -march=znver4, so the wheel's libflint needed AVX-512 and
-            # crashed (SIGILL) in factor/gcd on any CPU without it (3.13.0). A
-            # generic x86_64 triple selects no -march and no AVX code paths.
-            ( cd /tmp/flint-3.6.0 && ./configure --prefix=/usr/local --with-gmp=/usr/local --with-mpfr=/usr/local --disable-static --host=x86_64-pc-linux-gnu --build=x86_64-pc-linux-gnu && make -j"$(nproc)" && make install )
-            ldconfig
-            # One GMP: FLINT must resolve the libgmp just built, not the 6.1 runtime.
-            ldd /usr/local/lib/libflint.so | grep -E 'libgmp|libmpfr'
-            # Never `producer | grep -q` under pipefail: grep -q exits at the
-            # first match, the producer dies of SIGPIPE, and the pipeline
-            # "fails" precisely when the pattern is found. Capture, then grep.
-            ldd /usr/local/lib/libflint.so > /tmp/libflint.ldd
-            grep -q '/usr/local/lib/libgmp.so' /tmp/libflint.ldd \
-              || { echo 'libflint does not resolve /usr/local/lib/libgmp.so'; exit 1; }
-            # Fail the wheel build loudly if theta would be stubbed.
-            nm -D --defined-only /usr/local/lib/libflint.so > /tmp/libflint.syms
-            grep -q ' T acb_theta_ql_exact$' /tmp/libflint.syms \
-              || { echo 'FLINT lacks acb_theta_ql_exact; theta would ship stubbed'; exit 1; }
+          INTERPRETERS: ${{ inputs.pr_smoke && 'python3.12' || 'python3.9 python3.10 python3.11 python3.12 python3.13 python3.14' }}
+          FEATURES: egraph,groebner,cranelift,parallel,system-gmp
+        run: |
+          for attempt in 1 2 3 4 5; do
+            docker pull "$IMAGE" && break
+            if [ "$attempt" = 5 ]; then exit 1; fi
+            sleep 15
+          done
+          docker run --rm -v "$PWD:/io" -w /io \
+            -e MATURIN_VERSION -e INTERPRETERS -e FEATURES \
+            -e PYO3_USE_ABI3_FORWARD_COMPATIBILITY \
+            "$IMAGE" bash .github/scripts/build-manylinux-wheels.sh
 
-      # The default wheel must run on any x86-64 CPU (see the FLINT --host note).
-      - name: Bundled FLINT/MPFR use no AVX/AVX2/AVX-512
+      # The default wheel must run on any CPU of its architecture (see the
+      # portable-flags notes in build-manylinux-deps.sh).
+      - name: Bundled FLINT/MPFR use no CPU-specific vector code
         run: python scripts/check_wheel_isa.py dist/*.whl
 
       - name: Smoke test
@@ -207,8 +149,89 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: wheels-ubuntu-22.04
+          name: wheels-${{ matrix.runner }}
           path: dist/*.whl
+
+  # The source distribution: what `pip install alkahest` falls back to where no
+  # wheel matches. Full-matrix only, like aarch64.
+  build-sdist:
+    name: sdist / ubuntu-24.04
+    runs-on: ubuntu-24.04
+    if: ${{ !inputs.optional_variants && !inputs.pr_smoke }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_REF }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install maturin
+        run: pip install "maturin==$MATURIN_VERSION"
+
+      - name: Build the sdist
+        run: maturin sdist --out dist
+
+      - name: Sdist has what a build needs and nothing else
+        run: python .github/scripts/check_sdist.py dist/*.tar.gz
+
+      # build.rs has a message for this; what matters is that it survives
+      # maturin and pip and reaches the person who ran `pip install`. Before
+      # FLINT is set up, deliberately: this runner image has no libflint.
+      - name: Without FLINT, pip fails and says why
+        run: |
+          if ldconfig -p | grep libflint; then
+            echo "::error::this runner already has FLINT, so the check below proves nothing"
+            exit 1
+          fi
+          if pip install --no-deps dist/*.tar.gz > /tmp/no-flint.log 2>&1; then
+            echo "::error::a source build succeeded without FLINT"
+            exit 1
+          fi
+          tail -n 40 /tmp/no-flint.log
+          if ! grep -q 'FLINT_LIB_DIR=' /tmp/no-flint.log; then
+            echo "::error::pip failed, but its output does not carry the build.rs install hint"
+            exit 1
+          fi
+
+      # setup-flint builds FLINT 3.6 (apt's 3.0.1 is below the floor) and exports
+      # FLINT_LIB_DIR / FLINT_INCLUDE_DIR / LD_LIBRARY_PATH, the same variables
+      # build.rs's message tells a source builder to set.
+      - name: Set up FLINT
+        uses: ./.github/actions/setup-flint
+
+      # Plain `pip install`: no --features. A source build gets the default Cargo
+      # features (egraph, groebner) and rug's bundled GMP/MPFR, not the wheels'
+      # cranelift + parallel + system-gmp.
+      - name: Build and install from the sdist
+        run: pip install dist/*.tar.gz
+
+      - name: Smoke test
+        run: |
+          python - <<'PY'
+          import alkahest as ak
+          p = ak.ExprPool()
+          assert str(p.integer(10**30)) == str(10**30)
+          x = p.symbol('x')
+          print(ak.simplify(x + 0).value)
+          f = ak.capabilities()["features"]
+          assert f["egraph"] and f["groebner"], f
+          assert hasattr(ak, 'solve')
+          print('sdist build ok:', f)
+          PY
+
+      - name: README quickstart + fresh-interpreter parse smoke
+        run: python tests/smoke_readme.py
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sdist
+          path: dist/*.tar.gz
 
   # LLVM JIT: separate wheels with PEP 440 local version X.Y.Z+jit (PyTorch-style).
   # Not uploaded to main PyPI — avoids pip preferring +jit over the default release.
@@ -278,7 +301,7 @@ jobs:
           PY
 
       - name: Install maturin
-        run: pip install maturin
+        run: pip install "maturin==$MATURIN_VERSION"
 
       # `parallel` is included so this wheel is never a *downgrade* from the
       # default PyPI wheel, which now ships it. Before, installing +jit to gain
@@ -374,7 +397,7 @@ jobs:
           PY
 
       - name: Install maturin
-        run: pip install maturin
+        run: pip install "maturin==$MATURIN_VERSION"
 
       # `+full` earns its name by being a strict superset of every other wheel:
       # the only build carrying *both* JIT backends. Until `parallel` moved into
@@ -416,11 +439,11 @@ jobs:
       fail-fast: false
       matrix:
         # macos-15 = arm64 (Apple Silicon); macos-14 images are retired on
-        # 2026-11-02 (actions/runner-images#13518). Intel (x86_64) wheels are no longer
-        # produced: macos-13 Intel runners were deprecated by GitHub, and the
-        # macos-15 arm64 runner does not ship x86_64 Homebrew, making
-        # cross-compilation of libflint impractical. Intel Mac users can install
-        # from the sdist or run the arm64 wheel under Rosetta on ARM hardware.
+        # 2026-11-02 (actions/runner-images#13518). Intel (x86_64) wheels are not
+        # built: macos-13 is gone, and although macos-15-intel exists, a macOS
+        # wheel carries Homebrew's library paths until it is delocated, and
+        # Homebrew's Intel FLINT is not checked for CPU portability. Intel Mac
+        # users install from the sdist, with FLINT from Homebrew.
         # A pr_smoke call builds Windows/py3.12 only: its link step is where a
         # missing symbol fails loudest (Linux defers it to import time).
         os: ${{ fromJSON(inputs.pr_smoke && '["windows-2022"]' || '["macos-15", "windows-2022"]') }}
@@ -479,7 +502,10 @@ jobs:
         run: rustup target add x86_64-pc-windows-gnu
 
       - name: Install maturin
-        run: pip install maturin
+        # bash on Windows too: PowerShell would read $MATURIN_VERSION as an
+        # unset PowerShell variable and ask pip for `maturin==`.
+        shell: bash
+        run: pip install "maturin==$MATURIN_VERSION"
 
       # Feature set must stay identical to build-linux's: this is the same
       # default PyPI wheel, and `parallel` in particular has to be on every

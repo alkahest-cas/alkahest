@@ -41,6 +41,11 @@ python-source = "python"
 manifest-path = "alkahest-py/Cargo.toml"
 module-name = "alkahest"
 features = ["pyo3/extension-module"]
+# `vendor/egglog` is reached only through the workspace's [patch.crates-io], which
+# maturin does not follow when packing path dependencies, and without it a build
+# from the sdist stops at `cargo metadata`. .github/scripts/check_sdist.py guards
+# this list and the absence of everything else.
+include = [{ path = "vendor/egglog/**/*", format = "sdist" }]
 
 # ── Dev / CI dependencies ────────────────────────────────────────────────────
 # Use `uv sync --no-install-project --group dev` to install.

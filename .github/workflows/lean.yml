@@ -62,8 +62,12 @@ jobs:
 
       - name: Install Lean 4 via elan
         run: |
-          curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf \
-            | sh -s -- --default-toolchain leanprover/lean4:v4.9.0 -y
+          # To a file, not `curl | sh`: without pipefail a failed download would
+          # hand sh an empty script and the step would pass with no Lean installed.
+          curl --fail --location --silent --show-error --retry 5 --retry-all-errors \
+            --retry-delay 15 --connect-timeout 30 -o /tmp/elan-init.sh \
+            https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh
+          sh /tmp/elan-init.sh --default-toolchain leanprover/lean4:v4.9.0 -y
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: Cache Lean toolchain and Mathlib oleans

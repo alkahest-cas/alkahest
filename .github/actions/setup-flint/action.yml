@@ -38,8 +38,8 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        sudo apt-get update
-        sudo apt-get install -y libgmp-dev libmpfr-dev m4
+        sudo apt-get -o Acquire::Retries=5 update
+        sudo apt-get -o Acquire::Retries=5 install -y libgmp-dev libmpfr-dev m4
 
     # The prefix below is cached, so the key has to separate runner images:
     # a prefix built on 22.04 carries its own GMP, one built on 24.04 does not.
@@ -74,12 +74,16 @@ runs:
         set -euo pipefail
         prefix="$HOME/.local/flint"
         cd /tmp
-        curl -fsSLO https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz
-        curl -fsSLO https://ftp.gnu.org/gnu/mpfr/mpfr-4.2.2.tar.xz
-        sha256sum -c - <<'SUMS'
-        a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898  gmp-6.3.0.tar.xz
-        b67ba0383ef7e8a8563734e2e889ef5ec3c3b898a01d00fa0a6869ad81c6ce01  mpfr-4.2.2.tar.xz
-        SUMS
+        # Retries, then a mirror; the checksum vouches for whichever answered.
+        fetch="$GITHUB_ACTION_PATH/../../scripts/fetch.sh"
+        "$fetch" gmp-6.3.0.tar.xz \
+          a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898 \
+          https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz \
+          https://mirrors.kernel.org/gnu/gmp/gmp-6.3.0.tar.xz
+        "$fetch" mpfr-4.2.2.tar.xz \
+          b67ba0383ef7e8a8563734e2e889ef5ec3c3b898a01d00fa0a6869ad81c6ce01 \
+          https://ftp.gnu.org/gnu/mpfr/mpfr-4.2.2.tar.xz \
+          https://mirrors.kernel.org/gnu/mpfr/mpfr-4.2.2.tar.xz
         tar xf gmp-6.3.0.tar.xz && tar xf mpfr-4.2.2.tar.xz
         # --enable-fat: the +jit/+full wheels bundle this libgmp, so it must pick
         # its kernels at run time rather than for this runner's CPU.
@@ -94,12 +98,14 @@ runs:
         # Pinned by tag, so a yanked or re-rolled release fails loudly at the
         # download rather than quietly changing what CI links against.
         tarball="/tmp/flint-${{ inputs.version }}.tar.gz"
-        curl -fsSL -o "$tarball" "https://github.com/flintlib/flint/releases/download/v${{ inputs.version }}/flint-${{ inputs.version }}.tar.gz"
-        if [ -n "${{ inputs.sha256 }}" ]; then
-          echo "${{ inputs.sha256 }}  $tarball" | sha256sum -c -
-        else
+        sha256="${{ inputs.sha256 }}"
+        if [ -z "$sha256" ]; then
+          sha256=-
           echo "::warning::FLINT ${{ inputs.version }} tarball not checksum-verified (no sha256 input)"
         fi
+        "$GITHUB_ACTION_PATH/../../scripts/fetch.sh" "$tarball" "$sha256" \
+          "https://github.com/flintlib/flint/releases/download/v${{ inputs.version }}/flint-${{ inputs.version }}.tar.gz" \
+          "https://flintlib.org/download/flint-${{ inputs.version }}.tar.gz"
         tar xzf "$tarball" -C /tmp
         cd "/tmp/flint-${{ inputs.version }}"
         prefix="$HOME/.local/flint"

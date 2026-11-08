@@ -45,7 +45,8 @@ jobs:
           # exactly the thing it exists to prevent. Ask the endpoint built for
           # programmatic use, and treat a failed *lookup* as fatal rather than
           # as an answer.
-          if ! curl -sSfL -H 'User-Agent: alkahest-release-ci' \
+          if ! curl -sSfL --retry 5 --retry-all-errors --retry-delay 15 --connect-timeout 30 \
+                 -H 'User-Agent: alkahest-release-ci' \
                  https://index.crates.io/al/ka/alkahest-cas -o /tmp/index.json; then
             echo "::error title=crates.io index unreachable::Cannot tell whether $version is published; refusing to guess." >&2
             exit 1

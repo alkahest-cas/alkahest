@@ -2,7 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- Linux aarch64 wheels (`manylinux_2_28`, CPython 3.9–3.14), built on native ARM runners. GMP, MPFR and FLINT target plain ARMv8-A (`-march=armv8-a`, no runner-specific tuning), and `scripts/check_wheel_isa.py` rejects any SVE in them.
+- A source distribution on PyPI, so `pip install alkahest` on a platform with no wheel compiles instead of failing with "no matching distribution". It needs a Rust toolchain and FLINT ≥ 3.3, and stops with the install instructions if FLINT is missing. It builds the default Cargo features (`egraph`, `groebner`).
+
 ### Fixed
+
+- Release and CI jobs failed outright when a download hit a 504 or received an HTML error page in place of a tarball (2026-11-08, a GitHub incident). Every source and tool download now retries, tarballs keep their sha256 checks and count a mismatch as a failed attempt, GMP, MPFR and FLINT fall back to a mirror, and the manylinux builds install maturin (pinned to 1.16.0) from PyPI rather than from a GitHub release.
 
 - `integrate` no longer runs past its wall budget, or out of memory, in the by-parts route's
   clean-up `cancel`. `∫ d/dx[atan x + atan x·log x·√(x+1)] dx` under `Budget(wall_ms=4000)` was

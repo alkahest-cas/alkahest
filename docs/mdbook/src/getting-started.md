@@ -25,6 +25,14 @@ Diophantine and homotopy work out of the box), the pure-Rust **Cranelift JIT** (
 `alkahest.jit_is_available()` is `True` without a system LLVM), and the Rayon-backed
 **multi-core paths**. They do **not** include the LLVM JIT (`llvm_jit`) or `cuda`.
 
+Wheels exist for Linux (manylinux_2_28) x86_64 and aarch64, macOS arm64 and Windows
+x86_64. Anywhere else, such as Intel macOS or musl Linux, `pip install alkahest` falls
+back to the source distribution and compiles it. That needs a Rust toolchain and
+FLINT ≥ 3.3 with GMP and MPFR; without FLINT the build stops and prints how to install
+it. A build from the source distribution has the default Cargo features, `egraph` and
+`groebner`: no JIT and no `parallel`. For those, [build from a checkout](#from-source)
+with `--features`.
+
 > ### `parallel` is on in the default wheel — but still check it
 >
 > `capabilities()["features"]["parallel"]` is `True` on every wheel published to PyPI, on
@@ -93,7 +101,8 @@ print(features)
 
 | Distribution | Tested platforms | Native feature profile | `parallel` |
 |---|---|---|---|
-| Default PyPI wheel | Linux x86_64, macOS arm64, Windows x86_64 | `egraph`, `groebner`, `cranelift_jit`, `parallel` | `True` |
+| Default PyPI wheel | Linux x86_64 and aarch64, macOS arm64, Windows x86_64 | `egraph`, `groebner`, `cranelift_jit`, `parallel` | `True` |
+| PyPI source distribution | Linux x86_64 (built in CI); anywhere with Rust and FLINT ≥ 3.3 | `egraph`, `groebner` | `False` |
 | Release `+jit` | Linux x86_64 | `egraph`, `groebner`, `llvm_jit` (no Cranelift), `parallel` | `True` |
 | Release `+full` | Linux x86_64 | same as `+jit` | `True` |
 | Source build | any | whatever you pass to `--features` | `True` **only** with `--features parallel` |
