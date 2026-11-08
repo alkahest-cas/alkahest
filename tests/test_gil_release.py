@@ -8,7 +8,7 @@ Two changes are pinned here.
    attributes are read in, and however many times.
 
 2. ``simplify``, ``diff``, ``solve``, ``evaluate``, ``factor_z`` and the other
-   heavy entry points run their core call under ``py.allow_threads``. That is
+   heavy entry points run their core call under ``py.detach``. That is
    only worth having if a thread pool actually overlaps them, and only sound if
    the thread-local channels — the budget frame, explicit assumptions, the
    ``*_side_conditions()`` side channels — still describe the calling thread's
@@ -215,7 +215,7 @@ class TestThreadsOverlap:
 
 
 class TestContextsSurviveReleasedSections:
-    """Everything thread-local is still the caller's inside ``allow_threads``."""
+    """Everything thread-local is still the caller's inside ``detach``."""
 
     def test_budget_frame_is_per_thread_inside_simplify(self):
         """An exhausted budget on one thread stops only that thread's simplify.
