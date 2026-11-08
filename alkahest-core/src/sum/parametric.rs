@@ -119,9 +119,57 @@ fn direct_sum(
         map.insert(n, pool.integer(m));
         map.insert(k, pool.integer(j));
         let v = simp(pool, subs(term, &map, pool));
+        // `C(1, 2) = Γ(2)/(Γ(3)·Γ(0))`: a reciprocal Γ at a pole is the natural
+        // boundary of a binomial, and the term is 0.
+        if vanishes_by_reciprocal_gamma(v, pool) {
+            continue;
+        }
         total += rational_literal(pool, v)?;
     }
     Some(total)
+}
+
+/// `Γ(m)` for an integer literal `m ≤ 0`.
+fn is_gamma_pole(e: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(e) {
+        ExprData::Func { name, args } if name == "gamma" && args.len() == 1 => {
+            rational_literal(pool, args[0]).is_some_and(|q| *q.denom() == 1 && q <= 0)
+        }
+        _ => false,
+    }
+}
+
+/// Whether a denominator product contains a `Γ` pole.
+fn has_gamma_pole_factor(e: ExprId, pool: &ExprPool) -> bool {
+    if is_gamma_pole(e, pool) {
+        return true;
+    }
+    match pool.get(e) {
+        ExprData::Mul(xs) => xs.iter().any(|&x| has_gamma_pole_factor(x, pool)),
+        ExprData::Pow { base, exp } => {
+            rational_literal(pool, exp).is_some_and(|q| *q.denom() == 1 && q > 0)
+                && has_gamma_pole_factor(base, pool)
+        }
+        _ => false,
+    }
+}
+
+/// `e` is a product with a `Γ` pole in its denominator and none in its
+/// numerator, so it is exactly `0`.
+fn vanishes_by_reciprocal_gamma(e: ExprId, pool: &ExprPool) -> bool {
+    let factors = match pool.get(e) {
+        ExprData::Mul(xs) => xs,
+        _ => vec![e],
+    };
+    let in_denominator = |f: ExprId| match pool.get(f) {
+        ExprData::Pow { base, exp } => {
+            rational_literal(pool, exp).is_some_and(|q| *q.denom() == 1 && q < 0)
+                && has_gamma_pole_factor(base, pool)
+        }
+        _ => false,
+    };
+    factors.iter().any(|&f| in_denominator(f))
+        && !factors.iter().any(|&f| has_gamma_pole_factor(f, pool))
 }
 
 /// The closed form at `n = m`, as an exact rational.

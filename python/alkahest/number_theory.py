@@ -93,7 +93,9 @@ def discrete_log(residue: int, base: int, modulus: int) -> int:
     factored, each prime power solved on its own, and the exponent classes
     merged by the Chinese remainder theorem; ``base`` and ``residue`` need not
     be coprime to ``modulus`` (``discrete_log(2, 2, 12) == 1``). The result is
-    verified by ``pow`` before it is returned.
+    verified by ``pow`` before it is returned. A composite ``modulus`` has to
+    be factored first, so a large hard semiprime costs what factoring it costs
+    (bound it with ``ak.context(budget=...)``).
 
     Raises
     ------

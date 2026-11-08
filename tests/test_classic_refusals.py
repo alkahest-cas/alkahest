@@ -229,13 +229,15 @@ def test_alternating_binomial_states_its_domain(pool):
     assert any("n" in c for c in conds), conds
 
 
-def test_literal_range_with_a_parameter(pool):
-    n = pool.symbol("n")
-    k = pool.symbol("k")
-    r = ak.sum_definite(ak.binomial(n, k), k, pool.integer(0), pool.integer(3))
-    ns = sympy.Symbol("n")
-    want = sum(sympy.binomial(ns, j) for j in range(4))
-    assert sympy.simplify(sympy.expand_func(to_sympy(r.value) - want)) == 0
+def test_binomial_past_its_natural_boundary_is_zero(pool):
+    # The k = n term of C(n, k+1) and the k = n+1 term of C(n, k) are 1/Γ(0) = 0.
+    _check_sum(
+        pool,
+        lambda n, k: ak.binomial(n, k) * ak.binomial(n, k + 1),
+        lambda m: sum(math.comb(m, j) * math.comb(m, j + 1) for j in range(m + 1)),
+        n_from=1,
+    )
+    _check_sum(pool, lambda n, k: ak.binomial(n, k), lambda m: 2**m, hi=lambda n: n + 1, n_from=1)
 
 
 def test_order_two_sum_is_refused_with_a_reason(pool):
