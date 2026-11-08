@@ -235,13 +235,13 @@ fn expr_to_ratfunc(term: ExprId, k: ExprId, pool: &ExprPool) -> Result<RatFunc, 
     }
 }
 
+/// `(constant, [(a, c, e)])`: see [`linear_factorization`].
+pub(super) type LinearFactors = (Rational, Vec<(Integer, Integer, i64)>);
+
 /// `p = constant · ∏ (a·k + c)^e` over `ℚ`, with every `(a, c)` integer,
 /// `a > 0`, `gcd(a, c) = 1`; `None` when `p` is zero or has an irreducible
 /// factor of degree `> 1`. `var` only labels the intermediate polynomial.
-pub(super) fn linear_factorization(
-    p: &RatUniPoly,
-    var: ExprId,
-) -> Option<(Rational, Vec<(Integer, Integer, i64)>)> {
+pub(super) fn linear_factorization(p: &RatUniPoly, var: ExprId) -> Option<LinearFactors> {
     if p.is_zero() {
         return None;
     }

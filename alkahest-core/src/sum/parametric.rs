@@ -218,7 +218,7 @@ fn past_last_integer_root(c: &[Rational]) -> Option<i64> {
     }
     let mut bound = Rational::from(0);
     for ci in &c[..c.len() - 1] {
-        let r = Rational::from((ci.clone() / lead.clone()).abs());
+        let r = (ci.clone() / lead.clone()).abs();
         if r > bound {
             bound = r;
         }
@@ -330,7 +330,7 @@ impl ProductPlan {
         let mut lo = i64::MIN;
         for (alpha, beta, _) in &self.gammas {
             // α·n₀ + β > 0  ⇔  n₀ > −β/α.
-            let bound = (Rational::from(-beta.clone()) / Rational::from(*alpha))
+            let bound = (-beta.clone() / Rational::from(*alpha))
                 .floor()
                 .numer()
                 .to_i64()
