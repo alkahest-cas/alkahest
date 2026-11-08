@@ -10,6 +10,7 @@ mod expr_ratio;
 pub(crate) mod gosper;
 mod hyper_series;
 mod poly_aux;
+mod parametric;
 mod product;
 mod ratfunc;
 mod recurrence;
@@ -228,6 +229,28 @@ pub fn sum_definite(
                 log.push(RewriteStep::with_conditions(rule, term, value, conditions));
                 return Ok(DerivedExpr::with_log(value, log));
             }
+            // Bounds and summand sharing a parameter: Σ_{k=0}^{n} C(n,k).
+            match parametric::parametric_definite(term, k, lo, hi, pool)? {
+                parametric::Outcome::Sum {
+                    value,
+                    conditions,
+                    rule,
+                } => {
+                    let mut log = DerivationLog::new();
+                    log.push(RewriteStep::with_conditions(rule, term, value, conditions));
+                    return Ok(DerivedExpr::with_log(value, log));
+                }
+                parametric::Outcome::Refused(why) => {
+                    return Err(SumError::NotHypergeometric(why));
+                }
+                parametric::Outcome::NotApplicable => {}
+            }
+            // Literal bounds over a short range: add the terms up.
+            if let Some(value) = literal_range_sum(term, k, lo, hi, pool) {
+                let mut log = DerivationLog::new();
+                log.push(RewriteStep::simple("finite_sum_expanded", term, value));
+                return Ok(DerivedExpr::with_log(value, log));
+            }
             return Err(e);
         }
     };
@@ -278,6 +301,42 @@ pub fn sum_definite(
     let mut log = DerivationLog::new();
     log.push(RewriteStep::simple("gosper_definite_telescope", term, diff));
     Ok(DerivedExpr::with_log(diff, log))
+}
+
+/// Largest range [`literal_range_sum`] expands term by term.
+const MAX_LITERAL_RANGE: i64 = 200;
+
+/// `Σ_{k=lo}^{hi} term` for integer-literal bounds with at most
+/// [`MAX_LITERAL_RANGE`] terms, by substituting each index: exact, whatever
+/// else the summand mentions (`Σ_{k=0}^{3} C(n,k)`). `None` when a bound is not
+/// a literal, the range is long or backwards, or a term does not simplify to
+/// something free of `k` and of undefined values.
+fn literal_range_sum(
+    term: ExprId,
+    k: ExprId,
+    lo: ExprId,
+    hi: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    let (a, b) = (const_i64(pool, lo)?, const_i64(pool, hi)?);
+    if b < a {
+        return (b == a - 1).then(|| pool.integer(0_i32));
+    }
+    if b - a >= MAX_LITERAL_RANGE {
+        return None;
+    }
+    let mut terms = Vec::with_capacity((b - a + 1) as usize);
+    for j in a..=b {
+        let mut m = HashMap::new();
+        m.insert(k, pool.integer(j));
+        let t = simp(pool, subs(term, &m, pool));
+        if crate::kernel::subs::mentions_var(t, k, pool) || contains_zero_to_negative_power(t, pool)
+        {
+            return None;
+        }
+        terms.push(t);
+    }
+    Some(simp(pool, pool.add(terms)))
 }
 
 /// Largest number of individual indices [`interior_undefined_index`] will
