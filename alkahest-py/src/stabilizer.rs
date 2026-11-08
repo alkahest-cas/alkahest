@@ -42,14 +42,14 @@ use crate::group::PyPermutationGroup;
 pyo3::create_exception!(alkahest, PyStabilizerError, crate::PyAlkahestError);
 
 fn stab_err(e: StabilizerError) -> PyErr {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let exc_type = py.get_type::<PyStabilizerError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
 
 /// A `rug::Integer` as an exact Python `int`, at any size.
-fn big_int(py: Python<'_>, value: &rug::Integer) -> PyResult<PyObject> {
+fn big_int(py: Python<'_>, value: &rug::Integer) -> PyResult<Py<PyAny>> {
     crate::bigint::int_to_py(py, value)
 }
 
@@ -711,7 +711,7 @@ impl PyMatrixGroup {
     /// The exact group order, from the product formula — an arbitrary-precision
     /// Python ``int``.
     #[getter]
-    fn order(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn order(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         big_int(py, &self.inner.order())
     }
 

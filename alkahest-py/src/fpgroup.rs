@@ -43,14 +43,14 @@ use std::hash::{Hash, Hasher};
 pyo3::create_exception!(alkahest, PyFpGroupError, crate::PyAlkahestError);
 
 fn fp_err(e: FpGroupError) -> PyErr {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let exc_type = py.get_type::<PyFpGroupError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
 
 /// A `rug::Integer` as an exact Python `int`, at any size.
-fn big_int(py: Python<'_>, value: &Integer) -> PyResult<PyObject> {
+fn big_int(py: Python<'_>, value: &Integer) -> PyResult<Py<PyAny>> {
     crate::bigint::int_to_py(py, value)
 }
 
@@ -210,7 +210,7 @@ impl PyAbelianInvariants {
 
     /// The invariant factors, ascending under divisibility and each at least 2.
     #[getter]
-    fn torsion(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn torsion(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         self.inner
             .torsion()
             .iter()
@@ -229,7 +229,7 @@ impl PyAbelianInvariants {
     }
 
     /// The order, or ``None`` when the group is infinite.
-    fn order(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+    fn order(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         match self.inner.order() {
             Some(n) => Ok(Some(big_int(py, &n)?)),
             None => Ok(None),
@@ -330,7 +330,7 @@ impl PyCosetTable {
     }
 
     /// One :class:`alkahest.Permutation` per generator, of degree ``index``.
-    fn permutations(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn permutations(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         let cls = py.get_type::<crate::group::PyPermutation>();
         let mut out = Vec::new();
         for p in self.inner.permutations().map_err(fp_err)? {
@@ -500,7 +500,7 @@ impl PyFpGroup {
     /// ``E-FPGRP-004`` when the enumeration did not finish within
     /// ``max_cosets`` — which is not a claim either way about finiteness.
     #[pyo3(signature = (max_cosets = None))]
-    fn order(&self, py: Python<'_>, max_cosets: Option<usize>) -> PyResult<PyObject> {
+    fn order(&self, py: Python<'_>, max_cosets: Option<usize>) -> PyResult<Py<PyAny>> {
         let cap = max_cosets.unwrap_or_else(|| default_max_cosets(self.inner.rank()));
         let n = self.inner.order_with_cap(cap).map_err(fp_err)?;
         big_int(py, &n)

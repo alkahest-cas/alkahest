@@ -24,7 +24,7 @@ use crate::bigint::{rational_from_py, rational_to_py};
 pyo3::create_exception!(alkahest, PyUnitError, crate::PyAlkahestError);
 
 fn unit_err(e: UnitError) -> PyErr {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let exc_type = py.get_type::<PyUnitError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
@@ -79,7 +79,7 @@ fn wrap(u: Unit) -> PyUnit {
     PyUnit { inner: u }
 }
 
-fn scale_tuple(py: Python<'_>, s: &core_units::Scale) -> PyResult<PyObject> {
+fn scale_tuple(py: Python<'_>, s: &core_units::Scale) -> PyResult<Py<PyAny>> {
     Ok(PyTuple::new(
         py,
         [
@@ -117,7 +117,7 @@ impl PyUnit {
 
     /// ``{base_dimension: Fraction}`` for the non-zero exponents.
     #[getter]
-    fn dimension_exponents(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn dimension_exponents(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let d = PyDict::new(py);
         for (i, name) in core_units::BASE_DIMENSIONS.iter().enumerate() {
             let e = self.inner.dimension().exponent(i);
@@ -130,7 +130,7 @@ impl PyUnit {
 
     /// ``[(name, Fraction exponent), …]`` as written.
     #[getter]
-    fn factors(&self, py: Python<'_>) -> PyResult<Vec<(String, PyObject)>> {
+    fn factors(&self, py: Python<'_>) -> PyResult<Vec<(String, Py<PyAny>)>> {
         self.inner
             .factors()
             .iter()
@@ -141,7 +141,7 @@ impl PyUnit {
     /// ``(ratio, pi_power)``: one of this unit is ``ratio · π**pi_power`` of the
     /// coherent SI unit of the same dimension (both ``Fraction``).
     #[getter]
-    fn scale(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn scale(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         scale_tuple(py, self.inner.scale())
     }
 
@@ -196,7 +196,7 @@ impl PyUnit {
     /// ``(ratio, pi_power, shift)`` (``Fraction``\ s; ``shift`` is ``0`` except
     /// between affine temperature scales). ``E-UNIT-001`` on a dimension
     /// mismatch.
-    fn conversion(&self, py: Python<'_>, target: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn conversion(&self, py: Python<'_>, target: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let t = require_unit(target, "target")?;
         let (f, shift) = self.inner.conversion(&t).map_err(unit_err)?;
         Ok(PyTuple::new(
@@ -228,7 +228,7 @@ impl PyUnit {
         py: Python<'_>,
         derived: bool,
         allowed: Option<Vec<String>>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let (f, u) = if derived {
             let a: Option<Vec<&str>> = allowed
                 .as_ref()
@@ -266,7 +266,7 @@ impl PyUnit {
         self.inner.to_derived(a.as_deref()).map(wrap)
     }
 
-    fn __mul__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn __mul__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         match unit_from_py(other)? {
             Some(o) => {
                 Ok(Py::new(py, wrap(self.inner.mul(&o).map_err(unit_err)?))?.into_py_any(py)?)
@@ -275,7 +275,7 @@ impl PyUnit {
         }
     }
 
-    fn __rmul__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn __rmul__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         match unit_from_py(other)? {
             Some(o) => {
                 Ok(Py::new(py, wrap(o.mul(&self.inner).map_err(unit_err)?))?.into_py_any(py)?)
@@ -284,7 +284,7 @@ impl PyUnit {
         }
     }
 
-    fn __truediv__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn __truediv__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         match unit_from_py(other)? {
             Some(o) => {
                 Ok(Py::new(py, wrap(self.inner.div(&o).map_err(unit_err)?))?.into_py_any(py)?)
@@ -293,7 +293,7 @@ impl PyUnit {
         }
     }
 
-    fn __rtruediv__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn __rtruediv__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let lhs = if other.extract::<i64>().ok() == Some(1) {
             Some(Unit::dimensionless())
         } else {
@@ -311,8 +311,8 @@ impl PyUnit {
         &self,
         py: Python<'_>,
         exp: &Bound<'_, PyAny>,
-        modulo: Option<PyObject>,
-    ) -> PyResult<PyObject> {
+        modulo: Option<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
         if modulo.is_some() {
             return Ok(py.NotImplemented());
         }
@@ -331,7 +331,7 @@ impl PyUnit {
         py: Python<'_>,
         other: &Bound<'_, PyAny>,
         op: CompareOp,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let Some(o) = (match other.downcast::<PyUnit>() {
             Ok(u) => Some(u.get().inner.clone()),
             Err(_) => None,
@@ -361,7 +361,7 @@ impl PyUnit {
         self.inner.name()
     }
 
-    fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let cls = py.get_type::<PyUnit>();
         Ok((cls, (self.inner.name(),)).into_py_any(py)?)
     }

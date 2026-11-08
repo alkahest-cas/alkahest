@@ -22,7 +22,7 @@ use alkahest_core::experimental::{FieldElement, FiniteField, FiniteFieldError, G
 pyo3::create_exception!(alkahest, PyFiniteFieldError, crate::PyAlkahestError);
 
 fn ff_err(e: FiniteFieldError) -> PyErr {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         // A shape refused for memory (rather than for being unaddressable)
         // leaves its cause in the budget's trip slot: raise that as the
         // `BudgetExceededError` every other engine raises.
@@ -62,7 +62,7 @@ fn elem_from_py(field: &FiniteField, obj: &Bound<'_, PyAny>) -> PyResult<FieldEl
 
 /// Write one field element back to Python — `int` over GF(p), `list[int]`
 /// of exactly `k` coordinates over GF(p^k).
-fn elem_to_py(py: Python<'_>, field: &FiniteField, e: &FieldElement) -> PyObject {
+fn elem_to_py(py: Python<'_>, field: &FiniteField, e: &FieldElement) -> Py<PyAny> {
     if field.is_prime_field() {
         e.as_u64().unwrap_or(0).to_py_any(py)
     } else {
@@ -158,7 +158,7 @@ impl PyFiniteField {
     }
 
     /// The generator `a` of the extension, or ``None`` for a prime field.
-    fn generator(&self, py: Python<'_>) -> Option<PyObject> {
+    fn generator(&self, py: Python<'_>) -> Option<Py<PyAny>> {
         self.inner
             .generator()
             .map(|g| elem_to_py(py, &self.inner, &g))
@@ -324,7 +324,7 @@ impl PyGfMatrix {
     }
 
     /// Entry ``(i, j)``.
-    fn entry(&self, py: Python<'_>, i: usize, j: usize) -> PyResult<PyObject> {
+    fn entry(&self, py: Python<'_>, i: usize, j: usize) -> PyResult<Py<PyAny>> {
         let e = self.inner.entry(i, j).map_err(ff_err)?;
         Ok(elem_to_py(py, self.inner.field(), &e))
     }
@@ -336,12 +336,12 @@ impl PyGfMatrix {
     }
 
     /// All entries as nested rows.
-    fn to_list(&self, py: Python<'_>) -> PyObject {
+    fn to_list(&self, py: Python<'_>) -> Py<PyAny> {
         let (r, c) = self.inner.shape();
         let f = self.inner.field();
-        let rows: Vec<PyObject> = (0..r)
+        let rows: Vec<Py<PyAny>> = (0..r)
             .map(|i| {
-                let cells: Vec<PyObject> = (0..c)
+                let cells: Vec<Py<PyAny>> = (0..c)
                     .map(|j| {
                         elem_to_py(
                             py,
@@ -436,17 +436,17 @@ impl PyGfMatrix {
     }
 
     /// The determinant.
-    fn determinant(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn determinant(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let d = self.inner.determinant().map_err(ff_err)?;
         Ok(elem_to_py(py, self.inner.field(), &d))
     }
 
     /// Coefficients of the characteristic polynomial ``det(x*I - A)``,
     /// ascending, so the last entry is the leading ``1``.
-    fn charpoly(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn charpoly(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let cp = self.inner.charpoly().map_err(ff_err)?;
         let f = self.inner.field();
-        let cells: Vec<PyObject> = cp.iter().map(|c| elem_to_py(py, f, c)).collect();
+        let cells: Vec<Py<PyAny>> = cp.iter().map(|c| elem_to_py(py, f, c)).collect();
         Ok(PyList::new(py, cells)?.into())
     }
 

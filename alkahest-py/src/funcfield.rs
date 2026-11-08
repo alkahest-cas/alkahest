@@ -35,7 +35,7 @@ pyo3::create_exception!(alkahest, PyFunctionFieldError, crate::PyAlkahestError);
 /// Mirrors `lib.rs`'s `make_structured_err`; kept local so that adding this
 /// module touches `lib.rs` in exactly two lines.
 fn structured(e: &FunctionFieldError) -> PyErr {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let exc_type = py.get_type::<PyFunctionFieldError>();
         let msg = e.to_string();
         let code = e.code();
@@ -103,11 +103,11 @@ fn to_integer(obj: &Bound<'_, PyAny>) -> PyResult<Integer> {
 
 /// Exact rational back to Python: an `int` when integral, else a
 /// `fractions.Fraction`.
-fn rational_to_py(py: Python<'_>, r: &Rational) -> PyResult<PyObject> {
+fn rational_to_py(py: Python<'_>, r: &Rational) -> PyResult<Py<PyAny>> {
     crate::bigint::rational_to_py(py, r)
 }
 
-fn integer_to_py(py: Python<'_>, i: &Integer) -> PyResult<PyObject> {
+fn integer_to_py(py: Python<'_>, i: &Integer) -> PyResult<Py<PyAny>> {
     crate::bigint::int_to_py(py, i)
 }
 
@@ -119,7 +119,7 @@ fn coeffs_from_py(obj: &Bound<'_, PyAny>) -> PyResult<Vec<Rational>> {
     Ok(out)
 }
 
-fn coeffs_to_py(py: Python<'_>, cs: &[Rational]) -> PyResult<Vec<PyObject>> {
+fn coeffs_to_py(py: Python<'_>, cs: &[Rational]) -> PyResult<Vec<Py<PyAny>>> {
     cs.iter().map(|c| rational_to_py(py, c)).collect()
 }
 
@@ -179,7 +179,7 @@ impl PyFunctionField {
     }
 
     /// The coefficients of the normalised `a(x)`, lowest degree first.
-    fn curve(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn curve(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         coeffs_to_py(py, self.inner.curve())
     }
 
@@ -292,13 +292,13 @@ impl PyPlace {
 
     /// The `x`-coordinate, or `None` at infinity.
     #[getter]
-    fn x(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+    fn x(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         self.inner.x().map(|v| rational_to_py(py, v)).transpose()
     }
 
     /// The `y`-coordinate, or `None` at infinity.
     #[getter]
-    fn y(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+    fn y(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         self.inner.y().map(|v| rational_to_py(py, v)).transpose()
     }
 
@@ -382,7 +382,7 @@ impl PyDivisor {
 
     /// `deg D` — the sum of the multiplicities, every place having degree 1.
     #[getter]
-    fn degree(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn degree(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         integer_to_py(py, &self.inner.degree())
     }
 
@@ -413,7 +413,7 @@ impl PyDivisor {
     }
 
     /// The `(place, multiplicity)` pairs, in canonical order.
-    fn terms(&self, py: Python<'_>) -> PyResult<Vec<(PyPlace, PyObject)>> {
+    fn terms(&self, py: Python<'_>) -> PyResult<Vec<(PyPlace, Py<PyAny>)>> {
         self.inner
             .terms()
             .into_iter()
@@ -422,7 +422,7 @@ impl PyDivisor {
     }
 
     /// The multiplicity at `place`; zero when it is not in the support.
-    fn coefficient(&self, py: Python<'_>, place: &PyPlace) -> PyResult<PyObject> {
+    fn coefficient(&self, py: Python<'_>, place: &PyPlace) -> PyResult<Py<PyAny>> {
         integer_to_py(py, &self.inner.coefficient(&place.inner))
     }
 
@@ -566,12 +566,12 @@ impl PyDivisorClass {
     }
 
     /// Mumford `u(X)` on the monicised model, lowest degree first.
-    fn mumford_u(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn mumford_u(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         coeffs_to_py(py, self.inner.mumford_u())
     }
 
     /// Mumford `v(X)` on the monicised model, lowest degree first.
-    fn mumford_v(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn mumford_v(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         coeffs_to_py(py, self.inner.mumford_v())
     }
 
@@ -705,22 +705,22 @@ impl PyFunctionFieldElement {
     }
 
     /// The `y⁰` part of the numerator, lowest degree first.
-    fn numerator_rational_part(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn numerator_rational_part(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         coeffs_to_py(py, self.inner.numerator_rational_part())
     }
 
     /// The `y¹` part of the numerator, lowest degree first.
-    fn numerator_algebraic_part(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn numerator_algebraic_part(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         coeffs_to_py(py, self.inner.numerator_algebraic_part())
     }
 
     /// The denominator, lowest degree first.
-    fn denominator(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn denominator(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         coeffs_to_py(py, self.inner.denominator())
     }
 
     /// The norm `p² − q²·a` of the numerator, down to `ℚ(x)`.
-    fn numerator_norm(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn numerator_norm(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         coeffs_to_py(py, &self.inner.numerator_norm())
     }
 

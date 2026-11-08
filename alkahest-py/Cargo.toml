@@ -31,7 +31,7 @@ cuda = ["alkahest-core/cuda"]
 
 [build-dependencies]
 # Only to re-export PyO3's cfgs (Py_LIMITED_API / Py_3_11) — see build.rs.
-pyo3-build-config = "0.25"
+pyo3-build-config = "0.26"
 
 [dependencies]
 alkahest-core = { path = "../alkahest-core", package = "alkahest-cas" }

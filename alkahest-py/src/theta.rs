@@ -43,7 +43,7 @@ use alkahest_core::experimental::{
 pyo3::create_exception!(alkahest, PyThetaError, crate::PyAlkahestError);
 
 fn th_err(e: ThetaError) -> PyErr {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let exc_type = py.get_type::<PyThetaError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
@@ -99,7 +99,7 @@ fn ball_from_any(obj: &Bound<'_, PyAny>, prec: u32) -> PyResult<ComplexBall> {
 }
 
 /// Hand Python an exact integer of any size.
-fn integer_to_py(py: Python<'_>, i: &rug::Integer) -> PyResult<PyObject> {
+fn integer_to_py(py: Python<'_>, i: &rug::Integer) -> PyResult<Py<PyAny>> {
     crate::bigint::int_to_py(py, i)
 }
 
@@ -248,7 +248,7 @@ impl PyComplexBall {
     /// value that is exactly zero can never satisfy this and should be checked
     /// with ``contains_zero()``.
     #[pyo3(signature = (min_accuracy_bits=53))]
-    fn value(&self, py: Python<'_>, min_accuracy_bits: u32) -> PyResult<PyObject> {
+    fn value(&self, py: Python<'_>, min_accuracy_bits: u32) -> PyResult<Py<PyAny>> {
         let (re, im) = self
             .inner
             .value_if_accurate("value", min_accuracy_bits)
@@ -544,7 +544,7 @@ impl PySiegelReduction {
     }
 
     /// The symplectic matrix, as a list of ``2g`` rows of ``2g`` integers.
-    fn symplectic(&self, py: Python<'_>) -> PyResult<Vec<Vec<PyObject>>> {
+    fn symplectic(&self, py: Python<'_>) -> PyResult<Vec<Vec<Py<PyAny>>>> {
         let n = 2 * self.inner.genus();
         let flat = self.inner.symplectic();
         let mut rows = Vec::with_capacity(n);

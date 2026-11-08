@@ -14,7 +14,7 @@ use alkahest_core::validated::ode::{
 use crate::{PyExpr, PyExprPool};
 
 fn ode_err(e: VerifiedOdeError) -> PyErr {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         if let VerifiedOdeError::Budget(b) = &e {
             let exc_type = py.get_type::<crate::PyBudgetExceededError>();
             return crate::make_structured_err(py, &exc_type, b);
@@ -230,8 +230,8 @@ fn py_verified_ode(
     let inner = &pool_ref.inner;
     // Run on this thread so an active `alkahest.context(budget=...)` (a
     // thread-local stack) is honoured.
-    let result = py
-        .allow_threads(|| core_verified_ode(&rhs_ids, &var_ids, time, &y0v, t_span, inner, &opts));
+    let result =
+        py.detach(|| core_verified_ode(&rhs_ids, &var_ids, time, &y0v, t_span, inner, &opts));
     result
         .map(|inner| PyVerifiedOdeSolution { inner })
         .map_err(ode_err)

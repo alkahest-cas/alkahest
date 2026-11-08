@@ -37,19 +37,19 @@ use crate::numfield::{PyNumberField, PyNumberFieldElement};
 pyo3::create_exception!(alkahest, PyCharacterError, crate::PyAlkahestError);
 
 fn char_err(e: CharacterError) -> PyErr {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let exc_type = py.get_type::<PyCharacterError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
 
 /// A `rug::Integer` as an exact Python `int`, at any size.
-fn big_int(py: Python<'_>, value: &rug::Integer) -> PyResult<PyObject> {
+fn big_int(py: Python<'_>, value: &rug::Integer) -> PyResult<Py<PyAny>> {
     crate::bigint::int_to_py(py, value)
 }
 
 /// A `rug::Rational` as a `fractions.Fraction`, built from two ints.
-fn py_fraction(py: Python<'_>, r: &rug::Rational) -> PyResult<PyObject> {
+fn py_fraction(py: Python<'_>, r: &rug::Rational) -> PyResult<Py<PyAny>> {
     crate::bigint::fraction_to_py(py, r.numer(), r.denom())
 }
 
@@ -90,7 +90,7 @@ impl PyConjugacyClass {
     /// its centraliser. Only the *order* is available here, not the centraliser
     /// as a subgroup.
     #[getter]
-    fn centraliser_order(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn centraliser_order(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         big_int(py, self.inner.centraliser_order())
     }
 
@@ -176,7 +176,7 @@ impl PyConjugacyClasses {
     }
 
     /// Iterate over the classes as :class:`ConjugacyClass`.
-    fn __iter__(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn __iter__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let list = pyo3::types::PyList::empty(py);
         for c in self.inner.classes() {
             list.append(Py::new(py, PyConjugacyClass { inner: c.clone() })?)?;
@@ -192,7 +192,7 @@ impl PyConjugacyClasses {
 
     /// ``|G|``, exactly.
     #[getter]
-    fn group_order(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn group_order(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         big_int(py, self.inner.group_order())
     }
 
@@ -420,7 +420,7 @@ impl PyCharacterTable {
     /// already checked before the table was returned, so this is here for
     /// callers who want to re-check it, or to test a class function of their own
     /// against the irreducibles.
-    fn inner_product(&self, py: Python<'_>, i: usize, j: usize) -> PyResult<PyObject> {
+    fn inner_product(&self, py: Python<'_>, i: usize, j: usize) -> PyResult<Py<PyAny>> {
         let value = self.inner.inner_product(i, j).map_err(char_err)?;
         py_fraction(py, &value)
     }

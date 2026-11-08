@@ -35,14 +35,14 @@ use crate::group::PyPermutationGroup;
 pyo3::create_exception!(alkahest, PyMatGroupError, crate::PyAlkahestError);
 
 fn mg_err(e: MatGroupError) -> PyErr {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let exc_type = py.get_type::<PyMatGroupError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
 
 /// A `rug::Integer` as an exact Python `int`, at any size.
-fn big_int(py: Python<'_>, value: &rug::Integer) -> PyResult<PyObject> {
+fn big_int(py: Python<'_>, value: &rug::Integer) -> PyResult<Py<PyAny>> {
     crate::bigint::int_to_py(py, value)
 }
 
@@ -207,7 +207,7 @@ impl PyMatGroup {
     /// an arbitrary-precision Python ``int``.
     ///
     /// Not a formula: this is computed from the generators.
-    fn order(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn order(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let order = self.inner.order().map_err(mg_err)?;
         big_int(py, &order)
     }
@@ -434,7 +434,7 @@ fn check_order_arguments(family: &'static str, q: u64, degree: usize) -> Result<
 /// `MatGroup.order()` against it, which is what this module's Rust tests do.
 /// `q >= 2` and `n <= MATGROUP_MAX_DEGREE`; see `check_order_arguments`.
 #[pyfunction]
-fn matgroup_gl_order(py: Python<'_>, q: u64, n: usize) -> PyResult<PyObject> {
+fn matgroup_gl_order(py: Python<'_>, q: u64, n: usize) -> PyResult<Py<PyAny>> {
     check_order_arguments("GL", q, n).map_err(mg_err)?;
     big_int(py, &core_gl_order(&rug::Integer::from(q), n))
 }
@@ -443,7 +443,7 @@ fn matgroup_gl_order(py: Python<'_>, q: u64, n: usize) -> PyResult<PyObject> {
 ///
 /// `q >= 2` and `n <= MATGROUP_MAX_DEGREE`; see `check_order_arguments`.
 #[pyfunction]
-fn matgroup_sl_order(py: Python<'_>, q: u64, n: usize) -> PyResult<PyObject> {
+fn matgroup_sl_order(py: Python<'_>, q: u64, n: usize) -> PyResult<Py<PyAny>> {
     check_order_arguments("SL", q, n).map_err(mg_err)?;
     big_int(py, &core_sl_order(&rug::Integer::from(q), n))
 }
@@ -453,7 +453,7 @@ fn matgroup_sl_order(py: Python<'_>, q: u64, n: usize) -> PyResult<PyObject> {
 /// `q >= 2` and `2n <= MATGROUP_MAX_DEGREE` — the bound is on the matrix size,
 /// which is `2n` here, so it matches the degree a `MatGroup` can have.
 #[pyfunction]
-fn matgroup_sp_order(py: Python<'_>, q: u64, n: usize) -> PyResult<PyObject> {
+fn matgroup_sp_order(py: Python<'_>, q: u64, n: usize) -> PyResult<Py<PyAny>> {
     check_order_arguments("Sp", q, n.saturating_mul(2)).map_err(mg_err)?;
     big_int(py, &core_sp_order(&rug::Integer::from(q), n))
 }

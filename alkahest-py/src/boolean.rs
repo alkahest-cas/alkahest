@@ -26,7 +26,7 @@ use crate::{
 };
 
 fn bool_err(e: BooleanError) -> PyErr {
-    Python::with_gil(|py| match &e {
+    Python::attach(|py| match &e {
         BooleanError::Budget(b) => {
             let t = py.get_type::<PyBudgetExceededError>();
             make_structured_err(py, &t, b)
@@ -493,7 +493,7 @@ fn py_minimize_logic(
     form: &str,
     dontcare: Option<PyRef<PyExpr>>,
     exact: Option<bool>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     if expr.downcast::<PyList>().is_ok() || expr.downcast::<PyTuple>().is_ok() {
         let mut es: Vec<PyRef<PyExpr>> = Vec::new();
         for item in expr.try_iter()? {
@@ -549,7 +549,7 @@ fn py_equivalent(
     g: PyRef<PyExpr>,
     method: &str,
     counterexample: bool,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     if !f.pool.is(&g.pool) {
         return Err(cross_pool_err(
             "[E-POOL-001] equivalent(): f and g belong to different ExprPools".into(),
@@ -903,7 +903,7 @@ impl PyBdd {
         &self,
         py: Python<'_>,
         variables: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let sh = lock(&self.shared);
         let nm = sh.mgr.num_vars() as u32;
         let total = sh.mgr.sat_count(self.root, nm);
@@ -979,7 +979,7 @@ impl PyBdd {
     /// >>> f.node_count() < before
     /// True
     #[pyo3(signature = (max_growth=1.2, max_swaps=200_000))]
-    fn reorder(&self, py: Python<'_>, max_growth: f64, max_swaps: usize) -> PyResult<PyObject> {
+    fn reorder(&self, py: Python<'_>, max_growth: f64, max_swaps: usize) -> PyResult<Py<PyAny>> {
         let st = {
             let mut sh = lock(&self.shared);
             sh.mgr
@@ -1038,7 +1038,7 @@ impl PyBdd {
 
     /// One satisfying assignment ``{name: bool}`` (variables left out are
     /// free), or ``None`` if unsatisfiable.
-    fn satisfy_one(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn satisfy_one(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let sh = lock(&self.shared);
         match sh.mgr.any_sat(self.root) {
             None => Ok(py.None()),

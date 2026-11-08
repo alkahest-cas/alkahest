@@ -59,7 +59,7 @@ fn lat(e: LatticeGeometryError) -> PyErr {
     if let LatticeGeometryError::Budget(trip) = e {
         return crate::budget_trip_into_py(trip);
     }
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let exc_type = py.get_type::<PyLatticeGeometryError>();
         let msg = e.to_string();
         let code = e.code();
@@ -118,17 +118,17 @@ fn rows_from_py(obj: &Bound<'_, PyAny>) -> PyResult<Vec<Vec<Rational>>> {
     Ok(out)
 }
 
-fn integer_to_py(py: Python<'_>, i: &Integer) -> PyResult<PyObject> {
+fn integer_to_py(py: Python<'_>, i: &Integer) -> PyResult<Py<PyAny>> {
     crate::bigint::int_to_py(py, i)
 }
 
 /// Exact rational back to Python: an `int` when integral, else a
 /// `fractions.Fraction`. Never a `float`.
-fn rational_to_py(py: Python<'_>, r: &Rational) -> PyResult<PyObject> {
+fn rational_to_py(py: Python<'_>, r: &Rational) -> PyResult<Py<PyAny>> {
     crate::bigint::rational_to_py(py, r)
 }
 
-fn matrix_to_py(py: Python<'_>, m: &[Vec<Rational>]) -> PyResult<Vec<Vec<PyObject>>> {
+fn matrix_to_py(py: Python<'_>, m: &[Vec<Rational>]) -> PyResult<Vec<Vec<Py<PyAny>>>> {
     m.iter()
         .map(|row| row.iter().map(|x| rational_to_py(py, x)).collect())
         .collect()
@@ -151,7 +151,7 @@ pub struct PyLatticeVector {
 #[pymethods]
 impl PyLatticeVector {
     /// Coefficients against the lattice's own basis (or Gram rows).
-    fn coefficients(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn coefficients(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         self.inner
             .coefficients
             .iter()
@@ -160,7 +160,7 @@ impl PyLatticeVector {
     }
 
     /// Ambient coordinates, or `None` for a lattice built from a Gram matrix.
-    fn coordinates(&self, py: Python<'_>) -> PyResult<Option<Vec<PyObject>>> {
+    fn coordinates(&self, py: Python<'_>) -> PyResult<Option<Vec<Py<PyAny>>>> {
         match &self.inner.coordinates {
             None => Ok(None),
             Some(c) => Ok(Some(
@@ -172,7 +172,7 @@ impl PyLatticeVector {
     }
 
     /// The **squared** norm — `⟨v, v⟩`, or `⟨v − t, v − t⟩` for a CVP answer.
-    fn norm(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn norm(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         rational_to_py(py, &self.inner.norm)
     }
 
@@ -298,7 +298,7 @@ impl PyLattice {
     }
 
     /// `det G` — the **squared** covolume, exactly.
-    fn determinant(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn determinant(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         rational_to_py(py, &self.inner.determinant())
     }
 
@@ -308,12 +308,12 @@ impl PyLattice {
     }
 
     /// The Gram matrix, as exact rationals.
-    fn gram_matrix(&self, py: Python<'_>) -> PyResult<Vec<Vec<PyObject>>> {
+    fn gram_matrix(&self, py: Python<'_>) -> PyResult<Vec<Vec<Py<PyAny>>>> {
         matrix_to_py(py, self.inner.gram_matrix())
     }
 
     /// The basis rows, or `None` when the lattice was built from a Gram matrix.
-    fn basis(&self, py: Python<'_>) -> PyResult<Option<Vec<Vec<PyObject>>>> {
+    fn basis(&self, py: Python<'_>) -> PyResult<Option<Vec<Vec<Py<PyAny>>>>> {
         match self.inner.basis() {
             None => Ok(None),
             Some(b) => Ok(Some(matrix_to_py(py, b)?)),
@@ -341,7 +341,7 @@ impl PyLattice {
     /// `kissing_number`, `hermite_invariant` and the densities. Passing a
     /// `budget` always does the work under that budget.
     #[pyo3(signature = (budget=None))]
-    fn minimum(&self, py: Python<'_>, budget: Option<u64>) -> PyResult<PyObject> {
+    fn minimum(&self, py: Python<'_>, budget: Option<u64>) -> PyResult<Py<PyAny>> {
         let m = match budget {
             None => self.inner.minimum().map_err(lat)?,
             Some(b) => self.inner.minimum_with_budget(b).map_err(lat)?,
@@ -388,7 +388,7 @@ impl PyLattice {
         py: Python<'_>,
         max_norm: u64,
         budget: Option<u64>,
-    ) -> PyResult<Vec<PyObject>> {
+    ) -> PyResult<Vec<Py<PyAny>>> {
         self.inner
             .theta_series_with_budget(max_norm, budget_or_default(budget))
             .map_err(lat)?
@@ -423,7 +423,7 @@ impl PyLattice {
 
     /// The centre density as an exact rational, or `None` when it is
     /// irrational — never a rounded stand-in.
-    fn center_density_exact(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+    fn center_density_exact(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         match self.inner.center_density_exact().map_err(lat)? {
             None => Ok(None),
             Some(r) => Ok(Some(rational_to_py(py, &r)?)),

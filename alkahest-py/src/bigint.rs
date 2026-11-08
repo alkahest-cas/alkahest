@@ -69,7 +69,7 @@ pub(crate) fn int_from_py(ob: &Bound<'_, PyAny>) -> PyResult<Integer> {
 }
 
 /// An exact `rug::Integer` as a Python `int`, at any size.
-pub(crate) fn int_to_py(py: Python<'_>, z: &Integer) -> PyResult<PyObject> {
+pub(crate) fn int_to_py(py: Python<'_>, z: &Integer) -> PyResult<Py<PyAny>> {
     if let Some(v) = z.to_i64() {
         return Ok(v.into_py_any(py)?);
     }
@@ -94,7 +94,7 @@ pub(crate) fn fraction_to_py(
     py: Python<'_>,
     numer: &Integer,
     denom: &Integer,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let n = int_to_py(py, numer)?;
     let d = int_to_py(py, denom)?;
     Ok(py
@@ -106,7 +106,7 @@ pub(crate) fn fraction_to_py(
 
 /// An exact rational as a Python `int` when integral, else a
 /// `fractions.Fraction`.
-pub(crate) fn rational_to_py(py: Python<'_>, r: &Rational) -> PyResult<PyObject> {
+pub(crate) fn rational_to_py(py: Python<'_>, r: &Rational) -> PyResult<Py<PyAny>> {
     if *r.denom() == 1 {
         return int_to_py(py, r.numer());
     }
@@ -159,7 +159,7 @@ pub(crate) fn rational_text_of(ob: &Bound<'_, PyAny>) -> PyResult<String> {
 /// A decimal integer string (as returned by core entry points) as a Python
 /// `int`, parsed by GMP rather than by `int(str)` — so it is not subject to
 /// `sys.get_int_max_str_digits()`.
-pub(crate) fn int_from_decimal(py: Python<'_>, decimal: &str) -> PyResult<PyObject> {
+pub(crate) fn int_from_decimal(py: Python<'_>, decimal: &str) -> PyResult<Py<PyAny>> {
     let z = Integer::from(Integer::parse(decimal.trim()).map_err(|_| {
         pyo3::exceptions::PyValueError::new_err(format!("invalid decimal integer: {decimal:.64}"))
     })?);
@@ -171,7 +171,7 @@ pub(crate) fn int_from_decimal(py: Python<'_>, decimal: &str) -> PyResult<PyObje
 /// it on the decimal strings some binding functions return.
 #[pyfunction]
 #[pyo3(name = "_decimal_to_int")]
-fn py_decimal_to_int(py: Python<'_>, s: &str) -> PyResult<PyObject> {
+fn py_decimal_to_int(py: Python<'_>, s: &str) -> PyResult<Py<PyAny>> {
     int_from_decimal(py, s)
 }
 
