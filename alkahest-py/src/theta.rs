@@ -87,7 +87,7 @@ fn ball_from_any(obj: &Bound<'_, PyAny>, prec: u32) -> PyResult<ComplexBall> {
     if let Ok(b) = obj.extract::<PyComplexBall>() {
         return Ok(b.inner);
     }
-    if let Ok(c) = obj.downcast::<PyComplex>() {
+    if let Ok(c) = obj.cast::<PyComplex>() {
         return Ok(ComplexBall::exact_f64(c.real(), c.imag(), prec));
     }
     if let Ok(v) = obj.extract::<f64>() {

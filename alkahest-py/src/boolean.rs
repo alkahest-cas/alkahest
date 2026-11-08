@@ -494,7 +494,7 @@ fn py_minimize_logic(
     dontcare: Option<PyRef<PyExpr>>,
     exact: Option<bool>,
 ) -> PyResult<Py<PyAny>> {
-    if expr.downcast::<PyList>().is_ok() || expr.downcast::<PyTuple>().is_ok() {
+    if expr.cast::<PyList>().is_ok() || expr.cast::<PyTuple>().is_ok() {
         let mut es: Vec<PyRef<PyExpr>> = Vec::new();
         for item in expr.try_iter()? {
             es.push(
@@ -694,7 +694,7 @@ fn parse_auto_reorder(ob: &Bound<'_, PyAny>) -> PyResult<Option<usize>> {
     if ob.is_none() {
         return Ok(None);
     }
-    if let Ok(b) = ob.downcast::<pyo3::types::PyBool>() {
+    if let Ok(b) = ob.cast::<pyo3::types::PyBool>() {
         return Ok(b.is_true().then_some(DEFAULT_AUTO_REORDER));
     }
     let n: usize = ob.extract().map_err(|_| {

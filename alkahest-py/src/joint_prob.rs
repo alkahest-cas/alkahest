@@ -55,10 +55,10 @@ fn find_pool(py: Python<'_>, obs: &[&Bound<'_, PyAny>]) -> Option<Py<PyExprPool>
         if let Ok(m) = ob.extract::<PyRef<PyMatrix>>() {
             return Some(m.pool.clone_ref(py));
         }
-        if let Ok(l) = ob.downcast::<PyList>() {
+        if let Ok(l) = ob.cast::<PyList>() {
             return l.iter().find_map(|x| go(py, &x));
         }
-        if let Ok(t) = ob.downcast::<PyTuple>() {
+        if let Ok(t) = ob.cast::<PyTuple>() {
             return t.iter().find_map(|x| go(py, &x));
         }
         None

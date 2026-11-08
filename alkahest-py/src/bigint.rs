@@ -63,7 +63,7 @@ pub(crate) fn int_from_py(ob: &Bound<'_, PyAny>) -> PyResult<Integer> {
     let bits: u64 = magnitude.call_method0("bit_length")?.extract()?;
     let nbytes = bits.div_ceil(8);
     let raw = magnitude.call_method1("to_bytes", (nbytes, "little"))?;
-    let bytes = raw.downcast::<PyBytes>()?.as_bytes();
+    let bytes = raw.cast::<PyBytes>()?.as_bytes();
     let z = Integer::from_digits(bytes, Order::Lsf);
     Ok(if negative { -z } else { z })
 }

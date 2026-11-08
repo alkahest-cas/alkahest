@@ -110,7 +110,7 @@ fn to_rational(ob: &Bound<'_, PyAny>, what: &str) -> PyResult<Rational> {
     if let Some(r) = crate::bigint::rational_from_py(ob)? {
         return Ok(r);
     }
-    if let Ok(s) = ob.downcast::<PyString>() {
+    if let Ok(s) = ob.cast::<PyString>() {
         let text = s.to_string_lossy();
         return Rational::from_str_radix(text.trim(), 10).map_err(|_| inexact(what, ob));
     }
@@ -167,7 +167,7 @@ fn bound_side(ob: &Bound<'_, PyAny>, what: &str, upper: bool) -> PyResult<Option
     if ob.is_none() {
         return Ok(None);
     }
-    if let Ok(f) = ob.downcast::<PyFloat>() {
+    if let Ok(f) = ob.cast::<PyFloat>() {
         let v = f.value();
         if v.is_infinite() && (v > 0.0) == upper {
             return Ok(None);
@@ -183,7 +183,7 @@ fn is_pair_of_scalars(ob: &Bound<'_, PyAny>) -> bool {
     };
     t.len() == 2
         && t.iter()
-            .all(|x| x.is_none() || x.try_iter().is_err() || x.downcast::<PyString>().is_ok())
+            .all(|x| x.is_none() || x.try_iter().is_err() || x.cast::<PyString>().is_ok())
 }
 
 fn to_bounds(ob: Option<&Bound<'_, PyAny>>, n: usize) -> PyResult<Vec<VarBound>> {

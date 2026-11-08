@@ -243,6 +243,7 @@ use alkahest_core::number_theory::{
 // so a limited-API 3.9/3.10 build loses the bulk-copy fast path and nothing else.
 #[cfg(any(not(Py_LIMITED_API), Py_3_11))]
 use pyo3::buffer::PyBuffer;
+use pyo3::conversion::FromPyObjectOwned;
 use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyComplex, PyDict, PyFloat, PyInt, PyList, PyTuple};
@@ -390,8 +391,8 @@ fn checked_prec(prec: u32) -> PyResult<u32> {
 /// in-range-but-invalid values right next to them, and a caller should not
 /// have to catch two exception types for one mistake.  A non-integer is
 /// still the `TypeError` PyO3 raises.
-fn int_arg<'py, T: FromPyObject<'py>>(ob: &Bound<'py, PyAny>) -> PyResult<Option<T>> {
-    match ob.extract::<T>() {
+fn int_arg<'py, T: FromPyObjectOwned<'py>>(ob: &Bound<'py, PyAny>) -> PyResult<Option<T>> {
+    match ob.extract::<T>().map_err(Into::<PyErr>::into) {
         Ok(v) => Ok(Some(v)),
         Err(e) if e.is_instance_of::<PyOverflowError>(ob.py()) => Ok(None),
         Err(e) => Err(e),
@@ -400,7 +401,7 @@ fn int_arg<'py, T: FromPyObject<'py>>(ob: &Bound<'py, PyAny>) -> PyResult<Option
 
 /// [`int_arg`] for a count or limit: out of range is a `ValueError` naming
 /// the argument.
-fn nonneg_arg<'py, T: FromPyObject<'py>>(ob: &Bound<'py, PyAny>, name: &str) -> PyResult<T> {
+fn nonneg_arg<'py, T: FromPyObjectOwned<'py>>(ob: &Bound<'py, PyAny>, name: &str) -> PyResult<T> {
     int_arg(ob)?.ok_or_else(|| {
         pyo3::exceptions::PyValueError::new_err(format!(
             "{name} must be a non-negative integer that fits in {} bits (got {ob})",
@@ -414,9 +415,11 @@ fn nonneg_arg<'py, T: FromPyObject<'py>>(ob: &Bound<'py, PyAny>, name: &str) -> 
 /// PyO3's `OverflowError`.
 struct NonNeg<T>(T);
 
-impl<'py, T: FromPyObject<'py>> FromPyObject<'py> for NonNeg<T> {
-    fn extract_bound(ob: &Bound<'py, PyAny>) -> PyResult<Self> {
-        nonneg_arg(ob, "argument").map(NonNeg)
+impl<'py, T: FromPyObjectOwned<'py>> FromPyObject<'_, 'py> for NonNeg<T> {
+    type Error = PyErr;
+
+    fn extract(ob: pyo3::Borrowed<'_, 'py, PyAny>) -> PyResult<Self> {
+        nonneg_arg(&ob, "argument").map(NonNeg)
     }
 }
 
@@ -742,7 +745,7 @@ fn operand<'py>(ob: &Bound<'py, PyAny>) -> Option<Operand<'py>> {
     if let Ok(e) = ob.extract::<PyRef<PyExpr>>() {
         return Some(Operand::Expr(e.clone()));
     }
-    if let Ok(dr) = ob.downcast::<PyDerivedResult>() {
+    if let Ok(dr) = ob.cast::<PyDerivedResult>() {
         return Some(Operand::Expr(dr.borrow().value.clone()));
     }
     if is_python_number(ob) {
@@ -1187,7 +1190,7 @@ fn coerce_substituent(
     if let Ok(e) = ob.extract::<PyRef<PyExpr>>() {
         return expr_into_pool(py, &e, pool_py)?.ok_or_else(pool_mismatch_err);
     }
-    if let Ok(dr) = ob.downcast::<PyDerivedResult>() {
+    if let Ok(dr) = ob.cast::<PyDerivedResult>() {
         let value = dr.borrow().value.clone();
         return expr_into_pool(py, &value, pool_py)?.ok_or_else(pool_mismatch_err);
     }
@@ -4334,7 +4337,7 @@ impl PyDerivedResult {
     }
 
     fn __eq__(&self, other: &Bound<'_, PyAny>, _py: Python<'_>) -> PyResult<bool> {
-        if let Ok(other_dr) = other.downcast::<PyDerivedResult>() {
+        if let Ok(other_dr) = other.cast::<PyDerivedResult>() {
             return Ok(expr_ids_equal(&self.value, &other_dr.borrow().value));
         }
         if let Ok(other_expr) = other.extract::<PyRef<PyExpr>>() {
@@ -6279,7 +6282,7 @@ fn rational_from_py(ob: &Bound<'_, PyAny>) -> PyResult<Rational> {
     exact_binding(ob)
 }
 fn parse_gauss_point(ob: &Bound<'_, PyAny>) -> PyResult<GaussRat> {
-    if let Ok(t) = ob.downcast::<PyTuple>() {
+    if let Ok(t) = ob.cast::<PyTuple>() {
         if t.len() == 2 {
             return Ok(GaussRat::from_re_im(
                 rational_from_py(&t.get_item(0)?)?,
@@ -6287,7 +6290,7 @@ fn parse_gauss_point(ob: &Bound<'_, PyAny>) -> PyResult<GaussRat> {
             ));
         }
     }
-    if let Ok(c) = ob.downcast::<PyComplex>() {
+    if let Ok(c) = ob.cast::<PyComplex>() {
         let (re, im) = (c.real(), c.imag());
         if re.fract() == 0.0 && im.fract() == 0.0 {
             return Ok(GaussRat::from_re_im(
@@ -6319,10 +6322,10 @@ fn try_complex_binding(ob: &Bound<'_, PyAny>) -> Option<ComplexF64> {
 /// Deliberately excludes reals/`Fraction` (those extract as `f64`) so auto
 /// mode still prefers exact rational / f64 backends.
 fn try_strict_complex_binding(ob: &Bound<'_, PyAny>) -> Option<ComplexF64> {
-    if let Ok(c) = ob.downcast::<PyComplex>() {
+    if let Ok(c) = ob.cast::<PyComplex>() {
         return Some(ComplexF64::new(c.real(), c.imag()));
     }
-    if let Ok(t) = ob.downcast::<PyTuple>() {
+    if let Ok(t) = ob.cast::<PyTuple>() {
         if t.len() == 2 {
             let re: f64 = t.get_item(0).ok()?.extract().ok()?;
             let im: f64 = t.get_item(1).ok()?.extract().ok()?;
@@ -7859,7 +7862,7 @@ fn py_rsolve(
             if b.is_none() {
                 None
             } else {
-                let d = b.downcast::<PyDict>().map_err(|_| {
+                let d = b.cast::<PyDict>().map_err(|_| {
                     PyTypeError::new_err("initials must be dict[int, Expr] or None")
                 })?;
                 let mut m = BTreeMap::new();
@@ -10619,7 +10622,7 @@ fn py_rewrite_piecewise(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyExpr>
 #[pyfunction]
 #[pyo3(name = "to_lean")]
 fn py_to_lean(py: Python<'_>, arg: &Bound<'_, PyAny>) -> PyResult<String> {
-    if let Ok(derived_bound) = arg.downcast::<PyDerivedResult>() {
+    if let Ok(derived_bound) = arg.cast::<PyDerivedResult>() {
         let d = derived_bound.borrow();
         // `expr_to_lean` recurses once per level with no cap.
         guard_expr_depth(py, &d.value)?;
@@ -10635,10 +10638,10 @@ fn py_to_lean(py: Python<'_>, arg: &Bound<'_, PyAny>) -> PyResult<String> {
             .unwrap_or_else(|| "withheld".to_string());
         let mut blocking: Vec<String> = Vec::new();
         if let Ok(Some(steps)) = status.get_item("blocking_steps") {
-            if let Ok(list) = steps.downcast::<PyList>() {
+            if let Ok(list) = steps.cast::<PyList>() {
                 for step in list.iter() {
                     if let Ok(Some(rule)) = step
-                        .downcast::<PyDict>()
+                        .cast::<PyDict>()
                         .map(|s| s.get_item("rule").ok().flatten())
                     {
                         if let Ok(rule) = rule.extract::<String>() {
@@ -10671,7 +10674,7 @@ fn py_to_lean(py: Python<'_>, arg: &Bound<'_, PyAny>) -> PyResult<String> {
             &remediation,
         ));
     }
-    if let Ok(expr_bound) = arg.downcast::<PyExpr>() {
+    if let Ok(expr_bound) = arg.cast::<PyExpr>() {
         let expr = expr_bound.borrow();
         let pool_py = expr.pool.clone_ref(py);
         let derived = {
@@ -11109,7 +11112,7 @@ impl PyMatrix {
         for entry in rows.iter().flatten() {
             let e = if let Ok(e) = entry.extract::<PyRef<PyExpr>>() {
                 e.clone()
-            } else if let Ok(dr) = entry.downcast::<PyDerivedResult>() {
+            } else if let Ok(dr) = entry.cast::<PyDerivedResult>() {
                 dr.borrow().value.clone()
             } else {
                 continue;
@@ -11302,7 +11305,7 @@ impl PyMatrix {
     /// scaled by it. There is no elementwise (Hadamard) product on ``*``; use
     /// :meth:`hadamard` for that.
     fn __mul__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if let Ok(rhs) = other.downcast::<PyMatrix>() {
+        if let Ok(rhs) = other.cast::<PyMatrix>() {
             return Ok(self.matmul_impl(py, &rhs.borrow())?.into_py_any(py)?);
         }
         match self.coerce_matrix_scalar(other, py)? {
@@ -11902,7 +11905,7 @@ impl PyMatrix {
             }
             return Ok(Some(e.id));
         }
-        if let Ok(dr) = ob.downcast::<PyDerivedResult>() {
+        if let Ok(dr) = ob.cast::<PyDerivedResult>() {
             let dr = dr.borrow();
             if !dr.value.pool.is(&self.pool) {
                 return Err(pool_mismatch_err());
@@ -13195,7 +13198,7 @@ fn py_eval_expr(
     expr: &Bound<'_, PyAny>,
     bindings: &Bound<'_, PyDict>,
 ) -> PyResult<f64> {
-    let (expr_id, pool_py) = if let Ok(dr) = expr.downcast::<PyDerivedResult>() {
+    let (expr_id, pool_py) = if let Ok(dr) = expr.cast::<PyDerivedResult>() {
         let dr = dr.borrow();
         (dr.value.id, dr.value.pool.clone_ref(py))
     } else {
@@ -13482,7 +13485,7 @@ fn array_view(obj: &Bound<'_, PyAny>, writable: bool, what: &str) -> PyResult<Ar
         .getattr("__array_interface__")
         .map_err(|_| bad("it has no __array_interface__"))?;
     let d = iface
-        .downcast::<PyDict>()
+        .cast::<PyDict>()
         .map_err(|_| bad("__array_interface__ is not a dict"))?;
     let get = |key: &str| d.get_item(key).ok().flatten();
     let typestr: String = get("typestr")
@@ -17872,10 +17875,10 @@ impl PyGroebnerBasis {
     /// Accept a `GbPoly` as-is, or convert an `Expr` using this basis's
     /// variable ordering.
     fn coerce_to_gbpoly(&self, py: Python<'_>, p: &Bound<'_, PyAny>) -> PyResult<GbPoly> {
-        if let Ok(gbp) = p.downcast::<PyGbPoly>() {
+        if let Ok(gbp) = p.cast::<PyGbPoly>() {
             return Ok(gbp.borrow().inner.clone());
         }
-        if let Ok(expr) = p.downcast::<PyExpr>() {
+        if let Ok(expr) = p.cast::<PyExpr>() {
             let pool_py = self.pool.as_ref().ok_or_else(|| {
                 pyo3::exceptions::PyValueError::new_err(
                     "GroebnerBasis has no variable context; use GroebnerBasis.compute() to build one that accepts Expr, or pass a GbPoly from expr_to_gbpoly()",
@@ -19132,10 +19135,10 @@ impl PyParamGroebnerBasis {
     /// Accept a `ParametricGbPoly` as-is, or convert an `Expr` against this
     /// basis's variable and parameter lists.
     fn coerce(&self, py: Python<'_>, p: &Bound<'_, PyAny>) -> PyResult<ParamGbPoly> {
-        if let Ok(pg) = p.downcast::<PyParamGbPoly>() {
+        if let Ok(pg) = p.cast::<PyParamGbPoly>() {
             return Ok(pg.borrow().inner.clone());
         }
-        if let Ok(expr) = p.downcast::<PyExpr>() {
+        if let Ok(expr) = p.cast::<PyExpr>() {
             same_pool!("ParametricGroebnerBasis"; self.pool, expr.borrow());
             let pool = self.pool.borrow(py);
             // Over `Q(params)` a `den**-1` factor in the parameters is an
@@ -21549,7 +21552,7 @@ fn py_modular_rational_reconstruction(
 
 /// A Python `int` (converted by bytes) or a decimal integer string.
 fn int_or_decimal_arg(ob: &Bound<'_, PyAny>, what: &str) -> PyResult<Integer> {
-    if let Ok(s) = ob.downcast::<pyo3::types::PyString>() {
+    if let Ok(s) = ob.cast::<pyo3::types::PyString>() {
         let s = s.to_cow()?;
         return Integer::parse(s.as_ref())
             .map(Integer::from)
@@ -21631,7 +21634,7 @@ fn py_guess_relation(
     use rug::Float;
     let precision_bits = checked_prec(precision_bits)?;
     let list = constants
-        .downcast::<PyList>()
+        .cast::<PyList>()
         .map_err(|_| PyTypeError::new_err("constants must be a list"))?;
     let n = list.len();
     let mut xs: Vec<Float> = Vec::with_capacity(n);
@@ -22836,7 +22839,7 @@ fn pool_from_items(py: Python<'_>, items: &[Bound<'_, PyAny>]) -> Option<Py<PyEx
         if let Ok(e) = item.extract::<PyRef<PyExpr>>() {
             return Some(e.pool.clone_ref(py));
         }
-        if let Ok(dr) = item.downcast::<PyDerivedResult>() {
+        if let Ok(dr) = item.cast::<PyDerivedResult>() {
             return Some(dr.borrow().value.pool.clone_ref(py));
         }
     }

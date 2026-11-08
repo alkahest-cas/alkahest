@@ -35,7 +35,7 @@ pub(crate) fn pool_of(py: Python<'_>, obs: &[&Bound<'_, PyAny>]) -> Option<Py<Py
         if let Ok(e) = ob.extract::<PyRef<'_, PyExpr>>() {
             return Some(e.pool.clone_ref(py));
         }
-        if let Ok(dr) = ob.downcast::<PyDerivedResult>() {
+        if let Ok(dr) = ob.cast::<PyDerivedResult>() {
             return Some(dr.borrow().value.pool.clone_ref(py));
         }
     }
