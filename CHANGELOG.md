@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- `import alkahest` failed with a dyld error (`Library not loaded: /opt/homebrew/opt/flint/lib/libflint.24.0.dylib`) on any Apple Silicon Mac without exactly those Homebrew libraries. Every macOS wheel on PyPI, 3.12.0 and 3.13.1 included, linked Homebrew's FLINT, GMP and MPFR by absolute path and shipped no copies; the release smoke test passed only because the runner had them, and the `macosx_11_0` tag was untrue of those libraries, whose bottles need macOS 15. The wheels now bundle FLINT, GMP and MPFR under `alkahest/.dylibs` (via `delocate`), built from source for macOS 11 with a generic `armv8-a` target, so `pip install alkahest` needs no Homebrew on macOS 11 or later. `scripts/check_wheel_macos.py` fails a wheel with any dependency outside the wheel and the system, or any library newer than its tag, and the macOS smoke test now moves the build-time libraries away first.
 - Release and CI jobs failed outright when a download hit a 504 or received an HTML error page in place of a tarball (2026-11-08, a GitHub incident). Every source and tool download now retries, tarballs keep their sha256 checks and count a mismatch as a failed attempt, GMP, MPFR and FLINT fall back to a mirror, and the manylinux builds install maturin (pinned to 1.16.0) from PyPI rather than from a GitHub release.
 
 - `integrate` no longer runs past its wall budget, or out of memory, in the by-parts route's

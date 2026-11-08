@@ -54,7 +54,7 @@ Probe your environment after install: `alkahest.capabilities()["features"]` and 
 
 | Artifact | Where | OS / arch (CI) | Python | Cranelift JIT | LLVM JIT | `parallel` |
 |----------|-------|----------------|--------|---------------|----------|------------|
-| **Default** (`pip install alkahest`) | [PyPI](https://pypi.org/project/alkahest/) | Linux manylinux_2_28 x86_64 and aarch64; macOS arm64; Windows x86_64 | 3.9–3.14 | yes | no | yes |
+| **Default** (`pip install alkahest`) | [PyPI](https://pypi.org/project/alkahest/) | Linux manylinux_2_28 x86_64 and aarch64; macOS 11+ arm64 (Apple Silicon); Windows x86_64 | 3.9–3.14 | yes | no | yes |
 | **Source** (sdist) | [PyPI](https://pypi.org/project/alkahest/), used where no wheel matches | CI builds it on Linux x86_64; anywhere with Rust and FLINT ≥ 3.3 | 3.9–3.14 | no | no | no |
 | **`+jit`** (`X.Y.Z+jit`) | GitHub Releases only | Linux x86_64 | 3.9–3.14 | no | yes | yes |
 | **`+full`** (`X.Y.Z+full`) | GitHub Releases only | Linux x86_64 | 3.9–3.14 | yes | yes | yes |
@@ -68,7 +68,7 @@ Probe your environment after install: `alkahest.capabilities()["features"]` and 
 
 **No wheel for your platform** (Intel macOS, musl Linux, …): `pip install alkahest` falls back to the source distribution and compiles it, which needs a Rust toolchain and FLINT ≥ 3.3 with GMP and MPFR (see [building from source](#from-source)). Without FLINT the build stops and prints how to install it. It builds the default Cargo features, `egraph` and `groebner`: no JIT and no `parallel`, unless you build from a checkout with `--features`.
 
-**macOS / Windows:** default PyPI wheels include Cranelift JIT and `parallel`. **`+jit`** and **`+full`** are **not** built in CI (LLVM / MSYS2 constraints); use [building from source](#from-source) with `--features jit` on those platforms if you need the LLVM backend.
+**macOS / Windows:** default PyPI wheels include Cranelift JIT and `parallel`, and bundle FLINT, GMP and MPFR, so neither Homebrew nor MSYS2 is needed to install them. **`+jit`** and **`+full`** are **not** built in CI (LLVM / MSYS2 constraints); use [building from source](#from-source) with `--features jit` on those platforms if you need the LLVM backend.
 
 **Linux LLVM wheels** vendor LLVM and related `.so` files under `site-packages/alkahest.libs/`. If `import alkahest` fails with a missing `libffi-*.so` or `libLLVM-*.so`, prepend that directory to `LD_LIBRARY_PATH`.
 

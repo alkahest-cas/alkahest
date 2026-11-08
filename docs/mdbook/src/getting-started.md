@@ -25,7 +25,8 @@ Diophantine and homotopy work out of the box), the pure-Rust **Cranelift JIT** (
 `alkahest.jit_is_available()` is `True` without a system LLVM), and the Rayon-backed
 **multi-core paths**. They do **not** include the LLVM JIT (`llvm_jit`) or `cuda`.
 
-Wheels exist for Linux (manylinux_2_28) x86_64 and aarch64, macOS arm64 and Windows
+Wheels exist for Linux (manylinux_2_28) x86_64 and aarch64, macOS 11+ arm64 (no Homebrew
+needed; FLINT, GMP and MPFR are bundled) and Windows
 x86_64. Anywhere else, such as Intel macOS or musl Linux, `pip install alkahest` falls
 back to the source distribution and compiles it. That needs a Rust toolchain and
 FLINT ≥ 3.3 with GMP and MPFR; without FLINT the build stops and prints how to install

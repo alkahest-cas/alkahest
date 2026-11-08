@@ -69,16 +69,13 @@ tar xzf flint-3.6.0.tar.gz
 ( cd flint-3.6.0 \
   && ./configure --prefix="$prefix" --with-gmp="$prefix" --with-mpfr="$prefix" --disable-static \
        --host="$triple" --build="$triple" \
-  && grep -E '^CFLAGS *=' Makefile > "$work/flint-cflags" \
+  && grep -E '^_CFLAGS *:?=' Makefile > "$work/flint-cflags" \
   && cat "$work/flint-cflags" \
   && make -j"$jobs" && make install )
 
-case "$(cat "$work/flint-cflags")" in
-  *-march=armv8.[1-9]*)
-    echo "FLINT was configured for a specific Apple chip; the triple did not take" >&2
-    exit 1
-    ;;
-esac
+# `_CFLAGS`: FLINT's `CFLAGS` is a make expression built from it.
+grep -q -e '-march=armv8-a' "$work/flint-cflags" \
+  || { echo "FLINT was not configured for generic armv8-a; the triple did not take" >&2; exit 1; }
 
 # One GMP: FLINT must resolve the libgmp just built.
 libflint=$(cd "$prefix/lib" && ls libflint.[0-9]*.dylib | head -n 1)
