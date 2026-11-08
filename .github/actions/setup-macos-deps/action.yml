@@ -1,0 +1,33 @@
+name: Set up macOS wheel dependencies
+description: >
+  Build (or restore from cache) GMP 6.3, MPFR 4.2 and FLINT 3.6 for the macOS
+  arm64 wheels, with MACOSX_DEPLOYMENT_TARGET applied, then export the variables
+  build.rs and gmp-mpfr-sys read. MACOSX_DEPLOYMENT_TARGET must already be set.
+  See .github/scripts/build-macos-deps.sh for why this is not Homebrew.
+
+runs:
+  using: composite
+  steps:
+    - name: Restore cached prefix
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/macos-deps
+        # The script holds every version, checksum and flag.
+        key: macos-deps-${{ runner.arch }}-${{ env.MACOSX_DEPLOYMENT_TARGET }}-${{ hashFiles('.github/scripts/build-macos-deps.sh') }}
+
+    - name: Build GMP, MPFR and FLINT
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/../../scripts/build-macos-deps.sh" "$HOME/macos-deps"
+
+    - name: Export paths
+      shell: bash
+      run: |
+        prefix="$HOME/macos-deps"
+        echo "FLINT_LIB_DIR=$prefix/lib"         >> "$GITHUB_ENV"
+        echo "FLINT_INCLUDE_DIR=$prefix/include" >> "$GITHUB_ENV"
+        # gmp-mpfr-sys's system-gmp probe is a bare `cc probe.c -lgmp`, which
+        # honours only these two.
+        echo "CPATH=$prefix/include"             >> "$GITHUB_ENV"
+        echo "LIBRARY_PATH=$prefix/lib"          >> "$GITHUB_ENV"
