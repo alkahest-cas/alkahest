@@ -183,8 +183,8 @@ pub use transform::{
 
 // Phase 24 — Horner form
 pub use horner::{
-    emit_expr_c, emit_expr_c_vec, emit_horner_c, eval_horner_f64, eval_horner_f64_batch, horner,
-    EmitCError,
+    c_param_names, emit_expr_c, emit_expr_c_vec, emit_horner_c, eval_horner_f64,
+    eval_horner_f64_batch, horner, EmitCError,
 };
 pub use simplify::rulesets::{
     log_exp_rules, log_exp_rules_safe, trig_normal_form_rules, trig_rules,

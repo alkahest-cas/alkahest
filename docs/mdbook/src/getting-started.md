@@ -229,7 +229,16 @@ from fractions import Fraction
 expr = x**2 + 2 * x + 1
 print(expr)  # x^2 + 2*x + 1
 alt = (-1)**x * 2**x + Fraction(1, 3)
+half_x = Fraction(1, 2) ** x   # base exactly 1/2
+half_x == pool.rational(1, 2) ** x   # True
 ```
+
+A `Fraction` base is exact on every supported Python. (On Python 3.9–3.11,
+`Fraction.__pow__` converts itself to a `float` before Alkahest sees it;
+Alkahest recovers the `Fraction` only when the running frame proves that is
+where the float came from.) A base you write as a float, `0.5 ** x`, stays a
+float. The spelling that is exact everywhere, without relying on that, is
+`pool.rational(1, 2) ** x`.
 
 Math functions accept expressions and Python numbers:
 

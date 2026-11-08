@@ -1270,6 +1270,14 @@ impl PyDomain {
     fn __repr__(&self) -> String {
         format!("Domain.{self:?}")
     }
+
+    /// Pickle support: a domain unpickles as the same member, by name.
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let helper = py
+            .import_bound("alkahest._pickle")?
+            .getattr("_unpickle_domain")?;
+        Ok((helper, (format!("{self:?}"),)).into_py(py))
+    }
 }
 
 impl PyDomain {
@@ -2682,6 +2690,49 @@ struct PyExpr {
     pool: Py<PyExprPool>,
 }
 
+/// The exact `Fraction` behind a float base of `Fraction ** Expr`, if that is
+/// provably where the float came from.
+///
+/// Before Python 3.12, `Fraction.__pow__(a, b)` ends in `return float(a) ** b`
+/// for any `b` it does not recognise, so `Fraction(1, 3) ** x` reached
+/// `Expr.__rpow__` as the float `0.333…` and the power had a float base.
+/// (3.12+ returns `NotImplemented` and `__rpow__` receives the `Fraction`.)
+/// A float alone cannot say it came from a `Fraction`, but the frame that is
+/// running can: the base is replaced only when the innermost Python frame is
+/// `fractions.Fraction.__pow__` itself, its `b` is this very expression, its
+/// `a` is a `Fraction`, and `float(a)` is bit-for-bit the float received.
+/// Anything else — a float the caller wrote, a subclass that overrides
+/// `__pow__`, an interpreter without `sys._getframe` — keeps the float.
+fn fraction_pow_base<'py>(
+    slf: &Bound<'py, PyExpr>,
+    base: &Bound<'py, PyAny>,
+) -> Option<Bound<'py, PyAny>> {
+    let py = slf.py();
+    if py.version_info() >= (3, 12) || !base.is_exact_instance_of::<pyo3::types::PyFloat>() {
+        return None;
+    }
+    let found = (|| -> PyResult<Option<Bound<'py, PyAny>>> {
+        let fraction = py.import_bound("fractions")?.getattr("Fraction")?;
+        let pow_code = fraction.getattr("__pow__")?.getattr("__code__")?;
+        let frame = py.import_bound("sys")?.getattr("_getframe")?.call1((0,))?;
+        if !frame.getattr("f_code")?.is(&pow_code) {
+            return Ok(None);
+        }
+        let locals = frame.getattr("f_locals")?;
+        if !locals.get_item("b")?.is(slf) {
+            return Ok(None);
+        }
+        let a = locals.get_item("a")?;
+        if !a.is_instance(&fraction)? {
+            return Ok(None);
+        }
+        let as_float: f64 = a.call_method0("__float__")?.extract()?;
+        let received: f64 = base.extract()?;
+        Ok((as_float.to_bits() == received.to_bits()).then_some(a))
+    })();
+    found.ok().flatten()
+}
+
 /// Shared body of `Expr.node()` / `Expr._node_exact()`.
 fn expr_node_impl(this: &PyExpr, py: Python<'_>, exact: bool) -> PyResult<PyObject> {
     let data = {
@@ -2991,9 +3042,10 @@ impl PyExpr {
     ///
     /// The base is coerced exactly, as every other reflected operator does:
     /// ``2**x`` is the integer ``2`` raised to ``x``, and ``0.5**x`` keeps
-    /// its float base.
+    /// its float base. ``Fraction(1, 2)**x`` has the exact base ``1/2`` on
+    /// every Python version (see `fraction_pow_base` for 3.9–3.11).
     fn __rpow__(
-        &self,
+        slf: &Bound<'_, Self>,
         base: &Bound<'_, PyAny>,
         modulo: Option<PyObject>,
         py: Python<'_>,
@@ -3003,7 +3055,9 @@ impl PyExpr {
                 "pow() with a modulus is not supported for Expr",
             ));
         }
-        self.binary_op(base, py, |p, a, b| Ok(p.pow(b, a)))
+        let exact = fraction_pow_base(slf, base);
+        let base = exact.as_ref().unwrap_or(base);
+        slf.borrow().binary_op(base, py, |p, a, b| Ok(p.pow(b, a)))
     }
 
     fn pow_expr(&self, exp: &PyExpr, py: Python<'_>) -> PyResult<PyExpr> {
@@ -3124,6 +3178,21 @@ impl PySeries {
     #[getter]
     fn expr(&self) -> PyExpr {
         self.expr.clone()
+    }
+
+    /// Pickle support: the expansion (with its `O(·)` term) as an `Expr`,
+    /// which pickles in the pool scheme of `alkahest._pickle`.
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let helper = py
+            .import_bound("alkahest._pickle")?
+            .getattr("_unpickle_series")?;
+        Ok((helper, (self.expr.clone().into_py(py),)).into_py(py))
+    }
+
+    /// Rebuild a series pickled by `__reduce__`. Private.
+    #[staticmethod]
+    fn _from_pickle(expr: PyExpr) -> PySeries {
+        PySeries { expr }
     }
 
     /// The expansion with its trailing `O(·)` term dropped — SymPy's
@@ -14125,6 +14194,104 @@ impl PyArbBall {
     fn __str__(&self) -> String {
         self.__repr__()
     }
+
+    /// Pickle support: the midpoint and radius as their exact binary values
+    /// (`mantissa · 2^exp` at each float's own precision), never decimals, so
+    /// a round trip is bit-for-bit at any precision.
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let helper = py
+            .import_bound("alkahest._pickle")?
+            .getattr("_unpickle_arb_ball")?;
+        let args = (
+            self.inner.prec,
+            float_pickle_state(py, &self.inner.mid)?,
+            float_pickle_state(py, &self.inner.rad)?,
+        );
+        Ok((helper, args).into_py(py))
+    }
+
+    /// Rebuild a ball pickled by `__reduce__`. Private.
+    #[staticmethod]
+    fn _from_pickle(
+        prec: u32,
+        mid: &Bound<'_, PyAny>,
+        rad: &Bound<'_, PyAny>,
+    ) -> PyResult<PyArbBall> {
+        let prec = checked_prec(prec)?;
+        let mid = float_from_pickle_state(mid)?;
+        let rad = float_from_pickle_state(rad)?;
+        if rad.is_sign_negative() && !rad.is_zero() {
+            return Err(PyValueError::new_err(
+                "pickled ArbBall has a negative radius",
+            ));
+        }
+        Ok(PyArbBall {
+            inner: CoreArbBall { mid, rad, prec },
+        })
+    }
+}
+
+/// `(precision, tag, mantissa, exponent)` for one MPFR float: the value is
+/// exactly `mantissa · 2^exponent` when `tag == "f"`; `"+0"`, `"-0"`,
+/// `"+inf"`, `"-inf"` and `"nan"` carry no mantissa.
+fn float_pickle_state(py: Python<'_>, f: &rug::Float) -> PyResult<PyObject> {
+    let prec = f.prec();
+    let zero = 0i64.into_py(py);
+    let state = if f.is_nan() {
+        (prec, "nan", zero, 0i64).into_py(py)
+    } else if f.is_infinite() {
+        let tag = if f.is_sign_negative() { "-inf" } else { "+inf" };
+        (prec, tag, zero, 0i64).into_py(py)
+    } else if f.is_zero() {
+        let tag = if f.is_sign_negative() { "-0" } else { "+0" };
+        (prec, tag, zero, 0i64).into_py(py)
+    } else {
+        let (m, e) = f
+            .to_integer_exp()
+            .ok_or_else(|| PyValueError::new_err("ball endpoint is not finite"))?;
+        (prec, "f", bigint::int_to_py(py, &m)?, i64::from(e)).into_py(py)
+    };
+    Ok(state)
+}
+
+/// Inverse of [`float_pickle_state`]; validates instead of rounding, so a
+/// payload that does not describe a float exactly is refused.
+fn float_from_pickle_state(state: &Bound<'_, PyAny>) -> PyResult<rug::Float> {
+    let (prec, tag, mant, exp): (u32, String, Bound<'_, PyAny>, i64) = state.extract()?;
+    if prec < rug::float::prec_min() || prec > rug::float::prec_max() {
+        return Err(PyValueError::new_err(format!(
+            "pickled float has an invalid precision {prec}"
+        )));
+    }
+    let special = |v: rug::float::Special| rug::Float::with_val(prec, v);
+    Ok(match tag.as_str() {
+        "nan" => special(rug::float::Special::Nan),
+        "+inf" => special(rug::float::Special::Infinity),
+        "-inf" => special(rug::float::Special::NegInfinity),
+        "+0" => special(rug::float::Special::Zero),
+        "-0" => special(rug::float::Special::NegZero),
+        "f" => {
+            let m = bigint::int_from_py(&mant)?;
+            if m == 0 || u64::from(m.significant_bits()) > u64::from(prec) {
+                return Err(PyValueError::new_err(
+                    "pickled float mantissa does not fit its precision",
+                ));
+            }
+            let e = i32::try_from(exp)
+                .map_err(|_| PyValueError::new_err("pickled float exponent out of range"))?;
+            let mut f = rug::Float::with_val(prec, m);
+            f <<= e;
+            if !f.is_finite() || f.is_zero() {
+                return Err(PyValueError::new_err("pickled float exponent out of range"));
+            }
+            f
+        }
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "pickled float has an unknown tag {other:?}"
+            )))
+        }
+    })
 }
 
 fn float_to_dec_string(f: &rug::Float) -> String {
@@ -14227,6 +14394,49 @@ impl PyEvaluationResult {
     #[getter]
     fn is_enclosure(&self) -> bool {
         self.enclosure.is_some()
+    }
+
+    /// Pickle support: every field, the enclosure as an exact `ArbBall`.
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let helper = py
+            .import_bound("alkahest._pickle")?
+            .getattr("_unpickle_evaluation_result")?;
+        let args = (
+            self.value.clone_ref(py),
+            self.status.clone(),
+            self.backend.clone(),
+            self.requested_mode.clone(),
+            self.requested_precision_bits,
+            self.achieved_precision_bits,
+            self.enclosure.as_ref().map(|b| b.clone_ref(py)),
+            self.reason.clone(),
+        );
+        Ok((helper, args).into_py(py))
+    }
+
+    /// Rebuild a result pickled by `__reduce__`. Private.
+    #[staticmethod]
+    #[allow(clippy::too_many_arguments)]
+    fn _from_pickle(
+        value: PyObject,
+        status: String,
+        backend: String,
+        requested_mode: String,
+        requested_precision_bits: Option<u32>,
+        achieved_precision_bits: Option<u32>,
+        enclosure: Option<Py<PyArbBall>>,
+        reason: Option<String>,
+    ) -> PyEvaluationResult {
+        PyEvaluationResult {
+            value,
+            status,
+            backend,
+            requested_mode,
+            requested_precision_bits,
+            achieved_precision_bits,
+            enclosure,
+            reason,
+        }
     }
 }
 
@@ -14768,7 +14978,10 @@ fn emit_c_error_to_py(e: alkahest_core::EmitCError) -> PyErr {
 ///     as a one-element list.
 /// var_names : str | list[str], optional
 ///     C parameter names for each variable.  If omitted, defaults to the
-///     symbolic name of each variable.  Must have the same length as *vars*.
+///     symbolic name of each variable, made a valid C identifier that
+///     collides with no ``<math.h>`` name or name the emitted code uses
+///     (``out`` becomes ``out_1``; a variable called ``pi`` is ``pi``).
+///     Must have the same length as *vars*.
 /// fn_name : str, optional
 ///     The C function name (default ``"f"``).
 ///
@@ -14833,14 +15046,9 @@ fn py_emit_c_expr(
             ));
         }
     } else {
-        // Default: use the symbolic name of each variable.
-        var_ids
-            .iter()
-            .map(|&id| match pool_guard.inner.get(id) {
-                alkahest_core::kernel::ExprData::Symbol { name, .. } => name,
-                _ => "v".to_string(),
-            })
-            .collect()
+        // Default: each variable's display name as a collision-free C
+        // identifier (a user `pi` is `pi`, not `pi` + the kernel's marker).
+        alkahest_core::horner::c_param_names(&var_ids, fn_name, &pool_guard.inner)
     };
 
     if var_ids.len() != c_names.len() {
@@ -14878,7 +15086,8 @@ fn py_emit_c_expr(
 /// vars : Expr | list[Expr]
 ///     The symbolic variables (in argument order).
 /// var_names : str | list[str], optional
-///     C parameter names for each variable.  Defaults to the symbolic names.
+///     C parameter names for each variable.  Defaults to the symbolic names,
+///     made valid, collision-free C identifiers as for :func:`emit_c_expr`.
 /// fn_name : str, optional
 ///     The C function name (default ``"eval_vec"``).
 ///
@@ -14949,13 +15158,7 @@ fn py_emit_c_vec(
             ));
         }
     } else {
-        var_ids
-            .iter()
-            .map(|&id| match pool_guard.inner.get(id) {
-                alkahest_core::kernel::ExprData::Symbol { name, .. } => name,
-                _ => "v".to_string(),
-            })
-            .collect()
+        alkahest_core::horner::c_param_names(&var_ids, fn_name, &pool_guard.inner)
     };
 
     if var_ids.len() != c_names.len() {
@@ -15388,6 +15591,32 @@ impl PyRootInterval {
 
     fn __str__(&self) -> String {
         self.__repr__()
+    }
+
+    /// Pickle support: the two endpoints as exact rationals.
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let helper = py
+            .import_bound("alkahest._pickle")?
+            .getattr("_unpickle_root_interval")?;
+        let lo = bigint::fraction_to_py(py, self.inner.lo.numer(), self.inner.lo.denom())?;
+        let hi = bigint::fraction_to_py(py, self.inner.hi.numer(), self.inner.hi.denom())?;
+        Ok((helper, (lo, hi)).into_py(py))
+    }
+
+    /// Rebuild an interval pickled by `__reduce__`. Private.
+    #[staticmethod]
+    fn _from_pickle(lo: &Bound<'_, PyAny>, hi: &Bound<'_, PyAny>) -> PyResult<PyRootInterval> {
+        let read = |v: &Bound<'_, PyAny>| -> PyResult<rug::Rational> {
+            bigint::rational_from_py(v)?
+                .ok_or_else(|| PyValueError::new_err("pickled RootInterval endpoint is not exact"))
+        };
+        let (lo, hi) = (read(lo)?, read(hi)?);
+        if lo > hi {
+            return Err(PyValueError::new_err("pickled RootInterval has lo > hi"));
+        }
+        Ok(PyRootInterval {
+            inner: CoreRootInterval::new(lo, hi),
+        })
     }
 }
 
@@ -17813,6 +18042,96 @@ impl PyGroebnerBasis {
     #[getter]
     fn proof_status(&self) -> &'static str {
         self.inner.proof_status().as_str()
+    }
+
+    /// Pickle support: exact generators, order, proof status, and the
+    /// variables (as `Expr`s, in the pool scheme of `alkahest._pickle`).
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let mut gens = Vec::with_capacity(self.inner.generators().len());
+        for g in self.inner.generators() {
+            let mut terms = Vec::with_capacity(g.terms.len());
+            for (exps, c) in &g.terms {
+                let coeff = bigint::fraction_to_py(py, c.numer(), c.denom())?;
+                terms.push((exps.clone(), coeff));
+            }
+            gens.push((g.n_vars, terms));
+        }
+        let vars: Vec<PyExpr> = match &self.pool {
+            Some(pool) => self
+                .var_ids
+                .iter()
+                .map(|&id| PyExpr {
+                    id,
+                    pool: pool.clone_ref(py),
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        let helper = py
+            .import_bound("alkahest._pickle")?
+            .getattr("_unpickle_groebner")?;
+        let args = (
+            gens,
+            self.inner.order().as_str(),
+            self.inner.proof_status().as_str(),
+            self.pool.as_ref().map(|p| p.clone_ref(py)),
+            vars,
+        );
+        Ok((helper, args).into_py(py))
+    }
+
+    /// Rebuild a basis pickled by `__reduce__`. Private.
+    #[staticmethod]
+    #[pyo3(signature = (gens, order, proof_status, pool, vars))]
+    #[allow(clippy::type_complexity)]
+    fn _from_pickle(
+        gens: Vec<(usize, Vec<(Vec<u32>, Bound<'_, PyAny>)>)>,
+        order: &str,
+        proof_status: &str,
+        pool: Option<Py<PyExprPool>>,
+        vars: Vec<PyExpr>,
+    ) -> PyResult<PyGroebnerBasis> {
+        let order = MonomialOrder::from_str(order)
+            .ok_or_else(|| PyValueError::new_err("pickled GroebnerBasis has an unknown order"))?;
+        let status = match proof_status {
+            "proved" => alkahest_core::GroebnerProofStatus::Proved,
+            "probabilistic" => alkahest_core::GroebnerProofStatus::Probabilistic,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "pickled GroebnerBasis has an unknown proof status {other:?}"
+                )))
+            }
+        };
+        let same_pool = match &pool {
+            Some(p) => vars.iter().all(|v| v.pool.is(p)),
+            None => vars.is_empty(),
+        };
+        if !same_pool {
+            return Err(PyValueError::new_err(
+                "pickled GroebnerBasis variables are not in its pool",
+            ));
+        }
+        let mut generators = Vec::with_capacity(gens.len());
+        for (n_vars, terms) in gens {
+            let mut map = std::collections::BTreeMap::new();
+            for (exps, coeff) in terms {
+                let c = bigint::rational_from_py(&coeff)?.ok_or_else(|| {
+                    PyValueError::new_err("pickled GroebnerBasis coefficient is not exact")
+                })?;
+                if exps.len() != n_vars || c == 0 {
+                    return Err(PyValueError::new_err(
+                        "pickled GroebnerBasis has a malformed term",
+                    ));
+                }
+                map.insert(exps, c);
+            }
+            generators.push(GbPoly { terms: map, n_vars });
+        }
+        Ok(PyGroebnerBasis {
+            inner: GroebnerBasis::from_parts(generators, order, status),
+            pool,
+            var_ids: vars.iter().map(|v| v.id).collect(),
+        })
     }
 
     /// The elimination ideal `I ∩ k[remaining vars]`, as a `GroebnerBasis`.

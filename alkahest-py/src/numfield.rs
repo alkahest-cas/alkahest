@@ -153,6 +153,20 @@ impl PyNumberField {
             .map_err(nf_err)
     }
 
+    /// Pickle support: the defining polynomial, generator name and cyclotomic
+    /// order. The field is rebuilt through its public constructors.
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let helper = py
+            .import_bound("alkahest._pickle")?
+            .getattr("_unpickle_number_field")?;
+        let args = (
+            self.defining_polynomial(py)?,
+            self.inner.variable().to_string(),
+            self.inner.cyclotomic_order(),
+        );
+        Ok((helper, args).into_py(py))
+    }
+
     /// The degree ``[K : Q]``.
     #[getter]
     fn degree(&self) -> usize {
@@ -274,6 +288,23 @@ pub struct PyNumberFieldElement {
 
 #[pymethods]
 impl PyNumberFieldElement {
+    /// Pickle support: the field and the exact power-basis coordinates.
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let helper = py
+            .import_bound("alkahest._pickle")?
+            .getattr("_unpickle_number_field_element")?;
+        let field = PyNumberField {
+            inner: self.inner.field().clone(),
+        };
+        let coeffs: Vec<PyObject> = self
+            .inner
+            .coefficients()
+            .iter()
+            .map(|c| py_fraction(py, c))
+            .collect::<PyResult<_>>()?;
+        Ok((helper, (field.into_py(py), coeffs)).into_py(py))
+    }
+
     /// The field this element lives in.
     #[getter]
     fn field(&self) -> PyNumberField {

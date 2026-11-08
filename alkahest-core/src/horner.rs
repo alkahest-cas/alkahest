@@ -494,6 +494,117 @@ pub fn emit_expr_c_vec(
 }
 
 // ---------------------------------------------------------------------------
+// Default C parameter names
+// ---------------------------------------------------------------------------
+
+/// Names the emitted C declares or calls itself, so a parameter must not take
+/// them: C keywords, `<math.h>` functions and macros, the output pointer, and
+/// the locals of the complex-fallback evaluator (which shares the parameter
+/// list).  Prefixes `_`, `ak_`, `AK_`, `alkahest_` and `M_` are reserved
+/// wholesale (temporaries `_t0…`, helpers, `M_PI`, …).
+#[rustfmt::skip]
+const C_RESERVED: &[&str] = &[
+    // C99 / C11 keywords and common macros
+    "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
+    "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long", "register",
+    "restrict", "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef",
+    "union", "unsigned", "void", "volatile", "while", "bool", "true", "false", "complex",
+    "imaginary", "I", "NULL", "main", "errno", "assert", "alignas", "alignof", "noreturn",
+    "static_assert", "thread_local",
+    // <math.h> functions
+    "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "asinh",
+    "acosh", "atanh", "exp", "exp2", "expm1", "log", "log2", "log10", "log1p", "logb", "pow",
+    "sqrt", "cbrt", "hypot", "fabs", "floor", "ceil", "round", "trunc", "fmod", "fmin", "fmax",
+    "fdim", "fma", "copysign", "erf", "erfc", "tgamma", "lgamma", "isnan", "isinf", "isfinite",
+    "isnormal", "signbit", "fpclassify", "nan", "ldexp", "frexp", "modf", "remainder",
+    "remquo", "nearbyint", "rint", "lrint", "llrint", "lround", "llround", "scalbn", "scalbln",
+    "ilogb", "nextafter", "nexttoward", "j0", "j1", "jn", "y0", "y1", "yn", "gamma",
+    // <math.h> macros
+    "NAN", "INFINITY", "HUGE_VAL", "HUGE_VALF", "HUGE_VALL",
+    // names in the emitted functions themselves
+    "out", "in", "v", "ok", "sc", "ops", "args", "consts", "roots",
+];
+
+/// A name in one of the reserved *families* (by prefix); a suffix cannot
+/// leave a family, so these are fixed with a `v_` prefix instead.
+fn c_name_has_reserved_prefix(name: &str, fn_name: &str) -> bool {
+    name.is_empty()
+        || name.starts_with(|c: char| c.is_ascii_digit() || c == '_')
+        || name.starts_with("ak_")
+        || name.starts_with("AK_")
+        || name.starts_with("alkahest_")
+        || name.starts_with("M_")
+        || name.starts_with(&format!("{fn_name}__"))
+}
+
+/// Default C parameter names for `vars`: each symbol's *display* name (see
+/// [`crate::kernel::symbol_display_name`] — a user variable called `pi` is
+/// the parameter `pi`, without the kernel's invisible marker), made into a
+/// valid C identifier that collides with nothing the emitted function or
+/// `<math.h>` declares, nor with another parameter.
+///
+/// Characters outside `[A-Za-z0-9_]` become `_`. A name that is empty, starts
+/// with a digit or `_`, or is in a reserved family (`M_PI`, `ak_…`,
+/// `alkahest_…`, `{fn_name}__…`) gets a `v_` prefix; one that equals a
+/// reserved name (`sin`, `out`, `double`, `fn_name`, …) or an earlier
+/// parameter gets a suffix `_1`, `_2`, … until it is free. A non-symbol entry
+/// is named `v`, which the same rule turns into `v_1`, ….
+///
+/// ```
+/// use alkahest_cas::kernel::{Domain, ExprPool, USER_SYMBOL_MARKER};
+/// use alkahest_cas::horner::c_param_names;
+///
+/// let pool = ExprPool::new();
+/// let pi = pool.symbol(format!("pi{USER_SYMBOL_MARKER}"), Domain::Real);
+/// let out = pool.symbol("out", Domain::Real);
+/// let a = pool.symbol("α", Domain::Real);
+/// let m = pool.symbol("M_PI", Domain::Real);
+/// let names = c_param_names(&[pi, out, a, m], "f", &pool);
+/// assert_eq!(names, ["pi", "out_1", "v__", "v_M_PI"]);
+/// ```
+pub fn c_param_names(vars: &[ExprId], fn_name: &str, pool: &ExprPool) -> Vec<String> {
+    use crate::kernel::ExprData;
+    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut names = Vec::with_capacity(vars.len());
+    for &v in vars {
+        let raw = match pool.get(v) {
+            ExprData::Symbol { name, .. } => crate::kernel::symbol_display_name(&name).to_string(),
+            _ => "v".to_string(),
+        };
+        let mut base: String = raw
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        // Terminates: after a few prefixes the name starts `v_v_…`, which no
+        // reserved prefix (none contains `v_v`; `{fn_name}__` contains `__`)
+        // can match.
+        while c_name_has_reserved_prefix(&base, fn_name) {
+            base = format!("v_{base}");
+        }
+        // Exact-name clashes (keywords, `<math.h>`, `out`, the function, an
+        // earlier parameter) take a numeric suffix, which keeps the prefix.
+        let mut candidate = base.clone();
+        let mut k = 1usize;
+        while C_RESERVED.contains(&candidate.as_str())
+            || candidate == fn_name
+            || used.contains(&candidate)
+        {
+            candidate = format!("{base}_{k}");
+            k += 1;
+        }
+        used.insert(candidate.clone());
+        names.push(candidate);
+    }
+    names
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
