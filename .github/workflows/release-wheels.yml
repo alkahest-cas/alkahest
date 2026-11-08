@@ -439,11 +439,11 @@ jobs:
       fail-fast: false
       matrix:
         # macos-15 = arm64 (Apple Silicon); macos-14 images are retired on
-        # 2026-11-02 (actions/runner-images#13518). Intel (x86_64) wheels are no longer
-        # produced: macos-13 Intel runners were deprecated by GitHub, and the
-        # macos-15 arm64 runner does not ship x86_64 Homebrew, making
-        # cross-compilation of libflint impractical. Intel Mac users can install
-        # from the sdist or run the arm64 wheel under Rosetta on ARM hardware.
+        # 2026-11-02 (actions/runner-images#13518). Intel (x86_64) wheels are not
+        # built: macos-13 is gone, and although macos-15-intel exists, a macOS
+        # wheel carries Homebrew's library paths until it is delocated, and
+        # Homebrew's Intel FLINT is not checked for CPU portability. Intel Mac
+        # users install from the sdist, with FLINT from Homebrew.
         # A pr_smoke call builds Windows/py3.12 only: its link step is where a
         # missing symbol fails loudest (Linux defers it to import time).
         os: ${{ fromJSON(inputs.pr_smoke && '["windows-2022"]' || '["macos-15", "windows-2022"]') }}
@@ -502,6 +502,9 @@ jobs:
         run: rustup target add x86_64-pc-windows-gnu
 
       - name: Install maturin
+        # bash on Windows too: PowerShell would read $MATURIN_VERSION as an
+        # unset PowerShell variable and ask pip for `maturin==`.
+        shell: bash
         run: pip install "maturin==$MATURIN_VERSION"
 
       # Feature set must stay identical to build-linux's: this is the same
