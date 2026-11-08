@@ -257,13 +257,13 @@ the initial value before it is returned, and the domain is a side condition:
 ```python
 import alkahest as ak
 
-pool = ak.ExprPool()
-n, k = pool.symbol("n"), pool.symbol("k")
-zero = pool.integer(0)
+p2 = ak.ExprPool()
+m, j = p2.symbol("m"), p2.symbol("j")
+zero = p2.integer(0)
 
-s = ak.sum_definite(ak.binomial(n, k), k, zero, n)          # 2^n
-s2 = ak.sum_definite(ak.binomial(n, k) ** 2, k, zero, n)    # C(2n, n), as Γ-ratios
-s.steps[0]["rule"]                                          # 'zeilberger_first_order_recurrence'
+s = ak.sum_definite(ak.binomial(m, j), j, zero, m)          # 2^m
+s2 = ak.sum_definite(ak.binomial(m, j) ** 2, j, zero, m)    # gamma(1 + 2*m)/gamma(1 + m)^2
+s.steps[-1]["rule"]                                         # 'zeilberger_first_order_recurrence'
 ```
 
 A nonzero boundary term is solved too (`Σ C(n,k)/(k+1) = (2^{n+1} − 1)/(n + 1)`).

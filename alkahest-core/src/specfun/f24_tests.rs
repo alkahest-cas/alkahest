@@ -191,10 +191,10 @@ fn zeta_deriv_node_and_ladder() {
 #[test]
 fn zeta_deriv_values_match_mpmath() {
     let cases: [(f64, f64, f64); 4] = [
-        (2.0, 2.0, 1.989280234298901023420858687421516381494),
-        (3.0, 0.5, -96.00330924531907009738976722069545930251),
-        (2.0, -1.0, -0.2502044241096003892910937926994701218594),
-        (5.0, 3.0, -1.875627915071535970571352501817506570574),
+        (2.0, 2.0, 1.989_280_234_298_901),
+        (3.0, 0.5, -96.003_309_245_319_07),
+        (2.0, -1.0, -0.250_204_424_109_600_4),
+        (5.0, 3.0, -1.875_627_915_071_536),
     ];
     for (n, s, want) in cases {
         let got = eval_f64(Kernel::ZetaDeriv, &[n, s])
@@ -215,8 +215,8 @@ fn zeta_deriv_values_match_mpmath() {
     }
     // Complex s, through the complex evaluator.
     let (re, im) = super::numeric::eval_c64(Kernel::ZetaDeriv, &[(2.0, 0.0), (0.25, 3.0)]).unwrap();
-    assert!((re - 0.02315848467702988887640112418393396428821).abs() < 1e-15);
-    assert!((im - 0.0418261057082330419479026788564079132848).abs() < 1e-15);
+    assert!((re - 0.023_158_484_677_029_89).abs() < 1e-15);
+    assert!((im - 0.041_826_105_708_233_044).abs() < 1e-15);
     // A non-integer or out-of-range order, and the pole, have no value.
     assert!(eval_f64(Kernel::ZetaDeriv, &[1.5, 2.0]).is_none());
     assert!(eval_f64(Kernel::ZetaDeriv, &[-1.0, 2.0]).is_none());
