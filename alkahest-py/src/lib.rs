@@ -489,9 +489,9 @@ fn number_into_pool(pool: &ExprPool, ob: &Bound<'_, PyAny>) -> PyResult<Option<E
     // NumPy integer scalars and anything else that is an integer by protocol.
     // The test is made on the *type*, so a `Fraction` or `Decimal` instance
     // doesn't pay for calling `__index__` and discarding the `TypeError`.
-    // Not `pyo3::ffi::PyIndex_Check`: pyo3-ffi 0.21 binds it to the PyPy
-    // symbol `PyPyIndex_Check`, so a CPython wheel built with it fails to
-    // import on Linux (undefined symbol) and fails to link on Windows.
+    // Not `pyo3::ffi::PyIndex_Check`: pyo3-ffi 0.21 bound it to the PyPy
+    // symbol `PyPyIndex_Check`, so a CPython wheel built with it failed to
+    // import on Linux (undefined symbol) and failed to link on Windows.
     if ob.get_type().hasattr("__index__")? {
         if let Ok(index) = ob.call_method0("__index__") {
             return Ok(Some(integer_into_pool(pool, &index)?));
@@ -1839,7 +1839,7 @@ where
 /// Run `f`, turning a Rust panic inside it into a coded `AlkahestError`
 /// (`E-INTERNAL-001`) instead of `pyo3_runtime.PanicException`.
 ///
-/// PyO3 0.21 has no global panic hook, and a `PanicException` derives from
+/// PyO3 has no global panic hook, and a `PanicException` derives from
 /// `BaseException`, so `except Exception` (and `except ak.AlkahestError`) in a
 /// caller's loop does not catch it.  A panic is always a bug in alkahest, never
 /// a property of the input; this boundary keeps it catchable and says so.
