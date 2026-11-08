@@ -1078,3 +1078,280 @@ def test_property_emitted_script_is_accepted_by_the_solver(spec):
         assert getattr(refusal, "code", "") in {"E-SMT-003", "E-BUDGET-001"}, refusal
         return
     assert "(error" not in result.raw_output.split(result.status)[0]
+
+
+# ---------------------------------------------------------------------------
+# Named constants: a constant must never reach the solver as a free variable
+# ---------------------------------------------------------------------------
+
+
+def _unrepresentable_constants(pool):
+    """Every kernel constant with no exact SMT-LIB term, or no real value."""
+    return {
+        "pi": pool.pi(),
+        "EulerGamma": pool.euler_gamma(),
+        "Catalan": pool.catalan(),
+        "Glaisher": pool.glaisher(),
+        "StieltjesGamma1": ak.stieltjes_constant(pool, 1),
+        "StieltjesGamma30": ak.stieltjes_constant(pool, 30),
+        "oo": pool.pos_infinity(),
+    }
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["pi", "EulerGamma", "Catalan", "Glaisher", "StieltjesGamma1", "StieltjesGamma30", "oo"],
+)
+def test_constants_with_no_exact_term_are_refused_not_declared(pool, name):
+    constant = _unrepresentable_constants(pool)[name]
+    x = pool.symbol("x")
+    for formula in (
+        pool.gt(constant, pool.integer(100)),
+        pool.lt(constant + x, pool.integer(0)),
+        ak.And(pool.gt(x, pool.integer(0)), pool.gt(x * constant, pool.integer(1))),
+    ):
+        with pytest.raises(ak.SmtError) as refusal:
+            ak.to_smtlib(formula)
+        assert refusal.value.code == "E-SMT-002"
+
+        support = smt.supported(formula)
+        assert not support
+        assert not support.exportable
+        assert support.reason == "outside_fragment"
+        assert support.script is None
+        assert support.error is not None
+        assert support.error.code == "E-SMT-002"
+        # There is no SMT route, so `supported` must not recommend one.
+        assert support.recommendation == "prefer_in_tree"
+
+
+def test_constant_under_a_quantifier_is_refused(pool):
+    x = pool.symbol("x")
+    with pytest.raises(ak.SmtError) as refusal:
+        ak.to_smtlib(ak.Forall(x, pool.gt(x + pool.pi(), x)))
+    assert refusal.value.code == "E-SMT-002"
+
+
+@pytest.mark.parametrize("constructor", [ak.exp, ak.log, ak.sin, ak.cos, ak.tan, ak.gamma, ak.erf])
+def test_transcendental_heads_are_refused(pool, constructor):
+    x = pool.symbol("x")
+    with pytest.raises(ak.SmtError) as refusal:
+        ak.to_smtlib(pool.gt(constructor(x), pool.integer(100)))
+    assert refusal.value.code == "E-SMT-002"
+
+
+def test_e_and_i_are_refused(pool):
+    for constant in (pool.E(), ak.parse("I", pool=pool)):
+        with pytest.raises(ak.SmtError) as refusal:
+            ak.to_smtlib(pool.gt(constant, pool.integer(1)))
+        assert refusal.value.code == "E-SMT-002"
+
+
+def test_a_user_variable_named_pi_is_still_exported_as_a_variable(pool):
+    user_pi = pool.symbol("pi")
+    assert "(declare-fun pi () Real)" in ak.to_smtlib(pool.gt(user_pi, pool.integer(4)))
+
+
+def test_a_formula_with_both_user_pi_and_the_constant_is_refused(pool):
+    with pytest.raises(ak.SmtError) as refusal:
+        ak.to_smtlib(pool.gt(pool.symbol("pi") + pool.pi(), pool.integer(4)))
+    assert refusal.value.code == "E-SMT-002"
+
+
+def test_golden_ratio_is_defined_not_free(pool):
+    script = ak.to_smtlib(pool.gt(pool.golden_ratio(), pool.integer(1)))
+    assert "(set-logic QF_NRA)" in script
+    assert "(declare-fun GoldenRatio () Real)" in script
+    assert "(assert (= (* GoldenRatio GoldenRatio) (+ GoldenRatio 1)))" in script
+    assert "(assert (> GoldenRatio 0))" in script
+    assert "(assert (> GoldenRatio 1))" in script
+
+
+def test_golden_ratio_mixed_int_real_coerces_its_definition(pool):
+    n = pool.symbol("n", "integer")
+    script = ak.to_smtlib(pool.gt(pool.golden_ratio(), n))
+    assert "(set-logic QF_NIRA)" in script
+    assert "(+ GoldenRatio (to_real 1))" in script
+    assert "(> GoldenRatio (to_real 0))" in script
+
+
+def test_golden_ratio_needs_a_nonlinear_logic(pool):
+    with pytest.raises(ak.SmtError) as refusal:
+        ak.to_smtlib(pool.gt(pool.golden_ratio(), pool.integer(1)), "QF_LRA")
+    assert refusal.value.code == "E-SMT-002"
+
+
+def test_golden_ratio_cannot_be_a_binder(pool):
+    phi = pool.golden_ratio()
+    with pytest.raises(ak.SmtError) as refusal:
+        ak.to_smtlib(ak.Forall(phi, pool.gt(phi, pool.integer(0))))
+    assert refusal.value.code == "E-SMT-002"
+
+
+def test_a_user_variable_named_golden_ratio_is_not_constrained(pool):
+    script = ak.to_smtlib(pool.lt(pool.symbol("GoldenRatio"), pool.integer(0)))
+    assert "(declare-fun GoldenRatio () Real)" in script
+    assert "(* GoldenRatio GoldenRatio)" not in script
+
+
+def test_supported_agrees_on_golden_ratio(pool):
+    real = smt.supported(pool.gt(pool.golden_ratio(), pool.integer(1)))
+    assert real.exportable
+    assert real.logic == "QF_NRA"
+    assert real.recommendation == "prefer_in_tree"
+    assert real.reason == ("ok" if has_solver else "no_solver")
+
+    mixed = smt.supported(pool.gt(pool.golden_ratio(), pool.symbol("n", "integer")))
+    assert mixed.logic == "QF_NIRA"
+    assert mixed.recommendation == "smt"
+
+
+# The arithmetic the model check depends on, against an independent oracle.
+_RATIONALS = st.fractions(min_value=-1000, max_value=1000, max_denominator=1000)
+
+
+def _as_mpf(number):
+    import mpmath as mp
+
+    if isinstance(number, Fraction):
+        return mp.mpf(number.numerator) / number.denominator
+    return _as_mpf(number.a) + _as_mpf(number.b) * mp.phi
+
+
+@given(a=_RATIONALS, b=_RATIONALS, c=_RATIONALS, d=_RATIONALS)
+def test_golden_arithmetic_matches_mpmath(a, b, c, d):
+    import mpmath as mp
+
+    mp.mp.dps = 60
+    left, right = smt._GoldenNumber(a, b), smt._GoldenNumber(c, d)
+    tolerance = mp.mpf(10) ** -40
+    assert abs(_as_mpf(left + right) - (_as_mpf(left) + _as_mpf(right))) < tolerance
+    assert abs(_as_mpf(left - right) - (_as_mpf(left) - _as_mpf(right))) < tolerance
+    assert abs(_as_mpf(left * right) - (_as_mpf(left) * _as_mpf(right))) < tolerance
+    if right != 0:
+        assert abs(_as_mpf(left / right) - (_as_mpf(left) / _as_mpf(right))) < tolerance
+    assert (left < right) == (_as_mpf(left) < _as_mpf(right))
+    assert (left > right) == (_as_mpf(left) > _as_mpf(right))
+
+
+def test_golden_number_identity_and_sign():
+    phi = smt._PHI
+    assert phi * phi == phi + 1
+    assert Fraction(8, 5) < phi < Fraction(13, 8)
+    assert 1 / phi == phi - 1
+    assert abs(1 - phi) == phi - 1
+
+
+def test_a_formula_with_both_user_golden_ratio_and_the_constant_is_refused(pool):
+    formula = pool.gt(pool.symbol("GoldenRatio") + pool.golden_ratio(), pool.integer(4))
+    with pytest.raises(ak.SmtError) as refusal:
+        ak.to_smtlib(formula)
+    assert refusal.value.code == "E-SMT-002"
+
+
+def test_evaluating_the_original_formula_covers_every_emitted_shape(pool):
+    x = pool.symbol("x")
+    phi = pool.golden_ratio()
+    one, two = pool.integer(1), pool.integer(2)
+    model = {"x": Fraction(2)}
+    true_cases = [
+        ak.And(pool.gt(phi, one), pool.lt(phi, two)),
+        ak.Or(pool.gt(phi, two), pool.lt(phi, two)),
+        ak.Not(pool.gt(phi, two)),
+        pool.pred_ne(phi, two),
+        pool.le(phi * x, pool.rational(13, 4)),
+        pool.ge(phi * x, pool.rational(16, 5)),
+        pool.pred_eq(phi**-1, phi - one),
+        pool.pred_eq(phi**2, phi + one),
+        pool.pred_eq((x - two) ** 0, one),
+        pool.pred_eq(ak.piecewise([(pool.gt(phi, two), x)], one), one),
+        pool.pred_eq(ak.piecewise([(pool.lt(phi, two), x)], one), two),
+    ]
+    for formula in true_cases:
+        assert smt._eval_over_golden(formula, model) is True, formula
+    for formula in (pool.gt(phi, two), pool.pred_eq(phi, pool.rational(13, 8))):
+        assert smt._eval_over_golden(formula, model) is False, formula
+    # A pole is unevaluable, not false.
+    with pytest.raises(smt._ScriptCheckFailure):
+        smt._eval_over_golden(pool.gt((x - two + phi - phi) ** -1, one), model)
+
+
+def test_a_model_is_judged_at_the_true_golden_ratio_whatever_the_solver_said(pool):
+    """Exactly what the fake solver output would need to get past the check."""
+    formula = pool.gt(pool.golden_ratio(), pool.integer(2))
+    script = ak.to_smtlib(formula)
+    with pytest.raises(ak.SmtError) as refusal:
+        smt._verify_model(formula, script, {}, "a broken solver")
+    assert refusal.value.code == "E-SMT-004"
+
+
+@requires_solver
+@pytest.mark.parametrize("bound", [3, 4, 100])
+def test_solve_refuses_pi_rather_than_answering_about_a_variable(pool, bound):
+    # `pi > 4` must not be sat, and `pi > 3` must not be a false unsat.
+    with pytest.raises(ak.SmtError) as refusal:
+        smt.solve(pool.gt(pool.pi(), pool.integer(bound)), budget=BUDGET)
+    assert refusal.value.code == "E-SMT-002"
+
+
+@requires_solver
+@pytest.mark.parametrize(
+    ("build", "expected"),
+    [
+        (lambda p, phi: p.pred_eq(phi * phi, phi + p.integer(1)), "sat"),
+        (lambda p, phi: p.pred_ne(phi * phi, phi + p.integer(1)), "unsat"),
+        (lambda p, phi: p.gt(phi, p.integer(1)), "sat"),
+        (lambda p, phi: p.gt(phi, p.rational(13, 8)), "unsat"),
+        (lambda p, phi: p.lt(phi, p.rational(13, 8)), "sat"),
+        (lambda p, phi: p.gt(phi, p.rational(8, 5)), "sat"),
+        (lambda p, phi: p.lt(phi, p.rational(8, 5)), "unsat"),
+        (lambda p, phi: p.gt(phi, p.integer(2)), "unsat"),
+        (lambda p, phi: p.lt(phi, p.integer(0)), "unsat"),
+        (lambda p, phi: p.pred_eq(phi**-1, phi - p.integer(1)), "sat"),
+    ],
+)
+def test_golden_ratio_decides_identities(pool, build, expected):
+    result = smt.solve(build(pool, pool.golden_ratio()), budget=BUDGET)
+    assert result.status == expected
+    assert result.model == {}
+    assert "GoldenRatio" not in result.sorts
+    if expected == "sat":
+        assert result.verification["status"] == "exactly_verified"
+        assert result.machine_checked
+
+
+@requires_solver
+def test_golden_ratio_with_a_variable_returns_a_checked_rational_witness(pool):
+    import mpmath as mp
+
+    mp.mp.dps = 40
+    x = pool.symbol("x")
+    phi = pool.golden_ratio()
+    result = smt.solve(
+        ak.And(pool.gt(x, phi), pool.lt(x, pool.integer(2))),
+        budget=BUDGET,
+    )
+    assert result.status == "sat"
+    assert result.verification["status"] == "exactly_verified"
+    assert set(result.model) == {"x"}
+    value = result.model["x"]
+    assert isinstance(value, Fraction)
+    assert mp.phi < mp.mpf(value.numerator) / value.denominator < 2
+    assert result.sorts == {"x": "Real"}
+
+
+@requires_solver
+def test_a_variable_forced_to_the_golden_ratio_has_no_rational_witness(pool):
+    x = pool.symbol("x")
+    with pytest.raises(ak.SmtError) as refusal:
+        smt.solve(pool.pred_eq(x, pool.golden_ratio()), budget=BUDGET)
+    assert refusal.value.code == "E-SMT-003"
+
+
+@requires_solver
+def test_user_variable_named_pi_is_free_and_checked(pool):
+    # The case #555 made work: a variable, so `pi > 4` is genuinely satisfiable.
+    result = smt.solve(pool.gt(pool.symbol("pi"), pool.integer(4)), budget=BUDGET)
+    assert result.status == "sat"
+    assert result.model["pi"] > 4
+    assert result.verification["status"] == "exactly_verified"

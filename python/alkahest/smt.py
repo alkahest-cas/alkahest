@@ -424,18 +424,30 @@ def _walk_exprs(obj: Any):
             stack.extend(reversed(item))
 
 
-def _formula_symbols(formula: Any) -> dict[str, Any]:
+#: Interned name of the golden ratio, the one named constant the emitter can
+#: represent exactly (see ``alkahest_core::logic::smtlib``).  A user variable of
+#: the same name carries the kernel's marker, so it never compares equal to this.
+_GOLDEN_RATIO = "GoldenRatio"
+
+
+def _formula_symbols(formula: Any, *, include_constants: bool = False) -> dict[str, Any]:
     """Symbol name → the :class:`~alkahest.Expr` for it, for back-substitution.
 
     Keyed by the name the script declares, which for a user variable ``pi`` is
-    the printed name, without the kernel's marker.
+    the printed name, without the kernel's marker.  ``GoldenRatio`` is left out
+    unless asked for: it is a constant, and binding it to a model value is how
+    a constant silently becomes a variable.
     """
     out: dict[str, Any] = {}
     for expr in _walk_exprs(formula):
         node = expr.node()
-        if node[0] == "symbol":
+        if node[0] == "symbol" and (include_constants or node[1] != _GOLDEN_RATIO):
             out.setdefault(_display_name(node[1]), expr)
     return out
+
+
+def _uses_golden_ratio(formula: Any) -> bool:
+    return any(expr.node()[:2] == ["symbol", _GOLDEN_RATIO] for expr in _walk_exprs(formula))
 
 
 def _is_quantified(formula: Any) -> bool:
@@ -524,7 +536,9 @@ def _exactly_checkable(formula: Any) -> tuple[bool, str | None]:
     """
     from . import evaluate as _evaluate
 
-    symbols = _formula_symbols(formula)
+    # Binding the constant here is harmless: this asks only whether the kernel
+    # can evaluate the shape of the formula, never whether it is true.
+    symbols = _formula_symbols(formula, include_constants=True)
     reason: str | None = None
     for point in _PROBE_POINTS:
         result = _evaluate(formula, dict.fromkeys(symbols.values(), point), mode="exact")
@@ -566,6 +580,10 @@ def supported(formula: Any, *, solver: str = "auto") -> SmtSupport:
     neither CAD nor :func:`alkahest.diophantine` handles — there
     ``recommendation`` is ``"smt"``.
 
+    A formula the emitter refuses (a transcendental function, a named constant
+    with no exact term such as ``pi``) cannot be handed to a solver at all, so
+    it too gets ``"prefer_in_tree"``.
+
     Returns
     -------
     SmtSupport
@@ -599,7 +617,8 @@ def supported(formula: Any, *, solver: str = "auto") -> SmtSupport:
     except SmtError:
         solver_name = None
 
-    recommendation = "prefer_in_tree" if logic in _IN_TREE_LOGICS else "smt"
+    # A formula the emitter refuses has no SMT route, whatever else it contains.
+    recommendation = "prefer_in_tree" if error is not None or logic in _IN_TREE_LOGICS else "smt"
 
     if error is not None:
         return SmtSupport(
@@ -819,7 +838,116 @@ class _ScriptCheckFailure(Exception):
     """An assertion in the emitted script is false (or unevaluable) under the model."""
 
 
-def _num(value: Fraction | bool) -> Fraction:
+class _GoldenNumber:
+    """An exact element ``a + b·φ`` of ℚ(φ), with φ the golden ratio.
+
+    A ``sat`` model for a formula containing ``GoldenRatio`` has to be checked
+    at the true value of φ, which no ``Fraction`` is.  Arithmetic and order are
+    exact: products reduce by ``φ² = φ + 1``, and a sign is decided by comparing
+    squares against 5, so no rounding is involved anywhere.
+    """
+
+    __slots__ = ("a", "b")
+
+    def __init__(self, a: Fraction, b: Fraction) -> None:
+        self.a = a
+        self.b = b
+
+    @staticmethod
+    def _coerce(other: Any) -> _GoldenNumber | None:
+        if isinstance(other, _GoldenNumber):
+            return other
+        if isinstance(other, (int, Fraction)) and not isinstance(other, bool):
+            return _GoldenNumber(Fraction(other), Fraction(0))
+        return None
+
+    def __add__(self, other: Any) -> _GoldenNumber:
+        o = self._coerce(other)
+        if o is None:
+            return NotImplemented
+        return _GoldenNumber(self.a + o.a, self.b + o.b)
+
+    __radd__ = __add__
+
+    def __neg__(self) -> _GoldenNumber:
+        return _GoldenNumber(-self.a, -self.b)
+
+    def __sub__(self, other: Any) -> _GoldenNumber:
+        o = self._coerce(other)
+        if o is None:
+            return NotImplemented
+        return self + (-o)
+
+    def __rsub__(self, other: Any) -> _GoldenNumber:
+        return (-self) + other
+
+    def __mul__(self, other: Any) -> _GoldenNumber:
+        o = self._coerce(other)
+        if o is None:
+            return NotImplemented
+        bd = self.b * o.b
+        return _GoldenNumber(self.a * o.a + bd, self.a * o.b + self.b * o.a + bd)
+
+    __rmul__ = __mul__
+
+    def _inverse(self) -> _GoldenNumber:
+        # (a + bφ)(a + b − bφ) = a² + ab − b², which vanishes only at 0 because
+        # φ is irrational; a zero divisor is rejected by the caller.
+        norm = self.a * self.a + self.a * self.b - self.b * self.b
+        return _GoldenNumber((self.a + self.b) / norm, -self.b / norm)
+
+    def __truediv__(self, other: Any) -> _GoldenNumber:
+        o = self._coerce(other)
+        if o is None:
+            return NotImplemented
+        return self * o._inverse()
+
+    def __rtruediv__(self, other: Any) -> _GoldenNumber:
+        return self._inverse() * other
+
+    def _sign(self) -> int:
+        # a + bφ = p + q√5 with p = a + b/2, q = b/2.
+        p, q = self.a + self.b / 2, self.b / 2
+        if q == 0:
+            return (p > 0) - (p < 0)
+        if p == 0 or (p > 0) == (q > 0):
+            return 1 if q > 0 else -1
+        return (1 if p > 0 else -1) * (1 if p * p > 5 * q * q else -1)
+
+    def __abs__(self) -> _GoldenNumber:
+        return -self if self._sign() < 0 else self
+
+    def __eq__(self, other: object) -> bool:
+        o = self._coerce(other)
+        return NotImplemented if o is None else self.a == o.a and self.b == o.b
+
+    def __hash__(self) -> int:
+        return hash((self.a, self.b))
+
+    def __lt__(self, other: Any) -> bool:
+        o = self._coerce(other)
+        return NotImplemented if o is None else (self - o)._sign() < 0
+
+    def __le__(self, other: Any) -> bool:
+        o = self._coerce(other)
+        return NotImplemented if o is None else (self - o)._sign() <= 0
+
+    def __gt__(self, other: Any) -> bool:
+        o = self._coerce(other)
+        return NotImplemented if o is None else (self - o)._sign() > 0
+
+    def __ge__(self, other: Any) -> bool:
+        o = self._coerce(other)
+        return NotImplemented if o is None else (self - o)._sign() >= 0
+
+    def __repr__(self) -> str:
+        return f"({self.a} + {self.b}*GoldenRatio)"
+
+
+_PHI = _GoldenNumber(Fraction(0), Fraction(1))
+
+
+def _num(value: Fraction | _GoldenNumber | bool) -> Fraction | _GoldenNumber:
     """Require an arithmetic operand to be an exact rational.
 
     The emitter never produces arithmetic over booleans, so this cannot fire on
@@ -829,12 +957,14 @@ def _num(value: Fraction | bool) -> Fraction:
     the one guarantee it exists to provide, so an impossible operand is a hard
     failure rather than a quiet numeric downgrade.
     """
-    if isinstance(value, bool) or not isinstance(value, Fraction):
+    if isinstance(value, bool) or not isinstance(value, (Fraction, _GoldenNumber)):
         raise _ScriptCheckFailure(f"arithmetic on a non-rational operand: {value!r}")
     return value
 
 
-def _eval_term(sexp: Any, env: Mapping[str, Fraction]) -> Fraction | bool:
+def _eval_term(
+    sexp: Any, env: Mapping[str, Fraction | _GoldenNumber]
+) -> Fraction | _GoldenNumber | bool:
     """Evaluate an emitted SMT-LIB term/formula exactly over ``Fraction``.
 
     Deliberately narrow: it understands exactly the operators
@@ -907,7 +1037,82 @@ def _eval_term(sexp: Any, env: Mapping[str, Fraction]) -> Fraction | bool:
     raise _ScriptCheckFailure(f"unhandled operator {head!r}/{len(vals)}")
 
 
-def _check_script(script: str, model: Mapping[str, Fraction]) -> list[str]:
+def _eval_over_golden(expr: Any, env: Mapping[str, Fraction]) -> Fraction | _GoldenNumber | bool:
+    """Evaluate the **original** formula exactly, with ``GoldenRatio`` at its true value.
+
+    The kernel's exact evaluator is rational-only and would need φ bound to a
+    rational, so a formula containing φ takes this route for the first of the
+    two checks.  It reads the ``Expr`` and never the emitted script, so it stays
+    independent of the emitter.  Same conventions as the kernel: ``0^0 = 1``, and
+    division by zero makes the formula unevaluable rather than false.
+    """
+    node = expr._node_exact()
+    tag = node[0]
+    if tag == "symbol":
+        if node[1] == _GOLDEN_RATIO:
+            return _PHI
+        key = _display_name(node[1])
+        if key in env:
+            return env[key]
+        raise _ScriptCheckFailure(f"unbound symbol {key!r}")
+    if tag == "integer":
+        return Fraction(node[1])
+    if tag == "rational":
+        return Fraction(node[1], node[2])
+    if tag in ("add", "mul"):
+        vals = [_num(_eval_over_golden(a, env)) for a in node[1]]
+        acc: Fraction | _GoldenNumber = Fraction(0 if tag == "add" else 1)
+        for v in vals:
+            acc = acc + v if tag == "add" else acc * v
+        return acc
+    if tag == "pow":
+        base = _num(_eval_over_golden(node[1], env))
+        exponent = node[2]._node_exact()
+        if exponent[0] != "integer":
+            raise _ScriptCheckFailure(f"non-integer exponent {node[2]}")
+        k = exponent[1]
+        power: Fraction | _GoldenNumber = Fraction(1)
+        for _ in range(abs(k)):
+            power = power * base
+        if k >= 0:
+            return power
+        if power == 0:
+            raise _ScriptCheckFailure("division by zero")
+        return Fraction(1) / power
+    if tag == "piecewise":
+        for cond, value in node[1]:
+            if _eval_over_golden(cond, env) is True:
+                return _eval_over_golden(value, env)
+        return _eval_over_golden(node[2], env)
+    if tag == "predicate":
+        kind, args = node[1], [_eval_over_golden(a, env) for a in node[2]]
+        if kind == "true":
+            return True
+        if kind == "false":
+            return False
+        if kind == "and":
+            return all(a is True for a in args)
+        if kind == "or":
+            return any(a is True for a in args)
+        if kind == "not":
+            return args[0] is not True
+        lhs, rhs = _num(args[0]), _num(args[1])
+        if kind == "eq":
+            return lhs == rhs
+        if kind == "ne":
+            return lhs != rhs
+        if kind == "lt":
+            return lhs < rhs
+        if kind == "le":
+            return lhs <= rhs
+        if kind == "gt":
+            return lhs > rhs
+        if kind == "ge":
+            return lhs >= rhs
+    raise _ScriptCheckFailure(f"cannot evaluate {tag!r} over Q(GoldenRatio)")
+
+
+def _check_script(script: str, model: Mapping[str, Fraction | _GoldenNumber]) -> list[str]:
     """Return the emitted assertions that the model does **not** satisfy."""
     failures: list[str] = []
     for form in _parse_sexprs(script):
@@ -1217,6 +1422,9 @@ def solve(
         model_exprs = _intern_model(model, pool)
 
     sorts = _declared_sorts(script)
+    if _uses_golden_ratio(formula):
+        # The script declares it, but it is a constant and not part of the question.
+        sorts.pop(_GOLDEN_RATIO, None)
     verification = _verification_for(status, engine, reason_unknown, logic_used, sorts)
     return SmtResult(
         status=status,
@@ -1243,12 +1451,19 @@ def solve(
 def _lift_model(output: str, script: str, formula: Any) -> dict[str, Fraction]:
     """Parse, lift, and complete the solver's model."""
     raw = _parse_model(_parse_sexprs(output))
+    # GoldenRatio is a constant: the solver reports a `root-obj` for it, which is
+    # not a witness anyone asked for and is never trusted — `_verify_model` uses
+    # the true value of φ.
+    constants = {_GOLDEN_RATIO} if _uses_golden_ratio(formula) else set()
     model: dict[str, Fraction] = {}
     for name, sexp in raw.items():
-        model[name] = _lift_value(sexp, name)
+        if name not in constants:
+            model[name] = _lift_value(sexp, name)
 
     sorts = _declared_sorts(script)
     for name, sort in sorts.items():
+        if name in constants:
+            continue
         if name not in model:
             # A solver may omit a "don't care" variable.  Completing it here (and
             # then checking the completed model) keeps the witness total: a model
@@ -1294,11 +1509,22 @@ def _verify_model(formula: Any, script: str, model: Mapping[str, Fraction], engi
             remediation=_BROKEN_BRIDGE,
         )
 
-    result = _evaluate(formula, bindings, mode="exact")
-    if result.status != "ok":
+    golden = _uses_golden_ratio(formula)
+    if golden:
+        try:
+            satisfied = _eval_over_golden(formula, model) is True
+        except _ScriptCheckFailure as exc:
+            status, reason = "failed", str(exc)
+        else:
+            status, reason = "ok", None
+    else:
+        result = _evaluate(formula, bindings, mode="exact")
+        status, reason = result.status, result.reason
+        satisfied = status == "ok" and result.value == 1
+    if status != "ok":
         raise SmtError(
             f"[E-SMT-004] the model from {engine} could not be checked: exact evaluation "
-            f"of the formula reported {result.status} ({result.reason})",
+            f"of the formula reported {status} ({reason})",
             code="E-SMT-004",
             remediation=(
                 "an unchecked sat model is not a result this bridge will hand back. Reduce "
@@ -1307,7 +1533,7 @@ def _verify_model(formula: Any, script: str, model: Mapping[str, Fraction], engi
                 "trust"
             ),
         )
-    if result.value != 1:
+    if not satisfied:
         raise SmtError(
             f"[E-SMT-004] the model from {engine} does not satisfy the formula: "
             f"back-substitution evaluated it to false. Model: "
@@ -1316,7 +1542,7 @@ def _verify_model(formula: Any, script: str, model: Mapping[str, Fraction], engi
             remediation=_BROKEN_BRIDGE,
         )
 
-    failures = _check_script(script, model)
+    failures = _check_script(script, {**model, _GOLDEN_RATIO: _PHI} if golden else model)
     if failures:
         raise SmtError(
             f"[E-SMT-004] the model from {engine} does not satisfy the emitted script; "

@@ -32,11 +32,25 @@
 //! Everything whose SMT-LIB rendering would not mean *exactly* the same thing as
 //! the alkahest expression: float literals (write `pool.rational(1, 10)`, not
 //! `0.1`), complex-domain symbols, non-integer exponents, unregistered function
-//! heads, `BigO`, `RootSum`, and symbol names that cannot be quoted.  Every
-//! refusal is [`SmtLibError`] with the stable code `E-SMT-002`.
+//! heads, named constants with no exact term (see below), `BigO`, `RootSum`, and
+//! symbol names that cannot be quoted.  Every refusal is [`SmtLibError`] with
+//! the stable code `E-SMT-002`.
+//!
+//! # Named constants
+//!
+//! The kernel's named constants (`π`, `EulerGamma`, `Catalan`, `Glaisher`, the
+//! Stieltjes constants, `GoldenRatio`, `∞`) are ordinary [`ExprData::Symbol`]
+//! nodes, recognised by name.  Declaring one as a free `Real` hands its value to
+//! the solver, which then "satisfies" `π > 4` with `π = 5`.  So each is either
+//! refused, or — for the one algebraic constant, `GoldenRatio` — pinned down by
+//! its defining equation, `φ·φ = φ + 1 ∧ φ > 0`, which has exactly one real
+//! solution; that makes the script nonlinear, so an explicit linear logic is
+//! refused for it.
 
 use super::{formula_from_expr, Formula, LogicError};
+use crate::eval::symbols::{constant_value_f64, GOLDEN_RATIO_NAME};
 use crate::kernel::expr::PredicateKind;
+use crate::kernel::pool::POS_INFINITY_SYMBOL;
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -105,7 +119,9 @@ impl crate::errors::AlkahestError for SmtLibError {
             SmtLibError::UnsupportedNode(_) => {
                 "the SMT-LIB fragment is polynomial (in)equalities over Int/Real symbols, \
                  boolean structure, quantifiers and Piecewise; rewrite the expression into \
-                 that fragment, and use pool.rational(p, q) rather than a float literal"
+                 that fragment, use pool.rational(p, q) rather than a float literal, and \
+                 replace a constant such as pi by rational bounds of your own (a fresh \
+                 variable between two rationals) if that is the question you mean"
             }
             SmtLibError::UnsupportedDomain(_) => {
                 "declare the symbol over Real, Integer, Positive, NonNegative or NonZero; \
@@ -451,6 +467,32 @@ fn smt_symbol(name: &str) -> Result<String, SmtLibError> {
     }
 }
 
+/// Why the named constant `name` has no exact SMT-LIB term, or `None` when
+/// `name` is an ordinary symbol or `GoldenRatio` (which [`formula_export`]
+/// encodes by its defining equation).
+///
+/// Driven by the kernel's own constant table, so a constant added there is
+/// refused here without anyone remembering to list it.
+fn refused_constant(name: &str) -> Option<String> {
+    if name == GOLDEN_RATIO_NAME {
+        return None;
+    }
+    if name == POS_INFINITY_SYMBOL {
+        return Some(
+            "∞ is not a real number; declared as a Real the solver would assign it a finite \
+             value"
+                .to_string(),
+        );
+    }
+    constant_value_f64(name).map(|_| {
+        format!(
+            "the named constant {name} has no exact SMT-LIB term; declared as a Real the \
+             solver would choose its value, so a false statement such as {name} > 100 could \
+             come back sat"
+        )
+    })
+}
+
 fn sort_of_domain(name: &str, domain: Domain) -> Result<Sort, SmtLibError> {
     match domain {
         Domain::Integer => Ok(Sort::Int),
@@ -477,7 +519,15 @@ fn collect_symbols_expr(
 ) -> Result<(), SmtLibError> {
     match pool.get(id) {
         ExprData::Symbol { name, domain, .. } => {
+            if let Some(why) = refused_constant(&name) {
+                return Err(SmtLibError::UnsupportedNode(why));
+            }
             let sort = sort_of_domain(&name, domain)?;
+            if name == GOLDEN_RATIO_NAME && sort != Sort::Real {
+                return Err(SmtLibError::SymbolConflict(format!(
+                    "{GOLDEN_RATIO_NAME} is irrational, so it cannot have domain {domain}"
+                )));
+            }
             let marker = crate::kernel::USER_SYMBOL_MARKER;
             let display = crate::kernel::symbol_display_name(&name);
             let twin = if display == name {
@@ -935,6 +985,11 @@ impl<'a> Emitter<'a> {
                 )))
             }
         };
+        if name == GOLDEN_RATIO_NAME {
+            return Err(SmtLibError::UnsupportedNode(format!(
+                "{binder} binds the constant {GOLDEN_RATIO_NAME}, which is not a variable"
+            )));
+        }
         let sort = sort_of_domain(&name, domain)?;
         match sort {
             Sort::Int => self.req.ints = true,
@@ -1021,7 +1076,9 @@ pub struct SmtLibExport {
     pub logic: String,
     /// What the formula actually needs, independent of the logic that was named.
     pub requirements: Requirements,
-    /// Declared (free) symbols, in declaration order, as `(name, sort)`.
+    /// Declared (free) symbols, in declaration order, as `(name, sort)`.  A
+    /// `GoldenRatio` declaration is the constant's encoding, not a free symbol,
+    /// and is not listed.
     pub symbols: Vec<(String, Sort)>,
 }
 
@@ -1061,6 +1118,8 @@ pub fn formula_export(
 ) -> Result<SmtLibExport, SmtLibError> {
     let mut symbols: BTreeMap<String, (Sort, Domain)> = BTreeMap::new();
     collect_symbols_formula(f, pool, &mut symbols)?;
+    // Not a free symbol: declared and pinned down by its definition below.
+    let golden = symbols.remove(GOLDEN_RATIO_NAME).is_some();
     // `to_real` exists only inside a `Reals_Ints` logic, and there are two ways
     // to be in one: an `Int`-sorted symbol forces it, or the caller named a
     // logic that carries both sorts.  Emitting `to_real` outside such a logic
@@ -1079,6 +1138,11 @@ pub fn formula_export(
         bound: Vec::new(),
         bound_ever: BTreeSet::new(),
     };
+    if golden {
+        // The definition is `φ·φ = φ + 1`, whatever the formula does with φ.
+        emitter.req.reals = true;
+        emitter.req.nonlinear = true;
+    }
     let body = emitter.formula(f)?;
 
     // A name that is both quantifier-bound and free would be declared *and*
@@ -1113,6 +1177,9 @@ pub fn formula_export(
     if opts.get_model {
         out.push_str("(set-option :produce-models true)\n");
     }
+    if golden {
+        out.push_str(&format!("(declare-fun {GOLDEN_RATIO_NAME} () Real)\n"));
+    }
     for (name, (sort, _)) in &free {
         let smt_name = smt_symbol(name)?;
         out.push_str(&format!("(declare-fun {smt_name} () {})\n", sort.name()));
@@ -1122,6 +1189,15 @@ pub fn formula_export(
         if let Some(guard) = emitter.domain_guard(&smt_name, *domain, *sort) {
             out.push_str(&format!("(assert {guard})\n"));
         }
+    }
+    if golden {
+        // `t² = t + 1` has two real roots and `t > 0` selects φ, so the solver
+        // has no freedom left: this is the constant, exactly.
+        let phi = GOLDEN_RATIO_NAME;
+        let one = emitter.one(Sort::Real);
+        let zero = emitter.zero(Sort::Real);
+        out.push_str(&format!("(assert (= (* {phi} {phi}) (+ {phi} {one})))\n"));
+        out.push_str(&format!("(assert (> {phi} {zero}))\n"));
     }
     out.push_str(&format!("(assert {body})\n"));
     if opts.check_sat {
@@ -1198,6 +1274,91 @@ mod tests {
             e.text
         );
         assert!(e.text.ends_with("(check-sat)\n(get-model)\n"), "{}", e.text);
+    }
+
+    #[test]
+    fn transcendental_constants_are_refused_not_declared() {
+        // Declared as a free Real, each of these lets the solver "satisfy"
+        // `c > 100` by choosing c = 101.
+        let p = ExprPool::new();
+        let names = [
+            "pi",
+            "EulerGamma",
+            "Catalan",
+            "Glaisher",
+            "StieltjesGamma1",
+            "StieltjesGamma30",
+            POS_INFINITY_SYMBOL,
+        ];
+        for name in names {
+            let c = p.symbol(name, Domain::Real);
+            let f = p.pred_gt(c, p.integer(100_i32));
+            let err = to_smtlib(f, &p, &opts()).unwrap_err();
+            assert!(
+                matches!(err, SmtLibError::UnsupportedNode(_)),
+                "{name}: {err}"
+            );
+        }
+        // Also under a binder and alongside a real variable.
+        let x = p.symbol("x", Domain::Real);
+        let pi = p.symbol("pi", Domain::Real);
+        let forall = p.forall(x, p.pred_gt(p.add(vec![x, pi]), x));
+        assert!(to_smtlib(forall, &p, &opts()).is_err());
+        let mixed = p.pred_gt(p.mul(vec![pi, x]), p.integer(1_i32));
+        assert!(to_smtlib(mixed, &p, &opts()).is_err());
+        assert!(!supported(mixed, &p));
+    }
+
+    #[test]
+    fn a_user_variable_named_pi_is_still_a_variable() {
+        let p = ExprPool::new();
+        let user = format!("pi{}", crate::kernel::USER_SYMBOL_MARKER);
+        let pi = p.symbol(user, Domain::Real);
+        let text = to_smtlib(p.pred_gt(pi, p.integer(4_i32)), &p, &opts()).unwrap();
+        assert!(text.contains("(declare-fun pi () Real)"), "{text}");
+    }
+
+    #[test]
+    fn golden_ratio_is_pinned_down_by_its_definition() {
+        let p = ExprPool::new();
+        let phi = p.symbol(GOLDEN_RATIO_NAME, Domain::Real);
+        let e = export(p.pred_gt(phi, p.integer(1_i32)), &p, &opts()).unwrap();
+        assert_eq!(e.logic, "QF_NRA", "{}", e.text);
+        assert!(e.symbols.is_empty(), "{:?}", e.symbols);
+        assert!(
+            e.text.contains("(declare-fun GoldenRatio () Real)"),
+            "{}",
+            e.text
+        );
+        assert!(
+            e.text
+                .contains("(assert (= (* GoldenRatio GoldenRatio) (+ GoldenRatio 1)))"),
+            "{}",
+            e.text
+        );
+        assert!(e.text.contains("(assert (> GoldenRatio 0))"), "{}", e.text);
+        assert!(e.text.contains("(assert (> GoldenRatio 1))"), "{}", e.text);
+
+        // The definition is nonlinear, so a linear logic is too weak for it.
+        let linear = SmtLibOptions {
+            logic: Some("QF_LRA"),
+            ..opts()
+        };
+        assert!(matches!(
+            to_smtlib(p.pred_gt(phi, p.integer(1_i32)), &p, &linear),
+            Err(SmtLibError::UnsupportedLogic(_))
+        ));
+
+        // Mixed Int/Real needs the coercions in the definition too.
+        let n = p.symbol("n", Domain::Integer);
+        let mixed = to_smtlib(p.pred_gt(phi, n), &p, &opts()).unwrap();
+        assert!(mixed.contains("(+ GoldenRatio (to_real 1))"), "{mixed}");
+        assert!(mixed.contains("(> GoldenRatio (to_real 0))"), "{mixed}");
+
+        // A constant is not a binder.
+        let x = p.symbol("x", Domain::Real);
+        let bad = p.forall(phi, p.pred_gt(x, phi));
+        assert!(to_smtlib(bad, &p, &opts()).is_err());
     }
 
     #[test]
