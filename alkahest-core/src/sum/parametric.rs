@@ -191,7 +191,13 @@ fn poly_coeffs(e: ExprId, n: ExprId, pool: &ExprPool) -> Option<Vec<Rational>> {
         return None;
     }
     let d = rf.den.coeffs[0].clone();
-    Some(rf.num.coeffs.iter().map(|c| c.clone() / d.clone()).collect())
+    Some(
+        rf.num
+            .coeffs
+            .iter()
+            .map(|c| c.clone() / d.clone())
+            .collect(),
+    )
 }
 
 fn poly_eval(c: &[Rational], x: i64) -> Rational {
@@ -262,7 +268,12 @@ impl ProductPlan {
             *m.entry((a.to_i64()?, c.to_i64()?)).or_insert(0) -= e;
         }
         m.retain(|_, e| *e != 0);
-        let gcd = |a: i64, b: i64| Integer::from(a).gcd(&Integer::from(b)).to_i64().unwrap_or(1);
+        let gcd = |a: i64, b: i64| {
+            Integer::from(a)
+                .gcd(&Integer::from(b))
+                .to_i64()
+                .unwrap_or(1)
+        };
         let mut gammas = Vec::new();
         let mut stuck: HashSet<(i64, i64)> = HashSet::new();
         loop {
@@ -341,7 +352,10 @@ impl ProductPlan {
         }
         for (alpha, beta, e) in &self.gammas {
             let b = crate::orthopoly::rat_node(pool, beta);
-            let arg = simp(pool, pool.add(vec![pool.mul(vec![pool.integer(*alpha), upper]), b]));
+            let arg = simp(
+                pool,
+                pool.add(vec![pool.mul(vec![pool.integer(*alpha), upper]), b]),
+            );
             let arg0 = crate::orthopoly::rat_node(
                 pool,
                 &(Rational::from(*alpha) * Rational::from(n0) + beta.clone()),
@@ -487,11 +501,7 @@ pub(super) fn parametric_definite(
              over Q, so the recurrence has no Γ-product solution here"
         )));
     };
-    let n0 = domain_lo
-        .max(1)
-        .max(root1)
-        .max(root0)
-        .max(plan.min_start());
+    let n0 = domain_lo.max(1).max(root1).max(root0).max(plan.min_start());
 
     let Some(s0) = direct_sum(term, n, k, lo, hi, n0, pool) else {
         return Ok(Outcome::Refused(format!(

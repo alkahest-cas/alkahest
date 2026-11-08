@@ -1739,7 +1739,7 @@ def series(expr, var, point, order):
         if getattr(e, "code", None) == "E-SERIES-004" and "Puiseux" in str(e):
             try:
                 px = _native_puiseux_series(expr, var, point, order)
-            except Exception:  # noqa: BLE001 - the original refusal stands
+            except Exception:  # the original refusal stands
                 raise e from None
             h = str(var) if str(point) == "0" else f"({var} - {point})"
             shown = [
@@ -3889,8 +3889,8 @@ __all__ = [
     # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     "zeilberger",
     "zeta",
-    "zeta_prime",
     "zeta_deriv",
+    "zeta_prime",
 ]
 
 # Drop import-machinery leaks from ``dir(alkahest)`` / autocomplete. Lazy

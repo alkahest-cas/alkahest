@@ -15,9 +15,8 @@ from __future__ import annotations
 import math
 import random
 
-import pytest
-
 import alkahest as ak
+import pytest
 from alkahest import number_theory as nt
 
 mpmath = pytest.importorskip("mpmath")
@@ -127,7 +126,10 @@ def test_log_over_one_plus_x2_half_line_is_zero(pool):
     x = pool.symbol("x")
     e = ak.log(x) / (1 + x**2)
     assert str(ak.integrate(e, x, pool.integer(0), pool.pos_infinity()).value) == "0"
-    f = lambda t: _M.log(t) / (1 + t**2)
+
+    def f(t):
+        return _M.log(t) / (1 + t**2)
+
     with mpmath.workdps(30):
         assert abs(mpmath.quad(f, [0, 1, _M.inf])) < mpmath.mpf(10) ** -25
 
@@ -256,7 +258,7 @@ def test_order_two_sum_is_refused_with_a_reason(pool):
 
 
 @pytest.mark.parametrize(
-    "build, sym_build",
+    ("build", "sym_build"),
     [
         (lambda p, x: ak.sqrt(x), lambda t: sympy.sqrt(t)),
         (lambda p, x: ak.sqrt(x) * ak.exp(x), lambda t: sympy.sqrt(t) * sympy.exp(t)),
@@ -274,7 +276,8 @@ def test_series_at_a_branch_point_says_so(build, sym_build):
         ak.series(e, x, p.integer(0), 3)
     msg = str(ei.value)
     assert ei.value.code == "E-SERIES-004"
-    assert "branch point" in msg and "puiseux_series" in msg, msg
+    assert "branch point" in msg, msg
+    assert "puiseux_series" in msg, msg
     assert "indeterminate" not in msg, msg
     # The expansion in the message is SymPy's, term for term.
     shown = msg.rsplit("): ", 1)[1].split(" + O(")[0]
@@ -289,7 +292,8 @@ def test_series_log_is_still_indeterminate(pool):
     with pytest.raises(ak.SeriesError) as ei:
         ak.series(ak.log(x), x, pool.integer(0), 3)
     msg = str(ei.value)
-    assert "not a power series" not in msg and "indeterminate form" in msg, msg
+    assert "not a power series" not in msg, msg
+    assert "indeterminate form" in msg, msg
 
 
 # ---------------------------------------------------------------------------

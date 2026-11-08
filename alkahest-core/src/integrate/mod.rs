@@ -1,8 +1,8 @@
 pub mod algebraic;
 mod beta_family;
-mod classics;
 pub(crate) mod branch_check;
 pub mod by_parts;
+mod classics;
 mod continuity;
 mod derivative;
 mod elliptic_exact;

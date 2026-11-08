@@ -170,13 +170,9 @@ fn zeta_deriv_node_and_ladder() {
     }
     // Chain rule through the order-shift rule.
     let two_s = pool.mul(vec![pool.integer(2), s]);
-    let d = crate::diff::diff(
-        zeta_deriv(pool.integer(3), two_s, &pool).unwrap(),
-        s,
-        &pool,
-    )
-    .unwrap()
-    .value;
+    let d = crate::diff::diff(zeta_deriv(pool.integer(3), two_s, &pool).unwrap(), s, &pool)
+        .unwrap()
+        .value;
     let shown = pool.display(d).to_string();
     assert!(
         shown.contains("zeta_deriv(4, ") && shown.contains('2'),

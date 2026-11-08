@@ -437,7 +437,10 @@ pub(super) mod arb_impl {
         let half_pi = pi.mul_2exp(-1);
         let theta = half_pi.mul(s, prec);
         let i = Acb::i();
-        let (e_p, e_m) = (i.mul(&theta, prec).exp(prec), i.neg().mul(&theta, prec).exp(prec));
+        let (e_p, e_m) = (
+            i.mul(&theta, prec).exp(prec),
+            i.neg().mul(&theta, prec).exp(prec),
+        );
         let sin = e_p.sub(&e_m, prec).div(&two.mul(&i, prec), prec);
         let cos = e_p.add(&e_m, prec).mul_2exp(-1);
         let (neg_sin, neg_cos) = (sin.neg(), cos.neg());

@@ -564,7 +564,11 @@ pub(crate) fn local_derivative(kernel: Kernel, args: &[ExprId], pool: &ExprPool)
         Kernel::Zeta => pool.func(Kernel::ZetaPrime.name(), vec![args[0]]),
         // ζ″ = zeta_deriv(2, s), and ζ⁽ⁿ⁾′ = ζ⁽ⁿ⁺¹⁾.
         Kernel::ZetaPrime => pool.func(Kernel::ZetaDeriv.name(), vec![pool.integer(2), args[0]]),
-        Kernel::ZetaDeriv => node(Kernel::ZetaDeriv, vec![shift(pool, args[0], 1), args[1]], pool),
+        Kernel::ZetaDeriv => node(
+            Kernel::ZetaDeriv,
+            vec![shift(pool, args[0], 1), args[1]],
+            pool,
+        ),
         // d/dx log Γ(x) = ψ(x) (DLMF 5.2.2), on every branch.
         Kernel::LogGamma => pool.func("digamma", vec![args[0]]),
     })
