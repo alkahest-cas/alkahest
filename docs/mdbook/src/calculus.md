@@ -390,6 +390,33 @@ cross its own pole, or a radicand that does not split over `ℚ` declines to the
 other routes (whose float-derived elliptic antiderivatives the definite path
 refuses).
 
+### Catalan's constant and other classical values
+
+Some textbook definite integrals have non-elementary antiderivatives —
+`∫ atan(x)/x dx` is the inverse tangent integral `Ti₂(x)` — so the
+fundamental-theorem route cannot reach them. A table of classical evaluations
+does, up to a constant factor, a reversed interval, or as one term of a sum:
+
+```python
+import alkahest as ak
+
+pool = ak.ExprPool()
+x = pool.symbol("x")
+zero, one = pool.integer(0), pool.integer(1)
+ak.integrate(ak.atan(x) / x, x, zero, one).value                  # Catalan
+ak.integrate(ak.log(x) / (1 + x**2), x, zero, one).value          # -Catalan
+ak.integrate(ak.log(1 + x) / (1 + x**2), x, zero, one).value      # pi*log(2)/8
+```
+
+The entries: `∫₀¹ atan(x)/x = G`, `∫₀¹ log(x)/(1+x²) = −G` (and `G` on
+`[1, ∞)`, `0` on `[0, ∞)`), `∫₀^∞ atan(x)/(x(1+x²)) = (π/2) log 2`,
+`∫₀¹ log(1+x²)/(1+x²) = (π/2) log 2 − G` (`π log 2` on `[0, ∞)`), Serret's
+`(π/8) log 2` in its three forms, `∫₀^{π/4} log tan x = −G`,
+`∫₀^{π/2} x/sin x = 2G`, `∫₀^∞ x/cosh x = 2G`, the log-sine and log-cosine
+integrals on `[0, π/2]` and `[0, π/4]`, and
+`∫₀¹ atan(x)/(x√(1−x²)) = (π/2) log(1+√2)`. Each is checked against mpmath to
+30 digits in the test suite. Any other interval is still refused.
+
 ### Continuity across substitution poles
 
 A rational function of `sin x` and `cos x` is integrated by `t = tan(x/2)`, or —
@@ -467,7 +494,11 @@ expanded from repeated derivatives, as before.
 
 Some expansions have **fractional** exponents and there is no `Series` that can hold one:
 `√x` has valuation `1/2`. `series` refuses those with `E-SERIES-004` rather than returning
-a series whose coefficients are `sqrt(0)^-1` — `Ok`, unevaluable, `NaN` on contact.
+a series whose coefficients are `sqrt(0)^-1` — `Ok`, unevaluable, `NaN` on contact. The
+refusal says what is going on: for `series(sqrt(x), x, 0, 3)`, `sqrt(x)*exp(x)` or
+`x**(1/3)*sin(x)` the message reads "not a power series at the expansion point: it is a branch
+point …", names `puiseux_series`, and ends with the verified Puiseux expansion itself
+(`Puiseux expansion (verified, ramification 2): x^(1/2) + O(x^(3))`).
 
 `alkahest.experimental.puiseux_series` is the sibling that expands them.
 

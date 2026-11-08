@@ -99,10 +99,12 @@ def test_certifiable_reports_a_failing_operation_rather_than_raising(pool):
     G11c's ``polygamma(n, x)`` closed the ladder (``ψ₁′ = ψ₂``), so the probe
     moved again, to ``zeta`` — ``ζ′`` has no closed form.  F24 added the node
     ``zeta_prime`` for ``ζ′``, whose own derivative (``ζ″``) is the new end of
-    the ladder, so the probe moved to ``zeta_prime``.
+    the ladder, so the probe moved to ``zeta_prime``. ``zeta_deriv(n, s)`` then
+    closed that ladder too, so the probe moved to ``diracdelta``, whose
+    distributional derivative has no node.
     """
     x = pool.symbol("x")
-    answer = ak.certifiable("diff", ak.zeta_prime(x), x)
+    answer = ak.certifiable("diff", pool.func("diracdelta", [x]), x)
 
     assert bool(answer) is False
     assert answer.reason == "operation_failed"

@@ -113,8 +113,8 @@ def test_the_flag_is_not_a_restatement_of_numeric_ball():
     # integer-order Bessel J/Y/I/K, the Airy functions, `zeta`, `polylog` and
     # `polygamma` Taylor-model rules. What is left with an Arb ball kernel and
     # no rule: the spherical Bessel functions and Hurwitz zeta (not wired),
-    # `hyper` (variable arity) and `zeta_prime` (its own derivative has no
-    # node, so there is no Lagrange remainder to bound).
+    # `hyper` (variable arity) and `zeta_prime` / `zeta_deriv` (a rule could
+    # now be written from the zeta jet, but none is wired).
     specfun = {
         "spherical_jn",
         "spherical_yn",
@@ -124,6 +124,7 @@ def test_the_flag_is_not_a_restatement_of_numeric_ball():
         # Taylor-model rule yet.
         "lambert_wm1",
         "zeta_prime",
+        "zeta_deriv",
         # F11: the Beta and incomplete gamma functions (binary, Arb balls).
         "beta",
         "uppergamma",

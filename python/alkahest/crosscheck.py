@@ -279,6 +279,10 @@ REFUSED_FUNCTIONS: dict[str, str] = {
         "SymPy has no `zeta_prime` function: it spells the derivative "
         "`Derivative(zeta(s), s)`, an unevaluated form a name-for-name table cannot express"
     ),
+    "zeta_deriv": (
+        "SymPy has no `zeta_deriv` function: it spells the n-th derivative "
+        "`Derivative(zeta(s), (s, n))`, an unevaluated form a name-for-name table cannot express"
+    ),
     "heaviside": (
         "SymPy's Heaviside(0) defaults to 1/2 while Alkahest fixes no value there, "
         "so the two agree everywhere except on a point the comparison would sample"

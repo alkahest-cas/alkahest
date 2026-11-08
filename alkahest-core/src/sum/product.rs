@@ -151,6 +151,11 @@ fn ratuni_poly_to_univ(p: &RatUniPoly, var: ExprId) -> Result<(UniPoly, Integer)
     Ok((UniPoly { var, coeffs: fp }, lcm))
 }
 
+/// [`expr_to_ratfunc`] for the rest of `sum`, without the error detail.
+pub(super) fn expr_to_ratfunc_pub(term: ExprId, k: ExprId, pool: &ExprPool) -> Option<RatFunc> {
+    expr_to_ratfunc(term, k, pool).ok()
+}
+
 fn expr_to_ratfunc(term: ExprId, k: ExprId, pool: &ExprPool) -> Result<RatFunc, ProductError> {
     let term = simp(pool, term);
     if term == k {
@@ -228,6 +233,55 @@ fn expr_to_ratfunc(term: ExprId, k: ExprId, pool: &ExprPool) -> Result<RatFunc, 
             "expression is not a rational function of k with integer poly factors".into(),
         )),
     }
+}
+
+/// `(constant, [(a, c, e)])`: see [`linear_factorization`].
+pub(super) type LinearFactors = (Rational, Vec<(Integer, Integer, i64)>);
+
+/// `p = constant · ∏ (a·k + c)^e` over `ℚ`, with every `(a, c)` integer,
+/// `a > 0`, `gcd(a, c) = 1`; `None` when `p` is zero or has an irreducible
+/// factor of degree `> 1`. `var` only labels the intermediate polynomial.
+pub(super) fn linear_factorization(p: &RatUniPoly, var: ExprId) -> Option<LinearFactors> {
+    if p.is_zero() {
+        return None;
+    }
+    let (u, scale) = ratuni_poly_to_univ(p, var).ok()?;
+    let fac = factor_univ(&u).ok()?;
+    let mut constant = Rational::from((fac.unit.clone(), scale));
+    let mut out = Vec::new();
+    for (f, e) in &fac.factors {
+        let e = i64::from(*e);
+        let cs = f.coefficients();
+        match f.degree() {
+            0 => {
+                let c = cs.first().cloned().unwrap_or_else(|| Integer::from(1));
+                for _ in 0..e {
+                    constant *= Rational::from(c.clone());
+                }
+            }
+            1 => {
+                let (mut c, mut a) = (cs[0].clone(), cs[1].clone());
+                if a < 0 {
+                    a = -a;
+                    c = -c;
+                    if e % 2 != 0 {
+                        constant = -constant;
+                    }
+                }
+                let g = Integer::from(a.gcd_ref(&c));
+                if g != 1 {
+                    for _ in 0..e {
+                        constant *= Rational::from(g.clone());
+                    }
+                    a /= &g;
+                    c /= &g;
+                }
+                out.push((a, c, e));
+            }
+            _ => return None,
+        }
+    }
+    Some((constant, out))
 }
 
 fn factor_univ(p: &UniPoly) -> Result<UniPolyFactorization, ProductError> {

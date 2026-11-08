@@ -439,6 +439,7 @@ from .alkahest import (  # noqa: F401
     # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     zeilberger,
     zeta,
+    zeta_deriv,
     zeta_prime,
 )
 from .alkahest import (
@@ -1640,6 +1641,7 @@ def collect_like_terms(expr):
 
 
 _native_series = series
+from .alkahest import puiseux_series as _native_puiseux_series  # noqa: E402
 
 
 def series(expr, var, point, order):
@@ -1699,7 +1701,11 @@ def series(expr, var, point, order):
     ramification index, and only after verifying it).  ``Series`` carries no
     ramification and every consumer of the underlying expansion reads an
     *integer* valuation, so the fractional case lives in a sibling type rather
-    than widening this one — the refusal here is deliberate, not a gap::
+    than widening this one — the refusal here is deliberate, not a gap. The
+    refusal says so: for ``series(sqrt(x), x, 0, 3)``, ``sqrt(x)*exp(x)`` or
+    ``x**(1/3)*sin(x)`` its message reads "not a power series at the expansion
+    point: it is a branch point …", names ``puiseux_series`` and ends with the
+    verified Puiseux expansion itself (``x^(1/2) + O(x^(3))``)::
 
         >>> from alkahest.experimental import puiseux_series
         >>> px = puiseux_series(sqrt(sin(x)), x, pool.integer(0), 5)  # doctest: +SKIP
@@ -1724,7 +1730,27 @@ def series(expr, var, point, order):
     the ``O(.)`` term dropped, which is what :func:`eval_expr` and
     :func:`simplify` accept.
     """
-    return _native_series(_coerce_expr(expr), _coerce_expr(var), _coerce_to(point, var), order)
+    expr, var, point = _coerce_expr(expr), _coerce_expr(var), _coerce_to(point, var)
+    try:
+        return _native_series(expr, var, point, order)
+    except SeriesError as e:
+        # A branch point: the refusal names puiseux_series; show the verified
+        # expansion itself, so the answer is in the message.
+        if getattr(e, "code", None) == "E-SERIES-004" and "Puiseux" in str(e):
+            try:
+                px = _native_puiseux_series(expr, var, point, order)
+            except Exception:  # the original refusal stands
+                raise e from None
+            h = str(var) if str(point) == "0" else f"({var} - {point})"
+            shown = [
+                (f"{h}^({ex})" if str(c) == "1" else f"({c})*{h}^({ex})") for ex, c in px.terms
+            ]
+            shown.append(f"O({h}^({px.remainder_order}))")
+            e.args = (
+                f"{e.args[0]}\nPuiseux expansion (verified, ramification "
+                f"{px.ramification}): {' + '.join(shown)}",
+            )
+        raise
 
 
 _native_limit = limit
@@ -3863,6 +3889,7 @@ __all__ = [
     # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     "zeilberger",
     "zeta",
+    "zeta_deriv",
     "zeta_prime",
 ]
 

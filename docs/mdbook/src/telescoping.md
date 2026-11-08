@@ -245,6 +245,31 @@ reads this list still cannot mistake the three. It is never empty: even a proved
 boundary is a statement about the `n` at which everything involved is defined,
 and a permanent record of which range was assumed.
 
+## Closed forms from `sum_definite`
+
+`sum_definite` runs this pipeline itself when the bounds and the summand share
+one parameter — the case Gosper cannot see. A first-order certificate, a
+proved boundary verdict over the range you wrote, and an exact initial value
+give the closed form by a definite product; the result is compared with the sum,
+evaluated term by term, at every `n` from the start of its domain to well past
+the initial value before it is returned, and the domain is a side condition:
+
+```python
+import alkahest as ak
+
+p2 = ak.ExprPool()
+m, j = p2.symbol("m"), p2.symbol("j")
+zero = p2.integer(0)
+
+s = ak.sum_definite(ak.binomial(m, j), j, zero, m)          # 2^m
+s2 = ak.sum_definite(ak.binomial(m, j) ** 2, j, zero, m)    # gamma(1 + 2*m)/gamma(1 + m)^2
+s.steps[-1]["rule"]                                         # 'zeilberger_first_order_recurrence'
+```
+
+A nonzero boundary term is solved too (`Σ C(n,k)/(k+1) = (2^{n+1} − 1)/(n + 1)`).
+A sum whose only recurrence has order 2 or more (Franel's `Σ C(n,k)³`) is
+refused, with that reason, rather than guessed.
+
 ## Verification is not optional
 
 Every certificate is re-checked as an exact identity in `Q(n)(k)` before it is

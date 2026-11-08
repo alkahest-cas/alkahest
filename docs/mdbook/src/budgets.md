@@ -152,7 +152,7 @@ a handful of strategic points — not blanket-inserted into every loop:
 - **`alkahest.decide`** — once per sample cell of the two-variable CAD.
 - **`sos_decompose` / `prove_nonneg`** — between SDP solves (already the case before).
 - **`alkahest.number_theory.discrete_log`** — Pohlig–Hellman over the (budgeted)
-  factorisation of `p − 1`, polling every 4096 group operations of each baby-step
+  factorisation of `p − 1` (of the modulus and each `φ(pᵏ)` for a composite modulus), polling every 4096 group operations of each baby-step
   giant-step / Pollard-rho subgroup solve. It used to be a linear sweep with no
   checkpoint (`p = 2³¹−1` ran 55 s against a 2 s budget); smooth orders such as
   `2¹²⁷−1`'s are now instant, and a 61-bit prime order stops at the budget.

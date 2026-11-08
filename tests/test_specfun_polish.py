@@ -457,10 +457,8 @@ def test_diff_zeta_is_zeta_prime(x):
     xv = 1.7
     want = float(2 * mp.zeta(2 * mp.mpf(xv), derivative=1))
     assert abs(_ev(d2, {x: xv}) - want) < 1e-12
-    # the second derivative has no node
-    with pytest.raises(ak.DiffError) as err:
-        ak.diff(ak.zeta_prime(x), x)
-    assert err.value.code == "E-DIFF-001"
+    # the second derivative is the node zeta_deriv(2, s)
+    assert ak.diff(ak.zeta_prime(x), x).value == ak.zeta_deriv(2, x)
 
 
 # ---------------------------------------------------------------------------

@@ -1610,12 +1610,13 @@ ak.airy_ai(x), ak.airy_bi_prime(x)  # Ai'' = x*Ai; exact at 0
 ak.zeta(p.integer(4))               # pi^4/90; zeta(-1) = -1/12; zeta(3) stays; zeta(1) → E-SPECFN-006
 ak.hurwitz_zeta(s, a), ak.polylog(s, z)   # polylog(2, z) is dilog(z); Li_{-n} rational
 ak.zeta_prime(s)                    # diff(zeta(s), s); exact at 0, -1, 2, -2n; numeric via Arb
+ak.zeta_deriv(3, s)                 # zeta^(3)(s); diff(zeta_prime(s), s) = zeta_deriv(2, s); numeric via Arb
 ak.hankel1(Fraction(1, 2), x)       # J + iY, complex; half-integer → exp(I*x) form; hankel2 = J - iY
 ak.expand_special(ak.subs(e, {nu: Fraction(1, 2)}))   # expand after subs
 ak.evaluate(ak.bessel_j(nu, x), {nu: 2+0j, x: 1+1j})   # complex values via Arb
 ```
 
-- `diff` in the order / `s`, and of `zeta_prime`, refuses (`E-DIFF-001`); `diff(zeta(s), s)` is `zeta_prime(s)`; in `x` uses DLMF identities.
+- `diff` in the order / `s` refuses (`E-DIFF-001`); `diff(zeta(s), s)` is `zeta_prime(s)`, the next ones `zeta_deriv(n, s)`; in `x` uses DLMF identities.
 - `bound_on_box` / validated routines accept integer-order `bessel_j/y/i/k`, the Airy four, `zeta`, `polylog` (literal `s`, `|z|<1`), `polygamma` (literal order) and orthopoly with integer degree; symbolic/non-integer order → `E-VALIDATED-005`/`-001`.
 - `Σ 1/k³` sums to `zeta(3)`; `∫x·J0 = x·J1`, `∫J1 = −J0`.
 - f64/ball/complex values from Arb; non-real values (Y, K at x<0; Li_s(x>1)) decline in real mode.

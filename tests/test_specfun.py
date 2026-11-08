@@ -442,7 +442,7 @@ def test_derivative_in_the_order_is_refused_not_dropped(pool, x):
         ak.bessel_k(x, pool.integer(2), expand=False),
         ak.polylog(x, pool.rational(1, 2)),
         ak.hurwitz_zeta(x, pool.integer(3)),
-        ak.zeta_prime(x),  # zeta'' has no node
+        ak.zeta_deriv(x, n),  # the order of a derivative is not a variable
     ):
         with pytest.raises(ak.DiffError) as ei:
             ak.diff(e, x)

@@ -372,16 +372,18 @@ pub fn nthroot_mod(a: &str, k: u64, p: &str) -> Result<String, NumberTheoryError
     Ok(out.to_string())
 }
 
-/// Smallest exponent \(e \geq 0\) with \(\mathit{base}^e \equiv \mathit{residue}\pmod{p}\) (`p` prime).
+/// Smallest exponent \(e \geq 0\) with \(\mathit{base}^e \equiv \mathit{residue}\pmod{m}\),
+/// for any modulus \(m \geq 2\).
 ///
 /// Pohlig–Hellman over the factorisation of \(\operatorname{ord}(\mathit{base})\), with
 /// baby-step giant-step (or Pollard's rho above \(2^{42}\)) in each prime-order subgroup, so
-/// the cost is governed by the largest prime factor of the order, not by `p`. The answer is
-/// checked by modular exponentiation before it is returned.
+/// the cost is governed by the largest prime factor of the order, not by `m`. A composite
+/// modulus is factored; each prime power is solved in its own unit group (or, for a prime
+/// dividing the base, by the saturation of the base's powers to zero), and the residue
+/// classes are merged by the CRT for non-coprime moduli. Neither `base` nor `residue` needs to
+/// be a unit. The answer is checked by modular exponentiation before it is returned.
 ///
-/// Refusals: [`NumberTheoryError::NoSolution`] when `residue ∉ ⟨base⟩`;
-/// [`NumberTheoryError::CompositeModulus`] for a composite modulus (no CRT lifting is
-/// attempted). An active [`crate::budget::Budget`] is honoured: on a trip this records the
+/// Refusals: [`NumberTheoryError::NoSolution`] when no power of `base` is `residue`. An active [`crate::budget::Budget`] is honoured: on a trip this records the
 /// [`crate::budget::BudgetTrip`] (see [`crate::budget::take_trip`]) and returns
 /// [`NumberTheoryError::Domain`] — never a partial exponent. Use
 /// [`discrete_log_bounded`] to receive the trip as a typed error instead.
@@ -418,15 +420,16 @@ pub fn discrete_log_bounded(
         }
         .into());
     }
-    let fp = FlintInteger::from_rug(&pm);
-    if unsafe { ffi::fmpz_is_prime(fp.inner_ptr()) } == 0 {
-        return Err(NumberTheoryError::CompositeModulus.into());
-    }
-
     // Least non-negative residues. rug's `%` truncates toward zero, so
     // `-1 % 5` is `-1`, which no power of the base ever equals.
     let b = parse_int(base)?.rem_euc(&pm);
     let r = parse_int(residue)?.rem_euc(&pm);
+
+    let fp = FlintInteger::from_rug(&pm);
+    if unsafe { ffi::fmpz_is_prime(fp.inner_ptr()) } == 0 {
+        // Factor, Pohlig–Hellman per prime power, CRT (`dlog` module docs).
+        return Ok(dlog::discrete_log_composite(&r, &b, &pm)?.to_string());
+    }
 
     if b.is_zero() {
         // 0^0 = 1 and 0^e = 0 for every e >= 1.

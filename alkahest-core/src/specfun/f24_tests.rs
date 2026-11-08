@@ -132,11 +132,95 @@ fn zeta_prime_is_the_derivative_of_zeta() {
         d2,
         pool.mul(vec![pool.integer(2), pool.func("zeta_prime", vec![two_s])])
     );
-    // ζ″ has no node: refused, not dropped.
+    // ζ″ is the node zeta_deriv(2, s).
     let zp = zeta_prime(s, &pool).unwrap();
-    assert!(crate::diff::diff(zp, s, &pool).is_err());
+    assert_eq!(
+        crate::diff::diff(zp, s, &pool).unwrap().value,
+        pool.func("zeta_deriv", vec![pool.integer(2), s])
+    );
     // The pole.
     assert!(zeta_prime(pool.integer(1), &pool).is_err());
+}
+
+/// `zeta_deriv(n, s)`: the canonical low orders, the derivative ladder, the
+/// order check and the pole.
+#[test]
+fn zeta_deriv_node_and_ladder() {
+    let pool = ExprPool::new();
+    let s = sym(&pool, "s");
+    assert_eq!(crate::kernel::known_func_arity("zeta_deriv"), Some((2, 2)));
+    assert_eq!(
+        zeta_deriv(pool.integer(0), s, &pool).unwrap(),
+        zeta(s, &pool).unwrap()
+    );
+    assert_eq!(
+        zeta_deriv(pool.integer(1), s, &pool).unwrap(),
+        zeta_prime(s, &pool).unwrap()
+    );
+    // Exact values come through the low orders: ζ⁽¹⁾(0) = −½ log 2π.
+    assert_eq!(
+        zeta_deriv(pool.integer(1), pool.integer(0), &pool).unwrap(),
+        zeta_prime(pool.integer(0), &pool).unwrap()
+    );
+    let mut e = zeta(s, &pool).unwrap();
+    for n in 1..=5 {
+        e = crate::diff::diff(e, s, &pool).unwrap().value;
+        let want = zeta_deriv(pool.integer(n), s, &pool).unwrap();
+        assert_eq!(e, want, "order {n}");
+    }
+    // Chain rule through the order-shift rule.
+    let two_s = pool.mul(vec![pool.integer(2), s]);
+    let d = crate::diff::diff(zeta_deriv(pool.integer(3), two_s, &pool).unwrap(), s, &pool)
+        .unwrap()
+        .value;
+    let shown = pool.display(d).to_string();
+    assert!(
+        shown.contains("zeta_deriv(4, ") && shown.contains('2'),
+        "{shown}"
+    );
+    // A derivative in the order is refused, not dropped.
+    let n = sym(&pool, "n");
+    assert!(crate::diff::diff(pool.func("zeta_deriv", vec![n, s]), n, &pool).is_err());
+    assert!(zeta_deriv(pool.integer(-1), s, &pool).is_err());
+    assert!(zeta_deriv(pool.rational(1, 2), s, &pool).is_err());
+    assert!(zeta_deriv(pool.integer(2), pool.integer(1), &pool).is_err());
+}
+
+/// Values against mpmath (`zeta(s, 1, n)`, 40 digits).
+#[cfg(flint_arb)]
+#[test]
+fn zeta_deriv_values_match_mpmath() {
+    let cases: [(f64, f64, f64); 4] = [
+        (2.0, 2.0, 1.989_280_234_298_901),
+        (3.0, 0.5, -96.003_309_245_319_07),
+        (2.0, -1.0, -0.250_204_424_109_600_4),
+        (5.0, 3.0, -1.875_627_915_071_536),
+    ];
+    for (n, s, want) in cases {
+        let got = eval_f64(Kernel::ZetaDeriv, &[n, s])
+            .unwrap_or_else(|| panic!("zeta_deriv({n}, {s}) has no f64 value"));
+        assert!(
+            (got - want).abs() <= 1e-14 * want.abs(),
+            "zeta_deriv({n}, {s}) = {got}, mpmath {want}"
+        );
+    }
+    // Order 1 agrees with the zeta_prime kernel, order 0 with zeta.
+    for s in [-3.5, 0.5, 2.0, 7.25] {
+        let a = eval_f64(Kernel::ZetaDeriv, &[1.0, s]).unwrap();
+        let b = eval_f64(Kernel::ZetaPrime, &[s]).unwrap();
+        assert!((a - b).abs() <= 1e-15 * b.abs().max(1.0), "{s}");
+        let a = eval_f64(Kernel::ZetaDeriv, &[0.0, s]).unwrap();
+        let b = eval_f64(Kernel::Zeta, &[s]).unwrap();
+        assert!((a - b).abs() <= 1e-15 * b.abs().max(1.0), "{s}");
+    }
+    // Complex s, through the complex evaluator.
+    let (re, im) = super::numeric::eval_c64(Kernel::ZetaDeriv, &[(2.0, 0.0), (0.25, 3.0)]).unwrap();
+    assert!((re - 0.023_158_484_677_029_89).abs() < 1e-15);
+    assert!((im - 0.041_826_105_708_233_044).abs() < 1e-15);
+    // A non-integer or out-of-range order, and the pole, have no value.
+    assert!(eval_f64(Kernel::ZetaDeriv, &[1.5, 2.0]).is_none());
+    assert!(eval_f64(Kernel::ZetaDeriv, &[-1.0, 2.0]).is_none());
+    assert!(eval_f64(Kernel::ZetaDeriv, &[2.0, 1.0]).is_none());
 }
 
 #[cfg(flint_arb)]

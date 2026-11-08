@@ -973,8 +973,9 @@ mod tests {
     fn diff_unknown_function_error() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
-        // `zeta` differentiates to `zeta_prime` (F24); ζ″ has no node.
-        let err = diff(pool.func("zeta_prime", vec![x]), x, &pool);
+        // `diracdelta` has no derivative rule (its distributional derivative
+        // has no node).
+        let err = diff(pool.func("diracdelta", vec![x]), x, &pool);
         assert!(matches!(err, Err(DiffError::UnknownFunction(_))));
     }
 

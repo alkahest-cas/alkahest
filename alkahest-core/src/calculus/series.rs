@@ -176,13 +176,21 @@ pub fn series(
     }
 
     let h_expr = expansion_increment(pool, var, point);
-    let (valuation, coeffs) = complete_expansion(
+    let (valuation, coeffs) = match complete_expansion(
         |n| local_expansion(expr, var, point, n, pool),
         order,
         SeriesRefusalCause::IndeterminateCoefficient,
         &frame,
         pool,
-    )?;
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            if frame.outermost {
+                classify_branch_point(expr, var, point, order, pool);
+            }
+            return Err(e);
+        }
+    };
 
     let out = assemble_series(&coeffs, valuation, h_expr, order, pool);
     // A coefficient carrying `∞` (because the input mentioned it) is not a
@@ -196,6 +204,36 @@ pub fn series(
         ));
     }
     Ok(out)
+}
+
+/// An indeterminate-coefficient refusal at a point where the expression has a
+/// *verified* Puiseux expansion with ramification `> 1` is a branch point, not
+/// an indeterminate form: re-label the recorded refusal
+/// [`SeriesRefusalCause::BranchPoint`] so its message says what is true and
+/// where the expansion is. Anything else (a logarithm, an essential
+/// singularity, an unverifiable expansion, a budget trip) keeps the original
+/// refusal untouched.
+fn classify_branch_point(expr: ExprId, var: ExprId, point: ExprId, order: u32, pool: &ExprPool) {
+    let Some(prev) = LAST_REFUSAL.with(|c| c.get()) else {
+        return;
+    };
+    if prev.cause != SeriesRefusalCause::IndeterminateCoefficient || prev.budget.is_some() {
+        return;
+    }
+    let fractional = matches!(
+        crate::calculus::puiseux::puiseux_series(expr, var, point, order, pool),
+        Ok(px) if px.ramification() > 1
+    );
+    LAST_REFUSAL.with(|c| {
+        c.set(Some(SeriesRefusal {
+            cause: if fractional {
+                SeriesRefusalCause::BranchPoint
+            } else {
+                prev.cause
+            },
+            ..prev
+        }))
+    });
 }
 
 /// Record a refusal for [`take_series_refusal`] and return its carrier error.
@@ -934,6 +972,7 @@ fn has_pole_value(expr: ExprId, pool: &ExprPool) -> bool {
         ExprData::Func { name, args } => {
             let here = match (name.as_str(), args.as_slice()) {
                 ("zeta" | "zeta_prime", [s]) => lit(*s).is_some_and(|q| q == 1),
+                ("zeta_deriv", [_, s]) => lit(*s).is_some_and(|q| q == 1),
                 ("hurwitz_zeta", [s, a]) => {
                     lit(*s).is_some_and(|q| q == 1) || (nonpos_int(*a) && lit(*s).is_none())
                 }
@@ -1289,6 +1328,13 @@ pub enum SeriesRefusalCause {
     /// Taylor formula is never an answer: it used to return coefficients
     /// such as `∞⁻¹` and `0·∞` as a success.
     InfinitePoint,
+    /// The expansion point is a **branch point** with a verified Puiseux
+    /// expansion: the function is a series in *fractional* powers there
+    /// (`√x = x^{1/2}`, `x^{1/3} sin x = x^{4/3} − ⋯`), which a `Series` cannot
+    /// hold — `E-SERIES-004`, with a message that says so and names
+    /// [`crate::calculus::puiseux::puiseux_series`]. Before this cause existed
+    /// these were reported as an "indeterminate form", which nothing was.
+    BranchPoint,
 }
 
 impl SeriesRefusal {
@@ -1348,6 +1394,13 @@ impl fmt::Display for SeriesRefusal {
                  the function has no Taylor series: expanding there would return one \
                  piece's series as if it held on both sides. Refusing"
             ),
+            SeriesRefusalCause::BranchPoint => write!(
+                f,
+                "not a power series at the expansion point: it is a branch point, where \
+                 the function expands in fractional powers (a Puiseux series), which a \
+                 Series cannot represent. The verified expansion is available from \
+                 puiseux_series (alkahest.experimental.puiseux_series in Python)"
+            ),
             SeriesRefusalCause::InfinitePoint => write!(
                 f,
                 "no expansion in powers of 1/x at the infinite expansion point: the \
@@ -1369,6 +1422,7 @@ impl crate::errors::AlkahestError for SeriesRefusal {
             SeriesRefusalCause::IndeterminateCoefficient => "E-SERIES-004",
             SeriesRefusalCause::PiecewiseBoundary => "E-SERIES-004",
             SeriesRefusalCause::InfinitePoint => "E-SERIES-007",
+            SeriesRefusalCause::BranchPoint => "E-SERIES-004",
         }
     }
 
@@ -1388,6 +1442,11 @@ impl crate::errors::AlkahestError for SeriesRefusal {
             SeriesRefusalCause::PiecewiseBoundary => Some(
                 "expand each piece separately about the boundary (substitute the branch \
                  value for the Piecewise), or expand about a point strictly inside one piece",
+            ),
+            SeriesRefusalCause::BranchPoint => Some(
+                "call puiseux_series(expr, var, point, order) (Python: \
+                 `from alkahest.experimental import puiseux_series`) for the expansion in \
+                 fractional powers, with its ramification index",
             ),
             SeriesRefusalCause::InfinitePoint => Some(
                 "pass exactly +oo (`pool.pos_infinity()`) or -oo; for exp/log scales at \
@@ -2419,6 +2478,23 @@ mod tests {
         );
     }
 
+    /// A branch point with a verified Puiseux expansion is refused under the
+    /// same code, but as what it is: `BranchPoint`, naming `puiseux_series`,
+    /// never "indeterminate form".
+    fn assert_refuses_as_branch_point(expr: ExprId, var: ExprId, order: u32, p: &ExprPool) {
+        use crate::errors::AlkahestError;
+        let err = series(expr, var, p.integer(0), order, p)
+            .err()
+            .unwrap_or_else(|| panic!("expected a refusal, got a Series"));
+        assert!(matches!(err, SeriesError::InvalidOrder), "{err:?}");
+        let refusal = take_series_refusal().expect("branch-point refusal recorded");
+        assert_eq!(refusal.code(), "E-SERIES-004");
+        assert_eq!(refusal.cause(), SeriesRefusalCause::BranchPoint);
+        let msg = refusal.to_string();
+        assert!(msg.contains("puiseux_series"), "{msg}");
+        assert!(!msg.contains("indeterminate"), "{msg}");
+    }
+
     /// `√x`, `log x`, `e^{1/x}`, `x^x` and `x·sin(1/x)` have no Laurent
     /// expansion at `0` — branch point, logarithmic singularity, essential
     /// singularity, and two shapes that are not meromorphic at all. Every one
@@ -2433,7 +2509,7 @@ mod tests {
         let inv_x = p.pow(x, p.integer(-1));
         let log_x = p.func("log", vec![x]);
 
-        assert_refuses_as_indeterminate(p.func("sqrt", vec![x]), x, 4, &p);
+        assert_refuses_as_branch_point(p.func("sqrt", vec![x]), x, 4, &p);
         assert_refuses_as_indeterminate(log_x, x, 4, &p);
         assert_refuses_as_indeterminate(p.mul(vec![x, log_x]), x, 4, &p);
         assert_refuses_as_indeterminate(p.mul(vec![log_x, inv_x]), x, 4, &p);
@@ -2445,7 +2521,12 @@ mod tests {
         assert_refuses_as_indeterminate(x_to_x, x, 3, &p);
         // Puiseux, not Laurent: a half-integer valuation.
         let sqrt_sin = p.func("sqrt", vec![p.func("sin", vec![x])]);
-        assert_refuses_as_indeterminate(sqrt_sin, x, 4, &p);
+        assert_refuses_as_branch_point(sqrt_sin, x, 4, &p);
+        // The reported cases: √x·eˣ and x^{1/3}·sin x.
+        let sqrt_exp = p.mul(vec![p.func("sqrt", vec![x]), p.func("exp", vec![x])]);
+        assert_refuses_as_branch_point(sqrt_exp, x, 3, &p);
+        let cbrt_sin = p.mul(vec![p.pow(x, p.rational(1, 3)), p.func("sin", vec![x])]);
+        assert_refuses_as_branch_point(cbrt_sin, x, 3, &p);
     }
 
     /// A free parameter must not hide the indeterminate part.
@@ -2461,10 +2542,12 @@ mod tests {
         let k = p.symbol("k", Domain::Real);
         let sqrt_x = p.func("sqrt", vec![x]);
 
-        assert_refuses_as_indeterminate(p.mul(vec![k, sqrt_x]), x, 3, &p);
+        // k·√x and k·√x·sin x are branch points with a verified Puiseux
+        // expansion, so they are refused as such (still E-SERIES-004).
+        assert_refuses_as_branch_point(p.mul(vec![k, sqrt_x]), x, 3, &p);
         assert_refuses_as_indeterminate(p.mul(vec![k, p.func("log", vec![x])]), x, 3, &p);
         let k_sqrt_sin = p.mul(vec![k, sqrt_x, p.func("sin", vec![x])]);
-        assert_refuses_as_indeterminate(k_sqrt_sin, x, 4, &p);
+        assert_refuses_as_branch_point(k_sqrt_sin, x, 4, &p);
 
         // The control: a free parameter over a *pole* is an ordinary Laurent
         // expansion and must still succeed.

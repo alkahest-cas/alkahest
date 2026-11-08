@@ -83,20 +83,24 @@ def nthroot_mod(a: int, k: int, m: int) -> int:
 
 
 def discrete_log(residue: int, base: int, modulus: int) -> int:
-    """Smallest ``e >= 0`` with ``pow(base, e, modulus) == residue % modulus`` (prime ``modulus``).
+    """Smallest ``e >= 0`` with ``pow(base, e, modulus) == residue % modulus``.
 
     Pohlig–Hellman over the factorisation of the order of ``base``, with
     baby-step giant-step (Pollard's rho for prime factors above ``2**42``) in
     each prime-order subgroup: the cost follows the largest prime factor of
     ``ord(base)``, so ``2**127 - 1`` (whose ``p - 1`` is smooth) is fast, while
-    a 64-bit prime factor is genuinely hard. The result is verified by
-    ``pow`` before it is returned.
+    a 64-bit prime factor is genuinely hard. A composite ``modulus`` is
+    factored, each prime power solved on its own, and the exponent classes
+    merged by the Chinese remainder theorem; ``base`` and ``residue`` need not
+    be coprime to ``modulus`` (``discrete_log(2, 2, 12) == 1``). The result is
+    verified by ``pow`` before it is returned. A composite ``modulus`` has to
+    be factored first, so a large hard semiprime costs what factoring it costs
+    (bound it with ``ak.context(budget=...)``).
 
     Raises
     ------
     NumberTheoryError
-        ``E-NT-003`` when ``residue`` is not a power of ``base``;
-        ``E-NT-004`` for a composite modulus (no CRT lifting is attempted).
+        ``E-NT-003`` when ``residue`` is not a power of ``base``.
     BudgetExceededError
         ``E-BUDGET-*`` when an active ``ak.context(budget=...)`` runs out —
         never a partial exponent.
@@ -105,5 +109,7 @@ def discrete_log(residue: int, base: int, modulus: int) -> int:
     -------
     >>> discrete_log(13, 3, 17)
     4
+    >>> discrete_log(17, 13, 100)
+    7
     """
     return _decimal_to_int(nt_discrete_log(int(residue), int(base), int(modulus)))

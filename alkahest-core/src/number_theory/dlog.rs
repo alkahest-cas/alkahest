@@ -1,6 +1,7 @@
-//! Discrete logarithms in `(ℤ/pℤ)^×`: Pohlig–Hellman over the factorisation of
-//! the order of the base, with baby-step giant-step or Pollard's rho in each
-//! prime-order subgroup.
+//! Discrete logarithms modulo any `m ≥ 2`: Pohlig–Hellman over the
+//! factorisation of the order of the base, with baby-step giant-step or
+//! Pollard's rho in each prime-order subgroup; a composite modulus is split
+//! into prime powers and recombined by the CRT ([`discrete_log_composite`]).
 //!
 //! # Why not the linear sweep it replaces
 //!
@@ -31,7 +32,7 @@
 use super::arith::ArithmeticError;
 use super::NumberTheoryError;
 use crate::budget::{self, BudgetTrip};
-use rug::ops::RemRounding;
+use rug::ops::{Pow, RemRounding};
 use rug::Integer;
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -91,18 +92,54 @@ pub(super) fn discrete_log_prime(
         return Ok(Integer::new());
     }
     let group_order = Integer::from(p - 1u32);
+    let fac = factor_list(&group_order)?;
+    let (x, _) = dlog_unit(r, b, p, &group_order, fac, true)?;
+    Ok(x)
+}
 
-    // ord(b): strip every prime from p − 1 that b's order does not need.
-    let (_, fac) = super::factorint_bounded(&group_order.to_string())?;
+/// `n`'s factorisation as `(prime, exponent)` pairs, through the budgeted
+/// factoriser.
+fn factor_list(n: &Integer) -> Result<Vec<(Integer, u32)>, ArithmeticError> {
+    if *n <= 1 {
+        return Ok(Vec::new());
+    }
+    let (_, fac) = super::factorint_bounded(&n.to_string())?;
+    fac.into_iter()
+        .map(|(q, e)| {
+            Integer::from_str(&q)
+                .map(|q| (q, e as u32))
+                .map_err(|_| internal("factorint returned a non-integer"))
+        })
+        .collect()
+}
+
+/// `(x, ord(b))` with `x` the smallest exponent such that `b^x ≡ r (mod m)`,
+/// for units `b`, `r` of a unit group `(ℤ/mℤ)^×` of order `group_order`
+/// (factorised as `fac`).
+///
+/// `cyclic` says whether the group is cyclic (`m` a prime, an odd prime power,
+/// 2 or 4): then `r ∈ ⟨b⟩ ⟺ r^ord(b) = 1` decides membership up front and a
+/// later miss is an internal failure. In the non-cyclic `(ℤ/2^kℤ)^×`
+/// (`k ≥ 3`) every prime of the order is 2, so each subgroup step is an
+/// exhaustive two-element search: a miss there, or a failed final check, is a
+/// proof that `r ∉ ⟨b⟩` and comes back as [`NumberTheoryError::NoSolution`].
+fn dlog_unit(
+    r: &Integer,
+    b: &Integer,
+    m: &Integer,
+    group_order: &Integer,
+    fac: Vec<(Integer, u32)>,
+    cyclic: bool,
+) -> Result<(Integer, Integer), ArithmeticError> {
+    // ord(b): strip every prime from the group order that b's order does not need.
+    let one_mod_m = Integer::from(1) % m;
     let mut n = group_order.clone();
     let mut order_fac: Vec<(Integer, u32)> = Vec::new();
-    for (q_str, e) in fac {
-        let q =
-            Integer::from_str(&q_str).map_err(|_| internal("factorint returned a non-integer"))?;
-        let mut kept = e as u32;
+    for (q, e) in fac {
+        let mut kept = e;
         while kept > 0 {
             let cofactor = Integer::from(&n / &q);
-            if powm(b, &cofactor, p) == 1 {
+            if powm(b, &cofactor, m) == one_mod_m {
                 n = cofactor;
                 kept -= 1;
             } else {
@@ -114,31 +151,41 @@ pub(super) fn discrete_log_prime(
         }
         budget::check_all()?;
     }
+    if *r == one_mod_m {
+        return Ok((Integer::new(), n));
+    }
 
-    // `(ℤ/pℤ)^×` is cyclic, so `r ∈ ⟨b⟩` iff `r^ord(b) = 1`.
-    if powm(r, &n, p) != 1 {
+    // Necessary in every group; sufficient in a cyclic one.
+    if powm(r, &n, m) != one_mod_m {
         return Err(NumberTheoryError::NoSolution.into());
     }
 
     let b_inv = Integer::from(
-        b.invert_ref(p)
-            .ok_or_else(|| internal("base is not a unit modulo a prime"))?,
+        b.invert_ref(m)
+            .ok_or_else(|| internal("discrete_log: the base is not a unit"))?,
     );
 
     // Pohlig–Hellman: x mod q^e for each prime power, then CRT.
     let mut x_all = Integer::new();
     let mut modulus = Integer::from(1);
     for (q, e) in &order_fac {
-        let g0 = powm(b, &Integer::from(&n / q), p); // order exactly q
+        let g0 = powm(b, &Integer::from(&n / q), m); // order exactly q
         let mut x = Integer::new();
         let mut qk = Integer::from(1);
         for _ in 0..*e {
-            // h = (r · b^{−x})^{n / q^{k+1}} lies in ⟨g0⟩.
-            let mut h = powm(&b_inv, &x, p);
-            mulm(&mut h, r, p);
+            // h = (r · b^{−x})^{n / q^{k+1}} lies in ⟨g0⟩ when r ∈ ⟨b⟩.
+            let mut h = powm(&b_inv, &x, m);
+            mulm(&mut h, r, m);
             let qk1 = Integer::from(&qk * q);
-            let h = powm(&h, &Integer::from(&n / &qk1), p);
-            let d = dlog_prime_order(&g0, &h, q, p)?;
+            let h = powm(&h, &Integer::from(&n / &qk1), m);
+            let d = match dlog_prime_order(&g0, &h, q, m) {
+                Ok(d) => d,
+                // q = 2 is solved exhaustively, so a miss is a proof.
+                Err(_) if !cyclic && *q == 2 => {
+                    return Err(NumberTheoryError::NoSolution.into());
+                }
+                Err(e) => return Err(e),
+            };
             x += Integer::from(&d * &qk);
             qk = qk1;
         }
@@ -156,12 +203,145 @@ pub(super) fn discrete_log_prime(
     }
     x_all = x_all.rem_euc(&n);
 
-    if powm(b, &x_all, p) != *r {
+    if powm(b, &x_all, m) != *r {
+        if !cyclic {
+            return Err(NumberTheoryError::NoSolution.into());
+        }
         return Err(internal(
             "discrete_log: the Pohlig–Hellman exponent failed its final check",
         ));
     }
-    Ok(x_all)
+    Ok((x_all, n))
+}
+
+/// `v_p(b)` for `b ≠ 0`.
+fn valuation(b: &Integer, p: &Integer) -> u32 {
+    let mut v = 0u32;
+    let mut bb = b.clone();
+    while bb.is_divisible(p) {
+        bb /= p;
+        v += 1;
+    }
+    v
+}
+
+/// Smallest `e ≥ 0` with `b^e ≡ r (mod m)` for a composite modulus `m`, with
+/// `b` and `r` already reduced into `[0, m)`. Neither needs to be a unit.
+///
+/// Factor `m = ∏ pᵢ^kᵢ`. For a prime `p | b`, `b^e ≡ 0 (mod p^k)` as soon as
+/// `e · v_p(b) ≥ k`; for a prime `p ∤ b`, `b` is a unit modulo `p^k` and the
+/// exponents that work there form one residue class modulo `ord_{p^k}(b)`
+/// (Pohlig–Hellman in `(ℤ/p^kℤ)^×`, cyclic of order `p^{k−1}(p − 1)` for odd
+/// `p`). So:
+///
+/// 1. every `e < T`, where `T = max ⌈k / v_p(b)⌉ ≤ log₂ m` over the primes
+///    dividing `b`, is tried directly — this is where a non-unit base reaches
+///    residues that no large power does (`2¹ ≡ 2 (mod 12)`);
+/// 2. for `e ≥ T` the condition is `r ≡ 0` modulo every `p^k` with `p | b`,
+///    and `e ≡ xᵢ (mod nᵢ)` for every unit prime power; the classes are merged
+///    by the CRT for non-coprime moduli (an incompatible pair proves there is
+///    no solution), and the smallest `e ≥ T` in the merged class is returned.
+///
+/// The answer is checked by one modular exponentiation before it is returned.
+pub(super) fn discrete_log_composite(
+    r: &Integer,
+    b: &Integer,
+    m: &Integer,
+) -> Result<Integer, ArithmeticError> {
+    let fac = factor_list(m)?;
+
+    // T: from it on, every prime dividing b has driven its prime power to 0.
+    let mut t_sat: u32 = 0;
+    for (p, k) in &fac {
+        if b.is_divisible(p) {
+            let need = if b.is_zero() {
+                1
+            } else {
+                k.div_ceil(valuation(b, p))
+            };
+            t_sat = t_sat.max(need);
+        }
+    }
+
+    // Step 1: small exponents, directly modulo m.
+    let mut cur = Integer::from(1) % m;
+    for e in 0..t_sat {
+        if cur == *r {
+            return Ok(Integer::from(e));
+        }
+        mulm(&mut cur, b, m);
+    }
+    budget::check_all()?;
+
+    // Step 2: e ≥ T, one residue class per unit prime power.
+    let mut x_all = Integer::new();
+    let mut l_all = Integer::from(1);
+    for (p, k) in &fac {
+        let pk = Integer::from(Pow::pow(p, *k));
+        let rk = Integer::from(r % &pk);
+        if b.is_divisible(p) {
+            if !rk.is_zero() {
+                return Err(NumberTheoryError::NoSolution.into());
+            }
+            continue;
+        }
+        if Integer::from(rk.gcd_ref(&pk)) != 1 {
+            // A unit never powers to a non-unit.
+            return Err(NumberTheoryError::NoSolution.into());
+        }
+        let bk = Integer::from(b % &pk);
+        let (group_order, gfac, cyclic) = if *p == 2 {
+            let gfac = if *k >= 2 {
+                vec![(Integer::from(2), k - 1)]
+            } else {
+                Vec::new()
+            };
+            (Integer::from(1) << (k - 1), gfac, *k <= 2)
+        } else {
+            let pm1 = Integer::from(p - 1u32);
+            let mut gfac = factor_list(&pm1)?;
+            if *k >= 2 {
+                gfac.push((p.clone(), k - 1));
+            }
+            (Integer::from(Pow::pow(p, k - 1)) * &pm1, gfac, true)
+        };
+        let (x, n) = dlog_unit(&rk, &bk, &pk, &group_order, gfac, cyclic)?;
+        // Merge e ≡ x_all (mod l_all) with e ≡ x (mod n).
+        let g = Integer::from(l_all.gcd_ref(&n));
+        let diff = Integer::from(&x - &x_all);
+        if !diff.is_divisible(&g) {
+            return Err(NumberTheoryError::NoSolution.into());
+        }
+        let l_g = Integer::from(&l_all / &g);
+        let n_g = Integer::from(&n / &g);
+        let inv = if n_g == 1 {
+            Integer::new()
+        } else {
+            Integer::from(
+                l_g.invert_ref(&n_g)
+                    .ok_or_else(|| internal("discrete_log: CRT moduli were not reduced"))?,
+            )
+        };
+        let tt = (Integer::from(&diff / &g) * inv).rem_euc(&n_g);
+        x_all += Integer::from(&l_all * &tt);
+        l_all *= &n_g;
+        x_all = x_all.rem_euc(&l_all);
+        budget::check_all()?;
+    }
+
+    // Smallest e ≥ T with e ≡ x_all (mod l_all).
+    let t = Integer::from(t_sat);
+    let mut e = x_all;
+    if e < t {
+        let steps = (Integer::from(&t - &e) + &l_all - 1u32) / &l_all;
+        e += steps * &l_all;
+    }
+    if powm(b, &e, m) != *r {
+        return Err(internal(
+            "discrete_log: the composite-modulus exponent failed its final check",
+        ));
+    }
+    Ok(e)
 }
 
 /// `d ∈ [0, q)` with `g^d = h`, where `g` has prime order `q` and `h ∈ ⟨g⟩`.
@@ -475,5 +655,136 @@ mod tests {
         };
         assert!(matches!(out, Err(NumberTheoryError::Domain { .. })));
         assert!(budget::take_trip().is_some());
+    }
+
+    /// First exponent at which each residue appears in `1, b, b², …` mod `m`
+    /// (the sequence is eventually periodic with preperiod + period ≤ m).
+    fn first_hits(b: u64, m: u64) -> Vec<Option<u64>> {
+        let mut first = vec![None; m as usize];
+        let mut cur = 1 % m;
+        for e in 0..=m {
+            if first[cur as usize].is_none() {
+                first[cur as usize] = Some(e);
+            }
+            cur = cur * b % m;
+        }
+        first
+    }
+
+    fn check_against_brute(r: u64, b: u64, m: u64, want: Option<u64>) {
+        let got = discrete_log(&r.to_string(), &b.to_string(), &m.to_string());
+        match want {
+            Some(e) => assert_eq!(got.unwrap(), e.to_string(), "m={m} b={b} r={r}"),
+            None => assert!(
+                matches!(got, Err(NumberTheoryError::NoSolution)),
+                "m={m} b={b} r={r}: {got:?}"
+            ),
+        }
+    }
+
+    /// Every (residue, base) pair for every modulus up to 130 — composite
+    /// moduli, non-unit bases and residues, powers of two (non-cyclic unit
+    /// groups) — against the definition: the smallest exponent, and
+    /// NoSolution exactly when there is none.
+    #[test]
+    fn composite_moduli_exhaustive_up_to_130() {
+        for m in 2u64..=130 {
+            for b in 0..m {
+                let first = first_hits(b, m);
+                for r in 0..m {
+                    check_against_brute(r, b, m, first[r as usize]);
+                }
+            }
+        }
+    }
+
+    /// Every modulus up to 2000 with a spread of bases (units, zero divisors,
+    /// prime-power multiples) and residues (reachable and not).
+    #[test]
+    fn composite_moduli_sampled_up_to_2000() {
+        let mut rng = SplitMix64(0xD106_C0DE);
+        for m in 131u64..=2000 {
+            let mut bases = vec![2, 3, 6, 10, 12, m - 1, m / 2, (m / 3).max(2)];
+            bases.extend((0..4).map(|_| rng.next() % m));
+            for b in bases {
+                let b = b % m;
+                let first = first_hits(b, m);
+                let mut rs: Vec<u64> = (0..m).filter(|&r| first[r as usize].is_some()).collect();
+                // Every reachable residue when there are few, a sample otherwise.
+                if rs.len() > 24 {
+                    let len = rs.len() as u64;
+                    rs = (0..24).map(|_| rs[(rng.next() % len) as usize]).collect();
+                }
+                rs.extend((0..8).map(|_| rng.next() % m));
+                rs.extend([0, 1]);
+                for r in rs {
+                    check_against_brute(r, b, m, first[r as usize]);
+                }
+            }
+        }
+    }
+
+    /// The reported repro and some structured composite cases.
+    #[test]
+    fn composite_modulus_examples() {
+        // 13 generates the index-2 subgroup of (ℤ/100)^× (20 elements); 3 is
+        // outside it, so `13^e ≡ 3 (mod 100)` has no solution.
+        assert!(matches!(
+            discrete_log("3", "13", "100"),
+            Err(NumberTheoryError::NoSolution)
+        ));
+        assert_eq!(discrete_log("17", "13", "100").unwrap(), "7");
+        // Non-unit base: 2^1 = 2 (mod 12) is reached once, never again.
+        assert_eq!(discrete_log("2", "2", "12").unwrap(), "1");
+        assert_eq!(discrete_log("4", "2", "12").unwrap(), "2");
+        assert_eq!(discrete_log("8", "2", "12").unwrap(), "3");
+        assert!(matches!(
+            discrete_log("6", "2", "12"),
+            Err(NumberTheoryError::NoSolution)
+        ));
+        // (ℤ/2^k)^× is not cyclic: 3 and 5 generate different subgroups mod 64.
+        assert!(matches!(
+            discrete_log("5", "3", "64"),
+            Err(NumberTheoryError::NoSolution)
+        ));
+        assert_eq!(discrete_log("9", "3", "64").unwrap(), "2");
+    }
+
+    /// Large composite moduli with smooth unit-group orders, checked by
+    /// exponentiation (the answer must also be the minimal one modulo the
+    /// order of the base, which `b^e ≠ r` for every smaller `e` would need a
+    /// sweep to confirm; minimality is covered by the exhaustive tests).
+    #[test]
+    fn large_composite_moduli() {
+        let p1 = z("2147483647");
+        let p2 = z("1000000000039");
+        let cases = [
+            (Integer::from(&p1 * &p2), "7", "123456789012345"),
+            (Integer::from(&p1 * &p1) * 12u32, "5", "98765432101234"),
+            (Integer::from(1) << 100u32, "3", "123456789123456789"),
+        ];
+        for (m, b, e) in cases {
+            let r = powm(&z(b), &z(e), &m);
+            let x = z(&discrete_log(&r.to_string(), b, &m.to_string()).unwrap());
+            assert_eq!(powm(&z(b), &x, &m), r, "m={m}");
+            assert!(x <= z(e), "m={m}: {x} is not minimal");
+        }
+    }
+
+    /// A composite modulus whose unit group has a 61-bit prime order factor
+    /// still honours the budget (#518): a typed trip, never a partial value.
+    #[test]
+    fn budget_trips_on_a_hard_composite_modulus() {
+        let p = z("4611686018427394499");
+        let m = Integer::from(&p * 15u32);
+        let r = powm(&z("4"), &z("987654321987654321"), &m);
+        let wall = Duration::from_millis(300);
+        let t = Instant::now();
+        let out = {
+            let _g = budget::enter(budget::Budget::new().with_wall(wall));
+            discrete_log_bounded(&r.to_string(), "4", &m.to_string())
+        };
+        assert!(matches!(out, Err(ArithmeticError::Resource(_))), "{out:?}");
+        assert!(t.elapsed() < wall * 3 + Duration::from_millis(500));
     }
 }

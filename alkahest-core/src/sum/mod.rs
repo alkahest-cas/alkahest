@@ -9,6 +9,7 @@ mod closed_form;
 mod expr_ratio;
 pub(crate) mod gosper;
 mod hyper_series;
+mod parametric;
 mod poly_aux;
 mod product;
 mod ratfunc;
@@ -227,6 +228,22 @@ pub fn sum_definite(
                 let mut log = DerivationLog::new();
                 log.push(RewriteStep::with_conditions(rule, term, value, conditions));
                 return Ok(DerivedExpr::with_log(value, log));
+            }
+            // Bounds and summand sharing a parameter: Σ_{k=0}^{n} C(n,k).
+            match parametric::parametric_definite(term, k, lo, hi, pool)? {
+                parametric::Outcome::Sum {
+                    value,
+                    conditions,
+                    rule,
+                } => {
+                    let mut log = DerivationLog::new();
+                    log.push(RewriteStep::with_conditions(rule, term, value, conditions));
+                    return Ok(DerivedExpr::with_log(value, log));
+                }
+                parametric::Outcome::Refused(why) => {
+                    return Err(SumError::NotHypergeometric(why));
+                }
+                parametric::Outcome::NotApplicable => {}
             }
             return Err(e);
         }
