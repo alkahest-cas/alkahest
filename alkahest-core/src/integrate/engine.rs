@@ -3775,6 +3775,14 @@ pub fn integrate_definite(
         return Ok(DerivedExpr::with_log(v, log));
     }
 
+    // Classical non-elementary integrals with known values (Catalan's
+    // constant: `∫₀¹ atan(x)/x`, `∫₀¹ log(x)/(1+x²)`, `∫₀^{π/4} log tan x`, …):
+    // their antiderivatives (`Ti₂`, Clausen) are not elementary, so the FTC
+    // below refuses them. See [`super::classics`].
+    if let Some(r) = super::classics::try_definite(expr, var, lower, upper, pool) {
+        return r;
+    }
+
     // `∫_{-∞}^{∞}` of a rational function is not an FTC problem: the
     // antiderivative is a `RootSum` or a sum of logs and arctangents whose
     // limits at `±∞` the limit engine cannot establish. Take the residue
