@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Alkahest — computer algebra for agents and humans</title>
-  <meta name="description" content="Alkahest is a high-performance computer algebra system for Python and Rust: exact symbolic math, JIT and GPU code generation, Lean 4 certificates, and coded refusals instead of silent wrong answers." />
-  <meta property="og:title" content="Alkahest — computer algebra for agents and humans" />
-  <meta property="og:description" content="Exact symbolic math for Python and Rust, with Lean 4 certificates, budgets, coded refusals, and native code generation." />
+  <title>alkahest – symbolic math</title>
+  <meta name="description" content="alkahest is symbolic math for agents and humans: exact answers in Python and Rust, with derivation logs, Lean 4 certificates where the result supports them, budgets, and coded refusals instead of silent wrong answers." />
+  <meta property="og:title" content="alkahest – symbolic math" />
+  <meta property="og:description" content="Symbolic math for agents and humans. Exact answers, with a derivation you can check." />
   <meta property="og:url" content="https://alkahest-cas.github.io/" />
   <meta name="twitter:card" content="summary" />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23c41e3a'/%3E%3Ctext x='16' y='23' text-anchor='middle' font-family='Inter,Arial,sans-serif' font-weight='700' font-size='21' fill='white'%3Ea%3C/text%3E%3C/svg%3E" />
+  <link rel="icon" type="image/svg+xml" href="/logo.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
@@ -18,7 +18,7 @@
 <body>
   <header class="topbar">
     <div class="wrap">
-      <a class="wordmark" href="/">alkahest</a>
+      <a class="wordmark" href="/"><img src="/logo.svg" alt="" width="26" height="26" /><span>alkahest</span></a>
       <button class="menu-btn" aria-label="Menu" aria-expanded="false" aria-controls="nav">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
       </button>
@@ -26,7 +26,7 @@
         <a href="/docs/">Docs</a>
         <a href="/playground/">Playground</a>
         <a href="/agent/">Agent</a>
-        <a class="gh" href="https://github.com/alkahest-cas/alkahest" aria-label="Alkahest on GitHub">
+        <a class="gh" href="https://github.com/alkahest-cas/alkahest" aria-label="alkahest on GitHub">
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
         </a>
       </nav>
@@ -36,46 +36,48 @@
   <main>
     <!-- ── Hero ───────────────────────────────────────────────────────── -->
     <section class="hero">
-      <div class="wrap hero-grid">
-        <div>
-          <h1>High-performance computer algebra for <em>agents</em> and humans.</h1>
-          <p class="lede">
-            Exact symbolic mathematics in Python and Rust, built on FLINT and Arb.
-            Results carry derivation logs and Lean&nbsp;4 certificates; when Alkahest
-            can’t answer correctly, it refuses with a coded error rather than guessing.
-          </p>
+      <div class="wrap hero-center">
+        <h1>Symbolic math for agents and humans</h1>
+        <p class="lede">Get an exact answer fast with a formally verified derivation</p>
 
-          <div class="install">
-            <div class="tabs" role="tablist" aria-label="Install language">
-              <button class="tab" role="tab" aria-selected="true" aria-controls="inst-py" id="inst-tab-py">Python</button>
-              <button class="tab" role="tab" aria-selected="false" aria-controls="inst-rs" id="inst-tab-rs" tabindex="-1">Rust</button>
-            </div>
-            <div id="inst-py" role="tabpanel" aria-labelledby="inst-tab-py">
-              <div class="install-row">
-                <code>pip install alkahest</code>
-                <button class="copy" data-copy="pip install alkahest">Copy</button>
-              </div>
-              <p class="install-meta">Python 3.9–3.14 · Linux x86_64, macOS arm64, Windows x86_64 · <a href="https://pypi.org/project/alkahest/">PyPI</a></p>
-            </div>
-            <div id="inst-rs" role="tabpanel" aria-labelledby="inst-tab-rs" hidden>
-              <div class="install-row">
-                <code>cargo add alkahest-cas</code>
-                <button class="copy" data-copy="cargo add alkahest-cas">Copy</button>
-              </div>
-              <p class="install-meta">Needs FLINT ≥ 3.3, GMP and MPFR at build time · <a href="https://crates.io/crates/alkahest-cas">crates.io</a> · <a href="https://docs.rs/alkahest-cas">docs.rs</a></p>
-            </div>
+        <div class="install">
+          <div class="tabs" role="tablist" aria-label="Install language">
+            <button class="tab" role="tab" aria-selected="true" aria-controls="inst-py" id="inst-tab-py">Python</button>
+            <button class="tab" role="tab" aria-selected="false" aria-controls="inst-rs" id="inst-tab-rs" tabindex="-1">Rust</button>
           </div>
-
-          <div class="hero-ctas">
-            <a class="btn primary" href="/docs/#quickstart">Quickstart →</a>
-            <a class="btn" href="/playground/">Try it in the browser</a>
+          <div id="inst-py" role="tabpanel" aria-labelledby="inst-tab-py">
+            <button class="install-row" data-copy="pip install alkahest" aria-label="Copy: pip install alkahest">
+              <code>pip install alkahest</code>
+              <span class="copy-hint" aria-hidden="true">Copy</span>
+            </button>
+            <p class="install-meta">Python 3.9–3.14 · Linux x86_64, macOS arm64, Windows x86_64 · <a href="https://pypi.org/project/alkahest/">PyPI</a></p>
+          </div>
+          <div id="inst-rs" role="tabpanel" aria-labelledby="inst-tab-rs" hidden>
+            <button class="install-row" data-copy="cargo add alkahest-cas" aria-label="Copy: cargo add alkahest-cas">
+              <code>cargo add alkahest-cas</code>
+              <span class="copy-hint" aria-hidden="true">Copy</span>
+            </button>
+            <p class="install-meta">Needs FLINT ≥ 3.3, GMP and MPFR at build time · <a href="https://crates.io/crates/alkahest-cas">crates.io</a> · <a href="https://docs.rs/alkahest-cas">docs.rs</a></p>
           </div>
         </div>
 
-        <div class="card bench-card" id="hero-bench" aria-label="Benchmarks">
+        <div class="hero-ctas">
+          <a class="btn primary" href="/docs/#quickstart">Quickstart →</a>
+          <a class="btn" href="/playground/">Try it out →</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Benchmarks ────────────────────────────────────────────────── -->
+    <section class="block bench-section" id="benchmarks">
+      <div class="wrap">
+        <p class="eyebrow">Benchmarks</p>
+        <h2 class="h2">Measured on the workloads people run.</h2>
+        <p class="lede">Median wall time against SymPy, SymEngine, NumPy and Mathematica, same machine, every answer checked. Losses included.</p>
+        <div class="bench-panel" id="hero-bench" aria-label="Benchmarks">
           <div class="tabs" role="tablist" aria-label="Benchmark suite"></div>
           <div class="bench-body"><div class="bench-empty">Loading benchmarks…</div></div>
-          <div class="bench-foot"><span class="bench-meta"></span><a href="#performance">All benchmarks ↓</a></div>
+          <div class="bench-foot"><span class="bench-meta"></span><a href="#performance">Full tables and method ↓</a></div>
         </div>
       </div>
     </section>
@@ -180,12 +182,12 @@
       <div class="wrap">
         <p class="eyebrow">Built for agents</p>
         <h2 class="h2">Answers an agent can check — or an honest refusal.</h2>
-        <p class="lede">An LLM can’t tell a plausible wrong answer from a right one. Alkahest is designed so it doesn’t have to take the result on trust.</p>
+        <p class="lede">An LLM can’t tell a plausible wrong answer from a right one. alkahest is designed so it doesn’t have to take the result on trust.</p>
 
         <div class="verify-grid">
           <article class="card vcard">
             <h3>Lean 4 certificates <span class="pill ok">certified</span></h3>
-            <p>Supported results export a Lean&nbsp;4 + Mathlib proof that typechecks independently of Alkahest. The boundary is generated, not hand-maintained: <code>certifiable()</code> tells you up front whether a shape will certify.</p>
+            <p>Supported results export a Lean&nbsp;4 + Mathlib proof that typechecks independently of alkahest. The boundary is generated, not hand-maintained: <code>certifiable()</code> tells you up front whether a shape will certify.</p>
             <div class="code"><div class="label">r = ak.integrate(x**2, x, 0, 1); r.certificate  # tail of the Lean file</div><pre><code>example : ∫ x in ((0 : ℝ))..((1 : ℝ)), ((x : ℝ)) ^ (2 : ℕ) = (((1 : ℝ)) ^ (3 : ℕ) / (3)) - (((0 : ℝ)) ^ (3 : ℕ) / (3)) := by
   have hderiv : ∀ x ∈ Set.uIcc ((0 : ℝ)) ((1 : ℝ)),
       HasDerivAt (fun (x : ℝ) =&gt; (x) ^ (3 : ℕ) / (3)) (((x : ℝ)) ^ (2 : ℕ)) x := by
@@ -265,7 +267,7 @@ Remediation: this integrand has no closed-form antiderivative in terms of elemen
         <div class="perf-head">
           <div>
             <p class="eyebrow">Performance</p>
-            <h2 class="h2">Measured against the systems people actually use.</h2>
+            <h2 class="h2">Every number, with its method.</h2>
             <p class="lede">Median wall time on realistic workloads, same machine, every answer checked for correctness. Losses are included.</p>
           </div>
         </div>

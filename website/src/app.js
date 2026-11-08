@@ -43,18 +43,20 @@
   document.addEventListener("click", async (e) => {
     const btn = e.target.closest("[data-copy]");
     if (!btn) return;
+    // The install rows are whole-block buttons with a separate hint; plain copy buttons use their own text.
+    const hint = btn.querySelector(".copy-hint") || btn;
     try {
       await navigator.clipboard.writeText(btn.dataset.copy);
-      btn.textContent = "Copied";
+      hint.textContent = "Copied";
     } catch {
-      btn.textContent = "Press ⌘C";
+      hint.textContent = "Press ⌘C";
     }
-    setTimeout(() => (btn.textContent = "Copy"), 1500);
+    setTimeout(() => (hint.textContent = "Copy"), 1500);
   });
 
   // ── Benchmarks ───────────────────────────────────────────────────────
   const SYSTEM_LABEL = {
-    alkahest: "Alkahest",
+    alkahest: "alkahest",
     sympy: "SymPy",
     symengine: "SymEngine",
     mathematica: "Mathematica",
@@ -144,12 +146,12 @@
       .join("");
     const show = (tab) => {
       const s = suites.find((x) => x.id === tab.dataset.suite);
-      body.innerHTML = `${s.blurb ? `<p class="bench-blurb">${esc(s.blurb)}</p>` : ""}${s.cases.slice(0, 3).map(caseBars).join("")}`;
+      body.innerHTML = `${s.blurb ? `<p class="bench-blurb">${esc(s.blurb)}</p>` : ""}<div class="bench-grid">${s.cases.map(caseBars).join("")}</div>`;
     };
     wireTabs(tablist, show);
     show(tablist.querySelector('[aria-selected="true"]'));
     const meta = card.querySelector(".bench-meta");
-    if (meta) meta.textContent = `Median wall time, log scale · Alkahest ${data.alkahest_version || ""}`;
+    if (meta) meta.textContent = `Median wall time, log scale · alkahest ${data.alkahest_version || ""}`;
   }
 
   function renderTables(data) {
@@ -182,12 +184,12 @@
           })
           .join("");
         return `<div class="perf-suite"><h3>${esc(s.label)}</h3>${s.blurb ? `<p>${esc(s.blurb)}</p>` : ""}
-          <div class="table-scroll"><table class="perf"><thead><tr><th>Task</th>${head}<th>Alkahest vs best other</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+          <div class="table-scroll"><table class="perf"><thead><tr><th>Task</th>${head}<th>alkahest vs best other</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
       })
       .join("");
     const m = document.getElementById("perf-method");
     if (m) {
-      m.innerHTML = `Alkahest ${esc(data.alkahest_version || "")}${data.alkahest_commit ? ` (${esc(data.alkahest_commit)})` : ""}, generated ${esc(data.generated || "")} on ${esc(data.machine || "one machine")}. ` +
+      m.innerHTML = `alkahest ${esc(data.alkahest_version || "")}${data.alkahest_commit ? ` (${esc(data.alkahest_commit)})` : ""}, generated ${esc(data.generated || "")} on ${esc(data.machine || "one machine")}. ` +
         `${esc(data.methodology || "")} ` +
         `Reproduce with <code>python benchmarks/website/run_all.py</code> — ` +
         `<a href="https://github.com/alkahest-cas/alkahest/blob/main/benchmarks/website/RESULTS.md">full results and caveats</a>.`;
