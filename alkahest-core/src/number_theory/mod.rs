@@ -575,7 +575,7 @@ mod tests {
         ];
         for n in &cases {
             let want = factorint(n).unwrap();
-            let _guard = budget::enter(Budget::new().with_wall(std::time::Duration::from_secs(60)));
+            let _guard = budget::enter(Budget::new().with_wall(crate::test_time::limit_secs(60)));
             let got = factorint_bounded(n).unwrap();
             assert_eq!(got, want, "{n}");
         }

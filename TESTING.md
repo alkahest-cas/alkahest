@@ -174,20 +174,41 @@ RUSTFLAGS="-Zsanitizer=leak" \
 ### Valgrind
 Valgrind is used exclusively on the Rust/C FFI layer (bypassing Python/PyO3 to avoid false positives from Python's `pymalloc`). It verifies that deep, long-running algebraic simplifications do not slowly leak memory.
 
+**What the two nightly shards cover.** Both run the `alkahest-cas` *unit-test* binary
+(a `-Z build-std` debug build) under memcheck, scoped by
+[`.github/valgrind-scope.txt`](.github/valgrind-scope.txt), which the CI step reads. The
+step fails if a filter or a skip in that file matches no test, and if memcheck executes
+none; it sets `ALKAHEST_TEST_TIME_SCALE=50`, so wall-clock bounds written with
+`test_time::limit*` stretch to fit memcheck's 20–50× slowdown.
+
+| Shard | Runs | Does not run (and what checks it instead) |
+|-------|------|-------------------------------------------|
+| `valgrind` | the GMP/MPFR/FLINT boundary: tests matching `ball::`, `flint`, `rug`, `number_theory::`, `lattice::`, `poly::factor::binomial::` | `poly::factor::binomial::tests::{x_n_pm_1_matches_flint, scaled_and_shifted_binomials_match_flint}` and `poly::factor::tests::canonical_order_is_independent_of_flint` — FLINT factorisations of degree up to 300 that did not finish in five hours under memcheck (they kept the shard at the 6 h cap from 2026-11-01 to 11-07). The same FLINT entry points run here on small inputs; the three tests in full run under ASan and LSan. |
+| `valgrind-validated` | `validated::` | `validated::bounds::` — enclosure searches that do not finish under memcheck (2026-10-05); ASan and LSan run them. |
+| — | — | every other unit test, every integration test (`alkahest-core/tests/`), every other crate, and all of Python: pure-Rust logic is memory-checked by the `asan` and leak-checked by the `lsan` shards over the whole workspace. |
+
+The `valgrind` selection is 235 tests. Memcheck runs all of a process's threads on one
+core, so what matters is their sum: 57 minutes on a GitHub runner, about 27 on a developer machine (the two
+Leech-lattice tests are 21 of them; measured test by test on the 21 slowest and a
+one-in-ten sample of the rest). On the 2026-11-07 nightly the tests the old filter shared with this one had finished
+2 h 30 min into the job while time-slicing with the three that are now skipped.
+
 *Local parity with the `valgrind` nightly shard:*
 ```bash
 sudo apt-get install -y valgrind   # or your OS equivalent
 
 export RUSTFLAGS="-C debuginfo=2 -Z dwarf-version=4"
-cargo +nightly build --workspace --target x86_64-unknown-linux-gnu -Z build-std
+cargo +nightly test -p alkahest-cas --lib --no-run \
+  --target x86_64-unknown-linux-gnu -Z build-std
+# The path cargo printed ("Executable unittests src/lib.rs (...)"):
+bin=target/x86_64-unknown-linux-gnu/debug/deps/alkahest_cas-<hash>
 
-# The crate's test binaries are `alkahest_cas-*` (package `alkahest-cas`).
-# `alkahest_core-*` matches nothing and the guard below turns that into a silent pass.
-for bin in target/x86_64-unknown-linux-gnu/debug/deps/alkahest_cas-*; do
-  [ -x "$bin" ] || continue
-  valgrind --leak-check=full --error-exitcode=1 \
-    --suppressions=valgrind.supp "$bin"
-done
+shard=valgrind   # or valgrind-validated
+mapfile -t F < <(awk -v s=$shard '$1 == s && $2 == "filter" {print $3}' .github/valgrind-scope.txt)
+mapfile -t K < <(awk -v s=$shard '$1 == s && $2 == "skip" {printf "--skip\n%s\n", $3}' .github/valgrind-scope.txt)
+ALKAHEST_TEST_TIME_SCALE=50 valgrind --leak-check=full --error-exitcode=1 \
+  --errors-for-leak-kinds=definite,indirect \
+  --suppressions=valgrind.supp "$bin" "${F[@]}" "${K[@]}"
 ```
 
 ---
@@ -235,7 +256,7 @@ Use this checklist when you want **more than** `cargo test --workspace` on a bee
 | **hypothesis** | See §1 Python (`HYPOTHESIS_MAX_EXAMPLES=5000`, `pytest tests/`) |
 | **tsan** | See §3 ThreadSanitizer block |
 | **lsan** | See §3 LeakSanitizer block |
-| **valgrind**, **valgrind-validated** | See §3 Valgrind block; the second runs `validated::` (minus `validated::bounds::`, which cannot finish under valgrind), the first the FFI filters |
+| **valgrind**, **valgrind-validated** | See §3 Valgrind block: both read `.github/valgrind-scope.txt` (the first the FFI filters, the second `validated::`), whose skips list what memcheck cannot finish and what covers it instead |
 | **fuzz-\*** | See §2; use `--manifest-path fuzz/Cargo.toml` |
 | **extras** | `maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner`; `pytest tests/test_oracle.py -v` if configured; `cargo bench --workspace`; optional scripts under `benchmarks/` (may need SymPy / optional CAS; CI sets `RUN_COMMERCIAL_CAS` where applicable) |
 

@@ -606,7 +606,11 @@ mod tests {
         );
         check_large("2305843009213693951", "37", "1234567890123456789");
         check_large("1000000000039", "5", "777777777777");
-        assert!(t.elapsed() < Duration::from_secs(20), "{:?}", t.elapsed());
+        assert!(
+            t.elapsed() < crate::test_time::limit_secs(20),
+            "{:?}",
+            t.elapsed()
+        );
     }
 
     /// A prime order between 2^42 and 2^64 goes through Pollard's rho.
