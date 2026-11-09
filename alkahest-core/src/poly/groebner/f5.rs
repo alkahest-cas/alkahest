@@ -180,7 +180,11 @@ impl State {
             }
             let lm = key(self.order, &mul_exp(&quo(t, &g.sig.mon), &g.lead));
             // `<=`: the newest of equals, as `m` is increasing.
-            if best.as_ref().is_none_or(|(b, _)| lm <= *b) {
+            let better = match &best {
+                Some((b, _)) => lm <= *b,
+                None => true,
+            };
+            if better {
                 best = Some((lm, m));
             }
         }
