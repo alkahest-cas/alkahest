@@ -23,17 +23,23 @@ def _is_int_list(v) -> bool:
 
 def test_bit_vectors_are_lists_of_ints_not_bytes():
     p = PauliOperator("XZ")
-    assert _is_int_list(p.x_bits) and p.x_bits == [1, 0]
-    assert _is_int_list(p.z_bits) and p.z_bits == [0, 1]
-    assert _is_int_list(p.symplectic()) and p.symplectic() == [1, 0, 0, 1]
+    for bits, expected in [
+        (p.x_bits, [1, 0]),
+        (p.z_bits, [0, 1]),
+        (p.symplectic(), [1, 0, 0, 1]),
+    ]:
+        assert _is_int_list(bits)
+        assert bits == expected
 
 
 def test_nested_bit_vectors_are_lists_too():
     comp = symplectic_complement([[1, 0, 0, 0]], 2)
-    assert isinstance(comp, list) and comp
+    assert isinstance(comp, list)
+    assert comp
     assert all(_is_int_list(row) for row in comp)
     a, b = theta_characteristic_bits(8, 2)
-    assert _is_int_list(a) and _is_int_list(b)
+    assert _is_int_list(a)
+    assert _is_int_list(b)
 
 
 def test_trailing_optional_arguments_stay_optional():
