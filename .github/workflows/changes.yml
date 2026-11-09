@@ -208,6 +208,7 @@ jobs:
               - '.github/actions/**'
               - '.github/scripts/**'
               - 'scripts/check_wheel_isa.py'
+              - 'scripts/check_wheel_macos.py'
               - 'vendor/**'
               - 'tests/smoke_readme.py'
             # docs.yml's trigger `paths:`, plus the workflow itself.

@@ -31,6 +31,13 @@ case "$curl_help" in
   *--retry-all-errors*) opts+=(--retry-all-errors) ;;
 esac
 
+# macOS has shasum, and sha256sum only on some releases.
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256=(sha256sum)
+else
+  sha256=(shasum -a 256)
+fi
+
 for round in 1 2 3; do
   for url in "$@"; do
     echo "fetch: $url (round $round)"
@@ -39,11 +46,11 @@ for round in 1 2 3; do
       if [ "$sum" = - ]; then
         exit 0
       fi
-      if echo "$sum  $out" | sha256sum --check --status -; then
+      if echo "$sum  $out" | "${sha256[@]}" --check --status -; then
         echo "fetch: $out verified"
         exit 0
       fi
-      echo "fetch: checksum mismatch for $url; got $(sha256sum "$out" | cut -d' ' -f1)" >&2
+      echo "fetch: checksum mismatch for $url; got $("${sha256[@]}" "$out" | cut -d' ' -f1)" >&2
       head -c 200 "$out" | tr -cd '[:print:]\n' >&2 || true
       echo >&2
     fi
