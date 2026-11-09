@@ -436,6 +436,12 @@ impl Lifter {
         let mut den = Integer::from(1);
         let mut out = Vec::with_capacity(g.residues.len());
         for (k, r) in g.residues.iter().enumerate() {
+            // The modulus of a hard input runs to millions of bits, and one
+            // reconstruction is a half-gcd on it.  `None` is "not liftable
+            // yet", and the budget stops the caller at its next poll.
+            if crate::budget::interrupted() {
+                return None;
+            }
             match lift(r, &mut den) {
                 Some(x) => out.push(x),
                 None => {
@@ -1152,6 +1158,9 @@ fn verify_lex(cand: &[GbPoly], mats: &MulMatrices, n: usize) -> Option<bool> {
     }
     let mut ev = ExactVectors::new(mats);
     for g in cand {
+        if crate::budget::interrupted() {
+            return None;
+        }
         // Σ_m c_m·vec(m) with vec(m) = w_m/den_m: scale every c_m/den_m to
         // the common denominator and accumulate over ℤ (no gcds).
         let mut factors = Vec::with_capacity(g.terms.len());

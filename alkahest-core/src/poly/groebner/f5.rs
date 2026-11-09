@@ -676,6 +676,84 @@ pub(crate) mod tests {
         }
     }
 
+    /// The unverified engine against Buchberger on many random ideals, far
+    /// harder than the proptest below: `F5_FUZZ_CASES` (default 5000) ideals
+    /// from the seed `F5_FUZZ_SEED`, each under a wall budget.  Run with
+    /// `cargo test --release --features groebner -p alkahest-cas fuzz_f5 -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn fuzz_f5_unverified_against_buchberger() {
+        use crate::budget::{enter, Budget};
+        use crate::poly::groebner::armed;
+        use std::time::Duration;
+
+        let env = |k: &str, d: u64| {
+            std::env::var(k)
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(d)
+        };
+        let cases = env("F5_FUZZ_CASES", 5000);
+        let mut x = env("F5_FUZZ_SEED", 1).max(1);
+        let mut next = move |m: u64| {
+            // xorshift64
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x % m
+        };
+        let orders = [
+            MonomialOrder::Lex,
+            MonomialOrder::GrLex,
+            MonomialOrder::GRevLex,
+        ];
+        let mut stats = [0u64; 3]; // agreed, a side over budget, zero input
+        for _ in 0..cases {
+            let n = 2 + next(3) as usize;
+            let m = 2 + next(3) as usize;
+            let max_e = 1 + next(3) as u32;
+            let mut gens = Vec::with_capacity(m);
+            for _ in 0..m {
+                let mut p = GbPoly::zero(n);
+                for _ in 0..1 + next(5) {
+                    let e: Vec<u32> = (0..n).map(|_| next(u64::from(max_e) + 1) as u32).collect();
+                    let c = rug::Rational::from((next(13) as i64 - 6, 1 + next(3) as i64));
+                    p = p.add(&GbPoly::monomial(e, c));
+                }
+                if !p.is_zero() {
+                    gens.push(p);
+                }
+            }
+            if gens.len() < 2 {
+                stats[2] += 1;
+                continue;
+            }
+            let order = orders[next(3) as usize];
+            let limit = Budget::new().with_wall(Duration::from_secs(3));
+            let run = |g: Vec<GbPoly>, raw: bool| {
+                let _b = enter(limit);
+                armed(|| {
+                    if raw {
+                        signature_basis(&g, order)
+                    } else {
+                        compute_buchberger_basis(g, order)
+                    }
+                })
+                .ok()
+            };
+            let (Some(a), Some(b)) = (run(gens.clone(), true), run(gens.clone(), false)) else {
+                stats[1] += 1;
+                continue;
+            };
+            assert_eq!(canon(&a), canon(&b), "{order:?} {gens:?}");
+            stats[0] += 1;
+        }
+        eprintln!(
+            "f5 fuzz: {} agreed, {} over budget, {} degenerate",
+            stats[0], stats[1], stats[2]
+        );
+    }
+
     fn small_system() -> impl proptest::strategy::Strategy<Value = (Vec<GbPoly>, usize)> {
         use proptest::prelude::*;
         (2usize..=3, 2usize..=4, 0usize..3).prop_flat_map(|(n, m, ord)| {
