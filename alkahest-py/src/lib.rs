@@ -17553,7 +17553,7 @@ impl PyCudaCompiledFn {
             .call_batch_on(device, &col_refs, &mut out)
             .map_err(|e| {
                 Python::attach(|py2| {
-                    let exc_type = py2.get_type_bound::<PyCudaError>();
+                    let exc_type = py2.get_type::<PyCudaError>();
                     make_structured_err(py2, &exc_type, &e)
                 })
             })?;
@@ -17585,7 +17585,7 @@ fn py_compile_cuda(
     let pool_ref = expr.pool.borrow(py);
     let compiled = core_compile_cuda(expr.id, &input_ids, &pool_ref.inner).map_err(|e| {
         Python::attach(|py2| {
-            let exc_type = py2.get_type_bound::<PyCudaError>();
+            let exc_type = py2.get_type::<PyCudaError>();
             make_structured_err(py2, &exc_type, &e)
         })
     })?;
