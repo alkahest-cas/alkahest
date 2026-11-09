@@ -18,14 +18,27 @@
 //!   signature of a known syzygy is skipped.  Known syzygies are the principal
 //!   (Koszul) ones, `lm(g)·e_i` for every `g` of index below `i`, and every
 //!   signature at which a reduction reached zero.
-//! * **Rewrite criterion** — among the elements whose signature divides an
-//!   S-pair signature `T`, only the most recently added may generate it; pairs
-//!   from any other element are skipped.
+//! * **Rewrite criterion** — of the elements `g` whose signature divides an
+//!   S-pair signature `T`, the one with the smallest `lm((T / sig(g))·g)`
+//!   (the signature-ratio order of Arri–Perry / Gao–Volny–Wang / Roune–Stillman)
+//!   is the only one allowed to generate `T`.  This must be that order, not
+//!   "the most recently added": an S-pair whose reduction is singular
+//!   top-reducible is dropped, and the argument for that drop is that the
+//!   element which singularly reduces it, having a smaller `lm` at `T`, wins
+//!   `T` instead.  Under add order a later element keeps `T`, its multiple can
+//!   stay regular top-reducible, and every S-pair at `T` is discarded with
+//!   nothing left to represent it — which lost basis elements on inhomogeneous
+//!   input (`⟨1 + y² + x·y²·z + x²·z², 1 + x²·y², y + y·z⟩` under grevlex).
 //!
 //! Every S-pair the criteria do not discard is a genuine reduction step of
-//! the signature-based theory, so the result is a Gröbner basis (Eder–Faugère
-//! Thm 7.1 / Roune–Stillman 2012).  The final basis is interreduced and monic,
-//! like [`super::buchberger::compute_buchberger_basis`]'s.
+//! the signature-based theory.  The final basis is interreduced and monic,
+//! like [`super::buchberger::compute_buchberger_basis`]'s, and **verified
+//! exactly** before it is returned: every generator and every critical pair
+//! left by Gebauer–Möller reduces to zero modulo it.  A basis that fails is
+//! not returned; Buchberger's algorithm answers instead.  Every element is
+//! built from the input by S-polynomials and reductions, so it lies in the
+//! input ideal, and the verification gives the other inclusion: the result is
+//! a proof, independently of the correctness of the criteria above.
 //!
 //! This engine works in exact rational arithmetic.  It is correct and avoids
 //! most zero reductions, but it is **not** the fast path:
@@ -38,9 +51,10 @@ use std::collections::{BTreeMap, BinaryHeap};
 
 use rug::Rational;
 
-use crate::poly::groebner::buchberger::interreduce;
+use crate::poly::groebner::buchberger::{compute_buchberger_basis, interreduce};
 use crate::poly::groebner::ideal::GbPoly;
 use crate::poly::groebner::monomial_order::MonomialOrder;
+use crate::poly::groebner::multimodular::verify_over_q;
 
 /// `t·e_index`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,7 +116,7 @@ struct Elem {
 }
 
 /// A critical pair, keyed by its signature `T = t·sig(g_k)`, the larger of
-/// the two halves' signatures.
+/// the two halves' signatures; `g_k` is the half that carries it.
 struct SPair {
     t_key: Vec<u32>,
     t: Vec<u32>,
@@ -154,11 +168,23 @@ impl State {
         self.syz[index].iter().any(|s| divides(s, t))
     }
 
-    /// Some element newer than `k` has a signature dividing `index, t`.
-    fn rewritable(&self, index: usize, t: &[u32], k: usize) -> bool {
-        self.basis[k + 1..]
-            .iter()
-            .any(|g| g.sig.index == index && divides(&g.sig.mon, t))
+    /// The element allowed to generate the signature `t·e_index`: among those
+    /// whose signature divides it, the one whose multiple at `t` has the
+    /// smallest leading monomial (the newest of equals).  See the module
+    /// documentation for why it has to be this order.
+    fn rewriter(&self, index: usize, t: &[u32]) -> Option<usize> {
+        let mut best: Option<(Vec<u32>, usize)> = None;
+        for (m, g) in self.basis.iter().enumerate() {
+            if g.sig.index != index || !divides(&g.sig.mon, t) {
+                continue;
+            }
+            let lm = key(self.order, &mul_exp(&quo(t, &g.sig.mon), &g.lead));
+            // `<=`: the newest of equals, as `m` is increasing.
+            if best.as_ref().is_none_or(|(b, _)| lm <= *b) {
+                best = Some((lm, m));
+            }
+        }
+        best.map(|(_, m)| m)
     }
 
     /// Regular reduction of `p` (signature `sig`), top and tail.  `None` when
@@ -306,15 +332,34 @@ impl State {
 
 /// Compute a Gröbner basis with the signature-based algorithm described in
 /// the module documentation.  The output is interreduced and monic in the
-/// same sense as [`super::buchberger::compute_buchberger_basis`].
+/// same sense as [`super::buchberger::compute_buchberger_basis`], and has been
+/// verified to be a reduced Gröbner basis of the input ideal.
 pub fn compute_groebner_basis_f5(
     generators: Vec<GbPoly>,
     poly_order: MonomialOrder,
 ) -> Vec<GbPoly> {
     let gens: Vec<GbPoly> = generators.into_iter().filter(|g| !g.is_zero()).collect();
-    let Some(n_vars) = gens.first().map(|g| g.n_vars) else {
+    if gens.is_empty() {
         return Vec::new();
-    };
+    }
+    let basis = signature_basis(&gens, poly_order);
+    if crate::budget::interrupt_pending() {
+        return basis;
+    }
+    match verify_over_q(&gens, &basis, poly_order) {
+        Some(true) if is_reduced(&basis, poly_order) => basis,
+        // Stopped by an armed budget: the caller discards this.
+        None => basis,
+        // The criteria dropped something they should not have.  Never return
+        // it: Buchberger needs no criteria beyond Gebauer–Möller's.
+        Some(_) => compute_buchberger_basis(gens, poly_order),
+    }
+}
+
+/// The signature-based computation proper, unverified.  `gens` is non-empty
+/// and has no zero element.
+fn signature_basis(gens: &[GbPoly], poly_order: MonomialOrder) -> Vec<GbPoly> {
+    let n_vars = gens[0].n_vars;
     let mut st = State {
         order: poly_order,
         basis: Vec::new(),
@@ -343,20 +388,29 @@ pub fn compute_groebner_basis_f5(
             Some(r) => st.add(r, sig),
             None => {}
         }
-        let mut last: Option<Vec<u32>> = None;
-        while let Some(pair) = st.pairs.pop() {
+        while let Some(first) = st.pairs.pop() {
             if crate::budget::interrupted() {
                 break;
             }
-            // One reduction per signature: the first pair popped for `T` has
-            // the newest generator; the rest are rewritten by it.
-            if last.as_ref() == Some(&pair.t) {
+            // Every pair of this signature, of which at most one is reduced.
+            let mut pairs_at_t = vec![first];
+            while st
+                .pairs
+                .peek()
+                .is_some_and(|p| p.index == pairs_at_t[0].index && p.t == pairs_at_t[0].t)
+            {
+                pairs_at_t.extend(st.pairs.pop());
+            }
+            let (index, t) = (pairs_at_t[0].index, pairs_at_t[0].t.clone());
+            if st.syzygy_covers(index, &t) {
                 continue;
             }
-            last = Some(pair.t.clone());
-            if st.syzygy_covers(pair.index, &pair.t) || st.rewritable(pair.index, &pair.t, pair.k) {
+            let Some(rewriter) = st.rewriter(index, &t) else {
                 continue;
-            }
+            };
+            let Some(pair) = pairs_at_t.into_iter().find(|p| p.k == rewriter) else {
+                continue;
+            };
             let sig = Sig {
                 index: pair.index,
                 mon: pair.t.clone(),
@@ -383,6 +437,19 @@ pub fn compute_groebner_basis_f5(
     interreduce(polys, poly_order)
 }
 
+/// No term of any element is divisible by the leading monomial of another.
+fn is_reduced(basis: &[GbPoly], order: MonomialOrder) -> bool {
+    let leads: Vec<Vec<u32>> = basis.iter().filter_map(|g| g.leading_exp(order)).collect();
+    basis.iter().enumerate().all(|(i, g)| {
+        g.terms.keys().all(|e| {
+            leads
+                .iter()
+                .enumerate()
+                .all(|(j, l)| j == i || !divides(l, e))
+        })
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -390,7 +457,6 @@ pub fn compute_groebner_basis_f5(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::poly::groebner::buchberger::compute_buchberger_basis;
     use crate::poly::groebner::reduce::reduce;
     use std::collections::BTreeMap;
 
@@ -565,6 +631,51 @@ pub(crate) mod tests {
         }
     }
 
+    /// `⟨1 + y² + x·y²·z + x²·z², 1 + x²·y², y + y·z⟩`: the input that exposed
+    /// the rewrite criterion's order.  Under grevlex the S-pair of `z + 1` and
+    /// `x³z² + …` was discarded, in favour of a newer element whose multiple
+    /// was itself still regular top-reducible; the basis lost `x³ + …` and
+    /// disagreed with Buchberger, SymPy and Wolfram.
+    #[test]
+    fn f5_keeps_element_the_add_order_rewrite_lost() {
+        let sys = vec![
+            poly(
+                &[
+                    (&[0, 2, 0], 1),
+                    (&[1, 2, 1], 1),
+                    (&[2, 0, 2], 1),
+                    (&[0, 0, 0], 1),
+                ],
+                3,
+            ),
+            poly(&[(&[2, 2, 0], 1), (&[0, 0, 0], 1)], 3),
+            poly(&[(&[0, 1, 0], 1), (&[0, 1, 1], 1)], 3),
+        ];
+        for order in [
+            MonomialOrder::Lex,
+            MonomialOrder::GrLex,
+            MonomialOrder::GRevLex,
+        ] {
+            let b1 = compute_buchberger_basis(sys.clone(), order);
+            // The engine itself, so the verification cannot hide a criterion
+            // that loses something: it would only cost the Buchberger fallback.
+            let raw = signature_basis(&sys, order);
+            assert_eq!(canon(&b1), canon(&raw), "{order:?}, unverified");
+            let b2 = compute_groebner_basis_f5(sys.clone(), order);
+            assert_eq!(canon(&b1), canon(&b2), "{order:?}");
+        }
+        // The hand-checked grevlex basis: z + 1 and three polynomials in x, y.
+        let b = compute_groebner_basis_f5(sys, MonomialOrder::GRevLex);
+        assert_eq!(b.len(), 4);
+        let leads: Vec<Vec<u32>> = b
+            .iter()
+            .filter_map(|g| g.leading_exp(MonomialOrder::GRevLex))
+            .collect();
+        for l in [vec![0, 4, 0], vec![3, 0, 0], vec![1, 2, 0], vec![0, 0, 1]] {
+            assert!(leads.contains(&l), "missing leading monomial {l:?}");
+        }
+    }
+
     fn small_system() -> impl proptest::strategy::Strategy<Value = (Vec<GbPoly>, usize)> {
         use proptest::prelude::*;
         (2usize..=3, 2usize..=4, 0usize..3).prop_flat_map(|(n, m, ord)| {
@@ -589,6 +700,13 @@ pub(crate) mod tests {
         fn f5_random_ideals_equal_buchberger((gens, ord) in small_system()) {
             let order = [MonomialOrder::Lex, MonomialOrder::GrLex, MonomialOrder::GRevLex][ord];
             let b1 = compute_buchberger_basis(gens.clone(), order);
+            // Against the unverified engine as well: verification only makes a
+            // wrong basis cost a fallback, and that must not hide a wrong basis.
+            let nonzero: Vec<GbPoly> = gens.iter().filter(|g| !g.is_zero()).cloned().collect();
+            if !nonzero.is_empty() {
+                let raw = signature_basis(&nonzero, order);
+                proptest::prop_assert_eq!(canon(&b1), canon(&raw));
+            }
             let b2 = compute_groebner_basis_f5(gens, order);
             proptest::prop_assert_eq!(canon(&b1), canon(&b2));
         }
