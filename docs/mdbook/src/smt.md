@@ -89,7 +89,9 @@ support.recommendation   # 'smt' | 'prefer_in_tree'
 support.script           # the emitted script, so you don't pay for it twice
 ```
 
-`recommendation` is the part worth reading, and it cuts against the usual instinct:
+A formula the emitter refuses has no SMT route at all, so it gets `prefer_in_tree` with
+`reason='outside_fragment'`. Otherwise, `recommendation` is the part worth reading, and it
+cuts against the usual instinct:
 
 - **`prefer_in_tree`** for real arithmetic with no integer variables (`QF_LRA` / `QF_NRA`).
   [`prove_nonneg` / `sos_decompose`](./positivity.md) return a `PositivityCertificate` that
@@ -179,6 +181,7 @@ chosen theory requires — and none where they would not parse.
 | --- | --- |
 | `Symbol` (Real / Positive / NonNegative / NonZero) | `(declare-fun x () Real)` |
 | `Symbol` (Integer) | `(declare-fun n () Int)` |
+| `GoldenRatio` | `(declare-fun GoldenRatio () Real)` plus `(assert (= (* GoldenRatio GoldenRatio) (+ GoldenRatio 1)))` and `(assert (> GoldenRatio 0))` |
 | `Positive` / `NonNegative` / `NonZero` refinement | an extra `(assert (> x 0))` / `(>= x 0)` / `(not (= x 0))` |
 | `Integer(-3)` | `(- 3)` |
 | `Rational(-1, 3)` | `(/ (- 1) 3)` |
@@ -210,8 +213,15 @@ The emitter is **total-or-refuse**. Everything below raises `SmtError` `E-SMT-00
   Write `pool.rational(1, 10)`; exporting the dyadic expansion would silently change what
   is being asked.
 - **Complex-domain symbols** — SMT-LIB arithmetic is ordered and real.
-- **Transcendental function heads** (`sin`, `exp`, `log`, …). Only `abs` has an exact
-  SMT-LIB rendering.
+- **Transcendental function heads** (`sin`, `exp`, `log`, …, and so `exp(1)`). Only
+  `abs` has an exact SMT-LIB rendering.
+- **Named constants with no exact term**: `pi`, `EulerGamma`, `Catalan`, `Glaisher`, the
+  Stieltjes constants, and `∞`. The kernel stores these as symbols, and a symbol is what a
+  solver gets to choose: declared as a free `Real`, `pi > 4` comes back `sat` with `pi = 5`,
+  and the model passes every check, because substituting `pi = 5` back really does satisfy
+  `pi > 4`. To reason about π, say what you know about it yourself: a variable `p` with
+  `pool.rational(314, 100) < p < pool.rational(315, 100)` asks a question whose answer is
+  true of that interval, not of π. (`I` was already refused: it is `Complex`.)
 - **Non-integer or very large exponents.** Powers become products, so the expansion is
   *bounded* (`MAX_POW_EXPANSION`, 128) — a loop must never be able to ask for a megabyte
   of `x`.
@@ -312,6 +322,16 @@ Two independent exact checks, both mandatory:
 
 A model missing a "don't care" variable is completed with `0` and then checked, so the
 witness a caller receives is always total and always substitutable.
+
+`GoldenRatio` is the one named constant that goes through. It is algebraic, so the script
+declares it and pins it to its defining equation, `φ² = φ + 1 ∧ φ > 0`, which has exactly one
+real solution: the solver has no freedom left and `unsat` means what it says. That equation
+is nonlinear, so a formula containing φ needs `QF_NRA` / `QF_NIRA`, and naming a linear logic
+is refused as too weak. The constant is not a variable, so it is never part of `model` or
+`sorts`, and the value the solver reports for it is ignored. Both checks above run at the true
+value of φ, with exact arithmetic in ℚ(φ) in place of the kernel's rational evaluator. A
+*variable* forced to an irrational value (`x = φ`) still has no rational witness and is refused
+with `E-SMT-003`.
 
 Because the guarantee is unconditional, `solve` refuses **up front** — before the solver
 runs — for a formula the kernel cannot evaluate exactly (`E-SMT-002`, reason
@@ -437,7 +457,7 @@ recipe that re-establishes the link and let
 | Code | Raised by | Meaning |
 | --- | --- | --- |
 | `E-SMT-001` | Python driver | No solver binary found. A refusal, never a fallback. |
-| `E-SMT-002` | Rust emitter + driver | Formula outside the supported fragment (or an unusable logic, a quantified formula passed to `solve`, or one the kernel cannot check exactly). |
+| `E-SMT-002` | Rust emitter + driver | Formula outside the supported fragment, including a named constant with no exact term (or an unusable logic, a quantified formula passed to `solve`, or one the kernel cannot check exactly). |
 | `E-SMT-003` | Python driver | A model value (`root-obj`) cannot be lifted exactly. Refused, not rounded. |
 | `E-SMT-004` | Python driver | A model failed back-substitution. Always raised, never warned. |
 | `E-BUDGET-001` | Python driver | The solver hit `Budget.wall_ms`. |
