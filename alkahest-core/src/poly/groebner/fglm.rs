@@ -343,6 +343,9 @@ impl GaussState {
         let mut new_tr = vec![rug::Rational::from(0); k + 1];
         new_tr[k] = rug::Rational::from(1) / pivot_val.clone(); // contribution from orig_k
         for (j, entry) in new_tr.iter_mut().enumerate().take(k) {
+            if crate::budget::interrupted() {
+                break;
+            }
             let mut s = rug::Rational::from(0);
             for (i, c) in combo.iter().enumerate() {
                 if *c != 0 && j < self.transform[i].len() {
@@ -367,6 +370,11 @@ impl GaussState {
     fn reduce(&self, mut v: Vec<rug::Rational>) -> (Vec<rug::Rational>, Vec<rug::Rational>) {
         let mut combo = vec![rug::Rational::from(0); self.rref.len()];
         for (i, row) in self.rref.iter().enumerate() {
+            // Abandoning a half-reduced vector is safe: the budget poll in the
+            // FGLM loop stops the whole conversion before it is used.
+            if crate::budget::interrupted() {
+                break;
+            }
             let pc = self.pivot_col[i];
             if v[pc] == 0 {
                 continue;

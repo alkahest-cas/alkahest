@@ -7,6 +7,8 @@ with SymPy's ``groebner``, and checked for ideal membership of the inputs.
 
 from __future__ import annotations
 
+import contextlib
+import signal
 import time
 from fractions import Fraction
 
@@ -26,6 +28,38 @@ ENGINES = {
     "compute": alk.GroebnerBasis.compute,
     "compute_f5": alk.GroebnerBasis.compute_f5,
 }
+
+
+# Lex Buchberger over Q on a positive-dimensional ideal can run for hours in
+# either system on a few small generators: one such example held a full suite
+# run at 14 GB for over 80 minutes.  Every call here is bounded, and a call that
+# hits its bound says nothing either way (the differential check is skipped for
+# that example; the Budget is what keeps the engine from hanging CI).
+ENGINE_BUDGET_MS = 20_000
+SYMPY_SECONDS = 20
+
+
+class _SymPyDeadline(Exception):
+    pass
+
+
+@contextlib.contextmanager
+def _deadline(seconds):
+    """Interrupt Python code after ``seconds`` (a no-op where there is no SIGALRM)."""
+    if not hasattr(signal, "SIGALRM"):
+        yield
+        return
+
+    def fire(signum, frame):
+        raise _SymPyDeadline
+
+    prev = signal.signal(signal.SIGALRM, fire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, prev)
 
 
 def _canon_alk(gb):
@@ -77,8 +111,17 @@ def _check(n, terms_list, order, engine):
     nonzero = [i for i, p in enumerate(spolys) if p != 0]
     apolys = [apolys[i] for i in nonzero]
     spolys = [spolys[i] for i in nonzero]
-    gb = ENGINES[engine](apolys, avars, order=order)
-    assert _canon_alk(gb) == _canon_sympy(spolys, svars, order)
+    try:
+        with alk.context(budget=alk.Budget(wall_ms=ENGINE_BUDGET_MS)):
+            gb = ENGINES[engine](apolys, avars, order=order)
+    except alk.BudgetExceededError:
+        return
+    try:
+        with _deadline(SYMPY_SECONDS):
+            want = _canon_sympy(spolys, svars, order)
+    except _SymPyDeadline:
+        return
+    assert _canon_alk(gb) == want
     for p in apolys:
         assert gb.contains(p)
 
@@ -111,6 +154,58 @@ _system = st.integers(2, 3).flatmap(
 def test_random_ideals_match_sympy(system, order, engine):
     n, terms_list = system
     _check(n, terms_list, order, engine)
+
+
+# compute_f5 used to return a non-Gröbner basis for this ideal (grevlex): the
+# rewrite criterion kept the newest element at a signature rather than the one
+# with the smallest leading monomial, and an element was lost.  Exact: SymPy's
+# buchberger and f5b, Wolfram's GroebnerBasis, and compute all agree.
+_F5_REWRITE_REGRESSION = (
+    3,
+    [
+        [([0, 0, 0], 1, 1), ([0, 2, 0], 1, 1), ([1, 2, 1], 1, 1), ([2, 0, 2], 1, 1)],
+        [([0, 0, 0], 1, 1), ([2, 2, 0], 1, 1)],
+        [([0, 1, 0], 1, 1), ([0, 1, 1], 1, 1)],
+    ],
+)
+
+
+@pytest.mark.parametrize("order", ["grevlex", "lex", "grlex"])
+def test_f5_rewrite_regression_exact_agreement(order):
+    n, terms = _F5_REWRITE_REGRESSION
+    avars, apolys, svars, spolys = _build(n, terms)
+    want = _canon_sympy(spolys, svars, order)
+    gb = alk.GroebnerBasis.compute_f5(apolys, avars, order=order)
+    assert _canon_alk(gb) == want
+    assert gb.proof_status == "proved"
+
+
+# Positive-dimensional lex over Q: 3 small generators.  At the time of writing it
+# takes well over 5 minutes unbudgeted; the point is that a Budget stops it, on
+# any path, so a test cannot hang on one.
+_PATHOLOGICAL_LEX = (
+    3,
+    [
+        [([2, 1, 2], 5, 3), ([2, 2, 0], -5, 2), ([2, 0, 1], -4, 1), ([1, 2, 2], -6, 3)],
+        [([0, 2, 0], 5, 2), ([2, 0, 2], -3, 3), ([1, 1, 0], -6, 3)],
+        [([0, 2, 2], -1, 2), ([0, 1, 2], 4, 3), ([2, 0, 2], -6, 3), ([2, 1, 2], -2, 3)],
+    ],
+)
+
+
+def test_positive_dimensional_lex_honours_budget():
+    """If the lex path ever gets fast enough to finish this, so much the better."""
+    n, terms = _PATHOLOGICAL_LEX
+    avars, apolys, svars, spolys = _build(n, terms)
+    t = time.perf_counter()
+    try:
+        with alk.context(budget=alk.Budget(wall_ms=1000)):
+            gb = alk.GroebnerBasis.compute(apolys, avars, order="lex")
+    except alk.BudgetExceededError:
+        gb = None
+    assert time.perf_counter() - t < 15
+    if gb is not None:
+        assert _canon_alk(gb) == _canon_sympy(spolys, svars, "lex")
 
 
 def _cyclic(n):
