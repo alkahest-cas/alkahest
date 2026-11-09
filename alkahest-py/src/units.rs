@@ -80,14 +80,14 @@ fn wrap(u: Unit) -> PyUnit {
 }
 
 fn scale_tuple(py: Python<'_>, s: &core_units::Scale) -> PyResult<Py<PyAny>> {
-    Ok(PyTuple::new(
+    PyTuple::new(
         py,
         [
             rational_to_py(py, &s.ratio)?,
             rational_to_py(py, &s.pi_power)?,
         ],
     )?
-    .into_py_any(py)?)
+    .into_py_any(py)
 }
 
 #[pymethods]
@@ -125,7 +125,7 @@ impl PyUnit {
                 d.set_item(*name, rational_to_py(py, e)?)?;
             }
         }
-        Ok(d.into_py_any(py)?)
+        d.into_py_any(py)
     }
 
     /// ``[(name, Fraction exponent), …]`` as written.
@@ -199,7 +199,7 @@ impl PyUnit {
     fn conversion(&self, py: Python<'_>, target: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let t = require_unit(target, "target")?;
         let (f, shift) = self.inner.conversion(&t).map_err(unit_err)?;
-        Ok(PyTuple::new(
+        PyTuple::new(
             py,
             [
                 rational_to_py(py, &f.ratio)?,
@@ -207,7 +207,7 @@ impl PyUnit {
                 rational_to_py(py, &shift)?,
             ],
         )?
-        .into_py_any(py)?)
+        .into_py_any(py)
     }
 
     /// The coherent SI unit of the same dimension in base units
@@ -237,7 +237,7 @@ impl PyUnit {
         } else {
             self.inner.simplify()
         };
-        Ok(PyTuple::new(
+        PyTuple::new(
             py,
             [
                 rational_to_py(py, &f.ratio)?,
@@ -245,7 +245,7 @@ impl PyUnit {
                 Py::new(py, wrap(u))?.into_py_any(py)?,
             ],
         )?
-        .into_py_any(py)?)
+        .into_py_any(py)
     }
 
     /// The named SI derived unit this unit exactly equals, or ``None``.
@@ -363,7 +363,7 @@ impl PyUnit {
 
     fn __reduce__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let cls = py.get_type::<PyUnit>();
-        Ok((cls, (self.inner.name(),)).into_py_any(py)?)
+        (cls, (self.inner.name(),)).into_py_any(py)
     }
 }
 

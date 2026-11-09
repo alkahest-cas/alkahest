@@ -71,10 +71,10 @@ pub(crate) fn int_from_py(ob: &Bound<'_, PyAny>) -> PyResult<Integer> {
 /// An exact `rug::Integer` as a Python `int`, at any size.
 pub(crate) fn int_to_py(py: Python<'_>, z: &Integer) -> PyResult<Py<PyAny>> {
     if let Some(v) = z.to_i64() {
-        return Ok(v.into_py_any(py)?);
+        return v.into_py_any(py);
     }
     if let Some(v) = z.to_u64() {
-        return Ok(v.into_py_any(py)?);
+        return v.into_py_any(py);
     }
     // `to_digits` ignores the sign: these are the magnitude's bytes.
     let digits = z.to_digits::<u8>(Order::Lsf);

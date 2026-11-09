@@ -40,7 +40,7 @@ fn rat(py: Python<'_>, r: &Rational) -> PyResult<Py<PyAny>> {
 
 fn rat_list(py: Python<'_>, v: &[Rational]) -> PyResult<Py<PyAny>> {
     let items = v.iter().map(|r| rat(py, r)).collect::<PyResult<Vec<_>>>()?;
-    Ok(PyList::new(py, items)?.into_py_any(py)?)
+    PyList::new(py, items)?.into_py_any(py)
 }
 
 fn lp_err(e: LinprogError) -> PyErr {
@@ -274,7 +274,7 @@ fn solution_dict(
     for (v, xi) in vars.iter().zip(x) {
         d.set_item(v.clone_ref(py), rat(py, xi)?)?;
     }
-    Ok(d.into_py_any(py)?)
+    d.into_py_any(py)
 }
 
 // ---------------------------------------------------------------------------
@@ -468,7 +468,7 @@ impl PyLpResult {
         d.set_item("eqlin", rat_list(py, &f.y_eq)?)?;
         d.set_item("lower", rat_list(py, &f.w_lower)?)?;
         d.set_item("upper", rat_list(py, &f.w_upper)?)?;
-        Ok(d.into_py_any(py)?)
+        d.into_py_any(py)
     }
 
     /// The improving direction (unbounded only).
@@ -565,7 +565,7 @@ fn program_dict(py: Python<'_>, lp: &LinearProgram) -> PyResult<Py<PyAny>> {
             .iter()
             .map(|r| rat_list(py, r))
             .collect::<PyResult<Vec<_>>>()?;
-        Ok(PyList::new(py, rows)?.into_py_any(py)?)
+        PyList::new(py, rows)?.into_py_any(py)
     };
     d.set_item("c", rat_list(py, &lp.c)?)?;
     d.set_item("A_ub", mat(&lp.a_ub)?)?;
@@ -582,7 +582,7 @@ fn program_dict(py: Python<'_>, lp: &LinearProgram) -> PyResult<Py<PyAny>> {
         .bounds
         .iter()
         .map(|b| -> PyResult<Py<PyAny>> {
-            Ok(PyTuple::new(py, [side(&b.lower)?, side(&b.upper)?])?.into_py_any(py)?)
+            PyTuple::new(py, [side(&b.lower)?, side(&b.upper)?])?.into_py_any(py)
         })
         .collect::<PyResult<Vec<_>>>()?;
     d.set_item("bounds", PyList::new(py, bounds)?)?;
@@ -593,7 +593,7 @@ fn program_dict(py: Python<'_>, lp: &LinearProgram) -> PyResult<Py<PyAny>> {
             Sense::Maximize => "max",
         },
     )?;
-    Ok(d.into_py_any(py)?)
+    d.into_py_any(py)
 }
 
 // ---------------------------------------------------------------------------
@@ -695,16 +695,16 @@ impl PyMilpResult {
     #[getter]
     fn cuts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         if !matches!(self.outcome, MilpOutcome::Optimal(_)) {
-            return Ok(PyList::empty(py).into_py_any(py)?);
+            return PyList::empty(py).into_py_any(py);
         }
         let items = self
             .cuts
             .iter()
             .map(|(row, rhs)| -> PyResult<Py<PyAny>> {
-                Ok(PyTuple::new(py, [rat_list(py, row)?, rat(py, rhs)?])?.into_py_any(py)?)
+                PyTuple::new(py, [rat_list(py, row)?, rat(py, rhs)?])?.into_py_any(py)
             })
             .collect::<PyResult<Vec<_>>>()?;
-        Ok(PyList::new(py, items)?.into_py_any(py)?)
+        PyList::new(py, items)?.into_py_any(py)
     }
 
     /// ``{variable: value}`` for :func:`linprog_expr` results.
@@ -1016,13 +1016,13 @@ fn py_linprog_expr(
         };
         let (lo, hi) = parse_theta_range(parameter_range)?;
         let sol = core_parametric(&lp, &delta, lo, hi).map_err(lp_err)?;
-        return Ok(PyParametricResult {
+        return PyParametricResult {
             lp,
             delta,
             sol,
             vars: Some(var_py),
         }
-        .into_py_any(py)?);
+        .into_py_any(py);
     }
     let lp = {
         let pool = pool_py.borrow(py);
@@ -1030,7 +1030,7 @@ fn py_linprog_expr(
     };
     let Some(integer) = integer.filter(|o| !o.is_none()) else {
         let sol = linprog_with(&lp, &LpOptions::default()).map_err(lp_err)?;
-        return Ok(PyLpResult::new(lp, sol, Some(var_py)).into_py_any(py)?);
+        return PyLpResult::new(lp, sol, Some(var_py)).into_py_any(py);
     };
     let integrality = if let Ok(all) = integer.extract::<bool>() {
         vec![all; var_ids.len()]
@@ -1051,14 +1051,14 @@ fn py_linprog_expr(
     let mut opts = MilpOptions::new(integrality.clone());
     opts.max_nodes = max_nodes;
     let report = milp_with(&lp, &opts, &CutOptions::default()).map_err(lp_err)?;
-    Ok(PyMilpResult {
+    PyMilpResult {
         lp,
         integrality,
         outcome: report.outcome,
         vars: Some(var_py),
         cuts: report.cuts,
     }
-    .into_py_any(py)?)
+    .into_py_any(py)
 }
 
 // ---------------------------------------------------------------------------
@@ -1128,7 +1128,7 @@ fn region_dict(py: Python<'_>, r: &ParametricRegion) -> PyResult<Py<PyAny>> {
         Some(b) => d.set_item("basis", basis_to_py(py, b))?,
         None => d.set_item("basis", py.None())?,
     }
-    Ok(d.into_py_any(py)?)
+    d.into_py_any(py)
 }
 
 /// Result of :func:`linprog_parametric` (or :func:`linprog_expr` with a
@@ -1171,7 +1171,7 @@ impl PyParametricResult {
             .iter()
             .map(|r| region_dict(py, r))
             .collect::<PyResult<Vec<_>>>()?;
-        Ok(PyList::new(py, items)?.into_py_any(py)?)
+        PyList::new(py, items)?.into_py_any(py)
     }
 
     /// The exact ``θ`` where the optimal basis or the status changes.

@@ -181,7 +181,7 @@ impl PyConjugacyClasses {
         for c in self.inner.classes() {
             list.append(Py::new(py, PyConjugacyClass { inner: c.clone() })?)?;
         }
-        Ok(list.as_any().try_iter()?.into_py_any(py)?)
+        list.as_any().try_iter()?.into_py_any(py)
     }
 
     /// The degree of the underlying permutation group.

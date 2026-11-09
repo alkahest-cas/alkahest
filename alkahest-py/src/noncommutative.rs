@@ -105,7 +105,7 @@ fn py_nc_terms(py: Python<'_>, expr: PyRef<'_, PyExpr>) -> PyResult<Py<PyAny>> {
         )?;
         out.append(t)?;
     }
-    Ok(out.into_py_any(py)?)
+    out.into_py_any(py)
 }
 
 /// ``nc_rewrite(expr, rules, *, max_steps=200000) -> Expr``
@@ -485,7 +485,7 @@ fn py_gamma_contract(
             ],
         )?)?;
     }
-    Ok(out.into_py_any(py)?)
+    out.into_py_any(py)
 }
 
 /// ``lorentz_contract(expr, indices, dim) -> Expr``
@@ -821,7 +821,7 @@ fn table_dict(
     for ((a, b, c), f) in entries {
         d.set_item((a, b, c), wrap(py, f, pool_py).into_py_any(py)?)?;
     }
-    Ok(d.into_py_any(py)?)
+    d.into_py_any(py)
 }
 
 /// ``lie_su2(pool, generators=None, *, prefix="J") -> LieAlgebra``

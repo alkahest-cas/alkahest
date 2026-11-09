@@ -1337,7 +1337,7 @@ impl PyDomain {
     /// Pickle support: a domain unpickles as the same member, by name.
     fn __reduce__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let helper = py.import("alkahest._pickle")?.getattr("_unpickle_domain")?;
-        Ok((helper, (format!("{self:?}"),)).into_py_any(py)?)
+        (helper, (format!("{self:?}"),)).into_py_any(py)
     }
 }
 
@@ -2023,7 +2023,7 @@ fn py_pell_classes(
         .detach(|| alkahest_core::solver::diophantine_pell_classes(&dz, &nz))
         .map_err(diophantine_error_to_py)?;
     let pair = |p: &(Integer, Integer)| -> PyResult<Py<PyAny>> {
-        Ok((bigint::int_to_py(py, &p.0)?, bigint::int_to_py(py, &p.1)?).into_py_any(py)?)
+        (bigint::int_to_py(py, &p.0)?, bigint::int_to_py(py, &p.1)?).into_py_any(py)
     };
     let out = pyo3::types::PyDict::new(py);
     out.set_item("d", bigint::int_to_py(py, &pc.d)?)?;
@@ -3264,7 +3264,7 @@ impl PySeries {
     /// which pickles in the pool scheme of `alkahest._pickle`.
     fn __reduce__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let helper = py.import("alkahest._pickle")?.getattr("_unpickle_series")?;
-        Ok((helper, (self.expr.clone().into_py_any(py)?,)).into_py_any(py)?)
+        (helper, (self.expr.clone().into_py_any(py)?,)).into_py_any(py)
     }
 
     /// Rebuild a series pickled by `__reduce__`. Private.
@@ -3519,7 +3519,7 @@ impl PyFps {
         for c in self.inner.coeffs(n) {
             out.append(rational_to_py(py, &c)?)?;
         }
-        Ok(out.into_py_any(py)?)
+        out.into_py_any(py)
     }
 
     /// Truncate to a symbolic `Expr` of degree `< order` in `var` (with an
@@ -6669,7 +6669,7 @@ fn py_dsolve(
         d.set_item("notes", report.notes.clone())?;
         out.append(d)?;
     }
-    Ok(out.into_py_any(py)?)
+    out.into_py_any(py)
 }
 
 /// `dsolve` input for an equation written with the applied function `y(x)`
@@ -6904,7 +6904,7 @@ fn py_dsolve_system(
     d.set_item("method", sol.method)?;
     d.set_item("side_conditions", conditions)?;
     d.set_item("notes", sol.notes)?;
-    Ok(d.into_py_any(py)?)
+    d.into_py_any(py)
 }
 
 // ---------------------------------------------------------------------------
@@ -7391,7 +7391,7 @@ fn py_multilimit(
             d.set_item("status", "undecided")?;
         }
     }
-    Ok(d.into_py_any(py)?)
+    d.into_py_any(py)
 }
 
 /// `experimental.asymptotic_expand(f, var, n_terms)` — asymptotic expansion at
@@ -7423,7 +7423,7 @@ fn py_asymptotic_expand(
             .into_py_any(py)?,
         )?;
     }
-    Ok(out.into_py_any(py)?)
+    out.into_py_any(py)
 }
 
 /// Convert a [`CorePuiseuxError`] into a Python exception.
@@ -7507,7 +7507,7 @@ impl PyPuiseuxExpansion {
             )?;
             out.append(pair)?;
         }
-        Ok(out.into_py_any(py)?)
+        out.into_py_any(py)
     }
 
     /// The leading exponent, or ``None`` when the expansion is zero to the
@@ -7547,7 +7547,7 @@ impl PyPuiseuxExpansion {
         d.set_item("conclusive_rungs", self.conclusive_rungs)?;
         d.set_item("worst_margin", self.worst_margin)?;
         d.set_item("power_check_passed", self.power_check_passed)?;
-        Ok(d.into_py_any(py)?)
+        d.into_py_any(py)
     }
 
     fn __repr__(&self, py: Python<'_>) -> String {
@@ -7720,7 +7720,7 @@ fn py_series_solve(
         sols.append(sd)?;
     }
     d.set_item("solutions", sols)?;
-    Ok(d.into_py_any(py)?)
+    d.into_py_any(py)
 }
 
 #[pyfunction]
@@ -10271,7 +10271,7 @@ fn match_pattern(
         }
         out.append(d)?;
     }
-    Ok(out.into_py_any(py)?)
+    out.into_py_any(py)
 }
 
 // ---------------------------------------------------------------------------
@@ -10740,7 +10740,7 @@ fn py_to_lean(py: Python<'_>, arg: &Bound<'_, PyAny>) -> PyResult<String> {
     let exported = py
         .import("alkahest")
         .and_then(|m| m.getattr(type_name.as_str()))
-        .map(|t| t.is(&arg.get_type()))
+        .map(|t| t.is(arg.get_type()))
         .unwrap_or(false);
     if exported || module == "alkahest" || module.starts_with("alkahest.") {
         return Err(certificate_unavailable(
@@ -11306,7 +11306,7 @@ impl PyMatrix {
     /// :meth:`hadamard` for that.
     fn __mul__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<Py<PyAny>> {
         if let Ok(rhs) = other.cast::<PyMatrix>() {
-            return Ok(self.matmul_impl(py, &rhs.borrow())?.into_py_any(py)?);
+            return self.matmul_impl(py, &rhs.borrow())?.into_py_any(py);
         }
         match self.coerce_matrix_scalar(other, py)? {
             Some(scalar) => Ok(self.scale_impl(py, scalar).into_py_any(py)?),
@@ -11426,11 +11426,11 @@ impl PyMatrix {
                 .map_err(matrix_error_to_py)?;
         }
         drop(pool);
-        Ok(PyMatrix {
+        PyMatrix {
             inner: acc,
             pool: self.pool.clone_ref(py),
         }
-        .into_py_any(py)?)
+        .into_py_any(py)
     }
 
     fn det(&self, py: Python<'_>) -> PyResult<PyExpr> {
@@ -12899,7 +12899,7 @@ fn component_to_pydict(
         "component",
         PyComponent { inner: comp, pool }.into_py_any(py)?,
     )?;
-    Ok(d.into_py_any(py)?)
+    d.into_py_any(py)
 }
 
 /// `alkahest.resistor(name, resistance)` — create a resistor component.
@@ -14299,7 +14299,7 @@ impl PyArbBall {
             float_pickle_state(py, &self.inner.mid)?,
             float_pickle_state(py, &self.inner.rad)?,
         );
-        Ok((helper, args).into_py_any(py)?)
+        (helper, args).into_py_any(py)
     }
 
     /// Rebuild a ball pickled by `__reduce__`. Private.
@@ -14501,7 +14501,7 @@ impl PyEvaluationResult {
             self.enclosure.as_ref().map(|b| b.clone_ref(py)),
             self.reason.clone(),
         );
-        Ok((helper, args).into_py_any(py)?)
+        (helper, args).into_py_any(py)
     }
 
     /// Rebuild a result pickled by `__reduce__`. Private.
@@ -15687,7 +15687,7 @@ impl PyRootInterval {
             .getattr("_unpickle_root_interval")?;
         let lo = bigint::fraction_to_py(py, self.inner.lo.numer(), self.inner.lo.denom())?;
         let hi = bigint::fraction_to_py(py, self.inner.hi.numer(), self.inner.hi.denom())?;
-        Ok((helper, (lo, hi)).into_py_any(py)?)
+        (helper, (lo, hi)).into_py_any(py)
     }
 
     /// Rebuild an interval pickled by `__reduce__`. Private.
@@ -16564,7 +16564,7 @@ impl PyBoundsSupport {
         d.set_item("blocker", self.blocker.clone())?;
         d.set_item("functions", self.functions.clone())?;
         d.set_item("detail", &self.detail)?;
-        Ok(d.into_py_any(py)?)
+        d.into_py_any(py)
     }
 
     fn __repr__(&self) -> String {
@@ -17283,7 +17283,7 @@ fn py_routh_hurwitz(
     d.set_item("degree", rh.degree)?;
     d.set_item("first_column", first_column)?;
     d.set_item("condition", condition)?;
-    Ok(d.into_py_any(py)?)
+    d.into_py_any(py)
 }
 
 // ---------------------------------------------------------------------------
@@ -17946,7 +17946,7 @@ impl PyGroebnerBasis {
         if let Some(params) = params {
             if !params.is_empty() {
                 let basis = PyParamGroebnerBasis::build(py, polys, vars, params, order)?;
-                return Ok(Py::new(py, basis)?.into_py_any(py)?);
+                return Py::new(py, basis)?.into_py_any(py);
             }
         }
         if polys.is_empty() || vars.is_empty() {
@@ -17977,7 +17977,7 @@ impl PyGroebnerBasis {
                 other => GroebnerBasis::try_compute(gb_polys, other),
             })
             .map_err(budget_trip_into_py)?;
-        Ok(Py::new(
+        Py::new(
             py,
             PyGroebnerBasis {
                 inner,
@@ -17985,7 +17985,7 @@ impl PyGroebnerBasis {
                 var_ids,
             },
         )?
-        .into_py_any(py)?)
+        .into_py_any(py)
     }
 
     /// Gröbner basis via a signature-based (F5-family) algorithm.
@@ -18168,7 +18168,7 @@ impl PyGroebnerBasis {
             self.pool.as_ref().map(|p| p.clone_ref(py)),
             vars,
         );
-        Ok((helper, args).into_py_any(py)?)
+        (helper, args).into_py_any(py)
     }
 
     /// Rebuild a basis pickled by `__reduce__`. Private.
@@ -18384,7 +18384,7 @@ impl PyGroebnerBasis {
         for p in self.inner.generators() {
             list.append(Py::new(py, self.wrap(py, p.clone()))?)?;
         }
-        Ok(list.as_any().try_iter()?.into_py_any(py)?)
+        list.as_any().try_iter()?.into_py_any(py)
     }
 
     fn __repr__(&self) -> String {
@@ -19117,7 +19117,7 @@ impl PyParamGroebnerBasis {
         for p in self.inner.generators() {
             list.append(Py::new(py, self.wrap(py, p.clone()))?)?;
         }
-        Ok(list.as_any().try_iter()?.into_py_any(py)?)
+        list.as_any().try_iter()?.into_py_any(py)
     }
 
     fn __repr__(&self) -> String {
@@ -19598,7 +19598,7 @@ fn py_rosenfeld_groebner(
         }
     }
 
-    Ok(Py::new(
+    Py::new(
         py,
         PyParametricRosenfeldResult {
             consistent: r.consistent,
@@ -19612,7 +19612,7 @@ fn py_rosenfeld_groebner(
             param_ids,
         },
     )?
-    .into_py_any(py)?)
+    .into_py_any(py)
 }
 
 /// A Rosenfeld–Gröbner error as Python sees it: `BudgetExceededError` when the
@@ -19646,7 +19646,7 @@ fn py_rosenfeld_groebner_plain(
         )
     };
     let (r, ranking) = r.map_err(diffalg_error_to_py)?;
-    Ok(Py::new(
+    Py::new(
         py,
         PyRosenfeldGroebnerResult {
             consistent: r.consistent,
@@ -19658,7 +19658,7 @@ fn py_rosenfeld_groebner_plain(
             var_ids: ranking.vars,
         },
     )?
-    .into_py_any(py)?)
+    .into_py_any(py)
 }
 
 #[cfg(feature = "groebner")]
@@ -22203,7 +22203,7 @@ impl PyDistribution {
             ),
             _ => ("unknown", py.None()),
         };
-        Ok(out.into_py_any(py)?)
+        out.into_py_any(py)
     }
 
     /// The parameter constraints, as predicate expressions.
@@ -23245,7 +23245,7 @@ struct PyQuaternion {
 impl Clone for PyQuaternion {
     fn clone(&self) -> Self {
         Self {
-            inner: self.inner.clone(),
+            inner: self.inner,
             pool: clone_py(&self.pool),
         }
     }
@@ -23496,14 +23496,14 @@ impl PyQuaternion {
                 .to_axis_angle(&p.inner)
                 .map_err(quaternion_error_to_py)?
         };
-        Ok(PyTuple::new(
+        PyTuple::new(
             py,
             [
                 vec3_to_py(axis, &self.pool, py),
                 self.expr(angle, py).into_py_any(py)?,
             ],
         )?
-        .into_py_any(py)?)
+        .into_py_any(py)
     }
 
     /// ``q = cos(θ/2) + sin(θ/2)·û`` for a rotation of ``angle`` about

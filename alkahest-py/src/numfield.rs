@@ -165,7 +165,7 @@ impl PyNumberField {
             self.inner.variable().to_string(),
             self.inner.cyclotomic_order(),
         );
-        Ok((helper, args).into_py_any(py)?)
+        (helper, args).into_py_any(py)
     }
 
     /// The degree ``[K : Q]``.
@@ -303,7 +303,7 @@ impl PyNumberFieldElement {
             .iter()
             .map(|c| py_fraction(py, c))
             .collect::<PyResult<_>>()?;
-        Ok((helper, (field.into_py_any(py)?, coeffs)).into_py_any(py)?)
+        (helper, (field.into_py_any(py)?, coeffs)).into_py_any(py)
     }
 
     /// The field this element lives in.

@@ -504,7 +504,7 @@ fn py_minimize_logic(
             );
         }
         let r = run_minimize_multi(py, &es, form, dontcare, exact)?;
-        return Ok(Py::new(py, r)?.into_py_any(py)?);
+        return Py::new(py, r)?.into_py_any(py);
     }
     let expr = expr
         .extract::<PyRef<PyExpr>>()
@@ -517,7 +517,7 @@ fn py_minimize_logic(
         terms: m.terms,
         literals: m.literals,
     };
-    Ok(Py::new(py, r)?.into_py_any(py)?)
+    Py::new(py, r)?.into_py_any(py)
 }
 
 /// Decide whether two propositional formulas are equivalent.
@@ -944,7 +944,7 @@ impl PyBdd {
         };
         let s = count.to_string();
         let int = py.get_type::<pyo3::types::PyInt>();
-        Ok(int.call1((s,))?.into_py_any(py)?)
+        int.call1((s,))?.into_py_any(py)
     }
 
     /// Re-sort the manager's variable order by Rudell sifting to shrink the
@@ -997,7 +997,7 @@ impl PyBdd {
         d.set_item("nodes_after", st.nodes_after)?;
         d.set_item("swaps", st.swaps)?;
         d.set_item("complete", st.complete)?;
-        Ok(d.into_py_any(py)?)
+        d.into_py_any(py)
     }
 
     /// Turn automatic reordering of this BDD's manager on or off: ``False``
