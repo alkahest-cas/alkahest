@@ -455,7 +455,6 @@ jobs:
       matrix:
         python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
     env:
-      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
       # Read by clang, rustc, maturin (for the wheel tag) and delocate.
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
