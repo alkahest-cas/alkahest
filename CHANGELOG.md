@@ -2,10 +2,27 @@
 
 ## Unreleased
 
+## 3.13.2 — 2026-11-11
+
+Fixes `import alkahest` on macOS without Homebrew (the wheels now bundle FLINT, GMP and MPFR, for macOS 11 and later), a `compute_f5` soundness bug that returned a wrong basis marked proved, and SMT export treating π and other named constants as free variables, so that `pi > 4` came back `sat`. `integrate` now honours its wall budget on inputs that used to hang, several classic refusals are answered (`∫₀¹ atan(x)/x`, `Σ C(n,k)`, composite `discrete_log`, `zeta''`), and more result types pickle. New: Linux aarch64 wheels and a source distribution on PyPI.
+
 ### Added
 
 - Linux aarch64 wheels (`manylinux_2_28`, CPython 3.9–3.14), built on native ARM runners. GMP, MPFR and FLINT target plain ARMv8-A (`-march=armv8-a`, no runner-specific tuning), and `scripts/check_wheel_isa.py` rejects any SVE in them.
 - A source distribution on PyPI, so `pip install alkahest` on a platform with no wheel compiles instead of failing with "no matching distribution". It needs a Rust toolchain and FLINT ≥ 3.3, and stops with the install instructions if FLINT is missing. It builds the default Cargo features (`egraph`, `groebner`).
+
+
+- **`ArbBall` pickles, bit-for-bit at any precision**, and so do `EvaluationResult`,
+  `RootInterval`, `Series`, `Domain`, `GroebnerBasis` (a `"probabilistic"` basis stays
+  probabilistic), `NumberField` and `NumberFieldElement`, which makes PARI's `NumberFieldData` and
+  `EllipticCurveData` picklable too. `pickle.dumps(ak.ArbBall(1.0, 0.0, 300))` raised
+  `TypeError: cannot pickle 'builtins.ArbBall' object`, so a ball could not go through
+  `multiprocessing.Pool.map`. The midpoint and radius are serialised as their exact binary
+  values (`mantissa · 2**exp` at each float's own precision), never as decimals; tested at 53,
+  300 and 3400 bits, through `multiprocessing`, and for ±0, ±∞ and NaN. A malformed payload
+  (negative radius, mantissa wider than its precision) raises `ValueError`.
+- `alkahest_cas::horner::c_param_names(vars, fn_name, pool)`: the default C parameter names
+  `emit_c_expr` / `emit_c_vec` now use. `GroebnerBasis::from_parts`, for deserialisation.
 
 ### Fixed
 
@@ -64,20 +81,6 @@
   `Fraction` itself. The spelling that is exact everywhere, `pool.rational(1, 2) ** x`, is
   documented.
 - The nightly CI has been red since 3.13.0's Gröbner work (2026-11-06 and 11-07), for test and CI reasons only; no library behaviour changes. `proptest`: `random_ideals_match_buchberger` aborted with "Too many global rejects" under `PROPTEST_CASES=50000` because it rejected the all-zero ideal with `prop_assume!` — its strategy now repairs that draw into a one-monomial ideal instead, leaving every previously accepted ideal equally likely; `cyclic6_solve_honours_a_wall_budget` asserted a budget trip that the multimodular engine no longer gives in a release build (cyclic-6 `solve` finishes in well under 200 ms), and now uses cyclic-7 (as the Python budget tests do) and asserts the trip is the wall clock. `hypothesis`: the random-tree generator of `test_numpy_eval_interpreter.py` built `a / (x - x)`, which construction refuses since `x - x` folds to 0 — the generator now checks that refusal (code `E-DOMAIN-001`, denominator numerically zero) and keeps the numerator; the interpreter-throughput bound (8× NumPy) failed at 19–28× because the shard builds unoptimised — not a regression: in that build #509 measures 17.8× and main 17.7×, while optimised the same interpreter is 0.75× (3.11.0: about 30×). An unoptimised timing does not track the interpreter (#509 halved the optimised cost and made the unoptimised cost a quarter worse). The bound is now skipped in debug builds (new private `alkahest.alkahest._DEBUG_BUILD`) and checked by a separate `--release` step of the shard. `valgrind`: the shard hit GitHub's 6 h cap every night from 11-01 to 11-07 on three FLINT factorisations of degree up to 300; it now reads `.github/valgrind-scope.txt`, which skips those three (ASan and LSan still run them) and fails on any stale filter or skip, and sets `ALKAHEST_TEST_TIME_SCALE=50` so two fixed wall-clock bounds (now `test_time::limit_secs`) no longer fail for memcheck's slowdown. TESTING.md §3 lists what each valgrind shard covers.
-
-### Added
-
-- **`ArbBall` pickles, bit-for-bit at any precision**, and so do `EvaluationResult`,
-  `RootInterval`, `Series`, `Domain`, `GroebnerBasis` (a `"probabilistic"` basis stays
-  probabilistic), `NumberField` and `NumberFieldElement`, which makes PARI's `NumberFieldData` and
-  `EllipticCurveData` picklable too. `pickle.dumps(ak.ArbBall(1.0, 0.0, 300))` raised
-  `TypeError: cannot pickle 'builtins.ArbBall' object`, so a ball could not go through
-  `multiprocessing.Pool.map`. The midpoint and radius are serialised as their exact binary
-  values (`mantissa · 2**exp` at each float's own precision), never as decimals; tested at 53,
-  300 and 3400 bits, through `multiprocessing`, and for ±0, ±∞ and NaN. A malformed payload
-  (negative radius, mantissa wider than its precision) raises `ValueError`.
-- `alkahest_cas::horner::c_param_names(vars, fn_name, pool)`: the default C parameter names
-  `emit_c_expr` / `emit_c_vec` now use. `GroebnerBasis::from_parts`, for deserialisation.
 
 ## 3.13.1 — 2026-11-08
 
