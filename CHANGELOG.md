@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- The Python bindings moved from PyO3 0.21 to 0.30, which supports CPython 3.9 through 3.15 natively, so the 3.13 and 3.14 wheels no longer build through `PYO3_USE_ABI3_FORWARD_COMPATIBILITY`. Python 3.9 stays supported and the module still declares that it needs the GIL. Two details are visible from Python: calling a class that has no constructor is still a `TypeError`, but the message is now `cannot create 'alkahest.BDD' instances` where it was `No constructor defined`; and a getter with no docstring reports `__doc__` as `None` where it was `''`.
+
 ## 3.13.2 — 2026-11-11
 
 Fixes `import alkahest` on macOS without Homebrew (the wheels now bundle FLINT, GMP and MPFR, for macOS 11 and later), a `compute_f5` soundness bug that returned a wrong basis marked proved, and SMT export treating π and other named constants as free variables, so that `pi > 4` came back `sat`. `integrate` now honours its wall budget on inputs that used to hang, several classic refusals are answered (`∫₀¹ atan(x)/x`, `Σ C(n,k)`, composite `discrete_log`, `zeta''`), and more result types pickle. New: Linux aarch64 wheels and a source distribution on PyPI.
@@ -10,10 +14,6 @@ Fixes `import alkahest` on macOS without Homebrew (the wheels now bundle FLINT, 
 
 - Linux aarch64 wheels (`manylinux_2_28`, CPython 3.9–3.14), built on native ARM runners. GMP, MPFR and FLINT target plain ARMv8-A (`-march=armv8-a`, no runner-specific tuning), and `scripts/check_wheel_isa.py` rejects any SVE in them.
 - A source distribution on PyPI, so `pip install alkahest` on a platform with no wheel compiles instead of failing with "no matching distribution". It needs a Rust toolchain and FLINT ≥ 3.3, and stops with the install instructions if FLINT is missing. It builds the default Cargo features (`egraph`, `groebner`).
-
-### Changed
-
-- The Python bindings moved from PyO3 0.21 to 0.30, which supports CPython 3.9 through 3.15 natively, so the 3.13 and 3.14 wheels no longer build through `PYO3_USE_ABI3_FORWARD_COMPATIBILITY`. Python 3.9 stays supported and the module still declares that it needs the GIL. Two details are visible from Python: calling a class that has no constructor is still a `TypeError`, but the message is now `cannot create 'alkahest.BDD' instances` where it was `No constructor defined`; and a getter with no docstring reports `__doc__` as `None` where it was `''`.
 
 
 - **`ArbBall` pickles, bit-for-bit at any precision**, and so do `EvaluationResult`,
