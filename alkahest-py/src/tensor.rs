@@ -7,6 +7,7 @@
 //! `alkahest.TensorError` with a stable `E-TENSOR-NNN` `.code`; budget trips
 //! as `BudgetExceededError`.
 
+use crate::ToPyAny;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PyTuple};
@@ -22,22 +23,22 @@ use crate::{coerce_substituent, guard_depth_all, PyExpr, PyExprPool};
 pyo3::create_exception!(alkahest, PyTensorError, crate::PyAlkahestError);
 
 fn tensor_err(e: TensorError) -> PyErr {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         if let Some(trip) = e.budget_trip() {
-            let exc_type = py.get_type_bound::<crate::PyBudgetExceededError>();
+            let exc_type = py.get_type::<crate::PyBudgetExceededError>();
             return crate::make_structured_err(py, &exc_type, &trip);
         }
-        let exc_type = py.get_type_bound::<PyTensorError>();
+        let exc_type = py.get_type::<PyTensorError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
 
-fn wrap(py: Python<'_>, pool: &Py<PyExprPool>, id: ExprId) -> PyObject {
+fn wrap(py: Python<'_>, pool: &Py<PyExprPool>, id: ExprId) -> Py<PyAny> {
     PyExpr {
         id,
         pool: pool.clone_ref(py),
     }
-    .into_py(py)
+    .to_py_any(py)
 }
 
 /// The pool of the first `Expr` found anywhere in `ob` (recursing into lists/tuples).
@@ -45,10 +46,10 @@ fn find_pool(py: Python<'_>, ob: &Bound<'_, PyAny>) -> Option<Py<PyExprPool>> {
     if let Ok(e) = ob.extract::<PyRef<PyExpr>>() {
         return Some(e.pool.clone_ref(py));
     }
-    if let Ok(l) = ob.downcast::<PyList>() {
+    if let Ok(l) = ob.cast::<PyList>() {
         return l.iter().find_map(|x| find_pool(py, &x));
     }
-    if let Ok(t) = ob.downcast::<PyTuple>() {
+    if let Ok(t) = ob.cast::<PyTuple>() {
         return t.iter().find_map(|x| find_pool(py, &x));
     }
     None
@@ -66,25 +67,25 @@ fn vector(py: Python<'_>, pool: &Py<PyExprPool>, ob: &Bound<'_, PyAny>) -> PyRes
     Ok(ids)
 }
 
-fn nest2(py: Python<'_>, pool: &Py<PyExprPool>, t: Vec<Vec<ExprId>>) -> PyObject {
-    let rows: Vec<PyObject> = t
+fn nest2(py: Python<'_>, pool: &Py<PyExprPool>, t: Vec<Vec<ExprId>>) -> Py<PyAny> {
+    let rows: Vec<Py<PyAny>> = t
         .into_iter()
         .map(|r| {
-            let v: Vec<PyObject> = r.into_iter().map(|e| wrap(py, pool, e)).collect();
-            PyList::new_bound(py, v).into_py(py)
+            let v: Vec<Py<PyAny>> = r.into_iter().map(|e| wrap(py, pool, e)).collect();
+            crate::pylist(py, v).to_py_any(py)
         })
         .collect();
-    PyList::new_bound(py, rows).into_py(py)
+    crate::pylist(py, rows).to_py_any(py)
 }
 
-fn nest3(py: Python<'_>, pool: &Py<PyExprPool>, t: Vec<Vec<Vec<ExprId>>>) -> PyObject {
-    let v: Vec<PyObject> = t.into_iter().map(|m| nest2(py, pool, m)).collect();
-    PyList::new_bound(py, v).into_py(py)
+fn nest3(py: Python<'_>, pool: &Py<PyExprPool>, t: Vec<Vec<Vec<ExprId>>>) -> Py<PyAny> {
+    let v: Vec<Py<PyAny>> = t.into_iter().map(|m| nest2(py, pool, m)).collect();
+    crate::pylist(py, v).to_py_any(py)
 }
 
-fn nest4(py: Python<'_>, pool: &Py<PyExprPool>, t: Vec<Vec<Vec<Vec<ExprId>>>>) -> PyObject {
-    let v: Vec<PyObject> = t.into_iter().map(|m| nest3(py, pool, m)).collect();
-    PyList::new_bound(py, v).into_py(py)
+fn nest4(py: Python<'_>, pool: &Py<PyExprPool>, t: Vec<Vec<Vec<Vec<ExprId>>>>) -> Py<PyAny> {
+    let v: Vec<Py<PyAny>> = t.into_iter().map(|m| nest3(py, pool, m)).collect();
+    crate::pylist(py, v).to_py_any(py)
 }
 
 /// Native metric (private; use :class:`alkahest.Metric`).
@@ -120,7 +121,7 @@ impl PyTensorMetric {
         self.inner.dim()
     }
 
-    fn coords(&self, py: Python<'_>) -> Vec<PyObject> {
+    fn coords(&self, py: Python<'_>) -> Vec<Py<PyAny>> {
         self.inner
             .coords()
             .iter()
@@ -136,31 +137,31 @@ impl PyTensorMetric {
             .collect()
     }
 
-    fn components(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn components(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let p = self.pool.borrow(py);
         let t = self.inner.components(&p.inner).map_err(tensor_err)?;
         Ok(nest2(py, &self.pool, t))
     }
 
-    fn determinant(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+    fn determinant(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let p = self.pool.borrow(py);
         let e = self.inner.determinant(&p.inner).map_err(tensor_err)?;
         Ok(wrap(py, &self.pool, e))
     }
 
-    fn inverse(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+    fn inverse(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let p = self.pool.borrow(py);
         let t = self.inner.inverse(&p.inner).map_err(tensor_err)?;
         Ok(nest2(py, &self.pool, t))
     }
 
-    fn christoffel(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+    fn christoffel(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let p = self.pool.borrow(py);
         let t = self.inner.christoffel(&p.inner).map_err(tensor_err)?;
         Ok(nest3(py, &self.pool, t))
     }
 
-    fn christoffel_first_kind(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+    fn christoffel_first_kind(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let p = self.pool.borrow(py);
         let t = self
             .inner
@@ -169,25 +170,25 @@ impl PyTensorMetric {
         Ok(nest3(py, &self.pool, t))
     }
 
-    fn riemann(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+    fn riemann(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let p = self.pool.borrow(py);
         let t = self.inner.riemann(&p.inner).map_err(tensor_err)?;
         Ok(nest4(py, &self.pool, t))
     }
 
-    fn riemann_lower(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+    fn riemann_lower(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let p = self.pool.borrow(py);
         let t = self.inner.riemann_lower(&p.inner).map_err(tensor_err)?;
         Ok(nest4(py, &self.pool, t))
     }
 
-    fn ricci(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+    fn ricci(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let p = self.pool.borrow(py);
         let t = self.inner.ricci(&p.inner).map_err(tensor_err)?;
         Ok(nest2(py, &self.pool, t))
     }
 
-    fn ricci_scalar(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+    fn ricci_scalar(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let p = self.pool.borrow(py);
         let e = self.inner.ricci_scalar(&p.inner).map_err(tensor_err)?;
         Ok(wrap(py, &self.pool, e))
@@ -197,19 +198,19 @@ impl PyTensorMetric {
         self.inner.is_ricci_flat().map_err(tensor_err)
     }
 
-    fn einstein(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+    fn einstein(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let p = self.pool.borrow(py);
         let t = self.inner.einstein(&p.inner).map_err(tensor_err)?;
         Ok(nest2(py, &self.pool, t))
     }
 
-    fn weyl(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+    fn weyl(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let p = self.pool.borrow(py);
         let t = self.inner.weyl(&p.inner).map_err(tensor_err)?;
         Ok(nest4(py, &self.pool, t))
     }
 
-    fn kretschmann(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+    fn kretschmann(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let p = self.pool.borrow(py);
         let e = self.inner.kretschmann(&p.inner).map_err(tensor_err)?;
         Ok(wrap(py, &self.pool, e))
@@ -219,7 +220,7 @@ impl PyTensorMetric {
         &mut self,
         py: Python<'_>,
         velocities: &Bound<'_, PyAny>,
-    ) -> PyResult<Vec<PyObject>> {
+    ) -> PyResult<Vec<Py<PyAny>>> {
         let vs = vector(py, &self.pool, velocities)?;
         let p = self.pool.borrow(py);
         let out = self
@@ -238,7 +239,7 @@ fn py_tensor_canonical(
     py: Python<'_>,
     exprs: &Bound<'_, PyAny>,
     coords: &Bound<'_, PyAny>,
-) -> PyResult<Vec<PyObject>> {
+) -> PyResult<Vec<Py<PyAny>>> {
     let Some(pool) = find_pool(py, coords).or_else(|| find_pool(py, exprs)) else {
         return Err(PyTypeError::new_err("coordinates must be Expr symbols"));
     };
@@ -259,7 +260,7 @@ fn py_tensor_derivative(
     exprs: &Bound<'_, PyAny>,
     coords: &Bound<'_, PyAny>,
     var: usize,
-) -> PyResult<Vec<PyObject>> {
+) -> PyResult<Vec<Py<PyAny>>> {
     let Some(pool) = find_pool(py, coords).or_else(|| find_pool(py, exprs)) else {
         return Err(PyTypeError::new_err("coordinates must be Expr symbols"));
     };
@@ -273,7 +274,7 @@ fn py_tensor_derivative(
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add("TensorError", m.py().get_type_bound::<PyTensorError>())?;
+    m.add("TensorError", m.py().get_type::<PyTensorError>())?;
     m.add_class::<PyTensorMetric>()?;
     m.add_function(wrap_pyfunction!(py_tensor_canonical, m)?)?;
     m.add_function(wrap_pyfunction!(py_tensor_derivative, m)?)?;

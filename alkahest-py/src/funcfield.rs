@@ -35,8 +35,8 @@ pyo3::create_exception!(alkahest, PyFunctionFieldError, crate::PyAlkahestError);
 /// Mirrors `lib.rs`'s `make_structured_err`; kept local so that adding this
 /// module touches `lib.rs` in exactly two lines.
 fn structured(e: &FunctionFieldError) -> PyErr {
-    Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyFunctionFieldError>();
+    Python::attach(|py| {
+        let exc_type = py.get_type::<PyFunctionFieldError>();
         let msg = e.to_string();
         let code = e.code();
         let remediation = e.remediation().unwrap_or("");
@@ -50,7 +50,7 @@ fn structured(e: &FunctionFieldError) -> PyErr {
                 exc.setattr("code", code).ok();
                 exc.setattr("remediation", e.remediation()).ok();
                 exc.setattr("span", e.span()).ok();
-                PyErr::from_value_bound(exc)
+                PyErr::from_value(exc)
             }
             Err(err) => err,
         }
@@ -103,23 +103,23 @@ fn to_integer(obj: &Bound<'_, PyAny>) -> PyResult<Integer> {
 
 /// Exact rational back to Python: an `int` when integral, else a
 /// `fractions.Fraction`.
-fn rational_to_py(py: Python<'_>, r: &Rational) -> PyResult<PyObject> {
+fn rational_to_py(py: Python<'_>, r: &Rational) -> PyResult<Py<PyAny>> {
     crate::bigint::rational_to_py(py, r)
 }
 
-fn integer_to_py(py: Python<'_>, i: &Integer) -> PyResult<PyObject> {
+fn integer_to_py(py: Python<'_>, i: &Integer) -> PyResult<Py<PyAny>> {
     crate::bigint::int_to_py(py, i)
 }
 
 fn coeffs_from_py(obj: &Bound<'_, PyAny>) -> PyResult<Vec<Rational>> {
     let mut out = Vec::new();
-    for item in obj.iter()? {
+    for item in obj.try_iter()? {
         out.push(to_rational(&item?)?);
     }
     Ok(out)
 }
 
-fn coeffs_to_py(py: Python<'_>, cs: &[Rational]) -> PyResult<Vec<PyObject>> {
+fn coeffs_to_py(py: Python<'_>, cs: &[Rational]) -> PyResult<Vec<Py<PyAny>>> {
     cs.iter().map(|c| rational_to_py(py, c)).collect()
 }
 
@@ -132,7 +132,7 @@ fn coeffs_to_py(py: Python<'_>, cs: &[Rational]) -> PyResult<Vec<PyObject>> {
 /// Construct from the `y`-coefficients of `f` (lowest power of `y` first, each
 /// a list of `x`-coefficients lowest degree first), or with
 /// :meth:`FunctionField.hyperelliptic` from `a(x)` alone.
-#[pyclass(name = "FunctionField")]
+#[pyclass(from_py_object, name = "FunctionField")]
 #[derive(Clone)]
 pub struct PyFunctionField {
     pub(crate) inner: FunctionField,
@@ -143,7 +143,7 @@ impl PyFunctionField {
     #[new]
     fn new(coeffs: &Bound<'_, PyAny>) -> PyResult<Self> {
         let mut cs = Vec::new();
-        for item in coeffs.iter()? {
+        for item in coeffs.try_iter()? {
             cs.push(coeffs_from_py(&item?)?);
         }
         Ok(PyFunctionField {
@@ -179,7 +179,7 @@ impl PyFunctionField {
     }
 
     /// The coefficients of the normalised `a(x)`, lowest degree first.
-    fn curve(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn curve(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         coeffs_to_py(py, self.inner.curve())
     }
 
@@ -243,7 +243,7 @@ impl PyFunctionField {
 // ---------------------------------------------------------------------------
 
 /// A degree-one place: a rational point `(x, y)`, or the place at infinity.
-#[pyclass(name = "Place")]
+#[pyclass(from_py_object, name = "Place")]
 #[derive(Clone)]
 pub struct PyPlace {
     pub(crate) inner: Place,
@@ -292,13 +292,13 @@ impl PyPlace {
 
     /// The `x`-coordinate, or `None` at infinity.
     #[getter]
-    fn x(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+    fn x(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         self.inner.x().map(|v| rational_to_py(py, v)).transpose()
     }
 
     /// The `y`-coordinate, or `None` at infinity.
     #[getter]
-    fn y(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+    fn y(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         self.inner.y().map(|v| rational_to_py(py, v)).transpose()
     }
 
@@ -338,7 +338,7 @@ impl PyPlace {
 /// `E - D` is effective.  Two divisors at different places are incomparable,
 /// and then every one of `<`, `<=`, `>`, `>=` is `False` — which is what a
 /// partial order means, not a bug.
-#[pyclass(name = "Divisor")]
+#[pyclass(from_py_object, name = "Divisor")]
 #[derive(Clone)]
 pub struct PyDivisor {
     pub(crate) inner: Divisor,
@@ -352,7 +352,7 @@ impl PyDivisor {
     fn new(field: &PyFunctionField, terms: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
         let mut parsed: Vec<(Place, Integer)> = Vec::new();
         if let Some(terms) = terms {
-            for item in terms.iter()? {
+            for item in terms.try_iter()? {
                 let item = item?;
                 let place: PyRef<PyPlace> = item.get_item(0)?.extract()?;
                 let mult = to_integer(&item.get_item(1)?)?;
@@ -382,7 +382,7 @@ impl PyDivisor {
 
     /// `deg D` — the sum of the multiplicities, every place having degree 1.
     #[getter]
-    fn degree(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn degree(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         integer_to_py(py, &self.inner.degree())
     }
 
@@ -413,7 +413,7 @@ impl PyDivisor {
     }
 
     /// The `(place, multiplicity)` pairs, in canonical order.
-    fn terms(&self, py: Python<'_>) -> PyResult<Vec<(PyPlace, PyObject)>> {
+    fn terms(&self, py: Python<'_>) -> PyResult<Vec<(PyPlace, Py<PyAny>)>> {
         self.inner
             .terms()
             .into_iter()
@@ -422,7 +422,7 @@ impl PyDivisor {
     }
 
     /// The multiplicity at `place`; zero when it is not in the support.
-    fn coefficient(&self, py: Python<'_>, place: &PyPlace) -> PyResult<PyObject> {
+    fn coefficient(&self, py: Python<'_>, place: &PyPlace) -> PyResult<Py<PyAny>> {
         integer_to_py(py, &self.inner.coefficient(&place.inner))
     }
 
@@ -521,7 +521,7 @@ impl PyDivisor {
 // ---------------------------------------------------------------------------
 
 /// A class in `Pic⁰`, held as a reduced Mumford pair.
-#[pyclass(name = "DivisorClass")]
+#[pyclass(from_py_object, name = "DivisorClass")]
 #[derive(Clone)]
 pub struct PyDivisorClass {
     pub(crate) inner: DivisorClass,
@@ -566,12 +566,12 @@ impl PyDivisorClass {
     }
 
     /// Mumford `u(X)` on the monicised model, lowest degree first.
-    fn mumford_u(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn mumford_u(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         coeffs_to_py(py, self.inner.mumford_u())
     }
 
     /// Mumford `v(X)` on the monicised model, lowest degree first.
-    fn mumford_v(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn mumford_v(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         coeffs_to_py(py, self.inner.mumford_v())
     }
 
@@ -642,7 +642,7 @@ impl PyDivisorClass {
 // ---------------------------------------------------------------------------
 
 /// `(p(x) + q(x)·y) / d(x)` — an element of the function field.
-#[pyclass(name = "FunctionFieldElement")]
+#[pyclass(from_py_object, name = "FunctionFieldElement")]
 #[derive(Clone)]
 pub struct PyFunctionFieldElement {
     pub(crate) inner: FunctionFieldElement,
@@ -705,22 +705,22 @@ impl PyFunctionFieldElement {
     }
 
     /// The `y⁰` part of the numerator, lowest degree first.
-    fn numerator_rational_part(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn numerator_rational_part(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         coeffs_to_py(py, self.inner.numerator_rational_part())
     }
 
     /// The `y¹` part of the numerator, lowest degree first.
-    fn numerator_algebraic_part(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn numerator_algebraic_part(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         coeffs_to_py(py, self.inner.numerator_algebraic_part())
     }
 
     /// The denominator, lowest degree first.
-    fn denominator(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn denominator(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         coeffs_to_py(py, self.inner.denominator())
     }
 
     /// The norm `p² − q²·a` of the numerator, down to `ℚ(x)`.
-    fn numerator_norm(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn numerator_norm(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         coeffs_to_py(py, &self.inner.numerator_norm())
     }
 
@@ -771,7 +771,7 @@ impl PyFunctionFieldElement {
 // ---------------------------------------------------------------------------
 
 /// The space `L(D)`: its dimension and an explicit basis.
-#[pyclass(name = "RiemannRochSpace")]
+#[pyclass(from_py_object, name = "RiemannRochSpace")]
 #[derive(Clone)]
 pub struct PyRiemannRochSpace {
     pub(crate) inner: RiemannRochSpace,
@@ -834,7 +834,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_riemann_roch, m)?)?;
     m.add(
         "FunctionFieldError",
-        m.py().get_type_bound::<PyFunctionFieldError>(),
+        m.py().get_type::<PyFunctionFieldError>(),
     )?;
     Ok(())
 }

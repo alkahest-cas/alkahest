@@ -17,7 +17,7 @@ use std::hash::{Hash, Hasher};
 pyo3::create_exception!(alkahest, PyGroupError, crate::PyAlkahestError);
 
 fn group_error_to_py(e: GroupError) -> PyErr {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         // A Schreier–Sims run stopped by `ak.context(budget=...)`: raise the
         // recorded trip as `BudgetExceededError` (`E-BUDGET-*`).
         if e.is_budget_stop() {
@@ -25,13 +25,13 @@ fn group_error_to_py(e: GroupError) -> PyErr {
                 return err;
             }
         }
-        let exc_type = py.get_type_bound::<PyGroupError>();
+        let exc_type = py.get_type::<PyGroupError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
 
 /// A `rug::Integer` as an exact Python `int`, at any size.
-fn big_int(py: Python<'_>, value: &rug::Integer) -> PyResult<PyObject> {
+fn big_int(py: Python<'_>, value: &rug::Integer) -> PyResult<Py<PyAny>> {
     crate::bigint::int_to_py(py, value)
 }
 
@@ -52,7 +52,7 @@ fn big_int(py: Python<'_>, value: &rug::Integer) -> PyResult<PyObject> {
 /// the opposite of the ``f ∘ g = f(g(x))`` convention used for functions in
 /// analysis. Mixing the two yields a group of the right *order* whose elements
 /// are the inverses of the ones you wanted.
-#[pyclass(name = "Permutation", module = "alkahest")]
+#[pyclass(from_py_object, name = "Permutation", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyPermutation {
     pub(crate) inner: Permutation,
@@ -173,7 +173,7 @@ impl PyPermutation {
     ///
     /// Arbitrary precision on purpose: the largest order in ``S_n`` is
     /// Landau's function, which passes 64 bits a little after degree 180.
-    fn order(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn order(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         big_int(py, &self.inner.order())
     }
 
@@ -362,7 +362,7 @@ impl PyPermutationGroup {
     }
 
     /// ``|G|``, exactly, as a Python ``int`` of any size.
-    fn order(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn order(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let order = self.inner.order().map_err(group_error_to_py)?;
         big_int(py, &order)
     }
@@ -534,7 +534,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPermutation>()?;
     m.add_class::<PyPermutationGroup>()?;
     m.add_class::<PySiftResult>()?;
-    m.add("GroupError", m.py().get_type_bound::<PyGroupError>())?;
+    m.add("GroupError", m.py().get_type::<PyGroupError>())?;
     m.add("GROUP_DEFAULT_ELEMENT_CAP", DEFAULT_ELEMENT_CAP)?;
     m.add("GROUP_MAX_ELEMENT_CAP", MAX_ELEMENT_CAP)?;
     m.add("GROUP_MAX_BSGS_DEGREE", MAX_BSGS_DEGREE)?;

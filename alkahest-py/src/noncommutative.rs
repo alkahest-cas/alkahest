@@ -5,6 +5,7 @@
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::IntoPyObjectExt;
 
 use alkahest_core::algebra::nc_poly::{
     self as core_nc, GammaSlot, LadderMode, NcError, DEFAULT_MAX_STEPS,
@@ -18,8 +19,8 @@ use crate::{guard_depth, PyExpr, PyExprPool, PyRewriteRule};
 pyo3::create_exception!(alkahest, PyNcError, crate::PyAlkahestError);
 
 pub(crate) fn nc_err(e: NcError) -> PyErr {
-    Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyNcError>();
+    Python::attach(|py| {
+        let exc_type = py.get_type::<PyNcError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
@@ -83,22 +84,28 @@ fn py_nc_expand(py: Python<'_>, expr: PyRef<'_, PyExpr>) -> PyResult<PyExpr> {
 /// scalar part).
 #[pyfunction]
 #[pyo3(name = "nc_terms")]
-fn py_nc_terms(py: Python<'_>, expr: PyRef<'_, PyExpr>) -> PyResult<PyObject> {
+fn py_nc_terms(py: Python<'_>, expr: PyRef<'_, PyExpr>) -> PyResult<Py<PyAny>> {
     let terms = {
         let pool = expr.pool.borrow(py);
         guard_depth(&pool.inner, expr.id)?;
         core_nc::nc_terms(expr.id, &pool.inner).map_err(nc_err)?
     };
-    let out = PyList::empty_bound(py);
+    let out = PyList::empty(py);
     for (c, w) in terms {
-        let word = PyList::empty_bound(py);
+        let word = PyList::empty(py);
         for a in w {
-            word.append(wrap(py, a, &expr.pool).into_py(py))?;
+            word.append(wrap(py, a, &expr.pool).into_py_any(py)?)?;
         }
-        let t = PyTuple::new_bound(py, [wrap(py, c, &expr.pool).into_py(py), word.into_py(py)]);
+        let t = PyTuple::new(
+            py,
+            [
+                wrap(py, c, &expr.pool).into_py_any(py)?,
+                word.into_py_any(py)?,
+            ],
+        )?;
         out.append(t)?;
     }
-    Ok(out.into_py(py))
+    out.into_py_any(py)
 }
 
 /// ``nc_rewrite(expr, rules, *, max_steps=200000) -> Expr``
@@ -215,7 +222,7 @@ fn parse_modes(
         let pairs: Vec<Bound<'_, PyAny>> = match spec.extract::<(PyRef<PyExpr>, PyRef<PyExpr>)>() {
             Ok(_) => vec![spec.clone()],
             Err(_) => spec
-                .iter()
+                .try_iter()
                 .map_err(|_| {
                     PyTypeError::new_err(
                         "modes must be an (annihilator, creator) pair or a list of pairs",
@@ -458,24 +465,27 @@ fn py_gamma_contract(
     slots: &Bound<'_, PyList>,
     indices: Vec<PyRef<'_, PyExpr>>,
     dim: PyRef<'_, PyExpr>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let (labels, idx) = dim_labels(py, slots, Some(indices), &dim)?;
     let terms = {
         let pool = dim.pool.borrow(py);
         core_gd::gamma_contract(&labels, &idx, dim.id, &pool.inner).map_err(nc_err)?
     };
-    let out = PyList::empty_bound(py);
+    let out = PyList::empty(py);
     for (c, w) in terms {
-        let word = PyList::empty_bound(py);
+        let word = PyList::empty(py);
         for a in w {
-            word.append(wrap(py, a, &dim.pool).into_py(py))?;
+            word.append(wrap(py, a, &dim.pool).into_py_any(py)?)?;
         }
-        out.append(PyTuple::new_bound(
+        out.append(PyTuple::new(
             py,
-            [wrap(py, c, &dim.pool).into_py(py), word.into_py(py)],
-        ))?;
+            [
+                wrap(py, c, &dim.pool).into_py_any(py)?,
+                word.into_py_any(py)?,
+            ],
+        )?)?;
     }
-    Ok(out.into_py(py))
+    out.into_py_any(py)
 }
 
 /// ``lorentz_contract(expr, indices, dim) -> Expr``
@@ -806,12 +816,12 @@ fn table_dict(
     py: Python<'_>,
     pool_py: &Py<PyExprPool>,
     entries: Vec<((usize, usize, usize), ExprId)>,
-) -> PyResult<PyObject> {
-    let d = PyDict::new_bound(py);
+) -> PyResult<Py<PyAny>> {
+    let d = PyDict::new(py);
     for ((a, b, c), f) in entries {
-        d.set_item((a, b, c), wrap(py, f, pool_py).into_py(py))?;
+        d.set_item((a, b, c), wrap(py, f, pool_py).into_py_any(py)?)?;
     }
-    Ok(d.into_py(py))
+    d.into_py_any(py)
 }
 
 /// ``lie_su2(pool, generators=None, *, prefix="J") -> LieAlgebra``
@@ -857,7 +867,7 @@ fn py_lie_su3(
 /// entries in all six index orders): ``[λ_a/2, λ_b/2] = i f_{abc} λ_c/2``.
 #[pyfunction]
 #[pyo3(name = "su3_f")]
-fn py_su3_f(py: Python<'_>, pool: &Bound<'_, PyExprPool>) -> PyResult<PyObject> {
+fn py_su3_f(py: Python<'_>, pool: &Bound<'_, PyExprPool>) -> PyResult<Py<PyAny>> {
     let pool_py = pool.clone().unbind();
     let mut map: std::collections::BTreeMap<(usize, usize, usize), ExprId> = Default::default();
     {
@@ -877,7 +887,7 @@ fn py_su3_f(py: Python<'_>, pool: &Bound<'_, PyExprPool>) -> PyResult<PyObject> 
 /// entries in every index order): ``{λ_a, λ_b} = (4/3) δ_{ab} + 2 d_{abc} λ_c``.
 #[pyfunction]
 #[pyo3(name = "su3_d")]
-fn py_su3_d(py: Python<'_>, pool: &Bound<'_, PyExprPool>) -> PyResult<PyObject> {
+fn py_su3_d(py: Python<'_>, pool: &Bound<'_, PyExprPool>) -> PyResult<Py<PyAny>> {
     let pool_py = pool.clone().unbind();
     let mut map: std::collections::BTreeMap<(usize, usize, usize), ExprId> = Default::default();
     {
@@ -904,7 +914,7 @@ pub(crate) fn pauli_reduce(pool: &alkahest_core::kernel::ExprPool, id: ExprId) -
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add("NcError", m.py().get_type_bound::<PyNcError>())?;
+    m.add("NcError", m.py().get_type::<PyNcError>())?;
     m.add_function(wrap_pyfunction!(py_nc_expand, m)?)?;
     m.add_function(wrap_pyfunction!(py_nc_terms, m)?)?;
     m.add_function(wrap_pyfunction!(py_nc_rewrite, m)?)?;

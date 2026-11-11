@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::IntoPyObjectExt;
 
 use alkahest_core::logic::bdd::{BddManager, BddRef, ReorderOptions, DEFAULT_MAX_BDD_NODES};
 use alkahest_core::logic::boolean::{
@@ -25,13 +26,13 @@ use crate::{
 };
 
 fn bool_err(e: BooleanError) -> PyErr {
-    Python::with_gil(|py| match &e {
+    Python::attach(|py| match &e {
         BooleanError::Budget(b) => {
-            let t = py.get_type_bound::<PyBudgetExceededError>();
+            let t = py.get_type::<PyBudgetExceededError>();
             make_structured_err(py, &t, b)
         }
         _ => {
-            let t = py.get_type_bound::<PyLogicError>();
+            let t = py.get_type::<PyLogicError>();
             make_structured_err(py, &t, &e)
         }
     })
@@ -151,7 +152,7 @@ fn py_xor(py: Python<'_>, args: &Bound<'_, PyTuple>) -> PyResult<PyExpr> {
 /// Material implication ``a → b``, built as ``Or(Not(a), b)``.
 #[pyfunction(name = "Implies")]
 fn py_implies(py: Python<'_>, a: &Bound<'_, PyAny>, b: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
-    let t = PyTuple::new_bound(py, [a, b]);
+    let t = PyTuple::new(py, [a, b])?;
     let (pool_py, ids) = collect_args(py, "Implies", &t)?;
     let id = lb::logic_implies(&pool_py.borrow(py).inner, ids[0], ids[1]);
     Ok(wrap(pool_py, id))
@@ -174,7 +175,7 @@ fn py_ite(
     t: &Bound<'_, PyAny>,
     e: &Bound<'_, PyAny>,
 ) -> PyResult<PyExpr> {
-    let tup = PyTuple::new_bound(py, [c, t, e]);
+    let tup = PyTuple::new(py, [c, t, e])?;
     let (pool_py, ids) = collect_args(py, "ITE", &tup)?;
     let id = lb::logic_ite(&pool_py.borrow(py).inner, ids[0], ids[1], ids[2]);
     Ok(wrap(pool_py, id))
@@ -492,10 +493,10 @@ fn py_minimize_logic(
     form: &str,
     dontcare: Option<PyRef<PyExpr>>,
     exact: Option<bool>,
-) -> PyResult<PyObject> {
-    if expr.downcast::<PyList>().is_ok() || expr.downcast::<PyTuple>().is_ok() {
+) -> PyResult<Py<PyAny>> {
+    if expr.cast::<PyList>().is_ok() || expr.cast::<PyTuple>().is_ok() {
         let mut es: Vec<PyRef<PyExpr>> = Vec::new();
-        for item in expr.iter()? {
+        for item in expr.try_iter()? {
             es.push(
                 item?
                     .extract::<PyRef<PyExpr>>()
@@ -503,7 +504,7 @@ fn py_minimize_logic(
             );
         }
         let r = run_minimize_multi(py, &es, form, dontcare, exact)?;
-        return Ok(Py::new(py, r)?.into_py(py));
+        return Py::new(py, r)?.into_py_any(py);
     }
     let expr = expr
         .extract::<PyRef<PyExpr>>()
@@ -516,7 +517,7 @@ fn py_minimize_logic(
         terms: m.terms,
         literals: m.literals,
     };
-    Ok(Py::new(py, r)?.into_py(py))
+    Py::new(py, r)?.into_py_any(py)
 }
 
 /// Decide whether two propositional formulas are equivalent.
@@ -548,7 +549,7 @@ fn py_equivalent(
     g: PyRef<PyExpr>,
     method: &str,
     counterexample: bool,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     if !f.pool.is(&g.pool) {
         return Err(cross_pool_err(
             "[E-POOL-001] equivalent(): f and g belong to different ExprPools".into(),
@@ -564,18 +565,18 @@ fn py_equivalent(
     let (ok, cex) = match verdict {
         Equivalence::Equivalent => (true, py.None()),
         Equivalence::Counterexample(m) => {
-            let d = PyDict::new_bound(py);
+            let d = PyDict::new(py);
             for (k, v) in m {
                 d.set_item(k, v)?;
             }
-            (false, d.into_py(py))
+            (false, d.into_py_any(py)?)
         }
         _ => unreachable!("Equivalence has two variants"),
     };
     if counterexample {
-        Ok((ok, cex).into_py(py))
+        Ok((ok, cex).into_py_any(py)?)
     } else {
-        Ok(ok.into_py(py))
+        Ok(ok.into_py_any(py)?)
     }
 }
 
@@ -620,7 +621,7 @@ fn py_truth_table(
         .enumerate()
         .map(|(r, v)| {
             let bits: Vec<bool> = (0..n).map(|i| (r >> (n - 1 - i)) & 1 == 1).collect();
-            (PyTuple::new_bound(py, bits).unbind(), v)
+            (crate::pytuple(py, bits).unbind(), v)
         })
         .collect())
 }
@@ -693,7 +694,7 @@ fn parse_auto_reorder(ob: &Bound<'_, PyAny>) -> PyResult<Option<usize>> {
     if ob.is_none() {
         return Ok(None);
     }
-    if let Ok(b) = ob.downcast::<pyo3::types::PyBool>() {
+    if let Ok(b) = ob.cast::<pyo3::types::PyBool>() {
         return Ok(b.is_true().then_some(DEFAULT_AUTO_REORDER));
     }
     let n: usize = ob.extract().map_err(|_| {
@@ -786,7 +787,7 @@ impl PyBdd {
     fn levels(&self, py: Python<'_>, vars: &Bound<'_, PyAny>) -> PyResult<Vec<u32>> {
         let sh = lock(&self.shared);
         let mut out = Vec::new();
-        for v in vars.iter()? {
+        for v in vars.try_iter()? {
             if let Some(l) = level_of(py, &sh, &v?)? {
                 out.push(l);
             }
@@ -902,7 +903,7 @@ impl PyBdd {
         &self,
         py: Python<'_>,
         variables: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let sh = lock(&self.shared);
         let nm = sh.mgr.num_vars() as u32;
         let total = sh.mgr.sat_count(self.root, nm);
@@ -910,7 +911,7 @@ impl PyBdd {
             None => total,
             Some(vs) => {
                 let mut names: Vec<String> = Vec::new();
-                for v in vs.iter()? {
+                for v in vs.try_iter()? {
                     let v = v?;
                     let name = if let Ok(e) = v.extract::<PyRef<PyExpr>>() {
                         let pool = e.pool.borrow(py);
@@ -942,8 +943,8 @@ impl PyBdd {
             }
         };
         let s = count.to_string();
-        let int = py.get_type_bound::<pyo3::types::PyLong>();
-        Ok(int.call1((s,))?.into_py(py))
+        let int = py.get_type::<pyo3::types::PyInt>();
+        int.call1((s,))?.into_py_any(py)
     }
 
     /// Re-sort the manager's variable order by Rudell sifting to shrink the
@@ -978,7 +979,7 @@ impl PyBdd {
     /// >>> f.node_count() < before
     /// True
     #[pyo3(signature = (max_growth=1.2, max_swaps=200_000))]
-    fn reorder(&self, py: Python<'_>, max_growth: f64, max_swaps: usize) -> PyResult<PyObject> {
+    fn reorder(&self, py: Python<'_>, max_growth: f64, max_swaps: usize) -> PyResult<Py<PyAny>> {
         let st = {
             let mut sh = lock(&self.shared);
             sh.mgr
@@ -991,12 +992,12 @@ impl PyBdd {
                 )
                 .map_err(bool_err)?
         };
-        let d = PyDict::new_bound(py);
+        let d = PyDict::new(py);
         d.set_item("nodes_before", st.nodes_before)?;
         d.set_item("nodes_after", st.nodes_after)?;
         d.set_item("swaps", st.swaps)?;
         d.set_item("complete", st.complete)?;
-        Ok(d.into_py(py))
+        d.into_py_any(py)
     }
 
     /// Turn automatic reordering of this BDD's manager on or off: ``False``
@@ -1037,16 +1038,16 @@ impl PyBdd {
 
     /// One satisfying assignment ``{name: bool}`` (variables left out are
     /// free), or ``None`` if unsatisfiable.
-    fn satisfy_one(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn satisfy_one(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let sh = lock(&self.shared);
         match sh.mgr.any_sat(self.root) {
             None => Ok(py.None()),
             Some(lits) => {
-                let d = PyDict::new_bound(py);
+                let d = PyDict::new(py);
                 for (l, v) in lits {
                     d.set_item(&sh.mgr.var_names()[l as usize], v)?;
                 }
-                Ok(d.into_py(py))
+                Ok(d.into_py_any(py)?)
             }
         }
     }
@@ -1138,7 +1139,7 @@ fn py_bdd(
     let pool = pool_py.borrow(py);
     guard_depth(&pool.inner, expr.id)?;
     if let Some(order) = order {
-        for v in order.iter()? {
+        for v in order.try_iter()? {
             let v = v?;
             let name = if let Ok(e) = v.extract::<PyRef<PyExpr>>() {
                 if !e.pool.is(&pool_py) {

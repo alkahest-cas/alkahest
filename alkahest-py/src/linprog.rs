@@ -16,8 +16,10 @@
 //! `±inf` in `bounds`, meaning "no bound". Every value returned is an `int` or a
 //! `fractions.Fraction`.
 
+use crate::ToPyAny;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyFloat, PyList, PyString, PyTuple};
+use pyo3::IntoPyObjectExt;
 use rug::Rational;
 
 use alkahest_core::kernel::ExprData;
@@ -32,17 +34,17 @@ use crate::{PyExpr, PyExprPool};
 
 pyo3::create_exception!(alkahest, PyLinprogError, crate::PyAlkahestError);
 
-fn rat(py: Python<'_>, r: &Rational) -> PyResult<PyObject> {
+fn rat(py: Python<'_>, r: &Rational) -> PyResult<Py<PyAny>> {
     crate::bigint::rational_to_py(py, r)
 }
 
-fn rat_list(py: Python<'_>, v: &[Rational]) -> PyResult<PyObject> {
+fn rat_list(py: Python<'_>, v: &[Rational]) -> PyResult<Py<PyAny>> {
     let items = v.iter().map(|r| rat(py, r)).collect::<PyResult<Vec<_>>>()?;
-    Ok(PyList::new_bound(py, items).into_py(py))
+    PyList::new(py, items)?.into_py_any(py)
 }
 
 fn lp_err(e: LinprogError) -> PyErr {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         let (incumbent, bound) = match &e {
             LinprogError::NodeLimit {
                 incumbent, bound, ..
@@ -53,16 +55,16 @@ fn lp_err(e: LinprogError) -> PyErr {
             _ => (None, None),
         };
         let err = if matches!(e, LinprogError::Budget { .. }) {
-            let exc = py.get_type_bound::<crate::PyBudgetExceededError>();
+            let exc = py.get_type::<crate::PyBudgetExceededError>();
             crate::make_structured_err(py, &exc, &e)
         } else {
-            let exc = py.get_type_bound::<PyLinprogError>();
+            let exc = py.get_type::<PyLinprogError>();
             crate::make_structured_err(py, &exc, &e)
         };
         // Attach what a stopped branch-and-bound had, so a caller can use the
         // incumbent knowing it is unproven.
-        let value = err.value_bound(py);
-        let set = |name: &str, v: PyObject| {
+        let value = err.value(py);
+        let set = |name: &str, v: Py<PyAny>| {
             let _ = value.setattr(name, v);
         };
         let none = || py.None();
@@ -87,7 +89,7 @@ fn lp_err(e: LinprogError) -> PyErr {
                 .unwrap_or_else(none),
         );
         if let LinprogError::NodeLimit { nodes, .. } = &e {
-            set("nodes", nodes.into_py(py));
+            set("nodes", nodes.to_py_any(py));
         }
         err
     })
@@ -108,7 +110,7 @@ fn to_rational(ob: &Bound<'_, PyAny>, what: &str) -> PyResult<Rational> {
     if let Some(r) = crate::bigint::rational_from_py(ob)? {
         return Ok(r);
     }
-    if let Ok(s) = ob.downcast::<PyString>() {
+    if let Ok(s) = ob.cast::<PyString>() {
         let text = s.to_string_lossy();
         return Rational::from_str_radix(text.trim(), 10).map_err(|_| inexact(what, ob));
     }
@@ -129,7 +131,7 @@ fn shape(detail: String) -> PyErr {
 
 fn to_vector(ob: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<Rational>> {
     let items: Vec<Bound<'_, PyAny>> = ob
-        .iter()
+        .try_iter()
         .map_err(|_| shape(format!("{what} must be a sequence")))?
         .collect::<PyResult<_>>()?;
     items
@@ -144,7 +146,7 @@ fn to_matrix(ob: Option<&Bound<'_, PyAny>>, what: &str) -> PyResult<Vec<Vec<Rati
         return Ok(Vec::new());
     };
     let rows: Vec<Bound<'_, PyAny>> = ob
-        .iter()
+        .try_iter()
         .map_err(|_| shape(format!("{what} must be a sequence of rows")))?
         .collect::<PyResult<_>>()?;
     rows.iter()
@@ -165,7 +167,7 @@ fn bound_side(ob: &Bound<'_, PyAny>, what: &str, upper: bool) -> PyResult<Option
     if ob.is_none() {
         return Ok(None);
     }
-    if let Ok(f) = ob.downcast::<PyFloat>() {
+    if let Ok(f) = ob.cast::<PyFloat>() {
         let v = f.value();
         if v.is_infinite() && (v > 0.0) == upper {
             return Ok(None);
@@ -181,7 +183,7 @@ fn is_pair_of_scalars(ob: &Bound<'_, PyAny>) -> bool {
     };
     t.len() == 2
         && t.iter()
-            .all(|x| x.is_none() || x.iter().is_err() || x.downcast::<PyString>().is_ok())
+            .all(|x| x.is_none() || x.try_iter().is_err() || x.cast::<PyString>().is_ok())
 }
 
 fn to_bounds(ob: Option<&Bound<'_, PyAny>>, n: usize) -> PyResult<Vec<VarBound>> {
@@ -209,7 +211,7 @@ fn to_bounds(ob: Option<&Bound<'_, PyAny>>, n: usize) -> PyResult<Vec<VarBound>>
         return Ok(vec![pair(ob, None)?; n]);
     }
     let items: Vec<Bound<'_, PyAny>> = ob
-        .iter()
+        .try_iter()
         .map_err(|_| shape("bounds must be a pair or a sequence of pairs".into()))?
         .collect::<PyResult<_>>()?;
     items
@@ -264,15 +266,15 @@ fn solution_dict(
     py: Python<'_>,
     vars: &Option<Vec<Py<PyExpr>>>,
     x: Option<&[Rational]>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let (Some(vars), Some(x)) = (vars, x) else {
         return Ok(py.None());
     };
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     for (v, xi) in vars.iter().zip(x) {
         d.set_item(v.clone_ref(py), rat(py, xi)?)?;
     }
-    Ok(d.into_py(py))
+    d.into_py_any(py)
 }
 
 // ---------------------------------------------------------------------------
@@ -318,8 +320,8 @@ impl PyLpResult {
     }
 }
 
-fn basis_to_py(py: Python<'_>, b: &LpBasis) -> PyObject {
-    let items: Vec<PyObject> = b
+fn basis_to_py(py: Python<'_>, b: &LpBasis) -> Py<PyAny> {
+    let items: Vec<Py<PyAny>> = b
         .entries
         .iter()
         .filter_map(|e| {
@@ -330,10 +332,10 @@ fn basis_to_py(py: Python<'_>, b: &LpBasis) -> PyObject {
                 BasisEntry::UpperSlack(j) => ("upper", j),
                 _ => return None,
             };
-            Some((tag, k).into_py(py))
+            Some((tag, k).to_py_any(py))
         })
         .collect();
-    PyList::new_bound(py, items).into_py(py)
+    crate::pylist(py, items).to_py_any(py)
 }
 
 /// A warm-start basis: a list of ``(kind, index)`` pairs as returned in
@@ -349,7 +351,8 @@ fn basis_from_py(ob: &Bound<'_, PyAny>) -> PyResult<LpBasis> {
                 .into(),
         )
     };
-    let items: Vec<Bound<'_, PyAny>> = ob.iter().map_err(|_| bad())?.collect::<PyResult<_>>()?;
+    let items: Vec<Bound<'_, PyAny>> =
+        ob.try_iter().map_err(|_| bad())?.collect::<PyResult<_>>()?;
     let mut entries = Vec::with_capacity(items.len());
     for it in &items {
         let (tag, k): (String, usize) = it.extract().map_err(|_| bad())?;
@@ -400,7 +403,7 @@ impl PyLpResult {
     /// The optimal point, or the feasible base point of the ray when
     /// unbounded; ``None`` when infeasible.
     #[getter]
-    fn x(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn x(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match &self.outcome {
             LpOutcome::Optimal(c) => rat_list(py, &c.x),
             LpOutcome::Unbounded(u) => rat_list(py, &u.point),
@@ -410,7 +413,7 @@ impl PyLpResult {
 
     /// The optimal objective value, or ``None``.
     #[getter]
-    fn fun(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn fun(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match &self.outcome {
             LpOutcome::Optimal(c) => rat(py, &c.objective),
             _ => Ok(py.None()),
@@ -419,7 +422,7 @@ impl PyLpResult {
 
     /// Multipliers of the ``A_ub`` rows (optimal only).
     #[getter]
-    fn ineqlin(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn ineqlin(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match &self.outcome {
             LpOutcome::Optimal(c) => rat_list(py, &c.y_ub),
             _ => Ok(py.None()),
@@ -428,7 +431,7 @@ impl PyLpResult {
 
     /// Multipliers of the ``A_eq`` rows (optimal only).
     #[getter]
-    fn eqlin(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn eqlin(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match &self.outcome {
             LpOutcome::Optimal(c) => rat_list(py, &c.y_eq),
             _ => Ok(py.None()),
@@ -437,7 +440,7 @@ impl PyLpResult {
 
     /// Multipliers of the lower bounds (optimal only).
     #[getter]
-    fn lower(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn lower(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match &self.outcome {
             LpOutcome::Optimal(c) => rat_list(py, &c.z_lower),
             _ => Ok(py.None()),
@@ -446,7 +449,7 @@ impl PyLpResult {
 
     /// Multipliers of the upper bounds (optimal only).
     #[getter]
-    fn upper(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn upper(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match &self.outcome {
             LpOutcome::Optimal(c) => rat_list(py, &c.z_upper),
             _ => Ok(py.None()),
@@ -456,21 +459,21 @@ impl PyLpResult {
     /// The Farkas certificate (infeasible only): a dict with keys
     /// ``ineqlin``, ``eqlin``, ``lower``, ``upper``.
     #[getter]
-    fn farkas(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn farkas(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let LpOutcome::Infeasible(f) = &self.outcome else {
             return Ok(py.None());
         };
-        let d = PyDict::new_bound(py);
+        let d = PyDict::new(py);
         d.set_item("ineqlin", rat_list(py, &f.y_ub)?)?;
         d.set_item("eqlin", rat_list(py, &f.y_eq)?)?;
         d.set_item("lower", rat_list(py, &f.w_lower)?)?;
         d.set_item("upper", rat_list(py, &f.w_upper)?)?;
-        Ok(d.into_py(py))
+        d.into_py_any(py)
     }
 
     /// The improving direction (unbounded only).
     #[getter]
-    fn ray(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn ray(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match &self.outcome {
             LpOutcome::Unbounded(u) => rat_list(py, &u.direction),
             _ => Ok(py.None()),
@@ -480,7 +483,7 @@ impl PyLpResult {
     /// ``{variable: value}`` for :func:`linprog_expr` results (``None``
     /// otherwise, or when there is no point).
     #[getter]
-    fn solution(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn solution(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let x = match &self.outcome {
             LpOutcome::Optimal(c) => Some(c.x.as_slice()),
             LpOutcome::Unbounded(u) => Some(u.point.as_slice()),
@@ -492,7 +495,7 @@ impl PyLpResult {
     /// The programme in matrix form, as a dict (``c``, ``A_ub``, ``b_ub``,
     /// ``A_eq``, ``b_eq``, ``bounds``, ``sense``) — for :func:`linprog_expr`
     /// this shows how the relations were laid out as rows.
-    fn program(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn program(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         program_dict(py, &self.lp)
     }
 
@@ -509,7 +512,7 @@ impl PyLpResult {
     /// the slack of variable ``j``'s upper bound. Pass it (or this result) as
     /// ``linprog(..., basis=...)`` to warm-start a related programme.
     #[getter]
-    fn basis(&self, py: Python<'_>) -> PyObject {
+    fn basis(&self, py: Python<'_>) -> Py<PyAny> {
         basis_to_py(py, &self.basis)
     }
 
@@ -555,21 +558,21 @@ fn join(v: &[Rational]) -> String {
         .join(", ")
 }
 
-fn program_dict(py: Python<'_>, lp: &LinearProgram) -> PyResult<PyObject> {
-    let d = PyDict::new_bound(py);
-    let mat = |m: &[Vec<Rational>]| -> PyResult<PyObject> {
+fn program_dict(py: Python<'_>, lp: &LinearProgram) -> PyResult<Py<PyAny>> {
+    let d = PyDict::new(py);
+    let mat = |m: &[Vec<Rational>]| -> PyResult<Py<PyAny>> {
         let rows = m
             .iter()
             .map(|r| rat_list(py, r))
             .collect::<PyResult<Vec<_>>>()?;
-        Ok(PyList::new_bound(py, rows).into_py(py))
+        PyList::new(py, rows)?.into_py_any(py)
     };
     d.set_item("c", rat_list(py, &lp.c)?)?;
     d.set_item("A_ub", mat(&lp.a_ub)?)?;
     d.set_item("b_ub", rat_list(py, &lp.b_ub)?)?;
     d.set_item("A_eq", mat(&lp.a_eq)?)?;
     d.set_item("b_eq", rat_list(py, &lp.b_eq)?)?;
-    let side = |s: &Option<Rational>| -> PyResult<PyObject> {
+    let side = |s: &Option<Rational>| -> PyResult<Py<PyAny>> {
         match s {
             None => Ok(py.None()),
             Some(r) => rat(py, r),
@@ -578,11 +581,11 @@ fn program_dict(py: Python<'_>, lp: &LinearProgram) -> PyResult<PyObject> {
     let bounds = lp
         .bounds
         .iter()
-        .map(|b| -> PyResult<PyObject> {
-            Ok(PyTuple::new_bound(py, [side(&b.lower)?, side(&b.upper)?]).into_py(py))
+        .map(|b| -> PyResult<Py<PyAny>> {
+            PyTuple::new(py, [side(&b.lower)?, side(&b.upper)?])?.into_py_any(py)
         })
         .collect::<PyResult<Vec<_>>>()?;
-    d.set_item("bounds", PyList::new_bound(py, bounds))?;
+    d.set_item("bounds", PyList::new(py, bounds)?)?;
     d.set_item(
         "sense",
         match lp.sense {
@@ -590,7 +593,7 @@ fn program_dict(py: Python<'_>, lp: &LinearProgram) -> PyResult<PyObject> {
             Sense::Maximize => "max",
         },
     )?;
-    Ok(d.into_py(py))
+    d.into_py_any(py)
 }
 
 // ---------------------------------------------------------------------------
@@ -635,7 +638,7 @@ impl PyMilpResult {
 
     /// The optimal point (or the integer base point when unbounded).
     #[getter]
-    fn x(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn x(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match &self.outcome {
             MilpOutcome::Optimal(s) => rat_list(py, &s.x),
             MilpOutcome::Unbounded(u) => rat_list(py, &u.point),
@@ -645,7 +648,7 @@ impl PyMilpResult {
 
     /// The optimal objective value, or ``None``.
     #[getter]
-    fn fun(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn fun(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match &self.outcome {
             MilpOutcome::Optimal(s) => rat(py, &s.objective),
             _ => Ok(py.None()),
@@ -654,32 +657,32 @@ impl PyMilpResult {
 
     /// The proven bound; equal to ``fun`` for an optimal result.
     #[getter]
-    fn bound(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn bound(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.fun(py)
     }
 
     /// ``bound − fun``: exactly ``0`` for an optimal result, else ``None``.
     #[getter]
-    fn gap(&self, py: Python<'_>) -> PyObject {
+    fn gap(&self, py: Python<'_>) -> Py<PyAny> {
         match self.outcome {
-            MilpOutcome::Optimal(_) => 0i64.into_py(py),
+            MilpOutcome::Optimal(_) => 0i64.to_py_any(py),
             _ => py.None(),
         }
     }
 
     /// Branch-and-bound nodes whose LP was solved.
     #[getter]
-    fn nodes(&self, py: Python<'_>) -> PyObject {
+    fn nodes(&self, py: Python<'_>) -> Py<PyAny> {
         match self.outcome {
-            MilpOutcome::Optimal(ref s) => s.nodes.into_py(py),
-            MilpOutcome::Infeasible { nodes } => nodes.into_py(py),
+            MilpOutcome::Optimal(ref s) => s.nodes.to_py_any(py),
+            MilpOutcome::Infeasible { nodes } => nodes.to_py_any(py),
             MilpOutcome::Unbounded(_) => py.None(),
         }
     }
 
     /// The integral improving direction (unbounded only).
     #[getter]
-    fn ray(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn ray(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match &self.outcome {
             MilpOutcome::Unbounded(u) => rat_list(py, &u.direction),
             _ => Ok(py.None()),
@@ -690,23 +693,23 @@ impl PyMilpResult {
     /// pairs meaning ``row @ x <= rhs``; each holds at every integer-feasible
     /// point (optimal results only; ``[]`` when none were added).
     #[getter]
-    fn cuts(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn cuts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         if !matches!(self.outcome, MilpOutcome::Optimal(_)) {
-            return Ok(PyList::empty_bound(py).into_py(py));
+            return PyList::empty(py).into_py_any(py);
         }
         let items = self
             .cuts
             .iter()
-            .map(|(row, rhs)| -> PyResult<PyObject> {
-                Ok(PyTuple::new_bound(py, [rat_list(py, row)?, rat(py, rhs)?]).into_py(py))
+            .map(|(row, rhs)| -> PyResult<Py<PyAny>> {
+                PyTuple::new(py, [rat_list(py, row)?, rat(py, rhs)?])?.into_py_any(py)
             })
             .collect::<PyResult<Vec<_>>>()?;
-        Ok(PyList::new_bound(py, items).into_py(py))
+        PyList::new(py, items)?.into_py_any(py)
     }
 
     /// ``{variable: value}`` for :func:`linprog_expr` results.
     #[getter]
-    fn solution(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn solution(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let x = match &self.outcome {
             MilpOutcome::Optimal(s) => Some(s.x.as_slice()),
             MilpOutcome::Unbounded(u) => Some(u.point.as_slice()),
@@ -717,7 +720,7 @@ impl PyMilpResult {
 
     /// The programme in matrix form, as a dict (see :meth:`LPResult.program`),
     /// plus ``integrality``.
-    fn program(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn program(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let d = program_dict(py, &self.lp)?;
         d.bind(py)
             .set_item("integrality", self.integrality.clone())?;
@@ -842,7 +845,7 @@ fn to_integrality(ob: Option<&Bound<'_, PyAny>>, n: usize) -> PyResult<Vec<bool>
         return Ok(vec![b; n]);
     }
     let items: Vec<Bound<'_, PyAny>> = ob
-        .iter()
+        .try_iter()
         .map_err(|_| shape("integrality must be a bool or a sequence".into()))?
         .collect::<PyResult<_>>()?;
     items
@@ -982,9 +985,9 @@ fn py_linprog_expr(
     max_nodes: usize,
     parameter: Option<&Bound<'_, PyAny>>,
     parameter_range: Option<&Bound<'_, PyAny>>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let pool_py: Py<PyExprPool> = objective.pool.clone_ref(py);
-    let var_objs: Vec<Bound<'_, PyAny>> = vars.iter()?.collect::<PyResult<_>>()?;
+    let var_objs: Vec<Bound<'_, PyAny>> = vars.try_iter()?.collect::<PyResult<_>>()?;
     let mut var_ids = Vec::new();
     let mut var_py = Vec::new();
     for v in &var_objs {
@@ -993,7 +996,7 @@ fn py_linprog_expr(
         var_py.push(Py::new(py, (*e).clone())?);
     }
     let mut con_ids = Vec::new();
-    for c in constraints.iter()? {
+    for c in constraints.try_iter()? {
         let c = c?;
         let e = crate::extract_expr_in(&c, &pool_py, "linprog_expr", "a constraint")?;
         con_ids.push(e.id);
@@ -1013,13 +1016,13 @@ fn py_linprog_expr(
         };
         let (lo, hi) = parse_theta_range(parameter_range)?;
         let sol = core_parametric(&lp, &delta, lo, hi).map_err(lp_err)?;
-        return Ok(PyParametricResult {
+        return PyParametricResult {
             lp,
             delta,
             sol,
             vars: Some(var_py),
         }
-        .into_py(py));
+        .into_py_any(py);
     }
     let lp = {
         let pool = pool_py.borrow(py);
@@ -1027,13 +1030,13 @@ fn py_linprog_expr(
     };
     let Some(integer) = integer.filter(|o| !o.is_none()) else {
         let sol = linprog_with(&lp, &LpOptions::default()).map_err(lp_err)?;
-        return Ok(PyLpResult::new(lp, sol, Some(var_py)).into_py(py));
+        return PyLpResult::new(lp, sol, Some(var_py)).into_py_any(py);
     };
     let integrality = if let Ok(all) = integer.extract::<bool>() {
         vec![all; var_ids.len()]
     } else {
         let mut flags = vec![false; var_ids.len()];
-        for v in integer.iter()? {
+        for v in integer.try_iter()? {
             let v = v?;
             let e = crate::extract_expr_in(&v, &pool_py, "linprog_expr", "an integer variable")?;
             let Some(i) = var_ids.iter().position(|&id| id == e.id) else {
@@ -1048,14 +1051,14 @@ fn py_linprog_expr(
     let mut opts = MilpOptions::new(integrality.clone());
     opts.max_nodes = max_nodes;
     let report = milp_with(&lp, &opts, &CutOptions::default()).map_err(lp_err)?;
-    Ok(PyMilpResult {
+    PyMilpResult {
         lp,
         integrality,
         outcome: report.outcome,
         vars: Some(var_py),
         cuts: report.cuts,
     }
-    .into_py(py))
+    .into_py_any(py)
 }
 
 // ---------------------------------------------------------------------------
@@ -1089,34 +1092,31 @@ fn status_name(s: RegionStatus) -> &'static str {
     }
 }
 
-fn opt_rat(py: Python<'_>, v: &Option<Rational>) -> PyResult<PyObject> {
+fn opt_rat(py: Python<'_>, v: &Option<Rational>) -> PyResult<Py<PyAny>> {
     match v {
         None => Ok(py.None()),
         Some(r) => rat(py, r),
     }
 }
 
-fn affine_pair(py: Python<'_>, p: &Option<(Vec<Rational>, Vec<Rational>)>) -> PyResult<PyObject> {
+fn affine_pair(py: Python<'_>, p: &Option<(Vec<Rational>, Vec<Rational>)>) -> PyResult<Py<PyAny>> {
     match p {
         None => Ok(py.None()),
         Some((a, b)) => {
-            Ok(PyTuple::new_bound(py, [rat_list(py, a)?, rat_list(py, b)?]).into_py(py))
+            Ok(PyTuple::new(py, [rat_list(py, a)?, rat_list(py, b)?])?.into_py_any(py)?)
         }
     }
 }
 
-fn region_dict(py: Python<'_>, r: &ParametricRegion) -> PyResult<PyObject> {
-    let d = PyDict::new_bound(py);
+fn region_dict(py: Python<'_>, r: &ParametricRegion) -> PyResult<Py<PyAny>> {
+    let d = PyDict::new(py);
     d.set_item(
         "theta",
-        PyTuple::new_bound(py, [opt_rat(py, &r.lower)?, opt_rat(py, &r.upper)?]),
+        PyTuple::new(py, [opt_rat(py, &r.lower)?, opt_rat(py, &r.upper)?])?,
     )?;
     d.set_item("status", status_name(r.status))?;
     match &r.value {
-        Some((v0, v1)) => d.set_item(
-            "value",
-            PyTuple::new_bound(py, [rat(py, v0)?, rat(py, v1)?]),
-        )?,
+        Some((v0, v1)) => d.set_item("value", PyTuple::new(py, [rat(py, v0)?, rat(py, v1)?])?)?,
         None => d.set_item("value", py.None())?,
     }
     d.set_item("x", affine_pair(py, &r.x)?)?;
@@ -1128,7 +1128,7 @@ fn region_dict(py: Python<'_>, r: &ParametricRegion) -> PyResult<PyObject> {
         Some(b) => d.set_item("basis", basis_to_py(py, b))?,
         None => d.set_item("basis", py.None())?,
     }
-    Ok(d.into_py(py))
+    d.into_py_any(py)
 }
 
 /// Result of :func:`linprog_parametric` (or :func:`linprog_expr` with a
@@ -1164,41 +1164,41 @@ impl PyParametricResult {
 
     /// The critical regions (see the class docs).
     #[getter]
-    fn regions(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn regions(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let items = self
             .sol
             .regions
             .iter()
             .map(|r| region_dict(py, r))
             .collect::<PyResult<Vec<_>>>()?;
-        Ok(PyList::new_bound(py, items).into_py(py))
+        PyList::new(py, items)?.into_py_any(py)
     }
 
     /// The exact ``θ`` where the optimal basis or the status changes.
     #[getter]
-    fn breakpoints(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn breakpoints(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         rat_list(py, &self.sol.breakpoints)
     }
 
     /// The optimal value at ``theta``; ``None`` where the programme is
     /// infeasible or unbounded (see :meth:`status_at`) or outside the range.
-    fn value_at(&self, py: Python<'_>, theta: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn value_at(&self, py: Python<'_>, theta: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let t = to_rational(theta, "theta")?;
         opt_rat(py, &self.sol.value_at(&t))
     }
 
     /// ``"optimal"``, ``"infeasible"`` or ``"unbounded"`` at ``theta``
     /// (``None`` outside the range).
-    fn status_at(&self, py: Python<'_>, theta: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn status_at(&self, py: Python<'_>, theta: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let t = to_rational(theta, "theta")?;
         Ok(match self.sol.status_at(&t) {
-            Some(s) => status_name(s).into_py(py),
+            Some(s) => status_name(s).into_py_any(py)?,
             None => py.None(),
         })
     }
 
     /// An optimal point at ``theta`` (``None`` where there is none).
-    fn x_at(&self, py: Python<'_>, theta: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn x_at(&self, py: Python<'_>, theta: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let t = to_rational(theta, "theta")?;
         match self.sol.region_at(&t).and_then(|r| r.certificate_at(&t)) {
             Some(c) => rat_list(py, &c.x),
@@ -1207,7 +1207,7 @@ impl PyParametricResult {
     }
 
     /// ``{variable: value}`` at ``theta`` for :func:`linprog_expr` results.
-    fn solution_at(&self, py: Python<'_>, theta: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn solution_at(&self, py: Python<'_>, theta: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         let t = to_rational(theta, "theta")?;
         let cert = self.sol.region_at(&t).and_then(|r| r.certificate_at(&t));
         solution_dict(py, &self.vars, cert.as_ref().map(|c| c.x.as_slice()))
@@ -1216,7 +1216,7 @@ impl PyParametricResult {
     /// The programme at ``θ = 0`` in matrix form (see
     /// :meth:`LPResult.program`), plus its ``θ``-direction under
     /// ``c_theta`` or ``b_ub_theta`` / ``b_eq_theta``.
-    fn program(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn program(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let d = program_dict(py, &self.lp)?;
         let b = d.bind(py);
         match &self.delta {
@@ -1352,10 +1352,10 @@ fn py_linear_form(
     py: Python<'_>,
     expr: PyRef<'_, PyExpr>,
     vars: &Bound<'_, PyAny>,
-) -> PyResult<(PyObject, PyObject)> {
+) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
     let pool_py: Py<PyExprPool> = expr.pool.clone_ref(py);
     let mut ids = Vec::new();
-    for v in vars.iter()? {
+    for v in vars.try_iter()? {
         let v = v?;
         ids.push(crate::extract_expr_in(&v, &pool_py, "_linear_form", "a variable")?.id);
     }
@@ -1368,7 +1368,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLpResult>()?;
     m.add_class::<PyMilpResult>()?;
     m.add_class::<PyParametricResult>()?;
-    m.add("LinprogError", m.py().get_type_bound::<PyLinprogError>())?;
+    m.add("LinprogError", m.py().get_type::<PyLinprogError>())?;
     m.add_function(wrap_pyfunction!(py_linprog, m)?)?;
     m.add_function(wrap_pyfunction!(py_milp, m)?)?;
     m.add_function(wrap_pyfunction!(py_linprog_expr, m)?)?;

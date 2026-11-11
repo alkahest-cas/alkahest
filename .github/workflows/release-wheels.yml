@@ -64,9 +64,6 @@ jobs:
       matrix:
         # aarch64 is on the full matrix only; a pr_smoke call stays x86_64.
         include: ${{ fromJSON(inputs.pr_smoke && '[{"runner":"ubuntu-22.04","image":"quay.io/pypa/manylinux_2_28_x86_64:latest"}]' || '[{"runner":"ubuntu-22.04","image":"quay.io/pypa/manylinux_2_28_x86_64:latest"},{"runner":"ubuntu-24.04-arm","image":"quay.io/pypa/manylinux_2_28_aarch64:latest"}]') }}
-    env:
-      # PyO3 0.21 supports up to 3.12; this allows 3.13 and 3.14 via the stable ABI.
-      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -84,8 +81,6 @@ jobs:
       - name: Build wheels (manylinux_2_28, all Python versions)
         env:
           IMAGE: ${{ matrix.image }}
-          # 3.13 and 3.14 build through PYO3_USE_ABI3_FORWARD_COMPATIBILITY
-          # (PyO3 0.21 natively supports up to 3.12).
           INTERPRETERS: ${{ inputs.pr_smoke && 'python3.12' || 'python3.9 python3.10 python3.11 python3.12 python3.13 python3.14' }}
           FEATURES: egraph,groebner,cranelift,parallel,system-gmp
         run: |
@@ -96,7 +91,6 @@ jobs:
           done
           docker run --rm -v "$PWD:/io" -w /io \
             -e MATURIN_VERSION -e INTERPRETERS -e FEATURES \
-            -e PYO3_USE_ABI3_FORWARD_COMPATIBILITY \
             "$IMAGE" bash .github/scripts/build-manylinux-wheels.sh
 
       # The default wheel must run on any CPU of its architecture (see the
@@ -255,14 +249,12 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
-    env:
       # No LLVM_SYS_211_PREFIX here on purpose: `setup-llvm` writes the real
       # prefix (/usr/lib/llvm-21) to $GITHUB_ENV, and a workflow-file `env:`
       # would override it. The old `/usr` was only ever correct because
       # llvm-15-dev came from jammy's universe, which populates /usr/bin via
       # alternatives; the apt.llvm.org debs put llvm-config solely at
       # /usr/lib/llvm-21/bin and ship nothing directly in /usr/bin.
-      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -351,14 +343,12 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
-    env:
       # No LLVM_SYS_211_PREFIX here on purpose: `setup-llvm` writes the real
       # prefix (/usr/lib/llvm-21) to $GITHUB_ENV, and a workflow-file `env:`
       # would override it. The old `/usr` was only ever correct because
       # llvm-15-dev came from jammy's universe, which populates /usr/bin via
       # alternatives; the apt.llvm.org debs put llvm-config solely at
       # /usr/lib/llvm-21/bin and ship nothing directly in /usr/bin.
-      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -465,7 +455,6 @@ jobs:
       matrix:
         python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
     env:
-      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
       # Read by clang, rustc, maturin (for the wheel tag) and delocate.
       MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
@@ -528,8 +517,6 @@ jobs:
         # missing symbol fails loudest (Linux defers it to import time).
         os: ["windows-2022"]
         python: ${{ fromJSON(inputs.pr_smoke && '["3.12"]' || '["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]') }}
-    env:
-      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
     steps:
       - uses: actions/checkout@v6
         with:

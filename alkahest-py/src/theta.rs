@@ -43,8 +43,8 @@ use alkahest_core::experimental::{
 pyo3::create_exception!(alkahest, PyThetaError, crate::PyAlkahestError);
 
 fn th_err(e: ThetaError) -> PyErr {
-    Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyThetaError>();
+    Python::attach(|py| {
+        let exc_type = py.get_type::<PyThetaError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
@@ -72,7 +72,7 @@ fn precision(prec: u32, accurate_to: Option<u32>) -> Precision {
 /// The midpoint of ``[0 +/- 1e9]`` is ``0`` and means nothing. Use ``value()``,
 /// which refuses unless the enclosure is good enough, or read
 /// ``accuracy_bits``.
-#[pyclass(name = "ComplexBall", module = "alkahest")]
+#[pyclass(from_py_object, name = "ComplexBall", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyComplexBall {
     inner: ComplexBall,
@@ -87,7 +87,7 @@ fn ball_from_any(obj: &Bound<'_, PyAny>, prec: u32) -> PyResult<ComplexBall> {
     if let Ok(b) = obj.extract::<PyComplexBall>() {
         return Ok(b.inner);
     }
-    if let Ok(c) = obj.downcast::<PyComplex>() {
+    if let Ok(c) = obj.cast::<PyComplex>() {
         return Ok(ComplexBall::exact_f64(c.real(), c.imag(), prec));
     }
     if let Ok(v) = obj.extract::<f64>() {
@@ -99,7 +99,7 @@ fn ball_from_any(obj: &Bound<'_, PyAny>, prec: u32) -> PyResult<ComplexBall> {
 }
 
 /// Hand Python an exact integer of any size.
-fn integer_to_py(py: Python<'_>, i: &rug::Integer) -> PyResult<PyObject> {
+fn integer_to_py(py: Python<'_>, i: &rug::Integer) -> PyResult<Py<PyAny>> {
     crate::bigint::int_to_py(py, i)
 }
 
@@ -248,12 +248,12 @@ impl PyComplexBall {
     /// value that is exactly zero can never satisfy this and should be checked
     /// with ``contains_zero()``.
     #[pyo3(signature = (min_accuracy_bits=53))]
-    fn value(&self, py: Python<'_>, min_accuracy_bits: u32) -> PyResult<PyObject> {
+    fn value(&self, py: Python<'_>, min_accuracy_bits: u32) -> PyResult<Py<PyAny>> {
         let (re, im) = self
             .inner
             .value_if_accurate("value", min_accuracy_bits)
             .map_err(th_err)?;
-        Ok(PyComplex::from_doubles_bound(py, re, im).into())
+        Ok(PyComplex::from_doubles(py, re, im).into())
     }
 
     fn __add__(&self, other: &Bound<'_, PyAny>) -> PyResult<Self> {
@@ -348,7 +348,7 @@ impl PyComplexBall {
 /// of one number are two different inputs and are refused (``E-THETA-006``).
 /// ``SiegelMatrix.from_upper_triangle(genus, entries)`` fills the lower half by
 /// copying and cannot trip that check.
-#[pyclass(name = "SiegelMatrix", module = "alkahest")]
+#[pyclass(from_py_object, name = "SiegelMatrix", module = "alkahest")]
 #[derive(Clone)]
 pub struct PySiegelMatrix {
     inner: SiegelMatrix,
@@ -356,7 +356,7 @@ pub struct PySiegelMatrix {
 
 fn ball_list(objs: &Bound<'_, PyAny>, prec: u32) -> PyResult<Vec<ComplexBall>> {
     let mut out = Vec::new();
-    for item in objs.iter()? {
+    for item in objs.try_iter()? {
         out.push(ball_from_any(&item?, prec)?);
     }
     Ok(out)
@@ -446,7 +446,7 @@ impl PySiegelMatrix {
 /// The index is the ``2g``-bit integer ``(a << g) | b``, most significant bit
 /// first within each half; ``theta_characteristic_index`` builds it from bit
 /// lists so the ordering never has to be rediscovered at a call site.
-#[pyclass(name = "ThetaValues", module = "alkahest")]
+#[pyclass(from_py_object, name = "ThetaValues", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyThetaValues {
     inner: ThetaValues,
@@ -529,7 +529,7 @@ impl PyThetaValues {
 
 /// The result of ``siegel_reduce``: a symplectic matrix and the point it moves
 /// ``tau`` to.
-#[pyclass(name = "SiegelReduction", module = "alkahest")]
+#[pyclass(from_py_object, name = "SiegelReduction", module = "alkahest")]
 #[derive(Clone)]
 pub struct PySiegelReduction {
     inner: SiegelReduction,
@@ -544,7 +544,7 @@ impl PySiegelReduction {
     }
 
     /// The symplectic matrix, as a list of ``2g`` rows of ``2g`` integers.
-    fn symplectic(&self, py: Python<'_>) -> PyResult<Vec<Vec<PyObject>>> {
+    fn symplectic(&self, py: Python<'_>) -> PyResult<Vec<Vec<Py<PyAny>>>> {
         let n = 2 * self.inner.genus();
         let flat = self.inner.symplectic();
         let mut rows = Vec::with_capacity(n);
@@ -838,8 +838,11 @@ fn py_theta_characteristic_index(a: Vec<u8>, b: Vec<u8>) -> PyResult<u64> {
 /// Split a characteristic index into its ``(a, b)`` bit lists.
 #[pyfunction]
 #[pyo3(name = "theta_characteristic_bits")]
-fn py_theta_characteristic_bits(ab: u64, genus: usize) -> PyResult<(Vec<u8>, Vec<u8>)> {
-    theta_characteristic_bits(ab, genus).map_err(th_err)
+fn py_theta_characteristic_bits(ab: u64, genus: usize) -> PyResult<(Vec<u32>, Vec<u32>)> {
+    // `u32`, not `u8`: PyO3 converts a returned `Vec<u8>` to `bytes`; these are lists.
+    let (a, b) = theta_characteristic_bits(ab, genus).map_err(th_err)?;
+    let widen = |v: Vec<u8>| v.into_iter().map(u32::from).collect();
+    Ok((widen(a), widen(b)))
 }
 
 /// Is the characteristic ``(a, b)`` even — i.e. is ``theta[a;b]`` an even
@@ -914,6 +917,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_siegel_is_reduced, m)?)?;
     m.add_function(wrap_pyfunction!(py_riemann_theta_available, m)?)?;
     m.add_function(wrap_pyfunction!(py_arb_backend_available, m)?)?;
-    m.add("ThetaError", m.py().get_type_bound::<PyThetaError>())?;
+    m.add("ThetaError", m.py().get_type::<PyThetaError>())?;
     Ok(())
 }

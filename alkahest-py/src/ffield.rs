@@ -13,6 +13,7 @@
 //! prime subfield); outputs always use the form that matches the field, so a
 //! caller never has to branch on what came back.
 
+use crate::ToPyAny;
 use pyo3::prelude::*;
 use pyo3::types::{PyInt, PyList, PyType};
 
@@ -21,7 +22,7 @@ use alkahest_core::experimental::{FieldElement, FiniteField, FiniteFieldError, G
 pyo3::create_exception!(alkahest, PyFiniteFieldError, crate::PyAlkahestError);
 
 fn ff_err(e: FiniteFieldError) -> PyErr {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         // A shape refused for memory (rather than for being unaddressable)
         // leaves its cause in the budget's trip slot: raise that as the
         // `BudgetExceededError` every other engine raises.
@@ -30,7 +31,7 @@ fn ff_err(e: FiniteFieldError) -> PyErr {
                 return err;
             }
         }
-        let exc_type = py.get_type_bound::<PyFiniteFieldError>();
+        let exc_type = py.get_type::<PyFiniteFieldError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
@@ -61,11 +62,11 @@ fn elem_from_py(field: &FiniteField, obj: &Bound<'_, PyAny>) -> PyResult<FieldEl
 
 /// Write one field element back to Python — `int` over GF(p), `list[int]`
 /// of exactly `k` coordinates over GF(p^k).
-fn elem_to_py(py: Python<'_>, field: &FiniteField, e: &FieldElement) -> PyObject {
+fn elem_to_py(py: Python<'_>, field: &FiniteField, e: &FieldElement) -> Py<PyAny> {
     if field.is_prime_field() {
-        e.as_u64().unwrap_or(0).into_py(py)
+        e.as_u64().unwrap_or(0).to_py_any(py)
     } else {
-        PyList::new_bound(py, e.coefficients_padded(field.degree())).into()
+        crate::pylist(py, e.coefficients_padded(field.degree())).into()
     }
 }
 
@@ -84,7 +85,7 @@ fn elem_to_py(py: Python<'_>, field: &FiniteField, e: &FieldElement) -> PyObject
 /// Two fields of the same order but different defining polynomials are
 /// isomorphic and are **not** interchangeable here: an element's coordinates
 /// mean different things in each, so mixing them raises ``E-GFQ-006``.
-#[pyclass(name = "FiniteField", module = "alkahest")]
+#[pyclass(from_py_object, name = "FiniteField", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyFiniteField {
     pub(crate) inner: FiniteField,
@@ -157,7 +158,7 @@ impl PyFiniteField {
     }
 
     /// The generator `a` of the extension, or ``None`` for a prime field.
-    fn generator(&self, py: Python<'_>) -> Option<PyObject> {
+    fn generator(&self, py: Python<'_>) -> Option<Py<PyAny>> {
         self.inner
             .generator()
             .map(|g| elem_to_py(py, &self.inner, &g))
@@ -323,7 +324,7 @@ impl PyGfMatrix {
     }
 
     /// Entry ``(i, j)``.
-    fn entry(&self, py: Python<'_>, i: usize, j: usize) -> PyResult<PyObject> {
+    fn entry(&self, py: Python<'_>, i: usize, j: usize) -> PyResult<Py<PyAny>> {
         let e = self.inner.entry(i, j).map_err(ff_err)?;
         Ok(elem_to_py(py, self.inner.field(), &e))
     }
@@ -335,12 +336,12 @@ impl PyGfMatrix {
     }
 
     /// All entries as nested rows.
-    fn to_list(&self, py: Python<'_>) -> PyObject {
+    fn to_list(&self, py: Python<'_>) -> Py<PyAny> {
         let (r, c) = self.inner.shape();
         let f = self.inner.field();
-        let rows: Vec<PyObject> = (0..r)
+        let rows: Vec<Py<PyAny>> = (0..r)
             .map(|i| {
-                let cells: Vec<PyObject> = (0..c)
+                let cells: Vec<Py<PyAny>> = (0..c)
                     .map(|j| {
                         elem_to_py(
                             py,
@@ -349,10 +350,10 @@ impl PyGfMatrix {
                         )
                     })
                     .collect();
-                PyList::new_bound(py, cells).into()
+                crate::pylist(py, cells).into()
             })
             .collect();
-        PyList::new_bound(py, rows).into()
+        crate::pylist(py, rows).into()
     }
 
     /// ``True`` when every entry is zero. O(rows * cols), hence a method.
@@ -435,18 +436,18 @@ impl PyGfMatrix {
     }
 
     /// The determinant.
-    fn determinant(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn determinant(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let d = self.inner.determinant().map_err(ff_err)?;
         Ok(elem_to_py(py, self.inner.field(), &d))
     }
 
     /// Coefficients of the characteristic polynomial ``det(x*I - A)``,
     /// ascending, so the last entry is the leading ``1``.
-    fn charpoly(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn charpoly(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let cp = self.inner.charpoly().map_err(ff_err)?;
         let f = self.inner.field();
-        let cells: Vec<PyObject> = cp.iter().map(|c| elem_to_py(py, f, c)).collect();
-        Ok(PyList::new_bound(py, cells).into())
+        let cells: Vec<Py<PyAny>> = cp.iter().map(|c| elem_to_py(py, f, c)).collect();
+        Ok(PyList::new(py, cells)?.into())
     }
 
     fn __add__(&self, other: &Self) -> PyResult<Self> {
@@ -538,9 +539,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFiniteField>()?;
     m.add_class::<PyGfMatrix>()?;
     m.add_class::<PyGfRref>()?;
-    m.add(
-        "FiniteFieldError",
-        m.py().get_type_bound::<PyFiniteFieldError>(),
-    )?;
+    m.add("FiniteFieldError", m.py().get_type::<PyFiniteFieldError>())?;
     Ok(())
 }

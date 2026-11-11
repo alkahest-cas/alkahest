@@ -19,12 +19,12 @@ use crate::{PyDerivedResult, PyExpr, PyExprPool};
 pyo3::create_exception!(alkahest, PySpecialFunctionError, crate::PyAlkahestError);
 
 pub(crate) fn specfn_err(e: SpecialFunctionError) -> PyErr {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         if let SpecialFunctionError::Budget(b) = &e {
-            let exc_type = py.get_type_bound::<crate::PyBudgetExceededError>();
+            let exc_type = py.get_type::<crate::PyBudgetExceededError>();
             return crate::make_structured_err(py, &exc_type, b);
         }
-        let exc_type = py.get_type_bound::<PySpecialFunctionError>();
+        let exc_type = py.get_type::<PySpecialFunctionError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
@@ -35,7 +35,7 @@ pub(crate) fn pool_of(py: Python<'_>, obs: &[&Bound<'_, PyAny>]) -> Option<Py<Py
         if let Ok(e) = ob.extract::<PyRef<'_, PyExpr>>() {
             return Some(e.pool.clone_ref(py));
         }
-        if let Ok(dr) = ob.downcast::<PyDerivedResult>() {
+        if let Ok(dr) = ob.cast::<PyDerivedResult>() {
             return Some(dr.borrow().value.pool.clone_ref(py));
         }
     }
@@ -290,7 +290,7 @@ fn half_int(ob: &Bound<'_, PyAny>, what: &str) -> PyResult<HalfInt> {
     HalfInt::from_rational(&q, what).map_err(specfn_err)
 }
 
-static DEFAULT_POOL: pyo3::sync::GILOnceCell<Py<PyExprPool>> = pyo3::sync::GILOnceCell::new();
+static DEFAULT_POOL: pyo3::sync::PyOnceLock<Py<PyExprPool>> = pyo3::sync::PyOnceLock::new();
 
 fn result_pool(
     py: Python<'_>,
@@ -337,7 +337,7 @@ fn coupling(
     }
     let pool_py = result_pool(py, &args, pool)?;
     let s = py
-        .allow_threads(|| f(h[0], h[1], h[2], h[3], h[4], h[5]))
+        .detach(|| f(h[0], h[1], h[2], h[3], h[4], h[5]))
         .map_err(specfn_err)?;
     let id = s.to_expr(&pool_py.borrow(py).inner);
     Ok(PyExpr { id, pool: pool_py })
@@ -540,7 +540,7 @@ fn real_spherical_harmonic_y(
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "SpecialFunctionError",
-        m.py().get_type_bound::<PySpecialFunctionError>(),
+        m.py().get_type::<PySpecialFunctionError>(),
     )?;
     m.add_function(wrap_pyfunction!(legendre_p, m)?)?;
     m.add_function(wrap_pyfunction!(assoc_legendre_p, m)?)?;

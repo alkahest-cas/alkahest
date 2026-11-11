@@ -35,6 +35,7 @@ use alkahest_core::fpgroup::{
 };
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
+use pyo3::IntoPyObjectExt;
 use rug::Integer;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -42,14 +43,14 @@ use std::hash::{Hash, Hasher};
 pyo3::create_exception!(alkahest, PyFpGroupError, crate::PyAlkahestError);
 
 fn fp_err(e: FpGroupError) -> PyErr {
-    Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyFpGroupError>();
+    Python::attach(|py| {
+        let exc_type = py.get_type::<PyFpGroupError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
 
 /// A `rug::Integer` as an exact Python `int`, at any size.
-fn big_int(py: Python<'_>, value: &Integer) -> PyResult<PyObject> {
+fn big_int(py: Python<'_>, value: &Integer) -> PyResult<Py<PyAny>> {
     crate::bigint::int_to_py(py, value)
 }
 
@@ -64,7 +65,7 @@ fn big_int(py: Python<'_>, value: &Integer) -> PyResult<PyObject> {
 /// letter and the identity is the empty word. Every ``Word`` is freely reduced
 /// on construction, so ``==`` is equality in the *free* group — it says nothing
 /// about equality in a quotient, which is undecidable.
-#[pyclass(name = "Word", module = "alkahest")]
+#[pyclass(from_py_object, name = "Word", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyWord {
     inner: Word,
@@ -169,7 +170,7 @@ fn words_from(group: &FpGroup, items: Option<&Bound<'_, PyAny>>) -> PyResult<Vec
         ));
     }
     let mut out = Vec::new();
-    for item in items.iter()? {
+    for item in items.try_iter()? {
         let item = item?;
         if let Ok(w) = item.extract::<PyWord>() {
             out.push(w.inner);
@@ -193,7 +194,7 @@ fn words_from(group: &FpGroup, items: Option<&Bound<'_, PyAny>>) -> PyResult<Vec
 /// Returned by :meth:`FpGroup.abelian_invariants` and
 /// :meth:`FpGroup.cohomology`. ``order()`` is ``None`` exactly when the group is
 /// **infinite** — that is a proof, not a failure to decide.
-#[pyclass(name = "AbelianInvariants", module = "alkahest")]
+#[pyclass(from_py_object, name = "AbelianInvariants", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyAbelianInvariants {
     inner: AbelianInvariants,
@@ -209,7 +210,7 @@ impl PyAbelianInvariants {
 
     /// The invariant factors, ascending under divisibility and each at least 2.
     #[getter]
-    fn torsion(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn torsion(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         self.inner
             .torsion()
             .iter()
@@ -228,7 +229,7 @@ impl PyAbelianInvariants {
     }
 
     /// The order, or ``None`` when the group is infinite.
-    fn order(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
+    fn order(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         match self.inner.order() {
             Some(n) => Ok(Some(big_int(py, &n)?)),
             None => Ok(None),
@@ -257,7 +258,7 @@ impl PyAbelianInvariants {
 ///
 /// **Cosets are 0-based and coset 0 is** ``H``. ``rows()[c][2*k]`` is the coset
 /// ``c`` maps to under generator ``k``, and ``[2*k+1]`` under its inverse.
-#[pyclass(name = "CosetTable", module = "alkahest")]
+#[pyclass(from_py_object, name = "CosetTable", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyCosetTable {
     inner: CosetTable,
@@ -329,11 +330,11 @@ impl PyCosetTable {
     }
 
     /// One :class:`alkahest.Permutation` per generator, of degree ``index``.
-    fn permutations(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
-        let cls = py.get_type_bound::<crate::group::PyPermutation>();
+    fn permutations(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
+        let cls = py.get_type::<crate::group::PyPermutation>();
         let mut out = Vec::new();
         for p in self.inner.permutations().map_err(fp_err)? {
-            out.push(cls.call1((p.images().to_vec(),))?.into_py(py));
+            out.push(cls.call1((p.images().to_vec(),))?.into_py_any(py)?);
         }
         Ok(out)
     }
@@ -371,7 +372,7 @@ impl PyCosetTable {
 ///
 /// Not simplified: there is no Tietze pass, so a cyclic subgroup of index 30 in
 /// a two-generator group arrives with 31 generators.
-#[pyclass(name = "SubgroupPresentation", module = "alkahest")]
+#[pyclass(from_py_object, name = "SubgroupPresentation", module = "alkahest")]
 #[derive(Clone)]
 pub struct PySubgroupPresentation {
     inner: SubgroupPresentation,
@@ -428,7 +429,7 @@ impl PySubgroupPresentation {
 /// products of powers of generator names and parenthesised sub-words; ``1`` is
 /// the identity, and juxtaposition means multiplication, so ``"ab"`` and
 /// ``"a*b"`` are the same word.
-#[pyclass(name = "FpGroup", module = "alkahest")]
+#[pyclass(from_py_object, name = "FpGroup", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyFpGroup {
     inner: FpGroup,
@@ -499,7 +500,7 @@ impl PyFpGroup {
     /// ``E-FPGRP-004`` when the enumeration did not finish within
     /// ``max_cosets`` — which is not a claim either way about finiteness.
     #[pyo3(signature = (max_cosets = None))]
-    fn order(&self, py: Python<'_>, max_cosets: Option<usize>) -> PyResult<PyObject> {
+    fn order(&self, py: Python<'_>, max_cosets: Option<usize>) -> PyResult<Py<PyAny>> {
         let cap = max_cosets.unwrap_or_else(|| default_max_cosets(self.inner.rank()));
         let n = self.inner.order_with_cap(cap).map_err(fp_err)?;
         big_int(py, &n)
@@ -650,7 +651,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCosetTable>()?;
     m.add_class::<PySubgroupPresentation>()?;
     m.add_class::<PyAbelianInvariants>()?;
-    m.add("FpGroupError", m.py().get_type_bound::<PyFpGroupError>())?;
+    m.add("FpGroupError", m.py().get_type::<PyFpGroupError>())?;
     m.add("FPGROUP_DEFAULT_MAX_COSETS", DEFAULT_MAX_COSETS)?;
     m.add("FPGROUP_MAX_FREE_RANK", MAX_FREE_RANK)?;
     m.add("FPGROUP_MAX_MODULE_RANK", MAX_MODULE_RANK)?;

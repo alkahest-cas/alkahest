@@ -108,7 +108,7 @@ def _tags_from_binding_source() -> set[str] | None:
                 end = index
                 break
     body = text[open_index : end + 1]
-    return set(re.findall(r'"([a-z_0-9]+)"\.into_py\(py\)', body))
+    return set(re.findall(r'"([a-z_0-9]+)"\.(?:into_py_any|to_py_any)\(py\)', body))
 
 
 def test_dispatch_table_covers_every_node_tag():

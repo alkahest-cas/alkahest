@@ -23,6 +23,7 @@
 
 use pyo3::prelude::*;
 use pyo3::types::{PyModule, PyType};
+use pyo3::IntoPyObjectExt;
 
 use alkahest_core::budget::BudgetTrip;
 use alkahest_core::experimental::{NumberField, NumberFieldElement, NumberFieldError};
@@ -46,8 +47,8 @@ pyo3::create_exception!(alkahest, PyNumberFieldError, crate::PyAlkahestError);
 pyo3::create_exception!(alkahest, PyArithmeticError, crate::PyNumberTheoryError);
 
 fn nf_err(e: NumberFieldError) -> PyErr {
-    Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyNumberFieldError>();
+    Python::attach(|py| {
+        let exc_type = py.get_type::<PyNumberFieldError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
@@ -55,8 +56,8 @@ fn nf_err(e: NumberFieldError) -> PyErr {
 /// A size or budget refusal, raised as the same `BudgetExceededError`
 /// (`E-BUDGET-*`) every other engine raises.
 fn trip_err(t: BudgetTrip) -> PyErr {
-    Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<crate::PyBudgetExceededError>();
+    Python::attach(|py| {
+        let exc_type = py.get_type::<crate::PyBudgetExceededError>();
         crate::make_structured_err(py, &exc_type, &t)
     })
 }
@@ -75,8 +76,8 @@ fn nt_err(e: ArithmeticError) -> PyErr {
     if let ArithmeticError::Resource(t) = e {
         return trip_err(t);
     }
-    Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyArithmeticError>();
+    Python::attach(|py| {
+        let exc_type = py.get_type::<PyArithmeticError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
@@ -84,12 +85,12 @@ fn nt_err(e: ArithmeticError) -> PyErr {
 /// A decimal string into a Python `int`, with no width limit anywhere on the
 /// path — parsed by GMP and handed over as bytes, so
 /// `sys.get_int_max_str_digits()` does not apply.
-fn py_int(py: Python<'_>, decimal: &str) -> PyResult<PyObject> {
+fn py_int(py: Python<'_>, decimal: &str) -> PyResult<Py<PyAny>> {
     crate::bigint::int_from_decimal(py, decimal)
 }
 
 /// A `rug::Rational` into a `fractions.Fraction`, built from two ints.
-fn py_fraction(py: Python<'_>, r: &rug::Rational) -> PyResult<PyObject> {
+fn py_fraction(py: Python<'_>, r: &rug::Rational) -> PyResult<Py<PyAny>> {
     crate::bigint::fraction_to_py(py, r.numer(), r.denom())
 }
 
@@ -101,7 +102,7 @@ fn py_fraction(py: Python<'_>, r: &rug::Rational) -> PyResult<PyObject> {
 /// binary-to-rational conversion.
 fn coeff_strings(obj: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
     let mut out = Vec::new();
-    for item in obj.iter()? {
+    for item in obj.try_iter()? {
         out.push(crate::bigint::rational_text_of(&item?)?);
     }
     Ok(out)
@@ -123,7 +124,7 @@ fn coeff_strings(obj: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
 /// which ``inverse`` would have no answer for some non-zero elements.
 ///
 /// ``NumberField.cyclotomic(n)`` is ``Q(zeta_n)``, of degree ``phi(n)``.
-#[pyclass(name = "NumberField", module = "alkahest")]
+#[pyclass(from_py_object, name = "NumberField", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyNumberField {
     pub(crate) inner: NumberField,
@@ -155,16 +156,16 @@ impl PyNumberField {
 
     /// Pickle support: the defining polynomial, generator name and cyclotomic
     /// order. The field is rebuilt through its public constructors.
-    fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let helper = py
-            .import_bound("alkahest._pickle")?
+            .import("alkahest._pickle")?
             .getattr("_unpickle_number_field")?;
         let args = (
             self.defining_polynomial(py)?,
             self.inner.variable().to_string(),
             self.inner.cyclotomic_order(),
         );
-        Ok((helper, args).into_py(py))
+        (helper, args).into_py_any(py)
     }
 
     /// The degree ``[K : Q]``.
@@ -176,7 +177,7 @@ impl PyNumberField {
     /// The canonical defining polynomial: primitive, integral, ascending in
     /// degree, positive leading coefficient.
     #[getter]
-    fn defining_polynomial(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn defining_polynomial(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         self.inner
             .defining_polynomial()
             .iter()
@@ -193,7 +194,7 @@ impl PyNumberField {
     /// here, and there is deliberately no ``field_discriminant`` to confuse
     /// this with.
     #[getter]
-    fn polynomial_discriminant(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn polynomial_discriminant(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         crate::bigint::int_to_py(py, &self.inner.polynomial_discriminant())
     }
 
@@ -280,7 +281,7 @@ impl PyNumberField {
 /// with different canonical defining polynomials are not interchangeable even
 /// when they are isomorphic, because an element's coordinates mean different
 /// things in each.
-#[pyclass(name = "NumberFieldElement", module = "alkahest")]
+#[pyclass(from_py_object, name = "NumberFieldElement", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyNumberFieldElement {
     pub(crate) inner: NumberFieldElement,
@@ -289,20 +290,20 @@ pub struct PyNumberFieldElement {
 #[pymethods]
 impl PyNumberFieldElement {
     /// Pickle support: the field and the exact power-basis coordinates.
-    fn __reduce__(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let helper = py
-            .import_bound("alkahest._pickle")?
+            .import("alkahest._pickle")?
             .getattr("_unpickle_number_field_element")?;
         let field = PyNumberField {
             inner: self.inner.field().clone(),
         };
-        let coeffs: Vec<PyObject> = self
+        let coeffs: Vec<Py<PyAny>> = self
             .inner
             .coefficients()
             .iter()
             .map(|c| py_fraction(py, c))
             .collect::<PyResult<_>>()?;
-        Ok((helper, (field.into_py(py), coeffs)).into_py(py))
+        (helper, (field.into_py_any(py)?, coeffs)).into_py_any(py)
     }
 
     /// The field this element lives in.
@@ -315,7 +316,7 @@ impl PyNumberFieldElement {
 
     /// Coordinates in the power basis, ascending, always exactly ``degree`` of
     /// them, as ``fractions.Fraction``.
-    fn coefficients(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn coefficients(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         self.inner
             .coefficients()
             .iter()
@@ -324,18 +325,18 @@ impl PyNumberFieldElement {
     }
 
     /// The field norm ``N(self)`` — the product of the conjugates.
-    fn norm(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn norm(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         py_fraction(py, &self.inner.norm())
     }
 
     /// The field trace ``Tr(self)`` — the sum of the conjugates.
-    fn trace(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn trace(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         py_fraction(py, &self.inner.trace())
     }
 
     /// The monic minimal polynomial over ``Q``, ascending in degree, with a
     /// trailing ``1``. Its degree divides ``[K : Q]``.
-    fn minimal_polynomial(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn minimal_polynomial(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         self.inner
             .minimal_polynomial()
             .iter()
@@ -438,7 +439,7 @@ impl PyNumberFieldElement {
 /// ``E-NT-006`` when ``phi(n)`` exceeds ``2**24``.
 #[pyfunction]
 #[pyo3(name = "cyclotomic_polynomial_coeffs")]
-fn py_cyclotomic_polynomial_coeffs(py: Python<'_>, n: u64) -> PyResult<Vec<PyObject>> {
+fn py_cyclotomic_polynomial_coeffs(py: Python<'_>, n: u64) -> PyResult<Vec<Py<PyAny>>> {
     try_cyclotomic_polynomial(n)
         .map_err(nt_err)?
         .iter()
@@ -451,7 +452,7 @@ fn py_cyclotomic_polynomial_coeffs(py: Python<'_>, n: u64) -> PyResult<Vec<PyObj
 /// ``p(100) == 190569292``. Raises ``E-NT-006`` past the work cap.
 #[pyfunction]
 #[pyo3(name = "partition_number")]
-fn py_partition_number(py: Python<'_>, n: u64) -> PyResult<PyObject> {
+fn py_partition_number(py: Python<'_>, n: u64) -> PyResult<Py<PyAny>> {
     py_int(py, &partition_number(n).map_err(nt_err)?)
 }
 
@@ -465,7 +466,7 @@ fn py_partition_number(py: Python<'_>, n: u64) -> PyResult<PyObject> {
 /// Negate ``B_1`` if you want ``B_n^+``.
 #[pyfunction]
 #[pyo3(name = "bernoulli_number")]
-fn py_bernoulli_number(py: Python<'_>, n: u64) -> PyResult<PyObject> {
+fn py_bernoulli_number(py: Python<'_>, n: u64) -> PyResult<Py<PyAny>> {
     py_fraction(py, &bernoulli_number(n).map_err(nt_err)?)
 }
 
@@ -474,14 +475,14 @@ fn py_bernoulli_number(py: Python<'_>, n: u64) -> PyResult<PyObject> {
 /// These are *not* the Eulerian numbers.
 #[pyfunction]
 #[pyo3(name = "euler_number")]
-fn py_euler_number(py: Python<'_>, n: u64) -> PyResult<PyObject> {
+fn py_euler_number(py: Python<'_>, n: u64) -> PyResult<Py<PyAny>> {
     py_int(py, &euler_number(n).map_err(nt_err)?)
 }
 
 /// The harmonic number ``H_n = 1 + 1/2 + … + 1/n`` as an exact ``Fraction``.
 #[pyfunction]
 #[pyo3(name = "harmonic_number")]
-fn py_harmonic_number(py: Python<'_>, n: u64) -> PyResult<PyObject> {
+fn py_harmonic_number(py: Python<'_>, n: u64) -> PyResult<Py<PyAny>> {
     py_fraction(py, &harmonic_number(n).map_err(nt_err)?)
 }
 
@@ -493,7 +494,7 @@ fn py_harmonic_number(py: Python<'_>, n: u64) -> PyResult<PyObject> {
 /// sign error that hides whenever ``n - k`` is even.
 #[pyfunction]
 #[pyo3(name = "stirling_first")]
-fn py_stirling_first(py: Python<'_>, n: u64, k: u64) -> PyResult<PyObject> {
+fn py_stirling_first(py: Python<'_>, n: u64, k: u64) -> PyResult<Py<PyAny>> {
     py_int(py, &stirling_first(n, k).map_err(nt_err)?)
 }
 
@@ -501,7 +502,7 @@ fn py_stirling_first(py: Python<'_>, n: u64, k: u64) -> PyResult<PyObject> {
 /// permutations of ``n`` elements with exactly ``k`` cycles.
 #[pyfunction]
 #[pyo3(name = "stirling_first_unsigned")]
-fn py_stirling_first_unsigned(py: Python<'_>, n: u64, k: u64) -> PyResult<PyObject> {
+fn py_stirling_first_unsigned(py: Python<'_>, n: u64, k: u64) -> PyResult<Py<PyAny>> {
     py_int(py, &stirling_first_unsigned(n, k).map_err(nt_err)?)
 }
 
@@ -509,7 +510,7 @@ fn py_stirling_first_unsigned(py: Python<'_>, n: u64, k: u64) -> PyResult<PyObje
 /// labelled elements into ``k`` non-empty blocks. ``S(4, 2) == 7``.
 #[pyfunction]
 #[pyo3(name = "stirling_second")]
-fn py_stirling_second(py: Python<'_>, n: u64, k: u64) -> PyResult<PyObject> {
+fn py_stirling_second(py: Python<'_>, n: u64, k: u64) -> PyResult<Py<PyAny>> {
     py_int(py, &stirling_second(n, k).map_err(nt_err)?)
 }
 
@@ -527,7 +528,7 @@ fn py_moebius_mu(n: &Bound<'_, PyAny>) -> PyResult<i32> {
 /// sums them.
 #[pyfunction]
 #[pyo3(name = "divisor_sigma")]
-fn py_divisor_sigma(py: Python<'_>, k: u64, n: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+fn py_divisor_sigma(py: Python<'_>, k: u64, n: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let decimal = crate::bigint::decimal_of(n)?;
     py_int(py, &divisor_sigma(k, &decimal).map_err(nt_err)?)
 }
@@ -536,7 +537,7 @@ fn py_divisor_sigma(py: Python<'_>, k: u64, n: &Bound<'_, PyAny>) -> PyResult<Py
 /// ``k`` integer squares, counting signs. ``r_2(5) == 8``.
 #[pyfunction]
 #[pyo3(name = "sum_of_squares")]
-fn py_sum_of_squares(py: Python<'_>, k: u64, n: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+fn py_sum_of_squares(py: Python<'_>, k: u64, n: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let decimal = crate::bigint::decimal_of(n)?;
     py_int(py, &sum_of_squares(k, &decimal).map_err(nt_err)?)
 }
@@ -546,14 +547,8 @@ fn py_sum_of_squares(py: Python<'_>, k: u64, n: &Bound<'_, PyAny>) -> PyResult<P
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyNumberField>()?;
     m.add_class::<PyNumberFieldElement>()?;
-    m.add(
-        "NumberFieldError",
-        m.py().get_type_bound::<PyNumberFieldError>(),
-    )?;
-    m.add(
-        "ArithmeticError",
-        m.py().get_type_bound::<PyArithmeticError>(),
-    )?;
+    m.add("NumberFieldError", m.py().get_type::<PyNumberFieldError>())?;
+    m.add("ArithmeticError", m.py().get_type::<PyArithmeticError>())?;
     m.add_function(wrap_pyfunction!(py_cyclotomic_polynomial_coeffs, m)?)?;
     m.add_function(wrap_pyfunction!(py_partition_number, m)?)?;
     m.add_function(wrap_pyfunction!(py_bernoulli_number, m)?)?;

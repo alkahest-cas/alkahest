@@ -10,7 +10,7 @@ authors = ["Alkahest Contributors"]
 license = "Apache-2.0"
 
 [workspace.dependencies]
-pyo3 = { version = "0.21", features = ["extension-module"] }
+pyo3 = { version = "0.30", features = ["extension-module"] }
 
 # Redirect egglog to the vendored source tree (vendor/egglog, tag v0.4.0).
 # Pure-Rust, no system-library dependency — this makes the `egraph` feature

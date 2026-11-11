@@ -35,7 +35,7 @@ use crate::ffield::{PyFiniteField, PyGfMatrix};
 pyo3::create_exception!(alkahest, PyCodingError, crate::PyAlkahestError);
 
 fn coding_err(e: CodingError) -> PyErr {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         // A bound too large to hold leaves its cause in the budget's trip
         // slot; raise it as the `BudgetExceededError` other engines raise.
         if matches!(e, CodingError::LengthTooLarge { .. }) {
@@ -43,22 +43,22 @@ fn coding_err(e: CodingError) -> PyErr {
                 return err;
             }
         }
-        let exc_type = py.get_type_bound::<PyCodingError>();
+        let exc_type = py.get_type::<PyCodingError>();
         crate::make_structured_err(py, &exc_type, &e)
     })
 }
 
 /// A `rug::Integer` as an exact Python `int`, at any size.
-fn big_int(py: Python<'_>, value: &Integer) -> PyResult<PyObject> {
+fn big_int(py: Python<'_>, value: &Integer) -> PyResult<Py<PyAny>> {
     crate::bigint::int_to_py(py, value)
 }
 
 /// A `rug::Rational` as an `int` when integral, else a `fractions.Fraction`.
-fn big_rat(py: Python<'_>, value: &Rational) -> PyResult<PyObject> {
+fn big_rat(py: Python<'_>, value: &Rational) -> PyResult<Py<PyAny>> {
     crate::bigint::rational_to_py(py, value)
 }
 
-fn int_list(py: Python<'_>, values: &[Integer]) -> PyResult<Vec<PyObject>> {
+fn int_list(py: Python<'_>, values: &[Integer]) -> PyResult<Vec<Py<PyAny>>> {
     values.iter().map(|v| big_int(py, v)).collect()
 }
 
@@ -78,7 +78,7 @@ fn int_list(py: Python<'_>, values: &[Integer]) -> PyResult<Vec<PyObject>> {
 /// codewords. That is capped, and past the cap they raise ``E-CODE-004`` rather
 /// than truncating the search: the minimum weight of *some* of the codewords is
 /// an upper bound on ``d`` wearing ``d``'s name.
-#[pyclass(name = "LinearCode", module = "alkahest")]
+#[pyclass(from_py_object, name = "LinearCode", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyLinearCode {
     inner: LinearCode,
@@ -167,7 +167,7 @@ impl PyLinearCode {
     }
 
     /// ``q**k``, the number of codewords, as an exact ``int``.
-    fn size(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn size(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         big_int(py, &self.inner.size())
     }
 
@@ -214,7 +214,7 @@ impl PyLinearCode {
     /// The weight distribution ``[A_0, …, A_n]`` as exact ``int``s.
     ///
     /// Raises ``E-CODE-004`` when ``q**k`` is past the enumeration cap.
-    fn weight_distribution(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn weight_distribution(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         let a = self.inner.weight_distribution().map_err(coding_err)?;
         int_list(py, &a)
     }
@@ -257,7 +257,7 @@ impl PyLinearCode {
 ///
 /// ``WeightEnumerator(q, coeffs)`` builds one from a weight distribution, which
 /// is validated: a linear code has ``A_0 == 1`` and no negative multiplicity.
-#[pyclass(name = "WeightEnumerator", module = "alkahest")]
+#[pyclass(from_py_object, name = "WeightEnumerator", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyWeightEnumerator {
     inner: WeightEnumerator,
@@ -286,12 +286,12 @@ impl PyWeightEnumerator {
     }
 
     /// The weight distribution ``[A_0, …, A_n]`` as exact ``int``s.
-    fn coefficients(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn coefficients(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         int_list(py, self.inner.coefficients())
     }
 
     /// ``|C| = sum_i A_i``.
-    fn size(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn size(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         big_int(py, &self.inner.size())
     }
 
@@ -301,7 +301,7 @@ impl PyWeightEnumerator {
     }
 
     /// ``W(x, y)`` at integer arguments.
-    fn evaluate(&self, py: Python<'_>, x: i128, y: i128) -> PyResult<PyObject> {
+    fn evaluate(&self, py: Python<'_>, x: i128, y: i128) -> PyResult<Py<PyAny>> {
         let v = self.inner.evaluate(&Integer::from(x), &Integer::from(y));
         big_int(py, &v)
     }
@@ -353,7 +353,7 @@ impl PyWeightEnumerator {
 /// that proves it. ``verify_certificate()`` re-checks them from scratch in
 /// exact rational arithmetic; :func:`delsarte_lp_bound` already refuses rather
 /// than return a bound whose certificate did not pass.
-#[pyclass(name = "DelsarteBound", module = "alkahest")]
+#[pyclass(from_py_object, name = "DelsarteBound", module = "alkahest")]
 #[derive(Clone)]
 pub struct PyDelsarteBound {
     inner: DelsarteBound,
@@ -383,13 +383,13 @@ impl PyDelsarteBound {
     /// exact ``int``. A code has an integer number of words, so flooring is
     /// sound.
     #[getter]
-    fn bound(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn bound(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         big_int(py, self.inner.bound())
     }
 
     /// The exact LP optimum: an ``int`` when integral, else a
     /// ``fractions.Fraction``. Never a ``float``.
-    fn optimum(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn optimum(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         big_rat(py, self.inner.optimum())
     }
 
@@ -397,7 +397,7 @@ impl PyDelsarteBound {
     ///
     /// A vertex of the relaxation, **not** the distance distribution of any
     /// code: entries are generally fractional and no code need attain them.
-    fn distribution(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn distribution(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         self.inner
             .distribution()
             .iter()
@@ -410,7 +410,7 @@ impl PyDelsarteBound {
     ///
     /// With that and a Krawtchouk evaluator, the bound can be re-derived
     /// without trusting this library at all.
-    fn certificate(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+    fn certificate(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
         self.inner
             .certificate()
             .iter()
@@ -449,7 +449,7 @@ impl PyDelsarteBound {
 /// outside ``0..n``.
 #[pyfunction]
 #[pyo3(name = "krawtchouk")]
-fn py_krawtchouk(py: Python<'_>, k: usize, x: i64, n: usize, q: u64) -> PyResult<PyObject> {
+fn py_krawtchouk(py: Python<'_>, k: usize, x: i64, n: usize, q: u64) -> PyResult<Py<PyAny>> {
     if q < 2 {
         return Err(PyValueError::new_err(
             "an alphabet needs at least two symbols",
@@ -462,7 +462,7 @@ fn py_krawtchouk(py: Python<'_>, k: usize, x: i64, n: usize, q: u64) -> PyResult
 /// ``int`` or a ``fractions.Fraction``.
 #[pyfunction]
 #[pyo3(name = "krawtchouk_poly")]
-fn py_krawtchouk_poly(py: Python<'_>, k: usize, n: usize, q: u64) -> PyResult<Vec<PyObject>> {
+fn py_krawtchouk_poly(py: Python<'_>, k: usize, n: usize, q: u64) -> PyResult<Vec<Py<PyAny>>> {
     if q < 2 {
         return Err(PyValueError::new_err(
             "an alphabet needs at least two symbols",
@@ -493,7 +493,7 @@ fn py_delsarte_lp_bound(n: usize, d: usize, q: u64) -> PyResult<PyDelsarteBound>
 /// The Singleton bound ``A_q(n, d) <= q**(n - d + 1)``.
 #[pyfunction]
 #[pyo3(name = "singleton_bound")]
-fn py_singleton_bound(py: Python<'_>, n: usize, d: usize, q: u64) -> PyResult<PyObject> {
+fn py_singleton_bound(py: Python<'_>, n: usize, d: usize, q: u64) -> PyResult<Py<PyAny>> {
     let v = core_singleton_bound(n, d, q).map_err(coding_err)?;
     big_int(py, &v)
 }
@@ -501,7 +501,7 @@ fn py_singleton_bound(py: Python<'_>, n: usize, d: usize, q: u64) -> PyResult<Py
 /// The Hamming (sphere-packing) bound, floored.
 #[pyfunction]
 #[pyo3(name = "hamming_bound")]
-fn py_hamming_bound(py: Python<'_>, n: usize, d: usize, q: u64) -> PyResult<PyObject> {
+fn py_hamming_bound(py: Python<'_>, n: usize, d: usize, q: u64) -> PyResult<Py<PyAny>> {
     let v = core_hamming_bound(n, d, q).map_err(coding_err)?;
     big_int(py, &v)
 }
@@ -511,7 +511,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLinearCode>()?;
     m.add_class::<PyWeightEnumerator>()?;
     m.add_class::<PyDelsarteBound>()?;
-    m.add("CodingError", m.py().get_type_bound::<PyCodingError>())?;
+    m.add("CodingError", m.py().get_type::<PyCodingError>())?;
     m.add_function(wrap_pyfunction!(py_krawtchouk, m)?)?;
     m.add_function(wrap_pyfunction!(py_krawtchouk_poly, m)?)?;
     m.add_function(wrap_pyfunction!(py_delsarte_lp_bound, m)?)?;
