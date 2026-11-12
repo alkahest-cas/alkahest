@@ -27,7 +27,14 @@ Diophantine and homotopy work out of the box), the pure-Rust **Cranelift JIT** (
 
 Wheels exist for Linux (manylinux_2_28) x86_64 and aarch64, macOS 11+ arm64 (no Homebrew
 needed; FLINT, GMP and MPFR are bundled) and Windows
-x86_64. Anywhere else, such as Intel macOS or musl Linux, `pip install alkahest` falls
+x86_64.
+
+**macOS support is Apple Silicon only (macOS 11+).** Intel Macs (x86_64) are not
+supported: no wheel is built for them, and a source build for `x86_64-apple-darwin`
+stops at once with "alkahest supports macOS on Apple Silicon only; Intel Macs are not
+supported".
+
+On any other platform without a wheel, such as musl Linux, `pip install alkahest` falls
 back to the source distribution and compiles it. That needs a Rust toolchain and
 FLINT ≥ 3.3 with GMP and MPFR; without FLINT the build stops and prints how to install
 it. A build from the source distribution has the default Cargo features, `egraph` and
@@ -103,7 +110,7 @@ print(features)
 | Distribution | Tested platforms | Native feature profile | `parallel` |
 |---|---|---|---|
 | Default PyPI wheel | Linux x86_64 and aarch64, macOS arm64, Windows x86_64 | `egraph`, `groebner`, `cranelift_jit`, `parallel` | `True` |
-| PyPI source distribution | Linux x86_64 (built in CI); anywhere with Rust and FLINT ≥ 3.3 | `egraph`, `groebner` | `False` |
+| PyPI source distribution | Linux x86_64 (built in CI); anywhere with Rust and FLINT ≥ 3.3, except Intel macOS | `egraph`, `groebner` | `False` |
 | Release `+jit` | Linux x86_64 | `egraph`, `groebner`, `llvm_jit` (no Cranelift), `parallel` | `True` |
 | Release `+full` | Linux x86_64 | same as `+jit` | `True` |
 | Source build | any | whatever you pass to `--features` | `True` **only** with `--features parallel` |

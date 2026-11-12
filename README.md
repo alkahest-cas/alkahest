@@ -55,7 +55,7 @@ Probe your environment after install: `alkahest.capabilities()["features"]` and 
 | Artifact | Where | OS / arch (CI) | Python | Cranelift JIT | LLVM JIT | `parallel` |
 |----------|-------|----------------|--------|---------------|----------|------------|
 | **Default** (`pip install alkahest`) | [PyPI](https://pypi.org/project/alkahest/) | Linux manylinux_2_28 x86_64 and aarch64; macOS 11+ arm64 (Apple Silicon); Windows x86_64 | 3.10–3.14 | yes | no | yes |
-| **Source** (sdist) | [PyPI](https://pypi.org/project/alkahest/), used where no wheel matches | CI builds it on Linux x86_64; anywhere with Rust and FLINT ≥ 3.3 | 3.10–3.14 | no | no | no |
+| **Source** (sdist) | [PyPI](https://pypi.org/project/alkahest/), used where no wheel matches | CI builds it on Linux x86_64; anywhere with Rust and FLINT ≥ 3.3, except Intel macOS | 3.10–3.14 | no | no | no |
 | **`+jit`** (`X.Y.Z+jit`) | GitHub Releases only | Linux x86_64 | 3.10–3.14 | no | yes | yes |
 | **`+full`** (`X.Y.Z+full`) | GitHub Releases only | Linux x86_64 | 3.10–3.14 | yes | yes | yes |
 
@@ -66,7 +66,9 @@ Probe your environment after install: `alkahest.capabilities()["features"]` and 
 > ak.capabilities()["features"]["parallel"]   # True on wheels; source builds need --features parallel
 > ```
 
-**No wheel for your platform** (Intel macOS, musl Linux, …): `pip install alkahest` falls back to the source distribution and compiles it, which needs a Rust toolchain and FLINT ≥ 3.3 with GMP and MPFR (see [building from source](#from-source)). Without FLINT the build stops and prints how to install it. It builds the default Cargo features, `egraph` and `groebner`: no JIT and no `parallel`, unless you build from a checkout with `--features`.
+**macOS support is Apple Silicon only (macOS 11+).** Intel Macs (x86_64) are not supported: there is no wheel for them, and the source build refuses that target (`alkahest supports macOS on Apple Silicon only; Intel Macs are not supported`).
+
+**No wheel for your platform** (musl Linux, …): `pip install alkahest` falls back to the source distribution and compiles it, which needs a Rust toolchain and FLINT ≥ 3.3 with GMP and MPFR (see [building from source](#from-source)). Without FLINT the build stops and prints how to install it. It builds the default Cargo features, `egraph` and `groebner`: no JIT and no `parallel`, unless you build from a checkout with `--features`.
 
 **macOS / Windows:** default PyPI wheels include Cranelift JIT and `parallel`, and bundle FLINT, GMP and MPFR, so neither Homebrew nor MSYS2 is needed to install them. **`+jit`** and **`+full`** are **not** built in CI (LLVM / MSYS2 constraints); use [building from source](#from-source) with `--features jit` on those platforms if you need the LLVM backend.
 

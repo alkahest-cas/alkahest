@@ -4,6 +4,11 @@ fn flint_probe_note(msg: impl std::fmt::Display) {
 }
 
 fn main() {
+    // Before anything else, and in particular before any FLINT probe: an
+    // Intel Mac is not a supported target, so say so instead of letting the
+    // build go looking for a FLINT it will not get far with.
+    refuse_intel_mac();
+
     // Custom cfgs from this build script; keeps `unexpected_cfgs` quiet.
     println!("cargo::rustc-check-cfg=cfg(flint3)");
     // flint3_stride: fmpz_mat_struct uses `stride: slong` instead of `rows: **fmpz`.
@@ -215,6 +220,35 @@ fn flint_is_linkable() -> bool {
     }
 
     false
+}
+
+/// macOS support is Apple Silicon only: refuse `x86_64-apple-darwin`.
+///
+/// No wheel is built for Intel Macs, so `pip install alkahest` there falls back
+/// to the sdist, which lands here. The check reads the *target* from Cargo's
+/// `CARGO_CFG_TARGET_*` variables (not `cfg!`, which in a build script describes
+/// the host), so it fires only for that one triple: Linux, Windows and
+/// `aarch64-apple-darwin` are untouched whatever the host is. docs.rs
+/// (`DOCS_RS`) only runs rustdoc, which never links, and is let through so a
+/// docs build for any target cannot fail on this.
+fn refuse_intel_mac() {
+    // DOCS_RS is already on the rerun list (see `main`).
+    let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    if os != "macos" || arch != "x86_64" || std::env::var("DOCS_RS").is_ok() {
+        return;
+    }
+    panic!(
+        "\n\
+         alkahest supports macOS on Apple Silicon only; Intel Macs are not supported.\n\
+         \n\
+         This build targets x86_64-apple-darwin: an Intel Mac, or an x86_64 Python or\n\
+         toolchain running under Rosetta 2. No wheel is published for that target and\n\
+         the source build stops here rather than attempting FLINT.\n\
+         \n\
+         On an Apple Silicon Mac, use a native arm64 Python and Rust toolchain;\n\
+         `pip install alkahest` then installs the prebuilt macOS 11+ arm64 wheel.\n"
+    );
 }
 
 fn check_flint_present() {
