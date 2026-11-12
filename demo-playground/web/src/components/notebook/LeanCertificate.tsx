@@ -74,7 +74,7 @@ export default function LeanCertificate({ item, onUpdate, defaultExpanded = true
       : 'Lean 4 certificate';
 
   return (
-    <div className="overflow-hidden rounded-lg border border-ak-ok/30 bg-ak-elev">
+    <div className="overflow-hidden border border-ak-ok/30 bg-ak-elev">
       <div className="flex flex-wrap items-center gap-2 border-b border-ak-ok/20 bg-ak-ok/[0.06] px-3 py-2">
         <button
           type="button"
@@ -87,12 +87,12 @@ export default function LeanCertificate({ item, onUpdate, defaultExpanded = true
           )}
         </button>
         {localItem.verified === 'ok' && (
-          <span className="rounded-full bg-ak-ok/10 px-2 py-0.5 font-mono text-[12px] text-ak-ok">
+          <span className="bg-ak-ok/10 px-2 py-0.5 font-mono text-[12px] text-ak-ok">
             verified
           </span>
         )}
         {localItem.verified === 'fail' && (
-          <span className="rounded-full bg-ak-brand/10 px-2 py-0.5 font-mono text-[12px] text-ak-brand">
+          <span className="bg-ak-brand/10 px-2 py-0.5 font-mono text-[12px] text-ak-brand">
             check failed
           </span>
         )}
@@ -100,14 +100,14 @@ export default function LeanCertificate({ item, onUpdate, defaultExpanded = true
           <button
             type="button"
             onClick={handleCopy}
-            className="rounded border border-ak-border px-2 py-0.5 text-xs text-ak-fg2 hover:border-ak-border-strong hover:text-ak-fg"
+            className="border border-ak-border px-2 py-0.5 text-xs text-ak-fg2 hover:border-ak-border-strong hover:text-ak-fg"
           >
             {copied ? 'Copied' : 'Copy'}
           </button>
           <button
             type="button"
             onClick={handleDownload}
-            className="rounded border border-ak-border px-2 py-0.5 text-xs text-ak-fg2 hover:border-ak-border-strong hover:text-ak-fg"
+            className="border border-ak-border px-2 py-0.5 text-xs text-ak-fg2 hover:border-ak-border-strong hover:text-ak-fg"
           >
             Download .lean
           </button>
@@ -120,7 +120,7 @@ export default function LeanCertificate({ item, onUpdate, defaultExpanded = true
                 ? 'Install Lean 4 + Mathlib (see demo-playground README)'
                 : 'Typecheck with lake env lean'
             }
-            className="rounded bg-ak-ok px-2 py-0.5 text-xs text-ak-elev hover:opacity-90 disabled:opacity-40"
+            className="bg-ak-ok px-2 py-0.5 text-xs text-ak-elev hover:opacity-90 disabled:opacity-40"
           >
             {verifying ? 'Checking…' : 'Verify in Lean'}
           </button>

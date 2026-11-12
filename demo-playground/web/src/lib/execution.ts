@@ -64,7 +64,7 @@ export async function destroySession(conn: ServerConnection, sessionId: string):
 
 export async function installWheel(conn: ServerConnection, sessionId: string, file: File): Promise<void> {
   if (conn.backend === 'jupyter') {
-    throw new Error('Wheel install is only supported with the Alkahest execution server');
+    throw new Error('Wheel install is only supported with the alkahest execution server');
   }
   const form = new FormData();
   form.append('wheel', file);

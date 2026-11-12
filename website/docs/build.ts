@@ -189,7 +189,7 @@ for (const e of flat) {
   const r = renderMarkdown(md, { resolveLink: (h) => resolveLink(h, dirname(join(SRC, e.file))) });
   const title = r.title || e.title;
   const href = guideHref(e.slug);
-  const desc = truncate(firstParagraphText(md) || `${title} — Alkahest documentation.`, 158);
+  const desc = truncate(firstParagraphText(md) || `${title} — alkahest documentation.`, 158);
   indexGuide(md, title, href);
   if (e.slug === "python-api") {
     apiIntro.html = r.html;
@@ -221,7 +221,7 @@ api.pages.forEach((p, i) => {
   search.push(...r.search);
   const n = p.sections.reduce((a, s) => a + s.items.reduce((b, it) => b + (it.t === "syms" ? it.syms.length : 0), 0), 0);
   const desc = truncate(
-    r.description ? stripTags(r.description) : `Python API reference for ${p.title.replace(/ API$/, "").toLowerCase()} in Alkahest: ${n} documented symbols with signatures, parameters and source links.`,
+    r.description ? stripTags(r.description) : `Python API reference for ${p.title.replace(/ API$/, "").toLowerCase()} in alkahest: ${n} documented symbols with signatures, parameters and source links.`,
     158,
   );
   pages.push({
@@ -286,15 +286,15 @@ ${cards}`;
   const body = `
 <section class="hero">
   <div class="eyebrow">Documentation</div>
-  <h1>Alkahest documentation</h1>
-  <p class="lead">Alkahest is a computer algebra system with a Rust core and a Python API, built for both humans and agents. Every computation produces a derivation log, a growing subset exports Lean 4 proofs, and when it cannot answer it refuses with a coded error.</p>
+  <h1>alkahest documentation</h1>
+  <p class="lead">alkahest is a computer algebra system with a Rust core and a Python API, built for both humans and agents. Every computation produces a derivation log, a growing subset exports Lean 4 proofs, and when it cannot answer it refuses with a coded error.</p>
   <div class="hero-links">
     <a class="btn btn-primary" href="${guideHref("getting-started")}">Get started</a>
     <a class="btn" href="${BASE}api/">Python API reference</a>
   </div>
 </section>
 
-<div class="callout callout-important"><div class="callout-title">Beta</div><p>The API is still moving and Alkahest will contain bugs, including answers that are wrong without saying so. Treat a result that matters as unverified until you have checked it: read the derivation log, export the Lean certificate where one exists, or cross-check against an independent source.</p></div>
+<div class="callout callout-important"><div class="callout-title">Beta</div><p>The API is still moving and alkahest will contain bugs, including answers that are wrong without saying so. Treat a result that matters as unverified until you have checked it: read the derivation log, export the Lean certificate where one exists, or cross-check against an independent source.</p></div>
 
 <h2 id="install">Install</h2>
 <div class="tabs" data-tabs>
@@ -354,10 +354,10 @@ ${await sample("quickstart.py")}
   pages.push({
     path: "index.html",
     href: BASE,
-    title: "Alkahest documentation",
+    title: "alkahest documentation",
     docTitle: "Overview",
     description:
-      "Documentation for Alkahest, a computer algebra system with a Rust core and Python API: install, quickstart, guides on calculus, solving, codegen and Lean certificates, and the API reference.",
+      "Documentation for alkahest, a computer algebra system with a Rust core and Python API: install, quickstart, guides on calculus, solving, codegen and Lean certificates, and the API reference.",
     section: "home",
     wide: true,
     body,

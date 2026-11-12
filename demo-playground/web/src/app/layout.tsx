@@ -1,15 +1,20 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Providers } from './providers';
+import { basePath } from '@/lib/hosting';
 import './globals.css';
 
-const FAVICON =
-  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23c41e3a'/%3E%3Ctext x='16' y='22.5' text-anchor='middle' font-family='Inter,Arial,sans-serif' font-weight='700' font-size='20' fill='white'%3Ea%3C/text%3E%3C/svg%3E";
-
 export const metadata: Metadata = {
-  title: 'Alkahest Playground',
+  title: 'alkahest – playground',
   description:
-    'Type mathematics or Python and run it on the Alkahest computer algebra system, with coded refusals and Lean certificates.',
-  icons: { icon: FAVICON },
+    'Type mathematics or Python and run it on the alkahest computer algebra system, with coded refusals and Lean certificates.',
+  // The landing page's logo, copied into public/ because the playground is also
+  // served on its own (localhost), away from the site root.
+  icons: { icon: { url: `${basePath}/logo.svg`, type: 'image/svg+xml' } },
+};
+
+export const viewport: Viewport = {
+  themeColor: '#f8f7f3',
+  colorScheme: 'light',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

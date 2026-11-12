@@ -132,7 +132,7 @@ function OutputItemView({
         <img
           src={`data:image/png;base64,${item.data}`}
           alt="output"
-          className="max-w-full rounded"
+          className="max-w-full"
           style={{ maxHeight: '480px' }}
         />
       );
@@ -153,7 +153,7 @@ function OutputItemView({
 
   if (item.type === 'json') {
     return (
-      <pre className="font-mono text-xs bg-ak-code-bg border border-ak-border rounded p-3 overflow-x-auto">
+      <pre className="font-mono text-xs bg-ak-code-bg border border-ak-border p-3 overflow-x-auto">
         {JSON.stringify(item.data, null, 2)}
       </pre>
     );
@@ -161,7 +161,7 @@ function OutputItemView({
 
   if (item.type === 'error') {
     return (
-      <div className="rounded border border-ak-brand/30 bg-ak-brand/[0.06] p-3">
+      <div className="border border-ak-brand/30 bg-ak-brand/[0.06] p-3">
         <p className="font-mono text-sm font-semibold text-ak-brand">
           {item.ename}: {item.evalue}
         </p>

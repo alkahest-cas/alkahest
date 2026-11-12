@@ -234,7 +234,7 @@ export default function MathNotebook({ onServerStatusChange, onReady }: MathNote
           ok: false,
           error_code: 'NETWORK',
           error_message: local
-            ? 'The local Alkahest server stopped answering. Start it again with python -m alkahest.playground.'
+            ? 'The local alkahest server stopped answering. Start it again with python -m alkahest.playground.'
             : `Could not reach the backend (${e instanceof Error ? e.message : String(e)}).`,
           error_source: 'playground',
         };
@@ -429,17 +429,17 @@ export default function MathNotebook({ onServerStatusChange, onReady }: MathNote
           Write mathematics. Get exact answers.
         </h1>
         <p className="mt-2 max-w-2xl text-[15px] leading-relaxed text-ak-fg2">
-          Each line is read as ordinary maths and computed by Alkahest. Results it checked are marked{' '}
-          <span className="rounded-full bg-ak-ok/10 px-1.5 py-px font-mono text-[12px] text-ak-ok">verified</span>; when it
+          Each line is read as ordinary maths and computed by alkahest. Results it checked are marked{' '}
+          <span className="bg-ak-ok/10 px-1.5 py-px font-mono text-[12px] text-ak-ok">verified</span>; when it
           cannot stand behind an answer it declines with a coded reason instead of guessing.
         </p>
         {backend.status === 'online' && backend.local && (
           <p
-            className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-ak-ok/30 bg-ak-ok/[0.07] px-2.5 py-0.5 text-xs font-medium text-ak-ok"
+            className="mt-3 inline-flex items-center gap-1.5 border border-ak-ok/30 bg-ak-ok/[0.07] px-2.5 py-0.5 text-xs font-medium text-ak-ok"
             data-testid="math-local-pill"
-            title={`Connected to python -m alkahest.playground at ${LOCAL_MATH_URL}${backend.version ? ` (Alkahest ${backend.version})` : ''}`}
+            title={`Connected to python -m alkahest.playground at ${LOCAL_MATH_URL}${backend.version ? ` (alkahest ${backend.version})` : ''}`}
           >
-            <span className="h-1.5 w-1.5 rounded-full bg-ak-ok" aria-hidden />
+            <span className="h-1.5 w-1.5 bg-ak-ok" aria-hidden />
             Computing on this machine
           </p>
         )}
@@ -474,7 +474,7 @@ export default function MathNotebook({ onServerStatusChange, onReady }: MathNote
                   aria-label={`Insert ${item.title}`}
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => insertSnippet(item)}
-                  className="h-8 min-w-[2rem] shrink-0 rounded-md px-2 font-mono text-[13.5px] text-ak-fg2 transition-colors hover:bg-ak-sunk hover:text-ak-fg"
+                  className="h-8 min-w-[2rem] shrink-0 px-2 font-mono text-[13.5px] text-ak-fg2 transition-colors hover:bg-ak-sunk hover:text-ak-fg"
                 >
                   {item.label}
                 </button>
@@ -536,7 +536,7 @@ export default function MathNotebook({ onServerStatusChange, onReady }: MathNote
               key={ex}
               type="button"
               onClick={() => void tryExample(ex)}
-              className="rounded-md border border-ak-border bg-ak-elev px-2.5 py-1 font-mono text-[12.5px] text-ak-fg2 transition-colors hover:border-ak-border-strong hover:text-ak-fg"
+              className="border border-ak-border bg-ak-elev px-2.5 py-1 font-mono text-[12.5px] text-ak-fg2 transition-colors hover:border-ak-border-strong hover:text-ak-fg"
             >
               {ex}
             </button>
@@ -572,7 +572,7 @@ function LocalSetupCard({
   const denied = state.permission === 'denied';
   return (
     <section
-      className="mb-5 rounded-lg border border-ak-border bg-ak-elev px-4 py-4 text-sm sm:px-5"
+      className="mb-5 border border-ak-border bg-ak-elev px-4 py-4 text-sm sm:px-5"
       aria-labelledby="math-local-title"
       data-testid="math-local-card"
     >
@@ -580,11 +580,11 @@ function LocalSetupCard({
         Compute on your own machine
       </h2>
       <p className="mt-1 leading-relaxed text-ak-fg2">
-        Alkahest is native code and doesn&apos;t run in the browser yet, so this tab talks to a small Alkahest
+        alkahest is native code and doesn&apos;t run in the browser yet, so this tab talks to a small alkahest
         server on your computer. Everything is computed locally; nothing you type is sent to a server.
       </p>
       {webkit && (
-        <p className="mt-3 rounded-md border border-ak-warn/30 bg-ak-warn/[0.07] px-3 py-2 text-[13px] leading-relaxed text-ak-fg">
+        <p className="mt-3 border border-ak-warn/30 bg-ak-warn/[0.07] px-3 py-2 text-[13px] leading-relaxed text-ak-fg">
           Safari (and every browser on iPhone and iPad) blocks secure pages from reaching a server on your computer,
           so this page can&apos;t connect from here. Use Chrome, Edge or Firefox on a computer, or run the playground
           itself locally.
@@ -594,7 +594,7 @@ function LocalSetupCard({
         {LOCAL_SETUP_COMMANDS.map((cmd, i) => (
           <li key={cmd} className="flex items-center gap-3">
             <span
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-ak-sunk font-mono text-xs text-ak-fg2"
+              className="flex h-6 w-6 shrink-0 items-center justify-center bg-ak-sunk font-mono text-xs text-ak-fg2"
               aria-hidden
             >
               {i + 1}
@@ -633,7 +633,7 @@ function LocalSetupCard({
             }
           }}
           disabled={checking}
-          className="rounded-md bg-ak-brand px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-60"
+          className="bg-ak-brand px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-60"
         >
           {checking ? 'Checking…' : 'Check again'}
         </button>
@@ -647,7 +647,7 @@ function LocalSetupCard({
       )}
       {hasPrecomputed && (
         <p className="mt-1 text-xs leading-relaxed text-ak-muted">
-          Until then, the results below were computed in advance with Alkahest {PRECOMPUTED_VERSION} when this page
+          Until then, the results below were computed in advance with alkahest {PRECOMPUTED_VERSION} when this page
           was built.
         </p>
       )}
@@ -658,7 +658,7 @@ function LocalSetupCard({
 function CopyCommand({ command }: { command: string }) {
   const [copied, setCopied] = useState(false);
   return (
-    <div className="flex min-w-0 flex-1 items-center rounded-md border border-ak-border bg-ak-code-bg">
+    <div className="flex min-w-0 flex-1 items-center border border-ak-border bg-ak-code-bg">
       <code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap px-3 py-1.5 font-mono text-[12px] text-ak-fg no-scrollbar sm:text-[13px]">
         {command}
       </code>
@@ -693,16 +693,16 @@ function BackendNotice({
 }) {
   if (state.status === 'checking') {
     return (
-      <div className="mb-5 rounded-lg border border-ak-border bg-ak-elev px-4 py-3 text-sm text-ak-muted">
-        Looking for an Alkahest backend…
+      <div className="mb-5 border border-ak-border bg-ak-elev px-4 py-3 text-sm text-ak-muted">
+        Looking for an alkahest backend…
       </div>
     );
   }
-  let title = "The Alkahest server didn't answer";
+  let title = "The alkahest server didn't answer";
   let body: React.ReactNode;
   if (state.status === 'jupyter') {
-    title = 'The Math tab needs an Alkahest server, not Jupyter';
-    body = <>Your settings point at a Jupyter server. The Math tab talks to the playground&apos;s own Alkahest server (it has a restricted <Code>/math</Code> endpoint). Switch the backend type in settings.</>;
+    title = 'The Math tab needs an alkahest server, not Jupyter';
+    body = <>Your settings point at a Jupyter server. The Math tab talks to the playground&apos;s own alkahest server (it has a restricted <Code>/math</Code> endpoint). Switch the backend type in settings.</>;
   } else if (state.status === 'outdated') {
     title = 'This server is too old for the Math tab';
     body = <>The server answered, but it has no <Code>/math</Code> endpoint. Update <Code>demo-playground/server</Code> and restart it.</>;
@@ -716,7 +716,7 @@ function BackendNotice({
     );
   }
   return (
-    <div className="mb-5 rounded-lg border border-ak-warn/30 bg-ak-warn/[0.06] px-4 py-3.5 text-sm" role="status">
+    <div className="mb-5 border border-ak-warn/30 bg-ak-warn/[0.06] px-4 py-3.5 text-sm" role="status">
       <p className="font-medium text-ak-fg">{title}</p>
       <p className="mt-1 leading-relaxed text-ak-fg2">{body}</p>
       <div className="mt-3 flex gap-2">
@@ -741,7 +741,7 @@ function ToolbarButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="flex items-center gap-1.5 rounded-md border border-ak-border bg-ak-elev px-3 py-1.5 text-xs font-medium text-ak-fg2 transition-colors hover:border-ak-border-strong hover:text-ak-fg disabled:opacity-40"
+      className="flex items-center gap-1.5 border border-ak-border bg-ak-elev px-3 py-1.5 text-xs font-medium text-ak-fg2 transition-colors hover:border-ak-border-strong hover:text-ak-fg disabled:opacity-40"
     >
       {children}
     </button>
@@ -750,12 +750,12 @@ function ToolbarButton({
 
 function Kbd({ children }: { children: React.ReactNode }) {
   return (
-    <kbd className="rounded border border-ak-border bg-ak-elev px-1 py-px font-mono text-[11px] text-ak-fg2">
+    <kbd className="border border-ak-border bg-ak-elev px-1 py-px font-mono text-[11px] text-ak-fg2">
       {children}
     </kbd>
   );
 }
 
 function Code({ children }: { children: React.ReactNode }) {
-  return <code className="rounded bg-ak-sunk px-1 py-px font-mono text-[0.92em] text-ak-fg2">{children}</code>;
+  return <code className="bg-ak-sunk px-1 py-px font-mono text-[0.92em] text-ak-fg2">{children}</code>;
 }

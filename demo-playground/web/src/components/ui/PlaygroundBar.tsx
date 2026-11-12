@@ -67,7 +67,7 @@ export default function PlaygroundBar({
           <span className="flex items-center gap-1.5 text-xs text-ak-muted" title={statusText}>
             <span
               className={clsx(
-                'h-2 w-2 rounded-full',
+                'h-2 w-2',
                 serverStatus === 'online' ? 'bg-ak-ok' : serverStatus === 'offline' ? 'bg-ak-warn' : 'bg-ak-border-strong',
               )}
             />
@@ -79,14 +79,14 @@ export default function PlaygroundBar({
               type="button"
               onClick={onToggleRecording}
               className={clsx(
-                'hidden items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors sm:flex',
+                'hidden items-center gap-1.5 px-2.5 py-1 text-xs font-medium transition-colors sm:flex',
                 isRecording
                   ? 'bg-ak-brand text-ak-brand-fg'
                   : 'border border-ak-border text-ak-muted hover:border-ak-border-strong hover:text-ak-fg',
               )}
               title={isRecording ? 'Stop recording' : 'Record this tab as a video'}
             >
-              <span className={clsx('h-2 w-2 rounded-full bg-current', isRecording && 'rec-indicator')} />
+              <span className={clsx('h-2 w-2 bg-current', isRecording && 'rec-indicator')} />
               {isRecording ? 'Recording…' : 'Record'}
             </button>
           )}
@@ -94,7 +94,7 @@ export default function PlaygroundBar({
           <button
             type="button"
             onClick={toggleSettings}
-            className="rounded-md p-1.5 text-ak-muted transition-colors hover:bg-ak-sunk hover:text-ak-fg"
+            className="p-1.5 text-ak-muted transition-colors hover:bg-ak-sunk hover:text-ak-fg"
             title="Backend settings (Ctrl+/)"
             aria-label="Backend settings"
           >

@@ -44,11 +44,13 @@ export default function SiteHeader({ confirmLeave }: SiteHeaderProps) {
   return (
     <header className="sticky top-0 z-40 border-b border-ak-border bg-ak-bg/85 backdrop-blur-md">
       <div className="mx-auto flex h-[60px] max-w-site items-center gap-6 px-4 sm:px-6">
-        <a href={`${SITE}/`} className="ak-wordmark" onClick={guard} aria-label="Alkahest home">
-          alkahest
+        <a href={`${SITE}/`} className="ak-wordmark" onClick={guard} aria-label="alkahest home">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={`${basePath}/logo.svg`} alt="" width={26} height={26} className="block" />
+          <span>alkahest</span>
         </a>
         <div className="flex-1" />
-        <nav className="hidden items-center gap-7 min-[720px]:flex" aria-label="Site">
+        <nav className="hidden items-center gap-1 min-[720px]:flex" aria-label="Primary">
           {links.map((l) => (
             <a
               key={l.label}
@@ -56,7 +58,7 @@ export default function SiteHeader({ confirmLeave }: SiteHeaderProps) {
               onClick={l.current ? undefined : guard}
               aria-current={l.current ? 'page' : undefined}
               className={clsx(
-                'text-sm font-medium no-underline transition-colors',
+                'px-2.5 py-1.5 text-sm font-medium no-underline transition-colors hover:bg-ak-sunk',
                 l.current ? 'text-ak-fg' : 'text-ak-fg2 hover:text-ak-fg',
               )}
             >
@@ -66,15 +68,15 @@ export default function SiteHeader({ confirmLeave }: SiteHeaderProps) {
           <a
             href={GITHUB}
             onClick={guard}
-            aria-label="Alkahest on GitHub"
-            className="text-ak-fg2 transition-colors hover:text-ak-fg"
+            aria-label="alkahest on GitHub"
+            className="ml-1 inline-flex px-2 py-1.5 text-ak-fg2 transition-colors hover:bg-ak-sunk hover:text-ak-fg"
           >
             <GitHubMark />
           </a>
         </nav>
         <button
           type="button"
-          className="rounded-md p-2 text-ak-fg2 hover:text-ak-fg min-[720px]:hidden"
+          className="border border-ak-border px-2 py-1.5 text-ak-fg hover:bg-ak-sunk min-[720px]:hidden"
           aria-label={menuOpen ? 'Close menu' : 'Open menu'}
           aria-expanded={menuOpen}
           onClick={() => setMenuOpen((v) => !v)}
@@ -96,14 +98,14 @@ export default function SiteHeader({ confirmLeave }: SiteHeaderProps) {
               onClick={l.current ? () => setMenuOpen(false) : guard}
               aria-current={l.current ? 'page' : undefined}
               className={clsx(
-                'block py-2.5 text-[15px] font-medium no-underline',
+                'block px-2 py-2.5 text-[15px] font-medium no-underline',
                 l.current ? 'text-ak-fg' : 'text-ak-fg2',
               )}
             >
               {l.label}
             </a>
           ))}
-          <a href={GITHUB} onClick={guard} className="flex items-center gap-2 py-2.5 text-[15px] font-medium text-ak-fg2 no-underline">
+          <a href={GITHUB} onClick={guard} className="flex items-center gap-2 px-2 py-2.5 text-[15px] font-medium text-ak-fg2 no-underline">
             <GitHubMark /> GitHub
           </a>
         </nav>

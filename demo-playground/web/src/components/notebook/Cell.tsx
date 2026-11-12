@@ -8,7 +8,6 @@ import { Prec } from '@codemirror/state';
 import MarkdownRender from '@/lib/markdown-render';
 import type { OutputItem } from '@/lib/execution';
 import { ADD_CODE_CELL_SHORTCUT_HINT } from '@/lib/notebook-commands';
-import { useIsDark } from '@/lib/theme';
 import CellActionsMenu from './CellActionsMenu';
 import Output from './Output';
 
@@ -45,7 +44,7 @@ interface CellProps {
   showLineNumbers?: boolean;
 }
 
-/** Editor chrome from the design tokens, so it follows light/dark mode. */
+/** Editor chrome from the design tokens. */
 const tokenTheme = Prec.highest(
   EditorView.theme({
     '&': { backgroundColor: 'var(--bg-elev)', color: 'var(--fg)' },
@@ -125,8 +124,7 @@ export default function Cell({
   const cellBodyRef = useRef<HTMLDivElement>(null);
   const [gutterWidth, setGutterWidth] = useState(0);
   const elapsed = useElapsedTimer(cell.status);
-  // Syntax colours: @uiw's light/dark highlight styles; backgrounds come from tokenTheme.
-  const isDark = useIsDark();
+  // Syntax colours: @uiw's light highlight style; backgrounds come from tokenTheme.
   const onRunRef = useRef(onRun);
   const onFocusRef = useRef(onFocus);
   const zenModeRef = useRef(zenMode);
@@ -229,7 +227,7 @@ export default function Cell({
         data-cell-type={cell.cellType}
         data-cell-active={uiActive || undefined}
         onMouseDown={handleCellMouseDown}
-        className={`relative overflow-hidden rounded-lg border transition-all ${
+        className={`relative overflow-hidden border transition-all ${
           isMarkdown
             ? idleBorder
             : isRunning
@@ -245,7 +243,7 @@ export default function Cell({
 
           {!isMarkdown && cell.backend && (
             <span
-              className={`text-xs px-1.5 py-0.5 rounded font-mono ${
+              className={`text-xs px-1.5 py-0.5 font-mono ${
                 cell.backend === 'server'
                   ? 'bg-ak-run/10 text-ak-run'
                   : 'bg-ak-ok/10 text-ak-ok'
@@ -262,7 +260,7 @@ export default function Cell({
               }`}
             >
               {isRunning && (
-                <span className="cell-run-pulse inline-block w-1.5 h-1.5 rounded-full bg-ak-run mr-1 align-middle" />
+                <span className="cell-run-pulse inline-block w-1.5 h-1.5 bg-ak-run mr-1 align-middle" />
               )}
               {formatMs(elapsed)}
             </span>
@@ -298,11 +296,11 @@ export default function Cell({
                     type="button"
                     onClick={() => onStop(cell.id)}
                     title="Stop execution"
-                    className="flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium bg-ak-run/15 text-ak-run hover:bg-ak-run/25 transition-colors"
+                    className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium bg-ak-run/15 text-ak-run hover:bg-ak-run/25 transition-colors"
                   >
                     <span className="relative flex h-3 w-3 items-center justify-center">
-                      <span className="cell-run-pulse absolute inset-0 rounded-sm border border-ak-run/60" />
-                      <span className="relative h-2 w-2 rounded-sm bg-ak-run" />
+                      <span className="cell-run-pulse absolute inset-0 border border-ak-run/60" />
+                      <span className="relative h-2 w-2 bg-ak-run" />
                     </span>
                     Stop
                   </button>
@@ -311,7 +309,7 @@ export default function Cell({
                     type="button"
                     onClick={() => onRun(cell.id)}
                     title="Run cell (Ctrl+Enter)"
-                    className="flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium bg-ak-brand text-ak-brand-fg hover:bg-ak-brand-dark transition-colors"
+                    className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium bg-ak-brand text-ak-brand-fg hover:bg-ak-brand-dark transition-colors"
                   >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                     Run
@@ -322,7 +320,7 @@ export default function Cell({
           )}
 
           {!isMarkdown && zenMode && isRunning && (
-            <span className="cell-run-pulse flex h-3.5 w-3.5 items-center justify-center rounded-full border-2 border-ak-run" aria-hidden />
+            <span className="cell-run-pulse flex h-3.5 w-3.5 items-center justify-center border-2 border-ak-run" aria-hidden />
           )}
         </div>
 
@@ -340,7 +338,7 @@ export default function Cell({
               value={cell.code}
               onChange={(code) => onCodeChange(cell.id, code)}
               extensions={editorExtensions}
-              theme={isDark ? 'dark' : 'light'}
+              theme="light"
               basicSetup={{
                 lineNumbers: showLineNumbers,
                 highlightActiveLine: showLineNumbers,
@@ -393,14 +391,14 @@ function CellInsertBar({
           type="button"
           onClick={onAddCode}
           title={ADD_CODE_CELL_SHORTCUT_HINT}
-          className="flex items-center gap-1 rounded border border-transparent px-2 py-0.5 text-xs text-ak-muted transition-colors hover:border-ak-border hover:bg-ak-code-bg hover:text-ak-fg"
+          className="flex items-center gap-1 border border-transparent px-2 py-0.5 text-xs text-ak-muted transition-colors hover:border-ak-border hover:bg-ak-code-bg hover:text-ak-fg"
         >
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>
           Add code
         </button>
         <span
           role="tooltip"
-          className="pointer-events-none absolute left-1/2 top-full z-10 mt-1 -translate-x-1/2 whitespace-nowrap rounded border border-ak-border bg-ak-bg px-2 py-1 text-[10px] text-ak-muted opacity-0 shadow-sm transition-opacity group-hover/addcode:opacity-100"
+          className="pointer-events-none absolute left-1/2 top-full z-10 mt-1 -translate-x-1/2 whitespace-nowrap border border-ak-border bg-ak-bg px-2 py-1 text-[10px] text-ak-muted opacity-0 shadow-sm transition-opacity group-hover/addcode:opacity-100"
         >
           {ADD_CODE_CELL_SHORTCUT_HINT}
         </span>
@@ -408,7 +406,7 @@ function CellInsertBar({
       <button
         type="button"
         onClick={onAddMarkdown}
-        className="flex items-center gap-1 rounded border border-transparent px-2 py-0.5 text-xs text-ak-muted transition-colors hover:border-ak-border hover:bg-ak-code-bg hover:text-ak-fg"
+        className="flex items-center gap-1 border border-transparent px-2 py-0.5 text-xs text-ak-muted transition-colors hover:border-ak-border hover:bg-ak-code-bg hover:text-ak-fg"
       >
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 6h16M4 12h8M4 18h16"/></svg>
         Add markdown
@@ -498,7 +496,7 @@ function CellBtn({
       type="button"
       title={title}
       onClick={onClick}
-      className={`rounded p-1 transition-colors ${
+      className={`p-1 transition-colors ${
         danger
           ? 'text-ak-muted hover:text-ak-brand hover:bg-ak-brand/[0.06]'
           : 'text-ak-muted hover:text-ak-fg hover:bg-ak-code-bg'

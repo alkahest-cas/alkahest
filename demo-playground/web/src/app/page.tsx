@@ -36,10 +36,14 @@ export default function PlaygroundPage() {
     setMathLabel(label);
   }, []);
   const [isDirty, setIsDirty] = useState(false);
-  const [zenMode] = useState(readZenFromUrl);
+  // Read with the tab in the effect below, not in a lazy initializer: the
+  // prerendered HTML has no query string, so reading it during hydration made
+  // `?zen=1` keep the site header and the Math tab label from the static HTML.
+  const [zenMode, setZenMode] = useState(false);
 
   useEffect(() => {
     const t = initialTab();
+    setZenMode(readZenFromUrl());
     setTab(t);
     setMounted((m) => ({ ...m, [t]: true }));
   }, []);
