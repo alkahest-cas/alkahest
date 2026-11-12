@@ -9,13 +9,12 @@ description = "A high-performance computer algebra system for Python"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Alkahest Contributors" }]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -26,9 +25,8 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-# verifiers requires Python >=3.10; keep alkahest core installable on 3.9 without rl.
-rl = ["verifiers>=0.1.5; python_version>='3.10'", "datasets>=2.0"]
-rl-integration = ["verifiers>=0.1.5; python_version>='3.10'", "datasets>=2.0"]
+rl = ["verifiers>=0.1.5", "datasets>=2.0"]
+rl-integration = ["verifiers>=0.1.5", "datasets>=2.0"]
 
 [project.urls]
 Homepage = "https://github.com/alkahest-cas/alkahest"
@@ -74,6 +72,10 @@ ci-extras = [
 # ── Ruff ─────────────────────────────────────────────────────────────────────
 [tool.ruff]
 line-length = 100
+# Deliberately still py39 although requires-python is now >=3.10: raising it
+# turns on B905 (zip strict=), UP035 and RUF007 across ~235 sites, a style
+# rewrite that is a separate change from dropping 3.9. py39 is a subset of
+# py310, so this never lets ruff suggest syntax 3.10 cannot run.
 target-version = "py39"
 
 [tool.ruff.lint]
@@ -90,7 +92,7 @@ indent-style = "space"
 # ── ty (type checker) ────────────────────────────────────────────────────────
 # src is passed explicitly on the CLI: `ty check python/alkahest/`
 [tool.ty.environment]
-python-version = "3.9"
+python-version = "3.10"
 
 [tool.ty.rules]
 # numpy and jax are optional runtime deps not present in the lean dev venv;

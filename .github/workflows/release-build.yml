@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 jobs:
-  # Default wheels (manylinux x86_64 and aarch64, macOS arm64, Windows; py3.9-3.14)
+  # Default wheels (manylinux x86_64 and aarch64, macOS arm64, Windows; py3.10-3.14)
   # and the sdist.
   wheels:
     name: wheels

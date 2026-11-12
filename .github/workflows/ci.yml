@@ -172,17 +172,19 @@ jobs:
         if: env.RUST_CHANGED == 'true'
         run: cargo clippy --all-targets --features groebner-cuda -- -D warnings
 
-      # Every PR build targets 3.11/3.12, but the release wheels go back to 3.9,
-      # whose limited API lacks some PyO3 0.21 methods (`PyString::to_str` was
-      # one: from #462 on, every 3.9 wheel failed to compile and nothing before
-      # the release matrix noticed). Type-check the extension against 3.9.
-      # setup-python has no 3.9 for the ubuntu-latest (26.04) image, so take a
-      # standalone CPython 3.9 from uv (installed by setup-uv above).
-      - name: cargo check alkahest-py against Python 3.9
+      # Every PR build targets 3.11/3.12, but the release wheels go back to the
+      # oldest supported Python (3.10), and PyO3 gates parts of its API on the
+      # interpreter version (`PyString::to_str` once was one: from #462 on,
+      # every 3.9 wheel failed to compile and nothing before the release matrix
+      # noticed). Type-check the extension against the minimum, 3.10.
+      # Take a standalone CPython from uv (installed by setup-uv above) rather
+      # than setup-python, which does not offer every old version on the
+      # ubuntu-latest (26.04) image (it has no 3.9 there).
+      - name: cargo check alkahest-py against Python 3.10
         if: env.RUST_CHANGED == 'true'
         run: |
-          uv python install 3.9
-          PYO3_PYTHON="$(uv python find 3.9)" \
+          uv python install 3.10
+          PYO3_PYTHON="$(uv python find 3.10)" \
             cargo check -p alkahest-py --features "egraph groebner cranelift parallel"
 
       - name: ruff check

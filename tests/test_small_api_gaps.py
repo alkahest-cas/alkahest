@@ -5,8 +5,9 @@
 2. A user symbol named ``pi`` is stored under an invisibly marked name (#534);
    no code emitter may leak that marker, and the variable must not collide
    with ``M_PI`` / π or a name the emitted code declares.
-3. ``Fraction(1, 2) ** x`` has the exact base ``1/2`` (Python 3.9–3.11 hand
-   ``Expr.__rpow__`` a float).
+3. ``Fraction(1, 2) ** x`` has the exact base ``1/2`` on Python 3.12+; on
+   3.10/3.11 ``Fraction.__pow__`` hands ``Expr.__rpow__`` a float, and the base
+   is that float (documented; ``pool.rational(1, 2) ** x`` is exact everywhere).
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import os
 import pickle
 import shutil
 import subprocess
+import sys
 from fractions import Fraction
 
 import alkahest as ak
@@ -357,8 +359,16 @@ def test_to_sympy_user_pi(user_pi):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("q", [Fraction(1, 2), Fraction(1, 3), Fraction(-2, 7), Fraction(5)])
-def test_fraction_base_is_exact(q):
+FRACTIONS = [Fraction(1, 2), Fraction(1, 3), Fraction(-2, 7), Fraction(5)]
+
+# Before 3.12, `Fraction.__pow__(a, b)` ends in `return float(a) ** b` for a `b`
+# it does not recognise, so `Expr.__rpow__` only ever sees `float(a)`.
+FRACTION_POW_DEFERS = sys.version_info >= (3, 12)
+
+
+@pytest.mark.skipif(not FRACTION_POW_DEFERS, reason="Fraction.__pow__ floats itself before 3.12")
+@pytest.mark.parametrize("q", FRACTIONS)
+def test_fraction_base_is_exact_on_312_and_later(q):
     p = ak.ExprPool()
     x = p.symbol("x")
     got = q**x
@@ -367,11 +377,39 @@ def test_fraction_base_is_exact(q):
     assert got.node()[1].node()[0] in ("rational", "integer")
 
 
+@pytest.mark.skipif(FRACTION_POW_DEFERS, reason="Fraction.__pow__ defers to __rpow__ on 3.12+")
+@pytest.mark.parametrize("q", FRACTIONS)
+def test_fraction_base_is_the_documented_float_before_312(q):
+    """3.10/3.11: the base is the float `float(q)`, never a silently exact value."""
+    p = ak.ExprPool()
+    x = p.symbol("x")
+    got = q**x
+    base = got.node()[1]
+    assert base.node()[0] == "float"
+    assert got == float(q) ** x
+    assert got != p.rational(q.numerator, q.denominator) ** x
+
+
+@pytest.mark.skipif(FRACTION_POW_DEFERS, reason="Fraction.__pow__ defers to __rpow__ on 3.12+")
+def test_fraction_half_base_is_float_half_before_312():
+    p = ak.ExprPool()
+    x = p.symbol("x")
+    base = (Fraction(1, 2) ** x).node()[1]
+    assert base.node()[0] == "float"
+    assert float(ak.eval_expr(base, {})) == 0.5
+    assert base == (0.5**x).node()[1]
+
+
+def test_rpow_takes_a_fraction_exactly_when_it_receives_one():
+    """What 3.12+'s `Fraction.__pow__` delegates to, on every Python."""
+    p = ak.ExprPool()
+    x = p.symbol("x")
+    assert x.__rpow__(Fraction(1, 2)) == p.rational(1, 2) ** x
+
+
 def test_float_base_stays_float():
     p = ak.ExprPool()
     x = p.symbol("x")
-    # 0.5 is what Fraction(1, 2) turns into on 3.9-3.11; written as a float it
-    # is a float and must stay one.
     assert (0.5**x).node()[1].node()[0] == "float"
     assert x.__rpow__(0.5).node()[1].node()[0] == "float"
 
@@ -385,7 +423,7 @@ def test_documented_exact_spelling():
 
 
 def test_fraction_subclass_overriding_pow_keeps_its_float():
-    """The frame check is on `Fraction.__pow__` itself, not on the class name."""
+    """A subclass whose `__pow__` floats itself is not second-guessed."""
 
     class Lossy(Fraction):
         def __pow__(self, other):

@@ -69,8 +69,8 @@ Compiled evaluation
 
    The arrays are read and the result written **in place** (no copy, no
    Python ``float`` per element) with the GIL released, by one native loop
-   over the whole batch. On every build — including the limited-API wheels
-   for Python 3.9/3.10, which used to fall back to ``.tolist()``.
+   over the whole batch. On every build — including a limited-API build
+   for Python 3.10, which has no buffer protocol.
 
    :returns: ``numpy.ndarray`` of float64 with the same shape as the
       first input; for a :class:`CompiledVecFn`, shape

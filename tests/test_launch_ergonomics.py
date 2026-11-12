@@ -59,9 +59,9 @@ class TestPythonNumberOperands:
         assert (x ** Fraction(1, 3)).node()[2].node() == ["rational", "1", "3"]
         # A float base stays a float: no false exactness.
         assert (0.5**x).node()[1].node()[0] == "float"
-        # (`Fraction(1, 2) ** x` is decided by `Fraction.__pow__`, which turns
-        # itself into a float before Expr is asked; `pool.rational(1, 2) ** x`
-        # is the exact spelling.)
+        # (`Fraction(1, 2) ** x` is decided by `Fraction.__pow__`, which on
+        # 3.10/3.11 turns itself into a float before Expr is asked;
+        # `pool.rational(1, 2) ** x` is the spelling exact on every Python.)
         assert (pool.rational(1, 2) ** x).node()[1].node() == ["rational", "1", "2"]
 
     def test_int_on_either_side(self, pool):

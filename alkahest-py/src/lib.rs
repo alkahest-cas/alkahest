@@ -240,7 +240,7 @@ use alkahest_core::number_theory::{
 // The buffer protocol is not in the stable ABI before 3.11, and PyO3 gates
 // `pyo3::buffer` on exactly this cfg. The Python layer already falls back to
 // `call_batch_raw` when these methods are absent (see `_dlpack._call_batch`),
-// so a limited-API 3.9/3.10 build loses the bulk-copy fast path and nothing else.
+// so a limited-API 3.10 build loses the bulk-copy fast path and nothing else.
 #[cfg(any(not(Py_LIMITED_API), Py_3_11))]
 use pyo3::buffer::PyBuffer;
 use pyo3::conversion::FromPyObjectOwned;
@@ -2758,49 +2758,6 @@ impl Clone for PyExpr {
     }
 }
 
-/// The exact `Fraction` behind a float base of `Fraction ** Expr`, if that is
-/// provably where the float came from.
-///
-/// Before Python 3.12, `Fraction.__pow__(a, b)` ends in `return float(a) ** b`
-/// for any `b` it does not recognise, so `Fraction(1, 3) ** x` reached
-/// `Expr.__rpow__` as the float `0.333…` and the power had a float base.
-/// (3.12+ returns `NotImplemented` and `__rpow__` receives the `Fraction`.)
-/// A float alone cannot say it came from a `Fraction`, but the frame that is
-/// running can: the base is replaced only when the innermost Python frame is
-/// `fractions.Fraction.__pow__` itself, its `b` is this very expression, its
-/// `a` is a `Fraction`, and `float(a)` is bit-for-bit the float received.
-/// Anything else — a float the caller wrote, a subclass that overrides
-/// `__pow__`, an interpreter without `sys._getframe` — keeps the float.
-fn fraction_pow_base<'py>(
-    slf: &Bound<'py, PyExpr>,
-    base: &Bound<'py, PyAny>,
-) -> Option<Bound<'py, PyAny>> {
-    let py = slf.py();
-    if py.version_info() >= (3, 12) || !base.is_exact_instance_of::<pyo3::types::PyFloat>() {
-        return None;
-    }
-    let found = (|| -> PyResult<Option<Bound<'py, PyAny>>> {
-        let fraction = py.import("fractions")?.getattr("Fraction")?;
-        let pow_code = fraction.getattr("__pow__")?.getattr("__code__")?;
-        let frame = py.import("sys")?.getattr("_getframe")?.call1((0,))?;
-        if !frame.getattr("f_code")?.is(&pow_code) {
-            return Ok(None);
-        }
-        let locals = frame.getattr("f_locals")?;
-        if !locals.get_item("b")?.is(slf) {
-            return Ok(None);
-        }
-        let a = locals.get_item("a")?;
-        if !a.is_instance(&fraction)? {
-            return Ok(None);
-        }
-        let as_float: f64 = a.call_method0("__float__")?.extract()?;
-        let received: f64 = base.extract()?;
-        Ok((as_float.to_bits() == received.to_bits()).then_some(a))
-    })();
-    found.ok().flatten()
-}
-
 /// Shared body of `Expr.node()` / `Expr._node_exact()`.
 fn expr_node_impl(this: &PyExpr, py: Python<'_>, exact: bool) -> PyResult<Py<PyAny>> {
     let data = {
@@ -3123,9 +3080,13 @@ impl PyExpr {
     /// The base is coerced exactly, as every other reflected operator does:
     /// ``2**x`` is the integer ``2`` raised to ``x``, and ``0.5**x`` keeps
     /// its float base. ``Fraction(1, 2)**x`` has the exact base ``1/2`` on
-    /// every Python version (see `fraction_pow_base` for 3.9–3.11).
+    /// Python 3.12+, where ``Fraction.__pow__`` returns ``NotImplemented`` and
+    /// this method receives the ``Fraction``. On 3.10/3.11 ``Fraction.__pow__``
+    /// itself returns ``float(a) ** b``, so this method receives the float
+    /// ``0.5`` and the base is that float; ``pool.rational(1, 2)**x`` is the
+    /// spelling that is exact on every Python.
     fn __rpow__(
-        slf: &Bound<'_, Self>,
+        &self,
         base: &Bound<'_, PyAny>,
         modulo: Option<Py<PyAny>>,
         py: Python<'_>,
@@ -3135,9 +3096,7 @@ impl PyExpr {
                 "pow() with a modulus is not supported for Expr",
             ));
         }
-        let exact = fraction_pow_base(slf, base);
-        let base = exact.as_ref().unwrap_or(base);
-        slf.borrow().binary_op(base, py, |p, a, b| Ok(p.pow(b, a)))
+        self.binary_op(base, py, |p, a, b| Ok(p.pow(b, a)))
     }
 
     fn pow_expr(&self, exp: &PyExpr, py: Python<'_>) -> PyResult<PyExpr> {

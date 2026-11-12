@@ -11,7 +11,7 @@ AI agents must follow [`AGENTS.md`](AGENTS.md) instructions.
 End-user install commands (PyPI vs optional `+jit` / `+full` wheels, from source) are in [`README.md`](README.md) and the [**Getting started**](https://alkahest-cas.github.io/docs/guide/getting-started/) chapter of the docs.
 
 ```bash
-# Prerequisites: Rust (stable + nightly), Python 3.9–3.13, uv, LLVM 21, FLINT (see README § Install).
+# Prerequisites: Rust (stable + nightly), Python 3.10–3.14, uv, LLVM 21, FLINT (see README § Install).
 # Add `system-gmp` to --features to match the PyPI wheels (needs GMP >= 6.3 / MPFR >= 4.2).
 # Install uv: https://docs.astral.sh/uv/getting-started/installation/
 uv sync --no-install-project --group dev

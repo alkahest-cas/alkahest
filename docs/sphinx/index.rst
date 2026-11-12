@@ -4,7 +4,7 @@ Alkahest — Python API reference
 Installation
 ------------
 
-**Python** — install from PyPI. Supported versions: **3.9 through 3.13**:
+**Python** — install from PyPI. Supported versions: **3.10 through 3.14**:
 
 ::
 

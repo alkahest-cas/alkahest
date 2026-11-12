@@ -4,7 +4,7 @@
 
 ### PyPI (default)
 
-Alkahest is on the [Python Package Index](https://pypi.org/project/alkahest/). Supported interpreters are **Python 3.9 through 3.14** (`requires-python` on PyPI).
+Alkahest is on the [Python Package Index](https://pypi.org/project/alkahest/). Supported interpreters are **Python 3.10 through 3.14** (`requires-python` on PyPI).
 
 ```bash
 python -m pip install -U pip
@@ -27,7 +27,14 @@ Diophantine and homotopy work out of the box), the pure-Rust **Cranelift JIT** (
 
 Wheels exist for Linux (manylinux_2_28) x86_64 and aarch64, macOS 11+ arm64 (no Homebrew
 needed; FLINT, GMP and MPFR are bundled) and Windows
-x86_64. Anywhere else, such as Intel macOS or musl Linux, `pip install alkahest` falls
+x86_64.
+
+**macOS support is Apple Silicon only (macOS 11+).** Intel Macs (x86_64) are not
+supported: no wheel is built for them, and a source build for `x86_64-apple-darwin`
+stops at once with "alkahest supports macOS on Apple Silicon only; Intel Macs are not
+supported".
+
+On any other platform without a wheel, such as musl Linux, `pip install alkahest` falls
 back to the source distribution and compiles it. That needs a Rust toolchain and
 FLINT ≥ 3.3 with GMP and MPFR; without FLINT the build stops and prints how to install
 it. A build from the source distribution has the default Cargo features, `egraph` and
@@ -103,7 +110,7 @@ print(features)
 | Distribution | Tested platforms | Native feature profile | `parallel` |
 |---|---|---|---|
 | Default PyPI wheel | Linux x86_64 and aarch64, macOS arm64, Windows x86_64 | `egraph`, `groebner`, `cranelift_jit`, `parallel` | `True` |
-| PyPI source distribution | Linux x86_64 (built in CI); anywhere with Rust and FLINT ≥ 3.3 | `egraph`, `groebner` | `False` |
+| PyPI source distribution | Linux x86_64 (built in CI); anywhere with Rust and FLINT ≥ 3.3, except Intel macOS | `egraph`, `groebner` | `False` |
 | Release `+jit` | Linux x86_64 | `egraph`, `groebner`, `llvm_jit` (no Cranelift), `parallel` | `True` |
 | Release `+full` | Linux x86_64 | same as `+jit` | `True` |
 | Source build | any | whatever you pass to `--features` | `True` **only** with `--features parallel` |
@@ -126,7 +133,7 @@ was unfalsifiable from Python and was removed in contract v3. Read
 ### Optional: RL environments (`alkahest[rl]`)
 
 Reinforcement-learning environments (symbolic integration, Prime Intellect Hub) are an
-optional extra. Requires **Python ≥ 3.10** (`verifiers` does not support 3.9).
+optional extra.
 
 ```bash
 pip install "alkahest[rl]"
@@ -239,16 +246,17 @@ from fractions import Fraction
 expr = x**2 + 2 * x + 1
 print(expr)  # x^2 + 2*x + 1
 alt = (-1)**x * 2**x + Fraction(1, 3)
-half_x = Fraction(1, 2) ** x   # base exactly 1/2
-half_x == pool.rational(1, 2) ** x   # True
+half_x = pool.rational(1, 2) ** x   # base exactly 1/2, on every Python
 ```
 
-A `Fraction` base is exact on every supported Python. (On Python 3.9–3.11,
-`Fraction.__pow__` converts itself to a `float` before Alkahest sees it;
-Alkahest recovers the `Fraction` only when the running frame proves that is
-where the float came from.) A base you write as a float, `0.5 ** x`, stays a
-float. The spelling that is exact everywhere, without relying on that, is
-`pool.rational(1, 2) ** x`.
+A `Fraction` *base* depends on the Python version, because Python asks
+`Fraction.__pow__` first. On Python 3.12 and later it returns `NotImplemented`,
+Alkahest receives the `Fraction`, and `Fraction(1, 2) ** x` has the exact base
+1/2. On Python 3.10 and 3.11, `Fraction.__pow__` returns `float(a) ** b`, so
+Alkahest only ever sees the float `0.5` and `Fraction(1, 2) ** x` has the
+**float** base `0.5`, the same as `0.5 ** x`. Write `pool.rational(1, 2) ** x`
+for a base that is exact on every Python. (A `Fraction` *exponent*,
+`x ** Fraction(1, 3)`, is exact everywhere.)
 
 Math functions accept expressions and Python numbers:
 

@@ -14,7 +14,7 @@ Use this skill whenever you are writing Python code that uses the `alkahest` lib
 
 ## Install
 
-**Requirements:** Python **3.9–3.14** ([PyPI](https://pypi.org/project/alkahest/) `requires-python`).
+**Requirements:** Python **3.10–3.14** ([PyPI](https://pypi.org/project/alkahest/) `requires-python`).
 
 ```bash
 pip install alkahest
@@ -34,7 +34,9 @@ python -m pip install -U pip
 pip install alkahest
 ```
 
-Default PyPI wheels (Linux x86_64 and aarch64, macOS arm64, Windows x86_64) ship the **vendored egglog** e-graph backend (`egraph`), the **Gröbner solver** (`groebner` — so `alkahest.solve`, Diophantine, homotopy and related APIs work out of the box), the **Cranelift JIT** (`cranelift`, since 3.6.0 — so `jit_is_available()` is `True` on a plain `pip install alkahest`), and **`parallel`** (since 3.8.0 — the sharded `ExprPool`, parallel F4, and the `*_par` entry points are genuinely multi-core). They do **not** include the LLVM JIT (`jit`); for that use a **PyTorch-style** opt-in wheel (separate artifact / index), not the default PyPI resolver path. On any other platform (Intel macOS, musl Linux) `pip install alkahest` compiles the source distribution, which needs a Rust toolchain and FLINT ≥ 3.3 and has only `egraph` and `groebner`: no JIT, no `parallel`.
+macOS support is **Apple Silicon only (macOS 11+)**; Intel Macs (x86_64) are not supported — there is no wheel, and a source build for that target refuses with `alkahest supports macOS on Apple Silicon only; Intel Macs are not supported`.
+
+Default PyPI wheels (Linux x86_64 and aarch64, macOS 11+ arm64, Windows x86_64) ship the **vendored egglog** e-graph backend (`egraph`), the **Gröbner solver** (`groebner` — so `alkahest.solve`, Diophantine, homotopy and related APIs work out of the box), the **Cranelift JIT** (`cranelift`, since 3.6.0 — so `jit_is_available()` is `True` on a plain `pip install alkahest`), and **`parallel`** (since 3.8.0 — the sharded `ExprPool`, parallel F4, and the `*_par` entry points are genuinely multi-core). They do **not** include the LLVM JIT (`jit`); for that use a **PyTorch-style** opt-in wheel (separate artifact / index), not the default PyPI resolver path. On any other platform (Intel macOS, musl Linux) `pip install alkahest` compiles the source distribution, which needs a Rust toolchain and FLINT ≥ 3.3 and has only `egraph` and `groebner`: no JIT, no `parallel`.
 
 Note that the Cargo `default` feature set (`egraph`, `groebner`) is narrower than what release CI builds into the published wheels (`egraph`, `groebner`, `cranelift`, `parallel`). A plain `cargo build` or `maturin develop` therefore has **no** JIT and **no** threads unless you pass `--features "cranelift parallel"`. Never infer the active feature set from the version number — probe it:
 
@@ -166,10 +168,11 @@ y = pool.symbol("y")   # ambient context(domain=…) if one is open, else Domain
 expr = x**2 + 1          # int literals in +, -, *, **, / are fine
 half = pool.rational(1, 2)  # exact rationals: pool.rational, or fractions.Fraction(1, 2)
 alt = (-1)**x * 2**x     # Python numbers on either side, including as the base
-h = pool.rational(1, 2) ** x  # exact base 1/2; Fraction(1, 2) ** x is the same (0.5 ** x is a float base)
+h = pool.rational(1, 2) ** x  # exact base 1/2 on every Python (0.5 ** x is a float base)
+# Fraction(1, 2) ** x: exact base on Python 3.12+, but the FLOAT base 0.5 on 3.10/3.11
 ```
 
-Arithmetic operators (`+`, `-`, `*`, `**`, `/`) are all overloaded on `Expr` — use them freely. Python `int`s and `Fraction`s are coerced **exactly** (to integer / rational nodes) on either side of an operator, as function arguments (`ak.sin(2)`, `ak.sqrt(2)`, `ak.exp(1)`) and as `Matrix` entries (`ak.Matrix([[1, 2], [3, 4]])`); a `float` stays a float node (no false exactness).
+Arithmetic operators (`+`, `-`, `*`, `**`, `/`) are all overloaded on `Expr` — use them freely. Python `int`s and `Fraction`s are coerced **exactly** (to integer / rational nodes) on either side of an operator (one exception: a `Fraction` *base* of `**` on Python 3.10/3.11, where `Fraction.__pow__` hands Alkahest `float(a)` — write `pool.rational(p, q) ** x`), as function arguments (`ak.sin(2)`, `ak.sqrt(2)`, `ak.exp(1)`) and as `Matrix` entries (`ak.Matrix([[1, 2], [3, 4]])`); a `float` stays a float node (no false exactness).
 
 **SymPy-style first reach.** `ak.pi`, `ak.E` (`exp(1)`), `ak.I` and `ak.oo` are the constants; `ak.factor(e)` factors over ℤ (numerator and denominator, multivariate) and returns an `Expr` product; `ak.expand(e)` multiplies out completely (no size cap, unlike `simplify_expanded`); `ak.binomial(n, k)` / `ak.factorial(n)` are exact for integers and gamma ratios otherwise. A call with **no** `Expr` argument (`ak.sin(2)`, `ak.pi`, `ak.parse("x + 1")`, `ak.symbol("x")`, an all-number `Matrix`) uses the active `ak.context(pool=...)` pool, else the process-wide `ak.default_pool()`. Closed default-pool values (`ak.pi / 2`, `ak.sqrt(2)`) mix into any pool — `x + ak.pi` works for `x` from your own pool — while expressions with free symbols never cross pools (`E-POOL-001`).
 

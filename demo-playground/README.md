@@ -33,7 +33,7 @@ demo-playground/
 ## Prerequisites
 
 - **Node.js** ≥ 18 with **pnpm** (`npm i -g pnpm`)
-- **Python** ≥ 3.9
+- **Python** ≥ 3.10
 
 ## Quick start
 
@@ -86,7 +86,7 @@ Pushes to `main` under `demo-playground/` deploy automatically via `.github/work
 The hosted page has no backend. Alkahest is native code (Rust + FLINT) and does not run in the browser yet, so the Math tab sends each line to a small server **on your own machine**:
 
 ```bash
-pip install -U alkahest          # Python 3.9+
+pip install -U alkahest          # Python 3.10+
 python -m alkahest.playground    # http://127.0.0.1:8765, Ctrl+C to stop
 ```
 

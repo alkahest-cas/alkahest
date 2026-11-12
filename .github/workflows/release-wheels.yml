@@ -45,7 +45,7 @@ env:
 
 jobs:
   # Linux: per architecture, one job builds all Python versions at once, inside a
-  # manylinux_2_28 Docker image that ships Python 3.9–3.14. The matrix python on
+  # manylinux_2_28 Docker image that ships Python 3.10–3.14. The matrix python on
   # the host runner is NOT visible inside Docker, so a per-version matrix would
   # all produce the same wheel. Each interpreter is passed explicitly because
   # --find-interpreter also matches PyPy.
@@ -81,7 +81,7 @@ jobs:
       - name: Build wheels (manylinux_2_28, all Python versions)
         env:
           IMAGE: ${{ matrix.image }}
-          INTERPRETERS: ${{ inputs.pr_smoke && 'python3.12' || 'python3.9 python3.10 python3.11 python3.12 python3.13 python3.14' }}
+          INTERPRETERS: ${{ inputs.pr_smoke && 'python3.12' || 'python3.10 python3.11 python3.12 python3.13 python3.14' }}
           FEATURES: egraph,groebner,cranelift,parallel,system-gmp
         run: |
           for attempt in 1 2 3 4 5; do
@@ -248,7 +248,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
       # No LLVM_SYS_211_PREFIX here on purpose: `setup-llvm` writes the real
       # prefix (/usr/lib/llvm-21) to $GITHUB_ENV, and a workflow-file `env:`
       # would override it. The old `/usr` was only ever correct because
@@ -342,7 +342,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
       # No LLVM_SYS_211_PREFIX here on purpose: `setup-llvm` writes the real
       # prefix (/usr/lib/llvm-21) to $GITHUB_ENV, and a workflow-file `env:`
       # would override it. The old `/usr` was only ever correct because
@@ -423,10 +423,12 @@ jobs:
   # macOS arm64. The FLINT/GMP/MPFR come from source so that the wheel can claim
   # macOS 11, the oldest Apple Silicon macOS and Rust's floor for this target;
   # see .github/scripts/build-macos-deps.sh. This job fills the cache once, so
-  # the six wheel jobs below do not each build FLINT.
+  # the five wheel jobs below do not each build FLINT.
   #
-  # Intel (x86_64) wheels are not built: macos-13 is gone and no CPU-portability
-  # work has been done for that target. Intel Mac users install from the sdist.
+  # macOS support is Apple Silicon (arm64, macOS 11+) only. Intel Macs
+  # (x86_64-apple-darwin) are not supported: no wheel is built for them, and
+  # alkahest-py's build script refuses that target, so `pip install` on an
+  # Intel Mac (which falls back to the sdist) stops with that message.
   macos-deps:
     name: macOS arm64 dependencies
     runs-on: macos-15
@@ -453,7 +455,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     env:
       # Read by clang, rustc, maturin (for the wheel tag) and delocate.
       MACOSX_DEPLOYMENT_TARGET: "11.0"
@@ -516,7 +518,7 @@ jobs:
         # A pr_smoke call builds Windows/py3.12 only: its link step is where a
         # missing symbol fails loudest (Linux defers it to import time).
         os: ["windows-2022"]
-        python: ${{ fromJSON(inputs.pr_smoke && '["3.12"]' || '["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]') }}
+        python: ${{ fromJSON(inputs.pr_smoke && '["3.12"]' || '["3.10", "3.11", "3.12", "3.13", "3.14"]') }}
     steps:
       - uses: actions/checkout@v6
         with:
