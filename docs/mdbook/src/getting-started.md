@@ -239,16 +239,17 @@ from fractions import Fraction
 expr = x**2 + 2 * x + 1
 print(expr)  # x^2 + 2*x + 1
 alt = (-1)**x * 2**x + Fraction(1, 3)
-half_x = Fraction(1, 2) ** x   # base exactly 1/2
-half_x == pool.rational(1, 2) ** x   # True
+half_x = pool.rational(1, 2) ** x   # base exactly 1/2, on every Python
 ```
 
-A `Fraction` base is exact on every supported Python. (On Python 3.9–3.11,
-`Fraction.__pow__` converts itself to a `float` before Alkahest sees it;
-Alkahest recovers the `Fraction` only when the running frame proves that is
-where the float came from.) A base you write as a float, `0.5 ** x`, stays a
-float. The spelling that is exact everywhere, without relying on that, is
-`pool.rational(1, 2) ** x`.
+A `Fraction` *base* depends on the Python version, because Python asks
+`Fraction.__pow__` first. On Python 3.12 and later it returns `NotImplemented`,
+Alkahest receives the `Fraction`, and `Fraction(1, 2) ** x` has the exact base
+1/2. On Python 3.10 and 3.11, `Fraction.__pow__` returns `float(a) ** b`, so
+Alkahest only ever sees the float `0.5` and `Fraction(1, 2) ** x` has the
+**float** base `0.5`, the same as `0.5 ** x`. Write `pool.rational(1, 2) ** x`
+for a base that is exact on every Python. (A `Fraction` *exponent*,
+`x ** Fraction(1, 3)`, is exact everywhere.)
 
 Math functions accept expressions and Python numbers:
 

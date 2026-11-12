@@ -166,10 +166,11 @@ y = pool.symbol("y")   # ambient context(domain=…) if one is open, else Domain
 expr = x**2 + 1          # int literals in +, -, *, **, / are fine
 half = pool.rational(1, 2)  # exact rationals: pool.rational, or fractions.Fraction(1, 2)
 alt = (-1)**x * 2**x     # Python numbers on either side, including as the base
-h = pool.rational(1, 2) ** x  # exact base 1/2; Fraction(1, 2) ** x is the same (0.5 ** x is a float base)
+h = pool.rational(1, 2) ** x  # exact base 1/2 on every Python (0.5 ** x is a float base)
+# Fraction(1, 2) ** x: exact base on Python 3.12+, but the FLOAT base 0.5 on 3.10/3.11
 ```
 
-Arithmetic operators (`+`, `-`, `*`, `**`, `/`) are all overloaded on `Expr` — use them freely. Python `int`s and `Fraction`s are coerced **exactly** (to integer / rational nodes) on either side of an operator, as function arguments (`ak.sin(2)`, `ak.sqrt(2)`, `ak.exp(1)`) and as `Matrix` entries (`ak.Matrix([[1, 2], [3, 4]])`); a `float` stays a float node (no false exactness).
+Arithmetic operators (`+`, `-`, `*`, `**`, `/`) are all overloaded on `Expr` — use them freely. Python `int`s and `Fraction`s are coerced **exactly** (to integer / rational nodes) on either side of an operator (one exception: a `Fraction` *base* of `**` on Python 3.10/3.11, where `Fraction.__pow__` hands Alkahest `float(a)` — write `pool.rational(p, q) ** x`), as function arguments (`ak.sin(2)`, `ak.sqrt(2)`, `ak.exp(1)`) and as `Matrix` entries (`ak.Matrix([[1, 2], [3, 4]])`); a `float` stays a float node (no false exactness).
 
 **SymPy-style first reach.** `ak.pi`, `ak.E` (`exp(1)`), `ak.I` and `ak.oo` are the constants; `ak.factor(e)` factors over ℤ (numerator and denominator, multivariate) and returns an `Expr` product; `ak.expand(e)` multiplies out completely (no size cap, unlike `simplify_expanded`); `ak.binomial(n, k)` / `ak.factorial(n)` are exact for integers and gamma ratios otherwise. A call with **no** `Expr` argument (`ak.sin(2)`, `ak.pi`, `ak.parse("x + 1")`, `ak.symbol("x")`, an all-number `Matrix`) uses the active `ak.context(pool=...)` pool, else the process-wide `ak.default_pool()`. Closed default-pool values (`ak.pi / 2`, `ak.sqrt(2)`) mix into any pool — `x + ak.pi` works for `x` from your own pool — while expressions with free symbols never cross pools (`E-POOL-001`).
 
