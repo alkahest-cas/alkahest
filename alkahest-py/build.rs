@@ -3,7 +3,7 @@
 //! `pyo3::buffer` is gated, in PyO3 itself, as
 //! `#![cfg(any(not(Py_LIMITED_API), Py_3_11))]` — the buffer protocol is not
 //! part of the stable ABI before 3.11. Without these cfgs a build against a
-//! limited-API 3.9/3.10 interpreter fails with `unresolved import pyo3::buffer`
+//! limited-API 3.10 interpreter fails with `unresolved import pyo3::buffer`
 //! *only in the release wheel matrix*, which is the one place nobody looks
 //! until tagging.
 fn main() {

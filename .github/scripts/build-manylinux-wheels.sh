@@ -8,7 +8,7 @@
 # Here rustup comes through fetch.sh and maturin from PyPI (pip retries).
 #
 #   MATURIN_VERSION  exact maturin release, e.g. 1.16.0
-#   INTERPRETERS     space-separated, e.g. "python3.9 python3.10". Explicit
+#   INTERPRETERS     space-separated, e.g. "python3.10 python3.11". Explicit
 #                    because --find-interpreter also matches PyPy.
 #   FEATURES         comma-separated Cargo features
 set -euo pipefail

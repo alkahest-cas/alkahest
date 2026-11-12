@@ -47,7 +47,7 @@ failure is rebased onto `origin/main` and re-queued, not merged around.
 
 [`demo-playground/`](demo-playground/) contains an interactive web app for demoing and recording Alkahest. It has a Math tab (plain-language maths input, computed by a restricted `/math` server endpoint), a Python notebook, and a CLI for recording demos as video.
 
-Quick start (requires Node ≥ 18 with pnpm, and Python ≥ 3.9):
+Quick start (requires Node ≥ 18 with pnpm, and Python ≥ 3.10):
 ```bash
 cd demo-playground
 cp .env.example web/.env.local

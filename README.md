@@ -37,11 +37,11 @@ The main stack is: Rust kernel → FLINT/Arb (polynomials, ball arithmetic) → 
 
 ## Install
 
-Python **3.9–3.14**:
+Python **3.10–3.14**:
 
 ```bash
 pip install alkahest
-pip install "alkahest[rl]"   # RL environments; Python >= 3.10
+pip install "alkahest[rl]"   # RL environments
 ```
 
 Rust users: `cargo add alkahest-cas` — see [Rust crate](#rust-crate).
@@ -54,10 +54,10 @@ Probe your environment after install: `alkahest.capabilities()["features"]` and 
 
 | Artifact | Where | OS / arch (CI) | Python | Cranelift JIT | LLVM JIT | `parallel` |
 |----------|-------|----------------|--------|---------------|----------|------------|
-| **Default** (`pip install alkahest`) | [PyPI](https://pypi.org/project/alkahest/) | Linux manylinux_2_28 x86_64 and aarch64; macOS 11+ arm64 (Apple Silicon); Windows x86_64 | 3.9–3.14 | yes | no | yes |
-| **Source** (sdist) | [PyPI](https://pypi.org/project/alkahest/), used where no wheel matches | CI builds it on Linux x86_64; anywhere with Rust and FLINT ≥ 3.3 | 3.9–3.14 | no | no | no |
-| **`+jit`** (`X.Y.Z+jit`) | GitHub Releases only | Linux x86_64 | 3.9–3.14 | no | yes | yes |
-| **`+full`** (`X.Y.Z+full`) | GitHub Releases only | Linux x86_64 | 3.9–3.14 | yes | yes | yes |
+| **Default** (`pip install alkahest`) | [PyPI](https://pypi.org/project/alkahest/) | Linux manylinux_2_28 x86_64 and aarch64; macOS 11+ arm64 (Apple Silicon); Windows x86_64 | 3.10–3.14 | yes | no | yes |
+| **Source** (sdist) | [PyPI](https://pypi.org/project/alkahest/), used where no wheel matches | CI builds it on Linux x86_64; anywhere with Rust and FLINT ≥ 3.3 | 3.10–3.14 | no | no | no |
+| **`+jit`** (`X.Y.Z+jit`) | GitHub Releases only | Linux x86_64 | 3.10–3.14 | no | yes | yes |
+| **`+full`** (`X.Y.Z+full`) | GitHub Releases only | Linux x86_64 | 3.10–3.14 | yes | yes | yes |
 
 > **`parallel` ships in the default PyPI wheel** on every wheel platform, so `numpy_eval_par` and `simplify_par` really do use multiple cores out of the box. Its state is still worth *checking* rather than assuming, because it is the one feature whose absence is silent: those entry points exist in every build and fall back to `numpy_eval` / `simplify` — same correct answer, no speedup, no warning — if you are on a source build that did not enable it.
 >

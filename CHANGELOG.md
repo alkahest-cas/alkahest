@@ -4,7 +4,8 @@
 
 ### Changed
 
-- The Python bindings moved from PyO3 0.21 to 0.30, which supports CPython 3.9 through 3.15 natively, so the 3.13 and 3.14 wheels no longer build through `PYO3_USE_ABI3_FORWARD_COMPATIBILITY`. Python 3.9 stays supported and the module still declares that it needs the GIL. Two details are visible from Python: calling a class that has no constructor is still a `TypeError`, but the message is now `cannot create 'alkahest.BDD' instances` where it was `No constructor defined`; and a getter with no docstring reports `__doc__` as `None` where it was `''`.
+- **Python 3.9 is no longer supported.** It reached end of life in October 2025. The minimum is now Python 3.10 (`requires-python = ">=3.10"`), and no cp39 wheels are built for any platform or variant (default, `+jit`, `+full`). 3.13.2 is the last release with Python 3.9 wheels; on 3.9, `pip install alkahest` resolves to it. The `alkahest[rl]` extra no longer needs a `python_version` marker on `verifiers`, since every supported Python satisfies it.
+- The Python bindings moved from PyO3 0.21 to 0.30, which supports CPython 3.9 through 3.15 natively, so the 3.13 and 3.14 wheels no longer build through `PYO3_USE_ABI3_FORWARD_COMPATIBILITY`. The module still declares that it needs the GIL. Two details are visible from Python: calling a class that has no constructor is still a `TypeError`, but the message is now `cannot create 'alkahest.BDD' instances` where it was `No constructor defined`; and a getter with no docstring reports `__doc__` as `None` where it was `''`.
 
 ## 3.13.2 — 2026-11-11
 

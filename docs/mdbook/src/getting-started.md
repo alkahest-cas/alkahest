@@ -4,7 +4,7 @@
 
 ### PyPI (default)
 
-Alkahest is on the [Python Package Index](https://pypi.org/project/alkahest/). Supported interpreters are **Python 3.9 through 3.14** (`requires-python` on PyPI).
+Alkahest is on the [Python Package Index](https://pypi.org/project/alkahest/). Supported interpreters are **Python 3.10 through 3.14** (`requires-python` on PyPI).
 
 ```bash
 python -m pip install -U pip
@@ -126,7 +126,7 @@ was unfalsifiable from Python and was removed in contract v3. Read
 ### Optional: RL environments (`alkahest[rl]`)
 
 Reinforcement-learning environments (symbolic integration, Prime Intellect Hub) are an
-optional extra. Requires **Python ≥ 3.10** (`verifiers` does not support 3.9).
+optional extra.
 
 ```bash
 pip install "alkahest[rl]"

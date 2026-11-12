@@ -240,7 +240,7 @@ use alkahest_core::number_theory::{
 // The buffer protocol is not in the stable ABI before 3.11, and PyO3 gates
 // `pyo3::buffer` on exactly this cfg. The Python layer already falls back to
 // `call_batch_raw` when these methods are absent (see `_dlpack._call_batch`),
-// so a limited-API 3.9/3.10 build loses the bulk-copy fast path and nothing else.
+// so a limited-API 3.10 build loses the bulk-copy fast path and nothing else.
 #[cfg(any(not(Py_LIMITED_API), Py_3_11))]
 use pyo3::buffer::PyBuffer;
 use pyo3::conversion::FromPyObjectOwned;

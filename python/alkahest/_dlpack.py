@@ -54,8 +54,8 @@ def _call_batch(compiled_fn, flat_arrays: Sequence, n_points: int, *, parallel: 
     Prefers ``_call_batch_arrays``, which reads the input arrays and writes
     the output array **in place** (through ``__array_interface__``) with the
     GIL released — no copy, no per-element Python ``float``. It exists on
-    every build, including the limited-API wheels for Python 3.9/3.10, which
-    have no buffer protocol and used to fall back to ``.tolist()``. Then
+    every build, including a limited-API build for Python 3.10, which has no
+    buffer protocol; older 3.9/3.10 wheels fell back to ``.tolist()``. Then
     ``call_batch_buffer`` (one bulk copy per array), and last the legacy
     ``call_batch_raw`` for an older/foreign extension build.
 

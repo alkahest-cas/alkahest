@@ -13,8 +13,7 @@ The package has two layers:
 
 ## Install
 
-The RL stack is an **optional extra** on the main PyPI package. It requires **Python
-≥ 3.10** because `verifiers` does not support 3.9.
+The RL stack is an **optional extra** on the main PyPI package.
 
 ```bash
 pip install "alkahest[rl]"

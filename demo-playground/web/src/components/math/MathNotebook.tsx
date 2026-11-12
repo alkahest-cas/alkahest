@@ -605,7 +605,7 @@ function LocalSetupCard({
       </ol>
       <p className="mt-3 text-[13px] leading-relaxed text-ak-fg2">
         This page then finds it at <Code>{LOCAL_MATH_URL.replace('http://', '')}</Code>. Your browser may ask
-        whether this site can connect to apps on your device: choose <strong>Allow</strong>. Needs Python 3.9 or
+        whether this site can connect to apps on your device: choose <strong>Allow</strong>. Needs Python 3.10 or
         newer.
       </p>
       {denied ? (
