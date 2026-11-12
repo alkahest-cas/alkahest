@@ -156,7 +156,7 @@ export default function Settings({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm" onClick={onClose}>
       <div
-        className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-lg border border-ak-border bg-ak-elev p-6 shadow-xl"
+        className="w-full max-w-lg max-h-[90vh] overflow-y-auto border border-ak-border bg-ak-elev p-6 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-5 flex items-center justify-between">
@@ -178,31 +178,31 @@ export default function Settings({
               Execution backend
             </h3>
             <p className="mb-3 text-xs text-ak-muted">
-              The Math tab and alkahest cells in the Python tab run on an Alkahest server
-              (<code className="rounded bg-ak-sunk px-1">pnpm start</code> runs one on
+              The Math tab and alkahest cells in the Python tab run on an alkahest server
+              (<code className="bg-ak-sunk px-1">pnpm start</code> runs one on
               localhost:8000). The Python tab can also use a remote Jupyter server. The token
               stays in this browser.
             </p>
             {isStaticHosting &&
               cfg.serverBackend === 'alkahest' &&
               /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/?$/i.test(cfg.serverHttpUrl.trim()) && (
-                <p className="mb-3 rounded border border-ak-warn/30 bg-ak-warn/10 px-3 py-2 text-xs text-ak-fg">
+                <p className="mb-3 border border-ak-warn/30 bg-ak-warn/10 px-3 py-2 text-xs text-ak-fg">
                   From this HTTPS page, Chrome, Edge and Firefox can reach a server on{' '}
-                  <code className="rounded bg-ak-elev/80 px-1">http://127.0.0.1</code> or{' '}
-                  <code className="rounded bg-ak-elev/80 px-1">localhost</code> once you allow the site to connect to apps on
+                  <code className="bg-ak-elev/80 px-1">http://127.0.0.1</code> or{' '}
+                  <code className="bg-ak-elev/80 px-1">localhost</code> once you allow the site to connect to apps on
                   this device; Safari blocks it as mixed content. The Math tab finds{' '}
-                  <code className="rounded bg-ak-elev/80 px-1">python -m alkahest.playground</code> without a URL (leave it
+                  <code className="bg-ak-elev/80 px-1">python -m alkahest.playground</code> without a URL (leave it
                   empty). In Safari, run the playground locally at{' '}
-                  <code className="rounded bg-ak-elev/80 px-1">http://localhost:3000</code> instead.
+                  <code className="bg-ak-elev/80 px-1">http://localhost:3000</code> instead.
                 </p>
               )}
             <label className="block text-sm mb-1">Backend type</label>
             <select
               value={cfg.serverBackend}
               onChange={(e) => update('serverBackend', e.target.value as ServerBackend)}
-              className="mb-3 w-full rounded border border-ak-border bg-ak-code-bg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ak-brand"
+              className="mb-3 w-full border border-ak-border bg-ak-code-bg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ak-brand"
             >
-              <option value="alkahest">Alkahest server</option>
+              <option value="alkahest">alkahest server</option>
               <option value="jupyter">Jupyter Server</option>
             </select>
             <label className="block text-sm mb-1">Server URL</label>
@@ -212,12 +212,12 @@ export default function Settings({
                 value={cfg.serverHttpUrl}
                 onChange={(e) => update('serverHttpUrl', e.target.value)}
                 placeholder={cfg.serverBackend === 'jupyter' ? 'https://host:8888' : 'http://localhost:8000'}
-                className="flex-1 rounded border border-ak-border bg-ak-code-bg px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-ak-brand"
+                className="flex-1 border border-ak-border bg-ak-code-bg px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-ak-brand"
               />
               <button
                 type="button"
                 onClick={testConnection}
-                className="rounded border border-ak-border px-3 py-1.5 text-xs hover:bg-ak-code-bg"
+                className="border border-ak-border px-3 py-1.5 text-xs hover:bg-ak-code-bg"
               >
                 {testStatus === 'testing' ? '…' : testStatus === 'ok' ? '✓ OK' : testStatus === 'fail' ? '✗ fail' : 'Test'}
               </button>
@@ -229,7 +229,7 @@ export default function Settings({
               onChange={(e) => update('serverToken', e.target.value)}
               placeholder={cfg.serverBackend === 'jupyter' ? 'Jupyter token' : 'Optional Bearer token'}
               autoComplete="off"
-              className="w-full rounded border border-ak-border bg-ak-code-bg px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-ak-brand"
+              className="w-full border border-ak-border bg-ak-code-bg px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-ak-brand"
             />
             {leanStatus && (
               <p className="mt-2 text-xs text-ak-muted">{leanStatus}</p>
@@ -241,7 +241,7 @@ export default function Settings({
             <select
               value={cfg.executionMode}
               onChange={(e) => update('executionMode', e.target.value as ExecutionMode)}
-              className="w-full rounded border border-ak-border bg-ak-code-bg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ak-brand"
+              className="w-full border border-ak-border bg-ak-code-bg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ak-brand"
             >
               <option value="auto">Auto (WASM for pure Python, server for alkahest)</option>
               <option value="wasm">WASM only (Pyodide)</option>
@@ -254,7 +254,7 @@ export default function Settings({
               <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ak-muted">
                 Notebook display
               </h3>
-              <label className="flex cursor-pointer items-start gap-2 rounded border border-ak-border px-3 py-2 text-sm hover:bg-ak-code-bg">
+              <label className="flex cursor-pointer items-start gap-2 border border-ak-border px-3 py-2 text-sm hover:bg-ak-code-bg">
                 <input
                   type="checkbox"
                   checked={cfg.hideLineNumbers}
@@ -265,7 +265,7 @@ export default function Settings({
                   <span className="font-medium">Hide code line numbers</span>
                   <span className="mt-0.5 block text-xs text-ak-muted">
                     Cleaner layout for demos and recordings. Also available via{' '}
-                    <code className="rounded bg-ak-code-bg px-1">?hideLineNumbers=1</code> in the URL.
+                    <code className="bg-ak-code-bg px-1">?hideLineNumbers=1</code> in the URL.
                   </span>
                 </span>
               </label>
@@ -279,7 +279,7 @@ export default function Settings({
               </h3>
               <div className="space-y-2">
                 {onImportNotebook && (
-                  <label className="flex w-full cursor-pointer items-center gap-2 rounded border border-ak-border px-3 py-2 text-sm hover:bg-ak-code-bg transition-colors">
+                  <label className="flex w-full cursor-pointer items-center gap-2 border border-ak-border px-3 py-2 text-sm hover:bg-ak-code-bg transition-colors">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5-5 5 5M12 15V3" />
                     </svg>
@@ -300,7 +300,7 @@ export default function Settings({
                   <button
                     type="button"
                     onClick={() => { onExportNotebook(); onClose(); }}
-                    className="flex w-full items-center gap-2 rounded border border-ak-border px-3 py-2 text-sm text-left hover:bg-ak-code-bg transition-colors"
+                    className="flex w-full items-center gap-2 border border-ak-border px-3 py-2 text-sm text-left hover:bg-ak-code-bg transition-colors"
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 3v12" />
@@ -316,13 +316,13 @@ export default function Settings({
         <div className="mt-6 flex justify-end gap-2">
           <button
             onClick={onClose}
-            className="rounded border border-ak-border px-4 py-1.5 text-sm hover:bg-ak-code-bg"
+            className="border border-ak-border px-4 py-1.5 text-sm hover:bg-ak-code-bg"
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
-            className="rounded bg-ak-brand px-4 py-1.5 text-sm font-medium text-ak-brand-fg hover:bg-ak-brand-dark"
+            className="bg-ak-brand px-4 py-1.5 text-sm font-medium text-ak-brand-fg hover:bg-ak-brand-dark"
           >
             Save & reload
           </button>

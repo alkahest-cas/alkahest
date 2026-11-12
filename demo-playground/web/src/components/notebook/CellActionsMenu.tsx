@@ -49,7 +49,7 @@ export default function CellActionsMenu({
         aria-expanded={open}
         aria-haspopup="menu"
         title="Cell actions"
-        className="rounded p-1 text-ak-muted transition-colors hover:bg-ak-code-bg hover:text-ak-fg"
+        className="p-1 text-ak-muted transition-colors hover:bg-ak-code-bg hover:text-ak-fg"
       >
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <circle cx="12" cy="5" r="1" fill="currentColor" />
@@ -61,7 +61,7 @@ export default function CellActionsMenu({
       {open && (
         <div
           role="menu"
-          className="absolute right-0 top-full z-30 mt-1 min-w-[168px] rounded-lg border border-ak-border bg-ak-elev py-1 shadow-lg"
+          className="absolute right-0 top-full z-30 mt-1 min-w-[168px] border border-ak-border bg-ak-elev py-1 shadow-lg"
         >
           <button
             type="button"

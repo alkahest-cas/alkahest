@@ -209,7 +209,7 @@ export function verificationBadge(r: MathResult): { label: string; title: string
     case 'exactly_verified':
       return {
         label: 'verified',
-        title: 'Alkahest checked this result exactly (for example, differentiating the antiderivative gives back the integrand).',
+        title: 'alkahest checked this result exactly (for example, differentiating the antiderivative gives back the integrand).',
       };
     case 'lean_checked':
       return { label: 'verified in Lean', title: 'A Lean proof of this result was checked.' };

@@ -65,7 +65,7 @@ export default function MathCell({
       data-math-cell={index + 1}
       data-status={cell.status}
       className={clsx(
-        'group/cell rounded-lg border bg-ak-elev transition-colors',
+        'group/cell border bg-ak-elev transition-colors',
         'border-ak-border focus-within:border-ak-border-strong',
       )}
     >
@@ -105,7 +105,7 @@ export default function MathCell({
           onClick={onDelete}
           title="Delete cell"
           aria-label={`Delete cell ${index + 1}`}
-          className="rounded p-1 text-ak-muted opacity-0 transition hover:bg-ak-sunk hover:text-ak-fg focus:opacity-100 group-hover/cell:opacity-100 group-focus-within/cell:opacity-100"
+          className="p-1 text-ak-muted opacity-0 transition hover:bg-ak-sunk hover:text-ak-fg focus:opacity-100 group-hover/cell:opacity-100 group-focus-within/cell:opacity-100"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M18 6 6 18M6 6l12 12" />
@@ -117,10 +117,10 @@ export default function MathCell({
           disabled={!canRun || cell.status === 'running' || !cell.input.trim()}
           title={canRun ? 'Run (Enter)' : 'Start the local server (see above) to run this'}
           aria-label={`Run cell ${index + 1}`}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-ak-border text-ak-fg2 transition-colors hover:border-ak-border-strong hover:text-ak-fg disabled:opacity-40"
+          className="flex h-7 w-7 shrink-0 items-center justify-center border border-ak-border text-ak-fg2 transition-colors hover:border-ak-border-strong hover:text-ak-fg disabled:opacity-40"
         >
           {cell.status === 'running' ? (
-            <span className="h-3 w-3 animate-spin rounded-full border-2 border-ak-muted border-t-transparent" />
+            <span className="h-3 w-3 animate-spin border-2 border-ak-muted border-t-transparent" />
           ) : (
             <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
               <path d="M7 4.5v15l13-7.5z" />
@@ -153,9 +153,9 @@ export default function MathCell({
           </div>
           {cell.precomputed && (
             <span
-              className="mt-0.5 shrink-0 rounded-full border border-ak-border px-2 py-px text-[11px] text-ak-muted"
+              className="mt-0.5 shrink-0 border border-ak-border px-2 py-px text-[11px] text-ak-muted"
               data-testid="precomputed-badge"
-              title={`Computed in advance with Alkahest ${precomputedVersion ?? ''} when this page was built. Start the local server to run it yourself.`}
+              title={`Computed in advance with alkahest ${precomputedVersion ?? ''} when this page was built. Start the local server to run it yourself.`}
             >
               precomputed
             </span>
@@ -193,7 +193,7 @@ function ResultView({ result }: { result: MathResult }) {
       <div className="flex flex-wrap items-center gap-2 text-xs">
         {badge && (
           <span
-            className="rounded-full bg-ak-ok/10 px-2 py-0.5 font-mono text-[12px] text-ak-ok"
+            className="bg-ak-ok/10 px-2 py-0.5 font-mono text-[12px] text-ak-ok"
             title={badge.title}
           >
             {badge.label}
@@ -204,8 +204,8 @@ function ResultView({ result }: { result: MathResult }) {
             type="button"
             onClick={() => setShowCert((v) => !v)}
             aria-expanded={showCert}
-            className="rounded-full border border-ak-ok/40 px-2 py-0.5 font-mono text-[12px] text-ak-ok transition-colors hover:bg-ak-ok/10"
-            title="Alkahest generated a Lean 4 proof of this step. Generated, not yet checked: use Verify in Lean."
+            className="border border-ak-ok/40 px-2 py-0.5 font-mono text-[12px] text-ak-ok transition-colors hover:bg-ak-ok/10"
+            title="alkahest generated a Lean 4 proof of this step. Generated, not yet checked: use Verify in Lean."
           >
             Lean certificate {showCert ? '▴' : '▾'}
           </button>
@@ -235,7 +235,7 @@ function ResultView({ result }: { result: MathResult }) {
           </button>
         )}
         {result.elapsed_ms != null && (
-          <span className="font-mono tabular-nums text-ak-muted" title="Time inside Alkahest">
+          <span className="font-mono tabular-nums text-ak-muted" title="Time inside alkahest">
             {formatMs(result.elapsed_ms)}
           </span>
         )}
@@ -257,7 +257,7 @@ function RefusalView({ result }: { result: MathResult }) {
   const overLimit = result.error_code === 'E-PLAYGROUND-002' || result.error_code === 'E-PLAYGROUND-004';
   const heading =
     source === 'alkahest'
-      ? 'Alkahest declined'
+      ? 'alkahest declined'
       : overLimit
         ? "Over the playground's limits"
         : source === 'input'
@@ -278,7 +278,7 @@ function RefusalView({ result }: { result: MathResult }) {
           {heading}
         </span>
         {result.error_code && (
-          <span className="rounded-full bg-ak-sunk px-2 py-0.5 font-mono text-[12px] text-ak-fg2">
+          <span className="bg-ak-sunk px-2 py-0.5 font-mono text-[12px] text-ak-fg2">
             {result.error_code}
           </span>
         )}
@@ -288,7 +288,7 @@ function RefusalView({ result }: { result: MathResult }) {
       </p>
       {source === 'alkahest' && (
         <p className="text-xs text-ak-muted">
-          A coded refusal is an answer, not a crash: Alkahest returns an error rather than a result it cannot stand behind.
+          A coded refusal is an answer, not a crash: alkahest returns an error rather than a result it cannot stand behind.
         </p>
       )}
       {more.length > 0 && (
@@ -302,7 +302,7 @@ function RefusalView({ result }: { result: MathResult }) {
             {open ? 'Hide details' : source === 'alkahest' ? 'Details and what to try' : 'Details'}
           </button>
           {open && (
-            <div className="mt-1.5 space-y-1.5 rounded-md bg-ak-sunk px-3 py-2 text-xs leading-relaxed text-ak-fg2">
+            <div className="mt-1.5 space-y-1.5 bg-ak-sunk px-3 py-2 text-xs leading-relaxed text-ak-fg2">
               {more.map((m) => (
                 <p key={m} className="whitespace-pre-wrap break-words">
                   {m}

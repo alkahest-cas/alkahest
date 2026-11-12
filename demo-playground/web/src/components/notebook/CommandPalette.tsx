@@ -91,7 +91,7 @@ export default function CommandPalette({ open, onClose, commands }: CommandPalet
       <div
         role="dialog"
         aria-label="Command palette"
-        className="w-full max-w-lg overflow-hidden rounded-lg border border-ak-border bg-ak-elev shadow-xl"
+        className="w-full max-w-lg overflow-hidden border border-ak-border bg-ak-elev shadow-xl"
       >
         <input
           ref={inputRef}
@@ -125,7 +125,7 @@ export default function CommandPalette({ open, onClose, commands }: CommandPalet
               >
                 <span className="flex-1">{cmd.label}</span>
                 {cmd.shortcut && (
-                  <kbd className="shrink-0 rounded border border-ak-border bg-ak-bg px-1.5 py-0.5 font-mono text-[10px] text-ak-muted">
+                  <kbd className="shrink-0 border border-ak-border bg-ak-bg px-1.5 py-0.5 font-mono text-[10px] text-ak-muted">
                     {cmd.shortcut}
                   </kbd>
                 )}

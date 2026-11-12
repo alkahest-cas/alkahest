@@ -2,9 +2,10 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ── Design tokens (shared with the landing page and docs; copied verbatim) ── */
+/* ── Design tokens (copied verbatim from the landing page, website/src/styles.css).
+   Light only and square corners: the site has no dark theme. ── */
 :root {
-  --bg: #f7f6f3;          /* warm paper */
+  --bg: #f8f7f3;          /* warm paper */
   --bg-elev: #ffffff;     /* cards, code panels */
   --bg-sunk: #efeee9;     /* inline code, table header */
   --fg: #141413;
@@ -17,33 +18,18 @@
   --brand-soft: #c41e3a14;
   --ok: #1f7a4d;          /* "certified / verified" */
   --warn: #9a6700;
-  --radius: 10px;
-  --radius-sm: 6px;
+  --radius: 0;
+  --radius-sm: 0;
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --maxw: 1200px;
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #111110; --bg-elev: #191918; --bg-sunk: #1f1f1d;
-    --fg: #eeeeec; --fg-2: #c9c8c3; --muted: #8f8e88;
-    --border: #2a2a27; --border-strong: #3a3a36;
-    --brand: #ef4a5f; --brand-soft: #ef4a5f1f; --ok: #4cc38a; --warn: #e2b340;
-  }
-}
-:root[data-theme="dark"] {
-  --bg: #111110; --bg-elev: #191918; --bg-sunk: #1f1f1d;
-  --fg: #eeeeec; --fg-2: #c9c8c3; --muted: #8f8e88;
-  --border: #2a2a27; --border-strong: #3a3a36;
-  --brand: #ef4a5f; --brand-soft: #ef4a5f1f; --ok: #4cc38a; --warn: #e2b340;
-}
-
 /* ── The same tokens as RGB channels, for Tailwind's opacity modifiers ──────
    (bg-ak-ok/10 etc.). Keep in sync with the block above. Two playground-only
    extras: --brand-dark (button hover) and --run (a running cell). */
 :root {
   color-scheme: light;
-  --bg-rgb: 247 246 243;
+  --bg-rgb: 248 247 243;
   --bg-elev-rgb: 255 255 255;
   --bg-sunk-rgb: 239 238 233;
   --fg-rgb: 20 20 19;
@@ -58,41 +44,6 @@
   --warn-rgb: 154 103 0;
   --run-rgb: 37 99 235;
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --bg-rgb: 17 17 16;
-    --bg-elev-rgb: 25 25 24;
-    --bg-sunk-rgb: 31 31 29;
-    --fg-rgb: 238 238 236;
-    --fg-2-rgb: 201 200 195;
-    --muted-rgb: 143 142 136;
-    --border-rgb: 42 42 39;
-    --border-strong-rgb: 58 58 54;
-    --brand-rgb: 239 74 95;
-    --brand-dark-rgb: 242 109 126;
-    --ok-rgb: 76 195 138;
-    --warn-rgb: 226 179 64;
-    --run-rgb: 107 155 255;
-  }
-}
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --bg-rgb: 17 17 16;
-  --bg-elev-rgb: 25 25 24;
-  --bg-sunk-rgb: 31 31 29;
-  --fg-rgb: 238 238 236;
-  --fg-2-rgb: 201 200 195;
-  --muted-rgb: 143 142 136;
-  --border-rgb: 42 42 39;
-  --border-strong-rgb: 58 58 54;
-  --brand-rgb: 239 74 95;
-  --brand-dark-rgb: 242 109 126;
-  --ok-rgb: 76 195 138;
-  --warn-rgb: 226 179 64;
-  --run-rgb: 107 155 255;
-}
-
 html,
 body {
   background-color: var(--bg);
@@ -105,10 +56,13 @@ body {
 
 /* ── Site wordmark (identical on landing, docs and playground) ── */
 .ak-wordmark {
-  color: var(--brand);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--fg);
   font-family: var(--font-sans);
   font-weight: 700;
-  font-size: 20px;
+  font-size: 21px;
   letter-spacing: -0.03em;
   line-height: 1;
   text-decoration: none;
@@ -127,7 +81,6 @@ body {
 
 /* CodeMirror overrides — blend with the token palette */
 .cm-editor {
-  border-radius: var(--radius-sm);
   font-size: 13.5px;
   line-height: 1.6;
 }
@@ -160,7 +113,7 @@ body {
 }
 ::-webkit-scrollbar-thumb {
   background: var(--border-strong);
-  border-radius: 3px;
+  border-radius: 0;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--muted);
@@ -181,7 +134,7 @@ body {
 .prose code {
   background: var(--bg-sunk);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 0;
   padding: 0.08em 0.35em;
   font-size: 0.875em;
   font-family: var(--font-mono);
@@ -189,7 +142,7 @@ body {
 .prose pre {
   background: var(--bg-sunk);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 0;
   padding: 0.85rem 1rem;
   overflow-x: auto;
 }
@@ -227,4 +180,13 @@ body {
   .cell-run-pulse {
     animation: none;
   }
+}
+
+/* Square corners everywhere, as on the landing page. This also reaches what the
+   Tailwind config cannot: KaTeX, CodeMirror's tooltips and panels, the
+   typography plugin's code blocks, and native form controls. */
+*,
+*::before,
+*::after {
+  border-radius: 0 !important;
 }

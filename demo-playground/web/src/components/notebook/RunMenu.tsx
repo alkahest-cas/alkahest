@@ -51,7 +51,7 @@ export default function RunMenu({ onAction, anyRunning }: RunMenuProps) {
 
   return (
     <div ref={rootRef} className="relative">
-      <div className="flex rounded border border-ak-border overflow-hidden">
+      <div className="flex border border-ak-border overflow-hidden">
         <button
           type="button"
           onClick={() => onAction('run-all')}
@@ -77,7 +77,7 @@ export default function RunMenu({ onAction, anyRunning }: RunMenuProps) {
       {open && (
         <div
           role="menu"
-          className="absolute left-0 top-full z-30 mt-1 min-w-[240px] rounded-lg border border-ak-border bg-ak-elev py-1 shadow-lg"
+          className="absolute left-0 top-full z-30 mt-1 min-w-[240px] border border-ak-border bg-ak-elev py-1 shadow-lg"
         >
           {ITEMS.map(({ action, label, dividerBefore }) => (
             <div key={action}>

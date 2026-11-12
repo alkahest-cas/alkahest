@@ -25,7 +25,7 @@ export default function ComparePage() {
       <div className="grid grid-cols-2 divide-x divide-ak-border">
         <section className="min-w-0">
           <header className="border-b border-ak-border bg-ak-code-bg/40 px-4 py-2">
-            <h2 className="text-sm font-semibold text-ak-fg">Alkahest</h2>
+            <h2 className="text-sm font-semibold text-ak-fg">alkahest</h2>
             <p className="text-xs text-ak-muted">Rust F5B Groebner basis</p>
           </header>
           <Notebook zenMode demoParam="left" compact onReady={markLeftReady} />

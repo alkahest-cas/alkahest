@@ -9,7 +9,7 @@ export const DEFAULT_NOTEBOOK_CELLS: DefaultNotebookCell[] = [
   {
     cellType: 'markdown',
     code:
-      '# Alkahest playground\n\n' +
+      '# alkahest playground\n\n' +
       'Symbolic math in Python: simplify, differentiate, integrate, and more.\n' +
       'Run cells with **⌘/Ctrl+Enter**.',
   },

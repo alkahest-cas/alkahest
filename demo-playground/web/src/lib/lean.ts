@@ -131,7 +131,7 @@ export async function verifyLeanCertificate(
     return {
       ok: false,
       stdout: '',
-      stderr: 'Lean verification requires the Alkahest demo server (not Jupyter-only mode).',
+      stderr: 'Lean verification requires the alkahest demo server (not Jupyter-only mode).',
       duration_ms: 0,
     };
   }

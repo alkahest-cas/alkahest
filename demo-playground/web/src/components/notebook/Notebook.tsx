@@ -734,7 +734,7 @@ export default function Notebook({
         <button
           onClick={() => addCodeCellBelow()}
           title={ADD_CODE_CELL_SHORTCUT_HINT}
-          className="flex items-center gap-1.5 rounded border border-ak-border px-3 py-1.5 text-xs hover:bg-ak-code-bg transition-colors"
+          className="flex items-center gap-1.5 border border-ak-border px-3 py-1.5 text-xs hover:bg-ak-code-bg transition-colors"
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>
           Add code
@@ -742,7 +742,7 @@ export default function Notebook({
 
         <button
           onClick={() => userDispatch({ type: 'ADD_CELL', cellType: 'markdown' })}
-          className="flex items-center gap-1.5 rounded border border-ak-border px-3 py-1.5 text-xs hover:bg-ak-code-bg transition-colors"
+          className="flex items-center gap-1.5 border border-ak-border px-3 py-1.5 text-xs hover:bg-ak-code-bg transition-colors"
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 6h16M4 12h8M4 18h16"/></svg>
           Add markdown
@@ -750,7 +750,7 @@ export default function Notebook({
 
         <RunMenu onAction={handleRunMenuAction} anyRunning={anyRunning} />
 
-        <label className="flex items-center gap-1.5 rounded border border-ak-border px-3 py-1.5 text-xs cursor-pointer hover:bg-ak-code-bg transition-colors">
+        <label className="flex items-center gap-1.5 border border-ak-border px-3 py-1.5 text-xs cursor-pointer hover:bg-ak-code-bg transition-colors">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
           Install wheel
           <input type="file" accept=".whl" className="hidden" onChange={(e) => e.target.files?.[0] && handleWheelUpload(e.target.files[0])} />
@@ -760,7 +760,7 @@ export default function Notebook({
           type="button"
           onClick={handleClearNotebook}
           title="Remove all cells and start with one empty code cell"
-          className="flex items-center gap-1.5 rounded border border-ak-border px-3 py-1.5 text-xs hover:bg-ak-code-bg transition-colors"
+          className="flex items-center gap-1.5 border border-ak-border px-3 py-1.5 text-xs hover:bg-ak-code-bg transition-colors"
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
           Clear notebook

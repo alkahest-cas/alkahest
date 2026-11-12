@@ -30,12 +30,12 @@ export default function HostedBanner() {
 
   return (
     <div className="mx-auto max-w-4xl px-4 pt-5">
-      <div className="relative rounded-lg border border-ak-border bg-ak-elev px-4 py-3 pr-10 text-sm">
+      <div className="relative border border-ak-border bg-ak-elev px-4 py-3 pr-10 text-sm">
         <button
           type="button"
           onClick={dismiss}
           aria-label="Dismiss"
-          className="absolute right-2 top-2 rounded p-1 text-ak-muted transition-colors hover:bg-ak-sunk hover:text-ak-fg"
+          className="absolute right-2 top-2 p-1 text-ak-muted transition-colors hover:bg-ak-sunk hover:text-ak-fg"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M18 6 6 18M6 6l12 12" />
@@ -43,9 +43,9 @@ export default function HostedBanner() {
         </button>
         <p className="font-medium text-ak-fg">Pure Python runs in your browser</p>
         <p className="mt-1 text-ak-fg2">
-          Cells without <code className="rounded bg-ak-sunk px-1 font-mono text-[0.85em]">import alkahest</code> run
-          in WebAssembly (Pyodide, with SymPy). Alkahest itself needs a backend: open settings (
-          <kbd className="rounded border border-ak-border px-1 text-xs">Ctrl+/</kbd>) and add an Alkahest
+          Cells without <code className="bg-ak-sunk px-1 font-mono text-[0.85em]">import alkahest</code> run
+          in WebAssembly (Pyodide, with SymPy). alkahest itself needs a backend: open settings (
+          <kbd className="border border-ak-border px-1 text-xs">Ctrl+/</kbd>) and add an alkahest
           server or Jupyter URL and token.
         </p>
       </div>

@@ -7,6 +7,19 @@ const token = (name: string) => `rgb(var(--${name}-rgb) / <alpha-value>)`;
 const config: Config = {
   content: ['./src/**/*.{ts,tsx,js,jsx}'],
   theme: {
+    // Square corners everywhere, like the landing page: every radius key is 0,
+    // so a stray `rounded-*` class cannot bring a curve back.
+    borderRadius: {
+      none: '0',
+      sm: '0',
+      DEFAULT: '0',
+      md: '0',
+      lg: '0',
+      xl: '0',
+      '2xl': '0',
+      '3xl': '0',
+      full: '0',
+    },
     extend: {
       typography: {
         DEFAULT: {
@@ -53,10 +66,6 @@ const config: Config = {
       fontFamily: {
         sans: ['var(--font-sans)'],
         mono: ['var(--font-mono)'],
-      },
-      borderRadius: {
-        DEFAULT: '6px',
-        lg: '10px',
       },
       maxWidth: {
         site: '1200px',
