@@ -31,7 +31,7 @@ const ALIASES: Record<string, string> = {
 
 export async function initHighlighter() {
   hl = await createHighlighter({
-    themes: ["github-light", "github-dark-dimmed"],
+    themes: ["github-light"],
     langs: LANGS.filter((l) => l !== "text"),
   });
 }
@@ -79,7 +79,7 @@ export function highlight(code: string, lang0: string): string {
   if (hl && lang !== "text") {
     inner = hl.codeToHtml(code, {
       lang,
-      themes: { light: "github-light", dark: "github-dark-dimmed" },
+      themes: { light: "github-light" },
       defaultColor: false,
     });
   } else {

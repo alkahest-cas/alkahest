@@ -1,5 +1,5 @@
 // Page shell: top bar (shared with the landing page and playground, see
-// DESIGN.md), sidebar, content column, "On this page" TOC.
+// website/src/styles.css), sidebar, content column, "On this page" TOC.
 
 import { escapeHtml, type Heading } from "./markdown";
 
@@ -35,17 +35,11 @@ const MENU_ICON =
 const SEARCH_ICON =
   '<svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><circle cx="9" cy="9" r="5.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m13.2 13.2 3.8 3.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
 const SIDEBAR_ICON =
-  '<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4v12" stroke="currentColor" stroke-width="1.5"/></svg>';
+  '<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true"><rect x="3" y="4" width="14" height="12" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 4v12" stroke="currentColor" stroke-width="1.5"/></svg>';
 const ARROW_EXT =
   '<svg class="ext" viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M4 2h6v6M10 2 3 9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
 const EDIT_ICON =
   '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61Zm.176 4.823L9.75 4.81l-6.286 6.287a.253.253 0 0 0-.064.108l-.558 1.953 1.953-.558a.253.253 0 0 0 .108-.064Zm1.238-3.763a.25.25 0 0 0-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 0 0 0-.354Z"/></svg>';
-
-export const FAVICON =
-  "data:image/svg+xml," +
-  encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#c41e3a"/><text x="16" y="23" text-anchor="middle" font-family="Inter,Arial,sans-serif" font-weight="700" font-size="21" fill="#fff">a</text></svg>',
-  );
 
 // The root of the GitHub Pages site (the landing page lives at "/").
 function siteRoot(base: string): string {
@@ -56,14 +50,14 @@ export function topBar(base: string): string {
   const root = siteRoot(base);
   return `<header class="topbar">
   <div class="topbar-inner">
-    <a class="wordmark" href="${root}">alkahest</a>
-    <nav class="topnav" id="topnav" aria-label="Site">
-      <a href="${base}" class="current" aria-current="page">Docs</a>
+    <a class="wordmark" href="${root}"><img src="${base}assets/logo.svg" alt="" width="26" height="26"><span>alkahest</span></a>
+    <button class="menu-btn" type="button" aria-label="Menu" aria-expanded="false" aria-controls="topnav">${MENU_ICON}</button>
+    <nav class="topnav" id="topnav" aria-label="Primary">
+      <a href="${base}" aria-current="page">Docs</a>
       <a href="${root}playground/">Playground</a>
       <a href="${root}agent/">Agent</a>
-      <a class="gh" href="${GITHUB_REPO}" aria-label="GitHub">${GITHUB_ICON}</a>
+      <a class="gh" href="${GITHUB_REPO}" aria-label="alkahest on GitHub">${GITHUB_ICON}</a>
     </nav>
-    <button class="menu-btn" type="button" aria-label="Menu" aria-expanded="false" aria-controls="topnav">${MENU_ICON}</button>
   </div>
 </header>`;
 }
@@ -105,11 +99,6 @@ export function sidebar(guide: NavGroup[], api: NavGroup[], page: Page, base: st
     <nav class="side-nav" data-panel="api"${onApi ? "" : " hidden"}>${navGroups(api, page.href)}</nav>
   </div>
   <div class="sidebar-foot">
-    <div class="theme-switch" role="radiogroup" aria-label="Theme">
-      <button type="button" data-theme-set="system" aria-label="System theme" title="System"><svg viewBox="0 0 16 16" width="14" height="14"><rect x="1.5" y="2.5" width="13" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 14h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
-      <button type="button" data-theme-set="light" aria-label="Light theme" title="Light"><svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 1v1.6M8 13.4V15M1 8h1.6M13.4 8H15M3.05 3.05l1.13 1.13M11.82 11.82l1.13 1.13M3.05 12.95l1.13-1.13M11.82 4.18l1.13-1.13" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
-      <button type="button" data-theme-set="dark" aria-label="Dark theme" title="Dark"><svg viewBox="0 0 16 16" width="14" height="14"><path d="M13.5 9.6A5.8 5.8 0 0 1 6.4 2.5a5.8 5.8 0 1 0 7.1 7.1Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg></button>
-    </div>
     <a class="side-foot-link" href="https://pypi.org/project/alkahest/" rel="noopener">PyPI${ARROW_EXT}</a>
     <a class="side-foot-link" href="https://docs.rs/alkahest-cas" rel="noopener">docs.rs${ARROW_EXT}</a>
   </div>
@@ -138,7 +127,7 @@ function pager(p: Page): string {
 }
 
 export function renderPage(p: Page, guide: NavGroup[], api: NavGroup[], base: string, version: string): string {
-  const docTitle = `${p.docTitle ?? p.title} · Alkahest Docs`;
+  const docTitle = p.section === "home" ? "alkahest – docs" : `${p.docTitle ?? p.title} · alkahest docs`;
   const head = `<!doctype html>
 <html lang="en">
 <head>
@@ -149,15 +138,14 @@ export function renderPage(p: Page, guide: NavGroup[], api: NavGroup[], base: st
 <meta property="og:title" content="${escapeHtml(docTitle)}">
 <meta property="og:description" content="${escapeHtml(p.description)}">
 <meta property="og:type" content="website">
-<meta name="theme-color" content="#f7f6f3" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#111110" media="(prefers-color-scheme: dark)">
-<link rel="icon" href="${FAVICON}">
+<meta name="theme-color" content="#f8f7f3">
+<meta name="color-scheme" content="light">
+<link rel="icon" type="image/svg+xml" href="${base}assets/logo.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="${base}assets/style.css?v=${version}">
 ${p.math ? `<link rel="stylesheet" href="${base}assets/katex/katex.min.css">` : ""}
-<script>try{var t=localStorage.getItem("alkahest-theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
 <script defer src="${base}assets/app.js?v=${version}"></script>
 </head>`;
   const body = `<body data-base="${base}" data-section="${p.section}">
@@ -179,7 +167,7 @@ ${sidebar(guide, api, p, base)}
   ${pager(p)}
   <footer class="doc-foot">
     ${p.editUrl ? `<a href="${p.editUrl}" rel="noopener">${EDIT_ICON}Edit on GitHub</a>` : "<span></span>"}
-    <span class="foot-meta">Alkahest ${escapeHtml(version)} · <a href="https://areggevorgyan.github.io/" rel="noopener">Built by Areg</a></span>
+    <span class="foot-meta">alkahest ${escapeHtml(version)} · <a href="https://areggevorgyan.github.io/" rel="noopener">Built by Areg</a></span>
   </footer>
 </main>
 ${p.wide ? "" : toc(p.headings, p.editUrl)}

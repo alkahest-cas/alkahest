@@ -1,30 +1,9 @@
-// Alkahest docs: theme, copy buttons, tabs, drawer, TOC scrollspy, search.
+// alkahest docs: copy buttons, tabs, drawer, TOC scrollspy, search.
 (() => {
   "use strict";
   const BASE = document.body.dataset.base || "/docs/";
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => Array.from(el.querySelectorAll(s));
-  const store = {
-    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
-    set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} },
-  };
-
-  // ---- theme ----------------------------------------------------------------
-  function applyTheme(mode) {
-    const root = document.documentElement;
-    if (mode === "light" || mode === "dark") root.dataset.theme = mode;
-    else delete root.dataset.theme;
-    $$("[data-theme-set]").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.themeSet === (mode || "system"))));
-    $$("[data-theme-set]").forEach((b) => b.setAttribute("role", "radio"));
-  }
-  applyTheme(store.get("alkahest-theme") || "system");
-  $$("[data-theme-set]").forEach((b) =>
-    b.addEventListener("click", () => {
-      const m = b.dataset.themeSet;
-      store.set("alkahest-theme", m === "system" ? null : m);
-      applyTheme(m);
-    }),
-  );
 
   // ---- top-bar menu (mobile) -------------------------------------------------
   const menuBtn = $(".menu-btn");
