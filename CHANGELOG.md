@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 3.14.0 — 2026-11-11
+
+Python 3.10 is now the minimum (3.13.2 was the last release with Python 3.9 wheels), and macOS support is Apple Silicon only: a source build targeting an Intel Mac stops with a clear message. The Python bindings move from PyO3 0.21 to 0.30, so Python 3.13 and 3.14 are supported natively rather than through PyO3's forward-compatibility mode. `Fraction ** Expr` no longer inspects the calling stack frame: the base is exact on Python 3.12+ and a float on 3.10–3.11, where `pool.rational(p, q) ** x` is the exact spelling.
+
 ### Changed
 
 - **Python 3.9 is no longer supported.** It reached end of life in October 2025. The minimum is now Python 3.10 (`requires-python = ">=3.10"`), and no cp39 wheels are built for any platform or variant (default, `+jit`, `+full`). 3.13.2 is the last release with Python 3.9 wheels; on 3.9, `pip install alkahest` resolves to it. The `alkahest[rl]` extra no longer needs a `python_version` marker on `verifiers`, since every supported Python satisfies it.
