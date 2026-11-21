@@ -20,6 +20,7 @@
 
 use crate::budget::BudgetError;
 use crate::errors::AlkahestError;
+use crate::flint::{ffi, FlintInteger};
 use crate::kernel::{Domain, ExprId, ExprPool};
 use crate::poly::groebner::ideal::GbPoly;
 use rug::ops::{DivRounding, Pow};
@@ -327,7 +328,7 @@ fn pollard_step(g: &Integer, c: &Integer, x: &Integer) -> Integer {
 
 /// One nontrivial factor of composite `n` (not necessarily prime).
 fn pollard_rho_factor(n: &Integer, c: u32) -> Option<Integer> {
-    if n <= &Integer::from(3) || is_probable_prime(n) {
+    if n <= &Integer::from(3) || is_proven_prime(n) {
         return None;
     }
     if is_perfect_square(n) {
@@ -357,18 +358,21 @@ fn pollard_rho_factor(n: &Integer, c: u32) -> Option<Integer> {
     }
 }
 
-/// Deterministic probable-prime (Miller–Rabin with small bases) for odd `n > 2`.
-fn is_probable_prime(n: &Integer) -> bool {
-    if n <= &Integer::from(1) {
+/// Proven primality via FLINT's `fmpz_is_prime` (`1` = proved prime).
+///
+/// This gates every "this factor is prime" claim in the solver: the
+/// factorisation falls back to returning unsplit composites, and the callers
+/// rely on this check to reject them. It used to be `rug`'s
+/// `is_probably_prime(40)` — a probable-prime test whose doc comment called it
+/// deterministic. FLINT proves the result (BPSW, then Pocklington/APR-CL), so
+/// a pseudoprime can no longer be handed to Cornacchia as if it were prime.
+fn is_proven_prime(n: &Integer) -> bool {
+    if n < &Integer::from(2) {
         return false;
     }
-    if n <= &Integer::from(3) {
-        return true;
-    }
-    if n.clone() % 2u32 == 0 {
-        return false;
-    }
-    n.is_probably_prime(40) != rug::integer::IsPrime::No
+    let fz = FlintInteger::from_rug(n);
+    // SAFETY: `fz` is a live, initialised fmpz for the duration of the call.
+    unsafe { ffi::fmpz_is_prime(fz.inner_ptr()) == 1 }
 }
 
 /// Distinct prime factors with multiplicity, `n ≥ 2`.
@@ -404,7 +408,7 @@ fn factor_positive(mut n: Integer) -> Vec<(Integer, u32)> {
         if m <= 1 {
             continue;
         }
-        if is_probable_prime(&m) {
+        if is_proven_prime(&m) {
             prime_parts.push(m);
             continue;
         }
@@ -474,7 +478,7 @@ fn sum_two_squares_all_points(n: &Integer) -> Result<Vec<(Integer, Integer)>, St
     let mut split: Vec<((Integer, Integer), u32)> = Vec::new();
     if rest != 1 {
         for (p, e) in factor_positive(rest) {
-            if !is_probable_prime(&p) {
+            if !is_proven_prime(&p) {
                 return Err("could not completely factor n".into());
             }
             let m4 = p.clone() % 4u32;
@@ -819,7 +823,7 @@ fn square_d_solutions(
     let mut divisors = vec![Integer::from(1)];
     if n_abs > 1 {
         for (p, e) in factor_positive(n_abs.clone()) {
-            if !is_probable_prime(&p) {
+            if !is_proven_prime(&p) {
                 return Err(DiophantineError::Unsupported(format!(
                     "could not factor {n_abs} to enumerate x² − {}·y² = {n}",
                     Integer::from(s * s)
@@ -1361,6 +1365,23 @@ pub fn diophantine(
 mod tests {
     use super::*;
     use crate::kernel::{ExprData, ExprPool};
+
+    /// `is_proven_prime` is a proof, not a probable-prime screen: Carmichael
+    /// numbers and a strong pseudoprime to bases 2, 3, 5, 7 are rejected,
+    /// and large primes are accepted.
+    #[test]
+    fn is_proven_prime_rejects_pseudoprimes_and_accepts_large_primes() {
+        for c in ["561", "41041", "3215031751", "3825123056546413051"] {
+            assert!(!is_proven_prime(&c.parse().unwrap()), "{c} is composite");
+        }
+        for n in ["-7", "0", "1"] {
+            assert!(!is_proven_prime(&n.parse().unwrap()), "{n} is not prime");
+        }
+        let m127 = (Integer::from(1) << 127u32) - 1u32;
+        assert!(is_proven_prime(&m127));
+        assert!(is_proven_prime(&Integer::from(2)));
+        assert!(!is_proven_prime(&(m127.clone() * &m127)));
+    }
 
     #[test]
     fn linear_3x_5y_1() {

@@ -39,7 +39,12 @@ Each result states how far it is trusted, in plain strings:
     outright.
 ``grh_conditional``
     PARI's class group / units are correct only under the Generalised Riemann
-    Hypothesis (``bnfinit`` without ``bnfcertify``).
+    Hypothesis for the Hecke ``L``-functions of the field (``bnfinit`` without
+    ``bnfcertify``).  This is *not* discharged by the November 2026 Lean
+    proof of RH, which covers ``zeta`` and Dirichlet ``L``-functions only:
+    the class-group bound (Bach; Belabas--Diaz y Diaz--Friedman) needs GRH for
+    the ``L``-functions of the class-group characters, which are Dirichlet
+    ``L``-functions only in special cases (e.g. genus characters).
 ``proven`` / ``numerical`` / ``bounds_only``
     For elliptic-curve ranks and ``L``-values; see
     :func:`elliptic_curve_invariants`.

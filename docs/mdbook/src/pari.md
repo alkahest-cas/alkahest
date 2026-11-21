@@ -27,7 +27,7 @@ d.primes[3]          # [PrimeIdeal(p=3, e=1, f=1, ...), ...]  two-element (p, al
 d.certification      # 'certified' | 'grh_conditional'
 ```
 
-`bnfinit` is conditional on GRH; `bnfcertify` is run when degree ≤ 6 and `|d_K| < 10^15`
+`bnfinit` is conditional on GRH for the Hecke L-functions of the field. That is not covered by the November 2026 Lean proof of RH, which proves GRH for Dirichlet L-functions only, so the label is unchanged. `bnfcertify` is run when degree ≤ 6 and `|d_K| < 10^15`
 (`certify=True` forces it, `False` skips it) and the result is labelled accordingly.
 Verified here: Gram determinant `= d_K`, integral basis closed under multiplication and
 consisting of integers, `disc(f) = index² d_K`, unit norms `±1`, each prime ideal's
