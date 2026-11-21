@@ -484,8 +484,8 @@ impl ChainBuilder {
                     self.checked.push((0, 0));
                     stop = self.base.len() - 1;
                 }
-                for level in (i + 1)..=stop {
-                    self.generators[level].push(residue.clone());
+                for gens in &mut self.generators[(i + 1)..=stop] {
+                    gens.push(residue.clone());
                 }
                 for level in ((i + 1)..=stop).rev() {
                     self.complete_level(level)?;

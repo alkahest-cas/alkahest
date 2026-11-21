@@ -228,12 +228,12 @@ impl NormanRing {
     /// undone again by the common-denominator step that follows.
     pub fn deriv_scaled(&self, p: &MultiPoly) -> MultiPoly {
         let mut acc = MultiPoly::zero(self.vars.clone());
-        for i in 0..self.nvars() {
+        for (i, dnum_i) in self.dnum[..self.nvars()].iter().enumerate() {
             let dp = p.partial_derivative(i);
             if dp.is_zero() {
                 continue;
             }
-            acc = acc + dp * self.dnum[i].clone();
+            acc = acc + dp * dnum_i.clone();
         }
         acc
     }

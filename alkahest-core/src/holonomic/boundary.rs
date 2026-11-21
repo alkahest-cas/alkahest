@@ -542,8 +542,8 @@ fn collect_terms(
 
     // The range-shift corrections: Σ_i a_i(n)·D_i(n).
     let one = RatK::one();
-    for i in 0..=order {
-        let a_i = coeff_as_rn(result.coeffs[i], n, k, pool)
+    for (i, &c_i) in result.coeffs[..=order].iter().enumerate() {
+        let a_i = coeff_as_rn(c_i, n, k, pool)
             .ok_or_else(|| format!("recurrence coefficient a_{i}(n) is not an element of Q(n)"))?;
         if rn_is_zero(&a_i) {
             continue;

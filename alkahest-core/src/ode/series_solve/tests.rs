@@ -196,19 +196,15 @@ fn euler_equal_root_log() {
     assert_eq!(res.solutions[0].exponent, ri(1));
     // y₁ = x (bracket [1,0,0,…]).
     assert_eq!(res.solutions[0].coeffs[0], ri(1));
-    for k in 1..res.solutions[0].coeffs.len() {
-        assert_eq!(res.solutions[0].coeffs[k], ri(0));
+    for c in &res.solutions[0].coeffs[1..] {
+        assert_eq!(*c, ri(0));
     }
     // y₂ = x·ln x  → log_coeff = 1, bracket all zero.
     let s2 = &res.solutions[1];
     assert_eq!(s2.exponent, ri(1));
     assert_eq!(s2.log_coeff.clone().unwrap(), ri(1));
-    for k in 0..s2.coeffs.len() {
-        assert_eq!(
-            s2.coeffs[k],
-            ri(0),
-            "Euler log bracket should be zero at {k}"
-        );
+    for (k, c) in s2.coeffs.iter().enumerate() {
+        assert_eq!(*c, ri(0), "Euler log bracket should be zero at {k}");
     }
 }
 

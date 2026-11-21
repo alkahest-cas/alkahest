@@ -18,7 +18,7 @@
 //! | `sinh`, `cosh` | `(expm1(x) − expm1(−x))/2`, `(eˣ + e⁻ˣ)/2` |
 //! | `atan` | `atan2(x, 1)` |
 //! | `asin`, `acos` | `atan2(x, √((1−x)(1+x)))`, `atan2(√((1−x)(1+x)), x)` |
-//! | `atanh` | `sign(x) · ½·log1p(2|x|/(1−|x|))` |
+//! | `atanh` | `sign(x) · ½·log1p(2\|x\|/(1−\|x\|))` |
 //! | `heaviside` | `(sign(x) + 1)/2` (so `θ(0) = ½`, as `eval_expr`) |
 //! | `Piecewise` | a chain of `select` over `compare` / `and` / `or` / `not` |
 //! | a predicate used as a number | `select(p, 1, 0)` |

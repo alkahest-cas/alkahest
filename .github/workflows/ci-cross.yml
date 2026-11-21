@@ -145,6 +145,7 @@ jobs:
           # Match `release-wheels.yml`: full POSIX toolchain + flint (+ gmp/mpfr via deps).
           install: >-
             base-devel
+            m4
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-flint
             mingw-w64-ucrt-x86_64-pkg-config

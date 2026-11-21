@@ -549,6 +549,7 @@ jobs:
           # fallback still works here.
           install: >-
             base-devel
+            m4
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-flint
             mingw-w64-ucrt-x86_64-pkg-config
