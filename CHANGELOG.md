@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- `diophantine` now proves primality before trusting a factor. Its internal primality check, which decides whether a factor that Pollard rho could not split is prime before Cornacchia and divisor enumeration, used a probable-prime test (`rug`'s `is_probably_prime(40)`) while documented as deterministic. It now uses FLINT's `fmpz_is_prime` and accepts only a proved prime, like `isprime`. The PARI docs now name the hypothesis behind `certification == "grh_conditional"`: GRH for the field's Hecke L-functions. The November 2026 Lean proof of RH covers the Riemann zeta function and Dirichlet L-functions only, so that label is unchanged.
+
 ## 3.14.0 — 2026-11-11
 
 Python 3.10 is now the minimum (3.13.2 was the last release with Python 3.9 wheels), and macOS support is Apple Silicon only: a source build targeting an Intel Mac stops with a clear message. The Python bindings move from PyO3 0.21 to 0.30, so Python 3.13 and 3.14 are supported natively rather than through PyO3's forward-compatibility mode. `Fraction ** Expr` no longer inspects the calling stack frame: the base is exact on Python 3.12+ and a float on 3.10–3.11, where `pool.rational(p, q) ** x` is the exact spelling.
