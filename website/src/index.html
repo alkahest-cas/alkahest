@@ -159,52 +159,52 @@
           <article class="card vcard">
             <h3>Lean 4 certificates <span class="pill ok">certified</span></h3>
             <p>Supported results come with a Lean&nbsp;4 proof that checks independently of alkahest. <code>certifiable()</code> tells you in advance whether a result will get one</p>
-            <div class="code"><div class="label">r = ak.integrate(x**2, x, 0, 1); r.certificate  # tail of the Lean file</div><pre><code>example : ∫ x in ((0 : ℝ))..((1 : ℝ)), ((x : ℝ)) ^ (2 : ℕ) = (((1 : ℝ)) ^ (3 : ℕ) / (3)) - (((0 : ℝ)) ^ (3 : ℕ) / (3)) := by
-  have hderiv : ∀ x ∈ Set.uIcc ((0 : ℝ)) ((1 : ℝ)),
-      HasDerivAt (fun (x : ℝ) =&gt; (x) ^ (3 : ℕ) / (3)) (((x : ℝ)) ^ (2 : ℕ)) x := by
-    intro x _
-    simpa using (hasDerivAt_pow 3 x).div_const 3
-  have hint : IntervalIntegrable (fun (x : ℝ) =&gt; ((x : ℝ)) ^ (2 : ℕ)) MeasureTheory.volume ((0 : ℝ)) ((1 : ℝ)) :=
-    (continuous_pow 2).intervalIntegrable _ _
-  exact intervalIntegral.integral_eq_sub_of_hasDerivAt hderiv hint</code></pre></div>
+            <div class="code"><div class="label">r = ak.integrate(x**2, x, 0, 1); r.certificate  # tail of the Lean file</div><pre class="shiki"><code><span style="--shiki-light:#D73A49">example</span><span style="--shiki-light:#24292E"> : ∫ x </span><span style="--shiki-light:#D73A49">in</span><span style="--shiki-light:#24292E"> ((</span><span style="--shiki-light:#005CC5">0</span><span style="--shiki-light:#24292E"> : ℝ))..((</span><span style="--shiki-light:#005CC5">1</span><span style="--shiki-light:#24292E"> : ℝ)), ((x : ℝ)) ^ (</span><span style="--shiki-light:#005CC5">2</span><span style="--shiki-light:#24292E"> : ℕ) = (((</span><span style="--shiki-light:#005CC5">1</span><span style="--shiki-light:#24292E"> : ℝ)) ^ (</span><span style="--shiki-light:#005CC5">3</span><span style="--shiki-light:#24292E"> : ℕ) / (</span><span style="--shiki-light:#005CC5">3</span><span style="--shiki-light:#24292E">)) - (((</span><span style="--shiki-light:#005CC5">0</span><span style="--shiki-light:#24292E"> : ℝ)) ^ (</span><span style="--shiki-light:#005CC5">3</span><span style="--shiki-light:#24292E"> : ℕ) / (</span><span style="--shiki-light:#005CC5">3</span><span style="--shiki-light:#24292E">)) := </span><span style="--shiki-light:#D73A49">by</span>
+<span style="--shiki-light:#D73A49">  have</span><span style="--shiki-light:#24292E"> hderiv : ∀ x ∈ Set.uIcc ((</span><span style="--shiki-light:#005CC5">0</span><span style="--shiki-light:#24292E"> : ℝ)) ((</span><span style="--shiki-light:#005CC5">1</span><span style="--shiki-light:#24292E"> : ℝ)),</span>
+<span style="--shiki-light:#24292E">      HasDerivAt (</span><span style="--shiki-light:#D73A49">fun</span><span style="--shiki-light:#24292E"> (x : ℝ) => (x) ^ (</span><span style="--shiki-light:#005CC5">3</span><span style="--shiki-light:#24292E"> : ℕ) / (</span><span style="--shiki-light:#005CC5">3</span><span style="--shiki-light:#24292E">)) (((x : ℝ)) ^ (</span><span style="--shiki-light:#005CC5">2</span><span style="--shiki-light:#24292E"> : ℕ)) x := </span><span style="--shiki-light:#D73A49">by</span>
+<span style="--shiki-light:#24292E">    </span><span style="--shiki-light:#D73A49">intro</span><span style="--shiki-light:#24292E"> x _</span>
+<span style="--shiki-light:#24292E">    </span><span style="--shiki-light:#D73A49">simpa</span><span style="--shiki-light:#24292E"> </span><span style="--shiki-light:#D73A49">using</span><span style="--shiki-light:#24292E"> (hasDerivAt_pow </span><span style="--shiki-light:#005CC5">3</span><span style="--shiki-light:#24292E"> x).div_const </span><span style="--shiki-light:#005CC5">3</span>
+<span style="--shiki-light:#D73A49">  have</span><span style="--shiki-light:#24292E"> hint : IntervalIntegrable (</span><span style="--shiki-light:#D73A49">fun</span><span style="--shiki-light:#24292E"> (x : ℝ) => ((x : ℝ)) ^ (</span><span style="--shiki-light:#005CC5">2</span><span style="--shiki-light:#24292E"> : ℕ)) MeasureTheory.volume ((</span><span style="--shiki-light:#005CC5">0</span><span style="--shiki-light:#24292E"> : ℝ)) ((</span><span style="--shiki-light:#005CC5">1</span><span style="--shiki-light:#24292E"> : ℝ)) :=</span>
+<span style="--shiki-light:#24292E">    (continuous_pow </span><span style="--shiki-light:#005CC5">2</span><span style="--shiki-light:#24292E">).intervalIntegrable _ _</span>
+<span style="--shiki-light:#24292E">  </span><span style="--shiki-light:#D73A49">exact</span><span style="--shiki-light:#24292E"> intervalIntegral.integral_eq_sub_of_hasDerivAt hderiv hint</span></code></pre></div>
             <p class="stat"><strong>121</strong> kinds of result certified, listed in the <a href="/docs/guide/certificate-coverage/">coverage ledger</a> and checked against Mathlib in CI</p>
           </article>
 
           <article class="card vcard">
             <h3>Refuses instead of guessing <span class="pill warn">E-INT-004</span></h3>
             <p>When there is no answer, alkahest says so and says why. Every error has a stable code and a hint for what to do next</p>
-            <div class="code"><div class="label">ak.integrate(ak.exp(x**2), x)  # raises IntegrationError</div><pre class="wrap"><code>[E-INT-004] integrate: no elementary antiderivative exists: ∫ e^(x²) dx …
-Remediation: this integrand has no closed-form antiderivative in terms of elementary functions; use a numeric integrator or elliptic-integral library</code></pre></div>
+            <div class="code"><div class="label">ak.integrate(ak.exp(x**2), x)  # raises IntegrationError</div><pre class="shiki wrap"><code><span class="tok-k">[E-INT-004]</span> <span class="tok-f">integrate:</span> no elementary antiderivative exists: <span class="tok-n">∫ e^(x²) dx</span> …
+<span class="tok-c">Remediation:</span> this integrand has no closed-form antiderivative in terms of elementary functions; use a numeric integrator or elliptic-integral library</code></pre></div>
             <p class="stat">Time, step and memory <strong>budgets</strong> raise <code>E-BUDGET-*</code> so a long call never hangs your program</p>
           </article>
 
           <article class="card vcard">
             <h3>Proven arithmetic kernels <span class="pill ok">model-checked</span></h3>
             <p>The integer and modular arithmetic underneath everything is proven correct for every possible input with the Kani model checker</p>
-            <div class="code"><div class="label">alkahest-core/src/modular/mod.rs</div><pre><code>#[kani::proof]
-<span class="tok-k">fn</span> mul_mod_in_range_full_width() {
-    <span class="tok-k">let</span> a: u64 = kani::any();
-    <span class="tok-k">let</span> b: u64 = kani::any();
-    <span class="tok-k">let</span> m: u64 = kani::any_where(|m: &amp;u64| *m &gt; 0);
-    <span class="tok-k">assert!</span>(mul_mod(a, b, m) &lt; m);
-}</code></pre></div>
+            <div class="code"><div class="label">alkahest-core/src/modular/mod.rs</div><pre class="shiki"><code><span style="--shiki-light:#24292E">#[kani</span><span style="--shiki-light:#D73A49">::</span><span style="--shiki-light:#24292E">proof]</span>
+<span style="--shiki-light:#D73A49">fn</span><span style="--shiki-light:#6F42C1"> mul_mod_in_range_full_width</span><span style="--shiki-light:#24292E">() {</span>
+<span style="--shiki-light:#D73A49">    let</span><span style="--shiki-light:#24292E"> a</span><span style="--shiki-light:#D73A49">:</span><span style="--shiki-light:#6F42C1"> u64</span><span style="--shiki-light:#D73A49"> =</span><span style="--shiki-light:#6F42C1"> kani</span><span style="--shiki-light:#D73A49">::</span><span style="--shiki-light:#6F42C1">any</span><span style="--shiki-light:#24292E">();</span>
+<span style="--shiki-light:#D73A49">    let</span><span style="--shiki-light:#24292E"> b</span><span style="--shiki-light:#D73A49">:</span><span style="--shiki-light:#6F42C1"> u64</span><span style="--shiki-light:#D73A49"> =</span><span style="--shiki-light:#6F42C1"> kani</span><span style="--shiki-light:#D73A49">::</span><span style="--shiki-light:#6F42C1">any</span><span style="--shiki-light:#24292E">();</span>
+<span style="--shiki-light:#D73A49">    let</span><span style="--shiki-light:#24292E"> m</span><span style="--shiki-light:#D73A49">:</span><span style="--shiki-light:#6F42C1"> u64</span><span style="--shiki-light:#D73A49"> =</span><span style="--shiki-light:#6F42C1"> kani</span><span style="--shiki-light:#D73A49">::</span><span style="--shiki-light:#6F42C1">any_where</span><span style="--shiki-light:#24292E">(</span><span style="--shiki-light:#D73A49">|</span><span style="--shiki-light:#24292E">m</span><span style="--shiki-light:#D73A49">:</span><span style="--shiki-light:#D73A49"> &#x26;</span><span style="--shiki-light:#6F42C1">u64</span><span style="--shiki-light:#D73A49">|</span><span style="--shiki-light:#D73A49"> *</span><span style="--shiki-light:#24292E">m </span><span style="--shiki-light:#D73A49">></span><span style="--shiki-light:#005CC5"> 0</span><span style="--shiki-light:#24292E">);</span>
+<span style="--shiki-light:#6F42C1">    assert!</span><span style="--shiki-light:#24292E">(</span><span style="--shiki-light:#6F42C1">mul_mod</span><span style="--shiki-light:#24292E">(a, b, m) &#x3C; m);</span>
+<span style="--shiki-light:#24292E">}</span></code></pre></div>
             <p class="stat"><strong>50</strong> proofs across 16 modules, checked on every pull request and nightly</p>
           </article>
 
           <article class="card vcard">
             <h3>Every step on record</h3>
             <p>Each result carries the list of rules that produced it and how it was verified, ready to log or compare</p>
-            <div class="code"><div class="label">ak.integrate(x * ak.cos(x), x).to_dict(mode="compact")</div><pre><code>{
-  "kind": "alkahest.derived_result",
-  "value": "(cos(x) + (x * sin(x)))",
-  "verification": { "status": "exactly_verified" },
-  "certificate_status": { "certifiable": true },
-  "steps": [
-    { "r": "int_poly_trig_ibp" },
-    { "r": "const_fold" },
-    { "r": "mul_one" }, …
-  ]
-}</code></pre></div>
+            <div class="code"><div class="label">ak.integrate(x * ak.cos(x), x).to_dict(mode="compact")</div><pre class="shiki"><code><span style="--shiki-light:#24292E">{</span>
+<span style="--shiki-light:#005CC5">  "kind"</span><span style="--shiki-light:#24292E">: </span><span style="--shiki-light:#032F62">"alkahest.derived_result"</span><span style="--shiki-light:#24292E">,</span>
+<span style="--shiki-light:#005CC5">  "value"</span><span style="--shiki-light:#24292E">: </span><span style="--shiki-light:#032F62">"(cos(x) + (x * sin(x)))"</span><span style="--shiki-light:#24292E">,</span>
+<span style="--shiki-light:#005CC5">  "verification"</span><span style="--shiki-light:#24292E">: { </span><span style="--shiki-light:#005CC5">"status"</span><span style="--shiki-light:#24292E">: </span><span style="--shiki-light:#032F62">"exactly_verified"</span><span style="--shiki-light:#24292E"> },</span>
+<span style="--shiki-light:#005CC5">  "certificate_status"</span><span style="--shiki-light:#24292E">: { </span><span style="--shiki-light:#005CC5">"certifiable"</span><span style="--shiki-light:#24292E">: </span><span style="--shiki-light:#005CC5">true</span><span style="--shiki-light:#24292E"> },</span>
+<span style="--shiki-light:#005CC5">  "steps"</span><span style="--shiki-light:#24292E">: [</span>
+<span style="--shiki-light:#24292E">    { </span><span style="--shiki-light:#005CC5">"r"</span><span style="--shiki-light:#24292E">: </span><span style="--shiki-light:#032F62">"int_poly_trig_ibp"</span><span style="--shiki-light:#24292E"> },</span>
+<span style="--shiki-light:#24292E">    { </span><span style="--shiki-light:#005CC5">"r"</span><span style="--shiki-light:#24292E">: </span><span style="--shiki-light:#032F62">"const_fold"</span><span style="--shiki-light:#24292E"> },</span>
+<span style="--shiki-light:#24292E">    { </span><span style="--shiki-light:#005CC5">"r"</span><span style="--shiki-light:#24292E">: </span><span style="--shiki-light:#032F62">"mul_one"</span><span style="--shiki-light:#24292E"> }, </span><span style="--shiki-light:#B31D28;--shiki-light-font-style:italic">…</span>
+<span style="--shiki-light:#24292E">  ]</span>
+<span style="--shiki-light:#24292E">}</span></code></pre></div>
             <p class="stat"><code>crosscheck</code> compares any answer against another computer algebra system</p>
           </article>
         </div>

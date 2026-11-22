@@ -120,6 +120,10 @@ section.block { padding: 112px 0 0; }
 .tok-k { color: var(--brand); }
 .tok-s { color: var(--ok); }
 .tok-o { color: var(--muted); font-style: normal; }
+.tok-f { color: #6f42c1; }
+.tok-n { color: #005cc5; }
+/* Pre-rendered Shiki (github-light), same palette as the docs. */
+.code pre.shiki span[style] { color: var(--shiki-light); }
 
 .copy {
   font: inherit; font-size: 12px; font-weight: 500; color: var(--muted);
