@@ -423,27 +423,18 @@ export default function MathNotebook({ onServerStatusChange, onReady }: MathNote
 
   return (
     <div className="mx-auto max-w-3xl px-4 pb-[40vh] pt-8 sm:pt-10">
-      <header className="mb-6">
-        <p className="text-[13px] font-medium uppercase tracking-[0.08em] text-ak-brand">Math</p>
-        <h1 className="mt-1 text-[28px] font-semibold leading-tight tracking-[-0.02em] text-ak-fg sm:text-[34px]">
-          Write mathematics. Get exact answers.
-        </h1>
-        <p className="mt-2 max-w-2xl text-[15px] leading-relaxed text-ak-fg2">
-          Each line is read as ordinary maths and computed by alkahest. Results it checked are marked{' '}
-          <span className="bg-ak-ok/10 px-1.5 py-px font-mono text-[12px] text-ak-ok">verified</span>; when it
-          cannot stand behind an answer it declines with a coded reason instead of guessing.
-        </p>
-        {backend.status === 'online' && backend.local && (
+      {backend.status === 'online' && backend.local && (
+        <header className="mb-6">
           <p
-            className="mt-3 inline-flex items-center gap-1.5 border border-ak-ok/30 bg-ak-ok/[0.07] px-2.5 py-0.5 text-xs font-medium text-ak-ok"
+            className="inline-flex items-center gap-1.5 border border-ak-ok/30 bg-ak-ok/[0.07] px-2.5 py-0.5 text-xs font-medium text-ak-ok"
             data-testid="math-local-pill"
             title={`Connected to python -m alkahest.playground at ${LOCAL_MATH_URL}${backend.version ? ` (alkahest ${backend.version})` : ''}`}
           >
             <span className="h-1.5 w-1.5 bg-ak-ok" aria-hidden />
             Computing on this machine
           </p>
-        )}
-      </header>
+        </header>
+      )}
 
       {!online &&
         (backend.status === 'none' ? (
