@@ -465,8 +465,24 @@ impl MultiPoly {
         Ok(MultiPoly { vars, terms })
     }
 
+    /// Whether this is the zero polynomial.
+    ///
+    /// A map built by the constructors and arithmetic never holds a zero
+    /// coefficient, so this is `terms.is_empty()` for them. A hand-assembled
+    /// `terms` map whose coefficients are all zero is also the zero polynomial
+    /// and is reported as such: it used to read as non-zero, which let it
+    /// reach FLINT as a divisor and abort the process.
     pub fn is_zero(&self) -> bool {
-        self.terms.is_empty()
+        // Short-circuits on the first non-zero coefficient, so this stays O(1)
+        // for every canonical non-zero polynomial.
+        self.terms.values().all(|c| c.is_zero())
+    }
+
+    /// Drop terms whose coefficient is zero, so the map is canonical again.
+    pub(crate) fn drop_zero_terms(&mut self) {
+        if self.terms.values().any(|c| c.is_zero()) {
+            self.terms.retain(|_, c| !c.is_zero());
+        }
     }
 
     /// Largest total degree of a term (0 for the zero polynomial).

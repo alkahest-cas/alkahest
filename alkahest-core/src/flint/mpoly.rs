@@ -466,7 +466,11 @@ impl FlintMPoly {
     /// `None` otherwise (i.e. when the division is not exact or FLINT fails).
     ///
     /// Uses `fmpz_mpoly_divides` which fills `Q` and returns 1 on success.
+    /// A zero `divisor` returns `None`: FLINT aborts the process on it.
     pub fn divides(&self, divisor: &FlintMPoly) -> Option<FlintMPoly> {
+        if divisor.is_zero() {
+            return None;
+        }
         let mut q = FlintMPoly::new(Arc::clone(&self.ctx));
         let ok = unsafe {
             super::ffi::fmpz_mpoly_divides(
@@ -703,5 +707,31 @@ impl Drop for FlintMPolyFactor {
         unsafe {
             super::ffi::fmpz_mpoly_factor_clear(&mut self.inner, self.ctx.as_ptr());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `fmpz_mpoly_divides` aborts the process on a zero divisor; the wrapper
+    /// refuses it first.
+    #[test]
+    fn divides_by_zero_is_refused() {
+        let ctx = FlintMPolyCtx::new(2);
+        let mut a = FlintMPoly::new(Arc::clone(&ctx));
+        a.push_term(&rug::Integer::from(5), &[1, 2]);
+        a.finish();
+        let zero = FlintMPoly::new(Arc::clone(&ctx));
+        assert!(a.divides(&zero).is_none());
+        assert!(zero.divides(&zero).is_none());
+        // A divisor pushed with only zero coefficients canonicalises to zero.
+        let mut z2 = FlintMPoly::new(Arc::clone(&ctx));
+        z2.push_term(&rug::Integer::from(0), &[0, 1]);
+        z2.finish();
+        assert!(z2.is_zero());
+        assert!(a.divides(&z2).is_none());
+        // Ordinary exact division still works.
+        assert!(a.divides(&a).is_some());
     }
 }

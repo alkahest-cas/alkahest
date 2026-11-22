@@ -30,7 +30,16 @@ impl RationalFunction {
 
     /// [`Self::new`]; `fast = false` always takes the reference GCD
     /// reduction (the tests' oracle).
-    fn normalise(numer: MultiPoly, denom: MultiPoly, fast: bool) -> Result<Self, ConversionError> {
+    fn normalise(
+        mut numer: MultiPoly,
+        mut denom: MultiPoly,
+        fast: bool,
+    ) -> Result<Self, ConversionError> {
+        // A hand-built map may hold zero coefficients. Normalise first, on
+        // both paths, so a denominator of only zero coefficients is refused
+        // here instead of reaching FLINT, where dividing by it aborts.
+        numer.drop_zero_terms();
+        denom.drop_zero_terms();
         if denom.is_zero() {
             return Err(ConversionError::ZeroDenominator);
         }
@@ -301,6 +310,9 @@ fn to_flintpoly(p: &MultiPoly) -> Option<FlintPoly> {
 /// Exact division of multivariate polynomials: `a / b` assuming `b | a`.
 /// Returns `None` if the division is not exact or if FLINT fails.
 pub(crate) fn mpoly_exact_div(a: &MultiPoly, b: &MultiPoly) -> Option<MultiPoly> {
+    if b.is_zero() {
+        return None;
+    }
     use crate::flint::mpoly::FlintMPolyCtx;
     use std::sync::Arc;
     let nvars = a.vars.len().max(1);
@@ -382,6 +394,58 @@ mod tests {
         let x = p.symbol("x", Domain::Real);
         let y = p.symbol("y", Domain::Real);
         (p, x, y)
+    }
+
+    /// A hand-built map holding only zero coefficients is the zero polynomial.
+    /// As a denominator it used to pass the `is_zero` check and reach
+    /// `fmpz_mpoly_divides` with a zero divisor, which aborts the process.
+    #[test]
+    fn zero_coefficient_maps_are_normalised_not_aborted() {
+        let (p, x, y) = pool_xy();
+        let vars = vec![x, y];
+        let zeros = |keys: &[Vec<u32>]| MultiPoly {
+            vars: vars.clone(),
+            terms: keys
+                .iter()
+                .map(|k| (k.clone(), rug::Integer::from(0)))
+                .collect(),
+        };
+        let z = zeros(&[vec![], vec![1], vec![0, 2]]);
+        assert!(z.is_zero());
+        let n = MultiPoly::from_symbolic(x, vars.clone(), &p).unwrap();
+
+        // Zero-coefficient denominator: refused, with or without a zero numerator.
+        assert!(matches!(
+            RationalFunction::new(n.clone(), z.clone()),
+            Err(ConversionError::ZeroDenominator)
+        ));
+        assert!(matches!(
+            RationalFunction::new(z.clone(), z.clone()),
+            Err(ConversionError::ZeroDenominator)
+        ));
+
+        // Zero-coefficient numerator: the zero function, canonical map.
+        let r = RationalFunction::new(z.clone(), n.clone()).unwrap();
+        assert!(r.is_zero());
+        assert!(r.numer.terms.is_empty());
+
+        // A map mixing zero and non-zero coefficients is the non-zero part.
+        let mut mixed = z.clone();
+        mixed.terms.insert(vec![1], rug::Integer::from(3));
+        let r = RationalFunction::new(mixed.clone(), mixed).unwrap();
+        assert_eq!(r.numer.terms.len(), 1);
+        assert_eq!(r.numer, r.denom);
+
+        // The exact-division helper refuses a zero divisor instead of aborting.
+        assert!(mpoly_exact_div(&n, &z).is_none());
+        assert!(mpoly_exact_div(&n, &MultiPoly::zero(vars.clone())).is_none());
+
+        // The lazy wrapper sees the same zero, and refuses a GCD with it.
+        let lz = crate::poly::multipoly::LazyMultiPoly::new(z.clone());
+        assert!(lz.is_zero());
+        let ln = crate::poly::multipoly::LazyMultiPoly::new(n.clone());
+        assert!(ln.gcd(&lz).is_none());
+        assert!(lz.factor_z().is_err());
     }
 
     #[test]
