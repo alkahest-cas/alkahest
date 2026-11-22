@@ -25,6 +25,12 @@ impl RationalFunction {
     ///
     /// Returns `Err(ZeroDenominator)` if `denom` is the zero polynomial.
     pub fn new(numer: MultiPoly, denom: MultiPoly) -> Result<Self, ConversionError> {
+        Self::normalise(numer, denom, true)
+    }
+
+    /// [`Self::new`]; `fast = false` always takes the reference GCD
+    /// reduction (the tests' oracle).
+    fn normalise(numer: MultiPoly, denom: MultiPoly, fast: bool) -> Result<Self, ConversionError> {
         if denom.is_zero() {
             return Err(ConversionError::ZeroDenominator);
         }
@@ -49,6 +55,106 @@ impl RationalFunction {
             (numer, denom)
         };
 
+        let how = if fast {
+            reduce_by_gcd(&n, &d)
+        } else {
+            Reduction::Unavailable
+        };
+        match how {
+            Reduction::Coprime => {}
+            Reduction::Reduced(qn, qd) => {
+                n = qn;
+                d = qd;
+            }
+            Reduction::Unavailable => (n, d) = reduce_by_gcd_reference(n, d),
+        }
+
+        // Ensure leading coefficient of denominator is positive.
+        // "Leading" = lexicographically last exponent key (highest total degree,
+        // then highest variable index).
+        if let Some((_, lc)) = d.terms.iter().next_back() {
+            if *lc < 0 {
+                n = -n;
+                d = -d;
+            }
+        }
+
+        Ok(RationalFunction { numer: n, denom: d })
+    }
+}
+
+/// Outcome of [`reduce_by_gcd`].
+enum Reduction {
+    /// The polynomial GCD is 1: nothing to divide out.
+    Coprime,
+    /// `(n/g, d/g)` for the non-trivial GCD `g`.
+    Reduced(MultiPoly, MultiPoly),
+    /// Not decided here; [`reduce_by_gcd_reference`] handles it.
+    Unavailable,
+}
+
+/// Whether a polynomial is a single constant term.
+fn is_constant(p: &MultiPoly) -> bool {
+    p.terms.len() == 1 && p.terms.keys().all(|k| k.iter().all(|&e| e == 0))
+}
+
+/// Divide content-reduced `n` and `d` by their polynomial GCD with one FLINT
+/// call (`fmpz_mpoly_gcd_cofactors`) instead of a GCD and two exact
+/// divisions, each a round trip through FLINT.
+///
+/// A constant on either side needs no FLINT call at all: once the combined
+/// integer content is divided out, `gcd(c, p) = gcd(c, content(p)) = 1`.
+/// Mismatched variable lists, a zero numerator, a hand-assembled term map
+/// holding a zero coefficient, and a FLINT failure are left to the reference
+/// path, whose behaviour there is unchanged.
+fn reduce_by_gcd(n: &MultiPoly, d: &MultiPoly) -> Reduction {
+    use crate::flint::mpoly::FlintMPolyCtx;
+    use std::sync::Arc;
+    if n.vars != d.vars
+        || n.is_zero()
+        || d.is_zero()
+        || n.terms.values().chain(d.terms.values()).any(|c| *c == 0)
+    {
+        return Reduction::Unavailable;
+    }
+    if is_constant(n) || is_constant(d) {
+        return Reduction::Coprime;
+    }
+    let ctx = FlintMPolyCtx::new(n.vars.len().max(1));
+    let fa = super::multipoly::multi_to_flint_pub(n, Arc::clone(&ctx));
+    let fb = super::multipoly::multi_to_flint_pub(d, Arc::clone(&ctx));
+    let Some((g, qn, qd)) = fa.gcd_cofactors(&fb) else {
+        return Reduction::Unavailable;
+    };
+    if g.length() == 1
+        && g.try_terms()
+            .is_some_and(|t| t.get(&vec![]).is_some_and(|c| *c == 1))
+    {
+        return Reduction::Coprime;
+    }
+    // Divisors' exponents are bounded by the inputs', so these only fail on
+    // a FLINT inconsistency.
+    match (qn.try_terms(), qd.try_terms()) {
+        (Some(tn), Some(td)) => Reduction::Reduced(
+            MultiPoly {
+                vars: n.vars.clone(),
+                terms: tn,
+            },
+            MultiPoly {
+                vars: d.vars.clone(),
+                terms: td,
+            },
+        ),
+        _ => Reduction::Unavailable,
+    }
+}
+
+/// The GCD reduction [`RationalFunction::new`] performed before
+/// [`reduce_by_gcd`]: a multivariate GCD and two exact divisions, falling back
+/// to the univariate FLINT path. Kept for the cases `reduce_by_gcd` does not
+/// decide, and as the reference its tests compare against.
+fn reduce_by_gcd_reference(mut n: MultiPoly, mut d: MultiPoly) -> (MultiPoly, MultiPoly) {
+    {
         // Polynomial GCD reduction.
         // Try multivariate GCD first (works for both univariate and multivariate).
         // Fall back to the univariate FLINT path for robustness.
@@ -88,20 +194,11 @@ impl RationalFunction {
                 d = from_flintpoly(&q_d, d.vars.clone());
             }
         }
-
-        // Ensure leading coefficient of denominator is positive.
-        // "Leading" = lexicographically last exponent key (highest total degree,
-        // then highest variable index).
-        if let Some((_, lc)) = d.terms.iter().next_back() {
-            if *lc < 0 {
-                n = -n;
-                d = -d;
-            }
-        }
-
-        Ok(RationalFunction { numer: n, denom: d })
     }
+    (n, d)
+}
 
+impl RationalFunction {
     /// Construct from two symbolic expressions.
     pub fn from_symbolic(
         numer_expr: ExprId,
@@ -407,5 +504,61 @@ mod tests {
             !s.contains('/'),
             "should not show '/' for denominator 1: {s}"
         );
+    }
+
+    // --- one-call GCD reduction vs the reference (gcd + two divisions) ---
+
+    use proptest::prelude::*;
+
+    fn small_poly(nvars: usize) -> impl Strategy<Value = BTreeMap<Vec<u32>, rug::Integer>> {
+        prop::collection::btree_map(
+            prop::collection::vec(0u32..4, 0..=nvars),
+            prop_oneof![
+                4 => (-7i64..=7).prop_map(rug::Integer::from),
+                1 => (any::<i64>(), 0u32..130).prop_map(|(a, s)| rug::Integer::from(a) << s),
+            ],
+            0..=6,
+        )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// `new` gives exactly what the gcd-and-divide reference gives, on
+        /// operands built with a common factor (often non-trivial), constants,
+        /// zero numerators and non-canonical maps alike.
+        #[test]
+        fn new_matches_reference_reduction(
+            nv in 1usize..4,
+            a in small_poly(3),
+            b in small_poly(3),
+            g in small_poly(3),
+        ) {
+            let p = ExprPool::new();
+            let vars: Vec<ExprId> = (0..nv)
+                .map(|i| p.symbol(format!("v{i}"), Domain::Real))
+                .collect();
+            let trim = |t: &BTreeMap<Vec<u32>, rug::Integer>| -> MultiPoly {
+                // Zero coefficients are left out: the reference path aborts
+                // inside FLINT (a division by a polynomial that is zero once
+                // FLINT drops them) on a map that is all zeros, and
+                // `reduce_by_gcd` hands such maps to it untouched.
+                let terms = t
+                    .iter()
+                    .filter(|(_, c)| **c != 0)
+                    .map(|(k, c)| (k.iter().copied().take(nv).collect::<Vec<u32>>(), c.clone()))
+                    .collect();
+                MultiPoly { vars: vars.clone(), terms }
+            };
+            let (pa, pb, pg) = (trim(&a), trim(&b), trim(&g));
+            let (n, d) = if pg.is_zero() {
+                (pa, pb)
+            } else {
+                (pa.checked_mul(&pg).unwrap(), pb.checked_mul(&pg).unwrap())
+            };
+            let fast = RationalFunction::normalise(n.clone(), d.clone(), true);
+            let slow = RationalFunction::normalise(n, d, false);
+            prop_assert_eq!(fast, slow);
+        }
     }
 }

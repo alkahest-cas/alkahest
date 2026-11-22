@@ -132,18 +132,11 @@ fn termmap_nvars(t: &TermMap) -> usize {
 }
 
 fn termmap_to_flint(t: &TermMap, ctx: &Arc<FlintMPolyCtx>) -> FlintMPoly {
-    let nvars = ctx.nvars();
-    let mut fp = FlintMPoly::new(Arc::clone(ctx));
-    let mut e = vec![0u64; nvars];
-    for (exp, c) in t {
-        e.iter_mut().for_each(|v| *v = 0);
-        for (slot, &x) in e.iter_mut().zip(exp) {
-            *slot = u64::from(x);
-        }
-        fp.push_term(c, &e);
-    }
-    fp.finish();
-    fp
+    // Descending: FLINT's canonical order, so no sort pass is needed.
+    FlintMPoly::from_terms(
+        Arc::clone(ctx),
+        t.iter().rev().map(|(e, c)| (e.as_slice(), c)),
+    )
 }
 
 /// `a * b` through FLINT, or `None` when some result exponent or total degree
@@ -182,7 +175,56 @@ fn termmap_pow_flint(base: &TermMap, n: u32) -> Option<TermMap> {
         .try_terms()
 }
 
+/// `a · m` for a single-term `m = c·x^e`: the schoolbook product with one
+/// column. Shifting every key by the same vector keeps their order, so the
+/// map is bulk-built from sorted output instead of one insertion per term;
+/// keys that coincide (only possible for a hand-assembled `a` with unstripped
+/// trailing zeros) are summed, exactly as the schoolbook loop sums them.
+fn termmap_mul_monomial(
+    a: &TermMap,
+    e: &[u32],
+    c: &rug::Integer,
+) -> Result<TermMap, ConversionError> {
+    let unit = *c == 1;
+    let mut out: Vec<(Exponents, rug::Integer)> = Vec::with_capacity(a.len());
+    for (ea, ca) in a {
+        let prod = if unit {
+            ca.clone()
+        } else {
+            rug::Integer::from(ca * c)
+        };
+        if prod == 0 {
+            continue;
+        }
+        let mut exp = exponent::add_vecs(ea, e)?;
+        while exp.last() == Some(&0) {
+            exp.pop();
+        }
+        out.push((exp, prod));
+    }
+    // Already ascending for a well-formed `a` (the sort is then one pass).
+    out.sort_by(|x, y| x.0.cmp(&y.0));
+    let mut merged: Vec<(Exponents, rug::Integer)> = Vec::with_capacity(out.len());
+    for (k, v) in out {
+        match merged.last_mut() {
+            Some((lk, lv)) if *lk == k => *lv += v,
+            _ => merged.push((k, v)),
+        }
+    }
+    Ok(merged.into_iter().filter(|(_, v)| *v != 0).collect())
+}
+
 pub(crate) fn termmap_mul(a: &TermMap, b: &TermMap) -> Result<TermMap, ConversionError> {
+    // A one-term operand (a constant, a single monomial) is a shift and a
+    // scale: no FLINT round trip, whatever the other operand's size.
+    if b.len() == 1 {
+        let (e, c) = b.iter().next().expect("one term");
+        return termmap_mul_monomial(a, e, c);
+    }
+    if a.len() == 1 {
+        let (e, c) = a.iter().next().expect("one term");
+        return termmap_mul_monomial(b, e, c);
+    }
     if a.len().saturating_mul(b.len()) >= FLINT_MUL_MIN_PAIRS {
         if let Some(r) = termmap_mul_flint(a, b) {
             return Ok(r);
@@ -515,6 +557,11 @@ impl MultiPoly {
             return pool.integer(0_i32);
         }
         let one = rug::Integer::from(1);
+        // `var^e` recurs across terms; interning it once per (var, e) instead
+        // of once per term gives the same `ExprId` (the pool hash-conses)
+        // without hashing the node again.
+        let mut powers: std::collections::HashMap<(usize, u32), ExprId> =
+            std::collections::HashMap::new();
         let summands: Vec<ExprId> = self
             .terms
             .iter()
@@ -530,8 +577,13 @@ impl MultiPoly {
                         continue;
                     }
                     let var = self.vars[i];
-                    let exp_id = pool.integer(e);
-                    factors.push(if e == 1 { var } else { pool.pow(var, exp_id) });
+                    factors.push(if e == 1 {
+                        var
+                    } else {
+                        *powers
+                            .entry((i, e))
+                            .or_insert_with(|| pool.pow(var, pool.integer(e)))
+                    });
                 }
                 match factors.len() {
                     0 => pool.integer(1_i32),
@@ -642,19 +694,10 @@ pub(crate) fn multi_to_flint_pub(p: &MultiPoly, ctx: Arc<FlintMPolyCtx>) -> Flin
 }
 
 fn multi_to_flint(p: &MultiPoly, ctx: Arc<FlintMPolyCtx>) -> FlintMPoly {
-    let nvars = p.vars.len().max(1);
-    let mut fp = FlintMPoly::new(ctx);
-    for (exp, coeff) in &p.terms {
-        let mut exp_u64 = vec![0u64; nvars];
-        for (i, &e) in exp.iter().enumerate() {
-            if i < nvars {
-                exp_u64[i] = e as u64;
-            }
-        }
-        fp.push_term(coeff, &exp_u64);
-    }
-    fp.finish();
-    fp
+    // Exponents past `ctx.nvars()` are dropped and the rest zero-padded, as
+    // `FlintMPoly::from_terms` reads them; terms that then coincide are
+    // combined there.
+    FlintMPoly::from_terms(ctx, p.terms.iter().rev().map(|(e, c)| (e.as_slice(), c)))
 }
 
 fn same_vars(a: &MultiPoly, b: &MultiPoly) {
@@ -721,6 +764,261 @@ impl Mul for MultiPoly {
     fn mul(self, rhs: Self) -> Self {
         self.checked_mul(&rhs)
             .unwrap_or_else(|_| exponent::overflow_panic())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// LazyMultiPoly — a MultiPoly that keeps its FLINT form between operations
+// ---------------------------------------------------------------------------
+
+/// A [`MultiPoly`] that holds its term map, its FLINT `fmpz_mpoly` form, or
+/// both, building each on first use and keeping it.
+///
+/// [`MultiPoly`] stores its terms as a `BTreeMap` of `rug::Integer`s, so every
+/// FLINT-backed operation on it (a large product, a GCD, a factorisation)
+/// converts both operands into FLINT and the result back. On a large product
+/// that round trip costs more than FLINT's multiplication itself. A chain of
+/// operations on `LazyMultiPoly` values converts each operand into FLINT at
+/// most once, and a FLINT result back only when its terms are asked for
+/// ([`Self::as_multipoly`]).
+///
+/// Every operation returns exactly what the same operation on the
+/// [`MultiPoly`]s returns; the representation is the only difference.
+pub struct LazyMultiPoly {
+    vars: Vec<ExprId>,
+    terms: std::sync::OnceLock<MultiPoly>,
+    flint: std::sync::OnceLock<FlintMPoly>,
+}
+
+impl Clone for LazyMultiPoly {
+    fn clone(&self) -> Self {
+        let terms = std::sync::OnceLock::new();
+        if let Some(t) = self.terms.get() {
+            let _ = terms.set(t.clone());
+        }
+        let flint = std::sync::OnceLock::new();
+        if let Some(f) = self.flint.get() {
+            let _ = flint.set(f.clone());
+        }
+        LazyMultiPoly {
+            vars: self.vars.clone(),
+            terms,
+            flint,
+        }
+    }
+}
+
+impl From<MultiPoly> for LazyMultiPoly {
+    fn from(p: MultiPoly) -> Self {
+        LazyMultiPoly::new(p)
+    }
+}
+
+impl fmt::Debug for LazyMultiPoly {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.as_multipoly(), f)
+    }
+}
+
+impl LazyMultiPoly {
+    /// Wrap a term-map polynomial (no FLINT form is built yet).
+    pub fn new(p: MultiPoly) -> Self {
+        let vars = p.vars.clone();
+        let terms = std::sync::OnceLock::new();
+        let _ = terms.set(p);
+        LazyMultiPoly {
+            vars,
+            terms,
+            flint: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn from_flint(vars: Vec<ExprId>, f: FlintMPoly) -> Self {
+        let flint = std::sync::OnceLock::new();
+        let _ = flint.set(f);
+        LazyMultiPoly {
+            vars,
+            terms: std::sync::OnceLock::new(),
+            flint,
+        }
+    }
+
+    /// The variable list.
+    pub fn vars(&self) -> &[ExprId] {
+        &self.vars
+    }
+
+    /// The polynomial as a [`MultiPoly`], converted from FLINT on first use.
+    pub fn as_multipoly(&self) -> &MultiPoly {
+        self.terms.get_or_init(|| {
+            let f = self
+                .flint
+                .get()
+                .expect("LazyMultiPoly holds at least one representation");
+            MultiPoly {
+                vars: self.vars.clone(),
+                // Every FLINT form here came from `u32`-exponent terms or from
+                // a product whose exponents were checked to fit (see
+                // `checked_mul`); a wider exponent would be refused, not cut.
+                terms: f.terms(),
+            }
+        })
+    }
+
+    /// The polynomial as a [`MultiPoly`], consuming `self`.
+    pub fn into_multipoly(self) -> MultiPoly {
+        self.as_multipoly();
+        self.terms.into_inner().expect("initialised above")
+    }
+
+    fn flint(&self) -> &FlintMPoly {
+        self.flint.get_or_init(|| {
+            let p = self
+                .terms
+                .get()
+                .expect("LazyMultiPoly holds at least one representation");
+            let ctx = FlintMPolyCtx::new(self.vars.len().max(1));
+            multi_to_flint(p, ctx)
+        })
+    }
+
+    /// Number of terms.
+    pub fn num_terms(&self) -> usize {
+        match self.terms.get() {
+            Some(t) => t.terms.len(),
+            None => self.flint().length(),
+        }
+    }
+
+    /// Whether this is the zero polynomial.
+    pub fn is_zero(&self) -> bool {
+        match self.terms.get() {
+            Some(t) => t.is_zero(),
+            None => self.flint().is_zero(),
+        }
+    }
+
+    /// Whether both have the same variable list.
+    pub fn compatible_with(&self, other: &Self) -> bool {
+        self.vars == other.vars
+    }
+
+    /// Whether the term map is not built yet (the polynomial lives in FLINT).
+    fn flint_only(&self) -> bool {
+        self.terms.get().is_none()
+    }
+
+    /// `self + rhs`, as [`MultiPoly`]'s `+`: on the term maps when both
+    /// operands have one, otherwise in FLINT.
+    ///
+    /// # Panics
+    ///
+    /// If the variable lists differ (as `MultiPoly`'s `+`).
+    pub fn add(&self, rhs: &Self) -> Self {
+        self.add_sub(rhs, false)
+    }
+
+    /// `self - rhs`; see [`Self::add`].
+    pub fn sub(&self, rhs: &Self) -> Self {
+        self.add_sub(rhs, true)
+    }
+
+    fn add_sub(&self, rhs: &Self, subtract: bool) -> Self {
+        assert_eq!(
+            self.vars, rhs.vars,
+            "MultiPoly arithmetic requires both operands to share the same variable list"
+        );
+        if !self.flint_only() && !rhs.flint_only() {
+            let (a, b) = (self.as_multipoly().clone(), rhs.as_multipoly().clone());
+            return LazyMultiPoly::new(if subtract { a - b } else { a + b });
+        }
+        let (a, b) = (self.flint(), rhs.flint());
+        LazyMultiPoly::from_flint(
+            self.vars.clone(),
+            if subtract { a.sub(b) } else { a.add(b) },
+        )
+    }
+
+    /// `-self`.
+    pub fn neg(&self) -> Self {
+        match self.terms.get() {
+            Some(t) => LazyMultiPoly::new(-t.clone()),
+            None => LazyMultiPoly::from_flint(self.vars.clone(), self.flint().neg()),
+        }
+    }
+
+    /// `self * rhs`, or [`ConversionError::ExponentTooLarge`] exactly when
+    /// [`MultiPoly::checked_mul`] would refuse (some product exponent or
+    /// total degree past `u32::MAX`).
+    ///
+    /// Products large enough for [`MultiPoly`] to hand to FLINT — and any
+    /// product with an operand already in FLINT — are computed on the cached
+    /// FLINT forms and the result stays there.
+    ///
+    /// # Panics
+    ///
+    /// If the variable lists differ (as [`MultiPoly::checked_mul`]).
+    pub fn checked_mul(&self, rhs: &Self) -> Result<Self, ConversionError> {
+        assert_eq!(
+            self.vars, rhs.vars,
+            "MultiPoly arithmetic requires both operands to share the same variable list"
+        );
+        let (la, lb) = (self.num_terms(), rhs.num_terms());
+        let in_flint = self.flint_only() || rhs.flint_only();
+        if !in_flint && (la <= 1 || lb <= 1 || la.saturating_mul(lb) < FLINT_MUL_MIN_PAIRS) {
+            return self
+                .as_multipoly()
+                .checked_mul(rhs.as_multipoly())
+                .map(LazyMultiPoly::new);
+        }
+        let (a, b) = (self.flint(), rhs.flint());
+        // The schoolbook loop refuses exactly when the largest exponents of
+        // some variable, or the largest total degrees, add past u32::MAX (that
+        // pair of terms is multiplied; a zero product cannot occur over ℤ).
+        let limit = u64::from(u32::MAX);
+        let (Some((da, ta)), Some((db, tb))) = (a.degrees(), b.degrees()) else {
+            return Err(ConversionError::ExponentTooLarge);
+        };
+        if !a.is_zero()
+            && !b.is_zero()
+            && (da.iter().zip(&db).any(|(x, y)| x + y > limit) || ta + tb > limit)
+        {
+            return Err(ConversionError::ExponentTooLarge);
+        }
+        Ok(LazyMultiPoly::from_flint(self.vars.clone(), a.mul(b)))
+    }
+
+    /// [`MultiPoly::gcd`] on the cached FLINT forms: `None` for different
+    /// variable lists, a zero operand or a FLINT failure; the GCD has a
+    /// positive leading coefficient.
+    pub fn gcd(&self, other: &Self) -> Option<Self> {
+        if !self.compatible_with(other) || self.is_zero() || other.is_zero() {
+            return None;
+        }
+        // FLINT's GCD has a positive leading coefficient (in lex order, the
+        // last key of the term map), which is MultiPoly::gcd's normalisation.
+        let g = self.flint().gcd(other.flint())?;
+        Some(LazyMultiPoly::from_flint(self.vars.clone(), g))
+    }
+
+    /// [`MultiPoly::factor_z`], factoring the cached FLINT form when the
+    /// polynomial has two or more variables.
+    pub fn factor_z(&self) -> Result<super::factor::MultiPolyFactorization, super::FactorError> {
+        if self.is_zero() {
+            return Err(super::FactorError::ZeroPolynomial);
+        }
+        if !self.flint_only() {
+            if let Some(r) = self.as_multipoly().factor_z_univariate() {
+                return r;
+            }
+        } else if let Some((degs, _)) = self.flint().degrees() {
+            if degs.iter().filter(|&&d| d > 0).count() == 1 {
+                if let Some(r) = self.as_multipoly().factor_z_univariate() {
+                    return r;
+                }
+            }
+        }
+        super::factor::factor_flint_mpoly(&self.vars, self.flint())
     }
 }
 
@@ -1028,6 +1326,36 @@ mod tests {
                 prop_assert_eq!(termmap_pow_flint(&base, n), Some(expect.clone()));
             }
             prop_assert_eq!(termmap_pow(&base, n).unwrap(), expect);
+        }
+
+        /// The one-term shortcut against the schoolbook loop, on either side
+        /// and on non-canonical maps (zero coefficients, unstripped keys).
+        #[test]
+        fn monomial_mul_matches_schoolbook(
+            (a, m) in (1usize..6).prop_flat_map(|n| (raw_termmap(n, 40), raw_termmap(n, 1))),
+        ) {
+            let expect = termmap_mul_schoolbook(&a, &m).unwrap();
+            prop_assert_eq!(termmap_mul(&a, &m).unwrap(), expect.clone());
+            prop_assert_eq!(termmap_mul(&m, &a).unwrap(), expect);
+        }
+
+        /// TermMap → FLINT → TermMap is the canonical form of the map, and
+        /// the FLINT polynomial is canonical whether or not the input was.
+        #[test]
+        fn flint_round_trip_is_canonical(t in (1usize..6).prop_flat_map(|n| raw_termmap(n, 60))) {
+            let nvars = termmap_nvars(&t).max(1);
+            let ctx = FlintMPolyCtx::new(nvars);
+            let fp = termmap_to_flint(&t, &ctx);
+            prop_assert!(fp.is_canonical());
+            let one = TermMap::from([(vec![], rug::Integer::from(1))]);
+            prop_assert_eq!(fp.try_terms().unwrap(), termmap_mul_schoolbook(&t, &one).unwrap());
+            let wide: TermMap = fp
+                .terms_u64()
+                .unwrap()
+                .into_iter()
+                .map(|(k, c)| (k.into_iter().map(|e| e as u32).collect(), c))
+                .collect();
+            prop_assert_eq!(wide, fp.try_terms().unwrap());
         }
 
         /// `MultiPoly * MultiPoly` over the public type.
@@ -1386,6 +1714,104 @@ mod tests {
             "from_symbolic((x+y+z+1)^20): schoolbook {:.3} ms, flint {:.3} ms",
             sb / 1e3,
             fl / 1e3
+        );
+    }
+
+    // --- LazyMultiPoly against MultiPoly ---
+
+    fn three_vars() -> (ExprPool, Vec<ExprId>) {
+        let p = ExprPool::new();
+        let vs = ["x", "y", "z"]
+            .iter()
+            .map(|n| p.symbol(*n, Domain::Real))
+            .collect();
+        (p, vs)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        /// A chain of operations whose intermediate results stay in FLINT
+        /// ends where the same chain on `MultiPoly` ends.
+        #[test]
+        fn lazy_chain_matches_multipoly(
+            a in termmap(3, 25),
+            b in termmap(3, 25),
+            c in termmap(3, 8),
+        ) {
+            let (_p, vars) = three_vars();
+            let mk = |t: &TermMap| MultiPoly { vars: vars.clone(), terms: t.clone() };
+            let (pa, pb, pc) = (mk(&a), mk(&b), mk(&c));
+            let (la, lb, lc) = (
+                LazyMultiPoly::new(pa.clone()),
+                LazyMultiPoly::new(pb.clone()),
+                LazyMultiPoly::new(pc.clone()),
+            );
+            // ((a·b + c)·c − a)·(−b)
+            let ab = la.checked_mul(&lb).unwrap();
+            let r = ab.add(&lc).checked_mul(&lc).unwrap().sub(&la).checked_mul(&lb.neg()).unwrap();
+            let expect = ((pa.checked_mul(&pb).unwrap() + pc.clone()).checked_mul(&pc).unwrap()
+                - pa.clone())
+                .checked_mul(&(-pb.clone()))
+                .unwrap();
+            prop_assert_eq!(r.num_terms(), expect.terms.len());
+            prop_assert_eq!(r.is_zero(), expect.is_zero());
+            prop_assert_eq!(r.as_multipoly(), &expect);
+            prop_assert_eq!(ab.clone().into_multipoly(), pa.checked_mul(&pb).unwrap());
+            // gcd(a·b, a·c) on FLINT-only operands.
+            let ac = la.checked_mul(&lc).unwrap();
+            let g = ab.gcd(&ac).map(|g| g.into_multipoly());
+            let pab = pa.checked_mul(&pb).unwrap();
+            let pac = pa.checked_mul(&pc).unwrap();
+            prop_assert_eq!(g, pab.gcd(&pac));
+        }
+
+        /// `factor_z` of a FLINT-only product (and of a term-map operand)
+        /// is `MultiPoly::factor_z` of the same polynomial.
+        #[test]
+        fn lazy_factor_matches_multipoly(a in termmap(3, 5), b in termmap(3, 5)) {
+            let (_p, vars) = three_vars();
+            let pa = MultiPoly { vars: vars.clone(), terms: a };
+            let pb = MultiPoly { vars, terms: b };
+            let prod = LazyMultiPoly::new(pa.clone())
+                .checked_mul(&LazyMultiPoly::new(pb.clone()))
+                .unwrap();
+            let expect = pa.checked_mul(&pb).unwrap();
+            // Force the FLINT form whatever the operand sizes.
+            let in_flint = LazyMultiPoly::from_flint(prod.vars.clone(), prod.flint().clone());
+            prop_assert_eq!(in_flint.factor_z(), expect.factor_z());
+            prop_assert_eq!(LazyMultiPoly::new(pa.clone()).factor_z(), pa.factor_z());
+        }
+    }
+
+    /// A product whose exponents would pass `u32::MAX` is refused exactly as
+    /// `MultiPoly::checked_mul` refuses it, from either representation.
+    #[test]
+    fn lazy_mul_refuses_exponent_overflow_like_multipoly() {
+        let (_p, vars) = three_vars();
+        let big = |e: u32, extra: u32| MultiPoly {
+            vars: vars.clone(),
+            terms: (0..20u32)
+                .map(|i| (vec![e - i, i + extra], rug::Integer::from(i + 1)))
+                .collect(),
+        };
+        let (a, b) = (big(u32::MAX / 2 + 30, 0), big(u32::MAX / 2 + 30, 0));
+        assert_eq!(a.checked_mul(&b), Err(ConversionError::ExponentTooLarge));
+        let (la, lb) = (LazyMultiPoly::new(a.clone()), LazyMultiPoly::new(b.clone()));
+        assert_eq!(
+            la.checked_mul(&lb).err(),
+            Some(ConversionError::ExponentTooLarge)
+        );
+        // Just under the limit both succeed, with the same product.
+        let (c, d) = (big(u32::MAX / 2 - 30, 0), big(u32::MAX / 2 - 30, 0));
+        let expect = c.checked_mul(&d).unwrap();
+        let (lc, ld) = (LazyMultiPoly::new(c), LazyMultiPoly::new(d));
+        let prod = lc.checked_mul(&ld).unwrap();
+        assert_eq!(prod.as_multipoly(), &expect);
+        // A FLINT-only operand still checks: (c·d)·(c·d) overflows.
+        assert_eq!(
+            prod.checked_mul(&prod).err(),
+            Some(ConversionError::ExponentTooLarge)
         );
     }
 }

@@ -494,6 +494,53 @@ extern "C" {
         ctx: *const FmpzMPolyCtxBuf,
     );
 
+    /// Push a term with a word-sized coefficient (as `push_term_fmpz_ui`).
+    pub fn fmpz_mpoly_push_term_si_ui(
+        A: *mut FmpzMPolyBuf,
+        c: slong,
+        exp: *const u64,
+        ctx: *const FmpzMPolyCtxBuf,
+    );
+
+    /// A pointer to the coefficient of term `i` (`i < length`), owned by `A`.
+    /// FLINT declares `A` mutable but only reads it here.
+    pub fn fmpz_mpoly_term_coeff_ref(
+        A: *const FmpzMPolyBuf,
+        i: slong,
+        ctx: *const FmpzMPolyCtxBuf,
+    ) -> *mut fmpz;
+
+    /// Nonzero when every exponent of `A` fits in a signed word (so also in
+    /// an unsigned one).
+    pub fn fmpz_mpoly_degrees_fit_si(A: *const FmpzMPolyBuf, ctx: *const FmpzMPolyCtxBuf) -> c_int;
+
+    /// `G = gcd(A, B)`, `Abar = A/G`, `Bbar = B/G` in one call. Returns 1 on
+    /// success, 0 on failure. `G` has a positive leading coefficient (as
+    /// `fmpz_mpoly_gcd`); the outputs must not alias each other.
+    pub fn fmpz_mpoly_gcd_cofactors(
+        G: *mut FmpzMPolyBuf,
+        Abar: *mut FmpzMPolyBuf,
+        Bbar: *mut FmpzMPolyBuf,
+        A: *const FmpzMPolyBuf,
+        B: *const FmpzMPolyBuf,
+        ctx: *const FmpzMPolyCtxBuf,
+    ) -> c_int;
+
+    /// `degs[i]` = degree of `A` in variable `i` (`-1` for zero). Requires
+    /// [`fmpz_mpoly_degrees_fit_si`]; FLINT throws otherwise.
+    pub fn fmpz_mpoly_degrees_si(
+        degs: *mut slong,
+        A: *const FmpzMPolyBuf,
+        ctx: *const FmpzMPolyCtxBuf,
+    );
+
+    /// Total degree of `A` (`-1` for zero), assuming it fits in a word.
+    pub fn fmpz_mpoly_total_degree_si(A: *const FmpzMPolyBuf, ctx: *const FmpzMPolyCtxBuf)
+        -> slong;
+
+    /// Nonzero when `A` is in canonical form (sorted, no zero or repeated terms).
+    pub fn fmpz_mpoly_is_canonical(A: *const FmpzMPolyBuf, ctx: *const FmpzMPolyCtxBuf) -> c_int;
+
     /// Sort terms and combine like monomials (call after push_term_* sequence).
     pub fn fmpz_mpoly_sort_terms(A: *mut FmpzMPolyBuf, ctx: *const FmpzMPolyCtxBuf);
     pub fn fmpz_mpoly_combine_like_terms(A: *mut FmpzMPolyBuf, ctx: *const FmpzMPolyCtxBuf);

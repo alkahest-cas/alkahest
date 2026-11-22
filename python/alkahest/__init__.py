@@ -1139,6 +1139,12 @@ def expand(expr):
             groups[key] = []
             order.append(key)
         groups[key].append(pool.mul(num) if len(num) > 1 else (num[0] if num else pool.integer(1)))
+    if order == [None]:
+        # No denominators: the cancelled sum is the answer. Re-adding its
+        # monomials one by one (below) rebuilds the same node — `add` sorts
+        # and interns, and the sum holds no zero — at a cost per monomial.
+        nums = groups[None]
+        return _native_cancel(pool.add(nums) if len(nums) > 1 else nums[0])
     out = []
     for key in order:
         nums = groups[key]

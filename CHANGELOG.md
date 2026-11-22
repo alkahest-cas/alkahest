@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Performance
+
+- **Less conversion between Alkahest's polynomials and FLINT.** `MultiPoly` keeps its terms in a `BTreeMap` of `rug::Integer`s, so every product, GCD and factorisation that FLINT computes was converted into FLINT and back, and on a large product that round trip cost more than FLINT's multiplication. Single-threaded, against python-flint (raw FLINT) on the same machine:
+
+  | task | before | after | python-flint |
+  |---|---|---|---|
+  | Fateman-15 product `f·(f+1)`, `f = (1+x+y+z+t)^15` | 28.3 ms | 12.9 ms | 11.3 ms |
+  | Fateman-20 | 203 ms | 137 ms | 136 ms |
+  | `MultiPoly.factor_z` of `x^2310 − 1` (FLINT 3.5) | 6.7 s | 0.26 ms | 0.98 s |
+  | `expand` of the Fateman-15 product | 103 ms | 49 ms | |
+  | `gcd` (sparse, 5 variables) | 3.1 ms | 2.8 ms | 2.8 ms |
+
+  - The Python `MultiPoly` holds its term map, its FLINT form or both (new `alkahest_cas::LazyMultiPoly`), each built on first use. A chain of products, GCDs and factorisations converts each polynomial into FLINT once, and converts a result back only when its terms are read (`str`, `total_degree`, …).
+  - Terms move between the two forms in bulk: they are pushed already in FLINT's order, so FLINT's sort pass is skipped, and read back in ascending order into a bulk-built map, with no per-term insertion and no copy of each coefficient.
+  - A product with a one-term factor (a constant or a monomial) no longer goes through FLINT.
+  - `RationalFunction::new` (behind `cancel`, `together`, `factor` and `expand`) skips the GCD when the numerator or denominator is constant, which after content removal is always 1, and otherwise divides out the GCD with one `fmpz_mpoly_gcd_cofactors` call instead of a GCD and two exact divisions.
+  - `MultiPoly.factor_z` factors a polynomial in a single variable through `fmpz_poly`, which has the cyclotomic shortcut for `x^n ± 1`. The factors and their order are unchanged.
+  - `expand` of an expression without denominators returns the cancelled sum directly instead of re-adding its monomials one at a time.
+
+  Every path is pinned against the code it replaced: proptests compare products, one-term products, conversions, `RationalFunction::new` and `LazyMultiPoly` chains with the term-map arithmetic, and the univariate `factor_z` route with `fmpz_mpoly_factor`.
+
 ### Fixed
 
 - `diophantine` now proves primality before trusting a factor. Its internal primality check, which decides whether a factor that Pollard rho could not split is prime before Cornacchia and divisor enumeration, used a probable-prime test (`rug`'s `is_probably_prime(40)`) while documented as deterministic. It now uses FLINT's `fmpz_is_prime` and accepts only a proved prime, like `isprime`. The PARI docs now name the hypothesis behind `certification == "grh_conditional"`: GRH for the field's Hecke L-functions. The November 2026 Lean proof of RH covers the Riemann zeta function and Dirichlet L-functions only, so that label is unchanged.
