@@ -264,4 +264,13 @@ ${e.s ? `<div class="sr-snippet">${mark(e.s, terms)}</div>` : ""}</a></li>`;
     a.setAttribute("aria-selected", "true");
   });
   list?.addEventListener("click", (e) => { if (e.target.closest("a")) close(); });
+
+  // ---- back to top -----------------------------------------------------------
+  const toTop = document.querySelector(".to-top");
+  if (toTop) {
+    const sync = () => toTop.classList.toggle("show", window.scrollY > 600);
+    addEventListener("scroll", sync, { passive: true });
+    sync();
+    toTop.addEventListener("click", (e) => { e.preventDefault(); scrollTo({ top: 0, behavior: "smooth" }); history.replaceState(null, "", location.pathname + location.search); });
+  }
 })();

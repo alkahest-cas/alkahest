@@ -49,7 +49,7 @@ for (const line of summary.split("\n")) {
 }
 
 const SECTIONS: [string, string[]][] = [
-  ["Get started", ["intro", "getting-started", "python-api"]],
+  ["Get started", ["intro", "quickstart", "getting-started", "python-api"]],
   ["Core concepts", ["kernel", "representations", "parsing"]],
   ["Simplification", ["simplification"]],
   ["Mathematics", ["calculus", "transformations", "probability", "vector-quaternion", "units", "tensor", "controls", "orthopoly", "noncommutative", "specfun"]],

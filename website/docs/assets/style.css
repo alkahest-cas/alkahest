@@ -167,8 +167,6 @@ kbd {
 .toc li a:hover { color: var(--fg); }
 .toc li a.active { color: var(--fg); border-left-color: var(--brand); }
 body[data-section="api"] .toc li.d3 a { font-family: var(--font-mono); font-size: 12px; }
-.toc-edit, .toc-top { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); text-decoration: none; margin-top: 6px; }
-.toc-edit:hover, .toc-top:hover { color: var(--fg); }
 
 /* ---- content typography ------------------------------------------------------ */
 .doc h1 {
@@ -280,6 +278,16 @@ a > code { color: inherit; }
 .doc-foot a { color: var(--muted); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; }
 .doc-foot a:hover { color: var(--fg); }
 .layout-wide .pager, .layout-wide .doc-foot { max-width: 860px; }
+/* Back to top: fixed bottom-right, shown once the page has scrolled. */
+.to-top {
+  position: fixed; right: 24px; bottom: 24px; z-index: 40; width: 40px; height: 40px;
+  display: grid; place-items: center; background: var(--bg-elev); border: 1px solid var(--border);
+  color: var(--fg-2); box-shadow: 0 2px 8px rgb(0 0 0 / .06);
+  opacity: 0; pointer-events: none; transform: translateY(8px); transition: opacity .2s, transform .2s, color .15s, border-color .15s;
+}
+.to-top.show { opacity: 1; pointer-events: auto; transform: none; }
+.to-top:hover { color: var(--brand); border-color: var(--border-strong); }
+.to-top svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
 
 /* ---- home ---------------------------------------------------------------------- */
 .hero { padding: 8px 0 8px; }
@@ -489,7 +497,7 @@ body.search-open { overflow: hidden; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
 @media print {
-  .topbar, .sidebar, .toc, .subbar, .pager, .copy { display: none !important; }
+  .topbar, .sidebar, .toc, .subbar, .pager, .copy, .to-top { display: none !important; }
   .layout { display: block; }
 }
 
