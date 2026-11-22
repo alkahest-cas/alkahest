@@ -1296,6 +1296,10 @@ fn limit_inner(
         return Ok(r);
     }
 
+    if let Some(r) = try_stirling_limit(expr, var, point, pool, depth)? {
+        return Ok(r);
+    }
+
     // The special-function basis the integrator emits over. Placed with the
     // other table lookups and ahead of the `x ↦ 1/t` substitution, which would
     // hand `erf(1/t)` to a Taylor expansion that cannot see through it.
@@ -1452,6 +1456,160 @@ fn limit_inner(
     }
 
     Err(LimitError::Unsupported)
+}
+
+/// `gamma` / `loggamma` / `digamma` / `polygamma` at `+∞`: replace each by an
+/// asymptotically equivalent elementary expression (Stirling) where that is
+/// sound, and take the limit of the result. See
+/// [`crate::calculus::limit_stirling`] for which shapes qualify; anything
+/// else is `Ok(None)` and falls through to the other rules.
+fn try_stirling_limit(
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    pool: &ExprPool,
+    depth: u32,
+) -> Result<Option<ExprId>, LimitError> {
+    use crate::calculus::limit_stirling::{mentions_gamma_family, Rewriter};
+    if !is_pos_infinity(point, pool) || !mentions_gamma_family(expr, var, pool) {
+        return Ok(None);
+    }
+    let mut rw = Rewriter {
+        var,
+        pool,
+        goes_to_infinity: |u: ExprId| {
+            !mentions_gamma_family(u, var, pool)
+                && matches!(
+                    limit_inner(u, var, point, LimitDirection::Bidirectional, pool, depth + 1),
+                    Ok(v) if is_pos_infinity(v, pool)
+                )
+        },
+    };
+    let Some(rewritten) = rw.top(expr) else {
+        return Ok(None);
+    };
+    let rewritten = simplify(rewritten, pool).value;
+    // Stirling leaves a product of `exp(·)` factors whose exponents cancel to
+    // leading order; handing the product to Gruntz as is makes it rediscover
+    // that cancellation (and run out of depth). Take the limit of the
+    // collected exponent instead when every other factor is a positive
+    // constant or a constant power of something tending to `+∞`.
+    if let Some((exponent, constant)) = exp_log_form(rewritten, var, point, pool, depth) {
+        let exponent = simplify_expanded(
+            crate::calculus::limit_stirling::split_polynomial_logs(exponent, var, pool),
+            pool,
+        )
+        .value;
+        match limit_inner(
+            exponent,
+            var,
+            point,
+            LimitDirection::Bidirectional,
+            pool,
+            depth + 1,
+        ) {
+            Ok(l) if is_pos_infinity(l, pool) => return Ok(Some(pool.pos_infinity())),
+            Ok(l) if is_neg_infinity(l, pool) => return Ok(Some(pool.integer(0_i32))),
+            Ok(l) if !depends_on(l, var, pool) && is_finite_limit_value(l, pool) => {
+                let v = pool.mul(vec![constant, pool.func("exp", vec![l])]);
+                return Ok(Some(simplify(v, pool).value));
+            }
+            Err(LimitError::DepthExceeded) => return Err(LimitError::DepthExceeded),
+            _ => {}
+        }
+    }
+    match limit_inner(
+        rewritten,
+        var,
+        point,
+        LimitDirection::Bidirectional,
+        pool,
+        depth + 1,
+    ) {
+        Ok(v) => Ok(Some(v)),
+        Err(LimitError::DepthExceeded) => Err(LimitError::DepthExceeded),
+        Err(_) => Ok(None),
+    }
+}
+
+/// `f = C · exp(E)` read off a product: `exp(a)^c` contributes `c·a`, a
+/// factor `b^c` (or `b`) with `b → +∞` and `c` constant contributes
+/// `c·log b`, and positive rational constants go into `C`. `None` unless at
+/// least one `exp` factor is present and every factor is accounted for.
+fn exp_log_form(
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    pool: &ExprPool,
+    depth: u32,
+) -> Option<(ExprId, ExprId)> {
+    // Flatten products and constant powers of products: `(a·b)^c → a^c, b^c`.
+    let mut work = vec![(expr, pool.integer(1_i32))];
+    let mut factors: Vec<ExprId> = Vec::new();
+    while let Some((e, c)) = work.pop() {
+        if factors.len() > 64 {
+            return None;
+        }
+        match pool.get(e) {
+            ExprData::Mul(xs) => work.extend(xs.iter().map(|&x| (x, c))),
+            // Every base kept below is `exp(·)`, a positive constant or tends
+            // to `+∞`, so `(b^e)^c = b^{e·c}` holds for it.
+            ExprData::Pow { base, exp } if !depends_on(exp, var, pool) => {
+                work.push((base, simplify(pool.mul(vec![c, exp]), pool).value));
+            }
+            ExprData::Func { name, args } if name == "sqrt" && args.len() == 1 => {
+                let half = pool.rational(1, 2);
+                work.push((args[0], simplify(pool.mul(vec![c, half]), pool).value));
+            }
+            _ => factors.push(if c == pool.integer(1_i32) {
+                e
+            } else {
+                pool.pow(e, c)
+            }),
+        }
+    }
+    let mut exponent = Vec::new();
+    let mut constant = Vec::new();
+    let mut saw_exp = false;
+    let to_infinity = |b: ExprId| {
+        matches!(
+            limit_inner(b, var, point, LimitDirection::Bidirectional, pool, depth + 1),
+            Ok(v) if is_pos_infinity(v, pool)
+        )
+    };
+    for f in factors {
+        if !depends_on(f, var, pool) {
+            let positive = match pool.get(f) {
+                ExprData::Integer(n) => n.0 > 0,
+                ExprData::Rational(r) => r.0 > 0,
+                _ => quantity_sign(f, pool) == Some(Sign::Positive),
+            };
+            if !positive {
+                return None;
+            }
+            constant.push(f);
+            continue;
+        }
+        let (base, c) = match pool.get(f) {
+            ExprData::Pow { base, exp } if !depends_on(exp, var, pool) => (base, exp),
+            _ => (f, pool.integer(1_i32)),
+        };
+        if let ExprData::Func { name, args } = pool.get(base) {
+            if name == "exp" && args.len() == 1 {
+                saw_exp = true;
+                exponent.push(pool.mul(vec![c, args[0]]));
+                continue;
+            }
+        }
+        if !to_infinity(base) {
+            return None;
+        }
+        exponent.push(pool.mul(vec![c, pool.func("log", vec![base])]));
+    }
+    if !saw_exp {
+        return None;
+    }
+    Some((pool.add(exponent), pool.mul(constant)))
 }
 
 /// `lim (c · g) = c · lim g` when `c` does not depend on `var`.

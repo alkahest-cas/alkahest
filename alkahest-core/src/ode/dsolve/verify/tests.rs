@@ -246,14 +246,15 @@ fn regularity_probe_ignores_an_unlucky_state() {
     assert!(!ode_is_regular_at(&input2, 0.61, &HashMap::new(), &f.pool));
 }
 
-/// An equation the sampler cannot evaluate at all (an unknown special function)
-/// is never called regular, so a candidate is never condemned on the strength
-/// of a probe that did not run.
+/// An equation the sampler cannot evaluate at all (a function with no
+/// numeric kernel) is never called regular, so a candidate is never condemned
+/// on the strength of a probe that did not run. (`Ei` used to stand in here;
+/// registered special functions now evaluate through their own kernels.)
 #[test]
 fn regularity_probe_declines_on_an_unknown_construct() {
     let f = Fixture::new();
     let (input, yp) = OdeInput::first_order(f.x, f.y, &f.pool);
-    let ei = f.pool.func("Ei", vec![f.x]);
+    let ei = f.pool.func("no_numeric_kernel", vec![f.x]);
     let input = input.with_equation(f.pool.add(vec![yp, f.neg(ei)]));
     assert!(!ode_is_regular_at(&input, 0.43, &HashMap::new(), &f.pool));
 }

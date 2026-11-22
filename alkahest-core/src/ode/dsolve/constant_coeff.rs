@@ -85,7 +85,16 @@ pub(crate) fn solve_second_order(
     ctx: &mut SolveCtx<'_>,
     pool: &ExprPool,
 ) -> Result<Vec<DsolveBranch>, DsolveError> {
-    let (coeffs, r) = extract_linear(input, pool)?;
+    let (coeffs, r) = match extract_linear(input, pool) {
+        Ok(v) => v,
+        Err(e) => {
+            // Nonlinear, but free of `y`: `p = y'` makes it first order.
+            if let Some(res) = super::special_linear::solve_y_absent(input, gen, pool)? {
+                return Ok(res);
+            }
+            return Err(e);
+        }
+    };
     let x = input.x;
 
     if all_constant(&coeffs, x, pool) {
@@ -94,6 +103,22 @@ pub(crate) fn solve_second_order(
     // Euler–Cauchy: coeffs[k] = c_k · x^k with c_k constant.
     if let Some(euler) = try_euler_cauchy(input, &coeffs, r, gen, pool)? {
         return Ok(euler);
+    }
+    // Airy (`y'' = (a x + b) y`, after removing a constant first-derivative
+    // term) and the Bessel family `x^α Z_ν(β x^γ)`.
+    if let Some(basis) = super::special_linear::airy_basis(&coeffs, x, pool) {
+        let mark = gen.checkpoint();
+        if let Some(res) = compose_from_basis(input, &basis, coeffs[2], r, "airy", gen, pool)? {
+            return Ok(res);
+        }
+        gen.rollback(mark, pool);
+    }
+    if let Some(basis) = super::special_linear::bessel_basis(&coeffs, x, pool) {
+        let mark = gen.checkpoint();
+        if let Some(res) = compose_from_basis(input, &basis, coeffs[2], r, "bessel", gen, pool)? {
+            return Ok(res);
+        }
+        gen.rollback(mark, pool);
     }
     // General variable coefficients: one solution by ansatz, the second by
     // reduction of order, the forcing by variation of parameters.

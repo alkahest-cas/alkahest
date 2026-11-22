@@ -6,6 +6,7 @@
 //! difference equations (V2-18), and optional WZ pair verification.
 
 mod closed_form;
+mod digamma_sum;
 mod expr_ratio;
 pub(crate) mod gosper;
 mod hyper_series;
@@ -228,6 +229,23 @@ pub fn sum_definite(
                 let mut log = DerivationLog::new();
                 log.push(RewriteStep::with_conditions(rule, term, value, conditions));
                 return Ok(DerivedExpr::with_log(value, log));
+            }
+            // A rational summand with no rational antidifference (Σ 1/k):
+            // partial fractions and the digamma family.
+            match digamma_sum::finite_rational(term, k, lo, hi, pool) {
+                closed_form::Outcome::Sum {
+                    value,
+                    conditions,
+                    rule,
+                } => {
+                    let mut log = DerivationLog::new();
+                    log.push(RewriteStep::with_conditions(rule, term, value, conditions));
+                    return Ok(DerivedExpr::with_log(value, log));
+                }
+                closed_form::Outcome::Refused(why) => {
+                    return Err(SumError::BoundSubstitution(why));
+                }
+                closed_form::Outcome::NotApplicable => {}
             }
             // Bounds and summand sharing a parameter: Σ_{k=0}^{n} C(n,k).
             match parametric::parametric_definite(term, k, lo, hi, pool)? {

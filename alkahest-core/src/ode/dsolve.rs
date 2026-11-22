@@ -108,6 +108,7 @@ mod constant_coeff;
 #[cfg(test)]
 mod corpus;
 mod first_order;
+mod special_linear;
 pub mod system;
 mod variation;
 mod verify;

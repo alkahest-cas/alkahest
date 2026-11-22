@@ -1305,3 +1305,140 @@ fn candidate_wrong_away_from_origin_is_refused() {
     ]);
     assert!(residual_is_zero(&input, cand, &[], &p).is_err());
 }
+
+// ---------------------------------------------------------------------------
+// Airy, Bessel and y-absent second order (special_linear)
+// ---------------------------------------------------------------------------
+
+/// Solve `build(x, y, y', y'') = 0`, assert one verified explicit branch whose
+/// text mentions `needle`, with two constants.
+fn special_case(
+    build: impl Fn(&ExprPool, ExprId, ExprId, ExprId, ExprId) -> ExprId,
+    needle: &str,
+    method: &str,
+) {
+    let (p, x, y) = setup();
+    let (input, yp, ypp) = OdeInput::second_order(x, y, &p);
+    let input = input.with_equation(build(&p, x, y, yp, ypp));
+    let res = solve_all(&input, &p).expect("solves");
+    let sol = &res.solutions[0];
+    assert_verifies(&input, sol, &p);
+    let text = p.display(explicit_of(sol)).to_string();
+    assert!(text.contains(needle), "{text}");
+    assert_eq!(sol.method, method);
+    assert_eq!(sol.constants.len(), 2);
+}
+
+#[test]
+fn airy_equation() {
+    // y'' − x y = 0
+    special_case(
+        |p, x, y, _yp, ypp| p.add(vec![ypp, p.mul(vec![p.integer(-1_i32), x, y])]),
+        "airy_ai",
+        "airy",
+    );
+}
+
+#[test]
+fn airy_equation_scaled_and_shifted_with_damping() {
+    // y'' + 2y' − (8x + 1) y = 0
+    special_case(
+        |p, x, y, yp, ypp| {
+            let q = p.add(vec![p.mul(vec![p.integer(8_i32), x]), p.integer(1_i32)]);
+            p.add(vec![
+                ypp,
+                p.mul(vec![p.integer(2_i32), yp]),
+                p.mul(vec![p.integer(-1_i32), q, y]),
+            ])
+        },
+        "airy_bi",
+        "airy",
+    );
+}
+
+#[test]
+fn bessel_order_zero() {
+    // x² y'' + x y' + x² y = 0
+    special_case(
+        |p, x, y, yp, ypp| {
+            let x2 = p.pow(x, p.integer(2_i32));
+            p.add(vec![
+                p.mul(vec![x2, ypp]),
+                p.mul(vec![x, yp]),
+                p.mul(vec![x2, y]),
+            ])
+        },
+        "bessel_j",
+        "bessel",
+    );
+}
+
+#[test]
+fn modified_bessel_scaled_argument() {
+    // x² y'' + x y' − (4x² + 1) y = 0  →  I_1(2x), K_1(2x)
+    special_case(
+        |p, x, y, yp, ypp| {
+            let x2 = p.pow(x, p.integer(2_i32));
+            let q = p.add(vec![p.mul(vec![p.integer(4_i32), x2]), p.integer(1_i32)]);
+            p.add(vec![
+                p.mul(vec![x2, ypp]),
+                p.mul(vec![x, yp]),
+                p.mul(vec![p.integer(-1_i32), q, y]),
+            ])
+        },
+        "bessel_k",
+        "bessel",
+    );
+}
+
+#[test]
+fn bessel_family_with_power_prefactor() {
+    // x y'' + 2 y' + x y = 0  →  x^{−1/2} J_{1/2}(x), x^{−1/2} Y_{1/2}(x)
+    special_case(
+        |p, x, y, yp, ypp| {
+            p.add(vec![
+                p.mul(vec![x, ypp]),
+                p.mul(vec![p.integer(2_i32), yp]),
+                p.mul(vec![x, y]),
+            ])
+        },
+        "bessel_y",
+        "bessel",
+    );
+}
+
+#[test]
+fn y_absent_nonlinear_second_order() {
+    // y'' − y'² = 0
+    special_case(
+        |p, _x, _y, yp, ypp| {
+            p.add(vec![
+                ypp,
+                p.mul(vec![p.integer(-1_i32), p.pow(yp, p.integer(2_i32))]),
+            ])
+        },
+        "log",
+        "reduction_of_order_y_absent",
+    );
+}
+
+#[test]
+fn imaginary_bessel_order_is_not_claimed() {
+    // x² y'' + x y' + (x² + 1) y = 0 has ν² = −1: whatever is returned must
+    // verify, and it is not a real-order Bessel basis.
+    let (p, x, y) = setup();
+    let (input, yp, ypp) = OdeInput::second_order(x, y, &p);
+    let x2 = p.pow(x, p.integer(2_i32));
+    let eq = p.add(vec![
+        p.mul(vec![x2, ypp]),
+        p.mul(vec![x, yp]),
+        p.mul(vec![p.add(vec![x2, p.integer(1_i32)]), y]),
+    ]);
+    let input = input.with_equation(eq);
+    if let Ok(res) = solve_all(&input, &p) {
+        for sol in &res.solutions {
+            assert_verifies(&input, sol, &p);
+            assert_ne!(sol.method, "bessel");
+        }
+    }
+}
