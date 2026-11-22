@@ -18,7 +18,7 @@
 //! | `InverseOneMinusZ` | `(1−z)^{−a} Γ(c)Γ(b−a)/(Γ(b)Γ(c−a)) F(a, c−b; a−b+1; 1/(1−z)) + (a ↔ b)` | `z ∉ [0, ∞)`, `a−b ∉ ℤ` |
 //! | `OneMinusInverseZ` | `Γ(c)Γ(c−a−b)/(Γ(c−a)Γ(c−b)) z^{−a} F(a, a−c+1; a+b−c+1; 1−1/z) + Γ(c)Γ(a+b−c)/(Γ(a)Γ(b)) (1−z)^{c−a−b} z^{a−c} F(c−a, 1−a; c−a−b+1; 1−1/z)` | `z ∉ (−∞, 0] ∪ [1, ∞)`, `c−a−b ∉ ℤ` |
 //! | `Quadratic`, `c = 2b` | `(1−z/2)^{−a} F(a/2, a/2+½; b+½; (z/(2−z))²)` | `z ∉ [1, ∞)` (DLMF 15.8.13) |
-//! | `Quadratic`, `c = a−b+1` | `(1+z)^{−a} F(a/2, a/2+½; a−b+1; 4z/(1+z)²)` | `|z| < 1` (DLMF 15.8.15) |
+//! | `Quadratic`, `c = a−b+1` | `(1+z)^{−a} F(a/2, a/2+½; a−b+1; 4z/(1+z)²)` | `\|z\| < 1` (DLMF 15.8.15) |
 //! | `Quadratic`, `2c = a+b+1` | `F(a/2, b/2; c; 4z(1−z))` | `Re z < ½` (DLMF 15.8.18) |
 //! | `Kummer` (`₁F₁`) | `eᶻ ₁F₁(b−a; b; −z)` | all `z` |
 //!

@@ -36,7 +36,7 @@
 //! | `e^{−π x²}`             | `e^{−π ξ²}`                            | Gaussian (self-dual) |
 //! | `e^{−a x²}` (`a>0`)     | `√(π/a)·e^{−π² ξ²/a}`                  | Gaussian        |
 //! | `e^{−a(x−b)²}` (`a>0`)  | `√(π/a)·e^{−π² ξ²/a}·e^{−2πi b ξ}`     | shifted Gaussian (completes the square) |
-//! | `e^{−a |x|}` (`a>0`)    | `2a/(a² + 4π² ξ²)`                     | two-sided exp / Lorentzian |
+//! | `e^{−a \|x\|}` (`a>0`)  | `2a/(a² + 4π² ξ²)`                     | two-sided exp / Lorentzian |
 //! | `θ(x)·e^{−a x}`         | `1/(a + 2πi ξ)`                        | one-sided exp   |
 //! | `δ(x−a)`               | `e^{−2πi a ξ}`  (`δ(x) ↦ 1`)           | impulse         |
 //! | `c` (const)            | `c·δ(ξ)`                               | constant        |

@@ -537,8 +537,8 @@ impl ChainBuilder {
                 if j == self.levels.len() {
                     self.push_level(&residue)?;
                 }
-                for k in (l + 1)..=j {
-                    self.levels[k].generators.push(residue.clone());
+                for level in &mut self.levels[(l + 1)..=j] {
+                    level.generators.push(residue.clone());
                 }
                 for k in ((l + 1)..=j).rev() {
                     self.schreier_sims(k)?;
