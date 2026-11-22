@@ -905,7 +905,15 @@ def _apply_func(name: str, args: list, offset: int, pool=None):
                 f"{name} takes exactly 1 argument, got {len(args)}",
                 span=(offset, offset + len(name)),
             )
-        return _funcs[base](args[0] ** -1)
+        inverse = {
+            "atan": _ak.atan,
+            "acos": _ak.acos,
+            "asin": _ak.asin,
+            "atanh": _ak.atanh,
+            "acosh": _ak.acosh,
+            "asinh": _ak.asinh,
+        }[base]
+        return inverse(args[0] ** -1)
     if name == "erfi":
         if len(args) != 1:
             raise ParseError(
