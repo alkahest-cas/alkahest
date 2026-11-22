@@ -5,14 +5,14 @@
 /* ── Design tokens (copied verbatim from the landing page, website/src/styles.css).
    Light only and square corners: the site has no dark theme. ── */
 :root {
-  --bg: #f8f7f3;          /* warm paper */
+  --bg: #f6f6f6;          /* light grey */
   --bg-elev: #ffffff;     /* cards, code panels */
-  --bg-sunk: #efeee9;     /* inline code, table header */
-  --fg: #141413;
-  --fg-2: #3d3d3a;        /* body copy */
-  --muted: #6b6a65;
-  --border: #e3e1da;
-  --border-strong: #cfccc3;
+  --bg-sunk: #ededed;     /* inline code, table header */
+  --fg: #141414;
+  --fg-2: #3d3d3d;        /* body copy */
+  --muted: #6b6b6b;
+  --border: #e2e2e2;
+  --border-strong: #cdcdcd;
   --brand: #c41e3a;       /* alkahest red — logo, links on hover, active tab underline */
   --brand-fg: #ffffff;
   --brand-soft: #c41e3a14;
@@ -20,23 +20,23 @@
   --warn: #9a6700;
   --radius: 0;
   --radius-sm: 0;
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  --maxw: 1200px;
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --maxw: 1320px;
 }
 /* ── The same tokens as RGB channels, for Tailwind's opacity modifiers ──────
    (bg-ak-ok/10 etc.). Keep in sync with the block above. Two playground-only
    extras: --brand-dark (button hover) and --run (a running cell). */
 :root {
   color-scheme: light;
-  --bg-rgb: 248 247 243;
+  --bg-rgb: 246 246 246;
   --bg-elev-rgb: 255 255 255;
-  --bg-sunk-rgb: 239 238 233;
-  --fg-rgb: 20 20 19;
-  --fg-2-rgb: 61 61 58;
-  --muted-rgb: 107 106 101;
-  --border-rgb: 227 225 218;
-  --border-strong-rgb: 207 204 195;
+  --bg-sunk-rgb: 237 237 237;
+  --fg-rgb: 20 20 20;
+  --fg-2-rgb: 61 61 61;
+  --muted-rgb: 107 107 107;
+  --border-rgb: 226 226 226;
+  --border-strong-rgb: 205 205 205;
   --brand-rgb: 196 30 58;
   --brand-dark-rgb: 163 24 47;
   --brand-fg-rgb: 255 255 255;

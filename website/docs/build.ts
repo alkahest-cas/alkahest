@@ -201,7 +201,6 @@ for (const e of flat) {
     href,
     title,
     description: desc,
-    eyebrow: group,
     section: "guide",
     body: r.html,
     headings: r.headings,
@@ -230,7 +229,6 @@ api.pages.forEach((p, i) => {
     title: p.title,
     docTitle: `${p.title}${/API|alkahest\./.test(p.title) ? "" : " API"}`,
     description: desc,
-    eyebrow: p.group === "Submodules" ? "Python API · Submodule" : "Python API",
     section: "api",
     body: r.html,
     headings: r.headings,
@@ -269,7 +267,6 @@ ${cards}`;
     title: "Python API reference",
     docTitle: "Python API reference",
     description: `Reference for every public name in the alkahest Python package: ${s.public} functions, classes and constants with signatures and docstrings.`,
-    eyebrow: "Python API",
     section: "api",
     body,
     headings: apiNav.filter((g) => g.title !== "Overview" && g.title !== "Elsewhere").map((g) => ({ depth: 2, id: g.title.toLowerCase(), text: g.title })),
@@ -281,11 +278,10 @@ ${cards}`;
 // --- Home -------------------------------------------------------------------
 {
   const sample = async (f: string) => highlight(await readFile(join(HERE, "content", f), "utf8"), "python");
-  const card = (slug: string, title: string, text: string) =>
-    `<a class="card" href="${guideHref(slug)}"><span class="card-title">${escapeHtml(title)}</span><span class="card-text">${escapeHtml(text)}</span></a>`;
+  const card = (slug: string, title: string) =>
+    `<a class="card" href="${guideHref(slug)}"><span class="card-title">${escapeHtml(title)}</span></a>`;
   const body = `
 <section class="hero">
-  <div class="eyebrow">Documentation</div>
   <h1>alkahest documentation</h1>
   <p class="lead">alkahest is a computer algebra system with a Rust core and a Python API, built for both humans and agents. Every computation produces a derivation log, a growing subset exports Lean 4 proofs, and when it cannot answer it refuses with a coded error.</p>
   <div class="hero-links">
@@ -329,26 +325,26 @@ ${await sample("quickstart.py")}
 
 <h2 id="guides">Guides</h2>
 <div class="cards">
-  ${card("calculus", "Calculus", "Differentiation, integration with verification, limits, series and asymptotics of sums.")}
-  ${card("solving", "Solving", "Polynomial and rational systems by Gröbner bases, with numeric and certified roots.")}
-  ${card("simplification", "Simplification", "A rule-based rewriter and an e-graph saturation engine over the same expression pool.")}
-  ${card("specfun", "Special functions", "Bessel, Airy, zeta and polylogarithm functions, with DLMF conventions.")}
-  ${card("codegen", "Codegen and JIT", "Compile expressions to native code, C, StableHLO or CUDA; evaluate over NumPy arrays.")}
-  ${card("lean-certs", "Lean certificates", "Emit Lean 4 source for derivations, and see which operations can be certified.")}
-  ${card("budgets", "Budgets and cancellation", "Bound every call by time, steps or memory, cancel it from outside, and keep runs deterministic.")}
-  ${card("errors", "Error handling", "A structured exception hierarchy where every error carries a stable code and a remediation hint.")}
-  ${card("ball-arithmetic", "Ball arithmetic", "Rigorous interval evaluation with Arb, and global bounds on boxes.")}
-  ${card("ode-dae", "ODEs and DAEs", "Symbolic ODE and DAE modelling, structural analysis and automatic index reduction.")}
-  ${card("positivity", "Positivity certificates", "Sum-of-squares and Putinar certificates that are re-verified exactly.")}
-  ${card("search-plumbing", "Agent loops", "Batch fan-out, compact result envelopes, claim graphs and cross-CAS testing for search loops.")}
+  ${card("calculus", "Calculus")}
+  ${card("solving", "Solving")}
+  ${card("simplification", "Simplification")}
+  ${card("specfun", "Special functions")}
+  ${card("codegen", "Codegen and JIT")}
+  ${card("lean-certs", "Lean certificates")}
+  ${card("budgets", "Budgets and cancellation")}
+  ${card("errors", "Error handling")}
+  ${card("ball-arithmetic", "Ball arithmetic")}
+  ${card("ode-dae", "ODEs and DAEs")}
+  ${card("positivity", "Positivity certificates")}
+  ${card("search-plumbing", "Agent loops")}
 </div>
 
 <h2 id="reference">Reference</h2>
 <div class="ref-grid">
-  <a class="ref-card" href="${BASE}api/"><span class="ref-title">Python API</span><span class="ref-count">${api.stats.public} public names</span></a>
-  <a class="ref-card" href="${guideHref("errors")}"><span class="ref-title">Error codes</span><span class="ref-count">E-SUBSYSTEM-NNN</span></a>
-  <a class="ref-card" href="${guideHref("stability")}"><span class="ref-title">Stability policy</span><span class="ref-count">What may change</span></a>
-  <a class="ref-card" href="https://docs.rs/alkahest-cas" rel="noopener"><span class="ref-title">Rust API ↗</span><span class="ref-count">docs.rs/alkahest-cas</span></a>
+  <a class="ref-card" href="${BASE}api/"><span class="ref-title">Python API</span></a>
+  <a class="ref-card" href="${guideHref("errors")}"><span class="ref-title">Error codes</span></a>
+  <a class="ref-card" href="${guideHref("stability")}"><span class="ref-title">Stability policy</span></a>
+  <a class="ref-card" href="https://docs.rs/alkahest-cas" rel="noopener"><span class="ref-title">Rust API ↗</span></a>
 </div>
 `;
   pages.push({

@@ -1,14 +1,14 @@
 /* alkahest docs. Tokens are copied verbatim from the landing page (website/src/styles.css).
    Light only, square corners: the site has no dark theme. */
 :root {
-  --bg: #f8f7f3;
+  --bg: #f6f6f6;
   --bg-elev: #ffffff;
-  --bg-sunk: #efeee9;
-  --fg: #141413;
-  --fg-2: #3d3d3a;
-  --muted: #6b6a65;
-  --border: #e3e1da;
-  --border-strong: #cfccc3;
+  --bg-sunk: #ededed;
+  --fg: #141414;
+  --fg-2: #3d3d3d;
+  --muted: #6b6b6b;
+  --border: #e2e2e2;
+  --border-strong: #cdcdcd;
   --brand: #c41e3a;
   --brand-fg: #ffffff;
   --brand-soft: #c41e3a14;
@@ -16,9 +16,9 @@
   --warn: #9a6700;
   --radius: 0;
   --radius-sm: 0;
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-  --maxw: 1200px;
+  --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --maxw: 1320px;
 
   /* docs-only */
   --topbar-h: 60px;
@@ -37,7 +37,6 @@ body {
   background: var(--bg);
   color: var(--fg-2);
   font: 400 15.5px/1.7 var(--font-sans);
-  font-feature-settings: "cv11", "ss01";
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -172,10 +171,6 @@ body[data-section="api"] .toc li.d3 a { font-family: var(--font-mono); font-size
 .toc-edit:hover, .toc-top:hover { color: var(--fg); }
 
 /* ---- content typography ------------------------------------------------------ */
-.eyebrow {
-  font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em;
-  color: var(--brand); margin-bottom: 10px;
-}
 .doc h1 {
   font-size: 36px; line-height: 1.15; font-weight: 600; letter-spacing: -0.02em;
   color: var(--fg); margin: 0 0 20px;
@@ -272,12 +267,7 @@ a > code { color: inherit; }
 
 /* ---- pager & footer ---------------------------------------------------------- */
 .pager { max-width: var(--content-w); margin: 64px auto 0; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.pager a {
-  display: flex; flex-direction: column; gap: 2px; padding: 14px 18px;
-  border: 1px solid var(--border); border-radius: 0; background: var(--bg-elev);
-  text-decoration: none; transition: border-color .15s;
-}
-.pager a:hover { border-color: var(--border-strong); }
+.pager a { display: flex; flex-direction: column; gap: 2px; padding: 4px 0; text-decoration: none; }
 .pager-next { text-align: right; grid-column: 2; }
 .pager-dir { font-size: 12.5px; color: var(--muted); }
 .pager-title { font-size: 15px; font-weight: 500; color: var(--fg); }
@@ -315,7 +305,6 @@ a > code { color: inherit; }
 .card:hover, .ref-card:hover { border-color: var(--border-strong); }
 .card-title, .ref-title { font-size: 15px; font-weight: 600; color: var(--fg); }
 .card:hover .card-title, .ref-card:hover .ref-title { color: var(--brand); }
-.card-text { font-size: 13.5px; line-height: 1.55; color: var(--muted); }
 .ref-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; margin: 16px 0 8px; }
 .ref-card { padding: 16px 18px; gap: 2px; }
 .ref-count { font-size: 12.5px; color: var(--muted); font-family: var(--font-mono); }
