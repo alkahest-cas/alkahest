@@ -21,12 +21,15 @@
 // and `galois_quartic` its automorphisms, consumed by
 // `genus_zero::try_alg_base_log` (the conjugate-divisor reduction).
 mod alg_tower;
+// Binomial differentials x^m (a + b x^n)^p (Chebyshev).
+mod binomial;
 mod coates;
 pub(super) mod decompose;
 pub mod elliptic;
 pub mod elliptic_output;
 pub mod find_order;
 mod generator_subst;
+mod genus1_infinity;
 pub mod genus1_log;
 pub(super) mod genus_zero;
 pub mod hermite_curve;
@@ -38,6 +41,10 @@ pub(super) mod poly_utils;
 // `x^{k−1}·g(x^k)` integrands.
 mod pullback;
 pub mod residues;
+// Exact normalisation in ℚ(x)(√P, √Q) to single-polynomial-radical pieces.
+mod radical_normal;
+// Reciprocal pullback `t = x + c/x` (genus 1 → 0 for symmetric quartics).
+mod reciprocal;
 pub(super) mod rootsum_expand;
 // Three-valued decision procedure for `v′ + (a′/2a)v = B` — the "is there an
 // algebraic primitive?" premise of the `∫B√P` non-elementarity certificate.
@@ -259,7 +266,19 @@ pub fn integrate_algebraic(
     if let Some(res) =
         crate::integrate::risch::simple_radical::try_integrate_simple_radical(expr, var, pool)
     {
-        return downgrade_unproved_certificate(res);
+        let res = downgrade_unproved_certificate(res);
+        if res.is_err() {
+            // Binomial differential `x^m (a + b x^n)^p`: Chebyshev's cases.
+            if let Some(d) = binomial::try_binomial(expr, var, pool) {
+                return Ok(d);
+            }
+            if matches!(res, Err(IntegrationError::NotImplemented(_))) {
+                if let Some(msg) = binomial::chebyshev_non_elementary(expr, var, pool) {
+                    return Err(IntegrationError::NonElementary(msg));
+                }
+            }
+        }
+        return res;
     }
 
     // Negative-leading-coefficient quadratic radicand `√(a x²+b x+c)`, `a < 0`
@@ -272,6 +291,11 @@ pub fn integrate_algebraic(
     // numerically `d/dx F = integrand` verified — so `a ≥ 0` behavior is untouched
     // and unsupported `a < 0` shapes decline cleanly (falling through below).
     if let Some(res) = parametrize::try_arcsin_quadratic(expr, var, pool) {
+        return res;
+    }
+    // Same family with a rational weight: split off the polynomial part so its
+    // `asin` stays an `asin` (see `try_arcsin_rational_split`).
+    if let Some(res) = parametrize::try_arcsin_rational_split(expr, var, pool) {
         return res;
     }
 
@@ -298,6 +322,11 @@ pub fn integrate_algebraic(
             if let Some(res) = parametrize::try_euler_conic_point(expr, var, pool) {
                 return res;
             }
+            // Two square roots, or a square root of a rational function:
+            // normalise exactly in ℚ(x)(√P, √Q) into single-radical pieces.
+            if let Some(res) = radical_normal::try_radical_normalize(expr, var, pool) {
+                return res;
+            }
             // Rationalizing substitution `uⁿ = g(x)` for a *non-polynomial*
             // radicand — `∫√(tan x) dx` and friends.  Tried last, after every
             // polynomial-radicand route has declined, so nothing that already
@@ -319,6 +348,21 @@ pub fn integrate_algebraic(
     if matches!(result, Err(IntegrationError::NotImplemented(_))) {
         if let Some(res) = pullback::try_power_pullback(expr, var, pool) {
             return Ok(res);
+        }
+        if let Some(res) = binomial::try_binomial(expr, var, pool) {
+            return Ok(res);
+        }
+        // Reciprocal pullback `t = x + c/x` for `x ↦ c/x`-symmetric quartics.
+        if let Some((sqrt_id, p_expr)) = find_generator(expr, pool) {
+            if let Some(res) = reciprocal::try_reciprocal_pullback(expr, sqrt_id, p_expr, var, pool)
+            {
+                return Ok(res);
+            }
+        }
+        // Every route declined: a binomial differential outside Chebyshev's
+        // three cases is provably non-elementary.
+        if let Some(msg) = binomial::chebyshev_non_elementary(expr, var, pool) {
+            return Err(IntegrationError::NonElementary(msg));
         }
     }
     result
@@ -463,6 +507,45 @@ fn integrate_via_decompose(
     ));
 
     Ok(DerivedExpr::with_log(simplified.value, log))
+}
+
+thread_local! {
+    /// Re-entry guard for [`try_rationalized_cofactor`].
+    static RATIONALIZING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Engine hook: rationalise the algebraic cofactor of a transcendental
+/// integrand (`asin(x)/(1+√(1−x²))` → `asin(x)/x² − asin(x)·√(1−x²)/x²`, see
+/// [`radical_normal::rationalize_algebraic_cofactor`]) and integrate the
+/// rewritten sum with the full engine.  The result is checked against the
+/// original integrand with [`crate::integrate::engine::verify_antiderivative_status`].
+/// Not re-entrant: a sub-integral never rationalises again.
+pub(crate) fn try_rationalized_cofactor(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<DerivedExpr<ExprId>> {
+    if RATIONALIZING.with(|r| r.get()) {
+        return None;
+    }
+    let rewritten = radical_normal::rationalize_algebraic_cofactor(expr, var, pool)?;
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            RATIONALIZING.with(|r| r.set(false));
+        }
+    }
+    RATIONALIZING.with(|r| r.set(true));
+    let _reset = Reset;
+    let d = crate::integrate::engine::integrate(rewritten, var, pool).ok()?;
+    crate::integrate::engine::verify_antiderivative_status(d.value, expr, var, pool)?;
+    let mut log = d.log;
+    log.push(RewriteStep::simple(
+        "algebraic_rationalize_cofactor",
+        expr,
+        d.value,
+    ));
+    Some(DerivedExpr::with_log(d.value, log))
 }
 
 /// Attempt the genus-1 (MC1) capstone for an integrand `A(x) + B(x)·√P` over the

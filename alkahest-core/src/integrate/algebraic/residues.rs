@@ -205,8 +205,11 @@ pub fn residues_at_infinity(n: usize, a: &QPoly, h: &AlgElem) -> Vec<Residue> {
         .collect()
 }
 
-/// As [`residues_at_infinity`], but each residue carries the place's
-/// `y`-coordinate (always `0` at ∞ here).  Internal — see [`PlacedResidue`].
+/// As [`residues_at_infinity`], but each residue carries a sheet label in
+/// `y_coord`: the **leading coefficient** `c` of `y` along the branch
+/// (`y = c·t^{-k} + …` with `x = t^{-e}`), which tells the two unramified places
+/// over `∞` of `y² = s²x⁴ + …` apart (`c = ±s`).  It is `0` when that
+/// coefficient is unavailable.  Internal — see [`PlacedResidue`].
 pub(crate) fn residues_at_infinity_placed(n: usize, a: &QPoly, h: &AlgElem) -> Vec<PlacedResidue> {
     let m = degree(&trim(a.clone())).max(0) as usize;
     let dmax = h
@@ -236,6 +239,11 @@ pub(crate) fn residues_at_infinity_placed(n: usize, a: &QPoly, h: &AlgElem) -> V
         let coeff = h_ts.get(&e).cloned().unwrap_or_else(|| Rational::from(0));
         let value = -Rational::from(e) * coeff;
         if value != 0 {
+            let y_lead = y_ts
+                .iter()
+                .next()
+                .map(|(_, c)| c.clone())
+                .unwrap_or_else(|| Rational::from(0));
             out.push(PlacedResidue {
                 residue: Residue {
                     point: Rational::from(0),
@@ -244,7 +252,7 @@ pub(crate) fn residues_at_infinity_placed(n: usize, a: &QPoly, h: &AlgElem) -> V
                     ramification: w_branch.ramification,
                     value,
                 },
-                y_coord: Rational::from(0),
+                y_coord: y_lead,
             });
         }
     }
@@ -499,11 +507,19 @@ impl InfinityResidues {
         } else {
             rational_sqrt(&self.lc)?
         };
+        // Sheet label (see `residues_at_infinity_placed`): the leading
+        // coefficient `±√lc` of `y = ±√lc·x^{m/2} + …`, when `√lc ∈ ℚ`.
+        let s_label = if self.two_places {
+            rational_sqrt(&self.lc).unwrap_or_else(|| Rational::from(0))
+        } else {
+            Rational::from(0)
+        };
         let mut out = Vec::new();
         for (sheet, sign) in [Rational::from(1), Rational::from(-1)]
             .into_iter()
             .enumerate()
         {
+            let y_label = sign.clone() * s_label.clone();
             let value = if self.two_places {
                 self.r0.clone() + sign * s.clone() * self.r1.clone()
             } else {
@@ -518,7 +534,7 @@ impl InfinityResidues {
                         ramification: if self.two_places { 1 } else { 2 },
                         value,
                     },
-                    y_coord: Rational::from(0),
+                    y_coord: y_label,
                 });
             }
             if !self.two_places {

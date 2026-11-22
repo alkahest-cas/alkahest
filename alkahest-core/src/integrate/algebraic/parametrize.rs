@@ -49,7 +49,7 @@ pub(super) fn try_parametrize_genus0(
     var: ExprId,
     pool: &ExprPool,
 ) -> Option<Result<DerivedExpr<ExprId>, IntegrationError>> {
-    let (n, radicand) = detect_single_radical(expr, var, pool)?;
+    let (n, radicand, other) = detect_radical_family(expr, var, pool)?;
     // Radicand as a reduced fraction num/den, each of degree ≤ 1.
     let (num, den) = expr_to_qrational(radicand, var, pool)?;
     let (num, den) = (trim(num), trim(den));
@@ -80,7 +80,7 @@ pub(super) fn try_parametrize_genus0(
     // Rewrite the integrand directly in `s`: standalone `x → x(s)`, and every
     // power `r(x)^{c/d}` of the radicand → `s^{c·n/d}`, so no un-reducible
     // `(sⁿ)^{1/n}` is ever formed.
-    let core = to_s(expr, var, &num, &den, n, s, x_of_s, pool)?;
+    let core = to_s(expr, var, &num, &den, n, s, x_of_s, other, pool)?;
     let dx_ds = simplify(crate::diff::diff(x_of_s, s, pool).ok()?.value, pool).value;
     let integrand_s = simplify(pool.mul(vec![core, dx_ds]), pool).value;
 
@@ -681,6 +681,93 @@ pub(super) fn try_arcsin_quadratic(
     Some(Ok(DerivedExpr::with_log(f_x, log)))
 }
 
+/// `∫ R(x)·√P dx` with `P = a x² + b x + c`, `a < 0`, `R` rational with a pole:
+/// split `R·P = Q + S/D` (polynomial quotient `Q`, `deg S < deg D`) so that
+///
+/// ```text
+///   ∫ R·√P = ∫ Q/√P  +  ∫ S/(D·√P)
+/// ```
+///
+/// and send `∫Q/√P` to [`try_arcsin_quadratic`] (an `asin` plus an algebraic
+/// part) while the proper part goes to the full engine.  Without the split the
+/// Euler substitution writes the `asin` of `∫√(1−x²)/x² = −√(1−x²)/x − asin x`
+/// as `−2·atan((√(1−x²)−1)/x)`: equal up to a constant, but a by-parts chain
+/// that differentiates or re-integrates it cannot see an `asin` any more
+/// (`∫asin(x)·√(1−x²)/x²` needs exactly that).  Gate-verified as a whole.
+pub(super) fn try_arcsin_rational_split(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<Result<DerivedExpr<ExprId>, IntegrationError>> {
+    let (n, radicand) = detect_single_radical(expr, var, pool)?;
+    if n != 2 {
+        return None;
+    }
+    let (pn, pd) = expr_to_qrational(radicand, var, pool)?;
+    let (pn, pd) = (trim(pn), trim(pd));
+    if degree(&pd) != 0 || degree(&pn) != 2 || pn[2] >= 0 {
+        return None;
+    }
+    let p_poly: QPoly = pn.iter().map(|c| c.clone() / &pd[0]).collect();
+    let sqrt_id = pool.func("sqrt", vec![radicand]);
+    let (a_raw, b_raw) =
+        super::decompose::decompose_sqrt(expr, sqrt_id, radicand, pool).or_else(|| {
+            let half = pool.pow(radicand, pool.rational(1, 2));
+            super::decompose::decompose_sqrt(expr, half, radicand, pool)
+        })?;
+    let b_part = simplify(b_raw, pool).value;
+    let (bn, bd) = expr_to_qrational(b_part, var, pool)?;
+    let (bn, bd) = (trim(bn), trim(bd));
+    if degree(&bd) < 1 || bn.is_empty() {
+        return None; // no pole: try_arcsin_quadratic's own shape
+    }
+    // R·P = (bn·P)/bd = Q + S/bd.
+    let num = trim(poly_mul(&bn, &p_poly));
+    let (q, s) = crate::integrate::risch::rational_rde::poly_divrem(&num, &bd);
+    let (q, s) = (trim(q), trim(s));
+    if q.is_empty() {
+        return None; // nothing for the asin table
+    }
+    let inv_sqrt = pool.pow(sqrt_id, pool.integer(-1));
+    let poly_piece = pool.mul(vec![qpoly_to_expr(&q, var, pool), inv_sqrt]);
+    let f_poly = match try_arcsin_quadratic(poly_piece, var, pool)? {
+        Ok(d) => d.value,
+        Err(_) => return None,
+    };
+    let mut parts = vec![f_poly];
+    if !s.is_empty() {
+        let proper = pool.mul(vec![
+            qpoly_to_expr(&s, var, pool),
+            pool.pow(qpoly_to_expr(&bd, var, pool), pool.integer(-1)),
+            inv_sqrt,
+        ]);
+        parts.push(
+            crate::integrate::engine::integrate(proper, var, pool)
+                .ok()?
+                .value,
+        );
+    }
+    let a_part = simplify(a_raw, pool).value;
+    if !super::poly_utils::is_zero_expr(a_part, pool) {
+        parts.push(
+            crate::integrate::engine::integrate(a_part, var, pool)
+                .ok()?
+                .value,
+        );
+    }
+    let f_x = simplify(pool.add(parts), pool).value;
+    if !verify_derivative(f_x, expr, radicand, var, pool) {
+        return None;
+    }
+    let mut log = DerivationLog::new();
+    log.push(RewriteStep::simple(
+        "algebraic_arcsin_rational_split",
+        expr,
+        f_x,
+    ));
+    Some(Ok(DerivedExpr::with_log(f_x, log)))
+}
+
 /// Rewrite every **even** integer power `s^{2m}` of the opaque radical symbol `s`
 /// to `(k²−w²)^m` (`kk_minus_w2`), leaving odd powers of `s` untouched (so a
 /// caller can detect an uncovered shape by testing whether the result still
@@ -1084,6 +1171,67 @@ fn sqrt_rational(v: &rug::Rational) -> Option<rug::Rational> {
     }
 }
 
+/// The radicals of `expr` as a family [`try_parametrize_genus0`] can
+/// rationalise, returned as `(L, r, second)`:
+///
+/// * every radical has the same radicand `r` (as a rational function): then
+///   `s = r^{1/L}` with `L` the lcm of the indices rationalises them all
+///   (`x^{1/3}` and `√x` share `s = x^{1/6}`) — `second = None`;
+/// * exactly two distinct radicands, both **linear polynomials** and both
+///   under square roots only: `s = √r` makes the other `√L₂(x(s))` a square
+///   root of a *quadratic* in `s`, a genus-0 conic — `second = Some(L₂)`.
+///
+/// `None` otherwise (more radicands, or a mix that would raise the genus).
+fn detect_radical_family(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<(usize, ExprId, Option<ExprId>)> {
+    let mut found: Vec<(usize, ExprId)> = Vec::new();
+    scan(expr, var, pool, &mut found);
+    // Group by radicand (ExprId, then as a rational function).
+    let mut groups: Vec<(ExprId, usize)> = Vec::new(); // (radicand, lcm index)
+    for (n, r) in found {
+        match groups
+            .iter_mut()
+            .find(|(q, _)| *q == r || same_fraction_expr(*q, r, var, pool))
+        {
+            Some(g) => g.1 = lcm_usize(g.1, n),
+            None => groups.push((r, n)),
+        }
+    }
+    match groups.as_slice() {
+        [(r, n)] => Some((*n, *r, None)),
+        [(r1, 2), (r2, 2)] => {
+            let lin_poly = |r: ExprId| -> bool {
+                expr_to_qrational(r, var, pool)
+                    .is_some_and(|(nm, dn)| degree(&trim(nm)) == 1 && degree(&trim(dn)) == 0)
+            };
+            (lin_poly(*r1) && lin_poly(*r2)).then_some((2, *r1, Some(*r2)))
+        }
+        _ => None,
+    }
+}
+
+fn lcm_usize(a: usize, b: usize) -> usize {
+    fn gcd(a: usize, b: usize) -> usize {
+        if b == 0 {
+            a
+        } else {
+            gcd(b, a % b)
+        }
+    }
+    a / gcd(a, b) * b
+}
+
+/// Are two expressions equal as rational functions of `var` (and non-constant)?
+fn same_fraction_expr(a: ExprId, b: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    match expr_to_qrational(b, var, pool) {
+        Some((bn, bd)) => same_fraction(a, &trim(bn), &trim(bd), var, pool),
+        None => false,
+    }
+}
+
 /// Find the unique `x`-dependent radical generator and return `(n, radicand)`.
 /// `None` if there is no such generator or more than one distinct one.
 fn detect_single_radical(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<(usize, ExprId)> {
@@ -1148,10 +1296,39 @@ fn to_s(
     n: usize,
     s: ExprId,
     x_of_s: ExprId,
+    other: Option<ExprId>,
     pool: &ExprPool,
 ) -> Option<ExprId> {
     if expr == var {
         return Some(x_of_s);
+    }
+    // A power `L₂^{c/2}` of the *second* square-root radicand (see
+    // [`detect_radical_family`]) becomes `√(L₂(x(s)))^c`: a square root of a
+    // quadratic in `s`, which the Euler substitutions downstream rationalise.
+    if let Some(l2) = other {
+        let second = |base: ExprId, c: i64, d: i64| -> Option<Option<ExprId>> {
+            if d != 2 || (base != l2 && !same_fraction_expr(base, l2, var, pool)) {
+                return None;
+            }
+            let inner = to_s(base, var, num, den, n, s, x_of_s, None, pool)?;
+            let inner = simplify(inner, pool).value;
+            Some(Some(
+                pool.pow(pool.func("sqrt", vec![inner]), pool.integer(c)),
+            ))
+        };
+        let hit = match pool.get(expr) {
+            ExprData::Func { ref name, ref args } if name == "sqrt" && args.len() == 1 => {
+                second(args[0], 1, 2)
+            }
+            ExprData::Pow { base, exp } => match pool.get(exp) {
+                ExprData::Rational(r) => second(base, r.0.numer().to_i64()?, r.0.denom().to_i64()?),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(res) = hit {
+            return res;
+        }
     }
     if is_free_of_var(expr, var, pool) {
         return Some(expr); // constant in x (incl. other symbols / numbers)
@@ -1175,20 +1352,20 @@ fn to_s(
         ExprData::Add(args) => {
             let v: Vec<ExprId> = args
                 .iter()
-                .map(|&a| to_s(a, var, num, den, n, s, x_of_s, pool))
+                .map(|&a| to_s(a, var, num, den, n, s, x_of_s, other, pool))
                 .collect::<Option<_>>()?;
             Some(pool.add(v))
         }
         ExprData::Mul(args) => {
             let v: Vec<ExprId> = args
                 .iter()
-                .map(|&a| to_s(a, var, num, den, n, s, x_of_s, pool))
+                .map(|&a| to_s(a, var, num, den, n, s, x_of_s, other, pool))
                 .collect::<Option<_>>()?;
             Some(pool.mul(v))
         }
         ExprData::Pow { base, exp } => match pool.get(exp) {
             ExprData::Integer(m) => {
-                let inner = to_s(base, var, num, den, n, s, x_of_s, pool)?;
+                let inner = to_s(base, var, num, den, n, s, x_of_s, other, pool)?;
                 // Exact exponent (was `to_i64()? as i32`, truncating).
                 Some(pool.pow(inner, pool.integer(m.0.clone())))
             }
@@ -1373,6 +1550,18 @@ fn verify_derivative(
     pool: &ExprPool,
 ) -> bool {
     gate_verdict(f, integrand, radicand, var, pool).is_verified()
+}
+
+/// [`verify_derivative`] for sibling routes (the radical normaliser): the gate
+/// on the region where `radicand > 0` and the integrand is finite.
+pub(super) fn verify_derivative_pub(
+    f: ExprId,
+    integrand: ExprId,
+    radicand: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> bool {
+    verify_derivative(f, integrand, radicand, var, pool)
 }
 
 /// The graded verdict behind [`verify_derivative`], kept separate so tests can
