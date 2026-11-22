@@ -51,6 +51,37 @@ Both native JIT backends also emit a **column** entry point (`fn(cols, outs, sta
 
 The **interpreter** tier (no JIT in the build, or an expression a JIT declines — `Piecewise` in particular) evaluates a batch a **block** of up to 256 points at a time: the expression is flattened once into a list of operations over numbered slots, and each operation runs over the whole block before the next one, so there is one dispatch per operation per block and sums, products and integer powers vectorise. `Piecewise` is a masked select: every branch is computed on the block, and per-point failure flags ensure a branch a point does not select (say `lambert_w(x)` guarded by `x > 0`) cannot fail that point; `And`/`Or` short-circuit per point. Each value is bit for bit what a single-point call (and `eval_expr`) gives.
 
+### Polynomial optimisation (Horner pass)
+
+Before lowering, `compile_expr` rewrites every sum that is a polynomial into a
+multivariate Horner scheme. "Polynomial" is read broadly: the variables are the
+inputs *and* any non-polynomial subexpression (`sin(k*x)`, `exp(-(x^2+y^2))`,
+`sqrt(1+x)`), so a polynomial argument of `sin` and the polynomial coefficients
+of transcendental terms are rewritten too. The variable occurring in the most
+terms is factored out first; the scheme's multiply-adds are fused on CPUs with
+an FMA instruction; and shared coefficient polynomials are evaluated once,
+including across the outputs of a vector compile (a gradient or Jacobian).
+
+A sum is rewritten only when it has at least six terms and the scheme saves at
+least a fifth of its operations; anything else is compiled exactly as written.
+The pass runs on the native tiers (Cranelift, LLVM), whose fused multiply-adds
+it is designed around; the interpreter tier evaluates the expression as written.
+Expanded `(1+x+y)^20` (231 terms) goes from about 180 to about 55 ns per point,
+and compiles faster (3 ms instead of 10; a 10 000-term polynomial in 0.3 s
+instead of 6 s);
+`Σ sin(kx)·cos(ky)/k` has nothing to factor and is unchanged.
+
+A rewritten sum rounds differently from the expanded form, so its value can
+differ from `eval_expr` in the last few bits. Horner evaluation is backward
+stable, so for a well-conditioned polynomial the result is at least as accurate
+(the expanded form also pays for rounding in each power); near a root where the
+polynomial cancels badly, both forms lose the digits its condition number says
+they must, but not the same ones. Opt out per call with
+`compile_expr(expr, inputs, optimize=False)` (every value is then bit for bit
+`eval_expr`'s), or for the whole process with the environment variable
+`ALKAHEST_JIT_HORNER=0`. From Rust: `compile_with_options(…,
+CodegenOptions::exact())`.
+
 ### Real values through complex intermediates
 
 A real-valued closed form can pass through complex numbers on the way:
@@ -190,6 +221,20 @@ from alkahest import horner
 # x^3 + 2x^2 + 3x + 4 → 4 + x*(3 + x*(2 + x))
 h = horner(x**3 + pool.integer(2)*x**2 + pool.integer(3)*x + pool.integer(4), x)
 ```
+
+Given a list of variables (or `None`, meaning every free symbol), `horner`
+builds a multivariate scheme. Coefficients may be rationals, floats, constants or
+other symbols:
+
+```python
+# 1 + 2x + 3y + 4xy + 5x^2 → (1 + 3y) + x*((2 + 4y) + 5x)
+h = horner(1 + 2*x + 3*y + 4*x*y + 5*x**2, [x, y])
+```
+
+The variable occurring in the most terms is factored out first, ties going to the
+one listed first. An expression not written as a sum of monomials, such as
+`(1+x)*(1+y)`, is expanded first (integer coefficients). The compile pipeline
+applies the same rewrite automatically (see *Polynomial optimisation* above).
 
 `emit_c` emits the Horner form of a univariate polynomial as a C function string for
 embedding in other projects:

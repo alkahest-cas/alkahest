@@ -22,7 +22,7 @@ use super::{
 use crate::kernel::eval_const::{
     has_hw_fma, pow_f64_narrow, powi_with, small_integer_exponent, sqrt_pow_with, FloatOps,
 };
-use crate::kernel::{integer_to_f64, rational_to_f64, ExprData, ExprId, ExprPool};
+use crate::kernel::{integer_to_f64, rational_to_f64, ExprData, ExprId, ExprPool, IdSet};
 use crate::primitive::Primitive;
 use cranelift_codegen::ir::{
     condcodes::{FloatCC, IntCC},
@@ -359,6 +359,10 @@ struct Codegen<'a> {
     /// one for their arguments (sized for the widest call), if any.
     fail_slot: Option<StackSlot>,
     args_slot: Option<StackSlot>,
+    /// `Add` nodes whose `Mul` arguments may be fused into the running sum
+    /// with a hardware multiply-add (the Horner links of
+    /// [`super::optimize`]); empty when nothing may be fused.
+    fma_adds: &'a IdSet,
 }
 
 /// The emitted value of a node, and — for a generic call — its failure flag.
@@ -400,6 +404,41 @@ fn codegen_node(
                 "unbound symbol '{name}'"
             ))),
         },
+        ExprData::Add(args) if cg.fma_adds.contains(&node) && has_hw_fma() => {
+            // A Horner link: the sum was reassociated by the optimiser, so
+            // fusing its products is as legitimate as the rewrite itself.
+            // The products' own `fmul` chains become dead and are removed.
+            // No `+0.0` seed either: a reassociated sum does not preserve the
+            // sign of a zero result anyway.
+            let mut acc: Option<Value> = None;
+            let mut products: Vec<Vec<ExprId>> = Vec::new();
+            for a in &args {
+                match pool.get(*a) {
+                    ExprData::Mul(fs) if fs.len() >= 2 => products.push(fs),
+                    _ => {
+                        let v = get(a, "Add child")?;
+                        acc = Some(match acc {
+                            None => v,
+                            Some(s) => builder.ins().fadd(s, v),
+                        });
+                    }
+                }
+            }
+            for fs in products {
+                let (last, rest) = fs.split_last().unwrap_or_else(|| unreachable!());
+                let mut p = get(&rest[0], "Mul child")?;
+                for f in &rest[1..] {
+                    let v = get(f, "Mul child")?;
+                    p = builder.ins().fmul(p, v);
+                }
+                let l = get(last, "Mul child")?;
+                acc = Some(match acc {
+                    None => builder.ins().fmul(p, l),
+                    Some(s) => builder.ins().fma(p, l, s),
+                });
+            }
+            plain(acc.unwrap_or_else(|| builder.ins().f64const(0.0)))
+        }
         ExprData::Add(args) => {
             // Seeded with +0.0 like the interpreter, so an all-(-0.0) sum is
             // +0.0 in both.
@@ -610,13 +649,26 @@ pub(super) struct CraneliftCode {
 /// Compile `expr` to a native function using the Cranelift JIT backend.
 ///
 /// Returns a [`CompiledFn`] wrapping the generated code and keeping the
-/// [`JITModule`] alive so the code pages remain valid.
+/// [`JITModule`] alive so the code pages remain valid. (The compile pipeline
+/// calls [`compile_cranelift_fused`]; this unfused form serves the tests.)
+#[cfg(test)]
 pub fn compile_cranelift(
     expr: ExprId,
     inputs: &[ExprId],
     pool: &ExprPool,
 ) -> Result<CompiledFn, JitError> {
-    let code = compile_cranelift_code(&[expr], inputs, pool, true)?;
+    compile_cranelift_fused(expr, inputs, pool, &IdSet::default())
+}
+
+/// [`compile_cranelift`], fusing the multiply-adds of the `Add` nodes in
+/// `fma_adds` where the CPU has an FMA instruction.
+pub(super) fn compile_cranelift_fused(
+    expr: ExprId,
+    inputs: &[ExprId],
+    pool: &ExprPool,
+    fma_adds: &IdSet,
+) -> Result<CompiledFn, JitError> {
+    let code = compile_cranelift_code(&[expr], inputs, pool, true, fma_adds)?;
     Ok(CompiledFn {
         inner: CompiledFnInner::Cranelift {
             fn_ptr: code
@@ -638,8 +690,9 @@ pub(super) fn compile_cranelift_many(
     outputs: &[ExprId],
     inputs: &[ExprId],
     pool: &ExprPool,
+    fma_adds: &IdSet,
 ) -> Result<CraneliftCode, JitError> {
-    compile_cranelift_code(outputs, inputs, pool, false)
+    compile_cranelift_code(outputs, inputs, pool, false, fma_adds)
 }
 
 fn compile_cranelift_code(
@@ -647,6 +700,7 @@ fn compile_cranelift_code(
     inputs: &[ExprId],
     pool: &ExprPool,
     want_scalar: bool,
+    fma_adds: &IdSet,
 ) -> Result<CraneliftCode, JitError> {
     let target = EvalTarget {
         outputs,
@@ -856,6 +910,7 @@ fn compile_cranelift_code(
                 prim_addr: &prim_addr,
                 fail_slot,
                 args_slot,
+                fma_adds,
             };
             let result = emit_point(
                 EvalTarget {
@@ -929,6 +984,7 @@ fn compile_cranelift_code(
             prim_addr: &prim_addr,
             fail_slot,
             args_slot,
+            fma_adds,
         };
         let start_arg = BlockArg::from(start);
         builder

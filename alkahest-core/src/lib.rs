@@ -184,7 +184,7 @@ pub use transform::{
 // Phase 24 — Horner form
 pub use horner::{
     c_param_names, emit_expr_c, emit_expr_c_vec, emit_horner_c, eval_horner_f64,
-    eval_horner_f64_batch, horner, EmitCError,
+    eval_horner_f64_batch, horner, horner_multivariate, EmitCError,
 };
 pub use simplify::rulesets::{
     log_exp_rules, log_exp_rules_safe, trig_normal_form_rules, trig_rules,
@@ -206,15 +206,15 @@ pub use sum::{
 
 // Phase 21 — JIT
 pub use jit::{
-    check_functions_evaluable, compile_many, compile_many_with, take_unevaluable_functions,
-    CompiledVecFn, UnevaluableFunctionError,
+    check_functions_evaluable, compile_many, compile_many_with, compile_many_with_options,
+    take_unevaluable_functions, CodegenOptions, CompiledVecFn, UnevaluableFunctionError,
 };
 pub use jit::{check_inputs_bind, take_unbound_symbols, UnboundSymbolsError};
 pub use jit::{
-    compile, compile_jit_only, compile_with, eval_interp, eval_interp_checked, eval_interp_real,
-    expr_subgraph_size, jit_available, select_compile_tier, CompileCache, CompileConfig,
-    CompileTier, CompiledFn, InterpEvalError, JitError, INTERP_MAX_EXPECTED_EVALS,
-    INTERP_MAX_NODES, LLVM_MIN_EXPECTED_EVALS,
+    compile, compile_jit_only, compile_with, compile_with_options, eval_interp,
+    eval_interp_checked, eval_interp_real, expr_subgraph_size, jit_available, select_compile_tier,
+    CompileCache, CompileConfig, CompileTier, CompiledFn, InterpEvalError, JitError,
+    INTERP_MAX_EXPECTED_EVALS, INTERP_MAX_NODES, LLVM_MIN_EXPECTED_EVALS,
 };
 
 // Plot — SVG polyline and Graphviz DOT renderers (dependency-free)

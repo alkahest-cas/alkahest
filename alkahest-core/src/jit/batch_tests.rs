@@ -213,7 +213,7 @@ fn native_batch_matches_interpreter_bit_for_bit() {
     let xs = grid(3000, -3.0, 3.0);
     let ys = grid(3000, -2.0, 2.5);
     for (name, expr) in corpus(&pool, x, y) {
-        let native = compile_with(
+        let native = compile_with_options(
             expr,
             &[x, y],
             &pool,
@@ -221,10 +221,11 @@ fn native_batch_matches_interpreter_bit_for_bit() {
                 expected_evals: None,
                 force_tier: Some(CompileTier::Cranelift),
             },
+            CodegenOptions::exact(),
         )
         .unwrap();
         assert_eq!(native.compile_tier(), CompileTier::Cranelift, "{name}");
-        let interp = compile_with(
+        let interp = compile_with_options(
             expr,
             &[x, y],
             &pool,
@@ -232,6 +233,7 @@ fn native_batch_matches_interpreter_bit_for_bit() {
                 expected_evals: None,
                 force_tier: Some(CompileTier::Interpreter),
             },
+            CodegenOptions::exact(),
         )
         .unwrap();
         let mut a = vec![0.0; xs.len()];
@@ -273,8 +275,14 @@ fn llvm_batch_matches_interpreter_bit_for_bit() {
             expected_evals: None,
             force_tier: Some(tier),
         };
-        let llvm = compile_with(expr, &[x, y], &pool, cfg(CompileTier::Llvm)).unwrap();
-        let interp = compile_with(expr, &[x, y], &pool, cfg(CompileTier::Interpreter)).unwrap();
+        // Exact options: the Horner pass would reassociate polynomial sums on
+        // the native tier only.
+        let exact = CodegenOptions::exact();
+        let llvm =
+            compile_with_options(expr, &[x, y], &pool, cfg(CompileTier::Llvm), exact).unwrap();
+        let interp =
+            compile_with_options(expr, &[x, y], &pool, cfg(CompileTier::Interpreter), exact)
+                .unwrap();
         let mut a = vec![0.0; xs.len()];
         let mut b = vec![0.0; xs.len()];
         llvm.call_batch(&[&xs, &ys], &mut a);
@@ -362,7 +370,9 @@ fn compile_many_matches_each_output_compiled_alone() {
     let xs = grid(n, -3.0, 3.0);
     let ys = grid(n, -2.0, 2.5);
     for force in [None, Some(CompileTier::Interpreter)] {
-        let many = compile_many_with(
+        // Exact options: the interpreter-tier `alone` below would not
+        // see the Horner pass (see `compile_many_horner_matches_native_alone`).
+        let many = compile_many_with_options(
             &exprs,
             &[x, y],
             &pool,
@@ -370,6 +380,7 @@ fn compile_many_matches_each_output_compiled_alone() {
                 expected_evals: None,
                 force_tier: force,
             },
+            CodegenOptions::exact(),
         )
         .unwrap();
         assert_eq!(many.n_inputs(), 2);
@@ -393,7 +404,7 @@ fn compile_many_matches_each_output_compiled_alone() {
         }
         let mut point = vec![0.0; exprs.len()];
         for (k, &e) in exprs.iter().enumerate() {
-            let alone = compile(e, &[x, y], &pool).unwrap();
+            let alone = compile_exact(e, &[x, y], &pool);
             for i in (0..n).step_by(7) {
                 let want = alone.call(&[xs[i], ys[i]]);
                 assert!(
@@ -405,8 +416,52 @@ fn compile_many_matches_each_output_compiled_alone() {
         }
         many.call(&[0.3, -0.7], &mut point);
         for (k, &e) in exprs.iter().enumerate() {
-            let alone = compile(e, &[x, y], &pool).unwrap();
+            let alone = compile_exact(e, &[x, y], &pool);
             assert!(same(point[k], alone.call(&[0.3, -0.7])), "point output {k}");
+        }
+    }
+}
+
+fn compile_exact(e: ExprId, inputs: &[ExprId], pool: &ExprPool) -> CompiledFn {
+    compile_with_options(
+        e,
+        inputs,
+        pool,
+        CompileConfig::default(),
+        CodegenOptions::exact(),
+    )
+    .unwrap()
+}
+
+/// With the Horner pass, the outputs of a vector compile are each exactly
+/// what the same output compiled alone on the native tier gives: the pass
+/// rewrites a node the same way whatever else is compiled with it.
+#[cfg(feature = "cranelift")]
+#[test]
+fn compile_many_horner_matches_native_alone() {
+    let pool = ExprPool::new();
+    let x = pool.symbol("x", Domain::Real);
+    let y = pool.symbol("y", Domain::Real);
+    let exprs: Vec<ExprId> = corpus(&pool, x, y).into_iter().map(|(_, e)| e).collect();
+    let on = CodegenOptions::exact().with_horner(true);
+    let native = CompileConfig {
+        expected_evals: None,
+        force_tier: Some(CompileTier::Cranelift),
+    };
+    let many = compile_many_with_options(&exprs, &[x, y], &pool, native, on).unwrap();
+    let n = 500;
+    let xs = grid(n, -3.0, 3.0);
+    let ys = grid(n, -2.0, 2.5);
+    let mut cols: Vec<Vec<f64>> = vec![vec![0.0; n]; exprs.len()];
+    {
+        let mut outs: Vec<&mut [f64]> = cols.iter_mut().map(|c| c.as_mut_slice()).collect();
+        many.call_batch(&[&xs, &ys], &mut outs);
+    }
+    for (k, &e) in exprs.iter().enumerate() {
+        let alone = compile_with_options(e, &[x, y], &pool, native, on).unwrap();
+        for i in 0..n {
+            let want = alone.call(&[xs[i], ys[i]]);
+            assert!(same(cols[k][i], want), "output {k} at {i}");
         }
     }
 }

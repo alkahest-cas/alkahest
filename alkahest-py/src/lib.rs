@@ -7,7 +7,6 @@ use alkahest_core::{
     cancel as core_cancel,
     capacitor as core_capacitor,
     // Phase 21 — JIT
-    compile_with as core_compile_with,
     decide_expr as core_decide_expr,
     emit_expr_c as core_emit_expr_c,
     emit_expr_c_vec as core_emit_expr_c_vec,
@@ -12953,19 +12952,35 @@ fn jit_compile_error_to_py(e: alkahest_core::JitError) -> PyErr {
 /// `CompiledVecFn` evaluating all of them in one pass per point, with the
 /// subexpressions they share computed once — the shape of a gradient or a
 /// Jacobian. `numpy_eval` on it returns an array with one row per output.
+///
+/// `optimize` controls the polynomial pass: sums that are polynomials (in the
+/// inputs and in any non-polynomial subexpression) are rewritten into
+/// multivariate Horner schemes before lowering, when that clearly saves
+/// operations. A rewritten sum rounds differently from the expanded form, so
+/// results can differ from `eval_expr` in the last few bits. `None` (the
+/// default) means on unless the environment variable `ALKAHEST_JIT_HORNER`
+/// is `0`; `False` compiles every expression exactly as written.
 #[pyfunction]
-#[pyo3(name = "compile_expr", signature = (expr, inputs, expected_evals = None))]
+#[pyo3(
+    name = "compile_expr",
+    signature = (expr, inputs, expected_evals = None, *, optimize = None)
+)]
 fn py_compile_expr(
     py: Python<'_>,
     expr: &Bound<'_, PyAny>,
     inputs: &Bound<'_, PyList>,
     expected_evals: Option<u64>,
+    optimize: Option<bool>,
 ) -> PyResult<Py<PyAny>> {
+    let mut options = alkahest_core::CodegenOptions::default();
+    if let Some(on) = optimize {
+        options = options.with_horner(on);
+    }
     if expr.is_instance_of::<PyList>() || expr.is_instance_of::<PyTuple>() {
-        return py_compile_many(py, expr, inputs).map(|f| f.to_py_any(py));
+        return py_compile_many(py, expr, inputs, options).map(|f| f.to_py_any(py));
     }
     let expr: PyRef<PyExpr> = expr.extract()?;
-    py_compile_one(py, expr, inputs, expected_evals).map(|f| f.to_py_any(py))
+    py_compile_one(py, expr, inputs, expected_evals, options).map(|f| f.to_py_any(py))
 }
 
 fn warn_no_native_jit(py: Python<'_>) -> PyResult<()> {
@@ -12993,6 +13008,7 @@ fn py_compile_many(
     py: Python<'_>,
     exprs: &Bound<'_, PyAny>,
     inputs: &Bound<'_, PyList>,
+    options: alkahest_core::CodegenOptions,
 ) -> PyResult<PyCompiledVecFn> {
     let items: Vec<Bound<'_, PyAny>> = exprs.try_iter()?.collect::<PyResult<_>>()?;
     let Some(first) = items.first() else {
@@ -13014,8 +13030,14 @@ fn py_compile_many(
         .collect::<PyResult<_>>()?;
     let pool = pool_obj.borrow(py);
     guard_depth_all(&pool.inner, &out_ids)?;
-    let compiled = alkahest_core::compile_many(&out_ids, &input_ids, &pool.inner)
-        .map_err(jit_compile_error_to_py)?;
+    let compiled = alkahest_core::compile_many_with_options(
+        &out_ids,
+        &input_ids,
+        &pool.inner,
+        alkahest_core::CompileConfig::default(),
+        options,
+    )
+    .map_err(jit_compile_error_to_py)?;
     Ok(PyCompiledVecFn {
         inner: Arc::new(compiled),
     })
@@ -13026,6 +13048,7 @@ fn py_compile_one(
     expr: PyRef<PyExpr>,
     inputs: &Bound<'_, PyList>,
     expected_evals: Option<u64>,
+    options: alkahest_core::CodegenOptions,
 ) -> PyResult<PyCompiledFn> {
     warn_no_native_jit(py)?;
 
@@ -13044,8 +13067,9 @@ fn py_compile_one(
     let config = expected_evals
         .map(alkahest_core::CompileConfig::for_batch)
         .unwrap_or_default();
-    let compiled = core_compile_with(expr.id, &input_ids, &pool_ref.inner, config)
-        .map_err(jit_compile_error_to_py)?;
+    let compiled =
+        alkahest_core::compile_with_options(expr.id, &input_ids, &pool_ref.inner, config, options)
+            .map_err(jit_compile_error_to_py)?;
     drop(pool_ref);
 
     Ok(PyCompiledFn::with_source(
@@ -13053,6 +13077,7 @@ fn py_compile_one(
         expr.pool.clone_ref(py),
         expr.id,
         input_ids,
+        options,
     ))
 }
 
@@ -13214,6 +13239,7 @@ struct CompiledFnSource {
     pool: Py<PyExprPool>,
     expr: ExprId,
     inputs: Vec<ExprId>,
+    options: alkahest_core::CodegenOptions,
 }
 
 /// Smallest batch for which an interpreter-tier function is recompiled
@@ -13228,10 +13254,16 @@ impl PyCompiledFn {
         pool: Py<PyExprPool>,
         expr: ExprId,
         inputs: Vec<ExprId>,
+        options: alkahest_core::CodegenOptions,
     ) -> Self {
         PyCompiledFn {
             inner,
-            source: Some(CompiledFnSource { pool, expr, inputs }),
+            source: Some(CompiledFnSource {
+                pool,
+                expr,
+                inputs,
+                options,
+            }),
             batch: std::cell::RefCell::new(None),
         }
     }
@@ -13244,7 +13276,9 @@ impl PyCompiledFn {
     /// native code wins by an order of magnitude or more — so the first such
     /// call recompiles with that hint and caches the result on this object.
     /// Both tiers compute the same values (the backends' agreement tests are
-    /// bit-exact), so which one answers is a speed question only.
+    /// bit-exact), except in a polynomial sum the native tier's Horner pass
+    /// rewrote, which can differ in the last few bits (`optimize=False`
+    /// keeps the two identical).
     fn batch_fn(&self, py: Python<'_>, n_points: usize) -> Arc<alkahest_core::CompiledFn> {
         if let Some(f) = self.batch.borrow().as_ref() {
             return f.clone();
@@ -13267,11 +13301,12 @@ impl PyCompiledFn {
             let Ok(pool) = src.pool.try_borrow(py) else {
                 return self.inner.clone();
             };
-            core_compile_with(
+            alkahest_core::compile_with_options(
                 src.expr,
                 &src.inputs,
                 &pool.inner,
                 alkahest_core::CompileConfig::for_batch(n_points as u64),
+                src.options,
             )
         };
         let f = upgraded
@@ -13287,7 +13322,9 @@ impl PyCompiledFn {
 /// Calling it on one point returns a list with one value per output;
 /// `numpy_eval(f, xs, ys)` returns an array of shape `(n_outputs, *xs.shape)`.
 /// Subexpressions the outputs share are evaluated once per point, and every
-/// output equals what `compile_expr` of that expression alone returns.
+/// output equals what `compile_expr` of that expression alone returns on the
+/// same tier (a polynomial sum rewritten by the native tier's Horner pass is
+/// not rewritten on the interpreter tier; see `compile_expr(optimize=...)`).
 #[pyclass(name = "CompiledVecFn", unsendable)]
 struct PyCompiledVecFn {
     inner: Arc<alkahest_core::CompiledVecFn>,
@@ -13970,6 +14007,7 @@ impl PyCompileCache {
             expr.pool.clone_ref(py),
             expr.id,
             input_ids,
+            alkahest_core::CodegenOptions::default(),
         ))
     }
 
@@ -14896,18 +14934,50 @@ fn py_simplify_strategy(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<String>
 
 /// Convert a polynomial expression to Horner form.
 ///
-/// `expr` must be a univariate polynomial in `var`.
-/// Returns a new `Expr` in Horner form `a₀ + x*(a₁ + x*(…))`.
+/// With a single variable, `expr` must be a univariate polynomial in `var`
+/// with integer coefficients; the result is `a₀ + x*(a₁ + x*(…))`.
+///
+/// With a list or tuple of variables, or `None` (every free symbol), `expr`
+/// is a multivariate polynomial and the result is a nested Horner scheme:
+/// the variable occurring in the most terms is factored out first, ties going
+/// to the one listed first. Coefficients may be rationals, floats, constants
+/// or other symbols (parameters).
 #[pyfunction]
-#[pyo3(name = "horner")]
-fn py_horner(py: Python<'_>, expr: PyRef<PyExpr>, var: PyRef<PyExpr>) -> PyResult<PyExpr> {
-    same_pool!("horner"; expr, var);
+#[pyo3(name = "horner", signature = (expr, var = None))]
+fn py_horner(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    var: Option<&Bound<'_, PyAny>>,
+) -> PyResult<PyExpr> {
     let pool_py = expr.pool.clone_ref(py);
-    let result = {
-        let pool = pool_py.borrow(py);
-        guard_depth(&pool.inner, expr.id)?;
-        core_horner(expr.id, var.id, &pool.inner)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+    let to_value_err = |e: alkahest_core::poly::ConversionError| {
+        pyo3::exceptions::PyValueError::new_err(e.to_string())
+    };
+    let result = match var {
+        Some(v) if v.is_instance_of::<PyExpr>() => {
+            let v: PyRef<PyExpr> = v.extract()?;
+            same_pool!("horner"; expr, v);
+            let pool = pool_py.borrow(py);
+            guard_depth(&pool.inner, expr.id)?;
+            core_horner(expr.id, v.id, &pool.inner).map_err(to_value_err)?
+        }
+        _ => {
+            let vars: Vec<ExprId> = match var {
+                None => Vec::new(),
+                Some(v) if v.is_instance_of::<PyList>() || v.is_instance_of::<PyTuple>() => v
+                    .try_iter()?
+                    .map(|item| Ok(extract_expr_in(&item?, &pool_py, "horner", "a variable")?.id))
+                    .collect::<PyResult<_>>()?,
+                Some(_) => {
+                    return Err(PyTypeError::new_err(
+                        "horner(expr, var): var must be an Expr, a list/tuple of Expr, or None",
+                    ))
+                }
+            };
+            let pool = pool_py.borrow(py);
+            guard_depth(&pool.inner, expr.id)?;
+            alkahest_core::horner_multivariate(expr.id, &vars, &pool.inner).map_err(to_value_err)?
+        }
     };
     Ok(PyExpr {
         id: result,
