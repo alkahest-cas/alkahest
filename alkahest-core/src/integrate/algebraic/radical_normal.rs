@@ -361,8 +361,7 @@ pub(super) fn try_radical_normalize(
     let mut pieces: Vec<ExprId> = Vec::new();
     let mut sign_pieces: Vec<(ExprId, ExprId)> = Vec::new();
     let mut backs: Vec<(QPoly, ExprId)> = Vec::new();
-    for k in 0..4 {
-        let c = &elem.0[k];
+    for (k, c) in elem.0.iter().enumerate() {
         if F.is_zero(c) {
             continue;
         }
@@ -524,8 +523,7 @@ pub(crate) fn rationalize_algebraic_cofactor(
     let elem = to_biq(a, var, &groups, &ring, pool)?;
     let t = pool.mul(other);
     let mut terms = Vec::new();
-    for k in 0..4 {
-        let c = &elem.0[k];
+    for (k, c) in elem.0.iter().enumerate() {
         if F.is_zero(c) {
             continue;
         }
