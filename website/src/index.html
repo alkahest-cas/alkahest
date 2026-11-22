@@ -12,7 +12,7 @@
   <link rel="icon" type="image/svg+xml" href="/logo.svg" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -23,6 +23,9 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
       </button>
       <nav class="nav" id="nav" aria-label="Primary">
+        <a href="/#features">Features</a>
+        <a href="/#correctness">Correctness</a>
+        <a href="/#performance">Performance</a>
         <a href="/docs/">Docs</a>
         <a href="/playground/">Playground</a>
         <a href="/agent/">Agent</a>
@@ -68,126 +71,94 @@
       </div>
     </section>
 
-    <!-- ── Benchmarks ────────────────────────────────────────────────── -->
-    <section class="block bench-section" id="benchmarks">
-      <div class="wrap">
-        <p class="eyebrow">Benchmarks</p>
-        <h2 class="h2">Measured on the workloads people run.</h2>
-        <p class="lede">Median wall time against SymPy, SymEngine, NumPy and Mathematica, same machine, every answer checked. Losses included.</p>
-        <div class="bench-panel" id="hero-bench" aria-label="Benchmarks">
-          <div class="tabs" role="tablist" aria-label="Benchmark suite"></div>
-          <div class="bench-body"><div class="bench-empty">Loading benchmarks…</div></div>
-          <div class="bench-foot"><span class="bench-meta"></span><a href="#performance">Full tables and method ↓</a></div>
-        </div>
-      </div>
-    </section>
-
     <!-- ── Features ──────────────────────────────────────────────────── -->
     <section class="block" id="features">
       <div class="wrap">
-        <p class="eyebrow">Capabilities</p>
-        <h2 class="h2">A full CAS, and the machinery to run it fast.</h2>
-        <p class="lede">From Risch integration to Gröbner bases to curvature tensors — with native code generation for when you need numbers out the other end.</p>
-
+        <h2 class="h2">Full symbolic and exact numerical capabilities</h2>
         <div class="feature-groups">
           <div>
-            <h3 class="group-title">Mathematics <span>exact, symbolic, rigorous</span></h3>
+            <h3 class="group-title">Mathematics</h3>
             <div class="grid-3">
-              <article class="card feat">
+              <a class="card feat" href="/docs/guide/calculus/">
                 <h3>Calculus</h3>
-                <p>Differentiation, Risch integration (definite and indefinite), Gruntz limits, series and Laurent expansions, residues.</p>
-                <div class="api"><code>diff</code><code>integrate</code><code>limit</code><code>series</code></div>
-                <a class="more" href="/docs/guide/calculus/">Calculus guide →</a>
-              </article>
-              <article class="card feat">
-                <h3>Solving</h3>
-                <p>Polynomial systems via Gröbner bases over ℚ, triangular and primary decomposition, real root isolation, CAD, numerical fallback.</p>
-                <div class="api"><code>solve</code><code>real_roots</code><code>GroebnerBasis</code><code>cad_project</code></div>
-                <a class="more" href="/docs/guide/solving/">Solving guide →</a>
-              </article>
-              <article class="card feat">
+                <p>Derivatives, integrals, limits, series expansions and residues</p>
+                <span class="go" aria-hidden="true"><span class="shaft"></span><svg viewBox="0 0 10 12"><path d="M2 1l6 5-6 5"/></svg></span>
+              </a>
+              <a class="card feat" href="/docs/guide/solving/">
+                <h3>Solving equations</h3>
+                <p>Solve systems of polynomial equations exactly and find every real root</p>
+                <span class="go" aria-hidden="true"><span class="shaft"></span><svg viewBox="0 0 10 12"><path d="M2 1l6 5-6 5"/></svg></span>
+              </a>
+              <a class="card feat" href="/docs/guide/pari/">
                 <h3>Polynomials &amp; number theory</h3>
-                <p>FLINT-backed factorisation over ℤ and 𝔽ₚ, sparse GCD, resultants, Diophantine equations, LLL, PSLQ, and an optional PARI bridge.</p>
-                <div class="api"><code>UniPoly.factor_z</code><code>resultant</code><code>diophantine</code><code>guess_relation</code></div>
-                <a class="more" href="/docs/guide/pari/">Number theory →</a>
-              </article>
-              <article class="card feat">
+                <p>Factor polynomials, find common divisors and solve equations over the integers</p>
+                <span class="go" aria-hidden="true"><span class="shaft"></span><svg viewBox="0 0 10 12"><path d="M2 1l6 5-6 5"/></svg></span>
+              </a>
+              <a class="card feat" href="/docs/guide/telescoping/">
                 <h3>Sums &amp; recurrences</h3>
-                <p>Gosper and Zeilberger creative telescoping, WZ pair verification, closed-form definite sums, linear recurrence solving.</p>
-                <div class="api"><code>sum_definite</code><code>zeilberger</code><code>rsolve</code></div>
-                <a class="more" href="/docs/guide/telescoping/">Telescoping →</a>
-              </article>
-              <article class="card feat">
-                <h3>ODEs, DAEs &amp; controls</h3>
-                <p>Symbolic ODE solving, Σ-method index reduction for DAEs, sensitivities, exact Riccati/Lyapunov, transfer functions and state space.</p>
-                <div class="api"><code>ODE</code><code>pantelides</code><code>rosenfeld_groebner</code><code>lqr</code></div>
-                <a class="more" href="/docs/guide/ode-dae/">ODEs and DAEs →</a>
-              </article>
-              <article class="card feat">
+                <p>Find closed forms for sums, prove summation identities and solve recurrences</p>
+                <span class="go" aria-hidden="true"><span class="shaft"></span><svg viewBox="0 0 10 12"><path d="M2 1l6 5-6 5"/></svg></span>
+              </a>
+              <a class="card feat" href="/docs/guide/ode-dae/">
+                <h3>Differential equations &amp; controls</h3>
+                <p>Solve differential equations, simplify differential-algebraic systems and design controllers</p>
+                <span class="go" aria-hidden="true"><span class="shaft"></span><svg viewBox="0 0 10 12"><path d="M2 1l6 5-6 5"/></svg></span>
+              </a>
+              <a class="card feat" href="/docs/guide/specfun/">
                 <h3>Special functions &amp; tensors</h3>
-                <p>Gamma, zeta, Bessel, hypergeometric and elliptic families with asymptotics; metric → Ricci/Riemann curvature in exact arithmetic.</p>
-                <div class="api"><code>zeta</code><code>bessel_j</code><code>hyper</code><code>tensor</code></div>
-                <a class="more" href="/docs/guide/specfun/">Special functions →</a>
-              </article>
+                <p>Gamma, zeta, Bessel and hypergeometric functions, and the curvature of any metric</p>
+                <span class="go" aria-hidden="true"><span class="shaft"></span><svg viewBox="0 0 10 12"><path d="M2 1l6 5-6 5"/></svg></span>
+              </a>
             </div>
           </div>
-
           <div>
-            <h3 class="group-title">Infrastructure <span>from expression to machine code</span></h3>
+            <h3 class="group-title">Infrastructure</h3>
             <div class="grid-3">
-              <article class="card feat">
-                <h3>JIT compilation</h3>
-                <p>Compile any expression to native code with Cranelift (in every wheel) or LLVM, and evaluate it over NumPy arrays at array speed.</p>
-                <div class="api"><code>compile_expr</code><code>numpy_eval</code><code>numpy_eval_par</code></div>
-                <a class="more" href="/docs/guide/codegen/">Code generation →</a>
-              </article>
-              <article class="card feat">
+              <a class="card feat" href="/docs/guide/codegen/">
+                <h3>Compilation</h3>
+                <p>Compile expressions to native machine code and evaluate them over whole arrays</p>
+                <span class="go" aria-hidden="true"><span class="shaft"></span><svg viewBox="0 0 10 12"><path d="M2 1l6 5-6 5"/></svg></span>
+              </a>
+              <a class="card feat" href="/docs/guide/gpu/">
                 <h3>GPU &amp; export</h3>
-                <p>NVPTX kernels for CUDA, C99 with common-subexpression elimination, StableHLO/MLIR for XLA-style pipelines, JAX interop.</p>
-                <div class="api"><code>emit_c_vec</code><code>to_jax</code><code>to_stablehlo</code></div>
-                <a class="more" href="/docs/guide/gpu/">GPU guide →</a>
-              </article>
-              <article class="card feat">
-                <h3>E-graph simplification</h3>
-                <p>Equality saturation via egglog alongside a domain-aware rule engine, so rewriting explores alternatives instead of committing early.</p>
-                <div class="api"><code>simplify_egraph</code><code>simplify_trig</code><code>make_rule</code></div>
-                <a class="more" href="/docs/guide/egraph/">E-graphs →</a>
-              </article>
-              <article class="card feat">
+                <p>Export operations to kernels for GPUs and other accelerated hardware</p>
+                <span class="go" aria-hidden="true"><span class="shaft"></span><svg viewBox="0 0 10 12"><path d="M2 1l6 5-6 5"/></svg></span>
+              </a>
+              <a class="card feat" href="/docs/guide/egraph/">
+                <h3>Simplification</h3>
+                <p>Simplification uses both equality saturation and domain-aware rules to explore alternatives</p>
+                <span class="go" aria-hidden="true"><span class="shaft"></span><svg viewBox="0 0 10 12"><path d="M2 1l6 5-6 5"/></svg></span>
+              </a>
+              <a class="card feat" href="/docs/guide/ball-arithmetic/">
                 <h3>Rigorous numerics</h3>
-                <p>Arb ball arithmetic: every float carries a proven error bound. Validated ODE enclosures and certified signs over boxes.</p>
-                <div class="api"><code>ArbBall</code><code>interval_eval</code><code>verified_ode</code></div>
-                <a class="more" href="/docs/guide/ball-arithmetic/">Ball arithmetic →</a>
-              </article>
-              <article class="card feat">
-                <h3>Budgets &amp; cancellation</h3>
-                <p>Wall-clock, step and memory budgets on expensive paths, so a single bad candidate can’t stall an unattended search loop.</p>
-                <div class="api"><code>Budget</code><code>context</code><code>batch_map</code></div>
-                <a class="more" href="/docs/guide/budgets/">Budgets →</a>
-              </article>
-              <article class="card feat">
-                <h3>Rust core, Python surface</h3>
-                <p>A hash-consed Rust kernel with explicit representations (<code>Expr</code>, <code>UniPoly</code>, <code>MultiPoly</code>, <code>ArbBall</code>) and multi-core paths via Rayon.</p>
-                <div class="api"><code>ExprPool</code><code>UniPoly</code><code>MultiPoly</code></div>
-                <a class="more" href="/docs/guide/representations/">Representations →</a>
-              </article>
+                <p>Every numerical result carries a proven error bound</p>
+                <span class="go" aria-hidden="true"><span class="shaft"></span><svg viewBox="0 0 10 12"><path d="M2 1l6 5-6 5"/></svg></span>
+              </a>
+              <a class="card feat" href="/docs/guide/budgets/">
+                <h3>Budgets</h3>
+                <p>Time, step and memory limits stop an expensive call before it stalls your program</p>
+                <span class="go" aria-hidden="true"><span class="shaft"></span><svg viewBox="0 0 10 12"><path d="M2 1l6 5-6 5"/></svg></span>
+              </a>
+              <a class="card feat" href="/docs/guide/representations/">
+                <h3>Rust core</h3>
+                <p>A fast Rust engine under a Python interface, running on every core of your machine</p>
+                <span class="go" aria-hidden="true"><span class="shaft"></span><svg viewBox="0 0 10 12"><path d="M2 1l6 5-6 5"/></svg></span>
+              </a>
             </div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ── Verification ──────────────────────────────────────────────── -->
-    <section class="block" id="verification">
+    <!-- ── Correctness ───────────────────────────────────────────────── -->
+    <section class="block" id="correctness">
       <div class="wrap">
-        <p class="eyebrow">Built for agents</p>
-        <h2 class="h2">Answers an agent can check — or an honest refusal.</h2>
-        <p class="lede">An LLM can’t tell a plausible wrong answer from a right one. alkahest is designed so it doesn’t have to take the result on trust.</p>
+        <h2 class="h2">Results you can verify</h2>
 
         <div class="verify-grid">
           <article class="card vcard">
             <h3>Lean 4 certificates <span class="pill ok">certified</span></h3>
-            <p>Supported results export a Lean&nbsp;4 + Mathlib proof that typechecks independently of alkahest. The boundary is generated, not hand-maintained: <code>certifiable()</code> tells you up front whether a shape will certify.</p>
+            <p>Supported results come with a Lean&nbsp;4 proof that checks independently of alkahest. <code>certifiable()</code> tells you in advance whether a result will get one</p>
             <div class="code"><div class="label">r = ak.integrate(x**2, x, 0, 1); r.certificate  # tail of the Lean file</div><pre><code>example : ∫ x in ((0 : ℝ))..((1 : ℝ)), ((x : ℝ)) ^ (2 : ℕ) = (((1 : ℝ)) ^ (3 : ℕ) / (3)) - (((0 : ℝ)) ^ (3 : ℕ) / (3)) := by
   have hderiv : ∀ x ∈ Set.uIcc ((0 : ℝ)) ((1 : ℝ)),
       HasDerivAt (fun (x : ℝ) =&gt; (x) ^ (3 : ℕ) / (3)) (((x : ℝ)) ^ (2 : ℕ)) x := by
@@ -196,20 +167,20 @@
   have hint : IntervalIntegrable (fun (x : ℝ) =&gt; ((x : ℝ)) ^ (2 : ℕ)) MeasureTheory.volume ((0 : ℝ)) ((1 : ℝ)) :=
     (continuous_pow 2).intervalIntegrable _ _
   exact intervalIntegral.integral_eq_sub_of_hasDerivAt hderiv hint</code></pre></div>
-            <p class="stat"><strong>121</strong> certified shape classes in the <a href="/docs/guide/certificate-coverage/">coverage ledger</a>; every corpus certificate is typechecked against Mathlib in CI.</p>
+            <p class="stat"><strong>121</strong> kinds of result certified, listed in the <a href="/docs/guide/certificate-coverage/">coverage ledger</a> and checked against Mathlib in CI</p>
           </article>
 
           <article class="card vcard">
             <h3>Refuses instead of guessing <span class="pill warn">E-INT-004</span></h3>
-            <p>Every error has a stable code, a message that says why, and a remediation hint. A non-elementary integral is a proof of non-existence, not a timeout.</p>
-            <div class="code"><div class="label">ak.integrate(ak.exp(x**2), x)  # raises IntegrationError</div><pre class="wrap"><code>[E-INT-004] integrate: no elementary antiderivative exists: ∫ e^(x²) dx — the Risch differential equation v′ + (2·x)·v = 1 has no rational solution v(x), so no v(x)·e^(x²) is an antiderivative of e^(x²) (Risch structure theorem for the exponential extension e^(x²))
+            <p>When there is no answer, alkahest says so and says why. Every error has a stable code and a hint for what to do next</p>
+            <div class="code"><div class="label">ak.integrate(ak.exp(x**2), x)  # raises IntegrationError</div><pre class="wrap"><code>[E-INT-004] integrate: no elementary antiderivative exists: ∫ e^(x²) dx …
 Remediation: this integrand has no closed-form antiderivative in terms of elementary functions; use a numeric integrator or elliptic-integral library</code></pre></div>
-            <p class="stat">Wall-clock, step and memory <strong>budgets</strong> raise <code>E-BUDGET-*</code> instead of hanging an agent loop.</p>
+            <p class="stat">Time, step and memory <strong>budgets</strong> raise <code>E-BUDGET-*</code> so a long call never hangs your program</p>
           </article>
 
           <article class="card vcard">
-            <h3>Kani-verified kernels <span class="pill ok">model-checked</span></h3>
-            <p>The integer and modular-arithmetic kernels underneath — <code>mul_mod</code>, <code>pow_mod</code>, CRT steps, modular inverses, integer square roots, bytecode bounds in the evaluator — carry Kani proof harnesses checked over their full input width.</p>
+            <h3>Proven arithmetic kernels <span class="pill ok">model-checked</span></h3>
+            <p>The integer and modular arithmetic underneath everything is proven correct for every possible input with the Kani model checker</p>
             <div class="code"><div class="label">alkahest-core/src/modular/mod.rs</div><pre><code>#[kani::proof]
 <span class="tok-k">fn</span> mul_mod_in_range_full_width() {
     <span class="tok-k">let</span> a: u64 = kani::any();
@@ -217,45 +188,24 @@ Remediation: this integrand has no closed-form antiderivative in terms of elemen
     <span class="tok-k">let</span> m: u64 = kani::any_where(|m: &amp;u64| *m &gt; 0);
     <span class="tok-k">assert!</span>(mul_mod(a, b, m) &lt; m);
 }</code></pre></div>
-            <p class="stat"><strong>50</strong> proof harnesses across 16 modules; the full-width ones run on every pull request, the rest nightly.</p>
+            <p class="stat"><strong>50</strong> proofs across 16 modules, checked on every pull request and nightly</p>
           </article>
 
           <article class="card vcard">
-            <h3>Debuggable by construction</h3>
-            <p>Every transforming call returns a derivation log of the rewrite rules it applied, plus a versioned JSON envelope with a verification status — cheap to log, easy to diff when a run goes wrong.</p>
+            <h3>Every step on record</h3>
+            <p>Each result carries the list of rules that produced it and how it was verified, ready to log or compare</p>
             <div class="code"><div class="label">ak.integrate(x * ak.cos(x), x).to_dict(mode="compact")</div><pre><code>{
   "kind": "alkahest.derived_result",
-  "schema_version": 1,
-  "steps_schema_version": 1,
   "value": "(cos(x) + (x * sin(x)))",
-  "verification": {
-    "status": "exactly_verified",
-    "externally_verified": false
-  },
-  "certificate_status": {
-    "certifiable": true,
-    "reason": "emitted"
-  },
+  "verification": { "status": "exactly_verified" },
+  "certificate_status": { "certifiable": true },
   "steps": [
-    {
-      "r": "int_poly_trig_ibp"
-    },
-    {
-      "r": "const_fold"
-    },
-    {
-      "r": "mul_one"
-    },
-    {
-      "r": "mul_one"
-    },
-    {
-      "r": "const_fold"
-    }
-  ],
-  "has_certificate": true
+    { "r": "int_poly_trig_ibp" },
+    { "r": "const_fold" },
+    { "r": "mul_one" }, …
+  ]
 }</code></pre></div>
-            <p class="stat">Plus <code>crosscheck</code> for differential testing against another CAS, and claim graphs for session provenance.</p>
+            <p class="stat"><code>crosscheck</code> compares any answer against another computer algebra system</p>
           </article>
         </div>
       </div>
@@ -264,15 +214,13 @@ Remediation: this integrand has no closed-form antiderivative in terms of elemen
     <!-- ── Performance ───────────────────────────────────────────────── -->
     <section class="block" id="performance">
       <div class="wrap">
-        <div class="perf-head">
-          <div>
-            <p class="eyebrow">Performance</p>
-            <h2 class="h2">Every number, with its method.</h2>
-            <p class="lede">Median wall time on realistic workloads, same machine, every answer checked for correctness. Losses are included.</p>
-          </div>
+        <h2 class="h2">High performance on real workloads</h2>
+        <div class="bench-panel" id="bench" aria-label="Benchmarks">
+          <div class="tabs" role="tablist" aria-label="Benchmark suite"></div>
+          <div class="bench-legend" aria-hidden="true"><span><i class="sw me"></i>alkahest</span><span><i class="sw"></i>other systems</span><span><i class="sw timeout"></i>did not finish</span><span class="bench-scale">Median time, log scale, shorter is faster</span></div>
+          <div class="bench-body"><div class="bench-empty">Loading benchmarks…</div></div>
+          <details class="bench-method"><summary>How this was measured</summary><p id="perf-method"></p></details>
         </div>
-        <div class="perf-tables" id="perf-tables"></div>
-        <p class="method" id="perf-method"></p>
       </div>
     </section>
   </main>
@@ -280,7 +228,7 @@ Remediation: this integrand has no closed-form antiderivative in terms of elemen
   <footer>
     <div class="wrap">
       <div class="foot-top">
-        <p>Built by <a href="https://areggevorgyan.github.io/">Areg</a>.</p>
+        <p>Built by <a href="https://areggevorgyan.github.io/">Areg</a></p>
         <p>Contact: <a href="mailto:areg@umd.edu">areg@umd.edu</a></p>
       </div>
       <div class="foot-links">
@@ -314,9 +262,9 @@ Remediation: this integrand has no closed-form antiderivative in terms of elemen
         <div>
           <h4>More</h4>
           <ul>
-            <li><a href="#features">Capabilities</a></li>
-            <li><a href="#verification">Verification</a></li>
-            <li><a href="#performance">Benchmarks</a></li>
+            <li><a href="#features">Features</a></li>
+            <li><a href="#correctness">Correctness</a></li>
+            <li><a href="#performance">Performance</a></li>
             <li><a href="https://app.primeintellect.ai/dashboard/environments/alkahest/alkahest-symbolic-integration">RL environment</a></li>
           </ul>
         </div>

@@ -60,6 +60,7 @@
     sympy: "SymPy",
     symengine: "SymEngine",
     mathematica: "Mathematica",
+    mpmath: "mpmath",
     numpy: "NumPy",
     "sympy-lambdify": "SymPy lambdify",
     scipy: "SciPy",
@@ -131,79 +132,110 @@
   }
   const toUnit = (s, unit) => (unit === "s" ? s : unit === "us" || unit === "µs" ? s * 1e6 : s * 1000);
 
-  function renderHero(data) {
-    const card = document.getElementById("hero-bench");
+  // Median speedup against each other system, over the tasks where both finished.
+  function overview(suites) {
+    const cases = suites.flatMap((s) => s.cases);
+    const stats = {};
+    for (const c of cases) {
+      const me = c.results.find((r) => r.system === "alkahest");
+      if (!me || !done(me)) continue;
+      for (const r of c.results) {
+        if (r.system === "alkahest") continue;
+        const st = (stats[r.system] ||= { n: 0, ratios: [], k: 0, wins: 0, losses: 0, dnf: 0 });
+        st.n++;
+        if (!done(r)) { st.dnf++; continue; }
+        const ratio = c.higher_is_better ? me.value / r.value : r.value / me.value;
+        st.ratios.push(ratio);
+        st.k++;
+        if (ratio >= 1.05) st.wins++;
+        else if (ratio <= 0.95) st.losses++;
+      }
+    }
+    const order = ["sympy", "mathematica", "symengine", "numpy"];
+    const cards = order
+      .filter((x) => stats[x] && stats[x].n >= 3)
+      .map((x) => {
+        const st = stats[x];
+        const rs = st.ratios.sort((a, b) => a - b);
+        const mid = rs.length >> 1;
+        const g = rs.length % 2 ? rs[mid] : Math.sqrt(rs[mid - 1] * rs[mid]);
+        const loss = g < 0.95;
+        const big = loss ? `${fmtRatio(1 / g)} slower` : g < 1.05 ? "On par" : `${fmtRatio(g)} faster`;
+        const ties = st.k - st.wins - st.losses;
+        const strip =
+          "<i></i>".repeat(st.wins) + '<i class="t"></i>'.repeat(st.dnf) + '<i class="l"></i>'.repeat(ties + st.losses);
+        const name = SYSTEM_LABEL[x] || x;
+        const rec = [
+          `faster on ${st.wins + st.dnf} of ${st.n} tasks`,
+          st.dnf ? `${name} did not finish ${st.dnf}` : "",
+        ].filter(Boolean).join(", ");
+        return `<div class="ov"><div class="num${loss ? " loss" : ""}">${esc(big)}</div>
+          <div class="vs">than ${esc(name)} on the median task</div>
+          <div class="wl" role="img" aria-label="${esc(rec)}">${strip}</div>
+          <div class="rec">${esc(rec[0].toUpperCase() + rec.slice(1))}</div></div>`;
+      })
+      .join("");
+    // Biggest wins as bars, so the overview still shows the actual timings.
+    const top = cases
+      .map((c) => ({ c, h: headline(c) }))
+      .filter((x) => x.h && !x.h.loss)
+      .sort((a, b) => ratioOf(b.c) - ratioOf(a.c))
+      .slice(0, 4)
+      .map((x) => caseBars(x.c))
+      .join("");
+    return `<div class="overview">${cards}</div><div class="bench-grid">${top}</div>`;
+  }
+  const ratioOf = (c) => {
+    const me = c.results.find((r) => r.system === "alkahest");
+    const ok = c.results.filter((r) => r.system !== "alkahest" && done(r));
+    if (!me || !done(me)) return 0;
+    if (!ok.length) return 1e9;
+    return Math.min(...ok.map((r) => (c.higher_is_better ? me.value / r.value : r.value / me.value)));
+  };
+
+  function renderBench(data) {
+    const card = document.getElementById("bench");
     if (!card) return;
     const tablist = card.querySelector(".tabs");
     const body = card.querySelector(".bench-body");
     const suites = (data.suites || []).filter((s) => s.cases && s.cases.length);
     if (!suites.length) {
-      body.innerHTML = `<div class="bench-empty">Benchmarks are being regenerated.</div>`;
+      body.innerHTML = `<div class="bench-empty">Benchmarks are being regenerated</div>`;
       return;
     }
-    tablist.innerHTML = suites
+    const tabs = [{ id: "_overview", label: "Overview" }, ...suites.map((s) => ({ id: s.id, label: s.label.replace(" / ", " & ") }))];
+    tablist.innerHTML = tabs
       .map((s, i) => `<button class="tab" role="tab" aria-selected="${i === 0}" tabindex="${i === 0 ? 0 : -1}" data-suite="${esc(s.id)}">${esc(s.label)}</button>`)
       .join("");
     const show = (tab) => {
-      const s = suites.find((x) => x.id === tab.dataset.suite);
-      body.innerHTML = `${s.blurb ? `<p class="bench-blurb">${esc(s.blurb)}</p>` : ""}<div class="bench-grid">${s.cases.map(caseBars).join("")}</div>`;
+      const id = tab.dataset.suite;
+      if (id === "_overview") {
+        body.innerHTML = overview(suites);
+        return;
+      }
+      const s = suites.find((x) => x.id === id);
+      body.innerHTML = `<div class="bench-grid">${s.cases.map(caseBars).join("")}</div>`;
     };
     wireTabs(tablist, show);
     show(tablist.querySelector('[aria-selected="true"]'));
-    const meta = card.querySelector(".bench-meta");
-    if (meta) meta.textContent = `Median wall time, log scale · alkahest ${data.alkahest_version || ""}`;
-  }
 
-  function renderTables(data) {
-    const host = document.getElementById("perf-tables");
-    if (!host) return;
-    const suites = (data.suites || []).filter((s) => s.cases && s.cases.length);
-    host.innerHTML = suites
-      .map((s) => {
-        const systems = [];
-        for (const c of s.cases) for (const r of c.results) if (!systems.includes(r.system)) systems.push(r.system);
-        systems.sort((a, b) => (a === "alkahest" ? -1 : b === "alkahest" ? 1 : 0));
-        const versions = {};
-        for (const c of s.cases) for (const r of c.results) if (r.version) versions[r.system] = r.version;
-        const head = systems.map((x) => `<th>${esc(SYSTEM_LABEL[x] || x)}${versions[x] ? ` <span style="font-weight:400">${esc(versions[x])}</span>` : ""}</th>`).join("");
-        const rows = s.cases
-          .map((c) => {
-            const ok = c.results.filter(done);
-            const best = ok.length ? ok.reduce((a, b) => (better(c, a.value, b.value) ? a : b)).system : null;
-            const cells = systems
-              .map((x) => {
-                const r = c.results.find((y) => y.system === x);
-                if (!r) return `<td class="num">—</td>`;
-                const txt = done(r) ? fmt(r.value, c.unit) : failText(r, c);
-                const cls = ["num", x === "alkahest" ? "me" : "", x === best ? "best" : ""].join(" ");
-                return `<td class="${cls}"${r.note ? ` title="${esc(r.note)}"` : ""}>${esc(txt)}</td>`;
-              })
-              .join("");
-            const h = headline(c);
-            return `<tr><td><span class="task">${esc(c.task)}</span>${c.detail ? `<span class="det">${esc(c.detail)}</span>` : ""}${c.note ? `<details class="note"><summary>Note</summary>${esc(c.note)}</details>` : ""}</td>${cells}<td class="num">${h ? esc(h.text) : ""}</td></tr>`;
-          })
-          .join("");
-        return `<div class="perf-suite"><h3>${esc(s.label)}</h3>${s.blurb ? `<p>${esc(s.blurb)}</p>` : ""}
-          <div class="table-scroll"><table class="perf"><thead><tr><th>Task</th>${head}<th>alkahest vs best other</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
-      })
-      .join("");
     const m = document.getElementById("perf-method");
     if (m) {
-      m.innerHTML = `alkahest ${esc(data.alkahest_version || "")}${data.alkahest_commit ? ` (${esc(data.alkahest_commit)})` : ""}, generated ${esc(data.generated || "")} on ${esc(data.machine || "one machine")}. ` +
+      const versions = {};
+      for (const s of suites) for (const c of s.cases) for (const r of c.results) if (r.version && r.system !== "alkahest") versions[r.system] = r.version;
+      const vs = Object.entries(versions).map(([k, v]) => `${SYSTEM_LABEL[k] || k} ${v}`).join(", ");
+      m.innerHTML =
+        `alkahest ${esc(data.alkahest_version || "")} against ${esc(vs)}, run ${esc(data.generated || "")} on ${esc(data.machine || "one machine")}. ` +
         `${esc(data.methodology || "")} ` +
-        `Reproduce with <code>python benchmarks/website/run_all.py</code> — ` +
-        `<a href="https://github.com/alkahest-cas/alkahest/blob/main/benchmarks/website/RESULTS.md">full results and caveats</a>.`;
+        `Reproduce with <code>python benchmarks/website/run_all.py</code>, or read the <a href="https://github.com/alkahest-cas/alkahest/blob/main/benchmarks/website/RESULTS.md">full results and caveats</a>`;
     }
   }
 
   fetch("/data/benchmarks.json")
     .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-    .then((data) => {
-      renderHero(data);
-      renderTables(data);
-    })
+    .then(renderBench)
     .catch(() => {
-      const body = document.querySelector("#hero-bench .bench-body");
-      if (body) body.innerHTML = `<div class="bench-empty">Benchmarks unavailable.</div>`;
+      const body = document.querySelector("#bench .bench-body");
+      if (body) body.innerHTML = `<div class="bench-empty">Benchmarks unavailable</div>`;
     });
 })();

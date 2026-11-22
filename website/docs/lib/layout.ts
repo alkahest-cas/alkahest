@@ -14,7 +14,6 @@ export type Page = {
   title: string; // <h1>
   docTitle?: string; // <title> prefix; defaults to title
   description: string;
-  eyebrow?: string;
   section: "home" | "guide" | "api";
   body: string;
   headings: Heading[];
@@ -40,6 +39,7 @@ const ARROW_EXT =
   '<svg class="ext" viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M4 2h6v6M10 2 3 9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
 const EDIT_ICON =
   '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61Zm.176 4.823L9.75 4.81l-6.286 6.287a.253.253 0 0 0-.064.108l-.558 1.953 1.953-.558a.253.253 0 0 0 .108-.064Zm1.238-3.763a.25.25 0 0 0-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 0 0 0-.354Z"/></svg>';
+const GH_ICON = `<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>`;
 
 // The root of the GitHub Pages site (the landing page lives at "/").
 function siteRoot(base: string): string {
@@ -138,12 +138,12 @@ export function renderPage(p: Page, guide: NavGroup[], api: NavGroup[], base: st
 <meta property="og:title" content="${escapeHtml(docTitle)}">
 <meta property="og:description" content="${escapeHtml(p.description)}">
 <meta property="og:type" content="website">
-<meta name="theme-color" content="#f8f7f3">
+<meta name="theme-color" content="#f6f6f6">
 <meta name="color-scheme" content="light">
 <link rel="icon" type="image/svg+xml" href="${base}assets/logo.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="${base}assets/style.css?v=${version}">
 ${p.math ? `<link rel="stylesheet" href="${base}assets/katex/katex.min.css">` : ""}
 <script defer src="${base}assets/app.js?v=${version}"></script>
@@ -160,13 +160,12 @@ ${sidebar(guide, api, p, base)}
 <div class="scrim" data-drawer-close></div>
 <main class="main" id="content">
   <article class="doc${p.section === "api" ? " doc-api" : ""}${p.wide ? " doc-home" : ""}">
-    ${p.eyebrow ? `<div class="eyebrow">${escapeHtml(p.eyebrow)}</div>` : ""}
     ${p.wide ? "" : `<h1>${escapeHtml(p.title)}</h1>`}
     ${p.body}
   </article>
   ${pager(p)}
   <footer class="doc-foot">
-    ${p.editUrl ? `<a href="${p.editUrl}" rel="noopener">${EDIT_ICON}Edit on GitHub</a>` : "<span></span>"}
+    ${p.editUrl ? `<a href="${p.editUrl}" rel="noopener">${GH_ICON}GitHub</a>` : "<span></span>"}
     <span class="foot-meta">alkahest ${escapeHtml(version)} · <a href="https://areggevorgyan.github.io/" rel="noopener">Built by Areg</a></span>
   </footer>
 </main>
