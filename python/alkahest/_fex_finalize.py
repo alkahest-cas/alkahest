@@ -244,14 +244,10 @@ def snap_candidates(
             if _close(c.value(), v, rel_tol * 2.0 ** -c.cost()):
                 found.setdefault(c, "rational" if not m else "constant")
     # Two-term relations v = r0 + r1*K with PSLQ.
-    try:
-        from . import PslqError  # type: ignore[attr-defined]
-    except ImportError:  # pragma: no cover
-        PslqError = Exception
     for n, (kv, _kc) in _BASIS.items():
         try:
             rel = _ak.guess_relation([v, 1.0, kv], max_abs_coeff=max_den)
-        except (PslqError, ValueError, ArithmeticError):
+        except Exception:  # E-PSLQ refusals and bad input both mean "no relation"
             rel = None
         if rel and rel[0] != 0 and rel[1] != 0 and rel[2] != 0:
             a, b, c = rel
@@ -840,6 +836,7 @@ def _operator_concrete(
         for x in spatial:
             t = _ak.diff(_ak.diff(u, x).value, x).value
             lap = t if lap is None else lap + t
+        assert lap is not None, "a Laplacian needs a spatial coordinate"
         r = -lap
         if kind == "cubic_schrodinger":
             r = r + u**3
@@ -1002,8 +999,17 @@ def _box_from_points(pts: np.ndarray | None, default: tuple[float, float]) -> tu
     return (lo, hi)
 
 
-def _exact_bound(v: float) -> Const | None:
+def _exact_bound(v: float) -> Const:
+    """A domain bound as an exact constant (a float is a dyadic rational
+    when it has no simpler exact form)."""
     c = _exact_float(v)
+    return c if c is not None else Const.rational(Fraction(v))
+
+
+def _family_float(v: float) -> Const:
+    c = _exact_float(v)
+    if c is None:
+        raise _err("E-FEX-010", f"the family constant {v!r} has no exact form; pass an Expr")
     return c
 
 
@@ -1120,7 +1126,7 @@ def finalize(
                 v
                 if v is None or isinstance(v, _ak.Expr)
                 else (
-                    _exact_float(v).to_expr(fpool)
+                    _family_float(v).to_expr(fpool)
                     if isinstance(v, float)
                     else _qexpr(Fraction(v), fpool)
                 )
@@ -1723,12 +1729,14 @@ def _lift_and_verify(tpl, e, fixed, groups, problem, kind, time, domain, family,
             for t in terms[1:]:
                 s = s + t
             return s
+        assert nd.a is not None
         if nd.kind == "unary":
             a = build(nd.a)
             if a is None:
                 return None
             o = offs[nd.slot]
             return P(o) * _unary(unary[e[nd.slot]], a, pool) + P(o + 1)
+        assert nd.b is not None
         a = build(nd.a)
         b = build(nd.b)
         if a is None or b is None:
@@ -1865,6 +1873,7 @@ def _lift_and_verify(tpl, e, fixed, groups, problem, kind, time, domain, family,
             best = (v, mp, score)
         elif v["verified"]:
             others.append({"expr": _simp(_ak.subs(u_ph, mp)), "family": family_of(mp)})
+    assert best is not None
     v, mp, _score = best
     report.update(v)
     report["interior_verified"] = _interior_verified(v)

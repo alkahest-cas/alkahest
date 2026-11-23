@@ -156,6 +156,7 @@ def hasderiv_term(e: Any, s: Any, names: dict) -> str:
                 continue
             t = hasderiv_term(c, s, names)
             acc = t if acc is None else f"({acc}.mul {t})"
+        assert acc is not None, "a product mentioning s has a factor mentioning s"
         if const_prefix:
             acc = f"({acc}.const_mul ({' * '.join(const_prefix)}))"
         return acc
