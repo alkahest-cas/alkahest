@@ -1049,7 +1049,7 @@ fn quadratic_contribution(
 /// half-integer `x` (`π^s` multiples for even `s`, `zeta(s)` for odd `s`),
 /// `trigamma` for `s = 2`, else the `hurwitz_zeta(s, x)` node; `None` only
 /// for a non-positive literal start.
-fn hurwitz_zeta(s: usize, x: ExprId, pool: &ExprPool) -> Option<ExprId> {
+pub(super) fn hurwitz_zeta(s: usize, x: ExprId, pool: &ExprPool) -> Option<ExprId> {
     let pi = pool.symbol("pi", Domain::Real);
     if let Some(v) = literal(pool, x) {
         let half = Rational::from((1, 2));
@@ -1359,7 +1359,7 @@ fn infinite_rational(term: ExprId, k: ExprId, lo: ExprId, pool: &ExprPool) -> Ou
 /// `ψ(x) + γ` at a literal `x` that is a positive integer or a positive
 /// half-integer: `H_{x−1}`, resp. `−2·log 2 + Σ_{j=1}^{n} 2/(2j−1)` for
 /// `x = n + 1/2`. `None` elsewhere (or past [`MAX_TELESCOPE_TERMS`]).
-fn digamma_without_gamma(x: ExprId, pool: &ExprPool) -> Option<ExprId> {
+pub(super) fn digamma_without_gamma(x: ExprId, pool: &ExprPool) -> Option<ExprId> {
     let v = literal(pool, x)?;
     if v <= 0 {
         return None;

@@ -5,6 +5,7 @@ pub mod asymptotic_common;
 pub mod euler_maclaurin;
 pub mod fps;
 pub mod gruntz;
+mod limit_stirling;
 pub mod limits;
 pub mod multilimit;
 pub mod opaque;

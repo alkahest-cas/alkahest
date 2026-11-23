@@ -187,6 +187,31 @@ _FUNC_NAMES = frozenset(
         "coth",
         # Desugared to ``u ** Fraction(1, 3)``; see ``_apply_func``.
         "cbrt",
+        # SymPy spellings with a Python constructor but no node of their own,
+        # desugared to their definitions (mirrors ``desugar_call`` in
+        # ``alkahest-core/src/parse.rs``): factorial/binomial through gamma,
+        # harmonic through digamma (or zeta/hurwitz_zeta for an order m >= 2),
+        # the inverse reciprocal functions through atan/acos/asin/atanh/acosh/
+        # asinh of 1/u, erfi(u) = -I*erf(I*u), and the aliases Abs and ln.
+        "factorial",
+        "binomial",
+        "harmonic",
+        "acot",
+        "asec",
+        "acsc",
+        "acoth",
+        "asech",
+        "acsch",
+        "erfi",
+        "Abs",
+        "ln",
+        # Complex parts and extrema (nodes of their own).
+        "re",
+        "im",
+        "arg",
+        "conjugate",
+        "min",
+        "max",
     }
 )
 
@@ -202,6 +227,19 @@ _RECIPROCAL_BASE: dict[str, str] = {
     "sech": "cosh",
     "csch": "sinh",
     "coth": "tanh",
+}
+
+# Inverse reciprocal functions: ``acot(u) = atan(1/u)`` and so on, the
+# principal-branch identities on the reals (SymPy's conventions).  Desugared
+# like the reciprocal functions above; mirrors ``desugar_call`` in
+# ``alkahest-core/src/parse.rs``.
+_INVERSE_RECIPROCAL_BASE: dict[str, str] = {
+    "acot": "atan",
+    "asec": "acos",
+    "acsc": "asin",
+    "acoth": "atanh",
+    "asech": "acosh",
+    "acsch": "asinh",
 }
 
 # ---------------------------------------------------------------------------
@@ -798,6 +836,19 @@ def _apply_func(name: str, args: list, offset: int, pool=None):
         "beta": _ak.beta,
         "uppergamma": _ak.uppergamma,
         "lowergamma": _ak.lowergamma,
+        # Not nodes: built from their definitions by the Python constructors
+        # (``factorial(n) = gamma(n + 1)``, exact for an integer literal).
+        "factorial": _ak.factorial,
+        "binomial": _ak.binomial,
+        "harmonic": _ak.harmonic,
+        "Abs": _ak.abs,
+        "ln": _ak.log,
+        "re": _ak.re,
+        "im": _ak.im,
+        "arg": _ak.arg,
+        "conjugate": _ak.conjugate,
+        "min": _ak.min,
+        "max": _ak.max,
     }
     # ``hyper(p, q, a1..ap, b1..bq, z)`` — the printed form of
     # ``alkahest.hyper([a…], [b…], z)``; the two leading integers split the
@@ -847,6 +898,30 @@ def _apply_func(name: str, args: list, offset: int, pool=None):
                 span=(offset, offset + len(name)),
             )
         return _funcs[base](*args) ** -1
+    base = _INVERSE_RECIPROCAL_BASE.get(name)
+    if base is not None:
+        if len(args) != 1:
+            raise ParseError(
+                f"{name} takes exactly 1 argument, got {len(args)}",
+                span=(offset, offset + len(name)),
+            )
+        inverse = {
+            "atan": _ak.atan,
+            "acos": _ak.acos,
+            "asin": _ak.asin,
+            "atanh": _ak.atanh,
+            "acosh": _ak.acosh,
+            "asinh": _ak.asinh,
+        }[base]
+        return inverse(args[0] ** -1)
+    if name == "erfi":
+        if len(args) != 1:
+            raise ParseError(
+                f"erfi takes exactly 1 argument, got {len(args)}",
+                span=(offset, offset + len(name)),
+            )
+        i = args[0]._pool.imaginary_unit() if pool is None else pool.imaginary_unit()
+        return -i * _ak.erf(i * args[0])
 
     fn = _funcs.get(name)
     if fn is None:
@@ -854,7 +929,15 @@ def _apply_func(name: str, args: list, offset: int, pool=None):
             f"unknown function {name!r}",
             span=(offset, offset + len(name)),
             remediation=(
-                f"known functions: {', '.join(sorted(set(_funcs) | set(_RECIPROCAL_BASE)))}"
+                "known functions: "
+                + ", ".join(
+                    sorted(
+                        set(_funcs)
+                        | set(_RECIPROCAL_BASE)
+                        | set(_INVERSE_RECIPROCAL_BASE)
+                        | {"erfi"}
+                    )
+                )
             ),
         )
     # A wrong argument count (``sin()``, ``sin(x, x)``, ``EllipticPi(x)``) is
@@ -862,7 +945,7 @@ def _apply_func(name: str, args: list, offset: int, pool=None):
     # the constructor, which is not an ``AlkahestError`` at all.
     lo, hi = _ARITY.get(name, (1, 1))
     if not lo <= len(args) <= hi:
-        want = str(lo) if lo == hi else f"{lo} or {hi}"
+        want = f"at least {lo}" if hi >= 1 << 30 else str(lo) if lo == hi else f"{lo} or {hi}"
         noun = "argument" if lo == hi == 1 else "arguments"
         raise ParseError(
             f"{name} takes {want} {noun}, got {len(args)}",
@@ -902,6 +985,10 @@ _ARITY: dict[str, tuple[int, int]] = {
     "beta": (2, 2),
     "uppergamma": (2, 2),
     "lowergamma": (2, 2),
+    "binomial": (2, 2),
+    "harmonic": (1, 2),
+    "min": (2, 1 << 30),
+    "max": (2, 1 << 30),
 }
 
 

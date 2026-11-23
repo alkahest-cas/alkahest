@@ -462,6 +462,41 @@ const KNOWN_FUNCS: &[&str] = &[
     // principal-branch convention the rest of the pool already uses for
     // fractional powers.
     "cbrt",
+    // Desugared to their definitions in `desugar_call`: the Python API has a
+    // constructor for each, and SymPy-syntax input uses these spellings, but
+    // none is a node of its own.
+    //
+    // * `factorial(n) → gamma(n + 1)`, `binomial(n, k) → Γ(n+1)/(Γ(k+1)Γ(n−k+1))`
+    //   (exact integers for integer literals), as `alkahest.factorial` /
+    //   `alkahest.binomial` build them;
+    // * `harmonic(n) → digamma(n + 1) + EulerGamma`, `harmonic(n, m) →
+    //   zeta(m) − hurwitz_zeta(m, n + 1)` (exact rationals for a literal `n`);
+    // * the inverse reciprocal functions through their principal-branch
+    //   identities on the reals: `acot(u) → atan(1/u)`, `asec(u) → acos(1/u)`,
+    //   `acsc(u) → asin(1/u)`, `acoth(u) → atanh(1/u)`, `asech(u) →
+    //   acosh(1/u)`, `acsch(u) → asinh(1/u)` (SymPy's conventions);
+    // * `erfi(u) → −I·erf(I·u)`;
+    // * the aliases `Abs → abs` and `ln → log`.
+    "factorial",
+    "binomial",
+    "harmonic",
+    "acot",
+    "asec",
+    "acsc",
+    "acoth",
+    "asech",
+    "acsch",
+    "erfi",
+    "Abs",
+    "ln",
+    // Complex parts and extrema: nodes of their own, with Python
+    // constructors, that the parser did not know.
+    "re",
+    "im",
+    "arg",
+    "conjugate",
+    "min",
+    "max",
 ];
 
 fn is_known_func(name: &str) -> bool {
@@ -484,6 +519,117 @@ fn reciprocal_base(name: &str) -> Option<&'static str> {
         "coth" => Some("tanh"),
         _ => None,
     }
+}
+
+/// Largest integer literal for which `factorial(n)`, `binomial(n, k)` and
+/// `harmonic(n)` are folded to an exact number at parse time; a larger literal
+/// stays symbolic (`gamma(n + 1)`, …), so a typo cannot ask the parser for a
+/// hundred-thousand-digit integer.
+const MAX_EXACT_FOLD: u64 = 10_000;
+
+/// The SymPy-spelling functions that are not nodes of their own; see the note
+/// at the end of [`KNOWN_FUNCS`].  `None` when `name` is not one of them,
+/// `Some(Err(message))` at the wrong arity or on a pole.
+fn desugar_call(name: &str, args: &[ExprId], pool: &ExprPool) -> Option<Result<ExprId, String>> {
+    let arity = |lo: usize, hi: usize| -> Result<(), String> {
+        if (lo..=hi).contains(&args.len()) {
+            Ok(())
+        } else if lo == hi {
+            Err(format!("{name} takes {lo} argument(s), got {}", args.len()))
+        } else {
+            Err(format!(
+                "{name} takes {lo} to {hi} arguments, got {}",
+                args.len()
+            ))
+        }
+    };
+    let small_int = |e: ExprId| -> Option<i64> {
+        match pool.get(e) {
+            ExprData::Integer(n) => n.0.to_i64().filter(|v| v.unsigned_abs() <= MAX_EXACT_FOLD),
+            _ => None,
+        }
+    };
+    let one = || pool.integer(1_i32);
+    let inv = |e: ExprId| pool.pow(e, pool.integer(-1_i32));
+    let gamma_of_succ = |e: ExprId| pool.func("gamma", vec![pool.add(vec![e, one()])]);
+    let r = match name {
+        "Abs" => arity(1, 1).map(|_| pool.func("abs", args.to_vec())),
+        "ln" => arity(1, 1).map(|_| pool.func("log", args.to_vec())),
+        "acot" | "asec" | "acsc" | "acoth" | "asech" | "acsch" => arity(1, 1).map(|_| {
+            let base = match name {
+                "acot" => "atan",
+                "asec" => "acos",
+                "acsc" => "asin",
+                "acoth" => "atanh",
+                "asech" => "acosh",
+                _ => "asinh",
+            };
+            pool.func(base, vec![inv(args[0])])
+        }),
+        "erfi" => arity(1, 1).map(|_| {
+            let i = pool.imaginary_unit();
+            let inner = pool.func("erf", vec![pool.mul(vec![i, args[0]])]);
+            pool.mul(vec![pool.integer(-1_i32), i, inner])
+        }),
+        "factorial" => arity(1, 1).and_then(|_| match small_int(args[0]) {
+            Some(n) if n < 0 => Err(format!(
+                "factorial({n}) is undefined: gamma(n + 1) has a pole at every negative integer n"
+            )),
+            Some(n) => Ok(pool.integer(rug::Integer::from(rug::Integer::factorial(n as u32)))),
+            None => Ok(gamma_of_succ(args[0])),
+        }),
+        "binomial" => arity(2, 2).map(|_| match (small_int(args[0]), small_int(args[1])) {
+            (Some(_), Some(k)) if k < 0 => pool.integer(0_i32),
+            (Some(n), Some(k)) => pool.integer(rug::Integer::from(n).binomial(k as u32)),
+            _ => {
+                let (n, k) = (args[0], args[1]);
+                let nmk = pool.add(vec![n, pool.mul(vec![pool.integer(-1_i32), k])]);
+                pool.mul(vec![
+                    gamma_of_succ(n),
+                    inv(gamma_of_succ(k)),
+                    inv(gamma_of_succ(nmk)),
+                ])
+            }
+        }),
+        "harmonic" => arity(1, 2).and_then(|_| {
+            let order = match args.get(1) {
+                None => Some(1),
+                Some(&m) => small_int(m),
+            };
+            match (small_int(args[0]), order) {
+                (Some(n), Some(m)) if n >= 0 && m >= 0 => {
+                    let mut acc = rug::Rational::new();
+                    for j in 1..=n {
+                        acc += rug::Rational::from((
+                            1,
+                            rug::Integer::from(rug::Integer::u_pow_u(j as u32, m as u32)),
+                        ));
+                    }
+                    let (num, den) = acc.into_numer_denom();
+                    Ok(pool.rational(num, den))
+                }
+                (_, Some(1)) => Ok(pool.add(vec![
+                    pool.func("digamma", vec![pool.add(vec![args[0], one()])]),
+                    pool.symbol("EulerGamma", Domain::Real),
+                ])),
+                (_, Some(m)) if m >= 2 => {
+                    let me = pool.integer(m);
+                    Ok(pool.add(vec![
+                        pool.func("zeta", vec![me]),
+                        pool.mul(vec![
+                            pool.integer(-1_i32),
+                            pool.func("hurwitz_zeta", vec![me, pool.add(vec![args[0], one()])]),
+                        ]),
+                    ]))
+                }
+                _ => Err("harmonic(n, m) needs an integer literal order m >= 1 \
+                     (or non-negative integer literals n and m)"
+                    .to_string()),
+            }
+        }),
+        _ => return None,
+    };
+    Some(r)
 }
 
 // ---------------------------------------------------------------------------
@@ -794,6 +940,10 @@ impl<'a> Parser<'a> {
             }
             let third = self.pool.rational(1_i64, 3_i64);
             return Ok(self.pool.pow(args[0], third));
+        }
+
+        if let Some(r) = desugar_call(name, &args, self.pool) {
+            return r.map_err(|msg| ParseError::syntax(msg, (offset, offset + name.len())));
         }
 
         // A built-in name at the wrong arity (`sin()`, `sin(x, x)`,

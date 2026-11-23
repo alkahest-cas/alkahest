@@ -811,7 +811,15 @@ fn eval_func(name: &str, a: &[f64]) -> Option<f64> {
         // no information instead of a fake disagreement.  Reachable because
         // the separable class inverts `k·log y + m·y = T` through `W`.
         "lambert_w" => return crate::special::lambert_w0(x),
-        _ => return None,
+        // Every other registered primitive through its own `f64` kernel —
+        // the Airy and Bessel bases the special-function classes return, and
+        // their derivatives (`bessel_y(ν ± 1, x)`, `airy_ai_prime`), have to
+        // be sampled like `sin`. A non-finite value is no information.
+        _ => {
+            return crate::jit::registry()
+                .numeric_f64(name, a)
+                .filter(|v| v.is_finite())
+        }
     })
 }
 

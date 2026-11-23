@@ -1223,6 +1223,39 @@ def binomial(n, k):
     return gamma(n_e + 1) / (gamma(k_e + 1) * gamma(n_e - k_e + 1))
 
 
+def harmonic(n, m=1):
+    """The harmonic number ``H_n = Σ_{j=1}^{n} 1/j`` (order *m*: ``Σ 1/j^m``).
+
+    For a non-negative integer ``n`` (Python ``int`` or integer literal) and
+    integer ``m >= 0`` this is the exact rational. Otherwise it is built from
+    its analytic continuation: ``digamma(n + 1) + EulerGamma`` for ``m = 1``
+    and ``zeta(m) - hurwitz_zeta(m, n + 1)`` for an integer ``m >= 2`` —
+    the form :func:`sum_definite` returns for ``Σ_{k=1}^{n} 1/k``. There is no
+    ``harmonic`` node: like :func:`factorial` and :func:`binomial`, the
+    result is an ordinary expression that differentiates, evaluates and
+    simplifies through the functions it is made of.
+    """
+    ni, mi = _integer_value(n), _integer_value(m)
+    pool = _pool_of(n, m)
+    if mi is None:
+        raise ValueError("harmonic(n, m): the order m must be an integer")
+    if ni is not None and ni >= 0 and mi >= 0:
+        acc = _Fraction(0)
+        for j in range(1, ni + 1):
+            acc += _Fraction(1, j**mi)
+        return pool.rational(acc.numerator, acc.denominator)
+    n_e = _as_expr_in(n, pool)
+    if mi == 1:
+        return digamma(n_e + 1) + pool.euler_gamma()
+    if mi >= 2:
+        m_e = pool.integer(mi)
+        return zeta(m_e) - hurwitz_zeta(m_e, n_e + 1)
+    raise ValueError(
+        "harmonic(n, m) is defined here for an integer order m >= 1 "
+        "(or non-negative integers n and m)"
+    )
+
+
 def _pool_of(*args):
     """The pool of the first ``Expr`` among *args*, else :func:`_ambient_pool`."""
     for a in args:
@@ -3673,6 +3706,7 @@ __all__ = [
     "guess_relation",
     "hankel1",
     "hankel2",
+    "harmonic",
     "hermite_h",
     "hermite_he",
     # Phase 24

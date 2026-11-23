@@ -511,7 +511,13 @@ fn reduction_of_order_variable_coefficients() {
         "ypp - yp/x - x",               // y₁ = 1, forced
     ] {
         let (_, _, sol) = solve_src(2, src);
-        assert_eq!(sol.method, "reduction_of_order");
+        // `x` and `x²` both solve the first: two polynomial solutions are a
+        // fundamental system without any quadrature.
+        assert!(
+            ["reduction_of_order", "polynomial_solutions"].contains(&sol.method),
+            "`{src}`: {}",
+            sol.method
+        );
         assert_eq!(sol.constants.len(), 2, "`{src}`: wrong constant count");
     }
 }
@@ -1304,4 +1310,349 @@ fn candidate_wrong_away_from_origin_is_refused() {
         ]),
     ]);
     assert!(residual_is_zero(&input, cand, &[], &p).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Airy, Bessel and y-absent second order (special_linear)
+// ---------------------------------------------------------------------------
+
+/// Solve `build(x, y, y', y'') = 0`, assert one verified explicit branch whose
+/// text mentions `needle`, with two constants.
+fn special_case(
+    build: impl Fn(&ExprPool, ExprId, ExprId, ExprId, ExprId) -> ExprId,
+    needle: &str,
+    method: &str,
+) {
+    let (p, x, y) = setup();
+    let (input, yp, ypp) = OdeInput::second_order(x, y, &p);
+    let input = input.with_equation(build(&p, x, y, yp, ypp));
+    let res = solve_all(&input, &p).expect("solves");
+    let sol = &res.solutions[0];
+    assert_verifies(&input, sol, &p);
+    let text = p.display(explicit_of(sol)).to_string();
+    assert!(text.contains(needle), "{text}");
+    assert_eq!(sol.method, method);
+    assert_eq!(sol.constants.len(), 2);
+}
+
+#[test]
+fn airy_equation() {
+    // y'' − x y = 0
+    special_case(
+        |p, x, y, _yp, ypp| p.add(vec![ypp, p.mul(vec![p.integer(-1_i32), x, y])]),
+        "airy_ai",
+        "airy",
+    );
+}
+
+#[test]
+fn airy_equation_scaled_and_shifted_with_damping() {
+    // y'' + 2y' − (8x + 1) y = 0
+    special_case(
+        |p, x, y, yp, ypp| {
+            let q = p.add(vec![p.mul(vec![p.integer(8_i32), x]), p.integer(1_i32)]);
+            p.add(vec![
+                ypp,
+                p.mul(vec![p.integer(2_i32), yp]),
+                p.mul(vec![p.integer(-1_i32), q, y]),
+            ])
+        },
+        "airy_bi",
+        "airy",
+    );
+}
+
+#[test]
+fn bessel_order_zero() {
+    // x² y'' + x y' + x² y = 0
+    special_case(
+        |p, x, y, yp, ypp| {
+            let x2 = p.pow(x, p.integer(2_i32));
+            p.add(vec![
+                p.mul(vec![x2, ypp]),
+                p.mul(vec![x, yp]),
+                p.mul(vec![x2, y]),
+            ])
+        },
+        "bessel_j",
+        "bessel",
+    );
+}
+
+#[test]
+fn modified_bessel_scaled_argument() {
+    // x² y'' + x y' − (4x² + 1) y = 0  →  I_1(2x), K_1(2x)
+    special_case(
+        |p, x, y, yp, ypp| {
+            let x2 = p.pow(x, p.integer(2_i32));
+            let q = p.add(vec![p.mul(vec![p.integer(4_i32), x2]), p.integer(1_i32)]);
+            p.add(vec![
+                p.mul(vec![x2, ypp]),
+                p.mul(vec![x, yp]),
+                p.mul(vec![p.integer(-1_i32), q, y]),
+            ])
+        },
+        "bessel_k",
+        "bessel",
+    );
+}
+
+#[test]
+fn bessel_family_with_power_prefactor() {
+    // x y'' + 2 y' + x y = 0  →  x^{−1/2} J_{1/2}(x), x^{−1/2} Y_{1/2}(x)
+    special_case(
+        |p, x, y, yp, ypp| {
+            p.add(vec![
+                p.mul(vec![x, ypp]),
+                p.mul(vec![p.integer(2_i32), yp]),
+                p.mul(vec![x, y]),
+            ])
+        },
+        "bessel_y",
+        "bessel",
+    );
+}
+
+#[test]
+fn y_absent_nonlinear_second_order() {
+    // y'' − y'² = 0
+    special_case(
+        |p, _x, _y, yp, ypp| {
+            p.add(vec![
+                ypp,
+                p.mul(vec![p.integer(-1_i32), p.pow(yp, p.integer(2_i32))]),
+            ])
+        },
+        "log",
+        "reduction_of_order_y_absent",
+    );
+}
+
+#[test]
+fn imaginary_bessel_order_is_not_claimed() {
+    // x² y'' + x y' + (x² + 1) y = 0 has ν² = −1: whatever is returned must
+    // verify, and it is not a real-order Bessel basis.
+    let (p, x, y) = setup();
+    let (input, yp, ypp) = OdeInput::second_order(x, y, &p);
+    let x2 = p.pow(x, p.integer(2_i32));
+    let eq = p.add(vec![
+        p.mul(vec![x2, ypp]),
+        p.mul(vec![x, yp]),
+        p.mul(vec![p.add(vec![x2, p.integer(1_i32)]), y]),
+    ]);
+    let input = input.with_equation(eq);
+    if let Ok(res) = solve_all(&input, &p) {
+        for sol in &res.solutions {
+            assert_verifies(&input, sol, &p);
+            assert_ne!(sol.method, "bessel");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Exact characteristic roots, Euler of any order, x-absent, polynomial
+// solutions, symbolic Bernoulli
+// ---------------------------------------------------------------------------
+
+/// No `Float` node anywhere in `e`.
+fn has_float(e: ExprId, p: &ExprPool) -> bool {
+    match p.get(e) {
+        ExprData::Float(_) => true,
+        ExprData::Add(xs) | ExprData::Mul(xs) | ExprData::Func { args: xs, .. } => {
+            xs.iter().any(|&a| has_float(a, p))
+        }
+        ExprData::Pow { base, exp } => has_float(base, p) || has_float(exp, p),
+        _ => false,
+    }
+}
+
+/// Solve `build(x, y, derivs) = 0` of the given order and return the branch.
+fn solve_order(
+    order: usize,
+    build: impl Fn(&ExprPool, ExprId, ExprId, &[ExprId]) -> ExprId,
+) -> (ExprPool, OdeInput, DsolveBranch) {
+    let (p, x, y) = setup();
+    let (input, ds) = OdeInput::higher_order(x, y, order, &p);
+    let eq = build(&p, x, y, &ds);
+    let input = input.with_equation(eq);
+    let res = solve_all(&input, &p).expect("solves");
+    let sol = res.solutions[0].clone();
+    (p, input, sol)
+}
+
+#[test]
+fn third_order_cube_roots_of_unity_are_exact() {
+    // y''' − y = 0: e^x, e^{−x/2}cos(√3x/2), e^{−x/2}sin(√3x/2) — no floats.
+    let (p, input, sol) = solve_order(3, |p, _x, y, d| {
+        p.add(vec![d[2], p.mul(vec![p.integer(-1_i32), y])])
+    });
+    assert_verifies(&input, &sol, &p);
+    let y = explicit_of(&sol);
+    assert!(!has_float(y, &p), "{}", p.display(y));
+    assert!(
+        p.display(y).to_string().contains("sqrt(3)"),
+        "{}",
+        p.display(y)
+    );
+}
+
+#[test]
+fn quartic_x4_plus_1_characteristic() {
+    // y'''' + y = 0: λ⁴ + 1 is irreducible over ℚ; roots (±1 ± i)/√2.
+    let (p, input, sol) = solve_order(4, |p, _x, y, d| p.add(vec![d[3], y]));
+    assert_verifies(&input, &sol, &p);
+    assert!(!has_float(explicit_of(&sol), &p));
+    assert_eq!(sol.constants.len(), 4);
+}
+
+#[test]
+fn irreducible_cubic_with_one_real_root() {
+    // y''' − 2y = 0: λ = ∛2 and a complex pair.
+    let (p, input, sol) = solve_order(3, |p, _x, y, d| {
+        p.add(vec![d[2], p.mul(vec![p.integer(-2_i32), y])])
+    });
+    assert_verifies(&input, &sol, &p);
+    assert!(!has_float(explicit_of(&sol), &p));
+}
+
+#[test]
+fn repeated_complex_roots_with_resonant_forcing() {
+    // y'''' + 2y'' + y = sin x: (λ² + 1)², forcing resonant twice.
+    let (p, input, sol) = solve_order(4, |p, x, y, d| {
+        p.add(vec![
+            d[3],
+            p.mul(vec![p.integer(2_i32), d[1]]),
+            y,
+            p.mul(vec![p.integer(-1_i32), p.func("sin", vec![x])]),
+        ])
+    });
+    assert_verifies(&input, &sol, &p);
+    assert!(!has_float(explicit_of(&sol), &p));
+}
+
+#[test]
+fn sqrt_two_roots_are_radicals() {
+    // y'' − 2y = 0: e^{±√2 x}.
+    let (p, input, sol) = solve_order(2, |p, _x, y, d| {
+        p.add(vec![d[1], p.mul(vec![p.integer(-2_i32), y])])
+    });
+    assert_verifies(&input, &sol, &p);
+    let y = explicit_of(&sol);
+    assert!(!has_float(y, &p));
+    assert!(p.display(y).to_string().contains("sqrt(2)"));
+}
+
+#[test]
+fn third_order_euler_cauchy() {
+    // x³y''' + xy' − y = 0: indicial (m − 1)³, basis x, x log x, x log² x.
+    let (p, input, sol) = solve_order(3, |p, x, y, d| {
+        p.add(vec![
+            p.mul(vec![p.pow(x, p.integer(3_i32)), d[2]]),
+            p.mul(vec![x, d[0]]),
+            p.mul(vec![p.integer(-1_i32), y]),
+        ])
+    });
+    assert_verifies(&input, &sol, &p);
+    assert_eq!(sol.method, "euler_cauchy");
+    assert_eq!(sol.constants.len(), 3);
+}
+
+#[test]
+fn autonomous_reduction_gives_an_explicit_solution() {
+    // y·y'' − y'² = 0  →  y = C·e^{Kx}.
+    let (p, input, sol) = solve_order(2, |p, _x, y, d| {
+        p.add(vec![
+            p.mul(vec![y, d[1]]),
+            p.mul(vec![p.integer(-1_i32), p.pow(d[0], p.integer(2_i32))]),
+        ])
+    });
+    assert_verifies(&input, &sol, &p);
+    assert_eq!(sol.method, "autonomous_x_absent");
+    assert_eq!(sol.constants.len(), 2);
+}
+
+#[test]
+fn autonomous_reduction_implicit_answer_verifies() {
+    // y'' = 2y³: ∫dy/√(y⁴ + C₁) is elliptic; whatever comes back is verified,
+    // explicit or implicit (second-order implicit gate).
+    let (p, x, y) = setup();
+    let (input, ds) = OdeInput::higher_order(x, y, 2, &p);
+    let eq = p.add(vec![
+        ds[1],
+        p.mul(vec![p.integer(-2_i32), p.pow(y, p.integer(3_i32))]),
+    ]);
+    let input = input.with_equation(eq);
+    if let Ok(res) = solve_all(&input, &p) {
+        let sol = &res.solutions[0];
+        match sol.form {
+            SolutionForm::Explicit(e) => {
+                residual_is_zero(&input, e, &sol.constants, &p).expect("verifies")
+            }
+            SolutionForm::Implicit(g) => {
+                special_linear::second_order_implicit_is_zero(&input, g, &sol.constants, &p)
+                    .expect("verifies")
+            }
+        }
+    }
+}
+
+#[test]
+fn second_order_implicit_gate_rejects_a_wrong_relation() {
+    // y'' = y with the (wrong) relation y² − x − C₂ = 0.
+    let (p, x, y) = setup();
+    let (input, ds) = OdeInput::higher_order(x, y, 2, &p);
+    let input = input.with_equation(p.add(vec![ds[1], p.mul(vec![p.integer(-1_i32), y])]));
+    let c2 = p.symbol("C2", Domain::Real);
+    let g = p.add(vec![
+        p.pow(y, p.integer(2_i32)),
+        p.mul(vec![p.integer(-1_i32), x]),
+        p.mul(vec![p.integer(-1_i32), c2]),
+    ]);
+    assert!(special_linear::second_order_implicit_is_zero(&input, g, &[c2], &p).is_err());
+}
+
+#[test]
+fn legendre_two_polynomial_or_reduced_basis() {
+    // (1 − x²)y'' − 2xy' + 6y = 0: P₂ plus a second solution.
+    let (p, input, sol) = solve_order(2, |p, x, y, d| {
+        let x2 = p.pow(x, p.integer(2_i32));
+        p.add(vec![
+            p.mul(vec![
+                p.add(vec![p.integer(1_i32), p.mul(vec![p.integer(-1_i32), x2])]),
+                d[1],
+            ]),
+            p.mul(vec![p.integer(-2_i32), x, d[0]]),
+            p.mul(vec![p.integer(6_i32), y]),
+        ])
+    });
+    assert_verifies(&input, &sol, &p);
+    assert_eq!(sol.constants.len(), 2);
+}
+
+#[test]
+fn bernoulli_with_a_symbolic_exponent() {
+    // y' + y − yⁿ = 0
+    let (p, x, y) = setup();
+    let n = p.symbol("n", Domain::Real);
+    let (input, yp) = OdeInput::first_order(x, y, &p);
+    let eq = p.add(vec![yp, y, p.mul(vec![p.integer(-1_i32), p.pow(y, n)])]);
+    let input = input.with_equation(eq);
+    let res = solve_all(&input, &p).expect("solves");
+    assert_eq!(res.solutions[0].method, "bernoulli");
+    assert_verifies(&input, &res.solutions[0], &p);
+}
+
+#[test]
+fn riccati_with_a_reciprocal_particular_solution() {
+    // y' + y² − 2/x² = 0, particular 2/x.
+    let (p, x, y) = setup();
+    let (input, yp) = OdeInput::first_order(x, y, &p);
+    let eq = p.add(vec![
+        yp,
+        p.pow(y, p.integer(2_i32)),
+        p.mul(vec![p.integer(-2_i32), p.pow(x, p.integer(-2_i32))]),
+    ]);
+    let input = input.with_equation(eq);
+    let res = solve_all(&input, &p).expect("solves");
+    assert_verifies(&input, &res.solutions[0], &p);
 }
