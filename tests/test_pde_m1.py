@@ -156,10 +156,18 @@ def test_all_returns_one_per_tier(xy):
     assert len({s.method for s in sols}) == len(sols)
 
 
-def test_second_order_refused_for_now(xy):
+def test_second_order_goes_to_m2(xy):
     p, x, y, U, u = xy  # noqa: RUF059
+    sol = akx.pdsolve(akx.D(u, x, 2) - akx.D(u, y, 2), u)
+    assert sol.method == "second_order"
+    assert sol.verified
+    assert sol.kind == "general"
+    # heat: no general closed form; the M2 tier returns a labelled family
+    heat = akx.pdsolve(akx.D(u, x, 2) - akx.D(u, y), u)
+    assert heat.kind == "particular"
+    # third order is still outside every tier
     with pytest.raises(akx.PdeError) as ei:
-        akx.pdsolve(akx.D(u, x, 2) - akx.D(u, y), u)
+        akx.pdsolve(akx.D(u, x, 3) - akx.D(u, y), u)
     assert ei.value.code == "E-PDE-050"
 
 

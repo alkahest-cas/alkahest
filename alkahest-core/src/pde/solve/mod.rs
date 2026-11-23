@@ -63,6 +63,7 @@ pub(crate) mod cauchy;
 pub(crate) mod integrals;
 pub(crate) mod linear;
 pub(crate) mod nonlinear;
+pub(crate) mod second_order_tier;
 pub(crate) mod util;
 
 use util::*;
@@ -241,6 +242,15 @@ pub static TIERS: &[Tier] = &[
         applies: |c| c.order == 1 && c.affine.is_none() && c.indep.len() == 2,
         solve: nonlinear::solve_charpit,
     },
+    Tier {
+        name: "second_order",
+        milestone: "M2",
+        description: "linear second order in two variables: ODE in one variable, factored \
+                      symbol (d'Alembert), exponential shift, Laplace cascade, canonical form; \
+                      d'Alembert's formula for Cauchy data",
+        applies: |c| c.order == 2 && c.indep.len() == 2,
+        solve: second_order_tier::solve,
+    },
 ];
 
 /// The valid `hint` names, in preference order.
@@ -277,6 +287,8 @@ pub struct Ctx<'a> {
     pub(crate) taken: HashSet<String>,
     pub(crate) arb: ArbitraryFunctions,
     pub(crate) failures: Vec<String>,
+    /// The arbitrary-function prefix requested in the options.
+    pub(crate) prefix: String,
 }
 
 impl<'a> Ctx<'a> {
@@ -334,6 +346,7 @@ impl<'a> Ctx<'a> {
             taken,
             arb,
             failures: Vec::new(),
+            prefix: opts.function_prefix.clone(),
         };
         if order == 1 {
             ctx.affine = ctx.affine_form(pool);
@@ -426,10 +439,12 @@ fn run(
         }
     }
     let mut ctx = Ctx::new(problem, opts, pool)?;
-    if ctx.order != 1 {
+    if ctx.order > 2 || (ctx.order == 2 && ctx.indep.len() != 2) {
         return Err(PdeError::PdsolveUnsupported(format!(
-            "order-{} equations are not solved yet (milestone M1 covers first order)",
-            ctx.order
+            "order-{} equations in {} variables are not solved yet (M1: first order; \
+             M2: second order in two variables)",
+            ctx.order,
+            ctx.indep.len()
         )));
     }
     let has_data = !problem.conditions().is_empty();
@@ -453,7 +468,8 @@ fn run(
         let mut got = false;
         let mut expanded: Vec<Candidate> = Vec::new();
         for cand in cands {
-            if has_data {
+            // M2 candidates already satisfy their Cauchy data (d'Alembert).
+            if has_data && tier.milestone != "M2" {
                 match cauchy::impose(&mut ctx, cand, pool) {
                     Ok(cs) => expanded.extend(cs),
                     Err(e) => {

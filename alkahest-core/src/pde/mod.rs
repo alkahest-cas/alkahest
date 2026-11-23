@@ -51,8 +51,8 @@ pub mod jet;
 pub(crate) mod numeric;
 pub mod problem;
 pub mod root_family;
-pub mod solve;
 pub mod second_order;
+pub mod solve;
 pub mod sum;
 pub mod transform;
 pub mod verify;
@@ -67,13 +67,13 @@ pub use problem::{ArbitraryFunctions, ConditionKind, PdeCondition, PdeDomain, Pd
 pub use root_family::{
     member, root_family_enclosure, root_family_parts, root_of_family, ROOT_OF_FAMILY,
 };
-pub use solve::{
-    pdsolve, pdsolve_all, pdsolve_hints, PdeSolution, PdeSolutionKind, PdsolveOptions, Tier, TIERS,
-};
 pub use second_order::{
     canonical_form, canonical_forms, laplace_cascade, laplace_invariants, solve_second_order,
     solve_second_order_with, CanonicalForm, SecondOrderOptions, SecondOrderSolution,
     DEFAULT_CASCADE_STEPS,
+};
+pub use solve::{
+    pdsolve, pdsolve_all, pdsolve_hints, PdeSolution, PdeSolutionKind, PdsolveOptions, Tier, TIERS,
 };
 pub use sum::{
     alpha_normalize, coefficient, expand_finite_sums, expand_sum, indexed, indexed_parts,
