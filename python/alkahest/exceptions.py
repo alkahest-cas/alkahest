@@ -1059,6 +1059,44 @@ class CrossCheckError(AlkahestError):
         super().__init__(message, code=code, remediation=remediation, span=span)
 
 
+class NumericPdeError(AlkahestError):
+    """Symbolic discretisation or scheme analysis was refused.
+
+    Raised by :mod:`alkahest.experimental.numeric_pde` (PDE milestone M7a:
+    finite-difference weights, stencils, spectral matrices, von Neumann and
+    modified-equation analysis). The ``E-PDE-350 … E-PDE-399`` block is
+    reserved for this layer; the codes are raised from Python only.
+
+    - ``E-PDE-350`` — malformed stencil: repeated offsets, too few points for
+      the derivative order, a negative order, or an unknown stencil name.
+    - ``E-PDE-351`` — a coefficient is not exact or not a (Laurent)
+      polynomial in the declared symbols (a float, ``sin(r)``, ``1/(1+r)``).
+    - ``E-PDE-352`` — a scheme expression is not a linear combination of
+      grid values ``u(n + l, j + k)`` with integer shifts.
+    - ``E-PDE-353`` — the analysis supports one space dimension only, or a
+      scheme with no time level.
+    - ``E-PDE-354`` — the scheme is inconsistent: it does not preserve
+      constant states (``Σ a_{l,k} ≠ 0``), so no modified equation exists.
+    - ``E-PDE-355`` — the principal amplification root is not simple at
+      ``θ = 0`` (``∂Φ/∂g (1, 0) = 0``).
+    - ``E-PDE-356`` — the leading time level vanishes identically, so the
+      scheme does not determine the new level.
+    - ``E-PDE-357`` — an invalid spectral-matrix request (``N`` too small,
+      unsupported derivative order).
+    - ``E-PDE-358`` — kernel generation failed (no JIT, or an expression
+      with a free symbol the kernel does not bind).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-PDE-350",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)
+
+
 class SmtError(AlkahestError):
     """An SMT-LIB export, solver invocation, or model lift failed.
 

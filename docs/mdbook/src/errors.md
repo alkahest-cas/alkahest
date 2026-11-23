@@ -24,6 +24,7 @@ AlkahestError (base)
 ├── CudaError         (E-CUDA-*)   — NVPTX compile, kernel launch, or driver, see [GPU support](./gpu.md)
 ├── PoolError         (E-POOL-*)   — ExprPool misuse
 ├── AnsatzError       (E-ANSATZ-*) — ansatz family construction or fitting, see [Ansatz families](./ansatz.md)
+├── NumericPdeError   (E-PDE-350…358) — discretisation and scheme analysis, see [Numerical PDE analysis](./numeric-pde.md)
 ├── CrossCheckError   (E-XCHECK-*) — cross-CAS check could not be posed, see [Cross-CAS testing](./crosscheck.md)
 ├── SmtError          (E-SMT-*)    — SMT-LIB export, solver run, or model lift, see [SMT bridge](./smt.md)
 ├── VectorError       (E-VEC-*)    — vector calculus over an orthogonal chart, see below
@@ -319,6 +320,7 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-CERT-*` | `CertificateUnavailableError` | A Lean certificate was required but withheld |
 | `E-BUDGET-*` | `BudgetExceededError` | Budget/cancellation trip — see [Budgets, cancellation, and determinism](./budgets.md) |
 | `E-ANSATZ-*` | `AnsatzError` | Ansatz family construction and fitting — see [Ansatz families](./ansatz.md) |
+| `E-PDE-350` … `E-PDE-358` | `NumericPdeError` | `alkahest.experimental.numeric_pde` (raised from Python): `350` malformed stencil (repeated offsets, too few points, unknown stencil), `351` a coefficient that is a float or not a (Laurent) polynomial / rational function, `352` a scheme expression not linear in `u(n + l, j + k)` with integer shifts, `353` unsupported (more than one space dimension, one time level), `354` scheme does not preserve constants, `355` principal root not simple at θ = 0, `356` newest time level vanishes, `357` invalid spectral-matrix request, `358` kernel generation failed. The rest of `E-PDE-350…399` is reserved for this layer — see [Numerical PDE analysis](./numeric-pde.md) |
 | `E-XCHECK-*` | `CrossCheckError` | Cross-CAS differential testing — see [Cross-CAS testing](./crosscheck.md) |
 | `E-SMT-*` | `SmtError` | SMT-LIB export, solver invocation, model lift — see [SMT bridge](./smt.md) |
 | `E-PARI-*` | `PariError` (`PariUnavailable` for `001`) | Optional PARI/GP interop — `001` no binding, `002` unsupported input, `003` PARI answer failed Alkahest verification, `004` PARI itself raised — see [PARI interop](./pari.md) |
