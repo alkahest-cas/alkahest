@@ -13,6 +13,8 @@
 //! A candidate that cannot be evaluated anywhere (overflow, zero
 //! denominator) comes back with loss `+∞`.
 
+#![allow(clippy::needless_range_loop)]
+
 use super::error::FexError;
 use super::eval::{Evaluator, NodeOp};
 
@@ -109,12 +111,12 @@ pub fn fit(
 ) -> Result<FitResult, FexError> {
     let ops = ev.resolve(e)?;
     ev.template().check_params(theta0)?;
-    if matches!(opts.method, FitMethod::Lm { .. }) {
-        if ev.problem().loss() != super::problem::LossKind::LeastSquares {
-            return Err(FexError::LossKind {
-                detail: "Levenberg-Marquardt needs a least-squares problem".into(),
-            });
-        }
+    if matches!(opts.method, FitMethod::Lm { .. })
+        && ev.problem().loss() != super::problem::LossKind::LeastSquares
+    {
+        return Err(FexError::LossKind {
+            detail: "Levenberg-Marquardt needs a least-squares problem".into(),
+        });
     }
     let mask = freeze_mask(ev, e, opts)?;
     Ok(fit_ops(ev, &ops, theta0, opts, mask.as_deref()))

@@ -490,6 +490,26 @@ Exception subclasses
    A budget trip during either solver raises :exc:`BudgetExceededError` with
    the same ``incumbent`` / ``incumbent_fun`` / ``bound`` attributes.
 
+.. exception:: FexError
+
+   Code prefix ``E-FEX-*``. The experimental Finite Expression Method engine
+   (:mod:`alkahest.fex`). All are refusals of malformed input; a candidate
+   that overflows, divides by zero or takes ``log`` of a non-positive number
+   is never an error — it is scored with loss ``+inf``.
+
+   - ``E-FEX-001`` — the tree shape does not parse, or is too large
+   - ``E-FEX-002`` — an operator name is not in the unary or binary table
+   - ``E-FEX-003`` — an opcode vector has the wrong length or an opcode is
+     out of range for its slot
+   - ``E-FEX-004`` — a parameter vector has the wrong length
+   - ``E-FEX-005`` — a point, opcode or parameter array has the wrong shape
+   - ``E-FEX-006`` — the PDE operator mentions a symbol that is not a jet
+     symbol or coordinate, or cannot be differentiated or compiled
+   - ``E-FEX-007`` — the template and problem dimensions disagree, or the
+     time coordinate is out of range
+   - ``E-FEX-008`` — a residual vector (or Levenberg–Marquardt) was asked of
+     a Rayleigh-quotient or normalised loss
+
 .. exception:: JitError
 
    Code prefix ``E-JIT-*``. LLVM/JIT compilation or linking error.

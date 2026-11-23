@@ -32,6 +32,8 @@
 //! invalid: its residuals are `+∞`, its Jacobian rows zero and its loss
 //! `+∞`. Nothing returns NaN.
 
+#![allow(clippy::needless_range_loop)]
+
 use std::sync::OnceLock;
 
 use super::error::FexError;
@@ -295,7 +297,7 @@ impl Evaluator {
             .collect()
     }
 
-    /// Forward sweep at point `p` of `blk`; the root jet ends up in the last
+    /// Forward sweep at point `p` (of the block `tabs` was resolved for); the root jet ends up in the last
     /// stride of `s.jets`.
     #[allow(clippy::too_many_arguments)]
     fn forward(
@@ -303,7 +305,6 @@ impl Evaluator {
         ops: &[NodeOp],
         tabs: &[Option<&LeafTable>],
         th: &[f64],
-        blk: &Block,
         p: usize,
         order: u8,
         s: &mut Scratch,
@@ -655,7 +656,7 @@ impl Evaluator {
         for (ri, row) in (row0..row0 + r.len()).enumerate() {
             if row < self.int.n {
                 let p = row;
-                self.forward(ops, ti, th, &self.int, p, self.order, s);
+                self.forward(ops, ti, th, p, self.order, s);
                 let w = self.int.weight;
                 let f = self.operator(p, s);
                 let rv = w * (f - self.int.target[p]);
@@ -674,7 +675,7 @@ impl Evaluator {
                 }
             } else {
                 let p = row - self.int.n;
-                self.forward(ops, tb, th, &self.bd, p, 0, s);
+                self.forward(ops, tb, th, p, 0, s);
                 let w = self.bd.weight;
                 let rv = w * (s.jets[root] - self.bd.target[p]);
                 if !rv.is_finite() {
@@ -969,7 +970,7 @@ impl Evaluator {
             for row in r0..r1 {
                 if row < self.int.n {
                     let p = row;
-                    self.forward(ops, &ti, th, &self.int, p, self.order, &mut s);
+                    self.forward(ops, &ti, th, p, self.order, &mut s);
                     let w = self.int.weight;
                     let rv = w * (self.operator(p, &mut s) - self.int.target[p]);
                     if !rv.is_finite() {
@@ -982,7 +983,7 @@ impl Evaluator {
                     }
                 } else {
                     let p = row - self.int.n;
-                    self.forward(ops, &tb, th, &self.bd, p, 0, &mut s);
+                    self.forward(ops, &tb, th, p, 0, &mut s);
                     let w = self.bd.weight;
                     let rv = w * (s.jets[root] - self.bd.target[p]);
                     if !rv.is_finite() {
@@ -1041,7 +1042,7 @@ impl Evaluator {
             for row in r0..r1 {
                 if row < self.int.n {
                     let p = row;
-                    self.forward(ops, &ti, th, &self.int, p, order, &mut s);
+                    self.forward(ops, &ti, th, p, order, &mut s);
                     let u = s.jets[root];
                     if rayleigh {
                         let g = &s.jets[root + 2..root + st];
@@ -1054,7 +1055,7 @@ impl Evaluator {
                     }
                 } else {
                     let p = row - self.int.n;
-                    self.forward(ops, &tb, th, &self.bd, p, 0, &mut s);
+                    self.forward(ops, &tb, th, p, 0, &mut s);
                     let rv = self.bd.weight * (s.jets[root] - self.bd.target[p]);
                     bd += rv * rv;
                 }
@@ -1083,7 +1084,7 @@ impl Evaluator {
             for row in r0..r1 {
                 if row < self.int.n {
                     let p = row;
-                    self.forward(ops, &ti, th, &self.int, p, order, &mut s);
+                    self.forward(ops, &ti, th, p, order, &mut s);
                     let u = s.jets[root];
                     let n_adj = s.adj.len();
                     s.adj[..n_adj].fill(0.0);
@@ -1112,7 +1113,7 @@ impl Evaluator {
                     self.backward(ops, &ti, th, p, order, &mut s, &mut g);
                 } else {
                     let p = row - self.int.n;
-                    self.forward(ops, &tb, th, &self.bd, p, 0, &mut s);
+                    self.forward(ops, &tb, th, p, 0, &mut s);
                     let w = self.bd.weight;
                     let rv = w * (s.jets[root] - self.bd.target[p]);
                     self.seed_root(&mut s, 2.0 * rv * w, false);
@@ -1153,7 +1154,7 @@ impl Evaluator {
             lap: Vec::with_capacity(n),
         };
         for p in 0..n {
-            self.forward(&ops, &tabs, theta, &blk, p, 2, &mut s);
+            self.forward(&ops, &tabs, theta, p, 2, &mut s);
             out.u.push(s.jets[root]);
             out.lap.push(s.jets[root + 1]);
             out.grad.extend_from_slice(&s.jets[root + 2..root + st]);
@@ -1187,7 +1188,7 @@ impl Evaluator {
         let root = (n - 1) * st;
         let mut out = vec![0.0; st * np];
         for comp in 0..st {
-            self.forward(&ops, &tabs, theta, &blk, 0, 2, &mut s);
+            self.forward(&ops, &tabs, theta, 0, 2, &mut s);
             s.adj[..n * st].fill(0.0);
             s.adj[root + comp] = 1.0;
             self.backward(&ops, &tabs, theta, 0, 2, &mut s, &mut out[comp * np..(comp + 1) * np]);

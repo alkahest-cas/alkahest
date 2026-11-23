@@ -2,6 +2,8 @@
 //! interpreter-vs-instantiate agreement, canonicalisation invariants,
 //! overflow guards, fitting, and error codes.
 
+#![allow(clippy::needless_range_loop)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -180,7 +182,7 @@ fn fused_derivatives_with_time_and_division_and_log() {
     let t = Template::new("U(B(L,L))", &u, &b, 3).unwrap();
     // log( (L[sq]) / (L[exp]) ) with positive weights: argument > 0.
     let e = [1, 0, 2, 3];
-    let th = [0.7, 0.4, 0.9, 0.3, 0.5, 0.2, 0.6, 0.8, 1.1, 1.3, -0.2];
+    let th = [0.7, 0.4, 0.9, 0.3, 0.5, 0.2, 0.6, 0.8, 1.3, -0.2];
     let x = [0.3, -0.6, 0.45];
     check_candidate_derivatives(&t, &e, &th, &x, None);
     check_candidate_derivatives(&t, &e, &th, &x, Some(0));
@@ -401,7 +403,7 @@ fn canonical_classes_of_the_paper_template() {
     let keys: std::collections::HashSet<&str> = reps.iter().map(|(k, _)| k.as_str()).collect();
     assert_eq!(keys.len(), reps.len());
     assert!(keys.contains("L[sq]"));
-    assert!(keys.contains("sin((L[cube] + L[id]))"));
+    assert!(keys.contains("sin((L[id] + L[cube]))"));
 }
 
 /// Order-0 regression problem `u ≈ target(x)`.

@@ -265,7 +265,7 @@ pub fn redundant_params(t: &Template, e: &[usize]) -> Result<Vec<Option<f64>>, F
     // Is plan node k (as built) a bare leaf or unary node, i.e. an affine
     // node with its own free β?
     let affine = |k: usize| matches!(t.plan[k].kind, SlotKind::Leaf | SlotKind::Unary);
-    for (k, n) in t.plan.iter().enumerate() {
+    for n in t.plan.iter() {
         match n.kind {
             SlotKind::Leaf => {
                 let phi = t.unary_at(e, n.slot);
@@ -278,12 +278,9 @@ pub fn redundant_params(t: &Template, e: &[usize]) -> Result<Vec<Option<f64>>, F
             }
             SlotKind::Unary => {
                 let op = t.unary_at(e, n.slot);
-                if op == UnaryOp::Zero {
-                    fixed[n.poff] = Some(0.0);
-                } else if op == UnaryOp::One {
-                    fixed[n.poff] = Some(0.0);
-                } else if vals[n.a] == Term::C {
-                    // α·g(c) + β is a constant: β alone carries it.
+                if op.is_constant() || vals[n.a] == Term::C {
+                    // α·0 + β, α·1 + β and α·g(c) + β are constants: β alone
+                    // carries them.
                     fixed[n.poff] = Some(0.0);
                 } else if op == UnaryOp::Id
                     && vals[n.a].scale_closed()

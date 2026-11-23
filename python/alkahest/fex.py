@@ -735,6 +735,7 @@ def search(
     finetune_iters: int = 200,
     finetune_restarts: int = 4,
     target_loss: float | None = None,
+    tie_loss: float = 1e-20,
     rng: np.random.Generator | None = None,
     verbose: bool = False,
 ) -> SearchResult:
@@ -753,7 +754,8 @@ def search(
     scored reuses its score. New skeletons in a batch are fitted together, in
     parallel. The best ``pool_size`` families are then fine-tuned
     (Levenberg–Marquardt, ``finetune_iters`` steps, ``finetune_restarts``
-    starts).
+    starts). Among fine-tuned families whose loss is at most ``tie_loss``
+    the one with the fewest free parameters is returned.
     """
     rng = rng if rng is not None else np.random.default_rng()
     t0 = time.perf_counter()
@@ -834,8 +836,16 @@ def search(
         th0[0] = r.theta
         res = ev.fit(es, th0, method="lm", max_iter=finetune_iters)
         finals.append((key, min(res, key=lambda x: x.loss)))
+    # Among families that solve the problem to within `tie_loss`, prefer the
+    # one with the fewest free parameters (a superset family such as
+    # L[sq] + L[cube] also fits ½Σx² exactly, with zero cube weights).
+    def free_params(r: FitResult) -> int:
+        return sum(1 for v in template.redundant_params(r.e) if v is None)
+
     finals.sort(key=lambda kv: kv[1].loss)
-    key, best = finals[0]
+    cutoff = max(tie_loss, finals[0][1].loss)
+    tied = [kv for kv in finals if kv[1].loss <= cutoff]
+    key, best = min(tied, key=lambda kv: (free_params(kv[1]), len(kv[0]), kv[1].loss))
     return SearchResult(
         e=best.e,
         theta=best.theta,
