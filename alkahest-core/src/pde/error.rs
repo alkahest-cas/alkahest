@@ -173,8 +173,10 @@ mod tests {
         ];
         for e in all {
             let code = e.code();
-            assert!(code.starts_with("E-PDE-0"), "{code}");
-            let n: u32 = code[6..].parse().unwrap();
+            let n: u32 = code
+                .strip_prefix("E-PDE-")
+                .and_then(|d| d.parse().ok())
+                .unwrap_or_else(|| panic!("{code} is not an E-PDE code"));
             assert!((1..=49).contains(&n), "{code} outside the M0 range");
             assert!(e.remediation().is_some(), "{code} not registered");
         }

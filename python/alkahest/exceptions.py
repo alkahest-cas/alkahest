@@ -1343,3 +1343,26 @@ class FpGroupError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code=code, remediation=remediation, span=span)
+
+
+class PdeError(AlkahestError):
+    """The PDE foundation layer refused (``E-PDE-001`` … ``E-PDE-049``).
+
+    Raised by :mod:`alkahest.experimental`'s PDE surface — unknowns and the jet
+    space, problem objects, ``classify_pde``, ``verify_pde_solution``, the
+    ``Sum`` / ``Indexed`` / ``RootOfFamily`` heads and transforms of unknowns.
+    The extension raises its native ``alkahest.experimental.PdeError``; this
+    class is for ``isinstance`` checks and pure-Python code, like the other
+    wrappers here.  ``E-PDE-031`` (a ``RootOfFamily`` root that could not be
+    certified) is a refusal, never a guess.  Later PDE milestones own
+    ``E-PDE-050`` and up.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-PDE-001",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)
