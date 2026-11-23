@@ -425,6 +425,8 @@ struct Rel {
     rhs: String,
     proof: String,
     kind: RelKind,
+    /// Emitted even with a zero cofactor (other facts' proofs cite it).
+    always: bool,
 }
 
 /// One node of the derivative computation.
@@ -463,6 +465,8 @@ struct Ctx<'a> {
     sqrt_nonneg: HashMap<u32, String>,
     /// Atom → an earlier atom with the same function and an equal argument.
     twin_of: HashMap<u32, u32>,
+    /// `(twin atom, index of its congrArg fact)`.
+    twin_rel: Vec<(u32, usize)>,
     /// `(name, lhs, rhs, proof)` rewrites applied to the goal `G = f`.
     goal_rw: Vec<(String, String, String, String)>,
 }
@@ -491,6 +495,7 @@ impl<'a> Ctx<'a> {
             poly_memo: HashMap::new(),
             sqrt_nonneg: HashMap::new(),
             twin_of: HashMap::new(),
+            twin_rel: Vec::new(),
             goal_rw: Vec::new(),
         };
         // Atom 0 is the integration variable.
@@ -726,10 +731,13 @@ impl<'a> Ctx<'a> {
         }
         let depth = 1 + self.depth_of(&arg);
         // An atom with the same function and an equal argument but a
-        // different spelling is related by `congrArg`.
-        let twin = self.atoms.iter().position(
-            |a| matches!(&a.kind, AKind::Fun { f: g, arg: q, .. } if *g == f && *q == arg),
-        );
+        // different spelling is related by `congrArg`. Arguments are compared
+        // through earlier twins, so `log (x + √(x² + 1·-1))` meets
+        // `log (x + √(x² + -1))`.
+        let norm = self.canon_poly(&arg);
+        let twin = self.atoms.iter().position(|a| {
+            matches!(&a.kind, AKind::Fun { f: g, arg: q, .. } if *g == f && self.canon_poly(q) == norm)
+        });
         let id = self.new_atom(
             lean.clone(),
             AKind::Fun {
@@ -741,23 +749,51 @@ impl<'a> Ctx<'a> {
         );
         if let Some(t) = twin {
             let t = self.canon(t as u32);
-            self.twin_of.insert(id, t);
-            let (t_lean, t_arg) = match &self.atoms[t as usize].kind {
-                AKind::Fun { arg_lean, .. } => {
-                    (self.atoms[t as usize].lean.clone(), arg_lean.clone())
-                }
+            let (t_lean, t_arg, t_poly) = match &self.atoms[t as usize].kind {
+                AKind::Fun { arg_lean, arg, .. } => (
+                    self.atoms[t as usize].lean.clone(),
+                    arg_lean.clone(),
+                    arg.clone(),
+                ),
                 _ => unreachable!(),
             };
+            let arg_proof = if arg == t_poly {
+                format!("(by ring : ({arg_lean}) = ({t_arg}))")
+            } else {
+                // `arg - t_arg = Σ cᵢ·(twinᵢ - canonᵢ)` over the inner twins.
+                let mut diff = arg.sub(&t_poly);
+                let mut terms = Vec::new();
+                for (v, ri) in self.twin_rel.clone() {
+                    if !diff.has_var(v) {
+                        continue;
+                    }
+                    let Ok((rest, delta)) = substitute(&diff, v, &Poly::var(self.canon(v))) else {
+                        break;
+                    };
+                    diff = rest;
+                    let Ok(c) = self.print_poly(&delta) else {
+                        break;
+                    };
+                    terms.push(format!("({c}) * {}", self.rels[ri].name));
+                }
+                format!(
+                    "(show ({arg_lean}) = ({t_arg}) by linear_combination {})",
+                    terms.join(" + ")
+                )
+            };
+            self.twin_of.insert(id, t);
             let name = format!("r{}", self.rels.len() + 1);
+            self.twin_rel.push((id, self.rels.len()));
             self.rels.push(Rel {
                 name,
                 lhs: lean,
                 rhs: t_lean,
-                proof: format!("congrArg {} (by ring : ({arg_lean}) = ({t_arg}))", f.lean()),
+                proof: format!("congrArg {} {arg_proof}", f.lean()),
                 kind: RelKind::Subst {
                     v: id,
                     e: Poly::var(t),
                 },
+                always: true,
             });
             if f == Fn1::Sqrt {
                 if let Some(p) = self.sqrt_nonneg.get(&t).cloned() {
@@ -766,6 +802,27 @@ impl<'a> Ctx<'a> {
             }
         }
         id
+    }
+
+    /// `p` with every twin atom replaced by its canonical atom.
+    fn canon_poly(&self, p: &Poly) -> Poly {
+        if !p.vars().iter().any(|v| self.twin_of.contains_key(v)) {
+            return p.clone();
+        }
+        let mut out = Poly::zero();
+        for (m, c) in &p.0 {
+            let mut mono: Mono = m.iter().map(|&(v, e)| (self.canon(v), e)).collect();
+            mono.sort_unstable();
+            let mut merged: Mono = Vec::new();
+            for (v, e) in mono {
+                match merged.last_mut() {
+                    Some(last) if last.0 == v => last.1 += e,
+                    _ => merged.push((v, e)),
+                }
+            }
+            out.add_term(merged, c.clone());
+        }
+        out
     }
 
     /// The polynomial of `1 / u`, where `u_lean` is a spelling of `u` with a
@@ -796,23 +853,72 @@ impl<'a> Ctx<'a> {
             let mut out = Poly::konst(Rational::from(c.recip_ref()));
             for &(v, e) in &m {
                 if matches!(self.atoms[v as usize].kind, AKind::Inv) {
-                    return Err(WITHHELD_UNSUPPORTED_NODE);
+                    // `(u⁻¹)⁻¹ = u`, which `ring` also normalises.
+                    let inner = self.rels.iter().find_map(|r| match &r.kind {
+                        RelKind::Inverse { w, u } if *w == v => Some(u.clone()),
+                        _ => None,
+                    });
+                    let inner = inner.ok_or(WITHHELD_UNSUPPORTED_NODE)?;
+                    out = out.mul(&inner.pow(e)?)?;
+                    continue;
                 }
                 let a_lean = self.atoms[v as usize].lean.clone();
                 let prop = format!("{a_lean} ≠ 0");
+                // A factor of a nonzero monomial is nonzero: rewriting it to 0
+                // turns the monomial into a product with a zero factor.
                 let fact = match self.fact_by_prop.get(&prop) {
                     Some(f) => f.clone(),
-                    None if m.len() == 1 => {
-                        self.have(prop, format!("fun h => {u_fact} (by rw [h]; norm_num)"))
-                    }
-                    None => return Err(WITHHELD_UNSUPPORTED_NODE),
+                    None => self.have(prop, format!("fun h => {u_fact} (by rw [h]; norm_num)")),
                 };
                 let w = self.inverse_atom(&Poly::var(v), &a_lean, &fact);
+                self.rationalize_constant_root(v, w, &fact)?;
                 out = out.mul(&Poly::var(w).pow(e)?)?;
             }
             return Ok(out);
         }
         Ok(Poly::var(self.inverse_atom(u, u_lean, &u_fact)))
+    }
+
+    /// `(√c)⁻¹ = √c · (1/c)` for a positive rational `c`: removes the
+    /// inverse atom before any denominator is cleared, which keeps the
+    /// cofactors of `atan`-style answers (`(√3)⁻¹ · atan((2x - 1)/√3)`) small.
+    fn rationalize_constant_root(
+        &mut self,
+        r: u32,
+        w: u32,
+        fact: &str,
+    ) -> Result<(), IntegrationCertWithheld> {
+        let c = match &self.atoms[r as usize].kind {
+            AKind::Fun {
+                f: Fn1::Sqrt, arg, ..
+            } => match u_as_constant(arg) {
+                Some(c) if c > 0 => c,
+                _ => return Ok(()),
+            },
+            _ => return Ok(()),
+        };
+        if self.has_rule(w) {
+            return Ok(());
+        }
+        let inv_c = Rational::from(c.recip_ref());
+        let (rl, wl) = (
+            self.atoms[r as usize].lean.clone(),
+            self.atoms[w as usize].lean.clone(),
+        );
+        let icl = rat_lean(&inv_c)?;
+        let radicand = self.arg_lean_of(r);
+        self.push_rel(
+            wl.clone(),
+            format!("{rl} * {icl}"),
+            format!(
+                "by linear_combination (-({wl}) * {icl}) * (Real.sq_sqrt (show (0:ℝ) ≤ {radicand} by norm_num)) + (({rl}) * {icl}) * (mul_inv_cancel {fact})"
+            ),
+            RelKind::Subst {
+                v: w,
+                e: Poly::var(r).scale(&inv_c),
+            },
+        );
+        Ok(())
     }
 
     /// The atom `(u)⁻¹` with its `u * u⁻¹ = 1` fact (one per polynomial `u`).
@@ -1333,6 +1439,7 @@ impl<'a> Ctx<'a> {
             rhs,
             proof,
             kind,
+            always: false,
         });
     }
 
@@ -2202,15 +2309,17 @@ pub fn emit_integration_hasderiv_cert(
     ));
     let mut lc_terms = Vec::new();
     for (i, r) in cx.rels.iter().enumerate() {
-        if cof[i].is_zero() {
+        if cof[i].is_zero() && !r.always {
             continue;
         }
-        let c = cx.print_poly(&cof[i])?;
         body.push_str(&format!(
             "  have {} : {} = {} := {}\n",
             r.name, r.lhs, r.rhs, r.proof
         ));
-        lc_terms.push(format!("({c}) * {}", r.name));
+        if !cof[i].is_zero() {
+            let c = cx.print_poly(&cof[i])?;
+            lc_terms.push(format!("({c}) * {}", r.name));
+        }
     }
     // `G = f` is a polynomial identity in the atoms modulo the facts above:
     // `ring1` checks `G - f - Σ cⱼ·(Lⱼ - Rⱼ) = 0` with the cofactors computed here.
@@ -2298,7 +2407,7 @@ mod tests {
     }
 
     #[test]
-    fn sqrt_answer_uses_the_square_fact() {
+    fn rational_power_answer_is_respelled() {
         // ∫ x·√(x²+1) = (x²+1)^(3/2) / 3
         let src = emit(|p, x| {
             let v = p.add(vec![p.pow(x, p.integer(2)), p.integer(1)]);
@@ -2306,7 +2415,7 @@ mod tests {
             (big, p.mul(vec![x, p.func("sqrt", vec![v])]))
         })
         .expect("cert");
-        assert!(src.contains("Real.sq_sqrt"), "{src}");
+        assert!(src.contains("Real.sqrt"), "{src}");
         // `x² + 1 > 0` is discharged by `positivity`, not assumed.
         assert!(src.contains("by positivity"), "{src}");
         assert!(!src.contains("(h1 :"), "{src}");
@@ -2324,6 +2433,23 @@ mod tests {
         })
         .expect("cert");
         assert!(src.contains("Real.sin_add"), "{src}");
+    }
+
+    #[test]
+    fn log_of_algebraic_argument_certifies() {
+        // ∫ log(x + √(x²-1)) = x·log(x + √(x²-1)) - √(x²-1)
+        let r = emit(|p, x| {
+            let r = p.func(
+                "sqrt",
+                vec![p.add(vec![p.pow(x, p.integer(2)), p.integer(-1)])],
+            );
+            let l = p.func("log", vec![p.add(vec![x, r])]);
+            (
+                p.add(vec![p.mul(vec![x, l]), p.mul(vec![p.integer(-1), r])]),
+                l,
+            )
+        });
+        assert!(r.is_ok(), "{r:?}");
     }
 
     #[test]
