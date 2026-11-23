@@ -26,6 +26,8 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
                                  last block moved off 020-025 in 3.10, where it
                                  collided with the numeric one)
     E-DAE-001  … E-DAE-005     DaeError (004/005 from the checked Σ-method path)
+    E-PDE-001  … E-PDE-049     PdeError (alkahest.experimental PDE layer, milestone
+                                 M0; later PDE milestones own 050-099, 100-149, …)
     E-HOMOTOPY-002 … E-HOMOTOPY-004 HomotopyError (numerical continuation — V2-14)
     E-SOLVE-010 … E-SOLVE-011  SolverError  (GPU Gröbner)
     E-JIT-001   … E-JIT-006    JitError  (005 = the expression has a free symbol
@@ -1337,6 +1339,29 @@ class FpGroupError(AlkahestError):
         self,
         message: str,
         code: str = "E-FPGRP-001",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)
+
+
+class PdeError(AlkahestError):
+    """The PDE foundation layer refused (``E-PDE-001`` … ``E-PDE-049``).
+
+    Raised by :mod:`alkahest.experimental`'s PDE surface — unknowns and the jet
+    space, problem objects, ``classify_pde``, ``verify_pde_solution``, the
+    ``Sum`` / ``Indexed`` / ``RootOfFamily`` heads and transforms of unknowns.
+    The extension raises its native ``alkahest.experimental.PdeError``; this
+    class is for ``isinstance`` checks and pure-Python code, like the other
+    wrappers here.  ``E-PDE-031`` (a ``RootOfFamily`` root that could not be
+    certified) is a refusal, never a guess.  Later PDE milestones own
+    ``E-PDE-050`` and up.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-PDE-001",
         remediation: str | None = None,
         span: tuple[int, int] | None = None,
     ):

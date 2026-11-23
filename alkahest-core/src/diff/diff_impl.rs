@@ -474,6 +474,20 @@ fn diff_raw(
             rvar: ExprId,
             body: ExprId,
         },
+        /// `Indexed(x, i)` other than the variable itself.
+        Indexed,
+        /// `Sum(body, k, lo, hi)` (see `crate::pde::sum`).
+        SumHead {
+            body: ExprId,
+            k: ExprId,
+            lo: ExprId,
+            hi: ExprId,
+        },
+        /// `RootOfFamily(F, λ, n, branch)` (see `crate::pde::root_family`).
+        RootFamily {
+            f: ExprId,
+            lam: ExprId,
+        },
     }
 
     let node = pool.with(expr, |data| match data {
@@ -490,6 +504,38 @@ fn diff_raw(
         },
         // A `RootOf` is a number: its arguments are integer literals.
         ExprData::Func { name, .. } if name == crate::poly::root_of::ROOT_OF => Node::Const,
+        // Indexed symbols are variables; `xᵢ` w.r.t. itself is 1.
+        ExprData::Func { name, args } if name == crate::pde::sum::INDEXED && args.len() == 2 => {
+            if expr == var {
+                Node::IdentVar
+            } else {
+                Node::Indexed
+            }
+        }
+        // δᵢⱼ of integer indices is locally constant.
+        ExprData::Func { name, .. } if name == crate::pde::sum::KRONECKER_DELTA => Node::Const,
+        ExprData::Func { name, args }
+            if name == crate::pde::sum::SUM
+                && args.len() == 4
+                && pool.with(args[1], |d| matches!(d, ExprData::Symbol { .. })) =>
+        {
+            Node::SumHead {
+                body: args[0],
+                k: args[1],
+                lo: args[2],
+                hi: args[3],
+            }
+        }
+        ExprData::Func { name, args }
+            if name == crate::pde::root_family::ROOT_OF_FAMILY
+                && args.len() == 4
+                && pool.with(args[1], |d| matches!(d, ExprData::Symbol { .. })) =>
+        {
+            Node::RootFamily {
+                f: args[0],
+                lam: args[1],
+            }
+        }
         ExprData::Func { name, args } => Node::Func {
             name: name.clone(),
             args: args.clone(),
@@ -751,6 +797,60 @@ fn diff_raw(
             let result = pool.piecewise(new_branches, ddefault);
             log.push(RewriteStep::simple("diff_piecewise", expr, result));
             result
+        }
+        // ∂xᵢ/∂xⱼ = δᵢⱼ for one base, 0 otherwise (and for a plain symbol).
+        Node::Indexed => {
+            let r = crate::pde::sum::indexed_derivative(expr, var, pool);
+            log.push(RewriteStep::simple("diff_indexed", expr, r));
+            r
+        }
+        // Term-wise: d/dv Σ_{k=lo}^{hi} body = Σ_{k=lo}^{hi} ∂body/∂v, for
+        // bounds free of v.  The bound k is renamed first if v mentions it
+        // (v = x_k for a free k), so it cannot capture v's index.
+        Node::SumHead { body, k, lo, hi } => {
+            if k == var {
+                let zero = pool.integer(0_i32);
+                log.push(RewriteStep::simple("diff_const", expr, zero));
+                zero
+            } else {
+                if crate::kernel::subs::mentions_var(lo, var, pool)
+                    || crate::kernel::subs::mentions_var(hi, var, pool)
+                {
+                    return Err(DiffError::UnknownFunction(
+                        "Sum (a bound depends on the differentiation variable)".to_string(),
+                    ));
+                }
+                let (body, k) = crate::pde::sum::rename_bound(body, k, &[var], pool);
+                let dbody = diff_raw(body, var, pool, memo, log)?;
+                let result = if dbody == pool.integer(0_i32) {
+                    dbody
+                } else {
+                    pool.func(crate::pde::sum::SUM, vec![dbody, k, lo, hi])
+                };
+                log.push(RewriteStep::simple("diff_sum_termwise", expr, result));
+                result
+            }
+        }
+        // Implicit differentiation: F(λ(v), v) = 0 ⇒ λ' = −F_v / F_λ at λ.
+        Node::RootFamily { f, lam } => {
+            let zero = pool.integer(0_i32);
+            if lam == var || !crate::kernel::subs::mentions_var(f, var, pool) {
+                log.push(RewriteStep::simple("diff_const", expr, zero));
+                zero
+            } else {
+                let fv = diff(f, var, pool)?.value;
+                let fl = diff(f, lam, pool)?.value;
+                let ratio = pool.mul(vec![
+                    pool.integer(-1_i32),
+                    fv,
+                    pool.pow(fl, pool.integer(-1_i32)),
+                ]);
+                let mut m = std::collections::HashMap::new();
+                m.insert(lam, expr);
+                let r = crate::kernel::subs::subs(ratio, &m, pool);
+                log.push(RewriteStep::simple("diff_root_family_implicit", expr, r));
+                r
+            }
         }
         // d/dx Σ_{c:P(c)=0} body(c,x) = Σ_{c:P(c)=0} ∂body/∂x.
         // The root `c` (rvar) is constant in `x`; `poly` is free of `x`.

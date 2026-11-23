@@ -113,6 +113,24 @@ fn subs_memo(
         ExprData::Func { name, args } if name == crate::diff::undefined::DERIVATIVE_FUNC => {
             subs_derivative(expr, &args, mapping, pool, memo)
         }
+        // `Sum(body, k, lo, hi)` binds `k` in `body` only; the bounds are
+        // free.  `RootOfFamily(F, λ, n, branch)` binds `λ` in `F`; the index
+        // `n` and the branch are free.  See `crate::pde::sum` and
+        // `crate::pde::root_family`.
+        ExprData::Func { name, args } if is_func_binder(&name, &args, pool) => {
+            let (nv, [nb]) = subs_binder(args[1], [args[0]], mapping, pool, memo);
+            let rest: Vec<ExprId> = args[2..]
+                .iter()
+                .map(|&a| subs_memo(a, mapping, pool, memo))
+                .collect();
+            if nv == args[1] && nb == args[0] && rest.as_slice() == &args[2..] {
+                expr
+            } else {
+                let mut new_args = vec![nb, nv];
+                new_args.extend(rest);
+                pool.func(name, new_args)
+            }
+        }
         ExprData::Func { name, args } => match subs_args(&args, mapping, pool, memo) {
             Some(new_args) => pool.func(name, new_args),
             None => expr,
@@ -484,6 +502,7 @@ fn fold_predicates_node(
 pub(crate) fn mentions_var(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
     let mut seen: HashSet<ExprId> = HashSet::new();
     let mut stack: Vec<ExprId> = vec![expr];
+    let indexed_base = indexed_base_of(var, pool);
     while let Some(node) = stack.pop() {
         if node == var {
             return true;
@@ -491,8 +510,21 @@ pub(crate) fn mentions_var(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
         if !seen.insert(node) {
             continue;
         }
+        if indexed_base.is_some() && indexed_base == indexed_base_of(node, pool) {
+            // `x_i` may be `x_j`: an indexed symbol with the same base and a
+            // different (possibly symbolic) index is a possible occurrence.
+            return true;
+        }
         pool.with(node, |data| match data {
             ExprData::Add(xs) | ExprData::Mul(xs) => stack.extend_from_slice(xs),
+            ExprData::Func { name, args } if is_func_binder_data(name, args, pool) => {
+                // Binder: the body (args[0]) only when the bound variable
+                // (args[1]) is not `var`; the other arguments are free.
+                if args[1] != var {
+                    stack.push(args[0]);
+                }
+                stack.extend_from_slice(&args[2..]);
+            }
             ExprData::Func { args, .. } | ExprData::Predicate { args, .. } => {
                 stack.extend_from_slice(args)
             }
@@ -530,6 +562,26 @@ pub(crate) fn mentions_var(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
         });
     }
     false
+}
+
+/// Whether `Func(name, args)` is one of the binder heads `Sum(body, k, lo,
+/// hi)` / `RootOfFamily(F, λ, n, branch)`: four arguments, a symbol in slot 1.
+fn is_func_binder(name: &str, args: &[ExprId], pool: &ExprPool) -> bool {
+    is_func_binder_data(name, args, pool)
+}
+
+fn is_func_binder_data(name: &str, args: &[ExprId], pool: &ExprPool) -> bool {
+    (name == "Sum" || name == "RootOfFamily")
+        && args.len() == 4
+        && pool.with(args[1], |d| matches!(d, ExprData::Symbol { .. }))
+}
+
+/// The base symbol of an `Indexed(x, i)` node.
+fn indexed_base_of(e: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    pool.with(e, |d| match d {
+        ExprData::Func { name, args } if name == "Indexed" && args.len() == 2 => Some(args[0]),
+        _ => None,
+    })
 }
 
 // ---------------------------------------------------------------------------

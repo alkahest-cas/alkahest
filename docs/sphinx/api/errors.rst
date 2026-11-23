@@ -256,6 +256,55 @@ Exception subclasses
    ``f(0) ≠ 0`` for the inverse), and each ``.remediation`` names the rewrite
    that removes the obstruction.
 
+.. exception:: PdeError
+
+   Code prefix ``E-PDE-*``. The :mod:`alkahest.experimental` PDE foundation
+   layer: unknowns and the jet space, problem objects, ``classify_pde``,
+   ``verify_pde_solution``, the ``Sum`` / ``Indexed`` / ``RootOfFamily`` heads
+   and transforms of unknowns. Milestone M0 owns ``001``–``049``; later PDE
+   milestones own ``050``–``099``, ``100``–``149``, and so on.
+
+   - ``E-PDE-001`` — not an unknown: an unknown is an undefined function
+     applied to distinct plain symbols (``u(x, t)``); built-in and reserved
+     names (``sin``, ``Derivative``, ``Sum``) are not.
+   - ``E-PDE-002`` — inconsistent variables: an argument that is not an
+     independent variable, a repeated variable or unknown, a multi-index of the
+     wrong length, a derivative in a variable the unknown does not depend on.
+   - ``E-PDE-003`` — an unknown evaluated off its declared arguments
+     (``u(x, 0)``) where a jet coordinate is needed; such evaluations belong in
+     a boundary or initial condition.
+   - ``E-PDE-004`` — a derivative above the jet space's maximum order.
+   - ``E-PDE-005`` — a jet coordinate's name is taken by an input symbol.
+   - ``E-PDE-006`` — not rational in the jets (``sin(u_x)``), so there is no
+     polynomial system for a Gröbner engine.
+   - ``E-PDE-007`` — not a differential equation in the declared unknowns.
+   - ``E-PDE-008`` — wrong system shape (empty, or several where one is
+     needed).
+   - ``E-PDE-009`` — an ODE naming convention (``y'``, ``q_dot``, ``dy/dt``)
+     for a jet space with several independent variables.
+   - ``E-PDE-010`` — a malformed domain (empty interval, non-positive radius,
+     a coordinate that is not an independent variable).
+   - ``E-PDE-011`` — a boundary or initial condition that mentions no unknown.
+   - ``E-PDE-012`` — classification of a system (only scalar equations are
+     classified).
+   - ``E-PDE-013`` — a candidate solution with the wrong number of components.
+   - ``E-PDE-020`` — a malformed ``Sum`` (the bound variable is not a symbol,
+     or a bound mentions it).
+   - ``E-PDE-021`` — a ``Sum`` that cannot be expanded or evaluated: a bound is
+     not an integer after substitution, or the range exceeds the term cap.
+   - ``E-PDE-022`` — a ``Sum`` whose bounds depend on the differentiation
+     variable (``diff`` itself raises ``DiffError`` ``E-DIFF-001`` there).
+   - ``E-PDE-023`` — a malformed ``Indexed`` (the base is not a symbol).
+   - ``E-PDE-030`` — a malformed ``RootOfFamily``, or one whose parameters are
+     not numbers when an enclosure is asked for.
+   - ``E-PDE-031`` — a ``RootOfFamily`` root that could not be **certified**:
+     no isolated sign change, a pole (write ``tan(λL) = −λ/h`` as
+     ``h·sin(λL) + λ·cos(λL) = 0``), a multiple root, or the search budget ran
+     out. A refusal, never a guess.
+   - ``E-PDE-040`` — a transform cannot act on an unknown because the transform
+     variable is not a single bare argument (``u(x, 2t)``, ``u(t²)``); the
+     transform raises its own ``TransformError`` carrying this message.
+
 .. exception:: ProbabilityError
 
    Code prefix ``E-PROB-*``. The :mod:`alkahest.experimental` probability

@@ -862,6 +862,29 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-CHAR-007", class: "CharacterError", cause: Cause::Internal,    remediation: Some("this is a defect in alkahest, not in the input: row and column orthogonality, sum of squared degrees = |G|, and the eigenvalue-multiplicity checksums are all implied by the group axioms, so a violation means the table is wrong and it is withheld rather than returned. Report the generators as a minimal failing example") },
     ErrorSpec { code: "E-CHAR-008", class: "CharacterError", cause: Cause::Internal,    remediation: Some("with p prime to |G| and p = 1 mod exp G the class algebra is split semisimple over GF(p), so the class multiplication matrices must split the space into one line per class; report the generators as a minimal failing example") },
     ErrorSpec { code: "E-CHAR-009", class: "CharacterError", cause: Cause::Internal,    remediation: Some("report the generators as a minimal failing example") },
+    // E-PDE — PdeError (PDE foundation layer, milestone M0: jets, problems, classification,
+    // verification, Sum / Indexed / RootOfFamily heads, derivative-aware transforms).
+    // M0 owns 001–049; later PDE milestones own 050–099, 100–149, …
+    ErrorSpec { code: "E-PDE-001", class: "PdeError", cause: Cause::UserInput,  remediation: Some("pass the applied unknown, e.g. pool.func(\"u\", [x, t]) with distinct plain symbols as arguments; a built-in or reserved name is not an unknown") },
+    ErrorSpec { code: "E-PDE-002", class: "PdeError", cause: Cause::UserInput,  remediation: Some("declare every argument of every unknown among the independent variables, once each, and give each unknown a distinct name") },
+    ErrorSpec { code: "E-PDE-003", class: "PdeError", cause: Cause::UserInput,  remediation: Some("an equation in jets holds at the unknown's own arguments; move evaluations such as u(x, 0) into a boundary or initial condition") },
+    ErrorSpec { code: "E-PDE-004", class: "PdeError", cause: Cause::UserInput,  remediation: Some("raise the jet space's max_order (or use JetSpace.prolonged(k)) to hold the derivative") },
+    ErrorSpec { code: "E-PDE-005", class: "PdeError", cause: Cause::UserInput,  remediation: Some("rename the symbol, or build the jet space with another domain, so that no input symbol spells a jet coordinate") },
+    ErrorSpec { code: "E-PDE-006", class: "PdeError", cause: Cause::Unsupported, remediation: Some("Gröbner and Rosenfeld–Gröbner need equations rational in the jets; substitute a new unknown for the transcendental term (v = sin(u)) and add its defining relation") },
+    ErrorSpec { code: "E-PDE-007", class: "PdeError", cause: Cause::UserInput,  remediation: Some("the equation must involve a derivative of a declared unknown; check the unknown's name and arguments") },
+    ErrorSpec { code: "E-PDE-008", class: "PdeError", cause: Cause::UserInput,  remediation: Some("give at least one equation, and for a scalar operation exactly one equation and one unknown") },
+    ErrorSpec { code: "E-PDE-009", class: "PdeError", cause: Cause::UserInput,  remediation: Some("the y' / q_dot / dy/dt spellings are for ODEs; use JetNaming::Subscript for several independent variables") },
+    ErrorSpec { code: "E-PDE-010", class: "PdeError", cause: Cause::UserInput,  remediation: Some("give each interval lo < hi, a positive radius, one bound pair per coordinate, and only coordinates that are independent variables of the problem") },
+    ErrorSpec { code: "E-PDE-011", class: "PdeError", cause: Cause::UserInput,  remediation: Some("a boundary or initial condition must mention an unknown, e.g. u(0, t) = 0") },
+    ErrorSpec { code: "E-PDE-012", class: "PdeError", cause: Cause::Unsupported, remediation: Some("classify each equation of a system separately; the elliptic/parabolic/hyperbolic type of a system needs its full principal symbol, which is not implemented") },
+    ErrorSpec { code: "E-PDE-013", class: "PdeError", cause: Cause::UserInput,  remediation: Some("give one solution expression per unknown, in the problem's independent variables") },
+    ErrorSpec { code: "E-PDE-020", class: "PdeError", cause: Cause::UserInput,  remediation: Some("the bound variable of Sum(body, k, lo, hi) must be a symbol that does not occur in lo or hi") },
+    ErrorSpec { code: "E-PDE-021", class: "PdeError", cause: Cause::Domain,     remediation: Some("substitute integers for symbolic bounds before expanding or evaluating, or use truncate(N) to take a finite partial sum; the term cap guards against runaway expansion") },
+    ErrorSpec { code: "E-PDE-022", class: "PdeError", cause: Cause::Unsupported, remediation: Some("the bounds of a Sum must not depend on the differentiation variable; differentiate with respect to a variable that only occurs in the summand") },
+    ErrorSpec { code: "E-PDE-023", class: "PdeError", cause: Cause::UserInput,  remediation: Some("the base of Indexed(x, i) must be a symbol") },
+    ErrorSpec { code: "E-PDE-030", class: "PdeError", cause: Cause::UserInput,  remediation: Some("RootOfFamily(F, lam, n, branch) needs a symbol lam, an integer n ≥ 0 (or a symbol), and an integer branch") },
+    ErrorSpec { code: "E-PDE-031", class: "PdeError", cause: Cause::Domain,     remediation: Some("the n-th root could not be bracketed and isolated with certified ball arithmetic; widen the bracket, check that F changes sign on it, or raise the precision") },
+    ErrorSpec { code: "E-PDE-040", class: "PdeError", cause: Cause::Unsupported, remediation: Some("the transform variable must occupy exactly one argument slot of the unknown as a bare symbol (u(x, t), not u(x, 2t) or u(t^2)); substitute first") },
 ];
 
 #[cfg(test)]
