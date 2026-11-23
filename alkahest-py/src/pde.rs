@@ -66,6 +66,12 @@ fn first_pool(ob: &Bound<'_, PyAny>) -> PyResult<Py<PyExprPool>> {
     if let Ok(e) = ob.extract::<PyRef<'_, PyExpr>>() {
         return Ok(e.pool.clone_ref(ob.py()));
     }
+    // A string iterates to one-character strings forever: never descend.
+    if ob.is_instance_of::<pyo3::types::PyString>() {
+        return Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected an Expr or a list of Exprs",
+        ));
+    }
     for item in ob.try_iter()? {
         if let Ok(p) = first_pool(&item?) {
             return Ok(p);
@@ -84,7 +90,7 @@ fn parse_naming(s: &str) -> PyResult<JetNaming> {
         "dae" | "dae_dt" => JetNaming::DaeDt,
         other => {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "naming must be 'subscript', 'prime', 'dot' or 'dae', not {other!r}"
+                "naming must be 'subscript', 'prime', 'dot' or 'dae', not {other:?}"
             )))
         }
     })

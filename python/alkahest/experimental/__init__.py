@@ -25,6 +25,23 @@ Remaining experimental surface:
 - :func:`compile_cuda` / :class:`CudaCompiledFn` — NVPTX codegen (requires
   ``cuda`` + ``jit``)
 
+PDE foundation layer (milestone M0; see ``alkahest.experimental._pde``):
+- :class:`Function` (``Function("u")(x, t)``), :func:`D` for mixed / higher
+  partials, :class:`JetSpace` (``Derivative(u(x, t), x, t) ↔ u_xt``, total
+  derivatives, prolongation, polynomial systems), :func:`functions_to_jets`
+- :class:`PDE` with ``.on(domain)`` / ``.bc`` / ``.ic`` and the domains
+  :class:`Interval`, :class:`HalfLine`, :class:`Line`, :class:`Box`,
+  :class:`Disk`, :class:`Ball` (``*`` builds a :class:`Product`)
+- :func:`classify_pde` → :class:`PdeInfo` (order, linearity, type with regions,
+  named equations); :func:`verify_pde_solution` (statuses mirror
+  ``integrate``'s ``verification``; numeric evidence may only refute);
+  :class:`ArbitraryFunctions` (``F1, F2, …``)
+- reserved heads :func:`Sum` (a binder, symbolic bounds), :func:`Indexed` /
+  :class:`IndexedBase`, :func:`KroneckerDelta`, :func:`RootOfFamily` (certified
+  enclosures), with :func:`truncate`, :func:`coefficient`, :func:`expand_sum`,
+  :func:`simplify_sums`, :func:`laplacian_indexed`; ``PdeError`` /
+  ``E-PDE-001…049``
+
 Probability and statistics:
 - :class:`Distribution` and its constructors :func:`Normal`, :func:`LogNormal`,
   :func:`Uniform`, :func:`Exponential`, :func:`Gamma`, :func:`Beta`,
@@ -700,24 +717,12 @@ from alkahest.alkahest import (
 # M11 — novelty filtering.  Claim normalisation, a stable hash, and a lookup
 # whose negative is never reported as "novel".  Pure Python by CONTRIBUTING's
 # rule: HTTP, JSON, and parsing a third party's prose.
-from alkahest.experimental import novelty
-from alkahest.experimental.novelty import (
-    NoveltyMatch,
-    NoveltyVerdict,
-    OeisCache,
-    OeisEntry,
-    OeisWeb,
-    QRecurrenceClaim,
-    RecurrenceClaim,
-    check_novelty,
-)
-
 # PDE foundation layer (milestone M0): unknowns `Function("u")(x, t)`,
 # partials `D(f, x, t)`, the multi-index jet space, problem objects with
 # domains and boundary / initial conditions, `classify_pde`, and
 # `verify_pde_solution` (statuses mirror `integrate`'s verification; numeric
 # evidence may only refute).
-from alkahest.experimental import _pde
+from alkahest.experimental import novelty
 from alkahest.experimental._pde import (
     PDE,
     ArbitraryFunctions,
@@ -749,6 +754,16 @@ from alkahest.experimental._pde import (
     simplify_sums,
     truncate,
     verify_pde_solution,
+)
+from alkahest.experimental.novelty import (
+    NoveltyMatch,
+    NoveltyVerdict,
+    OeisCache,
+    OeisEntry,
+    OeisWeb,
+    QRecurrenceClaim,
+    RecurrenceClaim,
+    check_novelty,
 )
 
 with contextlib.suppress(ImportError):
@@ -817,6 +832,7 @@ __all__ = [
     # classical matrix groups GL / SL / Sp over GF(q). Distance is exhaustive
     # and capped; above the cap it refuses (E-STAB-008) rather than guessing,
     # and a bound comes back as `Distance(at_most=...)`, not as an int.
+    "PDE",
     "STABILIZER_MAX_DISTANCE_SEARCH_DIM",
     "STABILIZER_MAX_MATRIX_ENUMERATION",
     "STABILIZER_MAX_QUBITS",
@@ -827,11 +843,13 @@ __all__ = [
     # `order()` returns None exactly when the group is infinite — a proof, not
     # a failure to decide.
     "AbelianInvariants",
+    "ArbitraryFunctions",
     "ArithmeticError",
     "Assumptions",
     # P1 item 10 — asymptotic expansion at scale
     "AsymptoticReport",
     # Probability: a law is a name plus symbolic parameters
+    "Ball",
     "Bernoulli",
     "Beta",
     "Binomial",
@@ -850,6 +868,7 @@ __all__ = [
     # character per class are checked as exact identities before a table is
     # returned: a table that failed them is withheld (E-CHAR-007), never
     # returned with a caveat.
+    "Box",
     "CharacterError",
     "CharacterTable",
     "CodingError",
@@ -867,7 +886,9 @@ __all__ = [
     "CosetTable",
     "CssCode",
     "CudaCompiledFn",
+    "D",
     "DelsarteBound",
+    "Disk",
     "Distance",
     "Distribution",
     "Divisor",
@@ -891,6 +912,7 @@ __all__ = [
     "FpGroup",
     "FpGroupError",
     "Fps",
+    "Function",
     "FunctionField",
     "FunctionFieldElement",
     "FunctionFieldError",
@@ -905,12 +927,19 @@ __all__ = [
     # every invariant here (determinant, dual, minimum, kissing number, theta
     # series, densities) depends on the Gram matrix alone. SVP/CVP/theta are
     # exact enumeration, capped at LATTICE_MAX_ENUM_RANK.
+    "HalfLine",
+    "Indexed",
+    "IndexedBase",
+    "Interval",
+    "JetSpace",
+    "KroneckerDelta",
     "Lattice",
     # The toolkit's refusals (E-LAT-005 … E-LAT-014). A *subclass* of
     # alkahest.LatticeError, so `except LatticeError` catches the reduction
     # errors (E-LAT-001 … E-LAT-004) and these together.
     "LatticeGeometryError",
     "LatticeVector",
+    "Line",
     "LinearCode",
     # Probability (continued)
     "LogNormal",
@@ -956,12 +985,15 @@ __all__ = [
     # Risch-Norman heuristic integration result
     # Computational group theory (permutation groups)
     "PauliOperator",
+    "PdeError",
+    "PdeInfo",
     "Permutation",
     "PermutationGroup",
     "Place",
     # Probability (continued)
     "Poisson",
     # Puiseux (fractional-exponent) expansion
+    "Product",
     "PuiseuxExpansion",
     # M11 — novelty filtering
     "QRecurrenceClaim",
@@ -977,6 +1009,7 @@ __all__ = [
     # M11 — novelty filtering
     "RecurrenceClaim",
     "RiemannRochSpace",
+    "RootOfFamily",
     "SiegelMatrix",
     "SiegelReduction",
     # Sifting an element through a stabilizer chain
@@ -989,6 +1022,7 @@ __all__ = [
     # [G:H]*|X| - [G:H] + 1.
     "SubgroupPresentation",
     # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
+    "Sum",
     "Telescoping2dCertificate",
     "TelescopingMdCertificate",
     "ThetaError",
@@ -1013,6 +1047,8 @@ __all__ = [
     # M11 — novelty filtering
     "check_novelty",
     # P1 item 10 — asymptotic expansion at scale
+    "classify_pde",
+    "coefficient",
     "coefficient_asymptotics",
     "compile_cuda",
     "conjugate",
@@ -1041,10 +1077,13 @@ __all__ = [
     "euler_maclaurin",
     "euler_number",
     "evaluate",
+    "expand_finite_sums",
+    "expand_sum",
     "expectation",
     "expectation_affine",
     "fourier_transform",
     # Vector calculus
+    "functions_to_jets",
     "gradient",
     "hamming_bound",
     "harmonic_number",
@@ -1072,6 +1111,7 @@ __all__ = [
     # Vector calculus
     "laplacian",
     # The classical orders in closed form, as an oracle for MatGroup.order()
+    "laplacian_indexed",
     "matgroup_gl_order",
     "matgroup_sl_order",
     "matgroup_sp_order",
@@ -1104,9 +1144,12 @@ __all__ = [
     "riemann_theta_available",
     "riemann_theta_characteristic",
     "riemann_theta_squared",
+    "root_family_enclosure",
+    "root_family_member",
     "series_solve",
     "siegel_is_reduced",
     "siegel_reduce",
+    "simplify_sums",
     "singleton_bound",
     "solve",
     "stirling_first",
@@ -1129,9 +1172,11 @@ __all__ = [
     "to_stablehlo",
     # Hypotheses the last inverse Laplace / Z transform on this thread rests on.
     "transform_side_conditions",
+    "truncate",
     "variance_affine_independent",
     # Vector calculus
     "vector_laplacian",
+    "verify_pde_solution",
     "weierstrass_invariants",
     "weierstrass_p",
     "weierstrass_p_prime",
@@ -1140,8 +1185,6 @@ __all__ = [
     "weierstrass_zeta",
     "z_transform",
 ]
-
-__all__ += list(_pde.__all__)
 
 # Names that exist only on some builds — `CudaCompiledFn` / `compile_cuda`
 # (``cuda`` feature) and the ``groebner``-gated classes imported under

@@ -37,35 +37,35 @@ from alkahest.alkahest import (
 )
 
 __all__ = [
+    "PDE",
+    "ArbitraryFunctions",
+    "Ball",
+    "Box",
     "D",
-    "IndexedBase",
+    "Disk",
+    "Function",
+    "HalfLine",
     "Indexed",
+    "IndexedBase",
+    "Interval",
+    "JetSpace",
     "KroneckerDelta",
+    "Line",
+    "PdeError",
+    "PdeInfo",
+    "Product",
     "RootOfFamily",
     "Sum",
+    "classify_pde",
     "coefficient",
     "expand_finite_sums",
     "expand_sum",
+    "functions_to_jets",
     "laplacian_indexed",
     "root_family_enclosure",
     "root_family_member",
     "simplify_sums",
     "truncate",
-    "ArbitraryFunctions",
-    "Ball",
-    "Box",
-    "Disk",
-    "Function",
-    "HalfLine",
-    "Interval",
-    "JetSpace",
-    "Line",
-    "PDE",
-    "PdeError",
-    "PdeInfo",
-    "Product",
-    "classify_pde",
-    "functions_to_jets",
     "verify_pde_solution",
 ]
 
@@ -81,7 +81,7 @@ def _err(code: str, message: str) -> PdeError:
 def _pool_of(*objs):
     for o in objs:
         if isinstance(o, _ak.Expr):
-            return o.pool
+            return o._pool
         if isinstance(o, (list, tuple)):
             p = _pool_of(*o)
             if p is not None:
@@ -92,6 +92,8 @@ def _pool_of(*objs):
 def _as_expr(v, pool):
     if isinstance(v, _ak.Expr):
         return v
+    if pool is None:
+        raise TypeError(f"cannot tell which ExprPool {v!r} belongs to: pass at least one Expr")
     if isinstance(v, bool):
         raise TypeError("a bool is not an expression")
     if isinstance(v, int):
@@ -278,7 +280,7 @@ class Interval(_Domain):
     __slots__ = ("hi", "lo", "var")
 
     def __init__(self, var, lo, hi):
-        pool = var.pool
+        pool = var._pool
         self.var, self.lo, self.hi = var, _as_expr(lo, pool), _as_expr(hi, pool)
 
     def spec(self):
@@ -294,7 +296,7 @@ class HalfLine(_Domain):
     __slots__ = ("end", "upper", "var")
 
     def __init__(self, var, end=0, upper: bool = False):
-        self.var, self.end, self.upper = var, _as_expr(end, var.pool), bool(upper)
+        self.var, self.end, self.upper = var, _as_expr(end, var._pool), bool(upper)
 
     def spec(self):
         return ("half_line", self.var, self.end, self.upper)
@@ -522,8 +524,7 @@ def classify_pde(equation, unknown=None) -> PdeInfo:
         if len(us) != 1:
             raise _err(
                 "E-PDE-001",
-                "pass the unknown explicitly: the equation differentiates "
-                f"{len(us)} functions",
+                f"pass the unknown explicitly: the equation differentiates {len(us)} functions",
             )
         unknown = us[0]
     return PdeInfo(_pde_classify(eq, unknown))
@@ -582,11 +583,11 @@ class PDE:
     def bc(self, lhs, rhs=None) -> PDE:
         """Add the boundary condition ``lhs = rhs`` (``rhs`` defaults to 0;
         ``lhs`` may also be an ``(lhs, rhs)`` pair)."""
-        return self._with(conditions=self._conditions + (_condition("bc", lhs, rhs),))
+        return self._with(conditions=(*self._conditions, _condition("bc", lhs, rhs)))
 
     def ic(self, lhs, rhs=None) -> PDE:
         """Add the initial condition ``lhs = rhs``."""
-        return self._with(conditions=self._conditions + (_condition("ic", lhs, rhs),))
+        return self._with(conditions=(*self._conditions, _condition("ic", lhs, rhs)))
 
     @property
     def domain(self):
@@ -683,9 +684,7 @@ def Sum(body, k, lo, hi):
     rest.  Raises :class:`PdeError` ``E-PDE-020`` for a malformed sum.
     """
     pool = _pool_of(k, body, lo, hi)
-    return _native._pde_sum(
-        _as_expr(body, pool), k, _as_expr(lo, pool), _as_expr(hi, pool)
-    )
+    return _native._pde_sum(_as_expr(body, pool), k, _as_expr(lo, pool), _as_expr(hi, pool))
 
 
 def Indexed(base, index):
@@ -693,7 +692,7 @@ def Indexed(base, index):
     differentiate with respect to, with ``∂x_i/∂x_j = KroneckerDelta(i, j)``.
     Bind ``Indexed(x, 3)`` in an ``eval_expr`` environment to give ``x_3`` a
     value."""
-    return _native._pde_indexed(base, _as_expr(index, base.pool))
+    return _native._pde_indexed(base, _as_expr(index, base._pool))
 
 
 class IndexedBase:
@@ -776,7 +775,7 @@ def truncate(expr, n: int):
 def coefficient(s, n):
     """The term with index ``n`` of the ``Sum`` ``s`` (``0`` when ``n`` is
     provably outside the range; ``E-PDE-021`` when undecidable)."""
-    return _native._pde_coefficient(s, _as_expr(n, s.pool))
+    return _native._pde_coefficient(s, _as_expr(n, s._pool))
 
 
 def simplify_sums(expr, ranges=None):
@@ -794,5 +793,5 @@ def laplacian_indexed(u, base, lo, hi):
     d)`` is ``d`` for every ``d``."""
     if isinstance(base, IndexedBase):
         base = base.symbol
-    pool = base.pool
+    pool = base._pool
     return _native._pde_laplacian_indexed(u, base, _as_expr(lo, pool), _as_expr(hi, pool))

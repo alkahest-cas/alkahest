@@ -639,7 +639,7 @@ impl JetSpace {
                 });
             }
         }
-        found.sort_by(|a, b| ranking_cmp(a, b));
+        found.sort_by(ranking_cmp);
         found.dedup();
         Ok(found)
     }
