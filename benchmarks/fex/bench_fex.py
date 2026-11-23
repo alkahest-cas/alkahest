@@ -30,9 +30,8 @@ import os
 import sys
 import time
 
-import numpy as np
-
 import alkahest as ak
+import numpy as np
 from alkahest import fex
 
 C = math.pi / 4
@@ -211,7 +210,13 @@ def main(argv=None):
     ap.add_argument("--json", default=None)
     args = ap.parse_args(argv)
     rng = np.random.default_rng(args.seed)
-    configs = [("poisson", 10), ("poisson", 20), ("poisson", 50), ("conservation", 5), ("conservation", 20)]
+    configs = [
+        ("poisson", 10),
+        ("poisson", 20),
+        ("poisson", 50),
+        ("conservation", 5),
+        ("conservation", 20),
+    ]
     if args.quick:
         configs = [("poisson", 10), ("conservation", 5)]
     out = {

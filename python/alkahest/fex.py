@@ -59,7 +59,10 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Sequence
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
 
 import numpy as np
 
@@ -160,9 +163,7 @@ class Template:
     n_params = property(lambda self: self._native.n_params, doc="Parameter vector length.")
     unary = property(lambda self: self._native.unary, doc="Unary table.")
     binary = property(lambda self: self._native.binary, doc="Binary table.")
-    slot_arities = property(
-        lambda self: self._native.slot_arities, doc="Table size per slot."
-    )
+    slot_arities = property(lambda self: self._native.slot_arities, doc="Table size per slot.")
     slot_kinds = property(
         lambda self: self._native.slot_kinds, doc="'leaf', 'unary' or 'binary' per slot."
     )
@@ -700,6 +701,37 @@ def fit(
 # ---------------------------------------------------------------------------
 
 
+def _prune(
+    ev: Evaluator,
+    best: FitResult,
+    cutoff: float,
+    iters: int,
+    restarts: int,
+    rng: np.random.Generator,
+) -> FitResult:
+    """Greedily replace leaves of ``best`` by the constant ``0`` while the
+    refitted loss stays at most ``cutoff``."""
+    tpl = ev.template
+    zero = tpl.unary.index("0")
+    leaves = [i for i, k in enumerate(tpl.slot_kinds) if k == "leaf"]
+    changed = True
+    while changed:
+        changed = False
+        for i in leaves:
+            if best.e[i] == zero:
+                continue
+            e = list(best.e)
+            e[i] = zero
+            es = np.tile(np.asarray(e, dtype=np.int64), (restarts, 1))
+            th0 = tpl.init_params(restarts, rng)
+            th0[0] = best.theta
+            r = min(ev.fit(es, th0, method="lm", max_iter=iters), key=lambda x: x.loss)
+            if r.loss <= cutoff:
+                best = r
+                changed = True
+    return best
+
+
 @dataclass
 class SearchResult:
     """Outcome of :func:`search`."""
@@ -736,6 +768,7 @@ def search(
     finetune_restarts: int = 4,
     target_loss: float | None = None,
     tie_loss: float = 1e-20,
+    prune: bool = True,
     rng: np.random.Generator | None = None,
     verbose: bool = False,
 ) -> SearchResult:
@@ -755,7 +788,11 @@ def search(
     parallel. The best ``pool_size`` families are then fine-tuned
     (Levenberg–Marquardt, ``finetune_iters`` steps, ``finetune_restarts``
     starts). Among fine-tuned families whose loss is at most ``tie_loss``
-    the one with the fewest free parameters is returned.
+    the one with the fewest free parameters is kept, and with ``prune`` each
+    of its leaves is then tried as the constant ``0`` (refitted; kept while
+    the loss stays within that cutoff), so a superset family such as
+    ``L[sq] + L[cos]`` that fits with zero ``cos`` weights reduces to
+    ``L[sq]``.
     """
     rng = rng if rng is not None else np.random.default_rng()
     t0 = time.perf_counter()
@@ -836,6 +873,7 @@ def search(
         th0[0] = r.theta
         res = ev.fit(es, th0, method="lm", max_iter=finetune_iters)
         finals.append((key, min(res, key=lambda x: x.loss)))
+
     # Among families that solve the problem to within `tie_loss`, prefer the
     # one with the fewest free parameters (a superset family such as
     # L[sq] + L[cube] also fits ½Σx² exactly, with zero cube weights).
@@ -846,6 +884,9 @@ def search(
     cutoff = max(tie_loss, finals[0][1].loss)
     tied = [kv for kv in finals if kv[1].loss <= cutoff]
     key, best = min(tied, key=lambda kv: (free_params(kv[1]), len(kv[0]), kv[1].loss))
+    if prune and "0" in template.unary:
+        best = _prune(ev, best, cutoff, finetune_iters, finetune_restarts, rng)
+        key = template.canonical_key(best.e)
     return SearchResult(
         e=best.e,
         theta=best.theta,
