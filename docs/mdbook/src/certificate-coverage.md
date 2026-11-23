@@ -156,7 +156,7 @@ A *shape class* is an operation plus a structural fingerprint of its arguments: 
 | ✅ certified | `form=product, funcs=exp, fn_arg=var, mul=scalar, pow=none, pow_base=none, definite=yes` | `(-1 * exp(x))` | — |
 | ✅ certified | `form=product, funcs=log, fn_arg=var, mul=general, pow=none, pow_base=none, definite=no` | `(log(x) * x)` | — |
 | ⛔ withheld | `form=product, funcs=log, fn_arg=var, mul=general, pow=none, pow_base=none, definite=yes` | `(log(x) * x)` | — |
-| ⛔ withheld | `form=product, funcs=sin, fn_arg=var, mul=general, pow=neg_one, pow_base=var, definite=no` | `(sin(x) * x^-1)` | — |
+| ✅ certified | `form=product, funcs=sin, fn_arg=var, mul=general, pow=neg_one, pow_base=var, definite=no` | `(sin(x) * x^-1)` | — |
 | ✅ certified | `form=product, funcs=sin, fn_arg=var, mul=general, pow=none, pow_base=none, definite=no` | `(sin(x) * x)` | — |
 | ✅ certified | `form=product, funcs=sqrt, fn_arg=other, mul=general, pow=neg_one, pow_base=expr, definite=no` | `((sqrt((1 + x^2)) * x^2)^-1 * 1)`, `((sqrt((1 + x^2)))^-1 * x)` | — |
 | ✅ certified | `form=product, funcs=sqrt, fn_arg=other, mul=scalar, pow=neg_one, pow_base=expr, definite=no` | `((sqrt(((-1 * 1) + x^2)))^-1 * 1)`, `((sqrt(((-1 * x^2) + 1)))^-1 * 1)` | — |
