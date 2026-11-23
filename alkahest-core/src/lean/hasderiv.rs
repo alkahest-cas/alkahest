@@ -362,9 +362,9 @@ fn special_function_reason(name: &str) -> IntegrationCertWithheld {
     match name {
         "erf" | "erfc" | "erfi" | "Si" | "Ci" | "Shi" | "Chi" | "Ei" | "li" | "Li" | "polylog"
         | "fresnels" | "fresnelc" | "FresnelS" | "FresnelC" | "gamma" | "uppergamma"
-        | "lowergamma" | "EllipticF" | "EllipticE" | "EllipticPi" | "elliptic_f"
-        | "elliptic_e" | "hyper" | "besselj" | "bessely" | "airyai" | "airybi" | "lambertw"
-        | "LambertW" | "zeta" | "dilog" => WITHHELD_SPECIAL_FUNCTION,
+        | "lowergamma" | "EllipticF" | "EllipticE" | "EllipticPi" | "elliptic_f" | "elliptic_e"
+        | "hyper" | "besselj" | "bessely" | "airyai" | "airybi" | "lambertw" | "LambertW"
+        | "zeta" | "dilog" => WITHHELD_SPECIAL_FUNCTION,
         _ => WITHHELD_UNSUPPORTED_FUNCTION,
     }
 }
@@ -374,11 +374,7 @@ enum AKind {
     /// The integration variable, a parameter, or `π`: no relations.
     Free,
     /// `f(arg)` for a unary elementary function.
-    Fun {
-        f: Fn1,
-        arg: Poly,
-        arg_lean: String,
-    },
+    Fun { f: Fn1, arg: Poly, arg_lean: String },
     /// `(u)⁻¹`.
     Inv,
     /// `base ^ ((1:ℝ) / b)`, `b ≥ 3` (the `b = 2` root is `Real.sqrt`); its
@@ -523,7 +519,10 @@ impl<'a> Ctx<'a> {
         if let Some(n) = self.fact_by_prop.get(&prop) {
             return n.clone();
         }
-        let name = format!("h{}", self.facts.iter().filter(|f| f.proof.is_none()).count() + 1);
+        let name = format!(
+            "h{}",
+            self.facts.iter().filter(|f| f.proof.is_none()).count() + 1
+        );
         self.fact_by_prop.insert(prop.clone(), name.clone());
         self.facts.push(Fact {
             name: name.clone(),
@@ -538,7 +537,10 @@ impl<'a> Ctx<'a> {
         if let Some(n) = self.fact_by_prop.get(&prop) {
             return n.clone();
         }
-        let name = format!("n{}", self.facts.iter().filter(|f| f.proof.is_some()).count() + 1);
+        let name = format!(
+            "n{}",
+            self.facts.iter().filter(|f| f.proof.is_some()).count() + 1
+        );
         self.fact_by_prop.insert(prop.clone(), name.clone());
         self.facts.push(Fact {
             name: name.clone(),
@@ -661,8 +663,8 @@ impl<'a> Ctx<'a> {
                 } else if name == self.var_name {
                     format!("({name} : ℝ)")
                 } else {
-                    if !super::is_lean_binder_name(&name) || name.starts_with('h')
-                        && name[1..].chars().all(|c| c.is_ascii_digit())
+                    if !super::is_lean_binder_name(&name)
+                        || name.starts_with('h') && name[1..].chars().all(|c| c.is_ascii_digit())
                         || name.starts_with('n') && name[1..].chars().all(|c| c.is_ascii_digit())
                         || name.starts_with('r') && name[1..].chars().all(|c| c.is_ascii_digit())
                         || matches!(name.as_str(), "hd" | "hd0" | "key" | "EulerGamma")
@@ -725,9 +727,9 @@ impl<'a> Ctx<'a> {
         let depth = 1 + self.depth_of(&arg);
         // An atom with the same function and an equal argument but a
         // different spelling is related by `congrArg`.
-        let twin = self.atoms.iter().position(|a| {
-            matches!(&a.kind, AKind::Fun { f: g, arg: q, .. } if *g == f && *q == arg)
-        });
+        let twin = self.atoms.iter().position(
+            |a| matches!(&a.kind, AKind::Fun { f: g, arg: q, .. } if *g == f && *q == arg),
+        );
         let id = self.new_atom(
             lean.clone(),
             AKind::Fun {
@@ -741,7 +743,9 @@ impl<'a> Ctx<'a> {
             let t = self.canon(t as u32);
             self.twin_of.insert(id, t);
             let (t_lean, t_arg) = match &self.atoms[t as usize].kind {
-                AKind::Fun { arg_lean, .. } => (self.atoms[t as usize].lean.clone(), arg_lean.clone()),
+                AKind::Fun { arg_lean, .. } => {
+                    (self.atoms[t as usize].lean.clone(), arg_lean.clone())
+                }
                 _ => unreachable!(),
             };
             let name = format!("r{}", self.rels.len() + 1);
@@ -749,10 +753,7 @@ impl<'a> Ctx<'a> {
                 name,
                 lhs: lean,
                 rhs: t_lean,
-                proof: format!(
-                    "congrArg {} (by ring : ({arg_lean}) = ({t_arg}))",
-                    f.lean()
-                ),
+                proof: format!("congrArg {} (by ring : ({arg_lean}) = ({t_arg}))", f.lean()),
                 kind: RelKind::Subst {
                     v: id,
                     e: Poly::var(t),
@@ -787,7 +788,11 @@ impl<'a> Ctx<'a> {
             .cloned()
             .ok_or(WITHHELD_UNSUPPORTED_NODE)?;
         if u.len() == 1 {
-            let (m, c) = u.0.iter().next().map(|(m, c)| (m.clone(), c.clone())).unwrap();
+            let (m, c) =
+                u.0.iter()
+                    .next()
+                    .map(|(m, c)| (m.clone(), c.clone()))
+                    .unwrap();
             let mut out = Poly::konst(Rational::from(c.recip_ref()));
             for &(v, e) in &m {
                 if matches!(self.atoms[v as usize].kind, AKind::Inv) {
@@ -826,7 +831,10 @@ impl<'a> Ctx<'a> {
             format!("({u_lean}) * {lean}"),
             "1".into(),
             format!("mul_inv_cancel {fact}"),
-            RelKind::Inverse { w: id, u: u.clone() },
+            RelKind::Inverse {
+                w: id,
+                u: u.clone(),
+            },
         );
         id
     }
@@ -994,7 +1002,10 @@ impl<'a> Ctx<'a> {
                 tail: bp.clone(),
             },
         );
-        self.have(format!("{lean} ≠ 0"), format!("(Real.rpow_pos_of_pos {pos} _).ne'"));
+        self.have(
+            format!("{lean} ≠ 0"),
+            format!("(Real.rpow_pos_of_pos {pos} _).ne'"),
+        );
         Ok(Poly::var(id))
     }
 
@@ -1180,7 +1191,11 @@ impl<'a> Ctx<'a> {
                 let da = na.dlean.clone();
                 let dp = na.dpoly.clone();
                 let pf = na.proof.clone();
-                let node = |proof: String, dlean: String, dpoly: Poly| Node { proof, dlean, dpoly };
+                let node = |proof: String, dlean: String, dpoly: Poly| Node {
+                    proof,
+                    dlean,
+                    dpoly,
+                };
                 Ok(match f {
                     Fn1::Exp => {
                         let e_atom = self.fun_atom(Fn1::Exp, &al, ap);
@@ -1426,7 +1441,11 @@ impl<'a> Ctx<'a> {
         // --- trig families --------------------------------------------------
         let trig = self.fun_atoms(&[Fn1::Sin, Fn1::Cos, Fn1::Tan]);
         for (base, base_lean, members) in self.multiple_classes(&trig)? {
-            let kmax = members.iter().map(|m| m.2.unsigned_abs()).max().unwrap_or(1) as i64;
+            let kmax = members
+                .iter()
+                .map(|m| m.2.unsigned_abs())
+                .max()
+                .unwrap_or(1) as i64;
             let mut spell_of: BTreeMap<i64, String> = BTreeMap::new();
             spell_of.insert(1, base_lean.clone());
             for (_, _, k, l) in &members {
@@ -1519,7 +1538,11 @@ impl<'a> Ctx<'a> {
                         let m_atom = self.fun_atom(g, &ml, at(-k));
                         let m_lean = self.atoms[m_atom as usize].lean.clone();
                         let (lemma, rhs, e) = if g == Fn1::Sin {
-                            ("Real.sin_neg", format!("-{m_lean}"), Poly::var(m_atom).neg())
+                            (
+                                "Real.sin_neg",
+                                format!("-{m_lean}"),
+                                Poly::var(m_atom).neg(),
+                            )
                         } else {
                             ("Real.cos_neg", m_lean.clone(), Poly::var(m_atom))
                         };
@@ -1555,7 +1578,11 @@ impl<'a> Ctx<'a> {
         // --- exp families ---------------------------------------------------
         let exps = self.fun_atoms(&[Fn1::Exp]);
         for (base, base_lean, members) in self.multiple_classes(&exps)? {
-            let kmax = members.iter().map(|m| m.2.unsigned_abs()).max().unwrap_or(1) as i64;
+            let kmax = members
+                .iter()
+                .map(|m| m.2.unsigned_abs())
+                .max()
+                .unwrap_or(1) as i64;
             if kmax == 1 && members.iter().all(|m| m.2 == 1) {
                 continue;
             }
@@ -1723,7 +1750,7 @@ impl<'a> Ctx<'a> {
                 _ => None,
             })
             .collect();
-        powers.sort_by(|a, b| b.1.cmp(&a.1));
+        powers.sort_by_key(|a| std::cmp::Reverse(a.1));
         for _round in 0..MAX_ROUNDS {
             if cur.is_zero() {
                 return Ok(cof);
@@ -1852,7 +1879,7 @@ impl<'a> Ctx<'a> {
             for &(v, e) in m {
                 let a = &self.atoms[v as usize].lean;
                 parts.push(if e == 1 {
-                    format!("{a}")
+                    a.to_string()
                 } else {
                     format!("({a}) ^ ({e} : ℕ)")
                 });
@@ -1897,7 +1924,8 @@ fn surely_positive(e: ExprId, pool: &ExprPool) -> bool {
             _ => false,
         },
         ExprData::Add(xs) => {
-            xs.iter().all(|&c| surely_nonneg(c, pool)) && xs.iter().any(|&c| surely_positive(c, pool))
+            xs.iter().all(|&c| surely_nonneg(c, pool))
+                && xs.iter().any(|&c| surely_positive(c, pool))
         }
         ExprData::Mul(xs) => xs.iter().all(|&c| surely_positive(c, pool)),
         ExprData::Pow { base, exp } => {
@@ -1918,9 +1946,7 @@ fn surely_nonneg(e: ExprId, pool: &ExprPool) -> bool {
         ExprData::Func { name, args } if args.len() == 1 => name == "sqrt",
         ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().all(|&c| surely_nonneg(c, pool)),
         ExprData::Pow { base, exp } => pool.with(*exp, |x| match x {
-            ExprData::Integer(n) => {
-                n.0 >= 0 && (n.0.is_even() || surely_nonneg(*base, pool))
-            }
+            ExprData::Integer(n) => n.0 >= 0 && (n.0.is_even() || surely_nonneg(*base, pool)),
             _ => false,
         }),
         _ => false,
@@ -2037,15 +2063,24 @@ fn respell_rational_powers(
     let out = match shape {
         Shape::Leaf => e,
         Shape::Add(xs) => {
-            let ys: Result<Vec<_>, _> = xs.iter().map(|&c| respell_rational_powers(c, pool, memo)).collect();
+            let ys: Result<Vec<_>, _> = xs
+                .iter()
+                .map(|&c| respell_rational_powers(c, pool, memo))
+                .collect();
             pool.add(ys?)
         }
         Shape::Mul(xs) => {
-            let ys: Result<Vec<_>, _> = xs.iter().map(|&c| respell_rational_powers(c, pool, memo)).collect();
+            let ys: Result<Vec<_>, _> = xs
+                .iter()
+                .map(|&c| respell_rational_powers(c, pool, memo))
+                .collect();
             pool.mul(ys?)
         }
         Shape::Func(name, xs) => {
-            let ys: Result<Vec<_>, _> = xs.iter().map(|&c| respell_rational_powers(c, pool, memo)).collect();
+            let ys: Result<Vec<_>, _> = xs
+                .iter()
+                .map(|&c| respell_rational_powers(c, pool, memo))
+                .collect();
             pool.func(name, ys?)
         }
         Shape::Pow(b, x) => {
@@ -2171,7 +2206,10 @@ pub fn emit_integration_hasderiv_cert(
             continue;
         }
         let c = cx.print_poly(&cof[i])?;
-        body.push_str(&format!("  have {} : {} = {} := {}\n", r.name, r.lhs, r.rhs, r.proof));
+        body.push_str(&format!(
+            "  have {} : {} = {} := {}\n",
+            r.name, r.lhs, r.rhs, r.proof
+        ));
         lc_terms.push(format!("({c}) * {}", r.name));
     }
     // `G = f` is a polynomial identity in the atoms modulo the facts above:

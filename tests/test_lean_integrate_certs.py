@@ -26,8 +26,8 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from lean_integrate_corpus import INTEGRANDS, certificates  # noqa: E402
-from test_lean_faithful import (  # noqa: E402
+from lean_integrate_corpus import INTEGRANDS, certificates
+from test_lean_faithful import (
     _hyp_holds,
     binder_names,
     close,
@@ -80,9 +80,9 @@ def test_statement_is_the_returned_antiderivative(src, result):
             assert close(py_eval(body, env), want, 1e-8), (src, body)
             compared += 1
         h = 1e-6
-        num = (py_eval(body, {**env, "x": env["x"] + h}) - py_eval(body, {**env, "x": env["x"] - h})) / (
-            2 * h
-        )
+        num = (
+            py_eval(body, {**env, "x": env["x"] + h}) - py_eval(body, {**env, "x": env["x"] - h})
+        ) / (2 * h)
         assert close(num, py_eval(deriv, env), 1e-4), (src, goal)
         if compared >= 4:
             break
@@ -121,7 +121,8 @@ def test_domain_hypotheses_are_explicit():
     assert "≠ 0" in binders
     r = ak.integrate(ak.sqrt(1 - x**2), x)
     binders, _ = statements(r.certificate)[0]
-    assert "-1 < " in binders and " < 1" in binders
+    assert "-1 < " in binders
+    assert " < 1" in binders
 
 
 _LEAN_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lean")
