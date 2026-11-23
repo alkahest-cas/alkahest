@@ -80,6 +80,8 @@ mod cranelift_backend;
 pub mod cache;
 pub(crate) mod complex_fallback;
 use complex_fallback::ComplexFallback;
+pub(crate) mod optimize;
+use optimize::Lowered;
 
 #[cfg(test)]
 mod agreement_tests;
@@ -137,6 +139,70 @@ impl CompileConfig {
             expected_evals: Some(n_points),
             force_tier: None,
         }
+    }
+}
+
+/// Optimisation passes applied to an expression before it is lowered.
+///
+/// Passed to [`compile_with_options`] / [`compile_many_with_options`]; every
+/// other compile entry point uses [`CodegenOptions::default`].
+///
+/// * `horner` — rewrite polynomial sums into multivariate Horner schemes
+///   (see [`crate::horner_multivariate`]) and let the native backends fuse
+///   their multiply-adds. Only a sum with at least six terms whose scheme
+///   saves at least a fifth of its operations is rewritten; any other sum is
+///   compiled exactly as written. A rewritten sum rounds differently from the
+///   expanded form, so its value can differ from [`eval_interp`] in the last
+///   few bits (more where the polynomial is ill-conditioned). The pass runs
+///   for the native tiers only (Cranelift, LLVM): the interpreter tier
+///   evaluates the expression as written, so a function that is upgraded to
+///   a native tier for a large batch can change in those bits. On by default,
+///   unless the environment variable `ALKAHEST_JIT_HORNER` is `0`, `false`,
+///   `off` or `no` when the options are created.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct CodegenOptions {
+    /// Rewrite polynomial sums into Horner schemes before lowering.
+    pub horner: bool,
+}
+
+impl CodegenOptions {
+    /// No rewriting: every evaluator computes exactly the expression given,
+    /// bit for bit like [`eval_interp`].
+    pub const fn exact() -> Self {
+        Self { horner: false }
+    }
+
+    /// These options with the Horner pass switched on or off.
+    pub const fn with_horner(mut self, on: bool) -> Self {
+        self.horner = on;
+        self
+    }
+}
+
+impl Default for CodegenOptions {
+    fn default() -> Self {
+        let off = std::env::var("ALKAHEST_JIT_HORNER").is_ok_and(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "off" | "no"
+            )
+        });
+        Self { horner: !off }
+    }
+}
+
+/// Run the optimisation passes `options` asks for.
+fn lower_for_codegen(
+    outputs: &[ExprId],
+    inputs: &[ExprId],
+    pool: &ExprPool,
+    options: CodegenOptions,
+) -> Lowered {
+    if options.horner {
+        optimize::lower(outputs, inputs, pool)
+    } else {
+        Lowered::identity(outputs)
     }
 }
 
@@ -1165,6 +1231,19 @@ pub fn compile_many_with(
     pool: &ExprPool,
     config: CompileConfig,
 ) -> Result<CompiledVecFn, JitError> {
+    compile_many_with_options(exprs, inputs, pool, config, CodegenOptions::default())
+}
+
+/// [`compile_many_with`] with explicit [`CodegenOptions`]. The outputs are
+/// optimised together, so a polynomial they share is rewritten once and
+/// still evaluated once per point.
+pub fn compile_many_with_options(
+    exprs: &[ExprId],
+    inputs: &[ExprId],
+    pool: &ExprPool,
+    config: CompileConfig,
+    options: CodegenOptions,
+) -> Result<CompiledVecFn, JitError> {
     for &e in exprs {
         refuse_unbound(e, inputs, pool)?;
     }
@@ -1173,7 +1252,7 @@ pub fn compile_many_with(
             .iter()
             .map(|&e| {
                 let t = tier.unwrap_or_else(|| select_compile_tier(e, pool, &config));
-                compile_with_fallbacks(t, e, inputs, pool)
+                compile_with_fallbacks(t, e, inputs, pool, options)
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(CompiledVecFn {
@@ -1189,7 +1268,13 @@ pub fn compile_many_with(
             && !exprs.is_empty()
             && !exprs.iter().any(|&e| needs_exact_integer_exponent(e, pool));
         if native_ok {
-            if let Ok(code) = cranelift_backend::compile_cranelift_many(exprs, inputs, pool) {
+            let lowered = lower_for_codegen(exprs, inputs, pool, options);
+            if let Ok(code) = cranelift_backend::compile_cranelift_many(
+                &lowered.outputs,
+                inputs,
+                pool,
+                &lowered.fma_adds,
+            ) {
                 let complex: Vec<Option<ComplexFallback>> = exprs
                     .iter()
                     .map(|&e| ComplexFallback::build(e, inputs, pool))
@@ -1275,11 +1360,15 @@ fn compile_for_tier(
     expr: ExprId,
     inputs: &[ExprId],
     pool: &ExprPool,
+    fma_adds: &IdSet,
 ) -> Result<CompiledFn, JitError> {
+    let _ = fma_adds;
     match tier {
         CompileTier::Interpreter => compile_interpreter(expr, inputs, pool),
         #[cfg(feature = "cranelift")]
-        CompileTier::Cranelift => cranelift_backend::compile_cranelift(expr, inputs, pool),
+        CompileTier::Cranelift => {
+            cranelift_backend::compile_cranelift_fused(expr, inputs, pool, fma_adds)
+        }
         #[cfg(feature = "jit")]
         CompileTier::Llvm => compile_llvm(expr, inputs, pool),
     }
@@ -1345,8 +1434,10 @@ fn compile_with_fallbacks(
     expr: ExprId,
     inputs: &[ExprId],
     pool: &ExprPool,
+    options: CodegenOptions,
 ) -> Result<CompiledFn, JitError> {
-    compile_with_fallbacks_real(tier, expr, inputs, pool)
+    // The complex fallback re-evaluates the expression as written.
+    compile_with_fallbacks_real(tier, expr, inputs, pool, options)
         .map(|f| with_complex_fallback(f, expr, inputs, pool))
 }
 
@@ -1355,6 +1446,7 @@ fn compile_with_fallbacks_real(
     expr: ExprId,
     inputs: &[ExprId],
     pool: &ExprPool,
+    options: CodegenOptions,
 ) -> Result<CompiledFn, JitError> {
     // Correctness outranks the tier, including a forced one: `compile_tier()`
     // reports `Interpreter` afterwards, so the downgrade is visible rather
@@ -1365,14 +1457,26 @@ fn compile_with_fallbacks_real(
         } else {
             CompileTier::Interpreter
         };
-    match compile_for_tier(tier, expr, inputs, pool) {
+    // The Horner pass is for the native tiers, whose fused multiply-adds it
+    // relies on. The interpreter tier — and the interpreter a native compile
+    // falls back to — evaluates the expression as written, bit for bit
+    // `eval_interp`.
+    let lowered = if matches!(tier, CompileTier::Interpreter) {
+        Lowered::identity(&[expr])
+    } else {
+        lower_for_codegen(&[expr], inputs, pool, options)
+    };
+    let (native, fma_adds) = (lowered.outputs[0], &lowered.fma_adds);
+    match compile_for_tier(tier, native, inputs, pool, fma_adds) {
         Ok(f) => Ok(f),
         Err(e) => match tier {
             CompileTier::Interpreter => Err(e),
             #[cfg(feature = "jit")]
             CompileTier::Llvm => {
                 #[cfg(feature = "cranelift")]
-                if let Ok(f) = cranelift_backend::compile_cranelift(expr, inputs, pool) {
+                if let Ok(f) =
+                    cranelift_backend::compile_cranelift_fused(native, inputs, pool, fma_adds)
+                {
                     return Ok(f);
                 }
                 compile_interpreter(expr, inputs, pool)
@@ -1380,7 +1484,7 @@ fn compile_with_fallbacks_real(
             #[cfg(feature = "cranelift")]
             CompileTier::Cranelift => {
                 #[cfg(feature = "jit")]
-                if let Ok(f) = compile_llvm(expr, inputs, pool) {
+                if let Ok(f) = compile_llvm(native, inputs, pool) {
                     return Ok(f);
                 }
                 compile_interpreter(expr, inputs, pool)
@@ -1396,9 +1500,21 @@ pub fn compile_with(
     pool: &ExprPool,
     config: CompileConfig,
 ) -> Result<CompiledFn, JitError> {
+    compile_with_options(expr, inputs, pool, config, CodegenOptions::default())
+}
+
+/// [`compile_with`] with explicit [`CodegenOptions`] — e.g.
+/// `CodegenOptions::exact()` to compile without the Horner rewrite.
+pub fn compile_with_options(
+    expr: ExprId,
+    inputs: &[ExprId],
+    pool: &ExprPool,
+    config: CompileConfig,
+    options: CodegenOptions,
+) -> Result<CompiledFn, JitError> {
     refuse_unbound(expr, inputs, pool)?;
     let tier = select_compile_tier(expr, pool, &config);
-    compile_with_fallbacks(tier, expr, inputs, pool)
+    compile_with_fallbacks(tier, expr, inputs, pool, options)
 }
 
 /// Compile `expr` to a native or interpreted function (default [`CompileConfig`]).
@@ -1435,12 +1551,21 @@ pub fn compile_jit_only(
     pool: &ExprPool,
 ) -> Result<CompiledFn, JitError> {
     refuse_unbound(expr, inputs, pool)?;
+    #[cfg(any(feature = "jit", feature = "cranelift"))]
+    let lowered = lower_for_codegen(&[expr], inputs, pool, CodegenOptions::default());
+
     #[cfg(feature = "cranelift")]
-    return cranelift_backend::compile_cranelift(expr, inputs, pool)
-        .map(|f| with_complex_fallback(f, expr, inputs, pool));
+    return cranelift_backend::compile_cranelift_fused(
+        lowered.outputs[0],
+        inputs,
+        pool,
+        &lowered.fma_adds,
+    )
+    .map(|f| with_complex_fallback(f, expr, inputs, pool));
 
     #[cfg(all(feature = "jit", not(feature = "cranelift")))]
-    return compile_llvm(expr, inputs, pool).map(|f| with_complex_fallback(f, expr, inputs, pool));
+    return compile_llvm(lowered.outputs[0], inputs, pool)
+        .map(|f| with_complex_fallback(f, expr, inputs, pool));
 
     #[cfg(not(any(feature = "jit", feature = "cranelift")))]
     {

@@ -109,7 +109,7 @@ C code emission
 Horner form
 -----------
 
-.. function:: horner(expr: Expr, var: Expr) -> Expr
+.. function:: horner(expr: Expr, var: Expr | list[Expr] | tuple[Expr, ...] | None = None) -> Expr
 
    Rewrite a polynomial in Horner's form.
 
@@ -117,6 +117,20 @@ Horner form
 
       h = horner(x**3 + pool.integer(2)*x**2 + pool.integer(3)*x + pool.integer(4), x)
       # x*(x*(x + 2) + 3) + 4
+
+   With one variable, ``expr`` must be a univariate polynomial with integer
+   coefficients. With a list or tuple of variables, or ``None`` (every free
+   symbol), ``expr`` is a multivariate polynomial whose coefficients may be
+   rationals, floats, constants or other symbols, and the result is a nested
+   scheme: the variable occurring in the most terms is factored out first,
+   ties going to the one listed first::
+
+      h = horner(1 + 2*x + 3*y + 4*x*y + 5*x**2, [x, y])
+      # (1 + 3*y) + x*((2 + 4*y) + 5*x)
+
+   Raises ``ValueError`` when ``expr`` is not a polynomial in the variables.
+   ``compile_expr`` applies the same rewrite automatically; pass
+   ``optimize=False`` to compile an expression exactly as written.
 
 Primitive registry
 ------------------

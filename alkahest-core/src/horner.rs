@@ -25,6 +25,9 @@ use crate::kernel::{integer_to_f64, ExprId, ExprPool};
 use crate::poly::{ConversionError, UniPoly};
 
 mod cemit;
+pub(crate) mod multi;
+
+pub use multi::horner_multivariate;
 
 // ---------------------------------------------------------------------------
 // horner — symbolic rewrite to Horner form
