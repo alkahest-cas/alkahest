@@ -727,6 +727,19 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-LP-005", class: "LinprogError", cause: Cause::Resource,    remediation: Some("raise max_nodes or tighten the variable bounds; the incumbent and open bound carried by the error bracket the optimum but do not prove it") },
     ErrorSpec { code: "E-LP-006", class: "LinprogError", cause: Cause::Internal,    remediation: Some("report the programme as a bug; the certificate failed its exact check and the result was withheld rather than returned") },
     ErrorSpec { code: "E-LP-007", class: "LinprogError", cause: Cause::UserInput,   remediation: Some("let the parameter enter only the right-hand side or only the objective, affinely; for a parameter in the constraint matrix (or in both), solve at fixed parameter values instead") },
+    // E-FEX — FexError (Finite Expression Method engine, crate::fex; experimental)
+    //
+    // All are refusals of malformed input. A candidate that overflows, divides
+    // by zero or takes log of a non-positive number is never an error: it is
+    // scored with loss +inf so a search can continue.
+    ErrorSpec { code: "E-FEX-001", class: "FexError", cause: Cause::UserInput,   remediation: Some("write the shape with L (leaf), U(child) and B(left,right), e.g. \"U(B(L,L))\", or use a preset: depth1, depth2, depth2_sub, depth2_rml, depth3") },
+    ErrorSpec { code: "E-FEX-002", class: "FexError", cause: Cause::UserInput,   remediation: Some("unary operators: 0 1 id sq cube quartic exp sin cos log abs; binary: + - * /") },
+    ErrorSpec { code: "E-FEX-003", class: "FexError", cause: Cause::UserInput,   remediation: Some("pass one opcode per slot (Template.n_slots), each below the size of that slot's table (unary or binary)") },
+    ErrorSpec { code: "E-FEX-004", class: "FexError", cause: Cause::UserInput,   remediation: Some("pass Template.n_params parameters: d+1 per leaf (weights, then bias), 2 per inner unary slot (alpha, beta), none per binary slot") },
+    ErrorSpec { code: "E-FEX-005", class: "FexError", cause: Cause::UserInput,   remediation: Some("pass C-contiguous float64 arrays of shape (n_points, dim); a batch of opcodes is (batch, n_slots) and of parameters (batch, n_params)") },
+    ErrorSpec { code: "E-FEX-006", class: "FexError", cause: Cause::Unsupported, remediation: Some("build the operator from the Jet symbols (u, lap, grad[i], ut) and the coordinates only; source terms may use the coordinates only") },
+    ErrorSpec { code: "E-FEX-007", class: "FexError", cause: Cause::UserInput,   remediation: Some("build the template and the problem with the same dim, and give the time coordinate as an index below dim") },
+    ErrorSpec { code: "E-FEX-008", class: "FexError", cause: Cause::UserInput,   remediation: Some("use loss_and_grad (and the adam or bfgs fitters) for Rayleigh-quotient and normalised losses; residual_and_jacobian and Levenberg-Marquardt need a least-squares problem") },
     // E-NUMF — NumberFieldError (algebraic number fields Q[x]/(f) on FLINT's
     // `nf`/`nf_elem`, and the cyclotomic fields Q(zeta_n))
     //

@@ -256,6 +256,7 @@ mod bigint;
 mod boolean;
 mod character;
 mod coding;
+mod fex;
 mod ffield;
 mod fpgroup;
 mod lattice;
@@ -23797,6 +23798,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     pde::register(m)?;
     lattice::register(m)?;
     linprog::register(m)?;
+    fex::register(m)?;
     matgroup::register(m)?;
     m.add_function(wrap_pyfunction!(py_derived_result_context_simplify, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify, m)?)?;
