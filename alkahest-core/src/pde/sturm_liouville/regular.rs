@@ -144,7 +144,9 @@ pub(super) fn reduce_pi_shifts(e: ExprId, pool: &ExprPool) -> ExprId {
             ExprData::Add(xs) => pool.add(xs.iter().map(|&x| go(x, pi, pool)).collect()),
             ExprData::Mul(xs) => pool.mul(xs.iter().map(|&x| go(x, pi, pool)).collect()),
             ExprData::Pow { base, exp } => pool.pow(go(base, pi, pool), go(exp, pi, pool)),
-            ExprData::Func { name, args } if (name == "sin" || name == "cos") && args.len() == 1 => {
+            ExprData::Func { name, args }
+                if (name == "sin" || name == "cos") && args.len() == 1 =>
+            {
                 let arg = crate::simplify::engine::simplify_expanded(args[0], pool).value;
                 let terms = match pool.get(arg) {
                     ExprData::Add(xs) => xs,
@@ -261,7 +263,11 @@ pub(super) fn separated_family(
     } else {
         (
             simp(
-                sub(pool.mul(vec![ba[1], y[0]]), pool.mul(vec![ba[0], y[1]]), pool),
+                sub(
+                    pool.mul(vec![ba[1], y[0]]),
+                    pool.mul(vec![ba[0], y[1]]),
+                    pool,
+                ),
                 pool,
             ),
             pool.integer(1),
@@ -273,8 +279,7 @@ pub(super) fn separated_family(
         // Below the threshold only the *absence* of roots is decided here.
         if let Some(sh) = &shape {
             let only = |c: ExprId, other: ExprId| {
-                proved_zero(other, pool)
-                    && matches!(super::sign(c, pool), Sgn::Pos | Sgn::Neg)
+                proved_zero(other, pool) && matches!(super::sign(c, pool), Sgn::Pos | Sgn::Neg)
             };
             if only(sh.cs, sh.cc) || only(sh.cc, sh.cs) {
                 return Ok(None);
@@ -296,7 +301,10 @@ pub(super) fn separated_family(
         let (cs0, cc0) = (proved_zero(sh.cs, pool), proved_zero(sh.cc, pool));
         let candidate = if cc0 && !cs0 {
             Some((
-                simp(pool.mul(vec![n, pi, pool.pow(kappa, pool.integer(-1))]), pool),
+                simp(
+                    pool.mul(vec![n, pi, pool.pow(kappa, pool.integer(-1))]),
+                    pool,
+                ),
                 sh.cs,
             ))
         } else if cs0 && !cc0 {
@@ -468,7 +476,11 @@ fn threshold_mode(
         functional(y0[1], x, problem.b, right, pool)?,
     ];
     let d0 = simp(
-        sub(pool.mul(vec![ba[0], bb[1]]), pool.mul(vec![ba[1], bb[0]]), pool),
+        sub(
+            pool.mul(vec![ba[0], bb[1]]),
+            pool.mul(vec![ba[1], bb[0]]),
+            pool,
+        ),
         pool,
     );
     let condition = if proved_zero(d0, pool) {
@@ -485,7 +497,11 @@ fn threshold_mode(
         y0[1]
     } else {
         simp(
-            sub(pool.mul(vec![ba[1], y0[0]]), pool.mul(vec![ba[0], y0[1]]), pool),
+            sub(
+                pool.mul(vec![ba[1], y0[0]]),
+                pool.mul(vec![ba[0], y0[1]]),
+                pool,
+            ),
             pool,
         )
     };
@@ -541,8 +557,20 @@ fn separated(
     require_positive(p, "p", problem, &mut side, pool)?;
     require_positive(w, "w", problem, &mut side, pool)?;
     let fam = separated_family(
-        problem, p, q, w, basis.freq, basis.y, basis.lam, lc, rc, n, ("sin", "cos"), &mut side,
-        &mut notes, pool,
+        problem,
+        p,
+        q,
+        w,
+        basis.freq,
+        basis.y,
+        basis.lam,
+        lc,
+        rc,
+        n,
+        ("sin", "cos"),
+        &mut side,
+        &mut notes,
+        pool,
     )?
     .expect("oscillatory family");
     let mut modes = Vec::new();
@@ -614,7 +642,8 @@ fn rayleigh(
     let left_ok = matches!(sa, Sgn::Neg | Sgn::Zero);
     let right_ok = matches!(sb, Sgn::Pos | Sgn::Zero);
     let q_ok = constant
-        || (!mentions_var(q, problem.var, pool) && matches!(super::sign(q, pool), Sgn::Neg | Sgn::Zero));
+        || (!mentions_var(q, problem.var, pool)
+            && matches!(super::sign(q, pool), Sgn::Neg | Sgn::Zero));
     let lam0_ok = constant || matches!(super::sign(lam0, pool), Sgn::Neg | Sgn::Zero);
     if left_ok && right_ok && q_ok && lam0_ok {
         return LowerSpectrum::None;
@@ -671,13 +700,20 @@ pub(super) fn constant_coefficients(
     let xa = simp(sub(x, problem.a, pool), pool);
     let arg = |f: ExprId| simp(pool.mul(vec![f, xa]), pool);
     let lam = simp(
-        div(sub(pool.mul(vec![p, pool.pow(nu, pool.integer(2))]), q, pool), w, pool),
+        div(
+            sub(pool.mul(vec![p, pool.pow(nu, pool.integer(2))]), q, pool),
+            w,
+            pool,
+        ),
         pool,
     );
     let lam0 = simp(neg(div(q, w, pool), pool), pool);
     let lam_k = simp(
         div(
-            neg(pool.add(vec![pool.mul(vec![p, pool.pow(kappa, pool.integer(2))]), q]), pool),
+            neg(
+                pool.add(vec![pool.mul(vec![p, pool.pow(kappa, pool.integer(2))]), q]),
+                pool,
+            ),
             w,
             pool,
         ),
@@ -685,13 +721,19 @@ pub(super) fn constant_coefficients(
     );
     let basis = Basis {
         freq: nu,
-        y: [pool.func("cos", vec![arg(nu)]), pool.func("sin", vec![arg(nu)])],
+        y: [
+            pool.func("cos", vec![arg(nu)]),
+            pool.func("sin", vec![arg(nu)]),
+        ],
         lam,
         y0: [pool.integer(1), xa],
         lam0,
         lower: Some((
             kappa,
-            [pool.func("cosh", vec![arg(kappa)]), pool.func("sinh", vec![arg(kappa)])],
+            [
+                pool.func("cosh", vec![arg(kappa)]),
+                pool.func("sinh", vec![arg(kappa)]),
+            ],
             lam_k,
         )),
         kind: "regular_constant",
@@ -720,7 +762,12 @@ fn periodic(
     let ell = simp(sub(problem.b, problem.a, pool), pool);
     let pi = pool.symbol("pi", Domain::Real);
     let nu_n = simp(
-        pool.mul(vec![pool.integer(2), n, pi, pool.pow(ell, pool.integer(-1))]),
+        pool.mul(vec![
+            pool.integer(2),
+            n,
+            pi,
+            pool.pow(ell, pool.integer(-1)),
+        ]),
         pool,
     );
     let mut statuses = Vec::new();
@@ -732,11 +779,19 @@ fn periodic(
         let f = at(yk);
         let df = d(f, x, pool)?;
         let r1 = closed_status(
-            sub(subs1(f, x, problem.a, pool), subs1(f, x, problem.b, pool), pool),
+            sub(
+                subs1(f, x, problem.a, pool),
+                subs1(f, x, problem.b, pool),
+                pool,
+            ),
             pool,
         );
         let r2 = closed_status(
-            sub(subs1(df, x, problem.a, pool), subs1(df, x, problem.b, pool), pool),
+            sub(
+                subs1(df, x, problem.a, pool),
+                subs1(df, x, problem.b, pool),
+                pool,
+            ),
             pool,
         );
         statuses.extend([ode, r1, r2]);
@@ -755,7 +810,9 @@ fn periodic(
     }
     let status = combine(&statuses);
     if status == VerificationStatus::Refuted {
-        return Err(PdeError::SlVerificationFailed("periodic eigenfunction".into()));
+        return Err(PdeError::SlVerificationFailed(
+            "periodic eigenfunction".into(),
+        ));
     }
     let dfun = pool.func(
         "sin",
@@ -843,8 +900,14 @@ fn euler_basis(
 ) -> Result<Option<Basis>, PdeError> {
     let x = problem.var;
     let b0 = simp(div(pool.mul(vec![x, d(p, x, pool)?]), p, pool), pool);
-    let c0 = simp(div(pool.mul(vec![pool.pow(x, pool.integer(2)), q]), p, pool), pool);
-    let c1 = simp(div(pool.mul(vec![pool.pow(x, pool.integer(2)), w]), p, pool), pool);
+    let c0 = simp(
+        div(pool.mul(vec![pool.pow(x, pool.integer(2)), q]), p, pool),
+        pool,
+    );
+    let c1 = simp(
+        div(pool.mul(vec![pool.pow(x, pool.integer(2)), w]), p, pool),
+        pool,
+    );
     if [b0, c0, c1].iter().any(|&e| mentions_var(e, x, pool)) {
         return Ok(None);
     }
@@ -855,12 +918,19 @@ fn euler_basis(
     let avoid = [p, q, w, problem.a, problem.b, x, n];
     let om = fresh_symbol("omega", Domain::Positive, &avoid, pool);
     let kappa = fresh_symbol("kappa", Domain::Positive, &avoid, pool);
-    let sigma = simp(pool.mul(vec![sub(pool.integer(1), b0, pool), pool.rational(1, 2)]), pool);
+    let sigma = simp(
+        pool.mul(vec![sub(pool.integer(1), b0, pool), pool.rational(1, 2)]),
+        pool,
+    );
     let s2 = simp(pool.pow(sigma, pool.integer(2)), pool);
     let ln = pool.func("log", vec![div(x, problem.a, pool)]);
     let xs = simp(pool.pow(x, sigma), pool);
     let lam = simp(
-        div(sub(pool.add(vec![pool.pow(om, pool.integer(2)), s2]), c0, pool), c1, pool),
+        div(
+            sub(pool.add(vec![pool.pow(om, pool.integer(2)), s2]), c0, pool),
+            c1,
+            pool,
+        ),
         pool,
     );
     let lam0 = simp(div(sub(s2, c0, pool), c1, pool), pool);
@@ -885,8 +955,14 @@ fn euler_basis(
         lower: Some((
             kappa,
             [
-                simp(pool.mul(vec![xs, pool.func("cosh", vec![arg(kappa)])]), pool),
-                simp(pool.mul(vec![xs, pool.func("sinh", vec![arg(kappa)])]), pool),
+                simp(
+                    pool.mul(vec![xs, pool.func("cosh", vec![arg(kappa)])]),
+                    pool,
+                ),
+                simp(
+                    pool.mul(vec![xs, pool.func("sinh", vec![arg(kappa)])]),
+                    pool,
+                ),
             ],
             lam_k,
         )),

@@ -54,12 +54,17 @@ pub(super) fn recognise(
         }
     }
     let bounded_both = left == EndCondition::Bounded && right == EndCondition::Bounded;
-    if bounded_both && same_end(a, minus_one, pool) && same_end(b, one, pool) && proved_zero(q, pool) {
+    if bounded_both
+        && same_end(a, minus_one, pool)
+        && same_end(b, one, pool)
+        && proved_zero(q, pool)
+    {
         let one_minus = sub(one, pool.pow(x, pool.integer(2)), pool);
         // Legendre: p = c(1 − x²), w = c.
         if let Some(c) = ratio(p, one_minus, x, pool) {
             if proved_zero(sub(w, c, pool), pool) {
-                return polynomial_problem(problem, OrthoFamily::Legendre, c, n, opts, pool).map(Some);
+                return polynomial_problem(problem, OrthoFamily::Legendre, c, n, opts, pool)
+                    .map(Some);
             }
         }
         // Chebyshev: p = c√(1 − x²), w = c/√(1 − x²).
@@ -80,7 +85,8 @@ pub(super) fn recognise(
     {
         if let Some(c) = ratio(p, gauss, x, pool) {
             if proved_zero(sub(simp(div(w, gauss, pool), pool), c, pool), pool) {
-                return polynomial_problem(problem, OrthoFamily::HermiteH, c, n, opts, pool).map(Some);
+                return polynomial_problem(problem, OrthoFamily::HermiteH, c, n, opts, pool)
+                    .map(Some);
             }
         }
     }
@@ -93,7 +99,8 @@ pub(super) fn recognise(
     {
         if let Some(c) = ratio(p, pool.mul(vec![x, e]), x, pool) {
             if proved_zero(sub(simp(div(w, e, pool), pool), c, pool), pool) {
-                return polynomial_problem(problem, OrthoFamily::Laguerre, c, n, opts, pool).map(Some);
+                return polynomial_problem(problem, OrthoFamily::Laguerre, c, n, opts, pool)
+                    .map(Some);
             }
         }
     }
@@ -101,7 +108,11 @@ pub(super) fn recognise(
 }
 
 /// The order `ν ≥ 0` from `ν²`.
-fn order_from_square(nu2: ExprId, side: &mut Vec<ExprId>, pool: &ExprPool) -> Result<ExprId, PdeError> {
+fn order_from_square(
+    nu2: ExprId,
+    side: &mut Vec<ExprId>,
+    pool: &ExprPool,
+) -> Result<ExprId, PdeError> {
     if let ExprData::Pow { base, exp } = pool.get(nu2) {
         if exp == pool.integer(2) {
             match super::sign(base, pool) {
@@ -169,7 +180,9 @@ fn bessel_problem(
     let lam = simp(pool.pow(mu, pool.integer(2)), pool);
     let dfun = functional(xf, x, radius, rc, pool)?;
     if proved_zero(dfun, pool) {
-        return Err(PdeError::SlDegenerate("the Bessel boundary condition vanishes identically".into()));
+        return Err(PdeError::SlDegenerate(
+            "the Bessel boundary condition vanishes identically".into(),
+        ));
     }
     let ode = zstatus(ode_residual(x, p, q, w, lam, xf, pool)?, pool);
     if ode == ZeroStatus::ProvedNonzero {
@@ -194,7 +207,11 @@ fn bessel_problem(
                 pool.mul(vec![
                     sub(
                         pool.integer(1),
-                        div(pool.pow(order, pool.integer(2)), pool.pow(mur, pool.integer(2)), pool),
+                        div(
+                            pool.pow(order, pool.integer(2)),
+                            pool.pow(mur, pool.integer(2)),
+                            pool,
+                        ),
                         pool,
                     ),
                     pool.pow(subs1(jz, z, mur, pool), pool.integer(2)),
@@ -340,7 +357,10 @@ fn poly_data(family: OrthoFamily, nn: ExprId, c: ExprId, pool: &ExprPool) -> (Ex
             pool.mul(vec![
                 pool.integer(2),
                 c,
-                pool.pow(pool.add(vec![pool.mul(vec![pool.integer(2), nn]), pool.integer(1)]), pool.integer(-1)),
+                pool.pow(
+                    pool.add(vec![pool.mul(vec![pool.integer(2), nn]), pool.integer(1)]),
+                    pool.integer(-1),
+                ),
             ]),
         ),
         OrthoFamily::ChebyshevT => (
@@ -386,7 +406,11 @@ fn polynomial_problem(
     let nu = fresh_symbol("nu", Domain::NonNegative, &avoid, pool);
     let (lam_nu, _) = poly_data(family, nu, c, pool);
     let (lam_n, norm_n) = poly_data(family, n, c, pool);
-    let first = if family == OrthoFamily::ChebyshevT { 1 } else { 0 };
+    let first = if family == OrthoFamily::ChebyshevT {
+        1
+    } else {
+        0
+    };
     let node = orthopoly(family, n, &[], x, false, pool)
         .map_err(|e| PdeError::SlUnsupported(format!("orthogonal polynomial: {e}")))?;
     // Exact checks on the first members with the explicit polynomials.
@@ -437,7 +461,11 @@ fn polynomial_problem(
             left: ZeroStatus::ProvedZero,
             right: ZeroStatus::ProvedZero,
             method,
-            members: if method == "members" { members } else { Vec::new() },
+            members: if method == "members" {
+                members
+            } else {
+                Vec::new()
+            },
         },
     };
     let mut modes = Vec::new();

@@ -67,7 +67,11 @@ impl P {
         let u = self.u();
         p.add(vec![
             self.dx(u, self.t(), 2),
-            p.mul(vec![p.integer(-1), p.pow(c, p.integer(2)), self.dx(u, self.x(), 2)]),
+            p.mul(vec![
+                p.integer(-1),
+                p.pow(c, p.integer(2)),
+                self.dx(u, self.x(), 2),
+            ]),
         ])
     }
 }
@@ -102,7 +106,10 @@ fn heat_on_the_line_symbolic_data_is_a_heat_kernel_integral() {
     assert_eq!(sol.kind, SolutionKind::IntegralRepresentation);
     exact(&sol, p);
     let v = shown(sol.value, p);
-    assert!(v.contains("Integral") && v.contains("exp") && v.contains("f(s)"), "{v}");
+    assert!(
+        v.contains("Integral") && v.contains("exp") && v.contains("f(s)"),
+        "{v}"
+    );
 }
 
 #[test]
@@ -110,7 +117,10 @@ fn heat_with_gaussian_data_closes() {
     let s = P::new();
     let p = &s.pool;
     let x = s.x();
-    let f = p.func("exp", vec![p.mul(vec![p.integer(-1), p.pow(x, p.integer(2))])]);
+    let f = p.func(
+        "exp",
+        vec![p.mul(vec![p.integer(-1), p.pow(x, p.integer(2))])],
+    );
     let prob = PdeProblem::new(&[s.heat(p.integer(1))], &[s.u()], p)
         .unwrap()
         .on(s.line(), p)
@@ -118,7 +128,12 @@ fn heat_with_gaussian_data_closes() {
         .ic(s.at(s.u(), s.t(), 0), f, p)
         .unwrap();
     let sol = fourier_method(&prob, p).unwrap();
-    assert_eq!(sol.kind, SolutionKind::ClosedForm, "{}", shown(sol.value, p));
+    assert_eq!(
+        sol.kind,
+        SolutionKind::ClosedForm,
+        "{}",
+        shown(sol.value, p)
+    );
     exact(&sol, p);
 }
 
@@ -139,7 +154,12 @@ fn wave_dalembert() {
         .ic(s.at(s.dx(u, s.t(), 1), s.t(), 0), g, p)
         .unwrap();
     let sol = fourier_method(&prob, p).unwrap();
-    assert_eq!(sol.kind, SolutionKind::ClosedForm, "{}", shown(sol.value, p));
+    assert_eq!(
+        sol.kind,
+        SolutionKind::ClosedForm,
+        "{}",
+        shown(sol.value, p)
+    );
     exact(&sol, p);
     let v = shown(sol.value, p);
     assert!(v.contains("f(") && v.contains("Integral(g(s)"), "{v}");
@@ -162,7 +182,13 @@ fn schrodinger_kernel() {
         .unwrap();
     let sol = fourier_method(&prob, p).unwrap();
     assert_eq!(sol.kind, SolutionKind::IntegralRepresentation);
-    assert!(sol.checks.iter().any(|c| c.what == "kernel_pde" && c.status == ZeroStatus::ProvedZero), "{:?}", sol.checks);
+    assert!(
+        sol.checks
+            .iter()
+            .any(|c| c.what == "kernel_pde" && c.status == ZeroStatus::ProvedZero),
+        "{:?}",
+        sol.checks
+    );
 }
 
 #[test]
@@ -206,7 +232,11 @@ fn klein_gordon_spectral_representation() {
         .unwrap();
     let sol = fourier_method(&prob, p).unwrap();
     assert_eq!(sol.kind, SolutionKind::IntegralRepresentation);
-    assert!(sol.checks.iter().any(|c| c.what == "integrand_pde"), "{:?}", sol.checks);
+    assert!(
+        sol.checks.iter().any(|c| c.what == "integrand_pde"),
+        "{:?}",
+        sol.checks
+    );
     assert_ne!(sol.status, VerificationStatus::Refuted);
 }
 
@@ -227,7 +257,11 @@ fn heat_half_line_constant_boundary_is_erfc() {
         .unwrap();
     let sol = transform_solve(&prob, p).unwrap();
     assert_eq!(sol.kind, SolutionKind::ClosedForm);
-    assert!(shown(sol.value, p).contains("erfc"), "{}", shown(sol.value, p));
+    assert!(
+        shown(sol.value, p).contains("erfc"),
+        "{}",
+        shown(sol.value, p)
+    );
     exact(&sol, p);
 }
 
@@ -271,7 +305,11 @@ fn wave_half_line_signal() {
     let sol = transform_solve(&prob, p).unwrap();
     assert_eq!(sol.kind, SolutionKind::ClosedForm);
     exact(&sol, p);
-    assert!(shown(sol.value, p).contains("Heaviside"), "{}", shown(sol.value, p));
+    assert!(
+        shown(sol.value, p).contains("Heaviside"),
+        "{}",
+        shown(sol.value, p)
+    );
 }
 
 #[test]
@@ -280,7 +318,10 @@ fn heat_half_line_images() {
     let p = &s.pool;
     let x = s.x();
     let u = s.u();
-    for (lhs, name) in [(s.at(u, x, 0), "fourier_sine"), (s.at(s.dx(u, x, 1), x, 0), "fourier_cosine")] {
+    for (lhs, name) in [
+        (s.at(u, x, 0), "fourier_sine"),
+        (s.at(s.dx(u, x, 1), x, 0), "fourier_cosine"),
+    ] {
         let prob = PdeProblem::new(&[s.heat(p.integer(1))], &[u], p)
             .unwrap()
             .on(s.quadrant(), p)
@@ -322,7 +363,10 @@ fn refusals() {
     let u = s.u();
     // nonlinear
     let eq = p.add(vec![s.dx(u, s.t(), 1), p.mul(vec![u, s.dx(u, s.x(), 1)])]);
-    let prob = PdeProblem::new(&[eq], &[u], p).unwrap().on(s.line(), p).unwrap();
+    let prob = PdeProblem::new(&[eq], &[u], p)
+        .unwrap()
+        .on(s.line(), p)
+        .unwrap();
     assert_eq!(fourier_method(&prob, p).unwrap_err().code(), "E-PDE-160");
     // no initial data
     let prob = PdeProblem::new(&[s.heat(p.integer(1))], &[u], p)

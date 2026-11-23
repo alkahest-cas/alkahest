@@ -329,7 +329,12 @@ fn is_named_constant(s: ExprId, pool: &ExprPool) -> bool {
 
 /// A fresh symbol named `base` (or `base1`, `base2`, …) that does not occur
 /// in `avoid`.
-pub(crate) fn fresh_symbol(base: &str, domain: Domain, avoid: &[ExprId], pool: &ExprPool) -> ExprId {
+pub(crate) fn fresh_symbol(
+    base: &str,
+    domain: Domain,
+    avoid: &[ExprId],
+    pool: &ExprPool,
+) -> ExprId {
     let mut taken: Vec<String> = Vec::new();
     for &e in avoid {
         for s in symbols_of(e, pool) {
@@ -479,10 +484,7 @@ impl SturmLiouvilleProblem {
     ///
     /// As [`Self::new`].
     pub fn hermite(x: ExprId, pool: &ExprPool) -> Result<Self, PdeError> {
-        let g = pool.func(
-            "exp",
-            vec![neg(pool.pow(x, pool.integer(2)), pool)],
-        );
+        let g = pool.func("exp", vec![neg(pool.pow(x, pool.integer(2)), pool)]);
         let oo = pool.pos_infinity();
         Self::new(
             x,
@@ -623,7 +625,8 @@ impl SturmLiouvilleProblem {
         for c in [c1, c2] {
             if mentions_var(c, lam, pool) {
                 return Err(PdeError::SlUnsupported(
-                    "λ multiplies a derivative of X; the problem is not of Sturm–Liouville type".into(),
+                    "λ multiplies a derivative of X; the problem is not of Sturm–Liouville type"
+                        .into(),
                 ));
             }
         }
@@ -689,8 +692,12 @@ pub(crate) fn replace_node(e: ExprId, old: ExprId, new: ExprId, pool: &ExprPool)
             return r;
         }
         let r = match pool.get(e) {
-            ExprData::Add(xs) => pool.add(xs.iter().map(|&x| go(x, old, new, pool, memo)).collect()),
-            ExprData::Mul(xs) => pool.mul(xs.iter().map(|&x| go(x, old, new, pool, memo)).collect()),
+            ExprData::Add(xs) => {
+                pool.add(xs.iter().map(|&x| go(x, old, new, pool, memo)).collect())
+            }
+            ExprData::Mul(xs) => {
+                pool.mul(xs.iter().map(|&x| go(x, old, new, pool, memo)).collect())
+            }
             ExprData::Pow { base, exp } => pool.pow(
                 go(base, old, new, pool, memo),
                 go(exp, old, new, pool, memo),
@@ -859,13 +866,19 @@ impl EigenFamily {
     /// The eigenvalue `λ_k` (a concrete member).
     pub fn eigenvalue_at(&self, k: i64, pool: &ExprPool) -> Result<ExprId, PdeError> {
         let nu = self.frequency_at(k, pool)?;
-        Ok(simp(subs1(self.eigenvalue_of_frequency, self.frequency_var, nu, pool), pool))
+        Ok(simp(
+            subs1(self.eigenvalue_of_frequency, self.frequency_var, nu, pool),
+            pool,
+        ))
     }
 
     /// `ν_k`.
     pub fn frequency_at(&self, k: i64, pool: &ExprPool) -> Result<ExprId, PdeError> {
         if self.closed_form {
-            Ok(simp(subs1(self.frequency, self.index, pool.integer(k), pool), pool))
+            Ok(simp(
+                subs1(self.frequency, self.index, pool.integer(k), pool),
+                pool,
+            ))
         } else {
             member(self.frequency, k, pool)
         }
@@ -956,7 +969,12 @@ pub fn family_enclosures(
         let k = fam.first + j;
         let nu_ball = if fam.closed_form {
             let e = simp(
-                subs1(subs(fam.frequency, params, pool), fam.index, pool.integer(k), pool),
+                subs1(
+                    subs(fam.frequency, params, pool),
+                    fam.index,
+                    pool.integer(k),
+                    pool,
+                ),
                 pool,
             );
             IntervalEval::new(prec + 32).eval(e, pool)
@@ -1095,7 +1113,8 @@ pub fn sturm_liouville_with(
     let p = simp(problem.p, pool);
     let q = simp(problem.q, pool);
     let w = simp(problem.w, pool);
-    let constant = !mentions_var(p, x, pool) && !mentions_var(q, x, pool) && !mentions_var(w, x, pool);
+    let constant =
+        !mentions_var(p, x, pool) && !mentions_var(q, x, pool) && !mentions_var(w, x, pool);
     let mut sys = if constant {
         regular::constant_coefficients(problem, p, q, w, n, pool)?
     } else {
@@ -1145,7 +1164,11 @@ fn ode_residual(
 ) -> Result<ExprId, PdeError> {
     let dx = d(xf, x, pool)?;
     let flux = d(pool.mul(vec![p, dx]), x, pool)?;
-    Ok(pool.add(vec![flux, pool.mul(vec![q, xf]), pool.mul(vec![lam, w, xf])]))
+    Ok(pool.add(vec![
+        flux,
+        pool.mul(vec![q, xf]),
+        pool.mul(vec![lam, w, xf]),
+    ]))
 }
 
 fn status_of(z: ZeroStatus) -> VerificationStatus {

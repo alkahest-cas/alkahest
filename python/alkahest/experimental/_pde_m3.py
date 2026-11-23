@@ -35,6 +35,8 @@ was verified by substitution.
 
 from __future__ import annotations
 
+import contextlib
+
 import alkahest as _ak
 from alkahest.alkahest import (
     _pde_sl_enclosures,
@@ -151,10 +153,8 @@ class EigenFamily:
         out = []
         for f in self.eigenfunctions_of_frequency:
             e = _ak.subs(f, {self.frequency_var: nu})
-            try:
+            with contextlib.suppress(Exception):  # no orthogonal polynomial inside
                 e = _ak.expand_orthopoly(e)
-            except Exception:  # noqa: BLE001 - no orthogonal polynomial inside
-                pass
             out.append(_ak.simplify(e))
         return out
 
@@ -301,12 +301,21 @@ class SturmLiouville:
         left, right = _end(left, pool), _end(right, pool)
         if self._ode is not None:
             eq, u, lam = self._ode
-            d = _pde_sl_from_ode(
-                eq, u, lam, a, b, left, right, periodic, enclosures, bits, index
-            )
+            d = _pde_sl_from_ode(eq, u, lam, a, b, left, right, periodic, enclosures, bits, index)
         else:
             d = _pde_sturm_liouville(
-                self.var, self.p, self.q, self.w, a, b, left, right, periodic, enclosures, bits, index
+                self.var,
+                self.p,
+                self.q,
+                self.w,
+                a,
+                b,
+                left,
+                right,
+                periodic,
+                enclosures,
+                bits,
+                index,
             )
         return Eigensystem(d)
 

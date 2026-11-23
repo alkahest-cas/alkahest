@@ -98,7 +98,10 @@ fn family_dict<'py>(
     d.set_item("frequency_var", wrap(py, f.frequency_var, pool))?;
     d.set_item("frequency", wrap(py, f.frequency, pool))?;
     d.set_item("eigenvalue", wrap(py, f.eigenvalue, pool))?;
-    d.set_item("eigenvalue_of_frequency", wrap(py, f.eigenvalue_of_frequency, pool))?;
+    d.set_item(
+        "eigenvalue_of_frequency",
+        wrap(py, f.eigenvalue_of_frequency, pool),
+    )?;
     d.set_item("eigenfunctions", wrap_list(py, &f.eigenfunctions, pool)?)?;
     d.set_item(
         "eigenfunctions_of_frequency",
@@ -440,8 +443,12 @@ fn _sincos_transform(
         let g = pool.borrow(py);
         let pl = &g.inner;
         match (k, inverse) {
-            (SinCosKind::Sine, false) => alkahest_core::transform::fourier_sine_transform(ff, xx, ww, pl),
-            (SinCosKind::Sine, true) => alkahest_core::transform::inverse_fourier_sine_transform(ff, xx, ww, pl),
+            (SinCosKind::Sine, false) => {
+                alkahest_core::transform::fourier_sine_transform(ff, xx, ww, pl)
+            }
+            (SinCosKind::Sine, true) => {
+                alkahest_core::transform::inverse_fourier_sine_transform(ff, xx, ww, pl)
+            }
             (_, false) => alkahest_core::transform::fourier_cosine_transform(ff, xx, ww, pl),
             (_, true) => alkahest_core::transform::inverse_fourier_cosine_transform(ff, xx, ww, pl),
         }

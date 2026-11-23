@@ -62,10 +62,34 @@ fn dirichlet_dirichlet() {
     let f = &sys.families[0];
     assert!(f.closed_form);
     exact(f);
-    assert_eq!(sh(f.eigenvalue, p), sh(simp(p.pow(p.mul(vec![f.index, p.symbol("pi", Domain::Real), p.pow(l, p.integer(-1))]), p.integer(2)), p), p));
-    assert!(sh(f.eigenfunctions[0], p).contains("sin"), "{}", sh(f.eigenfunctions[0], p));
+    assert_eq!(
+        sh(f.eigenvalue, p),
+        sh(
+            simp(
+                p.pow(
+                    p.mul(vec![
+                        f.index,
+                        p.symbol("pi", Domain::Real),
+                        p.pow(l, p.integer(-1))
+                    ]),
+                    p.integer(2)
+                ),
+                p
+            ),
+            p
+        )
+    );
+    assert!(
+        sh(f.eigenfunctions[0], p).contains("sin"),
+        "{}",
+        sh(f.eigenfunctions[0], p)
+    );
     let norm = f.norms_squared[0].unwrap();
-    assert!(proved_zero(sub(norm, p.mul(vec![l, p.rational(1, 2)]), p), p), "{}", sh(norm, p));
+    assert!(
+        proved_zero(sub(norm, p.mul(vec![l, p.rational(1, 2)]), p), p),
+        "{}",
+        sh(norm, p)
+    );
     assert!(sys.modes.is_empty());
     assert_eq!(sys.lower, LowerSpectrum::None);
     assert!(sys.side_conditions.is_empty(), "{:?}", sys.side_conditions);
@@ -145,7 +169,10 @@ fn robin_family_symbolic_h() {
     exact(f);
     assert_eq!(f.verification.method, "defining_equation");
     let de = sh(f.defining_equation.unwrap(), p);
-    assert!(de.contains("sin") && de.contains("cos") && !de.contains("tan"), "{de}");
+    assert!(
+        de.contains("sin") && de.contains("cos") && !de.contains("tan"),
+        "{de}"
+    );
     assert!(f.enclosures.is_empty());
     assert!(sys.modes.is_empty(), "hL + 1 > 0: no zero mode");
     assert_eq!(sys.lower, LowerSpectrum::None);
@@ -154,7 +181,11 @@ fn robin_family_symbolic_h() {
     params.insert(h, p.integer(1));
     params.insert(l, p.integer(1));
     let enc = f.enclosures(2, &params, 64, p).unwrap();
-    assert!((mid(&enc[0]) - 2.028757838110434f64.powi(2)).abs() < 1e-9, "{}", mid(&enc[0]));
+    assert!(
+        (mid(&enc[0]) - 2.028757838110434f64.powi(2)).abs() < 1e-9,
+        "{}",
+        mid(&enc[0])
+    );
     assert!((mid(&enc[1]) - 4.913180439434884f64.powi(2)).abs() < 1e-9);
 }
 
@@ -182,7 +213,11 @@ fn robin_with_negative_coefficient_has_a_negative_eigenvalue() {
         LowerSpectrum::Present { family, .. } => {
             let e = &family.enclosures[0];
             // κ ≈ 1.9150080481545, λ = −κ².
-            assert!((mid(e) + 1.915008048154_f64.powi(2)).abs() < 1e-6, "{}", mid(e));
+            assert!(
+                (mid(e) + 1.915008048154_f64.powi(2)).abs() < 1e-6,
+                "{}",
+                mid(e)
+            );
         }
         other => panic!("{other:?}"),
     }
@@ -193,7 +228,8 @@ fn periodic_two_eigenfunctions() {
     let c = Ctx::new();
     let p = &c.pool;
     let pi = p.symbol("pi", Domain::Real);
-    let pr = SturmLiouvilleProblem::interval(c.x(), neg(pi, p), pi, SlBoundary::Periodic, p).unwrap();
+    let pr =
+        SturmLiouvilleProblem::interval(c.x(), neg(pi, p), pi, SlBoundary::Periodic, p).unwrap();
     let sys = sturm_liouville(&pr, p).unwrap();
     assert_eq!(sys.kind, "periodic");
     let f = &sys.families[0];
@@ -226,7 +262,11 @@ fn euler_cauchy_closed_form() {
     assert!(f.closed_form, "{}", sh(f.frequency, p));
     exact(f);
     let want = (std::f64::consts::PI / 2f64.ln()).powi(2);
-    assert!((mid(&f.enclosures[0]) - want).abs() < 1e-9, "{}", mid(&f.enclosures[0]));
+    assert!(
+        (mid(&f.enclosures[0]) - want).abs() < 1e-9,
+        "{}",
+        mid(&f.enclosures[0])
+    );
     assert_eq!(sys.lower, LowerSpectrum::None);
 }
 
@@ -235,14 +275,19 @@ fn bessel_dirichlet_zeros() {
     let c = Ctx::new();
     let p = &c.pool;
     let r = p.symbol("r", Domain::Positive);
-    let pr = SturmLiouvilleProblem::bessel(r, p.integer(0), p.integer(1), EndCondition::Dirichlet, p)
-        .unwrap();
+    let pr =
+        SturmLiouvilleProblem::bessel(r, p.integer(0), p.integer(1), EndCondition::Dirichlet, p)
+            .unwrap();
     let sys = sturm_liouville(&pr, p).unwrap();
     assert_eq!(sys.kind, "bessel");
     let f = &sys.families[0];
     exact(f);
     let j01 = 2.404825557695773_f64;
-    assert!((mid(&f.enclosures[0]) - j01 * j01).abs() < 1e-9, "{:?}", f.enclosures);
+    assert!(
+        (mid(&f.enclosures[0]) - j01 * j01).abs() < 1e-9,
+        "{:?}",
+        f.enclosures
+    );
     assert!(sys.modes.is_empty());
     assert_eq!(sys.lower, LowerSpectrum::None);
 }
@@ -252,8 +297,9 @@ fn bessel_order_two_and_neumann_zero_mode() {
     let c = Ctx::new();
     let p = &c.pool;
     let r = p.symbol("r", Domain::Positive);
-    let pr = SturmLiouvilleProblem::bessel(r, p.integer(2), p.integer(1), EndCondition::Dirichlet, p)
-        .unwrap();
+    let pr =
+        SturmLiouvilleProblem::bessel(r, p.integer(2), p.integer(1), EndCondition::Dirichlet, p)
+            .unwrap();
     let sys = sturm_liouville(&pr, p).unwrap();
     let j21 = 5.135622301840683_f64;
     assert!((mid(&sys.families[0].enclosures[0]) - j21 * j21).abs() < 1e-8);
@@ -273,17 +319,37 @@ fn legendre_hermite_laguerre_chebyshev() {
     let p = &c.pool;
     let x = c.x();
     for (pr, kind, l2) in [
-        (SturmLiouvilleProblem::legendre(x, p).unwrap(), "legendre", 6.0),
-        (SturmLiouvilleProblem::hermite(x, p).unwrap(), "hermite", 4.0),
-        (SturmLiouvilleProblem::laguerre(x, p).unwrap(), "laguerre", 2.0),
-        (SturmLiouvilleProblem::chebyshev(x, p).unwrap(), "chebyshev", 9.0),
+        (
+            SturmLiouvilleProblem::legendre(x, p).unwrap(),
+            "legendre",
+            6.0,
+        ),
+        (
+            SturmLiouvilleProblem::hermite(x, p).unwrap(),
+            "hermite",
+            4.0,
+        ),
+        (
+            SturmLiouvilleProblem::laguerre(x, p).unwrap(),
+            "laguerre",
+            2.0,
+        ),
+        (
+            SturmLiouvilleProblem::chebyshev(x, p).unwrap(),
+            "chebyshev",
+            9.0,
+        ),
     ] {
         let sys = sturm_liouville(&pr, p).unwrap();
         assert_eq!(sys.kind, kind);
         let f = &sys.families[0];
         exact(f);
         // the third enclosure: λ₂ (λ₃ for Chebyshev, which starts at 1)
-        assert!((mid(&f.enclosures[2]) - l2).abs() < 1e-12, "{kind}: {:?}", f.enclosures);
+        assert!(
+            (mid(&f.enclosures[2]) - l2).abs() < 1e-12,
+            "{kind}: {:?}",
+            f.enclosures
+        );
         let fs = f.eigenfunctions_at(3, p).unwrap();
         assert!(!sh(fs[0], p).contains("_"), "{kind}: {}", sh(fs[0], p));
     }
@@ -313,7 +379,10 @@ fn from_ode_reads_the_coefficients() {
     assert_eq!(pr.p, p.integer(1));
     assert_eq!(pr.w, p.integer(1));
     let sys = sturm_liouville(&pr, p).unwrap();
-    assert_eq!(sh(sys.families[0].eigenvalue, p), sh(p.pow(sys.families[0].index, p.integer(2)), p));
+    assert_eq!(
+        sh(sys.families[0].eigenvalue, p),
+        sh(p.pow(sys.families[0].index, p.integer(2)), p)
+    );
     // Legendre written out: (1 − x²) X'' − 2x X' + λ X = 0.
     let d1 = crate::diff::diff(xf, x, p).unwrap().value;
     let eq = p.add(vec![

@@ -43,7 +43,7 @@ def _wl_numbers(s: str):
     s = re.sub(r"`[0-9.]*", "", s).replace("*^", "e")
     s = s.replace("{", "[").replace("}", "]").replace("*I", "j")
     s = re.sub(r"(\d)\s*j", r"\1j", s)
-    return eval(s, {"Indeterminate": None})  # noqa: S307 - our own reference file
+    return eval(s, {"Indeterminate": None})  # our own reference file
 
 
 SL_PROBLEMS = json.loads((CORPUS / "sturm_liouville_problems.json").read_text())
@@ -131,7 +131,9 @@ def test_sl_symbolic_robin_family_and_enclosures():
     assert not f.closed_form
     assert f.enclosures == []  # symbolic parameters
     de = str(f.defining_equation)
-    assert "sin" in de and "cos" in de and "h" in de
+    assert "sin" in de
+    assert "cos" in de
+    assert "h" in de
     assert es.lower["status"] == "none"
     assert es.modes == []
     encs = f.enclosures_with(3, {h: 1, L: 1})
@@ -153,7 +155,8 @@ def test_sl_symbolic_h_conditional_lower_spectrum():
     assert "h" in str(es.lower["condition"])
     # λ = 0 is an eigenvalue exactly when h + 1 = 0
     (m,) = es.modes
-    assert m.condition is not None and "h" in str(m.condition)
+    assert m.condition is not None
+    assert "h" in str(m.condition)
 
 
 def test_sl_from_ode_and_closed_forms():
@@ -162,7 +165,9 @@ def test_sl_from_ode_and_closed_forms():
     lam = pool.symbol("lam")
     X = akx.Function("X")(x)
     eq = akx.D(X, x, 2) + lam * X
-    es = akx.SturmLiouville.from_ode(eq, X, lam, (0, pool.symbol("pi")), ("dirichlet", "dirichlet")).solve()
+    es = akx.SturmLiouville.from_ode(
+        eq, X, lam, (0, pool.symbol("pi")), ("dirichlet", "dirichlet")
+    ).solve()
     (f,) = es.families
     assert str(f.eigenvalue) == str(f.index**2)
     assert f.eigenvalue_at(3) == pool.integer(9)
@@ -236,11 +241,20 @@ def _value_at(pool, expr, x, t, px, pt):
 def test_transform_corpus(entry):
     pool, x, t, pde = _build_transform_problem(entry)
     sol = akx.transform_solve(pde)
-    assert sol.verification["status"] == "exactly_verified", (entry["id"], sol.verification, sol.value)
+    assert sol.verification["status"] == "exactly_verified", (
+        entry["id"],
+        sol.verification,
+        sol.value,
+    )
     if entry["expect"] != "any":
         assert sol.kind == entry["expect"], (entry["id"], sol.kind, sol.value)
     ref = TR_REF.get(entry["id"])
-    if sol.kind == "closed_form" and ref and ref[0] == "closed" and "Integral" not in str(sol.value):
+    if (
+        sol.kind == "closed_form"
+        and ref
+        and ref[0] == "closed"
+        and "Integral" not in str(sol.value)
+    ):
         want = _wl_numbers(ref[1])
         for (px, pt), w in zip([(0.3, 0.7), (1.1, 0.2)], want):
             got = _value_at(pool, sol.value, x, t, px, pt)
@@ -250,7 +264,7 @@ def test_transform_corpus(entry):
 
 def test_transform_heat_kernel_shape():
     entry = next(e for e in TR_PROBLEMS if e["id"] == "heat_line_symbolic")
-    pool, x, t, pde = _build_transform_problem(entry)
+    _, _, _, pde = _build_transform_problem(entry)
     sol = akx.transform_solve(pde)
     (term,) = sol.terms
     assert str(term["density"]) == "f(s)"

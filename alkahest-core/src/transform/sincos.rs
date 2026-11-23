@@ -179,7 +179,10 @@ pub fn inverse_fourier_sine_transform(
     pool: &ExprPool,
 ) -> Result<ExprId, SinCosError> {
     let g = sincos_transform(SinCosKind::Sine, big_f, w, x, pool)?;
-    Ok(simp(pool.mul(vec![pool.integer(2), recip(pi(pool), pool), g]), pool))
+    Ok(simp(
+        pool.mul(vec![pool.integer(2), recip(pi(pool), pool), g]),
+        pool,
+    ))
 }
 
 /// `f(x) = (2/π) ∫₀^∞ F(ω) cos(ωx) dω`.
@@ -194,7 +197,10 @@ pub fn inverse_fourier_cosine_transform(
     pool: &ExprPool,
 ) -> Result<ExprId, SinCosError> {
     let g = sincos_transform(SinCosKind::Cosine, big_f, w, x, pool)?;
-    Ok(simp(pool.mul(vec![pool.integer(2), recip(pi(pool), pool), g]), pool))
+    Ok(simp(
+        pool.mul(vec![pool.integer(2), recip(pi(pool), pool), g]),
+        pool,
+    ))
 }
 
 /// The name of the transformed unknown: `{name}_hat_s` / `{name}_hat_c`.
@@ -289,7 +295,10 @@ fn shape(f: ExprId, x: ExprId, pool: &ExprPool) -> Option<Shape> {
             }
             ExprData::Func { name, args } if name == "exp" && args.len() == 1 => {
                 let arg = args[0];
-                let at0 = simp(crate::pde::sturm_liouville::subs1(arg, x, pool.integer(0), pool), pool);
+                let at0 = simp(
+                    crate::pde::sturm_liouville::subs1(arg, x, pool.integer(0), pool),
+                    pool,
+                );
                 if at0 != pool.integer(0) {
                     return None;
                 }
@@ -384,7 +393,10 @@ fn table(
             positive(a, "Gaussian rate", pool)?;
             let g = pool.func(
                 "exp",
-                vec![neg(pool.mul(vec![w2, recip(pool.mul(vec![pool.integer(4), a]), pool)]), pool)],
+                vec![neg(
+                    pool.mul(vec![w2, recip(pool.mul(vec![pool.integer(4), a]), pool)]),
+                    pool,
+                )],
             );
             let sqrt_pi_a = pool.func("sqrt", vec![pool.mul(vec![pi(pool), recip(a, pool)])]);
             match kind {
@@ -452,18 +464,29 @@ fn unknown_rule(
                 ord[j] = k;
                 pool.mul(vec![
                     w,
-                    crate::kernel::subs::subs(crate::diff::undefined::build(v.inner, &ord, pool), &at0, pool),
+                    crate::kernel::subs::subs(
+                        crate::diff::undefined::build(v.inner, &ord, pool),
+                        &at0,
+                        pool,
+                    ),
                 ])
             }
             SinCosKind::Cosine => {
                 ord[j] = k + 1;
                 neg(
-                    crate::kernel::subs::subs(crate::diff::undefined::build(v.inner, &ord, pool), &at0, pool),
+                    crate::kernel::subs::subs(
+                        crate::diff::undefined::build(v.inner, &ord, pool),
+                        &at0,
+                        pool,
+                    ),
                     pool,
                 )
             }
         };
-        acc = pool.add(vec![neg(pool.mul(vec![pool.pow(w, pool.integer(2)), acc]), pool), boundary]);
+        acc = pool.add(vec![
+            neg(pool.mul(vec![pool.pow(w, pool.integer(2)), acc]), pool),
+            boundary,
+        ]);
         k += 2;
     }
     Some(Ok(acc))
@@ -485,16 +508,32 @@ mod tests {
         let c = fourier_cosine_transform(f, x, w, &pool).unwrap();
         let want_s = pool.mul(vec![
             w,
-            recip(pool.add(vec![pool.pow(a, pool.integer(2)), pool.pow(w, pool.integer(2))]), &pool),
+            recip(
+                pool.add(vec![
+                    pool.pow(a, pool.integer(2)),
+                    pool.pow(w, pool.integer(2)),
+                ]),
+                &pool,
+            ),
         ]);
         assert_eq!(simp(want_s, &pool), s);
         // inverse cosine of a/(a²+ω²) is e^{−ax}
         let back = inverse_fourier_cosine_transform(c, w, x, &pool).unwrap();
         let z = crate::simplify::zero::zero_test(pool.add(vec![back, neg(f, &pool)]), &pool, None);
-        assert_eq!(z.status, crate::simplify::zero::ZeroStatus::ProvedZero, "{}", pool.display(back));
+        assert_eq!(
+            z.status,
+            crate::simplify::zero::ZeroStatus::ProvedZero,
+            "{}",
+            pool.display(back)
+        );
         let back = inverse_fourier_sine_transform(s, w, x, &pool).unwrap();
         let z = crate::simplify::zero::zero_test(pool.add(vec![back, neg(f, &pool)]), &pool, None);
-        assert_eq!(z.status, crate::simplify::zero::ZeroStatus::ProvedZero, "{}", pool.display(back));
+        assert_eq!(
+            z.status,
+            crate::simplify::zero::ZeroStatus::ProvedZero,
+            "{}",
+            pool.display(back)
+        );
     }
 
     #[test]
@@ -512,11 +551,15 @@ mod tests {
         );
         let other = pool.func("sin", vec![x]);
         assert_eq!(
-            fourier_sine_transform(other, x, w, &pool).unwrap_err().code(),
+            fourier_sine_transform(other, x, w, &pool)
+                .unwrap_err()
+                .code(),
             "E-TRANSFORM-021"
         );
         assert_eq!(
-            fourier_sine_transform(other, x, x, &pool).unwrap_err().code(),
+            fourier_sine_transform(other, x, x, &pool)
+                .unwrap_err()
+                .code(),
             "E-TRANSFORM-022"
         );
     }
@@ -533,10 +576,16 @@ mod tests {
             .value;
         let s = fourier_sine_transform(uxx, x, w, &pool).unwrap();
         let shown = pool.display(s).to_string();
-        assert!(shown.contains("u_hat_s(w, t)") && shown.contains("u(0, t)"), "{shown}");
+        assert!(
+            shown.contains("u_hat_s(w, t)") && shown.contains("u(0, t)"),
+            "{shown}"
+        );
         let c = fourier_cosine_transform(uxx, x, w, &pool).unwrap();
         let shown = pool.display(c).to_string();
-        assert!(shown.contains("u_hat_c(w, t)") && shown.contains("Derivative"), "{shown}");
+        assert!(
+            shown.contains("u_hat_c(w, t)") && shown.contains("Derivative"),
+            "{shown}"
+        );
         let ux = crate::diff::diff(u, x, &pool).unwrap().value;
         assert_eq!(
             fourier_sine_transform(ux, x, w, &pool).unwrap_err().code(),

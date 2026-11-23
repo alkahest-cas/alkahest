@@ -60,11 +60,11 @@ pub(crate) mod numeric;
 pub mod problem;
 pub mod root_family;
 pub mod solve;
+pub mod sturm_liouville;
 pub mod sum;
 pub mod transform;
-pub mod verify;
-pub mod sturm_liouville;
 pub mod transform_methods;
+pub mod verify;
 
 pub use classify::{classify_pde, Linearity, NamedEquation, PdeInfo, PdeType, TypeRegion};
 pub use error::PdeError;
@@ -92,6 +92,11 @@ pub use sturm_liouville::{
     family_enclosures, sturm_liouville, sturm_liouville_with, EigenEnclosure, EigenFamily,
     EigenMode, EigenVerification, Eigensystem, EndCondition, FamilyRef, LowerSpectrum, SlBoundary,
     SlOptions, SturmLiouvilleProblem,
+};
+pub use sum::{
+    alpha_normalize, coefficient, expand_finite_sums, expand_sum, indexed, indexed_parts,
+    kronecker_delta, laplacian_indexed, simplify_sums, sum, sum_parts, truncate, IndexRange,
+    INDEXED, KRONECKER_DELTA, MAX_SUM_TERMS, SUM,
 };
 pub use transform::{transformed_name, TransformKind};
 pub use transform_methods::{

@@ -38,7 +38,11 @@ pub(crate) fn wrap(py: Python<'_>, id: ExprId, pool: &Py<PyExprPool>) -> Py<PyAn
     .to_py_any(py)
 }
 
-pub(crate) fn wrap_list(py: Python<'_>, ids: &[ExprId], pool: &Py<PyExprPool>) -> PyResult<Py<PyAny>> {
+pub(crate) fn wrap_list(
+    py: Python<'_>,
+    ids: &[ExprId],
+    pool: &Py<PyExprPool>,
+) -> PyResult<Py<PyAny>> {
     PyList::new(py, ids.iter().map(|&i| wrap(py, i, pool)))?.into_py_any(py)
 }
 
@@ -53,7 +57,11 @@ pub(crate) fn expr_in(ob: &Bound<'_, PyAny>, pool: &Py<PyExprPool>, op: &str) ->
     Ok(e.id)
 }
 
-pub(crate) fn exprs_in(ob: &Bound<'_, PyAny>, pool: &Py<PyExprPool>, op: &str) -> PyResult<Vec<ExprId>> {
+pub(crate) fn exprs_in(
+    ob: &Bound<'_, PyAny>,
+    pool: &Py<PyExprPool>,
+    op: &str,
+) -> PyResult<Vec<ExprId>> {
     let mut out = Vec::new();
     for item in ob.try_iter()? {
         out.push(expr_in(&item?, pool, op)?);
@@ -579,7 +587,10 @@ fn _pde_classify<'py>(
 }
 
 /// Decode a domain spec tuple built by `_pde.py`.
-pub(crate) fn domain_from_spec(spec: &Bound<'_, PyAny>, pool: &Py<PyExprPool>) -> PyResult<PdeDomain> {
+pub(crate) fn domain_from_spec(
+    spec: &Bound<'_, PyAny>,
+    pool: &Py<PyExprPool>,
+) -> PyResult<PdeDomain> {
     let py = spec.py();
     let t: Bound<'_, PyTuple> = spec.extract()?;
     let kind: String = t.get_item(0)?.extract()?;

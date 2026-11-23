@@ -338,7 +338,10 @@ fn expand_positive_powers(e: ExprId, pool: &ExprPool) -> ExprId {
 ///   residual with `v = P` and with `v = −P` (`P > 0`).
 fn prove_harder(e: ExprId, pool: &ExprPool) -> bool {
     let pp = fresh_symbol("__tm_pi", Domain::Positive, &[e], pool);
-    let e1 = simp(expand_positive_powers(simp(subs1(e, pi(pool), pp, pool), pool), pool), pool);
+    let e1 = simp(
+        expand_positive_powers(simp(subs1(e, pi(pool), pp, pool), pool), pool),
+        pool,
+    );
     if e1 == pool.integer(0) || zero_test(e1, pool, None).status == ZeroStatus::ProvedZero {
         return true;
     }
@@ -369,7 +372,10 @@ fn prove_harder(e: ExprId, pool: &ExprPool) -> bool {
     [pv, neg(pv, pool)].iter().all(|&val| {
         // |v| = P on both sides; then v = ±P.
         let r = replace_node(e1, pool.func("abs", vec![v]), pv, pool);
-        let r = simp(expand_positive_powers(simp(subs1(r, v, val, pool), pool), pool), pool);
+        let r = simp(
+            expand_positive_powers(simp(subs1(r, v, val, pool), pool), pool),
+            pool,
+        );
         r == pool.integer(0) || zero_test(r, pool, None).status == ZeroStatus::ProvedZero
     })
 }
@@ -413,7 +419,9 @@ fn pi(pool: &ExprPool) -> ExprId {
 /// The name of an applied undefined function the data is (`f` for
 /// `f(x)`), for naming its transform.
 fn data_name(e: ExprId, pool: &ExprPool) -> Option<String> {
-    view(e, pool).filter(|v| v.orders.iter().all(|&k| k == 0)).map(|v| v.name)
+    view(e, pool)
+        .filter(|v| v.orders.iter().all(|&k| k == 0))
+        .map(|v| v.name)
 }
 
 // ---------------------------------------------------------------------------
@@ -441,7 +449,10 @@ fn to_ode(
         if let Some(v) = view(n, pool) {
             if v.name == hv.name {
                 if v.args != hv.args
-                    || v.orders.iter().enumerate().any(|(j, &k)| j != slot && k > 0)
+                    || v.orders
+                        .iter()
+                        .enumerate()
+                        .any(|(j, &k)| j != slot && k > 0)
                 {
                     return Err(PdeError::TransformOde(format!(
                         "{} occurs other than as a derivative in {}",
@@ -463,8 +474,7 @@ fn to_ode(
         )));
     }
     let y = fresh_symbol("y", Domain::Complex, &[expr], pool);
-    let (inp, derivs) =
-        crate::ode::dsolve::OdeInput::higher_order(var, y, order as usize, pool);
+    let (inp, derivs) = crate::ode::dsolve::OdeInput::higher_order(var, y, order as usize, pool);
     let mut e = expr;
     for k in (1..=order).rev() {
         let mut ord = vec![0; hv.args.len()];
@@ -491,7 +501,9 @@ fn solve_ode(
         .branches
         .iter()
         .find(|b| b.is_explicit())
-        .ok_or_else(|| PdeError::TransformOde("no explicit solution of the transformed ODE".into()))?;
+        .ok_or_else(|| {
+            PdeError::TransformOde("no explicit solution of the transformed ODE".into())
+        })?;
     let sol = br.y_of_x().expect("explicit");
     let mut basis = Vec::new();
     for &c in &br.constants {
@@ -559,14 +571,22 @@ fn transfer_functions(
             // C = M⁻¹ P: H₀ = (m11 y0 − m10 y1)/det, H₁ = (−m01 y0 + m00 y1)/det.
             let h0 = simp(
                 pool.mul(vec![
-                    sub(pool.mul(vec![m[1][1], basis[0]]), pool.mul(vec![m[1][0], basis[1]]), pool),
+                    sub(
+                        pool.mul(vec![m[1][1], basis[0]]),
+                        pool.mul(vec![m[1][0], basis[1]]),
+                        pool,
+                    ),
                     inv,
                 ]),
                 pool,
             );
             let h1 = simp(
                 pool.mul(vec![
-                    sub(pool.mul(vec![m[0][0], basis[1]]), pool.mul(vec![m[0][1], basis[0]]), pool),
+                    sub(
+                        pool.mul(vec![m[0][0], basis[1]]),
+                        pool.mul(vec![m[0][1], basis[0]]),
+                        pool,
+                    ),
                     inv,
                 ]),
                 pool,
@@ -581,9 +601,18 @@ fn transfer_functions(
 
 /// `r/ξ`, reading `√(ξ²)` and `|ξ|` as `ξ` (the sign is chosen after).
 fn rate_over_xi(r: ExprId, xi: ExprId, pool: &ExprPool) -> ExprId {
-    let r = replace_node(r, pool.func("sqrt", vec![pool.pow(xi, pool.integer(2))]), xi, pool);
+    let r = replace_node(
+        r,
+        pool.func("sqrt", vec![pool.pow(xi, pool.integer(2))]),
+        xi,
+        pool,
+    );
     let r = replace_node(r, pool.func("abs", vec![xi]), xi, pool);
-    constant_in(simp(pool.mul(vec![r, pool.pow(xi, pool.integer(-1))]), pool), xi, pool)
+    constant_in(
+        simp(pool.mul(vec![r, pool.pow(xi, pool.integer(-1))]), pool),
+        xi,
+        pool,
+    )
 }
 
 /// `e` itself, or — when `e` mentions `v` but `∂e/∂v` is proved zero — its
@@ -620,7 +649,10 @@ fn merge_exps(e: ExprId, pool: &ExprPool) -> ExprId {
 
 /// `exp(r·v)` basis element → `r`.
 fn exponent_rate(y: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
-    let r = simp(pool.mul(vec![d(y, v, pool).ok()?, pool.pow(y, pool.integer(-1))]), pool);
+    let r = simp(
+        pool.mul(vec![d(y, v, pool).ok()?, pool.pow(y, pool.integer(-1))]),
+        pool,
+    );
     (!mentions_var(r, v, pool)).then_some(r)
 }
 
@@ -714,7 +746,11 @@ fn shift_form(h: ExprId, xi: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId,
         return None;
     }
     let theta = args[0];
-    let mut kappa = constant_in(simp(pool.mul(vec![theta, pool.pow(xi, pool.integer(-1))]), pool), xi, pool);
+    let mut kappa = constant_in(
+        simp(pool.mul(vec![theta, pool.pow(xi, pool.integer(-1))]), pool),
+        xi,
+        pool,
+    );
     if mentions_var(kappa, xi, pool) {
         return None;
     }
@@ -726,7 +762,8 @@ fn shift_form(h: ExprId, xi: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId,
     let bs = simp(d(e, s_sym, pool).ok()?, pool);
     let b = constant_in(simp(pool.mul(vec![bs, xi]), pool), xi, pool);
     for c in [a, b] {
-        if mentions_var(c, xi, pool) || mentions_var(c, s_sym, pool) || mentions_var(c, c_sym, pool) {
+        if mentions_var(c, xi, pool) || mentions_var(c, s_sym, pool) || mentions_var(c, c_sym, pool)
+        {
             return None;
         }
     }
@@ -747,7 +784,13 @@ fn shift_form(h: ExprId, xi: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId,
         }
         _ => return None,
     }
-    let dd = simp(pool.mul(vec![kappa, pool.pow(pool.mul(vec![pool.integer(2), pi(pool)]), pool.integer(-1))]), pool);
+    let dd = simp(
+        pool.mul(vec![
+            kappa,
+            pool.pow(pool.mul(vec![pool.integer(2), pi(pool)]), pool.integer(-1)),
+        ]),
+        pool,
+    );
     Some((a, b, dd))
 }
 
@@ -758,7 +801,10 @@ fn shift_form(h: ExprId, xi: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId,
 /// `E-PDE-160` (not linear constant-coefficient homogeneous, or not on
 /// `ℝ × (0, ∞)`), `E-PDE-161` (initial data), `E-PDE-162` (the transformed
 /// ODE), `E-PDE-163` (a refuted candidate).
-pub fn fourier_method(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolution, PdeError> {
+pub fn fourier_method(
+    problem: &PdeProblem,
+    pool: &ExprPool,
+) -> Result<TransformSolution, PdeError> {
     let s = setup(problem, pool)?;
     let r = roles(problem)?;
     let (x, t) = match (r.line.as_slice(), r.half.as_slice()) {
@@ -769,7 +815,11 @@ pub fn fourier_method(problem: &PdeProblem, pool: &ExprPool) -> Result<Transform
             ))
         }
     };
-    let tslot = s.indep.iter().position(|&v| v == t).expect("t is a variable");
+    let tslot = s
+        .indep
+        .iter()
+        .position(|&v| v == t)
+        .expect("t is a variable");
     let avoid: Vec<ExprId> = vec![s.eq, x, t]
         .into_iter()
         .chain(problem.conditions().iter().flat_map(|c| [c.lhs, c.rhs]))
@@ -779,7 +829,10 @@ pub fn fourier_method(problem: &PdeProblem, pool: &ExprPool) -> Result<Transform
         .map_err(|e| PdeError::TransformOde(format!("Fourier transform of the PDE: {e}")))?;
     let mut hat_args = s.indep.clone();
     hat_args[s.indep.iter().position(|&v| v == x).expect("x")] = xi;
-    let hat = pool.func(transformed_name(&s.uv.name, TransformKind::Fourier), hat_args);
+    let hat = pool.func(
+        transformed_name(&s.uv.name, TransformKind::Fourier),
+        hat_args,
+    );
     let inp = to_ode(ft, hat, tslot, t, pool)?;
     let k = inp.order();
     let (basis, mut notes) = solve_ode(&inp, pool)?;
@@ -794,7 +847,14 @@ pub fn fourier_method(problem: &PdeProblem, pool: &ExprPool) -> Result<Transform
             )));
         }
         let j = dt.orders[tslot] as usize;
-        if dt.orders.iter().enumerate().any(|(i, &o)| i != tslot && o > 0) || j >= k || data[j].is_some() {
+        if dt
+            .orders
+            .iter()
+            .enumerate()
+            .any(|(i, &o)| i != tslot && o > 0)
+            || j >= k
+            || data[j].is_some()
+        {
             return Err(PdeError::TransformData(format!(
                 "{}: expected u(x, 0){}",
                 pool.display(c.lhs),
@@ -844,7 +904,10 @@ pub fn fourier_method(problem: &PdeProblem, pool: &ExprPool) -> Result<Transform
         };
         let h = pool.func(
             "exp",
-            vec![neg(pool.mul(vec![mag, pool.func("abs", vec![xi]), t]), pool)],
+            vec![neg(
+                pool.mul(vec![mag, pool.func("abs", vec![xi]), t]),
+                pool,
+            )],
         );
         notes.push("the solution is selected bounded as t → ∞".into());
         vec![h]
@@ -885,7 +948,10 @@ pub fn fourier_method(problem: &PdeProblem, pool: &ExprPool) -> Result<Transform
             checks.push(TransformCheck {
                 what: "transfer_ic",
                 index: j,
-                status: zstatus(sub(subs1(h, t, pool.integer(0), pool), pool.integer(1), pool), pool),
+                status: zstatus(
+                    sub(subs1(h, t, pool.integer(0), pool), pool.integer(1), pool),
+                    pool,
+                ),
             });
         }
     }
@@ -906,7 +972,10 @@ pub fn fourier_method(problem: &PdeProblem, pool: &ExprPool) -> Result<Transform
             None
         };
         let placeholder = pool.func(
-            format!("{}_hat", data_name(f, pool).unwrap_or_else(|| format!("f{j}"))),
+            format!(
+                "{}_hat",
+                data_name(f, pool).unwrap_or_else(|| format!("f{j}"))
+            ),
             vec![xi],
         );
         transformed.push(pool.mul(vec![h, fhat.unwrap_or(placeholder)]));
@@ -931,13 +1000,9 @@ pub fn fourier_method(problem: &PdeProblem, pool: &ExprPool) -> Result<Transform
                     status: status_to_zero(st.status),
                 });
                 if j == 0 {
-                    if let Ok(mass) = crate::integrate::integrate_definite(
-                        kern,
-                        x,
-                        neg(oo, pool),
-                        oo,
-                        pool,
-                    ) {
+                    if let Ok(mass) =
+                        crate::integrate::integrate_definite(kern, x, neg(oo, pool), oo, pool)
+                    {
                         checks.push(TransformCheck {
                             what: "kernel_mass",
                             index: j,
@@ -970,7 +1035,13 @@ pub fn fourier_method(problem: &PdeProblem, pool: &ExprPool) -> Result<Transform
             Inverse::Spectral => {
                 let e = pool.func(
                     "exp",
-                    vec![pool.mul(vec![pool.integer(2), pi(pool), pool.imaginary_unit(), xi, x])],
+                    vec![pool.mul(vec![
+                        pool.integer(2),
+                        pi(pool),
+                        pool.imaginary_unit(),
+                        xi,
+                        x,
+                    ])],
                 );
                 let integrand = simp(pool.mul(vec![e, h]), pool);
                 let st = verify_solution(&[s.eq], &[s.u], &[integrand], &[], pool)?;
@@ -1044,7 +1115,10 @@ fn invert_fourier(
             let avg = pool.mul(vec![
                 a,
                 half,
-                pool.add(vec![subs1(f, x, sub(x, dd, pool), pool), subs1(f, x, pool.add(vec![x, dd]), pool)]),
+                pool.add(vec![
+                    subs1(f, x, sub(x, dd, pool), pool),
+                    subs1(f, x, pool.add(vec![x, dd]), pool),
+                ]),
             ]);
             parts.push(avg);
             vparts.push(avg);
@@ -1056,7 +1130,9 @@ fn invert_fourier(
             let closed_int = if crate::diff::undefined::has_undefined_function(f, pool) {
                 None
             } else {
-                crate::integrate::integrate_definite(fs, sv, lo, hi, pool).ok().map(|r| r.value)
+                crate::integrate::integrate_definite(fs, sv, lo, hi, pool)
+                    .ok()
+                    .map(|r| r.value)
             };
             match closed_int {
                 Some(v) => {
@@ -1250,12 +1326,18 @@ fn laplace_table(big_f: ExprId, s: ExprId, t: ExprId, pool: &ExprPool) -> Option
                     pool,
                 );
                 let a1 = constant_in(a1, sigma, pool);
-                if !mentions_var(a1, sigma, pool) && !mentions_var(a1, s, pool) && sqrt_rate.is_none() {
+                if !mentions_var(a1, sigma, pool)
+                    && !mentions_var(a1, s, pool)
+                    && sqrt_rate.is_none()
+                {
                     sqrt_rate = Some(a1);
                     continue;
                 }
                 let a2 = constant_in(
-                    simp(neg(pool.mul(vec![arg, pool.pow(s, pool.integer(-1))]), pool), pool),
+                    simp(
+                        neg(pool.mul(vec![arg, pool.pow(s, pool.integer(-1))]), pool),
+                        pool,
+                    ),
                     s,
                     pool,
                 );
@@ -1279,7 +1361,13 @@ fn laplace_table(big_f: ExprId, s: ExprId, t: ExprId, pool: &ExprPool) -> Option
             let a2 = pool.pow(a, pool.integer(2));
             let gauss = pool.func(
                 "exp",
-                vec![neg(pool.mul(vec![a2, pool.pow(pool.mul(vec![pool.integer(4), t]), pool.integer(-1))]), pool)],
+                vec![neg(
+                    pool.mul(vec![
+                        a2,
+                        pool.pow(pool.mul(vec![pool.integer(4), t]), pool.integer(-1)),
+                    ]),
+                    pool,
+                )],
             );
             let sqrt_pi = pool.func("sqrt", vec![pi(pool)]);
             let out = if p == 0 {
@@ -1292,12 +1380,21 @@ fn laplace_table(big_f: ExprId, s: ExprId, t: ExprId, pool: &ExprPool) -> Option
                 ])
             } else if p == -half.clone() {
                 // e^{−a²/4t}/√(πt)
-                pool.mul(vec![gauss, pool.pow(pool.mul(vec![pi(pool), t]), pool.rational(-1, 2))])
+                pool.mul(vec![
+                    gauss,
+                    pool.pow(pool.mul(vec![pi(pool), t]), pool.rational(-1, 2)),
+                ])
             } else if p == -1 {
                 // erfc(a/(2√t))
                 pool.func(
                     "erfc",
-                    vec![pool.mul(vec![a, pool.pow(pool.mul(vec![pool.integer(2), pool.func("sqrt", vec![t])]), pool.integer(-1))])],
+                    vec![pool.mul(vec![
+                        a,
+                        pool.pow(
+                            pool.mul(vec![pool.integer(2), pool.func("sqrt", vec![t])]),
+                            pool.integer(-1),
+                        ),
+                    ])],
                 )
             } else {
                 return None;
@@ -1313,9 +1410,15 @@ fn laplace_table(big_f: ExprId, s: ExprId, t: ExprId, pool: &ExprPool) -> Option
             let shifted = sub(t, a, pool);
             let poly = pool.mul(vec![
                 pool.pow(shifted, pool.integer(n - 1)),
-                pool.pow(pool.func("factorial", vec![pool.integer(n - 1)]), pool.integer(-1)),
+                pool.pow(
+                    pool.func("factorial", vec![pool.integer(n - 1)]),
+                    pool.integer(-1),
+                ),
             ]);
-            Some(simp(pool.mul(vec![cc, pool.func("Heaviside", vec![shifted]), poly]), pool))
+            Some(simp(
+                pool.mul(vec![cc, pool.func("Heaviside", vec![shifted]), poly]),
+                pool,
+            ))
         }
         (None, None) => None,
         _ => None,
@@ -1329,7 +1432,10 @@ fn laplace_table(big_f: ExprId, s: ExprId, t: ExprId, pool: &ExprPool) -> Option
 ///
 /// As [`fourier_method`]; `E-PDE-161` for nonzero initial data (use
 /// [`image_method`], or [`transform_solve`], which superposes).
-pub fn laplace_method(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolution, PdeError> {
+pub fn laplace_method(
+    problem: &PdeProblem,
+    pool: &ExprPool,
+) -> Result<TransformSolution, PdeError> {
     let s = setup(problem, pool)?;
     let (x, t, data_bc, ics) = half_line_roles(problem, &s, pool)?;
     for dt in &ics {
@@ -1358,7 +1464,10 @@ pub fn laplace_method(problem: &PdeProblem, pool: &ExprPool) -> Result<Transform
     let lt = zero_initial_values(lt, &s, tslot, pool);
     let mut big_args = s.indep.clone();
     big_args[tslot] = sv;
-    let big = pool.func(transformed_name(&s.uv.name, TransformKind::Laplace), big_args);
+    let big = pool.func(
+        transformed_name(&s.uv.name, TransformKind::Laplace),
+        big_args,
+    );
     let inp = to_ode(lt, big, xslot, x, pool)?;
     let (basis, mut notes) = solve_ode(&inp, pool)?;
     // Keep the solutions decaying as x → ∞.
@@ -1400,7 +1509,10 @@ pub fn laplace_method(problem: &PdeProblem, pool: &ExprPool) -> Result<Transform
         y0 = d(y0, x, pool)?;
     }
     let y0_at = simp(subs1(y0, x, pool.integer(0), pool), pool);
-    let h = simp(pool.mul(vec![kept[0], pool.pow(y0_at, pool.integer(-1))]), pool);
+    let h = simp(
+        pool.mul(vec![kept[0], pool.pow(y0_at, pool.integer(-1))]),
+        pool,
+    );
     let g = bc.rhs;
     let concrete = !crate::diff::undefined::has_undefined_function(g, pool);
     let gl = if concrete {
@@ -1427,17 +1539,32 @@ pub fn laplace_method(problem: &PdeProblem, pool: &ExprPool) -> Result<Transform
     let tau = fresh_symbol("tau", Domain::Positive, &avoid, pool);
     // 1. closed via the table on H·G.
     if let Some(gl) = gl {
-        if let Some(v) = laplace_table(pool.mul(vec![h, gl]), sv, t, pool)
-            .or_else(|| crate::transform::inverse_laplace_transform(pool.mul(vec![h, gl]), sv, t, pool).ok())
-        {
-            return finish_half_line(problem, &s, x, t, v, Vec::new(), transformed, sv, checks, notes, pool);
+        if let Some(v) = laplace_table(pool.mul(vec![h, gl]), sv, t, pool).or_else(|| {
+            crate::transform::inverse_laplace_transform(pool.mul(vec![h, gl]), sv, t, pool).ok()
+        }) {
+            return finish_half_line(
+                problem,
+                &s,
+                x,
+                t,
+                v,
+                Vec::new(),
+                transformed,
+                sv,
+                checks,
+                notes,
+                pool,
+            );
         }
     }
     // 2. a pure delay H = e^{−as}: u = g(t − a)·θ(t − a) for any g.
     if let Some(a) = pure_delay(h, sv, pool) {
         let shifted = sub(t, a, pool);
         let v = simp(
-            pool.mul(vec![pool.func("Heaviside", vec![shifted]), subs1(g, t, shifted, pool)]),
+            pool.mul(vec![
+                pool.func("Heaviside", vec![shifted]),
+                subs1(g, t, shifted, pool),
+            ]),
             pool,
         );
         notes.push(format!(
@@ -1445,7 +1572,20 @@ pub fn laplace_method(problem: &PdeProblem, pool: &ExprPool) -> Result<Transform
             pool.display(subs1(g, t, pool.integer(0), pool)),
             pool.display(a)
         ));
-        return retarded(problem, &s, x, t, v, shifted, g, transformed, sv, checks, notes, pool);
+        return retarded(
+            problem,
+            &s,
+            x,
+            t,
+            v,
+            shifted,
+            g,
+            transformed,
+            sv,
+            checks,
+            notes,
+            pool,
+        );
     }
     // 3. Duhamel: u = ∫₀ᵗ K(x, t − τ) g(τ) dτ, K = L⁻¹{H}.
     let kern = laplace_table(h, sv, t, pool).ok_or_else(|| {
@@ -1491,7 +1631,10 @@ pub fn laplace_method(problem: &PdeProblem, pool: &ExprPool) -> Result<Transform
 fn pure_delay(h: ExprId, s: ExprId, pool: &ExprPool) -> Option<ExprId> {
     if let ExprData::Func { name, args } = pool.get(h) {
         if name == "exp" {
-            let a = simp(neg(pool.mul(vec![args[0], pool.pow(s, pool.integer(-1))]), pool), pool);
+            let a = simp(
+                neg(pool.mul(vec![args[0], pool.pow(s, pool.integer(-1))]), pool),
+                pool,
+            );
             if !mentions_var(a, s, pool) {
                 return Some(a);
             }
@@ -1511,7 +1654,10 @@ fn zero_initial_values(e: ExprId, s: &Setup, tslot: usize, pool: &ExprPool) -> E
             continue;
         }
         if let Some(v) = view(n, pool) {
-            if v.name == s.uv.name && v.args.len() == s.indep.len() && v.args[tslot] != s.indep[tslot] {
+            if v.name == s.uv.name
+                && v.args.len() == s.indep.len()
+                && v.args[tslot] != s.indep[tslot]
+            {
                 nodes.push(n);
             }
             continue;
@@ -1528,7 +1674,11 @@ fn zero_initial_values(e: ExprId, s: &Setup, tslot: usize, pool: &ExprPool) -> E
 type HalfLineRoles = (ExprId, ExprId, Vec<Datum>, Vec<Datum>);
 
 /// `(x, t, boundary data at x = 0, initial data at t = 0)`.
-fn half_line_roles(problem: &PdeProblem, s: &Setup, pool: &ExprPool) -> Result<HalfLineRoles, PdeError> {
+fn half_line_roles(
+    problem: &PdeProblem,
+    s: &Setup,
+    pool: &ExprPool,
+) -> Result<HalfLineRoles, PdeError> {
     let r = roles(problem)?;
     if r.half.len() != 2 || !r.line.is_empty() || r.half.iter().any(|(_, e)| !is_zero(*e, pool)) {
         return Err(PdeError::TransformMethodUnsupported(
@@ -1551,14 +1701,18 @@ fn half_line_roles(problem: &PdeProblem, s: &Setup, pool: &ExprPool) -> Result<H
         match dt.kind {
             ConditionKind::Initial => {
                 if xvar == Some(var) {
-                    return Err(PdeError::TransformData("a variable has both kinds of data".into()));
+                    return Err(PdeError::TransformData(
+                        "a variable has both kinds of data".into(),
+                    ));
                 }
                 tvar = Some(var);
                 ics.push(dt);
             }
             _ => {
                 if tvar == Some(var) {
-                    return Err(PdeError::TransformData("a variable has both kinds of data".into()));
+                    return Err(PdeError::TransformData(
+                        "a variable has both kinds of data".into(),
+                    ));
                 }
                 xvar = Some(var);
                 bcs.push(dt);
@@ -1571,7 +1725,8 @@ fn half_line_roles(problem: &PdeProblem, s: &Setup, pool: &ExprPool) -> Result<H
         (None, Some(t)) => (*s.indep.iter().find(|&&v| v != t).expect("two vars"), t),
         _ => {
             return Err(PdeError::TransformData(
-                "give the boundary condition at x = 0 with .bc and the initial data with .ic".into(),
+                "give the boundary condition at x = 0 with .bc and the initial data with .ic"
+                    .into(),
             ))
         }
     };
@@ -1609,7 +1764,11 @@ fn finish_half_line(
         });
     }
     let mut idx = 0;
-    for c in problem.conditions().iter().filter(|c| c.kind == ConditionKind::Initial) {
+    for c in problem
+        .conditions()
+        .iter()
+        .filter(|c| c.kind == ConditionKind::Initial)
+    {
         let dt = datum(c, s, pool)?;
         let mut e = value;
         for (j, &k) in dt.orders.iter().enumerate() {
@@ -1796,7 +1955,9 @@ pub fn image_method(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSo
     for dt in &ics {
         let j = dt.orders[tslot] as usize;
         if dt.slot != tslot || dt.orders[xslot] != 0 || j >= k || data[j].is_some() {
-            return Err(PdeError::TransformData("initial data u(x, 0) [, u_t(x, 0)]".into()));
+            return Err(PdeError::TransformData(
+                "initial data u(x, 0) [, u_t(x, 0)]".into(),
+            ));
         }
         data[j] = Some(dt.rhs);
     }
@@ -1815,7 +1976,11 @@ pub fn image_method(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSo
     let mut transformed = Vec::new();
     let sign = if kind == SinCosKind::Sine { -1 } else { 1 };
     let oo = pool.pos_infinity();
-    for (j, (&h, f)) in transfers.iter().zip(data.into_iter().map(Option::unwrap)).enumerate() {
+    for (j, (&h, f)) in transfers
+        .iter()
+        .zip(data.into_iter().map(Option::unwrap))
+        .enumerate()
+    {
         let concrete = !crate::diff::undefined::has_undefined_function(f, pool);
         let fs = if concrete {
             sincos_transform(kind, f, x, w, pool).ok()
@@ -1829,8 +1994,18 @@ pub fn image_method(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSo
         transformed.push(pool.mul(vec![h, fs.unwrap_or(placeholder)]));
         if let Some(fs) = fs {
             let inv = match kind {
-                SinCosKind::Sine => crate::transform::inverse_fourier_sine_transform(pool.mul(vec![h, fs]), w, x, pool),
-                _ => crate::transform::inverse_fourier_cosine_transform(pool.mul(vec![h, fs]), w, x, pool),
+                SinCosKind::Sine => crate::transform::inverse_fourier_sine_transform(
+                    pool.mul(vec![h, fs]),
+                    w,
+                    x,
+                    pool,
+                ),
+                _ => crate::transform::inverse_fourier_cosine_transform(
+                    pool.mul(vec![h, fs]),
+                    w,
+                    x,
+                    pool,
+                ),
             };
             if let Ok(v) = inv {
                 closed.push(v);
@@ -1849,7 +2024,10 @@ pub fn image_method(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSo
         let image = simp(
             pool.add(vec![
                 subs1(kern, x, sub(x, sv, pool), pool),
-                pool.mul(vec![pool.integer(sign), subs1(kern, x, pool.add(vec![x, sv]), pool)]),
+                pool.mul(vec![
+                    pool.integer(sign),
+                    subs1(kern, x, pool.add(vec![x, sv]), pool),
+                ]),
             ]),
             pool,
         );
@@ -1870,7 +2048,8 @@ pub fn image_method(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSo
             status: zstatus(bc_res, pool),
         });
         if j == 0 {
-            if let Ok(mass) = crate::integrate::integrate_definite(kern, x, neg(oo, pool), oo, pool) {
+            if let Ok(mass) = crate::integrate::integrate_definite(kern, x, neg(oo, pool), oo, pool)
+            {
                 if zstatus(sub(mass.value, pool.integer(1), pool), pool) == ZeroStatus::ProvedZero {
                     checks.push(TransformCheck {
                         what: "kernel_mass",
@@ -1921,7 +2100,10 @@ pub fn image_method(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSo
 /// # Errors
 ///
 /// As the individual methods.
-pub fn transform_solve(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolution, PdeError> {
+pub fn transform_solve(
+    problem: &PdeProblem,
+    pool: &ExprPool,
+) -> Result<TransformSolution, PdeError> {
     let r = roles(problem)?;
     if r.line.len() == 1 && r.half.len() == 1 {
         return fourier_method(problem, pool);

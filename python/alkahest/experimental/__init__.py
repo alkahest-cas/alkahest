@@ -896,17 +896,6 @@ __all__ = [
     # and capped; above the cap it refuses (E-STAB-008) rather than guessing,
     # and a bound comes back as `Distance(at_most=...)`, not as an int.
     "PDE",
-    "EigenFamily",
-    "EigenMode",
-    "Eigensystem",
-    "SturmLiouville",
-    "TransformSolution",
-    "fourier_cosine_transform",
-    "fourier_sine_transform",
-    "inverse_fourier_cosine_transform",
-    "inverse_fourier_sine_transform",
-    "sturm_liouville",
-    "transform_solve",
     "STABILIZER_MAX_DISTANCE_SEARCH_DIM",
     "STABILIZER_MAX_MATRIX_ENUMERATION",
     "STABILIZER_MAX_QUBITS",
@@ -967,6 +956,9 @@ __all__ = [
     "Distribution",
     "Divisor",
     "DivisorClass",
+    "EigenFamily",
+    "EigenMode",
+    "Eigensystem",
     "EvaluationResult",
     "Exponential",
     # Linear algebra over GF(q), q = p^k — built for linear codes. Rectangular
@@ -1095,6 +1087,7 @@ __all__ = [
     "StabilizerCode",
     "StabilizerError",
     "StabilizerGroup",
+    "SturmLiouville",
     # A Reidemeister-Schreier presentation of a finite-index subgroup. Not
     # simplified: no Tietze pass, so the generator count is the raw
     # [G:H]*|X| - [G:H] + 1.
@@ -1105,6 +1098,7 @@ __all__ = [
     "TelescopingMdCertificate",
     "ThetaError",
     "ThetaValues",
+    "TransformSolution",
     # Probability (continued)
     "Uniform",
     "VectorError",
@@ -1163,6 +1157,8 @@ __all__ = [
     "expectation_affine",
     "fd_weights",
     "fourier_diff_matrix",
+    "fourier_cosine_transform",
+    "fourier_sine_transform",
     "fourier_transform",
     # Vector calculus
     "functions_to_jets",
@@ -1174,6 +1170,8 @@ __all__ = [
     # Risch-Norman (parallel Risch) heuristic integrator.  Returns a result
     # object, never raises: a declined result is not a non-elementarity verdict.
     "integrate_parallel_risch",
+    "inverse_fourier_cosine_transform",
+    "inverse_fourier_sine_transform",
     "inverse_fourier_transform",
     "inverse_laplace_transform",
     "inverse_z_transform",
@@ -1243,6 +1241,7 @@ __all__ = [
     "stirling_first",
     "stirling_first_unsigned",
     "stirling_second",
+    "sturm_liouville",
     "sum_independent",
     "sum_of_squares",
     "symplectic_complement",
@@ -1260,6 +1259,7 @@ __all__ = [
     "to_stablehlo",
     # Hypotheses the last inverse Laplace / Z transform on this thread rests on.
     "transform_side_conditions",
+    "transform_solve",
     "truncate",
     "truncation_error",
     "variance_affine_independent",
