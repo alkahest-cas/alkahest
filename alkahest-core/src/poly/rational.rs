@@ -35,11 +35,13 @@ impl RationalFunction {
         mut denom: MultiPoly,
         fast: bool,
     ) -> Result<Self, ConversionError> {
-        // A hand-built map may hold zero coefficients. Normalise first, on
-        // both paths, so a denominator of only zero coefficients is refused
-        // here instead of reaching FLINT, where dividing by it aborts.
-        numer.drop_zero_terms();
-        denom.drop_zero_terms();
+        // A hand-built map may hold zero coefficients or keys with trailing
+        // zeros. Canonicalise first, on both paths: a denominator of only zero
+        // coefficients is then refused here instead of reaching FLINT, where
+        // dividing by it aborts, and the fast and reference reductions see
+        // the same polynomial (they used to disagree on `{[]: a, [0]: b}`).
+        numer.canonicalise();
+        denom.canonicalise();
         if denom.is_zero() {
             return Err(ConversionError::ZeroDenominator);
         }
@@ -570,6 +572,34 @@ mod tests {
         );
     }
 
+    /// Proptest counterexample (`cross / windows-2022`, merge queue of #578):
+    /// keys `[]` and `[0]` both denote the constant term in one variable.
+    /// The fast path merged them through FLINT, the reference path let one
+    /// overwrite the other, and the two results differed.
+    #[test]
+    fn keys_with_trailing_zeros_are_one_term() {
+        let p = ExprPool::new();
+        let x = p.symbol("v0", Domain::Real);
+        let map = |t: &[(&[u32], i64)]| MultiPoly {
+            vars: vec![x],
+            terms: t
+                .iter()
+                .map(|(k, c)| (k.to_vec(), rug::Integer::from(*c)))
+                .collect(),
+        };
+        let n = map(&[(&[], -1), (&[0], -6), (&[1], -6)]);
+        let d = map(&[(&[], 7), (&[1], -1), (&[2], -4), (&[3], 4)]);
+        let fast = RationalFunction::normalise(n.clone(), d.clone(), true).unwrap();
+        let slow = RationalFunction::normalise(n, d, false).unwrap();
+        assert_eq!(fast, slow);
+        // (−7 − 6x) / (7 − x − 4x² + 4x³), already in lowest terms.
+        assert_eq!(fast.numer, map(&[(&[], -7), (&[1], -6)]));
+        assert_eq!(
+            fast.denom,
+            map(&[(&[], 7), (&[1], -1), (&[2], -4), (&[3], 4)])
+        );
+    }
+
     // --- one-call GCD reduction vs the reference (gcd + two divisions) ---
 
     use proptest::prelude::*;
@@ -603,13 +633,11 @@ mod tests {
                 .map(|i| p.symbol(format!("v{i}"), Domain::Real))
                 .collect();
             let trim = |t: &BTreeMap<Vec<u32>, rug::Integer>| -> MultiPoly {
-                // Zero coefficients are left out: the reference path aborts
-                // inside FLINT (a division by a polynomial that is zero once
-                // FLINT drops them) on a map that is all zeros, and
-                // `reduce_by_gcd` hands such maps to it untouched.
+                // Deliberately non-canonical: zero coefficients, and keys that
+                // differ only in trailing zeros (`[]` and `[0]` when nv = 1).
+                // `normalise` canonicalises before either reduction.
                 let terms = t
                     .iter()
-                    .filter(|(_, c)| **c != 0)
                     .map(|(k, c)| (k.iter().copied().take(nv).collect::<Vec<u32>>(), c.clone()))
                     .collect();
                 MultiPoly { vars: vars.clone(), terms }
