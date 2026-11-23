@@ -543,6 +543,13 @@ impl DetSys {
         let old = std::mem::take(&mut self.eqs);
         let oldn = std::mem::take(&mut self.normalized);
         for (e, done) in old.into_iter().zip(oldn) {
+            if !done && crate::budget::tripped().is_some() {
+                // Out of budget: keep the equation as it is (`run` stops at
+                // its next poll and marks the system incomplete).
+                eqs.push(e);
+                norm.push(false);
+                continue;
+            }
             let n = if done {
                 Some(e)
             } else {
@@ -1242,6 +1249,10 @@ impl DetSys {
     /// split on a leading coefficient.
     fn reduce_by(&self, mut e: Lin, gs: &[Lin], pool: &ExprPool) -> Result<Option<Lin>, ExprId> {
         for _ in 0..200 {
+            if crate::budget::tripped().is_some() {
+                // A partial reduction is still a consequence of the system.
+                return Ok(Some(e));
+            }
             let Some(n) = self.normalize(&e, pool) else {
                 return Ok(None);
             };
@@ -1288,6 +1299,10 @@ impl DetSys {
         let mut changed = false;
         let mut i = 0;
         while i < self.eqs.len() {
+            if crate::budget::tripped().is_some() {
+                self.passive = false;
+                return Step::None;
+            }
             let others: Vec<Lin> = self
                 .eqs
                 .iter()

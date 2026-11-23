@@ -1,8 +1,6 @@
 """Nonlinear corpus entries (``corpus_nonlinear``) that ``pdsolve`` solves and
 verifies today: a lower bound (add an entry when it starts solving; one that
-stops solving is a regression).  Entries that take more than a few seconds
-(``zeldovich``, ``fitzhugh-nagumo``) are left out so a slow runner cannot
-turn a budget refusal into a false regression."""
+stops solving is a regression)."""
 
 EXPECTED_SOLVED_M6 = {
     "abbasi-2001",
@@ -21,6 +19,8 @@ EXPECTED_SOLVED_M6 = {
     "newell-whitehead",
     "allen-cahn",
     "huxley",
+    "zeldovich",
+    "fitzhugh-nagumo",
     "sine-gordon",
     "sine-gordon-wave",
     "phi4",
