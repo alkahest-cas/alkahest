@@ -14,7 +14,7 @@
 //! 2. only `exactly_verified` candidates survive — a failed route is
 //!    discarded (and named in the refusal), never returned;
 //! 3. when the problem carries Cauchy data, a tier's *general* solution is
-//!    first specialised to the data ([`cauchy`]) and the specialised answer is
+//!    first specialised to the data (the `cauchy` module) and the specialised answer is
 //!    what gets verified, data included.
 //!
 //! Refusals use `E-PDE-050 … E-PDE-099`.
@@ -23,7 +23,7 @@
 //!
 //! * **A new method is a new [`Tier`] row** in [`TIERS`]: a name (it becomes a
 //!   valid `hint`), the milestone that owns it, an `applies` predicate over
-//!   [`Ctx`] and a `solve` function returning [`Candidate`]s.  Order in the
+//!   [`Ctx`] and a `solve` function returning candidates.  Order in the
 //!   table is preference order.  M2 (second order in two variables), M4
 //!   (separation of variables) and M6 (nonlinear reductions) add rows; the
 //!   first-order rows below are guarded by `ctx.order == 1`.

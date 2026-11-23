@@ -131,12 +131,12 @@ impl<'a> IntegralSearch<'a> {
             progress = false;
             rounds += 1;
             let n = f.vars.len();
-            for i in 0..n {
+            for (i, &ci) in f.comps.iter().enumerate() {
+                if ci == pool.integer(0) {
+                    continue;
+                }
                 for j in 0..n {
                     if i == j || self.found.len() >= need {
-                        continue;
-                    }
-                    if f.comps[i] == pool.integer(0) {
                         continue;
                     }
                     if let Some(xi) = self.pair_integral(i, j, pool) {
