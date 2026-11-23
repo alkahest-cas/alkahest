@@ -12,14 +12,21 @@ Difference Schemes and PDEs* (2004), §2–§4, §8.2; Warming & Hyett,
 
 from __future__ import annotations
 
+import cmath
 import math
 from fractions import Fraction as F
 
 import alkahest as ak
-import numpy as np
 import pytest
 from alkahest.exceptions import NumericPdeError
 from alkahest.experimental import numeric_pde as N
+
+try:
+    import numpy as np
+except ImportError:  # numpy is optional: kernels and numeric matrices need it
+    np = None
+
+needs_numpy = pytest.mark.skipif(np is None, reason="numpy not installed")
 
 
 @pytest.fixture
@@ -193,13 +200,18 @@ def test_apply_and_kernel_1d(pool):
         pool.func("v", [j - 1]) - 2 * pool.func("v", [j]) + pool.func("v", [j + 1])
     ) * pool.symbol("h") ** -2
     assert _eq(ak.simplify(e).value, ak.simplify(want).value)
+    src = st.emit_c("d2")
+    assert "double d2(" in src
+
+
+@needs_numpy
+def test_kernel_1d(pool):
+    st = N.fd_weights(2, [-1, 0, 1], h=pool.symbol("h"))
     k = st.kernel()
     xs = np.linspace(0.0, 1.0, 21)
     out = k(xs**2, xs[1] - xs[0])
     assert out.shape == (19,)
     assert np.allclose(out, 2.0)
-    src = st.emit_c("d2")
-    assert "double d2(" in src
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +264,7 @@ def test_tensor_product_mixed_derivative(pool):
     assert "Derivative(w(x, y)" in str(te)
 
 
+@needs_numpy
 def test_laplacian_kernel_is_exact_on_quadratics():
     k = N.laplacian_stencil(2, 9).kernel()
     x = np.linspace(0, 1, 9)
@@ -287,15 +300,64 @@ def test_cheb_small_exact_matrices():
     assert str(D.to_list()[0][0]) == "19/6"
 
 
+def _cheb_ref(n):
+    """Trefethen's closed-form entries, in plain floats."""
+    x = [math.cos(math.pi * j / n) for j in range(n + 1)]
+    c = [2.0 if j in (0, n) else 1.0 for j in range(n + 1)]
+    D = [[0.0] * (n + 1) for _ in range(n + 1)]
+    for i in range(n + 1):
+        for j in range(n + 1):
+            if i != j:
+                D[i][j] = c[i] / c[j] * (-1) ** (i + j) / (x[i] - x[j])
+            elif i == 0:
+                D[i][j] = (2 * n * n + 1) / 6
+            elif i == n:
+                D[i][j] = -(2 * n * n + 1) / 6
+            else:
+                D[i][j] = -x[i] / (2 * (1 - x[i] ** 2))
+    return D, x
+
+
+def _fourier_ref(n, order):
+    D = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(n):
+            k = (i - j) % n
+            half = math.pi * k / n
+            sg = -1.0 if k % 2 else 1.0
+            if order == 1:
+                if k:
+                    D[i][j] = 0.5 * sg / (math.tan(half) if n % 2 == 0 else math.sin(half))
+            elif k == 0:
+                D[i][j] = -(n * n) / 12 - 1 / 6 if n % 2 == 0 else -(n * n) / 12 + 1 / 12
+            elif n % 2 == 0:
+                D[i][j] = -0.5 * sg / math.sin(half) ** 2
+            else:
+                D[i][j] = -0.5 * sg * math.cos(half) / math.sin(half) ** 2
+    return D
+
+
+def _close(A, B, tol=1e-12):
+    return all(abs(a - b) <= tol for ra, rb in zip(A, B) for a, b in zip(ra, rb))
+
+
 @pytest.mark.parametrize("n", [2, 3, 4, 5, 6, 7, 8])
-def test_cheb_exact_matches_numeric(n):
+def test_cheb_exact_matches_reference(n):
     D, x = N.cheb_diff_matrix(n)
-    Dn, xn = N.cheb_diff_matrix(n, numeric=True)
-    De = np.array([[_f(e) for e in r] for r in D.to_list()])
-    assert np.allclose(De, Dn, atol=1e-12)
-    assert np.allclose([_f(v) for v in x], xn)
+    De = [[_f(e) for e in r] for r in D.to_list()]
+    Dr, xr = _cheb_ref(n)
+    assert _close(De, Dr)
+    assert all(abs(_f(v) - w) < 1e-14 for v, w in zip(x, xr))
 
 
+@needs_numpy
+@pytest.mark.parametrize("n", [2, 5, 8])
+def test_cheb_numeric_matches_reference(n):
+    Dn, _ = N.cheb_diff_matrix(n, numeric=True)
+    assert _close(Dn.tolist(), _cheb_ref(n)[0], 1e-11)
+
+
+@needs_numpy
 def test_cheb_differentiates_polynomials_exactly():
     D, x = N.cheb_diff_matrix(12, numeric=True)
     f = x**7 - 3 * x**4 + x
@@ -315,13 +377,21 @@ def test_cheb_exact_rows_annihilate_constants():
 
 @pytest.mark.parametrize("n", [4, 5, 6, 8, 9])
 @pytest.mark.parametrize("order", [1, 2])
-def test_fourier_exact_matches_numeric(n, order):
+def test_fourier_exact_matches_reference(n, order):
     D, _x = N.fourier_diff_matrix(n, order)
-    Dn, _xn = N.fourier_diff_matrix(n, order, numeric=True)
-    De = np.array([[_f(e) for e in r] for r in D.to_list()])
-    assert np.allclose(De, Dn, atol=1e-12)
+    De = [[_f(e) for e in r] for r in D.to_list()]
+    assert _close(De, _fourier_ref(n, order))
 
 
+@needs_numpy
+@pytest.mark.parametrize("n", [6, 7])
+@pytest.mark.parametrize("order", [1, 2])
+def test_fourier_numeric_matches_reference(n, order):
+    Dn, _ = N.fourier_diff_matrix(n, order, numeric=True)
+    assert _close(Dn.tolist(), _fourier_ref(n, order), 1e-11)
+
+
+@needs_numpy
 @pytest.mark.parametrize("n", [16, 17])
 def test_fourier_differentiates_trig_polynomials(n):
     D, x = N.fourier_diff_matrix(n, numeric=True)
@@ -473,7 +543,17 @@ def test_von_neumann_agrees_with_sampling(pool, name):
     r, c, schemes = _schemes(pool)
     sym = r if name.endswith("heat") else c
     res = N.von_neumann(N.Scheme(schemes[name]))
-    thetas = np.linspace(-np.pi, np.pi, 721)
+    thetas = [-math.pi + 2 * math.pi * i / 720 for i in range(721)]
+
+    def roots_abs_max(coeffs):  # degree ≤ 2, highest power first
+        coeffs = list(coeffs)
+        while coeffs and abs(coeffs[0]) == 0:
+            coeffs.pop(0)
+        if len(coeffs) == 2:
+            return abs(coeffs[1] / coeffs[0])
+        a, b, c0 = coeffs
+        d = cmath.sqrt(b * b - 4 * a * c0)
+        return max(abs((-b + d) / (2 * a)), abs((-b - d) / (2 * a)))
 
     def max_root(val):
         rows = {}
@@ -484,9 +564,10 @@ def test_von_neumann_agrees_with_sampling(pool, name):
         worst = 0.0
         for th in thetas:
             coeffs = [
-                sum(v * np.exp(1j * k * th) for k, v in rows.get(lv, [])) for lv in range(L, -1, -1)
+                sum(v * cmath.exp(1j * k * th) for k, v in rows.get(lv, []))
+                for lv in range(L, -1, -1)
             ]
-            worst = max(worst, max(abs(np.roots(coeffs))))
+            worst = max(worst, roots_abs_max(coeffs))
         return worst
 
     def inside(v):
