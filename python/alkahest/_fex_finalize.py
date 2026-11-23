@@ -2008,7 +2008,7 @@ def _decide_zero(e: Any) -> bool | None:
     for form in forms:
         try:
             v = _ak.is_zero(form(e))
-        except Exception:  # noqa: BLE001 - an undecidable form is skipped
+        except Exception:
             continue
         if v is not None:
             return v
