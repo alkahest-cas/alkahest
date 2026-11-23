@@ -2355,7 +2355,6 @@ pub fn emit_integration_hasderiv_cert(
     let stated_big_lean = cx.lean(stated_big)?;
     let stated_small_lean = cx.lean(stated_small)?;
     let big_f = cx.lean(antiderivative)?;
-    let small_f = cx.lean(integrand)?;
     let node = cx.deriv(antiderivative)?;
     let fpoly = cx.vpoly(integrand)?;
     cx.build_relations()?;
