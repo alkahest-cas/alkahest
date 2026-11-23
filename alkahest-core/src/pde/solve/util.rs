@@ -445,9 +445,10 @@ fn exp_substitution(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
         if !seen.insert(n) {
             continue;
         }
-        let is_exp = pool.with(n, |d| {
-            matches!(d, ExprData::Func { name, args } if name == "exp" && args.len() == 1)
-        });
+        let is_exp = pool.with(
+            n,
+            |d| matches!(d, ExprData::Func { name, args } if name == "exp" && args.len() == 1),
+        );
         if is_exp && contains(n, v, pool) {
             nodes.push(n);
             continue;

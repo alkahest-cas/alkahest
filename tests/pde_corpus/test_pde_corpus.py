@@ -13,11 +13,11 @@ import pytest
 
 pytest.importorskip("alkahest.experimental")
 
-from corpus_abbasi import ABBASI  # noqa: E402
-from corpus_sympy import SYMPY  # noqa: E402
-from corpus_textbook import TEXTBOOK  # noqa: E402
-from pde_expected import EXPECTED_SOLVED  # noqa: E402
-from pde_harness import run_entry  # noqa: E402
+from corpus_abbasi import ABBASI
+from corpus_sympy import SYMPY
+from corpus_textbook import TEXTBOOK
+from pde_expected import EXPECTED_SOLVED
+from pde_harness import run_entry
 
 ALL = [("sympy", e) for e in SYMPY] + [("textbook", e) for e in TEXTBOOK]
 ABBASI_ENTRIES = [("abbasi", e) for e in ABBASI]

@@ -107,7 +107,8 @@ impl<'a> IntegralSearch<'a> {
         }
         self.rows.push(row);
         self.found.push(xi);
-        self.notes.push(format!("first integral {} ({how})", pool.display(xi)));
+        self.notes
+            .push(format!("first integral {} ({how})", pool.display(xi)));
         true
     }
 
@@ -370,10 +371,7 @@ pub(crate) fn nullspace_combinations(
             return Vec::new();
         }
         let k = cdeg[0];
-        let key: Vec<u32> = (m..gens.len())
-            .filter(|&i| var_dep[i])
-            .map(get)
-            .collect();
+        let key: Vec<u32> = (m..gens.len()).filter(|&i| var_dep[i]).map(get).collect();
         let pexp: Vec<u32> = param_idx.iter().map(|&i| get(i)).collect();
         let row = rows
             .entry(key)
@@ -421,7 +419,9 @@ pub(crate) fn nullspace_combinations(
 fn add_poly(a: &MultiPoly, b: &MultiPoly) -> MultiPoly {
     let mut terms = a.terms.clone();
     for (e, c) in &b.terms {
-        let entry = terms.entry(e.clone()).or_insert_with(|| rug::Integer::from(0));
+        let entry = terms
+            .entry(e.clone())
+            .or_insert_with(|| rug::Integer::from(0));
         *entry += c;
         if *entry == 0 {
             terms.remove(e);
@@ -439,8 +439,20 @@ fn nullspace(
     m: usize,
     params: &[ExprId],
 ) -> Option<Vec<Vec<RationalFunction>>> {
-    let zero = || RationalFunction::new(MultiPoly::zero(params.to_vec()), MultiPoly::constant(params.to_vec(), 1)).ok();
-    let one = || RationalFunction::new(MultiPoly::constant(params.to_vec(), 1), MultiPoly::constant(params.to_vec(), 1)).ok();
+    let zero = || {
+        RationalFunction::new(
+            MultiPoly::zero(params.to_vec()),
+            MultiPoly::constant(params.to_vec(), 1),
+        )
+        .ok()
+    };
+    let one = || {
+        RationalFunction::new(
+            MultiPoly::constant(params.to_vec(), 1),
+            MultiPoly::constant(params.to_vec(), 1),
+        )
+        .ok()
+    };
     let rows = mat.len();
     let mut pivots: Vec<usize> = Vec::new();
     let mut r = 0;

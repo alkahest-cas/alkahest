@@ -742,7 +742,6 @@ fn _pde_verify<'py>(
     verification_dict(py, &v, &pool)
 }
 
-
 fn verification_dict<'py>(
     py: Python<'py>,
     v: &alkahest_core::pde::PdeVerification,
@@ -980,7 +979,6 @@ fn _pde_laplacian_indexed(
     })
 }
 
-
 // ---------------------------------------------------------------------------
 // pdsolve
 // ---------------------------------------------------------------------------
@@ -1029,7 +1027,10 @@ fn solution_dict<'py>(
         sc.append(side_condition_tuple(py, c, pool)?)?;
     }
     d.set_item("side_conditions", sc)?;
-    d.set_item("verification", verification_dict(py, &s.verification, pool)?)?;
+    d.set_item(
+        "verification",
+        verification_dict(py, &s.verification, pool)?,
+    )?;
     d.set_item("steps", s.steps.clone())?;
     let alts = PyList::empty(py);
     for a in &s.alternatives {

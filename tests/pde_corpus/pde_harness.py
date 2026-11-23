@@ -13,8 +13,8 @@ A corpus entry is a dict:
 Namespace: the variables and parameters as symbols, ``u`` the applied unknown,
 ``U`` the unknown as a function (``U(x, 0)``), ``ux``/``uy``/``ut``/``uz`` the
 first partials, ``D``, ``f``/``g`` undefined functions, and ``exp``, ``log``,
-``sin``, ``cos``, ``tan``, ``sqrt``, ``sinh``, ``cosh``, ``tanh``, ``atan`` (and the other elementary functions);
-any other name is a symbol (a parameter).
+``sin``, ``cos``, ``tan``, ``sqrt``, ``sinh``, ``cosh``, ``tanh``, ``atan`` (and the
+other elementary functions); any other name is a symbol (a parameter).
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def build(entry: dict):
     U = akx.Function("u")
     u = U(*vs)
     ns = _Namespace(pool)
-    ns.update({n: v for n, v in zip(names, vs)})
+    ns.update(dict(zip(names, vs)))
     for pn in entry.get("params", "").split():
         ns[pn] = pool.symbol(pn)
     ns.update(
@@ -89,15 +89,15 @@ def build(entry: dict):
         for name in re.findall(r"\b([A-Za-z_]\w*)\(", src):
             if name not in ns:
                 ns[name] = akx.Function(name)
-    eq = eval(entry["eq"], {"__builtins__": {}}, ns)  # noqa: S307 - trusted corpus
+    eq = eval(entry["eq"], {"__builtins__": {}}, ns)
     if isinstance(eq, tuple):
         eq = eq[0] - eq[1]
     if not isinstance(eq, ak.Expr):
         eq = pool.integer(eq)
     pde = akx.PDE(eq, u)
     for lhs, rhs in entry.get("ics", ()):
-        lv = eval(lhs, {"__builtins__": {}}, ns)  # noqa: S307
-        rv = eval(rhs, {"__builtins__": {}}, ns)  # noqa: S307
+        lv = eval(lhs, {"__builtins__": {}}, ns)
+        rv = eval(rhs, {"__builtins__": {}}, ns)
         if not isinstance(rv, ak.Expr):
             rv = pool.integer(rv)
         pde = pde.ic(lv, rv)
@@ -109,7 +109,7 @@ def run_entry(entry: dict) -> dict:
     without saying so (``status == "unverified"`` is a corpus failure)."""
     t0 = time.perf_counter()
     try:
-        pde, u = build(entry)
+        pde, _ = build(entry)
     except Exception as e:  # pragma: no cover - corpus authoring error
         return {"id": entry["id"], "status": "build_error", "error": repr(e)}
     try:

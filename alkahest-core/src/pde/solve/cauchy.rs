@@ -62,7 +62,10 @@ fn read_data(ctx: &mut Ctx, pool: &ExprPool) -> Result<Data, PdeError> {
     }
     let c = &conds[0];
     let v = view(c.lhs, pool).ok_or_else(|| {
-        PdeError::CauchyUnsupported(format!("{} is not u evaluated on a curve", pool.display(c.lhs)))
+        PdeError::CauchyUnsupported(format!(
+            "{} is not u evaluated on a curve",
+            pool.display(c.lhs)
+        ))
     })?;
     if v.inner != c.lhs {
         return Err(PdeError::CauchyUnsupported(format!(
@@ -87,8 +90,16 @@ fn read_data(ctx: &mut Ctx, pool: &ExprPool) -> Result<Data, PdeError> {
         )));
     }
     let params: Vec<ExprId> = originals.iter().map(|_| ctx.fresh_internal(pool)).collect();
-    let m: HashMap<ExprId, ExprId> = originals.iter().copied().zip(params.iter().copied()).collect();
-    let args = v.args.iter().map(|&a| simp(subs_map(a, &m, pool), pool)).collect();
+    let m: HashMap<ExprId, ExprId> = originals
+        .iter()
+        .copied()
+        .zip(params.iter().copied())
+        .collect();
+    let args = v
+        .args
+        .iter()
+        .map(|&a| simp(subs_map(a, &m, pool), pool))
+        .collect();
     let phi = simp(subs_map(c.rhs, &m, pool), pool);
     if !free_of(phi, &ctx.indep, pool) {
         return Err(PdeError::CauchyUnsupported(format!(
@@ -106,8 +117,12 @@ fn read_data(ctx: &mut Ctx, pool: &ExprPool) -> Result<Data, PdeError> {
 
 /// Restrict `e(z, w)` to the data: `z → a(s)`, `w → φ(s)`.
 fn on_data(ctx: &Ctx, e: ExprId, data: &Data, pool: &ExprPool) -> ExprId {
-    let mut m: HashMap<ExprId, ExprId> =
-        ctx.indep.iter().copied().zip(data.args.iter().copied()).collect();
+    let mut m: HashMap<ExprId, ExprId> = ctx
+        .indep
+        .iter()
+        .copied()
+        .zip(data.args.iter().copied())
+        .collect();
     m.insert(ctx.w, data.phi);
     simp(subs_map(e, &m, pool), pool)
 }
@@ -144,7 +159,11 @@ fn solve_params(
     params: &[ExprId],
     pool: &ExprPool,
 ) -> Option<HashMap<ExprId, ExprId>> {
-    let mut eqs: Vec<ExprId> = sig.iter().zip(targets).map(|(&a, &b)| sub(a, b, pool)).collect();
+    let mut eqs: Vec<ExprId> = sig
+        .iter()
+        .zip(targets)
+        .map(|(&a, &b)| sub(a, b, pool))
+        .collect();
     let mut unsolved = params.to_vec();
     let mut sol: HashMap<ExprId, ExprId> = HashMap::new();
     while !unsolved.is_empty() {
@@ -211,7 +230,10 @@ pub(crate) fn impose(
             func,
             value,
         } => {
-            let sig: Vec<ExprId> = integrals.iter().map(|&xi| on_data(ctx, xi, &data, pool)).collect();
+            let sig: Vec<ExprId> = integrals
+                .iter()
+                .map(|&xi| on_data(ctx, xi, &data, pool))
+                .collect();
             let jac: Vec<Vec<ExprId>> = sig
                 .iter()
                 .map(|&s| {
@@ -297,7 +319,12 @@ pub(crate) fn impose(
                             .collect()
                     })
                     .collect();
-                rows.push(aff.a.iter().map(|&ai| on_data(ctx, ai, &data, pool)).collect());
+                rows.push(
+                    aff.a
+                        .iter()
+                        .map(|&ai| on_data(ctx, ai, &data, pool))
+                        .collect(),
+                );
                 let j = det(&rows, pool);
                 if is_zero(j, pool) {
                     return Err(PdeError::CharacteristicData(
@@ -324,7 +351,10 @@ pub(crate) fn impose(
                     for k in [1i64, -1, 2, -2] {
                         let mut v = integrals.clone();
                         v[i] = simp(
-                            pool.mul(vec![integrals[i], pool.pow(integrals[1 - i], pool.integer(k))]),
+                            pool.mul(vec![
+                                integrals[i],
+                                pool.pow(integrals[1 - i], pool.integer(k)),
+                            ]),
                             pool,
                         );
                         variants.push(v);
@@ -336,8 +366,10 @@ pub(crate) fn impose(
             let mut good = Vec::new();
             let mut inverse = Vec::new();
             for integrals in variants {
-                let sig: Vec<ExprId> =
-                    integrals.iter().map(|&xi| on_data(ctx, xi, &data, pool)).collect();
+                let sig: Vec<ExprId> = integrals
+                    .iter()
+                    .map(|&xi| on_data(ctx, xi, &data, pool))
+                    .collect();
                 for rest in (0..n).rev() {
                     let chosen: Vec<usize> = (0..n).filter(|&i| i != rest).collect();
                     let csig: Vec<ExprId> = chosen.iter().map(|&i| sig[i]).collect();
@@ -352,10 +384,17 @@ pub(crate) fn impose(
                     if !contains(rel, ctx.w, pool) {
                         continue;
                     }
-                    let bucket = if has_inverse(rel, pool) { &mut inverse } else { &mut good };
+                    let bucket = if has_inverse(rel, pool) {
+                        &mut inverse
+                    } else {
+                        &mut good
+                    };
                     for e in isolate(rel, ctx.w, pool) {
                         let mut st = steps.clone();
-                        st.push(format!("data imposed; solved for u: u = {}", pool.display(e)));
+                        st.push(format!(
+                            "data imposed; solved for u: u = {}",
+                            pool.display(e)
+                        ));
                         bucket.push(Candidate {
                             value: e,
                             implicit: false,
@@ -401,9 +440,18 @@ pub(crate) fn impose(
 /// Whether `e` contains an inverse elementary function (a branch choice).
 fn has_inverse(e: ExprId, pool: &ExprPool) -> bool {
     let names = names_in(&[e], pool);
-    ["asin", "acos", "atan", "asinh", "acosh", "atanh", "lambert_w", "RootOf"]
-        .iter()
-        .any(|n| names.contains(*n))
+    [
+        "asin",
+        "acos",
+        "atan",
+        "asinh",
+        "acosh",
+        "atanh",
+        "lambert_w",
+        "RootOf",
+    ]
+    .iter()
+    .any(|n| names.contains(*n))
 }
 
 type Breaking = (Option<(ExprId, ExprId)>, String);
@@ -446,7 +494,11 @@ fn breaking_time(ctx: &Ctx, aff: &Affine, data: &Data, pool: &ExprPool) -> Optio
         let tb = simp(sub(t0, recip(gp, pool), pool), pool);
         return Some((
             Some((t, tb)),
-            format!("breaking time t_b = {} (g' = {})", pool.display(tb), pool.display(gp)),
+            format!(
+                "breaking time t_b = {} (g' = {})",
+                pool.display(tb),
+                pool.display(gp)
+            ),
         ));
     }
     // Non-constant g': the global minimum, numerically located and
