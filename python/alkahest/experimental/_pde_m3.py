@@ -129,8 +129,19 @@ class EigenFamily:
     )
 
     def __init__(self, d: dict):
-        for k in self.__slots__:
-            setattr(self, k, d[k])
+        self.closed_form = d["closed_form"]
+        self.defining_equation = d["defining_equation"]
+        self.eigenfunctions = d["eigenfunctions"]
+        self.eigenfunctions_of_frequency = d["eigenfunctions_of_frequency"]
+        self.eigenvalue = d["eigenvalue"]
+        self.eigenvalue_of_frequency = d["eigenvalue_of_frequency"]
+        self.enclosures = d["enclosures"]
+        self.first = d["first"]
+        self.frequency = d["frequency"]
+        self.frequency_var = d["frequency_var"]
+        self.index = d["index"]
+        self.norms_squared = d["norms_squared"]
+        self.verification = d["verification"]
 
     def frequency_at(self, k: int):
         """``ν_k``: the closed form at ``n = k``, or the ``RootOfFamily``
@@ -186,8 +197,11 @@ class EigenMode:
     __slots__ = ("condition", "eigenfunction", "eigenvalue", "norm_squared", "verification")
 
     def __init__(self, d: dict):
-        for k in self.__slots__:
-            setattr(self, k, d[k])
+        self.condition = d["condition"]
+        self.eigenfunction = d["eigenfunction"]
+        self.eigenvalue = d["eigenvalue"]
+        self.norm_squared = d["norm_squared"]
+        self.verification = d["verification"]
 
     def __repr__(self) -> str:
         cond = "" if self.condition is None else f" if {self.condition}"
@@ -352,8 +366,16 @@ class TransformSolution:
     """
 
     def __init__(self, d: dict):
-        for k, v in d.items():
-            setattr(self, k, v)
+        self.kind = d["kind"]
+        self.method = d["method"]
+        self.value = d["value"]
+        self.closed_part = d["closed_part"]
+        self.terms = d["terms"]
+        self.transformed = d["transformed"]
+        self.transform_var = d["transform_var"]
+        self.verification = d["verification"]
+        self.side_conditions = d["side_conditions"]
+        self.notes = d["notes"]
 
     @property
     def verified(self) -> bool:

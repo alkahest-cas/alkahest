@@ -42,6 +42,7 @@
 //!   verified, codes `E-PDE-050 … E-PDE-099`.
 //! * [`error`] — [`PdeError`], codes `E-PDE-001 … E-PDE-049` (M0).
 //! * [`sturm_liouville`] — (milestone M3) the shared eigenproblem solver:
+//! * [`mod@sturm_liouville`] — (milestone M3) the shared eigenproblem solver:
 //!   [`SturmLiouvilleProblem`] → [`Eigensystem`] (closed-form or
 //!   `RootOfFamily` eigenvalues with certified enclosures, eigenfunctions,
 //!   weights, norms, `λ = 0` / negative-eigenvalue case analysis; Bessel,

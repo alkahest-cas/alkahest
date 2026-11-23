@@ -8,7 +8,7 @@
 //! with separated conditions `αX + βX' = 0` at each end (Dirichlet `β = 0`,
 //! Neumann `α = 0`, Robin otherwise), periodic conditions, or — at a singular
 //! or infinite end — boundedness / decay.  Separation of variables (M4) calls
-//! [`sturm_liouville`] for every separated coordinate, so the result,
+//! [`fn@sturm_liouville`] for every separated coordinate, so the result,
 //! [`Eigensystem`], carries everything an eigenfunction expansion needs: the
 //! eigenvalues as a family in an index `n`, the eigenfunctions, the weight,
 //! the squared norms `∫ w X_n²`, whether `λ = 0` or negative eigenvalues occur
