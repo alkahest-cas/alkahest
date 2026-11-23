@@ -897,6 +897,26 @@ fn fit_batch_runs_every_candidate() {
 // ---------------------------------------------------------------------------
 
 #[test]
+fn finalize_error_codes_match_the_registry() {
+    // E-FEX-009 … 011 are raised from Python (alkahest.fex.finalize /
+    // recovery_metric); the Rust variants carry the code and remediation the
+    // Python side uses, and the registry agrees with them.
+    for (e, code) in [
+        (FexError::Finalize { detail: "x".into() }, "E-FEX-009"),
+        (FexError::Family { detail: "x".into() }, "E-FEX-010"),
+        (FexError::Recovery { detail: "x".into() }, "E-FEX-011"),
+    ] {
+        assert_eq!(e.code(), code);
+        let spec = crate::errors::codes::REGISTRY
+            .iter()
+            .find(|s| s.code == code)
+            .expect("registered");
+        assert_eq!(spec.remediation, e.remediation());
+        assert!(!e.to_string().is_empty());
+    }
+}
+
+#[test]
 fn error_codes() {
     let e = Template::new("U(B(L,L)", &PAPER_UNARY, &PAPER_BINARY, 2).unwrap_err();
     assert_eq!(e.code(), "E-FEX-001");
@@ -979,6 +999,9 @@ fn error_codes() {
         "E-FEX-006",
         "E-FEX-007",
         "E-FEX-008",
+        "E-FEX-009",
+        "E-FEX-010",
+        "E-FEX-011",
     ] {
         assert!(
             crate::errors::codes::REGISTRY

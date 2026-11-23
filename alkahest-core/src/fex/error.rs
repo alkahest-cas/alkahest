@@ -1,4 +1,6 @@
-//! Refusals raised by the FEX evaluation engine (`E-FEX-001` … `E-FEX-008`).
+//! Refusals raised by the FEX evaluation engine (`E-FEX-001` … `E-FEX-008`)
+//! and by finalisation (`E-FEX-009` … `E-FEX-011`, raised from Python's
+//! `alkahest.fex.finalize` / `recovery_metric`).
 //!
 //! Every variant names what the caller passed and what was expected. None of
 //! them is a numerical failure of a candidate: a candidate whose value
@@ -65,6 +67,24 @@ pub enum FexError {
         /// What was asked for and why it is not available.
         detail: String,
     },
+    /// `E-FEX-009`: finalisation was given a candidate without its template,
+    /// or a candidate and a problem that do not belong together.
+    Finalize {
+        /// What is missing or inconsistent.
+        detail: String,
+    },
+    /// `E-FEX-010`: a symbolic-`d` problem family does not reduce to the
+    /// given problem at the problem's own dimension.
+    Family {
+        /// Which part of the family disagrees.
+        detail: String,
+    },
+    /// `E-FEX-011`: the recovery metric was given something other than two
+    /// expressions.
+    Recovery {
+        /// What was passed.
+        detail: String,
+    },
 }
 
 impl fmt::Display for FexError {
@@ -83,6 +103,9 @@ impl fmt::Display for FexError {
             FexError::Operator { detail } => write!(f, "unsupported FEX operator: {detail}"),
             FexError::Dimension { detail } => write!(f, "FEX dimension mismatch: {detail}"),
             FexError::LossKind { detail } => write!(f, "FEX loss kind: {detail}"),
+            FexError::Finalize { detail } => write!(f, "FEX finalize: {detail}"),
+            FexError::Family { detail } => write!(f, "FEX problem family: {detail}"),
+            FexError::Recovery { detail } => write!(f, "FEX recovery metric: {detail}"),
         }
     }
 }
@@ -100,6 +123,9 @@ impl AlkahestError for FexError {
             FexError::Operator { .. } => "E-FEX-006",
             FexError::Dimension { .. } => "E-FEX-007",
             FexError::LossKind { .. } => "E-FEX-008",
+            FexError::Finalize { .. } => "E-FEX-009",
+            FexError::Family { .. } => "E-FEX-010",
+            FexError::Recovery { .. } => "E-FEX-011",
         }
     }
 
@@ -128,6 +154,15 @@ impl AlkahestError for FexError {
             }
             FexError::LossKind { .. } => {
                 "use loss_and_grad (and the adam or bfgs fitters) for Rayleigh-quotient and normalised losses; residual_and_jacobian and Levenberg-Marquardt need a least-squares problem"
+            }
+            FexError::Finalize { .. } => {
+                "pass the SearchResult returned by fex.search, or a FitResult together with template=; the problem must be the fex.Problem the candidate was fitted to"
+            }
+            FexError::Family { .. } => {
+                "build the family from fex.family_symbols(problem): rhs / bc / potential as expressions in d, Indexed(x, i) and t that reduce to the problem's own source terms at the problem's dimension"
+            }
+            FexError::Recovery { .. } => {
+                "pass two Expr from the same ExprPool (or a SearchResult / finalize result for 'found')"
             }
         })
     }

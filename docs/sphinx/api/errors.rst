@@ -509,6 +509,13 @@ Exception subclasses
      time coordinate is out of range
    - ``E-FEX-008`` — a residual vector (or Levenberg–Marquardt) was asked of
      a Rayleigh-quotient or normalised loss
+   - ``E-FEX-009`` — :func:`alkahest.fex.finalize` was given a candidate
+     without its template, or a candidate and a problem that do not belong
+     together
+   - ``E-FEX-010`` — a ``family=`` for :func:`alkahest.fex.finalize` does not
+     reduce to the problem at the problem's own dimension
+   - ``E-FEX-011`` — :func:`alkahest.fex.recovery_metric` was not given two
+     expressions
 
 .. exception:: JitError
 

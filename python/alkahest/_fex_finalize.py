@@ -876,11 +876,37 @@ def _expand_args(e: Any) -> Any:
     return _rebuild(e, f)
 
 
+def _relaxed_face(c: dict) -> bool:
+    """A face residual written with stand-in symbols for the sums over the
+    other coordinates: a proof of zero holds for every value of them, but a
+    "nonzero" verdict does not (the stand-ins are not independent)."""
+    return "__fex_rest" in str(c["residual"])
+
+
+def _simplify_args(e: Any) -> Any:
+    """Simplify the arguments of every function application (the
+    simplifier collects ``x/3 + y/3`` as ``(x + y)/3``), so equal arguments
+    written differently become the same atom."""
+
+    def f(node: Any, kids: list) -> Any:
+        nd = node.node()
+        if nd[0] == "func" and nd[1] not in ("Sum", "Indexed", "KroneckerDelta"):
+            return node._pool.func(nd[1], [_simp(_ak.expand(k)) for k in kids])
+        return None
+
+    return _rebuild(e, f)
+
+
 def _verify_residuals(pool: Any, pde: list[Any], bc: list[Any], ic: list[Any]) -> dict:
     """Run residuals (already formed) through the PDE verifier's D9 pipeline:
     simplify sums, alpha-normalise, zero test, with ``proved_nonzero``
-    downgraded when an opaque ``Sum`` is involved. Function arguments are
-    expanded first (a normal form, not a weakening: nothing is sampled)."""
+    downgraded when an opaque ``Sum`` is involved.
+
+    When that does not prove every residual, it is repeated on further
+    normal forms of the *same* residuals — the full simplifier (which
+    combines exponentials), function arguments collected,
+    expanded, then the whole residual expanded — and a proof (or refutation) from any of
+    them stands: nothing is sampled, so none of this weakens the verdict."""
     from .alkahest import _pde_verify
 
     s = pool.symbol("__fex_s")
@@ -890,34 +916,55 @@ def _verify_residuals(pool: Any, pde: list[Any], bc: list[Any], ic: list[Any]) -
         conds = [("bc", r, pool.integer(0)) for r in b] + [("ic", r, pool.integer(0)) for r in i]
         return _pde_verify(p, [w], [pool.integer(0)], conds)
 
-    v = run(pde, bc, ic)
+    def finish(v: dict) -> dict:
+        for c in v["bc"]:
+            if c["status"] == "proved_nonzero" and _relaxed_face(c):
+                c["status"] = "unknown"
+                c["method"] = "none"
+                c["evidence"] = [
+                    "face residual with stand-ins for the other coordinates' sums: "
+                    "zero would be a proof, nonzero is not a refutation"
+                ]
+        st = [c["status"] for key in ("pde", "bc", "ic") for c in v[key]]
+        if all(x == "proved_zero" for x in st):
+            status = "exactly_verified"
+        elif any(x == "proved_nonzero" for x in st):
+            status = "refuted"
+        elif all(x in ("proved_zero", "probably_zero") for x in st):
+            status = "numerically_checked"
+        else:
+            status = "unverified"
+        v["status"] = status
+        v["verified"] = status == "exactly_verified"
+        v["evidence"] = {
+            "exactly_verified": "symbolic_residual",
+            "refuted": "nonzero_residual",
+            "numerically_checked": "ball_arithmetic_samples",
+        }.get(status, "none")
+        return v
+
+    v = finish(run(pde, bc, ic))
     if v["verified"]:
         return v
-    # Second normal form: function arguments expanded. Both runs see the
-    # same residuals, so a proof (or a refutation) from either stands.
-    v2 = run(*([_expand_args(r) for r in rs] for rs in (pde, bc, ic)))
     rank = {"proved_zero": 3, "proved_nonzero": 3, "probably_zero": 1, "unknown": 0}
-    for key in ("pde", "bc", "ic"):
-        for j, c2 in enumerate(v2[key]):
-            if rank.get(c2["status"], 0) > rank.get(v[key][j]["status"], 0):
-                v[key][j] = c2
-    checks = [c for key in ("pde", "bc", "ic") for c in v[key]]
-    st = [c["status"] for c in checks]
-    if all(x == "proved_zero" for x in st):
-        status = "exactly_verified"
-    elif any(x == "proved_nonzero" for x in st):
-        status = "refuted"
-    elif all(x in ("proved_zero", "probably_zero") for x in st):
-        status = "numerically_checked"
-    else:
-        status = "unverified"
-    v["status"] = status
-    v["verified"] = status == "exactly_verified"
-    v["evidence"] = {
-        "exactly_verified": "symbolic_residual",
-        "refuted": "nonzero_residual",
-        "numerically_checked": "ball_arithmetic_samples",
-    }.get(status, "none")
+    forms = (
+        _simp,
+        _simplify_args,
+        _expand_args,
+        lambda r: _ak.expand(_expand_args(r)),
+    )
+    for form in forms:
+        try:
+            v2 = finish(run(*([form(r) for r in rs] for rs in (pde, bc, ic))))
+        except Exception:  # noqa: BLE001 - a normal form that fails is skipped
+            continue
+        for key in ("pde", "bc", "ic"):
+            for j, c2 in enumerate(v2[key]):
+                if rank.get(c2["status"], 0) > rank.get(v[key][j]["status"], 0):
+                    v[key][j] = c2
+        v = finish(v)
+        if v["verified"]:
+            break
     return v
 
 
@@ -1067,6 +1114,20 @@ def finalize(
     spec = problem.spec
     time = problem.time
     dim = tpl.dim
+    if family is not None:
+        fpool = problem.jet.pool
+        family = {
+            k: (
+                v
+                if v is None or isinstance(v, _ak.Expr)
+                else (
+                    _exact_float(v).to_expr(fpool)
+                    if isinstance(v, float)
+                    else _qexpr(Fraction(v), fpool)
+                )
+            )
+            for k, v in family.items()
+        }
     pts = points if points is not None else getattr(result, "points", None)
     bd = boundary if boundary is not None else getattr(result, "boundary", None)
     if domain is None:
@@ -1835,15 +1896,30 @@ def _face_restrict(r: Any, fs: FamilySymbols, b: Any) -> Any | None:
     def f(node: Any, kids: list) -> Any:
         nd = node.node()
         if nd[0] == "func" and nd[1] == "Sum":
-            args = nd[2]
-            body, k = args[0], args[1]
-            key = str(_ak.subs(body, {k: fs.i}))
-            if key not in rest:
-                rest[key] = pool.symbol(f"__fex_rest{len(rest)}")
             from .experimental import Indexed
 
-            xk = Indexed(fs.x, k)
-            return _ak.subs(body, {xk: b}) + rest[key]
+            args = nd[2]
+            body, k = args[0], args[1]
+            body = _simp(_ak.subs(body, {k: fs.i}))
+            # Σ c·f(xᵢ) = c·Σ f(xᵢ): pull numeric factors out so equal sums
+            # written differently share one stand-in.
+            coeff = pool.integer(1)
+            bn = body.node()
+            if bn[0] == "mul":
+                num = [c for c in _children(body) if _number_value(c) is not None]
+                rest_f = [c for c in _children(body) if _number_value(c) is None]
+                if num and rest_f:
+                    for c in num:
+                        coeff = coeff * c
+                    body = rest_f[0]
+                    for c in rest_f[1:]:
+                        body = body * c
+                    body = _simp(body)
+            key = str(body)
+            if key not in rest:
+                rest[key] = pool.symbol(f"__fex_rest{len(rest)}")
+            xk = Indexed(fs.x, fs.i)
+            return coeff * (_ak.subs(body, {xk: b}) + rest[key])
         return None
 
     try:
@@ -1903,10 +1979,33 @@ def _check_family(problem, kind, time, family, fs, out) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _split_sum(p: str) -> list[str]:
+    """The top-level terms of a skeleton string ``[a+b+…]``."""
+    if not (p.startswith("[") and p.endswith("]")):
+        return [p]
+    inner, depth, cur, out = p[1:-1], 0, "", []
+    for ch in inner:
+        if ch in "[(":
+            depth += 1
+        elif ch in "])":
+            depth -= 1
+        if ch == "+" and depth == 0:
+            out.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    out.append(cur)
+    if len(out) == 1:
+        return [p]
+    return out
+
+
 def _skeleton(e: Any) -> str:
     """A constant-free normal form: every numeric literal (outside integer
-    exponents) and named constant becomes ``C``, then commutative arguments
-    are sorted and adjacent ``C`` factors / terms merged."""
+    exponents) and named constant becomes ``C``; a constant *factor* is
+    dropped (a scale is a free parameter, so ``C·f`` and ``f`` share a
+    skeleton, and ``C·(a + b)`` reads as ``a + b``), constant *terms* merge
+    into one ``C``, and commutative arguments are sorted."""
 
     def go(x: Any) -> str:
         nv = _number_value(x)
@@ -1928,19 +2027,37 @@ def _skeleton(e: Any) -> str:
             if nd[1] in ("exp", "log", "sqrt") and all(a == "C" for a in args):
                 return "C"
             return f"{nd[1]}({','.join(args)})"
-        if k in ("add", "mul"):
-            parts = sorted(go(a) for a in _children(x))
-            # Constants merge: C + C = C, C * C = C.
+        if k == "add":
+            parts = [go(a) for a in _children(x)]
             merged = [p for p in parts if p != "C"]
             if len(merged) < len(parts):
                 merged.append("C")
-            if len(merged) == 1:
-                return merged[0]
-            op = "+" if k == "add" else "*"
-            return "[" + op.join(sorted(merged)) + "]"
+            flat: list[str] = []
+            for p in merged:
+                flat.extend(_split_sum(p))
+            flat = sorted(set(flat)) if len(flat) > 1 else flat
+            return flat[0] if len(flat) == 1 else "[" + "+".join(flat) + "]"
+        if k == "mul":
+            parts = sorted(g for g in (go(a) for a in _children(x)) if g != "C")
+            if not parts:
+                return "C"
+            return parts[0] if len(parts) == 1 else "[" + "*".join(parts) + "]"
         return str(x)
 
-    return go(_simp(e))
+    def ratify(node: Any, _kids: list) -> Any:
+        # Floats become nearby rationals: the skeleton abstracts every
+        # constant anyway, and expand() refuses float coefficients.
+        nv = _number_value(node)
+        if isinstance(nv, float) and math.isfinite(nv):
+            return _qexpr(Fraction(nv).limit_denominator(10**9), node._pool)
+        return None
+
+    e = _rebuild(e, ratify)
+    try:
+        e = _ak.expand(_expand_args(_simp(e)))
+    except Exception:  # noqa: BLE001 - keep the simplified form
+        e = _simp(e)
+    return go(e)
 
 
 def recovery_metric(found: Any, truth: Any, *, coords: Any = None) -> dict:
