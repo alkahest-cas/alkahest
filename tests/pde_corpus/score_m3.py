@@ -17,7 +17,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-import test_pde_m3 as t  # noqa: E402
+import test_pde_m3 as t
 
 
 def main() -> None:
@@ -29,7 +29,7 @@ def main() -> None:
             ok = all(f.verification["verified"] for f in es.families)
             kinds = ",".join("closed" if f.closed_form else "RootOfFamily" for f in es.families)
             mine = f"{'verified' if ok else 'UNVERIFIED'} ({kinds})"
-        except Exception as exc:  # noqa: BLE001 - report the refusal
+        except Exception as exc:
             ok, mine = False, f"refused {str(exc)[:30]}"
         math_ok = t.SL_REF[e["id"]][0] == "True"
         sl_ok += ok
@@ -49,7 +49,7 @@ def main() -> None:
             ok = sol.verified
             mine = f"{'verified' if ok else 'UNVERIFIED'} {sol.kind}"
             tr_closed += ok and sol.kind == "closed_form"
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             ok, mine = False, f"refused {str(exc)[:30]}"
         ref = t.TR_REF[e["id"]][0]
         tr_ok += ok
