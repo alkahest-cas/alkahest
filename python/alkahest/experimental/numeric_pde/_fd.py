@@ -4,9 +4,9 @@ multi-dimensional (tensor-product and compact) stencils, and kernel hooks."""
 from __future__ import annotations
 
 from fractions import Fraction
-from typing import Any
 from itertools import product as _iproduct
 from math import factorial
+from typing import Any
 
 from ...exceptions import NumericPdeError
 from ._exact import _num_of, frac_to_expr

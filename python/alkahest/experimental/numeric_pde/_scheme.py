@@ -41,8 +41,8 @@ boundaries whose membership cannot be decided exactly are reported in
 from __future__ import annotations
 
 from fractions import Fraction
-from typing import Any
 from math import factorial
+from typing import Any
 
 from ...exceptions import NumericPdeError
 from ._exact import (

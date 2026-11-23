@@ -15,8 +15,8 @@ exact: no floating-point value ever decides a sign. The pieces are
 from __future__ import annotations
 
 from fractions import Fraction
-from typing import Any
 from math import gcd
+from typing import Any
 
 from ...exceptions import NumericPdeError
 
