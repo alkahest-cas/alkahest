@@ -1492,16 +1492,17 @@ impl<'a> Ctx<'a> {
                             Some(&id) => id,
                             None => self.new_atom("Real.pi".into(), AKind::Free, 0),
                         };
-                        let r = self.sqrt_atom(
-                            "Real.pi",
-                            Poly::var(pi),
-                            Some("Real.pi_pos.le".into()),
-                        );
+                        let r =
+                            self.sqrt_atom("Real.pi", Poly::var(pi), Some("Real.pi_pos.le".into()));
                         let rl = self.atoms[r as usize].lean.clone();
                         self.have(format!("{rl} ≠ 0"), "by positivity".into());
                         let w = self.inv_poly(&Poly::var(r), &rl)?;
                         let (arg_l, arg_p, lemma) = if f == Fn1::Erf {
-                            (format!("-({al}) ^ 2"), ap.pow(2)?.neg(), "alkahestErf_hasDerivAt")
+                            (
+                                format!("-({al}) ^ 2"),
+                                ap.pow(2)?.neg(),
+                                "alkahestErf_hasDerivAt",
+                            )
                         } else {
                             (format!("({al}) ^ 2"), ap.pow(2)?, "alkahestErfi_hasDerivAt")
                         };
@@ -2893,14 +2894,20 @@ mod tests {
         assert!(src.contains("congr_of_eventuallyEq"), "{src}");
         // ∫ 1/√(1+x²) = asinh x
         let src = emit(|p, x| {
-            let r = p.func("sqrt", vec![p.add(vec![p.integer(1), p.pow(x, p.integer(2))])]);
+            let r = p.func(
+                "sqrt",
+                vec![p.add(vec![p.integer(1), p.pow(x, p.integer(2))])],
+            );
             (p.func("asinh", vec![x]), p.pow(r, p.integer(-1)))
         })
         .expect("asinh cert");
         assert!(src.contains(".arsinh"), "{src}");
         // ∫ 1/√(x²-1) = acosh x on x > 1
         let src = emit(|p, x| {
-            let r = p.func("sqrt", vec![p.add(vec![p.pow(x, p.integer(2)), p.integer(-1)])]);
+            let r = p.func(
+                "sqrt",
+                vec![p.add(vec![p.pow(x, p.integer(2)), p.integer(-1)])],
+            );
             (p.func("acosh", vec![x]), p.pow(r, p.integer(-1)))
         })
         .expect("acosh cert");

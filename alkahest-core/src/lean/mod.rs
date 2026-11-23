@@ -462,8 +462,8 @@ fn neg_pow_of_var_certificate(
             "by\n    \
              have hinv := hasDerivAt_inv hx\n    \
              rw [(hinv.fun_pow {k}).deriv]\n    \
-             field_simp [hx]\n    \
-             try ring"
+             push_cast\n    \
+             ring"
         )
     };
     Some((Some(binder), tactic))
@@ -4284,7 +4284,10 @@ pub fn emit_resultant_cert(
     let literal = format!("!![{}]", rows.join("; "));
     let mut out = String::from(
         "import Mathlib.Tactic\n\
-         import Mathlib.LinearAlgebra.Matrix.Determinant.Basic\n\n",
+         import Mathlib.LinearAlgebra.Matrix.Determinant.Basic\n\n\
+         set_option linter.unusedSimpArgs false\n\
+         set_option linter.unusedTactic false\n\
+         set_option linter.unreachableTactic false\n\n",
     );
     out.push_str(&format!(
         "-- Resultant: Res_{var_name}(p, q) = {}\n\
@@ -6158,7 +6161,7 @@ mod tests {
             "expected an explicit nonzero-hypothesis binder: {lean_neg2}"
         );
         assert!(
-            lean_neg2.contains("hasDerivAt_inv") && lean_neg2.contains("hinv.pow 2"),
+            lean_neg2.contains("hasDerivAt_inv") && lean_neg2.contains("hinv.fun_pow 2"),
             "expected hasDerivAt_inv then HasDerivAt.pow 2: {lean_neg2}"
         );
     }
@@ -6287,7 +6290,7 @@ mod tests {
             "sin(x)² certificate must not use sorry: {lean}"
         );
         assert!(
-            lean.contains("hf.pow 2"),
+            lean.contains("hf.fun_pow 2"),
             "expected HasDerivAt.pow composition: {lean}"
         );
     }
@@ -6317,7 +6320,7 @@ mod tests {
             "expected an explicit nonzero-hypothesis binder: {lean}"
         );
         assert!(
-            lean.contains("hf.inv hne"),
+            lean.contains("hf.fun_inv hne"),
             "expected HasDerivAt.inv composition: {lean}"
         );
     }
@@ -6347,7 +6350,7 @@ mod tests {
             "sin/cos certificate must not use sorry: {lean}"
         );
         assert!(
-            lean.contains("hf.mul hg"),
+            lean.contains("hf.fun_mul hg"),
             "expected the quotient-chain HasDerivAt composition: {lean}"
         );
         assert!(

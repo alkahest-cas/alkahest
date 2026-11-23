@@ -621,7 +621,7 @@ def test_lean_diff_x_neg_two_certificate():
     assert "sorry" not in cert
     assert "(hx : x ≠ 0)" in cert
     assert "hasDerivAt_inv" in cert
-    assert "hinv.pow 2" in cert
+    assert "hinv.fun_pow 2" in cert
     assert r.verification["status"] == "certificate_available"
 
 

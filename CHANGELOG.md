@@ -10,6 +10,19 @@
 - **Lagrange (d'Alembert) equations in parametric form.** `y = x·f(y') + g(y')` (Clairaut excepted, which stays explicit) is solved through the linear equation for `x(p)`: Rust `dsolve_parametric` → `ParametricReport { branches: [ParametricBranch { parameter, x_of_p, y_of_p, constants, method }], singular }`; Python `experimental.dsolve` returns `form == "parametric"` with `x_of_p`, `y_of_p`, `parameter` and `singular_solutions` when no explicit or implicit class answers. The curve is verified by `F(x(p), y(p), p) = 0` and `y'(p) = p·x'(p)`, each singular line by substitution.
 - `evaluate(..., mode="complex")` and the dsolve gate's complex evaluator know `erf` on ℂ (Maclaurin series, `|z| ≤ 4`, refused beyond), so `erfi` answers are evaluable; the dsolve gate's complex pass also falls back to a registered primitive's real kernel at real arguments (`Ei`, the Jacobi functions).
 
+### Lean certificates
+
+- **The Lean checker moves from Lean 4 / Mathlib v4.9.0 (mid-2024) to v4.36.0.** `lean/lean-toolchain` and the Mathlib tag in `lean/lakefile.lean` are both `v4.36.0`, and `lean/lake-manifest.json` is now committed so every dependency revision is pinned. CI fetches Mathlib's prebuilt oleans with `lake exe cache get`. Every emitter is ported; the porting notes are in the book's *Lean certificates* chapter.
+  - Certificates switch off the `unusedSimpArgs`, `unusedTactic` and `unreachableTactic` style linters. Under `-DwarningAsError=true` they would reject a `simp` set naming an unneeded lemma; `sorry` still fails the check.
+  - Renamed lemmas: `mul_inv_cancel₀`, `Finset.Ico_add_one_right_eq_Icc`, `Set.notMem_uIcc_of_lt`, `Real.tendsto_one_add_div_rpow_exp`, `differentiableAt_id`, `differentiableAt_inv h`, `deriv_fun_pow`, `ite_eq_left` / `ite_eq_right`.
+  - `HasDerivAt.add` / `.mul` / `.neg` / `.pow` / `.inv` / `.div` and `deriv_add` / `deriv_mul` now state the derivative of a pointwise `f + g`. Proofs that `rw` or `simpa` against a `fun x => …` use the `fun_` forms, and the `simp` sets carry both.
+  - Moved modules: `Trigonometric.DerivHyp` (sinh/cosh derivatives), `IntervalIntegral.{Basic,FundThmCalculus}`, `BigOperators.Group.Finset.Basic`, `Integrals.Basic`.
+- **More integration answers get certificates.**
+  - `erf`, `erfi` and `Si`. Mathlib still has none of them, so the certificate defines each by its integral (`erf x = 2/√π ∫₀ˣ e^(-t²) dt`, `erfi x = 2/√π ∫₀ˣ e^(t²) dt`, `Si x = ∫₀ˣ sinc t dt`) and proves the derivative lemma from Mathlib's FTC in the same file. `∫ exp(-x²)`, `∫ x² exp(-x²)` and `∫ sin(x)/x` are certified; `Si` answers state `x ≠ 0`.
+  - `tanh`, through `sinh / cosh` and `Real.tanh_eq_sinh_div_cosh`. `asinh`, through Mathlib's `HasDerivAt.arsinh`. `acosh`, through `Real.hasDerivAt_arcosh` on `1 < u`.
+  - `Ei`, `li`, `Shi`, `Ci`, the Fresnel integrals and elliptic integrals stay withheld with `withheld_special_function`.
+- The Lean CI job checks every certificate four at a time. It prints per-corpus and total `verified/total` counts, lists every failure rather than stopping at the first, and always uploads the generated proofs.
+
 ### Performance
 
 - **Lex Gröbner bases in shape position are 6–9× faster.** This covers `GroebnerBasis.compute(..., order="lex")` on a zero-dimensional ideal, and `solve` through it. On one thread katsura-7 lex takes 3.8 s (was 34.1 s) and katsura-6 lex 0.21 s (was 1.29 s); with 8 threads katsura-7 lex takes 1.7 s (was 11.5 s). The bases are hash-identical to before, and the conversion is still verified exactly against the grevlex basis.
