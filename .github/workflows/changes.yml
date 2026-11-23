@@ -183,6 +183,8 @@ jobs:
               - 'tests/lean_tendsto_corpus.py'
               - 'tests/lean_sos_corpus.py'
               - 'tests/lean_gosper_corpus.py'
+              - 'tests/lean_integrate_corpus.py'
+              - 'alkahest-core/src/integrate/**'
               - 'alkahest-core/src/poly/resultant.rs'
               - 'alkahest-core/src/holonomic/**'
               - 'alkahest-core/src/real/sos/**'

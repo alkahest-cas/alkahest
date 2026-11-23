@@ -380,13 +380,6 @@ enum AKind {
     },
     /// `(u)⁻¹`.
     Inv,
-    /// `base ^ (p : ℝ)` with rational, non-integer `p`.
-    Rpow {
-        base: Poly,
-        base_lean: String,
-        p: Rational,
-        pos: String,
-    },
     /// `base ^ ((1:ℝ) / b)`, `b ≥ 3` (the `b = 2` root is `Real.sqrt`); its
     /// `ρ ^ b = base` rule is registered when the atom is made.
     Root,
@@ -473,6 +466,8 @@ struct Ctx<'a> {
     sqrt_nonneg: HashMap<u32, String>,
     /// Atom → an earlier atom with the same function and an equal argument.
     twin_of: HashMap<u32, u32>,
+    /// `(name, lhs, rhs, proof)` rewrites applied to the goal `G = f`.
+    goal_rw: Vec<(String, String, String, String)>,
 }
 
 impl<'a> Ctx<'a> {
@@ -499,6 +494,7 @@ impl<'a> Ctx<'a> {
             poly_memo: HashMap::new(),
             sqrt_nonneg: HashMap::new(),
             twin_of: HashMap::new(),
+            goal_rw: Vec::new(),
         };
         // Atom 0 is the integration variable.
         c.new_atom(format!("({var_name} : ℝ)"), AKind::Free, 0);
@@ -962,34 +958,43 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// `b ^ r` (rational, non-integer `r`) — an `Rpow` atom.
+    /// `b ^ (1/q)` (`q ≥ 3`; every other rational power was respelled by
+    /// [`respell_rational_powers`]) — a root atom with its `ρ ^ q = b` fact.
     fn rpow_poly(
         &mut self,
         b: ExprId,
         bp: &Poly,
         r: &Rational,
     ) -> Result<Poly, IntegrationCertWithheld> {
+        if *r.numer() != 1 || *r.denom() <= 2 {
+            return Err(WITHHELD_UNSUPPORTED_NODE);
+        }
+        let q = r.denom().to_u32().ok_or(WITHHELD_TOO_LARGE)?;
+        if q > 12 {
+            return Err(WITHHELD_TOO_LARGE);
+        }
         let pos = self.pos_fact(b)?;
         let bl = self.lean(b)?;
         let lean = format!("({bl}) ^ {}", rat_lean(r)?);
-        Ok(Poly::var(self.rpow_atom(lean, bp.clone(), bl, r.clone(), pos)))
-    }
-
-    fn rpow_atom(&mut self, lean: String, base: Poly, base_lean: String, p: Rational, pos: String) -> u32 {
         if let Some(&id) = self.by_lean.get(&lean) {
-            return id;
+            return Ok(Poly::var(id));
         }
-        let depth = 1 + self.depth_of(&base);
-        self.new_atom(
-            lean,
-            AKind::Rpow {
-                base,
-                base_lean,
-                p,
-                pos,
+        let depth = 1 + self.depth_of(bp);
+        let id = self.new_atom(lean.clone(), AKind::Root, depth);
+        self.push_rel(
+            format!("({lean}) ^ {q}"),
+            bl.clone(),
+            format!(
+                "by\n    rw [← Real.rpow_natCast ({lean}) {q}, ← Real.rpow_mul ({pos}).le]\n    norm_num"
+            ),
+            RelKind::Power {
+                v: id,
+                d: q,
+                tail: bp.clone(),
             },
-            depth,
-        )
+        );
+        self.have(format!("{lean} ≠ 0"), format!("(Real.rpow_pos_of_pos {pos} _).ne'"));
+        Ok(Poly::var(id))
     }
 
     // -------------------------------------------------------- derivatives
@@ -1127,12 +1132,30 @@ impl<'a> Ctx<'a> {
                         }
                     }
                     Err(r) => {
+                        // Only `b ^ (1/q)`, q ≥ 3, survives respelling. Its
+                        // derivative carries `b ^ (1/q - 1)`, which the proof
+                        // rewrites to `(b ^ (1/q))⁻¹ ^ (q-1)` before `ring`
+                        // sees it (two rational powers of one base would make
+                        // `ring` compare real exponents by unfolding them).
+                        let rho = self.rpow_poly(b, &bp, &r)?;
                         let pos = self.pos_fact(b)?;
                         let p_lean = rat_lean(&r)?;
-                        let pm1 = Rational::from(&r - 1u32);
+                        let rho_lean = format!("({bl}) ^ {p_lean}");
+                        let k = r.denom().to_u32().ok_or(WITHHELD_TOO_LARGE)? - 1;
+                        let w = self.inv_poly(&rho, &rho_lean)?;
                         let atom_lean = format!("({bl}) ^ ({p_lean} - 1)");
-                        let a = self.rpow_atom(atom_lean.clone(), bp.clone(), bl.clone(), pm1, pos.clone());
-                        let dpoly = nb.dpoly.mul(&Poly::var(a))?.scale(&r);
+                        if !self.goal_rw.iter().any(|g| g.1 == atom_lean) {
+                            let name = format!("g{}", self.goal_rw.len() + 1);
+                            self.goal_rw.push((
+                                name,
+                                atom_lean.clone(),
+                                format!("({rho_lean})⁻¹ ^ {k}"),
+                                format!(
+                                    "by\n    rw [inv_pow ({rho_lean}) {k}, ← Real.rpow_natCast ({rho_lean}) {k}, ← Real.rpow_mul ({pos}).le, ← Real.rpow_neg ({pos}).le]\n    norm_num"
+                                ),
+                            ));
+                        }
+                        let dpoly = nb.dpoly.mul(&w.pow(k)?)?.scale(&r);
                         Ok(Node {
                             proof: format!(
                                 "(({}).rpow_const (p := {p_lean}) (Or.inl ({pos}).ne'))",
@@ -1652,99 +1675,6 @@ impl<'a> Ctx<'a> {
             );
         }
 
-        // --- rational powers --------------------------------------------------
-        let rpows: Vec<(u32, Poly, String, Rational, String)> = self
-            .atoms
-            .iter()
-            .enumerate()
-            .filter_map(|(i, a)| match &a.kind {
-                AKind::Rpow {
-                    base,
-                    base_lean,
-                    p,
-                    pos,
-                } => Some((i as u32, base.clone(), base_lean.clone(), p.clone(), pos.clone())),
-                _ => None,
-            })
-            .collect();
-        for (id, base, bl, p, pos) in rpows {
-            let b = p.denom().to_u32().ok_or(WITHHELD_TOO_LARGE)?;
-            let a = p.numer().to_i64().ok_or(WITHHELD_TOO_LARGE)?;
-            if b > 12 || a.unsigned_abs() > 48 {
-                return Err(WITHHELD_TOO_LARGE);
-            }
-            let (rho, rho_rpow, rw_pre) = if b == 2 {
-                let r = self.sqrt_atom(&bl, base.clone(), Some(format!("({pos}).le")));
-                let rl = self.atoms[r as usize].lean.clone();
-                (
-                    r,
-                    format!("({bl}) ^ ((1:ℝ) / 2)"),
-                    format!("show {rl} = ({bl}) ^ ((1:ℝ) / 2) from Real.sqrt_eq_rpow _, "),
-                )
-            } else {
-                let rl = format!("({bl}) ^ ((1:ℝ) / {b})");
-                let r = if let Some(&r) = self.by_lean.get(&rl) {
-                    r
-                } else {
-                    let depth = 1 + self.depth_of(&base);
-                    let r = self.new_atom(
-                        rl.clone(),
-                        AKind::Root,
-                        depth,
-                    );
-                    self.push_rel(
-                        format!("({rl}) ^ {b}"),
-                        bl.clone(),
-                        format!(
-                            "by\n    rw [← Real.rpow_natCast ({rl}) {b}, ← Real.rpow_mul ({pos}).le]\n    norm_num"
-                        ),
-                        RelKind::Power {
-                            v: r,
-                            d: b,
-                            tail: base.clone(),
-                        },
-                    );
-                    r
-                };
-                (r, rl, String::new())
-            };
-            let rhol = self.atoms[rho as usize].lean.clone();
-            let lhs = self.atoms[id as usize].lean.clone();
-            if a > 0 {
-                self.push_rel(
-                    lhs,
-                    format!("({rhol}) ^ {a}"),
-                    format!(
-                        "by\n    rw [{rw_pre}← Real.rpow_natCast ({rho_rpow}) {a}, ← Real.rpow_mul ({pos}).le]\n    norm_num"
-                    ),
-                    RelKind::Subst {
-                        v: id,
-                        e: Poly::var(rho).pow(a as u32)?,
-                    },
-                );
-            } else {
-                let k = -a;
-                let ne_proof = if b == 2 {
-                    format!("(Real.sqrt_pos.mpr {pos}).ne'")
-                } else {
-                    format!("(Real.rpow_pos_of_pos {pos} _).ne'")
-                };
-                self.have(format!("{rhol} ≠ 0"), ne_proof);
-                let w = self.inv_poly(&Poly::var(rho), &rhol)?;
-                self.push_rel(
-                    lhs,
-                    format!("({rhol})⁻¹ ^ {k}"),
-                    format!(
-                        "by\n    rw [{rw_pre}inv_pow ({rho_rpow}) {k}, ← Real.rpow_natCast ({rho_rpow}) {k}, ← Real.rpow_mul ({pos}).le, ← Real.rpow_neg ({pos}).le]\n    norm_num"
-                    ),
-                    RelKind::Subst {
-                        v: id,
-                        e: w.pow(k as u32)?,
-                    },
-                );
-            }
-        }
-
         // --- √v ² = v ----------------------------------------------------------
         let sqrts = self.fun_atoms(&[Fn1::Sqrt]);
         for (id, _, arg, al) in sqrts {
@@ -2020,6 +1950,79 @@ fn collect_symbols(e: ExprId, pool: &ExprPool, out: &mut BTreeSet<ExprId>) {
 // Entry point
 // ===========================================================================
 
+/// Respell every rational power `b ^ (a/q)` as `√b ^ a` (`q = 2`) or
+/// `(b ^ (1/q)) ^ a` (`q ≥ 3`), negative `a` through `⁻¹`.
+///
+/// Equal to the original wherever `b > 0`, which the certificate assumes (or
+/// proves) for every such base. Afterwards a base carries at most one real
+/// exponent, `1/q`: `ring` compares atoms up to definitional unfolding, and
+/// two real exponents of one base (`b ^ (7/2)` against `b ^ (1/2)`) send it
+/// into unfolding real-number literals until the heartbeat limit.
+fn respell_rational_powers(
+    e: ExprId,
+    pool: &ExprPool,
+    memo: &mut HashMap<ExprId, ExprId>,
+) -> Result<ExprId, IntegrationCertWithheld> {
+    if let Some(&r) = memo.get(&e) {
+        return Ok(r);
+    }
+    enum Shape {
+        Leaf,
+        Add(Vec<ExprId>),
+        Mul(Vec<ExprId>),
+        Pow(ExprId, ExprId),
+        Func(String, Vec<ExprId>),
+    }
+    let shape = pool.with(e, |d| match d {
+        ExprData::Add(xs) => Shape::Add(xs.clone()),
+        ExprData::Mul(xs) => Shape::Mul(xs.clone()),
+        ExprData::Pow { base, exp } => Shape::Pow(*base, *exp),
+        ExprData::Func { name, args } => Shape::Func(name.clone(), args.clone()),
+        _ => Shape::Leaf,
+    });
+    let out = match shape {
+        Shape::Leaf => e,
+        Shape::Add(xs) => {
+            let ys: Result<Vec<_>, _> = xs.iter().map(|&c| respell_rational_powers(c, pool, memo)).collect();
+            pool.add(ys?)
+        }
+        Shape::Mul(xs) => {
+            let ys: Result<Vec<_>, _> = xs.iter().map(|&c| respell_rational_powers(c, pool, memo)).collect();
+            pool.mul(ys?)
+        }
+        Shape::Func(name, xs) => {
+            let ys: Result<Vec<_>, _> = xs.iter().map(|&c| respell_rational_powers(c, pool, memo)).collect();
+            pool.func(name, ys?)
+        }
+        Shape::Pow(b, x) => {
+            let b2 = respell_rational_powers(b, pool, memo)?;
+            let r = pool.with(x, |d| match d {
+                ExprData::Rational(r) => Some(r.0.clone()),
+                _ => None,
+            });
+            match r {
+                None => pool.pow(b2, x),
+                Some(r) => {
+                    let a = r.numer().to_i64().ok_or(WITHHELD_TOO_LARGE)?;
+                    let q = r.denom().to_i64().ok_or(WITHHELD_TOO_LARGE)?;
+                    let root = if q == 2 {
+                        pool.func("sqrt", vec![b2])
+                    } else {
+                        pool.pow(b2, pool.rational(1, q))
+                    };
+                    if a == 1 {
+                        root
+                    } else {
+                        pool.pow(root, pool.integer(a))
+                    }
+                }
+            }
+        }
+    };
+    memo.insert(e, out);
+    Ok(out)
+}
+
 /// Lean imports for `HasDerivAt` integration certificates.
 pub(crate) fn hasderiv_header() -> String {
     "import Mathlib.Tactic\n\
@@ -2049,6 +2052,9 @@ pub fn emit_integration_hasderiv_cert(
     var: ExprId,
     pool: &ExprPool,
 ) -> Result<String, IntegrationCertWithheld> {
+    let mut memo = HashMap::new();
+    let antiderivative = respell_rational_powers(antiderivative, pool, &mut memo)?;
+    let integrand = respell_rational_powers(integrand, pool, &mut memo)?;
     let mut cx = Ctx::new(pool, var)?;
     let big_f = cx.lean(antiderivative)?;
     let small_f = cx.lean(integrand)?;
@@ -2116,14 +2122,20 @@ pub fn emit_integration_hasderiv_cert(
     }
     // `G = f` is a polynomial identity in the atoms modulo the facts above:
     // `ring1` checks `G - f - Σ cⱼ·(Lⱼ - Rⱼ) = 0` with the cofactors computed here.
+    for (name, lhs, rhs, proof) in &cx.goal_rw {
+        body.push_str(&format!("  have {name} : {lhs} = {rhs} := {proof}\n"));
+    }
     let combo = if lc_terms.is_empty() {
         String::new()
     } else {
         format!(" {}", lc_terms.join(" + "))
     };
-    body.push_str(&format!(
-        "  exact hd.congr_deriv (by linear_combination{combo})\n"
-    ));
+    body.push_str("  refine hd.congr_deriv ?_\n");
+    if !cx.goal_rw.is_empty() {
+        let names: Vec<&str> = cx.goal_rw.iter().map(|g| g.0.as_str()).collect();
+        body.push_str(&format!("  rw [{}]\n", names.join(", ")));
+    }
+    body.push_str(&format!("  linear_combination{combo}\n"));
 
     let display_f = pool.display(integrand).to_string();
     let display_big = pool.display(antiderivative).to_string();
@@ -2144,4 +2156,115 @@ pub fn emit_integration_hasderiv_cert(
         return Err(WITHHELD_UNSUPPORTED_NODE);
     }
     Ok(src)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kernel::Domain;
+
+    fn emit(f: impl Fn(&ExprPool, ExprId) -> (ExprId, ExprId)) -> Result<String, &'static str> {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let (big_f, small_f) = f(&pool, x);
+        emit_integration_hasderiv_cert(big_f, small_f, x, &pool)
+    }
+
+    #[test]
+    fn polynomial_times_trig_certifies() {
+        // ∫ x² sin x = -x² cos x + 2x sin x + 2 cos x
+        let src = emit(|p, x| {
+            let two = p.integer(2);
+            let m1 = p.integer(-1);
+            let x2 = p.pow(x, two);
+            let s = p.func("sin", vec![x]);
+            let c = p.func("cos", vec![x]);
+            let big = p.add(vec![
+                p.mul(vec![x2, m1, c]),
+                p.mul(vec![x, two, s]),
+                p.mul(vec![two, c]),
+            ]);
+            (big, p.mul(vec![x2, s]))
+        })
+        .expect("certificate");
+        assert!(src.contains("HasDerivAt (fun (x : ℝ) =>"), "{src}");
+        assert!(src.contains("linear_combination"), "{src}");
+        assert!(!src.contains("sorry") && !src.contains("admit"), "{src}");
+    }
+
+    #[test]
+    fn log_answer_states_its_domain() {
+        // ∫ 1/x = log x on x ≠ 0
+        let src = emit(|p, x| (p.func("log", vec![x]), p.pow(x, p.integer(-1)))).expect("cert");
+        assert!(src.contains("(h1 : (x : ℝ) ≠ 0)"), "{src}");
+        assert!(src.contains(".log h1"), "{src}");
+    }
+
+    #[test]
+    fn sqrt_answer_uses_the_square_fact() {
+        // ∫ x·√(x²+1) = (x²+1)^(3/2) / 3
+        let src = emit(|p, x| {
+            let v = p.add(vec![p.pow(x, p.integer(2)), p.integer(1)]);
+            let big = p.mul(vec![p.rational(1, 3), p.pow(v, p.rational(3, 2))]);
+            (big, p.mul(vec![x, p.func("sqrt", vec![v])]))
+        })
+        .expect("cert");
+        assert!(src.contains("Real.sq_sqrt"), "{src}");
+        // `x² + 1 > 0` is discharged by `positivity`, not assumed.
+        assert!(src.contains("by positivity"), "{src}");
+        assert!(!src.contains("(h1 :"), "{src}");
+    }
+
+    #[test]
+    fn double_angle_uses_cos_add() {
+        // ∫ sin x cos x = -cos(2x)/4
+        let src = emit(|p, x| {
+            let c2 = p.func("cos", vec![p.mul(vec![x, p.integer(2)])]);
+            (
+                p.mul(vec![c2, p.rational(-1, 4)]),
+                p.mul(vec![p.func("sin", vec![x]), p.func("cos", vec![x])]),
+            )
+        })
+        .expect("cert");
+        assert!(src.contains("Real.sin_add"), "{src}");
+    }
+
+    #[test]
+    fn wrong_antiderivative_is_withheld() {
+        // d/dx sin x ≠ sin x: the residual does not reduce.
+        let r = emit(|p, x| (p.func("sin", vec![x]), p.func("sin", vec![x])));
+        assert_eq!(r, Err(WITHHELD_IDENTITY));
+    }
+
+    #[test]
+    fn special_functions_have_reasons() {
+        let r = emit(|p, x| (p.func("erf", vec![x]), p.func("exp", vec![x])));
+        assert_eq!(r, Err(WITHHELD_SPECIAL_FUNCTION));
+        let r = emit(|p, x| (p.func("tanh", vec![x]), x));
+        assert_eq!(r, Err(WITHHELD_UNSUPPORTED_FUNCTION));
+    }
+
+    #[test]
+    fn empty_domain_is_withheld() {
+        // asin(x + 3): no sample point has -1 < x + 3 < 1 together with x > 0.
+        let r = emit(|p, x| {
+            let a = p.func("asin", vec![p.add(vec![x, p.integer(3)])]);
+            let s = p.func("sqrt", vec![x]);
+            let big = p.add(vec![a, s]);
+            (big, big)
+        });
+        assert!(
+            r == Err(WITHHELD_EMPTY_DOMAIN) || r == Err(WITHHELD_IDENTITY),
+            "{r:?}"
+        );
+    }
+
+    #[test]
+    fn negative_constant_radicand_is_withheld() {
+        let r = emit(|p, x| {
+            let s = p.func("sqrt", vec![p.integer(-3)]);
+            (p.mul(vec![s, x]), s)
+        });
+        assert_eq!(r, Err(WITHHELD_CONSTANT_SIGN));
+    }
 }

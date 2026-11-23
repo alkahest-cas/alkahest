@@ -67,6 +67,9 @@ INTEGRANDS = [
     "x*sqrt(x+1)",
     "x^(3/2)",
     "(x^2+1)/sqrt(x)",
+    "(1+x)^(1/3)/x",
+    "(3*x-5)^2/(2*x-1)^(7/2)",
+    "-x^2/(1-x^2)^(3/2)",
     # trigonometric
     "sin(x)^2",
     "sin(x)*cos(x)",
