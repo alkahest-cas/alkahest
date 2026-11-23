@@ -904,8 +904,8 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-PDE-050", class: "PdeError", cause: Cause::Unsupported, remediation: Some("pdsolve currently solves one first-order equation in one unknown of two or more variables; check the hint name against pdsolve_hints(), or use dsolve for a single variable") },
     ErrorSpec { code: "E-PDE-051", class: "PdeError", cause: Cause::Unsupported, remediation: Some("no method produced an exactly verified answer; try another hint, simplify or rescale the equation, or supply a candidate to verify_pde_solution") },
     ErrorSpec { code: "E-PDE-052", class: "PdeError", cause: Cause::Domain,      remediation: Some("the data curve is characteristic (the Jacobian of the curve and the characteristic direction vanishes); pose the data on a transversal curve") },
-    ErrorSpec { code: "E-PDE-054", class: "PdeError", cause: Cause::UserInput,  remediation: Some("Integral(f, t, lo, hi) needs a symbol t that the bounds do not mention; Integral(f, x) needs a symbol x") },
     ErrorSpec { code: "E-PDE-053", class: "PdeError", cause: Cause::Unsupported, remediation: Some("give Cauchy data as u(curve) = value on a curve of dimension n-1 (e.g. u(x, 0) = f(x)); conditions on derivatives are not supported for first-order problems") },
+    ErrorSpec { code: "E-PDE-054", class: "PdeError", cause: Cause::UserInput,  remediation: Some("Integral(f, t, lo, hi) needs a symbol t that the bounds do not mention; Integral(f, x) needs a symbol x") },
 ];
 
 #[cfg(test)]

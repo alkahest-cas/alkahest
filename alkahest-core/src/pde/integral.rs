@@ -4,7 +4,7 @@
 //! The head has two forms:
 //!
 //! * `Integral(f, t, lo, hi)` is `∫_{lo}^{hi} f dt`. It binds `t` in `f`, like
-//!   [`crate::pde::sum`]'s `Sum`, so `subs` shadows and renames. The
+//!   [`mod@crate::pde::sum`]'s `Sum`, so `subs` shadows and renames. The
 //!   bounds are free.
 //! * `Integral(f, x)` is the indefinite integral, *defined* as
 //!   `Integral(f[x := t], t, 0, x)`.  `x` is free. Substituting a non-symbol for

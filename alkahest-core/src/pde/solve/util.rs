@@ -475,7 +475,7 @@ fn integrate_depth(e: ExprId, v: ExprId, depth: u32, pool: &ExprPool) -> Option<
 }
 
 /// `∫ e dv` in closed form when [`integrate`] finds one, otherwise the
-/// unevaluated `Integral(e[v := t], t, lo, v)` (see [`crate::pde::integral`]):
+/// unevaluated `Integral(e[v := t], t, lo, v)` (see [`mod@crate::pde::integral`]):
 /// answers containing it are verified exactly through the fundamental
 /// theorem of calculus.  The lower limit is the first of `1, 0, 2, −1` where
 /// the integrand evaluates to a finite number at a sample point.
