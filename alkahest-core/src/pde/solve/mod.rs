@@ -464,12 +464,12 @@ fn run(
         }
         for cand in expanded {
             match finalize(&ctx, tier.name, cand, pool) {
-                Some(sol) => {
+                Ok(sol) => {
                     out.push(sol);
                     got = true;
                     break;
                 }
-                None => ctx.fail(format!("{}: a candidate failed verification", tier.name)),
+                Err(why) => ctx.fail(format!("{}: {why}", tier.name)),
             }
         }
         if got && !all {
@@ -497,16 +497,37 @@ fn finalize(
     method: &'static str,
     cand: Candidate,
     pool: &ExprPool,
-) -> Option<PdeSolution> {
-    let value = simp(cand.value, pool);
+) -> Result<PdeSolution, String> {
+    let value = tidy(simp(cand.value, pool), pool);
+    let shown = || {
+        let s = pool.display(value).to_string();
+        let s: String = s.chars().take(160).collect();
+        if cand.implicit {
+            format!("{s} = 0")
+        } else {
+            format!("u = {s}")
+        }
+    };
     let (verification, mut side) = if cand.implicit {
-        verify_implicit(ctx, value, cand.kind, pool)?
+        verify_implicit(ctx, value, cand.kind, pool)
+            .ok_or_else(|| format!("{} is not a relation in u", shown()))?
     } else {
-        let v = verify_pde_solution(ctx.problem, &[value], pool).ok()?;
+        let v = verify_pde_solution(ctx.problem, &[value], pool).map_err(|e| e.to_string())?;
         (v, Vec::new())
     };
     if verification.status != VerificationStatus::ExactlyVerified {
-        return None;
+        let bad: Vec<String> = verification
+            .checks
+            .iter()
+            .filter(|c| c.status != ZeroStatus::ProvedZero)
+            .map(|c| format!("{} residual {}", c.kind, c.status.as_str()))
+            .collect();
+        return Err(format!(
+            "candidate {} discarded ({}: {})",
+            shown(),
+            verification.status.as_str(),
+            bad.join(", ")
+        ));
     }
     let mut side_conditions = cand.side_conditions.clone();
     side_conditions.append(&mut side);
@@ -526,14 +547,127 @@ fn finalize(
     };
     if cand.kind == PdeSolutionKind::CompleteIntegral && !cand.implicit {
         if let Some(sing) = nonlinear::singular_integral(ctx, value, &cand.constants, pool) {
-            if let Some(s) = finalize(ctx, method, sing, pool) {
+            if let Ok(s) = finalize(ctx, method, sing, pool) {
                 sol.steps
                     .push(format!("singular integral (envelope): u = {}", pool.display(s.value)));
                 sol.alternatives.push(s);
             }
         }
     }
-    Some(sol)
+    Ok(sol)
+}
+
+/// Cosmetic clean-up of an answer before verification (which sees the
+/// cleaned form, so nothing here needs to be trusted): `exp(c·log a) → a^c`,
+/// `log(exp a) → a`.
+fn tidy(e: ExprId, pool: &ExprPool) -> ExprId {
+    use crate::kernel::ExprData;
+    const ELEMENTARY: &[&str] = &[
+        "exp", "sin", "cos", "tan", "sinh", "cosh", "tanh", "asin", "acos", "atan",
+    ];
+    let rebuilt = match pool.get(e) {
+        ExprData::Add(xs) => pool.add(xs.iter().map(|&x| tidy(x, pool)).collect()),
+        ExprData::Mul(xs) => {
+            let xs: Vec<ExprId> = xs.iter().map(|&x| tidy(x, pool)).collect();
+            merge_exps(xs, pool)
+        }
+        ExprData::Pow { base, exp } => pool.pow(tidy(base, pool), tidy(exp, pool)),
+        ExprData::Func { name, args } => {
+            let mut args: Vec<ExprId> = args.iter().map(|&a| tidy(a, pool)).collect();
+            if ELEMENTARY.contains(&name.as_str())
+                && args.len() == 1
+                && pool.depth(args[0]) < 12
+            {
+                args[0] = crate::simplify::engine::simplify_expanded(args[0], pool).value;
+            }
+            if name == "exp" && args.len() == 1 {
+                if let Some(r) = exp_of_log(args[0], pool) {
+                    return r;
+                }
+            }
+            if name == "log" && args.len() == 1 {
+                if let ExprData::Func { name: n2, args: a2 } = pool.get(args[0]) {
+                    if n2 == "exp" && a2.len() == 1 {
+                        return a2[0];
+                    }
+                }
+            }
+            pool.func(name, args)
+        }
+        _ => return e,
+    };
+    if rebuilt == e {
+        e
+    } else {
+        simp(rebuilt, pool)
+    }
+}
+
+/// `exp(a)·exp(b)^k → exp(a + k b)` inside one product.
+fn merge_exps(xs: Vec<ExprId>, pool: &ExprPool) -> ExprId {
+    use crate::kernel::ExprData;
+    let mut args = Vec::new();
+    let mut rest = Vec::new();
+    for x in xs {
+        let hit = match pool.get(x) {
+            ExprData::Func { name, args: a } if name == "exp" && a.len() == 1 => Some(a[0]),
+            ExprData::Pow { base, exp } if is_number(exp, pool) => match pool.get(base) {
+                ExprData::Func { name, args: a } if name == "exp" && a.len() == 1 => {
+                    Some(pool.mul(vec![exp, a[0]]))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        match hit {
+            Some(a) => args.push(a),
+            None => rest.push(x),
+        }
+    }
+    if args.len() >= 2 {
+        let sum = pool.add(args);
+        let sum = if pool.depth(sum) < 12 {
+            crate::simplify::engine::simplify_expanded(sum, pool).value
+        } else {
+            simp(sum, pool)
+        };
+        let ex = exp_of_log(sum, pool).unwrap_or_else(|| pool.func("exp", vec![sum]));
+        rest.push(ex);
+    } else {
+        rest.extend(args.into_iter().map(|a| pool.func("exp", vec![a])));
+    }
+    pool.mul(rest)
+}
+
+/// `exp(Σ cᵢ log aᵢ + r)` → `Π aᵢ^cᵢ · exp(r)` for numeric `cᵢ`.
+fn exp_of_log(arg: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    use crate::kernel::ExprData;
+    let terms = match pool.get(arg) {
+        ExprData::Add(xs) => xs,
+        _ => vec![arg],
+    };
+    let mut factors = Vec::new();
+    let mut rest = Vec::new();
+    for t in terms {
+        let (coef, core) = match pool.get(t) {
+            ExprData::Mul(xs) if xs.len() == 2 && is_number(xs[0], pool) => (xs[0], xs[1]),
+            ExprData::Mul(xs) if xs.len() == 2 && is_number(xs[1], pool) => (xs[1], xs[0]),
+            _ => (pool.integer(1), t),
+        };
+        match pool.get(core) {
+            ExprData::Func { name, args } if name == "log" && args.len() == 1 => {
+                factors.push(pool.pow(args[0], coef));
+            }
+            _ => rest.push(t),
+        }
+    }
+    if factors.is_empty() {
+        return None;
+    }
+    if !rest.is_empty() {
+        factors.push(pool.func("exp", vec![pool.add(rest)]));
+    }
+    Some(simp(pool.mul(factors), pool))
 }
 
 /// Verify a relation `Φ(x, u(x)) = 0` by implicit differentiation, and the

@@ -42,6 +42,15 @@ PDE foundation layer (milestone M0; see ``alkahest.experimental._pde``):
   :func:`simplify_sums`, :func:`laplacian_indexed`; ``PdeError`` /
   ``E-PDE-001…049``
 
+PDE solver (milestone M1; see ``alkahest.experimental._pdsolve``):
+- :func:`pdsolve` → :class:`PdeSolution` (``value``, ``kind``, ``method``,
+  ``side_conditions``, ``verification``, ``steps``): a dispatcher over method
+  tiers (:func:`pdsolve_hints`); every answer verified by substitution,
+  refusals ``E-PDE-050…099``. First order: linear / semilinear /
+  quasilinear by characteristics, Cauchy problems (non-characteristic check,
+  breaking time), complete and singular integrals (Clairaut, standard forms,
+  Hamilton–Jacobi separation, Lagrange–Charpit)
+
 Probability and statistics:
 - :class:`Distribution` and its constructors :func:`Normal`, :func:`LogNormal`,
   :func:`Uniform`, :func:`Exponential`, :func:`Gamma`, :func:`Beta`,
@@ -755,6 +764,9 @@ from alkahest.experimental._pde import (
     truncate,
     verify_pde_solution,
 )
+
+# PDE solver (milestone M1): `pdsolve` over method tiers, first order.
+from alkahest.experimental._pdsolve import PdeSolution, pdsolve, pdsolve_hints
 from alkahest.experimental.novelty import (
     NoveltyMatch,
     NoveltyVerdict,
@@ -1048,6 +1060,9 @@ __all__ = [
     "check_novelty",
     # P1 item 10 — asymptotic expansion at scale
     "classify_pde",
+    "pdsolve",
+    "pdsolve_hints",
+    "PdeSolution",
     "coefficient",
     "coefficient_asymptotics",
     "compile_cuda",

@@ -45,18 +45,6 @@ pub(crate) fn is_zero(e: ExprId, pool: &ExprPool) -> bool {
     zero_test(s, pool, None).status == ZeroStatus::ProvedZero
 }
 
-/// Proved not identically zero.
-pub(crate) fn is_nonzero(e: ExprId, pool: &ExprPool) -> bool {
-    let s = simp(e, pool);
-    if s == pool.integer(0) {
-        return false;
-    }
-    if is_number(s, pool) {
-        return true;
-    }
-    zero_test(s, pool, None).status == ZeroStatus::ProvedNonzero
-}
-
 pub(crate) fn is_number(e: ExprId, pool: &ExprPool) -> bool {
     pool.with(e, |d| {
         matches!(
@@ -64,10 +52,6 @@ pub(crate) fn is_number(e: ExprId, pool: &ExprPool) -> bool {
             ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_)
         )
     })
-}
-
-pub(crate) fn is_symbol(e: ExprId, pool: &ExprPool) -> bool {
-    pool.with(e, |d| matches!(d, ExprData::Symbol { .. }))
 }
 
 pub(crate) fn symbol_name(e: ExprId, pool: &ExprPool) -> Option<String> {
@@ -358,12 +342,49 @@ pub(crate) fn integrate(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId>
     if has_undefined(e, pool) {
         return None;
     }
-    let r = crate::integrate::engine::integrate(e, v, pool).ok()?;
-    let val = r.value;
-    if names_in(&[val], pool).contains("Integral") {
+    if let Ok(r) = crate::integrate::integrate(e, v, pool) {
+        let val = r.value;
+        if !names_in(&[val], pool).contains("Integral") {
+            return Some(simp(val, pool));
+        }
+    }
+    // Term by term, and `∫ c·(a v + b)^n dv` directly (the integrator can
+    // refuse a power of a linear form with a symbolic constant whose sign it
+    // cannot place; every caller verifies the final answer anyway).
+    if let ExprData::Add(xs) = pool.get(e) {
+        let mut parts = Vec::new();
+        for x in xs {
+            parts.push(integrate(x, v, pool)?);
+        }
+        return Some(simp(pool.add(parts), pool));
+    }
+    let (coef, core) = match pool.get(e) {
+        ExprData::Mul(xs) => {
+            let (with, without): (Vec<ExprId>, Vec<ExprId>) =
+                xs.iter().partition(|&&a| contains(a, v, pool));
+            if with.len() != 1 {
+                return None;
+            }
+            (pool.mul(without), with[0])
+        }
+        _ => (pool.integer(1), e),
+    };
+    let (base, n) = match pool.get(core) {
+        ExprData::Pow { base, exp } if !contains(exp, v, pool) => (base, exp),
+        _ if core == v => (v, pool.integer(1)),
+        _ => return None,
+    };
+    let a = d(base, v, pool)?;
+    if contains(a, v, pool) || is_zero(a, pool) {
         return None;
     }
-    Some(simp(val, pool))
+    let n1 = simp(pool.add(vec![n, pool.integer(1)]), pool);
+    if is_zero(n1, pool) {
+        let r = div(pool.func("log", vec![base]), a, pool);
+        return Some(simp(pool.mul(vec![coef, r]), pool));
+    }
+    let r = div(pool.pow(base, n1), pool.mul(vec![a, n1]), pool);
+    Some(simp(pool.mul(vec![coef, r]), pool))
 }
 
 // ---------------------------------------------------------------------------

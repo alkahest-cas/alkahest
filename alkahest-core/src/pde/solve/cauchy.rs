@@ -284,7 +284,6 @@ pub(crate) fn impose(
         }
         GeneralForm::Integrals { integrals, affine } => {
             let n = ctx.indep.len();
-            let sig: Vec<ExprId> = integrals.iter().map(|&xi| on_data(ctx, xi, &data, pool)).collect();
             let mut side = cand.side_conditions.clone();
             // Non-characteristic: det[ ∂a/∂s ; characteristic direction ].
             if let Some(aff) = &affine {
@@ -316,52 +315,79 @@ pub(crate) fn impose(
                     }
                 }
             }
-            // Choose n − 1 integrals to solve for the parameters; the rest
-            // gives the relation.
-            let mut out = Vec::new();
-            for rest in (0..n).rev() {
-                let chosen: Vec<usize> = (0..n).filter(|&i| i != rest).collect();
-                let csig: Vec<ExprId> = chosen.iter().map(|&i| sig[i]).collect();
-                let targets: Vec<ExprId> = chosen.iter().map(|&i| integrals[i]).collect();
-                let Some(s_of) = solve_params(&csig, &targets, &data.params, pool) else {
-                    continue;
-                };
-                let rel = simp(
-                    sub(integrals[rest], subs_map(sig[rest], &s_of, pool), pool),
-                    pool,
-                );
-                if !contains(rel, ctx.w, pool) {
-                    continue;
+            // Variants of the integral set: an integral whose restriction to
+            // the data is not invertible (`t − x/u` on `u = sin s`) often is
+            // after scaling by a power of another one (`(t − x/u)·u`).
+            let mut variants: Vec<Vec<ExprId>> = vec![integrals.clone()];
+            if n == 2 {
+                for i in 0..2 {
+                    for k in [1i64, -1, 2, -2] {
+                        let mut v = integrals.clone();
+                        v[i] = simp(
+                            pool.mul(vec![integrals[i], pool.pow(integrals[1 - i], pool.integer(k))]),
+                            pool,
+                        );
+                        variants.push(v);
+                    }
                 }
-                for e in isolate(rel, ctx.w, pool) {
+            }
+            // Choose n − 1 integrals to solve for the parameters; the rest
+            // gives the relation.  Relations free of inverse functions first.
+            let mut good = Vec::new();
+            let mut inverse = Vec::new();
+            for integrals in variants {
+                let sig: Vec<ExprId> =
+                    integrals.iter().map(|&xi| on_data(ctx, xi, &data, pool)).collect();
+                for rest in (0..n).rev() {
+                    let chosen: Vec<usize> = (0..n).filter(|&i| i != rest).collect();
+                    let csig: Vec<ExprId> = chosen.iter().map(|&i| sig[i]).collect();
+                    let targets: Vec<ExprId> = chosen.iter().map(|&i| integrals[i]).collect();
+                    let Some(s_of) = solve_params(&csig, &targets, &data.params, pool) else {
+                        continue;
+                    };
+                    let rel = simp(
+                        sub(integrals[rest], subs_map(sig[rest], &s_of, pool), pool),
+                        pool,
+                    );
+                    if !contains(rel, ctx.w, pool) {
+                        continue;
+                    }
+                    let bucket = if has_inverse(rel, pool) { &mut inverse } else { &mut good };
+                    for e in isolate(rel, ctx.w, pool) {
+                        let mut st = steps.clone();
+                        st.push(format!("data imposed; solved for u: u = {}", pool.display(e)));
+                        bucket.push(Candidate {
+                            value: e,
+                            implicit: false,
+                            kind: PdeSolutionKind::Particular,
+                            constants: Vec::new(),
+                            side_conditions: side.clone(),
+                            steps: st,
+                            general: None,
+                        });
+                    }
                     let mut st = steps.clone();
-                    st.push(format!("data imposed; solved for u: u = {}", pool.display(e)));
-                    out.push(Candidate {
-                        value: e,
-                        implicit: false,
-                        kind: PdeSolutionKind::Particular,
+                    st.push(format!(
+                        "data imposed; implicit solution {} = 0",
+                        pool.display(ctx.with_unknown(rel, pool))
+                    ));
+                    bucket.push(Candidate {
+                        value: ctx.with_unknown(rel, pool),
+                        implicit: true,
+                        kind: PdeSolutionKind::Implicit,
                         constants: Vec::new(),
                         side_conditions: side.clone(),
                         steps: st,
                         general: None,
                     });
                 }
-                let mut st = steps.clone();
-                st.push(format!(
-                    "data imposed; implicit solution {} = 0",
-                    pool.display(ctx.with_unknown(rel, pool))
-                ));
-                out.push(Candidate {
-                    value: ctx.with_unknown(rel, pool),
-                    implicit: true,
-                    kind: PdeSolutionKind::Implicit,
-                    constants: Vec::new(),
-                    side_conditions: side.clone(),
-                    steps: st,
-                    general: None,
-                });
-                break;
             }
+            // Simplest relations first (explicit before implicit for the
+            // same relation is the push order, which the stable sort keeps).
+            good.sort_by_key(|c| pool.depth(c.value));
+            inverse.sort_by_key(|c| pool.depth(c.value));
+            let mut out: Vec<Candidate> = good.into_iter().chain(inverse).collect();
+            out.truncate(10);
             if out.is_empty() {
                 return Err(PdeError::CauchyUnsupported(
                     "the data parameters could not be eliminated from the first integrals".into(),
@@ -370,6 +396,14 @@ pub(crate) fn impose(
             Ok(out)
         }
     }
+}
+
+/// Whether `e` contains an inverse elementary function (a branch choice).
+fn has_inverse(e: ExprId, pool: &ExprPool) -> bool {
+    let names = names_in(&[e], pool);
+    ["asin", "acos", "atan", "asinh", "acosh", "atanh", "lambert_w", "RootOf"]
+        .iter()
+        .any(|n| names.contains(*n))
 }
 
 type Breaking = (Option<(ExprId, ExprId)>, String);

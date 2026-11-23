@@ -164,3 +164,61 @@ fn unknown_hint_and_order_two_refuse() {
     let e2 = pdsolve(&prob2, &PdsolveOptions::default(), p).unwrap_err();
     assert_eq!(e2.code(), "E-PDE-050");
 }
+
+fn show(f: &Fx, prob: &PdeProblem) -> String {
+    match pdsolve(prob, &PdsolveOptions::default(), &f.pool) {
+        Ok(s) => format!("OK {} {}", s.method, f.pool.display(s.value)),
+        Err(e) => format!("ERR {e}"),
+    }
+}
+
+#[test]
+#[ignore]
+fn debug_cases() {
+    let f = fx();
+    let p = &f.pool;
+    let (px, py) = (dd(&f, f.x), dd(&f, f.y));
+    let m = |a: Vec<ExprId>| p.mul(a);
+    let i = |n: i64| p.integer(n);
+    // -2 u_x + 4 u_y + 5 u - exp(x + 3y)
+    let e1 = p.add(vec![
+        m(vec![i(-2), px]),
+        m(vec![i(4), py]),
+        m(vec![i(5), f.u]),
+        m(vec![i(-1), p.func("exp", vec![p.add(vec![f.x, m(vec![i(3), f.y])])])]),
+    ]);
+    println!("ccoeff-1: {}", show(&f, &PdeProblem::new(&[e1], &[f.u], p).unwrap()));
+    // p^2 + q^2 - x - y
+    let e2 = p.add(vec![
+        p.pow(px, i(2)),
+        p.pow(py, i(2)),
+        m(vec![i(-1), f.x]),
+        m(vec![i(-1), f.y]),
+    ]);
+    println!("sep-2: {}", show(&f, &PdeProblem::new(&[e2], &[f.u], p).unwrap()));
+    let pr2 = PdeProblem::new(&[e2], &[f.u], p).unwrap();
+    match pdsolve(&pr2, &PdsolveOptions::default().with_hint("separable"), p) {
+        Ok(s) => println!("sep-2 hint: OK {}", p.display(s.value)),
+        Err(e) => println!("sep-2 hint: ERR {e}"),
+    }
+    // u_y + 2 u_x, u(x,0) = exp(-x^2)
+    let e3 = p.add(vec![py, m(vec![i(2), px])]);
+    let ic = p.func("u", vec![f.x, i(0)]);
+    let g = p.func("exp", vec![m(vec![i(-1), p.pow(f.x, i(2))])]);
+    let pr = PdeProblem::new(&[e3], &[f.u], p).unwrap().ic(ic, g, p).unwrap();
+    println!("advection: {}", show(&f, &pr));
+    // u_y + x u_x, u(x,0) = sin x
+    let e4 = p.add(vec![py, m(vec![f.x, px])]);
+    let pr = PdeProblem::new(&[e4], &[f.u], p)
+        .unwrap()
+        .ic(ic, p.func("sin", vec![f.x]), p)
+        .unwrap();
+    println!("stretch: {}", show(&f, &pr));
+    // Burgers sine
+    let e5 = p.add(vec![py, m(vec![f.u, px])]);
+    let pr = PdeProblem::new(&[e5], &[f.u], p)
+        .unwrap()
+        .ic(ic, p.func("sin", vec![f.x]), p)
+        .unwrap();
+    println!("burgers-sine: {}", show(&f, &pr));
+}
