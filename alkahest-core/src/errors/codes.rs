@@ -949,6 +949,13 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-PDE-254", class: "PdeError", cause: Cause::Domain, remediation: Some("the homogeneous problem has a nontrivial solution, so no Green's function exists; use eigen_green_function, which returns the modified Green's function (data orthogonal to the zero mode)") },
     ErrorSpec { code: "E-PDE-255", class: "PdeError", cause: Cause::Internal, remediation: Some("a Green's function or representation failed its exact check and was withheld; please report the problem") },
     ErrorSpec { code: "E-PDE-256", class: "PdeError", cause: Cause::Unsupported, remediation: Some("green_solve handles linear second-order two-point boundary-value problems, the heat and wave equations on the line with sources, and Laplace / Poisson problems on the image-method regions; check classify_pde and the domain") },
+    ErrorSpec { code: "E-PDE-300", class: "PdeError", cause: Cause::UserInput, remediation: Some("symmetries and conservation laws take one scalar equation in one unknown u(x1..xp) that is linear in some highest derivative; solve the equation for it first if needed") },
+    ErrorSpec { code: "E-PDE-301", class: "PdeError", cause: Cause::UserInput, remediation: Some("rewrite the equation so it is polynomial or rational in the derivatives of the unknown; transcendental functions of u itself are fine") },
+    ErrorSpec { code: "E-PDE-302", class: "PdeError", cause: Cause::Unsupported, remediation: Some("check the generator with verify_symmetry, give an explicit traveling-wave speed or another generator, or reduce by hand and call dsolve") },
+    ErrorSpec { code: "E-PDE-303", class: "PdeError", cause: Cause::Unsupported, remediation: Some("the reduced ODE had no closed-form solution that verified; try another reduction (generator or ansatz) or supply a candidate to verify_pde_solution") },
+    ErrorSpec { code: "E-PDE-304", class: "PdeError", cause: Cause::UserInput, remediation: Some("the transformation needs a specific form (Burgers u_t + a u u_x = nu u_xx for Cole-Hopf, KdV/mKdV for Miura, a 2x2 quasilinear first-order system for the hodograph); rescale or rewrite the equation") },
+    ErrorSpec { code: "E-PDE-305", class: "PdeError", cause: Cause::Unsupported, remediation: Some("write the equation in solved form (u_t = G(x, u, u_x, ...) for evolution equations) and choose a multiplier order") },
+    ErrorSpec { code: "E-PDE-306", class: "PdeError", cause: Cause::Unsupported, remediation: Some("the multiplier is still returned; recover the density and flux by hand, or try a multiplier of another order") },
 ];
 
 #[cfg(test)]
