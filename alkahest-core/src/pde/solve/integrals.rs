@@ -219,6 +219,12 @@ impl<'a> IntegralSearch<'a> {
             // Quadrature.
             let q = integrate(ratio, zi, pool)?;
             simp(sub(zj, q, pool), pool)
+        } else if let Some((a, b)) = separate(ratio, zi, zj, pool) {
+            // dzⱼ/dzᵢ = A(zᵢ)·B(zⱼ): ∫ dzⱼ/B − ∫ A dzᵢ, with this module's
+            // quadrature (which handles e.g. ∫ dy/sinh(μy) for symbolic μ).
+            let ib = integrate(recip(b, pool), zj, pool)?;
+            let ia = integrate(a, zi, pool)?;
+            simp(sub(ib, ia, pool), pool)
         } else {
             let (input, yp) = OdeInput::first_order(zi, zj, pool);
             let input = input.with_equation(sub(yp, ratio, pool));
@@ -240,6 +246,27 @@ impl<'a> IntegralSearch<'a> {
         let xi = simp(subs_map(constant, &back, pool), pool);
         Some(xi)
     }
+}
+
+/// `ratio = A(zᵢ)·B(zⱼ)` by splitting the factors of a product.
+fn separate(ratio: ExprId, zi: ExprId, zj: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
+    let factors = match pool.get(ratio) {
+        crate::kernel::ExprData::Mul(xs) => xs,
+        _ => vec![ratio],
+    };
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    for f in factors {
+        let (hi, hj) = (contains(f, zi, pool), contains(f, zj, pool));
+        match (hi, hj) {
+            (true, true) => return None,
+            (false, true) => b.push(f),
+            _ => a.push(f),
+        }
+    }
+    if b.is_empty() {
+        return None;
+    }
+    Some((simp(pool.mul(a), pool), simp(pool.mul(b), pool)))
 }
 
 // ---------------------------------------------------------------------------
@@ -426,19 +453,18 @@ fn nullspace(
         };
         mat.swap(r, p);
         let piv = mat[r][c].clone();
-        for j in 0..m {
-            let v = mat[r][j].clone();
-            mat[r][j] = (v / piv.clone()).ok()?;
+        for cell in mat[r].iter_mut() {
+            *cell = (cell.clone() / piv.clone()).ok()?;
         }
         for i in 0..rows {
             if i == r || mat[i][c].is_zero() {
                 continue;
             }
             let f = mat[i][c].clone();
-            for j in 0..m {
-                let t = (f.clone() * mat[r][j].clone()).ok()?;
-                let v = mat[i][j].clone();
-                mat[i][j] = (v - t).ok()?;
+            let pivot_row = mat[r].clone();
+            for (cell, pr) in mat[i].iter_mut().zip(pivot_row) {
+                let t = (f.clone() * pr).ok()?;
+                *cell = (cell.clone() - t).ok()?;
             }
         }
         pivots.push(c);
