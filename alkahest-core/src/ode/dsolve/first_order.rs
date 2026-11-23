@@ -843,44 +843,41 @@ fn try_linear(input: &OdeInput, rhs: ExprId, gen: &mut ConstGen, pool: &ExprPool
 
 fn try_bernoulli(input: &OdeInput, rhs: ExprId, gen: &mut ConstGen, pool: &ExprPool) -> Outcome {
     let (x, y) = (input.x, input.y);
-    // rhs = −p·y + q·y^n.  Try to detect: split additive terms by power of y.
+    // rhs = −p·y + q·y^n with `n` any expression free of `x` and `y` — an
+    // integer, a rational, or a symbol.  Split additive terms by power of y.
     let terms: Vec<ExprId> = match pool.get(rhs) {
         ExprData::Add(args) => args,
         _ => vec![rhs],
     };
-    // For each additive term, find its power of y (must be a clean monomial in y).
+    let one = pool.integer(1_i32);
     let mut linear_coeff: Vec<ExprId> = Vec::new(); // coeff of y^1
     let mut bern_coeff: Vec<ExprId> = Vec::new(); // coeff of y^n
-    let mut n_exp: Option<i64> = None;
+    let mut n_exp: Option<ExprId> = None;
     for t in terms {
-        let Some((coeff, pw)) = monomial_in_y(t, y, pool) else {
+        let Some((coeff, pw)) = power_monomial_in_y(t, y, pool) else {
             return Outcome::NoMatch;
         };
-        if contains(coeff, y, pool) {
+        if contains(coeff, y, pool) || contains(pw, x, pool) {
             return Outcome::NoMatch;
         }
-        match pw {
-            1 => linear_coeff.push(coeff),
-            other => {
-                if other == 0 {
-                    // constant term → would be Bernoulli with q·y^0; treat n=0 not supported here
-                    return Outcome::NoMatch;
-                }
-                match n_exp {
-                    None => n_exp = Some(other),
-                    Some(e) if e == other => {}
-                    Some(_) => return Outcome::NoMatch, // two different nonlinear powers
-                }
-                bern_coeff.push(coeff);
-            }
+        if pw == one {
+            linear_coeff.push(coeff);
+            continue;
         }
+        if is_zero(pw, pool) {
+            // a constant term: not Bernoulli
+            return Outcome::NoMatch;
+        }
+        match n_exp {
+            None => n_exp = Some(pw),
+            Some(e) if e == pw => {}
+            Some(_) => return Outcome::NoMatch, // two different nonlinear powers
+        }
+        bern_coeff.push(coeff);
     }
     let Some(n) = n_exp else {
         return Outcome::NoMatch;
     };
-    if n == 1 {
-        return Outcome::NoMatch;
-    }
     let p = simp(
         pool.mul(vec![pool.integer(-1_i32), pool.add(linear_coeff)]),
         pool,
@@ -891,7 +888,13 @@ fn try_bernoulli(input: &OdeInput, rhs: ExprId, gen: &mut ConstGen, pool: &ExprP
     }
 
     // v = y^{1−n}.  v' + (1−n) p v = (1−n) q.  Solve linear in v then y = v^{1/(1−n)}.
-    let one_minus_n = pool.integer((1 - n) as i32);
+    let one_minus_n = simp(
+        pool.add(vec![one, pool.mul(vec![pool.integer(-1_i32), n])]),
+        pool,
+    );
+    if is_zero(one_minus_n, pool) {
+        return Outcome::NoMatch;
+    }
     let pv = simp(pool.mul(vec![one_minus_n, p]), pool);
     let qv = simp(pool.mul(vec![one_minus_n, q]), pool);
     // integrating factor μ = e^{∫ pv}
@@ -908,9 +911,48 @@ fn try_bernoulli(input: &OdeInput, rhs: ExprId, gen: &mut ConstGen, pool: &ExprP
     let c = gen.fresh(pool);
     let v = div(simp(pool.add(vec![int_muq, c]), pool), mu, pool);
     // y = v^{1/(1−n)}
-    let exp = pool.rational(1_i32, (1 - n) as i32);
+    let exp = simp(pool.pow(one_minus_n, pool.integer(-1_i32)), pool);
     let y_expr = simp(pool.pow(v, exp), pool);
     finalize_explicit(input, y_expr, vec![c], "bernoulli", pool)
+}
+
+/// `term = coeff · y^pw` with `pw` any expression free of `y` (`y` alone is
+/// `pw = 1`, a term without `y` is `pw = 0`); `None` when `y` occurs any other
+/// way.
+fn power_monomial_in_y(term: ExprId, y: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
+    let factors: Vec<ExprId> = match pool.get(term) {
+        ExprData::Mul(args) => args,
+        _ => vec![term],
+    };
+    let mut coeff: Vec<ExprId> = Vec::new();
+    let mut powers: Vec<ExprId> = Vec::new();
+    for f in factors {
+        if f == y {
+            powers.push(pool.integer(1_i32));
+            continue;
+        }
+        if let ExprData::Pow { base, exp } = pool.get(f) {
+            if base == y && !contains(exp, y, pool) {
+                powers.push(exp);
+                continue;
+            }
+        }
+        if contains(f, y, pool) {
+            return None;
+        }
+        coeff.push(f);
+    }
+    let c = if coeff.is_empty() {
+        pool.integer(1_i32)
+    } else {
+        pool.mul(coeff)
+    };
+    let pw = if powers.is_empty() {
+        pool.integer(0_i32)
+    } else {
+        simp(pool.add(powers), pool)
+    };
+    Some((simp(c, pool), pw))
 }
 
 /// If `term` is `coeff · y^k` for integer `k ≥ 0` (with `coeff` free of `y`),
@@ -1388,6 +1430,29 @@ fn quadratic_in_y(expr: ExprId, y: ExprId, pool: &ExprPool) -> Option<(ExprId, E
 /// attempted, which covers the standard textbook Riccati cases.
 fn find_poly_particular(rhs: ExprId, x: ExprId, y: ExprId, pool: &ExprPool) -> Option<ExprId> {
     let candidates = candidate_constants();
+    let check = |yp: ExprId| -> Option<bool> {
+        let ypp = super::ddx(yp, x, pool).ok()?;
+        let r = subs1(rhs, y, yp, pool);
+        Some(is_zero(sub(ypp, r, pool), pool))
+    };
+    // `a/x + b`: the rational particular solutions of the textbook
+    // `y' = a y² + b y/x + c/x²` family.
+    let inv_x = pool.pow(x, pool.integer(-1_i32));
+    for &(an, ad) in &candidates {
+        if an == 0 {
+            continue;
+        }
+        for &(bn, bd) in &candidates {
+            let mut t = vec![pool.mul(vec![pool.rational(an, ad), inv_x])];
+            if bn != 0 {
+                t.push(pool.rational(bn, bd));
+            }
+            let yp = simp(pool.add(t), pool);
+            if check(yp)? {
+                return Some(yp);
+            }
+        }
+    }
     for degree in 0..=2usize {
         for combo in coefficient_combinations(degree + 1, &candidates) {
             let yp = build_poly(&combo, x, pool);

@@ -17,12 +17,13 @@
 //! differs.
 
 use super::{
-    contains, ddx, is_zero, residual_is_zero, simp, sub, AssumedSign, ConstGen, DsolveBranch,
-    DsolveError, OdeInput, SolveCtx,
+    contains, ddx, exact_roots, is_zero, residual_is_zero, simp, sub, AssumedSign, ConstGen,
+    DsolveBranch, DsolveError, OdeInput, SolveCtx,
 };
 use crate::kernel::eval_const::try_expr_f64;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::matrix::zero_test::{zero_status, ZeroStatus};
+use rug::Rational;
 
 // ---------------------------------------------------------------------------
 // Coefficient extraction
@@ -92,6 +93,10 @@ pub(crate) fn solve_second_order(
             if let Some(res) = super::special_linear::solve_y_absent(input, gen, pool)? {
                 return Ok(res);
             }
+            // Nonlinear and free of `x`: `p(y) = y'` makes it first order.
+            if let Some(res) = super::special_linear::solve_x_absent(input, gen, pool)? {
+                return Ok(res);
+            }
             return Err(e);
         }
     };
@@ -158,13 +163,129 @@ fn try_reduction_of_order(
     let a2 = coeffs[2];
     let p = super::normalized(super::div(coeffs[1], a2, pool), pool);
     let q = super::normalized(super::div(coeffs[0], a2, pool), pool);
-    let Some(y1) = super::variation::find_first_solution(p, q, x, pool)? else {
+    // Polynomial solutions first (Legendre, Hermite, Laguerre, Chebyshev at
+    // integer parameter): two of them are a fundamental system outright.
+    let polys = exact_roots::polynomial_solutions(coeffs, x, pool);
+    if polys.len() >= 2 && independent(polys[0], polys[1], x, pool) {
+        return compose_from_basis(input, &polys[..2], a2, r, "polynomial_solutions", gen, pool);
+    }
+    let y1 = match polys.first() {
+        Some(&y1) => y1,
+        None => match super::variation::find_first_solution(p, q, x, pool)? {
+            Some(y1) => y1,
+            None => return Ok(None),
+        },
+    };
+    if let Some(y2) = super::variation::reduction_of_order(y1, p, x, pool)? {
+        let mark = gen.checkpoint();
+        if let Some(res) =
+            compose_from_basis(input, &[y1, y2], a2, r, "reduction_of_order", gen, pool)?
+        {
+            return Ok(Some(res));
+        }
+        gen.rollback(mark, pool);
+    }
+    // The quadrature for y₂ did not close: look for y₂ = w(x)·(polynomial)
+    // for a few weights whose logarithmic derivative is rational — `√a₂`
+    // gives Chebyshev's `√(1 − x²)·U_{n−1}`.
+    let Some(y2) = weighted_polynomial_solution(coeffs, y1, x, pool)? else {
         return Ok(None);
     };
-    let Some(y2) = super::variation::reduction_of_order(y1, p, x, pool)? else {
-        return Ok(None);
+    compose_from_basis(
+        input,
+        &[y1, y2],
+        a2,
+        r,
+        "weighted_polynomial_solution",
+        gen,
+        pool,
+    )
+}
+
+/// A solution `w·u` of `a₂y'' + a₁y' + a₀y = 0`, independent of `y1`, with
+/// `u` a polynomial and `w` one of `a₂^{±1/2}`, `e^{±x}`, `e^{±x²}`,
+/// `e^{±x²/2}`. For `y = w·u` the equation for `u` is
+/// `a₂u'' + (a₁ + 2a₂g₁)u' + (a₀ + a₁g₁ + a₂g₂)u = 0` with `g₁ = w'/w`,
+/// `g₂ = w''/w`, which has rational coefficients exactly when `g₁` does.
+fn weighted_polynomial_solution(
+    coeffs: &[ExprId],
+    y1: ExprId,
+    x: ExprId,
+    pool: &ExprPool,
+) -> Result<Option<ExprId>, DsolveError> {
+    let (a0, a1, a2) = (coeffs[0], coeffs[1], coeffs[2]);
+    let half = pool.rational(1, 2);
+    let x2 = pool.pow(x, pool.integer(2_i32));
+    // (w, g₁ = w'/w, g₂ = w''/w), written out so that g₁, g₂ are visibly
+    // rational: for w = a₂^k, g₁ = k·a₂'/a₂ and g₂ = k(k−1)(a₂'/a₂)² + k·a₂''/a₂;
+    // for w = e^g, g₁ = g' and g₂ = g'' + g'².
+    let mut weights: Vec<(ExprId, ExprId, ExprId)> = Vec::new();
+    let da2 = ddx(a2, x, pool)?;
+    let dda2 = ddx(da2, x, pool)?;
+    if contains(a2, x, pool) {
+        let l = super::div(da2, a2, pool);
+        let l2 = super::div(dda2, a2, pool);
+        for k in [pool.rational(1, 2), pool.rational(-1, 2)] {
+            let km1 = pool.add(vec![k, pool.integer(-1_i32)]);
+            weights.push((
+                pool.pow(a2, k),
+                pool.mul(vec![k, l]),
+                pool.add(vec![
+                    pool.mul(vec![k, km1, pool.pow(l, pool.integer(2_i32))]),
+                    pool.mul(vec![k, l2]),
+                ]),
+            ));
+        }
+    }
+    for g in [
+        x,
+        pool.mul(vec![pool.integer(-1_i32), x]),
+        x2,
+        pool.mul(vec![pool.integer(-1_i32), x2]),
+        pool.mul(vec![half, x2]),
+        pool.mul(vec![pool.rational(-1, 2), x2]),
+    ] {
+        let g1 = ddx(g, x, pool)?;
+        let g2 = ddx(g1, x, pool)?;
+        weights.push((
+            pool.func("exp", vec![g]),
+            g1,
+            pool.add(vec![g2, pool.pow(g1, pool.integer(2_i32))]),
+        ));
+    }
+    for (w, g1, g2) in weights {
+        let w = simp(w, pool);
+        let b1 = simp(
+            pool.add(vec![a1, pool.mul(vec![pool.integer(2_i32), a2, g1])]),
+            pool,
+        );
+        let b0 = simp(
+            pool.add(vec![a0, pool.mul(vec![a1, g1]), pool.mul(vec![a2, g2])]),
+            pool,
+        );
+        for u in exact_roots::polynomial_solutions(&[b0, b1, a2], x, pool) {
+            let y2 = simp(pool.mul(vec![w, u]), pool);
+            if independent(y1, y2, x, pool) {
+                return Ok(Some(y2));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The Wronskian `y1·y2' − y1'·y2` is non-zero at some sample point.
+fn independent(y1: ExprId, y2: ExprId, x: ExprId, pool: &ExprPool) -> bool {
+    let (Ok(d1), Ok(d2)) = (ddx(y1, x, pool), ddx(y2, x, pool)) else {
+        return false;
     };
-    compose_from_basis(input, &[y1, y2], a2, r, "reduction_of_order", gen, pool)
+    let w = pool.add(vec![
+        pool.mul(vec![y1, d2]),
+        pool.mul(vec![pool.integer(-1_i32), d1, y2]),
+    ]);
+    [0.31_f64, 0.57, 0.83].iter().any(|&xv| {
+        let env = std::collections::HashMap::from([(x, xv)]);
+        super::verify::eval(w, &env, pool).is_some_and(|v| v.is_finite() && v.abs() > 1e-9)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -181,8 +302,13 @@ pub(crate) fn solve_higher_order(
     let (coeffs, r) = extract_linear(input, pool)?;
     let x = input.x;
     if !all_constant(&coeffs, x, pool) {
+        if let Some(euler) = try_euler_cauchy(input, &coeffs, r, gen, pool)? {
+            return Ok(euler);
+        }
         return Err(DsolveError::Unsupported(
-            "higher-order non-constant-coefficient equations are not supported".to_string(),
+            "higher-order non-constant-coefficient equations are supported only in \
+             Euler–Cauchy form (coefficient of y^(k) a rational multiple of x^k)"
+                .to_string(),
         ));
     }
     solve_const_coeff(input, &coeffs, r, gen, ctx, pool)
@@ -197,22 +323,18 @@ fn solve_const_coeff(
     pool: &ExprPool,
 ) -> Result<Vec<DsolveBranch>, DsolveError> {
     let x = input.x;
-    // Characteristic polynomial Σ aₖ λᵏ.  Numeric coefficients keep the ℚ route
-    // (exact rational roots, real cos/sin output); one symbolic coefficient
-    // sends the whole equation down the closed-form route instead.
-    let numeric: Option<Vec<f64>> = coeffs.iter().map(|&c| try_expr_f64(c, pool)).collect();
-    let (basis, method) = match numeric {
-        Some(mut a) => {
-            // Drop leading zeros (highest derivative might be zero).
-            while a.len() > 1 && a.last() == Some(&0.0) {
-                a.pop();
-            }
-            let roots = char_roots(&a)?;
-            let mut basis: Vec<ExprId> = Vec::new();
-            for root in &roots {
-                basis.extend(root.basis_functions(x, pool));
-            }
-            (basis, "constant_coefficient")
+    // Characteristic polynomial Σ aₖ λᵏ.  Rational coefficients take the exact
+    // route (FLINT factorisation over ℚ, roots in radicals or `RootOf`); a
+    // coefficient that is not a rational literal sends the equation down the
+    // closed-form symbolic route instead.  No root is ever a float.
+    let rational = rational_coeffs(coeffs, pool);
+    let (basis, method) = match &rational {
+        Some(a) => {
+            let roots = exact_roots::exact_roots(a, pool)?;
+            (
+                basis_from_roots(&roots, x, false, pool),
+                "constant_coefficient",
+            )
         }
         None => symbolic_basis(coeffs, x, ctx, pool)?,
     };
@@ -230,7 +352,7 @@ fn solve_const_coeff(
     let y_general = if is_zero(r, pool) {
         y_homog
     } else {
-        let yp = particular_solution(input, coeffs, &basis, r, pool)?;
+        let yp = particular_solution(input, coeffs, rational.as_deref(), &basis, r, pool)?;
         simp(pool.add(vec![y_homog, yp]), pool)
     };
 
@@ -238,6 +360,73 @@ fn solve_const_coeff(
         Ok(()) => Ok(vec![DsolveBranch::explicit(y_general, constants, method)]),
         Err(e) => Err(e),
     }
+}
+
+/// The coefficients as rational literals, leading zeros dropped; `None` when
+/// one of them is not a rational literal.
+fn rational_coeffs(coeffs: &[ExprId], pool: &ExprPool) -> Option<Vec<Rational>> {
+    let mut a: Vec<Rational> = coeffs
+        .iter()
+        .map(|&c| exact_roots::literal(simp(c, pool), pool))
+        .collect::<Option<_>>()?;
+    while a.len() > 1 && a.last().is_some_and(|c| *c == 0) {
+        a.pop();
+    }
+    Some(a)
+}
+
+/// Fundamental system from exact roots. `euler = false`: `xʲe^{rx}`,
+/// `xʲe^{αx}cos βx`, `xʲe^{αx}sin βx`. `euler = true` (roots of the indicial
+/// polynomial): `x^r logʲx`, `x^α cos(β log x) logʲx`, `x^α sin(β log x) logʲx`.
+fn basis_from_roots(
+    roots: &[exact_roots::ExactRoot],
+    x: ExprId,
+    euler: bool,
+    pool: &ExprPool,
+) -> Vec<ExprId> {
+    use exact_roots::ExactRoot;
+    let logx = pool.func("log", vec![x]);
+    let t = if euler { logx } else { x };
+    let growth = |r: ExprId| -> ExprId {
+        if matches!(zero_status(pool, r), ZeroStatus::Zero) {
+            pool.integer(1_i32)
+        } else if euler {
+            pool.pow(x, r)
+        } else {
+            pool.func("exp", vec![simp(pool.mul(vec![r, x]), pool)])
+        }
+    };
+    let power = |j: usize| -> ExprId {
+        if j == 0 {
+            pool.integer(1_i32)
+        } else {
+            pool.pow(t, pool.integer(j as i64))
+        }
+    };
+    let mut out = Vec::new();
+    for root in roots {
+        match *root {
+            ExactRoot::Real { r, m } => {
+                let g = growth(r);
+                for j in 0..m {
+                    out.push(simp(pool.mul(vec![power(j), g]), pool));
+                }
+            }
+            ExactRoot::Complex { alpha, beta, m } => {
+                let g = growth(alpha);
+                let arg = simp(pool.mul(vec![beta, t]), pool);
+                for j in 0..m {
+                    for trig in ["cos", "sin"] {
+                        out.push(simp(
+                            pool.mul(vec![power(j), g, pool.func(trig, vec![arg])]),
+                            pool,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -507,274 +696,27 @@ fn require_nonzero(e: ExprId, ctx: &mut SolveCtx<'_>, pool: &ExprPool) {
 }
 
 // ---------------------------------------------------------------------------
-// Characteristic roots over ℚ: rational roots + quadratic factors
-// ---------------------------------------------------------------------------
-
-/// A root of the characteristic polynomial together with its multiplicity.
-enum CharRoot {
-    /// Real root `r` (rational) with multiplicity `m`.
-    Real { r: f64, m: usize },
-    /// Complex conjugate pair `α ± βi` (β > 0) with multiplicity `m`.
-    Complex { alpha: f64, beta: f64, m: usize },
-}
-
-impl CharRoot {
-    /// e^{r x}, x·e^{r x}, … for real; e^{α x}·cos(β x)·xʲ, e^{α x}·sin(β x)·xʲ for complex.
-    fn basis_functions(&self, x: ExprId, pool: &ExprPool) -> Vec<ExprId> {
-        match *self {
-            CharRoot::Real { r, m } => (0..m)
-                .map(|j| {
-                    let exp_part = exp_rx(r, x, pool);
-                    if j == 0 {
-                        exp_part
-                    } else {
-                        let xj = pool.pow(x, pool.integer(j as i32));
-                        simp(pool.mul(vec![xj, exp_part]), pool)
-                    }
-                })
-                .collect(),
-            CharRoot::Complex { alpha, beta, m } => {
-                let mut out = Vec::new();
-                for j in 0..m {
-                    let exp_part = exp_rx(alpha, x, pool);
-                    let bx = mul_const(beta, x, pool);
-                    let cos = pool.func("cos", vec![bx]);
-                    let sin = pool.func("sin", vec![bx]);
-                    for trig in [cos, sin] {
-                        let base = simp(pool.mul(vec![exp_part, trig]), pool);
-                        let f = if j == 0 {
-                            base
-                        } else {
-                            let xj = pool.pow(x, pool.integer(j as i32));
-                            simp(pool.mul(vec![xj, base]), pool)
-                        };
-                        out.push(f);
-                    }
-                }
-                out
-            }
-        }
-    }
-}
-
-fn exp_rx(r: f64, x: ExprId, pool: &ExprPool) -> ExprId {
-    if r == 0.0 {
-        return pool.integer(1_i32);
-    }
-    let rx = mul_const(r, x, pool);
-    simp(pool.func("exp", vec![rx]), pool)
-}
-
-/// `c · x` with `c` rendered as an exact rational when possible.
-fn mul_const(c: f64, x: ExprId, pool: &ExprPool) -> ExprId {
-    let cexpr = f64_to_expr(c, pool);
-    simp(pool.mul(vec![cexpr, x]), pool)
-}
-
-/// Convert an `f64` that is a small rational to an exact `ExprId`.
-fn f64_to_expr(v: f64, pool: &ExprPool) -> ExprId {
-    if v == v.round() {
-        return pool.integer(v as i64);
-    }
-    // Try small denominators.
-    for den in 2..=12_i64 {
-        let num = v * den as f64;
-        if (num - num.round()).abs() < 1e-9 {
-            return pool.rational(num.round() as i64, den);
-        }
-    }
-    pool.float(v, 53)
-}
-
-/// Compute characteristic roots from coefficients `a[0..=deg]` (a[k] is the
-/// coefficient of λᵏ).  Factors out rational roots and quadratic factors;
-/// declines on an irreducible factor of degree ≥ 3.
-fn char_roots(a: &[f64]) -> Result<Vec<CharRoot>, DsolveError> {
-    // Work with the polynomial as a coefficient vector, repeatedly dividing out
-    // found roots/factors.  Operate numerically but recover rational roots.
-    let mut poly: Vec<f64> = a.to_vec();
-    normalize(&mut poly);
-    let mut roots: Vec<CharRoot> = Vec::new();
-
-    while poly.len() > 1 {
-        let deg = poly.len() - 1;
-        if deg == 1 {
-            // a0 + a1 λ = 0 → λ = −a0/a1
-            let r = -poly[0] / poly[1];
-            add_real_root(&mut roots, r);
-            break;
-        }
-        if deg == 2 {
-            add_quadratic(&mut roots, poly[2], poly[1], poly[0]);
-            break;
-        }
-        // deg ≥ 3: try to peel off a rational root.
-        if let Some(r) = find_rational_root(&poly) {
-            add_real_root(&mut roots, r);
-            poly = deflate_real(&poly, r);
-            normalize(&mut poly);
-            continue;
-        }
-        // try to peel off a rational quadratic factor λ² + p λ + q with rational p,q
-        if let Some((p, q)) = find_quadratic_factor(&poly) {
-            add_quadratic(&mut roots, 1.0, p, q);
-            poly = deflate_quadratic(&poly, p, q);
-            normalize(&mut poly);
-            continue;
-        }
-        return Err(DsolveError::Unsupported(
-            "characteristic polynomial has an irreducible factor of degree ≥ 3".to_string(),
-        ));
-    }
-    Ok(roots)
-}
-
-fn normalize(poly: &mut Vec<f64>) {
-    while poly.len() > 1 && poly.last().map(|v| v.abs() < 1e-12).unwrap_or(false) {
-        poly.pop();
-    }
-}
-
-fn add_real_root(roots: &mut Vec<CharRoot>, r: f64) {
-    for cr in roots.iter_mut() {
-        if let CharRoot::Real { r: rr, m } = cr {
-            if (*rr - r).abs() < 1e-7 {
-                *m += 1;
-                return;
-            }
-        }
-    }
-    roots.push(CharRoot::Real { r, m: 1 });
-}
-
-fn add_complex_pair(roots: &mut Vec<CharRoot>, alpha: f64, beta: f64) {
-    let beta = beta.abs();
-    for cr in roots.iter_mut() {
-        if let CharRoot::Complex {
-            alpha: a,
-            beta: b,
-            m,
-        } = cr
-        {
-            if (*a - alpha).abs() < 1e-7 && (*b - beta).abs() < 1e-7 {
-                *m += 1;
-                return;
-            }
-        }
-    }
-    roots.push(CharRoot::Complex { alpha, beta, m: 1 });
-}
-
-/// Solve `a λ² + b λ + c = 0` and record real/complex roots.
-fn add_quadratic(roots: &mut Vec<CharRoot>, a: f64, b: f64, c: f64) {
-    let disc = b * b - 4.0 * a * c;
-    if disc.abs() < 1e-10 {
-        let r = -b / (2.0 * a);
-        add_real_root(roots, r);
-        add_real_root(roots, r); // double root
-    } else if disc > 0.0 {
-        let s = disc.sqrt();
-        add_real_root(roots, (-b + s) / (2.0 * a));
-        add_real_root(roots, (-b - s) / (2.0 * a));
-    } else {
-        let alpha = -b / (2.0 * a);
-        let beta = (-disc).sqrt() / (2.0 * a);
-        add_complex_pair(roots, alpha, beta);
-    }
-}
-
-fn poly_eval(poly: &[f64], x: f64) -> f64 {
-    poly.iter().rev().fold(0.0, |acc, &c| acc * x + c)
-}
-
-/// Try integer candidate roots in a small range (characteristic roots of
-/// textbook ODEs are small integers/rationals).
-fn find_rational_root(poly: &[f64]) -> Option<f64> {
-    for num in -12..=12i64 {
-        for den in 1..=6i64 {
-            let r = num as f64 / den as f64;
-            if poly_eval(poly, r).abs() < 1e-7 {
-                return Some(r);
-            }
-        }
-    }
-    None
-}
-
-fn deflate_real(poly: &[f64], r: f64) -> Vec<f64> {
-    // synthetic division by (λ − r); poly is low→high.
-    let n = poly.len();
-    let mut out = vec![0.0; n - 1];
-    let mut carry = 0.0;
-    for i in (0..n).rev() {
-        if i == 0 {
-            break;
-        }
-        let coeff = poly[i] + carry;
-        out[i - 1] = coeff;
-        carry = coeff * r;
-    }
-    out
-}
-
-/// Search for a monic rational quadratic factor `λ² + p λ + q`.
-fn find_quadratic_factor(poly: &[f64]) -> Option<(f64, f64)> {
-    for pn in -12..=12i64 {
-        for qn in -12..=12i64 {
-            let (p, q) = (pn as f64, qn as f64);
-            if divides_quadratic(poly, p, q) {
-                return Some((p, q));
-            }
-        }
-    }
-    None
-}
-
-fn divides_quadratic(poly: &[f64], p: f64, q: f64) -> bool {
-    let (quot, rem) = quad_divmod(poly, p, q);
-    let _ = quot;
-    rem.iter().all(|v| v.abs() < 1e-6)
-}
-
-/// Divide `poly` by `λ² + p λ + q`; return `(quotient, remainder[0..2])`.
-fn quad_divmod(poly: &[f64], p: f64, q: f64) -> (Vec<f64>, Vec<f64>) {
-    // poly low→high; convert to high→low for long division.
-    let mut hi: Vec<f64> = poly.iter().rev().cloned().collect();
-    let n = hi.len();
-    if n < 3 {
-        return (vec![0.0], hi);
-    }
-    let mut quot = vec![0.0; n - 2];
-    for i in 0..(n - 2) {
-        let c = hi[i];
-        quot[i] = c;
-        hi[i + 1] -= c * p;
-        hi[i + 2] -= c * q;
-    }
-    let rem = vec![hi[n - 2], hi[n - 1]];
-    // quotient is high→low; return low→high
-    quot.reverse();
-    (quot, rem)
-}
-
-fn deflate_quadratic(poly: &[f64], p: f64, q: f64) -> Vec<f64> {
-    quad_divmod(poly, p, q).0
-}
-
-// ---------------------------------------------------------------------------
-// Particular solution: undetermined coefficients, then variation of parameters
+// Particular solution: exact undetermined coefficients, then variation of
+// parameters
 // ---------------------------------------------------------------------------
 
 fn particular_solution(
     input: &OdeInput,
     coeffs: &[ExprId],
+    rational: Option<&[Rational]>,
     basis: &[ExprId],
     r: ExprId,
     pool: &ExprPool,
 ) -> Result<ExprId, DsolveError> {
-    // Try undetermined coefficients first (cheap, exact).
-    if let Some(yp) = undetermined_coefficients(input, coeffs, basis, r, pool)? {
-        return Ok(yp);
+    // Exact undetermined coefficients over ℚ(i) for a forcing term made of
+    // `c·xᵏ·e^{ax}·{1, cos bx, sin bx}` with rational `c, a, b`.
+    if let Some(p) = rational {
+        let r_exp = simp(r, pool);
+        if let Some(fams) = exact_roots::forcing_families(r_exp, input.x, pool) {
+            if let Some(yp) = exact_roots::particular_exact(p, &fams, input.x, pool) {
+                return Ok(simp(yp, pool));
+            }
+        }
     }
     // Variation of parameters (any order): normalise by the leading
     // coefficient, then quadrature against the fundamental system.
@@ -790,347 +732,6 @@ fn particular_solution(
     ))
 }
 
-/// Undetermined coefficients for RHS of the form polynomial × exp × {1,cos,sin}.
-/// Builds an ansatz with unknown coefficients, substitutes, and solves the
-/// resulting linear system by numeric sampling + least-squares-free Gaussian
-/// elimination over a small monomial basis.
-fn undetermined_coefficients(
-    input: &OdeInput,
-    coeffs: &[ExprId],
-    basis: &[ExprId],
-    r: ExprId,
-    pool: &ExprPool,
-) -> Result<Option<ExprId>, DsolveError> {
-    let x = input.x;
-    // Build the ansatz term list (each term is a basis monomial of the RHS form).
-    let Some(ansatz_terms) = ansatz_terms_for(r, x, basis, pool) else {
-        return Ok(None);
-    };
-    if ansatz_terms.is_empty() {
-        return Ok(None);
-    }
-    let k = ansatz_terms.len();
-
-    // L[term_j] evaluated, residual must match r.  Build linear operator L =
-    // Σ coeffs[d] · d^d/dx^d.  Sample at k distinct points to solve for the
-    // unknown coefficients A_j in  Σ A_j L[term_j] = r.
-    let mut l_terms: Vec<ExprId> = Vec::with_capacity(k);
-    for &t in &ansatz_terms {
-        l_terms.push(apply_operator(coeffs, t, x, pool)?);
-    }
-
-    // Set up linear system M · A = b at sample points.
-    let samples: Vec<f64> = (0..k).map(|i| 0.37 + 0.53 * i as f64).collect();
-    let mut mat = vec![vec![0.0; k]; k];
-    let mut rhs_vec = vec![0.0; k];
-    for (i, &xv) in samples.iter().enumerate() {
-        for (j, &lt) in l_terms.iter().enumerate() {
-            // A sample the real evaluator cannot resolve — the operator carries
-            // a symbolic coefficient, or the ansatz a construct it does not know
-            // — means *this* method does not apply, not that the equation is
-            // unsolvable.  Declining lets variation of parameters have its turn.
-            let Some(v) = eval_at(lt, x, xv, pool) else {
-                return Ok(None);
-            };
-            mat[i][j] = v;
-        }
-        let Some(v) = eval_at(r, x, xv, pool) else {
-            return Ok(None);
-        };
-        rhs_vec[i] = v;
-    }
-    let Some(sol) = solve_linear(&mut mat, &mut rhs_vec) else {
-        return Ok(None);
-    };
-    // Build yp = Σ A_j term_j with rationalised coefficients.
-    let mut terms = Vec::new();
-    for (j, &t) in ansatz_terms.iter().enumerate() {
-        let a = f64_to_expr(sol[j], pool);
-        terms.push(pool.mul(vec![a, t]));
-    }
-    let yp = simp(pool.add(terms), pool);
-    Ok(Some(yp))
-}
-
-/// Determine the ansatz monomials for an RHS of the supported form.  Handles:
-/// polynomial (degree d), poly·exp(a x), poly·{cos,sin}(b x), poly·exp·trig.
-/// Multiplies by `x^s` to handle resonance with the homogeneous basis.
-fn ansatz_terms_for(
-    r: ExprId,
-    x: ExprId,
-    basis: &[ExprId],
-    pool: &ExprPool,
-) -> Option<Vec<ExprId>> {
-    // Identify exponential rate a, trig rate b, and polynomial degree d.
-    let (poly_deg, exp_rate, trig_rate) = classify_rhs(r, x, pool)?;
-    // Base modulating factor m(x) = exp(a x) · {1 | cos(bx),sin(bx)}.
-    let mut mods: Vec<ExprId> = Vec::new();
-    let exp_factor = if exp_rate != 0.0 {
-        Some(simp(
-            pool.func("exp", vec![mul_const(exp_rate, x, pool)]),
-            pool,
-        ))
-    } else {
-        None
-    };
-    if let Some(b) = trig_rate {
-        let bx = mul_const(b, x, pool);
-        mods.push(pool.func("cos", vec![bx]));
-        mods.push(pool.func("sin", vec![bx]));
-    } else {
-        mods.push(pool.integer(1_i32));
-    }
-
-    // Resonance shift s: how many basis functions match this exp·trig form.
-    let s = resonance_shift(exp_rate, trig_rate, basis, x, pool);
-
-    let mut terms = Vec::new();
-    for j in 0..=poly_deg {
-        let power = j + s;
-        let xpow = if power == 0 {
-            pool.integer(1_i32)
-        } else {
-            pool.pow(x, pool.integer(power as i32))
-        };
-        for &m in &mods {
-            let mut fac = vec![xpow, m];
-            if let Some(e) = exp_factor {
-                fac.push(e);
-            }
-            terms.push(simp(pool.mul(fac), pool));
-        }
-    }
-    Some(terms)
-}
-
-/// Classify the RHS into `(polynomial_degree, exp_rate, Option<trig_rate>)`.
-/// Returns None if it is not of the supported product form.
-fn classify_rhs(r: ExprId, x: ExprId, pool: &ExprPool) -> Option<(usize, f64, Option<f64>)> {
-    // Split off additive structure: for simplicity require a single product
-    // term family (the common textbook case).  We detect by scanning factors.
-    let factors: Vec<ExprId> = match pool.get(r) {
-        ExprData::Mul(args) => args,
-        ExprData::Add(_) => {
-            // allow pure polynomial sums
-            if is_polynomial_in(r, x, pool) {
-                return Some((poly_degree(r, x, pool)?, 0.0, None));
-            }
-            vec![r]
-        }
-        _ => vec![r],
-    };
-    let mut exp_rate = 0.0;
-    let mut trig_rate: Option<f64> = None;
-    let mut poly_factors: Vec<ExprId> = Vec::new();
-    for f in factors {
-        match pool.get(f) {
-            ExprData::Func { name, args } if name == "exp" && args.len() == 1 => {
-                exp_rate += linear_rate(args[0], x, pool)?;
-            }
-            ExprData::Func { name, args }
-                if (name == "cos" || name == "sin") && args.len() == 1 =>
-            {
-                let b = linear_rate(args[0], x, pool)?;
-                trig_rate = Some(b.abs());
-            }
-            _ => {
-                if contains(f, x, pool) && !is_polynomial_in(f, x, pool) {
-                    return None;
-                }
-                poly_factors.push(f);
-            }
-        }
-    }
-    let poly = if poly_factors.is_empty() {
-        pool.integer(1_i32)
-    } else {
-        simp(pool.mul(poly_factors), pool)
-    };
-    if !is_polynomial_in(poly, x, pool) {
-        return None;
-    }
-    let deg = poly_degree(poly, x, pool)?;
-    Some((deg, exp_rate, trig_rate))
-}
-
-/// `arg = c · x` → return `c`; only linear-through-origin args are accepted.
-fn linear_rate(arg: ExprId, x: ExprId, pool: &ExprPool) -> Option<f64> {
-    let d = ddx(arg, x, pool).ok()?;
-    if contains(d, x, pool) {
-        return None;
-    }
-    // require arg(0) = 0 (no constant phase): arg − d·x should be 0
-    let dx = simp(pool.mul(vec![d, x]), pool);
-    let cst = sub(arg, dx, pool);
-    if !is_zero(cst, pool) {
-        return None;
-    }
-    try_expr_f64(d, pool)
-}
-
-fn is_polynomial_in(expr: ExprId, x: ExprId, pool: &ExprPool) -> bool {
-    poly_degree(expr, x, pool).is_some()
-}
-
-/// Degree of `expr` as a polynomial in `x`, or None if not polynomial.
-fn poly_degree(expr: ExprId, x: ExprId, pool: &ExprPool) -> Option<usize> {
-    match pool.get(expr) {
-        _ if !contains(expr, x, pool) => Some(0),
-        ExprData::Symbol { .. } => Some(1), // == x (since it contains x)
-        ExprData::Add(args) | ExprData::Mul(args) => {
-            let op_is_mul = matches!(pool.get(expr), ExprData::Mul(_));
-            let mut acc = 0usize;
-            for a in args {
-                let d = poly_degree(a, x, pool)?;
-                if op_is_mul {
-                    acc += d;
-                } else {
-                    acc = acc.max(d);
-                }
-            }
-            Some(acc)
-        }
-        ExprData::Pow { base, exp } => {
-            if base == x {
-                if let ExprData::Integer(k) = pool.get(exp) {
-                    let k = k.0.to_i64()?;
-                    if k >= 0 {
-                        return Some(k as usize);
-                    }
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-/// How many extra powers of `x` to multiply the ansatz by, to avoid clashing
-/// with the homogeneous basis (resonance).  Counts basis functions matching the
-/// same exp·trig family.
-fn resonance_shift(
-    exp_rate: f64,
-    trig_rate: Option<f64>,
-    basis: &[ExprId],
-    x: ExprId,
-    pool: &ExprPool,
-) -> usize {
-    let mut count = 0;
-    for &b in basis {
-        if basis_matches_family(b, exp_rate, trig_rate, x, pool) {
-            count += 1;
-        }
-    }
-    // For real (no trig): each matching basis fn => shift by that many.  For
-    // complex pairs the basis contributes cos & sin; we want the multiplicity,
-    // so divide by the family width.
-    if trig_rate.is_some() {
-        count / 2
-    } else {
-        count
-    }
-}
-
-fn basis_matches_family(
-    b: ExprId,
-    exp_rate: f64,
-    trig_rate: Option<f64>,
-    x: ExprId,
-    pool: &ExprPool,
-) -> bool {
-    // Evaluate b's exp/trig signature by inspecting its factors.
-    let (be, bt) = basis_signature(b, x, pool);
-    (be - exp_rate).abs() < 1e-7
-        && match (bt, trig_rate) {
-            (None, None) => true,
-            (Some(a), Some(c)) => (a - c).abs() < 1e-7,
-            _ => false,
-        }
-}
-
-fn basis_signature(b: ExprId, x: ExprId, pool: &ExprPool) -> (f64, Option<f64>) {
-    let factors: Vec<ExprId> = match pool.get(b) {
-        ExprData::Mul(args) => args,
-        _ => vec![b],
-    };
-    let mut e = 0.0;
-    let mut t = None;
-    for f in factors {
-        match pool.get(f) {
-            ExprData::Func { name, args } if name == "exp" && args.len() == 1 => {
-                if let Some(rate) = linear_rate(args[0], x, pool) {
-                    e += rate;
-                }
-            }
-            ExprData::Func { name, args }
-                if (name == "cos" || name == "sin") && args.len() == 1 =>
-            {
-                if let Some(rate) = linear_rate(args[0], x, pool) {
-                    t = Some(rate.abs());
-                }
-            }
-            _ => {}
-        }
-    }
-    (e, t)
-}
-
-/// Apply the linear operator `L = Σ coeffs[d]·d^d/dx^d` to `expr`.
-fn apply_operator(
-    coeffs: &[ExprId],
-    expr: ExprId,
-    x: ExprId,
-    pool: &ExprPool,
-) -> Result<ExprId, DsolveError> {
-    let mut acc = Vec::new();
-    let mut cur = expr;
-    for (d, &c) in coeffs.iter().enumerate() {
-        if d > 0 {
-            cur = ddx(cur, x, pool)?;
-        }
-        acc.push(pool.mul(vec![c, cur]));
-    }
-    Ok(simp(pool.add(acc), pool))
-}
-
-fn eval_at(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> Option<f64> {
-    use std::collections::HashMap;
-    let mut env = HashMap::new();
-    env.insert(x, xv);
-    super::verify::eval(expr, &env, pool)
-}
-
-/// Gaussian elimination with partial pivoting.  Returns None on singularity.
-#[allow(clippy::needless_range_loop)]
-fn solve_linear(mat: &mut [Vec<f64>], rhs: &mut [f64]) -> Option<Vec<f64>> {
-    let n = rhs.len();
-    for col in 0..n {
-        // pivot
-        let mut piv = col;
-        for r in (col + 1)..n {
-            if mat[r][col].abs() > mat[piv][col].abs() {
-                piv = r;
-            }
-        }
-        if mat[piv][col].abs() < 1e-12 {
-            return None;
-        }
-        mat.swap(col, piv);
-        rhs.swap(col, piv);
-        for r in 0..n {
-            if r == col {
-                continue;
-            }
-            let factor = mat[r][col] / mat[col][col];
-            for c in col..n {
-                mat[r][c] -= factor * mat[col][c];
-            }
-            rhs[r] -= factor * rhs[col];
-        }
-    }
-    Some((0..n).map(|i| rhs[i] / mat[i][i]).collect())
-}
-
 // ---------------------------------------------------------------------------
 // Euler–Cauchy: a x² y'' + b x y' + c y = 0.  Substitution y = x^m gives the
 // indicial equation a m(m−1) + b m + c = 0.
@@ -1144,8 +745,8 @@ fn try_euler_cauchy(
     pool: &ExprPool,
 ) -> Result<Option<Vec<DsolveBranch>>, DsolveError> {
     let x = input.x;
-    // Require coeffs[k] = c_k · x^k with constant c_k.
-    let mut c = Vec::with_capacity(coeffs.len());
+    // Require coeffs[k] = c_k · x^k with rational c_k.
+    let mut c: Vec<Rational> = Vec::with_capacity(coeffs.len());
     for (k, &coeff) in coeffs.iter().enumerate() {
         // c_k = coeff · x^{−k} must be constant.  Multiply by a single negative
         // power so the exponents combine (`x^k · x^{−k} → x^0 = 1`); a nested
@@ -1159,49 +760,41 @@ fn try_euler_cauchy(
         if contains(ck, x, pool) {
             return Ok(None);
         }
-        // A symbolic (but x-free) coefficient means this is not the numeric
+        // A symbolic (but x-free) coefficient means this is not the rational
         // Euler–Cauchy this route handles.  Decline the *class*, not the
         // equation: reduction of order gets its turn next.
-        let Some(v) = try_expr_f64(ck, pool) else {
+        let Some(v) = exact_roots::literal(ck, pool) else {
             return Ok(None);
         };
         c.push(v);
     }
-    // Second order: a m(m−1) + b m + c0 = 0 → a m² + (b−a) m + c0 = 0.
-    if c.len() != 3 {
+    let n = c.len() - 1;
+    if n == 0 || c[n] == 0 {
         return Ok(None);
     }
-    let (a, b, c0) = (c[2], c[1], c[0]);
-    if a == 0.0 {
+    // Indicial polynomial Σ c_k · m(m−1)…(m−k+1).
+    let mut ind = vec![Rational::new(); n + 1];
+    for (k, ck) in c.iter().enumerate() {
+        // falling factorial m^(k) as coefficients, low → high
+        let mut ff = vec![Rational::from(1)];
+        for j in 0..k {
+            let mut next = vec![Rational::new(); ff.len() + 1];
+            for (i, v) in ff.iter().enumerate() {
+                next[i + 1] += v.clone();
+                next[i] -= v.clone() * Rational::from(j as i64);
+            }
+            ff = next;
+        }
+        for (i, v) in ff.iter().enumerate() {
+            ind[i] += v.clone() * ck.clone();
+        }
+    }
+    let roots = exact_roots::exact_roots(&ind, pool)?;
+    let basis = basis_from_roots(&roots, x, true, pool);
+    if basis.len() != n {
         return Ok(None);
     }
-    // indicial: a m² + (b − a) m + c0
-    let disc = (b - a) * (b - a) - 4.0 * a * c0;
-    let logx = pool.func("log", vec![x]);
-    let basis: Vec<ExprId> = if disc > 1e-10 {
-        let s = disc.sqrt();
-        let m1 = (-(b - a) + s) / (2.0 * a);
-        let m2 = (-(b - a) - s) / (2.0 * a);
-        vec![pow_real(x, m1, pool), pow_real(x, m2, pool)]
-    } else if disc.abs() <= 1e-10 {
-        // repeated root m: {x^m, x^m log x}
-        let m = -(b - a) / (2.0 * a);
-        let xm = pow_real(x, m, pool);
-        vec![xm, simp(pool.mul(vec![xm, logx]), pool)]
-    } else {
-        // complex roots m = α ± βi: {x^α cos(β log x), x^α sin(β log x)}
-        let alpha = -(b - a) / (2.0 * a);
-        let beta = (-disc).sqrt() / (2.0 * a);
-        let xa = pow_real(x, alpha, pool);
-        let blogx = mul_const(beta, logx, pool);
-        let cos = pool.func("cos", vec![blogx]);
-        let sin = pool.func("sin", vec![blogx]);
-        vec![
-            simp(pool.mul(vec![xa, cos]), pool),
-            simp(pool.mul(vec![xa, sin]), pool),
-        ]
-    };
-    compose_from_basis(input, &basis, coeffs[2], r, "euler_cauchy", gen, pool)
+    compose_from_basis(input, &basis, coeffs[n], r, "euler_cauchy", gen, pool)
 }
 
 /// Assemble `y = Σ Cₖ yₖ (+ y_p)` from a fundamental system, verify it, and
@@ -1246,9 +839,4 @@ fn compose_from_basis(
         )])),
         Err(_) => Ok(None),
     }
-}
-
-fn pow_real(x: ExprId, m: f64, pool: &ExprPool) -> ExprId {
-    let me = f64_to_expr(m, pool);
-    simp(pool.pow(x, me), pool)
 }

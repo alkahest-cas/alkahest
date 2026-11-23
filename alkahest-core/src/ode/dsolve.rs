@@ -107,6 +107,7 @@ use std::fmt;
 mod constant_coeff;
 #[cfg(test)]
 mod corpus;
+mod exact_roots;
 mod first_order;
 mod special_linear;
 pub mod system;
@@ -922,6 +923,43 @@ pub(crate) fn integrate_first_of(
             }
         }
     }
+    // Stage 3: `exp(k·log u) → u^k`, and a symbolic parameter `s` scaled out
+    // of the variable (`∫ f(x) dx = (1/s)·F(s·x)` with `F = ∫ f(t/s) dt`),
+    // which turns `(C·x − 1)^{−1/2}` into the `(t − 1)^{−1/2}` the integrator
+    // handles. The parameter is a constant of integration or a coefficient, and
+    // the identity holds for `s ≠ 0`; the caller verifies the result.
+    for &expr in exprs {
+        let folded = simp(fold_exp_log(expr, pool), pool);
+        let mut cands = vec![folded];
+        let mut params = Vec::new();
+        crate::eval::symbols::collect_free_symbols(folded, pool, &mut params);
+        params.retain(|&s| s != var);
+        for s in params.into_iter().take(3) {
+            let scaled = subs1(folded, var, div(var, s, pool), pool);
+            cands.push(simp(div(scaled, s, pool), pool));
+        }
+        for (i, cand) in cands.into_iter().enumerate() {
+            if tried.contains(&cand) {
+                continue;
+            }
+            tried.push(cand);
+            if let Ok(d) = integrate(cand, var, pool) {
+                if is_local_only(&d) {
+                    continue;
+                }
+                let f = d.value;
+                if i == 0 {
+                    return Ok(simp(f, pool));
+                }
+                // Undo the scaling: F(s·x), with `s` the (i−1)-th parameter.
+                let mut ps = Vec::new();
+                crate::eval::symbols::collect_free_symbols(folded, pool, &mut ps);
+                ps.retain(|&s| s != var);
+                let s = ps[i - 1];
+                return Ok(simp(subs1(f, var, pool.mul(vec![s, var]), pool), pool));
+            }
+        }
+    }
     #[cfg(test)]
     if std::env::var_os("ALKAHEST_DSOLVE_TRACE").is_some() {
         // Every line here is an integral `dsolve` needs and `integrate` does not
@@ -938,6 +976,45 @@ pub(crate) fn integrate_first_of(
         "required integral did not close: {}",
         last.unwrap_or_else(|| "no candidate form".to_string())
     )))
+}
+
+/// `exp(k·log u) → u^k` everywhere in `e` (an identity for every `u ≠ 0`,
+/// principal branches included). The first-order cascade hands back
+/// `p = C₁·exp(log y)`, which the integrator should not be asked to see
+/// through.
+pub(crate) fn fold_exp_log(e: ExprId, pool: &ExprPool) -> ExprId {
+    match pool.get(e) {
+        ExprData::Func { name, args } if name == "exp" && args.len() == 1 => {
+            let a = fold_exp_log(args[0], pool);
+            let (k, rest): (Vec<ExprId>, Vec<ExprId>) = match pool.get(a) {
+                ExprData::Mul(xs) => xs.iter().partition(
+                    |&&f| !matches!(pool.get(f), ExprData::Func { name, .. } if name == "log"),
+                ),
+                _ => (Vec::new(), vec![a]),
+            };
+            if let [l] = rest.as_slice() {
+                if let ExprData::Func { name, args: la } = pool.get(*l) {
+                    if name == "log" && la.len() == 1 {
+                        let k = if k.is_empty() {
+                            pool.integer(1_i32)
+                        } else {
+                            pool.mul(k)
+                        };
+                        return pool.pow(la[0], k);
+                    }
+                }
+            }
+            pool.func("exp", vec![a])
+        }
+        ExprData::Func { name, args } => pool.func(
+            name.as_str(),
+            args.iter().map(|&a| fold_exp_log(a, pool)).collect(),
+        ),
+        ExprData::Add(xs) => pool.add(xs.iter().map(|&a| fold_exp_log(a, pool)).collect()),
+        ExprData::Mul(xs) => pool.mul(xs.iter().map(|&a| fold_exp_log(a, pool)).collect()),
+        ExprData::Pow { base, exp } => pool.pow(fold_exp_log(base, pool), fold_exp_log(exp, pool)),
+        _ => e,
+    }
 }
 
 const LOCAL_ONLY: &str = "the antiderivative found is valid on (−π, π) only (half-angle \
