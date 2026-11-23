@@ -54,6 +54,23 @@
 
     Mathematica returns no general solution for the quasilinear and Cauchy–Burgers problems of the textbook set. The Abbasi sample is dominated by Riccati/Abel characteristics, arbitrary coefficient functions `f(x)` and symbolic exponents, where an answer needs unevaluated integrals or hypergeometric functions; `pdsolve` refuses those (`E-PDE-051`).
   - Error codes `E-PDE-050 … E-PDE-053`.
+- **Second-order linear PDEs in two variables (experimental, milestone M2 of the PDE plan).** `A u_xx + B u_xy + C u_yy + D u_x + E u_y + F u = G`, in `alkahest_cas::pde::second_order` and `alkahest.experimental`. Every returned solution has been substituted back with `verify_pde_solution`, arbitrary functions kept symbolic, and is `exactly_verified`. Anything else is refused with `E-PDE-100 … E-PDE-108`.
+  - `canonical_form(eq, u)` / `canonical_forms(eq, u)`: characteristic coordinates from `A dy² − B dx dy + C dx² = 0`. The first integrals come from closed patterns (λ(x), λ(y), separable, linear, homogeneous) with `dsolve` as a fallback, each checked by `φ_x + λ φ_y = 0`. The result is the hyperbolic `w_ξη + … = 0`, parabolic `w_ηη + … = 0` or elliptic `w_αα + w_ββ + … = 0` form. It returns the transformation, its inverse when one is found, and the coefficients in the new variables, checked by substituting back. Mixed-type equations get one form per region of constant type (Tricomi: hyperbolic for `y < 0`, elliptic for `y > 0`).
+  - `solve_second_order(eq, u)` / `solve_second_order(PDE(...))` returns general solutions in arbitrary functions `F1, F2`. The methods, in order:
+    - an ODE in one variable (`dsolve`, constants become functions of the other variable);
+    - constant coefficients:
+      - the full symbol `P(ξ, η)` is factored into first-order operators, over ℚ with FLINT, or over algebraic and complex extensions by the quadratic formula, matching the lower-order terms;
+      - each factor is solved by characteristics, and repeated factors give `F(φ) + x G(φ)`;
+      - a source gets a particular solution by quadrature along the characteristics;
+      - the shift `u = e^{αx+βy} v` removes first-order terms;
+    - the Laplace cascade;
+    - the canonical form, then the same methods in the new variables.
+
+    d'Alembert's `F(x + ct) + G(x − ct)` falls out of the factoring step.
+  - Cauchy data `u(x, y0) = f`, `u_y(x, y0) = g` is solved by d'Alembert's formula, generalised to any constant non-parabolic principal part and to a source.
+  - When no general solution exists in closed form (heat, Klein–Gordon, telegraph, Helmholtz), the exponential family `e^{kx + ω(k)y}` of the dispersion relation is returned with `kind="particular"` and its parameter, or refused when `allow_particular=False`.
+  - `laplace_cascade(eq, u, max_steps=8)` / `laplace_invariants`: the Laplace cascade (Tsarev) for `u_xy + a u_x + b u_y + c u = s` with variable coefficients. Laplace transformations run in both directions until an invariant vanishes. `∫ W G(y) dy` of an arbitrary `G` is removed exactly when `W = p(x) q(y) r(x, y)` with `r` polynomial in `y`, by repeated integration by parts. Euler–Poisson–Darboux equations and `u_xy = n(n+1) u/(x+y)²` solve this way. Termination has no a priori bound, so the step budget (and a cap on coefficient growth) ends in `E-PDE-103`.
+  - Corpus: 70 equations in `tests/pde_corpus/` (textbook, Polyanin, and the general-solution and whole-line Cauchy items of the hyperbolic and parabolic chapters of Abbasi's benchmark), with a Mathematica runner. See the PR for the head-to-head.
 
 ### Fixed
 

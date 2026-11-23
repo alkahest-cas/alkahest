@@ -34,9 +34,7 @@ def _wl(node, vars_: str) -> str:
         return _wl(node.body, vars_)
     if isinstance(node, ast.BinOp):
         lhs, rhs = _wl(node.left, vars_), _wl(node.right, vars_)
-        op = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/", ast.Pow: "^"}[
-            type(node.op)
-        ]
+        op = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/", ast.Pow: "^"}[type(node.op)]
         return f"({lhs}){op}({rhs})"
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
         return f"(-({_wl(node.operand, vars_)}))"

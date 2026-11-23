@@ -18,8 +18,8 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from second_order import CORPUS  # noqa: E402
-from translate import to_mathematica  # noqa: E402
+from second_order import CORPUS
+from translate import to_mathematica
 
 TEMPLATE = r"""
 pde = {pde};
@@ -28,7 +28,7 @@ v = {{{a}, {b}}};
 r = AbsoluteTiming[TimeConstrained[
   If[ics === {{}}, DSolveValue[pde, u[{a}, {b}], v, Assumptions -> {assum}],
      DSolveValue[Join[{{pde}}, ics], u[{a}, {b}], v, Assumptions -> {assum}]], 120, $Failed]];
-sol = r[[2]] /. Piecewise[{{e_, _}}, Indeterminate] :> e;
+sol = r[[2]] /. Piecewise[{{{{e_, _}}}}, Indeterminate] :> e;
 ok = Head[sol] =!= DSolveValue && sol =!= $Failed && FreeQ[sol, DSolveValue];
 check[e_] := TimeConstrained[
   Simplify[FullSimplify[(e /. Equal -> Subtract) /. u -> Function[Evaluate[v], Evaluate[sol]],
@@ -42,7 +42,7 @@ Print[ExportString[<|"ok" -> ok, "pde_verified" -> pdeok, "ic_verified" -> icok,
 
 def main():
     kernel = sys.argv[1]
-    out = open(sys.argv[2], "w") if len(sys.argv) > 2 else sys.stdout
+    out = open(sys.argv[2], "w") if len(sys.argv) > 2 else sys.stdout  # noqa: SIM115
     for entry in CORPUS:
         pde, ics, assum = to_mathematica(entry)
         a, b = entry["vars"]
@@ -51,10 +51,12 @@ def main():
             f.write(code)
             path = f.name
         try:
-            p = subprocess.run([kernel, "-script", path], capture_output=True, text=True, timeout=600)
+            p = subprocess.run(
+                [kernel, "-script", path], capture_output=True, text=True, timeout=600
+            )
             line = p.stdout.strip().splitlines()[-1] if p.stdout.strip() else "{}"
             res = json.loads(line)
-        except Exception as e:  # noqa: BLE001 - a harness, record and go on
+        except Exception as e:
             res = {"ok": False, "error": str(e)[:200]}
         finally:
             os.unlink(path)

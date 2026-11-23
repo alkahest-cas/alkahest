@@ -302,3 +302,64 @@ fn not_second_order_is_refused() {
     let eq = c.d(u, x);
     assert_eq!(c.solve(eq, u).unwrap_err().code(), "E-PDE-100");
 }
+
+#[test]
+fn tricomi_has_one_form_per_region() {
+    let c = Ctx::new();
+    let (x, y, u) = xy(&c);
+    let p = &c.pool;
+    let eq = c.lin(&[(y, c.d(c.d(u, x), x)), (c.int(1), c.d(c.d(u, y), y))]);
+    assert_eq!(canonical_form(eq, u, p).unwrap_err().code(), "E-PDE-102");
+    let forms = canonical_forms(eq, u, p).unwrap();
+    let mut types: Vec<&str> = forms.iter().map(|f| f.pde_type.as_str()).collect();
+    types.sort();
+    assert_eq!(types, ["elliptic", "hyperbolic"]);
+    assert!(forms.iter().all(|f| f.region.is_some()));
+}
+
+#[test]
+fn cascade_three_steps_verifies() {
+    let c = Ctx::new();
+    let (x, y, u) = xy(&c);
+    let p = &c.pool;
+    let coef = p.mul(vec![c.int(-12), p.pow(p.add(vec![x, y]), c.int(-2))]);
+    let eq = c.lin(&[(c.int(1), c.d(c.d(u, x), y)), (coef, u)]);
+    let r = laplace_cascade(eq, u, 8, p).unwrap();
+    assert_eq!(r.method, "laplace_cascade(3 step(s))");
+    assert_eq!(
+        laplace_cascade(eq, u, 2, p).unwrap_err().code(),
+        "E-PDE-103"
+    );
+}
+
+#[test]
+fn canonical_form_is_an_identity() {
+    // u(x, y) = w(φ, ψ) substituted into the operator equals the multiplier
+    // times the canonical operator at (φ, ψ).
+    let c = Ctx::new();
+    let (x, y, u) = xy(&c);
+    let p = &c.pool;
+    let eq = c.lin(&[
+        (p.pow(x, c.int(2)), c.d(c.d(u, x), x)),
+        (
+            p.mul(vec![c.int(-1), p.pow(y, c.int(2))]),
+            c.d(c.d(u, y), y),
+        ),
+    ]);
+    for cf in canonical_forms(eq, u, p).unwrap() {
+        let (phi, psi) = cf.transformation;
+        let (xi, eta) = cf.new_variables;
+        let wname = crate::diff::undefined::view(cf.unknown, p).unwrap().name;
+        let composed = p.func(wname, vec![phi, psi]);
+        let lhs = crate::diff::undefined::replace_function(eq, u, composed, p).unwrap();
+        let rhs = p.mul(vec![
+            cf.multiplier,
+            util::subs2(cf.equation, (xi, phi), (eta, psi), p),
+        ]);
+        assert!(
+            util::is_zero(util::sub(lhs, rhs, p), p),
+            "{}",
+            p.display(cf.equation)
+        );
+    }
+}

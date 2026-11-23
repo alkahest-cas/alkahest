@@ -13,10 +13,10 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import alkahest as ak  # noqa: E402
-import alkahest.experimental as akx  # noqa: E402
-from second_order import CORPUS  # noqa: E402
-from translate import to_alkahest  # noqa: E402
+import alkahest as ak
+import alkahest.experimental as akx
+from second_order import CORPUS
+from translate import to_alkahest
 
 
 def run_entry(entry) -> dict:
@@ -41,7 +41,7 @@ def run_entry(entry) -> dict:
 
 
 def main():
-    out = open(sys.argv[1], "w") if len(sys.argv) > 1 else sys.stdout
+    out = open(sys.argv[1], "w") if len(sys.argv) > 1 else sys.stdout  # noqa: SIM115
     for entry in CORPUS:
         print(json.dumps(run_entry(entry), ensure_ascii=False), file=out, flush=True)
 

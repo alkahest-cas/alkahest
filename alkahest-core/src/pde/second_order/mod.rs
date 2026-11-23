@@ -383,12 +383,19 @@ pub fn solve_second_order_with(
 
     let mut reasons: Vec<String> = Vec::new();
     let mut unverified = 0usize;
+    let mut budget: Option<PdeError> = None;
+    let mut quad: Option<PdeError> = None;
     let routes = general_candidates(&l, &info, opts, &arb, 0, &mut reasons, pool);
     for cand in routes {
         let cand = match cand {
             Ok(c) => c,
             Err(e) => {
-                reasons.push(e.to_string());
+                reasons.push(util::detail(&e));
+                match e {
+                    PdeError::LaplaceBudgetExhausted(_) if budget.is_none() => budget = Some(e),
+                    PdeError::QuadratureOfArbitraryFunction(_) if quad.is_none() => quad = Some(e),
+                    _ => {}
+                }
                 continue;
             }
         };
@@ -396,7 +403,7 @@ pub fn solve_second_order_with(
             Ok(s) => return Ok(s),
             Err(e) => {
                 unverified += 1;
-                reasons.push(e.to_string());
+                reasons.push(util::detail(&e));
             }
         }
     }
@@ -405,11 +412,8 @@ pub fn solve_second_order_with(
     }
     // A budget refusal or a quadrature obstruction is the most informative
     // single reason.
-    if let Some(r) = reasons.iter().find(|r| r.contains("transformation(s)")) {
-        return Err(PdeError::LaplaceBudgetExhausted(r.clone()));
-    }
-    if let Some(r) = reasons.iter().find(|r| r.contains("quadrature")) {
-        return Err(PdeError::QuadratureOfArbitraryFunction(r.clone()));
+    if let Some(e) = budget.or(quad) {
+        return Err(e);
     }
     Err(PdeError::NoClosedForm(format!(
         "no method gives a closed-form solution of {} = 0{}",

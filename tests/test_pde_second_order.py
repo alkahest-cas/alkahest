@@ -11,9 +11,8 @@ from __future__ import annotations
 import os
 import sys
 
-import pytest
-
 import alkahest as ak
+import pytest
 
 akx = pytest.importorskip("alkahest.experimental")
 if not hasattr(akx, "solve_second_order"):
@@ -106,7 +105,7 @@ def test_canonical_form_parabolic_variable(P):
     u = P.u(x, y)
     cf = akx.canonical_form(x**2 * D(u, x, 2) + 2 * x * y * D(u, x, y) + y**2 * D(u, y, 2), u)
     assert cf.type == "parabolic"
-    xi, eta = cf.new_variables
+    assert len(cf.new_variables) == 2
     assert cf.in_new_variables
     # the principal part is w_ηη
     assert cf.coefficients[2] == P.pool.integer(1)
@@ -119,7 +118,8 @@ def test_canonical_form_elliptic_is_real(P):
     cf = akx.canonical_form(D(u, P.x, 2) + 4 * D(u, P.x, P.y) + 5 * D(u, P.y, 2), u)
     assert cf.type == "elliptic"
     a, b = cf.transformation
-    assert "I" not in str(a) and "I" not in str(b)
+    assert "I" not in str(a)
+    assert "I" not in str(b)
     assert cf.coefficients[0] == cf.coefficients[2]
 
 
@@ -138,12 +138,7 @@ def test_canonical_forms_by_region_tricomi(P):
 def test_canonical_form_abbasi_403(P):
     x, y = P.x, P.y
     u = P.u(x, y)
-    eq = (
-        D(u, x, 2)
-        - 2 * ak.sin(x) * D(u, x, y)
-        - ak.cos(x) ** 2 * D(u, y, 2)
-        - ak.cos(x) * D(u, y)
-    )
+    eq = D(u, x, 2) - 2 * ak.sin(x) * D(u, x, y) - ak.cos(x) ** 2 * D(u, y, 2) - ak.cos(x) * D(u, y)
     cf = akx.canonical_form(eq, u)
     assert cf.type == "hyperbolic"
     xi, eta = cf.new_variables
@@ -159,7 +154,8 @@ def test_laplace_invariants(P):
     x, y = P.x, P.y
     u = P.u(x, y)
     h, k = akx.laplace_invariants(D(u, x, y) + y * D(u, x) + x * D(u, y) + x * y * u, u)
-    assert str(h) == "0" and str(k) == "0"
+    assert str(h) == "0"
+    assert str(k) == "0"
 
 
 def test_laplace_cascade_steps(P):

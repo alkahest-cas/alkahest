@@ -26,7 +26,7 @@ use crate::kernel::{ExprId, ExprPool};
 
 use super::super::error::PdeError;
 use super::util::{
-    d, div, exp, free_of, integ, is_zero, neg, poly_degree_in, simp, split_xy, sub, tidy,
+    d, div, exp, free_of, integ, is_zero, neg, poly_degree_in, simp, size, split_xy, sub, tidy,
 };
 
 /// One level of the chain: coefficients, source and invariants.
@@ -66,10 +66,40 @@ fn level(
     y: ExprId,
     pool: &ExprPool,
 ) -> Result<Level, PdeError> {
-    let (a, b, c, s) = (tidy(a, pool), tidy(b, pool), tidy(c, pool), tidy(s, pool));
+    let t = |e: ExprId| compact(e, x, y, pool);
+    let (a, b, c, s) = (t(a), t(b), t(c), t(s));
     let (h, k) = invariants(a, b, c, x, y, pool)?;
-    let (h, k) = (tidy(h, pool), tidy(k, pool));
+    let (h, k) = (t(h), t(k));
+    for e in [a, b, c, s, h, k] {
+        if size(e, pool) > MAX_COEFFICIENT_SIZE {
+            return Err(PdeError::LaplaceBudgetExhausted(format!(
+                "the Laplace invariants grew past {MAX_COEFFICIENT_SIZE} nodes after a \
+                 transformation(s); the chain is abandoned"
+            )));
+        }
+    }
     Ok(Level { a, b, c, s, h, k })
+}
+
+/// Coefficients beyond this many nodes stop the cascade (expression swell
+/// is the practical face of a non-terminating chain).
+const MAX_COEFFICIENT_SIZE: u64 = 1500;
+
+/// [`tidy`], or one cancelled fraction when the coefficient is rational in
+/// `x, y` — whichever is smaller.
+fn compact(e: ExprId, x: ExprId, y: ExprId, pool: &ExprPool) -> ExprId {
+    let a = tidy(e, pool);
+    match crate::poly::cancel::cancel(a, vec![x, y], pool) {
+        Ok(r) => {
+            let r = simp(r, pool);
+            if size(r, pool) < size(a, pool) {
+                r
+            } else {
+                a
+            }
+        }
+        Err(_) => a,
+    }
 }
 
 /// The outcome of a successful cascade.
@@ -123,7 +153,7 @@ pub(crate) fn cascade(
                         transforms: (pos.len() - 1) as i32,
                     });
                 }
-                Err(e) => quad_failures.push(e.to_string()),
+                Err(e) => quad_failures.push(super::util::detail(&e)),
             }
         }
         let n = negs.last().expect("non-empty").clone();
@@ -141,7 +171,7 @@ pub(crate) fn cascade(
                         transforms: -((negs.len() - 1) as i32),
                     });
                 }
-                Err(e) => quad_failures.push(e.to_string()),
+                Err(e) => quad_failures.push(super::util::detail(&e)),
             }
         }
         if !quad_failures.is_empty() {

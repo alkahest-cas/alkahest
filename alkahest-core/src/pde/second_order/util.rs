@@ -685,3 +685,12 @@ pub(crate) fn nicer_integral(phi: ExprId, pool: &ExprPool) -> ExprId {
         e
     }
 }
+
+/// The detail of an error without its `what: ` prefix (for re-wrapping).
+pub(crate) fn detail(e: &PdeError) -> String {
+    let s = e.to_string();
+    match s.split_once(": ") {
+        Some((_, rest)) => rest.to_string(),
+        None => s,
+    }
+}

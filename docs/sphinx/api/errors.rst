@@ -316,6 +316,30 @@ Exception subclasses
      problem: data on a derivative, several conditions, a data manifold of the
      wrong dimension, or parameters that could not be eliminated.
 
+   Second-order linear equations in two variables (milestone M2,
+   ``canonical_form`` / ``solve_second_order`` / ``laplace_cascade``):
+
+   - ``E-PDE-100`` — not a linear equation of order two in an unknown of
+     exactly two variables.
+   - ``E-PDE-101`` — a characteristic ODE ``dy/dx = λ(x, y)`` has no
+     first integral found in closed form, or the coordinates did not reduce
+     the principal part.
+   - ``E-PDE-102`` — the type is not the same on the whole plane; use
+     ``canonical_forms`` for one form per region.
+   - ``E-PDE-103`` — the Laplace cascade spent its step budget (or its
+     coefficients swelled) with no invariant vanishing. The chain may be
+     infinite: ``u_xy = u`` never terminates.
+   - ``E-PDE-104`` — no implemented method gives a closed form.
+   - ``E-PDE-105`` — a candidate was produced but not proved by substitution,
+     so it is withheld.
+   - ``E-PDE-106`` — the solution needs ``∫ W(x, y) G(y) dy`` of an
+     arbitrary ``G`` with no integral-free form, or a quadrature that does
+     not close.
+   - ``E-PDE-107`` — conditions other than Cauchy data on a line, a
+     characteristic data line, or ``∫ g`` not in closed form.
+   - ``E-PDE-108`` — ``laplace_cascade`` needs the principal part to be a
+     multiple of ``u_xy``.
+
 .. exception:: ProbabilityError
 
    Code prefix ``E-PROB-*``. The :mod:`alkahest.experimental` probability
