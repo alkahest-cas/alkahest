@@ -98,16 +98,24 @@
   - The solver is a dispatcher over method tiers (`pdsolve_hints()`, `alkahest_cas::pde::TIERS`); later milestones add rows to the table. The first-order tiers: linear and semilinear `Σ aᵢ(x) u_{xᵢ} = c(x, u)` in any number of variables (first integrals of the characteristic system, then the reduced ODE along characteristics — solved directly when it is linear in `u`, by `dsolve` otherwise); quasilinear equations by Lagrange's method (`F1(ξ₁, ξ₂) = 0`, explicit when `u` isolates); Clairaut (complete and singular integrals), `f(p, q) = 0`, `f(u, p, q) = 0`, additively separable / Hamilton–Jacobi equations, and Lagrange–Charpit with Charpit's system restricted to the equation's surface.
   - First integrals come from vanishing characteristic components, from pairs `dxⱼ/dxᵢ` solved by `dsolve` or as separable quadratures after eliminating a third variable through an integral already found, and from an ansatz search over monomials and logarithms solved as a linear system over `ℚ(parameters)` (the integrable combinations `x + y + u`, `x² + y² + u²`). Quadrature falls back to integration by parts and to `t = e^{λv}` for hyperbolic and exponential integrands with symbolic `λ`.
   - Cauchy problems: data `u(curve) = φ` (typically `.ic(u(x, 0), f(x))`). The data manifold must be non-characteristic — an identically vanishing Jacobian refuses with `E-PDE-052`, a non-constant one is a `side_conditions` entry — and the parameters are eliminated by isolation, the polynomial solver or the transcendental solver. For `u_t + c(u) u_x = 0` the breaking time `t_b = t₀ − 1/min g′` (`g = c(f)`) is the side condition `t_b − t > 0`; `u_t + u u_x = 0, u(x, 0) = sin x` returns the implicit `u = sin(x − u t)`.
-  - Corpus (`tests/pde_corpus/`, a regression test asserts no unverified answer and no lost solve), verified solves against Mathematica 14.3 (`DSolve`, answers checked by substitution with `FullSimplify`) and SymPy 1.14 (`pdsolve` + `checkpdesol`) run locally:
+  - **Unevaluated integrals as answers.** A new reserved head, `Integral(f, t, lo, hi)` (and the indefinite `Integral(f, x)`, defined as `∫₀ˣ`), is available as `alkahest.experimental.Integral`. `diff` applies the Leibniz rule and the fundamental theorem; `subs` treats `t` as bound; f64 evaluation uses Gauss–Legendre quadrature; it prints and parses. When a characteristic quadrature has no closed form — an arbitrary coefficient `f(x)`, a symbolic power such as `tanh(λx)^k`, or a non-elementary integrand — `pdsolve` answers with `Integral(…)`. The answer is still verified exactly: verification merges `Σ cᵢ ∫ fᵢ dt` into one integral and proves its integrand zero, and a numeric value never certifies.
+  - Characteristic ODEs beyond `dsolve` are handled by heuristics that keep symbolic parameters. Each candidate first integral is checked exactly:
+    - linear and Bernoulli equations (symbolic exponent) by integrating factor;
+    - separable equations, including ones written as a sum;
+    - `y′ = F(κx + y)` by substitution;
+    - exact equations, and equations made exact by an integrating factor `μ(x)` or `μ(y)`;
+    - Riccati equations with a particular solution `c₁h + c₀`, where `h = x^e` or `e^{λx}` with the exponent found by balancing the coefficients (`y′ = a xⁿ y² + b m x^{m−1} − a b² x^{n+2m}` ⇒ `y_p = b x^m`).
+  - Corpus (`tests/pde_corpus/`, a regression test asserts no unverified answer and no lost solve), verified solves against Mathematica 14.3 (`DSolve`, answers checked by substitution with `FullSimplify`) and SymPy 1.14 (`pdsolve` + `checkpdesol`) run locally; "closed" excludes answers containing an unevaluated integral (Mathematica's `Inactive[Integrate]`):
 
-    | corpus | problems | Alkahest | Mathematica 14.3 | SymPy 1.14 |
+    | corpus | problems | Alkahest (closed + with `Integral`) | Mathematica 14.3 (closed + unevaluated) | SymPy 1.14 |
     |---|---|---|---|---|
-    | SymPy's `test_pde.py` | 25 | 25 | 25 | 24 |
-    | textbook (Debnath, Sneddon, Evans) | 46 + 1 must-refuse | 46 | 39 | 13 |
-    | Abbasi benchmark, first-order handbook chapter (sample) | 155 | 32 | 82 (65 without unevaluated integrals) | 11 |
+    | SymPy's `test_pde.py` | 25 | 25 (25 + 0) | 25 (25 + 0) | 24 |
+    | textbook (Debnath, Sneddon, Evans) | 46 + 1 must-refuse | 46 (46 + 0) | 39 (39 + 0) | 13 |
+    | Abbasi benchmark, first-order handbook chapter, first sample | 155 | 102 (28 + 74) | 82 (65 + 17) | 12 |
+    | Abbasi, 400 of the chapter's 1579 problems (superset of the 155) | 400 | 262 (76 + 186) | 188 (143 + 45) | 31 |
 
-    Mathematica returns no general solution for the quasilinear and Cauchy–Burgers problems of the textbook set. The Abbasi sample is dominated by Riccati/Abel characteristics, arbitrary coefficient functions `f(x)` and symbolic exponents, where an answer needs unevaluated integrals or hypergeometric functions; `pdsolve` refuses those (`E-PDE-051`).
-  - Error codes `E-PDE-050 … E-PDE-053`.
+    Alkahest returns no unverified answer. Mathematica returns 102 answers on the 400 that `FullSimplify` cannot confirm; SymPy returns 50. The benchmark's own (unverified) verdicts on the 400 are Mathematica 15 305 and Maple 2026.1 362. Mathematica returns no general solution for the quasilinear and Cauchy–Burgers problems of the textbook set.
+  - Error codes `E-PDE-050 … E-PDE-054`.
 
 ### Fixed
 
