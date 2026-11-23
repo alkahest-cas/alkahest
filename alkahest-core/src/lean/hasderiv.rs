@@ -376,7 +376,7 @@ enum AKind {
     /// `f(arg)` for a unary elementary function.
     Fun { f: Fn1, arg: Poly, arg_lean: String },
     /// `(u)⁻¹`.
-    Inv,
+    Inv { u_lean: String },
     /// `base ^ ((1:ℝ) / b)`, `b ≥ 3` (the `b = 2` root is `Real.sqrt`); its
     /// `ρ ^ b = base` rule is registered when the atom is made.
     Root,
@@ -852,14 +852,32 @@ impl<'a> Ctx<'a> {
                     .unwrap();
             let mut out = Poly::konst(Rational::from(c.recip_ref()));
             for &(v, e) in &m {
-                if matches!(self.atoms[v as usize].kind, AKind::Inv) {
-                    // `(u⁻¹)⁻¹ = u`, which `ring` also normalises.
+                if let AKind::Inv { u_lean: inner_lean } = self.atoms[v as usize].kind.clone() {
+                    // `(u⁻¹)⁻¹`: `ring` keeps it as an atom, so state `inv_inv`.
                     let inner = self.rels.iter().find_map(|r| match &r.kind {
                         RelKind::Inverse { w, u } if *w == v => Some(u.clone()),
                         _ => None,
                     });
                     let inner = inner.ok_or(WITHHELD_UNSUPPORTED_NODE)?;
-                    out = out.mul(&inner.pow(e)?)?;
+                    let lean = format!("({})⁻¹", self.atoms[v as usize].lean);
+                    let ww = match self.by_lean.get(&lean) {
+                        Some(&id) => id,
+                        None => {
+                            let depth = self.atoms[v as usize].depth + 1;
+                            let id = self.new_atom(lean.clone(), AKind::Free, depth);
+                            self.push_rel(
+                                lean,
+                                format!("({inner_lean})"),
+                                "inv_inv _".into(),
+                                RelKind::Subst {
+                                    v: id,
+                                    e: inner.clone(),
+                                },
+                            );
+                            id
+                        }
+                    };
+                    out = out.mul(&Poly::var(ww).pow(e)?)?;
                     continue;
                 }
                 let a_lean = self.atoms[v as usize].lean.clone();
@@ -932,7 +950,13 @@ impl<'a> Ctx<'a> {
         }
         let lean = format!("({u_lean})⁻¹");
         let depth = 1 + self.depth_of(u);
-        let id = self.new_atom(lean.clone(), AKind::Inv, depth);
+        let id = self.new_atom(
+            lean.clone(),
+            AKind::Inv {
+                u_lean: u_lean.to_string(),
+            },
+            depth,
+        );
         self.push_rel(
             format!("({u_lean}) * {lean}"),
             "1".into(),

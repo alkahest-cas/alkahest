@@ -75,6 +75,7 @@ INTEGRANDS = [
     "sin(x)*cos(x)",
     "sin(3*x)*cos(5*x)",
     "tan(x)*sec(x)^2",
+    "1/(1/cos(x))^2",
     "sinh(x)^2*cosh(x)",
     "exp(x)*sin(exp(x))*cos(exp(x))^2",
 ]
