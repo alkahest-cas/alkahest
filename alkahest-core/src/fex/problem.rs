@@ -30,6 +30,9 @@ use crate::simplify::simplify;
 
 use super::error::FexError;
 
+/// A Rust closure of the coordinates (see [`ScalarField::Func`]).
+pub type CoordFn = Arc<dyn Fn(&[f64]) -> f64 + Send + Sync>;
+
 /// A scalar function of the coordinates, evaluated once per point.
 #[derive(Clone, Default)]
 #[non_exhaustive]
@@ -42,7 +45,7 @@ pub enum ScalarField {
     /// A compiled expression in the coordinates.
     Compiled(Arc<CompiledFn>),
     /// A Rust closure of the coordinates.
-    Func(Arc<dyn Fn(&[f64]) -> f64 + Send + Sync>),
+    Func(CoordFn),
 }
 
 impl fmt::Debug for ScalarField {
@@ -239,10 +242,7 @@ impl PdeOperator {
         let dim = syms.coords.len();
         if syms.grad.len() != dim {
             return Err(FexError::Dimension {
-                detail: format!(
-                    "{} gradient symbols for {dim} coordinates",
-                    syms.grad.len()
-                ),
+                detail: format!("{} gradient symbols for {dim} coordinates", syms.grad.len()),
             });
         }
         // u_t is shorthand for the time component of the gradient.
@@ -258,8 +258,7 @@ impl PdeOperator {
                     crate::eval::symbols::collect_free_symbols(expr, pool, &mut seen);
                     if seen.contains(&ut) {
                         return Err(FexError::Dimension {
-                            detail: "the operator uses u_t but no time coordinate was given"
-                                .into(),
+                            detail: "the operator uses u_t but no time coordinate was given".into(),
                         });
                     }
                 }
@@ -416,10 +415,7 @@ impl Problem {
         if let PdeOperator::Linear(l) = &operator {
             if !l.grad.is_empty() && l.grad.len() != dim {
                 return Err(FexError::Dimension {
-                    detail: format!(
-                        "{} gradient coefficients for dimension {dim}",
-                        l.grad.len()
-                    ),
+                    detail: format!("{} gradient coefficients for dimension {dim}", l.grad.len()),
                 });
             }
         }

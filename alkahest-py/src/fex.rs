@@ -157,7 +157,11 @@ unsafe fn write_f64<'a>(obj: &Bound<'_, PyAny>, n: usize, what: &str) -> PyResul
     Ok(std::slice::from_raw_parts_mut(v.addr as *mut f64, n))
 }
 
-fn expr_ids(py: Python<'_>, items: &[PyRef<'_, PyExpr>], pool: &Py<PyExprPool>) -> PyResult<Vec<ExprId>> {
+fn expr_ids(
+    py: Python<'_>,
+    items: &[PyRef<'_, PyExpr>],
+    pool: &Py<PyExprPool>,
+) -> PyResult<Vec<ExprId>> {
     items
         .iter()
         .map(|e| {
@@ -560,7 +564,11 @@ pub struct PyFexEvaluator {
 }
 
 impl PyFexEvaluator {
-    fn batch(&self, e: &Bound<'_, PyAny>, theta: &Bound<'_, PyAny>) -> PyResult<(Vec<usize>, Vec<f64>, usize)> {
+    fn batch(
+        &self,
+        e: &Bound<'_, PyAny>,
+        theta: &Bound<'_, PyAny>,
+    ) -> PyResult<(Vec<usize>, Vec<f64>, usize)> {
         let (es, esh) = read_i64(e, "E")?;
         let (th, _) = read_f64(theta, "Theta")?;
         let b = if esh.len() == 2 {
@@ -671,7 +679,8 @@ impl PyFexEvaluator {
             // SAFETY: see above; the slices are rebuilt from the same
             // pointers and lengths.
             let rs = unsafe { std::slice::from_raw_parts_mut(rs_addr as *mut f64, rs_len) };
-            let js = js_raw.map(|(a, n)| unsafe { std::slice::from_raw_parts_mut(a as *mut f64, n) });
+            let js =
+                js_raw.map(|(a, n)| unsafe { std::slice::from_raw_parts_mut(a as *mut f64, n) });
             ev.residual_and_jacobian_batch(&es, &th, rs, js)
         })
         .map_err(fex_err)
@@ -707,6 +716,7 @@ impl PyFexEvaluator {
 
     /// `(u, grad, lap)` of one candidate at the given points, written into
     /// `u` (n), `grad` (n × d), `lap` (n).
+    #[allow(clippy::too_many_arguments)]
     fn jets_into(
         &self,
         py: Python<'_>,

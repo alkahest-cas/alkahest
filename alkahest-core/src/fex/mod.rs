@@ -47,7 +47,7 @@ pub use eval::{Evaluator, Jets};
 pub use fit::{fit, fit_batch, FitMethod, FitOptions, FitResult};
 pub use ops::{BinaryOp, UnaryOp, ALL_UNARY, PAPER_BINARY, PAPER_UNARY};
 pub use problem::{
-    CompiledOperatorHandle, JetSymbols, LinearOperator, LossKind, PdeOperator, Problem,
+    CompiledOperatorHandle, CoordFn, JetSymbols, LinearOperator, LossKind, PdeOperator, Problem,
     ScalarField,
 };
 pub use template::{shape_preset, SlotInfo, SlotKind, Template, MAX_TEMPLATE_NODES};

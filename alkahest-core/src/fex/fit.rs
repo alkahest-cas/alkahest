@@ -212,7 +212,11 @@ pub(crate) fn fit_ops(
         FitMethod::Lm { max_iter } => lm(ev, ops, theta0, max_iter, opts.tol, free),
         FitMethod::Adam { iters, lr } => adam(ev, ops, theta0, iters, lr, opts.tol, free),
         FitMethod::Bfgs { iters } => bfgs(ev, ops, theta0, iters, opts.tol, free),
-        FitMethod::AdamBfgs { adam: a, lr, bfgs: b } => {
+        FitMethod::AdamBfgs {
+            adam: a,
+            lr,
+            bfgs: b,
+        } => {
             let r1 = adam(ev, ops, theta0, a, lr, opts.tol, free);
             let start = if r1.loss.is_finite() {
                 r1.theta.clone()
@@ -426,11 +430,23 @@ fn lm(
     }
 }
 
-fn ev_rows(ev: &Evaluator, ops: &[NodeOp], th: &[f64], r: &mut [f64], j: Option<&mut [f64]>) -> bool {
+fn ev_rows(
+    ev: &Evaluator,
+    ops: &[NodeOp],
+    th: &[f64],
+    r: &mut [f64],
+    j: Option<&mut [f64]>,
+) -> bool {
     ev.cand_rows(ops, th, r, j)
 }
 
-fn loss_grad(ev: &Evaluator, ops: &[NodeOp], th: &[f64], g: &mut [f64], free: Option<&[bool]>) -> f64 {
+fn loss_grad(
+    ev: &Evaluator,
+    ops: &[NodeOp],
+    th: &[f64],
+    g: &mut [f64],
+    free: Option<&[bool]>,
+) -> f64 {
     let l = ev.loss_impl(ops, th, Some(g));
     let n = g.len();
     mask_cols(g, n, free);

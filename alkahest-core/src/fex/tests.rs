@@ -49,7 +49,9 @@ fn poisson_problem(d: usize) -> Problem {
         d,
         PdeOperator::poisson(),
         ScalarField::Const(-(d as f64)),
-        ScalarField::Func(Arc::new(|x: &[f64]| 0.5 * x.iter().map(|v| v * v).sum::<f64>())),
+        ScalarField::Func(Arc::new(|x: &[f64]| {
+            0.5 * x.iter().map(|v| v * v).sum::<f64>()
+        })),
     )
     .unwrap()
 }
@@ -69,7 +71,12 @@ fn template_slots_follow_reference_inorder() {
     let kinds: Vec<SlotKind> = t.slots().iter().map(|s| s.kind).collect();
     assert_eq!(
         kinds,
-        vec![SlotKind::Leaf, SlotKind::Binary, SlotKind::Leaf, SlotKind::Unary]
+        vec![
+            SlotKind::Leaf,
+            SlotKind::Binary,
+            SlotKind::Leaf,
+            SlotKind::Unary
+        ]
     );
     assert_eq!(t.n_params(), 5 + 5 + 2);
     assert_eq!(t.slot_arities(), vec![9, 3, 9, 9]);
@@ -101,7 +108,13 @@ fn instantiate_matches_paper_formula() {
 /// Unary ops that are smooth everywhere on the sample domain.
 const SMOOTH: [UnaryOp; 9] = PAPER_UNARY;
 
-fn check_candidate_derivatives(t: &Template, e: &[usize], th: &[f64], x: &[f64], time: Option<usize>) {
+fn check_candidate_derivatives(
+    t: &Template,
+    e: &[usize],
+    th: &[f64],
+    x: &[f64],
+    time: Option<usize>,
+) {
     let d = t.dim();
     let pool = ExprPool::new();
     let xs = coords(&pool, d);
@@ -116,7 +129,13 @@ fn check_candidate_derivatives(t: &Template, e: &[usize], th: &[f64], x: &[f64],
     for (s, v) in psyms.iter().zip(th) {
         env.insert(*s, *v);
     }
-    let mut prob = Problem::new(d, PdeOperator::poisson(), ScalarField::Zero, ScalarField::Zero).unwrap();
+    let mut prob = Problem::new(
+        d,
+        PdeOperator::poisson(),
+        ScalarField::Zero,
+        ScalarField::Zero,
+    )
+    .unwrap();
     if let Some(tt) = time {
         prob = prob.with_time(tt).unwrap();
     }
@@ -134,14 +153,22 @@ fn check_candidate_derivatives(t: &Template, e: &[usize], th: &[f64], x: &[f64],
         let gi = diff(usym, xs[i], &pool).unwrap().value;
         grads.push(gi);
         let g_ref = ev_at(gi, &env, &pool);
-        assert!(close(jets.grad[i], g_ref, 1e-9), "grad[{i}] {} vs {g_ref}", jets.grad[i]);
+        assert!(
+            close(jets.grad[i], g_ref, 1e-9),
+            "grad[{i}] {} vs {g_ref}",
+            jets.grad[i]
+        );
         if Some(i) != time {
             lap_expr_terms.push(diff(gi, xs[i], &pool).unwrap().value);
         }
     }
     let lap = pool.add(lap_expr_terms);
     let lap_ref = ev_at(lap, &env, &pool);
-    assert!(close(jets.lap[0], lap_ref, 1e-9), "lap {} vs {lap_ref}", jets.lap[0]);
+    assert!(
+        close(jets.lap[0], lap_ref, 1e-9),
+        "lap {} vs {lap_ref}",
+        jets.lap[0]
+    );
     // Jacobian rows: u, Δu, ∂ᵢu  w.r.t. every θ_k.
     let rows: Vec<ExprId> = std::iter::once(usym)
         .chain(std::iter::once(lap))
@@ -177,7 +204,13 @@ fn fused_derivatives_match_symbolic_diff_random() {
 
 #[test]
 fn fused_derivatives_with_time_and_division_and_log() {
-    let u = [UnaryOp::Id, UnaryOp::Sq, UnaryOp::Exp, UnaryOp::Log, UnaryOp::Sin];
+    let u = [
+        UnaryOp::Id,
+        UnaryOp::Sq,
+        UnaryOp::Exp,
+        UnaryOp::Log,
+        UnaryOp::Sin,
+    ];
     let b = [BinaryOp::Div, BinaryOp::Mul, BinaryOp::Sub];
     let t = Template::new("U(B(L,L))", &u, &b, 3).unwrap();
     // log( (L[sq]) / (L[exp]) ) with positive weights: argument > 0.
@@ -206,7 +239,9 @@ fn residual_jacobian_matches_finite_differences() {
     let np = t.n_params();
     let mut r = vec![0.0; m];
     let mut j = vec![0.0; m * np];
-    assert!(ev.residual_and_jacobian(&e, &th, &mut r, Some(&mut j)).unwrap());
+    assert!(ev
+        .residual_and_jacobian(&e, &th, &mut r, Some(&mut j))
+        .unwrap());
     let h = 1e-6;
     for k in 0..np {
         let mut tp = th.clone();
@@ -251,7 +286,12 @@ fn batch_agrees_with_single_candidate_calls() {
     let np = t.n_params();
     let m = ev.n_residuals();
     let es: Vec<usize> = (0..b)
-        .flat_map(|_| t.slot_arities().into_iter().map(|k| rng.below(k)).collect::<Vec<_>>())
+        .flat_map(|_| {
+            t.slot_arities()
+                .into_iter()
+                .map(|k| rng.below(k))
+                .collect::<Vec<_>>()
+        })
         .collect();
     let ths: Vec<f64> = (0..b * np).map(|_| rng.unif(-0.3, 0.3)).collect();
     let mut r = vec![0.0; b * m];
@@ -265,7 +305,9 @@ fn batch_agrees_with_single_candidate_calls() {
         let th = &ths[c * np..(c + 1) * np];
         let mut r1 = vec![0.0; m];
         let mut j1 = vec![0.0; m * np];
-        let ok1 = ev.residual_and_jacobian(e, th, &mut r1, Some(&mut j1)).unwrap();
+        let ok1 = ev
+            .residual_and_jacobian(e, th, &mut r1, Some(&mut j1))
+            .unwrap();
         assert_eq!(ok[c], ok1);
         assert_eq!(&r[c * m..(c + 1) * m], &r1[..]);
         assert_eq!(&j[c * m * np..(c + 1) * m * np], &j1[..]);
@@ -303,7 +345,11 @@ fn interpreter_agrees_with_instantiate_on_every_skeleton() {
                         env.insert(xs[0], pts[p * d]);
                         env.insert(xs[1], pts[p * d + 1]);
                         let want = ev_at(expr, &env, &pool);
-                        assert!(close(jets.u[p], want, 1e-12), "{e:?}: {} vs {want}", jets.u[p]);
+                        assert!(
+                            close(jets.u[p], want, 1e-12),
+                            "{e:?}: {} vs {want}",
+                            jets.u[p]
+                        );
                     }
                     count += 1;
                 }
@@ -332,7 +378,10 @@ fn overflow_and_division_by_zero_score_infinity_not_nan() {
     let m = ev.n_residuals();
     let cases: Vec<([usize; 4], Vec<f64>)> = vec![
         // exp(exp(huge)) overflow
-        ([2, 0, 0, 2], vec![500.0, 500.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+        (
+            [2, 0, 0, 2],
+            vec![500.0, 500.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        ),
         // L[0] / L[0] with zero biases: 0/0
         ([0, 1, 0, 1], vec![0.0; 8]),
         // log of a negative number
@@ -342,7 +391,9 @@ fn overflow_and_division_by_zero_score_infinity_not_nan() {
         assert_eq!(th.len(), np);
         let mut r = vec![0.0; m];
         let mut j = vec![1.0; m * np];
-        let ok = ev.residual_and_jacobian(&e, &th, &mut r, Some(&mut j)).unwrap();
+        let ok = ev
+            .residual_and_jacobian(&e, &th, &mut r, Some(&mut j))
+            .unwrap();
         assert!(!ok, "{e:?} should be invalid");
         assert!(r.iter().all(|v| *v == f64::INFINITY));
         assert!(j.iter().all(|v| *v == 0.0));
@@ -451,7 +502,17 @@ fn equal_keys_mean_equal_families_numerically() {
         let mut best = f64::INFINITY;
         for _ in 0..8 {
             let th0: Vec<f64> = (0..t.n_params()).map(|_| rng.unif(-1.0, 1.0)).collect();
-            let r = fit(&ev, &b, &th0, &FitOptions { method: FitMethod::Lm { max_iter: 200 }, tol: 1e-26, ..Default::default() }).unwrap();
+            let r = fit(
+                &ev,
+                &b,
+                &th0,
+                &FitOptions {
+                    method: FitMethod::Lm { max_iter: 200 },
+                    tol: 1e-26,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
             best = best.min(r.loss);
             if best < 1e-18 {
                 break;
@@ -512,14 +573,47 @@ fn dedup_cache_and_same_function() {
     // id(L[sq] + L[0]) with ½ weights vs id(L[0] + L[sq]) with the same: equal.
     let th1 = [0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
     let th2 = [0.0, 0.0, 0.0, 0.5, 0.5, 0.0, 1.0, 0.0];
-    let same = same_function(&t, &[3, 0, 0, 2], &th1, &[0, 0, 3, 2], &th2, &xs, &pool, 1000, 1e-9).unwrap();
+    let same = same_function(
+        &t,
+        &[3, 0, 0, 2],
+        &th1,
+        &[0, 0, 3, 2],
+        &th2,
+        &xs,
+        &pool,
+        1000,
+        1e-9,
+    )
+    .unwrap();
     assert_eq!(same, Some(true));
     // ... with a slightly different weight (0.5000000001 snaps to 1/2).
     let th3 = [0.0, 0.0, 0.0, 0.500_000_000_1, 0.5, 0.0, 1.0, 0.0];
-    let same = same_function(&t, &[3, 0, 0, 2], &th1, &[0, 0, 3, 2], &th3, &xs, &pool, 1000, 1e-9).unwrap();
+    let same = same_function(
+        &t,
+        &[3, 0, 0, 2],
+        &th1,
+        &[0, 0, 3, 2],
+        &th3,
+        &xs,
+        &pool,
+        1000,
+        1e-9,
+    )
+    .unwrap();
     assert_eq!(same, Some(true));
     let th4 = [0.0, 0.0, 0.0, 0.25, 0.5, 0.0, 1.0, 0.0];
-    let same = same_function(&t, &[3, 0, 0, 2], &th1, &[0, 0, 3, 2], &th4, &xs, &pool, 1000, 1e-9).unwrap();
+    let same = same_function(
+        &t,
+        &[3, 0, 0, 2],
+        &th1,
+        &[0, 0, 3, 2],
+        &th4,
+        &xs,
+        &pool,
+        1000,
+        1e-9,
+    )
+    .unwrap();
     assert_ne!(same, Some(true));
 }
 
@@ -570,7 +664,9 @@ fn lm_recovers_conservation_law_solution() {
         d,
         PdeOperator::transport(coef),
         ScalarField::Zero,
-        ScalarField::Func(Arc::new(move |x: &[f64]| (c * x[1..].iter().sum::<f64>()).sin())),
+        ScalarField::Func(Arc::new(move |x: &[f64]| {
+            (c * x[1..].iter().sum::<f64>()).sin()
+        })),
     )
     .unwrap()
     .with_time(0)
@@ -609,14 +705,41 @@ fn adam_and_bfgs_reduce_the_loss() {
     let th0: Vec<f64> = (0..t.n_params()).map(|_| rng.unif(-0.1, 0.1)).collect();
     let l0 = ev.loss(&e, &th0).unwrap();
     for method in [
-        FitMethod::Adam { iters: 200, lr: 1e-2 },
+        FitMethod::Adam {
+            iters: 200,
+            lr: 1e-2,
+        },
         FitMethod::Bfgs { iters: 50 },
-        FitMethod::AdamBfgs { adam: 20, lr: 1e-3, bfgs: 20 },
+        FitMethod::AdamBfgs {
+            adam: 20,
+            lr: 1e-3,
+            bfgs: 20,
+        },
     ] {
-        let r = fit(&ev, &e, &th0, &FitOptions { method, tol: 1e-30, ..Default::default() }).unwrap();
+        let r = fit(
+            &ev,
+            &e,
+            &th0,
+            &FitOptions {
+                method,
+                tol: 1e-30,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert!(r.loss < l0 * 0.5, "{method:?}: {} vs {l0}", r.loss);
     }
-    let r = fit(&ev, &e, &th0, &FitOptions { method: FitMethod::Bfgs { iters: 300 }, tol: 1e-30, ..Default::default() }).unwrap();
+    let r = fit(
+        &ev,
+        &e,
+        &th0,
+        &FitOptions {
+            method: FitMethod::Bfgs { iters: 300 },
+            tol: 1e-30,
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert!(r.loss < 1e-12, "bfgs {}", r.loss);
 }
 
@@ -641,15 +764,25 @@ fn rayleigh_and_normalized_gradients_match_finite_differences() {
     let xi = grid(&mut rng, 150, d, -1.0, 1.0);
     let xb = grid(&mut rng, 40, d, -1.0, 1.0);
     let v = ScalarField::Func(Arc::new(|x: &[f64]| x.iter().map(|a| a.cos()).sum::<f64>()));
-    let ray = Problem::new(d, PdeOperator::poisson(), ScalarField::Zero, ScalarField::Zero)
-        .unwrap()
-        .with_potential(v.clone())
-        .with_loss(LossKind::Rayleigh);
-    let nls = Problem::new(d, PdeOperator::cubic_schrodinger(), ScalarField::Zero, ScalarField::Zero)
-        .unwrap()
-        .with_potential(v)
-        .with_loss(LossKind::Normalized { power: 3.0 })
-        .with_bc_weight(0.0);
+    let ray = Problem::new(
+        d,
+        PdeOperator::poisson(),
+        ScalarField::Zero,
+        ScalarField::Zero,
+    )
+    .unwrap()
+    .with_potential(v.clone())
+    .with_loss(LossKind::Rayleigh);
+    let nls = Problem::new(
+        d,
+        PdeOperator::cubic_schrodinger(),
+        ScalarField::Zero,
+        ScalarField::Zero,
+    )
+    .unwrap()
+    .with_potential(v)
+    .with_loss(LossKind::Normalized { power: 3.0 })
+    .with_bc_weight(0.0);
     let e = [8, 0, 3, 6]; // exp(L[cos] + L[sq])
     let th: Vec<f64> = (0..t.n_params()).map(|_| rng.unif(-0.4, 0.4)).collect();
     for prob in [ray, nls] {
@@ -659,7 +792,13 @@ fn rayleigh_and_normalized_gradients_match_finite_differences() {
         assert!(l.is_finite());
         let fd = fd_grad(&ev, &e, &th);
         for k in 0..g.len() {
-            assert!((g[k] - fd[k]).abs() < 1e-5 * (1.0 + fd[k].abs()), "{:?} k={k}: {} vs {}", prob.loss(), g[k], fd[k]);
+            assert!(
+                (g[k] - fd[k]).abs() < 1e-5 * (1.0 + fd[k].abs()),
+                "{:?} k={k}: {} vs {}",
+                prob.loss(),
+                g[k],
+                fd[k]
+            );
         }
         let mut r = vec![0.0; ev.n_residuals()];
         let err = ev.residual_and_jacobian(&e, &th, &mut r, None).unwrap_err();
@@ -679,7 +818,12 @@ fn expression_operator_matches_builtin() {
     let op = PdeOperator::from_expr(neg_lap, &js, None, &pool).unwrap();
     assert!(matches!(op, PdeOperator::Linear(ref l) if l.lap == -1.0 && l.u == 0.0));
     // −Δu + u³ + V(x)·u with V = Σ cos xᵢ, as an expression, vs the builtin.
-    let vexpr = pool.add(js.coords.iter().map(|&x| pool.func("cos", vec![x])).collect());
+    let vexpr = pool.add(
+        js.coords
+            .iter()
+            .map(|&x| pool.func("cos", vec![x]))
+            .collect(),
+    );
     let f = pool.add(vec![
         neg_lap,
         pool.pow(js.u, pool.integer(3)),
@@ -689,9 +833,14 @@ fn expression_operator_matches_builtin() {
     assert!(matches!(op_expr, PdeOperator::Compiled(_)));
     assert_eq!(op_expr.order(), 2);
     let p_expr = Problem::new(d, op_expr, ScalarField::Zero, ScalarField::Zero).unwrap();
-    let p_builtin = Problem::new(d, PdeOperator::cubic_schrodinger(), ScalarField::Zero, ScalarField::Zero)
-        .unwrap()
-        .with_potential(ScalarField::from_expr(vexpr, &js.coords, &pool).unwrap());
+    let p_builtin = Problem::new(
+        d,
+        PdeOperator::cubic_schrodinger(),
+        ScalarField::Zero,
+        ScalarField::Zero,
+    )
+    .unwrap()
+    .with_potential(ScalarField::from_expr(vexpr, &js.coords, &pool).unwrap());
     let t = Template::new("depth2_sub", &PAPER_UNARY, &PAPER_BINARY, d).unwrap();
     let mut rng = Rng(31);
     let xi = grid(&mut rng, 64, d, -1.0, 1.0);
@@ -704,8 +853,10 @@ fn expression_operator_matches_builtin() {
     let np = t.n_params();
     let (mut r1, mut r2) = (vec![0.0; m], vec![0.0; m]);
     let (mut j1, mut j2) = (vec![0.0; m * np], vec![0.0; m * np]);
-    e1.residual_and_jacobian(&e, &th, &mut r1, Some(&mut j1)).unwrap();
-    e2.residual_and_jacobian(&e, &th, &mut r2, Some(&mut j2)).unwrap();
+    e1.residual_and_jacobian(&e, &th, &mut r1, Some(&mut j1))
+        .unwrap();
+    e2.residual_and_jacobian(&e, &th, &mut r2, Some(&mut j2))
+        .unwrap();
     for i in 0..m {
         assert!(close(r1[i], r2[i], 1e-12));
     }
@@ -750,28 +901,90 @@ fn error_codes() {
     let e = Template::new("U(B(L,L)", &PAPER_UNARY, &PAPER_BINARY, 2).unwrap_err();
     assert_eq!(e.code(), "E-FEX-001");
     assert!(e.remediation().is_some());
-    assert_eq!(Template::new("Q", &PAPER_UNARY, &PAPER_BINARY, 2).unwrap_err().code(), "E-FEX-001");
-    assert_eq!(Template::new("B(L,L)", &PAPER_UNARY, &[], 2).unwrap_err().code(), "E-FEX-001");
-    assert_eq!(Template::from_names("L", &["tanh"], &[], 2).unwrap_err().code(), "E-FEX-002");
-    assert_eq!(Template::from_names("B(L,L)", &["id"], &["^"], 2).unwrap_err().code(), "E-FEX-002");
+    assert_eq!(
+        Template::new("Q", &PAPER_UNARY, &PAPER_BINARY, 2)
+            .unwrap_err()
+            .code(),
+        "E-FEX-001"
+    );
+    assert_eq!(
+        Template::new("B(L,L)", &PAPER_UNARY, &[], 2)
+            .unwrap_err()
+            .code(),
+        "E-FEX-001"
+    );
+    assert_eq!(
+        Template::from_names("L", &["tanh"], &[], 2)
+            .unwrap_err()
+            .code(),
+        "E-FEX-002"
+    );
+    assert_eq!(
+        Template::from_names("B(L,L)", &["id"], &["^"], 2)
+            .unwrap_err()
+            .code(),
+        "E-FEX-002"
+    );
     let t = Template::new("depth2_sub", &PAPER_UNARY, &PAPER_BINARY, 2).unwrap();
     assert_eq!(t.check_opcodes(&[0, 0, 0]).unwrap_err().code(), "E-FEX-003");
-    assert_eq!(t.check_opcodes(&[0, 3, 0, 0]).unwrap_err().code(), "E-FEX-003");
+    assert_eq!(
+        t.check_opcodes(&[0, 3, 0, 0]).unwrap_err().code(),
+        "E-FEX-003"
+    );
     let pool = ExprPool::new();
     let xs = coords(&pool, 2);
-    assert_eq!(t.instantiate(&[0, 0, 0, 0], &[0.0; 3], &xs, &pool).unwrap_err().code(), "E-FEX-004");
-    assert_eq!(t.instantiate(&[0, 0, 0, 0], &[0.0; 8], &xs[..1], &pool).unwrap_err().code(), "E-FEX-007");
+    assert_eq!(
+        t.instantiate(&[0, 0, 0, 0], &[0.0; 3], &xs, &pool)
+            .unwrap_err()
+            .code(),
+        "E-FEX-004"
+    );
+    assert_eq!(
+        t.instantiate(&[0, 0, 0, 0], &[0.0; 8], &xs[..1], &pool)
+            .unwrap_err()
+            .code(),
+        "E-FEX-007"
+    );
     let prob = poisson_problem(2);
-    assert_eq!(Evaluator::new(&t, &prob, &[0.0; 3], &[]).err().unwrap().code(), "E-FEX-005");
-    assert_eq!(Evaluator::new(&t, &prob, &[], &[]).err().unwrap().code(), "E-FEX-005");
+    assert_eq!(
+        Evaluator::new(&t, &prob, &[0.0; 3], &[])
+            .err()
+            .unwrap()
+            .code(),
+        "E-FEX-005"
+    );
+    assert_eq!(
+        Evaluator::new(&t, &prob, &[], &[]).err().unwrap().code(),
+        "E-FEX-005"
+    );
     let p3 = poisson_problem(3);
-    assert_eq!(Evaluator::new(&t, &p3, &[0.0; 6], &[]).err().unwrap().code(), "E-FEX-007");
-    assert_eq!(poisson_problem(2).with_time(2).unwrap_err().code(), "E-FEX-007");
+    assert_eq!(
+        Evaluator::new(&t, &p3, &[0.0; 6], &[])
+            .err()
+            .unwrap()
+            .code(),
+        "E-FEX-007"
+    );
+    assert_eq!(
+        poisson_problem(2).with_time(2).unwrap_err().code(),
+        "E-FEX-007"
+    );
     // every FexError code is registered
     for code in [
-        "E-FEX-001", "E-FEX-002", "E-FEX-003", "E-FEX-004", "E-FEX-005", "E-FEX-006", "E-FEX-007",
+        "E-FEX-001",
+        "E-FEX-002",
+        "E-FEX-003",
+        "E-FEX-004",
+        "E-FEX-005",
+        "E-FEX-006",
+        "E-FEX-007",
         "E-FEX-008",
     ] {
-        assert!(crate::errors::codes::REGISTRY.iter().any(|s| s.code == code), "{code}");
+        assert!(
+            crate::errors::codes::REGISTRY
+                .iter()
+                .any(|s| s.code == code),
+            "{code}"
+        );
     }
 }

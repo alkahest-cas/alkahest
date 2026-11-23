@@ -282,9 +282,7 @@ pub fn redundant_params(t: &Template, e: &[usize]) -> Result<Vec<Option<f64>>, F
                     // α·0 + β, α·1 + β and α·g(c) + β are constants: β alone
                     // carries them.
                     fixed[n.poff] = Some(0.0);
-                } else if op == UnaryOp::Id
-                    && vals[n.a].scale_closed()
-                    && vals[n.a].shift_closed()
+                } else if op == UnaryOp::Id && vals[n.a].scale_closed() && vals[n.a].shift_closed()
                 {
                     // α·T + β over a scale- and shift-closed family T: the
                     // child's own parameters absorb these.

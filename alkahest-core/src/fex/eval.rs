@@ -739,7 +739,13 @@ impl Evaluator {
         Ok(ok)
     }
 
-    pub(crate) fn cand_rows(&self, ops: &[NodeOp], th: &[f64], r: &mut [f64], jac: Option<&mut [f64]>) -> bool {
+    pub(crate) fn cand_rows(
+        &self,
+        ops: &[NodeOp],
+        th: &[f64],
+        r: &mut [f64],
+        jac: Option<&mut [f64]>,
+    ) -> bool {
         let np = self.template.n_params();
         let ti = self.tables(&self.int, ops);
         let tb = self.tables(&self.bd, ops);
@@ -925,7 +931,9 @@ impl Evaluator {
         let np = self.template.n_params();
         let out = match self.problem.loss {
             LossKind::LeastSquares => self.ls_loss(ops, th, grad.is_some()),
-            LossKind::Normalized { power } => self.scalar_loss(ops, th, grad.is_some(), Some(power)),
+            LossKind::Normalized { power } => {
+                self.scalar_loss(ops, th, grad.is_some(), Some(power))
+            }
             LossKind::Rayleigh => self.scalar_loss(ops, th, grad.is_some(), None),
         };
         match out {
@@ -1191,7 +1199,15 @@ impl Evaluator {
             self.forward(&ops, &tabs, theta, 0, 2, &mut s);
             s.adj[..n * st].fill(0.0);
             s.adj[root + comp] = 1.0;
-            self.backward(&ops, &tabs, theta, 0, 2, &mut s, &mut out[comp * np..(comp + 1) * np]);
+            self.backward(
+                &ops,
+                &tabs,
+                theta,
+                0,
+                2,
+                &mut s,
+                &mut out[comp * np..(comp + 1) * np],
+            );
         }
         Ok(out)
     }
