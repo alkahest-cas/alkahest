@@ -206,3 +206,49 @@ fn kdv_conservation_laws() {
     assert_eq!(laws.len(), 4);
     assert!(laws.iter().all(|l| l.verified));
 }
+
+fn show_red(e: &Eq, sols: &[super::nonlinear::ReducedSolution]) {
+    for r in sols {
+        eprintln!(
+            "  [{}] u = {}   consts={:?} assume={:?}",
+            r.method,
+            e.pool.display(r.value),
+            r.constants
+                .iter()
+                .map(|&c| e.pool.display(c).to_string())
+                .collect::<Vec<_>>(),
+            r.assumptions
+        );
+    }
+}
+
+#[test]
+fn traveling_waves() {
+    for (src, want) in [
+        ("u_t + u*u_x - u_xx", "burgers"),
+        ("u_t + 6*u*u_x + u_xxx", "kdv"),
+        ("u_t - u_xx - u + u^2", "fisher"),
+        ("u_xt - sin(u)", "sine-gordon"),
+        ("u_tt - u_xx - u + u^3", "phi4"),
+        ("u_t + 6*u^2*u_x + u_xxx", "mkdv"),
+    ] {
+        let e = eq_of(src, &["x", "t"]);
+        eprintln!("== {want}: {src}");
+        match super::nonlinear::traveling_wave_solutions(e.eq, e.u, &e.pool) {
+            Ok(s) => show_red(&e, &s),
+            Err(err) => eprintln!("  error {err}"),
+        }
+    }
+}
+
+#[test]
+fn similarity_heat_and_porous_medium() {
+    for src in ["u_t - u_xx", "u_t - u*u_xx - u_x^2", "u_t + u*u_x - u_xx"] {
+        let e = eq_of(src, &["x", "t"]);
+        eprintln!("== {src}");
+        match super::nonlinear::similarity_solutions(e.eq, e.u, &e.pool) {
+            Ok(s) => show_red(&e, &s),
+            Err(err) => eprintln!("  error {err}"),
+        }
+    }
+}

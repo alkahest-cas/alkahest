@@ -73,6 +73,7 @@ pub mod green;
 pub mod integral;
 pub mod jet;
 pub mod mol;
+pub mod nonlinear;
 pub(crate) mod numeric;
 pub mod problem;
 pub mod root_family;
@@ -105,6 +106,10 @@ pub use integral::{
 pub use jet::{
     functions_to_jets, multi_indices, JetCoordinate, JetNaming, JetSpace, JetSymbol, JetSystem,
     MultiIndex,
+};
+pub use nonlinear::{
+    ansatz_solutions_for, invariant_solutions, reduce_by_generator, similarity_solutions,
+    traveling_wave_solutions, ReducedSolution, Reduction,
 };
 pub use problem::{ArbitraryFunctions, ConditionKind, PdeCondition, PdeDomain, PdeProblem};
 pub use root_family::{
