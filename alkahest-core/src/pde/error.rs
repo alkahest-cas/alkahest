@@ -95,6 +95,9 @@ pub enum PdeError {
     /// impose: a condition on a derivative, data on a manifold of the wrong
     /// dimension, or parameters that could not be eliminated.
     CauchyUnsupported(String),
+    /// `E-PDE-054` — a malformed `Integral(f, t, lo, hi)` / `Integral(f, x)`
+    /// node: the integration variable is not a symbol, or a bound mentions it.
+    MalformedIntegral(String),
 }
 
 impl fmt::Display for PdeError {
@@ -124,6 +127,7 @@ impl fmt::Display for PdeError {
             PdeError::NoVerifiedSolution(d) => ("no verified solution", d),
             PdeError::CharacteristicData(d) => ("Cauchy data on a characteristic", d),
             PdeError::CauchyUnsupported(d) => ("unsupported Cauchy data", d),
+            PdeError::MalformedIntegral(d) => ("malformed Integral", d),
         };
         write!(f, "{what}: {d}")
     }
@@ -158,6 +162,7 @@ impl AlkahestError for PdeError {
             PdeError::NoVerifiedSolution(_) => "E-PDE-051",
             PdeError::CharacteristicData(_) => "E-PDE-052",
             PdeError::CauchyUnsupported(_) => "E-PDE-053",
+            PdeError::MalformedIntegral(_) => "E-PDE-054",
         }
     }
 
@@ -215,6 +220,7 @@ mod tests {
             PdeError::NoVerifiedSolution(String::new()),
             PdeError::CharacteristicData(String::new()),
             PdeError::CauchyUnsupported(String::new()),
+            PdeError::MalformedIntegral(String::new()),
         ];
         for e in all {
             let code = e.code();

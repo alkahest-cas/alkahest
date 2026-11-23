@@ -149,7 +149,7 @@ pub(crate) fn solve_f_up(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> {
         if is_zero(h, pool) {
             continue;
         }
-        let Some(hint) = integrate(recip(h, pool), ctx.w, pool) else {
+        let Some(hint) = quad(recip(h, pool), ctx.w, pool) else {
             continue;
         };
         let rel = simp(sub(hint, pool.add(vec![zeta, b]), pool), pool);
@@ -226,7 +226,7 @@ pub(crate) fn solve_separable(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> 
         let Some(pi) = isolate_one(sub(fi, rhs, pool), ctx.p[i], pool) else {
             return Vec::new();
         };
-        let Some(ii) = integrate(pi, ctx.indep[i], pool) else {
+        let Some(ii) = quad(pi, ctx.indep[i], pool) else {
             return Vec::new();
         };
         steps.push(format!("{} = {}", pool.display(ctx.p[i]), pool.display(pi)));
@@ -348,7 +348,7 @@ fn pfaff(
         }
         (Some(m), pt, qt)
     };
-    let Some(i1) = integrate(pt, x, pool) else {
+    let Some(i1) = quad(pt, x, pool) else {
         return out;
     };
     let Some(di1) = d(i1, y, pool) else {
@@ -358,7 +358,7 @@ fn pfaff(
     if contains(r, x, pool) {
         return out;
     }
-    let Some(i2) = integrate(r, y, pool) else {
+    let Some(i2) = quad(r, y, pool) else {
         return out;
     };
     let rhs = pool.add(vec![i1, i2, b]);

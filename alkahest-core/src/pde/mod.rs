@@ -44,6 +44,7 @@
 
 pub mod classify;
 pub mod error;
+pub mod integral;
 pub mod jet;
 pub(crate) mod numeric;
 pub mod problem;
@@ -55,6 +56,10 @@ pub mod verify;
 
 pub use classify::{classify_pde, Linearity, NamedEquation, PdeInfo, PdeType, TypeRegion};
 pub use error::PdeError;
+pub use integral::{
+    combine_integrals, has_integral, indefinite_integral, indefinite_parts, integral,
+    integral_parts, INTEGRAL,
+};
 pub use jet::{
     functions_to_jets, multi_indices, JetCoordinate, JetNaming, JetSpace, JetSymbol, JetSystem,
     MultiIndex,

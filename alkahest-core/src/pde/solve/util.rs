@@ -225,7 +225,13 @@ pub(crate) fn isolate(eq: ExprId, v: ExprId, pool: &ExprPool) -> Vec<ExprId> {
                             continue;
                         }
                         let inv = pool.rational(q.denom().clone(), q.numer().clone());
-                        let root = pool.pow(rhs, inv);
+                        // 0^(1/n) is 0 for a positive power (the simplifier
+                        // leaves it alone).
+                        let root = if rhs == pool.integer(0) && q > 0 {
+                            rhs
+                        } else {
+                            pool.pow(rhs, inv)
+                        };
                         stack.push((base, simp(root, pool), depth + 1));
                         // Even integer power: the negative root as well.
                         if q.denom() == &1u32 && q.numer().is_even() {
@@ -434,6 +440,94 @@ fn integrate_depth(e: ExprId, v: ExprId, depth: u32, pool: &ExprPool) -> Option<
     Some(simp(pool.mul(vec![coef, r]), pool))
 }
 
+/// `∫ e dv` in closed form when [`integrate`] finds one, otherwise the
+/// unevaluated `Integral(e[v := t], t, lo, v)` (see [`crate::pde::integral`]):
+/// answers containing it are verified exactly through the fundamental
+/// theorem of calculus.  The lower limit is the first of `1, 0, 2, −1` where
+/// the integrand evaluates to a finite number at a sample point.
+pub(crate) fn quad(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    if let Some(r) = integrate(e, v, pool) {
+        return Some(r);
+    }
+    unevaluated(e, v, pool)
+}
+
+pub(crate) fn unevaluated(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let e = simp(e, pool);
+    let t = crate::pde::integral::fresh_dummy("_t", &[e, v], pool);
+    let body = subs1(e, v, t, pool);
+    let inst = instantiate_undefined(body, pool);
+    let syms: Vec<ExprId> = free_symbols(&[inst], pool)
+        .into_iter()
+        .filter(|&s| s != t)
+        .collect();
+    // A lower limit where the integrand is finite on the segment to the
+    // sample value of v, at two sample points of the parameters.
+    let mut lo = pool.integer(1);
+    'cands: for cand in [1i64, 0, 2, -1] {
+        for k in 0..2 {
+            let env0 = sample_env(&syms, k);
+            let vv = sample_env(&[v], k)[&v];
+            for i in 0..=8 {
+                let tv = cand as f64 + (vv - cand as f64) * (i as f64) / 8.0;
+                let mut env = env0.clone();
+                env.insert(t, tv);
+                if eval_at(inst, &env, pool).is_none() {
+                    continue 'cands;
+                }
+            }
+        }
+        lo = pool.integer(cand);
+        break;
+    }
+    crate::pde::integral::integral(body, t, lo, v, pool).ok()
+}
+
+/// Replace every applied undefined function (and its derivatives) by a fixed
+/// generic elementary function, for numeric probes only.
+pub(crate) fn instantiate_undefined(e: ExprId, pool: &ExprPool) -> ExprId {
+    let mut apps: Vec<(String, usize)> = Vec::new();
+    let mut seen = HashSet::new();
+    let mut stack = vec![e];
+    while let Some(n) = stack.pop() {
+        if !seen.insert(n) {
+            continue;
+        }
+        if let Some(vw) = crate::diff::undefined::view(n, pool) {
+            if !apps
+                .iter()
+                .any(|(nm, a)| nm == &vw.name && *a == vw.args.len())
+            {
+                apps.push((vw.name.clone(), vw.args.len()));
+            }
+            stack.extend(vw.args);
+            continue;
+        }
+        push_children(n, pool, &mut stack);
+    }
+    let mut cur = e;
+    for (k, (name, arity)) in apps.into_iter().enumerate() {
+        let xi: Vec<ExprId> = (0..arity)
+            .map(|j| pool.symbol(format!("__alkahest_inst{j}"), Domain::Real))
+            .collect();
+        let lin = pool.add(
+            xi.iter()
+                .enumerate()
+                .map(|(j, &x)| pool.mul(vec![pool.rational(j as i64 + 3 + k as i64, 7), x]))
+                .collect(),
+        );
+        let body = pool.add(vec![
+            pool.func("sin", vec![lin]),
+            pool.func("exp", vec![pool.mul(vec![pool.rational(1, 5), lin])]),
+        ]);
+        let pattern = pool.func(name, xi);
+        if let Ok(r) = crate::diff::undefined::replace_function(cur, pattern, body, pool) {
+            cur = r;
+        }
+    }
+    cur
+}
+
 fn integrate_core(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
     let r = crate::integrate::integrate(e, v, pool).ok()?;
     let val = r.value;
@@ -621,6 +715,22 @@ pub(crate) fn eval_at(e: ExprId, env: &HashMap<ExprId, f64>, pool: &ExprPool) ->
 /// Numeric rank of a matrix of expressions, as the maximum over a few sample
 /// points (a nonzero minor at one point shows the functions are independent).
 pub(crate) fn numeric_rank(rows: &[Vec<ExprId>], syms: &[ExprId], pool: &ExprPool) -> usize {
+    // Arbitrary functions get generic instances (the rank at one instance
+    // bounds the generic rank from below).
+    let rows: Vec<Vec<ExprId>> = rows
+        .iter()
+        .map(|r| r.iter().map(|&e| instantiate_undefined(e, pool)).collect())
+        .collect();
+    let rows = &rows[..];
+    let mut syms = syms.to_vec();
+    for r in rows {
+        for s in free_symbols(r, pool) {
+            if !syms.contains(&s) {
+                syms.push(s);
+            }
+        }
+    }
+    let syms = &syms[..];
     let mut best = 0;
     for k in 0..3 {
         let env = sample_env(syms, k);

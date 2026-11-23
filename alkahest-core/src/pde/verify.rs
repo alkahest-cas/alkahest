@@ -189,7 +189,14 @@ pub fn verify_solution(
         // linearity / constant folding should have its chance first.
         let r = super::sum::simplify_sums(r, &[], pool);
         let r = super::sum::alpha_normalize(r, pool);
+        let r = super::integral::alpha_normalize_integrals(r, pool);
         let r = crate::simplify::engine::simplify(r, pool).value;
+        let r = if super::integral::has_integral(r, pool) {
+            let c = super::integral::combine_integrals(r, pool);
+            crate::simplify::engine::simplify(c, pool).value
+        } else {
+            r
+        };
         let zt = guarded(zero_test(r, pool, None), r, pool);
         let mut check = ResidualCheck {
             kind,
@@ -263,7 +270,9 @@ fn has_opaque_head(e: ExprId, pool: &ExprPool) -> bool {
         }
         let opaque = pool.with(n, |d| {
             matches!(d, crate::kernel::ExprData::Func { name, .. }
-                if name == super::sum::SUM || name == super::root_family::ROOT_OF_FAMILY)
+                if name == super::sum::SUM
+                    || name == super::root_family::ROOT_OF_FAMILY
+                    || name == super::integral::INTEGRAL)
         });
         if opaque {
             return true;

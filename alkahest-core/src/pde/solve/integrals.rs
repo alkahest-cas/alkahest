@@ -139,9 +139,10 @@ impl<'a> IntegralSearch<'a> {
                     if i == j || self.found.len() >= need {
                         continue;
                     }
-                    if let Some(xi) = self.pair_integral(i, j, pool) {
+                    for xi in self.pair_integral(i, j, pool) {
                         if self.offer(xi, "characteristic ODE", pool) {
                             progress = true;
+                            break;
                         }
                     }
                 }
@@ -164,11 +165,11 @@ impl<'a> IntegralSearch<'a> {
 
     /// An integral from `dzⱼ/dzᵢ = aⱼ/aᵢ`, eliminating other variables through
     /// the integrals already found.
-    fn pair_integral(&mut self, i: usize, j: usize, pool: &ExprPool) -> Option<ExprId> {
+    fn pair_integral(&mut self, i: usize, j: usize, pool: &ExprPool) -> Vec<ExprId> {
         let f = self.field;
         let (zi, zj) = (f.vars[i], f.vars[j]);
         if f.comps[j] == pool.integer(0) {
-            return None;
+            return Vec::new();
         }
         let mut ratio = simp(div(f.comps[j], f.comps[i], pool), pool);
         // Eliminate third variables.
@@ -201,7 +202,7 @@ impl<'a> IntegralSearch<'a> {
                 break;
             }
             if !done {
-                return None;
+                return Vec::new();
             }
         }
         if !f
@@ -210,43 +211,175 @@ impl<'a> IntegralSearch<'a> {
             .enumerate()
             .all(|(m, &zm)| m == i || m == j || !contains(ratio, zm, pool))
         {
-            return None;
-        }
-        if has_undefined(ratio, pool) {
-            return None;
+            return Vec::new();
         }
         // dzⱼ/dzᵢ = ratio.
-        let constant = if !contains(ratio, zj, pool) {
-            // Quadrature.
-            let q = integrate(ratio, zi, pool)?;
-            simp(sub(zj, q, pool), pool)
-        } else if let Some((a, b)) = separate(ratio, zi, zj, pool) {
-            // dzⱼ/dzᵢ = A(zᵢ)·B(zⱼ): ∫ dzⱼ/B − ∫ A dzᵢ, with this module's
-            // quadrature (which handles e.g. ∫ dy/sinh(μy) for symbolic μ).
-            let ib = integrate(recip(b, pool), zj, pool)?;
-            let ia = integrate(a, zi, pool)?;
-            simp(sub(ib, ia, pool), pool)
-        } else {
-            let (input, yp) = OdeInput::first_order(zi, zj, pool);
-            let input = input.with_equation(sub(yp, ratio, pool));
-            let rep = dsolve_with(&input, &AssumptionContext::new(), pool).ok()?;
-            let mut got = None;
-            for b in rep.branches {
-                let c1 = *b.constants.first()?;
-                let rel = match b.form {
-                    SolutionForm::Explicit(y) => sub(y, zj, pool),
-                    SolutionForm::Implicit(g) => g,
-                };
-                if let Some(cv) = isolate_one(rel, c1, pool) {
-                    got = Some(cv);
-                    break;
+        // Candidate "constants" of dzⱼ/dzᵢ = ratio (each a first integral
+        // once the eliminated variables are substituted back).  Closed forms
+        // first, then the same with unevaluated integrals: those verify
+        // exactly by the fundamental theorem of calculus even where the zero
+        // test cannot see through a closed form.
+        let mut constants: Vec<ExprId> = Vec::new();
+        let push = |c: Option<ExprId>, out: &mut Vec<ExprId>| {
+            if let Some(c) = c {
+                let c = simp(c, pool);
+                if !out.contains(&c) {
+                    out.push(c);
                 }
             }
-            got?
         };
-        let xi = simp(subs_map(constant, &back, pool), pool);
-        Some(xi)
+        if !contains(ratio, zj, pool) {
+            push(
+                quad(ratio, zi, pool).map(|q| sub(zj, q, pool)),
+                &mut constants,
+            );
+            push(
+                unevaluated(ratio, zi, pool).map(|q| sub(zj, q, pool)),
+                &mut constants,
+            );
+        } else if let Some((a, b)) =
+            separate(ratio, zi, zj, pool).or_else(|| separate_by_value(ratio, zi, zj, pool))
+        {
+            // dzⱼ/dzᵢ = A(zᵢ)·B(zⱼ): ∫ dzⱼ/B − ∫ A dzᵢ.
+            let rb = recip(b, pool);
+            if let (Some(ib), Some(ia)) = (quad(rb, zj, pool), quad(a, zi, pool)) {
+                push(Some(sub(ib, ia, pool)), &mut constants);
+            }
+            if let (Some(ib), Some(ia)) = (unevaluated(rb, zj, pool), unevaluated(a, zi, pool)) {
+                push(Some(sub(ib, ia, pool)), &mut constants);
+            }
+        } else {
+            for c in linear_or_bernoulli(ratio, zi, zj, pool) {
+                push(Some(c), &mut constants);
+            }
+            if constants.is_empty() && !has_undefined(ratio, pool) {
+                for c in super::riccati::riccati_integrals(ratio, zi, zj, pool) {
+                    push(Some(c), &mut constants);
+                }
+            }
+            if constants.is_empty() && !has_undefined(ratio, pool) {
+                let (input, yp) = OdeInput::first_order(zi, zj, pool);
+                let input = input.with_equation(sub(yp, ratio, pool));
+                if let Ok(rep) = dsolve_with(&input, &AssumptionContext::new(), pool) {
+                    for b in rep.branches {
+                        let Some(&c1) = b.constants.first() else {
+                            continue;
+                        };
+                        let rel = match b.form {
+                            SolutionForm::Explicit(y) => sub(y, zj, pool),
+                            SolutionForm::Implicit(g) => g,
+                        };
+                        if let Some(cv) = isolate_one(rel, c1, pool) {
+                            push(Some(cv), &mut constants);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        constants
+            .into_iter()
+            .map(|c| simp(subs_map(c, &back, pool), pool))
+            .collect()
     }
+}
+
+/// `dzⱼ/dzᵢ = P zⱼ + Q` (linear) or `P zⱼ + Q zⱼ^m` (Bernoulli, `m`
+/// possibly symbolic): integrating factor, with unevaluated integrals where
+/// the quadratures do not close.  Returns first-integral candidates.
+fn linear_or_bernoulli(ratio: ExprId, zi: ExprId, zj: ExprId, pool: &ExprPool) -> Vec<ExprId> {
+    let mut out = Vec::new();
+    let ratio = crate::simplify::engine::simplify_expanded(ratio, pool).value;
+    let terms = match pool.get(ratio) {
+        crate::kernel::ExprData::Add(xs) => xs,
+        _ => vec![ratio],
+    };
+    // Split into Q (free of zj), P·zj, and R·zj^m.
+    let (mut p, mut q, mut r) = (Vec::new(), Vec::new(), Vec::new());
+    let mut m_exp: Option<ExprId> = None;
+    for t in terms {
+        if !contains(t, zj, pool) {
+            q.push(t);
+            continue;
+        }
+        let Some(dt) = d(t, zj, pool) else {
+            return out;
+        };
+        if !contains(dt, zj, pool) {
+            p.push(dt);
+            continue;
+        }
+        // t = c·zj^m ? (structurally: factors zj^e, the rest free of zj)
+        let fs = match pool.get(t) {
+            crate::kernel::ExprData::Mul(xs) => xs,
+            _ => vec![t],
+        };
+        let mut es = Vec::new();
+        for f in fs {
+            if f == zj {
+                es.push(pool.integer(1));
+            } else if let crate::kernel::ExprData::Pow { base, exp } = pool.get(f) {
+                if base == zj && !contains(exp, zj, pool) {
+                    es.push(exp);
+                } else if contains(f, zj, pool) {
+                    return out;
+                }
+            } else if contains(f, zj, pool) {
+                return out;
+            }
+        }
+        let m = simp(pool.add(es), pool);
+        if contains(m, zi, pool) {
+            return out;
+        }
+        if let Some(prev) = m_exp {
+            if !is_zero(sub(prev, m, pool), pool) {
+                return out;
+            }
+        }
+        m_exp = Some(m);
+        r.push(simp(div(t, pool.pow(zj, m), pool), pool));
+    }
+    let pz = simp(pool.add(p), pool);
+    let (w, src, scale) = match (m_exp, q.is_empty()) {
+        (None, _) => (zj, simp(pool.add(q), pool), pool.integer(1)),
+        (Some(m), true) => {
+            // w = zj^(1−m): w' = (1−m) P w + (1−m) R
+            let one_m = simp(sub(pool.integer(1), m, pool), pool);
+            if is_zero(one_m, pool) {
+                return out;
+            }
+            (
+                pool.pow(zj, one_m),
+                simp(pool.mul(vec![one_m, pool.add(r)]), pool),
+                one_m,
+            )
+        }
+        _ => return out,
+    };
+    let pz = simp(pool.mul(vec![scale, pz]), pool);
+    if contains(pz, zj, pool) || contains(src, zj, pool) {
+        return out;
+    }
+    // ξ = w·e^{−∫P} − ∫ src·e^{−∫P}
+    for unev in [false, true] {
+        let ip = if unev {
+            unevaluated(pz, zi, pool)
+        } else {
+            quad(pz, zi, pool)
+        };
+        let Some(ip) = ip else { continue };
+        let mu = simp(pool.func("exp", vec![neg(ip, pool)]), pool);
+        let integrand = pool.mul(vec![src, mu]);
+        let iq = if unev {
+            unevaluated(integrand, zi, pool)
+        } else {
+            quad(integrand, zi, pool)
+        };
+        let Some(iq) = iq else { continue };
+        out.push(simp(sub(pool.mul(vec![w, mu]), iq, pool), pool));
+    }
+    out
 }
 
 /// `ratio = A(zᵢ)·B(zⱼ)` by splitting the factors of a product.
@@ -267,7 +400,33 @@ fn separate(ratio: ExprId, zi: ExprId, zj: ExprId, pool: &ExprPool) -> Option<(E
     if b.is_empty() {
         return None;
     }
-    Some((simp(pool.mul(a), pool), simp(pool.mul(b), pool)))
+    if a.iter().all(|&f| !contains(f, zj, pool)) && b.iter().all(|&f| !contains(f, zi, pool)) {
+        return Some((simp(pool.mul(a), pool), simp(pool.mul(b), pool)));
+    }
+    None
+}
+
+/// `ratio = A(zᵢ)·B(zⱼ)` for a ratio that is not a product of such factors
+/// (`(y + 1)·f(x)` written as a sum): `B = ratio(zᵢ := c)`,
+/// `A = ratio / B`, accepted when `A` is free of `zⱼ`.
+fn separate_by_value(
+    ratio: ExprId,
+    zi: ExprId,
+    zj: ExprId,
+    pool: &ExprPool,
+) -> Option<(ExprId, ExprId)> {
+    for c in [1i64, 2, 0] {
+        let b = simp(subs1(ratio, zi, pool.integer(c), pool), pool);
+        if is_zero(b, pool) || !contains(b, zj, pool) {
+            continue;
+        }
+        let a = simp(div(ratio, b, pool), pool);
+        let a = crate::poly::cancel::cancel(a, vec![zi, zj], pool).unwrap_or(a);
+        if !contains(a, zj, pool) {
+            return Some((a, b));
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------

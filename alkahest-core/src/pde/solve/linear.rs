@@ -122,6 +122,29 @@ pub(crate) fn solve_linear(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> {
         return Vec::new();
     }
     let mut out = Vec::new();
+    // Homogeneous: u is constant along characteristics, u = F1(ξ₁, …).  No
+    // inversion of the integrals is needed (they may be unevaluated
+    // integrals that cannot be inverted).
+    if is_zero(c, pool) {
+        let fname = ctx.arb.fresh_name();
+        let fapp = pool.func(fname.clone(), integrals.clone());
+        let mut st = steps.clone();
+        st.push("homogeneous: u is constant along characteristics".into());
+        out.push(Candidate {
+            value: fapp,
+            implicit: false,
+            kind: PdeSolutionKind::General,
+            constants: Vec::new(),
+            side_conditions: Vec::new(),
+            steps: st,
+            general: Some(GeneralForm::Explicit {
+                integrals: integrals.clone(),
+                func: fname,
+                value: fapp,
+            }),
+        });
+        return out;
+    }
     for &k in &order {
         let ks: Vec<ExprId> = (0..n - 1).map(|_| ctx.fresh_internal(pool)).collect();
         let Some(inv) = invert_integrals(&integrals, &ks, &ctx.indep, k, pool) else {
@@ -149,11 +172,11 @@ pub(crate) fn solve_linear(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> {
             // antiderivative of a, with the quadratures done here (by parts
             // where the integrator alone declines).
             let beta = simp(subs1(rhs, ctx.w, pool.integer(0), pool), pool);
-            let Some(ia) = integrate(al, zk, pool) else {
+            let Some(ia) = quad(al, zk, pool) else {
                 continue;
             };
             let mu = tidy(simp(pool.func("exp", vec![neg(ia, pool)]), pool), pool);
-            let Some(ib) = integrate(pool.mul(vec![beta, mu]), zk, pool) else {
+            let Some(ib) = quad(pool.mul(vec![beta, mu]), zk, pool) else {
                 ctx.fail(format!(
                     "first_order_linear: the quadrature of {} in {} did not close",
                     pool.display(pool.mul(vec![beta, mu])),

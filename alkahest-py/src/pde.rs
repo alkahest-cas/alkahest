@@ -815,6 +815,37 @@ fn _pde_sum(
     one_expr(py, &pool, |p| alkahest_core::pde::sum(b, kk, l, h, p))
 }
 
+/// Private: `Integral(body, t, lo, hi)` (definite) or `Integral(body, x)`
+/// (indefinite) when `lo` / `hi` are omitted.
+#[pyfunction]
+#[pyo3(signature = (body, t, lo=None, hi=None))]
+fn _pde_integral(
+    py: Python<'_>,
+    body: &Bound<'_, PyAny>,
+    t: &Bound<'_, PyAny>,
+    lo: Option<&Bound<'_, PyAny>>,
+    hi: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    let pool = first_pool(t)?;
+    let b = expr_in(body, &pool, "Integral")?;
+    let tt = expr_in(t, &pool, "Integral")?;
+    match (lo, hi) {
+        (Some(l), Some(h)) => {
+            let (l, h) = (
+                expr_in(l, &pool, "Integral")?,
+                expr_in(h, &pool, "Integral")?,
+            );
+            one_expr(py, &pool, |p| alkahest_core::pde::integral(b, tt, l, h, p))
+        }
+        (None, None) => one_expr(py, &pool, |p| {
+            alkahest_core::pde::indefinite_integral(b, tt, p)
+        }),
+        _ => Err(pyo3::exceptions::PyTypeError::new_err(
+            "Integral takes (f, x) or (f, t, lo, hi)",
+        )),
+    }
+}
+
 /// Private: `Indexed(base, index)`.
 #[pyfunction]
 fn _pde_indexed(
@@ -1111,6 +1142,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(_pde_solve, m)?)?;
     m.add_function(wrap_pyfunction!(_pde_solve_hints, m)?)?;
     m.add_function(wrap_pyfunction!(_pde_sum, m)?)?;
+    m.add_function(wrap_pyfunction!(_pde_integral, m)?)?;
     m.add_function(wrap_pyfunction!(_pde_indexed, m)?)?;
     m.add_function(wrap_pyfunction!(_pde_kronecker, m)?)?;
     m.add_function(wrap_pyfunction!(_pde_root_of_family, m)?)?;

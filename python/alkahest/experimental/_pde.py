@@ -47,6 +47,7 @@ __all__ = [
     "HalfLine",
     "Indexed",
     "IndexedBase",
+    "Integral",
     "Interval",
     "JetSpace",
     "KroneckerDelta",
@@ -696,6 +697,28 @@ def Sum(body, k, lo, hi):
     """
     pool = _pool_of(k, body, lo, hi)
     return _native._pde_sum(_as_expr(body, pool), k, _as_expr(lo, pool), _as_expr(hi, pool))
+
+
+def Integral(f, t, lo=None, hi=None):
+    """An unevaluated integral: ``Integral(f, t, lo, hi)`` is
+    ``∫_{lo}^{hi} f dt`` (a binder: ``t`` is bound in ``f``), and
+    ``Integral(f, x)`` the indefinite integral, defined as
+    ``Integral(f(t), t, 0, x)``.
+
+    ``diff`` applies the Leibniz rule / fundamental theorem of calculus
+    (``d/dx Integral(f(x), x) = f(x)``), so answers containing integrals are
+    verified exactly; numeric evaluation uses Gauss–Legendre quadrature.
+    ``pdsolve`` returns integrals of this head where a characteristic
+    quadrature has no closed form (an arbitrary ``f(x)``, a non-elementary
+    integrand).  Raises :class:`PdeError` ``E-PDE-054`` for a malformed
+    integral.
+    """
+    pool = _pool_of(t, f, lo, hi)
+    if lo is None and hi is None:
+        return _native._pde_integral(_as_expr(f, pool), t)
+    if lo is None or hi is None:
+        raise TypeError("Integral takes (f, x) or (f, t, lo, hi)")
+    return _native._pde_integral(_as_expr(f, pool), t, _as_expr(lo, pool), _as_expr(hi, pool))
 
 
 def Indexed(base, index):

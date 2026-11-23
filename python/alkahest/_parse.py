@@ -696,20 +696,24 @@ def _apply_root_of(args: list, bound: dict, offset: int):
         raise ParseError(f"RootOf: {exc}", span=span) from exc
 
 
-_PDE_HEADS = {"Sum": 4, "Indexed": 2, "KroneckerDelta": 2, "RootOfFamily": 4}
+_PDE_HEADS = {"Sum": 4, "Indexed": 2, "KroneckerDelta": 2, "RootOfFamily": 4, "Integral": (2, 4)}
 
 
 def _apply_pde_head(name: str, args: list, offset: int):
-    """``Sum``, ``Indexed``, ``KroneckerDelta`` and ``RootOfFamily`` — the PDE
+    """``Sum``, ``Indexed``, ``KroneckerDelta``, ``RootOfFamily`` and ``Integral`` — the PDE
     layer's reserved heads, built through their validating constructors.
     Mirrors ``Parser::parse_pde_head`` in ``alkahest-core/src/parse.rs``."""
     from alkahest.experimental import _pde
 
     span = (offset, offset + len(name))
     want = _PDE_HEADS[name]
-    if len(args) != want:
-        raise ParseError(f"{name} takes {want} arguments, got {len(args)}", span=span)
+    allowed = want if isinstance(want, tuple) else (want,)
+    if len(args) not in allowed:
+        wanted = " or ".join(str(w) for w in allowed)
+        raise ParseError(f"{name} takes {wanted} arguments, got {len(args)}", span=span)
     try:
+        if name == "Integral":
+            return _pde.Integral(*args)
         if name == "Sum":
             return _pde.Sum(*args)
         if name == "Indexed":

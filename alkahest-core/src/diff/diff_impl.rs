@@ -483,6 +483,9 @@ fn diff_raw(
             lo: ExprId,
             hi: ExprId,
         },
+        /// `Integral(f, t, lo, hi)` / `Integral(f, x)` (see
+        /// `crate::pde::integral`).
+        IntegralHead,
         /// `RootOfFamily(F, λ, n, branch)` (see `crate::pde::root_family`).
         RootFamily {
             f: ExprId,
@@ -525,6 +528,13 @@ fn diff_raw(
                 lo: args[2],
                 hi: args[3],
             }
+        }
+        ExprData::Func { name, args }
+            if name == crate::pde::integral::INTEGRAL
+                && (args.len() == 2 || args.len() == 4)
+                && pool.with(args[1], |d| matches!(d, ExprData::Symbol { .. })) =>
+        {
+            Node::IntegralHead
         }
         ExprData::Func { name, args }
             if name == crate::pde::root_family::ROOT_OF_FAMILY
@@ -830,6 +840,15 @@ fn diff_raw(
                 log.push(RewriteStep::simple("diff_sum_termwise", expr, result));
                 result
             }
+        }
+        // Leibniz / the fundamental theorem of calculus.
+        Node::IntegralHead => {
+            let r = crate::pde::integral::derivative(expr, var, pool, |e| {
+                diff_raw(e, var, pool, memo, log)
+            })
+            .expect("an Integral node")?;
+            log.push(RewriteStep::simple("diff_integral", expr, r));
+            r
         }
         // Implicit differentiation: F(λ(v), v) = 0 ⇒ λ' = −F_v / F_λ at λ.
         Node::RootFamily { f, lam } => {

@@ -211,7 +211,10 @@ fn debug_strings() {
                 s
             })
             .collect();
-        syms.insert("u".to_string(), pool.func("u", vs));
+        syms.insert("u".to_string(), pool.func("u", vs.clone()));
+        for name in ["f", "g", "h"] {
+            syms.insert(name.to_string(), pool.func(name, vec![vs[0]]));
+        }
         let u_src = format!("u({vars})");
         let full = eq_src
             .replace("ux", &format!("Derivative({u_src}, x)"))

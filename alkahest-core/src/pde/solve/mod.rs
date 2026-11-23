@@ -63,6 +63,7 @@ pub(crate) mod cauchy;
 pub(crate) mod integrals;
 pub(crate) mod linear;
 pub(crate) mod nonlinear;
+pub(crate) mod riccati;
 pub(crate) mod util;
 
 use util::*;
