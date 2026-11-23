@@ -349,6 +349,7 @@ fn solve_power(g: ExprId, v: ExprId, target: ExprId, pool: &ExprPool) -> Option<
 /// Express `c(x, y)` as `g(ξ, η)` with `g(φ, ψ) = c`: directly when `c`
 /// is free of `x, y`, else through the inverse, checked by substituting
 /// back.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn express(
     c: ExprId,
     l: &Linear2,
