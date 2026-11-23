@@ -27,7 +27,7 @@
 //! * [`verify`] — [`verify_pde_solution`]: residuals of the PDE, BCs and ICs
 //!   with the `zero_test` status vocabulary; numeric evidence may only refute
 //!   (D9).
-//! * [`sum`] — the reserved heads `Sum(body, k, lo, hi)` (a binder; symbolic
+//! * [`mod@sum`] — the reserved heads `Sum(body, k, lo, hi)` (a binder; symbolic
 //!   bounds such as a dimension `d`), `Indexed(x, i)` and
 //!   `KroneckerDelta(i, j)`, with term-wise `diff`, expansion, truncation,
 //!   coefficients and folding — enough for `Δ Σᵢ φ(xᵢ) = Σᵢ φ''(xᵢ)` with
