@@ -79,11 +79,15 @@ __all__ = [
     "SearchResult",
     "Template",
     "canonical_key",
+    "family_symbols",
+    "finalize",
     "fit",
     "sample_box",
     "sample_box_boundary",
     "sample_initial_slice",
+    "recovery_metric",
     "search",
+    "snap_candidates",
 ]
 
 #: The FEX paper's unary table, in the reference implementation's order.
@@ -324,6 +328,9 @@ class Problem:
         self._native = native
         self.jet = jet
         self.exact = exact
+        # What the problem was built from, in exact form where it was given
+        # as expressions: read by :func:`finalize` to verify a solution.
+        self.spec: dict[str, Any] = {}
 
     dim = property(lambda self: self._native.dim)
     time = property(lambda self: self._native.time)
@@ -338,16 +345,19 @@ class Problem:
 
     @classmethod
     def _make(cls, dim, kind, jet, rhs, bc, potential, exact, **kw) -> Problem:
+        rhs, bc, potential = _source(rhs, jet), _source(bc, jet), _source(potential, jet)
         native = _FexProblem(
             dim,
             kind,
-            rhs=_source(rhs, jet),
-            bc=_source(bc, jet),
-            potential=_source(potential, jet),
+            rhs=rhs,
+            bc=bc,
+            potential=potential,
             coords=jet.x,
             **kw,
         )
-        return cls(native, jet, exact)
+        out = cls(native, jet, exact)
+        out.spec = {"kind": kind, "rhs": rhs, "bc": bc, "potential": potential, **kw}
+        return out
 
     @classmethod
     def poisson(
@@ -746,6 +756,9 @@ class SearchResult:
     unique_skeletons: int
     seconds: float
     history: list[float] = field(default_factory=list)
+    template: Template | None = None
+    points: np.ndarray | None = None
+    boundary: np.ndarray | None = None
 
 
 def search(
@@ -898,4 +911,62 @@ def search(
         unique_skeletons=len(cache),
         seconds=time.perf_counter() - t0,
         history=history,
+        template=template,
+        points=ev.points,
+        boundary=ev.boundary,
     )
+
+
+# ---------------------------------------------------------------------------
+# Finalising a solution (F3)
+# ---------------------------------------------------------------------------
+
+
+def finalize(result: Any, problem: Problem, **kw: Any) -> dict:
+    """Turn a fitted candidate into an exact, verified closed form — for the
+    fitted dimension and, when it lifts, for symbolic ``d``.
+
+    Coefficients are pinned, filtered (``|θ| < tau`` → 0), grouped (equal leaf
+    weights tied) and snapped to exact constants (continued fractions, π, √2,
+    √3, e, log 2 and products / quotients of two, PSLQ and LLL relations),
+    refitting after every step and keeping it only while the loss stays
+    within the gate. Tied leaves ``Σᵢ α φ(xᵢ)`` lift to
+    ``α·Sum(φ(Indexed(x, i)), i, 1, d)``, the operator is written for
+    symbolic ``d``, and the residuals — PDE, and the boundary condition on
+    every face of the box (or the initial condition) — go through the exact
+    zero test with the statuses of
+    :func:`alkahest.experimental.verify_pde_solution`.
+
+    Returns a dict with ``expr``, ``expr_symbolic_d``, ``snapped_params``,
+    ``verification`` (``concrete``, ``symbolic_d``, ``interval``) and
+    ``certificate``; see :func:`alkahest._fex_finalize.finalize` for every
+    option. Raises :class:`FexError` ``E-FEX-009`` / ``E-FEX-010``.
+    """
+    from ._fex_finalize import finalize as _finalize
+
+    return _finalize(result, problem, **kw)
+
+
+def recovery_metric(found: Any, truth: Any) -> dict:
+    """Skeleton equivalence after simplification (the recovery criterion of
+    SSDE and SymPlex), plus whether ``found − truth`` is proved zero. Raises
+    :class:`FexError` ``E-FEX-011`` unless both are expressions."""
+    from ._fex_finalize import recovery_metric as _rm
+
+    return _rm(found, truth)
+
+
+def family_symbols(problem: Problem) -> Any:
+    """``d``, ``i``, ``x``, ``t`` and ``sum(...)`` for writing the
+    ``family=`` of :func:`finalize` in symbolic dimension."""
+    from ._fex_finalize import family_symbols as _fs
+
+    return _fs(problem)
+
+
+def snap_candidates(value: float, *, max_den: int = 1000, rel_tol: float = 1e-7) -> list:
+    """Exact constants near ``value``, simplest first, as ``(constant, how)``
+    with ``how`` in ``rational`` / ``constant`` / ``pslq`` / ``lll``."""
+    from ._fex_finalize import snap_candidates as _sc
+
+    return _sc(value, max_den=max_den, rel_tol=rel_tol)
