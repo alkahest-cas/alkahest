@@ -148,6 +148,11 @@ fn genus1(n: usize, a: &QPoly, divisor: &[PlacedResidue]) -> Option<FindOrder> {
                 (e, Box::new(f))
             }
             4 => {
+                // Residues at the places over ∞: only the `(T, V)` model of a
+                // square-leading-coefficient quartic keeps ∞₊ and ∞₋ apart.
+                if super::genus1_infinity::has_infinite_residue(divisor) {
+                    return super::genus1_infinity::find_order_infinity(&a, divisor);
+                }
                 // Quartic: handled only with no residue at infinity.
                 if divisor
                     .iter()

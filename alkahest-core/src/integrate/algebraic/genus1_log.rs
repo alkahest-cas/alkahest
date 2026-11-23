@@ -49,6 +49,18 @@ pub fn integrate_genus1_log(
     // 1–3. Hermite → (g, h); residue divisor; torsion decision.
     let (g_alg, h) = hermite_reduce_radical(2, &a, integrand)?;
     let divisor = residue_divisor_placed(2, &a, &h);
+
+    // A quartic with square leading coefficient and residues at the places
+    // over ∞: the models below send both places over ∞ to `O`, so use the
+    // `(T, V)` model that keeps them apart ([`super::genus1_infinity`]).
+    if deg == 4 && super::genus1_infinity::has_infinite_residue(&divisor) {
+        let a_expr = qpoly_to_expr(&a, var, pool);
+        let y_sym = pool.func("sqrt", vec![a_expr]);
+        let g_expr = alg_to_expr(&g_alg, y_sym, var, pool);
+        let f = super::genus1_infinity::antiderivative(&a, g_expr, &divisor, y_sym, var, pool)?;
+        return verify(f, integrand, &a, var, pool).then_some(f);
+    }
+
     if !matches!(
         find_order_placed(2, &a, &divisor),
         FindOrder::Principal { .. }
@@ -291,7 +303,7 @@ pub fn integrate_genus1_log(
 }
 
 /// `Σⱼ gⱼ(x)·yʲ` (AlgElem, `y = √a`) → symbolic.
-fn alg_to_expr(g: &AlgElem, y_sym: ExprId, var: ExprId, pool: &ExprPool) -> ExprId {
+pub(super) fn alg_to_expr(g: &AlgElem, y_sym: ExprId, var: ExprId, pool: &ExprPool) -> ExprId {
     let mut terms = Vec::new();
     for (j, c) in g.iter().enumerate() {
         if c.numer().is_empty() {
@@ -326,7 +338,7 @@ fn verify(f: ExprId, integrand: &AlgElem, a: &QPoly, var: ExprId, pool: &ExprPoo
     };
     let ds = simplify(df.value, pool).value;
     let mut checked = 0;
-    for &xv in &[0.3_f64, 1.4, 2.7, 3.6, 4.9] {
+    for &xv in &[0.3_f64, 1.4, 2.7, 3.6, 4.9, -0.7, -2.3, 6.1, -5.2, 8.3] {
         let av = eval_qpoly(a, xv);
         if av <= 1e-6 {
             continue; // need √a real

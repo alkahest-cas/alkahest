@@ -273,7 +273,7 @@ pub fn try_integrate_rational(expr: ExprId, var: ExprId, pool: &ExprPool) -> Opt
 
 /// Yun squarefree factorization of a monic polynomial: returns `(Vᵢ, i)` for
 /// each non-constant `Vᵢ`, with `f = ∏ Vᵢ^i` and the `Vᵢ` squarefree & coprime.
-pub(super) fn yun(f: &QPoly) -> Option<Vec<(QPoly, usize)>> {
+pub(crate) fn yun(f: &QPoly) -> Option<Vec<(QPoly, usize)>> {
     let f = poly_monic(f);
     if degree(&f) <= 0 {
         return Some(vec![]);

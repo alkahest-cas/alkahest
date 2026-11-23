@@ -3137,10 +3137,13 @@ mod tests {
     /// removed, wearing a different disguise.  A non-finite `F′` at a point
     /// where `f` is finite is now a disagreement, so the candidate is refused.
     ///
-    /// Recovering #35 needs `√(x²)` simplified to `|x|` — i.e. a correct
-    /// answer — not a wider search.
+    /// Recovering #35 needs a sign-aware answer — not a wider search.  The
+    /// radical normaliser now supplies one: the residual's `√(x²−1)·√(1−x⁻²)`
+    /// is `|x|·(x²−1)/x²` up to sign, and the answer carries the integrand's
+    /// own radicals as that sign factor (with `½·log(x²)` for `log|x|`).  So an
+    /// answer may come back; if it does it must be right on both components.
     #[test]
-    fn charlwood_35_is_refused_because_its_candidate_has_a_domain_hole() {
+    fn charlwood_35_is_refused_or_right_on_both_branches() {
         use crate::parse::parse;
         use std::collections::HashMap as Map;
 
@@ -3148,24 +3151,39 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let mut syms: Map<String, ExprId> = Map::from([("x".to_owned(), x)]);
         let f = parse("x*acos(1/x)/sqrt(-1+x^2)", &pool, &mut syms).expect("parses");
-        assert!(
-            integrate_by_parts(f, x, &pool).is_declined(),
-            "#35's candidate is undefined for x < −1, where the integrand is finite, \
-             and must be refused"
-        );
+        let ByPartsOutcome::Solved(big_f) = integrate_by_parts(f, x, &pool) else {
+            return;
+        };
+        // Differentiate symbolically: `F` itself may take a log of a negative
+        // quantity on `x < −1` (a constant `iπ` offset), which `f64` cannot
+        // evaluate, while `F′` is real there.
+        let df = crate::diff::diff(big_f, x, &pool)
+            .expect("differentiable")
+            .value;
+        let ev = |e: ExprId, v: f64| crate::integrate::gate::eval_at(e, x, v, &pool);
+        for xv in [-3.1_f64, -2.2, -1.4, 1.4, 2.2, 3.1] {
+            let d = ev(df, xv).expect("F' evaluates");
+            let want = ev(f, xv).unwrap();
+            assert!(
+                (d - want).abs() < 1e-5 * (1.0 + want.abs()),
+                "#35 answer wrong at x = {xv}: F' = {d}, f = {want}"
+            );
+        }
     }
 
     /// Charlwood #22 is **not** in the list above, and the reason is worth
-    /// pinning: this module produced an answer for it that is the
+    /// pinning: this module once produced an answer for it that was the
     /// antiderivative for `x > 1` and wrong by ≈1.1 for `x < −1`.
     ///
     /// The candidate passed the gate because the gate's numeric grid was
     /// positive-only — six samples, six agreements, one admitted wrong answer.
-    /// With the grid two-sided the candidate is refused, which is the correct
-    /// outcome for a module that has no way to say "valid on `x > 1`".
-    /// Recovering #22 needs a branch-aware answer, not a wider search.
+    /// With the grid two-sided that candidate is refused.  The residual
+    /// `∫√(x⁴−1)/(x²·√(1−x⁻²))` is now integrated branch-aware (the radical
+    /// normaliser keeps the integrand's own `√(1−x⁻²)`, whose sign flips with
+    /// `x`), so an answer may come back — and if it does it must be right on
+    /// **both** components.
     #[test]
-    fn charlwood_22_is_refused_because_its_candidate_is_one_sided() {
+    fn charlwood_22_is_refused_or_right_on_both_branches() {
         use crate::parse::parse;
         use std::collections::HashMap as Map;
 
@@ -3173,10 +3191,24 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let mut syms: Map<String, ExprId> = Map::from([("x".to_owned(), x)]);
         let f = parse("x^3*acos(1/x)/sqrt(-1+x^4)", &pool, &mut syms).expect("parses");
-        assert!(
-            integrate_by_parts(f, x, &pool).is_declined(),
-            "#22's candidate is only right on one branch and must be refused"
-        );
+        let ByPartsOutcome::Solved(big_f) = integrate_by_parts(f, x, &pool) else {
+            return;
+        };
+        // Differentiate symbolically: `F` itself may take a log of a negative
+        // quantity on `x < −1` (a constant `iπ` offset), which `f64` cannot
+        // evaluate, while `F′` is real there.
+        let df = crate::diff::diff(big_f, x, &pool)
+            .expect("differentiable")
+            .value;
+        let ev = |e: ExprId, v: f64| crate::integrate::gate::eval_at(e, x, v, &pool);
+        for xv in [-3.1_f64, -2.2, -1.4, 1.4, 2.2, 3.1] {
+            let d = ev(df, xv).expect("F' evaluates");
+            let want = ev(f, xv).unwrap();
+            assert!(
+                (d - want).abs() < 1e-5 * (1.0 + want.abs()),
+                "#22 answer wrong at x = {xv}: F' = {d}, f = {want}"
+            );
+        }
     }
 
     #[test]

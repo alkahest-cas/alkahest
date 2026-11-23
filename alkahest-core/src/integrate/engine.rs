@@ -3478,6 +3478,14 @@ fn integrate_dispatch(
                 return Ok(DerivedExpr::with_log(s.value, final_log));
             }
 
+            // ── Tier 3b: rationalise a radical denominator in the algebraic
+            // cofactor (`asin(x)/(1+√(1−x²))`), then integrate termwise.
+            // Re-verified against `expr`; not re-entrant.
+            crate::budget::check()?;
+            if let Some(r) = super::algebraic::try_rationalized_cofactor(expr, var, pool) {
+                return Ok(r);
+            }
+
             // ── Tier 4: pre-normalisation + parametric closed forms ─────────
             //
             // Expand powers of sums, merge `exp(a)·exp(b)`, combine powers of
