@@ -3686,7 +3686,10 @@ mod tests {
         let neg_log = pool.mul(vec![pool.integer(-1_i32), log_x(x, &pool)]);
         let eta = pool.add(vec![x, neg_log]);
         let integrand = pool.func("exp", vec![eta]);
-        let err = crate::integrate::integrate(integrand, x, &pool)
+        // The Risch entry point itself: the dispatcher now normalises
+        // `exp(x − log x)` to `eˣ/x` first and answers `Ei(x)`, which is the
+        // right outcome but no longer exercises this tower's certificate.
+        let err = crate::integrate::risch::integrate_risch(integrand, x, &pool)
             .expect_err("∫ eˣ/x dx is not elementary");
         assert!(
             matches!(err, IntegrationError::NonElementary(_)),

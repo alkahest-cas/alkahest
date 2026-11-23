@@ -259,6 +259,56 @@ fn mentions_log_like(e: ExprId, pool: &ExprPool) -> bool {
     }
 }
 
+/// `exp(η)` is transcendental over the field below when `η = Σ cᵢ·log uᵢ + r`
+/// with rational literals `cᵢ` and a remainder `r` that is free of logarithms
+/// and not constant: then `exp(η) = Π uᵢ^{cᵢ}·exp(r)` and `exp(r)` is
+/// transcendental (`exp(x − log x) = eˣ/x`).  A constant remainder makes it
+/// algebraic (`exp(log y) = y`); a logarithm with any other coefficient
+/// (`exp(a·log y) = y^a`) is not decided here.
+fn exp_argument_is_transcendental(eta: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    let terms = match pool.get(eta) {
+        ExprData::Add(ts) => ts,
+        _ => vec![eta],
+    };
+    let mut rest = Vec::new();
+    for t in terms {
+        let is_rational_log = match pool.get(t) {
+            ExprData::Func { name, .. } => is_log_like(&name),
+            ExprData::Mul(fs) => {
+                let logs = fs
+                    .iter()
+                    .filter(|&&f| matches!(pool.get(f), ExprData::Func { name, .. } if is_log_like(&name)))
+                    .count();
+                logs == 1 && fs.iter().all(|&f| {
+                    matches!(pool.get(f), ExprData::Integer(_) | ExprData::Rational(_))
+                        || matches!(pool.get(f), ExprData::Func { name, .. } if is_log_like(&name))
+                })
+            }
+            _ => false,
+        };
+        if !is_rational_log {
+            rest.push(t);
+        }
+    }
+    if rest.is_empty() {
+        return false;
+    }
+    let r = if rest.len() == 1 {
+        rest[0]
+    } else {
+        pool.add(rest)
+    };
+    if mentions_log_like(r, pool) {
+        return false;
+    }
+    match crate::diff::diff(r, var, pool) {
+        Ok(d) => {
+            !matches!(pool.get(simplify(d.value, pool).value), ExprData::Integer(n) if n.0 == 0)
+        }
+        Err(_) => false,
+    }
+}
+
 /// `true` when `e` has an `exp(·)` factor at its top multiplicative level.
 fn has_exp_factor(e: ExprId, pool: &ExprPool) -> bool {
     match pool.get(e) {
@@ -281,8 +331,9 @@ fn rational_ratio(a: ExprId, b: ExprId, pool: &ExprPool) -> bool {
 ///
 /// Checked conservatively — `false` means "not established", never "dependent":
 ///
-/// * `exp(η)` with a logarithm in `η` may be algebraic (`exp(log y) = y`,
-///   `exp(asinh x) = x + √(x²+1)`);
+/// * `exp(η)` whose `η` is a rational combination of logarithms plus a
+///   constant is algebraic (`exp(log y) = y`, `exp(asinh x) = x + √(x²+1)`);
+///   see [`exp_argument_is_transcendental`];
 /// * `log(u)` with an `exp` factor in `u` splits (`log(x·eˣ) = log x + x`);
 /// * two `exp` generators with `η₁′/η₂′ ∈ ℚ`, or two `log` generators with
 ///   `(u₁′/u₁)/(u₂′/u₂) ∈ ℚ`, are algebraically dependent.
@@ -301,7 +352,7 @@ pub(crate) fn tower_is_certifiably_transcendental(
         };
         let d = simplify(d.value, pool).value;
         if g.is_exp() {
-            if mentions_log_like(arg, pool) {
+            if !exp_argument_is_transcendental(arg, var, pool) {
                 return false;
             }
             exp_derivs.push(d);
