@@ -30,8 +30,11 @@
 //!    `v ^ (3/2) = √v ^ 3`, …). If the residual does not reduce to zero the
 //!    certificate is **withheld** — the emitter never hands Lean an identity
 //!    it has not already checked.
-//! 3. **Closing.** `field_simp; ring` proves that (purely rational) identity
-//!    and `linear_combination` combines it with the facts.
+//!    The facts include `u * u⁻¹ = 1` for every denominator `u`, so the
+//!    cofactors also clear denominators.
+//! 3. **Closing.** `linear_combination Σ cⱼ * factⱼ` — a single `ring1`
+//!    check of a polynomial identity the emitter already verified. No
+//!    `field_simp` / `simp` whose normal forms could drift.
 //!
 //! No `sorry`, no `admit`: every failure is a withheld certificate with a
 //! specific reason code (see [`IntegrationCertWithheld`]).
@@ -376,7 +379,7 @@ enum AKind {
         arg_lean: String,
     },
     /// `(u)⁻¹`.
-    Inv { u: Poly },
+    Inv,
     /// `base ^ (p : ℝ)` with rational, non-integer `p`.
     Rpow {
         base: Poly,
@@ -421,6 +424,8 @@ enum RelKind {
     Subst { v: u32, e: Poly },
     /// `v ^ d = tail`.
     Power { v: u32, d: u32, tail: Poly },
+    /// `u * w = 1` (`w` the inverse atom of `u`).
+    Inverse { w: u32, u: Poly },
 }
 
 #[derive(Clone, Debug)]
@@ -459,7 +464,6 @@ struct Ctx<'a> {
     params: BTreeSet<String>,
     atoms: Vec<Atom>,
     by_lean: HashMap<String, u32>,
-    inv_by_poly: Vec<(Poly, u32)>,
     facts: Vec<Fact>,
     fact_by_prop: HashMap<String, String>,
     rels: Vec<Rel>,
@@ -469,7 +473,6 @@ struct Ctx<'a> {
     sqrt_nonneg: HashMap<u32, String>,
     /// Atom → an earlier atom with the same function and an equal argument.
     twin_of: HashMap<u32, u32>,
-    uses_inverse: bool,
 }
 
 impl<'a> Ctx<'a> {
@@ -489,7 +492,6 @@ impl<'a> Ctx<'a> {
             params: BTreeSet::new(),
             atoms: Vec::new(),
             by_lean: HashMap::new(),
-            inv_by_poly: Vec::new(),
             facts: Vec::new(),
             fact_by_prop: HashMap::new(),
             rels: Vec::new(),
@@ -497,7 +499,6 @@ impl<'a> Ctx<'a> {
             poly_memo: HashMap::new(),
             sqrt_nonneg: HashMap::new(),
             twin_of: HashMap::new(),
-            uses_inverse: false,
         };
         // Atom 0 is the integration variable.
         c.new_atom(format!("({var_name} : ℝ)"), AKind::Free, 0);
@@ -771,26 +772,66 @@ impl<'a> Ctx<'a> {
 
     /// The polynomial of `1 / u`, where `u_lean` is a spelling of `u` with a
     /// `≠ 0` fact already in scope.
+    ///
+    /// This mirrors how `ring` sees an inverse: the inverse of a *monomial*
+    /// distributes (`(c·a²)⁻¹ = c⁻¹·(a⁻¹)²`), while the inverse of any other
+    /// polynomial is one atom per normal form — so inverse atoms are keyed by
+    /// atom (monomial case) or by polynomial (otherwise), never by spelling.
     fn inv_poly(&mut self, u: &Poly, u_lean: &str) -> Result<Poly, IntegrationCertWithheld> {
-        self.uses_inverse = true;
         if let Some(c) = u_as_constant(u) {
             if c == 0 {
                 return Err(WITHHELD_CONSTANT_SIGN);
             }
             return Ok(Poly::konst(Rational::from(c.recip_ref())));
         }
-        if let Some((_, id)) = self.inv_by_poly.iter().find(|(q, _)| q == u) {
-            return Ok(Poly::var(*id));
+        let u_fact = self
+            .fact_by_prop
+            .get(&format!("{u_lean} ≠ 0"))
+            .cloned()
+            .ok_or(WITHHELD_UNSUPPORTED_NODE)?;
+        if u.len() == 1 {
+            let (m, c) = u.0.iter().next().map(|(m, c)| (m.clone(), c.clone())).unwrap();
+            let mut out = Poly::konst(Rational::from(c.recip_ref()));
+            for &(v, e) in &m {
+                if matches!(self.atoms[v as usize].kind, AKind::Inv) {
+                    return Err(WITHHELD_UNSUPPORTED_NODE);
+                }
+                let a_lean = self.atoms[v as usize].lean.clone();
+                let prop = format!("{a_lean} ≠ 0");
+                let fact = match self.fact_by_prop.get(&prop) {
+                    Some(f) => f.clone(),
+                    None if m.len() == 1 => {
+                        self.have(prop, format!("fun h => {u_fact} (by simp [h])"))
+                    }
+                    None => return Err(WITHHELD_UNSUPPORTED_NODE),
+                };
+                let w = self.inverse_atom(&Poly::var(v), &a_lean, &fact);
+                out = out.mul(&Poly::var(w).pow(e)?)?;
+            }
+            return Ok(out);
         }
-        let depth = 1 + self.depth_of(u);
+        Ok(Poly::var(self.inverse_atom(u, u_lean, &u_fact)))
+    }
+
+    /// The atom `(u)⁻¹` with its `u * u⁻¹ = 1` fact (one per polynomial `u`).
+    fn inverse_atom(&mut self, u: &Poly, u_lean: &str, fact: &str) -> u32 {
+        let existing = self.rels.iter().find_map(|r| match &r.kind {
+            RelKind::Inverse { w, u: q } if q == u => Some(*w),
+            _ => None,
+        });
+        if let Some(w) = existing {
+            return w;
+        }
         let lean = format!("({u_lean})⁻¹");
-        let id = if let Some(&id) = self.by_lean.get(&lean) {
-            id
-        } else {
-            self.new_atom(lean, AKind::Inv { u: u.clone() }, depth)
-        };
-        self.inv_by_poly.push((u.clone(), id));
-        Ok(Poly::var(id))
+        let depth = 1 + self.depth_of(u);
+        let id = self.new_atom(lean.clone(), AKind::Inv, depth);
+        self.push_rel(
+            format!("({u_lean}) * {lean}"),
+            "1".into(),
+            format!("mul_inv_cancel {fact}"),
+            RelKind::Inverse { w: id, u: u.clone() },
+        );
+        id
     }
 
     fn sqrt_atom(&mut self, arg_lean: &str, arg: Poly, nonneg: Option<String>) -> u32 {
@@ -1057,7 +1098,10 @@ impl<'a> Ctx<'a> {
                         } else {
                             let ne = self.ne0_fact(b)?;
                             let w = self.inv_poly(&bp, &bl)?;
-                            let inv_d = nb.dpoly.neg().mul(&w.pow(2)?)?;
+                            let sq_lean = format!("({bl}) ^ (2 : ℕ)");
+                            self.have(format!("{sq_lean} ≠ 0"), format!("pow_ne_zero 2 {ne}"));
+                            let w2 = self.inv_poly(&bp.pow(2)?, &sq_lean)?;
+                            let inv_d = nb.dpoly.neg().mul(&w2)?;
                             let inv_proof = format!("(({}).inv {ne})", nb.proof);
                             let inv_dlean = format!("(-({})) / (({bl}) ^ (2 : ℕ))", nb.dlean);
                             if n == -1 {
@@ -1157,7 +1201,7 @@ impl<'a> Ctx<'a> {
                         let cl = self.atoms[c as usize].lean.clone();
                         let w = self.inv_poly(&Poly::var(c), &cl)?;
                         node(
-                            format!("((Real.hasDerivAt_tan {hc}).comp {x} {pf})"),
+                            format!("(HasDerivAt.comp (h := fun ({x} : ℝ) => {al}) {x} (Real.hasDerivAt_tan {hc}) {pf})"),
                             format!("(1 / Real.cos ({al}) ^ 2) * ({da})"),
                             w.pow(2)?.mul(&dp)?,
                         )
@@ -1196,7 +1240,7 @@ impl<'a> Ctx<'a> {
                             (format!("(-({core})) * ({da})"), -1)
                         };
                         node(
-                            format!("(({lemma} (ne_of_gt {h1}) (ne_of_lt {h2})).comp {x} {pf})"),
+                            format!("(HasDerivAt.comp (h := fun ({x} : ℝ) => {al}) {x} ({lemma} (ne_of_gt {h1}) (ne_of_lt {h2})) {pf})"),
                             dl,
                             w.mul(&dp)?.scale(&Rational::from(sign)),
                         )
@@ -1286,6 +1330,7 @@ impl<'a> Ctx<'a> {
     fn has_rule(&self, v: u32) -> bool {
         self.rels.iter().any(|r| match r.kind {
             RelKind::Subst { v: w, .. } | RelKind::Power { v: w, .. } => w == v,
+            RelKind::Inverse { .. } => false,
         })
     }
 
@@ -1729,12 +1774,12 @@ impl<'a> Ctx<'a> {
         let mut cof = vec![Poly::zero(); self.rels.len()];
         let mut cur = p;
         let mut mult = Poly::one();
-        let inv_atoms: Vec<(u32, Poly, u32)> = self
-            .atoms
+        let inv_rels: Vec<(usize, u32, Poly)> = self
+            .rels
             .iter()
             .enumerate()
-            .filter_map(|(i, a)| match &a.kind {
-                AKind::Inv { u } => Some((i as u32, u.clone(), a.depth)),
+            .filter_map(|(i, r)| match &r.kind {
+                RelKind::Inverse { w, u } => Some((i, *w, u.clone())),
                 _ => None,
             })
             .collect();
@@ -1767,22 +1812,36 @@ impl<'a> Ctx<'a> {
             if progressed {
                 continue;
             }
-            // 2. clear the outermost inverse
+            // 2. clear the outermost inverse: with t = u·w,
+            //    p = w^K·Σ cₖ u^(K-k) - (t - 1)·Σ cₖ wᵏ (1 + t + … + t^(K-k-1)).
             let vars = cur.vars();
-            if let Some((w, u, _)) = inv_atoms
+            if let Some((ri, w, u)) = inv_rels
                 .iter()
-                .filter(|(w, _, _)| vars.contains(w))
-                .max_by_key(|(_, _, d)| *d)
+                .filter(|(_, w, _)| vars.contains(w))
+                .max_by_key(|(_, w, _)| self.atoms[*w as usize].depth)
             {
                 let cs = cur.split(*w);
                 let kmax = (cs.len() - 1) as u32;
+                let t = u.mul(&Poly::var(*w))?;
                 let mut next = Poly::zero();
+                let mut a = Poly::zero();
                 for (k, c) in cs.iter().enumerate() {
                     if c.is_zero() {
                         continue;
                     }
-                    next = next.add(&c.mul(&u.pow(kmax - k as u32)?)?);
+                    let k = k as u32;
+                    next = next.add(&c.mul(&u.pow(kmax - k)?)?);
+                    let mut s_geo = Poly::zero();
+                    let mut tp = Poly::one();
+                    for _ in 0..(kmax - k) {
+                        s_geo = s_geo.add(&tp);
+                        tp = tp.mul(&t)?;
+                    }
+                    if !s_geo.is_zero() {
+                        a = a.add(&c.mul(&Poly::var(*w).pow(k)?)?.mul(&s_geo)?);
+                    }
                 }
+                cof[*ri] = cof[*ri].sub(&mult.mul(&a)?);
                 cur = next;
                 mult = mult.mul(&Poly::var(*w).pow(kmax)?)?;
                 continue;
@@ -2046,35 +2105,24 @@ pub fn emit_integration_hasderiv_cert(
         "  have hd : HasDerivAt (fun ({x} : ℝ) => {big_f}) ({}) {x} := hd0\n",
         node.dlean
     ));
-    let mut sum_terms = Vec::new();
-    let mut lc_terms = vec!["key".to_string()];
+    let mut lc_terms = Vec::new();
     for (i, r) in cx.rels.iter().enumerate() {
         if cof[i].is_zero() {
             continue;
         }
         let c = cx.print_poly(&cof[i])?;
         body.push_str(&format!("  have {} : {} = {} := {}\n", r.name, r.lhs, r.rhs, r.proof));
-        sum_terms.push(format!("({c}) * (({}) - ({}))", r.lhs, r.rhs));
         lc_terms.push(format!("({c}) * {}", r.name));
     }
-    let sum = if sum_terms.is_empty() {
-        "0".to_string()
+    // `G = f` is a polynomial identity in the atoms modulo the facts above:
+    // `ring1` checks `G - f - Σ cⱼ·(Lⱼ - Rⱼ) = 0` with the cofactors computed here.
+    let combo = if lc_terms.is_empty() {
+        String::new()
     } else {
-        sum_terms.join(" + ")
-    };
-    let needs_field = cx.uses_inverse || sum.contains('⁻') || sum.contains('/');
-    let closer = if needs_field {
-        "field_simp\n    ring"
-    } else {
-        "ring"
+        format!(" {}", lc_terms.join(" + "))
     };
     body.push_str(&format!(
-        "  have key : ({}) - ({small_f}) - ({sum}) = 0 := by\n    {closer}\n",
-        node.dlean
-    ));
-    body.push_str(&format!(
-        "  exact hd.congr_deriv (by linear_combination {})\n",
-        lc_terms.join(" + ")
+        "  exact hd.congr_deriv (by linear_combination{combo})\n"
     ));
 
     let display_f = pool.display(integrand).to_string();
