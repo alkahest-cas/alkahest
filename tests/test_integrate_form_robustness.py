@@ -148,9 +148,11 @@ def test_logistic_is_elementary():
 # to `_NONELEMENTARY_CLOSED_FORM` below.  The list is deliberately *repopulated*
 # rather than shortened: what it pins is that an `E-INT-004` proof is never
 # downgraded to the weaker `E-INT-001`, and that pin needs live examples.
+# `exp(x^2)` (now `erfi`) and `exp(-x^2)/x` (now `Ei(−x²)/2`, from the
+# composite pass after the verdict) moved the same way.
 _NONELEMENTARY = [
-    "exp(x^2)",  # would need `erfi`, which is not a registered primitive
-    "exp(-x^2)/x",  # `Ei(−x²)/2` — a quadratic argument, not in the table
+    "exp(x^3)",  # an incomplete gamma function, not in the basis
+    "exp(x)/(x^2+1)",  # `Ei` at complex shifts, not in the table
     "sin(2*x+3)/(x+1)",  # needs an angle-addition split, not in the table
     "cos(x)/(2*x+1)",  # denominator not proportional to the argument
 ]
@@ -191,6 +193,12 @@ _NONELEMENTARY_CLOSED_FORM = [
     # Gaussian moments: `∫x²·exp(−x²) dx = −x·exp(−x²)/2 + (√π/4)·erf(x)`.
     ("x^2*exp(-x^2)", "erf"),
     ("x^4*exp(-x^2)", "erf"),
+    # `A > 0`: the imaginary error function.
+    ("exp(x^2)", "erfi"),
+    ("x^2*exp(x^2)", "erfi"),
+    # Special functions of a non-trivial argument (the composite pass).
+    ("exp(-x^2)/x", "Ei"),
+    ("sin(exp(x))", "Si"),
 ]
 
 _SPECIAL_BASIS = (
@@ -202,6 +210,7 @@ _SPECIAL_BASIS = (
     "Chi",
     "erf",
     "erfc",
+    "erfi",
     "fresnels",
     "fresnelc",
     "dilog",
@@ -361,7 +370,7 @@ def test_association_does_not_change_a_nonelementary_verdict():
     """A certified `E-INT-004` must stay certified, however it is bracketed."""
     pool = ExprPool()
     x = pool.symbol("x")
-    for src in _assoc_spellings("exp(x^2)", "1", "1", "*"):
+    for src in _assoc_spellings("exp(x^3)", "1", "1", "*"):
         f = _parse(src, pool)
         with pytest.raises(ak.IntegrationError) as excinfo:
             integrate(f, x)

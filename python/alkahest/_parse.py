@@ -114,6 +114,7 @@ _FUNC_NAMES = frozenset(
         "round",
         "erf",
         "erfc",
+        "erfi",
         "gamma",
         "lambert_w",
         "lambert_wm1",
@@ -198,7 +199,8 @@ _FUNC_NAMES = frozenset(
         # ``alkahest-core/src/parse.rs``): factorial/binomial through gamma,
         # harmonic through digamma (or zeta/hurwitz_zeta for an order m >= 2),
         # the inverse reciprocal functions through atan/acos/asin/atanh/acosh/
-        # asinh of 1/u, erfi(u) = -I*erf(I*u), and the aliases Abs and ln.
+        # asinh of 1/u, and the aliases Abs and ln.  (``erfi`` is a primitive
+        # of its own, listed with erf above.)
         "factorial",
         "binomial",
         "harmonic",
@@ -208,7 +210,6 @@ _FUNC_NAMES = frozenset(
         "acoth",
         "asech",
         "acsch",
-        "erfi",
         "Abs",
         "ln",
         # Complex parts and extrema (nodes of their own).
@@ -813,6 +814,7 @@ def _apply_func(name: str, args: list, offset: int, pool=None):
         "round": _ak.round,
         "erf": _ak.erf,
         "erfc": _ak.erfc,
+        "erfi": _ak.erfi,
         "gamma": _ak.gamma,
         "lambert_w": _ak.lambert_w,
         "lambert_wm1": _ak.lambert_wm1,
@@ -959,14 +961,6 @@ def _apply_func(name: str, args: list, offset: int, pool=None):
             "asinh": _ak.asinh,
         }[base]
         return inverse(args[0] ** -1)
-    if name == "erfi":
-        if len(args) != 1:
-            raise ParseError(
-                f"erfi takes exactly 1 argument, got {len(args)}",
-                span=(offset, offset + len(name)),
-            )
-        i = args[0]._pool.imaginary_unit() if pool is None else pool.imaginary_unit()
-        return -i * _ak.erf(i * args[0])
 
     fn = _funcs.get(name)
     if fn is None:
@@ -976,12 +970,7 @@ def _apply_func(name: str, args: list, offset: int, pool=None):
             remediation=(
                 "known functions: "
                 + ", ".join(
-                    sorted(
-                        set(_funcs)
-                        | set(_RECIPROCAL_BASE)
-                        | set(_INVERSE_RECIPROCAL_BASE)
-                        | {"erfi"}
-                    )
+                    sorted(set(_funcs) | set(_RECIPROCAL_BASE) | set(_INVERSE_RECIPROCAL_BASE))
                 )
             ),
         )

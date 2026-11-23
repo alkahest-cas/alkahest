@@ -134,7 +134,8 @@ _GENUINELY_NON_ELEMENTARY = [
     "x/sqrt(x^5+1)",
     "x^3/sqrt(x^5+1)",
     "1/((x+2)*sqrt(x^5+1))",
-    "1/sqrt(1-x^3)",
+    # `1/sqrt(1-x^3)` was here; it is now answered as `x·₂F₁(½, ⅓; 4/3; x³)`
+    # (a non-elementary closed form) by the binomial matcher after the verdict.
 ]
 
 

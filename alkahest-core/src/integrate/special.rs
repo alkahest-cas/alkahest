@@ -102,8 +102,10 @@
 //! | `c·sin(A·x²)` / `c·cos(A·x²)` | Fresnel `S` / `C` |
 //! | `c·log(x)/(a+b·x)`, `a·b ≠ 0` | `Li₂` |
 //!
-//! Not covered, and honest about it: `A > 0` in the Gaussian (would need
-//! `erfi`, which is not a registered primitive); an `A` whose sign is not
+//! | `c·exp(A·x²+B·x+C)`, `c·xⁿ·exp(A·x²+C)`, `A > 0` provably | `erfi` (plus elementary terms) |
+//! | `R(x)·e^{g(x)}`, `g ∈ ℚ(x)` non-linear; `f(g)·g′` | `Ei(g)` + elementary; `Si(g)`, `Ei(g)`, … (see `special_subst`) |
+//!
+//! Not covered, and honest about it: an `A` whose sign is not
 //! decidable from the symbol's declared domain (`∫exp(−a·x²) dx` for a plain
 //! `Domain::Real` `a` — the answer would be `NaN` for every `a < 0`, so it is
 //! refused rather than emitted, and declaring `a` positive is what makes it
@@ -147,6 +149,7 @@ pub const SPECIAL_BASIS: &[&str] = &[
     "Chi",
     "erf",
     "erfc",
+    "erfi",
     "fresnels",
     "fresnelc",
     "dilog",
@@ -161,6 +164,10 @@ pub const SPECIAL_BASIS: &[&str] = &[
     "bessel_y",
     "bessel_i",
     "bessel_k",
+    // The Gauss hypergeometric function, as the `hyper(2, 1, a, b, c, z)`
+    // node: the antiderivative of a binomial `xᵐ·(a + b·xⁿ)ᵖ` (Chebyshev's
+    // non-elementary cases).
+    "hyper",
 ];
 
 /// The basis functions actually named in `expr`, sorted and deduplicated.
@@ -313,9 +320,13 @@ pub fn try_special_antiderivative(
         match_gaussian_symbolic(work, var, pool),
         match_gaussian(work, var, pool),
         match_gaussian_moment(work, var, pool),
+        // `A > 0`: the same reductions with `erfi`.
+        match_gaussian_erfi(work, var, pool),
+        match_gaussian_moment_erfi(work, var, pool),
         match_fresnel(work, var, pool),
         match_dilog(work, var, pool),
         match_bessel(work, var, pool),
+        match_binomial_hypergeometric(work, var, pool),
     ];
 
     for candidate in candidates.into_iter().flatten() {
@@ -341,6 +352,39 @@ pub fn try_special_derived(
     let mut log = DerivationLog::new();
     log.push(RewriteStep::simple("special_function_integral", expr, f));
     Some(DerivedExpr::with_log(f, log))
+}
+
+/// The composite pass of [`super::special_subst`]: special functions of a
+/// non-trivial argument (`Ei(x/(x²+2))`, `Si(eˣ)`) and derivative-divides
+/// substitutions closed by the full integrator.  Every candidate goes through
+/// the same gate as the table entries above; `None` is a decline.
+pub(crate) fn try_special_composite_derived(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<DerivedExpr<ExprId>> {
+    // Each candidate costs a full recursive integration; at a nested level
+    // that multiplies through every by-parts and substitution sub-problem.
+    if !super::engine::in_outermost_integrate() {
+        return None;
+    }
+    crate::budget::check().ok()?;
+    for candidate in super::special_subst::composite_candidates(expr, var, pool) {
+        crate::budget::check().ok()?;
+        let f = simplify(candidate, pool).value;
+        if verify_antiderivative_status_parametric(f, expr, var, pool).is_some() {
+            let f = super::real_log::realify_logs(f, expr, var, pool);
+            let rule = if basis_functions_used(f, pool).is_empty() {
+                "int_derivative_divides_full"
+            } else {
+                "special_function_integral"
+            };
+            let mut log = DerivationLog::new();
+            log.push(RewriteStep::simple(rule, expr, f));
+            return Some(DerivedExpr::with_log(f, log));
+        }
+    }
+    None
 }
 
 /// Convert a decline into the engine's error type.  `NotImplemented` and
@@ -969,15 +1013,23 @@ fn match_gaussian_moment(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<E
         return None;
     }
     let neg_aa = negated_coefficient(aa, pool)?;
-    Some(pool.mul(vec![c, gaussian_moment(n, g, aa, neg_aa, var, pool)?]))
+    Some(pool.mul(vec![
+        c,
+        gaussian_moment(n, g, aa, neg_aa, "erf", var, pool)?,
+    ]))
 }
 
 /// The recursion of [`match_gaussian_moment`], as an expression.
+///
+/// `mag` is `|A|` and `func` the special function of the base case: `erf`
+/// with `mag = −A` for `A < 0`, `erfi` with `mag = A` for `A > 0`
+/// (`∫exp(α²·w²) dw = (√π/2α)·erfi(α·w)`).
 fn gaussian_moment(
     n: u32,
     g: ExprId,
     aa: ExprId,
     neg_aa: ExprId,
+    func: &str,
     var: ExprId,
     pool: &ExprPool,
 ) -> Option<ExprId> {
@@ -1000,7 +1052,7 @@ fn gaussian_moment(
             Some(pool.mul(vec![
                 simplify(expc, pool).value,
                 gaussian_constant(neg_aa, pool),
-                pool.func("erf", vec![arg]),
+                pool.func(func, vec![arg]),
             ]))
         }
         1 => Some(pool.mul(vec![g, inv_two_a])),
@@ -1013,11 +1065,99 @@ fn gaussian_moment(
             let tail = pool.mul(vec![
                 pool.integer(-(n as i32 - 1)),
                 inv_two_a,
-                gaussian_moment(n - 2, g, aa, neg_aa, var, pool)?,
+                gaussian_moment(n - 2, g, aa, neg_aa, func, var, pool)?,
             ]);
             Some(pool.add(vec![head, tail]))
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Matcher 3d — erfi: the Gaussians with a positive leading coefficient
+// ---------------------------------------------------------------------------
+
+/// `A` itself when it is provably positive (the mirror of
+/// [`negated_coefficient`]).
+fn positive_coefficient(aa: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let a = simplify(aa, pool).value;
+    is_structurally_positive(a, pool).then_some(a)
+}
+
+/// `c · exp(A·x² + B·x + C)` with `A` provably **positive** → `erfi`.
+///
+/// The reduction of [`match_gaussian_symbolic`] with `α = √A`:
+/// `∫exp(α²·u²) du = (√π/2α)·erfi(α·u)`, `erfi′(z) = (2/√π)·e^{z²}`.
+fn match_gaussian_erfi(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let (c, rest) = split_constant(expr, var, pool);
+    if rest.len() != 1 {
+        return None;
+    }
+    let ExprData::Func { name, args } = pool.get(rest[0]) else {
+        return None;
+    };
+    if name != "exp" || args.len() != 1 {
+        return None;
+    }
+    let (aa, bb, cc) = quadratic_coeffs_sym(args[0], var, pool)?;
+    let pos_aa = positive_coefficient(aa, pool)?;
+    let alpha = square_root(pos_aa, pool);
+    let two_a = simplify(pool.mul(vec![pool.integer(2_i32), aa]), pool).value;
+    let h = quot(bb, two_a, pool);
+    let shifted = simplify(pool.add(vec![var, h]), pool).value;
+    let h2 = pool.pow(h, pool.integer(2_i32));
+    let k = simplify(
+        pool.add(vec![cc, pool.mul(vec![pool.integer(-1_i32), aa, h2])]),
+        pool,
+    )
+    .value;
+    let arg = simplify(pool.mul(vec![alpha, shifted]), pool).value;
+    Some(pool.mul(vec![
+        c,
+        pool.func("exp", vec![k]),
+        gaussian_constant(pos_aa, pool),
+        pool.func("erfi", vec![arg]),
+    ]))
+}
+
+/// `c · xⁿ · exp(A·x² + C)`, `n ≥ 2` even, `A` provably positive → `erfi`
+/// plus elementary terms; the recursion of [`match_gaussian_moment`].
+fn match_gaussian_moment_erfi(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let (c, rest) = split_constant(expr, var, pool);
+    if rest.len() != 2 {
+        return None;
+    }
+    let mut power: Option<u32> = None;
+    let mut gaussian: Option<(ExprId, ExprId)> = None;
+    for &factor in &rest {
+        if let Some(n) = var_power(factor, var, pool) {
+            if power.is_some() {
+                return None;
+            }
+            power = Some(n);
+            continue;
+        }
+        if let ExprData::Func { name, args } = pool.get(factor) {
+            if name == "exp" && args.len() == 1 && gaussian.is_none() {
+                let (aa, bb, _cc) = quadratic_coeffs_sym(args[0], var, pool)?;
+                if !is_zero_const(bb, pool) {
+                    return None;
+                }
+                gaussian = Some((factor, aa));
+                continue;
+            }
+        }
+        return None;
+    }
+    let n = power?;
+    let (g, aa) = gaussian?;
+    if n < 2 || n % 2 != 0 {
+        return None;
+    }
+    let pos_aa = positive_coefficient(aa, pool)?;
+    Some(pool.mul(vec![
+        c,
+        gaussian_moment(n, g, aa, pos_aa, "erfi", var, pool)?,
+    ]))
 }
 
 /// `Some(n)` when `factor` is `var^n` with `n` a non-negative integer literal.
@@ -1289,6 +1429,96 @@ fn match_dilog(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
 }
 
 // ---------------------------------------------------------------------------
+// Matcher — binomial integrals `xᵐ·(a + b·xⁿ)ᵖ` → ₂F₁
+// ---------------------------------------------------------------------------
+
+/// `c · xᵐ · (a + b·xⁿ)ᵖ` with `m` a non-negative integer, `n ≥ 1`, `p` a
+/// non-integer rational and `a > 0`, `b ≠ 0` rational →
+///
+/// ```text
+/// ∫ xᵐ(a + b·xⁿ)ᵖ dx = aᵖ·x^{m+1}/(m+1) · ₂F₁(−p, (m+1)/n; (m+1)/n + 1; −b·xⁿ/a)
+/// ```
+///
+/// (termwise integration of the binomial series, DLMF 15.2.1; the
+/// continuation past `|b·xⁿ/a| = 1` is the one the hypergeometric kernel
+/// evaluates).  By Chebyshev's theorem the integral is elementary exactly when
+/// `p`, `(m+1)/n` or `(m+1)/n + p` is an integer; this matcher runs after the
+/// elementary pipeline has had its turn, so it only sees the other cases (and
+/// the gate checks whatever it emits).  `a > 0` keeps `aᵖ` real.
+fn match_binomial_hypergeometric(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    use crate::integrate::risch::poly_rde::expr_to_qpoly;
+    use rug::Rational;
+    let (c, rest) = split_constant(expr, var, pool);
+    let mut m: u32 = 0;
+    let mut binomial: Option<(ExprId, Rational)> = None;
+    for f in rest {
+        if let Some(k) = var_power(f, var, pool) {
+            m = m.checked_add(k)?;
+            continue;
+        }
+        // `B^p`, `sqrt(B)` and `sqrt(B)^k` (the parser's spelling of `√`).
+        let (base, p) = match pool.get(f) {
+            ExprData::Pow { base, exp } => {
+                let k = match pool.get(exp) {
+                    ExprData::Rational(r) => r.0,
+                    ExprData::Integer(n) => Rational::from(n.0),
+                    _ => return None,
+                };
+                match pool.get(base) {
+                    ExprData::Func { name, args } if name == "sqrt" && args.len() == 1 => {
+                        (args[0], k / 2u32)
+                    }
+                    _ => (base, k),
+                }
+            }
+            ExprData::Func { name, args } if name == "sqrt" && args.len() == 1 => {
+                (args[0], Rational::from((1, 2)))
+            }
+            _ => return None,
+        };
+        if *p.denom() == 1 || binomial.is_some() {
+            return None;
+        }
+        binomial = Some((base, p));
+    }
+    let (base, p) = binomial?;
+    let poly = expr_to_qpoly(base, var, pool)?;
+    let nonzero: Vec<usize> = (0..poly.len()).filter(|&i| poly[i] != 0).collect();
+    if nonzero.len() != 2 || nonzero[0] != 0 {
+        return None;
+    }
+    let n = nonzero[1] as u32;
+    // Elliptic and lower (`n ≤ 4`) only: the genus-2-and-up binomials are
+    // left to the algebraic engine's own verdict for now.
+    if n > 4 {
+        return None;
+    }
+    let (a, b) = (poly[0].clone(), poly[n as usize].clone());
+    if a <= 0 {
+        return None;
+    }
+    let s = Rational::from((m + 1, n)); // (m+1)/n
+    let lit = |q: &Rational| pool.rational(q.numer().clone(), q.denom().clone());
+    let z = pool.mul(vec![
+        lit(&(-Rational::from(&b / &a))),
+        pool.pow(var, pool.integer(n)),
+    ]);
+    let hyper = crate::specfun::hyper::raw_node(
+        &[lit(&Rational::from(-&p)), lit(&s)],
+        &[lit(&Rational::from(&s + 1u32))],
+        z,
+        pool,
+    );
+    Some(pool.mul(vec![
+        c,
+        pool.pow(lit(&a), lit(&p)),
+        pool.rational(1, m + 1),
+        pool.pow(var, pool.integer(m + 1)),
+        hyper,
+    ]))
+}
+
+// ---------------------------------------------------------------------------
 // Matcher — Bessel recurrences (G11b)
 // ---------------------------------------------------------------------------
 
@@ -1444,12 +1674,29 @@ mod tests {
         assert_eq!(basis_functions_used(out, &pool), vec!["erf"]);
     }
 
-    /// `∫exp(+x²) dx` needs `erfi`, which is not registered: decline, do not
-    /// invent a name the gate cannot differentiate.
+    /// `∫exp(+x²) dx = (√π/2)·erfi(x)`, verified exactly through `erfi`'s
+    /// registered derivative.
     #[test]
-    fn positive_gaussian_declines() {
+    fn positive_gaussian_is_erfi() {
         let (pool, x) = setup();
         let f = pool.func("exp", vec![pool.pow(x, pool.integer(2_i32))]);
+        let (out, evidence) = try_special_antiderivative(f, x, &pool).expect("erfi");
+        assert_eq!(basis_functions_used(out, &pool), vec!["erfi"]);
+        assert_eq!(evidence, AntiderivativeVerification::Exact);
+        // A shifted, scaled one and an even moment.
+        for src in ["exp(2*x^2 + x + 1)", "x^2*exp(3*x^2)", "5*exp(x^2/4)"] {
+            let (pool, f, x) = parsed(src);
+            let (out, _) = try_special_antiderivative(f, x, &pool)
+                .unwrap_or_else(|| panic!("{src} should reach erfi"));
+            assert_eq!(basis_functions_used(out, &pool), vec!["erfi"], "{src}");
+        }
+    }
+
+    /// The sign of a symbolic leading coefficient still has to be declared:
+    /// `exp(a·x²)` for a merely real `a` is neither `erf` nor `erfi`.
+    #[test]
+    fn an_unsigned_symbolic_gaussian_is_neither_erf_nor_erfi() {
+        let (pool, f, x) = parsed("exp(a*x^2)");
         assert!(try_special_antiderivative(f, x, &pool).is_none());
     }
 
@@ -1497,7 +1744,9 @@ mod tests {
     #[test]
     fn decline_cannot_become_non_elementary() {
         let (pool, x) = setup();
-        let f = pool.func("exp", vec![pool.pow(x, pool.integer(2_i32))]);
+        // `exp(x³)` (an incomplete gamma function) — `exp(x²)` was the witness
+        // until `erfi` joined the basis.
+        let f = pool.func("exp", vec![pool.pow(x, pool.integer(3_i32))]);
         assert!(try_special_antiderivative(f, x, &pool).is_none());
         assert!(matches!(
             decline(f, &pool),

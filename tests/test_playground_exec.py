@@ -196,7 +196,8 @@ def test_bound_variable_shadows_definition():
 
 
 def test_non_elementary_integral_declined_with_code():
-    res = run("integrate e^(x^2) dx")
+    # `e^(x^3)`: `e^(x^2)` is answered with `erfi` now.
+    res = run("integrate e^(x^3) dx")
     assert not res["ok"]
     assert res["error_code"] == "E-INT-004"
     assert res["error_source"] == "alkahest"

@@ -2543,16 +2543,17 @@ mod tests {
     fn a_non_terminating_shape_declines_within_the_bound() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
-        // `∫e^{x²} dx` needs `erfi`, which is not a registered primitive, so
-        // nothing downstream can close the sub-integrals either.  (`∫eˣ/x dx`
-        // used to be the witness here; it stopped being one when the `Ei`
-        // emitter landed, and a witness that the engine can now solve proves
+        // `∫e^{x³} dx` needs an incomplete gamma function, which is not in
+        // the special-function basis, so nothing downstream can close the
+        // sub-integrals either.  (`∫eˣ/x dx` and then `∫e^{x²} dx` used to be
+        // the witness here; each stopped being one when the `Ei` and `erfi`
+        // emitters landed, and a witness that the engine can now solve proves
         // nothing about the step bound.)
-        let f = pool.func("exp", vec![pool.pow(x, pool.integer(2_i32))]);
+        let f = pool.func("exp", vec![pool.pow(x, pool.integer(3_i32))]);
         let t0 = std::time::Instant::now();
         let out = integrate_by_parts(f, x, &pool);
         let dt = t0.elapsed();
-        assert!(out.is_declined(), "∫e^{{x²}} must decline, got {out:?}");
+        assert!(out.is_declined(), "∫e^{{x³}} must decline, got {out:?}");
         assert!(
             dt < crate::test_time::limit_secs(20),
             "the decline took {dt:?} — the step bound is not holding"
@@ -2600,9 +2601,10 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
 
         // A genuinely non-elementary integrand with no closed form over the
-        // registered basis either: the decline must still be `E-INT-001`,
-        // because *this module* has no standing to certify.
-        let f = pool.func("exp", vec![pool.pow(x, pool.integer(2_i32))]);
+        // registered basis either (`e^{x³}`; `e^{x²}` is `erfi` now): the
+        // decline must still be `E-INT-001`, because *this module* has no
+        // standing to certify.
+        let f = pool.func("exp", vec![pool.pow(x, pool.integer(3_i32))]);
         let out = integrate_by_parts(f, x, &pool);
         assert!(out.is_declined());
 

@@ -415,7 +415,7 @@ def test_alkahest_error_catches_both_halves_of_the_hierarchy():
 
     caught_native = False
     try:
-        alkahest.integrate(alkahest.exp(x * x), x)
+        alkahest.integrate(alkahest.exp(x * x * x), x)
     except alkahest.AlkahestError:
         caught_native = True
     assert caught_native, "alkahest.AlkahestError missed a natively-raised error"

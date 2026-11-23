@@ -115,11 +115,12 @@ def test_indefinite_still_works_two_args():
 
 
 def test_nonelementary_propagates():
-    # ∫_0^1 exp(x²) dx is non-elementary — must error, not return a number.
+    # ∫_0^1 exp(x³) dx is non-elementary and outside the special-function
+    # basis — must error, not return a number.  (`exp(x²)` is `erfi` now.)
     pool = ExprPool()
     x = pool.symbol("x")
     with pytest.raises(Exception):
-        integrate(alkahest.exp(x**2), x, 0, 1)
+        integrate(alkahest.exp(x**3), x, 0, 1)
 
 
 def test_nonelementary_closed_form_evaluates():

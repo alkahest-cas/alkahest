@@ -91,9 +91,10 @@ def test_real_solve_of_x_squared_minus_one_has_two_real_roots(pool, x):
 
 
 def test_non_elementary_antiderivative_raises_not_a_fake_formula(pool, x):
-    """∫ exp(x^2) dx has no elementary closed form (it's related to erfi).
-    alkahest must refuse (E-INT-004 / NonElementary) rather than invent a
-    formula or silently return an unevaluated/incorrect expression."""
+    """∫ exp(x^3) dx has no elementary closed form and none over the
+    special-function basis (`exp(x^2)` is `erfi` now).  alkahest must refuse
+    (E-INT-004 / NonElementary) rather than invent a formula or silently
+    return an unevaluated/incorrect expression."""
     with pytest.raises(ak.IntegrationError) as excinfo:
-        ak.integrate(ak.exp(x**2), x)
+        ak.integrate(ak.exp(x**3), x)
     assert excinfo.value.code == "E-INT-004"

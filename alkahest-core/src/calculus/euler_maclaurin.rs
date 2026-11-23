@@ -491,13 +491,14 @@ mod tests {
     #[test]
     fn refuses_when_the_summand_cannot_be_integrated() {
         let (pool, k, n) = setup();
-        // `exp(k²)` has no antiderivative this crate can name: it is `erfi`,
-        // which is not a registered primitive.  (`exp(-k²)` used to be the
-        // witness here and stopped being one when `integrate` learned to emit
-        // `erf` — a summand the integrator can now answer proves nothing about
-        // the refusal path.)
-        let k2 = pool.mul(vec![k, k]);
-        let f = pool.func("exp", vec![k2]);
+        // `exp(k³)` has no antiderivative this crate can name: it is an
+        // incomplete gamma function, which is not in the special-function
+        // basis.  (`exp(-k²)` and then `exp(k²)` used to be the witness here and
+        // stopped being one when `integrate` learned to emit `erf` and `erfi` —
+        // a summand the integrator can now answer proves nothing about the
+        // refusal path.)
+        let k3 = pool.mul(vec![k, k, k]);
+        let f = pool.func("exp", vec![k3]);
         let err = euler_maclaurin(f, k, 1, n, 1, &pool).expect_err("must refuse");
         assert!(matches!(err, AsymptoticError::UnsupportedScale));
     }

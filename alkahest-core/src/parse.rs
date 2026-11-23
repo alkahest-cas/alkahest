@@ -373,6 +373,7 @@ const KNOWN_FUNCS: &[&str] = &[
     "round",
     "erf",
     "erfc",
+    "erfi",
     "gamma",
     "lambert_w",
     "lambert_wm1",
@@ -482,7 +483,6 @@ const KNOWN_FUNCS: &[&str] = &[
     //   identities on the reals: `acot(u) → atan(1/u)`, `asec(u) → acos(1/u)`,
     //   `acsc(u) → asin(1/u)`, `acoth(u) → atanh(1/u)`, `asech(u) →
     //   acosh(1/u)`, `acsch(u) → asinh(1/u)` (SymPy's conventions);
-    // * `erfi(u) → −I·erf(I·u)`;
     // * the aliases `Abs → abs` and `ln → log`.
     "factorial",
     "binomial",
@@ -493,7 +493,6 @@ const KNOWN_FUNCS: &[&str] = &[
     "acoth",
     "asech",
     "acsch",
-    "erfi",
     "Abs",
     "ln",
     // Complex parts and extrema: nodes of their own, with Python
@@ -572,11 +571,6 @@ fn desugar_call(name: &str, args: &[ExprId], pool: &ExprPool) -> Option<Result<E
                 _ => "asinh",
             };
             pool.func(base, vec![inv(args[0])])
-        }),
-        "erfi" => arity(1, 1).map(|_| {
-            let i = pool.imaginary_unit();
-            let inner = pool.func("erf", vec![pool.mul(vec![i, args[0]])]);
-            pool.mul(vec![pool.integer(-1_i32), i, inner])
         }),
         "factorial" => arity(1, 1).and_then(|_| match small_int(args[0]) {
             Some(n) if n < 0 => Err(format!(

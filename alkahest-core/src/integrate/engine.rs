@@ -1624,7 +1624,12 @@ fn try_weierstrass_rational_trig(
             Ok(inner) => inner,
             // Not this route declining — the caller wants out.
             Err(e) if e.is_budget() => return Err(e),
-            Err(_) => return Ok(None),
+            // `P′/(P² + k)`, whose real form the suppressed `RootSum` would
+            // have carried: `atan(P/√k)/√k` (gated below with the rest).
+            Err(_) => match super::rational_atan::atan_of_polynomial(g, t, pool) {
+                Some(f) => DerivedExpr::new(f),
+                None => return Ok(None),
+            },
         }
     };
 
@@ -2299,7 +2304,10 @@ fn try_bioche_tan_rational_trig(
         match integrate(g_t, t, pool) {
             Ok(inner) => inner,
             Err(e) if e.is_budget() => return Err(e),
-            Err(_) => return Ok(None),
+            Err(_) => match super::rational_atan::atan_of_polynomial(g_t, t, pool) {
+                Some(f) => DerivedExpr::new(f),
+                None => return Ok(None),
+            },
         }
     };
     let two_x = pool.mul(vec![pool.integer(2_i32), var]);
@@ -2371,6 +2379,152 @@ fn try_bioche_tan_rational_trig(
     }
     log.push(RewriteStep::simple(BIOCHE_RULE, expr, result));
     Ok(Some(result))
+}
+
+/// `sin ↦ s`, `cos ↦ c`, `tan ↦ s/c` (argument exactly `var`); `None` when
+/// `expr` is not rational in those.
+fn sincos_rewrite(
+    expr: ExprId,
+    var: ExprId,
+    s: ExprId,
+    c: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    if is_free_of(expr, var, pool) {
+        return Some(expr);
+    }
+    match pool.get(expr) {
+        ExprData::Add(args) => Some(
+            pool.add(
+                args.iter()
+                    .map(|&a| sincos_rewrite(a, var, s, c, pool))
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+        ),
+        ExprData::Mul(args) => Some(
+            pool.mul(
+                args.iter()
+                    .map(|&a| sincos_rewrite(a, var, s, c, pool))
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+        ),
+        ExprData::Pow { base, exp } => {
+            as_integer(exp, pool)?;
+            Some(pool.pow(sincos_rewrite(base, var, s, c, pool)?, exp))
+        }
+        ExprData::Func { name, args } if args.len() == 1 && args[0] == var => match name.as_str() {
+            "sin" => Some(s),
+            "cos" => Some(c),
+            "tan" => Some(pool.mul(vec![s, pool.pow(c, pool.integer(-1_i32))])),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Rule name of the `u = cos x` / `u = sin x` routes (Bioche's rules for
+/// integrands odd under `x ↦ −x` / `x ↦ π − x`).
+const BIOCHE_SINCOS_RULE: &str = "int_bioche_sincos_trig";
+
+/// `∫ R(sin x, cos x) dx` by Bioche's other two rules.
+///
+/// * `R(−s, c) = −R(s, c)` (the form `R dx` is invariant under `x ↦ −x`):
+///   `R = s·S(s², c)` and `u = cos x` gives `−∫ S(1 − u², u) du`.
+/// * `R(s, −c) = −R(s, c)` (invariant under `x ↦ π − x`): `R = c·S(s, c²)`
+///   and `u = sin x` gives `∫ S(u, 1 − u²) du`.
+///
+/// The substituted integrand is a rational function of `u` of the integrand's
+/// own degree, and back-substitution `u ↦ cos x` (or `sin x`) introduces no
+/// pole the integrand does not have, so the antiderivative is continuous
+/// wherever the integrand is.  Gated against the original integrand.
+fn try_bioche_sincos_rational_trig(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Result<Option<ExprId>, IntegrationError> {
+    if !has_rational_trig_denominator(expr, var, pool) {
+        return Ok(None);
+    }
+    let s = pool.symbol("__bioche_s", crate::kernel::Domain::Real);
+    let c = pool.symbol("__bioche_c", crate::kernel::Domain::Real);
+    let u = pool.symbol("__bioche_u", crate::kernel::Domain::Real);
+    let Some(body) = sincos_rewrite(expr, var, s, c, pool) else {
+        return Ok(None);
+    };
+    let Ok((n, d)) = crate::poly::cancel::together_parts(body, vec![s, c], pool) else {
+        return Ok(None);
+    };
+    let one_minus_u2 = pool.add(vec![
+        pool.integer(1_i32),
+        pool.mul(vec![pool.integer(-1_i32), pool.pow(u, pool.integer(2_i32))]),
+    ]);
+    // (odd generator, other generator, back-substitution, sign of du)
+    let routes = [
+        (s, c, pool.func("cos", vec![var]), -1_i32),
+        (c, s, pool.func("sin", vec![var]), 1_i32),
+    ];
+    for (odd, other, back_to, sign) in routes {
+        crate::budget::check()?;
+        let (Some(pn), Some(pd)) = (c_parity(n, odd, pool), c_parity(d, odd, pool)) else {
+            continue;
+        };
+        if pn == pd {
+            continue; // even in `odd`: this rule does not apply
+        }
+        // R/odd = n/(d·odd) with even powers of `odd` only: when `n` is the
+        // odd part, multiply both by `odd` once more.
+        let (num, den) = if pn == 1 {
+            (
+                simplify_expanded(pool.mul(vec![n, odd]), pool).value,
+                simplify_expanded(pool.mul(vec![d, pool.pow(odd, pool.integer(2_i32))]), pool)
+                    .value,
+            )
+        } else {
+            (n, simplify_expanded(pool.mul(vec![d, odd]), pool).value)
+        };
+        let (Some(num), Some(den)) = (
+            even_c_powers(num, odd, one_minus_u2, pool),
+            even_c_powers(den, odd, one_minus_u2, pool),
+        ) else {
+            continue;
+        };
+        let mut to_u = HashMap::new();
+        to_u.insert(other, u);
+        let num = crate::kernel::subs(num, &to_u, pool);
+        let den = crate::kernel::subs(den, &to_u, pool);
+        let quotient = pool.mul(vec![
+            pool.integer(sign),
+            num,
+            pool.pow(den, pool.integer(-1_i32)),
+        ]);
+        let Ok(g_u) = crate::poly::cancel::cancel(quotient, vec![u], pool) else {
+            continue;
+        };
+        let g_u = simplify(g_u, pool).value;
+        if !is_free_of(g_u, s, pool) || !is_free_of(g_u, c, pool) || !is_free_of(g_u, var, pool) {
+            continue;
+        }
+        let inner = {
+            let _no_root_sum = super::risch::rational_integrate::RootSumSuppressed::enter();
+            match integrate(g_u, u, pool) {
+                Ok(inner) => inner,
+                Err(e) if e.is_budget() => return Err(e),
+                Err(_) => continue,
+            }
+        };
+        let mut back = HashMap::new();
+        back.insert(u, back_to);
+        let result = simplify(crate::kernel::subs(inner.value, &back, pool), pool).value;
+        if !verify_antiderivative(result, expr, var, pool) {
+            continue;
+        }
+        // `log(2cos x − 2√2)` is negative on all of ℝ: give the real branch.
+        let result = super::real_log::realify_logs(result, expr, var, pool);
+        log.push(RewriteStep::simple(BIOCHE_SINCOS_RULE, expr, result));
+        return Ok(Some(result));
+    }
+    Ok(None)
 }
 
 /// `∫ R(cot u) dx` through a radical, by the reflection `cot u = tan(π/2 − u)`.
@@ -2502,7 +2656,17 @@ fn trig_reciprocal_square_antiderivative(
     let ExprData::Pow { base, exp } = pool.get(expr) else {
         return None;
     };
-    let n = as_integer(exp, pool)?;
+    let mut n = as_integer(exp, pool)?;
+    // `cot(u)²` parses as the nested `(tan(u)²)^(-1)`: flatten integer powers.
+    let mut base = base;
+    if let ExprData::Pow {
+        base: inner,
+        exp: k,
+    } = pool.get(base)
+    {
+        n = n.checked_mul(as_integer(k, pool)?)?;
+        base = inner;
+    }
     let ExprData::Func { name, args } = pool.get(base) else {
         return None;
     };
@@ -2530,6 +2694,16 @@ fn trig_reciprocal_square_antiderivative(
         ("tan", 2) => {
             let tan_u = pool.func("tan", vec![u]);
             let first = pool.mul(vec![a_inv, tan_u]);
+            let neg_x = pool.mul(vec![neg_one, var]);
+            Some(pool.add(vec![first, neg_x]))
+        }
+        // ∫ cot²(u) dx = −cot(u)/a − x, written with cos/sin: continuous
+        // wherever the integrand is (the `u = tan x` route leaves an
+        // `atan(tan x)` that jumps at the regular points π/2 + kπ).
+        ("tan", -2) => {
+            let cos_u = pool.func("cos", vec![u]);
+            let sin_inv = pool.pow(pool.func("sin", vec![u]), neg_one);
+            let first = pool.mul(vec![neg_one, a_inv, cos_u, sin_inv]);
             let neg_x = pool.mul(vec![neg_one, var]);
             Some(pool.add(vec![first, neg_x]))
         }
@@ -2800,6 +2974,12 @@ pub(crate) fn integrate_raw(
     // What half-angle declines, `t = tan x` may still close when the integrand
     // is invariant under `x ↦ x + π` (`1/(1 + sin²x)`).
     if let Some(result) = try_bioche_tan_rational_trig(expr, var, pool, log)? {
+        return Ok(result);
+    }
+    // And `u = cos x` / `u = sin x` when the integrand is odd under `x ↦ −x`
+    // / `x ↦ π − x` (`sin x/(1 + sin²x)`): the substituted integrand has no
+    // doubled degree and no tangent poles, so the answer is continuous.
+    if let Some(result) = try_bioche_sincos_rational_trig(expr, var, pool, log)? {
         return Ok(result);
     }
 
@@ -3177,6 +3357,14 @@ thread_local! {
     static INTEGRATE_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// `true` inside the outermost [`integrate`] call on this thread (and not in
+/// the sub-problems its routes integrate recursively).  Passes that start
+/// several full integrations of their own run only there, so their cost is
+/// paid once per caller rather than once per nested sub-integral.
+pub(crate) fn in_outermost_integrate() -> bool {
+    INTEGRATE_DEPTH.with(|d| d.get() == 1)
+}
+
 struct IntegrateFrame {
     outermost: bool,
 }
@@ -3458,6 +3646,20 @@ fn integrate_dispatch(
                 return Ok(result);
             }
 
+            // A rational function of one exponential (after rewriting
+            // hyperbolic functions and `bˣ`): decided by the rational
+            // integrator in `u = e^{g·x}`, before by-parts can reach a
+            // roundabout form of the same answer.
+            crate::budget::check()?;
+            if let Some(r) = super::exp_subst::try_exp_substitution(
+                expr,
+                var,
+                pool,
+                super::exp_subst::ExpStage::Rational,
+            )? {
+                return Ok(r);
+            }
+
             // ── Tier 3: general integration by parts ────────────────────────
             //
             // Last, and the reason is soundness rather than cost: its gate
@@ -3502,10 +3704,32 @@ fn integrate_dispatch(
             // residual this tier closes can steer by-parts off the split that
             // gives the principal-branch answer (`∫dx/(√x·√(1+x))`).
             crate::budget::check()?;
+            if let Some(r) = super::exp_subst::try_exp_substitution(
+                expr,
+                var,
+                pool,
+                super::exp_subst::ExpStage::Rewrite,
+            )? {
+                return Ok(r);
+            }
+
+            // Rational trig at several commensurable angles, or with only
+            // monomial denominators: one angle, then the full integrator.
+            crate::budget::check()?;
+            if let Some(r) = super::trig_angle::try_trig_angle_reduction(expr, var, pool)? {
+                return Ok(r);
+            }
+
+            crate::budget::check()?;
             if INTEGRATE_DEPTH.with(|d| d.get()) == 1 {
                 if let Some(r) = super::prenorm::try_prenormalised(expr, var, pool)? {
                     return Ok(r);
                 }
+            }
+
+            crate::budget::check()?;
+            if let Some(result) = super::special::try_special_composite_derived(expr, var, pool) {
+                return Ok(result);
             }
 
             // A trip inside any of the tiers above surfaces as a
@@ -3559,16 +3783,18 @@ fn emit_or_keep(
         return Err(err);
     }
     crate::budget::check()?;
-    match super::special::try_special_derived(expr, var, pool) {
-        Some(result) => Ok(result),
-        // The emitter also ends its budget check with `.ok()?`, so re-check
-        // before handing back the verdict: a trip must not be delivered as a
-        // mathematical answer of any kind, certificate included.
-        None => {
-            crate::budget::check()?;
-            Err(err)
-        }
+    if let Some(result) = super::special::try_special_derived(expr, var, pool) {
+        return Ok(result);
     }
+    // The emitters also end their budget checks with `.ok()?`, so re-check
+    // before handing back the verdict: a trip must not be delivered as a
+    // mathematical answer of any kind, certificate included.
+    crate::budget::check()?;
+    if let Some(result) = super::special::try_special_composite_derived(expr, var, pool) {
+        return Ok(result);
+    }
+    crate::budget::check()?;
+    Err(err)
 }
 
 /// [`integrate`], with the answer split into the two shapes of success.
@@ -7573,21 +7799,20 @@ mod tests {
     }
 
     #[test]
-    fn exp_of_a_negative_square_over_x_is_nonelementary() {
+    fn exp_of_a_negative_square_over_x_is_ei_of_a_square() {
         // ∫ exp(−x²)/x dx is `Ei(−x²)/2` — non-elementary, expressible over the
         // basis, and *not* in the table, because the reduction needs a quadratic
-        // argument rather than a linear one.  It is the witness `∫eˣ/x² dx` used
-        // to be: a certificate that is sound as "not elementary" and would be
-        // false if re-read as "not expressible over the basis either".
+        // argument rather than a linear one.  It was the witness of a sound
+        // "not elementary" certificate that would be false if re-read as "not
+        // expressible over the basis either"; the composite pass after the
+        // verdict now answers it, still classified non-elementary.
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let arg = pool.mul(vec![pool.integer(-1_i32), pool.pow(x, pool.integer(2_i32))]);
         let f = over(&pool, pool.func("exp", vec![arg]), x);
-        let r = integrate(f, x, &pool);
-        assert!(
-            matches!(r, Err(IntegrationError::NonElementary(_))),
-            "∫ exp(−x²)/x dx should be NonElementary; got {r:?}"
-        );
+        let r = integrate_classified(f, x, &pool).expect("∫ exp(−x²)/x dx = Ei(−x²)/2");
+        assert_eq!(r.basis(), ["Ei"], "∫ exp(−x²)/x dx");
+        assert!(verify_antiderivative_status(r.antiderivative(), f, x, &pool).is_some());
     }
 
     #[test]
@@ -7808,11 +8033,17 @@ mod tests {
             pool.display(r.value)
         );
 
-        // ∫ x/log(x) dx: coefficient x ≠ 1/x → the rule must not produce a result.
+        // ∫ x/log(x) dx: coefficient x ≠ 1/x → the rule must not produce a
+        // result.  The answer is `Ei(2·log x)`, from the `li`-part pass, and it
+        // must not be elementary.
         let f = pool.mul(vec![x, pool.pow(logx, pool.integer(-1))]);
-        assert!(
-            integrate(f, x, &pool).is_err(),
-            "∫ x/log(x) dx must not be (mis)integrated by the log-derivative rule"
+        assert!(try_log_derivative(f, x, &pool).is_none(), "x ≠ 1/x");
+        let r = integrate(f, x, &pool).expect("∫ x/log(x) dx = Ei(2·log x)");
+        assert_eq!(
+            super::super::special::basis_functions_used(r.value, &pool),
+            ["Ei"],
+            "∫ x/log(x) dx must stay non-elementary; got {}",
+            pool.display(r.value)
         );
     }
 
@@ -8291,15 +8522,16 @@ mod tests {
 
     #[test]
     fn definite_nonelementary_propagates() {
-        // ∫_0^1 exp(x²) dx — non-elementary antiderivative ⇒ must error, not a
-        // (wrong) number.
+        // ∫_0^1 exp(x³) dx — non-elementary antiderivative outside the
+        // special-function basis ⇒ must error, not a (wrong) number.  (`exp(x²)`
+        // was the witness until `erfi` joined the basis.)
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
-        let f = pool.func("exp", vec![pool.pow(x, pool.integer(2_i32))]);
+        let f = pool.func("exp", vec![pool.pow(x, pool.integer(3_i32))]);
         let r = integrate_definite(f, x, pool.integer(0_i32), pool.integer(1_i32), &pool);
         assert!(
             r.is_err(),
-            "∫_0^1 exp(x²) dx must propagate the integration error, got {r:?}"
+            "∫_0^1 exp(x³) dx must propagate the integration error, got {r:?}"
         );
     }
 
@@ -8717,15 +8949,17 @@ mod tests {
 
     #[test]
     fn usub_nonelementary_still_errors() {
-        // ∫ e^(x²) dx has no elementary antiderivative — must NOT be fabricated.
+        // ∫ e^(x³) dx has no elementary antiderivative and none over the
+        // special-function basis — must NOT be fabricated.  (`e^(x²)` is
+        // `erfi` now.)
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
-        let x2 = pool.pow(x, pool.integer(2_i32));
-        let f = pool.func("exp", vec![x2]);
+        let x3 = pool.pow(x, pool.integer(3_i32));
+        let f = pool.func("exp", vec![x3]);
         let r = integrate(f, x, &pool);
         assert!(
             r.is_err(),
-            "∫ e^(x²) dx must error, got {:?}",
+            "∫ e^(x³) dx must error, got {:?}",
             r.map(|d| pool.display(d.value))
         );
     }
@@ -9504,8 +9738,10 @@ mod tests {
         // than shortened: what it pins is the downgrade, and that needs live
         // examples.
         for src in [
-            "exp(x^2)",         // Risch DE has no rational solution; needs `erfi`
-            "exp(-x^2)/x",      // `Ei(−x²)/2` — a quadratic argument, not in the table
+            // `exp(x^2)` (now `erfi`) and `exp(-x^2)/x` (now `Ei(−x²)/2`)
+            // were here until those emitters landed.
+            "exp(x^3)",         // an incomplete gamma function, not in the basis
+            "exp(x)/(x^2+1)",   // `Ei` at complex shifts, not in the table
             "sin(2*x+3)/(x+1)", // needs an angle-addition split, not in the table
             "cos(x)/(2*x+1)",   // denominator not proportional to the argument
         ] {
@@ -9538,6 +9774,10 @@ mod tests {
             ("1/log(x)", "li"),
             ("exp(-x^2)", "erf"),
             ("sin(x^2)", "fresnels"),
+            ("exp(x^2)", "erfi"),
+            ("exp(-x^2)/x", "Ei"),
+            ("sin(exp(x))", "Si"),
+            ("(2 - x^2)*exp(x/(x^2 + 2))/(x^3 + 2*x)", "Ei"),
         ] {
             let mut syms = HashMap::from([("x".to_owned(), x)]);
             let f = crate::parse::parse(src, &pool, &mut syms).expect("parse");

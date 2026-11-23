@@ -129,6 +129,9 @@ def test_the_flag_is_not_a_restatement_of_numeric_ball():
         "beta",
         "uppergamma",
         "lowergamma",
+        # The imaginary error function: a ball kernel (endpoint hull of a
+        # monotone function), no Taylor-model rule yet.
+        "erfi",
     }
     assert ball_only - specfun == {"ceil", "floor"}
 
