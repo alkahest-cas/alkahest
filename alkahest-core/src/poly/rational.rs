@@ -30,7 +30,18 @@ impl RationalFunction {
 
     /// [`Self::new`]; `fast = false` always takes the reference GCD
     /// reduction (the tests' oracle).
-    fn normalise(numer: MultiPoly, denom: MultiPoly, fast: bool) -> Result<Self, ConversionError> {
+    fn normalise(
+        mut numer: MultiPoly,
+        mut denom: MultiPoly,
+        fast: bool,
+    ) -> Result<Self, ConversionError> {
+        // A hand-built map may hold zero coefficients or keys with trailing
+        // zeros. Canonicalise first, on both paths: a denominator of only zero
+        // coefficients is then refused here instead of reaching FLINT, where
+        // dividing by it aborts, and the fast and reference reductions see
+        // the same polynomial (they used to disagree on `{[]: a, [0]: b}`).
+        numer.canonicalise();
+        denom.canonicalise();
         if denom.is_zero() {
             return Err(ConversionError::ZeroDenominator);
         }
@@ -301,6 +312,9 @@ fn to_flintpoly(p: &MultiPoly) -> Option<FlintPoly> {
 /// Exact division of multivariate polynomials: `a / b` assuming `b | a`.
 /// Returns `None` if the division is not exact or if FLINT fails.
 pub(crate) fn mpoly_exact_div(a: &MultiPoly, b: &MultiPoly) -> Option<MultiPoly> {
+    if b.is_zero() {
+        return None;
+    }
     use crate::flint::mpoly::FlintMPolyCtx;
     use std::sync::Arc;
     let nvars = a.vars.len().max(1);
@@ -382,6 +396,58 @@ mod tests {
         let x = p.symbol("x", Domain::Real);
         let y = p.symbol("y", Domain::Real);
         (p, x, y)
+    }
+
+    /// A hand-built map holding only zero coefficients is the zero polynomial.
+    /// As a denominator it used to pass the `is_zero` check and reach
+    /// `fmpz_mpoly_divides` with a zero divisor, which aborts the process.
+    #[test]
+    fn zero_coefficient_maps_are_normalised_not_aborted() {
+        let (p, x, y) = pool_xy();
+        let vars = vec![x, y];
+        let zeros = |keys: &[Vec<u32>]| MultiPoly {
+            vars: vars.clone(),
+            terms: keys
+                .iter()
+                .map(|k| (k.clone(), rug::Integer::from(0)))
+                .collect(),
+        };
+        let z = zeros(&[vec![], vec![1], vec![0, 2]]);
+        assert!(z.is_zero());
+        let n = MultiPoly::from_symbolic(x, vars.clone(), &p).unwrap();
+
+        // Zero-coefficient denominator: refused, with or without a zero numerator.
+        assert!(matches!(
+            RationalFunction::new(n.clone(), z.clone()),
+            Err(ConversionError::ZeroDenominator)
+        ));
+        assert!(matches!(
+            RationalFunction::new(z.clone(), z.clone()),
+            Err(ConversionError::ZeroDenominator)
+        ));
+
+        // Zero-coefficient numerator: the zero function, canonical map.
+        let r = RationalFunction::new(z.clone(), n.clone()).unwrap();
+        assert!(r.is_zero());
+        assert!(r.numer.terms.is_empty());
+
+        // A map mixing zero and non-zero coefficients is the non-zero part.
+        let mut mixed = z.clone();
+        mixed.terms.insert(vec![1], rug::Integer::from(3));
+        let r = RationalFunction::new(mixed.clone(), mixed).unwrap();
+        assert_eq!(r.numer.terms.len(), 1);
+        assert_eq!(r.numer, r.denom);
+
+        // The exact-division helper refuses a zero divisor instead of aborting.
+        assert!(mpoly_exact_div(&n, &z).is_none());
+        assert!(mpoly_exact_div(&n, &MultiPoly::zero(vars.clone())).is_none());
+
+        // The lazy wrapper sees the same zero, and refuses a GCD with it.
+        let lz = crate::poly::multipoly::LazyMultiPoly::new(z.clone());
+        assert!(lz.is_zero());
+        let ln = crate::poly::multipoly::LazyMultiPoly::new(n.clone());
+        assert!(ln.gcd(&lz).is_none());
+        assert!(lz.factor_z().is_err());
     }
 
     #[test]
@@ -506,6 +572,34 @@ mod tests {
         );
     }
 
+    /// Proptest counterexample (`cross / windows-2022`, merge queue of #578):
+    /// keys `[]` and `[0]` both denote the constant term in one variable.
+    /// The fast path merged them through FLINT, the reference path let one
+    /// overwrite the other, and the two results differed.
+    #[test]
+    fn keys_with_trailing_zeros_are_one_term() {
+        let p = ExprPool::new();
+        let x = p.symbol("v0", Domain::Real);
+        let map = |t: &[(&[u32], i64)]| MultiPoly {
+            vars: vec![x],
+            terms: t
+                .iter()
+                .map(|(k, c)| (k.to_vec(), rug::Integer::from(*c)))
+                .collect(),
+        };
+        let n = map(&[(&[], -1), (&[0], -6), (&[1], -6)]);
+        let d = map(&[(&[], 7), (&[1], -1), (&[2], -4), (&[3], 4)]);
+        let fast = RationalFunction::normalise(n.clone(), d.clone(), true).unwrap();
+        let slow = RationalFunction::normalise(n, d, false).unwrap();
+        assert_eq!(fast, slow);
+        // (−7 − 6x) / (7 − x − 4x² + 4x³), already in lowest terms.
+        assert_eq!(fast.numer, map(&[(&[], -7), (&[1], -6)]));
+        assert_eq!(
+            fast.denom,
+            map(&[(&[], 7), (&[1], -1), (&[2], -4), (&[3], 4)])
+        );
+    }
+
     // --- one-call GCD reduction vs the reference (gcd + two divisions) ---
 
     use proptest::prelude::*;
@@ -539,13 +633,11 @@ mod tests {
                 .map(|i| p.symbol(format!("v{i}"), Domain::Real))
                 .collect();
             let trim = |t: &BTreeMap<Vec<u32>, rug::Integer>| -> MultiPoly {
-                // Zero coefficients are left out: the reference path aborts
-                // inside FLINT (a division by a polynomial that is zero once
-                // FLINT drops them) on a map that is all zeros, and
-                // `reduce_by_gcd` hands such maps to it untouched.
+                // Deliberately non-canonical: zero coefficients, and keys that
+                // differ only in trailing zeros (`[]` and `[0]` when nv = 1).
+                // `normalise` canonicalises before either reduction.
                 let terms = t
                     .iter()
-                    .filter(|(_, c)| **c != 0)
                     .map(|(k, c)| (k.iter().copied().take(nv).collect::<Vec<u32>>(), c.clone()))
                     .collect();
                 MultiPoly { vars: vars.clone(), terms }

@@ -465,8 +465,47 @@ impl MultiPoly {
         Ok(MultiPoly { vars, terms })
     }
 
+    /// Whether this is the zero polynomial.
+    ///
+    /// A map built by the constructors and arithmetic never holds a zero
+    /// coefficient, so this is `terms.is_empty()` for them. A hand-assembled
+    /// `terms` map whose coefficients are all zero is also the zero polynomial
+    /// and is reported as such: it used to read as non-zero, which let it
+    /// reach FLINT as a divisor and abort the process.
     pub fn is_zero(&self) -> bool {
-        self.terms.is_empty()
+        // Short-circuits on the first non-zero coefficient, so this stays O(1)
+        // for every canonical non-zero polynomial.
+        self.terms.values().all(|c| c.is_zero())
+    }
+
+    /// Restore the term map's invariants after hand assembly: strip trailing
+    /// zeros from every exponent key (so `[]` and `[0]` are the same constant
+    /// term), add up the terms that then share a key, and drop zero
+    /// coefficients.
+    ///
+    /// `terms` is a public field, so a map built through the Rust API need not
+    /// satisfy the invariants the arithmetic maintains.  The FLINT conversions
+    /// merge keys that differ only in trailing zeros while the univariate
+    /// paths overwrite one with the other, so two paths could disagree about
+    /// such a map; and an all-zero map reaching FLINT as a divisor aborts the
+    /// process.  A canonical map is returned untouched after one scan.
+    pub(crate) fn canonicalise(&mut self) {
+        let canonical = self
+            .terms
+            .iter()
+            .all(|(k, c)| !c.is_zero() && k.last() != Some(&0));
+        if canonical {
+            return;
+        }
+        let mut terms = TermMap::new();
+        for (mut k, c) in std::mem::take(&mut self.terms) {
+            while k.last() == Some(&0) {
+                k.pop();
+            }
+            *terms.entry(k).or_default() += c;
+        }
+        terms.retain(|_, c| !c.is_zero());
+        self.terms = terms;
     }
 
     /// Largest total degree of a term (0 for the zero polynomial).
