@@ -48,6 +48,8 @@ _FUNCS = {
     "Real.sqrt": "math.sqrt",
     "Real.arctan": "math.atan",
     "Real.arcsin": "math.asin",
+    "Real.arccos": "math.acos",
+    "Real.pi": "math.pi",
     "Real.Gamma": "math.gamma",
     "Nat.factorial": "math.factorial",
 }
@@ -138,10 +140,20 @@ def statements(src: str) -> list[tuple[str, str]]:
     return out
 
 
+def _binder_groups(binders: str) -> list[str]:
+    """Top-level ``( … )`` groups of a binder list (any nesting depth)."""
+    groups, i = [], 0
+    while (i := binders.find("(", i)) != -1:
+        end = _match_paren(binders, i)
+        groups.append(binders[i + 1 : end])
+        i = end + 1
+    return groups
+
+
 def binder_names(binders: str) -> tuple[dict[str, str], list[str]]:
     """``({name: type}, [hypothesis texts])`` of an ``example`` binder list."""
     names, hyps = {}, []
-    for group in re.findall(r"\(([^()]*(?:\([^()]*\)[^()]*)*)\)", binders):
+    for group in _binder_groups(binders):
         lhs, _, typ = group.partition(" : ")
         typ = typ.strip()
         for n in lhs.split():
@@ -161,21 +173,55 @@ def unbound_variables(binders: str, goal: str) -> set[str]:
     return {u for u in used if not re.fullmatch(r"-?\d+", u)} - bound
 
 
+def _hyp_holds(h: str, env: dict[str, float]) -> bool:
+    """Evaluate one emitted hypothesis (``0 < e``, ``e ≠ 0``, ``-1 < e``, ``e < 1``)."""
+    try:
+        if " ≠ " in h:
+            lhs, rhs = split_top(h, " ≠ ")
+            return abs(py_eval(lhs, env) - py_eval(rhs, env)) > 1e-9
+        parts = split_top(h, " < ")
+        if len(parts) == 2:
+            return py_eval(parts[0], env) < py_eval(parts[1], env) - 1e-12
+    except (ValueError, ZeroDivisionError, OverflowError):
+        return False
+    raise AssertionError(f"unexpected hypothesis {h!r}")
+
+
 def sample_env(binders: str, rng: random.Random) -> dict[str, float]:
     names, hyps = binder_names(binders)
-    env = {}
-    for n, typ in names.items():
-        env[n] = rng.randint(1, 6) if typ == "ℕ" else rng.uniform(0.3, 0.9)
-    # Hypotheses the emitter writes are positivity / nonvanishing / |x| < 1,
-    # all satisfied by values in (0.3, 0.9) away from cos / sin zeros.
+    # Hypotheses the emitter writes are positivity / nonvanishing / interval
+    # bounds; sample until they all hold (the integration emitter refuses to
+    # state a domain with no sample point in it).
     for h in hyps:
-        assert re.search(r"0 < |≠ 0|-1 < ", h), f"unexpected hypothesis {h!r}"
-    return env
+        assert re.search(r"0 < |≠ 0|-1 < | < 1$", h), f"unexpected hypothesis {h!r}"
+    for attempt in range(2000):
+        lo, hi = (0.3, 0.9) if attempt < 200 else (-6.0, 6.0)
+        env = {}
+        for n, typ in names.items():
+            env[n] = rng.randint(1, 6) if typ == "ℕ" else rng.uniform(lo, hi)
+        if all(_hyp_holds(h, env) for h in hyps):
+            return env
+    raise AssertionError(f"no sample point satisfies the hypotheses: {binders}")
 
 
 # ---------------------------------------------------------------------------
 # Numeric check of one goal
 # ---------------------------------------------------------------------------
+
+
+def parse_hasderiv(goal: str) -> tuple[str, str, str, str] | None:
+    """``HasDerivAt (fun (v : ℝ) => F) (f) p`` → ``(v, F, f, p)``."""
+    if not goal.startswith("HasDerivAt ("):
+        return None
+    i = len("HasDerivAt ")
+    j = _match_paren(goal, i)
+    m = re.fullmatch(r"fun \((\w+) : ℝ\) => (.*)", goal[i + 1 : j])
+    assert m, f"unexpected HasDerivAt function: {goal}"
+    k = goal.index("(", j)
+    end = _match_paren(goal, k)
+    point = goal[end + 1 :].strip()
+    assert re.fullmatch(r"\w+", point), goal
+    return m.group(1), m.group(2), goal[k + 1 : end], point
 
 
 def check_goal(binders: str, goal: str, rng: random.Random) -> str | None:
@@ -187,6 +233,19 @@ def check_goal(binders: str, goal: str, rng: random.Random) -> str | None:
         for _ in range(4):
             env = sample_env(binders, rng)
             assert py_eval(lo, env) <= py_eval(hi, env) + 1e-9, f"false inequality: {goal}"
+        return None
+    parsed = parse_hasderiv(goal)
+    if parsed:
+        var, body, deriv, point = parsed
+        for _ in range(4):
+            env = sample_env(binders, rng)
+            x0 = env[point]
+            h = 1e-6
+            fp = py_eval(body, {**env, var: x0 + h})
+            fm = py_eval(body, {**env, var: x0 - h})
+            got = (fp - fm) / (2 * h)
+            want = py_eval(deriv, env)
+            assert close(got, want, 1e-4), f"HasDerivAt mismatch {got} vs {want}: {goal}"
         return None
     lhs_rhs = split_top(goal, " = ")
     assert len(lhs_rhs) == 2, f"not an equation: {goal}"

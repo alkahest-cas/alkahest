@@ -28,8 +28,10 @@
 use crate::deriv::log::{DerivedExpr, RewriteStep, SideCondition};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 
+mod hasderiv;
 mod piecewise;
 mod zeilberger;
+pub use hasderiv::{emit_integration_hasderiv_cert, IntegrationCertWithheld};
 pub use zeilberger::emit_zeilberger_cert;
 
 // ---------------------------------------------------------------------------
