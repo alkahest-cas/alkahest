@@ -112,6 +112,11 @@ const RESERVED: &[&str] = &[
     "Min",
     // An algebraic number (`crate::poly::root_of`): a constant, not a function.
     crate::poly::root_of::ROOT_OF,
+    // The PDE layer's reserved heads (`crate::pde`): an indexed symbol and a
+    // certified root of a transcendental family.  `Sum` and `KroneckerDelta`
+    // are listed above.
+    "Indexed",
+    "RootOfFamily",
 ];
 
 /// Whether `name` is an *undefined function*: a name the kernel attaches no

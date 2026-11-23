@@ -52,6 +52,7 @@ pub mod numfield;
 pub mod ode;
 pub mod parse;
 pub mod pattern;
+pub mod pde;
 pub mod poly;
 pub mod prob;
 // V2-9 — CAD / real QE

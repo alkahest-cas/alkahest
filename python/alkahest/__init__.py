@@ -1252,8 +1252,8 @@ def _as_expr_in(x, pool):
 _native_diff = diff
 
 
-def diff(expr, var):
-    """Differentiate *expr* with respect to *var*.
+def diff(expr, var, n=1):
+    """Differentiate *expr* with respect to *var* (*n* times).
 
     Parameters
     ----------
@@ -1263,6 +1263,10 @@ def diff(expr, var):
         used automatically.
     var : Expr
         The differentiation variable.
+    n : int, optional
+        Order of the derivative (default 1): ``diff(f, x, 2)`` is ``f''``.
+        ``.steps`` are those of the last pass.  For mixed partials see
+        :func:`alkahest.experimental.D`.
 
     Returns
     -------
@@ -1275,7 +1279,12 @@ def diff(expr, var):
     >>> d = diff(x**3, x)   # DerivedResult; d.value == 3*x^2
     >>> diff(d, x).value    # second derivative — passes DerivedResult directly
     """
-    return _maybe_context_simplify(_native_diff(_coerce_expr(expr), _coerce_expr(var)))
+    if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+        raise ValueError(f"diff: the order n must be a positive integer, got {n!r}")
+    result = _maybe_context_simplify(_native_diff(_coerce_expr(expr), _coerce_expr(var)))
+    for _ in range(n - 1):
+        result = _maybe_context_simplify(_native_diff(result.value, _coerce_expr(var)))
+    return result
 
 
 _native_integrate = integrate

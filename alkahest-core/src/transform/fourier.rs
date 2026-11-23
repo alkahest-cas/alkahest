@@ -549,6 +549,12 @@ fn fourier_inner(
         return Ok(pool.mul(vec![f, delta]));
     }
 
+    // An unknown u(x, t) or a derivative of one: û(ξ, t) times (2πiξ)^m
+    // (crate::pde::transform).
+    if let Some(r) = crate::pde::transform::fourier_unknown(f, x, xi, pool) {
+        return r.map_err(|e| FourierError::NoRule(e.to_string()));
+    }
+
     // Lorentzian `2a/(a² + 4π² x²)` → e^{−a|ξ|}  (the dual of the two-sided
     // exponential; makes that pair invertible by the duality `F⁻¹{g} = F{g}(−·)`).
     if let Some(res) = try_lorentzian(f, x, xi, pool, gen)? {
@@ -602,6 +608,17 @@ fn fourier_mul(
         1 => rest[0],
         _ => pool.mul(rest.clone()),
     };
+
+    // c · u(x, t) (or a derivative of it): linearity, then the unknown rule.
+    if rest.len() == 1 {
+        if let Some(r) = crate::pde::transform::fourier_unknown(body, x, xi, pool) {
+            let transformed = r.map_err(|e| FourierError::NoRule(e.to_string()))?;
+            return Ok(match scalar {
+                Some(c) => pool.mul(vec![c, transformed]),
+                None => transformed,
+            });
+        }
+    }
 
     let transformed = fourier_product_body(body, &rest, x, xi, pool, depth, gen)?;
     Ok(match scalar {

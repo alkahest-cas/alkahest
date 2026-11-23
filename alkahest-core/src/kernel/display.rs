@@ -765,6 +765,24 @@ fn latex_pow(base: ExprId, exp: ExprId, pool: &ExprPool) -> String {
 }
 
 fn latex_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
+    // The PDE layer's heads (`crate::pde::sum`): Σ_{k=lo}^{hi} body and xᵢ.
+    if name == crate::pde::sum::SUM && args.len() == 4 {
+        let (body, _) = latex_r(args[0], pool);
+        let (k, _) = latex_r(args[1], pool);
+        let (lo, _) = latex_r(args[2], pool);
+        let (hi, _) = latex_r(args[3], pool);
+        return format!(r"\sum_{{{k}={lo}}}^{{{hi}}} \left({body}\right)");
+    }
+    if name == crate::pde::sum::INDEXED && args.len() == 2 {
+        let (b, _) = latex_r(args[0], pool);
+        let (i, _) = latex_r(args[1], pool);
+        return format!("{b}_{{{i}}}");
+    }
+    if name == crate::pde::sum::KRONECKER_DELTA && args.len() == 2 {
+        let (i, _) = latex_r(args[0], pool);
+        let (j, _) = latex_r(args[1], pool);
+        return format!(r"\delta_{{{i} {j}}}");
+    }
     if name == crate::poly::root_of::ROOT_OF {
         if let Some((coeffs, k)) = crate::poly::root_of::parts_from_args(args, pool) {
             let p = crate::poly::root_of::poly_text(&coeffs, |j| format!("x^{{{j}}}"));

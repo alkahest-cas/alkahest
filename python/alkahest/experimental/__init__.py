@@ -712,6 +712,45 @@ from alkahest.experimental.novelty import (
     check_novelty,
 )
 
+# PDE foundation layer (milestone M0): unknowns `Function("u")(x, t)`,
+# partials `D(f, x, t)`, the multi-index jet space, problem objects with
+# domains and boundary / initial conditions, `classify_pde`, and
+# `verify_pde_solution` (statuses mirror `integrate`'s verification; numeric
+# evidence may only refute).
+from alkahest.experimental import _pde
+from alkahest.experimental._pde import (
+    PDE,
+    ArbitraryFunctions,
+    Ball,
+    Box,
+    D,
+    Disk,
+    Function,
+    HalfLine,
+    Indexed,
+    IndexedBase,
+    Interval,
+    JetSpace,
+    KroneckerDelta,
+    Line,
+    PdeError,
+    PdeInfo,
+    Product,
+    RootOfFamily,
+    Sum,
+    classify_pde,
+    coefficient,
+    expand_finite_sums,
+    expand_sum,
+    functions_to_jets,
+    laplacian_indexed,
+    root_family_enclosure,
+    root_family_member,
+    simplify_sums,
+    truncate,
+    verify_pde_solution,
+)
+
 with contextlib.suppress(ImportError):
     from alkahest import to_lean
 
@@ -1101,6 +1140,8 @@ __all__ = [
     "weierstrass_zeta",
     "z_transform",
 ]
+
+__all__ += list(_pde.__all__)
 
 # Names that exist only on some builds — `CudaCompiledFn` / `compile_cuda`
 # (``cuda`` feature) and the ``groebner``-gated classes imported under

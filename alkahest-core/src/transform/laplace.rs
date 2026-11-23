@@ -421,6 +421,12 @@ fn laplace_inner(
         return Ok(recip(pool.pow(s, pool.integer(2_i32)), pool));
     }
 
+    // An unknown u(x, t) or a derivative of one: U(x, s) and the
+    // derivative rule with its initial-value terms (crate::pde::transform).
+    if let Some(r) = crate::pde::transform::laplace_unknown(f, t, s, pool) {
+        return r.map_err(|e| LaplaceError::NoRule(e.to_string()));
+    }
+
     match pool.get(f) {
         // Linearity over sums.
         ExprData::Add(args) => {
@@ -496,6 +502,17 @@ fn laplace_mul(
         1 => rest[0],
         _ => pool.mul(rest.clone()),
     };
+
+    // c · u(x, t) (or a derivative of it): linearity, then the unknown rule.
+    if rest.len() == 1 {
+        if let Some(r) = crate::pde::transform::laplace_unknown(inner, t, s, pool) {
+            let transformed = r.map_err(|e| LaplaceError::NoRule(e.to_string()))?;
+            return Ok(match scalar {
+                Some(c) => pool.mul(vec![c, transformed]),
+                None => transformed,
+            });
+        }
+    }
 
     let transformed = laplace_product_body(inner, t, s, pool, depth, gen)?;
     Ok(match scalar {

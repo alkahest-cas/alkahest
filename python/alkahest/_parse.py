@@ -598,6 +598,8 @@ class _Parser:
         special = _apply_undefined(name, args, offset, self._pool, self._symbols)
         if special is not None:
             return special
+        if name in _PDE_HEADS:
+            return _apply_pde_head(name, args, offset)
         return _apply_func(name, args, offset, self._pool)
 
 
@@ -649,6 +651,34 @@ def _apply_root_of(args: list, bound: dict, offset: int):
         raise ParseError(f"RootOf: {exc}", span=span) from exc
 
 
+_PDE_HEADS = {"Sum": 4, "Indexed": 2, "KroneckerDelta": 2, "RootOfFamily": 4}
+
+
+def _apply_pde_head(name: str, args: list, offset: int):
+    """``Sum``, ``Indexed``, ``KroneckerDelta`` and ``RootOfFamily`` — the PDE
+    layer's reserved heads, built through their validating constructors.
+    Mirrors ``Parser::parse_pde_head`` in ``alkahest-core/src/parse.rs``."""
+    from alkahest.experimental import _pde
+
+    span = (offset, offset + len(name))
+    want = _PDE_HEADS[name]
+    if len(args) != want:
+        raise ParseError(f"{name} takes {want} arguments, got {len(args)}", span=span)
+    try:
+        if name == "Sum":
+            return _pde.Sum(*args)
+        if name == "Indexed":
+            return _pde.Indexed(*args)
+        if name == "KroneckerDelta":
+            return _pde.KroneckerDelta(*args)
+        node = args[3]._node_exact()
+        if node[0] != "integer":
+            raise ParseError("RootOfFamily: the branch must be an integer", span=span)
+        return _pde.RootOfFamily(args[0], args[1], args[2], node[1])
+    except _pde.PdeError as exc:
+        raise ParseError(f"{name}: {exc}", span=span) from exc
+
+
 def _declared_function(name: str, symbols) -> bool:
     """Whether *symbols* declares *name* an undefined function.
 
@@ -660,6 +690,9 @@ def _declared_function(name: str, symbols) -> bool:
     import alkahest as _ak
 
     bound = symbols.get(name) if symbols else None
+    # ``alkahest.experimental.Function("f")`` declares ``f`` as well.
+    if getattr(bound, "_alkahest_undefined_function", False):
+        return getattr(bound, "name", None) == name and _ak._is_undefined_function_name(name)
     if not isinstance(bound, _Expr):
         return False
     node = bound.node()

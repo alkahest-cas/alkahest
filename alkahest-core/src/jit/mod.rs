@@ -1747,6 +1747,16 @@ fn eval_interp_data(
         ExprData::Func { name, .. } if name == crate::poly::root_of::ROOT_OF => {
             crate::poly::root_of::root_of_real_f64(expr, pool)
         }
+        // The PDE layer's heads (`crate::pde`): a finite `Sum` is expanded
+        // term by term once its bounds evaluate to integers; an indexed symbol
+        // is looked up like a symbol; δᵢⱼ compares integer indices; a
+        // `RootOfFamily` is isolated with certified ball arithmetic.
+        ExprData::Func { name, args } if crate::pde::numeric::is_pde_head(name, args) => {
+            crate::pde::numeric::eval_head_f64(expr, env, pool, &mut |e, env| {
+                let mut fresh = IdMap::default();
+                eval_interp_inner(e, env, pool, &mut fresh)
+            })
+        }
         ExprData::Func { name, args } => {
             // Unary heads (the common case) need no heap buffer.
             if let [a] = args.as_slice() {

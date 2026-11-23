@@ -477,6 +477,14 @@ fn eval_f64_data(
             crate::poly::root_of::root_of_real_f64(expr, pool)
                 .ok_or_else(|| error(UnsupportedReason::UnsupportedFunction { name: name.clone() }))
         }
+        // `Sum` / `Indexed` / `KroneckerDelta` / `RootOfFamily` (crate::pde).
+        ExprData::Func { name, args } if crate::pde::numeric::is_pde_head(name, args) => {
+            crate::pde::numeric::eval_head_f64(expr, bindings, pool, &mut |e, env| {
+                let mut fresh = F64Memo::default();
+                eval_f64_node(e, pool, env, &mut fresh).ok()
+            })
+            .ok_or_else(|| error(UnsupportedReason::UnsupportedFunction { name: name.clone() }))
+        }
         ExprData::Func { name, args } if args.len() == 1 => {
             let arg = eval_f64_node(args[0], pool, bindings, memo)?;
             match name.as_str() {
