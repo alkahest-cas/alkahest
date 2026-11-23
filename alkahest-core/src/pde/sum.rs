@@ -425,12 +425,11 @@ fn known_in_range(
     ) {
         return a <= v && v <= b;
     }
-    if let Some(v) = int_literal(j, pool) {
-        // A literal inside [a, symbolic] is decided only at the ends.
-        if j == lo || (int_literal(lo, pool).is_some_and(|a| a <= v) && hi == pool.pos_infinity()) {
+    // A literal at or above a literal lower end of a range unbounded above.
+    if let (Some(v), Some(a)) = (int_literal(j, pool), int_literal(lo, pool)) {
+        if a <= v && hi == pool.pos_infinity() {
             return true;
         }
-        let _ = v;
     }
     ranges.iter().any(|&(v, a, b)| {
         v == j

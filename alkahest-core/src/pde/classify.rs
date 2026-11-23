@@ -320,7 +320,7 @@ impl Sign {
             Sign::Neg => Sign::Pos,
         }
     }
-    fn mul(self, o: Sign) -> Sign {
+    fn times(self, o: Sign) -> Sign {
         use Sign::*;
         match (self, o) {
             (Zero, _) | (_, Zero) => Zero,
@@ -330,7 +330,7 @@ impl Sign {
             (NonNeg, NonPos) | (NonPos, NonNeg) => NonPos,
         }
     }
-    fn add(self, o: Sign) -> Option<Sign> {
+    fn plus(self, o: Sign) -> Option<Sign> {
         use Sign::*;
         Some(match (self, o) {
             (Zero, s) | (s, Zero) => s,
@@ -390,7 +390,7 @@ fn sign_of(e: ExprId, pool: &ExprPool) -> Option<Sign> {
                     if k < 0 && matches!(s, Sign::Zero | Sign::NonNeg | Sign::NonPos) {
                         return None;
                     }
-                    Some(if k % 2 == 0 { s.mul(s) } else { s })
+                    Some(if k % 2 == 0 { s.times(s) } else { s })
                 }
                 None => match sign_of(base, pool)? {
                     Sign::Pos => Some(Sign::Pos),
@@ -400,11 +400,11 @@ fn sign_of(e: ExprId, pool: &ExprPool) -> Option<Sign> {
         }
         ExprData::Mul(xs) => xs
             .iter()
-            .try_fold(Sign::Pos, |acc, &x| Some(acc.mul(sign_of(x, pool)?))),
+            .try_fold(Sign::Pos, |acc, &x| Some(acc.times(sign_of(x, pool)?))),
         ExprData::Add(xs) => {
             let mut acc = Sign::Zero;
             for x in xs {
-                acc = acc.add(sign_of(x, pool)?)?;
+                acc = acc.plus(sign_of(x, pool)?)?;
             }
             Some(acc)
         }
@@ -585,7 +585,6 @@ fn inertia(a: &[Vec<ExprId>], pool: &ExprPool) -> Option<(usize, usize, usize)> 
 }
 
 fn classify_by_discriminant(info: &mut PdeInfo, disc: ExprId, pool: &ExprPool) {
-    let indep_set: HashSet<ExprId> = info.independent.iter().copied().collect();
     let zero = pool.integer(0);
     let gt = |e: ExprId| pred(PredicateKind::Gt, e, zero, pool);
     let lt = |e: ExprId| pred(PredicateKind::Lt, e, zero, pool);
@@ -656,7 +655,6 @@ fn classify_by_discriminant(info: &mut PdeInfo, disc: ExprId, pool: &ExprPool) {
             }
         }
     }
-    let _ = indep_set;
     match sign_of(disc, pool) {
         Some(Sign::Pos) => info.pde_type = Some(PdeType::Hyperbolic),
         Some(Sign::Neg) => info.pde_type = Some(PdeType::Elliptic),
@@ -889,6 +887,11 @@ impl Ctx<'_> {
 /// `r > 0`: `Some(None)` when proved, `Some(Some(cond))` when it is a
 /// condition on symbols, `None` when refuted.
 fn positive(r: ExprId, pool: &ExprPool) -> Option<Option<ExprId>> {
+    // A complex coefficient (`i·u_t + u_xx`, Schrödinger) is never a
+    // diffusivity or a squared speed, whatever its symbols turn out to be.
+    if !real_valued(r, pool) {
+        return None;
+    }
     match sign_of(r, pool) {
         Some(Sign::Pos) => Some(None),
         Some(Sign::Neg | Sign::Zero | Sign::NonPos) => None,
@@ -965,7 +968,6 @@ fn match_named(
         let lap: Vec<Monomial> = (0..n)
             .map(|i| cx.mono(&[(cx.jet(&cx.e(i, 2)), 1)]))
             .collect();
-        let lap_set: HashSet<Monomial> = lap.iter().cloned().collect();
         let mut rest: HashSet<Monomial> = keys.clone();
         if n >= 2 && lap.iter().all(|m| rest.remove(m)) {
             let a = cx.coeff(&lap[0]).unwrap();
@@ -992,7 +994,6 @@ fn match_named(
                 }
                 out.push(named("helmholtz", p, vec![], None));
             }
-            let _ = lap_set;
         }
     }
 
