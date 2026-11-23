@@ -5,7 +5,7 @@
 use crate::kernel::{ExprId, ExprPool};
 
 use super::super::error::PdeError;
-use super::util::{d, div, exp, integ, is_nonzero, is_zero, neg, simp, sub, subs1};
+use super::util::{cdiv, d, div, exp, integ, is_nonzero, is_zero, neg, simp, size, sub, subs1, tidy};
 
 /// `p ∂x + q ∂y + c`.
 #[derive(Clone, Copy, Debug)]
@@ -53,7 +53,15 @@ impl Factor1 {
             x
         } else {
             note_nonzero(self.q, conds, pool);
-            simp(sub(x, pool.mul(vec![div(self.p, self.q, pool), y]), pool), pool)
+            // x − (p/q) y and y − (q/p) x are both invariants; keep the
+            // smaller (x + c t rather than t + x/c, no nested inverses).
+            let a = tidy(sub(x, pool.mul(vec![cdiv(self.p, self.q, pool), y]), pool), pool);
+            let b = tidy(sub(y, pool.mul(vec![cdiv(self.q, self.p, pool), x]), pool), pool);
+            if size(b, pool) < size(a, pool) {
+                b
+            } else {
+                a
+            }
         };
         let mult = if !pz {
             note_nonzero(self.p, conds, pool);

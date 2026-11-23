@@ -53,7 +53,7 @@ use super::error::PdeError;
 use super::problem::{ArbitraryFunctions, PdeProblem};
 use super::verify::{verify_solution, PdeVerification, VerificationStatus};
 use linear::Linear2;
-use util::{div, exp, is_zero, neg, simp, sub, subs2};
+use util::{div, exp, is_zero, neg, simp, subs2};
 
 /// Default budget of Laplace transformations for [`laplace_cascade`] and
 /// [`solve_second_order`].
@@ -166,11 +166,18 @@ pub fn canonical_form(
         Some(t @ (PdeType::Hyperbolic | PdeType::Parabolic | PdeType::Elliptic)) => {
             canonical::build(&l, t, None, pool)
         }
-        other => Err(PdeError::TypeNotUniform(format!(
+        _ => {
+            let regions = region_list(&info, pool);
+            if regions.len() == 1 {
+                let r = regions[0].clone();
+                return canonical::build(&l, r.pde_type, Some(r), pool);
+            }
+            Err(PdeError::TypeNotUniform(format!(
             "{} = 0 is {} on the plane; canonical_forms gives one form per region",
             pool.display(equation),
-            other.map(|t| t.as_str()).unwrap_or("untyped")
-        ))),
+            info.pde_type.map(|t| t.as_str()).unwrap_or("untyped")
+        )))
+        }
     }
 }
 
@@ -193,7 +200,7 @@ pub fn canonical_forms(
     }
     let mut out = Vec::new();
     let mut errors = Vec::new();
-    for r in region_list(&info) {
+    for r in region_list(&info, pool) {
         match canonical::build(&l, r.pde_type, Some(r.clone()), pool) {
             Ok(f) => out.push(f),
             Err(e) => errors.push(e.to_string()),
@@ -212,14 +219,26 @@ pub fn canonical_forms(
     Ok(out)
 }
 
-fn region_list(info: &PdeInfo) -> Vec<super::classify::TypeRegion> {
+fn region_list(info: &PdeInfo, pool: &ExprPool) -> Vec<super::classify::TypeRegion> {
+    let is_line = |r: &super::classify::TypeRegion| {
+        (r.lower.is_some() && r.lower == r.upper)
+            || pool.with(r.condition, |d| {
+                matches!(
+                    d,
+                    crate::kernel::ExprData::Predicate {
+                        kind: crate::kernel::expr::PredicateKind::Eq,
+                        ..
+                    }
+                )
+            })
+    };
     info.regions
         .iter()
         .filter(|r| {
             matches!(
                 r.pde_type,
                 PdeType::Hyperbolic | PdeType::Elliptic | PdeType::Parabolic
-            ) && !(r.lower.is_some() && r.lower == r.upper)
+            ) && !is_line(r)
         })
         .cloned()
         .collect()
@@ -381,9 +400,13 @@ pub fn solve_second_order_with(
     if unverified > 0 {
         return Err(PdeError::SecondOrderNotVerified(reasons.join("; ")));
     }
-    // A budget refusal is the most informative single reason.
+    // A budget refusal or a quadrature obstruction is the most informative
+    // single reason.
     if let Some(r) = reasons.iter().find(|r| r.contains("transformation(s)")) {
         return Err(PdeError::LaplaceBudgetExhausted(r.clone()));
+    }
+    if let Some(r) = reasons.iter().find(|r| r.contains("quadrature")) {
+        return Err(PdeError::QuadratureOfArbitraryFunction(r.clone()));
     }
     Err(PdeError::NoClosedForm(format!(
         "no method gives a closed-form solution of {} = 0{}",
@@ -404,7 +427,33 @@ fn finish(
     cand: Candidate,
     pool: &ExprPool,
 ) -> Result<SecondOrderSolution, PdeError> {
-    let v = verify_solution(&[eq], &[u], &[cand.solution], conditions, pool)?;
+    let mut cand = cand;
+    // Equivalent spellings of the candidate, smallest first: the zero test
+    // has size budgets, so a compact form can verify where a nested one
+    // cannot.
+    let tidied = util::tidy(cand.solution, pool);
+    let mut forms = vec![tidied];
+    let vars = super::jet::decode_unknown(u, pool)?.args;
+    if let Some(c) = util::collect_arbitrary(tidied, &vars, pool) {
+        forms.push(c);
+    }
+    forms.sort_by_key(|&f| util::size(f, pool));
+    forms.push(cand.solution);
+    forms.dedup();
+    let mut v = None;
+    for f in forms {
+        let vf = verify_solution(&[eq], &[u], &[f], conditions, pool)?;
+        let ok = vf.status == VerificationStatus::ExactlyVerified;
+        let refuted = vf.status == VerificationStatus::Refuted;
+        if ok {
+            cand.solution = f;
+        }
+        v = Some(vf);
+        if ok || refuted {
+            break;
+        }
+    }
+    let v = v.expect("at least one form");
     if v.status != VerificationStatus::ExactlyVerified {
         return Err(PdeError::SecondOrderNotVerified(format!(
             "{} candidate {} is {}",
@@ -536,14 +585,14 @@ fn general_candidates(
             Some(t @ (PdeType::Hyperbolic | PdeType::Parabolic | PdeType::Elliptic)) => {
                 vec![(t, None)]
             }
-            _ => region_list(info)
+            _ => region_list(info, pool)
                 .into_iter()
                 .map(|r| (r.pde_type, Some(r)))
                 .collect(),
         };
         for (t, region) in types {
             match canonical::build(l, t, region, pool) {
-                Ok(cf) => out.extend(via_canonical(l, cf, opts, arb, reasons, pool)),
+                Ok(cf) => out.extend(via_canonical(cf, opts, arb, reasons, pool)),
                 Err(e) => out.push(Err(e)),
             }
         }
@@ -569,7 +618,6 @@ fn general_candidates(
 
 /// Solve in the characteristic coordinates and map back.
 fn via_canonical(
-    l: &Linear2,
     cf: CanonicalForm,
     opts: &SecondOrderOptions,
     arb: &ArbitraryFunctions,
@@ -742,11 +790,6 @@ fn ode_candidate(
         steps,
         canonical: None,
     })
-}
-
-#[allow(dead_code)]
-fn _unused(pool: &ExprPool, a: ExprId, b: ExprId) -> ExprId {
-    sub(a, b, pool)
 }
 
 #[cfg(test)]

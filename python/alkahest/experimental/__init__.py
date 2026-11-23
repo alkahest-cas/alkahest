@@ -767,6 +767,15 @@ from alkahest.experimental._pde import (
 
 # PDE solver (milestone M1): `pdsolve` over method tiers, first order.
 from alkahest.experimental._pdsolve import PdeSolution, pdsolve, pdsolve_hints
+from alkahest.experimental._pde_second_order import (
+    CanonicalForm,
+    SecondOrderSolution,
+    canonical_form,
+    canonical_forms,
+    laplace_cascade,
+    laplace_invariants,
+    solve_second_order,
+)
 from alkahest.experimental.novelty import (
     NoveltyMatch,
     NoveltyVerdict,
@@ -881,6 +890,7 @@ __all__ = [
     # returned: a table that failed them is withheld (E-CHAR-007), never
     # returned with a caveat.
     "Box",
+    "CanonicalForm",
     "CharacterError",
     "CharacterTable",
     "CodingError",
@@ -1023,6 +1033,7 @@ __all__ = [
     "RecurrenceClaim",
     "RiemannRochSpace",
     "RootOfFamily",
+    "SecondOrderSolution",
     "SiegelMatrix",
     "SiegelReduction",
     # Sifting an element through a stabilizer chain
@@ -1057,6 +1068,8 @@ __all__ = [
     "bernoulli_number",
     "bessel_j0",
     "bessel_j1",
+    "canonical_form",
+    "canonical_forms",
     # M11 — novelty filtering
     "check_novelty",
     # P1 item 10 — asymptotic expansion at scale
@@ -1120,6 +1133,8 @@ __all__ = [
     "krawtchouk",
     "krawtchouk_poly",
     "lambert_w",
+    "laplace_cascade",
+    "laplace_invariants",
     "laplace_transform",
     # Vector calculus
     "laplacian",
@@ -1167,6 +1182,7 @@ __all__ = [
     "simplify_sums",
     "singleton_bound",
     "solve",
+    "solve_second_order",
     "stirling_first",
     "stirling_first_unsigned",
     "stirling_second",

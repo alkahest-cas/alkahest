@@ -25,13 +25,15 @@
 use crate::kernel::{ExprId, ExprPool};
 
 use super::super::error::PdeError;
-use super::util::{d, div, exp, free_of, integ, is_zero, neg, poly_degree_in, simp, split_xy, sub};
+use super::util::{d, div, exp, free_of, integ, is_zero, neg, poly_degree_in, simp, split_xy, sub, tidy};
 
 /// One level of the chain: coefficients, source and invariants.
 #[derive(Clone, Debug)]
 struct Level {
     a: ExprId,
     b: ExprId,
+    /// kept for debugging output
+    #[allow(dead_code)]
     c: ExprId,
     s: ExprId,
     h: ExprId,
@@ -54,7 +56,9 @@ pub(crate) fn invariants(
 }
 
 fn level(a: ExprId, b: ExprId, c: ExprId, s: ExprId, x: ExprId, y: ExprId, pool: &ExprPool) -> Result<Level, PdeError> {
+    let (a, b, c, s) = (tidy(a, pool), tidy(b, pool), tidy(c, pool), tidy(s, pool));
     let (h, k) = invariants(a, b, c, x, y, pool)?;
+    let (h, k) = (tidy(h, pool), tidy(k, pool));
     Ok(Level { a, b, c, s, h, k })
 }
 
@@ -65,9 +69,6 @@ pub(crate) struct CascadeOutcome {
     /// Signed number of Laplace transformations (positive: `u₁ = (∂y + a)u`
     /// direction).
     pub transforms: i32,
-    /// Invariants `(h, k)` of the input.
-    pub h0: ExprId,
-    pub k0: ExprId,
 }
 
 /// Run the cascade with at most `max_steps` Laplace transformations in
@@ -110,8 +111,6 @@ pub(crate) fn cascade(
                         solution: u,
                         steps,
                         transforms: (pos.len() - 1) as i32,
-                        h0,
-                        k0,
                     });
                 }
                 Err(e) => quad_failures.push(e.to_string()),
@@ -130,8 +129,6 @@ pub(crate) fn cascade(
                         solution: u,
                         steps,
                         transforms: -((negs.len() - 1) as i32),
-                        h0,
-                        k0,
                     });
                 }
                 Err(e) => quad_failures.push(e.to_string()),
@@ -193,7 +190,7 @@ fn carry_back_pos(chain: &[Level], top: ExprId, x: ExprId, _y: ExprId, pool: &Ex
     let mut u = top;
     for l in chain[..chain.len() - 1].iter().rev() {
         let num = pool.add(vec![d(u, x, pool)?, pool.mul(vec![l.b, u]), neg(l.s, pool)]);
-        u = div(num, l.h, pool);
+        u = tidy(div(num, l.h, pool), pool);
     }
     Ok(simp(u, pool))
 }
@@ -203,7 +200,7 @@ fn carry_back_neg(chain: &[Level], top: ExprId, _x: ExprId, y: ExprId, pool: &Ex
     let mut u = top;
     for l in chain[..chain.len() - 1].iter().rev() {
         let num = pool.add(vec![d(u, y, pool)?, pool.mul(vec![l.a, u]), neg(l.s, pool)]);
-        u = div(num, l.k, pool);
+        u = tidy(div(num, l.k, pool), pool);
     }
     Ok(simp(u, pool))
 }

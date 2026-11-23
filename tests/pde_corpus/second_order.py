@@ -1,0 +1,204 @@
+"""Corpus of linear second-order PDEs in two independent variables (milestone M2).
+
+Each entry is a plain dict, so the same data drives the alkahest run
+(``tests/test_pde_second_order.py``) and the Mathematica head-to-head
+(``tests/pde_corpus/run_mathematica.py``):
+
+* ``id`` — stable identifier; ``source`` — where it comes from;
+* ``vars`` — the two independent variables of the unknown ``u``;
+* ``eq`` — the equation, read ``= 0``, in a small Python syntax: ``u`` and its
+  partials ``u_x``, ``u_xt``, ``u_tt`` (variable letters in declared order),
+  ``sin``/``cos``/``exp``/``log``/``sqrt``, ``**`` for powers;
+* ``ics`` — optional Cauchy data ``[(lhs, rhs), …]`` with ``lhs`` one of
+  ``"u(x,a)"`` / ``"u_t(x,a)"`` (``a`` a number), ``rhs`` in the same syntax
+  (``f(x)`` an arbitrary function);
+* ``params`` — symbols with a declared domain (``"positive"``);
+* ``kind`` — what a complete answer is: ``"general"`` (in arbitrary
+  functions), ``"cauchy"`` (the solution of the initial-value problem) or
+  ``"family"`` (no general closed form exists; a parametrised family of
+  exact solutions is the expected best);
+* ``expect`` — what alkahest does at the time of writing:
+  ``"general"``, ``"particular"``, or an error code it refuses with.  The
+  test asserts this exactly, so an improvement shows up as a diff to review.
+
+Sources: textbooks (Strauss, *PDE: an introduction*; Debnath, *Nonlinear and
+linear PDEs*; Myint-U & Debnath), Polyanin, *Handbook of Linear PDEs for
+Engineers and Scientists* (sections 4.1–4.5: Laplace-cascade, EPD and
+reducible equations), and the general-solution and whole-line Cauchy items of
+the hyperbolic and parabolic chapters of N. Abbasi's PDE benchmark
+(https://www.12000.org/my_notes/pde_in_CAS/maple_2026_1_and_mma_15/, problem
+numbers in brackets).
+"""
+
+CORPUS = [
+    # ---- constant coefficients: factored symbols ----------------------------
+    {"id": "wave", "source": "textbook", "vars": "xt", "eq": "u_tt - c**2*u_xx",
+     "kind": "general", "expect": "general"},
+    {"id": "uxy", "source": "textbook", "vars": "xy", "eq": "u_xy", "kind": "general",
+     "expect": "general"},
+    {"id": "laplace", "source": "textbook", "vars": "xy", "eq": "u_xx + u_yy",
+     "kind": "general", "expect": "general"},
+    {"id": "strauss_1_6_a", "source": "Strauss 1.6", "vars": "xy",
+     "eq": "u_xx - 3*u_xy + 2*u_yy", "kind": "general", "expect": "general"},
+    {"id": "parabolic_square", "source": "textbook", "vars": "xy",
+     "eq": "u_xx + 2*u_xy + u_yy", "kind": "general", "expect": "general"},
+    {"id": "wave_4", "source": "textbook", "vars": "xy", "eq": "u_xx - 4*u_yy",
+     "kind": "general", "expect": "general"},
+    {"id": "factor_3_m2", "source": "textbook", "vars": "xy",
+     "eq": "u_xx + u_xy - 6*u_yy", "kind": "general", "expect": "general"},
+    {"id": "strauss_2_1_9", "source": "Strauss 2.1.9", "vars": "xt",
+     "eq": "u_xx - 3*u_xt - 4*u_tt", "kind": "general", "expect": "general"},
+    {"id": "strauss_3_10_3", "source": "Strauss", "vars": "xy",
+     "eq": "3*u_xx + 10*u_xy + 3*u_yy", "kind": "general", "expect": "general"},
+    {"id": "strauss_1_6_b", "source": "Strauss 1.6", "vars": "xy",
+     "eq": "u_xx - 2*u_xy - 3*u_yy", "kind": "general", "expect": "general"},
+    {"id": "parabolic_4_12_9", "source": "textbook", "vars": "xy",
+     "eq": "4*u_xx - 12*u_xy + 9*u_yy", "kind": "general", "expect": "general"},
+    {"id": "elliptic_1_4_5", "source": "textbook", "vars": "xy",
+     "eq": "u_xx + 4*u_xy + 5*u_yy", "kind": "general", "expect": "general"},
+    {"id": "rational_2_5_2", "source": "textbook", "vars": "xy",
+     "eq": "2*u_xx - 5*u_xy + 2*u_yy", "kind": "general", "expect": "general"},
+    {"id": "uxy_ux", "source": "textbook", "vars": "xy", "eq": "u_xy + u_x",
+     "kind": "general", "expect": "general"},
+    {"id": "uxy_full", "source": "textbook", "vars": "xy", "eq": "u_xy + u_x + u_y + u",
+     "kind": "general", "expect": "general"},
+    {"id": "polyanin_ab", "source": "Polyanin 4.1", "vars": "xy",
+     "eq": "u_xy + a*u_x + b*u_y + a*b*u", "kind": "general", "expect": "general"},
+    {"id": "lower_factor", "source": "textbook", "vars": "xy",
+     "eq": "u_xx - 3*u_xy + 2*u_yy + u_x - u_y", "kind": "general", "expect": "general"},
+    {"id": "lower_factor_2", "source": "textbook", "vars": "xy",
+     "eq": "u_xx - u_yy + u_x + u_y", "kind": "general", "expect": "general"},
+    {"id": "shift_1", "source": "textbook", "vars": "xy", "eq": "u_xx - u_yy + 2*u_x + u",
+     "kind": "general", "expect": "general"},
+    {"id": "shift_wave", "source": "Polyanin 4.1", "vars": "xt",
+     "eq": "u_tt - a**2*u_xx + 2*b*u_t - 2*a*b*u_x", "kind": "general",
+     "expect": "general"},
+    # ---- with a source -----------------------------------------------------
+    {"id": "wave_source_xy", "source": "textbook", "vars": "xy", "eq": "u_xx - u_yy - x*y",
+     "kind": "general", "expect": "general"},
+    {"id": "wave_source_sin", "source": "textbook", "vars": "xy",
+     "eq": "u_xx - u_yy - sin(x)", "kind": "general", "expect": "general"},
+    {"id": "uxy_source", "source": "textbook", "vars": "xy", "eq": "u_xy - x*y",
+     "kind": "general", "expect": "general"},
+    {"id": "uxy_const", "source": "textbook", "vars": "xy", "eq": "u_xy - 2",
+     "kind": "general", "expect": "general"},
+    {"id": "uxy_ux_source", "source": "textbook", "vars": "xy", "eq": "u_xy + u_x - x",
+     "kind": "general", "expect": "general"},
+    {"id": "parabolic_source", "source": "textbook", "vars": "xy",
+     "eq": "u_xx - 2*u_xy + u_yy - x", "kind": "general", "expect": "general"},
+    {"id": "wave_exp_source", "source": "textbook", "vars": "xt",
+     "eq": "u_tt - u_xx - exp(x + 2*t)", "kind": "general", "expect": "general"},
+    # ---- ODEs in one variable ----------------------------------------------
+    {"id": "ode_uxx_u", "source": "textbook", "vars": "xy", "eq": "u_xx + u",
+     "kind": "general", "expect": "general"},
+    {"id": "ode_uyy_4u", "source": "textbook", "vars": "xy", "eq": "u_yy - 4*u",
+     "kind": "general", "expect": "general"},
+    {"id": "ode_uxx_ux", "source": "textbook", "vars": "xy", "eq": "u_xx + u_x",
+     "kind": "general", "expect": "general"},
+    {"id": "ode_uxx_y", "source": "textbook", "vars": "xy", "eq": "u_xx - y*u",
+     "kind": "general", "expect": "general"},
+    # ---- no general solution in closed form: exponential families ----------
+    {"id": "heat", "source": "textbook", "vars": "xt", "eq": "u_t - k*u_xx",
+     "kind": "family", "expect": "particular"},
+    {"id": "klein_gordon", "source": "textbook", "vars": "xt", "eq": "u_tt - u_xx + m**2*u",
+     "kind": "family", "expect": "particular"},
+    {"id": "telegraph", "source": "textbook", "vars": "xt",
+     "eq": "u_tt + 2*a*u_t - c**2*u_xx", "kind": "family", "expect": "particular"},
+    {"id": "helmholtz", "source": "textbook", "vars": "xy", "eq": "u_xx + u_yy + k**2*u",
+     "kind": "family", "expect": "particular"},
+    {"id": "uxy_u", "source": "Polyanin 4.1", "vars": "xy", "eq": "u_xy - u",
+     "kind": "family", "expect": "particular"},
+    # ---- variable coefficients: Laplace cascade ----------------------------
+    {"id": "epd_1", "source": "Polyanin 4.5 (EPD)", "vars": "xy",
+     "eq": "u_xy + (u_x + u_y)/(x + y)", "kind": "general", "expect": "general"},
+    {"id": "epd_2", "source": "Polyanin 4.5 (EPD)", "vars": "xy",
+     "eq": "u_xy + 2*(u_x + u_y)/(x + y)", "kind": "general", "expect": "general"},
+    {"id": "epd_diff", "source": "Polyanin 4.5 (EPD)", "vars": "xy",
+     "eq": "(x - y)*u_xy - u_x + u_y", "kind": "general", "expect": "general"},
+    {"id": "cascade_x", "source": "textbook", "vars": "xy", "eq": "u_xy + x*u_x",
+     "kind": "general", "expect": "E-PDE-106"},
+    {"id": "cascade_xy", "source": "textbook", "vars": "xy",
+     "eq": "u_xy + y*u_x + x*u_y + x*y*u", "kind": "general", "expect": "general"},
+    {"id": "polyanin_2u", "source": "Polyanin 4.1", "vars": "xy",
+     "eq": "u_xy - 2*u/(x + y)**2", "kind": "general", "expect": "general"},
+    {"id": "polyanin_6u", "source": "Polyanin 4.1", "vars": "xy",
+     "eq": "u_xy - 6*u/(x + y)**2", "kind": "general", "expect": "general"},
+    {"id": "polyanin_12u", "source": "Polyanin 4.1", "vars": "xy",
+     "eq": "u_xy - 12*u/(x + y)**2", "kind": "general", "expect": "general"},
+    {"id": "cascade_by_x", "source": "textbook", "vars": "xy", "eq": "x*u_xy + u_y",
+     "kind": "general", "expect": "general"},
+    {"id": "cascade_ay", "source": "textbook", "vars": "xy", "eq": "u_xy + u_x/y",
+     "kind": "general", "expect": "general"},
+    # ---- variable coefficients: canonical forms ----------------------------
+    {"id": "euler_parabolic", "source": "Debnath", "vars": "xy",
+     "eq": "x**2*u_xx + 2*x*y*u_xy + y**2*u_yy", "kind": "general", "expect": "general"},
+    {"id": "euler_hyperbolic", "source": "Debnath", "vars": "xy",
+     "eq": "x**2*u_xx - y**2*u_yy", "kind": "general", "expect": "general"},
+    {"id": "abbasi_403", "source": "Abbasi [403]", "vars": "xy",
+     "eq": "u_xx - 2*sin(x)*u_xy - cos(x)**2*u_yy - cos(x)*u_y",
+     "kind": "general", "expect": "general"},
+    {"id": "parabolic_xy_lower", "source": "Debnath", "vars": "xy",
+     "eq": "x**2*u_xx - 2*x*y*u_xy + y**2*u_yy + x*u_x + y*u_y",
+     "kind": "general", "expect": "general"},
+    {"id": "hyperbolic_y2x2", "source": "Myint-U", "vars": "xy",
+     "eq": "y**2*u_xx - x**2*u_yy", "kind": "general", "expect": "E-PDE-104"},
+    {"id": "tricomi", "source": "textbook", "vars": "xy", "eq": "y*u_xx + u_yy",
+     "kind": "general", "expect": "E-PDE-104"},
+    {"id": "elliptic_x2", "source": "textbook", "vars": "xy", "eq": "u_xx + x**2*u_yy",
+     "kind": "general", "expect": "E-PDE-104"},
+    {"id": "hyperbolic_ey", "source": "Polyanin 4.4", "vars": "xy",
+     "eq": "u_xx - exp(2*y)*u_yy", "kind": "general", "expect": "E-PDE-104"},
+    # ---- Abbasi, general-solution items ------------------------------------
+    {"id": "abbasi_252", "source": "Abbasi [252]", "vars": "xt", "eq": "u_t - u_xx",
+     "kind": "family", "expect": "particular"},
+    {"id": "abbasi_378", "source": "Abbasi [378]", "vars": "xt",
+     "eq": "u_tt + u_xt - c**2*u_xx", "kind": "general", "expect": "general"},
+    {"id": "abbasi_383", "source": "Abbasi [383]", "vars": "xt",
+     "eq": "3*u_xx - u_tt + u_xt - 1", "kind": "general", "expect": "general"},
+    # ---- Cauchy problems on the line (d'Alembert) --------------------------
+    {"id": "abbasi_377", "source": "Abbasi [377]", "vars": "xt", "eq": "u_tt - u_xx",
+     "ics": [("u(x,0)", "f(x)"), ("u_t(x,0)", "g(x)")], "kind": "cauchy",
+     "expect": "E-PDE-107"},
+    {"id": "abbasi_377_g0", "source": "Abbasi [377], g = 0", "vars": "xt",
+     "eq": "u_tt - u_xx", "ics": [("u(x,0)", "f(x)"), ("u_t(x,0)", "0")],
+     "kind": "cauchy", "expect": "particular"},
+    {"id": "abbasi_380", "source": "Abbasi [380]", "vars": "xt", "eq": "u_tt - u_xx",
+     "ics": [("u(x,0)", "exp(-x**2)"), ("u_t(x,0)", "1")], "kind": "cauchy",
+     "expect": "particular"},
+    {"id": "abbasi_381", "source": "Abbasi [381] (|x| dropped)", "vars": "xt",
+     "eq": "u_tt - u_xx - m", "ics": [("u(x,0)", "sin(x) - cos(3*x)*exp(-x/6)"),
+                                      ("u_t(x,0)", "0")],
+     "kind": "cauchy", "expect": "particular"},
+    {"id": "abbasi_384", "source": "Abbasi [384]", "vars": "xt", "eq": "u_tt - u_xx",
+     "ics": [("u(x,0)", "sin(x)"), ("u_t(x,0)", "cos(x)")], "kind": "cauchy",
+     "expect": "particular"},
+    {"id": "abbasi_385", "source": "Abbasi [385]", "vars": "xt", "eq": "u_tt - u_xx",
+     "ics": [("u(x,0)", "x**2"), ("u_t(x,0)", "x")], "kind": "cauchy",
+     "expect": "particular"},
+    {"id": "abbasi_386", "source": "Abbasi [386]", "vars": "xt", "eq": "u_tt - u_xx",
+     "ics": [("u(x,0)", "0"), ("u_t(x,0)", "4*x/(x**2 + 1)")], "kind": "cauchy",
+     "expect": "particular"},
+    {"id": "abbasi_387", "source": "Abbasi [387]", "vars": "xt", "eq": "u_tt - u_xx",
+     "ics": [("u(x,0)", "1/(x**2 + 1)"), ("u_t(x,0)", "0")], "kind": "cauchy",
+     "expect": "particular"},
+    {"id": "abbasi_389", "source": "Abbasi [389]", "vars": "xt", "eq": "u_tt - u_xx",
+     "ics": [("u(x,0)", "sin(x)"), ("u_t(x,0)", "-2*x*exp(-x**2)")], "kind": "cauchy",
+     "expect": "particular"},
+    {"id": "abbasi_391", "source": "Abbasi [391]", "vars": "xt",
+     "eq": "u_tt - 4*u_xx - cos(t)", "ics": [("u(x,0)", "sin(x)"), ("u_t(x,0)", "cos(x)")],
+     "kind": "cauchy", "expect": "particular"},
+    {"id": "abbasi_379", "source": "Abbasi [379]", "vars": "xt", "eq": "u_tt - c**2*u_xx",
+     "ics": [("u(x,1)", "g(x)"), ("u_t(x,1)", "h(x)")], "kind": "cauchy",
+     "expect": "E-PDE-107"},
+    {"id": "dalembert_c", "source": "textbook", "vars": "xt", "eq": "u_tt - c**2*u_xx",
+     "params": {"c": "positive"},
+     "ics": [("u(x,0)", "sin(x)"), ("u_t(x,0)", "cos(x)")], "kind": "cauchy",
+     "expect": "particular"},
+    {"id": "cauchy_mixed", "source": "textbook", "vars": "xt",
+     "eq": "u_tt + u_xt - 2*u_xx", "ics": [("u(x,0)", "x**2"), ("u_t(x,0)", "exp(x)")],
+     "kind": "cauchy", "expect": "particular"},
+]
+
+#: Abbasi items that are out of reach by construction (piecewise / Dirac data,
+#: not expressible in the input syntax); counted as unsolved in the scores.
+ABBASI_UNREPRESENTABLE = [388, 390, 392]

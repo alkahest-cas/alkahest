@@ -99,27 +99,6 @@ impl Linear2 {
         is_zero(self.rhs, pool)
     }
 
-    /// `L[w]` for an expression `w(x, y)` (no source).
-    pub fn apply(&self, w: ExprId, pool: &ExprPool) -> Result<ExprId, PdeError> {
-        let (x, y) = (self.x, self.y);
-        let wx = d(w, x, pool)?;
-        let wy = d(w, y, pool)?;
-        let wxx = d(wx, x, pool)?;
-        let wxy = d(wx, y, pool)?;
-        let wyy = d(wy, y, pool)?;
-        let parts = [wxx, wxy, wyy, wx, wy, w];
-        Ok(simp(
-            pool.add(
-                self.coef
-                    .iter()
-                    .zip(parts)
-                    .map(|(&c, p)| pool.mul(vec![c, p]))
-                    .collect(),
-            ),
-            pool,
-        ))
-    }
-
     /// The equation `L u − G` as an expression in the unknown's derivatives.
     pub fn equation(&self, pool: &ExprPool) -> Result<ExprId, PdeError> {
         let lu = self.apply_unknown(pool)?;

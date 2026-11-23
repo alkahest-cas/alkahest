@@ -26,8 +26,8 @@ use super::super::classify::{PdeType, TypeRegion};
 use super::super::error::PdeError;
 use super::linear::Linear2;
 use super::util::{
-    conj, d, div, exp, free_of, free_of_all, integ, is_zero, linear_in, mentions_i, neg, simp,
-    split_xy, sqrt, sub, subs1, subs2,
+    conj, d, div, exp, free_of, free_of_all, integ, is_zero, linear_in, mentions_i, neg, nicer_integral, simp,
+    split_xy, sqrt, sub, subs1, subs2, tidy,
 };
 
 /// The result of [`super::canonical_form`].
@@ -74,14 +74,19 @@ pub(crate) fn first_integral(
 ) -> Option<ExprId> {
     let lambda = simp(lambda, pool);
     let candidates = first_integral_candidates(lambda, x, y, pool);
+    let check = |phi: ExprId| -> bool {
+        let (Ok(px), Ok(py)) = (d(phi, x, pool), d(phi, y, pool)) else {
+            return false;
+        };
+        !is_zero(py, pool) && is_zero(pool.add(vec![px, pool.mul(vec![lambda, py])]), pool)
+    };
     for phi in candidates {
         let phi = simp(phi, pool);
-        let Ok(px) = d(phi, x, pool) else { continue };
-        let Ok(py) = d(phi, y, pool) else { continue };
-        if is_zero(py, pool) {
-            continue;
+        let nice = nicer_integral(phi, pool);
+        if check(nice) {
+            return Some(nice);
         }
-        if is_zero(pool.add(vec![px, pool.mul(vec![lambda, py])]), pool) {
+        if check(phi) {
             return Some(phi);
         }
     }
@@ -249,14 +254,16 @@ pub(crate) fn invert(
     let tries = [(phi, xi, psi, eta), (psi, eta, phi, xi)];
     for (first, fv, second, sv) in tries {
         for (v1, v2) in [(y, x), (x, y)] {
-            let Some((p, q)) = linear_in(first, v1, pool) else {
-                continue;
+            let v1_of = match linear_in(first, v1, pool) {
+                Some((p, q)) if !is_zero(q, pool) && free_of(p, v1, pool) && free_of(q, v1, pool) => {
+                    div(sub(fv, p, pool), q, pool) // in v2 and fv
+                }
+                _ => match solve_power(first, v1, fv, pool) {
+                    Some(r) => r,
+                    None => continue,
+                },
             };
-            if is_zero(q, pool) || !free_of(p, v1, pool) || !free_of(q, v1, pool) {
-                continue;
-            }
-            let v1_of = div(sub(fv, p, pool), q, pool); // in v2 and fv
-            let g = simp(subs1(second, v1, v1_of, pool), pool); // in v2, fv
+            let g = tidy(subs1(second, v1, v1_of, pool), pool); // in v2, fv
             let v2_of = if free_of(g, v2, pool) {
                 continue;
             } else if let Some((p2, q2)) = linear_in(g, v2, pool) {
@@ -291,19 +298,40 @@ pub(crate) fn invert(
 /// Solve `g(v) = target` where `g = κ · v^m` (κ free of `v`, `m` an integer
 /// or rational): `v = (target/κ)^{1/m}`.
 fn solve_power(g: ExprId, v: ExprId, target: ExprId, pool: &ExprPool) -> Option<ExprId> {
-    // m = v g_v / g must be constant
+    // g = p + κ v^m: m = 1 + v g_vv / g_v must be constant
     let gv = d(g, v, pool).ok()?;
-    let m = simp(pool.mul(vec![v, gv, pool.pow(g, pool.integer(-1))]), pool);
+    if is_zero(gv, pool) {
+        return None;
+    }
+    let gvv = d(gv, v, pool).ok()?;
+    let m = tidy(
+        pool.add(vec![
+            pool.integer(1),
+            pool.mul(vec![v, gvv, pool.pow(gv, pool.integer(-1))]),
+        ]),
+        pool,
+    );
     if !free_of(m, v, pool) || is_zero(m, pool) {
         return None;
     }
-    let kappa = simp(pool.mul(vec![g, pool.pow(v, neg(m, pool))]), pool);
+    let kappa = tidy(
+        pool.mul(vec![
+            gv,
+            pool.pow(m, pool.integer(-1)),
+            pool.pow(v, sub(pool.integer(1), m, pool)),
+        ]),
+        pool,
+    );
     if !free_of(kappa, v, pool) {
         return None;
     }
-    Some(simp(
+    let p = tidy(sub(g, pool.mul(vec![kappa, pool.pow(v, m)]), pool), pool);
+    if !free_of(p, v, pool) {
+        return None;
+    }
+    Some(tidy(
         pool.pow(
-            pool.mul(vec![target, pool.pow(kappa, pool.integer(-1))]),
+            pool.mul(vec![sub(target, p, pool), pool.pow(kappa, pool.integer(-1))]),
             pool.pow(m, pool.integer(-1)),
         ),
         pool,
@@ -405,9 +433,10 @@ pub(crate) fn characteristic_coordinates(
                 pool,
             );
             let phi = fi(lam).ok_or_else(|| fail(&format!("no first integral of dy/dx = {}", pool.display(lam))))?;
+            let phi = tidy(phi, pool);
             let cphi = conj(phi, pool);
-            let alpha = simp(pool.mul(vec![pool.rational(1, 2), pool.add(vec![phi, cphi])]), pool);
-            let beta = simp(
+            let alpha = tidy(pool.mul(vec![pool.rational(1, 2), pool.add(vec![phi, cphi])]), pool);
+            let beta = tidy(
                 pool.mul(vec![
                     pool.mul(vec![pool.rational(-1, 2), i]),
                     sub(phi, cphi, pool),
@@ -439,6 +468,79 @@ pub(crate) fn build(
         conds.push(r.condition);
     }
     let (phi, psi) = characteristic_coordinates(l, pde_type, &mut conds, pool)?;
+    let (phi, psi) = (tidy(phi, pool), tidy(psi, pool));
+    let first = build_from(l, pde_type, region.clone(), phi, psi, conds.clone(), pool)?;
+    let constant = |f: &CanonicalForm| {
+        f.in_new_variables
+            && f.coefficients[..6]
+                .iter()
+                .all(|&c| free_of_all(c, &[f.new_variables.0, f.new_variables.1], pool))
+    };
+    if constant(&first) || (first.in_new_variables && has_no_power_of_product(&first, pool)) {
+        return Ok(first);
+    }
+    // A function of a first integral is one too: logarithmic coordinates
+    // often make the coefficients constant (x² u_xx − y² u_yy with
+    // ξ = log(y/x), η = log(xy)) where the inversion of ξ = y/x, η = xy
+    // would need branches.
+    let lphi = tidy(pool.func("log", vec![phi]), pool);
+    let lpsi = tidy(pool.func("log", vec![psi]), pool);
+    let mut fallback: Option<CanonicalForm> = None;
+    for (p2, q2) in [(lphi, lpsi), (lphi, psi), (phi, lpsi)] {
+        if let Ok(f) = build_from(l, pde_type, region.clone(), p2, q2, conds.clone(), pool) {
+            if constant(&f) {
+                return Ok(f);
+            }
+            if f.in_new_variables && fallback.is_none() {
+                fallback = Some(f);
+            }
+        }
+    }
+    if first.in_new_variables {
+        return Ok(first);
+    }
+    Ok(fallback.unwrap_or(first))
+}
+
+/// Whether the inverse map is free of fractional powers (no branch was
+/// chosen to express the coefficients).
+fn has_no_power_of_product(f: &CanonicalForm, pool: &ExprPool) -> bool {
+    let Some((a, b)) = f.inverse else {
+        return true;
+    };
+    let frac = |e: ExprId| {
+        let mut seen = std::collections::HashSet::new();
+        let mut stack = vec![e];
+        while let Some(n) = stack.pop() {
+            if !seen.insert(n) {
+                continue;
+            }
+            let r = pool.with(n, |d| match d {
+                crate::kernel::ExprData::Pow { exp, .. } => {
+                    Some(pool.with(*exp, |e| matches!(e, crate::kernel::ExprData::Rational(_))))
+                }
+                _ => None,
+            });
+            if r == Some(true) {
+                return true;
+            }
+            super::super::jet::push_children(n, pool, &mut stack);
+        }
+        false
+    };
+    !frac(a) && !frac(b)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_from(
+    l: &Linear2,
+    pde_type: PdeType,
+    region: Option<TypeRegion>,
+    phi: ExprId,
+    psi: ExprId,
+    conds: Vec<ExprId>,
+    pool: &ExprPool,
+) -> Result<CanonicalForm, PdeError> {
     let [a1, b1, c1, d1, e1] = transformed(l, phi, psi, pool)?;
     let bad = |what: &str| {
         PdeError::CharacteristicsNotIntegrated(format!(
@@ -498,9 +600,9 @@ pub(crate) fn build(
     let mut coefficients = Vec::with_capacity(7);
     let mut in_new = true;
     for &r in &raw {
-        let n = div(r, lead, pool);
+        let n = tidy(div(r, lead, pool), pool);
         match express(n, l, phi, psi, xi, eta, inverse, pool) {
-            Some(g) => coefficients.push(simp(g, pool)),
+            Some(g) => coefficients.push(tidy(g, pool)),
             None => {
                 in_new = false;
                 coefficients.push(n);
@@ -524,7 +626,7 @@ pub(crate) fn build(
     if !is_zero(coefficients[6], pool) {
         terms.push(neg(coefficients[6], pool));
     }
-    let equation = pool.add(terms);
+    let equation = simp(pool.add(terms), pool);
     let _ = exp;
     Ok(CanonicalForm {
         pde_type,
