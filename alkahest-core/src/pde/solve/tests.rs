@@ -159,7 +159,9 @@ fn unknown_hint_and_order_two_refuse() {
     let prob = PdeProblem::new(&[dd(&f, f.x)], &[f.u], p).unwrap();
     let e = pdsolve(&prob, &PdsolveOptions::default().with_hint("nope"), p).unwrap_err();
     assert_eq!(e.code(), "E-PDE-050");
-    let uxx = crate::diff::diff_impl::diff(dd(&f, f.x), f.x, p).unwrap().value;
+    let uxx = crate::diff::diff_impl::diff(dd(&f, f.x), f.x, p)
+        .unwrap()
+        .value;
     let prob2 = PdeProblem::new(&[uxx], &[f.u], p).unwrap();
     let e2 = pdsolve(&prob2, &PdsolveOptions::default(), p).unwrap_err();
     assert_eq!(e2.code(), "E-PDE-050");
@@ -177,7 +179,11 @@ fn debug_strings() {
     for eq_src in src.split(';') {
         let pool = ExprPool::new();
         let mut syms = std::collections::HashMap::new();
-        let vars = if eq_src.contains("uz") { "x, y, z" } else { "x, y" };
+        let vars = if eq_src.contains("uz") {
+            "x, y, z"
+        } else {
+            "x, y"
+        };
         let vs: Vec<ExprId> = vars
             .split(", ")
             .map(|n| {
@@ -188,7 +194,8 @@ fn debug_strings() {
             .collect();
         syms.insert("u".to_string(), pool.func("u", vs));
         let u_src = format!("u({vars})");
-        let full = eq_src.replace("ux", &format!("Derivative({u_src}, x)"))
+        let full = eq_src
+            .replace("ux", &format!("Derivative({u_src}, x)"))
             .replace("uy", &format!("Derivative({u_src}, y)"))
             .replace("uz", &format!("Derivative({u_src}, z)"));
         let eq = match crate::parse::parse(&full, &pool, &mut syms) {

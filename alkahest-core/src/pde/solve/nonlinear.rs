@@ -13,7 +13,12 @@ use super::integrals::{IntegralSearch, VectorField};
 use super::util::*;
 use super::{Candidate, Ctx, PdeSolutionKind};
 
-fn complete(value: ExprId, implicit: bool, constants: Vec<ExprId>, steps: Vec<String>) -> Candidate {
+fn complete(
+    value: ExprId,
+    implicit: bool,
+    constants: Vec<ExprId>,
+    steps: Vec<String>,
+) -> Candidate {
     Candidate {
         value,
         implicit,
@@ -46,7 +51,8 @@ pub(crate) fn solve_clairaut(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> {
     let consts: Vec<ExprId> = (0..ctx.p.len()).map(|_| ctx.fresh_constant(pool)).collect();
     let mut out = Vec::new();
     for f in isolate(g, omega, pool) {
-        let m: HashMap<ExprId, ExprId> = ctx.p.iter().copied().zip(consts.iter().copied()).collect();
+        let m: HashMap<ExprId, ExprId> =
+            ctx.p.iter().copied().zip(consts.iter().copied()).collect();
         let fa = subs_map(f, &m, pool);
         let value = pool.add(
             ctx.indep
@@ -155,7 +161,12 @@ pub(crate) fn solve_f_up(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> {
         for e in isolate(rel, ctx.w, pool) {
             out.push(complete(e, false, vec![a, b], steps.clone()));
         }
-        out.push(complete(ctx.with_unknown(rel, pool), true, vec![a, b], steps));
+        out.push(complete(
+            ctx.with_unknown(rel, pool),
+            true,
+            vec![a, b],
+            steps,
+        ));
     }
     out
 }
@@ -207,7 +218,10 @@ pub(crate) fn solve_separable(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> 
             sum_a.push(consts[i]);
             consts[i]
         } else {
-            neg(pool.add(c0.iter().copied().chain(sum_a.iter().copied()).collect()), pool)
+            neg(
+                pool.add(c0.iter().copied().chain(sum_a.iter().copied()).collect()),
+                pool,
+            )
         };
         let Some(pi) = isolate_one(sub(fi, rhs, pool), ctx.p[i], pool) else {
             return Vec::new();
@@ -235,9 +249,13 @@ pub(crate) fn solve_charpit(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> {
     let f = ctx.f;
     let (x, y) = (ctx.indep[0], ctx.indep[1]);
     let (p, q, w) = (ctx.p[0], ctx.p[1], ctx.w);
-    let (Some(fp), Some(fq), Some(fx), Some(fy), Some(fu)) =
-        (d(f, p, pool), d(f, q, pool), d(f, x, pool), d(f, y, pool), d(f, w, pool))
-    else {
+    let (Some(fp), Some(fq), Some(fx), Some(fy), Some(fu)) = (
+        d(f, p, pool),
+        d(f, q, pool),
+        d(f, x, pool),
+        d(f, y, pool),
+        d(f, w, pool),
+    ) else {
         return Vec::new();
     };
     let dp = neg(pool.add(vec![fx, pool.mul(vec![p, fu])]), pool);
@@ -274,7 +292,11 @@ pub(crate) fn solve_charpit(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> {
                         pool.display(root)
                     )];
                     st.extend(search.notes.clone());
-                    st.push(format!("p = {}, q = {}", pool.display(pp), pool.display(qq)));
+                    st.push(format!(
+                        "p = {}, q = {}",
+                        pool.display(pp),
+                        pool.display(qq)
+                    ));
                     out.extend(pfaff(ctx, pp, qq, a, b, st, pool));
                     if out.len() >= 4 {
                         return out;
@@ -350,7 +372,12 @@ fn pfaff(
             for e in isolate(rel, w, pool) {
                 out.push(complete(e, false, vec![a, b], steps.clone()));
             }
-            out.push(complete(ctx.with_unknown(rel, pool), true, vec![a, b], steps));
+            out.push(complete(
+                ctx.with_unknown(rel, pool),
+                true,
+                vec![a, b],
+                steps,
+            ));
         }
     }
     out

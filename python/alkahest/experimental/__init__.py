@@ -1023,6 +1023,7 @@ __all__ = [
     "PauliOperator",
     "PdeError",
     "PdeInfo",
+    "PdeSolution",
     "Permutation",
     "PermutationGroup",
     "Place",
@@ -1086,9 +1087,6 @@ __all__ = [
     "check_novelty",
     # P1 item 10 — asymptotic expansion at scale
     "classify_pde",
-    "pdsolve",
-    "pdsolve_hints",
-    "PdeSolution",
     "coefficient",
     "coefficient_asymptotics",
     "compile_cuda",
@@ -1176,6 +1174,8 @@ __all__ = [
     "ode_integrate_rk45",
     "order_statistic",
     "partition_number",
+    "pdsolve",
+    "pdsolve_hints",
     # Hypotheses the last Distribution method / expectation call rests on
     "prob_side_conditions",
     # Puiseux (fractional-exponent) expansion

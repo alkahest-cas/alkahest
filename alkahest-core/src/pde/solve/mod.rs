@@ -194,7 +194,8 @@ pub static TIERS: &[Tier] = &[
     Tier {
         name: "first_order_linear",
         milestone: "M1",
-        description: "linear / semilinear: characteristic coordinates + dsolve along characteristics",
+        description:
+            "linear / semilinear: characteristic coordinates + dsolve along characteristics",
         applies: |c| c.order == 1 && c.affine.is_some(),
         solve: linear::solve_linear,
     },
@@ -279,7 +280,11 @@ pub struct Ctx<'a> {
 }
 
 impl<'a> Ctx<'a> {
-    fn new(problem: &'a PdeProblem, opts: &PdsolveOptions, pool: &ExprPool) -> Result<Self, PdeError> {
+    fn new(
+        problem: &'a PdeProblem,
+        opts: &PdsolveOptions,
+        pool: &ExprPool,
+    ) -> Result<Self, PdeError> {
         if problem.equations().len() != 1 || problem.unknowns().len() != 1 {
             return Err(PdeError::PdsolveUnsupported(format!(
                 "pdsolve solves one equation in one unknown; got {} equations in {} unknowns",
@@ -548,8 +553,10 @@ fn finalize(
     if cand.kind == PdeSolutionKind::CompleteIntegral && !cand.implicit {
         if let Some(sing) = nonlinear::singular_integral(ctx, value, &cand.constants, pool) {
             if let Ok(s) = finalize(ctx, method, sing, pool) {
-                sol.steps
-                    .push(format!("singular integral (envelope): u = {}", pool.display(s.value)));
+                sol.steps.push(format!(
+                    "singular integral (envelope): u = {}",
+                    pool.display(s.value)
+                ));
                 sol.alternatives.push(s);
             }
         }
@@ -574,10 +581,7 @@ pub(crate) fn tidy(e: ExprId, pool: &ExprPool) -> ExprId {
         ExprData::Pow { base, exp } => pool.pow(tidy(base, pool), tidy(exp, pool)),
         ExprData::Func { name, args } => {
             let mut args: Vec<ExprId> = args.iter().map(|&a| tidy(a, pool)).collect();
-            if ELEMENTARY.contains(&name.as_str())
-                && args.len() == 1
-                && pool.depth(args[0]) < 12
-            {
+            if ELEMENTARY.contains(&name.as_str()) && args.len() == 1 && pool.depth(args[0]) < 12 {
                 args[0] = crate::simplify::engine::simplify_expanded(args[0], pool).value;
             }
             if name == "exp" && args.len() == 1 {
@@ -755,7 +759,9 @@ fn verify_implicit(
 }
 
 fn collect_arbitrary(e: ExprId, ctx: &Ctx, pool: &ExprPool, out: &mut Vec<String>) {
-    let uname = decode_unknown(ctx.unknown, pool).map(|v| v.name).unwrap_or_default();
+    let uname = decode_unknown(ctx.unknown, pool)
+        .map(|v| v.name)
+        .unwrap_or_default();
     let mut seen = HashSet::new();
     let mut stack = vec![e];
     while let Some(n) = stack.pop() {

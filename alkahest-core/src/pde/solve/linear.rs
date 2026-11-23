@@ -323,7 +323,10 @@ pub(crate) fn solve_quasilinear(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate
     } else {
         let fapp = ctx.arb.fresh(integrals.clone(), pool);
         let mut st = steps.clone();
-        st.push(format!("implicit general solution {} = 0", pool.display(fapp)));
+        st.push(format!(
+            "implicit general solution {} = 0",
+            pool.display(fapp)
+        ));
         out.push(Candidate {
             value: ctx.with_unknown(fapp, pool),
             implicit: true,
