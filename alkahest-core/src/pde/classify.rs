@@ -555,11 +555,11 @@ fn inertia(a: &[Vec<ExprId>], pool: &ExprPool) -> Option<(usize, usize, usize)> 
             } else {
                 q += 1
             }
-            for i in 0..size - 1 {
-                let f = rug::Rational::from(&m[i][size - 1] / &piv);
-                for j in 0..size - 1 {
-                    let t = rug::Rational::from(&f * &m[size - 1][j]);
-                    m[i][j] -= t;
+            let pivot_row: Vec<rug::Rational> = m[size - 1][..size - 1].to_vec();
+            for row in m.iter_mut().take(size - 1) {
+                let f = rug::Rational::from(&row[size - 1] / &piv);
+                for (x, pr) in row.iter_mut().take(size - 1).zip(&pivot_row) {
+                    *x -= rug::Rational::from(&f * pr);
                 }
             }
             size -= 1;
@@ -569,13 +569,13 @@ fn inertia(a: &[Vec<ExprId>], pool: &ExprPool) -> Option<(usize, usize, usize)> 
         {
             // Replace row/col i by row/col i + row/col j: the new diagonal
             // entry 2·m[i][j] is nonzero (m[i][i] = m[j][j] = 0).
-            for c in 0..size {
-                let t = m[j][c].clone();
-                m[i][c] += t;
+            let row_j: Vec<rug::Rational> = m[j][..size].to_vec();
+            for (x, t) in m[i].iter_mut().zip(&row_j) {
+                *x += t;
             }
-            for r in 0..size {
-                let t = m[r][j].clone();
-                m[r][i] += t;
+            for row in m.iter_mut().take(size) {
+                let t = row[j].clone();
+                row[i] += t;
             }
         } else {
             break;
