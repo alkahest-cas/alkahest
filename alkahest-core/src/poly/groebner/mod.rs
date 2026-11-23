@@ -35,6 +35,7 @@ mod multimodular;
 mod pairs;
 pub mod parametric;
 pub mod paramfield;
+mod qverify;
 pub mod reduce;
 
 // Keep f4 as a thin re-export so any external crate that depended on the old
@@ -148,6 +149,21 @@ fn is_unit_basis(gens: &[GbPoly]) -> bool {
 /// katsura-5..7 plus a generic quadric, where Buchberger over ℚ took over 180 s.
 fn prove_unit_ideal(gens: &[GbPoly]) -> Option<bool> {
     let n = gens.iter().find(|g| !g.is_zero())?.n_vars;
+    let basis = homogenised_basis(gens)?;
+    Some(
+        basis
+            .iter()
+            .any(|g| g.terms.keys().all(|e| e[..n].iter().all(|&x| x == 0))),
+    )
+}
+
+/// The proved grevlex basis of `⟨g^h : g ∈ gens⟩`, each generator
+/// homogenised with a new smallest variable `h` (the last), computed by the
+/// multimodular engine: on homogeneous input its verified result is proved
+/// (see [`GroebnerProofStatus::Proved`]).  `None` when the run was
+/// inconclusive or an armed budget fired.
+fn homogenised_basis(gens: &[GbPoly]) -> Option<Vec<GbPoly>> {
+    let n = gens.iter().find(|g| !g.is_zero())?.n_vars;
     let homogenised: Vec<GbPoly> = gens
         .iter()
         .filter(|g| !g.is_zero())
@@ -168,12 +184,41 @@ fn prove_unit_ideal(gens: &[GbPoly]) -> Option<bool> {
             })
         })
         .collect::<Option<_>>()?;
-    let basis = multimodular::groebner_basis(&homogenised, MonomialOrder::GRevLex).ok()?;
-    Some(
-        basis
-            .iter()
-            .any(|g| g.terms.keys().all(|e| e[..n].iter().all(|&x| x == 0))),
-    )
+    multimodular::groebner_basis(&homogenised, MonomialOrder::GRevLex).ok()
+}
+
+/// Decide whether a grevlex `basis` that the multimodular engine verified (a
+/// reduced Gröbner basis of an ideal `J ⊇ I = ⟨gens⟩`) is the basis of `I`
+/// itself, with a proof.
+///
+/// Let `H` be the proved basis of `⟨gens^h⟩` ([`homogenised_basis`]).  Under
+/// grevlex with `h` smallest, the leading monomial of a homogeneous `g` has the
+/// least power of `h` among its terms, so `g = hᵃ·g'` and `LM(g)` with `h`
+/// deleted is `LM(g|_{h=1})`.  For `f ∈ I` some `hˢ·f^h` lies in `⟨gens^h⟩`
+/// and has leading monomial `hˢ·LM(f)`; an element of `H` divides it, so
+/// `LM(f)` is divisible by a dehomogenised leading monomial of `H`.  These
+/// therefore generate `LT(I)`.  Since `I ⊆ J`, `LT(I) ⊆ LT(J)`; if every
+/// leading monomial of `basis` is divisible by one of them, the two leading
+/// ideals are equal, a Gröbner basis of `I` is one of `J`, and `I = J`.
+///
+/// `Some(false)` means `J ≠ I`: the basis is **wrong** (every prime that
+/// shaped it was unlucky).  `None`: inconclusive, or an armed budget fired.
+fn certify_grevlex(gens: &[GbPoly], basis: &[GbPoly]) -> Option<bool> {
+    let n = gens.iter().find(|g| !g.is_zero())?.n_vars;
+    let h_basis = homogenised_basis(gens)?;
+    let order = MonomialOrder::GRevLex;
+    let lt_i: Vec<Vec<u32>> = h_basis
+        .iter()
+        .map(|g| g.leading_exp(order).map(|e| e[..n].to_vec()))
+        .collect::<Option<_>>()?;
+    let mut all = true;
+    for b in basis {
+        let lb = b.leading_exp(order)?;
+        if !lt_i.iter().any(|m| m.iter().zip(&lb).all(|(x, y)| x <= y)) {
+            all = false;
+        }
+    }
+    Some(all)
 }
 
 impl GroebnerBasis {
@@ -225,6 +270,62 @@ impl GroebnerBasis {
         Self::compute_exact(gens, order)
     }
 
+    /// [`Self::compute`], then, if the result is only
+    /// [`GroebnerProofStatus::Probabilistic`], a proof that it is the basis of
+    /// exactly `⟨gens⟩`, so that the result is [`GroebnerProofStatus::Proved`].
+    ///
+    /// The proof costs one more multimodular run, on the homogenised input
+    /// (whose verified result is proved, see [`Self::proof_status`]): the
+    /// dehomogenised leading monomials of that basis generate the leading
+    /// ideal of `⟨gens⟩`, and the probabilistic basis, already verified to be a
+    /// Gröbner basis of an ideal containing `⟨gens⟩`, is the basis of
+    /// `⟨gens⟩` exactly when its leading monomials lie in that leading ideal.
+    /// A basis that fails this was wrong, and is recomputed by
+    /// [`Self::compute_exact`].  If the homogenised run is inconclusive the
+    /// result stays probabilistic, so check [`Self::proof_status`].
+    pub fn compute_certified(gens: Vec<GbPoly>, order: MonomialOrder) -> Self {
+        let mut basis = Self::compute(gens.clone(), order);
+        if basis.proof_status == GroebnerProofStatus::Proved
+            || order != MonomialOrder::GRevLex
+            || crate::budget::interrupt_pending()
+        {
+            return basis;
+        }
+        match certify_grevlex(&gens, &basis.generators) {
+            Some(true) => basis.proof_status = GroebnerProofStatus::Proved,
+            Some(false) if !crate::budget::interrupt_pending() => {
+                return Self::compute_exact(gens, order)
+            }
+            _ => {}
+        }
+        basis
+    }
+
+    /// [`Self::compute_certified`], honouring the active budget as
+    /// [`Self::try_compute`] does.
+    ///
+    /// # Errors
+    ///
+    /// The [`crate::budget::BudgetTrip`] that stopped the computation.
+    pub fn try_compute_certified(
+        gens: Vec<GbPoly>,
+        order: MonomialOrder,
+    ) -> Result<Self, crate::budget::BudgetTrip> {
+        armed(|| Self::compute_certified(gens, order))
+    }
+
+    /// [`Self::compute_lex`] with the grevlex basis it converts certified as by
+    /// [`Self::compute_certified`]; FGLM verifies what it adds exactly, so a
+    /// proved grevlex basis gives a proved lex basis.  Honours the active
+    /// budget as [`Self::try_compute`] does.
+    ///
+    /// # Errors
+    ///
+    /// The [`crate::budget::BudgetTrip`] that stopped the computation.
+    pub fn try_compute_lex_certified(gens: Vec<GbPoly>) -> Result<Self, crate::budget::BudgetTrip> {
+        armed(|| Self::compute_lex_with(gens, true))
+    }
+
     /// Compute the basis by Buchberger's algorithm over ℚ, whatever the order.
     /// The result is always [`GroebnerProofStatus::Proved`], and much slower
     /// than [`Self::compute`] on hard grevlex inputs.
@@ -248,11 +349,13 @@ impl GroebnerBasis {
     /// inhomogeneous input and from a lex basis converted from one by FGLM.
     /// Checked exactly: `B` is a reduced Gröbner basis and `I ⊆ ⟨B⟩`.  Not
     /// checked: `⟨B⟩ ⊆ I`.  Since `I ⊆ ⟨B⟩`, equal leading terms would give
-    /// equal ideals, so `⟨B⟩ ⊋ I` needs a majority of the primes used, at least
-    /// two independent ones drawn from the ≈5·10⁷ in `[2³⁰, 2³¹)`, to have
-    /// leading terms that `I` does not have.  Those primes divide a fixed
-    /// non-zero integer depending only on the input, so if `k` of them exist the
-    /// chance is of order `(k / 5·10⁷)²`.
+    /// equal ideals, so `⟨B⟩ ⊋ I` needs the two primes whose full F4 runs fixed
+    /// the shape of `B`, drawn independently from the ≈5·10⁷ in `[2³⁰, 2³¹)`,
+    /// to have the same leading terms, ones that `I` does not have.  Those
+    /// primes divide a fixed non-zero integer depending only on the input, so
+    /// if `k` of them exist the chance is of order `(k / 5·10⁷)²`.
+    /// [`Self::compute_certified`] removes the doubt, at the cost of one more
+    /// multimodular run.
     ///
     /// Consequences for a probabilistic `B`: `p ∉ ⟨B⟩` proves `p ∉ I`, while
     /// `p ∈ ⟨B⟩` is only as sure as `B` is; every zero of `B` is a zero of `I`,
@@ -286,6 +389,10 @@ impl GroebnerBasis {
     /// than direct lex Buchberger. Falls back to direct lex Buchberger when
     /// the ideal is positive-dimensional or FGLM fails.
     pub fn compute_lex(gens: Vec<GbPoly>) -> Self {
+        Self::compute_lex_with(gens, false)
+    }
+
+    fn compute_lex_with(gens: Vec<GbPoly>, certify: bool) -> Self {
         let n_vars = gens.first().map(|g| g.n_vars).unwrap_or(0);
 
         if n_vars <= 1 {
@@ -293,7 +400,11 @@ impl GroebnerBasis {
         }
 
         // Step 1: GRevLex basis (fast).
-        let mut grevlex = Self::compute(gens.clone(), MonomialOrder::GRevLex);
+        let mut grevlex = if certify {
+            Self::compute_certified(gens.clone(), MonomialOrder::GRevLex)
+        } else {
+            Self::compute(gens.clone(), MonomialOrder::GRevLex)
+        };
         // A `{1}` that could not be proved (see `prove_unit_ideal`): "this system
         // has no solutions" is the worst thing to get wrong, so settle it exactly.
         if grevlex.proof_status == GroebnerProofStatus::Probabilistic
@@ -585,6 +696,64 @@ mod tests {
             ];
             let gb = GroebnerBasis::compute(gens, MonomialOrder::GRevLex);
             assert_eq!(gb.proof_status(), Proved);
+        }
+
+        /// `compute_certified` proves what `compute` leaves probabilistic,
+        /// without changing the basis.
+        #[test]
+        fn certified_mode_proves_the_multimodular_basis() {
+            let terms = |g: &GroebnerBasis| {
+                let mut t: Vec<_> = g.generators().iter().map(|p| p.terms.clone()).collect();
+                t.sort();
+                t
+            };
+            let katsura = super::super::multimodular::tests::katsura_system(4);
+            for gens in [inhomogeneous(), katsura] {
+                let plain = GroebnerBasis::compute(gens.clone(), MonomialOrder::GRevLex);
+                assert_eq!(plain.proof_status(), Probabilistic);
+                let cert = GroebnerBasis::compute_certified(gens.clone(), MonomialOrder::GRevLex);
+                assert_eq!(cert.proof_status(), Proved);
+                assert_eq!(terms(&cert), terms(&plain));
+                let exact = GroebnerBasis::compute_exact(gens.clone(), MonomialOrder::GRevLex);
+                assert_eq!(terms(&cert), terms(&exact));
+                let lex = GroebnerBasis::try_compute_lex_certified(gens.clone()).unwrap();
+                assert_eq!(lex.order(), MonomialOrder::Lex);
+                assert_eq!(lex.proof_status(), Proved);
+                let plain_lex = GroebnerBasis::compute_lex(gens);
+                assert_eq!(plain_lex.proof_status(), Probabilistic);
+                assert_eq!(terms(&lex), terms(&plain_lex));
+            }
+            // Already proved: unchanged.
+            let gb = GroebnerBasis::compute_certified(inconsistent(), MonomialOrder::GRevLex);
+            assert!(is_unit_basis(gb.generators()));
+            assert_eq!(gb.proof_status(), Proved);
+        }
+
+        /// The certificate decides both ways: a verified-looking basis of a
+        /// larger ideal (what unlucky primes would give) is rejected.
+        #[test]
+        fn certify_grevlex_rejects_a_basis_of_a_larger_ideal() {
+            let gb = GroebnerBasis::compute(inhomogeneous(), MonomialOrder::GRevLex);
+            assert_eq!(
+                certify_grevlex(&inhomogeneous(), gb.generators()),
+                Some(true)
+            );
+            // A basis whose leading terms `I` does not have: rejected on those
+            // alone (here `⟨x − 1, y − 1⟩`, whose leading terms are of degree 1
+            // where every leading term of `I` has degree 2 or more).
+            let larger = vec![
+                poly(&[(&[1, 0], 1), (&[0, 0], -1)]),
+                poly(&[(&[0, 1], 1), (&[0, 0], -1)]),
+            ];
+            assert_eq!(certify_grevlex(&inhomogeneous(), &larger), Some(false));
+            // The unit ideal for a consistent system (`x = 1/N, y = 0`).
+            let n = 1_073_741_827_i64;
+            let gens = vec![
+                poly(&[(&[0, 2], 1)]),
+                poly(&[(&[0, 2], 1), (&[1, 0], n), (&[0, 0], -1)]),
+            ];
+            let one = vec![poly(&[(&[0, 0], 1)])];
+            assert_eq!(certify_grevlex(&gens, &one), Some(false));
         }
 
         /// `{1}` passes the verification vacuously, so it needs its own proof.

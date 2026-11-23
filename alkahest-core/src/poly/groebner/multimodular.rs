@@ -4,19 +4,26 @@
 //! but finitely many primes `p` its image modulo `p` is the reduced basis of
 //! the image ideal, which [`super::modp`] computes in machine words.  So:
 //!
-//! 1. compute the reduced basis modulo random primes `p < 2³¹`;
-//! 2. group the images by *shape* (the support of every element) — an unlucky
-//!    prime shows up as a shape the others do not share, and the majority
-//!    shape wins;
-//! 3. combine the majority images coefficient-wise by the Chinese remainder
-//!    theorem and lift by rational reconstruction; accept a lift once one more
-//!    prime agrees with it;
+//! 1. compute the reduced basis modulo random primes `p < 2³¹` by F4
+//!    ([`super::modp`]), recording each run's *trace* (which rows it built and
+//!    which of them reduced to something new);
+//! 2. once two full runs at independent primes give the same *shape* (the
+//!    support of every element), replay one of their traces modulo each
+//!    further prime instead of running F4 again: no pair handling, no symbolic
+//!    preprocessing, and none of the rows that reduced to zero ("learn and
+//!    apply", as in msolve and Groebner.jl).  A replay that diverges from the
+//!    recorded run is discarded, and repeated divergence sends the loop back
+//!    to full runs;
+//! 3. combine the images of the agreed shape coefficient-wise by the Chinese
+//!    remainder theorem and lift by rational reconstruction; accept a lift
+//!    once one more prime agrees with it;
 //! 4. **verify the lift over ℚ** before returning it: every input reduces to
 //!    zero modulo the candidate `B` (so `I ⊆ ⟨B⟩`) and every critical pair of
 //!    `B` that survives the Gebauer–Möller criteria reduces to zero (so `B` is
-//!    a Gröbner basis).  A candidate that fails is not returned; more primes are
-//!    taken, and after a few failures the caller falls back to the ℚ
-//!    algorithm.
+//!    a Gröbner basis), by the F4-style integer reduction of
+//!    [`super::qverify`].  A candidate that fails is not returned; the loop
+//!    learns again from fresh primes, and after a few failures the caller
+//!    falls back to the ℚ algorithm.
 //!
 //! What the verification proves: `B` is the reduced Gröbner basis of an ideal
 //! containing `I`.  For a **homogeneous** input that ideal is `I` itself
@@ -26,9 +33,9 @@
 //!
 //! For an inhomogeneous input that equality is not proved, and
 //! [`super::GroebnerBasis::proof_status`] says so.  Equal leading terms would
-//! still force it, so `⟨B⟩ ⊋ I` needs the primes of the majority shape, at least
-//! two and each drawn independently from the ≈5·10⁷ primes in `[2³⁰, 2³¹)`, to
-//! all give leading terms `I` does not have.  Those primes divide a fixed
+//! still force it, so `⟨B⟩ ⊋ I` needs the two primes whose full runs fixed the
+//! shape, each drawn independently from the ≈5·10⁷ primes in `[2³⁰, 2³¹)`, to
+//! give the same leading terms, ones `I` does not have.  Those primes divide a fixed
 //! non-zero integer that depends only on the input; if there are `k` of them,
 //! the chance is of order `(k / 5·10⁷)²`.  The basis `{1}` is the case to worry
 //! about, since it passes the verification vacuously: `⟨y, y + N·x − 1⟩` has
@@ -42,7 +49,9 @@ use std::collections::{BTreeMap, HashMap};
 use rug::{Assign, Integer, Rational};
 
 use crate::poly::groebner::ideal::GbPoly;
-use crate::poly::groebner::modp::{groebner_mod_p, is_prime_u32, ModPoly, MonoTable, Prime, Stop};
+use crate::poly::groebner::modp::{
+    groebner_mod_p_learn, is_prime_u32, ApplyFail, ModPoly, MonoTable, Prime, Stop, Trace,
+};
 use crate::poly::groebner::monomial_order::MonomialOrder;
 use crate::poly::groebner::pairs::{update_pairs, CriticalPair};
 use crate::poly::groebner::reduce::Divisors;
@@ -150,27 +159,36 @@ pub(crate) fn int_poly(table: &mut MonoTable, g: &GbPoly) -> Option<IntPoly> {
     })
 }
 
-/// The images of `gens` modulo `p`; `None` when `p` divides a leading
-/// coefficient (the image would have a different leading term).
-pub(crate) fn image_mod_p(gens: &[IntPoly], pr: Prime) -> Option<Vec<ModPoly>> {
+/// The coefficients of `gens` modulo `p`, on their full integer supports
+/// (zeros kept, so every prime sees the same supports); `None` when `p`
+/// divides a leading coefficient (the image would have a different leading
+/// term).
+pub(crate) fn coefs_mod_p(gens: &[IntPoly], pr: Prime) -> Option<Vec<Vec<u64>>> {
     let mut out = Vec::with_capacity(gens.len());
     for g in gens {
-        let mut mons = Vec::with_capacity(g.mons.len());
-        let mut coefs = Vec::with_capacity(g.mons.len());
-        for (k, (&m, c)) in g.mons.iter().zip(&g.coefs).enumerate() {
-            let r = u64::from(c.mod_u(pr.p as u32));
-            if r == 0 {
-                if k == 0 {
-                    return None;
-                }
-                continue;
-            }
-            mons.push(m);
-            coefs.push(r);
+        let c: Vec<u64> = g
+            .coefs
+            .iter()
+            .map(|c| u64::from(c.mod_u(pr.p as u32)))
+            .collect();
+        if c.first().is_some_and(|&lc| lc == 0) {
+            return None;
         }
-        out.push(ModPoly { mons, coefs });
+        out.push(c);
     }
     Some(out)
+}
+
+/// The images of `gens` given by [`coefs_mod_p`], as polynomials over 𝔽_p
+/// with the full integer supports.
+fn full_support_images(gens: &[IntPoly], coefs: Vec<Vec<u64>>) -> Vec<ModPoly> {
+    gens.iter()
+        .zip(coefs)
+        .map(|(g, coefs)| ModPoly {
+            mons: g.mons.clone(),
+            coefs,
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +310,8 @@ pub(crate) struct Lifter {
     proposed: Option<usize>,
     /// The coefficient that stopped the last reconstruction.
     last_fail: usize,
+    /// The denominator lcm carried up to that coefficient.
+    last_den: Integer,
 }
 
 impl Lifter {
@@ -301,6 +321,7 @@ impl Lifter {
             candidate: None,
             proposed: None,
             last_fail: 0,
+            last_den: Integer::from(1),
         }
     }
 
@@ -364,13 +385,50 @@ impl Lifter {
             .expect("a group");
         let g = &self.groups[gi];
         if largest == gi && g.n_primes >= g.next_try {
-            let next = (g.n_primes * 3).div_ceil(2).max(g.n_primes + 1);
-            self.groups[gi].next_try = next;
-            if let Some(lift) = self.reconstruct(gi) {
-                self.candidate = Some((gi, lift));
+            let n = g.n_primes;
+            // The coefficient that stopped the last attempt is probed alone
+            // first, without merging the pending batch into every residue:
+            // that keeps an attempt per prime cheap, so the lift is found
+            // within a prime or so of the precision it needs.
+            if !self.probe(gi) {
+                self.groups[gi].next_try = n + 1;
+            } else {
+                self.groups[gi].next_try = n + (n / 4).max(1);
+                if let Some(lift) = self.reconstruct(gi) {
+                    self.candidate = Some((gi, lift));
+                }
             }
         }
         None
+    }
+
+    /// Whether the coefficient that failed the last reconstruction of group
+    /// `gi` lifts now (`true` when there is none to probe).  The residue is
+    /// combined from the merged residues and the pending batch for this one
+    /// coefficient only.
+    fn probe(&self, gi: usize) -> bool {
+        let g = &self.groups[gi];
+        let k = self.last_fail;
+        if k >= g.residues.len() {
+            return true;
+        }
+        let (r, m) = if g.modulus == 1 {
+            (g.batch_residues[k].clone(), g.batch_modulus.clone())
+        } else if g.batch_len == 0 {
+            (g.residues[k].clone(), g.modulus.clone())
+        } else {
+            let mb = &g.batch_modulus;
+            let Ok(inv) = Integer::from(&g.modulus % mb).invert(mb) else {
+                return true;
+            };
+            let mut t = Integer::from(&g.batch_residues[k] - &g.residues[k]);
+            t *= &inv;
+            t.modulo_mut(mb);
+            t *= &g.modulus;
+            t += &g.residues[k];
+            (t, Integer::from(&g.modulus * mb))
+        };
+        lift_coefficient(&r, &m, &mut self.last_den.clone()).is_some()
     }
 
     fn crt(&mut self, gi: usize, img: &Image, pr: Prime) {
@@ -407,31 +465,13 @@ impl Lifter {
         self.groups[gi].flush();
         let g = &self.groups[gi];
         let m = &g.modulus;
-        let mut bound = Integer::from(m >> 1u32);
-        bound.sqrt_mut();
-        let half = Integer::from(m >> 1u32);
-        let m_bits = m.significant_bits();
-        let lift = |r: &Integer, den: &mut Integer| -> Option<Rational> {
-            let mut t = Integer::from(r * &*den);
-            t %= m;
-            if t > half {
-                t -= m;
-            }
-            if t.significant_bits() + 64 < m_bits {
-                return Some(Rational::from((t, den.clone())));
-            }
-            let t = if t < 0 { t + m } else { t };
-            let x = rational_reconstruction(&t, m, &bound)?;
-            let d = x.denom().clone();
-            let out = Rational::from((x.numer().clone(), Integer::from(&d * &*den)));
-            *den *= d;
-            Some(out)
-        };
+        let lift = |r: &Integer, den: &mut Integer| lift_coefficient(r, m, den);
         // The coefficient that failed last time usually fails again: try it
-        // first.  Then start from scratch: a lift that went wrong at a lower
-        // precision must not leave a spurious factor in `den`.
+        // first, with the denominator carried up to it then.  Then start from
+        // scratch: a lift that went wrong at a lower precision must not leave
+        // a spurious factor in `den`.
         if let Some(r) = g.residues.get(self.last_fail) {
-            lift(r, &mut Integer::from(1))?;
+            lift(r, &mut self.last_den.clone())?;
         }
         let mut den = Integer::from(1);
         let mut out = Vec::with_capacity(g.residues.len());
@@ -446,12 +486,40 @@ impl Lifter {
                 Some(x) => out.push(x),
                 None => {
                     self.last_fail = k;
+                    self.last_den = den;
                     return None;
                 }
             }
         }
         Some(out)
     }
+}
+
+/// Lift one residue `r` modulo `m`.  Coefficients of a Gröbner basis tend
+/// to share their denominators, so `den`, the lcm of the denominators found so
+/// far, is carried along: a coefficient `c` with `c·den` integral is
+/// recovered as the symmetric residue of `r·den` as soon as `m` exceeds
+/// `|c·den|` by 64 bits, about half the precision balanced rational
+/// reconstruction needs; otherwise rational reconstruction of `r·den`, whose
+/// denominator then joins `den`.
+fn lift_coefficient(r: &Integer, m: &Integer, den: &mut Integer) -> Option<Rational> {
+    let half = Integer::from(m >> 1u32);
+    let mut t = Integer::from(r * &*den);
+    t %= m;
+    if t > half {
+        t -= m;
+    }
+    if t.significant_bits() + 64 < m.significant_bits() {
+        return Some(Rational::from((t, den.clone())));
+    }
+    let t = if t < 0 { t + m } else { t };
+    let mut bound = half;
+    bound.sqrt_mut();
+    let x = rational_reconstruction(&t, m, &bound)?;
+    let d = x.denom().clone();
+    let out = Rational::from((x.numer().clone(), Integer::from(&d * &*den)));
+    *den *= d;
+    Some(out)
 }
 
 /// Rebuild `GbPoly`s from a shape and its coefficients.
@@ -565,21 +633,7 @@ pub(crate) fn groebner_basis(
         ints.push(int_poly(&mut table, g).ok_or(Unavailable::Fallback)?);
     }
 
-    lift_loop(
-        &mut table,
-        |t, pr| {
-            let Some(img) = image_mod_p(&ints, pr) else {
-                return Ok(None);
-            };
-            match groebner_mod_p(t, &img, pr) {
-                Ok(gb) => Ok(Some(gb)),
-                Err(Stop::Interrupted) => Err(Unavailable::Interrupted),
-                Err(Stop::Overflow) => Err(Unavailable::Fallback),
-            }
-        },
-        |cand| verify_over_q(&gens, cand, order),
-    )
-    .map(|mut b| {
+    traced_lift_loop(&mut table, &ints, |cand| verify_over_q(&gens, cand, order)).map(|mut b| {
         b.reverse();
         b
     })
@@ -594,7 +648,10 @@ pub(crate) fn groebner_basis(
 /// [`crate::budget`] and arms interrupt points if the caller had, so a long
 /// job stops on time; a trip in any worker is recorded on the calling thread.
 /// `Err(())` after such a trip.
-fn run_jobs<T: Send, R: Send>(jobs: Vec<T>, f: impl Fn(T) -> R + Sync) -> Result<Vec<R>, ()> {
+pub(crate) fn run_jobs<T: Send, R: Send>(
+    jobs: Vec<T>,
+    f: impl Fn(T) -> R + Sync,
+) -> Result<Vec<R>, ()> {
     #[cfg(feature = "parallel")]
     {
         use rayon::prelude::*;
@@ -641,7 +698,7 @@ fn run_jobs<T: Send, R: Send>(jobs: Vec<T>, f: impl Fn(T) -> R + Sync) -> Result
 }
 
 /// Primes computed side by side after the first.
-fn batch_width() -> usize {
+pub(crate) fn batch_width() -> usize {
     #[cfg(feature = "parallel")]
     {
         rayon::current_num_threads().clamp(1, 16)
@@ -720,11 +777,13 @@ fn lift_loop(
             let Some(gb) = r? else {
                 continue;
             };
-            let Some((shape, lift)) = lifter.add(Image::from_polys(gb), p) else {
+            let lifted = lifter.add(Image::from_polys(gb), p);
+            let Some((shape, lift)) = lifted else {
                 continue;
             };
             let cand = polys_from_lift(table, &shape, lift);
-            match verify(&cand) {
+            let vr = verify(&cand);
+            match vr {
                 None => return Err(Unavailable::Interrupted),
                 Some(true) => return Ok(cand),
                 Some(false) => {
@@ -733,6 +792,163 @@ fn lift_loop(
                         return Err(Unavailable::Fallback);
                     }
                     lifter.reject_candidate();
+                }
+            }
+        }
+    }
+}
+
+/// A prime and the inputs' coefficients modulo it.
+type PrimeImage = (Prime, Vec<Vec<u64>>);
+
+/// What replaying a trace modulo one prime gave.
+type Replay = Result<Vec<ModPoly>, ApplyFail>;
+
+/// Full F4 runs kept while looking for two whose shapes agree.
+const MAX_LEARN_RUNS: usize = 4;
+
+/// Consecutive primes at which a trace fails to replay before it is
+/// relearned, and relearnings before every prime gets a full run.
+const MAX_APPLY_MISMATCHES: usize = 2;
+const MAX_RELEARNS: usize = 3;
+
+/// The multimodular loop of the grevlex path, with tracing ("learn and
+/// apply", as in msolve and Groebner.jl).
+///
+/// A full F4 run modulo a prime records which rows it built and which of them
+/// reduced to something new (a [`Trace`]).  Once **two** full runs at
+/// independent random primes give the same shape, one of their traces is
+/// replayed modulo each further prime: only the rows that mattered are
+/// rebuilt and reduced, with no pair handling or symbolic preprocessing.  A
+/// replay that diverges from the learned run (a pivot vanishes, or a column
+/// the learning prime saw as zero is not) reports a mismatch; repeated
+/// mismatches, or a candidate that fails verification, send the loop back to
+/// full runs.
+///
+/// Correctness does not rest on the trace.  The images are lifted and
+/// verified over ℚ exactly as in [`lift_loop`], and the shape of every lift
+/// is one that two independent full F4 runs produced, as before.  A replay
+/// modulo `q` is the image modulo `q` of one fixed sequence of row operations
+/// over ℚ (it only divides by pivots that are non-zero modulo `q`, hence over
+/// ℚ), so each replayed element is the image of an element of the ideal.
+fn traced_lift_loop(
+    table: &mut MonoTable,
+    ints: &[IntPoly],
+    mut verify: impl FnMut(&[GbPoly]) -> Option<bool>,
+) -> Result<Vec<GbPoly>, Unavailable> {
+    let mut lifter = Lifter::new();
+    let mut failed = 0usize;
+    let mut primes = RandomPrimes::new();
+    let mut used = 0usize;
+    let mut learned: Vec<(Shape, Trace)> = Vec::new();
+    let mut trace: Option<Trace> = None;
+    let mut mismatches = 0usize;
+    let mut relearns = 0usize;
+    loop {
+        if used >= MAX_PRIMES {
+            return Err(Unavailable::Fallback);
+        }
+        if crate::budget::interrupted() {
+            return Err(Unavailable::Interrupted);
+        }
+        let mut results: Vec<(Prime, Vec<ModPoly>)> = Vec::new();
+        match &trace {
+            None => {
+                let p = primes.next().ok_or(Unavailable::Fallback)?;
+                used += 1;
+                let Some(c) = coefs_mod_p(ints, p) else {
+                    continue;
+                };
+                let (gb, tr) = match groebner_mod_p_learn(table, &full_support_images(ints, c), p) {
+                    Ok(x) => x,
+                    Err(Stop::Interrupted) => return Err(Unavailable::Interrupted),
+                    Err(Stop::Overflow) => return Err(Unavailable::Fallback),
+                };
+                if relearns <= MAX_RELEARNS {
+                    let shape: Shape = gb.iter().map(|g| g.mons.clone()).collect();
+                    if let Some(i) = learned.iter().position(|(s, _)| *s == shape) {
+                        trace = Some(learned.swap_remove(i).1);
+                        learned.clear();
+                        mismatches = 0;
+                    } else if learned.len() < MAX_LEARN_RUNS {
+                        learned.push((shape, tr));
+                    } else {
+                        // Shapes keep disagreeing: no trace; every prime
+                        // gets a full run and the majority shape lifts.
+                        relearns = MAX_RELEARNS + 1;
+                        learned.clear();
+                    }
+                }
+                results.push((p, gb));
+            }
+            Some(tr) => {
+                let batch: Vec<Prime> = primes.by_ref().take(2 * batch_width()).collect();
+                if batch.is_empty() {
+                    return Err(Unavailable::Fallback);
+                }
+                used += batch.len();
+                // Two primes per pass over the trace (see `Trace::apply2`).
+                let good: Vec<PrimeImage> = batch
+                    .into_iter()
+                    .filter_map(|p| coefs_mod_p(ints, p).map(|c| (p, c)))
+                    .collect();
+                let jobs: Vec<&[PrimeImage]> = good.chunks(2).collect();
+                let out: Vec<Option<(Prime, Replay)>> = run_jobs(jobs, |job| match job {
+                    [(p, a), (q, b)] => {
+                        let [ra, rb] = tr.apply2([a.as_slice(), b.as_slice()], [*p, *q]);
+                        vec![Some((*p, ra)), Some((*q, rb))]
+                    }
+                    [(p, a)] => vec![Some((*p, tr.apply(a, *p)))],
+                    _ => Vec::new(),
+                })
+                .map_err(|()| Unavailable::Interrupted)?
+                .into_iter()
+                .flatten()
+                .collect();
+                for r in out.into_iter().flatten() {
+                    match r {
+                        (p, Ok(gb)) => {
+                            mismatches = 0;
+                            results.push((p, gb));
+                        }
+                        (_, Err(ApplyFail::Interrupted)) => return Err(Unavailable::Interrupted),
+                        (_, Err(ApplyFail::Mismatch)) => mismatches += 1,
+                    }
+                }
+                if mismatches >= MAX_APPLY_MISMATCHES {
+                    trace = None;
+                    relearns += 1;
+                }
+            }
+        }
+        for (p, gb) in results {
+            let lifted = lifter.add(Image::from_polys(gb), p);
+            let Some((shape, lift)) = lifted else {
+                continue;
+            };
+            let fast = crate::poly::groebner::qverify::verify_lift(table, ints, &shape, &lift);
+            let cand = polys_from_lift(table, &shape, lift);
+            let vr = match fast {
+                Ok(v) => Some(v),
+                Err(Stop::Interrupted) => None,
+                // An exponent past the table's range: the term-by-term check.
+                Err(Stop::Overflow) => verify(&cand),
+            };
+            match vr {
+                None => return Err(Unavailable::Interrupted),
+                Some(true) => return Ok(cand),
+                Some(false) => {
+                    failed += 1;
+                    if failed >= MAX_FAILED_VERIFICATIONS {
+                        return Err(Unavailable::Fallback);
+                    }
+                    lifter.reject_candidate();
+                    // The trace may come from an unlucky pair of primes:
+                    // learn again.
+                    if trace.take().is_some() {
+                        relearns += 1;
+                    }
+                    learned.clear();
                 }
             }
         }
@@ -1389,6 +1605,82 @@ pub(crate) mod tests {
         }
     }
 
+    /// Replaying a learned trace modulo another prime gives exactly the
+    /// basis a full F4 run there gives.
+    #[test]
+    fn trace_replay_matches_full_runs() {
+        use crate::poly::groebner::modp::groebner_mod_p;
+        for gens in [cyclic_system(5), katsura_system(4), katsura_system(5)] {
+            let mut table = MonoTable::new(gens[0].n_vars, MonomialOrder::GRevLex);
+            let ints: Vec<IntPoly> = gens
+                .iter()
+                .map(|g| int_poly(&mut table, g).unwrap())
+                .collect();
+            let mut ps = RandomPrimes::new();
+            let p1 = ps.next().unwrap();
+            let c1 = coefs_mod_p(&ints, p1).unwrap();
+            let (gb1, trace) =
+                groebner_mod_p_learn(&mut table, &full_support_images(&ints, c1.clone()), p1)
+                    .unwrap();
+            assert_eq!(trace.apply(&c1, p1).unwrap(), gb1);
+            for _ in 0..4 {
+                let q = ps.next().unwrap();
+                let c = coefs_mod_p(&ints, q).unwrap();
+                let full =
+                    groebner_mod_p(&mut table, &full_support_images(&ints, c.clone()), q).unwrap();
+                assert_eq!(trace.apply(&c, q).unwrap(), full);
+                // Two primes in one pass give what each gives alone.
+                let [a, b] = trace.apply2([c.as_slice(), c1.as_slice()], [q, p1]);
+                assert_eq!(a.unwrap(), full);
+                assert_eq!(b.unwrap(), gb1);
+            }
+        }
+    }
+
+    /// A trace learned at a prime where a coefficient vanishes does not
+    /// replay elsewhere: the divergence is reported, not papered over.
+    #[test]
+    fn trace_from_an_unlucky_prime_reports_a_mismatch() {
+        let p = 2147483647u64;
+        // ⟨x² + p·y, x·y − 1⟩: modulo p it is the unit ideal, over ℚ it is not.
+        let f = GbPoly {
+            terms: [
+                (vec![2, 0], Rational::from(1)),
+                (vec![0, 1], Rational::from(p)),
+            ]
+            .into_iter()
+            .collect(),
+            n_vars: 2,
+        };
+        let g = GbPoly {
+            terms: [
+                (vec![1, 1], Rational::from(1)),
+                (vec![0, 0], Rational::from(-1)),
+            ]
+            .into_iter()
+            .collect(),
+            n_vars: 2,
+        };
+        let mut table = MonoTable::new(2, MonomialOrder::GRevLex);
+        let ints: Vec<IntPoly> = [f.clone(), g.clone()]
+            .iter()
+            .map(|g| int_poly(&mut table, g).unwrap())
+            .collect();
+        let bad = Prime::new(p);
+        let cb = coefs_mod_p(&ints, bad).unwrap();
+        let (gb_bad, trace) =
+            groebner_mod_p_learn(&mut table, &full_support_images(&ints, cb.clone()), bad).unwrap();
+        let q = RandomPrimes::new().find(|q| q.p != p).unwrap();
+        let c = coefs_mod_p(&ints, q).unwrap();
+        assert_eq!(trace.apply(&c, q), Err(ApplyFail::Mismatch));
+        // In a two-prime pass the diverging lane fails alone.
+        let [a, b] = trace.apply2([cb.as_slice(), c.as_slice()], [bad, q]);
+        assert_eq!(a, Ok(gb_bad));
+        assert_eq!(b, Err(ApplyFail::Mismatch));
+        // The driver still finds the basis over ℚ.
+        agrees_with_buchberger(vec![f, g]);
+    }
+
     #[test]
     fn matches_buchberger_on_benchmark_systems() {
         for n in 3..=5 {
@@ -1495,6 +1787,44 @@ pub(crate) mod tests {
             verify_over_q(&gens, &bad, MonomialOrder::GRevLex),
             Some(false)
         );
+    }
+
+    /// The table-based check agrees with the term-by-term one, both ways, on
+    /// a true basis, a basis missing an element, and a perturbed one.
+    #[test]
+    fn verify_lift_agrees_with_verify_over_q() {
+        use crate::poly::groebner::qverify::verify_lift;
+        for gens in [cyclic_system(4), cyclic_system(5), katsura_system(4)] {
+            let order = MonomialOrder::GRevLex;
+            let g = groebner_basis(&gens, order).unwrap();
+            let mut short = g.clone();
+            short.remove(short.len() / 2);
+            let mut bad = g.clone();
+            let last = bad.last_mut().unwrap();
+            let k = last.terms.keys().next().unwrap().clone();
+            *last.terms.get_mut(&k).unwrap() += 1;
+            for (cand, want) in [(g, true), (short, false), (bad, false)] {
+                assert_eq!(verify_over_q(&gens, &cand, order), Some(want));
+                let mut table = MonoTable::new(gens[0].n_vars, order);
+                let ints: Vec<IntPoly> = gens
+                    .iter()
+                    .map(|p| int_poly(&mut table, p).unwrap())
+                    .collect();
+                let mut shape: Shape = Vec::new();
+                let mut lift: Vec<Rational> = Vec::new();
+                for p in &cand {
+                    let mut terms: Vec<(u32, Rational)> = p
+                        .terms
+                        .iter()
+                        .map(|(e, c)| (table.intern_u32(e).unwrap(), c.clone()))
+                        .collect();
+                    terms.sort_by(|a, b| table.cmp(b.0, a.0));
+                    shape.push(terms.iter().map(|t| t.0).collect());
+                    lift.extend(terms.into_iter().map(|t| t.1));
+                }
+                assert_eq!(verify_lift(&mut table, &ints, &shape, &lift), Ok(want));
+            }
+        }
     }
 
     /// Every exponent vector in `n` variables of total degree at most 3.

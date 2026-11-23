@@ -82,6 +82,32 @@ pub(crate) fn update_pairs(
     pairs: &mut Vec<CriticalPair>,
     new_idx: usize,
 ) {
+    update_pairs_with(lead, sugar, pairs, new_idx, |_| true);
+}
+
+/// [`update_pairs`], forming new pairs only with the earlier elements for
+/// which `live` holds — the elements whose leading monomial no later element
+/// divides, as in Gebauer and Möller's UPDATE, where such an element leaves
+/// the basis.  A pair `(g, h)` with `lm(g′) | lm(g)` for a later `g′` is
+/// covered by the chain through `g′`: `lm(g′) | lcm(g, h)`, and the pairs
+/// `(g, g′)` and `(g′, h)` were formed (or discarded by these same criteria).
+pub(crate) fn update_pairs_live(
+    lead: &[Vec<u32>],
+    sugar: &[u32],
+    pairs: &mut Vec<CriticalPair>,
+    new_idx: usize,
+    live: impl Fn(usize) -> bool,
+) {
+    update_pairs_with(lead, sugar, pairs, new_idx, live);
+}
+
+fn update_pairs_with(
+    lead: &[Vec<u32>],
+    sugar: &[u32],
+    pairs: &mut Vec<CriticalPair>,
+    new_idx: usize,
+    live: impl Fn(usize) -> bool,
+) {
     let lh = &lead[new_idx];
     let lh_deg = total_deg(lh);
     let ecart_h = sugar[new_idx].saturating_sub(lh_deg);
@@ -96,6 +122,7 @@ pub(crate) fn update_pairs(
     }
 
     let candidates: Vec<Cand> = (0..new_idx)
+        .filter(|&g_idx| live(g_idx))
         .filter_map(|g_idx| {
             let lg = &lead[g_idx];
             if lh.iter().zip(lg.iter()).all(|(&a, &b)| a == 0 || b == 0) {
@@ -126,18 +153,25 @@ pub(crate) fn update_pairs(
     // The equality conditions prevent incorrectly discarding pairs whose
     // chain-criterion witness is itself degenerate (B&W §6.5).
     // -----------------------------------------------------------------------
+    // `p.lcm_exp` is `lcm(lead[p.i], lead[p.j])` (leads never change once
+    // pushed), so the tests below need no allocation.
+    let lcm_with_h_is = |lg: &[u32], l12: &[u32]| {
+        lg.iter()
+            .zip(lh)
+            .zip(l12)
+            .all(|((&a, &h), &l)| a.max(h) == l)
+    };
     pairs.retain(|p| {
-        let lg1 = &lead[p.i];
-        let lg2 = &lead[p.j];
-        let lcm_12 = lcm_exp(lg1, lg2);
+        let lcm_12 = &p.lcm_exp;
+        debug_assert_eq!(*lcm_12, lcm_exp(&lead[p.i], &lead[p.j]));
 
-        if !monomial_divides(lh, &lcm_12) {
+        if !monomial_divides(lh, lcm_12) {
             return true; // lm(h) doesn't divide — keep
         }
-        if lcm_exp(lg1, lh) == lcm_12 {
+        if lcm_with_h_is(&lead[p.i], lcm_12) {
             return true; // g1 is the witness — keep (pair is not truly covered)
         }
-        if lcm_exp(lg2, lh) == lcm_12 {
+        if lcm_with_h_is(&lead[p.j], lcm_12) {
             return true; // g2 is the witness — keep
         }
         false // discard: h truly subverts this pair

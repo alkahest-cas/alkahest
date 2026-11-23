@@ -17895,6 +17895,13 @@ impl PyGroebnerBasis {
     ///     :meth:`~ParametricGroebnerBasis.specialize`.  That class is
     ///     experimental; :class:`GroebnerBasis` is unchanged when ``params`` is
     ///     omitted or empty.
+    /// certify : bool, optional
+    ///     If true, a ``"grevlex"`` or ``"lex"`` basis that would be
+    ///     ``"probabilistic"`` is proved to be the basis of exactly the input
+    ///     ideal, at the cost of one more multimodular run on the homogenised
+    ///     system, and :attr:`proof_status` is ``"proved"`` (see there). A
+    ///     basis that fails the proof is recomputed exactly. Default false.
+    ///     Not supported together with ``params``.
     ///
     /// Example::
     ///
@@ -17903,17 +17910,23 @@ impl PyGroebnerBasis {
     ///     # parameters in the coefficient field
     ///     gb = alkahest.GroebnerBasis.compute([a*x - y, x + y - one], [x, y], params=[a])
     #[staticmethod]
-    #[pyo3(signature = (polys, vars, order=None, params=None))]
+    #[pyo3(signature = (polys, vars, order=None, params=None, certify=false))]
     fn compute(
         py: Python<'_>,
         polys: Vec<PyRef<PyExpr>>,
         vars: Vec<PyRef<PyExpr>>,
         order: Option<&str>,
         params: Option<Vec<PyRef<PyExpr>>>,
+        certify: bool,
     ) -> PyResult<Py<PyAny>> {
         same_pool!("GroebnerBasis.compute"; polys, vars, params);
         if let Some(params) = params {
             if !params.is_empty() {
+                if certify {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "GroebnerBasis.compute: certify is not supported with params",
+                    ));
+                }
                 let basis = PyParamGroebnerBasis::build(py, polys, vars, params, order)?;
                 return Py::new(py, basis)?.into_py_any(py);
             }
@@ -17941,9 +17954,11 @@ impl PyGroebnerBasis {
         // Budgeted: a basis stopped part-way is not a basis of anything, so a
         // trip raises `BudgetExceededError` instead of returning it.
         let inner = py
-            .detach(move || match parsed_order {
-                MonomialOrder::Lex => GroebnerBasis::try_compute_lex(gb_polys),
-                other => GroebnerBasis::try_compute(gb_polys, other),
+            .detach(move || match (parsed_order, certify) {
+                (MonomialOrder::Lex, false) => GroebnerBasis::try_compute_lex(gb_polys),
+                (MonomialOrder::Lex, true) => GroebnerBasis::try_compute_lex_certified(gb_polys),
+                (other, false) => GroebnerBasis::try_compute(gb_polys, other),
+                (other, true) => GroebnerBasis::try_compute_certified(gb_polys, other),
             })
             .map_err(budget_trip_into_py)?;
         Py::new(
@@ -18082,9 +18097,9 @@ impl PyGroebnerBasis {
     ///     *I* ⊆ ⟨B⟩. Not proved: ⟨B⟩ ⊆ *I*.
     ///
     /// Failure model for ``"probabilistic"``: since *I* ⊆ ⟨B⟩, equal leading terms
-    /// would give equal ideals, so ⟨B⟩ ≠ *I* needs a majority of the primes used
-    /// (at least two, each drawn independently from the ≈5·10⁷ primes in
-    /// [2³⁰, 2³¹)) to be unlucky in the same way. Unlucky primes divide a fixed
+    /// would give equal ideals, so ⟨B⟩ ≠ *I* needs the two primes whose full F4
+    /// runs fixed the shape of *B* (each drawn independently from the ≈5·10⁷
+    /// primes in [2³⁰, 2³¹)) to be unlucky in the same way. Unlucky primes divide a fixed
     /// non-zero integer depending only on the input, so with *k* of them the
     /// chance is of order (k / 5·10⁷)². No input can arrange it in advance, since
     /// the primes are drawn after the input is fixed.
@@ -18096,6 +18111,15 @@ impl PyGroebnerBasis {
     /// The basis ``{1}`` is ``"proved"`` by a separate homogenised run, because
     /// the check over ℚ tells it nothing. In the rare case that run is
     /// inconclusive a ``"grevlex"`` ``{1}`` stays ``"probabilistic"``.
+    ///
+    /// ``compute(..., certify=True)`` turns a ``"probabilistic"`` basis into a
+    /// ``"proved"`` one. It runs the multimodular engine once more on the
+    /// homogenised system, whose result is proved by the Hilbert-function
+    /// argument above. The dehomogenised leading monomials of that basis
+    /// generate the leading ideal of *I*, and *B* is the basis of *I* exactly
+    /// when each of its leading monomials is divisible by one of them, because
+    /// *I* ⊆ ⟨B⟩ is already proved. If that homogenised run is inconclusive the
+    /// basis stays ``"probabilistic"``.
     ///
     /// :meth:`compute_f5` and ``order="grlex"`` are proved at the cost of speed.
     /// See also :func:`alkahest.solve_proof_status`.

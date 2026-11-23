@@ -4,6 +4,12 @@
 
 ### Performance
 
+- **Gröbner bases over ℚ are 7–11× faster on one thread.** This covers `GroebnerBasis.compute(..., order="grevlex")`, and through it `"lex"` on a zero-dimensional ideal (grevlex, then FGLM) and `solve`. Single thread, best of 2, against 3.14.0: cyclic-7 takes 2.3 s (was 25.1 s), katsura-8 2.0 s (was 15.0 s), katsura-7 0.21 s (was 1.7 s) and cyclic-6 0.015 s (was 0.095 s). With all cores, cyclic-7 takes 0.94 s and katsura-8 0.68 s. Katsura-7 lex takes 31 s (was 48.5 s). The reduced bases are identical to 3.14.0's, and so is `proof_status`. The changes are all in the multimodular engine:
+  - **Learn and apply.** A full F4 run modulo a prime records which matrix rows it built and which of them reduced to something new. Once two full runs at independent random primes agree on the shape of the basis, the other primes replay one of those records, as msolve and Groebner.jl do. A replay does no pair handling and no symbolic preprocessing, and never builds the rows that reduced to zero (most of them). Two primes are replayed in one pass. A replay that diverges from the recorded run is discarded, and repeated divergence goes back to full runs.
+  - **The verification over ℚ uses F4's layout.** The exact check still runs: every input and every needed critical pair of the lifted basis must reduce to zero, so the lift is a Gröbner basis of an ideal containing the input. Symbolic preprocessing now gives every reachable monomial one reducer row and a column, and each row is reduced over ℤ in a dense accumulator. Before, the reduction worked term by term on ordered maps keyed by exponent vectors. Since every leading monomial is known in advance, Buchberger's chain criterion applies with any witness, which leaves about a quarter fewer pairs to check on katsura-8 than the Gebauer–Möller criteria.
+  - **F4 itself.** It uses the normal selection strategy and forms pairs only with elements still in the basis, as in Gebauer and Möller's UPDATE. Monomials are hashed linearly, the reducer search scans a flat list of the non-redundant leading monomials, and critical-pair updates no longer allocate.
+  - **The lift is tried at every prime.** The coefficient that stopped the last attempt is probed alone first, so a lift is no longer attempted only after the number of primes has grown by half.
+
 - **Less conversion between Alkahest's polynomials and FLINT.** `MultiPoly` keeps its terms in a `BTreeMap` of `rug::Integer`s, so every product, GCD and factorisation that FLINT computes was converted into FLINT and back, and on a large product that round trip cost more than FLINT's multiplication. Single-threaded, against python-flint (raw FLINT) on the same machine:
 
   | task | before | after | python-flint |
@@ -22,6 +28,9 @@
   - `expand` of an expression without denominators returns the cancelled sum directly instead of re-adding its monomials one at a time.
 
   Every path is pinned against the code it replaced: proptests compare products, one-term products, conversions, `RationalFunction::new` and `LazyMultiPoly` chains with the term-map arithmetic, and the univariate `factor_z` route with `fmpz_mpoly_factor`.
+### Added
+
+- `GroebnerBasis.compute(..., certify=True)` (Rust: `GroebnerBasis::compute_certified`, `try_compute_certified`, `try_compute_lex_certified`) proves a `"probabilistic"` grevlex or lex basis and reports `"proved"`. It costs one more multimodular run, on the homogenised system, whose verified result is proved. The dehomogenised leading monomials of that basis generate the leading ideal of the input ideal *I*. *I* ⊆ ⟨*B*⟩ is already verified, so *B* is the basis of *I* exactly when each of its leading monomials is divisible by one of them. A basis that fails this test was wrong and is recomputed exactly. If the homogenised run is inconclusive, the status stays `"probabilistic"`. On one thread the certified basis takes 7.5 s for cyclic-7 (2.3 s uncertified) and 4.2 s for katsura-8 (2.0 s). The default is unchanged (`certify=False`).
 
 ### Fixed
 

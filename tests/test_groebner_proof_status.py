@@ -182,3 +182,29 @@ def test_unlucky_primes_cannot_fake_an_inconsistency(ctx, n_primes):
     sols = alk.solve(polys, [x, y])
     assert len(sols) == 1
     assert Fraction(str(sols[0][x])) == Fraction(1, big_n)
+
+
+@pytest.mark.parametrize("order", ["grevlex", "lex"])
+def test_certify_proves_the_multimodular_basis(ctx, order):
+    pool, x, y = ctx
+    one = pool.integer(1)
+    polys = [x**2 + y**2 - one, x * y - one]
+    plain = alk.GroebnerBasis.compute(polys, [x, y], order=order)
+    assert plain.proof_status == "probabilistic"
+    cert = alk.GroebnerBasis.compute(polys, [x, y], order=order, certify=True)
+    assert cert.proof_status == "proved"
+    # Certifying changes the status, not the basis.
+    assert [str(g) for g in cert] == [str(g) for g in plain]
+
+
+def test_certify_keeps_a_proved_basis_and_rejects_params(ctx):
+    pool, x, y = ctx
+    gb = alk.GroebnerBasis.compute(
+        [x**2 - y**2, x * y + y**2], [x, y], order="grevlex", certify=True
+    )
+    assert gb.proof_status == "proved"
+    a = pool.symbol("a")
+    with pytest.raises(ValueError, match="certify"):
+        alk.GroebnerBasis.compute(
+            [a * x - y, x + y - pool.integer(1)], [x, y], params=[a], certify=True
+        )
