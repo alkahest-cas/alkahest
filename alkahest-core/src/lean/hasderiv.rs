@@ -797,7 +797,7 @@ impl<'a> Ctx<'a> {
                 let fact = match self.fact_by_prop.get(&prop) {
                     Some(f) => f.clone(),
                     None if m.len() == 1 => {
-                        self.have(prop, format!("fun h => {u_fact} (by simp [h])"))
+                        self.have(prop, format!("fun h => {u_fact} (by rw [h]; norm_num)"))
                     }
                     None => return Err(WITHHELD_UNSUPPORTED_NODE),
                 };
@@ -1742,6 +1742,50 @@ impl<'a> Ctx<'a> {
             if progressed {
                 continue;
             }
+            // 1b. cancel `a·a⁻¹` inside monomials: `c·m''·(a·w)ᵗ = c·m'' +
+            //     c·m''·(1 + a·w + … + (a·w)^(t-1))·(a·w - 1)`.
+            for (ri, w, u) in &inv_rels {
+                let Some(a) = single_var(u) else { continue };
+                if !cur.has_var(*w) || !cur.has_var(a) {
+                    continue;
+                }
+                let aw = Poly::var(a).mul(&Poly::var(*w))?;
+                if !cur.0.keys().any(|m| exp_of(m, a) > 0 && exp_of(m, *w) > 0) {
+                    continue;
+                }
+                let mut next = Poly::zero();
+                let mut q = Poly::zero();
+                for (m, c) in &cur.0 {
+                    let t = exp_of(m, a).min(exp_of(m, *w));
+                    if t == 0 {
+                        next.add_term(m.clone(), c.clone());
+                        continue;
+                    }
+                    let mut m2: Mono = Vec::new();
+                    for &(v, e) in m {
+                        let e2 = if v == a || v == *w { e - t } else { e };
+                        if e2 > 0 {
+                            m2.push((v, e2));
+                        }
+                    }
+                    next.add_term(m2.clone(), c.clone());
+                    let mut s_geo = Poly::zero();
+                    let mut tp = Poly::one();
+                    for _ in 0..t {
+                        s_geo = s_geo.add(&tp);
+                        tp = tp.mul(&aw)?;
+                    }
+                    let mut mono = Poly::zero();
+                    mono.add_term(m2, c.clone());
+                    q = q.add(&mono.mul(&s_geo)?);
+                }
+                cof[*ri] = cof[*ri].add(&mult.mul(&q)?);
+                cur = next;
+                progressed = true;
+            }
+            if progressed {
+                continue;
+            }
             // 2. clear the outermost inverse: with t = u·w,
             //    p = w^K·Σ cₖ u^(K-k) - (t - 1)·Σ cₖ wᵏ (1 + t + … + t^(K-k-1)).
             let vars = cur.vars();
@@ -1809,13 +1853,22 @@ impl<'a> Ctx<'a> {
                 parts.push(if e == 1 {
                     format!("{a}")
                 } else {
-                    format!("({a}) ^ {e}")
+                    format!("({a}) ^ ({e} : ℕ)")
                 });
             }
             terms.push(parts.join(" * "));
         }
         Ok(terms.join(" + "))
     }
+}
+
+/// `Some(v)` when `p` is exactly the variable `v`.
+fn single_var(p: &Poly) -> Option<u32> {
+    if p.len() != 1 {
+        return None;
+    }
+    let (m, c) = p.0.iter().next()?;
+    (m.len() == 1 && m[0].1 == 1 && *c == 1).then_some(m[0].0)
 }
 
 fn u_as_constant(u: &Poly) -> Option<Rational> {
