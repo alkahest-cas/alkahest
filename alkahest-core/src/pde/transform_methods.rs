@@ -647,6 +647,50 @@ fn merge_exps(e: ExprId, pool: &ExprPool) -> ExprId {
     pool.mul(rest)
 }
 
+/// The sign of `e` when every free parameter is taken positive (`k > 0`,
+/// `c > 0`): what the textbook problem assumes.  The caller records the
+/// resulting inequality as a side condition.
+fn sign_assuming_positive(e: ExprId, pool: &ExprPool) -> super::sturm_liouville::Sgn {
+    let mut m = std::collections::HashMap::new();
+    for sym in super::jet::symbols_of(e, pool) {
+        if let ExprData::Symbol { name, domain, .. } = pool.get(sym) {
+            if domain != Domain::Positive && name != "pi" {
+                m.insert(sym, pool.symbol(name, Domain::Positive));
+            }
+        }
+    }
+    super::sturm_liouville::sign(crate::kernel::subs::subs(e, &m, pool), pool)
+}
+
+/// `Positive` twins of the free symbols of `exprs` other than `keep` (and
+/// `π`): the forward and backward maps.
+fn positive_twins(
+    exprs: &[ExprId],
+    keep: &[ExprId],
+    pool: &ExprPool,
+) -> (
+    std::collections::HashMap<ExprId, ExprId>,
+    std::collections::HashMap<ExprId, ExprId>,
+) {
+    let mut fwd = std::collections::HashMap::new();
+    let mut back = std::collections::HashMap::new();
+    for &e in exprs {
+        for sym in super::jet::symbols_of(e, pool) {
+            if keep.contains(&sym) {
+                continue;
+            }
+            if let ExprData::Symbol { name, domain, .. } = pool.get(sym) {
+                if domain != Domain::Positive && name != "pi" {
+                    let tw = pool.symbol(name, Domain::Positive);
+                    fwd.insert(sym, tw);
+                    back.insert(tw, sym);
+                }
+            }
+        }
+    }
+    (fwd, back)
+}
+
 /// `exp(r·v)` basis element → `r`.
 fn exponent_rate(y: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
     let r = simp(
@@ -776,13 +820,12 @@ fn shift_form(h: ExprId, xi: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId,
         return None;
     }
     let mut b = b;
-    match super::sturm_liouville::sign(kappa, pool) {
-        super::sturm_liouville::Sgn::Pos => {}
-        super::sturm_liouville::Sgn::Neg => {
-            kappa = simp(neg(kappa, pool), pool);
-            b = simp(neg(b, pool), pool);
-        }
-        _ => return None,
+    // cos(κξ) and sin(κξ)/ξ are even in κ and odd in κ respectively, and the
+    // inverse below (an average of shifts, a signed ∫_{x−d}^{x+d}) is valid
+    // for either sign of d = κ/2π; normalise only when the sign is known.
+    if super::sturm_liouville::sign(kappa, pool) == super::sturm_liouville::Sgn::Neg {
+        kappa = simp(neg(kappa, pool), pool);
+        b = simp(neg(b, pool), pool);
     }
     let dd = simp(
         pool.mul(vec![
@@ -890,7 +933,27 @@ fn fourier_inner(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolut
                 "the bounded solution is not e^{−c|ξ|t}; give a second initial condition".into(),
             ));
         }
-        let mag = match super::sturm_liouville::sign(rho, pool) {
+        let rho = simp(expand_positive_powers(rho, pool), pool);
+        let sg = match super::sturm_liouville::sign(rho, pool) {
+            super::sturm_liouville::Sgn::Unknown => {
+                let g = sign_assuming_positive(rho, pool);
+                if matches!(
+                    g,
+                    super::sturm_liouville::Sgn::Pos | super::sturm_liouville::Sgn::Neg
+                ) {
+                    side.push(pool.pred_ne(rho, pool.integer(0)));
+                    let a = if g == super::sturm_liouville::Sgn::Pos {
+                        rho
+                    } else {
+                        neg(rho, pool)
+                    };
+                    side.push(pool.pred_gt(simp(a, pool), pool.integer(0)));
+                }
+                g
+            }
+            g => g,
+        };
+        let mag = match sg {
             super::sturm_liouville::Sgn::Pos => rho,
             super::sturm_liouville::Sgn::Neg => simp(neg(rho, pool), pool),
             _ => {
@@ -1071,7 +1134,7 @@ fn fourier_inner(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolut
         transformed,
         xi,
         checks,
-        side.drain(..).collect(),
+        side,
         notes,
         pool,
     )
@@ -1158,7 +1221,10 @@ fn invert_fourier(
         });
     }
     if let Ok(k) = crate::transform::inverse_fourier_transform(h, xi, x, pool) {
-        return Ok(Inverse::Kernel(simp(k, pool)));
+        return Ok(Inverse::Kernel(simp(
+            expand_positive_powers(simp(k, pool), pool),
+            pool,
+        )));
     }
     Ok(Inverse::Spectral)
 }
@@ -1465,6 +1531,8 @@ fn laplace_inner(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolut
     let inp = to_ode(lt, big, xslot, x, pool)?;
     let (basis, mut notes) = solve_ode(&inp, pool)?;
     // Keep the solutions decaying as x → ∞.
+    let mut side: Vec<ExprId> = Vec::new();
+    let mut assumed = false;
     let mut kept = Vec::new();
     for &y in &basis {
         let r = exponent_rate(y, x, pool).ok_or_else(|| {
@@ -1473,15 +1541,26 @@ fn laplace_inner(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolut
                 pool.display(y)
             ))
         })?;
+        let r = simp(expand_positive_powers(r, pool), pool);
         match super::sturm_liouville::sign(r, pool) {
             super::sturm_liouville::Sgn::Neg => kept.push(y),
             super::sturm_liouville::Sgn::Pos => {}
-            _ => {
-                return Err(PdeError::TransformOde(format!(
-                    "cannot decide whether e^({}·x) decays",
-                    pool.display(r)
-                )))
-            }
+            _ => match sign_assuming_positive(r, pool) {
+                // Decided with the parameters positive: keep the textbook
+                // choice and record the inequality it rests on.
+                super::sturm_liouville::Sgn::Neg => {
+                    side.push(pool.pred_lt(r, pool.integer(0)));
+                    assumed = true;
+                    kept.push(y);
+                }
+                super::sturm_liouville::Sgn::Pos => {}
+                _ => {
+                    return Err(PdeError::TransformOde(format!(
+                        "cannot decide whether e^({}·x) decays",
+                        pool.display(r)
+                    )))
+                }
+            },
         }
     }
     if kept.len() != data_bc.len() {
@@ -1531,18 +1610,37 @@ fn laplace_inner(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolut
         status: zstatus(r, pool),
     });
     let tau = fresh_symbol("tau", Domain::Positive, &avoid, pool);
+    // Where the decaying root was chosen with the parameters positive, invert
+    // with them positive (√(c²s²) = c s) and map the answer back; the answer
+    // is verified with the original symbols.
+    let (fwd, back) = if assumed {
+        positive_twins(&[h], &[x, t, sv], pool)
+    } else {
+        Default::default()
+    };
+    let h = if assumed {
+        simp(
+            expand_positive_powers(simp(crate::kernel::subs::subs(h, &fwd, pool), pool), pool),
+            pool,
+        )
+    } else {
+        h
+    };
+    let gl = gl.map(|e| crate::kernel::subs::subs(e, &fwd, pool));
+    let unmap = |e: ExprId| simp(crate::kernel::subs::subs(e, &back, pool), pool);
     // 1. closed via the table on H·G.
     if let Some(gl) = gl {
         if let Some(v) = laplace_table(pool.mul(vec![h, gl]), sv, t, pool).or_else(|| {
             crate::transform::inverse_laplace_transform(pool.mul(vec![h, gl]), sv, t, pool).ok()
         }) {
+            let v = unmap(v);
             return finish_half_line(
                 problem,
                 &s,
                 x,
                 t,
                 v,
-                Vec::new(),
+                side,
                 transformed,
                 sv,
                 checks,
@@ -1553,6 +1651,7 @@ fn laplace_inner(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolut
     }
     // 2. a pure delay H = e^{−as}: u = g(t − a)·θ(t − a) for any g.
     if let Some(a) = pure_delay(h, sv, pool) {
+        let a = unmap(a);
         let shifted = sub(t, a, pool);
         let v = simp(
             pool.mul(vec![
@@ -1566,7 +1665,7 @@ fn laplace_inner(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolut
             pool.display(subs1(g, t, pool.integer(0), pool)),
             pool.display(a)
         ));
-        return retarded(
+        let mut r = retarded(
             problem,
             &s,
             x,
@@ -1579,7 +1678,9 @@ fn laplace_inner(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolut
             checks,
             notes,
             pool,
-        );
+        )?;
+        r.side_conditions.extend(side);
+        return Ok(r);
     }
     // 3. Duhamel: u = ∫₀ᵗ K(x, t − τ) g(τ) dτ, K = L⁻¹{H}.
     let kern = laplace_table(h, sv, t, pool).ok_or_else(|| {
@@ -1588,6 +1689,7 @@ fn laplace_inner(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolut
             pool.display(h)
         ))
     })?;
+    let kern = unmap(kern);
     let st = verify_solution(&[s.eq], &[s.u], &[kern], &[], pool)?;
     checks.push(TransformCheck {
         what: "kernel_pde",
@@ -1616,7 +1718,7 @@ fn laplace_inner(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolut
         transformed,
         sv,
         checks,
-        Vec::new(),
+        side,
         notes,
         pool,
     )
@@ -1770,11 +1872,15 @@ fn finish_half_line(
                 e = d(e, s.indep[j], pool)?;
             }
         }
-        // On the half-line x > 0: take the limit with x a positive symbol.
-        let xp = fresh_symbol("__tm_xpos", Domain::Positive, &[e, dt.rhs], pool);
-        let e = subs1(e, x, xp, pool);
+        // On the half-line x > 0, with the parameters positive (the side
+        // conditions the solution already carries): take the limit t → 0⁺.
+        let (fwd, _) = positive_twins(&[e, dt.rhs], &[t], pool);
+        let e = crate::kernel::subs::subs(e, &fwd, pool);
         let st = match limit(e, t, pool.integer(0), LimitDirection::Plus, pool) {
-            Ok(l) => zstatus(sub(l, subs1(dt.rhs, x, xp, pool), pool), pool),
+            Ok(l) => zstatus(
+                sub(l, crate::kernel::subs::subs(dt.rhs, &fwd, pool), pool),
+                pool,
+            ),
             Err(_) => ZeroStatus::Unknown,
         };
         checks.push(TransformCheck {
@@ -2014,7 +2120,7 @@ fn image_inner(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolutio
                 pool.display(h)
             ))
         })?;
-        let kern = simp(kern, pool);
+        let kern = simp(expand_positive_powers(simp(kern, pool), pool), pool);
         let image = simp(
             pool.add(vec![
                 subs1(kern, x, sub(x, sv, pool), pool),

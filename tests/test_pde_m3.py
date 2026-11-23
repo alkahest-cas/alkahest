@@ -254,7 +254,10 @@ def test_transform_corpus(entry):
         and ref[0] == "closed"
         and "Integral" not in str(sol.value)
     ):
-        want = _wl_numbers(ref[1])
+        try:
+            want = _wl_numbers(ref[1])
+        except NameError:  # the reference is in the symbolic data (g[0.4])
+            want = []
         for (px, pt), w in zip([(0.3, 0.7), (1.1, 0.2)], want):
             got = _value_at(pool, sol.value, x, t, px, pt)
             if isinstance(w, (int, float, complex)) and got is not None:
