@@ -40,7 +40,10 @@
 //!   (M1: first-order linear / semilinear / quasilinear equations by
 //!   characteristics, Cauchy problems, complete integrals); every answer is
 //!   verified, codes `E-PDE-050 … E-PDE-099`.
-//! * [`error`] — [`PdeError`], codes `E-PDE-001 … E-PDE-049` (M0).
+//! * [`second_order`] — milestone M2: canonical forms, factored
+//!   constant-coefficient operators, d'Alembert, the Laplace cascade
+//!   (codes `E-PDE-100 … E-PDE-149`).
+//! * [`error`] — [`PdeError`], codes `E-PDE-001 … E-PDE-049` (M0), `050 … 099` (M1), `100 … 149` (M2).
 
 pub mod classify;
 pub mod error;
@@ -49,6 +52,7 @@ pub(crate) mod numeric;
 pub mod problem;
 pub mod root_family;
 pub mod solve;
+pub mod second_order;
 pub mod sum;
 pub mod transform;
 pub mod verify;
@@ -65,6 +69,11 @@ pub use root_family::{
 };
 pub use solve::{
     pdsolve, pdsolve_all, pdsolve_hints, PdeSolution, PdeSolutionKind, PdsolveOptions, Tier, TIERS,
+};
+pub use second_order::{
+    canonical_form, canonical_forms, laplace_cascade, laplace_invariants, solve_second_order,
+    solve_second_order_with, CanonicalForm, SecondOrderOptions, SecondOrderSolution,
+    DEFAULT_CASCADE_STEPS,
 };
 pub use sum::{
     alpha_normalize, coefficient, expand_finite_sums, expand_sum, indexed, indexed_parts,

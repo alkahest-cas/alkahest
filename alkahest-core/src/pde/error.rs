@@ -95,6 +95,34 @@ pub enum PdeError {
     /// impose: a condition on a derivative, data on a manifold of the wrong
     /// dimension, or parameters that could not be eliminated.
     CauchyUnsupported(String),
+    /// `E-PDE-100` — the second-order solvers need a linear equation of
+    /// order two in exactly two independent variables.
+    NotSecondOrderLinear2D(String),
+    /// `E-PDE-101` — no first integral of a characteristic ODE was found in
+    /// closed form, or the characteristic coordinates did not reduce the
+    /// principal part.
+    CharacteristicsNotIntegrated(String),
+    /// `E-PDE-102` — the type is not the same on the whole plane (mixed or
+    /// undetermined): a canonical form exists only region by region.
+    TypeNotUniform(String),
+    /// `E-PDE-103` — the Laplace cascade spent its step budget without an
+    /// invariant vanishing (termination has no a priori bound).
+    LaplaceBudgetExhausted(String),
+    /// `E-PDE-104` — no implemented method gives a closed-form solution.
+    NoClosedForm(String),
+    /// `E-PDE-105` — a candidate solution was produced but substitution did
+    /// not prove it; it is withheld.
+    SecondOrderNotVerified(String),
+    /// `E-PDE-106` — the solution would need a quadrature of an arbitrary
+    /// function (or of a coefficient) that has no closed form.
+    QuadratureOfArbitraryFunction(String),
+    /// `E-PDE-107` — the conditions are not Cauchy data the second-order
+    /// solver handles (`u(x, y₀) = f`, `u_y(x, y₀) = g`), or the data line is
+    /// characteristic, or `∫ g` does not close.
+    CauchyDataUnsupported(String),
+    /// `E-PDE-108` — the Laplace cascade needs `u_xy + a u_x + b u_y + c u = s`
+    /// (principal part a multiple of `u_xy`).
+    NotLaplaceForm(String),
 }
 
 impl fmt::Display for PdeError {
@@ -124,6 +152,15 @@ impl fmt::Display for PdeError {
             PdeError::NoVerifiedSolution(d) => ("no verified solution", d),
             PdeError::CharacteristicData(d) => ("Cauchy data on a characteristic", d),
             PdeError::CauchyUnsupported(d) => ("unsupported Cauchy data", d),
+            PdeError::NotSecondOrderLinear2D(d) => ("not a linear second-order equation in two variables", d),
+            PdeError::CharacteristicsNotIntegrated(d) => ("characteristics not integrated", d),
+            PdeError::TypeNotUniform(d) => ("type not uniform", d),
+            PdeError::LaplaceBudgetExhausted(d) => ("Laplace cascade budget exhausted", d),
+            PdeError::NoClosedForm(d) => ("no closed-form solution found", d),
+            PdeError::SecondOrderNotVerified(d) => ("candidate not verified", d),
+            PdeError::QuadratureOfArbitraryFunction(d) => ("quadrature has no closed form", d),
+            PdeError::CauchyDataUnsupported(d) => ("Cauchy data unsupported", d),
+            PdeError::NotLaplaceForm(d) => ("not in Laplace form", d),
         };
         write!(f, "{what}: {d}")
     }
@@ -158,6 +195,15 @@ impl AlkahestError for PdeError {
             PdeError::NoVerifiedSolution(_) => "E-PDE-051",
             PdeError::CharacteristicData(_) => "E-PDE-052",
             PdeError::CauchyUnsupported(_) => "E-PDE-053",
+            PdeError::NotSecondOrderLinear2D(_) => "E-PDE-100",
+            PdeError::CharacteristicsNotIntegrated(_) => "E-PDE-101",
+            PdeError::TypeNotUniform(_) => "E-PDE-102",
+            PdeError::LaplaceBudgetExhausted(_) => "E-PDE-103",
+            PdeError::NoClosedForm(_) => "E-PDE-104",
+            PdeError::SecondOrderNotVerified(_) => "E-PDE-105",
+            PdeError::QuadratureOfArbitraryFunction(_) => "E-PDE-106",
+            PdeError::CauchyDataUnsupported(_) => "E-PDE-107",
+            PdeError::NotLaplaceForm(_) => "E-PDE-108",
         }
     }
 
