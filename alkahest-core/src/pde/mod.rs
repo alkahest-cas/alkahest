@@ -36,7 +36,11 @@
 //!   transcendental equation, with certified ball-arithmetic enclosures.
 //! * [`transform`] — `laplace_transform` / `fourier_transform` of unknowns and
 //!   their derivatives (`s^k U − …` with initial values, `(2πiξ)^k û`).
-//! * [`error`] — [`PdeError`], codes `E-PDE-001 … E-PDE-049`.
+//! * [`solve`] — [`pdsolve`]: the solver, a dispatcher over method tiers
+//!   (M1: first-order linear / semilinear / quasilinear equations by
+//!   characteristics, Cauchy problems, complete integrals); every answer is
+//!   verified, codes `E-PDE-050 … E-PDE-099`.
+//! * [`error`] — [`PdeError`], codes `E-PDE-001 … E-PDE-049` (M0).
 
 pub mod classify;
 pub mod error;
@@ -44,6 +48,7 @@ pub mod jet;
 pub(crate) mod numeric;
 pub mod problem;
 pub mod root_family;
+pub mod solve;
 pub mod sum;
 pub mod transform;
 pub mod verify;
@@ -57,6 +62,9 @@ pub use jet::{
 pub use problem::{ArbitraryFunctions, ConditionKind, PdeCondition, PdeDomain, PdeProblem};
 pub use root_family::{
     member, root_family_enclosure, root_family_parts, root_of_family, ROOT_OF_FAMILY,
+};
+pub use solve::{
+    pdsolve, pdsolve_all, pdsolve_hints, PdeSolution, PdeSolutionKind, PdsolveOptions, Tier, TIERS,
 };
 pub use sum::{
     alpha_normalize, coefficient, expand_finite_sums, expand_sum, indexed, indexed_parts,
