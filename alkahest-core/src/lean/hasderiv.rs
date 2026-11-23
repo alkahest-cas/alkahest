@@ -76,6 +76,7 @@ pub const WITHHELD_TOO_LARGE: IntegrationCertWithheld = "withheld_certificate_to
 
 const MAX_TERMS: usize = 6_000;
 const MAX_SRC_BYTES: usize = 250_000;
+const MAX_COMBINATION_BYTES: usize = 36_000;
 const MAX_ROUNDS: usize = 400;
 
 // ===========================================================================
@@ -2183,6 +2184,11 @@ pub fn emit_integration_hasderiv_cert(
     } else {
         format!(" {}", lc_terms.join(" + "))
     };
+    // `ring1`'s cost grows with the combination; past this size it can run
+    // for minutes, so withhold rather than hand out a slow certificate.
+    if combo.len() > MAX_COMBINATION_BYTES {
+        return Err(WITHHELD_TOO_LARGE);
+    }
     body.push_str("  refine hd.congr_deriv ?_\n");
     if !cx.goal_rw.is_empty() {
         let names: Vec<&str> = cx.goal_rw.iter().map(|g| g.0.as_str()).collect();
@@ -2197,7 +2203,7 @@ pub fn emit_integration_hasderiv_cert(
          -- Certified via the derivative relation on the domain given by the hypotheses:\n\
          -- HasDerivAt (fun {x} => F) f {x}.\n\
          set_option linter.unusedVariables false in\n\
-         set_option maxHeartbeats 2000000 in\n\
+         set_option maxHeartbeats 4000000 in\n\
          theorem alkahest_integral {binders} :\n    \
          HasDerivAt (fun ({x} : ℝ) => {big_f}) ({small_f}) {x} := by\n{body}",
         hasderiv_header()

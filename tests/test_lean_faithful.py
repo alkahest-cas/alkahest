@@ -44,7 +44,8 @@ _FUNCS = {
     "Real.cos": "math.cos",
     "Real.tan": "math.tan",
     "Real.exp": "math.exp",
-    "Real.log": "math.log",
+    # Mathlib's `Real.log x` is `log |x|` (and `log 0 = 0`).
+    "Real.log": "_real_log",
     "Real.sqrt": "math.sqrt",
     "Real.arctan": "math.atan",
     "Real.arcsin": "math.asin",
@@ -94,8 +95,12 @@ def lean_to_py(term: str) -> str:
     return s
 
 
+def _real_log(v: float) -> float:
+    return math.log(abs(v)) if v != 0 else 0.0
+
+
 def py_eval(term: str, env: dict[str, float]) -> float:
-    ns = {"math": math, "pi": math.pi}
+    ns = {"math": math, "pi": math.pi, "_real_log": _real_log}
     ns.update(env)
     return float(eval(lean_to_py(term), ns))  # test-only: evaluates emitted text
 
@@ -508,7 +513,7 @@ def test_withheld_results_raise_never_empty():
     x = pool.symbol("x")
     for obj in (
         ak.simplify(x**2),  # nothing derived
-        ak.integrate(x * ak.exp(x**2), x),  # outside the FTC fragment
+        ak.integrate(ak.exp(-(x**2)), x),  # erf answer: no Mathlib derivative lemma
         ak.limit(ak.sin(pool.symbol("y") * x) / x, x, pool.integer(0)),
     ):
         assert obj.certificate is None

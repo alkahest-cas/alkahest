@@ -2196,10 +2196,10 @@
         "pow_base": "none",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 1,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
@@ -2219,10 +2219,10 @@
         "pow_base": "var",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 1,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
@@ -2338,10 +2338,10 @@
         "pow_base": "expr",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 1,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
@@ -2361,10 +2361,10 @@
         "pow_base": "expr",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 5,
+        "certified": 5,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
@@ -2386,10 +2386,10 @@
         "pow_base": "one_plus_sq",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 1,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
@@ -2455,10 +2455,10 @@
         "pow_base": "expr",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 2,
+        "certified": 2,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
@@ -2596,10 +2596,10 @@
         "pow_base": "none",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 1,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
@@ -2642,10 +2642,10 @@
         "pow_base": "expr",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 1,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
@@ -2688,10 +2688,10 @@
         "pow_base": "var",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 1,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
@@ -2757,10 +2757,10 @@
         "pow_base": "none",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 1,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
@@ -2826,10 +2826,10 @@
         "pow_base": "none",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 1,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
@@ -2918,10 +2918,10 @@
         "pow_base": "expr",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 2,
+        "certified": 2,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
@@ -2942,10 +2942,10 @@
         "pow_base": "expr",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 2,
+        "certified": 2,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],

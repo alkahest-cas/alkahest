@@ -28,6 +28,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lean_integrate_corpus import INTEGRANDS, certificates  # noqa: E402
 from test_lean_faithful import (  # noqa: E402
+    _hyp_holds,
+    binder_names,
     close,
     parse_hasderiv,
     py_eval,
@@ -40,7 +42,7 @@ _RESULTS = list(certificates())
 
 def _value(expr, env):
     x = ak.symbol("x")
-    return float(ak.evaluate(expr, {x: env["x"]}, mode="f64").value)
+    return complex(ak.eval_expr(expr, {x: env["x"]})).real
 
 
 @pytest.mark.parametrize(("src", "result"), _RESULTS, ids=[s for s, _ in _RESULTS])
@@ -62,15 +64,29 @@ def test_statement_is_the_returned_antiderivative(src, result):
     var, body, deriv, point = parsed
     assert var == point == "x"
     rng = random.Random(7)
-    for _ in range(4):
-        env = sample_env(binders, rng)
-        # The function is the returned F, the derivative the integrand.
-        assert close(py_eval(body, env), _value(result.value, env), 1e-8), (src, body)
+    hyps = binder_names(binders)[1]
+    compared = 0
+    for attempt in range(400):
+        env = sample_env(binders, rng) if attempt % 2 == 0 else {"x": rng.uniform(-6.0, 6.0)}
+        if not all(_hyp_holds(h, env) for h in hyps):
+            continue
+        # The function is the returned F (where the returned value is real:
+        # Mathlib's `Real.log` is `log |·|`, Alkahest's `log` is complex).
+        try:
+            want = _value(result.value, env)
+        except ak.DomainError:
+            want = None
+        if want is not None:
+            assert close(py_eval(body, env), want, 1e-8), (src, body)
+            compared += 1
         h = 1e-6
         num = (py_eval(body, {**env, "x": env["x"] + h}) - py_eval(body, {**env, "x": env["x"] - h})) / (
             2 * h
         )
         assert close(num, py_eval(deriv, env), 1e-4), (src, goal)
+        if compared >= 4:
+            break
+    assert compared, f"{src}: no sample point where the returned value is real"
 
 
 def test_most_of_the_corpus_is_certified():
