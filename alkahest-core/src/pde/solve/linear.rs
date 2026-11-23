@@ -10,7 +10,7 @@ use crate::simplify::assumptions::AssumptionContext;
 use super::cauchy::GeneralForm;
 use super::integrals::{IntegralSearch, VectorField};
 use super::util::*;
-use super::{Candidate, Ctx, PdeSolutionKind};
+use super::{tidy, Candidate, Ctx, PdeSolutionKind};
 
 /// Indices of the variables, simplest coefficient first (a number before a
 /// symbol before an expression).
@@ -143,14 +143,27 @@ pub(crate) fn solve_linear(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> {
         let fname = ctx.arb.fresh_name();
         let fapp = pool.func(fname.clone(), integrals.clone());
         // Quadrature when the reduced ODE does not involve u.
-        let branches: Vec<(SolutionForm, ExprId)> = if !contains(rhs, ctx.w, pool) {
-            match integrate(rhs, zk, pool) {
-                Some(q) => {
-                    let c1 = ctx.fresh_internal(pool);
-                    vec![(SolutionForm::Explicit(pool.add(vec![q, c1])), c1)]
-                }
-                None => continue,
-            }
+        let linear_in_u = d(rhs, ctx.w, pool).filter(|&al| !contains(al, ctx.w, pool));
+        let branches: Vec<(SolutionForm, ExprId)> = if let Some(al) = linear_in_u {
+            // u' = a u + b: u = exp(A) (C + integral of b exp(-A)), A the
+            // antiderivative of a, with the quadratures done here (by parts
+            // where the integrator alone declines).
+            let beta = simp(subs1(rhs, ctx.w, pool.integer(0), pool), pool);
+            let Some(ia) = integrate(al, zk, pool) else {
+                continue;
+            };
+            let mu = tidy(simp(pool.func("exp", vec![neg(ia, pool)]), pool), pool);
+            let Some(ib) = integrate(pool.mul(vec![beta, mu]), zk, pool) else {
+                ctx.fail(format!(
+                    "first_order_linear: the quadrature of {} in {} did not close",
+                    pool.display(pool.mul(vec![beta, mu])),
+                    pool.display(zk)
+                ));
+                continue;
+            };
+            let c1 = ctx.fresh_internal(pool);
+            let y = pool.mul(vec![pool.func("exp", vec![ia]), pool.add(vec![ib, c1])]);
+            vec![(SolutionForm::Explicit(y), c1)]
         } else {
             let (input, wp) = OdeInput::first_order(zk, ctx.w, pool);
             let input = input.with_equation(sub(wp, rhs, pool));

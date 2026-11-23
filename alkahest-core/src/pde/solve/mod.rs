@@ -560,7 +560,7 @@ fn finalize(
 /// Cosmetic clean-up of an answer before verification (which sees the
 /// cleaned form, so nothing here needs to be trusted): `exp(c·log a) → a^c`,
 /// `log(exp a) → a`.
-fn tidy(e: ExprId, pool: &ExprPool) -> ExprId {
+pub(crate) fn tidy(e: ExprId, pool: &ExprPool) -> ExprId {
     use crate::kernel::ExprData;
     const ELEMENTARY: &[&str] = &[
         "exp", "sin", "cos", "tan", "sinh", "cosh", "tanh", "asin", "acos", "atan",

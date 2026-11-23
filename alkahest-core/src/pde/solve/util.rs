@@ -332,6 +332,10 @@ pub(crate) fn isolate_one(eq: ExprId, v: ExprId, pool: &ExprPool) -> Option<Expr
 /// `∫ e dv` (no constant) through the verified integrator; `None` on any
 /// refusal.  A free-of-`v` integrand is done directly.
 pub(crate) fn integrate(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    integrate_depth(e, v, 2, pool)
+}
+
+fn integrate_depth(e: ExprId, v: ExprId, depth: u32, pool: &ExprPool) -> Option<ExprId> {
     let e = simp(e, pool);
     if e == pool.integer(0) {
         return Some(e);
@@ -342,10 +346,34 @@ pub(crate) fn integrate(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId>
     if has_undefined(e, pool) {
         return None;
     }
-    if let Ok(r) = crate::integrate::integrate(e, v, pool) {
-        let val = r.value;
-        if !names_in(&[val], pool).contains("Integral") {
-            return Some(simp(val, pool));
+    if let Some(r) = integrate_core(e, v, pool) {
+        return Some(r);
+    }
+    // The same integrand cleaned (`exp(c·log a) → a^c`, function arguments
+    // expanded), then expanded into a sum of terms.
+    let t = super::tidy(e, pool);
+    if t != e {
+        if let Some(r) = integrate_core(t, v, pool) {
+            return Some(r);
+        }
+    }
+    if depth > 0 && pool.depth(t) < 14 {
+        let ex = crate::simplify::engine::simplify_expanded(t, pool).value;
+        if ex != t && ex != e {
+            if let ExprData::Add(_) = pool.get(ex) {
+                if let Some(r) = integrate_depth(ex, v, depth - 1, pool) {
+                    return Some(r);
+                }
+            }
+        }
+        if let Some(r) = exp_substitution(t, v, pool) {
+            return Some(r);
+        }
+        let tc = rewrite_tan(t, pool);
+        if tc != t {
+            if let Some(r) = integrate_core(simp(tc, pool), v, pool) {
+                return Some(r);
+            }
         }
     }
     // Term by term, and `∫ c·(a v + b)^n dv` directly (the integrator can
@@ -354,9 +382,14 @@ pub(crate) fn integrate(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId>
     if let ExprData::Add(xs) = pool.get(e) {
         let mut parts = Vec::new();
         for x in xs {
-            parts.push(integrate(x, v, pool)?);
+            parts.push(integrate_depth(x, v, depth, pool)?);
         }
         return Some(simp(pool.add(parts), pool));
+    }
+    if depth > 0 {
+        if let Some(r) = by_parts(e, v, depth, pool) {
+            return Some(r);
+        }
     }
     let (coef, core) = match pool.get(e) {
         ExprData::Mul(xs) => {
@@ -385,6 +418,169 @@ pub(crate) fn integrate(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId>
     }
     let r = div(pool.pow(base, n1), pool.mul(vec![a, n1]), pool);
     Some(simp(pool.mul(vec![coef, r]), pool))
+}
+
+fn integrate_core(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let r = crate::integrate::integrate(e, v, pool).ok()?;
+    let val = r.value;
+    if names_in(&[val], pool).contains("Integral") {
+        return None;
+    }
+    Some(simp(val, pool))
+}
+
+/// `∫ R(e^{λv}) dv` with `t = e^{λv}`: hyperbolic functions are rewritten
+/// through `exp`, every exponential of `v` must be `e^{(rλ)v + c}` with a
+/// rational `r`, and the integrand becomes `R(t)/(λ t)` in `t`.  The
+/// integrator often declines the original form when `λ` is symbolic
+/// (`∫ dy/sinh(μy)`); the answer is verified by every caller.
+fn exp_substitution(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let e = rewrite_hyperbolic(e, v, pool);
+    let e = super::tidy(e, pool);
+    // Exponential nodes in v.
+    let mut nodes = Vec::new();
+    let mut seen = HashSet::new();
+    let mut stack = vec![e];
+    while let Some(n) = stack.pop() {
+        if !seen.insert(n) {
+            continue;
+        }
+        let is_exp = pool.with(n, |d| {
+            matches!(d, ExprData::Func { name, args } if name == "exp" && args.len() == 1)
+        });
+        if is_exp && contains(n, v, pool) {
+            nodes.push(n);
+            continue;
+        }
+        push_children(n, pool, &mut stack);
+    }
+    if nodes.is_empty() {
+        return None;
+    }
+    let arg_of = |n: ExprId| match pool.get(n) {
+        ExprData::Func { args, .. } => args[0],
+        _ => n,
+    };
+    let lam = d(arg_of(nodes[0]), v, pool)?;
+    if contains(lam, v, pool) || is_zero(lam, pool) {
+        return None;
+    }
+    let mut taken = names_in(&[e], pool);
+    let t = loop {
+        let name = format!("__pde_t{}", taken.len());
+        if taken.insert(name.clone()) {
+            break pool.symbol(name, crate::kernel::Domain::Positive);
+        }
+    };
+    let mut m = HashMap::new();
+    for &n in &nodes {
+        let a = arg_of(n);
+        let ai = d(a, v, pool)?;
+        let r = simp(div(ai, lam, pool), pool);
+        let q = as_rational(r, pool)?;
+        if q.denom() != &1u32 || q.numer().clone().abs() > 6 {
+            return None;
+        }
+        let rest = simp(sub(a, pool.mul(vec![ai, v]), pool), pool);
+        if contains(rest, v, pool) {
+            return None;
+        }
+        let tp = pool.pow(t, pool.integer(q.numer().to_i64()?));
+        let repl = if rest == pool.integer(0) {
+            tp
+        } else {
+            pool.mul(vec![pool.func("exp", vec![rest]), tp])
+        };
+        m.insert(n, repl);
+    }
+    let et = simp(subs_map(e, &m, pool), pool);
+    if contains(et, v, pool) {
+        return None;
+    }
+    let integrand = div(et, pool.mul(vec![lam, t]), pool);
+    let it = integrate_core(simp(integrand, pool), t, pool)?;
+    let back = pool.func("exp", vec![pool.mul(vec![lam, v])]);
+    Some(simp(subs1(it, t, back, pool), pool))
+}
+
+/// `tan → sin/cos` (so `1/tan` is `cos/sin`), for the integrator.
+fn rewrite_tan(e: ExprId, pool: &ExprPool) -> ExprId {
+    match pool.get(e) {
+        ExprData::Add(xs) => pool.add(xs.iter().map(|&x| rewrite_tan(x, pool)).collect()),
+        ExprData::Mul(xs) => pool.mul(xs.iter().map(|&x| rewrite_tan(x, pool)).collect()),
+        ExprData::Pow { base, exp } => pool.pow(rewrite_tan(base, pool), exp),
+        ExprData::Func { name, args } if name == "tan" && args.len() == 1 => div(
+            pool.func("sin", vec![args[0]]),
+            pool.func("cos", vec![args[0]]),
+            pool,
+        ),
+        ExprData::Func { name, args } if name == "tanh" && args.len() == 1 => div(
+            pool.func("sinh", vec![args[0]]),
+            pool.func("cosh", vec![args[0]]),
+            pool,
+        ),
+        _ => e,
+    }
+}
+
+fn rewrite_hyperbolic(e: ExprId, v: ExprId, pool: &ExprPool) -> ExprId {
+    if !contains(e, v, pool) {
+        return e;
+    }
+    match pool.get(e) {
+        ExprData::Add(xs) => pool.add(xs.iter().map(|&x| rewrite_hyperbolic(x, v, pool)).collect()),
+        ExprData::Mul(xs) => pool.mul(xs.iter().map(|&x| rewrite_hyperbolic(x, v, pool)).collect()),
+        ExprData::Pow { base, exp } => pool.pow(rewrite_hyperbolic(base, v, pool), exp),
+        ExprData::Func { name, args } if args.len() == 1 => {
+            let z = rewrite_hyperbolic(args[0], v, pool);
+            let ep = pool.func("exp", vec![z]);
+            let em = pool.func("exp", vec![neg(z, pool)]);
+            let half = pool.rational(1, 2);
+            match name.as_str() {
+                "sinh" => pool.mul(vec![half, sub(ep, em, pool)]),
+                "cosh" => pool.mul(vec![half, pool.add(vec![ep, em])]),
+                "tanh" => div(sub(ep, em, pool), pool.add(vec![ep, em]), pool),
+                _ => pool.func(name, vec![z]),
+            }
+        }
+        _ => e,
+    }
+}
+
+/// `∫ A·L dv = (∫A)·L − ∫ (∫A)·L′ dv` for a logarithmic or inverse
+/// trigonometric factor `L` (`∫ eˣ log x dx = eˣ log x − Ei(x)`).
+fn by_parts(e: ExprId, v: ExprId, depth: u32, pool: &ExprPool) -> Option<ExprId> {
+    let xs = match pool.get(e) {
+        ExprData::Mul(xs) => xs,
+        _ => return None,
+    };
+    for (i, &l) in xs.iter().enumerate() {
+        let is_l = pool.with(l, |d| {
+            matches!(d, ExprData::Func { name, .. }
+                if matches!(name.as_str(), "log" | "atan" | "asin" | "acos"))
+        });
+        if !is_l || !contains(l, v, pool) {
+            continue;
+        }
+        let rest: Vec<ExprId> = xs
+            .iter()
+            .enumerate()
+            .filter(|&(j, _)| j != i)
+            .map(|(_, &x)| x)
+            .collect();
+        let a = pool.mul(rest);
+        let Some(ga) = integrate_depth(a, v, depth - 1, pool) else {
+            continue;
+        };
+        let Some(dl) = d(l, v, pool) else {
+            continue;
+        };
+        let Some(second) = integrate_depth(pool.mul(vec![ga, dl]), v, depth - 1, pool) else {
+            continue;
+        };
+        return Some(simp(sub(pool.mul(vec![ga, l]), second, pool), pool));
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -466,8 +662,9 @@ fn rank_f64(mut m: Vec<Vec<f64>>) -> usize {
         for i in 0..rows {
             if i != r {
                 let f = m[i][c] / m[r][c];
-                for j in c..cols {
-                    m[i][j] -= f * m[r][j];
+                let pivot_row = m[r].clone();
+                for (cell, pr) in m[i].iter_mut().zip(pivot_row).skip(c) {
+                    *cell -= f * pr;
                 }
             }
         }
