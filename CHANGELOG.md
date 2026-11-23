@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Performance
+
+- **Less conversion between Alkahest's polynomials and FLINT.** `MultiPoly` keeps its terms in a `BTreeMap` of `rug::Integer`s, so every product, GCD and factorisation that FLINT computes was converted into FLINT and back, and on a large product that round trip cost more than FLINT's multiplication. Single-threaded, against python-flint (raw FLINT) on the same machine:
+
+  | task | before | after | python-flint |
+  |---|---|---|---|
+  | Fateman-15 product `f·(f+1)`, `f = (1+x+y+z+t)^15` | 28.3 ms | 12.9 ms | 11.3 ms |
+  | Fateman-20 | 203 ms | 137 ms | 136 ms |
+  | `MultiPoly.factor_z` of `x^2310 − 1` (FLINT 3.5) | 6.7 s | 0.26 ms | 0.98 s |
+  | `expand` of the Fateman-15 product | 103 ms | 49 ms | |
+  | `gcd` (sparse, 5 variables) | 3.1 ms | 2.8 ms | 2.8 ms |
+
+  - The Python `MultiPoly` holds its term map, its FLINT form or both (new `alkahest_cas::LazyMultiPoly`), each built on first use. A chain of products, GCDs and factorisations converts each polynomial into FLINT once, and converts a result back only when its terms are read (`str`, `total_degree`, …).
+  - Terms move between the two forms in bulk: they are pushed already in FLINT's order, so FLINT's sort pass is skipped, and read back in ascending order into a bulk-built map, with no per-term insertion and no copy of each coefficient.
+  - A product with a one-term factor (a constant or a monomial) no longer goes through FLINT.
+  - `RationalFunction::new` (behind `cancel`, `together`, `factor` and `expand`) skips the GCD when the numerator or denominator is constant, which after content removal is always 1, and otherwise divides out the GCD with one `fmpz_mpoly_gcd_cofactors` call instead of a GCD and two exact divisions.
+  - `MultiPoly.factor_z` factors a polynomial in a single variable through `fmpz_poly`, which has the cyclotomic shortcut for `x^n ± 1`. The factors and their order are unchanged.
+  - `expand` of an expression without denominators returns the cancelled sum directly instead of re-adding its monomials one at a time.
+
+  Every path is pinned against the code it replaced: proptests compare products, one-term products, conversions, `RationalFunction::new` and `LazyMultiPoly` chains with the term-map arithmetic, and the univariate `factor_z` route with `fmpz_mpoly_factor`.
+
 ### Fixed
 
 - **`integrate` no longer certifies elementary integrals non-elementary when they are written with `exp`/`log` identities.** `integrate(1/exp(log(y)), y)` raised `E-INT-004` ("no elementary antiderivative exists"); the answer is `log(y)`. The Risch tower adjoined `exp(log y)`, which *is* `y`, as a fresh transcendental monomial, so its "the Risch DE has no rational solution" was not a theorem; `exp(-log x)`, `exp(-log(x)/2)` and `1/exp(log(x+1))` were certified the same way. Two changes: the integrand is first normalised with the exact identities `exp(c·log u) = u^c` (rational literal `c`, principal branch) and `log(exp u) = u` (real `u`), and the answer is gated against the original integrand; and the Risch entry point issues `E-INT-004` only when every monomial is provably transcendental over the field below it (no logarithm inside an `exp`, no `exp` factor inside a `log`, no two `exp` or two `log` generators with rationally dependent derivatives). Otherwise it declines with `E-INT-001`. `tests/test_integrate_disguised_elementary.py` integrates a few dozen elementary functions written in that disguise, and their derivatives, and requires a verified answer or a non-certifying refusal for every one.

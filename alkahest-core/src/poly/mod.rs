@@ -45,7 +45,7 @@ pub use interp::{
     gcd_sparse_modular, sparse_interpolate, sparse_interpolate_univariate, SparseGcdError,
     SparseInterpError,
 };
-pub use multipoly::MultiPoly;
+pub use multipoly::{LazyMultiPoly, MultiPoly};
 pub use partial_fractions::{apart, apart_with_conditions, take_apart_side_conditions, ApartError};
 pub use rational::RationalFunction;
 pub use residue::{residue, ResidueError};

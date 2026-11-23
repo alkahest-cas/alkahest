@@ -272,38 +272,134 @@ impl MultiPoly {
     /// (ascending total degree, then coefficients over descending lex
     /// monomials), then ascending multiplicity — independent of the FLINT
     /// version.
+    ///
+    /// A polynomial in a single one of its variables is factored as a
+    /// univariate one ([`FlintPoly::factor_over_z`]), which has the cyclotomic
+    /// fast path for `x^n ± 1`. The univariate canonical order coincides with
+    /// the multivariate one there, so the result is the same either way.
     pub fn factor_z(&self) -> Result<MultiPolyFactorization, FactorError> {
         if self.is_zero() {
             return Err(FactorError::ZeroPolynomial);
         }
+        if let Some(fac) = self.factor_z_univariate() {
+            return fac;
+        }
+        self.factor_z_mpoly()
+    }
+
+    /// [`Self::factor_z`] through `fmpz_poly` when every term involves the
+    /// same single variable, or `None` when the polynomial is constant, has
+    /// two or more variables, or is too sparse for a dense coefficient array.
+    pub(crate) fn factor_z_univariate(
+        &self,
+    ) -> Option<Result<MultiPolyFactorization, FactorError>> {
+        let mut var: Option<usize> = None;
+        let mut top = 0u32;
+        for exp in self.terms.keys() {
+            for (i, &e) in exp.iter().enumerate() {
+                if e == 0 {
+                    continue;
+                }
+                match var {
+                    None => var = Some(i),
+                    Some(v) if v != i => return None,
+                    Some(_) => {}
+                }
+                top = top.max(e);
+            }
+        }
+        let var = var.filter(|&v| v < self.vars.len())?;
+        super::unipoly::check_dense_degree(u64::from(top)).ok()?;
+        let mut fp = FlintPoly::new();
+        // Highest degree first, so the coefficient array is allocated once.
+        for (exp, c) in self.terms.iter().rev() {
+            let deg = exp.get(var).copied().unwrap_or(0) as usize;
+            let cur = fp.get_coeff_flint(deg).to_rug();
+            fp.set_coeff_flint(deg, &crate::flint::FlintInteger::from_rug(&(cur + c)));
+        }
+        if fp.is_zero() {
+            return None;
+        }
+        let (unit, facs) = match fp.factor_over_z() {
+            Ok(r) => r,
+            Err(()) => return Some(Err(FactorError::FlintFailure)),
+        };
+        let factors = facs
+            .into_iter()
+            .map(|(f, m)| {
+                let mut terms = super::multipoly::TermMap::new();
+                for d in 0..f.length() {
+                    let c = f.get_coeff_flint(d).to_rug();
+                    if c == 0 {
+                        continue;
+                    }
+                    let key = if d == 0 {
+                        vec![]
+                    } else {
+                        let mut k = vec![0u32; var + 1];
+                        // `d` is at most the input degree, which is a `u32`.
+                        k[var] = d as u32;
+                        k
+                    };
+                    terms.insert(key, c);
+                }
+                (
+                    MultiPoly {
+                        vars: self.vars.clone(),
+                        terms,
+                    },
+                    m,
+                )
+            })
+            .collect();
+        Some(Ok(MultiPolyFactorization {
+            unit: unit.to_rug(),
+            factors,
+        }))
+    }
+
+    /// [`Self::factor_z`] through `fmpz_mpoly_factor`, whatever the shape of
+    /// the polynomial (the reference the univariate route is tested against).
+    pub(crate) fn factor_z_mpoly(&self) -> Result<MultiPolyFactorization, FactorError> {
+        if self.is_zero() {
+            return Err(FactorError::ZeroPolynomial);
+        }
         let nvars = self.vars.len().max(1);
-        // Arc-shared context: FlintMPoly and FlintMPolyFactor both clone it,
-        // so their Drop impls can call the matching FLINT clear functions.
         let ctx = FlintMPolyCtx::new(nvars);
         let a = multi_to_flint_pub(self, Arc::clone(&ctx));
-
-        let mut fac = FlintMPolyFactor::new(Arc::clone(&ctx));
-        if !fac.factor(&a) {
-            return Err(FactorError::FlintFailure);
-        }
-        if !fac.constant_den_is_one() {
-            return Err(FactorError::FlintFailure);
-        }
-
-        let unit = fac.unit().to_rug();
-        let mut factors = Vec::with_capacity(fac.len());
-        for i in fac.canonical_order() {
-            let base = fac.base_at(i);
-            let terms = base.terms();
-            let mp = MultiPoly {
-                vars: self.vars.clone(),
-                terms,
-            };
-            let exp = fac.exp_at(i);
-            factors.push((mp, exp));
-        }
-        Ok(MultiPolyFactorization { unit, factors })
+        factor_flint_mpoly(&self.vars, &a)
     }
+}
+
+/// Factor the non-zero `a` (a polynomial over `vars`) with
+/// `fmpz_mpoly_factor`; factors in the canonical order.
+pub(crate) fn factor_flint_mpoly(
+    vars: &[ExprId],
+    a: &crate::flint::mpoly::FlintMPoly,
+) -> Result<MultiPolyFactorization, FactorError> {
+    // Arc-shared context: FlintMPoly and FlintMPolyFactor both clone it,
+    // so their Drop impls can call the matching FLINT clear functions.
+    let mut fac = FlintMPolyFactor::new(Arc::clone(a.ctx()));
+    if !fac.factor(a) {
+        return Err(FactorError::FlintFailure);
+    }
+    if !fac.constant_den_is_one() {
+        return Err(FactorError::FlintFailure);
+    }
+
+    let unit = fac.unit().to_rug();
+    let mut factors = Vec::with_capacity(fac.len());
+    for i in fac.canonical_order() {
+        let base = fac.base_at(i);
+        let terms = base.terms();
+        let mp = MultiPoly {
+            vars: vars.to_vec(),
+            terms,
+        };
+        let exp = fac.exp_at(i);
+        factors.push((mp, exp));
+    }
+    Ok(MultiPolyFactorization { unit, factors })
 }
 
 /// Reduce coefficients mod `p` and factor over 𝔽_p.
@@ -701,5 +797,97 @@ mod tests {
         let expanded = fac.expand_clone_vars();
         assert_eq!(expanded, product);
         assert!(fac.verifies_product(&product));
+    }
+
+    /// A `MultiPoly` in one of its variables is factored through `fmpz_poly`
+    /// (with the cyclotomic fast path) and gives exactly what
+    /// `fmpz_mpoly_factor` gives: same unit, factors and canonical order —
+    /// in the first, middle or last variable of the ring, on random products
+    /// with repeated factors, a monomial factor, a negative content, and
+    /// binomials `x^n ± 1` / `8x^6 - 27`.
+    #[test]
+    fn univariate_multipoly_factor_matches_mpoly_route() {
+        let pool = crate::kernel::ExprPool::new();
+        let vars: Vec<ExprId> = ["x", "y", "z"]
+            .iter()
+            .map(|n| pool.symbol(*n, Domain::Real))
+            .collect();
+        let in_var = |coeffs: &[i64], var: usize| -> MultiPoly {
+            let mut terms = super::super::multipoly::TermMap::new();
+            for (d, &c) in coeffs.iter().enumerate() {
+                if c != 0 {
+                    let key = if d == 0 {
+                        vec![]
+                    } else {
+                        let mut k = vec![0u32; var + 1];
+                        k[var] = d as u32;
+                        k
+                    };
+                    terms.insert(key, rug::Integer::from(c));
+                }
+            }
+            MultiPoly {
+                vars: vars.clone(),
+                terms,
+            }
+        };
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move |m: i64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % (2 * m as u64 + 1)) as i64 - m
+        };
+        let mut cases: Vec<Vec<i64>> = vec![
+            vec![-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], // x^12 - 1
+            vec![1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1], // x^15 + 1
+            vec![-27, 0, 0, 0, 0, 0, 8],                  // 8x^6 - 27
+            vec![0, 0, 0, -1, 0, 1],                      // x^5 - x^3
+            vec![-6, -4, 2],                              // -2(x+1)(3-x)... content 2
+            vec![5],                                      // constant: mpoly route
+        ];
+        let mut cyc = vec![0i64; 211];
+        cyc[0] = -1;
+        cyc[210] = 1;
+        cases.push(cyc);
+        for _ in 0..60 {
+            let mut f =
+                FlintPoly::from_coefficients(&[next(3).max(1) * if next(1) < 0 { -1 } else { 1 }]);
+            for _ in 0..(1 + (next(2) + 2) as usize) {
+                let deg = 1 + (next(1) + 1) as usize;
+                let mut c: Vec<i64> = (0..deg).map(|_| next(4)).collect();
+                c.push(1 + next(1).abs());
+                let p = FlintPoly::from_coefficients(&c);
+                f = &f * &p;
+                if next(2) == 2 {
+                    f = &f * &p;
+                }
+            }
+            if next(3) == 3 {
+                f = &f * &FlintPoly::from_coefficients(&[0, 1]);
+            }
+            cases.push(f.coefficients());
+        }
+        for (i, c) in cases.iter().enumerate() {
+            for var in 0..3 {
+                let p = in_var(c, var);
+                let fast = p.factor_z().unwrap();
+                let slow = p.factor_z_mpoly().unwrap();
+                assert_eq!(fast, slow, "case {i} in variable {var}");
+                assert!(fast.verifies_product(&p), "case {i} in variable {var}");
+            }
+        }
+        // Two variables present: not routed, and still right.
+        let xy = MultiPoly {
+            vars: vars.clone(),
+            terms: [
+                (vec![2], rug::Integer::from(1)),
+                (vec![0, 2], rug::Integer::from(-1)),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        assert!(xy.factor_z_univariate().is_none());
+        assert_eq!(xy.factor_z().unwrap(), xy.factor_z_mpoly().unwrap());
     }
 }

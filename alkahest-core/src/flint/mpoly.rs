@@ -121,6 +121,21 @@ impl FlintMPoly {
     ///
     /// `exp` must have length equal to `ctx.nvars()`.
     pub fn push_term(&mut self, coeff: &rug::Integer, exp: &[u64]) {
+        // FLINT reads `nvars` words from `exp`.
+        assert!(exp.len() >= self.ctx.nvars(), "exponent vector too short");
+        if let Some(c) = coeff.to_i64() {
+            // Word-sized: no temporary fmpz to initialise and clear.
+            // SAFETY: `exp` holds `nvars` words; the polynomial is initialised.
+            unsafe {
+                super::ffi::fmpz_mpoly_push_term_si_ui(
+                    self.as_mut_ptr(),
+                    c,
+                    exp.as_ptr(),
+                    self.ctx.as_ptr(),
+                );
+            }
+            return;
+        }
         // FlintInteger::from_rug is drop-safe — no manual fmpz_init/fmpz_clear needed.
         let fz = FlintInteger::from_rug(coeff);
         unsafe {
@@ -141,6 +156,87 @@ impl FlintMPoly {
         }
     }
 
+    /// Build a polynomial from terms whose exponent vectors are read
+    /// zero-padded or truncated to `ctx.nvars()` words.
+    ///
+    /// When the terms arrive in strictly descending lexicographic order with
+    /// nonzero coefficients — a `TermMap` iterated in reverse, whose keys
+    /// order exactly as their padded vectors do — the pushed polynomial is
+    /// already canonical and FLINT's sort and combine passes are skipped.
+    /// Any other input (a zero coefficient, a repeated monomial, keys out of
+    /// order) is detected on the fly and finished with [`Self::finish`], so
+    /// the result is canonical either way.
+    pub(crate) fn from_terms<'a, I>(ctx: Arc<FlintMPolyCtx>, terms: I) -> FlintMPoly
+    where
+        I: IntoIterator<Item = (&'a [u32], &'a rug::Integer)>,
+    {
+        let nvars = ctx.nvars();
+        let mut fp = FlintMPoly::new(ctx);
+        let mut e = vec![0u64; nvars];
+        let mut prev: Option<Vec<u64>> = None;
+        let mut canonical = true;
+        for (exp, c) in terms {
+            e.iter_mut().for_each(|v| *v = 0);
+            for (slot, &x) in e.iter_mut().zip(exp) {
+                *slot = u64::from(x);
+            }
+            if canonical {
+                if *c == 0 {
+                    canonical = false;
+                } else {
+                    match prev.as_mut() {
+                        Some(p) if e.as_slice() >= p.as_slice() => canonical = false,
+                        Some(p) => p.copy_from_slice(&e),
+                        None => prev = Some(e.clone()),
+                    }
+                }
+            }
+            fp.push_term(c, &e);
+        }
+        if !canonical {
+            fp.finish();
+        }
+        debug_assert!(fp.is_canonical());
+        fp
+    }
+
+    /// `(per-variable degrees, total degree)`, all `0` for the zero
+    /// polynomial, or `None` if some degree does not fit in a signed word.
+    pub(crate) fn degrees(&self) -> Option<(Vec<u64>, u64)> {
+        let nvars = self.ctx.nvars();
+        // SAFETY: both pointers are initialised; `degs` holds `nvars` words,
+        // and `fmpz_mpoly_degrees_si` is only called once the degrees are
+        // known to fit (it throws otherwise).
+        unsafe {
+            if super::ffi::fmpz_mpoly_degrees_fit_si(self.as_ptr(), self.ctx.as_ptr()) == 0 {
+                return None;
+            }
+            let mut degs = vec![0 as super::ffi::slong; nvars];
+            super::ffi::fmpz_mpoly_degrees_si(degs.as_mut_ptr(), self.as_ptr(), self.ctx.as_ptr());
+            let per: Vec<u64> = degs.iter().map(|&d| d.max(0) as u64).collect();
+            // Each degree is below 2^63 and `nvars` is small, but sum in u128
+            // so the total cannot wrap even so.
+            let total: u128 = per.iter().map(|&d| u128::from(d)).sum();
+            if total > u128::from(i64::MAX as u64) {
+                return None;
+            }
+            let t = super::ffi::fmpz_mpoly_total_degree_si(self.as_ptr(), self.ctx.as_ptr());
+            Some((per, t.max(0) as u64))
+        }
+    }
+
+    /// `-self`.
+    pub(crate) fn neg(&self) -> FlintMPoly {
+        let zero = FlintMPoly::new(Arc::clone(&self.ctx));
+        zero.sub(self)
+    }
+
+    /// FLINT's internal consistency check (sorted, no zero or repeated terms).
+    pub(crate) fn is_canonical(&self) -> bool {
+        // SAFETY: the polynomial is initialised.
+        unsafe { super::ffi::fmpz_mpoly_is_canonical(self.as_ptr(), self.ctx.as_ptr()) != 0 }
+    }
+
     /// Compute `G = gcd(self, other)`. Returns `None` if FLINT fails.
     ///
     /// The two polynomials must share the same context (same `Arc` or same
@@ -157,6 +253,35 @@ impl FlintMPoly {
         };
         if ok != 0 {
             Some(g)
+        } else {
+            None
+        }
+    }
+
+    /// `(G, self/G, other/G)` with `G = gcd(self, other)` (positive leading
+    /// coefficient, as [`Self::gcd`]) in one FLINT call, or `None` if FLINT
+    /// fails.
+    pub(crate) fn gcd_cofactors(
+        &self,
+        other: &FlintMPoly,
+    ) -> Option<(FlintMPoly, FlintMPoly, FlintMPoly)> {
+        let mut g = FlintMPoly::new(Arc::clone(&self.ctx));
+        let mut abar = FlintMPoly::new(Arc::clone(&self.ctx));
+        let mut bbar = FlintMPoly::new(Arc::clone(&self.ctx));
+        // SAFETY: all five polynomials are initialised in compatible contexts;
+        // the three outputs are fresh, so none aliases another or an input.
+        let ok = unsafe {
+            super::ffi::fmpz_mpoly_gcd_cofactors(
+                g.as_mut_ptr(),
+                abar.as_mut_ptr(),
+                bbar.as_mut_ptr(),
+                self.as_ptr(),
+                other.as_ptr(),
+                self.ctx.as_ptr(),
+            )
+        };
+        if ok != 0 {
+            Some((g, abar, bbar))
         } else {
             None
         }
@@ -200,59 +325,81 @@ impl FlintMPoly {
 
     /// [`Self::terms`], or `None` if some exponent exceeds `u32::MAX`.
     pub(crate) fn try_terms(&self) -> Option<BTreeMap<Vec<u32>, rug::Integer>> {
-        let wide = self.terms_u64()?;
-        let mut result = BTreeMap::new();
-        for (exp, coeff) in wide {
-            let exp: Option<Vec<u32>> = exp.into_iter().map(|e| u32::try_from(e).ok()).collect();
-            result.insert(exp?, coeff);
-        }
-        Some(result)
+        self.collect_terms(|e| u32::try_from(e).ok())
     }
 
     /// All terms with `u64` exponents (trailing zeros stripped, zero
     /// coefficients omitted), or `None` if some exponent does not fit in a
     /// machine word.
     pub(crate) fn terms_u64(&self) -> Option<BTreeMap<Vec<u64>, rug::Integer>> {
+        self.collect_terms(Some)
+    }
+
+    /// The terms as a map with exponents narrowed by `narrow` (trailing zeros
+    /// stripped, zero coefficients omitted), or `None` if some exponent does
+    /// not fit in a machine word or `narrow` refuses one.
+    ///
+    /// Reads the coefficients in place and walks the terms in ascending
+    /// order, so the map is bulk-built from sorted input instead of one
+    /// insertion per term.
+    fn collect_terms<E, F>(&self, narrow: F) -> Option<BTreeMap<Vec<E>, rug::Integer>>
+    where
+        E: Ord,
+        F: Fn(u64) -> Option<E>,
+    {
         let nvars = self.ctx.nvars();
         let len = self.length();
-        let mut result = BTreeMap::new();
-        for i in 0..len {
+        // One check for the whole polynomial instead of one per term.
+        // SAFETY: both pointers are initialised.
+        let all_fit =
+            unsafe { super::ffi::fmpz_mpoly_degrees_fit_si(self.as_ptr(), self.ctx.as_ptr()) != 0 };
+        let mut exp_u64 = vec![0u64; nvars];
+        let mut out: Vec<(Vec<E>, rug::Integer)> = Vec::with_capacity(len);
+        // FLINT stores terms in descending order; read them ascending.
+        for i in (0..len).rev() {
             // SAFETY: `i < length`, and both pointers are initialised.
-            let fits = unsafe {
-                super::ffi::fmpz_mpoly_term_exp_fits_ui(self.as_ptr(), i as i64, self.ctx.as_ptr())
-            };
-            if fits == 0 {
+            if !all_fit
+                && unsafe {
+                    super::ffi::fmpz_mpoly_term_exp_fits_ui(
+                        self.as_ptr(),
+                        i as i64,
+                        self.ctx.as_ptr(),
+                    )
+                } == 0
+            {
                 // `fmpz_mpoly_get_term_exp_ui` would throw (abort) here.
                 return None;
             }
-            // FlintInteger is drop-safe — no raw fmpz_init/fmpz_clear needed.
-            let mut coeff_fz = FlintInteger::new();
-            let mut exp_u64 = vec![0u64; nvars];
-            unsafe {
-                super::ffi::fmpz_mpoly_get_term_coeff_fmpz(
-                    coeff_fz.inner_mut_ptr(),
-                    self.as_ptr(),
-                    i as i64,
-                    self.ctx.as_ptr(),
-                );
+            // SAFETY: `i < length`; `exp_u64` holds `nvars` words; the
+            // coefficient pointer is valid while `self` is borrowed and is
+            // only read.
+            let coeff = unsafe {
                 super::ffi::fmpz_mpoly_get_term_exp_ui(
                     exp_u64.as_mut_ptr(),
                     self.as_ptr(),
                     i as i64,
                     self.ctx.as_ptr(),
                 );
-            }
-            let coeff = coeff_fz.to_rug();
+                let c = super::ffi::fmpz_mpoly_term_coeff_ref(
+                    self.as_ptr(),
+                    i as i64,
+                    self.ctx.as_ptr(),
+                );
+                crate::flint::integer::fmpz_get_rug(c)
+            };
             if coeff == 0 {
                 continue;
             }
             // Truncate trailing zeros from the exponent vector.
-            while exp_u64.last() == Some(&0) {
-                exp_u64.pop();
+            let mut k = nvars;
+            while k > 0 && exp_u64[k - 1] == 0 {
+                k -= 1;
             }
-            result.insert(exp_u64, coeff);
+            let key: Option<Vec<E>> = exp_u64[..k].iter().map(|&e| narrow(e)).collect();
+            out.push((key?, coeff));
         }
-        Some(result)
+        // Sorted ascending already: `collect` detects the run and bulk-builds.
+        Some(out.into_iter().collect())
     }
 
     /// Product `self * other`. Both must share a context (same `nvars`).

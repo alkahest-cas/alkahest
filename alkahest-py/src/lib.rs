@@ -69,6 +69,7 @@ use alkahest_core::{
     HybridODE,
     IntervalEval as CoreIntervalEval,
     LatticeError,
+    LazyMultiPoly,
     LinearAlgebraError,
     Matrix,
     MatrixError,
@@ -5350,7 +5351,10 @@ struct PyUniPoly {
 
 #[pyclass(name = "MultiPoly")]
 struct PyMultiPoly {
-    inner: MultiPoly,
+    /// Term map and/or FLINT form, each built on first use: a chain of large
+    /// products, GCDs and factorisations converts each polynomial into FLINT
+    /// once, and a FLINT result back only when its terms are read.
+    inner: LazyMultiPoly,
     /// When set (e.g. from `from_symbolic`), `__str__` uses user symbol names.
     pool: Option<Py<PyExprPool>>,
 }
@@ -5411,7 +5415,7 @@ impl PyMultiPolyFactorization {
             .map(|(p, e)| {
                 (
                     PyMultiPoly {
-                        inner: p.clone(),
+                        inner: p.clone().into(),
                         pool: None,
                     },
                     *e,
@@ -5694,7 +5698,7 @@ impl PyMultiPoly {
         };
         MultiPoly::from_symbolic(expr.id, var_ids, &pool.inner)
             .map(|p| PyMultiPoly {
-                inner: p,
+                inner: p.into(),
                 pool: Some(expr.pool.clone_ref(py)),
             })
             .map_err(conv_error_to_py)
@@ -5709,11 +5713,11 @@ impl PyMultiPoly {
     /// Highest total degree over all terms (`0` for the zero polynomial).
     #[getter]
     fn total_degree(&self) -> u32 {
-        self.inner.total_degree()
+        self.inner.as_multipoly().total_degree()
     }
 
     fn integer_content(&self) -> String {
-        self.inner.integer_content().to_string()
+        self.inner.as_multipoly().integer_content().to_string()
     }
 
     fn __add__(&self, other: PyRef<PyMultiPoly>) -> PyResult<PyMultiPoly> {
@@ -5724,7 +5728,7 @@ impl PyMultiPoly {
             ));
         }
         Ok(PyMultiPoly {
-            inner: self.inner.clone() + other.inner.clone(),
+            inner: self.inner.add(&other.inner),
             pool: merge_mp_pool(&self.pool, &other.pool),
         })
     }
@@ -5737,7 +5741,7 @@ impl PyMultiPoly {
             ));
         }
         Ok(PyMultiPoly {
-            inner: self.inner.clone() - other.inner.clone(),
+            inner: self.inner.sub(&other.inner),
             pool: merge_mp_pool(&self.pool, &other.pool),
         })
     }
@@ -5761,7 +5765,7 @@ impl PyMultiPoly {
 
     fn primitive_part(&self) -> PyMultiPoly {
         PyMultiPoly {
-            inner: self.inner.primitive_part(),
+            inner: self.inner.as_multipoly().primitive_part().into(),
             pool: clone_opt_py(&self.pool),
         }
     }
@@ -5794,21 +5798,21 @@ impl PyMultiPoly {
         py.detach(|| poly.factor_z())
             .map(|inner| PyMultiPolyFactorization {
                 inner,
-                original: self.inner.clone(),
+                original: self.inner.as_multipoly().clone(),
             })
             .map_err(factor_error_to_py)
     }
 
     fn __repr__(&self) -> String {
-        format!("MultiPoly({})", self.inner)
+        format!("MultiPoly({})", self.inner.as_multipoly())
     }
 
     fn __str__(&self, py: Python<'_>) -> String {
         if let Some(ref pool_py) = self.pool {
             let pool = pool_py.borrow(py);
-            self.inner.display_with(&pool.inner)
+            self.inner.as_multipoly().display_with(&pool.inner)
         } else {
-            self.inner.to_string()
+            self.inner.as_multipoly().to_string()
         }
     }
 }
@@ -5893,14 +5897,14 @@ impl PyRationalFunction {
 
     fn numer(&self) -> PyMultiPoly {
         PyMultiPoly {
-            inner: self.inner.numer.clone(),
+            inner: self.inner.numer.clone().into(),
             pool: clone_opt_py(&self.pool),
         }
     }
 
     fn denom(&self) -> PyMultiPoly {
         PyMultiPoly {
-            inner: self.inner.denom.clone(),
+            inner: self.inner.denom.clone().into(),
             pool: clone_opt_py(&self.pool),
         }
     }
@@ -16056,10 +16060,16 @@ fn py_gcd_sparse(
     seed: u64,
 ) -> PyResult<PyMultiPoly> {
     same_pool!("gcd_sparse"; f.pool, g.pool);
-    let result = core_gcd_sparse_modular(&f.inner, &g.inner, term_bound, degree_bound, seed)
-        .map_err(sparse_gcd_error_to_py)?;
+    let result = core_gcd_sparse_modular(
+        f.inner.as_multipoly(),
+        g.inner.as_multipoly(),
+        term_bound,
+        degree_bound,
+        seed,
+    )
+    .map_err(sparse_gcd_error_to_py)?;
     Ok(PyMultiPoly {
-        inner: result,
+        inner: result.into(),
         pool: merge_mp_pool(&f.pool, &g.pool),
     })
 }
@@ -21456,7 +21466,7 @@ fn py_nt_discrete_log(
 #[pyfunction]
 #[pyo3(name = "modular_reduce")]
 fn py_modular_reduce(poly: PyRef<PyMultiPoly>, p: u64) -> PyResult<PyMultiPolyFp> {
-    core_reduce_mod(&poly.inner, p)
+    core_reduce_mod(poly.inner.as_multipoly(), p)
         .map(|fp| PyMultiPolyFp {
             inner: fp,
             pool: clone_opt_py(&poly.pool),
@@ -21488,7 +21498,10 @@ fn py_modular_lift_crt(
     // reconstructed polynomial round-trips to the same string representation.
     let pool = polys.first().and_then(|p| clone_opt_py(&p.pool));
     core_lift_crt(&images)
-        .map(|mp| PyMultiPoly { inner: mp, pool })
+        .map(|mp| PyMultiPoly {
+            inner: mp.into(),
+            pool,
+        })
         .map_err(modular_error_to_py)
 }
 
@@ -21527,7 +21540,7 @@ fn int_or_decimal_arg(ob: &Bound<'_, PyAny>, what: &str) -> PyResult<Integer> {
 #[pyfunction]
 #[pyo3(name = "modular_mignotte_bound")]
 fn py_modular_mignotte_bound(poly: PyRef<PyMultiPoly>) -> String {
-    core_mignotte_bound(&poly.inner).to_string()
+    core_mignotte_bound(poly.inner.as_multipoly()).to_string()
 }
 
 /// Select the smallest lucky prime not in `used` that does not divide `avoid_divisor_str`.
