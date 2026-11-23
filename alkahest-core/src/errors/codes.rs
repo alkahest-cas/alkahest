@@ -906,6 +906,14 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-PDE-052", class: "PdeError", cause: Cause::Domain,      remediation: Some("the data curve is characteristic (the Jacobian of the curve and the characteristic direction vanishes); pose the data on a transversal curve") },
     ErrorSpec { code: "E-PDE-053", class: "PdeError", cause: Cause::Unsupported, remediation: Some("give Cauchy data as u(curve) = value on a curve of dimension n-1 (e.g. u(x, 0) = f(x)); conditions on derivatives are not supported for first-order problems") },
     ErrorSpec { code: "E-PDE-054", class: "PdeError", cause: Cause::UserInput,  remediation: Some("Integral(f, t, lo, hi) needs a symbol t that the bounds do not mention; Integral(f, x) needs a symbol x") },
+    ErrorSpec { code: "E-PDE-150", class: "PdeError", cause: Cause::Unsupported, remediation: Some("the eigenproblem solver handles constant-coefficient regular problems, regular problems whose separated ODE dsolve solves, and the classical singular problems (Bessel, Legendre, Chebyshev, Hermite, Laguerre); transform the equation to one of those or solve the ODE by hand") },
+    ErrorSpec { code: "E-PDE-151", class: "PdeError", cause: Cause::UserInput, remediation: Some("give each separated end Dirichlet, Neumann or Robin (alpha*X + beta*X' = 0 with alpha, beta not both zero); use bounded/decay only at a singular or infinite end") },
+    ErrorSpec { code: "E-PDE-152", class: "PdeError", cause: Cause::Domain, remediation: Some("the eigenvalue condition is identically zero: every lambda would be an eigenvalue; check that the boundary conditions are independent") },
+    ErrorSpec { code: "E-PDE-153", class: "PdeError", cause: Cause::Internal, remediation: Some("an eigenpair failed exact verification and was withheld; please report the problem") },
+    ErrorSpec { code: "E-PDE-160", class: "PdeError", cause: Cause::Unsupported, remediation: Some("the Fourier method needs one linear constant-coefficient homogeneous PDE in (x, t) on a line in x; the Laplace method a half-line in t with homogeneous initial data; check classify_pde") },
+    ErrorSpec { code: "E-PDE-161", class: "PdeError", cause: Cause::UserInput, remediation: Some("supply the initial data at t = 0 (u, and u_t for second order in t) or the boundary value at the finite end, each once") },
+    ErrorSpec { code: "E-PDE-162", class: "PdeError", cause: Cause::Unsupported, remediation: Some("the transformed equation must be a constant-coefficient ODE in the remaining variable that dsolve solves") },
+    ErrorSpec { code: "E-PDE-163", class: "PdeError", cause: Cause::Internal, remediation: Some("the candidate built by the transform method was refuted by substitution and withheld; please report the problem") },
 ];
 
 #[cfg(test)]

@@ -53,6 +53,8 @@ pub mod solve;
 pub mod sum;
 pub mod transform;
 pub mod verify;
+mod m3_probe;
+pub mod sturm_liouville;
 
 pub use classify::{classify_pde, Linearity, NamedEquation, PdeInfo, PdeType, TypeRegion};
 pub use error::PdeError;

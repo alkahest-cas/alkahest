@@ -30,8 +30,9 @@
 //! never separates — is refused with `E-PDE-031`; nothing is ever guessed.
 //!
 //! A root at `λ = 0` (common: `sin(λ) = 0`) is excluded from the positive
-//! count when `F(0, n)` simplifies to exactly 0 and `∂F/∂λ` is certified
-//! nonzero on a neighbourhood `[0, δ]`.
+//! count when `F(0, n)` simplifies to exactly 0 and the first derivative
+//! `∂ᵐF/∂λᵐ` that does not vanish identically at 0 is certified nonzero on a
+//! neighbourhood `[0, δ]` (`J_ν(λ)` has a root of order `ν` there).
 //!
 //! `diff` treats the node by implicit differentiation,
 //! `∂λₙ/∂p = −F_p/F_λ` at `λ = λₙ`, so a family depending on a parameter
@@ -56,6 +57,8 @@ const MAX_EVALS: usize = 400_000;
 const MAX_ABSCISSA: f64 = 1.0e6;
 /// Deepest bisection of one scanning step.
 const MAX_DEPTH: u32 = 48;
+/// Highest multiplicity of a root at `λ = 0` the scanner steps over.
+const MAX_ROOT_ORDER_AT_ZERO: usize = 12;
 
 fn is_symbol(e: ExprId, pool: &ExprPool) -> bool {
     pool.with(e, |d| matches!(d, ExprData::Symbol { .. }))
@@ -291,9 +294,13 @@ pub fn root_family_enclosure(
                 .join(", ")
         )));
     }
-    let df = crate::diff::diff(f, lam, pool)
-        .map_err(|e| PdeError::RootFamilyNotCertified(format!("∂F/∂λ: {e}")))?
-        .value;
+    let f = regular_bessel_form(f, pool);
+    let df = regular_bessel_form(
+        crate::diff::diff(f, lam, pool)
+            .map_err(|e| PdeError::RootFamilyNotCertified(format!("∂F/∂λ: {e}")))?
+            .value,
+        pool,
+    );
     let prec = bits.max(64) + 64;
     let mut sc = Scanner {
         f,
@@ -310,20 +317,53 @@ pub fn root_family_enclosure(
     m0.insert(lam, pool.integer(0));
     let f0 = crate::simplify::engine::simplify(crate::kernel::subs::subs(f, &m0, pool), pool).value;
     if f0 == pool.integer(0) {
-        let mut delta = fl(0.25);
+        // A root of multiplicity m at 0 (J_ν(λ) has one of order ν): find
+        // the first derivative F^(m) not vanishing identically at 0 and
+        // certify it nonzero on [0, δ]; with F^(j)(0) = 0 for j < m, each
+        // lower derivative is then strictly monotone from 0, so F has no
+        // root in (0, δ].
+        let mut dm = df;
         let mut ok = false;
-        for _ in 0..24 {
-            let b = sc.ball(&fl(0.0), &delta);
-            let dv = sc.eval(df, b)?;
-            if Scanner::excludes_zero(&dv) {
-                ok = true;
+        let mut delta = fl(0.25);
+        'order: for _m in 1..=MAX_ROOT_ORDER_AT_ZERO {
+            delta = fl(0.25);
+            for _ in 0..24 {
+                let b = sc.ball(&fl(0.0), &delta);
+                let dv = sc.eval(dm, b)?;
+                if Scanner::excludes_zero(&dv) {
+                    ok = true;
+                    break 'order;
+                }
+                delta /= 2u32;
+            }
+            let at0 =
+                crate::simplify::engine::simplify(crate::kernel::subs::subs(dm, &m0, pool), pool)
+                    .value;
+            // Exactly zero at 0: symbolically, or as an exact (radius-0)
+            // Arb ball — `J₃(0)` is returned as the exact 0.
+            let exact_zero = at0 == pool.integer(0) || {
+                let z = ArbBall {
+                    mid: Float::with_val(sc.prec + 8, 0),
+                    rad: Float::new(sc.prec),
+                    prec: sc.prec,
+                };
+                matches!(sc.eval(dm, z)?, Some(v) if v.is_exact() && v.mid == 0)
+            };
+            if !exact_zero {
                 break;
             }
-            delta /= 2u32;
+            dm = regular_bessel_form(
+                crate::diff::diff(dm, lam, pool)
+                    .map_err(|e| PdeError::RootFamilyNotCertified(format!("∂ᵐF/∂λᵐ: {e}")))?
+                    .value,
+                pool,
+            );
         }
         if !ok {
             return Err(PdeError::RootFamilyNotCertified(
-                "F vanishes at λ = 0 and ∂F/∂λ could not be certified nonzero near 0 (a multiple root at 0)".into(),
+                "F vanishes at λ = 0 and no derivative could be certified nonzero near 0 \
+                 (a root of high multiplicity at 0)"
+                    .into(),
             ));
         }
         start = delta;
@@ -381,6 +421,34 @@ pub fn root_family_enclosure(
     } else {
         Ok((lo, hi))
     }
+}
+
+/// `bessel_j1(u)` → `bessel_j(1, u)`: the same function, but the unary
+/// node differentiates to `J₀(u) − J₁(u)/u`, which no ball containing
+/// `u = 0` can evaluate, while the binary node's rule `(J₀ − J₂)/2` is
+/// regular there.  Used only for the derivatives the scanner certifies.
+fn regular_bessel_form(e: ExprId, pool: &ExprPool) -> ExprId {
+    fn go(e: ExprId, pool: &ExprPool, memo: &mut HashMap<ExprId, ExprId>) -> ExprId {
+        if let Some(&r) = memo.get(&e) {
+            return r;
+        }
+        let r = match pool.get(e) {
+            ExprData::Func { name, args } if name == "bessel_j1" && args.len() == 1 => {
+                let u = go(args[0], pool, memo);
+                pool.func("bessel_j", vec![pool.integer(1), u])
+            }
+            ExprData::Func { name, args } => {
+                pool.func(name, args.iter().map(|&a| go(a, pool, memo)).collect())
+            }
+            ExprData::Add(xs) => pool.add(xs.iter().map(|&a| go(a, pool, memo)).collect()),
+            ExprData::Mul(xs) => pool.mul(xs.iter().map(|&a| go(a, pool, memo)).collect()),
+            ExprData::Pow { base, exp } => pool.pow(go(base, pool, memo), go(exp, pool, memo)),
+            _ => e,
+        };
+        memo.insert(e, r);
+        r
+    }
+    go(e, pool, &mut HashMap::new())
 }
 
 fn is_constant_symbol(s: ExprId, pool: &ExprPool) -> bool {

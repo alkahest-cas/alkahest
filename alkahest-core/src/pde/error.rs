@@ -98,6 +98,36 @@ pub enum PdeError {
     /// `E-PDE-054` — a malformed `Integral(f, t, lo, hi)` / `Integral(f, x)`
     /// node: the integration variable is not a symbol, or a bound mentions it.
     MalformedIntegral(String),
+    /// `E-PDE-150` — an eigenproblem outside the implemented classes: `dsolve` does not solve the
+    /// separated ODE, periodic conditions with non-constant coefficients, or a
+    /// singular endpoint of an unrecognised equation.
+    SlUnsupported(String),
+    /// `E-PDE-151` — a malformed eigenproblem boundary condition (`α = β = 0` in
+    /// `αX + βX' = 0`, a `bounded` / `decay` condition at a regular end, an
+    /// end that is not on the interval).
+    SlInvalidBoundary(String),
+    /// `E-PDE-152` — the eigenvalue condition vanishes identically, so every `λ` would be
+    /// an eigenvalue: the boundary conditions do not determine a self-adjoint
+    /// problem.
+    SlDegenerate(String),
+    /// `E-PDE-153` — an eigenpair failed verification: the ODE or boundary residual
+    /// was refuted.  Nothing is returned rather than an unverified pair.
+    SlVerificationFailed(String),
+    /// `E-PDE-160` — the transform method does not apply: not one linear,
+    /// constant-coefficient, homogeneous PDE in two variables, or a domain the
+    /// transform does not match (Fourier needs a line, Laplace a half-line).
+    TransformMethodUnsupported(String),
+    /// `E-PDE-161` — initial or boundary data is missing, duplicated or of the wrong
+    /// shape for the transform method (`u(x, 0)`, `u_t(x, 0)`, `u(0, t)`).
+    TransformData(String),
+    /// `E-PDE-162` — `dsolve` did not solve the transformed equation, or the transformed
+    /// equation is not an ODE with constant coefficients in the remaining
+    /// variable.
+    TransformOde(String),
+    /// `E-PDE-163` — the candidate built by the transform method was refuted
+    /// by substitution (a kernel that does not satisfy the PDE, a closed form
+    /// that misses a condition).
+    TransformVerificationFailed(String),
 }
 
 impl fmt::Display for PdeError {
@@ -128,6 +158,14 @@ impl fmt::Display for PdeError {
             PdeError::CharacteristicData(d) => ("Cauchy data on a characteristic", d),
             PdeError::CauchyUnsupported(d) => ("unsupported Cauchy data", d),
             PdeError::MalformedIntegral(d) => ("malformed Integral", d),
+            PdeError::SlUnsupported(d) => ("Sturm–Liouville problem unsupported", d),
+            PdeError::SlInvalidBoundary(d) => ("invalid Sturm–Liouville boundary condition", d),
+            PdeError::SlDegenerate(d) => ("degenerate Sturm–Liouville problem", d),
+            PdeError::SlVerificationFailed(d) => ("eigenpair failed verification", d),
+            PdeError::TransformMethodUnsupported(d) => ("transform method unsupported", d),
+            PdeError::TransformData(d) => ("transform method data", d),
+            PdeError::TransformOde(d) => ("transformed equation not solved", d),
+            PdeError::TransformVerificationFailed(d) => ("transform solution refuted", d),
         };
         write!(f, "{what}: {d}")
     }
@@ -163,6 +201,14 @@ impl AlkahestError for PdeError {
             PdeError::CharacteristicData(_) => "E-PDE-052",
             PdeError::CauchyUnsupported(_) => "E-PDE-053",
             PdeError::MalformedIntegral(_) => "E-PDE-054",
+            PdeError::SlUnsupported(_) => "E-PDE-150",
+            PdeError::SlInvalidBoundary(_) => "E-PDE-151",
+            PdeError::SlDegenerate(_) => "E-PDE-152",
+            PdeError::SlVerificationFailed(_) => "E-PDE-153",
+            PdeError::TransformMethodUnsupported(_) => "E-PDE-160",
+            PdeError::TransformData(_) => "E-PDE-161",
+            PdeError::TransformOde(_) => "E-PDE-162",
+            PdeError::TransformVerificationFailed(_) => "E-PDE-163",
         }
     }
 
