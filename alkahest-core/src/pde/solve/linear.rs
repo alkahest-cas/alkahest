@@ -172,21 +172,33 @@ pub(crate) fn solve_linear(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> {
             // antiderivative of a, with the quadratures done here (by parts
             // where the integrator alone declines).
             let beta = simp(subs1(rhs, ctx.w, pool.integer(0), pool), pool);
-            let Some(ia) = quad(al, zk, pool) else {
+            // Closed quadratures first, then the same with unevaluated
+            // integrals (which verify exactly where a closed form defeats
+            // the zero test).
+            let mut bs = Vec::new();
+            for unev in [false, true] {
+                let q = |e: ExprId| {
+                    if unev {
+                        unevaluated(e, zk, pool)
+                    } else {
+                        quad(e, zk, pool)
+                    }
+                };
+                let Some(ia) = q(al) else { continue };
+                let mu = tidy(simp(pool.func("exp", vec![neg(ia, pool)]), pool), pool);
+                let Some(ib) = q(pool.mul(vec![beta, mu])) else {
+                    continue;
+                };
+                let c1 = ctx.fresh_internal(pool);
+                let y = pool.mul(vec![pool.func("exp", vec![ia]), pool.add(vec![ib, c1])]);
+                if bs.iter().all(|(f, _)| *f != SolutionForm::Explicit(y)) {
+                    bs.push((SolutionForm::Explicit(y), c1));
+                }
+            }
+            if bs.is_empty() {
                 continue;
-            };
-            let mu = tidy(simp(pool.func("exp", vec![neg(ia, pool)]), pool), pool);
-            let Some(ib) = quad(pool.mul(vec![beta, mu]), zk, pool) else {
-                ctx.fail(format!(
-                    "first_order_linear: the quadrature of {} in {} did not close",
-                    pool.display(pool.mul(vec![beta, mu])),
-                    pool.display(zk)
-                ));
-                continue;
-            };
-            let c1 = ctx.fresh_internal(pool);
-            let y = pool.mul(vec![pool.func("exp", vec![ia]), pool.add(vec![ib, c1])]);
-            vec![(SolutionForm::Explicit(y), c1)]
+            }
+            bs
         } else {
             let (input, wp) = OdeInput::first_order(zk, ctx.w, pool);
             let input = input.with_equation(sub(wp, rhs, pool));

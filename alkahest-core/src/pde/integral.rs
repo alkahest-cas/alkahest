@@ -347,7 +347,7 @@ fn split_term(x: ExprId, pool: &ExprPool) -> Option<(Vec<ExprId>, ExprId)> {
         .collect();
     let c = pool.mul(coef);
     if let Some((body, t, lo, hi)) = integral_parts(node, pool) {
-        if mentions(c, t, pool) {
+        if mentions_free(c, t, pool) {
             return None;
         }
         return Some((vec![t, lo, hi], pool.mul(vec![c, body])));
@@ -359,6 +359,27 @@ fn split_term(x: ExprId, pool: &ExprPool) -> Option<(Vec<ExprId>, ExprId)> {
         return Some((vec![xv], pool.mul(vec![c, body])));
     }
     None
+}
+
+/// Whether `v` occurs free in `e` (not as the bound variable of a nested
+/// `Integral` or `Sum`).
+fn mentions_free(e: ExprId, v: ExprId, pool: &ExprPool) -> bool {
+    if e == v {
+        return true;
+    }
+    if let Some((body, t, lo, hi)) = integral_parts(e, pool) {
+        return mentions_free(lo, v, pool)
+            || mentions_free(hi, v, pool)
+            || (t != v && mentions_free(body, v, pool));
+    }
+    if let Some((body, k, lo, hi)) = super::sum::sum_parts(e, pool) {
+        return mentions_free(lo, v, pool)
+            || mentions_free(hi, v, pool)
+            || (k != v && mentions_free(body, v, pool));
+    }
+    let mut kids = Vec::new();
+    super::jet::push_children(e, pool, &mut kids);
+    kids.into_iter().any(|c| mentions_free(c, v, pool))
 }
 
 /// Whether `e` contains an `Integral` node.

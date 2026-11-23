@@ -20,11 +20,18 @@ from pde_expected import EXPECTED_SOLVED
 from pde_harness import run_entry
 
 ALL = [("sympy", e) for e in SYMPY] + [("textbook", e) for e in TEXTBOOK]
-ABBASI_ENTRIES = [("abbasi", e) for e in ABBASI]
+# The first 155-problem sample runs by default; the other 245 of the
+# 400-problem sample are `slow` (Tier 1b).
+ABBASI_ENTRIES = [
+    pytest.param(e, id=e["id"], marks=() if e["in155"] else pytest.mark.slow) for e in ABBASI
+]
+# Per-problem cooperative budget; the expected-solved set only lists problems
+# that solve well inside it.
+WALL_MS = 30_000
 
 
 def _check(entry):
-    r = run_entry(entry)
+    r = run_entry(entry, wall_ms=WALL_MS)
     assert r["status"] != "unverified", f"{entry['id']}: unverified answer {r}"
     assert r["status"] != "build_error", r
     if entry.get("expect") == "refused":
@@ -39,9 +46,7 @@ def test_corpus_entry(entry):
     _check(entry)
 
 
-@pytest.mark.parametrize(
-    "entry", [e for _, e in ABBASI_ENTRIES], ids=[e["id"] for _, e in ABBASI_ENTRIES]
-)
+@pytest.mark.parametrize("entry", ABBASI_ENTRIES)
 def test_abbasi_entry(entry):
     _check(entry)
 

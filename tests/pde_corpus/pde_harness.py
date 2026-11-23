@@ -104,7 +104,7 @@ def build(entry: dict):
     return pde, u
 
 
-def run_entry(entry: dict) -> dict:
+def run_entry(entry: dict, wall_ms: float | None = None) -> dict:
     """Solve one entry; the outcome dict never contains an unverified answer
     without saying so (``status == "unverified"`` is a corpus failure)."""
     t0 = time.perf_counter()
@@ -113,7 +113,16 @@ def run_entry(entry: dict) -> dict:
     except Exception as e:  # pragma: no cover - corpus authoring error
         return {"id": entry["id"], "status": "build_error", "error": repr(e)}
     try:
-        sol = akx.pdsolve(pde)
+        if wall_ms is None:
+            sol = akx.pdsolve(pde)
+        else:
+            # A cooperative wall-clock budget: a tripped budget can only turn
+            # an answer into a refusal (verification never passes on a
+            # budget trip), so it bounds the test without weakening it.
+            with ak.context(budget=ak.Budget(wall_ms=wall_ms)):
+                sol = akx.pdsolve(pde)
+    except ak.BudgetExceededError as e:
+        return {"id": entry["id"], "status": "refused", "code": e.code, "error": str(e)[:300]}
     except akx.PdeError as e:
         return {
             "id": entry["id"],

@@ -488,6 +488,10 @@ pub(crate) fn quad(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
 
 pub(crate) fn unevaluated(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {
     let e = simp(e, pool);
+    if !contains(e, v, pool) {
+        // Nothing to leave unevaluated.
+        return Some(simp(pool.mul(vec![e, v]), pool));
+    }
     let t = crate::pde::integral::fresh_dummy("_t", &[e, v], pool);
     let body = subs1(e, v, t, pool);
     let inst = instantiate_undefined(body, pool);
