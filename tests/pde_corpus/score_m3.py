@@ -36,7 +36,8 @@ def main() -> None:
         sl_math += math_ok
         print(f"{e['id']:<21} {mine:<32} {'solved' if math_ok else 'unevaluated'}")
     print(
-        f"eigenproblems: alkahest {sl_ok}/{len(t.SL_PROBLEMS)}, mathematica {sl_math}/{len(t.SL_PROBLEMS)}\n"
+        f"eigenproblems: alkahest {sl_ok}/{len(t.SL_PROBLEMS)}, "
+        f"mathematica {sl_math}/{len(t.SL_PROBLEMS)}\n"
     )
     tr_ok = tr_closed = m_closed = m_any = 0
     print(
