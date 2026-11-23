@@ -69,7 +69,9 @@ jobs:
           curl --fail --location --silent --show-error --retry 5 --retry-all-errors \
             --retry-delay 15 --connect-timeout 30 -o /tmp/elan-init.sh \
             https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh
-          sh /tmp/elan-init.sh --default-toolchain leanprover/lean4:v4.9.0 -y
+          # The toolchain is the one pinned in lean/lean-toolchain (kept in step
+          # with the Mathlib tag in lean/lakefile.lean and lean/lake-manifest.json).
+          sh /tmp/elan-init.sh --default-toolchain "$(cat lean/lean-toolchain)" -y
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: Cache Lean toolchain and Mathlib oleans
@@ -78,9 +80,7 @@ jobs:
           path: |
             ~/.elan
             lean/.lake
-          key: lean-${{ runner.os }}-${{ hashFiles('lean/lean-toolchain', 'lean/lakefile.lean', 'lean/lake-manifest.json') }}-v2
-          restore-keys: |
-            lean-${{ runner.os }}-
+          key: lean-${{ runner.os }}-${{ hashFiles('lean/lean-toolchain', 'lean/lakefile.lean', 'lean/lake-manifest.json') }}-v3
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -133,34 +133,60 @@ jobs:
         run: |
           python tests/lean_sos_corpus.py --output /tmp/lean_sos/
 
-      - name: Set up Mathlib (lake update + cache get)
+      - name: Set up Mathlib (prebuilt oleans from the Mathlib cache)
         run: |
           cd lean
-          lake update
+          # lake-manifest.json pins the exact Mathlib revision; `cache get`
+          # downloads its prebuilt oleans so Mathlib is never built from source.
           lake exe cache get
 
       - name: Verify proofs with Lean without admissions
         run: |
           cd lean
+          # Every file is checked (four at a time) and every failure is listed,
+          # so one run reports the whole picture rather than the first error.
+          check() {
+            f="$1"
+            fname=$(basename "$(dirname "$f")")/$(basename "$f")
+            if grep -Eq '\b(sorry|admit|axiom)\b' "$f"; then
+              echo "FAILED: $fname contains an admission"
+              return 1
+            fi
+            # autoImplicit=false: every free variable must be bound by an
+            # explicit binder. Under Lean's default a printed `(x : ℝ)` was
+            # silently auto-bound, so an unbound variable passed unnoticed.
+            start=$(date +%s)
+            if out=$(lake env lean -DwarningAsError=true -DautoImplicit=false "$f" 2>&1); then
+              echo "ok $fname ($(( $(date +%s) - start ))s)"
+            else
+              echo "FAILED: $fname"
+              echo "$out" | head -n 40
+              return 1
+            fi
+          }
+          export -f check
+          total=0
+          failed=0
           for dir in /tmp/lean_proofs /tmp/lean_tendsto /tmp/lean_gosper /tmp/lean_integrate /tmp/lean_pool /tmp/lean_sos; do
-            echo "== Verifying certificates in $dir =="
-            for f in "$dir"/*.lean; do
-              fname=$(basename "$f")
-              echo "Verifying $fname..."
-              if grep -Eq '\b(sorry|admit|axiom)\b' "$f"; then
-                echo "FAILED: $fname contains an admission"
-                exit 1
-              fi
-              # autoImplicit=false: every free variable must be bound by an
-              # explicit binder. Under Lean's default a printed `(x : ℝ)` was
-              # silently auto-bound, so an unbound variable passed unnoticed.
-              lake env lean -DwarningAsError=true -DautoImplicit=false "$f" || { echo "FAILED: $fname"; exit 1; }
-            done
+            n=$(ls "$dir"/*.lean 2>/dev/null | wc -l)
+            echo "== Verifying $n certificates in $dir =="
+            log=$(mktemp)
+            ls "$dir"/*.lean | xargs -P 4 -I{} bash -c 'check "$@"' _ {} > "$log" 2>&1 || true
+            cat "$log"
+            bad=$(grep -c '^FAILED:' "$log" || true)
+            echo "== $dir: $((n - bad))/$n verified =="
+            total=$((total + n))
+            failed=$((failed + bad))
           done
+          echo "== Lean $(lean --version | head -n 1): $((total - failed))/$total certificates verified =="
+          if [ "$failed" -ne 0 ]; then
+            echo "$failed certificate(s) failed to verify"
+            exit 1
+          fi
           echo "All generated Lean proofs (fixed corpus + Tendsto corpus + Gosper corpus + integration corpus + full textbook-gate pool + SOS) verified without admissions."
 
-      - name: Upload generated Lean proofs on failure
-        if: failure()
+      - name: Upload generated Lean proofs
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: generated-lean-proofs

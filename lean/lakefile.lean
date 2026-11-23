@@ -5,6 +5,6 @@ open Lake DSL
 -- `lake update` resolves the Mathlib4 revision compatible with the
 -- lean-toolchain pin; `lake exe cache get` downloads prebuilt oleans.
 require mathlib from git
-  "https://github.com/leanprover-community/mathlib4" @ "v4.9.0"
+  "https://github.com/leanprover-community/mathlib4" @ "v4.36.0"
 
 package alkahestProofs
