@@ -315,6 +315,8 @@ Exception subclasses
    - ``E-PDE-053`` — side conditions ``pdsolve`` cannot impose on a first-order
      problem: data on a derivative, several conditions, a data manifold of the
      wrong dimension, or parameters that could not be eliminated.
+   - ``E-PDE-054`` — a malformed ``Integral(f, t, lo, hi)`` / ``Integral(f, x)``
+     (the integration variable is not a symbol, or a bound mentions it).
 
 .. exception:: ProbabilityError
 

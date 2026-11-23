@@ -139,6 +139,10 @@ impl<'a> IntegralSearch<'a> {
                     if i == j || self.found.len() >= need {
                         continue;
                     }
+                    // An active budget (wall clock / steps) stops the search.
+                    if crate::budget::tripped().is_some() {
+                        return;
+                    }
                     for xi in self.pair_integral(i, j, pool) {
                         if self.offer(xi, "characteristic ODE", pool) {
                             progress = true;
@@ -152,6 +156,9 @@ impl<'a> IntegralSearch<'a> {
             for deg in 1..=3u32 {
                 if self.found.len() >= need {
                     break;
+                }
+                if crate::budget::tripped().is_some() {
+                    return;
                 }
                 for xi in ansatz_integrals(f, deg, pool) {
                     if self.found.len() >= need {

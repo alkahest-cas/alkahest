@@ -446,6 +446,10 @@ fn run(
         if !(tier.applies)(&ctx) {
             continue;
         }
+        if crate::budget::tripped().is_some() {
+            ctx.fail("the active budget was exhausted".into());
+            break;
+        }
         applicable += 1;
         let cands = (tier.solve)(&mut ctx, pool);
         if cands.is_empty() {
