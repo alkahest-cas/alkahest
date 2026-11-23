@@ -90,7 +90,7 @@ impl Jets {
             .into_iter()
             .filter_map(|s| self.decode(s, pool).map(|a| (a, s)))
             .collect();
-        out.sort_by(|a, b| rank_key(&a.0).cmp(&rank_key(&b.0)));
+        out.sort_by_key(|a| rank_key(&a.0));
         out
     }
 
@@ -209,7 +209,7 @@ impl Reducer {
             .into_iter()
             .filter(|(a, _)| a.iter().sum::<u32>() > 0)
             .collect();
-        cands.sort_by(|a, b| rank_key(&b.0).cmp(&rank_key(&a.0)));
+        cands.sort_by_key(|a| std::cmp::Reverse(rank_key(&a.0)));
         let maxo = cands.first().map(|c| c.0.iter().sum::<u32>()).unwrap_or(0);
         for (a, s) in &cands {
             if a.iter().sum::<u32>() < maxo {
@@ -601,8 +601,8 @@ pub(crate) fn determining(
     let mut dq: HashMap<Alpha, ExprId> = HashMap::new();
     dq.insert(vec![0; p], q);
     let mut terms = Vec::new();
-    for i in 0..p {
-        if let Some(fx) = d(f, jets.indep[i], pool) {
+    for (i, &xi) in jets.indep.iter().enumerate().take(p) {
+        if let Some(fx) = d(f, xi, pool) {
             if fx != pool.integer(0) {
                 terms.push(pool.mul(vec![a0(i), fx]));
             }

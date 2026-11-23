@@ -149,7 +149,7 @@ fn rewrite_root(e: ExprId, z: ExprId, w: ExprId, l: i64, pool: &ExprPool) -> Exp
     match pool.get(e) {
         ExprData::Pow { base, exp } if base == z => {
             if let Some(q) = super::solve::util::as_rational(exp, pool) {
-                let k = rug::Rational::from(&q * rug::Rational::from(l));
+                let k: rug::Rational = &q * rug::Rational::from(l);
                 if *k.denom() == 1 {
                     return pool.pow(w, pool.integer(k.numer().clone()));
                 }
@@ -993,7 +993,9 @@ impl DetSys {
                 .map(|a| a.0)
                 .collect();
             cands.sort_by_key(|&k| std::cmp::Reverse(self.funcs[k].deps.len()));
-            for k in cands {
+            // Only the first candidate is tried: it either branches or is
+            // eliminated.
+            if let Some(&k) = cands.first() {
                 let c = eq[&(k, za.clone())];
                 if !self.depends_on_vars(c, pool) {
                     if let Nz::Split(f) = self.nonzero_kind(c, pool) {

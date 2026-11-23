@@ -1480,6 +1480,10 @@ fn balance(ode: ExprId, ys: &[ExprId], pool: &ExprPool) -> Vec<u32> {
     out
 }
 
+/// A polynomial term: exponent vector and integer coefficient.
+#[cfg(feature = "groebner")]
+type Term = (Vec<u32>, rug::Integer);
+
 #[cfg(feature = "groebner")]
 fn ansatz_solutions(
     red: &Red,
@@ -1559,8 +1563,8 @@ fn ansatz_solutions(
             continue;
         };
         // Reduce Z² → 1 − Y² (sech basis), collect coefficients of Y^i Z^j.
-        let mut coeffs: HashMap<(u32, u32), Vec<(Vec<u32>, rug::Integer)>> = HashMap::new();
-        let mut work: Vec<(Vec<u32>, rug::Integer)> = rf
+        let mut coeffs: HashMap<(u32, u32), Vec<Term>> = HashMap::new();
+        let mut work: Vec<Term> = rf
             .numer
             .terms
             .iter()
