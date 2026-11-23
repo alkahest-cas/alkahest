@@ -30,12 +30,20 @@ dominates the cost of a search. This module makes it fast and exact:
 * :func:`search` — a small reference controller (risk-seeking policy
   gradient over per-slot categorical distributions, as in the paper) so a
   search runs end to end.
+* :func:`finalize` — turns a fitted candidate into an exact closed form
+  (filtering, tied weights, snapping to rationals and constants such as
+  ``π/4``, refitting under a loss gate), lifts it to symbolic dimension ``d``
+  with ``Sum`` / ``Indexed`` and verifies it exactly — for every ``d`` — with
+  the statuses of :func:`alkahest.experimental.verify_pde_solution`, plus a
+  Lean certificate at the fitted ``d`` when cheap;
+  :func:`recovery_metric` is the skeleton-equivalence recovery criterion.
 
 Candidates whose value overflows, divides by zero or takes ``log`` of a
 non-positive number get loss ``+inf`` — never NaN. Malformed input raises
-:class:`FexError` (``E-FEX-001`` … ``E-FEX-008``).
+:class:`FexError` (``E-FEX-001`` … ``E-FEX-011``).
 
-The dimension ``d`` is concrete. Arrays are NumPy ``float64`` (opcodes
+Search and fitting run at a concrete dimension ``d``; :func:`finalize`
+lifts the result to symbolic ``d``. Arrays are NumPy ``float64`` (opcodes
 ``int64``); anything exposing ``__dlpack__`` is accepted as input.
 
 Example
@@ -82,10 +90,10 @@ __all__ = [
     "family_symbols",
     "finalize",
     "fit",
+    "recovery_metric",
     "sample_box",
     "sample_box_boundary",
     "sample_initial_slice",
-    "recovery_metric",
     "search",
     "snap_candidates",
 ]

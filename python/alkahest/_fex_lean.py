@@ -276,9 +276,7 @@ def _emit(kind, expr, coords, time, src) -> str:
     else:
         stmt = f"{' + '.join(terms)} = {rhs_text}"
         rws = ", ".join(
-            f"(h{k} x{k}).deriv"
-            for k in range(n)
-            if _ak.is_zero(src["coeffs"][k]) is not True
+            f"(h{k} x{k}).deriv" for k in range(n) if _ak.is_zero(src["coeffs"][k]) is not True
         )
     lines.append(f"theorem fex_pde ({binders} : ℝ) :\n    {stmt} := by")
     lines.extend(proof)

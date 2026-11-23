@@ -65,17 +65,20 @@ def test_poisson_symbolic_d():
     assert conc["status"] == "exactly_verified"
     assert len(conc["bc"]) == 2 * d  # every face
     sym = out["verification"]["symbolic_d"]
-    assert sym["status"] == "exactly_verified" and sym["verified"]
+    assert sym["status"] == "exactly_verified"
+    assert sym["verified"]
     assert sym["family"]["rhs"] == "(-1 * d)"
     assert "Sum(Indexed(x, i)^2, i, 1, d)" in str(out["expr_symbolic_d"])
     # The lifted solution really has Laplacian d (independently of finalize).
     fs = fex.family_symbols(prob)
     assert laplacian_indexed(out["expr_symbolic_d"], fs.x, 1, fs.d) == fs.d
     how = {p["how"] for p in out["snapped_params"]}
-    assert "redundant" in how and "rational" in how
+    assert "redundant" in how
+    assert "rational" in how
     assert out["certificate"]["status"] == "emitted"
     lean = out["certificate"]["lean"]
-    assert "theorem fex_pde" in lean and "sorry" not in lean
+    assert "theorem fex_pde" in lean
+    assert "sorry" not in lean
     assert out["certificate"]["externally_verified"] is False
 
 
@@ -95,7 +98,8 @@ def test_conservation_snaps_pi_over_4_and_lifts():
     assert ak.is_zero(out["expr"] - ak.sin(t + sum(xs) * C)) is not False
     assert out["verification"]["concrete"]["status"] == "exactly_verified"
     sym = out["verification"]["symbolic_d"]
-    assert sym["verified"] and sym["family_inferred"]
+    assert sym["verified"]
+    assert sym["family_inferred"]
     # The paper's family, given explicitly: (πd/4) u_t − Σ u_x = 0.
     fs = fex.family_symbols(prob)
     pi = fs.pool.pi()
@@ -106,7 +110,8 @@ def test_conservation_snaps_pi_over_4_and_lifts():
     }
     out2 = fex.finalize(res, prob, template=tpl, points=pts, boundary=bd, family=fam)
     sym2 = out2["verification"]["symbolic_d"]
-    assert sym2["verified"] and not sym2["family_inferred"]
+    assert sym2["verified"]
+    assert not sym2["family_inferred"]
     assert "Sum(Indexed(x, i), i, 1, d)" in str(out2["expr_symbolic_d"])
     assert "d" not in str(out2["expr_symbolic_d"]).replace("Indexed", "").replace(", d)", "")
 
@@ -199,10 +204,13 @@ def test_unsnappable_candidate_gets_an_enclosure_only():
 
 def test_snap_candidates():
     best = fex.snap_candidates(math.pi / 4)[0]
-    assert str(best[0]) == "1/4*pi" and best[1] == "constant"
+    assert str(best[0]) == "1/4*pi"
+    assert best[1] == "constant"
     assert str(fex.snap_candidates(0.5)[0][0]) == "1/2"
     two = fex.snap_candidates(1 + math.pi / 4, rel_tol=1e-6)
-    assert any(str(c) == "1 + 1/4*pi^1" or c.value() == pytest.approx(1 + math.pi / 4) for c, _ in two)
+    assert any(
+        str(c) == "1 + 1/4*pi^1" or c.value() == pytest.approx(1 + math.pi / 4) for c, _ in two
+    )
     assert any(how in ("pslq", "lll") for _, how in two)
     # A "random" number does not snap to a complicated constant.
     assert all(c.cost() <= 12 for c, _ in fex.snap_candidates(0.7390851332151607 + 1e-9))
@@ -217,7 +225,8 @@ def test_recovery_metric():
     assert r["skeleton_equivalent"] is True
     assert r["exact"] is not True  # floats: never a proof of equality
     r2 = fex.recovery_metric(sum(v**2 for v in x) * pool.rational(1, 2), truth)
-    assert r2["skeleton_equivalent"] and r2["exact"] is True
+    assert r2["skeleton_equivalent"]
+    assert r2["exact"] is True
     r3 = fex.recovery_metric(ak.sin(sum(x)), truth)
     assert r3["skeleton_equivalent"] is False
     with pytest.raises(fex.FexError) as ei:
@@ -253,7 +262,8 @@ def test_search_result_carries_what_finalize_needs():
         target_loss=1e-20,
         rng=rng,
     )
-    assert res.template is tpl and res.points is not None
+    assert res.template is tpl
+    assert res.points is not None
     out = fex.finalize(res, prob)
     assert out["verification"]["symbolic_d"]["verified"]
     assert fex.recovery_metric(out, sum(v**2 for v in prob.x) / 2)["exact"] is True

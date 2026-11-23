@@ -63,8 +63,7 @@ _REMEDIATION = {
         "terms at the problem's dimension"
     ),
     "E-FEX-011": (
-        "pass two Expr from the same ExprPool (or a SearchResult / finalize result for "
-        "'found')"
+        "pass two Expr from the same ExprPool (or a SearchResult / finalize result for 'found')"
     ),
 }
 
@@ -248,7 +247,7 @@ def snap_candidates(
     try:
         from . import PslqError  # type: ignore[attr-defined]
     except ImportError:  # pragma: no cover
-        PslqError = Exception  # noqa: N806
+        PslqError = Exception
     for n, (kv, _kc) in _BASIS.items():
         try:
             rel = _ak.guess_relation([v, 1.0, kv], max_abs_coeff=max_den)
@@ -273,7 +272,7 @@ def snap_candidates(
         ]
         try:
             red = lll_reduce_rows(rows)
-        except Exception:  # noqa: BLE001 - LLL refusals mean "no relation"
+        except Exception:
             continue
         for row in red[:2]:
             c0, c1, c2, c3, _ = row
@@ -421,10 +420,10 @@ class _Refitter:
             sy = s @ y
             if sy > 1e-300:
                 rho = 1.0 / sy
-                I = np.eye(len(phi))
-                H = (I - rho * np.outer(s, y)) @ H @ (I - rho * np.outer(y, s)) + rho * np.outer(
-                    s, s
-                )
+                eye = np.eye(len(phi))
+                H = (eye - rho * np.outer(s, y)) @ H @ (
+                    eye - rho * np.outer(y, s)
+                ) + rho * np.outer(s, s)
             if np.linalg.norm(g) < 1e-14 * max(1.0, abs(f)):
                 break
         return th, f
@@ -956,7 +955,7 @@ def _verify_residuals(pool: Any, pde: list[Any], bc: list[Any], ic: list[Any]) -
     for form in forms:
         try:
             v2 = finish(run(*([form(r) for r in rs] for rs in (pde, bc, ic))))
-        except Exception:  # noqa: BLE001 - a normal form that fails is skipped
+        except Exception:
             continue
         for key in ("pde", "bc", "ic"):
             for j, c2 in enumerate(v2[key]):
@@ -1202,11 +1201,16 @@ def finalize(
 
     # 1. Pin parameters that do not change the family.
     red = tpl.redundant_params(e)
-    pins = {k: Const.rational(Fraction(v).limit_denominator(1000)) for k, v in enumerate(red) if v is not None}
-    if pins:
-        if attempt({**fixed, **pins}, without(groups, set(pins)), f"pin {len(pins)} redundant"):
-            for k in pins:
-                how[k] = "redundant"
+    pins = {
+        k: Const.rational(Fraction(v).limit_denominator(1000))
+        for k, v in enumerate(red)
+        if v is not None
+    }
+    if pins and attempt(
+        {**fixed, **pins}, without(groups, set(pins)), f"pin {len(pins)} redundant"
+    ):
+        for k in pins:
+            how[k] = "redundant"
 
     # 2. Filtering: coefficients below tau become 0.
     small = sorted(
@@ -1270,7 +1274,7 @@ def finalize(
         slot = max(s for s in range(len(offs)) if offs[s] <= k and kinds[s] != "binary")
         return (0 if is_bias(k) else 1, 0 if kinds[slot] == "unary" else 1, -slot, k)
 
-    for g in sorted(list(groups), key=order_key):
+    for g in sorted(groups, key=order_key):
         if g not in groups:
             continue
         v = float(np.mean(th_cur[g]))
@@ -1394,7 +1398,11 @@ def finalize(
         )
 
     # Lift to symbolic d.
-    if symbolic_d and not trivial and kind in ("poisson", "transport", "cubic_schrodinger", "eigen"):
+    if (
+        symbolic_d
+        and not trivial
+        and kind in ("poisson", "transport", "cubic_schrodinger", "eigen")
+    ):
         lifted = _lift_and_verify(
             tpl, e, fixed, groups, problem, kind, time, domain, family, all_exact, out
         )
@@ -1415,7 +1423,9 @@ def _drop_half_turns(tpl, e, fixed: dict, coords, log: list) -> dict:
     is tried at ``0``, alone or with one inner unary scale negated, and the
     change is kept only when the two closed forms are *proved* equal."""
     pool = coords[0]._pool if coords else None
-    if pool is None or not any(tpl.unary[e[s]] in ("sin", "cos") for s in range(len(e)) if tpl.slot_kinds[s] != "binary"):
+    if pool is None or not any(
+        tpl.unary[e[s]] in ("sin", "cos") for s in range(len(e)) if tpl.slot_kinds[s] != "binary"
+    ):
         return fixed
     n = tpl.n_params
 
@@ -1443,7 +1453,10 @@ def _drop_half_turns(tpl, e, fixed: dict, coords, log: list) -> dict:
                     fx[flip] = fixed[flip].scaled(Fraction(-1))
                 cand = inst(fx)
                 if _ak.is_zero(_simp(cand - base)) is True:
-                    log.append(f"half-turn: θ{k} = {c} -> 0" + (f", θ{flip} negated" if flip is not None else ""))
+                    log.append(
+                        f"half-turn: θ{k} = {c} -> 0"
+                        + (f", θ{flip} negated" if flip is not None else "")
+                    )
                     fixed, base, changed = fx, cand, True
                     break
             if changed:
@@ -1488,7 +1501,9 @@ def _exact_sources(problem: Any, kind: str, time: int | None) -> tuple[dict | No
         for key in ("rhs", "bc", "potential"):
             out[key] = exactify(spec.get(key), key)
         if kind == "transport":
-            out["coeffs"] = [exactify(float(c), f"coefficient {k}") for k, c in enumerate(spec["grad_coeffs"])]
+            out["coeffs"] = [
+                exactify(float(c), f"coefficient {k}") for k, c in enumerate(spec["grad_coeffs"])
+            ]
     except ValueError as exc:
         notes.append(f"no exact form for {exc}")
         return None, notes
@@ -1585,7 +1600,8 @@ def _refine_eigen(problem, tpl, e, theta, pts, max_den, snap_tol, log):
     free = [[k] for k in range(tpl.n_params) if k not in hold]
     loss = math.inf
     rounds = 0
-    for rounds in range(1, 31):
+    for _ in range(30):
+        rounds += 1
         ev = _fex.Evaluator(tpl, _eigen_twin(problem, lam), sel, None)
         rf = _Refitter(ev, e, th, False)
         th_new, loss = rf.fit(free, hold, np.array([th[g[0]] for g in free]), max_iter=40)
@@ -1615,7 +1631,7 @@ def _interval_residual(kind, tpl, e, th, coords, time, src, problem, pts, m, rng
     try:
         u = tpl.instantiate(e, th, coords)
         res = _operator_concrete(kind, u, coords, time, src)
-    except Exception as exc:  # noqa: BLE001 - reported, not raised
+    except Exception as exc:
         return {"status": "unavailable", "reason": str(exc)}
     if pts is None:
         return None
@@ -1626,7 +1642,7 @@ def _interval_residual(kind, tpl, e, th, coords, time, src, problem, pts, m, rng
         b = {x: _ak.ArbBall(float(v)) for x, v in zip(coords, p)}
         try:
             ball = _ak.interval_eval(res, b)
-        except Exception:  # noqa: BLE001
+        except Exception:
             continue
         hi = max(abs(float(ball.lo)), abs(float(ball.hi)))
         worst = max(worst, hi)
@@ -1779,7 +1795,7 @@ def _lift_and_verify(tpl, e, fixed, groups, problem, kind, time, domain, family,
     # Residuals in placeholders.
     try:
         res_ph = _operator_symbolic(kind, u_ph, fs, src_ph)
-    except Exception as exc:  # noqa: BLE001 - a lifting failure is reported
+    except Exception as exc:
         report["reason"] = f"symbolic operator failed: {exc}"
         return report
     has_bc = spec.get("bc_weight", 100.0) > 0
@@ -1924,7 +1940,7 @@ def _face_restrict(r: Any, fs: FamilySymbols, b: Any) -> Any | None:
 
     try:
         return _rebuild(r, f)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -2055,7 +2071,7 @@ def _skeleton(e: Any) -> str:
     e = _rebuild(e, ratify)
     try:
         e = _ak.expand(_expand_args(_simp(e)))
-    except Exception:  # noqa: BLE001 - keep the simplified form
+    except Exception:
         e = _simp(e)
     return go(e)
 
@@ -2083,7 +2099,7 @@ def recovery_metric(found: Any, truth: Any, *, coords: Any = None) -> dict:
     sf, st = _skeleton(found), _skeleton(truth)
     try:
         exact = _ak.is_zero(_simp(found - truth))
-    except Exception:  # noqa: BLE001 - undecided
+    except Exception:
         exact = None
     return {
         "skeleton_equivalent": sf == st,
