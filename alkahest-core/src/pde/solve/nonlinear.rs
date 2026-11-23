@@ -94,9 +94,9 @@ pub(crate) fn solve_f_p(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> {
         let consts: Vec<ExprId> = (0..n).map(|_| ctx.fresh_constant(pool)).collect();
         let mut m = HashMap::new();
         let mut ci = 0;
-        for i in 0..n {
+        for (i, &pi) in ctx.p.iter().enumerate() {
             if i != k {
-                m.insert(ctx.p[i], consts[ci]);
+                m.insert(pi, consts[ci]);
                 ci += 1;
             }
         }
@@ -104,11 +104,11 @@ pub(crate) fn solve_f_p(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> {
             let qa = subs_map(q, &m, pool);
             let mut terms = Vec::new();
             let mut ci = 0;
-            for i in 0..n {
+            for (i, &xi) in ctx.indep.iter().enumerate() {
                 if i == k {
-                    terms.push(pool.mul(vec![qa, ctx.indep[i]]));
+                    terms.push(pool.mul(vec![qa, xi]));
                 } else {
-                    terms.push(pool.mul(vec![consts[ci], ctx.indep[i]]));
+                    terms.push(pool.mul(vec![consts[ci], xi]));
                     ci += 1;
                 }
             }
