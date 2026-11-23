@@ -192,7 +192,9 @@ pub fn verify_solution(
         let r = super::integral::alpha_normalize_integrals(r, pool);
         let r = crate::simplify::engine::simplify(r, pool).value;
         let r = if super::integral::has_integral(r, pool) {
-            let c = super::integral::combine_integrals(r, pool);
+            // Distribute first so every integral is a term `c·∫…` of one sum.
+            let e = crate::simplify::engine::simplify_expanded(r, pool).value;
+            let c = super::integral::combine_integrals(e, pool);
             crate::simplify::engine::simplify(c, pool).value
         } else {
             r

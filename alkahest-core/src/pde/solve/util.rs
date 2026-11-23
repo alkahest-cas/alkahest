@@ -45,6 +45,23 @@ pub(crate) fn is_zero(e: ExprId, pool: &ExprPool) -> bool {
     zero_test(s, pool, None).status == ZeroStatus::ProvedZero
 }
 
+/// [`is_zero`] for expressions that may contain `Integral` nodes: the
+/// integrals are alpha-normalised, the expression distributed, and
+/// `Σ cᵢ ∫ fᵢ` combined into one integral before the zero test (as in
+/// verification).
+pub(crate) fn is_zero_with_integrals(e: ExprId, pool: &ExprPool) -> bool {
+    if !crate::pde::integral::has_integral(e, pool) {
+        return is_zero(e, pool);
+    }
+    if is_zero(e, pool) {
+        return true;
+    }
+    let a = crate::pde::integral::alpha_normalize_integrals(e, pool);
+    let x = crate::simplify::engine::simplify_expanded(a, pool).value;
+    let c = crate::pde::integral::combine_integrals(x, pool);
+    is_zero(c, pool)
+}
+
 pub(crate) fn is_number(e: ExprId, pool: &ExprPool) -> bool {
     pool.with(e, |d| {
         matches!(
@@ -230,7 +247,7 @@ pub(crate) fn isolate(eq: ExprId, v: ExprId, pool: &ExprPool) -> Vec<ExprId> {
                         let root = if rhs == pool.integer(0) && q > 0 {
                             rhs
                         } else {
-                            pool.pow(rhs, inv)
+                            root_of(rhs, inv, pool)
                         };
                         stack.push((base, simp(root, pool), depth + 1));
                         // Even integer power: the negative root as well.
@@ -289,6 +306,23 @@ pub(crate) fn isolate(eq: ExprId, v: ExprId, pool: &ExprPool) -> Vec<ExprId> {
         out.extend(solver_isolate(eq, v, pool));
     }
     out
+}
+
+/// `rhs^inv`, distributing over a product and multiplying exponents of
+/// powers (`(a²)^(1/2) → a`).  A branch choice; callers verify (the other
+/// sign of an even root is pushed separately).
+fn root_of(rhs: ExprId, inv: ExprId, pool: &ExprPool) -> ExprId {
+    let one = |f: ExprId| match pool.get(f) {
+        ExprData::Pow { base, exp } if is_number(exp, pool) => {
+            pool.pow(base, simp(pool.mul(vec![exp, inv]), pool))
+        }
+        _ => pool.pow(f, inv),
+    };
+    let r = match pool.get(rhs) {
+        ExprData::Mul(xs) => pool.mul(xs.into_iter().map(one).collect()),
+        _ => one(rhs),
+    };
+    simp(r, pool)
 }
 
 #[cfg(feature = "groebner")]
@@ -520,12 +554,48 @@ pub(crate) fn instantiate_undefined(e: ExprId, pool: &ExprPool) -> ExprId {
             pool.func("sin", vec![lin]),
             pool.func("exp", vec![pool.mul(vec![pool.rational(1, 5), lin])]),
         ]);
-        let pattern = pool.func(name, xi);
+        let pattern = pool.func(name.clone(), xi.clone());
         if let Ok(r) = crate::diff::undefined::replace_function(cur, pattern, body, pool) {
             cur = r;
         }
+        // Applications the replacement did not reach (inside an `Integral`).
+        cur = replace_apps(cur, &name, &xi, body, pool);
     }
     cur
+}
+
+fn replace_apps(e: ExprId, name: &str, params: &[ExprId], body: ExprId, pool: &ExprPool) -> ExprId {
+    match pool.get(e) {
+        ExprData::Func { name: n, args } if n == name && args.len() == params.len() => {
+            let args: Vec<ExprId> = args
+                .iter()
+                .map(|&a| replace_apps(a, name, params, body, pool))
+                .collect();
+            let m: HashMap<ExprId, ExprId> = params.iter().copied().zip(args).collect();
+            subs_map(body, &m, pool)
+        }
+        ExprData::Func { name: n, args } => pool.func(
+            n,
+            args.iter()
+                .map(|&a| replace_apps(a, name, params, body, pool))
+                .collect(),
+        ),
+        ExprData::Add(xs) => pool.add(
+            xs.iter()
+                .map(|&a| replace_apps(a, name, params, body, pool))
+                .collect(),
+        ),
+        ExprData::Mul(xs) => pool.mul(
+            xs.iter()
+                .map(|&a| replace_apps(a, name, params, body, pool))
+                .collect(),
+        ),
+        ExprData::Pow { base, exp } => pool.pow(
+            replace_apps(base, name, params, body, pool),
+            replace_apps(exp, name, params, body, pool),
+        ),
+        _ => e,
+    }
 }
 
 fn integrate_core(e: ExprId, v: ExprId, pool: &ExprPool) -> Option<ExprId> {

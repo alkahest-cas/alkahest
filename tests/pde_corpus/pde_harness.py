@@ -128,6 +128,7 @@ def run_entry(entry: dict) -> dict:
         "method": sol.method,
         "implicit": sol.implicit,
         "value": str(sol.value),
+        "integral": "Integral(" in str(sol.value),
         "side_conditions": [s[2] for s in sol.side_conditions],
         "seconds": time.perf_counter() - t0,
     }

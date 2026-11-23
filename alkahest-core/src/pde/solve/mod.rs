@@ -522,6 +522,17 @@ fn finalize(
         (v, Vec::new())
     };
     if verification.status != VerificationStatus::ExactlyVerified {
+        #[cfg(test)]
+        if std::env::var("PDE_DEBUG_RESID").is_ok() {
+            for c in &verification.checks {
+                eprintln!(
+                    "RESID {} {}: {}",
+                    c.kind,
+                    c.status.as_str(),
+                    pool.display(c.residual)
+                );
+            }
+        }
         let bad: Vec<String> = verification
             .checks
             .iter()
@@ -579,7 +590,16 @@ pub(crate) fn tidy(e: ExprId, pool: &ExprPool) -> ExprId {
             let xs: Vec<ExprId> = xs.iter().map(|&x| tidy(x, pool)).collect();
             merge_exps(xs, pool)
         }
-        ExprData::Pow { base, exp } => pool.pow(tidy(base, pool), tidy(exp, pool)),
+        ExprData::Pow { base, exp } => {
+            let mut b = tidy(base, pool);
+            // The base of a fractional / symbolic power is expanded like a
+            // function argument (`(a x + b(L − a x/b) + c)^(1/2)`).
+            let integral_exp = as_rational(exp, pool).is_some_and(|q| q.denom() == &1u32);
+            if !integral_exp && pool.depth(b) < 12 {
+                b = crate::simplify::engine::simplify_expanded(b, pool).value;
+            }
+            pool.pow(b, tidy(exp, pool))
+        }
         ExprData::Func { name, args } => {
             let mut args: Vec<ExprId> = args.iter().map(|&a| tidy(a, pool)).collect();
             if ELEMENTARY.contains(&name.as_str()) && args.len() == 1 && pool.depth(args[0]) < 12 {

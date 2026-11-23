@@ -59,7 +59,7 @@ impl VectorField {
             return false;
         }
         match self.apply(xi, pool) {
-            Some(r) => is_zero(r, pool),
+            Some(r) => is_zero_with_integrals(r, pool),
             None => false,
         }
     }
@@ -172,6 +172,7 @@ impl<'a> IntegralSearch<'a> {
             return Vec::new();
         }
         let mut ratio = simp(div(f.comps[j], f.comps[i], pool), pool);
+        let (mut ci, mut cj) = (f.comps[i], f.comps[j]);
         // Eliminate third variables.
         let mut back: HashMap<ExprId, ExprId> = HashMap::new();
         for (k, &zk) in f.vars.iter().enumerate() {
@@ -197,6 +198,8 @@ impl<'a> IntegralSearch<'a> {
                     continue;
                 };
                 ratio = simp(subs1(ratio, zk, zk_of, pool), pool);
+                ci = simp(subs1(ci, zk, zk_of, pool), pool);
+                cj = simp(subs1(cj, zk, zk_of, pool), pool);
                 back.insert(c, xi);
                 done = true;
                 break;
@@ -251,6 +254,22 @@ impl<'a> IntegralSearch<'a> {
         } else {
             for c in linear_or_bernoulli(ratio, zi, zj, pool) {
                 push(Some(c), &mut constants);
+            }
+            for c in linear_argument(ratio, zi, zj, pool) {
+                push(Some(c), &mut constants);
+            }
+            // cⱼ dzᵢ − cᵢ dzⱼ = 0: exact, or exact after μ(zᵢ) / μ(zⱼ).
+            for c in exact_with_factor(cj, neg(ci, pool), zi, zj, pool) {
+                push(Some(c), &mut constants);
+            }
+            // The same on the cancelled numerator / denominator of the ratio
+            // (the field may have been normalised by a coefficient).
+            if let Ok((nu, de)) = crate::poly::cancel::together_parts(ratio, vec![zi, zj], pool) {
+                if de != ci || nu != cj {
+                    for c in exact_with_factor(nu, neg(de, pool), zi, zj, pool) {
+                        push(Some(c), &mut constants);
+                    }
+                }
             }
             if constants.is_empty() && !has_undefined(ratio, pool) {
                 for c in super::riccati::riccati_integrals(ratio, zi, zj, pool) {
@@ -378,6 +397,91 @@ fn linear_or_bernoulli(ratio: ExprId, zi: ExprId, zj: ExprId, pool: &ExprPool) -
         };
         let Some(iq) = iq else { continue };
         out.push(simp(sub(pool.mul(vec![w, mu]), iq, pool), pool));
+    }
+    out
+}
+
+/// `dzⱼ/dzᵢ = F(κ zᵢ + zⱼ)`: with `L = κ zᵢ + zⱼ`, `dL/dzᵢ = κ + F(L)` is
+/// separable, giving `∫ dL/(κ + F(L)) − zᵢ`.
+fn linear_argument(ratio: ExprId, zi: ExprId, zj: ExprId, pool: &ExprPool) -> Vec<ExprId> {
+    let mut out = Vec::new();
+    let (Some(ri), Some(rj)) = (d(ratio, zi, pool), d(ratio, zj, pool)) else {
+        return out;
+    };
+    if is_zero(rj, pool) || is_zero(ri, pool) {
+        return out;
+    }
+    let kappa = simp(div(ri, rj, pool), pool);
+    if contains(kappa, zi, pool) || contains(kappa, zj, pool) {
+        return out;
+    }
+    let l = crate::pde::integral::fresh_dummy("_L", &[ratio, zi, zj], pool);
+    // zⱼ = L − κ zᵢ
+    let fl = simp(
+        subs1(ratio, zj, sub(l, pool.mul(vec![kappa, zi]), pool), pool),
+        pool,
+    );
+    let fl = super::tidy(
+        crate::simplify::engine::simplify_expanded(fl, pool).value,
+        pool,
+    );
+    if contains(fl, zi, pool) {
+        return out;
+    }
+    let integrand = recip(pool.add(vec![kappa, fl]), pool);
+    let lv = pool.add(vec![pool.mul(vec![kappa, zi]), zj]);
+    for q in [quad(integrand, l, pool), unevaluated(integrand, l, pool)]
+        .into_iter()
+        .flatten()
+    {
+        out.push(simp(sub(subs1(q, l, lv, pool), zi, pool), pool));
+    }
+    out
+}
+
+/// `M dzᵢ + N dzⱼ = 0`: the potential when exact, or after an integrating
+/// factor depending on `zᵢ` or `zⱼ` alone.
+fn exact_with_factor(m: ExprId, n: ExprId, zi: ExprId, zj: ExprId, pool: &ExprPool) -> Vec<ExprId> {
+    let mut out = Vec::new();
+    let (Some(my), Some(nx)) = (d(m, zj, pool), d(n, zi, pool)) else {
+        return out;
+    };
+    let diff = simp(sub(my, nx, pool), pool);
+    let mut factors: Vec<ExprId> = Vec::new();
+    if is_zero(diff, pool) {
+        factors.push(pool.integer(1));
+    } else {
+        // μ(zᵢ): μ′/μ = (M_y − N_x)/N;  μ(zⱼ): μ′/μ = (N_x − M_y)/M.
+        let gi = simp(div(diff, n, pool), pool);
+        if !contains(gi, zj, pool) {
+            if let Some(ig) = integrate(gi, zi, pool) {
+                factors.push(simp(pool.func("exp", vec![ig]), pool));
+            }
+        }
+        let gj = simp(div(neg(diff, pool), m, pool), pool);
+        if !contains(gj, zi, pool) {
+            if let Some(ig) = integrate(gj, zj, pool) {
+                factors.push(simp(pool.func("exp", vec![ig]), pool));
+            }
+        }
+    }
+    for mu in factors {
+        let mm = simp(pool.mul(vec![mu, m]), pool);
+        let nn = simp(pool.mul(vec![mu, n]), pool);
+        let Some(p) = quad(mm, zi, pool) else {
+            continue;
+        };
+        let Some(dp) = d(p, zj, pool) else { continue };
+        let rest = simp(sub(nn, dp, pool), pool);
+        let rest = crate::simplify::engine::simplify_expanded(rest, pool).value;
+        if contains(rest, zi, pool) && !is_zero(d(rest, zi, pool).unwrap_or(rest), pool) {
+            continue;
+        }
+        let rest = simp(subs1(rest, zi, pool.integer(1), pool), pool);
+        let Some(q) = quad(rest, zj, pool) else {
+            continue;
+        };
+        out.push(simp(pool.add(vec![p, q]), pool));
     }
     out
 }
@@ -652,4 +756,70 @@ fn nullspace(
         out.push(v);
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kernel::Domain;
+
+    /// Local debugging aid (`-- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn debug_linear_characteristic() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let mut syms = std::collections::HashMap::new();
+        syms.insert("x".to_string(), x);
+        syms.insert("y".to_string(), y);
+        syms.insert("f".to_string(), pool.func("f", vec![x]));
+        syms.insert("g".to_string(), pool.func("g", vec![x]));
+        for src in ["y*f(x) + g(x)", "y^2 - a^2*x^2 + a"] {
+            let ratio = crate::parse::parse(src, &pool, &mut syms).unwrap();
+            let field = VectorField::new(vec![x, y], vec![pool.integer(1), ratio], &pool);
+            let cands = if src.contains("f(") {
+                linear_or_bernoulli(ratio, x, y, &pool)
+            } else {
+                super::super::riccati::riccati_integrals(ratio, x, y, &pool)
+            };
+            for c in cands {
+                let r = field.apply(c, &pool).unwrap();
+                eprintln!(
+                    "CAND {}\n  V = {}\n  zero = {}",
+                    pool.display(c),
+                    pool.display(r),
+                    field.is_integral(c, &pool)
+                );
+                let mut search = IntegralSearch::new(&field, Default::default());
+                eprintln!("  offer = {}", search.offer(c, "test", &pool));
+                let row = field.jacobian_row(c, &pool).unwrap();
+                let inst: Vec<ExprId> = row
+                    .iter()
+                    .map(|&e| instantiate_undefined(e, &pool))
+                    .collect();
+                for e in &inst {
+                    let syms = free_symbols(&[*e], &pool);
+                    eprintln!(
+                        "  row {} -> {:?}",
+                        pool.display(*e),
+                        eval_at(*e, &sample_env(&syms, 0), &pool)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn linear_characteristic_with_arbitrary_coefficients() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let f = pool.func("f", vec![x]);
+        let g = pool.func("g", vec![x]);
+        let ratio = pool.add(vec![pool.mul(vec![y, f]), g]);
+        let field = VectorField::new(vec![x, y], vec![pool.integer(1), ratio], &pool);
+        let cands = linear_or_bernoulli(ratio, x, y, &pool);
+        assert!(cands.iter().any(|&c| field.is_integral(c, &pool)));
+    }
 }
