@@ -15,7 +15,7 @@ impl P {
         self.pool.symbol("x", Domain::Real)
     }
     fn t(&self) -> ExprId {
-        self.pool.symbol("t", Domain::Positive)
+        self.pool.symbol("t", Domain::Real)
     }
     fn u(&self) -> ExprId {
         self.pool.func("u", vec![self.x(), self.t()])

@@ -801,10 +801,7 @@ fn shift_form(h: ExprId, xi: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId,
 /// `E-PDE-160` (not linear constant-coefficient homogeneous, or not on
 /// `ℝ × (0, ∞)`), `E-PDE-161` (initial data), `E-PDE-162` (the transformed
 /// ODE), `E-PDE-163` (a refuted candidate).
-pub fn fourier_method(
-    problem: &PdeProblem,
-    pool: &ExprPool,
-) -> Result<TransformSolution, PdeError> {
+fn fourier_inner(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolution, PdeError> {
     let s = setup(problem, pool)?;
     let r = roles(problem)?;
     let (x, t) = match (r.line.as_slice(), r.half.as_slice()) {
@@ -1432,10 +1429,7 @@ fn laplace_table(big_f: ExprId, s: ExprId, t: ExprId, pool: &ExprPool) -> Option
 ///
 /// As [`fourier_method`]; `E-PDE-161` for nonzero initial data (use
 /// [`image_method`], or [`transform_solve`], which superposes).
-pub fn laplace_method(
-    problem: &PdeProblem,
-    pool: &ExprPool,
-) -> Result<TransformSolution, PdeError> {
+fn laplace_inner(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolution, PdeError> {
     let s = setup(problem, pool)?;
     let (x, t, data_bc, ics) = half_line_roles(problem, &s, pool)?;
     for dt in &ics {
@@ -1895,7 +1889,7 @@ fn retarded(
 ///
 /// As [`fourier_method`]; `E-PDE-161` for a nonzero boundary value (use
 /// [`laplace_method`] / [`transform_solve`]).
-pub fn image_method(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolution, PdeError> {
+fn image_inner(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolution, PdeError> {
     use crate::transform::sincos::{sincos_transform, sincos_transformed_name, SinCosKind};
     let s = setup(problem, pool)?;
     let (x, t, bcs, ics) = half_line_roles(problem, &s, pool)?;
@@ -2100,13 +2094,10 @@ pub fn image_method(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSo
 /// # Errors
 ///
 /// As the individual methods.
-pub fn transform_solve(
-    problem: &PdeProblem,
-    pool: &ExprPool,
-) -> Result<TransformSolution, PdeError> {
+fn transform_inner(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolution, PdeError> {
     let r = roles(problem)?;
     if r.line.len() == 1 && r.half.len() == 1 {
-        return fourier_method(problem, pool);
+        return fourier_inner(problem, pool);
     }
     if r.half.len() != 2 || !r.line.is_empty() {
         return Err(PdeError::TransformMethodUnsupported(
@@ -2118,8 +2109,8 @@ pub fn transform_solve(
     let ic_nonzero = ics.iter().any(|d| !is_zero(d.rhs, pool));
     let bc_nonzero = bcs.iter().any(|d| !is_zero(d.rhs, pool));
     match (ic_nonzero, bc_nonzero) {
-        (_, false) => image_method(problem, pool),
-        (false, true) => laplace_method(problem, pool),
+        (_, false) => image_inner(problem, pool),
+        (false, true) => laplace_inner(problem, pool),
         (true, true) => {
             // u = v + w: v has the initial data and a homogeneous end, w the
             // boundary data and zero initial data.
@@ -2140,8 +2131,8 @@ pub fn transform_solve(
                     }
                 }
             }
-            let v = image_method(&pv, pool)?;
-            let w = laplace_method(&pw, pool)?;
+            let v = image_inner(&pv, pool)?;
+            let w = laplace_inner(&pw, pool)?;
             let mut checks = v.checks.clone();
             checks.extend(w.checks.iter().cloned());
             let mut terms = v.terms.clone();
@@ -2171,6 +2162,146 @@ pub fn transform_solve(
             })
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Public entry points: half-line variables are positive
+// ---------------------------------------------------------------------------
+
+/// Run `f` on `problem` with every variable of a half-line `v > 0` replaced
+/// by a `Positive` symbol of the same name — the domain says `v > 0`, and the
+/// transform tables, signs and limits need to know it (`e^{−a ξ² t}` is a
+/// Gaussian only for `t > 0`) — then map the answer back.
+fn with_positive_half_lines(
+    problem: &PdeProblem,
+    pool: &ExprPool,
+    f: fn(&PdeProblem, &ExprPool) -> Result<TransformSolution, PdeError>,
+) -> Result<TransformSolution, PdeError> {
+    let r = roles(problem)?;
+    let mut fwd = std::collections::HashMap::new();
+    let mut back = std::collections::HashMap::new();
+    for &(v, end) in &r.half {
+        if !is_zero(end, pool) {
+            continue;
+        }
+        let (name, dom) = match pool.get(v) {
+            ExprData::Symbol { name, domain, .. } => (name, domain),
+            _ => continue,
+        };
+        if dom == Domain::Positive {
+            continue;
+        }
+        let twin = pool.symbol(name, Domain::Positive);
+        fwd.insert(v, twin);
+        back.insert(twin, v);
+    }
+    if fwd.is_empty() {
+        return f(problem, pool);
+    }
+    let sb = |e: ExprId, m: &std::collections::HashMap<ExprId, ExprId>| {
+        crate::kernel::subs::subs(e, m, pool)
+    };
+    let eqs: Vec<ExprId> = problem.equations().iter().map(|&e| sb(e, &fwd)).collect();
+    let us: Vec<ExprId> = problem.unknowns().iter().map(|&e| sb(e, &fwd)).collect();
+    let dom = map_domain(
+        problem.domain().expect("roles() checked the domain"),
+        &fwd,
+        pool,
+    )?;
+    let mut prob = PdeProblem::new(&eqs, &us, pool)?.on(dom, pool)?;
+    for c in problem.conditions() {
+        let (l, rr) = (sb(c.lhs, &fwd), sb(c.rhs, &fwd));
+        prob = match c.kind {
+            ConditionKind::Initial => prob.ic(l, rr, pool)?,
+            _ => prob.bc(l, rr, pool)?,
+        };
+    }
+    let mut sol = f(&prob, pool)?;
+    sol.value = sb(sol.value, &back);
+    sol.closed_part = sb(sol.closed_part, &back);
+    sol.transformed = sb(sol.transformed, &back);
+    for t in &mut sol.terms {
+        t.kernel = sb(t.kernel, &back);
+        t.density = sb(t.density, &back);
+        t.lower = sb(t.lower, &back);
+        t.upper = sb(t.upper, &back);
+    }
+    sol.side_conditions = sol.side_conditions.iter().map(|&e| sb(e, &back)).collect();
+    Ok(sol)
+}
+
+fn map_domain(
+    d: &PdeDomain,
+    m: &std::collections::HashMap<ExprId, ExprId>,
+    pool: &ExprPool,
+) -> Result<PdeDomain, PdeError> {
+    let v = |e: &ExprId| *m.get(e).unwrap_or(e);
+    Ok(match d {
+        PdeDomain::Line { var } => PdeDomain::line(v(var), pool)?,
+        PdeDomain::HalfLine { var, end, upper } => {
+            PdeDomain::half_line(v(var), *end, *upper, pool)?
+        }
+        PdeDomain::Product(ps) => PdeDomain::product(
+            ps.iter()
+                .map(|p| map_domain(p, m, pool))
+                .collect::<Result<_, _>>()?,
+            pool,
+        )?,
+        other => other.clone(),
+    })
+}
+
+/// Solve on `x ∈ ℝ`, `t > 0` by the Fourier transform in `x` (see the
+/// [module documentation](self)).
+///
+/// # Errors
+///
+/// `E-PDE-160` (not linear constant-coefficient homogeneous, or not on
+/// `ℝ × (0, ∞)`), `E-PDE-161` (initial data), `E-PDE-162` (the transformed
+/// ODE), `E-PDE-163` (a refuted candidate).
+pub fn fourier_method(
+    problem: &PdeProblem,
+    pool: &ExprPool,
+) -> Result<TransformSolution, PdeError> {
+    with_positive_half_lines(problem, pool, fourier_inner)
+}
+
+/// Solve on `x > 0`, `t > 0` with zero initial data and boundary data at
+/// `x = 0`, by the Laplace transform in `t`.
+///
+/// # Errors
+///
+/// As [`fourier_method`]; `E-PDE-161` for nonzero initial data (use
+/// [`image_method`], or [`transform_solve`], which superposes).
+pub fn laplace_method(
+    problem: &PdeProblem,
+    pool: &ExprPool,
+) -> Result<TransformSolution, PdeError> {
+    with_positive_half_lines(problem, pool, laplace_inner)
+}
+
+/// Solve on `x > 0`, `t > 0` with a homogeneous Dirichlet (sine transform)
+/// or Neumann (cosine transform) end and initial data.
+///
+/// # Errors
+///
+/// As [`fourier_method`]; `E-PDE-161` for a nonzero boundary value.
+pub fn image_method(problem: &PdeProblem, pool: &ExprPool) -> Result<TransformSolution, PdeError> {
+    with_positive_half_lines(problem, pool, image_inner)
+}
+
+/// Choose the transform method from the domain: Fourier on `ℝ × (0, ∞)`;
+/// on `(0, ∞)²` the image method for the initial data and the Laplace
+/// method for the boundary data, superposed when both are present.
+///
+/// # Errors
+///
+/// As the individual methods.
+pub fn transform_solve(
+    problem: &PdeProblem,
+    pool: &ExprPool,
+) -> Result<TransformSolution, PdeError> {
+    with_positive_half_lines(problem, pool, transform_inner)
 }
 
 #[cfg(test)]

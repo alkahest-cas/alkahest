@@ -82,9 +82,9 @@ def _as_expr(v, pool):
     if isinstance(v, float):
         return pool.float(v)
     if isinstance(v, str) and v in ("oo", "inf", "+oo"):
-        return pool.symbol("oo", "positive")
+        return _ak.parse("oo", pool)
     if isinstance(v, str) and v in ("-oo", "-inf"):
-        return -pool.symbol("oo", "positive")
+        return -_ak.parse("oo", pool)
     raise TypeError(f"cannot use {v!r} as an expression")
 
 
@@ -136,7 +136,7 @@ class EigenFamily:
         """``ν_k``: the closed form at ``n = k``, or the ``RootOfFamily``
         member."""
         if self.closed_form:
-            return _ak.simplify(_ak.subs(self.frequency, {self.index: k}))
+            return _ak.simplify(_ak.subs(self.frequency, {self.index: k})).value
         from alkahest.experimental._pde import root_family_member
 
         return root_family_member(self.frequency, k)
@@ -145,7 +145,7 @@ class EigenFamily:
         """``λ_k``."""
         return _ak.simplify(
             _ak.subs(self.eigenvalue_of_frequency, {self.frequency_var: self.frequency_at(k)})
-        )
+        ).value
 
     def eigenfunctions_at(self, k: int) -> list:
         """The eigenfunction(s) of ``λ_k``."""
@@ -155,7 +155,7 @@ class EigenFamily:
             e = _ak.subs(f, {self.frequency_var: nu})
             with contextlib.suppress(Exception):  # no orthogonal polynomial inside
                 e = _ak.expand_orthopoly(e)
-            out.append(_ak.simplify(e))
+            out.append(_ak.simplify(e).value)
         return out
 
     def enclosures_with(self, count: int, params: dict | None = None, bits: int = 64) -> list:

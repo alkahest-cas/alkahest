@@ -1201,7 +1201,104 @@ fn zstatus(e: ExprId, pool: &ExprPool) -> ZeroStatus {
     if is_zero_literal(s, pool) {
         return ZeroStatus::ProvedZero;
     }
-    zero_test(s, pool, None).status
+    let st = zero_test(s, pool, None).status;
+    if st == ZeroStatus::ProvedZero {
+        return st;
+    }
+    // Bessel residuals: the derivative rules leave J_{ν±k}; the three-term
+    // recurrence reduces them to two consecutive orders, after which the
+    // residual is rational in independent atoms.
+    if let Some(r) = bessel_recurrence_normal(s, pool) {
+        let r = simp(r, pool);
+        if is_zero_literal(r, pool) || zero_test(r, pool, None).status == ZeroStatus::ProvedZero {
+            return ZeroStatus::ProvedZero;
+        }
+    }
+    st
+}
+
+/// Rewrite every `bessel_j` / `bessel_i` (and `bessel_j0`, `bessel_j1`) of one
+/// argument `z` whose orders differ by integers in terms of the two lowest
+/// orders `J_b`, `J_{b+1}`, by `J_{m+1} = (2m/z) J_m − J_{m−1}` and
+/// `I_{m+1} = I_{m−1} − (2m/z) I_m`.  `None` when there is nothing to do.
+fn bessel_recurrence_normal(e: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    // (kind, order, arg, node)
+    let mut nodes: Vec<(char, ExprId, ExprId, ExprId)> = Vec::new();
+    let mut stack = vec![e];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(n) = stack.pop() {
+        if !seen.insert(n) {
+            continue;
+        }
+        if let ExprData::Func { name, args } = pool.get(n) {
+            let hit = match (name.as_str(), args.len()) {
+                ("bessel_j", 2) => Some(('J', args[0], args[1])),
+                ("bessel_i", 2) => Some(('I', args[0], args[1])),
+                ("bessel_j0", 1) => Some(('J', pool.integer(0), args[0])),
+                ("bessel_j1", 1) => Some(('J', pool.integer(1), args[0])),
+                _ => None,
+            };
+            if let Some((k, o, z)) = hit {
+                nodes.push((k, o, z, n));
+                continue;
+            }
+        }
+        super::jet::push_children(n, pool, &mut stack);
+    }
+    if nodes.len() < 3 {
+        return None;
+    }
+    let mut out = e;
+    let mut changed = false;
+    let groups: Vec<(char, ExprId)> = {
+        let mut g: Vec<(char, ExprId)> = nodes.iter().map(|&(k, _, z, _)| (k, z)).collect();
+        g.sort();
+        g.dedup();
+        g
+    };
+    for (kind, z) in groups {
+        let members: Vec<(ExprId, ExprId)> = nodes
+            .iter()
+            .filter(|&&(k, _, zz, _)| k == kind && zz == z)
+            .map(|&(_, o, _, n)| (o, n))
+            .collect();
+        let base = members[0].0;
+        // integer offsets from the first order
+        let mut offs = Vec::new();
+        for &(o, n) in &members {
+            let dlt = simp(sub(o, base, pool), pool);
+            let k = pool.with(dlt, |d| match d {
+                ExprData::Integer(i) => i.0.to_i64(),
+                _ => None,
+            })?;
+            offs.push((k, n));
+        }
+        let lo = offs.iter().map(|&(k, _)| k).min()?;
+        let hi = offs.iter().map(|&(k, _)| k).max()?;
+        if hi - lo < 2 || hi - lo > 40 {
+            continue;
+        }
+        let ord = |k: i64| simp(pool.add(vec![base, pool.integer(k)]), pool);
+        let name = if kind == 'J' { "bessel_j" } else { "bessel_i" };
+        let mut val: HashMap<i64, ExprId> = HashMap::new();
+        val.insert(lo, pool.func(name, vec![ord(lo), z]));
+        val.insert(lo + 1, pool.func(name, vec![ord(lo + 1), z]));
+        for m in lo + 1..hi {
+            let two_m_over_z =
+                pool.mul(vec![pool.integer(2), ord(m), pool.pow(z, pool.integer(-1))]);
+            let next = if kind == 'J' {
+                sub(pool.mul(vec![two_m_over_z, val[&m]]), val[&(m - 1)], pool)
+            } else {
+                sub(val[&(m - 1)], pool.mul(vec![two_m_over_z, val[&m]]), pool)
+            };
+            val.insert(m + 1, next);
+        }
+        for &(k, n) in &offs {
+            out = replace_node(out, n, val[&k], pool);
+            changed = true;
+        }
+    }
+    changed.then_some(out)
 }
 
 mod regular;

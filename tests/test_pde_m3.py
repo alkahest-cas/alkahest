@@ -165,15 +165,14 @@ def test_sl_from_ode_and_closed_forms():
     lam = pool.symbol("lam")
     X = akx.Function("X")(x)
     eq = akx.D(X, x, 2) + lam * X
-    es = akx.SturmLiouville.from_ode(
-        eq, X, lam, (0, pool.symbol("pi")), ("dirichlet", "dirichlet")
-    ).solve()
+    pi = ak.parse("pi", pool)
+    es = akx.SturmLiouville.from_ode(eq, X, lam, (0, pi), ("dirichlet", "dirichlet")).solve()
     (f,) = es.families
     assert str(f.eigenvalue) == str(f.index**2)
     assert f.eigenvalue_at(3) == pool.integer(9)
     (x3,) = f.eigenfunctions_at(3)
     assert "sin" in str(x3)
-    assert ak.simplify(f.norms_squared[0] - pool.symbol("pi") / 2) == pool.integer(0)
+    assert ak.simplify(f.norms_squared[0] - pi / 2).value == pool.integer(0)
 
 
 def test_sl_legendre_members_and_norms():
@@ -184,7 +183,7 @@ def test_sl_legendre_members_and_norms():
     assert f.first == 0
     assert f.verification["status"] == "exactly_verified"
     (p2,) = f.eigenfunctions_at(2)
-    assert ak.simplify(p2 - (3 * x**2 - 1) / 2) == pool.integer(0)
+    assert ak.simplify(p2 - (3 * x**2 - 1) / 2).value == pool.integer(0)
     assert "legendre_p" in str(f.eigenfunctions[0])
 
 
@@ -208,7 +207,7 @@ def _build_transform_problem(entry):
     pool = ak.ExprPool()
     x, t = pool.symbol("x"), pool.symbol("t")
     u = akx.Function("u")(x, t)
-    syms = {"x": x, "t": t, "u": akx.Function("u")}
+    syms = {"x": x, "t": t, "u": akx.Function("u"), "f": akx.Function("f"), "g": akx.Function("g")}
     eq = ak.parse(entry["eq"], pool, syms)
     pde = akx.PDE(eq, u)
     if entry["domain"] == "line":
@@ -281,10 +280,10 @@ def test_sine_cosine_transforms():
     f = ak.exp(-a * x)
     s = akx.fourier_sine_transform(f, x, w)
     c = akx.fourier_cosine_transform(f, x, w)
-    assert ak.simplify(s - w / (a**2 + w**2)) == pool.integer(0)
-    assert ak.simplify(c - a / (a**2 + w**2)) == pool.integer(0)
+    assert ak.simplify(s - w / (a**2 + w**2)).value == pool.integer(0)
+    assert ak.simplify(c - a / (a**2 + w**2)).value == pool.integer(0)
     back = akx.inverse_fourier_cosine_transform(c, w, x)
-    assert ak.simplify(back - f) == pool.integer(0)
+    assert ak.simplify(back - f).value == pool.integer(0)
     with pytest.raises(Exception) as e:
         akx.fourier_sine_transform(ak.sin(x), x, w)
     assert "E-TRANSFORM-021" in str(e.value)

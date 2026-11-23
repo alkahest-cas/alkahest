@@ -303,6 +303,7 @@ fn bessel_order_two_and_neumann_zero_mode() {
     let sys = sturm_liouville(&pr, p).unwrap();
     let j21 = 5.135622301840683_f64;
     assert!((mid(&sys.families[0].enclosures[0]) - j21 * j21).abs() < 1e-8);
+    exact(&sys.families[0]);
     let pr = SturmLiouvilleProblem::bessel(r, p.integer(0), p.integer(1), EndCondition::Neumann, p)
         .unwrap();
     let sys = sturm_liouville(&pr, p).unwrap();
