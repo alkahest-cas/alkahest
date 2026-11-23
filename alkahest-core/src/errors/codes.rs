@@ -901,6 +901,10 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-PDE-030", class: "PdeError", cause: Cause::UserInput,  remediation: Some("RootOfFamily(F, lam, n, branch) needs a symbol lam, an integer n ≥ 0 (or a symbol), and an integer branch") },
     ErrorSpec { code: "E-PDE-031", class: "PdeError", cause: Cause::Domain,     remediation: Some("the n-th root could not be bracketed and isolated with certified ball arithmetic; widen the bracket, check that F changes sign on it, or raise the precision") },
     ErrorSpec { code: "E-PDE-040", class: "PdeError", cause: Cause::Unsupported, remediation: Some("the transform variable must occupy exactly one argument slot of the unknown as a bare symbol (u(x, t), not u(x, 2t) or u(t^2)); substitute first") },
+    ErrorSpec { code: "E-PDE-050", class: "PdeError", cause: Cause::Unsupported, remediation: Some("pdsolve currently solves one first-order equation in one unknown of two or more variables; check the hint name against pdsolve_hints(), or use dsolve for a single variable") },
+    ErrorSpec { code: "E-PDE-051", class: "PdeError", cause: Cause::Unsupported, remediation: Some("no method produced an exactly verified answer; try another hint, simplify or rescale the equation, or supply a candidate to verify_pde_solution") },
+    ErrorSpec { code: "E-PDE-052", class: "PdeError", cause: Cause::Domain,      remediation: Some("the data curve is characteristic (the Jacobian of the curve and the characteristic direction vanishes); pose the data on a transversal curve") },
+    ErrorSpec { code: "E-PDE-053", class: "PdeError", cause: Cause::Unsupported, remediation: Some("give Cauchy data as u(curve) = value on a curve of dimension n-1 (e.g. u(x, 0) = f(x)); conditions on derivatives are not supported for first-order problems") },
 ];
 
 #[cfg(test)]

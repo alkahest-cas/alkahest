@@ -2,7 +2,9 @@
 //! M0 — jets, problem objects, classification, verification, the `Sum` /
 //! `Indexed` / `RootOfFamily` heads and derivative-aware transforms).
 //!
-//! Later milestones own their own ranges (M1 `050–099`, M2 `100–149`, …); this
+//! `E-PDE-050 … E-PDE-099` belong to `pdsolve` (milestone M1, first order).
+//!
+//! Later milestones own their own ranges (M2 `100–149`, …); this
 //! enum is `#[non_exhaustive]` so they can add variants without a semver break.
 
 use std::fmt;
@@ -77,6 +79,22 @@ pub enum PdeError {
     /// variable occurs in an argument other than as a bare slot (`u(t²)`,
     /// `u(x, 2t)`), or in more than one slot.
     TransformUnknown(String),
+    /// `E-PDE-050` — `pdsolve` has no method for this problem: a system, an
+    /// equation of order other than one (until later milestones add tiers),
+    /// a single independent variable, or an unknown hint name.
+    PdsolveUnsupported(String),
+    /// `E-PDE-051` — every applicable method was tried and none produced an
+    /// answer that verified exactly; candidates that failed verification are
+    /// discarded, never returned.
+    NoVerifiedSolution(String),
+    /// `E-PDE-052` — the Cauchy data lie on a characteristic curve (the
+    /// non-characteristic Jacobian vanishes identically), so the data do not
+    /// determine a solution.
+    CharacteristicData(String),
+    /// `E-PDE-053` — the side conditions are not Cauchy data `pdsolve` can
+    /// impose: a condition on a derivative, data on a manifold of the wrong
+    /// dimension, or parameters that could not be eliminated.
+    CauchyUnsupported(String),
 }
 
 impl fmt::Display for PdeError {
@@ -102,6 +120,10 @@ impl fmt::Display for PdeError {
             PdeError::MalformedRootFamily(d) => ("malformed RootOfFamily", d),
             PdeError::RootFamilyNotCertified(d) => ("RootOfFamily root not certified", d),
             PdeError::TransformUnknown(d) => ("transform cannot act on the unknown", d),
+            PdeError::PdsolveUnsupported(d) => ("pdsolve has no method for this problem", d),
+            PdeError::NoVerifiedSolution(d) => ("no verified solution", d),
+            PdeError::CharacteristicData(d) => ("Cauchy data on a characteristic", d),
+            PdeError::CauchyUnsupported(d) => ("unsupported Cauchy data", d),
         };
         write!(f, "{what}: {d}")
     }
@@ -132,6 +154,10 @@ impl AlkahestError for PdeError {
             PdeError::MalformedRootFamily(_) => "E-PDE-030",
             PdeError::RootFamilyNotCertified(_) => "E-PDE-031",
             PdeError::TransformUnknown(_) => "E-PDE-040",
+            PdeError::PdsolveUnsupported(_) => "E-PDE-050",
+            PdeError::NoVerifiedSolution(_) => "E-PDE-051",
+            PdeError::CharacteristicData(_) => "E-PDE-052",
+            PdeError::CauchyUnsupported(_) => "E-PDE-053",
         }
     }
 
@@ -178,6 +204,22 @@ mod tests {
                 .and_then(|d| d.parse().ok())
                 .unwrap_or_else(|| panic!("{code} is not an E-PDE code"));
             assert!((1..=49).contains(&n), "{code} outside the M0 range");
+            assert!(e.remediation().is_some(), "{code} not registered");
+        }
+    }
+
+    #[test]
+    fn m1_codes_are_registered_in_their_range() {
+        let all = [
+            PdeError::PdsolveUnsupported(String::new()),
+            PdeError::NoVerifiedSolution(String::new()),
+            PdeError::CharacteristicData(String::new()),
+            PdeError::CauchyUnsupported(String::new()),
+        ];
+        for e in all {
+            let code = e.code();
+            let n: u32 = code.strip_prefix("E-PDE-").unwrap().parse().unwrap();
+            assert!((50..=99).contains(&n), "{code} outside the M1 range");
             assert!(e.remediation().is_some(), "{code} not registered");
         }
     }
