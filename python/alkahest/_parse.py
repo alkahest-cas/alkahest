@@ -124,6 +124,12 @@ _FUNC_NAMES = frozenset(
         "EllipticE",
         "EllipticF",
         "EllipticPi",
+        "JacobiSN",
+        "JacobiCN",
+        "JacobiDN",
+        "JacobiAmplitude",
+        "WeierstrassP",
+        "WeierstrassPPrime",
         # The non-elementary output basis (3.10.0).  Without these the
         # integrator can emit an antiderivative that neither parser can read
         # back, so ``parse(str(integrate(f)))`` is not a round trip.  Mirrors
@@ -818,6 +824,12 @@ def _apply_func(name: str, args: list, offset: int, pool=None):
         "EllipticE": _ak.elliptic_e,  # 1 arg (complete) or 2 args (incomplete)
         "EllipticF": _ak.elliptic_f,
         "EllipticPi": _ak.elliptic_pi,
+        "JacobiSN": _ak.jacobi_sn,
+        "JacobiCN": _ak.jacobi_cn,
+        "JacobiDN": _ak.jacobi_dn,
+        "JacobiAmplitude": _ak.jacobi_am,
+        "WeierstrassP": _ak.weierstrass_wp,
+        "WeierstrassPPrime": _ak.weierstrass_wp_prime,
         # The non-elementary output basis (3.10.0).  The integrator emits
         # these, so the parser has to be able to read them back; mirrors
         # ``KNOWN_FUNCS`` in ``alkahest-core/src/parse.rs``.  The spelling is

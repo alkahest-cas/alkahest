@@ -42,6 +42,9 @@ pub fn known_func_arity(name: &str) -> Option<(usize, usize)> {
         "EllipticE" => Some((1, 2)),
         "EllipticF" | "atan2" => Some((2, 2)),
         "EllipticPi" => Some((3, 3)),
+        // Jacobi elliptic functions `(u, m)` and Weierstrass `(z, g2, g3)`.
+        "JacobiSN" | "JacobiCN" | "JacobiDN" | "JacobiAmplitude" => Some((2, 2)),
+        "WeierstrassP" | "WeierstrassPPrime" => Some((3, 3)),
         // Orthogonal polynomials (`crate::orthopoly`): `[n, params…, x]`.
         "legendre_p" | "hermite_h" | "hermite_he" | "laguerre_l" | "chebyshev_t"
         | "chebyshev_u" => Some((2, 2)),
@@ -244,6 +247,12 @@ mod wrong_arity_sweep {
         "EllipticE",
         "EllipticF",
         "EllipticPi",
+        "JacobiSN",
+        "JacobiCN",
+        "JacobiDN",
+        "JacobiAmplitude",
+        "WeierstrassP",
+        "WeierstrassPPrime",
         "Ei",
         "li",
         "Si",

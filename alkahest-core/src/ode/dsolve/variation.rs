@@ -173,7 +173,16 @@ pub(crate) fn reduction_of_order(
     let mu = exp_of(neg, pool);
     let y1sq = simp(pool.pow(y1, pool.integer(2_i32)), pool);
     let integrand = div(mu, y1sq, pool);
-    let v = integrate_or_decline(integrand, x, pool)?;
+    // A non-elementary `∫ R·e^{g}` (Hermite: `e^{x²}/H_n²`; Laguerre:
+    // `eˣ/(x·L_n²)`) is elementary plus one `erf`/`erfi`/`Ei` term; the
+    // assembled solution is verified by the caller like any other.
+    let v = match integrate_or_decline(integrand, x, pool) {
+        Ok(v) => v,
+        Err(e) => match super::special_quad::exp_rational_integral(integrand, x, pool) {
+            Some(v) => v,
+            None => return Err(e),
+        },
+    };
     if is_zero(v, pool) {
         return Ok(None);
     }
@@ -212,6 +221,16 @@ fn y1_candidates(x: ExprId, pool: &ExprPool) -> Vec<ExprId> {
     out.push(pool.func("sin", vec![x]));
     out.push(pool.func("cos", vec![x]));
     out.push(pool.func("log", vec![x]));
+    // Gaussians: `y'' + x·y' + y = 0` has `e^{−x²/2}`.
+    let x2 = pool.pow(x, pool.integer(2_i32));
+    for k in [
+        pool.rational(-1, 2),
+        pool.rational(1, 2),
+        pool.integer(-1_i32),
+        pool.integer(1_i32),
+    ] {
+        out.push(simp(pool.func("exp", vec![pool.mul(vec![k, x2])]), pool));
+    }
     out
 }
 

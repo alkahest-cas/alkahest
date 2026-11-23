@@ -51,6 +51,7 @@ use crate::kernel::{ExprId, ExprPool};
 use std::collections::HashMap;
 use std::fmt;
 
+pub mod elliptic_fn;
 pub mod expint;
 pub mod fresnel;
 pub mod polylog;
@@ -440,6 +441,14 @@ impl PrimitiveRegistry {
         reg.register_unprobed(Box::new(builtins::EllipticEPrimitive));
         reg.register_unprobed(Box::new(builtins::EllipticFPrimitive));
         reg.register_unprobed(Box::new(builtins::EllipticPiPrimitive));
+        // Their inverses: Jacobi sn/cn/dn/am and Weierstrass ℘, ℘'
+        // (`alkahest-core/src/primitive/elliptic_fn.rs`).
+        reg.register_unprobed(Box::new(elliptic_fn::JacobiSnPrimitive));
+        reg.register_unprobed(Box::new(elliptic_fn::JacobiCnPrimitive));
+        reg.register_unprobed(Box::new(elliptic_fn::JacobiDnPrimitive));
+        reg.register_unprobed(Box::new(elliptic_fn::JacobiAmPrimitive));
+        reg.register_unprobed(Box::new(elliptic_fn::WeierstrassPPrimitive));
+        reg.register_unprobed(Box::new(elliptic_fn::WeierstrassPPrimePrimitive));
         reg.register_unprobed(Box::new(builtins::AbsPrimitive));
         reg.register_unprobed(Box::new(builtins::SignPrimitive));
         reg.register_unprobed(Box::new(builtins::HeavisidePrimitive));

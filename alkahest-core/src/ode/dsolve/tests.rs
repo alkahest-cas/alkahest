@@ -1656,3 +1656,282 @@ fn riccati_with_a_reciprocal_particular_solution() {
     let res = solve_all(&input, &p).expect("solves");
     assert_verifies(&input, &res.solutions[0], &p);
 }
+
+// ---------------------------------------------------------------------------
+// Autonomous y'' = f(y): elliptic inversions and Liouville
+// ---------------------------------------------------------------------------
+
+/// `y'' = f(y)` solved, verified, with the expected method and head.
+fn autonomous_case(f: impl Fn(&ExprPool, ExprId) -> ExprId, method: &str, head: &str) {
+    let (p, input, sol) = solve_order(2, |p, _x, y, d| {
+        p.add(vec![d[1], p.mul(vec![p.integer(-1_i32), f(p, y)])])
+    });
+    assert_verifies(&input, &sol, &p);
+    assert_eq!(sol.method, method, "{}", sol.render(&p));
+    assert_eq!(sol.constants.len(), 2);
+    let shown = p.display(explicit_of(&sol)).to_string();
+    assert!(shown.contains(head), "{shown}");
+}
+
+#[test]
+fn autonomous_quadratic_is_weierstrass_p() {
+    // y'' = 6y²  →  y = ℘(x + C₂; 0, C₁)
+    autonomous_case(
+        |p, y| p.mul(vec![p.integer(6_i32), p.pow(y, p.integer(2_i32))]),
+        "autonomous_weierstrass",
+        "WeierstrassP",
+    );
+    // y'' = 3y² − 2y + 1: shifted and scaled ℘ with g₂ ≠ 0.
+    autonomous_case(
+        |p, y| {
+            p.add(vec![
+                p.mul(vec![p.integer(3_i32), p.pow(y, p.integer(2_i32))]),
+                p.mul(vec![p.integer(-2_i32), y]),
+                p.integer(1_i32),
+            ])
+        },
+        "autonomous_weierstrass",
+        "WeierstrassP",
+    );
+}
+
+#[test]
+fn autonomous_cubic_is_jacobi() {
+    // y'' = 2y³ → nc(…|½); y'' = −2y³ → cn(…|½); y'' = ±y ± y³ → cn.
+    autonomous_case(
+        |p, y| p.mul(vec![p.integer(2_i32), p.pow(y, p.integer(3_i32))]),
+        "autonomous_jacobi",
+        "JacobiCN",
+    );
+    autonomous_case(
+        |p, y| p.mul(vec![p.integer(-2_i32), p.pow(y, p.integer(3_i32))]),
+        "autonomous_jacobi",
+        "JacobiCN",
+    );
+    for (c1, c3) in [(1, -1), (-1, 1), (-1, -1)] {
+        autonomous_case(
+            |p, y| {
+                p.add(vec![
+                    p.mul(vec![p.integer(c1), y]),
+                    p.mul(vec![p.integer(c3), p.pow(y, p.integer(3_i32))]),
+                ])
+            },
+            "autonomous_jacobi",
+            "JacobiCN",
+        );
+    }
+}
+
+#[test]
+fn pendulum_is_jacobi_amplitude() {
+    // y'' + sin y = 0 and the inverted pendulum y'' = sin y.
+    for k in [-1, 1] {
+        autonomous_case(
+            |p, y| p.mul(vec![p.integer(k), p.func("sin", vec![y])]),
+            "autonomous_pendulum",
+            "JacobiAmplitude",
+        );
+    }
+}
+
+#[test]
+fn liouville_exponential_nonlinearity() {
+    // y'' = e^y (cos form) and y'' = −2e^{3y} (cosh form).
+    autonomous_case(|p, y| p.func("exp", vec![y]), "autonomous_liouville", "cos");
+    autonomous_case(
+        |p, y| {
+            p.mul(vec![
+                p.integer(-2_i32),
+                p.func("exp", vec![p.mul(vec![p.integer(3_i32), y])]),
+            ])
+        },
+        "autonomous_liouville",
+        "cosh",
+    );
+}
+
+#[test]
+fn ermakov_pinney_inverse_cube() {
+    // y'' = 1/y³  →  y = √(C₁(x + C₂)² + 1/C₁)
+    autonomous_case(
+        |p, y| p.pow(y, p.integer(-3_i32)),
+        "autonomous_ermakov",
+        "C1",
+    );
+}
+
+#[test]
+fn autonomous_wrong_elliptic_candidate_is_refused() {
+    // ℘ with the wrong invariant g₂ does not solve y'' = 6y²: the gate must
+    // refuse it even though it has the right head and shape.
+    let (p, x, y) = setup();
+    let (input, ds) = OdeInput::higher_order(x, y, 2, &p);
+    let eq = p.add(vec![
+        ds[1],
+        p.mul(vec![p.integer(-6_i32), p.pow(y, p.integer(2_i32))]),
+    ]);
+    let input = input.with_equation(eq);
+    let c1 = p.symbol("C1", Domain::Real);
+    let c2 = p.symbol("C2", Domain::Real);
+    let wrong = p.func(
+        "WeierstrassP",
+        vec![p.add(vec![x, c2]), p.integer(1_i32), c1],
+    );
+    assert!(residual_is_zero(&input, wrong, &[c1, c2], &p).is_err());
+    // …and a bare cn with the wrong scaling for y'' = y − y³ likewise.
+    let eq2 = p.add(vec![
+        ds[1],
+        p.mul(vec![p.integer(-1_i32), y]),
+        p.pow(y, p.integer(3_i32)),
+    ]);
+    let input2 = input.clone().with_equation(eq2);
+    let wrong2 = p.func("JacobiCN", vec![p.add(vec![x, c2]), c1]);
+    assert!(residual_is_zero(&input2, wrong2, &[c1, c2], &p).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Special second solutions (erf/erfi/Ei) by reduction of order
+// ---------------------------------------------------------------------------
+
+/// `a₂ y'' + a₁ y' + a₀ y = 0` with polynomial coefficients given as
+/// `(a2, a1, a0)` builders; returns the rendered solution after verifying it.
+fn special_second_solution(
+    build: impl Fn(&ExprPool, ExprId) -> (ExprId, ExprId, ExprId),
+    head: &str,
+) {
+    let (p, input, sol) = solve_order(2, |p, x, y, d| {
+        let (a2, a1, a0) = build(p, x);
+        p.add(vec![
+            p.mul(vec![a2, d[1]]),
+            p.mul(vec![a1, d[0]]),
+            p.mul(vec![a0, y]),
+        ])
+    });
+    assert_verifies(&input, &sol, &p);
+    assert_eq!(sol.constants.len(), 2);
+    let shown = p.display(explicit_of(&sol)).to_string();
+    assert!(shown.contains(head), "{shown}");
+}
+
+#[test]
+fn hermite_second_solution_uses_erfi() {
+    // y'' − 2x y' + 4y = 0 (H₂) and y'' − 2x y' + 6y = 0 (H₃).
+    for n in [4, 6] {
+        special_second_solution(
+            |p, x| {
+                (
+                    p.integer(1_i32),
+                    p.mul(vec![p.integer(-2_i32), x]),
+                    p.integer(n),
+                )
+            },
+            "erf",
+        );
+    }
+}
+
+#[test]
+fn laguerre_second_solution_uses_ei() {
+    // x y'' + (1 − x) y' + n y = 0, n = 1, 2.
+    for n in [1, 2] {
+        special_second_solution(
+            |p, x| {
+                (
+                    x,
+                    p.add(vec![p.integer(1_i32), p.mul(vec![p.integer(-1_i32), x])]),
+                    p.integer(n),
+                )
+            },
+            "Ei",
+        );
+    }
+}
+
+#[test]
+fn gaussian_first_solution_gives_an_erfi_second() {
+    // y'' + x y' + y = 0: y₁ = e^{−x²/2}, y₂ = e^{−x²/2}·∫e^{x²/2}.
+    special_second_solution(|p, x| (p.integer(1_i32), x, p.integer(1_i32)), "erf");
+}
+
+// ---------------------------------------------------------------------------
+// Lagrange (d'Alembert) equations, parametric
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lagrange_equation_parametric_solution_and_singular_line() {
+    // y = 2x y' + y'²: x = C/p² − 2p/3, y = 2C/p − p²/3; singular y = 0.
+    let (p, x, y) = setup();
+    let (input, yp) = OdeInput::first_order(x, y, &p);
+    let eq = p.add(vec![
+        y,
+        p.mul(vec![p.integer(-2_i32), x, yp]),
+        p.mul(vec![p.integer(-1_i32), p.pow(yp, p.integer(2_i32))]),
+    ]);
+    let input = input.with_equation(eq);
+    // Not an explicit/implicit class: dsolve declines …
+    assert!(dsolve_with(&input, &AssumptionContext::new(), &p).is_err());
+    // … and the parametric solver answers.
+    let rep = dsolve_parametric(&input, &p).expect("parametric");
+    let br = &rep.branches[0];
+    assert_eq!(br.method, "lagrange_parametric");
+    assert_eq!(br.constants.len(), 1);
+    lagrange::parametric_is_verified(
+        &input,
+        br.parameter,
+        br.x_of_p,
+        br.y_of_p,
+        &br.constants,
+        &p,
+    )
+    .expect("verifies");
+    assert_eq!(rep.singular, vec![p.integer(0_i32)]);
+    // A wrong curve is refused.
+    let wrong_y = p.add(vec![br.y_of_p, p.integer(1_i32)]);
+    assert!(lagrange::parametric_is_verified(
+        &input,
+        br.parameter,
+        br.x_of_p,
+        wrong_y,
+        &br.constants,
+        &p
+    )
+    .is_err());
+}
+
+#[test]
+fn lagrange_with_nonlinear_f() {
+    // y = x y'² + y'  (f = p², g = p): singular lines at p = 0 and p = 1.
+    let (p, x, y) = setup();
+    let (input, yp) = OdeInput::first_order(x, y, &p);
+    let eq = p.add(vec![
+        y,
+        p.mul(vec![p.integer(-1_i32), x, p.pow(yp, p.integer(2_i32))]),
+        p.mul(vec![p.integer(-1_i32), yp]),
+    ]);
+    let input = input.with_equation(eq);
+    let rep = dsolve_parametric(&input, &p).expect("parametric");
+    let br = &rep.branches[0];
+    lagrange::parametric_is_verified(
+        &input,
+        br.parameter,
+        br.x_of_p,
+        br.y_of_p,
+        &br.constants,
+        &p,
+    )
+    .expect("verifies");
+    assert_eq!(rep.singular.len(), 2, "{:?}", rep.singular);
+}
+
+#[test]
+fn clairaut_is_not_reported_parametrically() {
+    let (p, x, y) = setup();
+    let (input, yp) = OdeInput::first_order(x, y, &p);
+    let eq = p.add(vec![
+        y,
+        p.mul(vec![p.integer(-1_i32), x, yp]),
+        p.mul(vec![p.integer(-1_i32), p.pow(yp, p.integer(2_i32))]),
+    ]);
+    let input = input.with_equation(eq);
+    assert!(dsolve_parametric(&input, &p).is_err());
+}

@@ -383,6 +383,13 @@ const KNOWN_FUNCS: &[&str] = &[
     "EllipticE",
     "EllipticF",
     "EllipticPi",
+    // Jacobi elliptic functions and Weierstrass ℘ (`primitive::elliptic_fn`).
+    "JacobiSN",
+    "JacobiCN",
+    "JacobiDN",
+    "JacobiAmplitude",
+    "WeierstrassP",
+    "WeierstrassPPrime",
     // The non-elementary output basis (3.10.0).  Without these the integrator
     // can emit an antiderivative that neither parser can read back, so
     // `parse(str(integrate(f)))` is not a round trip — which is how a printed

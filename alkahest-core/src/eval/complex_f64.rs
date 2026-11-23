@@ -358,6 +358,12 @@ fn eval_node_uncached(
                             error(UnsupportedReason::UnsupportedFunction { name: name.clone() })
                         })
                 }
+                // `erfi(z)` is spelled `−i·erf(i·z)`, so `erf` meets the
+                // imaginary axis; the Maclaurin series is accurate for
+                // `|z| ≤ 4` and refused beyond (cancellation).
+                "erf" => erf_series(x).ok_or_else(|| {
+                    error(UnsupportedReason::UnsupportedFunction { name: name.clone() })
+                }),
                 _ => Err(error(UnsupportedReason::UnsupportedFunction {
                     name: name.clone(),
                 })),
@@ -530,5 +536,43 @@ mod tests {
         let expr = pool.func("log", vec![pool.integer(-1_i32)]);
         let v = eval_complex_f64(expr, &pool, &HashMap::new()).unwrap();
         assert!(v.re.abs() < 1e-12 && (v.im - std::f64::consts::PI).abs() < 1e-12);
+    }
+}
+
+/// `erf(z) = 2/√π·Σ (−1)ⁿ z^{2n+1}/(n!(2n+1))` for `|z| ≤ 4`.
+fn erf_series(z: ComplexF64) -> Option<ComplexF64> {
+    if !(z.re.is_finite() && z.im.is_finite()) || z.re.hypot(z.im) > 4.0 {
+        return None;
+    }
+    let z2 = z.mul(z);
+    let mut term = z;
+    let mut sum = z;
+    for n in 1..200u32 {
+        let t = term.mul(z2);
+        term = ComplexF64::new(-t.re / f64::from(n), -t.im / f64::from(n));
+        let k = f64::from(2 * n + 1);
+        let add = ComplexF64::new(term.re / k, term.im / k);
+        sum = sum.add(add);
+        if add.re.hypot(add.im) < 1e-17 * sum.re.hypot(sum.im).max(1e-300) {
+            break;
+        }
+    }
+    let c = 2.0 / std::f64::consts::PI.sqrt();
+    Some(ComplexF64::new(c * sum.re, c * sum.im))
+}
+
+#[cfg(test)]
+mod erf_tests {
+    use super::*;
+
+    #[test]
+    fn erf_on_the_imaginary_axis_is_i_erfi() {
+        // erf(0.5 i) = i·erfi(0.5), erfi(0.5) = 0.614952094696511…
+        let v = erf_series(ComplexF64::new(0.0, 0.5)).unwrap();
+        assert!(v.re.abs() < 1e-15 && (v.im - 0.614_952_094_696_511).abs() < 1e-13);
+        // erf(1) = 0.842700792949715
+        let w = erf_series(ComplexF64::new(1.0, 0.0)).unwrap();
+        assert!((w.re - 0.842_700_792_949_715).abs() < 1e-13 && w.im == 0.0);
+        assert!(erf_series(ComplexF64::new(5.0, 0.0)).is_none());
     }
 }
