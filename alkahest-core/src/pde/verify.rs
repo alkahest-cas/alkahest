@@ -185,8 +185,12 @@ pub fn verify_solution(
     let mut checks = Vec::with_capacity(items.len());
     for (kind, index, e) in items {
         let r = substitute(e)?;
+        // Alpha-equivalent sums must be one atom for the zero test, and
+        // linearity / constant folding should have its chance first.
+        let r = super::sum::simplify_sums(r, &[], pool);
+        let r = super::sum::alpha_normalize(r, pool);
         let r = crate::simplify::engine::simplify(r, pool).value;
-        let zt = zero_test(r, pool, None);
+        let zt = guarded(zero_test(r, pool, None), r, pool);
         let mut check = ResidualCheck {
             kind,
             index,
@@ -224,6 +228,49 @@ pub fn verify_solution(
         checks,
         arbitrary_functions: arbitrary.into_iter().map(|(n, _)| n).collect(),
     })
+}
+
+/// A `proved_nonzero` from the rational normal form is a statement about
+/// *independent atoms*.  A `Sum` or `RootOfFamily` is such an atom to the
+/// normal form, but two different sums can still be equal (`Σ(a+b)` and
+/// `Σa + Σb`), so with one present that verdict is downgraded to `unknown`:
+/// verification may fail to prove, never wrongly refute.
+fn guarded(
+    zt: crate::simplify::zero::ZeroTest,
+    r: ExprId,
+    pool: &ExprPool,
+) -> crate::simplify::zero::ZeroTest {
+    if zt.status == ZeroStatus::ProvedNonzero
+        && zt.method == "rational_normal_form"
+        && has_opaque_head(r, pool)
+    {
+        let mut z = zt;
+        z.status = ZeroStatus::Unknown;
+        z.method = "none";
+        z.evidence =
+            vec!["a Sum or RootOfFamily is opaque to the normal form; nonzero not proved".into()];
+        return z;
+    }
+    zt
+}
+
+fn has_opaque_head(e: ExprId, pool: &ExprPool) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![e];
+    while let Some(n) = stack.pop() {
+        if !seen.insert(n) {
+            continue;
+        }
+        let opaque = pool.with(n, |d| {
+            matches!(d, crate::kernel::ExprData::Func { name, .. }
+                if name == super::sum::SUM || name == super::root_family::ROOT_OF_FAMILY)
+        });
+        if opaque {
+            return true;
+        }
+        push_children(n, pool, &mut stack);
+    }
+    false
 }
 
 fn collect_undefined(e: ExprId, pool: &ExprPool, out: &mut Vec<(String, usize)>) {
@@ -288,7 +335,7 @@ fn refute_by_instances(
                 pool.display(body)
             ));
         }
-        let zt = zero_test(cur, pool, None);
+        let zt = guarded(zero_test(cur, pool, None), cur, pool);
         if zt.status == ZeroStatus::ProvedNonzero {
             let mut ev = vec![format!(
                 "residual is nonzero for the instance {}",
@@ -345,6 +392,49 @@ mod tests {
         );
         let v = verify_pde_solution(&p, &[bad], &pool).unwrap();
         assert_eq!(v.status, VerificationStatus::Refuted);
+    }
+
+    #[test]
+    fn series_candidate_verifies_term_wise() {
+        // u = Σ_{k=1}^{n} e^{−k² t} sin(k x) solves u_t = u_xx for every n.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let t = pool.symbol("t", Domain::Real);
+        let k = pool.symbol("k", Domain::Integer);
+        let n = pool.symbol("n", Domain::Integer);
+        let u = pool.func("u", vec![x, t]);
+        let d = |e, v| crate::diff::diff(e, v, &pool).unwrap().value;
+        let heat = pool.add(vec![
+            d(u, t),
+            pool.mul(vec![pool.integer(-1), d(d(u, x), x)]),
+        ]);
+        let term = pool.mul(vec![
+            pool.func(
+                "exp",
+                vec![pool.mul(vec![pool.integer(-1), pool.pow(k, pool.integer(2)), t])],
+            ),
+            pool.func("sin", vec![pool.mul(vec![k, x])]),
+        ]);
+        let sol = crate::pde::sum::sum(term, k, pool.integer(1), n, &pool).unwrap();
+        let p = PdeProblem::new(&[heat], &[u], &pool).unwrap();
+        let v = verify_pde_solution(&p, &[sol], &pool).unwrap();
+        assert_eq!(
+            v.status,
+            VerificationStatus::ExactlyVerified,
+            "{:?}",
+            v.checks
+        );
+        // A wrong series is never *refuted* through the opaque Sum atom.
+        let wrong = crate::pde::sum::sum(
+            pool.func("sin", vec![pool.mul(vec![k, x])]),
+            k,
+            pool.integer(1),
+            n,
+            &pool,
+        )
+        .unwrap();
+        let v = verify_pde_solution(&p, &[wrong], &pool).unwrap();
+        assert_ne!(v.status, VerificationStatus::ExactlyVerified);
     }
 
     #[test]

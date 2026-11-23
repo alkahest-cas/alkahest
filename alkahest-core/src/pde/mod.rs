@@ -59,9 +59,9 @@ pub use root_family::{
     member, root_family_enclosure, root_family_parts, root_of_family, ROOT_OF_FAMILY,
 };
 pub use sum::{
-    coefficient, expand_finite_sums, expand_sum, indexed, indexed_parts, kronecker_delta,
-    laplacian_indexed, simplify_sums, sum, sum_parts, truncate, IndexRange, INDEXED,
-    KRONECKER_DELTA, MAX_SUM_TERMS, SUM,
+    alpha_normalize, coefficient, expand_finite_sums, expand_sum, indexed, indexed_parts,
+    kronecker_delta, laplacian_indexed, simplify_sums, sum, sum_parts, truncate, IndexRange,
+    INDEXED, KRONECKER_DELTA, MAX_SUM_TERMS, SUM,
 };
 pub use transform::{transformed_name, TransformKind};
 pub use verify::{

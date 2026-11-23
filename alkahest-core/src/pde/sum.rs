@@ -408,6 +408,51 @@ pub fn coefficient(e: ExprId, n: ExprId, pool: &ExprPool) -> Result<ExprId, PdeE
     }
 }
 
+/// `expr` with the bound variable of every `Sum` renamed canonically, by
+/// nesting depth (`__alkahest_k0`, `__alkahest_k1`, …, same domain), so that
+/// alpha-equivalent sums — `Σᵢ φ(xᵢ)` and `Σⱼ φ(xⱼ)` — become the identical
+/// node.  Hash-consing then cancels them, and the zero test's normal form
+/// (which treats a `Sum` as an opaque atom) no longer mistakes them for
+/// independent quantities.  Used by verification and for deduplication;
+/// display names are lost, so it is not applied to user-facing results.
+pub fn alpha_normalize(expr: ExprId, pool: &ExprPool) -> ExprId {
+    alpha_rec(expr, 0, pool, &mut HashMap::new())
+}
+
+fn alpha_rec(
+    expr: ExprId,
+    depth: usize,
+    pool: &ExprPool,
+    memo: &mut HashMap<(ExprId, usize), ExprId>,
+) -> ExprId {
+    if let Some(&d) = memo.get(&(expr, depth)) {
+        return d;
+    }
+    let out = if let Some((body, k, lo, hi)) = sum_parts(expr, pool) {
+        let lo = alpha_rec(lo, depth, pool, memo);
+        let hi = alpha_rec(hi, depth, pool, memo);
+        let domain = pool.with(k, |d| match d {
+            ExprData::Symbol { domain, .. } => *domain,
+            _ => Domain::Integer,
+        });
+        let canon = pool.symbol(format!("__alkahest_k{depth}"), domain);
+        let body = if canon == k {
+            body
+        } else {
+            let mut m = HashMap::new();
+            m.insert(k, canon);
+            crate::kernel::subs::subs(body, &m, pool)
+        };
+        let body = alpha_rec(body, depth + 1, pool, memo);
+        pool.func(SUM, vec![body, canon, lo, hi])
+    } else {
+        rebuild_children(expr, pool, &mut |c| Ok(alpha_rec(c, depth, pool, memo)))
+            .expect("infallible")
+    };
+    memo.insert((expr, depth), out);
+    out
+}
+
 /// A range assumption `lo ≤ var ≤ hi` for [`simplify_sums`].
 pub type IndexRange = (ExprId, ExprId, ExprId);
 
@@ -787,6 +832,22 @@ mod tests {
         let _ = (b1, k1, back);
         let s = pool.display(l2).to_string();
         assert!(s.contains("sin") && s.contains("Sum"), "{s}");
+    }
+
+    #[test]
+    fn alpha_equivalent_sums_cancel() {
+        let (pool, x, i, d, _) = setup();
+        let j = pool.symbol("j", Domain::Integer);
+        let one = pool.integer(1);
+        let xi = indexed(x, i, &pool).unwrap();
+        let xj = indexed(x, j, &pool).unwrap();
+        let a = sum(pool.func("sin", vec![xi]), i, one, d, &pool).unwrap();
+        let b = sum(pool.func("sin", vec![xj]), j, one, d, &pool).unwrap();
+        assert_ne!(a, b);
+        assert_eq!(alpha_normalize(a, &pool), alpha_normalize(b, &pool));
+        let diff = pool.add(vec![a, pool.mul(vec![pool.integer(-1), b])]);
+        let z = crate::simplify::zero::zero_test(alpha_normalize(diff, &pool), &pool, None);
+        assert_eq!(z.status, crate::simplify::zero::ZeroStatus::ProvedZero);
     }
 
     #[test]
