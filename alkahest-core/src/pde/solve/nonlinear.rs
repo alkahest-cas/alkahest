@@ -170,7 +170,7 @@ fn terms_of(e: ExprId, pool: &ExprPool) -> Vec<ExprId> {
 
 /// `Σ fᵢ(xᵢ, pᵢ) + c₀ = 0` ⇒ `fᵢ = aᵢ`, `u = Σ ∫ Pᵢ dxᵢ + b`.
 pub(crate) fn solve_separable(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> {
-    let f = ctx.f;
+    let f = crate::simplify::engine::simplify_expanded(ctx.f, pool).value;
     if contains(f, ctx.w, pool) {
         return Vec::new();
     }
@@ -223,6 +223,14 @@ pub(crate) fn solve_separable(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> 
 }
 
 /// Lagrange–Charpit for `F(x, y, u, p, q) = 0`.
+///
+/// Charpit's system is restricted to the equation's surface: one of `p`, `q`
+/// is eliminated with `F = 0`, and a first integral `φ` of the reduced field
+/// on `(x, y, u, p)` (or `(x, y, u, q)`) that involves the kept derivative is
+/// sought — an integral of the full system often holds only on `F = 0`
+/// (`p/x` for `pq = xy`), so searching the full five-dimensional field would
+/// miss it.  `φ = a` and `F = 0` give `p, q`; `du = p dx + q dy` is then
+/// integrated.
 pub(crate) fn solve_charpit(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> {
     let f = ctx.f;
     let (x, y) = (ctx.indep[0], ctx.indep[1]);
@@ -232,58 +240,54 @@ pub(crate) fn solve_charpit(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> {
     else {
         return Vec::new();
     };
-    let comps = vec![
-        fp,
-        fq,
-        pool.add(vec![pool.mul(vec![p, fp]), pool.mul(vec![q, fq])]),
-        neg(pool.add(vec![fx, pool.mul(vec![p, fu])]), pool),
-        neg(pool.add(vec![fy, pool.mul(vec![q, fu])]), pool),
-    ];
-    let field = VectorField::new(vec![x, y, w, p, q], comps, pool);
-    let mut search = IntegralSearch::new(&field, ctx.taken.clone());
-    if !search.offer(f, "the equation itself", pool) {
-        return Vec::new();
-    }
-    search.run(2, pool);
-    if search.found.len() < 2 {
-        ctx.fail("charpit: no second first integral of Charpit's system".into());
-        return Vec::new();
-    }
-    let phi = search.found[1];
+    let dp = neg(pool.add(vec![fx, pool.mul(vec![p, fu])]), pool);
+    let dq = neg(pool.add(vec![fy, pool.mul(vec![q, fu])]), pool);
+    let du = pool.add(vec![pool.mul(vec![p, fp]), pool.mul(vec![q, fq])]);
     let a = ctx.fresh_constant(pool);
     let b = ctx.fresh_constant(pool);
-    let mut steps = vec!["Charpit's system".to_string()];
-    steps.extend(search.notes.clone());
-    // Solve {F = 0, φ = a} for p, q.
-    let eqs = [f, sub(phi, a, pool)];
     let mut out = Vec::new();
-    for order in [[p, q], [q, p]] {
-        for (e1, e2) in [(0, 1), (1, 0)] {
-            // e1 gives order[0] in terms of order[1]; e2 then gives order[1].
-            for v0 in isolate(eqs[e1], order[0], pool) {
-                let e2s = simp(subs1(eqs[e2], order[0], v0, pool), pool);
-                if contains(e2s, order[0], pool) {
+    for (elim, keep, dkeep) in [(q, p, dp), (p, q, dq)] {
+        for root in isolate(f, elim, pool) {
+            if contains(root, elim, pool) {
+                continue;
+            }
+            let comps: Vec<ExprId> = [fp, fq, du, dkeep]
+                .iter()
+                .map(|&c| simp(subs1(c, elim, root, pool), pool))
+                .collect();
+            let field = VectorField::new(vec![x, y, w, keep], comps, pool);
+            let mut search = IntegralSearch::new(&field, ctx.taken.clone());
+            search.run(3, pool);
+            for &phi in &search.found {
+                if !contains(phi, keep, pool) {
                     continue;
                 }
-                for v1 in isolate(e2s, order[1], pool) {
-                    let v0s = simp(subs1(v0, order[1], v1, pool), pool);
-                    let (pp, qq) = if order[0] == p { (v0s, v1) } else { (v1, v0s) };
+                for kv in isolate(sub(phi, a, pool), keep, pool) {
+                    let ev = simp(subs1(root, keep, kv, pool), pool);
+                    let (pp, qq) = if keep == p { (kv, ev) } else { (ev, kv) };
                     if !free_of(pp, &[p, q], pool) || !free_of(qq, &[p, q], pool) {
                         continue;
                     }
-                    let mut st = steps.clone();
-                    st.push(format!(
-                        "p = {}, q = {}",
-                        pool.display(pp),
-                        pool.display(qq)
-                    ));
+                    let mut st = vec![format!(
+                        "Charpit's system on F = 0 ({} = {})",
+                        pool.display(elim),
+                        pool.display(root)
+                    )];
+                    st.extend(search.notes.clone());
+                    st.push(format!("p = {}, q = {}", pool.display(pp), pool.display(qq)));
                     out.extend(pfaff(ctx, pp, qq, a, b, st, pool));
                     if out.len() >= 4 {
                         return out;
                     }
                 }
             }
+            if !out.is_empty() {
+                return out;
+            }
         }
+    }
+    if out.is_empty() {
+        ctx.fail("charpit: no usable first integral of Charpit's system".into());
     }
     out
 }
