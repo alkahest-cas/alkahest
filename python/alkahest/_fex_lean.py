@@ -278,6 +278,8 @@ def _emit(kind, expr, coords, time, src) -> str:
         rws = ", ".join(
             f"(h{k} x{k}).deriv" for k in range(n) if _ak.is_zero(src["coeffs"][k]) is not True
         )
+    # The proof is long but linear in d; give it room proportional to d.
+    lines.append(f"set_option maxHeartbeats {400000 * max(1, n)} in")
     lines.append(f"theorem fex_pde ({binders} : ℝ) :\n    {stmt} := by")
     lines.extend(proof)
     lines.append(f"  rw [{rws}]")

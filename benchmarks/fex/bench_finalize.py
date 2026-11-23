@@ -173,7 +173,7 @@ def run(kind, d, rng, quick, epochs, delta=0.0, lean_dir=None):
         row["recovered_exact"] = rm["exact"]
         # The negative of a solution of a homogeneous problem is a solution.
         if rm["exact"] is not True and kind in ("nls", "eigen"):
-            row["recovered_exact_up_to_sign"] = ak.is_zero(out["expr"] + tr)
+            row["recovered_exact_up_to_sign"] = fex.recovery_metric(-out["expr"], tr)["exact"]
     fam = paper_family(kind, prob) if not delta else None
     if fam is not None and out["exact"]:
         t0 = time.perf_counter()

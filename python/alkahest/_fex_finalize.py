@@ -1995,6 +1995,26 @@ def _check_family(problem, kind, time, family, fs, out) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _decide_zero(e: Any) -> bool | None:
+    """``is_zero`` on ``e`` and on the normal forms :func:`_verify_residuals`
+    uses; the first decided verdict (each is exact, none samples)."""
+    forms = (
+        lambda r: r,
+        _simp,
+        _simplify_args,
+        _expand_args,
+        lambda r: _ak.expand(_expand_args(r)),
+    )
+    for form in forms:
+        try:
+            v = _ak.is_zero(form(e))
+        except Exception:  # noqa: BLE001 - an undecidable form is skipped
+            continue
+        if v is not None:
+            return v
+    return None
+
+
 def _split_sum(p: str) -> list[str]:
     """The top-level terms of a skeleton string ``[a+b+…]``."""
     if not (p.startswith("[") and p.endswith("]")):
@@ -2097,10 +2117,7 @@ def recovery_metric(found: Any, truth: Any, *, coords: Any = None) -> dict:
     if not isinstance(found, _ak.Expr) or not isinstance(truth, _ak.Expr):
         raise _err("E-FEX-011", "recovery_metric compares two Expr")
     sf, st = _skeleton(found), _skeleton(truth)
-    try:
-        exact = _ak.is_zero(_simp(found - truth))
-    except Exception:
-        exact = None
+    exact = _decide_zero(found - truth)
     return {
         "skeleton_equivalent": sf == st,
         "exact": exact,
