@@ -1835,7 +1835,7 @@ fn half_line_roles(
 fn finish_half_line(
     problem: &PdeProblem,
     s: &Setup,
-    x: ExprId,
+    _x: ExprId,
     t: ExprId,
     value: ExprId,
     side: Vec<ExprId>,
@@ -1859,11 +1859,11 @@ fn finish_half_line(
             status: c.status,
         });
     }
-    let mut idx = 0;
-    for c in problem
+    for (idx, c) in problem
         .conditions()
         .iter()
         .filter(|c| c.kind == ConditionKind::Initial)
+        .enumerate()
     {
         let dt = datum(c, s, pool)?;
         let mut e = value;
@@ -1888,7 +1888,6 @@ fn finish_half_line(
             index: idx,
             status: st,
         });
-        idx += 1;
     }
     let status = combine(&checks);
     if status == VerificationStatus::Refuted {
