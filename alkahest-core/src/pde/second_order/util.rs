@@ -28,7 +28,9 @@ pub(crate) fn is_nonzero(e: ExprId, pool: &ExprPool) -> bool {
     if s == pool.integer(0) {
         return false;
     }
-    if pool.with(s, |d| matches!(d, ExprData::Integer(_) | ExprData::Rational(_))) {
+    if pool.with(s, |d| {
+        matches!(d, ExprData::Integer(_) | ExprData::Rational(_))
+    }) {
         return true;
     }
     zero_test(s, pool, None).status == ZeroStatus::ProvedNonzero
@@ -85,7 +87,10 @@ pub(crate) fn cdiv(p: ExprId, q: ExprId, pool: &ExprPool) -> ExprId {
         return plain;
     }
     let num = pool.mul(vec![p, sub(a, pool.mul(vec![b, i]), pool)]);
-    let den = pool.add(vec![pool.pow(a, pool.integer(2)), pool.pow(b, pool.integer(2))]);
+    let den = pool.add(vec![
+        pool.pow(a, pool.integer(2)),
+        pool.pow(b, pool.integer(2)),
+    ]);
     let r = tidy(div(num, den, pool), pool);
     smallest(vec![plain, r], pool)
 }
@@ -232,8 +237,9 @@ fn push_factors(e: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>) {
             let is_int = pool.with(exp, |d| matches!(d, ExprData::Integer(_)));
             // (a·b)^r → a^r b^r also for rational r: only used to *propose*
             // a separation, which the final substitution check vets.
-            let is_num =
-                pool.with(exp, |d| matches!(d, ExprData::Integer(_) | ExprData::Rational(_)));
+            let is_num = pool.with(exp, |d| {
+                matches!(d, ExprData::Integer(_) | ExprData::Rational(_))
+            });
             let inner = pool.with(base, |d| match d {
                 ExprData::Mul(xs) => Some(xs.clone()),
                 _ => None,
@@ -250,9 +256,10 @@ fn push_factors(e: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>) {
                 }
                 _ => {
                     // exp(a+b)^k
-                    let is_exp = pool.with(base, |d| {
-                        matches!(d, ExprData::Func { name, .. } if name == "exp")
-                    });
+                    let is_exp = pool.with(
+                        base,
+                        |d| matches!(d, ExprData::Func { name, .. } if name == "exp"),
+                    );
                     if is_int && is_exp {
                         let mut sub = Vec::new();
                         push_factors(base, pool, &mut sub);
@@ -462,10 +469,16 @@ pub(crate) fn tidy(e: ExprId, pool: &ExprPool) -> ExprId {
     let r = rewrite(e, pool, &mut memo);
     let a = simp(simp(r, pool), pool);
     let mut cands = vec![a];
-    let ex = simp(crate::simplify::engine::simplify_expanded(a, pool).value, pool);
+    let ex = simp(
+        crate::simplify::engine::simplify_expanded(a, pool).value,
+        pool,
+    );
     cands.push(ex);
     if has_trig(a, pool) {
-        cands.push(simp(crate::simplify::engine::simplify_trig(a, pool).value, pool));
+        cands.push(simp(
+            crate::simplify::engine::simplify_trig(a, pool).value,
+            pool,
+        ));
     }
     smallest(cands, pool)
 }
@@ -477,7 +490,10 @@ fn has_trig(e: ExprId, pool: &ExprPool) -> bool {
         if !seen.insert(n) {
             continue;
         }
-        if pool.with(n, |d| matches!(d, ExprData::Func { name, .. } if name == "sin" || name == "cos")) {
+        if pool.with(
+            n,
+            |d| matches!(d, ExprData::Func { name, .. } if name == "sin" || name == "cos"),
+        ) {
             return true;
         }
         super::super::jet::push_children(n, pool, &mut stack);
@@ -547,8 +563,11 @@ fn exp_of_logs(arg: ExprId, pool: &ExprPool) -> ExprId {
         ExprData::Add(ts) => ts,
         _ => vec![arg],
     };
-    let is_num =
-        |z: ExprId| pool.with(z, |d| matches!(d, ExprData::Integer(_) | ExprData::Rational(_)));
+    let is_num = |z: ExprId| {
+        pool.with(z, |d| {
+            matches!(d, ExprData::Integer(_) | ExprData::Rational(_))
+        })
+    };
     let mut powers = Vec::new();
     let mut rest = Vec::new();
     for t in terms {
@@ -587,7 +606,10 @@ fn has_log(e: ExprId, pool: &ExprPool) -> bool {
         if !seen.insert(n) {
             continue;
         }
-        if pool.with(n, |d| matches!(d, ExprData::Func { name, .. } if name == "log")) {
+        if pool.with(
+            n,
+            |d| matches!(d, ExprData::Func { name, .. } if name == "log"),
+        ) {
             return true;
         }
         super::super::jet::push_children(n, pool, &mut stack);

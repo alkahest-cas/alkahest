@@ -26,8 +26,8 @@ use super::super::classify::{PdeType, TypeRegion};
 use super::super::error::PdeError;
 use super::linear::Linear2;
 use super::util::{
-    conj, d, div, exp, free_of, free_of_all, integ, is_zero, linear_in, mentions_i, neg, nicer_integral, simp,
-    split_xy, sqrt, sub, subs1, subs2, tidy,
+    conj, d, div, exp, free_of, free_of_all, integ, is_zero, linear_in, mentions_i, neg,
+    nicer_integral, simp, split_xy, sqrt, sub, subs1, subs2, tidy,
 };
 
 /// The result of [`super::canonical_form`].
@@ -204,7 +204,10 @@ pub(crate) fn transformed(
     let b1 = simp(
         pool.add(vec![
             pool.mul(vec![two, a, px, qx]),
-            pool.mul(vec![b, pool.add(vec![pool.mul(vec![px, qy]), pool.mul(vec![py, qx])])]),
+            pool.mul(vec![
+                b,
+                pool.add(vec![pool.mul(vec![px, qy]), pool.mul(vec![py, qx])]),
+            ]),
             pool.mul(vec![two, c, py, qy]),
         ]),
         pool,
@@ -255,7 +258,9 @@ pub(crate) fn invert(
     for (first, fv, second, sv) in tries {
         for (v1, v2) in [(y, x), (x, y)] {
             let v1_of = match linear_in(first, v1, pool) {
-                Some((p, q)) if !is_zero(q, pool) && free_of(p, v1, pool) && free_of(q, v1, pool) => {
+                Some((p, q))
+                    if !is_zero(q, pool) && free_of(p, v1, pool) && free_of(q, v1, pool) =>
+                {
                     div(sub(fv, p, pool), q, pool) // in v2 and fv
                 }
                 _ => match solve_power(first, v1, fv, pool) {
@@ -331,7 +336,10 @@ fn solve_power(g: ExprId, v: ExprId, target: ExprId, pool: &ExprPool) -> Option<
     }
     Some(tidy(
         pool.pow(
-            pool.mul(vec![sub(target, p, pool), pool.pow(kappa, pool.integer(-1))]),
+            pool.mul(vec![
+                sub(target, p, pool),
+                pool.pow(kappa, pool.integer(-1)),
+            ]),
             pool.pow(m, pool.integer(-1)),
         ),
         pool,
@@ -382,7 +390,11 @@ pub(crate) fn characteristic_coordinates(
         ))
     };
     let disc = simp(
-        sub(pool.pow(b, pool.integer(2)), pool.mul(vec![pool.integer(4), a, c]), pool),
+        sub(
+            pool.pow(b, pool.integer(2)),
+            pool.mul(vec![pool.integer(4), a, c]),
+            pool,
+        ),
         pool,
     );
     let fi = |lam: ExprId| first_integral(lam, x, y, pool);
@@ -390,7 +402,8 @@ pub(crate) fn characteristic_coordinates(
         PdeType::Hyperbolic => {
             if is_zero(a, pool) {
                 // dx = 0 and B dy = C dx
-                let phi2 = fi(div(c, b, pool)).ok_or_else(|| fail("no first integral of dy/dx = C/B"))?;
+                let phi2 =
+                    fi(div(c, b, pool)).ok_or_else(|| fail("no first integral of dy/dx = C/B"))?;
                 super::first_order::note_nonzero(b, conds, pool);
                 Ok((x, phi2))
             } else if is_zero(c, pool) {
@@ -403,8 +416,18 @@ pub(crate) fn characteristic_coordinates(
                 let two_a = pool.mul(vec![pool.integer(2), a]);
                 let l1 = div(pool.add(vec![b, sq]), two_a, pool);
                 let l2 = div(sub(b, sq, pool), two_a, pool);
-                let p1 = fi(l1).ok_or_else(|| fail(&format!("no first integral of dy/dx = {}", pool.display(l1))))?;
-                let p2 = fi(l2).ok_or_else(|| fail(&format!("no first integral of dy/dx = {}", pool.display(l2))))?;
+                let p1 = fi(l1).ok_or_else(|| {
+                    fail(&format!(
+                        "no first integral of dy/dx = {}",
+                        pool.display(l1)
+                    ))
+                })?;
+                let p2 = fi(l2).ok_or_else(|| {
+                    fail(&format!(
+                        "no first integral of dy/dx = {}",
+                        pool.display(l2)
+                    ))
+                })?;
                 super::first_order::note_nonzero(a, conds, pool);
                 Ok((p1, p2))
             }
@@ -415,7 +438,12 @@ pub(crate) fn characteristic_coordinates(
                 return Ok((x, y));
             }
             let lam = div(b, pool.mul(vec![pool.integer(2), a]), pool);
-            let phi = fi(lam).ok_or_else(|| fail(&format!("no first integral of dy/dx = {}", pool.display(lam))))?;
+            let phi = fi(lam).ok_or_else(|| {
+                fail(&format!(
+                    "no first integral of dy/dx = {}",
+                    pool.display(lam)
+                ))
+            })?;
             super::first_order::note_nonzero(a, conds, pool);
             let py = d(phi, y, pool)?;
             let psi = if !is_zero(py, pool) { x } else { y };
@@ -432,10 +460,18 @@ pub(crate) fn characteristic_coordinates(
                 pool.mul(vec![pool.integer(2), a]),
                 pool,
             );
-            let phi = fi(lam).ok_or_else(|| fail(&format!("no first integral of dy/dx = {}", pool.display(lam))))?;
+            let phi = fi(lam).ok_or_else(|| {
+                fail(&format!(
+                    "no first integral of dy/dx = {}",
+                    pool.display(lam)
+                ))
+            })?;
             let phi = tidy(phi, pool);
             let cphi = conj(phi, pool);
-            let alpha = tidy(pool.mul(vec![pool.rational(1, 2), pool.add(vec![phi, cphi])]), pool);
+            let alpha = tidy(
+                pool.mul(vec![pool.rational(1, 2), pool.add(vec![phi, cphi])]),
+                pool,
+            );
             let beta = tidy(
                 pool.mul(vec![
                     pool.mul(vec![pool.rational(-1, 2), i]),
@@ -444,7 +480,9 @@ pub(crate) fn characteristic_coordinates(
                 pool,
             );
             if mentions_i(alpha, pool) || mentions_i(beta, pool) {
-                return Err(fail("the complex characteristic does not split into real and imaginary parts"));
+                return Err(fail(
+                    "the complex characteristic does not split into real and imaginary parts",
+                ));
             }
             super::first_order::note_nonzero(a, conds, pool);
             Ok((alpha, beta))
@@ -585,7 +623,12 @@ fn build_from(
     if is_zero(lead, pool) {
         return Err(bad("the principal coefficient vanishes"));
     }
-    let mut taken = super::util::names_in(&[l.u, l.rhs, l.coef[0], l.coef[1], l.coef[2], l.coef[3], l.coef[4], l.coef[5]], pool);
+    let mut taken = super::util::names_in(
+        &[
+            l.u, l.rhs, l.coef[0], l.coef[1], l.coef[2], l.coef[3], l.coef[4], l.coef[5],
+        ],
+        pool,
+    );
     let (n1, n2) = if pde_type == PdeType::Elliptic {
         ("alpha", "beta")
     } else {

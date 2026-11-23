@@ -145,7 +145,10 @@ fn solution_dict<'py>(
         Some(c) => d.set_item("canonical", canonical_dict(py, c, pool)?)?,
         None => d.set_item("canonical", py.None())?,
     }
-    d.set_item("verification", verification_dict(py, &s.verification, pool)?)?;
+    d.set_item(
+        "verification",
+        verification_dict(py, &s.verification, pool)?,
+    )?;
     Ok(d)
 }
 

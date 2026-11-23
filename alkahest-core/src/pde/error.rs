@@ -152,7 +152,9 @@ impl fmt::Display for PdeError {
             PdeError::NoVerifiedSolution(d) => ("no verified solution", d),
             PdeError::CharacteristicData(d) => ("Cauchy data on a characteristic", d),
             PdeError::CauchyUnsupported(d) => ("unsupported Cauchy data", d),
-            PdeError::NotSecondOrderLinear2D(d) => ("not a linear second-order equation in two variables", d),
+            PdeError::NotSecondOrderLinear2D(d) => {
+                ("not a linear second-order equation in two variables", d)
+            }
             PdeError::CharacteristicsNotIntegrated(d) => ("characteristics not integrated", d),
             PdeError::TypeNotUniform(d) => ("type not uniform", d),
             PdeError::LaplaceBudgetExhausted(d) => ("Laplace cascade budget exhausted", d),

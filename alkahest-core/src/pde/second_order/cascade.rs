@@ -25,7 +25,9 @@
 use crate::kernel::{ExprId, ExprPool};
 
 use super::super::error::PdeError;
-use super::util::{d, div, exp, free_of, integ, is_zero, neg, poly_degree_in, simp, split_xy, sub, tidy};
+use super::util::{
+    d, div, exp, free_of, integ, is_zero, neg, poly_degree_in, simp, split_xy, sub, tidy,
+};
 
 /// One level of the chain: coefficients, source and invariants.
 #[derive(Clone, Debug)]
@@ -55,7 +57,15 @@ pub(crate) fn invariants(
     Ok((h, k))
 }
 
-fn level(a: ExprId, b: ExprId, c: ExprId, s: ExprId, x: ExprId, y: ExprId, pool: &ExprPool) -> Result<Level, PdeError> {
+fn level(
+    a: ExprId,
+    b: ExprId,
+    c: ExprId,
+    s: ExprId,
+    x: ExprId,
+    y: ExprId,
+    pool: &ExprPool,
+) -> Result<Level, PdeError> {
     let (a, b, c, s) = (tidy(a, pool), tidy(b, pool), tidy(c, pool), tidy(s, pool));
     let (h, k) = invariants(a, b, c, x, y, pool)?;
     let (h, k) = (tidy(h, pool), tidy(k, pool));
@@ -135,7 +145,9 @@ pub(crate) fn cascade(
             }
         }
         if !quad_failures.is_empty() {
-            return Err(PdeError::QuadratureOfArbitraryFunction(quad_failures.join("; ")));
+            return Err(PdeError::QuadratureOfArbitraryFunction(
+                quad_failures.join("; "),
+            ));
         }
         if used >= max_steps {
             return Err(PdeError::LaplaceBudgetExhausted(format!(
@@ -165,10 +177,17 @@ fn step_pos(l: &Level, x: ExprId, y: ExprId, pool: &ExprPool) -> Result<Level, P
     let a1 = simp(sub(l.a, div(d(l.h, y, pool)?, l.h, pool), pool), pool);
     let b1 = l.b;
     let c1 = simp(
-        pool.add(vec![d(l.b, y, pool)?, pool.mul(vec![a1, l.b]), neg(l.h, pool)]),
+        pool.add(vec![
+            d(l.b, y, pool)?,
+            pool.mul(vec![a1, l.b]),
+            neg(l.h, pool),
+        ]),
         pool,
     );
-    let s1 = simp(pool.add(vec![d(l.s, y, pool)?, pool.mul(vec![a1, l.s])]), pool);
+    let s1 = simp(
+        pool.add(vec![d(l.s, y, pool)?, pool.mul(vec![a1, l.s])]),
+        pool,
+    );
     level(a1, b1, c1, s1, x, y, pool)
 }
 
@@ -178,15 +197,28 @@ fn step_neg(l: &Level, x: ExprId, y: ExprId, pool: &ExprPool) -> Result<Level, P
     let b1 = simp(sub(l.b, div(d(l.k, x, pool)?, l.k, pool), pool), pool);
     let a1 = l.a;
     let c1 = simp(
-        pool.add(vec![d(l.a, x, pool)?, pool.mul(vec![l.a, b1]), neg(l.k, pool)]),
+        pool.add(vec![
+            d(l.a, x, pool)?,
+            pool.mul(vec![l.a, b1]),
+            neg(l.k, pool),
+        ]),
         pool,
     );
-    let s1 = simp(pool.add(vec![d(l.s, x, pool)?, pool.mul(vec![b1, l.s])]), pool);
+    let s1 = simp(
+        pool.add(vec![d(l.s, x, pool)?, pool.mul(vec![b1, l.s])]),
+        pool,
+    );
     level(a1, b1, c1, s1, x, y, pool)
 }
 
 /// `u_n = ((∂x + b_n) u_{n+1} − s_n) / h_n`, from the top of the chain down.
-fn carry_back_pos(chain: &[Level], top: ExprId, x: ExprId, _y: ExprId, pool: &ExprPool) -> Result<ExprId, PdeError> {
+fn carry_back_pos(
+    chain: &[Level],
+    top: ExprId,
+    x: ExprId,
+    _y: ExprId,
+    pool: &ExprPool,
+) -> Result<ExprId, PdeError> {
     let mut u = top;
     for l in chain[..chain.len() - 1].iter().rev() {
         let num = pool.add(vec![d(u, x, pool)?, pool.mul(vec![l.b, u]), neg(l.s, pool)]);
@@ -196,7 +228,13 @@ fn carry_back_pos(chain: &[Level], top: ExprId, x: ExprId, _y: ExprId, pool: &Ex
 }
 
 /// `u_n = ((∂y + a_n) u_{n−1} − s_n) / k_n`.
-fn carry_back_neg(chain: &[Level], top: ExprId, _x: ExprId, y: ExprId, pool: &ExprPool) -> Result<ExprId, PdeError> {
+fn carry_back_neg(
+    chain: &[Level],
+    top: ExprId,
+    _x: ExprId,
+    y: ExprId,
+    pool: &ExprPool,
+) -> Result<ExprId, PdeError> {
     let mut u = top;
     for l in chain[..chain.len() - 1].iter().rev() {
         let num = pool.add(vec![d(u, y, pool)?, pool.mul(vec![l.a, u]), neg(l.s, pool)]);

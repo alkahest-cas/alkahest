@@ -47,7 +47,11 @@ fn factor_rational(l: &Linear2, pool: &ExprPool) -> Option<Factored> {
     }
     let ints: Vec<rug::Integer> = vals
         .iter()
-        .map(|v| (v.clone() * rug::Rational::from(lcm.clone())).numer().clone())
+        .map(|v| {
+            (v.clone() * rug::Rational::from(lcm.clone()))
+                .numer()
+                .clone()
+        })
         .collect();
     let xi = pool.symbol("__alkahest_pde2_xi", Domain::Real);
     let eta = pool.symbol("__alkahest_pde2_eta", Domain::Real);
@@ -73,7 +77,15 @@ fn factor_rational(l: &Linear2, pool: &ExprPool) -> Option<Factored> {
         let e = f.to_expr(pool);
         let pc = d(e, xi, pool).ok()?;
         let qc = d(e, eta, pool).ok()?;
-        let cc = simp(subs1(subs1(e, xi, pool.integer(0), pool), eta, pool.integer(0), pool), pool);
+        let cc = simp(
+            subs1(
+                subs1(e, xi, pool.integer(0), pool),
+                eta,
+                pool.integer(0),
+                pool,
+            ),
+            pool,
+        );
         let deg1 = rational_value(pc, pool).is_some() && rational_value(qc, pool).is_some();
         if !deg1 {
             return None;
@@ -97,7 +109,8 @@ fn factor_rational(l: &Linear2, pool: &ExprPool) -> Option<Factored> {
     if linear.len() != 2 {
         return None;
     }
-    let repeated = linear[0].p == linear[1].p && linear[0].q == linear[1].q && linear[0].c == linear[1].c;
+    let repeated =
+        linear[0].p == linear[1].p && linear[0].q == linear[1].q && linear[0].c == linear[1].c;
     Some(Factored {
         scale: pool.rational(scale.numer().clone(), scale.denom().clone()),
         f1: linear[0],
@@ -114,7 +127,11 @@ fn factor_algebraic(l: &Linear2, conds: &mut Vec<ExprId>, pool: &ExprPool) -> Op
     let zero = pool.integer(0);
     let one = pool.integer(1);
     let disc = simp(
-        sub(pool.pow(b, pool.integer(2)), pool.mul(vec![pool.integer(4), a, c]), pool),
+        sub(
+            pool.pow(b, pool.integer(2)),
+            pool.mul(vec![pool.integer(4), a, c]),
+            pool,
+        ),
         pool,
     );
     let mut local = Vec::new();
@@ -125,14 +142,26 @@ fn factor_algebraic(l: &Linear2, conds: &mut Vec<ExprId>, pool: &ExprPool) -> Op
         let two_a = pool.mul(vec![pool.integer(2), a]);
         let m1 = div(pool.add(vec![neg(b, pool), sq]), two_a, pool);
         let m2 = div(sub(neg(b, pool), sq, pool), two_a, pool);
-        (a, one, simp(neg(m1, pool), pool), one, simp(neg(m2, pool), pool))
+        (
+            a,
+            one,
+            simp(neg(m1, pool), pool),
+            one,
+            simp(neg(m2, pool), pool),
+        )
     } else if !is_zero(c, pool) {
         note_nonzero(c, &mut local, pool);
         let sq = sqrt(disc, pool);
         let two_c = pool.mul(vec![pool.integer(2), c]);
         let n1 = div(pool.add(vec![neg(b, pool), sq]), two_c, pool);
         let n2 = div(sub(neg(b, pool), sq, pool), two_c, pool);
-        (c, simp(neg(n1, pool), pool), one, simp(neg(n2, pool), pool), one)
+        (
+            c,
+            simp(neg(n1, pool), pool),
+            one,
+            simp(neg(n2, pool), pool),
+            one,
+        )
     } else if !is_zero(b, pool) {
         (b, one, zero, zero, one)
     } else {
@@ -141,12 +170,23 @@ fn factor_algebraic(l: &Linear2, conds: &mut Vec<ExprId>, pool: &ExprPool) -> Op
     let dp = div(dd, scale, pool);
     let ep = div(e, scale, pool);
     let fp = div(f, scale, pool);
-    let det = simp(sub(pool.mul(vec![p1, q2]), pool.mul(vec![p2, q1]), pool), pool);
+    let det = simp(
+        sub(pool.mul(vec![p1, q2]), pool.mul(vec![p2, q1]), pool),
+        pool,
+    );
     let (c1, c2, repeated) = if !is_zero(det, pool) {
         // p₁c₂ + p₂c₁ = D', q₁c₂ + q₂c₁ = E'
         let det2 = neg(det, pool);
-        let c1 = div(sub(pool.mul(vec![dp, q1]), pool.mul(vec![p1, ep]), pool), det2, pool);
-        let c2 = div(sub(pool.mul(vec![p2, ep]), pool.mul(vec![q2, dp]), pool), det2, pool);
+        let c1 = div(
+            sub(pool.mul(vec![dp, q1]), pool.mul(vec![p1, ep]), pool),
+            det2,
+            pool,
+        );
+        let c2 = div(
+            sub(pool.mul(vec![p2, ep]), pool.mul(vec![q2, dp]), pool),
+            det2,
+            pool,
+        );
         if !is_zero(sub(pool.mul(vec![c1, c2]), fp, pool), pool) {
             return None;
         }
@@ -165,7 +205,11 @@ fn factor_algebraic(l: &Linear2, conds: &mut Vec<ExprId>, pool: &ExprPool) -> Op
             return None;
         }
         let rad = simp(
-            sub(pool.pow(sigma, pool.integer(2)), pool.mul(vec![pool.integer(4), fp]), pool),
+            sub(
+                pool.pow(sigma, pool.integer(2)),
+                pool.mul(vec![pool.integer(4), fp]),
+                pool,
+            ),
             pool,
         );
         let half = pool.rational(1, 2);
@@ -241,14 +285,20 @@ pub(crate) fn solve_factored(
         let f1 = fresh(inv);
         let f2 = fresh(inv);
         steps.push("repeated factor: u = m·(F₁(φ) + v·F₂(φ))".into());
-        simp(pool.mul(vec![mult, pool.add(vec![f1, pool.mul(vec![v, f2])])]), pool)
+        simp(
+            pool.mul(vec![mult, pool.add(vec![f1, pool.mul(vec![v, f2])])]),
+            pool,
+        )
     } else {
         let (inv1, m1) = fac.f1.kernel(x, y, conds, pool);
         let (inv2, m2) = fac.f2.kernel(x, y, conds, pool);
         let f1 = fresh(inv1);
         let f2 = fresh(inv2);
         steps.push("distinct factors: u = m₁·F₁(φ₁) + m₂·F₂(φ₂)".into());
-        simp(pool.add(vec![pool.mul(vec![m1, f1]), pool.mul(vec![m2, f2])]), pool)
+        simp(
+            pool.add(vec![pool.mul(vec![m1, f1]), pool.mul(vec![m2, f2])]),
+            pool,
+        )
     };
     let particular = if l.homogeneous(pool) {
         pool.integer(0)
@@ -314,7 +364,11 @@ pub(crate) fn dispersion_family(
             (div(neg(cst2, pool), lin2, pool), true)
         } else {
             let disc = simp(
-                sub(pool.pow(lin, pool.integer(2)), pool.mul(vec![pool.integer(4), c, cst]), pool),
+                sub(
+                    pool.pow(lin, pool.integer(2)),
+                    pool.mul(vec![pool.integer(4), c, cst]),
+                    pool,
+                ),
                 pool,
             );
             let sq = sqrt(disc, pool);
@@ -356,19 +410,31 @@ pub(crate) fn exponential_shift(l: &Linear2, pool: &ExprPool) -> Option<(ExprId,
     let [a, b, c, dd, e, f] = l.coef;
     // [2A B; B 2C] [α; β] = −[D; E]
     let det = simp(
-        sub(pool.mul(vec![pool.integer(4), a, c]), pool.pow(b, pool.integer(2)), pool),
+        sub(
+            pool.mul(vec![pool.integer(4), a, c]),
+            pool.pow(b, pool.integer(2)),
+            pool,
+        ),
         pool,
     );
     if is_zero(det, pool) {
         return None;
     }
     let alpha = div(
-        sub(pool.mul(vec![b, e]), pool.mul(vec![pool.integer(2), c, dd]), pool),
+        sub(
+            pool.mul(vec![b, e]),
+            pool.mul(vec![pool.integer(2), c, dd]),
+            pool,
+        ),
         det,
         pool,
     );
     let beta = div(
-        sub(pool.mul(vec![b, dd]), pool.mul(vec![pool.integer(2), a, e]), pool),
+        sub(
+            pool.mul(vec![b, dd]),
+            pool.mul(vec![pool.integer(2), a, e]),
+            pool,
+        ),
         det,
         pool,
     );

@@ -5,7 +5,9 @@
 use crate::kernel::{ExprId, ExprPool};
 
 use super::super::error::PdeError;
-use super::util::{cdiv, d, div, exp, integ, is_nonzero, is_zero, neg, simp, size, sub, subs1, tidy};
+use super::util::{
+    cdiv, d, div, exp, integ, is_nonzero, is_zero, neg, simp, size, sub, subs1, tidy,
+};
 
 /// `p ∂x + q ∂y + c`.
 #[derive(Clone, Copy, Debug)]
@@ -17,7 +19,13 @@ pub(crate) struct Factor1 {
 
 impl Factor1 {
     /// Apply to `w`.
-    pub fn apply(&self, w: ExprId, x: ExprId, y: ExprId, pool: &ExprPool) -> Result<ExprId, PdeError> {
+    pub fn apply(
+        &self,
+        w: ExprId,
+        x: ExprId,
+        y: ExprId,
+        pool: &ExprPool,
+    ) -> Result<ExprId, PdeError> {
         Ok(simp(
             pool.add(vec![
                 pool.mul(vec![self.p, d(w, x, pool)?]),
@@ -55,8 +63,14 @@ impl Factor1 {
             note_nonzero(self.q, conds, pool);
             // x − (p/q) y and y − (q/p) x are both invariants; keep the
             // smaller (x + c t rather than t + x/c, no nested inverses).
-            let a = tidy(sub(x, pool.mul(vec![cdiv(self.p, self.q, pool), y]), pool), pool);
-            let b = tidy(sub(y, pool.mul(vec![cdiv(self.q, self.p, pool), x]), pool), pool);
+            let a = tidy(
+                sub(x, pool.mul(vec![cdiv(self.p, self.q, pool), y]), pool),
+                pool,
+            );
+            let b = tidy(
+                sub(y, pool.mul(vec![cdiv(self.q, self.p, pool), x]), pool),
+                pool,
+            );
             if size(b, pool) < size(a, pool) {
                 b
             } else {
@@ -65,10 +79,16 @@ impl Factor1 {
         };
         let mult = if !pz {
             note_nonzero(self.p, conds, pool);
-            exp(neg(pool.mul(vec![div(self.c, self.p, pool), x]), pool), pool)
+            exp(
+                neg(pool.mul(vec![div(self.c, self.p, pool), x]), pool),
+                pool,
+            )
         } else {
             note_nonzero(self.q, conds, pool);
-            exp(neg(pool.mul(vec![div(self.c, self.q, pool), y]), pool), pool)
+            exp(
+                neg(pool.mul(vec![div(self.c, self.q, pool), y]), pool),
+                pool,
+            )
         };
         (invariant, mult)
     }
@@ -99,7 +119,13 @@ impl Factor1 {
             let e = exp(pool.mul(vec![div(c, p, pool), x]), pool);
             let integrand = simp(pool.mul(vec![e, g_sr, pool.pow(p, pool.integer(-1))]), pool);
             let i = integ(integrand, x, pool)?;
-            let w_sr = simp(pool.mul(vec![exp(neg(pool.mul(vec![div(c, p, pool), x]), pool), pool), i]), pool);
+            let w_sr = simp(
+                pool.mul(vec![
+                    exp(neg(pool.mul(vec![div(c, p, pool), x]), pool), pool),
+                    i,
+                ]),
+                pool,
+            );
             let r_xy = sub(pool.mul(vec![q, x]), pool.mul(vec![p, y]), pool);
             simp(subs1(w_sr, r, r_xy, pool), pool)
         } else {
@@ -110,7 +136,13 @@ impl Factor1 {
             let e = exp(pool.mul(vec![div(c, q, pool), y]), pool);
             let integrand = simp(pool.mul(vec![e, g, pool.pow(q, pool.integer(-1))]), pool);
             let i = integ(integrand, y, pool)?;
-            simp(pool.mul(vec![exp(neg(pool.mul(vec![div(c, q, pool), y]), pool), pool), i]), pool)
+            simp(
+                pool.mul(vec![
+                    exp(neg(pool.mul(vec![div(c, q, pool), y]), pool), pool),
+                    i,
+                ]),
+                pool,
+            )
         };
         let check = self.apply(w, x, y, pool).ok()?;
         is_zero(sub(check, g, pool), pool).then_some(w)

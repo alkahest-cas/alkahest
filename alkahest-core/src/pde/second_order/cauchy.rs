@@ -83,7 +83,11 @@ pub(crate) fn solve(
     pool: &ExprPool,
 ) -> Result<Option<(ExprId, Vec<String>)>, PdeError> {
     let [a, b, c, dd, e, f0] = l.coef;
-    if !is_zero(dd, pool) || !is_zero(e, pool) || !is_zero(f0, pool) || !l.constant_coefficients(pool) {
+    if !is_zero(dd, pool)
+        || !is_zero(e, pool)
+        || !is_zero(f0, pool)
+        || !l.constant_coefficients(pool)
+    {
         return Ok(None);
     }
     if is_zero(c, pool) {
@@ -96,7 +100,11 @@ pub(crate) fn solve(
         )));
     }
     let disc = simp(
-        sub(pool.pow(b, pool.integer(2)), pool.mul(vec![pool.integer(4), a, c]), pool),
+        sub(
+            pool.pow(b, pool.integer(2)),
+            pool.mul(vec![pool.integer(4), a, c]),
+            pool,
+        ),
         pool,
     );
     if is_zero(disc, pool) {
@@ -145,7 +153,10 @@ pub(crate) fn solve(
         w
     };
     let fdat = simp(sub(data.f, subs1(up, y, data.y0, pool), pool), pool);
-    let gdat = simp(sub(data.g, subs1(d(up, y, pool)?, y, data.y0, pool), pool), pool);
+    let gdat = simp(
+        sub(data.g, subs1(d(up, y, pool)?, y, data.y0, pool), pool),
+        pool,
+    );
     let gamma = integ(gdat, x, pool).ok_or_else(|| {
         PdeError::CauchyDataUnsupported(format!(
             "∫ {} d{} does not close, so d'Alembert's formula has no closed form",
@@ -161,10 +172,10 @@ pub(crate) fn solve(
         let arg = simp(pool.add(vec![x, pool.mul(vec![lam, yy])]), pool);
         subs1(h, x, arg, pool)
     };
-    let u = simp(
-        pool.add(vec![at(big_f, l1), at(big_g, l2), up]),
-        pool,
+    let u = simp(pool.add(vec![at(big_f, l1), at(big_g, l2), up]), pool);
+    steps.push(
+        "d'Alembert: u = F(x + λ₁(y − y₀)) + G(x + λ₂(y − y₀)) with F + G = f, λ₁F' + λ₂G' = g"
+            .into(),
     );
-    steps.push("d'Alembert: u = F(x + λ₁(y − y₀)) + G(x + λ₂(y − y₀)) with F + G = f, λ₁F' + λ₂G' = g".into());
     Ok(Some((u, steps)))
 }

@@ -173,10 +173,10 @@ pub fn canonical_form(
                 return canonical::build(&l, r.pde_type, Some(r), pool);
             }
             Err(PdeError::TypeNotUniform(format!(
-            "{} = 0 is {} on the plane; canonical_forms gives one form per region",
-            pool.display(equation),
-            info.pde_type.map(|t| t.as_str()).unwrap_or("untyped")
-        )))
+                "{} = 0 is {} on the plane; canonical_forms gives one form per region",
+                pool.display(equation),
+                info.pde_type.map(|t| t.as_str()).unwrap_or("untyped")
+            )))
         }
     }
 }
@@ -264,7 +264,10 @@ pub fn laplace_invariants(
     cascade::invariants(a, b, c, l.x, l.y, pool)
 }
 
-fn laplace_form(l: &Linear2, pool: &ExprPool) -> Result<(ExprId, ExprId, ExprId, ExprId), PdeError> {
+fn laplace_form(
+    l: &Linear2,
+    pool: &ExprPool,
+) -> Result<(ExprId, ExprId, ExprId, ExprId), PdeError> {
     if !is_zero(l.a(), pool) || !is_zero(l.c(), pool) || is_zero(l.b(), pool) {
         return Err(PdeError::NotLaplaceForm(format!(
             "the principal part {} u_xx + {} u_xy + {} u_yy is not a multiple of u_xy; \
@@ -480,7 +483,11 @@ fn finish(
     })
 }
 
-fn cauchy_candidate(l: &Linear2, problem: &PdeProblem, pool: &ExprPool) -> Result<Candidate, PdeError> {
+fn cauchy_candidate(
+    l: &Linear2,
+    problem: &PdeProblem,
+    pool: &ExprPool,
+) -> Result<Candidate, PdeError> {
     let conds = problem.conditions();
     let (ll, data, swapped) = match cauchy::read_data(l, conds, pool) {
         Some(d) => (l.clone(), d, false),
@@ -599,7 +606,12 @@ fn general_candidates(
     }
     // 5. a particular family
     if opts.allow_particular && depth == 0 && l.constant_coefficients(pool) && l.homogeneous(pool) {
-        let mut taken = util::names_in(&[l.u, l.coef[0], l.coef[1], l.coef[2], l.coef[3], l.coef[4], l.coef[5]], pool);
+        let mut taken = util::names_in(
+            &[
+                l.u, l.coef[0], l.coef[1], l.coef[2], l.coef[3], l.coef[4], l.coef[5],
+            ],
+            pool,
+        );
         let k = util::fresh_symbol("k", &mut taken, pool);
         if let Some(cs) = constant::dispersion_family(l, k, pool) {
             out.push(Ok(Candidate {
@@ -696,7 +708,10 @@ fn shift_candidate(
         return None;
     }
     let (x, y) = (l.x, l.y);
-    let expo = simp(pool.add(vec![pool.mul(vec![alpha, x]), pool.mul(vec![beta, y])]), pool);
+    let expo = simp(
+        pool.add(vec![pool.mul(vec![alpha, x]), pool.mul(vec![beta, y])]),
+        pool,
+    );
     let zero = pool.integer(0);
     let lv = Linear2 {
         x,
@@ -740,7 +755,11 @@ fn ode_candidate(
 ) -> Option<Candidate> {
     let ll = if in_x { l.clone() } else { l.swapped() };
     // derivatives in x only: B = C = E = 0, A ≠ 0
-    if !is_zero(ll.b(), pool) || !is_zero(ll.c(), pool) || !is_zero(ll.e(), pool) || is_zero(ll.a(), pool) {
+    if !is_zero(ll.b(), pool)
+        || !is_zero(ll.c(), pool)
+        || !is_zero(ll.e(), pool)
+        || is_zero(ll.a(), pool)
+    {
         return None;
     }
     let (t, other) = (ll.x, ll.y);
@@ -756,7 +775,10 @@ fn ode_candidate(
         pool,
     );
     let rep = dsolve_with(&input, &AssumptionContext::new(), pool).ok()?;
-    let br = rep.branches.into_iter().find(|b| matches!(b.form, SolutionForm::Explicit(_)))?;
+    let br = rep
+        .branches
+        .into_iter()
+        .find(|b| matches!(b.form, SolutionForm::Explicit(_)))?;
     let SolutionForm::Explicit(mut sol) = br.form else {
         return None;
     };

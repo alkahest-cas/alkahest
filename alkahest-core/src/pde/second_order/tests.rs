@@ -52,7 +52,10 @@ fn wave_general_solution_is_dalembert() {
     let p = &c.pool;
     let eq = c.lin(&[
         (c.int(1), c.d(c.d(u, t), t)),
-        (p.mul(vec![c.int(-1), p.pow(s, c.int(2))]), c.d(c.d(u, x), x)),
+        (
+            p.mul(vec![c.int(-1), p.pow(s, c.int(2))]),
+            c.d(c.d(u, x), x),
+        ),
     ]);
     let r = c.solve(eq, u).unwrap();
     assert_eq!(r.kind, "general");
@@ -87,7 +90,11 @@ fn rational_factoring_with_lower_order_terms() {
     ]);
     let r = c.solve(eq, u).unwrap();
     assert_eq!(r.kind, "general");
-    assert!(r.method.contains("factored") || r.method.contains("shift"), "{}", r.method);
+    assert!(
+        r.method.contains("factored") || r.method.contains("shift"),
+        "{}",
+        r.method
+    );
 }
 
 #[test]
@@ -170,7 +177,10 @@ fn dalembert_cauchy_problem() {
     let p = &c.pool;
     let eq = c.lin(&[
         (c.int(1), c.d(c.d(u, t), t)),
-        (p.mul(vec![c.int(-1), p.pow(s, c.int(2))]), c.d(c.d(u, x), x)),
+        (
+            p.mul(vec![c.int(-1), p.pow(s, c.int(2))]),
+            c.d(c.d(u, x), x),
+        ),
     ]);
     let zero = c.int(0);
     let u0 = p.func("u", vec![x, zero]);
