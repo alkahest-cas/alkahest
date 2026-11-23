@@ -851,34 +851,41 @@ fn verify_candidate(
                 .collect::<Vec<_>>()
         );
     }
-    let mut v = verify_pde_solution(&prob, &[value], pool).ok()?;
-    if matches!(
+    let v = upgrade_verification(verify_pde_solution(&prob, &[value], pool).ok()?, pool);
+    (v.status == VerificationStatus::ExactlyVerified).then_some(v)
+}
+
+/// Re-run the zero test of the residuals that were not proved, after the
+/// exact rewrites of [`expand_exact`]; upgrade to `exactly_verified` when
+/// every residual is then proved zero.  Never downgrades, never certifies
+/// on numeric evidence.
+pub(crate) fn upgrade_verification(mut v: PdeVerification, pool: &ExprPool) -> PdeVerification {
+    if !matches!(
         v.status,
         VerificationStatus::NumericallyChecked | VerificationStatus::Unverified
     ) {
-        // Exact identities the zero test does not apply on its own:
-        // (a^(1/q))^q = a and trig functions of k·atan(w).
-        let mut all = true;
-        for c in v.checks.iter_mut() {
-            if c.status == crate::simplify::zero::ZeroStatus::ProvedZero {
-                continue;
-            }
-            let r = simp(expand_exact(c.residual, pool), pool);
-            let r = crate::simplify::engine::simplify_expanded(r, pool).value;
-            let zt = crate::simplify::zero::zero_test(r, pool, None);
-            if zt.status == crate::simplify::zero::ZeroStatus::ProvedZero {
-                c.status = zt.status;
-                c.method = "trig_of_atan_expansion";
-                c.residual = r;
-            } else {
-                all = false;
-            }
+        return v;
+    }
+    let mut all = true;
+    for c in v.checks.iter_mut() {
+        if c.status == crate::simplify::zero::ZeroStatus::ProvedZero {
+            continue;
         }
-        if all {
-            v.status = VerificationStatus::ExactlyVerified;
+        let r = simp(expand_exact(c.residual, pool), pool);
+        let r = crate::simplify::engine::simplify_expanded(r, pool).value;
+        let zt = crate::simplify::zero::zero_test(r, pool, None);
+        if zt.status == crate::simplify::zero::ZeroStatus::ProvedZero {
+            c.status = zt.status;
+            c.method = "trig_of_atan_expansion";
+            c.residual = r;
+        } else {
+            all = false;
         }
     }
-    (v.status == VerificationStatus::ExactlyVerified).then_some(v)
+    if all {
+        v.status = VerificationStatus::ExactlyVerified;
+    }
+    v
 }
 
 /// Rewrite by exact identities: `(a^(p/q))^n → a^(pn/q)` when `q | n`, and

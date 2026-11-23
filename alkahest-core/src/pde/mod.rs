@@ -73,6 +73,7 @@ pub mod green;
 pub mod integral;
 pub mod jet;
 pub mod mol;
+pub mod linearize;
 pub mod nonlinear;
 pub(crate) mod numeric;
 pub mod problem;
@@ -107,6 +108,7 @@ pub use jet::{
     functions_to_jets, multi_indices, JetCoordinate, JetNaming, JetSpace, JetSymbol, JetSystem,
     MultiIndex,
 };
+pub use linearize::{cole_hopf, hodograph, hopf_lax, miura, ColeHopf, Hodograph, HopfLax, Miura};
 pub use nonlinear::{
     ansatz_solutions_for, invariant_solutions, reduce_by_generator, similarity_solutions,
     traveling_wave_solutions, ReducedSolution, Reduction,

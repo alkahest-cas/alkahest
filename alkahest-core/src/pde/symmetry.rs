@@ -529,7 +529,6 @@ pub(crate) struct Determining {
     pub f: ExprId,
     pub sys: DetSys,
     pub red: Reducer,
-    pub params: Vec<ExprId>,
 }
 
 fn single_equation(
@@ -579,7 +578,7 @@ pub(crate) fn determining(
     let params = parameters_of(f, &jets, pool);
     let mut vars = jets.indep.clone();
     vars.push(jets.w);
-    let mut sys = DetSys::new(vars, params.clone());
+    let mut sys = DetSys::new(vars, params);
     let all: Vec<usize> = (0..=p).collect();
     for name in names_for(&jets, pool) {
         sys.add_func(name, all.clone());
@@ -636,13 +635,7 @@ pub(crate) fn determining(
     for e in eqs {
         sys.push_eq(e);
     }
-    Ok(Determining {
-        jets,
-        f,
-        sys,
-        red,
-        params,
-    })
+    Ok(Determining { jets, f, sys, red })
 }
 
 fn dq_of(

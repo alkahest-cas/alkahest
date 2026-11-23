@@ -252,3 +252,88 @@ fn similarity_heat_and_porous_medium() {
         }
     }
 }
+
+#[test]
+fn cole_hopf_verified_and_refused() {
+    let e = eq_of("u_t + 2*u*u_x - 3*u_xx", &["x", "t"]);
+    let ch = super::linearize::cole_hopf(e.eq, e.u, &e.pool).unwrap();
+    assert!(ch.verified);
+    eprintln!(
+        "u = {}; {}",
+        e.pool.display(ch.substitution),
+        e.pool.display(ch.heat_equation)
+    );
+    let k = eq_of("u_t + u*u_x + u_xxx", &["x", "t"]);
+    let err = super::linearize::cole_hopf(k.eq, k.u, &k.pool).unwrap_err();
+    assert_eq!(crate::errors::AlkahestError::code(&err), "E-PDE-304");
+}
+
+#[test]
+fn miura_mkdv_to_kdv() {
+    let e = eq_of("u_t - 6*u^2*u_x + u_xxx", &["x", "t"]);
+    let w = e.pool.func("w", e.vars.clone());
+    let m = super::linearize::miura(e.eq, e.u, w, &e.pool).unwrap();
+    eprintln!(
+        "u = {}  kdv: {}",
+        e.pool.display(m.substitution),
+        e.pool.display(m.kdv)
+    );
+    assert!(m.verified);
+}
+
+#[test]
+fn hodograph_shallow_water() {
+    let pool = ExprPool::new();
+    let x = pool.symbol("x", Domain::Real);
+    let t = pool.symbol("t", Domain::Real);
+    let u = pool.func("u", vec![x, t]);
+    let h = pool.func("h", vec![x, t]);
+    let space = JetSpace::new(&[x, t], &[u, h], 2, &pool).unwrap();
+    let mut syms: HashMap<String, ExprId> = HashMap::from([("x".into(), x), ("t".into(), t)]);
+    let e1 = crate::parse::parse("u_t + u*u_x + h_x", &pool, &mut syms).unwrap();
+    let e2 = crate::parse::parse("h_t + h*u_x + u*h_x", &pool, &mut syms).unwrap();
+    let eqs = [space.from_jets(e1, &pool), space.from_jets(e2, &pool)];
+    let hd = super::linearize::hodograph(&eqs, &[u, h], &pool).unwrap();
+    assert!(hd.verified);
+    for q in &hd.equations {
+        eprintln!("hodograph: {}", pool.display(*q));
+    }
+}
+
+#[test]
+fn hopf_lax_quadratic() {
+    let e = eq_of("u_t + u_x^2/2", &["x", "t"]);
+    let hl = super::linearize::hopf_lax(e.eq, e.u, &e.pool).unwrap();
+    assert!(hl.verified);
+    eprintln!(
+        "L = {}  objective = {}",
+        e.pool.display(hl.lagrangian),
+        e.pool.display(hl.objective)
+    );
+}
+
+#[test]
+fn pdsolve_m6_tiers() {
+    use super::solve::{pdsolve, pdsolve_all, PdsolveOptions};
+    for src in [
+        "u_t + u*u_x - u_xx",
+        "u_t + 6*u*u_x + u_xxx",
+        "u_xt - sin(u)",
+        "u_t - u_xx - u + u^2",
+    ] {
+        let e = eq_of(src, &["x", "t"]);
+        let prob = super::problem::PdeProblem::new(&[e.eq], &[e.u], &e.pool).unwrap();
+        let all = pdsolve_all(&prob, &PdsolveOptions::default(), &e.pool).unwrap();
+        for s in &all {
+            assert!(s.verification.status.is_verified());
+            eprintln!("{src}: [{}] u = {}", s.method, e.pool.display(s.value));
+        }
+        let one = pdsolve(&prob, &PdsolveOptions::default(), &e.pool).unwrap();
+        assert_eq!(one.kind, super::solve::PdeSolutionKind::Special);
+    }
+    // A linear second-order equation is still outside every tier.
+    let h = eq_of("u_t - u_xx", &["x", "t"]);
+    let prob = super::problem::PdeProblem::new(&[h.eq], &[h.u], &h.pool).unwrap();
+    let err = pdsolve(&prob, &PdsolveOptions::default(), &h.pool).unwrap_err();
+    assert_eq!(crate::errors::AlkahestError::code(&err), "E-PDE-050");
+}
