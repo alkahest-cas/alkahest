@@ -30,6 +30,36 @@ use super::solve::util::{contains, d, fresh_symbol, is_number, is_zero, isolate,
 use super::symmetry::Jets;
 use super::verify::{verify_pde_solution, PdeVerification, VerificationStatus};
 
+/// Internal wall-clock caps (seconds) of the open-ended steps; an outer
+/// budget that is tighter wins.
+const ANSATZ_SECONDS: u64 = 12;
+const REDUCE_SECONDS: u64 = 12;
+
+/// Run `f` under a wall-clock cap of `secs` (or the remaining outer budget,
+/// whichever is smaller); a trip of the cap alone is cleared afterwards so
+/// it does not stop the caller.
+pub(crate) fn capped<T>(secs: u64, f: impl FnOnce() -> T) -> T {
+    use std::time::Duration;
+    let cap = Duration::from_secs(secs);
+    let mut b = crate::budget::Budget::new();
+    match crate::budget::remaining() {
+        Some((outer, _)) => {
+            b.wall = Some(outer.wall.map_or(cap, |w| w.min(cap)));
+            b.max_steps = outer.max_steps;
+            b.seed = outer.seed;
+        }
+        None => b.wall = Some(cap),
+    }
+    let r = {
+        let _g = crate::budget::enter(b);
+        f()
+    };
+    if crate::budget::tripped().is_none() {
+        crate::budget::clear_trip();
+    }
+    r
+}
+
 /// A verified solution family produced by a reduction.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -697,8 +727,25 @@ fn separatrices(ode: ExprId, ys: &[ExprId], s: ExprId, pool: &ExprPool) -> Vec<O
                 .collect::<Vec<_>>()
         );
     }
-    for fstar in eqp.into_iter().take(4) {
-        let e0 = simp(sub_m(gi, &HashMap::from([(ys[0], fstar)]), pool), pool);
+    // No equilibrium (e^F): the separatrix of zero energy, F'² = 2G(F).
+    let no_eq = eqp.is_empty();
+    let mut levels: Vec<Option<ExprId>> = eqp.into_iter().take(4).map(Some).collect();
+    if no_eq {
+        levels.push(None);
+    }
+    for fstar_opt in levels {
+        let (fstar, e0) = match fstar_opt {
+            Some(f) => (f, simp(sub_m(gi, &HashMap::from([(ys[0], f)]), pool), pool)),
+            None => (pool.integer(0), pool.integer(0)),
+        };
+        let label = if fstar_opt.is_some() {
+            format!(
+                "separatrix through the equilibrium F = {}",
+                pool.display(fstar)
+            )
+        } else {
+            "zero-energy separatrix F'^2 = 2G(F)".to_string()
+        };
         let rad = crate::simplify::engine::simplify_expanded(
             pool.mul(vec![pool.integer(2), minus(gi, e0, pool)]),
             pool,
@@ -713,10 +760,7 @@ fn separatrices(ode: ExprId, ys: &[ExprId], s: ExprId, pool: &ExprPool) -> Vec<O
                 out.push(OdeSol {
                     f: v.0,
                     constants: vec![v.1],
-                    assumptions: vec![format!(
-                        "separatrix through the equilibrium F = {}",
-                        pool.display(fstar)
-                    )],
+                    assumptions: vec![label.clone()],
                     steps: vec![format!(
                         "energy integral F'^2 = {} through F = {}",
                         pool.display(rad),
@@ -758,10 +802,7 @@ fn separatrices(ode: ExprId, ys: &[ExprId], s: ExprId, pool: &ExprPool) -> Vec<O
                     out.push(OdeSol {
                         f: v,
                         constants: br.constants.clone(),
-                        assumptions: vec![format!(
-                            "separatrix through the equilibrium F = {}",
-                            pool.display(fstar)
-                        )],
+                        assumptions: vec![label.clone()],
                         steps: vec![format!(
                             "energy integral F'^2 = {} through F = {}",
                             pool.display(rad),
@@ -901,11 +942,11 @@ pub(crate) fn expand_exact(e: ExprId, pool: &ExprPool) -> ExprId {
                 (pool.get(b), super::solve::util::as_rational(exp, pool))
             {
                 if let Some(r) = super::solve::util::as_rational(e2, pool) {
+                    // (a^r)^n = a^(rn) for an integer n.
                     let prod = rug::Rational::from(&r * &n);
-                    if *n.denom() == 1 && *prod.denom() == 1 {
+                    if *n.denom() == 1 {
                         let (num, den) = prod.into_numer_denom();
-                        let _ = den;
-                        return pool.pow(b2, pool.integer(num));
+                        return pool.pow(b2, pool.rational(num, den));
                     }
                 }
             }
@@ -1170,7 +1211,7 @@ pub fn traveling_wave_solutions(
     comps[ti] = pool.integer(1);
     let red = reduce(&jets, f, &comps, &mut taken, "xi", pool)?;
     let mut out = Vec::new();
-    for sol in solve_reduced(&red, &mut taken, pool) {
+    for sol in capped(REDUCE_SECONDS, || solve_reduced(&red, &mut taken, pool)) {
         let mut v = assemble(&red, &sol, pool);
         let mut speed = c;
         if let Some((w, kappa)) = clear_speed_radical(v, c, &mut taken, pool) {
@@ -1197,7 +1238,10 @@ pub fn traveling_wave_solutions(
         }
     }
     for basis in [Basis::Tanh, Basis::Sech, Basis::Tan] {
-        for (v, consts, steps) in ansatz_solutions(&red, c, basis, &mut taken, pool) {
+        let cands = capped(ANSATZ_SECONDS, || {
+            ansatz_solutions(&red, c, basis, &mut taken, pool)
+        });
+        for (v, consts, steps) in cands {
             if let Some(ver) = verify_candidate(eq, unknown, v, pool) {
                 push_unique(
                     &mut out,
@@ -1259,7 +1303,7 @@ fn solutions_of(
     pool: &ExprPool,
 ) -> Vec<ReducedSolution> {
     let mut out = Vec::new();
-    for sol in solve_reduced(red, taken, pool) {
+    for sol in capped(REDUCE_SECONDS, || solve_reduced(red, taken, pool)) {
         let v = assemble(red, &sol, pool);
         if let Some(ver) = verify_candidate(eq, unknown, v, pool) {
             let mut steps = red.steps.clone();
@@ -1390,6 +1434,7 @@ impl Basis {
 
 /// The pole order `N` from balancing the highest derivative against the
 /// strongest nonlinearity (each derivative raises the degree in `Y` by one).
+#[cfg_attr(not(feature = "groebner"), allow(dead_code))]
 fn balance(ode: ExprId, ys: &[ExprId], pool: &ExprPool) -> Vec<u32> {
     let ex = crate::simplify::engine::simplify_expanded(ode, pool).value;
     let terms = match pool.get(ex) {
@@ -1758,11 +1803,6 @@ pub fn ansatz_solutions_for(
         )));
     }
     Ok(out)
-}
-
-#[allow(dead_code)]
-fn unused_marker() -> Option<f64> {
-    None
 }
 
 /// `F' = A·sin(bF)` / `A·cos(bF)` (`A`, `b` free of `F`): the closed-form

@@ -282,7 +282,7 @@ pub fn conservation_multipliers(
                 .iter()
                 .map(|q| b.lin_to_expr(q, &names, pool))
                 .collect();
-            if !b.eqs.is_empty() {
+            if !b.eqs.is_empty() && !b.passive {
                 complete = false;
             }
             Some((m, cons))

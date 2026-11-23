@@ -779,7 +779,7 @@ fn _pde_verify<'py>(
     verification_dict(py, &v, &pool)
 }
 
-fn verification_dict<'py>(
+pub(crate) fn verification_dict<'py>(
     py: Python<'py>,
     v: &alkahest_core::pde::PdeVerification,
     pool: &Py<PyExprPool>,

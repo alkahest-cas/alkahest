@@ -554,8 +554,6 @@ fn finalize(
             .ok_or_else(|| format!("{} is not a relation in u", shown()))?
     } else {
         let v = verify_pde_solution(ctx.problem, &[value], pool).map_err(|e| e.to_string())?;
-        // Exact identities the zero test does not apply by itself (M6).
-        let v = crate::pde::nonlinear::upgrade_verification(v, pool);
         (v, Vec::new())
     };
     if verification.status != VerificationStatus::ExactlyVerified {

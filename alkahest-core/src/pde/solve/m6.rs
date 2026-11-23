@@ -34,7 +34,9 @@ fn candidates(sols: Vec<crate::pde::nonlinear::ReducedSolution>) -> Vec<Candidat
 
 pub(crate) fn solve_traveling_wave(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> {
     let eq = ctx.problem.equations()[0];
-    match crate::pde::nonlinear::traveling_wave_solutions(eq, ctx.unknown, pool) {
+    match crate::pde::nonlinear::capped(60, || {
+        crate::pde::nonlinear::traveling_wave_solutions(eq, ctx.unknown, pool)
+    }) {
         Ok(s) => candidates(s),
         Err(e) => {
             ctx.fail(format!("traveling_wave: {e}"));
@@ -45,7 +47,9 @@ pub(crate) fn solve_traveling_wave(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candid
 
 pub(crate) fn solve_similarity(ctx: &mut Ctx, pool: &ExprPool) -> Vec<Candidate> {
     let eq = ctx.problem.equations()[0];
-    match crate::pde::nonlinear::similarity_solutions(eq, ctx.unknown, pool) {
+    match crate::pde::nonlinear::capped(60, || {
+        crate::pde::nonlinear::similarity_solutions(eq, ctx.unknown, pool)
+    }) {
         Ok(mut s) => {
             // Prefer solutions depending on both variables.
             let indep = ctx.indep.clone();

@@ -104,6 +104,74 @@ pub(crate) fn parse_atom_sym(sym: ExprId, pool: &ExprPool) -> Option<Atom> {
     Some((k, alpha?))
 }
 
+/// When `e` holds fractional powers `z^(p/q)`, the expression with
+/// `z = w^L` (`L` the lcm of the denominators) and the fresh symbol `w`.
+fn root_variable(e: ExprId, z: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
+    let mut l: u64 = 1;
+    let mut stack = vec![e];
+    let mut seen = HashSet::new();
+    while let Some(n) = stack.pop() {
+        if !seen.insert(n) {
+            continue;
+        }
+        if let ExprData::Pow { base, exp } = pool.get(n) {
+            if base == z {
+                if let Some(q) = super::solve::util::as_rational(exp, pool) {
+                    let den = q.denom().to_u64().unwrap_or(1);
+                    l = num_lcm(l, den);
+                }
+            }
+        }
+        push_children(n, pool, &mut stack);
+    }
+    if l == 1 || l > 64 {
+        return None;
+    }
+    let w = pool.symbol(format!("__root_{}", z.0), Domain::Real);
+    Some((rewrite_root(e, z, w, l as i64, pool), w))
+}
+
+fn num_lcm(a: u64, b: u64) -> u64 {
+    fn gcd(a: u64, b: u64) -> u64 {
+        if b == 0 {
+            a
+        } else {
+            gcd(b, a % b)
+        }
+    }
+    a / gcd(a, b) * b
+}
+
+fn rewrite_root(e: ExprId, z: ExprId, w: ExprId, l: i64, pool: &ExprPool) -> ExprId {
+    if e == z {
+        return pool.pow(w, pool.integer(l));
+    }
+    match pool.get(e) {
+        ExprData::Pow { base, exp } if base == z => {
+            if let Some(q) = super::solve::util::as_rational(exp, pool) {
+                let k = rug::Rational::from(&q * rug::Rational::from(l));
+                if *k.denom() == 1 {
+                    return pool.pow(w, pool.integer(k.numer().clone()));
+                }
+            }
+            pool.pow(pool.pow(w, pool.integer(l)), exp)
+        }
+        ExprData::Add(xs) => pool.add(xs.iter().map(|&x| rewrite_root(x, z, w, l, pool)).collect()),
+        ExprData::Mul(xs) => pool.mul(xs.iter().map(|&x| rewrite_root(x, z, w, l, pool)).collect()),
+        ExprData::Pow { base, exp } => pool.pow(
+            rewrite_root(base, z, w, l, pool),
+            rewrite_root(exp, z, w, l, pool),
+        ),
+        ExprData::Func { name, args } => pool.func(
+            name,
+            args.iter()
+                .map(|&a| rewrite_root(a, z, w, l, pool))
+                .collect(),
+        ),
+        _ => e,
+    }
+}
+
 pub(crate) fn atom_sym(a: &Atom, pool: &ExprPool) -> ExprId {
     let idx: Vec<String> = a.1.iter().map(|x| x.to_string()).collect();
     pool.symbol(format!("__dA{}_{}", a.0, idx.join("_")), Domain::Real)
@@ -678,9 +746,14 @@ impl DetSys {
 
     /// The parts of `eq` by monomials in the `z_j`-dependent generators.
     fn split_eq(&mut self, eq: &Lin, j: usize, pool: &ExprPool) -> Option<Vec<Lin>> {
-        let z = self.vars[j];
+        let z0 = self.vars[j];
         let (expr, atoms) = lin_to_symbolic(eq, pool);
         let expr = canon_powers(expr, pool);
+        // Fractional powers z^(p/q): split in w = z^(1/L), L = lcm(q).
+        let (expr, z) = match root_variable(expr, z0, pool) {
+            Some((e2, w)) => (e2, w),
+            None => (expr, z0),
+        };
         let syms: Vec<ExprId> = atoms.iter().map(|a| a.0).collect();
         let m = syms.len();
         let (rf, gens) = crate::poly::cancel::rational_over_generators(expr, syms, pool).ok()?;
@@ -1040,15 +1113,25 @@ impl DetSys {
         for i in 0..self.eqs.len() {
             let eq = &self.eqs[i];
             let k = eq.keys().next().unwrap().0;
-            if !eq.keys().all(|a| a.0 == k) || self.funcs[k].deps.len() != 1 {
+            if !eq.keys().all(|a| a.0 == k) || self.funcs[k].deps.is_empty() {
                 continue;
             }
-            let j = self.funcs[k].deps[0];
+            // Every atom a pure derivative in one variable z_j; the other
+            // variables of f are parameters of the ODE.
+            let deps = self.funcs[k].deps.clone();
+            let Some(j) = deps.iter().copied().find(|&j| {
+                eq.keys()
+                    .all(|a| a.1.iter().enumerate().all(|(i2, &o)| i2 == j || o == 0))
+            }) else {
+                continue;
+            };
             let z = self.vars[j];
-            if eq
-                .values()
-                .any(|&c| self.vars.iter().any(|&w| w != z && contains(c, w, pool)))
-            {
+            if eq.values().any(|&c| {
+                self.vars
+                    .iter()
+                    .enumerate()
+                    .any(|(i2, &w)| !deps.contains(&i2) && contains(c, w, pool))
+            }) {
                 continue;
             }
             let order = eq.keys().map(|a| a.1[j]).max().unwrap_or(0) as usize;
@@ -1109,9 +1192,10 @@ impl DetSys {
                 self.complete = false;
                 self.note("an ODE of the determining system was solved only partially");
             }
+            let rest_deps: Vec<usize> = deps.iter().copied().filter(|&x| x != j).collect();
             let mut l = Lin::new();
             for b in basis {
-                let g = self.fresh_func(k, vec![]);
+                let g = self.fresh_func(k, rest_deps.clone());
                 let za = self.zero_alpha();
                 l.insert((g, za), simp(b, pool));
             }

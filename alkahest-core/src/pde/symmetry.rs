@@ -937,6 +937,52 @@ fn primitive(comps: &[ExprId], vars: &[ExprId], pool: &ExprPool) -> Vec<ExprId> 
         .collect()
 }
 
+/// `b^p · b^q → b^(p+q)` for numeric exponents inside each product (an
+/// identity for principal powers: both are `exp((p+q)·log b)`).
+pub(crate) fn merge_powers(e: ExprId, pool: &ExprPool) -> ExprId {
+    match pool.get(e) {
+        ExprData::Add(xs) => simp(
+            pool.add(xs.iter().map(|&x| merge_powers(x, pool)).collect()),
+            pool,
+        ),
+        ExprData::Mul(xs) => {
+            let mut by_base: Vec<(ExprId, rug::Rational)> = Vec::new();
+            let mut rest = Vec::new();
+            for x in xs {
+                let x = merge_powers(x, pool);
+                let (b, q) = match pool.get(x) {
+                    ExprData::Pow { base, exp } => match super::solve::util::as_rational(exp, pool)
+                    {
+                        Some(q) if !is_number(base, pool) => (base, q),
+                        _ => {
+                            rest.push(x);
+                            continue;
+                        }
+                    },
+                    ExprData::Symbol { .. } => (x, rug::Rational::from(1)),
+                    _ => {
+                        rest.push(x);
+                        continue;
+                    }
+                };
+                match by_base.iter_mut().find(|(bb, _)| *bb == b) {
+                    Some((_, acc)) => *acc += q,
+                    None => by_base.push((b, q)),
+                }
+            }
+            for (b, q) in by_base {
+                if q == 0 {
+                    continue;
+                }
+                let (n, d) = q.into_numer_denom();
+                rest.push(pool.pow(b, pool.rational(n, d)));
+            }
+            simp(pool.mul(rest), pool)
+        }
+        _ => e,
+    }
+}
+
 fn size(e: ExprId, pool: &ExprPool) -> usize {
     let mut n = 0;
     let mut stack = vec![e];
@@ -1075,7 +1121,11 @@ fn read_branch(
     let keep = independent_subset(raw.clone(), &vars, pool);
     let mut gens: Vec<SymmetryGenerator> = Vec::new();
     for k in keep {
-        let comps = primitive(&raw[k], &vars, pool);
+        let flat: Vec<ExprId> = raw[k]
+            .iter()
+            .map(|&c| merge_powers(simp(super::nonlinear::expand_exact(c, pool), pool), pool))
+            .collect();
+        let comps = primitive(&flat, &vars, pool);
         let st = verify_components(jets, f, red, &comps, pool);
         let verified = st == ZeroStatus::ProvedZero;
         if st == ZeroStatus::ProvedNonzero {
