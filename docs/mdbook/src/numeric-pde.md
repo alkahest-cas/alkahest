@@ -15,6 +15,7 @@ that was proved stable is stated.
 ## Finite-difference weights
 
 ```python
+import alkahest as ak
 from alkahest.experimental import numeric_pde as N
 
 st = N.fd_weights(2, [-1, 0, 1])      # u'' ≈ (u₋₁ − 2u₀ + u₁)/h²
@@ -90,6 +91,9 @@ n, j, dt, dx, nu = (p.symbol(s) for s in ("n", "j", "dt", "dx", "nu"))
 u = lambda l, k: p.func("u", [n + l, j + k])
 ftcs = N.Scheme.from_expr((u(1,0) - u(0,0))/dt - nu*(u(0,1) - 2*u(0,0) + u(0,-1))/dx**2,
                           "u", n, j, dt=dt, dx=dx)
+res = N.von_neumann(ftcs)
+assert res["proof_status"] == "proved"
+print(res["stability_condition"])   # 0 ≤ dt·nu/dx² ≤ 1/2
 ```
 
 ### Von Neumann

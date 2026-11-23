@@ -15,6 +15,7 @@ exact: no floating-point value ever decides a sign. The pieces are
 from __future__ import annotations
 
 from fractions import Fraction
+from typing import Any
 from math import gcd
 
 from ...exceptions import NumericPdeError
@@ -236,6 +237,10 @@ class RealAlg:
     with ``poly(lo) * poly(hi) < 0``."""
 
     __slots__ = ("hi", "lo", "poly", "value")
+    hi: Any
+    lo: Any
+    poly: Any
+    value: Any
 
     def __init__(self, poly=None, lo=None, hi=None, value=None):
         self.poly, self.lo, self.hi, self.value = poly, lo, hi, value
@@ -995,6 +1000,10 @@ class KRoot:
     """A real root of a squarefree KPoly: exact rational, or isolated in (lo, hi)."""
 
     __slots__ = ("hi", "lo", "poly", "value")
+    hi: Any
+    lo: Any
+    poly: Any
+    value: Any
 
     def __init__(self, poly, lo=None, hi=None, value=None):
         self.poly, self.lo, self.hi, self.value = poly, lo, hi, value

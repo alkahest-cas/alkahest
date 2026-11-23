@@ -41,6 +41,7 @@ boundaries whose membership cannot be decided exactly are reported in
 from __future__ import annotations
 
 from fractions import Fraction
+from typing import Any
 from math import factorial
 
 from ...exceptions import NumericPdeError
@@ -195,7 +196,7 @@ class Scheme:
             raise NumericPdeError("empty scheme", code="E-PDE-353")
         pool = pool or _pool_of(dt, dx, *list(coeffs.values()))
         norm = {}
-        dims = None
+        dims: Any = None
         for key, v in coeffs.items():
             lv, k = key
             k = tuple(k) if isinstance(k, tuple | list) else (k,)
@@ -667,6 +668,11 @@ def _sgn(x):
 
 class _Cell:
     __slots__ = ("hi", "kind", "lo", "point", "stable")
+    hi: Any
+    kind: Any
+    lo: Any
+    point: Any
+    stable: Any
 
     def __init__(self, kind, lo=None, hi=None, point=None, stable=None):
         self.kind, self.lo, self.hi, self.point, self.stable = kind, lo, hi, point, stable
@@ -790,6 +796,16 @@ class VonNeumannResult(_DictLike):
         "method",
         "theta",
     )
+    G: Any
+    amplification_polynomial: Any
+    abs_G_squared: Any
+    stability_condition: Any
+    proof_status: Any
+    parameter: Any
+    intervals: Any
+    undecided_points: Any
+    method: Any
+    theta: Any
 
     def __init__(self, **kw):
         for k in self._keys:
@@ -1286,6 +1302,14 @@ class ModifiedEquation(_DictLike):
         "leading_dispersion",
         "order",
     )
+    coefficients: Any
+    symbol_coefficients: Any
+    physical: Any
+    numerical: Any
+    leading_dissipation: Any
+    leading_dispersion: Any
+    order: Any
+    _pool: Any
 
     def __init__(self, **kw):
         for k in self._keys:
@@ -1452,6 +1476,12 @@ class ConsistencyResult(_DictLike):
         "truncation_error",
         "terms",
     )
+    consistent: Any
+    time_order: Any
+    space_order: Any
+    mixed_terms: Any
+    truncation_error: Any
+    terms: Any
 
     def __init__(self, **kw):
         for k in self._keys:

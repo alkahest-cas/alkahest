@@ -4,6 +4,7 @@ multi-dimensional (tensor-product and compact) stencils, and kernel hooks."""
 from __future__ import annotations
 
 from fractions import Fraction
+from typing import Any
 from itertools import product as _iproduct
 from math import factorial
 
@@ -326,7 +327,7 @@ def _moments_error(order, offsets, weights, exact):
                 return n - order, -M
         else:
             # weights/offsets are Expr here (at least one of each pair)
-            acc = None
+            acc: Any = None
             for s, w in zip(offsets, weights):
                 t = _xpow(w, s, n)
                 acc = t if acc is None else acc + t
@@ -664,7 +665,7 @@ def laplacian_stencil(dim=2, points=None, h=None):
     """
     if points is None:
         points = {1: 3, 2: 5, 3: 7}.get(dim)
-    key = (dim, points)
+    key: Any = (dim, points)
     if key not in _LAPLACIANS:
         raise NumericPdeError(
             f"no {points}-point Laplacian in {dim} dimension(s); available: {sorted(_LAPLACIANS)}",
