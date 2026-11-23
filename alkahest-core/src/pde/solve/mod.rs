@@ -65,6 +65,7 @@ pub(crate) mod linear;
 pub(crate) mod m6;
 pub(crate) mod nonlinear;
 pub(crate) mod riccati;
+pub(crate) mod second_order_tier;
 pub(crate) mod util;
 
 use util::*;
@@ -249,6 +250,15 @@ pub static TIERS: &[Tier] = &[
         solve: nonlinear::solve_charpit,
     },
     Tier {
+        name: "second_order",
+        milestone: "M2",
+        description: "linear second order in two variables: ODE in one variable, factored \
+                      symbol (d'Alembert), exponential shift, Laplace cascade, canonical form; \
+                      d'Alembert's formula for Cauchy data",
+        applies: |c| c.order == 2 && c.indep.len() == 2 && !c.nonlinear,
+        solve: second_order_tier::solve,
+    },
+    Tier {
         name: "cole_hopf",
         milestone: "M6",
         description: "Burgers u_t + a u u_x = nu u_xx: Cole-Hopf from heat solutions (fronts)",
@@ -308,6 +318,8 @@ pub struct Ctx<'a> {
     pub(crate) failures: Vec<String>,
     /// The equation is not linear (M6 tiers).
     pub(crate) nonlinear: bool,
+    /// The arbitrary-function prefix requested in the options.
+    pub(crate) prefix: String,
 }
 
 impl<'a> Ctx<'a> {
@@ -368,6 +380,7 @@ impl<'a> Ctx<'a> {
             nonlinear: crate::pde::classify_pde(problem.equations()[0], unknown, pool)
                 .map(|i| i.linearity != crate::pde::Linearity::Linear)
                 .unwrap_or(false),
+            prefix: opts.function_prefix.clone(),
         };
         if order == 1 {
             ctx.affine = ctx.affine_form(pool);
@@ -499,7 +512,8 @@ fn run(
             }
             let mut expanded: Vec<Candidate> = Vec::new();
             for cand in cands {
-                if has_data {
+                // M2 candidates already satisfy their Cauchy data (d'Alembert).
+                if has_data && tier.milestone != "M2" {
                     match cauchy::impose(&mut ctx, cand, pool) {
                         Ok(cs) => expanded.extend(cs),
                         Err(e) => {
@@ -534,8 +548,9 @@ fn run(
             return Err(PdeError::PdsolveUnsupported(match &opts.hint {
                 Some(h) => format!("the hint {h:?} does not apply to this equation"),
                 None => format!(
-                    "no method applies to this order-{} equation (first-order methods, and \
-                     nonlinear reductions for two variables)",
+                    "no method applies to this order-{} equation (first-order methods, linear \
+                     second order in two variables, and nonlinear reductions for two \
+                     variables)",
                     ctx.order
                 ),
             }));
